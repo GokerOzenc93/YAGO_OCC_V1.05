@@ -330,6 +330,100 @@ export function createFaceDescriptor(
   };
 }
 
+export function assignDefaultFaceRoles(
+  geometry: THREE.BufferGeometry
+): Record<number, string> {
+  const faces = extractFacesFromGeometry(geometry);
+  const groups = groupCoplanarFaces(faces);
+  const roles: Record<number, string> = {};
+
+  const NORMAL_TOLERANCE = 0.85;
+
+  groups.forEach((group, index) => {
+    const n = group.normal;
+    if (n.x < -NORMAL_TOLERANCE) roles[index] = 'Left';
+    else if (n.x > NORMAL_TOLERANCE) roles[index] = 'Right';
+    else if (n.y < -NORMAL_TOLERANCE) roles[index] = 'Bottom';
+    else if (n.y > NORMAL_TOLERANCE) roles[index] = 'Top';
+    else if (n.z < -NORMAL_TOLERANCE) roles[index] = 'Back';
+  });
+
+  return roles;
+}
+
+export function remapFaceRoles(
+  oldFaceRoles: Record<number, string>,
+  oldGeometry: THREE.BufferGeometry,
+  newGeometry: THREE.BufferGeometry
+): Record<number, string> {
+  if (!oldFaceRoles || Object.keys(oldFaceRoles).length === 0) return {};
+
+  const oldFaces = extractFacesFromGeometry(oldGeometry);
+  const oldGroups = groupCoplanarFaces(oldFaces);
+  const newFaces = extractFacesFromGeometry(newGeometry);
+  const newGroups = groupCoplanarFaces(newFaces);
+
+  const newRoles: Record<number, string> = {};
+
+  const oldBox = new THREE.Box3().setFromBufferAttribute(oldGeometry.getAttribute('position') as THREE.BufferAttribute);
+  const oldSize = new THREE.Vector3();
+  oldBox.getSize(oldSize);
+
+  const newBox = new THREE.Box3().setFromBufferAttribute(newGeometry.getAttribute('position') as THREE.BufferAttribute);
+  const newSize = new THREE.Vector3();
+  newBox.getSize(newSize);
+
+  newGroups.forEach((newGroup, newIndex) => {
+    let bestOldIndex = -1;
+    let bestScore = Infinity;
+
+    Object.entries(oldFaceRoles).forEach(([oldIndexStr, role]) => {
+      if (!role) return;
+      const oldIndex = Number(oldIndexStr);
+      const oldGroup = oldGroups[oldIndex];
+      if (!oldGroup) return;
+
+      const dot = newGroup.normal.dot(oldGroup.normal);
+      const angle = Math.acos(Math.min(1, Math.max(-1, dot))) * (180 / Math.PI);
+
+      if (angle > 25) return;
+
+      const scaleX = oldSize.x > 0 ? oldSize.x : 1;
+      const scaleY = oldSize.y > 0 ? oldSize.y : 1;
+      const scaleZ = oldSize.z > 0 ? oldSize.z : 1;
+
+      const newScaleX = newSize.x > 0 ? newSize.x : 1;
+      const newScaleY = newSize.y > 0 ? newSize.y : 1;
+      const newScaleZ = newSize.z > 0 ? newSize.z : 1;
+
+      const oldNormCenter = new THREE.Vector3(
+        oldGroup.center.x / scaleX,
+        oldGroup.center.y / scaleY,
+        oldGroup.center.z / scaleZ
+      );
+      const newNormCenter = new THREE.Vector3(
+        newGroup.center.x / newScaleX,
+        newGroup.center.y / newScaleY,
+        newGroup.center.z / newScaleZ
+      );
+
+      const centerDiff = oldNormCenter.distanceTo(newNormCenter);
+      const score = angle * 2 + centerDiff * 10;
+
+      if (score < bestScore) {
+        bestScore = score;
+        bestOldIndex = oldIndex;
+      }
+    });
+
+    if (bestOldIndex >= 0 && bestScore < 30) {
+      newRoles[newIndex] = oldFaceRoles[bestOldIndex];
+    }
+  });
+
+  return newRoles;
+}
+
 export function findFaceByDescriptor(
   descriptor: { normal: [number, number, number]; normalizedCenter: [number, number, number]; area: number; isCurved?: boolean; axisDirection?: string | null },
   faces: FaceData[],
