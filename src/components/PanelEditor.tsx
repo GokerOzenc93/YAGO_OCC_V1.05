@@ -3,7 +3,7 @@ import { X, GripVertical, MousePointer, Layers, RotateCw, Plus, Trash2, Eye, Eye
 import { globalSettingsService, GlobalSettingsProfile } from './GlobalSettingsDatabase';
 import { useAppStore } from '../store';
 import type { FaceRole } from '../store';
-import { extractFacesFromGeometry, groupCoplanarFaces, FaceData, CoplanarFaceGroup, createFaceGroupSignature, snapshotGroupSignatures } from './FaceEditor';
+import { extractFacesFromGeometry, groupCoplanarFaces, FaceData, CoplanarFaceGroup } from './FaceEditor';
 import { resolveAllPanelJoints, restoreAllPanels, rebuildAllPanels, rebuildAndRecalculatePipeline } from './PanelJointService';
 import * as THREE from 'three';
 
@@ -14,8 +14,6 @@ interface PanelEditorProps {
 
 export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
   const { selectedShapeId, shapes, updateShape, addShape, showOutlines, setShowOutlines, showRoleNumbers, setShowRoleNumbers, selectedPanelRow, setSelectedPanelRow, panelSelectMode, setPanelSelectMode, raycastMode, setRaycastMode, showVirtualFaces, setShowVirtualFaces, virtualFaces, updateVirtualFace, deleteVirtualFace, pendingPanelCreation } = useAppStore();
-  const updateShapeRef = useRef(updateShape);
-  updateShapeRef.current = updateShape;
   const [position, setPosition] = useState({ x: 100, y: 100 });
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
@@ -156,15 +154,6 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
       setPanelSelectMode(false);
     }
   }, [isOpen, setSelectedPanelRow, setPanelSelectMode]);
-
-  useEffect(() => {
-    if (!selectedShape?.geometry) return;
-    if (selectedShape.faceGroupSignatures && selectedShape.faceGroupSignatures.length > 0) return;
-    const faces = extractFacesFromGeometry(selectedShape.geometry);
-    const groups = groupCoplanarFaces(faces);
-    const sigs = snapshotGroupSignatures(groups);
-    updateShapeRef.current(selectedShape.id, { faceGroupSignatures: sigs });
-  }, [selectedShape?.id, selectedShape?.geometry?.uuid]);
 
   useEffect(() => {
     if (selectedPanelRow !== null) {
@@ -527,17 +516,6 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
               const faces = extractFacesFromGeometry(geometry);
               const faceGroups = groupCoplanarFaces(faces);
               const faceRoles = selectedShape.faceRoles || {};
-              const prevSigCount = selectedShape.faceGroupSignatures?.length ?? faceGroups.length;
-              let _regularCounter = 0;
-              const faceLabels = faceGroups.map((group, idx) => {
-                if (idx < prevSigCount || !group.subtractionTag) {
-                  _regularCounter++;
-                  return `${_regularCounter}`;
-                }
-                const si = group.subtractionTag.subtractionIndex + 1;
-                const fi = group.subtractionTag.subtractionFaceIndex + 1;
-                return `S${si}:${fi}`;
-              });
               const faceDescriptions = selectedShape.faceDescriptions || {};
               const facePanels = selectedShape.facePanels || {};
               const roleOptions: FaceRole[] = ['Left', 'Right', 'Top', 'Bottom', 'Back', 'Door'];
@@ -546,10 +524,8 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
               const handleTogglePanel = async (faceIndex: number) => {
                 if (isDisabled) return;
                 const newFacePanels = { ...facePanels };
-                const newFacePanelSignatures = { ...(selectedShape.facePanelSignatures || {}) };
                 if (newFacePanels[faceIndex]) {
                   delete newFacePanels[faceIndex];
-                  delete newFacePanelSignatures[faceIndex];
 
                   const panelToRemove = shapes.find(s =>
                     s.type === 'panel' &&
@@ -562,10 +538,9 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                   }
                 } else {
                   newFacePanels[faceIndex] = true;
-                  newFacePanelSignatures[faceIndex] = createFaceGroupSignature(faceGroups[faceIndex]);
                   await createPanelForFace(faceGroups[faceIndex], faces, faceIndex);
                 }
-                updateShape(selectedShape.id, { facePanels: newFacePanels, facePanelSignatures: newFacePanelSignatures });
+                updateShape(selectedShape.id, { facePanels: newFacePanels });
 
                 if (selectedProfile !== 'none') {
                   setResolving(true);
@@ -704,11 +679,11 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                           />
                           <input
                             type="text"
-                            value={faceLabels[i]}
+                            value={i + 1}
                             readOnly
                             tabIndex={-1}
                             disabled={isDisabled}
-                            className={`px-1 py-0.5 text-xs font-mono border rounded text-center ${faceLabels[i].startsWith('S') ? 'w-10 text-amber-700 bg-amber-50 border-amber-300' : 'w-7'} ${isDisabled ? 'bg-stone-100 text-stone-400 border-stone-200' : !faceLabels[i].startsWith('S') ? 'bg-white text-gray-800 border-gray-300' : ''}`}
+                            className={`w-7 px-1 py-0.5 text-xs font-mono border rounded text-center ${isDisabled ? 'bg-stone-100 text-stone-400 border-stone-200' : 'bg-white text-gray-800 border-gray-300'}`}
                             onClick={(e) => e.stopPropagation()}
                           />
                           <select
@@ -721,13 +696,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                               if (newRole === null) {
                                 delete newFaceRoles[i];
                               }
-                              const newFaceRoleSignatures = { ...(selectedShape.faceRoleSignatures || {}) };
-                              if (newRole !== null) {
-                                newFaceRoleSignatures[i] = createFaceGroupSignature(faceGroups[i]);
-                              } else {
-                                delete newFaceRoleSignatures[i];
-                              }
-                              updateShape(selectedShape.id, { faceRoles: newFaceRoles, faceRoleSignatures: newFaceRoleSignatures });
+                              updateShape(selectedShape.id, { faceRoles: newFaceRoles });
 
                               const panelShape = shapes.find(s =>
                                 s.type === 'panel' &&
@@ -768,8 +737,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                             onClick={(e) => e.stopPropagation()}
                             onChange={(e) => {
                               const newDescriptions = { ...faceDescriptions, [i]: e.target.value };
-                              const newDescSigs = { ...(selectedShape.faceDescriptionSignatures || {}), [i]: createFaceGroupSignature(faceGroups[i]) };
-                              updateShape(selectedShape.id, { faceDescriptions: newDescriptions, faceDescriptionSignatures: newDescSigs });
+                              updateShape(selectedShape.id, { faceDescriptions: newDescriptions });
                             }}
                             placeholder="description"
                             style={{ width: '40mm' }}

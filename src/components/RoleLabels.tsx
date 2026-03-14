@@ -24,25 +24,9 @@ export const RoleLabels: React.FC<RoleLabelsProps> = React.memo(({ shape, isActi
     const maxDim = Math.max(size.x, size.y, size.z);
     const offsetAmount = Math.max(maxDim * 0.02, 2);
 
-    const prevSigCount = shape.faceGroupSignatures?.length ?? faceGroups.length;
-
-    let regularCounter = 0;
-
     return faceGroups.map((group, index) => {
       const role = faceRoles[index];
-
-      let label: string;
-      let isSubtractionFace = false;
-
-      if (index < prevSigCount || !group.subtractionTag) {
-        regularCounter++;
-        label = `${regularCounter}`;
-      } else {
-        isSubtractionFace = true;
-        const si = group.subtractionTag.subtractionIndex + 1;
-        const fi = group.subtractionTag.subtractionFaceIndex + 1;
-        label = `S${si}:${fi}`;
-      }
+      const label = `${index + 1}`;
 
       const offsetPosition = new THREE.Vector3()
         .copy(group.center)
@@ -52,11 +36,10 @@ export const RoleLabels: React.FC<RoleLabelsProps> = React.memo(({ shape, isActi
         position: offsetPosition,
         label,
         index,
-        hasRole: !!role,
-        isSubtractionFace,
+        hasRole: !!role
       };
     });
-  }, [shape.geometry?.uuid, JSON.stringify(shape.faceRoles), isActive, shape.faceGroupSignatures?.length]);
+  }, [shape.geometry?.uuid, JSON.stringify(shape.faceRoles), isActive]);
 
   if (!isActive || faceLabels.length === 0) return null;
 
@@ -76,29 +59,20 @@ export const RoleLabels: React.FC<RoleLabelsProps> = React.memo(({ shape, isActi
         >
           <div
             style={{
-              background: item.hasRole
-                ? 'rgba(5, 150, 105, 0.95)'
-                : item.isSubtractionFace
-                  ? 'rgba(180, 83, 9, 0.92)'
-                  : 'rgba(30, 41, 59, 0.9)',
+              background: item.hasRole ? 'rgba(5, 150, 105, 0.95)' : 'rgba(30, 41, 59, 0.9)',
               color: 'white',
-              minWidth: item.isSubtractionFace ? '36px' : '22px',
+              minWidth: '22px',
               height: '22px',
-              borderRadius: item.isSubtractionFace ? '6px' : '50%',
-              fontSize: item.isSubtractionFace ? '9px' : '11px',
+              borderRadius: '50%',
+              fontSize: '11px',
               fontWeight: '700',
               fontFamily: 'system-ui, sans-serif',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              border: item.hasRole
-                ? '2px solid rgba(255,255,255,0.7)'
-                : item.isSubtractionFace
-                  ? '2px solid rgba(255,200,100,0.6)'
-                  : '2px solid rgba(255,255,255,0.4)',
+              border: item.hasRole ? '2px solid rgba(255,255,255,0.7)' : '2px solid rgba(255,255,255,0.4)',
               boxShadow: '0 1px 4px rgba(0,0,0,0.4)',
-              padding: '0 4px',
-              letterSpacing: item.isSubtractionFace ? '0.5px' : '0',
+              padding: '0 2px'
             }}
           >
             {item.label}

@@ -5,7 +5,6 @@ import { useAppStore } from '../store';
 export type {
   FaceData,
   CoplanarFaceGroup,
-  SubtractionFaceTag,
 } from './GeometryUtils';
 
 export {
@@ -18,14 +17,7 @@ export {
   getFaceWorldNormal,
   createFaceDescriptor,
   findFaceByDescriptor,
-  createFaceGroupSignature,
-  remapFaceRolesBySignature,
-  mergeGroupsPreservingOrder,
-  snapshotGroupSignatures,
-  tagNewGroupsWithSubtractionOrigin,
 } from './GeometryUtils';
-
-export type { FaceGroupSignature } from './GeometryUtils';
 
 import {
   extractFacesFromGeometry,

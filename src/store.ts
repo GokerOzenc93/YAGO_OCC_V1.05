@@ -2,8 +2,6 @@ import { create } from 'zustand';
 import * as THREE from 'three';
 import type { OpenCascadeInstance } from './vite-env';
 import { VertexModification } from './components/VertexEditorService';
-import type { FaceGroupSignature } from './components/GeometryUtils';
-export type { FaceGroupSignature };
 
 /** VERİ YAPILARI */
 export interface SubtractionParameters {
@@ -79,12 +77,8 @@ export interface Shape {
   subtractionGeometries?:SubtractedGeometry[];
   fillets?:FilletInfo[];
   faceRoles?:Record<number,FaceRole>;
-  faceRoleSignatures?:Record<number,FaceGroupSignature>;
-  facePanelSignatures?:Record<number,FaceGroupSignature>;
   faceDescriptions?:Record<number,string>;
-  faceDescriptionSignatures?:Record<number,FaceGroupSignature>;
   facePanels?:Record<number,boolean>;
-  faceGroupSignatures?:FaceGroupSignature[];
 }
 
 export enum CameraType{PERSPECTIVE='perspective',ORTHOGRAPHIC='orthographic'}
@@ -469,17 +463,6 @@ export const useAppStore=create<AppState>((set,get)=>({
           }
 
           const sub=b.geometry.clone();
-          const{extractFacesFromGeometry:eFG2,groupCoplanarFaces:gCF2,mergeGroupsPreservingOrder:mGPO2,snapshotGroupSignatures:sGS2,createFaceGroupSignature:cFGS2,tagNewGroupsWithSubtractionOrigin:tNG2}=await import('./components/GeometryUtils');
-          const boolRawFaces=eFG2(geo);const boolRawGroups=gCF2(boolRawFaces);
-          const boolPrevSigs=a.faceGroupSignatures||[];
-          const boolMergedGroups=boolPrevSigs.length>0?mGPO2(boolPrevSigs,boolRawGroups):boolRawGroups;
-          const boolAllSubs=[...(a.subtractionGeometries||[]),{geometry:sub,relativeOffset:rel,relativeRotation:rot,scale:[1,1,1] as [number,number,number]}];
-          const boolOrderedGroups=tNG2(boolMergedGroups,boolPrevSigs.length,boolAllSubs);
-          const boolNewFaceGroupSigs=sGS2(boolOrderedGroups);
-          const buildBoolMap=()=>{const m:Record<number,number>={};if(!boolPrevSigs.length)return m;for(let oi=0;oi<boolPrevSigs.length;oi++){const os=boolPrevSigs[oi];const ni=boolOrderedGroups.findIndex(g=>{const s=cFGS2(g);return s.axisDirection===os.axisDirection&&Math.abs(s.normal[0]-os.normal[0])<0.02&&Math.abs(s.normal[1]-os.normal[1])<0.02&&Math.abs(s.normal[2]-os.normal[2])<0.02&&Math.abs(s.center[0]-os.center[0])<5&&Math.abs(s.center[1]-os.center[1])<5&&Math.abs(s.center[2]-os.center[2])<5;});if(ni>=0)m[oi]=ni;}return m;};
-          const boolIdxMap=buildBoolMap();
-          const boolRemap=<T>(d:Record<number,T>):Record<number,T>=>{const r:Record<number,T>={};for(const[k,v]of Object.entries(d)){const ni=boolIdxMap[parseInt(k)];r[ni!==undefined?ni:parseInt(k)]=v as T;}return r;};
-          const boolRemappedRoles=a.faceRoles&&Object.keys(a.faceRoles).length?boolRemap(a.faceRoles):a.faceRoles;
           set((S)=>({
             shapes:S.shapes
               .map(x=>x.id===a.id?{
@@ -487,8 +470,6 @@ export const useAppStore=create<AppState>((set,get)=>({
                 geometry:geo,
                 replicadShape:result,
                 fillets,
-                faceRoles:boolRemappedRoles,
-                faceGroupSignatures:boolNewFaceGroupSigs,
                 subtractionGeometries:[
                   ...(x.subtractionGeometries||[]),
                   {
@@ -551,27 +532,6 @@ export const useAppStore=create<AppState>((set,get)=>({
         verts=await getReplicadVertices(base);
       }
 
-      const{extractFacesFromGeometry:eFG,groupCoplanarFaces:gCF,mergeGroupsPreservingOrder:mGPO,snapshotGroupSignatures:sGS,createFaceGroupSignature:cFGS,tagNewGroupsWithSubtractionOrigin:tNG}=await import('./components/GeometryUtils');
-      const rawFaces=eFG(geo);const rawGroups=gCF(rawFaces);
-      const prevSigs=sh.faceGroupSignatures||[];
-      const mergedGroups=prevSigs.length>0?mGPO(prevSigs,rawGroups):rawGroups;
-      const orderedGroups=arr.filter(Boolean).length>0?tNG(mergedGroups,prevSigs.length,arr.filter(Boolean)):mergedGroups;
-      const newFaceGroupSignatures=sGS(orderedGroups);
-      const buildMap=()=>{
-        const m:Record<number,number>={};
-        if(!prevSigs.length)return m;
-        for(let oi=0;oi<prevSigs.length;oi++){
-          const os=prevSigs[oi];
-          const ni=orderedGroups.findIndex(g=>{const s=cFGS(g);return s.axisDirection===os.axisDirection&&Math.abs(s.normal[0]-os.normal[0])<0.02&&Math.abs(s.normal[1]-os.normal[1])<0.02&&Math.abs(s.normal[2]-os.normal[2])<0.02&&Math.abs(s.center[0]-os.center[0])<5&&Math.abs(s.center[1]-os.center[1])<5&&Math.abs(s.center[2]-os.center[2])<5;});
-          if(ni>=0)m[oi]=ni;
-        }
-        return m;
-      };
-      const idxMap=buildMap();
-      const remap=<T>(d:Record<number,T>):Record<number,T>=>{const r:Record<number,T>={};for(const[k,v]of Object.entries(d)){const ni=idxMap[parseInt(k)];r[ni!==undefined?ni:parseInt(k)]=v as T;}return r;};
-      const remappedRoles=sh.faceRoles&&Object.keys(sh.faceRoles).length?remap(sh.faceRoles):sh.faceRoles;
-      const remappedPanels=sh.facePanels&&Object.keys(sh.facePanels).length?remap(sh.facePanels):sh.facePanels;
-
       set((S)=>({
         shapes:S.shapes.map(x=>x.id===shapeId?{
           ...x,
@@ -580,9 +540,6 @@ export const useAppStore=create<AppState>((set,get)=>({
           subtractionGeometries:arr,
           fillets,
           position:pos,
-          faceRoles:remappedRoles,
-          facePanels:remappedPanels,
-          faceGroupSignatures:newFaceGroupSignatures,
           parameters:{...x.parameters,scaledBaseVertices:verts.map(v=>[v.x,v.y,v.z])}
         }:x),
         selectedSubtractionIndex:null
