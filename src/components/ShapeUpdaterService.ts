@@ -383,9 +383,16 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
 
     const { extractFacesFromGeometry: efgSU, groupCoplanarFaces: gcfSU, detectSubtractionFaceGroups: dsfgSU } = await import('./GeometryUtils');
 
-    const computeSubFaceIndices = (origGeo: THREE.BufferGeometry, newGeo: THREE.BufferGeometry): number[] => {
-      if (!selectedShape.subtractionGeometries?.filter((s: any) => s !== null).length) return [];
-      const origFaces = efgSU(origGeo);
+    const hasActiveSubtractions = (selectedShape.subtractionGeometries || []).filter((s: any) => s !== null).length > 0;
+    let plainBoxGeo: THREE.BufferGeometry | null = null;
+    if (hasActiveSubtractions) {
+      const plainBox = await createReplicadBox({ width, height, depth });
+      plainBoxGeo = convertReplicadToThreeGeometry(plainBox);
+    }
+
+    const computeSubFaceIndices = (newGeo: THREE.BufferGeometry): number[] => {
+      if (!hasActiveSubtractions || !plainBoxGeo) return [];
+      const origFaces = efgSU(plainBoxGeo);
       const origGroups = gcfSU(origFaces);
       const newFaces = efgSU(newGeo);
       const newGroups = gcfSU(newFaces);
@@ -418,7 +425,7 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
       const preservedPosition = copyPosition(selectedShape);
       const shapeSize = { width, height, depth };
       const final = await finalizeWithFillets(resultShape, selectedShape.fillets || [], shapeSize, convertReplicadToThreeGeometry, getReplicadVertices);
-      const subFaceIndices = computeSubFaceIndices(selectedShape.geometry, final.geometry);
+      const subFaceIndices = computeSubFaceIndices(final.geometry);
 
       updateShape(selectedShape.id, {
         geometry: final.geometry,
@@ -450,7 +457,7 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
       const preservedPosition = copyPosition(selectedShape);
       const shapeSize = { width, height, depth };
       const final = await finalizeWithFillets(newReplicadShape, updatedFillets, shapeSize, convertReplicadToThreeGeometry, getReplicadVertices);
-      const subFaceIndices = computeSubFaceIndices(selectedShape.geometry, final.geometry);
+      const subFaceIndices = computeSubFaceIndices(final.geometry);
 
       updateShape(selectedShape.id, {
         geometry: final.geometry,
@@ -481,7 +488,7 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
         const preservedPosition = copyPosition(selectedShape);
         const shapeSize = { width, height, depth };
         const final = await finalizeWithFillets(newReplicadShape, updatedFillets, shapeSize, convertReplicadToThreeGeometry, getReplicadVertices);
-        const subFaceIndices = computeSubFaceIndices(selectedShape.geometry, final.geometry);
+        const subFaceIndices = computeSubFaceIndices(final.geometry);
 
         updateShape(selectedShape.id, {
           geometry: final.geometry,
@@ -608,7 +615,9 @@ export async function applySubtractionChanges(params: ApplySubtractionChangesPar
   const final = await finalizeWithFillets(resultShape, currentShape.fillets || [], shapeSize, convertReplicadToThreeGeometry, getReplicadVertices);
 
   const { extractFacesFromGeometry: efgSC, groupCoplanarFaces: gcfSC, detectSubtractionFaceGroups: dsfgSC } = await import('./GeometryUtils');
-  const origFacesSC = efgSC(currentShape.geometry);
+  const plainBoxForSC = await createReplicadBox(shapeSize);
+  const plainBoxGeoSC = convertReplicadToThreeGeometry(plainBoxForSC);
+  const origFacesSC = efgSC(plainBoxGeoSC);
   const origGroupsSC = gcfSC(origFacesSC);
   const newFacesSC = efgSC(final.geometry);
   const newGroupsSC = gcfSC(newFacesSC);

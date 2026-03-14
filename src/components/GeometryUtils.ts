@@ -335,15 +335,33 @@ export function detectSubtractionFaceGroups(
   newGroups: CoplanarFaceGroup[],
   normalTolerance: number = 0.95
 ): number[] {
+  const allCenters = [...originalGroups, ...newGroups].map(g => g.center);
+  const bmin = new THREE.Vector3(Infinity, Infinity, Infinity);
+  const bmax = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+  for (const c of allCenters) { bmin.min(c); bmax.max(c); }
+  const bsize = new THREE.Vector3().subVectors(bmax, bmin);
+  const maxDim = Math.max(bsize.x, bsize.y, bsize.z, 1);
+  const planeTolerance = maxDim * 0.01;
+
+  const origPlanes = originalGroups.map(g => ({
+    normal: g.normal.clone(),
+    d: g.normal.dot(g.center)
+  }));
+
   const subtractionIndices: number[] = [];
 
   for (let newIdx = 0; newIdx < newGroups.length; newIdx++) {
     const newGroup = newGroups[newIdx];
     let matchFound = false;
 
-    for (const origGroup of originalGroups) {
-      const dot = newGroup.normal.dot(origGroup.normal);
-      if (dot >= normalTolerance) {
+    for (const plane of origPlanes) {
+      const dotNormal = newGroup.normal.dot(plane.normal);
+      if (dotNormal < normalTolerance) continue;
+
+      const newGroupD = newGroup.normal.dot(newGroup.center);
+      const planeDiff = Math.abs(newGroupD - plane.d);
+
+      if (planeDiff < planeTolerance) {
         matchFound = true;
         break;
       }

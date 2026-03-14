@@ -466,7 +466,8 @@ export const useAppStore=create<AppState>((set,get)=>({
           const sub=b.geometry.clone();
 
           const{extractFacesFromGeometry:efg,groupCoplanarFaces:gcf,detectSubtractionFaceGroups:dsfg}=await import('./components/GeometryUtils');
-          const origFaces=efg(a.geometry);
+          const plainGeoA=convertReplicadToThreeGeometry(RA);
+          const origFaces=efg(plainGeoA);
           const origGroups=gcf(origFaces);
           const newFaces=efg(geo);
           const newGroups=gcf(newFaces);
@@ -543,11 +544,17 @@ export const useAppStore=create<AppState>((set,get)=>({
       }
 
       const{extractFacesFromGeometry:efgD,groupCoplanarFaces:gcfD,detectSubtractionFaceGroups:dsfgD}=await import('./components/GeometryUtils');
-      const origFacesD=efgD(sh.geometry);
-      const origGroupsD=gcfD(origFacesD);
-      const newFacesD=efgD(geo);
-      const newGroupsD=gcfD(newFacesD);
-      const remainingSubFaceIndices=dsfgD(origGroupsD,newGroupsD);
+      const hasRemainingSubtractions=arr.filter(Boolean).length>0;
+      let remainingSubFaceIndices:number[]=[];
+      if(hasRemainingSubtractions){
+        const plainBoxD=await createReplicadBox({width:W,height:H,depth:D});
+        const plainGeoD=convertReplicadToThreeGeometry(plainBoxD);
+        const origFacesD=efgD(plainGeoD);
+        const origGroupsD=gcfD(origFacesD);
+        const newFacesD=efgD(geo);
+        const newGroupsD=gcfD(newFacesD);
+        remainingSubFaceIndices=dsfgD(origGroupsD,newGroupsD);
+      }
 
       set((S)=>({
         shapes:S.shapes.map(x=>x.id===shapeId?{
