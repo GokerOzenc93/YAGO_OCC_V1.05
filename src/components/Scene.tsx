@@ -354,6 +354,8 @@ const Scene: React.FC = () => {
           console.log('✅ Fillet faces cleared. Select 2 new faces for another fillet operation.');
         } catch (error) {
           console.error('❌ Failed to apply fillet:', error);
+          const newState = useAppStore.getState();
+          newState.clearFilletFaces();
           alert(`Failed to apply fillet: ${(error as Error).message}`);
         }
       }
