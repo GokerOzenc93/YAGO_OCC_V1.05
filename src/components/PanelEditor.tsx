@@ -3,7 +3,7 @@ import { X, GripVertical, MousePointer, Layers, RotateCw, Plus, Trash2, Eye, Eye
 import { globalSettingsService, GlobalSettingsProfile } from './GlobalSettingsDatabase';
 import { useAppStore } from '../store';
 import type { FaceRole } from '../store';
-import { extractFacesFromGeometry, groupCoplanarFaces, FaceData, CoplanarFaceGroup } from './FaceEditor';
+import { extractFacesFromGeometry, groupCoplanarFaces, FaceData, CoplanarFaceGroup, createFaceGroupSignature } from './FaceEditor';
 import { resolveAllPanelJoints, restoreAllPanels, rebuildAllPanels, rebuildAndRecalculatePipeline } from './PanelJointService';
 import * as THREE from 'three';
 
@@ -524,8 +524,10 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
               const handleTogglePanel = async (faceIndex: number) => {
                 if (isDisabled) return;
                 const newFacePanels = { ...facePanels };
+                const newFacePanelSignatures = { ...(selectedShape.facePanelSignatures || {}) };
                 if (newFacePanels[faceIndex]) {
                   delete newFacePanels[faceIndex];
+                  delete newFacePanelSignatures[faceIndex];
 
                   const panelToRemove = shapes.find(s =>
                     s.type === 'panel' &&
@@ -538,9 +540,10 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                   }
                 } else {
                   newFacePanels[faceIndex] = true;
+                  newFacePanelSignatures[faceIndex] = createFaceGroupSignature(faceGroups[faceIndex]);
                   await createPanelForFace(faceGroups[faceIndex], faces, faceIndex);
                 }
-                updateShape(selectedShape.id, { facePanels: newFacePanels });
+                updateShape(selectedShape.id, { facePanels: newFacePanels, facePanelSignatures: newFacePanelSignatures });
 
                 if (selectedProfile !== 'none') {
                   setResolving(true);
@@ -696,7 +699,13 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                               if (newRole === null) {
                                 delete newFaceRoles[i];
                               }
-                              updateShape(selectedShape.id, { faceRoles: newFaceRoles });
+                              const newFaceRoleSignatures = { ...(selectedShape.faceRoleSignatures || {}) };
+                              if (newRole !== null) {
+                                newFaceRoleSignatures[i] = createFaceGroupSignature(faceGroups[i]);
+                              } else {
+                                delete newFaceRoleSignatures[i];
+                              }
+                              updateShape(selectedShape.id, { faceRoles: newFaceRoles, faceRoleSignatures: newFaceRoleSignatures });
 
                               const panelShape = shapes.find(s =>
                                 s.type === 'panel' &&
@@ -737,7 +746,8 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                             onClick={(e) => e.stopPropagation()}
                             onChange={(e) => {
                               const newDescriptions = { ...faceDescriptions, [i]: e.target.value };
-                              updateShape(selectedShape.id, { faceDescriptions: newDescriptions });
+                              const newDescSigs = { ...(selectedShape.faceDescriptionSignatures || {}), [i]: createFaceGroupSignature(faceGroups[i]) };
+                              updateShape(selectedShape.id, { faceDescriptions: newDescriptions, faceDescriptionSignatures: newDescSigs });
                             }}
                             placeholder="description"
                             style={{ width: '40mm' }}

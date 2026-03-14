@@ -330,6 +330,95 @@ export function createFaceDescriptor(
   };
 }
 
+export interface FaceGroupSignature {
+  normal: [number, number, number];
+  center: [number, number, number];
+  area: number;
+  axisDirection: 'x+' | 'x-' | 'y+' | 'y-' | 'z+' | 'z-' | null;
+}
+
+export function createFaceGroupSignature(group: CoplanarFaceGroup): FaceGroupSignature {
+  const axisDirection = getAxisDirection(group.normal);
+  return {
+    normal: [
+      Math.round(group.normal.x * 1000) / 1000,
+      Math.round(group.normal.y * 1000) / 1000,
+      Math.round(group.normal.z * 1000) / 1000
+    ],
+    center: [
+      Math.round(group.center.x * 10) / 10,
+      Math.round(group.center.y * 10) / 10,
+      Math.round(group.center.z * 10) / 10
+    ],
+    area: Math.round(group.totalArea * 10) / 10,
+    axisDirection
+  };
+}
+
+export function signatureToKey(sig: FaceGroupSignature): string {
+  return `${sig.axisDirection}|${sig.normal.map(n => n.toFixed(3)).join(',')}`;
+}
+
+export function findBestMatchingGroupIndex(
+  oldSig: FaceGroupSignature,
+  newGroups: CoplanarFaceGroup[],
+  toleranceCenterRatio: number = 0.15
+): number {
+  let bestIdx = -1;
+  let bestScore = Infinity;
+
+  const oldNormal = new THREE.Vector3(...oldSig.normal);
+  const oldCenter = new THREE.Vector3(...oldSig.center);
+
+  for (let i = 0; i < newGroups.length; i++) {
+    const g = newGroups[i];
+    const newAxisDir = getAxisDirection(g.normal);
+
+    if (oldSig.axisDirection !== null && oldSig.axisDirection !== newAxisDir) continue;
+
+    const dot = oldNormal.dot(g.normal);
+    const normalAngle = Math.acos(Math.min(1, Math.max(-1, dot))) * (180 / Math.PI);
+    if (normalAngle > 15) continue;
+
+    const centerDist = oldCenter.distanceTo(g.center);
+    const areaRatio = oldSig.area > 0 ? Math.abs(g.totalArea - oldSig.area) / oldSig.area : 1;
+
+    const score = normalAngle * 2 + centerDist * 0.01 + areaRatio * 5;
+    if (score < bestScore) {
+      bestScore = score;
+      bestIdx = i;
+    }
+  }
+
+  return bestIdx;
+}
+
+export function remapFaceRolesBySignature<T>(
+  oldFaceRoles: Record<number, T>,
+  oldFaceSignatures: Record<number, FaceGroupSignature>,
+  newGroups: CoplanarFaceGroup[]
+): { newFaceRoles: Record<number, T>; newSignatures: Record<number, FaceGroupSignature> } {
+  const newFaceRoles: Record<number, T> = {};
+  const newSignatures: Record<number, FaceGroupSignature> = {};
+
+  newGroups.forEach((g, i) => {
+    newSignatures[i] = createFaceGroupSignature(g);
+  });
+
+  for (const [idxStr, role] of Object.entries(oldFaceRoles)) {
+    const idx = parseInt(idxStr);
+    const oldSig = oldFaceSignatures[idx];
+    if (!oldSig) continue;
+
+    const newIdx = findBestMatchingGroupIndex(oldSig, newGroups);
+    if (newIdx >= 0) {
+      newFaceRoles[newIdx] = role as T;
+    }
+  }
+
+  return { newFaceRoles, newSignatures };
+}
+
 export function findFaceByDescriptor(
   descriptor: { normal: [number, number, number]; normalizedCenter: [number, number, number]; area: number; isCurved?: boolean; axisDirection?: string | null },
   faces: FaceData[],

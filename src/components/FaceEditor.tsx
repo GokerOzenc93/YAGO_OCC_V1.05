@@ -17,7 +17,11 @@ export {
   getFaceWorldNormal,
   createFaceDescriptor,
   findFaceByDescriptor,
+  createFaceGroupSignature,
+  remapFaceRolesBySignature,
 } from './GeometryUtils';
+
+export type { FaceGroupSignature } from './GeometryUtils';
 
 import {
   extractFacesFromGeometry,

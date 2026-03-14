@@ -2,6 +2,8 @@ import { create } from 'zustand';
 import * as THREE from 'three';
 import type { OpenCascadeInstance } from './vite-env';
 import { VertexModification } from './components/VertexEditorService';
+import type { FaceGroupSignature } from './components/GeometryUtils';
+export type { FaceGroupSignature };
 
 /** VERİ YAPILARI */
 export interface SubtractionParameters {
@@ -77,7 +79,10 @@ export interface Shape {
   subtractionGeometries?:SubtractedGeometry[];
   fillets?:FilletInfo[];
   faceRoles?:Record<number,FaceRole>;
+  faceRoleSignatures?:Record<number,FaceGroupSignature>;
+  facePanelSignatures?:Record<number,FaceGroupSignature>;
   faceDescriptions?:Record<number,string>;
+  faceDescriptionSignatures?:Record<number,FaceGroupSignature>;
   facePanels?:Record<number,boolean>;
 }
 
@@ -463,6 +468,13 @@ export const useAppStore=create<AppState>((set,get)=>({
           }
 
           const sub=b.geometry.clone();
+          const{extractFacesFromGeometry:eFG2,groupCoplanarFaces:gCF2,remapFaceRolesBySignature:rFRS2}=await import('./components/GeometryUtils');
+          const boolNewFaces=eFG2(geo);const boolNewGroups=gCF2(boolNewFaces);
+          let boolRemappedRoles=a.faceRoles,boolRemappedRoleSigs=a.faceRoleSignatures;
+          if(a.faceRoles&&a.faceRoleSignatures&&Object.keys(a.faceRoles).length>0){
+            const r=rFRS2(a.faceRoles,a.faceRoleSignatures,boolNewGroups);
+            boolRemappedRoles=r.newFaceRoles;boolRemappedRoleSigs=r.newSignatures;
+          }
           set((S)=>({
             shapes:S.shapes
               .map(x=>x.id===a.id?{
@@ -470,6 +482,8 @@ export const useAppStore=create<AppState>((set,get)=>({
                 geometry:geo,
                 replicadShape:result,
                 fillets,
+                faceRoles:boolRemappedRoles,
+                faceRoleSignatures:boolRemappedRoleSigs,
                 subtractionGeometries:[
                   ...(x.subtractionGeometries||[]),
                   {
@@ -532,6 +546,19 @@ export const useAppStore=create<AppState>((set,get)=>({
         verts=await getReplicadVertices(base);
       }
 
+      const{extractFacesFromGeometry:eFG,groupCoplanarFaces:gCF,remapFaceRolesBySignature:rFRS}=await import('./components/GeometryUtils');
+      const newFaces=eFG(geo);const newGroups=gCF(newFaces);
+      let remappedRoles=sh.faceRoles,remappedRoleSigs=sh.faceRoleSignatures;
+      if(sh.faceRoles&&sh.faceRoleSignatures&&Object.keys(sh.faceRoles).length>0){
+        const r=rFRS(sh.faceRoles,sh.faceRoleSignatures,newGroups);
+        remappedRoles=r.newFaceRoles;remappedRoleSigs=r.newSignatures;
+      }
+      let remappedPanels=sh.facePanels,remappedPanelSigs=sh.facePanelSignatures;
+      if(sh.facePanels&&sh.facePanelSignatures&&Object.keys(sh.facePanels).length>0){
+        const r=rFRS(sh.facePanels,sh.facePanelSignatures,newGroups);
+        remappedPanels=r.newFaceRoles;remappedPanelSigs=r.newSignatures;
+      }
+
       set((S)=>({
         shapes:S.shapes.map(x=>x.id===shapeId?{
           ...x,
@@ -540,6 +567,10 @@ export const useAppStore=create<AppState>((set,get)=>({
           subtractionGeometries:arr,
           fillets,
           position:pos,
+          faceRoles:remappedRoles,
+          faceRoleSignatures:remappedRoleSigs,
+          facePanels:remappedPanels,
+          facePanelSignatures:remappedPanelSigs,
           parameters:{...x.parameters,scaledBaseVertices:verts.map(v=>[v.x,v.y,v.z])}
         }:x),
         selectedSubtractionIndex:null

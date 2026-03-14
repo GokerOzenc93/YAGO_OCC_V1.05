@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { evaluateExpression } from './Expression';
 import type { FilletInfo } from '../store';
+import { extractFacesFromGeometry, groupCoplanarFaces, remapFaceRolesBySignature, createFaceGroupSignature } from './GeometryUtils';
 
 export const getOriginalSize = (geometry: THREE.BufferGeometry) => {
   const box = new THREE.Box3().setFromBufferAttribute(
@@ -199,6 +200,55 @@ async function finalizeWithFillets(
     vertices: await getReplicadVertices(filletedShape),
     fillets: updatedFillets
   };
+}
+
+function remapShapeFaceData(shape: any, newGeometry: THREE.BufferGeometry): {
+  faceRoles: Record<number, any> | undefined;
+  faceRoleSignatures: Record<number, any> | undefined;
+  facePanels: Record<number, boolean> | undefined;
+  facePanelSignatures: Record<number, any> | undefined;
+  faceDescriptions: Record<number, string> | undefined;
+  faceDescriptionSignatures: Record<number, any> | undefined;
+} {
+  if (!newGeometry) {
+    return {
+      faceRoles: shape.faceRoles,
+      faceRoleSignatures: shape.faceRoleSignatures,
+      facePanels: shape.facePanels,
+      facePanelSignatures: shape.facePanelSignatures,
+      faceDescriptions: shape.faceDescriptions,
+      faceDescriptionSignatures: shape.faceDescriptionSignatures,
+    };
+  }
+
+  const faces = extractFacesFromGeometry(newGeometry);
+  const newGroups = groupCoplanarFaces(faces);
+
+  let faceRoles = shape.faceRoles;
+  let faceRoleSignatures = shape.faceRoleSignatures;
+  if (faceRoles && faceRoleSignatures && Object.keys(faceRoles).length > 0) {
+    const remapped = remapFaceRolesBySignature(faceRoles, faceRoleSignatures, newGroups);
+    faceRoles = remapped.newFaceRoles;
+    faceRoleSignatures = remapped.newSignatures;
+  }
+
+  let facePanels = shape.facePanels;
+  let facePanelSignatures = shape.facePanelSignatures;
+  if (facePanels && facePanelSignatures && Object.keys(facePanels).length > 0) {
+    const remapped = remapFaceRolesBySignature(facePanels, facePanelSignatures, newGroups);
+    facePanels = remapped.newFaceRoles;
+    facePanelSignatures = remapped.newSignatures;
+  }
+
+  let faceDescriptions = shape.faceDescriptions;
+  let faceDescriptionSignatures = shape.faceDescriptionSignatures;
+  if (faceDescriptions && faceDescriptionSignatures && Object.keys(faceDescriptions).length > 0) {
+    const remapped = remapFaceRolesBySignature(faceDescriptions, faceDescriptionSignatures, newGroups);
+    faceDescriptions = remapped.newFaceRoles;
+    faceDescriptionSignatures = remapped.newSignatures;
+  }
+
+  return { faceRoles, faceRoleSignatures, facePanels, facePanelSignatures, faceDescriptions, faceDescriptionSignatures };
 }
 
 interface ApplyShapeChangesParams {
@@ -407,6 +457,7 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
       const preservedPosition = copyPosition(selectedShape);
       const shapeSize = { width, height, depth };
       const final = await finalizeWithFillets(resultShape, selectedShape.fillets || [], shapeSize, convertReplicadToThreeGeometry, getReplicadVertices);
+      const remapped = remapShapeFaceData(selectedShape, final.geometry);
 
       updateShape(selectedShape.id, {
         geometry: final.geometry,
@@ -417,7 +468,8 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
         rotation: baseUpdate.rotation,
         scale: baseUpdate.scale,
         vertexModifications: baseUpdate.vertexModifications,
-        parameters: { ...baseUpdate.parameters, scaledBaseVertices: final.vertices.map(v => [v.x, v.y, v.z]) }
+        parameters: { ...baseUpdate.parameters, scaledBaseVertices: final.vertices.map(v => [v.x, v.y, v.z]) },
+        ...remapped
       });
     } else if (dimensionsChanged) {
       let newReplicadShape = await createReplicadBox({ width, height, depth });
@@ -437,6 +489,7 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
       const preservedPosition = copyPosition(selectedShape);
       const shapeSize = { width, height, depth };
       const final = await finalizeWithFillets(newReplicadShape, updatedFillets, shapeSize, convertReplicadToThreeGeometry, getReplicadVertices);
+      const remapped = remapShapeFaceData(selectedShape, final.geometry);
 
       updateShape(selectedShape.id, {
         geometry: final.geometry,
@@ -446,7 +499,8 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
         rotation: baseUpdate.rotation,
         scale: baseUpdate.scale,
         vertexModifications: baseUpdate.vertexModifications,
-        parameters: { ...baseUpdate.parameters, scaledBaseVertices: final.vertices.map(v => [v.x, v.y, v.z]) }
+        parameters: { ...baseUpdate.parameters, scaledBaseVertices: final.vertices.map(v => [v.x, v.y, v.z]) },
+        ...remapped
       });
     } else {
       const filletsChanged = filletRadii && filletRadii.length > 0 &&
@@ -466,6 +520,7 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
         const preservedPosition = copyPosition(selectedShape);
         const shapeSize = { width, height, depth };
         const final = await finalizeWithFillets(newReplicadShape, updatedFillets, shapeSize, convertReplicadToThreeGeometry, getReplicadVertices);
+        const remapped = remapShapeFaceData(selectedShape, final.geometry);
 
         updateShape(selectedShape.id, {
           geometry: final.geometry,
@@ -475,7 +530,8 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
           rotation: baseUpdate.rotation,
           scale: baseUpdate.scale,
           vertexModifications: baseUpdate.vertexModifications,
-          parameters: { ...baseUpdate.parameters, scaledBaseVertices: final.vertices.map(v => [v.x, v.y, v.z]) }
+          parameters: { ...baseUpdate.parameters, scaledBaseVertices: final.vertices.map(v => [v.x, v.y, v.z]) },
+          ...remapped
         });
       } else {
         updateShape(selectedShape.id, {
@@ -589,6 +645,7 @@ export async function applySubtractionChanges(params: ApplySubtractionChangesPar
   const resultShape = await applyAllSubtractions(baseShape, allSubtractions, createReplicadBox, performBooleanCut);
   const preservedPosition = copyPosition(currentShape);
   const final = await finalizeWithFillets(resultShape, currentShape.fillets || [], shapeSize, convertReplicadToThreeGeometry, getReplicadVertices);
+  const remapped = remapShapeFaceData(currentShape, final.geometry);
 
   updateShape(currentShape.id, {
     geometry: final.geometry,
@@ -599,6 +656,7 @@ export async function applySubtractionChanges(params: ApplySubtractionChangesPar
     parameters: {
       ...currentShape.parameters,
       scaledBaseVertices: final.vertices.map(v => [v.x, v.y, v.z])
-    }
+    },
+    ...remapped
   });
 }
