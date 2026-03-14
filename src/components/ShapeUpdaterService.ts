@@ -85,14 +85,26 @@ export async function applyFillets(replicadShape: any, fillets: FilletInfo[], sh
     const scaleY = shapeSize.height / fillet.originalSize.height;
     const scaleZ = shapeSize.depth / fillet.originalSize.depth;
 
+    const face1Normal = new THREE.Vector3(...fillet.face1Data.normal);
+    const face2Normal = new THREE.Vector3(...fillet.face2Data.normal);
+
     const face1Center = new THREE.Vector3(...fillet.face1Data.center);
     face1Center.multiply(new THREE.Vector3(scaleX, scaleY, scaleZ));
 
     const face2Center = new THREE.Vector3(...fillet.face2Data.center);
     face2Center.multiply(new THREE.Vector3(scaleX, scaleY, scaleZ));
 
-    const face1Normal = new THREE.Vector3(...fillet.face1Data.normal);
-    const face2Normal = new THREE.Vector3(...fillet.face2Data.normal);
+    const face1PlaneD = fillet.face1Data.planeD !== undefined
+      ? fillet.face1Data.planeD * (
+          face1Normal.x !== 0 ? scaleX : face1Normal.y !== 0 ? scaleY : scaleZ
+        )
+      : face1Normal.dot(face1Center);
+
+    const face2PlaneD = fillet.face2Data.planeD !== undefined
+      ? fillet.face2Data.planeD * (
+          face2Normal.x !== 0 ? scaleX : face2Normal.y !== 0 ? scaleY : scaleZ
+        )
+      : face2Normal.dot(face2Center);
 
     console.log(`📐 Scaled face centers for new dimensions (${shapeSize.width}x${shapeSize.height}x${shapeSize.depth})`);
     console.log(`   Face1 center: (${face1Center.x.toFixed(2)}, ${face1Center.y.toFixed(2)}, ${face1Center.z.toFixed(2)})`);
@@ -118,14 +130,14 @@ export async function applyFillets(replicadShape: any, fillets: FilletInfo[], sh
         );
 
         const maxDimension = Math.max(shapeSize.width || 1, shapeSize.height || 1, shapeSize.depth || 1);
-        const tolerance = maxDimension * 0.05;
+        const tolerance = maxDimension * 0.08;
 
-        const startDistFace1 = Math.abs(startVec.clone().sub(face1Center).dot(face1Normal));
-        const startDistFace2 = Math.abs(startVec.clone().sub(face2Center).dot(face2Normal));
-        const endDistFace1 = Math.abs(endVec.clone().sub(face1Center).dot(face1Normal));
-        const endDistFace2 = Math.abs(endVec.clone().sub(face2Center).dot(face2Normal));
-        const centerDistFace1 = Math.abs(centerVec.clone().sub(face1Center).dot(face1Normal));
-        const centerDistFace2 = Math.abs(centerVec.clone().sub(face2Center).dot(face2Normal));
+        const startDistFace1 = Math.abs(face1Normal.dot(startVec) - face1PlaneD);
+        const startDistFace2 = Math.abs(face2Normal.dot(startVec) - face2PlaneD);
+        const endDistFace1 = Math.abs(face1Normal.dot(endVec) - face1PlaneD);
+        const endDistFace2 = Math.abs(face2Normal.dot(endVec) - face2PlaneD);
+        const centerDistFace1 = Math.abs(face1Normal.dot(centerVec) - face1PlaneD);
+        const centerDistFace2 = Math.abs(face2Normal.dot(centerVec) - face2PlaneD);
 
         const allPointsOnFace1 = startDistFace1 < tolerance && endDistFace1 < tolerance && centerDistFace1 < tolerance;
         const allPointsOnFace2 = startDistFace2 < tolerance && endDistFace2 < tolerance && centerDistFace2 < tolerance;

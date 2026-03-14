@@ -68,10 +68,15 @@ export const FaceEditor: React.FC<FaceEditorProps> = ({ shape, isActive }) => {
     if (filletMode && selectedFilletFaces.length < 2) {
       const group = faceGroups[groupIndex];
       if (group) {
+        const representativeFace = faces.find(f => group.faceIndices.includes(f.faceIndex));
+        const representativeVertex = representativeFace?.vertices[0];
+        const normal = new (THREE.Vector3)(group.normal.x, group.normal.y, group.normal.z);
+        const planeD = representativeVertex ? normal.dot(representativeVertex) : normal.dot(group.center);
         addFilletFace(groupIndex);
         addFilletFaceData({
           normal: [group.normal.x, group.normal.y, group.normal.z],
-          center: [group.center.x, group.center.y, group.center.z]
+          center: [group.center.x, group.center.y, group.center.z],
+          planeD
         });
       }
     } else {

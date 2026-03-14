@@ -12,8 +12,8 @@ import { getReplicadVertices } from './VertexEditorService';
 export interface FilletData {
   face1Descriptor: any;
   face2Descriptor: any;
-  face1Data: any;
-  face2Data: any;
+  face1Data: { normal: [number, number, number]; center: [number, number, number]; planeD?: number };
+  face2Data: { normal: [number, number, number]; center: [number, number, number]; planeD?: number };
   radius: number;
   originalSize: {
     width: number;
@@ -46,6 +46,13 @@ export async function applyFilletToShape(
   const face2Center = new THREE.Vector3(...selectedFilletFaceData[1].center);
   const face1Normal = new THREE.Vector3(...selectedFilletFaceData[0].normal);
   const face2Normal = new THREE.Vector3(...selectedFilletFaceData[1].normal);
+
+  const face1PlaneD = selectedFilletFaceData[0].planeD !== undefined
+    ? selectedFilletFaceData[0].planeD
+    : face1Normal.dot(face1Center);
+  const face2PlaneD = selectedFilletFaceData[1].planeD !== undefined
+    ? selectedFilletFaceData[1].planeD
+    : face2Normal.dot(face2Center);
 
   const faces = extractFacesFromGeometry(shape.geometry);
   const faceGroups = groupCoplanarFaces(faces);
@@ -86,14 +93,14 @@ export async function applyFilletToShape(
       );
 
       const maxDimension = Math.max(shape.parameters.width || 1, shape.parameters.height || 1, shape.parameters.depth || 1);
-      const tolerance = maxDimension * 0.05;
+      const tolerance = maxDimension * 0.08;
 
-      const startDistFace1 = Math.abs(startVec.clone().sub(face1Center).dot(face1Normal));
-      const startDistFace2 = Math.abs(startVec.clone().sub(face2Center).dot(face2Normal));
-      const endDistFace1 = Math.abs(endVec.clone().sub(face1Center).dot(face1Normal));
-      const endDistFace2 = Math.abs(endVec.clone().sub(face2Center).dot(face2Normal));
-      const centerDistFace1 = Math.abs(centerVec.clone().sub(face1Center).dot(face1Normal));
-      const centerDistFace2 = Math.abs(centerVec.clone().sub(face2Center).dot(face2Normal));
+      const startDistFace1 = Math.abs(face1Normal.dot(startVec) - face1PlaneD);
+      const startDistFace2 = Math.abs(face2Normal.dot(startVec) - face2PlaneD);
+      const endDistFace1 = Math.abs(face1Normal.dot(endVec) - face1PlaneD);
+      const endDistFace2 = Math.abs(face2Normal.dot(endVec) - face2PlaneD);
+      const centerDistFace1 = Math.abs(face1Normal.dot(centerVec) - face1PlaneD);
+      const centerDistFace2 = Math.abs(face2Normal.dot(centerVec) - face2PlaneD);
 
       const allPointsOnFace1 = startDistFace1 < tolerance && endDistFace1 < tolerance && centerDistFace1 < tolerance;
       const allPointsOnFace2 = startDistFace2 < tolerance && endDistFace2 < tolerance && centerDistFace2 < tolerance;

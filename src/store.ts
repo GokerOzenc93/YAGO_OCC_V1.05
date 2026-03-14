@@ -21,8 +21,8 @@ export interface FaceDescriptor {
 export interface FilletInfo {
   face1Descriptor:FaceDescriptor;
   face2Descriptor:FaceDescriptor;
-  face1Data:{normal:[number,number,number];center:[number,number,number]};
-  face2Data:{normal:[number,number,number];center:[number,number,number]};
+  face1Data:{normal:[number,number,number];center:[number,number,number];planeD?:number};
+  face2Data:{normal:[number,number,number];center:[number,number,number];planeD?:number};
   radius:number;
   originalSize:{width:number;height:number;depth:number};
 }
@@ -160,8 +160,8 @@ interface AppState{
   filletMode:boolean;setFilletMode:(b:boolean)=>void;
   selectedFilletFaces:number[];setSelectedFilletFaces:(f:number[])=>void;
   addFilletFace:(i:number)=>void;clearFilletFaces:()=>void;
-  selectedFilletFaceData:Array<{normal:[number,number,number];center:[number,number,number]}>;
-  addFilletFaceData:(d:{normal:[number,number,number];center:[number,number,number]})=>void;
+  selectedFilletFaceData:Array<{normal:[number,number,number];center:[number,number,number];planeD?:number}>;
+  addFilletFaceData:(d:{normal:[number,number,number];center:[number,number,number];planeD?:number})=>void;
   clearFilletFaceData:()=>void;
 
   roleEditMode:boolean;setRoleEditMode:(b:boolean)=>void;
