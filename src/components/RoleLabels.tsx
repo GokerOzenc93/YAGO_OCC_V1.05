@@ -143,18 +143,37 @@ export const RoleLabels: React.FC<RoleLabelsProps> = React.memo(({ shape, isActi
       return orderA - orderB;
     });
 
-    const result: Array<{ position: THREE.Vector3; label: string; index: number; hasRole: boolean }> = [];
-    axisSorted.forEach(({ candidates }, roleIdx) => {
+    const result: Array<{
+      position: THREE.Vector3;
+      labels: Array<{ text: string; index: number; hasRole: boolean }>;
+      groupKey: string;
+    }> = [];
+
+    axisSorted.forEach(({ axisDir, candidates }, roleIdx) => {
       const roleNumber = roleIdx + 1;
       const isSplit = candidates.length > 1;
-      candidates.forEach((candidate, subIdx) => {
-        const role = faceRoles[candidate.originalIndex];
-        const label = isSplit ? `${roleNumber}-${subIdx + 1}` : `${roleNumber}`;
+
+      if (isSplit) {
+        const avgCenter = candidates.reduce((acc, c) => acc.add(c.group.center), new THREE.Vector3()).divideScalar(candidates.length);
+        const normal = candidates[0].group.normal;
+        const offsetPosition = avgCenter.clone().add(normal.clone().multiplyScalar(offsetAmount));
+        const labels = candidates.map((candidate, subIdx) => ({
+          text: `${roleNumber}-${subIdx + 1}`,
+          index: candidate.originalIndex,
+          hasRole: !!faceRoles[candidate.originalIndex],
+        }));
+        result.push({ position: offsetPosition, labels, groupKey: `${axisDir}-${roleIdx}` });
+      } else {
+        const candidate = candidates[0];
         const offsetPosition = new THREE.Vector3()
           .copy(candidate.group.center)
           .add(candidate.group.normal.clone().multiplyScalar(offsetAmount));
-        result.push({ position: offsetPosition, label, index: candidate.originalIndex, hasRole: !!role });
-      });
+        result.push({
+          position: offsetPosition,
+          labels: [{ text: `${roleNumber}`, index: candidate.originalIndex, hasRole: !!faceRoles[candidate.originalIndex] }],
+          groupKey: `${axisDir}-${roleIdx}`,
+        });
+      }
     });
 
     return result;
@@ -166,7 +185,7 @@ export const RoleLabels: React.FC<RoleLabelsProps> = React.memo(({ shape, isActi
     <>
       {faceLabels.map((item) => (
         <Html
-          key={`label-${item.index}`}
+          key={`label-${item.groupKey}`}
           position={[item.position.x, item.position.y, item.position.z]}
           center
           occlude={false}
@@ -176,25 +195,23 @@ export const RoleLabels: React.FC<RoleLabelsProps> = React.memo(({ shape, isActi
             userSelect: 'none'
           }}
         >
-          <div
-            style={{
-              background: item.hasRole ? 'rgba(5, 150, 105, 0.95)' : 'rgba(30, 41, 59, 0.9)',
-              color: 'white',
-              minWidth: '22px',
-              height: '22px',
-              borderRadius: '50%',
-              fontSize: '11px',
-              fontWeight: '700',
-              fontFamily: 'system-ui, sans-serif',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              border: item.hasRole ? '2px solid rgba(255,255,255,0.7)' : '2px solid rgba(255,255,255,0.4)',
-              boxShadow: '0 1px 4px rgba(0,0,0,0.4)',
-              padding: '0 2px'
-            }}
-          >
-            {item.label}
+          <div style={{ display: 'flex', flexDirection: 'row', gap: '3px', alignItems: 'center' }}>
+            {item.labels.map((lbl) => (
+              <span
+                key={`lbl-${lbl.index}`}
+                style={{
+                  color: lbl.hasRole ? 'rgb(52, 211, 153)' : 'white',
+                  fontSize: '12px',
+                  fontWeight: '800',
+                  fontFamily: 'system-ui, sans-serif',
+                  textShadow: '0 0 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.7), 1px 1px 0 rgba(0,0,0,0.8)',
+                  letterSpacing: '0.02em',
+                  lineHeight: 1,
+                }}
+              >
+                {lbl.text}
+              </span>
+            ))}
           </div>
         </Html>
       ))}
