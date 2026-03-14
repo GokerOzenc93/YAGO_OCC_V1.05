@@ -339,89 +339,67 @@ export function assignDefaultFaceRoles(
 
   const NORMAL_TOLERANCE = 0.85;
 
+  const box = new THREE.Box3().setFromBufferAttribute(
+    geometry.getAttribute('position') as THREE.BufferAttribute
+  );
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  const maxDim = Math.max(size.x, size.y, size.z, 1);
+  const BOUNDARY_TOLERANCE = maxDim * 0.05 + 1;
+
+  const directions: Array<{
+    role: string;
+    normalTest: (n: THREE.Vector3) => boolean;
+    boundaryTest: (c: THREE.Vector3) => boolean;
+  }> = [
+    {
+      role: 'Left',
+      normalTest: (n) => n.x < -NORMAL_TOLERANCE,
+      boundaryTest: (c) => Math.abs(c.x - box.min.x) < BOUNDARY_TOLERANCE,
+    },
+    {
+      role: 'Right',
+      normalTest: (n) => n.x > NORMAL_TOLERANCE,
+      boundaryTest: (c) => Math.abs(c.x - box.max.x) < BOUNDARY_TOLERANCE,
+    },
+    {
+      role: 'Bottom',
+      normalTest: (n) => n.y < -NORMAL_TOLERANCE,
+      boundaryTest: (c) => Math.abs(c.y - box.min.y) < BOUNDARY_TOLERANCE,
+    },
+    {
+      role: 'Top',
+      normalTest: (n) => n.y > NORMAL_TOLERANCE,
+      boundaryTest: (c) => Math.abs(c.y - box.max.y) < BOUNDARY_TOLERANCE,
+    },
+    {
+      role: 'Back',
+      normalTest: (n) => n.z < -NORMAL_TOLERANCE,
+      boundaryTest: (c) => Math.abs(c.z - box.min.z) < BOUNDARY_TOLERANCE,
+    },
+  ];
+
   groups.forEach((group, index) => {
     const n = group.normal;
-    if (n.x < -NORMAL_TOLERANCE) roles[index] = 'Left';
-    else if (n.x > NORMAL_TOLERANCE) roles[index] = 'Right';
-    else if (n.y < -NORMAL_TOLERANCE) roles[index] = 'Bottom';
-    else if (n.y > NORMAL_TOLERANCE) roles[index] = 'Top';
-    else if (n.z < -NORMAL_TOLERANCE) roles[index] = 'Back';
+    const c = group.center;
+
+    for (const dir of directions) {
+      if (dir.normalTest(n) && dir.boundaryTest(c)) {
+        roles[index] = dir.role;
+        break;
+      }
+    }
   });
 
   return roles;
 }
 
 export function remapFaceRoles(
-  oldFaceRoles: Record<number, string>,
-  oldGeometry: THREE.BufferGeometry,
+  _oldFaceRoles: Record<number, string>,
+  _oldGeometry: THREE.BufferGeometry,
   newGeometry: THREE.BufferGeometry
 ): Record<number, string> {
-  if (!oldFaceRoles || Object.keys(oldFaceRoles).length === 0) return {};
-
-  const oldFaces = extractFacesFromGeometry(oldGeometry);
-  const oldGroups = groupCoplanarFaces(oldFaces);
-  const newFaces = extractFacesFromGeometry(newGeometry);
-  const newGroups = groupCoplanarFaces(newFaces);
-
-  const newRoles: Record<number, string> = {};
-
-  const oldBox = new THREE.Box3().setFromBufferAttribute(oldGeometry.getAttribute('position') as THREE.BufferAttribute);
-  const oldSize = new THREE.Vector3();
-  oldBox.getSize(oldSize);
-
-  const newBox = new THREE.Box3().setFromBufferAttribute(newGeometry.getAttribute('position') as THREE.BufferAttribute);
-  const newSize = new THREE.Vector3();
-  newBox.getSize(newSize);
-
-  newGroups.forEach((newGroup, newIndex) => {
-    let bestOldIndex = -1;
-    let bestScore = Infinity;
-
-    Object.entries(oldFaceRoles).forEach(([oldIndexStr, role]) => {
-      if (!role) return;
-      const oldIndex = Number(oldIndexStr);
-      const oldGroup = oldGroups[oldIndex];
-      if (!oldGroup) return;
-
-      const dot = newGroup.normal.dot(oldGroup.normal);
-      const angle = Math.acos(Math.min(1, Math.max(-1, dot))) * (180 / Math.PI);
-
-      if (angle > 25) return;
-
-      const scaleX = oldSize.x > 0 ? oldSize.x : 1;
-      const scaleY = oldSize.y > 0 ? oldSize.y : 1;
-      const scaleZ = oldSize.z > 0 ? oldSize.z : 1;
-
-      const newScaleX = newSize.x > 0 ? newSize.x : 1;
-      const newScaleY = newSize.y > 0 ? newSize.y : 1;
-      const newScaleZ = newSize.z > 0 ? newSize.z : 1;
-
-      const oldNormCenter = new THREE.Vector3(
-        oldGroup.center.x / scaleX,
-        oldGroup.center.y / scaleY,
-        oldGroup.center.z / scaleZ
-      );
-      const newNormCenter = new THREE.Vector3(
-        newGroup.center.x / newScaleX,
-        newGroup.center.y / newScaleY,
-        newGroup.center.z / newScaleZ
-      );
-
-      const centerDiff = oldNormCenter.distanceTo(newNormCenter);
-      const score = angle * 2 + centerDiff * 10;
-
-      if (score < bestScore) {
-        bestScore = score;
-        bestOldIndex = oldIndex;
-      }
-    });
-
-    if (bestOldIndex >= 0 && bestScore < 30) {
-      newRoles[newIndex] = oldFaceRoles[bestOldIndex];
-    }
-  });
-
-  return newRoles;
+  return assignDefaultFaceRoles(newGeometry);
 }
 
 export function findFaceByDescriptor(
