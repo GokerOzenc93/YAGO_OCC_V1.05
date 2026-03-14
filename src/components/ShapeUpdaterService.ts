@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { evaluateExpression } from './Expression';
 import type { FilletInfo } from '../store';
-import { extractFacesFromGeometry, groupCoplanarFaces, remapFaceRolesBySignature, createFaceGroupSignature, mergeGroupsPreservingOrder, snapshotGroupSignatures, type FaceGroupSignature } from './GeometryUtils';
+import { extractFacesFromGeometry, groupCoplanarFaces, remapFaceRolesBySignature, createFaceGroupSignature, mergeGroupsPreservingOrder, snapshotGroupSignatures, tagNewGroupsWithSubtractionOrigin, type FaceGroupSignature } from './GeometryUtils';
 
 export const getOriginalSize = (geometry: THREE.BufferGeometry) => {
   const box = new THREE.Box3().setFromBufferAttribute(
@@ -228,9 +228,13 @@ function remapShapeFaceData(shape: any, newGeometry: THREE.BufferGeometry): {
 
   const prevGroupSigs: FaceGroupSignature[] = shape.faceGroupSignatures || [];
 
-  const orderedGroups = prevGroupSigs.length > 0
+  const mergedGroups = prevGroupSigs.length > 0
     ? mergeGroupsPreservingOrder(prevGroupSigs, rawGroups)
     : rawGroups;
+
+  const orderedGroups = shape.subtractionGeometries?.length > 0
+    ? tagNewGroupsWithSubtractionOrigin(mergedGroups, prevGroupSigs.length, shape.subtractionGeometries)
+    : mergedGroups;
 
   const newFaceGroupSignatures = snapshotGroupSignatures(orderedGroups);
 

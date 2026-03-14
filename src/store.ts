@@ -469,10 +469,12 @@ export const useAppStore=create<AppState>((set,get)=>({
           }
 
           const sub=b.geometry.clone();
-          const{extractFacesFromGeometry:eFG2,groupCoplanarFaces:gCF2,mergeGroupsPreservingOrder:mGPO2,snapshotGroupSignatures:sGS2,createFaceGroupSignature:cFGS2}=await import('./components/GeometryUtils');
+          const{extractFacesFromGeometry:eFG2,groupCoplanarFaces:gCF2,mergeGroupsPreservingOrder:mGPO2,snapshotGroupSignatures:sGS2,createFaceGroupSignature:cFGS2,tagNewGroupsWithSubtractionOrigin:tNG2}=await import('./components/GeometryUtils');
           const boolRawFaces=eFG2(geo);const boolRawGroups=gCF2(boolRawFaces);
           const boolPrevSigs=a.faceGroupSignatures||[];
-          const boolOrderedGroups=boolPrevSigs.length>0?mGPO2(boolPrevSigs,boolRawGroups):boolRawGroups;
+          const boolMergedGroups=boolPrevSigs.length>0?mGPO2(boolPrevSigs,boolRawGroups):boolRawGroups;
+          const boolAllSubs=[...(a.subtractionGeometries||[]),{geometry:sub,relativeOffset:rel,relativeRotation:rot,scale:[1,1,1] as [number,number,number]}];
+          const boolOrderedGroups=tNG2(boolMergedGroups,boolPrevSigs.length,boolAllSubs);
           const boolNewFaceGroupSigs=sGS2(boolOrderedGroups);
           const buildBoolMap=()=>{const m:Record<number,number>={};if(!boolPrevSigs.length)return m;for(let oi=0;oi<boolPrevSigs.length;oi++){const os=boolPrevSigs[oi];const ni=boolOrderedGroups.findIndex(g=>{const s=cFGS2(g);return s.axisDirection===os.axisDirection&&Math.abs(s.normal[0]-os.normal[0])<0.02&&Math.abs(s.normal[1]-os.normal[1])<0.02&&Math.abs(s.normal[2]-os.normal[2])<0.02&&Math.abs(s.center[0]-os.center[0])<5&&Math.abs(s.center[1]-os.center[1])<5&&Math.abs(s.center[2]-os.center[2])<5;});if(ni>=0)m[oi]=ni;}return m;};
           const boolIdxMap=buildBoolMap();
@@ -549,10 +551,11 @@ export const useAppStore=create<AppState>((set,get)=>({
         verts=await getReplicadVertices(base);
       }
 
-      const{extractFacesFromGeometry:eFG,groupCoplanarFaces:gCF,mergeGroupsPreservingOrder:mGPO,snapshotGroupSignatures:sGS,createFaceGroupSignature:cFGS}=await import('./components/GeometryUtils');
+      const{extractFacesFromGeometry:eFG,groupCoplanarFaces:gCF,mergeGroupsPreservingOrder:mGPO,snapshotGroupSignatures:sGS,createFaceGroupSignature:cFGS,tagNewGroupsWithSubtractionOrigin:tNG}=await import('./components/GeometryUtils');
       const rawFaces=eFG(geo);const rawGroups=gCF(rawFaces);
       const prevSigs=sh.faceGroupSignatures||[];
-      const orderedGroups=prevSigs.length>0?mGPO(prevSigs,rawGroups):rawGroups;
+      const mergedGroups=prevSigs.length>0?mGPO(prevSigs,rawGroups):rawGroups;
+      const orderedGroups=arr.filter(Boolean).length>0?tNG(mergedGroups,prevSigs.length,arr.filter(Boolean)):mergedGroups;
       const newFaceGroupSignatures=sGS(orderedGroups);
       const buildMap=()=>{
         const m:Record<number,number>={};

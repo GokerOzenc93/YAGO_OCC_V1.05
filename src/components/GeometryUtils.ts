@@ -9,11 +9,17 @@ export interface FaceData {
   isCurved?: boolean;
 }
 
+export interface SubtractionFaceTag {
+  subtractionIndex: number;
+  subtractionFaceIndex: number;
+}
+
 export interface CoplanarFaceGroup {
   normal: THREE.Vector3;
   faceIndices: number[];
   center: THREE.Vector3;
   totalArea: number;
+  subtractionTag?: SubtractionFaceTag;
 }
 
 export function extractFacesFromGeometry(geometry: THREE.BufferGeometry): FaceData[] {
@@ -581,4 +587,100 @@ export function findFaceByDescriptor(
   }
 
   return bestMatch;
+}
+
+/**
+ * For each new face group that has no match in prevSignatures (i.e. was created by a subtraction),
+ * geometrically determine which subtraction box it came from and which face of that box it corresponds to.
+ *
+ * Each SubtractedGeometry has its own box. We transform the center of each new group into the
+ * local space of each subtraction box and check if it lies on one of its 6 faces (within tolerance).
+ *
+ * subtractionGeometries: array of { geometry, relativeOffset, relativeRotation, scale }
+ * newGroups: the full ordered group list after mergeGroupsPreservingOrder
+ * prevSignatureCount: how many groups existed before (groups at indices >= prevSignatureCount are new)
+ */
+export function tagNewGroupsWithSubtractionOrigin(
+  newGroups: CoplanarFaceGroup[],
+  prevSignatureCount: number,
+  subtractionGeometries: Array<{
+    geometry: THREE.BufferGeometry;
+    relativeOffset: [number, number, number];
+    relativeRotation: [number, number, number];
+    scale: [number, number, number];
+  }>
+): CoplanarFaceGroup[] {
+  if (!subtractionGeometries || subtractionGeometries.length === 0) return newGroups;
+
+  return newGroups.map((group, groupIdx) => {
+    if (groupIdx < prevSignatureCount) return group;
+    if (group.subtractionTag) return group;
+
+    let bestTag: SubtractionFaceTag | null = null;
+    let bestDist = Infinity;
+
+    for (let si = 0; si < subtractionGeometries.length; si++) {
+      const sub = subtractionGeometries[si];
+      if (!sub.geometry) continue;
+
+      const subBox = new THREE.Box3().setFromBufferAttribute(
+        sub.geometry.getAttribute('position') as THREE.BufferAttribute
+      );
+      const subSize = new THREE.Vector3();
+      subBox.getSize(subSize);
+
+      const rx = sub.relativeRotation[0];
+      const ry = sub.relativeRotation[1];
+      const rz = sub.relativeRotation[2];
+
+      const rotMatrix = new THREE.Matrix4().makeRotationFromEuler(
+        new THREE.Euler(rx, ry, rz, 'XYZ')
+      );
+      const invRot = rotMatrix.clone().invert();
+
+      const offsetCenter = new THREE.Vector3(...sub.relativeOffset);
+      const localGroupCenter = group.center.clone().sub(offsetCenter).applyMatrix4(invRot);
+
+      const hx = subSize.x / 2;
+      const hy = subSize.y / 2;
+      const hz = subSize.z / 2;
+      const tol = Math.max(subSize.x, subSize.y, subSize.z) * 0.15;
+
+      const subFaceCandidates: Array<{ faceIdx: number; dist: number }> = [];
+      const faces6 = [
+        { fi: 0, pos: new THREE.Vector3(hx, 0, 0), n: new THREE.Vector3(1, 0, 0) },
+        { fi: 1, pos: new THREE.Vector3(-hx, 0, 0), n: new THREE.Vector3(-1, 0, 0) },
+        { fi: 2, pos: new THREE.Vector3(0, hy, 0), n: new THREE.Vector3(0, 1, 0) },
+        { fi: 3, pos: new THREE.Vector3(0, -hy, 0), n: new THREE.Vector3(0, -1, 0) },
+        { fi: 4, pos: new THREE.Vector3(0, 0, hz), n: new THREE.Vector3(0, 0, 1) },
+        { fi: 5, pos: new THREE.Vector3(0, 0, -hz), n: new THREE.Vector3(0, 0, -1) },
+      ];
+
+      const localGroupNormal = group.normal.clone().applyMatrix4(invRot).normalize();
+
+      for (const { fi, pos, n } of faces6) {
+        const normalDot = localGroupNormal.dot(n);
+        if (normalDot < 0.85) continue;
+
+        const dist = pos.distanceTo(localGroupCenter);
+        if (dist < tol) {
+          subFaceCandidates.push({ faceIdx: fi, dist });
+        }
+      }
+
+      if (subFaceCandidates.length > 0) {
+        subFaceCandidates.sort((a, b) => a.dist - b.dist);
+        const best = subFaceCandidates[0];
+        if (best.dist < bestDist) {
+          bestDist = best.dist;
+          bestTag = { subtractionIndex: si, subtractionFaceIndex: best.faceIdx };
+        }
+      }
+    }
+
+    if (bestTag) {
+      return { ...group, subtractionTag: bestTag };
+    }
+    return group;
+  });
 }
