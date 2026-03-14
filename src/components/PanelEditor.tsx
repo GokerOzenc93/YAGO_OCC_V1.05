@@ -5,6 +5,7 @@ import { useAppStore } from '../store';
 import type { FaceRole } from '../store';
 import { extractFacesFromGeometry, groupCoplanarFaces, FaceData, CoplanarFaceGroup } from './FaceEditor';
 import { resolveAllPanelJoints, restoreAllPanels, rebuildAllPanels, rebuildAndRecalculatePipeline } from './PanelJointService';
+import type { FilletData } from './Fillet';
 import * as THREE from 'three';
 
 interface PanelEditorProps {
@@ -639,6 +640,139 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                 updateVirtualFace(vfId, { hasPanel: false });
               };
 
+              const fillets: FilletData[] = selectedShape.fillets || [];
+              const subtractionGeometries: Array<any> = selectedShape.subtractionGeometries || [];
+
+              const AXIS_DIRECTION_ORDER: Record<string, number> = {
+                'x+': 0, 'x-': 1, 'y+': 2, 'y-': 3, 'z+': 4, 'z-': 5,
+              };
+              const getAxisDir = (n: THREE.Vector3): string | null => {
+                const tol = 0.95;
+                if (n.x > tol) return 'x+';
+                if (n.x < -tol) return 'x-';
+                if (n.y > tol) return 'y+';
+                if (n.y < -tol) return 'y-';
+                if (n.z > tol) return 'z+';
+                if (n.z < -tol) return 'z-';
+                return null;
+              };
+
+              const mainBbox = new THREE.Box3().setFromBufferAttribute(geometry.getAttribute('position'));
+              const cuttingPlanes: Array<{ normal: THREE.Vector3; constant: number; subtractorIndex: number }> = [];
+              subtractionGeometries.forEach((sub: any, subtractorIndex: number) => {
+                const subGeo = sub.geometry;
+                if (!subGeo) return;
+                const subBbox = new THREE.Box3().setFromBufferAttribute(subGeo.getAttribute('position'));
+                const offset = new THREE.Vector3(...sub.relativeOffset);
+                const rot = sub.relativeRotation;
+                const rotMatrix = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rot[0], rot[1], rot[2], 'XYZ'));
+                const corners = [
+                  new THREE.Vector3(subBbox.min.x, subBbox.min.y, subBbox.min.z),
+                  new THREE.Vector3(subBbox.max.x, subBbox.min.y, subBbox.min.z),
+                  new THREE.Vector3(subBbox.min.x, subBbox.max.y, subBbox.min.z),
+                  new THREE.Vector3(subBbox.max.x, subBbox.max.y, subBbox.min.z),
+                  new THREE.Vector3(subBbox.min.x, subBbox.min.y, subBbox.max.z),
+                  new THREE.Vector3(subBbox.max.x, subBbox.min.y, subBbox.max.z),
+                  new THREE.Vector3(subBbox.min.x, subBbox.max.y, subBbox.max.z),
+                  new THREE.Vector3(subBbox.max.x, subBbox.max.y, subBbox.max.z),
+                ].map(c => c.applyMatrix4(rotMatrix).add(offset));
+                const worldBbox = new THREE.Box3().setFromPoints(corners);
+                const faceNormals = [
+                  new THREE.Vector3(1,0,0), new THREE.Vector3(-1,0,0),
+                  new THREE.Vector3(0,1,0), new THREE.Vector3(0,-1,0),
+                  new THREE.Vector3(0,0,1), new THREE.Vector3(0,0,-1),
+                ];
+                const faceConstants = [
+                  -worldBbox.max.x, worldBbox.min.x,
+                  -worldBbox.max.y, worldBbox.min.y,
+                  -worldBbox.max.z, worldBbox.min.z,
+                ];
+                const facePlanePositions = [
+                  worldBbox.max.x, worldBbox.min.x,
+                  worldBbox.max.y, worldBbox.min.y,
+                  worldBbox.max.z, worldBbox.min.z,
+                ];
+                for (let pi = 0; pi < 6; pi++) {
+                  const pos = facePlanePositions[pi];
+                  const axisIdx = Math.floor(pi / 2);
+                  const minVal = axisIdx === 0 ? mainBbox.min.x : axisIdx === 1 ? mainBbox.min.y : mainBbox.min.z;
+                  const maxVal = axisIdx === 0 ? mainBbox.max.x : axisIdx === 1 ? mainBbox.max.y : mainBbox.max.z;
+                  if (pos > minVal + 1.0 && pos < maxVal - 1.0) {
+                    cuttingPlanes.push({ normal: faceNormals[pi], constant: faceConstants[pi], subtractorIndex });
+                  }
+                }
+              });
+
+              const axisCandidatesForLabels = new Map<string, Array<number>>();
+              const subtractorMapForLabels = new Map<number, Array<number>>();
+              const filletMapForLabels = new Map<number, Array<number>>();
+
+              faceGroups.forEach((group, groupIndex) => {
+                const axisDir = getAxisDir(group.normal);
+                if (axisDir === null) {
+                  for (let fi = 0; fi < fillets.length; fi++) {
+                    const fillet = fillets[fi];
+                    const radius = fillet.radius;
+                    const tol = Math.max(radius * 2.0, 10);
+                    const n1 = new THREE.Vector3(...fillet.face1Data.normal);
+                    const n2 = new THREE.Vector3(...fillet.face2Data.normal);
+                    const d1 = fillet.face1Data.planeD ?? n1.dot(new THREE.Vector3(...fillet.face1Data.center));
+                    const d2 = fillet.face2Data.planeD ?? n2.dot(new THREE.Vector3(...fillet.face2Data.center));
+                    const dist1 = Math.abs(n1.dot(group.center) - d1);
+                    const dist2 = Math.abs(n2.dot(group.center) - d2);
+                    if (dist1 < tol && dist2 < tol) {
+                      if (!filletMapForLabels.has(fi)) filletMapForLabels.set(fi, []);
+                      filletMapForLabels.get(fi)!.push(groupIndex);
+                      return;
+                    }
+                  }
+                  return;
+                }
+                if (cuttingPlanes.length > 0) {
+                  for (const plane of cuttingPlanes) {
+                    const normalDot = Math.abs(group.normal.dot(plane.normal));
+                    if (normalDot < 0.95) continue;
+                    const dist = group.center.dot(plane.normal) + plane.constant;
+                    if (Math.abs(dist) < 1.0) {
+                      if (!subtractorMapForLabels.has(plane.subtractorIndex)) subtractorMapForLabels.set(plane.subtractorIndex, []);
+                      subtractorMapForLabels.get(plane.subtractorIndex)!.push(groupIndex);
+                      return;
+                    }
+                  }
+                }
+                if (!axisCandidatesForLabels.has(axisDir)) axisCandidatesForLabels.set(axisDir, []);
+                axisCandidatesForLabels.get(axisDir)!.push(groupIndex);
+              });
+
+              const axisSortedForLabels = Array.from(axisCandidatesForLabels.entries()).sort(
+                ([a], [b]) => (AXIS_DIRECTION_ORDER[a] ?? 99) - (AXIS_DIRECTION_ORDER[b] ?? 99)
+              );
+
+              const faceGroupLabels = new Map<number, { label: string; color: string }>();
+
+              axisSortedForLabels.forEach(([, groupIndices], roleIdx) => {
+                const roleNumber = roleIdx + 1;
+                if (groupIndices.length > 1) {
+                  groupIndices.forEach((gi, subIdx) => {
+                    faceGroupLabels.set(gi, { label: `${roleNumber}-${subIdx + 1}`, color: '#1a1a1a' });
+                  });
+                } else {
+                  faceGroupLabels.set(groupIndices[0], { label: `${roleNumber}`, color: '#1a1a1a' });
+                }
+              });
+
+              subtractorMapForLabels.forEach((groupIndices, subtractorIdx) => {
+                groupIndices.forEach((gi, faceIdx) => {
+                  faceGroupLabels.set(gi, { label: `S${subtractorIdx + 1}.${faceIdx + 1}`, color: '#b45000' });
+                });
+              });
+
+              filletMapForLabels.forEach((groupIndices, filletIdx) => {
+                groupIndices.forEach((gi) => {
+                  faceGroupLabels.set(gi, { label: `F${filletIdx + 1}`, color: '#006eb4' });
+                });
+              });
+
               return (
                 <div className={`space-y-0.5 pt-2 border-t border-stone-300 ${isDisabled ? 'opacity-40 pointer-events-none' : ''}`}>
                   <div className={`text-xs font-semibold mb-1 flex items-center gap-2 ${isDisabled ? 'text-stone-400' : 'text-orange-700'}`}>
@@ -652,6 +786,9 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                   {faceGroups.map((_group, i) => {
                     const dimensions = getPanelDimensions(i);
                     const isRowSelected = selectedPanelRow === i;
+                    const faceLabel = faceGroupLabels.get(i);
+                    const labelText = faceLabel?.label ?? `${i + 1}`;
+                    const labelColor = faceLabel?.color ?? '#1a1a1a';
                     return (
                       <React.Fragment key={`face-${i}`}>
                         <div
@@ -679,11 +816,12 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                           />
                           <input
                             type="text"
-                            value={i + 1}
+                            value={labelText}
                             readOnly
                             tabIndex={-1}
                             disabled={isDisabled}
-                            className={`w-7 px-1 py-0.5 text-xs font-mono border rounded text-center ${isDisabled ? 'bg-stone-100 text-stone-400 border-stone-200' : 'bg-white text-gray-800 border-gray-300'}`}
+                            style={isDisabled ? undefined : { color: labelColor }}
+                            className={`w-10 px-1 py-0.5 text-xs font-mono font-bold border rounded text-center ${isDisabled ? 'bg-stone-100 text-stone-400 border-stone-200' : 'bg-white border-gray-300'}`}
                             onClick={(e) => e.stopPropagation()}
                           />
                           <select
