@@ -117,8 +117,6 @@ export const RoleLabels: React.FC<RoleLabelsProps> = React.memo(({ shape, isActi
     );
     const size = new THREE.Vector3();
     bbox.getSize(size);
-    const maxDim = Math.max(size.x, size.y, size.z);
-    const offsetAmount = Math.max(maxDim * 0.02, 2);
 
     const subtractionGeometries: Array<any> = shape.subtractionGeometries || [];
     const cuttingPlanes = buildSubtractorCuttingPlanes(subtractionGeometries, bbox);
@@ -153,10 +151,21 @@ export const RoleLabels: React.FC<RoleLabelsProps> = React.memo(({ shape, isActi
       const roleNumber = roleIdx + 1;
       const isSplit = candidates.length > 1;
 
+      const computeOffset = (normal: THREE.Vector3): number => {
+        const absX = Math.abs(normal.x);
+        const absY = Math.abs(normal.y);
+        const absZ = Math.abs(normal.z);
+        if (absX > 0.9) return Math.max(size.x * 0.06, 3);
+        if (absY > 0.9) return Math.max(size.y * 0.06, 3);
+        if (absZ > 0.9) return Math.max(size.z * 0.06, 3);
+        return 3;
+      };
+
       if (isSplit) {
-        const avgCenter = candidates.reduce((acc, c) => acc.add(c.group.center), new THREE.Vector3()).divideScalar(candidates.length);
+        const avgCenter = candidates.reduce((acc, c) => acc.add(c.group.center.clone()), new THREE.Vector3()).divideScalar(candidates.length);
         const normal = candidates[0].group.normal;
-        const offsetPosition = avgCenter.clone().add(normal.clone().multiplyScalar(offsetAmount));
+        const offset = computeOffset(normal);
+        const offsetPosition = avgCenter.clone().add(normal.clone().multiplyScalar(offset));
         const labels = candidates.map((candidate, subIdx) => ({
           text: `${roleNumber}-${subIdx + 1}`,
           index: candidate.originalIndex,
@@ -165,9 +174,8 @@ export const RoleLabels: React.FC<RoleLabelsProps> = React.memo(({ shape, isActi
         result.push({ position: offsetPosition, labels, groupKey: `${axisDir}-${roleIdx}` });
       } else {
         const candidate = candidates[0];
-        const offsetPosition = new THREE.Vector3()
-          .copy(candidate.group.center)
-          .add(candidate.group.normal.clone().multiplyScalar(offsetAmount));
+        const offset = computeOffset(candidate.group.normal);
+        const offsetPosition = candidate.group.center.clone().add(candidate.group.normal.clone().multiplyScalar(offset));
         result.push({
           position: offsetPosition,
           labels: [{ text: `${roleNumber}`, index: candidate.originalIndex, hasRole: !!faceRoles[candidate.originalIndex] }],
@@ -200,11 +208,11 @@ export const RoleLabels: React.FC<RoleLabelsProps> = React.memo(({ shape, isActi
               <span
                 key={`lbl-${lbl.index}`}
                 style={{
-                  color: lbl.hasRole ? 'rgb(52, 211, 153)' : 'white',
-                  fontSize: '12px',
+                  color: 'rgb(10, 10, 10)',
+                  fontSize: '13px',
                   fontWeight: '800',
                   fontFamily: 'system-ui, sans-serif',
-                  textShadow: '0 0 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.7), 1px 1px 0 rgba(0,0,0,0.8)',
+                  textShadow: '0 0 2px rgba(255,255,255,0.9), 0 0 4px rgba(255,255,255,0.7), 1px 1px 0 rgba(255,255,255,0.6)',
                   letterSpacing: '0.02em',
                   lineHeight: 1,
                 }}
