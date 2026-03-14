@@ -24,9 +24,11 @@ function getAxisDirection(normal: THREE.Vector3): string | null {
 }
 
 function buildSubtractorCuttingPlanes(
-  subtractionGeometries: Array<{ geometry: THREE.BufferGeometry; relativeOffset: [number, number, number]; relativeRotation: [number, number, number]; scale: [number, number, number] }>
+  subtractionGeometries: Array<{ geometry: THREE.BufferGeometry; relativeOffset: [number, number, number]; relativeRotation: [number, number, number]; scale: [number, number, number] }>,
+  mainBbox: THREE.Box3
 ): Array<{ normal: THREE.Vector3; constant: number }> {
   const planes: Array<{ normal: THREE.Vector3; constant: number }> = [];
+
   for (const sub of subtractionGeometries) {
     const subGeo = sub.geometry;
     if (!subGeo) continue;
@@ -53,6 +55,11 @@ function buildSubtractorCuttingPlanes(
 
     const worldBbox = new THREE.Box3().setFromPoints(corners);
 
+    const facePlanePositions = [
+      worldBbox.max.x, worldBbox.min.x,
+      worldBbox.max.y, worldBbox.min.y,
+      worldBbox.max.z, worldBbox.min.z,
+    ];
     const faceNormals = [
       new THREE.Vector3(1, 0, 0), new THREE.Vector3(-1, 0, 0),
       new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, -1, 0),
@@ -64,8 +71,19 @@ function buildSubtractorCuttingPlanes(
       -worldBbox.max.z, worldBbox.min.z,
     ];
 
+    const mainMin = mainBbox.min;
+    const mainMax = mainBbox.max;
+
     for (let i = 0; i < 6; i++) {
-      planes.push({ normal: faceNormals[i], constant: faceConstants[i] });
+      const pos = facePlanePositions[i];
+      const axisIdx = Math.floor(i / 2);
+      const minVal = axisIdx === 0 ? mainMin.x : axisIdx === 1 ? mainMin.y : mainMin.z;
+      const maxVal = axisIdx === 0 ? mainMax.x : axisIdx === 1 ? mainMax.y : mainMax.z;
+      const insetMin = minVal + 1.0;
+      const insetMax = maxVal - 1.0;
+      if (pos > insetMin && pos < insetMax) {
+        planes.push({ normal: faceNormals[i], constant: faceConstants[i] });
+      }
     }
   }
   return planes;
@@ -103,7 +121,7 @@ export const RoleLabels: React.FC<RoleLabelsProps> = React.memo(({ shape, isActi
     const offsetAmount = Math.max(maxDim * 0.02, 2);
 
     const subtractionGeometries: Array<any> = shape.subtractionGeometries || [];
-    const cuttingPlanes = buildSubtractorCuttingPlanes(subtractionGeometries);
+    const cuttingPlanes = buildSubtractorCuttingPlanes(subtractionGeometries, bbox);
 
     const axisCandidates = new Map<string, Array<{ group: typeof faceGroups[0]; originalIndex: number }>>();
     faceGroups.forEach((group, index) => {
