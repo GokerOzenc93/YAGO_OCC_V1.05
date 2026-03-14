@@ -68,13 +68,45 @@ export const FaceEditor: React.FC<FaceEditorProps> = ({ shape, isActive }) => {
     if (filletMode && selectedFilletFaces.length < 2) {
       const group = faceGroups[groupIndex];
       if (group) {
-        const representativeFace = faces.find(f => group.faceIndices.includes(f.faceIndex));
-        const representativeVertex = representativeFace?.vertices[0];
-        const normal = new (THREE.Vector3)(group.normal.x, group.normal.y, group.normal.z);
-        const planeD = representativeVertex ? normal.dot(representativeVertex) : normal.dot(group.center);
+        const nx = group.normal.x;
+        const ny = group.normal.y;
+        const nz = group.normal.z;
+        const absX = Math.abs(nx);
+        const absY = Math.abs(ny);
+        const absZ = Math.abs(nz);
+        const isAxisAligned = absX > 0.9 || absY > 0.9 || absZ > 0.9;
+        let planeD: number;
+        if (isAxisAligned && shape.geometry) {
+          const flatFaces = faces.filter(f =>
+            group.faceIndices.includes(f.faceIndex) && !f.isCurved
+          );
+          const sourceFaces = flatFaces.length > 0 ? flatFaces : faces.filter(f => group.faceIndices.includes(f.faceIndex));
+          const allVerts: THREE.Vector3[] = sourceFaces.flatMap(f => f.vertices);
+          if (allVerts.length > 0) {
+            if (absX > 0.9) {
+              const vals = allVerts.map(v => v.x);
+              const extreme = nx > 0 ? Math.max(...vals) : Math.min(...vals);
+              planeD = nx * extreme;
+            } else if (absY > 0.9) {
+              const vals = allVerts.map(v => v.y);
+              const extreme = ny > 0 ? Math.max(...vals) : Math.min(...vals);
+              planeD = ny * extreme;
+            } else {
+              const vals = allVerts.map(v => v.z);
+              const extreme = nz > 0 ? Math.max(...vals) : Math.min(...vals);
+              planeD = nz * extreme;
+            }
+          } else {
+            planeD = nx * group.center.x + ny * group.center.y + nz * group.center.z;
+          }
+        } else {
+          planeD = nx * group.center.x + ny * group.center.y + nz * group.center.z;
+        }
+        console.log(`🎯 Fillet face selected: groupIndex=${groupIndex}, normal=[${nx.toFixed(2)},${ny.toFixed(2)},${nz.toFixed(2)}], planeD=${planeD.toFixed(3)}, center=[${group.center.x.toFixed(2)},${group.center.y.toFixed(2)},${group.center.z.toFixed(2)}]`);
+        console.log(`🎯 flatFaces count: ${faces.filter(f => group.faceIndices.includes(f.faceIndex) && !f.isCurved).length}, total in group: ${group.faceIndices.length}`);
         addFilletFace(groupIndex);
         addFilletFaceData({
-          normal: [group.normal.x, group.normal.y, group.normal.z],
+          normal: [nx, ny, nz],
           center: [group.center.x, group.center.y, group.center.z],
           planeD
         });
