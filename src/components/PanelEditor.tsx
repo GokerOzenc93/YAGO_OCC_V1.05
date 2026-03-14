@@ -773,6 +773,11 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                 });
               });
 
+              const sortedFaceIndices = Array.from(faceGroupLabels.keys());
+              faceGroups.forEach((_, i) => {
+                if (!faceGroupLabels.has(i)) sortedFaceIndices.push(i);
+              });
+
               return (
                 <div className={`space-y-0.5 pt-2 border-t border-stone-300 ${isDisabled ? 'opacity-40 pointer-events-none' : ''}`}>
                   <div className={`text-xs font-semibold mb-1 flex items-center gap-2 ${isDisabled ? 'text-stone-400' : 'text-orange-700'}`}>
@@ -783,7 +788,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                       </span>
                     )}
                   </div>
-                  {faceGroups.map((_group, i) => {
+                  {sortedFaceIndices.map((i) => {
                     const dimensions = getPanelDimensions(i);
                     const isRowSelected = selectedPanelRow === i;
                     const faceLabel = faceGroupLabels.get(i);
