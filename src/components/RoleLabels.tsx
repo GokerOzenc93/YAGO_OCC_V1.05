@@ -8,6 +8,21 @@ interface RoleLabelsProps {
   isActive: boolean;
 }
 
+const AXIS_DIRECTION_ORDER: Record<string, number> = {
+  'x+': 0, 'x-': 1, 'y+': 2, 'y-': 3, 'z+': 4, 'z-': 5,
+};
+
+function getAxisDirection(normal: THREE.Vector3): string | null {
+  const tol = 0.95;
+  if (normal.x > tol) return 'x+';
+  if (normal.x < -tol) return 'x-';
+  if (normal.y > tol) return 'y+';
+  if (normal.y < -tol) return 'y-';
+  if (normal.z > tol) return 'z+';
+  if (normal.z < -tol) return 'z-';
+  return null;
+}
+
 export const RoleLabels: React.FC<RoleLabelsProps> = React.memo(({ shape, isActive }) => {
   const faceLabels = useMemo(() => {
     if (!isActive || !shape.geometry) return [];
@@ -24,9 +39,23 @@ export const RoleLabels: React.FC<RoleLabelsProps> = React.memo(({ shape, isActi
     const maxDim = Math.max(size.x, size.y, size.z);
     const offsetAmount = Math.max(maxDim * 0.02, 2);
 
-    return faceGroups.map((group, index) => {
-      const role = faceRoles[index];
-      const label = `${index + 1}`;
+    const axisGroups: Array<{ group: typeof faceGroups[0]; originalIndex: number; axisDir: string }> = [];
+    faceGroups.forEach((group, index) => {
+      const axisDir = getAxisDirection(group.normal);
+      if (axisDir !== null) {
+        axisGroups.push({ group, originalIndex: index, axisDir });
+      }
+    });
+
+    axisGroups.sort((a, b) => {
+      const orderA = AXIS_DIRECTION_ORDER[a.axisDir] ?? 99;
+      const orderB = AXIS_DIRECTION_ORDER[b.axisDir] ?? 99;
+      return orderA - orderB;
+    });
+
+    return axisGroups.map(({ group, originalIndex }, labelIdx) => {
+      const role = faceRoles[originalIndex];
+      const label = `${labelIdx + 1}`;
 
       const offsetPosition = new THREE.Vector3()
         .copy(group.center)
@@ -35,7 +64,7 @@ export const RoleLabels: React.FC<RoleLabelsProps> = React.memo(({ shape, isActi
       return {
         position: offsetPosition,
         label,
-        index,
+        index: originalIndex,
         hasRole: !!role
       };
     });
