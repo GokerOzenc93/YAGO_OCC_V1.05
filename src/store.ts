@@ -79,6 +79,7 @@ export interface Shape {
   faceRoles?:Record<number,FaceRole>;
   faceDescriptions?:Record<number,string>;
   facePanels?:Record<number,boolean>;
+  subtractionFaceIndices?:number[];
 }
 
 export enum CameraType{PERSPECTIVE='perspective',ORTHOGRAPHIC='orthographic'}
@@ -463,6 +464,14 @@ export const useAppStore=create<AppState>((set,get)=>({
           }
 
           const sub=b.geometry.clone();
+
+          const{extractFacesFromGeometry:efg,groupCoplanarFaces:gcf,detectSubtractionFaceGroups:dsfg}=await import('./components/GeometryUtils');
+          const origFaces=efg(a.geometry);
+          const origGroups=gcf(origFaces);
+          const newFaces=efg(geo);
+          const newGroups=gcf(newFaces);
+          const subFaceIndices=dsfg(origGroups,newGroups);
+
           set((S)=>({
             shapes:S.shapes
               .map(x=>x.id===a.id?{
@@ -470,6 +479,7 @@ export const useAppStore=create<AppState>((set,get)=>({
                 geometry:geo,
                 replicadShape:result,
                 fillets,
+                subtractionFaceIndices:subFaceIndices,
                 subtractionGeometries:[
                   ...(x.subtractionGeometries||[]),
                   {
@@ -532,12 +542,20 @@ export const useAppStore=create<AppState>((set,get)=>({
         verts=await getReplicadVertices(base);
       }
 
+      const{extractFacesFromGeometry:efgD,groupCoplanarFaces:gcfD,detectSubtractionFaceGroups:dsfgD}=await import('./components/GeometryUtils');
+      const origFacesD=efgD(sh.geometry);
+      const origGroupsD=gcfD(origFacesD);
+      const newFacesD=efgD(geo);
+      const newGroupsD=gcfD(newFacesD);
+      const remainingSubFaceIndices=dsfgD(origGroupsD,newGroupsD);
+
       set((S)=>({
         shapes:S.shapes.map(x=>x.id===shapeId?{
           ...x,
           geometry:geo,
           replicadShape:base,
           subtractionGeometries:arr,
+          subtractionFaceIndices:remainingSubFaceIndices,
           fillets,
           position:pos,
           parameters:{...x.parameters,scaledBaseVertices:verts.map(v=>[v.x,v.y,v.z])}

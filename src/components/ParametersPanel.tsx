@@ -985,45 +985,62 @@ export function ParametersPanel({ isOpen, onClose }: ParametersPanelProps) {
               const faceGroups = groupCoplanarFaces(faces);
               const faceRoles = selectedShape.faceRoles || {};
               const faceDescriptions = selectedShape.faceDescriptions || {};
+              const subtractionFaceIndices: number[] = selectedShape.subtractionFaceIndices || [];
               const roleOptions: FaceRole[] = ['Left', 'Right', 'Top', 'Bottom', 'Back', 'Door'];
+
+              let subCounter = 0;
 
               return (
                 <div className="space-y-2 pt-2 border-t border-stone-300">
-                  <div className="text-xs font-semibold text-purple-700 mb-1">Face Roles ({faceGroups.length} faces)</div>
-                  {faceGroups.map((group, i) => (
-                    <div key={`face-${i}`} className="flex gap-1 items-center">
-                      <input
-                        type="text"
-                        value={i + 1}
-                        readOnly
-                        tabIndex={-1}
-                        className="w-10 px-1 py-0.5 text-xs font-mono bg-white text-gray-800 border border-gray-300 rounded text-center"
-                      />
-                      <select
-                        value={faceRoles[i] || ''}
-                        onChange={(e) => {
-                          const newRole = e.target.value === '' ? null : e.target.value as FaceRole;
-                          updateFaceRole(selectedShape.id, i, newRole);
-                        }}
-                        className="w-20 px-1 py-0.5 text-xs bg-white text-gray-800 border border-gray-300 rounded"
-                      >
-                        <option value="">none</option>
-                        {roleOptions.map(role => (
-                          <option key={role} value={role}>{role}</option>
-                        ))}
-                      </select>
-                      <input
-                        type="text"
-                        value={faceDescriptions[i] || ''}
-                        onChange={(e) => {
-                          const newDescriptions = { ...faceDescriptions, [i]: e.target.value };
-                          updateShape(selectedShape.id, { faceDescriptions: newDescriptions });
-                        }}
-                        placeholder="description"
-                        className="flex-1 px-2 py-0.5 text-xs bg-white text-gray-800 border border-gray-300 rounded"
-                      />
-                    </div>
-                  ))}
+                  <div className="text-xs font-semibold text-slate-700 mb-1">Face Roles ({faceGroups.length} faces)</div>
+                  {faceGroups.map((_group, i) => {
+                    const isSubFace = subtractionFaceIndices.includes(i);
+                    let faceLabel: string;
+                    if (isSubFace) {
+                      subCounter++;
+                      faceLabel = `S${subCounter}`;
+                    } else {
+                      faceLabel = String(i + 1);
+                    }
+                    return (
+                      <div key={`face-${i}`} className="flex gap-1 items-center">
+                        <input
+                          type="text"
+                          value={faceLabel}
+                          readOnly
+                          tabIndex={-1}
+                          className={`w-10 px-1 py-0.5 text-xs font-mono border rounded text-center ${
+                            isSubFace
+                              ? 'bg-orange-50 text-orange-700 border-orange-300'
+                              : 'bg-white text-gray-800 border-gray-300'
+                          }`}
+                        />
+                        <select
+                          value={faceRoles[i] || ''}
+                          onChange={(e) => {
+                            const newRole = e.target.value === '' ? null : e.target.value as FaceRole;
+                            updateFaceRole(selectedShape.id, i, newRole);
+                          }}
+                          className="w-20 px-1 py-0.5 text-xs bg-white text-gray-800 border border-gray-300 rounded"
+                        >
+                          <option value="">none</option>
+                          {roleOptions.map(role => (
+                            <option key={role} value={role}>{role}</option>
+                          ))}
+                        </select>
+                        <input
+                          type="text"
+                          value={faceDescriptions[i] || ''}
+                          onChange={(e) => {
+                            const newDescriptions = { ...faceDescriptions, [i]: e.target.value };
+                            updateShape(selectedShape.id, { faceDescriptions: newDescriptions });
+                          }}
+                          placeholder="description"
+                          className="flex-1 px-2 py-0.5 text-xs bg-white text-gray-800 border border-gray-300 rounded"
+                        />
+                      </div>
+                    );
+                  })}
                 </div>
               );
             })()}

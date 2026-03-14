@@ -330,6 +330,33 @@ export function createFaceDescriptor(
   };
 }
 
+export function detectSubtractionFaceGroups(
+  originalGroups: CoplanarFaceGroup[],
+  newGroups: CoplanarFaceGroup[],
+  normalTolerance: number = 0.95
+): number[] {
+  const subtractionIndices: number[] = [];
+
+  for (let newIdx = 0; newIdx < newGroups.length; newIdx++) {
+    const newGroup = newGroups[newIdx];
+    let matchFound = false;
+
+    for (const origGroup of originalGroups) {
+      const dot = newGroup.normal.dot(origGroup.normal);
+      if (dot >= normalTolerance) {
+        matchFound = true;
+        break;
+      }
+    }
+
+    if (!matchFound) {
+      subtractionIndices.push(newIdx);
+    }
+  }
+
+  return subtractionIndices;
+}
+
 export function findFaceByDescriptor(
   descriptor: { normal: [number, number, number]; normalizedCenter: [number, number, number]; area: number; isCurved?: boolean; axisDirection?: string | null },
   faces: FaceData[],

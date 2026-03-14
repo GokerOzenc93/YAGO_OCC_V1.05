@@ -381,6 +381,17 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
       scale: selectedShape.scale
     };
 
+    const { extractFacesFromGeometry: efgSU, groupCoplanarFaces: gcfSU, detectSubtractionFaceGroups: dsfgSU } = await import('./GeometryUtils');
+
+    const computeSubFaceIndices = (origGeo: THREE.BufferGeometry, newGeo: THREE.BufferGeometry): number[] => {
+      if (!selectedShape.subtractionGeometries?.filter((s: any) => s !== null).length) return [];
+      const origFaces = efgSU(origGeo);
+      const origGroups = gcfSU(origFaces);
+      const newFaces = efgSU(newGeo);
+      const newGroups = gcfSU(newFaces);
+      return dsfgSU(origGroups, newGroups);
+    };
+
     if (hasSubtractionChanges) {
       const subReplicadGeometry = convertReplicadToThreeGeometry(
         await createReplicadBox({ width: subWidth, height: subHeight, depth: subDepth })
@@ -407,11 +418,13 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
       const preservedPosition = copyPosition(selectedShape);
       const shapeSize = { width, height, depth };
       const final = await finalizeWithFillets(resultShape, selectedShape.fillets || [], shapeSize, convertReplicadToThreeGeometry, getReplicadVertices);
+      const subFaceIndices = computeSubFaceIndices(selectedShape.geometry, final.geometry);
 
       updateShape(selectedShape.id, {
         geometry: final.geometry,
         replicadShape: final.shape,
         subtractionGeometries: allSubtractions,
+        subtractionFaceIndices: subFaceIndices,
         fillets: final.fillets,
         position: preservedPosition,
         rotation: baseUpdate.rotation,
@@ -437,10 +450,12 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
       const preservedPosition = copyPosition(selectedShape);
       const shapeSize = { width, height, depth };
       const final = await finalizeWithFillets(newReplicadShape, updatedFillets, shapeSize, convertReplicadToThreeGeometry, getReplicadVertices);
+      const subFaceIndices = computeSubFaceIndices(selectedShape.geometry, final.geometry);
 
       updateShape(selectedShape.id, {
         geometry: final.geometry,
         replicadShape: final.shape,
+        subtractionFaceIndices: subFaceIndices,
         fillets: final.fillets,
         position: preservedPosition,
         rotation: baseUpdate.rotation,
@@ -466,10 +481,12 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
         const preservedPosition = copyPosition(selectedShape);
         const shapeSize = { width, height, depth };
         const final = await finalizeWithFillets(newReplicadShape, updatedFillets, shapeSize, convertReplicadToThreeGeometry, getReplicadVertices);
+        const subFaceIndices = computeSubFaceIndices(selectedShape.geometry, final.geometry);
 
         updateShape(selectedShape.id, {
           geometry: final.geometry,
           replicadShape: final.shape,
+          subtractionFaceIndices: subFaceIndices,
           fillets: final.fillets,
           position: preservedPosition,
           rotation: baseUpdate.rotation,
@@ -590,10 +607,18 @@ export async function applySubtractionChanges(params: ApplySubtractionChangesPar
   const preservedPosition = copyPosition(currentShape);
   const final = await finalizeWithFillets(resultShape, currentShape.fillets || [], shapeSize, convertReplicadToThreeGeometry, getReplicadVertices);
 
+  const { extractFacesFromGeometry: efgSC, groupCoplanarFaces: gcfSC, detectSubtractionFaceGroups: dsfgSC } = await import('./GeometryUtils');
+  const origFacesSC = efgSC(currentShape.geometry);
+  const origGroupsSC = gcfSC(origFacesSC);
+  const newFacesSC = efgSC(final.geometry);
+  const newGroupsSC = gcfSC(newFacesSC);
+  const subFaceIndicesSC = dsfgSC(origGroupsSC, newGroupsSC);
+
   updateShape(currentShape.id, {
     geometry: final.geometry,
     replicadShape: final.shape,
     subtractionGeometries: allSubtractions,
+    subtractionFaceIndices: subFaceIndicesSC,
     fillets: final.fillets,
     position: preservedPosition,
     parameters: {
