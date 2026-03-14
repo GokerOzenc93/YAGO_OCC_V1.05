@@ -132,33 +132,32 @@ export const RoleLabels: React.FC<RoleLabelsProps> = React.memo(({ shape, isActi
       axisCandidates.get(axisDir)!.push({ group, originalIndex: index });
     });
 
-    const axisGroups: Array<{ group: typeof faceGroups[0]; originalIndex: number; axisDir: string }> = [];
+    const axisSorted: Array<{ axisDir: string; candidates: Array<{ group: typeof faceGroups[0]; originalIndex: number }> }> = [];
     axisCandidates.forEach((candidates, axisDir) => {
-      const best = candidates.reduce((a, b) => a.group.totalArea > b.group.totalArea ? a : b);
-      axisGroups.push({ ...best, axisDir });
+      axisSorted.push({ axisDir, candidates });
     });
 
-    axisGroups.sort((a, b) => {
+    axisSorted.sort((a, b) => {
       const orderA = AXIS_DIRECTION_ORDER[a.axisDir] ?? 99;
       const orderB = AXIS_DIRECTION_ORDER[b.axisDir] ?? 99;
       return orderA - orderB;
     });
 
-    return axisGroups.map(({ group, originalIndex }, labelIdx) => {
-      const role = faceRoles[originalIndex];
-      const label = `${labelIdx + 1}`;
-
-      const offsetPosition = new THREE.Vector3()
-        .copy(group.center)
-        .add(group.normal.clone().multiplyScalar(offsetAmount));
-
-      return {
-        position: offsetPosition,
-        label,
-        index: originalIndex,
-        hasRole: !!role
-      };
+    const result: Array<{ position: THREE.Vector3; label: string; index: number; hasRole: boolean }> = [];
+    axisSorted.forEach(({ candidates }, roleIdx) => {
+      const roleNumber = roleIdx + 1;
+      const isSplit = candidates.length > 1;
+      candidates.forEach((candidate, subIdx) => {
+        const role = faceRoles[candidate.originalIndex];
+        const label = isSplit ? `${roleNumber}-${subIdx + 1}` : `${roleNumber}`;
+        const offsetPosition = new THREE.Vector3()
+          .copy(candidate.group.center)
+          .add(candidate.group.normal.clone().multiplyScalar(offsetAmount));
+        result.push({ position: offsetPosition, label, index: candidate.originalIndex, hasRole: !!role });
+      });
     });
+
+    return result;
   }, [shape.geometry?.uuid, JSON.stringify(shape.faceRoles), isActive]);
 
   if (!isActive || faceLabels.length === 0) return null;
