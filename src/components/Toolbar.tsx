@@ -213,7 +213,6 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
     try {
       const { createReplicadBox, convertReplicadToThreeGeometry } =
         await import('./ReplicadService');
-      const { assignDefaultFaceRoles } = await import('./GeometryUtils');
       const w = 600,
         h = 600,
         d = 600;
@@ -222,19 +221,16 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
         height: h,
         depth: d,
       });
-      const geometry = convertReplicadToThreeGeometry(replicadShape);
-      const defaultRoles = assignDefaultFaceRoles(geometry);
       addShape({
         id: `box-${Date.now()}`,
         type: 'box',
-        geometry,
+        geometry: convertReplicadToThreeGeometry(replicadShape),
         replicadShape,
         position: [0, 0, 0],
         rotation: [0, 0, 0],
         scale: [1, 1, 1],
         color: '#2563eb',
         parameters: { width: w, height: h, depth: d },
-        faceRoles: defaultRoles,
       });
     } catch (error) {
       alert(`Failed to add box: ${(error as Error).message}`);

@@ -1,7 +1,6 @@
 import * as THREE from 'three';
 import { evaluateExpression } from './Expression';
 import type { FilletInfo } from '../store';
-import { remapFaceRoles, assignDefaultFaceRoles } from './GeometryUtils';
 
 export const getOriginalSize = (geometry: THREE.BufferGeometry) => {
   const box = new THREE.Box3().setFromBufferAttribute(
@@ -409,10 +408,6 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
       const shapeSize = { width, height, depth };
       const final = await finalizeWithFillets(resultShape, selectedShape.fillets || [], shapeSize, convertReplicadToThreeGeometry, getReplicadVertices);
 
-      const remappedRoles1 = selectedShape.geometry
-        ? remapFaceRoles(selectedShape.faceRoles || {}, selectedShape.geometry, final.geometry)
-        : assignDefaultFaceRoles(final.geometry);
-
       updateShape(selectedShape.id, {
         geometry: final.geometry,
         replicadShape: final.shape,
@@ -422,7 +417,6 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
         rotation: baseUpdate.rotation,
         scale: baseUpdate.scale,
         vertexModifications: baseUpdate.vertexModifications,
-        faceRoles: remappedRoles1,
         parameters: { ...baseUpdate.parameters, scaledBaseVertices: final.vertices.map(v => [v.x, v.y, v.z]) }
       });
     } else if (dimensionsChanged) {
@@ -444,10 +438,6 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
       const shapeSize = { width, height, depth };
       const final = await finalizeWithFillets(newReplicadShape, updatedFillets, shapeSize, convertReplicadToThreeGeometry, getReplicadVertices);
 
-      const remappedRoles2 = selectedShape.geometry
-        ? remapFaceRoles(selectedShape.faceRoles || {}, selectedShape.geometry, final.geometry)
-        : assignDefaultFaceRoles(final.geometry);
-
       updateShape(selectedShape.id, {
         geometry: final.geometry,
         replicadShape: final.shape,
@@ -456,7 +446,6 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
         rotation: baseUpdate.rotation,
         scale: baseUpdate.scale,
         vertexModifications: baseUpdate.vertexModifications,
-        faceRoles: remappedRoles2,
         parameters: { ...baseUpdate.parameters, scaledBaseVertices: final.vertices.map(v => [v.x, v.y, v.z]) }
       });
     } else {
@@ -478,10 +467,6 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
         const shapeSize = { width, height, depth };
         const final = await finalizeWithFillets(newReplicadShape, updatedFillets, shapeSize, convertReplicadToThreeGeometry, getReplicadVertices);
 
-        const remappedRoles3 = selectedShape.geometry
-          ? remapFaceRoles(selectedShape.faceRoles || {}, selectedShape.geometry, final.geometry)
-          : assignDefaultFaceRoles(final.geometry);
-
         updateShape(selectedShape.id, {
           geometry: final.geometry,
           replicadShape: final.shape,
@@ -490,7 +475,6 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
           rotation: baseUpdate.rotation,
           scale: baseUpdate.scale,
           vertexModifications: baseUpdate.vertexModifications,
-          faceRoles: remappedRoles3,
           parameters: { ...baseUpdate.parameters, scaledBaseVertices: final.vertices.map(v => [v.x, v.y, v.z]) }
         });
       } else {
@@ -606,17 +590,12 @@ export async function applySubtractionChanges(params: ApplySubtractionChangesPar
   const preservedPosition = copyPosition(currentShape);
   const final = await finalizeWithFillets(resultShape, currentShape.fillets || [], shapeSize, convertReplicadToThreeGeometry, getReplicadVertices);
 
-  const remappedRoles4 = currentShape.geometry
-    ? remapFaceRoles(currentShape.faceRoles || {}, currentShape.geometry, final.geometry)
-    : assignDefaultFaceRoles(final.geometry);
-
   updateShape(currentShape.id, {
     geometry: final.geometry,
     replicadShape: final.shape,
     subtractionGeometries: allSubtractions,
     fillets: final.fillets,
     position: preservedPosition,
-    faceRoles: remappedRoles4,
     parameters: {
       ...currentShape.parameters,
       scaledBaseVertices: final.vertices.map(v => [v.x, v.y, v.z])
