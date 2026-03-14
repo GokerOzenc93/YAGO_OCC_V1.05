@@ -190,6 +190,24 @@ export function groupCoplanarFaces(
     });
   }
 
+  groups.sort((a, b) => {
+    const axisOrder = ['x+', 'x-', 'y+', 'y-', 'z+', 'z-', null];
+    const aAxis = getAxisDirection(a.normal);
+    const bAxis = getAxisDirection(b.normal);
+    const aAxisIdx = axisOrder.indexOf(aAxis);
+    const bAxisIdx = axisOrder.indexOf(bAxis);
+    if (aAxisIdx !== bAxisIdx) return aAxisIdx - bAxisIdx;
+
+    const cx = Math.round(a.center.x * 10) - Math.round(b.center.x * 10);
+    if (cx !== 0) return cx;
+    const cy = Math.round(a.center.y * 10) - Math.round(b.center.y * 10);
+    if (cy !== 0) return cy;
+    const cz = Math.round(a.center.z * 10) - Math.round(b.center.z * 10);
+    if (cz !== 0) return cz;
+
+    return b.totalArea - a.totalArea;
+  });
+
   return groups;
 }
 
