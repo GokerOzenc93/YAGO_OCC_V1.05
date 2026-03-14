@@ -463,6 +463,8 @@ export const useAppStore=create<AppState>((set,get)=>({
           }
 
           const sub=b.geometry.clone();
+          const{remapFaceRoles}=await import('./components/GeometryUtils');
+          const remappedFaceRoles=a.geometry?remapFaceRoles(a.faceRoles||{},a.geometry,geo):undefined;
           set((S)=>({
             shapes:S.shapes
               .map(x=>x.id===a.id?{
@@ -470,6 +472,7 @@ export const useAppStore=create<AppState>((set,get)=>({
                 geometry:geo,
                 replicadShape:result,
                 fillets,
+                faceRoles:remappedFaceRoles,
                 subtractionGeometries:[
                   ...(x.subtractionGeometries||[]),
                   {
@@ -532,6 +535,9 @@ export const useAppStore=create<AppState>((set,get)=>({
         verts=await getReplicadVertices(base);
       }
 
+      const{remapFaceRoles}=await import('./components/GeometryUtils');
+      const remappedFaceRoles=sh.geometry?remapFaceRoles(sh.faceRoles||{},sh.geometry,geo):undefined;
+
       set((S)=>({
         shapes:S.shapes.map(x=>x.id===shapeId?{
           ...x,
@@ -539,6 +545,7 @@ export const useAppStore=create<AppState>((set,get)=>({
           replicadShape:base,
           subtractionGeometries:arr,
           fillets,
+          faceRoles:remappedFaceRoles,
           position:pos,
           parameters:{...x.parameters,scaledBaseVertices:verts.map(v=>[v.x,v.y,v.z])}
         }:x),
