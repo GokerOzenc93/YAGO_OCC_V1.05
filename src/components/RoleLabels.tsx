@@ -261,7 +261,7 @@ export const RoleLabels: React.FC<RoleLabelsProps> = React.memo(({ shape, isActi
         const offsetPosition = candidate.group.center.clone().add(normal.clone().multiplyScalar(offset));
         result.push({
           position: offsetPosition,
-          labels: [{ text: `F${fNumber}.${faceIdx + 1}`, index: candidate.originalIndex, hasRole: !!faceRoles[candidate.originalIndex] }],
+          labels: [{ text: `F${fNumber}`, index: candidate.originalIndex, hasRole: !!faceRoles[candidate.originalIndex] }],
           groupKey: `fillet-${filletIdx}-${faceIdx}`,
           isFillet: true,
         });

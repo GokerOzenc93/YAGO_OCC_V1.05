@@ -1119,8 +1119,8 @@ export function ParametersPanel({ isOpen, onClose }: ParametersPanelProps) {
               });
 
               filletMap.forEach((candidates, filletIdx) => {
-                candidates.forEach((c, faceIdx) => {
-                  faceEntries.push({ label: `F${filletIdx + 1}.${faceIdx + 1}`, groupIndex: c.groupIndex, color: '#006eb4' });
+                candidates.forEach((c) => {
+                  faceEntries.push({ label: `F${filletIdx + 1}`, groupIndex: c.groupIndex, color: '#006eb4' });
                 });
               });
 
