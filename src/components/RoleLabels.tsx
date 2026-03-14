@@ -162,16 +162,15 @@ export const RoleLabels: React.FC<RoleLabelsProps> = React.memo(({ shape, isActi
       };
 
       if (isSplit) {
-        const avgCenter = candidates.reduce((acc, c) => acc.add(c.group.center.clone()), new THREE.Vector3()).divideScalar(candidates.length);
-        const normal = candidates[0].group.normal;
-        const offset = computeOffset(normal);
-        const offsetPosition = avgCenter.clone().add(normal.clone().multiplyScalar(offset));
-        const labels = candidates.map((candidate, subIdx) => ({
-          text: `${roleNumber}-${subIdx + 1}`,
-          index: candidate.originalIndex,
-          hasRole: !!faceRoles[candidate.originalIndex],
-        }));
-        result.push({ position: offsetPosition, labels, groupKey: `${axisDir}-${roleIdx}` });
+        candidates.forEach((candidate, subIdx) => {
+          const offset = computeOffset(candidate.group.normal);
+          const offsetPosition = candidate.group.center.clone().add(candidate.group.normal.clone().multiplyScalar(offset));
+          result.push({
+            position: offsetPosition,
+            labels: [{ text: `${roleNumber}-${subIdx + 1}`, index: candidate.originalIndex, hasRole: !!faceRoles[candidate.originalIndex] }],
+            groupKey: `${axisDir}-${roleIdx}-${subIdx}`,
+          });
+        });
       } else {
         const candidate = candidates[0];
         const offset = computeOffset(candidate.group.normal);
