@@ -79,7 +79,6 @@ export interface Shape {
   faceRoles?:Record<number,FaceRole>;
   faceDescriptions?:Record<number,string>;
   facePanels?:Record<number,boolean>;
-  subtractionFaceIndices?:number[];
 }
 
 export enum CameraType{PERSPECTIVE='perspective',ORTHOGRAPHIC='orthographic'}
@@ -464,18 +463,6 @@ export const useAppStore=create<AppState>((set,get)=>({
           }
 
           const sub=b.geometry.clone();
-
-          const{extractFacesFromGeometry:efg,groupCoplanarFaces:gcf,detectSubtractionFaceGroups:dsfg,migrateFaceRoles:mfr}=await import('./components/GeometryUtils');
-          const plainGeoA=convertReplicadToThreeGeometry(RA);
-          const origFacesForMigration=efg(a.geometry);
-          const origGroupsForMigration=gcf(origFacesForMigration);
-          const newFaces=efg(geo);
-          const newGroups=gcf(newFaces);
-          const origFacesForSubDetect=efg(plainGeoA);
-          const origGroupsForSubDetect=gcf(origFacesForSubDetect);
-          const subFaceIndices=dsfg(origGroupsForSubDetect,newGroups);
-          const migratedFaceRoles=mfr(origGroupsForMigration,newGroups,a.faceRoles||{});
-
           set((S)=>({
             shapes:S.shapes
               .map(x=>x.id===a.id?{
@@ -483,8 +470,6 @@ export const useAppStore=create<AppState>((set,get)=>({
                 geometry:geo,
                 replicadShape:result,
                 fillets,
-                faceRoles:migratedFaceRoles,
-                subtractionFaceIndices:subFaceIndices,
                 subtractionGeometries:[
                   ...(x.subtractionGeometries||[]),
                   {
@@ -547,30 +532,12 @@ export const useAppStore=create<AppState>((set,get)=>({
         verts=await getReplicadVertices(base);
       }
 
-      const{extractFacesFromGeometry:efgD,groupCoplanarFaces:gcfD,detectSubtractionFaceGroups:dsfgD,migrateFaceRoles:mfrD}=await import('./components/GeometryUtils');
-      const newFacesD=efgD(geo);
-      const newGroupsD=gcfD(newFacesD);
-      const origFacesForMigD=efgD(sh.geometry);
-      const origGroupsForMigD=gcfD(origFacesForMigD);
-      const migratedRolesD=mfrD(origGroupsForMigD,newGroupsD,sh.faceRoles||{});
-      const hasRemainingSubtractions=arr.filter(Boolean).length>0;
-      let remainingSubFaceIndices:number[]=[];
-      if(hasRemainingSubtractions){
-        const plainBoxD=await createReplicadBox({width:W,height:H,depth:D});
-        const plainGeoD=convertReplicadToThreeGeometry(plainBoxD);
-        const origFacesD2=efgD(plainGeoD);
-        const origGroupsD2=gcfD(origFacesD2);
-        remainingSubFaceIndices=dsfgD(origGroupsD2,newGroupsD);
-      }
-
       set((S)=>({
         shapes:S.shapes.map(x=>x.id===shapeId?{
           ...x,
           geometry:geo,
           replicadShape:base,
           subtractionGeometries:arr,
-          faceRoles:migratedRolesD,
-          subtractionFaceIndices:remainingSubFaceIndices,
           fillets,
           position:pos,
           parameters:{...x.parameters,scaledBaseVertices:verts.map(v=>[v.x,v.y,v.z])}

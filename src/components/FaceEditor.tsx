@@ -17,8 +17,6 @@ export {
   getFaceWorldNormal,
   createFaceDescriptor,
   findFaceByDescriptor,
-  detectSubtractionFaceGroups,
-  migrateFaceRoles,
 } from './GeometryUtils';
 
 import {
