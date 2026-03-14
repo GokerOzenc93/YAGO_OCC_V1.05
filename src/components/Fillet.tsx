@@ -72,6 +72,13 @@ export async function applyFilletToShape(
   console.log('🆔 Face 1 Descriptor:', face1Descriptor);
   console.log('🆔 Face 2 Descriptor:', face2Descriptor);
 
+  console.log('🔍 face1PlaneD:', face1PlaneD, '| face2PlaneD:', face2PlaneD);
+  console.log('🔍 face1Normal:', face1Normal.toArray().map((n:number) => n.toFixed(3)));
+  console.log('🔍 face2Normal:', face2Normal.toArray().map((n:number) => n.toFixed(3)));
+
+  const geomBox = new THREE.Box3().setFromBufferAttribute(shape.geometry.getAttribute('position') as THREE.BufferAttribute);
+  console.log('🔍 Geometry bbox min:', geomBox.min.toArray().map((n:number) => n.toFixed(3)), 'max:', geomBox.max.toArray().map((n:number) => n.toFixed(3)));
+
   let replicadShape = shape.replicadShape;
   let edgeCount = 0;
   let foundEdgeCount = 0;
@@ -104,6 +111,10 @@ export async function applyFilletToShape(
 
       const allPointsOnFace1 = startDistFace1 < tolerance && endDistFace1 < tolerance && centerDistFace1 < tolerance;
       const allPointsOnFace2 = startDistFace2 < tolerance && endDistFace2 < tolerance && centerDistFace2 < tolerance;
+
+      if (edgeCount <= 20) {
+        console.log(`Edge #${edgeCount}: start(${startVec.x.toFixed(2)},${startVec.y.toFixed(2)},${startVec.z.toFixed(2)}) end(${endVec.x.toFixed(2)},${endVec.y.toFixed(2)},${endVec.z.toFixed(2)}) | d1:[${startDistFace1.toFixed(2)},${endDistFace1.toFixed(2)},${centerDistFace1.toFixed(2)}] d2:[${startDistFace2.toFixed(2)},${endDistFace2.toFixed(2)},${centerDistFace2.toFixed(2)}] tol:${tolerance.toFixed(2)}`);
+      }
 
       if (allPointsOnFace1 && allPointsOnFace2) {
         foundEdgeCount++;
