@@ -75,7 +75,7 @@ function calculateSurfaceType(
   faces: FaceData[],
   adjacencyMap: Map<number, Set<number>>
 ): 'flat' | 'curved' {
-  if (isAxisAligned(face.normal, 0.95)) return 'flat';
+  if (isAxisAligned(face.normal, 0.999)) return 'flat';
 
   const neighbors = adjacencyMap.get(face.faceIndex);
   if (!neighbors || neighbors.size === 0) return 'curved';
@@ -85,15 +85,15 @@ function calculateSurfaceType(
 
   for (const neighborIdx of neighbors) {
     const neighbor = faces[neighborIdx];
-    if (isAxisAligned(neighbor.normal, 0.95)) hasAxisAlignedNeighbor = true;
+    if (isAxisAligned(neighbor.normal, 0.999)) hasAxisAlignedNeighbor = true;
 
     const dot = face.normal.dot(neighbor.normal);
     const angle = Math.acos(Math.min(1, Math.max(-1, dot))) * (180 / Math.PI);
     if (angle > 2 && angle < 50) hasCurvedNeighbor = true;
   }
 
-  if (hasCurvedNeighbor && !isAxisAligned(face.normal, 0.9)) return 'curved';
-  if (hasAxisAlignedNeighbor && isAxisAligned(face.normal, 0.9)) return 'flat';
+  if (hasCurvedNeighbor && !isAxisAligned(face.normal, 0.999)) return 'curved';
+  if (hasAxisAlignedNeighbor && isAxisAligned(face.normal, 0.999)) return 'flat';
   return 'curved';
 }
 
