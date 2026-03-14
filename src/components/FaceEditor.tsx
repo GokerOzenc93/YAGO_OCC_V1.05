@@ -18,6 +18,7 @@ export {
   createFaceDescriptor,
   findFaceByDescriptor,
   detectSubtractionFaceGroups,
+  migrateFaceRoles,
 } from './GeometryUtils';
 
 import {

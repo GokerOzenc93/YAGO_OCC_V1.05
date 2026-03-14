@@ -381,7 +381,7 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
       scale: selectedShape.scale
     };
 
-    const { extractFacesFromGeometry: efgSU, groupCoplanarFaces: gcfSU, detectSubtractionFaceGroups: dsfgSU } = await import('./GeometryUtils');
+    const { extractFacesFromGeometry: efgSU, groupCoplanarFaces: gcfSU, detectSubtractionFaceGroups: dsfgSU, migrateFaceRoles: mfrSU } = await import('./GeometryUtils');
 
     const hasActiveSubtractions = (selectedShape.subtractionGeometries || []).filter((s: any) => s !== null).length > 0;
     let plainBoxGeo: THREE.BufferGeometry | null = null;
@@ -390,6 +390,9 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
       plainBoxGeo = convertReplicadToThreeGeometry(plainBox);
     }
 
+    const origFacesForRoleMig = efgSU(selectedShape.geometry);
+    const origGroupsForRoleMig = gcfSU(origFacesForRoleMig);
+
     const computeSubFaceIndices = (newGeo: THREE.BufferGeometry): number[] => {
       if (!hasActiveSubtractions || !plainBoxGeo) return [];
       const origFaces = efgSU(plainBoxGeo);
@@ -397,6 +400,12 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
       const newFaces = efgSU(newGeo);
       const newGroups = gcfSU(newFaces);
       return dsfgSU(origGroups, newGroups);
+    };
+
+    const computeMigratedRoles = (newGeo: THREE.BufferGeometry): Record<number, any> => {
+      const newFaces = efgSU(newGeo);
+      const newGroups = gcfSU(newFaces);
+      return mfrSU(origGroupsForRoleMig, newGroups, selectedShape.faceRoles || {});
     };
 
     if (hasSubtractionChanges) {
@@ -426,12 +435,14 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
       const shapeSize = { width, height, depth };
       const final = await finalizeWithFillets(resultShape, selectedShape.fillets || [], shapeSize, convertReplicadToThreeGeometry, getReplicadVertices);
       const subFaceIndices = computeSubFaceIndices(final.geometry);
+      const migratedRoles = computeMigratedRoles(final.geometry);
 
       updateShape(selectedShape.id, {
         geometry: final.geometry,
         replicadShape: final.shape,
         subtractionGeometries: allSubtractions,
         subtractionFaceIndices: subFaceIndices,
+        faceRoles: migratedRoles,
         fillets: final.fillets,
         position: preservedPosition,
         rotation: baseUpdate.rotation,
@@ -458,11 +469,13 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
       const shapeSize = { width, height, depth };
       const final = await finalizeWithFillets(newReplicadShape, updatedFillets, shapeSize, convertReplicadToThreeGeometry, getReplicadVertices);
       const subFaceIndices = computeSubFaceIndices(final.geometry);
+      const migratedRoles2 = computeMigratedRoles(final.geometry);
 
       updateShape(selectedShape.id, {
         geometry: final.geometry,
         replicadShape: final.shape,
         subtractionFaceIndices: subFaceIndices,
+        faceRoles: migratedRoles2,
         fillets: final.fillets,
         position: preservedPosition,
         rotation: baseUpdate.rotation,
@@ -489,11 +502,13 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
         const shapeSize = { width, height, depth };
         const final = await finalizeWithFillets(newReplicadShape, updatedFillets, shapeSize, convertReplicadToThreeGeometry, getReplicadVertices);
         const subFaceIndices = computeSubFaceIndices(final.geometry);
+        const migratedRoles3 = computeMigratedRoles(final.geometry);
 
         updateShape(selectedShape.id, {
           geometry: final.geometry,
           replicadShape: final.shape,
           subtractionFaceIndices: subFaceIndices,
+          faceRoles: migratedRoles3,
           fillets: final.fillets,
           position: preservedPosition,
           rotation: baseUpdate.rotation,

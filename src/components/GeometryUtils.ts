@@ -330,38 +330,46 @@ export function createFaceDescriptor(
   };
 }
 
+function getGroupsBbox(groups: CoplanarFaceGroup[]): THREE.Box3 {
+  const bb = new THREE.Box3();
+  for (const g of groups) bb.expandByPoint(g.center);
+  return bb;
+}
+
+function normalizedD(group: CoplanarFaceGroup, bbox: THREE.Box3): number {
+  const center = new THREE.Vector3();
+  bbox.getCenter(center);
+  const bsize = new THREE.Vector3();
+  bbox.getSize(bsize);
+  const maxDim = Math.max(bsize.x, bsize.y, bsize.z, 1);
+  const relCenter = group.center.clone().sub(center).divideScalar(maxDim);
+  return group.normal.dot(relCenter);
+}
+
 export function detectSubtractionFaceGroups(
   originalGroups: CoplanarFaceGroup[],
   newGroups: CoplanarFaceGroup[],
   normalTolerance: number = 0.95
 ): number[] {
-  const allCenters = [...originalGroups, ...newGroups].map(g => g.center);
-  const bmin = new THREE.Vector3(Infinity, Infinity, Infinity);
-  const bmax = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
-  for (const c of allCenters) { bmin.min(c); bmax.max(c); }
-  const bsize = new THREE.Vector3().subVectors(bmax, bmin);
-  const maxDim = Math.max(bsize.x, bsize.y, bsize.z, 1);
-  const planeTolerance = maxDim * 0.01;
+  const origBbox = getGroupsBbox(originalGroups);
+  const newBbox = getGroupsBbox(newGroups);
 
   const origPlanes = originalGroups.map(g => ({
     normal: g.normal.clone(),
-    d: g.normal.dot(g.center)
+    nd: normalizedD(g, origBbox)
   }));
 
   const subtractionIndices: number[] = [];
 
   for (let newIdx = 0; newIdx < newGroups.length; newIdx++) {
     const newGroup = newGroups[newIdx];
+    const newNd = normalizedD(newGroup, newBbox);
     let matchFound = false;
 
     for (const plane of origPlanes) {
       const dotNormal = newGroup.normal.dot(plane.normal);
       if (dotNormal < normalTolerance) continue;
-
-      const newGroupD = newGroup.normal.dot(newGroup.center);
-      const planeDiff = Math.abs(newGroupD - plane.d);
-
-      if (planeDiff < planeTolerance) {
+      if (Math.abs(newNd - plane.nd) < 0.15) {
         matchFound = true;
         break;
       }
@@ -373,6 +381,47 @@ export function detectSubtractionFaceGroups(
   }
 
   return subtractionIndices;
+}
+
+export function migrateFaceRoles(
+  originalGroups: CoplanarFaceGroup[],
+  newGroups: CoplanarFaceGroup[],
+  oldFaceRoles: Record<number, any>,
+  normalTolerance: number = 0.95
+): Record<number, any> {
+  const origBbox = getGroupsBbox(originalGroups);
+  const newBbox = getGroupsBbox(newGroups);
+
+  const origPlanes = originalGroups.map((g, i) => ({
+    normal: g.normal.clone(),
+    nd: normalizedD(g, origBbox),
+    oldIndex: i
+  }));
+
+  const newFaceRoles: Record<number, any> = {};
+
+  for (let newIdx = 0; newIdx < newGroups.length; newIdx++) {
+    const newGroup = newGroups[newIdx];
+    const newNd = normalizedD(newGroup, newBbox);
+    let bestMatch: number | null = null;
+    let bestDiff = Infinity;
+
+    for (const plane of origPlanes) {
+      const dotNormal = newGroup.normal.dot(plane.normal);
+      if (dotNormal < normalTolerance) continue;
+      const diff = Math.abs(newNd - plane.nd);
+      if (diff < 0.15 && diff < bestDiff) {
+        bestDiff = diff;
+        bestMatch = plane.oldIndex;
+      }
+    }
+
+    if (bestMatch !== null && oldFaceRoles[bestMatch] != null) {
+      newFaceRoles[newIdx] = oldFaceRoles[bestMatch];
+    }
+  }
+
+  return newFaceRoles;
 }
 
 export function findFaceByDescriptor(
