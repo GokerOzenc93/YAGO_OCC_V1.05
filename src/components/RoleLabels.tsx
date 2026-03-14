@@ -23,15 +23,21 @@ function getAxisDirection(normal: THREE.Vector3): string | null {
   return null;
 }
 
+interface CuttingPlane {
+  normal: THREE.Vector3;
+  constant: number;
+  subtractorIndex: number;
+}
+
 function buildSubtractorCuttingPlanes(
   subtractionGeometries: Array<{ geometry: THREE.BufferGeometry; relativeOffset: [number, number, number]; relativeRotation: [number, number, number]; scale: [number, number, number] }>,
   mainBbox: THREE.Box3
-): Array<{ normal: THREE.Vector3; constant: number }> {
-  const planes: Array<{ normal: THREE.Vector3; constant: number }> = [];
+): CuttingPlane[] {
+  const planes: CuttingPlane[] = [];
 
-  for (const sub of subtractionGeometries) {
+  subtractionGeometries.forEach((sub, subtractorIndex) => {
     const subGeo = sub.geometry;
-    if (!subGeo) continue;
+    if (!subGeo) return;
 
     const subBbox = new THREE.Box3().setFromBufferAttribute(subGeo.getAttribute('position'));
     const subMin = subBbox.min.clone();
@@ -82,26 +88,27 @@ function buildSubtractorCuttingPlanes(
       const insetMin = minVal + 1.0;
       const insetMax = maxVal - 1.0;
       if (pos > insetMin && pos < insetMax) {
-        planes.push({ normal: faceNormals[i], constant: faceConstants[i] });
+        planes.push({ normal: faceNormals[i], constant: faceConstants[i], subtractorIndex });
       }
     }
-  }
+  });
+
   return planes;
 }
 
-function isFaceOnSubtractorCuttingPlane(
+function getSubtractorPlaneForFace(
   groupCenter: THREE.Vector3,
   groupNormal: THREE.Vector3,
-  cuttingPlanes: Array<{ normal: THREE.Vector3; constant: number }>,
+  cuttingPlanes: CuttingPlane[],
   tolerance: number = 1.0
-): boolean {
+): number | null {
   for (const plane of cuttingPlanes) {
     const normalDot = Math.abs(groupNormal.dot(plane.normal));
     if (normalDot < 0.95) continue;
     const dist = groupCenter.dot(plane.normal) + plane.constant;
-    if (Math.abs(dist) < tolerance) return true;
+    if (Math.abs(dist) < tolerance) return plane.subtractorIndex;
   }
-  return false;
+  return null;
 }
 
 export const RoleLabels: React.FC<RoleLabelsProps> = React.memo(({ shape, isActive }) => {
@@ -122,10 +129,21 @@ export const RoleLabels: React.FC<RoleLabelsProps> = React.memo(({ shape, isActi
     const cuttingPlanes = buildSubtractorCuttingPlanes(subtractionGeometries, bbox);
 
     const axisCandidates = new Map<string, Array<{ group: typeof faceGroups[0]; originalIndex: number }>>();
+    const subtractorFaces = new Map<number, Array<{ group: typeof faceGroups[0]; originalIndex: number }>>();
+
     faceGroups.forEach((group, index) => {
       const axisDir = getAxisDirection(group.normal);
       if (axisDir === null) return;
-      if (cuttingPlanes.length > 0 && isFaceOnSubtractorCuttingPlane(group.center, group.normal, cuttingPlanes)) return;
+
+      if (cuttingPlanes.length > 0) {
+        const subtractorIdx = getSubtractorPlaneForFace(group.center, group.normal, cuttingPlanes);
+        if (subtractorIdx !== null) {
+          if (!subtractorFaces.has(subtractorIdx)) subtractorFaces.set(subtractorIdx, []);
+          subtractorFaces.get(subtractorIdx)!.push({ group, originalIndex: index });
+          return;
+        }
+      }
+
       if (!axisCandidates.has(axisDir)) axisCandidates.set(axisDir, []);
       axisCandidates.get(axisDir)!.push({ group, originalIndex: index });
     });
@@ -145,21 +163,22 @@ export const RoleLabels: React.FC<RoleLabelsProps> = React.memo(({ shape, isActi
       position: THREE.Vector3;
       labels: Array<{ text: string; index: number; hasRole: boolean }>;
       groupKey: string;
+      isSubtractor?: boolean;
     }> = [];
+
+    const computeOffset = (normal: THREE.Vector3): number => {
+      const absX = Math.abs(normal.x);
+      const absY = Math.abs(normal.y);
+      const absZ = Math.abs(normal.z);
+      if (absX > 0.9) return Math.max(size.x * 0.06, 3);
+      if (absY > 0.9) return Math.max(size.y * 0.06, 3);
+      if (absZ > 0.9) return Math.max(size.z * 0.06, 3);
+      return 3;
+    };
 
     axisSorted.forEach(({ axisDir, candidates }, roleIdx) => {
       const roleNumber = roleIdx + 1;
       const isSplit = candidates.length > 1;
-
-      const computeOffset = (normal: THREE.Vector3): number => {
-        const absX = Math.abs(normal.x);
-        const absY = Math.abs(normal.y);
-        const absZ = Math.abs(normal.z);
-        if (absX > 0.9) return Math.max(size.x * 0.06, 3);
-        if (absY > 0.9) return Math.max(size.y * 0.06, 3);
-        if (absZ > 0.9) return Math.max(size.z * 0.06, 3);
-        return 3;
-      };
 
       if (isSplit) {
         candidates.forEach((candidate, subIdx) => {
@@ -183,8 +202,22 @@ export const RoleLabels: React.FC<RoleLabelsProps> = React.memo(({ shape, isActi
       }
     });
 
+    subtractorFaces.forEach((faces, subtractorIdx) => {
+      const sNumber = subtractorIdx + 1;
+      faces.forEach((candidate, faceIdx) => {
+        const offset = computeOffset(candidate.group.normal);
+        const offsetPosition = candidate.group.center.clone().add(candidate.group.normal.clone().multiplyScalar(offset));
+        result.push({
+          position: offsetPosition,
+          labels: [{ text: `S${sNumber}.${faceIdx + 1}`, index: candidate.originalIndex, hasRole: !!faceRoles[candidate.originalIndex] }],
+          groupKey: `sub-${subtractorIdx}-${faceIdx}`,
+          isSubtractor: true,
+        });
+      });
+    });
+
     return result;
-  }, [shape.geometry?.uuid, JSON.stringify(shape.faceRoles), isActive]);
+  }, [shape.geometry?.uuid, JSON.stringify(shape.faceRoles), isActive, JSON.stringify(shape.subtractionGeometries?.map((s: any) => s.relativeOffset))]);
 
   if (!isActive || faceLabels.length === 0) return null;
 
@@ -207,7 +240,7 @@ export const RoleLabels: React.FC<RoleLabelsProps> = React.memo(({ shape, isActi
               <span
                 key={`lbl-${lbl.index}`}
                 style={{
-                  color: 'rgb(10, 10, 10)',
+                  color: item.isSubtractor ? 'rgb(180, 80, 0)' : 'rgb(10, 10, 10)',
                   fontSize: '13px',
                   fontWeight: '800',
                   fontFamily: 'system-ui, sans-serif',
