@@ -3,11 +3,11 @@ import { createClient } from '@supabase/supabase-js';
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-if (!supabaseUrl || !supabaseAnonKey) {
-  throw new Error('Missing Supabase environment variables');
-}
+const hasSupabaseConfig = supabaseUrl && supabaseAnonKey;
 
-const supabase = createClient(supabaseUrl, supabaseAnonKey);
+const supabase = hasSupabaseConfig
+  ? createClient(supabaseUrl, supabaseAnonKey)
+  : null;
 
 export interface GlobalSettingsProfile {
   id: string;
@@ -28,6 +28,7 @@ export interface ProfileSettings {
 
 class GlobalSettingsService {
   async listProfiles(): Promise<GlobalSettingsProfile[]> {
+    if (!supabase) return [];
     const { data, error } = await supabase
       .from('global_settings_profiles')
       .select('*')
@@ -42,6 +43,7 @@ class GlobalSettingsService {
   }
 
   async getDefaultProfile(): Promise<GlobalSettingsProfile | null> {
+    if (!supabase) return null;
     const { data, error } = await supabase
       .from('global_settings_profiles')
       .select('*')
@@ -58,6 +60,7 @@ class GlobalSettingsService {
   }
 
   async getProfile(id: string): Promise<GlobalSettingsProfile | null> {
+    if (!supabase) return null;
     const { data, error } = await supabase
       .from('global_settings_profiles')
       .select('*')
@@ -73,6 +76,7 @@ class GlobalSettingsService {
   }
 
   async createProfile(name: string, order?: number): Promise<GlobalSettingsProfile> {
+    if (!supabase) throw new Error('Database not configured');
     const { data, error } = await supabase
       .from('global_settings_profiles')
       .insert([{ name, order: order || 0 }])
@@ -88,6 +92,7 @@ class GlobalSettingsService {
   }
 
   async updateProfile(id: string, updates: Partial<GlobalSettingsProfile>): Promise<GlobalSettingsProfile> {
+    if (!supabase) throw new Error('Database not configured');
     const { data, error } = await supabase
       .from('global_settings_profiles')
       .update({ ...updates, updated_at: new Date().toISOString() })
@@ -104,6 +109,7 @@ class GlobalSettingsService {
   }
 
   async deleteProfile(id: string): Promise<void> {
+    if (!supabase) return;
     const { error } = await supabase
       .from('global_settings_profiles')
       .delete()
@@ -116,6 +122,7 @@ class GlobalSettingsService {
   }
 
   async getProfileSettings(profileId: string, settingType: string): Promise<ProfileSettings | null> {
+    if (!supabase) return null;
     const { data, error } = await supabase
       .from('profile_settings')
       .select('*')
@@ -132,6 +139,7 @@ class GlobalSettingsService {
   }
 
   async getAllProfileSettings(profileId: string): Promise<ProfileSettings[]> {
+    if (!supabase) return [];
     const { data, error } = await supabase
       .from('profile_settings')
       .select('*')
@@ -150,6 +158,7 @@ class GlobalSettingsService {
     settingType: string,
     settings: Record<string, unknown>
   ): Promise<ProfileSettings> {
+    if (!supabase) throw new Error('Database not configured');
     const existing = await this.getProfileSettings(profileId, settingType);
 
     if (existing) {
@@ -183,6 +192,7 @@ class GlobalSettingsService {
   }
 
   async deleteProfileSettings(profileId: string, settingType: string): Promise<void> {
+    if (!supabase) return;
     const { error } = await supabase
       .from('profile_settings')
       .delete()
