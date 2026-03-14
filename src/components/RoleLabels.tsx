@@ -39,12 +39,19 @@ export const RoleLabels: React.FC<RoleLabelsProps> = React.memo(({ shape, isActi
     const maxDim = Math.max(size.x, size.y, size.z);
     const offsetAmount = Math.max(maxDim * 0.02, 2);
 
-    const axisGroups: Array<{ group: typeof faceGroups[0]; originalIndex: number; axisDir: string }> = [];
+    const axisCandidates = new Map<string, Array<{ group: typeof faceGroups[0]; originalIndex: number }>>();
     faceGroups.forEach((group, index) => {
       const axisDir = getAxisDirection(group.normal);
       if (axisDir !== null) {
-        axisGroups.push({ group, originalIndex: index, axisDir });
+        if (!axisCandidates.has(axisDir)) axisCandidates.set(axisDir, []);
+        axisCandidates.get(axisDir)!.push({ group, originalIndex: index });
       }
+    });
+
+    const axisGroups: Array<{ group: typeof faceGroups[0]; originalIndex: number; axisDir: string }> = [];
+    axisCandidates.forEach((candidates, axisDir) => {
+      const best = candidates.reduce((a, b) => a.group.totalArea > b.group.totalArea ? a : b);
+      axisGroups.push({ ...best, axisDir });
     });
 
     axisGroups.sort((a, b) => {
