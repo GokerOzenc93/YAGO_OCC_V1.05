@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import { Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { extractFacesFromGeometry, groupCoplanarFaces } from './FaceEditor';
+import type { FilletData } from './Fillet';
 
 interface RoleLabelsProps {
   shape: any;
@@ -111,6 +112,28 @@ function getSubtractorPlaneForFace(
   return null;
 }
 
+function getFilletIndexForCurvedGroup(
+  groupCenter: THREE.Vector3,
+  fillets: FilletData[]
+): number | null {
+  for (let i = 0; i < fillets.length; i++) {
+    const fillet = fillets[i];
+    const radius = fillet.radius;
+    const tolerance = Math.max(radius * 2.0, 10);
+
+    const n1 = new THREE.Vector3(...fillet.face1Data.normal);
+    const n2 = new THREE.Vector3(...fillet.face2Data.normal);
+    const d1 = fillet.face1Data.planeD ?? n1.dot(new THREE.Vector3(...fillet.face1Data.center));
+    const d2 = fillet.face2Data.planeD ?? n2.dot(new THREE.Vector3(...fillet.face2Data.center));
+
+    const dist1 = Math.abs(n1.dot(groupCenter) - d1);
+    const dist2 = Math.abs(n2.dot(groupCenter) - d2);
+
+    if (dist1 < tolerance && dist2 < tolerance) return i;
+  }
+  return null;
+}
+
 export const RoleLabels: React.FC<RoleLabelsProps> = React.memo(({ shape, isActive }) => {
   const faceLabels = useMemo(() => {
     if (!isActive || !shape.geometry) return [];
@@ -130,10 +153,23 @@ export const RoleLabels: React.FC<RoleLabelsProps> = React.memo(({ shape, isActi
 
     const axisCandidates = new Map<string, Array<{ group: typeof faceGroups[0]; originalIndex: number }>>();
     const subtractorFaces = new Map<number, Array<{ group: typeof faceGroups[0]; originalIndex: number }>>();
+    const filletFaces = new Map<number, Array<{ group: typeof faceGroups[0]; originalIndex: number }>>();
+
+    const fillets: FilletData[] = shape.fillets || [];
 
     faceGroups.forEach((group, index) => {
       const axisDir = getAxisDirection(group.normal);
-      if (axisDir === null) return;
+
+      if (axisDir === null) {
+        if (fillets.length > 0) {
+          const filletIdx = getFilletIndexForCurvedGroup(group.center, fillets);
+          if (filletIdx !== null) {
+            if (!filletFaces.has(filletIdx)) filletFaces.set(filletIdx, []);
+            filletFaces.get(filletIdx)!.push({ group, originalIndex: index });
+          }
+        }
+        return;
+      }
 
       if (cuttingPlanes.length > 0) {
         const subtractorIdx = getSubtractorPlaneForFace(group.center, group.normal, cuttingPlanes);
@@ -164,6 +200,7 @@ export const RoleLabels: React.FC<RoleLabelsProps> = React.memo(({ shape, isActi
       labels: Array<{ text: string; index: number; hasRole: boolean }>;
       groupKey: string;
       isSubtractor?: boolean;
+      isFillet?: boolean;
     }> = [];
 
     const computeOffset = (normal: THREE.Vector3): number => {
@@ -216,8 +253,23 @@ export const RoleLabels: React.FC<RoleLabelsProps> = React.memo(({ shape, isActi
       });
     });
 
+    filletFaces.forEach((faces, filletIdx) => {
+      const fNumber = filletIdx + 1;
+      faces.forEach((candidate, faceIdx) => {
+        const normal = candidate.group.normal;
+        const offset = Math.max(fillets[filletIdx].radius * 0.3, 3);
+        const offsetPosition = candidate.group.center.clone().add(normal.clone().multiplyScalar(offset));
+        result.push({
+          position: offsetPosition,
+          labels: [{ text: `F${fNumber}.${faceIdx + 1}`, index: candidate.originalIndex, hasRole: !!faceRoles[candidate.originalIndex] }],
+          groupKey: `fillet-${filletIdx}-${faceIdx}`,
+          isFillet: true,
+        });
+      });
+    });
+
     return result;
-  }, [shape.geometry?.uuid, JSON.stringify(shape.faceRoles), isActive, JSON.stringify(shape.subtractionGeometries?.map((s: any) => s.relativeOffset))]);
+  }, [shape.geometry?.uuid, JSON.stringify(shape.faceRoles), isActive, JSON.stringify(shape.subtractionGeometries?.map((s: any) => s.relativeOffset)), JSON.stringify(shape.fillets?.map((f: FilletData) => ({ r: f.radius, f1: f.face1Data.planeD, f2: f.face2Data.planeD })))]);
 
   if (!isActive || faceLabels.length === 0) return null;
 
@@ -240,7 +292,7 @@ export const RoleLabels: React.FC<RoleLabelsProps> = React.memo(({ shape, isActi
               <span
                 key={`lbl-${lbl.index}`}
                 style={{
-                  color: item.isSubtractor ? 'rgb(180, 80, 0)' : 'rgb(10, 10, 10)',
+                  color: item.isSubtractor ? 'rgb(180, 80, 0)' : item.isFillet ? 'rgb(0, 110, 180)' : 'rgb(10, 10, 10)',
                   fontSize: '13px',
                   fontWeight: '800',
                   fontFamily: 'system-ui, sans-serif',

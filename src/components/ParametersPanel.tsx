@@ -6,6 +6,7 @@ import * as THREE from 'three';
 import { evaluateExpression } from './Expression';
 import { applyShapeChanges, applySubtractionChanges } from './ShapeUpdaterService';
 import { extractFacesFromGeometry, groupCoplanarFaces } from './FaceEditor';
+import type { FilletData } from './Fillet';
 
 interface CustomParameter {
   id: string;
@@ -986,24 +987,161 @@ export function ParametersPanel({ isOpen, onClose }: ParametersPanelProps) {
               const faceRoles = selectedShape.faceRoles || {};
               const faceDescriptions = selectedShape.faceDescriptions || {};
               const roleOptions: FaceRole[] = ['Left', 'Right', 'Top', 'Bottom', 'Back', 'Door'];
+              const fillets: FilletData[] = selectedShape.fillets || [];
+
+              const AXIS_DIRECTION_ORDER: Record<string, number> = {
+                'x+': 0, 'x-': 1, 'y+': 2, 'y-': 3, 'z+': 4, 'z-': 5,
+              };
+              const getAxisDir = (n: THREE.Vector3): string | null => {
+                const tol = 0.95;
+                if (n.x > tol) return 'x+';
+                if (n.x < -tol) return 'x-';
+                if (n.y > tol) return 'y+';
+                if (n.y < -tol) return 'y-';
+                if (n.z > tol) return 'z+';
+                if (n.z < -tol) return 'z-';
+                return null;
+              };
+
+              const bbox = new THREE.Box3().setFromBufferAttribute(geometry.getAttribute('position'));
+              const subtractionGeometries: Array<any> = selectedShape.subtractionGeometries || [];
+
+              const cuttingPlanes: Array<{ normal: THREE.Vector3; constant: number; subtractorIndex: number }> = [];
+              subtractionGeometries.forEach((sub: any, subtractorIndex: number) => {
+                const subGeo = sub.geometry;
+                if (!subGeo) return;
+                const subBbox = new THREE.Box3().setFromBufferAttribute(subGeo.getAttribute('position'));
+                const offset = new THREE.Vector3(...sub.relativeOffset);
+                const rot = sub.relativeRotation;
+                const rotMatrix = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rot[0], rot[1], rot[2], 'XYZ'));
+                const corners = [
+                  new THREE.Vector3(subBbox.min.x, subBbox.min.y, subBbox.min.z),
+                  new THREE.Vector3(subBbox.max.x, subBbox.min.y, subBbox.min.z),
+                  new THREE.Vector3(subBbox.min.x, subBbox.max.y, subBbox.min.z),
+                  new THREE.Vector3(subBbox.max.x, subBbox.max.y, subBbox.min.z),
+                  new THREE.Vector3(subBbox.min.x, subBbox.min.y, subBbox.max.z),
+                  new THREE.Vector3(subBbox.max.x, subBbox.min.y, subBbox.max.z),
+                  new THREE.Vector3(subBbox.min.x, subBbox.max.y, subBbox.max.z),
+                  new THREE.Vector3(subBbox.max.x, subBbox.max.y, subBbox.max.z),
+                ].map(c => c.applyMatrix4(rotMatrix).add(offset));
+                const worldBbox = new THREE.Box3().setFromPoints(corners);
+                const faceNormals = [
+                  new THREE.Vector3(1,0,0), new THREE.Vector3(-1,0,0),
+                  new THREE.Vector3(0,1,0), new THREE.Vector3(0,-1,0),
+                  new THREE.Vector3(0,0,1), new THREE.Vector3(0,0,-1),
+                ];
+                const faceConstants = [
+                  -worldBbox.max.x, worldBbox.min.x,
+                  -worldBbox.max.y, worldBbox.min.y,
+                  -worldBbox.max.z, worldBbox.min.z,
+                ];
+                const facePlanePositions = [
+                  worldBbox.max.x, worldBbox.min.x,
+                  worldBbox.max.y, worldBbox.min.y,
+                  worldBbox.max.z, worldBbox.min.z,
+                ];
+                for (let i = 0; i < 6; i++) {
+                  const pos = facePlanePositions[i];
+                  const axisIdx = Math.floor(i / 2);
+                  const minVal = axisIdx === 0 ? bbox.min.x : axisIdx === 1 ? bbox.min.y : bbox.min.z;
+                  const maxVal = axisIdx === 0 ? bbox.max.x : axisIdx === 1 ? bbox.max.y : bbox.max.z;
+                  if (pos > minVal + 1.0 && pos < maxVal - 1.0) {
+                    cuttingPlanes.push({ normal: faceNormals[i], constant: faceConstants[i], subtractorIndex });
+                  }
+                }
+              });
+
+              const axisCandidates = new Map<string, Array<{ groupIndex: number }>>();
+              const subtractorMap = new Map<number, Array<{ groupIndex: number }>>();
+              const filletMap = new Map<number, Array<{ groupIndex: number }>>();
+
+              faceGroups.forEach((group, groupIndex) => {
+                const axisDir = getAxisDir(group.normal);
+
+                if (axisDir === null) {
+                  for (let fi = 0; fi < fillets.length; fi++) {
+                    const fillet = fillets[fi];
+                    const radius = fillet.radius;
+                    const tol = Math.max(radius * 2.0, 10);
+                    const n1 = new THREE.Vector3(...fillet.face1Data.normal);
+                    const n2 = new THREE.Vector3(...fillet.face2Data.normal);
+                    const d1 = fillet.face1Data.planeD ?? n1.dot(new THREE.Vector3(...fillet.face1Data.center));
+                    const d2 = fillet.face2Data.planeD ?? n2.dot(new THREE.Vector3(...fillet.face2Data.center));
+                    const dist1 = Math.abs(n1.dot(group.center) - d1);
+                    const dist2 = Math.abs(n2.dot(group.center) - d2);
+                    if (dist1 < tol && dist2 < tol) {
+                      if (!filletMap.has(fi)) filletMap.set(fi, []);
+                      filletMap.get(fi)!.push({ groupIndex });
+                      return;
+                    }
+                  }
+                  return;
+                }
+
+                if (cuttingPlanes.length > 0) {
+                  for (const plane of cuttingPlanes) {
+                    const normalDot = Math.abs(group.normal.dot(plane.normal));
+                    if (normalDot < 0.95) continue;
+                    const dist = group.center.dot(plane.normal) + plane.constant;
+                    if (Math.abs(dist) < 1.0) {
+                      if (!subtractorMap.has(plane.subtractorIndex)) subtractorMap.set(plane.subtractorIndex, []);
+                      subtractorMap.get(plane.subtractorIndex)!.push({ groupIndex });
+                      return;
+                    }
+                  }
+                }
+
+                if (!axisCandidates.has(axisDir)) axisCandidates.set(axisDir, []);
+                axisCandidates.get(axisDir)!.push({ groupIndex });
+              });
+
+              const axisSorted = Array.from(axisCandidates.entries()).sort(
+                ([a], [b]) => (AXIS_DIRECTION_ORDER[a] ?? 99) - (AXIS_DIRECTION_ORDER[b] ?? 99)
+              );
+
+              const faceEntries: Array<{ label: string; groupIndex: number; color: string }> = [];
+
+              axisSorted.forEach(([, candidates], roleIdx) => {
+                const roleNumber = roleIdx + 1;
+                if (candidates.length > 1) {
+                  candidates.forEach((c, subIdx) => {
+                    faceEntries.push({ label: `${roleNumber}-${subIdx + 1}`, groupIndex: c.groupIndex, color: '#1a1a1a' });
+                  });
+                } else {
+                  faceEntries.push({ label: `${roleNumber}`, groupIndex: candidates[0].groupIndex, color: '#1a1a1a' });
+                }
+              });
+
+              subtractorMap.forEach((candidates, subtractorIdx) => {
+                candidates.forEach((c, faceIdx) => {
+                  faceEntries.push({ label: `S${subtractorIdx + 1}.${faceIdx + 1}`, groupIndex: c.groupIndex, color: '#b45000' });
+                });
+              });
+
+              filletMap.forEach((candidates, filletIdx) => {
+                candidates.forEach((c, faceIdx) => {
+                  faceEntries.push({ label: `F${filletIdx + 1}.${faceIdx + 1}`, groupIndex: c.groupIndex, color: '#006eb4' });
+                });
+              });
 
               return (
                 <div className="space-y-2 pt-2 border-t border-stone-300">
-                  <div className="text-xs font-semibold text-purple-700 mb-1">Face Roles ({faceGroups.length} faces)</div>
-                  {faceGroups.map((group, i) => (
-                    <div key={`face-${i}`} className="flex gap-1 items-center">
+                  <div className="text-xs font-semibold text-stone-600 mb-1">Face Roles ({faceEntries.length} faces)</div>
+                  {faceEntries.map(({ label, groupIndex, color }) => (
+                    <div key={`face-${groupIndex}`} className="flex gap-1 items-center">
                       <input
                         type="text"
-                        value={i + 1}
+                        value={label}
                         readOnly
                         tabIndex={-1}
-                        className="w-10 px-1 py-0.5 text-xs font-mono bg-white text-gray-800 border border-gray-300 rounded text-center"
+                        style={{ color }}
+                        className="w-12 px-1 py-0.5 text-xs font-mono font-bold bg-white border border-gray-300 rounded text-center"
                       />
                       <select
-                        value={faceRoles[i] || ''}
+                        value={faceRoles[groupIndex] || ''}
                         onChange={(e) => {
                           const newRole = e.target.value === '' ? null : e.target.value as FaceRole;
-                          updateFaceRole(selectedShape.id, i, newRole);
+                          updateFaceRole(selectedShape.id, groupIndex, newRole);
                         }}
                         className="w-20 px-1 py-0.5 text-xs bg-white text-gray-800 border border-gray-300 rounded"
                       >
@@ -1014,9 +1152,9 @@ export function ParametersPanel({ isOpen, onClose }: ParametersPanelProps) {
                       </select>
                       <input
                         type="text"
-                        value={faceDescriptions[i] || ''}
+                        value={faceDescriptions[groupIndex] || ''}
                         onChange={(e) => {
-                          const newDescriptions = { ...faceDescriptions, [i]: e.target.value };
+                          const newDescriptions = { ...faceDescriptions, [groupIndex]: e.target.value };
                           updateShape(selectedShape.id, { faceDescriptions: newDescriptions });
                         }}
                         placeholder="description"
