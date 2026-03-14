@@ -19,6 +19,8 @@ export {
   findFaceByDescriptor,
   createFaceGroupSignature,
   remapFaceRolesBySignature,
+  mergeGroupsPreservingOrder,
+  snapshotGroupSignatures,
 } from './GeometryUtils';
 
 export type { FaceGroupSignature } from './GeometryUtils';

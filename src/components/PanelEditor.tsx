@@ -3,7 +3,7 @@ import { X, GripVertical, MousePointer, Layers, RotateCw, Plus, Trash2, Eye, Eye
 import { globalSettingsService, GlobalSettingsProfile } from './GlobalSettingsDatabase';
 import { useAppStore } from '../store';
 import type { FaceRole } from '../store';
-import { extractFacesFromGeometry, groupCoplanarFaces, FaceData, CoplanarFaceGroup, createFaceGroupSignature } from './FaceEditor';
+import { extractFacesFromGeometry, groupCoplanarFaces, FaceData, CoplanarFaceGroup, createFaceGroupSignature, snapshotGroupSignatures } from './FaceEditor';
 import { resolveAllPanelJoints, restoreAllPanels, rebuildAllPanels, rebuildAndRecalculatePipeline } from './PanelJointService';
 import * as THREE from 'three';
 
@@ -14,6 +14,8 @@ interface PanelEditorProps {
 
 export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
   const { selectedShapeId, shapes, updateShape, addShape, showOutlines, setShowOutlines, showRoleNumbers, setShowRoleNumbers, selectedPanelRow, setSelectedPanelRow, panelSelectMode, setPanelSelectMode, raycastMode, setRaycastMode, showVirtualFaces, setShowVirtualFaces, virtualFaces, updateVirtualFace, deleteVirtualFace, pendingPanelCreation } = useAppStore();
+  const updateShapeRef = useRef(updateShape);
+  updateShapeRef.current = updateShape;
   const [position, setPosition] = useState({ x: 100, y: 100 });
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
@@ -154,6 +156,15 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
       setPanelSelectMode(false);
     }
   }, [isOpen, setSelectedPanelRow, setPanelSelectMode]);
+
+  useEffect(() => {
+    if (!selectedShape?.geometry) return;
+    if (selectedShape.faceGroupSignatures && selectedShape.faceGroupSignatures.length > 0) return;
+    const faces = extractFacesFromGeometry(selectedShape.geometry);
+    const groups = groupCoplanarFaces(faces);
+    const sigs = snapshotGroupSignatures(groups);
+    updateShapeRef.current(selectedShape.id, { faceGroupSignatures: sigs });
+  }, [selectedShape?.id, selectedShape?.geometry?.uuid]);
 
   useEffect(() => {
     if (selectedPanelRow !== null) {

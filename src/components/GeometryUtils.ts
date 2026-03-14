@@ -411,6 +411,84 @@ export function findBestMatchingGroupIndex(
   return bestIdx;
 }
 
+/**
+ * Merges new face groups with previous groups, preserving original indices.
+ * Old groups that still exist → keep their original index.
+ * New groups that didn't exist before (e.g. opened by subtraction) → appended at the end.
+ * Returns the ordered list of new groups in stable order.
+ */
+export function mergeGroupsPreservingOrder(
+  prevSignatures: FaceGroupSignature[],
+  newGroups: CoplanarFaceGroup[]
+): CoplanarFaceGroup[] {
+  const NORMAL_THRESHOLD_DEG = 12;
+  const AREA_RATIO_THRESHOLD = 0.6;
+
+  const used = new Set<number>();
+  const result: (CoplanarFaceGroup | null)[] = new Array(prevSignatures.length).fill(null);
+
+  for (let oldIdx = 0; oldIdx < prevSignatures.length; oldIdx++) {
+    const oldSig = prevSignatures[oldIdx];
+    const oldNormal = new THREE.Vector3(...oldSig.normal);
+    const oldCenter = new THREE.Vector3(...oldSig.center);
+
+    let bestNewIdx = -1;
+    let bestScore = Infinity;
+
+    for (let newIdx = 0; newIdx < newGroups.length; newIdx++) {
+      if (used.has(newIdx)) continue;
+      const g = newGroups[newIdx];
+      const newAxisDir = getAxisDirection(g.normal);
+
+      if (oldSig.axisDirection !== null && oldSig.axisDirection !== newAxisDir) continue;
+
+      const dot = oldNormal.dot(g.normal);
+      const normalAngle = Math.acos(Math.min(1, Math.max(-1, dot))) * (180 / Math.PI);
+      if (normalAngle > NORMAL_THRESHOLD_DEG) continue;
+
+      const centerDist = oldCenter.distanceTo(g.center);
+
+      const oldArea = oldSig.area;
+      const newArea = g.totalArea;
+      const areaRatio = oldArea > 0 ? Math.min(oldArea, newArea) / Math.max(oldArea, newArea) : 0;
+      if (areaRatio < AREA_RATIO_THRESHOLD) continue;
+
+      const score = normalAngle * 3 + centerDist * 0.005;
+      if (score < bestScore) {
+        bestScore = score;
+        bestNewIdx = newIdx;
+      }
+    }
+
+    if (bestNewIdx >= 0) {
+      result[oldIdx] = newGroups[bestNewIdx];
+      used.add(bestNewIdx);
+    }
+  }
+
+  const ordered: CoplanarFaceGroup[] = [];
+  for (let i = 0; i < result.length; i++) {
+    if (result[i] !== null) {
+      ordered.push(result[i]!);
+    }
+  }
+
+  for (let newIdx = 0; newIdx < newGroups.length; newIdx++) {
+    if (!used.has(newIdx)) {
+      ordered.push(newGroups[newIdx]);
+    }
+  }
+
+  return ordered;
+}
+
+/**
+ * Extracts signatures for all groups. Used to snapshot the current state before geometry changes.
+ */
+export function snapshotGroupSignatures(groups: CoplanarFaceGroup[]): FaceGroupSignature[] {
+  return groups.map(g => createFaceGroupSignature(g));
+}
+
 export function remapFaceRolesBySignature<T>(
   oldFaceRoles: Record<number, T>,
   oldFaceSignatures: Record<number, FaceGroupSignature>,

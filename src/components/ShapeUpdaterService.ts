@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { evaluateExpression } from './Expression';
 import type { FilletInfo } from '../store';
-import { extractFacesFromGeometry, groupCoplanarFaces, remapFaceRolesBySignature, createFaceGroupSignature } from './GeometryUtils';
+import { extractFacesFromGeometry, groupCoplanarFaces, remapFaceRolesBySignature, createFaceGroupSignature, mergeGroupsPreservingOrder, snapshotGroupSignatures, type FaceGroupSignature } from './GeometryUtils';
 
 export const getOriginalSize = (geometry: THREE.BufferGeometry) => {
   const box = new THREE.Box3().setFromBufferAttribute(
@@ -209,6 +209,7 @@ function remapShapeFaceData(shape: any, newGeometry: THREE.BufferGeometry): {
   facePanelSignatures: Record<number, any> | undefined;
   faceDescriptions: Record<number, string> | undefined;
   faceDescriptionSignatures: Record<number, any> | undefined;
+  faceGroupSignatures: FaceGroupSignature[] | undefined;
 } {
   if (!newGeometry) {
     return {
@@ -218,37 +219,101 @@ function remapShapeFaceData(shape: any, newGeometry: THREE.BufferGeometry): {
       facePanelSignatures: shape.facePanelSignatures,
       faceDescriptions: shape.faceDescriptions,
       faceDescriptionSignatures: shape.faceDescriptionSignatures,
+      faceGroupSignatures: shape.faceGroupSignatures,
     };
   }
 
   const faces = extractFacesFromGeometry(newGeometry);
-  const newGroups = groupCoplanarFaces(faces);
+  const rawGroups = groupCoplanarFaces(faces);
 
-  let faceRoles = shape.faceRoles;
-  let faceRoleSignatures = shape.faceRoleSignatures;
-  if (faceRoles && faceRoleSignatures && Object.keys(faceRoles).length > 0) {
-    const remapped = remapFaceRolesBySignature(faceRoles, faceRoleSignatures, newGroups);
-    faceRoles = remapped.newFaceRoles;
-    faceRoleSignatures = remapped.newSignatures;
+  const prevGroupSigs: FaceGroupSignature[] = shape.faceGroupSignatures || [];
+
+  const orderedGroups = prevGroupSigs.length > 0
+    ? mergeGroupsPreservingOrder(prevGroupSigs, rawGroups)
+    : rawGroups;
+
+  const newFaceGroupSignatures = snapshotGroupSignatures(orderedGroups);
+
+  const buildIndexMap = (): Record<number, number> => {
+    const map: Record<number, number> = {};
+    if (prevGroupSigs.length === 0) return map;
+    for (let oldIdx = 0; oldIdx < prevGroupSigs.length; oldIdx++) {
+      const oldSig = prevGroupSigs[oldIdx];
+      const newIdx = orderedGroups.findIndex(g => {
+        const s = createFaceGroupSignature(g);
+        return s.axisDirection === oldSig.axisDirection &&
+          Math.abs(s.normal[0] - oldSig.normal[0]) < 0.02 &&
+          Math.abs(s.normal[1] - oldSig.normal[1]) < 0.02 &&
+          Math.abs(s.normal[2] - oldSig.normal[2]) < 0.02 &&
+          Math.abs(s.center[0] - oldSig.center[0]) < 5 &&
+          Math.abs(s.center[1] - oldSig.center[1]) < 5 &&
+          Math.abs(s.center[2] - oldSig.center[2]) < 5;
+      });
+      if (newIdx >= 0) map[oldIdx] = newIdx;
+    }
+    return map;
+  };
+
+  const indexMap = buildIndexMap();
+
+  function remapByIndexMap<T>(oldData: Record<number, T>): Record<number, T> {
+    const result: Record<number, T> = {};
+    for (const [idxStr, val] of Object.entries(oldData)) {
+      const oldIdx = parseInt(idxStr);
+      const newIdx = indexMap[oldIdx];
+      if (newIdx !== undefined) {
+        result[newIdx] = val as T;
+      } else {
+        result[oldIdx] = val as T;
+      }
+    }
+    return result;
   }
 
-  let facePanels = shape.facePanels;
-  let facePanelSignatures = shape.facePanelSignatures;
-  if (facePanels && facePanelSignatures && Object.keys(facePanels).length > 0) {
-    const remapped = remapFaceRolesBySignature(facePanels, facePanelSignatures, newGroups);
-    facePanels = remapped.newFaceRoles;
-    facePanelSignatures = remapped.newSignatures;
+  function remapSignaturesByIndexMap(oldSigs: Record<number, FaceGroupSignature>): Record<number, FaceGroupSignature> {
+    const result: Record<number, FaceGroupSignature> = {};
+    for (const [idxStr, sig] of Object.entries(oldSigs)) {
+      const oldIdx = parseInt(idxStr);
+      const newIdx = indexMap[oldIdx];
+      const targetIdx = newIdx !== undefined ? newIdx : oldIdx;
+      result[targetIdx] = createFaceGroupSignature(orderedGroups[targetIdx] || orderedGroups[0]);
+    }
+    return result;
   }
 
-  let faceDescriptions = shape.faceDescriptions;
-  let faceDescriptionSignatures = shape.faceDescriptionSignatures;
-  if (faceDescriptions && faceDescriptionSignatures && Object.keys(faceDescriptions).length > 0) {
-    const remapped = remapFaceRolesBySignature(faceDescriptions, faceDescriptionSignatures, newGroups);
-    faceDescriptions = remapped.newFaceRoles;
-    faceDescriptionSignatures = remapped.newSignatures;
-  }
+  const faceRoles = shape.faceRoles && Object.keys(shape.faceRoles).length > 0
+    ? remapByIndexMap(shape.faceRoles)
+    : shape.faceRoles;
 
-  return { faceRoles, faceRoleSignatures, facePanels, facePanelSignatures, faceDescriptions, faceDescriptionSignatures };
+  const faceRoleSignatures = shape.faceRoleSignatures && Object.keys(shape.faceRoleSignatures).length > 0
+    ? remapSignaturesByIndexMap(shape.faceRoleSignatures)
+    : shape.faceRoleSignatures;
+
+  const facePanels = shape.facePanels && Object.keys(shape.facePanels).length > 0
+    ? remapByIndexMap(shape.facePanels)
+    : shape.facePanels;
+
+  const facePanelSignatures = shape.facePanelSignatures && Object.keys(shape.facePanelSignatures).length > 0
+    ? remapSignaturesByIndexMap(shape.facePanelSignatures)
+    : shape.facePanelSignatures;
+
+  const faceDescriptions = shape.faceDescriptions && Object.keys(shape.faceDescriptions).length > 0
+    ? remapByIndexMap(shape.faceDescriptions)
+    : shape.faceDescriptions;
+
+  const faceDescriptionSignatures = shape.faceDescriptionSignatures && Object.keys(shape.faceDescriptionSignatures).length > 0
+    ? remapSignaturesByIndexMap(shape.faceDescriptionSignatures)
+    : shape.faceDescriptionSignatures;
+
+  return {
+    faceRoles,
+    faceRoleSignatures,
+    facePanels,
+    facePanelSignatures,
+    faceDescriptions,
+    faceDescriptionSignatures,
+    faceGroupSignatures: newFaceGroupSignatures,
+  };
 }
 
 interface ApplyShapeChangesParams {
