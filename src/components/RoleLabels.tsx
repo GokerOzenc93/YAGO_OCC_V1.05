@@ -214,6 +214,7 @@ export const RoleLabels: React.FC<RoleLabelsProps> = React.memo(({ shape, isActi
                   textShadow: '0 0 2px rgba(255,255,255,0.9), 0 0 4px rgba(255,255,255,0.7), 1px 1px 0 rgba(255,255,255,0.6)',
                   letterSpacing: '0.02em',
                   lineHeight: 1,
+                  whiteSpace: 'nowrap',
                 }}
               >
                 {lbl.text}
