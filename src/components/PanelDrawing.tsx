@@ -343,7 +343,7 @@ const DirectionArrow: React.FC<DirectionArrowProps> = React.memo(({
   if (!arrowConfig) return null;
 
   const { position, rotation } = arrowConfig;
-  const shaftRadius = 3.5;
+  const shaftRadius = 1.8;
   const shaftLength = 90;
   const headRadius = 10;
   const headLength = 28;
