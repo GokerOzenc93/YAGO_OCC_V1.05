@@ -546,7 +546,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
                     <edgesGeometry args={[localGeometry, 5]} />
                   )}
                   <lineBasicMaterial
-                    color={isSelected ? '#60a5fa' : shouldShowAsReference ? '#ef4444' : '#1a1a1a'}
+                    color={isSelected ? '#60a5fa' : shouldShowAsReference ? '#ef4444' : '#000000'}
                     linewidth={isSelected || shouldShowAsReference ? 3.5 : 2.5}
                     depthTest={true}
                     depthWrite={true}
@@ -599,7 +599,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
                   <edgesGeometry args={[localGeometry, 5]} />
                 )}
                 <lineBasicMaterial
-                  color={isSelected ? '#1e40af' : shouldShowAsReference ? '#991b1b' : '#0a0a0a'}
+                  color={isSelected ? '#1e40af' : shouldShowAsReference ? '#991b1b' : '#000000'}
                   linewidth={isSelected || shouldShowAsReference ? 3 : 2.5}
                   depthTest={true}
                   transparent={false}
