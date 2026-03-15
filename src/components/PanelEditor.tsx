@@ -1070,6 +1070,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                             className="w-[48px] px-1 py-0.5 text-xs font-mono border rounded text-center bg-white text-gray-800 border-gray-300 font-semibold"
                             title="Panel Thickness"
                           />
+                          <div className="ml-auto flex items-center gap-0.5 pr-3">
                           <input
                             type="checkbox"
                             checked={facePanels[i] || false}
@@ -1143,6 +1144,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                           >
                             <PenLine size={13} />
                           </button>
+                          </div>
                         </div>
                       </React.Fragment>
                     );
@@ -1295,6 +1297,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                           className={`w-4 h-4 border-gray-300 rounded ${isDisabled ? 'text-stone-300 cursor-not-allowed' : 'text-green-600 focus:ring-green-500 cursor-pointer'}`}
                           title={`Toggle panel for virtual face V${vfIdx + 1}`}
                         />
+                        <div className="ml-auto flex items-center gap-0.5 pr-3">
                         <button
                           disabled={isDisabled || !vf.hasPanel}
                           onClick={(e) => {
@@ -1351,6 +1354,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                         >
                           <Trash2 size={13} className="text-red-400" />
                         </button>
+                        </div>
                       </div>
                     );
                   })}
