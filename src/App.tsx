@@ -74,9 +74,20 @@ function App() {
     };
     const onUnhandledRejection = (e: PromiseRejectionEvent) => {
       const msg = String(e.reason?.message || e.reason || '');
-      if (msg.includes('BindingError') || msg.includes('OpenCascade') || msg.includes('replicad')) {
+      const isKnownSafe =
+        msg.includes('BindingError') ||
+        msg.includes('OpenCascade') ||
+        msg.includes('replicad') ||
+        msg.includes('ERR_CONNECTION') ||
+        msg.includes('Failed to fetch') ||
+        msg.includes('NetworkError') ||
+        msg.includes('Network request failed') ||
+        msg.includes('timeout') ||
+        msg.includes('sentry') ||
+        (e.reason instanceof TypeError && msg.includes('fetch'));
+      if (isKnownSafe) {
         e.preventDefault();
-        console.error('Caught unhandled rejection (prevented reload):', msg);
+        console.warn('Caught unhandled rejection (prevented reload):', msg);
       }
     };
     window.addEventListener('error', onError);
