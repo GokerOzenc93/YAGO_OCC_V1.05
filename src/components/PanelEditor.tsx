@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, GripVertical, MousePointer, Layers, RotateCw, Plus, Trash2, Eye, EyeOff, RefreshCw } from 'lucide-react';
+import { X, GripVertical, MousePointer, Layers, RotateCw, Plus, Trash2, Eye, EyeOff, RefreshCw, PenLine } from 'lucide-react';
 import { globalSettingsService, faceLabelRoleDefaultsService, GlobalSettingsProfile } from './GlobalSettingsDatabase';
 import { useAppStore } from '../store';
 import type { FaceRole } from '../store';
@@ -514,7 +514,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
       style={{
         left: `${position.x}px`,
         top: `${position.y}px`,
-        width: '565px',
+        width: '640px',
       }}
     >
       <div
@@ -1118,6 +1118,31 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                           >
                             <RotateCw size={13} />
                           </button>
+                          <button
+                            disabled={isDisabled || !facePanels[i]}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const panelShape = shapes.find(s =>
+                                s.type === 'panel' &&
+                                s.parameters?.parentShapeId === selectedShape.id &&
+                                s.parameters?.faceIndex === i &&
+                                !s.parameters?.extraRowId
+                              );
+                              if (panelShape) {
+                                const { selectShape, setShowParametersPanel } = useAppStore.getState();
+                                selectShape(panelShape.id);
+                                setShowParametersPanel(true);
+                              }
+                            }}
+                            className={`p-0.5 rounded transition-colors ${
+                              isDisabled || !facePanels[i]
+                                ? 'text-stone-300 cursor-not-allowed'
+                                : 'text-slate-500 hover:bg-stone-100 hover:text-slate-800'
+                            }`}
+                            title="Edit panel parameters"
+                          >
+                            <PenLine size={13} />
+                          </button>
                         </div>
                       </React.Fragment>
                     );
@@ -1294,6 +1319,25 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                           title="Rotate arrow direction"
                         >
                           <RotateCw size={13} />
+                        </button>
+                        <button
+                          disabled={isDisabled || !vf.hasPanel}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (virtualPanel) {
+                              const { selectShape, setShowParametersPanel } = useAppStore.getState();
+                              selectShape(virtualPanel.id);
+                              setShowParametersPanel(true);
+                            }
+                          }}
+                          className={`p-0.5 rounded transition-colors ${
+                            isDisabled || !vf.hasPanel
+                              ? 'text-stone-300 cursor-not-allowed'
+                              : 'text-slate-500 hover:bg-stone-100 hover:text-slate-800'
+                          }`}
+                          title="Edit panel parameters"
+                        >
+                          <PenLine size={13} />
                         </button>
                         <button
                           disabled={isDisabled}
