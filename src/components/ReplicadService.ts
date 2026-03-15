@@ -108,7 +108,7 @@ export const convertReplicadToThreeGeometry = (shape: any): THREE.BufferGeometry
     console.log('🔄 Converting Replicad shape to Three.js geometry...');
     console.log('Shape object:', shape);
 
-    const mesh = shape.mesh({ tolerance: 0.02, angularTolerance: 10 });
+    const mesh = shape.mesh({ tolerance: 0.5, angularTolerance: 30 });
     console.log('Mesh data:', mesh);
 
     if (!mesh.vertices || !mesh.triangles) {
