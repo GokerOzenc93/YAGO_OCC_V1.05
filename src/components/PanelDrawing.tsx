@@ -25,8 +25,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     panelSurfaceSelectMode,
     waitingForSurfaceSelection,
     triggerPanelCreationForFace,
-    viewMode,
-    editingPanelId
+    viewMode
   } = useAppStore(useShallow(state => ({
     selectShape: state.selectShape,
     selectSecondaryShape: state.selectSecondaryShape,
@@ -38,8 +37,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     panelSurfaceSelectMode: state.panelSurfaceSelectMode,
     waitingForSurfaceSelection: state.waitingForSurfaceSelection,
     triggerPanelCreationForFace: state.triggerPanelCreationForFace,
-    viewMode: state.viewMode,
-    editingPanelId: state.editingPanelId
+    viewMode: state.viewMode
   })));
 
   const [faceGroups, setFaceGroups] = useState<any[]>([]);
@@ -70,8 +68,6 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
       )
     );
 
-  const isEditingThisPanel = editingPanelId === shape.id;
-
   const edgeGeometry = useMemo(() => {
     if (!shape.geometry) return null;
     try {
@@ -82,88 +78,6 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
       return null;
     }
   }, [shape.geometry]);
-
-  const axisEdgeData = useMemo(() => {
-    if (!shape.geometry || !isEditingThisPanel) return null;
-    try {
-      const posAttr = shape.geometry.getAttribute('position') as THREE.BufferAttribute;
-      if (!posAttr) return null;
-
-      const worldMat = new THREE.Matrix4()
-        .makeRotationFromEuler(new THREE.Euler(shape.rotation[0], shape.rotation[1], shape.rotation[2]))
-        .setPosition(shape.position[0], shape.position[1], shape.position[2]);
-
-      const worldBbox = new THREE.Box3();
-      const tmpV = new THREE.Vector3();
-      const arr = posAttr.array as Float32Array;
-      for (let i = 0; i < arr.length; i += 3) {
-        tmpV.set(arr[i], arr[i + 1], arr[i + 2]).applyMatrix4(worldMat);
-        worldBbox.expandByPoint(tmpV);
-      }
-      const wn = worldBbox.min;
-      const wx = worldBbox.max;
-
-      const worldCorners = [
-        new THREE.Vector3(wn.x, wn.y, wn.z),
-        new THREE.Vector3(wx.x, wn.y, wn.z),
-        new THREE.Vector3(wn.x, wx.y, wn.z),
-        new THREE.Vector3(wx.x, wx.y, wn.z),
-        new THREE.Vector3(wn.x, wn.y, wx.z),
-        new THREE.Vector3(wx.x, wn.y, wx.z),
-        new THREE.Vector3(wn.x, wx.y, wx.z),
-        new THREE.Vector3(wx.x, wx.y, wx.z),
-      ];
-
-      const edgePairs: [number, number][] = [
-        [0,1],[2,3],[4,5],[6,7],
-        [0,2],[1,3],[4,6],[5,7],
-        [0,4],[1,5],[2,6],[3,7],
-      ];
-
-      const xPairs: [THREE.Vector3, THREE.Vector3][] = [];
-      const yPairs: [THREE.Vector3, THREE.Vector3][] = [];
-      const zPairs: [THREE.Vector3, THREE.Vector3][] = [];
-
-      for (const [i, j] of edgePairs) {
-        const a = worldCorners[i];
-        const b = worldCorners[j];
-        const dir = b.clone().sub(a);
-        const len = dir.length();
-        if (len < 0.001) continue;
-        dir.divideScalar(len);
-        const ax = Math.abs(dir.x);
-        const ay = Math.abs(dir.y);
-        const az = Math.abs(dir.z);
-
-        if (ax >= ay && ax >= az) {
-          xPairs.push([a, b]);
-        } else if (ay >= ax && ay >= az) {
-          yPairs.push([a, b]);
-        } else {
-          zPairs.push([a, b]);
-        }
-      }
-
-      const buildGeo = (pairs: [THREE.Vector3, THREE.Vector3][]) => {
-        if (pairs.length === 0) return null;
-        const pos: number[] = [];
-        for (const [a, b] of pairs) {
-          pos.push(a.x, a.y, a.z, b.x, b.y, b.z);
-        }
-        const geo = new THREE.BufferGeometry();
-        geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-        return geo;
-      };
-
-      return {
-        x: buildGeo(xPairs),
-        y: buildGeo(yPairs),
-        z: buildGeo(zPairs),
-      };
-    } catch {
-      return null;
-    }
-  }, [shape.geometry, shape.rotation, shape.position, isEditingThisPanel]);
 
   if (!shape.geometry) return null;
 
@@ -246,7 +160,6 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   };
 
   return (
-    <>
     <group
       name={`shape-${shape.id}`}
       position={shape.position}
@@ -330,7 +243,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           )}
         </>
       )}
-      {!isWireframe && !isXray && edgeGeometry && !isEditingThisPanel && (
+      {!isWireframe && !isXray && edgeGeometry && (
         <lineSegments geometry={edgeGeometry}>
           <lineBasicMaterial
             color={edgeColor}
@@ -341,7 +254,6 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           />
         </lineSegments>
       )}
-
       {isPanelRowSelected && (
         <DirectionArrow
           geometry={shape.geometry}
@@ -350,153 +262,10 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
         />
       )}
     </group>
-
-    {isEditingThisPanel && axisEdgeData && (
-      <>
-        {axisEdgeData.x && (
-          <lineSegments geometry={axisEdgeData.x} renderOrder={10}>
-            <lineBasicMaterial
-              color="#ef4444"
-              linewidth={4}
-              depthTest={false}
-              transparent={false}
-            />
-          </lineSegments>
-        )}
-        {axisEdgeData.y && (
-          <lineSegments geometry={axisEdgeData.y} renderOrder={10}>
-            <lineBasicMaterial
-              color="#22c55e"
-              linewidth={4}
-              depthTest={false}
-              transparent={false}
-            />
-          </lineSegments>
-        )}
-        {axisEdgeData.z && (
-          <lineSegments geometry={axisEdgeData.z} renderOrder={10}>
-            <lineBasicMaterial
-              color="#3b82f6"
-              linewidth={4}
-              depthTest={false}
-              transparent={false}
-            />
-          </lineSegments>
-        )}
-      </>
-    )}
-    </>
   );
 });
 
 PanelDrawing.displayName = 'PanelDrawing';
-
-interface AxisEdgeLabelsProps {
-  geometry: THREE.BufferGeometry;
-  axisData: { x: THREE.BufferGeometry | null; y: THREE.BufferGeometry | null; z: THREE.BufferGeometry | null; bbox: { min: THREE.Vector3; max: THREE.Vector3 } };
-}
-
-const AxisEdgeLabels: React.FC<AxisEdgeLabelsProps> = React.memo(({ geometry, axisData }) => {
-  const labelData = useMemo(() => {
-    const posAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
-    if (!posAttr) return null;
-    const bbox = new THREE.Box3().setFromBufferAttribute(posAttr);
-    const min = bbox.min;
-    const max = bbox.max;
-    const size = new THREE.Vector3();
-    bbox.getSize(size);
-
-    const axes = [
-      { index: 0, value: size.x, label: 'X', color: '#ef4444' },
-      { index: 1, value: size.y, label: 'Y', color: '#22c55e' },
-      { index: 2, value: size.z, label: 'Z', color: '#3b82f6' }
-    ];
-
-    const cx = (min.x + max.x) / 2;
-    const cy = (min.y + max.y) / 2;
-    const cz = (min.z + max.z) / 2;
-
-    const offset = 40;
-
-    return [
-      { label: `X: ${Math.round(size.x)}`, color: '#ef4444', pos: new THREE.Vector3(cx, min.y - offset, min.z - offset) },
-      { label: `Y: ${Math.round(size.y)}`, color: '#22c55e', pos: new THREE.Vector3(max.x + offset, cy, min.z - offset) },
-      { label: `Z: ${Math.round(size.z)}`, color: '#3b82f6', pos: new THREE.Vector3(max.x + offset, min.y - offset, cz) },
-    ];
-  }, [geometry]);
-
-  if (!labelData) return null;
-
-  return (
-    <>
-      {labelData.map(({ label, color, pos }) => (
-        <AxisLabel key={label} position={pos} text={label} color={color} />
-      ))}
-    </>
-  );
-});
-
-AxisEdgeLabels.displayName = 'AxisEdgeLabels';
-
-interface AxisLabelProps {
-  position: THREE.Vector3;
-  text: string;
-  color: string;
-}
-
-const AxisLabel: React.FC<AxisLabelProps> = React.memo(({ position, text, color }) => {
-  const labelGeo = useMemo(() => {
-    const canvas = document.createElement('canvas');
-    canvas.width = 256;
-    canvas.height = 96;
-    const ctx = canvas.getContext('2d')!;
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    ctx.fillStyle = 'rgba(15,15,15,0.82)';
-    const rx = 12;
-    const w = canvas.width, h = canvas.height;
-    ctx.beginPath();
-    ctx.moveTo(rx, 0);
-    ctx.lineTo(w - rx, 0);
-    ctx.quadraticCurveTo(w, 0, w, rx);
-    ctx.lineTo(w, h - rx);
-    ctx.quadraticCurveTo(w, h, w - rx, h);
-    ctx.lineTo(rx, h);
-    ctx.quadraticCurveTo(0, h, 0, h - rx);
-    ctx.lineTo(0, rx);
-    ctx.quadraticCurveTo(0, 0, rx, 0);
-    ctx.closePath();
-    ctx.fill();
-
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 5;
-    ctx.stroke();
-
-    ctx.fillStyle = color;
-    ctx.font = 'bold 52px Inter, system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(text, canvas.width / 2, canvas.height / 2);
-
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.needsUpdate = true;
-    return texture;
-  }, [text, color]);
-
-  return (
-    <sprite position={[position.x, position.y, position.z]} scale={[160, 60, 1]}>
-      <spriteMaterial
-        map={labelGeo}
-        transparent={true}
-        depthTest={false}
-        sizeAttenuation={true}
-      />
-    </sprite>
-  );
-});
-
-AxisLabel.displayName = 'AxisLabel';
 
 interface DirectionArrowProps {
   geometry: THREE.BufferGeometry;
