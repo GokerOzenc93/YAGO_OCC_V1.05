@@ -116,6 +116,7 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
     if (!selectedShapeId) return false;
     const selectedShape = shapes.find((s) => s.id === selectedShapeId);
     if (!selectedShape?.geometry) return false;
+    if (selectedShape.type === 'panel') return false;
     try {
       const selectedBox = new THREE.Box3().setFromBufferAttribute(
         selectedShape.geometry.getAttribute('position')
@@ -129,6 +130,7 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
       selectedBox.set(sMin, sMax);
       return shapes.some((s) => {
         if (s.id === selectedShapeId || !s.geometry) return false;
+        if (s.type === 'panel') return false;
         try {
           const b = new THREE.Box3().setFromBufferAttribute(
             s.geometry.getAttribute('position')
