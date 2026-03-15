@@ -343,34 +343,32 @@ const DirectionArrow: React.FC<DirectionArrowProps> = React.memo(({
   if (!arrowConfig) return null;
 
   const { position, rotation } = arrowConfig;
-  const shaftLength = 80;
-  const shaftWidth = 8;
-  const shaftDepth = 2;
-  const headLength = 30;
-  const headWidth = 24;
+  const shaftRadius = 3.5;
+  const shaftLength = 90;
+  const headRadius = 10;
+  const headLength = 28;
+  const segments = 16;
 
   return (
     <group position={position} rotation={rotation}>
       <mesh position={[0, shaftLength / 2, 0]}>
-        <boxGeometry args={[shaftWidth, shaftLength, shaftDepth]} />
+        <cylinderGeometry args={[shaftRadius, shaftRadius, shaftLength, segments]} />
         <meshStandardMaterial
-          color="#2196F3"
-          emissive="#2196F3"
-          emissiveIntensity={0.5}
-          metalness={0.2}
-          roughness={0.4}
-          side={THREE.DoubleSide}
+          color="#1565C0"
+          emissive="#1976D2"
+          emissiveIntensity={0.6}
+          metalness={0.4}
+          roughness={0.2}
         />
       </mesh>
       <mesh position={[0, shaftLength + headLength / 2, 0]}>
-        <coneGeometry args={[headWidth, headLength, 3]} />
+        <coneGeometry args={[headRadius, headLength, segments]} />
         <meshStandardMaterial
-          color="#2196F3"
-          emissive="#2196F3"
-          emissiveIntensity={0.5}
-          metalness={0.2}
-          roughness={0.4}
-          side={THREE.DoubleSide}
+          color="#1565C0"
+          emissive="#1976D2"
+          emissiveIntensity={0.6}
+          metalness={0.4}
+          roughness={0.2}
         />
       </mesh>
     </group>
