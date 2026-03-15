@@ -90,56 +90,29 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
       if (!posAttr) return null;
 
       const bbox = new THREE.Box3().setFromBufferAttribute(posAttr);
-      const min = bbox.min;
-      const max = bbox.max;
+      const mn = bbox.min;
+      const mx = bbox.max;
 
-      const eps = 0.001;
+      const p000 = new THREE.Vector3(mn.x, mn.y, mn.z);
+      const p100 = new THREE.Vector3(mx.x, mn.y, mn.z);
+      const p010 = new THREE.Vector3(mn.x, mx.y, mn.z);
+      const p110 = new THREE.Vector3(mx.x, mx.y, mn.z);
+      const p001 = new THREE.Vector3(mn.x, mn.y, mx.z);
+      const p101 = new THREE.Vector3(mx.x, mn.y, mx.z);
+      const p011 = new THREE.Vector3(mn.x, mx.y, mx.z);
+      const p111 = new THREE.Vector3(mx.x, mx.y, mx.z);
 
-      const xEdges: [THREE.Vector3, THREE.Vector3][] = [];
-      const yEdges: [THREE.Vector3, THREE.Vector3][] = [];
-      const zEdges: [THREE.Vector3, THREE.Vector3][] = [];
-
-      const edgesGeo = new THREE.EdgesGeometry(shape.geometry, 5);
-      const edgePosAttr = edgesGeo.getAttribute('position') as THREE.BufferAttribute;
-
-      for (let i = 0; i < edgePosAttr.count; i += 2) {
-        const v1 = new THREE.Vector3(
-          edgePosAttr.getX(i), edgePosAttr.getY(i), edgePosAttr.getZ(i)
-        );
-        const v2 = new THREE.Vector3(
-          edgePosAttr.getX(i + 1), edgePosAttr.getY(i + 1), edgePosAttr.getZ(i + 1)
-        );
-
-        const dx = Math.abs(v2.x - v1.x);
-        const dy = Math.abs(v2.y - v1.y);
-        const dz = Math.abs(v2.z - v1.z);
-
-        const isAlongX = dx > eps && dy < eps && dz < eps;
-        const isAlongY = dy > eps && dx < eps && dz < eps;
-        const isAlongZ = dz > eps && dx < eps && dy < eps;
-
-        const onMinX = Math.abs(v1.x - min.x) < eps && Math.abs(v2.x - min.x) < eps;
-        const onMaxX = Math.abs(v1.x - max.x) < eps && Math.abs(v2.x - max.x) < eps;
-        const onMinY = Math.abs(v1.y - min.y) < eps && Math.abs(v2.y - min.y) < eps;
-        const onMaxY = Math.abs(v1.y - max.y) < eps && Math.abs(v2.y - max.y) < eps;
-        const onMinZ = Math.abs(v1.z - min.z) < eps && Math.abs(v2.z - min.z) < eps;
-        const onMaxZ = Math.abs(v1.z - max.z) < eps && Math.abs(v2.z - max.z) < eps;
-
-        if (isAlongX) {
-          xEdges.push([v1, v2]);
-        } else if (isAlongY) {
-          yEdges.push([v1, v2]);
-        } else if (isAlongZ) {
-          zEdges.push([v1, v2]);
-        } else if (dx > eps || dy > eps || dz > eps) {
-          if (onMinX || onMaxX) xEdges.push([v1, v2]);
-          else if (onMinY || onMaxY) yEdges.push([v1, v2]);
-          else if (onMinZ || onMaxZ) zEdges.push([v1, v2]);
-        }
-      }
+      const xPairs: [THREE.Vector3, THREE.Vector3][] = [
+        [p000, p100], [p010, p110], [p001, p101], [p011, p111]
+      ];
+      const yPairs: [THREE.Vector3, THREE.Vector3][] = [
+        [p000, p010], [p100, p110], [p001, p011], [p101, p111]
+      ];
+      const zPairs: [THREE.Vector3, THREE.Vector3][] = [
+        [p000, p001], [p100, p101], [p010, p011], [p110, p111]
+      ];
 
       const buildLineGeo = (pairs: [THREE.Vector3, THREE.Vector3][]) => {
-        if (pairs.length === 0) return null;
         const positions: number[] = [];
         for (const [a, b] of pairs) {
           positions.push(a.x, a.y, a.z, b.x, b.y, b.z);
@@ -150,10 +123,10 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
       };
 
       return {
-        x: buildLineGeo(xEdges),
-        y: buildLineGeo(yEdges),
-        z: buildLineGeo(zEdges),
-        bbox: { min, max }
+        x: buildLineGeo(xPairs),
+        y: buildLineGeo(yPairs),
+        z: buildLineGeo(zPairs),
+        bbox: { min: mn, max: mx }
       };
     } catch {
       return null;
