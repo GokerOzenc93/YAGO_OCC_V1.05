@@ -528,8 +528,9 @@ const Scene: React.FC = () => {
   const handleCreated = useCallback(({ gl }: { gl: THREE.WebGLRenderer }) => {
     gl.toneMapping = THREE.ACESFilmicToneMapping;
     gl.toneMappingExposure = 1.0;
-    gl.shadowMap.type = THREE.PCFShadowMap;
+    gl.shadowMap.type = THREE.PCFSoftShadowMap;
     gl.outputColorSpace = THREE.SRGBColorSpace;
+    gl.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
     const canvas = gl.domElement;
     canvas.addEventListener('webglcontextlost', (e) => {
@@ -552,7 +553,7 @@ const Scene: React.FC = () => {
           preserveDrawingBuffer: true,
           powerPreference: 'high-performance'
         }}
-        dpr={[1, 1.5]}
+        dpr={[1, 2]}
         onContextMenu={(e) => e.preventDefault()}
         onCreated={handleCreated}
       >

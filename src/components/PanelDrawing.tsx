@@ -69,7 +69,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   const edgeGeometry = useMemo(() => {
     if (!shape.geometry) return null;
     try {
-      const edges = new THREE.EdgesGeometry(shape.geometry, 5);
+      const edges = new THREE.EdgesGeometry(shape.geometry, 15);
       return edges;
     } catch (error) {
       console.error('Error creating edge geometry:', error);
@@ -183,14 +183,17 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
         <meshStandardMaterial
           color={materialColor}
           emissive={isPanelRowSelected ? '#ef4444' : baseColor}
-          emissiveIntensity={isPanelRowSelected ? 0.35 : 0.1}
-          metalness={0}
-          roughness={0.4}
+          emissiveIntensity={isPanelRowSelected ? 0.35 : 0.08}
+          metalness={0.0}
+          roughness={0.45}
           transparent={false}
           opacity={1}
-          side={THREE.DoubleSide}
+          side={THREE.FrontSide}
           depthWrite={true}
           flatShading={false}
+          polygonOffset={true}
+          polygonOffsetFactor={1}
+          polygonOffsetUnits={1}
         />
       </mesh>
       {edgeGeometry && (
