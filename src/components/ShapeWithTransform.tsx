@@ -2,6 +2,7 @@ import React, { useRef, useEffect, useState, useMemo } from 'react';
 import { TransformControls } from '@react-three/drei';
 import { useThree } from '@react-three/fiber';
 import * as THREE from 'three';
+import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { useAppStore, Tool, ViewMode } from '../store';
 import { useShallow } from 'zustand/react/shallow';
 import { SubtractionMesh } from './SubtractionMesh';
@@ -167,28 +168,58 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
           geom.computeBoundingSphere();
         }
 
-        setLocalGeometry(geom);
-        const edges = new THREE.EdgesGeometry(geom, 15);
-        setEdgeGeometry(edges);
+        try {
+          const merged = mergeVertices(geom, 0.1);
+          merged.computeVertexNormals();
+          merged.computeBoundingBox();
+          merged.computeBoundingSphere();
+          setLocalGeometry(merged);
+          setEdgeGeometry(new THREE.EdgesGeometry(merged, 15));
+        } catch {
+          setLocalGeometry(geom);
+          setEdgeGeometry(new THREE.EdgesGeometry(geom, 15));
+        }
         setGeometryKey(prev => prev + 1);
         return;
       }
 
       if (shape.parameters?.modified && shape.geometry) {
         let geom = shape.geometry.clone();
-
-        geom.computeVertexNormals();
-        geom.computeBoundingBox();
-        geom.computeBoundingSphere();
-
-        setLocalGeometry(geom);
-        const edges = new THREE.EdgesGeometry(geom, 15);
-        setEdgeGeometry(edges);
+        try {
+          const merged = mergeVertices(geom, 0.1);
+          merged.computeVertexNormals();
+          merged.computeBoundingBox();
+          merged.computeBoundingSphere();
+          setLocalGeometry(merged);
+          setEdgeGeometry(new THREE.EdgesGeometry(merged, 15));
+        } catch {
+          geom.computeVertexNormals();
+          geom.computeBoundingBox();
+          geom.computeBoundingSphere();
+          setLocalGeometry(geom);
+          setEdgeGeometry(new THREE.EdgesGeometry(geom, 15));
+        }
         setGeometryKey(prev => prev + 1);
         return;
       }
 
-      setEdgeGeometry(null);
+      if (shape.geometry) {
+        try {
+          const merged = mergeVertices(shape.geometry.clone(), 0.1);
+          merged.computeVertexNormals();
+          merged.computeBoundingBox();
+          merged.computeBoundingSphere();
+          setLocalGeometry(merged);
+          setEdgeGeometry(new THREE.EdgesGeometry(merged, 15));
+        } catch {
+          const geom = shape.geometry.clone();
+          geom.computeVertexNormals();
+          setLocalGeometry(geom);
+          setEdgeGeometry(new THREE.EdgesGeometry(geom, 15));
+        }
+      } else {
+        setEdgeGeometry(null);
+      }
     };
 
     loadEdges();
