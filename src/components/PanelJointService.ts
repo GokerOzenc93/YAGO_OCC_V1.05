@@ -416,6 +416,11 @@ export async function remapFaceDataAfterGeometryChange(parentShapeId: string): P
   const faces = extractFacesFromGeometry(parentShape.geometry);
   const newFaceGroups = groupCoplanarFaces(faces);
 
+  const newDescs: Array<ReturnType<typeof createFaceDescriptor>> = newFaceGroups.map(group => {
+    const repFace = faces[group.faceIndices[0]];
+    return createFaceDescriptor(repFace, parentShape.geometry);
+  });
+
   const oldToNew = new Map<number, number>();
 
   for (const [oldIdxStr, descriptor] of Object.entries(descriptors)) {
@@ -424,12 +429,7 @@ export async function remapFaceDataAfterGeometryChange(parentShapeId: string): P
     let bestScore = Infinity;
 
     for (let newIdx = 0; newIdx < newFaceGroups.length; newIdx++) {
-      const group = newFaceGroups[newIdx];
-      const repFaceIdx = group.faceIndices[0];
-      const repFace = faces[repFaceIdx];
-      if (!repFace) continue;
-
-      const newDesc = createFaceDescriptor(repFace, parentShape.geometry);
+      const newDesc = newDescs[newIdx];
 
       const sameAxis = descriptor.axisDirection && newDesc.axisDirection === descriptor.axisDirection;
       const neitherAxis = !descriptor.axisDirection && !newDesc.axisDirection;
@@ -439,26 +439,32 @@ export async function remapFaceDataAfterGeometryChange(parentShapeId: string): P
       let score: number;
       if (sameAxis) {
         const axis = descriptor.axisDirection!;
-        let diff = 0;
-        if (axis === 'x+' || axis === 'x-') {
-          diff = Math.sqrt(
-            Math.pow(newDesc.normalizedCenter[1] - descriptor.normalizedCenter[1], 2) +
-            Math.pow(newDesc.normalizedCenter[2] - descriptor.normalizedCenter[2], 2)
-          );
-        } else if (axis === 'y+' || axis === 'y-') {
-          diff = Math.sqrt(
-            Math.pow(newDesc.normalizedCenter[0] - descriptor.normalizedCenter[0], 2) +
-            Math.pow(newDesc.normalizedCenter[2] - descriptor.normalizedCenter[2], 2)
-          );
+        if (descriptor.axisPosition !== undefined && newDesc.axisPosition !== undefined) {
+          const posDiff = Math.abs(newDesc.axisPosition - descriptor.axisPosition);
+          score = posDiff * 1000;
         } else {
-          diff = Math.sqrt(
-            Math.pow(newDesc.normalizedCenter[0] - descriptor.normalizedCenter[0], 2) +
-            Math.pow(newDesc.normalizedCenter[1] - descriptor.normalizedCenter[1], 2)
-          );
+          let diff = 0;
+          if (axis === 'x+' || axis === 'x-') {
+            diff = Math.sqrt(
+              Math.pow(newDesc.normalizedCenter[1] - descriptor.normalizedCenter[1], 2) +
+              Math.pow(newDesc.normalizedCenter[2] - descriptor.normalizedCenter[2], 2)
+            );
+          } else if (axis === 'y+' || axis === 'y-') {
+            diff = Math.sqrt(
+              Math.pow(newDesc.normalizedCenter[0] - descriptor.normalizedCenter[0], 2) +
+              Math.pow(newDesc.normalizedCenter[2] - descriptor.normalizedCenter[2], 2)
+            );
+          } else {
+            diff = Math.sqrt(
+              Math.pow(newDesc.normalizedCenter[0] - descriptor.normalizedCenter[0], 2) +
+              Math.pow(newDesc.normalizedCenter[1] - descriptor.normalizedCenter[1], 2)
+            );
+          }
+          score = diff * 10;
         }
-        score = diff * 10;
       } else {
         const targetNormal = new THREE.Vector3(...descriptor.normal);
+        const repFace = faces[newFaceGroups[newIdx].faceIndices[0]];
         const dot = targetNormal.dot(repFace.normal);
         const angle = Math.acos(Math.min(1, Math.max(-1, dot))) * (180 / Math.PI);
         if (angle > 15) continue;
@@ -476,10 +482,8 @@ export async function remapFaceDataAfterGeometryChange(parentShapeId: string): P
       }
     }
 
-    if (bestNewIdx !== -1 && bestNewIdx !== oldIdx) {
+    if (bestNewIdx !== -1) {
       oldToNew.set(oldIdx, bestNewIdx);
-    } else if (bestNewIdx === oldIdx) {
-      oldToNew.set(oldIdx, oldIdx);
     }
   }
 
@@ -497,7 +501,7 @@ export async function remapFaceDataAfterGeometryChange(parentShapeId: string): P
   const newFaceDescriptions: Record<number, string> = {};
   const newFaceGroupDescriptors: Record<number, import('../store').FaceDescriptor> = {};
 
-  for (const [oldIdxStr, descriptor] of Object.entries(descriptors)) {
+  for (const [oldIdxStr] of Object.entries(descriptors)) {
     const oldIdx = parseInt(oldIdxStr);
     const newIdx = oldToNew.get(oldIdx) ?? oldIdx;
 
@@ -505,13 +509,8 @@ export async function remapFaceDataAfterGeometryChange(parentShapeId: string): P
     if (oldFacePanels[oldIdx] !== undefined) newFacePanels[newIdx] = oldFacePanels[oldIdx];
     if (oldFaceDescriptions[oldIdx] !== undefined) newFaceDescriptions[newIdx] = oldFaceDescriptions[oldIdx];
 
-    const group = newFaceGroups[newIdx];
-    if (group) {
-      const repFaceIdx = group.faceIndices[0];
-      const repFace = faces[repFaceIdx];
-      if (repFace) {
-        newFaceGroupDescriptors[newIdx] = createFaceDescriptor(repFace, parentShape.geometry);
-      }
+    if (newIdx < newFaceGroups.length) {
+      newFaceGroupDescriptors[newIdx] = newDescs[newIdx];
     }
   }
 

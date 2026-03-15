@@ -303,7 +303,7 @@ function getAxisDirection(normal: THREE.Vector3): 'x+' | 'x-' | 'y+' | 'y-' | 'z
 export function createFaceDescriptor(
   face: FaceData,
   geometry: THREE.BufferGeometry
-): { normal: [number, number, number]; normalizedCenter: [number, number, number]; area: number; isCurved?: boolean; axisDirection?: 'x+' | 'x-' | 'y+' | 'y-' | 'z+' | 'z-' | null } {
+): { normal: [number, number, number]; normalizedCenter: [number, number, number]; area: number; isCurved?: boolean; axisDirection?: 'x+' | 'x-' | 'y+' | 'y-' | 'z+' | 'z-' | null; axisPosition?: number } {
   const boundingBox = new THREE.Box3().setFromBufferAttribute(
     geometry.getAttribute('position')
   );
@@ -321,12 +321,22 @@ export function createFaceDescriptor(
   const axisDirection = getAxisDirection(face.normal);
   const isCurved = face.isCurved || axisDirection === null;
 
+  let axisPosition: number | undefined;
+  if (axisDirection === 'x+' || axisDirection === 'x-') {
+    axisPosition = face.center.x;
+  } else if (axisDirection === 'y+' || axisDirection === 'y-') {
+    axisPosition = face.center.y;
+  } else if (axisDirection === 'z+' || axisDirection === 'z-') {
+    axisPosition = face.center.z;
+  }
+
   return {
     normal: [face.normal.x, face.normal.y, face.normal.z],
     normalizedCenter,
     area: face.area,
     isCurved,
-    axisDirection
+    axisDirection,
+    axisPosition
   };
 }
 

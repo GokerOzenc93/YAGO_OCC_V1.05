@@ -16,6 +16,7 @@ export interface FaceDescriptor {
   area:number;
   isCurved?:boolean;
   axisDirection?:'x+'|'x-'|'y+'|'y-'|'z+'|'z-'|null;
+  axisPosition?:number;
 }
 
 export interface FilletInfo {
