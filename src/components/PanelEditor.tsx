@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { X, GripVertical, MousePointer, Layers, RotateCw, Plus, Trash2, Eye, EyeOff, RefreshCw, PenLine } from 'lucide-react';
-import { PanelDimensions } from './PanelDimensions';
 import { globalSettingsService, faceLabelRoleDefaultsService, GlobalSettingsProfile } from './GlobalSettingsDatabase';
 import { useAppStore } from '../store';
 import type { FaceRole } from '../store';
@@ -1044,11 +1043,32 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                             style={{ width: '40mm' }}
                             className={`px-2 py-0.5 text-xs border rounded ${isDisabled ? 'bg-stone-100 text-stone-400 border-stone-200 placeholder:text-stone-300' : 'bg-white text-gray-800 border-gray-300'}`}
                           />
-                          <PanelDimensions
-                            w={dimensions?.w}
-                            h={dimensions?.h}
-                            d={dimensions?.d}
+                          <input
+                            type="text"
+                            value={dimensions?.primary || 'NaN'}
+                            readOnly
+                            tabIndex={-1}
                             onClick={(e) => e.stopPropagation()}
+                            className="w-[48px] px-1 py-0.5 text-xs font-mono border rounded text-center bg-white text-gray-800 border-gray-300 font-semibold"
+                            title="Arrow Direction Dimension"
+                          />
+                          <input
+                            type="text"
+                            value={dimensions?.secondary || 'NaN'}
+                            readOnly
+                            tabIndex={-1}
+                            onClick={(e) => e.stopPropagation()}
+                            className="w-[48px] px-1 py-0.5 text-xs font-mono border rounded text-center bg-white text-gray-800 border-gray-300 font-semibold"
+                            title="Perpendicular to Arrow Direction"
+                          />
+                          <input
+                            type="text"
+                            value={dimensions?.thickness || 'NaN'}
+                            readOnly
+                            tabIndex={-1}
+                            onClick={(e) => e.stopPropagation()}
+                            className="w-[48px] px-1 py-0.5 text-xs font-mono border rounded text-center bg-white text-gray-800 border-gray-300 font-semibold"
+                            title="Panel Thickness"
                           />
                           <div className="ml-3 flex items-center gap-0.5">
                           <input
@@ -1225,10 +1245,31 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                           style={{ width: '40mm' }}
                           className={`px-2 py-0.5 text-xs border rounded ${isDisabled ? 'bg-stone-100 text-stone-400 border-stone-200 placeholder:text-stone-300' : 'bg-white text-gray-800 border-green-300'}`}
                         />
-                        <PanelDimensions
-                          w={vf.hasPanel ? Math.round(panelWidth) : undefined}
-                          h={vf.hasPanel ? Math.round(panelHeight) : undefined}
-                          d={vf.hasPanel ? Math.round(panelDepth) : undefined}
+                        <input
+                          type="text"
+                          value={vf.hasPanel ? (arrowRotated ? Math.round(panelHeight) : Math.round(panelWidth)) : '—'}
+                          readOnly
+                          tabIndex={-1}
+                          className={`w-[48px] px-1 py-0.5 text-xs font-mono border rounded text-center ${vf.hasPanel ? 'bg-white text-gray-800 border-gray-300 font-semibold' : 'bg-white text-stone-400 border-gray-200'}`}
+                          title="Arrow Direction Dimension"
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                        <input
+                          type="text"
+                          value={vf.hasPanel ? (arrowRotated ? Math.round(panelWidth) : Math.round(panelHeight)) : '—'}
+                          readOnly
+                          tabIndex={-1}
+                          className={`w-[48px] px-1 py-0.5 text-xs font-mono border rounded text-center ${vf.hasPanel ? 'bg-white text-gray-800 border-gray-300 font-semibold' : 'bg-white text-stone-400 border-gray-200'}`}
+                          title="Perpendicular Dimension"
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                        <input
+                          type="text"
+                          value={vf.hasPanel ? Math.round(panelDepth) : '—'}
+                          readOnly
+                          tabIndex={-1}
+                          className={`w-[48px] px-1 py-0.5 text-xs font-mono border rounded text-center ${vf.hasPanel ? 'bg-white text-gray-800 border-gray-300 font-semibold' : 'bg-white text-stone-400 border-gray-200'}`}
+                          title="Panel Thickness"
                           onClick={(e) => e.stopPropagation()}
                         />
                         <div className="ml-3 flex items-center gap-0.5">
