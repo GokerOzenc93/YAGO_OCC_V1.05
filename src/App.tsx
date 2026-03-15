@@ -40,10 +40,13 @@ function App() {
 
         if (prevKey && prevKey !== key && !rebuildInProgressRef.current.has(shape.id)) {
           const profileId = state.activePanelProfileId;
-          rebuildInProgressRef.current.add(shape.id);
+          const shapeId = shape.id;
+          rebuildInProgressRef.current.add(shapeId);
+          useAppStore.getState().setShapeRebuilding(shapeId, true);
           import('./components/PanelJointService').then(({ rebuildAndRecalculatePipeline }) => {
-            rebuildAndRecalculatePipeline(shape.id, profileId).finally(() => {
-              rebuildInProgressRef.current.delete(shape.id);
+            rebuildAndRecalculatePipeline(shapeId, profileId).finally(() => {
+              rebuildInProgressRef.current.delete(shapeId);
+              useAppStore.getState().setShapeRebuilding(shapeId, false);
             });
           });
         }

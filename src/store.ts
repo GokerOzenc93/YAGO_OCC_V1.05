@@ -218,6 +218,9 @@ interface AppState{
   showTopPanelBackShorten:boolean;setShowTopPanelBackShorten:(b:boolean)=>void;
   bottomPanelBackShorten:number;setBottomPanelBackShorten:(n:number)=>void;
   showBottomPanelBackShorten:boolean;setShowBottomPanelBackShorten:(b:boolean)=>void;
+
+  rebuildingShapeIds:Set<string>;
+  setShapeRebuilding:(id:string,rebuilding:boolean)=>void;
 }
 
 /** STORE */
@@ -312,6 +315,13 @@ export const useAppStore=create<AppState>((set,get)=>({
   showTopPanelBackShorten:false,setShowTopPanelBackShorten:(b)=>set({showTopPanelBackShorten:b}),
   bottomPanelBackShorten:0,setBottomPanelBackShorten:(n)=>set({bottomPanelBackShorten:n}),
   showBottomPanelBackShorten:false,setShowBottomPanelBackShorten:(b)=>set({showBottomPanelBackShorten:b}),
+
+  rebuildingShapeIds:new Set<string>(),
+  setShapeRebuilding:(id,rebuilding)=>set((s)=>{
+    const next=new Set(s.rebuildingShapeIds);
+    if(rebuilding)next.add(id);else next.delete(id);
+    return{rebuildingShapeIds:next};
+  }),
 
   /** ----------- SHAPE ACTIONS ----------- */
 

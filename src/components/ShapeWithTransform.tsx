@@ -50,7 +50,8 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     panelSurfaceSelectMode,
     waitingForSurfaceSelection,
     raycastMode,
-    shapes
+    shapes,
+    rebuildingShapeIds
   } = useAppStore(useShallow(state => ({
     selectShape: state.selectShape,
     selectSecondaryShape: state.selectSecondaryShape,
@@ -78,7 +79,8 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     panelSurfaceSelectMode: state.panelSurfaceSelectMode,
     waitingForSurfaceSelection: state.waitingForSurfaceSelection,
     raycastMode: state.raycastMode,
-    shapes: state.shapes
+    shapes: state.shapes,
+    rebuildingShapeIds: state.rebuildingShapeIds
   })));
 
   const { scene } = useThree();
@@ -373,6 +375,8 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
   const isReferenceBox = shape.isReferenceBox;
   const shouldShowAsReference = isReferenceBox || isSecondarySelected;
   const isPanel = shape.type === 'panel';
+  const parentShapeId = isPanel ? shape.parameters?.parentShapeId : null;
+  const isParentRebuilding = parentShapeId ? rebuildingShapeIds.has(parentShapeId) : false;
   const hasPanels = (shape.facePanels && Object.keys(shape.facePanels).length > 0) ||
     shapes.some(s => s.type === 'panel' && s.parameters?.parentShapeId === shape.id);
   const hasFillets = shape.fillets && shape.fillets.length > 0;
@@ -388,6 +392,10 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     `vf-${shape.parameters.virtualFaceId}` === selectedPanelRow;
   const panelColor = (isPanelRowSelected || isVirtualPanelRowSelected) ? '#ef4444' : (shape.color || '#ffffff');
   if (shape.isolated === false) {
+    return null;
+  }
+
+  if (isParentRebuilding) {
     return null;
   }
 
