@@ -396,6 +396,54 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
     };
   }, [isDragging, dragOffset]);
 
+  useEffect(() => {
+    if (!selectedShape || !selectedShape.geometry) return;
+    if (selectedShape.faceRoles && Object.keys(selectedShape.faceRoles).length > 0) return;
+
+    const DEFAULT_ROLE_BY_IDX: FaceRole[] = ['Right', 'Left', 'Top', 'Bottom', 'Door', 'Back'];
+    const AXIS_ORDER: Record<string, number> = { 'x+': 0, 'x-': 1, 'y+': 2, 'y-': 3, 'z+': 4, 'z-': 5 };
+    const getAxisDir = (n: THREE.Vector3): string | null => {
+      const tol = 0.95;
+      if (n.x > tol) return 'x+';
+      if (n.x < -tol) return 'x-';
+      if (n.y > tol) return 'y+';
+      if (n.y < -tol) return 'y-';
+      if (n.z > tol) return 'z+';
+      if (n.z < -tol) return 'z-';
+      return null;
+    };
+
+    const faces = extractFacesFromGeometry(selectedShape.geometry);
+    const faceGroups = groupCoplanarFaces(faces);
+
+    const axisCandidates = new Map<string, number[]>();
+    faceGroups.forEach((group, groupIndex) => {
+      const axisDir = getAxisDir(group.normal);
+      if (axisDir === null) return;
+      if (!axisCandidates.has(axisDir)) axisCandidates.set(axisDir, []);
+      axisCandidates.get(axisDir)!.push(groupIndex);
+    });
+
+    const axisSorted = Array.from(axisCandidates.entries()).sort(
+      ([a], [b]) => (AXIS_ORDER[a] ?? 99) - (AXIS_ORDER[b] ?? 99)
+    );
+
+    if (axisSorted.length === 0) return;
+
+    const newFaceRoles: Record<number, FaceRole> = {};
+    axisSorted.forEach(([, groupIndices], roleIdx) => {
+      const defaultRole = DEFAULT_ROLE_BY_IDX[roleIdx] ?? null;
+      if (defaultRole === null) return;
+      groupIndices.forEach((gi) => {
+        newFaceRoles[gi] = defaultRole;
+      });
+    });
+
+    if (Object.keys(newFaceRoles).length > 0) {
+      updateShape(selectedShape.id, { faceRoles: newFaceRoles });
+    }
+  }, [selectedShape?.id, selectedShape?.geometry]);
+
   if (!isOpen) return null;
 
   return (
