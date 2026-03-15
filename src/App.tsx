@@ -24,6 +24,15 @@ function App() {
 
       if (shapes === prevShapes) return;
 
+      const nonPanelShapesChanged = shapes.some((s, i) => {
+        if (s.type === 'panel') return false;
+        const prev = prevShapes.find(p => p.id === s.id);
+        if (!prev) return false;
+        return prev.geometry !== s.geometry || prev.subtractionGeometries !== s.subtractionGeometries;
+      });
+
+      if (!nonPanelShapesChanged) return;
+
       for (const shape of shapes) {
         if (shape.type === 'panel' || !shape.geometry) continue;
 
@@ -32,27 +41,34 @@ function App() {
         );
         if (!hasAnyPanels) continue;
 
+        const prevShape = prevShapes.find(p => p.id === shape.id);
+        if (!prevShape) continue;
+
+        const geometryChanged = prevShape.geometry !== shape.geometry;
+        const subtractionChanged = prevShape.subtractionGeometries !== shape.subtractionGeometries;
+
+        if (!geometryChanged && !subtractionChanged) continue;
+
+        if (rebuildInProgressRef.current.has(shape.id)) continue;
+
         const key = [
           shape.geometry?.uuid,
           (shape.subtractionGeometries || []).length,
         ].join('|');
 
         const prevKey = prevGeometryKeysRef.current.get(shape.id);
-
-        if (prevKey && prevKey !== key && !rebuildInProgressRef.current.has(shape.id)) {
-          const profileId = state.activePanelProfileId;
-          const shapeId = shape.id;
-          rebuildInProgressRef.current.add(shapeId);
-          useAppStore.getState().setShapeRebuilding(shapeId, true);
-          import('./components/PanelJointService').then(({ rebuildAndRecalculatePipeline }) => {
-            rebuildAndRecalculatePipeline(shapeId, profileId).finally(() => {
-              rebuildInProgressRef.current.delete(shapeId);
-              useAppStore.getState().setShapeRebuilding(shapeId, false);
-            });
-          });
-        }
-
         prevGeometryKeysRef.current.set(shape.id, key);
+
+        if (!prevKey) continue;
+
+        const profileId = state.activePanelProfileId;
+        const shapeId = shape.id;
+        rebuildInProgressRef.current.add(shapeId);
+        import('./components/PanelJointService').then(({ rebuildAndRecalculatePipeline }) => {
+          rebuildAndRecalculatePipeline(shapeId, profileId).finally(() => {
+            rebuildInProgressRef.current.delete(shapeId);
+          });
+        });
       }
 
       for (const [id] of prevGeometryKeysRef.current) {
