@@ -1,6 +1,6 @@
 import React, { useRef, useMemo, useState, useEffect } from 'react';
 import * as THREE from 'three';
-import { useAppStore } from '../store';
+import { useAppStore, ViewMode } from '../store';
 import { useShallow } from 'zustand/react/shallow';
 import { extractFacesFromGeometry, groupCoplanarFaces } from './FaceEditor';
 
@@ -24,7 +24,8 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     panelSelectMode,
     panelSurfaceSelectMode,
     waitingForSurfaceSelection,
-    triggerPanelCreationForFace
+    triggerPanelCreationForFace,
+    viewMode
   } = useAppStore(useShallow(state => ({
     selectShape: state.selectShape,
     selectSecondaryShape: state.selectSecondaryShape,
@@ -35,7 +36,8 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     panelSelectMode: state.panelSelectMode,
     panelSurfaceSelectMode: state.panelSurfaceSelectMode,
     waitingForSurfaceSelection: state.waitingForSurfaceSelection,
-    triggerPanelCreationForFace: state.triggerPanelCreationForFace
+    triggerPanelCreationForFace: state.triggerPanelCreationForFace,
+    viewMode: state.viewMode
   })));
 
   const [faceGroups, setFaceGroups] = useState<any[]>([]);
@@ -79,6 +81,9 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
 
   if (!shape.geometry) return null;
 
+  const isWireframe = viewMode === ViewMode.WIREFRAME;
+  const isXray = viewMode === ViewMode.XRAY;
+
   const panelColor = shape.color || '#ffffff';
   const faceRole = shape.parameters?.faceRole;
 
@@ -108,7 +113,51 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   const baseColor = getRoleColor(faceRole);
   const shouldHighlightRed = isPanelRowSelected && panelSelectMode;
   const materialColor = shouldHighlightRed ? '#ef4444' : baseColor;
-  const edgeColor = shouldHighlightRed ? '#b91c1c' : isSelected ? '#1e40af' : '#000000';
+  const edgeColor = shouldHighlightRed ? '#b91c1c' : isSelected ? '#1e40af' : '#1a1a1a';
+
+  const handleClick = (e: any) => {
+    e.stopPropagation();
+
+    if (panelSurfaceSelectMode && waitingForSurfaceSelection && e.faceIndex !== undefined) {
+      const clickedFaceIndex = e.faceIndex;
+      const groupIndex = faceGroups.findIndex(group =>
+        group.faceIndices.includes(clickedFaceIndex)
+      );
+
+      if (groupIndex !== -1) {
+        const faceGroup = faceGroups[groupIndex];
+        const surfaceConstraint = {
+          center: [faceGroup.center.x, faceGroup.center.y, faceGroup.center.z] as [number, number, number],
+          normal: [faceGroup.normal.x, faceGroup.normal.y, faceGroup.normal.z] as [number, number, number],
+          constraintPanelId: shape.id
+        };
+
+        if (selectedShapeId !== parentShapeId) {
+          selectShape(parentShapeId);
+        }
+
+        triggerPanelCreationForFace(groupIndex, shape.id, surfaceConstraint);
+        return;
+      }
+    }
+
+    if (panelSurfaceSelectMode && parentShapeId) {
+      if (selectedShapeId !== parentShapeId) {
+        selectShape(parentShapeId);
+      }
+      setSelectedPanelRow(faceIndex ?? null, extraRowId || null);
+      selectSecondaryShape(null);
+    } else if (panelSelectMode && parentShapeId) {
+      if (selectedShapeId !== parentShapeId) {
+        selectShape(parentShapeId);
+      }
+      setSelectedPanelRow(faceIndex ?? null, extraRowId || null);
+      selectSecondaryShape(null);
+    } else {
+      selectShape(shape.id);
+      selectSecondaryShape(null);
+    }
+  };
 
   return (
     <group
@@ -117,83 +166,71 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
       rotation={shape.rotation}
       scale={shape.scale}
     >
-      <mesh
-        ref={meshRef}
-        geometry={shape.geometry}
-        castShadow
-        receiveShadow
-        onClick={(e) => {
-          e.stopPropagation();
-
-          if (panelSurfaceSelectMode && waitingForSurfaceSelection && e.faceIndex !== undefined) {
-            const clickedFaceIndex = e.faceIndex;
-            const groupIndex = faceGroups.findIndex(group =>
-              group.faceIndices.includes(clickedFaceIndex)
-            );
-
-            if (groupIndex !== -1) {
-              const faceGroup = faceGroups[groupIndex];
-              const surfaceConstraint = {
-                center: [faceGroup.center.x, faceGroup.center.y, faceGroup.center.z] as [number, number, number],
-                normal: [faceGroup.normal.x, faceGroup.normal.y, faceGroup.normal.z] as [number, number, number],
-                constraintPanelId: shape.id
-              };
-
-              console.log('🎯 Panel surface clicked for new panel creation:', {
-                panelId: shape.id,
-                clickedFaceIndex,
-                groupIndex,
-                parentShapeId,
-                surfaceConstraint
-              });
-
-              if (selectedShapeId !== parentShapeId) {
-                selectShape(parentShapeId);
-              }
-
-              triggerPanelCreationForFace(groupIndex, shape.id, surfaceConstraint);
-              return;
-            }
-          }
-
-          if (panelSurfaceSelectMode && parentShapeId) {
-            if (selectedShapeId !== parentShapeId) {
-              selectShape(parentShapeId);
-            }
-            setSelectedPanelRow(faceIndex ?? null, extraRowId || null);
-            selectSecondaryShape(null);
-            console.log('Panel surface selected:', {
-              parentShapeId,
-              faceIndex,
-              extraRowId: extraRowId || 'none',
-              panelId: shape.id
-            });
-          } else if (panelSelectMode && parentShapeId) {
-            if (selectedShapeId !== parentShapeId) {
-              selectShape(parentShapeId);
-            }
-            setSelectedPanelRow(faceIndex ?? null, extraRowId || null);
-            selectSecondaryShape(null);
-          } else {
-            selectShape(shape.id);
-            selectSecondaryShape(null);
-          }
-        }}
-      >
-        <meshStandardMaterial
-          color={materialColor}
-          emissive={isPanelRowSelected ? '#ef4444' : baseColor}
-          emissiveIntensity={isPanelRowSelected ? 0.35 : 0.1}
-          metalness={0}
-          roughness={0.4}
-          transparent={false}
-          opacity={1}
-          side={THREE.DoubleSide}
-          depthWrite={true}
-          flatShading={false}
-        />
-      </mesh>
-      {edgeGeometry && (
+      {!isWireframe && !isXray && (
+        <mesh
+          ref={meshRef}
+          geometry={shape.geometry}
+          castShadow
+          receiveShadow
+          onClick={handleClick}
+        >
+          <meshStandardMaterial
+            color={materialColor}
+            emissive={isPanelRowSelected ? '#ef4444' : baseColor}
+            emissiveIntensity={isPanelRowSelected ? 0.35 : 0.1}
+            metalness={0}
+            roughness={0.4}
+            transparent={false}
+            opacity={1}
+            side={THREE.DoubleSide}
+            depthWrite={true}
+            flatShading={false}
+          />
+        </mesh>
+      )}
+      {isWireframe && (
+        <>
+          <mesh
+            ref={meshRef}
+            geometry={shape.geometry}
+            visible={false}
+            onClick={handleClick}
+          />
+          {edgeGeometry && (
+            <lineSegments geometry={edgeGeometry}>
+              <lineBasicMaterial
+                color={isSelected ? '#60a5fa' : '#1a1a1a'}
+                linewidth={isPanelRowSelected ? 3 : isSelected ? 2.5 : 2}
+                depthTest={true}
+                depthWrite={true}
+              />
+            </lineSegments>
+          )}
+        </>
+      )}
+      {isXray && (
+        <mesh
+          ref={meshRef}
+          geometry={shape.geometry}
+          castShadow
+          receiveShadow
+          onClick={handleClick}
+        >
+          <meshStandardMaterial
+            color={materialColor}
+            emissive={isPanelRowSelected ? '#ef4444' : baseColor}
+            emissiveIntensity={isPanelRowSelected ? 0.35 : 0.1}
+            metalness={0}
+            roughness={0.4}
+            transparent={true}
+            opacity={0.45}
+            side={THREE.DoubleSide}
+            depthWrite={false}
+            flatShading={false}
+          />
+        </mesh>
+      )}
+      {!isWireframe && edgeGeometry && (
         <lineSegments geometry={edgeGeometry}>
           <lineBasicMaterial
             color={edgeColor}
