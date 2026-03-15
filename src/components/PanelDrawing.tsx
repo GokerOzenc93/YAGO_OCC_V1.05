@@ -111,9 +111,8 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   };
 
   const baseColor = getRoleColor(faceRole);
-  const shouldHighlightRed = isPanelRowSelected && panelSelectMode;
-  const materialColor = shouldHighlightRed ? '#ef4444' : baseColor;
-  const edgeColor = shouldHighlightRed ? '#b91c1c' : isSelected ? '#1e40af' : '#1a1a1a';
+  const materialColor = isPanelRowSelected ? '#ef4444' : baseColor;
+  const edgeColor = isPanelRowSelected ? '#b91c1c' : isSelected ? '#1e40af' : '#1a1a1a';
 
   const handleClick = (e: any) => {
     e.stopPropagation();
@@ -176,8 +175,8 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
         >
           <meshStandardMaterial
             color={materialColor}
-            emissive={isPanelRowSelected ? '#ef4444' : baseColor}
-            emissiveIntensity={isPanelRowSelected ? 0.35 : 0.1}
+            emissive={isPanelRowSelected ? '#ef4444' : '#000000'}
+            emissiveIntensity={isPanelRowSelected ? 0.4 : 0}
             metalness={0}
             roughness={0.4}
             transparent={false}
@@ -219,8 +218,8 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           >
             <meshStandardMaterial
               color={materialColor}
-              emissive={isPanelRowSelected ? '#ef4444' : baseColor}
-              emissiveIntensity={isPanelRowSelected ? 0.35 : 0.1}
+              emissive={isPanelRowSelected ? '#ef4444' : '#000000'}
+              emissiveIntensity={isPanelRowSelected ? 0.4 : 0}
               metalness={0}
               roughness={0.4}
               transparent={true}
