@@ -196,12 +196,13 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
   }, [shape.parameters?.width, shape.parameters?.height, shape.parameters?.depth, vertexModsString, shape.parameters?.modified, shape.geometry, shape.id]);
 
   useEffect(() => {
-    if (!groupRef.current || isUpdatingRef.current) return;
+    if (!groupRef.current) return;
+    if (isUpdatingRef.current && shape.id === useAppStore.getState().selectedShapeId) return;
 
     groupRef.current.position.set(shape.position[0], shape.position[1], shape.position[2]);
     groupRef.current.rotation.set(shape.rotation[0], shape.rotation[1], shape.rotation[2]);
     groupRef.current.scale.set(shape.scale[0], shape.scale[1], shape.scale[2]);
-  }, [shape.position, shape.rotation, shape.scale]);
+  }, [shape.position, shape.rotation, shape.scale, shape.id]);
 
   useEffect(() => {
     if (transformRef.current && isSelected && groupRef.current) {
@@ -249,12 +250,6 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
 
           isUpdatingRef.current = true;
 
-          updateShape(shape.id, {
-            position: finalPosition,
-            rotation: finalRotation,
-            scale: finalScale
-          });
-
           const positionDelta: [number, number, number] = [
             finalPosition[0] - initialTransformRef.current.position[0],
             finalPosition[1] - initialTransformRef.current.position[1],
@@ -271,27 +266,63 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
             finalScale[2] / initialTransformRef.current.scale[2]
           ];
 
-          initialTransformRef.current.childPanels.forEach((initialState, panelId) => {
-            updateShape(panelId, {
-              position: [
-                initialState.position[0] + positionDelta[0],
-                initialState.position[1] + positionDelta[1],
-                initialState.position[2] + positionDelta[2]
-              ],
-              rotation: [
-                initialState.rotation[0] + rotationDelta[0],
-                initialState.rotation[1] + rotationDelta[1],
-                initialState.rotation[2] + rotationDelta[2]
-              ],
-              scale: [
-                initialState.scale[0] * scaleDelta[0],
-                initialState.scale[1] * scaleDelta[1],
-                initialState.scale[2] * scaleDelta[2]
-              ]
-            });
-          });
-
+          const capturedPanels = initialTransformRef.current.childPanels;
           initialTransformRef.current = null;
+
+          useAppStore.setState((state) => {
+            const sh = state.shapes.find(s => s.id === shape.id);
+            if (!sh) return state;
+
+            const updatedShapes = state.shapes.map(s => {
+              if (s.id === shape.id) {
+                return { ...s, position: finalPosition, rotation: finalRotation, scale: finalScale };
+              }
+              if (sh.groupId && s.groupId === sh.groupId && s.id !== shape.id) {
+                return {
+                  ...s,
+                  position: [
+                    s.position[0] + positionDelta[0],
+                    s.position[1] + positionDelta[1],
+                    s.position[2] + positionDelta[2]
+                  ] as [number, number, number],
+                  rotation: [
+                    s.rotation[0] + rotationDelta[0],
+                    s.rotation[1] + rotationDelta[1],
+                    s.rotation[2] + rotationDelta[2]
+                  ] as [number, number, number],
+                  scale: [
+                    s.scale[0] * scaleDelta[0],
+                    s.scale[1] * scaleDelta[1],
+                    s.scale[2] * scaleDelta[2]
+                  ] as [number, number, number]
+                };
+              }
+              const panelInitial = capturedPanels.get(s.id);
+              if (panelInitial) {
+                return {
+                  ...s,
+                  position: [
+                    panelInitial.position[0] + positionDelta[0],
+                    panelInitial.position[1] + positionDelta[1],
+                    panelInitial.position[2] + positionDelta[2]
+                  ] as [number, number, number],
+                  rotation: [
+                    panelInitial.rotation[0] + rotationDelta[0],
+                    panelInitial.rotation[1] + rotationDelta[1],
+                    panelInitial.rotation[2] + rotationDelta[2]
+                  ] as [number, number, number],
+                  scale: [
+                    panelInitial.scale[0] * scaleDelta[0],
+                    panelInitial.scale[1] * scaleDelta[1],
+                    panelInitial.scale[2] * scaleDelta[2]
+                  ] as [number, number, number]
+                };
+              }
+              return s;
+            });
+
+            return { shapes: updatedShapes };
+          });
 
           requestAnimationFrame(() => {
             isUpdatingRef.current = false;
