@@ -398,6 +398,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
 
   useEffect(() => {
     if (!selectedShape || !selectedShape.geometry) return;
+    if (selectedShape.faceRoles && Object.keys(selectedShape.faceRoles).length > 0) return;
 
     const DEFAULT_ROLE_BY_IDX: FaceRole[] = ['Right', 'Left', 'Top', 'Bottom', 'Door', 'Back'];
     const AXIS_ORDER: Record<string, number> = { 'x+': 0, 'x-': 1, 'y+': 2, 'y-': 3, 'z+': 4, 'z-': 5 };
@@ -429,39 +430,16 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
 
     if (axisSorted.length === 0) return;
 
-    const existingRoles = selectedShape.faceRoles || {};
-
-    const axisRoleByDir = new Map<string, FaceRole>();
-    axisSorted.forEach(([axisDir], roleIdx) => {
+    const newFaceRoles: Record<number, FaceRole> = {};
+    axisSorted.forEach(([, groupIndices], roleIdx) => {
       const defaultRole = DEFAULT_ROLE_BY_IDX[roleIdx] ?? null;
       if (defaultRole === null) return;
-      axisRoleByDir.set(axisDir, defaultRole);
-    });
-
-    const currentAxisGroupIndices = new Set<number>();
-    axisSorted.forEach(([, groupIndices]) => {
-      groupIndices.forEach((gi) => currentAxisGroupIndices.add(gi));
-    });
-
-    const manualRoles: Record<number, FaceRole> = {};
-    Object.entries(existingRoles).forEach(([key, role]) => {
-      const gi = Number(key);
-      if (!currentAxisGroupIndices.has(gi)) {
-        manualRoles[gi] = role;
-      }
-    });
-
-    const newFaceRoles: Record<number, FaceRole> = { ...manualRoles };
-    axisSorted.forEach(([axisDir, groupIndices]) => {
-      const role = axisRoleByDir.get(axisDir) ?? null;
-      if (role === null) return;
       groupIndices.forEach((gi) => {
-        newFaceRoles[gi] = role;
+        newFaceRoles[gi] = defaultRole;
       });
     });
 
-    const hasChanged = JSON.stringify(newFaceRoles) !== JSON.stringify(existingRoles);
-    if (hasChanged) {
+    if (Object.keys(newFaceRoles).length > 0) {
       updateShape(selectedShape.id, { faceRoles: newFaceRoles });
     }
   }, [selectedShape?.id, selectedShape?.geometry]);
