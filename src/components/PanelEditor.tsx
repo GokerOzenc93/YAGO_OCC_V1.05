@@ -952,7 +952,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                             if (el) rowRefs.current.set(i, el);
                             else rowRefs.current.delete(i);
                           }}
-                          className={`flex w-fit gap-0.5 items-center rounded transition-colors ${isRowSelected ? 'bg-orange-50 ring-1 ring-orange-400' : 'hover:bg-gray-50'} ${facePanels[i] ? 'cursor-pointer' : ''}`}
+                          className={`flex w-fit gap-0.5 items-center rounded transition-colors ${isRowSelected ? 'bg-red-100 ring-1 ring-red-600' : 'hover:bg-gray-50'} ${facePanels[i] ? 'cursor-pointer' : ''}`}
                           onClick={(e) => {
                             e.stopPropagation();
                             if (facePanels[i]) handleRowClick(i);
@@ -1170,7 +1170,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                     return (
                       <div
                         key={vf.id}
-                        className={`flex w-fit gap-0.5 items-center rounded transition-colors ${isRowSelected ? 'bg-orange-50 ring-1 ring-orange-400' : 'hover:bg-gray-50'} ${vf.hasPanel ? 'cursor-pointer' : ''}`}
+                        className={`flex w-fit gap-0.5 items-center rounded transition-colors ${isRowSelected ? 'bg-red-100 ring-1 ring-red-600' : 'hover:bg-gray-50'} ${vf.hasPanel ? 'cursor-pointer' : ''}`}
                         onClick={(e) => {
                           e.stopPropagation();
                           if (vf.hasPanel) handleVirtualRowClick();
