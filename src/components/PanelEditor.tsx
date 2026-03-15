@@ -3,7 +3,8 @@ import { X, GripVertical, MousePointer, Layers, RotateCw, Plus, Trash2, Eye, Eye
 import { globalSettingsService, faceLabelRoleDefaultsService, GlobalSettingsProfile } from './GlobalSettingsDatabase';
 import { useAppStore } from '../store';
 import type { FaceRole } from '../store';
-import { extractFacesFromGeometry, groupCoplanarFaces, FaceData, CoplanarFaceGroup } from './FaceEditor';
+import { extractFacesFromGeometry, groupCoplanarFaces, createFaceDescriptor, FaceData, CoplanarFaceGroup } from './FaceEditor';
+import type { FaceDescriptor } from '../store';
 import { resolveAllPanelJoints, restoreAllPanels, rebuildAllPanels, rebuildAndRecalculatePipeline } from './PanelJointService';
 import type { FilletData } from './Fillet';
 import * as THREE from 'three';
@@ -656,6 +657,18 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
               const roleOptions: FaceRole[] = ['Left', 'Right', 'Top', 'Bottom', 'Back', 'Door'];
               const isDisabled = selectedProfile === 'none';
 
+              const buildDescriptors = (): Record<number, FaceDescriptor> => {
+                const descriptors: Record<number, FaceDescriptor> = { ...(selectedShape.faceGroupDescriptors || {}) };
+                faceGroups.forEach((group, gi) => {
+                  const repFaceIdx = group.faceIndices[0];
+                  const repFace = faces[repFaceIdx];
+                  if (repFace) {
+                    descriptors[gi] = createFaceDescriptor(repFace, geometry);
+                  }
+                });
+                return descriptors;
+              };
+
               const handleTogglePanel = async (faceIndex: number) => {
                 if (isDisabled) return;
                 const newFacePanels = { ...facePanels };
@@ -675,7 +688,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                   newFacePanels[faceIndex] = true;
                   await createPanelForFace(faceGroups[faceIndex], faces, faceIndex);
                 }
-                updateShape(selectedShape.id, { facePanels: newFacePanels });
+                updateShape(selectedShape.id, { facePanels: newFacePanels, faceGroupDescriptors: buildDescriptors() });
 
                 if (selectedProfile !== 'none') {
                   setResolving(true);
@@ -979,7 +992,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                               if (newRole === null) {
                                 delete newFaceRoles[i];
                               }
-                              updateShape(selectedShape.id, { faceRoles: newFaceRoles });
+                              updateShape(selectedShape.id, { faceRoles: newFaceRoles, faceGroupDescriptors: buildDescriptors() });
 
                               if (newRole !== null && labelText && !labelText.startsWith('S') && !labelText.startsWith('F')) {
                                 faceLabelRoleDefaultsService.upsert(labelText, newRole);
@@ -1024,7 +1037,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                             onClick={(e) => e.stopPropagation()}
                             onChange={(e) => {
                               const newDescriptions = { ...faceDescriptions, [i]: e.target.value };
-                              updateShape(selectedShape.id, { faceDescriptions: newDescriptions });
+                              updateShape(selectedShape.id, { faceDescriptions: newDescriptions, faceGroupDescriptors: buildDescriptors() });
                             }}
                             placeholder="description"
                             style={{ width: '40mm' }}

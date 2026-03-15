@@ -396,6 +396,154 @@ async function generateFrontBazaPanels(
   }
 }
 
+export async function remapFaceDataAfterGeometryChange(parentShapeId: string): Promise<void> {
+  const state = useAppStore.getState();
+  const parentShape = state.shapes.find(s => s.id === parentShapeId);
+  if (!parentShape || !parentShape.geometry) return;
+
+  const descriptors = parentShape.faceGroupDescriptors;
+  if (!descriptors || Object.keys(descriptors).length === 0) return;
+
+  const hasAnyFaceData =
+    Object.keys(parentShape.faceRoles || {}).length > 0 ||
+    Object.keys(parentShape.facePanels || {}).length > 0 ||
+    Object.keys(parentShape.faceDescriptions || {}).length > 0;
+
+  if (!hasAnyFaceData) return;
+
+  const { extractFacesFromGeometry, groupCoplanarFaces, createFaceDescriptor } = await import('./FaceEditor');
+
+  const faces = extractFacesFromGeometry(parentShape.geometry);
+  const newFaceGroups = groupCoplanarFaces(faces);
+
+  const oldToNew = new Map<number, number>();
+
+  for (const [oldIdxStr, descriptor] of Object.entries(descriptors)) {
+    const oldIdx = parseInt(oldIdxStr);
+    let bestNewIdx = -1;
+    let bestScore = Infinity;
+
+    for (let newIdx = 0; newIdx < newFaceGroups.length; newIdx++) {
+      const group = newFaceGroups[newIdx];
+      const repFaceIdx = group.faceIndices[0];
+      const repFace = faces[repFaceIdx];
+      if (!repFace) continue;
+
+      const newDesc = createFaceDescriptor(repFace, parentShape.geometry);
+
+      const sameAxis = descriptor.axisDirection && newDesc.axisDirection === descriptor.axisDirection;
+      const neitherAxis = !descriptor.axisDirection && !newDesc.axisDirection;
+
+      if (!sameAxis && !neitherAxis) continue;
+
+      let score: number;
+      if (sameAxis) {
+        const axis = descriptor.axisDirection!;
+        let diff = 0;
+        if (axis === 'x+' || axis === 'x-') {
+          diff = Math.sqrt(
+            Math.pow(newDesc.normalizedCenter[1] - descriptor.normalizedCenter[1], 2) +
+            Math.pow(newDesc.normalizedCenter[2] - descriptor.normalizedCenter[2], 2)
+          );
+        } else if (axis === 'y+' || axis === 'y-') {
+          diff = Math.sqrt(
+            Math.pow(newDesc.normalizedCenter[0] - descriptor.normalizedCenter[0], 2) +
+            Math.pow(newDesc.normalizedCenter[2] - descriptor.normalizedCenter[2], 2)
+          );
+        } else {
+          diff = Math.sqrt(
+            Math.pow(newDesc.normalizedCenter[0] - descriptor.normalizedCenter[0], 2) +
+            Math.pow(newDesc.normalizedCenter[1] - descriptor.normalizedCenter[1], 2)
+          );
+        }
+        score = diff * 10;
+      } else {
+        const targetNormal = new THREE.Vector3(...descriptor.normal);
+        const dot = targetNormal.dot(repFace.normal);
+        const angle = Math.acos(Math.min(1, Math.max(-1, dot))) * (180 / Math.PI);
+        if (angle > 15) continue;
+        const centerDiff = Math.sqrt(
+          Math.pow(newDesc.normalizedCenter[0] - descriptor.normalizedCenter[0], 2) +
+          Math.pow(newDesc.normalizedCenter[1] - descriptor.normalizedCenter[1], 2) +
+          Math.pow(newDesc.normalizedCenter[2] - descriptor.normalizedCenter[2], 2)
+        );
+        score = angle * 2 + centerDiff * 10;
+      }
+
+      if (score < bestScore) {
+        bestScore = score;
+        bestNewIdx = newIdx;
+      }
+    }
+
+    if (bestNewIdx !== -1 && bestNewIdx !== oldIdx) {
+      oldToNew.set(oldIdx, bestNewIdx);
+    } else if (bestNewIdx === oldIdx) {
+      oldToNew.set(oldIdx, oldIdx);
+    }
+  }
+
+  if (oldToNew.size === 0) return;
+
+  const changed = Array.from(oldToNew.entries()).some(([o, n]) => o !== n);
+  if (!changed) return;
+
+  const oldFaceRoles = parentShape.faceRoles || {};
+  const oldFacePanels = parentShape.facePanels || {};
+  const oldFaceDescriptions = parentShape.faceDescriptions || {};
+
+  const newFaceRoles: Record<number, import('../store').FaceRole> = {};
+  const newFacePanels: Record<number, boolean> = {};
+  const newFaceDescriptions: Record<number, string> = {};
+  const newFaceGroupDescriptors: Record<number, import('../store').FaceDescriptor> = {};
+
+  for (const [oldIdxStr, descriptor] of Object.entries(descriptors)) {
+    const oldIdx = parseInt(oldIdxStr);
+    const newIdx = oldToNew.get(oldIdx) ?? oldIdx;
+
+    if (oldFaceRoles[oldIdx] !== undefined) newFaceRoles[newIdx] = oldFaceRoles[oldIdx];
+    if (oldFacePanels[oldIdx] !== undefined) newFacePanels[newIdx] = oldFacePanels[oldIdx];
+    if (oldFaceDescriptions[oldIdx] !== undefined) newFaceDescriptions[newIdx] = oldFaceDescriptions[oldIdx];
+
+    const group = newFaceGroups[newIdx];
+    if (group) {
+      const repFaceIdx = group.faceIndices[0];
+      const repFace = faces[repFaceIdx];
+      if (repFace) {
+        newFaceGroupDescriptors[newIdx] = createFaceDescriptor(repFace, parentShape.geometry);
+      }
+    }
+  }
+
+  useAppStore.setState((st) => ({
+    shapes: st.shapes.map(s => {
+      if (s.id === parentShapeId) {
+        return {
+          ...s,
+          faceRoles: newFaceRoles,
+          facePanels: newFacePanels,
+          faceDescriptions: newFaceDescriptions,
+          faceGroupDescriptors: newFaceGroupDescriptors,
+        };
+      }
+      if (s.type === 'panel' && s.parameters?.parentShapeId === parentShapeId && s.parameters?.faceIndex !== undefined) {
+        const oldIdx = s.parameters.faceIndex;
+        const newIdx = oldToNew.get(oldIdx);
+        if (newIdx !== undefined && newIdx !== oldIdx) {
+          return {
+            ...s,
+            parameters: {
+              ...s.parameters,
+              faceIndex: newIdx,
+            }
+          };
+        }
+      }
+      return s;
+    })
+  }));
+}
+
 export async function rebuildAllPanels(parentShapeId: string): Promise<void> {
   const state = useAppStore.getState();
   const parentShape = state.shapes.find(s => s.id === parentShapeId);
@@ -775,6 +923,7 @@ export async function rebuildAndRecalculatePipeline(
   parentShapeId: string,
   profileId: string | null
 ): Promise<void> {
+  await remapFaceDataAfterGeometryChange(parentShapeId);
   await rebuildAllPanels(parentShapeId);
 
   if (profileId && profileId !== 'none') {
