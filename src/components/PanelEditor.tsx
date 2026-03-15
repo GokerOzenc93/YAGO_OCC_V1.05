@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { X, GripVertical, MousePointer, Layers, RotateCw, Plus, Trash2, Eye, EyeOff } from 'lucide-react';
-import { globalSettingsService, GlobalSettingsProfile } from './GlobalSettingsDatabase';
+import { globalSettingsService, faceLabelRoleDefaultsService, GlobalSettingsProfile } from './GlobalSettingsDatabase';
 import { useAppStore } from '../store';
 import type { FaceRole } from '../store';
 import { extractFacesFromGeometry, groupCoplanarFaces, FaceData, CoplanarFaceGroup } from './FaceEditor';
@@ -398,50 +398,145 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
 
   useEffect(() => {
     if (!selectedShape || !selectedShape.geometry) return;
-    if (selectedShape.faceRoles && Object.keys(selectedShape.faceRoles).length > 0) return;
 
-    const DEFAULT_ROLE_BY_IDX: FaceRole[] = ['Right', 'Left', 'Top', 'Bottom', 'Door', 'Back'];
-    const AXIS_ORDER: Record<string, number> = { 'x+': 0, 'x-': 1, 'y+': 2, 'y-': 3, 'z+': 4, 'z-': 5 };
-    const getAxisDir = (n: THREE.Vector3): string | null => {
-      const tol = 0.95;
-      if (n.x > tol) return 'x+';
-      if (n.x < -tol) return 'x-';
-      if (n.y > tol) return 'y+';
-      if (n.y < -tol) return 'y-';
-      if (n.z > tol) return 'z+';
-      if (n.z < -tol) return 'z-';
-      return null;
+    const applyLabelDefaults = async () => {
+      const labelDefaults = await faceLabelRoleDefaultsService.getAll();
+      if (Object.keys(labelDefaults).length === 0) return;
+
+      const AXIS_ORDER: Record<string, number> = { 'x+': 0, 'x-': 1, 'y+': 2, 'y-': 3, 'z+': 4, 'z-': 5 };
+      const getAxisDir = (n: THREE.Vector3): string | null => {
+        const tol = 0.95;
+        if (n.x > tol) return 'x+';
+        if (n.x < -tol) return 'x-';
+        if (n.y > tol) return 'y+';
+        if (n.y < -tol) return 'y-';
+        if (n.z > tol) return 'z+';
+        if (n.z < -tol) return 'z-';
+        return null;
+      };
+
+      const geometry = selectedShape.geometry;
+      const faces = extractFacesFromGeometry(geometry);
+      const faceGroups = groupCoplanarFaces(faces);
+      const subtractionGeometries: any[] = selectedShape.subtractionGeometries || [];
+      const fillets: any[] = selectedShape.fillets || [];
+
+      const mainBbox = new THREE.Box3().setFromBufferAttribute(geometry.getAttribute('position'));
+      const cuttingPlanes: Array<{ normal: THREE.Vector3; constant: number }> = [];
+      subtractionGeometries.forEach((sub: any) => {
+        const subGeo = sub.geometry;
+        if (!subGeo) return;
+        const subBbox = new THREE.Box3().setFromBufferAttribute(subGeo.getAttribute('position'));
+        const offset = new THREE.Vector3(...sub.relativeOffset);
+        const rot = sub.relativeRotation;
+        const rotMatrix = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rot[0], rot[1], rot[2], 'XYZ'));
+        const corners = [
+          new THREE.Vector3(subBbox.min.x, subBbox.min.y, subBbox.min.z),
+          new THREE.Vector3(subBbox.max.x, subBbox.min.y, subBbox.min.z),
+          new THREE.Vector3(subBbox.min.x, subBbox.max.y, subBbox.min.z),
+          new THREE.Vector3(subBbox.max.x, subBbox.max.y, subBbox.min.z),
+          new THREE.Vector3(subBbox.min.x, subBbox.min.y, subBbox.max.z),
+          new THREE.Vector3(subBbox.max.x, subBbox.min.y, subBbox.max.z),
+          new THREE.Vector3(subBbox.min.x, subBbox.max.y, subBbox.max.z),
+          new THREE.Vector3(subBbox.max.x, subBbox.max.y, subBbox.max.z),
+        ].map(c => c.applyMatrix4(rotMatrix).add(offset));
+        const worldBbox = new THREE.Box3().setFromPoints(corners);
+        const faceNormals = [
+          new THREE.Vector3(1,0,0), new THREE.Vector3(-1,0,0),
+          new THREE.Vector3(0,1,0), new THREE.Vector3(0,-1,0),
+          new THREE.Vector3(0,0,1), new THREE.Vector3(0,0,-1),
+        ];
+        const faceConstants = [
+          -worldBbox.max.x, worldBbox.min.x,
+          -worldBbox.max.y, worldBbox.min.y,
+          -worldBbox.max.z, worldBbox.min.z,
+        ];
+        const facePlanePositions = [
+          worldBbox.max.x, worldBbox.min.x,
+          worldBbox.max.y, worldBbox.min.y,
+          worldBbox.max.z, worldBbox.min.z,
+        ];
+        for (let pi = 0; pi < 6; pi++) {
+          const pos = facePlanePositions[pi];
+          const axisIdx = Math.floor(pi / 2);
+          const minVal = axisIdx === 0 ? mainBbox.min.x : axisIdx === 1 ? mainBbox.min.y : mainBbox.min.z;
+          const maxVal = axisIdx === 0 ? mainBbox.max.x : axisIdx === 1 ? mainBbox.max.y : mainBbox.max.z;
+          if (pos > minVal + 1.0 && pos < maxVal - 1.0) {
+            cuttingPlanes.push({ normal: faceNormals[pi], constant: faceConstants[pi] });
+          }
+        }
+      });
+
+      const subtractorIndices = new Set<number>();
+      const filletIndices = new Set<number>();
+      const axisCandidates = new Map<string, number[]>();
+
+      faceGroups.forEach((group, groupIndex) => {
+        const axisDir = getAxisDir(group.normal);
+        if (axisDir === null) {
+          for (let fi = 0; fi < fillets.length; fi++) {
+            const fillet = fillets[fi];
+            const radius = fillet.radius;
+            const tol = Math.max(radius * 2.0, 10);
+            const n1 = new THREE.Vector3(...fillet.face1Data.normal);
+            const n2 = new THREE.Vector3(...fillet.face2Data.normal);
+            const d1 = fillet.face1Data.planeD ?? n1.dot(new THREE.Vector3(...fillet.face1Data.center));
+            const d2 = fillet.face2Data.planeD ?? n2.dot(new THREE.Vector3(...fillet.face2Data.center));
+            if (Math.abs(n1.dot(group.center) - d1) < tol && Math.abs(n2.dot(group.center) - d2) < tol) {
+              filletIndices.add(groupIndex);
+              return;
+            }
+          }
+          return;
+        }
+        if (cuttingPlanes.length > 0) {
+          for (const plane of cuttingPlanes) {
+            const normalDot = Math.abs(group.normal.dot(plane.normal));
+            if (normalDot < 0.95) continue;
+            const dist = group.center.dot(plane.normal) + plane.constant;
+            if (Math.abs(dist) < 1.0) {
+              subtractorIndices.add(groupIndex);
+              return;
+            }
+          }
+        }
+        if (!axisCandidates.has(axisDir)) axisCandidates.set(axisDir, []);
+        axisCandidates.get(axisDir)!.push(groupIndex);
+      });
+
+      const axisSorted = Array.from(axisCandidates.entries()).sort(
+        ([a], [b]) => (AXIS_ORDER[a] ?? 99) - (AXIS_ORDER[b] ?? 99)
+      );
+
+      const labelForGroupIndex = new Map<number, string>();
+      axisSorted.forEach(([, groupIndices], roleIdx) => {
+        const roleNumber = roleIdx + 1;
+        if (groupIndices.length > 1) {
+          groupIndices.forEach((gi, subIdx) => {
+            labelForGroupIndex.set(gi, `${roleNumber}-${subIdx + 1}`);
+          });
+        } else {
+          labelForGroupIndex.set(groupIndices[0], `${roleNumber}`);
+        }
+      });
+
+      const currentFaceRoles = selectedShape.faceRoles || {};
+      const updates: Record<number, FaceRole> = {};
+
+      labelForGroupIndex.forEach((label, groupIndex) => {
+        if (groupIndex in currentFaceRoles) return;
+        const defaultRole = labelDefaults[label];
+        if (defaultRole) {
+          updates[groupIndex] = defaultRole as FaceRole;
+        }
+      });
+
+      if (Object.keys(updates).length > 0) {
+        updateShape(selectedShape.id, { faceRoles: { ...currentFaceRoles, ...updates } });
+      }
     };
 
-    const faces = extractFacesFromGeometry(selectedShape.geometry);
-    const faceGroups = groupCoplanarFaces(faces);
-
-    const axisCandidates = new Map<string, number[]>();
-    faceGroups.forEach((group, groupIndex) => {
-      const axisDir = getAxisDir(group.normal);
-      if (axisDir === null) return;
-      if (!axisCandidates.has(axisDir)) axisCandidates.set(axisDir, []);
-      axisCandidates.get(axisDir)!.push(groupIndex);
-    });
-
-    const axisSorted = Array.from(axisCandidates.entries()).sort(
-      ([a], [b]) => (AXIS_ORDER[a] ?? 99) - (AXIS_ORDER[b] ?? 99)
-    );
-
-    if (axisSorted.length === 0) return;
-
-    const newFaceRoles: Record<number, FaceRole> = {};
-    axisSorted.forEach(([, groupIndices], roleIdx) => {
-      const defaultRole = DEFAULT_ROLE_BY_IDX[roleIdx] ?? null;
-      if (defaultRole === null) return;
-      groupIndices.forEach((gi) => {
-        newFaceRoles[gi] = defaultRole;
-      });
-    });
-
-    if (Object.keys(newFaceRoles).length > 0) {
-      updateShape(selectedShape.id, { faceRoles: newFaceRoles });
-    }
+    applyLabelDefaults();
   }, [selectedShape?.id, selectedShape?.geometry]);
 
   if (!isOpen) return null;
@@ -894,6 +989,10 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                                 delete newFaceRoles[i];
                               }
                               updateShape(selectedShape.id, { faceRoles: newFaceRoles });
+
+                              if (newRole !== null && labelText && !labelText.startsWith('S') && !labelText.startsWith('F')) {
+                                faceLabelRoleDefaultsService.upsert(labelText, newRole);
+                              }
 
                               const panelShape = shapes.find(s =>
                                 s.type === 'panel' &&

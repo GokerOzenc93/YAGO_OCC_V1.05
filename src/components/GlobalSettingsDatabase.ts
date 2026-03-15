@@ -207,3 +207,33 @@ class GlobalSettingsService {
 }
 
 export const globalSettingsService = new GlobalSettingsService();
+
+class FaceLabelRoleDefaultsService {
+  async getAll(): Promise<Record<string, string>> {
+    if (!supabase) return {};
+    const { data, error } = await supabase
+      .from('face_label_role_defaults')
+      .select('label, role');
+    if (error) {
+      console.error('Failed to get face label role defaults:', error);
+      return {};
+    }
+    const map: Record<string, string> = {};
+    (data || []).forEach((row: { label: string; role: string }) => {
+      map[row.label] = row.role;
+    });
+    return map;
+  }
+
+  async upsert(label: string, role: string): Promise<void> {
+    if (!supabase) return;
+    const { error } = await supabase
+      .from('face_label_role_defaults')
+      .upsert({ label, role, updated_at: new Date().toISOString() }, { onConflict: 'label' });
+    if (error) {
+      console.error('Failed to upsert face label role default:', error);
+    }
+  }
+}
+
+export const faceLabelRoleDefaultsService = new FaceLabelRoleDefaultsService();
