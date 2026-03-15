@@ -7,9 +7,10 @@ import StatusBar from './components/StatusBar';
 import CatalogPanel from './components/CatalogPanel';
 import { useAppStore } from './store';
 import { catalogService, CatalogItem } from './components/Database';
+import { initReplicad } from './components/ReplicadService';
 
 function App() {
-  const { opencascadeLoading, addShape } = useAppStore();
+  const { opencascadeLoading, setOpenCascadeLoading, addShape } = useAppStore();
   const [catalogOpen, setCatalogOpen] = useState(false);
   const [catalogItems, setCatalogItems] = useState<CatalogItem[]>([]);
 
@@ -88,6 +89,13 @@ function App() {
 
   useEffect(() => {
     loadCatalogItems();
+  }, []);
+
+  useEffect(() => {
+    setOpenCascadeLoading(true);
+    initReplicad()
+      .catch((err) => console.error('Failed to preload OpenCascade:', err))
+      .finally(() => setOpenCascadeLoading(false));
   }, []);
 
   const loadCatalogItems = async () => {

@@ -66,6 +66,7 @@ import {
 import { ParametersPanel } from './ParametersPanel';
 import { PanelEditor } from './PanelEditor';
 import { GlobalSettingsPanel } from './GlobalSettingsPanel';
+import { createReplicadBox, convertReplicadToThreeGeometry, performBooleanCut } from './ReplicadService';
 
 interface ToolbarProps {
   onOpenCatalog: () => void;
@@ -211,8 +212,6 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
     e?.preventDefault();
     e?.stopPropagation();
     try {
-      const { createReplicadBox, convertReplicadToThreeGeometry } =
-        await import('./ReplicadService');
       const w = 600,
         h = 600,
         d = 600;
@@ -265,8 +264,6 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
 
       if (!intersecting.length) return;
 
-      const { performBooleanCut, convertReplicadToThreeGeometry } =
-        await import('./ReplicadService');
       const { getReplicadVertices } = await import('./VertexEditorService');
 
       for (const target of intersecting) {
