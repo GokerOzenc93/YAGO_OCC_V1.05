@@ -89,42 +89,45 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
       const posAttr = shape.geometry.getAttribute('position') as THREE.BufferAttribute;
       if (!posAttr) return null;
 
-      const bbox = new THREE.Box3().setFromBufferAttribute(posAttr);
-      const mn = bbox.min;
-      const mx = bbox.max;
+      const worldMat = new THREE.Matrix4()
+        .makeRotationFromEuler(new THREE.Euler(shape.rotation[0], shape.rotation[1], shape.rotation[2]))
+        .setPosition(shape.position[0], shape.position[1], shape.position[2]);
 
-      const rotMatrix = new THREE.Matrix4().makeRotationFromEuler(
-        new THREE.Euler(shape.rotation[0], shape.rotation[1], shape.rotation[2])
-      );
+      const worldBbox = new THREE.Box3();
+      const tmpV = new THREE.Vector3();
+      const arr = posAttr.array as Float32Array;
+      for (let i = 0; i < arr.length; i += 3) {
+        tmpV.set(arr[i], arr[i + 1], arr[i + 2]).applyMatrix4(worldMat);
+        worldBbox.expandByPoint(tmpV);
+      }
+      const wn = worldBbox.min;
+      const wx = worldBbox.max;
 
-      const localCorners = [
-        new THREE.Vector3(mn.x, mn.y, mn.z),
-        new THREE.Vector3(mx.x, mn.y, mn.z),
-        new THREE.Vector3(mn.x, mx.y, mn.z),
-        new THREE.Vector3(mx.x, mx.y, mn.z),
-        new THREE.Vector3(mn.x, mn.y, mx.z),
-        new THREE.Vector3(mx.x, mn.y, mx.z),
-        new THREE.Vector3(mn.x, mx.y, mx.z),
-        new THREE.Vector3(mx.x, mx.y, mx.z),
+      const worldCorners = [
+        new THREE.Vector3(wn.x, wn.y, wn.z),
+        new THREE.Vector3(wx.x, wn.y, wn.z),
+        new THREE.Vector3(wn.x, wx.y, wn.z),
+        new THREE.Vector3(wx.x, wx.y, wn.z),
+        new THREE.Vector3(wn.x, wn.y, wx.z),
+        new THREE.Vector3(wx.x, wn.y, wx.z),
+        new THREE.Vector3(wn.x, wx.y, wx.z),
+        new THREE.Vector3(wx.x, wx.y, wx.z),
       ];
 
-      const localEdgeIndexPairs: [number, number][] = [
+      const edgePairs: [number, number][] = [
         [0,1],[2,3],[4,5],[6,7],
         [0,2],[1,3],[4,6],[5,7],
         [0,4],[1,5],[2,6],[3,7],
       ];
 
-      const worldXPairs: [THREE.Vector3, THREE.Vector3][] = [];
-      const worldYPairs: [THREE.Vector3, THREE.Vector3][] = [];
-      const worldZPairs: [THREE.Vector3, THREE.Vector3][] = [];
+      const xPairs: [THREE.Vector3, THREE.Vector3][] = [];
+      const yPairs: [THREE.Vector3, THREE.Vector3][] = [];
+      const zPairs: [THREE.Vector3, THREE.Vector3][] = [];
 
-      for (const [i, j] of localEdgeIndexPairs) {
-        const a = localCorners[i];
-        const b = localCorners[j];
-
-        const wa = a.clone().applyMatrix4(rotMatrix);
-        const wb = b.clone().applyMatrix4(rotMatrix);
-        const dir = wb.clone().sub(wa);
+      for (const [i, j] of edgePairs) {
+        const a = worldCorners[i];
+        const b = worldCorners[j];
+        const dir = b.clone().sub(a);
         const len = dir.length();
         if (len < 0.001) continue;
         dir.divideScalar(len);
@@ -133,35 +136,34 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
         const az = Math.abs(dir.z);
 
         if (ax >= ay && ax >= az) {
-          worldXPairs.push([a, b]);
+          xPairs.push([a, b]);
         } else if (ay >= ax && ay >= az) {
-          worldYPairs.push([a, b]);
+          yPairs.push([a, b]);
         } else {
-          worldZPairs.push([a, b]);
+          zPairs.push([a, b]);
         }
       }
 
-      const buildLineGeo = (pairs: [THREE.Vector3, THREE.Vector3][]) => {
+      const buildGeo = (pairs: [THREE.Vector3, THREE.Vector3][]) => {
         if (pairs.length === 0) return null;
-        const positions: number[] = [];
+        const pos: number[] = [];
         for (const [a, b] of pairs) {
-          positions.push(a.x, a.y, a.z, b.x, b.y, b.z);
+          pos.push(a.x, a.y, a.z, b.x, b.y, b.z);
         }
         const geo = new THREE.BufferGeometry();
-        geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
         return geo;
       };
 
       return {
-        x: buildLineGeo(worldXPairs),
-        y: buildLineGeo(worldYPairs),
-        z: buildLineGeo(worldZPairs),
-        bbox: { min: mn, max: mx }
+        x: buildGeo(xPairs),
+        y: buildGeo(yPairs),
+        z: buildGeo(zPairs),
       };
     } catch {
       return null;
     }
-  }, [shape.geometry, shape.rotation, isEditingThisPanel]);
+  }, [shape.geometry, shape.rotation, shape.position, isEditingThisPanel]);
 
   if (!shape.geometry) return null;
 
@@ -244,6 +246,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   };
 
   return (
+    <>
     <group
       name={`shape-${shape.id}`}
       position={shape.position}
@@ -339,41 +342,6 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
         </lineSegments>
       )}
 
-      {isEditingThisPanel && axisEdgeData && (
-        <>
-          {axisEdgeData.x && (
-            <lineSegments geometry={axisEdgeData.x} renderOrder={10}>
-              <lineBasicMaterial
-                color="#ef4444"
-                linewidth={4}
-                depthTest={false}
-                transparent={false}
-              />
-            </lineSegments>
-          )}
-          {axisEdgeData.y && (
-            <lineSegments geometry={axisEdgeData.y} renderOrder={10}>
-              <lineBasicMaterial
-                color="#22c55e"
-                linewidth={4}
-                depthTest={false}
-                transparent={false}
-              />
-            </lineSegments>
-          )}
-          {axisEdgeData.z && (
-            <lineSegments geometry={axisEdgeData.z} renderOrder={10}>
-              <lineBasicMaterial
-                color="#3b82f6"
-                linewidth={4}
-                depthTest={false}
-                transparent={false}
-              />
-            </lineSegments>
-          )}
-        </>
-      )}
-
       {isPanelRowSelected && (
         <DirectionArrow
           geometry={shape.geometry}
@@ -382,6 +350,42 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
         />
       )}
     </group>
+
+    {isEditingThisPanel && axisEdgeData && (
+      <>
+        {axisEdgeData.x && (
+          <lineSegments geometry={axisEdgeData.x} renderOrder={10}>
+            <lineBasicMaterial
+              color="#ef4444"
+              linewidth={4}
+              depthTest={false}
+              transparent={false}
+            />
+          </lineSegments>
+        )}
+        {axisEdgeData.y && (
+          <lineSegments geometry={axisEdgeData.y} renderOrder={10}>
+            <lineBasicMaterial
+              color="#22c55e"
+              linewidth={4}
+              depthTest={false}
+              transparent={false}
+            />
+          </lineSegments>
+        )}
+        {axisEdgeData.z && (
+          <lineSegments geometry={axisEdgeData.z} renderOrder={10}>
+            <lineBasicMaterial
+              color="#3b82f6"
+              linewidth={4}
+              depthTest={false}
+              transparent={false}
+            />
+          </lineSegments>
+        )}
+      </>
+    )}
+    </>
   );
 });
 
