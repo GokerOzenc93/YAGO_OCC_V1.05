@@ -1193,7 +1193,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                           value={`V${vfIdx + 1}`}
                           readOnly
                           tabIndex={-1}
-                          className="w-7 px-1 py-0.5 text-xs font-mono border rounded text-center bg-green-100 text-green-800 border-green-300"
+                          className="w-10 px-1 py-0.5 text-xs font-mono border rounded text-center bg-green-100 text-green-800 border-green-300"
                           onClick={(e) => e.stopPropagation()}
                         />
                         <select
@@ -1272,6 +1272,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                           title="Panel Thickness"
                           onClick={(e) => e.stopPropagation()}
                         />
+                        <div className="ml-3 flex items-center gap-0.5">
                         <input
                           type="checkbox"
                           checked={vf.hasPanel}
@@ -1297,7 +1298,6 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                           className={`w-4 h-4 border-gray-300 rounded ${isDisabled ? 'text-stone-300 cursor-not-allowed' : 'text-green-600 focus:ring-green-500 cursor-pointer'}`}
                           title={`Toggle panel for virtual face V${vfIdx + 1}`}
                         />
-                        <div className="ml-3 flex items-center gap-0.5">
                         <button
                           disabled={isDisabled || !vf.hasPanel}
                           onClick={(e) => {
