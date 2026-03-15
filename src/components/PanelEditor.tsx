@@ -934,14 +934,11 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
 
               return (
                 <div className={`space-y-0.5 pt-2 border-t border-stone-300 ${isDisabled ? 'opacity-40 pointer-events-none' : ''}`}>
-                  <div className={`text-xs font-semibold mb-1 flex items-center gap-2 ${isDisabled ? 'text-stone-400' : 'text-orange-700'}`}>
-                    <span>Face Roles ({faceGroups.length + shapeVirtualFaces.length} faces)</span>
-                    {resolving && (
-                      <span className="text-[10px] font-normal text-orange-500 animate-pulse">
-                        resolving joints...
-                      </span>
-                    )}
-                  </div>
+                  {resolving && (
+                    <div className="text-[10px] font-normal text-orange-500 animate-pulse mb-1">
+                      resolving joints...
+                    </div>
+                  )}
                   {orderedFaceIndices.map((i) => {
                     const dimensions = getPanelDimensions(i);
                     const isRowSelected = selectedPanelRow === i;
@@ -955,7 +952,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                             if (el) rowRefs.current.set(i, el);
                             else rowRefs.current.delete(i);
                           }}
-                          className={`flex gap-0.5 items-center p-0.5 rounded transition-colors ${isRowSelected ? 'bg-orange-50 ring-1 ring-orange-400' : 'hover:bg-gray-50'} ${facePanels[i] ? 'cursor-pointer' : ''}`}
+                          className={`flex gap-0.5 items-center rounded transition-colors ${isRowSelected ? 'bg-orange-50 ring-1 ring-orange-400' : 'hover:bg-gray-50'} ${facePanels[i] ? 'cursor-pointer' : ''}`}
                           onClick={(e) => {
                             e.stopPropagation();
                             if (facePanels[i]) handleRowClick(i);
@@ -1052,7 +1049,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                             readOnly
                             tabIndex={-1}
                             onClick={(e) => e.stopPropagation()}
-                            className="w-[48px] px-1 py-0.5 text-xs font-mono border rounded text-center bg-orange-50 text-gray-800 border-orange-300 font-semibold"
+                            className="w-[48px] px-1 py-0.5 text-xs font-mono border rounded text-center bg-white text-gray-800 border-gray-300 font-semibold"
                             title="Arrow Direction Dimension"
                           />
                           <input
@@ -1061,7 +1058,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                             readOnly
                             tabIndex={-1}
                             onClick={(e) => e.stopPropagation()}
-                            className="w-[48px] px-1 py-0.5 text-xs font-mono border rounded text-center bg-blue-50 text-gray-800 border-blue-300 font-semibold"
+                            className="w-[48px] px-1 py-0.5 text-xs font-mono border rounded text-center bg-white text-gray-800 border-gray-300 font-semibold"
                             title="Perpendicular to Arrow Direction"
                           />
                           <input
@@ -1070,7 +1067,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                             readOnly
                             tabIndex={-1}
                             onClick={(e) => e.stopPropagation()}
-                            className="w-[48px] px-1 py-0.5 text-xs font-mono border rounded text-center bg-green-50 text-gray-800 border-green-300 font-semibold"
+                            className="w-[48px] px-1 py-0.5 text-xs font-mono border rounded text-center bg-white text-gray-800 border-gray-300 font-semibold"
                             title="Panel Thickness"
                           />
                           <input
@@ -1146,7 +1143,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                     return (
                       <div
                         key={vf.id}
-                        className={`flex gap-0.5 items-center p-0.5 rounded transition-colors ${isRowSelected ? 'bg-orange-50 ring-1 ring-orange-400' : 'hover:bg-gray-50'} ${vf.hasPanel ? 'cursor-pointer' : ''}`}
+                        className={`flex gap-0.5 items-center rounded transition-colors ${isRowSelected ? 'bg-orange-50 ring-1 ring-orange-400' : 'hover:bg-gray-50'} ${vf.hasPanel ? 'cursor-pointer' : ''}`}
                         onClick={(e) => {
                           e.stopPropagation();
                           if (vf.hasPanel) handleVirtualRowClick();
@@ -1226,7 +1223,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                           value={vf.hasPanel ? (arrowRotated ? Math.round(panelHeight) : Math.round(panelWidth)) : '—'}
                           readOnly
                           tabIndex={-1}
-                          className={`w-[48px] px-1 py-0.5 text-xs font-mono border rounded text-center ${vf.hasPanel ? 'bg-orange-50 text-gray-800 border-orange-300 font-semibold' : 'bg-orange-50 text-stone-400 border-orange-200'}`}
+                          className={`w-[48px] px-1 py-0.5 text-xs font-mono border rounded text-center ${vf.hasPanel ? 'bg-white text-gray-800 border-gray-300 font-semibold' : 'bg-white text-stone-400 border-gray-200'}`}
                           title="Arrow Direction Dimension"
                           onClick={(e) => e.stopPropagation()}
                         />
@@ -1235,7 +1232,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                           value={vf.hasPanel ? (arrowRotated ? Math.round(panelWidth) : Math.round(panelHeight)) : '—'}
                           readOnly
                           tabIndex={-1}
-                          className={`w-[48px] px-1 py-0.5 text-xs font-mono border rounded text-center ${vf.hasPanel ? 'bg-blue-50 text-gray-800 border-blue-300 font-semibold' : 'bg-blue-50 text-stone-400 border-blue-200'}`}
+                          className={`w-[48px] px-1 py-0.5 text-xs font-mono border rounded text-center ${vf.hasPanel ? 'bg-white text-gray-800 border-gray-300 font-semibold' : 'bg-white text-stone-400 border-gray-200'}`}
                           title="Perpendicular Dimension"
                           onClick={(e) => e.stopPropagation()}
                         />
@@ -1244,7 +1241,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                           value={vf.hasPanel ? Math.round(panelDepth) : '—'}
                           readOnly
                           tabIndex={-1}
-                          className={`w-[48px] px-1 py-0.5 text-xs font-mono border rounded text-center ${vf.hasPanel ? 'bg-green-50 text-gray-800 border-green-300 font-semibold' : 'bg-green-50 text-stone-400 border-green-200'}`}
+                          className={`w-[48px] px-1 py-0.5 text-xs font-mono border rounded text-center ${vf.hasPanel ? 'bg-white text-gray-800 border-gray-300 font-semibold' : 'bg-white text-stone-400 border-gray-200'}`}
                           title="Panel Thickness"
                           onClick={(e) => e.stopPropagation()}
                         />
