@@ -66,6 +66,13 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
       )
     );
 
+  const smoothGeometry = useMemo(() => {
+    if (!shape.geometry) return null;
+    const geom = shape.geometry.clone();
+    geom.computeVertexNormals();
+    return geom;
+  }, [shape.geometry]);
+
   const edgeGeometry = useMemo(() => {
     if (!shape.geometry) return null;
     try {
@@ -119,7 +126,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     >
       <mesh
         ref={meshRef}
-        geometry={shape.geometry}
+        geometry={smoothGeometry || shape.geometry}
         castShadow
         receiveShadow
         onClick={(e) => {
@@ -182,13 +189,13 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
       >
         <meshStandardMaterial
           color={materialColor}
-          emissive={isPanelRowSelected ? '#ef4444' : baseColor}
-          emissiveIntensity={isPanelRowSelected ? 0.35 : 0.08}
+          emissive={isPanelRowSelected ? '#ef4444' : '#000000'}
+          emissiveIntensity={isPanelRowSelected ? 0.25 : 0}
           metalness={0.0}
-          roughness={0.45}
+          roughness={0.5}
           transparent={false}
           opacity={1}
-          side={THREE.FrontSide}
+          side={THREE.DoubleSide}
           depthWrite={true}
           flatShading={false}
           polygonOffset={true}

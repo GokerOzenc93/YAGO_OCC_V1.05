@@ -526,7 +526,7 @@ const Scene: React.FC = () => {
   };
 
   const handleCreated = useCallback(({ gl }: { gl: THREE.WebGLRenderer }) => {
-    gl.toneMapping = THREE.ACESFilmicToneMapping;
+    gl.toneMapping = THREE.LinearToneMapping;
     gl.toneMappingExposure = 1.0;
     gl.shadowMap.type = THREE.PCFSoftShadowMap;
     gl.outputColorSpace = THREE.SRGBColorSpace;
@@ -561,14 +561,13 @@ const Scene: React.FC = () => {
 
       <CameraController controlsRef={controlsRef} cameraType={cameraType} />
 
-      <ambientLight intensity={0.7} />
-      <hemisphereLight intensity={0.5} groundColor="#888888" color="#ffffff" />
+      <ambientLight intensity={1.2} color="#ffffff" />
       <directionalLight
         position={[2000, 3000, 2000]}
-        intensity={1.6}
+        intensity={0.8}
         castShadow
-        shadow-mapSize-width={1024}
-        shadow-mapSize-height={1024}
+        shadow-mapSize-width={2048}
+        shadow-mapSize-height={2048}
         shadow-bias={-0.0001}
         shadow-camera-far={20000}
         shadow-camera-left={-5000}
@@ -578,15 +577,15 @@ const Scene: React.FC = () => {
       />
       <directionalLight
         position={[-1000, 1500, -1000]}
-        intensity={0.5}
+        intensity={0.3}
       />
       <directionalLight
         position={[0, 2000, -2000]}
-        intensity={0.4}
+        intensity={0.2}
       />
       <directionalLight
         position={[500, 500, 3000]}
-        intensity={0.4}
+        intensity={0.2}
       />
 
       <OrbitControls
