@@ -821,6 +821,23 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                 });
               });
 
+              const sortedFaceGroupIndices = [...faceGroups.keys()].sort((a, b) => {
+                const labelA = faceGroupLabels.get(a)?.label ?? `${a + 1}`;
+                const labelB = faceGroupLabels.get(b)?.label ?? `${b + 1}`;
+                const parseLabel = (l: string) => {
+                  const parts = l.replace(/^[SF]/, '').split(/[-.]/).map(Number);
+                  return parts;
+                };
+                const pa = parseLabel(labelA);
+                const pb = parseLabel(labelB);
+                for (let k = 0; k < Math.max(pa.length, pb.length); k++) {
+                  const va = pa[k] ?? 0;
+                  const vb = pb[k] ?? 0;
+                  if (va !== vb) return va - vb;
+                }
+                return 0;
+              });
+
               return (
                 <div className={`space-y-0.5 pt-2 border-t border-stone-300 ${isDisabled ? 'opacity-40 pointer-events-none' : ''}`}>
                   <div className={`text-xs font-semibold mb-1 flex items-center gap-2 ${isDisabled ? 'text-stone-400' : 'text-orange-700'}`}>
@@ -831,7 +848,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                       </span>
                     )}
                   </div>
-                  {faceGroups.map((_group, i) => {
+                  {sortedFaceGroupIndices.map((i) => {
                     const dimensions = getPanelDimensions(i);
                     const isRowSelected = selectedPanelRow === i;
                     const faceLabel = faceGroupLabels.get(i);
