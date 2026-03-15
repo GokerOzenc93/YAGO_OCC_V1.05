@@ -2,7 +2,6 @@ import React, { useRef, useEffect, useState, useMemo } from 'react';
 import { TransformControls } from '@react-three/drei';
 import { useThree } from '@react-three/fiber';
 import * as THREE from 'three';
-import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { useAppStore, Tool, ViewMode } from '../store';
 import { useShallow } from 'zustand/react/shallow';
 import { SubtractionMesh } from './SubtractionMesh';
@@ -99,127 +98,82 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
       scale: [number, number, number];
     }>;
   } | null>(null);
-  const [localGeometry, setLocalGeometry] = useState(shape.geometry);
+  const [localGeometry, setLocalGeometry] = useState<THREE.BufferGeometry | null>(shape.geometry ?? null);
   const [edgeGeometry, setEdgeGeometry] = useState<THREE.BufferGeometry | null>(null);
   const [geometryKey, setGeometryKey] = useState(0);
   const vertexModsString = useMemo(() => JSON.stringify(shape.vertexModifications || []), [shape.vertexModifications]);
+  const processedGeomUUID = useRef<string | null>(null);
+
+  const prepareGeometry = (geom: THREE.BufferGeometry): THREE.BufferGeometry => {
+    if (!geom.getAttribute('normal')) {
+      geom.computeVertexNormals();
+    }
+    geom.computeBoundingBox();
+    geom.computeBoundingSphere();
+    return geom;
+  };
 
   useEffect(() => {
+    if (!shape.geometry) return;
+
+    const hasVertexMods = shape.vertexModifications && shape.vertexModifications.length > 0;
+    const geometryChanged = shape.geometry.uuid !== processedGeomUUID.current;
+
+    if (!geometryChanged && !hasVertexMods) return;
+
     const loadEdges = async () => {
-      const hasVertexMods = shape.vertexModifications && shape.vertexModifications.length > 0;
-      const shouldUpdate = (shape.geometry && shape.geometry !== localGeometry) || hasVertexMods;
+      processedGeomUUID.current = shape.geometry.uuid;
+      let geom = shape.geometry.clone();
 
-      if (shouldUpdate && shape.geometry) {
-        let geom = shape.geometry.clone();
+      if (hasVertexMods) {
+        const positionAttribute = geom.getAttribute('position');
+        const positions = positionAttribute.array as Float32Array;
 
-        if (hasVertexMods) {
-          const positionAttribute = geom.getAttribute('position');
-          const positions = positionAttribute.array as Float32Array;
+        const vertexMap = new Map<string, number[]>();
+        for (let i = 0; i < positions.length; i += 3) {
+          const x = Math.round(positions[i] * 100) / 100;
+          const y = Math.round(positions[i + 1] * 100) / 100;
+          const z = Math.round(positions[i + 2] * 100) / 100;
+          const key = `${x},${y},${z}`;
+          if (!vertexMap.has(key)) vertexMap.set(key, []);
+          vertexMap.get(key)!.push(i);
+        }
 
-          const vertexMap = new Map<string, number[]>();
-          for (let i = 0; i < positions.length; i += 3) {
-            const x = Math.round(positions[i] * 100) / 100;
-            const y = Math.round(positions[i + 1] * 100) / 100;
-            const z = Math.round(positions[i + 2] * 100) / 100;
-            const key = `${x},${y},${z}`;
+        const { getBoxVertices, getReplicadVertices } = await import('./VertexEditorService');
+        let baseVertices: THREE.Vector3[] = [];
 
-            if (!vertexMap.has(key)) {
-              vertexMap.set(key, []);
-            }
-            vertexMap.get(key)!.push(i);
+        if (shape.parameters?.scaledBaseVertices && shape.parameters.scaledBaseVertices.length > 0) {
+          baseVertices = shape.parameters.scaledBaseVertices.map((v: number[]) =>
+            new THREE.Vector3(v[0], v[1], v[2])
+          );
+        } else if (shape.replicadShape) {
+          baseVertices = await getReplicadVertices(shape.replicadShape);
+        } else if (shape.type === 'box' && shape.parameters) {
+          baseVertices = getBoxVertices(shape.parameters.width, shape.parameters.height, shape.parameters.depth);
+        }
+
+        shape.vertexModifications.forEach((mod: any) => {
+          const baseVertex = baseVertices[mod.vertexIndex];
+          if (!baseVertex) return;
+          const key = `${Math.round(baseVertex.x * 100) / 100},${Math.round(baseVertex.y * 100) / 100},${Math.round(baseVertex.z * 100) / 100}`;
+          const indices = vertexMap.get(key);
+          if (indices) {
+            indices.forEach(idx => {
+              positions[idx] = mod.newPosition[0];
+              positions[idx + 1] = mod.newPosition[1];
+              positions[idx + 2] = mod.newPosition[2];
+            });
           }
+        });
 
-          const { getBoxVertices, getReplicadVertices } = await import('./VertexEditorService');
-          let baseVertices: THREE.Vector3[] = [];
-
-          if (shape.parameters?.scaledBaseVertices && shape.parameters.scaledBaseVertices.length > 0) {
-            baseVertices = shape.parameters.scaledBaseVertices.map((v: number[]) =>
-              new THREE.Vector3(v[0], v[1], v[2])
-            );
-          } else if (shape.replicadShape) {
-            baseVertices = await getReplicadVertices(shape.replicadShape);
-          } else if (shape.type === 'box' && shape.parameters) {
-            baseVertices = getBoxVertices(
-              shape.parameters.width,
-              shape.parameters.height,
-              shape.parameters.depth
-            );
-          }
-
-          shape.vertexModifications.forEach((mod: any) => {
-            const baseVertex = baseVertices[mod.vertexIndex];
-            if (!baseVertex) return;
-
-            const key = `${Math.round(baseVertex.x * 100) / 100},${Math.round(baseVertex.y * 100) / 100},${Math.round(baseVertex.z * 100) / 100}`;
-            const indices = vertexMap.get(key);
-
-            if (indices) {
-              indices.forEach(idx => {
-                positions[idx] = mod.newPosition[0];
-                positions[idx + 1] = mod.newPosition[1];
-                positions[idx + 2] = mod.newPosition[2];
-              });
-            }
-          });
-
-          positionAttribute.needsUpdate = true;
-          geom.computeVertexNormals();
-          geom.computeBoundingBox();
-          geom.computeBoundingSphere();
-        }
-
-        try {
-          const merged = mergeVertices(geom, 0.1);
-          merged.computeVertexNormals();
-          merged.computeBoundingBox();
-          merged.computeBoundingSphere();
-          setLocalGeometry(merged);
-          setEdgeGeometry(new THREE.EdgesGeometry(merged, 15));
-        } catch {
-          setLocalGeometry(geom);
-          setEdgeGeometry(new THREE.EdgesGeometry(geom, 15));
-        }
-        setGeometryKey(prev => prev + 1);
-        return;
+        positionAttribute.needsUpdate = true;
+        geom.deleteAttribute('normal');
       }
 
-      if (shape.parameters?.modified && shape.geometry) {
-        let geom = shape.geometry.clone();
-        try {
-          const merged = mergeVertices(geom, 0.1);
-          merged.computeVertexNormals();
-          merged.computeBoundingBox();
-          merged.computeBoundingSphere();
-          setLocalGeometry(merged);
-          setEdgeGeometry(new THREE.EdgesGeometry(merged, 15));
-        } catch {
-          geom.computeVertexNormals();
-          geom.computeBoundingBox();
-          geom.computeBoundingSphere();
-          setLocalGeometry(geom);
-          setEdgeGeometry(new THREE.EdgesGeometry(geom, 15));
-        }
-        setGeometryKey(prev => prev + 1);
-        return;
-      }
-
-      if (shape.geometry) {
-        try {
-          const merged = mergeVertices(shape.geometry.clone(), 0.1);
-          merged.computeVertexNormals();
-          merged.computeBoundingBox();
-          merged.computeBoundingSphere();
-          setLocalGeometry(merged);
-          setEdgeGeometry(new THREE.EdgesGeometry(merged, 15));
-        } catch {
-          const geom = shape.geometry.clone();
-          geom.computeVertexNormals();
-          setLocalGeometry(geom);
-          setEdgeGeometry(new THREE.EdgesGeometry(geom, 15));
-        }
-      } else {
-        setEdgeGeometry(null);
-      }
+      const processed = prepareGeometry(geom);
+      setLocalGeometry(processed);
+      setEdgeGeometry(new THREE.EdgesGeometry(processed, 15));
+      setGeometryKey(prev => prev + 1);
     };
 
     loadEdges();

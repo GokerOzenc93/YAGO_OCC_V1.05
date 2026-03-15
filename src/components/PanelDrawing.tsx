@@ -1,6 +1,5 @@
 import React, { useRef, useMemo, useState, useEffect } from 'react';
 import * as THREE from 'three';
-import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { useAppStore } from '../store';
 import { useShallow } from 'zustand/react/shallow';
 import { extractFacesFromGeometry, groupCoplanarFaces } from './FaceEditor';
@@ -69,15 +68,11 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
 
   const smoothGeometry = useMemo(() => {
     if (!shape.geometry) return null;
-    try {
-      const merged = mergeVertices(shape.geometry.clone(), 0.1);
-      merged.computeVertexNormals();
-      return merged;
-    } catch {
-      const geom = shape.geometry.clone();
+    const geom = shape.geometry.clone();
+    if (!geom.getAttribute('normal')) {
       geom.computeVertexNormals();
-      return geom;
     }
+    return geom;
   }, [shape.geometry]);
 
   const edgeGeometry = useMemo(() => {

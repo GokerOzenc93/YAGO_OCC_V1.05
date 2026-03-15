@@ -108,40 +108,48 @@ export const convertReplicadToThreeGeometry = (shape: any): THREE.BufferGeometry
     console.log('🔄 Converting Replicad shape to Three.js geometry...');
     console.log('Shape object:', shape);
 
-    const mesh = shape.mesh({ tolerance: 0.1, angularTolerance: 30 });
+    const mesh = shape.mesh({ tolerance: 0.02, angularTolerance: 10 });
     console.log('Mesh data:', mesh);
 
-    const vertices: number[] = [];
-    const indices: number[] = [];
-
-    if (mesh.vertices && mesh.triangles) {
-      console.log('Raw mesh data:', {
-        verticesLength: mesh.vertices.length,
-        trianglesLength: mesh.triangles.length
-      });
-
-      for (let i = 0; i < mesh.vertices.length; i++) {
-        vertices.push(mesh.vertices[i]);
-      }
-
-      for (let i = 0; i < mesh.triangles.length; i++) {
-        indices.push(mesh.triangles[i]);
-      }
-    } else {
+    if (!mesh.vertices || !mesh.triangles) {
       console.error('❌ Mesh vertices or triangles missing');
       throw new Error('Invalid mesh data');
     }
 
+    const triangleCount = mesh.triangles.length / 3;
+    const expandedPositions = new Float32Array(triangleCount * 9);
+    const expandedNormals = new Float32Array(triangleCount * 9);
+    const hasNormals = mesh.normals && mesh.normals.length === mesh.vertices.length;
+
+    for (let t = 0; t < triangleCount; t++) {
+      for (let v = 0; v < 3; v++) {
+        const idx = mesh.triangles[t * 3 + v];
+        const outIdx = (t * 3 + v) * 3;
+        expandedPositions[outIdx] = mesh.vertices[idx * 3];
+        expandedPositions[outIdx + 1] = mesh.vertices[idx * 3 + 1];
+        expandedPositions[outIdx + 2] = mesh.vertices[idx * 3 + 2];
+        if (hasNormals) {
+          expandedNormals[outIdx] = mesh.normals[idx * 3];
+          expandedNormals[outIdx + 1] = mesh.normals[idx * 3 + 1];
+          expandedNormals[outIdx + 2] = mesh.normals[idx * 3 + 2];
+        }
+      }
+    }
+
     const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
-    geometry.setIndex(indices);
-    geometry.computeVertexNormals();
+    geometry.setAttribute('position', new THREE.BufferAttribute(expandedPositions, 3));
+
+    if (hasNormals) {
+      geometry.setAttribute('normal', new THREE.BufferAttribute(expandedNormals, 3));
+    } else {
+      geometry.computeVertexNormals();
+    }
+
     geometry.computeBoundingBox();
     geometry.computeBoundingSphere();
 
     console.log('✅ Converted Replicad shape to Three.js geometry:', {
-      vertices: vertices.length / 3,
-      triangles: indices.length / 3,
+      triangles: triangleCount,
       boundingBox: geometry.boundingBox
     });
 
