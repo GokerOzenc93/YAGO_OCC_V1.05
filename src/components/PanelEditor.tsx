@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { X, GripVertical, MousePointer, Layers, RotateCw, Plus, Trash2, Eye, EyeOff } from 'lucide-react';
-import { globalSettingsService, faceLabelRoleDefaultsService, GlobalSettingsProfile } from './GlobalSettingsDatabase';
+import { globalSettingsService, faceLabelRoleDefaultsService, faceLabelPanelDefaultsService, GlobalSettingsProfile } from './GlobalSettingsDatabase';
 import { useAppStore } from '../store';
 import type { FaceRole } from '../store';
 import { extractFacesFromGeometry, groupCoplanarFaces, FaceData, CoplanarFaceGroup } from './FaceEditor';
@@ -516,7 +516,6 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
       });
 
       const newFaceRoles: Record<number, FaceRole> = {};
-
       labelForGroupIndex.forEach((label, groupIndex) => {
         const defaultRole = labelDefaults[label];
         if (defaultRole) {
@@ -524,7 +523,15 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
         }
       });
 
-      updateShape(selectedShape.id, { faceRoles: newFaceRoles });
+      const panelDefaults = await faceLabelPanelDefaultsService.getAll();
+      const newFacePanels: Record<number, boolean> = {};
+      labelForGroupIndex.forEach((label, groupIndex) => {
+        if (panelDefaults[label] === true) {
+          newFacePanels[groupIndex] = true;
+        }
+      });
+
+      updateShape(selectedShape.id, { faceRoles: newFaceRoles, facePanels: newFacePanels });
     };
 
     applyLabelDefaults();
@@ -656,7 +663,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
               const roleOptions: FaceRole[] = ['Left', 'Right', 'Top', 'Bottom', 'Back', 'Door'];
               const isDisabled = selectedProfile === 'none';
 
-              const handleTogglePanel = async (faceIndex: number) => {
+              const handleTogglePanel = async (faceIndex: number, label?: string) => {
                 if (isDisabled) return;
                 const newFacePanels = { ...facePanels };
                 if (newFacePanels[faceIndex]) {
@@ -671,9 +678,17 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                     const { deleteShape } = useAppStore.getState();
                     deleteShape(panelToRemove.id);
                   }
+
+                  if (label && !label.startsWith('S') && !label.startsWith('F')) {
+                    faceLabelPanelDefaultsService.upsert(label, false);
+                  }
                 } else {
                   newFacePanels[faceIndex] = true;
                   await createPanelForFace(faceGroups[faceIndex], faces, faceIndex);
+
+                  if (label && !label.startsWith('S') && !label.startsWith('F')) {
+                    faceLabelPanelDefaultsService.upsert(label, true);
+                  }
                 }
                 updateShape(selectedShape.id, { facePanels: newFacePanels });
 
@@ -1062,7 +1077,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                             checked={facePanels[i] || false}
                             disabled={isDisabled}
                             onClick={(e) => e.stopPropagation()}
-                            onChange={() => handleTogglePanel(i)}
+                            onChange={() => handleTogglePanel(i, labelText)}
                             className={`w-4 h-4 border-gray-300 rounded ${isDisabled ? 'text-stone-300 cursor-not-allowed' : 'text-green-600 focus:ring-green-500 cursor-pointer'}`}
                             title={`Toggle panel for face ${i + 1}`}
                           />
