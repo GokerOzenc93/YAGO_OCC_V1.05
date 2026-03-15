@@ -83,7 +83,7 @@ const ParameterRow: React.FC<ParameterRowProps> = ({
   };
 
   return (
-    <div className="flex gap-1 items-center">
+    <div className="flex gap-0.5 items-center">
       <input
         type="text"
         value={label}
@@ -166,7 +166,7 @@ export function ParametersPanel({ isOpen, onClose }: ParametersPanelProps) {
     onSubParamChange: (param: string, expression: string) => void
   ) => {
     return (
-      <div key={paramKey} className="flex gap-1 items-center">
+      <div key={paramKey} className="flex gap-0.5 items-center">
         <input
           type="text"
           value={label}
@@ -819,8 +819,8 @@ export function ParametersPanel({ isOpen, onClose }: ParametersPanelProps) {
 
       <div className="p-3 max-h-[calc(100vh-200px)] overflow-y-auto">
         {selectedShape ? (
-          <div className="space-y-2">
-            <div className="space-y-2">
+          <div className="space-y-0.5">
+            <div className="space-y-0.5">
               <ParameterRow
                 label="W"
                 value={width}
@@ -865,7 +865,7 @@ export function ParametersPanel({ isOpen, onClose }: ParametersPanelProps) {
               />
 
               {showBackPanelLeftExtend && (
-                <div className="flex gap-1 items-center">
+                <div className="flex gap-0.5 items-center">
                   <input
                     type="text"
                     value="BPL"
@@ -907,7 +907,7 @@ export function ParametersPanel({ isOpen, onClose }: ParametersPanelProps) {
               )}
 
               {showBackPanelRightExtend && (
-                <div className="flex gap-1 items-center">
+                <div className="flex gap-0.5 items-center">
                   <input
                     type="text"
                     value="BPR"
@@ -950,9 +950,9 @@ export function ParametersPanel({ isOpen, onClose }: ParametersPanelProps) {
             </div>
 
             {filletRadii.length > 0 && (
-              <div className="space-y-1 pt-2 border-t border-stone-300">
+              <div className="space-y-0.5 pt-2 border-t border-stone-300">
                 {filletRadii.map((radius, idx) => (
-                  <div key={`fillet-${idx}`} className="flex gap-1 items-center">
+                  <div key={`fillet-${idx}`} className="flex gap-0.5 items-center">
                     <div className="flex-1">
                       <ParameterRow
                         label={`F${idx + 1}`}
@@ -1130,10 +1130,10 @@ export function ParametersPanel({ isOpen, onClose }: ParametersPanelProps) {
               });
 
               return (
-                <div className="space-y-2 pt-2 border-t border-stone-300">
+                <div className="space-y-0.5 pt-2 border-t border-stone-300">
                   <div className="text-xs font-semibold text-stone-600 mb-1">Face Roles ({faceEntries.length} faces)</div>
                   {faceEntries.map(({ label, groupIndex, color }) => (
-                    <div key={`face-${groupIndex}`} className="flex gap-1 items-center">
+                    <div key={`face-${groupIndex}`} className="flex gap-0.5 items-center">
                       <input
                         type="text"
                         value={label}
@@ -1172,9 +1172,9 @@ export function ParametersPanel({ isOpen, onClose }: ParametersPanelProps) {
             })()}
 
             {customParameters.length > 0 && (
-              <div className="space-y-1">
+              <div className="space-y-0.5">
                 {customParameters.map((param) => (
-                  <div key={param.id} className="flex gap-1 items-center">
+                  <div key={param.id} className="flex gap-0.5 items-center">
                     <input
                       type="text"
                       value={param.name}
@@ -1215,7 +1215,7 @@ export function ParametersPanel({ isOpen, onClose }: ParametersPanelProps) {
             )}
 
             {subtractionViewMode && selectedSubtractionIndex !== null && selectedShape.subtractionGeometries && selectedShape.subtractionGeometries[selectedSubtractionIndex] && (
-              <div className="space-y-2 pt-2 border-t-2 border-yellow-400">
+              <div className="space-y-0.5 pt-2 border-t-2 border-yellow-400">
                 <div className="flex items-center justify-between text-xs font-semibold text-yellow-700">
                   <span>Subtraction #{selectedSubtractionIndex + 1}</span>
                   <div className="flex items-center gap-1">
@@ -1241,7 +1241,7 @@ export function ParametersPanel({ isOpen, onClose }: ParametersPanelProps) {
                     </button>
                   </div>
                 </div>
-                <div className="space-y-2">
+                <div className="space-y-0.5">
                   {renderSubtractionParamRow('W', subParams.width, 'width', 'Subtraction Width', handleSubParamChange)}
                   {renderSubtractionParamRow('H', subParams.height, 'height', 'Subtraction Height', handleSubParamChange)}
                   {renderSubtractionParamRow('D', subParams.depth, 'depth', 'Subtraction Depth', handleSubParamChange)}
@@ -1256,7 +1256,7 @@ export function ParametersPanel({ isOpen, onClose }: ParametersPanelProps) {
             )}
 
             {vertexEditMode && vertexModifications.length > 0 && (
-              <div className="space-y-1 pt-2 border-t border-stone-300">
+              <div className="space-y-0.5 pt-2 border-t border-stone-300">
                 <div className="text-xs font-semibold text-stone-600 mb-1">Vertex Modifications</div>
                 {vertexModifications.map((mod, idx) => {
                   const context = {
@@ -1271,7 +1271,7 @@ export function ParametersPanel({ isOpen, onClose }: ParametersPanelProps) {
                   const result = evaluateExpression(mod.expression, context);
 
                   return (
-                    <div key={idx} className="flex gap-1 items-center">
+                    <div key={idx} className="flex gap-0.5 items-center">
                       <input
                         type="text"
                         value={`V${mod.vertexIndex}`}
