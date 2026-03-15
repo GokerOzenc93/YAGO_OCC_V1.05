@@ -500,15 +500,15 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
               receiveShadow
             >
               <meshStandardMaterial
-                color={isPanel ? panelColor : "#94b8d9"}
+                color={isPanel ? panelColor : "#c8c8c8"}
                 emissive={isPanel ? panelColor : undefined}
                 emissiveIntensity={isPanel ? (isPanelRowSelected ? 0.3 : 0.1) : 0}
-                metalness={isPanel ? 0 : 0.1}
-                roughness={isPanel ? 0.4 : 0.6}
+                metalness={isPanel ? 0 : 0}
+                roughness={isPanel ? 0.4 : 1}
                 transparent
-                opacity={hasPanels ? 0 : isPanel ? 1 : 0.12}
+                opacity={hasPanels ? 0 : isPanel ? 1 : 0.06}
                 side={THREE.DoubleSide}
-                depthWrite={!hasPanels}
+                depthWrite={false}
                 flatShading={false}
               />
             </mesh>
@@ -579,15 +579,15 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
               receiveShadow
             >
               <meshStandardMaterial
-                color={isPanel ? panelColor : isSelected ? '#60a5fa' : shouldShowAsReference ? '#ef4444' : shape.color || '#2563eb'}
+                color={isPanel ? panelColor : shouldShowAsReference ? '#ef4444' : "#c8c8c8"}
                 emissive={isPanel ? panelColor : undefined}
                 emissiveIntensity={isPanel ? (isPanelRowSelected ? 0.3 : 0.1) : 0}
-                metalness={isPanel ? 0 : 0.2}
-                roughness={isPanel ? 0.4 : 0.5}
+                metalness={isPanel ? 0 : 0}
+                roughness={isPanel ? 0.4 : 1}
                 transparent
-                opacity={hasPanels ? 0 : isPanel ? 1 : 0.25}
+                opacity={hasPanels ? 0 : isPanel ? 1 : shouldShowAsReference ? 0.2 : 0.06}
                 side={THREE.DoubleSide}
-                depthWrite={!hasPanels}
+                depthWrite={false}
                 flatShading={false}
               />
             </mesh>
