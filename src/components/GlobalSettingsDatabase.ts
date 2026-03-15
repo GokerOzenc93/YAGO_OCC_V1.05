@@ -237,33 +237,3 @@ class FaceLabelRoleDefaultsService {
 }
 
 export const faceLabelRoleDefaultsService = new FaceLabelRoleDefaultsService();
-
-class FaceLabelPanelDefaultsService {
-  async getAll(): Promise<Record<string, boolean>> {
-    if (!supabase) return {};
-    const { data, error } = await supabase
-      .from('face_label_panel_defaults')
-      .select('label, has_panel');
-    if (error) {
-      console.error('Failed to get face label panel defaults:', error);
-      return {};
-    }
-    const map: Record<string, boolean> = {};
-    (data || []).forEach((row: { label: string; has_panel: boolean }) => {
-      map[row.label] = row.has_panel;
-    });
-    return map;
-  }
-
-  async upsert(label: string, hasPanel: boolean): Promise<void> {
-    if (!supabase) return;
-    const { error } = await supabase
-      .from('face_label_panel_defaults')
-      .upsert({ label, has_panel: hasPanel, updated_at: new Date().toISOString() }, { onConflict: 'label' });
-    if (error) {
-      console.error('Failed to upsert face label panel default:', error);
-    }
-  }
-}
-
-export const faceLabelPanelDefaultsService = new FaceLabelPanelDefaultsService();
