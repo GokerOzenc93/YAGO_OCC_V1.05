@@ -1130,15 +1130,31 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                                 !s.parameters?.extraRowId
                               );
                               if (panelShape) {
-                                const { selectShape, setShowParametersPanel } = useAppStore.getState();
+                                const { selectShape, setShowParametersPanel, editingPanelId, setEditingPanelId } = useAppStore.getState();
                                 selectShape(panelShape.id);
                                 setShowParametersPanel(true);
+                                if (editingPanelId === panelShape.id) {
+                                  setEditingPanelId(null);
+                                } else {
+                                  setEditingPanelId(panelShape.id);
+                                }
                               }
                             }}
                             className={`p-0.5 rounded transition-colors ${
                               isDisabled || !facePanels[i]
                                 ? 'text-stone-300 cursor-not-allowed'
-                                : 'text-slate-500 hover:bg-stone-100 hover:text-slate-800'
+                                : (() => {
+                                    const ps = shapes.find(s =>
+                                      s.type === 'panel' &&
+                                      s.parameters?.parentShapeId === selectedShape.id &&
+                                      s.parameters?.faceIndex === i &&
+                                      !s.parameters?.extraRowId
+                                    );
+                                    const { editingPanelId } = useAppStore.getState();
+                                    return ps && editingPanelId === ps.id
+                                      ? 'text-orange-600 bg-orange-50 hover:bg-orange-100'
+                                      : 'text-slate-500 hover:bg-stone-100 hover:text-slate-800';
+                                  })()
                             }`}
                             title="Edit panel parameters"
                           >

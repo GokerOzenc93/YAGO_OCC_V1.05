@@ -221,6 +221,8 @@ interface AppState{
 
   rebuildingShapeIds:Set<string>;
   setShapeRebuilding:(id:string,rebuilding:boolean)=>void;
+
+  editingPanelId:string|null;setEditingPanelId:(id:string|null)=>void;
 }
 
 /** STORE */
@@ -322,6 +324,8 @@ export const useAppStore=create<AppState>((set,get)=>({
     if(rebuilding)next.add(id);else next.delete(id);
     return{rebuildingShapeIds:next};
   }),
+
+  editingPanelId:null,setEditingPanelId:(id)=>set({editingPanelId:id}),
 
   /** ----------- SHAPE ACTIONS ----------- */
 
