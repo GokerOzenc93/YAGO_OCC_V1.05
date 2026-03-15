@@ -797,28 +797,39 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
               );
 
               const faceGroupLabels = new Map<number, { label: string; color: string }>();
+              const orderedFaceIndices: number[] = [];
 
               axisSortedForLabels.forEach(([, groupIndices], roleIdx) => {
                 const roleNumber = roleIdx + 1;
                 if (groupIndices.length > 1) {
                   groupIndices.forEach((gi, subIdx) => {
                     faceGroupLabels.set(gi, { label: `${roleNumber}-${subIdx + 1}`, color: '#1a1a1a' });
+                    orderedFaceIndices.push(gi);
                   });
                 } else {
                   faceGroupLabels.set(groupIndices[0], { label: `${roleNumber}`, color: '#1a1a1a' });
+                  orderedFaceIndices.push(groupIndices[0]);
                 }
               });
 
               subtractorMapForLabels.forEach((groupIndices, subtractorIdx) => {
                 groupIndices.forEach((gi, faceIdx) => {
                   faceGroupLabels.set(gi, { label: `S${subtractorIdx + 1}.${faceIdx + 1}`, color: '#b45000' });
+                  orderedFaceIndices.push(gi);
                 });
               });
 
               filletMapForLabels.forEach((groupIndices, filletIdx) => {
                 groupIndices.forEach((gi) => {
                   faceGroupLabels.set(gi, { label: `F${filletIdx + 1}`, color: '#006eb4' });
+                  orderedFaceIndices.push(gi);
                 });
+              });
+
+              faceGroups.forEach((_, gi) => {
+                if (!orderedFaceIndices.includes(gi)) {
+                  orderedFaceIndices.push(gi);
+                }
               });
 
               return (
@@ -831,7 +842,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                       </span>
                     )}
                   </div>
-                  {faceGroups.map((_group, i) => {
+                  {orderedFaceIndices.map((i) => {
                     const dimensions = getPanelDimensions(i);
                     const isRowSelected = selectedPanelRow === i;
                     const faceLabel = faceGroupLabels.get(i);
