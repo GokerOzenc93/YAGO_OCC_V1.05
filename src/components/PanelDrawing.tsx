@@ -93,26 +93,56 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
       const mn = bbox.min;
       const mx = bbox.max;
 
-      const p000 = new THREE.Vector3(mn.x, mn.y, mn.z);
-      const p100 = new THREE.Vector3(mx.x, mn.y, mn.z);
-      const p010 = new THREE.Vector3(mn.x, mx.y, mn.z);
-      const p110 = new THREE.Vector3(mx.x, mx.y, mn.z);
-      const p001 = new THREE.Vector3(mn.x, mn.y, mx.z);
-      const p101 = new THREE.Vector3(mx.x, mn.y, mx.z);
-      const p011 = new THREE.Vector3(mn.x, mx.y, mx.z);
-      const p111 = new THREE.Vector3(mx.x, mx.y, mx.z);
+      const rotMatrix = new THREE.Matrix4().makeRotationFromEuler(
+        new THREE.Euler(shape.rotation[0], shape.rotation[1], shape.rotation[2])
+      );
 
-      const xPairs: [THREE.Vector3, THREE.Vector3][] = [
-        [p000, p100], [p010, p110], [p001, p101], [p011, p111]
+      const localCorners = [
+        new THREE.Vector3(mn.x, mn.y, mn.z),
+        new THREE.Vector3(mx.x, mn.y, mn.z),
+        new THREE.Vector3(mn.x, mx.y, mn.z),
+        new THREE.Vector3(mx.x, mx.y, mn.z),
+        new THREE.Vector3(mn.x, mn.y, mx.z),
+        new THREE.Vector3(mx.x, mn.y, mx.z),
+        new THREE.Vector3(mn.x, mx.y, mx.z),
+        new THREE.Vector3(mx.x, mx.y, mx.z),
       ];
-      const yPairs: [THREE.Vector3, THREE.Vector3][] = [
-        [p000, p010], [p100, p110], [p001, p011], [p101, p111]
+
+      const localEdgeIndexPairs: [number, number][] = [
+        [0,1],[2,3],[4,5],[6,7],
+        [0,2],[1,3],[4,6],[5,7],
+        [0,4],[1,5],[2,6],[3,7],
       ];
-      const zPairs: [THREE.Vector3, THREE.Vector3][] = [
-        [p000, p001], [p100, p101], [p010, p011], [p110, p111]
-      ];
+
+      const worldXPairs: [THREE.Vector3, THREE.Vector3][] = [];
+      const worldYPairs: [THREE.Vector3, THREE.Vector3][] = [];
+      const worldZPairs: [THREE.Vector3, THREE.Vector3][] = [];
+
+      for (const [i, j] of localEdgeIndexPairs) {
+        const a = localCorners[i];
+        const b = localCorners[j];
+
+        const wa = a.clone().applyMatrix4(rotMatrix);
+        const wb = b.clone().applyMatrix4(rotMatrix);
+        const dir = wb.clone().sub(wa);
+        const len = dir.length();
+        if (len < 0.001) continue;
+        dir.divideScalar(len);
+        const ax = Math.abs(dir.x);
+        const ay = Math.abs(dir.y);
+        const az = Math.abs(dir.z);
+
+        if (ax >= ay && ax >= az) {
+          worldXPairs.push([a, b]);
+        } else if (ay >= ax && ay >= az) {
+          worldYPairs.push([a, b]);
+        } else {
+          worldZPairs.push([a, b]);
+        }
+      }
 
       const buildLineGeo = (pairs: [THREE.Vector3, THREE.Vector3][]) => {
+        if (pairs.length === 0) return null;
         const positions: number[] = [];
         for (const [a, b] of pairs) {
           positions.push(a.x, a.y, a.z, b.x, b.y, b.z);
@@ -123,15 +153,15 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
       };
 
       return {
-        x: buildLineGeo(xPairs),
-        y: buildLineGeo(yPairs),
-        z: buildLineGeo(zPairs),
+        x: buildLineGeo(worldXPairs),
+        y: buildLineGeo(worldYPairs),
+        z: buildLineGeo(worldZPairs),
         bbox: { min: mn, max: mx }
       };
     } catch {
       return null;
     }
-  }, [shape.geometry, isEditingThisPanel]);
+  }, [shape.geometry, shape.rotation, isEditingThisPanel]);
 
   if (!shape.geometry) return null;
 
