@@ -15,7 +15,7 @@ interface PanelEditorProps {
 }
 
 export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
-  const { selectedShapeId, shapes, updateShape, addShape, showOutlines, setShowOutlines, showRoleNumbers, setShowRoleNumbers, selectedPanelRow, setSelectedPanelRow, panelSelectMode, setPanelSelectMode, raycastMode, setRaycastMode, showVirtualFaces, setShowVirtualFaces, virtualFaces, updateVirtualFace, deleteVirtualFace, pendingPanelCreation, setActivePanelProfileId, setShapeRebuilding } = useAppStore();
+  const { selectedShapeId, shapes, updateShape, addShape, showOutlines, setShowOutlines, showRoleNumbers, setShowRoleNumbers, selectedPanelRow, selectedPanelRowParentId, setSelectedPanelRow, panelSelectMode, setPanelSelectMode, raycastMode, setRaycastMode, showVirtualFaces, setShowVirtualFaces, virtualFaces, updateVirtualFace, deleteVirtualFace, pendingPanelCreation, setActivePanelProfileId, setShapeRebuilding } = useAppStore();
   const [position, setPosition] = useState({ x: 100, y: 100 });
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
@@ -702,9 +702,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
 
               const handleRowClick = (faceIndex: number) => {
                 if (!facePanels[faceIndex]) return;
-                const { selectShape } = useAppStore.getState();
-                selectShape(selectedShape.id);
-                setSelectedPanelRow(faceIndex, null);
+                setSelectedPanelRow(faceIndex, null, selectedShape.id);
               };
 
               const shapeVirtualFaces = virtualFaces.filter(vf => vf.shapeId === selectedShape.id);
@@ -1166,9 +1164,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
 
                     const handleVirtualRowClick = () => {
                       if (!vf.hasPanel) return;
-                      const { selectShape } = useAppStore.getState();
-                      selectShape(selectedShape.id);
-                      setSelectedPanelRow(`vf-${vf.id}`);
+                      setSelectedPanelRow(`vf-${vf.id}`, null, selectedShape.id);
                     };
 
                     return (

@@ -145,13 +145,13 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
       if (selectedShapeId !== parentShapeId) {
         selectShape(parentShapeId);
       }
-      setSelectedPanelRow(faceIndex ?? null, extraRowId || null);
+      setSelectedPanelRow(faceIndex ?? null, extraRowId || null, parentShapeId);
       selectSecondaryShape(null);
     } else if (panelSelectMode && parentShapeId) {
       if (selectedShapeId !== parentShapeId) {
         selectShape(parentShapeId);
       }
-      setSelectedPanelRow(faceIndex ?? null, extraRowId || null);
+      setSelectedPanelRow(faceIndex ?? null, extraRowId || null, parentShapeId);
       selectSecondaryShape(null);
     } else {
       selectShape(shape.id);

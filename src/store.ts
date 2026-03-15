@@ -140,7 +140,8 @@ interface AppState{
 
   selectedPanelRow:number|string|null;
   selectedPanelRowExtraId:string|null;
-  setSelectedPanelRow:(i:number|string|null,e?:string|null)=>void;
+  selectedPanelRowParentId:string|null;
+  setSelectedPanelRow:(i:number|string|null,e?:string|null,parentId?:string|null)=>void;
   panelSelectMode:boolean;setPanelSelectMode:(b:boolean)=>void;
   panelSurfaceSelectMode:boolean;setPanelSurfaceSelectMode:(b:boolean)=>void;
   waitingForSurfaceSelection:{extraRowId:string;sourceFaceIndex:number}|null;
@@ -232,9 +233,9 @@ export const useAppStore=create<AppState>((set,get)=>({
   showOutlines:true,setShowOutlines:(b)=>set({showOutlines:b}),
   showRoleNumbers:false,setShowRoleNumbers:(b)=>set({showRoleNumbers:b}),
 
-  selectedPanelRow:null,selectedPanelRowExtraId:null,
-  setSelectedPanelRow:(i,e)=>set({selectedPanelRow:i,selectedPanelRowExtraId:e||null}),
-  panelSelectMode:false,setPanelSelectMode:(b)=>set({panelSelectMode:b,selectedPanelRow:null,selectedPanelRowExtraId:null}),
+  selectedPanelRow:null,selectedPanelRowExtraId:null,selectedPanelRowParentId:null,
+  setSelectedPanelRow:(i,e,parentId)=>set({selectedPanelRow:i,selectedPanelRowExtraId:e||null,selectedPanelRowParentId:parentId||null}),
+  panelSelectMode:false,setPanelSelectMode:(b)=>set({panelSelectMode:b,selectedPanelRow:null,selectedPanelRowExtraId:null,selectedPanelRowParentId:null}),
   panelSurfaceSelectMode:false,setPanelSurfaceSelectMode:(b)=>set({panelSurfaceSelectMode:b}),
   waitingForSurfaceSelection:null,setWaitingForSurfaceSelection:(v)=>set({waitingForSurfaceSelection:v}),
   pendingPanelCreation:null,

@@ -40,6 +40,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     showOutlines,
     showRoleNumbers,
     selectedPanelRow,
+    selectedPanelRowParentId,
     setSelectedPanelRow,
     panelSelectMode,
     faceEditMode,
@@ -69,6 +70,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     showOutlines: state.showOutlines,
     showRoleNumbers: state.showRoleNumbers,
     selectedPanelRow: state.selectedPanelRow,
+    selectedPanelRowParentId: state.selectedPanelRowParentId,
     setSelectedPanelRow: state.setSelectedPanelRow,
     panelSelectMode: state.panelSelectMode,
     faceEditMode: state.faceEditMode,
@@ -413,12 +415,14 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
   const hasFillets = shape.fillets && shape.fillets.length > 0;
 
   const isParentSelected = isPanel && shape.parameters?.parentShapeId === selectedShapeId;
+  const isPanelParentMatch = isParentSelected ||
+    (selectedPanelRowParentId != null && shape.parameters?.parentShapeId === selectedPanelRowParentId);
   const isPanelRowSelected = isPanel &&
-    isParentSelected &&
+    isPanelParentMatch &&
     shape.parameters?.faceIndex !== undefined &&
     shape.parameters.faceIndex === selectedPanelRow;
   const isVirtualPanelRowSelected = isPanel &&
-    isParentSelected &&
+    isPanelParentMatch &&
     shape.parameters?.virtualFaceId &&
     `vf-${shape.parameters.virtualFaceId}` === selectedPanelRow;
   const panelColor = (isPanelRowSelected || isVirtualPanelRowSelected) ? '#ef4444' : (shape.color || '#ffffff');
