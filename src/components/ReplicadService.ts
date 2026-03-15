@@ -3,33 +3,32 @@ import initOpenCascade from 'opencascade.js';
 import * as THREE from 'three';
 import type { SubtractedGeometry } from '../store';
 
-let ocInstance: any = null;
-let isInitializing = false;
+declare global {
+  interface Window {
+    __ocInstance?: any;
+    __ocInitPromise?: Promise<any>;
+  }
+}
 
 export const initReplicad = async () => {
-  if (ocInstance) return ocInstance;
-  if (isInitializing) {
-    await new Promise(resolve => setTimeout(resolve, 100));
-    return initReplicad();
-  }
+  if (window.__ocInstance) return window.__ocInstance;
+  if (window.__ocInitPromise) return window.__ocInitPromise;
 
-  isInitializing = true;
-  try {
-    console.log('🔄 Initializing OpenCascade...');
+  window.__ocInitPromise = (async () => {
+    console.log('Initializing OpenCascade...');
     const oc = await initOpenCascade();
-    console.log('✅ OpenCascade loaded');
-
-    console.log('🔄 Setting OpenCascade for Replicad...');
+    console.log('OpenCascade loaded');
     setOC(oc);
-    ocInstance = oc;
-    console.log('✅ Replicad initialized with OpenCascade');
-    return ocInstance;
-  } catch (error) {
-    console.error('❌ Failed to initialize Replicad:', error);
+    window.__ocInstance = oc;
+    console.log('Replicad initialized');
+    return oc;
+  })().catch((error) => {
+    window.__ocInitPromise = undefined;
+    console.error('Failed to initialize Replicad:', error);
     throw error;
-  } finally {
-    isInitializing = false;
-  }
+  });
+
+  return window.__ocInitPromise;
 };
 
 export interface ReplicadBoxParams {
