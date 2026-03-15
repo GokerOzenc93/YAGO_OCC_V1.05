@@ -152,6 +152,8 @@ interface AppState{
   }|null;
   triggerPanelCreationForFace:(faceIndex:number,sid?:string,sc?:{center:[number,number,number];normal:[number,number,number];constraintPanelId:string;})=>void;
 
+  activePanelProfileId:string|null;setActivePanelProfileId:(id:string|null)=>void;
+
   showGlobalSettingsPanel:boolean;setShowGlobalSettingsPanel:(b:boolean)=>void;
 
   faceEditMode:boolean;setFaceEditMode:(b:boolean)=>void;
@@ -233,6 +235,8 @@ export const useAppStore=create<AppState>((set,get)=>({
   waitingForSurfaceSelection:null,setWaitingForSurfaceSelection:(v)=>set({waitingForSurfaceSelection:v}),
   pendingPanelCreation:null,
   triggerPanelCreationForFace:(i,sid,sc)=>set({pendingPanelCreation:{faceIndex:i,timestamp:Date.now(),sourceGeometryShapeId:sid,surfaceConstraint:sc}}),
+
+  activePanelProfileId:null,setActivePanelProfileId:(id)=>set({activePanelProfileId:id}),
 
   showGlobalSettingsPanel:false,setShowGlobalSettingsPanel:(b)=>set({showGlobalSettingsPanel:b}),
 

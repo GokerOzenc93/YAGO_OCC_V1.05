@@ -919,10 +919,33 @@ async function recalculateAndRebuildVirtualFaces(parentShapeId: string): Promise
   }
 }
 
+function clearStaleOriginalShapes(parentShapeId: string) {
+  useAppStore.setState((st) => ({
+    shapes: st.shapes.map(s => {
+      if (
+        s.type === 'panel' &&
+        s.parameters?.parentShapeId === parentShapeId &&
+        s.parameters?.originalReplicadShape
+      ) {
+        return {
+          ...s,
+          parameters: {
+            ...s.parameters,
+            originalReplicadShape: null,
+            jointTrimmed: false,
+          }
+        };
+      }
+      return s;
+    })
+  }));
+}
+
 export async function rebuildAndRecalculatePipeline(
   parentShapeId: string,
   profileId: string | null
 ): Promise<void> {
+  clearStaleOriginalShapes(parentShapeId);
   await remapFaceDataAfterGeometryChange(parentShapeId);
   await rebuildAllPanels(parentShapeId);
 

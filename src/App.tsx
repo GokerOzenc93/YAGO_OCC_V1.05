@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import Scene from './components/Scene';
 import Toolbar from './components/Toolbar';
@@ -12,6 +12,54 @@ function App() {
   const { opencascadeLoading, addShape } = useAppStore();
   const [catalogOpen, setCatalogOpen] = useState(false);
   const [catalogItems, setCatalogItems] = useState<CatalogItem[]>([]);
+
+  const prevGeometryKeysRef = useRef<Map<string, string>>(new Map());
+  const rebuildInProgressRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const unsubscribe = useAppStore.subscribe((state, prevState) => {
+      const shapes = state.shapes;
+      const prevShapes = prevState.shapes;
+
+      if (shapes === prevShapes) return;
+
+      for (const shape of shapes) {
+        if (shape.type === 'panel' || !shape.geometry) continue;
+
+        const hasAnyPanels = shapes.some(
+          s => s.type === 'panel' && s.parameters?.parentShapeId === shape.id
+        );
+        if (!hasAnyPanels) continue;
+
+        const key = [
+          shape.geometry?.uuid,
+          (shape.subtractionGeometries || []).length,
+        ].join('|');
+
+        const prevKey = prevGeometryKeysRef.current.get(shape.id);
+
+        if (prevKey && prevKey !== key && !rebuildInProgressRef.current.has(shape.id)) {
+          const profileId = state.activePanelProfileId;
+          rebuildInProgressRef.current.add(shape.id);
+          import('./components/PanelJointService').then(({ rebuildAndRecalculatePipeline }) => {
+            rebuildAndRecalculatePipeline(shape.id, profileId).finally(() => {
+              rebuildInProgressRef.current.delete(shape.id);
+            });
+          });
+        }
+
+        prevGeometryKeysRef.current.set(shape.id, key);
+      }
+
+      for (const [id] of prevGeometryKeysRef.current) {
+        if (!shapes.find(s => s.id === id)) {
+          prevGeometryKeysRef.current.delete(id);
+        }
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   useEffect(() => {
     const onError = (e: ErrorEvent) => {
