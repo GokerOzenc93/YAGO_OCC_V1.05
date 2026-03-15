@@ -401,7 +401,6 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
 
     const applyLabelDefaults = async () => {
       const labelDefaults = await faceLabelRoleDefaultsService.getAll();
-      if (Object.keys(labelDefaults).length === 0) return;
 
       const AXIS_ORDER: Record<string, number> = { 'x+': 0, 'x-': 1, 'y+': 2, 'y-': 3, 'z+': 4, 'z-': 5 };
       const getAxisDir = (n: THREE.Vector3): string | null => {
@@ -467,8 +466,6 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
         }
       });
 
-      const subtractorIndices = new Set<number>();
-      const filletIndices = new Set<number>();
       const axisCandidates = new Map<string, number[]>();
 
       faceGroups.forEach((group, groupIndex) => {
@@ -483,7 +480,6 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
             const d1 = fillet.face1Data.planeD ?? n1.dot(new THREE.Vector3(...fillet.face1Data.center));
             const d2 = fillet.face2Data.planeD ?? n2.dot(new THREE.Vector3(...fillet.face2Data.center));
             if (Math.abs(n1.dot(group.center) - d1) < tol && Math.abs(n2.dot(group.center) - d2) < tol) {
-              filletIndices.add(groupIndex);
               return;
             }
           }
@@ -495,7 +491,6 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
             if (normalDot < 0.95) continue;
             const dist = group.center.dot(plane.normal) + plane.constant;
             if (Math.abs(dist) < 1.0) {
-              subtractorIndices.add(groupIndex);
               return;
             }
           }
@@ -520,20 +515,16 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
         }
       });
 
-      const currentFaceRoles = selectedShape.faceRoles || {};
-      const updates: Record<number, FaceRole> = {};
+      const newFaceRoles: Record<number, FaceRole> = {};
 
       labelForGroupIndex.forEach((label, groupIndex) => {
-        if (groupIndex in currentFaceRoles) return;
         const defaultRole = labelDefaults[label];
         if (defaultRole) {
-          updates[groupIndex] = defaultRole as FaceRole;
+          newFaceRoles[groupIndex] = defaultRole as FaceRole;
         }
       });
 
-      if (Object.keys(updates).length > 0) {
-        updateShape(selectedShape.id, { faceRoles: { ...currentFaceRoles, ...updates } });
-      }
+      updateShape(selectedShape.id, { faceRoles: newFaceRoles });
     };
 
     applyLabelDefaults();
