@@ -702,6 +702,8 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
 
               const handleRowClick = (faceIndex: number) => {
                 if (!facePanels[faceIndex]) return;
+                const { selectShape } = useAppStore.getState();
+                selectShape(selectedShape.id);
                 setSelectedPanelRow(faceIndex, null);
               };
 
@@ -1164,6 +1166,8 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
 
                     const handleVirtualRowClick = () => {
                       if (!vf.hasPanel) return;
+                      const { selectShape } = useAppStore.getState();
+                      selectShape(selectedShape.id);
                       setSelectedPanelRow(`vf-${vf.id}`);
                     };
 
