@@ -4,7 +4,7 @@ import { useAppStore } from '../store';
 import type { FaceRole } from '../store';
 import * as THREE from 'three';
 import { evaluateExpression } from './Expression';
-import { applyShapeChanges, applySubtractionChanges } from './ShapeUpdaterService';
+import { applyShapeChanges } from './ShapeUpdaterService';
 import { extractFacesFromGeometry, groupCoplanarFaces } from './FaceEditor';
 import type { FilletData } from './Fillet';
 
@@ -587,26 +587,6 @@ export function ParametersPanel({ isOpen, onClose }: ParametersPanelProps) {
 
     if (selectedShapeId) recalculateVirtualFacesForShape(selectedShapeId);
     console.log('✅ Apply Changes completed');
-  };
-
-  const handleApplySubtractionChanges = async (shapeOverride?: any) => {
-    await applySubtractionChanges({
-      selectedShapeId,
-      selectedSubtractionIndex,
-      shapes,
-      subWidth,
-      subHeight,
-      subDepth,
-      subPosX,
-      subPosY,
-      subPosZ,
-      subRotX,
-      subRotY,
-      subRotZ,
-      updateShape,
-      shapeOverride
-    });
-    if (selectedShapeId) recalculateVirtualFacesForShape(selectedShapeId);
   };
 
   const handleDeleteFillet = async (filletIndex: number) => {
