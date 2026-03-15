@@ -1,51 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { X, GripVertical, Plus, Check, Trash2 } from 'lucide-react';
-import { useDrag } from './hooks';
 import { useAppStore } from '../store';
 import type { FaceRole } from '../store';
 import * as THREE from 'three';
 import { evaluateExpression } from './Expression';
-import { applyShapeChanges } from './ShapeUpdaterService';
+import { applyShapeChanges, applySubtractionChanges } from './ShapeUpdaterService';
 import { extractFacesFromGeometry, groupCoplanarFaces } from './FaceEditor';
 import type { FilletData } from './Fillet';
-
-const AXIS_DIRECTION_ORDER: Record<string, number> = { 'x+': 0, 'x-': 1, 'y+': 2, 'y-': 3, 'z+': 4, 'z-': 5 };
-
-function getAxisDir(n: THREE.Vector3): string | null {
-  const tol = 0.95;
-  if (n.x > tol) return 'x+'; if (n.x < -tol) return 'x-';
-  if (n.y > tol) return 'y+'; if (n.y < -tol) return 'y-';
-  if (n.z > tol) return 'z+'; if (n.z < -tol) return 'z-';
-  return null;
-}
-
-function computeSubtractorCuttingPlanes(subtractionGeometries: any[], bbox: THREE.Box3): Array<{ normal: THREE.Vector3; constant: number; subtractorIndex: number }> {
-  const planes: Array<{ normal: THREE.Vector3; constant: number; subtractorIndex: number }> = [];
-  subtractionGeometries.forEach((sub: any, subtractorIndex: number) => {
-    if (!sub?.geometry) return;
-    const subBbox = new THREE.Box3().setFromBufferAttribute(sub.geometry.getAttribute('position'));
-    const rotMatrix = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(...sub.relativeRotation, 'XYZ'));
-    const offset = new THREE.Vector3(...sub.relativeOffset);
-    const corners = [
-      [subBbox.min.x, subBbox.min.y, subBbox.min.z], [subBbox.max.x, subBbox.min.y, subBbox.min.z],
-      [subBbox.min.x, subBbox.max.y, subBbox.min.z], [subBbox.max.x, subBbox.max.y, subBbox.min.z],
-      [subBbox.min.x, subBbox.min.y, subBbox.max.z], [subBbox.max.x, subBbox.min.y, subBbox.max.z],
-      [subBbox.min.x, subBbox.max.y, subBbox.max.z], [subBbox.max.x, subBbox.max.y, subBbox.max.z],
-    ].map(([x, y, z]) => new THREE.Vector3(x, y, z).applyMatrix4(rotMatrix).add(offset));
-    const wb = new THREE.Box3().setFromPoints(corners);
-    const faceNormals = [new THREE.Vector3(1,0,0), new THREE.Vector3(-1,0,0), new THREE.Vector3(0,1,0), new THREE.Vector3(0,-1,0), new THREE.Vector3(0,0,1), new THREE.Vector3(0,0,-1)];
-    const constants = [-wb.max.x, wb.min.x, -wb.max.y, wb.min.y, -wb.max.z, wb.min.z];
-    const positions = [wb.max.x, wb.min.x, wb.max.y, wb.min.y, wb.max.z, wb.min.z];
-    for (let i = 0; i < 6; i++) {
-      const ai = Math.floor(i / 2);
-      const minV = ai === 0 ? bbox.min.x : ai === 1 ? bbox.min.y : bbox.min.z;
-      const maxV = ai === 0 ? bbox.max.x : ai === 1 ? bbox.max.y : bbox.max.z;
-      if (positions[i] > minV + 1.0 && positions[i] < maxV - 1.0)
-        planes.push({ normal: faceNormals[i], constant: constants[i], subtractorIndex });
-    }
-  });
-  return planes;
-}
 
 interface CustomParameter {
   id: string;
@@ -193,7 +154,9 @@ export function ParametersPanel({ isOpen, onClose }: ParametersPanelProps) {
     recalculateVirtualFacesForShape
   } = useAppStore();
 
-  const { position, isDragging, handleMouseDown } = useDrag({ x: 100, y: 100 });
+  const [position, setPosition] = useState({ x: 100, y: 100 });
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
 
   const renderSubtractionParamRow = (
     label: string,
@@ -410,6 +373,45 @@ export function ParametersPanel({ isOpen, onClose }: ParametersPanelProps) {
     }
   }, [selectedShape?.id, selectedSubtractionIndex, selectedShape?.subtractionGeometries?.length, width, height, depth, customParameters]);
 
+  const handleMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+    setDragOffset({
+      x: e.clientX - position.x,
+      y: e.clientY - position.y
+    });
+  };
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (isDragging) {
+        e.preventDefault();
+        setPosition({
+          x: e.clientX - dragOffset.x,
+          y: e.clientY - dragOffset.y
+        });
+      }
+    };
+
+    const handleMouseUp = () => {
+      setIsDragging(false);
+    };
+
+    if (isDragging) {
+      document.body.style.userSelect = 'none';
+      document.body.style.cursor = 'grabbing';
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+    }
+
+    return () => {
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isDragging, dragOffset]);
+
   const handleDimensionChange = (dimension: 'width' | 'height' | 'depth', value: number) => {
     if (dimension === 'width') setWidth(value);
     if (dimension === 'height') setHeight(value);
@@ -585,6 +587,26 @@ export function ParametersPanel({ isOpen, onClose }: ParametersPanelProps) {
 
     if (selectedShapeId) recalculateVirtualFacesForShape(selectedShapeId);
     console.log('✅ Apply Changes completed');
+  };
+
+  const handleApplySubtractionChanges = async (shapeOverride?: any) => {
+    await applySubtractionChanges({
+      selectedShapeId,
+      selectedSubtractionIndex,
+      shapes,
+      subWidth,
+      subHeight,
+      subDepth,
+      subPosX,
+      subPosY,
+      subPosZ,
+      subRotX,
+      subRotY,
+      subRotZ,
+      updateShape,
+      shapeOverride
+    });
+    if (selectedShapeId) recalculateVirtualFacesForShape(selectedShapeId);
   };
 
   const handleDeleteFillet = async (filletIndex: number) => {
@@ -971,9 +993,68 @@ export function ParametersPanel({ isOpen, onClose }: ParametersPanelProps) {
               const roleOptions: FaceRole[] = ['Left', 'Right', 'Top', 'Bottom', 'Back', 'Door'];
               const fillets: FilletData[] = selectedShape.fillets || [];
 
+              const AXIS_DIRECTION_ORDER: Record<string, number> = {
+                'x+': 0, 'x-': 1, 'y+': 2, 'y-': 3, 'z+': 4, 'z-': 5,
+              };
+              const getAxisDir = (n: THREE.Vector3): string | null => {
+                const tol = 0.95;
+                if (n.x > tol) return 'x+';
+                if (n.x < -tol) return 'x-';
+                if (n.y > tol) return 'y+';
+                if (n.y < -tol) return 'y-';
+                if (n.z > tol) return 'z+';
+                if (n.z < -tol) return 'z-';
+                return null;
+              };
+
               const bbox = new THREE.Box3().setFromBufferAttribute(geometry.getAttribute('position'));
               const subtractionGeometries: Array<any> = selectedShape.subtractionGeometries || [];
-              const cuttingPlanes = computeSubtractorCuttingPlanes(subtractionGeometries, bbox);
+
+              const cuttingPlanes: Array<{ normal: THREE.Vector3; constant: number; subtractorIndex: number }> = [];
+              subtractionGeometries.forEach((sub: any, subtractorIndex: number) => {
+                if (!sub) return;
+                const subGeo = sub.geometry;
+                if (!subGeo) return;
+                const subBbox = new THREE.Box3().setFromBufferAttribute(subGeo.getAttribute('position'));
+                const offset = new THREE.Vector3(...sub.relativeOffset);
+                const rot = sub.relativeRotation;
+                const rotMatrix = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rot[0], rot[1], rot[2], 'XYZ'));
+                const corners = [
+                  new THREE.Vector3(subBbox.min.x, subBbox.min.y, subBbox.min.z),
+                  new THREE.Vector3(subBbox.max.x, subBbox.min.y, subBbox.min.z),
+                  new THREE.Vector3(subBbox.min.x, subBbox.max.y, subBbox.min.z),
+                  new THREE.Vector3(subBbox.max.x, subBbox.max.y, subBbox.min.z),
+                  new THREE.Vector3(subBbox.min.x, subBbox.min.y, subBbox.max.z),
+                  new THREE.Vector3(subBbox.max.x, subBbox.min.y, subBbox.max.z),
+                  new THREE.Vector3(subBbox.min.x, subBbox.max.y, subBbox.max.z),
+                  new THREE.Vector3(subBbox.max.x, subBbox.max.y, subBbox.max.z),
+                ].map(c => c.applyMatrix4(rotMatrix).add(offset));
+                const worldBbox = new THREE.Box3().setFromPoints(corners);
+                const faceNormals = [
+                  new THREE.Vector3(1,0,0), new THREE.Vector3(-1,0,0),
+                  new THREE.Vector3(0,1,0), new THREE.Vector3(0,-1,0),
+                  new THREE.Vector3(0,0,1), new THREE.Vector3(0,0,-1),
+                ];
+                const faceConstants = [
+                  -worldBbox.max.x, worldBbox.min.x,
+                  -worldBbox.max.y, worldBbox.min.y,
+                  -worldBbox.max.z, worldBbox.min.z,
+                ];
+                const facePlanePositions = [
+                  worldBbox.max.x, worldBbox.min.x,
+                  worldBbox.max.y, worldBbox.min.y,
+                  worldBbox.max.z, worldBbox.min.z,
+                ];
+                for (let i = 0; i < 6; i++) {
+                  const pos = facePlanePositions[i];
+                  const axisIdx = Math.floor(i / 2);
+                  const minVal = axisIdx === 0 ? bbox.min.x : axisIdx === 1 ? bbox.min.y : bbox.min.z;
+                  const maxVal = axisIdx === 0 ? bbox.max.x : axisIdx === 1 ? bbox.max.y : bbox.max.z;
+                  if (pos > minVal + 1.0 && pos < maxVal - 1.0) {
+                    cuttingPlanes.push({ normal: faceNormals[i], constant: faceConstants[i], subtractorIndex });
+                  }
+                }
+              });
 
               const axisCandidates = new Map<string, Array<{ groupIndex: number }>>();
               const subtractorMap = new Map<number, Array<{ groupIndex: number }>>();
@@ -1019,7 +1100,9 @@ export function ParametersPanel({ isOpen, onClose }: ParametersPanelProps) {
                 axisCandidates.get(axisDir)!.push({ groupIndex });
               });
 
-              const axisSorted = Array.from(axisCandidates.entries()).sort(([a], [b]) => (AXIS_DIRECTION_ORDER[a] ?? 99) - (AXIS_DIRECTION_ORDER[b] ?? 99));
+              const axisSorted = Array.from(axisCandidates.entries()).sort(
+                ([a], [b]) => (AXIS_DIRECTION_ORDER[a] ?? 99) - (AXIS_DIRECTION_ORDER[b] ?? 99)
+              );
 
               const faceEntries: Array<{ label: string; groupIndex: number; color: string }> = [];
 
