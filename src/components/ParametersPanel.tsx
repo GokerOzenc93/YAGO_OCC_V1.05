@@ -273,10 +273,14 @@ export function ParametersPanel({ isOpen, onClose }: ParametersPanelProps) {
 
         const defaultProfile = await globalSettingsService.getDefaultProfile();
         if (defaultProfile) {
-          await resolveAllPanelJoints(
-            selectedShape.parameters.parentShapeId,
-            defaultProfile.id
-          );
+          const { setShapeRebuilding } = useAppStore.getState();
+          const parentId = selectedShape.parameters.parentShapeId;
+          setShapeRebuilding(parentId, true);
+          try {
+            await resolveAllPanelJoints(parentId, defaultProfile.id);
+          } finally {
+            setShapeRebuilding(parentId, false);
+          }
         }
       }
     };

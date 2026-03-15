@@ -15,7 +15,7 @@ interface PanelEditorProps {
 }
 
 export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
-  const { selectedShapeId, shapes, updateShape, addShape, showOutlines, setShowOutlines, showRoleNumbers, setShowRoleNumbers, selectedPanelRow, setSelectedPanelRow, panelSelectMode, setPanelSelectMode, raycastMode, setRaycastMode, showVirtualFaces, setShowVirtualFaces, virtualFaces, updateVirtualFace, deleteVirtualFace, pendingPanelCreation, setActivePanelProfileId } = useAppStore();
+  const { selectedShapeId, shapes, updateShape, addShape, showOutlines, setShowOutlines, showRoleNumbers, setShowRoleNumbers, selectedPanelRow, setSelectedPanelRow, panelSelectMode, setPanelSelectMode, raycastMode, setRaycastMode, showVirtualFaces, setShowVirtualFaces, virtualFaces, updateVirtualFace, deleteVirtualFace, pendingPanelCreation, setActivePanelProfileId, setShapeRebuilding } = useAppStore();
   const [position, setPosition] = useState({ x: 100, y: 100 });
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
@@ -176,9 +176,11 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
 
     if (selectedProfile !== 'none') {
       setResolving(true);
-      resolveAllPanelJoints(selectedShapeId, selectedProfile).finally(() =>
-        setResolving(false)
-      );
+      setShapeRebuilding(selectedShapeId, true);
+      resolveAllPanelJoints(selectedShapeId, selectedProfile).finally(() => {
+        setResolving(false);
+        setShapeRebuilding(selectedShapeId, false);
+      });
     } else {
       restoreAllPanels(selectedShapeId);
     }
@@ -250,10 +252,12 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
         const currentProfile = selectedProfileRef.current;
         if (currentProfile !== 'none') {
           setResolving(true);
+          setShapeRebuilding(currentShape.id, true);
           try {
             await resolveAllPanelJoints(currentShape.id, currentProfile);
           } finally {
             setResolving(false);
+            setShapeRebuilding(currentShape.id, false);
           }
         }
       } catch (err) {
@@ -663,10 +667,12 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
 
                 if (selectedProfile !== 'none') {
                   setResolving(true);
+                  setShapeRebuilding(selectedShape.id, true);
                   try {
                     await resolveAllPanelJoints(selectedShape.id, selectedProfile);
                   } finally {
                     setResolving(false);
+                    setShapeRebuilding(selectedShape.id, false);
                   }
                 }
               };
@@ -985,11 +991,13 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                                 });
                                 if (selectedProfile !== 'none') {
                                   setResolving(true);
+                                  setShapeRebuilding(selectedShape.id, true);
                                   try {
                                     await rebuildAllPanels(selectedShape.id);
                                     await resolveAllPanelJoints(selectedShape.id, selectedProfile);
                                   } finally {
                                     setResolving(false);
+                                    setShapeRebuilding(selectedShape.id, false);
                                   }
                                 }
                               }
@@ -1159,11 +1167,13 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                               });
                               if (selectedProfile !== 'none') {
                                 setResolving(true);
+                                setShapeRebuilding(selectedShape.id, true);
                                 try {
                                   await rebuildAllPanels(selectedShape.id);
                                   await resolveAllPanelJoints(selectedShape.id, selectedProfile);
                                 } finally {
                                   setResolving(false);
+                                  setShapeRebuilding(selectedShape.id, false);
                                 }
                               }
                             }
@@ -1227,10 +1237,12 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                               await createVirtualPanel(vf.id, vfIdx);
                               if (selectedProfile !== 'none') {
                                 setResolving(true);
+                                setShapeRebuilding(selectedShape.id, true);
                                 try {
                                   await resolveAllPanelJoints(selectedShape.id, selectedProfile);
                                 } finally {
                                   setResolving(false);
+                                  setShapeRebuilding(selectedShape.id, false);
                                 }
                               }
                             }
