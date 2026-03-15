@@ -1008,6 +1008,7 @@ export function ParametersPanel({ isOpen, onClose }: ParametersPanelProps) {
 
               const cuttingPlanes: Array<{ normal: THREE.Vector3; constant: number; subtractorIndex: number }> = [];
               subtractionGeometries.forEach((sub: any, subtractorIndex: number) => {
+                if (!sub) return;
                 const subGeo = sub.geometry;
                 if (!subGeo) return;
                 const subBbox = new THREE.Box3().setFromBufferAttribute(subGeo.getAttribute('position'));

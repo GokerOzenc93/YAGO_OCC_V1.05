@@ -428,6 +428,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
       const mainBbox = new THREE.Box3().setFromBufferAttribute(geometry.getAttribute('position'));
       const cuttingPlanes: Array<{ normal: THREE.Vector3; constant: number }> = [];
       subtractionGeometries.forEach((sub: any) => {
+        if (!sub) return;
         const subGeo = sub.geometry;
         if (!subGeo) return;
         const subBbox = new THREE.Box3().setFromBufferAttribute(subGeo.getAttribute('position'));
@@ -811,6 +812,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
               const mainBbox = new THREE.Box3().setFromBufferAttribute(geometry.getAttribute('position'));
               const cuttingPlanes: Array<{ normal: THREE.Vector3; constant: number; subtractorIndex: number }> = [];
               subtractionGeometries.forEach((sub: any, subtractorIndex: number) => {
+                if (!sub) return;
                 const subGeo = sub.geometry;
                 if (!subGeo) return;
                 const subBbox = new THREE.Box3().setFromBufferAttribute(subGeo.getAttribute('position'));

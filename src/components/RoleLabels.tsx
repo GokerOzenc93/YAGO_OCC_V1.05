@@ -37,6 +37,7 @@ function buildSubtractorCuttingPlanes(
   const planes: CuttingPlane[] = [];
 
   subtractionGeometries.forEach((sub, subtractorIndex) => {
+    if (!sub) return;
     const subGeo = sub.geometry;
     if (!subGeo) return;
 
