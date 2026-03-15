@@ -209,28 +209,41 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
         </>
       )}
       {isXray && (
-        <mesh
-          ref={meshRef}
-          geometry={shape.geometry}
-          castShadow
-          receiveShadow
-          onClick={handleClick}
-        >
-          <meshStandardMaterial
-            color={materialColor}
-            emissive={isPanelRowSelected ? '#ef4444' : baseColor}
-            emissiveIntensity={isPanelRowSelected ? 0.35 : 0.1}
-            metalness={0}
-            roughness={0.4}
-            transparent={true}
-            opacity={0.45}
-            side={THREE.DoubleSide}
-            depthWrite={false}
-            flatShading={false}
-          />
-        </mesh>
+        <>
+          <mesh
+            ref={meshRef}
+            geometry={shape.geometry}
+            castShadow
+            receiveShadow
+            onClick={handleClick}
+          >
+            <meshStandardMaterial
+              color={materialColor}
+              emissive={isPanelRowSelected ? '#ef4444' : baseColor}
+              emissiveIntensity={isPanelRowSelected ? 0.35 : 0.1}
+              metalness={0}
+              roughness={0.4}
+              transparent={true}
+              opacity={0.45}
+              side={THREE.DoubleSide}
+              depthWrite={false}
+              flatShading={false}
+            />
+          </mesh>
+          {edgeGeometry && (
+            <lineSegments geometry={edgeGeometry}>
+              <lineBasicMaterial
+                color={edgeColor}
+                linewidth={isPanelRowSelected ? 3 : isSelected ? 2.5 : 2}
+                opacity={1}
+                transparent={false}
+                depthTest={true}
+              />
+            </lineSegments>
+          )}
+        </>
       )}
-      {!isWireframe && edgeGeometry && (
+      {!isWireframe && !isXray && edgeGeometry && (
         <lineSegments geometry={edgeGeometry}>
           <lineBasicMaterial
             color={edgeColor}
