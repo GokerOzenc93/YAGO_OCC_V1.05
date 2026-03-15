@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, GripVertical, MousePointer, Layers, RotateCw, Plus, Trash2, Eye, EyeOff } from 'lucide-react';
+import { X, GripVertical, MousePointer, Layers, RotateCw, Plus, Trash2, Eye, EyeOff, RefreshCw } from 'lucide-react';
 import { globalSettingsService, faceLabelRoleDefaultsService, GlobalSettingsProfile } from './GlobalSettingsDatabase';
 import { useAppStore } from '../store';
 import type { FaceRole } from '../store';
@@ -537,6 +537,29 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
             title={raycastMode ? 'Raycast Modu Aktif (kapat)' : 'Raycast Modunu Aç'}
           >
             <Plus size={14} />
+          </button>
+          <button
+            onClick={async () => {
+              if (!selectedShape || selectedProfile === 'none' || resolving) return;
+              setResolving(true);
+              setShapeRebuilding(selectedShape.id, true);
+              try {
+                await rebuildAllPanels(selectedShape.id);
+                await resolveAllPanelJoints(selectedShape.id, selectedProfile);
+              } finally {
+                setResolving(false);
+                setShapeRebuilding(selectedShape.id, false);
+              }
+            }}
+            disabled={!selectedShape || selectedProfile === 'none' || resolving}
+            className={`p-0.5 rounded transition-colors ${
+              !selectedShape || selectedProfile === 'none' || resolving
+                ? 'text-stone-300 cursor-not-allowed'
+                : 'text-slate-600 hover:bg-stone-200'
+            }`}
+            title="Panelleri Yeniden Hesapla"
+          >
+            <RefreshCw size={14} className={resolving ? 'animate-spin' : ''} />
           </button>
           <button
             onClick={() => setPanelSelectMode(!panelSelectMode)}
