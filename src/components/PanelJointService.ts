@@ -573,6 +573,9 @@ export async function rebuildAllPanels(parentShapeId: string): Promise<void> {
 
     if (faceIndex < 0 || faceIndex >= faceGroups.length) continue;
 
+    const parentFacePanels = parentShape.facePanels || {};
+    if (!parentFacePanels[faceIndex]) continue;
+
     const faceGroup = faceGroups[faceIndex];
 
     const localVertices: THREE.Vector3[] = [];

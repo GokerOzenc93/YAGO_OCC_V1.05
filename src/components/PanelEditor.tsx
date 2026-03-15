@@ -24,7 +24,6 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
   const [loading, setLoading] = useState(true);
   const [resolving, setResolving] = useState(false);
   const prevProfileRef = useRef<string>('none');
-  const prevGeometryRef = useRef<string>('');
   const rowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
 
   const selectedShape = shapes.find((s) => s.id === selectedShapeId);
@@ -185,39 +184,6 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
     }
   }, [selectedProfile, selectedShapeId]);
 
-  useEffect(() => {
-    if (!selectedShape || !selectedShapeId) return;
-
-    const geometryKey = [
-      selectedShape.parameters?.width,
-      selectedShape.parameters?.height,
-      selectedShape.parameters?.depth,
-      selectedShape.geometry?.uuid,
-      (selectedShape.subtractionGeometries || []).length,
-      JSON.stringify(selectedShape.position),
-      JSON.stringify(selectedShape.scale)
-    ].join('|');
-
-    if (prevGeometryRef.current && prevGeometryRef.current !== geometryKey) {
-      setResolving(true);
-      rebuildAndRecalculatePipeline(
-        selectedShapeId,
-        selectedProfileRef.current !== 'none' ? selectedProfileRef.current : null
-      ).finally(() => setResolving(false));
-    }
-
-    prevGeometryRef.current = geometryKey;
-  }, [
-    selectedShape?.parameters?.width,
-    selectedShape?.parameters?.height,
-    selectedShape?.parameters?.depth,
-    selectedShape?.geometry?.uuid,
-    selectedShape?.subtractionGeometries?.length,
-    selectedShape?.position,
-    selectedShape?.scale,
-    selectedShapeId,
-    selectedProfile
-  ]);
 
   const loadProfiles = async () => {
     try {

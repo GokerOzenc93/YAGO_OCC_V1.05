@@ -494,7 +494,6 @@ export const useAppStore=create<AppState>((set,get)=>({
               .filter(Boolean)
           }));
 
-          import('./components/PanelJointService').then(({rebuildAndRecalculatePipeline})=>rebuildAndRecalculatePipeline(a.id,null));
           return;
         }catch(e){console.error('boolean fail:',e);}
       }
@@ -549,8 +548,6 @@ export const useAppStore=create<AppState>((set,get)=>({
         }:x),
         selectedSubtractionIndex:null
       }));
-
-      import('./components/PanelJointService').then(({rebuildAndRecalculatePipeline})=>rebuildAndRecalculatePipeline(shapeId,null));
 
     }catch(e){console.error('deleteSubtraction fail:',e);}
   }
