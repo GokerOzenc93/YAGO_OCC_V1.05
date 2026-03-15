@@ -501,8 +501,8 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
             >
               <meshStandardMaterial
                 color={isPanel ? panelColor : "#c8c8c8"}
-                emissive={isPanel ? panelColor : undefined}
-                emissiveIntensity={isPanel ? (isPanelRowSelected ? 0.3 : 0.1) : 0}
+                emissive={(isPanelRowSelected || isVirtualPanelRowSelected) ? '#000000' : isPanel ? panelColor : undefined}
+                emissiveIntensity={(isPanelRowSelected || isVirtualPanelRowSelected) ? 0 : isPanel ? 0.1 : 0}
                 metalness={isPanel ? 0 : 0}
                 roughness={isPanel ? 0.4 : 1}
                 transparent
@@ -580,8 +580,8 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
             >
               <meshStandardMaterial
                 color={isPanel ? panelColor : shouldShowAsReference ? '#ef4444' : "#c8c8c8"}
-                emissive={isPanel ? panelColor : undefined}
-                emissiveIntensity={isPanel ? (isPanelRowSelected ? 0.3 : 0.1) : 0}
+                emissive={(isPanelRowSelected || isVirtualPanelRowSelected) ? '#000000' : isPanel ? panelColor : undefined}
+                emissiveIntensity={(isPanelRowSelected || isVirtualPanelRowSelected) ? 0 : isPanel ? 0.1 : 0}
                 metalness={isPanel ? 0 : 0}
                 roughness={isPanel ? 0.4 : 1}
                 transparent
