@@ -368,7 +368,6 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
               />
             </lineSegments>
           )}
-          <AxisEdgeLabels geometry={shape.geometry} axisData={axisEdgeData} />
         </>
       )}
 
