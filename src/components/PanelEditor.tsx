@@ -398,6 +398,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
 
   useEffect(() => {
     if (!selectedShape || !selectedShape.geometry) return;
+    if (selectedShape.faceRoles && Object.keys(selectedShape.faceRoles).length > 0) return;
 
     const DEFAULT_ROLE_BY_IDX: FaceRole[] = ['Right', 'Left', 'Top', 'Bottom', 'Door', 'Back'];
     const AXIS_ORDER: Record<string, number> = { 'x+': 0, 'x-': 1, 'y+': 2, 'y-': 3, 'z+': 4, 'z-': 5 };
@@ -412,71 +413,11 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
       return null;
     };
 
-    const subtractionGeometries: Array<any> = selectedShape.subtractionGeometries || [];
     const faces = extractFacesFromGeometry(selectedShape.geometry);
     const faceGroups = groupCoplanarFaces(faces);
 
-    const mainBbox = new THREE.Box3().setFromBufferAttribute(selectedShape.geometry.getAttribute('position'));
-    const cuttingPlanes: Array<{ normal: THREE.Vector3; constant: number }> = [];
-    subtractionGeometries.forEach((sub: any) => {
-      const subGeo = sub.geometry;
-      if (!subGeo) return;
-      const subBbox = new THREE.Box3().setFromBufferAttribute(subGeo.getAttribute('position'));
-      const offset = new THREE.Vector3(...sub.relativeOffset);
-      const rot = sub.relativeRotation;
-      const rotMatrix = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rot[0], rot[1], rot[2], 'XYZ'));
-      const corners = [
-        new THREE.Vector3(subBbox.min.x, subBbox.min.y, subBbox.min.z),
-        new THREE.Vector3(subBbox.max.x, subBbox.min.y, subBbox.min.z),
-        new THREE.Vector3(subBbox.min.x, subBbox.max.y, subBbox.min.z),
-        new THREE.Vector3(subBbox.max.x, subBbox.max.y, subBbox.min.z),
-        new THREE.Vector3(subBbox.min.x, subBbox.min.y, subBbox.max.z),
-        new THREE.Vector3(subBbox.max.x, subBbox.min.y, subBbox.max.z),
-        new THREE.Vector3(subBbox.min.x, subBbox.max.y, subBbox.max.z),
-        new THREE.Vector3(subBbox.max.x, subBbox.max.y, subBbox.max.z),
-      ].map(c => c.applyMatrix4(rotMatrix).add(offset));
-      const worldBbox = new THREE.Box3().setFromPoints(corners);
-      const faceNormals = [
-        new THREE.Vector3(1,0,0), new THREE.Vector3(-1,0,0),
-        new THREE.Vector3(0,1,0), new THREE.Vector3(0,-1,0),
-        new THREE.Vector3(0,0,1), new THREE.Vector3(0,0,-1),
-      ];
-      const faceConstants = [
-        -worldBbox.max.x, worldBbox.min.x,
-        -worldBbox.max.y, worldBbox.min.y,
-        -worldBbox.max.z, worldBbox.min.z,
-      ];
-      const facePlanePositions = [
-        worldBbox.max.x, worldBbox.min.x,
-        worldBbox.max.y, worldBbox.min.y,
-        worldBbox.max.z, worldBbox.min.z,
-      ];
-      for (let pi = 0; pi < 6; pi++) {
-        const pos = facePlanePositions[pi];
-        const axisIdx = Math.floor(pi / 2);
-        const minVal = axisIdx === 0 ? mainBbox.min.x : axisIdx === 1 ? mainBbox.min.y : mainBbox.min.z;
-        const maxVal = axisIdx === 0 ? mainBbox.max.x : axisIdx === 1 ? mainBbox.max.y : mainBbox.max.z;
-        if (pos > minVal + 1.0 && pos < maxVal - 1.0) {
-          cuttingPlanes.push({ normal: faceNormals[pi], constant: faceConstants[pi] });
-        }
-      }
-    });
-
-    const subtractorGroupIndices = new Set<number>();
-    faceGroups.forEach((group, groupIndex) => {
-      if (getAxisDir(group.normal) === null) return;
-      for (const plane of cuttingPlanes) {
-        if (Math.abs(group.normal.dot(plane.normal)) < 0.95) continue;
-        if (Math.abs(group.center.dot(plane.normal) + plane.constant) < 1.0) {
-          subtractorGroupIndices.add(groupIndex);
-          return;
-        }
-      }
-    });
-
     const axisCandidates = new Map<string, number[]>();
     faceGroups.forEach((group, groupIndex) => {
-      if (subtractorGroupIndices.has(groupIndex)) return;
       const axisDir = getAxisDir(group.normal);
       if (axisDir === null) return;
       if (!axisCandidates.has(axisDir)) axisCandidates.set(axisDir, []);
@@ -489,150 +430,19 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
 
     if (axisSorted.length === 0) return;
 
-    const userOverrides = selectedShape.userFaceRoleOverrides as Record<number, FaceRole> | undefined;
-    const existingRoles = selectedShape.faceRoles || {};
-
-    const newFaceRoles: Record<number, FaceRole> = { ...existingRoles };
-
+    const newFaceRoles: Record<number, FaceRole> = {};
     axisSorted.forEach(([, groupIndices], roleIdx) => {
       const defaultRole = DEFAULT_ROLE_BY_IDX[roleIdx] ?? null;
       if (defaultRole === null) return;
       groupIndices.forEach((gi) => {
-        if (userOverrides && gi in userOverrides) {
-          newFaceRoles[gi] = userOverrides[gi];
-        } else {
-          newFaceRoles[gi] = defaultRole;
-        }
+        newFaceRoles[gi] = defaultRole;
       });
     });
 
-    subtractorGroupIndices.forEach(gi => {
-      delete newFaceRoles[gi];
-    });
-
-    const hasChanges = JSON.stringify(newFaceRoles) !== JSON.stringify(existingRoles);
-    if (hasChanges) {
+    if (Object.keys(newFaceRoles).length > 0) {
       updateShape(selectedShape.id, { faceRoles: newFaceRoles });
     }
   }, [selectedShape?.id, selectedShape?.geometry]);
-
-  useEffect(() => {
-    if (!selectedShape || !selectedShape.geometry) return;
-    const subtractionGeometries: Array<any> = selectedShape.subtractionGeometries || [];
-    if (subtractionGeometries.length === 0) return;
-
-    const faces = extractFacesFromGeometry(selectedShape.geometry);
-    const faceGroups = groupCoplanarFaces(faces);
-
-    const tol = 0.95;
-    const getAxisDir = (n: THREE.Vector3): string | null => {
-      if (n.x > tol) return 'x+';
-      if (n.x < -tol) return 'x-';
-      if (n.y > tol) return 'y+';
-      if (n.y < -tol) return 'y-';
-      if (n.z > tol) return 'z+';
-      if (n.z < -tol) return 'z-';
-      return null;
-    };
-
-    const mainBbox = new THREE.Box3().setFromBufferAttribute(selectedShape.geometry.getAttribute('position'));
-    const cuttingPlanes: Array<{ normal: THREE.Vector3; constant: number }> = [];
-    subtractionGeometries.forEach((sub: any) => {
-      const subGeo = sub.geometry;
-      if (!subGeo) return;
-      const subBbox = new THREE.Box3().setFromBufferAttribute(subGeo.getAttribute('position'));
-      const offset = new THREE.Vector3(...sub.relativeOffset);
-      const rot = sub.relativeRotation;
-      const rotMatrix = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rot[0], rot[1], rot[2], 'XYZ'));
-      const corners = [
-        new THREE.Vector3(subBbox.min.x, subBbox.min.y, subBbox.min.z),
-        new THREE.Vector3(subBbox.max.x, subBbox.min.y, subBbox.min.z),
-        new THREE.Vector3(subBbox.min.x, subBbox.max.y, subBbox.min.z),
-        new THREE.Vector3(subBbox.max.x, subBbox.max.y, subBbox.min.z),
-        new THREE.Vector3(subBbox.min.x, subBbox.min.y, subBbox.max.z),
-        new THREE.Vector3(subBbox.max.x, subBbox.min.y, subBbox.max.z),
-        new THREE.Vector3(subBbox.min.x, subBbox.max.y, subBbox.max.z),
-        new THREE.Vector3(subBbox.max.x, subBbox.max.y, subBbox.max.z),
-      ].map(c => c.applyMatrix4(rotMatrix).add(offset));
-      const worldBbox = new THREE.Box3().setFromPoints(corners);
-      const faceNormals = [
-        new THREE.Vector3(1,0,0), new THREE.Vector3(-1,0,0),
-        new THREE.Vector3(0,1,0), new THREE.Vector3(0,-1,0),
-        new THREE.Vector3(0,0,1), new THREE.Vector3(0,0,-1),
-      ];
-      const faceConstants = [
-        -worldBbox.max.x, worldBbox.min.x,
-        -worldBbox.max.y, worldBbox.min.y,
-        -worldBbox.max.z, worldBbox.min.z,
-      ];
-      const facePlanePositions = [
-        worldBbox.max.x, worldBbox.min.x,
-        worldBbox.max.y, worldBbox.min.y,
-        worldBbox.max.z, worldBbox.min.z,
-      ];
-      for (let pi = 0; pi < 6; pi++) {
-        const pos = facePlanePositions[pi];
-        const axisIdx = Math.floor(pi / 2);
-        const minVal = axisIdx === 0 ? mainBbox.min.x : axisIdx === 1 ? mainBbox.min.y : mainBbox.min.z;
-        const maxVal = axisIdx === 0 ? mainBbox.max.x : axisIdx === 1 ? mainBbox.max.y : mainBbox.max.z;
-        if (pos > minVal + 1.0 && pos < maxVal - 1.0) {
-          cuttingPlanes.push({ normal: faceNormals[pi], constant: faceConstants[pi] });
-        }
-      }
-    });
-
-    if (cuttingPlanes.length === 0) return;
-
-    const subtractorGroupIndices = new Set<number>();
-    faceGroups.forEach((group, groupIndex) => {
-      const axisDir = getAxisDir(group.normal);
-      if (axisDir === null) return;
-      for (const plane of cuttingPlanes) {
-        const normalDot = Math.abs(group.normal.dot(plane.normal));
-        if (normalDot < 0.95) continue;
-        const dist = group.center.dot(plane.normal) + plane.constant;
-        if (Math.abs(dist) < 1.0) {
-          subtractorGroupIndices.add(groupIndex);
-          return;
-        }
-      }
-    });
-
-    if (subtractorGroupIndices.size === 0) return;
-
-    const existingRoles = selectedShape.faceRoles || {};
-    const existingPanels = selectedShape.facePanels || {};
-    let rolesChanged = false;
-    let panelsChanged = false;
-    const newFaceRoles = { ...existingRoles };
-    const newFacePanels = { ...existingPanels };
-
-    subtractorGroupIndices.forEach(gi => {
-      if (gi in newFaceRoles) {
-        delete newFaceRoles[gi];
-        rolesChanged = true;
-      }
-      if (gi in newFacePanels) {
-        delete newFacePanels[gi];
-        panelsChanged = true;
-        const panelToRemove = useAppStore.getState().shapes.find(s =>
-          s.type === 'panel' &&
-          s.parameters?.parentShapeId === selectedShape.id &&
-          s.parameters?.faceIndex === gi
-        );
-        if (panelToRemove) {
-          useAppStore.getState().deleteShape(panelToRemove.id);
-        }
-      }
-    });
-
-    if (rolesChanged || panelsChanged) {
-      updateShape(selectedShape.id, {
-        ...(rolesChanged ? { faceRoles: newFaceRoles } : {}),
-        ...(panelsChanged ? { facePanels: newFacePanels } : {}),
-      });
-    }
-  }, [selectedShape?.id, selectedShape?.geometry, selectedShape?.subtractionGeometries?.length]);
 
   if (!isOpen) return null;
 
@@ -1011,23 +821,6 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                 });
               });
 
-              const sortedFaceGroupIndices = [...faceGroups.keys()].sort((a, b) => {
-                const labelA = faceGroupLabels.get(a)?.label ?? `${a + 1}`;
-                const labelB = faceGroupLabels.get(b)?.label ?? `${b + 1}`;
-                const parseLabel = (l: string) => {
-                  const parts = l.replace(/^[SF]/, '').split(/[-.]/).map(Number);
-                  return parts;
-                };
-                const pa = parseLabel(labelA);
-                const pb = parseLabel(labelB);
-                for (let k = 0; k < Math.max(pa.length, pb.length); k++) {
-                  const va = pa[k] ?? 0;
-                  const vb = pb[k] ?? 0;
-                  if (va !== vb) return va - vb;
-                }
-                return 0;
-              });
-
               return (
                 <div className={`space-y-0.5 pt-2 border-t border-stone-300 ${isDisabled ? 'opacity-40 pointer-events-none' : ''}`}>
                   <div className={`text-xs font-semibold mb-1 flex items-center gap-2 ${isDisabled ? 'text-stone-400' : 'text-orange-700'}`}>
@@ -1038,7 +831,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                       </span>
                     )}
                   </div>
-                  {sortedFaceGroupIndices.map((i) => {
+                  {faceGroups.map((_group, i) => {
                     const dimensions = getPanelDimensions(i);
                     const isRowSelected = selectedPanelRow === i;
                     const faceLabel = faceGroupLabels.get(i);
@@ -1089,10 +882,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                               if (newRole === null) {
                                 delete newFaceRoles[i];
                               }
-                              const existingOverrides = (selectedShape.userFaceRoleOverrides as Record<number, FaceRole> | undefined) || {};
-                              const newOverrides = { ...existingOverrides, [i]: newRole };
-                              if (newRole === null) delete newOverrides[i];
-                              updateShape(selectedShape.id, { faceRoles: newFaceRoles, userFaceRoleOverrides: newOverrides });
+                              updateShape(selectedShape.id, { faceRoles: newFaceRoles });
 
                               const panelShape = shapes.find(s =>
                                 s.type === 'panel' &&

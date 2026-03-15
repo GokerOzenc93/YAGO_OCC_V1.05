@@ -79,7 +79,6 @@ export interface Shape {
   faceRoles?:Record<number,FaceRole>;
   faceDescriptions?:Record<number,string>;
   facePanels?:Record<number,boolean>;
-  userFaceRoleOverrides?:Record<number,FaceRole>;
 }
 
 export enum CameraType{PERSPECTIVE='perspective',ORTHOGRAPHIC='orthographic'}
