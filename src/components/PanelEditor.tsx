@@ -952,7 +952,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                             if (el) rowRefs.current.set(i, el);
                             else rowRefs.current.delete(i);
                           }}
-                          className={`flex gap-0.5 items-center rounded transition-colors ${isRowSelected ? 'bg-orange-50 ring-1 ring-orange-400' : 'hover:bg-gray-50'} ${facePanels[i] ? 'cursor-pointer' : ''}`}
+                          className={`flex w-fit gap-0.5 items-center rounded transition-colors ${isRowSelected ? 'bg-orange-50 ring-1 ring-orange-400' : 'hover:bg-gray-50'} ${facePanels[i] ? 'cursor-pointer' : ''}`}
                           onClick={(e) => {
                             e.stopPropagation();
                             if (facePanels[i]) handleRowClick(i);
@@ -1070,7 +1070,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                             className="w-[48px] px-1 py-0.5 text-xs font-mono border rounded text-center bg-white text-gray-800 border-gray-300 font-semibold"
                             title="Panel Thickness"
                           />
-                          <div className="ml-auto flex items-center gap-0.5 pr-3">
+                          <div className="ml-3 flex items-center gap-0.5">
                           <input
                             type="checkbox"
                             checked={facePanels[i] || false}
@@ -1170,7 +1170,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                     return (
                       <div
                         key={vf.id}
-                        className={`flex gap-0.5 items-center rounded transition-colors ${isRowSelected ? 'bg-orange-50 ring-1 ring-orange-400' : 'hover:bg-gray-50'} ${vf.hasPanel ? 'cursor-pointer' : ''}`}
+                        className={`flex w-fit gap-0.5 items-center rounded transition-colors ${isRowSelected ? 'bg-orange-50 ring-1 ring-orange-400' : 'hover:bg-gray-50'} ${vf.hasPanel ? 'cursor-pointer' : ''}`}
                         onClick={(e) => {
                           e.stopPropagation();
                           if (vf.hasPanel) handleVirtualRowClick();
@@ -1297,7 +1297,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                           className={`w-4 h-4 border-gray-300 rounded ${isDisabled ? 'text-stone-300 cursor-not-allowed' : 'text-green-600 focus:ring-green-500 cursor-pointer'}`}
                           title={`Toggle panel for virtual face V${vfIdx + 1}`}
                         />
-                        <div className="ml-auto flex items-center gap-0.5 pr-3">
+                        <div className="ml-3 flex items-center gap-0.5">
                         <button
                           disabled={isDisabled || !vf.hasPanel}
                           onClick={(e) => {
