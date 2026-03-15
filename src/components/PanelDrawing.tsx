@@ -66,19 +66,10 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
       )
     );
 
-  const smoothGeometry = useMemo(() => {
-    if (!shape.geometry) return null;
-    const geom = shape.geometry.clone();
-    if (!geom.getAttribute('normal')) {
-      geom.computeVertexNormals();
-    }
-    return geom;
-  }, [shape.geometry]);
-
   const edgeGeometry = useMemo(() => {
     if (!shape.geometry) return null;
     try {
-      const edges = new THREE.EdgesGeometry(shape.geometry, 15);
+      const edges = new THREE.EdgesGeometry(shape.geometry, 5);
       return edges;
     } catch (error) {
       console.error('Error creating edge geometry:', error);
@@ -128,7 +119,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     >
       <mesh
         ref={meshRef}
-        geometry={smoothGeometry || shape.geometry}
+        geometry={shape.geometry}
         castShadow
         receiveShadow
         onClick={(e) => {
@@ -191,18 +182,15 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
       >
         <meshStandardMaterial
           color={materialColor}
-          emissive={isPanelRowSelected ? '#ef4444' : '#000000'}
-          emissiveIntensity={isPanelRowSelected ? 0.25 : 0}
-          metalness={0.0}
-          roughness={0.5}
+          emissive={isPanelRowSelected ? '#ef4444' : baseColor}
+          emissiveIntensity={isPanelRowSelected ? 0.35 : 0.1}
+          metalness={0}
+          roughness={0.4}
           transparent={false}
           opacity={1}
           side={THREE.DoubleSide}
           depthWrite={true}
           flatShading={false}
-          polygonOffset={true}
-          polygonOffsetFactor={1}
-          polygonOffsetUnits={1}
         />
       </mesh>
       {edgeGeometry && (
