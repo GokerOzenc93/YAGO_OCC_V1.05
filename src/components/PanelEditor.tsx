@@ -514,7 +514,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
       style={{
         left: `${position.x}px`,
         top: `${position.y}px`,
-        width: '640px',
+        width: '617px',
       }}
     >
       <div
