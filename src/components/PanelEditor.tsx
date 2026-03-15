@@ -1064,7 +1064,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                             onClick={(e) => e.stopPropagation()}
                             onChange={() => handleTogglePanel(i)}
                             className={`w-4 h-4 border-gray-300 rounded ${isDisabled ? 'text-stone-300 cursor-not-allowed' : 'text-green-600 focus:ring-green-500 cursor-pointer'}`}
-                            title={`Toggle panel for face ${i + 1}`}
+                            title={`Toggle panel for face ${labelText}`}
                           />
                           <button
                             disabled={isDisabled || !facePanels[i]}
