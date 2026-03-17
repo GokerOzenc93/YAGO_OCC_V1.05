@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { OrbitControls, GizmoHelper, GizmoViewport, PerspectiveCamera, OrthographicCamera } from '@react-three/drei';
+import { OrbitControls, GizmoHelper, GizmoViewport, PerspectiveCamera, OrthographicCamera, ContactShadows } from '@react-three/drei';
 import * as THREE from 'three';
 import { useAppStore, CameraType } from '../store';
 import { useShallow } from 'zustand/react/shallow';
@@ -443,8 +443,8 @@ const Scene: React.FC = () => {
 
   const handleCreated = useCallback(({ gl }: { gl: THREE.WebGLRenderer }) => {
     gl.toneMapping = THREE.ACESFilmicToneMapping;
-    gl.toneMappingExposure = 1.0;
-    // --- KRİTİK: Gölge yumuşatma algoritması ---
+    // Pozlamayı 0.85'e düşürerek beyazların "patlamasını" engelliyoruz
+    gl.toneMappingExposure = 0.85; 
     gl.shadowMap.type = THREE.PCFSoftShadowMap;
     gl.outputColorSpace = THREE.SRGBColorSpace;
     
@@ -465,43 +465,46 @@ const Scene: React.FC = () => {
             alpha: false,
             preserveDrawingBuffer: true,
             powerPreference: 'high-performance',
-            logarithmicDepthBuffer: true // Yakınlaşınca oluşan titremeleri engeller
+            logarithmicDepthBuffer: true 
           }}
-          dpr={[1, 2]} // Retina ekranlarda kaliteyi artırır
+          dpr={[1, 2]} 
           onContextMenu={(e) => e.preventDefault()}
           onCreated={handleCreated}
         >
-          <color attach="background" args={['#f5f5f4']} />
+          <color attach="background" args={['#f8f8f7']} />
           <CameraController controlsRef={controlsRef} cameraType={cameraType} />
 
-          <ambientLight intensity={0.6} />
-          <hemisphereLight intensity={0.4} groundColor="#888888" color="#ffffff" />
+          {/* --- AYDINLATMA STRATEJİSİ --- */}
+          {/* Ortamı homojen bir şekilde aydınlatan temel ışık */}
+          <ambientLight intensity={0.5} /> 
           
-          {/* --- ANA GÖLGE IŞIĞI (GÜNCELLENDİ) --- */}
+          {/* Gökyüzü yansıması taklidi (Derinlik katar, patlamayı önler) */}
+          <hemisphereLight intensity={0.4} groundColor="#444444" color="#ffffff" />
+          
+          {/* Ana Işık: Keskin patlamayı önlemek için pozisyonu ve şiddeti optimize edildi */}
           <directionalLight
-            position={[1500, 2500, 1500]}
-            intensity={1.8}
+            position={[1500, 3000, 1500]}
+            intensity={1.1}
             castShadow
-            shadow-mapSize-width={2048} // Gölge çözünürlüğü artırıldı
-            shadow-mapSize-height={2048}
-            shadow-bias={-0.0005}       // KRİTİK: Çizgilenmeyi (Shadow Acne) yok eder
+            shadow-mapSize={[2048, 2048]}
+            shadow-bias={-0.0002}
             shadow-camera-far={15000}
-            shadow-camera-left={-3000}  // Alan daraltılarak kalite bu bölgeye odaklandı
-            shadow-camera-right={3000}
-            shadow-camera-top={3000}
-            shadow-camera-bottom={-3000}
+            shadow-camera-left={-4000}
+            shadow-camera-right={4000}
+            shadow-camera-top={4000}
+            shadow-camera-bottom={-4000}
           />
-          
-          <directionalLight position={[-1000, 1500, -1000]} intensity={0.4} />
-          <directionalLight position={[0, 2000, -2000]} intensity={0.3} />
-          <directionalLight position={[500, 500, 3000]} intensity={0.5} />
+
+          {/* Dolgu Işıkları: Işığın tek bir noktadan gelmediği hissini verir, parlamayı yüzeye yayar */}
+          <directionalLight position={[-1500, 1000, -500]} intensity={0.3} />
+          <pointLight position={[0, 2000, -2000]} intensity={0.4} distance={10000} />
 
           <OrbitControls
             ref={controlsRef}
             makeDefault
             target={[0, 0, 0]}
             enableDamping
-            dampingFactor={0.05}
+            dampingFactor={0.07}
             rotateSpeed={0.8}
             maxDistance={25000}
             minDistance={50}
@@ -532,14 +535,26 @@ const Scene: React.FC = () => {
             );
           })}
 
+          {/* --- GÖLGE VE DERİNLİK KATMANLARI --- */}
           <mesh
-            position={[0, -1, 0]}
+            position={[0, -2, 0]}
             rotation={[-Math.PI / 2, 0, 0]}
             receiveShadow
           >
-            <planeGeometry args={[30000, 30000]} />
-            <shadowMaterial opacity={0.12} />
+            <planeGeometry args={[50000, 50000]} />
+            <shadowMaterial opacity={0.15} />
           </mesh>
+
+          {/* Panelin altına yumuşak, gerçekçi bir derinlik katan kontakt gölgesi */}
+          <ContactShadows 
+            position={[0, -1, 0]}
+            opacity={0.4} 
+            scale={5000} 
+            blur={2} 
+            far={50} 
+            resolution={512} 
+            color="#000000" 
+          />
 
           <GizmoHelper alignment="bottom-right" margin={[80, 100]}>
             <GizmoViewport axisColors={['#f87171', '#4ade80', '#60a5fa']} labelColor="white" />
