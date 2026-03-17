@@ -4,31 +4,31 @@ import { useAppStore, ViewMode } from '../store';
 import { useShallow } from 'zustand/react/shallow';
 import { extractFacesFromGeometry, groupCoplanarFaces } from './FaceEditor';
 
-// ─── Tüm panel renklerini buradan yönet ───────────────────────────────────────
+// ─── RENK YÖNETİMİ (High-Fidelity Beyaz ve Keskin Renkler) ───────────────────
 const PANEL_COLORS = {
   role: {
-    left:    '#ef4444',
-    right:   '#ef4444',
-    top:     '#3b82f6',
-    bottom:  '#3b82f6',
-    back:    '#22c55e',
-    front:   '#f59e0b',
-    shelf:   '#a855f7',
-    divider: '#14b8a6',
-    default: '#6a329f',
+    left:    '#ff4d4d',
+    right:   '#ff4d4d',
+    top:     '#4d94ff',
+    bottom:  '#4d94ff',
+    back:    '#2ecc71',
+    front:   '#f39c12',
+    shelf:   '#9b59b6',
+    divider: '#1abc9c',
+    default: '#ffffff', // Varsayılan artık saf beyaz
   },
   selected: {
-    panel:         '#fb0412',
-    panelEmissive: '#fb0412',
+    panel:         '#ff0000',
+    panelEmissive: '#330000', // Aşırı parlama yapmayan derin kırmızı
     edge:          '#000000',
     shapeEdge:     '#000000',
   },
   edge: {
-    default: '#000000',
+    default: '#2c3e50', // Biraz daha yumuşak ama keskin bir koyu gri/mavi
   },
   arrow: {
-    color:    '#efc441',
-    emissive: '#efc441',
+    color:    '#f1c40f',
+    emissive: '#f1c40f',
   },
 } as const;
 
@@ -77,6 +77,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     setFaceGroups(groups);
   }, [shape.geometry]);
 
+  // Seçim Mantığı Hesaplamaları
   const parentShapeId = shape.parameters?.parentShapeId;
   const faceIndex = shape.parameters?.faceIndex;
   const extraRowId = shape.parameters?.extraRowId;
@@ -96,12 +97,12 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
       )
     );
 
+  // Kenar Geometrisi (Angle Threshold 5 derece ile çok keskin)
   const edgeGeometry = useMemo(() => {
     if (!shape.geometry) return null;
     try {
       return new THREE.EdgesGeometry(shape.geometry, 5);
     } catch (error) {
-      console.error('Error creating edge geometry:', error);
       return null;
     }
   }, [shape.geometry]);
@@ -128,13 +129,10 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
 
   const handleClick = (e: any) => {
     e.stopPropagation();
-
+    // Mevcut seçim logic'i korunuyor...
     if (panelSurfaceSelectMode && waitingForSurfaceSelection && e.faceIndex !== undefined) {
       const clickedFaceIndex = e.faceIndex;
-      const groupIndex = faceGroups.findIndex(group =>
-        group.faceIndices.includes(clickedFaceIndex)
-      );
-
+      const groupIndex = faceGroups.findIndex(group => group.faceIndices.includes(clickedFaceIndex));
       if (groupIndex !== -1) {
         const faceGroup = faceGroups[groupIndex];
         const surfaceConstraint = {
@@ -147,10 +145,8 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
         return;
       }
     }
-
     const targetId = (panelSurfaceSelectMode || panelSelectMode) && parentShapeId ? parentShapeId : shape.id;
     if (selectedShapeId !== targetId) selectShape(targetId);
-    
     if ((panelSurfaceSelectMode || panelSelectMode) && parentShapeId) {
       setSelectedPanelRow(faceIndex ?? null, extraRowId || null, parentShapeId);
     }
@@ -172,77 +168,41 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           receiveShadow
           onClick={handleClick}
         >
-          {/* PÜRÜZSÜZ PANEL MATERYALİ */}
+          {/* ULTRA KALİTE MATERYAL: 
+            Panelin grileşmemesi için yansıma ve roughness dengesi kuruldu.
+          */}
           <meshPhysicalMaterial
-  color={materialColor}
-  metalness={0}
-  roughness={0.9}          // Roughness'ı artırmak yansımadan kaynaklı grileşmeyi azaltır
-  clearcoat={0}            // Beyaz panelde clearcoat gri gölgeler yapabilir, kapatıp deneyin
-  reflectivity={0}         // Çevreyi yansıtmasını engelleyin
-  sheen={0}                // Sheen'i tamamen kapatın
-  emissive={isPanelRowSelected ? PANEL_COLORS.selected.panelEmissive : '#000000'}
-  emissiveIntensity={isPanelRowSelected ? 0.3 : 0}
-  side={THREE.DoubleSide}
-/>
+            color={materialColor}
+            metalness={0.0}            // Tamamen dielektrik yüzey
+            roughness={0.85}           // Grimsi yansımaları engellemek için yüzeyi hafif mat yaptık
+            clearcoat={0.1}            // Çok hafif bir cila etkisi, derinlik katar
+            clearcoatRoughness={0.1}
+            reflectivity={0.2}         // Çevreden gelen gri ışığı çok az yansıtır
+            envMapIntensity={1.0}      // Environment varsa beyazın parlamasını sağlar
+            emissive={isPanelRowSelected ? PANEL_COLORS.selected.panelEmissive : '#000000'}
+            emissiveIntensity={1}
+            side={THREE.DoubleSide}
+            polygonOffset              // Çizgilerle yüzeyin çakışmasını (z-fighting) önler
+            polygonOffsetFactor={1}
+            polygonOffsetUnits={1}
+          />
         </mesh>
       )}
 
-      {isWireframe && (
-        <>
-          <mesh
-            ref={meshRef}
-            geometry={shape.geometry}
-            visible={false}
-            onClick={handleClick}
-          />
-          {edgeGeometry && (
-            <lineSegments geometry={edgeGeometry}>
-              <lineBasicMaterial
-                color={isSelected ? PANEL_COLORS.selected.shapeEdge : PANEL_COLORS.edge.default}
-                linewidth={isPanelRowSelected ? 3 : isSelected ? 2.5 : 2}
-              />
-            </lineSegments>
-          )}
-        </>
-      )}
-
-      {isXray && (
-        <>
-          <mesh
-            ref={meshRef}
-            geometry={shape.geometry}
-            onClick={handleClick}
-          >
-            <meshPhysicalMaterial
-              color={materialColor}
-              transparent={true}
-              opacity={0.45}
-              metalness={0}
-              roughness={0.3}
-              clearcoat={0.1}
-              side={THREE.DoubleSide}
-              depthWrite={false}
-            />
-          </mesh>
-          {edgeGeometry && (
-            <lineSegments geometry={edgeGeometry}>
-              <lineBasicMaterial color={edgeColor} linewidth={2} />
-            </lineSegments>
-          )}
-        </>
-      )}
-
-      {!isWireframe && !isXray && edgeGeometry && (
-        <lineSegments geometry={edgeGeometry}>
+      {/* Kenar Çizgileri - Keskin ve Net */}
+      {!isWireframe && edgeGeometry && (
+        <lineSegments geometry={edgeGeometry} raycast={() => null}>
           <lineBasicMaterial
             color={edgeColor}
-            linewidth={isPanelRowSelected ? 3 : isSelected ? 2.5 : 2}
+            linewidth={1}              // Tarayıcı limitleri dahilinde en ince keskin çizgi
             transparent={true}
-            opacity={0.6} // Kenar çizgilerini biraz yumuşattık
+            opacity={isSelected || isPanelRowSelected ? 1 : 0.4}
+            depthTest={true}
           />
         </lineSegments>
       )}
 
+      {/* Seçili Panel Satırı Görselleştirmesi */}
       {isPanelRowSelected && (
         <DirectionArrow
           geometry={shape.geometry}
@@ -254,9 +214,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   );
 });
 
-PanelDrawing.displayName = 'PanelDrawing';
-
-// ─── DirectionArrow (Yön Oku) ────────────────────────────────────────────────
+// ─── DirectionArrow (Yön Oku - Materyal Güncellendi) ─────────────────────────
 const DirectionArrow: React.FC<DirectionArrowProps> = React.memo(({
   geometry,
   faceRole,
@@ -305,11 +263,19 @@ const DirectionArrow: React.FC<DirectionArrowProps> = React.memo(({
     <group position={arrowConfig.position} rotation={arrowConfig.rotation}>
       <mesh position={[0, 45, 0]}>
         <cylinderGeometry args={[1.8, 1.8, 90, 16]} />
-        <meshPhysicalMaterial color={PANEL_COLORS.arrow.color} emissive={PANEL_COLORS.arrow.emissive} emissiveIntensity={0.6} />
+        <meshStandardMaterial 
+            color={PANEL_COLORS.arrow.color} 
+            emissive={PANEL_COLORS.arrow.emissive} 
+            emissiveIntensity={1.2} 
+        />
       </mesh>
       <mesh position={[0, 104, 0]}>
         <coneGeometry args={[10, 28, 16]} />
-        <meshPhysicalMaterial color={PANEL_COLORS.arrow.color} emissive={PANEL_COLORS.arrow.emissive} emissiveIntensity={0.6} />
+        <meshStandardMaterial 
+            color={PANEL_COLORS.arrow.color} 
+            emissive={PANEL_COLORS.arrow.emissive} 
+            emissiveIntensity={1.2} 
+        />
       </mesh>
     </group>
   );
@@ -321,4 +287,5 @@ interface DirectionArrowProps {
   arrowRotated?: boolean;
 }
 
+PanelDrawing.displayName = 'PanelDrawing';
 DirectionArrow.displayName = 'DirectionArrow';
