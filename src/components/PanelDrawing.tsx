@@ -34,8 +34,8 @@ const PANEL_COLORS = {
 
   // Yön oku (DirectionArrow)
   arrow: {
-    color:    '#1565C0',
-    emissive: '#1976D2',
+    color:    '#efc441',
+    emissive: '#efc441',
   },
 } as const;
 // ─────────────────────────────────────────────────────────────────────────────
