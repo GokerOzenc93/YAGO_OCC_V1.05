@@ -183,20 +183,14 @@ const Scene: React.FC = () => {
       if (currentSelectedShapeId && currentSelectedVertexIndex !== null && currentVertexDirection) {
         const shape = currentState.shapes.find(s => s.id === currentSelectedShapeId);
         if (shape && shape.parameters) {
-          console.log('📝 Processing vertex offset:', { newValue, vertexIndex: currentSelectedVertexIndex, direction: currentVertexDirection });
-
           let baseVertices: number[][] = [];
 
           if (shape.parameters.scaledBaseVertices && shape.parameters.scaledBaseVertices.length > 0) {
-            console.log('📍 Using pre-computed scaled base vertices for offset calculation...');
             baseVertices = shape.parameters.scaledBaseVertices;
-            console.log(`✅ Using ${baseVertices.length} scaled base vertices`);
           } else if (shape.replicadShape) {
-            console.log('🔍 Getting vertices from Replicad shape for offset calculation...');
             const { getReplicadVertices } = await import('./VertexEditorService');
             const verts = await getReplicadVertices(shape.replicadShape);
             baseVertices = verts.map(v => [v.x, v.y, v.z]);
-            console.log(`✅ Got ${baseVertices.length} vertices from Replicad`);
           } else if (shape.type === 'box') {
             const { getBoxVertices } = await import('./VertexEditorService');
             const verts = getBoxVertices(
@@ -205,19 +199,13 @@ const Scene: React.FC = () => {
               shape.parameters.depth
             );
             baseVertices = verts.map(v => [v.x, v.y, v.z]);
-            console.log(`✅ Got ${baseVertices.length} vertices from box parameters`);
           }
 
-          if (currentSelectedVertexIndex >= baseVertices.length) {
-            console.error('❌ Invalid vertex index:', currentSelectedVertexIndex);
-            return;
-          }
+          if (currentSelectedVertexIndex >= baseVertices.length) return;
 
           const originalPos = baseVertices[currentSelectedVertexIndex];
-
           const axisIndex = currentVertexDirection.startsWith('x') ? 0 : currentVertexDirection.startsWith('y') ? 1 : 2;
-
-          const newPosition: [number, number, number] = [...originalPos];
+          const newPosition: [number, number, number] = [...originalPos] as [number, number, number];
           newPosition[axisIndex] = newValue;
 
           const offsetAmount = newValue - originalPos[axisIndex];
@@ -226,15 +214,6 @@ const Scene: React.FC = () => {
 
           const axisName = currentVertexDirection[0].toUpperCase();
           const directionSymbol = currentVertexDirection[1] === '+' ? '+' : '-';
-
-          console.log(`🎯 Absolute position applied:`, {
-            direction: currentVertexDirection,
-            userInput: newValue,
-            originalPosAxis: originalPos[axisIndex].toFixed(1),
-            newPosAxis: newPosition[axisIndex].toFixed(1),
-            offsetAmount: offsetAmount.toFixed(1),
-            explanation: `${axisName}${directionSymbol} → move to ${newValue} (offset: ${offsetAmount.toFixed(1)})`
-          });
 
           currentState.addVertexModification(currentSelectedShapeId, {
             vertexIndex: currentSelectedVertexIndex,
@@ -245,16 +224,7 @@ const Scene: React.FC = () => {
             description: `Vertex ${currentSelectedVertexIndex} ${axisName}${directionSymbol}`,
             offset
           });
-
-          console.log(`✅ Vertex ${currentSelectedVertexIndex}:`, {
-            base: `[${originalPos[0].toFixed(1)}, ${originalPos[1].toFixed(1)}, ${originalPos[2].toFixed(1)}]`,
-            userValue: newValue,
-            axis: axisName,
-            offset: `[${offset[0].toFixed(1)}, ${offset[1].toFixed(1)}, ${offset[2].toFixed(1)}]`,
-            final: `[${newPosition[0].toFixed(1)}, ${newPosition[1].toFixed(1)}, ${newPosition[2].toFixed(1)}]`
-          });
         }
-
         (window as any).pendingVertexEdit = false;
         currentState.setSelectedVertexIndex(null);
       }
@@ -278,45 +248,29 @@ const Scene: React.FC = () => {
 
       if (currentSelectedShapeId && currentFilletMode && currentSelectedFilletFaces.length === 2 && currentSelectedFilletFaceData.length === 2) {
         const shape = currentState.shapes.find(s => s.id === currentSelectedShapeId);
-        if (!shape || !shape.replicadShape) {
-          console.error('❌ Shape or replicadShape not found');
-          return;
-        }
+        if (!shape || !shape.replicadShape) return;
 
         try {
-          console.log('🎯 BEFORE FILLET - Shape position:', shape.position);
-
           const oldCenter = new THREE.Vector3();
           if (shape.geometry) {
             const oldBox = new THREE.Box3().setFromBufferAttribute(shape.geometry.getAttribute('position'));
             oldBox.getCenter(oldCenter);
-            console.log('📍 Center BEFORE adding fillet:', oldCenter);
           }
 
-          const result = await applyFilletToShape(
-            shape,
-            currentSelectedFilletFaces,
-            currentSelectedFilletFaceData,
-            radius
-          );
-
+          const result = await applyFilletToShape(shape, currentSelectedFilletFaces, currentSelectedFilletFaceData, radius);
           const newBaseVertices = await getReplicadVertices(result.replicadShape);
 
           const newCenter = new THREE.Vector3();
           const newBox = new THREE.Box3().setFromBufferAttribute(result.geometry.getAttribute('position'));
           newBox.getCenter(newCenter);
-          console.log('📍 Center AFTER adding fillet:', newCenter);
 
           const centerOffset = new THREE.Vector3().subVectors(newCenter, oldCenter);
-          console.log('📍 Center offset (local):', centerOffset);
-
           const rotatedOffset = centerOffset.clone();
           if (shape.rotation[0] !== 0 || shape.rotation[1] !== 0 || shape.rotation[2] !== 0) {
             const rotationMatrix = new THREE.Matrix4().makeRotationFromEuler(
               new THREE.Euler(shape.rotation[0], shape.rotation[1], shape.rotation[2], 'XYZ')
             );
             rotatedOffset.applyMatrix4(rotationMatrix);
-            console.log('📍 Center offset (rotated):', rotatedOffset);
           }
 
           const finalPosition: [number, number, number] = [
@@ -324,8 +278,6 @@ const Scene: React.FC = () => {
             shape.position[1] - rotatedOffset.y,
             shape.position[2] - rotatedOffset.z
           ];
-
-          console.log('🎯 AFTER FILLET - Adjusted position from', shape.position, 'to', finalPosition);
 
           currentState.updateShape(currentSelectedShapeId, {
             geometry: result.geometry,
@@ -340,26 +292,16 @@ const Scene: React.FC = () => {
               height: shape.parameters.height || 1,
               depth: shape.parameters.depth || 1
             },
-            fillets: [
-              ...(shape.fillets || []),
-              result.filletData
-            ]
+            fillets: [...(shape.fillets || []), result.filletData]
           });
 
-          console.log(`✅ Fillet with radius ${radius} applied successfully and saved to shape.fillets!`);
-          const newState = useAppStore.getState();
-          const updatedShape = newState.shapes.find(s => s.id === selectedShapeId);
-          console.log(`📍 After update, shape.fillets.length: ${updatedShape?.fillets?.length || 0}`);
-          newState.clearFilletFaces();
-          console.log('✅ Fillet faces cleared. Select 2 new faces for another fillet operation.');
+          currentState.clearFilletFaces();
         } catch (error) {
           console.error('❌ Failed to apply fillet:', error);
-          const newState = useAppStore.getState();
-          newState.clearFilletFaces();
+          currentState.clearFilletFaces();
           alert(`Failed to apply fillet: ${(error as Error).message}`);
         }
       }
-
       (window as any).pendingFilletOperation = false;
     };
 
@@ -373,9 +315,7 @@ const Scene: React.FC = () => {
 
   const handleContextMenu = useCallback((e: any, shapeId: string) => {
     const state = useAppStore.getState();
-    if (state.vertexEditMode || state.faceEditMode) {
-      return;
-    }
+    if (state.vertexEditMode || state.faceEditMode) return;
     e.nativeEvent.preventDefault();
     state.selectShape(shapeId);
     const shape = state.shapes.find(s => s.id === shapeId);
@@ -395,7 +335,6 @@ const Scene: React.FC = () => {
 
   const serializeSubtractionGeometries = (subtractionGeometries: any[] | undefined) => {
     if (!subtractionGeometries || subtractionGeometries.length === 0) return [];
-
     return subtractionGeometries.filter(sub => sub !== null).map(sub => {
       const serialized: any = {
         relativeOffset: sub.relativeOffset,
@@ -403,7 +342,6 @@ const Scene: React.FC = () => {
         scale: sub.scale,
         parameters: sub.parameters
       };
-
       if (sub.geometry) {
         const posAttr = sub.geometry.getAttribute('position');
         if (posAttr) {
@@ -413,14 +351,12 @@ const Scene: React.FC = () => {
           serialized.geometrySize = [size.x, size.y, size.z];
         }
       }
-
       return serialized;
     });
   };
 
   const handleSave = async (data: { code: string; description: string; tags: string[]; previewImage?: string }) => {
     if (!saveDialog.shapeId) return;
-
     const shape = shapes.find(s => s.id === saveDialog.shapeId);
     if (!shape) return;
 
@@ -446,12 +382,6 @@ const Scene: React.FC = () => {
             isReferenceBox: s.isReferenceBox
           }))
         };
-
-        console.log('Saving group:', {
-          code: data.code,
-          shapeCount: groupShapes.length,
-          groupId: shape.groupId
-        });
       } else {
         geometryData = {
           type: shape.type,
@@ -462,7 +392,6 @@ const Scene: React.FC = () => {
           parameters: shape.parameters,
           vertexModifications: shape.vertexModifications || []
         };
-
         shapeParameters = {
           width: shape.parameters?.width,
           height: shape.parameters?.height,
@@ -473,10 +402,8 @@ const Scene: React.FC = () => {
           scale: shape.scale,
           vertexModifications: shape.vertexModifications || []
         };
-
         subtractionGeometriesData = serializeSubtractionGeometries(shape.subtractionGeometries);
-
-        if (shape.fillets && shape.fillets.length > 0) {
+        if (shape.fillets) {
           filletsData = shape.fillets.map(fillet => ({
             face1Descriptor: fillet.face1Descriptor,
             face2Descriptor: fillet.face2Descriptor,
@@ -486,22 +413,12 @@ const Scene: React.FC = () => {
             originalSize: fillet.originalSize
           }));
         }
-
         if (shape.faceRoles) {
           faceRolesData = Object.entries(shape.faceRoles).reduce((acc, [key, value]) => {
             if (value) acc[Number(key)] = value;
             return acc;
           }, {} as Record<number, string>);
         }
-
-        console.log('Saving geometry with full parameters:', {
-          code: data.code,
-          type: shape.type,
-          parameters: shapeParameters,
-          subtractionCount: subtractionGeometriesData.length,
-          filletsCount: filletsData.length,
-          faceRolesCount: Object.keys(faceRolesData).length
-        });
       }
 
       await catalogService.save({
@@ -516,7 +433,6 @@ const Scene: React.FC = () => {
         preview_image: data.previewImage
       });
 
-      console.log('Geometry saved to catalog:', data.code);
       alert('Geometry saved successfully!');
       setSaveDialog({ isOpen: false, shapeId: null });
     } catch (error) {
@@ -528,176 +444,129 @@ const Scene: React.FC = () => {
   const handleCreated = useCallback(({ gl }: { gl: THREE.WebGLRenderer }) => {
     gl.toneMapping = THREE.ACESFilmicToneMapping;
     gl.toneMappingExposure = 1.0;
-    gl.shadowMap.type = THREE.PCFShadowMap;
+    // --- KRİTİK: Gölge yumuşatma algoritması ---
+    gl.shadowMap.type = THREE.PCFSoftShadowMap;
     gl.outputColorSpace = THREE.SRGBColorSpace;
-
+    
     const canvas = gl.domElement;
     canvas.addEventListener('webglcontextlost', (e) => {
       e.preventDefault();
-      console.warn('WebGL context lost - preventing page reload');
-    });
-    canvas.addEventListener('webglcontextrestored', () => {
-      console.log('WebGL context restored');
+      console.warn('WebGL context lost');
     });
   }, []);
 
   return (
     <>
       <ErrorBoundary>
-      <Canvas
-        shadows
-        gl={{
-          antialias: true,
-          alpha: false,
-          preserveDrawingBuffer: true,
-          powerPreference: 'high-performance'
-        }}
-        dpr={[1, 1.5]}
-        onContextMenu={(e) => e.preventDefault()}
-        onCreated={handleCreated}
-      >
-        <color attach="background" args={['#f5f5f4']} />
+        <Canvas
+          shadows
+          gl={{
+            antialias: true,
+            alpha: false,
+            preserveDrawingBuffer: true,
+            powerPreference: 'high-performance',
+            logarithmicDepthBuffer: true // Yakınlaşınca oluşan titremeleri engeller
+          }}
+          dpr={[1, 2]} // Retina ekranlarda kaliteyi artırır
+          onContextMenu={(e) => e.preventDefault()}
+          onCreated={handleCreated}
+        >
+          <color attach="background" args={['#f5f5f4']} />
+          <CameraController controlsRef={controlsRef} cameraType={cameraType} />
 
-      <CameraController controlsRef={controlsRef} cameraType={cameraType} />
+          <ambientLight intensity={0.6} />
+          <hemisphereLight intensity={0.4} groundColor="#888888" color="#ffffff" />
+          
+          {/* --- ANA GÖLGE IŞIĞI (GÜNCELLENDİ) --- */}
+          <directionalLight
+            position={[1500, 2500, 1500]}
+            intensity={1.8}
+            castShadow
+            shadow-mapSize-width={2048} // Gölge çözünürlüğü artırıldı
+            shadow-mapSize-height={2048}
+            shadow-bias={-0.0005}       // KRİTİK: Çizgilenmeyi (Shadow Acne) yok eder
+            shadow-camera-far={15000}
+            shadow-camera-left={-3000}  // Alan daraltılarak kalite bu bölgeye odaklandı
+            shadow-camera-right={3000}
+            shadow-camera-top={3000}
+            shadow-camera-bottom={-3000}
+          />
+          
+          <directionalLight position={[-1000, 1500, -1000]} intensity={0.4} />
+          <directionalLight position={[0, 2000, -2000]} intensity={0.3} />
+          <directionalLight position={[500, 500, 3000]} intensity={0.5} />
 
-      <ambientLight intensity={0.7} />
-      <hemisphereLight intensity={0.5} groundColor="#888888" color="#ffffff" />
-      <directionalLight
-        position={[2000, 3000, 2000]}
-        intensity={1.6}
-        castShadow
-        shadow-mapSize-width={1024}
-        shadow-mapSize-height={1024}
-        shadow-bias={-0.0001}
-        shadow-camera-far={20000}
-        shadow-camera-left={-5000}
-        shadow-camera-right={5000}
-        shadow-camera-top={5000}
-        shadow-camera-bottom={-5000}
-      />
-      <directionalLight
-        position={[-1000, 1500, -1000]}
-        intensity={0.5}
-      />
-      <directionalLight
-        position={[0, 2000, -2000]}
-        intensity={0.4}
-      />
-      <directionalLight
-        position={[500, 500, 3000]}
-        intensity={0.4}
-      />
+          <OrbitControls
+            ref={controlsRef}
+            makeDefault
+            target={[0, 0, 0]}
+            enableDamping
+            dampingFactor={0.05}
+            rotateSpeed={0.8}
+            maxDistance={25000}
+            minDistance={50}
+          />
 
-      <OrbitControls
-        ref={controlsRef}
-        makeDefault
-        target={[0, 0, 0]}
-        enableDamping
-        dampingFactor={0.05}
-        rotateSpeed={0.8}
-        maxDistance={25000}
-        minDistance={50}
-      />
+          {shapes.map((shape) => {
+            const isSelected = selectedShapeId === shape.id;
+            if (shape.type === 'panel') {
+              return <PanelDrawing key={shape.id} shape={shape} isSelected={isSelected} />;
+            }
+            return (
+              <React.Fragment key={shape.id}>
+                <ShapeWithTransform
+                  shape={shape}
+                  isSelected={isSelected}
+                  orbitControlsRef={controlsRef}
+                  onContextMenu={handleContextMenu}
+                />
+                {isSelected && vertexEditMode && (
+                  <VertexEditor
+                    shape={shape}
+                    isActive={true}
+                    onVertexSelect={(index) => setSelectedVertexIndex(index)}
+                    onDirectionChange={(dir) => setVertexDirection(dir)}
+                  />
+                )}
+              </React.Fragment>
+            );
+          })}
 
+          <mesh
+            position={[0, -1, 0]}
+            rotation={[-Math.PI / 2, 0, 0]}
+            receiveShadow
+          >
+            <planeGeometry args={[30000, 30000]} />
+            <shadowMaterial opacity={0.12} />
+          </mesh>
 
-      {shapes.map((shape) => {
-        const isSelected = selectedShapeId === shape.id;
+          <GizmoHelper alignment="bottom-right" margin={[80, 100]}>
+            <GizmoViewport axisColors={['#f87171', '#4ade80', '#60a5fa']} labelColor="white" />
+          </GizmoHelper>
+        </Canvas>
+      </ErrorBoundary>
 
-        if (shape.type === 'panel') {
-          return (
-            <PanelDrawing
-              key={shape.id}
-              shape={shape}
-              isSelected={isSelected}
-            />
-          );
-        }
-
-        return (
-          <React.Fragment key={shape.id}>
-            <ShapeWithTransform
-              shape={shape}
-              isSelected={isSelected}
-              orbitControlsRef={controlsRef}
-              onContextMenu={handleContextMenu}
-            />
-            {isSelected && vertexEditMode && (
-              <VertexEditor
-                shape={shape}
-                isActive={true}
-                onVertexSelect={(index) => setSelectedVertexIndex(index)}
-                onDirectionChange={(dir) => setVertexDirection(dir)}
-                onOffsetConfirm={(vertexIndex, direction, offset) => {
-                  console.log('Offset confirmed:', { vertexIndex, direction, offset });
-                }}
-              />
-            )}
-          </React.Fragment>
-        );
-      })}
-
-      <mesh
-        position={[0, -2, 0]}
-        rotation={[-Math.PI / 2, 0, 0]}
-        receiveShadow
-      >
-        <planeGeometry args={[30000, 30000]} />
-        <shadowMaterial opacity={0.15} />
-      </mesh>
-
-      <GizmoHelper alignment="bottom-right" margin={[80, 100]}>
-        <GizmoViewport
-          axisColors={['#f87171', '#4ade80', '#60a5fa']}
-          labelColor="white"
+      {contextMenu && (
+        <ContextMenu
+          position={{ x: contextMenu.x, y: contextMenu.y }}
+          shapeId={contextMenu.shapeId}
+          shapeType={contextMenu.shapeType}
+          onClose={() => setContextMenu(null)}
+          onEdit={() => { isolateShape(contextMenu.shapeId); setContextMenu(null); }}
+          onCopy={() => { copyShape(contextMenu.shapeId); setContextMenu(null); }}
+          onDelete={() => { deleteShape(contextMenu.shapeId); setContextMenu(null); }}
+          onSave={() => { setSaveDialog({ isOpen: true, shapeId: contextMenu.shapeId }); setContextMenu(null); }}
         />
-      </GizmoHelper>
-    </Canvas>
-    </ErrorBoundary>
+      )}
 
-    {contextMenu && (
-      <ContextMenu
-        position={{ x: contextMenu.x, y: contextMenu.y }}
-        shapeId={contextMenu.shapeId}
-        shapeType={contextMenu.shapeType}
-        onClose={() => setContextMenu(null)}
-        onEdit={() => {
-          isolateShape(contextMenu.shapeId);
-          setContextMenu(null);
-        }}
-        onCopy={() => {
-          copyShape(contextMenu.shapeId);
-          setContextMenu(null);
-        }}
-        onMove={() => {
-          console.log('Move:', contextMenu.shapeId);
-          setContextMenu(null);
-        }}
-        onRotate={() => {
-          console.log('Rotate:', contextMenu.shapeId);
-          setContextMenu(null);
-        }}
-        onDelete={() => {
-          deleteShape(contextMenu.shapeId);
-          setContextMenu(null);
-        }}
-        onToggleVisibility={() => {
-          console.log('Toggle visibility:', contextMenu.shapeId);
-          setContextMenu(null);
-        }}
-        onSave={() => {
-          setSaveDialog({ isOpen: true, shapeId: contextMenu.shapeId });
-          setContextMenu(null);
-        }}
+      <SaveDialog
+        isOpen={saveDialog.isOpen}
+        onClose={() => setSaveDialog({ isOpen: false, shapeId: null })}
+        onSave={handleSave}
+        shapeId={saveDialog.shapeId || ''}
+        captureSnapshot={captureSnapshot}
       />
-    )}
-
-    <SaveDialog
-      isOpen={saveDialog.isOpen}
-      onClose={() => setSaveDialog({ isOpen: false, shapeId: null })}
-      onSave={handleSave}
-      shapeId={saveDialog.shapeId || ''}
-      captureSnapshot={captureSnapshot}
-    />
     </>
   );
 };
