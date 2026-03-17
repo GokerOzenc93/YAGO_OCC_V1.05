@@ -99,7 +99,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           (typeof faceIndex === 'string' && faceIndex === selectedPanelRow) ||
           (typeof faceIndex === 'number' && faceIndex === selectedPanelRow &&
             ((extraRowId && extraRowId === selectedPanelRowExtraId) ||
-             (!extraRowId && !selectedPanelRowExtraId)))
+              (!extraRowId && !selectedPanelRowExtraId)))
         )
       )
     );
@@ -195,27 +195,23 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           receiveShadow
           onClick={handleClick}
         >
-
-
-
-
-          
-         <meshPhysicalMaterial
-  color={materialColor}
-  metalness={0}
-  roughness={0.75}
-  clearcoat={0.1}
-  clearcoatRoughness={0.4}
-  reflectivity={0.2}
-
-  emissive={isPanelRowSelected ? PANEL_COLORS.selected.panelEmissive : '#000000'}
-  emissiveIntensity={isPanelRowSelected ? 0.4 : 0}
-
-  side={THREE.DoubleSide}
-  transparent={true}
-  opacity={1.0}
-  depthWrite={true}
-/>
+          {/* KALİTELİ PANEL GÖRÜNÜMÜ İÇİN FİZİKSEL MATERYAL */}
+          <meshPhysicalMaterial
+            color={materialColor}
+            metalness={0.05}             // Hafif bir derinlik hissi
+            roughness={0.18}            // Kaliteli mat/parlak arası doku
+            clearcoat={0.8}             // Vernik etkisi
+            clearcoatRoughness={0.15}   // Vernik pürüzsüzlüğü
+            sheen={0.4}                 // Mobilya kenarlarında yumuşak parlama
+            sheenColor={new THREE.Color('#ffffff')}
+            reflectivity={0.5}
+            emissive={isPanelRowSelected ? PANEL_COLORS.selected.panelEmissive : '#000000'}
+            emissiveIntensity={isPanelRowSelected ? 0.35 : 0}
+            side={THREE.DoubleSide}
+            transparent={false}
+            opacity={1}
+            depthWrite={true}
+          />
         </mesh>
       )}
       {isWireframe && (
@@ -247,7 +243,8 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
             receiveShadow
             onClick={handleClick}
           >
-            <meshStandardMaterial
+            {/* X-RAY MODUNDA DA FİZİKSEL MATERYAL KALİTESİ (ŞEFFAF) */}
+            <meshPhysicalMaterial
               color={materialColor}
               emissive={isPanelRowSelected ? PANEL_COLORS.selected.panelEmissive : '#000000'}
               emissiveIntensity={isPanelRowSelected ? 0.4 : 0}
@@ -257,7 +254,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
               opacity={0.45}
               side={THREE.DoubleSide}
               depthWrite={false}
-              flatShading={false}
+              clearcoat={0.2}
             />
           </mesh>
           {edgeGeometry && (
@@ -384,22 +381,24 @@ const DirectionArrow: React.FC<DirectionArrowProps> = React.memo(({
     <group position={position} rotation={rotation}>
       <mesh position={[0, shaftLength / 2, 0]}>
         <cylinderGeometry args={[shaftRadius, shaftRadius, shaftLength, segments]} />
-        <meshStandardMaterial
+        <meshPhysicalMaterial
           color={PANEL_COLORS.arrow.color}
           emissive={PANEL_COLORS.arrow.emissive}
           emissiveIntensity={0.6}
           metalness={0.4}
           roughness={0.2}
+          clearcoat={1}
         />
       </mesh>
       <mesh position={[0, shaftLength + headLength / 2, 0]}>
         <coneGeometry args={[headRadius, headLength, segments]} />
-        <meshStandardMaterial
+        <meshPhysicalMaterial
           color={PANEL_COLORS.arrow.color}
           emissive={PANEL_COLORS.arrow.emissive}
           emissiveIntensity={0.6}
           metalness={0.4}
           roughness={0.2}
+          clearcoat={1}
         />
       </mesh>
     </group>
