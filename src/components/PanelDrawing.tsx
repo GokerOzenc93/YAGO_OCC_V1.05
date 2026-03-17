@@ -6,6 +6,7 @@ import { extractFacesFromGeometry, groupCoplanarFaces } from './FaceEditor';
 
 // ─── Tüm panel renklerini buradan yönet ───────────────────────────────────────
 const PANEL_COLORS = {
+  // Yüzey rolleri (faceRole) → panel rengi
   role: {
     left:    '#ef4444',
     right:   '#ef4444',
@@ -15,22 +16,29 @@ const PANEL_COLORS = {
     front:   '#f59e0b',
     shelf:   '#a855f7',
     divider: '#14b8a6',
-    default: '#6a329f',
+    default: '#6a329f',   // shape.color yoksa fallback
   },
+
+  // Seçim & vurgulama
   selected: {
-    panel:         '#fb0412',
-    panelEmissive: '#fb0412',
-    edge:          '#000000',
-    shapeEdge:     '#000000',
+    panel:         '#fb0412',   // isPanelRowSelected → mesh rengi
+    panelEmissive: '#fb0412',   // isPanelRowSelected → emissive rengi
+    edge:          '#000000',   // isPanelRowSelected → edge rengi
+    shapeEdge:     '#000000',   // sadece isSelected → edge rengi
   },
+
+  // Normal (seçilmemiş) kenar
   edge: {
     default: '#000000',
   },
+
+  // Yön oku (DirectionArrow)
   arrow: {
     color:    '#efc441',
     emissive: '#efc441',
   },
 } as const;
+// ─────────────────────────────────────────────────────────────────────────────
 
 interface PanelDrawingProps {
   shape: any;
@@ -91,7 +99,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           (typeof faceIndex === 'string' && faceIndex === selectedPanelRow) ||
           (typeof faceIndex === 'number' && faceIndex === selectedPanelRow &&
             ((extraRowId && extraRowId === selectedPanelRowExtraId) ||
-              (!extraRowId && !selectedPanelRowExtraId)))
+             (!extraRowId && !selectedPanelRowExtraId)))
         )
       )
     );
@@ -99,66 +107,44 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   const edgeGeometry = useMemo(() => {
     if (!shape.geometry) return null;
     try {
-      return new THREE.EdgesGeometry(shape.geometry, 5);
+      const edges = new THREE.EdgesGeometry(shape.geometry, 5);
+      return edges;
     } catch (error) {
       console.error('Error creating edge geometry:', error);
       return null;
     }
   }, [shape.geometry]);
 
-  // Görünüm Modları
+  if (!shape.geometry) return null;
+
   const isWireframe = viewMode === ViewMode.WIREFRAME;
   const isXray = viewMode === ViewMode.XRAY;
 
-  // Renk Hesaplama
   const faceRole = shape.parameters?.faceRole;
+
   const getRoleColor = (role: string | undefined): string => {
     if (!role) return shape.color || PANEL_COLORS.role.default;
     return (PANEL_COLORS.role as Record<string, string>)[role]
       ?? (shape.color || PANEL_COLORS.role.default);
   };
 
-  const baseColor = getRoleColor(faceRole);
+  const baseColor     = getRoleColor(faceRole);
   const materialColor = isPanelRowSelected ? PANEL_COLORS.selected.panel : baseColor;
-  const edgeColor = isPanelRowSelected
+  const edgeColor     = isPanelRowSelected
     ? PANEL_COLORS.selected.edge
     : isSelected
       ? PANEL_COLORS.selected.shapeEdge
       : PANEL_COLORS.edge.default;
 
-  // ─── MeshPhysicalMaterial Parametreleri ──────────────────────────────────────
-  const physicalProps = useMemo(() => ({
-    color: materialColor,
-    emissive: isPanelRowSelected ? PANEL_COLORS.selected.panelEmissive : '#000000',
-    emissiveIntensity: isPanelRowSelected ? 0.25 : 0,
-    
-    // Gerçekçilik Ayarları
-    metalness: 0.0,           // Mobilya panelleri genelde metalik değildir
-    roughness: 0.2,           // Hafif pürüzsüz, kaliteli bir yüzey
-    
-    // Vernik (Cila) Etkisi
-    clearcoat: 1.0,           // Yüzeyde ekstra bir parlak katman
-    clearcoatRoughness: 0.1,  // Ciladaki yansıma netliği
-    
-    // Kumaşsı/Yumuşak Parlama (Kenar hatları için)
-    sheen: 0.5,               
-    sheenRoughness: 0.2,
-    sheenColor: new THREE.Color('#ffffff'),
-
-    // X-Ray & Opacity Ayarları
-    transparent: isXray,
-    opacity: isXray ? 0.45 : 1,
-    depthWrite: !isXray,      // Şeffaf modda derinlik hatalarını önler
-    side: THREE.DoubleSide,
-  }), [materialColor, isPanelRowSelected, isXray]);
-
   const handleClick = (e: any) => {
     e.stopPropagation();
+
     if (panelSurfaceSelectMode && waitingForSurfaceSelection && e.faceIndex !== undefined) {
       const clickedFaceIndex = e.faceIndex;
       const groupIndex = faceGroups.findIndex(group =>
         group.faceIndices.includes(clickedFaceIndex)
       );
+
       if (groupIndex !== -1) {
         const faceGroup = faceGroups[groupIndex];
         const surfaceConstraint = {
@@ -166,20 +152,33 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           normal: [faceGroup.normal.x, faceGroup.normal.y, faceGroup.normal.z] as [number, number, number],
           constraintPanelId: shape.id
         };
-        if (selectedShapeId !== parentShapeId) selectShape(parentShapeId);
+
+        if (selectedShapeId !== parentShapeId) {
+          selectShape(parentShapeId);
+        }
+
         triggerPanelCreationForFace(groupIndex, shape.id, surfaceConstraint);
         return;
       }
     }
-    const targetShapeId = (panelSurfaceSelectMode || panelSelectMode) && parentShapeId ? parentShapeId : shape.id;
-    if (selectedShapeId !== targetShapeId) selectShape(targetShapeId);
-    if ((panelSurfaceSelectMode || panelSelectMode) && parentShapeId) {
-      setSelectedPanelRow(faceIndex ?? null, extraRowId || null, parentShapeId);
-    }
-    selectSecondaryShape(null);
-  };
 
-  if (!shape.geometry) return null;
+    if (panelSurfaceSelectMode && parentShapeId) {
+      if (selectedShapeId !== parentShapeId) {
+        selectShape(parentShapeId);
+      }
+      setSelectedPanelRow(faceIndex ?? null, extraRowId || null, parentShapeId);
+      selectSecondaryShape(null);
+    } else if (panelSelectMode && parentShapeId) {
+      if (selectedShapeId !== parentShapeId) {
+        selectShape(parentShapeId);
+      }
+      setSelectedPanelRow(faceIndex ?? null, extraRowId || null, parentShapeId);
+      selectSecondaryShape(null);
+    } else {
+      selectShape(shape.id);
+      selectSecondaryShape(null);
+    }
+  };
 
   return (
     <group
@@ -188,8 +187,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
       rotation={shape.rotation}
       scale={shape.scale}
     >
-      {/* 1. ANA GÖVDE (Solid veya X-Ray) */}
-      {!isWireframe && (
+      {!isWireframe && !isXray && (
         <mesh
           ref={meshRef}
           geometry={shape.geometry}
@@ -197,34 +195,95 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           receiveShadow
           onClick={handleClick}
         >
-          <meshPhysicalMaterial {...physicalProps} />
+
+
+
+
+          
+         <meshPhysicalMaterial
+  color={materialColor}
+  metalness={0}
+  roughness={0.75}
+  clearcoat={0.1}
+  clearcoatRoughness={0.4}
+  reflectivity={0.2}
+
+  emissive={isPanelRowSelected ? PANEL_COLORS.selected.panelEmissive : '#000000'}
+  emissiveIntensity={isPanelRowSelected ? 0.4 : 0}
+
+  side={THREE.DoubleSide}
+  transparent={true}
+  opacity={0.45}
+  depthWrite={false}
+/>
         </mesh>
       )}
-
-      {/* 2. WIREFRAME INTERACTION (Sadece tıklama yakalamak için) */}
       {isWireframe && (
-        <mesh
-          ref={meshRef}
-          geometry={shape.geometry}
-          visible={false}
-          onClick={handleClick}
-        />
+        <>
+          <mesh
+            ref={meshRef}
+            geometry={shape.geometry}
+            visible={false}
+            onClick={handleClick}
+          />
+          {edgeGeometry && (
+            <lineSegments geometry={edgeGeometry}>
+              <lineBasicMaterial
+                color={isSelected ? PANEL_COLORS.selected.shapeEdge : PANEL_COLORS.edge.default}
+                linewidth={isPanelRowSelected ? 3 : isSelected ? 2.5 : 2}
+                depthTest={true}
+                depthWrite={true}
+              />
+            </lineSegments>
+          )}
+        </>
       )}
-
-      {/* 3. KENAR ÇİZGİLERİ (EDGES) */}
-      {edgeGeometry && (
+      {isXray && (
+        <>
+          <mesh
+            ref={meshRef}
+            geometry={shape.geometry}
+            castShadow
+            receiveShadow
+            onClick={handleClick}
+          >
+            <meshStandardMaterial
+              color={materialColor}
+              emissive={isPanelRowSelected ? PANEL_COLORS.selected.panelEmissive : '#000000'}
+              emissiveIntensity={isPanelRowSelected ? 0.4 : 0}
+              metalness={0}
+              roughness={0.4}
+              transparent={true}
+              opacity={0.45}
+              side={THREE.DoubleSide}
+              depthWrite={false}
+              flatShading={false}
+            />
+          </mesh>
+          {edgeGeometry && (
+            <lineSegments geometry={edgeGeometry}>
+              <lineBasicMaterial
+                color={edgeColor}
+                linewidth={isPanelRowSelected ? 3 : isSelected ? 2.5 : 2}
+                opacity={1}
+                transparent={false}
+                depthTest={true}
+              />
+            </lineSegments>
+          )}
+        </>
+      )}
+      {!isWireframe && !isXray && edgeGeometry && (
         <lineSegments geometry={edgeGeometry}>
           <lineBasicMaterial
             color={edgeColor}
             linewidth={isPanelRowSelected ? 3 : isSelected ? 2.5 : 2}
-            transparent={true}
-            opacity={isWireframe ? 0.8 : 1}
+            opacity={1}
+            transparent={false}
             depthTest={true}
           />
         </lineSegments>
       )}
-
-      {/* 4. YÖN OKU */}
       {isPanelRowSelected && (
         <DirectionArrow
           geometry={shape.geometry}
@@ -238,7 +297,12 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
 
 PanelDrawing.displayName = 'PanelDrawing';
 
-// ─── DirectionArrow Bileşeni (Geliştirilmiş Materyal) ──────────────────────────
+interface DirectionArrowProps {
+  geometry: THREE.BufferGeometry;
+  faceRole?: string;
+  arrowRotated?: boolean;
+}
+
 const DirectionArrow: React.FC<DirectionArrowProps> = React.memo(({
   geometry,
   faceRole,
@@ -246,6 +310,7 @@ const DirectionArrow: React.FC<DirectionArrowProps> = React.memo(({
 }) => {
   const arrowConfig = useMemo(() => {
     if (!geometry) return null;
+
     const posAttr = geometry.getAttribute('position');
     if (!posAttr) return null;
 
@@ -259,62 +324,86 @@ const DirectionArrow: React.FC<DirectionArrowProps> = React.memo(({
       { index: 0, value: size.x },
       { index: 1, value: size.y },
       { index: 2, value: size.z }
-    ].sort((a, b) => a.value - b.value);
-
+    ];
+    axes.sort((a, b) => a.value - b.value);
     const thinAxisIndex = axes[0].index;
-    const offsetDir = new THREE.Vector3().setComponent(thinAxisIndex, 1);
-    const gap = (axes[0].value / 2) + 40;
-    const arrowPosition = center.clone().add(offsetDir.multiplyScalar(gap));
+    const thinAxisValue = axes[0].value;
+
+    const offsetDir = new THREE.Vector3();
+    offsetDir.setComponent(thinAxisIndex, 1);
+
+    const gap = thinAxisValue / 2 + 40;
+
+    const arrowPosition = center.clone().add(
+      offsetDir.clone().multiplyScalar(gap)
+    );
 
     const planeAxes = axes.slice(1).map(a => a.index).sort((a, b) => a - b);
+
+    const axisToRotation = (axis: number): [number, number, number] => {
+      if (axis === 0) return [0, 0, -Math.PI / 2];
+      if (axis === 2) return [Math.PI / 2, 0, 0];
+      return [0, 0, 0];
+    };
+
     const role = faceRole?.toLowerCase();
     let defaultAxis = planeAxes[0];
     let altAxis = planeAxes[1];
 
-    if ((role === 'left' || role === 'right') && planeAxes.includes(1)) {
+    if (role === 'left' || role === 'right') {
+      if (planeAxes.includes(1)) {
         defaultAxis = 1;
         altAxis = planeAxes.find(a => a !== 1) ?? planeAxes[1];
-    } else if ((role === 'top' || role === 'bottom') && planeAxes.includes(0)) {
+      }
+    } else if (role === 'top' || role === 'bottom') {
+      if (planeAxes.includes(0)) {
         defaultAxis = 0;
         altAxis = planeAxes.find(a => a !== 0) ?? planeAxes[1];
+      }
     }
 
     const targetAxis = arrowRotated ? altAxis : defaultAxis;
-    const rotation: [number, number, number] = targetAxis === 0 ? [0, 0, -Math.PI / 2] : targetAxis === 2 ? [Math.PI / 2, 0, 0] : [0, 0, 0];
+    const rotation = axisToRotation(targetAxis);
 
-    return { position: [arrowPosition.x, arrowPosition.y, arrowPosition.z] as [number, number, number], rotation };
+    return {
+      position: [arrowPosition.x, arrowPosition.y, arrowPosition.z] as [number, number, number],
+      rotation
+    };
   }, [geometry, faceRole, arrowRotated]);
 
   if (!arrowConfig) return null;
 
   const { position, rotation } = arrowConfig;
-  const commonMatProps = {
-    color: PANEL_COLORS.arrow.color,
-    emissive: PANEL_COLORS.arrow.emissive,
-    emissiveIntensity: 0.6,
-    metalness: 0.6,
-    roughness: 0.1,
-    clearcoat: 1.0
-  };
+  const shaftRadius = 1.8;
+  const shaftLength = 90;
+  const headRadius = 10;
+  const headLength = 28;
+  const segments = 16;
 
   return (
     <group position={position} rotation={rotation}>
-      <mesh position={[0, 45, 0]}>
-        <cylinderGeometry args={[1.8, 1.8, 90, 16]} />
-        <meshPhysicalMaterial {...commonMatProps} />
+      <mesh position={[0, shaftLength / 2, 0]}>
+        <cylinderGeometry args={[shaftRadius, shaftRadius, shaftLength, segments]} />
+        <meshStandardMaterial
+          color={PANEL_COLORS.arrow.color}
+          emissive={PANEL_COLORS.arrow.emissive}
+          emissiveIntensity={0.6}
+          metalness={0.4}
+          roughness={0.2}
+        />
       </mesh>
-      <mesh position={[0, 104, 0]}>
-        <coneGeometry args={[10, 28, 16]} />
-        <meshPhysicalMaterial {...commonMatProps} />
+      <mesh position={[0, shaftLength + headLength / 2, 0]}>
+        <coneGeometry args={[headRadius, headLength, segments]} />
+        <meshStandardMaterial
+          color={PANEL_COLORS.arrow.color}
+          emissive={PANEL_COLORS.arrow.emissive}
+          emissiveIntensity={0.6}
+          metalness={0.4}
+          roughness={0.2}
+        />
       </mesh>
     </group>
   );
 });
-
-interface DirectionArrowProps {
-  geometry: THREE.BufferGeometry;
-  faceRole?: string;
-  arrowRotated?: boolean;
-}
 
 DirectionArrow.displayName = 'DirectionArrow';
