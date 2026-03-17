@@ -21,9 +21,9 @@ const PANEL_COLORS = {
 
   // Seçim & vurgulama
   selected: {
-    panel:         '#ef4444',   // isPanelRowSelected → mesh rengi
-    panelEmissive: '#ef4444',   // isPanelRowSelected → emissive rengi
-    edge:          '#b91c1c',   // isPanelRowSelected → edge rengi
+    panel:         '#fb0412',   // isPanelRowSelected → mesh rengi
+    panelEmissive: '#fb0412',   // isPanelRowSelected → emissive rengi
+    edge:          '#fb0412',   // isPanelRowSelected → edge rengi
     shapeEdge:     '#1e40af',   // sadece isSelected → edge rengi
   },
 
