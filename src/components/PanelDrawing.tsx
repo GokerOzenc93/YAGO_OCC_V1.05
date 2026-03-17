@@ -213,7 +213,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
 
   side={THREE.DoubleSide}
   transparent={true}
-  opacity={0.45}
+  opacity={0.0}
   depthWrite={false}
 />
         </mesh>
