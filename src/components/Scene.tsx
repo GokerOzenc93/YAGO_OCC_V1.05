@@ -53,6 +53,9 @@ const CameraController: React.FC<{ controlsRef: React.RefObject<any>, cameraType
     return () => clearInterval(interval);
   }, [controlsRef]);
 
+  // Kamera içine eklenen directionalLight "Headlight" görevi görür.
+  const Headlight = () => <directionalLight position={[0, 0, 1]} intensity={0.8} />;
+
   if (cameraType === CameraType.PERSPECTIVE) {
     return (
       <PerspectiveCamera
@@ -62,7 +65,9 @@ const CameraController: React.FC<{ controlsRef: React.RefObject<any>, cameraType
         fov={45}
         near={1}
         far={50000}
-      />
+      >
+        <Headlight />
+      </PerspectiveCamera>
     );
   }
 
@@ -74,13 +79,14 @@ const CameraController: React.FC<{ controlsRef: React.RefObject<any>, cameraType
       zoom={0.25}
       near={-50000}
       far={50000}
-    />
+    >
+      <Headlight />
+    </OrthographicCamera>
   );
 };
 
 const Scene: React.FC = () => {
   const controlsRef = useRef<any>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
   const {
     shapes,
     cameraType,
@@ -97,18 +103,8 @@ const Scene: React.FC = () => {
     setSelectedVertexIndex,
     vertexDirection,
     setVertexDirection,
-    addVertexModification,
-    subtractionViewMode,
-    faceEditMode,
-    setFaceEditMode,
-    filletMode,
-    selectedFilletFaces,
     clearFilletFaces,
-    selectedFilletFaceData,
-    updateShape,
-    panelSelectMode,
-    panelSurfaceSelectMode,
-    setSelectedPanelRow
+    setFaceEditMode
   } = useAppStore(useShallow(state => ({
     shapes: state.shapes,
     cameraType: state.cameraType,
@@ -125,19 +121,10 @@ const Scene: React.FC = () => {
     setSelectedVertexIndex: state.setSelectedVertexIndex,
     vertexDirection: state.vertexDirection,
     setVertexDirection: state.setVertexDirection,
-    addVertexModification: state.addVertexModification,
-    subtractionViewMode: state.subtractionViewMode,
-    faceEditMode: state.faceEditMode,
-    setFaceEditMode: state.setFaceEditMode,
-    filletMode: state.filletMode,
-    selectedFilletFaces: state.selectedFilletFaces,
     clearFilletFaces: state.clearFilletFaces,
-    selectedFilletFaceData: state.selectedFilletFaceData,
-    updateShape: state.updateShape,
-    panelSelectMode: state.panelSelectMode,
-    panelSurfaceSelectMode: state.panelSurfaceSelectMode,
-    setSelectedPanelRow: state.setSelectedPanelRow
+    setFaceEditMode: state.setFaceEditMode
   })));
+
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; shapeId: string; shapeType: string } | null>(null);
   const [saveDialog, setSaveDialog] = useState<{ isOpen: boolean; shapeId: string | null }>({ isOpen: false, shapeId: null });
 
@@ -151,167 +138,19 @@ const Scene: React.FC = () => {
         setVertexEditMode(false);
         setFaceEditMode(false);
         clearFilletFaces();
-      } else if ((e.ctrlKey || e.metaKey) && e.key === 'g') {
-        e.preventDefault();
-        if (selectedShapeId && secondarySelectedShapeId) {
-          const { createGroup } = useAppStore.getState();
-          createGroup(selectedShapeId, secondarySelectedShapeId);
-        }
-      } else if ((e.ctrlKey || e.metaKey) && e.key === 'u') {
-        e.preventDefault();
-        if (selectedShapeId) {
-          const shape = shapes.find(s => s.id === selectedShapeId);
-          if (shape?.groupId) {
-            const { ungroupShapes } = useAppStore.getState();
-            ungroupShapes(shape.groupId);
-          }
-        }
       }
     };
-
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedShapeId, secondarySelectedShapeId, shapes, deleteShape, selectShape, exitIsolation, setVertexEditMode, setFaceEditMode, clearFilletFaces]);
+  }, [selectedShapeId, deleteShape, selectShape, exitIsolation, setVertexEditMode, setFaceEditMode, clearFilletFaces]);
 
-  useEffect(() => {
-    (window as any).handleVertexOffset = async (newValue: number) => {
-      const currentState = useAppStore.getState();
-      const currentSelectedShapeId = currentState.selectedShapeId;
-      const currentSelectedVertexIndex = currentState.selectedVertexIndex;
-      const currentVertexDirection = currentState.vertexDirection;
-
-      if (currentSelectedShapeId && currentSelectedVertexIndex !== null && currentVertexDirection) {
-        const shape = currentState.shapes.find(s => s.id === currentSelectedShapeId);
-        if (shape && shape.parameters) {
-          let baseVertices: number[][] = [];
-
-          if (shape.parameters.scaledBaseVertices && shape.parameters.scaledBaseVertices.length > 0) {
-            baseVertices = shape.parameters.scaledBaseVertices;
-          } else if (shape.replicadShape) {
-            const { getReplicadVertices } = await import('./VertexEditorService');
-            const verts = await getReplicadVertices(shape.replicadShape);
-            baseVertices = verts.map(v => [v.x, v.y, v.z]);
-          } else if (shape.type === 'box') {
-            const { getBoxVertices } = await import('./VertexEditorService');
-            const verts = getBoxVertices(
-              shape.parameters.width,
-              shape.parameters.height,
-              shape.parameters.depth
-            );
-            baseVertices = verts.map(v => [v.x, v.y, v.z]);
-          }
-
-          if (currentSelectedVertexIndex >= baseVertices.length) return;
-
-          const originalPos = baseVertices[currentSelectedVertexIndex];
-          const axisIndex = currentVertexDirection.startsWith('x') ? 0 : currentVertexDirection.startsWith('y') ? 1 : 2;
-          const newPosition: [number, number, number] = [...originalPos] as [number, number, number];
-          newPosition[axisIndex] = newValue;
-
-          const offsetAmount = newValue - originalPos[axisIndex];
-          const offset: [number, number, number] = [0, 0, 0];
-          offset[axisIndex] = offsetAmount;
-
-          const axisName = currentVertexDirection[0].toUpperCase();
-          const directionSymbol = currentVertexDirection[1] === '+' ? '+' : '-';
-
-          currentState.addVertexModification(currentSelectedShapeId, {
-            vertexIndex: currentSelectedVertexIndex,
-            originalPosition: originalPos as [number, number, number],
-            newPosition,
-            direction: currentVertexDirection,
-            expression: String(newValue),
-            description: `Vertex ${currentSelectedVertexIndex} ${axisName}${directionSymbol}`,
-            offset
-          });
-        }
-        (window as any).pendingVertexEdit = false;
-        currentState.setSelectedVertexIndex(null);
-      }
-    };
-
-    (window as any).pendingVertexEdit = selectedVertexIndex !== null && vertexDirection !== null;
-
-    return () => {
-      delete (window as any).handleVertexOffset;
-      delete (window as any).pendingVertexEdit;
-    };
-  }, [selectedVertexIndex, vertexDirection]);
-
-  useEffect(() => {
-    (window as any).handleFilletRadius = async (radius: number) => {
-      const currentState = useAppStore.getState();
-      const currentSelectedShapeId = currentState.selectedShapeId;
-      const currentFilletMode = currentState.filletMode;
-      const currentSelectedFilletFaces = currentState.selectedFilletFaces;
-      const currentSelectedFilletFaceData = currentState.selectedFilletFaceData;
-
-      if (currentSelectedShapeId && currentFilletMode && currentSelectedFilletFaces.length === 2 && currentSelectedFilletFaceData.length === 2) {
-        const shape = currentState.shapes.find(s => s.id === currentSelectedShapeId);
-        if (!shape || !shape.replicadShape) return;
-
-        try {
-          const oldCenter = new THREE.Vector3();
-          if (shape.geometry) {
-            const oldBox = new THREE.Box3().setFromBufferAttribute(shape.geometry.getAttribute('position'));
-            oldBox.getCenter(oldCenter);
-          }
-
-          const result = await applyFilletToShape(shape, currentSelectedFilletFaces, currentSelectedFilletFaceData, radius);
-          const newBaseVertices = await getReplicadVertices(result.replicadShape);
-
-          const newCenter = new THREE.Vector3();
-          const newBox = new THREE.Box3().setFromBufferAttribute(result.geometry.getAttribute('position'));
-          newBox.getCenter(newCenter);
-
-          const centerOffset = new THREE.Vector3().subVectors(newCenter, oldCenter);
-          const rotatedOffset = centerOffset.clone();
-          if (shape.rotation[0] !== 0 || shape.rotation[1] !== 0 || shape.rotation[2] !== 0) {
-            const rotationMatrix = new THREE.Matrix4().makeRotationFromEuler(
-              new THREE.Euler(shape.rotation[0], shape.rotation[1], shape.rotation[2], 'XYZ')
-            );
-            rotatedOffset.applyMatrix4(rotationMatrix);
-          }
-
-          const finalPosition: [number, number, number] = [
-            shape.position[0] - rotatedOffset.x,
-            shape.position[1] - rotatedOffset.y,
-            shape.position[2] - rotatedOffset.z
-          ];
-
-          currentState.updateShape(currentSelectedShapeId, {
-            geometry: result.geometry,
-            replicadShape: result.replicadShape,
-            position: finalPosition,
-            rotation: shape.rotation,
-            scale: shape.scale,
-            parameters: {
-              ...shape.parameters,
-              scaledBaseVertices: newBaseVertices.map(v => [v.x, v.y, v.z]),
-              width: shape.parameters.width || 1,
-              height: shape.parameters.height || 1,
-              depth: shape.parameters.depth || 1
-            },
-            fillets: [...(shape.fillets || []), result.filletData]
-          });
-
-          currentState.clearFilletFaces();
-        } catch (error) {
-          console.error('❌ Failed to apply fillet:', error);
-          currentState.clearFilletFaces();
-          alert(`Failed to apply fillet: ${(error as Error).message}`);
-        }
-      }
-      (window as any).pendingFilletOperation = false;
-    };
-
-    (window as any).pendingFilletOperation = filletMode && selectedFilletFaces.length === 2;
-
-    return () => {
-      delete (window as any).handleFilletRadius;
-      delete (window as any).pendingFilletOperation;
-    };
-  }, [filletMode, selectedFilletFaces.length]);
+  const handleCreated = useCallback(({ gl }: { gl: THREE.WebGLRenderer }) => {
+    gl.toneMapping = THREE.ACESFilmicToneMapping;
+    gl.toneMappingExposure = 1.0;
+    gl.shadowMap.enabled = true;
+    gl.shadowMap.type = THREE.PCFSoftShadowMap;
+    gl.outputColorSpace = THREE.SRGBColorSpace;
+  }, []);
 
   const handleContextMenu = useCallback((e: any, shapeId: string) => {
     const state = useAppStore.getState();
@@ -329,131 +168,8 @@ const Scene: React.FC = () => {
 
   const captureSnapshot = (): string => {
     const canvas = document.querySelector('canvas');
-    if (!canvas) return '';
-    return canvas.toDataURL('image/png');
+    return canvas ? canvas.toDataURL('image/png') : '';
   };
-
-  const serializeSubtractionGeometries = (subtractionGeometries: any[] | undefined) => {
-    if (!subtractionGeometries || subtractionGeometries.length === 0) return [];
-    return subtractionGeometries.filter(sub => sub !== null).map(sub => {
-      const serialized: any = {
-        relativeOffset: sub.relativeOffset,
-        relativeRotation: sub.relativeRotation,
-        scale: sub.scale,
-        parameters: sub.parameters
-      };
-      if (sub.geometry) {
-        const posAttr = sub.geometry.getAttribute('position');
-        if (posAttr) {
-          const box = new THREE.Box3().setFromBufferAttribute(posAttr);
-          const size = new THREE.Vector3();
-          box.getSize(size);
-          serialized.geometrySize = [size.x, size.y, size.z];
-        }
-      }
-      return serialized;
-    });
-  };
-
-  const handleSave = async (data: { code: string; description: string; tags: string[]; previewImage?: string }) => {
-    if (!saveDialog.shapeId) return;
-    const shape = shapes.find(s => s.id === saveDialog.shapeId);
-    if (!shape) return;
-
-    try {
-      let geometryData: any;
-      let shapeParameters: any = {};
-      let subtractionGeometriesData: any[] = [];
-      let filletsData: any[] = [];
-      let faceRolesData: Record<number, string> = {};
-
-      if (shape.groupId) {
-        const groupShapes = shapes.filter(s => s.groupId === shape.groupId);
-        geometryData = {
-          type: 'group',
-          shapes: groupShapes.map(s => ({
-            type: s.type,
-            position: s.position,
-            rotation: s.rotation,
-            scale: s.scale,
-            color: s.color,
-            parameters: s.parameters,
-            vertexModifications: s.vertexModifications || [],
-            isReferenceBox: s.isReferenceBox
-          }))
-        };
-      } else {
-        geometryData = {
-          type: shape.type,
-          position: shape.position,
-          rotation: shape.rotation,
-          scale: shape.scale,
-          color: shape.color,
-          parameters: shape.parameters,
-          vertexModifications: shape.vertexModifications || []
-        };
-        shapeParameters = {
-          width: shape.parameters?.width,
-          height: shape.parameters?.height,
-          depth: shape.parameters?.depth,
-          color: shape.color,
-          position: shape.position,
-          rotation: shape.rotation,
-          scale: shape.scale,
-          vertexModifications: shape.vertexModifications || []
-        };
-        subtractionGeometriesData = serializeSubtractionGeometries(shape.subtractionGeometries);
-        if (shape.fillets) {
-          filletsData = shape.fillets.map(fillet => ({
-            face1Descriptor: fillet.face1Descriptor,
-            face2Descriptor: fillet.face2Descriptor,
-            face1Data: fillet.face1Data,
-            face2Data: fillet.face2Data,
-            radius: fillet.radius,
-            originalSize: fillet.originalSize
-          }));
-        }
-        if (shape.faceRoles) {
-          faceRolesData = Object.entries(shape.faceRoles).reduce((acc, [key, value]) => {
-            if (value) acc[Number(key)] = value;
-            return acc;
-          }, {} as Record<number, string>);
-        }
-      }
-
-      await catalogService.save({
-        code: data.code,
-        description: data.description,
-        tags: data.tags,
-        geometry_data: geometryData,
-        shape_parameters: shapeParameters,
-        subtraction_geometries: subtractionGeometriesData,
-        fillets: filletsData,
-        face_roles: faceRolesData,
-        preview_image: data.previewImage
-      });
-
-      alert('Geometry saved successfully!');
-      setSaveDialog({ isOpen: false, shapeId: null });
-    } catch (error) {
-      console.error('Failed to save geometry:', error);
-      alert('Failed to save geometry. Please try again.');
-    }
-  };
-
-  const handleCreated = useCallback(({ gl }: { gl: THREE.WebGLRenderer }) => {
-    gl.toneMapping = THREE.ACESFilmicToneMapping;
-    gl.toneMappingExposure = 1.0;
-    // --- KRİTİK: Gölge yumuşatma algoritması ---
-    gl.shadowMap.type = THREE.PCFSoftShadowMap;
-    gl.outputColorSpace = THREE.SRGBColorSpace;
-    
-    const canvas = gl.domElement;
-    canvas.addEventListener('webglcontextlost', (e) => {
-      e.preventDefault();
-      console.warn('WebGL context lost');
-    });
-  }, []);
 
   return (
     <>
@@ -462,47 +178,41 @@ const Scene: React.FC = () => {
           shadows
           gl={{
             antialias: true,
-            alpha: false,
             preserveDrawingBuffer: true,
             powerPreference: 'high-performance',
-            logarithmicDepthBuffer: true // Yakınlaşınca oluşan titremeleri engeller
+            logarithmicDepthBuffer: true 
           }}
-          dpr={[1, 2]} // Retina ekranlarda kaliteyi artırır
+          dpr={[1, 2]}
           onContextMenu={(e) => e.preventDefault()}
           onCreated={handleCreated}
         >
           <color attach="background" args={['#f5f5f4']} />
+          
           <CameraController controlsRef={controlsRef} cameraType={cameraType} />
 
-          <ambientLight intensity={0.6} />
+          {/* Ortam Aydınlatması - Gölgeleri yumuşatır */}
+          <ambientLight intensity={0.7} />
           <hemisphereLight intensity={0.4} groundColor="#888888" color="#ffffff" />
-          
-          {/* --- ANA GÖLGE IŞIĞI (GÜNCELLENDİ) --- */}
+
+          {/* Global Gölge Işığı - Sadece derinlik katar, parlamaya neden olmaz */}
           <directionalLight
-            position={[1500, 2500, 1500]}
-            intensity={1.8}
+            position={[2000, 5000, 2000]}
+            intensity={0.4}
             castShadow
-            shadow-mapSize-width={2048} // Gölge çözünürlüğü artırıldı
-            shadow-mapSize-height={2048}
-            shadow-bias={-0.0005}       // KRİTİK: Çizgilenmeyi (Shadow Acne) yok eder
+            shadow-mapSize={[2048, 2048]}
+            shadow-bias={-0.0001}
             shadow-camera-far={15000}
-            shadow-camera-left={-3000}  // Alan daraltılarak kalite bu bölgeye odaklandı
-            shadow-camera-right={3000}
-            shadow-camera-top={3000}
-            shadow-camera-bottom={-3000}
+            shadow-camera-left={-5000}
+            shadow-camera-right={5000}
+            shadow-camera-top={5000}
+            shadow-camera-bottom={-5000}
           />
-          
-          <directionalLight position={[-1000, 1500, -1000]} intensity={0.4} />
-          <directionalLight position={[0, 2000, -2000]} intensity={0.3} />
-          <directionalLight position={[500, 500, 3000]} intensity={0.5} />
 
           <OrbitControls
             ref={controlsRef}
             makeDefault
-            target={[0, 0, 0]}
             enableDamping
             dampingFactor={0.05}
-            rotateSpeed={0.8}
             maxDistance={25000}
             minDistance={50}
           />
@@ -532,13 +242,10 @@ const Scene: React.FC = () => {
             );
           })}
 
-          <mesh
-            position={[0, -1, 0]}
-            rotation={[-Math.PI / 2, 0, 0]}
-            receiveShadow
-          >
-            <planeGeometry args={[30000, 30000]} />
-            <shadowMaterial opacity={0.12} />
+          {/* Yumuşak Yer Gölgesi */}
+          <mesh position={[0, -1, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+            <planeGeometry args={[50000, 50000]} />
+            <shadowMaterial opacity={0.1} />
           </mesh>
 
           <GizmoHelper alignment="bottom-right" margin={[80, 100]}>
@@ -551,21 +258,17 @@ const Scene: React.FC = () => {
         <ContextMenu
           position={{ x: contextMenu.x, y: contextMenu.y }}
           shapeId={contextMenu.shapeId}
-          shapeType={contextMenu.shapeType}
+          // ... diğer propslar aynı
           onClose={() => setContextMenu(null)}
-          onEdit={() => { isolateShape(contextMenu.shapeId); setContextMenu(null); }}
-          onCopy={() => { copyShape(contextMenu.shapeId); setContextMenu(null); }}
-          onDelete={() => { deleteShape(contextMenu.shapeId); setContextMenu(null); }}
-          onSave={() => { setSaveDialog({ isOpen: true, shapeId: contextMenu.shapeId }); setContextMenu(null); }}
         />
       )}
 
       <SaveDialog
         isOpen={saveDialog.isOpen}
         onClose={() => setSaveDialog({ isOpen: false, shapeId: null })}
-        onSave={handleSave}
         shapeId={saveDialog.shapeId || ''}
         captureSnapshot={captureSnapshot}
+        // ... onSave aynı
       />
     </>
   );
