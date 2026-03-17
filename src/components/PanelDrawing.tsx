@@ -23,8 +23,8 @@ const PANEL_COLORS = {
   selected: {
     panel:         '#fb0412',   // isPanelRowSelected → mesh rengi
     panelEmissive: '#fb0412',   // isPanelRowSelected → emissive rengi
-    edge:          '#fb0412',   // isPanelRowSelected → edge rengi
-    shapeEdge:     '#1e40af',   // sadece isSelected → edge rengi
+    edge:          '#000000',   // isPanelRowSelected → edge rengi
+    shapeEdge:     '#000000',   // sadece isSelected → edge rengi
   },
 
   // Normal (seçilmemiş) kenar
