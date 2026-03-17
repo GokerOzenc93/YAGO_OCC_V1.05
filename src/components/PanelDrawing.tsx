@@ -212,7 +212,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   emissiveIntensity={isPanelRowSelected ? 0.4 : 0}
 
   side={THREE.DoubleSide}
-  transparent={false}
+  transparent={true}
   opacity={1.0}
   depthWrite={false}
 />
