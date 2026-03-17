@@ -29,7 +29,7 @@ const PANEL_COLORS = {
 
   // Normal (seçilmemiş) kenar
   edge: {
-    default: '#1a1a1a',
+    default: '#000000',
   },
 
   // Yön oku (DirectionArrow)
