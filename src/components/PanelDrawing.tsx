@@ -84,7 +84,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   const isWireframe = viewMode === ViewMode.WIREFRAME;
   const isXray = viewMode === ViewMode.XRAY;
 
-  const panelColor = shape.color || '#ffffff';
+  const panelColor = shape.color || '#F2F2F2';
   const faceRole = shape.parameters?.faceRole;
 
   const getRoleColor = (role: string | undefined): string => {
