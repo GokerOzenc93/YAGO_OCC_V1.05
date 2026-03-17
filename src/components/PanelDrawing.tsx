@@ -4,6 +4,42 @@ import { useAppStore, ViewMode } from '../store';
 import { useShallow } from 'zustand/react/shallow';
 import { extractFacesFromGeometry, groupCoplanarFaces } from './FaceEditor';
 
+// ─── Tüm panel renklerini buradan yönet ───────────────────────────────────────
+const PANEL_COLORS = {
+  // Yüzey rolleri (faceRole) → panel rengi
+  role: {
+    left:    '#ef4444',
+    right:   '#ef4444',
+    top:     '#3b82f6',
+    bottom:  '#3b82f6',
+    back:    '#22c55e',
+    front:   '#f59e0b',
+    shelf:   '#a855f7',
+    divider: '#14b8a6',
+    default: '#6a329f',   // shape.color yoksa fallback
+  },
+
+  // Seçim & vurgulama
+  selected: {
+    panel:         '#ef4444',   // isPanelRowSelected → mesh rengi
+    panelEmissive: '#ef4444',   // isPanelRowSelected → emissive rengi
+    edge:          '#b91c1c',   // isPanelRowSelected → edge rengi
+    shapeEdge:     '#1e40af',   // sadece isSelected → edge rengi
+  },
+
+  // Normal (seçilmemiş) kenar
+  edge: {
+    default: '#1a1a1a',
+  },
+
+  // Yön oku (DirectionArrow)
+  arrow: {
+    color:    '#1565C0',
+    emissive: '#1976D2',
+  },
+} as const;
+// ─────────────────────────────────────────────────────────────────────────────
+
 interface PanelDrawingProps {
   shape: any;
   isSelected: boolean;
@@ -84,35 +120,21 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   const isWireframe = viewMode === ViewMode.WIREFRAME;
   const isXray = viewMode === ViewMode.XRAY;
 
-  const panelColor = shape.color || '#6a329f';
   const faceRole = shape.parameters?.faceRole;
 
   const getRoleColor = (role: string | undefined): string => {
-    if (!role) return panelColor;
-
-    switch (role) {
-      case 'left':
-      case 'right':
-        return '#ef4444';
-      case 'top':
-      case 'bottom':
-        return '#3b82f6';
-      case 'back':
-        return '#22c55e';
-      case 'front':
-        return '#f59e0b';
-      case 'shelf':
-        return '#a855f7';
-      case 'divider':
-        return '#14b8a6';
-      default:
-        return panelColor;
-    }
+    if (!role) return shape.color || PANEL_COLORS.role.default;
+    return (PANEL_COLORS.role as Record<string, string>)[role]
+      ?? (shape.color || PANEL_COLORS.role.default);
   };
 
-  const baseColor = getRoleColor(faceRole);
-  const materialColor = isPanelRowSelected ? '#ef4444' : baseColor;
-  const edgeColor = isPanelRowSelected ? '#b91c1c' : isSelected ? '#1e40af' : '#1a1a1a';
+  const baseColor     = getRoleColor(faceRole);
+  const materialColor = isPanelRowSelected ? PANEL_COLORS.selected.panel : baseColor;
+  const edgeColor     = isPanelRowSelected
+    ? PANEL_COLORS.selected.edge
+    : isSelected
+      ? PANEL_COLORS.selected.shapeEdge
+      : PANEL_COLORS.edge.default;
 
   const handleClick = (e: any) => {
     e.stopPropagation();
@@ -175,7 +197,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
         >
           <meshStandardMaterial
             color={materialColor}
-            emissive={isPanelRowSelected ? '#ef4444' : '#000000'}
+            emissive={isPanelRowSelected ? PANEL_COLORS.selected.panelEmissive : '#000000'}
             emissiveIntensity={isPanelRowSelected ? 0.4 : 0}
             metalness={0}
             roughness={0.4}
@@ -198,7 +220,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           {edgeGeometry && (
             <lineSegments geometry={edgeGeometry}>
               <lineBasicMaterial
-                color={isSelected ? '#60a5fa' : '#1a1a1a'}
+                color={isSelected ? PANEL_COLORS.selected.shapeEdge : PANEL_COLORS.edge.default}
                 linewidth={isPanelRowSelected ? 3 : isSelected ? 2.5 : 2}
                 depthTest={true}
                 depthWrite={true}
@@ -218,7 +240,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           >
             <meshStandardMaterial
               color={materialColor}
-              emissive={isPanelRowSelected ? '#ef4444' : '#000000'}
+              emissive={isPanelRowSelected ? PANEL_COLORS.selected.panelEmissive : '#000000'}
               emissiveIntensity={isPanelRowSelected ? 0.4 : 0}
               metalness={0}
               roughness={0.4}
@@ -354,8 +376,8 @@ const DirectionArrow: React.FC<DirectionArrowProps> = React.memo(({
       <mesh position={[0, shaftLength / 2, 0]}>
         <cylinderGeometry args={[shaftRadius, shaftRadius, shaftLength, segments]} />
         <meshStandardMaterial
-          color="#1565C0"
-          emissive="#1976D2"
+          color={PANEL_COLORS.arrow.color}
+          emissive={PANEL_COLORS.arrow.emissive}
           emissiveIntensity={0.6}
           metalness={0.4}
           roughness={0.2}
@@ -364,8 +386,8 @@ const DirectionArrow: React.FC<DirectionArrowProps> = React.memo(({
       <mesh position={[0, shaftLength + headLength / 2, 0]}>
         <coneGeometry args={[headRadius, headLength, segments]} />
         <meshStandardMaterial
-          color="#1565C0"
-          emissive="#1976D2"
+          color={PANEL_COLORS.arrow.color}
+          emissive={PANEL_COLORS.arrow.emissive}
           emissiveIntensity={0.6}
           metalness={0.4}
           roughness={0.2}
