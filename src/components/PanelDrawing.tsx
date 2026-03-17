@@ -174,19 +174,16 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
         >
           {/* PÜRÜZSÜZ PANEL MATERYALİ */}
           <meshPhysicalMaterial
-            color={materialColor}
-            metalness={0}                // Kumlanmayı önlemek için metalness kapatıldı
-            roughness={0.12}             // Daha düz ve pürüzsüz yüzey (lake etkisi)
-            clearcoat={1.0}              // Tam katman vernik
-            clearcoatRoughness={0.03}    // Vernik yüzeyi cam gibi pürüzsüz
-            reflectivity={0.5}           // Işık yansıtma gücü
-            sheen={0.1}                  // Tırtıklanma yapmaması için sheen minimize edildi
-            emissive={isPanelRowSelected ? PANEL_COLORS.selected.panelEmissive : '#000000'}
-            emissiveIntensity={isPanelRowSelected ? 0.3 : 0}
-            side={THREE.DoubleSide}
-            transparent={false}
-            depthWrite={true}
-          />
+  color={materialColor}
+  metalness={0}
+  roughness={0.9}          // Roughness'ı artırmak yansımadan kaynaklı grileşmeyi azaltır
+  clearcoat={0}            // Beyaz panelde clearcoat gri gölgeler yapabilir, kapatıp deneyin
+  reflectivity={0}         // Çevreyi yansıtmasını engelleyin
+  sheen={0}                // Sheen'i tamamen kapatın
+  emissive={isPanelRowSelected ? PANEL_COLORS.selected.panelEmissive : '#000000'}
+  emissiveIntensity={isPanelRowSelected ? 0.3 : 0}
+  side={THREE.DoubleSide}
+/>
         </mesh>
       )}
 
