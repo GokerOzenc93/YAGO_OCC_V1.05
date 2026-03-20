@@ -5,6 +5,7 @@ import { MousePointer2, Move, RotateCcw, Maximize, FileDown, Upload, Save, FileP
 import { ParametersPanel } from './ParametersPanel';
 import { PanelEditor } from './PanelEditor';
 import { GlobalSettingsPanel } from './GlobalSettingsPanel';
+import { createReplicadBox, convertReplicadToThreeGeometry, performBooleanCut } from './ReplicadService';
 
 interface ToolbarProps { onOpenCatalog: () => void; }
 
@@ -15,7 +16,7 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
     viewMode, setViewMode, cycleViewMode, orthoMode, toggleOrthoMode,
     opencascadeInstance, extrudeShape, shapes, updateShape, deleteShape,
     showParametersPanel, setShowParametersPanel, showGlobalSettingsPanel,
-    setShowGlobalSettingsPanel, panelSelectMode, panelSurfaceSelectMode, setPanelSurfaceSelectMode
+    setShowGlobalSettingsPanel, panelSelectMode, panelSurfaceSelectMode, setPanelSurfaceSelectMode,
   } = useAppStore();
 
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
@@ -26,15 +27,17 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
 
   const hasIntersectingShapes = React.useMemo(() => {
     if (!selectedShapeId) return false;
-    const selectedShape = shapes.find(s => s.id === selectedShapeId);
+    const selectedShape = shapes.find((s) => s.id === selectedShapeId);
     if (!selectedShape?.geometry) return false;
+    if (selectedShape.type === 'panel') return false;
     try {
       const selectedBox = new THREE.Box3().setFromBufferAttribute(selectedShape.geometry.getAttribute('position'));
       const sMin = selectedBox.min.clone().add(new THREE.Vector3(...selectedShape.position));
       const sMax = selectedBox.max.clone().add(new THREE.Vector3(...selectedShape.position));
       selectedBox.set(sMin, sMax);
-      return shapes.some(s => {
+      return shapes.some((s) => {
         if (s.id === selectedShapeId || !s.geometry) return false;
+        if (s.type === 'panel') return false;
         try {
           const b = new THREE.Box3().setFromBufferAttribute(s.geometry.getAttribute('position'));
           b.set(b.min.clone().add(new THREE.Vector3(...s.position)), b.max.clone().add(new THREE.Vector3(...s.position)));
@@ -46,10 +49,10 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
 
   const getViewModeLabel = () => ({ [ViewMode.SOLID]: 'Solid', [ViewMode.WIREFRAME]: 'Wire', [ViewMode.XRAY]: 'X-Ray' }[viewMode] ?? 'Solid');
   const getViewModeIcon = () => {
-    const cls = "text-orange-600";
-    if (viewMode === ViewMode.WIREFRAME) return <Wireframe size={12} className={cls} />;
-    if (viewMode === ViewMode.XRAY) return <Eye size={12} className={cls} />;
-    return <Cube size={12} className={cls} />;
+    const cls = 'text-orange-600';
+    if (viewMode === ViewMode.WIREFRAME) return <Wireframe size={14} className={cls} />;
+    if (viewMode === ViewMode.XRAY) return <Eye size={14} className={cls} />;
+    return <Cube size={14} className={cls} />;
   };
 
   const handleTransformToolSelect = (tool: Tool) => { setActiveTool(tool); setLastTransformTool(tool); };
@@ -78,13 +81,12 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
     if (panelSelectMode && activeTool !== Tool.SELECT) setActiveTool(Tool.SELECT);
   }, [panelSelectMode, activeTool, setActiveTool]);
 
-  const selectedShape = shapes.find(s => s.id === selectedShapeId);
+  const selectedShape = shapes.find((s) => s.id === selectedShapeId);
   const isBoxSelected = selectedShape?.type === 'box';
 
   const handleAddBox = async (e?: React.MouseEvent) => {
     e?.preventDefault(); e?.stopPropagation();
     try {
-      const { createReplicadBox, convertReplicadToThreeGeometry } = await import('./ReplicadService');
       const w = 600, h = 600, d = 600;
       const replicadShape = await createReplicadBox({ width: w, height: h, depth: d });
       addShape({ id: `box-${Date.now()}`, type: 'box', geometry: convertReplicadToThreeGeometry(replicadShape), replicadShape, position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1], color: '#2563eb', parameters: { width: w, height: h, depth: d } });
@@ -94,18 +96,17 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
   const handleSubtract = async () => {
     if (!selectedShapeId || !hasIntersectingShapes) return;
     try {
-      const sel = shapes.find(s => s.id === selectedShapeId);
+      const sel = shapes.find((s) => s.id === selectedShapeId);
       if (!sel?.geometry || !sel.replicadShape) return;
       const selBox = new THREE.Box3().setFromBufferAttribute(sel.geometry.getAttribute('position'));
       selBox.set(selBox.min.clone().add(new THREE.Vector3(...sel.position)), selBox.max.clone().add(new THREE.Vector3(...sel.position)));
-      const intersecting = shapes.filter(s => {
+      const intersecting = shapes.filter((s) => {
         if (s.id === selectedShapeId || !s.geometry) return false;
         const b = new THREE.Box3().setFromBufferAttribute(s.geometry.getAttribute('position'));
         b.set(b.min.clone().add(new THREE.Vector3(...s.position)), b.max.clone().add(new THREE.Vector3(...s.position)));
         return selBox.intersectsBox(b);
       });
       if (!intersecting.length) return;
-      const { performBooleanCut, convertReplicadToThreeGeometry } = await import('./ReplicadService');
       const { getReplicadVertices } = await import('./VertexEditorService');
       for (const target of intersecting) {
         if (!target.replicadShape) continue;
@@ -114,18 +115,18 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
         const result = await performBooleanCut(target.replicadShape, sel.replicadShape, undefined, relOff, undefined, relRot, undefined, sel.scale);
         const newGeo = convertReplicadToThreeGeometry(result);
         const newVerts = await getReplicadVertices(result);
-        updateShape(target.id, { geometry: newGeo, replicadShape: result, subtractionGeometries: [...(target.subtractionGeometries || []), { geometry: sel.geometry.clone(), relativeOffset: relOff, relativeRotation: relRot, scale: [1, 1, 1] }], parameters: { ...target.parameters, scaledBaseVertices: newVerts.map(v => [v.x, v.y, v.z]) } });
+        updateShape(target.id, { geometry: newGeo, replicadShape: result, subtractionGeometries: [...(target.subtractionGeometries || []), { geometry: sel.geometry.clone(), relativeOffset: relOff, relativeRotation: relRot, scale: [1, 1, 1] }], parameters: { ...target.parameters, scaledBaseVertices: newVerts.map((v) => [v.x, v.y, v.z]) } });
       }
       deleteShape(selectedShapeId);
     } catch (error) { alert(`Failed to subtract: ${(error as Error).message}`); }
   };
 
   const transformTools = [
-    { id: Tool.SELECT, icon: <MousePointer2 size={11} />, label: 'Select', shortcut: 'V' },
-    { id: Tool.MOVE, icon: <Move size={11} />, label: 'Move', shortcut: 'M' },
-    { id: Tool.POINT_TO_POINT_MOVE, icon: <ArrowDownUp size={11} />, label: 'Point to Point', shortcut: 'P2P' },
-    { id: Tool.ROTATE, icon: <RotateCcw size={11} />, label: 'Rotate', shortcut: 'Ro' },
-    { id: Tool.SCALE, icon: <Maximize size={11} />, label: 'Scale', shortcut: 'S', disabledForBox: true },
+    { id: Tool.SELECT, icon: <MousePointer2 size={15} />, label: 'Select', shortcut: 'V' },
+    { id: Tool.MOVE, icon: <Move size={15} />, label: 'Move', shortcut: 'M' },
+    { id: Tool.POINT_TO_POINT_MOVE, icon: <ArrowDownUp size={15} />, label: 'Point to Point', shortcut: 'P2P' },
+    { id: Tool.ROTATE, icon: <RotateCcw size={15} />, label: 'Rotate', shortcut: 'Ro' },
+    { id: Tool.SCALE, icon: <Maximize size={15} />, label: 'Scale', shortcut: 'S', disabledForBox: true },
   ];
 
   const menus = [
@@ -142,10 +143,6 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
     { label: 'Window', items: [{ icon: <PanelLeft size={11} />, label: 'New Window', shortcut: 'Ctrl+N' }, { icon: <Layers size={11} />, label: 'Window Layout', shortcut: 'Ctrl+W' }, { type: 'separator' }, { icon: <Monitor size={11} />, label: 'Full Screen', shortcut: 'F11' }, { icon: <PanelLeft size={11} />, label: 'Hide Panels', shortcut: 'Tab' }] },
     { label: 'Help', items: [{ icon: <HelpCircle size={11} />, label: 'User Manual', shortcut: 'F1' }, { icon: <HelpCircle size={11} />, label: 'Keyboard Shortcuts', shortcut: 'Ctrl+?' }, { icon: <Layers size={11} />, label: 'Video Tutorials', shortcut: 'Ctrl+T' }, { type: 'separator' }, { icon: <HelpCircle size={11} />, label: 'About', shortcut: 'Ctrl+H' }, { icon: <HelpCircle size={11} />, label: 'Check Updates', shortcut: 'Ctrl+U' }] },
   ];
-
-  const iconBtn = (icon: React.ReactNode, label: string, shortcut: string) => (
-    <button className="p-1.5 rounded text-stone-600 hover:bg-stone-50 hover:text-slate-800 transition-colors" title={`${label} (${shortcut})`}>{icon}</button>
-  );
 
   return (
     <div className="flex flex-col font-inter">
@@ -200,7 +197,7 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
               </button>
               {activeMenu === menu.label && (
                 <div className="absolute left-0 top-full mt-1 w-52 bg-white rounded-lg border border-stone-200 py-1 z-50 shadow-xl" onMouseLeave={() => setActiveMenu(null)}>
-                  {menu.items.map((item, i) => (
+                  {menu.items.map((item, i) =>
                     item.type === 'separator' ? <div key={i} className="border-t border-stone-100 my-1" /> : (
                       <button key={i} className="flex items-center justify-between w-full h-8 px-3 text-sm hover:bg-stone-50 transition-colors text-slate-700 hover:text-slate-800"
                         onClick={() => { if (item.label === 'Solid View') setViewMode(ViewMode.SOLID); else if (item.label === 'Wireframe View') setViewMode(ViewMode.WIREFRAME); else if (item.label === 'X-Ray View') setViewMode(ViewMode.XRAY); setActiveMenu(null); }}>
@@ -208,7 +205,7 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
                         {item.shortcut && <span className="text-stone-500 text-xs font-medium">{item.shortcut}</span>}
                       </button>
                     )
-                  ))}
+                  )}
                 </div>
               )}
             </div>
@@ -217,25 +214,33 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
       </div>
 
       {/* Toolbar */}
-      <div className="flex items-center h-12 gap-3 px-4 bg-stone-50 border-b border-stone-200">
-        <div className="flex items-center gap-0.5 bg-white rounded-lg p-1 shadow-sm border border-stone-200">
-          {iconBtn(<FilePlus size={11} />, 'New', 'Ctrl+N')}
-          {iconBtn(<Save size={11} />, 'Save', 'Ctrl+S')}
-          {iconBtn(<FileDown size={11} />, 'Save As', 'Ctrl+Shift+S')}
+      <div className="flex items-center h-11 gap-1 px-4 bg-stone-50 border-b border-stone-200">
+        <div className="flex items-center bg-white rounded-lg shadow-sm border border-stone-200 overflow-hidden">
+          {[
+            { icon: <FilePlus size={15} />, label: 'New', shortcut: 'Ctrl+N' },
+            { icon: <Save size={15} />, label: 'Save', shortcut: 'Ctrl+S' },
+            { icon: <FileDown size={15} />, label: 'Save As', shortcut: 'Ctrl+Shift+S' },
+          ].map((btn, i) => (
+            <button key={i} className="p-2 text-stone-600 hover:bg-stone-100 hover:text-slate-800 transition-colors" title={`${btn.label} (${btn.shortcut})`}>{btn.icon}</button>
+          ))}
+          <div className="w-px h-5 bg-stone-200" />
+          {[
+            { icon: <Undo2 size={15} />, label: 'Undo', shortcut: 'Ctrl+Z' },
+            { icon: <Redo2 size={15} />, label: 'Redo', shortcut: 'Ctrl+Y' },
+          ].map((btn, i) => (
+            <button key={i} className="p-2 text-stone-600 hover:bg-stone-100 hover:text-slate-800 transition-colors" title={`${btn.label} (${btn.shortcut})`}>{btn.icon}</button>
+          ))}
         </div>
-        <div className="w-px h-7 bg-stone-300" />
-        <div className="flex items-center gap-0.5 bg-white rounded-lg p-1 shadow-sm border border-stone-200">
-          {iconBtn(<Undo2 size={11} />, 'Undo', 'Ctrl+Z')}
-          {iconBtn(<Redo2 size={11} />, 'Redo', 'Ctrl+Y')}
-        </div>
-        <div className="w-px h-7 bg-stone-300" />
-        <div className="flex items-center gap-0.5 bg-white rounded-lg p-1 shadow-sm border border-stone-200">
+
+        <div className="w-px h-6 bg-stone-300 mx-1" />
+
+        <div className="flex items-center bg-white rounded-lg shadow-sm border border-stone-200 overflow-hidden">
           {transformTools.map((tool) => {
             const isDisabled = (tool.id !== Tool.SELECT && !selectedShapeId) || (tool.disabledForBox && isBoxSelected);
             return (
               <button key={tool.id}
-                className={`p-1.5 rounded transition-all ${activeTool === tool.id ? 'bg-orange-100 text-orange-700 border border-orange-300' : isDisabled ? 'opacity-50 cursor-not-allowed text-stone-400' : 'hover:bg-stone-50 text-stone-600 hover:text-slate-800'}`}
-                onClick={() => tool.id === Tool.SELECT ? setActiveTool(tool.id) : (!isDisabled && handleTransformToolSelect(tool.id))}
+                className={`p-2 transition-all ${activeTool === tool.id ? 'bg-orange-100 text-orange-700' : isDisabled ? 'opacity-50 cursor-not-allowed text-stone-400' : 'hover:bg-stone-100 text-stone-600 hover:text-slate-800'}`}
+                onClick={() => tool.id === Tool.SELECT ? setActiveTool(tool.id) : !isDisabled && handleTransformToolSelect(tool.id)}
                 disabled={isDisabled}
                 title={isBoxSelected && tool.disabledForBox ? `${tool.label} is disabled for boxes` : `${tool.label} (${tool.shortcut})`}>
                 {tool.icon}
@@ -243,19 +248,15 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
             );
           })}
         </div>
-        <div className="w-px h-7 bg-stone-300" />
-        <div className="flex items-center gap-0.5 bg-white rounded-lg p-1 shadow-sm border border-stone-200">
-          <button className={`p-1.5 rounded transition-all ${activeTool === Tool.DIMENSION ? 'bg-orange-100 text-orange-700 border border-orange-300' : 'hover:bg-stone-50 text-stone-600 hover:text-slate-800'}`} onClick={() => setActiveTool(activeTool === Tool.DIMENSION ? Tool.SELECT : Tool.DIMENSION)} title="Dimension (D)">
-            <Ruler size={11} />
-          </button>
-        </div>
-        <div className="w-px h-7 bg-stone-300" />
-        <div className="flex items-center gap-0.5 bg-white rounded-lg p-1 shadow-sm border border-stone-200">
-          <button type="button" onClick={handleAddBox} className="p-1.5 rounded transition-all hover:bg-stone-50 text-stone-600 hover:text-slate-800" title="Add Box (B)"><Box size={11} /></button>
-          <button onClick={() => setShowGlobalSettingsPanel(!showGlobalSettingsPanel)} className="p-1.5 rounded transition-all hover:bg-stone-50 text-stone-600 hover:text-slate-800" title="Global Settings"><Cog size={11} /></button>
-          <button onClick={() => selectedShapeId && setShowParametersPanel(!showParametersPanel)} className={`p-1.5 rounded transition-all ${selectedShapeId ? 'hover:bg-stone-50 text-stone-600 hover:text-slate-800' : 'text-stone-300 cursor-not-allowed'}`} title={selectedShapeId ? 'Parameters' : 'Select a shape first'} disabled={!selectedShapeId}><Settings size={11} /></button>
-          <button onClick={handleSubtract} className={`p-1.5 rounded transition-all ${hasIntersectingShapes ? 'bg-red-100 text-red-700 hover:bg-red-200 border border-red-300' : selectedShapeId ? 'hover:bg-stone-50 text-stone-600 hover:text-slate-800' : 'text-stone-300 cursor-not-allowed'}`} title={hasIntersectingShapes ? 'Subtract Intersecting Shapes' : selectedShapeId ? 'No intersecting shapes' : 'Select a shape first'} disabled={!selectedShapeId}><DivideCircle size={11} /></button>
-          <button onClick={() => setShowPanelEditor(!showPanelEditor)} className="p-1.5 rounded transition-all hover:bg-stone-50 text-stone-600 hover:text-slate-800" title="Panel Editor"><PanelLeft size={11} /></button>
+
+        <div className="w-px h-6 bg-stone-300 mx-1" />
+
+        <div className="flex items-center bg-white rounded-lg shadow-sm border border-stone-200 overflow-hidden">
+          <button type="button" onClick={handleAddBox} className="p-2 transition-all hover:bg-stone-100 text-stone-600 hover:text-slate-800" title="Add Box (B)"><Box size={15} /></button>
+          <button onClick={() => setShowGlobalSettingsPanel(!showGlobalSettingsPanel)} className="p-2 transition-all hover:bg-stone-100 text-stone-600 hover:text-slate-800" title="Global Settings"><Cog size={15} /></button>
+          <button onClick={() => selectedShapeId && setShowParametersPanel(!showParametersPanel)} className={`p-2 transition-all ${selectedShapeId ? 'hover:bg-stone-100 text-stone-600 hover:text-slate-800' : 'text-stone-300 cursor-not-allowed'}`} title={selectedShapeId ? 'Parameters' : 'Select a shape first'} disabled={!selectedShapeId}><Settings size={15} /></button>
+          <button onClick={handleSubtract} className={`p-2 transition-all ${hasIntersectingShapes ? 'bg-red-100 text-red-700 hover:bg-red-200' : selectedShapeId ? 'hover:bg-stone-100 text-stone-600 hover:text-slate-800' : 'text-stone-300 cursor-not-allowed'}`} title={hasIntersectingShapes ? 'Subtract Intersecting Shapes' : selectedShapeId ? 'No intersecting shapes' : 'Select a shape first'} disabled={!selectedShapeId}><DivideCircle size={15} /></button>
+          <button onClick={() => setShowPanelEditor(!showPanelEditor)} className="p-2 transition-all hover:bg-stone-100 text-stone-600 hover:text-slate-800" title="Panel Editor"><PanelLeft size={15} /></button>
         </div>
       </div>
 
