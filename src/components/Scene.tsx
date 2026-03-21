@@ -16,65 +16,59 @@ import { ErrorBoundary } from './ErrorBoundary';
 
 /* ═══════════════════════════════════════════════════════════
    VIEW-CUBE GIZMO
+   • 6 faces + 24 edge strips + 8 corner zones (with hover)
+   • Compass ring below the cube (N/S/E/W labels, rotates with camera)
 ══════════════════════════════════════════════════════════ */
 
 const C_FACE_BG  = 'rgba(240,238,234,0.94)';
 const C_FACE_HOV = 'rgba(232,98,42,0.92)';
 const C_EDGE_BG  = 'rgba(210,207,202,0.90)';
 const C_EDGE_HOV = 'rgba(232,98,42,0.88)';
+const C_CORN_HOV = 'rgba(232,98,42,0.82)';
 const C_BODY     = '#dbd8d2';
 const C_OUTLINE  = 'rgba(150,145,138,0.55)';
+const C_ACCENT   = '#e8622a';
 
-/* Face texture with auto-fit font */
+/* ── textures ── */
 function makeFaceTex(label: string, hovered: boolean, flipH = false): THREE.CanvasTexture {
   const S = 256;
-  const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = S;
-  const ctx = canvas.getContext('2d')!;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = S;
+  const ctx = cv.getContext('2d')!;
 
   ctx.fillStyle = hovered ? C_FACE_HOV : C_FACE_BG;
   ctx.fillRect(0, 0, S, S);
-
   ctx.strokeStyle = hovered ? 'rgba(255,255,255,0.35)' : 'rgba(160,155,148,0.65)';
   ctx.lineWidth = 4;
   ctx.strokeRect(2, 2, S - 4, S - 4);
 
-  // Flip horizontally for faces whose plane normal points in -X
-  // (mirrored by the rotation) so text reads correctly
-  if (flipH) {
-    ctx.save();
-    ctx.translate(S, 0);
-    ctx.scale(-1, 1);
-  }
+  if (flipH) { ctx.save(); ctx.translate(S, 0); ctx.scale(-1, 1); }
 
-  const PAD = 12;
-  const maxW = S - PAD * 2;
+  const PAD = 12, maxW = S - PAD * 2;
   let fs = 64;
   ctx.font = `800 ${fs}px "Syne","DM Sans",system-ui,sans-serif`;
   while (ctx.measureText(label).width > maxW && fs > 14) {
     fs -= 2;
     ctx.font = `800 ${fs}px "Syne","DM Sans",system-ui,sans-serif`;
   }
-
-  ctx.fillStyle = hovered ? '#ffffff' : '#2c2a27';
+  ctx.fillStyle = hovered ? '#fff' : '#2c2a27';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(label, S / 2, S / 2);
-
   if (flipH) ctx.restore();
 
-  const t = new THREE.CanvasTexture(canvas);
+  const t = new THREE.CanvasTexture(cv);
   t.needsUpdate = true;
   return t;
 }
 
 function makeEdgeTex(hovered: boolean): THREE.CanvasTexture {
-  const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = 64;
-  const ctx = canvas.getContext('2d')!;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = 64;
+  const ctx = cv.getContext('2d')!;
   ctx.fillStyle = hovered ? C_EDGE_HOV : C_EDGE_BG;
   ctx.fillRect(0, 0, 64, 64);
-  const t = new THREE.CanvasTexture(canvas);
+  const t = new THREE.CanvasTexture(cv);
   t.needsUpdate = true;
   return t;
 }
@@ -84,7 +78,7 @@ function norm(x: number, y: number, z: number): [number, number, number] {
   return [x / l, y / l, z / l];
 }
 
-/* Hoverable plane */
+/* ── FacePlane ── */
 interface FacePlaneProps {
   geo: THREE.BufferGeometry;
   pos: [number, number, number];
@@ -101,59 +95,169 @@ const FacePlane: React.FC<FacePlaneProps> = ({ geo, pos, rot, label = '', isEdge
     [hov, label, isEdge, flipH]
   );
   useEffect(() => () => tex.dispose(), [tex]);
-
   return (
-    <mesh
-      geometry={geo}
-      position={pos}
-      rotation={new THREE.Euler(...rot)}
+    <mesh geometry={geo} position={pos} rotation={new THREE.Euler(...rot)} renderOrder={3}
       onPointerEnter={e => { e.stopPropagation(); setHov(true);  document.body.style.cursor = 'pointer'; }}
       onPointerLeave={e => { e.stopPropagation(); setHov(false); document.body.style.cursor = 'default';  }}
-      onClick={e      => { e.stopPropagation(); onSnap(); }}
-      renderOrder={3}
-    >
+      onClick={e      => { e.stopPropagation(); onSnap(); }}>
       <meshBasicMaterial map={tex} transparent depthTest={false} depthWrite={false} side={THREE.DoubleSide} />
     </mesh>
   );
 };
 
-/* Invisible corner hit-zone */
+/* ── CornerZone — now with real visible hover highlight ── */
 const CornerZone: React.FC<{ pos: [number, number, number]; onSnap: () => void }> = ({ pos, onSnap }) => {
-  const geo = useMemo(() => new THREE.BoxGeometry(0.22, 0.22, 0.22), []);
+  const [hov, setHov] = useState(false);
+  // Slightly larger than edge-strip width so it's easy to hit
+  const geo = useMemo(() => new THREE.BoxGeometry(0.19, 0.19, 0.19), []);
   return (
-    <mesh
-      geometry={geo}
-      position={pos}
-      onPointerEnter={e => { e.stopPropagation(); document.body.style.cursor = 'pointer'; }}
-      onPointerLeave={e => { e.stopPropagation(); document.body.style.cursor = 'default';  }}
-      onClick={e      => { e.stopPropagation(); onSnap(); }}
-      renderOrder={5}
-    >
-      <meshBasicMaterial transparent opacity={0} depthTest={false} />
+    <mesh geometry={geo} position={pos} renderOrder={6}
+      onPointerEnter={e => { e.stopPropagation(); setHov(true);  document.body.style.cursor = 'pointer'; }}
+      onPointerLeave={e => { e.stopPropagation(); setHov(false); document.body.style.cursor = 'default';  }}
+      onClick={e      => { e.stopPropagation(); onSnap(); }}>
+      {/* visible only when hovered — orange corner cube */}
+      <meshBasicMaterial
+        color={C_ACCENT}
+        transparent
+        opacity={hov ? 0.82 : 0}
+        depthTest={false}
+        depthWrite={false}
+      />
     </mesh>
   );
 };
 
-/* Main ViewCube */
+/* ── Compass ring — static (does NOT rotate with cube group) ── */
+const CompassRing: React.FC = () => {
+  const ringRef = useRef<THREE.Group>(null);
+  const { camera } = useThree();
+
+  // Keep compass always flat (horizontal) but rotate around Y to match camera azimuth
+  useFrame(() => {
+    if (!ringRef.current) return;
+    // Extract yaw from camera quaternion
+    const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+    const azimuth = Math.atan2(dir.x, dir.z);
+    ringRef.current.rotation.set(-Math.PI / 2, 0, azimuth);
+  });
+
+  // Ring geometry
+  const ringGeo = useMemo(() => new THREE.RingGeometry(0.72, 0.80, 64), []);
+  const ringMat = useMemo(() => new THREE.MeshBasicMaterial({
+    color: 'rgba(160,155,148,1)', side: THREE.DoubleSide,
+    transparent: true, opacity: 0.55, depthTest: false,
+  }), []);
+
+  // Cardinal tick lines
+  const tickGeos = useMemo(() => {
+    const out: THREE.BufferGeometry[] = [];
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2;
+      const inner = 0.80, outer = 0.92;
+      const pts = [
+        new THREE.Vector3(Math.sin(a) * inner, Math.cos(a) * inner, 0),
+        new THREE.Vector3(Math.sin(a) * outer, Math.cos(a) * outer, 0),
+      ];
+      out.push(new THREE.BufferGeometry().setFromPoints(pts));
+    }
+    return out;
+  }, []);
+
+  const tickMat = useMemo(() => new THREE.LineBasicMaterial({
+    color: C_ACCENT, transparent: true, opacity: 0.85, depthTest: false,
+  }), []);
+
+  // North arrow (filled triangle pointing outward)
+  const arrowGeo = useMemo(() => {
+    const g = new THREE.BufferGeometry();
+    const verts = new Float32Array([
+      0,      0.96, 0,   // tip
+     -0.055,  0.80, 0,   // left base
+      0.055,  0.80, 0,   // right base
+    ]);
+    g.setAttribute('position', new THREE.BufferAttribute(verts, 3));
+    g.setIndex([0, 1, 2]);
+    return g;
+  }, []);
+  const arrowMat = useMemo(() => new THREE.MeshBasicMaterial({
+    color: C_ACCENT, side: THREE.DoubleSide, transparent: true, opacity: 0.9, depthTest: false,
+  }), []);
+
+  // Label textures N/S/E/W
+  function makeCardinalTex(letter: string): THREE.CanvasTexture {
+    const S = 64;
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = S;
+    const ctx = cv.getContext('2d')!;
+    ctx.clearRect(0, 0, S, S);
+    ctx.fillStyle = '#5a5652';
+    ctx.font = `700 28px "Syne",system-ui,sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(letter, S / 2, S / 2);
+    const t = new THREE.CanvasTexture(cv);
+    t.needsUpdate = true;
+    return t;
+  }
+
+  const cardinals = useMemo(() => [
+    { letter: 'N', angle: 0 },
+    { letter: 'E', angle: Math.PI / 2 },
+    { letter: 'S', angle: Math.PI },
+    { letter: 'W', angle: -Math.PI / 2 },
+  ].map(({ letter, angle }) => ({
+    letter,
+    angle,
+    tex: makeCardinalTex(letter),
+    pos: new THREE.Vector3(Math.sin(angle) * 1.08, Math.cos(angle) * 1.08, 0),
+  })), []);
+
+  const labelGeo = useMemo(() => new THREE.PlaneGeometry(0.22, 0.22), []);
+
+  return (
+    // Positioned below the cube (cube spans -0.5 to 0.5 in Y → bottom at -0.5)
+    <group position={[0, -0.56, 0]}>
+      <group ref={ringRef}>
+        {/* Ring */}
+        <mesh geometry={ringGeo} material={ringMat} renderOrder={2} />
+
+        {/* Cardinal ticks */}
+        {tickGeos.map((g, i) => (
+          <lineSegments key={i} geometry={g} material={tickMat} renderOrder={2} />
+        ))}
+
+        {/* North arrow */}
+        <mesh geometry={arrowGeo} material={arrowMat} renderOrder={2} />
+
+        {/* N/S/E/W labels */}
+        {cardinals.map(({ letter, pos, tex }) => (
+          <mesh key={letter} position={pos} renderOrder={3}>
+            <primitive object={labelGeo} attach="geometry" />
+            <meshBasicMaterial map={tex} transparent depthTest={false} depthWrite={false} side={THREE.DoubleSide} />
+          </mesh>
+        ))}
+      </group>
+    </group>
+  );
+};
+
+/* ── Main ViewCube ── */
 const ViewCube: React.FC = () => {
   const { tweenCamera } = useGizmoContext();
   const { camera }      = useThree();
-  const groupRef        = useRef<THREE.Group>(null);
+  const cubeRef         = useRef<THREE.Group>(null);
 
+  // Only the cube rotates — compass is handled separately
   useFrame(() => {
-    if (!groupRef.current) return;
-    groupRef.current.quaternion.copy(camera.quaternion).invert();
+    if (!cubeRef.current) return;
+    cubeRef.current.quaternion.copy(camera.quaternion).invert();
   });
 
   const snap = useCallback((dir: [number, number, number], up: [number, number, number] = [0, 1, 0]) => {
     tweenCamera(new THREE.Vector3(...dir), new THREE.Vector3(...up), 1);
   }, [tweenCamera]);
 
-  const S  = 1;
-  const H  = 0.5;
-  const FW = 0.68;
-  const EW = 0.155;
-  const D  = 0.003;
+  const S  = 1, H = 0.5, FW = 0.68, EW = 0.155, D = 0.003;
 
   const geoFace  = useMemo(() => new THREE.PlaneGeometry(FW, FW), []);
   const geoEdgeH = useMemo(() => new THREE.PlaneGeometry(FW, EW), []);
@@ -163,85 +267,83 @@ const ViewCube: React.FC = () => {
   const matBody  = useMemo(() => new THREE.MeshBasicMaterial({ color: C_BODY, depthTest: false, depthWrite: false }), []);
   const matEdges = useMemo(() => new THREE.LineBasicMaterial({ color: C_OUTLINE, transparent: true, opacity: 1, depthTest: false }), []);
 
-  const P  = H + D;
-  const EC = (FW + EW) / 2;
-
+  const P = H + D, EC = (FW + EW) / 2;
   type V3 = [number, number, number];
 
-  /* ── FACES
-     flipH = true for LEFT face (rotated +π/2 around Y → texture gets mirrored)
-     RIGHT face is rotated -π/2 around Y → also mirrored, needs flip too.
-  ── */
   const FACES: { label: string; pos: V3; rot: V3; dir: V3; up: V3; flipH?: boolean }[] = [
-    { label: 'FRONT',  pos: [0,0,P],    rot: [0,0,0],           dir: [0,0,1],  up: [0,1,0]  },
-    { label: 'BACK',   pos: [0,0,-P],   rot: [0,Math.PI,0],     dir: [0,0,-1], up: [0,1,0]  },
-    { label: 'RIGHT',  pos: [P,0,0],    rot: [0,-Math.PI/2,0],  dir: [1,0,0],  up: [0,1,0],  flipH: true  },
-    { label: 'LEFT',   pos: [-P,0,0],   rot: [0,Math.PI/2,0],   dir: [-1,0,0], up: [0,1,0],  flipH: true  },
-    { label: 'TOP',    pos: [0,P,0],    rot: [-Math.PI/2,0,0],  dir: [0,1,0],  up: [0,0,-1] },
-    { label: 'BOTTOM', pos: [0,-P,0],   rot: [Math.PI/2,0,0],   dir: [0,-1,0], up: [0,0,1]  },
+    { label:'FRONT',  pos:[0,0,P],    rot:[0,0,0],           dir:[0,0,1],  up:[0,1,0]  },
+    { label:'BACK',   pos:[0,0,-P],   rot:[0,Math.PI,0],     dir:[0,0,-1], up:[0,1,0]  },
+    { label:'RIGHT',  pos:[P,0,0],    rot:[0,-Math.PI/2,0],  dir:[1,0,0],  up:[0,1,0], flipH:true },
+    { label:'LEFT',   pos:[-P,0,0],   rot:[0,Math.PI/2,0],   dir:[-1,0,0], up:[0,1,0], flipH:true },
+    { label:'TOP',    pos:[0,P,0],    rot:[-Math.PI/2,0,0],  dir:[0,1,0],  up:[0,0,-1] },
+    { label:'BOTTOM', pos:[0,-P,0],   rot:[Math.PI/2,0,0],   dir:[0,-1,0], up:[0,0,1]  },
   ];
 
-  const EDGES: { pos: V3; rot: V3; geo: 'h'|'v'; dir: V3; up: V3 }[] = [
+  const EDGES: { pos:V3; rot:V3; geo:'h'|'v'; dir:V3; up:V3 }[] = [
     // FRONT
-    { pos:[0, EC, P],  rot:[0,0,0],           geo:'h', dir:norm(0,1,1),   up:[0,1,0]  },
-    { pos:[0,-EC, P],  rot:[0,0,0],           geo:'h', dir:norm(0,-1,1),  up:[0,1,0]  },
-    { pos:[-EC,0, P],  rot:[0,0,0],           geo:'v', dir:norm(-1,0,1),  up:[0,1,0]  },
-    { pos:[ EC,0, P],  rot:[0,0,0],           geo:'v', dir:norm(1,0,1),   up:[0,1,0]  },
+    {pos:[0,EC,P],    rot:[0,0,0],           geo:'h', dir:norm(0,1,1),   up:[0,1,0]},
+    {pos:[0,-EC,P],   rot:[0,0,0],           geo:'h', dir:norm(0,-1,1),  up:[0,1,0]},
+    {pos:[-EC,0,P],   rot:[0,0,0],           geo:'v', dir:norm(-1,0,1),  up:[0,1,0]},
+    {pos:[EC,0,P],    rot:[0,0,0],           geo:'v', dir:norm(1,0,1),   up:[0,1,0]},
     // BACK
-    { pos:[0, EC,-P],  rot:[0,Math.PI,0],     geo:'h', dir:norm(0,1,-1),  up:[0,1,0]  },
-    { pos:[0,-EC,-P],  rot:[0,Math.PI,0],     geo:'h', dir:norm(0,-1,-1), up:[0,1,0]  },
-    { pos:[ EC,0,-P],  rot:[0,Math.PI,0],     geo:'v', dir:norm(1,0,-1),  up:[0,1,0]  },
-    { pos:[-EC,0,-P],  rot:[0,Math.PI,0],     geo:'v', dir:norm(-1,0,-1), up:[0,1,0]  },
+    {pos:[0,EC,-P],   rot:[0,Math.PI,0],     geo:'h', dir:norm(0,1,-1),  up:[0,1,0]},
+    {pos:[0,-EC,-P],  rot:[0,Math.PI,0],     geo:'h', dir:norm(0,-1,-1), up:[0,1,0]},
+    {pos:[EC,0,-P],   rot:[0,Math.PI,0],     geo:'v', dir:norm(1,0,-1),  up:[0,1,0]},
+    {pos:[-EC,0,-P],  rot:[0,Math.PI,0],     geo:'v', dir:norm(-1,0,-1), up:[0,1,0]},
     // RIGHT
-    { pos:[P, EC, 0],  rot:[0,-Math.PI/2,0],  geo:'h', dir:norm(1,1,0),   up:[0,1,0]  },
-    { pos:[P,-EC, 0],  rot:[0,-Math.PI/2,0],  geo:'h', dir:norm(1,-1,0),  up:[0,1,0]  },
-    { pos:[P,0, EC],   rot:[0,-Math.PI/2,0],  geo:'v', dir:norm(1,0,1),   up:[0,1,0]  },
-    { pos:[P,0,-EC],   rot:[0,-Math.PI/2,0],  geo:'v', dir:norm(1,0,-1),  up:[0,1,0]  },
+    {pos:[P,EC,0],    rot:[0,-Math.PI/2,0],  geo:'h', dir:norm(1,1,0),   up:[0,1,0]},
+    {pos:[P,-EC,0],   rot:[0,-Math.PI/2,0],  geo:'h', dir:norm(1,-1,0),  up:[0,1,0]},
+    {pos:[P,0,EC],    rot:[0,-Math.PI/2,0],  geo:'v', dir:norm(1,0,1),   up:[0,1,0]},
+    {pos:[P,0,-EC],   rot:[0,-Math.PI/2,0],  geo:'v', dir:norm(1,0,-1),  up:[0,1,0]},
     // LEFT
-    { pos:[-P, EC, 0], rot:[0,Math.PI/2,0],   geo:'h', dir:norm(-1,1,0),  up:[0,1,0]  },
-    { pos:[-P,-EC, 0], rot:[0,Math.PI/2,0],   geo:'h', dir:norm(-1,-1,0), up:[0,1,0]  },
-    { pos:[-P,0,-EC],  rot:[0,Math.PI/2,0],   geo:'v', dir:norm(-1,0,-1), up:[0,1,0]  },
-    { pos:[-P,0, EC],  rot:[0,Math.PI/2,0],   geo:'v', dir:norm(-1,0,1),  up:[0,1,0]  },
+    {pos:[-P,EC,0],   rot:[0,Math.PI/2,0],   geo:'h', dir:norm(-1,1,0),  up:[0,1,0]},
+    {pos:[-P,-EC,0],  rot:[0,Math.PI/2,0],   geo:'h', dir:norm(-1,-1,0), up:[0,1,0]},
+    {pos:[-P,0,-EC],  rot:[0,Math.PI/2,0],   geo:'v', dir:norm(-1,0,-1), up:[0,1,0]},
+    {pos:[-P,0,EC],   rot:[0,Math.PI/2,0],   geo:'v', dir:norm(-1,0,1),  up:[0,1,0]},
     // TOP
-    { pos:[0, P, EC],  rot:[-Math.PI/2,0,0],  geo:'h', dir:norm(0,1,1),   up:[0,0,-1] },
-    { pos:[0, P,-EC],  rot:[-Math.PI/2,0,0],  geo:'h', dir:norm(0,1,-1),  up:[0,0,-1] },
-    { pos:[-EC,P, 0],  rot:[-Math.PI/2,0,0],  geo:'v', dir:norm(-1,1,0),  up:[0,0,-1] },
-    { pos:[ EC,P, 0],  rot:[-Math.PI/2,0,0],  geo:'v', dir:norm(1,1,0),   up:[0,0,-1] },
+    {pos:[0,P,EC],    rot:[-Math.PI/2,0,0],  geo:'h', dir:norm(0,1,1),   up:[0,0,-1]},
+    {pos:[0,P,-EC],   rot:[-Math.PI/2,0,0],  geo:'h', dir:norm(0,1,-1),  up:[0,0,-1]},
+    {pos:[-EC,P,0],   rot:[-Math.PI/2,0,0],  geo:'v', dir:norm(-1,1,0),  up:[0,0,-1]},
+    {pos:[EC,P,0],    rot:[-Math.PI/2,0,0],  geo:'v', dir:norm(1,1,0),   up:[0,0,-1]},
     // BOTTOM
-    { pos:[0,-P, EC],  rot:[Math.PI/2,0,0],   geo:'h', dir:norm(0,-1,1),  up:[0,0,1]  },
-    { pos:[0,-P,-EC],  rot:[Math.PI/2,0,0],   geo:'h', dir:norm(0,-1,-1), up:[0,0,1]  },
-    { pos:[-EC,-P,0],  rot:[Math.PI/2,0,0],   geo:'v', dir:norm(-1,-1,0), up:[0,0,1]  },
-    { pos:[ EC,-P,0],  rot:[Math.PI/2,0,0],   geo:'v', dir:norm(1,-1,0),  up:[0,0,1]  },
+    {pos:[0,-P,EC],   rot:[Math.PI/2,0,0],   geo:'h', dir:norm(0,-1,1),  up:[0,0,1]},
+    {pos:[0,-P,-EC],  rot:[Math.PI/2,0,0],   geo:'h', dir:norm(0,-1,-1), up:[0,0,1]},
+    {pos:[-EC,-P,0],  rot:[Math.PI/2,0,0],   geo:'v', dir:norm(-1,-1,0), up:[0,0,1]},
+    {pos:[EC,-P,0],   rot:[Math.PI/2,0,0],   geo:'v', dir:norm(1,-1,0),  up:[0,0,1]},
   ];
 
-  const CORNERS: { pos: V3; dir: V3; up: V3 }[] = [
-    { pos:[ H, H, H], dir:norm(1,1,1),    up:[0,0,-1] },
-    { pos:[-H, H, H], dir:norm(-1,1,1),   up:[0,0,-1] },
-    { pos:[ H,-H, H], dir:norm(1,-1,1),   up:[0,0,1]  },
-    { pos:[-H,-H, H], dir:norm(-1,-1,1),  up:[0,0,1]  },
-    { pos:[ H, H,-H], dir:norm(1,1,-1),   up:[0,0,-1] },
-    { pos:[-H, H,-H], dir:norm(-1,1,-1),  up:[0,0,-1] },
-    { pos:[ H,-H,-H], dir:norm(1,-1,-1),  up:[0,0,1]  },
-    { pos:[-H,-H,-H], dir:norm(-1,-1,-1), up:[0,0,1]  },
+  const CORNERS: {pos:V3; dir:V3; up:V3}[] = [
+    {pos:[H,H,H],    dir:norm(1,1,1),    up:[0,0,-1]},
+    {pos:[-H,H,H],   dir:norm(-1,1,1),   up:[0,0,-1]},
+    {pos:[H,-H,H],   dir:norm(1,-1,1),   up:[0,0,1]},
+    {pos:[-H,-H,H],  dir:norm(-1,-1,1),  up:[0,0,1]},
+    {pos:[H,H,-H],   dir:norm(1,1,-1),   up:[0,0,-1]},
+    {pos:[-H,H,-H],  dir:norm(-1,1,-1),  up:[0,0,-1]},
+    {pos:[H,-H,-H],  dir:norm(1,-1,-1),  up:[0,0,1]},
+    {pos:[-H,-H,-H], dir:norm(-1,-1,-1), up:[0,0,1]},
   ];
 
   return (
-    <group ref={groupRef}>
-      <mesh geometry={geoBody} material={matBody} renderOrder={1} />
-      <lineSegments geometry={geoEdges} material={matEdges} renderOrder={4} />
+    <>
+      {/* Cube — rotates with camera */}
+      <group ref={cubeRef}>
+        <mesh geometry={geoBody} material={matBody} renderOrder={1} />
+        <lineSegments geometry={geoEdges} material={matEdges} renderOrder={4} />
 
-      {FACES.map((f, i) => (
-        <FacePlane key={`f${i}`} geo={geoFace} pos={f.pos} rot={f.rot} label={f.label} flipH={f.flipH} onSnap={() => snap(f.dir, f.up)} />
-      ))}
+        {FACES.map((f, i) => (
+          <FacePlane key={`f${i}`} geo={geoFace} pos={f.pos} rot={f.rot} label={f.label} flipH={f.flipH} onSnap={() => snap(f.dir, f.up)} />
+        ))}
+        {EDGES.map((e, i) => (
+          <FacePlane key={`e${i}`} geo={e.geo === 'h' ? geoEdgeH : geoEdgeV} pos={e.pos} rot={e.rot} isEdge onSnap={() => snap(e.dir, e.up)} />
+        ))}
+        {CORNERS.map((c, i) => (
+          <CornerZone key={`c${i}`} pos={c.pos} onSnap={() => snap(c.dir, c.up)} />
+        ))}
+      </group>
 
-      {EDGES.map((e, i) => (
-        <FacePlane key={`e${i}`} geo={e.geo === 'h' ? geoEdgeH : geoEdgeV} pos={e.pos} rot={e.rot} isEdge onSnap={() => snap(e.dir, e.up)} />
-      ))}
-
-      {CORNERS.map((c, i) => (
-        <CornerZone key={`c${i}`} pos={c.pos} onSnap={() => snap(c.dir, c.up)} />
-      ))}
-    </group>
+      {/* Compass ring — independent rotation, stays flat */}
+      <CompassRing />
+    </>
   );
 };
 
@@ -343,8 +445,7 @@ const Scene: React.FC = () => {
           else if (shape.replicadShape) { const { getReplicadVertices: g } = await import('./VertexEditorService'); bv = (await g(shape.replicadShape)).map(v => [v.x,v.y,v.z]); }
           else if (shape.type === 'box') { const { getBoxVertices } = await import('./VertexEditorService'); bv = getBoxVertices(shape.parameters.width, shape.parameters.height, shape.parameters.depth).map(v => [v.x,v.y,v.z]); }
           if (vi >= bv.length) return;
-          const op = bv[vi];
-          const ai = vd.startsWith('x') ? 0 : vd.startsWith('y') ? 1 : 2;
+          const op = bv[vi]; const ai = vd.startsWith('x') ? 0 : vd.startsWith('y') ? 1 : 2;
           const np: [number,number,number] = [...op] as [number,number,number]; np[ai] = newValue;
           const off: [number,number,number] = [0,0,0]; off[ai] = newValue - op[ai];
           cs.addVertexModification(sid, { vertexIndex: vi, originalPosition: op as [number,number,number], newPosition: np, direction: vd, expression: String(newValue), description: `Vertex ${vi} ${vd[0].toUpperCase()}${vd[1]==='+'?'+':'-'}`, offset: off });
@@ -458,10 +559,11 @@ const Scene: React.FC = () => {
           </mesh>
 
           {/*
-            scale: 58 → 55  (-3 units ≈ "3mm" smaller)
-            margin: [96,96] → [96,104]  (right margin +8 → pushed 8px toward right edge)
+            scale 55 → same cube size
+            margin right: 104 + 12 = 116 (12px more to the right)
+            margin bottom: 96 → 110 (extra space for compass ring below cube)
           */}
-          <GizmoHelper alignment="bottom-right" margin={[96, 104]}>
+          <GizmoHelper alignment="bottom-right" margin={[116, 110]}>
             <group scale={55}>
               <ViewCube />
             </group>
@@ -481,14 +583,7 @@ const Scene: React.FC = () => {
           onSave={() => { setSaveDialog({ isOpen:true, shapeId:contextMenu.shapeId }); setContextMenu(null); }}
         />
       )}
-
-      <SaveDialog
-        isOpen={saveDialog.isOpen}
-        onClose={() => setSaveDialog({ isOpen:false, shapeId:null })}
-        onSave={handleSave}
-        shapeId={saveDialog.shapeId || ''}
-        captureSnapshot={captureSnapshot}
-      />
+      <SaveDialog isOpen={saveDialog.isOpen} onClose={() => setSaveDialog({ isOpen:false, shapeId:null })} onSave={handleSave} shapeId={saveDialog.shapeId || ''} captureSnapshot={captureSnapshot} />
     </>
   );
 };
