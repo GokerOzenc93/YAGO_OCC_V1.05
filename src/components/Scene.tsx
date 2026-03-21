@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
-import { OrbitControls, GizmoHelper, PerspectiveCamera, OrthographicCamera } from '@react-three/drei';
+import { OrbitControls, GizmoHelper, useGizmoContext, PerspectiveCamera, OrthographicCamera } from '@react-three/drei';
 import * as THREE from 'three';
 import { useAppStore, CameraType } from '../store';
 import { useShallow } from 'zustand/react/shallow';
@@ -14,176 +14,149 @@ import { getReplicadVertices } from './VertexEditorService';
 import { PanelDrawing } from './PanelDrawing';
 import { ErrorBoundary } from './ErrorBoundary';
 
-/* ─────────────────────────────────────────────
-   CUBE GIZMO  – pure Three.js, no Html/CSS
-   • 6 faces with canvas-drawn labels
-   • Hover highlights face orange
-   • Click snaps orbit camera to that view
-───────────────────────────────────────────── */
+/* ─────────────────────────────────────────────────────────
+   CUBE GIZMO
+   – Uses useGizmoContext so clicks move the MAIN camera
+     without moving/hiding the gizmo itself.
+   – All 6 faces rendered with DoubleSide + depthTest=false
+     so every face is always visible regardless of angle.
+───────────────────────────────────────────────────────── */
 
-/** Build a CanvasTexture for a face label */
-function makeFaceTexture(label: string, hovered: boolean): THREE.CanvasTexture {
-  const size = 128;
-  const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = size;
-  const ctx = canvas.getContext('2d')!;
+/** Draw a face label onto a CanvasTexture */
+function makeFaceTex(label: string, hovered: boolean): THREE.CanvasTexture {
+  const S = 128;
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  const ctx = c.getContext('2d')!;
 
-  // Background
-  ctx.fillStyle = hovered ? 'rgba(232,98,42,0.92)' : 'rgba(20,20,24,0.88)';
-  ctx.fillRect(0, 0, size, size);
+  ctx.fillStyle = hovered ? 'rgba(232,98,42,0.95)' : 'rgba(18,18,22,0.91)';
+  ctx.fillRect(0, 0, S, S);
 
-  // Border
-  ctx.strokeStyle = hovered ? 'rgba(255,255,255,0.45)' : 'rgba(255,255,255,0.12)';
+  ctx.strokeStyle = hovered ? 'rgba(255,255,255,0.5)' : 'rgba(255,255,255,0.14)';
   ctx.lineWidth = 3;
-  ctx.strokeRect(1.5, 1.5, size - 3, size - 3);
+  ctx.strokeRect(2, 2, S - 4, S - 4);
 
-  // Label text
-  ctx.fillStyle = hovered ? '#ffffff' : 'rgba(220,220,225,0.88)';
-  ctx.font = `bold ${label.length > 4 ? 18 : 22}px "Syne", "DM Sans", system-ui, sans-serif`;
+  ctx.fillStyle = hovered ? '#fff' : 'rgba(210,210,218,0.92)';
+  ctx.font = `bold ${label.length > 4 ? 17 : 21}px "Syne","DM Sans",system-ui,sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(label, size / 2, size / 2);
+  ctx.fillText(label, S / 2, S / 2);
 
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.needsUpdate = true;
-  return tex;
+  const t = new THREE.CanvasTexture(c);
+  t.needsUpdate = true;
+  return t;
 }
 
-// Face definitions: label, position offset, euler rotation
-const FACES: { label: string; pos: [number,number,number]; rot: [number,number,number] }[] = [
-  { label: 'FRONT',  pos: [0,  0,  0.501], rot: [0, 0, 0] },
-  { label: 'BACK',   pos: [0,  0, -0.501], rot: [0, Math.PI, 0] },
-  { label: 'RIGHT',  pos: [0.501, 0, 0],   rot: [0, -Math.PI/2, 0] },
-  { label: 'LEFT',   pos: [-0.501, 0, 0],  rot: [0,  Math.PI/2, 0] },
-  { label: 'TOP',    pos: [0,  0.501, 0],  rot: [-Math.PI/2, 0, 0] },
-  { label: 'BOTTOM', pos: [0, -0.501, 0],  rot: [ Math.PI/2, 0, 0] },
+/* Face order: +Z  -Z  +X  -X  +Y  -Y */
+const FACE_DEFS: { label: string; normal: [number,number,number]; rot: [number,number,number] }[] = [
+  { label: 'FRONT',  normal: [ 0, 0, 1],  rot: [0, 0, 0] },
+  { label: 'BACK',   normal: [ 0, 0,-1],  rot: [0, Math.PI, 0] },
+  { label: 'RIGHT',  normal: [ 1, 0, 0],  rot: [0, -Math.PI/2, 0] },
+  { label: 'LEFT',   normal: [-1, 0, 0],  rot: [0,  Math.PI/2, 0] },
+  { label: 'TOP',    normal: [ 0, 1, 0],  rot: [-Math.PI/2, 0, 0] },
+  { label: 'BOTTOM', normal: [ 0,-1, 0],  rot: [ Math.PI/2, 0, 0] },
 ];
 
-// Snap targets for each face (world-space camera direction from target)
-const FACE_SNAP_DIRS: [number,number,number][] = [
-  [0, 0, 1],   // FRONT
-  [0, 0, -1],  // BACK
-  [1, 0, 0],   // RIGHT
-  [-1, 0, 0],  // LEFT
-  [0, 1, 0],   // TOP
-  [0, -1, 0],  // BOTTOM
-];
-
-interface CubeFaceProps {
-  index: number;
-  label: string;
-  pos: [number,number,number];
-  rot: [number,number,number];
-  orbitRef: React.RefObject<any>;
-}
-
-const CubeFace: React.FC<CubeFaceProps> = ({ index, label, pos, rot, orbitRef }) => {
-  const { camera } = useThree();
+/* Single face mesh */
+const CubeFace: React.FC<{ def: typeof FACE_DEFS[0]; onSnap: (normal: [number,number,number]) => void }> = ({ def, onSnap }) => {
   const [hovered, setHovered] = useState(false);
+  const tex = useMemo(() => makeFaceTex(def.label, hovered), [def.label, hovered]);
+  useEffect(() => () => tex.dispose(), [tex]);
 
-  const texture = useMemo(() => makeFaceTexture(label, hovered), [label, hovered]);
-
-  // Cleanup texture on unmount / re-create
-  useEffect(() => () => { texture.dispose(); }, [texture]);
-
-  const snapTo = useCallback(() => {
-    if (!orbitRef.current) return;
-    const dir = new THREE.Vector3(...FACE_SNAP_DIRS[index]);
-    const target: THREE.Vector3 = orbitRef.current.target.clone();
-    const dist = camera.position.distanceTo(target);
-    const endPos = target.clone().add(dir.clone().multiplyScalar(dist));
-    const startPos = camera.position.clone();
-    const t0 = performance.now();
-    const duration = 420;
-
-    // Pick a stable up vector
-    const up = (index === 4)
-      ? new THREE.Vector3(0, 0, -1)
-      : (index === 5)
-        ? new THREE.Vector3(0, 0, 1)
-        : new THREE.Vector3(0, 1, 0);
-
-    const tick = () => {
-      const raw = Math.min((performance.now() - t0) / duration, 1);
-      const t = 1 - Math.pow(1 - raw, 3); // ease-out-cubic
-      camera.position.lerpVectors(startPos, endPos, t);
-      camera.up.copy(up);
-      camera.lookAt(orbitRef.current.target);
-      orbitRef.current.update();
-      if (raw < 1) requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
-  }, [camera, orbitRef, index]);
+  const pos = def.normal.map(n => n * 0.501) as [number,number,number];
 
   return (
     <mesh
       position={pos}
-      rotation={new THREE.Euler(...rot)}
-      onPointerEnter={(e) => { e.stopPropagation(); setHovered(true); document.body.style.cursor = 'pointer'; }}
-      onPointerLeave={(e) => { e.stopPropagation(); setHovered(false); document.body.style.cursor = 'default'; }}
-      onClick={(e) => { e.stopPropagation(); snapTo(); }}
+      rotation={new THREE.Euler(...def.rot)}
+      onPointerEnter={e => { e.stopPropagation(); setHovered(true); document.body.style.cursor = 'pointer'; }}
+      onPointerLeave={e => { e.stopPropagation(); setHovered(false); document.body.style.cursor = 'default'; }}
+      onClick={e => { e.stopPropagation(); onSnap(def.normal); }}
+      renderOrder={2}
     >
-      <planeGeometry args={[1, 1]} />
-      <meshBasicMaterial map={texture} transparent depthTest={false} />
+      {/* Use a slightly inset plane so it sits clearly on the face */}
+      <planeGeometry args={[0.98, 0.98]} />
+      <meshBasicMaterial
+        map={tex}
+        transparent
+        depthTest={false}
+        depthWrite={false}
+        side={THREE.DoubleSide}
+      />
     </mesh>
   );
 };
 
-const CubeGizmo: React.FC<{ orbitRef: React.RefObject<any> }> = ({ orbitRef }) => {
+/* Corner dot */
+const CORNERS: [number,number,number][] = [
+  [ .5, .5, .5],[ -.5, .5, .5],[ .5,-.5, .5],[-.5,-.5, .5],
+  [ .5, .5,-.5],[-.5, .5,-.5],[ .5,-.5,-.5],[-.5,-.5,-.5],
+];
+
+/* Main gizmo — must live inside <GizmoHelper> */
+const CubeGizmo: React.FC = () => {
+  const { tweenCamera } = useGizmoContext();
   const { camera } = useThree();
   const groupRef = useRef<THREE.Group>(null);
 
-  // Sync rotation: invert camera quaternion so cube always shows world orientation
+  /* Mirror the main scene camera orientation every frame */
   useFrame(() => {
     if (!groupRef.current) return;
     groupRef.current.quaternion.copy(camera.quaternion).invert();
   });
 
-  // Static edge geometry (built once)
-  const edgesGeo = useMemo(() => new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)), []);
-  const edgesMat = useMemo(() => new THREE.LineBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.18 }), []);
+  /* Snap: use GizmoHelper's tweenCamera so gizmo stays put */
+  const snap = useCallback((normal: [number,number,number]) => {
+    // up vector: if snapping to top/bottom, tilt forward
+    const n = new THREE.Vector3(...normal);
+    let up = new THREE.Vector3(0, 1, 0);
+    if (Math.abs(normal[1]) > 0.9) up = new THREE.Vector3(0, 0, normal[1] > 0 ? -1 : 1);
+    tweenCamera(n, up, 1);   // direction, up, speed multiplier
+  }, [tweenCamera]);
 
-  // Axis lines geometry
-  const axisLines = useMemo(() => {
-    const axes = [
-      { dir: [0.65,0,0], color: '#f87171' },
-      { dir: [0,0.65,0], color: '#4ade80' },
-      { dir: [0,0,0.65], color: '#60a5fa' },
-    ] as { dir: [number,number,number]; color: string }[];
-    return axes.map(({ dir, color }) => {
-      const geo = new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(0,0,0), new THREE.Vector3(...dir)
-      ]);
-      const mat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.6 });
-      return { geo, mat };
-    });
-  }, []);
+  const edgesGeo = useMemo(() => new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)), []);
+  const edgesMat = useMemo(() => new THREE.LineBasicMaterial({ color: '#aaaaaa', transparent: true, opacity: 0.22, depthTest: false }), []);
+
+  const axes = useMemo<{ pts: THREE.Vector3[]; color: string }[]>(() => [
+    { pts: [new THREE.Vector3(0,0,0), new THREE.Vector3(.72,0,0)],  color: '#f87171' },
+    { pts: [new THREE.Vector3(0,0,0), new THREE.Vector3(0,.72,0)],  color: '#4ade80' },
+    { pts: [new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,.72)],  color: '#60a5fa' },
+  ], []);
 
   return (
     <group ref={groupRef}>
-      {/* Faces */}
-      {FACES.map((f, i) => (
-        <CubeFace key={i} index={i} label={f.label} pos={f.pos} rot={f.rot} orbitRef={orbitRef} />
-      ))}
+      {/* Opaque cube body so back faces don't show through */}
+      <mesh renderOrder={1}>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshBasicMaterial color="#111114" transparent opacity={0.88} depthTest={false} depthWrite={false} />
+      </mesh>
 
       {/* Edges outline */}
-      <lineSegments geometry={edgesGeo} material={edgesMat} />
+      <lineSegments geometry={edgesGeo} material={edgesMat} renderOrder={3} />
 
-      {/* Corner spheres */}
-      {[
-        [ 0.5, 0.5, 0.5],[-0.5, 0.5, 0.5],[ 0.5,-0.5, 0.5],[-0.5,-0.5, 0.5],
-        [ 0.5, 0.5,-0.5],[-0.5, 0.5,-0.5],[ 0.5,-0.5,-0.5],[-0.5,-0.5,-0.5],
-      ].map((p, i) => (
-        <mesh key={`c${i}`} position={p as [number,number,number]}>
-          <sphereGeometry args={[0.048, 8, 8]} />
-          <meshBasicMaterial color="#e8622a" transparent opacity={0.75} depthTest={false} />
+      {/* Six face planes */}
+      {FACE_DEFS.map((def, i) => (
+        <CubeFace key={i} def={def} onSnap={snap} />
+      ))}
+
+      {/* Corner dots */}
+      {CORNERS.map((p, i) => (
+        <mesh key={i} position={p} renderOrder={4}>
+          <sphereGeometry args={[0.05, 8, 8]} />
+          <meshBasicMaterial color="#e8622a" transparent opacity={0.8} depthTest={false} />
         </mesh>
       ))}
 
       {/* Axis stubs */}
-      {axisLines.map(({ geo, mat }, i) => (
-        <lineSegments key={`ax${i}`} geometry={geo} material={mat} />
-      ))}
+      {axes.map(({ pts, color }, i) => {
+        const geo = new THREE.BufferGeometry().setFromPoints(pts);
+        return (
+          <lineSegments key={i} renderOrder={4}>
+            <primitive object={geo} attach="geometry" />
+            <lineBasicMaterial color={color} transparent opacity={0.65} depthTest={false} />
+          </lineSegments>
+        );
+      })}
     </group>
   );
 };
@@ -193,44 +166,41 @@ const CubeGizmo: React.FC<{ orbitRef: React.RefObject<any> }> = ({ orbitRef }) =
 ───────────────────────────────────────────── */
 const CameraController: React.FC<{ controlsRef: React.RefObject<any>; cameraType: CameraType }> = ({ controlsRef, cameraType }) => {
   const cameraRef = useRef<THREE.PerspectiveCamera | THREE.OrthographicCamera>(null);
-  const savedStateRef = useRef<{ position: THREE.Vector3; target: THREE.Vector3; zoom: number; perspectiveFov: number } | null>(null);
-  const prevCameraTypeRef = useRef<CameraType>(cameraType);
+  const savedRef = useRef<{ position: THREE.Vector3; target: THREE.Vector3; zoom: number; perspectiveFov: number } | null>(null);
+  const prevType = useRef<CameraType>(cameraType);
 
   useEffect(() => {
-    if (prevCameraTypeRef.current !== cameraType && savedStateRef.current && cameraRef.current && controlsRef.current) {
-      cameraRef.current.position.copy(savedStateRef.current.position);
-      controlsRef.current.target.copy(savedStateRef.current.target);
+    if (prevType.current !== cameraType && savedRef.current && cameraRef.current && controlsRef.current) {
+      cameraRef.current.position.copy(savedRef.current.position);
+      controlsRef.current.target.copy(savedRef.current.target);
       if (cameraType === CameraType.ORTHOGRAPHIC && cameraRef.current instanceof THREE.OrthographicCamera) {
-        const distance = savedStateRef.current.position.distanceTo(savedStateRef.current.target);
-        const fovRad = (savedStateRef.current.perspectiveFov || 45) * Math.PI / 180;
-        const visibleHeight = 2 * distance * Math.tan(fovRad / 2);
-        cameraRef.current.zoom = window.innerHeight / visibleHeight;
+        const dist = savedRef.current.position.distanceTo(savedRef.current.target);
+        const fovRad = (savedRef.current.perspectiveFov || 45) * Math.PI / 180;
+        cameraRef.current.zoom = window.innerHeight / (2 * dist * Math.tan(fovRad / 2));
         cameraRef.current.updateProjectionMatrix();
       }
       controlsRef.current.update();
     }
-    prevCameraTypeRef.current = cameraType;
+    prevType.current = cameraType;
   }, [cameraType, controlsRef]);
 
   useEffect(() => {
-    const save = () => {
+    const id = setInterval(() => {
       if (cameraRef.current && controlsRef.current) {
-        savedStateRef.current = {
+        savedRef.current = {
           position: cameraRef.current.position.clone(),
           target: controlsRef.current.target.clone(),
           zoom: cameraRef.current instanceof THREE.OrthographicCamera ? cameraRef.current.zoom : 1,
           perspectiveFov: cameraRef.current instanceof THREE.PerspectiveCamera ? cameraRef.current.fov : 45,
         };
       }
-    };
-    const id = setInterval(save, 100);
+    }, 100);
     return () => clearInterval(id);
   }, [controlsRef]);
 
-  if (cameraType === CameraType.PERSPECTIVE) {
-    return <PerspectiveCamera ref={cameraRef as React.RefObject<THREE.PerspectiveCamera>} makeDefault position={savedStateRef.current?.position.toArray() || [2000, 2000, 2000]} fov={45} near={1} far={50000} />;
-  }
-  return <OrthographicCamera ref={cameraRef as React.RefObject<THREE.OrthographicCamera>} makeDefault position={savedStateRef.current?.position.toArray() || [2000, 2000, 2000]} zoom={0.25} near={-50000} far={50000} />;
+  return cameraType === CameraType.PERSPECTIVE
+    ? <PerspectiveCamera ref={cameraRef as React.RefObject<THREE.PerspectiveCamera>} makeDefault position={savedRef.current?.position.toArray() || [2000,2000,2000]} fov={45} near={1} far={50000} />
+    : <OrthographicCamera ref={cameraRef as React.RefObject<THREE.OrthographicCamera>} makeDefault position={savedRef.current?.position.toArray() || [2000,2000,2000]} zoom={0.25} near={-50000} far={50000} />;
 };
 
 /* ─────────────────────────────────────────────
@@ -246,7 +216,7 @@ const Scene: React.FC = () => {
     vertexDirection, setVertexDirection, addVertexModification,
     subtractionViewMode, faceEditMode, setFaceEditMode,
     filletMode, selectedFilletFaces, clearFilletFaces, selectedFilletFaceData,
-    updateShape, panelSelectMode, panelSurfaceSelectMode, setSelectedPanelRow
+    updateShape, panelSelectMode, panelSurfaceSelectMode, setSelectedPanelRow,
   } = useAppStore(useShallow(state => ({
     shapes: state.shapes, cameraType: state.cameraType,
     selectedShapeId: state.selectedShapeId, secondarySelectedShapeId: state.secondarySelectedShapeId,
@@ -267,27 +237,19 @@ const Scene: React.FC = () => {
   const [saveDialog, setSaveDialog] = useState<{ isOpen: boolean; shapeId: string | null }>({ isOpen: false, shapeId: null });
 
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Delete' && selectedShapeId) {
-        deleteShape(selectedShapeId);
-      } else if (e.key === 'Escape') {
-        selectShape(null); exitIsolation(); setVertexEditMode(false); setFaceEditMode(false); clearFilletFaces();
-      } else if ((e.ctrlKey || e.metaKey) && e.key === 'g') {
+    const handle = (e: KeyboardEvent) => {
+      if (e.key === 'Delete' && selectedShapeId) deleteShape(selectedShapeId);
+      else if (e.key === 'Escape') { selectShape(null); exitIsolation(); setVertexEditMode(false); setFaceEditMode(false); clearFilletFaces(); }
+      else if ((e.ctrlKey || e.metaKey) && e.key === 'g') {
         e.preventDefault();
-        if (selectedShapeId && secondarySelectedShapeId) {
-          const { createGroup } = useAppStore.getState();
-          createGroup(selectedShapeId, secondarySelectedShapeId);
-        }
+        if (selectedShapeId && secondarySelectedShapeId) useAppStore.getState().createGroup(selectedShapeId, secondarySelectedShapeId);
       } else if ((e.ctrlKey || e.metaKey) && e.key === 'u') {
         e.preventDefault();
-        if (selectedShapeId) {
-          const shape = shapes.find(s => s.id === selectedShapeId);
-          if (shape?.groupId) { const { ungroupShapes } = useAppStore.getState(); ungroupShapes(shape.groupId); }
-        }
+        if (selectedShapeId) { const sh = shapes.find(s => s.id === selectedShapeId); if (sh?.groupId) useAppStore.getState().ungroupShapes(sh.groupId); }
       }
     };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    window.addEventListener('keydown', handle);
+    return () => window.removeEventListener('keydown', handle);
   }, [selectedShapeId, secondarySelectedShapeId, shapes, deleteShape, selectShape, exitIsolation, setVertexEditMode, setFaceEditMode, clearFilletFaces]);
 
   useEffect(() => {
@@ -296,25 +258,18 @@ const Scene: React.FC = () => {
       const { selectedShapeId: sid, selectedVertexIndex: vi, vertexDirection: vd } = cs;
       if (sid && vi !== null && vd) {
         const shape = cs.shapes.find(s => s.id === sid);
-        if (shape && shape.parameters) {
-          let baseVertices: number[][] = [];
-          if (shape.parameters.scaledBaseVertices?.length > 0) {
-            baseVertices = shape.parameters.scaledBaseVertices;
-          } else if (shape.replicadShape) {
-            const { getReplicadVertices } = await import('./VertexEditorService');
-            baseVertices = (await getReplicadVertices(shape.replicadShape)).map(v => [v.x, v.y, v.z]);
-          } else if (shape.type === 'box') {
-            const { getBoxVertices } = await import('./VertexEditorService');
-            baseVertices = (getBoxVertices(shape.parameters.width, shape.parameters.height, shape.parameters.depth)).map(v => [v.x, v.y, v.z]);
-          }
-          if (vi >= baseVertices.length) return;
-          const originalPos = baseVertices[vi];
-          const axisIndex = vd.startsWith('x') ? 0 : vd.startsWith('y') ? 1 : 2;
-          const newPosition: [number, number, number] = [...originalPos] as [number, number, number];
-          newPosition[axisIndex] = newValue;
-          const offset: [number, number, number] = [0, 0, 0];
-          offset[axisIndex] = newValue - originalPos[axisIndex];
-          cs.addVertexModification(sid, { vertexIndex: vi, originalPosition: originalPos as [number, number, number], newPosition, direction: vd, expression: String(newValue), description: `Vertex ${vi} ${vd[0].toUpperCase()}${vd[1] === '+' ? '+' : '-'}`, offset });
+        if (shape?.parameters) {
+          let bv: number[][] = [];
+          if (shape.parameters.scaledBaseVertices?.length > 0) bv = shape.parameters.scaledBaseVertices;
+          else if (shape.replicadShape) { const { getReplicadVertices: grv } = await import('./VertexEditorService'); bv = (await grv(shape.replicadShape)).map(v => [v.x,v.y,v.z]); }
+          else if (shape.type === 'box') { const { getBoxVertices } = await import('./VertexEditorService'); bv = getBoxVertices(shape.parameters.width, shape.parameters.height, shape.parameters.depth).map(v => [v.x,v.y,v.z]); }
+          if (vi >= bv.length) return;
+          const op = bv[vi];
+          const ai = vd.startsWith('x') ? 0 : vd.startsWith('y') ? 1 : 2;
+          const np: [number,number,number] = [...op] as [number,number,number];
+          np[ai] = newValue;
+          const off: [number,number,number] = [0,0,0]; off[ai] = newValue - op[ai];
+          cs.addVertexModification(sid, { vertexIndex: vi, originalPosition: op as [number,number,number], newPosition: np, direction: vd, expression: String(newValue), description: `Vertex ${vi} ${vd[0].toUpperCase()}${vd[1]==='+'?'+':'-'}`, offset: off });
         }
         (window as any).pendingVertexEdit = false;
         cs.setSelectedVertexIndex(null);
@@ -330,31 +285,19 @@ const Scene: React.FC = () => {
       const { selectedShapeId: sid, filletMode: fm, selectedFilletFaces: sff, selectedFilletFaceData: sffd } = cs;
       if (sid && fm && sff.length === 2 && sffd.length === 2) {
         const shape = cs.shapes.find(s => s.id === sid);
-        if (!shape || !shape.replicadShape) return;
+        if (!shape?.replicadShape) return;
         try {
-          const oldCenter = new THREE.Vector3();
-          if (shape.geometry) { const ob = new THREE.Box3().setFromBufferAttribute(shape.geometry.getAttribute('position')); ob.getCenter(oldCenter); }
+          const oc = new THREE.Vector3();
+          if (shape.geometry) new THREE.Box3().setFromBufferAttribute(shape.geometry.getAttribute('position')).getCenter(oc);
           const result = await applyFilletToShape(shape, sff, sffd, radius);
-          const newBaseVertices = await getReplicadVertices(result.replicadShape);
-          const newCenter = new THREE.Vector3();
-          new THREE.Box3().setFromBufferAttribute(result.geometry.getAttribute('position')).getCenter(newCenter);
-          const rotatedOffset = new THREE.Vector3().subVectors(newCenter, oldCenter);
-          if (shape.rotation[0] !== 0 || shape.rotation[1] !== 0 || shape.rotation[2] !== 0) {
-            rotatedOffset.applyMatrix4(new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(shape.rotation[0], shape.rotation[1], shape.rotation[2], 'XYZ')));
-          }
-          cs.updateShape(sid, {
-            geometry: result.geometry, replicadShape: result.replicadShape,
-            position: [shape.position[0] - rotatedOffset.x, shape.position[1] - rotatedOffset.y, shape.position[2] - rotatedOffset.z],
-            rotation: shape.rotation, scale: shape.scale,
-            parameters: { ...shape.parameters, scaledBaseVertices: newBaseVertices.map(v => [v.x, v.y, v.z]), width: shape.parameters.width || 1, height: shape.parameters.height || 1, depth: shape.parameters.depth || 1 },
-            fillets: [...(shape.fillets || []), result.filletData],
-          });
+          const nbv = await getReplicadVertices(result.replicadShape);
+          const nc = new THREE.Vector3();
+          new THREE.Box3().setFromBufferAttribute(result.geometry.getAttribute('position')).getCenter(nc);
+          const ro = new THREE.Vector3().subVectors(nc, oc);
+          if (shape.rotation[0]||shape.rotation[1]||shape.rotation[2]) ro.applyMatrix4(new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(shape.rotation[0],shape.rotation[1],shape.rotation[2],'XYZ')));
+          cs.updateShape(sid, { geometry: result.geometry, replicadShape: result.replicadShape, position: [shape.position[0]-ro.x,shape.position[1]-ro.y,shape.position[2]-ro.z], rotation: shape.rotation, scale: shape.scale, parameters: { ...shape.parameters, scaledBaseVertices: nbv.map(v=>[v.x,v.y,v.z]), width: shape.parameters.width||1, height: shape.parameters.height||1, depth: shape.parameters.depth||1 }, fillets: [...(shape.fillets||[]), result.filletData] });
           cs.clearFilletFaces();
-        } catch (error) {
-          console.error('❌ Failed to apply fillet:', error);
-          cs.clearFilletFaces();
-          alert(`Failed to apply fillet: ${(error as Error).message}`);
-        }
+        } catch (err) { console.error('fillet failed:', err); cs.clearFilletFaces(); alert(`Failed to apply fillet: ${(err as Error).message}`); }
       }
       (window as any).pendingFilletOperation = false;
     };
@@ -367,54 +310,40 @@ const Scene: React.FC = () => {
     if (state.vertexEditMode || state.faceEditMode) return;
     e.nativeEvent.preventDefault();
     state.selectShape(shapeId);
-    const shape = state.shapes.find(s => s.id === shapeId);
-    setContextMenu({ x: e.nativeEvent.clientX, y: e.nativeEvent.clientY, shapeId, shapeType: shape?.type || 'unknown' });
+    setContextMenu({ x: e.nativeEvent.clientX, y: e.nativeEvent.clientY, shapeId, shapeType: state.shapes.find(s=>s.id===shapeId)?.type||'unknown' });
   }, []);
 
-  const captureSnapshot = (): string => {
-    const canvas = document.querySelector('canvas');
-    return canvas ? canvas.toDataURL('image/png') : '';
-  };
+  const captureSnapshot = () => { const c = document.querySelector('canvas'); return c ? c.toDataURL('image/png') : ''; };
 
-  const serializeSubtractionGeometries = (sg: any[] | undefined) => {
-    if (!sg || sg.length === 0) return [];
-    return sg.filter(s => s !== null).map(sub => {
+  const serializeSubs = (sg: any[]|undefined) => {
+    if (!sg?.length) return [];
+    return sg.filter(Boolean).map(sub => {
       const out: any = { relativeOffset: sub.relativeOffset, relativeRotation: sub.relativeRotation, scale: sub.scale, parameters: sub.parameters };
-      if (sub.geometry) {
-        const pa = sub.geometry.getAttribute('position');
-        if (pa) { const sz = new THREE.Vector3(); new THREE.Box3().setFromBufferAttribute(pa).getSize(sz); out.geometrySize = [sz.x, sz.y, sz.z]; }
-      }
+      if (sub.geometry) { const pa = sub.geometry.getAttribute('position'); if (pa) { const sz = new THREE.Vector3(); new THREE.Box3().setFromBufferAttribute(pa).getSize(sz); out.geometrySize=[sz.x,sz.y,sz.z]; } }
       return out;
     });
   };
 
   const handleSave = async (data: { code: string; description: string; tags: string[]; previewImage?: string }) => {
     if (!saveDialog.shapeId) return;
-    const shape = shapes.find(s => s.id === saveDialog.shapeId);
+    const shape = shapes.find(s=>s.id===saveDialog.shapeId);
     if (!shape) return;
     try {
-      let geometryData: any;
-      let shapeParameters: any = {};
-      let subtractionGeometriesData: any[] = [];
-      let filletsData: any[] = [];
-      let faceRolesData: Record<number, string> = {};
+      let gd: any, sp: any={}, ssd: any[]=[], fd: any[]=[], frd: Record<number,string>={};
       if (shape.groupId) {
-        const groupShapes = shapes.filter(s => s.groupId === shape.groupId);
-        geometryData = { type: 'group', shapes: groupShapes.map(s => ({ type: s.type, position: s.position, rotation: s.rotation, scale: s.scale, color: s.color, parameters: s.parameters, vertexModifications: s.vertexModifications || [], isReferenceBox: s.isReferenceBox })) };
+        const gs = shapes.filter(s=>s.groupId===shape.groupId);
+        gd = { type:'group', shapes: gs.map(s=>({ type:s.type, position:s.position, rotation:s.rotation, scale:s.scale, color:s.color, parameters:s.parameters, vertexModifications:s.vertexModifications||[], isReferenceBox:s.isReferenceBox })) };
       } else {
-        geometryData = { type: shape.type, position: shape.position, rotation: shape.rotation, scale: shape.scale, color: shape.color, parameters: shape.parameters, vertexModifications: shape.vertexModifications || [] };
-        shapeParameters = { width: shape.parameters?.width, height: shape.parameters?.height, depth: shape.parameters?.depth, color: shape.color, position: shape.position, rotation: shape.rotation, scale: shape.scale, vertexModifications: shape.vertexModifications || [] };
-        subtractionGeometriesData = serializeSubtractionGeometries(shape.subtractionGeometries);
-        if (shape.fillets) filletsData = shape.fillets.map(f => ({ face1Descriptor: f.face1Descriptor, face2Descriptor: f.face2Descriptor, face1Data: f.face1Data, face2Data: f.face2Data, radius: f.radius, originalSize: f.originalSize }));
-        if (shape.faceRoles) faceRolesData = Object.entries(shape.faceRoles).reduce((acc, [k, v]) => { if (v) acc[Number(k)] = v; return acc; }, {} as Record<number, string>);
+        gd = { type:shape.type, position:shape.position, rotation:shape.rotation, scale:shape.scale, color:shape.color, parameters:shape.parameters, vertexModifications:shape.vertexModifications||[] };
+        sp = { width:shape.parameters?.width, height:shape.parameters?.height, depth:shape.parameters?.depth, color:shape.color, position:shape.position, rotation:shape.rotation, scale:shape.scale, vertexModifications:shape.vertexModifications||[] };
+        ssd = serializeSubs(shape.subtractionGeometries);
+        if (shape.fillets) fd = shape.fillets.map(f=>({ face1Descriptor:f.face1Descriptor, face2Descriptor:f.face2Descriptor, face1Data:f.face1Data, face2Data:f.face2Data, radius:f.radius, originalSize:f.originalSize }));
+        if (shape.faceRoles) frd = Object.entries(shape.faceRoles).reduce((a,[k,v])=>{ if(v) a[Number(k)]=v; return a; },{} as Record<number,string>);
       }
-      await catalogService.save({ code: data.code, description: data.description, tags: data.tags, geometry_data: geometryData, shape_parameters: shapeParameters, subtraction_geometries: subtractionGeometriesData, fillets: filletsData, face_roles: faceRolesData, preview_image: data.previewImage });
+      await catalogService.save({ code:data.code, description:data.description, tags:data.tags, geometry_data:gd, shape_parameters:sp, subtraction_geometries:ssd, fillets:fd, face_roles:frd, preview_image:data.previewImage });
       alert('Geometry saved successfully!');
-      setSaveDialog({ isOpen: false, shapeId: null });
-    } catch (error) {
-      console.error('Failed to save geometry:', error);
-      alert('Failed to save geometry. Please try again.');
-    }
+      setSaveDialog({ isOpen:false, shapeId:null });
+    } catch (err) { console.error('save failed:', err); alert('Failed to save geometry. Please try again.'); }
   };
 
   const handleCreated = useCallback(({ gl }: { gl: THREE.WebGLRenderer }) => {
@@ -422,7 +351,7 @@ const Scene: React.FC = () => {
     gl.toneMappingExposure = 1.0;
     gl.shadowMap.type = THREE.PCFSoftShadowMap;
     gl.outputColorSpace = THREE.SRGBColorSpace;
-    gl.domElement.addEventListener('webglcontextlost', (e) => { e.preventDefault(); console.warn('WebGL context lost'); });
+    gl.domElement.addEventListener('webglcontextlost', e => { e.preventDefault(); console.warn('WebGL context lost'); });
   }, []);
 
   return (
@@ -430,9 +359,9 @@ const Scene: React.FC = () => {
       <ErrorBoundary>
         <Canvas
           shadows
-          gl={{ antialias: true, alpha: false, preserveDrawingBuffer: true, powerPreference: 'high-performance', logarithmicDepthBuffer: true }}
-          dpr={[1, 2]}
-          onContextMenu={(e) => e.preventDefault()}
+          gl={{ antialias:true, alpha:false, preserveDrawingBuffer:true, powerPreference:'high-performance', logarithmicDepthBuffer:true }}
+          dpr={[1,2]}
+          onContextMenu={e=>e.preventDefault()}
           onCreated={handleCreated}
         >
           <color attach="background" args={['#f5f5f4']} />
@@ -440,52 +369,43 @@ const Scene: React.FC = () => {
 
           <ambientLight intensity={0.6} />
           <hemisphereLight intensity={0.4} groundColor="#888888" color="#ffffff" />
-          <directionalLight position={[1500, 2500, 1500]} intensity={1.8} castShadow
+          <directionalLight position={[1500,2500,1500]} intensity={1.8} castShadow
             shadow-mapSize-width={2048} shadow-mapSize-height={2048} shadow-bias={-0.0005}
             shadow-camera-far={15000} shadow-camera-left={-3000} shadow-camera-right={3000}
             shadow-camera-top={3000} shadow-camera-bottom={-3000} />
-          <directionalLight position={[-1000, 1500, -1000]} intensity={0.4} />
-          <directionalLight position={[0, 2000, -2000]} intensity={0.3} />
-          <directionalLight position={[500, 500, 3000]} intensity={0.5} />
+          <directionalLight position={[-1000,1500,-1000]} intensity={0.4} />
+          <directionalLight position={[0,2000,-2000]} intensity={0.3} />
+          <directionalLight position={[500,500,3000]} intensity={0.5} />
 
-          <OrbitControls
-            ref={controlsRef}
-            makeDefault
-            target={[0, 0, 0]}
-            enableDamping
-            dampingFactor={0.05}
-            rotateSpeed={0.8}
-            maxDistance={25000}
-            minDistance={50}
-          />
+          <OrbitControls ref={controlsRef} makeDefault target={[0,0,0]} enableDamping dampingFactor={0.05} rotateSpeed={0.8} maxDistance={25000} minDistance={50} />
 
-          {shapes.map((shape) => {
-            const isSelected = selectedShapeId === shape.id;
-            if (shape.type === 'panel') return <PanelDrawing key={shape.id} shape={shape} isSelected={isSelected} />;
+          {shapes.map(shape => {
+            const isSel = selectedShapeId === shape.id;
+            if (shape.type === 'panel') return <PanelDrawing key={shape.id} shape={shape} isSelected={isSel} />;
             return (
               <React.Fragment key={shape.id}>
-                <ShapeWithTransform shape={shape} isSelected={isSelected} orbitControlsRef={controlsRef} onContextMenu={handleContextMenu} />
-                {isSelected && vertexEditMode && (
-                  <VertexEditor shape={shape} isActive={true} onVertexSelect={(i) => setSelectedVertexIndex(i)} onDirectionChange={(d) => setVertexDirection(d)} />
+                <ShapeWithTransform shape={shape} isSelected={isSel} orbitControlsRef={controlsRef} onContextMenu={handleContextMenu} />
+                {isSel && vertexEditMode && (
+                  <VertexEditor shape={shape} isActive onVertexSelect={i=>setSelectedVertexIndex(i)} onDirectionChange={d=>setVertexDirection(d)} />
                 )}
               </React.Fragment>
             );
           })}
 
-          <mesh position={[0, -1, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-            <planeGeometry args={[30000, 30000]} />
+          <mesh position={[0,-1,0]} rotation={[-Math.PI/2,0,0]} receiveShadow>
+            <planeGeometry args={[30000,30000]} />
             <shadowMaterial opacity={0.12} />
           </mesh>
 
-          {/* ── CUBE GIZMO ─────────────────────────────
-              GizmoHelper renders into an isolated viewport
-              (always visible, fixed bottom-right corner).
-              CubeGizmo reads the main camera quaternion
-              each frame and updates its own rotation.
-          ─────────────────────────────────────────── */}
+          {/* ── CUBE GIZMO ────────────────────────────────────────────
+              GizmoHelper renders a separate fixed viewport at bottom-right.
+              CubeGizmo uses useGizmoContext().tweenCamera for snap —
+              this is the correct drei API that moves the main orbit camera
+              while keeping the gizmo visible and in place.
+          ──────────────────────────────────────────────────────────── */}
           <GizmoHelper alignment="bottom-right" margin={[90, 90]}>
             <group scale={55}>
-              <CubeGizmo orbitRef={controlsRef} />
+              <CubeGizmo />
             </group>
           </GizmoHelper>
 
@@ -494,20 +414,20 @@ const Scene: React.FC = () => {
 
       {contextMenu && (
         <ContextMenu
-          position={{ x: contextMenu.x, y: contextMenu.y }}
+          position={{ x:contextMenu.x, y:contextMenu.y }}
           shapeId={contextMenu.shapeId}
           shapeType={contextMenu.shapeType}
           onClose={() => setContextMenu(null)}
           onEdit={() => { isolateShape(contextMenu.shapeId); setContextMenu(null); }}
           onCopy={() => { copyShape(contextMenu.shapeId); setContextMenu(null); }}
           onDelete={() => { deleteShape(contextMenu.shapeId); setContextMenu(null); }}
-          onSave={() => { setSaveDialog({ isOpen: true, shapeId: contextMenu.shapeId }); setContextMenu(null); }}
+          onSave={() => { setSaveDialog({ isOpen:true, shapeId:contextMenu.shapeId }); setContextMenu(null); }}
         />
       )}
 
       <SaveDialog
         isOpen={saveDialog.isOpen}
-        onClose={() => setSaveDialog({ isOpen: false, shapeId: null })}
+        onClose={() => setSaveDialog({ isOpen:false, shapeId:null })}
         onSave={handleSave}
         shapeId={saveDialog.shapeId || ''}
         captureSnapshot={captureSnapshot}
