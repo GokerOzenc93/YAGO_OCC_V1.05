@@ -18,7 +18,6 @@ import { ErrorBoundary } from './ErrorBoundary';
    VIEW-CUBE GIZMO
 ══════════════════════════════════════════════════════════ */
 
-const C_ACCENT   = '#e8622a';
 const C_FACE_BG  = 'rgba(240,238,234,0.94)';
 const C_FACE_HOV = 'rgba(232,98,42,0.92)';
 const C_EDGE_BG  = 'rgba(210,207,202,0.90)';
@@ -26,24 +25,29 @@ const C_EDGE_HOV = 'rgba(232,98,42,0.88)';
 const C_BODY     = '#dbd8d2';
 const C_OUTLINE  = 'rgba(150,145,138,0.55)';
 
-/* Face texture — fills entire tile with label text as large as possible */
-function makeFaceTex(label: string, hovered: boolean): THREE.CanvasTexture {
-  const S = 256; // higher res for crispness
+/* Face texture with auto-fit font */
+function makeFaceTex(label: string, hovered: boolean, flipH = false): THREE.CanvasTexture {
+  const S = 256;
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = S;
   const ctx = canvas.getContext('2d')!;
 
-  // background
   ctx.fillStyle = hovered ? C_FACE_HOV : C_FACE_BG;
   ctx.fillRect(0, 0, S, S);
 
-  // subtle border
   ctx.strokeStyle = hovered ? 'rgba(255,255,255,0.35)' : 'rgba(160,155,148,0.65)';
   ctx.lineWidth = 4;
   ctx.strokeRect(2, 2, S - 4, S - 4);
 
-  // auto-fit font size: try largest, shrink until it fits
-  const PAD = 12; // px padding each side
+  // Flip horizontally for faces whose plane normal points in -X
+  // (mirrored by the rotation) so text reads correctly
+  if (flipH) {
+    ctx.save();
+    ctx.translate(S, 0);
+    ctx.scale(-1, 1);
+  }
+
+  const PAD = 12;
   const maxW = S - PAD * 2;
   let fs = 64;
   ctx.font = `800 ${fs}px "Syne","DM Sans",system-ui,sans-serif`;
@@ -57,12 +61,13 @@ function makeFaceTex(label: string, hovered: boolean): THREE.CanvasTexture {
   ctx.textBaseline = 'middle';
   ctx.fillText(label, S / 2, S / 2);
 
+  if (flipH) ctx.restore();
+
   const t = new THREE.CanvasTexture(canvas);
   t.needsUpdate = true;
   return t;
 }
 
-/* Edge strip texture */
 function makeEdgeTex(hovered: boolean): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = 64;
@@ -86,13 +91,14 @@ interface FacePlaneProps {
   rot: [number, number, number];
   label?: string;
   isEdge?: boolean;
+  flipH?: boolean;
   onSnap: () => void;
 }
-const FacePlane: React.FC<FacePlaneProps> = ({ geo, pos, rot, label = '', isEdge = false, onSnap }) => {
+const FacePlane: React.FC<FacePlaneProps> = ({ geo, pos, rot, label = '', isEdge = false, flipH = false, onSnap }) => {
   const [hov, setHov] = useState(false);
   const tex = useMemo(
-    () => isEdge ? makeEdgeTex(hov) : makeFaceTex(label, hov),
-    [hov, label, isEdge]
+    () => isEdge ? makeEdgeTex(hov) : makeFaceTex(label, hov, flipH),
+    [hov, label, isEdge, flipH]
   );
   useEffect(() => () => tex.dispose(), [tex]);
 
@@ -145,14 +151,14 @@ const ViewCube: React.FC = () => {
 
   const S  = 1;
   const H  = 0.5;
-  const FW = 0.68;   // face label area
-  const EW = 0.155;  // edge strip width
-  const D  = 0.003;  // plane offset
+  const FW = 0.68;
+  const EW = 0.155;
+  const D  = 0.003;
 
   const geoFace  = useMemo(() => new THREE.PlaneGeometry(FW, FW), []);
   const geoEdgeH = useMemo(() => new THREE.PlaneGeometry(FW, EW), []);
   const geoEdgeV = useMemo(() => new THREE.PlaneGeometry(EW, FW), []);
-  const geoBody  = useMemo(() => new THREE.BoxGeometry(S, S, S),   []);
+  const geoBody  = useMemo(() => new THREE.BoxGeometry(S, S, S),  []);
   const geoEdges = useMemo(() => new THREE.EdgesGeometry(new THREE.BoxGeometry(S, S, S)), []);
   const matBody  = useMemo(() => new THREE.MeshBasicMaterial({ color: C_BODY, depthTest: false, depthWrite: false }), []);
   const matEdges = useMemo(() => new THREE.LineBasicMaterial({ color: C_OUTLINE, transparent: true, opacity: 1, depthTest: false }), []);
@@ -162,11 +168,15 @@ const ViewCube: React.FC = () => {
 
   type V3 = [number, number, number];
 
-  const FACES: { label: string; pos: V3; rot: V3; dir: V3; up: V3 }[] = [
+  /* ── FACES
+     flipH = true for LEFT face (rotated +π/2 around Y → texture gets mirrored)
+     RIGHT face is rotated -π/2 around Y → also mirrored, needs flip too.
+  ── */
+  const FACES: { label: string; pos: V3; rot: V3; dir: V3; up: V3; flipH?: boolean }[] = [
     { label: 'FRONT',  pos: [0,0,P],    rot: [0,0,0],           dir: [0,0,1],  up: [0,1,0]  },
     { label: 'BACK',   pos: [0,0,-P],   rot: [0,Math.PI,0],     dir: [0,0,-1], up: [0,1,0]  },
-    { label: 'RIGHT',  pos: [P,0,0],    rot: [0,-Math.PI/2,0],  dir: [1,0,0],  up: [0,1,0]  },
-    { label: 'LEFT',   pos: [-P,0,0],   rot: [0,Math.PI/2,0],   dir: [-1,0,0], up: [0,1,0]  },
+    { label: 'RIGHT',  pos: [P,0,0],    rot: [0,-Math.PI/2,0],  dir: [1,0,0],  up: [0,1,0],  flipH: true  },
+    { label: 'LEFT',   pos: [-P,0,0],   rot: [0,Math.PI/2,0],   dir: [-1,0,0], up: [0,1,0],  flipH: true  },
     { label: 'TOP',    pos: [0,P,0],    rot: [-Math.PI/2,0,0],  dir: [0,1,0],  up: [0,0,-1] },
     { label: 'BOTTOM', pos: [0,-P,0],   rot: [Math.PI/2,0,0],   dir: [0,-1,0], up: [0,0,1]  },
   ];
@@ -217,23 +227,17 @@ const ViewCube: React.FC = () => {
 
   return (
     <group ref={groupRef}>
-      {/* Cube body */}
       <mesh geometry={geoBody} material={matBody} renderOrder={1} />
-
-      {/* Edge outline */}
       <lineSegments geometry={geoEdges} material={matEdges} renderOrder={4} />
 
-      {/* 6 face labels */}
       {FACES.map((f, i) => (
-        <FacePlane key={`f${i}`} geo={geoFace} pos={f.pos} rot={f.rot} label={f.label} onSnap={() => snap(f.dir, f.up)} />
+        <FacePlane key={`f${i}`} geo={geoFace} pos={f.pos} rot={f.rot} label={f.label} flipH={f.flipH} onSnap={() => snap(f.dir, f.up)} />
       ))}
 
-      {/* 24 edge strips */}
       {EDGES.map((e, i) => (
         <FacePlane key={`e${i}`} geo={e.geo === 'h' ? geoEdgeH : geoEdgeV} pos={e.pos} rot={e.rot} isEdge onSnap={() => snap(e.dir, e.up)} />
       ))}
 
-      {/* 8 invisible corner hit-zones */}
       {CORNERS.map((c, i) => (
         <CornerZone key={`c${i}`} pos={c.pos} onSnap={() => snap(c.dir, c.up)} />
       ))}
@@ -453,8 +457,12 @@ const Scene: React.FC = () => {
             <shadowMaterial opacity={0.12} />
           </mesh>
 
-          <GizmoHelper alignment="bottom-right" margin={[96,96]}>
-            <group scale={58}>
+          {/*
+            scale: 58 → 55  (-3 units ≈ "3mm" smaller)
+            margin: [96,96] → [96,104]  (right margin +8 → pushed 8px toward right edge)
+          */}
+          <GizmoHelper alignment="bottom-right" margin={[96, 104]}>
+            <group scale={55}>
               <ViewCube />
             </group>
           </GizmoHelper>
