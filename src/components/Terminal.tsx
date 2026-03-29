@@ -164,25 +164,27 @@ const Terminal: React.FC = () => {
         </div>
       )}
 
-      <div className="fixed bottom-0 left-0 right-0 bg-stone-100 border-t border-stone-300 z-30" style={{ height: '7mm' }}>
-      <div className="flex items-center h-full px-2">
-        <span className="text-stone-500 font-mono text-xs mr-2"></span>
-        <input
-          ref={inputRef}
-          type="text"
-          value={commandInput}
-          onChange={(e) => setCommandInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="Enter command or value..."
-          className="flex-1 bg-transparent text-slate-800 font-mono text-xs outline-none placeholder-stone-500"
-        />
-        <button
-          onClick={() => executeCommand(commandInput)}
-          className="ml-2 p-1 bg-orange-500 hover:bg-orange-600 text-white rounded transition-colors"
-        >
-          <Send className="w-2 h-2" />
-        </button>
-      </div>
+      {/* ↓ 7mm → 10mm (+3mm) */}
+      <div className="fixed bottom-0 left-0 right-0 bg-stone-100 border-t border-stone-300 z-30" style={{ height: '8mm' }}>
+        <div className="flex items-center h-full px-2 gap-2">
+          <span className="text-stone-400 font-mono text-xs select-none">›</span>
+          <input
+            ref={inputRef}
+            type="text"
+            value={commandInput}
+            onChange={(e) => setCommandInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Enter command or value..."
+            className="flex-1 bg-transparent text-slate-800 font-mono text-xs outline-none placeholder-stone-400"
+          />
+          {/* ↓ küçük p-1 → p-2, ikon w-2 h-2 → w-4 h-4 */}
+          <button
+            onClick={() => executeCommand(commandInput)}
+            className="flex items-center justify-center p-2 bg-orange-500 hover:bg-orange-600 active:scale-95 text-white rounded-lg transition-all"
+          >
+            <Send className="w-2 h-2" />
+          </button>
+        </div>
       </div>
     </>
   );

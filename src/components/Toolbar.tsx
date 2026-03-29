@@ -2,15 +2,26 @@ import React, { useState } from 'react';
 import * as THREE from 'three';
 import { Tool, useAppStore, ModificationType, CameraType, SnapType, ViewMode, OrthoMode } from '../store';
 import {
-  MousePointer2, Move, RotateCcw, Maximize, FileDown, Upload, Save, FilePlus,
-  Undo2, Redo2, Grid2x2 as Grid, Layers, Box, Cylinder, Settings, HelpCircle,
-  Search, Copy, Scissors, ClipboardPaste, Square, Circle, FlipHorizontal,
-  Copy as Copy1, Eraser, Eye, Monitor, Package, CreditCard as Edit, BarChart3,
-  Cog, FileText, PanelLeft, GitBranch, CreditCard as Edit3, Camera, CameraOff,
-  Target, Navigation, Crosshair, RotateCw, Zap, InspectionPanel as Intersection,
-  MapPin, Frame as Wireframe, Cuboid as Cube, Ruler, FolderOpen, ArrowDownUp,
-  Divide, DivideCircle, Scan, Layers3, ScanEye, BoxSelect, AlignCenter,
-  Minus, Plus, Maximize2
+  // Header / meta
+  Search, Settings, HelpCircle,
+  // File ops
+  FilePlus, FileDown, Save, Upload,
+  // Edit ops
+  Undo2, Redo2, Scissors, Copy, ClipboardPaste, Eraser,
+  // Transform tools
+  MousePointer2, Move, Navigation, RefreshCcw, Maximize2,
+  // Geometry tools
+  Box, Cog, SlidersHorizontal, MinusSquare, PanelLeft,
+  // Camera / view
+  Camera, CameraOff, Crosshair, FolderOpen,
+  // View mode icons
+  BoxSelect, ScanEye, Cuboid as Cube,
+  // Menu-only icons (unchanged)
+  Grid2x2 as Grid, Layers, Eye, Cylinder, Package, Square, FlipHorizontal,
+  Maximize, Maximize2 as Area, BarChart3, FileText,
+  GitBranch, Target, RotateCw, Zap,
+  InspectionPanel as Intersection, MapPin, Ruler, Monitor,
+  RotateCcw, ArrowDownUp,
 } from 'lucide-react';
 import { ParametersPanel } from './ParametersPanel';
 import { PanelEditor } from './PanelEditor';
@@ -32,21 +43,27 @@ const TBtn = ({
     disabled={disabled}
     onClick={onClick}
     className={[
-      'relative flex items-center justify-center w-[28px] h-[28px] rounded-md transition-all duration-150 group',
-      'outline-none focus-visible:ring-2 focus-visible:ring-orange-400',
+      // ↓ 28px → 22px  (~2 mm küçüldü)
+      'relative flex items-center justify-center w-[22px] h-[22px] rounded-md transition-all duration-150 group',
+      'outline-none focus-visible:ring-2 focus-visible:ring-orange-200',
       disabled
         ? 'opacity-30 cursor-not-allowed text-stone-400'
         : danger
-          ? 'text-red-500 hover:bg-red-50 hover:text-red-600 active:scale-90 active:bg-red-100'
+          ? 'text-red-400 hover:bg-red-50 hover:text-red-500 active:scale-90'
           : active
-            ? 'bg-orange-500 text-white shadow-md shadow-orange-200 scale-100'
+            // ↓ koyu turuncu → çok soft, beyaza yakın turuncu
+            ? 'bg-orange-50 text-orange-400 shadow-sm ring-1 ring-orange-200'
             : accent
-              ? 'bg-orange-500 text-white hover:bg-orange-600 shadow-sm active:scale-90'
-              : 'text-stone-500 hover:bg-stone-100 hover:text-stone-800 active:scale-90',
+              ? 'bg-orange-50 text-orange-400 hover:bg-orange-100 shadow-sm active:scale-90'
+              : 'text-stone-400 hover:bg-stone-100 hover:text-stone-700 active:scale-90',
       className
     ].join(' ')}
   >
-    <span className={`transition-transform duration-150 ${!disabled && !active ? 'group-hover:scale-110' : ''}`}>
+    {/* ↓ icon wrapper: tam doldur, taşma yok */}
+    <span className={[
+      'flex items-center justify-center w-full h-full transition-transform duration-150',
+      !disabled && !active ? 'group-hover:scale-110' : ''
+    ].join(' ')}>
       {icon}
     </span>
 
@@ -57,7 +74,7 @@ const TBtn = ({
   </button>
 );
 
-/* ─── Pill toggle button (for view mode, camera, linear) ─── */
+/* ─── Pill toggle button ─── */
 const PillBtn = ({
   icon, label, active = false, onClick
 }: {
@@ -68,7 +85,7 @@ const PillBtn = ({
     onClick={onClick}
     className={[
       'group relative flex items-center gap-1.5 px-3 h-8 rounded-lg text-xs font-semibold',
-      'transition-all duration-150 active:scale-95 outline-none focus-visible:ring-2 focus-visible:ring-orange-400',
+      'transition-all duration-150 active:scale-95 outline-none focus-visible:ring-2 focus-visible:ring-orange-200',
       active
         ? 'bg-stone-800 text-white shadow-md'
         : 'bg-stone-100 text-stone-600 hover:bg-stone-200 hover:text-stone-800'
@@ -80,7 +97,7 @@ const PillBtn = ({
 );
 
 /* ─── Divider ─── */
-const Sep = () => <div className="w-px h-6 bg-stone-200 mx-1 flex-shrink-0" />;
+const Sep = () => <div className="w-px h-5 bg-stone-200 mx-0.5 flex-shrink-0" />;
 
 const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
   const {
@@ -121,10 +138,11 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
   }, [selectedShapeId, shapes]);
 
   const viewModeLabel = { [ViewMode.SOLID]: 'Solid', [ViewMode.WIREFRAME]: 'Wire', [ViewMode.XRAY]: 'X-Ray' }[viewMode] ?? 'Solid';
+  // ↓ view mode ikonları da 15px
   const viewModeIcon =
-    viewMode === ViewMode.WIREFRAME ? <BoxSelect size={13} /> :
-    viewMode === ViewMode.XRAY     ? <ScanEye size={13} /> :
-                                     <Cube size={13} />;
+    viewMode === ViewMode.WIREFRAME ? <BoxSelect size={15} /> :
+    viewMode === ViewMode.XRAY     ? <ScanEye size={15} /> :
+                                     <Cube size={15} />;
 
   const handleTransformToolSelect = (tool: Tool) => { setActiveTool(tool); setLastTransformTool(tool); };
   const handleModify = (type: ModificationType) => {
@@ -195,14 +213,14 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
     { label: 'Edit', items: [{ icon: <Undo2 size={11} />, label: 'Undo', shortcut: 'Ctrl+Z' }, { icon: <Redo2 size={11} />, label: 'Redo', shortcut: 'Ctrl+Y' }, { type: 'separator' }, { icon: <Scissors size={11} />, label: 'Cut', shortcut: 'Ctrl+X' }, { icon: <Copy size={11} />, label: 'Copy', shortcut: 'Ctrl+C' }, { icon: <ClipboardPaste size={11} />, label: 'Paste', shortcut: 'Ctrl+V' }, { type: 'separator' }, { icon: <Eraser size={11} />, label: 'Delete', shortcut: 'Del' }] },
     { label: 'View', items: [{ icon: <Grid size={11} />, label: 'Show Grid', shortcut: 'G' }, { icon: <Layers size={11} />, label: 'Show Layers', shortcut: 'L' }, { icon: <Eye size={11} />, label: 'Visibility', shortcut: 'V' }, { type: 'separator' }, { icon: <Cube size={11} />, label: 'Solid View', shortcut: '1' }, { icon: <BoxSelect size={11} />, label: 'Wireframe View', shortcut: '2' }, { icon: <ScanEye size={11} />, label: 'X-Ray View', shortcut: '3' }, { type: 'separator' }, { label: 'Zoom In', shortcut: 'Ctrl++' }, { label: 'Zoom Out', shortcut: 'Ctrl+-' }, { label: 'Fit to View', shortcut: 'F' }] },
     { label: 'Place', items: [{ icon: <Box size={11} />, label: 'Add Box', shortcut: 'B' }, { icon: <Cylinder size={11} />, label: 'Add Cylinder', shortcut: 'C' }, { icon: <Package size={11} />, label: '3D Objects', shortcut: '3' }, { type: 'separator' }, { icon: <Square size={11} />, label: '2D Shapes', shortcut: '2' }, { icon: <GitBranch size={11} />, label: 'Drawing Tools', shortcut: 'L' }] },
-    { label: 'Modify', items: [{ icon: <Move size={11} />, label: 'Move', shortcut: 'M' }, { icon: <RotateCcw size={11} />, label: 'Rotate', shortcut: 'R' }, { icon: <Maximize size={11} />, label: 'Scale', shortcut: 'S' }, { type: 'separator' }, { icon: <FlipHorizontal size={11} />, label: 'Mirror', shortcut: 'Mi' }, { icon: <Copy1 size={11} />, label: 'Array', shortcut: 'Ar' }, { icon: <Edit size={11} />, label: 'Edit', shortcut: 'E' }] },
+    { label: 'Modify', items: [{ icon: <Move size={11} />, label: 'Move', shortcut: 'M' }, { icon: <RotateCcw size={11} />, label: 'Rotate', shortcut: 'R' }, { icon: <Maximize size={11} />, label: 'Scale', shortcut: 'S' }, { type: 'separator' }, { icon: <FlipHorizontal size={11} />, label: 'Mirror', shortcut: 'Mi' }, { icon: <Copy size={11} />, label: 'Array', shortcut: 'Ar' }, { icon: <SlidersHorizontal size={11} />, label: 'Edit', shortcut: 'E' }] },
     { label: 'Snap', items: [{ icon: <Target size={11} />, label: 'Endpoint Snap', shortcut: 'End' }, { icon: <Navigation size={11} />, label: 'Midpoint Snap', shortcut: 'Mid' }, { icon: <Crosshair size={11} />, label: 'Center Snap', shortcut: 'Cen' }, { icon: <RotateCw size={11} />, label: 'Quadrant Snap', shortcut: 'Qua' }, { icon: <Zap size={11} />, label: 'Perpendicular Snap', shortcut: 'Per' }, { icon: <Intersection size={11} />, label: 'Intersection Snap', shortcut: 'Int' }, { icon: <MapPin size={11} />, label: 'Nearest Snap', shortcut: 'Nea' }, { type: 'separator' }, { icon: <Settings size={11} />, label: 'Snap Settings', shortcut: 'Ctrl+Snap' }] },
-    { label: 'Measure', items: [{ icon: <Ruler size={11} />, label: 'Distance', shortcut: 'D' }, { icon: <Layers size={11} />, label: 'Angle', shortcut: 'A' }, { icon: <Maximize2 size={11} />, label: 'Area', shortcut: 'Ar' }, { type: 'separator' }, { icon: <Layers size={11} />, label: 'Add Dimension', shortcut: 'Ctrl+D' }, { icon: <Layers size={11} />, label: 'Dimension Style', shortcut: 'Ctrl+M' }] },
+    { label: 'Measure', items: [{ icon: <Ruler size={11} />, label: 'Distance', shortcut: 'D' }, { icon: <Ruler size={11} />, label: 'Angle', shortcut: 'A' }, { icon: <Area size={11} />, label: 'Area', shortcut: 'Ar' }, { type: 'separator' }, { icon: <Ruler size={11} />, label: 'Add Dimension', shortcut: 'Ctrl+D' }, { icon: <Settings size={11} />, label: 'Dimension Style', shortcut: 'Ctrl+M' }] },
     { label: 'Display', items: [{ icon: <Monitor size={11} />, label: 'Render Settings', shortcut: 'R' }, { icon: <Eye size={11} />, label: 'View Modes', shortcut: 'V' }, { icon: <Camera size={11} />, label: 'Camera Settings', shortcut: 'C' }, { type: 'separator' }, { icon: <Layers size={11} />, label: 'Material Editor', shortcut: 'M' }, { icon: <Settings size={11} />, label: 'Lighting', shortcut: 'L' }] },
-    { label: 'Settings', items: [{ icon: <Cog size={11} />, label: 'General Settings', shortcut: 'Ctrl+,' }, { icon: <Grid size={11} />, label: 'Grid Settings', shortcut: 'G' }, { icon: <Layers size={11} />, label: 'Unit Settings', shortcut: 'U' }, { type: 'separator' }, { icon: <Settings size={11} />, label: 'Toolbar', shortcut: 'T' }, { icon: <PanelLeft size={11} />, label: 'Panel Layout', shortcut: 'P' }] },
+    { label: 'Settings', items: [{ icon: <Cog size={11} />, label: 'General Settings', shortcut: 'Ctrl+,' }, { icon: <Grid size={11} />, label: 'Grid Settings', shortcut: 'G' }, { icon: <Ruler size={11} />, label: 'Unit Settings', shortcut: 'U' }, { type: 'separator' }, { icon: <Settings size={11} />, label: 'Toolbar', shortcut: 'T' }, { icon: <PanelLeft size={11} />, label: 'Panel Layout', shortcut: 'P' }] },
     { label: 'Report', items: [{ icon: <FileText size={11} />, label: 'Project Report', shortcut: 'Ctrl+R' }, { icon: <BarChart3 size={11} />, label: 'Material List', shortcut: 'Ctrl+L' }, { icon: <FileText size={11} />, label: 'Dimension Report', shortcut: 'Ctrl+M' }, { type: 'separator' }, { icon: <FileDown size={11} />, label: 'PDF Export', shortcut: 'Ctrl+P' }, { icon: <FileDown size={11} />, label: 'Excel Export', shortcut: 'Ctrl+E' }] },
     { label: 'Window', items: [{ icon: <PanelLeft size={11} />, label: 'New Window', shortcut: 'Ctrl+N' }, { icon: <Layers size={11} />, label: 'Window Layout', shortcut: 'Ctrl+W' }, { type: 'separator' }, { icon: <Monitor size={11} />, label: 'Full Screen', shortcut: 'F11' }, { icon: <PanelLeft size={11} />, label: 'Hide Panels', shortcut: 'Tab' }] },
-    { label: 'Help', items: [{ icon: <HelpCircle size={11} />, label: 'User Manual', shortcut: 'F1' }, { icon: <HelpCircle size={11} />, label: 'Keyboard Shortcuts', shortcut: 'Ctrl+?' }, { icon: <Layers size={11} />, label: 'Video Tutorials', shortcut: 'Ctrl+T' }, { type: 'separator' }, { icon: <HelpCircle size={11} />, label: 'About', shortcut: 'Ctrl+H' }, { icon: <HelpCircle size={11} />, label: 'Check Updates', shortcut: 'Ctrl+U' }] },
+    { label: 'Help', items: [{ icon: <HelpCircle size={11} />, label: 'User Manual', shortcut: 'F1' }, { icon: <HelpCircle size={11} />, label: 'Keyboard Shortcuts', shortcut: 'Ctrl+?' }, { icon: <Monitor size={11} />, label: 'Video Tutorials', shortcut: 'Ctrl+T' }, { type: 'separator' }, { icon: <HelpCircle size={11} />, label: 'About', shortcut: 'Ctrl+H' }, { icon: <HelpCircle size={11} />, label: 'Check Updates', shortcut: 'Ctrl+U' }] },
   ];
 
   return (
@@ -212,7 +230,7 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
         .tb-menu-enter { animation: tb-fade-in 0.12s ease-out forwards; }
         .tb-active-indicator {
           position: absolute; bottom: -1px; left: 50%; transform: translateX(-50%);
-          width: 18px; height: 2px; background: #f97316; border-radius: 9999px;
+          width: 14px; height: 2px; background: #f97316; border-radius: 9999px;
         }
       `}</style>
 
@@ -235,16 +253,10 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
               <span className="text-stone-700 font-semibold">Drawing1</span>
             </div>
           </div>
-
           <div className="ml-auto flex items-center gap-2">
-            {/* Search */}
             <div className="relative">
               <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-stone-400 pointer-events-none" />
-              <input
-                type="text"
-                placeholder="Ara..."
-                className="w-36 h-7 pl-8 pr-3 text-xs bg-stone-50 rounded-lg border border-stone-200 focus:outline-none focus:border-orange-400 focus:ring-1 focus:ring-orange-300 transition-all placeholder-stone-400 text-stone-700"
-              />
+              <input type="text" placeholder="Ara..." className="w-36 h-7 pl-8 pr-3 text-xs bg-stone-50 rounded-lg border border-stone-200 focus:outline-none focus:border-orange-400 focus:ring-1 focus:ring-orange-200 transition-all placeholder-stone-400 text-stone-700" />
             </div>
             <button className="p-1.5 rounded-lg hover:bg-stone-100 transition-colors text-stone-500 hover:text-stone-700" title="Ayarlar"><Settings size={13} /></button>
             <button className="p-1.5 rounded-lg hover:bg-stone-100 transition-colors text-stone-500 hover:text-stone-700" title="Yardım"><HelpCircle size={13} /></button>
@@ -257,33 +269,26 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
             <div key={menu.label} className="relative h-full">
               <button
                 className={`relative h-full px-3 text-[11px] font-medium transition-colors flex items-center gap-0.5
-                  ${activeMenu === menu.label ? 'text-orange-600 bg-orange-50' : 'text-stone-600 hover:text-stone-800 hover:bg-stone-100'}`}
+                  ${activeMenu === menu.label ? 'text-orange-500 bg-orange-50' : 'text-stone-600 hover:text-stone-800 hover:bg-stone-100'}`}
                 onClick={() => setActiveMenu(activeMenu === menu.label ? null : menu.label)}
                 onMouseEnter={() => activeMenu && setActiveMenu(menu.label)}
               >
                 {menu.label}
                 {activeMenu === menu.label && <div className="tb-active-indicator" />}
               </button>
-
               {activeMenu === menu.label && (
-                <div
-                  className="tb-menu-enter absolute left-0 top-full mt-0.5 w-52 bg-white rounded-xl border border-stone-200 py-1.5 z-50 shadow-xl shadow-stone-200/60"
-                  onMouseLeave={() => setActiveMenu(null)}
-                >
+                <div className="tb-menu-enter absolute left-0 top-full mt-0.5 w-52 bg-white rounded-xl border border-stone-200 py-1.5 z-50 shadow-xl shadow-stone-200/60" onMouseLeave={() => setActiveMenu(null)}>
                   {menu.items.map((item, i) =>
                     item.type === 'separator'
                       ? <div key={i} className="border-t border-stone-100 my-1" />
                       : (
-                        <button
-                          key={i}
-                          className="flex items-center justify-between w-full h-8 px-3 text-xs hover:bg-orange-50 hover:text-orange-700 transition-colors text-stone-600 rounded-lg mx-0"
+                        <button key={i} className="flex items-center justify-between w-full h-8 px-3 text-xs hover:bg-orange-50 hover:text-orange-600 transition-colors text-stone-600 rounded-lg mx-0"
                           onClick={() => {
                             if (item.label === 'Solid View') setViewMode(ViewMode.SOLID);
                             else if (item.label === 'Wireframe View') setViewMode(ViewMode.WIREFRAME);
                             else if (item.label === 'X-Ray View') setViewMode(ViewMode.XRAY);
                             setActiveMenu(null);
-                          }}
-                        >
+                          }}>
                           <div className="flex items-center gap-2">{item.icon}<span className="font-medium">{item.label}</span></div>
                           {item.shortcut && <span className="text-stone-400 text-[10px] font-mono">{item.shortcut}</span>}
                         </button>
@@ -296,61 +301,57 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
         </div>
 
         {/* ── Row 3 · Main Toolbar ── */}
-        <div className="flex items-center h-[34px] gap-1 px-3 bg-stone-50 border-b border-stone-200">
+        {/* ↓ yükseklik 34px → 30px, butonlar küçüldüğü için */}
+        <div className="flex items-center h-[30px] gap-0.5 px-3 bg-stone-50 border-b border-stone-200">
 
           {/* File group */}
-          <div className="flex items-center bg-white rounded-xl shadow-sm border border-stone-200 p-0.5 gap-0">
-            <TBtn icon={<FilePlus size={16} />} label="Yeni (Ctrl+N)" />
-            <TBtn icon={<Save size={16} />} label="Kaydet (Ctrl+S)" />
-            <TBtn icon={<FileDown size={16} />} label="Farklı Kaydet (Ctrl+Shift+S)" />
+          <div className="flex items-center bg-white rounded-lg shadow-sm border border-stone-200 p-0.5 gap-0">
+            <TBtn icon={<FilePlus size={15} />}  label="Yeni (Ctrl+N)" />
+            <TBtn icon={<Save size={15} />}       label="Kaydet (Ctrl+S)" />
+            <TBtn icon={<FileDown size={15} />}   label="Farklı Kaydet (Ctrl+Shift+S)" />
           </div>
 
           <Sep />
 
-          {/* Undo/Redo */}
-          <div className="flex items-center bg-white rounded-xl shadow-sm border border-stone-200 p-0.5 gap-0">
-            <TBtn icon={<Undo2 size={16} />} label="Geri Al (Ctrl+Z)" />
-            <TBtn icon={<Redo2 size={16} />} label="Yinele (Ctrl+Y)" />
+          {/* Undo / Redo */}
+          <div className="flex items-center bg-white rounded-lg shadow-sm border border-stone-200 p-0.5 gap-0">
+            <TBtn icon={<Undo2 size={15} />}  label="Geri Al (Ctrl+Z)" />
+            <TBtn icon={<Redo2 size={15} />}  label="Yinele (Ctrl+Y)" />
           </div>
 
           <Sep />
 
           {/* Transform tools */}
-          <div className="flex items-center bg-white rounded-xl shadow-sm border border-stone-200 p-0.5 gap-0">
-            {/* Select */}
+          <div className="flex items-center bg-white rounded-lg shadow-sm border border-stone-200 p-0.5 gap-0">
             <TBtn
-              icon={<MousePointer2 size={16} />}
+              icon={<MousePointer2 size={15} />}
               label="Seç (V)"
               active={activeTool === Tool.SELECT}
               onClick={() => setActiveTool(Tool.SELECT)}
             />
-            {/* Move */}
             <TBtn
-              icon={<Move size={16} />}
+              icon={<Move size={15} />}
               label="Taşı (M)"
               active={activeTool === Tool.MOVE}
               disabled={!selectedShapeId}
               onClick={() => handleTransformToolSelect(Tool.MOVE)}
             />
-            {/* Point to Point */}
             <TBtn
-              icon={<ArrowDownUp size={16} />}
+              icon={<Navigation size={15} />}
               label="Noktadan Noktaya"
               active={activeTool === Tool.POINT_TO_POINT_MOVE}
               disabled={!selectedShapeId}
               onClick={() => handleTransformToolSelect(Tool.POINT_TO_POINT_MOVE)}
             />
-            {/* Rotate */}
             <TBtn
-              icon={<RotateCcw size={16} />}
+              icon={<RefreshCcw size={15} />}
               label="Döndür (R)"
               active={activeTool === Tool.ROTATE}
               disabled={!selectedShapeId}
               onClick={() => handleTransformToolSelect(Tool.ROTATE)}
             />
-            {/* Scale — disabled for boxes */}
             <TBtn
-              icon={<Maximize size={16} />}
+              icon={<Maximize2 size={15} />}
               label={isBoxSelected ? 'Ölçek – kutu için devre dışı' : 'Ölçekle (S)'}
               active={activeTool === Tool.SCALE}
               disabled={!selectedShapeId || isBoxSelected}
@@ -360,56 +361,49 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
 
           <Sep />
 
-          {/* Geometry & Tools group */}
-          <div className="flex items-center bg-white rounded-xl shadow-sm border border-stone-200 p-0.5 gap-0">
-            <TBtn icon={<Box size={16} />} label="Kutu Ekle (B)" onClick={handleAddBox} />
-            <TBtn icon={<Cog size={16} />} label="Genel Ayarlar" onClick={() => setShowGlobalSettingsPanel(!showGlobalSettingsPanel)} />
+          {/* Geometry & Tools */}
+          <div className="flex items-center bg-white rounded-lg shadow-sm border border-stone-200 p-0.5 gap-0">
+            <TBtn icon={<Box size={15} />}              label="Kutu Ekle (B)"    onClick={handleAddBox} />
+            <TBtn icon={<Cog size={15} />}              label="Genel Ayarlar"     onClick={() => setShowGlobalSettingsPanel(!showGlobalSettingsPanel)} />
             <TBtn
-              icon={<Settings size={16} />}
+              icon={<SlidersHorizontal size={15} />}
               label="Parametreler"
               disabled={!selectedShapeId}
               onClick={() => selectedShapeId && setShowParametersPanel(!showParametersPanel)}
             />
             <TBtn
-              icon={<DivideCircle size={16} />}
+              icon={<MinusSquare size={15} />}
               label={hasIntersectingShapes ? 'Kesişen Şekilleri Çıkar' : selectedShapeId ? 'Kesişen şekil yok' : 'Önce şekil seçin'}
               danger={hasIntersectingShapes}
               disabled={!selectedShapeId}
               onClick={handleSubtract}
             />
-            <TBtn icon={<PanelLeft size={16} />} label="Panel Düzenleyici" onClick={() => setShowPanelEditor(!showPanelEditor)} />
+            <TBtn icon={<PanelLeft size={15} />}        label="Panel Düzenleyici" onClick={() => setShowPanelEditor(!showPanelEditor)} />
           </div>
 
           <Sep />
 
-          {/* ── View controls (moved from header) ── */}
-          <div className="flex items-center bg-white rounded-xl shadow-sm border border-stone-200 p-0.5 gap-0">
-            {/* Camera toggle */}
+          {/* View controls */}
+          <div className="flex items-center bg-white rounded-lg shadow-sm border border-stone-200 p-0.5 gap-0">
             <TBtn
-              icon={cameraType === CameraType.PERSPECTIVE ? <Camera size={16} /> : <CameraOff size={16} />}
+              icon={cameraType === CameraType.PERSPECTIVE ? <Camera size={15} /> : <CameraOff size={15} />}
               label={cameraType === CameraType.PERSPECTIVE ? 'Perspektif' : 'Ortografik'}
               onClick={handleCameraToggle}
             />
-
-            {/* View mode cycle */}
             <TBtn
               icon={viewModeIcon}
               label={`Görünüm: ${viewModeLabel}`}
               active={viewMode !== ViewMode.SOLID}
               onClick={() => useAppStore.getState().cycleViewMode()}
             />
-
-            {/* Linear / Ortho */}
             <TBtn
-              icon={<Grid size={16} />}
+              icon={<Crosshair size={15} />}
               label={`Lineer Mod: ${orthoMode === OrthoMode.ON ? 'Açık' : 'Kapalı'}`}
               active={orthoMode === OrthoMode.ON}
               onClick={() => toggleOrthoMode()}
             />
-
-            {/* Catalog */}
             <TBtn
-              icon={<FolderOpen size={16} />}
+              icon={<FolderOpen size={15} />}
               label="Katalog"
               accent
               onClick={onOpenCatalog}
@@ -421,15 +415,12 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
 
       {/* Polyline context menu */}
       {showPolylineMenu && (
-        <div
-          className="fixed bg-white rounded-xl border border-stone-200 py-1.5 z-50 shadow-xl shadow-stone-200/60 tb-menu-enter"
-          style={{ left: polylineMenuPosition.x, top: polylineMenuPosition.y }}
-        >
-          <button className="w-full px-3 py-2 text-left text-xs hover:bg-orange-50 hover:text-orange-700 flex items-center gap-2 text-stone-600 transition-colors"
+        <div className="fixed bg-white rounded-xl border border-stone-200 py-1.5 z-50 shadow-xl shadow-stone-200/60 tb-menu-enter" style={{ left: polylineMenuPosition.x, top: polylineMenuPosition.y }}>
+          <button className="w-full px-3 py-2 text-left text-xs hover:bg-orange-50 hover:text-orange-600 flex items-center gap-2 text-stone-600 transition-colors"
             onClick={() => { setActiveTool(Tool.POLYLINE_EDIT); setShowPolylineMenu(false); }}>
-            <Edit3 size={13} /><span className="font-medium">Polilini Düzenle</span>
+            <SlidersHorizontal size={13} /><span className="font-medium">Polilini Düzenle</span>
           </button>
-          <button className="w-full px-3 py-2 text-left text-xs hover:bg-orange-50 hover:text-orange-700 flex items-center gap-2 text-stone-600 transition-colors"
+          <button className="w-full px-3 py-2 text-left text-xs hover:bg-orange-50 hover:text-orange-600 flex items-center gap-2 text-stone-600 transition-colors"
             onClick={() => { setActiveTool(Tool.POLYLINE); setShowPolylineMenu(false); }}>
             <GitBranch size={13} /><span className="font-medium">Polilini Çiz</span>
           </button>
