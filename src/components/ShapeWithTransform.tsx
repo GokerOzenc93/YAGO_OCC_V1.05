@@ -100,18 +100,19 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
       scale: [number, number, number];
     }>;
   } | null>(null);
+
   const [localGeometry, setLocalGeometry] = useState(shape.geometry);
   const [edgeGeometry, setEdgeGeometry] = useState<THREE.BufferGeometry | null>(null);
   const [geometryKey, setGeometryKey] = useState(0);
   const vertexModsString = useMemo(() => JSON.stringify(shape.vertexModifications || []), [shape.vertexModifications]);
 
+  // ── Kenar geometrisi ve vertex modification yükleyici ──────────────────────
   useEffect(() => {
     const loadEdges = async () => {
       const hasVertexMods = shape.vertexModifications && shape.vertexModifications.length > 0;
       const shouldUpdate = (shape.geometry && shape.geometry !== localGeometry) || hasVertexMods;
 
       if (shouldUpdate && shape.geometry) {
-
         let geom = shape.geometry.clone();
 
         if (hasVertexMods) {
@@ -120,72 +121,37 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
 
           const vertexMap = new Map<string, number[]>();
           for (let i = 0; i < positions.length; i += 3) {
-            const x = Math.round(positions[i] * 100) / 100;
+            const x = Math.round(positions[i]     * 100) / 100;
             const y = Math.round(positions[i + 1] * 100) / 100;
             const z = Math.round(positions[i + 2] * 100) / 100;
             const key = `${x},${y},${z}`;
-
-            if (!vertexMap.has(key)) {
-              vertexMap.set(key, []);
-            }
-            vertexMap.get(key)!.push(i);
+            const group = vertexMap.get(key) || [];
+            group.push(i);
+            vertexMap.set(key, group);
           }
 
-          const { getBoxVertices, getReplicadVertices } = await import('./VertexEditorService');
-          let baseVertices: THREE.Vector3[] = [];
-
-          if (shape.parameters?.scaledBaseVertices && shape.parameters.scaledBaseVertices.length > 0) {
-            baseVertices = shape.parameters.scaledBaseVertices.map((v: number[]) =>
-              new THREE.Vector3(v[0], v[1], v[2])
-            );
-          } else if (shape.replicadShape) {
-            baseVertices = await getReplicadVertices(shape.replicadShape);
-          } else if (shape.type === 'box' && shape.parameters) {
-            baseVertices = getBoxVertices(
-              shape.parameters.width,
-              shape.parameters.height,
-              shape.parameters.depth
-            );
-          }
-
-          shape.vertexModifications.forEach((mod: any) => {
-            const baseVertex = baseVertices[mod.vertexIndex];
-            if (!baseVertex) return;
-
-            const key = `${Math.round(baseVertex.x * 100) / 100},${Math.round(baseVertex.y * 100) / 100},${Math.round(baseVertex.z * 100) / 100}`;
+          for (const mod of shape.vertexModifications) {
+            if (!mod.offset) continue;
+            const vx = Math.round(mod.vertex[0] * 100) / 100;
+            const vy = Math.round(mod.vertex[1] * 100) / 100;
+            const vz = Math.round(mod.vertex[2] * 100) / 100;
+            const key = `${vx},${vy},${vz}`;
             const indices = vertexMap.get(key);
-
             if (indices) {
-              indices.forEach(idx => {
-                positions[idx] = mod.newPosition[0];
-                positions[idx + 1] = mod.newPosition[1];
-                positions[idx + 2] = mod.newPosition[2];
-              });
+              for (const idx of indices) {
+                positions[idx]     += mod.offset[0];
+                positions[idx + 1] += mod.offset[1];
+                positions[idx + 2] += mod.offset[2];
+              }
             }
-          });
+          }
 
           positionAttribute.needsUpdate = true;
           geom.computeVertexNormals();
-          geom.computeBoundingBox();
-          geom.computeBoundingSphere();
         }
 
-        setLocalGeometry(geom);
         const edges = new THREE.EdgesGeometry(geom, 5);
-        setEdgeGeometry(edges);
-        setGeometryKey(prev => prev + 1);
-        return;
-      }
-
-      if (shape.parameters?.modified && shape.geometry) {
-        let geom = shape.geometry.clone();
-
-        geom.computeVertexNormals();
-        geom.computeBoundingBox();
-        geom.computeBoundingSphere();
-
         setLocalGeometry(geom);
-        const edges = new THREE.EdgesGeometry(geom, 5);
         setEdgeGeometry(edges);
         setGeometryKey(prev => prev + 1);
         return;
@@ -195,8 +161,17 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     };
 
     loadEdges();
-  }, [shape.parameters?.width, shape.parameters?.height, shape.parameters?.depth, vertexModsString, shape.parameters?.modified, shape.geometry, shape.id]);
+  }, [
+    shape.parameters?.width,
+    shape.parameters?.height,
+    shape.parameters?.depth,
+    vertexModsString,
+    shape.parameters?.modified,
+    shape.geometry,
+    shape.id
+  ]);
 
+  // ── Pozisyon / rotasyon / ölçek senkronizasyonu ────────────────────────────
   useEffect(() => {
     if (!groupRef.current) return;
     if (isUpdatingRef.current && shape.id === useAppStore.getState().selectedShapeId) return;
@@ -206,6 +181,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     groupRef.current.scale.set(shape.scale[0], shape.scale[1], shape.scale[2]);
   }, [shape.position, shape.rotation, shape.scale, shape.id]);
 
+  // ── TransformControls olay dinleyicileri ───────────────────────────────────
   useEffect(() => {
     if (transformRef.current && isSelected && groupRef.current) {
       const controls = transformRef.current;
@@ -233,22 +209,22 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
             childPanelMap.set(panel.id, {
               position: [...panel.position] as [number, number, number],
               rotation: [...panel.rotation] as [number, number, number],
-              scale: [...panel.scale] as [number, number, number]
+              scale:    [...panel.scale]    as [number, number, number]
             });
           });
 
           initialTransformRef.current = {
-            position: groupRef.current.position.toArray() as [number, number, number],
-            rotation: groupRef.current.rotation.toArray().slice(0, 3) as [number, number, number],
-            scale: groupRef.current.scale.toArray() as [number, number, number],
+            position:    groupRef.current.position.toArray()              as [number, number, number],
+            rotation:    groupRef.current.rotation.toArray().slice(0, 3)  as [number, number, number],
+            scale:       groupRef.current.scale.toArray()                 as [number, number, number],
             childPanels: childPanelMap
           };
         }
 
         if (!event.value && groupRef.current && initialTransformRef.current) {
-          const finalPosition = groupRef.current.position.toArray() as [number, number, number];
+          const finalPosition = groupRef.current.position.toArray()             as [number, number, number];
           const finalRotation = groupRef.current.rotation.toArray().slice(0, 3) as [number, number, number];
-          const finalScale = groupRef.current.scale.toArray() as [number, number, number];
+          const finalScale    = groupRef.current.scale.toArray()                as [number, number, number];
 
           isUpdatingRef.current = true;
 
@@ -336,9 +312,9 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
         if (groupRef.current && isDragging && initialTransformRef.current) {
           isUpdatingRef.current = true;
 
-          const currentPosition = groupRef.current.position.toArray() as [number, number, number];
+          const currentPosition = groupRef.current.position.toArray()             as [number, number, number];
           const currentRotation = groupRef.current.rotation.toArray().slice(0, 3) as [number, number, number];
-          const currentScale = groupRef.current.scale.toArray() as [number, number, number];
+          const currentScale    = groupRef.current.scale.toArray()                as [number, number, number];
 
           const positionDelta: [number, number, number] = [
             currentPosition[0] - initialTransformRef.current.position[0],
@@ -389,27 +365,26 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     }
   }, [isSelected, shape.id, updateShape, orbitControlsRef, geometryKey, scene]);
 
+  // ── Yardımcı fonksiyonlar ──────────────────────────────────────────────────
   const getTransformMode = () => {
     switch (activeTool) {
-      case Tool.MOVE:
-        return 'translate';
-      case Tool.ROTATE:
-        return 'rotate';
-      case Tool.SCALE:
-        return 'scale';
-      default:
-        return 'translate';
+      case Tool.MOVE:   return 'translate';
+      case Tool.ROTATE: return 'rotate';
+      case Tool.SCALE:  return 'scale';
+      default:          return 'translate';
     }
   };
 
-  const isWireframe = viewMode === ViewMode.WIREFRAME;
-  const isXray = viewMode === ViewMode.XRAY;
-  const isSecondarySelected = shape.id === secondarySelectedShapeId;
-  const isReferenceBox = shape.isReferenceBox;
+  // ── View mode ve seçim durumu hesaplamaları ────────────────────────────────
+  const isWireframe          = viewMode === ViewMode.WIREFRAME;
+  const isXray               = viewMode === ViewMode.XRAY;
+  const isSecondarySelected  = shape.id === secondarySelectedShapeId;
+  const isReferenceBox       = shape.isReferenceBox;
   const shouldShowAsReference = isReferenceBox || isSecondarySelected;
-  const isPanel = shape.type === 'panel';
-  const parentShapeId = isPanel ? shape.parameters?.parentShapeId : null;
-  const isParentRebuilding = parentShapeId ? rebuildingShapeIds.has(parentShapeId) : false;
+  const isPanel              = shape.type === 'panel';
+  const parentShapeId        = isPanel ? shape.parameters?.parentShapeId : null;
+  const isParentRebuilding   = parentShapeId ? rebuildingShapeIds.has(parentShapeId) : false;
+
   const hasPanels = (shape.facePanels && Object.keys(shape.facePanels).length > 0) ||
     shapes.some(s => s.type === 'panel' && s.parameters?.parentShapeId === shape.id);
   const hasFillets = shape.fillets && shape.fillets.length > 0;
@@ -425,37 +400,30 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     isPanelParentMatch &&
     shape.parameters?.virtualFaceId &&
     `vf-${shape.parameters.virtualFaceId}` === selectedPanelRow;
-  const panelColor = (isPanelRowSelected || isVirtualPanelRowSelected) ? '#ef4444' : (shape.color || '#ffffff');
-  if (shape.isolated === false) {
-    return null;
-  }
 
-  if (isParentRebuilding) {
-    return null;
-  }
+  const panelColor = (isPanelRowSelected || isVirtualPanelRowSelected)
+    ? '#ef4444'
+    : (shape.color || '#ffffff');
 
+  if (shape.isolated === false) return null;
+  if (isParentRebuilding)       return null;
+
+  // ══════════════════════════════════════════════════════════════════════════
   return (
     <>
       <group
         ref={groupRef}
         name={`shape-${shape.id}`}
         onClick={(e) => {
-          if (panelSelectMode && hasPanels) {
-            return;
-          }
+          if (panelSelectMode && hasPanels) return;
           e.stopPropagation();
           if (e.nativeEvent.ctrlKey || e.nativeEvent.metaKey) {
-            if (shape.id === secondarySelectedShapeId) {
-              selectSecondaryShape(null);
-            } else {
-              selectSecondaryShape(shape.id);
-            }
+            if (shape.id === secondarySelectedShapeId) selectSecondaryShape(null);
+            else selectSecondaryShape(shape.id);
           } else if (panelSelectMode && isPanel && shape.parameters?.parentShapeId) {
             const parentId = shape.parameters.parentShapeId;
-            if (selectedShapeId !== parentId) {
-              selectShape(parentId);
-            }
-            setSelectedPanelRow(shape.parameters.faceIndex ?? null);
+            if (selectedShapeId !== parentId) selectShape(parentId);
+            setSelectedPanelRow(shape.parameters.faceIndex ?? null, shape.parameters.extraRowId || null, parentId);
             selectSecondaryShape(null);
           } else if (panelSelectMode && !isPanel) {
             selectShape(shape.id);
@@ -476,12 +444,11 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
           onContextMenu(e, shape.id);
         }}
       >
-        {shape.subtractionGeometries && subtractionViewMode && shape.subtractionGeometries.map((subtraction, index) => {
+        {/* Subtraction görselleştirme */}
+        {shape.subtractionGeometries && subtractionViewMode && shape.subtractionGeometries.map((subtraction: any, index: number) => {
           if (!subtraction) return null;
-
-          const isHovered = hoveredSubtractionIndex === index && isSelected;
+          const isHovered           = hoveredSubtractionIndex === index && isSelected;
           const isSubtractionSelected = selectedSubtractionIndex === index && isSelected;
-
           return (
             <SubtractionMesh
               key={`${shape.id}-subtraction-${index}`}
@@ -495,6 +462,8 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
             />
           );
         })}
+
+        {/* ── SOLID MOD ─────────────────────────────────────────────────── */}
         {!isWireframe && !isXray && !shouldShowAsReference && (
           <>
             <mesh
@@ -503,37 +472,50 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
               castShadow
               receiveShadow
             >
+              {/*
+                ✅ MATERYAL DÜZELTMELERİ:
+                roughness: 0.4 → 0.92  — speküler ışık patlaması önlendi
+                polygonOffset eklendi  — Z-fighting önlendi
+              */}
               <meshStandardMaterial
-                color={isPanel ? panelColor : "#c8c8c8"}
+                color={isPanel ? panelColor : '#c8c8c8'}
                 emissive={(isPanelRowSelected || isVirtualPanelRowSelected) ? panelColor : '#000000'}
                 emissiveIntensity={(isPanelRowSelected || isVirtualPanelRowSelected) ? 0.4 : 0}
                 metalness={0}
-                roughness={isPanel ? 0.4 : 1}
+                roughness={isPanel ? 0.92 : 1.0}
                 transparent
                 opacity={hasPanels ? 0 : isPanel ? 1 : 0.06}
                 side={THREE.DoubleSide}
                 depthWrite={false}
                 flatShading={false}
+                polygonOffset
+                polygonOffsetFactor={4}
+                polygonOffsetUnits={8}
               />
             </mesh>
+
+            {/* ✅ KENAR ÇİZGİLERİ: renderOrder + depthWrite düzeltmesi */}
             {showOutlines && (
-              <lineSegments>
+              <lineSegments renderOrder={1}>
                 {edgeGeometry ? (
                   <bufferGeometry {...edgeGeometry} />
                 ) : (
                   <edgesGeometry args={[localGeometry, 5]} />
                 )}
                 <lineBasicMaterial
-                  color="#000000"
+                  color='#000000'
                   linewidth={2}
                   opacity={1}
                   transparent={false}
                   depthTest={true}
+                  depthWrite={false}
                 />
               </lineSegments>
             )}
           </>
         )}
+
+        {/* ── WIREFRAME MOD ─────────────────────────────────────────────── */}
         {isWireframe && (
           <>
             <mesh
@@ -543,7 +525,8 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
             />
             {showOutlines && (
               <>
-                <lineSegments>
+                {/* Dış (kalın) kenar katmanı */}
+                <lineSegments renderOrder={1}>
                   {edgeGeometry ? (
                     <bufferGeometry {...edgeGeometry} />
                   ) : (
@@ -553,10 +536,12 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
                     color={isSelected ? '#60a5fa' : shouldShowAsReference ? '#ef4444' : '#000000'}
                     linewidth={isSelected || shouldShowAsReference ? 3.5 : 2.5}
                     depthTest={true}
-                    depthWrite={true}
+                    depthWrite={false}
                   />
                 </lineSegments>
-                <lineSegments>
+
+                {/* İç (ince/gölge) kenar katmanı */}
+                <lineSegments renderOrder={2}>
                   {edgeGeometry ? (
                     <bufferGeometry {...edgeGeometry} />
                   ) : (
@@ -568,12 +553,15 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
                     transparent
                     opacity={0.4}
                     depthTest={true}
+                    depthWrite={false}
                   />
                 </lineSegments>
               </>
             )}
           </>
         )}
+
+        {/* ── X-RAY / REFERENCE MOD ─────────────────────────────────────── */}
         {(isXray || shouldShowAsReference) && (
           <>
             <mesh
@@ -583,11 +571,11 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
               receiveShadow
             >
               <meshStandardMaterial
-                color={isPanel ? panelColor : shouldShowAsReference ? '#ef4444' : "#c8c8c8"}
+                color={isPanel ? panelColor : shouldShowAsReference ? '#ef4444' : '#c8c8c8'}
                 emissive={(isPanelRowSelected || isVirtualPanelRowSelected) ? panelColor : '#000000'}
                 emissiveIntensity={(isPanelRowSelected || isVirtualPanelRowSelected) ? 0.4 : 0}
                 metalness={0}
-                roughness={isPanel ? 0.4 : 1}
+                roughness={isPanel ? 0.92 : 1.0}
                 transparent
                 opacity={hasPanels ? 0 : isPanel ? 1 : shouldShowAsReference ? 0.2 : 0.06}
                 side={THREE.DoubleSide}
@@ -595,8 +583,9 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
                 flatShading={false}
               />
             </mesh>
+
             {showOutlines && (
-              <lineSegments>
+              <lineSegments renderOrder={1}>
                 {edgeGeometry ? (
                   <bufferGeometry {...edgeGeometry} />
                 ) : (
@@ -608,14 +597,18 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
                   depthTest={true}
                   transparent={false}
                   opacity={1}
+                  depthWrite={false}
                 />
               </lineSegments>
             )}
           </>
         )}
+
+        {/* ── EK KATMANLAR ──────────────────────────────────────────────── */}
         {hasFillets && filletMode && (
           <FilletEdgeLines shape={shape} isSelected={isSelected} />
         )}
+
         {isSelected && (faceEditMode || (panelSurfaceSelectMode && waitingForSurfaceSelection)) && (
           <FaceEditor
             key={`face-editor-${shape.id}-${shape.geometry?.uuid || ''}-${(shape.fillets || []).length}`}
@@ -623,6 +616,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
             isActive={true}
           />
         )}
+
         {(showRoleNumbers || roleEditMode) && isSelected && (
           <RoleLabels
             key={`role-labels-${shape.id}-${shape.geometry?.uuid || ''}`}
@@ -630,6 +624,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
             isActive={true}
           />
         )}
+
         {isSelected && raycastMode && !isPanel && (
           <FaceRaycastOverlay
             key={`raycast-${shape.id}-${shape.geometry?.uuid || ''}`}
@@ -637,11 +632,13 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
             allShapes={shapes}
           />
         )}
+
         {!isPanel && (
           <VirtualFaceOverlay shape={shape} />
         )}
       </group>
 
+      {/* ── TRANSFORM CONTROLS ────────────────────────────────────────────── */}
       {isSelected && activeTool !== Tool.SELECT && groupRef.current && !shape.isReferenceBox && !panelSelectMode && (
         <TransformControls
           key={geometryKey}

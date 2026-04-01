@@ -171,28 +171,23 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           onClick={handleClick}
         >
           {/*
-            ULTRA KALİTE MATERYAL:
-            Panelin grileşmemesi için yansıma ve roughness dengesi kuruldu.
+            MAT AHŞAP/MDF MATERYAL:
+            - meshLambertMaterial kullanıldı: speküler hesaplama YOKTUR,
+              kamera açısından bağımsız düz/mat görünüm sağlar.
+            - clearcoat, reflectivity, envMapIntensity tamamen kaldırıldı.
+            - Bu sayede kamera açısına göre parlama/patlama oluşmaz.
 
             ✅ FIX (Z-fighting):
-            polygonOffsetFactor ve polygonOffsetUnits artırıldı (1→4, 1→8).
-            Bu sayede mesh yüzeyi kenar çizgilerinden daha fazla "geri itilir"
-            ve kamera zoom'una bağlı pırpırlanma ortadan kalkar.
+            polygonOffsetFactor=4, polygonOffsetUnits=8 korundu.
           */}
-          <meshPhysicalMaterial
+          <meshLambertMaterial
             color={materialColor}
-            metalness={0.0}
-            roughness={0.85}
-            clearcoat={0.1}
-            clearcoatRoughness={0.1}
-            reflectivity={0.2}
-            envMapIntensity={1.0}
             emissive={isPanelRowSelected ? PANEL_COLORS.selected.panelEmissive : '#000000'}
             emissiveIntensity={1}
             side={THREE.DoubleSide}
             polygonOffset
-            polygonOffsetFactor={4}   // ✅ DÜZELTME: 1 → 4
-            polygonOffsetUnits={8}    // ✅ DÜZELTME: 1 → 8
+            polygonOffsetFactor={4}
+            polygonOffsetUnits={8}
           />
         </mesh>
       )}
@@ -247,14 +242,8 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
             receiveShadow
             onClick={handleClick}
           >
-            <meshPhysicalMaterial
+            <meshLambertMaterial
               color={materialColor}
-              metalness={0.0}
-              roughness={0.85}
-              clearcoat={0.1}
-              clearcoatRoughness={0.1}
-              reflectivity={0.2}
-              envMapIntensity={1.0}
               emissive={isPanelRowSelected ? PANEL_COLORS.selected.panelEmissive : '#000000'}
               emissiveIntensity={1}
               side={THREE.DoubleSide}
