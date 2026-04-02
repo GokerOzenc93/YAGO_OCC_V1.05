@@ -391,8 +391,8 @@ const Scene: React.FC = () => {
           onContextMenu={e => e.preventDefault()}
           onCreated={handleCreated}
         >
-          <color attach="background" args={['#f0ede8']} />
-          {/* ✅ Arka plan rengi: hafif sıcak gri (#f5f5f4 → #f0ede8) — daha doğal stüdyo tonu */}
+          <color attach="background" args={['#ffffff']} />
+          {/* ✅ Arka plan rengi: hafif sıcak gri (#fffffff → #f0ede8) — daha doğal stüdyo tonu */}
 
           <CameraController controlsRef={controlsRef} cameraType={cameraType} />
 
