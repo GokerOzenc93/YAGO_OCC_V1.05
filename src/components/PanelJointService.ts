@@ -90,7 +90,6 @@ async function createExtendedPanel(
       subBB.max[1] - subBB.min[1],
       subBB.max[2] - subBB.min[2]
     ];
-    const subThickness = Math.min(subSize[0], subSize[1], subSize[2]);
     const subThicknessAxis = subSize[0] <= subSize[1] && subSize[0] <= subSize[2] ? 0
       : subSize[1] <= subSize[0] && subSize[1] <= subSize[2] ? 1 : 2;
 
@@ -152,34 +151,152 @@ interface FullProfileSettings {
   selectedBodyType: string | null;
   bazaHeight: number;
   frontBaseDistance: number;
+  backPanelThickness: number;
+  grooveOffset: number;
 }
 
 async function loadFullProfileSettings(profileId: string): Promise<FullProfileSettings> {
+  let jointConfig = DEFAULT_CONFIG;
+  let selectedBodyType: string | null = null;
+  let bazaHeight = 100;
+  let frontBaseDistance = 10;
+  let backPanelThickness = 8;
+  let grooveOffset = 12;
+
   try {
     const settings = await globalSettingsService.getProfileSettings(profileId, 'panel_joint');
     if (settings?.settings) {
       const s = settings.settings as Record<string, unknown>;
-      return {
-        jointConfig: {
-          topLeftExpanded: Boolean(s.topLeftExpanded),
-          topRightExpanded: Boolean(s.topRightExpanded),
-          bottomLeftExpanded: Boolean(s.bottomLeftExpanded),
-          bottomRightExpanded: Boolean(s.bottomRightExpanded),
-        },
-        selectedBodyType: (s.selectedBodyType as string) || null,
-        bazaHeight: typeof s.bazaHeight === 'number' ? s.bazaHeight : 100,
-        frontBaseDistance: typeof s.frontBaseDistance === 'number' ? s.frontBaseDistance : 10,
+      jointConfig = {
+        topLeftExpanded: Boolean(s.topLeftExpanded),
+        topRightExpanded: Boolean(s.topRightExpanded),
+        bottomLeftExpanded: Boolean(s.bottomLeftExpanded),
+        bottomRightExpanded: Boolean(s.bottomRightExpanded),
       };
+      selectedBodyType = (s.selectedBodyType as string) || null;
+      bazaHeight = typeof s.bazaHeight === 'number' ? s.bazaHeight : 100;
+      frontBaseDistance = typeof s.frontBaseDistance === 'number' ? s.frontBaseDistance : 10;
     }
   } catch (err) {
-    console.error('Failed to load full profile settings:', err);
+    console.error('Failed to load panel_joint settings:', err);
   }
-  return {
-    jointConfig: DEFAULT_CONFIG,
-    selectedBodyType: null,
-    bazaHeight: 100,
-    frontBaseDistance: 10,
-  };
+
+  try {
+    const backSettings = await globalSettingsService.getProfileSettings(profileId, 'back_panel');
+    if (backSettings?.settings) {
+      const bs = backSettings.settings as Record<string, unknown>;
+      if (typeof bs.backPanelThickness === 'number') backPanelThickness = bs.backPanelThickness;
+      if (typeof bs.grooveOffset === 'number') grooveOffset = bs.grooveOffset;
+    }
+  } catch (err) {
+    console.error('Failed to load back_panel settings:', err);
+  }
+
+  return { jointConfig, selectedBodyType, bazaHeight, frontBaseDistance, backPanelThickness, grooveOffset };
+}
+
+// ── Back panel thickness & groove offset uygulama ──────────────────────────
+async function applyBackPanelSettings(
+  parentShapeId: string,
+  panels: any[],
+  backPanelThickness: number,
+  grooveOffset: number
+): Promise<void> {
+  const backPanels = panels.filter(p => p.parameters?.faceRole === 'Back');
+  if (backPanels.length === 0) return;
+
+  const state = useAppStore.getState();
+  const parentShape = state.shapes.find(s => s.id === parentShapeId);
+  if (!parentShape || !parentShape.replicadShape || !parentShape.geometry) return;
+
+  const { createPanelFromFace, convertReplicadToThreeGeometry } = await import('./ReplicadService');
+  const { extractFacesFromGeometry, groupCoplanarFaces } = await import('./FaceEditor');
+
+  const faces = extractFacesFromGeometry(parentShape.geometry);
+  const faceGroups = groupCoplanarFaces(faces);
+
+  const updates: Array<{ id: string; geometry: any; replicadShape: any; parameters: any }> = [];
+
+  for (const panel of backPanels) {
+    const faceIndex = panel.parameters?.faceIndex;
+    if (faceIndex === undefined || faceIndex === null || faceIndex < 0) continue;
+    if (faceIndex >= faceGroups.length) continue;
+
+    try {
+      const faceGroup = faceGroups[faceIndex];
+      if (!faceGroup) continue;
+
+      const localVertices: THREE.Vector3[] = [];
+      faceGroup.faceIndices.forEach((idx: number) => {
+        faces[idx].vertices.forEach((v: THREE.Vector3) => localVertices.push(v.clone()));
+      });
+
+      const localNormal = faceGroup.normal.clone().normalize();
+      const localBox = new THREE.Box3().setFromPoints(localVertices);
+      const localCenter = new THREE.Vector3();
+      localBox.getCenter(localCenter);
+
+      // Paneli backPanelThickness kalınlığında oluştur
+      const replicadPanel = await createPanelFromFace(
+        parentShape.replicadShape,
+        [localNormal.x, localNormal.y, localNormal.z],
+        [localCenter.x, localCenter.y, localCenter.z],
+        backPanelThickness,
+        null
+      );
+      if (!replicadPanel) continue;
+
+      // grooveOffset kadar paneli içeriye (öne) taşı
+      // Normal arka yüze dışarı doğru bakar (-Z yönünde tipik olarak),
+      // bu yüzden paneli ters yönde (içeriye, +Z) offsetliyoruz
+      const offsetX = localNormal.x * (-grooveOffset);
+      const offsetY = localNormal.y * (-grooveOffset);
+      const offsetZ = localNormal.z * (-grooveOffset);
+      const translatedPanel = replicadPanel.translate(offsetX, offsetY, offsetZ);
+
+      const geometry = convertReplicadToThreeGeometry(translatedPanel);
+
+      updates.push({
+        id: panel.id,
+        geometry,
+        replicadShape: translatedPanel,
+        parameters: {
+          ...panel.parameters,
+          depth: backPanelThickness,
+          grooveOffset,
+          originalReplicadShape: panel.parameters?.originalReplicadShape || panel.replicadShape,
+        }
+      });
+
+      // Joint resolution için local panel referansını güncelle
+      panel.replicadShape = translatedPanel;
+      panel.geometry = geometry;
+      panel.parameters = { ...panel.parameters, depth: backPanelThickness, grooveOffset };
+
+    } catch (err) {
+      console.error(`Failed to apply back panel settings for panel ${panel.id}:`, err);
+    }
+  }
+
+  if (updates.length > 0) {
+    useAppStore.setState((st) => ({
+      shapes: st.shapes.map(s => {
+        const update = updates.find(u => u.id === s.id);
+        if (!update) return s;
+        const parent = st.shapes.find(p => p.id === parentShapeId);
+        return {
+          ...s,
+          geometry: update.geometry,
+          replicadShape: update.replicadShape,
+          position: parent ? [...parent.position] as [number, number, number] : s.position,
+          rotation: parent ? parent.rotation : s.rotation,
+          scale: parent ? [...parent.scale] as [number, number, number] : s.scale,
+          parameters: update.parameters,
+        };
+      })
+    }));
+    console.log(`✅ Back panel settings applied: thickness=${backPanelThickness}mm, grooveOffset=${grooveOffset}mm`);
+  }
 }
 
 function applyBazaOffset(parentShapeId: string, selectedBodyType: string | null, bazaHeight: number) {
@@ -245,399 +362,91 @@ async function generateFrontBazaPanels(
   if (selectedBodyType !== 'bazali') return;
 
   return;
-
-  const { extractFacesFromGeometry, groupCoplanarFaces } = await import('./FaceEditor');
-  const { createReplicadBox, convertReplicadToThreeGeometry } = await import('./ReplicadService');
-
-  const parentFaces = extractFacesFromGeometry(parentShape.geometry);
-  const parentGroups = groupCoplanarFaces(parentFaces);
-
-  const panelThickness = 18;
-
-  const hasLeftPanel = state.shapes.some(
-    s => s.type === 'panel' &&
-    s.parameters?.parentShapeId === parentShapeId &&
-    s.parameters?.faceRole === 'Left'
-  );
-  const hasRightPanel = state.shapes.some(
-    s => s.type === 'panel' &&
-    s.parameters?.parentShapeId === parentShapeId &&
-    s.parameters?.faceRole === 'Right'
-  );
-
-  const bottomBox = new THREE.Box3().setFromBufferAttribute(
-    bottomPanel.geometry.getAttribute('position')
-  );
-  bottomBox.translate(new THREE.Vector3(...bottomPanel.position));
-  const bazaY = bottomBox.min.y - bazaHeight;
-
-  const newShapes: any[] = [];
-  const processedDirs: string[] = [];
-
-  for (const [indexStr, role] of Object.entries(parentShape.faceRoles)) {
-    if (role !== 'Door') continue;
-    const idx = parseInt(indexStr);
-    if (idx >= parentGroups.length) continue;
-
-    const doorGroup = parentGroups[idx];
-    const doorNormal = doorGroup.normal.clone().normalize();
-
-    const dirKey = `${Math.round(doorNormal.x)}_${Math.round(doorNormal.y)}_${Math.round(doorNormal.z)}`;
-    if (processedDirs.includes(dirKey)) continue;
-    processedDirs.push(dirKey);
-
-    const doorVertices: THREE.Vector3[] = [];
-    doorGroup.faceIndices.forEach(fi => {
-      parentFaces[fi].vertices.forEach(v => doorVertices.push(v.clone()));
-    });
-    const doorBbox = new THREE.Box3().setFromPoints(doorVertices);
-
-    const absNx = Math.abs(doorNormal.x);
-    const absNz = Math.abs(doorNormal.z);
-
-    let bazaWidth: number;
-    let bazaDepth: number;
-    let translateX: number;
-    let translateZ: number;
-
-    if (absNz >= absNx && absNz > 0.5) {
-      let startX = doorBbox.min.x;
-      let endX = doorBbox.max.x;
-
-      if (hasLeftPanel) {
-        startX += panelThickness;
-      } else {
-        startX -= frontBaseDistance;
-      }
-
-      if (hasRightPanel) {
-        endX -= panelThickness;
-      } else {
-        endX += frontBaseDistance;
-      }
-
-      translateX = startX;
-      bazaWidth = endX - startX;
-      bazaDepth = panelThickness;
-
-      if (doorNormal.z > 0) {
-        translateZ = doorBbox.min.z - frontBaseDistance - panelThickness;
-      } else {
-        translateZ = doorBbox.max.z + frontBaseDistance;
-      }
-    } else if (absNx > 0.5) {
-      let startZ = doorBbox.min.z;
-      let endZ = doorBbox.max.z;
-
-      if (hasLeftPanel) {
-        startZ += panelThickness;
-      } else {
-        startZ -= frontBaseDistance;
-      }
-
-      if (hasRightPanel) {
-        endZ -= panelThickness;
-      } else {
-        endZ += frontBaseDistance;
-      }
-
-      translateZ = startZ;
-      bazaDepth = endZ - startZ;
-      bazaWidth = panelThickness;
-
-      if (doorNormal.x > 0) {
-        translateX = doorBbox.min.x - frontBaseDistance - panelThickness;
-      } else {
-        translateX = doorBbox.max.x + frontBaseDistance;
-      }
-    } else {
-      continue;
-    }
-
-    if (bazaWidth < 1 || bazaDepth < 1) continue;
-
-    try {
-      const bazaBox = await createReplicadBox({
-        width: bazaWidth,
-        height: bazaHeight,
-        depth: bazaDepth
-      });
-
-      const positioned = bazaBox.translate(translateX, bazaY, translateZ);
-      const geometry = convertReplicadToThreeGeometry(positioned);
-
-      newShapes.push({
-        id: `baza-front-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-        type: 'panel',
-        geometry,
-        replicadShape: positioned,
-        position: [parentShape.position[0], parentShape.position[1], parentShape.position[2]] as [number, number, number],
-        rotation: parentShape.rotation,
-        scale: [...parentShape.scale] as [number, number, number],
-        color: '#ffffff',
-        parameters: {
-          parentShapeId,
-          isBaza: true,
-          bazaType: 'front',
-          width: bazaWidth,
-          height: bazaHeight,
-          depth: bazaDepth
-        }
-      });
-    } catch (err) {
-      console.error('BAZA: failed to create:', err);
-    }
-  }
-
-  if (newShapes.length > 0) {
-    useAppStore.setState(st => ({
-      shapes: [...st.shapes, ...newShapes]
-    }));
-  }
 }
 
-export async function remapFaceDataAfterGeometryChange(parentShapeId: string): Promise<void> {
-  const state = useAppStore.getState();
-  const parentShape = state.shapes.find(s => s.id === parentShapeId);
-  if (!parentShape || !parentShape.geometry) return;
+function saveOriginalShapes(panels: any[], parentShapeId: string) {
+  const needsSave = panels.some((p) => !p.parameters?.originalReplicadShape);
+  if (!needsSave) return;
 
-  const descriptors = parentShape.faceGroupDescriptors;
-  if (!descriptors || Object.keys(descriptors).length === 0) return;
-
-  const hasAnyFaceData =
-    Object.keys(parentShape.faceRoles || {}).length > 0 ||
-    Object.keys(parentShape.facePanels || {}).length > 0 ||
-    Object.keys(parentShape.faceDescriptions || {}).length > 0;
-
-  if (!hasAnyFaceData) return;
-
-  const { extractFacesFromGeometry, groupCoplanarFaces, createFaceDescriptor } = await import('./FaceEditor');
-
-  const faces = extractFacesFromGeometry(parentShape.geometry);
-  const newFaceGroups = groupCoplanarFaces(faces);
-
-  const newDescs: Array<ReturnType<typeof createFaceDescriptor>> = newFaceGroups.map(group => {
-    const repFace = faces[group.faceIndices[0]];
-    return createFaceDescriptor(repFace, parentShape.geometry);
-  });
-
-  const oldToNew = new Map<number, number>();
-
-  for (const [oldIdxStr, descriptor] of Object.entries(descriptors)) {
-    const oldIdx = parseInt(oldIdxStr);
-    let bestNewIdx = -1;
-    let bestScore = Infinity;
-
-    for (let newIdx = 0; newIdx < newFaceGroups.length; newIdx++) {
-      const newDesc = newDescs[newIdx];
-
-      const sameAxis = descriptor.axisDirection && newDesc.axisDirection === descriptor.axisDirection;
-      const neitherAxis = !descriptor.axisDirection && !newDesc.axisDirection;
-
-      if (!sameAxis && !neitherAxis) continue;
-
-      let score: number;
-      if (sameAxis) {
-        const axis = descriptor.axisDirection!;
-        if (descriptor.axisPosition !== undefined && newDesc.axisPosition !== undefined) {
-          const posDiff = Math.abs(newDesc.axisPosition - descriptor.axisPosition);
-          score = posDiff * 1000;
-        } else {
-          let diff = 0;
-          if (axis === 'x+' || axis === 'x-') {
-            diff = Math.sqrt(
-              Math.pow(newDesc.normalizedCenter[1] - descriptor.normalizedCenter[1], 2) +
-              Math.pow(newDesc.normalizedCenter[2] - descriptor.normalizedCenter[2], 2)
-            );
-          } else if (axis === 'y+' || axis === 'y-') {
-            diff = Math.sqrt(
-              Math.pow(newDesc.normalizedCenter[0] - descriptor.normalizedCenter[0], 2) +
-              Math.pow(newDesc.normalizedCenter[2] - descriptor.normalizedCenter[2], 2)
-            );
-          } else {
-            diff = Math.sqrt(
-              Math.pow(newDesc.normalizedCenter[0] - descriptor.normalizedCenter[0], 2) +
-              Math.pow(newDesc.normalizedCenter[1] - descriptor.normalizedCenter[1], 2)
-            );
-          }
-          score = diff * 10;
-        }
-      } else {
-        const targetNormal = new THREE.Vector3(...descriptor.normal);
-        const repFace = faces[newFaceGroups[newIdx].faceIndices[0]];
-        const dot = targetNormal.dot(repFace.normal);
-        const angle = Math.acos(Math.min(1, Math.max(-1, dot))) * (180 / Math.PI);
-        if (angle > 15) continue;
-        const centerDiff = Math.sqrt(
-          Math.pow(newDesc.normalizedCenter[0] - descriptor.normalizedCenter[0], 2) +
-          Math.pow(newDesc.normalizedCenter[1] - descriptor.normalizedCenter[1], 2) +
-          Math.pow(newDesc.normalizedCenter[2] - descriptor.normalizedCenter[2], 2)
-        );
-        score = angle * 2 + centerDiff * 10;
-      }
-
-      if (score < bestScore) {
-        bestScore = score;
-        bestNewIdx = newIdx;
-      }
-    }
-
-    if (bestNewIdx !== -1) {
-      oldToNew.set(oldIdx, bestNewIdx);
-    }
-  }
-
-  if (oldToNew.size === 0) return;
-
-  const changed = Array.from(oldToNew.entries()).some(([o, n]) => o !== n);
-  if (!changed) return;
-
-  const oldFaceRoles = parentShape.faceRoles || {};
-  const oldFacePanels = parentShape.facePanels || {};
-  const oldFaceDescriptions = parentShape.faceDescriptions || {};
-
-  const newFaceRoles: Record<number, import('../store').FaceRole> = {};
-  const newFacePanels: Record<number, boolean> = {};
-  const newFaceDescriptions: Record<number, string> = {};
-  const newFaceGroupDescriptors: Record<number, import('../store').FaceDescriptor> = {};
-
-  for (const [oldIdxStr] of Object.entries(descriptors)) {
-    const oldIdx = parseInt(oldIdxStr);
-    const newIdx = oldToNew.get(oldIdx) ?? oldIdx;
-
-    if (oldFaceRoles[oldIdx] !== undefined) newFaceRoles[newIdx] = oldFaceRoles[oldIdx];
-    if (oldFacePanels[oldIdx] !== undefined) newFacePanels[newIdx] = oldFacePanels[oldIdx];
-    if (oldFaceDescriptions[oldIdx] !== undefined) newFaceDescriptions[newIdx] = oldFaceDescriptions[oldIdx];
-
-    if (newIdx < newFaceGroups.length) {
-      newFaceGroupDescriptors[newIdx] = newDescs[newIdx];
-    }
-  }
-
-  useAppStore.setState((st) => ({
-    shapes: st.shapes.map(s => {
-      if (s.id === parentShapeId) {
+  useAppStore.setState((state) => ({
+    shapes: state.shapes.map((s) => {
+      if (
+        s.type === 'panel' &&
+        s.parameters?.parentShapeId === parentShapeId &&
+        !s.parameters?.originalReplicadShape &&
+        s.replicadShape
+      ) {
         return {
           ...s,
-          faceRoles: newFaceRoles,
-          facePanels: newFacePanels,
-          faceDescriptions: newFaceDescriptions,
-          faceGroupDescriptors: newFaceGroupDescriptors,
+          parameters: {
+            ...s.parameters,
+            originalReplicadShape: s.replicadShape,
+          },
         };
       }
-      if (s.type === 'panel' && s.parameters?.parentShapeId === parentShapeId && s.parameters?.faceIndex !== undefined) {
-        const oldIdx = s.parameters.faceIndex;
-        const newIdx = oldToNew.get(oldIdx);
-        if (newIdx !== undefined && newIdx !== oldIdx) {
-          return {
-            ...s,
-            parameters: {
-              ...s.parameters,
-              faceIndex: newIdx,
-            }
-          };
-        }
-      }
       return s;
-    })
+    }),
   }));
 }
 
-export async function rebuildAllPanels(parentShapeId: string): Promise<void> {
-  const state = useAppStore.getState();
-  const parentShape = state.shapes.find(s => s.id === parentShapeId);
-  if (!parentShape || !parentShape.replicadShape || !parentShape.geometry) return;
-
-  const facePanels = state.shapes.filter(
-    s => s.type === 'panel' &&
-    s.parameters?.parentShapeId === parentShapeId &&
-    !s.parameters?.isBaza &&
-    !s.parameters?.virtualFaceId
-  );
-  if (facePanels.length === 0) return;
-
-  console.log(`Rebuilding ${facePanels.length} face-based panels for parent ${parentShapeId}...`);
-
-  const { extractFacesFromGeometry, groupCoplanarFaces } = await import('./FaceEditor');
-  const { createPanelFromFace, convertReplicadToThreeGeometry } = await import('./ReplicadService');
-
-  const faces = extractFacesFromGeometry(parentShape.geometry);
-  const faceGroups = groupCoplanarFaces(faces);
-
-  const updates: Array<{ id: string; geometry: any; replicadShape: any; parameters: any }> = [];
-
-  for (const panel of facePanels) {
-    const faceIndex = panel.parameters?.faceIndex;
-    if (faceIndex === undefined) continue;
-
-    if (faceIndex < 0 || faceIndex >= faceGroups.length) continue;
-
-    const parentFacePanels = parentShape.facePanels || {};
-    if (!parentFacePanels[faceIndex]) continue;
-
-    const faceGroup = faceGroups[faceIndex];
-
-    const localVertices: THREE.Vector3[] = [];
-    faceGroup.faceIndices.forEach((idx: number) => {
-      const face = faces[idx];
-      face.vertices.forEach((v: THREE.Vector3) => localVertices.push(v.clone()));
-    });
-
-    const localNormal = faceGroup.normal.clone().normalize();
-    const localBox = new THREE.Box3().setFromPoints(localVertices);
-    const localCenter = new THREE.Vector3();
-    localBox.getCenter(localCenter);
-
-    const panelThickness = panel.parameters?.depth || 18;
-
-    try {
-      const replicadPanel = await createPanelFromFace(
-        parentShape.replicadShape,
-        [localNormal.x, localNormal.y, localNormal.z],
-        [localCenter.x, localCenter.y, localCenter.z],
-        panelThickness
-      );
-
-      if (!replicadPanel) continue;
-
-      const geometry = convertReplicadToThreeGeometry(replicadPanel);
-
-      updates.push({
-        id: panel.id,
-        geometry,
-        replicadShape: replicadPanel,
-        parameters: {
-          ...panel.parameters,
-          originalReplicadShape: null,
-          jointTrimmed: false,
-        }
-      });
-    } catch (error) {
-      console.error(`Failed to rebuild panel ${panel.id}:`, error);
+async function restoreSinglePanels(panels: any[]) {
+  for (const panel of panels) {
+    if (panel.parameters?.jointTrimmed && panel.parameters?.originalReplicadShape) {
+      try {
+        const geo = await toGeometry(panel.parameters.originalReplicadShape);
+        useAppStore.getState().updateShape(panel.id, {
+          geometry: geo,
+          replicadShape: panel.parameters.originalReplicadShape,
+          parameters: {
+            ...panel.parameters,
+            jointTrimmed: false,
+          },
+        });
+      } catch {}
     }
   }
+}
 
-  if (updates.length > 0) {
-    useAppStore.setState((st) => ({
-      shapes: st.shapes.map(s => {
-        const update = updates.find(u => u.id === s.id);
-        if (update) {
-          const parent = st.shapes.find(p => p.id === parentShapeId);
-          return {
-            ...s,
-            geometry: update.geometry,
-            replicadShape: update.replicadShape,
-            position: parent ? [...parent.position] as [number, number, number] : s.position,
-            rotation: parent ? parent.rotation : s.rotation,
-            scale: parent ? [...parent.scale] as [number, number, number] : s.scale,
-            parameters: update.parameters,
-          };
-        }
-        return s;
-      })
-    }));
-    console.log(`Rebuilt ${updates.length} face-based panels successfully`);
-  }
+function batchApplyUpdates(
+  updates: Map<string, { geometry: any; replicadShape: any; jointTrimmed: boolean }>,
+  originalShapes: Map<string, any>,
+  parentShapeId: string
+) {
+  useAppStore.setState((state) => ({
+    shapes: state.shapes.map((s) => {
+      const update = updates.get(s.id);
+      if (update) {
+        return {
+          ...s,
+          geometry: update.geometry,
+          replicadShape: update.replicadShape,
+          parameters: {
+            ...s.parameters,
+            originalReplicadShape:
+              originalShapes.get(s.id) ||
+              s.parameters?.originalReplicadShape ||
+              s.replicadShape,
+            jointTrimmed: update.jointTrimmed,
+          },
+        };
+      }
+      if (
+        s.type === 'panel' &&
+        s.parameters?.parentShapeId === parentShapeId &&
+        !s.parameters?.originalReplicadShape &&
+        s.replicadShape
+      ) {
+        return {
+          ...s,
+          parameters: {
+            ...s.parameters,
+            originalReplicadShape: s.replicadShape,
+          },
+        };
+      }
+      return s;
+    }),
+  }));
 }
 
 export async function resolveAllPanelJoints(
@@ -657,6 +466,14 @@ export async function resolveAllPanelJoints(
       s.parameters?.faceRole &&
       s.parameters.faceRole !== 'Door' &&
       (s.parameters?.originalReplicadShape || s.replicadShape)
+  );
+
+  // Back panel ayarlarını (thickness + grooveOffset) uygula
+  await applyBackPanelSettings(
+    parentShapeId,
+    panels,
+    fullSettings.backPanelThickness,
+    fullSettings.grooveOffset
   );
 
   if (panels.length < 2) {
@@ -837,63 +654,269 @@ export async function restoreAllPanels(parentShapeId: string): Promise<void> {
   removeExistingBazaPanels(parentShapeId);
 }
 
-async function restoreSinglePanels(panels: any[]) {
-  for (const panel of panels) {
-    if (panel.parameters?.jointTrimmed && panel.parameters?.originalReplicadShape) {
-      try {
-        const geo = await toGeometry(panel.parameters.originalReplicadShape);
-        useAppStore.getState().updateShape(panel.id, {
-          geometry: geo,
-          replicadShape: panel.parameters.originalReplicadShape,
-          parameters: {
-            ...panel.parameters,
-            jointTrimmed: false,
-          },
-        });
-      } catch {}
+export async function rebuildAllPanels(parentShapeId: string): Promise<void> {
+  const state = useAppStore.getState();
+  const parentShape = state.shapes.find(s => s.id === parentShapeId);
+  if (!parentShape || !parentShape.replicadShape || !parentShape.geometry) return;
+
+  const facePanels = state.shapes.filter(
+    s => s.type === 'panel' &&
+    s.parameters?.parentShapeId === parentShapeId &&
+    !s.parameters?.isBaza &&
+    !s.parameters?.virtualFaceId
+  );
+  if (facePanels.length === 0) return;
+
+  console.log(`Rebuilding ${facePanels.length} face-based panels for parent ${parentShapeId}...`);
+
+  const { extractFacesFromGeometry, groupCoplanarFaces } = await import('./FaceEditor');
+  const { createPanelFromFace, convertReplicadToThreeGeometry } = await import('./ReplicadService');
+
+  const faces = extractFacesFromGeometry(parentShape.geometry);
+  const faceGroups = groupCoplanarFaces(faces);
+
+  const updates: Array<{ id: string; geometry: any; replicadShape: any; parameters: any }> = [];
+
+  for (const panel of facePanels) {
+    const faceIndex = panel.parameters?.faceIndex;
+    if (faceIndex === undefined) continue;
+
+    if (faceIndex < 0 || faceIndex >= faceGroups.length) continue;
+
+    const parentFacePanels = parentShape.facePanels || {};
+    if (!parentFacePanels[faceIndex]) continue;
+
+    const faceGroup = faceGroups[faceIndex];
+
+    const localVertices: THREE.Vector3[] = [];
+    faceGroup.faceIndices.forEach((idx: number) => {
+      const face = faces[idx];
+      face.vertices.forEach((v: THREE.Vector3) => localVertices.push(v.clone()));
+    });
+
+    const localNormal = faceGroup.normal.clone().normalize();
+    const localBox = new THREE.Box3().setFromPoints(localVertices);
+    const localCenter = new THREE.Vector3();
+    localBox.getCenter(localCenter);
+
+    const panelThickness = panel.parameters?.depth || 18;
+
+    try {
+      const replicadPanel = await createPanelFromFace(
+        parentShape.replicadShape,
+        [localNormal.x, localNormal.y, localNormal.z],
+        [localCenter.x, localCenter.y, localCenter.z],
+        panelThickness
+      );
+
+      if (!replicadPanel) continue;
+
+      const geometry = convertReplicadToThreeGeometry(replicadPanel);
+
+      updates.push({
+        id: panel.id,
+        geometry,
+        replicadShape: replicadPanel,
+        parameters: {
+          ...panel.parameters,
+          originalReplicadShape: null,
+          jointTrimmed: false,
+        }
+      });
+    } catch (error) {
+      console.error(`Failed to rebuild panel ${panel.id}:`, error);
     }
+  }
+
+  if (updates.length > 0) {
+    useAppStore.setState((st) => ({
+      shapes: st.shapes.map(s => {
+        const update = updates.find(u => u.id === s.id);
+        if (update) {
+          const parent = st.shapes.find(p => p.id === parentShapeId);
+          return {
+            ...s,
+            geometry: update.geometry,
+            replicadShape: update.replicadShape,
+            position: parent ? [...parent.position] as [number, number, number] : s.position,
+            rotation: parent ? parent.rotation : s.rotation,
+            scale: parent ? [...parent.scale] as [number, number, number] : s.scale,
+            parameters: update.parameters,
+          };
+        }
+        return s;
+      })
+    }));
+    console.log(`Rebuilt ${updates.length} face-based panels successfully`);
   }
 }
 
-function batchApplyUpdates(
-  updates: Map<string, { geometry: any; replicadShape: any; jointTrimmed: boolean }>,
-  originalShapes: Map<string, any>,
-  parentShapeId: string
-) {
-  useAppStore.setState((state) => ({
-    shapes: state.shapes.map((s) => {
-      const update = updates.get(s.id);
-      if (update) {
+export async function remapFaceDataAfterGeometryChange(parentShapeId: string): Promise<void> {
+  const state = useAppStore.getState();
+  const parentShape = state.shapes.find(s => s.id === parentShapeId);
+  if (!parentShape || !parentShape.geometry) return;
+
+  const descriptors = parentShape.faceGroupDescriptors;
+  if (!descriptors || Object.keys(descriptors).length === 0) return;
+
+  const hasAnyFaceData =
+    Object.keys(parentShape.faceRoles || {}).length > 0 ||
+    Object.keys(parentShape.facePanels || {}).length > 0 ||
+    Object.keys(parentShape.faceDescriptions || {}).length > 0;
+
+  if (!hasAnyFaceData) return;
+
+  const { extractFacesFromGeometry, groupCoplanarFaces, createFaceDescriptor } = await import('./FaceEditor');
+
+  const faces = extractFacesFromGeometry(parentShape.geometry);
+  const newFaceGroups = groupCoplanarFaces(faces);
+
+  const newDescs: Array<ReturnType<typeof createFaceDescriptor>> = newFaceGroups.map(group => {
+    const repFace = faces[group.faceIndices[0]];
+    return createFaceDescriptor(repFace, parentShape.geometry);
+  });
+
+  const oldToNew = new Map<number, number>();
+
+  for (const [oldIdxStr, descriptor] of Object.entries(descriptors)) {
+    const oldIdx = parseInt(oldIdxStr);
+    let bestNewIdx = -1;
+    let bestScore = Infinity;
+
+    for (let newIdx = 0; newIdx < newFaceGroups.length; newIdx++) {
+      const newDesc = newDescs[newIdx];
+
+      const sameAxis = descriptor.axisDirection && newDesc.axisDirection === descriptor.axisDirection;
+      const neitherAxis = !descriptor.axisDirection && !newDesc.axisDirection;
+
+      if (!sameAxis && !neitherAxis) continue;
+
+      let score: number;
+      if (sameAxis) {
+        const axis = descriptor.axisDirection!;
+        if (descriptor.axisPosition !== undefined && newDesc.axisPosition !== undefined) {
+          const posDiff = Math.abs(newDesc.axisPosition - descriptor.axisPosition);
+          score = posDiff * 1000;
+        } else {
+          let diff = 0;
+          if (axis === 'x+' || axis === 'x-') {
+            diff = Math.sqrt(
+              Math.pow(newDesc.normalizedCenter[1] - descriptor.normalizedCenter[1], 2) +
+              Math.pow(newDesc.normalizedCenter[2] - descriptor.normalizedCenter[2], 2)
+            );
+          } else if (axis === 'y+' || axis === 'y-') {
+            diff = Math.sqrt(
+              Math.pow(newDesc.normalizedCenter[0] - descriptor.normalizedCenter[0], 2) +
+              Math.pow(newDesc.normalizedCenter[2] - descriptor.normalizedCenter[2], 2)
+            );
+          } else {
+            diff = Math.sqrt(
+              Math.pow(newDesc.normalizedCenter[0] - descriptor.normalizedCenter[0], 2) +
+              Math.pow(newDesc.normalizedCenter[1] - descriptor.normalizedCenter[1], 2)
+            );
+          }
+          score = diff * 10;
+        }
+      } else {
+        const targetNormal = new THREE.Vector3(...descriptor.normal);
+        const repFace = faces[newFaceGroups[newIdx].faceIndices[0]];
+        const dot = targetNormal.dot(repFace.normal);
+        const angle = Math.acos(Math.min(1, Math.max(-1, dot))) * (180 / Math.PI);
+        if (angle > 15) continue;
+        const centerDiff = Math.sqrt(
+          Math.pow(newDesc.normalizedCenter[0] - descriptor.normalizedCenter[0], 2) +
+          Math.pow(newDesc.normalizedCenter[1] - descriptor.normalizedCenter[1], 2) +
+          Math.pow(newDesc.normalizedCenter[2] - descriptor.normalizedCenter[2], 2)
+        );
+        score = angle * 2 + centerDiff * 10;
+      }
+
+      if (score < bestScore) {
+        bestScore = score;
+        bestNewIdx = newIdx;
+      }
+    }
+
+    if (bestNewIdx !== -1) {
+      oldToNew.set(oldIdx, bestNewIdx);
+    }
+  }
+
+  if (oldToNew.size === 0) return;
+
+  const changed = Array.from(oldToNew.entries()).some(([o, n]) => o !== n);
+  if (!changed) return;
+
+  const oldFaceRoles = parentShape.faceRoles || {};
+  const oldFacePanels = parentShape.facePanels || {};
+  const oldFaceDescriptions = parentShape.faceDescriptions || {};
+
+  const newFaceRoles: Record<number, import('../store').FaceRole> = {};
+  const newFacePanels: Record<number, boolean> = {};
+  const newFaceDescriptions: Record<number, string> = {};
+  const newFaceGroupDescriptors: Record<number, import('../store').FaceDescriptor> = {};
+
+  for (const [oldIdxStr] of Object.entries(descriptors)) {
+    const oldIdx = parseInt(oldIdxStr);
+    const newIdx = oldToNew.get(oldIdx) ?? oldIdx;
+
+    if (oldFaceRoles[oldIdx] !== undefined) newFaceRoles[newIdx] = oldFaceRoles[oldIdx];
+    if (oldFacePanels[oldIdx] !== undefined) newFacePanels[newIdx] = oldFacePanels[oldIdx];
+    if (oldFaceDescriptions[oldIdx] !== undefined) newFaceDescriptions[newIdx] = oldFaceDescriptions[oldIdx];
+
+    if (newIdx < newFaceGroups.length) {
+      newFaceGroupDescriptors[newIdx] = newDescs[newIdx];
+    }
+  }
+
+  useAppStore.setState((st) => ({
+    shapes: st.shapes.map(s => {
+      if (s.id === parentShapeId) {
         return {
           ...s,
-          geometry: update.geometry,
-          replicadShape: update.replicadShape,
-          parameters: {
-            ...s.parameters,
-            originalReplicadShape:
-              originalShapes.get(s.id) ||
-              s.parameters?.originalReplicadShape ||
-              s.replicadShape,
-            jointTrimmed: update.jointTrimmed,
-          },
+          faceRoles: newFaceRoles,
+          facePanels: newFacePanels,
+          faceDescriptions: newFaceDescriptions,
+          faceGroupDescriptors: newFaceGroupDescriptors,
         };
       }
+      if (s.type === 'panel' && s.parameters?.parentShapeId === parentShapeId && s.parameters?.faceIndex !== undefined) {
+        const oldIdx = s.parameters.faceIndex;
+        const newIdx = oldToNew.get(oldIdx);
+        if (newIdx !== undefined && newIdx !== oldIdx) {
+          return {
+            ...s,
+            parameters: {
+              ...s.parameters,
+              faceIndex: newIdx,
+            }
+          };
+        }
+      }
+      return s;
+    })
+  }));
+}
+
+function clearStaleOriginalShapes(parentShapeId: string) {
+  useAppStore.setState((st) => ({
+    shapes: st.shapes.map(s => {
       if (
         s.type === 'panel' &&
         s.parameters?.parentShapeId === parentShapeId &&
-        !s.parameters?.originalReplicadShape &&
-        s.replicadShape
+        s.parameters?.originalReplicadShape
       ) {
         return {
           ...s,
           parameters: {
             ...s.parameters,
-            originalReplicadShape: s.replicadShape,
-          },
+            originalReplicadShape: null,
+            jointTrimmed: false,
+          }
         };
       }
       return s;
-    }),
+    })
   }));
 }
 
@@ -919,28 +942,6 @@ async function recalculateAndRebuildVirtualFaces(parentShapeId: string): Promise
   if (hasVirtualPanels) {
     await rebuildVirtualFacePanels(parentShapeId, updatedFaces);
   }
-}
-
-function clearStaleOriginalShapes(parentShapeId: string) {
-  useAppStore.setState((st) => ({
-    shapes: st.shapes.map(s => {
-      if (
-        s.type === 'panel' &&
-        s.parameters?.parentShapeId === parentShapeId &&
-        s.parameters?.originalReplicadShape
-      ) {
-        return {
-          ...s,
-          parameters: {
-            ...s.parameters,
-            originalReplicadShape: null,
-            jointTrimmed: false,
-          }
-        };
-      }
-      return s;
-    })
-  }));
 }
 
 export async function rebuildAndRecalculatePipeline(
@@ -1060,29 +1061,4 @@ async function rebuildVirtualFacePanels(
       })
     }));
   }
-}
-
-function saveOriginalShapes(panels: any[], parentShapeId: string) {
-  const needsSave = panels.some((p) => !p.parameters?.originalReplicadShape);
-  if (!needsSave) return;
-
-  useAppStore.setState((state) => ({
-    shapes: state.shapes.map((s) => {
-      if (
-        s.type === 'panel' &&
-        s.parameters?.parentShapeId === parentShapeId &&
-        !s.parameters?.originalReplicadShape &&
-        s.replicadShape
-      ) {
-        return {
-          ...s,
-          parameters: {
-            ...s.parameters,
-            originalReplicadShape: s.replicadShape,
-          },
-        };
-      }
-      return s;
-    }),
-  }));
 }

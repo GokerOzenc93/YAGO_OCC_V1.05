@@ -268,7 +268,7 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
           {menus.map((menu) => (
             <div key={menu.label} className="relative h-full">
               <button
-               className={`relative h-full px-2 text-[12.7px] font-medium transition-colors flex items-center gap-0.2
+               className={`relative h-full px-3 text-[12.1px] font-medium transition-colors flex items-center gap-0.2
                   ${activeMenu === menu.label ? 'text-orange-500 bg-orange-50' : 'text-stone-600 hover:text-stone-800 hover:bg-stone-100'}`}
                 onClick={() => setActiveMenu(activeMenu === menu.label ? null : menu.label)}
                 onMouseEnter={() => activeMenu && setActiveMenu(menu.label)}
