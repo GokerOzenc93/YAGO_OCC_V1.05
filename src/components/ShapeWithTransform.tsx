@@ -9,7 +9,6 @@ import { FilletEdgeLines } from './Fillet';
 import { FaceEditor } from './FaceEditor';
 import { RoleLabels } from './RoleLabels';
 import { FaceRaycastOverlay, VirtualFaceOverlay } from './FaceRaycastOverlay';
-import { extractFacesFromGeometry, groupCoplanarFaces, createFaceHighlightGeometry } from './GeometryUtils';
 
 interface ShapeWithTransformProps {
   shape: any;
@@ -53,11 +52,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     waitingForSurfaceSelection,
     raycastMode,
     shapes,
-    rebuildingShapeIds,
-    faceExtrudeMode,
-    faceExtrudeTargetPanelId,
-    faceExtrudeHoveredFace,
-    setFaceExtrudeHoveredFace
+    rebuildingShapeIds
   } = useAppStore(useShallow(state => ({
     selectShape: state.selectShape,
     selectSecondaryShape: state.selectSecondaryShape,
@@ -87,11 +82,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     waitingForSurfaceSelection: state.waitingForSurfaceSelection,
     raycastMode: state.raycastMode,
     shapes: state.shapes,
-    rebuildingShapeIds: state.rebuildingShapeIds,
-    faceExtrudeMode: state.faceExtrudeMode,
-    faceExtrudeTargetPanelId: state.faceExtrudeTargetPanelId,
-    faceExtrudeHoveredFace: state.faceExtrudeHoveredFace,
-    setFaceExtrudeHoveredFace: state.setFaceExtrudeHoveredFace
+    rebuildingShapeIds: state.rebuildingShapeIds
   })));
 
   const { scene } = useThree();
@@ -414,9 +405,6 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     ? '#ef4444'
     : (shape.color || '#ffffff');
 
-  const isFaceExtrudeTarget = faceExtrudeMode && isPanel && shape.id === faceExtrudeTargetPanelId;
-  const isFaceExtrudeXray = faceExtrudeMode && isPanel && shape.id !== faceExtrudeTargetPanelId;
-
   if (shape.isolated === false) return null;
   if (isParentRebuilding)       return null;
 
@@ -496,7 +484,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
                 metalness={0}
                 roughness={isPanel ? 0.92 : 1.0}
                 transparent
-                opacity={hasPanels ? 0 : isFaceExtrudeXray ? 0.12 : isPanel ? 1 : 0.06}
+                opacity={hasPanels ? 0 : isPanel ? 1 : 0.06}
                 side={THREE.DoubleSide}
                 depthWrite={false}
                 flatShading={false}
@@ -589,7 +577,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
                 metalness={0}
                 roughness={isPanel ? 0.92 : 1.0}
                 transparent
-                opacity={hasPanels ? 0 : isFaceExtrudeXray ? 0.12 : isPanel ? 1 : shouldShowAsReference ? 0.2 : 0.06}
+                opacity={hasPanels ? 0 : isPanel ? 1 : shouldShowAsReference ? 0.2 : 0.06}
                 side={THREE.DoubleSide}
                 depthWrite={false}
                 flatShading={false}
@@ -637,13 +625,6 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
           />
         )}
 
-        {isFaceExtrudeTarget && (
-          <FaceExtrudeOverlay
-            key={`face-extrude-${shape.id}-${shape.geometry?.uuid || ''}`}
-            shape={shape}
-          />
-        )}
-
         {isSelected && raycastMode && !isPanel && (
           <FaceRaycastOverlay
             key={`raycast-${shape.id}-${shape.geometry?.uuid || ''}`}
@@ -673,68 +654,3 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
 
 ShapeWithTransform.displayName = 'ShapeWithTransform';
 
-const FaceExtrudeOverlay: React.FC<{ shape: any }> = ({ shape }) => {
-  const { setFaceExtrudeHoveredFace, faceExtrudeHoveredFace } = useAppStore(useShallow(state => ({
-    setFaceExtrudeHoveredFace: state.setFaceExtrudeHoveredFace,
-    faceExtrudeHoveredFace: state.faceExtrudeHoveredFace
-  })));
-
-  const faces = useMemo(() => {
-    if (!shape.geometry) return [];
-    return extractFacesFromGeometry(shape.geometry);
-  }, [shape.geometry]);
-
-  const faceGroups = useMemo(() => {
-    if (faces.length === 0) return [];
-    return groupCoplanarFaces(faces, 0.01);
-  }, [faces]);
-
-  const [hoveredGroup, setHoveredGroup] = useState<number | null>(null);
-
-  const highlightGeometry = useMemo(() => {
-    if (hoveredGroup === null || !faceGroups[hoveredGroup]) return null;
-    return createFaceHighlightGeometry(faces, faceGroups[hoveredGroup].faceIndices);
-  }, [hoveredGroup, faceGroups, faces]);
-
-  const handlePointerMove = (e: any) => {
-    e.stopPropagation();
-    const faceIndex = e.faceIndex;
-    if (faceIndex !== undefined) {
-      const groupIndex = faceGroups.findIndex(g => g.faceIndices.includes(faceIndex));
-      if (groupIndex !== -1) {
-        setHoveredGroup(groupIndex);
-        setFaceExtrudeHoveredFace(groupIndex);
-      }
-    }
-  };
-
-  const handlePointerOut = (e: any) => {
-    e.stopPropagation();
-    setHoveredGroup(null);
-    setFaceExtrudeHoveredFace(null);
-  };
-
-  return (
-    <>
-      <mesh
-        geometry={shape.geometry}
-        visible={false}
-        onPointerMove={handlePointerMove}
-        onPointerOut={handlePointerOut}
-      />
-      {highlightGeometry && (
-        <mesh geometry={highlightGeometry}>
-          <meshBasicMaterial
-            color={0x2196f3}
-            transparent
-            opacity={0.45}
-            side={THREE.DoubleSide}
-            polygonOffset
-            polygonOffsetFactor={-1}
-            polygonOffsetUnits={-1}
-          />
-        </mesh>
-      )}
-    </>
-  );
-};

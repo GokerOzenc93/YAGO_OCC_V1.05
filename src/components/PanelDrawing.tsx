@@ -2,7 +2,7 @@ import React, { useRef, useMemo, useState, useEffect } from 'react';
 import * as THREE from 'three';
 import { useAppStore, ViewMode } from '../store';
 import { useShallow } from 'zustand/react/shallow';
-import { extractFacesFromGeometry, groupCoplanarFaces } from './FaceEditor';
+import { extractFacesFromGeometry, groupCoplanarFaces, createFaceHighlightGeometry } from './FaceEditor';
 
 // ─── RENK YÖNETİMİ (High-Fidelity Beyaz ve Keskin Renkler) ───────────────────
 const PANEL_COLORS = {
@@ -53,7 +53,10 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     panelSurfaceSelectMode,
     waitingForSurfaceSelection,
     triggerPanelCreationForFace,
-    viewMode
+    viewMode,
+    faceExtrudeMode,
+    faceExtrudeTargetPanelId,
+    setFaceExtrudeHoveredFace
   } = useAppStore(useShallow(state => ({
     selectShape: state.selectShape,
     selectSecondaryShape: state.selectSecondaryShape,
@@ -65,15 +68,21 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     panelSurfaceSelectMode: state.panelSurfaceSelectMode,
     waitingForSurfaceSelection: state.waitingForSurfaceSelection,
     triggerPanelCreationForFace: state.triggerPanelCreationForFace,
-    viewMode: state.viewMode
+    viewMode: state.viewMode,
+    faceExtrudeMode: state.faceExtrudeMode,
+    faceExtrudeTargetPanelId: state.faceExtrudeTargetPanelId,
+    setFaceExtrudeHoveredFace: state.setFaceExtrudeHoveredFace
   })));
 
   const [faceGroups, setFaceGroups] = useState<any[]>([]);
+  const [faces, setFaces] = useState<any[]>([]);
+  const [hoveredExtrudeGroup, setHoveredExtrudeGroup] = useState<number | null>(null);
 
   useEffect(() => {
     if (!shape.geometry) return;
-    const faces = extractFacesFromGeometry(shape.geometry);
-    const groups = groupCoplanarFaces(faces);
+    const f = extractFacesFromGeometry(shape.geometry);
+    const groups = groupCoplanarFaces(f);
+    setFaces(f);
     setFaceGroups(groups);
   }, [shape.geometry]);
 
@@ -106,6 +115,14 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
       return null;
     }
   }, [shape.geometry]);
+
+  const isFaceExtrudeTarget = faceExtrudeMode && shape.id === faceExtrudeTargetPanelId;
+  const isFaceExtrudeXray = faceExtrudeMode && shape.id !== faceExtrudeTargetPanelId;
+
+  const extrudeHighlightGeometry = useMemo(() => {
+    if (!isFaceExtrudeTarget || hoveredExtrudeGroup === null || !faceGroups[hoveredExtrudeGroup] || faces.length === 0) return null;
+    return createFaceHighlightGeometry(faces, faceGroups[hoveredExtrudeGroup].faceIndices);
+  }, [isFaceExtrudeTarget, hoveredExtrudeGroup, faceGroups, faces]);
 
   if (!shape.geometry) return null;
 
@@ -170,21 +187,14 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           receiveShadow
           onClick={handleClick}
         >
-          {/*
-            MAT AHŞAP/MDF MATERYAL:
-            - meshLambertMaterial kullanıldı: speküler hesaplama YOKTUR,
-              kamera açısından bağımsız düz/mat görünüm sağlar.
-            - clearcoat, reflectivity, envMapIntensity tamamen kaldırıldı.
-            - Bu sayede kamera açısına göre parlama/patlama oluşmaz.
-
-            ✅ FIX (Z-fighting):
-            polygonOffsetFactor=4, polygonOffsetUnits=8 korundu.
-          */}
           <meshLambertMaterial
             color={materialColor}
             emissive={isPanelRowSelected ? PANEL_COLORS.selected.panelEmissive : '#000000'}
             emissiveIntensity={1}
             side={THREE.DoubleSide}
+            transparent={isFaceExtrudeXray}
+            opacity={isFaceExtrudeXray ? 0.12 : 1}
+            depthWrite={!isFaceExtrudeXray}
             polygonOffset
             polygonOffsetFactor={4}
             polygonOffsetUnits={8}
@@ -269,6 +279,44 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
                 opacity={0.8}
               />
             </lineSegments>
+          )}
+        </>
+      )}
+
+      {isFaceExtrudeTarget && (
+        <>
+          <mesh
+            geometry={shape.geometry}
+            visible={false}
+            onPointerMove={(e: any) => {
+              e.stopPropagation();
+              const fi = e.faceIndex;
+              if (fi !== undefined) {
+                const gi = faceGroups.findIndex(g => g.faceIndices.includes(fi));
+                if (gi !== -1) {
+                  setHoveredExtrudeGroup(gi);
+                  setFaceExtrudeHoveredFace(gi);
+                }
+              }
+            }}
+            onPointerOut={(e: any) => {
+              e.stopPropagation();
+              setHoveredExtrudeGroup(null);
+              setFaceExtrudeHoveredFace(null);
+            }}
+          />
+          {extrudeHighlightGeometry && (
+            <mesh geometry={extrudeHighlightGeometry}>
+              <meshBasicMaterial
+                color={0x2196f3}
+                transparent
+                opacity={0.45}
+                side={THREE.DoubleSide}
+                polygonOffset
+                polygonOffsetFactor={-1}
+                polygonOffsetUnits={-1}
+              />
+            </mesh>
           )}
         </>
       )}
