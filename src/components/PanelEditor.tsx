@@ -1332,22 +1332,49 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
 
         return (
           <div className="border-t border-orange-200 bg-orange-50 px-3 py-2 rounded-b-lg">
-            <div className="flex items-center gap-3">
-              <div className="flex flex-col items-center">
-                <span className="text-[9px] text-stone-500 font-medium uppercase tracking-wide mb-0.5">Width</span>
-                <span className="text-sm font-bold text-slate-800 font-mono">{dims.primary}</span>
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[9px] text-stone-400 font-medium uppercase tracking-wide">W</span>
+                <span className="text-xs font-bold text-slate-800 font-mono">{dims.primary}</span>
               </div>
-              <div className="w-px h-6 bg-orange-200" />
-              <div className="flex flex-col items-center">
-                <span className="text-[9px] text-stone-500 font-medium uppercase tracking-wide mb-0.5">Height</span>
-                <span className="text-sm font-bold text-slate-800 font-mono">{dims.secondary}</span>
+              <div className="w-px h-4 bg-orange-200 shrink-0" />
+              <div className="flex items-center gap-1.5">
+                <span className="text-[9px] text-stone-400 font-medium uppercase tracking-wide">H</span>
+                <span className="text-xs font-bold text-slate-800 font-mono">{dims.secondary}</span>
               </div>
-              <div className="w-px h-6 bg-orange-200" />
-              <div className="flex flex-col items-center">
-                <span className="text-[9px] text-stone-500 font-medium uppercase tracking-wide mb-0.5">Thickness</span>
-                <span className="text-sm font-bold text-slate-800 font-mono">{dims.thickness}</span>
+              <div className="w-px h-4 bg-orange-200 shrink-0" />
+              <div className="flex items-center gap-1.5">
+                <span className="text-[9px] text-stone-400 font-medium uppercase tracking-wide">T</span>
+                <span className="text-xs font-bold text-slate-800 font-mono">{dims.thickness}</span>
               </div>
-              <div className="ml-auto">
+              {showExtrudeControls && (
+                <>
+                  <div className="w-px h-4 bg-orange-200 shrink-0" />
+                  <ArrowUp size={12} className={`shrink-0 ${faceExtrudeSelectedFace !== null ? 'text-orange-600' : 'text-orange-300'}`} />
+                  <input
+                    type="number"
+                    value={faceExtrudeThickness}
+                    onChange={(e) => setFaceExtrudeThickness(Number(e.target.value) || 0)}
+                    disabled={faceExtrudeSelectedFace === null}
+                    className={`w-14 h-6 px-1 text-xs font-mono text-center border rounded focus:outline-none focus:border-orange-500 ${faceExtrudeSelectedFace !== null ? 'bg-white border-orange-300' : 'bg-orange-100 border-orange-200 text-orange-300 cursor-not-allowed'}`}
+                    min={0}
+                    step={1}
+                  />
+                  <div className={`flex rounded overflow-hidden border shrink-0 ${faceExtrudeSelectedFace !== null ? 'border-orange-300' : 'border-orange-200 opacity-40'}`}>
+                    <button
+                      disabled={faceExtrudeSelectedFace === null}
+                      onClick={() => setFaceExtrudeFixedMode(true)}
+                      className={`px-1.5 h-6 text-[10px] font-semibold transition-colors ${faceExtrudeFixedMode ? 'bg-orange-500 text-white' : 'bg-white text-orange-600 hover:bg-orange-50'}`}
+                    >Fix</button>
+                    <button
+                      disabled={faceExtrudeSelectedFace === null}
+                      onClick={() => setFaceExtrudeFixedMode(false)}
+                      className={`px-1.5 h-6 text-[10px] font-semibold border-l border-orange-300 transition-colors ${!faceExtrudeFixedMode ? 'bg-orange-500 text-white' : 'bg-white text-orange-600 hover:bg-orange-50'}`}
+                    >Din</button>
+                  </div>
+                </>
+              )}
+              <div className="ml-auto flex items-center gap-1">
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
@@ -1358,63 +1385,27 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                       setFaceExtrudeMode(true);
                     }
                   }}
-                  className={`flex items-center justify-center w-7 h-7 rounded border transition-colors ${
+                  className={`flex items-center justify-center w-6 h-6 rounded border transition-colors shrink-0 ${
                     isExtrudeActive
                       ? 'border-orange-500 bg-orange-500 text-white shadow-sm'
                       : 'border-orange-300 bg-white hover:bg-orange-100 text-orange-600'
                   }`}
                   title="Face Extrude"
                 >
-                  <MoveVertical size={14} />
+                  <MoveVertical size={12} />
                 </button>
+                {showExtrudeControls && (
+                  <button
+                    disabled={faceExtrudeSelectedFace === null}
+                    onClick={() => {}}
+                    className={`flex items-center justify-center w-6 h-6 rounded border transition-colors shrink-0 ${faceExtrudeSelectedFace !== null ? 'border-green-400 bg-green-500 text-white hover:bg-green-600' : 'border-orange-200 bg-orange-100 text-orange-300 cursor-not-allowed'}`}
+                    title="Onayla"
+                  >
+                    <Check size={12} />
+                  </button>
+                )}
               </div>
             </div>
-            {showExtrudeControls && (
-              <div className="flex items-center gap-2 mt-2 pt-2 border-t border-orange-200">
-                <ArrowUp size={14} className={`shrink-0 ${faceExtrudeSelectedFace !== null ? 'text-orange-600' : 'text-orange-300'}`} />
-                <input
-                  type="number"
-                  value={faceExtrudeThickness}
-                  onChange={(e) => setFaceExtrudeThickness(Number(e.target.value) || 0)}
-                  disabled={faceExtrudeSelectedFace === null}
-                  className={`w-16 h-6 px-1.5 text-xs font-mono text-center border rounded focus:outline-none focus:border-orange-500 ${faceExtrudeSelectedFace !== null ? 'bg-white border-orange-300' : 'bg-orange-100 border-orange-200 text-orange-300 cursor-not-allowed'}`}
-                  min={0}
-                  step={1}
-                />
-                <div className={`flex rounded overflow-hidden border shrink-0 ${faceExtrudeSelectedFace !== null ? 'border-orange-300' : 'border-orange-200 opacity-40'}`}>
-                  <button
-                    disabled={faceExtrudeSelectedFace === null}
-                    onClick={() => setFaceExtrudeFixedMode(true)}
-                    className={`px-2 h-6 text-[10px] font-semibold transition-colors ${
-                      faceExtrudeFixedMode
-                        ? 'bg-orange-500 text-white'
-                        : 'bg-white text-orange-600 hover:bg-orange-50'
-                    }`}
-                  >
-                    Fix
-                  </button>
-                  <button
-                    disabled={faceExtrudeSelectedFace === null}
-                    onClick={() => setFaceExtrudeFixedMode(false)}
-                    className={`px-2 h-6 text-[10px] font-semibold border-l border-orange-300 transition-colors ${
-                      !faceExtrudeFixedMode
-                        ? 'bg-orange-500 text-white'
-                        : 'bg-white text-orange-600 hover:bg-orange-50'
-                    }`}
-                  >
-                    Dinamik
-                  </button>
-                </div>
-                <button
-                  disabled={faceExtrudeSelectedFace === null}
-                  onClick={() => {}}
-                  className={`flex items-center justify-center w-6 h-6 rounded border transition-colors shrink-0 ml-auto ${faceExtrudeSelectedFace !== null ? 'border-green-400 bg-green-500 text-white hover:bg-green-600' : 'border-orange-200 bg-orange-100 text-orange-300 cursor-not-allowed'}`}
-                  title="Onayla"
-                >
-                  <Check size={12} />
-                </button>
-              </div>
-            )}
           </div>
         );
       })()}

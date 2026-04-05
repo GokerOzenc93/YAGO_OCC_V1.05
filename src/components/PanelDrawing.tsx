@@ -327,7 +327,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
               setFaceExtrudeHoveredFace(null);
             }}
           >
-            <meshBasicMaterial transparent opacity={0} side={THREE.DoubleSide} />
+            <meshBasicMaterial transparent opacity={0} side={THREE.DoubleSide} depthTest={false} depthWrite={false} />
           </mesh>
           {extrudeHighlightGeometry && (
             <mesh geometry={extrudeHighlightGeometry}>
