@@ -261,42 +261,46 @@ async function applyBackPanelSettings(
       const offsetZ = localNormal.z * (-grooveOffset);
       let finalPanel = replicadPanel.translate(offsetX, offsetY, offsetZ);
 
-      if (grooveDepth > 0) {
-        const panelBB = getReplicadBoundingBox(finalPanel);
-        const panelSize = [
-          panelBB.max[0] - panelBB.min[0],
-          panelBB.max[1] - panelBB.min[1],
-          panelBB.max[2] - panelBB.min[2],
+      if (grooveDepth > 0 || backPanelLeftExtend > 0 || backPanelRightExtend > 0 || backPanelTopExtend > 0 || backPanelBottomExtend > 0) {
+        const baseBB = getReplicadBoundingBox(finalPanel);
+        const baseSize = [
+          baseBB.max[0] - baseBB.min[0],
+          baseBB.max[1] - baseBB.min[1],
+          baseBB.max[2] - baseBB.min[2],
         ];
 
-        const thicknessAxis = panelSize[0] <= panelSize[1] && panelSize[0] <= panelSize[2] ? 0
-          : panelSize[1] <= panelSize[0] && panelSize[1] <= panelSize[2] ? 1 : 2;
+        const sortedAxes = [0, 1, 2]
+          .map(a => ({ axis: a, size: baseSize[a] }))
+          .sort((a, b) => a.size - b.size);
 
-        const planeAxes = [0, 1, 2].filter(a => a !== thicknessAxis);
-
-        const horizontalAxis = planeAxes.find(a => a !== 1) ?? planeAxes[0];
-        const verticalAxis = planeAxes.find(a => a === 1) ?? planeAxes[1];
+        const thicknessAxis = sortedAxes[0].axis;
+        const verticalAxis = 1;
+        const horizontalAxis = [0, 1, 2].find(a => a !== thicknessAxis && a !== verticalAxis) ?? 0;
 
         const leftExt = grooveDepth + backPanelLeftExtend;
         const rightExt = grooveDepth + backPanelRightExtend;
         const topExt = grooveDepth + backPanelTopExtend;
         const bottomExt = grooveDepth + backPanelBottomExtend;
 
-        const newMin: [number, number, number] = [...panelBB.min];
-        const newMax: [number, number, number] = [...panelBB.max];
+        const newMin: [number, number, number] = [baseBB.min[0], baseBB.min[1], baseBB.min[2]];
+        const newMax: [number, number, number] = [baseBB.max[0], baseBB.max[1], baseBB.max[2]];
 
         newMin[horizontalAxis] -= leftExt;
         newMax[horizontalAxis] += rightExt;
         newMax[verticalAxis] += topExt;
         newMin[verticalAxis] -= bottomExt;
 
-        const w = newMax[0] - newMin[0];
-        const h = newMax[1] - newMin[1];
-        const d = newMax[2] - newMin[2];
+        const dims: [number, number, number] = [
+          newMax[0] - newMin[0],
+          newMax[1] - newMin[1],
+          newMax[2] - newMin[2],
+        ];
 
-        if (w > 0.1 && h > 0.1 && d > 0.1) {
+        console.log(`Back panel groove expand: thicknessAxis=${thicknessAxis}, horizontalAxis=${horizontalAxis}, baseSize=${JSON.stringify(baseSize)}, leftExt=${leftExt}, rightExt=${rightExt}, topExt=${topExt}, bottomExt=${bottomExt}`);
+
+        if (dims[0] > 0.1 && dims[1] > 0.1 && dims[2] > 0.1) {
           try {
-            const expandedBox = await createReplicadBox({ width: w, height: h, depth: d });
+            const expandedBox = await createReplicadBox({ width: dims[0], height: dims[1], depth: dims[2] });
             finalPanel = expandedBox.translate(newMin[0], newMin[1], newMin[2]);
           } catch (expandErr) {
             console.error('Failed to expand back panel with grooveDepth:', expandErr);
