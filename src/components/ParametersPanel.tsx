@@ -415,7 +415,7 @@ export function ParametersPanel({ isOpen, onClose }: ParametersPanelProps) {
               const faceGroups = groupCoplanarFaces(faces);
               const faceRoles = selectedShape.faceRoles || {};
               const faceDescriptions = selectedShape.faceDescriptions || {};
-              const roleOptions: FaceRole[] = ['Left', 'Right', 'Top', 'Bottom', 'Back', 'Door'];
+              const roleOptions: FaceRole[] = ['Left', 'Top', 'Bottom', 'Back', 'Door'];
               const fillets: FilletData[] = selectedShape.fillets || [];
               const AXIS_ORDER: Record<string, number> = { 'x+': 0, 'x-': 1, 'y+': 2, 'y-': 3, 'z+': 4, 'z-': 5 };
               const getAxisDir = (n: THREE.Vector3) => {

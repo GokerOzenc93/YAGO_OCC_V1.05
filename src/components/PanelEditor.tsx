@@ -650,7 +650,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
               const faceRoles = selectedShape.faceRoles || {};
               const faceDescriptions = selectedShape.faceDescriptions || {};
               const facePanels = selectedShape.facePanels || {};
-              const roleOptions: FaceRole[] = ['Left', 'Right', 'Top', 'Bottom', 'Back', 'Door'];
+              const roleOptions: FaceRole[] = ['Left', 'Top', 'Bottom', 'Back', 'Door'];
               const isDisabled = selectedProfile === 'none';
 
               const buildDescriptors = (): Record<number, FaceDescriptor> => {
@@ -1328,28 +1328,27 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
         return (
           <div className="border-t border-orange-200 bg-orange-50 px-3 py-2 rounded-b-lg">
             <div className="flex items-center gap-3">
+              <div className="flex flex-col items-center">
+                <span className="text-[9px] text-stone-500 font-medium uppercase tracking-wide mb-0.5">Width</span>
+                <span className="text-sm font-bold text-slate-800 font-mono">{dims.primary}</span>
+                <span className="text-[9px] text-stone-400">mm</span>
+              </div>
+              <div className="w-px h-8 bg-orange-200" />
+              <div className="flex flex-col items-center">
+                <span className="text-[9px] text-stone-500 font-medium uppercase tracking-wide mb-0.5">Height</span>
+                <span className="text-sm font-bold text-slate-800 font-mono">{dims.secondary}</span>
+                <span className="text-[9px] text-stone-400">mm</span>
+              </div>
+              <div className="w-px h-8 bg-orange-200" />
+              <div className="flex flex-col items-center">
+                <span className="text-[9px] text-stone-500 font-medium uppercase tracking-wide mb-0.5">Thickness</span>
+                <span className="text-sm font-bold text-slate-800 font-mono">{dims.thickness}</span>
+                <span className="text-[9px] text-stone-400">mm</span>
+              </div>
+              <div className="w-px h-8 bg-orange-200" />
               <span className="text-[10px] font-semibold text-orange-600 bg-orange-100 border border-orange-300 rounded px-1.5 py-0.5">
                 {panelLabel}
               </span>
-              <div className="flex items-center gap-3 flex-1">
-                <div className="flex flex-col items-center">
-                  <span className="text-[9px] text-stone-500 font-medium uppercase tracking-wide mb-0.5">Width</span>
-                  <span className="text-sm font-bold text-slate-800 font-mono">{dims.primary}</span>
-                  <span className="text-[9px] text-stone-400">mm</span>
-                </div>
-                <div className="w-px h-8 bg-orange-200" />
-                <div className="flex flex-col items-center">
-                  <span className="text-[9px] text-stone-500 font-medium uppercase tracking-wide mb-0.5">Height</span>
-                  <span className="text-sm font-bold text-slate-800 font-mono">{dims.secondary}</span>
-                  <span className="text-[9px] text-stone-400">mm</span>
-                </div>
-                <div className="w-px h-8 bg-orange-200" />
-                <div className="flex flex-col items-center">
-                  <span className="text-[9px] text-stone-500 font-medium uppercase tracking-wide mb-0.5">Thickness</span>
-                  <span className="text-sm font-bold text-slate-800 font-mono">{dims.thickness}</span>
-                  <span className="text-[9px] text-stone-400">mm</span>
-                </div>
-              </div>
             </div>
           </div>
         );
