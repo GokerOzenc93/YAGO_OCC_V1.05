@@ -598,9 +598,11 @@ export async function resolveAllPanelJoints(
         cutsMap.set(subordinateId, existing);
       }
 
-      const extEntries = extensionsMap.get(dominantId) || [];
-      extEntries.push({ subordinateId, subordinateRole });
-      extensionsMap.set(dominantId, extEntries);
+      if (!isBackSubordinate) {
+        const extEntries = extensionsMap.get(dominantId) || [];
+        extEntries.push({ subordinateId, subordinateRole });
+        extensionsMap.set(dominantId, extEntries);
+      }
 
       console.log(
         `  Joint: ${roleA}-${roleB} → ${dominant} dominant, ${isADominant ? roleB : roleA} trimmed`
