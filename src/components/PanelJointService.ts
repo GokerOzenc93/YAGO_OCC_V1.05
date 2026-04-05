@@ -269,7 +269,7 @@ async function applyBackPanelSettings(
       const offsetZ = localNormal.z * (-effectiveGrooveOffset);
       let finalPanel = replicadPanel.translate(offsetX, offsetY, offsetZ);
 
-      const needsGrooveExpand = effectiveGrooveDepth > 0 || (hasDominantPanels && (backPanelLeftExtend > 0 || backPanelRightExtend > 0 || backPanelTopExtend > 0 || backPanelBottomExtend > 0));
+      const needsGrooveExpand = hasDominantPanels && (effectiveGrooveDepth > 0 || backPanelLeftExtend > 0 || backPanelRightExtend > 0 || backPanelTopExtend > 0 || backPanelBottomExtend > 0);
 
       if (needsGrooveExpand) {
         const baseBB = getReplicadBoundingBox(finalPanel);
@@ -297,13 +297,18 @@ async function applyBackPanelSettings(
         const topThickness = topPanel ? (topPanel.parameters?.depth ?? 18) : 0;
         const bottomThickness = bottomPanel ? (bottomPanel.parameters?.depth ?? 18) : 0;
 
+        const leftGroove = leftPanel ? effectiveGrooveDepth : 0;
+        const rightGroove = rightPanel ? effectiveGrooveDepth : 0;
+        const topGroove = topPanel ? effectiveGrooveDepth : 0;
+        const bottomGroove = bottomPanel ? effectiveGrooveDepth : 0;
+
         const newMin: [number, number, number] = [baseBB.min[0], baseBB.min[1], baseBB.min[2]];
         const newMax: [number, number, number] = [baseBB.max[0], baseBB.max[1], baseBB.max[2]];
 
-        newMin[horizontalAxis] += leftThickness - effectiveGrooveDepth - backPanelLeftExtend;
-        newMax[horizontalAxis] -= rightThickness - effectiveGrooveDepth - backPanelRightExtend;
-        newMax[verticalAxis] -= topThickness - effectiveGrooveDepth - backPanelTopExtend;
-        newMin[verticalAxis] += bottomThickness - effectiveGrooveDepth - backPanelBottomExtend;
+        newMin[horizontalAxis] += leftThickness - leftGroove - backPanelLeftExtend;
+        newMax[horizontalAxis] -= rightThickness - rightGroove - backPanelRightExtend;
+        newMax[verticalAxis] -= topThickness - topGroove - backPanelTopExtend;
+        newMin[verticalAxis] += bottomThickness - bottomGroove - backPanelBottomExtend;
 
         const dims: [number, number, number] = [
           newMax[0] - newMin[0],
