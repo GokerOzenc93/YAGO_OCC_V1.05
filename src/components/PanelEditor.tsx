@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, GripVertical, MousePointer, Layers, RotateCw, Plus, Trash2, Eye, EyeOff, RefreshCw, Pencil } from 'lucide-react';
+import { X, GripVertical, MousePointer, Layers, RotateCw, Plus, Trash2, Eye, EyeOff, RefreshCw } from 'lucide-react';
 import { globalSettingsService, faceLabelRoleDefaultsService, GlobalSettingsProfile } from './GlobalSettingsDatabase';
 import { useAppStore } from '../store';
 import type { FaceRole } from '../store';
@@ -1326,30 +1326,24 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
         if (!dims) return null;
 
         return (
-          <div className="border-t border-orange-200 bg-orange-50 px-3 py-1 rounded-b-lg">
-            <div className="flex items-center gap-2">
-              <div className="flex items-center gap-2">
-                <span className="text-[9px] text-stone-500 font-medium uppercase tracking-wide">W</span>
-                <span className="text-xs font-bold text-slate-800 font-mono">{dims.primary}</span>
+          <div className="border-t border-orange-200 bg-orange-50 px-3 py-2 rounded-b-lg">
+            <div className="flex items-center gap-3">
+              <div className="flex flex-col items-center">
+                <span className="text-[9px] text-stone-500 font-medium uppercase tracking-wide mb-0.5">Width</span>
+                <span className="text-sm font-bold text-slate-800 font-mono">{dims.primary}</span>
+                <span className="text-[9px] text-stone-400">mm</span>
               </div>
-              <div className="w-px h-4 bg-orange-200" />
-              <div className="flex items-center gap-2">
-                <span className="text-[9px] text-stone-500 font-medium uppercase tracking-wide">H</span>
-                <span className="text-xs font-bold text-slate-800 font-mono">{dims.secondary}</span>
+              <div className="w-px h-8 bg-orange-200" />
+              <div className="flex flex-col items-center">
+                <span className="text-[9px] text-stone-500 font-medium uppercase tracking-wide mb-0.5">Height</span>
+                <span className="text-sm font-bold text-slate-800 font-mono">{dims.secondary}</span>
+                <span className="text-[9px] text-stone-400">mm</span>
               </div>
-              <div className="w-px h-4 bg-orange-200" />
-              <div className="flex items-center gap-2">
-                <span className="text-[9px] text-stone-500 font-medium uppercase tracking-wide">T</span>
-                <span className="text-xs font-bold text-slate-800 font-mono">{dims.thickness}</span>
-              </div>
-              <div className="ml-auto">
-                <button
-                  className="p-1 rounded hover:bg-orange-100 text-orange-500 transition-colors"
-                  title="Edit panel"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <Pencil size={12} />
-                </button>
+              <div className="w-px h-8 bg-orange-200" />
+              <div className="flex flex-col items-center">
+                <span className="text-[9px] text-stone-500 font-medium uppercase tracking-wide mb-0.5">Thickness</span>
+                <span className="text-sm font-bold text-slate-800 font-mono">{dims.thickness}</span>
+                <span className="text-[9px] text-stone-400">mm</span>
               </div>
             </div>
           </div>
