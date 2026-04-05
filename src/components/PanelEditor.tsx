@@ -528,6 +528,39 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
         </div>
         <div className="flex items-center gap-1">
           <button
+            onClick={() => setShowVirtualFaces(!showVirtualFaces)}
+            className={`p-0.5 rounded transition-colors text-[10px] font-semibold px-1.5 ${
+              showVirtualFaces
+                ? 'text-green-700 bg-green-100 ring-1 ring-green-400'
+                : 'text-slate-500 hover:bg-stone-200'
+            }`}
+            title="Raycast Face"
+          >
+            RF
+          </button>
+          <button
+            onClick={() => setShowOutlines(!showOutlines)}
+            className={`p-0.5 rounded transition-colors text-[10px] font-semibold px-1.5 ${
+              showOutlines
+                ? 'text-blue-700 bg-blue-100 ring-1 ring-blue-400'
+                : 'text-slate-500 hover:bg-stone-200'
+            }`}
+            title="Outline"
+          >
+            OL
+          </button>
+          <button
+            onClick={() => setShowRoleNumbers(!showRoleNumbers)}
+            className={`p-0.5 rounded transition-colors text-[10px] font-semibold px-1.5 ${
+              showRoleNumbers
+                ? 'text-orange-700 bg-orange-100 ring-1 ring-orange-400'
+                : 'text-slate-500 hover:bg-stone-200'
+            }`}
+            title="Role Numbers"
+          >
+            RN
+          </button>
+          <button
             onClick={() => setRaycastMode(!raycastMode)}
             className={`p-0.5 rounded transition-colors ${
               raycastMode
@@ -582,64 +615,29 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
       <div className="p-3 max-h-[calc(100vh-200px)] overflow-y-auto">
         {selectedShape ? (
           <div className="space-y-3">
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-2">
-                <label className="text-xs font-semibold text-slate-800 whitespace-nowrap">
-                  Select Body Profile
-                </label>
-                {loading ? (
-                  <div className="px-2 py-0.5 text-xs text-stone-400 bg-white border border-gray-300 rounded" style={{ width: '30mm' }}>
-                    Loading...
-                  </div>
-                ) : (
-                  <select
-                    value={selectedProfile}
-                    onChange={(e) => setSelectedProfile(e.target.value)}
-                    className="px-2 py-0.5 text-xs bg-white text-gray-800 border border-gray-300 rounded focus:outline-none focus:border-orange-500"
-                    style={{ width: '30mm' }}
-                  >
-                    <option value="none">None</option>
-                    {profiles.map((profile) => (
-                      <option key={profile.id} value={profile.id}>
-                        {profile.name}
-                      </option>
-                    ))}
-                  </select>
-                )}
-              </div>
-              <div className="flex items-center gap-1">
-                <label className="text-xs font-semibold text-slate-800 whitespace-nowrap">
-                  Raycast Face
-                </label>
-                <input
-                  type="checkbox"
-                  checked={showVirtualFaces}
-                  onChange={(e) => setShowVirtualFaces(e.target.checked)}
-                  className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                />
-              </div>
-              <div className="flex items-center gap-1">
-                <label className="text-xs font-semibold text-slate-800 whitespace-nowrap">
-                  Outline
-                </label>
-                <input
-                  type="checkbox"
-                  checked={showOutlines}
-                  onChange={(e) => setShowOutlines(e.target.checked)}
-                  className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                />
-              </div>
-              <div className="flex items-center gap-1">
-                <label className="text-xs font-semibold text-slate-800 whitespace-nowrap">
-                  Role numbers
-                </label>
-                <input
-                  type="checkbox"
-                  checked={showRoleNumbers}
-                  onChange={(e) => setShowRoleNumbers(e.target.checked)}
-                  className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                />
-              </div>
+            <div className="flex items-center gap-2">
+              <label className="text-xs font-semibold text-slate-800 whitespace-nowrap">
+                Select Body Profile
+              </label>
+              {loading ? (
+                <div className="px-2 py-0.5 text-xs text-stone-400 bg-white border border-gray-300 rounded" style={{ width: '30mm' }}>
+                  Loading...
+                </div>
+              ) : (
+                <select
+                  value={selectedProfile}
+                  onChange={(e) => setSelectedProfile(e.target.value)}
+                  className="px-2 py-0.5 text-xs bg-white text-gray-800 border border-gray-300 rounded focus:outline-none focus:border-orange-500"
+                  style={{ width: '30mm' }}
+                >
+                  <option value="none">None</option>
+                  {profiles.map((profile) => (
+                    <option key={profile.id} value={profile.id}>
+                      {profile.name}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
 
 
@@ -1040,7 +1038,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                               updateShape(selectedShape.id, { faceDescriptions: newDescriptions, faceGroupDescriptors: buildDescriptors() });
                             }}
                             placeholder="description"
-                            style={{ width: '30mm' }}
+                            style={{ width: '40mm' }}
                             className={`px-2 py-0.5 text-xs border rounded ${isDisabled ? 'bg-stone-100 text-stone-400 border-stone-200 placeholder:text-stone-300' : 'bg-white text-gray-800 border-gray-300'}`}
                           />
                           <div className="ml-3 flex items-center gap-0.5">
@@ -1190,7 +1188,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                             updateVirtualFace(vf.id, { description: e.target.value });
                           }}
                           placeholder="description"
-                          style={{ width: '30mm' }}
+                          style={{ width: '40mm' }}
                           className={`px-2 py-0.5 text-xs border rounded ${isDisabled ? 'bg-stone-100 text-stone-400 border-stone-200 placeholder:text-stone-300' : 'bg-white text-gray-800 border-green-300'}`}
                         />
                         <div className="ml-3 flex items-center gap-0.5">
