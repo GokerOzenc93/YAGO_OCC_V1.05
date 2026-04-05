@@ -153,6 +153,7 @@ interface FullProfileSettings {
   frontBaseDistance: number;
   backPanelThickness: number;
   grooveOffset: number;
+  grooveDepth: number;
 }
 
 async function loadFullProfileSettings(profileId: string): Promise<FullProfileSettings> {
@@ -162,6 +163,7 @@ async function loadFullProfileSettings(profileId: string): Promise<FullProfileSe
   let frontBaseDistance = 10;
   let backPanelThickness = 8;
   let grooveOffset = 12;
+  let grooveDepth = 8;
 
   try {
     const settings = await globalSettingsService.getProfileSettings(profileId, 'panel_joint');
@@ -187,20 +189,22 @@ async function loadFullProfileSettings(profileId: string): Promise<FullProfileSe
       const bs = backSettings.settings as Record<string, unknown>;
       if (typeof bs.backPanelThickness === 'number') backPanelThickness = bs.backPanelThickness;
       if (typeof bs.grooveOffset === 'number') grooveOffset = bs.grooveOffset;
+      if (typeof bs.grooveDepth === 'number') grooveDepth = bs.grooveDepth;
     }
   } catch (err) {
     console.error('Failed to load back_panel settings:', err);
   }
 
-  return { jointConfig, selectedBodyType, bazaHeight, frontBaseDistance, backPanelThickness, grooveOffset };
+  return { jointConfig, selectedBodyType, bazaHeight, frontBaseDistance, backPanelThickness, grooveOffset, grooveDepth };
 }
 
-// ── Back panel thickness & groove offset uygulama ──────────────────────────
+// ── Back panel thickness, groove offset & groove depth uygulama ──────────────
 async function applyBackPanelSettings(
   parentShapeId: string,
   panels: any[],
   backPanelThickness: number,
-  grooveOffset: number
+  grooveOffset: number,
+  grooveDepth: number
 ): Promise<void> {
   const backPanels = panels.filter(p => p.parameters?.faceRole === 'Back');
   if (backPanels.length === 0) return;
@@ -209,7 +213,14 @@ async function applyBackPanelSettings(
   const parentShape = state.shapes.find(s => s.id === parentShapeId);
   if (!parentShape || !parentShape.replicadShape || !parentShape.geometry) return;
 
-  const { createPanelFromFace, convertReplicadToThreeGeometry } = await import('./ReplicadService');
+  const {
+    backPanelLeftExtend,
+    backPanelRightExtend,
+    backPanelTopExtend,
+    backPanelBottomExtend,
+  } = state;
+
+  const { createPanelFromFace, convertReplicadToThreeGeometry, createReplicadBox } = await import('./ReplicadService');
   const { extractFacesFromGeometry, groupCoplanarFaces } = await import('./FaceEditor');
 
   const faces = extractFacesFromGeometry(parentShape.geometry);
@@ -236,7 +247,6 @@ async function applyBackPanelSettings(
       const localCenter = new THREE.Vector3();
       localBox.getCenter(localCenter);
 
-      // Paneli backPanelThickness kalınlığında oluştur
       const replicadPanel = await createPanelFromFace(
         parentShape.replicadShape,
         [localNormal.x, localNormal.y, localNormal.z],
@@ -246,32 +256,72 @@ async function applyBackPanelSettings(
       );
       if (!replicadPanel) continue;
 
-      // grooveOffset kadar paneli içeriye (öne) taşı
-      // Normal arka yüze dışarı doğru bakar (-Z yönünde tipik olarak),
-      // bu yüzden paneli ters yönde (içeriye, +Z) offsetliyoruz
       const offsetX = localNormal.x * (-grooveOffset);
       const offsetY = localNormal.y * (-grooveOffset);
       const offsetZ = localNormal.z * (-grooveOffset);
-      const translatedPanel = replicadPanel.translate(offsetX, offsetY, offsetZ);
+      let finalPanel = replicadPanel.translate(offsetX, offsetY, offsetZ);
 
-      const geometry = convertReplicadToThreeGeometry(translatedPanel);
+      if (grooveDepth > 0) {
+        const panelBB = getReplicadBoundingBox(finalPanel);
+        const panelSize = [
+          panelBB.max[0] - panelBB.min[0],
+          panelBB.max[1] - panelBB.min[1],
+          panelBB.max[2] - panelBB.min[2],
+        ];
+
+        const thicknessAxis = panelSize[0] <= panelSize[1] && panelSize[0] <= panelSize[2] ? 0
+          : panelSize[1] <= panelSize[0] && panelSize[1] <= panelSize[2] ? 1 : 2;
+
+        const planeAxes = [0, 1, 2].filter(a => a !== thicknessAxis);
+
+        const horizontalAxis = planeAxes.find(a => a !== 1) ?? planeAxes[0];
+        const verticalAxis = planeAxes.find(a => a === 1) ?? planeAxes[1];
+
+        const leftExt = grooveDepth + backPanelLeftExtend;
+        const rightExt = grooveDepth + backPanelRightExtend;
+        const topExt = grooveDepth + backPanelTopExtend;
+        const bottomExt = grooveDepth + backPanelBottomExtend;
+
+        const newMin: [number, number, number] = [...panelBB.min];
+        const newMax: [number, number, number] = [...panelBB.max];
+
+        newMin[horizontalAxis] -= leftExt;
+        newMax[horizontalAxis] += rightExt;
+        newMax[verticalAxis] += topExt;
+        newMin[verticalAxis] -= bottomExt;
+
+        const w = newMax[0] - newMin[0];
+        const h = newMax[1] - newMin[1];
+        const d = newMax[2] - newMin[2];
+
+        if (w > 0.1 && h > 0.1 && d > 0.1) {
+          try {
+            const expandedBox = await createReplicadBox({ width: w, height: h, depth: d });
+            finalPanel = expandedBox.translate(newMin[0], newMin[1], newMin[2]);
+          } catch (expandErr) {
+            console.error('Failed to expand back panel with grooveDepth:', expandErr);
+          }
+        }
+      }
+
+      const geometry = convertReplicadToThreeGeometry(finalPanel);
 
       updates.push({
         id: panel.id,
         geometry,
-        replicadShape: translatedPanel,
+        replicadShape: finalPanel,
         parameters: {
           ...panel.parameters,
           depth: backPanelThickness,
           grooveOffset,
+          grooveDepth,
           originalReplicadShape: panel.parameters?.originalReplicadShape || panel.replicadShape,
         }
       });
 
-      // Joint resolution için local panel referansını güncelle
-      panel.replicadShape = translatedPanel;
+      panel.replicadShape = finalPanel;
       panel.geometry = geometry;
-      panel.parameters = { ...panel.parameters, depth: backPanelThickness, grooveOffset };
+      panel.parameters = { ...panel.parameters, depth: backPanelThickness, grooveOffset, grooveDepth };
 
     } catch (err) {
       console.error(`Failed to apply back panel settings for panel ${panel.id}:`, err);
@@ -295,7 +345,7 @@ async function applyBackPanelSettings(
         };
       })
     }));
-    console.log(`✅ Back panel settings applied: thickness=${backPanelThickness}mm, grooveOffset=${grooveOffset}mm`);
+    console.log(`✅ Back panel settings applied: thickness=${backPanelThickness}mm, grooveOffset=${grooveOffset}mm, grooveDepth=${grooveDepth}mm`);
   }
 }
 
@@ -468,12 +518,12 @@ export async function resolveAllPanelJoints(
       (s.parameters?.originalReplicadShape || s.replicadShape)
   );
 
-  // Back panel ayarlarını (thickness + grooveOffset) uygula
   await applyBackPanelSettings(
     parentShapeId,
     panels,
     fullSettings.backPanelThickness,
-    fullSettings.grooveOffset
+    fullSettings.grooveOffset,
+    fullSettings.grooveDepth
   );
 
   if (panels.length < 2) {
