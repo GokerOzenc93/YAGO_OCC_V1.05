@@ -15,7 +15,7 @@ interface PanelEditorProps {
 }
 
 export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
-  const { selectedShapeId, shapes, updateShape, addShape, showOutlines, setShowOutlines, showRoleNumbers, setShowRoleNumbers, selectedPanelRow, selectedPanelRowParentId, setSelectedPanelRow, panelSelectMode, setPanelSelectMode, raycastMode, setRaycastMode, showVirtualFaces, setShowVirtualFaces, virtualFaces, updateVirtualFace, deleteVirtualFace, pendingPanelCreation, setActivePanelProfileId, setShapeRebuilding } = useAppStore();
+  const { selectedShapeId, shapes, updateShape, addShape, showOutlines, setShowOutlines, showRoleNumbers, setShowRoleNumbers, selectedPanelRow, selectedPanelRowParentId, setSelectedPanelRow, panelSelectMode, setPanelSelectMode, raycastMode, setRaycastMode, showVirtualFaces, setShowVirtualFaces, virtualFaces, updateVirtualFace, deleteVirtualFace, pendingPanelCreation, setActivePanelProfileId, setShapeRebuilding, faceExtrudeMode, setFaceExtrudeMode, setFaceExtrudeTargetPanelId } = useAppStore();
   const [position, setPosition] = useState({ x: 100, y: 100 });
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
@@ -1271,6 +1271,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
       {selectedShape && selectedPanelRow !== null && (() => {
         let dims: { primary: number; secondary: number; thickness: number; w: number; h: number; d: number } | null = null;
         let panelLabel = '';
+        let currentPanelId: string | null = null;
 
         if (typeof selectedPanelRow === 'number') {
           dims = getPanelDimensions(selectedPanelRow);
@@ -1280,6 +1281,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
             s.parameters?.faceIndex === selectedPanelRow &&
             !s.parameters?.extraRowId
           );
+          currentPanelId = panelShape?.id || null;
           panelLabel = panelShape?.parameters?.faceRole ? String(panelShape.parameters.faceRole) : `Face ${selectedPanelRow + 1}`;
         } else if (typeof selectedPanelRow === 'string' && selectedPanelRow.startsWith('vf-')) {
           const vfId = selectedPanelRow.replace('vf-', '');
@@ -1320,10 +1322,12 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
               d: Math.round(size.z * 10) / 10,
             };
           }
+          currentPanelId = vp?.id || null;
           panelLabel = vp?.parameters?.faceRole ? String(vp.parameters.faceRole) : 'Virtual Panel';
         }
 
         if (!dims) return null;
+        const isExtrudeActive = faceExtrudeMode && currentPanelId !== null;
 
         return (
           <div className="border-t border-orange-200 bg-orange-50 px-3 py-2 rounded-b-lg">
@@ -1344,8 +1348,20 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
               </div>
               <div className="ml-auto">
                 <button
-                  onClick={(e) => e.stopPropagation()}
-                  className="flex items-center justify-center w-7 h-7 rounded border border-orange-300 bg-white hover:bg-orange-100 text-orange-600 transition-colors"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (faceExtrudeMode) {
+                      setFaceExtrudeMode(false);
+                    } else if (currentPanelId) {
+                      setFaceExtrudeTargetPanelId(currentPanelId);
+                      setFaceExtrudeMode(true);
+                    }
+                  }}
+                  className={`flex items-center justify-center w-7 h-7 rounded border transition-colors ${
+                    isExtrudeActive
+                      ? 'border-orange-500 bg-orange-500 text-white shadow-sm'
+                      : 'border-orange-300 bg-white hover:bg-orange-100 text-orange-600'
+                  }`}
                   title="Face Extrude"
                 >
                   <MoveVertical size={14} />
