@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, GripVertical, MousePointer, Layers, RotateCw, Plus, Trash2, Eye, EyeOff, RefreshCw, PenLine } from 'lucide-react';
+import { X, GripVertical, MousePointer, Layers, RotateCw, Plus, Trash2, Eye, EyeOff, RefreshCw, PenLine, ArrowLeft } from 'lucide-react';
 import { globalSettingsService, faceLabelRoleDefaultsService, GlobalSettingsProfile } from './GlobalSettingsDatabase';
 import { useAppStore } from '../store';
 import type { FaceRole } from '../store';
@@ -15,7 +15,7 @@ interface PanelEditorProps {
 }
 
 export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
-  const { selectedShapeId, shapes, updateShape, addShape, showOutlines, setShowOutlines, showRoleNumbers, setShowRoleNumbers, selectedPanelRow, selectedPanelRowParentId, setSelectedPanelRow, panelSelectMode, setPanelSelectMode, raycastMode, setRaycastMode, showVirtualFaces, setShowVirtualFaces, virtualFaces, updateVirtualFace, deleteVirtualFace, pendingPanelCreation, setActivePanelProfileId, setShapeRebuilding } = useAppStore();
+  const { selectedShapeId, shapes, updateShape, addShape, showOutlines, setShowOutlines, showRoleNumbers, setShowRoleNumbers, selectedPanelRow, selectedPanelRowParentId, setSelectedPanelRow, panelSelectMode, setPanelSelectMode, raycastMode, setRaycastMode, showVirtualFaces, setShowVirtualFaces, virtualFaces, updateVirtualFace, deleteVirtualFace, pendingPanelCreation, setActivePanelProfileId, setShapeRebuilding, panelFaceEditMode, setPanelFaceEditMode, editingPanelId, setEditingPanelId } = useAppStore();
   const [position, setPosition] = useState({ x: 100, y: 100 });
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
@@ -153,8 +153,10 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
     } else {
       setSelectedPanelRow(null);
       setPanelSelectMode(false);
+      setPanelFaceEditMode(false);
+      setEditingPanelId(null);
     }
-  }, [isOpen, setSelectedPanelRow, setPanelSelectMode]);
+  }, [isOpen, setSelectedPanelRow, setPanelSelectMode, setPanelFaceEditMode, setEditingPanelId]);
 
   useEffect(() => {
     if (selectedPanelRow !== null) {
@@ -932,6 +934,17 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                 }
               });
 
+              const editingPanel = panelFaceEditMode && editingPanelId
+                ? shapes.find(s => s.id === editingPanelId)
+                : null;
+              const editingFaceIndex = editingPanel?.parameters?.faceIndex;
+              const editingFaceLabel = editingFaceIndex !== undefined ? faceGroupLabels.get(editingFaceIndex) : null;
+              const editingLabelText = editingFaceLabel?.label ?? (editingFaceIndex !== undefined ? `${editingFaceIndex + 1}` : '?');
+              const editingLabelColor = editingFaceLabel?.color ?? '#1a1a1a';
+              const editingDimensions = editingFaceIndex !== undefined ? getPanelDimensions(editingFaceIndex) : null;
+              const editingRole = editingFaceIndex !== undefined ? faceRoles[editingFaceIndex] : null;
+              const editingDescription = editingFaceIndex !== undefined ? (faceDescriptions[editingFaceIndex] || '') : '';
+
               return (
                 <div className={`space-y-0.5 pt-2 border-t border-stone-300 ${isDisabled ? 'opacity-40 pointer-events-none' : ''}`}>
                   {resolving && (
@@ -939,6 +952,76 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                       resolving joints...
                     </div>
                   )}
+
+                  {panelFaceEditMode && editingPanel && (
+                    <div className="mb-2 bg-orange-50 border border-orange-300 rounded-lg p-2">
+                      <div className="flex items-center gap-2 mb-1">
+                        <button
+                          onClick={() => {
+                            setPanelFaceEditMode(false);
+                            setEditingPanelId(null);
+                          }}
+                          className="p-0.5 rounded hover:bg-orange-200 transition-colors"
+                          title="Exit edit mode"
+                        >
+                          <ArrowLeft size={14} className="text-orange-700" />
+                        </button>
+                        <span className="text-xs font-bold text-orange-800">Panel Face Edit</span>
+                      </div>
+                      <div className="flex w-fit gap-0.5 items-center">
+                        <input
+                          type="text"
+                          value={editingLabelText}
+                          readOnly
+                          tabIndex={-1}
+                          style={{ color: editingLabelColor }}
+                          className="w-10 px-1 py-0.5 text-xs font-mono font-bold border rounded text-center bg-white border-orange-300"
+                        />
+                        <select
+                          value={editingRole || ''}
+                          disabled
+                          style={{ width: '35mm' }}
+                          className="px-1 py-0.5 text-xs border rounded bg-orange-50 text-gray-800 border-orange-300"
+                        >
+                          <option value="">none</option>
+                          {roleOptions.map(role => (
+                            <option key={role} value={role}>{role}</option>
+                          ))}
+                        </select>
+                        <input
+                          type="text"
+                          value={editingDescription}
+                          readOnly
+                          tabIndex={-1}
+                          placeholder="description"
+                          style={{ width: '40mm' }}
+                          className="px-2 py-0.5 text-xs border rounded bg-orange-50 text-gray-800 border-orange-300"
+                        />
+                        <input
+                          type="text"
+                          value={editingDimensions?.primary || 'NaN'}
+                          readOnly
+                          tabIndex={-1}
+                          className="w-[48px] px-1 py-0.5 text-xs font-mono border rounded text-center bg-orange-50 text-gray-800 border-orange-300 font-semibold"
+                        />
+                        <input
+                          type="text"
+                          value={editingDimensions?.secondary || 'NaN'}
+                          readOnly
+                          tabIndex={-1}
+                          className="w-[48px] px-1 py-0.5 text-xs font-mono border rounded text-center bg-orange-50 text-gray-800 border-orange-300 font-semibold"
+                        />
+                        <input
+                          type="text"
+                          value={editingDimensions?.thickness || 'NaN'}
+                          readOnly
+                          tabIndex={-1}
+                          className="w-[48px] px-1 py-0.5 text-xs font-mono border rounded text-center bg-orange-50 text-gray-800 border-orange-300 font-semibold"
+                        />
+                      </div>
+                    </div>
+                  )}
+
                   {orderedFaceIndices.map((i) => {
                     const dimensions = getPanelDimensions(i);
                     const isRowSelected = selectedPanelRow === i;
@@ -1130,17 +1213,24 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                                 !s.parameters?.extraRowId
                               );
                               if (panelShape) {
-                                const { selectShape, setShowParametersPanel } = useAppStore.getState();
-                                selectShape(panelShape.id);
-                                setShowParametersPanel(true);
+                                setEditingPanelId(panelShape.id);
+                                setPanelFaceEditMode(true);
+                                setSelectedPanelRow(i, null, selectedShape.id);
                               }
                             }}
                             className={`p-0.5 rounded transition-colors ${
                               isDisabled || !facePanels[i]
                                 ? 'text-stone-300 cursor-not-allowed'
+                                : panelFaceEditMode && editingPanelId === shapes.find(s =>
+                                    s.type === 'panel' &&
+                                    s.parameters?.parentShapeId === selectedShape.id &&
+                                    s.parameters?.faceIndex === i &&
+                                    !s.parameters?.extraRowId
+                                  )?.id
+                                ? 'text-orange-600 bg-orange-100 hover:bg-orange-200'
                                 : 'text-slate-500 hover:bg-stone-100 hover:text-slate-800'
                             }`}
-                            title="Edit panel parameters"
+                            title="Edit panel face selection"
                           >
                             <PenLine size={13} />
                           </button>

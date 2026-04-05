@@ -222,6 +222,10 @@ interface AppState{
 
   rebuildingShapeIds:Set<string>;
   setShapeRebuilding:(id:string,rebuilding:boolean)=>void;
+
+  panelFaceEditMode:boolean;setPanelFaceEditMode:(b:boolean)=>void;
+  editingPanelId:string|null;setEditingPanelId:(id:string|null)=>void;
+  hoveredPanelFaceIndex:number|null;setHoveredPanelFaceIndex:(i:number|null)=>void;
 }
 
 /** STORE */
@@ -323,6 +327,10 @@ export const useAppStore=create<AppState>((set,get)=>({
     if(rebuilding)next.add(id);else next.delete(id);
     return{rebuildingShapeIds:next};
   }),
+
+  panelFaceEditMode:false,setPanelFaceEditMode:(b)=>set({panelFaceEditMode:b,hoveredPanelFaceIndex:null}),
+  editingPanelId:null,setEditingPanelId:(id)=>set({editingPanelId:id}),
+  hoveredPanelFaceIndex:null,setHoveredPanelFaceIndex:(i)=>set({hoveredPanelFaceIndex:i}),
 
   /** ----------- SHAPE ACTIONS ----------- */
 

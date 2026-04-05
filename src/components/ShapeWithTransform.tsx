@@ -9,6 +9,7 @@ import { FilletEdgeLines } from './Fillet';
 import { FaceEditor } from './FaceEditor';
 import { RoleLabels } from './RoleLabels';
 import { FaceRaycastOverlay, VirtualFaceOverlay } from './FaceRaycastOverlay';
+import { PanelFaceSelectionOverlay } from './PanelFaceSelection';
 
 interface ShapeWithTransformProps {
   shape: any;
@@ -52,7 +53,9 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     waitingForSurfaceSelection,
     raycastMode,
     shapes,
-    rebuildingShapeIds
+    rebuildingShapeIds,
+    panelFaceEditMode,
+    editingPanelId,
   } = useAppStore(useShallow(state => ({
     selectShape: state.selectShape,
     selectSecondaryShape: state.selectSecondaryShape,
@@ -82,7 +85,9 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     waitingForSurfaceSelection: state.waitingForSurfaceSelection,
     raycastMode: state.raycastMode,
     shapes: state.shapes,
-    rebuildingShapeIds: state.rebuildingShapeIds
+    rebuildingShapeIds: state.rebuildingShapeIds,
+    panelFaceEditMode: state.panelFaceEditMode,
+    editingPanelId: state.editingPanelId,
   })));
 
   const { scene } = useThree();
@@ -401,7 +406,11 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     shape.parameters?.virtualFaceId &&
     `vf-${shape.parameters.virtualFaceId}` === selectedPanelRow;
 
-  const panelColor = (isPanelRowSelected || isVirtualPanelRowSelected)
+  const isPanelBeingEdited = isPanel && panelFaceEditMode && editingPanelId === shape.id;
+
+  const panelColor = isPanelBeingEdited
+    ? '#f97316'
+    : (isPanelRowSelected || isVirtualPanelRowSelected)
     ? '#ef4444'
     : (shape.color || '#ffffff');
 
@@ -479,8 +488,8 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
               */}
               <meshStandardMaterial
                 color={isPanel ? panelColor : '#c8c8c8'}
-                emissive={(isPanelRowSelected || isVirtualPanelRowSelected) ? panelColor : '#000000'}
-                emissiveIntensity={(isPanelRowSelected || isVirtualPanelRowSelected) ? 0.4 : 0}
+                emissive={(isPanelBeingEdited || isPanelRowSelected || isVirtualPanelRowSelected) ? panelColor : '#000000'}
+                emissiveIntensity={(isPanelBeingEdited || isPanelRowSelected || isVirtualPanelRowSelected) ? 0.4 : 0}
                 metalness={0}
                 roughness={isPanel ? 0.92 : 1.0}
                 transparent
@@ -572,8 +581,8 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
             >
               <meshStandardMaterial
                 color={isPanel ? panelColor : shouldShowAsReference ? '#ef4444' : '#c8c8c8'}
-                emissive={(isPanelRowSelected || isVirtualPanelRowSelected) ? panelColor : '#000000'}
-                emissiveIntensity={(isPanelRowSelected || isVirtualPanelRowSelected) ? 0.4 : 0}
+                emissive={(isPanelBeingEdited || isPanelRowSelected || isVirtualPanelRowSelected) ? panelColor : '#000000'}
+                emissiveIntensity={(isPanelBeingEdited || isPanelRowSelected || isVirtualPanelRowSelected) ? 0.4 : 0}
                 metalness={0}
                 roughness={isPanel ? 0.92 : 1.0}
                 transparent
@@ -622,6 +631,13 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
             key={`role-labels-${shape.id}-${shape.geometry?.uuid || ''}`}
             shape={shape}
             isActive={true}
+          />
+        )}
+
+        {isPanelBeingEdited && (
+          <PanelFaceSelectionOverlay
+            key={`panel-face-select-${shape.id}-${shape.geometry?.uuid || ''}`}
+            shape={shape}
           />
         )}
 
