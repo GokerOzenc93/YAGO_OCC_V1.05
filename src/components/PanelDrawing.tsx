@@ -197,6 +197,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           castShadow
           receiveShadow
           onClick={handleClick}
+          raycast={isFaceExtrudeTarget ? () => null : undefined}
         >
           <meshLambertMaterial
             color={materialColor}
@@ -262,6 +263,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
             castShadow
             receiveShadow
             onClick={handleClick}
+            raycast={isFaceExtrudeTarget ? () => null : undefined}
           >
             <meshLambertMaterial
               color={materialColor}
