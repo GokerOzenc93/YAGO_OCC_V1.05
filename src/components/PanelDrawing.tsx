@@ -156,6 +156,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
 
   const handleClick = (e: any) => {
     e.stopPropagation();
+    if (isFaceExtrudeTarget) return;
     // Panel yüzey seçim modu
     if (panelSurfaceSelectMode && waitingForSurfaceSelection && e.faceIndex !== undefined) {
       const clickedFaceIndex = e.faceIndex;
@@ -297,7 +298,6 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
         <>
           <mesh
             geometry={shape.geometry}
-            visible={false}
             onClick={(e: any) => {
               e.stopPropagation();
               const fi = e.faceIndex;
@@ -324,7 +324,9 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
               setHoveredExtrudeGroup(null);
               setFaceExtrudeHoveredFace(null);
             }}
-          />
+          >
+            <meshBasicMaterial transparent opacity={0} side={THREE.DoubleSide} />
+          </mesh>
           {extrudeHighlightGeometry && (
             <mesh geometry={extrudeHighlightGeometry}>
               <meshBasicMaterial
