@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, GripVertical, MousePointer, Layers, RotateCw, Plus, Trash2, Eye, EyeOff, RefreshCw, PenLine } from 'lucide-react';
+import { X, GripVertical, MousePointer, Layers, RotateCw, Plus, Trash2, Eye, EyeOff, RefreshCw } from 'lucide-react';
 import { globalSettingsService, faceLabelRoleDefaultsService, GlobalSettingsProfile } from './GlobalSettingsDatabase';
 import { useAppStore } from '../store';
 import type { FaceRole } from '../store';
@@ -1119,31 +1119,6 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                           >
                             <RotateCw size={13} />
                           </button>
-                          <button
-                            disabled={isDisabled || !facePanels[i]}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              const panelShape = shapes.find(s =>
-                                s.type === 'panel' &&
-                                s.parameters?.parentShapeId === selectedShape.id &&
-                                s.parameters?.faceIndex === i &&
-                                !s.parameters?.extraRowId
-                              );
-                              if (panelShape) {
-                                const { selectShape, setShowParametersPanel } = useAppStore.getState();
-                                selectShape(panelShape.id);
-                                setShowParametersPanel(true);
-                              }
-                            }}
-                            className={`p-0.5 rounded transition-colors ${
-                              isDisabled || !facePanels[i]
-                                ? 'text-stone-300 cursor-not-allowed'
-                                : 'text-slate-500 hover:bg-stone-100 hover:text-slate-800'
-                            }`}
-                            title="Edit panel parameters"
-                          >
-                            <PenLine size={13} />
-                          </button>
                           </div>
                         </div>
                       </React.Fragment>
@@ -1324,25 +1299,6 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                           <RotateCw size={13} />
                         </button>
                         <button
-                          disabled={isDisabled || !vf.hasPanel}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (virtualPanel) {
-                              const { selectShape, setShowParametersPanel } = useAppStore.getState();
-                              selectShape(virtualPanel.id);
-                              setShowParametersPanel(true);
-                            }
-                          }}
-                          className={`p-0.5 rounded transition-colors ${
-                            isDisabled || !vf.hasPanel
-                              ? 'text-stone-300 cursor-not-allowed'
-                              : 'text-slate-500 hover:bg-stone-100 hover:text-slate-800'
-                          }`}
-                          title="Edit panel parameters"
-                        >
-                          <PenLine size={13} />
-                        </button>
-                        <button
                           disabled={isDisabled}
                           onClick={(e) => {
                             e.stopPropagation();
@@ -1368,6 +1324,100 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
           </div>
         )}
       </div>
+      {selectedShape && selectedPanelRow !== null && (() => {
+        let dims: { primary: number; secondary: number; thickness: number; w: number; h: number; d: number } | null = null;
+        let panelLabel = '';
+
+        if (typeof selectedPanelRow === 'number') {
+          dims = getPanelDimensions(selectedPanelRow);
+          const panelShape = shapes.find(s =>
+            s.type === 'panel' &&
+            s.parameters?.parentShapeId === selectedShape.id &&
+            s.parameters?.faceIndex === selectedPanelRow &&
+            !s.parameters?.extraRowId
+          );
+          panelLabel = panelShape?.parameters?.faceRole ? String(panelShape.parameters.faceRole) : `Face ${selectedPanelRow + 1}`;
+        } else if (typeof selectedPanelRow === 'string' && selectedPanelRow.startsWith('vf-')) {
+          const vfId = selectedPanelRow.replace('vf-', '');
+          const vp = shapes.find(s =>
+            s.type === 'panel' &&
+            s.parameters?.parentShapeId === selectedShape.id &&
+            s.parameters?.virtualFaceId === vfId
+          );
+          if (vp && vp.geometry) {
+            const box = new THREE.Box3().setFromBufferAttribute(vp.geometry.getAttribute('position'));
+            const size = new THREE.Vector3();
+            box.getSize(size);
+            const axes = [
+              { index: 0, value: size.x },
+              { index: 1, value: size.y },
+              { index: 2, value: size.z }
+            ].sort((a, b) => a.value - b.value);
+            const thicknessAxis = axes[0].index;
+            const planeAxes = axes.slice(1).map(a => a.index);
+            const arrowRotated = vp.parameters?.arrowRotated || false;
+            const role = vp.parameters?.faceRole?.toLowerCase();
+            let defaultAxis = planeAxes[0];
+            let altAxis = planeAxes[1];
+            if (role === 'left' || role === 'right') {
+              if (planeAxes.includes(1)) { defaultAxis = 1; altAxis = planeAxes.find(a => a !== 1) ?? planeAxes[1]; }
+            } else if (role === 'top' || role === 'bottom') {
+              if (planeAxes.includes(0)) { defaultAxis = 0; altAxis = planeAxes.find(a => a !== 0) ?? planeAxes[1]; }
+            }
+            const targetAxis = arrowRotated ? altAxis : defaultAxis;
+            const secondaryAxis = planeAxes.find(a => a !== targetAxis) ?? planeAxes[0];
+            const sizeByIndex = [size.x, size.y, size.z];
+            dims = {
+              primary: Math.round(sizeByIndex[targetAxis] * 10) / 10,
+              secondary: Math.round(sizeByIndex[secondaryAxis] * 10) / 10,
+              thickness: Math.round(sizeByIndex[thicknessAxis] * 10) / 10,
+              w: Math.round(size.x * 10) / 10,
+              h: Math.round(size.y * 10) / 10,
+              d: Math.round(size.z * 10) / 10,
+            };
+          }
+          panelLabel = vp?.parameters?.faceRole ? String(vp.parameters.faceRole) : 'Virtual Panel';
+        }
+
+        if (!dims) return null;
+
+        return (
+          <div className="border-t border-orange-200 bg-orange-50 px-3 py-2 rounded-b-lg">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[10px] font-semibold text-orange-700 uppercase tracking-wide">
+                Seçili Panel
+              </span>
+              <span className="text-[10px] font-semibold text-orange-600 bg-orange-100 border border-orange-300 rounded px-1.5 py-0.5">
+                {panelLabel}
+              </span>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="flex flex-col items-center">
+                <span className="text-[9px] text-stone-500 font-medium uppercase tracking-wide mb-0.5">Genişlik</span>
+                <span className="text-sm font-bold text-slate-800 font-mono">{dims.primary}</span>
+                <span className="text-[9px] text-stone-400">mm</span>
+              </div>
+              <div className="w-px h-8 bg-orange-200" />
+              <div className="flex flex-col items-center">
+                <span className="text-[9px] text-stone-500 font-medium uppercase tracking-wide mb-0.5">Yükseklik</span>
+                <span className="text-sm font-bold text-slate-800 font-mono">{dims.secondary}</span>
+                <span className="text-[9px] text-stone-400">mm</span>
+              </div>
+              <div className="w-px h-8 bg-orange-200" />
+              <div className="flex flex-col items-center">
+                <span className="text-[9px] text-stone-500 font-medium uppercase tracking-wide mb-0.5">Kalınlık</span>
+                <span className="text-sm font-bold text-slate-800 font-mono">{dims.thickness}</span>
+                <span className="text-[9px] text-stone-400">mm</span>
+              </div>
+              <div className="w-px h-8 bg-orange-200" />
+              <div className="flex flex-col items-center flex-1">
+                <span className="text-[9px] text-stone-500 font-medium uppercase tracking-wide mb-0.5">X / Y / Z</span>
+                <span className="text-xs font-semibold text-slate-600 font-mono">{dims.w} × {dims.h} × {dims.d}</span>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
