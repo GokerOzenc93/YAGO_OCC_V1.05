@@ -64,16 +64,17 @@ export const PanelFaceSelectionOverlay: React.FC<{ shape: any }> = ({ shape }) =
         />
       </mesh>
       {hoverHighlightGeometry && (
-        <mesh geometry={hoverHighlightGeometry}>
+        <mesh geometry={hoverHighlightGeometry} renderOrder={999}>
           <meshBasicMaterial
-            color={0xff0000}
+            color={0x3b82f6}
             transparent
-            opacity={0.45}
+            opacity={0.7}
             side={THREE.DoubleSide}
             polygonOffset
-            polygonOffsetFactor={-3}
-            polygonOffsetUnits={-3}
+            polygonOffsetFactor={-4}
+            polygonOffsetUnits={-4}
             depthTest={false}
+            depthWrite={false}
           />
         </mesh>
       )}
