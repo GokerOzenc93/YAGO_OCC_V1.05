@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, GripVertical, MousePointer, Layers, RotateCw, Plus, Trash2, Eye, EyeOff, RefreshCw } from 'lucide-react';
+import { X, GripVertical, MousePointer, Layers, RotateCw, Plus, Trash2, Eye, EyeOff, RefreshCw, MoveVertical } from 'lucide-react';
 import { globalSettingsService, faceLabelRoleDefaultsService, GlobalSettingsProfile } from './GlobalSettingsDatabase';
 import { useAppStore } from '../store';
 import type { FaceRole } from '../store';
@@ -1020,7 +1020,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                                 }
                               }
                             }}
-                            style={{ width: '28mm' }}
+                            style={{ width: '32mm' }}
                             className={`px-1 py-0.5 text-xs border rounded ${isDisabled ? 'bg-stone-100 text-stone-400 border-stone-200' : 'bg-white text-gray-800 border-gray-300'}`}
                           >
                             <option value="">none</option>
@@ -1171,7 +1171,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                               }
                             }
                           }}
-                          style={{ width: '28mm' }}
+                          style={{ width: '32mm' }}
                           className={`px-1 py-0.5 text-xs border rounded ${isDisabled ? 'bg-stone-100 text-stone-400 border-stone-200' : 'bg-white text-gray-800 border-green-300'}`}
                         >
                           <option value="">none</option>
@@ -1341,6 +1341,15 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
               <div className="flex flex-col items-center">
                 <span className="text-[9px] text-stone-500 font-medium uppercase tracking-wide mb-0.5">Thickness</span>
                 <span className="text-sm font-bold text-slate-800 font-mono">{dims.thickness}</span>
+              </div>
+              <div className="ml-auto">
+                <button
+                  onClick={(e) => e.stopPropagation()}
+                  className="flex items-center justify-center w-7 h-7 rounded border border-orange-300 bg-white hover:bg-orange-100 text-orange-600 transition-colors"
+                  title="Face Extrude"
+                >
+                  <MoveVertical size={14} />
+                </button>
               </div>
             </div>
           </div>
