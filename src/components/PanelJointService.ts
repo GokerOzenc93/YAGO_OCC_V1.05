@@ -228,6 +228,14 @@ async function applyBackPanelSettings(
 
   const updates: Array<{ id: string; geometry: any; replicadShape: any; parameters: any }> = [];
 
+  const hasDominantPanels = panels.some(p => {
+    const role = p.parameters?.faceRole as FaceRole;
+    return role === 'Left' || role === 'Right' || role === 'Top' || role === 'Bottom';
+  });
+
+  const effectiveGrooveOffset = hasDominantPanels ? grooveOffset : 0;
+  const effectiveGrooveDepth = hasDominantPanels ? grooveDepth : 0;
+
   for (const panel of backPanels) {
     const faceIndex = panel.parameters?.faceIndex;
     if (faceIndex === undefined || faceIndex === null || faceIndex < 0) continue;
@@ -256,12 +264,12 @@ async function applyBackPanelSettings(
       );
       if (!replicadPanel) continue;
 
-      const offsetX = localNormal.x * (-grooveOffset);
-      const offsetY = localNormal.y * (-grooveOffset);
-      const offsetZ = localNormal.z * (-grooveOffset);
+      const offsetX = localNormal.x * (-effectiveGrooveOffset);
+      const offsetY = localNormal.y * (-effectiveGrooveOffset);
+      const offsetZ = localNormal.z * (-effectiveGrooveOffset);
       let finalPanel = replicadPanel.translate(offsetX, offsetY, offsetZ);
 
-      const needsGrooveExpand = grooveDepth > 0 || backPanelLeftExtend > 0 || backPanelRightExtend > 0 || backPanelTopExtend > 0 || backPanelBottomExtend > 0;
+      const needsGrooveExpand = hasDominantPanels && (effectiveGrooveDepth > 0 || backPanelLeftExtend > 0 || backPanelRightExtend > 0 || backPanelTopExtend > 0 || backPanelBottomExtend > 0);
 
       if (needsGrooveExpand) {
         const baseBB = getReplicadBoundingBox(finalPanel);
@@ -279,28 +287,23 @@ async function applyBackPanelSettings(
         const verticalAxis = 1;
         const horizontalAxis = [0, 1, 2].find(a => a !== thicknessAxis && a !== verticalAxis) ?? 0;
 
-        const dominantPanels = panels.filter(p => {
-          const role = p.parameters?.faceRole as FaceRole;
-          return role === 'Left' || role === 'Right' || role === 'Top' || role === 'Bottom';
-        });
+        const leftPanel = panels.find(p => p.parameters?.faceRole === 'Left');
+        const rightPanel = panels.find(p => p.parameters?.faceRole === 'Right');
+        const topPanel = panels.find(p => p.parameters?.faceRole === 'Top');
+        const bottomPanel = panels.find(p => p.parameters?.faceRole === 'Bottom');
 
-        const leftPanel = dominantPanels.find(p => p.parameters?.faceRole === 'Left');
-        const rightPanel = dominantPanels.find(p => p.parameters?.faceRole === 'Right');
-        const topPanel = dominantPanels.find(p => p.parameters?.faceRole === 'Top');
-        const bottomPanel = dominantPanels.find(p => p.parameters?.faceRole === 'Bottom');
-
-        const leftThickness = leftPanel ? (leftPanel.parameters?.depth ?? 18) : 18;
-        const rightThickness = rightPanel ? (rightPanel.parameters?.depth ?? 18) : 18;
-        const topThickness = topPanel ? (topPanel.parameters?.depth ?? 18) : 18;
-        const bottomThickness = bottomPanel ? (bottomPanel.parameters?.depth ?? 18) : 18;
+        const leftThickness = leftPanel ? (leftPanel.parameters?.depth ?? 18) : 0;
+        const rightThickness = rightPanel ? (rightPanel.parameters?.depth ?? 18) : 0;
+        const topThickness = topPanel ? (topPanel.parameters?.depth ?? 18) : 0;
+        const bottomThickness = bottomPanel ? (bottomPanel.parameters?.depth ?? 18) : 0;
 
         const newMin: [number, number, number] = [baseBB.min[0], baseBB.min[1], baseBB.min[2]];
         const newMax: [number, number, number] = [baseBB.max[0], baseBB.max[1], baseBB.max[2]];
 
-        newMin[horizontalAxis] += leftThickness - grooveDepth - backPanelLeftExtend;
-        newMax[horizontalAxis] -= rightThickness - grooveDepth - backPanelRightExtend;
-        newMax[verticalAxis] -= topThickness - grooveDepth - backPanelTopExtend;
-        newMin[verticalAxis] += bottomThickness - grooveDepth - backPanelBottomExtend;
+        newMin[horizontalAxis] += leftThickness - effectiveGrooveDepth - backPanelLeftExtend;
+        newMax[horizontalAxis] -= rightThickness - effectiveGrooveDepth - backPanelRightExtend;
+        newMax[verticalAxis] -= topThickness - effectiveGrooveDepth - backPanelTopExtend;
+        newMin[verticalAxis] += bottomThickness - effectiveGrooveDepth - backPanelBottomExtend;
 
         const dims: [number, number, number] = [
           newMax[0] - newMin[0],
@@ -308,7 +311,7 @@ async function applyBackPanelSettings(
           newMax[2] - newMin[2],
         ];
 
-        console.log(`Back panel groove expand: thicknessAxis=${thicknessAxis}, horizontalAxis=${horizontalAxis}, baseSize=${JSON.stringify(baseSize)}, dims=${JSON.stringify(dims)}, grooveDepth=${grooveDepth}`);
+        console.log(`Back panel groove expand: thicknessAxis=${thicknessAxis}, horizontalAxis=${horizontalAxis}, baseSize=${JSON.stringify(baseSize)}, dims=${JSON.stringify(dims)}, effectiveGrooveDepth=${effectiveGrooveDepth}`);
 
         if (dims[0] > 0.1 && dims[1] > 0.1 && dims[2] > 0.1) {
           try {
