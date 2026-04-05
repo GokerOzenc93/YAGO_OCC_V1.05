@@ -179,6 +179,9 @@ interface AppState{
   faceExtrudeMode:boolean;setFaceExtrudeMode:(b:boolean)=>void;
   faceExtrudeTargetPanelId:string|null;setFaceExtrudeTargetPanelId:(id:string|null)=>void;
   faceExtrudeHoveredFace:number|null;setFaceExtrudeHoveredFace:(i:number|null)=>void;
+  faceExtrudeSelectedFace:number|null;setFaceExtrudeSelectedFace:(i:number|null)=>void;
+  faceExtrudeThickness:number;setFaceExtrudeThickness:(v:number)=>void;
+  faceExtrudeFixedMode:boolean;setFaceExtrudeFixedMode:(b:boolean)=>void;
 
   showVirtualFaces:boolean;setShowVirtualFaces:(b:boolean)=>void;
   virtualFaces:VirtualFace[];
@@ -266,9 +269,12 @@ export const useAppStore=create<AppState>((set,get)=>({
   raycastMode:false,setRaycastMode:(e)=>set({raycastMode:e,raycastResults:e?get().raycastResults:[]}),
   raycastResults:[],setRaycastResults:(r)=>set({raycastResults:r}),
 
-  faceExtrudeMode:false,setFaceExtrudeMode:(b)=>set({faceExtrudeMode:b,faceExtrudeHoveredFace:null,...(!b?{faceExtrudeTargetPanelId:null}:{})}),
+  faceExtrudeMode:false,setFaceExtrudeMode:(b)=>set({faceExtrudeMode:b,faceExtrudeHoveredFace:null,faceExtrudeSelectedFace:null,...(!b?{faceExtrudeTargetPanelId:null}:{})}),
   faceExtrudeTargetPanelId:null,setFaceExtrudeTargetPanelId:(id)=>set({faceExtrudeTargetPanelId:id}),
   faceExtrudeHoveredFace:null,setFaceExtrudeHoveredFace:(i)=>set({faceExtrudeHoveredFace:i}),
+  faceExtrudeSelectedFace:null,setFaceExtrudeSelectedFace:(i)=>set({faceExtrudeSelectedFace:i}),
+  faceExtrudeThickness:18,setFaceExtrudeThickness:(v)=>set({faceExtrudeThickness:v}),
+  faceExtrudeFixedMode:true,setFaceExtrudeFixedMode:(b)=>set({faceExtrudeFixedMode:b}),
 
   showVirtualFaces:true,setShowVirtualFaces:(b)=>set({showVirtualFaces:b}),
   virtualFaces:[],

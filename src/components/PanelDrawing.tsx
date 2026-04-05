@@ -56,7 +56,9 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     viewMode,
     faceExtrudeMode,
     faceExtrudeTargetPanelId,
-    setFaceExtrudeHoveredFace
+    setFaceExtrudeHoveredFace,
+    faceExtrudeSelectedFace,
+    setFaceExtrudeSelectedFace
   } = useAppStore(useShallow(state => ({
     selectShape: state.selectShape,
     selectSecondaryShape: state.selectSecondaryShape,
@@ -71,7 +73,9 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     viewMode: state.viewMode,
     faceExtrudeMode: state.faceExtrudeMode,
     faceExtrudeTargetPanelId: state.faceExtrudeTargetPanelId,
-    setFaceExtrudeHoveredFace: state.setFaceExtrudeHoveredFace
+    setFaceExtrudeHoveredFace: state.setFaceExtrudeHoveredFace,
+    faceExtrudeSelectedFace: state.faceExtrudeSelectedFace,
+    setFaceExtrudeSelectedFace: state.setFaceExtrudeSelectedFace
   })));
 
   const [faceGroups, setFaceGroups] = useState<any[]>([]);
@@ -121,8 +125,14 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
 
   const extrudeHighlightGeometry = useMemo(() => {
     if (!isFaceExtrudeTarget || hoveredExtrudeGroup === null || !faceGroups[hoveredExtrudeGroup] || faces.length === 0) return null;
+    if (hoveredExtrudeGroup === faceExtrudeSelectedFace) return null;
     return createFaceHighlightGeometry(faces, faceGroups[hoveredExtrudeGroup].faceIndices);
-  }, [isFaceExtrudeTarget, hoveredExtrudeGroup, faceGroups, faces]);
+  }, [isFaceExtrudeTarget, hoveredExtrudeGroup, faceGroups, faces, faceExtrudeSelectedFace]);
+
+  const extrudeSelectedGeometry = useMemo(() => {
+    if (!isFaceExtrudeTarget || faceExtrudeSelectedFace === null || !faceGroups[faceExtrudeSelectedFace] || faces.length === 0) return null;
+    return createFaceHighlightGeometry(faces, faceGroups[faceExtrudeSelectedFace].faceIndices);
+  }, [isFaceExtrudeTarget, faceExtrudeSelectedFace, faceGroups, faces]);
 
   if (!shape.geometry) return null;
 
@@ -288,6 +298,16 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           <mesh
             geometry={shape.geometry}
             visible={false}
+            onClick={(e: any) => {
+              e.stopPropagation();
+              const fi = e.faceIndex;
+              if (fi !== undefined) {
+                const gi = faceGroups.findIndex(g => g.faceIndices.includes(fi));
+                if (gi !== -1) {
+                  setFaceExtrudeSelectedFace(faceExtrudeSelectedFace === gi ? null : gi);
+                }
+              }
+            }}
             onPointerMove={(e: any) => {
               e.stopPropagation();
               const fi = e.faceIndex;
@@ -310,11 +330,24 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
               <meshBasicMaterial
                 color={0x2196f3}
                 transparent
-                opacity={0.45}
+                opacity={0.35}
                 side={THREE.DoubleSide}
                 polygonOffset
                 polygonOffsetFactor={-1}
                 polygonOffsetUnits={-1}
+              />
+            </mesh>
+          )}
+          {extrudeSelectedGeometry && (
+            <mesh geometry={extrudeSelectedGeometry}>
+              <meshBasicMaterial
+                color={0xff9800}
+                transparent
+                opacity={0.6}
+                side={THREE.DoubleSide}
+                polygonOffset
+                polygonOffsetFactor={-2}
+                polygonOffsetUnits={-2}
               />
             </mesh>
           )}

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, GripVertical, MousePointer, Layers, RotateCw, Plus, Trash2, Eye, EyeOff, RefreshCw, MoveVertical } from 'lucide-react';
+import { X, GripVertical, MousePointer, Layers, RotateCw, Plus, Trash2, Eye, EyeOff, RefreshCw, MoveVertical, ArrowUp, Check } from 'lucide-react';
 import { globalSettingsService, faceLabelRoleDefaultsService, GlobalSettingsProfile } from './GlobalSettingsDatabase';
 import { useAppStore } from '../store';
 import type { FaceRole } from '../store';
@@ -15,7 +15,7 @@ interface PanelEditorProps {
 }
 
 export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
-  const { selectedShapeId, shapes, updateShape, addShape, showOutlines, setShowOutlines, showRoleNumbers, setShowRoleNumbers, selectedPanelRow, selectedPanelRowParentId, setSelectedPanelRow, panelSelectMode, setPanelSelectMode, raycastMode, setRaycastMode, showVirtualFaces, setShowVirtualFaces, virtualFaces, updateVirtualFace, deleteVirtualFace, pendingPanelCreation, setActivePanelProfileId, setShapeRebuilding, faceExtrudeMode, setFaceExtrudeMode, setFaceExtrudeTargetPanelId } = useAppStore();
+  const { selectedShapeId, shapes, updateShape, addShape, showOutlines, setShowOutlines, showRoleNumbers, setShowRoleNumbers, selectedPanelRow, selectedPanelRowParentId, setSelectedPanelRow, panelSelectMode, setPanelSelectMode, raycastMode, setRaycastMode, showVirtualFaces, setShowVirtualFaces, virtualFaces, updateVirtualFace, deleteVirtualFace, pendingPanelCreation, setActivePanelProfileId, setShapeRebuilding, faceExtrudeMode, setFaceExtrudeMode, setFaceExtrudeTargetPanelId, faceExtrudeSelectedFace, setFaceExtrudeSelectedFace, faceExtrudeThickness, setFaceExtrudeThickness, faceExtrudeFixedMode, setFaceExtrudeFixedMode } = useAppStore();
   const [position, setPosition] = useState({ x: 100, y: 100 });
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
@@ -1328,6 +1328,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
 
         if (!dims) return null;
         const isExtrudeActive = faceExtrudeMode && currentPanelId !== null;
+        const showExtrudeControls = isExtrudeActive && faceExtrudeSelectedFace !== null;
 
         return (
           <div className="border-t border-orange-200 bg-orange-50 px-3 py-2 rounded-b-lg">
@@ -1368,6 +1369,50 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                 </button>
               </div>
             </div>
+            {showExtrudeControls && (
+              <div className="flex items-center gap-2 mt-2 pt-2 border-t border-orange-200">
+                <ArrowUp size={14} className="text-orange-600 shrink-0" />
+                <input
+                  type="number"
+                  value={faceExtrudeThickness}
+                  onChange={(e) => setFaceExtrudeThickness(Number(e.target.value) || 0)}
+                  className="w-16 h-6 px-1.5 text-xs font-mono text-center bg-white border border-orange-300 rounded focus:outline-none focus:border-orange-500"
+                  min={0}
+                  step={1}
+                />
+                <div className="flex rounded overflow-hidden border border-orange-300 shrink-0">
+                  <button
+                    onClick={() => setFaceExtrudeFixedMode(true)}
+                    className={`px-2 h-6 text-[10px] font-semibold transition-colors ${
+                      faceExtrudeFixedMode
+                        ? 'bg-orange-500 text-white'
+                        : 'bg-white text-orange-600 hover:bg-orange-50'
+                    }`}
+                  >
+                    Fix
+                  </button>
+                  <button
+                    onClick={() => setFaceExtrudeFixedMode(false)}
+                    className={`px-2 h-6 text-[10px] font-semibold border-l border-orange-300 transition-colors ${
+                      !faceExtrudeFixedMode
+                        ? 'bg-orange-500 text-white'
+                        : 'bg-white text-orange-600 hover:bg-orange-50'
+                    }`}
+                  >
+                    Dinamik
+                  </button>
+                </div>
+                <button
+                  onClick={() => {
+                    // onay islemi - su an sadece placeholder
+                  }}
+                  className="flex items-center justify-center w-6 h-6 rounded border border-green-400 bg-green-500 text-white hover:bg-green-600 transition-colors shrink-0 ml-auto"
+                  title="Onayla"
+                >
+                  <Check size={12} />
+                </button>
+              </div>
+            )}
           </div>
         );
       })()}
