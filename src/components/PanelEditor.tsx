@@ -1328,7 +1328,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
 
         if (!dims) return null;
         const isExtrudeActive = faceExtrudeMode && currentPanelId !== null;
-        const showExtrudeControls = isExtrudeActive && faceExtrudeSelectedFace !== null;
+        const showExtrudeControls = isExtrudeActive;
 
         return (
           <div className="border-t border-orange-200 bg-orange-50 px-3 py-2 rounded-b-lg">
@@ -1371,17 +1371,19 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
             </div>
             {showExtrudeControls && (
               <div className="flex items-center gap-2 mt-2 pt-2 border-t border-orange-200">
-                <ArrowUp size={14} className="text-orange-600 shrink-0" />
+                <ArrowUp size={14} className={`shrink-0 ${faceExtrudeSelectedFace !== null ? 'text-orange-600' : 'text-orange-300'}`} />
                 <input
                   type="number"
                   value={faceExtrudeThickness}
                   onChange={(e) => setFaceExtrudeThickness(Number(e.target.value) || 0)}
-                  className="w-16 h-6 px-1.5 text-xs font-mono text-center bg-white border border-orange-300 rounded focus:outline-none focus:border-orange-500"
+                  disabled={faceExtrudeSelectedFace === null}
+                  className={`w-16 h-6 px-1.5 text-xs font-mono text-center border rounded focus:outline-none focus:border-orange-500 ${faceExtrudeSelectedFace !== null ? 'bg-white border-orange-300' : 'bg-orange-100 border-orange-200 text-orange-300 cursor-not-allowed'}`}
                   min={0}
                   step={1}
                 />
-                <div className="flex rounded overflow-hidden border border-orange-300 shrink-0">
+                <div className={`flex rounded overflow-hidden border shrink-0 ${faceExtrudeSelectedFace !== null ? 'border-orange-300' : 'border-orange-200 opacity-40'}`}>
                   <button
+                    disabled={faceExtrudeSelectedFace === null}
                     onClick={() => setFaceExtrudeFixedMode(true)}
                     className={`px-2 h-6 text-[10px] font-semibold transition-colors ${
                       faceExtrudeFixedMode
@@ -1392,6 +1394,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                     Fix
                   </button>
                   <button
+                    disabled={faceExtrudeSelectedFace === null}
                     onClick={() => setFaceExtrudeFixedMode(false)}
                     className={`px-2 h-6 text-[10px] font-semibold border-l border-orange-300 transition-colors ${
                       !faceExtrudeFixedMode
@@ -1403,10 +1406,9 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                   </button>
                 </div>
                 <button
-                  onClick={() => {
-                    // onay islemi - su an sadece placeholder
-                  }}
-                  className="flex items-center justify-center w-6 h-6 rounded border border-green-400 bg-green-500 text-white hover:bg-green-600 transition-colors shrink-0 ml-auto"
+                  disabled={faceExtrudeSelectedFace === null}
+                  onClick={() => {}}
+                  className={`flex items-center justify-center w-6 h-6 rounded border transition-colors shrink-0 ml-auto ${faceExtrudeSelectedFace !== null ? 'border-green-400 bg-green-500 text-white hover:bg-green-600' : 'border-orange-200 bg-orange-100 text-orange-300 cursor-not-allowed'}`}
                   title="Onayla"
                 >
                   <Check size={12} />
