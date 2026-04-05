@@ -1331,19 +1331,16 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
               <div className="flex flex-col items-center">
                 <span className="text-[9px] text-stone-500 font-medium uppercase tracking-wide mb-0.5">Width</span>
                 <span className="text-sm font-bold text-slate-800 font-mono">{dims.primary}</span>
-                <span className="text-[9px] text-stone-400">mm</span>
               </div>
-              <div className="w-px h-8 bg-orange-200" />
+              <div className="w-px h-6 bg-orange-200" />
               <div className="flex flex-col items-center">
                 <span className="text-[9px] text-stone-500 font-medium uppercase tracking-wide mb-0.5">Height</span>
                 <span className="text-sm font-bold text-slate-800 font-mono">{dims.secondary}</span>
-                <span className="text-[9px] text-stone-400">mm</span>
               </div>
-              <div className="w-px h-8 bg-orange-200" />
+              <div className="w-px h-6 bg-orange-200" />
               <div className="flex flex-col items-center">
                 <span className="text-[9px] text-stone-500 font-medium uppercase tracking-wide mb-0.5">Thickness</span>
                 <span className="text-sm font-bold text-slate-800 font-mono">{dims.thickness}</span>
-                <span className="text-[9px] text-stone-400">mm</span>
               </div>
             </div>
           </div>
