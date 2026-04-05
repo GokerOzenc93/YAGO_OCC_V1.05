@@ -1327,36 +1327,28 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
 
         return (
           <div className="border-t border-orange-200 bg-orange-50 px-3 py-2 rounded-b-lg">
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-[10px] font-semibold text-orange-700 uppercase tracking-wide">
-                Seçili Panel
-              </span>
+            <div className="flex items-center gap-3">
               <span className="text-[10px] font-semibold text-orange-600 bg-orange-100 border border-orange-300 rounded px-1.5 py-0.5">
                 {panelLabel}
               </span>
-            </div>
-            <div className="flex items-center gap-3">
-              <div className="flex flex-col items-center">
-                <span className="text-[9px] text-stone-500 font-medium uppercase tracking-wide mb-0.5">Genişlik</span>
-                <span className="text-sm font-bold text-slate-800 font-mono">{dims.primary}</span>
-                <span className="text-[9px] text-stone-400">mm</span>
-              </div>
-              <div className="w-px h-8 bg-orange-200" />
-              <div className="flex flex-col items-center">
-                <span className="text-[9px] text-stone-500 font-medium uppercase tracking-wide mb-0.5">Yükseklik</span>
-                <span className="text-sm font-bold text-slate-800 font-mono">{dims.secondary}</span>
-                <span className="text-[9px] text-stone-400">mm</span>
-              </div>
-              <div className="w-px h-8 bg-orange-200" />
-              <div className="flex flex-col items-center">
-                <span className="text-[9px] text-stone-500 font-medium uppercase tracking-wide mb-0.5">Kalınlık</span>
-                <span className="text-sm font-bold text-slate-800 font-mono">{dims.thickness}</span>
-                <span className="text-[9px] text-stone-400">mm</span>
-              </div>
-              <div className="w-px h-8 bg-orange-200" />
-              <div className="flex flex-col items-center flex-1">
-                <span className="text-[9px] text-stone-500 font-medium uppercase tracking-wide mb-0.5">X / Y / Z</span>
-                <span className="text-xs font-semibold text-slate-600 font-mono">{dims.w} × {dims.h} × {dims.d}</span>
+              <div className="flex items-center gap-3 flex-1">
+                <div className="flex flex-col items-center">
+                  <span className="text-[9px] text-stone-500 font-medium uppercase tracking-wide mb-0.5">Width</span>
+                  <span className="text-sm font-bold text-slate-800 font-mono">{dims.primary}</span>
+                  <span className="text-[9px] text-stone-400">mm</span>
+                </div>
+                <div className="w-px h-8 bg-orange-200" />
+                <div className="flex flex-col items-center">
+                  <span className="text-[9px] text-stone-500 font-medium uppercase tracking-wide mb-0.5">Height</span>
+                  <span className="text-sm font-bold text-slate-800 font-mono">{dims.secondary}</span>
+                  <span className="text-[9px] text-stone-400">mm</span>
+                </div>
+                <div className="w-px h-8 bg-orange-200" />
+                <div className="flex flex-col items-center">
+                  <span className="text-[9px] text-stone-500 font-medium uppercase tracking-wide mb-0.5">Thickness</span>
+                  <span className="text-sm font-bold text-slate-800 font-mono">{dims.thickness}</span>
+                  <span className="text-[9px] text-stone-400">mm</span>
+                </div>
               </div>
             </div>
           </div>
