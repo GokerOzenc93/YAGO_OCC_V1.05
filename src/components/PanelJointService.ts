@@ -261,7 +261,9 @@ async function applyBackPanelSettings(
       const offsetZ = localNormal.z * (-grooveOffset);
       let finalPanel = replicadPanel.translate(offsetX, offsetY, offsetZ);
 
-      if (grooveDepth > 0 || backPanelLeftExtend > 0 || backPanelRightExtend > 0 || backPanelTopExtend > 0 || backPanelBottomExtend > 0) {
+      const needsGrooveExpand = grooveDepth > 0 || backPanelLeftExtend > 0 || backPanelRightExtend > 0 || backPanelTopExtend > 0 || backPanelBottomExtend > 0;
+
+      if (needsGrooveExpand) {
         const baseBB = getReplicadBoundingBox(finalPanel);
         const baseSize = [
           baseBB.max[0] - baseBB.min[0],
@@ -277,18 +279,28 @@ async function applyBackPanelSettings(
         const verticalAxis = 1;
         const horizontalAxis = [0, 1, 2].find(a => a !== thicknessAxis && a !== verticalAxis) ?? 0;
 
-        const leftExt = grooveDepth + backPanelLeftExtend;
-        const rightExt = grooveDepth + backPanelRightExtend;
-        const topExt = grooveDepth + backPanelTopExtend;
-        const bottomExt = grooveDepth + backPanelBottomExtend;
+        const dominantPanels = panels.filter(p => {
+          const role = p.parameters?.faceRole as FaceRole;
+          return role === 'Left' || role === 'Right' || role === 'Top' || role === 'Bottom';
+        });
+
+        const leftPanel = dominantPanels.find(p => p.parameters?.faceRole === 'Left');
+        const rightPanel = dominantPanels.find(p => p.parameters?.faceRole === 'Right');
+        const topPanel = dominantPanels.find(p => p.parameters?.faceRole === 'Top');
+        const bottomPanel = dominantPanels.find(p => p.parameters?.faceRole === 'Bottom');
+
+        const leftThickness = leftPanel ? (leftPanel.parameters?.depth ?? 18) : 18;
+        const rightThickness = rightPanel ? (rightPanel.parameters?.depth ?? 18) : 18;
+        const topThickness = topPanel ? (topPanel.parameters?.depth ?? 18) : 18;
+        const bottomThickness = bottomPanel ? (bottomPanel.parameters?.depth ?? 18) : 18;
 
         const newMin: [number, number, number] = [baseBB.min[0], baseBB.min[1], baseBB.min[2]];
         const newMax: [number, number, number] = [baseBB.max[0], baseBB.max[1], baseBB.max[2]];
 
-        newMin[horizontalAxis] -= leftExt;
-        newMax[horizontalAxis] += rightExt;
-        newMax[verticalAxis] += topExt;
-        newMin[verticalAxis] -= bottomExt;
+        newMin[horizontalAxis] += leftThickness - grooveDepth - backPanelLeftExtend;
+        newMax[horizontalAxis] -= rightThickness - grooveDepth - backPanelRightExtend;
+        newMax[verticalAxis] -= topThickness - grooveDepth - backPanelTopExtend;
+        newMin[verticalAxis] += bottomThickness - grooveDepth - backPanelBottomExtend;
 
         const dims: [number, number, number] = [
           newMax[0] - newMin[0],
@@ -296,7 +308,7 @@ async function applyBackPanelSettings(
           newMax[2] - newMin[2],
         ];
 
-        console.log(`Back panel groove expand: thicknessAxis=${thicknessAxis}, horizontalAxis=${horizontalAxis}, baseSize=${JSON.stringify(baseSize)}, leftExt=${leftExt}, rightExt=${rightExt}, topExt=${topExt}, bottomExt=${bottomExt}`);
+        console.log(`Back panel groove expand: thicknessAxis=${thicknessAxis}, horizontalAxis=${horizontalAxis}, baseSize=${JSON.stringify(baseSize)}, dims=${JSON.stringify(dims)}, grooveDepth=${grooveDepth}`);
 
         if (dims[0] > 0.1 && dims[1] > 0.1 && dims[2] > 0.1) {
           try {
@@ -565,9 +577,18 @@ export async function resolveAllPanelJoints(
       const dominantId = isADominant ? pA.id : pB.id;
       const subordinateRole = isADominant ? roleB : roleA;
 
-      const existing = cutsMap.get(subordinateId) || [];
-      existing.push(dominantId);
-      cutsMap.set(subordinateId, existing);
+      const isBackSubordinate = subordinateRole === 'Back';
+      const grooveDepthActive = fullSettings.grooveDepth > 0
+        || state.backPanelLeftExtend > 0
+        || state.backPanelRightExtend > 0
+        || state.backPanelTopExtend > 0
+        || state.backPanelBottomExtend > 0;
+
+      if (!isBackSubordinate || !grooveDepthActive) {
+        const existing = cutsMap.get(subordinateId) || [];
+        existing.push(dominantId);
+        cutsMap.set(subordinateId, existing);
+      }
 
       const extEntries = extensionsMap.get(dominantId) || [];
       extEntries.push({ subordinateId, subordinateRole });
