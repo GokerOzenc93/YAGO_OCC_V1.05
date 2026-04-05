@@ -234,7 +234,7 @@ async function applyBackPanelSettings(
   });
 
   const effectiveGrooveOffset = hasDominantPanels ? grooveOffset : 0;
-  const effectiveGrooveDepth = hasDominantPanels ? grooveDepth : 0;
+  const effectiveGrooveDepth = grooveDepth;
 
   for (const panel of backPanels) {
     const faceIndex = panel.parameters?.faceIndex;
@@ -269,7 +269,7 @@ async function applyBackPanelSettings(
       const offsetZ = localNormal.z * (-effectiveGrooveOffset);
       let finalPanel = replicadPanel.translate(offsetX, offsetY, offsetZ);
 
-      const needsGrooveExpand = hasDominantPanels && (effectiveGrooveDepth > 0 || backPanelLeftExtend > 0 || backPanelRightExtend > 0 || backPanelTopExtend > 0 || backPanelBottomExtend > 0);
+      const needsGrooveExpand = effectiveGrooveDepth > 0 || (hasDominantPanels && (backPanelLeftExtend > 0 || backPanelRightExtend > 0 || backPanelTopExtend > 0 || backPanelBottomExtend > 0));
 
       if (needsGrooveExpand) {
         const baseBB = getReplicadBoundingBox(finalPanel);
