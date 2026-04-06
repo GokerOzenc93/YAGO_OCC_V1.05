@@ -200,44 +200,43 @@ export async function rebuildFromSteps(
 }
 
 export async function executeFaceExtrude(params: FaceExtrudeParams): Promise<boolean> {
-  const { panelShape, faceGroupIndex, value, isFixed, updateShape } = params;
+  const { faceGroupIndex, value, isFixed, updateShape } = params;
+  let panel = params.panelShape;
 
-  if (!panelShape.geometry || !panelShape.replicadShape) return false;
+  if (!panel.geometry || !panel.replicadShape) return false;
 
-  const faces = extractFacesFromGeometry(panelShape.geometry);
+  const faces = extractFacesFromGeometry(panel.geometry);
   const groups = groupCoplanarFaces(faces);
 
   if (faceGroupIndex < 0 || faceGroupIndex >= groups.length) return false;
 
   const selectedGroup = groups[faceGroupIndex];
   const faceNormal = selectedGroup.normal.clone().normalize();
-  const faceCenter = selectedGroup.center.clone();
   const axisLabel = getAxisLabel(faceNormal);
 
-  if (!panelShape.parameters?.baseReplicadShape) {
-    panelShape = {
-      ...panelShape,
+  if (!panel.parameters?.baseReplicadShape) {
+    panel = {
+      ...panel,
       parameters: {
-        ...panelShape.parameters,
-        baseReplicadShape: panelShape.replicadShape,
+        ...panel.parameters,
+        baseReplicadShape: panel.replicadShape,
       },
     };
-    updateShape(panelShape.id, {
+    updateShape(panel.id, {
       parameters: {
-        ...panelShape.parameters,
-        baseReplicadShape: panelShape.replicadShape,
+        ...panel.parameters,
       },
     });
   }
 
-  const existingSteps: ExtrudeStep[] = panelShape.parameters?.extrudeSteps || [];
+  const existingSteps: ExtrudeStep[] = panel.parameters?.extrudeSteps || [];
 
   const existingIdx = existingSteps.findIndex(s => s.axisLabel === axisLabel);
 
   let extrudeAmount: number;
   if (isFixed) {
     const box = new THREE.Box3().setFromBufferAttribute(
-      panelShape.geometry.getAttribute('position') as THREE.BufferAttribute
+      panel.geometry!.getAttribute('position') as THREE.BufferAttribute
     );
     const size = new THREE.Vector3();
     box.getSize(size);
@@ -274,10 +273,10 @@ export async function executeFaceExtrude(params: FaceExtrudeParams): Promise<boo
 
   return rebuildFromSteps(
     {
-      ...panelShape,
+      ...panel,
       parameters: {
-        ...panelShape.parameters,
-        baseReplicadShape: panelShape.parameters.baseReplicadShape || panelShape.replicadShape,
+        ...panel.parameters,
+        baseReplicadShape: panel.parameters.baseReplicadShape || panel.replicadShape,
       },
     },
     newSteps,
