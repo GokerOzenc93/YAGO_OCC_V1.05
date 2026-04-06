@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, GripVertical, MousePointer, Layers, RotateCw, Plus, Trash2, Eye, EyeOff, RefreshCw, MoveVertical, ArrowUp, Check } from 'lucide-react';
+import { X, GripVertical, MousePointer, Layers, RotateCw, Plus, Trash2, Eye, EyeOff, RefreshCw, MoveVertical, Check } from 'lucide-react';
 import { globalSettingsService, faceLabelRoleDefaultsService, GlobalSettingsProfile } from './GlobalSettingsDatabase';
 import { useAppStore } from '../store';
 import type { FaceRole } from '../store';
@@ -1350,15 +1350,13 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
               {showExtrudeControls && (
                 <>
                   <div className="w-px h-4 bg-orange-200 shrink-0" />
-                  <ArrowUp size={12} className={`shrink-0 ${faceExtrudeSelectedFace !== null ? 'text-orange-600' : 'text-orange-300'}`} />
                   <input
-                    type="number"
+                    type="text"
+                    inputMode="numeric"
                     value={faceExtrudeThickness}
                     onChange={(e) => setFaceExtrudeThickness(Number(e.target.value) || 0)}
                     disabled={faceExtrudeSelectedFace === null}
                     className={`w-14 h-6 px-1 text-xs font-mono text-center border rounded focus:outline-none focus:border-orange-500 ${faceExtrudeSelectedFace !== null ? 'bg-white border-orange-300' : 'bg-orange-100 border-orange-200 text-orange-300 cursor-not-allowed'}`}
-                    min={0}
-                    step={1}
                   />
                   <div className={`flex rounded overflow-hidden border shrink-0 ${faceExtrudeSelectedFace !== null ? 'border-orange-300' : 'border-orange-200 opacity-40'}`}>
                     <button
