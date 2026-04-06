@@ -62,15 +62,6 @@ export interface VirtualFace {
   raycastRecipe?:VirtualFaceRaycastRecipe;
 }
 
-export interface FaceExtrudeOperation {
-  id:string;
-  faceNormal:[number,number,number];
-  faceCenter:[number,number,number];
-  axisLabel:string;
-  value:number;
-  isFixed:boolean;
-}
-
 export interface Shape {
   id:string;type:string;
   position:[number,number,number];
@@ -90,7 +81,6 @@ export interface Shape {
   faceDescriptions?:Record<number,string>;
   facePanels?:Record<number,boolean>;
   faceGroupDescriptors?:Record<number,FaceDescriptor>;
-  faceExtrudeOperations?:FaceExtrudeOperation[];
 }
 
 export enum CameraType{PERSPECTIVE='perspective',ORTHOGRAPHIC='orthographic'}

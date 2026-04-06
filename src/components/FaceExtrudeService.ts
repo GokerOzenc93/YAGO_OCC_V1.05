@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { Shape, FaceExtrudeOperation } from '../store';
+import type { Shape } from '../store';
 import {
   extractFacesFromGeometry,
   groupCoplanarFaces,
@@ -14,218 +14,173 @@ export interface FaceExtrudeParams {
   updateShape: (id: string, updates: Partial<Shape>) => void;
 }
 
-function getAxisLabel(normal: THREE.Vector3): string {
-  const absX = Math.abs(normal.x);
-  const absY = Math.abs(normal.y);
-  const absZ = Math.abs(normal.z);
-  if (absX >= absY && absX >= absZ) return normal.x > 0 ? 'X+' : 'X-';
-  if (absY >= absX && absY >= absZ) return normal.y > 0 ? 'Y+' : 'Y-';
-  return normal.z > 0 ? 'Z+' : 'Z-';
+interface ExtrudeAxis {
+  axisIndex: number;
+  sign: number;
+  dimensionKey: 'x' | 'y' | 'z';
+  currentSize: number;
+  faceMin: number;
+  faceMax: number;
+  boxMin: number;
+  boxMax: number;
 }
 
-function computeFaceGroupCenter(
-  geometry: THREE.BufferGeometry,
-  faceIndices: number[]
-): THREE.Vector3 {
-  const posAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
-  const indexAttr = geometry.getIndex();
-  const center = new THREE.Vector3();
-  let count = 0;
+function resolveExtrudeAxis(
+  faceGroupNormal: THREE.Vector3,
+  geometry: THREE.BufferGeometry
+): ExtrudeAxis | null {
+  const absX = Math.abs(faceGroupNormal.x);
+  const absY = Math.abs(faceGroupNormal.y);
+  const absZ = Math.abs(faceGroupNormal.z);
 
-  for (const fi of faceIndices) {
-    for (let v = 0; v < 3; v++) {
-      const idx = indexAttr ? indexAttr.getX(fi * 3 + v) : fi * 3 + v;
-      center.x += posAttr.getX(idx);
-      center.y += posAttr.getY(idx);
-      center.z += posAttr.getZ(idx);
-      count++;
-    }
-  }
-
-  if (count > 0) center.divideScalar(count);
-  return center;
-}
-
-export function addFaceExtrudeOperation(params: FaceExtrudeParams): FaceExtrudeOperation | null {
-  const { panelShape, faceGroupIndex, value, isFixed } = params;
-  if (!panelShape.geometry) return null;
-
-  const meshFaces = extractFacesFromGeometry(panelShape.geometry);
-  const groups = groupCoplanarFaces(meshFaces);
-  if (faceGroupIndex < 0 || faceGroupIndex >= groups.length) return null;
-
-  const selectedGroup = groups[faceGroupIndex];
-  const faceNormal = selectedGroup.normal.clone().normalize();
-  const faceCenter = computeFaceGroupCenter(panelShape.geometry, selectedGroup.faceIndices);
-
-  return {
-    id: `fext-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
-    faceNormal: [faceNormal.x, faceNormal.y, faceNormal.z],
-    faceCenter: [faceCenter.x, faceCenter.y, faceCenter.z],
-    axisLabel: getAxisLabel(faceNormal),
-    value,
-    isFixed,
-  };
-}
-
-function findMatchingReplicadFace(
-  targetNormal: THREE.Vector3,
-  targetCenter: THREE.Vector3,
-  faces: any[]
-): any | null {
-  let bestFace: any = null;
-  let bestDist = Infinity;
-
-  for (const face of faces) {
-    try {
-      const fNormal = face.normalAt();
-      const n = new THREE.Vector3(fNormal.x, fNormal.y, fNormal.z).normalize();
-      if (n.dot(targetNormal) < 0.9) continue;
-
-      const fCenter = face.center;
-      const c = new THREE.Vector3(fCenter.x, fCenter.y, fCenter.z);
-      const dist = c.distanceTo(targetCenter);
-      if (dist < bestDist) {
-        bestDist = dist;
-        bestFace = face;
-      }
-    } catch {
-      continue;
-    }
-  }
-
-  return bestFace;
-}
-
-function getAxisSize(geometry: THREE.BufferGeometry, normal: THREE.Vector3): number {
   const box = new THREE.Box3().setFromBufferAttribute(
     geometry.getAttribute('position') as THREE.BufferAttribute
   );
-  const absX = Math.abs(normal.x);
-  const absY = Math.abs(normal.y);
-  const absZ = Math.abs(normal.z);
-  if (absX >= absY && absX >= absZ) return box.max.x - box.min.x;
-  if (absY >= absX && absY >= absZ) return box.max.y - box.min.y;
-  return box.max.z - box.min.z;
-}
 
-export async function applyAllFaceExtrudeOperations(
-  replicadShape: any,
-  operations: FaceExtrudeOperation[],
-  currentGeometry: THREE.BufferGeometry
-): Promise<{ shape: any; geometry: THREE.BufferGeometry } | null> {
-  if (!operations || operations.length === 0) return null;
-
-  const { convertReplicadToThreeGeometry, initReplicad } = await import('./ReplicadService');
-  const { cast } = await import('replicad');
-  const oc = await initReplicad();
-
-  let currentShape = replicadShape;
-  let currentGeo = currentGeometry;
-
-  for (const op of operations) {
-    try {
-      const normal = new THREE.Vector3(...op.faceNormal);
-      const center = new THREE.Vector3(...op.faceCenter);
-
-      const replicadFaces = currentShape.faces;
-      const matchingFace = findMatchingReplicadFace(normal, center, replicadFaces);
-
-      if (!matchingFace) continue;
-
-      const axisSize = getAxisSize(currentGeo, normal);
-      const delta = op.isFixed ? op.value - axisSize : op.value;
-      if (Math.abs(delta) < 1e-6) continue;
-
-      const extrudeVec = new oc.gp_Vec_4(
-        normal.x * delta,
-        normal.y * delta,
-        normal.z * delta
-      );
-
-      const prismBuilder = new oc.BRepPrimAPI_MakePrism_1(
-        matchingFace.wrapped,
-        extrudeVec,
-        false,
-        true
-      );
-      prismBuilder.Build(new oc.Message_ProgressRange_1());
-      const prismOcShape = prismBuilder.Shape();
-      const prismSolid = cast(prismOcShape);
-
-      if (delta > 0) {
-        currentShape = currentShape.fuse(prismSolid);
-      } else {
-        currentShape = currentShape.cut(prismSolid);
-      }
-
-      currentGeo = convertReplicadToThreeGeometry(currentShape);
-    } catch (err) {
-      console.error('Face extrude operation failed for op:', op.id, err);
-      continue;
-    }
+  if (absX >= absY && absX >= absZ) {
+    const sign = faceGroupNormal.x > 0 ? 1 : -1;
+    return {
+      axisIndex: 0,
+      sign,
+      dimensionKey: 'x',
+      currentSize: box.max.x - box.min.x,
+      faceMin: sign > 0 ? box.max.x : box.min.x,
+      faceMax: sign > 0 ? box.max.x : box.min.x,
+      boxMin: box.min.x,
+      boxMax: box.max.x,
+    };
+  } else if (absY >= absX && absY >= absZ) {
+    const sign = faceGroupNormal.y > 0 ? 1 : -1;
+    return {
+      axisIndex: 1,
+      sign,
+      dimensionKey: 'y',
+      currentSize: box.max.y - box.min.y,
+      faceMin: sign > 0 ? box.max.y : box.min.y,
+      faceMax: sign > 0 ? box.max.y : box.min.y,
+      boxMin: box.min.y,
+      boxMax: box.max.y,
+    };
+  } else {
+    const sign = faceGroupNormal.z > 0 ? 1 : -1;
+    return {
+      axisIndex: 2,
+      sign,
+      dimensionKey: 'z',
+      currentSize: box.max.z - box.min.z,
+      faceMin: sign > 0 ? box.max.z : box.min.z,
+      faceMax: sign > 0 ? box.max.z : box.min.z,
+      boxMin: box.min.z,
+      boxMax: box.max.z,
+    };
   }
-
-  return { shape: currentShape, geometry: currentGeo };
 }
 
 export async function executeFaceExtrude(params: FaceExtrudeParams): Promise<boolean> {
   const { panelShape, faceGroupIndex, value, isFixed, updateShape } = params;
+
   if (!panelShape.geometry || !panelShape.replicadShape) return false;
 
-  const operation = addFaceExtrudeOperation(params);
-  if (!operation) return false;
+  const faces = extractFacesFromGeometry(panelShape.geometry);
+  const groups = groupCoplanarFaces(faces);
 
-  const existingOps = panelShape.faceExtrudeOperations || [];
-  const allOps = [...existingOps, operation];
+  if (faceGroupIndex < 0 || faceGroupIndex >= groups.length) return false;
 
-  const baseShape = panelShape.parameters?.originalReplicadShape || panelShape.replicadShape;
+  const selectedGroup = groups[faceGroupIndex];
+  const faceNormal = selectedGroup.normal.clone().normalize();
 
-  const result = await applyAllFaceExtrudeOperations(
-    baseShape,
-    allOps,
-    panelShape.geometry
-  );
+  const axis = resolveExtrudeAxis(faceNormal, panelShape.geometry);
+  if (!axis) return false;
 
-  if (!result) return false;
-
-  const { convertReplicadToThreeGeometry } = await import('./ReplicadService');
-
-  let finalShape = result.shape;
-  let newGeometry = result.geometry;
-
-  const newBox = new THREE.Box3().setFromBufferAttribute(
-    newGeometry.getAttribute('position') as THREE.BufferAttribute
-  );
-  const newBoxSize = new THREE.Vector3();
-  newBox.getSize(newBoxSize);
-
-  let updatedFillets = panelShape.fillets || [];
-  if (updatedFillets.length > 0) {
-    const { updateFilletCentersForNewGeometry, applyFillets } = await import('./ShapeUpdaterService');
-    updatedFillets = await updateFilletCentersForNewGeometry(
-      updatedFillets,
-      newGeometry,
-      { width: newBoxSize.x, height: newBoxSize.y, depth: newBoxSize.z }
-    );
-    finalShape = await applyFillets(finalShape, updatedFillets, {
-      width: newBoxSize.x, height: newBoxSize.y, depth: newBoxSize.z,
-    });
-    newGeometry = convertReplicadToThreeGeometry(finalShape);
+  let delta: number;
+  if (isFixed) {
+    delta = value - axis.currentSize;
+  } else {
+    delta = value;
   }
 
-  updateShape(panelShape.id, {
-    geometry: newGeometry,
-    replicadShape: finalShape,
-    fillets: updatedFillets,
-    faceExtrudeOperations: allOps,
-    parameters: {
-      ...panelShape.parameters,
-      width: newBoxSize.x,
-      height: newBoxSize.y,
-      depth: newBoxSize.z,
-    },
-  });
+  const newSize = axis.currentSize + delta;
+  if (newSize < 0.1) return false;
 
-  return true;
+  const anchorPos = axis.sign > 0 ? axis.boxMin : axis.boxMax;
+  const newFacePos = anchorPos + (axis.sign > 0 ? newSize : -newSize);
+  const newMin = Math.min(anchorPos, newFacePos);
+  const newMax = Math.max(anchorPos, newFacePos);
+
+  const oldBox = new THREE.Box3().setFromBufferAttribute(
+    panelShape.geometry.getAttribute('position') as THREE.BufferAttribute
+  );
+  const oldSize = new THREE.Vector3();
+  oldBox.getSize(oldSize);
+
+  const newWidth = axis.axisIndex === 0 ? newSize : oldSize.x;
+  const newHeight = axis.axisIndex === 1 ? newSize : oldSize.y;
+  const newDepth = axis.axisIndex === 2 ? newSize : oldSize.z;
+
+  try {
+    const { convertReplicadToThreeGeometry, initReplicad } = await import('./ReplicadService');
+    const { getReplicadVertices } = await import('./VertexEditorService');
+    const { draw } = await import('replicad');
+
+    await initReplicad();
+
+    const corners: [number, number, number][] = [
+      [axis.axisIndex === 0 ? newMin : oldBox.min.x, axis.axisIndex === 1 ? newMin : oldBox.min.y, axis.axisIndex === 2 ? newMin : oldBox.min.z],
+      [axis.axisIndex === 0 ? newMax : oldBox.max.x, axis.axisIndex === 1 ? newMax : oldBox.max.y, axis.axisIndex === 2 ? newMax : oldBox.max.z],
+    ];
+
+    const minC = corners[0];
+    const maxC = corners[1];
+
+    const w = maxC[0] - minC[0];
+    const h = maxC[1] - minC[1];
+    const d = maxC[2] - minC[2];
+
+    const boxSketch = draw()
+      .movePointerTo([minC[0], minC[1]])
+      .lineTo([minC[0] + w, minC[1]])
+      .lineTo([minC[0] + w, minC[1] + h])
+      .lineTo([minC[0], minC[1] + h])
+      .close()
+      .sketchOnPlane('XY', minC[2])
+      .extrude(d);
+
+    let finalShape = boxSketch;
+    let newGeometry = convertReplicadToThreeGeometry(finalShape);
+    const newVertices = await getReplicadVertices(finalShape);
+
+    let updatedFillets = panelShape.fillets || [];
+    if (updatedFillets.length > 0) {
+      const { updateFilletCentersForNewGeometry, applyFillets } = await import('./ShapeUpdaterService');
+      updatedFillets = await updateFilletCentersForNewGeometry(
+        updatedFillets,
+        newGeometry,
+        { width: newWidth, height: newHeight, depth: newDepth }
+      );
+      finalShape = await applyFillets(finalShape, updatedFillets, {
+        width: newWidth,
+        height: newHeight,
+        depth: newDepth,
+      });
+      newGeometry = convertReplicadToThreeGeometry(finalShape);
+    }
+
+    updateShape(panelShape.id, {
+      geometry: newGeometry,
+      replicadShape: finalShape,
+      fillets: updatedFillets,
+      parameters: {
+        ...panelShape.parameters,
+        width: newWidth,
+        height: newHeight,
+        depth: newDepth,
+        scaledBaseVertices: newVertices.map((v: THREE.Vector3) => [v.x, v.y, v.z]),
+      },
+    });
+
+    return true;
+  } catch (error) {
+    console.error('Face extrude failed:', error);
+    return false;
+  }
 }
