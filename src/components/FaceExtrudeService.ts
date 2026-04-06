@@ -58,32 +58,61 @@ function resolveExtrudeAxis(
   }
 }
 
-function nonUniformScaleShape(
-  oc: any,
-  wrappedShape: any,
-  anchorPos: number,
-  scaleFactor: number,
-  axisIndex: number
-): any {
-  const sx = axisIndex === 0 ? scaleFactor : 1;
-  const sy = axisIndex === 1 ? scaleFactor : 1;
-  const sz = axisIndex === 2 ? scaleFactor : 1;
+function findMatchingReplicadFace(
+  replicadShape: any,
+  targetNormal: THREE.Vector3,
+  targetCenter: THREE.Vector3,
+  faces: any[]
+): any | null {
+  let bestFace: any = null;
+  let bestDist = Infinity;
 
-  const tx = axisIndex === 0 ? anchorPos * (1 - scaleFactor) : 0;
-  const ty = axisIndex === 1 ? anchorPos * (1 - scaleFactor) : 0;
-  const tz = axisIndex === 2 ? anchorPos * (1 - scaleFactor) : 0;
+  for (const face of faces) {
+    try {
+      const fNormal = face.normalAt();
+      const fCenter = face.center;
 
-  const mat = new oc.gp_Mat_2(
-    sx, 0, 0,
-    0, sy, 0,
-    0, 0, sz
-  );
-  const translationVec = new oc.gp_XYZ_2(tx, ty, tz);
-  const gTrsf = new oc.gp_GTrsf_3(mat, translationVec);
+      const n = new THREE.Vector3(fNormal.x, fNormal.y, fNormal.z).normalize();
+      const dot = n.dot(targetNormal);
 
-  const transformer = new oc.BRepBuilderAPI_GTransform_2(wrappedShape, gTrsf, true);
-  transformer.Build(new oc.Message_ProgressRange_1());
-  return transformer.Shape();
+      if (dot < 0.9) continue;
+
+      const c = new THREE.Vector3(fCenter.x, fCenter.y, fCenter.z);
+      const dist = c.distanceTo(targetCenter);
+
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestFace = face;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return bestFace;
+}
+
+function computeFaceGroupCenter(
+  geometry: THREE.BufferGeometry,
+  faceIndices: number[]
+): THREE.Vector3 {
+  const posAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
+  const indexAttr = geometry.getIndex();
+  const center = new THREE.Vector3();
+  let count = 0;
+
+  for (const fi of faceIndices) {
+    for (let v = 0; v < 3; v++) {
+      const idx = indexAttr ? indexAttr.getX(fi * 3 + v) : fi * 3 + v;
+      center.x += posAttr.getX(idx);
+      center.y += posAttr.getY(idx);
+      center.z += posAttr.getZ(idx);
+      count++;
+    }
+  }
+
+  if (count > 0) center.divideScalar(count);
+  return center;
 }
 
 export async function executeFaceExtrude(params: FaceExtrudeParams): Promise<boolean> {
@@ -91,8 +120,8 @@ export async function executeFaceExtrude(params: FaceExtrudeParams): Promise<boo
 
   if (!panelShape.geometry || !panelShape.replicadShape) return false;
 
-  const faces = extractFacesFromGeometry(panelShape.geometry);
-  const groups = groupCoplanarFaces(faces);
+  const meshFaces = extractFacesFromGeometry(panelShape.geometry);
+  const groups = groupCoplanarFaces(meshFaces);
 
   if (faceGroupIndex < 0 || faceGroupIndex >= groups.length) return false;
 
@@ -103,30 +132,57 @@ export async function executeFaceExtrude(params: FaceExtrudeParams): Promise<boo
   if (!axis) return false;
 
   const delta = isFixed ? value - axis.currentSize : value;
-  const newSize = axis.currentSize + delta;
-  if (newSize < 0.1) return false;
+  if (Math.abs(delta) < 1e-6) return false;
 
-  const scaleFactor = newSize / axis.currentSize;
-  if (Math.abs(scaleFactor - 1) < 1e-9) return false;
-
-  const anchorPos = axis.sign > 0 ? axis.boxMin : axis.boxMax;
+  const faceCenter = computeFaceGroupCenter(
+    panelShape.geometry,
+    selectedGroup.faceIndices
+  );
 
   try {
     const { convertReplicadToThreeGeometry, initReplicad } = await import('./ReplicadService');
     const { getReplicadVertices } = await import('./VertexEditorService');
-    const { cast } = await import('replicad');
 
     const oc = await initReplicad();
 
-    const transformedOcShape = nonUniformScaleShape(
-      oc,
-      panelShape.replicadShape.wrapped,
-      anchorPos,
-      scaleFactor,
-      axis.axisIndex
+    const replicadFaces = panelShape.replicadShape.faces;
+    const matchingFace = findMatchingReplicadFace(
+      panelShape.replicadShape,
+      faceNormal,
+      faceCenter,
+      replicadFaces
     );
 
-    let finalShape = cast(transformedOcShape);
+    if (!matchingFace) {
+      console.error('Could not find matching replicad face');
+      return false;
+    }
+
+    const extrudeVec = new oc.gp_Vec_4(
+      faceNormal.x * delta,
+      faceNormal.y * delta,
+      faceNormal.z * delta
+    );
+
+    const prismBuilder = new oc.BRepPrimAPI_MakePrism_1(
+      matchingFace.wrapped,
+      extrudeVec,
+      false,
+      true
+    );
+    prismBuilder.Build(new oc.Message_ProgressRange_1());
+    const prismShape = prismBuilder.Shape();
+
+    const { cast } = await import('replicad');
+    const prismSolid = cast(prismShape);
+
+    let finalShape: any;
+    if (delta > 0) {
+      finalShape = panelShape.replicadShape.fuse(prismSolid);
+    } else {
+      finalShape = panelShape.replicadShape.cut(prismSolid);
+    }
+
     let newGeometry = convertReplicadToThreeGeometry(finalShape);
     const newVertices = await getReplicadVertices(finalShape);
 
