@@ -300,20 +300,24 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
         <>
           <mesh
             geometry={shape.geometry}
-            onClick={(e: any) => {
+            renderOrder={10}
+            onPointerDown={(e: any) => {
+              if (e.button !== 0) return;
               e.stopPropagation();
               const fi = e.faceIndex;
-              if (fi !== undefined) {
+              if (fi !== undefined && fi !== null) {
                 const gi = faceGroups.findIndex(g => g.faceIndices.includes(fi));
                 if (gi !== -1) {
-                  setFaceExtrudeSelectedFace(faceExtrudeSelectedFace === gi ? null : gi);
+                  setFaceExtrudeSelectedFace(gi);
+                  setHoveredExtrudeGroup(gi);
+                  setFaceExtrudeHoveredFace(gi);
                 }
               }
             }}
             onPointerMove={(e: any) => {
               e.stopPropagation();
               const fi = e.faceIndex;
-              if (fi !== undefined) {
+              if (fi !== undefined && fi !== null) {
                 const gi = faceGroups.findIndex(g => g.faceIndices.includes(fi));
                 if (gi !== -1) {
                   setHoveredExtrudeGroup(gi);
@@ -327,31 +331,29 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
               setFaceExtrudeHoveredFace(null);
             }}
           >
-            <meshBasicMaterial transparent opacity={0} side={THREE.DoubleSide} depthTest={false} depthWrite={false} />
+            <meshBasicMaterial transparent opacity={0.01} side={THREE.DoubleSide} depthTest={false} depthWrite={false} />
           </mesh>
           {extrudeHighlightGeometry && (
-            <mesh geometry={extrudeHighlightGeometry}>
+            <mesh geometry={extrudeHighlightGeometry} renderOrder={11}>
               <meshBasicMaterial
-                color={0x2196f3}
+                color={0x38bdf8}
                 transparent
-                opacity={0.35}
+                opacity={0.55}
                 side={THREE.DoubleSide}
-                polygonOffset
-                polygonOffsetFactor={-1}
-                polygonOffsetUnits={-1}
+                depthTest={false}
+                depthWrite={false}
               />
             </mesh>
           )}
           {extrudeSelectedGeometry && (
-            <mesh geometry={extrudeSelectedGeometry}>
+            <mesh geometry={extrudeSelectedGeometry} renderOrder={12}>
               <meshBasicMaterial
-                color={0xff9800}
+                color={0xf97316}
                 transparent
-                opacity={0.6}
+                opacity={0.75}
                 side={THREE.DoubleSide}
-                polygonOffset
-                polygonOffsetFactor={-2}
-                polygonOffsetUnits={-2}
+                depthTest={false}
+                depthWrite={false}
               />
             </mesh>
           )}
