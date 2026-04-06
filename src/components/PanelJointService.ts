@@ -697,6 +697,8 @@ export async function resolveAllPanelJoints(
     saveOriginalShapes(panels, parentShapeId);
   }
 
+  await applyFaceExtrudeAfterJoints(parentShapeId);
+
   applyBazaOffset(parentShapeId, fullSettings.selectedBodyType, fullSettings.bazaHeight);
   await generateFrontBazaPanels(parentShapeId, fullSettings.selectedBodyType, fullSettings.bazaHeight, fullSettings.frontBaseDistance);
 
@@ -1145,5 +1147,56 @@ async function rebuildVirtualFacePanels(
         return s;
       })
     }));
+  }
+}
+
+async function applyFaceExtrudeAfterJoints(parentShapeId: string): Promise<void> {
+  const state = useAppStore.getState();
+  const panelsWithExtrude = state.shapes.filter(
+    s => s.type === 'panel' &&
+    s.parameters?.parentShapeId === parentShapeId &&
+    s.faceExtrudeOperations &&
+    s.faceExtrudeOperations.length > 0
+  );
+
+  if (panelsWithExtrude.length === 0) return;
+
+  const { applyAllFaceExtrudeOperations } = await import('./FaceExtrudeService');
+
+  for (const panel of panelsWithExtrude) {
+    if (!panel.replicadShape || !panel.geometry) continue;
+    try {
+      const result = await applyAllFaceExtrudeOperations(
+        panel.replicadShape,
+        panel.faceExtrudeOperations!,
+        panel.geometry
+      );
+      if (!result) continue;
+
+      const newBox = new THREE.Box3().setFromBufferAttribute(
+        result.geometry.getAttribute('position') as THREE.BufferAttribute
+      );
+      const newBoxSize = new THREE.Vector3();
+      newBox.getSize(newBoxSize);
+
+      useAppStore.setState((st) => ({
+        shapes: st.shapes.map(s => {
+          if (s.id !== panel.id) return s;
+          return {
+            ...s,
+            geometry: result.geometry,
+            replicadShape: result.shape,
+            parameters: {
+              ...s.parameters,
+              width: newBoxSize.x,
+              height: newBoxSize.y,
+              depth: newBoxSize.z,
+            },
+          };
+        })
+      }));
+    } catch (err) {
+      console.error(`Face extrude after joints failed for panel ${panel.id}:`, err);
+    }
   }
 }
