@@ -17,10 +17,7 @@ export interface FaceExtrudeParams {
 interface ExtrudeAxis {
   axisIndex: number;
   sign: number;
-  dimensionKey: 'x' | 'y' | 'z';
   currentSize: number;
-  faceMin: number;
-  faceMax: number;
   boxMin: number;
   boxMax: number;
 }
@@ -40,40 +37,53 @@ function resolveExtrudeAxis(
   if (absX >= absY && absX >= absZ) {
     const sign = faceGroupNormal.x > 0 ? 1 : -1;
     return {
-      axisIndex: 0,
-      sign,
-      dimensionKey: 'x',
+      axisIndex: 0, sign,
       currentSize: box.max.x - box.min.x,
-      faceMin: sign > 0 ? box.max.x : box.min.x,
-      faceMax: sign > 0 ? box.max.x : box.min.x,
-      boxMin: box.min.x,
-      boxMax: box.max.x,
+      boxMin: box.min.x, boxMax: box.max.x,
     };
   } else if (absY >= absX && absY >= absZ) {
     const sign = faceGroupNormal.y > 0 ? 1 : -1;
     return {
-      axisIndex: 1,
-      sign,
-      dimensionKey: 'y',
+      axisIndex: 1, sign,
       currentSize: box.max.y - box.min.y,
-      faceMin: sign > 0 ? box.max.y : box.min.y,
-      faceMax: sign > 0 ? box.max.y : box.min.y,
-      boxMin: box.min.y,
-      boxMax: box.max.y,
+      boxMin: box.min.y, boxMax: box.max.y,
     };
   } else {
     const sign = faceGroupNormal.z > 0 ? 1 : -1;
     return {
-      axisIndex: 2,
-      sign,
-      dimensionKey: 'z',
+      axisIndex: 2, sign,
       currentSize: box.max.z - box.min.z,
-      faceMin: sign > 0 ? box.max.z : box.min.z,
-      faceMax: sign > 0 ? box.max.z : box.min.z,
-      boxMin: box.min.z,
-      boxMax: box.max.z,
+      boxMin: box.min.z, boxMax: box.max.z,
     };
   }
+}
+
+function nonUniformScaleShape(
+  oc: any,
+  wrappedShape: any,
+  anchorPos: number,
+  scaleFactor: number,
+  axisIndex: number
+): any {
+  const sx = axisIndex === 0 ? scaleFactor : 1;
+  const sy = axisIndex === 1 ? scaleFactor : 1;
+  const sz = axisIndex === 2 ? scaleFactor : 1;
+
+  const tx = axisIndex === 0 ? anchorPos * (1 - scaleFactor) : 0;
+  const ty = axisIndex === 1 ? anchorPos * (1 - scaleFactor) : 0;
+  const tz = axisIndex === 2 ? anchorPos * (1 - scaleFactor) : 0;
+
+  const mat = new oc.gp_Mat_2(
+    sx, 0, 0,
+    0, sy, 0,
+    0, 0, sz
+  );
+  const translationVec = new oc.gp_XYZ_2(tx, ty, tz);
+  const gTrsf = new oc.gp_GTrsf_3(mat, translationVec);
+
+  const transformer = new oc.BRepBuilderAPI_GTransform_2(wrappedShape, gTrsf, true);
+  transformer.Build(new oc.Message_ProgressRange_1());
+  return transformer.Shape();
 }
 
 export async function executeFaceExtrude(params: FaceExtrudeParams): Promise<boolean> {
@@ -92,62 +102,39 @@ export async function executeFaceExtrude(params: FaceExtrudeParams): Promise<boo
   const axis = resolveExtrudeAxis(faceNormal, panelShape.geometry);
   if (!axis) return false;
 
-  let delta: number;
-  if (isFixed) {
-    delta = value - axis.currentSize;
-  } else {
-    delta = value;
-  }
-
+  const delta = isFixed ? value - axis.currentSize : value;
   const newSize = axis.currentSize + delta;
   if (newSize < 0.1) return false;
 
+  const scaleFactor = newSize / axis.currentSize;
+  if (Math.abs(scaleFactor - 1) < 1e-9) return false;
+
   const anchorPos = axis.sign > 0 ? axis.boxMin : axis.boxMax;
-  const newFacePos = anchorPos + (axis.sign > 0 ? newSize : -newSize);
-  const newMin = Math.min(anchorPos, newFacePos);
-  const newMax = Math.max(anchorPos, newFacePos);
-
-  const oldBox = new THREE.Box3().setFromBufferAttribute(
-    panelShape.geometry.getAttribute('position') as THREE.BufferAttribute
-  );
-  const oldSize = new THREE.Vector3();
-  oldBox.getSize(oldSize);
-
-  const newWidth = axis.axisIndex === 0 ? newSize : oldSize.x;
-  const newHeight = axis.axisIndex === 1 ? newSize : oldSize.y;
-  const newDepth = axis.axisIndex === 2 ? newSize : oldSize.z;
 
   try {
     const { convertReplicadToThreeGeometry, initReplicad } = await import('./ReplicadService');
     const { getReplicadVertices } = await import('./VertexEditorService');
-    const { draw } = await import('replicad');
+    const { cast } = await import('replicad');
 
-    await initReplicad();
+    const oc = await initReplicad();
 
-    const corners: [number, number, number][] = [
-      [axis.axisIndex === 0 ? newMin : oldBox.min.x, axis.axisIndex === 1 ? newMin : oldBox.min.y, axis.axisIndex === 2 ? newMin : oldBox.min.z],
-      [axis.axisIndex === 0 ? newMax : oldBox.max.x, axis.axisIndex === 1 ? newMax : oldBox.max.y, axis.axisIndex === 2 ? newMax : oldBox.max.z],
-    ];
+    const transformedOcShape = nonUniformScaleShape(
+      oc,
+      panelShape.replicadShape.wrapped,
+      anchorPos,
+      scaleFactor,
+      axis.axisIndex
+    );
 
-    const minC = corners[0];
-    const maxC = corners[1];
-
-    const w = maxC[0] - minC[0];
-    const h = maxC[1] - minC[1];
-    const d = maxC[2] - minC[2];
-
-    const boxSketch = draw()
-      .movePointerTo([minC[0], minC[1]])
-      .lineTo([minC[0] + w, minC[1]])
-      .lineTo([minC[0] + w, minC[1] + h])
-      .lineTo([minC[0], minC[1] + h])
-      .close()
-      .sketchOnPlane('XY', minC[2])
-      .extrude(d);
-
-    let finalShape = boxSketch;
+    let finalShape = cast(transformedOcShape);
     let newGeometry = convertReplicadToThreeGeometry(finalShape);
     const newVertices = await getReplicadVertices(finalShape);
+
+    const newBox = new THREE.Box3().setFromBufferAttribute(
+      newGeometry.getAttribute('position') as THREE.BufferAttribute
+    );
+    const newBoxSize = new THREE.Vector3();
+    newBox.getSize(newBoxSize);
 
     let updatedFillets = panelShape.fillets || [];
     if (updatedFillets.length > 0) {
@@ -155,12 +142,12 @@ export async function executeFaceExtrude(params: FaceExtrudeParams): Promise<boo
       updatedFillets = await updateFilletCentersForNewGeometry(
         updatedFillets,
         newGeometry,
-        { width: newWidth, height: newHeight, depth: newDepth }
+        { width: newBoxSize.x, height: newBoxSize.y, depth: newBoxSize.z }
       );
       finalShape = await applyFillets(finalShape, updatedFillets, {
-        width: newWidth,
-        height: newHeight,
-        depth: newDepth,
+        width: newBoxSize.x,
+        height: newBoxSize.y,
+        depth: newBoxSize.z,
       });
       newGeometry = convertReplicadToThreeGeometry(finalShape);
     }
@@ -171,9 +158,9 @@ export async function executeFaceExtrude(params: FaceExtrudeParams): Promise<boo
       fillets: updatedFillets,
       parameters: {
         ...panelShape.parameters,
-        width: newWidth,
-        height: newHeight,
-        depth: newDepth,
+        width: newBoxSize.x,
+        height: newBoxSize.y,
+        depth: newBoxSize.z,
         scaledBaseVertices: newVertices.map((v: THREE.Vector3) => [v.x, v.y, v.z]),
       },
     });
