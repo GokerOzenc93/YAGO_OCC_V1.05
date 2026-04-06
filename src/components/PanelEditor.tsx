@@ -15,7 +15,7 @@ interface PanelEditorProps {
 }
 
 export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
-  const { selectedShapeId, shapes, updateShape, addShape, showOutlines, setShowOutlines, showRoleNumbers, setShowRoleNumbers, selectedPanelRow, selectedPanelRowParentId, setSelectedPanelRow, panelSelectMode, setPanelSelectMode, raycastMode, setRaycastMode, showVirtualFaces, setShowVirtualFaces, virtualFaces, updateVirtualFace, deleteVirtualFace, pendingPanelCreation, setActivePanelProfileId, setShapeRebuilding, faceExtrudeMode, setFaceExtrudeMode, setFaceExtrudeTargetPanelId, faceExtrudeSelectedFace, setFaceExtrudeSelectedFace, faceExtrudeThickness, setFaceExtrudeThickness, faceExtrudeFixedMode, setFaceExtrudeFixedMode } = useAppStore();
+  const { selectedShapeId, shapes, updateShape, addShape, showOutlines, setShowOutlines, showRoleNumbers, setShowRoleNumbers, selectedPanelRow, selectedPanelRowParentId, setSelectedPanelRow, panelSelectMode, setPanelSelectMode, raycastMode, setRaycastMode, showVirtualFaces, setShowVirtualFaces, virtualFaces, updateVirtualFace, deleteVirtualFace, pendingPanelCreation, setActivePanelProfileId, setShapeRebuilding, faceExtrudeMode, setFaceExtrudeMode, faceExtrudeTargetPanelId, setFaceExtrudeTargetPanelId, faceExtrudeSelectedFace, setFaceExtrudeSelectedFace, faceExtrudeHoveredFace, setFaceExtrudeHoveredFace, faceExtrudeThickness, setFaceExtrudeThickness, faceExtrudeFixedMode, setFaceExtrudeFixedMode } = useAppStore();
   const [position, setPosition] = useState({ x: 100, y: 100 });
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
@@ -31,6 +31,37 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
   useEffect(() => {
     setSelectedPanelRow(null);
   }, [selectedShapeId, setSelectedPanelRow]);
+
+  const activePanelId = React.useMemo(() => {
+    if (!selectedShape || selectedPanelRow === null) return null;
+    if (typeof selectedPanelRow === 'number') {
+      const ps = shapes.find(s =>
+        s.type === 'panel' &&
+        s.parameters?.parentShapeId === selectedShape.id &&
+        s.parameters?.faceIndex === selectedPanelRow &&
+        !s.parameters?.extraRowId
+      );
+      return ps?.id || null;
+    }
+    if (typeof selectedPanelRow === 'string' && selectedPanelRow.startsWith('vf-')) {
+      const vfId = selectedPanelRow.replace('vf-', '');
+      const vp = shapes.find(s =>
+        s.type === 'panel' &&
+        s.parameters?.parentShapeId === selectedShape.id &&
+        s.parameters?.virtualFaceId === vfId
+      );
+      return vp?.id || null;
+    }
+    return null;
+  }, [selectedShape, selectedPanelRow, shapes]);
+
+  useEffect(() => {
+    if (faceExtrudeMode && activePanelId && activePanelId !== faceExtrudeTargetPanelId) {
+      setFaceExtrudeTargetPanelId(activePanelId);
+      setFaceExtrudeSelectedFace(null);
+      setFaceExtrudeHoveredFace(null);
+    }
+  }, [faceExtrudeMode, activePanelId, faceExtrudeTargetPanelId, setFaceExtrudeTargetPanelId, setFaceExtrudeSelectedFace, setFaceExtrudeHoveredFace]);
 
   const getArrowTargetAxis = (geometry: THREE.BufferGeometry, faceRole?: string, arrowRotated?: boolean): number => {
     if (!geometry) return 0;
