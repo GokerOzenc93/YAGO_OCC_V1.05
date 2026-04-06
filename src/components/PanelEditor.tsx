@@ -184,8 +184,9 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
     } else {
       setSelectedPanelRow(null);
       setPanelSelectMode(false);
+      if (faceExtrudeMode) setFaceExtrudeMode(false);
     }
-  }, [isOpen, setSelectedPanelRow, setPanelSelectMode]);
+  }, [isOpen, setSelectedPanelRow, setPanelSelectMode, faceExtrudeMode, setFaceExtrudeMode]);
 
   useEffect(() => {
     if (selectedPanelRow !== null) {

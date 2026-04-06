@@ -197,7 +197,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           castShadow
           receiveShadow
           onClick={handleClick}
-          raycast={isFaceExtrudeTarget ? () => null : undefined}
+          raycast={isFaceExtrudeTarget || isFaceExtrudeXray ? () => null : undefined}
         >
           <meshLambertMaterial
             color={materialColor}
@@ -214,16 +214,11 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
         </mesh>
       )}
 
-      {/* Kenar Çizgileri - Keskin ve Net
-          ✅ FIX (Z-fighting):
-          - renderOrder={1} → çizgiler her zaman mesh'ten SONRA çizilir
-          - depthWrite={false} → Z-buffer'ı kirletmez, diğer nesnelerle çakışmaz
-      */}
       {!isWireframe && edgeGeometry && (
         <lineSegments
           geometry={edgeGeometry}
           raycast={() => null}
-          renderOrder={1}             // ✅ DÜZELTME: mesh'ten sonra render et
+          renderOrder={1}
         >
           <lineBasicMaterial
             color={edgeColor}
@@ -263,7 +258,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
             castShadow
             receiveShadow
             onClick={handleClick}
-            raycast={isFaceExtrudeTarget ? () => null : undefined}
+            raycast={isFaceExtrudeTarget || isFaceExtrudeXray ? () => null : undefined}
           >
             <meshLambertMaterial
               color={materialColor}
