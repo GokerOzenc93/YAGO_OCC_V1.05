@@ -6,6 +6,7 @@ import type { FaceRole } from '../store';
 import { extractFacesFromGeometry, groupCoplanarFaces, createFaceDescriptor, FaceData, CoplanarFaceGroup } from './FaceEditor';
 import type { FaceDescriptor } from '../store';
 import { resolveAllPanelJoints, restoreAllPanels, rebuildAllPanels, rebuildAndRecalculatePipeline } from './PanelJointService';
+import { findExistingStepForFace } from './FaceExtrudeService';
 import type { FilletData } from './Fillet';
 import * as THREE from 'three';
 
@@ -77,12 +78,8 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
     const group = groups[faceExtrudeSelectedFace];
     if (!group) return;
     const n = group.normal.clone().normalize();
-    const absX = Math.abs(n.x), absY = Math.abs(n.y), absZ = Math.abs(n.z);
-    let label: string;
-    if (absX >= absY && absX >= absZ) label = n.x > 0 ? 'X+' : 'X-';
-    else if (absY >= absX && absY >= absZ) label = n.y > 0 ? 'Y+' : 'Y-';
-    else label = n.z > 0 ? 'Z+' : 'Z-';
-    const existing = steps.find((s: any) => s.axisLabel === label);
+    const center = group.center.clone();
+    const existing = findExistingStepForFace(steps, n, center);
     if (existing) {
       setFaceExtrudeThickness(existing.value);
       setFaceExtrudeFixedMode(existing.isFixed);

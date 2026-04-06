@@ -8,6 +8,7 @@ import {
 export interface ExtrudeStep {
   id: string;
   faceNormal: [number, number, number];
+  faceCenter: [number, number, number];
   axisLabel: string;
   value: number;
   isFixed: boolean;
@@ -34,10 +35,21 @@ function getAxisLabel(normal: THREE.Vector3): string {
 
 export function findExistingStepForFace(
   steps: ExtrudeStep[],
-  faceNormal: THREE.Vector3
+  faceNormal: THREE.Vector3,
+  faceCenter?: THREE.Vector3
 ): ExtrudeStep | null {
   const label = getAxisLabel(faceNormal);
-  return steps.find(s => s.axisLabel === label) || null;
+  const candidates = steps.filter(s => s.axisLabel === label);
+  if (candidates.length === 0) return null;
+  if (candidates.length === 1 || !faceCenter) return candidates[0];
+  let best: ExtrudeStep | null = null;
+  let bestDist = Infinity;
+  for (const s of candidates) {
+    const sc = new THREE.Vector3(...s.faceCenter);
+    const d = sc.distanceTo(faceCenter);
+    if (d < bestDist) { bestDist = d; best = s; }
+  }
+  return best;
 }
 
 function findMatchingReplicadFace(
@@ -97,15 +109,19 @@ async function applyOneExtrudeStep(
   const faces = extractFacesFromGeometry(geometry);
   const groups = groupCoplanarFaces(faces);
   const stepNormal = new THREE.Vector3(...step.faceNormal);
+  const stepCenter = new THREE.Vector3(...step.faceCenter);
 
-  let bestGroup = groups[0];
-  let bestDot = -Infinity;
-  for (const g of groups) {
-    const dot = g.normal.clone().normalize().dot(stepNormal);
-    if (dot > bestDot) { bestDot = dot; bestGroup = g; }
+  const aligned = groups.filter(g => g.normal.clone().normalize().dot(stepNormal) > 0.7);
+  if (aligned.length === 0) return null;
+
+  let bestGroup: typeof aligned[0];
+  if (aligned.length === 1) {
+    bestGroup = aligned[0];
+  } else {
+    bestGroup = aligned.reduce((a, b) =>
+      a.center.distanceTo(stepCenter) <= b.center.distanceTo(stepCenter) ? a : b
+    );
   }
-
-  if (bestDot < 0.7) return null;
 
   const faceNormal = bestGroup.normal.clone().normalize();
   const faceCenter = bestGroup.center.clone();
@@ -212,6 +228,7 @@ export async function executeFaceExtrude(params: FaceExtrudeParams): Promise<boo
 
   const selectedGroup = groups[faceGroupIndex];
   const faceNormal = selectedGroup.normal.clone().normalize();
+  const faceCenter = selectedGroup.center.clone();
   const axisLabel = getAxisLabel(faceNormal);
 
   if (!panel.parameters?.baseReplicadShape) {
@@ -231,7 +248,11 @@ export async function executeFaceExtrude(params: FaceExtrudeParams): Promise<boo
 
   const existingSteps: ExtrudeStep[] = panel.parameters?.extrudeSteps || [];
 
-  const existingIdx = existingSteps.findIndex(s => s.axisLabel === axisLabel);
+  const existingIdx = existingSteps.findIndex(s => {
+    if (s.axisLabel !== axisLabel) return false;
+    const sc = new THREE.Vector3(...s.faceCenter);
+    return sc.distanceTo(faceCenter) < 1.0;
+  });
 
   let extrudeAmount: number;
   if (isFixed) {
@@ -257,6 +278,7 @@ export async function executeFaceExtrude(params: FaceExtrudeParams): Promise<boo
   const newStep: ExtrudeStep = {
     id: `ext-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
     faceNormal: [faceNormal.x, faceNormal.y, faceNormal.z],
+    faceCenter: [faceCenter.x, faceCenter.y, faceCenter.z],
     axisLabel,
     value,
     isFixed,
