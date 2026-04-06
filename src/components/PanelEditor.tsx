@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, GripVertical, MousePointer, Layers, RotateCw, Plus, Trash2, Eye, EyeOff, RefreshCw, MoveVertical, Check } from 'lucide-react';
+import { X, GripVertical, MousePointer, Layers, RotateCw, Plus, Trash2, Eye, EyeOff, RefreshCw, MoveVertical, Check, Pencil } from 'lucide-react';
 import { globalSettingsService, faceLabelRoleDefaultsService, GlobalSettingsProfile } from './GlobalSettingsDatabase';
 import { useAppStore } from '../store';
 import type { FaceRole } from '../store';
@@ -62,6 +62,32 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
       setFaceExtrudeHoveredFace(null);
     }
   }, [faceExtrudeMode, activePanelId, faceExtrudeTargetPanelId, setFaceExtrudeTargetPanelId, setFaceExtrudeSelectedFace, setFaceExtrudeHoveredFace]);
+
+  const [editingStepId, setEditingStepId] = useState<string | null>(null);
+  const [editingStepValue, setEditingStepValue] = useState<number>(0);
+
+  useEffect(() => {
+    if (faceExtrudeSelectedFace === null || !activePanelId) return;
+    const panelShape = shapes.find(s => s.id === activePanelId);
+    if (!panelShape?.geometry) return;
+    const steps = panelShape.parameters?.extrudeSteps || [];
+    if (steps.length === 0) return;
+    const faces = extractFacesFromGeometry(panelShape.geometry);
+    const groups = groupCoplanarFaces(faces);
+    const group = groups[faceExtrudeSelectedFace];
+    if (!group) return;
+    const n = group.normal.clone().normalize();
+    const absX = Math.abs(n.x), absY = Math.abs(n.y), absZ = Math.abs(n.z);
+    let label: string;
+    if (absX >= absY && absX >= absZ) label = n.x > 0 ? 'X+' : 'X-';
+    else if (absY >= absX && absY >= absZ) label = n.y > 0 ? 'Y+' : 'Y-';
+    else label = n.z > 0 ? 'Z+' : 'Z-';
+    const existing = steps.find((s: any) => s.axisLabel === label);
+    if (existing) {
+      setFaceExtrudeThickness(existing.value);
+      setFaceExtrudeFixedMode(existing.isFixed);
+    }
+  }, [faceExtrudeSelectedFace, activePanelId, shapes]);
 
   const getArrowTargetAxis = (geometry: THREE.BufferGeometry, faceRole?: string, arrowRotated?: boolean): number => {
     if (!geometry) return 0;
@@ -1361,6 +1387,8 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
         if (!dims) return null;
         const isExtrudeActive = faceExtrudeMode && currentPanelId !== null;
         const showExtrudeControls = isExtrudeActive;
+        const currentPanel = currentPanelId ? shapes.find(s => s.id === currentPanelId) : null;
+        const extrudeSteps = currentPanel?.parameters?.extrudeSteps || [];
 
         return (
           <div className="border-t border-orange-200 bg-orange-50 px-3 py-2 rounded-b-lg">
@@ -1450,6 +1478,94 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                 )}
               </div>
             </div>
+            {extrudeSteps.length > 0 && (
+              <div className="mt-1.5 border-t border-orange-200 pt-1.5 space-y-1">
+                {extrudeSteps.map((step: any) => (
+                  <div
+                    key={step.id}
+                    className="flex items-center gap-1.5 group"
+                  >
+                    <span className="text-[9px] font-bold text-orange-600 bg-orange-200 rounded px-1 py-0.5 font-mono min-w-[24px] text-center">{step.axisLabel}</span>
+                    {editingStepId === step.id ? (
+                      <>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          autoFocus
+                          value={editingStepValue}
+                          onChange={(e) => setEditingStepValue(Number(e.target.value) || 0)}
+                          onKeyDown={async (e) => {
+                            if (e.key === 'Enter') {
+                              if (!currentPanelId) return;
+                              const ps = shapes.find(s => s.id === currentPanelId);
+                              if (!ps) return;
+                              const { updateExtrudeStep } = await import('./FaceExtrudeService');
+                              await updateExtrudeStep(ps, step.id, editingStepValue, updateShape);
+                              setEditingStepId(null);
+                            } else if (e.key === 'Escape') {
+                              setEditingStepId(null);
+                            }
+                          }}
+                          className="w-14 h-5 px-1 text-[10px] font-mono text-center border border-orange-400 rounded bg-white focus:outline-none focus:border-orange-500"
+                        />
+                        <span className="text-[9px] text-stone-400">{step.isFixed ? 'Fix' : 'Din'}</span>
+                        <button
+                          onClick={async () => {
+                            if (!currentPanelId) return;
+                            const ps = shapes.find(s => s.id === currentPanelId);
+                            if (!ps) return;
+                            const { updateExtrudeStep } = await import('./FaceExtrudeService');
+                            await updateExtrudeStep(ps, step.id, editingStepValue, updateShape);
+                            setEditingStepId(null);
+                          }}
+                          className="flex items-center justify-center w-5 h-5 rounded border border-green-400 bg-green-500 text-white hover:bg-green-600 transition-colors"
+                          title="Kaydet"
+                        >
+                          <Check size={10} />
+                        </button>
+                        <button
+                          onClick={() => setEditingStepId(null)}
+                          className="flex items-center justify-center w-5 h-5 rounded border border-stone-300 bg-white text-stone-500 hover:bg-stone-100 transition-colors"
+                          title="Iptal"
+                        >
+                          <X size={10} />
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <span className="text-[10px] font-mono text-slate-700 font-semibold">{step.value}</span>
+                        <span className="text-[9px] text-stone-400">{step.isFixed ? 'Fix' : 'Din'}</span>
+                        <div className="ml-auto flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button
+                            onClick={() => {
+                              setEditingStepId(step.id);
+                              setEditingStepValue(step.value);
+                            }}
+                            className="flex items-center justify-center w-5 h-5 rounded border border-orange-300 bg-white text-orange-500 hover:bg-orange-100 transition-colors"
+                            title="Duzenle"
+                          >
+                            <Pencil size={9} />
+                          </button>
+                          <button
+                            onClick={async () => {
+                              if (!currentPanelId) return;
+                              const ps = shapes.find(s => s.id === currentPanelId);
+                              if (!ps) return;
+                              const { deleteExtrudeStep } = await import('./FaceExtrudeService');
+                              await deleteExtrudeStep(ps, step.id, updateShape);
+                            }}
+                            className="flex items-center justify-center w-5 h-5 rounded border border-red-300 bg-white text-red-500 hover:bg-red-50 transition-colors"
+                            title="Sil"
+                          >
+                            <Trash2 size={9} />
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         );
       })()}
