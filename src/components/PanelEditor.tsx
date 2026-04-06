@@ -1395,7 +1395,21 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                 {showExtrudeControls && (
                   <button
                     disabled={faceExtrudeSelectedFace === null}
-                    onClick={() => {}}
+                    onClick={async () => {
+                      if (faceExtrudeSelectedFace === null || !currentPanelId) return;
+                      const panelShape = shapes.find(s => s.id === currentPanelId);
+                      if (!panelShape) return;
+                      const { executeFaceExtrude } = await import('./FaceExtrudeService');
+                      await executeFaceExtrude({
+                        panelShape,
+                        faceGroupIndex: faceExtrudeSelectedFace,
+                        value: faceExtrudeThickness,
+                        isFixed: faceExtrudeFixedMode,
+                        shapes,
+                        updateShape,
+                      });
+                      setFaceExtrudeSelectedFace(null);
+                    }}
                     className={`flex items-center justify-center w-6 h-6 rounded border transition-colors shrink-0 ${faceExtrudeSelectedFace !== null ? 'border-green-400 bg-green-500 text-white hover:bg-green-600' : 'border-orange-200 bg-orange-100 text-orange-300 cursor-not-allowed'}`}
                     title="Onayla"
                   >
