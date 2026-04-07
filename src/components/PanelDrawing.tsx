@@ -81,6 +81,17 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   const [faceGroups, setFaceGroups] = useState<any[]>([]);
   const [faces, setFaces] = useState<any[]>([]);
   const [hoveredExtrudeGroup, setHoveredExtrudeGroup] = useState<number | null>(null);
+  const disableRaycast = isFaceExtrudeTarget || isFaceExtrudeXray;
+
+  useEffect(() => {
+    const mesh = meshRef.current;
+    if (!mesh) return;
+    if (disableRaycast) {
+      mesh.raycast = () => {};
+    } else {
+      mesh.raycast = THREE.Mesh.prototype.raycast;
+    }
+  }, [disableRaycast]);
 
   useEffect(() => {
     if (!shape.geometry) return;
@@ -197,7 +208,6 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           castShadow
           receiveShadow
           onClick={handleClick}
-          raycast={isFaceExtrudeTarget || isFaceExtrudeXray ? () => null : undefined}
         >
           <meshLambertMaterial
             color={materialColor}
@@ -258,7 +268,6 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
             castShadow
             receiveShadow
             onClick={handleClick}
-            raycast={isFaceExtrudeTarget || isFaceExtrudeXray ? () => null : undefined}
           >
             <meshLambertMaterial
               color={materialColor}
