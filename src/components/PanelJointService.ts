@@ -806,6 +806,7 @@ export async function rebuildAllPanels(parentShapeId: string): Promise<void> {
           ...panel.parameters,
           originalReplicadShape: null,
           jointTrimmed: false,
+          baseReplicadShape: panel.parameters?.extrudeSteps?.length > 0 ? replicadPanel : panel.parameters?.baseReplicadShape,
         }
       });
     } catch (error) {
@@ -1029,6 +1030,28 @@ async function recalculateAndRebuildVirtualFaces(parentShapeId: string): Promise
   }
 }
 
+async function reapplyExtrudeSteps(parentShapeId: string): Promise<void> {
+  const state = useAppStore.getState();
+  const extrudePanels = state.shapes.filter(
+    s => s.type === 'panel' &&
+    s.parameters?.parentShapeId === parentShapeId &&
+    s.parameters?.extrudeSteps?.length > 0 &&
+    s.parameters?.baseReplicadShape
+  );
+  if (extrudePanels.length === 0) return;
+
+  const { rebuildFromSteps } = await import('./FaceExtrudeService');
+  const { updateShape } = useAppStore.getState();
+
+  for (const panel of extrudePanels) {
+    try {
+      await rebuildFromSteps(panel, panel.parameters.extrudeSteps, updateShape);
+    } catch (err) {
+      console.error(`Failed to reapply extrude steps for panel ${panel.id}:`, err);
+    }
+  }
+}
+
 export async function rebuildAndRecalculatePipeline(
   parentShapeId: string,
   profileId: string | null
@@ -1042,6 +1065,7 @@ export async function rebuildAndRecalculatePipeline(
   }
 
   await recalculateAndRebuildVirtualFaces(parentShapeId);
+  await reapplyExtrudeSteps(parentShapeId);
 }
 
 async function rebuildVirtualFacePanels(
