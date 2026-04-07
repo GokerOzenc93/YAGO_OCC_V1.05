@@ -5,7 +5,7 @@ import { useAppStore } from '../store';
 import type { FaceRole } from '../store';
 import { extractFacesFromGeometry, groupCoplanarFaces, createFaceDescriptor, FaceData, CoplanarFaceGroup } from './FaceEditor';
 import type { FaceDescriptor } from '../store';
-import { resolveAllPanelJoints, restoreAllPanels, rebuildAllPanels, rebuildAndRecalculatePipeline } from './PanelJointService';
+import { resolveAllPanelJoints, restoreAllPanels, rebuildAndRecalculatePipeline } from './PanelJointService';
 import { findExistingStepForFace } from './FaceExtrudeService';
 import type { FilletData } from './Fillet';
 import * as THREE from 'three';
@@ -632,8 +632,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
               setResolving(true);
               setShapeRebuilding(selectedShape.id, true);
               try {
-                await rebuildAllPanels(selectedShape.id);
-                await resolveAllPanelJoints(selectedShape.id, selectedProfile);
+                await rebuildAndRecalculatePipeline(selectedShape.id, selectedProfile);
               } finally {
                 setResolving(false);
                 setShapeRebuilding(selectedShape.id, false);
@@ -1066,8 +1065,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                                   setResolving(true);
                                   setShapeRebuilding(selectedShape.id, true);
                                   try {
-                                    await rebuildAllPanels(selectedShape.id);
-                                    await resolveAllPanelJoints(selectedShape.id, selectedProfile);
+                                    await rebuildAndRecalculatePipeline(selectedShape.id, selectedProfile);
                                   } finally {
                                     setResolving(false);
                                     setShapeRebuilding(selectedShape.id, false);
@@ -1217,8 +1215,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                                 setResolving(true);
                                 setShapeRebuilding(selectedShape.id, true);
                                 try {
-                                  await rebuildAllPanels(selectedShape.id);
-                                  await resolveAllPanelJoints(selectedShape.id, selectedProfile);
+                                  await rebuildAndRecalculatePipeline(selectedShape.id, selectedProfile);
                                 } finally {
                                   setResolving(false);
                                   setShapeRebuilding(selectedShape.id, false);
