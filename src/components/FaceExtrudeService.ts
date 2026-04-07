@@ -100,7 +100,7 @@ function findMatchingReplicadFace(
 
   if (candidates.length === 0) return null;
   if (candidates.length === 1) return candidates[0].face;
-  candidates.sort((a, b) => b.dot - a.dot || a.dist - b.dist);
+  candidates.sort((a, b) => a.dist - b.dist || b.dot - a.dot);
   return candidates[0].face;
 }
 
@@ -126,7 +126,18 @@ async function applyOneExtrudeStep(
     return null;
   }
 
-  const bestGroup = aligned[0];
+  const stepCenter = new THREE.Vector3(...step.faceCenter);
+  let bestGroup = aligned[0];
+  if (aligned.length > 1) {
+    let bestDist = Infinity;
+    for (const g of aligned) {
+      const d = g.center.distanceTo(stepCenter);
+      if (d < bestDist) {
+        bestDist = d;
+        bestGroup = g;
+      }
+    }
+  }
 
   const faceNormal = bestGroup.normal.clone().normalize();
   const faceCenter = bestGroup.center.clone();
