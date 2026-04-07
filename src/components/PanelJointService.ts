@@ -1062,6 +1062,28 @@ async function reapplyExtrudeSteps(parentShapeId: string): Promise<void> {
   }
 }
 
+function updateBaseShapesAfterJoints(parentShapeId: string) {
+  useAppStore.setState((st) => ({
+    shapes: st.shapes.map(s => {
+      if (
+        s.type === 'panel' &&
+        s.parameters?.parentShapeId === parentShapeId &&
+        s.parameters?.extrudeSteps?.length > 0 &&
+        s.replicadShape
+      ) {
+        return {
+          ...s,
+          parameters: {
+            ...s.parameters,
+            baseReplicadShape: s.replicadShape,
+          },
+        };
+      }
+      return s;
+    }),
+  }));
+}
+
 export async function rebuildAndRecalculatePipeline(
   parentShapeId: string,
   profileId: string | null
@@ -1069,11 +1091,13 @@ export async function rebuildAndRecalculatePipeline(
   clearStaleOriginalShapes(parentShapeId);
   await remapFaceDataAfterGeometryChange(parentShapeId);
   await rebuildAllPanels(parentShapeId);
-  await reapplyExtrudeSteps(parentShapeId);
 
   if (profileId && profileId !== 'none') {
     await resolveAllPanelJoints(parentShapeId, profileId, undefined, true);
   }
+
+  updateBaseShapesAfterJoints(parentShapeId);
+  await reapplyExtrudeSteps(parentShapeId);
 
   await recalculateAndRebuildVirtualFaces(parentShapeId);
 }
