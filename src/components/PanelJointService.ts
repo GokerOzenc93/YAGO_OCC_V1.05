@@ -1059,13 +1059,13 @@ export async function rebuildAndRecalculatePipeline(
   clearStaleOriginalShapes(parentShapeId);
   await remapFaceDataAfterGeometryChange(parentShapeId);
   await rebuildAllPanels(parentShapeId);
+  await reapplyExtrudeSteps(parentShapeId);
 
   if (profileId && profileId !== 'none') {
     await resolveAllPanelJoints(parentShapeId, profileId, undefined, true);
   }
 
   await recalculateAndRebuildVirtualFaces(parentShapeId);
-  await reapplyExtrudeSteps(parentShapeId);
 }
 
 async function rebuildVirtualFacePanels(

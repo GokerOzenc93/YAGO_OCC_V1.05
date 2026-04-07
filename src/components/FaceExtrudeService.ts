@@ -200,14 +200,31 @@ export async function rebuildFromSteps(
   const newSize = new THREE.Vector3();
   newBox.getSize(newSize);
 
+  const baseGeometry = convertReplicadToThreeGeometry(panelShape.parameters.baseReplicadShape);
+  const baseBox = new THREE.Box3().setFromBufferAttribute(
+    baseGeometry.getAttribute('position') as THREE.BufferAttribute
+  );
+  const baseSize = new THREE.Vector3();
+  baseBox.getSize(baseSize);
+  const baseSizes = [baseSize.x, baseSize.y, baseSize.z];
+  const thicknessAxis = baseSizes.indexOf(Math.min(...baseSizes));
+  const originalThickness = baseSizes[thicknessAxis];
+
+  const sizeArr = [newSize.x, newSize.y, newSize.z];
+  const sortedAxes = [0, 1, 2]
+    .map(a => ({ axis: a, size: sizeArr[a] }))
+    .sort((a, b) => b.size - a.size);
+  const newWidth = sortedAxes[0].size;
+  const newHeight = sortedAxes[1].size;
+
   updateShape(panelShape.id, {
     geometry: currentGeometry,
     replicadShape: currentReplicad,
     parameters: {
       ...panelShape.parameters,
-      width: Math.round(newSize.x * 10) / 10,
-      height: Math.round(newSize.y * 10) / 10,
-      depth: Math.round(newSize.z * 10) / 10,
+      width: Math.round(newWidth * 10) / 10,
+      height: Math.round(newHeight * 10) / 10,
+      depth: Math.round(originalThickness * 10) / 10,
       extrudeSteps: steps,
     },
   });
