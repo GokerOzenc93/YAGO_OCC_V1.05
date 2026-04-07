@@ -106,6 +106,12 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
   const [geometryKey, setGeometryKey] = useState(0);
   const vertexModsString = useMemo(() => JSON.stringify(shape.vertexModifications || []), [shape.vertexModifications]);
 
+  const resolvedEdgeGeometry = useMemo(() => {
+    if (edgeGeometry) return edgeGeometry;
+    if (!localGeometry) return null;
+    try { return new THREE.EdgesGeometry(localGeometry, 5); } catch { return null; }
+  }, [edgeGeometry, localGeometry]);
+
   // ── Kenar geometrisi ve vertex modification yükleyici ──────────────────────
   useEffect(() => {
     const loadEdges = async () => {
@@ -407,6 +413,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
 
   if (shape.isolated === false) return null;
   if (isParentRebuilding)       return null;
+  if (!localGeometry)           return null;
 
   // ══════════════════════════════════════════════════════════════════════════
   return (
@@ -494,14 +501,8 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
               />
             </mesh>
 
-            {/* ✅ KENAR ÇİZGİLERİ: renderOrder + depthWrite düzeltmesi */}
-            {showOutlines && (
-              <lineSegments renderOrder={1}>
-                {edgeGeometry ? (
-                  <bufferGeometry {...edgeGeometry} />
-                ) : (
-                  <edgesGeometry args={[localGeometry, 5]} />
-                )}
+            {showOutlines && resolvedEdgeGeometry && (
+              <lineSegments geometry={resolvedEdgeGeometry!} renderOrder={1}>
                 <lineBasicMaterial
                   color='#000000'
                   linewidth={2}
@@ -523,15 +524,9 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
               geometry={localGeometry}
               visible={false}
             />
-            {showOutlines && (
+            {showOutlines && resolvedEdgeGeometry && (
               <>
-                {/* Dış (kalın) kenar katmanı */}
-                <lineSegments renderOrder={1}>
-                  {edgeGeometry ? (
-                    <bufferGeometry {...edgeGeometry} />
-                  ) : (
-                    <edgesGeometry args={[localGeometry, 5]} />
-                  )}
+                <lineSegments geometry={resolvedEdgeGeometry!} renderOrder={1}>
                   <lineBasicMaterial
                     color={isSelected ? '#60a5fa' : shouldShowAsReference ? '#ef4444' : '#000000'}
                     linewidth={isSelected || shouldShowAsReference ? 3.5 : 2.5}
@@ -540,13 +535,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
                   />
                 </lineSegments>
 
-                {/* İç (ince/gölge) kenar katmanı */}
-                <lineSegments renderOrder={2}>
-                  {edgeGeometry ? (
-                    <bufferGeometry {...edgeGeometry} />
-                  ) : (
-                    <edgesGeometry args={[localGeometry, 5]} />
-                  )}
+                <lineSegments geometry={resolvedEdgeGeometry!} renderOrder={2}>
                   <lineBasicMaterial
                     color={isSelected ? '#1e40af' : shouldShowAsReference ? '#991b1b' : '#000000'}
                     linewidth={isSelected || shouldShowAsReference ? 2 : 1.5}
@@ -584,13 +573,8 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
               />
             </mesh>
 
-            {showOutlines && (
-              <lineSegments renderOrder={1}>
-                {edgeGeometry ? (
-                  <bufferGeometry {...edgeGeometry} />
-                ) : (
-                  <edgesGeometry args={[localGeometry, 5]} />
-                )}
+            {showOutlines && resolvedEdgeGeometry && (
+              <lineSegments geometry={resolvedEdgeGeometry!} renderOrder={1}>
                 <lineBasicMaterial
                   color={isSelected ? '#1e40af' : shouldShowAsReference ? '#991b1b' : '#000000'}
                   linewidth={isSelected || shouldShowAsReference ? 3 : 2.5}
