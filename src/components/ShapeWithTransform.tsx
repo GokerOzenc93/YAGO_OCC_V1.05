@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState, useMemo } from 'react';
+import React, { useRef, useEffect, useState, useMemo, useCallback } from 'react';
 import { TransformControls } from '@react-three/drei';
 import { useThree } from '@react-three/fiber';
 import * as THREE from 'three';
@@ -86,10 +86,10 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
   })));
 
   const { scene } = useThree();
-  const transformRef = useRef<any>(null);
   const meshRef = useRef<THREE.Mesh>(null);
   const groupRef = useRef<THREE.Group>(null);
   const isUpdatingRef = useRef(false);
+  const cleanupListenersRef = useRef<(() => void) | null>(null);
   const initialTransformRef = useRef<{
     position: [number, number, number];
     rotation: [number, number, number];
@@ -192,189 +192,203 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     groupRef.current.scale.set(shape.scale[0], shape.scale[1], shape.scale[2]);
   }, [shape.position, shape.rotation, shape.scale, shape.id]);
 
-  // ── TransformControls olay dinleyicileri ───────────────────────────────────
+  // ── TransformControls listener cleanup on unmount ─────────────────────────
   useEffect(() => {
-    if (transformRef.current && isSelected && groupRef.current) {
-      const controls = transformRef.current;
-      let isDragging = false;
+    return () => {
+      if (cleanupListenersRef.current) {
+        cleanupListenersRef.current();
+        cleanupListenersRef.current = null;
+      }
+    };
+  }, []);
 
-      const onDraggingChanged = (event: any) => {
-        isDragging = event.value;
-        if (orbitControlsRef.current) {
-          orbitControlsRef.current.enabled = !event.value;
-        }
-
-        if (event.value && groupRef.current) {
-          const allShapes = useAppStore.getState().shapes;
-          const childPanels = allShapes.filter(
-            s => s.type === 'panel' && s.parameters?.parentShapeId === shape.id
-          );
-
-          const childPanelMap = new Map<string, {
-            position: [number, number, number];
-            rotation: [number, number, number];
-            scale: [number, number, number];
-          }>();
-
-          childPanels.forEach(panel => {
-            childPanelMap.set(panel.id, {
-              position: [...panel.position] as [number, number, number],
-              rotation: [...panel.rotation] as [number, number, number],
-              scale:    [...panel.scale]    as [number, number, number]
-            });
-          });
-
-          initialTransformRef.current = {
-            position:    groupRef.current.position.toArray()              as [number, number, number],
-            rotation:    groupRef.current.rotation.toArray().slice(0, 3)  as [number, number, number],
-            scale:       groupRef.current.scale.toArray()                 as [number, number, number],
-            childPanels: childPanelMap
-          };
-        }
-
-        if (!event.value && groupRef.current && initialTransformRef.current) {
-          const finalPosition = groupRef.current.position.toArray()             as [number, number, number];
-          const finalRotation = groupRef.current.rotation.toArray().slice(0, 3) as [number, number, number];
-          const finalScale    = groupRef.current.scale.toArray()                as [number, number, number];
-
-          isUpdatingRef.current = true;
-
-          const positionDelta: [number, number, number] = [
-            finalPosition[0] - initialTransformRef.current.position[0],
-            finalPosition[1] - initialTransformRef.current.position[1],
-            finalPosition[2] - initialTransformRef.current.position[2]
-          ];
-          const rotationDelta: [number, number, number] = [
-            finalRotation[0] - initialTransformRef.current.rotation[0],
-            finalRotation[1] - initialTransformRef.current.rotation[1],
-            finalRotation[2] - initialTransformRef.current.rotation[2]
-          ];
-          const scaleDelta: [number, number, number] = [
-            finalScale[0] / initialTransformRef.current.scale[0],
-            finalScale[1] / initialTransformRef.current.scale[1],
-            finalScale[2] / initialTransformRef.current.scale[2]
-          ];
-
-          const capturedPanels = initialTransformRef.current.childPanels;
-          initialTransformRef.current = null;
-
-          useAppStore.setState((state) => {
-            const sh = state.shapes.find(s => s.id === shape.id);
-            if (!sh) return state;
-
-            const updatedShapes = state.shapes.map(s => {
-              if (s.id === shape.id) {
-                return { ...s, position: finalPosition, rotation: finalRotation, scale: finalScale };
-              }
-              if (sh.groupId && s.groupId === sh.groupId && s.id !== shape.id) {
-                return {
-                  ...s,
-                  position: [
-                    s.position[0] + positionDelta[0],
-                    s.position[1] + positionDelta[1],
-                    s.position[2] + positionDelta[2]
-                  ] as [number, number, number],
-                  rotation: [
-                    s.rotation[0] + rotationDelta[0],
-                    s.rotation[1] + rotationDelta[1],
-                    s.rotation[2] + rotationDelta[2]
-                  ] as [number, number, number],
-                  scale: [
-                    s.scale[0] * scaleDelta[0],
-                    s.scale[1] * scaleDelta[1],
-                    s.scale[2] * scaleDelta[2]
-                  ] as [number, number, number]
-                };
-              }
-              const panelInitial = capturedPanels.get(s.id);
-              if (panelInitial) {
-                return {
-                  ...s,
-                  position: [
-                    panelInitial.position[0] + positionDelta[0],
-                    panelInitial.position[1] + positionDelta[1],
-                    panelInitial.position[2] + positionDelta[2]
-                  ] as [number, number, number],
-                  rotation: [
-                    panelInitial.rotation[0] + rotationDelta[0],
-                    panelInitial.rotation[1] + rotationDelta[1],
-                    panelInitial.rotation[2] + rotationDelta[2]
-                  ] as [number, number, number],
-                  scale: [
-                    panelInitial.scale[0] * scaleDelta[0],
-                    panelInitial.scale[1] * scaleDelta[1],
-                    panelInitial.scale[2] * scaleDelta[2]
-                  ] as [number, number, number]
-                };
-              }
-              return s;
-            });
-
-            return { shapes: updatedShapes };
-          });
-
-          requestAnimationFrame(() => {
-            isUpdatingRef.current = false;
-          });
-        }
-      };
-
-      const onChange = () => {
-        if (groupRef.current && isDragging && initialTransformRef.current) {
-          isUpdatingRef.current = true;
-
-          const currentPosition = groupRef.current.position.toArray()             as [number, number, number];
-          const currentRotation = groupRef.current.rotation.toArray().slice(0, 3) as [number, number, number];
-          const currentScale    = groupRef.current.scale.toArray()                as [number, number, number];
-
-          const positionDelta: [number, number, number] = [
-            currentPosition[0] - initialTransformRef.current.position[0],
-            currentPosition[1] - initialTransformRef.current.position[1],
-            currentPosition[2] - initialTransformRef.current.position[2]
-          ];
-          const rotationDelta: [number, number, number] = [
-            currentRotation[0] - initialTransformRef.current.rotation[0],
-            currentRotation[1] - initialTransformRef.current.rotation[1],
-            currentRotation[2] - initialTransformRef.current.rotation[2]
-          ];
-          const scaleDelta: [number, number, number] = [
-            currentScale[0] / initialTransformRef.current.scale[0],
-            currentScale[1] / initialTransformRef.current.scale[1],
-            currentScale[2] / initialTransformRef.current.scale[2]
-          ];
-
-          initialTransformRef.current.childPanels.forEach((initialState, panelId) => {
-            const childGroup = scene.getObjectByName(`shape-${panelId}`);
-            if (childGroup) {
-              childGroup.position.set(
-                initialState.position[0] + positionDelta[0],
-                initialState.position[1] + positionDelta[1],
-                initialState.position[2] + positionDelta[2]
-              );
-              childGroup.rotation.set(
-                initialState.rotation[0] + rotationDelta[0],
-                initialState.rotation[1] + rotationDelta[1],
-                initialState.rotation[2] + rotationDelta[2]
-              );
-              childGroup.scale.set(
-                initialState.scale[0] * scaleDelta[0],
-                initialState.scale[1] * scaleDelta[1],
-                initialState.scale[2] * scaleDelta[2]
-              );
-            }
-          });
-        }
-      };
-
-      controls.addEventListener('dragging-changed', onDraggingChanged);
-      controls.addEventListener('change', onChange);
-
-      return () => {
-        controls.removeEventListener('dragging-changed', onDraggingChanged);
-        controls.removeEventListener('change', onChange);
-      };
+  // ── TransformControls callback ref ────────────────────────────────────────
+  const transformRefCallback = useCallback((controls: any) => {
+    if (cleanupListenersRef.current) {
+      cleanupListenersRef.current();
+      cleanupListenersRef.current = null;
     }
-  }, [isSelected, shape.id, updateShape, orbitControlsRef, geometryKey, scene, panelSelectMode]);
+
+    if (!controls || !groupRef.current) return;
+
+    let isDragging = false;
+
+    const onDraggingChanged = (event: any) => {
+      isDragging = event.value;
+      if (orbitControlsRef.current) {
+        orbitControlsRef.current.enabled = !event.value;
+      }
+
+      if (event.value && groupRef.current) {
+        const allShapes = useAppStore.getState().shapes;
+        const childPanels = allShapes.filter(
+          s => s.type === 'panel' && s.parameters?.parentShapeId === shape.id
+        );
+
+        const childPanelMap = new Map<string, {
+          position: [number, number, number];
+          rotation: [number, number, number];
+          scale: [number, number, number];
+        }>();
+
+        childPanels.forEach(panel => {
+          childPanelMap.set(panel.id, {
+            position: [...panel.position] as [number, number, number],
+            rotation: [...panel.rotation] as [number, number, number],
+            scale:    [...panel.scale]    as [number, number, number]
+          });
+        });
+
+        initialTransformRef.current = {
+          position:    groupRef.current.position.toArray()              as [number, number, number],
+          rotation:    groupRef.current.rotation.toArray().slice(0, 3)  as [number, number, number],
+          scale:       groupRef.current.scale.toArray()                 as [number, number, number],
+          childPanels: childPanelMap
+        };
+      }
+
+      if (!event.value && groupRef.current && initialTransformRef.current) {
+        const finalPosition = groupRef.current.position.toArray()             as [number, number, number];
+        const finalRotation = groupRef.current.rotation.toArray().slice(0, 3) as [number, number, number];
+        const finalScale    = groupRef.current.scale.toArray()                as [number, number, number];
+
+        isUpdatingRef.current = true;
+
+        const positionDelta: [number, number, number] = [
+          finalPosition[0] - initialTransformRef.current.position[0],
+          finalPosition[1] - initialTransformRef.current.position[1],
+          finalPosition[2] - initialTransformRef.current.position[2]
+        ];
+        const rotationDelta: [number, number, number] = [
+          finalRotation[0] - initialTransformRef.current.rotation[0],
+          finalRotation[1] - initialTransformRef.current.rotation[1],
+          finalRotation[2] - initialTransformRef.current.rotation[2]
+        ];
+        const scaleDelta: [number, number, number] = [
+          finalScale[0] / initialTransformRef.current.scale[0],
+          finalScale[1] / initialTransformRef.current.scale[1],
+          finalScale[2] / initialTransformRef.current.scale[2]
+        ];
+
+        const capturedPanels = initialTransformRef.current.childPanels;
+        initialTransformRef.current = null;
+
+        useAppStore.setState((state) => {
+          const sh = state.shapes.find(s => s.id === shape.id);
+          if (!sh) return state;
+
+          const updatedShapes = state.shapes.map(s => {
+            if (s.id === shape.id) {
+              return { ...s, position: finalPosition, rotation: finalRotation, scale: finalScale };
+            }
+            if (sh.groupId && s.groupId === sh.groupId && s.id !== shape.id) {
+              return {
+                ...s,
+                position: [
+                  s.position[0] + positionDelta[0],
+                  s.position[1] + positionDelta[1],
+                  s.position[2] + positionDelta[2]
+                ] as [number, number, number],
+                rotation: [
+                  s.rotation[0] + rotationDelta[0],
+                  s.rotation[1] + rotationDelta[1],
+                  s.rotation[2] + rotationDelta[2]
+                ] as [number, number, number],
+                scale: [
+                  s.scale[0] * scaleDelta[0],
+                  s.scale[1] * scaleDelta[1],
+                  s.scale[2] * scaleDelta[2]
+                ] as [number, number, number]
+              };
+            }
+            const panelInitial = capturedPanels.get(s.id);
+            if (panelInitial) {
+              return {
+                ...s,
+                position: [
+                  panelInitial.position[0] + positionDelta[0],
+                  panelInitial.position[1] + positionDelta[1],
+                  panelInitial.position[2] + positionDelta[2]
+                ] as [number, number, number],
+                rotation: [
+                  panelInitial.rotation[0] + rotationDelta[0],
+                  panelInitial.rotation[1] + rotationDelta[1],
+                  panelInitial.rotation[2] + rotationDelta[2]
+                ] as [number, number, number],
+                scale: [
+                  panelInitial.scale[0] * scaleDelta[0],
+                  panelInitial.scale[1] * scaleDelta[1],
+                  panelInitial.scale[2] * scaleDelta[2]
+                ] as [number, number, number]
+              };
+            }
+            return s;
+          });
+
+          return { shapes: updatedShapes };
+        });
+
+        requestAnimationFrame(() => {
+          isUpdatingRef.current = false;
+        });
+      }
+    };
+
+    const onChange = () => {
+      if (groupRef.current && isDragging && initialTransformRef.current) {
+        isUpdatingRef.current = true;
+
+        const currentPosition = groupRef.current.position.toArray()             as [number, number, number];
+        const currentRotation = groupRef.current.rotation.toArray().slice(0, 3) as [number, number, number];
+        const currentScale    = groupRef.current.scale.toArray()                as [number, number, number];
+
+        const positionDelta: [number, number, number] = [
+          currentPosition[0] - initialTransformRef.current.position[0],
+          currentPosition[1] - initialTransformRef.current.position[1],
+          currentPosition[2] - initialTransformRef.current.position[2]
+        ];
+        const rotationDelta: [number, number, number] = [
+          currentRotation[0] - initialTransformRef.current.rotation[0],
+          currentRotation[1] - initialTransformRef.current.rotation[1],
+          currentRotation[2] - initialTransformRef.current.rotation[2]
+        ];
+        const scaleDelta: [number, number, number] = [
+          currentScale[0] / initialTransformRef.current.scale[0],
+          currentScale[1] / initialTransformRef.current.scale[1],
+          currentScale[2] / initialTransformRef.current.scale[2]
+        ];
+
+        initialTransformRef.current.childPanels.forEach((initialState, panelId) => {
+          const childGroup = scene.getObjectByName(`shape-${panelId}`);
+          if (childGroup) {
+            childGroup.position.set(
+              initialState.position[0] + positionDelta[0],
+              initialState.position[1] + positionDelta[1],
+              initialState.position[2] + positionDelta[2]
+            );
+            childGroup.rotation.set(
+              initialState.rotation[0] + rotationDelta[0],
+              initialState.rotation[1] + rotationDelta[1],
+              initialState.rotation[2] + rotationDelta[2]
+            );
+            childGroup.scale.set(
+              initialState.scale[0] * scaleDelta[0],
+              initialState.scale[1] * scaleDelta[1],
+              initialState.scale[2] * scaleDelta[2]
+            );
+          }
+        });
+      }
+    };
+
+    controls.addEventListener('dragging-changed', onDraggingChanged);
+    controls.addEventListener('change', onChange);
+
+    cleanupListenersRef.current = () => {
+      controls.removeEventListener('dragging-changed', onDraggingChanged);
+      controls.removeEventListener('change', onChange);
+    };
+  }, [shape.id, orbitControlsRef, scene]);
 
   // ── Yardımcı fonksiyonlar ──────────────────────────────────────────────────
   const getTransformMode = () => {
@@ -631,7 +645,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
       {isSelected && activeTool !== Tool.SELECT && groupRef.current && !shape.isReferenceBox && !panelSelectMode && (
         <TransformControls
           key={geometryKey}
-          ref={transformRef}
+          ref={transformRefCallback}
           object={groupRef.current}
           mode={getTransformMode()}
           size={0.8}
