@@ -1032,20 +1032,30 @@ async function recalculateAndRebuildVirtualFaces(parentShapeId: string): Promise
 
 async function reapplyExtrudeSteps(parentShapeId: string): Promise<void> {
   const state = useAppStore.getState();
-  const extrudePanels = state.shapes.filter(
-    s => s.type === 'panel' &&
-    s.parameters?.parentShapeId === parentShapeId &&
-    s.parameters?.extrudeSteps?.length > 0 &&
-    s.parameters?.baseReplicadShape
+  const allPanels = state.shapes.filter(
+    s => s.type === 'panel' && s.parameters?.parentShapeId === parentShapeId
   );
-  if (extrudePanels.length === 0) return;
+  const extrudePanels = allPanels.filter(
+    s => s.parameters?.extrudeSteps?.length > 0 && s.parameters?.baseReplicadShape
+  );
+
+  if (extrudePanels.length === 0) {
+    const withSteps = allPanels.filter(s => s.parameters?.extrudeSteps?.length > 0);
+    if (withSteps.length > 0) {
+      console.warn(`[reapplyExtrudeSteps] ${withSteps.length} panel(s) have extrude steps but missing baseReplicadShape`);
+    }
+    return;
+  }
+
+  console.log(`[reapplyExtrudeSteps] Reapplying extrude steps for ${extrudePanels.length} panel(s)`);
 
   const { rebuildFromSteps } = await import('./FaceExtrudeService');
   const { updateShape } = useAppStore.getState();
 
   for (const panel of extrudePanels) {
     try {
-      await rebuildFromSteps(panel, panel.parameters.extrudeSteps, updateShape);
+      const result = await rebuildFromSteps(panel, panel.parameters.extrudeSteps, updateShape);
+      console.log(`[reapplyExtrudeSteps] Panel ${panel.id}: rebuildFromSteps returned ${result}`);
     } catch (err) {
       console.error(`Failed to reapply extrude steps for panel ${panel.id}:`, err);
     }

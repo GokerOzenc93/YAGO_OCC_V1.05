@@ -60,15 +60,19 @@ function findMatchingReplicadFace(
   const faces = replicadShape.faces;
   if (!faces || faces.length === 0) return null;
 
-  const candidates: Array<{ face: any; dist: number }> = [];
+  const targetLabel = getAxisLabel(targetNormal);
+  const candidates: Array<{ face: any; dot: number; dist: number }> = [];
 
   for (let i = 0; i < faces.length; i++) {
     const face = faces[i];
     try {
       const normalVec = face.normalAt(0.5, 0.5);
       const faceNormal = new THREE.Vector3(normalVec.x, normalVec.y, normalVec.z);
+      const faceLabel = getAxisLabel(faceNormal);
+      if (faceLabel !== targetLabel) continue;
+
       const dot = faceNormal.dot(targetNormal);
-      if (dot < 0.7) continue;
+      if (dot < 0.5) continue;
 
       let center = new THREE.Vector3();
       try {
@@ -84,17 +88,19 @@ function findMatchingReplicadFace(
           center = new THREE.Vector3(sx / nv, sy / nv, sz / nv);
         }
       } catch {
+        candidates.push({ face, dot, dist: Infinity });
         continue;
       }
 
-      candidates.push({ face, dist: center.distanceTo(targetCenter) });
+      candidates.push({ face, dot, dist: center.distanceTo(targetCenter) });
     } catch {
       continue;
     }
   }
 
   if (candidates.length === 0) return null;
-  candidates.sort((a, b) => a.dist - b.dist);
+  if (candidates.length === 1) return candidates[0].face;
+  candidates.sort((a, b) => b.dot - a.dot || a.dist - b.dist);
   return candidates[0].face;
 }
 
@@ -109,19 +115,18 @@ async function applyOneExtrudeStep(
   const faces = extractFacesFromGeometry(geometry);
   const groups = groupCoplanarFaces(faces);
   const stepNormal = new THREE.Vector3(...step.faceNormal);
-  const stepCenter = new THREE.Vector3(...step.faceCenter);
 
-  const aligned = groups.filter(g => g.normal.clone().normalize().dot(stepNormal) > 0.7);
-  if (aligned.length === 0) return null;
-
-  let bestGroup: typeof aligned[0];
-  if (aligned.length === 1) {
-    bestGroup = aligned[0];
-  } else {
-    bestGroup = aligned.reduce((a, b) =>
-      a.center.distanceTo(stepCenter) <= b.center.distanceTo(stepCenter) ? a : b
-    );
+  const aligned = groups.filter(g => {
+    const gNorm = g.normal.clone().normalize();
+    const gLabel = getAxisLabel(gNorm);
+    return gLabel === step.axisLabel && gNorm.dot(stepNormal) > 0.7;
+  });
+  if (aligned.length === 0) {
+    console.warn(`[applyOneExtrudeStep] No aligned face group for axis ${step.axisLabel}. Groups:`, groups.map(g => getAxisLabel(g.normal.clone().normalize())));
+    return null;
   }
+
+  const bestGroup = aligned[0];
 
   const faceNormal = bestGroup.normal.clone().normalize();
   const faceCenter = bestGroup.center.clone();
@@ -146,10 +151,16 @@ async function applyOneExtrudeStep(
     extrudeAmount = step.value;
   }
 
-  if (Math.abs(extrudeAmount) < 0.01) return null;
+  if (Math.abs(extrudeAmount) < 0.01) {
+    console.warn(`[applyOneExtrudeStep] Extrude amount too small: ${extrudeAmount} for step ${step.axisLabel}`);
+    return null;
+  }
 
   const matchingFace = findMatchingReplicadFace(currentShape, faceNormal, faceCenter);
-  if (!matchingFace) return null;
+  if (!matchingFace) {
+    console.warn(`[applyOneExtrudeStep] No matching replicad face for normal ${faceNormal.toArray()} center ${faceCenter.toArray()}`);
+    return null;
+  }
 
   const extVec: [number, number, number] = [
     faceNormal.x * extrudeAmount,
@@ -185,13 +196,21 @@ export async function rebuildFromSteps(
 
   let currentReplicad = panelShape.parameters.baseReplicadShape;
   let currentGeometry = convertReplicadToThreeGeometry(currentReplicad);
+  let anyStepApplied = false;
 
   for (const step of steps) {
     const result = await applyOneExtrudeStep(currentReplicad, step, currentGeometry);
     if (result) {
       currentReplicad = result.replicadShape;
       currentGeometry = result.geometry;
+      anyStepApplied = true;
+    } else {
+      console.warn(`[rebuildFromSteps] Step ${step.axisLabel} (id=${step.id}) failed to apply`);
     }
+  }
+
+  if (!anyStepApplied) {
+    console.warn(`[rebuildFromSteps] No extrude steps applied for panel ${panelShape.id}`);
   }
 
   const newBox = new THREE.Box3().setFromBufferAttribute(
