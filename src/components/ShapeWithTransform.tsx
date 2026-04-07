@@ -177,6 +177,11 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     shape.id
   ]);
 
+  useEffect(() => {
+    isUpdatingRef.current = false;
+    initialTransformRef.current = null;
+  }, [panelSelectMode]);
+
   // ── Pozisyon / rotasyon / ölçek senkronizasyonu ────────────────────────────
   useEffect(() => {
     if (!groupRef.current) return;
@@ -369,7 +374,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
         controls.removeEventListener('change', onChange);
       };
     }
-  }, [isSelected, shape.id, updateShape, orbitControlsRef, geometryKey, scene]);
+  }, [isSelected, shape.id, updateShape, orbitControlsRef, geometryKey, scene, panelSelectMode]);
 
   // ── Yardımcı fonksiyonlar ──────────────────────────────────────────────────
   const getTransformMode = () => {
