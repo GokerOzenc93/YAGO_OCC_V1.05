@@ -49,6 +49,61 @@ function getDominantRole(
   }
 }
 
+function getVirtualFaceOrder(panelShape: any, virtualFaces: any[]): number {
+  const vfId = panelShape.parameters?.virtualFaceId;
+  if (!vfId) return -1;
+  const shapeId = panelShape.parameters?.parentShapeId;
+  const shapeFaces = virtualFaces.filter((vf: any) => vf.shapeId === shapeId);
+  return shapeFaces.findIndex((vf: any) => vf.id === vfId);
+}
+
+function panelsOverlap(shapeA: any, shapeB: any): boolean {
+  if (!shapeA || !shapeB) return false;
+  const bbA = shapeA.boundingBox;
+  const bbB = shapeB.boundingBox;
+  if (!bbA || !bbB) return false;
+  const [[axMin, ayMin, azMin], [axMax, ayMax, azMax]] = bbA.bounds;
+  const [[bxMin, byMin, bzMin], [bxMax, byMax, bzMax]] = bbB.bounds;
+  const tol = 0.5;
+  return (
+    axMin < bxMax - tol && axMax > bxMin + tol &&
+    ayMin < byMax - tol && ayMax > byMin + tol &&
+    azMin < bzMax - tol && azMax > bzMin + tol
+  );
+}
+
+function determineDominantPanel(
+  panelA: any,
+  panelB: any,
+  config: PanelJointConfig,
+  virtualFaces: any[]
+): 'A' | 'B' | null {
+  const roleA = panelA.parameters?.faceRole as FaceRole;
+  const roleB = panelB.parameters?.faceRole as FaceRole;
+  const isAVirtual = !!panelA.parameters?.virtualFaceId;
+  const isBVirtual = !!panelB.parameters?.virtualFaceId;
+
+  if (roleA && roleB && roleA !== 'Door' && roleB !== 'Door' && roleA !== roleB) {
+    const roleDominant = getDominantRole(roleA, roleB, config);
+    if (roleDominant) {
+      return roleDominant === roleA ? 'A' : 'B';
+    }
+  }
+
+  if (!isAVirtual && isBVirtual) return 'A';
+  if (isAVirtual && !isBVirtual) return 'B';
+
+  if (isAVirtual && isBVirtual) {
+    const orderA = getVirtualFaceOrder(panelA, virtualFaces);
+    const orderB = getVirtualFaceOrder(panelB, virtualFaces);
+    if (orderA !== -1 && orderB !== -1 && orderA !== orderB) {
+      return orderA < orderB ? 'A' : 'B';
+    }
+  }
+
+  return null;
+}
+
 async function toGeometry(replicadShape: any) {
   const { convertReplicadToThreeGeometry } = await import('./ReplicadService');
   return convertReplicadToThreeGeometry(replicadShape);
@@ -537,14 +592,15 @@ export async function resolveAllPanelJoints(
     (s) =>
       s.type === 'panel' &&
       s.parameters?.parentShapeId === parentShapeId &&
-      s.parameters?.faceRole &&
-      s.parameters.faceRole !== 'Door' &&
+      s.parameters?.faceRole !== 'Door' &&
       (s.parameters?.originalReplicadShape || s.replicadShape)
   );
 
+  const rolePanels = panels.filter(p => p.parameters?.faceRole);
+
   await applyBackPanelSettings(
     parentShapeId,
-    panels,
+    rolePanels,
     fullSettings.backPanelThickness,
     fullSettings.grooveOffset,
     fullSettings.grooveDepth
@@ -557,7 +613,9 @@ export async function resolveAllPanelJoints(
     return;
   }
 
-  console.log(`🔗 Resolving panel joints for ${panels.length} panels...`);
+  console.log(`Resolving panel joints for ${panels.length} panels...`);
+
+  const virtualFaces = state.virtualFaces;
 
   const originalShapes = new Map<string, any>();
   for (const panel of panels) {
@@ -577,10 +635,15 @@ export async function resolveAllPanelJoints(
       const roleA = pA.parameters?.faceRole as FaceRole;
       const roleB = pB.parameters?.faceRole as FaceRole;
 
-      const dominant = getDominantRole(roleA, roleB, jointConfig);
-      if (!dominant) continue;
+      const origA = originalShapes.get(pA.id);
+      const origB = originalShapes.get(pB.id);
 
-      const isADominant = dominant === roleA;
+      const winner = determineDominantPanel(pA, pB, jointConfig, virtualFaces);
+      if (!winner) continue;
+
+      if (origA && origB && !panelsOverlap(origA, origB)) continue;
+
+      const isADominant = winner === 'A';
       const subordinateId = isADominant ? pB.id : pA.id;
       const dominantId = isADominant ? pA.id : pB.id;
       const subordinateRole = isADominant ? roleB : roleA;
@@ -598,14 +661,16 @@ export async function resolveAllPanelJoints(
         cutsMap.set(subordinateId, existing);
       }
 
-      if (!isBackSubordinate) {
+      if (!isBackSubordinate && roleA && roleB && roleA !== roleB) {
         const extEntries = extensionsMap.get(dominantId) || [];
         extEntries.push({ subordinateId, subordinateRole });
         extensionsMap.set(dominantId, extEntries);
       }
 
+      const domRole = isADominant ? roleA : roleB;
+      const subRole = isADominant ? roleB : roleA;
       console.log(
-        `  Joint: ${roleA}-${roleB} → ${dominant} dominant, ${isADominant ? roleB : roleA} trimmed`
+        `  Joint: ${roleA || 'none'}-${roleB || 'none'} -> ${domRole || 'none'} dominant, ${subRole || 'none'} trimmed`
       );
     }
   }
