@@ -58,18 +58,19 @@ function getVirtualFaceOrder(panelShape: any, virtualFaces: any[]): number {
 }
 
 function panelsOverlap(shapeA: any, shapeB: any): boolean {
-  if (!shapeA || !shapeB) return false;
-  const bbA = shapeA.boundingBox;
-  const bbB = shapeB.boundingBox;
-  if (!bbA || !bbB) return false;
-  const [[axMin, ayMin, azMin], [axMax, ayMax, azMax]] = bbA.bounds;
-  const [[bxMin, byMin, bzMin], [bxMax, byMax, bzMax]] = bbB.bounds;
-  const tol = 0.5;
-  return (
-    axMin < bxMax - tol && axMax > bxMin + tol &&
-    ayMin < byMax - tol && ayMax > byMin + tol &&
-    azMin < bzMax - tol && azMax > bzMin + tol
-  );
+  try {
+    if (!shapeA || !shapeB) return true;
+    const bbA = getReplicadBoundingBox(shapeA);
+    const bbB = getReplicadBoundingBox(shapeB);
+    const tol = 0.5;
+    return (
+      bbA.min[0] < bbB.max[0] - tol && bbA.max[0] > bbB.min[0] + tol &&
+      bbA.min[1] < bbB.max[1] - tol && bbA.max[1] > bbB.min[1] + tol &&
+      bbA.min[2] < bbB.max[2] - tol && bbA.max[2] > bbB.min[2] + tol
+    );
+  } catch {
+    return true;
+  }
 }
 
 function determineDominantPanel(
@@ -614,6 +615,10 @@ export async function resolveAllPanelJoints(
   }
 
   console.log(`Resolving panel joints for ${panels.length} panels...`);
+  panels.forEach((p, i) => {
+    const isVf = !!p.parameters?.virtualFaceId;
+    console.log(`  Panel[${i}]: role=${p.parameters?.faceRole || 'none'} virtual=${isVf} vfId=${p.parameters?.virtualFaceId || '-'} id=${p.id}`);
+  });
 
   const virtualFaces = state.virtualFaces;
 
@@ -639,9 +644,16 @@ export async function resolveAllPanelJoints(
       const origB = originalShapes.get(pB.id);
 
       const winner = determineDominantPanel(pA, pB, jointConfig, virtualFaces);
-      if (!winner) continue;
+      if (!winner) {
+        console.log(`  Skip: ${roleA || 'none'}-${roleB || 'none'} no dominant (vfA=${!!pA.parameters?.virtualFaceId} vfB=${!!pB.parameters?.virtualFaceId})`);
+        continue;
+      }
 
-      if (origA && origB && !panelsOverlap(origA, origB)) continue;
+      const overlap = panelsOverlap(origA, origB);
+      if (origA && origB && !overlap) {
+        console.log(`  Skip: ${roleA || 'none'}-${roleB || 'none'} no overlap`);
+        continue;
+      }
 
       const isADominant = winner === 'A';
       const subordinateId = isADominant ? pB.id : pA.id;
@@ -721,7 +733,7 @@ export async function resolveAllPanelJoints(
       if (isCut) {
         const dominantIds = cutsMap.get(panel.id)!;
         for (const dominantId of dominantIds) {
-          const cuttingShape = originalShapes.get(dominantId);
+          const cuttingShape = extendedShapes.get(dominantId) || originalShapes.get(dominantId);
           if (!cuttingShape) continue;
           try {
             currentShape = currentShape.cut(cuttingShape);
@@ -784,6 +796,7 @@ export async function resolveAllPanelJoints(
         );
         if (hasVirtualPanels) {
           await rebuildVirtualFacePanels(parentShapeId, updatedFaces);
+          await resolveAllPanelJoints(parentShapeId, profileId, config, true);
         }
       }
     }
@@ -1071,7 +1084,7 @@ function clearStaleOriginalShapes(parentShapeId: string) {
   }));
 }
 
-async function recalculateAndRebuildVirtualFaces(parentShapeId: string): Promise<void> {
+async function recalculateAndRebuildVirtualFaces(parentShapeId: string, profileId?: string | null): Promise<void> {
   const shapeFaces = useAppStore.getState().virtualFaces.filter(vf => vf.shapeId === parentShapeId);
   if (shapeFaces.length === 0) return;
 
@@ -1092,6 +1105,9 @@ async function recalculateAndRebuildVirtualFaces(parentShapeId: string): Promise
   );
   if (hasVirtualPanels) {
     await rebuildVirtualFacePanels(parentShapeId, updatedFaces);
+    if (profileId && profileId !== 'none') {
+      await resolveAllPanelJoints(parentShapeId, profileId, undefined, true);
+    }
   }
 }
 
@@ -1164,7 +1180,7 @@ export async function rebuildAndRecalculatePipeline(
   updateBaseShapesAfterJoints(parentShapeId);
   await reapplyExtrudeSteps(parentShapeId);
 
-  await recalculateAndRebuildVirtualFaces(parentShapeId);
+  await recalculateAndRebuildVirtualFaces(parentShapeId, profileId);
 }
 
 async function rebuildVirtualFacePanels(
