@@ -1,7 +1,7 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { useAppStore } from '../store';
-import type { VirtualFace, EdgeAnchor } from '../store';
+import type { VirtualFace, EdgeAnchor, NormalizedHitDistances } from '../store';
 import {
   extractFacesFromGeometry,
   groupCoplanarFaces,
@@ -338,7 +338,12 @@ function castRayOnFaceWorldDetailed(originWorld: THREE.Vector3, dirWorld: THREE.
   for (const edge of obstacleEdges) {
     const a2d = projectTo2D(edge.v1, planeOrigin, u, v), b2d = projectTo2D(edge.v2, planeOrigin, u, v);
     const t = raySegmentIntersect2D(o2d.x, o2d.y, dir2d.x, dir2d.y, a2d.x, a2d.y, b2d.x, b2d.y);
-    if (t !== null && t < tMin) { tMin = t; hitEdge = edge; isBoundary = false; hitEdgeT = 0; }
+    if (t !== null && t < tMin) {
+      tMin = t; hitEdge = edge; isBoundary = false;
+      const hitX = o2d.x + dir2d.x * t, hitY = o2d.y + dir2d.y * t;
+      const ex = b2d.x - a2d.x, ey = b2d.y - a2d.y, eLen = Math.sqrt(ex * ex + ey * ey);
+      hitEdgeT = eLen > 1e-8 ? ((hitX - a2d.x) * ex + (hitY - a2d.y) * ey) / (eLen * eLen) : 0;
+    }
   }
   return { hitPoint: originWorld.clone().addScaledVector(dirWorld, tMin), hitEdge, edgeT: Math.max(0, Math.min(1, hitEdgeT)), isBoundaryEdge: isBoundary };
 }
@@ -396,7 +401,7 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
     const result = castRayOnFaceWorldDetailed(startWorld, dir, boundaryEdges, obstacleEdges, u, v, planeOrigin, maxDist);
     lines.push({ start: startWorld.clone().sub(parentPos), end: result.hitPoint.clone().sub(parentPos) });
     hitPointsWorld.push(result.hitPoint);
-    if (result.hitEdge && result.isBoundaryEdge) {
+    if (result.hitEdge) {
       const v1Local = result.hitEdge.v1.clone().applyMatrix4(worldToLocal);
       const v2Local = result.hitEdge.v2.clone().applyMatrix4(worldToLocal);
       edgeAnchors.push({ edgeV1Local: [v1Local.x, v1Local.y, v1Local.z], edgeV2Local: [v2Local.x, v2Local.y, v2Local.z], t: result.edgeT, direction: dirLabels[di] });
@@ -444,6 +449,7 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
     if (representativeFace) faceGroupDescriptor = createFaceDescriptor(representativeFace, geometry);
   }
   let normalizedClickUV: [number, number] | undefined;
+  let normalizedHitDistances: NormalizedHitDistances | undefined;
   {
     const faceWorldVerts: THREE.Vector3[] = [];
     group.faceIndices.forEach(fi => { const face = faces[fi]; if (!face) return; face.vertices.forEach(v3 => faceWorldVerts.push(v3.clone().applyMatrix4(localToWorld))); });
@@ -455,6 +461,14 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
       if (uSpan > 0 && vSpan > 0) {
         const clickU = clickWorld.dot(u), clickV = clickWorld.dot(v);
         normalizedClickUV = [Math.max(0, Math.min(1, (clickU - uMin) / uSpan)), Math.max(0, Math.min(1, (clickV - vMin) / vSpan))];
+        normalizedHitDistances = {
+          uPosRatio: uPosT / uSpan,
+          uNegRatio: uNegT / uSpan,
+          vPosRatio: vPosT / vSpan,
+          vNegRatio: vNegT / vSpan,
+          uTotalExtent: uSpan,
+          vTotalExtent: vSpan,
+        };
       }
     }
   }
@@ -470,6 +484,7 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
       faceGroupNormal: [localNormal.x, localNormal.y, localNormal.z],
       faceGroupDescriptor, normalizedClickUV,
       edgeAnchors: edgeAnchors.length === 4 ? edgeAnchors : undefined,
+      normalizedHitDistances,
     } : undefined,
   };
   return { rayLines: lines, originLocal: clickWorld.clone().sub(parentPos), geo, edgeGeo, virtualFace };

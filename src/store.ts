@@ -45,12 +45,22 @@ export interface EdgeAnchor {
   direction:'u+'|'u-'|'v+'|'v-';
 }
 
+export interface NormalizedHitDistances {
+  uPosRatio:number;
+  uNegRatio:number;
+  vPosRatio:number;
+  vNegRatio:number;
+  uTotalExtent:number;
+  vTotalExtent:number;
+}
+
 export interface VirtualFaceRaycastRecipe {
   clickLocalPoint:[number,number,number];
   faceGroupNormal:[number,number,number];
   faceGroupDescriptor:FaceDescriptor;
   normalizedClickUV?:[number,number];
   edgeAnchors?:EdgeAnchor[];
+  normalizedHitDistances?:NormalizedHitDistances;
 }
 
 export interface VirtualFace {
