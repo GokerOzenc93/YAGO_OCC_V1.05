@@ -89,24 +89,10 @@ function reconstructFromNormalizedDistances(
   const extent = computeFaceGroupExtent(groupVerticesWorld, u, v);
   if (extent.uSpan <= 0 || extent.vSpan <= 0) return null;
 
-  const normalizedUV = vf.raycastRecipe!.normalizedClickUV;
-  if (!normalizedUV) return null;
-
-  const clickU = extent.uMin + normalizedUV[0] * extent.uSpan;
-  const clickV = extent.vMin + normalizedUV[1] * extent.vSpan;
-
-  const hitUPos = nhd.uPosIsBoundary
-    ? extent.uMax - nhd.uPosFromEdge
-    : Math.min(clickU + nhd.uPosAbsDist, extent.uMax);
-  const hitUNeg = nhd.uNegIsBoundary
-    ? extent.uMin + nhd.uNegFromEdge
-    : Math.max(clickU - nhd.uNegAbsDist, extent.uMin);
-  const hitVPos = nhd.vPosIsBoundary
-    ? extent.vMax - nhd.vPosFromEdge
-    : Math.min(clickV + nhd.vPosAbsDist, extent.vMax);
-  const hitVNeg = nhd.vNegIsBoundary
-    ? extent.vMin + nhd.vNegFromEdge
-    : Math.max(clickV - nhd.vNegAbsDist, extent.vMin);
+  const hitUPos = extent.uMax - nhd.uPosFromEdge;
+  const hitUNeg = extent.uMin + nhd.uNegFromEdge;
+  const hitVPos = extent.vMax - nhd.vPosFromEdge;
+  const hitVNeg = extent.vMin + nhd.vNegFromEdge;
 
   const refPoint = groupVerticesWorld[0];
   const nComp = refPoint.dot(worldNormal);
@@ -129,18 +115,18 @@ function reconstructFromNormalizedDistances(
   );
 
   const newNhd: NormalizedHitDistances = {
-    uPosFromEdge: extent.uMax - hitUPos,
-    uNegFromEdge: hitUNeg - extent.uMin,
-    vPosFromEdge: extent.vMax - hitVPos,
-    vNegFromEdge: hitVNeg - extent.vMin,
+    uPosFromEdge: nhd.uPosFromEdge,
+    uNegFromEdge: nhd.uNegFromEdge,
+    vPosFromEdge: nhd.vPosFromEdge,
+    vNegFromEdge: nhd.vNegFromEdge,
     uPosIsBoundary: nhd.uPosIsBoundary,
     uNegIsBoundary: nhd.uNegIsBoundary,
     vPosIsBoundary: nhd.vPosIsBoundary,
     vNegIsBoundary: nhd.vNegIsBoundary,
-    uPosAbsDist: hitUPos - clickU,
-    uNegAbsDist: clickU - hitUNeg,
-    vPosAbsDist: hitVPos - clickV,
-    vNegAbsDist: clickV - hitVNeg,
+    uPosAbsDist: nhd.uPosAbsDist,
+    uNegAbsDist: nhd.uNegAbsDist,
+    vPosAbsDist: nhd.vPosAbsDist,
+    vNegAbsDist: nhd.vNegAbsDist,
   };
 
   return {
@@ -391,7 +377,7 @@ function reraycastVirtualFace(
   const uniqueBoundaryEdgesLocal = extractUniqueBoundaryEdgesLocal(faces, matchedGroup.faceIndices);
 
   const nhd = vf.raycastRecipe.normalizedHitDistances;
-  if (nhd && vf.raycastRecipe.normalizedClickUV) {
+  if (nhd) {
     const result = reconstructFromNormalizedDistances(
       vf, nhd, groupVerticesWorld, worldNormal, u, v,
       localToWorld, worldToLocal, localNormal, shape, uniqueBoundaryEdgesLocal
