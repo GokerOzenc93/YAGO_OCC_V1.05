@@ -393,6 +393,7 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
   const directions = [u, u.clone().negate(), v, v.clone().negate()];
   const lines: RayLine[] = [];
   const hitPointsWorld: THREE.Vector3[] = [];
+  const hitIsBoundary: boolean[] = [];
   const edgeAnchors: EdgeAnchor[] = [];
   const parentPos = new THREE.Vector3();
   localToWorld.decompose(parentPos, new THREE.Quaternion(), new THREE.Vector3());
@@ -401,6 +402,7 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
     const result = castRayOnFaceWorldDetailed(startWorld, dir, boundaryEdges, obstacleEdges, u, v, planeOrigin, maxDist);
     lines.push({ start: startWorld.clone().sub(parentPos), end: result.hitPoint.clone().sub(parentPos) });
     hitPointsWorld.push(result.hitPoint);
+    hitIsBoundary.push(result.isBoundaryEdge);
     if (result.hitEdge) {
       const v1Local = result.hitEdge.v1.clone().applyMatrix4(worldToLocal);
       const v2Local = result.hitEdge.v2.clone().applyMatrix4(worldToLocal);
@@ -461,13 +463,23 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
       if (uSpan > 0 && vSpan > 0) {
         const clickU = clickWorld.dot(u), clickV = clickWorld.dot(v);
         normalizedClickUV = [Math.max(0, Math.min(1, (clickU - uMin) / uSpan)), Math.max(0, Math.min(1, (clickV - vMin) / vSpan))];
+        const hitUPos = clickU + uPosT;
+        const hitUNeg = clickU - uNegT;
+        const hitVPos = clickV + vPosT;
+        const hitVNeg = clickV - vNegT;
         normalizedHitDistances = {
-          uPosRatio: uPosT / uSpan,
-          uNegRatio: uNegT / uSpan,
-          vPosRatio: vPosT / vSpan,
-          vNegRatio: vNegT / vSpan,
-          uTotalExtent: uSpan,
-          vTotalExtent: vSpan,
+          uPosFromEdge: uMax - hitUPos,
+          uNegFromEdge: hitUNeg - uMin,
+          vPosFromEdge: vMax - hitVPos,
+          vNegFromEdge: hitVNeg - vMin,
+          uPosIsBoundary: hitIsBoundary[0],
+          uNegIsBoundary: hitIsBoundary[1],
+          vPosIsBoundary: hitIsBoundary[2],
+          vNegIsBoundary: hitIsBoundary[3],
+          uPosAbsDist: uPosT,
+          uNegAbsDist: uNegT,
+          vPosAbsDist: vPosT,
+          vNegAbsDist: vNegT,
         };
       }
     }

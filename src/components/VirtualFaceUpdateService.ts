@@ -95,22 +95,27 @@ function reconstructFromNormalizedDistances(
   const clickU = extent.uMin + normalizedUV[0] * extent.uSpan;
   const clickV = extent.vMin + normalizedUV[1] * extent.vSpan;
 
-  const uPosT = nhd.uPosRatio * extent.uSpan;
-  const uNegT = nhd.uNegRatio * extent.uSpan;
-  const vPosT = nhd.vPosRatio * extent.vSpan;
-  const vNegT = nhd.vNegRatio * extent.vSpan;
+  const hitUPos = nhd.uPosIsBoundary
+    ? extent.uMax - nhd.uPosFromEdge
+    : Math.min(clickU + nhd.uPosAbsDist, extent.uMax);
+  const hitUNeg = nhd.uNegIsBoundary
+    ? extent.uMin + nhd.uNegFromEdge
+    : Math.max(clickU - nhd.uNegAbsDist, extent.uMin);
+  const hitVPos = nhd.vPosIsBoundary
+    ? extent.vMax - nhd.vPosFromEdge
+    : Math.min(clickV + nhd.vPosAbsDist, extent.vMax);
+  const hitVNeg = nhd.vNegIsBoundary
+    ? extent.vMin + nhd.vNegFromEdge
+    : Math.max(clickV - nhd.vNegAbsDist, extent.vMin);
 
   const refPoint = groupVerticesWorld[0];
   const nComp = refPoint.dot(worldNormal);
 
-  const startU = clickU;
-  const startV = clickV;
-
   const cornersWorld = [
-    buildWorldPoint(startU + uPosT, startV + vPosT, nComp, u, v, worldNormal),
-    buildWorldPoint(startU - uNegT, startV + vPosT, nComp, u, v, worldNormal),
-    buildWorldPoint(startU - uNegT, startV - vNegT, nComp, u, v, worldNormal),
-    buildWorldPoint(startU + uPosT, startV - vNegT, nComp, u, v, worldNormal),
+    buildWorldPoint(hitUPos, hitVPos, nComp, u, v, worldNormal),
+    buildWorldPoint(hitUNeg, hitVPos, nComp, u, v, worldNormal),
+    buildWorldPoint(hitUNeg, hitVNeg, nComp, u, v, worldNormal),
+    buildWorldPoint(hitUPos, hitVNeg, nComp, u, v, worldNormal),
   ];
 
   const subtractions = shape.subtractionGeometries || [];
@@ -123,14 +128,19 @@ function reconstructFromNormalizedDistances(
     result.cornersLocal, uniqueBoundaryEdgesLocal
   );
 
-  const newExtent = computeFaceGroupExtent(groupVerticesWorld, u, v);
   const newNhd: NormalizedHitDistances = {
-    uPosRatio: newExtent.uSpan > 0 ? uPosT / newExtent.uSpan : nhd.uPosRatio,
-    uNegRatio: newExtent.uSpan > 0 ? uNegT / newExtent.uSpan : nhd.uNegRatio,
-    vPosRatio: newExtent.vSpan > 0 ? vPosT / newExtent.vSpan : nhd.vPosRatio,
-    vNegRatio: newExtent.vSpan > 0 ? vNegT / newExtent.vSpan : nhd.vNegRatio,
-    uTotalExtent: newExtent.uSpan,
-    vTotalExtent: newExtent.vSpan,
+    uPosFromEdge: extent.uMax - hitUPos,
+    uNegFromEdge: hitUNeg - extent.uMin,
+    vPosFromEdge: extent.vMax - hitVPos,
+    vNegFromEdge: hitVNeg - extent.vMin,
+    uPosIsBoundary: nhd.uPosIsBoundary,
+    uNegIsBoundary: nhd.uNegIsBoundary,
+    vPosIsBoundary: nhd.vPosIsBoundary,
+    vNegIsBoundary: nhd.vNegIsBoundary,
+    uPosAbsDist: hitUPos - clickU,
+    uNegAbsDist: clickU - hitUNeg,
+    vPosAbsDist: hitVPos - clickV,
+    vNegAbsDist: clickV - hitVNeg,
   };
 
   return {

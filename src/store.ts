@@ -46,12 +46,18 @@ export interface EdgeAnchor {
 }
 
 export interface NormalizedHitDistances {
-  uPosRatio:number;
-  uNegRatio:number;
-  vPosRatio:number;
-  vNegRatio:number;
-  uTotalExtent:number;
-  vTotalExtent:number;
+  uPosFromEdge:number;
+  uNegFromEdge:number;
+  vPosFromEdge:number;
+  vNegFromEdge:number;
+  uPosIsBoundary:boolean;
+  uNegIsBoundary:boolean;
+  vPosIsBoundary:boolean;
+  vNegIsBoundary:boolean;
+  uPosAbsDist:number;
+  uNegAbsDist:number;
+  vPosAbsDist:number;
+  vNegAbsDist:number;
 }
 
 export interface VirtualFaceRaycastRecipe {
