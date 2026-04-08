@@ -380,19 +380,15 @@ export function collectVirtualFaceObstacleEdgesWorld(virtualFaces: VirtualFace[]
 
 function collectBoundaryCornerVertices(
   boundaryEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>,
-  worldToLocal: THREE.Matrix4,
-  worldNormal: THREE.Vector3,
-  facePlaneOrigin: THREE.Vector3,
-  tolerance: number = 5
+  worldToLocal: THREE.Matrix4
 ): AnchorCandidate[] {
   const uniqueMap = new Map<string, AnchorCandidate>();
   for (const edge of boundaryEdges) {
     for (const wp of [edge.v1, edge.v2]) {
-      const dist = Math.abs(worldNormal.dot(new THREE.Vector3().subVectors(wp, facePlaneOrigin)));
-      if (dist > tolerance) continue;
-      const key = `${wp.x.toFixed(1)},${wp.y.toFixed(1)},${wp.z.toFixed(1)}`;
+      const lp = wp.clone().applyMatrix4(worldToLocal);
+      const key = `${lp.x.toFixed(1)},${lp.y.toFixed(1)},${lp.z.toFixed(1)}`;
       if (!uniqueMap.has(key)) {
-        uniqueMap.set(key, { worldPos: wp.clone(), localPos: wp.clone().applyMatrix4(worldToLocal) });
+        uniqueMap.set(key, { worldPos: wp.clone(), localPos: lp });
       }
     }
   }
@@ -490,7 +486,7 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
       }
     }
   }
-  const anchorCandidates = collectBoundaryCornerVertices(boundaryEdges, worldToLocal, worldNormal, planeOrigin);
+  const anchorCandidates = collectBoundaryCornerVertices(boundaryEdges, worldToLocal);
   const newId = `vf-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
   const virtualFace: VirtualFace = {
     id: newId, shapeId,
@@ -739,12 +735,6 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     }
   };
 
-  const parentPos = useMemo(() => {
-    const p = new THREE.Vector3();
-    localToWorld.decompose(p, new THREE.Quaternion(), new THREE.Vector3());
-    return p;
-  }, [localToWorld]);
-
   if (!raycastMode) return null;
   return (
     <>
@@ -770,19 +760,18 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
             <lineBasicMaterial color={0x16a34a} linewidth={2} depthTest={false} transparent opacity={0.9} />
           </lineSegments>
           {pending.anchorCandidates.map((candidate, idx) => {
-            const localOffset = candidate.worldPos.clone().sub(parentPos);
             const isSelected = pending.safeAnchorLocal != null &&
               candidate.localPos.distanceTo(pending.safeAnchorLocal) < 1;
             return (
               <React.Fragment key={`anchor-${idx}`}>
                 <AnchorPointDot
-                  position={localOffset}
+                  position={candidate.localPos}
                   isHovered={hoveredAnchorIndex === idx}
                   isSelected={isSelected}
                   onHover={(h) => setHoveredAnchorIndex(h ? idx : null)}
                   onClick={() => handleAnchorClick(idx)}
                 />
-                <AnchorRingDot position={localOffset} isSelected={isSelected} />
+                <AnchorRingDot position={candidate.localPos} isSelected={isSelected} />
               </React.Fragment>
             );
           })}
