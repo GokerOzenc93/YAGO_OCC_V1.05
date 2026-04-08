@@ -65,6 +65,68 @@ function raySegmentIntersect2D(ox: number, oy: number, dx: number, dy: number, a
   return null;
 }
 
+function computePanelPlaneIntersectionEdges(panel: any, facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3): Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> {
+  const panelMatrix = getShapeMatrix(panel);
+  const posAttr = panel.geometry.getAttribute('position');
+  const indexAttr = panel.geometry.getIndex();
+  if (!posAttr) return [];
+
+  const planeD = facePlaneNormal.dot(facePlaneOrigin);
+  const intersectionPoints: THREE.Vector3[] = [];
+
+  const triCount = indexAttr ? indexAttr.count / 3 : posAttr.count / 3;
+  for (let t = 0; t < triCount; t++) {
+    const idx = indexAttr
+      ? [indexAttr.getX(t * 3), indexAttr.getX(t * 3 + 1), indexAttr.getX(t * 3 + 2)]
+      : [t * 3, t * 3 + 1, t * 3 + 2];
+    const verts = idx.map(i =>
+      new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)).applyMatrix4(panelMatrix)
+    );
+    const dists = verts.map(v => facePlaneNormal.dot(v) - planeD);
+
+    for (let e = 0; e < 3; e++) {
+      const eNext = (e + 1) % 3;
+      const dA = dists[e], dB = dists[eNext];
+      if ((dA > 0 && dB < 0) || (dA < 0 && dB > 0)) {
+        const tParam = dA / (dA - dB);
+        intersectionPoints.push(
+          new THREE.Vector3().lerpVectors(verts[e], verts[eNext], tParam)
+        );
+      } else if (Math.abs(dA) < 0.01) {
+        intersectionPoints.push(verts[e].clone());
+      }
+    }
+  }
+
+  if (intersectionPoints.length < 2) return [];
+
+  const { u, v } = getFacePlaneAxes(facePlaneNormal);
+  const pts2DWithWorld = intersectionPoints.map(p => ({
+    world: p,
+    x: p.dot(u),
+    y: p.dot(v)
+  }));
+
+  const hull2D = convexHull2D(pts2DWithWorld.map(p => ({ x: p.x, y: p.y })));
+  if (hull2D.length < 2) return [];
+
+  const hullWorld = hull2D.map(h => {
+    let bestDist = Infinity;
+    let bestPt = intersectionPoints[0];
+    for (const pw of pts2DWithWorld) {
+      const d = (pw.x - h.x) ** 2 + (pw.y - h.y) ** 2;
+      if (d < bestDist) { bestDist = d; bestPt = pw.world; }
+    }
+    return bestPt;
+  });
+
+  const edges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> = [];
+  for (let i = 0; i < hullWorld.length; i++) {
+    edges.push({ v1: hullWorld[i], v2: hullWorld[(i + 1) % hullWorld.length] });
+  }
+  return edges;
+}
+
 export function collectPanelObstacleEdgesWorld(panelShapes: any[], facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, planeTolerance: number = 15): Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> {
   const obstacleEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> = [];
   for (const panel of panelShapes) {
@@ -72,14 +134,25 @@ export function collectPanelObstacleEdgesWorld(panelShapes: any[], facePlaneNorm
     const panelMatrix = getShapeMatrix(panel);
     const edgesGeo = new THREE.EdgesGeometry(panel.geometry);
     const edgePos = edgesGeo.getAttribute('position');
+    let hasCoplanarEdges = false;
     for (let i = 0; i < edgePos.count; i += 2) {
       const va = new THREE.Vector3(edgePos.getX(i), edgePos.getY(i), edgePos.getZ(i)).applyMatrix4(panelMatrix);
       const vb = new THREE.Vector3(edgePos.getX(i + 1), edgePos.getY(i + 1), edgePos.getZ(i + 1)).applyMatrix4(panelMatrix);
       const distA = Math.abs(facePlaneNormal.dot(new THREE.Vector3().subVectors(va, facePlaneOrigin)));
       const distB = Math.abs(facePlaneNormal.dot(new THREE.Vector3().subVectors(vb, facePlaneOrigin)));
-      if (distA < planeTolerance && distB < planeTolerance) obstacleEdges.push({ v1: va, v2: vb });
+      if (distA < planeTolerance && distB < planeTolerance) {
+        obstacleEdges.push({ v1: va, v2: vb });
+        hasCoplanarEdges = true;
+      }
     }
     edgesGeo.dispose();
+
+    if (!hasCoplanarEdges) {
+      const crossEdges = computePanelPlaneIntersectionEdges(panel, facePlaneNormal, facePlaneOrigin);
+      if (crossEdges.length > 0) {
+        obstacleEdges.push(...crossEdges);
+      }
+    }
   }
   return obstacleEdges;
 }
