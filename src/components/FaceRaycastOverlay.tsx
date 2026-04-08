@@ -319,28 +319,31 @@ interface RayHitResult {
   hitEdge: { v1: THREE.Vector3; v2: THREE.Vector3 } | null;
   edgeT: number;
   isBoundaryEdge: boolean;
+  boundaryEdge: { v1: THREE.Vector3; v2: THREE.Vector3 } | null;
+  boundaryEdgeT: number;
 }
 
 function castRayOnFaceWorldDetailed(originWorld: THREE.Vector3, dirWorld: THREE.Vector3, boundaryEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>, obstacleEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>, u: THREE.Vector3, v: THREE.Vector3, planeOrigin: THREE.Vector3, maxDist: number): RayHitResult {
   const o2d = projectTo2D(originWorld, planeOrigin, u, v);
   const dir2d = { x: dirWorld.dot(u), y: dirWorld.dot(v) };
-  let tMin = maxDist, hitEdge: { v1: THREE.Vector3; v2: THREE.Vector3 } | null = null, hitEdgeT = 0, isBoundary = false;
+  let tMinBoundary = maxDist, boundaryEdgeHit: { v1: THREE.Vector3; v2: THREE.Vector3 } | null = null, boundaryEdgeHitT = 0;
   for (const edge of boundaryEdges) {
     const a2d = projectTo2D(edge.v1, planeOrigin, u, v), b2d = projectTo2D(edge.v2, planeOrigin, u, v);
     const t = raySegmentIntersect2D(o2d.x, o2d.y, dir2d.x, dir2d.y, a2d.x, a2d.y, b2d.x, b2d.y);
-    if (t !== null && t < tMin) {
-      tMin = t; hitEdge = edge; isBoundary = true;
+    if (t !== null && t < tMinBoundary) {
+      tMinBoundary = t; boundaryEdgeHit = edge;
       const hitX = o2d.x + dir2d.x * t, hitY = o2d.y + dir2d.y * t;
       const ex = b2d.x - a2d.x, ey = b2d.y - a2d.y, eLen = Math.sqrt(ex * ex + ey * ey);
-      hitEdgeT = eLen > 1e-8 ? ((hitX - a2d.x) * ex + (hitY - a2d.y) * ey) / (eLen * eLen) : 0;
+      boundaryEdgeHitT = eLen > 1e-8 ? ((hitX - a2d.x) * ex + (hitY - a2d.y) * ey) / (eLen * eLen) : 0;
     }
   }
+  let tMin = tMinBoundary, hitEdge = boundaryEdgeHit, hitEdgeT = boundaryEdgeHitT, isBoundary = boundaryEdgeHit !== null;
   for (const edge of obstacleEdges) {
     const a2d = projectTo2D(edge.v1, planeOrigin, u, v), b2d = projectTo2D(edge.v2, planeOrigin, u, v);
     const t = raySegmentIntersect2D(o2d.x, o2d.y, dir2d.x, dir2d.y, a2d.x, a2d.y, b2d.x, b2d.y);
     if (t !== null && t < tMin) { tMin = t; hitEdge = edge; isBoundary = false; hitEdgeT = 0; }
   }
-  return { hitPoint: originWorld.clone().addScaledVector(dirWorld, tMin), hitEdge, edgeT: Math.max(0, Math.min(1, hitEdgeT)), isBoundaryEdge: isBoundary };
+  return { hitPoint: originWorld.clone().addScaledVector(dirWorld, tMin), hitEdge, edgeT: Math.max(0, Math.min(1, hitEdgeT)), isBoundaryEdge: isBoundary, boundaryEdge: boundaryEdgeHit, boundaryEdgeT: Math.max(0, Math.min(1, boundaryEdgeHitT)) };
 }
 
 export function castRayOnFaceWorld(originWorld: THREE.Vector3, dirWorld: THREE.Vector3, boundaryEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>, obstacleEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>, u: THREE.Vector3, v: THREE.Vector3, planeOrigin: THREE.Vector3, maxDist: number): THREE.Vector3 {
@@ -396,10 +399,12 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
     const result = castRayOnFaceWorldDetailed(startWorld, dir, boundaryEdges, obstacleEdges, u, v, planeOrigin, maxDist);
     lines.push({ start: startWorld.clone().sub(parentPos), end: result.hitPoint.clone().sub(parentPos) });
     hitPointsWorld.push(result.hitPoint);
-    if (result.hitEdge && result.isBoundaryEdge) {
-      const v1Local = result.hitEdge.v1.clone().applyMatrix4(worldToLocal);
-      const v2Local = result.hitEdge.v2.clone().applyMatrix4(worldToLocal);
-      edgeAnchors.push({ edgeV1Local: [v1Local.x, v1Local.y, v1Local.z], edgeV2Local: [v2Local.x, v2Local.y, v2Local.z], t: result.edgeT, direction: dirLabels[di] });
+    const anchorEdge = result.boundaryEdge;
+    const anchorT = result.boundaryEdgeT;
+    if (anchorEdge) {
+      const v1Local = anchorEdge.v1.clone().applyMatrix4(worldToLocal);
+      const v2Local = anchorEdge.v2.clone().applyMatrix4(worldToLocal);
+      edgeAnchors.push({ edgeV1Local: [v1Local.x, v1Local.y, v1Local.z], edgeV2Local: [v2Local.x, v2Local.y, v2Local.z], t: anchorT, direction: dirLabels[di] });
     }
   }
   if (hitPointsWorld.length < 4) return null;

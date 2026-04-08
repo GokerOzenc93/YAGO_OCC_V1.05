@@ -345,72 +345,20 @@ function rebuildAnchorsFromHitPoints(
   return newAnchors;
 }
 
-function reraycastVirtualFaceFallback(
-  vf: VirtualFace,
-  shape: Shape,
-  faces: FaceData[],
-  matchedGroup: CoplanarFaceGroup,
-  localToWorld: THREE.Matrix4,
-  worldToLocal: THREE.Matrix4,
-  childPanels: any[],
-  shapeFaces: VirtualFace[],
-  groupVerticesWorld: THREE.Vector3[],
+function tryRaycastFromPoint(
+  clickWorld: THREE.Vector3,
   worldNormal: THREE.Vector3,
   u: THREE.Vector3,
-  v: THREE.Vector3
+  v: THREE.Vector3,
+  boundaryEdgesWorld: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>,
+  obstacleEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>,
+  subtractions: any[],
+  localToWorld: THREE.Matrix4,
+  worldToLocal: THREE.Matrix4,
+  localNormal: THREE.Vector3
 ): VirtualFace | null {
-  let clampedClickWorld: THREE.Vector3;
-
-  const normalizedUV = vf.raycastRecipe!.normalizedClickUV;
-  if (normalizedUV) {
-    const faceVertsU = groupVerticesWorld.map(vw => vw.dot(u));
-    const faceVertsV = groupVerticesWorld.map(vw => vw.dot(v));
-    const uMin = Math.min(...faceVertsU);
-    const uMax = Math.max(...faceVertsU);
-    const vMin = Math.min(...faceVertsV);
-    const vMax = Math.max(...faceVertsV);
-
-    const worldU = uMin + normalizedUV[0] * (uMax - uMin);
-    const worldV = vMin + normalizedUV[1] * (vMax - vMin);
-
-    const groupCenter = new THREE.Vector3();
-    groupVerticesWorld.forEach(vw => groupCenter.add(vw));
-    groupCenter.divideScalar(groupVerticesWorld.length);
-
-    clampedClickWorld = groupCenter.clone()
-      .addScaledVector(u, worldU - groupCenter.dot(u))
-      .addScaledVector(v, worldV - groupCenter.dot(v));
-  } else {
-    const clickLocal = new THREE.Vector3(
-      vf.raycastRecipe!.clickLocalPoint[0],
-      vf.raycastRecipe!.clickLocalPoint[1],
-      vf.raycastRecipe!.clickLocalPoint[2]
-    );
-    const clickWorld = clickLocal.clone().applyMatrix4(localToWorld);
-    const groupBboxWorld = new THREE.Box3().setFromPoints(groupVerticesWorld);
-    clampedClickWorld = clickWorld.clone().clamp(groupBboxWorld.min, groupBboxWorld.max);
-  }
-
-  const startWorld = clampedClickWorld.clone().addScaledVector(worldNormal, 0.5);
+  const startWorld = clickWorld.clone().addScaledVector(worldNormal, 0.5);
   const planeOrigin = startWorld.clone();
-
-  const boundaryEdgesWorld = collectBoundaryEdgesWorld(faces, matchedGroup.faceIndices, localToWorld);
-  const subtractions = shape.subtractionGeometries || [];
-
-  const panelsExcludingSelf = childPanels.filter(
-    p => p.parameters?.virtualFaceId !== vf.id
-  );
-  const panelObstacleEdges = collectPanelObstacleEdgesWorld(
-    panelsExcludingSelf, worldNormal, planeOrigin, 20
-  );
-  const subObstacleEdges = collectSubtractionObstacleEdgesWorld(
-    subtractions, localToWorld, worldNormal, planeOrigin, 20
-  );
-  const vfObstacleEdges = collectVirtualFaceObstacleEdgesWorld(
-    shapeFaces, vf.id, localToWorld, worldNormal, planeOrigin, 20
-  );
-  const obstacleEdges = [...panelObstacleEdges, ...subObstacleEdges, ...vfObstacleEdges];
-
   const maxDist = 5000;
   const directions = [u, u.clone().negate(), v, v.clone().negate()];
 
@@ -426,6 +374,8 @@ function reraycastVirtualFaceFallback(
   const uNegT = hitPointsWorld[1].distanceTo(startWorld);
   const vPosT = hitPointsWorld[2].distanceTo(startWorld);
   const vNegT = hitPointsWorld[3].distanceTo(startWorld);
+
+  if (uPosT < 0.1 && uNegT < 0.1 && vPosT < 0.1 && vNegT < 0.1) return null;
 
   let rect2D: Point2D[] = ensureCCW([
     { x: uPosT, y: vPosT },
@@ -460,14 +410,105 @@ function reraycastVirtualFaceFallback(
   cornersLocal.forEach(c => centerLocal.add(c));
   centerLocal.divideScalar(cornersLocal.length);
 
+  return {
+    normal: [localNormal.x, localNormal.y, localNormal.z] as [number, number, number],
+    center: [centerLocal.x, centerLocal.y, centerLocal.z] as [number, number, number],
+    vertices: cornersLocal.map(c => [c.x, c.y, c.z] as [number, number, number]),
+  } as any;
+}
+
+function reraycastVirtualFaceFallback(
+  vf: VirtualFace,
+  shape: Shape,
+  faces: FaceData[],
+  matchedGroup: CoplanarFaceGroup,
+  localToWorld: THREE.Matrix4,
+  worldToLocal: THREE.Matrix4,
+  childPanels: any[],
+  shapeFaces: VirtualFace[],
+  groupVerticesWorld: THREE.Vector3[],
+  worldNormal: THREE.Vector3,
+  u: THREE.Vector3,
+  v: THREE.Vector3
+): VirtualFace | null {
+  const boundaryEdgesWorld = collectBoundaryEdgesWorld(faces, matchedGroup.faceIndices, localToWorld);
+  const subtractions = shape.subtractionGeometries || [];
   const localNormal = matchedGroup.normal.clone().normalize();
 
-  return {
-    ...vf,
-    normal: [localNormal.x, localNormal.y, localNormal.z],
-    center: [centerLocal.x, centerLocal.y, centerLocal.z],
-    vertices: cornersLocal.map(c => [c.x, c.y, c.z] as [number, number, number]),
+  const panelsExcludingSelf = childPanels.filter(
+    p => p.parameters?.virtualFaceId !== vf.id
+  );
+
+  const buildObstacleEdges = (planeOrigin: THREE.Vector3) => {
+    const panelObstacleEdges = collectPanelObstacleEdgesWorld(
+      panelsExcludingSelf, worldNormal, planeOrigin, 20
+    );
+    const subObstacleEdges = collectSubtractionObstacleEdgesWorld(
+      subtractions, localToWorld, worldNormal, planeOrigin, 20
+    );
+    const vfObstacleEdges = collectVirtualFaceObstacleEdgesWorld(
+      shapeFaces, vf.id, localToWorld, worldNormal, planeOrigin, 20
+    );
+    return [...panelObstacleEdges, ...subObstacleEdges, ...vfObstacleEdges];
   };
+
+  const candidates: THREE.Vector3[] = [];
+
+  const normalizedUV = vf.raycastRecipe!.normalizedClickUV;
+  if (normalizedUV) {
+    const faceVertsU = groupVerticesWorld.map(vw => vw.dot(u));
+    const faceVertsV = groupVerticesWorld.map(vw => vw.dot(v));
+    const uMin = Math.min(...faceVertsU);
+    const uMax = Math.max(...faceVertsU);
+    const vMin = Math.min(...faceVertsV);
+    const vMax = Math.max(...faceVertsV);
+
+    const worldU = uMin + normalizedUV[0] * (uMax - uMin);
+    const worldV = vMin + normalizedUV[1] * (vMax - vMin);
+
+    const groupCenter = new THREE.Vector3();
+    groupVerticesWorld.forEach(vw => groupCenter.add(vw));
+    groupCenter.divideScalar(groupVerticesWorld.length);
+
+    candidates.push(
+      groupCenter.clone()
+        .addScaledVector(u, worldU - groupCenter.dot(u))
+        .addScaledVector(v, worldV - groupCenter.dot(v))
+    );
+  }
+
+  const clickLocal = new THREE.Vector3(
+    vf.raycastRecipe!.clickLocalPoint[0],
+    vf.raycastRecipe!.clickLocalPoint[1],
+    vf.raycastRecipe!.clickLocalPoint[2]
+  );
+  const clickWorld = clickLocal.clone().applyMatrix4(localToWorld);
+  const groupBboxWorld = new THREE.Box3().setFromPoints(groupVerticesWorld);
+  candidates.push(clickWorld.clone().clamp(groupBboxWorld.min, groupBboxWorld.max));
+
+  const groupCenter = new THREE.Vector3();
+  groupVerticesWorld.forEach(vw => groupCenter.add(vw));
+  groupCenter.divideScalar(groupVerticesWorld.length);
+  candidates.push(groupCenter);
+
+  for (const candidate of candidates) {
+    const obstacleEdges = buildObstacleEdges(candidate);
+    const result = tryRaycastFromPoint(
+      candidate, worldNormal, u, v,
+      boundaryEdgesWorld, obstacleEdges, subtractions,
+      localToWorld, worldToLocal, localNormal
+    );
+    if (result) {
+      return {
+        ...vf,
+        normal: result.normal,
+        center: result.center,
+        vertices: result.vertices,
+      };
+    }
+  }
+
+  return null;
 }
 
 export function recalculateVirtualFacesForShape(
