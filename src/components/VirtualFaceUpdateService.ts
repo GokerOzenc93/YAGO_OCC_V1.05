@@ -29,6 +29,43 @@ function findMatchingFaceGroup(
   faceGroups: CoplanarFaceGroup[],
   geometry: THREE.BufferGeometry
 ): CoplanarFaceGroup | null {
+  const vfNormal = new THREE.Vector3(vf.normal[0], vf.normal[1], vf.normal[2]).normalize();
+  const vfCenter = new THREE.Vector3(vf.center[0], vf.center[1], vf.center[2]);
+
+  const candidateGroups: CoplanarFaceGroup[] = [];
+  for (const group of faceGroups) {
+    const groupNormal = group.normal.clone().normalize();
+    if (vfNormal.dot(groupNormal) > 0.95) {
+      candidateGroups.push(group);
+    }
+  }
+
+  if (candidateGroups.length === 0) return null;
+  if (candidateGroups.length === 1) return candidateGroups[0];
+
+  let bestGroup: CoplanarFaceGroup | null = null;
+  let bestDist = Infinity;
+
+  for (const group of candidateGroups) {
+    const groupBBox = new THREE.Box3();
+    group.faceIndices.forEach(fi => {
+      const face = faces[fi];
+      if (!face) return;
+      face.vertices.forEach(v => groupBBox.expandByPoint(v));
+    });
+
+    const expanded = groupBBox.clone().expandByScalar(5);
+    if (expanded.containsPoint(vfCenter)) {
+      const dist = vfCenter.distanceTo(group.center);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestGroup = group;
+      }
+    }
+  }
+
+  if (bestGroup) return bestGroup;
+
   if (vf.raycastRecipe) {
     const matchedFace = findFaceByDescriptor(
       vf.raycastRecipe.faceGroupDescriptor,
@@ -36,22 +73,18 @@ function findMatchingFaceGroup(
       geometry
     );
     if (matchedFace) {
-      const matchedGroup = faceGroups.find(g =>
+      const matchedGroup = candidateGroups.find(g =>
         g.faceIndices.includes(matchedFace.faceIndex)
       );
       if (matchedGroup) return matchedGroup;
     }
   }
 
-  const vfNormal = new THREE.Vector3(vf.normal[0], vf.normal[1], vf.normal[2]).normalize();
-  let bestGroup: CoplanarFaceGroup | null = null;
-  let bestDot = -Infinity;
-
-  for (const group of faceGroups) {
-    const groupNormal = group.normal.clone().normalize();
-    const dot = vfNormal.dot(groupNormal);
-    if (dot > 0.95 && dot > bestDot) {
-      bestDot = dot;
+  bestDist = Infinity;
+  for (const group of candidateGroups) {
+    const dist = vfCenter.distanceTo(group.center);
+    if (dist < bestDist) {
+      bestDist = dist;
       bestGroup = group;
     }
   }
