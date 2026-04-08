@@ -196,6 +196,13 @@ function reraycastVirtualFace(
 
   const uniqueBoundaryEdgesLocal = extractUniqueBoundaryEdgesLocal(faces, matchedGroup.faceIndices);
 
+  if (vf.raycastRecipe.safeAnchorLocal) {
+    return reraycastVirtualFaceFallback(
+      vf, shape, faces, matchedGroup, localToWorld, worldToLocal,
+      childPanels, shapeFaces, groupVerticesWorld, worldNormal, u, v
+    );
+  }
+
   const edgeAnchors = vf.raycastRecipe.edgeAnchors;
 
   if (edgeAnchors && edgeAnchors.length === 4) {
@@ -361,34 +368,40 @@ function reraycastVirtualFaceFallback(
 ): VirtualFace | null {
   let clampedClickWorld: THREE.Vector3;
 
-  const normalizedUV = vf.raycastRecipe!.normalizedClickUV;
-  if (normalizedUV) {
-    const faceVertsU = groupVerticesWorld.map(vw => vw.dot(u));
-    const faceVertsV = groupVerticesWorld.map(vw => vw.dot(v));
-    const uMin = Math.min(...faceVertsU);
-    const uMax = Math.max(...faceVertsU);
-    const vMin = Math.min(...faceVertsV);
-    const vMax = Math.max(...faceVertsV);
-
-    const worldU = uMin + normalizedUV[0] * (uMax - uMin);
-    const worldV = vMin + normalizedUV[1] * (vMax - vMin);
-
-    const groupCenter = new THREE.Vector3();
-    groupVerticesWorld.forEach(vw => groupCenter.add(vw));
-    groupCenter.divideScalar(groupVerticesWorld.length);
-
-    clampedClickWorld = groupCenter.clone()
-      .addScaledVector(u, worldU - groupCenter.dot(u))
-      .addScaledVector(v, worldV - groupCenter.dot(v));
+  const safeAnchor = vf.raycastRecipe!.safeAnchorLocal;
+  if (safeAnchor) {
+    clampedClickWorld = new THREE.Vector3(safeAnchor[0], safeAnchor[1], safeAnchor[2])
+      .applyMatrix4(localToWorld);
   } else {
-    const clickLocal = new THREE.Vector3(
-      vf.raycastRecipe!.clickLocalPoint[0],
-      vf.raycastRecipe!.clickLocalPoint[1],
-      vf.raycastRecipe!.clickLocalPoint[2]
-    );
-    const clickWorld = clickLocal.clone().applyMatrix4(localToWorld);
-    const groupBboxWorld = new THREE.Box3().setFromPoints(groupVerticesWorld);
-    clampedClickWorld = clickWorld.clone().clamp(groupBboxWorld.min, groupBboxWorld.max);
+    const normalizedUV = vf.raycastRecipe!.normalizedClickUV;
+    if (normalizedUV) {
+      const faceVertsU = groupVerticesWorld.map(vw => vw.dot(u));
+      const faceVertsV = groupVerticesWorld.map(vw => vw.dot(v));
+      const uMin = Math.min(...faceVertsU);
+      const uMax = Math.max(...faceVertsU);
+      const vMin = Math.min(...faceVertsV);
+      const vMax = Math.max(...faceVertsV);
+
+      const worldU = uMin + normalizedUV[0] * (uMax - uMin);
+      const worldV = vMin + normalizedUV[1] * (vMax - vMin);
+
+      const groupCenter = new THREE.Vector3();
+      groupVerticesWorld.forEach(vw => groupCenter.add(vw));
+      groupCenter.divideScalar(groupVerticesWorld.length);
+
+      clampedClickWorld = groupCenter.clone()
+        .addScaledVector(u, worldU - groupCenter.dot(u))
+        .addScaledVector(v, worldV - groupCenter.dot(v));
+    } else {
+      const clickLocal = new THREE.Vector3(
+        vf.raycastRecipe!.clickLocalPoint[0],
+        vf.raycastRecipe!.clickLocalPoint[1],
+        vf.raycastRecipe!.clickLocalPoint[2]
+      );
+      const clickWorld = clickLocal.clone().applyMatrix4(localToWorld);
+      const groupBboxWorld = new THREE.Box3().setFromPoints(groupVerticesWorld);
+      clampedClickWorld = clickWorld.clone().clamp(groupBboxWorld.min, groupBboxWorld.max);
+    }
   }
 
   const startWorld = clampedClickWorld.clone().addScaledVector(worldNormal, 0.5);
