@@ -13,6 +13,7 @@ import {
   collectSubtractionObstacleEdgesWorld,
   collectVirtualFaceObstacleEdgesWorld,
   castRayOnFaceWorld,
+  castRayOnFaceWorldDetailed,
   type Point2D,
 } from './FaceRaycastOverlay';
 import {
@@ -106,6 +107,11 @@ function computeFaceGroupExtent(
   return { uMin, uMax, vMin, vMax, uSpan: uMax - uMin, vSpan: vMax - vMin };
 }
 
+interface ObstacleContext {
+  boundaryEdgesWorld: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>;
+  obstacleEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>;
+}
+
 function reconstructFromNormalizedDistances(
   vf: VirtualFace,
   nhd: NormalizedHitDistances,
@@ -117,15 +123,73 @@ function reconstructFromNormalizedDistances(
   worldToLocal: THREE.Matrix4,
   localNormal: THREE.Vector3,
   shape: Shape,
-  uniqueBoundaryEdgesLocal: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>
+  uniqueBoundaryEdgesLocal: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>,
+  obstacleCtx?: ObstacleContext
 ): VirtualFace | null {
   const extent = computeFaceGroupExtent(groupVerticesWorld, u, v);
   if (extent.uSpan <= 0 || extent.vSpan <= 0) return null;
 
-  const hitUPos = extent.uMax - nhd.uPosFromEdge;
-  const hitUNeg = extent.uMin + nhd.uNegFromEdge;
-  const hitVPos = extent.vMax - nhd.vPosFromEdge;
-  const hitVNeg = extent.vMin + nhd.vNegFromEdge;
+  let hitUPos = extent.uMax - nhd.uPosFromEdge;
+  let hitUNeg = extent.uMin + nhd.uNegFromEdge;
+  let hitVPos = extent.vMax - nhd.vPosFromEdge;
+  let hitVNeg = extent.vMin + nhd.vNegFromEdge;
+
+  const newNhd: NormalizedHitDistances = { ...nhd };
+
+  if (obstacleCtx) {
+    const hasObstacleDir = !nhd.uPosIsBoundary || !nhd.uNegIsBoundary || !nhd.vPosIsBoundary || !nhd.vNegIsBoundary;
+
+    if (hasObstacleDir) {
+      const centerU = (hitUPos + hitUNeg) / 2;
+      const centerV = (hitVPos + hitVNeg) / 2;
+      const refPoint = groupVerticesWorld[0];
+      const nComp = refPoint.dot(worldNormal);
+      const originWorld = buildWorldPoint(centerU, centerV, nComp, u, v, worldNormal)
+        .addScaledVector(worldNormal, 0.5);
+      const planeOrigin = originWorld.clone();
+      const maxDist = 5000;
+
+      const dirs: Array<{ dir: THREE.Vector3; key: 'uPos' | 'uNeg' | 'vPos' | 'vNeg' }> = [
+        { dir: u, key: 'uPos' },
+        { dir: u.clone().negate(), key: 'uNeg' },
+        { dir: v, key: 'vPos' },
+        { dir: v.clone().negate(), key: 'vNeg' },
+      ];
+
+      for (const { dir, key } of dirs) {
+        const isBoundary = nhd[`${key}IsBoundary` as keyof NormalizedHitDistances] as boolean;
+        if (isBoundary) continue;
+
+        const result = castRayOnFaceWorldDetailed(
+          originWorld, dir,
+          obstacleCtx.boundaryEdgesWorld, obstacleCtx.obstacleEdges,
+          u, v, planeOrigin, maxDist
+        );
+
+        const hitCoord = key.startsWith('u')
+          ? result.hitPoint.dot(u)
+          : result.hitPoint.dot(v);
+
+        if (key === 'uPos') {
+          hitUPos = Math.min(hitCoord, extent.uMax);
+          newNhd.uPosFromEdge = extent.uMax - hitUPos;
+          newNhd.uPosIsBoundary = result.isBoundaryEdge;
+        } else if (key === 'uNeg') {
+          hitUNeg = Math.max(hitCoord, extent.uMin);
+          newNhd.uNegFromEdge = hitUNeg - extent.uMin;
+          newNhd.uNegIsBoundary = result.isBoundaryEdge;
+        } else if (key === 'vPos') {
+          hitVPos = Math.min(hitCoord, extent.vMax);
+          newNhd.vPosFromEdge = extent.vMax - hitVPos;
+          newNhd.vPosIsBoundary = result.isBoundaryEdge;
+        } else if (key === 'vNeg') {
+          hitVNeg = Math.max(hitCoord, extent.vMin);
+          newNhd.vNegFromEdge = hitVNeg - extent.vMin;
+          newNhd.vNegIsBoundary = result.isBoundaryEdge;
+        }
+      }
+    }
+  }
 
   const refPoint = groupVerticesWorld[0];
   const nComp = refPoint.dot(worldNormal);
@@ -146,21 +210,6 @@ function reconstructFromNormalizedDistances(
   const newAnchors = rebuildAnchorsFromWorldCorners(
     result.cornersLocal, uniqueBoundaryEdgesLocal
   );
-
-  const newNhd: NormalizedHitDistances = {
-    uPosFromEdge: nhd.uPosFromEdge,
-    uNegFromEdge: nhd.uNegFromEdge,
-    vPosFromEdge: nhd.vPosFromEdge,
-    vNegFromEdge: nhd.vNegFromEdge,
-    uPosIsBoundary: nhd.uPosIsBoundary,
-    uNegIsBoundary: nhd.uNegIsBoundary,
-    vPosIsBoundary: nhd.vPosIsBoundary,
-    vNegIsBoundary: nhd.vNegIsBoundary,
-    uPosAbsDist: nhd.uPosAbsDist,
-    uNegAbsDist: nhd.uNegAbsDist,
-    vPosAbsDist: nhd.vPosAbsDist,
-    vNegAbsDist: nhd.vNegAbsDist,
-  };
 
   return {
     ...vf,
@@ -411,9 +460,37 @@ function reraycastVirtualFace(
 
   const nhd = vf.raycastRecipe.normalizedHitDistances;
   if (nhd) {
+    let obstacleCtx: ObstacleContext | undefined;
+
+    const hasObstacleDir = !nhd.uPosIsBoundary || !nhd.uNegIsBoundary || !nhd.vPosIsBoundary || !nhd.vNegIsBoundary;
+    if (hasObstacleDir) {
+      const boundaryEdgesWorld = collectBoundaryEdgesWorld(faces, matchedGroup.faceIndices, localToWorld);
+      const refPointForPlane = groupVerticesWorld[0];
+      const planeOriginForObstacles = refPointForPlane.clone();
+
+      const panelsExcludingSelf = childPanels.filter(
+        p => p.parameters?.virtualFaceId !== vf.id
+      );
+      const panelEdges = collectPanelObstacleEdgesWorld(
+        panelsExcludingSelf, worldNormal, planeOriginForObstacles, 20
+      );
+      const subEdges = collectSubtractionObstacleEdgesWorld(
+        shape.subtractionGeometries || [], localToWorld, worldNormal, planeOriginForObstacles, 20
+      );
+      const vfEdges = collectVirtualFaceObstacleEdgesWorld(
+        shapeFaces, vf.id, localToWorld, worldNormal, planeOriginForObstacles, 20
+      );
+
+      obstacleCtx = {
+        boundaryEdgesWorld,
+        obstacleEdges: [...panelEdges, ...subEdges, ...vfEdges],
+      };
+    }
+
     const result = reconstructFromNormalizedDistances(
       vf, nhd, groupVerticesWorld, worldNormal, u, v,
-      localToWorld, worldToLocal, localNormal, shape, uniqueBoundaryEdgesLocal
+      localToWorld, worldToLocal, localNormal, shape, uniqueBoundaryEdgesLocal,
+      obstacleCtx
     );
     if (result) return result;
   }
