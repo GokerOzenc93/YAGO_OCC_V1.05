@@ -51,7 +51,6 @@ export interface VirtualFaceRaycastRecipe {
   faceGroupDescriptor:FaceDescriptor;
   normalizedClickUV?:[number,number];
   edgeAnchors?:EdgeAnchor[];
-  safeAnchorLocal?:[number,number,number];
 }
 
 export interface VirtualFace {

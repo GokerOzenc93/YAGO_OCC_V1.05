@@ -347,20 +347,12 @@ export function castRayOnFaceWorld(originWorld: THREE.Vector3, dirWorld: THREE.V
   return castRayOnFaceWorldDetailed(originWorld, dirWorld, boundaryEdges, obstacleEdges, u, v, planeOrigin, maxDist).hitPoint;
 }
 
-interface AnchorCandidate {
-  worldPos: THREE.Vector3;
-  localPos: THREE.Vector3;
-}
-
 interface PendingPreview {
   rayLines: RayLine[];
   originLocal: THREE.Vector3;
   geo: THREE.BufferGeometry;
   edgeGeo: THREE.BufferGeometry;
   virtualFace: VirtualFace;
-  anchorCandidates: AnchorCandidate[];
-  group: CoplanarFaceGroup;
-  safeAnchorLocal?: THREE.Vector3;
 }
 
 export function collectVirtualFaceObstacleEdgesWorld(virtualFaces: VirtualFace[], excludeId: string | null, shapeLocalToWorld: THREE.Matrix4, facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, planeTolerance: number = 20): Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> {
@@ -378,32 +370,12 @@ export function collectVirtualFaceObstacleEdgesWorld(virtualFaces: VirtualFace[]
   return edges;
 }
 
-function collectBoundaryCornerVertices(
-  boundaryEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>,
-  worldToLocal: THREE.Matrix4
-): AnchorCandidate[] {
-  const uniqueMap = new Map<string, AnchorCandidate>();
-  for (const edge of boundaryEdges) {
-    for (const wp of [edge.v1, edge.v2]) {
-      const lp = wp.clone().applyMatrix4(worldToLocal);
-      const key = `${lp.x.toFixed(1)},${lp.y.toFixed(1)},${lp.z.toFixed(1)}`;
-      if (!uniqueMap.has(key)) {
-        uniqueMap.set(key, { worldPos: wp.clone(), localPos: lp });
-      }
-    }
-  }
-  return Array.from(uniqueMap.values());
-}
-
-function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces: FaceData[], localToWorld: THREE.Matrix4, worldToLocal: THREE.Matrix4, childPanels: any[], shapeId: string, subtractions: any[] = [], geometry?: THREE.BufferGeometry, shapeVirtualFaces: VirtualFace[] = [], safeAnchorLocal?: THREE.Vector3): PendingPreview | null {
+function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces: FaceData[], localToWorld: THREE.Matrix4, worldToLocal: THREE.Matrix4, childPanels: any[], shapeId: string, subtractions: any[] = [], geometry?: THREE.BufferGeometry, shapeVirtualFaces: VirtualFace[] = []): PendingPreview | null {
   const localNormal = group.normal.clone().normalize();
   const normalMatrix = new THREE.Matrix3().getNormalMatrix(localToWorld);
   const worldNormal = localNormal.clone().applyMatrix3(normalMatrix).normalize();
   const { u, v } = getFacePlaneAxes(worldNormal);
-  const effectiveClickWorld = safeAnchorLocal
-    ? safeAnchorLocal.clone().applyMatrix4(localToWorld)
-    : clickWorld;
-  const planeOrigin = effectiveClickWorld.clone();
+  const planeOrigin = clickWorld.clone();
   const boundaryEdges = collectBoundaryEdgesWorld(faces, group.faceIndices, localToWorld);
   const panelEdges = collectPanelObstacleEdgesWorld(childPanels, worldNormal, planeOrigin, 20);
   const subEdges = collectSubtractionObstacleEdgesWorld(subtractions, localToWorld, worldNormal, planeOrigin, 20);
@@ -411,7 +383,7 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
   const obstacleEdges = [...panelEdges, ...subEdges, ...vfEdges];
   const maxDist = 5000;
   const offset = worldNormal.clone().multiplyScalar(0.5);
-  const startWorld = effectiveClickWorld.clone().add(offset);
+  const startWorld = clickWorld.clone().add(offset);
   const dirLabels: Array<'u+' | 'u-' | 'v+' | 'v-'> = ['u+', 'u-', 'v+', 'v-'];
   const directions = [u, u.clone().negate(), v, v.clone().negate()];
   const lines: RayLine[] = [];
@@ -465,7 +437,7 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
   }
   const edgeGeo = new THREE.BufferGeometry();
   edgeGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(edgeVerts), 3));
-  const clickLocal = effectiveClickWorld.clone().applyMatrix4(worldToLocal);
+  const clickLocal = clickWorld.clone().applyMatrix4(worldToLocal);
   let faceGroupDescriptor: import('../store').FaceDescriptor | undefined;
   if (geometry && group.faceIndices.length > 0) {
     const representativeFace = faces[group.faceIndices[0]];
@@ -481,12 +453,11 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
       const vMin = Math.min(...faceVertsV), vMax = Math.max(...faceVertsV);
       const uSpan = uMax - uMin, vSpan = vMax - vMin;
       if (uSpan > 0 && vSpan > 0) {
-        const clickU = effectiveClickWorld.dot(u), clickV = effectiveClickWorld.dot(v);
+        const clickU = clickWorld.dot(u), clickV = clickWorld.dot(v);
         normalizedClickUV = [Math.max(0, Math.min(1, (clickU - uMin) / uSpan)), Math.max(0, Math.min(1, (clickV - vMin) / vSpan))];
       }
     }
   }
-  const anchorCandidates = collectBoundaryCornerVertices(boundaryEdges, worldToLocal);
   const newId = `vf-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
   const virtualFace: VirtualFace = {
     id: newId, shapeId,
@@ -499,10 +470,9 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
       faceGroupNormal: [localNormal.x, localNormal.y, localNormal.z],
       faceGroupDescriptor, normalizedClickUV,
       edgeAnchors: edgeAnchors.length === 4 ? edgeAnchors : undefined,
-      safeAnchorLocal: safeAnchorLocal ? [safeAnchorLocal.x, safeAnchorLocal.y, safeAnchorLocal.z] : undefined,
     } : undefined,
   };
-  return { rayLines: lines, originLocal: effectiveClickWorld.clone().sub(parentPos), geo, edgeGeo, virtualFace, anchorCandidates, group, safeAnchorLocal: safeAnchorLocal?.clone() };
+  return { rayLines: lines, originLocal: clickWorld.clone().sub(parentPos), geo, edgeGeo, virtualFace };
 }
 
 const RayLine3D: React.FC<{ start: THREE.Vector3; end: THREE.Vector3 }> = React.memo(({ start, end }) => {
@@ -601,49 +571,12 @@ export const VirtualFaceOverlay: React.FC<VirtualFaceOverlayProps> = ({ shape })
   );
 };
 
-const AnchorPointDot: React.FC<{
-  position: THREE.Vector3;
-  isHovered: boolean;
-  isSelected: boolean;
-  onHover: (hovered: boolean) => void;
-  onClick: () => void;
-}> = React.memo(({ position, isHovered, isSelected, onHover, onClick }) => {
-  const color = isSelected ? 0x3b82f6 : isHovered ? 0x60a5fa : 0xffffff;
-  const radius = isSelected ? 4.5 : isHovered ? 4 : 3;
-  const opacity = isSelected ? 1 : isHovered ? 0.95 : 0.7;
-  return (
-    <mesh
-      position={[position.x, position.y, position.z]}
-      onPointerOver={(e) => { e.stopPropagation(); onHover(true); }}
-      onPointerOut={(e) => { e.stopPropagation(); onHover(false); }}
-      onClick={(e) => { e.stopPropagation(); onClick(); }}
-    >
-      <sphereGeometry args={[radius, 12, 12]} />
-      <meshBasicMaterial color={color} depthTest={false} transparent opacity={opacity} />
-    </mesh>
-  );
-});
-AnchorPointDot.displayName = 'AnchorPointDot';
-
-const AnchorRingDot: React.FC<{ position: THREE.Vector3; isSelected: boolean }> = React.memo(({ position, isSelected }) => {
-  if (!isSelected) return null;
-  return (
-    <mesh position={[position.x, position.y, position.z]}>
-      <ringGeometry args={[5, 7, 16]} />
-      <meshBasicMaterial color={0x3b82f6} depthTest={false} transparent opacity={0.6} side={THREE.DoubleSide} />
-    </mesh>
-  );
-});
-AnchorRingDot.displayName = 'AnchorRingDot';
-
 export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, allShapes = [] }) => {
   const { raycastMode, addVirtualFace, virtualFaces } = useAppStore();
   const [faces, setFaces] = useState<FaceData[]>([]);
   const [faceGroups, setFaceGroups] = useState<CoplanarFaceGroup[]>([]);
   const [hoveredGroupIndex, setHoveredGroupIndex] = useState<number | null>(null);
   const [pending, setPending] = useState<PendingPreview | null>(null);
-  const [hoveredAnchorIndex, setHoveredAnchorIndex] = useState<number | null>(null);
-  const initialClickRef = useRef<THREE.Vector3 | null>(null);
   const shapeVirtualFaces = useMemo(() => virtualFaces.filter(vf => vf.shapeId === shape.id), [virtualFaces, shape.id]);
   const geometryUuid = shape.geometry?.uuid || '';
   const localToWorld = useMemo(() => getShapeMatrix(shape), [shape.position[0], shape.position[1], shape.position[2], shape.rotation[0], shape.rotation[1], shape.rotation[2], shape.scale[0], shape.scale[1], shape.scale[2]]);
@@ -653,16 +586,8 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     setFaces(extractFacesFromGeometry(shape.geometry));
     setFaceGroups(groupCoplanarFaces(extractFacesFromGeometry(shape.geometry)));
     setPending(null);
-    initialClickRef.current = null;
   }, [shape.geometry, shape.id, geometryUuid]);
-  useEffect(() => {
-    if (!raycastMode) {
-      setHoveredGroupIndex(null);
-      setPending(null);
-      setHoveredAnchorIndex(null);
-      initialClickRef.current = null;
-    }
-  }, [raycastMode]);
+  useEffect(() => { if (!raycastMode) { setHoveredGroupIndex(null); setPending(null); } }, [raycastMode]);
   const childPanels = useMemo(() => allShapes.filter(s => s.type === 'panel' && s.parameters?.parentShapeId === shape.id), [allShapes, shape.id]);
   const hoveredGroupHasPanel = useMemo(() => {
     if (hoveredGroupIndex === null || !faceGroups[hoveredGroupIndex]) return false;
@@ -680,23 +605,6 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     if (hoveredGroupIndex === null || !faceGroups[hoveredGroupIndex] || hoveredGroupHasPanel) return null;
     return createFaceHighlightGeometry(faces, faceGroups[hoveredGroupIndex].faceIndices);
   }, [hoveredGroupIndex, faceGroups, faces, hoveredGroupHasPanel]);
-
-  const handleAnchorClick = (anchorIdx: number) => {
-    if (!pending) return;
-    const anchor = pending.anchorCandidates[anchorIdx];
-    if (!anchor) return;
-    const rebuilt = buildPreview(
-      initialClickRef.current || anchor.worldPos,
-      pending.group, faces, localToWorld, worldToLocal,
-      childPanels, shape.id, shape.subtractionGeometries || [],
-      shape.geometry, shapeVirtualFaces, anchor.localPos
-    );
-    if (rebuilt) {
-      setPending(rebuilt);
-      setHoveredAnchorIndex(null);
-    }
-  };
-
   const handlePointerMove = (e: any) => {
     if (!raycastMode || faces.length === 0) return;
     e.stopPropagation();
@@ -710,31 +618,18 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     if (!raycastMode) return;
     if (e.button === 2) {
       e.stopPropagation(); e.nativeEvent?.preventDefault?.();
-      if (pending) {
-        addVirtualFace(pending.virtualFace);
-        setPending(null);
-        initialClickRef.current = null;
-        setHoveredAnchorIndex(null);
-      }
+      if (pending) { addVirtualFace(pending.virtualFace); setPending(null); }
       return;
     }
     if (e.button !== 0) return;
     e.stopPropagation();
     if (hoveredGroupIndex === null || !faceGroups[hoveredGroupIndex] || hoveredGroupHasPanel) return;
-    initialClickRef.current = e.point.clone();
     setPending(buildPreview(e.point.clone(), faceGroups[hoveredGroupIndex], faces, localToWorld, worldToLocal, childPanels, shape.id, shape.subtractionGeometries || [], shape.geometry, shapeVirtualFaces));
-    setHoveredAnchorIndex(null);
   };
   const handleContextMenu = (e: any) => {
     e.stopPropagation(); e.nativeEvent?.preventDefault?.();
-    if (pending) {
-      addVirtualFace(pending.virtualFace);
-      setPending(null);
-      initialClickRef.current = null;
-      setHoveredAnchorIndex(null);
-    }
+    if (pending) { addVirtualFace(pending.virtualFace); setPending(null); }
   };
-
   if (!raycastMode) return null;
   return (
     <>
@@ -759,22 +654,6 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
           <lineSegments geometry={pending.edgeGeo}>
             <lineBasicMaterial color={0x16a34a} linewidth={2} depthTest={false} transparent opacity={0.9} />
           </lineSegments>
-          {pending.anchorCandidates.map((candidate, idx) => {
-            const isSelected = pending.safeAnchorLocal != null &&
-              candidate.localPos.distanceTo(pending.safeAnchorLocal) < 1;
-            return (
-              <React.Fragment key={`anchor-${idx}`}>
-                <AnchorPointDot
-                  position={candidate.localPos}
-                  isHovered={hoveredAnchorIndex === idx}
-                  isSelected={isSelected}
-                  onHover={(h) => setHoveredAnchorIndex(h ? idx : null)}
-                  onClick={() => handleAnchorClick(idx)}
-                />
-                <AnchorRingDot position={candidate.localPos} isSelected={isSelected} />
-              </React.Fragment>
-            );
-          })}
         </>
       )}
     </>
