@@ -314,14 +314,14 @@ export function ensureCCW(poly: Point2D[]): Point2D[] {
   return area < 0 ? [...poly].reverse() : poly;
 }
 
-export interface RayHitResult {
+interface RayHitResult {
   hitPoint: THREE.Vector3;
   hitEdge: { v1: THREE.Vector3; v2: THREE.Vector3 } | null;
   edgeT: number;
   isBoundaryEdge: boolean;
 }
 
-export function castRayOnFaceWorldDetailed(originWorld: THREE.Vector3, dirWorld: THREE.Vector3, boundaryEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>, obstacleEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>, u: THREE.Vector3, v: THREE.Vector3, planeOrigin: THREE.Vector3, maxDist: number): RayHitResult {
+function castRayOnFaceWorldDetailed(originWorld: THREE.Vector3, dirWorld: THREE.Vector3, boundaryEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>, obstacleEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>, u: THREE.Vector3, v: THREE.Vector3, planeOrigin: THREE.Vector3, maxDist: number): RayHitResult {
   const o2d = projectTo2D(originWorld, planeOrigin, u, v);
   const dir2d = { x: dirWorld.dot(u), y: dirWorld.dot(v) };
   let tMin = maxDist, hitEdge: { v1: THREE.Vector3; v2: THREE.Vector3 } | null = null, hitEdgeT = 0, isBoundary = false;

@@ -16,7 +16,7 @@ interface PanelEditorProps {
 }
 
 export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
-  const { selectedShapeId, shapes, updateShape, addShape, showOutlines, setShowOutlines, showRoleNumbers, setShowRoleNumbers, selectedPanelRow, selectedPanelRowParentId, setSelectedPanelRow, panelSelectMode, setPanelSelectMode, raycastMode, setRaycastMode, showVirtualFaces, setShowVirtualFaces, virtualFaces, updateVirtualFace, deleteVirtualFace, pendingPanelCreation, setActivePanelProfileId, setShapeRebuilding, faceExtrudeMode, setFaceExtrudeMode, faceExtrudeTargetPanelId, setFaceExtrudeTargetPanelId, faceExtrudeSelectedFace, setFaceExtrudeSelectedFace, faceExtrudeHoveredFace, setFaceExtrudeHoveredFace, faceExtrudeThickness, setFaceExtrudeThickness, faceExtrudeFixedMode, setFaceExtrudeFixedMode, recalculateVirtualFacesForShape } = useAppStore();
+  const { selectedShapeId, shapes, updateShape, addShape, showOutlines, setShowOutlines, showRoleNumbers, setShowRoleNumbers, selectedPanelRow, selectedPanelRowParentId, setSelectedPanelRow, panelSelectMode, setPanelSelectMode, raycastMode, setRaycastMode, showVirtualFaces, setShowVirtualFaces, virtualFaces, updateVirtualFace, deleteVirtualFace, pendingPanelCreation, setActivePanelProfileId, setShapeRebuilding, faceExtrudeMode, setFaceExtrudeMode, faceExtrudeTargetPanelId, setFaceExtrudeTargetPanelId, faceExtrudeSelectedFace, setFaceExtrudeSelectedFace, faceExtrudeHoveredFace, setFaceExtrudeHoveredFace, faceExtrudeThickness, setFaceExtrudeThickness, faceExtrudeFixedMode, setFaceExtrudeFixedMode } = useAppStore();
   const [position, setPosition] = useState({ x: 100, y: 100 });
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
@@ -314,8 +314,6 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
             setResolving(false);
             setShapeRebuilding(currentShape.id, false);
           }
-        } else {
-          recalculateVirtualFacesForShape(currentShape.id);
         }
       } catch (err) {
         console.error('Failed to create panel for virtual face via click:', err);
@@ -751,8 +749,6 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                     setResolving(false);
                     setShapeRebuilding(selectedShape.id, false);
                   }
-                } else {
-                  recalculateVirtualFacesForShape(selectedShape.id);
                 }
               };
 
@@ -825,7 +821,6 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                   };
                   addShape(newPanel);
                   updateVirtualFace(vf.id, { hasPanel: true });
-                  recalculateVirtualFacesForShape(selectedShape.id);
                 } catch (err) {
                   console.error('Failed to create panel for virtual face:', err);
                 }
@@ -842,7 +837,6 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
                   deleteShape(panelToRemove.id);
                 }
                 updateVirtualFace(vfId, { hasPanel: false });
-                recalculateVirtualFacesForShape(selectedShape.id);
               };
 
               const fillets: FilletData[] = selectedShape.fillets || [];
