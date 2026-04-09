@@ -73,60 +73,48 @@ function panelsOverlap(shapeA: any, shapeB: any): boolean {
   }
 }
 
+function getPanelPlaneInfo(panel: any, virtualFaces: any[]): { normal: THREE.Vector3; planeD: number } | null {
+  const vfId = panel.parameters?.virtualFaceId;
+  if (vfId) {
+    const vf = virtualFaces.find((f: any) => f.id === vfId);
+    if (vf) {
+      const n = new THREE.Vector3(vf.normal[0], vf.normal[1], vf.normal[2]).normalize();
+      const c = new THREE.Vector3(vf.center[0], vf.center[1], vf.center[2]);
+      return { normal: n, planeD: n.dot(c) };
+    }
+  }
+
+  const shape = panel.parameters?.baseReplicadShape
+    || panel.parameters?.originalReplicadShape
+    || panel.replicadShape;
+  if (!shape) return null;
+  try {
+    const bb = shape.boundingBox;
+    const [[xMin, yMin, zMin], [xMax, yMax, zMax]] = bb.bounds;
+    const sizes = [xMax - xMin, yMax - yMin, zMax - zMin];
+    const minIdx = sizes.indexOf(Math.min(...sizes));
+    const n = new THREE.Vector3(0, 0, 0);
+    n.setComponent(minIdx, 1);
+    const center = new THREE.Vector3((xMin + xMax) / 2, (yMin + yMax) / 2, (zMin + zMax) / 2);
+    return { normal: n, planeD: n.dot(center) };
+  } catch { return null; }
+}
+
 function arePanelsCoplanar(panelA: any, panelB: any, virtualFaces: any[]): boolean {
   const roleA = panelA.parameters?.faceRole as FaceRole;
   const roleB = panelB.parameters?.faceRole as FaceRole;
   if (roleA && roleB && roleA === roleB) return true;
 
-  const vfIdA = panelA.parameters?.virtualFaceId;
-  const vfIdB = panelB.parameters?.virtualFaceId;
-  const vfA = vfIdA ? virtualFaces.find((vf: any) => vf.id === vfIdA) : null;
-  const vfB = vfIdB ? virtualFaces.find((vf: any) => vf.id === vfIdB) : null;
+  const infoA = getPanelPlaneInfo(panelA, virtualFaces);
+  const infoB = getPanelPlaneInfo(panelB, virtualFaces);
+  if (!infoA || !infoB) return false;
 
-  let normalA: THREE.Vector3 | null = null;
-  let normalB: THREE.Vector3 | null = null;
-  let centerA: THREE.Vector3 | null = null;
-  let centerB: THREE.Vector3 | null = null;
+  const normalDot = infoA.normal.dot(infoB.normal);
+  if (Math.abs(normalDot) < 0.9) return false;
 
-  if (vfA) {
-    normalA = new THREE.Vector3(vfA.normal[0], vfA.normal[1], vfA.normal[2]).normalize();
-    centerA = new THREE.Vector3(vfA.center[0], vfA.center[1], vfA.center[2]);
-  }
-  if (vfB) {
-    normalB = new THREE.Vector3(vfB.normal[0], vfB.normal[1], vfB.normal[2]).normalize();
-    centerB = new THREE.Vector3(vfB.center[0], vfB.center[1], vfB.center[2]);
-  }
-
-  if (!normalA && panelA.replicadShape) {
-    try {
-      const bb = panelA.replicadShape.boundingBox;
-      const [[xMin, yMin, zMin], [xMax, yMax, zMax]] = bb.bounds;
-      const sizes = [xMax - xMin, yMax - yMin, zMax - zMin];
-      const minIdx = sizes.indexOf(Math.min(...sizes));
-      const n = [0, 0, 0]; n[minIdx] = 1;
-      normalA = new THREE.Vector3(n[0], n[1], n[2]);
-      centerA = new THREE.Vector3((xMin + xMax) / 2, (yMin + yMax) / 2, (zMin + zMax) / 2);
-    } catch { /* ignore */ }
-  }
-  if (!normalB && panelB.replicadShape) {
-    try {
-      const bb = panelB.replicadShape.boundingBox;
-      const [[xMin, yMin, zMin], [xMax, yMax, zMax]] = bb.bounds;
-      const sizes = [xMax - xMin, yMax - yMin, zMax - zMin];
-      const minIdx = sizes.indexOf(Math.min(...sizes));
-      const n = [0, 0, 0]; n[minIdx] = 1;
-      normalB = new THREE.Vector3(n[0], n[1], n[2]);
-      centerB = new THREE.Vector3((xMin + xMax) / 2, (yMin + yMax) / 2, (zMin + zMax) / 2);
-    } catch { /* ignore */ }
-  }
-
-  if (!normalA || !normalB || !centerA || !centerB) return false;
-
-  if (Math.abs(normalA.dot(normalB)) < 0.9) return false;
-
-  const diff = centerA.clone().sub(centerB);
-  const distAlongNormal = Math.abs(diff.dot(normalA));
-  return distAlongNormal < 2;
+  const adjustedPlaneD_B = normalDot < 0 ? -infoB.planeD : infoB.planeD;
+  const planeDist = Math.abs(infoA.planeD - adjustedPlaneD_B);
+  return planeDist < 2;
 }
 
 function determineDominantPanel(
