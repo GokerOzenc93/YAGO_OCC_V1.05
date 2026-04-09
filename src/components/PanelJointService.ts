@@ -74,6 +74,22 @@ function panelsOverlap(shapeA: any, shapeB: any): boolean {
 }
 
 function getPanelPlaneInfo(panel: any, virtualFaces: any[]): { normal: THREE.Vector3; planeD: number } | null {
+  const shape = panel.parameters?.baseReplicadShape
+    || panel.parameters?.originalReplicadShape
+    || panel.replicadShape;
+  if (shape) {
+    try {
+      const bb = shape.boundingBox;
+      const [[xMin, yMin, zMin], [xMax, yMax, zMax]] = bb.bounds;
+      const sizes = [xMax - xMin, yMax - yMin, zMax - zMin];
+      const minIdx = sizes.indexOf(Math.min(...sizes));
+      const n = new THREE.Vector3(0, 0, 0);
+      n.setComponent(minIdx, 1);
+      const center = new THREE.Vector3((xMin + xMax) / 2, (yMin + yMax) / 2, (zMin + zMax) / 2);
+      return { normal: n, planeD: n.dot(center) };
+    } catch { /* fall through */ }
+  }
+
   const vfId = panel.parameters?.virtualFaceId;
   if (vfId) {
     const vf = virtualFaces.find((f: any) => f.id === vfId);
@@ -84,20 +100,7 @@ function getPanelPlaneInfo(panel: any, virtualFaces: any[]): { normal: THREE.Vec
     }
   }
 
-  const shape = panel.parameters?.baseReplicadShape
-    || panel.parameters?.originalReplicadShape
-    || panel.replicadShape;
-  if (!shape) return null;
-  try {
-    const bb = shape.boundingBox;
-    const [[xMin, yMin, zMin], [xMax, yMax, zMax]] = bb.bounds;
-    const sizes = [xMax - xMin, yMax - yMin, zMax - zMin];
-    const minIdx = sizes.indexOf(Math.min(...sizes));
-    const n = new THREE.Vector3(0, 0, 0);
-    n.setComponent(minIdx, 1);
-    const center = new THREE.Vector3((xMin + xMax) / 2, (yMin + yMax) / 2, (zMin + zMax) / 2);
-    return { normal: n, planeD: n.dot(center) };
-  } catch { return null; }
+  return null;
 }
 
 function arePanelsCoplanar(panelA: any, panelB: any, virtualFaces: any[]): boolean {
