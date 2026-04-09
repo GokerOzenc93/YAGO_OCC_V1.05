@@ -430,6 +430,9 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     ? '#ef4444'
     : (shape.color || '#ffffff');
 
+  const suppressPanelRaycast = isPanel && raycastMode && parentShapeId === selectedShapeId;
+  const noopRaycast = useCallback(() => {}, []);
+
   if (shape.isolated === false) return null;
   if (isParentRebuilding)       return null;
   if (!localGeometry)           return null;
@@ -497,6 +500,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
               geometry={localGeometry}
               castShadow
               receiveShadow
+              {...(suppressPanelRaycast ? { raycast: noopRaycast } : {})}
             >
               {/*
                 ✅ MATERYAL DÜZELTMELERİ:
@@ -542,6 +546,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
               ref={meshRef}
               geometry={localGeometry}
               visible={false}
+              {...(suppressPanelRaycast ? { raycast: noopRaycast } : {})}
             />
             {showOutlines && resolvedEdgeGeometry && (
               <>
@@ -577,6 +582,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
               geometry={localGeometry}
               castShadow
               receiveShadow
+              {...(suppressPanelRaycast ? { raycast: noopRaycast } : {})}
             >
               <meshStandardMaterial
                 color={isPanel ? panelColor : shouldShowAsReference ? '#ef4444' : '#c8c8c8'}
