@@ -1255,6 +1255,8 @@ async function rebuildVirtualFacePanels(
       const newWidth = sizeArr[defaultAxis];
       const newHeight = sizeArr[altAxis];
 
+      const hasExtrude = panel.parameters?.extrudeSteps?.length > 0;
+
       updates.push({
         id: panel.id,
         geometry,
@@ -1266,6 +1268,7 @@ async function rebuildVirtualFacePanels(
           height: newHeight,
           originalReplicadShape: null,
           jointTrimmed: false,
+          baseReplicadShape: hasExtrude ? replicadPanel : panel.parameters?.baseReplicadShape,
         }
       });
     } catch (err) {
