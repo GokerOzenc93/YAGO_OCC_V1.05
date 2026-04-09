@@ -1111,24 +1111,24 @@ async function recalculateAndRebuildVirtualFaces(parentShapeId: string, profileI
   }
 }
 
-async function reapplyExtrudeSteps(parentShapeId: string): Promise<void> {
+async function reapplyExtrudeStepsForSubset(
+  parentShapeId: string,
+  filter: 'role' | 'raycast'
+): Promise<void> {
   const state = useAppStore.getState();
   const allPanels = state.shapes.filter(
     s => s.type === 'panel' && s.parameters?.parentShapeId === parentShapeId
   );
-  const extrudePanels = allPanels.filter(
-    s => s.parameters?.extrudeSteps?.length > 0 && s.parameters?.baseReplicadShape
-  );
 
-  if (extrudePanels.length === 0) {
-    const withSteps = allPanels.filter(s => s.parameters?.extrudeSteps?.length > 0);
-    if (withSteps.length > 0) {
-      console.warn(`[reapplyExtrudeSteps] ${withSteps.length} panel(s) have extrude steps but missing baseReplicadShape`);
-    }
-    return;
-  }
+  const extrudePanels = allPanels.filter(s => {
+    if (!(s.parameters?.extrudeSteps?.length > 0 && s.parameters?.baseReplicadShape)) return false;
+    const isVirtual = !!s.parameters?.virtualFaceId;
+    return filter === 'raycast' ? isVirtual : !isVirtual;
+  });
 
-  console.log(`[reapplyExtrudeSteps] Reapplying extrude steps for ${extrudePanels.length} panel(s)`);
+  if (extrudePanels.length === 0) return;
+
+  console.log(`[reapplyExtrudeSteps:${filter}] Reapplying extrude steps for ${extrudePanels.length} panel(s)`);
 
   const { rebuildFromSteps } = await import('./FaceExtrudeService');
   const { updateShape } = useAppStore.getState();
@@ -1136,14 +1136,14 @@ async function reapplyExtrudeSteps(parentShapeId: string): Promise<void> {
   for (const panel of extrudePanels) {
     try {
       const result = await rebuildFromSteps(panel, panel.parameters.extrudeSteps, updateShape);
-      console.log(`[reapplyExtrudeSteps] Panel ${panel.id}: rebuildFromSteps returned ${result}`);
+      console.log(`[reapplyExtrudeSteps:${filter}] Panel ${panel.id}: rebuildFromSteps returned ${result}`);
     } catch (err) {
       console.error(`Failed to reapply extrude steps for panel ${panel.id}:`, err);
     }
   }
 }
 
-function updateBaseShapesAfterJoints(parentShapeId: string) {
+function updateBaseShapesAfterJoints(parentShapeId: string, filter?: 'role' | 'raycast') {
   useAppStore.setState((st) => ({
     shapes: st.shapes.map(s => {
       if (
@@ -1152,6 +1152,11 @@ function updateBaseShapesAfterJoints(parentShapeId: string) {
         s.parameters?.extrudeSteps?.length > 0 &&
         s.replicadShape
       ) {
+        if (filter) {
+          const isVirtual = !!s.parameters?.virtualFaceId;
+          if (filter === 'raycast' && !isVirtual) return s;
+          if (filter === 'role' && isVirtual) return s;
+        }
         return {
           ...s,
           parameters: {
@@ -1177,10 +1182,13 @@ export async function rebuildAndRecalculatePipeline(
     await resolveAllPanelJoints(parentShapeId, profileId, undefined, true);
   }
 
+  updateBaseShapesAfterJoints(parentShapeId, 'role');
+  await reapplyExtrudeStepsForSubset(parentShapeId, 'role');
+
   await recalculateAndRebuildVirtualFaces(parentShapeId, profileId);
 
-  updateBaseShapesAfterJoints(parentShapeId);
-  await reapplyExtrudeSteps(parentShapeId);
+  updateBaseShapesAfterJoints(parentShapeId, 'raycast');
+  await reapplyExtrudeStepsForSubset(parentShapeId, 'raycast');
 }
 
 async function rebuildVirtualFacePanels(
