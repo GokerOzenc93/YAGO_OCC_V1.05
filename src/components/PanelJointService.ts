@@ -1177,10 +1177,10 @@ export async function rebuildAndRecalculatePipeline(
     await resolveAllPanelJoints(parentShapeId, profileId, undefined, true);
   }
 
+  await recalculateAndRebuildVirtualFaces(parentShapeId, profileId);
+
   updateBaseShapesAfterJoints(parentShapeId);
   await reapplyExtrudeSteps(parentShapeId);
-
-  await recalculateAndRebuildVirtualFaces(parentShapeId, profileId);
 }
 
 async function rebuildVirtualFacePanels(
