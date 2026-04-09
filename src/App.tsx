@@ -5,6 +5,9 @@ import Toolbar from './components/Toolbar';
 import Terminal from './components/Terminal';
 import StatusBar from './components/StatusBar';
 import CatalogPanel from './components/CatalogPanel';
+import LeftSidebar from './components/LeftSidebar';
+import { ParametersPanel } from './components/ParametersPanel';
+import { PanelEditor } from './components/PanelEditor';
 import { useAppStore } from './store';
 import { catalogService, CatalogItem } from './components/Database';
 import { initReplicad } from './components/ReplicadService';
@@ -242,6 +245,14 @@ function App() {
       <Toolbar onOpenCatalog={handleOpenCatalog} />
       <div className="flex-1 overflow-hidden relative">
         <Scene />
+        <LeftSidebar
+          parametersContent={
+            <ParametersPanel isOpen={true} onClose={() => {}} embedded />
+          }
+          panelEditorContent={
+            <PanelEditor isOpen={true} onClose={() => {}} embedded />
+          }
+        />
       </div>
       <div className="relative">
         <Terminal />

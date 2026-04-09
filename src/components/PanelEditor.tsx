@@ -13,9 +13,10 @@ import * as THREE from 'three';
 interface PanelEditorProps {
   isOpen: boolean;
   onClose: () => void;
+  embedded?: boolean;
 }
 
-export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
+export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorProps) {
   const { selectedShapeId, shapes, updateShape, addShape, showOutlines, setShowOutlines, showRoleNumbers, setShowRoleNumbers, selectedPanelRow, selectedPanelRowParentId, setSelectedPanelRow, panelSelectMode, setPanelSelectMode, raycastMode, setRaycastMode, showVirtualFaces, setShowVirtualFaces, virtualFaces, updateVirtualFace, deleteVirtualFace, pendingPanelCreation, setActivePanelProfileId, setShapeRebuilding, faceExtrudeMode, setFaceExtrudeMode, faceExtrudeTargetPanelId, setFaceExtrudeTargetPanelId, faceExtrudeSelectedFace, setFaceExtrudeSelectedFace, faceExtrudeHoveredFace, setFaceExtrudeHoveredFace, faceExtrudeThickness, setFaceExtrudeThickness, faceExtrudeFixedMode, setFaceExtrudeFixedMode } = useAppStore();
   const [position, setPosition] = useState({ x: 100, y: 100 });
   const [isDragging, setIsDragging] = useState(false);
@@ -202,14 +203,14 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
   };
 
   useEffect(() => {
-    if (isOpen) {
+    if (isOpen || embedded) {
       loadProfiles();
     } else {
       setSelectedPanelRow(null);
       setPanelSelectMode(false);
       if (faceExtrudeMode) setFaceExtrudeMode(false);
     }
-  }, [isOpen, setSelectedPanelRow, setPanelSelectMode, faceExtrudeMode, setFaceExtrudeMode]);
+  }, [isOpen, embedded, setSelectedPanelRow, setPanelSelectMode, faceExtrudeMode, setFaceExtrudeMode]);
 
   useEffect(() => {
     if (selectedPanelRow !== null) {
@@ -258,7 +259,7 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
   selectedProfileRef.current = selectedProfile;
 
   useEffect(() => {
-    if (!pendingPanelCreation || !isOpen) return;
+    if (!pendingPanelCreation || (!isOpen && !embedded)) return;
     const constraint = pendingPanelCreation.surfaceConstraint;
     if (!constraint?.constraintPanelId) return;
 
@@ -561,113 +562,89 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
     applyLabelDefaults();
   }, [selectedShape?.id, selectedShape?.geometry]);
 
-  if (!isOpen) return null;
+  if (!isOpen && !embedded) return null;
 
-  return (
-    <div
-      className="fixed bg-white rounded-lg shadow-2xl border border-stone-300 z-50"
-      style={{
-        left: `${position.x}px`,
-        top: `${position.y}px`,
-        width: '410px',
-      }}
-    >
-      <div
-        className="flex items-center justify-between px-3 py-2 bg-stone-100 border-b border-stone-300 rounded-t-lg select-none"
-        style={{ cursor: isDragging ? 'grabbing' : 'grab' }}
-        onMouseDown={handleMouseDown}
+  const panelToolbar = (
+    <div className="flex items-center gap-1 flex-wrap">
+      <button
+        onClick={() => setShowVirtualFaces(!showVirtualFaces)}
+        className={`p-0.5 rounded transition-colors text-[10px] font-semibold px-1.5 ${
+          showVirtualFaces
+            ? 'text-green-700 bg-green-100 ring-1 ring-green-400'
+            : 'text-slate-500 hover:bg-stone-200'
+        }`}
+        title="Raycast Face"
       >
-        <div className="flex items-center gap-2">
-          <GripVertical size={14} className="text-stone-400" />
-          <span className="text-sm font-semibold text-slate-800">Panel Editor</span>
-        </div>
-        <div className="flex items-center gap-1">
-          <button
-            onClick={() => setShowVirtualFaces(!showVirtualFaces)}
-            className={`p-0.5 rounded transition-colors text-[10px] font-semibold px-1.5 ${
-              showVirtualFaces
-                ? 'text-green-700 bg-green-100 ring-1 ring-green-400'
-                : 'text-slate-500 hover:bg-stone-200'
-            }`}
-            title="Raycast Face"
-          >
-            RF
-          </button>
-          <button
-            onClick={() => setShowOutlines(!showOutlines)}
-            className={`p-0.5 rounded transition-colors text-[10px] font-semibold px-1.5 ${
-              showOutlines
-                ? 'text-blue-700 bg-blue-100 ring-1 ring-blue-400'
-                : 'text-slate-500 hover:bg-stone-200'
-            }`}
-            title="Outline"
-          >
-            OL
-          </button>
-          <button
-            onClick={() => setShowRoleNumbers(!showRoleNumbers)}
-            className={`p-0.5 rounded transition-colors text-[10px] font-semibold px-1.5 ${
-              showRoleNumbers
-                ? 'text-orange-700 bg-orange-100 ring-1 ring-orange-400'
-                : 'text-slate-500 hover:bg-stone-200'
-            }`}
-            title="Role Numbers"
-          >
-            RN
-          </button>
-          <button
-            onClick={() => setRaycastMode(!raycastMode)}
-            className={`p-0.5 rounded transition-colors ${
-              raycastMode
-                ? 'text-amber-600 bg-amber-100 ring-1 ring-amber-400'
-                : 'text-slate-600 hover:bg-stone-200'
-            }`}
-            title={raycastMode ? 'Raycast Modu Aktif (kapat)' : 'Raycast Modunu Aç'}
-          >
-            <Plus size={14} />
-          </button>
-          <button
-            onClick={async () => {
-              if (!selectedShape || selectedProfile === 'none' || resolving) return;
-              setResolving(true);
-              setShapeRebuilding(selectedShape.id, true);
-              try {
-                await rebuildAndRecalculatePipeline(selectedShape.id, selectedProfile);
-              } finally {
-                setResolving(false);
-                setShapeRebuilding(selectedShape.id, false);
-              }
-            }}
-            disabled={!selectedShape || selectedProfile === 'none' || resolving}
-            className={`p-0.5 rounded transition-colors ${
-              !selectedShape || selectedProfile === 'none' || resolving
-                ? 'text-stone-300 cursor-not-allowed'
-                : 'text-slate-600 hover:bg-stone-200'
-            }`}
-            title="Panelleri Yeniden Hesapla"
-          >
-            <RefreshCw size={14} className={resolving ? 'animate-spin' : ''} />
-          </button>
-          <button
-            onClick={() => setPanelSelectMode(!panelSelectMode)}
-            className={`p-0.5 hover:bg-stone-200 rounded transition-colors ${
-              panelSelectMode ? 'text-orange-600' : 'text-slate-600'
-            }`}
-            title={panelSelectMode ? 'Panel Mode' : 'Body Mode'}
-          >
-            {panelSelectMode ? <MousePointer size={14} /> : <Layers size={14} />}
-          </button>
-          <button
-            onClick={onClose}
-            className="p-0.5 hover:bg-stone-200 rounded transition-colors"
-          >
-            <X size={14} className="text-stone-600" />
-          </button>
-        </div>
-      </div>
+        RF
+      </button>
+      <button
+        onClick={() => setShowOutlines(!showOutlines)}
+        className={`p-0.5 rounded transition-colors text-[10px] font-semibold px-1.5 ${
+          showOutlines
+            ? 'text-blue-700 bg-blue-100 ring-1 ring-blue-400'
+            : 'text-slate-500 hover:bg-stone-200'
+        }`}
+        title="Outline"
+      >
+        OL
+      </button>
+      <button
+        onClick={() => setShowRoleNumbers(!showRoleNumbers)}
+        className={`p-0.5 rounded transition-colors text-[10px] font-semibold px-1.5 ${
+          showRoleNumbers
+            ? 'text-orange-700 bg-orange-100 ring-1 ring-orange-400'
+            : 'text-slate-500 hover:bg-stone-200'
+        }`}
+        title="Role Numbers"
+      >
+        RN
+      </button>
+      <button
+        onClick={() => setRaycastMode(!raycastMode)}
+        className={`p-0.5 rounded transition-colors ${
+          raycastMode
+            ? 'text-amber-600 bg-amber-100 ring-1 ring-amber-400'
+            : 'text-slate-600 hover:bg-stone-200'
+        }`}
+        title={raycastMode ? 'Raycast Modu Aktif (kapat)' : 'Raycast Modunu Ac'}
+      >
+        <Plus size={14} />
+      </button>
+      <button
+        onClick={async () => {
+          if (!selectedShape || selectedProfile === 'none' || resolving) return;
+          setResolving(true);
+          setShapeRebuilding(selectedShape.id, true);
+          try {
+            await rebuildAndRecalculatePipeline(selectedShape.id, selectedProfile);
+          } finally {
+            setResolving(false);
+            setShapeRebuilding(selectedShape.id, false);
+          }
+        }}
+        disabled={!selectedShape || selectedProfile === 'none' || resolving}
+        className={`p-0.5 rounded transition-colors ${
+          !selectedShape || selectedProfile === 'none' || resolving
+            ? 'text-stone-300 cursor-not-allowed'
+            : 'text-slate-600 hover:bg-stone-200'
+        }`}
+        title="Panelleri Yeniden Hesapla"
+      >
+        <RefreshCw size={14} className={resolving ? 'animate-spin' : ''} />
+      </button>
+      <button
+        onClick={() => setPanelSelectMode(!panelSelectMode)}
+        className={`p-0.5 hover:bg-stone-200 rounded transition-colors ${
+          panelSelectMode ? 'text-orange-600' : 'text-slate-600'
+        }`}
+        title={panelSelectMode ? 'Panel Mode' : 'Body Mode'}
+      >
+        {panelSelectMode ? <MousePointer size={14} /> : <Layers size={14} />}
+      </button>
+    </div>
+  );
 
-      <div className="p-3 max-h-[calc(100vh-200px)] overflow-y-auto">
-        {selectedShape ? (
+  const panelContent = selectedShape ? (
           <div className="space-y-3">
             <div className="flex items-center gap-2">
               <label className="text-xs font-semibold text-slate-800 whitespace-nowrap">
@@ -1318,9 +1295,9 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
           <div className="text-center text-stone-500 text-xs py-4">
             No shape selected
           </div>
-        )}
-      </div>
-      {selectedShape && selectedPanelRow !== null && (() => {
+        );
+
+  const dimsSection = selectedShape && selectedPanelRow !== null && (() => {
         let dims: { primary: number; secondary: number; thickness: number; w: number; h: number; d: number } | null = null;
         let panelLabel = '';
         let currentPanelId: string | null = null;
@@ -1562,7 +1539,54 @@ export function PanelEditor({ isOpen, onClose }: PanelEditorProps) {
             )}
           </div>
         );
-      })()}
+      })();
+
+  if (embedded) {
+    return (
+      <div className="flex flex-col">
+        <div className="px-3 py-2 border-b border-stone-200 bg-stone-50">
+          {panelToolbar}
+        </div>
+        <div className="p-3">
+          {panelContent}
+        </div>
+        {dimsSection}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="fixed bg-white rounded-lg shadow-2xl border border-stone-300 z-50"
+      style={{
+        left: `${position.x}px`,
+        top: `${position.y}px`,
+        width: '410px',
+      }}
+    >
+      <div
+        className="flex items-center justify-between px-3 py-2 bg-stone-100 border-b border-stone-300 rounded-t-lg select-none"
+        style={{ cursor: isDragging ? 'grabbing' : 'grab' }}
+        onMouseDown={handleMouseDown}
+      >
+        <div className="flex items-center gap-2">
+          <GripVertical size={14} className="text-stone-400" />
+          <span className="text-sm font-semibold text-slate-800">Panel Editor</span>
+        </div>
+        <div className="flex items-center gap-1">
+          {panelToolbar}
+          <button
+            onClick={onClose}
+            className="p-0.5 hover:bg-stone-200 rounded transition-colors"
+          >
+            <X size={14} className="text-stone-600" />
+          </button>
+        </div>
+      </div>
+      <div className="p-3 max-h-[calc(100vh-200px)] overflow-y-auto">
+        {panelContent}
+      </div>
+      {dimsSection}
     </div>
   );
 }

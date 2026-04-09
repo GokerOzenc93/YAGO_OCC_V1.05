@@ -19,6 +19,7 @@ interface CustomParameter {
 interface ParametersPanelProps {
   isOpen: boolean;
   onClose: () => void;
+  embedded?: boolean;
 }
 
 interface SubtractionParam {
@@ -74,7 +75,7 @@ const ParameterRow: React.FC<ParameterRowProps> = ({ label, value, onChange, dis
   );
 };
 
-export function ParametersPanel({ isOpen, onClose }: ParametersPanelProps) {
+export function ParametersPanel({ isOpen, onClose, embedded = false }: ParametersPanelProps) {
   const {
     selectedShapeId, shapes, updateShape, vertexEditMode, setVertexEditMode,
     subtractionViewMode, setSubtractionViewMode, selectedSubtractionIndex, setSelectedSubtractionIndex,
@@ -343,42 +344,33 @@ export function ParametersPanel({ isOpen, onClose }: ParametersPanelProps) {
     </div>
   );
 
-  if (!isOpen) return null;
+  if (!isOpen && !embedded) return null;
 
   const subtractionCount = selectedShape?.subtractionGeometries?.filter((s: any) => s !== null).length ?? 0;
 
-  return (
-    <div className="fixed bg-white rounded-lg shadow-2xl border border-stone-300 z-50" style={{ left: `${position.x}px`, top: `${position.y}px`, width: '410px' }}>
-      <div className="flex items-center justify-between px-3 py-2 bg-stone-100 border-b border-stone-300 rounded-t-lg select-none"
-        style={{ cursor: isDragging ? 'grabbing' : 'grab' }} onMouseDown={handleMouseDown}>
-        <div className="flex items-center gap-2">
-          <GripVertical size={14} className="text-stone-400" />
-          <span className="text-sm font-semibold text-slate-800">Parameters</span>
-        </div>
-        <div className="flex items-center gap-1">
-          {[
-            { label: 'VERTEX', active: vertexEditMode, color: 'bg-orange-600', onClick: () => { setVertexEditMode(!vertexEditMode); if (!vertexEditMode) { setFilletMode(false); setFaceEditMode(false); setRoleEditMode(false); } } },
-            { label: 'ROLE', active: roleEditMode, color: 'bg-purple-600', onClick: () => { setRoleEditMode(!roleEditMode); if (!roleEditMode) { setVertexEditMode(false); setFilletMode(false); setFaceEditMode(false); } } },
-          ].map(({ label, active, color, onClick }) => (
-            <button key={label} onClick={onClick} className={`px-2 py-1 text-[10px] font-medium rounded transition-colors ${active ? `${color} text-white` : 'bg-stone-200 text-slate-700 hover:bg-stone-300'}`}>{label}</button>
-          ))}
-          {subtractionCount > 0 && (
-            <button onClick={() => { setSubtractionViewMode(!subtractionViewMode); if (!subtractionViewMode) { setFilletMode(false); setFaceEditMode(false); } }}
-              className={`px-2 py-1 text-[10px] font-medium rounded transition-colors ${subtractionViewMode ? 'bg-yellow-500 text-white' : 'bg-stone-200 text-slate-700 hover:bg-stone-300'}`}>
-              SUB ({subtractionCount})
-            </button>
-          )}
-          <button onClick={() => { const n = !filletMode; setFilletMode(n); setFaceEditMode(n); clearFilletFaces(); clearFilletFaceData(); if (n) { setVertexEditMode(false); setSubtractionViewMode(false); } }}
-            className={`px-2 py-1 text-[10px] font-medium rounded transition-colors ${filletMode ? 'bg-blue-600 text-white' : 'bg-stone-200 text-slate-700 hover:bg-stone-300'}`}>
-            FILLET {selectedFilletFaces.length > 0 && `(${selectedFilletFaces.length}/2)`}
-          </button>
-          <button onClick={addCustomParameter} className="p-0.5 hover:bg-stone-200 rounded transition-colors" title="Add Parameter"><Plus size={14} className="text-stone-600" /></button>
-          <button onClick={handleClose} className="p-0.5 hover:bg-stone-200 rounded transition-colors"><X size={14} className="text-stone-600" /></button>
-        </div>
-      </div>
+  const toolbarButtons = (
+    <div className="flex items-center gap-1 flex-wrap">
+      {[
+        { label: 'VERTEX', active: vertexEditMode, color: 'bg-orange-600', onClick: () => { setVertexEditMode(!vertexEditMode); if (!vertexEditMode) { setFilletMode(false); setFaceEditMode(false); setRoleEditMode(false); } } },
+        { label: 'ROLE', active: roleEditMode, color: 'bg-teal-600', onClick: () => { setRoleEditMode(!roleEditMode); if (!roleEditMode) { setVertexEditMode(false); setFilletMode(false); setFaceEditMode(false); } } },
+      ].map(({ label, active, color, onClick }) => (
+        <button key={label} onClick={onClick} className={`px-2 py-1 text-[10px] font-medium rounded transition-colors ${active ? `${color} text-white` : 'bg-stone-200 text-slate-700 hover:bg-stone-300'}`}>{label}</button>
+      ))}
+      {subtractionCount > 0 && (
+        <button onClick={() => { setSubtractionViewMode(!subtractionViewMode); if (!subtractionViewMode) { setFilletMode(false); setFaceEditMode(false); } }}
+          className={`px-2 py-1 text-[10px] font-medium rounded transition-colors ${subtractionViewMode ? 'bg-yellow-500 text-white' : 'bg-stone-200 text-slate-700 hover:bg-stone-300'}`}>
+          SUB ({subtractionCount})
+        </button>
+      )}
+      <button onClick={() => { const n = !filletMode; setFilletMode(n); setFaceEditMode(n); clearFilletFaces(); clearFilletFaceData(); if (n) { setVertexEditMode(false); setSubtractionViewMode(false); } }}
+        className={`px-2 py-1 text-[10px] font-medium rounded transition-colors ${filletMode ? 'bg-blue-600 text-white' : 'bg-stone-200 text-slate-700 hover:bg-stone-300'}`}>
+        FILLET {selectedFilletFaces.length > 0 && `(${selectedFilletFaces.length}/2)`}
+      </button>
+      <button onClick={addCustomParameter} className="p-0.5 hover:bg-stone-200 rounded transition-colors" title="Add Parameter"><Plus size={14} className="text-stone-600" /></button>
+    </div>
+  );
 
-      <div className="p-3 max-h-[calc(100vh-200px)] overflow-y-auto">
-        {selectedShape ? (
+  const content = selectedShape ? (
           <div className="space-y-0.5">
             <div className="space-y-0.5">
               {(['width', 'height', 'depth'] as const).map((dim, i) => (
@@ -573,7 +565,36 @@ export function ParametersPanel({ isOpen, onClose }: ParametersPanelProps) {
           </div>
         ) : (
           <div className="text-center text-stone-500 text-xs py-4">No shape selected</div>
-        )}
+        );
+
+  if (embedded) {
+    return (
+      <div className="flex flex-col">
+        <div className="px-3 py-2 border-b border-stone-200 bg-stone-50">
+          {toolbarButtons}
+        </div>
+        <div className="p-3">
+          {content}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fixed bg-white rounded-lg shadow-2xl border border-stone-300 z-50" style={{ left: `${position.x}px`, top: `${position.y}px`, width: '410px' }}>
+      <div className="flex items-center justify-between px-3 py-2 bg-stone-100 border-b border-stone-300 rounded-t-lg select-none"
+        style={{ cursor: isDragging ? 'grabbing' : 'grab' }} onMouseDown={handleMouseDown}>
+        <div className="flex items-center gap-2">
+          <GripVertical size={14} className="text-stone-400" />
+          <span className="text-sm font-semibold text-slate-800">Parameters</span>
+        </div>
+        <div className="flex items-center gap-1">
+          {toolbarButtons}
+          <button onClick={handleClose} className="p-0.5 hover:bg-stone-200 rounded transition-colors"><X size={14} className="text-stone-600" /></button>
+        </div>
+      </div>
+      <div className="p-3 max-h-[calc(100vh-200px)] overflow-y-auto">
+        {content}
       </div>
     </div>
   );

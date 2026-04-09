@@ -23,8 +23,6 @@ import {
   InspectionPanel as Intersection, MapPin, Ruler, Monitor,
   RotateCcw, ArrowDownUp,
 } from 'lucide-react';
-import { ParametersPanel } from './ParametersPanel';
-import { PanelEditor } from './PanelEditor';
 import { GlobalSettingsPanel } from './GlobalSettingsPanel';
 import { createReplicadBox, convertReplicadToThreeGeometry, performBooleanCut } from './ReplicadService';
 
@@ -105,7 +103,7 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
     modifyShape, cameraType, setCameraType, snapSettings, toggleSnapSetting,
     viewMode, setViewMode, cycleViewMode, orthoMode, toggleOrthoMode,
     opencascadeInstance, extrudeShape, shapes, updateShape, deleteShape,
-    showParametersPanel, setShowParametersPanel, showGlobalSettingsPanel,
+    showGlobalSettingsPanel,
     setShowGlobalSettingsPanel, panelSelectMode, panelSurfaceSelectMode, setPanelSurfaceSelectMode,
   } = useAppStore();
 
@@ -113,7 +111,6 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
   const [showModifyMenu, setShowModifyMenu] = useState(false);
   const [showPolylineMenu, setShowPolylineMenu] = useState(false);
   const [polylineMenuPosition, setPolylineMenuPosition] = useState({ x: 0, y: 0 });
-  const [showPanelEditor, setShowPanelEditor] = useState(false);
 
   const hasIntersectingShapes = React.useMemo(() => {
     if (!selectedShapeId) return false;
@@ -366,19 +363,12 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
             <TBtn icon={<Box size={15} />}              label="Kutu Ekle (B)"    onClick={handleAddBox} />
             <TBtn icon={<Cog size={15} />}              label="Genel Ayarlar"     onClick={() => setShowGlobalSettingsPanel(!showGlobalSettingsPanel)} />
             <TBtn
-              icon={<SlidersHorizontal size={15} />}
-              label="Parametreler"
-              disabled={!selectedShapeId}
-              onClick={() => selectedShapeId && setShowParametersPanel(!showParametersPanel)}
-            />
-            <TBtn
               icon={<MinusSquare size={15} />}
               label={hasIntersectingShapes ? 'Kesişen Şekilleri Çıkar' : selectedShapeId ? 'Kesişen şekil yok' : 'Önce şekil seçin'}
               danger={hasIntersectingShapes}
               disabled={!selectedShapeId}
               onClick={handleSubtract}
             />
-            <TBtn icon={<PanelLeft size={15} />}        label="Panel Düzenleyici" onClick={() => setShowPanelEditor(!showPanelEditor)} />
           </div>
 
           <Sep />
@@ -427,8 +417,6 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
         </div>
       )}
 
-      <ParametersPanel isOpen={showParametersPanel} onClose={() => setShowParametersPanel(false)} />
-      <PanelEditor isOpen={showPanelEditor} onClose={() => setShowPanelEditor(false)} />
       <GlobalSettingsPanel isOpen={showGlobalSettingsPanel} onClose={() => setShowGlobalSettingsPanel(false)} />
     </>
   );
