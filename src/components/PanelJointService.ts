@@ -674,7 +674,9 @@ export async function resolveAllPanelJoints(
   for (const panel of panels) {
     originalShapes.set(
       panel.id,
-      panel.parameters?.originalReplicadShape || panel.replicadShape
+      panel.parameters?.originalReplicadShape
+        || panel.parameters?.baseReplicadShape
+        || panel.replicadShape
     );
   }
 
