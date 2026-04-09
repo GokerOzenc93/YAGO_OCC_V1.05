@@ -73,6 +73,62 @@ function panelsOverlap(shapeA: any, shapeB: any): boolean {
   }
 }
 
+function arePanelsCoplanar(panelA: any, panelB: any, virtualFaces: any[]): boolean {
+  const roleA = panelA.parameters?.faceRole as FaceRole;
+  const roleB = panelB.parameters?.faceRole as FaceRole;
+  if (roleA && roleB && roleA === roleB) return true;
+
+  const vfIdA = panelA.parameters?.virtualFaceId;
+  const vfIdB = panelB.parameters?.virtualFaceId;
+  const vfA = vfIdA ? virtualFaces.find((vf: any) => vf.id === vfIdA) : null;
+  const vfB = vfIdB ? virtualFaces.find((vf: any) => vf.id === vfIdB) : null;
+
+  let normalA: THREE.Vector3 | null = null;
+  let normalB: THREE.Vector3 | null = null;
+  let centerA: THREE.Vector3 | null = null;
+  let centerB: THREE.Vector3 | null = null;
+
+  if (vfA) {
+    normalA = new THREE.Vector3(vfA.normal[0], vfA.normal[1], vfA.normal[2]).normalize();
+    centerA = new THREE.Vector3(vfA.center[0], vfA.center[1], vfA.center[2]);
+  }
+  if (vfB) {
+    normalB = new THREE.Vector3(vfB.normal[0], vfB.normal[1], vfB.normal[2]).normalize();
+    centerB = new THREE.Vector3(vfB.center[0], vfB.center[1], vfB.center[2]);
+  }
+
+  if (!normalA && panelA.replicadShape) {
+    try {
+      const bb = panelA.replicadShape.boundingBox;
+      const [[xMin, yMin, zMin], [xMax, yMax, zMax]] = bb.bounds;
+      const sizes = [xMax - xMin, yMax - yMin, zMax - zMin];
+      const minIdx = sizes.indexOf(Math.min(...sizes));
+      const n = [0, 0, 0]; n[minIdx] = 1;
+      normalA = new THREE.Vector3(n[0], n[1], n[2]);
+      centerA = new THREE.Vector3((xMin + xMax) / 2, (yMin + yMax) / 2, (zMin + zMax) / 2);
+    } catch { /* ignore */ }
+  }
+  if (!normalB && panelB.replicadShape) {
+    try {
+      const bb = panelB.replicadShape.boundingBox;
+      const [[xMin, yMin, zMin], [xMax, yMax, zMax]] = bb.bounds;
+      const sizes = [xMax - xMin, yMax - yMin, zMax - zMin];
+      const minIdx = sizes.indexOf(Math.min(...sizes));
+      const n = [0, 0, 0]; n[minIdx] = 1;
+      normalB = new THREE.Vector3(n[0], n[1], n[2]);
+      centerB = new THREE.Vector3((xMin + xMax) / 2, (yMin + yMax) / 2, (zMin + zMax) / 2);
+    } catch { /* ignore */ }
+  }
+
+  if (!normalA || !normalB || !centerA || !centerB) return false;
+
+  if (Math.abs(normalA.dot(normalB)) < 0.9) return false;
+
+  const diff = centerA.clone().sub(centerB);
+  const distAlongNormal = Math.abs(diff.dot(normalA));
+  return distAlongNormal < 2;
+}
+
 function determineDominantPanel(
   panelA: any,
   panelB: any,
@@ -83,6 +139,10 @@ function determineDominantPanel(
   const roleB = panelB.parameters?.faceRole as FaceRole;
   const isAVirtual = !!panelA.parameters?.virtualFaceId;
   const isBVirtual = !!panelB.parameters?.virtualFaceId;
+
+  if (arePanelsCoplanar(panelA, panelB, virtualFaces)) {
+    return null;
+  }
 
   if (roleA && roleB && roleA !== 'Door' && roleB !== 'Door' && roleA !== roleB) {
     const roleDominant = getDominantRole(roleA, roleB, config);
