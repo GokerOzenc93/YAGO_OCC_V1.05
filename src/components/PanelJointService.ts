@@ -797,6 +797,8 @@ export async function resolveAllPanelJoints(
         if (hasVirtualPanels) {
           await rebuildVirtualFacePanels(parentShapeId, updatedFaces);
           await resolveAllPanelJoints(parentShapeId, profileId, config, true);
+          updateBaseShapesAfterJoints(parentShapeId, 'raycast');
+          await reapplyExtrudeStepsForSubset(parentShapeId, 'raycast');
         }
       }
     }
