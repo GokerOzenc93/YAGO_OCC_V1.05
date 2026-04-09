@@ -689,22 +689,10 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
   }, [shape.geometry, shape.id, geometryUuid]);
   useEffect(() => { if (!raycastMode) { setHoveredGroupIndex(null); setPending(null); } }, [raycastMode]);
   const childPanels = useMemo(() => allShapes.filter(s => s.type === 'panel' && s.parameters?.parentShapeId === shape.id), [allShapes, shape.id]);
-  const hoveredGroupHasPanel = useMemo(() => {
-    if (hoveredGroupIndex === null || !faceGroups[hoveredGroupIndex]) return false;
-    if (childPanels.some(p => p.parameters?.faceIndex === hoveredGroupIndex)) return true;
-    const groupNormal = faceGroups[hoveredGroupIndex].normal.clone().normalize();
-    const groupCenter = faceGroups[hoveredGroupIndex].center;
-    return shapeVirtualFaces.some(vf => {
-      if (!vf.hasPanel) return false;
-      const vfNormal = new THREE.Vector3(vf.normal[0], vf.normal[1], vf.normal[2]).normalize();
-      if (Math.abs(groupNormal.dot(vfNormal)) < 0.9) return false;
-      return new THREE.Vector3(vf.center[0], vf.center[1], vf.center[2]).distanceTo(groupCenter) < 50;
-    });
-  }, [hoveredGroupIndex, faceGroups, shapeVirtualFaces, childPanels]);
   const hoverHighlightGeometry = useMemo(() => {
-    if (hoveredGroupIndex === null || !faceGroups[hoveredGroupIndex] || hoveredGroupHasPanel) return null;
+    if (hoveredGroupIndex === null || !faceGroups[hoveredGroupIndex]) return null;
     return createFaceHighlightGeometry(faces, faceGroups[hoveredGroupIndex].faceIndices);
-  }, [hoveredGroupIndex, faceGroups, faces, hoveredGroupHasPanel]);
+  }, [hoveredGroupIndex, faceGroups, faces]);
   const handlePointerMove = (e: any) => {
     if (!raycastMode || faces.length === 0) return;
     e.stopPropagation();
@@ -723,7 +711,7 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     }
     if (e.button !== 0) return;
     e.stopPropagation();
-    if (hoveredGroupIndex === null || !faceGroups[hoveredGroupIndex] || hoveredGroupHasPanel) return;
+    if (hoveredGroupIndex === null || !faceGroups[hoveredGroupIndex]) return;
     setPending(buildPreview(e.point.clone(), faceGroups[hoveredGroupIndex], faces, localToWorld, worldToLocal, childPanels, shape.id, shape.subtractionGeometries || [], shape.geometry, shapeVirtualFaces));
   };
   const handleContextMenu = (e: any) => {
