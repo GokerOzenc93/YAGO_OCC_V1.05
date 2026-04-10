@@ -479,7 +479,7 @@ const Scene: React.FC = () => {
     <>
       <ErrorBoundary>
         <Canvas shadows gl={{ antialias:true, alpha:false, preserveDrawingBuffer:true, powerPreference:'high-performance', logarithmicDepthBuffer:true }} dpr={[1,2]} onContextMenu={e=>e.preventDefault()} onCreated={handleCreated}>
-          <color attach="background" args={['#f7f7f7']} />
+          <color attach="background" args={['#faf9f6']} />
           <CameraController controlsRef={controlsRef} cameraType={cameraType} />
 
           <ambientLight intensity={10.0} />
