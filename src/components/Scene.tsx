@@ -515,7 +515,7 @@ const Scene: React.FC = () => {
             margin right=116, margin bottom=140
             Extra bottom margin gives room for the now-larger compass ring + labels
           */}
-          <GizmoHelper alignment="bottom-right" margin={[145, 120]}>
+          <GizmoHelper alignment="bottom-right" margin={[145, 100]}>
             <group scale={42}>
               <ViewCube />
             </group>
