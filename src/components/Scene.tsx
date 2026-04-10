@@ -482,7 +482,7 @@ const Scene: React.FC = () => {
           <color attach="background" args={['#ffffff']} />
           <CameraController controlsRef={controlsRef} cameraType={cameraType} />
 
-          <ambientLight intensity={0.6} />
+          <ambientLight intensity={1.6} />
           <hemisphereLight intensity={0.4} groundColor="#888888" color="#ffffff" />
           <directionalLight position={[1500,2500,1500]} intensity={1.8} castShadow
             shadow-mapSize-width={2048} shadow-mapSize-height={2048} shadow-bias={-0.0005}
