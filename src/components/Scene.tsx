@@ -357,7 +357,7 @@ const CameraController: React.FC<{ controlsRef: React.RefObject<any>; cameraType
   }, [controlsRef]);
 
   return cameraType === CameraType.PERSPECTIVE
-    ? <PerspectiveCamera  ref={cameraRef as React.RefObject<THREE.PerspectiveCamera>}  makeDefault position={savedRef.current?.position.toArray() || [2000,2000,2000]} fov={15}   near={1}      far={50000} />
+    ? <PerspectiveCamera  ref={cameraRef as React.RefObject<THREE.PerspectiveCamera>}  makeDefault position={savedRef.current?.position.toArray() || [2000,2000,2000]} fov={55}   near={1}      far={50000} />
     : <OrthographicCamera ref={cameraRef as React.RefObject<THREE.OrthographicCamera>} makeDefault position={savedRef.current?.position.toArray() || [2000,2000,2000]} zoom={0.25} near={-50000} far={50000} />;
 };
 
