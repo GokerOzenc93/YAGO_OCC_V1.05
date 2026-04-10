@@ -479,11 +479,11 @@ const Scene: React.FC = () => {
     <>
       <ErrorBoundary>
         <Canvas shadows gl={{ antialias:true, alpha:false, preserveDrawingBuffer:true, powerPreference:'high-performance', logarithmicDepthBuffer:true }} dpr={[1,2]} onContextMenu={e=>e.preventDefault()} onCreated={handleCreated}>
-          <color attach="background" args={['#ffffff']} />
+          <color attach="background" args={['#f2f1ed']} />
           <CameraController controlsRef={controlsRef} cameraType={cameraType} />
 
           <ambientLight intensity={10.0} />
-          <hemisphereLight intensity={10.5} groundColor="#d5a6bd" color="##fffcf2" />  
+          <hemisphereLight intensity={0.5} groundColor="#cccccc" color="##fffcf2" />  
           <directionalLight position={[1500,2500,1500]} intensity={1.8} castShadow
             shadow-mapSize-width={2048} shadow-mapSize-height={2048} shadow-bias={-0.0005}
             shadow-camera-far={15000} shadow-camera-left={-3000} shadow-camera-right={3000}
