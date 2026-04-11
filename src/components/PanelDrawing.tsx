@@ -277,8 +277,8 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
               transparent={true}
               opacity={0.35}
               polygonOffset
-              polygonOffsetFactor={4}
-              polygonOffsetUnits={8}
+              polygonOffsetFactor={40}
+              polygonOffsetUnits={80}
             />
           </mesh>
           {edgeGeometry && (
