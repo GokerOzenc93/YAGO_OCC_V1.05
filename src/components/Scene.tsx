@@ -484,7 +484,7 @@ const Scene: React.FC = () => {
 
           <ambientLight intensity={4.0} />
           <hemisphereLight intensity={0.0} groundColor="#cccccc" color="#fffcf2" />  
-          <directionalLight position={[1500,2500,1500]} intensity={102.8} castShadow
+          <directionalLight position={[1500,2500,1500]} intensity={4.8} castShadow
             shadow-mapSize-width={2048} shadow-mapSize-height={2048} shadow-bias={-0.0005}
             shadow-camera-far={15000} shadow-camera-left={-3000} shadow-camera-right={3000}
             shadow-camera-top={3000} shadow-camera-bottom={-3000} />
