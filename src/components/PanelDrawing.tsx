@@ -271,7 +271,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           >
             <meshLambertMaterial
               color={materialColor}
-              emissive={isPanelRowSelected ? PANEL_COLORS.selected.panelEmissive : '#000000'}
+              emissive={isPanelRowSelected ? PANEL_COLORS.selected.panelEmissive : '#333232'}
               emissiveIntensity={1}
               side={THREE.DoubleSide}
               transparent={true}
