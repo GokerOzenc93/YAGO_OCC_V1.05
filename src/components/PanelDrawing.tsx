@@ -218,8 +218,8 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
             opacity={isFaceExtrudeXray ? 0.12 : 1}
             depthWrite={!isFaceExtrudeXray}
             polygonOffset
-            polygonOffsetFactor={40}
-            polygonOffsetUnits={80}
+            polygonOffsetFactor={4}
+            polygonOffsetUnits={8}
           />
         </mesh>
       )}
