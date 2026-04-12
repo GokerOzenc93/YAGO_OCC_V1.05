@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { X, GripVertical, MousePointer, Layers, RotateCw, Plus, Trash2, RefreshCw, MoveVertical, Check, Pencil } from 'lucide-react';
+import { X, GripVertical, MousePointer, Layers, RotateCw, Trash2, RefreshCw, MoveVertical, Check, Pencil, ScanEye, Square, Hash, Crosshair } from 'lucide-react';
 import { globalSettingsService, faceLabelRoleDefaultsService, GlobalSettingsProfile } from './GlobalSettingsDatabase';
 import { useAppStore } from '../store';
 import type { FaceRole } from '../store';
@@ -246,22 +246,22 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
 
   if (!isOpen && !embedded) return null;
 
-  const tbBtn = (active: boolean, onClick: () => void, label: string, title: string, cls: [string, string]) => (
-    <button onClick={onClick} className={`p-0.5 rounded transition-colors text-[10px] font-semibold px-1.5 ${active ? cls[0] : cls[1]}`} title={title}>{label}</button>
+  const tbBtn = (active: boolean, onClick: () => void, icon: React.ReactNode, title: string, cls: [string, string]) => (
+    <button onClick={onClick} className={`p-1 rounded transition-colors ${active ? cls[0] : cls[1]}`} title={title}>{icon}</button>
   );
 
   const panelToolbar = (
     <div className="flex items-center gap-1 flex-wrap">
-      {tbBtn(showVirtualFaces, () => setShowVirtualFaces(!showVirtualFaces), 'RF', 'Raycast Face', ['text-green-700 bg-green-100 ring-1 ring-green-400', 'text-slate-500 hover:bg-stone-200'])}
-      {tbBtn(showOutlines, () => setShowOutlines(!showOutlines), 'OL', 'Outline', ['text-blue-700 bg-blue-100 ring-1 ring-blue-400', 'text-slate-500 hover:bg-stone-200'])}
-      {tbBtn(showRoleNumbers, () => setShowRoleNumbers(!showRoleNumbers), 'RN', 'Role Numbers', ['text-orange-700 bg-orange-100 ring-1 ring-orange-400', 'text-slate-500 hover:bg-stone-200'])}
-      <button onClick={() => setRaycastMode(!raycastMode)} className={`p-0.5 rounded transition-colors ${raycastMode ? 'text-amber-600 bg-amber-100 ring-1 ring-amber-400' : 'text-slate-600 hover:bg-stone-200'}`}
-        title={raycastMode ? 'Raycast Modu Aktif (kapat)' : 'Raycast Modunu Ac'}><Plus size={14} /></button>
+      {tbBtn(showVirtualFaces, () => setShowVirtualFaces(!showVirtualFaces), <ScanEye size={14} />, 'Raycast Face', ['text-green-700 bg-green-100 ring-1 ring-green-400', 'text-slate-500 hover:bg-stone-200'])}
+      {tbBtn(showOutlines, () => setShowOutlines(!showOutlines), <Square size={14} />, 'Outline', ['text-blue-700 bg-blue-100 ring-1 ring-blue-400', 'text-slate-500 hover:bg-stone-200'])}
+      {tbBtn(showRoleNumbers, () => setShowRoleNumbers(!showRoleNumbers), <Hash size={14} />, 'Role Numbers', ['text-orange-700 bg-orange-100 ring-1 ring-orange-400', 'text-slate-500 hover:bg-stone-200'])}
+      <button onClick={() => setRaycastMode(!raycastMode)} className={`p-1 rounded transition-colors ${raycastMode ? 'text-amber-600 bg-amber-100 ring-1 ring-amber-400' : 'text-slate-600 hover:bg-stone-200'}`}
+        title={raycastMode ? 'Raycast Modu Aktif (kapat)' : 'Raycast Modunu Ac'}><Crosshair size={14} /></button>
       <button onClick={async () => { if (selectedShape && selectedProfile !== 'none' && !resolving) await withResolving(selectedShape.id, () => rebuildAndRecalculatePipeline(selectedShape.id, selectedProfile)); }}
         disabled={!selectedShape || selectedProfile === 'none' || resolving}
-        className={`p-0.5 rounded transition-colors ${!selectedShape || selectedProfile === 'none' || resolving ? 'text-stone-300 cursor-not-allowed' : 'text-slate-600 hover:bg-stone-200'}`}
+        className={`p-1 rounded transition-colors ${!selectedShape || selectedProfile === 'none' || resolving ? 'text-stone-300 cursor-not-allowed' : 'text-slate-600 hover:bg-stone-200'}`}
         title="Panelleri Yeniden Hesapla"><RefreshCw size={14} className={resolving ? 'animate-spin' : ''} /></button>
-      <button onClick={() => setPanelSelectMode(!panelSelectMode)} className={`p-0.5 hover:bg-stone-200 rounded transition-colors ${panelSelectMode ? 'text-orange-600' : 'text-slate-600'}`}
+      <button onClick={() => setPanelSelectMode(!panelSelectMode)} className={`p-1 hover:bg-stone-200 rounded transition-colors ${panelSelectMode ? 'text-orange-600' : 'text-slate-600'}`}
         title={panelSelectMode ? 'Panel Mode' : 'Body Mode'}>{panelSelectMode ? <MousePointer size={14} /> : <Layers size={14} />}</button>
     </div>
   );
