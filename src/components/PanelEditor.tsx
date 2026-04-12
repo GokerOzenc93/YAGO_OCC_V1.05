@@ -392,7 +392,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     return (
       <div className="border-t border-orange-200 bg-orange-50 px-3 py-2 rounded-b-lg">
         <div className="flex items-center gap-2">
-          {(['W',dims.primary],['H',dims.secondary],['T',dims.thickness]).map(([l,v],idx) => (
+          {[['W',dims.primary],['H',dims.secondary],['T',dims.thickness]].map(([l,v],idx) => (
             <React.Fragment key={l as string}>{idx>0&&<div className="w-px h-4 bg-orange-200 shrink-0"/>}
               <div className="flex items-center gap-1.5"><span className="text-[9px] text-stone-400 font-medium uppercase tracking-wide">{l}</span>
                 <span className="text-xs font-bold text-slate-800 font-mono">{v}</span></div></React.Fragment>))}
