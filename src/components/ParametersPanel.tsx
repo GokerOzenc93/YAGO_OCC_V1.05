@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, GripVertical, Check, Trash2, Waypoints, Component, Scissors, Squircle, ListPlus } from 'lucide-react';
+import { X, GripVertical, Plus, Check, Trash2 } from 'lucide-react';
 import { useAppStore } from '../store';
 import type { FaceRole } from '../store';
 import * as THREE from 'three';
@@ -19,14 +19,6 @@ interface CustomParameter {
 interface ParametersPanelProps {
   isOpen: boolean;
   onClose: () => void;
-  /**
-   * When true, the panel renders as inline content (no fixed positioning,
-   * no draggable header, no outer window chrome). Use this when embedding
-   * inside a sidebar/tab container (e.g. the left sidebar with
-   * Parameters/Panel Editor tabs). The outer tab shell is expected to
-   * supply its own title, close button, and positioning.
-   */
-  embedded?: boolean;
 }
 
 interface SubtractionParam {
@@ -82,7 +74,7 @@ const ParameterRow: React.FC<ParameterRowProps> = ({ label, value, onChange, dis
   );
 };
 
-export function ParametersPanel({ isOpen, onClose, embedded = false }: ParametersPanelProps) {
+export function ParametersPanel({ isOpen, onClose }: ParametersPanelProps) {
   const {
     selectedShapeId, shapes, updateShape, vertexEditMode, setVertexEditMode,
     subtractionViewMode, setSubtractionViewMode, selectedSubtractionIndex, setSelectedSubtractionIndex,
@@ -160,41 +152,18 @@ export function ParametersPanel({ isOpen, onClose, embedded = false }: Parameter
     if (!selectedShape || selectedSubtractionIndex === null || !selectedShape.subtractionGeometries) return;
     const subtraction = selectedShape.subtractionGeometries[selectedSubtractionIndex];
     if (!subtraction) return;
-    const round = (n: number) => Math.round(n * 100) / 100;
-    const evalContext = getEvalContext();
-
-    if (subtraction.parameters) {
-      const ev = (k: string) => evaluateExpression(subtraction.parameters[k], evalContext);
-      setSubParams({
-        width: { expression: subtraction.parameters.width, result: ev('width') },
-        height: { expression: subtraction.parameters.height, result: ev('height') },
-        depth: { expression: subtraction.parameters.depth, result: ev('depth') },
-        posX: { expression: subtraction.parameters.posX, result: ev('posX') },
-        posY: { expression: subtraction.parameters.posY, result: ev('posY') },
-        posZ: { expression: subtraction.parameters.posZ, result: ev('posZ') },
-        rotX: { expression: subtraction.parameters.rotX, result: ev('rotX') },
-        rotY: { expression: subtraction.parameters.rotY, result: ev('rotY') },
-        rotZ: { expression: subtraction.parameters.rotZ, result: ev('rotZ') },
-      });
-    } else {
-      const box = new THREE.Box3().setFromBufferAttribute(subtraction.geometry.attributes.position as THREE.BufferAttribute);
-      const size = new THREE.Vector3();
-      box.getSize(size);
-      const [w, h, d] = [round(size.x), round(size.y), round(size.z)];
-      const [px, py, pz] = subtraction.relativeOffset.map(round);
-      const rot = subtraction.relativeRotation || [0, 0, 0];
-      const [rx, ry, rz] = rot.map((r: number) => round(r * (180 / Math.PI)));
-      setSubParams({
-        width: initSubParam(w), height: initSubParam(h), depth: initSubParam(d),
-        posX: initSubParam(px), posY: initSubParam(py), posZ: initSubParam(pz),
-        rotX: initSubParam(rx), rotY: initSubParam(ry), rotZ: initSubParam(rz),
-      });
-    }
+    const { relativeOffset: [px = 0, py = 0, pz = 0] = [], relativeRotation: [rx = 0, ry = 0, rz = 0] = [], parameters } = subtraction;
+    const sw = parameters?.width || subtraction.geometrySize?.[0] || 0;
+    const sh = parameters?.height || subtraction.geometrySize?.[1] || 0;
+    const sd = parameters?.depth || subtraction.geometrySize?.[2] || 0;
+    setSubParams({
+      width: initSubParam(sw), height: initSubParam(sh), depth: initSubParam(sd),
+      posX: initSubParam(px), posY: initSubParam(py), posZ: initSubParam(pz),
+      rotX: initSubParam(rx * (180 / Math.PI)), rotY: initSubParam(ry * (180 / Math.PI)), rotZ: initSubParam(rz * (180 / Math.PI)),
+    });
   }, [selectedShape?.id, selectedSubtractionIndex, selectedShape?.subtractionGeometries?.length, width, height, depth, customParameters]);
 
-  // Drag handlers only used in floating (non-embedded) mode
   useEffect(() => {
-    if (embedded) return;
     const handleMouseMove = (e: MouseEvent) => {
       if (isDragging) { e.preventDefault(); setPosition({ x: e.clientX - dragOffset.x, y: e.clientY - dragOffset.y }); }
     };
@@ -211,10 +180,9 @@ export function ParametersPanel({ isOpen, onClose, embedded = false }: Parameter
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [isDragging, dragOffset, embedded]);
+  }, [isDragging, dragOffset]);
 
   const handleMouseDown = (e: React.MouseEvent) => {
-    if (embedded) return;
     e.preventDefault();
     setIsDragging(true);
     setDragOffset({ x: e.clientX - position.x, y: e.clientY - position.y });
@@ -263,78 +231,28 @@ export function ParametersPanel({ isOpen, onClose, embedded = false }: Parameter
         const sign = mod.direction.includes('-') ? -1 : 1;
         const axis = mod.direction[0];
         u.offset = axis === 'x' ? [result * sign, 0, 0] : axis === 'y' ? [0, result * sign, 0] : [0, 0, result * sign];
-        u.newPosition = mod.originalPosition.map((v: number, i: number) => v + u.offset[i]);
       }
       return u;
     });
     setVertexModifications(updated);
+    if (selectedShape) updateShape(selectedShape.id, { vertexModifications: updated });
   };
 
-  const handleApplyChanges = async () => {
-    const currentShape = useAppStore.getState().shapes.find(s => s.id === selectedShapeId);
-    if (!currentShape) return;
-    const pos: [number, number, number] = [...currentShape.position as [number, number, number]];
-    const ctx = getEvalContext();
-    const ev = (k: keyof typeof subParams) => ({ expression: subParams[k].expression, result: evaluateExpression(subParams[k].expression, ctx) });
-    const evalSub = { width: ev('width'), height: ev('height'), depth: ev('depth'), posX: ev('posX'), posY: ev('posY'), posZ: ev('posZ'), rotX: ev('rotX'), rotY: ev('rotY'), rotZ: ev('rotZ') };
-
-    await applyShapeChanges({
-      selectedShape: { ...currentShape, position: pos }, width, height, depth, rotX, rotY, rotZ,
-      customParameters, vertexModifications, filletRadii, selectedSubtractionIndex,
-      subWidth: evalSub.width.result, subHeight: evalSub.height.result, subDepth: evalSub.depth.result,
-      subPosX: evalSub.posX.result, subPosY: evalSub.posY.result, subPosZ: evalSub.posZ.result,
-      subRotX: evalSub.rotX.result, subRotY: evalSub.rotY.result, subRotZ: evalSub.rotZ.result,
-      subParams: evalSub, updateShape
+  const handleApplyChanges = () => {
+    if (!selectedShape) return;
+    const rx = rotX * (Math.PI / 180), ry = rotY * (Math.PI / 180), rz = rotZ * (Math.PI / 180);
+    updateShape(selectedShape.id, {
+      parameters: { ...selectedShape.parameters, width, height, depth, customParameters },
+      rotation: [rx, ry, rz] as [number, number, number],
+      vertexModifications,
+      fillets: filletRadii.map((radius, idx) => selectedShape.fillets?.[idx] ? { ...selectedShape.fillets[idx], radius } : { radius, edgeIndices: [] })
     });
-    if (selectedShapeId) recalculateVirtualFacesForShape(selectedShapeId);
-  };
-
-  const handleDeleteFillet = async (filletIndex: number) => {
-    const currentShape = useAppStore.getState().shapes.find(s => s.id === selectedShapeId);
-    if (!currentShape) return;
-    const newFillets = (currentShape.fillets || []).filter((_: any, i: number) => i !== filletIndex);
-    const newFilletRadii = filletRadii.filter((_, i) => i !== filletIndex);
-
-    try {
-      const { createReplicadBox, performBooleanCut, convertReplicadToThreeGeometry } = await import('./ReplicadService');
-      const { getReplicadVertices } = await import('./VertexEditorService');
-      const { applyFillets, updateFilletCentersForNewGeometry } = await import('./ShapeUpdaterService');
-
-      let baseShape = await createReplicadBox({ width, height, depth });
-
-      for (const sub of (currentShape.subtractionGeometries || [])) {
-        if (!sub) continue;
-        const subBox = new THREE.Box3().setFromBufferAttribute(sub.geometry.getAttribute('position'));
-        const subSize = new THREE.Vector3();
-        subBox.getSize(subSize);
-        const subShape = await createReplicadBox({ width: subSize.x, height: subSize.y, depth: subSize.z });
-        baseShape = await performBooleanCut(baseShape, subShape, undefined, sub.relativeOffset, undefined, sub.relativeRotation || [0, 0, 0], undefined, sub.scale || [1, 1, 1]);
-      }
-
-      let finalGeometry = convertReplicadToThreeGeometry(baseShape);
-      let finalBaseVertices = await getReplicadVertices(baseShape);
-      let finalShape = baseShape;
-      let updatedFillets = newFillets;
-
-      if (newFillets.length > 0) {
-        updatedFillets = await updateFilletCentersForNewGeometry(newFillets, finalGeometry, { width, height, depth });
-        finalShape = await applyFillets(finalShape, updatedFillets, { width, height, depth });
-        finalGeometry = convertReplicadToThreeGeometry(finalShape);
-        finalBaseVertices = await getReplicadVertices(finalShape);
-      }
-
-      updateShape(currentShape.id, {
-        geometry: finalGeometry, replicadShape: finalShape, fillets: updatedFillets,
-        position: [...currentShape.position] as [number, number, number],
-        parameters: { ...currentShape.parameters, scaledBaseVertices: finalBaseVertices.map((v: any) => [v.x, v.y, v.z]) }
-      });
-      setFilletRadii(newFilletRadii);
-    } catch (error) {
-      console.error('Failed to delete fillet:', error);
+    if (selectedShape.type === 'panel' && selectedShape.parameters?.parentShapeId) {
+      recalculateVirtualFacesForShape(selectedShape.parameters.parentShapeId);
     }
   };
 
-  const renderSubParamRow = (label: string, param: SubtractionParam, paramKey: string, description: string) => (
+  const renderSubParam = (label: string, param: SubtractionParam, paramKey: string, description: string) => (
     <div key={paramKey} className="flex gap-0.5 items-center">
       <input type="text" value={label} readOnly tabIndex={-1} className={`w-10 ${inputBase} bg-white text-gray-800 text-center`} />
       <input type="text" value={param.expression} onChange={e => handleSubParamChange(paramKey, e.target.value)} className={`w-16 ${inputBase} bg-white text-gray-800`} placeholder="expr" />
@@ -357,325 +275,9 @@ export function ParametersPanel({ isOpen, onClose, embedded = false }: Parameter
   if (!isOpen) return null;
 
   const subtractionCount = selectedShape?.subtractionGeometries?.filter((s: any) => s !== null).length ?? 0;
+  const roleOptions: FaceRole[] = ['extrude', 'offset', 'bevel'];
+  const faceDescriptions = selectedShape?.faceDescriptions || {};
 
-  /* ─── Action icons row (VERTEX / ROLE / SUB / FILLET / + / close) ─── */
-  const actionIcons = (
-    <div className="flex items-center gap-1.5 px-1">
-      {/* VERTEX */}
-      <button
-        onClick={() => {
-          setVertexEditMode(!vertexEditMode);
-          if (!vertexEditMode) { setFilletMode(false); setFaceEditMode(false); setRoleEditMode(false); }
-        }}
-        title="Vertex Point Editor"
-        className={`p-1 rounded transition-all duration-200 ${
-          vertexEditMode
-            ? 'text-orange-600 bg-orange-100 ring-1 ring-orange-400 shadow-sm'
-            : 'text-slate-500 hover:text-slate-800 hover:bg-stone-200'
-        }`}
-      >
-        <Waypoints size={15} strokeWidth={1.5} />
-      </button>
-
-      {/* ROLE */}
-      <button
-        onClick={() => {
-          setRoleEditMode(!roleEditMode);
-          if (!roleEditMode) { setVertexEditMode(false); setFilletMode(false); setFaceEditMode(false); }
-        }}
-        title="Face Role Management"
-        className={`p-1 rounded transition-all duration-200 ${
-          roleEditMode
-            ? 'text-purple-600 bg-purple-100 ring-1 ring-purple-400 shadow-sm'
-            : 'text-slate-500 hover:text-slate-800 hover:bg-stone-200'
-        }`}
-      >
-        <Component size={15} strokeWidth={1.5} />
-      </button>
-
-      {/* SUB */}
-      {subtractionCount > 0 && (
-        <button
-          onClick={() => {
-            setSubtractionViewMode(!subtractionViewMode);
-            if (!subtractionViewMode) { setFilletMode(false); setFaceEditMode(false); }
-          }}
-          title={`Boolean Subtractions (${subtractionCount})`}
-          className={`relative p-1 rounded transition-all duration-200 ${
-            subtractionViewMode
-              ? 'text-amber-600 bg-amber-100 ring-1 ring-amber-400 shadow-sm'
-              : 'text-slate-500 hover:text-slate-800 hover:bg-stone-200'
-          }`}
-        >
-          <Scissors size={15} strokeWidth={1.5} />
-          <span className="absolute -top-1.5 -right-1.5 flex h-4 w-4 items-center justify-center text-[9px] font-bold text-amber-700 bg-white rounded-full border border-amber-200 shadow-sm">
-            {subtractionCount}
-          </span>
-        </button>
-      )}
-
-      {/* FILLET */}
-      <button
-        onClick={() => {
-          const n = !filletMode;
-          setFilletMode(n); setFaceEditMode(n);
-          clearFilletFaces(); clearFilletFaceData();
-          if (n) { setVertexEditMode(false); setSubtractionViewMode(false); }
-        }}
-        title={`Edge Fillets${selectedFilletFaces.length > 0 ? ` (${selectedFilletFaces.length}/2)` : ''}`}
-        className={`relative p-1 rounded transition-all duration-200 ${
-          filletMode
-            ? 'text-blue-600 bg-blue-100 ring-1 ring-blue-400 shadow-sm'
-            : 'text-slate-500 hover:text-slate-800 hover:bg-stone-200'
-        }`}
-      >
-        <Squircle size={15} strokeWidth={1.5} />
-        {selectedFilletFaces.length > 0 && (
-          <span className="absolute -top-1.5 -right-1.5 flex h-4 w-4 items-center justify-center text-[9px] font-bold text-blue-700 bg-white rounded-full border border-blue-200 shadow-sm">
-            {selectedFilletFaces.length}
-          </span>
-        )}
-      </button>
-
-      {/* Add Parameter */}
-      <button
-        onClick={addCustomParameter}
-        title="Add Custom Parameter"
-        className="p-1 rounded transition-all duration-200 text-slate-500 hover:text-slate-800 hover:bg-stone-200 ml-1"
-      >
-        <ListPlus size={15} strokeWidth={1.5} />
-      </button>
-
-      {/* Close — only rendered in floating mode; the embedding tab shell
-         should supply its own close affordance */}
-      {!embedded && (
-        <button
-          onClick={handleClose}
-          title="Close Panel"
-          className="p-1 hover:bg-red-100 hover:text-red-600 rounded transition-all duration-200 ml-1"
-        >
-          <X size={15} strokeWidth={1.5} className="text-stone-500 hover:text-red-600" />
-        </button>
-      )}
-    </div>
-  );
-
-  /* ─── Main content (forms, fillet list, role editor, custom params,
-         subtraction editor, vertex edits, Apply button) ─── */
-  const bodyContent = selectedShape ? (
-    <div className="space-y-0.5">
-      <div className="space-y-0.5">
-        {(['width', 'height', 'depth'] as const).map((dim, i) => (
-          <ParameterRow key={dim} label={['W', 'H', 'D'][i]} value={[width, height, depth][i]}
-            onChange={v => { [setWidth, setHeight, setDepth][i](v); }} description={['Width', 'Height', 'Depth'][i]} />
-        ))}
-        {[['RX', rotX, setRotX, 'Rotation X'], ['RY', rotY, setRotY, 'Rotation Y'], ['RZ', rotZ, setRotZ, 'Rotation Z']].map(([label, val, set, desc]) => (
-          <ParameterRow key={label as string} label={label as string} value={val as number} onChange={set as (v: number) => void}
-            display={(val as number).toFixed(1) + '°'} description={desc as string} step={1} />
-        ))}
-        {showBackPanelLeftExtend && renderBackPanelExtend('BPL', backPanelLeftExtend, setBackPanelLeftExtend, 'Back panel left extend', () => { setShowBackPanelLeftExtend(false); setBackPanelLeftExtend(0); })}
-        {showBackPanelRightExtend && renderBackPanelExtend('BPR', backPanelRightExtend, setBackPanelRightExtend, 'Back panel right extend', () => { setShowBackPanelRightExtend(false); setBackPanelRightExtend(0); })}
-      </div>
-
-      {filletRadii.length > 0 && (
-        <div className="space-y-0.5 pt-2 border-t border-stone-300">
-          {filletRadii.map((radius, idx) => (
-            <div key={`fillet-${idx}`} className="flex gap-0.5 items-center">
-              <div className="flex-1">
-                <ParameterRow label={`F${idx + 1}`} value={radius} onChange={v => { const r = [...filletRadii]; r[idx] = v; setFilletRadii(r); }} description={`Fillet ${idx + 1} Radius`} step={0.1} />
-              </div>
-              <button onClick={() => selectedShape && handleDeleteFillet(idx)} className="p-0.5 hover:bg-red-100 rounded transition-colors" title="Delete fillet">
-                <Trash2 size={12} className="text-red-600" />
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {roleEditMode && selectedShape && (() => {
-        const geometry = selectedShape.geometry;
-        if (!geometry) return null;
-        const faces = extractFacesFromGeometry(geometry);
-        const faceGroups = groupCoplanarFaces(faces);
-        const faceRoles = selectedShape.faceRoles || {};
-        const faceDescriptions = selectedShape.faceDescriptions || {};
-        const roleOptions: FaceRole[] = ['Left', 'Right', 'Top', 'Bottom', 'Back', 'Door'];
-        const fillets: FilletData[] = selectedShape.fillets || [];
-        const AXIS_ORDER: Record<string, number> = { 'x+': 0, 'x-': 1, 'y+': 2, 'y-': 3, 'z+': 4, 'z-': 5 };
-        const getAxisDir = (n: THREE.Vector3) => {
-          const t = 0.95;
-          if (n.x > t) return 'x+'; if (n.x < -t) return 'x-';
-          if (n.y > t) return 'y+'; if (n.y < -t) return 'y-';
-          if (n.z > t) return 'z+'; if (n.z < -t) return 'z-';
-          return null;
-        };
-        const bbox = new THREE.Box3().setFromBufferAttribute(geometry.getAttribute('position'));
-        const subGeos: Array<any> = selectedShape.subtractionGeometries || [];
-        const cuttingPlanes: Array<{ normal: THREE.Vector3; constant: number; subtractorIndex: number }> = [];
-
-        subGeos.forEach((sub: any, si: number) => {
-          if (!sub?.geometry) return;
-          const subBbox = new THREE.Box3().setFromBufferAttribute(sub.geometry.getAttribute('position'));
-          const rot = sub.relativeRotation;
-          const rotM = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rot[0], rot[1], rot[2], 'XYZ'));
-          const offset = new THREE.Vector3(...sub.relativeOffset);
-          const corners = [
-            [subBbox.min.x, subBbox.min.y, subBbox.min.z], [subBbox.max.x, subBbox.min.y, subBbox.min.z],
-            [subBbox.min.x, subBbox.max.y, subBbox.min.z], [subBbox.max.x, subBbox.max.y, subBbox.min.z],
-            [subBbox.min.x, subBbox.min.y, subBbox.max.z], [subBbox.max.x, subBbox.min.y, subBbox.max.z],
-            [subBbox.min.x, subBbox.max.y, subBbox.max.z], [subBbox.max.x, subBbox.max.y, subBbox.max.z],
-          ].map(([x, y, z]) => new THREE.Vector3(x, y, z).applyMatrix4(rotM).add(offset));
-          const wb = new THREE.Box3().setFromPoints(corners);
-          const ns = [new THREE.Vector3(1,0,0), new THREE.Vector3(-1,0,0), new THREE.Vector3(0,1,0), new THREE.Vector3(0,-1,0), new THREE.Vector3(0,0,1), new THREE.Vector3(0,0,-1)];
-          const pos = [wb.max.x, wb.min.x, wb.max.y, wb.min.y, wb.max.z, wb.min.z];
-          const consts = [-wb.max.x, wb.min.x, -wb.max.y, wb.min.y, -wb.max.z, wb.min.z];
-          ns.forEach((n, i) => {
-            const ai = Math.floor(i / 2);
-            const [mn, mx] = ai === 0 ? [bbox.min.x, bbox.max.x] : ai === 1 ? [bbox.min.y, bbox.max.y] : [bbox.min.z, bbox.max.z];
-            if (pos[i] > mn + 1.0 && pos[i] < mx - 1.0) cuttingPlanes.push({ normal: n, constant: consts[i], subtractorIndex: si });
-          });
-        });
-
-        const axisCandidates = new Map<string, Array<{ groupIndex: number }>>();
-        const subtractorMap = new Map<number, Array<{ groupIndex: number }>>();
-        const filletMap = new Map<number, Array<{ groupIndex: number }>>();
-
-        faceGroups.forEach((group, groupIndex) => {
-          const axisDir = getAxisDir(group.normal);
-          if (axisDir === null) {
-            for (let fi = 0; fi < fillets.length; fi++) {
-              const f = fillets[fi];
-              const tol = Math.max(f.radius * 2.0, 10);
-              const n1 = new THREE.Vector3(...f.face1Data.normal);
-              const n2 = new THREE.Vector3(...f.face2Data.normal);
-              const d1 = f.face1Data.planeD ?? n1.dot(new THREE.Vector3(...f.face1Data.center));
-              const d2 = f.face2Data.planeD ?? n2.dot(new THREE.Vector3(...f.face2Data.center));
-              if (Math.abs(n1.dot(group.center) - d1) < tol && Math.abs(n2.dot(group.center) - d2) < tol) {
-                if (!filletMap.has(fi)) filletMap.set(fi, []);
-                filletMap.get(fi)!.push({ groupIndex }); return;
-              }
-            }
-            return;
-          }
-          for (const plane of cuttingPlanes) {
-            if (Math.abs(group.normal.dot(plane.normal)) >= 0.95 && Math.abs(group.center.dot(plane.normal) + plane.constant) < 1.0) {
-              if (!subtractorMap.has(plane.subtractorIndex)) subtractorMap.set(plane.subtractorIndex, []);
-              subtractorMap.get(plane.subtractorIndex)!.push({ groupIndex }); return;
-            }
-          }
-          if (!axisCandidates.has(axisDir)) axisCandidates.set(axisDir, []);
-          axisCandidates.get(axisDir)!.push({ groupIndex });
-        });
-
-        const faceEntries: Array<{ label: string; groupIndex: number; color: string }> = [];
-        Array.from(axisCandidates.entries())
-          .sort(([a], [b]) => (AXIS_ORDER[a] ?? 99) - (AXIS_ORDER[b] ?? 99))
-          .forEach(([, candidates], ri) => {
-            if (candidates.length > 1) candidates.forEach((c, si) => faceEntries.push({ label: `${ri + 1}-${si + 1}`, groupIndex: c.groupIndex, color: '#1a1a1a' }));
-            else faceEntries.push({ label: `${ri + 1}`, groupIndex: candidates[0].groupIndex, color: '#1a1a1a' });
-          });
-        subtractorMap.forEach((c, si) => c.forEach((f, fi) => faceEntries.push({ label: `S${si + 1}.${fi + 1}`, groupIndex: f.groupIndex, color: '#b45000' })));
-        filletMap.forEach((c, fi) => c.forEach(f => faceEntries.push({ label: `F${fi + 1}`, groupIndex: f.groupIndex, color: '#006eb4' })));
-
-        return (
-          <div className="space-y-0.5 pt-2 border-t border-stone-300">
-            <div className="text-xs font-semibold text-stone-600 mb-1">Face Roles ({faceEntries.length} faces)</div>
-            {faceEntries.map(({ label, groupIndex, color }) => (
-              <div key={`face-${groupIndex}`} className="flex gap-0.5 items-center">
-                <input type="text" value={label} readOnly tabIndex={-1} style={{ color }} className="w-12 px-1 py-0.5 text-xs font-mono font-bold bg-white border border-gray-300 rounded text-center" />
-                <select value={faceRoles[groupIndex] || ''} onChange={e => updateFaceRole(selectedShape.id, groupIndex, e.target.value === '' ? null : e.target.value as FaceRole)}
-                  className="w-20 px-1 py-0.5 text-xs bg-white text-gray-800 border border-gray-300 rounded">
-                  <option value="">none</option>
-                  {roleOptions.map(r => <option key={r} value={r}>{r}</option>)}
-                </select>
-                <input type="text" value={faceDescriptions[groupIndex] || ''} onChange={e => updateShape(selectedShape.id, { faceDescriptions: { ...faceDescriptions, [groupIndex]: e.target.value } })}
-                  placeholder="description" className="flex-1 px-2 py-0.5 text-xs bg-white text-gray-800 border border-gray-300 rounded" />
-              </div>
-            ))}
-          </div>
-        );
-      })()}
-
-      {customParameters.length > 0 && (
-        <div className="space-y-0.5">
-          {customParameters.map(param => (
-            <div key={param.id} className="flex gap-0.5 items-center">
-              <input type="text" value={param.name} onChange={e => updateCustomParameter(param.id, 'name', e.target.value)} className={`w-10 ${inputBase} bg-white text-gray-800 text-center`} />
-              <input type="text" value={param.expression} onChange={e => updateCustomParameter(param.id, 'expression', e.target.value)} className={`w-16 ${inputBase} bg-white text-gray-800`} placeholder="expr" />
-              <input type="text" value={param.result.toFixed(2)} readOnly tabIndex={-1} className={`w-16 ${inputRO} text-left`} />
-              <input type="text" value={param.description} onChange={e => updateCustomParameter(param.id, 'description', e.target.value)} className="flex-1 px-2 py-0.5 text-xs bg-white text-gray-800 border border-gray-300 rounded" placeholder="Description" />
-              <button onClick={() => deleteCustomParameter(param.id)} className="p-0.5 hover:bg-red-100 rounded transition-colors" title="Delete"><X size={12} className="text-red-600" /></button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {subtractionViewMode && selectedSubtractionIndex !== null && selectedShape.subtractionGeometries?.[selectedSubtractionIndex] && (
-        <div className="space-y-0.5 pt-2 border-t-2 border-yellow-400">
-          <div className="flex items-center justify-between text-xs font-semibold text-yellow-700">
-            <span>Subtraction #{selectedSubtractionIndex + 1}</span>
-            <div className="flex items-center gap-1">
-              <button onClick={async () => { if (selectedShape && selectedSubtractionIndex !== null) await deleteSubtraction(selectedShape.id, selectedSubtractionIndex); }}
-                className="p-0.5 hover:bg-red-200 rounded transition-colors text-red-600" title="Delete subtraction"><Trash2 size={14} /></button>
-              <button onClick={() => setSelectedSubtractionIndex(null)} className="p-0.5 hover:bg-yellow-200 rounded transition-colors" title="Close"><X size={14} /></button>
-            </div>
-          </div>
-          <div className="space-y-0.5">
-            {renderSubParamRow('W', subParams.width, 'width', 'Subtraction Width')}
-            {renderSubParamRow('H', subParams.height, 'height', 'Subtraction Height')}
-            {renderSubParamRow('D', subParams.depth, 'depth', 'Subtraction Depth')}
-            {renderSubParamRow('X', subParams.posX, 'posX', 'Subtraction Position X')}
-            {renderSubParamRow('Y', subParams.posY, 'posY', 'Subtraction Position Y')}
-            {renderSubParamRow('Z', subParams.posZ, 'posZ', 'Subtraction Position Z')}
-            {renderSubParamRow('RX', subParams.rotX, 'rotX', 'Subtraction Rotation X')}
-            {renderSubParamRow('RY', subParams.rotY, 'rotY', 'Subtraction Rotation Y')}
-            {renderSubParamRow('RZ', subParams.rotZ, 'rotZ', 'Subtraction Rotation Z')}
-          </div>
-        </div>
-      )}
-
-      {vertexEditMode && vertexModifications.length > 0 && (
-        <div className="space-y-0.5 pt-2 border-t border-stone-300">
-          <div className="text-xs font-semibold text-stone-600 mb-1">Vertex Modifications</div>
-          {vertexModifications.map((mod, idx) => {
-            const result = evaluateExpression(mod.expression, getEvalContext());
-            return (
-              <div key={idx} className="flex gap-0.5 items-center">
-                <input type="text" value={`V${mod.vertexIndex}`} readOnly tabIndex={-1} className={`w-10 ${inputBase} bg-white text-gray-800 text-center`} />
-                <input type="text" value={mod.expression} onChange={e => updateVertexModification(idx, 'expression', e.target.value)} className={`w-16 ${inputBase} bg-white text-gray-800`} placeholder="expr" />
-                <input type="text" value={result.toFixed(2)} readOnly tabIndex={-1} className={`w-16 ${inputRO} text-left`} />
-                <input type="text" value={mod.description || ''} onChange={e => updateVertexModification(idx, 'description', e.target.value)} className="flex-1 px-2 py-0.5 text-xs bg-white text-gray-800 border border-gray-300 rounded" placeholder="Description" />
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      <button onClick={handleApplyChanges} className="w-full mt-2 px-3 py-1.5 bg-orange-500 text-white text-xs font-medium rounded hover:bg-orange-600 transition-colors flex items-center justify-center gap-1">
-        <Check size={12} /> Apply Changes
-      </button>
-    </div>
-  ) : (
-    <div className="text-center text-stone-500 text-xs py-4">No shape selected</div>
-  );
-
-  /* ─── EMBEDDED RENDER: inline — no fixed window, no draggable header.
-         The outer sidebar/tab shell supplies the title and close button. */
-  if (embedded) {
-    return (
-      <div className="flex flex-col w-full h-full bg-white">
-        {/* Action icon toolbar inside tab content */}
-        <div className="flex items-center justify-start px-3 py-2 bg-stone-100 border-b border-stone-300">
-          {actionIcons}
-        </div>
-        <div className="flex-1 p-3 overflow-y-auto">
-          {bodyContent}
-        </div>
-      </div>
-    );
-  }
-
-  /* ─── FLOATING RENDER: original draggable window (backwards compatible). */
   return (
     <div className="fixed bg-white rounded-lg shadow-2xl border border-stone-300 z-50" style={{ left: `${position.x}px`, top: `${position.y}px`, width: '410px' }}>
       <div className="flex items-center justify-between px-3 py-2 bg-stone-100 border-b border-stone-300 rounded-t-lg select-none"
@@ -684,11 +286,148 @@ export function ParametersPanel({ isOpen, onClose, embedded = false }: Parameter
           <GripVertical size={14} className="text-stone-400" />
           <span className="text-sm font-semibold text-slate-800">Parameters</span>
         </div>
-        {actionIcons}
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => { setVertexEditMode(!vertexEditMode); if (!vertexEditMode) { setFilletMode(false); setFaceEditMode(false); setRoleEditMode(false); } }}
+            className={`px-2 py-1 text-[10px] font-medium rounded transition-colors ${vertexEditMode ? 'bg-orange-100 text-orange-600 ring-1 ring-orange-200' : 'text-stone-600 hover:bg-stone-200'}`}
+            title="Vertex Edit Mode"
+          >
+            VERTEX
+          </button>
+          <button
+            onClick={() => { setRoleEditMode(!roleEditMode); if (!roleEditMode) { setVertexEditMode(false); setFilletMode(false); setFaceEditMode(false); } }}
+            className={`px-2 py-1 text-[10px] font-medium rounded transition-colors ${roleEditMode ? 'bg-purple-100 text-purple-600 ring-1 ring-purple-200' : 'text-stone-600 hover:bg-stone-200'}`}
+            title="Role Edit Mode"
+          >
+            ROLE
+          </button>
+          {subtractionCount > 0 && (
+            <button
+              onClick={() => { setSubtractionViewMode(!subtractionViewMode); if (!subtractionViewMode) { setFilletMode(false); setFaceEditMode(false); } }}
+              className={`px-2 py-1 text-[10px] font-medium rounded transition-colors ${subtractionViewMode ? 'bg-red-100 text-red-600 ring-1 ring-red-200' : 'text-stone-600 hover:bg-stone-200'}`}
+              title="Subtraction Mode"
+            >
+              SUB ({subtractionCount})
+            </button>
+          )}
+          <button
+            onClick={() => { const n = !filletMode; setFilletMode(n); setFaceEditMode(n); clearFilletFaces(); clearFilletFaceData(); if (n) { setVertexEditMode(false); setSubtractionViewMode(false); } }}
+            className={`px-2 py-1 text-[10px] font-medium rounded transition-colors ${filletMode ? 'bg-blue-100 text-blue-600 ring-1 ring-blue-200' : 'text-stone-600 hover:bg-stone-200'}`}
+            title={`Fillet${selectedFilletFaces.length > 0 ? ` (${selectedFilletFaces.length}/2)` : ''}`}
+          >
+            FILLET {selectedFilletFaces.length > 0 && `(${selectedFilletFaces.length}/2)`}
+          </button>
+          <button onClick={addCustomParameter} className="p-0.5 hover:bg-stone-200 rounded transition-colors" title="Add Parameter"><Plus size={14} className="text-stone-600" /></button>
+          <button onClick={handleClose} className="p-0.5 hover:bg-stone-200 rounded transition-colors"><X size={14} className="text-stone-600" /></button>
+        </div>
       </div>
 
       <div className="p-3 max-h-[calc(100vh-200px)] overflow-y-auto">
-        {bodyContent}
+        {selectedShape ? (
+          <div className="space-y-0.5">
+            <div className="space-y-0.5">
+              {(['width', 'height', 'depth'] as const).map((dim, i) => (
+                <ParameterRow key={dim} label={['W', 'H', 'D'][i]} value={[width, height, depth][i]}
+                  onChange={v => { [setWidth, setHeight, setDepth][i](v); }} description={['Width', 'Height', 'Depth'][i]} />
+              ))}
+              {[['RX', rotX, setRotX, 'Rotation X'], ['RY', rotY, setRotY, 'Rotation Y'], ['RZ', rotZ, setRotZ, 'Rotation Z']].map(([label, val, set, desc]) => (
+                <ParameterRow key={label as string} label={label as string} value={val as number} onChange={set as (v: number) => void}
+                  display={(val as number).toFixed(1) + '°'} description={desc as string} step={1} />
+              ))}
+              {showBackPanelLeftExtend && renderBackPanelExtend('BPL', backPanelLeftExtend, setBackPanelLeftExtend, 'Back panel left extend', () => { setShowBackPanelLeftExtend(false); setBackPanelLeftExtend(0); })}
+              {showBackPanelRightExtend && renderBackPanelExtend('BPR', backPanelRightExtend, setBackPanelRightExtend, 'Back panel right extend', () => { setShowBackPanelRightExtend(false); setBackPanelRightExtend(0); })}
+            </div>
+
+            {filletRadii.length > 0 && (
+              <div className="space-y-0.5 pt-2 border-t border-stone-300">
+                {filletRadii.map((radius, idx) => (
+                  <div key={`fillet-${idx}`} className="flex gap-0.5 items-center">
+                    <div className="flex-1">
+                      <ParameterRow label={`F${idx + 1}`} value={radius} onChange={v => { const r = [...filletRadii]; r[idx] = v; setFilletRadii(r); }} description={`Fillet ${idx + 1} radius`} />
+                    </div>
+                    <button onClick={() => setFilletRadii(filletRadii.filter((_, i) => i !== idx))} className="p-0.5 hover:bg-red-100 rounded transition-colors" title="Remove"><X size={12} className="text-red-600" /></button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {roleEditMode && (() => {
+              if (!selectedShape.geometry) return null;
+              const faces = extractFacesFromGeometry(selectedShape.geometry);
+              const groups = groupCoplanarFaces(faces);
+              return (
+                <div className="space-y-0.5 pt-2 border-t border-stone-300">
+                  {groups.map((group, groupIndex) => (
+                    <div key={groupIndex} className="flex gap-0.5 items-center">
+                      <input type="text" value={`F${groupIndex}`} readOnly tabIndex={-1} className={`w-10 ${inputBase} bg-white text-gray-800 text-center`} />
+                      <select value={selectedShape.faceRoles?.[groupIndex] || ''} onChange={e => updateFaceRole(selectedShape.id, groupIndex, e.target.value === '' ? null : e.target.value as FaceRole)}
+                        className="w-20 px-1 py-0.5 text-xs bg-white text-gray-800 border border-gray-300 rounded">
+                        <option value="">none</option>
+                        {roleOptions.map(r => <option key={r} value={r}>{r}</option>)}
+                      </select>
+                      <input type="text" value={faceDescriptions[groupIndex] || ''} onChange={e => updateShape(selectedShape.id, { faceDescriptions: { ...faceDescriptions, [groupIndex]: e.target.value } })}
+                        placeholder="description" className="flex-1 px-2 py-0.5 text-xs bg-white text-gray-800 border border-gray-300 rounded" />
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+
+            {customParameters.length > 0 && (
+              <div className="space-y-0.5">
+                {customParameters.map(param => (
+                  <div key={param.id} className="flex gap-0.5 items-center">
+                    <input type="text" value={param.name} onChange={e => updateCustomParameter(param.id, 'name', e.target.value)} className={`w-10 ${inputBase} bg-white text-gray-800 text-center`} />
+                    <input type="text" value={param.expression} onChange={e => updateCustomParameter(param.id, 'expression', e.target.value)} className={`w-16 ${inputBase} bg-white text-gray-800`} placeholder="expr" />
+                    <input type="text" value={param.result.toFixed(2)} readOnly tabIndex={-1} className={`w-16 ${inputRO} text-left`} />
+                    <input type="text" value={param.description} onChange={e => updateCustomParameter(param.id, 'description', e.target.value)} className="flex-1 px-2 py-0.5 text-xs bg-white text-gray-800 border border-gray-300 rounded" placeholder="Description" />
+                    <button onClick={() => deleteCustomParameter(param.id)} className="p-0.5 hover:bg-red-100 rounded transition-colors" title="Delete"><X size={12} className="text-red-600" /></button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {subtractionViewMode && selectedSubtractionIndex !== null && selectedShape.subtractionGeometries?.[selectedSubtractionIndex] && (
+              <div className="space-y-0.5 pt-2 border-t-2 border-yellow-400">
+                {renderSubParam('SW', subParams.width, 'width', 'Subtraction Width')}
+                {renderSubParam('SH', subParams.height, 'height', 'Subtraction Height')}
+                {renderSubParam('SD', subParams.depth, 'depth', 'Subtraction Depth')}
+                {renderSubParam('SX', subParams.posX, 'posX', 'Subtraction Offset X')}
+                {renderSubParam('SY', subParams.posY, 'posY', 'Subtraction Offset Y')}
+                {renderSubParam('SZ', subParams.posZ, 'posZ', 'Subtraction Offset Z')}
+                {renderSubParam('SRX', subParams.rotX, 'rotX', 'Subtraction Rotation X')}
+                {renderSubParam('SRY', subParams.rotY, 'rotY', 'Subtraction Rotation Y')}
+                {renderSubParam('SRZ', subParams.rotZ, 'rotZ', 'Subtraction Rotation Z')}
+                <button onClick={() => { if (selectedSubtractionIndex !== null) deleteSubtraction(selectedShapeId!, selectedSubtractionIndex); setSubtractionViewMode(false); setSelectedSubtractionIndex(null); }}
+                  className="w-full mt-1 px-3 py-1 bg-red-500 text-white text-xs font-medium rounded hover:bg-red-600 transition-colors flex items-center justify-center gap-1">
+                  <Trash2 size={12} /> Delete Subtraction
+                </button>
+              </div>
+            )}
+
+            {vertexEditMode && vertexModifications.length > 0 && (
+              <div className="space-y-0.5 pt-2 border-t border-stone-300">
+                {vertexModifications.map((mod, idx) => {
+                  const result = evaluateExpression(mod.expression, getEvalContext());
+                  return (
+                    <div key={idx} className="flex gap-0.5 items-center">
+                      <input type="text" value={`V${mod.vertexIndex}`} readOnly tabIndex={-1} className={`w-10 ${inputBase} bg-white text-gray-800 text-center`} />
+                      <input type="text" value={mod.expression} onChange={e => updateVertexModification(idx, 'expression', e.target.value)} className={`w-16 ${inputBase} bg-white text-gray-800`} placeholder="expr" />
+                      <input type="text" value={result.toFixed(2)} readOnly tabIndex={-1} className={`w-16 ${inputRO} text-left`} />
+                      <input type="text" value={mod.description || ''} onChange={e => updateVertexModification(idx, 'description', e.target.value)} className="flex-1 px-2 py-0.5 text-xs bg-white text-gray-800 border border-gray-300 rounded" placeholder="Description" />
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <button onClick={handleApplyChanges} className="w-full mt-2 px-3 py-1.5 bg-orange-500 text-white text-xs font-medium rounded hover:bg-orange-600 transition-colors flex items-center justify-center gap-1">
+              <Check size={12} /> Apply Changes
+            </button>
+          </div>
+        ) : (
+          <div className="text-center text-stone-500 text-xs py-4">No shape selected</div>
+        )}
       </div>
     </div>
   );
