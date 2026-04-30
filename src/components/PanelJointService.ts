@@ -997,7 +997,6 @@ export async function resolveAllPanelJoints(
         );
         if (hasVirtualPanels) {
           await rebuildVirtualFacePanels(parentShapeId, updatedFaces);
-          saveExtrudedAsOriginal(parentShapeId, 'role');
           await resolveAllPanelJoints(parentShapeId, profileId, config, true, true);
           updateBaseShapesAfterJoints(parentShapeId, 'raycast');
           await reapplyExtrudeStepsForSubset(parentShapeId, 'raycast');
@@ -1383,11 +1382,14 @@ function updateBaseShapesAfterJoints(parentShapeId: string, filter?: 'role' | 'r
           if (filter === 'raycast' && !isVirtual) return s;
           if (filter === 'role' && isVirtual) return s;
         }
+        const newBase = s.parameters?.jointTrimmed
+          ? s.replicadShape
+          : (s.parameters?.originalReplicadShape || s.parameters?.baseReplicadShape || s.replicadShape);
         return {
           ...s,
           parameters: {
             ...s.parameters,
-            baseReplicadShape: s.replicadShape,
+            baseReplicadShape: newBase,
           },
         };
       }
