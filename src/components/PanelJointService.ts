@@ -73,6 +73,62 @@ function panelsOverlap(shapeA: any, shapeB: any): boolean {
   }
 }
 
+function panelsOverlapWithOffset(
+  shapeA: any, shapeB: any,
+  panelA: any, panelB: any
+): boolean {
+  try {
+    if (!shapeA || !shapeB) return true;
+    const bbA = getReplicadBoundingBox(shapeA);
+    const bbB = getReplicadBoundingBox(shapeB);
+
+    const bazaOffsetA = panelA.parameters?.bazaOffset || 0;
+    const bazaOffsetB = panelB.parameters?.bazaOffset || 0;
+
+    const tol = 0.5;
+    const aMinY = bbA.min[1] + bazaOffsetA;
+    const aMaxY = bbA.max[1] + bazaOffsetA;
+    const bMinY = bbB.min[1] + bazaOffsetB;
+    const bMaxY = bbB.max[1] + bazaOffsetB;
+
+    return (
+      bbA.min[0] < bbB.max[0] - tol && bbA.max[0] > bbB.min[0] + tol &&
+      aMinY < bMaxY - tol && aMaxY > bMinY + tol &&
+      bbA.min[2] < bbB.max[2] - tol && bbA.max[2] > bbB.min[2] + tol
+    );
+  } catch {
+    return true;
+  }
+}
+
+function dominantTouchesSubordinateEdge(
+  dominantShape: any,
+  subordinateShape: any,
+  dominantBazaOffset: number
+): boolean {
+  try {
+    const domBB = getReplicadBoundingBox(dominantShape);
+    const subBB = getReplicadBoundingBox(subordinateShape);
+
+    const domMinY = domBB.min[1] + dominantBazaOffset;
+    const domMaxY = domBB.max[1] + dominantBazaOffset;
+
+    const edgeTol = 2.0;
+    const touchesMinY = Math.abs(subBB.min[1] - domMinY) < edgeTol || Math.abs(subBB.min[1] - domMaxY) < edgeTol;
+    const touchesMaxY = Math.abs(subBB.max[1] - domMinY) < edgeTol || Math.abs(subBB.max[1] - domMaxY) < edgeTol;
+
+    const touchesMinX = Math.abs(subBB.min[0] - domBB.min[0]) < edgeTol || Math.abs(subBB.min[0] - domBB.max[0]) < edgeTol;
+    const touchesMaxX = Math.abs(subBB.max[0] - domBB.min[0]) < edgeTol || Math.abs(subBB.max[0] - domBB.max[0]) < edgeTol;
+
+    const touchesMinZ = Math.abs(subBB.min[2] - domBB.min[2]) < edgeTol || Math.abs(subBB.min[2] - domBB.max[2]) < edgeTol;
+    const touchesMaxZ = Math.abs(subBB.max[2] - domBB.min[2]) < edgeTol || Math.abs(subBB.max[2] - domBB.max[2]) < edgeTol;
+
+    return touchesMinY || touchesMaxY || touchesMinX || touchesMaxX || touchesMinZ || touchesMaxZ;
+  } catch {
+    return true;
+  }
+}
+
 function getPanelPlaneInfo(panel: any, virtualFaces: any[]): { normal: THREE.Vector3; planeD: number } | null {
   const shape = panel.parameters?.baseReplicadShape
     || panel.parameters?.originalReplicadShape
@@ -704,9 +760,16 @@ export async function resolveAllPanelJoints(
         continue;
       }
 
-      const overlap = panelsOverlap(origA, origB);
+      const isAVirtual = !!pA.parameters?.virtualFaceId;
+      const isBVirtual = !!pB.parameters?.virtualFaceId;
+      const hasVirtualInPair = isAVirtual || isBVirtual;
+      const hasBazaOffset = (pA.parameters?.bazaOffset || 0) > 0 || (pB.parameters?.bazaOffset || 0) > 0;
+
+      const overlap = (hasVirtualInPair && hasBazaOffset)
+        ? panelsOverlapWithOffset(origA, origB, pA, pB)
+        : panelsOverlap(origA, origB);
       if (origA && origB && !overlap) {
-        console.log(`  Skip: ${roleA || 'none'}-${roleB || 'none'} no overlap`);
+        console.log(`  Skip: ${roleA || 'none'}-${roleB || 'none'} no overlap (bazaOffset aware)`);
         continue;
       }
 
@@ -787,9 +850,24 @@ export async function resolveAllPanelJoints(
 
       if (isCut) {
         const dominantIds = cutsMap.get(panel.id)!;
+        const panelIsVirtual = !!panel.parameters?.virtualFaceId;
         for (const dominantId of dominantIds) {
-          const cuttingShape = extendedShapes.get(dominantId) || originalShapes.get(dominantId);
+          let cuttingShape = extendedShapes.get(dominantId) || originalShapes.get(dominantId);
           if (!cuttingShape) continue;
+
+          if (panelIsVirtual) {
+            const dominantPanel = panels.find(p => p.id === dominantId);
+            const dominantBazaOffset = dominantPanel?.parameters?.bazaOffset || 0;
+            if (dominantBazaOffset > 0) {
+              if (!dominantTouchesSubordinateEdge(cuttingShape, original, dominantBazaOffset)) {
+                continue;
+              }
+              try {
+                cuttingShape = cuttingShape.translate(0, dominantBazaOffset, 0);
+              } catch { /* use untranslated */ }
+            }
+          }
+
           try {
             currentShape = currentShape.cut(cuttingShape);
           } catch (err) {
