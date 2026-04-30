@@ -64,9 +64,9 @@ function panelsOverlap(shapeA: any, shapeB: any): boolean {
     const bbB = getReplicadBoundingBox(shapeB);
     const tol = 0.5;
     return (
-      bbA.min[0] < bbB.max[0] - tol && bbA.max[0] > bbB.min[0] + tol &&
-      bbA.min[1] < bbB.max[1] - tol && bbA.max[1] > bbB.min[1] + tol &&
-      bbA.min[2] < bbB.max[2] - tol && bbA.max[2] > bbB.min[2] + tol
+      bbA.min[0] < bbB.max[0] + tol && bbA.max[0] > bbB.min[0] - tol &&
+      bbA.min[1] < bbB.max[1] + tol && bbA.max[1] > bbB.min[1] - tol &&
+      bbA.min[2] < bbB.max[2] + tol && bbA.max[2] > bbB.min[2] - tol
     );
   } catch {
     return true;

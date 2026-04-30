@@ -183,8 +183,27 @@ export function GlobalSettingsPanel({ isOpen, onClose }: GlobalSettingsPanelProp
     }
   };
 
-  const handleSettingsSaved = () => {
+  const handleSettingsSaved = async () => {
     loadProfileSettingTypes();
+    try {
+      const { useAppStore } = await import('../store');
+      const { rebuildAndRecalculatePipeline } = await import('./PanelJointService');
+      const state = useAppStore.getState();
+      const activeProfileId = state.activePanelProfileId;
+      if (!activeProfileId || activeProfileId !== selectedProfile) return;
+      const parentIds = Array.from(new Set(
+        state.shapes
+          .filter(s => s.type === 'panel' && s.parameters?.parentShapeId)
+          .map(s => s.parameters.parentShapeId as string)
+      ));
+      for (const pid of parentIds) {
+        state.setShapeRebuilding(pid, true);
+        try { await rebuildAndRecalculatePipeline(pid, activeProfileId); }
+        finally { state.setShapeRebuilding(pid, false); }
+      }
+    } catch (err) {
+      console.error('Failed to re-resolve joints after settings save:', err);
+    }
   };
 
   const getVisibleOptions = () => {
