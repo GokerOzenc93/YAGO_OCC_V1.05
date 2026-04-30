@@ -935,10 +935,10 @@ export async function resolveAllPanelJoints(
         }
       }
     }
-  }
 
-  updateBaseShapesAfterJoints(parentShapeId, 'role');
-  await reapplyExtrudeStepsForSubset(parentShapeId, 'role');
+    updateBaseShapesAfterJoints(parentShapeId, 'role');
+    await reapplyExtrudeStepsForSubset(parentShapeId, 'role');
+  }
 }
 
 export async function restoreAllPanels(parentShapeId: string): Promise<void> {
@@ -1328,6 +1328,7 @@ export async function rebuildAndRecalculatePipeline(
   updateBaseShapesAfterJoints(parentShapeId, 'raycast');
   await reapplyExtrudeStepsForSubset(parentShapeId, 'raycast');
 }
+
 
 async function rebuildVirtualFacePanels(
   parentShapeId: string,
