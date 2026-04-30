@@ -64,66 +64,10 @@ function panelsOverlap(shapeA: any, shapeB: any): boolean {
     const bbB = getReplicadBoundingBox(shapeB);
     const tol = 0.5;
     return (
-      bbA.min[0] < bbB.max[0] - tol && bbA.max[0] > bbB.min[0] + tol &&
-      bbA.min[1] < bbB.max[1] - tol && bbA.max[1] > bbB.min[1] + tol &&
-      bbA.min[2] < bbB.max[2] - tol && bbA.max[2] > bbB.min[2] + tol
+      bbA.min[0] < bbB.max[0] + tol && bbA.max[0] > bbB.min[0] - tol &&
+      bbA.min[1] < bbB.max[1] + tol && bbA.max[1] > bbB.min[1] - tol &&
+      bbA.min[2] < bbB.max[2] + tol && bbA.max[2] > bbB.min[2] - tol
     );
-  } catch {
-    return true;
-  }
-}
-
-function panelsOverlapWithOffset(
-  shapeA: any, shapeB: any,
-  panelA: any, panelB: any
-): boolean {
-  try {
-    if (!shapeA || !shapeB) return true;
-    const bbA = getReplicadBoundingBox(shapeA);
-    const bbB = getReplicadBoundingBox(shapeB);
-
-    const bazaOffsetA = panelA.parameters?.bazaOffset || 0;
-    const bazaOffsetB = panelB.parameters?.bazaOffset || 0;
-
-    const tol = 0.5;
-    const aMinY = bbA.min[1] + bazaOffsetA;
-    const aMaxY = bbA.max[1] + bazaOffsetA;
-    const bMinY = bbB.min[1] + bazaOffsetB;
-    const bMaxY = bbB.max[1] + bazaOffsetB;
-
-    return (
-      bbA.min[0] < bbB.max[0] - tol && bbA.max[0] > bbB.min[0] + tol &&
-      aMinY < bMaxY - tol && aMaxY > bMinY + tol &&
-      bbA.min[2] < bbB.max[2] - tol && bbA.max[2] > bbB.min[2] + tol
-    );
-  } catch {
-    return true;
-  }
-}
-
-function dominantTouchesSubordinateEdge(
-  dominantShape: any,
-  subordinateShape: any,
-  dominantBazaOffset: number
-): boolean {
-  try {
-    const domBB = getReplicadBoundingBox(dominantShape);
-    const subBB = getReplicadBoundingBox(subordinateShape);
-
-    const domMinY = domBB.min[1] + dominantBazaOffset;
-    const domMaxY = domBB.max[1] + dominantBazaOffset;
-
-    const edgeTol = 2.0;
-    const touchesMinY = Math.abs(subBB.min[1] - domMinY) < edgeTol || Math.abs(subBB.min[1] - domMaxY) < edgeTol;
-    const touchesMaxY = Math.abs(subBB.max[1] - domMinY) < edgeTol || Math.abs(subBB.max[1] - domMaxY) < edgeTol;
-
-    const touchesMinX = Math.abs(subBB.min[0] - domBB.min[0]) < edgeTol || Math.abs(subBB.min[0] - domBB.max[0]) < edgeTol;
-    const touchesMaxX = Math.abs(subBB.max[0] - domBB.min[0]) < edgeTol || Math.abs(subBB.max[0] - domBB.max[0]) < edgeTol;
-
-    const touchesMinZ = Math.abs(subBB.min[2] - domBB.min[2]) < edgeTol || Math.abs(subBB.min[2] - domBB.max[2]) < edgeTol;
-    const touchesMaxZ = Math.abs(subBB.max[2] - domBB.min[2]) < edgeTol || Math.abs(subBB.max[2] - domBB.max[2]) < edgeTol;
-
-    return touchesMinY || touchesMaxY || touchesMinX || touchesMaxX || touchesMinZ || touchesMaxZ;
   } catch {
     return true;
   }
@@ -176,6 +120,30 @@ function arePanelsCoplanar(panelA: any, panelB: any, virtualFaces: any[]): boole
   return planeDist < 2;
 }
 
+function getThicknessFaceTouch(panelA: any, panelB: any): 'A' | 'B' | null {
+  try {
+    const bbA = getReplicadBoundingBox(panelA.parameters?.originalReplicadShape || panelA.replicadShape);
+    const bbB = getReplicadBoundingBox(panelB.parameters?.originalReplicadShape || panelB.replicadShape);
+    const sizeA = [bbA.max[0]-bbA.min[0], bbA.max[1]-bbA.min[1], bbA.max[2]-bbA.min[2]];
+    const sizeB = [bbB.max[0]-bbB.min[0], bbB.max[1]-bbB.min[1], bbB.max[2]-bbB.min[2]];
+    const tA = sizeA.indexOf(Math.min(...sizeA));
+    const tB = sizeB.indexOf(Math.min(...sizeB));
+    if (tA === tB) return null;
+    const tol = 0.5;
+    const overlapsOn = (ax: number) =>
+      bbA.min[ax] < bbB.max[ax] - tol && bbA.max[ax] > bbB.min[ax] + tol;
+    const touchesOn = (ax: number) =>
+      Math.abs(bbA.max[ax] - bbB.min[ax]) < tol || Math.abs(bbB.max[ax] - bbA.min[ax]) < tol;
+    const aTouchesB = touchesOn(tA) && [0,1,2].filter(a => a !== tA).every(a => overlapsOn(a));
+    const bTouchesA = touchesOn(tB) && [0,1,2].filter(a => a !== tB).every(a => overlapsOn(a));
+    if (aTouchesB && !bTouchesA) return 'B';
+    if (bTouchesA && !aTouchesB) return 'A';
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function determineDominantPanel(
   panelA: any,
   panelB: any,
@@ -186,6 +154,10 @@ function determineDominantPanel(
   const roleB = panelB.parameters?.faceRole as FaceRole;
   const isAVirtual = !!panelA.parameters?.virtualFaceId;
   const isBVirtual = !!panelB.parameters?.virtualFaceId;
+  const isARoleless = !!panelA.parameters?.roleless;
+  const isBRoleless = !!panelB.parameters?.roleless;
+
+  if (isARoleless || isBRoleless) return null;
 
   if (arePanelsCoplanar(panelA, panelB, virtualFaces)) {
     return null;
@@ -200,6 +172,9 @@ function determineDominantPanel(
 
   if (!isAVirtual && isBVirtual) return 'A';
   if (isAVirtual && !isBVirtual) return 'B';
+
+  const thicknessWinner = getThicknessFaceTouch(panelA, panelB);
+  if (thicknessWinner) return thicknessWinner;
 
   if (isAVirtual && isBVirtual) {
     const orderA = getVirtualFaceOrder(panelA, virtualFaces);
@@ -544,8 +519,7 @@ function applyBazaOffset(parentShapeId: string, selectedBodyType: string | null,
   const hasBottomPanels = state.shapes.some(
     s => s.type === 'panel' &&
     s.parameters?.parentShapeId === parentShapeId &&
-    s.parameters?.faceRole === 'Bottom' &&
-    !s.parameters?.virtualFaceId
+    s.parameters?.faceRole === 'Bottom'
   );
   if (!hasBottomPanels) return;
 
@@ -555,8 +529,7 @@ function applyBazaOffset(parentShapeId: string, selectedBodyType: string | null,
     shapes: st.shapes.map(s => {
       if (s.type === 'panel' &&
           s.parameters?.parentShapeId === parentShapeId &&
-          s.parameters?.faceRole === 'Bottom' &&
-          !s.parameters?.virtualFaceId) {
+          s.parameters?.faceRole === 'Bottom') {
         const parent = st.shapes.find(p => p.id === parentShapeId);
         if (!parent) return s;
         return {
@@ -615,14 +588,11 @@ function saveOriginalShapes(panels: any[], parentShapeId: string) {
         !s.parameters?.originalReplicadShape &&
         s.replicadShape
       ) {
-        const preExtrude = s.parameters?.extrudeSteps?.length > 0
-          ? s.parameters?.baseReplicadShape
-          : null;
         return {
           ...s,
           parameters: {
             ...s.parameters,
-            originalReplicadShape: preExtrude || s.replicadShape,
+            originalReplicadShape: s.replicadShape,
           },
         };
       }
@@ -678,14 +648,11 @@ function batchApplyUpdates(
         !s.parameters?.originalReplicadShape &&
         s.replicadShape
       ) {
-        const preExtrude = s.parameters?.extrudeSteps?.length > 0
-          ? s.parameters?.baseReplicadShape
-          : null;
         return {
           ...s,
           parameters: {
             ...s.parameters,
-            originalReplicadShape: preExtrude || s.replicadShape,
+            originalReplicadShape: s.replicadShape,
           },
         };
       }
@@ -694,55 +661,11 @@ function batchApplyUpdates(
   }));
 }
 
-function getExtrudeStepCoversJointCut(
-  subordinatePanel: any,
-  dominantShape: any,
-  subordinateShape: any
-): boolean {
-  const steps = subordinatePanel.parameters?.extrudeSteps;
-  if (!steps || steps.length === 0) return false;
-
-  try {
-    const domBB = getReplicadBoundingBox(dominantShape);
-    const subBB = getReplicadBoundingBox(subordinateShape);
-
-    const domSize = [
-      domBB.max[0] - domBB.min[0],
-      domBB.max[1] - domBB.min[1],
-      domBB.max[2] - domBB.min[2],
-    ];
-    const domThicknessAxis = domSize[0] <= domSize[1] && domSize[0] <= domSize[2] ? 0
-      : domSize[1] <= domSize[0] && domSize[1] <= domSize[2] ? 1 : 2;
-
-    const domCenter = (domBB.min[domThicknessAxis] + domBB.max[domThicknessAxis]) / 2;
-    const subCenter = (subBB.min[domThicknessAxis] + subBB.max[domThicknessAxis]) / 2;
-
-    const axisLabels = ['X', 'Y', 'Z'];
-    const cutDirection = domCenter > subCenter
-      ? `${axisLabels[domThicknessAxis]}+`
-      : `${axisLabels[domThicknessAxis]}-`;
-
-    for (const step of steps) {
-      if (step.axisLabel === cutDirection && step.value < 0) {
-        return true;
-      }
-      if (step.axisLabel === cutDirection && step.isFixed) {
-        return true;
-      }
-    }
-  } catch {
-    return false;
-  }
-
-  return false;
-}
-
 export async function resolveAllPanelJoints(
   parentShapeId: string,
   profileId: string,
   config?: PanelJointConfig,
-  skipVirtualFaceUpdate?: boolean,
-  skipRoleToRole?: boolean
+  skipVirtualFaceUpdate?: boolean
 ): Promise<void> {
   const state = useAppStore.getState();
   const fullSettings = await loadFullProfileSettings(profileId);
@@ -783,17 +706,12 @@ export async function resolveAllPanelJoints(
 
   const originalShapes = new Map<string, any>();
   for (const panel of panels) {
-    const isVirtual = !!panel.parameters?.virtualFaceId;
-    if (skipRoleToRole && !isVirtual) {
-      originalShapes.set(panel.id, panel.replicadShape);
-    } else {
-      originalShapes.set(
-        panel.id,
-        panel.parameters?.originalReplicadShape
-          || panel.parameters?.baseReplicadShape
-          || panel.replicadShape
-      );
-    }
+    originalShapes.set(
+      panel.id,
+      panel.parameters?.originalReplicadShape
+        || panel.parameters?.baseReplicadShape
+        || panel.replicadShape
+    );
   }
 
   const cutsMap = new Map<string, string[]>();
@@ -806,29 +724,18 @@ export async function resolveAllPanelJoints(
       const roleA = pA.parameters?.faceRole as FaceRole;
       const roleB = pB.parameters?.faceRole as FaceRole;
 
-      const isAVirtual = !!pA.parameters?.virtualFaceId;
-      const isBVirtual = !!pB.parameters?.virtualFaceId;
-
-      if (skipRoleToRole && !isAVirtual && !isBVirtual) {
-        continue;
-      }
-
       const origA = originalShapes.get(pA.id);
       const origB = originalShapes.get(pB.id);
 
       const winner = determineDominantPanel(pA, pB, jointConfig, virtualFaces);
       if (!winner) {
-        console.log(`  Skip: ${roleA || 'none'}-${roleB || 'none'} no dominant (vfA=${isAVirtual} vfB=${isBVirtual})`);
+        console.log(`  Skip: ${roleA || 'none'}-${roleB || 'none'} no dominant (vfA=${!!pA.parameters?.virtualFaceId} vfB=${!!pB.parameters?.virtualFaceId})`);
         continue;
       }
-      const hasVirtualInPair = isAVirtual || isBVirtual;
-      const hasBazaOffset = (pA.parameters?.bazaOffset || 0) > 0 || (pB.parameters?.bazaOffset || 0) > 0;
 
-      const overlap = (hasVirtualInPair && hasBazaOffset)
-        ? panelsOverlapWithOffset(origA, origB, pA, pB)
-        : panelsOverlap(origA, origB);
+      const overlap = panelsOverlap(origA, origB);
       if (origA && origB && !overlap) {
-        console.log(`  Skip: ${roleA || 'none'}-${roleB || 'none'} no overlap (bazaOffset aware)`);
+        console.log(`  Skip: ${roleA || 'none'}-${roleB || 'none'} no overlap`);
         continue;
       }
 
@@ -845,19 +752,9 @@ export async function resolveAllPanelJoints(
         || state.backPanelBottomExtend > 0;
 
       if (!isBackSubordinate || !grooveDepthActive) {
-        const subordinatePanel = isADominant ? pB : pA;
-        const domOriginal = originalShapes.get(dominantId);
-        const subOriginal = originalShapes.get(subordinateId);
-        const extrudeCovers = domOriginal && subOriginal &&
-          getExtrudeStepCoversJointCut(subordinatePanel, domOriginal, subOriginal);
-
-        if (!extrudeCovers) {
-          const existing = cutsMap.get(subordinateId) || [];
-          existing.push(dominantId);
-          cutsMap.set(subordinateId, existing);
-        } else {
-          console.log(`  Skip cut: ${subordinatePanel.parameters?.faceRole || 'none'} extrude already covers direction from ${isADominant ? roleA : roleB}`);
-        }
+        const existing = cutsMap.get(subordinateId) || [];
+        existing.push(dominantId);
+        cutsMap.set(subordinateId, existing);
       }
 
       if (!isBackSubordinate && roleA && roleB && roleA !== roleB) {
@@ -919,24 +816,9 @@ export async function resolveAllPanelJoints(
 
       if (isCut) {
         const dominantIds = cutsMap.get(panel.id)!;
-        const panelIsVirtual = !!panel.parameters?.virtualFaceId;
         for (const dominantId of dominantIds) {
-          let cuttingShape = extendedShapes.get(dominantId) || originalShapes.get(dominantId);
+          const cuttingShape = extendedShapes.get(dominantId) || originalShapes.get(dominantId);
           if (!cuttingShape) continue;
-
-          if (panelIsVirtual) {
-            const dominantPanel = panels.find(p => p.id === dominantId);
-            const dominantBazaOffset = dominantPanel?.parameters?.bazaOffset || 0;
-            if (dominantBazaOffset > 0) {
-              if (!dominantTouchesSubordinateEdge(cuttingShape, original, dominantBazaOffset)) {
-                continue;
-              }
-              try {
-                cuttingShape = cuttingShape.translate(0, dominantBazaOffset, 0);
-              } catch { /* use untranslated */ }
-            }
-          }
-
           try {
             currentShape = currentShape.cut(cuttingShape);
           } catch (err) {
@@ -976,11 +858,6 @@ export async function resolveAllPanelJoints(
     saveOriginalShapes(panels, parentShapeId);
   }
 
-  if (!skipVirtualFaceUpdate) {
-    updateBaseShapesAfterJoints(parentShapeId, 'role');
-    await reapplyExtrudeStepsForSubset(parentShapeId, 'role');
-  }
-
   applyBazaOffset(parentShapeId, fullSettings.selectedBodyType, fullSettings.bazaHeight);
   await generateFrontBazaPanels(parentShapeId, fullSettings.selectedBodyType, fullSettings.bazaHeight, fullSettings.frontBaseDistance);
 
@@ -1003,7 +880,7 @@ export async function resolveAllPanelJoints(
         );
         if (hasVirtualPanels) {
           await rebuildVirtualFacePanels(parentShapeId, updatedFaces);
-          await resolveAllPanelJoints(parentShapeId, profileId, config, true, true);
+          await resolveAllPanelJoints(parentShapeId, profileId, config, true);
           updateBaseShapesAfterJoints(parentShapeId, 'raycast');
           await reapplyExtrudeStepsForSubset(parentShapeId, 'raycast');
         }
@@ -1026,250 +903,6 @@ export async function restoreAllPanels(parentShapeId: string): Promise<void> {
   removeExistingBazaPanels(parentShapeId);
 }
 
-export async function rebuildAllPanels(parentShapeId: string): Promise<void> {
-  const state = useAppStore.getState();
-  const parentShape = state.shapes.find(s => s.id === parentShapeId);
-  if (!parentShape || !parentShape.replicadShape || !parentShape.geometry) return;
-
-  const facePanels = state.shapes.filter(
-    s => s.type === 'panel' &&
-    s.parameters?.parentShapeId === parentShapeId &&
-    !s.parameters?.isBaza &&
-    !s.parameters?.virtualFaceId
-  );
-  if (facePanels.length === 0) return;
-
-  console.log(`Rebuilding ${facePanels.length} face-based panels for parent ${parentShapeId}...`);
-
-  const { extractFacesFromGeometry, groupCoplanarFaces } = await import('./FaceEditor');
-  const { createPanelFromFace, convertReplicadToThreeGeometry } = await import('./ReplicadService');
-
-  const faces = extractFacesFromGeometry(parentShape.geometry);
-  const faceGroups = groupCoplanarFaces(faces);
-
-  const updates: Array<{ id: string; geometry: any; replicadShape: any; parameters: any }> = [];
-
-  for (const panel of facePanels) {
-    const faceIndex = panel.parameters?.faceIndex;
-    if (faceIndex === undefined) continue;
-
-    if (faceIndex < 0 || faceIndex >= faceGroups.length) continue;
-
-    const parentFacePanels = parentShape.facePanels || {};
-    if (!parentFacePanels[faceIndex]) continue;
-
-    const faceGroup = faceGroups[faceIndex];
-
-    const localVertices: THREE.Vector3[] = [];
-    faceGroup.faceIndices.forEach((idx: number) => {
-      const face = faces[idx];
-      face.vertices.forEach((v: THREE.Vector3) => localVertices.push(v.clone()));
-    });
-
-    const localNormal = faceGroup.normal.clone().normalize();
-    const localBox = new THREE.Box3().setFromPoints(localVertices);
-    const localCenter = new THREE.Vector3();
-    localBox.getCenter(localCenter);
-
-    const panelThickness = panel.parameters?.depth || 18;
-
-    try {
-      const replicadPanel = await createPanelFromFace(
-        parentShape.replicadShape,
-        [localNormal.x, localNormal.y, localNormal.z],
-        [localCenter.x, localCenter.y, localCenter.z],
-        panelThickness
-      );
-
-      if (!replicadPanel) continue;
-
-      const geometry = convertReplicadToThreeGeometry(replicadPanel);
-
-      updates.push({
-        id: panel.id,
-        geometry,
-        replicadShape: replicadPanel,
-        parameters: {
-          ...panel.parameters,
-          originalReplicadShape: null,
-          jointTrimmed: false,
-          baseReplicadShape: panel.parameters?.extrudeSteps?.length > 0 ? replicadPanel : panel.parameters?.baseReplicadShape,
-        }
-      });
-    } catch (error) {
-      console.error(`Failed to rebuild panel ${panel.id}:`, error);
-    }
-  }
-
-  if (updates.length > 0) {
-    useAppStore.setState((st) => ({
-      shapes: st.shapes.map(s => {
-        const update = updates.find(u => u.id === s.id);
-        if (update) {
-          const parent = st.shapes.find(p => p.id === parentShapeId);
-          return {
-            ...s,
-            geometry: update.geometry,
-            replicadShape: update.replicadShape,
-            position: parent ? [...parent.position] as [number, number, number] : s.position,
-            rotation: parent ? parent.rotation : s.rotation,
-            scale: parent ? [...parent.scale] as [number, number, number] : s.scale,
-            parameters: update.parameters,
-          };
-        }
-        return s;
-      })
-    }));
-    console.log(`Rebuilt ${updates.length} face-based panels successfully`);
-  }
-}
-
-export async function remapFaceDataAfterGeometryChange(parentShapeId: string): Promise<void> {
-  const state = useAppStore.getState();
-  const parentShape = state.shapes.find(s => s.id === parentShapeId);
-  if (!parentShape || !parentShape.geometry) return;
-
-  const descriptors = parentShape.faceGroupDescriptors;
-  if (!descriptors || Object.keys(descriptors).length === 0) return;
-
-  const hasAnyFaceData =
-    Object.keys(parentShape.faceRoles || {}).length > 0 ||
-    Object.keys(parentShape.facePanels || {}).length > 0 ||
-    Object.keys(parentShape.faceDescriptions || {}).length > 0;
-
-  if (!hasAnyFaceData) return;
-
-  const { extractFacesFromGeometry, groupCoplanarFaces, createFaceDescriptor } = await import('./FaceEditor');
-
-  const faces = extractFacesFromGeometry(parentShape.geometry);
-  const newFaceGroups = groupCoplanarFaces(faces);
-
-  const newDescs: Array<ReturnType<typeof createFaceDescriptor>> = newFaceGroups.map(group => {
-    const repFace = faces[group.faceIndices[0]];
-    return createFaceDescriptor(repFace, parentShape.geometry);
-  });
-
-  const oldToNew = new Map<number, number>();
-
-  for (const [oldIdxStr, descriptor] of Object.entries(descriptors)) {
-    const oldIdx = parseInt(oldIdxStr);
-    let bestNewIdx = -1;
-    let bestScore = Infinity;
-
-    for (let newIdx = 0; newIdx < newFaceGroups.length; newIdx++) {
-      const newDesc = newDescs[newIdx];
-
-      const sameAxis = descriptor.axisDirection && newDesc.axisDirection === descriptor.axisDirection;
-      const neitherAxis = !descriptor.axisDirection && !newDesc.axisDirection;
-
-      if (!sameAxis && !neitherAxis) continue;
-
-      let score: number;
-      if (sameAxis) {
-        const axis = descriptor.axisDirection!;
-        if (descriptor.axisPosition !== undefined && newDesc.axisPosition !== undefined) {
-          const posDiff = Math.abs(newDesc.axisPosition - descriptor.axisPosition);
-          score = posDiff * 1000;
-        } else {
-          let diff = 0;
-          if (axis === 'x+' || axis === 'x-') {
-            diff = Math.sqrt(
-              Math.pow(newDesc.normalizedCenter[1] - descriptor.normalizedCenter[1], 2) +
-              Math.pow(newDesc.normalizedCenter[2] - descriptor.normalizedCenter[2], 2)
-            );
-          } else if (axis === 'y+' || axis === 'y-') {
-            diff = Math.sqrt(
-              Math.pow(newDesc.normalizedCenter[0] - descriptor.normalizedCenter[0], 2) +
-              Math.pow(newDesc.normalizedCenter[2] - descriptor.normalizedCenter[2], 2)
-            );
-          } else {
-            diff = Math.sqrt(
-              Math.pow(newDesc.normalizedCenter[0] - descriptor.normalizedCenter[0], 2) +
-              Math.pow(newDesc.normalizedCenter[1] - descriptor.normalizedCenter[1], 2)
-            );
-          }
-          score = diff * 10;
-        }
-      } else {
-        const targetNormal = new THREE.Vector3(...descriptor.normal);
-        const repFace = faces[newFaceGroups[newIdx].faceIndices[0]];
-        const dot = targetNormal.dot(repFace.normal);
-        const angle = Math.acos(Math.min(1, Math.max(-1, dot))) * (180 / Math.PI);
-        if (angle > 15) continue;
-        const centerDiff = Math.sqrt(
-          Math.pow(newDesc.normalizedCenter[0] - descriptor.normalizedCenter[0], 2) +
-          Math.pow(newDesc.normalizedCenter[1] - descriptor.normalizedCenter[1], 2) +
-          Math.pow(newDesc.normalizedCenter[2] - descriptor.normalizedCenter[2], 2)
-        );
-        score = angle * 2 + centerDiff * 10;
-      }
-
-      if (score < bestScore) {
-        bestScore = score;
-        bestNewIdx = newIdx;
-      }
-    }
-
-    if (bestNewIdx !== -1) {
-      oldToNew.set(oldIdx, bestNewIdx);
-    }
-  }
-
-  if (oldToNew.size === 0) return;
-
-  const changed = Array.from(oldToNew.entries()).some(([o, n]) => o !== n);
-  if (!changed) return;
-
-  const oldFaceRoles = parentShape.faceRoles || {};
-  const oldFacePanels = parentShape.facePanels || {};
-  const oldFaceDescriptions = parentShape.faceDescriptions || {};
-
-  const newFaceRoles: Record<number, import('../store').FaceRole> = {};
-  const newFacePanels: Record<number, boolean> = {};
-  const newFaceDescriptions: Record<number, string> = {};
-  const newFaceGroupDescriptors: Record<number, import('../store').FaceDescriptor> = {};
-
-  for (const [oldIdxStr] of Object.entries(descriptors)) {
-    const oldIdx = parseInt(oldIdxStr);
-    const newIdx = oldToNew.get(oldIdx) ?? oldIdx;
-
-    if (oldFaceRoles[oldIdx] !== undefined) newFaceRoles[newIdx] = oldFaceRoles[oldIdx];
-    if (oldFacePanels[oldIdx] !== undefined) newFacePanels[newIdx] = oldFacePanels[oldIdx];
-    if (oldFaceDescriptions[oldIdx] !== undefined) newFaceDescriptions[newIdx] = oldFaceDescriptions[oldIdx];
-
-    if (newIdx < newFaceGroups.length) {
-      newFaceGroupDescriptors[newIdx] = newDescs[newIdx];
-    }
-  }
-
-  useAppStore.setState((st) => ({
-    shapes: st.shapes.map(s => {
-      if (s.id === parentShapeId) {
-        return {
-          ...s,
-          faceRoles: newFaceRoles,
-          facePanels: newFacePanels,
-          faceDescriptions: newFaceDescriptions,
-          faceGroupDescriptors: newFaceGroupDescriptors,
-        };
-      }
-      if (s.type === 'panel' && s.parameters?.parentShapeId === parentShapeId && s.parameters?.faceIndex !== undefined) {
-        const oldIdx = s.parameters.faceIndex;
-        const newIdx = oldToNew.get(oldIdx);
-        if (newIdx !== undefined && newIdx !== oldIdx) {
-          return {
-            ...s,
-            parameters: {
-              ...s.parameters,
-              faceIndex: newIdx,
-            }
-          };
-        }
-      }
-      return s;
-    })
-  }));
-}
 
 function clearStaleOriginalShapes(parentShapeId: string) {
   useAppStore.setState((st) => ({
@@ -1293,7 +926,7 @@ function clearStaleOriginalShapes(parentShapeId: string) {
   }));
 }
 
-async function recalculateAndRebuildVirtualFaces(parentShapeId: string, _profileId?: string | null): Promise<void> {
+async function recalculateAndRebuildVirtualFaces(parentShapeId: string, profileId?: string | null): Promise<void> {
   const shapeFaces = useAppStore.getState().virtualFaces.filter(vf => vf.shapeId === parentShapeId);
   if (shapeFaces.length === 0) return;
 
@@ -1314,6 +947,9 @@ async function recalculateAndRebuildVirtualFaces(parentShapeId: string, _profile
   );
   if (hasVirtualPanels) {
     await rebuildVirtualFacePanels(parentShapeId, updatedFaces);
+    if (profileId && profileId !== 'none') {
+      await resolveAllPanelJoints(parentShapeId, profileId, undefined, true);
+    }
   }
 }
 
@@ -1341,42 +977,12 @@ async function reapplyExtrudeStepsForSubset(
 
   for (const panel of extrudePanels) {
     try {
-      const baseBB = panel.parameters.baseReplicadShape?.boundingBox?.bounds;
-      const curBB = panel.replicadShape?.boundingBox?.bounds;
-      console.log(`[reapplyExtrudeSteps:${filter}] Panel ${panel.id} BEFORE: base=${JSON.stringify(baseBB)} replicad=${JSON.stringify(curBB)} steps=${JSON.stringify(panel.parameters.extrudeSteps.map((s: any) => ({ axis: s.axisLabel, val: s.value, fixed: s.isFixed })))}`);
       const result = await rebuildFromSteps(panel, panel.parameters.extrudeSteps, updateShape);
-      const afterPanel = useAppStore.getState().shapes.find(s => s.id === panel.id);
-      const afterBB = afterPanel?.replicadShape?.boundingBox?.bounds;
-      console.log(`[reapplyExtrudeSteps:${filter}] Panel ${panel.id}: rebuildFromSteps returned ${result}. AFTER: replicad=${JSON.stringify(afterBB)}`);
+      console.log(`[reapplyExtrudeSteps:${filter}] Panel ${panel.id}: rebuildFromSteps returned ${result}`);
     } catch (err) {
       console.error(`Failed to reapply extrude steps for panel ${panel.id}:`, err);
     }
   }
-}
-
-function saveExtrudedAsOriginal(parentShapeId: string, filter: 'role' | 'raycast') {
-  useAppStore.setState((st) => ({
-    shapes: st.shapes.map(s => {
-      if (
-        s.type === 'panel' &&
-        s.parameters?.parentShapeId === parentShapeId &&
-        s.parameters?.extrudeSteps?.length > 0 &&
-        s.replicadShape
-      ) {
-        const isVirtual = !!s.parameters?.virtualFaceId;
-        if (filter === 'raycast' && !isVirtual) return s;
-        if (filter === 'role' && isVirtual) return s;
-        return {
-          ...s,
-          parameters: {
-            ...s.parameters,
-            originalReplicadShape: s.replicadShape,
-          },
-        };
-      }
-      return s;
-    }),
-  }));
 }
 
 function updateBaseShapesAfterJoints(parentShapeId: string, filter?: 'role' | 'raycast') {
@@ -1393,15 +999,11 @@ function updateBaseShapesAfterJoints(parentShapeId: string, filter?: 'role' | 'r
           if (filter === 'raycast' && !isVirtual) return s;
           if (filter === 'role' && isVirtual) return s;
         }
-        const newBase = s.parameters?.jointTrimmed && s.replicadShape
-          ? s.replicadShape
-          : (s.parameters?.originalReplicadShape || s.parameters?.baseReplicadShape);
-        if (!newBase) return s;
         return {
           ...s,
           parameters: {
             ...s.parameters,
-            baseReplicadShape: newBase,
+            baseReplicadShape: s.replicadShape,
           },
         };
       }
@@ -1415,8 +1017,6 @@ export async function rebuildAndRecalculatePipeline(
   profileId: string | null
 ): Promise<void> {
   clearStaleOriginalShapes(parentShapeId);
-  await remapFaceDataAfterGeometryChange(parentShapeId);
-  await rebuildAllPanels(parentShapeId);
 
   await recalculateAndRebuildVirtualFaces(parentShapeId, profileId);
 
@@ -1424,13 +1024,9 @@ export async function rebuildAndRecalculatePipeline(
     await resolveAllPanelJoints(parentShapeId, profileId, undefined, true);
   }
 
-  updateBaseShapesAfterJoints(parentShapeId, 'role');
-  await reapplyExtrudeStepsForSubset(parentShapeId, 'role');
-
   updateBaseShapesAfterJoints(parentShapeId, 'raycast');
   await reapplyExtrudeStepsForSubset(parentShapeId, 'raycast');
 }
-
 
 async function rebuildVirtualFacePanels(
   parentShapeId: string,
