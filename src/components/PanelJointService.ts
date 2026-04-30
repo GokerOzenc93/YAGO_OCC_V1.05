@@ -735,7 +735,8 @@ export async function resolveAllPanelJoints(
   parentShapeId: string,
   profileId: string,
   config?: PanelJointConfig,
-  skipVirtualFaceUpdate?: boolean
+  skipVirtualFaceUpdate?: boolean,
+  skipRoleToRole?: boolean
 ): Promise<void> {
   const state = useAppStore.getState();
   const fullSettings = await loadFullProfileSettings(profileId);
@@ -776,12 +777,17 @@ export async function resolveAllPanelJoints(
 
   const originalShapes = new Map<string, any>();
   for (const panel of panels) {
-    originalShapes.set(
-      panel.id,
-      panel.parameters?.originalReplicadShape
-        || panel.parameters?.baseReplicadShape
-        || panel.replicadShape
-    );
+    const isVirtual = !!panel.parameters?.virtualFaceId;
+    if (skipRoleToRole && !isVirtual) {
+      originalShapes.set(panel.id, panel.replicadShape);
+    } else {
+      originalShapes.set(
+        panel.id,
+        panel.parameters?.originalReplicadShape
+          || panel.parameters?.baseReplicadShape
+          || panel.replicadShape
+      );
+    }
   }
 
   const cutsMap = new Map<string, string[]>();
@@ -794,17 +800,21 @@ export async function resolveAllPanelJoints(
       const roleA = pA.parameters?.faceRole as FaceRole;
       const roleB = pB.parameters?.faceRole as FaceRole;
 
+      const isAVirtual = !!pA.parameters?.virtualFaceId;
+      const isBVirtual = !!pB.parameters?.virtualFaceId;
+
+      if (skipRoleToRole && !isAVirtual && !isBVirtual) {
+        continue;
+      }
+
       const origA = originalShapes.get(pA.id);
       const origB = originalShapes.get(pB.id);
 
       const winner = determineDominantPanel(pA, pB, jointConfig, virtualFaces);
       if (!winner) {
-        console.log(`  Skip: ${roleA || 'none'}-${roleB || 'none'} no dominant (vfA=${!!pA.parameters?.virtualFaceId} vfB=${!!pB.parameters?.virtualFaceId})`);
+        console.log(`  Skip: ${roleA || 'none'}-${roleB || 'none'} no dominant (vfA=${isAVirtual} vfB=${isBVirtual})`);
         continue;
       }
-
-      const isAVirtual = !!pA.parameters?.virtualFaceId;
-      const isBVirtual = !!pB.parameters?.virtualFaceId;
       const hasVirtualInPair = isAVirtual || isBVirtual;
       const hasBazaOffset = (pA.parameters?.bazaOffset || 0) > 0 || (pB.parameters?.bazaOffset || 0) > 0;
 
@@ -988,7 +998,7 @@ export async function resolveAllPanelJoints(
         if (hasVirtualPanels) {
           await rebuildVirtualFacePanels(parentShapeId, updatedFaces);
           saveExtrudedAsOriginal(parentShapeId, 'role');
-          await resolveAllPanelJoints(parentShapeId, profileId, config, true);
+          await resolveAllPanelJoints(parentShapeId, profileId, config, true, true);
           updateBaseShapesAfterJoints(parentShapeId, 'raycast');
           await reapplyExtrudeStepsForSubset(parentShapeId, 'raycast');
         }
