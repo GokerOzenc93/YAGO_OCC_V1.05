@@ -858,6 +858,9 @@ export async function resolveAllPanelJoints(
       }
     }
   }
+
+  updateBaseShapesAfterJoints(parentShapeId, 'role');
+  await reapplyExtrudeStepsForSubset(parentShapeId, 'role');
 }
 
 export async function restoreAllPanels(parentShapeId: string): Promise<void> {
