@@ -75,7 +75,6 @@ export interface VirtualFace {
   center:[number,number,number];
   vertices:[number,number,number][];
   role:FaceRole;description:string;hasPanel:boolean;
-  roleSelected?:boolean;
   raycastRecipe?:VirtualFaceRaycastRecipe;
 }
 
@@ -96,6 +95,7 @@ export interface Shape {
   fillets?:FilletInfo[];
   faceRoles?:Record<number,FaceRole>;
   faceDescriptions?:Record<number,string>;
+  facePanels?:Record<number,boolean>;
   faceGroupDescriptors?:Record<number,FaceDescriptor>;
 }
 
