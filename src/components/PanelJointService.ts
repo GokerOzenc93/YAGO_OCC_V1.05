@@ -688,6 +688,49 @@ function batchApplyUpdates(
   }));
 }
 
+function getExtrudeStepCoversJointCut(
+  subordinatePanel: any,
+  dominantShape: any,
+  subordinateShape: any
+): boolean {
+  const steps = subordinatePanel.parameters?.extrudeSteps;
+  if (!steps || steps.length === 0) return false;
+
+  try {
+    const domBB = getReplicadBoundingBox(dominantShape);
+    const subBB = getReplicadBoundingBox(subordinateShape);
+
+    const domSize = [
+      domBB.max[0] - domBB.min[0],
+      domBB.max[1] - domBB.min[1],
+      domBB.max[2] - domBB.min[2],
+    ];
+    const domThicknessAxis = domSize[0] <= domSize[1] && domSize[0] <= domSize[2] ? 0
+      : domSize[1] <= domSize[0] && domSize[1] <= domSize[2] ? 1 : 2;
+
+    const domCenter = (domBB.min[domThicknessAxis] + domBB.max[domThicknessAxis]) / 2;
+    const subCenter = (subBB.min[domThicknessAxis] + subBB.max[domThicknessAxis]) / 2;
+
+    const axisLabels = ['X', 'Y', 'Z'];
+    const cutDirection = domCenter > subCenter
+      ? `${axisLabels[domThicknessAxis]}+`
+      : `${axisLabels[domThicknessAxis]}-`;
+
+    for (const step of steps) {
+      if (step.axisLabel === cutDirection && step.value < 0) {
+        return true;
+      }
+      if (step.axisLabel === cutDirection && step.isFixed) {
+        return true;
+      }
+    }
+  } catch {
+    return false;
+  }
+
+  return false;
+}
+
 export async function resolveAllPanelJoints(
   parentShapeId: string,
   profileId: string,
@@ -786,9 +829,19 @@ export async function resolveAllPanelJoints(
         || state.backPanelBottomExtend > 0;
 
       if (!isBackSubordinate || !grooveDepthActive) {
-        const existing = cutsMap.get(subordinateId) || [];
-        existing.push(dominantId);
-        cutsMap.set(subordinateId, existing);
+        const subordinatePanel = isADominant ? pB : pA;
+        const domOriginal = originalShapes.get(dominantId);
+        const subOriginal = originalShapes.get(subordinateId);
+        const extrudeCovers = domOriginal && subOriginal &&
+          getExtrudeStepCoversJointCut(subordinatePanel, domOriginal, subOriginal);
+
+        if (!extrudeCovers) {
+          const existing = cutsMap.get(subordinateId) || [];
+          existing.push(dominantId);
+          cutsMap.set(subordinateId, existing);
+        } else {
+          console.log(`  Skip cut: ${subordinatePanel.parameters?.faceRole || 'none'} extrude already covers direction from ${isADominant ? roleA : roleB}`);
+        }
       }
 
       if (!isBackSubordinate && roleA && roleB && roleA !== roleB) {
@@ -907,6 +960,11 @@ export async function resolveAllPanelJoints(
     saveOriginalShapes(panels, parentShapeId);
   }
 
+  if (!skipVirtualFaceUpdate) {
+    updateBaseShapesAfterJoints(parentShapeId, 'role');
+    await reapplyExtrudeStepsForSubset(parentShapeId, 'role');
+  }
+
   applyBazaOffset(parentShapeId, fullSettings.selectedBodyType, fullSettings.bazaHeight);
   await generateFrontBazaPanels(parentShapeId, fullSettings.selectedBodyType, fullSettings.bazaHeight, fullSettings.frontBaseDistance);
 
@@ -929,15 +987,13 @@ export async function resolveAllPanelJoints(
         );
         if (hasVirtualPanels) {
           await rebuildVirtualFacePanels(parentShapeId, updatedFaces);
+          saveExtrudedAsOriginal(parentShapeId, 'role');
           await resolveAllPanelJoints(parentShapeId, profileId, config, true);
           updateBaseShapesAfterJoints(parentShapeId, 'raycast');
           await reapplyExtrudeStepsForSubset(parentShapeId, 'raycast');
         }
       }
     }
-
-    updateBaseShapesAfterJoints(parentShapeId, 'role');
-    await reapplyExtrudeStepsForSubset(parentShapeId, 'role');
   }
 }
 
@@ -1222,7 +1278,7 @@ function clearStaleOriginalShapes(parentShapeId: string) {
   }));
 }
 
-async function recalculateAndRebuildVirtualFaces(parentShapeId: string, profileId?: string | null): Promise<void> {
+async function recalculateAndRebuildVirtualFaces(parentShapeId: string, _profileId?: string | null): Promise<void> {
   const shapeFaces = useAppStore.getState().virtualFaces.filter(vf => vf.shapeId === parentShapeId);
   if (shapeFaces.length === 0) return;
 
@@ -1243,9 +1299,6 @@ async function recalculateAndRebuildVirtualFaces(parentShapeId: string, profileI
   );
   if (hasVirtualPanels) {
     await rebuildVirtualFacePanels(parentShapeId, updatedFaces);
-    if (profileId && profileId !== 'none') {
-      await resolveAllPanelJoints(parentShapeId, profileId, undefined, true);
-    }
   }
 }
 
@@ -1279,6 +1332,31 @@ async function reapplyExtrudeStepsForSubset(
       console.error(`Failed to reapply extrude steps for panel ${panel.id}:`, err);
     }
   }
+}
+
+function saveExtrudedAsOriginal(parentShapeId: string, filter: 'role' | 'raycast') {
+  useAppStore.setState((st) => ({
+    shapes: st.shapes.map(s => {
+      if (
+        s.type === 'panel' &&
+        s.parameters?.parentShapeId === parentShapeId &&
+        s.parameters?.extrudeSteps?.length > 0 &&
+        s.replicadShape
+      ) {
+        const isVirtual = !!s.parameters?.virtualFaceId;
+        if (filter === 'raycast' && !isVirtual) return s;
+        if (filter === 'role' && isVirtual) return s;
+        return {
+          ...s,
+          parameters: {
+            ...s.parameters,
+            originalReplicadShape: s.replicadShape,
+          },
+        };
+      }
+      return s;
+    }),
+  }));
 }
 
 function updateBaseShapesAfterJoints(parentShapeId: string, filter?: 'role' | 'raycast') {
@@ -1316,14 +1394,14 @@ export async function rebuildAndRecalculatePipeline(
   await remapFaceDataAfterGeometryChange(parentShapeId);
   await rebuildAllPanels(parentShapeId);
 
+  await recalculateAndRebuildVirtualFaces(parentShapeId, profileId);
+
   if (profileId && profileId !== 'none') {
     await resolveAllPanelJoints(parentShapeId, profileId, undefined, true);
   }
 
   updateBaseShapesAfterJoints(parentShapeId, 'role');
   await reapplyExtrudeStepsForSubset(parentShapeId, 'role');
-
-  await recalculateAndRebuildVirtualFaces(parentShapeId, profileId);
 
   updateBaseShapesAfterJoints(parentShapeId, 'raycast');
   await reapplyExtrudeStepsForSubset(parentShapeId, 'raycast');
