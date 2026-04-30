@@ -615,11 +615,14 @@ function saveOriginalShapes(panels: any[], parentShapeId: string) {
         !s.parameters?.originalReplicadShape &&
         s.replicadShape
       ) {
+        const preExtrude = s.parameters?.extrudeSteps?.length > 0
+          ? s.parameters?.baseReplicadShape
+          : null;
         return {
           ...s,
           parameters: {
             ...s.parameters,
-            originalReplicadShape: s.replicadShape,
+            originalReplicadShape: preExtrude || s.replicadShape,
           },
         };
       }
@@ -675,11 +678,14 @@ function batchApplyUpdates(
         !s.parameters?.originalReplicadShape &&
         s.replicadShape
       ) {
+        const preExtrude = s.parameters?.extrudeSteps?.length > 0
+          ? s.parameters?.baseReplicadShape
+          : null;
         return {
           ...s,
           parameters: {
             ...s.parameters,
-            originalReplicadShape: s.replicadShape,
+            originalReplicadShape: preExtrude || s.replicadShape,
           },
         };
       }
@@ -1335,8 +1341,13 @@ async function reapplyExtrudeStepsForSubset(
 
   for (const panel of extrudePanels) {
     try {
+      const baseBB = panel.parameters.baseReplicadShape?.boundingBox?.bounds;
+      const curBB = panel.replicadShape?.boundingBox?.bounds;
+      console.log(`[reapplyExtrudeSteps:${filter}] Panel ${panel.id} BEFORE: base=${JSON.stringify(baseBB)} replicad=${JSON.stringify(curBB)} steps=${JSON.stringify(panel.parameters.extrudeSteps.map((s: any) => ({ axis: s.axisLabel, val: s.value, fixed: s.isFixed })))}`);
       const result = await rebuildFromSteps(panel, panel.parameters.extrudeSteps, updateShape);
-      console.log(`[reapplyExtrudeSteps:${filter}] Panel ${panel.id}: rebuildFromSteps returned ${result}`);
+      const afterPanel = useAppStore.getState().shapes.find(s => s.id === panel.id);
+      const afterBB = afterPanel?.replicadShape?.boundingBox?.bounds;
+      console.log(`[reapplyExtrudeSteps:${filter}] Panel ${panel.id}: rebuildFromSteps returned ${result}. AFTER: replicad=${JSON.stringify(afterBB)}`);
     } catch (err) {
       console.error(`Failed to reapply extrude steps for panel ${panel.id}:`, err);
     }
@@ -1382,9 +1393,10 @@ function updateBaseShapesAfterJoints(parentShapeId: string, filter?: 'role' | 'r
           if (filter === 'raycast' && !isVirtual) return s;
           if (filter === 'role' && isVirtual) return s;
         }
-        const newBase = s.parameters?.jointTrimmed
+        const newBase = s.parameters?.jointTrimmed && s.replicadShape
           ? s.replicadShape
-          : (s.parameters?.originalReplicadShape || s.parameters?.baseReplicadShape || s.replicadShape);
+          : (s.parameters?.originalReplicadShape || s.parameters?.baseReplicadShape);
+        if (!newBase) return s;
         return {
           ...s,
           parameters: {
