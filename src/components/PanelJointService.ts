@@ -128,17 +128,14 @@ function getThicknessFaceTouch(panelA: any, panelB: any): 'A' | 'B' | null {
     const sizeB = [bbB.max[0]-bbB.min[0], bbB.max[1]-bbB.min[1], bbB.max[2]-bbB.min[2]];
     const tA = sizeA.indexOf(Math.min(...sizeA));
     const tB = sizeB.indexOf(Math.min(...sizeB));
+    if (tA === tB) return null;
     const tol = 0.5;
     const overlapsOn = (ax: number) =>
       bbA.min[ax] < bbB.max[ax] - tol && bbA.max[ax] > bbB.min[ax] + tol;
     const touchesOn = (ax: number) =>
       Math.abs(bbA.max[ax] - bbB.min[ax]) < tol || Math.abs(bbB.max[ax] - bbA.min[ax]) < tol;
-    // A's thickness face touches B's plane face (and they overlap on other axes)
-    const aTouchesB = touchesOn(tA) && tA !== tB &&
-      [0,1,2].filter(a => a !== tA).every(a => overlapsOn(a));
-    const bTouchesA = touchesOn(tB) && tA !== tB &&
-      [0,1,2].filter(a => a !== tB).every(a => overlapsOn(a));
-    // If A's thickness face touches B's flat face, B is dominant (A butts into B)
+    const aTouchesB = touchesOn(tA) && [0,1,2].filter(a => a !== tA).every(a => overlapsOn(a));
+    const bTouchesA = touchesOn(tB) && [0,1,2].filter(a => a !== tB).every(a => overlapsOn(a));
     if (aTouchesB && !bTouchesA) return 'B';
     if (bTouchesA && !aTouchesB) return 'A';
     return null;
@@ -173,11 +170,11 @@ function determineDominantPanel(
     }
   }
 
-  const thicknessWinner = getThicknessFaceTouch(panelA, panelB);
-  if (thicknessWinner) return thicknessWinner;
-
   if (!isAVirtual && isBVirtual) return 'A';
   if (isAVirtual && !isBVirtual) return 'B';
+
+  const thicknessWinner = getThicknessFaceTouch(panelA, panelB);
+  if (thicknessWinner) return thicknessWinner;
 
   if (isAVirtual && isBVirtual) {
     const orderA = getVirtualFaceOrder(panelA, virtualFaces);
