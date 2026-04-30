@@ -519,8 +519,7 @@ function applyBazaOffset(parentShapeId: string, selectedBodyType: string | null,
   const hasBottomPanels = state.shapes.some(
     s => s.type === 'panel' &&
     s.parameters?.parentShapeId === parentShapeId &&
-    s.parameters?.faceRole === 'Bottom' &&
-    !s.parameters?.virtualFaceId
+    s.parameters?.faceRole === 'Bottom'
   );
   if (!hasBottomPanels) return;
 
@@ -530,8 +529,7 @@ function applyBazaOffset(parentShapeId: string, selectedBodyType: string | null,
     shapes: st.shapes.map(s => {
       if (s.type === 'panel' &&
           s.parameters?.parentShapeId === parentShapeId &&
-          s.parameters?.faceRole === 'Bottom' &&
-          !s.parameters?.virtualFaceId) {
+          s.parameters?.faceRole === 'Bottom') {
         const parent = st.shapes.find(p => p.id === parentShapeId);
         if (!parent) return s;
         return {
