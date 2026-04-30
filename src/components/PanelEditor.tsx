@@ -268,9 +268,10 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
   const panelContent = selectedShape ? (
     <div className="space-y-2">
       <div className="flex items-center gap-2">
-        <span className="text-[11px] font-medium text-stone-500 whitespace-nowrap">Profile</span>
-        {loading ? <span className="text-[11px] text-stone-300">...</span>
-          : <select value={selectedProfile} onChange={e => setSelectedProfile(e.target.value)} className="flex-1 px-1.5 py-0.5 text-[11px] bg-transparent text-stone-700 border-b border-transparent hover:border-stone-300 focus:border-orange-400 rounded-none outline-none">
+        <label className="text-xs font-semibold text-stone-600 whitespace-nowrap">Select Body Profile</label>
+        {loading ? <div className="px-2 py-0.5 text-xs text-stone-400 bg-white border border-stone-300 rounded" style={{ width: '30mm' }}>Loading...</div>
+          : <select value={selectedProfile} onChange={e => setSelectedProfile(e.target.value)}
+              className="px-2 py-0.5 text-xs bg-white text-stone-700 border border-stone-300 rounded focus:outline-none focus:border-orange-400" style={{ width: '30mm' }}>
               <option value="none">None</option>{profiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select>}
       </div>
       {(() => {
@@ -392,7 +393,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         <div className="flex items-center gap-2">
           {[['W',dims.primary],['H',dims.secondary],['T',dims.thickness]].map(([l,v],idx) => (
             <React.Fragment key={l as string}>{idx>0&&<div className="w-px h-4 bg-orange-200 shrink-0"/>}
-              <div className="flex items-center gap-1.5"><span className="text-[9px] text-stone-400 font-medium uppercase tracking-wide">{l}</span>
+              <div className="flex items-center gap-1.5"><span className="text-xs text-stone-400 font-medium uppercase tracking-wide">{l}</span>
                 <span className="text-xs font-bold text-slate-800 font-mono">{v}</span></div></React.Fragment>))}
           {isExt && <>
             <div className="w-px h-4 bg-orange-200 shrink-0"/>
@@ -400,7 +401,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
               className={`w-14 h-6 px-1 text-xs font-mono text-center border rounded focus:outline-none focus:border-orange-500 ${hf ? 'bg-white border-orange-300' : 'bg-orange-100 border-orange-200 text-orange-300 cursor-not-allowed'}`} />
             <div className={`flex rounded overflow-hidden border shrink-0 ${hf ? 'border-orange-300' : 'border-orange-200 opacity-40'}`}>
               {[true,false].map(f => <button key={String(f)} disabled={!hf} onClick={() => setFaceExtrudeFixedMode(f)}
-                className={`px-1.5 h-6 text-[10px] font-semibold transition-colors ${!f?'border-l border-orange-300':''} ${faceExtrudeFixedMode===f?'bg-orange-500 text-white':'bg-white text-orange-600 hover:bg-orange-50'}`}>{f?'Fix':'Din'}</button>)}
+                className={`px-1.5 h-6 text-xs font-semibold transition-colors ${!f?'border-l border-orange-300':''} ${faceExtrudeFixedMode===f?'bg-orange-500 text-white':'bg-white text-orange-600 hover:bg-orange-50'}`}>{f?'Fix':'Din'}</button>)}
             </div></>}
           <div className="ml-auto flex items-center gap-1">
             <button onClick={e => { stop(e); faceExtrudeMode ? setFaceExtrudeMode(false) : cpId && (setFaceExtrudeTargetPanelId(cpId), setFaceExtrudeMode(true)); }}
@@ -417,17 +418,17 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         </div>
         {steps.length > 0 && <div className="mt-1.5 border-t border-orange-200 pt-1.5 space-y-1">
           {steps.map((s: any) => <div key={s.id} className="flex items-center gap-1.5 group">
-            <span className="text-[9px] font-bold text-orange-600 bg-orange-200 rounded px-1 py-0.5 font-mono min-w-[24px] text-center">{s.axisLabel}</span>
+            <span className="text-xs font-bold text-orange-600 bg-orange-200 rounded px-1 py-0.5 font-mono min-w-[24px] text-center">{s.axisLabel}</span>
             {editingStepId === s.id ? <>
               <input type="text" inputMode="numeric" autoFocus value={editingStepValue} onChange={e => setEditingStepValue(Number(e.target.value)||0)}
                 onKeyDown={e => { if (e.key==='Enter') saveStep(cpId,s.id,editingStepValue); else if (e.key==='Escape') setEditingStepId(null); }}
-                className="w-14 h-5 px-1 text-[10px] font-mono text-center border border-orange-400 rounded bg-white focus:outline-none focus:border-orange-500"/>
-              <span className="text-[9px] text-stone-400">{s.isFixed?'Fix':'Din'}</span>
+                className="w-14 h-5 px-1 text-xs font-mono text-center border border-orange-400 rounded bg-white focus:outline-none focus:border-orange-500"/>
+              <span className="text-xs text-stone-400">{s.isFixed?'Fix':'Din'}</span>
               <button onClick={() => saveStep(cpId,s.id,editingStepValue)} className="flex items-center justify-center w-5 h-5 rounded border border-green-400 bg-green-500 text-white hover:bg-green-600 transition-colors" title="Kaydet"><Check size={10}/></button>
               <button onClick={() => setEditingStepId(null)} className="flex items-center justify-center w-5 h-5 rounded border border-stone-300 bg-white text-stone-500 hover:bg-stone-100 transition-colors" title="Iptal"><X size={10}/></button>
             </> : <>
-              <span className="text-[10px] font-mono text-slate-700 font-semibold">{s.value}</span>
-              <span className="text-[9px] text-stone-400">{s.isFixed?'Fix':'Din'}</span>
+              <span className="text-xs font-mono text-slate-700 font-semibold">{s.value}</span>
+              <span className="text-xs text-stone-400">{s.isFixed?'Fix':'Din'}</span>
               <div className="ml-auto flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
                 <button onClick={() => { setEditingStepId(s.id); setEditingStepValue(s.value); }}
                   className="flex items-center justify-center w-5 h-5 rounded border border-orange-300 bg-white text-orange-500 hover:bg-orange-100 transition-colors" title="Duzenle"><Pencil size={9}/></button>
@@ -452,7 +453,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
   return (
     <div className="fixed bg-white rounded-md shadow-lg border border-stone-200 z-50" style={{ left: `${position.x}px`, top: `${position.y}px`, width: '370px' }}>
       <div className="flex items-center justify-between px-2.5 py-1.5 bg-stone-50 border-b border-stone-200 rounded-t-md select-none" style={{ cursor: isDragging ? 'grabbing' : 'grab' }} onMouseDown={handleMouseDown}>
-        <div className="flex items-center gap-1.5"><GripVertical size={12} className="text-stone-300"/><span className="text-xs font-semibold text-stone-600 tracking-wide uppercase">Panel Editor</span></div>
+        <div className="flex items-center gap-1.5"><GripVertical size={12} className="text-stone-300"/><span className="text-xs font-semibold text-stone-600 tracking-wide uppercase">Parameters</span></div>
         <div className="flex items-center gap-1">{panelToolbar}<button onClick={onClose} className="p-0.5 hover:bg-stone-200 rounded transition-colors"><X size={12} className="text-stone-400"/></button></div>
       </div>
       <div className="px-2.5 py-2 max-h-[calc(100vh-200px)] overflow-y-auto">{panelContent}</div>

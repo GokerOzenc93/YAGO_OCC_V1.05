@@ -554,8 +554,8 @@ export function ParametersPanel({ isOpen, onClose, embedded = false }: Parameter
         </div>
       )}
 
-      <button onClick={handleApplyChanges} className="w-full mt-3 px-3 py-1.5 bg-stone-800 text-white text-[11px] font-medium rounded-md hover:bg-stone-700 transition-colors flex items-center justify-center gap-1.5">
-        <Check size={11} /> Apply
+      <button onClick={handleApplyChanges} className="w-full mt-3 px-3 py-1.5 bg-orange-500 text-white text-xs font-medium rounded hover:bg-orange-600 transition-colors flex items-center justify-center gap-1.5">
+        <Check size={12} /> Apply Changes
       </button>
     </div>
   ) : (
