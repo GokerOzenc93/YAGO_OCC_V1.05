@@ -263,7 +263,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
             const g = convertReplicadToThreeGeometry(rp), r = geoAxes(g); if (!r) return;
             const pa = r.axes.slice(1).map(a => a.i).sort((a, b) => a - b), { def, alt } = roleBasedAxes(pa, vf.role), s = [r.size.x, r.size.y, r.size.z];
             addShape(makePanelBase(selectedShape, { geometry: g, replicadShape: rp,
-              parameters: { width: s[def], height: s[alt], depth: PANEL_THICKNESS, parentShapeId: sid, faceIndex: -(vi+1), faceRole: vf.role, virtualFaceId: vf.id, arrowRotated: false } }));
+              parameters: { width: s[def], height: s[alt], depth: PANEL_THICKNESS, parentShapeId: sid, faceIndex: -(vi+1), faceRole: vf.role, virtualFaceId: vf.id, arrowRotated: false, roleless: vf.roleSelected && vf.role === null } }));
             updateVirtualFace(vf.id, { hasPanel: true });
           } catch (e) { console.error('Failed to create virtual panel:', e); }
         };
@@ -271,13 +271,15 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         const roleSel = (val: string, onChange: (v: string) => void, bc = 'border-transparent') => (
           <select value={val} disabled={isOff} onClick={stop} onChange={e => onChange(e.target.value)} style={{ width: '28mm' }}
             className={`px-1 py-0.5 text-xs border-b rounded-none bg-transparent ${isOff ? 'text-stone-400 border-stone-200' : `text-gray-700 ${bc} hover:border-gray-300 focus:border-orange-400`}`}>
-            <option value="">—</option>{ROLE_OPTIONS.map(r => <option key={r} value={r}>{r}</option>)}</select>
+            <option value="">—</option>{ROLE_OPTIONS.map(r => <option key={r} value={r}>{r}</option>)}<option value="__none__">Rolsüz</option></select>
         );
         return (
           <div className={`space-y-0 pt-2 border-t border-stone-200 ${isOff ? 'opacity-40 pointer-events-none' : ''}`}>
             {resolving && <div className="text-xs font-normal text-orange-500 animate-pulse mb-1">resolving joints...</div>}
             {svf.map((vf, vi) => {
               const vp = findVPanel(shapes, sid, vf.id), ar = vp?.parameters?.arrowRotated||false, sel = selectedPanelRow === `vf-${vf.id}`;
+              const roleChosen = !!vf.roleSelected;
+              const selVal = roleChosen ? (vf.role || '__none__') : '';
               const rc = () => { if (vf.hasPanel) setSelectedPanelRow(`vf-${vf.id}`, null, sid); };
               return (
                 <div key={vf.id} className={`flex w-fit gap-1 items-center py-0.5 px-1 rounded transition-colors ${sel ? 'bg-orange-50 ring-1 ring-orange-300' : 'hover:bg-stone-50'} ${vf.hasPanel ? 'cursor-pointer' : ''}`}
@@ -285,17 +287,19 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                   <input type="radio" name="ps" checked={sel} disabled={isOff||!vf.hasPanel} onChange={e => { stop(e); rc(); }}
                     className={`w-3.5 h-3.5 ${isOff||!vf.hasPanel ? 'text-stone-300 cursor-not-allowed' : 'text-orange-500 focus:ring-orange-400 cursor-pointer'}`} onClick={stop} />
                   <span className="w-8 text-xs font-mono font-bold text-center text-green-700 select-none" onClick={stop}>V{vi+1}</span>
-                  {roleSel(vf.role||'', async v => {
-                    const nr = v===''?null:v as FaceRole; updateVirtualFace(vf.id, { role: nr });
-                    if (vp) { updateShape(vp.id, { parameters: { ...vp.parameters, faceRole: nr } }); await rebuildIfActive(sid); }
+                  {roleSel(selVal, async v => {
+                    if (v === '') { updateVirtualFace(vf.id, { role: null, roleSelected: false }); if (vp) { updateShape(vp.id, { parameters: { ...vp.parameters, faceRole: null, roleless: false } }); await rebuildIfActive(sid); } return; }
+                    const nr: FaceRole = v === '__none__' ? null : (v as FaceRole);
+                    updateVirtualFace(vf.id, { role: nr, roleSelected: true });
+                    if (vp) { updateShape(vp.id, { parameters: { ...vp.parameters, faceRole: nr, roleless: v === '__none__' } }); await rebuildIfActive(sid); }
                   }, 'border-transparent')}
                   <input type="text" value={vf.description||''} disabled={isOff} onClick={stop} onChange={e => updateVirtualFace(vf.id, { description: e.target.value })}
                     placeholder="note" style={{ width: '32mm' }}
                     className={`px-1 py-0.5 text-xs bg-transparent border-b rounded-none ${isOff ? 'text-stone-400 border-stone-200 placeholder:text-stone-300' : 'text-gray-600 border-transparent hover:border-gray-300 focus:border-orange-400 placeholder:text-stone-300'}`} />
                   <div className="ml-1 flex items-center gap-0.5">
-                    <input type="checkbox" checked={vf.hasPanel} disabled={isOff} onClick={stop}
+                    <input type="checkbox" checked={vf.hasPanel} disabled={isOff||!roleChosen} onClick={stop}
                       onChange={async () => { if (vf.hasPanel) removeVP(vf.id); else { await createVP(vf.id, vi); await resolveIfActive(sid); } }}
-                      className={`w-3.5 h-3.5 rounded ${isOff ? 'text-stone-300 cursor-not-allowed' : 'text-green-500 focus:ring-green-400 cursor-pointer'}`} title={`Toggle virtual face V${vi+1}`} />
+                      className={`w-3.5 h-3.5 rounded ${isOff||!roleChosen ? 'text-stone-300 cursor-not-allowed' : 'text-green-500 focus:ring-green-400 cursor-pointer'}`} title={roleChosen ? `Toggle virtual face V${vi+1}` : 'Önce rol seçin'} />
                     <button disabled={isOff||!vf.hasPanel} onClick={e => { stop(e); toggleArrow(vp); }}
                       className={`p-0.5 rounded transition-colors ${isOff||!vf.hasPanel ? 'text-stone-300 cursor-not-allowed' : ar ? 'text-blue-500' : 'text-stone-300 hover:text-stone-500'}`}
                       title="Rotate arrow direction"><RotateCw size={12} /></button>

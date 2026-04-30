@@ -75,6 +75,7 @@ export interface VirtualFace {
   center:[number,number,number];
   vertices:[number,number,number][];
   role:FaceRole;description:string;hasPanel:boolean;
+  roleSelected?:boolean;
   raycastRecipe?:VirtualFaceRaycastRecipe;
 }
 

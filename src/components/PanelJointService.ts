@@ -120,6 +120,33 @@ function arePanelsCoplanar(panelA: any, panelB: any, virtualFaces: any[]): boole
   return planeDist < 2;
 }
 
+function getThicknessFaceTouch(panelA: any, panelB: any): 'A' | 'B' | null {
+  try {
+    const bbA = getReplicadBoundingBox(panelA.parameters?.originalReplicadShape || panelA.replicadShape);
+    const bbB = getReplicadBoundingBox(panelB.parameters?.originalReplicadShape || panelB.replicadShape);
+    const sizeA = [bbA.max[0]-bbA.min[0], bbA.max[1]-bbA.min[1], bbA.max[2]-bbA.min[2]];
+    const sizeB = [bbB.max[0]-bbB.min[0], bbB.max[1]-bbB.min[1], bbB.max[2]-bbB.min[2]];
+    const tA = sizeA.indexOf(Math.min(...sizeA));
+    const tB = sizeB.indexOf(Math.min(...sizeB));
+    const tol = 0.5;
+    const overlapsOn = (ax: number) =>
+      bbA.min[ax] < bbB.max[ax] - tol && bbA.max[ax] > bbB.min[ax] + tol;
+    const touchesOn = (ax: number) =>
+      Math.abs(bbA.max[ax] - bbB.min[ax]) < tol || Math.abs(bbB.max[ax] - bbA.min[ax]) < tol;
+    // A's thickness face touches B's plane face (and they overlap on other axes)
+    const aTouchesB = touchesOn(tA) && tA !== tB &&
+      [0,1,2].filter(a => a !== tA).every(a => overlapsOn(a));
+    const bTouchesA = touchesOn(tB) && tA !== tB &&
+      [0,1,2].filter(a => a !== tB).every(a => overlapsOn(a));
+    // If A's thickness face touches B's flat face, B is dominant (A butts into B)
+    if (aTouchesB && !bTouchesA) return 'B';
+    if (bTouchesA && !aTouchesB) return 'A';
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function determineDominantPanel(
   panelA: any,
   panelB: any,
@@ -130,6 +157,10 @@ function determineDominantPanel(
   const roleB = panelB.parameters?.faceRole as FaceRole;
   const isAVirtual = !!panelA.parameters?.virtualFaceId;
   const isBVirtual = !!panelB.parameters?.virtualFaceId;
+  const isARoleless = !!panelA.parameters?.roleless;
+  const isBRoleless = !!panelB.parameters?.roleless;
+
+  if (isARoleless || isBRoleless) return null;
 
   if (arePanelsCoplanar(panelA, panelB, virtualFaces)) {
     return null;
@@ -141,6 +172,9 @@ function determineDominantPanel(
       return roleDominant === roleA ? 'A' : 'B';
     }
   }
+
+  const thicknessWinner = getThicknessFaceTouch(panelA, panelB);
+  if (thicknessWinner) return thicknessWinner;
 
   if (!isAVirtual && isBVirtual) return 'A';
   if (isAVirtual && !isBVirtual) return 'B';
