@@ -410,8 +410,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
   const parentShapeId        = isPanel ? shape.parameters?.parentShapeId : null;
   const isParentRebuilding   = parentShapeId ? rebuildingShapeIds.has(parentShapeId) : false;
 
-  const hasPanels = (shape.facePanels && Object.keys(shape.facePanels).length > 0) ||
-    shapes.some(s => s.type === 'panel' && s.parameters?.parentShapeId === shape.id);
+  const hasPanels = shapes.some(s => s.type === 'panel' && s.parameters?.parentShapeId === shape.id);
   const hasFillets = shape.fillets && shape.fillets.length > 0;
 
   const isParentSelected = isPanel && shape.parameters?.parentShapeId === selectedShapeId;

@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { X, GripVertical, RotateCw, Trash2, RefreshCw, MoveVertical, Check, Pencil } from 'lucide-react';
+import { X, GripVertical, RotateCw, Trash2, MoveVertical, Check, Pencil } from 'lucide-react';
 import { globalSettingsService, faceLabelRoleDefaultsService, GlobalSettingsProfile } from './GlobalSettingsDatabase';
 import { useAppStore } from '../store';
 import type { FaceRole } from '../store';
-import { extractFacesFromGeometry, groupCoplanarFaces, createFaceDescriptor, FaceData, CoplanarFaceGroup } from './FaceEditor';
+import { extractFacesFromGeometry, groupCoplanarFaces, createFaceDescriptor, CoplanarFaceGroup } from './FaceEditor';
 import type { FaceDescriptor } from '../store';
 import { resolveAllPanelJoints, restoreAllPanels, rebuildAndRecalculatePipeline } from './PanelJointService';
 import { findExistingStepForFace } from './FaceExtrudeService';
@@ -105,7 +105,6 @@ function buildLabels(groups: CoplanarFaceGroup[], axis: Map<string, number[]>, s
   return { labels, order };
 }
 
-const findPanel = (shapes: any[], pid: string, fi: number) => shapes.find(s => s.type === 'panel' && s.parameters?.parentShapeId === pid && s.parameters?.faceIndex === fi && !s.parameters?.extraRowId);
 const findVPanel = (shapes: any[], pid: string, vfId: string) => shapes.find(s => s.type === 'panel' && s.parameters?.parentShapeId === pid && s.parameters?.virtualFaceId === vfId);
 
 function makePanelBase(shape: any, extra: Record<string, any>) {
@@ -156,7 +155,6 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
 
   const activePanelId = useMemo(() => {
     if (!selectedShape || selectedPanelRow === null) return null;
-    if (typeof selectedPanelRow === 'number') return findPanel(shapes, selectedShape.id, selectedPanelRow)?.id || null;
     if (typeof selectedPanelRow === 'string' && selectedPanelRow.startsWith('vf-'))
       return findVPanel(shapes, selectedShape.id, selectedPanelRow.replace('vf-', ''))?.id || null;
     return null;
@@ -216,17 +214,6 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
 
   const loadProfiles = async () => { try { setLoading(true); setProfiles(await globalSettingsService.listProfiles()); } catch (e) { console.error('Failed to load profiles:', e); } finally { setLoading(false); } };
 
-  const createPanelForFace = async (fg: CoplanarFaceGroup, faces: FaceData[], fi: number) => {
-    if (!selectedShape?.replicadShape) return;
-    try {
-      const verts: THREE.Vector3[] = []; fg.faceIndices.forEach(idx => faces[idx].vertices.forEach(v => verts.push(v.clone())));
-      const n = fg.normal.clone().normalize(), center = new THREE.Vector3(); new THREE.Box3().setFromPoints(verts).getCenter(center);
-      const { createPanelFromFace, convertReplicadToThreeGeometry } = await import('./ReplicadService');
-      const rp = await createPanelFromFace(selectedShape.replicadShape, [n.x,n.y,n.z], [center.x,center.y,center.z], PANEL_THICKNESS, null); if (!rp) return;
-      addShape(makePanelBase(selectedShape, { geometry: convertReplicadToThreeGeometry(rp), replicadShape: rp,
-        parameters: { width: 0, height: 0, depth: PANEL_THICKNESS, parentShapeId: selectedShape.id, faceIndex: fi, faceRole: selectedShape.faceRoles?.[fi] } }));
-    } catch (e) { console.error('Failed to create panel:', e); }
-  };
 
   const handleMouseDown = (e: React.MouseEvent) => { e.preventDefault(); setIsDragging(true); setDragOffset({ x: e.clientX - position.x, y: e.clientY - position.y }); };
   useEffect(() => {
@@ -277,17 +264,11 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       {(() => {
         const geo = selectedShape.geometry; if (!geo) return null;
         const faces = extractFacesFromGeometry(geo), faceGroups = groupCoplanarFaces(faces);
-        const faceRoles = selectedShape.faceRoles || {}, faceDescs = selectedShape.faceDescriptions || {}, facePanels = selectedShape.facePanels || {};
+        const faceRoles = selectedShape.faceRoles || {}, faceDescs = selectedShape.faceDescriptions || {};
         const isOff = selectedProfile === 'none', sid = selectedShape.id;
         const buildDesc = (): Record<number, FaceDescriptor> => {
           const d: Record<number, FaceDescriptor> = { ...(selectedShape.faceGroupDescriptors || {}) };
           faceGroups.forEach((g, gi) => { const f = faces[g.faceIndices[0]]; if (f) d[gi] = createFaceDescriptor(f, geo); }); return d;
-        };
-        const handleToggle = async (fi: number) => {
-          if (isOff) return; const fp = { ...facePanels };
-          if (fp[fi]) { delete fp[fi]; const p = findPanel(shapes, sid, fi); if (p) useAppStore.getState().deleteShape(p.id); }
-          else { fp[fi] = true; await createPanelForFace(faceGroups[fi], faces, fi); }
-          updateShape(sid, { facePanels: fp, faceGroupDescriptors: buildDesc() }); await resolveIfActive(sid);
         };
         const svf = virtualFaces.filter(vf => vf.shapeId === sid);
         const createVP = async (_: string, vi: number) => {
@@ -315,32 +296,20 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
           <div className={`space-y-0 pt-2 border-t border-stone-200 ${isOff ? 'opacity-40 pointer-events-none' : ''}`}>
             {resolving && <div className="text-xs font-normal text-orange-500 animate-pulse mb-1">resolving joints...</div>}
             {order.map(i => {
-              const sel = selectedPanelRow === i, fl = fgl.get(i), lt = fl?.label ?? `${i+1}`, lc = fl?.color ?? '#1a1a1a', hp = !!facePanels[i];
+              const fl = fgl.get(i), lt = fl?.label ?? `${i+1}`, lc = fl?.color ?? '#1a1a1a';
               return (
                 <div key={`f-${i}`} ref={el => { if (el) rowRefs.current.set(i, el); else rowRefs.current.delete(i); }}
-                  className={`flex w-fit gap-1 items-center py-0.5 px-1 rounded transition-colors ${sel ? 'bg-orange-50 ring-1 ring-orange-300' : 'hover:bg-stone-50'} ${hp ? 'cursor-pointer' : ''}`}
-                  onClick={e => { stop(e); if (hp) setSelectedPanelRow(i, null, sid); }}>
-                  <input type="radio" name="ps" checked={sel} disabled={isOff||!hp} onChange={e => { stop(e); setSelectedPanelRow(i,null,sid); }}
-                    className={`w-3.5 h-3.5 ${isOff||!hp ? 'text-stone-300 cursor-not-allowed' : 'text-orange-500 focus:ring-orange-400 cursor-pointer'}`} onClick={stop} />
+                  className="flex w-fit gap-1 items-center py-0.5 px-1 rounded transition-colors hover:bg-stone-50">
                   <span style={isOff ? undefined : { color: lc }} className="w-8 text-xs font-mono font-bold text-center select-none" onClick={stop}>{lt}</span>
                   {roleSel(faceRoles[i]||'', async v => {
                     const nr = v===''?null:v as FaceRole, nfr={...faceRoles,[i]:nr}; if(!nr) delete nfr[i];
                     updateShape(sid, { faceRoles: nfr, faceGroupDescriptors: buildDesc() });
                     if (nr && lt && !lt.startsWith('S') && !lt.startsWith('F')) faceLabelRoleDefaultsService.upsert(lt, nr);
-                    const ps = findPanel(shapes, sid, i);
-                    if (ps) { updateShape(ps.id, { parameters: { ...ps.parameters, faceRole: nr } }); await rebuildIfActive(sid); }
                   })}
                   <input type="text" value={faceDescs[i]||''} disabled={isOff} onClick={stop}
                     onChange={e => updateShape(sid, { faceDescriptions: { ...faceDescs, [i]: e.target.value }, faceGroupDescriptors: buildDesc() })}
                     placeholder="note" style={{ width: '32mm' }}
                     className={`px-1 py-0.5 text-xs bg-transparent border-b rounded-none ${isOff ? 'text-stone-400 border-stone-200 placeholder:text-stone-300' : 'text-gray-600 border-transparent hover:border-gray-300 focus:border-orange-400 placeholder:text-stone-300'}`} />
-                  <div className="ml-1 flex items-center gap-0.5">
-                    <input type="checkbox" checked={hp} disabled={isOff} onClick={stop} onChange={() => handleToggle(i)}
-                      className={`w-3.5 h-3.5 rounded ${isOff ? 'text-stone-300 cursor-not-allowed' : 'text-green-500 focus:ring-green-400 cursor-pointer'}`} title={`Toggle panel for face ${lt}`} />
-                    <button disabled={isOff||!hp} onClick={e => { stop(e); toggleArrow(findPanel(shapes, sid, i)); }}
-                      className={`p-0.5 rounded transition-colors ${isOff||!hp ? 'text-stone-300 cursor-not-allowed' : findPanel(shapes,sid,i)?.parameters?.arrowRotated ? 'text-blue-500' : 'text-stone-300 hover:text-stone-500'}`}
-                      title="Rotate arrow direction"><RotateCw size={12} /></button>
-                  </div>
                 </div>);
             })}
             {svf.map((vf, vi) => {
@@ -378,10 +347,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
 
   const dimsSection = selectedShape && selectedPanelRow !== null && (() => {
     let dims: Dims | null = null, cpId: string | null = null;
-    if (typeof selectedPanelRow === 'number') {
-      const ps = findPanel(shapes, selectedShape.id, selectedPanelRow); cpId = ps?.id||null;
-      if (ps?.geometry) dims = getDimsFromGeo(ps.geometry, ps.parameters?.faceRole, ps.parameters?.arrowRotated);
-    } else if (typeof selectedPanelRow === 'string' && selectedPanelRow.startsWith('vf-')) {
+    if (typeof selectedPanelRow === 'string' && selectedPanelRow.startsWith('vf-')) {
       const vp = findVPanel(shapes, selectedShape.id, selectedPanelRow.replace('vf-','')); cpId = vp?.id||null;
       if (vp?.geometry) dims = getDimsFromGeo(vp.geometry, vp.parameters?.faceRole, vp.parameters?.arrowRotated);
     }

@@ -95,7 +95,6 @@ export interface Shape {
   fillets?:FilletInfo[];
   faceRoles?:Record<number,FaceRole>;
   faceDescriptions?:Record<number,string>;
-  facePanels?:Record<number,boolean>;
   faceGroupDescriptors?:Record<number,FaceDescriptor>;
 }
 
