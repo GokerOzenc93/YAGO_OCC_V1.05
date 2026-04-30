@@ -410,7 +410,8 @@ function reraycastVirtualFace(
   const uniqueBoundaryEdgesLocal = extractUniqueBoundaryEdgesLocal(faces, matchedGroup.faceIndices);
 
   const nhd = vf.raycastRecipe.normalizedHitDistances;
-  if (nhd) {
+  const allBoundary = !!nhd && !!nhd.uPosIsBoundary && !!nhd.uNegIsBoundary && !!nhd.vPosIsBoundary && !!nhd.vNegIsBoundary;
+  if (nhd && allBoundary) {
     const result = reconstructFromNormalizedDistances(
       vf, nhd, groupVerticesWorld, worldNormal, u, v,
       localToWorld, worldToLocal, localNormal, shape, uniqueBoundaryEdgesLocal
@@ -420,7 +421,7 @@ function reraycastVirtualFace(
 
   const edgeAnchors = vf.raycastRecipe.edgeAnchors;
 
-  if (edgeAnchors && edgeAnchors.length === 4) {
+  if (edgeAnchors && edgeAnchors.length === 4 && allBoundary) {
     const faceGroupCenterLocal = matchedGroup.center.clone();
     const anchorHitPoints = reconstructHitPointsFromAnchors(
       edgeAnchors, uniqueBoundaryEdgesLocal, localToWorld, localNormal, faceGroupCenterLocal
