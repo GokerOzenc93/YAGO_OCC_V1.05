@@ -904,7 +904,27 @@ export async function restoreAllPanels(parentShapeId: string): Promise<void> {
 }
 
 
-function clearStaleOriginalShapes(parentShapeId: string) {
+async function clearStaleOriginalShapes(parentShapeId: string) {
+  const state = useAppStore.getState();
+  const toRestore = state.shapes.filter(s =>
+    s.type === 'panel' &&
+    s.parameters?.parentShapeId === parentShapeId &&
+    s.parameters?.jointTrimmed &&
+    s.parameters?.originalReplicadShape &&
+    !s.parameters?.virtualFaceId
+  );
+
+  const restoreMap = new Map<string, { geometry: any; replicadShape: any }>();
+  for (const panel of toRestore) {
+    try {
+      const orig = panel.parameters.originalReplicadShape;
+      const geo = await toGeometry(orig);
+      restoreMap.set(panel.id, { geometry: geo, replicadShape: orig });
+    } catch (err) {
+      console.error('Failed to restore panel original shape:', err);
+    }
+  }
+
   useAppStore.setState((st) => ({
     shapes: st.shapes.map(s => {
       if (
@@ -912,8 +932,10 @@ function clearStaleOriginalShapes(parentShapeId: string) {
         s.parameters?.parentShapeId === parentShapeId &&
         s.parameters?.originalReplicadShape
       ) {
+        const restored = restoreMap.get(s.id);
         return {
           ...s,
+          ...(restored ? { geometry: restored.geometry, replicadShape: restored.replicadShape } : {}),
           parameters: {
             ...s.parameters,
             originalReplicadShape: null,
@@ -1016,7 +1038,7 @@ export async function rebuildAndRecalculatePipeline(
   parentShapeId: string,
   profileId: string | null
 ): Promise<void> {
-  clearStaleOriginalShapes(parentShapeId);
+  await clearStaleOriginalShapes(parentShapeId);
 
   await recalculateAndRebuildVirtualFaces(parentShapeId, profileId);
 

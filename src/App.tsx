@@ -18,49 +18,68 @@ function App() {
   const [catalogItems, setCatalogItems] = useState<CatalogItem[]>([]);
 
   const prevGeometryKeysRef = useRef<Map<string, string>>(new Map());
+  const prevPanelIdsRef = useRef<Map<string, Set<string>>>(new Map());
   const rebuildInProgressRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
+    const triggerRebuild = (shapeId: string, profileId: string | null) => {
+      if (rebuildInProgressRef.current.has(shapeId)) return;
+      rebuildInProgressRef.current.add(shapeId);
+      useAppStore.getState().setShapeRebuilding(shapeId, true);
+      import('./components/PanelJointService').then(({ rebuildAndRecalculatePipeline }) => {
+        rebuildAndRecalculatePipeline(shapeId, profileId).finally(() => {
+          rebuildInProgressRef.current.delete(shapeId);
+          useAppStore.getState().setShapeRebuilding(shapeId, false);
+        });
+      });
+    };
+
     const unsubscribe = useAppStore.subscribe((state, prevState) => {
       const shapes = state.shapes;
       const prevShapes = prevState.shapes;
 
       if (shapes === prevShapes) return;
 
+      const currentPanelsByParent = new Map<string, Set<string>>();
+      for (const s of shapes) {
+        if (s.type === 'panel' && s.parameters?.parentShapeId) {
+          const pid = s.parameters.parentShapeId;
+          if (!currentPanelsByParent.has(pid)) currentPanelsByParent.set(pid, new Set());
+          currentPanelsByParent.get(pid)!.add(s.id);
+        }
+      }
+
       for (const shape of shapes) {
         if (shape.type === 'panel' || !shape.geometry) continue;
 
-        const hasAnyPanels = shapes.some(
-          s => s.type === 'panel' && s.parameters?.parentShapeId === shape.id
-        );
-        if (!hasAnyPanels) continue;
+        const currentPanelIds = currentPanelsByParent.get(shape.id) || new Set<string>();
+        const prevPanelIds = prevPanelIdsRef.current.get(shape.id) || new Set<string>();
+        let panelsRemoved = false;
+        for (const pid of prevPanelIds) {
+          if (!currentPanelIds.has(pid)) { panelsRemoved = true; break; }
+        }
 
         const key = [
           shape.geometry?.uuid,
           (shape.subtractionGeometries || []).length,
         ].join('|');
-
         const prevKey = prevGeometryKeysRef.current.get(shape.id);
+        const geometryChanged = !!prevKey && prevKey !== key;
 
-        if (prevKey && prevKey !== key && !rebuildInProgressRef.current.has(shape.id)) {
-          const profileId = state.activePanelProfileId;
-          const shapeId = shape.id;
-          rebuildInProgressRef.current.add(shapeId);
-          useAppStore.getState().setShapeRebuilding(shapeId, true);
-          import('./components/PanelJointService').then(({ rebuildAndRecalculatePipeline }) => {
-            rebuildAndRecalculatePipeline(shapeId, profileId).finally(() => {
-              rebuildInProgressRef.current.delete(shapeId);
-              useAppStore.getState().setShapeRebuilding(shapeId, false);
-            });
-          });
+        const hasRemainingPanels = currentPanelIds.size > 0;
+
+        if ((geometryChanged && hasRemainingPanels) || (panelsRemoved && hasRemainingPanels)) {
+          triggerRebuild(shape.id, state.activePanelProfileId);
         }
 
         prevGeometryKeysRef.current.set(shape.id, key);
+        prevPanelIdsRef.current.set(shape.id, currentPanelIds);
       }
 
       for (const [id] of prevGeometryKeysRef.current) {
         if (!shapes.find(s => s.id === id)) {
           prevGeometryKeysRef.current.delete(id);
+          prevPanelIdsRef.current.delete(id);
         }
       }
     });
