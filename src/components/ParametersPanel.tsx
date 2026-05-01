@@ -81,7 +81,7 @@ export function ParametersPanel({ isOpen, onClose, embedded = false }: Parameter
     subtractionViewMode, setSubtractionViewMode, selectedSubtractionIndex, setSelectedSubtractionIndex,
     deleteSubtraction, setShowParametersPanel, filletMode, setFilletMode, faceEditMode, setFaceEditMode,
     selectedFilletFaces, clearFilletFaces, clearFilletFaceData, roleEditMode, setRoleEditMode,
-    updateFaceRole, recalculateVirtualFacesForShape
+    updateFaceRole
   } = useAppStore();
 
   const [position, setPosition] = useState({ x: 100, y: 100 });
@@ -258,7 +258,6 @@ export function ParametersPanel({ isOpen, onClose, embedded = false }: Parameter
       subParams: evalSub, updateShape
     });
     if (selectedShapeId) {
-      recalculateVirtualFacesForShape(selectedShapeId);
       const { rebuildPanelsForParent } = await import('./PanelRebuildService');
       await rebuildPanelsForParent(selectedShapeId);
     }
