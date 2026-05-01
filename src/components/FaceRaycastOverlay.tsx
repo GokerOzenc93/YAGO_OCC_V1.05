@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect, useRef } from 'react';
+import React, { useMemo, useState, useEffect, useRef, useCallback } from 'react';
 import * as THREE from 'three';
 import { useAppStore } from '../store';
 import type { VirtualFace, EdgeAnchor, NormalizedHitDistances } from '../store';
@@ -703,6 +703,17 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
   }, [shape.geometry, shape.id, geometryUuid]);
   useEffect(() => { if (!raycastMode) { setHoveredGroupIndex(null); setPending(null); lastClickRef.current = null; } }, [raycastMode]);
   const childPanels = useMemo(() => allShapes.filter(s => s.type === 'panel' && s.parameters?.parentShapeId === shape.id), [allShapes, shape.id]);
+  const groupHasVirtualFace = useCallback((gi: number) => {
+    if (gi < 0 || gi >= faceGroups.length || shapeVirtualFaces.length === 0) return false;
+    const gn = faceGroups[gi].normal.clone().normalize();
+    const gc = faceGroups[gi].center.clone();
+    return shapeVirtualFaces.some(vf => {
+      const vn = new THREE.Vector3(...vf.normal).normalize();
+      if (Math.abs(gn.dot(vn)) < 0.98) return false;
+      const vc = new THREE.Vector3(...vf.center);
+      return gc.distanceTo(vc) < 2;
+    });
+  }, [faceGroups, shapeVirtualFaces]);
   const hoverHighlightGeometry = useMemo(() => {
     if (hoveredGroupIndex === null || !faceGroups[hoveredGroupIndex]) return null;
     return createFaceHighlightGeometry(faces, faceGroups[hoveredGroupIndex].faceIndices);
@@ -712,7 +723,8 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     e.stopPropagation();
     if (e.faceIndex !== undefined) {
       const gi = faceGroups.findIndex(g => g.faceIndices.includes(e.faceIndex));
-      if (gi !== -1) setHoveredGroupIndex(gi);
+      if (gi !== -1 && !groupHasVirtualFace(gi)) setHoveredGroupIndex(gi);
+      else if (gi !== -1 && groupHasVirtualFace(gi)) setHoveredGroupIndex(null);
     }
   };
   const handlePointerOut = (e: any) => { e.stopPropagation(); setHoveredGroupIndex(null); };
@@ -725,7 +737,7 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     }
     if (e.button !== 0) return;
     e.stopPropagation();
-    if (hoveredGroupIndex === null || !faceGroups[hoveredGroupIndex]) return;
+    if (hoveredGroupIndex === null || !faceGroups[hoveredGroupIndex] || groupHasVirtualFace(hoveredGroupIndex)) return;
 
     const clickPoint: THREE.Vector3 = e.point.clone();
     const clickLocal = clickPoint.clone().applyMatrix4(worldToLocal);
@@ -743,6 +755,7 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
         const candidateGroups: Array<{ index: number; depth: number; hitPoint: THREE.Vector3 }> = [];
 
         for (let gi = 0; gi < faceGroups.length; gi++) {
+          if (groupHasVirtualFace(gi)) continue;
           const group = faceGroups[gi];
           const groupNormalWorld = group.normal.clone().normalize().applyMatrix3(
             new THREE.Matrix3().getNormalMatrix(localToWorld)
