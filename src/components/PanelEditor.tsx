@@ -197,7 +197,10 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         addShape(makePanelBase(cs, { geometry: convertReplicadToThreeGeometry(rp), replicadShape: rp,
           parameters: { width: 0, height: 0, depth: PANEL_THICKNESS, parentShapeId: cs.id, faceIndex: -(vi+1), faceRole: vf.role, virtualFaceId: vf.id } }));
         updateVirtualFace(vf.id, { hasPanel: true });
-        await resolveIfActive(cs.id, selectedProfileRef.current);
+        const pid = selectedProfileRef.current;
+        if (pid && pid !== 'none') {
+          await withResolving(cs.id, () => rebuildAndRecalculatePipeline(cs.id, pid));
+        }
       } catch (err) { console.error('Failed to create panel for virtual face via click:', err); }
     })();
   }, [pendingPanelCreation]);
