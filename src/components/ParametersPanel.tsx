@@ -257,7 +257,11 @@ export function ParametersPanel({ isOpen, onClose, embedded = false }: Parameter
       subRotX: evalSub.rotX.result, subRotY: evalSub.rotY.result, subRotZ: evalSub.rotZ.result,
       subParams: evalSub, updateShape
     });
-    if (selectedShapeId) recalculateVirtualFacesForShape(selectedShapeId);
+    if (selectedShapeId) {
+      recalculateVirtualFacesForShape(selectedShapeId);
+      const { rebuildPanelsForParent } = await import('./PanelRebuildService');
+      await rebuildPanelsForParent(selectedShapeId);
+    }
   };
 
   const handleDeleteFillet = async (filletIndex: number) => {
