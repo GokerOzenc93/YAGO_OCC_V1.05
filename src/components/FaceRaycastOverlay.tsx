@@ -677,6 +677,7 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
   const [faceGroups, setFaceGroups] = useState<CoplanarFaceGroup[]>([]);
   const [hoveredGroupIndex, setHoveredGroupIndex] = useState<number | null>(null);
   const [pending, setPending] = useState<PendingPreview | null>(null);
+  const lastClickRef = useRef<{ point: THREE.Vector3; groupIndex: number; cycleIndex: number } | null>(null);
   const shapeVirtualFaces = useMemo(() => virtualFaces.filter(vf => vf.shapeId === shape.id), [virtualFaces, shape.id]);
   const geometryUuid = shape.geometry?.uuid || '';
   const localToWorld = useMemo(() => getShapeMatrix(shape), [shape.position[0], shape.position[1], shape.position[2], shape.rotation[0], shape.rotation[1], shape.rotation[2], shape.scale[0], shape.scale[1], shape.scale[2]]);
@@ -686,8 +687,9 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     setFaces(extractFacesFromGeometry(shape.geometry));
     setFaceGroups(groupCoplanarFaces(extractFacesFromGeometry(shape.geometry)));
     setPending(null);
+    lastClickRef.current = null;
   }, [shape.geometry, shape.id, geometryUuid]);
-  useEffect(() => { if (!raycastMode) { setHoveredGroupIndex(null); setPending(null); } }, [raycastMode]);
+  useEffect(() => { if (!raycastMode) { setHoveredGroupIndex(null); setPending(null); lastClickRef.current = null; } }, [raycastMode]);
   const childPanels = useMemo(() => allShapes.filter(s => s.type === 'panel' && s.parameters?.parentShapeId === shape.id), [allShapes, shape.id]);
   const hoverHighlightGeometry = useMemo(() => {
     if (hoveredGroupIndex === null || !faceGroups[hoveredGroupIndex]) return null;
@@ -706,13 +708,62 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     if (!raycastMode) return;
     if (e.button === 2) {
       e.stopPropagation(); e.nativeEvent?.preventDefault?.();
-      if (pending) { addVirtualFace(pending.virtualFace); setPending(null); }
+      if (pending) { addVirtualFace(pending.virtualFace); setPending(null); lastClickRef.current = null; }
       return;
     }
     if (e.button !== 0) return;
     e.stopPropagation();
     if (hoveredGroupIndex === null || !faceGroups[hoveredGroupIndex]) return;
-    setPending(buildPreview(e.point.clone(), faceGroups[hoveredGroupIndex], faces, localToWorld, worldToLocal, childPanels, shape.id, shape.subtractionGeometries || [], shape.geometry, shapeVirtualFaces));
+
+    const clickPoint: THREE.Vector3 = e.point.clone();
+    const clickLocal = clickPoint.clone().applyMatrix4(worldToLocal);
+
+    const isSameSpot = lastClickRef.current && lastClickRef.current.point.distanceTo(clickLocal) < 5;
+
+    let targetGroupIndex = hoveredGroupIndex;
+
+    if (isSameSpot) {
+      const cameraPos = e.camera?.position?.clone();
+      if (cameraPos) {
+        const rayDir = clickPoint.clone().sub(cameraPos).normalize();
+        const candidateGroups: Array<{ index: number; depth: number }> = [];
+        for (let gi = 0; gi < faceGroups.length; gi++) {
+          const group = faceGroups[gi];
+          const groupNormal = group.normal.clone().normalize();
+          const groupCenter = group.center.clone().applyMatrix4(localToWorld);
+          const toGroup = groupCenter.clone().sub(cameraPos);
+          const depth = toGroup.dot(rayDir);
+          const perpDist = toGroup.clone().sub(rayDir.clone().multiplyScalar(depth)).length();
+          const groupBBox = new THREE.Box3();
+          group.faceIndices.forEach(fi => {
+            const face = faces[fi];
+            if (!face) return;
+            face.vertices.forEach(v => groupBBox.expandByPoint(v.clone().applyMatrix4(localToWorld)));
+          });
+          const expanded = groupBBox.clone().expandByScalar(2);
+          if (expanded.containsPoint(clickPoint) || perpDist < Math.max(groupBBox.getSize(new THREE.Vector3()).length() * 0.6, 10)) {
+            candidateGroups.push({ index: gi, depth });
+          }
+        }
+
+        if (candidateGroups.length > 1) {
+          candidateGroups.sort((a, b) => a.depth - b.depth);
+          const prevCycleIndex = lastClickRef.current!.cycleIndex;
+          const nextCycleIndex = (prevCycleIndex + 1) % candidateGroups.length;
+          targetGroupIndex = candidateGroups[nextCycleIndex].index;
+          lastClickRef.current = { point: clickLocal, groupIndex: targetGroupIndex, cycleIndex: nextCycleIndex };
+        } else {
+          lastClickRef.current = { point: clickLocal, groupIndex: targetGroupIndex, cycleIndex: 0 };
+        }
+      } else {
+        lastClickRef.current = { point: clickLocal, groupIndex: targetGroupIndex, cycleIndex: 0 };
+      }
+    } else {
+      lastClickRef.current = { point: clickLocal, groupIndex: targetGroupIndex, cycleIndex: 0 };
+    }
+
+    setHoveredGroupIndex(targetGroupIndex);
+    setPending(buildPreview(clickPoint, faceGroups[targetGroupIndex], faces, localToWorld, worldToLocal, childPanels, shape.id, shape.subtractionGeometries || [], shape.geometry, shapeVirtualFaces));
   };
   const handleContextMenu = (e: any) => {
     e.stopPropagation(); e.nativeEvent?.preventDefault?.();
