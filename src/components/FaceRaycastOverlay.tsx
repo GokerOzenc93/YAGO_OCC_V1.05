@@ -738,71 +738,66 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     if (e.button !== 0) return;
     e.stopPropagation();
     if (hoveredGroupIndex === null || !faceGroups[hoveredGroupIndex]) return;
-    const clickedExistingVf = findVirtualFaceForGroup(hoveredGroupIndex);
-    if (clickedExistingVf) {
-      if (clickedExistingVf.hasPanel) setSelectedPanelRow(`vf-${clickedExistingVf.id}`, null, shape.id);
-      return;
-    }
 
     const clickPoint: THREE.Vector3 = e.point.clone();
     const clickLocal = clickPoint.clone().applyMatrix4(worldToLocal);
 
     const isSameSpot = lastClickRef.current && lastClickRef.current.point.distanceTo(clickLocal) < 5;
+    const hoveredIsDefined = groupHasVirtualFace(hoveredGroupIndex);
 
     let targetGroupIndex = hoveredGroupIndex;
     let previewClickPoint = clickPoint;
+    let cycleCandidates: Array<{ index: number; depth: number; hitPoint: THREE.Vector3 }> | null = null;
 
-    if (isSameSpot) {
-      const cameraPos = e.camera?.position?.clone();
-      if (cameraPos) {
-        const rayOrigin = cameraPos;
-        const rayDir = clickPoint.clone().sub(rayOrigin).normalize();
-        const candidateGroups: Array<{ index: number; depth: number; hitPoint: THREE.Vector3 }> = [];
+    const cameraPos = e.camera?.position?.clone();
+    if (cameraPos && (isSameSpot || hoveredIsDefined)) {
+      const rayOrigin = cameraPos;
+      const rayDir = clickPoint.clone().sub(rayOrigin).normalize();
+      const candidateGroups: Array<{ index: number; depth: number; hitPoint: THREE.Vector3 }> = [];
 
-        for (let gi = 0; gi < faceGroups.length; gi++) {
-          if (groupHasVirtualFace(gi)) continue;
-          const group = faceGroups[gi];
-          const groupNormalWorld = group.normal.clone().normalize().applyMatrix3(
-            new THREE.Matrix3().getNormalMatrix(localToWorld)
-          ).normalize();
-          const planePoint = group.center.clone().applyMatrix4(localToWorld);
-          const denom = groupNormalWorld.dot(rayDir);
-          if (Math.abs(denom) < 1e-6) continue;
-          const t = planePoint.clone().sub(rayOrigin).dot(groupNormalWorld) / denom;
-          if (t < 0) continue;
-          const hitOnPlane = rayOrigin.clone().addScaledVector(rayDir, t);
+      for (let gi = 0; gi < faceGroups.length; gi++) {
+        if (groupHasVirtualFace(gi)) continue;
+        const group = faceGroups[gi];
+        const groupNormalWorld = group.normal.clone().normalize().applyMatrix3(
+          new THREE.Matrix3().getNormalMatrix(localToWorld)
+        ).normalize();
+        const planePoint = group.center.clone().applyMatrix4(localToWorld);
+        const denom = groupNormalWorld.dot(rayDir);
+        if (Math.abs(denom) < 1e-6) continue;
+        const t = planePoint.clone().sub(rayOrigin).dot(groupNormalWorld) / denom;
+        if (t < 0) continue;
+        const hitOnPlane = rayOrigin.clone().addScaledVector(rayDir, t);
 
-          let inside = false;
-          for (const fi of group.faceIndices) {
-            const face = faces[fi];
-            if (!face) continue;
-            const vA = face.vertices[0].clone().applyMatrix4(localToWorld);
-            const vB = face.vertices[1].clone().applyMatrix4(localToWorld);
-            const vC = face.vertices[2].clone().applyMatrix4(localToWorld);
-            if (pointInTriangle3D(hitOnPlane, vA, vB, vC)) { inside = true; break; }
-          }
-          if (inside) {
-            candidateGroups.push({ index: gi, depth: t, hitPoint: hitOnPlane });
-          }
+        let inside = false;
+        for (const fi of group.faceIndices) {
+          const face = faces[fi];
+          if (!face) continue;
+          const vA = face.vertices[0].clone().applyMatrix4(localToWorld);
+          const vB = face.vertices[1].clone().applyMatrix4(localToWorld);
+          const vC = face.vertices[2].clone().applyMatrix4(localToWorld);
+          if (pointInTriangle3D(hitOnPlane, vA, vB, vC)) { inside = true; break; }
         }
-
-        if (candidateGroups.length > 1) {
-          candidateGroups.sort((a, b) => a.depth - b.depth);
-          const prevCycleIndex = lastClickRef.current!.cycleIndex;
-          const nextCycleIndex = (prevCycleIndex + 1) % candidateGroups.length;
-          targetGroupIndex = candidateGroups[nextCycleIndex].index;
-          previewClickPoint = candidateGroups[nextCycleIndex].hitPoint;
-          lastClickRef.current = { point: clickLocal, groupIndex: targetGroupIndex, cycleIndex: nextCycleIndex };
-        } else if (candidateGroups.length === 1) {
-          targetGroupIndex = candidateGroups[0].index;
-          previewClickPoint = candidateGroups[0].hitPoint;
-          lastClickRef.current = { point: clickLocal, groupIndex: targetGroupIndex, cycleIndex: 0 };
-        } else {
-          lastClickRef.current = { point: clickLocal, groupIndex: targetGroupIndex, cycleIndex: 0 };
+        if (inside) {
+          candidateGroups.push({ index: gi, depth: t, hitPoint: hitOnPlane });
         }
-      } else {
-        lastClickRef.current = { point: clickLocal, groupIndex: targetGroupIndex, cycleIndex: 0 };
       }
+      candidateGroups.sort((a, b) => a.depth - b.depth);
+      cycleCandidates = candidateGroups;
+    }
+
+    if (cycleCandidates && cycleCandidates.length > 0) {
+      let nextCycleIndex = 0;
+      if (isSameSpot && !hoveredIsDefined) {
+        const prevCycleIndex = lastClickRef.current!.cycleIndex;
+        nextCycleIndex = (prevCycleIndex + 1) % cycleCandidates.length;
+      }
+      targetGroupIndex = cycleCandidates[nextCycleIndex].index;
+      previewClickPoint = cycleCandidates[nextCycleIndex].hitPoint;
+      lastClickRef.current = { point: clickLocal, groupIndex: targetGroupIndex, cycleIndex: nextCycleIndex };
+    } else if (hoveredIsDefined) {
+      const existingVf = findVirtualFaceForGroup(hoveredGroupIndex);
+      if (existingVf?.hasPanel) setSelectedPanelRow(`vf-${existingVf.id}`, null, shape.id);
+      return;
     } else {
       lastClickRef.current = { point: clickLocal, groupIndex: targetGroupIndex, cycleIndex: 0 };
     }
