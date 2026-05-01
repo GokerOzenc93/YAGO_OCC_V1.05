@@ -1,10 +1,9 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { X, GripVertical, RotateCw, Trash2, MoveVertical, Check, Pencil } from 'lucide-react';
-import { globalSettingsService, faceLabelRoleDefaultsService, GlobalSettingsProfile } from './GlobalSettingsDatabase';
+import { faceLabelRoleDefaultsService } from './GlobalSettingsDatabase';
 import { useAppStore } from '../store';
 import type { FaceRole } from '../store';
 import { extractFacesFromGeometry, groupCoplanarFaces, CoplanarFaceGroup } from './FaceEditor';
-import { resolveAllPanelJoints, restoreAllPanels, rebuildAndRecalculatePipeline } from './PanelJointService';
 import { findExistingStepForFace } from './FaceExtrudeService';
 import type { FilletData } from './Fillet';
 import * as THREE from 'three';
@@ -117,31 +116,17 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
   const { selectedShapeId, shapes, updateShape, addShape, showOutlines, setShowOutlines, showRoleNumbers, setShowRoleNumbers,
     selectedPanelRow, setSelectedPanelRow, panelSelectMode, setPanelSelectMode, raycastMode, setRaycastMode,
     showVirtualFaces, setShowVirtualFaces, virtualFaces, updateVirtualFace, deleteVirtualFace, pendingPanelCreation,
-    setActivePanelProfileId, setShapeRebuilding, faceExtrudeMode, setFaceExtrudeMode, faceExtrudeTargetPanelId,
+    faceExtrudeMode, setFaceExtrudeMode, faceExtrudeTargetPanelId,
     setFaceExtrudeTargetPanelId, faceExtrudeSelectedFace, setFaceExtrudeSelectedFace, setFaceExtrudeHoveredFace,
     faceExtrudeThickness, setFaceExtrudeThickness, faceExtrudeFixedMode, setFaceExtrudeFixedMode } = useAppStore();
 
   const [position, setPosition] = useState({ x: 100, y: 100 });
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
-  const [profiles, setProfiles] = useState<GlobalSettingsProfile[]>([]);
-  const [selectedProfile, setSelectedProfile] = useState('none');
-  const [loading, setLoading] = useState(true);
-  const [resolving, setResolving] = useState(false);
   const [editingStepId, setEditingStepId] = useState<string | null>(null);
   const [editingStepValue, setEditingStepValue] = useState(0);
-  const prevProfileRef = useRef('none');
   const rowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
-  const selectedProfileRef = useRef('none');
-  selectedProfileRef.current = selectedProfile;
   const selectedShape = shapes.find(s => s.id === selectedShapeId);
-
-  const withResolving = async (sid: string, fn: () => Promise<void>) => {
-    setResolving(true); setShapeRebuilding(sid, true);
-    try { await fn(); } finally { setResolving(false); setShapeRebuilding(sid, false); }
-  };
-  const resolveIfActive = async (sid: string, pid?: string) => { const p = pid ?? selectedProfile; if (p !== 'none') await withResolving(sid, () => resolveAllPanelJoints(sid, p)); };
-  const rebuildIfActive = async (sid: string) => { if (selectedProfile !== 'none') await withResolving(sid, () => rebuildAndRecalculatePipeline(sid, selectedProfile)); };
 
   const activePanelId = useMemo(() => {
     if (!selectedShape || selectedPanelRow === null) return null;
@@ -163,14 +148,8 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     const existing = findExistingStepForFace(steps, g.normal.clone().normalize(), g.center.clone());
     if (existing) { setFaceExtrudeThickness(existing.value); setFaceExtrudeFixedMode(existing.isFixed); }
   }, [faceExtrudeSelectedFace, activePanelId, shapes]);
-  useEffect(() => { if (isOpen || embedded) loadProfiles(); else { setSelectedPanelRow(null); setPanelSelectMode(false); if (faceExtrudeMode) setFaceExtrudeMode(false); } }, [isOpen, embedded]);
+  useEffect(() => { if (!(isOpen || embedded)) { setSelectedPanelRow(null); setPanelSelectMode(false); if (faceExtrudeMode) setFaceExtrudeMode(false); } }, [isOpen, embedded]);
   useEffect(() => { if (selectedPanelRow !== null) rowRefs.current.get(selectedPanelRow)?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, [selectedPanelRow]);
-  useEffect(() => { setActivePanelProfileId(selectedProfile !== 'none' ? selectedProfile : null); }, [selectedProfile]);
-  useEffect(() => {
-    if (prevProfileRef.current === selectedProfile) return; prevProfileRef.current = selectedProfile; if (!selectedShapeId) return;
-    if (selectedProfile !== 'none') withResolving(selectedShapeId, () => resolveAllPanelJoints(selectedShapeId, selectedProfile));
-    else restoreAllPanels(selectedShapeId);
-  }, [selectedProfile, selectedShapeId]);
   useEffect(() => {
     if (!selectedShape?.geometry) return;
     (async () => {
@@ -197,10 +176,6 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         addShape(makePanelBase(cs, { geometry: convertReplicadToThreeGeometry(rp), replicadShape: rp,
           parameters: { width: 0, height: 0, depth: PANEL_THICKNESS, parentShapeId: cs.id, faceIndex: -(vi+1), faceRole: vf.role, virtualFaceId: vf.id } }));
         updateVirtualFace(vf.id, { hasPanel: true });
-        const pid = selectedProfileRef.current;
-        if (pid && pid !== 'none') {
-          await withResolving(cs.id, () => rebuildAndRecalculatePipeline(cs.id, pid));
-        }
       } catch (err) { console.error('Failed to create panel for virtual face via click:', err); }
     })();
   }, [pendingPanelCreation]);
@@ -215,9 +190,6 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     if (!hasPanels) { setShowOutlines(true); return; }
     if (!raycastMode) { setShowOutlines(false); }
   }, [selectedShape?.id, shapes.length, raycastMode]);
-
-  const loadProfiles = async () => { try { setLoading(true); setProfiles(await globalSettingsService.listProfiles()); } catch (e) { console.error('Failed to load profiles:', e); } finally { setLoading(false); } };
-
 
   const handleMouseDown = (e: React.MouseEvent) => { e.preventDefault(); setIsDragging(true); setDragOffset({ x: e.clientX - position.x, y: e.clientY - position.y }); };
   useEffect(() => {
@@ -247,27 +219,15 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       {tb(showOutlines, () => setShowOutlines(!showOutlines), 'Outline', ['text-blue-700 bg-blue-100 ring-1 ring-blue-400', 'text-slate-500 hover:bg-stone-200'])}
       {tb(showRoleNumbers, () => setShowRoleNumbers(!showRoleNumbers), 'Roles', ['text-orange-700 bg-orange-100 ring-1 ring-orange-400', 'text-slate-500 hover:bg-stone-200'])}
       {tb(raycastMode, () => setRaycastMode(!raycastMode), 'Add Face', ['text-amber-700 bg-amber-100 ring-1 ring-amber-400', 'text-slate-500 hover:bg-stone-200'])}
-      <button onClick={async () => { if (selectedShape && selectedProfile !== 'none' && !resolving) await withResolving(selectedShape.id, () => rebuildAndRecalculatePipeline(selectedShape.id, selectedProfile)); }}
-        disabled={!selectedShape || selectedProfile === 'none' || resolving}
-        className={`px-1.5 py-0.5 rounded text-xs font-semibold transition-colors ${!selectedShape || selectedProfile === 'none' || resolving ? 'text-stone-300 cursor-not-allowed' : 'text-slate-500 hover:bg-stone-200'}`}>
-        {resolving ? 'Calc...' : 'Recalc'}
-      </button>
       {tb(panelSelectMode, () => setPanelSelectMode(!panelSelectMode), panelSelectMode ? 'Panel' : 'Body', ['text-violet-700 bg-violet-100 ring-1 ring-violet-400', 'text-slate-500 hover:bg-stone-200'])}
     </div>
   );
 
   const panelContent = selectedShape ? (
     <div className="space-y-2">
-      <div className="flex items-center gap-2">
-        <label className="text-xs font-semibold text-stone-600 whitespace-nowrap">Select Body Profile</label>
-        {loading ? <div className="px-2 py-0.5 text-xs text-stone-400 bg-white border border-stone-300 rounded" style={{ width: '30mm' }}>Loading...</div>
-          : <select value={selectedProfile} onChange={e => setSelectedProfile(e.target.value)}
-              className="px-2 py-0.5 text-xs bg-white text-stone-700 border border-stone-300 rounded focus:outline-none focus:border-orange-400" style={{ width: '30mm' }}>
-              <option value="none">None</option>{profiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select>}
-      </div>
       {(() => {
         const geo = selectedShape.geometry; if (!geo) return null;
-        const isOff = selectedProfile === 'none', sid = selectedShape.id;
+        const isOff = false, sid = selectedShape.id;
         const svf = virtualFaces.filter(vf => vf.shapeId === sid);
         const createVP = async (_: string, vi: number) => {
           const vf = svf[vi]; if (!vf) return;
@@ -288,8 +248,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
             <option value="">—</option>{ROLE_OPTIONS.map(r => <option key={r} value={r}>{r}</option>)}<option value="__none__">Roleless</option></select>
         );
         return (
-          <div className={`space-y-0 pt-2 border-t border-stone-200 ${isOff ? 'opacity-40 pointer-events-none' : ''}`}>
-            {resolving && <div className="text-xs font-normal text-orange-500 animate-pulse mb-1">resolving joints...</div>}
+          <div className="space-y-0 pt-2 border-t border-stone-200">
             {svf.map((vf, vi) => {
               const vp = findVPanel(shapes, sid, vf.id), ar = vp?.parameters?.arrowRotated||false, sel = selectedPanelRow === `vf-${vf.id}`;
               const roleChosen = !!vf.roleSelected;
@@ -301,18 +260,18 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                   <input type="radio" name="ps" checked={sel} disabled={isOff||!vf.hasPanel} onChange={e => { stop(e); rc(); }}
                     className={`w-3.5 h-3.5 ${isOff||!vf.hasPanel ? 'text-stone-300 cursor-not-allowed' : 'text-orange-500 focus:ring-orange-400 cursor-pointer'}`} onClick={stop} />
                   <span className="w-8 text-xs font-mono font-bold text-center text-green-700 select-none" onClick={stop}>V{vi+1}</span>
-                  {roleSel(selVal, async v => {
-                    if (v === '') { updateVirtualFace(vf.id, { role: null, roleSelected: false }); if (vp) { updateShape(vp.id, { parameters: { ...vp.parameters, faceRole: null, roleless: false } }); await rebuildIfActive(sid); } return; }
+                  {roleSel(selVal, v => {
+                    if (v === '') { updateVirtualFace(vf.id, { role: null, roleSelected: false }); if (vp) updateShape(vp.id, { parameters: { ...vp.parameters, faceRole: null, roleless: false } }); return; }
                     const nr: FaceRole = v === '__none__' ? null : (v as FaceRole);
                     updateVirtualFace(vf.id, { role: nr, roleSelected: true });
-                    if (vp) { updateShape(vp.id, { parameters: { ...vp.parameters, faceRole: nr, roleless: v === '__none__' } }); await rebuildIfActive(sid); }
+                    if (vp) updateShape(vp.id, { parameters: { ...vp.parameters, faceRole: nr, roleless: v === '__none__' } });
                   }, 'border-transparent')}
                   <input type="text" value={vf.description||''} disabled={isOff} onClick={stop} onChange={e => updateVirtualFace(vf.id, { description: e.target.value })}
                     placeholder="note" style={{ width: '32mm' }}
                     className={`px-1 py-0.5 text-xs bg-transparent border-b rounded-none ${isOff ? 'text-stone-400 border-stone-200 placeholder:text-stone-300' : 'text-gray-600 border-transparent hover:border-gray-300 focus:border-orange-400 placeholder:text-stone-300'}`} />
                   <div className="ml-1 flex items-center gap-0.5">
                     <input type="checkbox" checked={vf.hasPanel} disabled={isOff||!roleChosen} onClick={stop}
-                      onChange={async () => { if (vf.hasPanel) removeVP(vf.id); else { await createVP(vf.id, vi); await resolveIfActive(sid); } }}
+                      onChange={async () => { if (vf.hasPanel) removeVP(vf.id); else await createVP(vf.id, vi); }}
                       className={`w-3.5 h-3.5 rounded ${isOff||!roleChosen ? 'text-stone-300 cursor-not-allowed' : 'text-green-500 focus:ring-green-400 cursor-pointer'}`} title={roleChosen ? `Toggle virtual face V${vi+1}` : 'Önce rol seçin'} />
                     <button disabled={isOff||!vf.hasPanel} onClick={e => { stop(e); toggleArrow(vp); }}
                       className={`p-0.5 rounded transition-colors ${isOff||!vf.hasPanel ? 'text-stone-300 cursor-not-allowed' : ar ? 'text-blue-500' : 'text-stone-300 hover:text-stone-500'}`}

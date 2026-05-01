@@ -23,7 +23,6 @@ import {
   InspectionPanel as Intersection, MapPin, Ruler, Monitor,
   RotateCcw, ArrowDownUp,
 } from 'lucide-react';
-import { GlobalSettingsPanel } from './GlobalSettingsPanel';
 import { createReplicadBox, convertReplicadToThreeGeometry, performBooleanCut } from './ReplicadService';
 
 interface ToolbarProps { onOpenCatalog: () => void; }
@@ -103,8 +102,7 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
     modifyShape, cameraType, setCameraType, snapSettings, toggleSnapSetting,
     viewMode, setViewMode, cycleViewMode, orthoMode, toggleOrthoMode,
     opencascadeInstance, extrudeShape, shapes, updateShape, deleteShape,
-    showGlobalSettingsPanel,
-    setShowGlobalSettingsPanel, panelSelectMode, panelSurfaceSelectMode, setPanelSurfaceSelectMode,
+    panelSelectMode, panelSurfaceSelectMode, setPanelSurfaceSelectMode,
   } = useAppStore();
 
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
@@ -361,7 +359,6 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
           {/* Geometry & Tools */}
           <div className="flex items-center bg-white rounded-lg shadow-sm border border-stone-200 p-0.5 gap-0">
             <TBtn icon={<Box size={15} />}              label="Kutu Ekle (B)"    onClick={handleAddBox} />
-            <TBtn icon={<Cog size={15} />}              label="Genel Ayarlar"     onClick={() => setShowGlobalSettingsPanel(!showGlobalSettingsPanel)} />
             <TBtn
               icon={<MinusSquare size={15} />}
               label={hasIntersectingShapes ? 'Kesişen Şekilleri Çıkar' : selectedShapeId ? 'Kesişen şekil yok' : 'Önce şekil seçin'}
@@ -417,7 +414,6 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
         </div>
       )}
 
-      <GlobalSettingsPanel isOpen={showGlobalSettingsPanel} onClose={() => setShowGlobalSettingsPanel(false)} />
     </>
   );
 };

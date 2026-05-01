@@ -81,9 +81,7 @@ export function ParametersPanel({ isOpen, onClose, embedded = false }: Parameter
     subtractionViewMode, setSubtractionViewMode, selectedSubtractionIndex, setSelectedSubtractionIndex,
     deleteSubtraction, setShowParametersPanel, filletMode, setFilletMode, faceEditMode, setFaceEditMode,
     selectedFilletFaces, clearFilletFaces, clearFilletFaceData, roleEditMode, setRoleEditMode,
-    updateFaceRole, backPanelLeftExtend, setBackPanelLeftExtend, showBackPanelLeftExtend, setShowBackPanelLeftExtend,
-    backPanelRightExtend, setBackPanelRightExtend, showBackPanelRightExtend, setShowBackPanelRightExtend,
-    recalculateVirtualFacesForShape
+    updateFaceRole, recalculateVirtualFacesForShape
   } = useAppStore();
 
   const [position, setPosition] = useState({ x: 100, y: 100 });
@@ -130,24 +128,6 @@ export function ParametersPanel({ isOpen, onClose, embedded = false }: Parameter
       setCustomParameters([]); setVertexModifications([]); setFilletRadii([]);
     }
   }, [selectedShape, selectedShapeId, shapes]);
-
-  useEffect(() => {
-    const handleBottomPanelSelection = async () => {
-      if (selectedShape?.type === 'panel' && selectedShape.parameters?.faceRole === 'Bottom' && selectedShape.parameters?.parentShapeId) {
-        const { globalSettingsService } = await import('./GlobalSettingsDatabase');
-        const { resolveAllPanelJoints } = await import('./PanelJointService');
-        const defaultProfile = await globalSettingsService.getDefaultProfile();
-        if (defaultProfile) {
-          const { setShapeRebuilding } = useAppStore.getState();
-          const parentId = selectedShape.parameters.parentShapeId;
-          setShapeRebuilding(parentId, true);
-          try { await resolveAllPanelJoints(parentId, defaultProfile.id); }
-          finally { setShapeRebuilding(parentId, false); }
-        }
-      }
-    };
-    handleBottomPanelSelection();
-  }, [selectedShapeId]);
 
   useEffect(() => {
     if (!selectedShape || selectedSubtractionIndex === null || !selectedShape.subtractionGeometries) return;
@@ -334,17 +314,6 @@ export function ParametersPanel({ isOpen, onClose, embedded = false }: Parameter
     </div>
   );
 
-  const renderBackPanelExtend = (label: string, value: number, onChange: (v: number) => void, description: string, onRemove: () => void) => (
-    <div className="flex gap-1 items-center py-0.5 px-1 rounded transition-colors focus-within:bg-orange-50 focus-within:ring-1 focus-within:ring-orange-300 hover:bg-stone-50">
-      <span className="w-8 text-xs font-mono font-bold text-orange-600 text-center select-none">{label}</span>
-      <input type="number" value={value} onChange={e => onChange(Number(e.target.value))}
-        className={`w-16 ${inputBase} text-gray-800 text-left [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none`} />
-      <span className="w-16 text-xs font-mono text-gray-400 text-left select-none">{value.toFixed(2)}</span>
-      <span className="flex-1 text-xs text-gray-400 select-none truncate">{description}</span>
-      <button onClick={onRemove} className="p-0.5 rounded text-stone-300 hover:text-red-400 transition-colors" title="Remove"><X size={12} /></button>
-    </div>
-  );
-
   if (!isOpen && !embedded) return null;
 
   const subtractionCount = selectedShape?.subtractionGeometries?.filter((s: any) => s !== null).length ?? 0;
@@ -374,8 +343,6 @@ export function ParametersPanel({ isOpen, onClose, embedded = false }: Parameter
           <ParameterRow key={label as string} label={label as string} value={val as number} onChange={set as (v: number) => void}
             display={(val as number).toFixed(1) + '°'} description={desc as string} step={1} />
         ))}
-        {showBackPanelLeftExtend && renderBackPanelExtend('BPL', backPanelLeftExtend, setBackPanelLeftExtend, 'Back panel left extend', () => { setShowBackPanelLeftExtend(false); setBackPanelLeftExtend(0); })}
-        {showBackPanelRightExtend && renderBackPanelExtend('BPR', backPanelRightExtend, setBackPanelRightExtend, 'Back panel right extend', () => { setShowBackPanelRightExtend(false); setBackPanelRightExtend(0); })}
       </div>
 
       {filletRadii.length > 0 && (

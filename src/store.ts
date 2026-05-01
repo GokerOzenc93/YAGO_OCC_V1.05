@@ -170,10 +170,6 @@ interface AppState{
   }|null;
   triggerPanelCreationForFace:(faceIndex:number,sid?:string,sc?:{center:[number,number,number];normal:[number,number,number];constraintPanelId:string;})=>void;
 
-  activePanelProfileId:string|null;setActivePanelProfileId:(id:string|null)=>void;
-
-  showGlobalSettingsPanel:boolean;setShowGlobalSettingsPanel:(b:boolean)=>void;
-
   faceEditMode:boolean;setFaceEditMode:(b:boolean)=>void;
   selectedFaceIndex:number|null;setSelectedFaceIndex:(i:number|null)=>void;
   hoveredFaceIndex:number|null;setHoveredFaceIndex:(i:number|null)=>void;
@@ -207,42 +203,6 @@ interface AppState{
   getVirtualFacesForShape:(sid:string)=>VirtualFace[];
   recalculateVirtualFacesForShape:(sid:string)=>void;
 
-  bazaHeight:number;setBazaHeight:(n:number)=>void;
-  frontBaseDistance:number;setFrontBaseDistance:(n:number)=>void;
-  backBaseDistance:number;setBackBaseDistance:(n:number)=>void;
-
-  legHeight:number;setLegHeight:(n:number)=>void;
-  legDiameter:number;setLegDiameter:(n:number)=>void;
-  legFrontDistance:number;setLegFrontDistance:(n:number)=>void;
-  legBackDistance:number;setLegBackDistance:(n:number)=>void;
-  legSideDistance:number;setLegSideDistance:(n:number)=>void;
-
-  backPanelLeftExtend:number;setBackPanelLeftExtend:(n:number)=>void;
-  showBackPanelLeftExtend:boolean;setShowBackPanelLeftExtend:(b:boolean)=>void;
-  backPanelRightExtend:number;setBackPanelRightExtend:(n:number)=>void;
-  showBackPanelRightExtend:boolean;setShowBackPanelRightExtend:(b:boolean)=>void;
-
-  backPanelTopExtend:number;setBackPanelTopExtend:(n:number)=>void;
-  showBackPanelTopExtend:boolean;setShowBackPanelTopExtend:(b:boolean)=>void;
-  backPanelBottomExtend:number;setBackPanelBottomExtend:(n:number)=>void;
-  showBackPanelBottomExtend:boolean;setShowBackPanelBottomExtend:(b:boolean)=>void;
-
-  leftPanelBackShorten:number;setLeftPanelBackShorten:(n:number)=>void;
-  showLeftPanelBackShorten:boolean;setShowLeftPanelBackShorten:(b:boolean)=>void;
-  rightPanelBackShorten:number;setRightPanelBackShorten:(n:number)=>void;
-  showRightPanelBackShorten:boolean;setShowRightPanelBackShorten:(b:boolean)=>void;
-
-  isLeftPanelSelected:boolean;setIsLeftPanelSelected:(b:boolean)=>void;
-  isRightPanelSelected:boolean;setIsRightPanelSelected:(b:boolean)=>void;
-
-  isTopPanelSelected:boolean;setIsTopPanelSelected:(b:boolean)=>void;
-  isBottomPanelSelected:boolean;setIsBottomPanelSelected:(b:boolean)=>void;
-
-  topPanelBackShorten:number;setTopPanelBackShorten:(n:number)=>void;
-  showTopPanelBackShorten:boolean;setShowTopPanelBackShorten:(b:boolean)=>void;
-  bottomPanelBackShorten:number;setBottomPanelBackShorten:(n:number)=>void;
-  showBottomPanelBackShorten:boolean;setShowBottomPanelBackShorten:(b:boolean)=>void;
-
   rebuildingShapeIds:Set<string>;
   setShapeRebuilding:(id:string,rebuilding:boolean)=>void;
 }
@@ -263,10 +223,6 @@ export const useAppStore=create<AppState>((set,get)=>({
   waitingForSurfaceSelection:null,setWaitingForSurfaceSelection:(v)=>set({waitingForSurfaceSelection:v}),
   pendingPanelCreation:null,
   triggerPanelCreationForFace:(i,sid,sc)=>set({pendingPanelCreation:{faceIndex:i,timestamp:Date.now(),sourceGeometryShapeId:sid,surfaceConstraint:sc}}),
-
-  activePanelProfileId:null,setActivePanelProfileId:(id)=>set({activePanelProfileId:id}),
-
-  showGlobalSettingsPanel:false,setShowGlobalSettingsPanel:(b)=>set({showGlobalSettingsPanel:b}),
 
   faceEditMode:false,setFaceEditMode:(b)=>set({faceEditMode:b}),
   selectedFaceIndex:null,setSelectedFaceIndex:(i)=>set({selectedFaceIndex:i}),
@@ -310,42 +266,6 @@ export const useAppStore=create<AppState>((set,get)=>({
       set({virtualFaces:up});
     });
   },
-
-  bazaHeight:100,setBazaHeight:(n)=>set({bazaHeight:n}),
-  frontBaseDistance:10,setFrontBaseDistance:(n)=>set({frontBaseDistance:n}),
-  backBaseDistance:30,setBackBaseDistance:(n)=>set({backBaseDistance:n}),
-
-  legHeight:100,setLegHeight:(n)=>set({legHeight:n}),
-  legDiameter:25,setLegDiameter:(n)=>set({legDiameter:n}),
-  legFrontDistance:30,setLegFrontDistance:(n)=>set({legFrontDistance:n}),
-  legBackDistance:30,setLegBackDistance:(n)=>set({legBackDistance:n}),
-  legSideDistance:30,setLegSideDistance:(n)=>set({legSideDistance:n}),
-
-  backPanelLeftExtend:0,setBackPanelLeftExtend:(n)=>set({backPanelLeftExtend:n}),
-  showBackPanelLeftExtend:false,setShowBackPanelLeftExtend:(b)=>set({showBackPanelLeftExtend:b}),
-  backPanelRightExtend:0,setBackPanelRightExtend:(n)=>set({backPanelRightExtend:n}),
-  showBackPanelRightExtend:false,setShowBackPanelRightExtend:(b)=>set({showBackPanelRightExtend:b}),
-
-  backPanelTopExtend:0,setBackPanelTopExtend:(n)=>set({backPanelTopExtend:n}),
-  showBackPanelTopExtend:false,setShowBackPanelTopExtend:(b)=>set({showBackPanelTopExtend:b}),
-  backPanelBottomExtend:0,setBackPanelBottomExtend:(n)=>set({backPanelBottomExtend:n}),
-  showBackPanelBottomExtend:false,setShowBackPanelBottomExtend:(b)=>set({showBackPanelBottomExtend:b}),
-
-  leftPanelBackShorten:0,setLeftPanelBackShorten:(n)=>set({leftPanelBackShorten:n}),
-  showLeftPanelBackShorten:false,setShowLeftPanelBackShorten:(b)=>set({showLeftPanelBackShorten:b}),
-  rightPanelBackShorten:0,setRightPanelBackShorten:(n)=>set({rightPanelBackShorten:n}),
-  showRightPanelBackShorten:false,setShowRightPanelBackShorten:(b)=>set({showRightPanelBackShorten:b}),
-
-  isLeftPanelSelected:false,setIsLeftPanelSelected:(b)=>set({isLeftPanelSelected:b}),
-  isRightPanelSelected:false,setIsRightPanelSelected:(b)=>set({isRightPanelSelected:b}),
-
-  isTopPanelSelected:false,setIsTopPanelSelected:(b)=>set({isTopPanelSelected:b}),
-  isBottomPanelSelected:false,setIsBottomPanelSelected:(b)=>set({isBottomPanelSelected:b}),
-
-  topPanelBackShorten:0,setTopPanelBackShorten:(n)=>set({topPanelBackShorten:n}),
-  showTopPanelBackShorten:false,setShowTopPanelBackShorten:(b)=>set({showTopPanelBackShorten:b}),
-  bottomPanelBackShorten:0,setBottomPanelBackShorten:(n)=>set({bottomPanelBackShorten:n}),
-  showBottomPanelBackShorten:false,setShowBottomPanelBackShorten:(b)=>set({showBottomPanelBackShorten:b}),
 
   rebuildingShapeIds:new Set<string>(),
   setShapeRebuilding:(id,rebuilding)=>set((s)=>{
