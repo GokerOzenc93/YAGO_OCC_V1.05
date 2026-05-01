@@ -589,12 +589,12 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
 
 const RayLine3D: React.FC<{ start: THREE.Vector3; end: THREE.Vector3 }> = React.memo(({ start, end }) => {
   const geometry = useMemo(() => new THREE.BufferGeometry().setFromPoints([start, end]), [start.x, start.y, start.z, end.x, end.y, end.z]);
-  return <lineSegments geometry={geometry}><lineBasicMaterial color={0xf97316} linewidth={2} depthTest={false} transparent opacity={0.9} /></lineSegments>;
+  return <lineSegments geometry={geometry} raycast={() => null}><lineBasicMaterial color={0xf97316} linewidth={2} depthTest={false} transparent opacity={0.9} /></lineSegments>;
 });
 RayLine3D.displayName = 'RayLine3D';
 
 const HitDot: React.FC<{ position: THREE.Vector3 }> = React.memo(({ position }) => (
-  <mesh position={[position.x, position.y, position.z]}>
+  <mesh position={[position.x, position.y, position.z]} raycast={() => null}>
     <sphereGeometry args={[2.5, 8, 8]} />
     <meshBasicMaterial color={0xef4444} depthTest={false} transparent opacity={0.9} />
   </mesh>
@@ -602,7 +602,7 @@ const HitDot: React.FC<{ position: THREE.Vector3 }> = React.memo(({ position }) 
 HitDot.displayName = 'HitDot';
 
 const OriginDot: React.FC<{ position: THREE.Vector3 }> = React.memo(({ position }) => (
-  <mesh position={[position.x, position.y, position.z]}>
+  <mesh position={[position.x, position.y, position.z]} raycast={() => null}>
     <sphereGeometry args={[3.5, 8, 8]} />
     <meshBasicMaterial color={0xfbbf24} depthTest={false} transparent opacity={0.95} />
   </mesh>
@@ -813,8 +813,8 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
   return (
     <>
       <mesh geometry={shape.geometry} visible={false} onPointerMove={handlePointerMove} onPointerOut={handlePointerOut} onPointerDown={handlePointerDown} onContextMenu={handleContextMenu} />
-      {hoverHighlightGeometry && !pending && (
-        <mesh geometry={hoverHighlightGeometry}>
+      {hoverHighlightGeometry && (
+        <mesh geometry={hoverHighlightGeometry} raycast={() => null}>
           <meshBasicMaterial color={hoveredGroupIndex !== null && groupHasVirtualFace(hoveredGroupIndex) ? 0x60a5fa : 0xfbbf24} transparent opacity={0.35} side={THREE.DoubleSide} polygonOffset polygonOffsetFactor={-1} polygonOffsetUnits={-1} />
         </mesh>
       )}
@@ -827,10 +827,10 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
               <HitDot position={line.end} />
             </React.Fragment>
           ))}
-          <mesh geometry={pending.geo}>
+          <mesh geometry={pending.geo} raycast={() => null}>
             <meshBasicMaterial color={0x22c55e} transparent opacity={0.5} side={THREE.DoubleSide} polygonOffset polygonOffsetFactor={-2} polygonOffsetUnits={-2} depthTest={false} />
           </mesh>
-          <lineSegments geometry={pending.edgeGeo}>
+          <lineSegments geometry={pending.edgeGeo} raycast={() => null}>
             <lineBasicMaterial color={0x16a34a} linewidth={2} depthTest={false} transparent opacity={0.9} />
           </lineSegments>
         </>
