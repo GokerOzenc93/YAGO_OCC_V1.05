@@ -32,22 +32,41 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
     const { recalculateVirtualFacesForShape } = await import('./VirtualFaceUpdateService');
     const { createPanelFromVirtualFace, convertReplicadToThreeGeometry } = await import('./ReplicadService');
 
-    const freshFaces = recalculateVirtualFacesForShape(parent, store.virtualFaces, store.shapes);
-    useAppStore.setState({ virtualFaces: freshFaces });
+    const vfOrder = new Map<string, number>();
+    store.virtualFaces.forEach((vf, idx) => vfOrder.set(vf.id, idx));
 
-    const siblings = useAppStore.getState().shapes.filter(
-      s => s.type === 'panel' &&
+    const siblingsOrdered = store.shapes
+      .filter(s => s.type === 'panel' &&
         s.parameters?.parentShapeId === parentShapeId &&
-        s.parameters?.virtualFaceId
-    );
+        s.parameters?.virtualFaceId)
+      .sort((a, b) => {
+        const ai = vfOrder.get(a.parameters.virtualFaceId) ?? Infinity;
+        const bi = vfOrder.get(b.parameters.virtualFaceId) ?? Infinity;
+        return ai - bi;
+      });
 
-    for (const panel of siblings) {
+    let workingShapes: any[] = store.shapes.filter(
+      s => !(s.type === 'panel' && s.parameters?.parentShapeId === parentShapeId)
+    );
+    let workingVirtualFaces = store.virtualFaces;
+
+    for (const panel of siblingsOrdered) {
+      const freshFaces = recalculateVirtualFacesForShape(parent, workingVirtualFaces, workingShapes);
+      workingVirtualFaces = freshFaces;
+
       const vf = freshFaces.find(f => f.id === panel.parameters.virtualFaceId);
-      if (!vf || vf.vertices.length < 3) continue;
+      if (!vf || vf.vertices.length < 3) {
+        workingShapes = [...workingShapes, panel];
+        continue;
+      }
+
       try {
         const thickness = panel.parameters?.depth || 18;
         const rp = await createPanelFromVirtualFace(vf.vertices, vf.normal, thickness);
-        if (!rp) continue;
+        if (!rp) {
+          workingShapes = [...workingShapes, panel];
+          continue;
+        }
         const geometry = convertReplicadToThreeGeometry(rp);
         const r = geoAxesSize(geometry);
         const paramUpdates: Record<string, any> = { ...panel.parameters };
@@ -58,11 +77,24 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           paramUpdates.width = s[def];
           paramUpdates.height = s[alt];
         }
-        useAppStore.getState().updateShape(panel.id, { geometry, replicadShape: rp, parameters: paramUpdates });
+        const rebuiltPanel = { ...panel, geometry, replicadShape: rp, parameters: paramUpdates };
+        workingShapes = [...workingShapes, rebuiltPanel];
       } catch (err) {
-        console.error('Failed to rebuild sibling panel', panel.id, err);
+        console.error('Failed to rebuild panel', panel.id, err);
+        workingShapes = [...workingShapes, panel];
       }
     }
+
+    useAppStore.setState(state => {
+      const rebuiltById = new Map<string, any>();
+      for (const s of workingShapes) {
+        if (s.type === 'panel' && s.parameters?.parentShapeId === parentShapeId) rebuiltById.set(s.id, s);
+      }
+      return {
+        shapes: state.shapes.map(s => rebuiltById.get(s.id) || s),
+        virtualFaces: workingVirtualFaces,
+      };
+    });
   } finally {
     rebuildInFlight.delete(parentShapeId);
   }

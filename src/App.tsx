@@ -42,6 +42,12 @@ function App() {
           if (!currSet.has(id)) { parentsNeedingRebuild.add(pid); break; }
         }
       }
+      for (const [pid, currSet] of nextMap) {
+        const prevSet = prevPanelsByParent.get(pid) || new Set<string>();
+        for (const id of currSet) {
+          if (!prevSet.has(id)) { parentsNeedingRebuild.add(pid); break; }
+        }
+      }
       prevPanelsByParent = nextMap;
 
       if (parentsNeedingRebuild.size === 0) return;
