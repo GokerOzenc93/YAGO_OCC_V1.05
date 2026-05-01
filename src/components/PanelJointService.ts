@@ -358,11 +358,12 @@ async function applyBackPanelSettings(
     backPanelBottomExtend,
   } = state;
 
-  const { createPanelFromFace, convertReplicadToThreeGeometry, createReplicadBox } = await import('./ReplicadService');
+  const { createPanelFromFace, createPanelFromVirtualFace, convertReplicadToThreeGeometry, createReplicadBox } = await import('./ReplicadService');
   const { extractFacesFromGeometry, groupCoplanarFaces } = await import('./FaceEditor');
 
   const faces = extractFacesFromGeometry(parentShape.geometry);
   const faceGroups = groupCoplanarFaces(faces);
+  const virtualFacesAll = state.virtualFaces;
 
   const updates: Array<{ id: string; geometry: any; replicadShape: any; parameters: any }> = [];
 
@@ -376,31 +377,44 @@ async function applyBackPanelSettings(
 
   for (const panel of backPanels) {
     const faceIndex = panel.parameters?.faceIndex;
-    if (faceIndex === undefined || faceIndex === null || faceIndex < 0) continue;
-    if (faceIndex >= faceGroups.length) continue;
+    const virtualFaceId = panel.parameters?.virtualFaceId;
+    const isVirtual = !!virtualFaceId;
 
     try {
-      const faceGroup = faceGroups[faceIndex];
-      if (!faceGroup) continue;
+      let replicadPanel: any = null;
+      let localNormal: THREE.Vector3;
 
-      const localVertices: THREE.Vector3[] = [];
-      faceGroup.faceIndices.forEach((idx: number) => {
-        faces[idx].vertices.forEach((v: THREE.Vector3) => localVertices.push(v.clone()));
-      });
+      if (isVirtual) {
+        const vf = virtualFacesAll.find((f: any) => f.id === virtualFaceId);
+        if (!vf || vf.vertices.length < 3) continue;
+        replicadPanel = await createPanelFromVirtualFace(vf.vertices, vf.normal, backPanelThickness);
+        if (!replicadPanel) continue;
+        localNormal = new THREE.Vector3(vf.normal[0], vf.normal[1], vf.normal[2]).normalize();
+      } else {
+        if (faceIndex === undefined || faceIndex === null || faceIndex < 0) continue;
+        if (faceIndex >= faceGroups.length) continue;
+        const faceGroup = faceGroups[faceIndex];
+        if (!faceGroup) continue;
 
-      const localNormal = faceGroup.normal.clone().normalize();
-      const localBox = new THREE.Box3().setFromPoints(localVertices);
-      const localCenter = new THREE.Vector3();
-      localBox.getCenter(localCenter);
+        const localVertices: THREE.Vector3[] = [];
+        faceGroup.faceIndices.forEach((idx: number) => {
+          faces[idx].vertices.forEach((v: THREE.Vector3) => localVertices.push(v.clone()));
+        });
 
-      const replicadPanel = await createPanelFromFace(
-        parentShape.replicadShape,
-        [localNormal.x, localNormal.y, localNormal.z],
-        [localCenter.x, localCenter.y, localCenter.z],
-        backPanelThickness,
-        null
-      );
-      if (!replicadPanel) continue;
+        localNormal = faceGroup.normal.clone().normalize();
+        const localBox = new THREE.Box3().setFromPoints(localVertices);
+        const localCenter = new THREE.Vector3();
+        localBox.getCenter(localCenter);
+
+        replicadPanel = await createPanelFromFace(
+          parentShape.replicadShape,
+          [localNormal.x, localNormal.y, localNormal.z],
+          [localCenter.x, localCenter.y, localCenter.z],
+          backPanelThickness,
+          null
+        );
+        if (!replicadPanel) continue;
+      }
 
       const offsetX = localNormal.x * (-effectiveGrooveOffset);
       const offsetY = localNormal.y * (-effectiveGrooveOffset);
