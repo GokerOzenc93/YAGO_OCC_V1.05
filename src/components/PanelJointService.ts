@@ -717,12 +717,30 @@ export async function resolveAllPanelJoints(
   const cutsMap = new Map<string, string[]>();
   const extensionsMap = new Map<string, Array<{ subordinateId: string; subordinateRole: FaceRole }>>();
 
+  const frozenPanelIds = new Set<string>();
+  const rolelessPanels = panels.filter(p => !!p.parameters?.roleless);
+  for (const rp of rolelessPanels) {
+    frozenPanelIds.add(rp.id);
+    const rpOrig = originalShapes.get(rp.id);
+    for (const other of panels) {
+      if (other.id === rp.id) continue;
+      const otherOrig = originalShapes.get(other.id);
+      if (rpOrig && otherOrig && panelsOverlap(rpOrig, otherOrig)) {
+        frozenPanelIds.add(other.id);
+      }
+    }
+  }
+
   for (let i = 0; i < panels.length; i++) {
     for (let j = i + 1; j < panels.length; j++) {
       const pA = panels[i];
       const pB = panels[j];
       const roleA = pA.parameters?.faceRole as FaceRole;
       const roleB = pB.parameters?.faceRole as FaceRole;
+
+      if (frozenPanelIds.has(pA.id) || frozenPanelIds.has(pB.id)) {
+        continue;
+      }
 
       const origA = originalShapes.get(pA.id);
       const origB = originalShapes.get(pB.id);

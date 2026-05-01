@@ -282,7 +282,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         const roleSel = (val: string, onChange: (v: string) => void, bc = 'border-transparent') => (
           <select value={val} disabled={isOff} onClick={stop} onChange={e => onChange(e.target.value)} style={{ width: '28mm' }}
             className={`px-1 py-0.5 text-xs border-b rounded-none bg-transparent ${isOff ? 'text-stone-400 border-stone-200' : `text-gray-700 ${bc} hover:border-gray-300 focus:border-orange-400`}`}>
-            <option value="">—</option>{ROLE_OPTIONS.map(r => <option key={r} value={r}>{r}</option>)}<option value="__none__">Rolsüz</option></select>
+            <option value="">—</option>{ROLE_OPTIONS.map(r => <option key={r} value={r}>{r}</option>)}<option value="__none__">Roleless</option></select>
         );
         return (
           <div className={`space-y-0 pt-2 border-t border-stone-200 ${isOff ? 'opacity-40 pointer-events-none' : ''}`}>
