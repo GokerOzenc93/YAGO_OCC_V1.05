@@ -127,7 +127,7 @@ function computePanelPlaneIntersectionEdges(panel: any, facePlaneNormal: THREE.V
   return edges;
 }
 
-export function collectPanelObstacleEdgesWorld(panelShapes: any[], facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, planeTolerance: number = 15): Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> {
+export function collectPanelObstacleEdgesWorld(panelShapes: any[], facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, planeTolerance: number = 1.5): Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> {
   const obstacleEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> = [];
   for (const panel of panelShapes) {
     if (!panel.geometry) continue;
@@ -467,7 +467,7 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
   const { u, v } = getFacePlaneAxes(worldNormal);
   const planeOrigin = clickWorld.clone();
   const boundaryEdges = collectBoundaryEdgesWorld(faces, group.faceIndices, localToWorld);
-  const panelEdges = collectPanelObstacleEdgesWorld(childPanels, worldNormal, planeOrigin, 20);
+  const panelEdges = collectPanelObstacleEdgesWorld(childPanels, worldNormal, planeOrigin, 1.5);
   const subEdges = collectSubtractionObstacleEdgesWorld(subtractions, localToWorld, worldNormal, planeOrigin, 20);
   const vfEdges = collectVirtualFaceObstacleEdgesWorld(shapeVirtualFaces, null, localToWorld, worldNormal, planeOrigin, 20);
   const obstacleEdges = [...panelEdges, ...subEdges, ...vfEdges];
