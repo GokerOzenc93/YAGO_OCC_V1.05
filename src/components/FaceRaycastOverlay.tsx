@@ -378,6 +378,18 @@ function sign(p1: Point2D, p2: Point2D, p3: Point2D): number {
   return (p1.x - p3.x) * (p2.y - p3.y) - (p2.x - p3.x) * (p1.y - p3.y);
 }
 
+function pointInTriangle3D(p: THREE.Vector3, a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3): boolean {
+  const v0 = c.clone().sub(a);
+  const v1 = b.clone().sub(a);
+  const v2 = p.clone().sub(a);
+  const dot00 = v0.dot(v0), dot01 = v0.dot(v1), dot02 = v0.dot(v2);
+  const dot11 = v1.dot(v1), dot12 = v1.dot(v2);
+  const inv = 1 / (dot00 * dot11 - dot01 * dot01);
+  const u = (dot11 * dot02 - dot01 * dot12) * inv;
+  const v = (dot00 * dot12 - dot01 * dot02) * inv;
+  return u >= -0.01 && v >= -0.01 && (u + v) <= 1.02;
+}
+
 export function ensureCCW(poly: Point2D[]): Point2D[] {
   let area = 0;
   for (let i = 0; i < poly.length; i++) {
@@ -725,24 +737,33 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     if (isSameSpot) {
       const cameraPos = e.camera?.position?.clone();
       if (cameraPos) {
-        const rayDir = clickPoint.clone().sub(cameraPos).normalize();
+        const rayOrigin = cameraPos;
+        const rayDir = clickPoint.clone().sub(rayOrigin).normalize();
         const candidateGroups: Array<{ index: number; depth: number }> = [];
+
         for (let gi = 0; gi < faceGroups.length; gi++) {
           const group = faceGroups[gi];
-          const groupNormal = group.normal.clone().normalize();
-          const groupCenter = group.center.clone().applyMatrix4(localToWorld);
-          const toGroup = groupCenter.clone().sub(cameraPos);
-          const depth = toGroup.dot(rayDir);
-          const perpDist = toGroup.clone().sub(rayDir.clone().multiplyScalar(depth)).length();
-          const groupBBox = new THREE.Box3();
-          group.faceIndices.forEach(fi => {
+          const groupNormalWorld = group.normal.clone().normalize().applyMatrix3(
+            new THREE.Matrix3().getNormalMatrix(localToWorld)
+          ).normalize();
+          const planePoint = group.center.clone().applyMatrix4(localToWorld);
+          const denom = groupNormalWorld.dot(rayDir);
+          if (Math.abs(denom) < 1e-6) continue;
+          const t = planePoint.clone().sub(rayOrigin).dot(groupNormalWorld) / denom;
+          if (t < 0) continue;
+          const hitOnPlane = rayOrigin.clone().addScaledVector(rayDir, t);
+
+          let inside = false;
+          for (const fi of group.faceIndices) {
             const face = faces[fi];
-            if (!face) return;
-            face.vertices.forEach(v => groupBBox.expandByPoint(v.clone().applyMatrix4(localToWorld)));
-          });
-          const expanded = groupBBox.clone().expandByScalar(2);
-          if (expanded.containsPoint(clickPoint) || perpDist < Math.max(groupBBox.getSize(new THREE.Vector3()).length() * 0.6, 10)) {
-            candidateGroups.push({ index: gi, depth });
+            if (!face) continue;
+            const vA = face.vertices[0].clone().applyMatrix4(localToWorld);
+            const vB = face.vertices[1].clone().applyMatrix4(localToWorld);
+            const vC = face.vertices[2].clone().applyMatrix4(localToWorld);
+            if (pointInTriangle3D(hitOnPlane, vA, vB, vC)) { inside = true; break; }
+          }
+          if (inside) {
+            candidateGroups.push({ index: gi, depth: t });
           }
         }
 
