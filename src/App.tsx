@@ -18,6 +18,45 @@ function App() {
   const [catalogItems, setCatalogItems] = useState<CatalogItem[]>([]);
 
   useEffect(() => {
+    let prevPanelsByParent = new Map<string, Set<string>>();
+    const capture = (shapes: any[]) => {
+      const m = new Map<string, Set<string>>();
+      for (const s of shapes) {
+        if (s.type === 'panel' && s.parameters?.parentShapeId) {
+          const pid = s.parameters.parentShapeId;
+          if (!m.has(pid)) m.set(pid, new Set());
+          m.get(pid)!.add(s.id);
+        }
+      }
+      return m;
+    };
+    prevPanelsByParent = capture(useAppStore.getState().shapes);
+
+    const unsubscribe = useAppStore.subscribe((state, prev) => {
+      if (state.shapes === prev.shapes) return;
+      const nextMap = capture(state.shapes);
+      const parentsNeedingRebuild = new Set<string>();
+      for (const [pid, prevSet] of prevPanelsByParent) {
+        const currSet = nextMap.get(pid) || new Set<string>();
+        for (const id of prevSet) {
+          if (!currSet.has(id)) { parentsNeedingRebuild.add(pid); break; }
+        }
+      }
+      prevPanelsByParent = nextMap;
+
+      if (parentsNeedingRebuild.size === 0) return;
+      import('./components/PanelRebuildService').then(({ rebuildPanelsForParent }) => {
+        for (const pid of parentsNeedingRebuild) {
+          if (!state.shapes.find(s => s.id === pid)) continue;
+          rebuildPanelsForParent(pid);
+        }
+      });
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
     const onError = (e: ErrorEvent) => {
       if (e.message?.includes('BindingError') || e.message?.includes('OpenCascade')) {
         e.preventDefault();

@@ -241,7 +241,11 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
             updateVirtualFace(vf.id, { hasPanel: true });
           } catch (e) { console.error('Failed to create virtual panel:', e); }
         };
-        const removeVP = (vfId: string) => { const p = findVPanel(shapes, sid, vfId); if (p) useAppStore.getState().deleteShape(p.id); updateVirtualFace(vfId, { hasPanel: false }); };
+        const removeVP = (vfId: string) => {
+          const p = findVPanel(shapes, sid, vfId);
+          if (p) useAppStore.getState().deleteShape(p.id);
+          updateVirtualFace(vfId, { hasPanel: false });
+        };
         const roleSel = (val: string, onChange: (v: string) => void, bc = 'border-transparent') => (
           <select value={val} disabled={isOff} onClick={stop} onChange={e => onChange(e.target.value)} style={{ width: '28mm' }}
             className={`px-1 py-0.5 text-xs border-b rounded-none bg-transparent ${isOff ? 'text-stone-400 border-stone-200' : `text-gray-700 ${bc} hover:border-gray-300 focus:border-orange-400`}`}>
