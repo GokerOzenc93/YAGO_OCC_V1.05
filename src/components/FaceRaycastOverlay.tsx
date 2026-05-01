@@ -733,13 +733,14 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     const isSameSpot = lastClickRef.current && lastClickRef.current.point.distanceTo(clickLocal) < 5;
 
     let targetGroupIndex = hoveredGroupIndex;
+    let previewClickPoint = clickPoint;
 
     if (isSameSpot) {
       const cameraPos = e.camera?.position?.clone();
       if (cameraPos) {
         const rayOrigin = cameraPos;
         const rayDir = clickPoint.clone().sub(rayOrigin).normalize();
-        const candidateGroups: Array<{ index: number; depth: number }> = [];
+        const candidateGroups: Array<{ index: number; depth: number; hitPoint: THREE.Vector3 }> = [];
 
         for (let gi = 0; gi < faceGroups.length; gi++) {
           const group = faceGroups[gi];
@@ -763,7 +764,7 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
             if (pointInTriangle3D(hitOnPlane, vA, vB, vC)) { inside = true; break; }
           }
           if (inside) {
-            candidateGroups.push({ index: gi, depth: t });
+            candidateGroups.push({ index: gi, depth: t, hitPoint: hitOnPlane });
           }
         }
 
@@ -772,7 +773,12 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
           const prevCycleIndex = lastClickRef.current!.cycleIndex;
           const nextCycleIndex = (prevCycleIndex + 1) % candidateGroups.length;
           targetGroupIndex = candidateGroups[nextCycleIndex].index;
+          previewClickPoint = candidateGroups[nextCycleIndex].hitPoint;
           lastClickRef.current = { point: clickLocal, groupIndex: targetGroupIndex, cycleIndex: nextCycleIndex };
+        } else if (candidateGroups.length === 1) {
+          targetGroupIndex = candidateGroups[0].index;
+          previewClickPoint = candidateGroups[0].hitPoint;
+          lastClickRef.current = { point: clickLocal, groupIndex: targetGroupIndex, cycleIndex: 0 };
         } else {
           lastClickRef.current = { point: clickLocal, groupIndex: targetGroupIndex, cycleIndex: 0 };
         }
@@ -784,7 +790,7 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     }
 
     setHoveredGroupIndex(targetGroupIndex);
-    setPending(buildPreview(clickPoint, faceGroups[targetGroupIndex], faces, localToWorld, worldToLocal, childPanels, shape.id, shape.subtractionGeometries || [], shape.geometry, shapeVirtualFaces));
+    setPending(buildPreview(previewClickPoint, faceGroups[targetGroupIndex], faces, localToWorld, worldToLocal, childPanels, shape.id, shape.subtractionGeometries || [], shape.geometry, shapeVirtualFaces));
   };
   const handleContextMenu = (e: any) => {
     e.stopPropagation(); e.nativeEvent?.preventDefault?.();
