@@ -684,7 +684,7 @@ export const VirtualFaceOverlay: React.FC<VirtualFaceOverlayProps> = ({ shape })
 };
 
 export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, allShapes = [] }) => {
-  const { raycastMode, addVirtualFace, virtualFaces } = useAppStore();
+  const { raycastMode, setRaycastMode, addVirtualFace, virtualFaces } = useAppStore();
   const [faces, setFaces] = useState<FaceData[]>([]);
   const [faceGroups, setFaceGroups] = useState<CoplanarFaceGroup[]>([]);
   const [hoveredGroupIndex, setHoveredGroupIndex] = useState<number | null>(null);
@@ -720,7 +720,7 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     if (!raycastMode) return;
     if (e.button === 2) {
       e.stopPropagation(); e.nativeEvent?.preventDefault?.();
-      if (pending) { addVirtualFace(pending.virtualFace); setPending(null); lastClickRef.current = null; }
+      if (pending) { addVirtualFace(pending.virtualFace); setPending(null); lastClickRef.current = null; setRaycastMode(false); }
       return;
     }
     if (e.button !== 0) return;
@@ -794,7 +794,7 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
   };
   const handleContextMenu = (e: any) => {
     e.stopPropagation(); e.nativeEvent?.preventDefault?.();
-    if (pending) { addVirtualFace(pending.virtualFace); setPending(null); }
+    if (pending) { addVirtualFace(pending.virtualFace); setPending(null); lastClickRef.current = null; setRaycastMode(false); }
   };
   if (!raycastMode) return null;
   return (

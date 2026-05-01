@@ -202,6 +202,17 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     })();
   }, [pendingPanelCreation]);
 
+  useEffect(() => {
+    if (raycastMode) { setShowOutlines(true); }
+  }, [raycastMode]);
+
+  useEffect(() => {
+    if (!selectedShape) return;
+    const hasPanels = shapes.some(s => s.type === 'panel' && s.parameters?.parentShapeId === selectedShape.id);
+    if (!hasPanels) { setShowOutlines(true); return; }
+    if (!raycastMode) { setShowOutlines(false); }
+  }, [selectedShape?.id, shapes.length, raycastMode]);
+
   const loadProfiles = async () => { try { setLoading(true); setProfiles(await globalSettingsService.listProfiles()); } catch (e) { console.error('Failed to load profiles:', e); } finally { setLoading(false); } };
 
 
@@ -346,6 +357,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
               const { executeFaceExtrude } = await import('./FaceExtrudeService');
               await executeFaceExtrude({ panelShape: ps, faceGroupIndex: faceExtrudeSelectedFace!, value: faceExtrudeThickness, isFixed: faceExtrudeFixedMode, shapes, updateShape });
               setFaceExtrudeSelectedFace(null);
+              setFaceExtrudeMode(false);
             }} className={`flex items-center justify-center w-6 h-6 rounded border transition-colors shrink-0 ${hf ? 'border-green-400 bg-green-500 text-white hover:bg-green-600' : 'border-orange-200 bg-orange-100 text-orange-300 cursor-not-allowed'}`}
               title="Onayla"><Check size={12}/></button>}
           </div>
