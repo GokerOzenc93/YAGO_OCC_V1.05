@@ -407,7 +407,7 @@ async function applyBackPanelSettings(
       const offsetZ = localNormal.z * (-effectiveGrooveOffset);
       let finalPanel = replicadPanel.translate(offsetX, offsetY, offsetZ);
 
-      const needsGrooveExpand = hasDominantPanels && (effectiveGrooveDepth > 0 || backPanelLeftExtend > 0 || backPanelRightExtend > 0 || backPanelTopExtend > 0 || backPanelBottomExtend > 0);
+      const needsGrooveExpand = hasDominantPanels;
 
       if (needsGrooveExpand) {
         const baseBB = getReplicadBoundingBox(finalPanel);
@@ -430,10 +430,11 @@ async function applyBackPanelSettings(
         const topPanel = panels.find(p => p.parameters?.faceRole === 'Top');
         const bottomPanel = panels.find(p => p.parameters?.faceRole === 'Bottom');
 
-        const leftThickness = leftPanel ? (leftPanel.parameters?.depth ?? 18) : 0;
-        const rightThickness = rightPanel ? (rightPanel.parameters?.depth ?? 18) : 0;
-        const topThickness = topPanel ? (topPanel.parameters?.depth ?? 18) : 0;
-        const bottomThickness = bottomPanel ? (bottomPanel.parameters?.depth ?? 18) : 0;
+        const getPanelShape = (p: any) => p?.parameters?.originalReplicadShape || p?.replicadShape;
+        const leftBB = leftPanel ? getReplicadBoundingBox(getPanelShape(leftPanel)) : null;
+        const rightBB = rightPanel ? getReplicadBoundingBox(getPanelShape(rightPanel)) : null;
+        const topBB = topPanel ? getReplicadBoundingBox(getPanelShape(topPanel)) : null;
+        const bottomBB = bottomPanel ? getReplicadBoundingBox(getPanelShape(bottomPanel)) : null;
 
         const leftGroove = leftPanel ? effectiveGrooveDepth : 0;
         const rightGroove = rightPanel ? effectiveGrooveDepth : 0;
@@ -443,10 +444,18 @@ async function applyBackPanelSettings(
         const newMin: [number, number, number] = [baseBB.min[0], baseBB.min[1], baseBB.min[2]];
         const newMax: [number, number, number] = [baseBB.max[0], baseBB.max[1], baseBB.max[2]];
 
-        newMin[horizontalAxis] += leftThickness - leftGroove - backPanelLeftExtend;
-        newMax[horizontalAxis] -= rightThickness - rightGroove - backPanelRightExtend;
-        newMax[verticalAxis] -= topThickness - topGroove - backPanelTopExtend;
-        newMin[verticalAxis] += bottomThickness - bottomGroove - backPanelBottomExtend;
+        if (leftBB) {
+          newMin[horizontalAxis] = leftBB.max[horizontalAxis] - leftGroove - backPanelLeftExtend;
+        }
+        if (rightBB) {
+          newMax[horizontalAxis] = rightBB.min[horizontalAxis] + rightGroove + backPanelRightExtend;
+        }
+        if (topBB) {
+          newMax[verticalAxis] = topBB.min[verticalAxis] + topGroove + backPanelTopExtend;
+        }
+        if (bottomBB) {
+          newMin[verticalAxis] = bottomBB.max[verticalAxis] - bottomGroove - backPanelBottomExtend;
+        }
 
         const dims: [number, number, number] = [
           newMax[0] - newMin[0],
