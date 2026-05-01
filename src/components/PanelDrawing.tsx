@@ -124,7 +124,8 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
 
   const isFaceExtrudeTarget = faceExtrudeMode && shape.id === faceExtrudeTargetPanelId;
   const isFaceExtrudeXray = faceExtrudeMode && shape.id !== faceExtrudeTargetPanelId;
-  const disableRaycast = isFaceExtrudeTarget || isFaceExtrudeXray;
+  const isRaycastOnParent = raycastMode && parentShapeId && parentShapeId === selectedShapeId;
+  const disableRaycast = isFaceExtrudeTarget || isFaceExtrudeXray || isRaycastOnParent;
 
   useEffect(() => {
     const mesh = meshRef.current;
@@ -170,17 +171,6 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   const handleClick = (e: any) => {
     e.stopPropagation();
     if (isFaceExtrudeTarget) return;
-    // Raycast (add-face) modu: parent referans hacminin seçimi bozulmasın, sadece panel satırı seçilsin
-    if (raycastMode && parentShapeId) {
-      if (selectedShapeId !== parentShapeId) selectShape(parentShapeId);
-      if (virtualFaceId) {
-        setSelectedPanelRow(`vf-${virtualFaceId}`, null, parentShapeId);
-      } else {
-        setSelectedPanelRow(faceIndex ?? null, extraRowId || null, parentShapeId);
-      }
-      selectSecondaryShape(null);
-      return;
-    }
     // Panel yüzey seçim modu
     if (panelSurfaceSelectMode && waitingForSurfaceSelection && e.faceIndex !== undefined) {
       const clickedFaceIndex = e.faceIndex;

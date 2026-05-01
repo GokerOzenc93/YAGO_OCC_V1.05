@@ -736,16 +736,6 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
       return;
     }
     if (e.button !== 0) return;
-    const panelIds = new Set(childPanels.map(p => p.id));
-    const panelInRay = Array.isArray(e.intersections) && e.intersections.some((hit: any) => {
-      let obj: any = hit?.object;
-      while (obj) {
-        if (typeof obj.name === 'string' && obj.name.startsWith('shape-') && panelIds.has(obj.name.slice(6))) return true;
-        obj = obj.parent;
-      }
-      return false;
-    });
-    if (panelInRay) return;
     e.stopPropagation();
     if (hoveredGroupIndex === null || !faceGroups[hoveredGroupIndex]) return;
 
