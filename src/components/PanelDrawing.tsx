@@ -58,7 +58,8 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     faceExtrudeTargetPanelId,
     setFaceExtrudeHoveredFace,
     faceExtrudeSelectedFace,
-    setFaceExtrudeSelectedFace
+    setFaceExtrudeSelectedFace,
+    raycastMode
   } = useAppStore(useShallow(state => ({
     selectShape: state.selectShape,
     selectSecondaryShape: state.selectSecondaryShape,
@@ -75,7 +76,8 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     faceExtrudeTargetPanelId: state.faceExtrudeTargetPanelId,
     setFaceExtrudeHoveredFace: state.setFaceExtrudeHoveredFace,
     faceExtrudeSelectedFace: state.faceExtrudeSelectedFace,
-    setFaceExtrudeSelectedFace: state.setFaceExtrudeSelectedFace
+    setFaceExtrudeSelectedFace: state.setFaceExtrudeSelectedFace,
+    raycastMode: state.raycastMode
   })));
 
   const [faceGroups, setFaceGroups] = useState<any[]>([]);
@@ -168,6 +170,17 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   const handleClick = (e: any) => {
     e.stopPropagation();
     if (isFaceExtrudeTarget) return;
+    // Raycast (add-face) modu: parent referans hacminin seçimi bozulmasın, sadece panel satırı seçilsin
+    if (raycastMode && parentShapeId) {
+      if (selectedShapeId !== parentShapeId) selectShape(parentShapeId);
+      if (virtualFaceId) {
+        setSelectedPanelRow(`vf-${virtualFaceId}`, null, parentShapeId);
+      } else {
+        setSelectedPanelRow(faceIndex ?? null, extraRowId || null, parentShapeId);
+      }
+      selectSecondaryShape(null);
+      return;
+    }
     // Panel yüzey seçim modu
     if (panelSurfaceSelectMode && waitingForSurfaceSelection && e.faceIndex !== undefined) {
       const clickedFaceIndex = e.faceIndex;
