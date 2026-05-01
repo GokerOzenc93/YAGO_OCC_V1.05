@@ -684,7 +684,7 @@ export const VirtualFaceOverlay: React.FC<VirtualFaceOverlayProps> = ({ shape })
 };
 
 export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, allShapes = [] }) => {
-  const { raycastMode, setRaycastMode, addVirtualFace, virtualFaces } = useAppStore();
+  const { raycastMode, setRaycastMode, addVirtualFace, virtualFaces, setSelectedPanelRow } = useAppStore();
   const [faces, setFaces] = useState<FaceData[]>([]);
   const [faceGroups, setFaceGroups] = useState<CoplanarFaceGroup[]>([]);
   const [hoveredGroupIndex, setHoveredGroupIndex] = useState<number | null>(null);
@@ -703,17 +703,18 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
   }, [shape.geometry, shape.id, geometryUuid]);
   useEffect(() => { if (!raycastMode) { setHoveredGroupIndex(null); setPending(null); lastClickRef.current = null; } }, [raycastMode]);
   const childPanels = useMemo(() => allShapes.filter(s => s.type === 'panel' && s.parameters?.parentShapeId === shape.id), [allShapes, shape.id]);
-  const groupHasVirtualFace = useCallback((gi: number) => {
-    if (gi < 0 || gi >= faceGroups.length || shapeVirtualFaces.length === 0) return false;
+  const findVirtualFaceForGroup = useCallback((gi: number) => {
+    if (gi < 0 || gi >= faceGroups.length || shapeVirtualFaces.length === 0) return null;
     const gn = faceGroups[gi].normal.clone().normalize();
     const gc = faceGroups[gi].center.clone();
-    return shapeVirtualFaces.some(vf => {
+    return shapeVirtualFaces.find(vf => {
       const vn = new THREE.Vector3(...vf.normal).normalize();
       if (Math.abs(gn.dot(vn)) < 0.98) return false;
       const vc = new THREE.Vector3(...vf.center);
       return gc.distanceTo(vc) < 2;
-    });
+    }) || null;
   }, [faceGroups, shapeVirtualFaces]);
+  const groupHasVirtualFace = useCallback((gi: number) => findVirtualFaceForGroup(gi) !== null, [findVirtualFaceForGroup]);
   const hoverHighlightGeometry = useMemo(() => {
     if (hoveredGroupIndex === null || !faceGroups[hoveredGroupIndex]) return null;
     return createFaceHighlightGeometry(faces, faceGroups[hoveredGroupIndex].faceIndices);
@@ -723,8 +724,7 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     e.stopPropagation();
     if (e.faceIndex !== undefined) {
       const gi = faceGroups.findIndex(g => g.faceIndices.includes(e.faceIndex));
-      if (gi !== -1 && !groupHasVirtualFace(gi)) setHoveredGroupIndex(gi);
-      else if (gi !== -1 && groupHasVirtualFace(gi)) setHoveredGroupIndex(null);
+      if (gi !== -1) setHoveredGroupIndex(gi);
     }
   };
   const handlePointerOut = (e: any) => { e.stopPropagation(); setHoveredGroupIndex(null); };
@@ -737,7 +737,12 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     }
     if (e.button !== 0) return;
     e.stopPropagation();
-    if (hoveredGroupIndex === null || !faceGroups[hoveredGroupIndex] || groupHasVirtualFace(hoveredGroupIndex)) return;
+    if (hoveredGroupIndex === null || !faceGroups[hoveredGroupIndex]) return;
+    const clickedExistingVf = findVirtualFaceForGroup(hoveredGroupIndex);
+    if (clickedExistingVf) {
+      if (clickedExistingVf.hasPanel) setSelectedPanelRow(`vf-${clickedExistingVf.id}`, null, shape.id);
+      return;
+    }
 
     const clickPoint: THREE.Vector3 = e.point.clone();
     const clickLocal = clickPoint.clone().applyMatrix4(worldToLocal);
@@ -815,7 +820,7 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
       <mesh geometry={shape.geometry} visible={false} onPointerMove={handlePointerMove} onPointerOut={handlePointerOut} onPointerDown={handlePointerDown} onContextMenu={handleContextMenu} />
       {hoverHighlightGeometry && !pending && (
         <mesh geometry={hoverHighlightGeometry}>
-          <meshBasicMaterial color={0xfbbf24} transparent opacity={0.35} side={THREE.DoubleSide} polygonOffset polygonOffsetFactor={-1} polygonOffsetUnits={-1} />
+          <meshBasicMaterial color={hoveredGroupIndex !== null && groupHasVirtualFace(hoveredGroupIndex) ? 0x60a5fa : 0xfbbf24} transparent opacity={0.35} side={THREE.DoubleSide} polygonOffset polygonOffsetFactor={-1} polygonOffsetUnits={-1} />
         </mesh>
       )}
       {pending && (
