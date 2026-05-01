@@ -115,10 +115,13 @@ interface PanelEditorProps { isOpen: boolean; onClose: () => void; embedded?: bo
 export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorProps) {
   const { selectedShapeId, shapes, updateShape, addShape, showOutlines, setShowOutlines, showRoleNumbers, setShowRoleNumbers,
     selectedPanelRow, setSelectedPanelRow, panelSelectMode, setPanelSelectMode, raycastMode, setRaycastMode,
-    showVirtualFaces, setShowVirtualFaces, virtualFaces, updateVirtualFace, deleteVirtualFace, pendingPanelCreation,
+    showVirtualFaces, setShowVirtualFaces, virtualFaces, updateVirtualFace, deleteVirtualFace, reorderVirtualFaces, pendingPanelCreation,
     faceExtrudeMode, setFaceExtrudeMode, faceExtrudeTargetPanelId,
     setFaceExtrudeTargetPanelId, faceExtrudeSelectedFace, setFaceExtrudeSelectedFace, setFaceExtrudeHoveredFace,
     faceExtrudeThickness, setFaceExtrudeThickness, faceExtrudeFixedMode, setFaceExtrudeFixedMode } = useAppStore();
+
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [dropIndex, setDropIndex] = useState<number | null>(null);
 
   const [position, setPosition] = useState({ x: 100, y: 100 });
   const [isDragging, setIsDragging] = useState(false);
@@ -251,6 +254,14 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
             className={`px-1 py-0.5 text-xs border-b rounded-none bg-transparent ${isOff ? 'text-stone-400 border-stone-200' : `text-gray-700 ${bc} hover:border-gray-300 focus:border-orange-400`}`}>
             <option value="">—</option>{ROLE_OPTIONS.map(r => <option key={r} value={r}>{r}</option>)}<option value="__none__">Roleless</option></select>
         );
+        const onDrop = async (toIndex: number) => {
+          const from = dragIndex;
+          setDragIndex(null); setDropIndex(null);
+          if (from === null || from === toIndex) return;
+          reorderVirtualFaces(sid, from, toIndex);
+          const { rebuildPanelsForParent } = await import('./PanelRebuildService');
+          await rebuildPanelsForParent(sid);
+        };
         return (
           <div className="space-y-0 pt-2 border-t border-stone-200">
             {svf.map((vf, vi) => {
@@ -258,9 +269,23 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
               const roleChosen = !!vf.roleSelected;
               const selVal = roleChosen ? (vf.role || '__none__') : '';
               const rc = () => { if (vf.hasPanel) setSelectedPanelRow(`vf-${vf.id}`, null, sid); };
+              const isDragging = dragIndex === vi;
+              const isDropTarget = dropIndex === vi && dragIndex !== null && dragIndex !== vi;
               return (
-                <div key={vf.id} className={`flex w-fit gap-1 items-center py-0.5 px-1 rounded transition-colors ${sel ? 'bg-orange-50 ring-1 ring-orange-300' : 'hover:bg-stone-50'} ${vf.hasPanel ? 'cursor-pointer' : ''}`}
+                <div key={vf.id}
+                  onDragOver={e => { if (dragIndex !== null) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (dropIndex !== vi) setDropIndex(vi); } }}
+                  onDragLeave={() => { if (dropIndex === vi) setDropIndex(null); }}
+                  onDrop={e => { e.preventDefault(); onDrop(vi); }}
+                  className={`flex w-fit gap-1 items-center py-0.5 px-1 rounded transition-colors ${sel ? 'bg-orange-50 ring-1 ring-orange-300' : 'hover:bg-stone-50'} ${isDragging ? 'opacity-40' : ''} ${isDropTarget ? 'ring-1 ring-blue-400 bg-blue-50' : ''} ${vf.hasPanel ? 'cursor-pointer' : ''}`}
                   onClick={e => { stop(e); rc(); }}>
+                  <span
+                    draggable
+                    onDragStart={e => { stop(e); setDragIndex(vi); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(vi)); }}
+                    onDragEnd={() => { setDragIndex(null); setDropIndex(null); }}
+                    onClick={stop}
+                    className="cursor-grab active:cursor-grabbing text-stone-300 hover:text-stone-500"
+                    title="Drag to reorder"
+                  ><GripVertical size={12} /></span>
                   <input type="radio" name="ps" checked={sel} disabled={isOff||!vf.hasPanel} onChange={e => { stop(e); rc(); }}
                     className={`w-3.5 h-3.5 ${isOff||!vf.hasPanel ? 'text-stone-300 cursor-not-allowed' : 'text-orange-500 focus:ring-orange-400 cursor-pointer'}`} onClick={stop} />
                   <span className="w-8 text-xs font-mono font-bold text-center text-green-700 select-none" onClick={stop}>V{vi+1}</span>

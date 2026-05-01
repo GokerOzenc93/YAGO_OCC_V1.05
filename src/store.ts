@@ -200,6 +200,7 @@ interface AppState{
   addVirtualFace:(v:VirtualFace)=>void;
   updateVirtualFace:(id:string,u:Partial<VirtualFace>)=>void;
   deleteVirtualFace:(id:string)=>void;
+  reorderVirtualFaces:(shapeId:string,fromIndex:number,toIndex:number)=>void;
   getVirtualFacesForShape:(sid:string)=>VirtualFace[];
   recalculateVirtualFacesForShape:(sid:string)=>void;
 
@@ -253,6 +254,16 @@ export const useAppStore=create<AppState>((set,get)=>({
   addVirtualFace:(v)=>set((s)=>({virtualFaces:[...s.virtualFaces,v]})),
   updateVirtualFace:(id,u)=>set((s)=>({virtualFaces:s.virtualFaces.map(f=>f.id===id?{...f,...u}:f)})),
   deleteVirtualFace:(id)=>set((s)=>({virtualFaces:s.virtualFaces.filter(f=>f.id!==id)})),
+  reorderVirtualFaces:(shapeId,fromIndex,toIndex)=>set((s)=>{
+    const shapeFaces=s.virtualFaces.filter(f=>f.shapeId===shapeId);
+    if(fromIndex<0||fromIndex>=shapeFaces.length||toIndex<0||toIndex>=shapeFaces.length||fromIndex===toIndex)return{};
+    const reordered=[...shapeFaces];
+    const[moved]=reordered.splice(fromIndex,1);
+    reordered.splice(toIndex,0,moved);
+    const queue=[...reordered];
+    const next=s.virtualFaces.map(f=>f.shapeId===shapeId?queue.shift()!:f);
+    return{virtualFaces:next};
+  }),
   getVirtualFacesForShape:(sid)=>get().virtualFaces.filter(f=>f.shapeId===sid),
   recalculateVirtualFacesForShape:(sid)=>{
     const s=get(),sh=s.shapes.find(x=>x.id===sid);
