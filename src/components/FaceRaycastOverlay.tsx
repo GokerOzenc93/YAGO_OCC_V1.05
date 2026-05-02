@@ -237,18 +237,24 @@ function filterStrictCoplanarFaceIndices(
   localToWorld: THREE.Matrix4,
   normalMatrix: THREE.Matrix3,
   clickWorld: THREE.Vector3,
-  normalDotTol: number = 0.999,
-  planeDistTol: number = 0.3
+  groupNormalLocal: THREE.Vector3,
+  normalDotTol: number = 0.9995,
+  planeDistTol: number = 0.25
 ): number[] {
   if (groupIndices.length === 0) return [];
+  const groupNormalW = groupNormalLocal.clone().applyMatrix3(normalMatrix).normalize();
   let bestIdx = groupIndices[0];
-  let bestDist = Infinity;
+  let bestScore = -Infinity;
   for (const fi of groupIndices) {
     const face = faces[fi];
     if (!face) continue;
+    const nW = face.normal.clone().applyMatrix3(normalMatrix).normalize();
+    const align = nW.dot(groupNormalW);
+    if (align < 0.9995) continue;
     const cw = face.center.clone().applyMatrix4(localToWorld);
     const d = cw.distanceTo(clickWorld);
-    if (d < bestDist) { bestDist = d; bestIdx = fi; }
+    const score = align * 10 - d;
+    if (score > bestScore) { bestScore = score; bestIdx = fi; }
   }
   const refFace = faces[bestIdx];
   const refNormalW = refFace.normal.clone().applyMatrix3(normalMatrix).normalize();
@@ -567,11 +573,10 @@ export function collectVirtualFaceObstacleEdgesWorld(virtualFaces: VirtualFace[]
 function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces: FaceData[], localToWorld: THREE.Matrix4, worldToLocal: THREE.Matrix4, childPanels: any[], shapeId: string, subtractions: any[] = [], geometry?: THREE.BufferGeometry, shapeVirtualFaces: VirtualFace[] = []): PendingPreview | null {
   const normalMatrix = new THREE.Matrix3().getNormalMatrix(localToWorld);
   const planeOrigin = clickWorld.clone();
-  const strictIndices = filterStrictCoplanarFaceIndices(faces, group.faceIndices, localToWorld, normalMatrix, planeOrigin);
-  const refLocalNormal = strictIndices.length > 0
-    ? faces[strictIndices[0]].normal.clone().normalize()
-    : group.normal.clone().normalize();
-  const localNormal = refLocalNormal;
+  const strictIndices = filterStrictCoplanarFaceIndices(faces, group.faceIndices, localToWorld, normalMatrix, planeOrigin, group.normal);
+  const refFaceIdx = strictIndices[0] ?? group.faceIndices[0];
+  const refFace = faces[refFaceIdx];
+  const localNormal = refFace ? refFace.normal.clone().normalize() : group.normal.clone().normalize();
   const worldNormal = localNormal.clone().applyMatrix3(normalMatrix).normalize();
   let { u, v } = getFacePlaneAxes(worldNormal);
   const boundaryEdges = collectBoundaryEdgesWorld(faces, strictIndices, localToWorld);
