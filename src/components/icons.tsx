@@ -21,7 +21,7 @@ export const AddBoxButton: React.FC<IconButtonProps> = ({ onClick, disabled = fa
       <path d="M2.44 6.12L7.3 1.98M12.52 6.12L17.02 1.98M12.52 16.56L17.02 12.24" stroke="black" strokeWidth="0.7"/>
       <path d="M7.3 1.98H17.02V12.24" stroke="black" strokeWidth="0.7"/>
       <g style={{ mixBlendMode: 'plus-darker' }}>
-        <path d="M6.765 11.995H3.075V10.765H6.765V7.075H7.995V10.765H11.685V11.995H7.995V15.685H6.765V11.995Z" fill="#FF8D28"/>
+        <path d="M6.765 11.995H3.075V10.765H6.765V7.075H7.995V10.765H11.685V11.995H7.995V15.685H6.765V11.995Z" fill="#ffffff"/>
       </g>
     </svg>
   </button>
