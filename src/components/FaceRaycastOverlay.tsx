@@ -231,6 +231,42 @@ export function convexHull2D(points: Point2D[]): Point2D[] {
   return lower.concat(upper);
 }
 
+function filterStrictCoplanarFaceIndices(
+  faces: FaceData[],
+  groupIndices: number[],
+  localToWorld: THREE.Matrix4,
+  normalMatrix: THREE.Matrix3,
+  clickWorld: THREE.Vector3,
+  normalDotTol: number = 0.999,
+  planeDistTol: number = 0.3
+): number[] {
+  if (groupIndices.length === 0) return [];
+  let bestIdx = groupIndices[0];
+  let bestDist = Infinity;
+  for (const fi of groupIndices) {
+    const face = faces[fi];
+    if (!face) continue;
+    const cw = face.center.clone().applyMatrix4(localToWorld);
+    const d = cw.distanceTo(clickWorld);
+    if (d < bestDist) { bestDist = d; bestIdx = fi; }
+  }
+  const refFace = faces[bestIdx];
+  const refNormalW = refFace.normal.clone().applyMatrix3(normalMatrix).normalize();
+  const refPointW = refFace.center.clone().applyMatrix4(localToWorld);
+  const result: number[] = [];
+  for (const fi of groupIndices) {
+    const face = faces[fi];
+    if (!face) continue;
+    const nW = face.normal.clone().applyMatrix3(normalMatrix).normalize();
+    if (nW.dot(refNormalW) < normalDotTol) continue;
+    const cW = face.center.clone().applyMatrix4(localToWorld);
+    const planeDist = Math.abs(refNormalW.dot(new THREE.Vector3().subVectors(cW, refPointW)));
+    if (planeDist > planeDistTol) continue;
+    result.push(fi);
+  }
+  return result.length > 0 ? result : [bestIdx];
+}
+
 function pickDominantEdgeDirection(
   boundaryEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>,
   normal: THREE.Vector3
@@ -529,12 +565,16 @@ export function collectVirtualFaceObstacleEdgesWorld(virtualFaces: VirtualFace[]
 }
 
 function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces: FaceData[], localToWorld: THREE.Matrix4, worldToLocal: THREE.Matrix4, childPanels: any[], shapeId: string, subtractions: any[] = [], geometry?: THREE.BufferGeometry, shapeVirtualFaces: VirtualFace[] = []): PendingPreview | null {
-  const localNormal = group.normal.clone().normalize();
   const normalMatrix = new THREE.Matrix3().getNormalMatrix(localToWorld);
+  const planeOrigin = clickWorld.clone();
+  const strictIndices = filterStrictCoplanarFaceIndices(faces, group.faceIndices, localToWorld, normalMatrix, planeOrigin);
+  const refLocalNormal = strictIndices.length > 0
+    ? faces[strictIndices[0]].normal.clone().normalize()
+    : group.normal.clone().normalize();
+  const localNormal = refLocalNormal;
   const worldNormal = localNormal.clone().applyMatrix3(normalMatrix).normalize();
   let { u, v } = getFacePlaneAxes(worldNormal);
-  const planeOrigin = clickWorld.clone();
-  const boundaryEdges = collectBoundaryEdgesWorld(faces, group.faceIndices, localToWorld);
+  const boundaryEdges = collectBoundaryEdgesWorld(faces, strictIndices, localToWorld);
   const dominant = pickDominantEdgeDirection(boundaryEdges, worldNormal);
   if (dominant) {
     u = dominant.clone();
