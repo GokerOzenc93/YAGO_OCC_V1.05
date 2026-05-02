@@ -24,7 +24,7 @@ import {
   RotateCcw, ArrowDownUp,
 } from 'lucide-react';
 import { createReplicadBox, convertReplicadToThreeGeometry, performBooleanCut } from './ReplicadService';
-import AddBoxIcon from './AddBoxIcon';
+import AddBox from './AddBoxIcon';
 
 interface ToolbarProps { onOpenCatalog: () => void; }
 
@@ -357,7 +357,7 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
 
           {/* Geometry & Tools */}
           <div className="flex items-center bg-white rounded-lg shadow-sm border border-stone-200 p-0.5 gap-0">
-            <TBtn icon={<AddBoxIcon size={17} />}       label="Kutu Ekle (B)"    onClick={handleAddBox} />
+            <AddBox onClick={handleAddBox} />
             <TBtn
               icon={<MinusSquare size={17} />}
               label={hasIntersectingShapes ? 'Kesişen Şekilleri Çıkar' : selectedShapeId ? 'Kesişen şekil yok' : 'Önce şekil seçin'}
