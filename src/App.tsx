@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import * as THREE from 'three';
 import Scene from './components/Scene';
 import VerticalToolbar from './components/VerticalToolbar';
+import TopBar from './components/TopBar';
 import Terminal from './components/Terminal';
 import StatusBar from './components/StatusBar';
 import CatalogPanel from './components/CatalogPanel';
@@ -236,6 +237,7 @@ function App() {
           </div>
         </div>
       )}
+      <TopBar />
       <div className="flex-1 overflow-hidden flex">
         <VerticalToolbar onOpenCatalog={handleOpenCatalog} />
         <div className="flex-1 relative overflow-hidden">
