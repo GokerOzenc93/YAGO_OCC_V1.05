@@ -89,25 +89,29 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           }
         }
 
+        const parentHasFillets = !!(parent.fillets && parent.fillets.length > 0 && parent.replicadShape);
+
         if (vf.parentFaceShape) {
           const subs = parent.subtractionGeometries || [];
-          for (const sub of subs) {
-            if (!sub || !sub.parameters) continue;
-            const w = parseFloat(sub.parameters.width);
-            const h = parseFloat(sub.parameters.height);
-            const d = parseFloat(sub.parameters.depth);
-            if (isNaN(w) || isNaN(h) || isNaN(d) || w <= 0 || h <= 0 || d <= 0) continue;
-            try {
-              const margin = 0.5;
-              const cuttingBox = await createReplicadBox({ width: w + margin, height: h + margin, depth: d + margin });
-              rp = await performBooleanCut(
-                rp, cuttingBox,
-                undefined, sub.relativeOffset,
-                undefined, sub.relativeRotation || [0, 0, 0],
-                undefined, sub.scale || [1, 1, 1]
-              );
-            } catch (err) {
-              console.error('Failed to apply subtractor cut to parent-face-shape panel:', err);
+          if (!parentHasFillets) {
+            for (const sub of subs) {
+              if (!sub || !sub.parameters) continue;
+              const w = parseFloat(sub.parameters.width);
+              const h = parseFloat(sub.parameters.height);
+              const d = parseFloat(sub.parameters.depth);
+              if (isNaN(w) || isNaN(h) || isNaN(d) || w <= 0 || h <= 0 || d <= 0) continue;
+              try {
+                const margin = 0.5;
+                const cuttingBox = await createReplicadBox({ width: w + margin, height: h + margin, depth: d + margin });
+                rp = await performBooleanCut(
+                  rp, cuttingBox,
+                  undefined, sub.relativeOffset,
+                  undefined, sub.relativeRotation || [0, 0, 0],
+                  undefined, sub.scale || [1, 1, 1]
+                );
+              } catch (err) {
+                console.error('Failed to apply subtractor cut to parent-face-shape panel:', err);
+              }
             }
           }
 
