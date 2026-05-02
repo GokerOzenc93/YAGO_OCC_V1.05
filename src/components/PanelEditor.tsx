@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { X, GripVertical, RotateCw, Trash2, MoveVertical, Check, Pencil } from 'lucide-react';
+import { X, GripVertical, RotateCw, Trash2, MoveVertical, Check, Pencil, Shapes } from 'lucide-react';
 import { faceLabelRoleDefaultsService } from './GlobalSettingsDatabase';
 import { useAppStore } from '../store';
 import type { FaceRole } from '../store';
@@ -305,6 +305,13 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                     <button disabled={isOff||!vf.hasPanel} onClick={e => { stop(e); toggleArrow(vp); }}
                       className={`p-0.5 rounded transition-colors ${isOff||!vf.hasPanel ? 'text-stone-300 cursor-not-allowed' : ar ? 'text-blue-500' : 'text-stone-300 hover:text-stone-500'}`}
                       title="Rotate arrow direction"><RotateCw size={12} /></button>
+                    <button disabled={isOff||!vf.hasPanel||!vp} onClick={async e => {
+                      stop(e); if (!vp) return;
+                      const { reshapePanelToParentFace } = await import('./PanelReshapeService');
+                      await reshapePanelToParentFace(vp.id);
+                    }}
+                      className={`p-0.5 rounded transition-colors ${isOff||!vf.hasPanel||!vp ? 'text-stone-300 cursor-not-allowed' : 'text-stone-400 hover:text-teal-600'}`}
+                      title="Match parent face shape"><Shapes size={12} /></button>
                     <button disabled={isOff} onClick={e => { stop(e); if (vf.hasPanel) removeVP(vf.id); deleteVirtualFace(vf.id); }}
                       className="p-0.5 rounded text-stone-300 hover:text-red-400 transition-colors" title="Delete virtual face"><Trash2 size={12} /></button>
                   </div>
