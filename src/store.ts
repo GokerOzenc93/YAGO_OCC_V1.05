@@ -468,6 +468,11 @@ export const useAppStore=create<AppState>((set,get)=>({
               .filter(Boolean)
           }));
 
+          try{
+            const{rebuildPanelsForParent}=await import('./components/PanelRebuildService');
+            await rebuildPanelsForParent(a.id);
+          }catch(err){console.error('rebuild after subtractor add fail:',err);}
+
           return;
         }catch(e){console.error('boolean fail:',e);}
       }
@@ -522,6 +527,11 @@ export const useAppStore=create<AppState>((set,get)=>({
         }:x),
         selectedSubtractionIndex:null
       }));
+
+      try{
+        const{rebuildPanelsForParent}=await import('./components/PanelRebuildService');
+        await rebuildPanelsForParent(shapeId);
+      }catch(err){console.error('rebuild after subtractor delete fail:',err);}
 
     }catch(e){console.error('deleteSubtraction fail:',e);}
   }
