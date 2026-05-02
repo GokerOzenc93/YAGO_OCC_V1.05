@@ -155,6 +155,8 @@ interface AppState{
   showParametersPanel:boolean;setShowParametersPanel:(b:boolean)=>void;
   showOutlines:boolean;setShowOutlines:(b:boolean)=>void;
   showRoleNumbers:boolean;setShowRoleNumbers:(b:boolean)=>void;
+  showToolbarLabels:boolean;setShowToolbarLabels:(b:boolean)=>void;
+  leftSidebarOpen:boolean;setLeftSidebarOpen:(b:boolean)=>void;
 
   selectedPanelRow:number|string|null;
   selectedPanelRowExtraId:string|null;
@@ -218,6 +220,8 @@ export const useAppStore=create<AppState>((set,get)=>({
   showParametersPanel:false,setShowParametersPanel:(b)=>set({showParametersPanel:b}),
   showOutlines:true,setShowOutlines:(b)=>set({showOutlines:b}),
   showRoleNumbers:false,setShowRoleNumbers:(b)=>set({showRoleNumbers:b}),
+  showToolbarLabels:true,setShowToolbarLabels:(b)=>set({showToolbarLabels:b}),
+  leftSidebarOpen:false,setLeftSidebarOpen:(b)=>set({leftSidebarOpen:b}),
 
   selectedPanelRow:null,selectedPanelRowExtraId:null,selectedPanelRowParentId:null,
   setSelectedPanelRow:(i,e,parentId)=>set({selectedPanelRow:i,selectedPanelRowExtraId:e||null,selectedPanelRowParentId:parentId||null}),
