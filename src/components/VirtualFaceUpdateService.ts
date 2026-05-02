@@ -42,6 +42,17 @@ function findMatchingFaceGroup(
   }
 
   if (candidateGroups.length === 0) return null;
+
+  if (vf.faceGroupDescriptor) {
+    const matchedFace = findFaceByDescriptor(vf.faceGroupDescriptor, faces, geometry);
+    if (matchedFace) {
+      const matchedGroup = candidateGroups.find(g =>
+        g.faceIndices.includes(matchedFace.faceIndex)
+      );
+      if (matchedGroup) return matchedGroup;
+    }
+  }
+
   if (candidateGroups.length === 1) return candidateGroups[0];
 
   let bestGroup: CoplanarFaceGroup | null = null;

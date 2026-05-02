@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { VirtualFace } from '../store';
 import { extractFacesFromGeometry, groupCoplanarFaces } from './FaceEditor';
+import { createFaceDescriptor } from './GeometryUtils';
 
 type P2 = { x: number; y: number };
 
@@ -190,6 +191,9 @@ export async function reshapePanelToParentFace(panelId: string): Promise<void> {
             center: [center.x, center.y, center.z],
             raycastRecipe: undefined,
             parentFaceShape: true,
+            faceGroupDescriptor: group.faceIndices[0] !== undefined && faces[group.faceIndices[0]]
+              ? createFaceDescriptor(faces[group.faceIndices[0]], parent.geometry)
+              : undefined,
           }
         : f
     ),
