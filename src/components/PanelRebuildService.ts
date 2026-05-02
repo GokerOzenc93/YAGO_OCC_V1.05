@@ -51,11 +51,23 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
     );
     let workingVirtualFaces = store.virtualFaces;
 
-    for (const panel of siblingsOrdered) {
-      const freshFaces = recalculateVirtualFacesForShape(parent, workingVirtualFaces, workingShapes);
-      workingVirtualFaces = freshFaces;
+    const builtVfIds = new Set<string>();
 
-      const vf = freshFaces.find(f => f.id === panel.parameters.virtualFaceId);
+    for (const panel of siblingsOrdered) {
+      const currentVfId = panel.parameters.virtualFaceId;
+      const otherShapeVfs = workingVirtualFaces.filter(f => f.shapeId !== parentShapeId);
+      const activeSiblingVfs = workingVirtualFaces.filter(f =>
+        f.shapeId === parentShapeId &&
+        (f.id === currentVfId || builtVfIds.has(f.id) || !siblingsOrdered.some(s => s.parameters?.virtualFaceId === f.id))
+      );
+      const filteredForRecalc = [...otherShapeVfs, ...activeSiblingVfs];
+
+      const freshFaces = recalculateVirtualFacesForShape(parent, filteredForRecalc, workingShapes);
+      const freshById = new Map(freshFaces.map(f => [f.id, f]));
+      workingVirtualFaces = workingVirtualFaces.map(f => freshById.get(f.id) || f);
+      builtVfIds.add(currentVfId);
+
+      const vf = freshFaces.find(f => f.id === currentVfId);
       if (!vf || vf.vertices.length < 3) {
         workingShapes = [...workingShapes, panel];
         continue;
