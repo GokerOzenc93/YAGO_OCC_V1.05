@@ -237,24 +237,22 @@ function filterStrictCoplanarFaceIndices(
   localToWorld: THREE.Matrix4,
   normalMatrix: THREE.Matrix3,
   clickWorld: THREE.Vector3,
-  groupNormalLocal: THREE.Vector3,
-  normalDotTol: number = 0.9995,
-  planeDistTol: number = 0.25
+  _groupNormalLocal: THREE.Vector3,
+  normalDotTol: number = 0.99999,
+  planeDistTol: number = 0.05
 ): number[] {
   if (groupIndices.length === 0) return [];
-  const groupNormalW = groupNormalLocal.clone().applyMatrix3(normalMatrix).normalize();
   let bestIdx = groupIndices[0];
-  let bestScore = -Infinity;
+  let bestDist = Infinity;
   for (const fi of groupIndices) {
     const face = faces[fi];
     if (!face) continue;
     const nW = face.normal.clone().applyMatrix3(normalMatrix).normalize();
-    const align = nW.dot(groupNormalW);
-    if (align < 0.9995) continue;
     const cw = face.center.clone().applyMatrix4(localToWorld);
-    const d = cw.distanceTo(clickWorld);
-    const score = align * 10 - d;
-    if (score > bestScore) { bestScore = score; bestIdx = fi; }
+    const offset = new THREE.Vector3().subVectors(clickWorld, cw);
+    const planeOffset = offset.clone().addScaledVector(nW, -offset.dot(nW));
+    const d = planeOffset.length() + Math.abs(offset.dot(nW)) * 5;
+    if (d < bestDist) { bestDist = d; bestIdx = fi; }
   }
   const refFace = faces[bestIdx];
   const refNormalW = refFace.normal.clone().applyMatrix3(normalMatrix).normalize();
@@ -265,9 +263,13 @@ function filterStrictCoplanarFaceIndices(
     if (!face) continue;
     const nW = face.normal.clone().applyMatrix3(normalMatrix).normalize();
     if (nW.dot(refNormalW) < normalDotTol) continue;
-    const cW = face.center.clone().applyMatrix4(localToWorld);
-    const planeDist = Math.abs(refNormalW.dot(new THREE.Vector3().subVectors(cW, refPointW)));
-    if (planeDist > planeDistTol) continue;
+    let maxPlaneDist = 0;
+    for (const vLocal of face.vertices) {
+      const vW = vLocal.clone().applyMatrix4(localToWorld);
+      const d = Math.abs(refNormalW.dot(new THREE.Vector3().subVectors(vW, refPointW)));
+      if (d > maxPlaneDist) maxPlaneDist = d;
+    }
+    if (maxPlaneDist > planeDistTol) continue;
     result.push(fi);
   }
   return result.length > 0 ? result : [bestIdx];
