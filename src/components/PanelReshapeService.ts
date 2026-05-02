@@ -171,30 +171,33 @@ export async function reshapePanelToParentFace(panelId: string): Promise<void> {
   newVerticesLocal.forEach(p => center.add(p));
   center.divideScalar(newVerticesLocal.length);
 
-  const nLocal = localNormal.clone();
+  const nVf = new THREE.Vector3(...vf.normal).normalize();
   let upRef: THREE.Vector3;
-  if (Math.abs(nLocal.y) > Math.abs(nLocal.x) && Math.abs(nLocal.y) > Math.abs(nLocal.z)) {
+  if (Math.abs(nVf.y) > Math.abs(nVf.x) && Math.abs(nVf.y) > Math.abs(nVf.z)) {
     upRef = new THREE.Vector3(1, 0, 0);
   } else {
     upRef = new THREE.Vector3(0, 1, 0);
   }
-  const uSketch = new THREE.Vector3().crossVectors(nLocal, upRef).normalize();
-  const vSketch = new THREE.Vector3().crossVectors(uSketch, nLocal).normalize();
+  const uSketch = new THREE.Vector3().crossVectors(nVf, upRef).normalize();
+  const vSketch = new THREE.Vector3().crossVectors(uSketch, nVf).normalize();
 
-  const centroid = new THREE.Vector3();
-  newVerticesLocal.forEach(p => centroid.add(p));
-  centroid.divideScalar(newVerticesLocal.length);
+  const signedAreaUV = (pts: THREE.Vector3[]) => {
+    const c = new THREE.Vector3();
+    pts.forEach(p => c.add(p));
+    c.divideScalar(pts.length);
+    let s = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i].clone().sub(c);
+      const b = pts[(i + 1) % pts.length].clone().sub(c);
+      s += a.dot(uSketch) * b.dot(vSketch) - b.dot(uSketch) * a.dot(vSketch);
+    }
+    return s;
+  };
 
-  let signedArea = 0;
-  for (let i = 0; i < newVerticesLocal.length; i++) {
-    const a = newVerticesLocal[i].clone().sub(centroid);
-    const b = newVerticesLocal[(i + 1) % newVerticesLocal.length].clone().sub(centroid);
-    const ax = a.dot(uSketch), ay = a.dot(vSketch);
-    const bx = b.dot(uSketch), by = b.dot(vSketch);
-    signedArea += ax * by - bx * ay;
-  }
-
-  const orderedLocal = signedArea < 0 ? [...newVerticesLocal].reverse() : newVerticesLocal;
+  const origPts = vf.vertices.map(v => new THREE.Vector3(v[0], v[1], v[2]));
+  const origSign = Math.sign(signedAreaUV(origPts)) || 1;
+  const newSign = Math.sign(signedAreaUV(newVerticesLocal)) || 1;
+  const orderedLocal = origSign !== newSign ? [...newVerticesLocal].reverse() : newVerticesLocal;
 
   useAppStore.setState(s => ({
     virtualFaces: s.virtualFaces.map(f =>
