@@ -10,7 +10,7 @@ export const AddBoxButton: React.FC<IconButtonProps> = ({ onClick, disabled = fa
   <button
     onClick={onClick}
     disabled={disabled}
-    className={`flex items-center justify-center w-8 h-8 rounded transition-all duration-150 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-stone-400 hover:bg-stone-100 active:scale-95 ${
+    className={`flex items-center justify-center w-11 h-11 rounded transition-all duration-150 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-stone-400 hover:bg-stone-100 active:scale-95 ${
       disabled ? 'opacity-30 cursor-not-allowed' : 'cursor-pointer'
     } ${className}`}
     title="Kutu Ekle (B)"
