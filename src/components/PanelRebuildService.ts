@@ -81,15 +81,15 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           continue;
         }
 
-        if (parent.fillets && parent.fillets.length > 0 && parent.replicadShape) {
+        const parentHasFillets = !!(parent.fillets && parent.fillets.length > 0 && parent.replicadShape);
+
+        if (vf.parentFaceShape && parentHasFillets) {
           try {
             rp = await performBooleanIntersection(rp, parent.replicadShape);
           } catch (err) {
             console.error('Failed to intersect panel with filleted parent:', err);
           }
         }
-
-        const parentHasFillets = !!(parent.fillets && parent.fillets.length > 0 && parent.replicadShape);
 
         if (vf.parentFaceShape) {
           const subs = parent.subtractionGeometries || [];
