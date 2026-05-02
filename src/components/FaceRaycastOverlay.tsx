@@ -231,6 +231,47 @@ export function convexHull2D(points: Point2D[]): Point2D[] {
   return lower.concat(upper);
 }
 
+function buildBoundaryLoop2D(
+  boundaryEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>,
+  origin: THREE.Vector3,
+  u: THREE.Vector3,
+  v: THREE.Vector3
+): Point2D[] | null {
+  if (boundaryEdges.length < 3) return null;
+  const keyOf = (p: Point2D) => `${p.x.toFixed(2)},${p.y.toFixed(2)}`;
+  type Edge2D = { a: Point2D; b: Point2D; ak: string; bk: string };
+  const edges: Edge2D[] = boundaryEdges.map(e => {
+    const a = projectTo2D(e.v1, origin, u, v);
+    const b = projectTo2D(e.v2, origin, u, v);
+    return { a, b, ak: keyOf(a), bk: keyOf(b) };
+  });
+  const adj = new Map<string, { other: string; point: Point2D }[]>();
+  for (const e of edges) {
+    if (e.ak === e.bk) continue;
+    if (!adj.has(e.ak)) adj.set(e.ak, []);
+    if (!adj.has(e.bk)) adj.set(e.bk, []);
+    adj.get(e.ak)!.push({ other: e.bk, point: e.b });
+    adj.get(e.bk)!.push({ other: e.ak, point: e.a });
+  }
+  if (edges.length === 0) return null;
+  const startKey = edges[0].ak;
+  const startPt = edges[0].a;
+  const loop: Point2D[] = [startPt];
+  const visited = new Set<string>();
+  let cur = startKey, prev = '';
+  while (true) {
+    visited.add(cur);
+    const neigh = adj.get(cur) || [];
+    const next = neigh.find(n => n.other !== prev && !visited.has(n.other));
+    if (!next) break;
+    loop.push(next.point);
+    prev = cur; cur = next.other;
+    if (cur === startKey) break;
+    if (loop.length > edges.length + 2) break;
+  }
+  return loop.length >= 3 ? loop : null;
+}
+
 function sutherlandHodgmanClip(subject: Point2D[], clip: Point2D[]): Point2D[] {
   let output = [...subject];
   for (let i = 0; i < clip.length && output.length > 0; i++) {
@@ -500,6 +541,12 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
   const uPosT = uPosHit.distanceTo(startWorld), uNegT = uNegHit.distanceTo(startWorld);
   const vPosT = vPosHit.distanceTo(startWorld), vNegT = vNegHit.distanceTo(startWorld);
   let rect2D: Point2D[] = ensureCCW([{ x: uPosT, y: vPosT }, { x: -uNegT, y: vPosT }, { x: -uNegT, y: -vNegT }, { x: uPosT, y: -vNegT }]);
+  const boundaryLoop2D = buildBoundaryLoop2D(boundaryEdges, startWorld, u, v);
+  if (boundaryLoop2D && boundaryLoop2D.length >= 3) {
+    const ccwBoundary = ensureCCW(boundaryLoop2D);
+    const clipped = sutherlandHodgmanClip(rect2D, ccwBoundary);
+    if (clipped.length >= 3) rect2D = clipped;
+  }
   const footprints = getSubtractorFootprints2D(subtractions, localToWorld, worldNormal, planeOrigin, u, v, 50);
   let clippedPoly = rect2D;
   for (const footprint of footprints) {
