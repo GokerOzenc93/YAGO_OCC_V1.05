@@ -13,6 +13,7 @@ import {
   collectSubtractionObstacleEdgesWorld,
   collectVirtualFaceObstacleEdgesWorld,
   castRayOnFaceWorld,
+  convexHull2D,
   type Point2D,
 } from './FaceRaycastOverlay';
 import {
@@ -623,16 +624,115 @@ export function recalculateVirtualFacesForShape(
       updatedMap.set(vf.id, reraycast || vf);
     } else {
       const subtractions = shape.subtractionGeometries || [];
-      if (subtractions.length > 0) {
-        const clipped = clipVirtualFaceAgainstSubtractions(vf, subtractions, localToWorld, worldToLocal);
-        updatedMap.set(vf.id, clipped || vf);
-      } else {
-        updatedMap.set(vf.id, vf);
-      }
+      const panelsExcludingSelf = childPanels.filter(
+        p => p.parameters?.virtualFaceId !== vf.id
+      );
+      const clipped = clipVirtualFaceAgainstSubtractionsAndPanels(
+        vf, subtractions, panelsExcludingSelf, localToWorld, worldToLocal
+      );
+      updatedMap.set(vf.id, clipped || vf);
     }
   }
 
   return virtualFaces.map(vf => updatedMap.get(vf.id) || vf);
+}
+
+function getPanelFootprints2D(
+  panels: any[],
+  facePlaneNormal: THREE.Vector3,
+  facePlaneOrigin: THREE.Vector3,
+  u: THREE.Vector3,
+  v: THREE.Vector3,
+  planeTolerance = 2.0
+): Point2D[][] {
+  const footprints: Point2D[][] = [];
+  for (const panel of panels) {
+    if (!panel.geometry) continue;
+    const m = new THREE.Matrix4().compose(
+      new THREE.Vector3(...panel.position),
+      new THREE.Quaternion().setFromEuler(
+        new THREE.Euler(panel.rotation[0], panel.rotation[1], panel.rotation[2], 'XYZ')
+      ),
+      new THREE.Vector3(...panel.scale)
+    );
+    const posAttr = panel.geometry.getAttribute('position');
+    if (!posAttr) continue;
+    const onPlane: Point2D[] = [];
+    for (let i = 0; i < posAttr.count; i++) {
+      const wp = new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)).applyMatrix4(m);
+      const d = facePlaneNormal.dot(new THREE.Vector3().subVectors(wp, facePlaneOrigin));
+      if (Math.abs(d) < planeTolerance) {
+        onPlane.push(projectTo2D(wp, facePlaneOrigin, u, v));
+      }
+    }
+    if (onPlane.length < 3) continue;
+    const hull = convexHull2D(onPlane);
+    if (hull.length >= 3) footprints.push(hull);
+  }
+  return footprints;
+}
+
+function clipVirtualFaceAgainstSubtractionsAndPanels(
+  vf: VirtualFace,
+  subtractions: any[],
+  siblingPanels: any[],
+  localToWorld: THREE.Matrix4,
+  worldToLocal: THREE.Matrix4
+): VirtualFace | null {
+  if (vf.vertices.length < 3) return null;
+
+  const localNormal = new THREE.Vector3(vf.normal[0], vf.normal[1], vf.normal[2]).normalize();
+  const normalMatrix = new THREE.Matrix3().getNormalMatrix(localToWorld);
+  const worldNormal = localNormal.clone().applyMatrix3(normalMatrix).normalize();
+  const { u, v } = getFacePlaneAxes(worldNormal);
+
+  const cornersWorld = vf.vertices.map(vtx =>
+    new THREE.Vector3(vtx[0], vtx[1], vtx[2]).applyMatrix4(localToWorld)
+  );
+  const centerWorld = new THREE.Vector3();
+  cornersWorld.forEach(c => centerWorld.add(c));
+  centerWorld.divideScalar(cornersWorld.length);
+  const planeOrigin = centerWorld.clone();
+
+  let poly: Point2D[] = ensureCCW(
+    cornersWorld.map(c => projectTo2D(c, planeOrigin, u, v))
+  );
+
+  const subFootprints = getSubtractorFootprints2D(
+    subtractions, localToWorld, worldNormal, planeOrigin, u, v, 50
+  );
+  const panelFootprints = getPanelFootprints2D(
+    siblingPanels, worldNormal, planeOrigin, u, v, 2.0
+  );
+  const allFootprints = [...subFootprints, ...panelFootprints];
+
+  let changed = false;
+  for (const fp of allFootprints) {
+    const ccwFp = ensureCCW(fp);
+    const hasOverlap =
+      ccwFp.some(p => isPointInsidePolygon(p, poly)) ||
+      poly.some(p => isPointInsidePolygon(p, ccwFp));
+    if (hasOverlap) {
+      poly = subtractPolygon(poly, ccwFp);
+      changed = true;
+    }
+  }
+
+  if (!changed) return null;
+  if (poly.length < 3) return null;
+
+  const newCornersLocal = poly.map(p =>
+    planeOrigin.clone().addScaledVector(u, p.x).addScaledVector(v, p.y).applyMatrix4(worldToLocal)
+  );
+  const newCenter = new THREE.Vector3();
+  newCornersLocal.forEach(c => newCenter.add(c));
+  newCenter.divideScalar(newCornersLocal.length);
+
+  return {
+    ...vf,
+    vertices: newCornersLocal.map(c => [c.x, c.y, c.z] as [number, number, number]),
+    center: [newCenter.x, newCenter.y, newCenter.z],
+  };
 }
 
 function clipVirtualFaceAgainstSubtractions(
