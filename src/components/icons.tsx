@@ -26,3 +26,5 @@ export const AddBoxButton: React.FC<IconButtonProps> = ({ onClick, disabled = fa
     </svg>
   </button>
 );
+
+https://www.figma.com/design/3TsDPlX1aJRahMhjmHrB0K/Add-Box?node-id=3-85&t=dBM6zxEgjTyFkC6U-1
