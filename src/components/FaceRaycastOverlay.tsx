@@ -231,6 +231,32 @@ export function convexHull2D(points: Point2D[]): Point2D[] {
   return lower.concat(upper);
 }
 
+function pickDominantEdgeDirection(
+  boundaryEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>,
+  normal: THREE.Vector3
+): THREE.Vector3 | null {
+  const bins = new Map<string, { dir: THREE.Vector3; length: number }>();
+  for (const e of boundaryEdges) {
+    const d = new THREE.Vector3().subVectors(e.v2, e.v1);
+    const len = d.length();
+    if (len < 1e-3) continue;
+    d.divideScalar(len);
+    d.addScaledVector(normal, -d.dot(normal)).normalize();
+    let dir = d.clone();
+    if (dir.x < 0 || (Math.abs(dir.x) < 1e-6 && dir.y < 0) ||
+        (Math.abs(dir.x) < 1e-6 && Math.abs(dir.y) < 1e-6 && dir.z < 0)) {
+      dir.negate();
+    }
+    const key = `${dir.x.toFixed(3)},${dir.y.toFixed(3)},${dir.z.toFixed(3)}`;
+    const existing = bins.get(key);
+    if (existing) existing.length += len;
+    else bins.set(key, { dir, length: len });
+  }
+  let best: { dir: THREE.Vector3; length: number } | null = null;
+  bins.forEach(b => { if (!best || b.length > best.length) best = b; });
+  return best ? best.dir.clone() : null;
+}
+
 function buildBoundaryLoop2D(
   boundaryEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>,
   origin: THREE.Vector3,
@@ -506,9 +532,14 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
   const localNormal = group.normal.clone().normalize();
   const normalMatrix = new THREE.Matrix3().getNormalMatrix(localToWorld);
   const worldNormal = localNormal.clone().applyMatrix3(normalMatrix).normalize();
-  const { u, v } = getFacePlaneAxes(worldNormal);
+  let { u, v } = getFacePlaneAxes(worldNormal);
   const planeOrigin = clickWorld.clone();
   const boundaryEdges = collectBoundaryEdgesWorld(faces, group.faceIndices, localToWorld);
+  const dominant = pickDominantEdgeDirection(boundaryEdges, worldNormal);
+  if (dominant) {
+    u = dominant.clone();
+    v = new THREE.Vector3().crossVectors(worldNormal, u).normalize();
+  }
   const panelEdges = collectPanelObstacleEdgesWorld(childPanels, worldNormal, planeOrigin, 1.5);
   const subEdges = collectSubtractionObstacleEdgesWorld(subtractions, localToWorld, worldNormal, planeOrigin, 20);
   const vfEdges = collectVirtualFaceObstacleEdgesWorld(shapeVirtualFaces, null, localToWorld, worldNormal, planeOrigin, 20);
