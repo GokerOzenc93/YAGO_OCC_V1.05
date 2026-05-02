@@ -1,15 +1,9 @@
 import * as THREE from 'three';
-import type { VirtualFace, Shape } from '../store';
-import {
-  getFacePlaneAxes,
-  getShapeMatrix,
-  projectTo2D,
-  ensureCCW,
-  type Point2D,
-} from './FaceRaycastOverlay';
+import type { VirtualFace } from '../store';
 import { extractFacesFromGeometry, groupCoplanarFaces } from './FaceEditor';
 
-type EdgeKey = string;
+type P2 = { x: number; y: number };
+
 const keyOf = (p: THREE.Vector3) => `${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)}`;
 
 function extractBoundaryLoopLocal(
@@ -17,7 +11,7 @@ function extractBoundaryLoopLocal(
   faceIndices: number[]
 ): THREE.Vector3[] | null {
   type Edge = { a: THREE.Vector3; b: THREE.Vector3; ak: string; bk: string };
-  const map = new Map<EdgeKey, { e: Edge; count: number }>();
+  const map = new Map<string, { e: Edge; count: number }>();
   for (const fi of faceIndices) {
     const f = faces[fi];
     if (!f) continue;
@@ -40,30 +34,21 @@ function extractBoundaryLoopLocal(
     adj.get(e.ak)!.push({ other: e.bk, point: e.b });
     adj.get(e.bk)!.push({ other: e.ak, point: e.a });
   }
-
   const startKey = boundary[0].ak;
-  const startPt = boundary[0].a;
-  const loop: THREE.Vector3[] = [startPt];
+  const loop: THREE.Vector3[] = [boundary[0].a];
   const visited = new Set<string>();
-  let currentKey = startKey;
-  let prevKey = '';
+  let cur = startKey, prev = '';
   while (true) {
-    visited.add(currentKey);
-    const neighbors = adj.get(currentKey) || [];
-    const next = neighbors.find(n => n.other !== prevKey && !visited.has(n.other));
-    if (!next) {
-      const closing = neighbors.find(n => n.other === startKey && n.other !== prevKey);
-      if (closing) break;
-      break;
-    }
+    visited.add(cur);
+    const neigh = adj.get(cur) || [];
+    const next = neigh.find(n => n.other !== prev && !visited.has(n.other));
+    if (!next) break;
     loop.push(next.point);
-    prevKey = currentKey;
-    currentKey = next.other;
-    if (currentKey === startKey) break;
+    prev = cur; cur = next.other;
+    if (cur === startKey) break;
     if (loop.length > boundary.length + 2) break;
   }
-  if (loop.length < 3) return null;
-  return loop;
+  return loop.length >= 3 ? loop : null;
 }
 
 function findMatchingGroup(
@@ -73,54 +58,60 @@ function findMatchingGroup(
 ) {
   const vfN = new THREE.Vector3(...vf.normal).normalize();
   const vfC = new THREE.Vector3(...vf.center);
-  const candidates = groups.filter(g => g.normal.clone().normalize().dot(vfN) > 0.95);
-  if (candidates.length === 0) return null;
-  if (candidates.length === 1) return candidates[0];
-  let best = candidates[0], bestDist = Infinity;
-  for (const g of candidates) {
-    const bbox = new THREE.Box3();
-    g.faceIndices.forEach(fi => { const f = faces[fi]; if (f) f.vertices.forEach(v => bbox.expandByPoint(v)); });
-    const expanded = bbox.clone().expandByScalar(5);
-    if (expanded.containsPoint(vfC)) {
-      const d = vfC.distanceTo(g.center);
-      if (d < bestDist) { best = g; bestDist = d; }
-    }
+  const cand = groups.filter(g => g.normal.clone().normalize().dot(vfN) > 0.95);
+  if (cand.length === 0) return null;
+  if (cand.length === 1) return cand[0];
+  let best = cand[0], bestD = Infinity;
+  for (const g of cand) {
+    const d = vfC.distanceTo(g.center);
+    if (d < bestD) { bestD = d; best = g; }
   }
   return best;
 }
 
-function polygonIntersect(a: Point2D[], b: Point2D[]): Point2D[] {
-  let output = [...a];
-  for (let i = 0; i < b.length && output.length > 0; i++) {
-    const input = [...output];
-    output = [];
-    const eS = b[i], eE = b[(i + 1) % b.length];
+function signedArea(poly: P2[]): number {
+  let s = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i + 1) % poly.length];
+    s += a.x * b.y - b.x * a.y;
+  }
+  return s * 0.5;
+}
+
+function forceWinding(poly: P2[], wantPositive: boolean): P2[] {
+  const a = signedArea(poly);
+  const pos = a > 0;
+  return pos === wantPositive ? poly : [...poly].reverse();
+}
+
+function clipSH(subject: P2[], clip: P2[]): P2[] {
+  let output = [...subject];
+  for (let i = 0; i < clip.length && output.length > 0; i++) {
+    const input = [...output]; output = [];
+    const eS = clip[i], eE = clip[(i + 1) % clip.length];
+    const side = (p: P2) => (eE.x - eS.x) * (p.y - eS.y) - (eE.y - eS.y) * (p.x - eS.x);
     for (let j = 0; j < input.length; j++) {
       const curr = input[j], prev = input[(j + input.length - 1) % input.length];
-      const currIn = (eE.x - eS.x) * (curr.y - eS.y) - (eE.y - eS.y) * (curr.x - eS.x) >= -1e-6;
-      const prevIn = (eE.x - eS.x) * (prev.y - eS.y) - (eE.y - eS.y) * (prev.x - eS.x) >= -1e-6;
-      if (currIn) {
-        if (!prevIn) {
-          const inter = segInter(prev, curr, eS, eE);
-          if (inter) output.push(inter);
+      const cIn = side(curr) >= -1e-6;
+      const pIn = side(prev) >= -1e-6;
+      if (cIn) {
+        if (!pIn) {
+          const it = segInter(prev, curr, eS, eE); if (it) output.push(it);
         }
         output.push(curr);
-      } else if (prevIn) {
-        const inter = segInter(prev, curr, eS, eE);
-        if (inter) output.push(inter);
+      } else if (pIn) {
+        const it = segInter(prev, curr, eS, eE); if (it) output.push(it);
       }
     }
   }
   return output;
 }
 
-function segInter(p1: Point2D, p2: Point2D, p3: Point2D, p4: Point2D): Point2D | null {
-  const x1 = p1.x, y1 = p1.y, x2 = p2.x, y2 = p2.y;
-  const x3 = p3.x, y3 = p3.y, x4 = p4.x, y4 = p4.y;
-  const denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
+function segInter(p1: P2, p2: P2, p3: P2, p4: P2): P2 | null {
+  const denom = (p1.x - p2.x) * (p3.y - p4.y) - (p1.y - p2.y) * (p3.x - p4.x);
   if (Math.abs(denom) < 1e-10) return null;
-  const t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom;
-  return { x: x1 + t * (x2 - x1), y: y1 + t * (y2 - y1) };
+  const t = ((p1.x - p3.x) * (p3.y - p4.y) - (p1.y - p3.y) * (p3.x - p4.x)) / denom;
+  return { x: p1.x + t * (p2.x - p1.x), y: p1.y + t * (p2.y - p1.y) };
 }
 
 export async function reshapePanelToParentFace(panelId: string): Promise<void> {
@@ -143,68 +134,59 @@ export async function reshapePanelToParentFace(panelId: string): Promise<void> {
   const boundaryLocal = extractBoundaryLoopLocal(faces, group.faceIndices);
   if (!boundaryLocal || boundaryLocal.length < 3) return;
 
-  const localToWorld = getShapeMatrix(parent);
-  const worldToLocal = localToWorld.clone().invert();
+  // Everything below runs in PARENT-LOCAL space and projects using the
+  // SAME sketch basis that createPanelFromVirtualFace uses with vf.normal.
+  const n = new THREE.Vector3(...vf.normal).normalize();
+  const up = Math.abs(n.y) > Math.abs(n.x) && Math.abs(n.y) > Math.abs(n.z)
+    ? new THREE.Vector3(1, 0, 0)
+    : new THREE.Vector3(0, 1, 0);
+  const uAxis = new THREE.Vector3().crossVectors(n, up).normalize();
+  const vAxis = new THREE.Vector3().crossVectors(uAxis, n).normalize();
 
-  const localNormal = group.normal.clone().normalize();
-  const normalMat = new THREE.Matrix3().getNormalMatrix(localToWorld);
-  const worldNormal = localNormal.clone().applyMatrix3(normalMat).normalize();
-  const { u, v } = getFacePlaneAxes(worldNormal);
+  const origin = new THREE.Vector3(...vf.center);
+  const to2D = (p: THREE.Vector3): P2 => {
+    const d = new THREE.Vector3().subVectors(p, origin);
+    return { x: d.dot(uAxis), y: d.dot(vAxis) };
+  };
+  const to3D = (p: P2): THREE.Vector3 =>
+    origin.clone().addScaledVector(uAxis, p.x).addScaledVector(vAxis, p.y);
 
-  const boundaryWorld = boundaryLocal.map(p => p.clone().applyMatrix4(localToWorld));
-  const origin = boundaryWorld[0].clone();
-  const boundary2D = ensureCCW(boundaryWorld.map(p => projectTo2D(p, origin, u, v)));
+  const vfOrig2D = vf.vertices.map(v => to2D(new THREE.Vector3(v[0], v[1], v[2])));
+  const origWindingPositive = signedArea(vfOrig2D) > 0;
 
-  const vfWorld = vf.vertices.map(vt =>
-    new THREE.Vector3(vt[0], vt[1], vt[2]).applyMatrix4(localToWorld)
-  );
-  const vf2D = ensureCCW(vfWorld.map(p => projectTo2D(p, origin, u, v)));
+  const boundary2D = forceWinding(boundaryLocal.map(to2D), true);
+  const vfClip2D = forceWinding(vfOrig2D, true);
 
-  let clipped = polygonIntersect(boundary2D, vf2D);
+  let clipped = clipSH(boundary2D, vfClip2D);
   if (clipped.length < 3) clipped = boundary2D;
 
-  const newVerticesWorld = clipped.map(p =>
-    origin.clone().addScaledVector(u, p.x).addScaledVector(v, p.y)
-  );
-  const newVerticesLocal = newVerticesWorld.map(p => p.clone().applyMatrix4(worldToLocal));
+  // Deduplicate close points.
+  const EPS = 0.2;
+  const dedup: P2[] = [];
+  for (const p of clipped) {
+    const last = dedup[dedup.length - 1];
+    if (!last || Math.hypot(p.x - last.x, p.y - last.y) > EPS) dedup.push(p);
+  }
+  if (dedup.length >= 2) {
+    const f = dedup[0], l = dedup[dedup.length - 1];
+    if (Math.hypot(f.x - l.x, f.y - l.y) < EPS) dedup.pop();
+  }
+  if (dedup.length < 3) return;
+
+  // Restore original winding of vf so replicad extrudes correctly.
+  const finalOrdered = forceWinding(dedup, origWindingPositive);
+
+  const newVerticesLocal = finalOrdered.map(to3D);
   const center = new THREE.Vector3();
   newVerticesLocal.forEach(p => center.add(p));
   center.divideScalar(newVerticesLocal.length);
-
-  const nVf = new THREE.Vector3(...vf.normal).normalize();
-  let upRef: THREE.Vector3;
-  if (Math.abs(nVf.y) > Math.abs(nVf.x) && Math.abs(nVf.y) > Math.abs(nVf.z)) {
-    upRef = new THREE.Vector3(1, 0, 0);
-  } else {
-    upRef = new THREE.Vector3(0, 1, 0);
-  }
-  const uSketch = new THREE.Vector3().crossVectors(nVf, upRef).normalize();
-  const vSketch = new THREE.Vector3().crossVectors(uSketch, nVf).normalize();
-
-  const signedAreaUV = (pts: THREE.Vector3[]) => {
-    const c = new THREE.Vector3();
-    pts.forEach(p => c.add(p));
-    c.divideScalar(pts.length);
-    let s = 0;
-    for (let i = 0; i < pts.length; i++) {
-      const a = pts[i].clone().sub(c);
-      const b = pts[(i + 1) % pts.length].clone().sub(c);
-      s += a.dot(uSketch) * b.dot(vSketch) - b.dot(uSketch) * a.dot(vSketch);
-    }
-    return s;
-  };
-
-  const origPts = vf.vertices.map(v => new THREE.Vector3(v[0], v[1], v[2]));
-  const origSign = Math.sign(signedAreaUV(origPts)) || 1;
-  const newSign = Math.sign(signedAreaUV(newVerticesLocal)) || 1;
-  const orderedLocal = origSign !== newSign ? [...newVerticesLocal].reverse() : newVerticesLocal;
 
   useAppStore.setState(s => ({
     virtualFaces: s.virtualFaces.map(f =>
       f.id === vfId
         ? {
             ...f,
-            vertices: orderedLocal.map(p => [p.x, p.y, p.z] as [number, number, number]),
+            vertices: newVerticesLocal.map(p => [p.x, p.y, p.z] as [number, number, number]),
             center: [center.x, center.y, center.z],
             raycastRecipe: undefined,
           }
