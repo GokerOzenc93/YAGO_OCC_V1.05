@@ -83,17 +83,17 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
 
         const parentHasFillets = !!(parent.fillets && parent.fillets.length > 0 && parent.replicadShape);
 
-        if (vf.parentFaceShape && parentHasFillets) {
+        if (vf.parentFaceShape && parent.replicadShape) {
           try {
             rp = await performBooleanIntersection(rp, parent.replicadShape);
           } catch (err) {
-            console.error('Failed to intersect panel with filleted parent:', err);
+            console.error('Failed to intersect panel with parent:', err);
           }
         }
 
         if (vf.parentFaceShape) {
-          const subs = parent.subtractionGeometries || [];
-          if (!parentHasFillets) {
+          if (!parent.replicadShape) {
+            const subs = parent.subtractionGeometries || [];
             for (const sub of subs) {
               if (!sub || !sub.parameters) continue;
               const w = parseFloat(sub.parameters.width);
