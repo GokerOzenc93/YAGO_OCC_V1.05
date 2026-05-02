@@ -1,16 +1,16 @@
 import React from 'react';
 
-interface AddBoxProps {
+interface IconButtonProps {
   onClick?: () => void;
   disabled?: boolean;
   className?: string;
 }
 
-const AddBox: React.FC<AddBoxProps> = ({ onClick, disabled = false, className = '' }) => (
+export const AddBoxButton: React.FC<IconButtonProps> = ({ onClick, disabled = false, className = '' }) => (
   <button
     onClick={onClick}
     disabled={disabled}
-    className={`flex items-center justify-center w-18 h-118 rounded transition-all duration-150 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-stone-400 hover:bg-stone-100 active:scale-95 ${
+    className={`flex items-center justify-center w-8 h-8 rounded transition-all duration-150 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-stone-400 hover:bg-stone-100 active:scale-95 ${
       disabled ? 'opacity-30 cursor-not-allowed' : 'cursor-pointer'
     } ${className}`}
     title="Kutu Ekle (B)"
@@ -26,5 +26,3 @@ const AddBox: React.FC<AddBoxProps> = ({ onClick, disabled = false, className = 
     </svg>
   </button>
 );
-
-export default AddBox;
