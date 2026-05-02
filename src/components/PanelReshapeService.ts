@@ -171,12 +171,37 @@ export async function reshapePanelToParentFace(panelId: string): Promise<void> {
   newVerticesLocal.forEach(p => center.add(p));
   center.divideScalar(newVerticesLocal.length);
 
+  const nLocal = localNormal.clone();
+  let upRef: THREE.Vector3;
+  if (Math.abs(nLocal.y) > Math.abs(nLocal.x) && Math.abs(nLocal.y) > Math.abs(nLocal.z)) {
+    upRef = new THREE.Vector3(1, 0, 0);
+  } else {
+    upRef = new THREE.Vector3(0, 1, 0);
+  }
+  const uSketch = new THREE.Vector3().crossVectors(nLocal, upRef).normalize();
+  const vSketch = new THREE.Vector3().crossVectors(uSketch, nLocal).normalize();
+
+  const centroid = new THREE.Vector3();
+  newVerticesLocal.forEach(p => centroid.add(p));
+  centroid.divideScalar(newVerticesLocal.length);
+
+  let signedArea = 0;
+  for (let i = 0; i < newVerticesLocal.length; i++) {
+    const a = newVerticesLocal[i].clone().sub(centroid);
+    const b = newVerticesLocal[(i + 1) % newVerticesLocal.length].clone().sub(centroid);
+    const ax = a.dot(uSketch), ay = a.dot(vSketch);
+    const bx = b.dot(uSketch), by = b.dot(vSketch);
+    signedArea += ax * by - bx * ay;
+  }
+
+  const orderedLocal = signedArea < 0 ? [...newVerticesLocal].reverse() : newVerticesLocal;
+
   useAppStore.setState(s => ({
     virtualFaces: s.virtualFaces.map(f =>
       f.id === vfId
         ? {
             ...f,
-            vertices: newVerticesLocal.map(p => [p.x, p.y, p.z] as [number, number, number]),
+            vertices: orderedLocal.map(p => [p.x, p.y, p.z] as [number, number, number]),
             center: [center.x, center.y, center.z],
             raycastRecipe: undefined,
           }
