@@ -418,7 +418,14 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
       const resultShape = await applyAllSubtractions(baseShape, allSubtractions, createReplicadBox, performBooleanCut);
       const preservedPosition = copyPosition(selectedShape);
       const shapeSize = { width, height, depth };
-      const final = await finalizeWithFillets(resultShape, selectedShape.fillets || [], shapeSize, convertReplicadToThreeGeometry, getReplicadVertices);
+      let filletsForSub: FilletInfo[] = selectedShape.fillets || [];
+      if (filletRadii && filletRadii.length > 0) {
+        filletsForSub = filletsForSub.map((fillet: FilletInfo, idx: number) => ({
+          ...fillet,
+          radius: filletRadii[idx] !== undefined ? filletRadii[idx] : fillet.radius
+        }));
+      }
+      const final = await finalizeWithFillets(resultShape, filletsForSub, shapeSize, convertReplicadToThreeGeometry, getReplicadVertices);
 
       updateShape(selectedShape.id, {
         geometry: final.geometry,
