@@ -235,13 +235,13 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
           <div className="flex items-center gap-3">
             <img src="/yago_logo.png" alt="YAGO" className="h-7 w-auto object-contain" />
             <div className="w-px h-5 bg-stone-200" />
-            <div className="flex items-center gap-1 text-xs">
+            <div className="flex items-center gap-1 text-[13.1px]">
               <span className="text-stone-400 font-medium">Şirket</span>
               <span className="text-stone-300 mx-0.5">/</span>
               <span className="text-orange-600 font-semibold">Göker İnşaat</span>
             </div>
             <div className="w-px h-5 bg-stone-200" />
-            <div className="flex items-center gap-1 text-xs">
+            <div className="flex items-center gap-1 text-[13.1px]">
               <span className="text-stone-400 font-medium">Proje</span>
               <span className="text-stone-300 mx-0.5">/</span>
               <span className="text-stone-700 font-semibold">Drawing1</span>
