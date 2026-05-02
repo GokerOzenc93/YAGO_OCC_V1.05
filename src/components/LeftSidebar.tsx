@@ -10,7 +10,7 @@ interface LeftSidebarProps {
 type SidebarTab = 'parameters' | 'panel-editor';
 
 const LeftSidebar: React.FC<LeftSidebarProps> = ({ parametersContent, panelEditorContent }) => {
-  const { selectedShapeId, setLeftSidebarOpen } = useAppStore();
+  const { selectedShapeId } = useAppStore();
   const [isOpen, setIsOpen] = useState(false);
   const [isPinned, setIsPinned] = useState(false);
   const [activeTab, setActiveTab] = useState<SidebarTab>('panel-editor');
@@ -30,15 +30,13 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({ parametersContent, panelEdito
     cancelClose();
     closeTimeoutRef.current = setTimeout(() => {
       setIsOpen(false);
-      setLeftSidebarOpen(false);
     }, 300);
-  }, [isPinned, cancelClose, setLeftSidebarOpen]);
+  }, [isPinned, cancelClose]);
 
   const handleMouseEnter = useCallback(() => {
     cancelClose();
     setIsOpen(true);
-    setLeftSidebarOpen(true);
-  }, [cancelClose, setLeftSidebarOpen]);
+  }, [cancelClose]);
 
   const handleMouseLeave = useCallback(() => {
     scheduleClose();
@@ -54,11 +52,11 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({ parametersContent, panelEdito
 
   return (
     <>
-      {/* Hover zone — only when sidebar is closed */}
       {!isOpen && !isPinned && (
         <div
           ref={hoverZoneRef}
-          className="absolute left-0 top-0 bottom-0 w-[6px] z-40 group cursor-pointer"
+          className="fixed left-0 w-[6px] z-40 group cursor-pointer"
+          style={{ top: '114px', bottom: '62px' }}
           onMouseEnter={handleMouseEnter}
         >
           <div className="absolute inset-0 bg-gradient-to-r from-stone-300/60 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-200" />
@@ -69,11 +67,12 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({ parametersContent, panelEdito
         </div>
       )}
 
-      {/* Sidebar panel */}
       <div
         ref={sidebarRef}
-        className="absolute z-40 flex transition-transform duration-300 ease-[cubic-bezier(0.4,0,0.2,1)] top-0 bottom-0"
+        className="fixed z-40 flex transition-transform duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]"
         style={{
+          top: '114px',
+          bottom: '62px',
           left: 0,
           width: `${sidebarWidth}px`,
           transform: isOpen || isPinned ? 'translateX(0)' : `translateX(-${sidebarWidth}px)`,
@@ -82,7 +81,6 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({ parametersContent, panelEdito
         onMouseLeave={handleMouseLeave}
       >
         <div className="flex flex-col w-full h-full bg-white border-r border-stone-200 shadow-xl shadow-stone-300/30">
-          {/* Tab bar */}
           <div className="flex items-center h-9 border-b border-stone-200 bg-stone-50 shrink-0">
             <button
               onClick={() => setActiveTab('parameters')}
@@ -113,10 +111,8 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({ parametersContent, panelEdito
                 if (isPinned) {
                   setIsPinned(false);
                   setIsOpen(false);
-                  setLeftSidebarOpen(false);
                 } else {
                   setIsPinned(true);
-                  setLeftSidebarOpen(true);
                 }
               }}
               className={`w-9 h-full flex items-center justify-center transition-colors duration-150 ${
@@ -130,7 +126,6 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({ parametersContent, panelEdito
             </button>
           </div>
 
-          {/* Content */}
           <div className="flex-1 overflow-y-auto overflow-x-hidden">
             <div className={activeTab === 'parameters' ? '' : 'hidden'}>
               {selectedShapeId ? parametersContent : (
@@ -149,6 +144,14 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({ parametersContent, panelEdito
           </div>
         </div>
       </div>
+
+      {isOpen && !isPinned && (
+        <div
+          className="fixed inset-0 z-30"
+          onMouseEnter={handleMouseLeave}
+          style={{ pointerEvents: 'none' }}
+        />
+      )}
     </>
   );
 };
