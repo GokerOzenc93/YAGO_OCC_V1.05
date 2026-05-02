@@ -411,7 +411,7 @@ export const createPanelFromVirtualFace = async (
     up = new THREE.Vector3(0, 1, 0);
   }
   const uAxis = new THREE.Vector3().crossVectors(n, up).normalize();
-  const vAxis = new THREE.Vector3().crossVectors(uAxis, n).normalize();
+  const vAxis = new THREE.Vector3().crossVectors(n, uAxis).normalize();
 
   const v3s = vertices.map(v => new THREE.Vector3(v[0], v[1], v[2]));
   const center = new THREE.Vector3();
