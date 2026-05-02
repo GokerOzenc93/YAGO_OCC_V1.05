@@ -614,7 +614,13 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
   let rect2D: Point2D[] = ensureCCW([{ x: uPosT, y: vPosT }, { x: -uNegT, y: vPosT }, { x: -uNegT, y: -vNegT }, { x: uPosT, y: -vNegT }]);
   const boundaryLoop2D = buildBoundaryLoop2D(boundaryEdges, startWorld, u, v);
   if (boundaryLoop2D && boundaryLoop2D.length >= 3) {
-    rect2D = ensureCCW(boundaryLoop2D);
+    const ccwBoundary = ensureCCW(boundaryLoop2D);
+    const clipped = sutherlandHodgmanClip(rect2D, ccwBoundary);
+    if (clipped.length >= 3) {
+      rect2D = clipped;
+    } else {
+      rect2D = ccwBoundary;
+    }
   }
   const footprints = getSubtractorFootprints2D(subtractions, localToWorld, worldNormal, planeOrigin, u, v, 50);
   let clippedPoly = rect2D;
