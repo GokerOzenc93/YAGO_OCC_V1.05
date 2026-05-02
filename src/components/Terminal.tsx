@@ -165,7 +165,7 @@ const Terminal: React.FC = () => {
       )}
 
       {/* ↓ 7mm → 10mm (+3mm) */}
-      <div className="fixed bottom-0 left-0 right-0 bg-stone-100 border-t border-stone-300 z-30" style={{ height: '8mm' }}>
+      <div className="fixed bottom-0 left-0 right-0 bg-stone-100 border-t border-stone-300 z-30" style={{ height: '38px' }}>
         <div className="flex items-center h-full px-2 gap-2">
           <span className="text-stone-400 font-mono text-xs select-none">›</span>
           <input

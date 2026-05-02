@@ -56,7 +56,7 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({ parametersContent, panelEdito
         <div
           ref={hoverZoneRef}
           className="fixed left-0 w-[6px] z-40 group cursor-pointer"
-          style={{ top: '114px', bottom: '80px' }}
+          style={{ top: '114px', bottom: '62px' }}
           onMouseEnter={handleMouseEnter}
         >
           <div className="absolute inset-0 bg-gradient-to-r from-stone-300/60 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-200" />
@@ -72,7 +72,7 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({ parametersContent, panelEdito
         className="fixed z-40 flex transition-transform duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]"
         style={{
           top: '114px',
-          bottom: '80px',
+          bottom: '62px',
           left: 0,
           width: `${sidebarWidth}px`,
           transform: isOpen || isPinned ? 'translateX(0)' : `translateX(-${sidebarWidth}px)`,

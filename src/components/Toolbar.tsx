@@ -252,8 +252,8 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
               <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-stone-400 pointer-events-none" />
               <input type="text" placeholder="Ara..." className="w-36 h-7 pl-8 pr-3 text-xs bg-stone-50 rounded-lg border border-stone-200 focus:outline-none focus:border-orange-400 focus:ring-1 focus:ring-orange-200 transition-all placeholder-stone-400 text-stone-700" />
             </div>
-            <button className="p-1.5 rounded-lg hover:bg-stone-100 transition-colors text-stone-500 hover:text-stone-700" title="Ayarlar"><Settings size={13} /></button>
-            <button className="p-1.5 rounded-lg hover:bg-stone-100 transition-colors text-stone-500 hover:text-stone-700" title="Yardım"><HelpCircle size={13} /></button>
+            <TBtn icon={<Settings size={17} />} label="Ayarlar" />
+            <TBtn icon={<HelpCircle size={17} />} label="Yardım" />
           </div>
         </div>
 

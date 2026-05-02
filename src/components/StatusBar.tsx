@@ -7,7 +7,7 @@ const StatusBar: React.FC = () => {
   const vertexModCount = selectedShape?.vertexModifications?.length || 0;
 
   return (
-    <div className="absolute left-0 right-0 flex items-center h-5 px-4 bg-white text-stone-700 text-xs border-t border-stone-200 z-20" style={{ bottom: '9mm' }}>
+    <div className="absolute left-0 right-0 flex items-center h-[24px] px-4 bg-white text-stone-700 text-xs border-t border-stone-200 z-20" style={{ bottom: '38px' }}>
       <div className="flex items-center gap-4">
         <span className="text-stone-500">Objects: {shapes.length}</span>
         <span className="text-stone-500">
