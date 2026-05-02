@@ -10,6 +10,7 @@ import {
   FaceData,
   CoplanarFaceGroup,
 } from './FaceEditor';
+import { convertReplicadToThreeGeometry } from './ReplicadService';
 
 interface RayLine { start: THREE.Vector3; end: THREE.Vector3; }
 interface FaceRaycastOverlayProps { shape: any; allShapes?: any[]; }
@@ -702,7 +703,19 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     lastClickRef.current = null;
   }, [shape.geometry, shape.id, geometryUuid]);
   useEffect(() => { if (!raycastMode) { setHoveredGroupIndex(null); setPending(null); lastClickRef.current = null; } }, [raycastMode]);
-  const childPanels = useMemo(() => allShapes.filter(s => s.type === 'panel' && s.parameters?.parentShapeId === shape.id), [allShapes, shape.id]);
+  const childPanels = useMemo(() => {
+    const panels = allShapes.filter(s => s.type === 'panel' && s.parameters?.parentShapeId === shape.id);
+    return panels.map(p => {
+      const base = p.parameters?.baseReplicadShape;
+      if (!base || !(p.parameters?.extrudeSteps?.length)) return p;
+      try {
+        const baseGeo = convertReplicadToThreeGeometry(base);
+        return { ...p, geometry: baseGeo, replicadShape: base };
+      } catch {
+        return p;
+      }
+    });
+  }, [allShapes, shape.id]);
   const findVirtualFaceForGroup = useCallback((gi: number) => {
     if (gi < 0 || gi >= faceGroups.length || shapeVirtualFaces.length === 0) return null;
     const gn = faceGroups[gi].normal.clone().normalize();
