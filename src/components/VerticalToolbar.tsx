@@ -108,42 +108,42 @@ const VerticalToolbar: React.FC<VerticalToolbarProps> = ({ onOpenCatalog }) => {
     {
       key: 'file',
       items: [
-        { key: 'new', icon: <FilePlus size={16} />, label: 'Yeni', onClick: () => {} },
-        { key: 'save', icon: <Save size={16} />, label: 'Kaydet', onClick: () => {} },
-        { key: 'saveas', icon: <FileDown size={16} />, label: 'Farklı Kaydet', onClick: () => {} },
+        { key: 'new', icon: <FilePlus size={16} />, label: 'New', onClick: () => {} },
+        { key: 'save', icon: <Save size={16} />, label: 'Save', onClick: () => {} },
+        { key: 'saveas', icon: <FileDown size={16} />, label: 'Save As', onClick: () => {} },
       ],
     },
     {
       key: 'history',
       items: [
-        { key: 'undo', icon: <Undo2 size={16} />, label: 'Geri Al', onClick: () => {} },
-        { key: 'redo', icon: <Redo2 size={16} />, label: 'Yinele', onClick: () => {} },
+        { key: 'undo', icon: <Undo2 size={16} />, label: 'Undo', onClick: () => {} },
+        { key: 'redo', icon: <Redo2 size={16} />, label: 'Redo', onClick: () => {} },
       ],
     },
     {
       key: 'transform',
       items: [
-        { key: 'select', icon: <MousePointer2 size={16} />, label: 'Seç', active: activeTool === Tool.SELECT, onClick: () => setActiveTool(Tool.SELECT) },
-        { key: 'move', icon: <Move size={16} />, label: 'Taşı', active: activeTool === Tool.MOVE, disabled: !selectedShapeId, onClick: () => handleTransformTool(Tool.MOVE) },
-        { key: 'p2p', icon: <Navigation size={16} />, label: 'Noktadan Noktaya', active: activeTool === Tool.POINT_TO_POINT_MOVE, disabled: !selectedShapeId, onClick: () => handleTransformTool(Tool.POINT_TO_POINT_MOVE) },
-        { key: 'rotate', icon: <RefreshCcw size={16} />, label: 'Döndür', active: activeTool === Tool.ROTATE, disabled: !selectedShapeId, onClick: () => handleTransformTool(Tool.ROTATE) },
-        { key: 'scale', icon: <Maximize2 size={16} />, label: 'Ölçekle', active: activeTool === Tool.SCALE, disabled: !selectedShapeId || isBoxSelected, onClick: () => handleTransformTool(Tool.SCALE) },
+        { key: 'select', icon: <MousePointer2 size={16} />, label: 'Select', active: activeTool === Tool.SELECT, onClick: () => setActiveTool(Tool.SELECT) },
+        { key: 'move', icon: <Move size={16} />, label: 'Move', active: activeTool === Tool.MOVE, disabled: !selectedShapeId, onClick: () => handleTransformTool(Tool.MOVE) },
+        { key: 'p2p', icon: <Navigation size={16} />, label: 'Point to Point', active: activeTool === Tool.POINT_TO_POINT_MOVE, disabled: !selectedShapeId, onClick: () => handleTransformTool(Tool.POINT_TO_POINT_MOVE) },
+        { key: 'rotate', icon: <RefreshCcw size={16} />, label: 'Rotate', active: activeTool === Tool.ROTATE, disabled: !selectedShapeId, onClick: () => handleTransformTool(Tool.ROTATE) },
+        { key: 'scale', icon: <Maximize2 size={16} />, label: 'Scale', active: activeTool === Tool.SCALE, disabled: !selectedShapeId || isBoxSelected, onClick: () => handleTransformTool(Tool.SCALE) },
       ],
     },
     {
       key: 'geometry',
       items: [
-        { key: 'addbox', icon: null, label: 'Kutu Ekle', custom: <AddBoxButton onClick={handleAddBox} /> },
-        { key: 'subtract', icon: <MinusSquare size={16} />, label: hasIntersectingShapes ? 'Kesişimi Çıkar' : 'Çıkar', danger: hasIntersectingShapes, disabled: !selectedShapeId, onClick: handleSubtract },
+        { key: 'addbox', icon: null, label: 'Add Box', custom: <AddBoxButton onClick={handleAddBox} /> },
+        { key: 'subtract', icon: <MinusSquare size={16} />, label: hasIntersectingShapes ? 'Subtract Intersection' : 'Subtract', danger: hasIntersectingShapes, disabled: !selectedShapeId, onClick: handleSubtract },
       ],
     },
     {
       key: 'view',
       items: [
-        { key: 'camera', icon: cameraType === CameraType.PERSPECTIVE ? <Camera size={16} /> : <CameraOff size={16} />, label: cameraType === CameraType.PERSPECTIVE ? 'Perspektif' : 'Ortografik', onClick: () => setCameraType(cameraType === CameraType.PERSPECTIVE ? CameraType.ORTHOGRAPHIC : CameraType.PERSPECTIVE) },
-        { key: 'viewmode', icon: viewModeIcon, label: `Görünüm: ${viewModeLabel}`, active: viewMode !== ViewMode.SOLID, onClick: () => useAppStore.getState().cycleViewMode() },
-        { key: 'ortho', icon: <Crosshair size={16} />, label: `Lineer: ${orthoMode === OrthoMode.ON ? 'Açık' : 'Kapalı'}`, active: orthoMode === OrthoMode.ON, onClick: toggleOrthoMode },
-        { key: 'catalog', icon: <FolderOpen size={16} />, label: 'Katalog', accent: true, onClick: onOpenCatalog },
+        { key: 'camera', icon: cameraType === CameraType.PERSPECTIVE ? <Camera size={16} /> : <CameraOff size={16} />, label: cameraType === CameraType.PERSPECTIVE ? 'Perspective' : 'Orthographic', onClick: () => setCameraType(cameraType === CameraType.PERSPECTIVE ? CameraType.ORTHOGRAPHIC : CameraType.PERSPECTIVE) },
+        { key: 'viewmode', icon: viewModeIcon, label: `View: ${viewModeLabel}`, active: viewMode !== ViewMode.SOLID, onClick: () => useAppStore.getState().cycleViewMode() },
+        { key: 'ortho', icon: <Crosshair size={16} />, label: `Linear: ${orthoMode === OrthoMode.ON ? 'On' : 'Off'}`, active: orthoMode === OrthoMode.ON, onClick: toggleOrthoMode },
+        { key: 'catalog', icon: <FolderOpen size={16} />, label: 'Catalog', accent: true, onClick: onOpenCatalog },
       ],
     },
   ];
@@ -155,7 +155,7 @@ const VerticalToolbar: React.FC<VerticalToolbarProps> = ({ onOpenCatalog }) => {
     >
       {/* Label toggle button at top */}
       <button
-        title={showToolbarLabels ? 'Etiketleri Gizle' : 'Etiketleri Göster'}
+        title={showToolbarLabels ? 'Hide Labels' : 'Show Labels'}
         onClick={() => setShowToolbarLabels(!showToolbarLabels)}
         className="flex items-center justify-center w-full h-6 rounded text-stone-300 hover:text-stone-500 hover:bg-stone-100 transition-colors duration-150 mb-0.5"
       >

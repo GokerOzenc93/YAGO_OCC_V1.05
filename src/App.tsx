@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import * as THREE from 'three';
 import Scene from './components/Scene';
-import Toolbar from './components/Toolbar';
 import VerticalToolbar from './components/VerticalToolbar';
 import Terminal from './components/Terminal';
 import StatusBar from './components/StatusBar';
@@ -237,7 +236,6 @@ function App() {
           </div>
         </div>
       )}
-      <Toolbar onOpenCatalog={handleOpenCatalog} />
       <div className="flex-1 overflow-hidden flex">
         <VerticalToolbar onOpenCatalog={handleOpenCatalog} />
         <div className="flex-1 relative overflow-hidden">
