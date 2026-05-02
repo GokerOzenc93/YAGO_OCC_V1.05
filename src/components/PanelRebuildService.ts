@@ -30,7 +30,7 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
     if (!parent) return;
 
     const { recalculateVirtualFacesForShape } = await import('./VirtualFaceUpdateService');
-    const { createPanelFromVirtualFace, convertReplicadToThreeGeometry } = await import('./ReplicadService');
+    const { createPanelFromVirtualFace, convertReplicadToThreeGeometry, performBooleanCut, createReplicadBox } = await import('./ReplicadService');
     const { rebuildFromSteps } = await import('./FaceExtrudeService');
 
     const vfOrder = new Map<string, number>();
@@ -75,11 +75,49 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
 
       try {
         const thickness = panel.parameters?.depth || 18;
-        const rp = await createPanelFromVirtualFace(vf.vertices, vf.normal, thickness);
+        let rp = await createPanelFromVirtualFace(vf.vertices, vf.normal, thickness);
         if (!rp) {
           workingShapes = [...workingShapes, panel];
           continue;
         }
+
+        if (vf.parentFaceShape) {
+          const subs = parent.subtractionGeometries || [];
+          for (const sub of subs) {
+            if (!sub || !sub.parameters) continue;
+            const w = parseFloat(sub.parameters.width);
+            const h = parseFloat(sub.parameters.height);
+            const d = parseFloat(sub.parameters.depth);
+            if (isNaN(w) || isNaN(h) || isNaN(d) || w <= 0 || h <= 0 || d <= 0) continue;
+            try {
+              const margin = 0.5;
+              const cuttingBox = await createReplicadBox({ width: w + margin, height: h + margin, depth: d + margin });
+              rp = await performBooleanCut(
+                rp, cuttingBox,
+                undefined, sub.relativeOffset,
+                undefined, sub.relativeRotation || [0, 0, 0],
+                undefined, sub.scale || [1, 1, 1]
+              );
+            } catch (err) {
+              console.error('Failed to apply subtractor cut to parent-face-shape panel:', err);
+            }
+          }
+
+          const siblingPanelShapes = workingShapes.filter(
+            s => s.type === 'panel' &&
+              s.parameters?.parentShapeId === parentShapeId &&
+              s.id !== panel.id &&
+              s.replicadShape
+          );
+          for (const sib of siblingPanelShapes) {
+            try {
+              rp = await performBooleanCut(rp, sib.replicadShape);
+            } catch (err) {
+              console.error('Failed to subtract sibling panel from parent-face-shape panel:', err);
+            }
+          }
+        }
+
         const geometry = convertReplicadToThreeGeometry(rp);
         const r = geoAxesSize(geometry);
         const paramUpdates: Record<string, any> = { ...panel.parameters, baseReplicadShape: rp };

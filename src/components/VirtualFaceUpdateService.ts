@@ -618,13 +618,7 @@ export function recalculateVirtualFacesForShape(
 
   for (const vf of shapeFaces) {
     if (vf.parentFaceShape) {
-      const subtractions = shape.subtractionGeometries || [];
-      const panelsExcludingSelf = childPanels.filter(
-        p => p.parameters?.virtualFaceId !== vf.id
-      );
-      const regen = regenerateParentFaceShapeVF(
-        vf, shape, faces, faceGroups, subtractions, panelsExcludingSelf, localToWorld, worldToLocal
-      );
+      const regen = regenerateParentFaceShapeVF(vf, shape, faces, faceGroups, localToWorld);
       updatedMap.set(vf.id, regen || vf);
     } else if (vf.raycastRecipe) {
       const reraycast = reraycastVirtualFace(
@@ -695,10 +689,7 @@ function regenerateParentFaceShapeVF(
   shape: Shape,
   faces: FaceData[],
   faceGroups: CoplanarFaceGroup[],
-  subtractions: any[],
-  siblingPanels: any[],
-  localToWorld: THREE.Matrix4,
-  worldToLocal: THREE.Matrix4
+  localToWorld: THREE.Matrix4
 ): VirtualFace | null {
   const matchedGroup = findMatchingFaceGroup(vf, faces, faceGroups, shape.geometry);
   if (!matchedGroup) return null;
@@ -717,30 +708,15 @@ function regenerateParentFaceShapeVF(
   centerWorld.divideScalar(boundaryWorld.length);
   const planeOrigin = centerWorld.clone();
 
-  let poly: Point2D[] = ensureCCW(
+  const poly: Point2D[] = ensureCCW(
     boundaryWorld.map(c => projectTo2D(c, planeOrigin, u, v))
   );
-
-  const subFootprints = getSubtractorFootprints2D(
-    subtractions, localToWorld, worldNormal, planeOrigin, u, v, 50
-  );
-  const panelFootprints = getPanelFootprints2D(
-    siblingPanels, worldNormal, planeOrigin, u, v, 2.0
-  );
-
-  for (const fp of [...subFootprints, ...panelFootprints]) {
-    const ccwFp = ensureCCW(fp);
-    const hasOverlap =
-      ccwFp.some(p => isPointInsidePolygon(p, poly)) ||
-      poly.some(p => isPointInsidePolygon(p, ccwFp));
-    if (hasOverlap) poly = subtractPolygon(poly, ccwFp);
-  }
-
   if (poly.length < 3) return null;
 
   const newCornersLocal = poly.map(p =>
-    planeOrigin.clone().addScaledVector(u, p.x).addScaledVector(v, p.y).applyMatrix4(worldToLocal)
-  );
+    planeOrigin.clone().addScaledVector(u, p.x).addScaledVector(v, p.y)
+  ).map(cw => cw.clone().applyMatrix4(new THREE.Matrix4().copy(localToWorld).invert()));
+
   const newCenter = new THREE.Vector3();
   newCornersLocal.forEach(c => newCenter.add(c));
   newCenter.divideScalar(newCornersLocal.length);
