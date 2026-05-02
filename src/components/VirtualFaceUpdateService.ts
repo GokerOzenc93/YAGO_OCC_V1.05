@@ -45,8 +45,23 @@ function findMatchingFaceGroup(
   if (candidateGroups.length === 1) return candidateGroups[0];
 
   let bestGroup: CoplanarFaceGroup | null = null;
-  let bestDist = Infinity;
 
+  const vfPlaneOffset = vfCenter.dot(vfNormal);
+  let bestPlaneDiff = Infinity;
+  for (const group of candidateGroups) {
+    const groupNormal = group.normal.clone().normalize();
+    const groupPlaneOffset = group.center.dot(groupNormal);
+    const planeDiff = Math.abs(groupPlaneOffset - vfPlaneOffset);
+    if (planeDiff < bestPlaneDiff) {
+      bestPlaneDiff = planeDiff;
+      bestGroup = group;
+    }
+  }
+
+  if (bestGroup && bestPlaneDiff < 5) return bestGroup;
+
+  let bestDist = Infinity;
+  bestGroup = null;
   for (const group of candidateGroups) {
     const groupBBox = new THREE.Box3();
     group.faceIndices.forEach(fi => {
