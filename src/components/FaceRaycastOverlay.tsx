@@ -275,7 +275,7 @@ function filterStrictCoplanarFaceIndices(
   return result.length > 0 ? result : [bestIdx];
 }
 
-function pickDominantEdgeDirection(
+export function pickDominantEdgeDirection(
   boundaryEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>,
   normal: THREE.Vector3
 ): THREE.Vector3 | null {

@@ -14,6 +14,7 @@ import {
   collectVirtualFaceObstacleEdgesWorld,
   castRayOnFaceWorld,
   convexHull2D,
+  pickDominantEdgeDirection,
   type Point2D,
 } from './FaceRaycastOverlay';
 import {
@@ -117,6 +118,48 @@ function findMatchingFaceGroup(
   }
 
   return bestGroup;
+}
+
+function filterStrictCoplanarIndices(
+  faces: FaceData[],
+  groupIndices: number[],
+  localToWorld: THREE.Matrix4,
+  normalMatrix: THREE.Matrix3,
+  normalDotTol: number = 0.99999,
+  planeDistTol: number = 0.05
+): number[] {
+  if (groupIndices.length === 0) return [];
+  let bestIdx = groupIndices[0];
+  let bestArea = 0;
+  for (const fi of groupIndices) {
+    const face = faces[fi];
+    if (!face) continue;
+    const a = face.vertices[0], b = face.vertices[1], c = face.vertices[2];
+    const area = new THREE.Vector3().crossVectors(
+      new THREE.Vector3().subVectors(b, a),
+      new THREE.Vector3().subVectors(c, a)
+    ).length();
+    if (area > bestArea) { bestArea = area; bestIdx = fi; }
+  }
+  const refFace = faces[bestIdx];
+  const refNormalW = refFace.normal.clone().applyMatrix3(normalMatrix).normalize();
+  const refPointW = refFace.center.clone().applyMatrix4(localToWorld);
+  const result: number[] = [];
+  for (const fi of groupIndices) {
+    const face = faces[fi];
+    if (!face) continue;
+    const nW = face.normal.clone().applyMatrix3(normalMatrix).normalize();
+    if (nW.dot(refNormalW) < normalDotTol) continue;
+    let maxPlaneDist = 0;
+    for (const vLocal of face.vertices) {
+      const vW = vLocal.clone().applyMatrix4(localToWorld);
+      const d = Math.abs(refNormalW.dot(new THREE.Vector3().subVectors(vW, refPointW)));
+      if (d > maxPlaneDist) maxPlaneDist = d;
+    }
+    if (maxPlaneDist > planeDistTol) continue;
+    result.push(fi);
+  }
+  return result.length > 0 ? result : groupIndices;
 }
 
 function computeFaceGroupExtent(
@@ -419,14 +462,19 @@ function reraycastVirtualFace(
   const matchedGroup = findMatchingFaceGroup(vf, faces, faceGroups, shape.geometry);
   if (!matchedGroup) return null;
 
-  const localNormal = matchedGroup.normal.clone().normalize();
   const normalMatrix = new THREE.Matrix3().getNormalMatrix(localToWorld);
+  const strictIndices = filterStrictCoplanarIndices(
+    faces, matchedGroup.faceIndices, localToWorld, normalMatrix
+  );
+
+  const refFace = faces[strictIndices[0]];
+  const localNormal = refFace ? refFace.normal.clone().normalize() : matchedGroup.normal.clone().normalize();
   const worldNormal = localNormal.clone().applyMatrix3(normalMatrix).normalize();
 
-  const { u, v } = getFacePlaneAxes(worldNormal);
+  let { u, v } = getFacePlaneAxes(worldNormal);
 
   const groupVerticesWorld: THREE.Vector3[] = [];
-  matchedGroup.faceIndices.forEach(fi => {
+  strictIndices.forEach(fi => {
     const face = faces[fi];
     if (!face) return;
     face.vertices.forEach(vertex => groupVerticesWorld.push(vertex.clone().applyMatrix4(localToWorld)));
@@ -434,7 +482,13 @@ function reraycastVirtualFace(
 
   if (groupVerticesWorld.length === 0) return null;
 
-  const uniqueBoundaryEdgesLocal = extractUniqueBoundaryEdgesLocal(faces, matchedGroup.faceIndices);
+  const uniqueBoundaryEdgesLocal = extractUniqueBoundaryEdgesLocal(faces, strictIndices);
+  const boundaryEdgesWorldForDominant = collectBoundaryEdgesWorld(faces, strictIndices, localToWorld);
+  const dominant = pickDominantEdgeDirection(boundaryEdgesWorldForDominant, worldNormal);
+  if (dominant) {
+    u = dominant.clone();
+    v = new THREE.Vector3().crossVectors(worldNormal, u).normalize();
+  }
 
   const nhd = vf.raycastRecipe.normalizedHitDistances;
   const allBoundary = !!nhd && !!nhd.uPosIsBoundary && !!nhd.uNegIsBoundary && !!nhd.vPosIsBoundary && !!nhd.vNegIsBoundary;
@@ -497,7 +551,7 @@ function reraycastVirtualFace(
 
   return reraycastVirtualFaceFallback(
     vf, shape, faces, matchedGroup, localToWorld, worldToLocal,
-    childPanels, shapeFaces, groupVerticesWorld, worldNormal, u, v
+    childPanels, shapeFaces, groupVerticesWorld, worldNormal, u, v, strictIndices
   );
 }
 
@@ -513,7 +567,8 @@ function reraycastVirtualFaceFallback(
   groupVerticesWorld: THREE.Vector3[],
   worldNormal: THREE.Vector3,
   u: THREE.Vector3,
-  v: THREE.Vector3
+  v: THREE.Vector3,
+  strictFaceIndices?: number[]
 ): VirtualFace | null {
   let clampedClickWorld: THREE.Vector3;
 
@@ -545,7 +600,9 @@ function reraycastVirtualFaceFallback(
   const startWorld = clampedClickWorld.clone().addScaledVector(worldNormal, 0.5);
   const planeOrigin = startWorld.clone();
 
-  const boundaryEdgesWorld = collectBoundaryEdgesWorld(faces, matchedGroup.faceIndices, localToWorld);
+  const faceIndicesForBoundary = strictFaceIndices && strictFaceIndices.length > 0
+    ? strictFaceIndices : matchedGroup.faceIndices;
+  const boundaryEdgesWorld = collectBoundaryEdgesWorld(faces, faceIndicesForBoundary, localToWorld);
   const subtractions = shape.subtractionGeometries || [];
 
   const panelsExcludingSelf = childPanels.filter(
@@ -720,11 +777,16 @@ function regenerateParentFaceShapeVF(
   const matchedGroup = findMatchingFaceGroup(vf, faces, faceGroups, shape.geometry);
   if (!matchedGroup) return null;
 
-  const boundaryLocal = extractParentBoundaryLoopLocal(faces, matchedGroup.faceIndices);
+  const normalMatrix = new THREE.Matrix3().getNormalMatrix(localToWorld);
+  const strictIndicesForPFS = filterStrictCoplanarIndices(
+    faces, matchedGroup.faceIndices, localToWorld, normalMatrix
+  );
+
+  const boundaryLocal = extractParentBoundaryLoopLocal(faces, strictIndicesForPFS);
   if (!boundaryLocal || boundaryLocal.length < 3) return null;
 
-  const localNormal = matchedGroup.normal.clone().normalize();
-  const normalMatrix = new THREE.Matrix3().getNormalMatrix(localToWorld);
+  const refFacePFS = faces[strictIndicesForPFS[0]];
+  const localNormal = refFacePFS ? refFacePFS.normal.clone().normalize() : matchedGroup.normal.clone().normalize();
   const worldNormal = localNormal.clone().applyMatrix3(normalMatrix).normalize();
   const { u, v } = getFacePlaneAxes(worldNormal);
 
