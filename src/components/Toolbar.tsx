@@ -41,8 +41,7 @@ const TBtn = ({
     disabled={disabled}
     onClick={onClick}
     className={[
-      // ↓ 28px → 22px  (~2 mm küçüldü)
-      'relative flex items-center justify-center w-[22px] h-[22px] rounded-md transition-all duration-150 group',
+      'relative flex items-center justify-center w-[26px] h-[26px] rounded-md transition-all duration-150 group',
       'outline-none focus-visible:ring-2 focus-visible:ring-orange-200',
       disabled
         ? 'opacity-30 cursor-not-allowed text-stone-400'
@@ -134,11 +133,10 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
   }, [selectedShapeId, shapes]);
 
   const viewModeLabel = { [ViewMode.SOLID]: 'Solid', [ViewMode.WIREFRAME]: 'Wire', [ViewMode.XRAY]: 'X-Ray' }[viewMode] ?? 'Solid';
-  // ↓ view mode ikonları da 15px
   const viewModeIcon =
-    viewMode === ViewMode.WIREFRAME ? <BoxSelect size={15} /> :
-    viewMode === ViewMode.XRAY     ? <ScanEye size={15} /> :
-                                     <Cube size={15} />;
+    viewMode === ViewMode.WIREFRAME ? <BoxSelect size={17} /> :
+    viewMode === ViewMode.XRAY     ? <ScanEye size={17} /> :
+                                     <Cube size={17} />;
 
   const handleTransformToolSelect = (tool: Tool) => { setActiveTool(tool); setLastTransformTool(tool); };
   const handleModify = (type: ModificationType) => {
@@ -264,7 +262,7 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
           {menus.map((menu) => (
             <div key={menu.label} className="relative h-full">
               <button
-               className={`relative h-full px-3 text-[12.1px] font-medium transition-colors flex items-center gap-0.2
+               className={`relative h-full px-3 text-[13.1px] font-medium transition-colors flex items-center gap-0.2
                   ${activeMenu === menu.label ? 'text-orange-500 bg-orange-50' : 'text-stone-600 hover:text-stone-800 hover:bg-stone-100'}`}
                 onClick={() => setActiveMenu(activeMenu === menu.label ? null : menu.label)}
                 onMouseEnter={() => activeMenu && setActiveMenu(menu.label)}
@@ -298,21 +296,21 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
 
         {/* ── Row 3 · Main Toolbar ── */}
         {/* ↓ yükseklik 34px → 30px, butonlar küçüldüğü için */}
-        <div className="flex items-center h-[30px] gap-0.5 px-3 bg-stone-50 border-b border-stone-200">
+        <div className="flex items-center h-[38px] gap-0.5 px-3 bg-stone-50 border-b border-stone-200">
 
           {/* File group */}
           <div className="flex items-center bg-white rounded-lg shadow-sm border border-stone-200 p-0.5 gap-0">
-            <TBtn icon={<FilePlus size={15} />}  label="Yeni (Ctrl+N)" />
-            <TBtn icon={<Save size={15} />}       label="Kaydet (Ctrl+S)" />
-            <TBtn icon={<FileDown size={15} />}   label="Farklı Kaydet (Ctrl+Shift+S)" />
+            <TBtn icon={<FilePlus size={17} />}  label="Yeni (Ctrl+N)" />
+            <TBtn icon={<Save size={17} />}       label="Kaydet (Ctrl+S)" />
+            <TBtn icon={<FileDown size={17} />}   label="Farklı Kaydet (Ctrl+Shift+S)" />
           </div>
 
           <Sep />
 
           {/* Undo / Redo */}
           <div className="flex items-center bg-white rounded-lg shadow-sm border border-stone-200 p-0.5 gap-0">
-            <TBtn icon={<Undo2 size={15} />}  label="Geri Al (Ctrl+Z)" />
-            <TBtn icon={<Redo2 size={15} />}  label="Yinele (Ctrl+Y)" />
+            <TBtn icon={<Undo2 size={17} />}  label="Geri Al (Ctrl+Z)" />
+            <TBtn icon={<Redo2 size={17} />}  label="Yinele (Ctrl+Y)" />
           </div>
 
           <Sep />
@@ -320,34 +318,34 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
           {/* Transform tools */}
           <div className="flex items-center bg-white rounded-lg shadow-sm border border-stone-200 p-0.5 gap-0">
             <TBtn
-              icon={<MousePointer2 size={15} />}
+              icon={<MousePointer2 size={17} />}
               label="Seç (V)"
               active={activeTool === Tool.SELECT}
               onClick={() => setActiveTool(Tool.SELECT)}
             />
             <TBtn
-              icon={<Move size={15} />}
+              icon={<Move size={17} />}
               label="Taşı (M)"
               active={activeTool === Tool.MOVE}
               disabled={!selectedShapeId}
               onClick={() => handleTransformToolSelect(Tool.MOVE)}
             />
             <TBtn
-              icon={<Navigation size={15} />}
+              icon={<Navigation size={17} />}
               label="Noktadan Noktaya"
               active={activeTool === Tool.POINT_TO_POINT_MOVE}
               disabled={!selectedShapeId}
               onClick={() => handleTransformToolSelect(Tool.POINT_TO_POINT_MOVE)}
             />
             <TBtn
-              icon={<RefreshCcw size={15} />}
+              icon={<RefreshCcw size={17} />}
               label="Döndür (R)"
               active={activeTool === Tool.ROTATE}
               disabled={!selectedShapeId}
               onClick={() => handleTransformToolSelect(Tool.ROTATE)}
             />
             <TBtn
-              icon={<Maximize2 size={15} />}
+              icon={<Maximize2 size={17} />}
               label={isBoxSelected ? 'Ölçek – kutu için devre dışı' : 'Ölçekle (S)'}
               active={activeTool === Tool.SCALE}
               disabled={!selectedShapeId || isBoxSelected}
@@ -359,9 +357,9 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
 
           {/* Geometry & Tools */}
           <div className="flex items-center bg-white rounded-lg shadow-sm border border-stone-200 p-0.5 gap-0">
-            <TBtn icon={<AddBoxIcon size={15} />}       label="Kutu Ekle (B)"    onClick={handleAddBox} />
+            <TBtn icon={<AddBoxIcon size={17} />}       label="Kutu Ekle (B)"    onClick={handleAddBox} />
             <TBtn
-              icon={<MinusSquare size={15} />}
+              icon={<MinusSquare size={17} />}
               label={hasIntersectingShapes ? 'Kesişen Şekilleri Çıkar' : selectedShapeId ? 'Kesişen şekil yok' : 'Önce şekil seçin'}
               danger={hasIntersectingShapes}
               disabled={!selectedShapeId}
@@ -374,7 +372,7 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
           {/* View controls */}
           <div className="flex items-center bg-white rounded-lg shadow-sm border border-stone-200 p-0.5 gap-0">
             <TBtn
-              icon={cameraType === CameraType.PERSPECTIVE ? <Camera size={15} /> : <CameraOff size={15} />}
+              icon={cameraType === CameraType.PERSPECTIVE ? <Camera size={17} /> : <CameraOff size={17} />}
               label={cameraType === CameraType.PERSPECTIVE ? 'Perspektif' : 'Ortografik'}
               onClick={handleCameraToggle}
             />
@@ -385,13 +383,13 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
               onClick={() => useAppStore.getState().cycleViewMode()}
             />
             <TBtn
-              icon={<Crosshair size={15} />}
+              icon={<Crosshair size={17} />}
               label={`Lineer Mod: ${orthoMode === OrthoMode.ON ? 'Açık' : 'Kapalı'}`}
               active={orthoMode === OrthoMode.ON}
               onClick={() => toggleOrthoMode()}
             />
             <TBtn
-              icon={<FolderOpen size={15} />}
+              icon={<FolderOpen size={17} />}
               label="Katalog"
               accent
               onClick={onOpenCatalog}
