@@ -77,6 +77,7 @@ export interface VirtualFace {
   role:FaceRole;description:string;hasPanel:boolean;
   roleSelected?:boolean;
   raycastRecipe?:VirtualFaceRaycastRecipe;
+  parentFaceShape?:boolean;
 }
 
 export interface Shape {

@@ -617,7 +617,16 @@ export function recalculateVirtualFacesForShape(
   const updatedMap = new Map<string, VirtualFace>();
 
   for (const vf of shapeFaces) {
-    if (vf.raycastRecipe) {
+    if (vf.parentFaceShape) {
+      const subtractions = shape.subtractionGeometries || [];
+      const panelsExcludingSelf = childPanels.filter(
+        p => p.parameters?.virtualFaceId !== vf.id
+      );
+      const regen = regenerateParentFaceShapeVF(
+        vf, shape, faces, faceGroups, subtractions, panelsExcludingSelf, localToWorld, worldToLocal
+      );
+      updatedMap.set(vf.id, regen || vf);
+    } else if (vf.raycastRecipe) {
       const reraycast = reraycastVirtualFace(
         vf, shape, faces, faceGroups, localToWorld, worldToLocal, childPanels, shapeFaces
       );
@@ -635,6 +644,113 @@ export function recalculateVirtualFacesForShape(
   }
 
   return virtualFaces.map(vf => updatedMap.get(vf.id) || vf);
+}
+
+function extractParentBoundaryLoopLocal(
+  faces: FaceData[],
+  faceIndices: number[]
+): THREE.Vector3[] | null {
+  type Edge = { a: THREE.Vector3; b: THREE.Vector3; ak: string; bk: string };
+  const keyOf = (p: THREE.Vector3) => `${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)}`;
+  const map = new Map<string, { e: Edge; count: number }>();
+  for (const fi of faceIndices) {
+    const f = faces[fi]; if (!f) continue;
+    for (let i = 0; i < 3; i++) {
+      const a = f.vertices[i], b = f.vertices[(i + 1) % 3];
+      const ak = keyOf(a), bk = keyOf(b);
+      const k = ak < bk ? `${ak}|${bk}` : `${bk}|${ak}`;
+      if (!map.has(k)) map.set(k, { e: { a: a.clone(), b: b.clone(), ak, bk }, count: 0 });
+      map.get(k)!.count++;
+    }
+  }
+  const boundary: Edge[] = [];
+  map.forEach(v => { if (v.count === 1) boundary.push(v.e); });
+  if (boundary.length < 3) return null;
+  const adj = new Map<string, { other: string; point: THREE.Vector3 }[]>();
+  for (const e of boundary) {
+    if (!adj.has(e.ak)) adj.set(e.ak, []);
+    if (!adj.has(e.bk)) adj.set(e.bk, []);
+    adj.get(e.ak)!.push({ other: e.bk, point: e.b });
+    adj.get(e.bk)!.push({ other: e.ak, point: e.a });
+  }
+  const startKey = boundary[0].ak;
+  const loop: THREE.Vector3[] = [boundary[0].a];
+  const visited = new Set<string>();
+  let cur = startKey, prev = '';
+  while (true) {
+    visited.add(cur);
+    const neigh = adj.get(cur) || [];
+    const next = neigh.find(n => n.other !== prev && !visited.has(n.other));
+    if (!next) break;
+    loop.push(next.point);
+    prev = cur; cur = next.other;
+    if (cur === startKey) break;
+    if (loop.length > boundary.length + 2) break;
+  }
+  return loop.length >= 3 ? loop : null;
+}
+
+function regenerateParentFaceShapeVF(
+  vf: VirtualFace,
+  shape: Shape,
+  faces: FaceData[],
+  faceGroups: CoplanarFaceGroup[],
+  subtractions: any[],
+  siblingPanels: any[],
+  localToWorld: THREE.Matrix4,
+  worldToLocal: THREE.Matrix4
+): VirtualFace | null {
+  const matchedGroup = findMatchingFaceGroup(vf, faces, faceGroups, shape.geometry);
+  if (!matchedGroup) return null;
+
+  const boundaryLocal = extractParentBoundaryLoopLocal(faces, matchedGroup.faceIndices);
+  if (!boundaryLocal || boundaryLocal.length < 3) return null;
+
+  const localNormal = matchedGroup.normal.clone().normalize();
+  const normalMatrix = new THREE.Matrix3().getNormalMatrix(localToWorld);
+  const worldNormal = localNormal.clone().applyMatrix3(normalMatrix).normalize();
+  const { u, v } = getFacePlaneAxes(worldNormal);
+
+  const boundaryWorld = boundaryLocal.map(p => p.clone().applyMatrix4(localToWorld));
+  const centerWorld = new THREE.Vector3();
+  boundaryWorld.forEach(c => centerWorld.add(c));
+  centerWorld.divideScalar(boundaryWorld.length);
+  const planeOrigin = centerWorld.clone();
+
+  let poly: Point2D[] = ensureCCW(
+    boundaryWorld.map(c => projectTo2D(c, planeOrigin, u, v))
+  );
+
+  const subFootprints = getSubtractorFootprints2D(
+    subtractions, localToWorld, worldNormal, planeOrigin, u, v, 50
+  );
+  const panelFootprints = getPanelFootprints2D(
+    siblingPanels, worldNormal, planeOrigin, u, v, 2.0
+  );
+
+  for (const fp of [...subFootprints, ...panelFootprints]) {
+    const ccwFp = ensureCCW(fp);
+    const hasOverlap =
+      ccwFp.some(p => isPointInsidePolygon(p, poly)) ||
+      poly.some(p => isPointInsidePolygon(p, ccwFp));
+    if (hasOverlap) poly = subtractPolygon(poly, ccwFp);
+  }
+
+  if (poly.length < 3) return null;
+
+  const newCornersLocal = poly.map(p =>
+    planeOrigin.clone().addScaledVector(u, p.x).addScaledVector(v, p.y).applyMatrix4(worldToLocal)
+  );
+  const newCenter = new THREE.Vector3();
+  newCornersLocal.forEach(c => newCenter.add(c));
+  newCenter.divideScalar(newCornersLocal.length);
+
+  return {
+    ...vf,
+    normal: [localNormal.x, localNormal.y, localNormal.z],
+    vertices: newCornersLocal.map(c => [c.x, c.y, c.z] as [number, number, number]),
+    center: [newCenter.x, newCenter.y, newCenter.z],
+  };
 }
 
 function getPanelFootprints2D(

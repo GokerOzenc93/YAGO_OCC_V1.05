@@ -189,6 +189,7 @@ export async function reshapePanelToParentFace(panelId: string): Promise<void> {
             vertices: newVerticesLocal.map(p => [p.x, p.y, p.z] as [number, number, number]),
             center: [center.x, center.y, center.z],
             raycastRecipe: undefined,
+            parentFaceShape: true,
           }
         : f
     ),
