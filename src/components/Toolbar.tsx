@@ -24,7 +24,7 @@ import {
   RotateCcw, ArrowDownUp,
 } from 'lucide-react';
 import { createReplicadBox, convertReplicadToThreeGeometry, performBooleanCut } from './ReplicadService';
-import { AddBoxButton } from './icons';
+import { AddBoxButton, SubtractBoxButton, CameraPerspectiveButton, CameraOrthographicButton, ViewSolidButton, ViewWireframeButton, ViewXRayButton } from './icons';
 
 interface ToolbarProps { onOpenCatalog: () => void; }
 
@@ -41,7 +41,7 @@ const TBtn = ({
     disabled={disabled}
     onClick={onClick}
     className={[
-      'relative flex items-center justify-center w-[26px] h-[26px] rounded-md transition-all duration-150 group',
+      'relative flex items-center justify-center w-[32px] h-[32px] rounded-md transition-all duration-150 group',
       'outline-none focus-visible:ring-2 focus-visible:ring-orange-200',
       disabled
         ? 'opacity-30 cursor-not-allowed text-stone-400'
@@ -134,9 +134,9 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
 
   const viewModeLabel = { [ViewMode.SOLID]: 'Solid', [ViewMode.WIREFRAME]: 'Wire', [ViewMode.XRAY]: 'X-Ray' }[viewMode] ?? 'Solid';
   const viewModeIcon =
-    viewMode === ViewMode.WIREFRAME ? <BoxSelect size={17} /> :
-    viewMode === ViewMode.XRAY     ? <ScanEye size={17} /> :
-                                     <Cube size={17} />;
+    viewMode === ViewMode.WIREFRAME ? <BoxSelect size={20} /> :
+    viewMode === ViewMode.XRAY     ? <ScanEye size={20} /> :
+                                     <Cube size={20} />;
 
   const handleTransformToolSelect = (tool: Tool) => { setActiveTool(tool); setLastTransformTool(tool); };
   const handleModify = (type: ModificationType) => {
@@ -295,22 +295,21 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
         </div>
 
         {/* ── Row 3 · Main Toolbar ── */}
-        {/* ↓ yükseklik 34px → 30px, butonlar küçüldüğü için */}
-        <div className="flex items-center h-[38px] gap-0.5 px-3 bg-stone-50 border-b border-stone-200">
+        <div className="flex items-center h-[44px] gap-0.5 px-3 bg-stone-50 border-b border-stone-200">
 
           {/* File group */}
           <div className="flex items-center bg-white rounded-lg shadow-sm border border-stone-200 p-0.5 gap-0">
-            <TBtn icon={<FilePlus size={17} />}  label="Yeni (Ctrl+N)" />
-            <TBtn icon={<Save size={17} />}       label="Kaydet (Ctrl+S)" />
-            <TBtn icon={<FileDown size={17} />}   label="Farklı Kaydet (Ctrl+Shift+S)" />
+            <TBtn icon={<FilePlus size={20} />}  label="Yeni (Ctrl+N)" />
+            <TBtn icon={<Save size={20} />}       label="Kaydet (Ctrl+S)" />
+            <TBtn icon={<FileDown size={20} />}   label="Farklı Kaydet (Ctrl+Shift+S)" />
           </div>
 
           <Sep />
 
           {/* Undo / Redo */}
           <div className="flex items-center bg-white rounded-lg shadow-sm border border-stone-200 p-0.5 gap-0">
-            <TBtn icon={<Undo2 size={17} />}  label="Geri Al (Ctrl+Z)" />
-            <TBtn icon={<Redo2 size={17} />}  label="Yinele (Ctrl+Y)" />
+            <TBtn icon={<Undo2 size={20} />}  label="Geri Al (Ctrl+Z)" />
+            <TBtn icon={<Redo2 size={20} />}  label="Yinele (Ctrl+Y)" />
           </div>
 
           <Sep />
@@ -318,34 +317,34 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
           {/* Transform tools */}
           <div className="flex items-center bg-white rounded-lg shadow-sm border border-stone-200 p-0.5 gap-0">
             <TBtn
-              icon={<MousePointer2 size={17} />}
+              icon={<MousePointer2 size={20} />}
               label="Seç (V)"
               active={activeTool === Tool.SELECT}
               onClick={() => setActiveTool(Tool.SELECT)}
             />
             <TBtn
-              icon={<Move size={17} />}
+              icon={<Move size={20} />}
               label="Taşı (M)"
               active={activeTool === Tool.MOVE}
               disabled={!selectedShapeId}
               onClick={() => handleTransformToolSelect(Tool.MOVE)}
             />
             <TBtn
-              icon={<Navigation size={17} />}
+              icon={<Navigation size={20} />}
               label="Noktadan Noktaya"
               active={activeTool === Tool.POINT_TO_POINT_MOVE}
               disabled={!selectedShapeId}
               onClick={() => handleTransformToolSelect(Tool.POINT_TO_POINT_MOVE)}
             />
             <TBtn
-              icon={<RefreshCcw size={17} />}
+              icon={<RefreshCcw size={20} />}
               label="Döndür (R)"
               active={activeTool === Tool.ROTATE}
               disabled={!selectedShapeId}
               onClick={() => handleTransformToolSelect(Tool.ROTATE)}
             />
             <TBtn
-              icon={<Maximize2 size={17} />}
+              icon={<Maximize2 size={20} />}
               label={isBoxSelected ? 'Ölçek – kutu için devre dışı' : 'Ölçekle (S)'}
               active={activeTool === Tool.SCALE}
               disabled={!selectedShapeId || isBoxSelected}
@@ -358,12 +357,10 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
           {/* Geometry & Tools */}
           <div className="flex items-center bg-white rounded-lg shadow-sm border border-stone-200 p-0.5 gap-0">
             <AddBoxButton onClick={handleAddBox} />
-            <TBtn
-              icon={<MinusSquare size={17} />}
-              label={hasIntersectingShapes ? 'Kesişen Şekilleri Çıkar' : selectedShapeId ? 'Kesişen şekil yok' : 'Önce şekil seçin'}
-              danger={hasIntersectingShapes}
-              disabled={!selectedShapeId}
+            <SubtractBoxButton
               onClick={handleSubtract}
+              disabled={!selectedShapeId || !hasIntersectingShapes}
+              className={hasIntersectingShapes ? 'text-red-400 hover:bg-red-50 hover:text-red-500' : ''}
             />
           </div>
 
@@ -371,25 +368,26 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
 
           {/* View controls */}
           <div className="flex items-center bg-white rounded-lg shadow-sm border border-stone-200 p-0.5 gap-0">
+            {cameraType === CameraType.PERSPECTIVE ? (
+              <CameraPerspectiveButton onClick={handleCameraToggle} />
+            ) : (
+              <CameraOrthographicButton onClick={handleCameraToggle} />
+            )}
+            {viewMode === ViewMode.SOLID ? (
+              <ViewSolidButton onClick={() => cycleViewMode()} />
+            ) : viewMode === ViewMode.WIREFRAME ? (
+              <ViewWireframeButton onClick={() => cycleViewMode()} />
+            ) : (
+              <ViewXRayButton onClick={() => cycleViewMode()} />
+            )}
             <TBtn
-              icon={cameraType === CameraType.PERSPECTIVE ? <Camera size={17} /> : <CameraOff size={17} />}
-              label={cameraType === CameraType.PERSPECTIVE ? 'Perspektif' : 'Ortografik'}
-              onClick={handleCameraToggle}
-            />
-            <TBtn
-              icon={viewModeIcon}
-              label={`Görünüm: ${viewModeLabel}`}
-              active={viewMode !== ViewMode.SOLID}
-              onClick={() => useAppStore.getState().cycleViewMode()}
-            />
-            <TBtn
-              icon={<Crosshair size={17} />}
+              icon={<Crosshair size={20} />}
               label={`Lineer Mod: ${orthoMode === OrthoMode.ON ? 'Açık' : 'Kapalı'}`}
               active={orthoMode === OrthoMode.ON}
               onClick={() => toggleOrthoMode()}
             />
             <TBtn
-              icon={<FolderOpen size={17} />}
+              icon={<FolderOpen size={20} />}
               label="Katalog"
               accent
               onClick={onOpenCatalog}
