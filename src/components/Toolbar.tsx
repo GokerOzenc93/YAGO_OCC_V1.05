@@ -24,25 +24,46 @@ import {
 
 interface ToolbarProps { onOpenCatalog: () => void; }
 
+/* ─── Typography scale ─── */
+const TS = {
+  /* Top-level UI text — header breadcrumbs, search input, menu bar items */
+  ui:           '12.5px',
+  uiSep:        '11.5px',   // breadcrumb separator chevron
+  uiLabel:      '10.5px',   // tiny eyebrow labels above breadcrumbs
+  /* Letter-spacing */
+  ls:           '0.012em',
+  lsTight:      '-0.005em', // active menu / strong items
+  lsLoose:      '0.04em',   // uppercase labels
+};
+
 /* ─── Design tokens ─── */
 const T = {
-  /* surfaces — slightly cooler, more architectural */
+  /* surfaces */
   headerBg:    '#fdfcfa',
-  menuBg:      '#faf9f6',
+  /* Menu bar: deeper layered surface for that "milled bone" depth */
+  menuBg:      'linear-gradient(180deg,#f7f5f0 0%,#efece5 100%)',
   rowBg:       'linear-gradient(180deg,#f4f2ee 0%,#ebe8e2 100%)',
-  /* Button group: subtle warm gradient instead of flat white — sits like polished bone/ivory against the darker row */
+  /* Button group */
   groupBg:     'linear-gradient(180deg,#fdfcfa 0%,#f6f3ed 100%)',
   groupBorder: 'rgba(60,50,40,0.14)',
-  /* Layered shadow: soft drop + crisp hairline ring + top highlight + inner bottom shade for depth */
   groupShadow: '0 1.5px 3px rgba(40,30,20,0.09),0 0.5px 1px rgba(40,30,20,0.05),0 0 0 0.5px rgba(60,50,40,0.07),inset 0 0.5px 0 rgba(255,255,255,0.95),inset 0 -0.5px 0 rgba(140,120,100,0.06)',
   hdrBorder:   '#e4dfd7',
   rowBorder:   '#d6d1c8',
+  menuBorder:  '#dcd6cb',
   iconIdle:    '#6b6560',
   iconHover:   '#1c1917',
   iconActive:  '#ea580c',
   activeBg:    'rgba(234,88,12,0.08)',
   activeBord:  'rgba(234,88,12,0.28)',
   hoverBg:     'rgba(0,0,0,0.05)',
+
+  /* Text */
+  textPrimary: '#1c1917',
+  textStrong:  '#292524',
+  textBody:    '#44403c',
+  textMute:    '#706b65',
+  textFaint:   '#9c9590',
+  textWhisper: '#c9c4be',
 };
 
 /* ─── Icon button ─── */
@@ -231,8 +252,9 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
   const menuItemBase: React.CSSProperties = {
     display:'flex', alignItems:'center', justifyContent:'space-between',
     width:'100%', height:'30px', padding:'0 10px',
-    fontSize:'12px', fontFamily:"'Inter',system-ui,sans-serif",
-    fontWeight:420, letterSpacing:'0.01em', color:'#44403c',
+    fontSize: TS.ui,
+    fontFamily:"'Inter',system-ui,sans-serif",
+    fontWeight:420, letterSpacing: TS.ls, color: T.textBody,
     background:'transparent', border:'none', cursor:'pointer',
     borderRadius:'6px', outline:'none', transition:'background 0.08s,color 0.08s',
   };
@@ -268,20 +290,63 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
             background:'linear-gradient(to bottom,transparent,rgba(60,50,40,0.18) 40%,rgba(60,50,40,0.18) 60%,transparent)',
           }}/>
 
-          {/* Breadcrumb */}
-          <div style={{display:'flex',alignItems:'center',gap:'5px',fontSize:'12.5px'}}>
-            <span style={{color:'#9c9590',fontWeight:400,letterSpacing:'0.025em'}}>Şirket</span>
-            <span style={{color:'#c9c4be',fontSize:'11px'}}>›</span>
-            <span style={{color:'#d9540a',fontWeight:600,letterSpacing:'-0.01em'}}>Göker İnşaat</span>
+          {/* Breadcrumb — Company */}
+          <div style={{display:'flex',alignItems:'center',gap:'6px'}}>
+            <span style={{
+              fontSize: TS.ui,
+              fontWeight: 400,
+              letterSpacing: TS.ls,
+              color: T.textFaint,
+              fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif",
+            }}>
+              Company
+            </span>
+            <span style={{
+              fontSize: TS.uiSep,
+              color: T.textWhisper,
+              fontWeight: 300,
+            }}>›</span>
+            <span style={{
+              fontSize: TS.ui,
+              fontWeight: 600,
+              letterSpacing: TS.lsTight,
+              color: '#d9540a',
+              fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif",
+            }}>
+              Göker İnşaat
+            </span>
           </div>
+
           <div style={{
             width:'1px', height:'20px', flexShrink:0,
             background:'linear-gradient(to bottom,transparent,rgba(60,50,40,0.18) 40%,rgba(60,50,40,0.18) 60%,transparent)',
           }}/>
-          <div style={{display:'flex',alignItems:'center',gap:'5px',fontSize:'12.5px'}}>
-            <span style={{color:'#9c9590',fontWeight:400,letterSpacing:'0.025em'}}>Proje</span>
-            <span style={{color:'#c9c4be',fontSize:'11px'}}>›</span>
-            <span style={{color:'#292524',fontWeight:600,letterSpacing:'-0.01em'}}>Drawing1</span>
+
+          {/* Breadcrumb — Project */}
+          <div style={{display:'flex',alignItems:'center',gap:'6px'}}>
+            <span style={{
+              fontSize: TS.ui,
+              fontWeight: 400,
+              letterSpacing: TS.ls,
+              color: T.textFaint,
+              fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif",
+            }}>
+              Project
+            </span>
+            <span style={{
+              fontSize: TS.uiSep,
+              color: T.textWhisper,
+              fontWeight: 300,
+            }}>›</span>
+            <span style={{
+              fontSize: TS.ui,
+              fontWeight: 600,
+              letterSpacing: TS.lsTight,
+              color: T.textStrong,
+              fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif",
+            }}>
+              Drawing1
+            </span>
           </div>
 
           {/* Right */}
@@ -289,13 +354,16 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
 
             {/* Search */}
             <div style={{position:'relative',display:'flex',alignItems:'center'}}>
-              <Search size={11} style={{position:'absolute',left:'9px',color:'#b0aaa4',pointerEvents:'none'}}/>
+              <Search size={12} style={{position:'absolute',left:'10px',color:'#b0aaa4',pointerEvents:'none'}}/>
               <input
-                type="text" placeholder="Ara..."
+                type="text" placeholder="Search..."
                 style={{
-                  width:'148px', height:'28px', paddingLeft:'27px', paddingRight:'10px',
-                  fontSize:'12px', fontFamily:"'Inter',system-ui,sans-serif",
-                  letterSpacing:'0.01em', color:'#292524',
+                  width:'180px', height:'28px', paddingLeft:'30px', paddingRight:'10px',
+                  fontSize: TS.ui,
+                  fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif",
+                  fontWeight: 400,
+                  letterSpacing: TS.ls,
+                  color: T.textStrong,
                   background:'#f7f6f3', border:`1px solid ${T.groupBorder}`,
                   borderRadius:'7px', outline:'none',
                   boxShadow:'inset 0 1px 2px rgba(0,0,0,0.04)',
@@ -319,7 +387,6 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
               background:'linear-gradient(to bottom,transparent,rgba(60,50,40,0.16) 40%,rgba(60,50,40,0.16) 60%,transparent)',
             }}/>
 
-            {/* Combined group: view + camera + linear + divider + settings + help + divider + exit */}
             <BtnGroup>
               {viewMode===ViewMode.SOLID
                 ? <ViewSolidButton onClick={()=>cycleViewMode()}/>
@@ -333,53 +400,94 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
               }
               <TBtn
                 icon={<Crosshair size={14}/>}
-                label={`Lineer Mod: ${orthoMode===OrthoMode.ON?'Açık':'Kapalı'}`}
+                label={`Linear Mode: ${orthoMode===OrthoMode.ON?'On':'Off'}`}
                 active={orthoMode===OrthoMode.ON}
                 onClick={()=>toggleOrthoMode()}
               />
               <GrpSep/>
-              <TBtn icon={<Settings size={14}/>} label="Ayarlar"/>
-              <TBtn icon={<HelpCircle size={14}/>} label="Yardım"/>
+              <TBtn icon={<Settings size={14}/>} label="Settings"/>
+              <TBtn icon={<HelpCircle size={14}/>} label="Help"/>
               <GrpSep/>
-              <TBtn icon={<LogOut size={14}/>} label="Çıkış" exit onClick={()=>{/* handle exit */}}/>
+              <TBtn icon={<LogOut size={14}/>} label="Exit" exit onClick={()=>{/* handle exit */}}/>
             </BtnGroup>
           </div>
         </div>
 
-        {/* ── ROW 2 · Menu Bar ── */}
+        {/* ══════════════════════════════════════════════
+            ROW 2 · MENU BAR — Premium milled-bone surface
+            • Gradient background with depth
+            • Inset top highlight + bottom shadow
+            • Subtle texture via layered box-shadows
+        ══════════════════════════════════════════════ */}
         <div style={{
           position:'relative',
-          display:'flex', alignItems:'center', height:'32px', padding:'0 10px',
+          display:'flex', alignItems:'center',
+          height:'34px',
+          padding:'0 14px',
           background:T.menuBg,
-          borderBottom:`1px solid ${T.hdrBorder}`,
-          boxShadow:'inset 0 1px 0 rgba(255,255,255,0.6)',
+          borderBottom:`1px solid ${T.menuBorder}`,
+          boxShadow:[
+            /* Inner top highlight — looks like light catching the milled edge */
+            'inset 0 1px 0 rgba(255,255,255,0.85)',
+            /* Inner bottom shade — subtle depression */
+            'inset 0 -1px 0 rgba(140,120,100,0.08)',
+            /* Inner side accents — wall feeling */
+            'inset 1px 0 0 rgba(255,255,255,0.4)',
+            'inset -1px 0 0 rgba(140,120,100,0.04)',
+            /* Drop shadow underneath — separates from row 3 */
+            '0 1px 0 rgba(255,255,255,0.45)',
+            '0 2px 4px -1px rgba(60,50,40,0.06)',
+          ].join(','),
         }}>
+          {/* Subtle horizontal "grain" texture overlay — barely visible but adds depth */}
+          <div style={{
+            position:'absolute',
+            inset:0,
+            pointerEvents:'none',
+            backgroundImage:
+              'repeating-linear-gradient(0deg,' +
+              'rgba(255,255,255,0) 0px,' +
+              'rgba(255,255,255,0) 2px,' +
+              'rgba(140,120,100,0.012) 2px,' +
+              'rgba(140,120,100,0.012) 3px)',
+            opacity: 0.6,
+          }}/>
+
           {menus.map(menu=>(
-            <div key={menu.label} style={{position:'relative',height:'100%'}}>
+            <div key={menu.label} style={{position:'relative',height:'100%',zIndex:1}}>
               <button
                 style={{
-                  height:'100%', padding:'0 11px',
-                  fontSize:'12.5px', fontFamily:"'Inter',system-ui,sans-serif",
-                  fontWeight: activeMenu===menu.label ? 600 : 420,
-                  letterSpacing:'0.02em',
-                  color: activeMenu===menu.label ? '#ea580c' : '#706b65',
-                  background: activeMenu===menu.label ? '#fff7ed' : 'transparent',
+                  height:'100%',
+                  padding:'0 13px',
+                  fontSize: TS.ui,
+                  fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif",
+                  fontWeight: activeMenu===menu.label ? 600 : 450,
+                  letterSpacing: activeMenu===menu.label ? TS.lsTight : TS.ls,
+                  color: activeMenu===menu.label ? '#ea580c' : T.textMute,
+                  background: activeMenu===menu.label
+                    ? 'linear-gradient(180deg,#fff7ed 0%,#ffedd5 100%)'
+                    : 'transparent',
+                  boxShadow: activeMenu===menu.label
+                    ? '0 0 0 0.5px rgba(234,88,12,0.12),inset 0 1px 0 rgba(255,255,255,0.9),inset 0 -1px 0 rgba(234,88,12,0.06)'
+                    : 'none',
                   border:'none', cursor:'pointer', display:'flex', alignItems:'center',
-                  position:'relative', outline:'none', borderRadius:'4px',
-                  transition:'color 0.1s,background 0.1s',
+                  position:'relative', outline:'none', borderRadius:'5px',
+                  transition:'color 0.12s,background 0.12s,box-shadow 0.12s,letter-spacing 0.12s',
                 }}
                 onClick={()=>setActiveMenu(activeMenu===menu.label?null:menu.label)}
                 onMouseEnter={e=>{
                   if (activeMenu) setActiveMenu(menu.label);
                   if (activeMenu!==menu.label){
-                    (e.currentTarget as HTMLButtonElement).style.color='#292524';
-                    (e.currentTarget as HTMLButtonElement).style.background='#f5f3ef';
+                    (e.currentTarget as HTMLButtonElement).style.color = T.textStrong;
+                    (e.currentTarget as HTMLButtonElement).style.background = 'linear-gradient(180deg,#fdfcfa 0%,#f4f1ea 100%)';
+                    (e.currentTarget as HTMLButtonElement).style.boxShadow = '0 0 0 0.5px rgba(60,50,40,0.08),inset 0 1px 0 rgba(255,255,255,0.9)';
                   }
                 }}
                 onMouseLeave={e=>{
                   if (activeMenu!==menu.label){
-                    (e.currentTarget as HTMLButtonElement).style.color='#706b65';
-                    (e.currentTarget as HTMLButtonElement).style.background='transparent';
+                    (e.currentTarget as HTMLButtonElement).style.color = T.textMute;
+                    (e.currentTarget as HTMLButtonElement).style.background = 'transparent';
+                    (e.currentTarget as HTMLButtonElement).style.boxShadow = 'none';
                   }
                 }}
               >
@@ -401,7 +509,13 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
                             setActiveMenu(null);
                           }}>
                           <div style={{display:'flex',alignItems:'center',gap:'8px'}}>{item.icon}<span>{item.label}</span></div>
-                          {item.shortcut&&<span style={{fontFamily:"'SF Mono','Fira Code',monospace",fontSize:'10px',letterSpacing:'0.03em',color:'#b0aaa4',fontWeight:400}}>{item.shortcut}</span>}
+                          {item.shortcut&&<span style={{
+                            fontFamily:"'SF Mono','Fira Code',monospace",
+                            fontSize:'10px',
+                            letterSpacing:'0.03em',
+                            color: T.textFaint,
+                            fontWeight:400,
+                          }}>{item.shortcut}</span>}
                         </button>
                       )
                   )}
@@ -421,29 +535,29 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
           boxShadow:'inset 0 1px 0 rgba(255,255,255,0.85),inset 0 -1px 0 rgba(140,120,100,0.06),0 1px 4px rgba(60,50,40,0.04)',
         }}>
           <BtnGroup>
-            <TBtn icon={<FilePlus size={16}/>} label="Yeni (Ctrl+N)"/>
-            <TBtn icon={<Save size={16}/>}     label="Kaydet (Ctrl+S)"/>
-            <TBtn icon={<FileDown size={16}/>} label="Farklı Kaydet"/>
+            <TBtn icon={<FilePlus size={16}/>} label="New (Ctrl+N)"/>
+            <TBtn icon={<Save size={16}/>}     label="Save (Ctrl+S)"/>
+            <TBtn icon={<FileDown size={16}/>} label="Save As"/>
           </BtnGroup>
           <Sep/>
           <BtnGroup>
-            <TBtn icon={<Undo2 size={16}/>} label="Geri Al (Ctrl+Z)"/>
-            <TBtn icon={<Redo2 size={16}/>} label="Yinele (Ctrl+Y)"/>
+            <TBtn icon={<Undo2 size={16}/>} label="Undo (Ctrl+Z)"/>
+            <TBtn icon={<Redo2 size={16}/>} label="Redo (Ctrl+Y)"/>
           </BtnGroup>
           <Sep/>
           <BtnGroup>
-            <TBtn icon={<MousePointer2 size={16}/>} label="Seç (V)" active={activeTool===Tool.SELECT} onClick={()=>setActiveTool(Tool.SELECT)}/>
-            <TBtn icon={<Move size={16}/>} label="Taşı (M)" active={activeTool===Tool.MOVE} disabled={!selectedShapeId} onClick={()=>handleTransformToolSelect(Tool.MOVE)}/>
-            <TBtn icon={<Navigation size={16}/>} label="Noktadan Noktaya" active={activeTool===Tool.POINT_TO_POINT_MOVE} disabled={!selectedShapeId} onClick={()=>handleTransformToolSelect(Tool.POINT_TO_POINT_MOVE)}/>
-            <TBtn icon={<RefreshCcw size={16}/>} label="Döndür (R)" active={activeTool===Tool.ROTATE} disabled={!selectedShapeId} onClick={()=>handleTransformToolSelect(Tool.ROTATE)}/>
-            <TBtn icon={<Maximize2 size={16}/>} label={isBoxSelected?'Ölçek – kutu için devre dışı':'Ölçekle (S)'} active={activeTool===Tool.SCALE} disabled={!selectedShapeId||isBoxSelected} onClick={()=>handleTransformToolSelect(Tool.SCALE)}/>
+            <TBtn icon={<MousePointer2 size={16}/>} label="Select (V)" active={activeTool===Tool.SELECT} onClick={()=>setActiveTool(Tool.SELECT)}/>
+            <TBtn icon={<Move size={16}/>} label="Move (M)" active={activeTool===Tool.MOVE} disabled={!selectedShapeId} onClick={()=>handleTransformToolSelect(Tool.MOVE)}/>
+            <TBtn icon={<Navigation size={16}/>} label="Point to Point" active={activeTool===Tool.POINT_TO_POINT_MOVE} disabled={!selectedShapeId} onClick={()=>handleTransformToolSelect(Tool.POINT_TO_POINT_MOVE)}/>
+            <TBtn icon={<RefreshCcw size={16}/>} label="Rotate (R)" active={activeTool===Tool.ROTATE} disabled={!selectedShapeId} onClick={()=>handleTransformToolSelect(Tool.ROTATE)}/>
+            <TBtn icon={<Maximize2 size={16}/>} label={isBoxSelected?'Scale — disabled for box':'Scale (S)'} active={activeTool===Tool.SCALE} disabled={!selectedShapeId||isBoxSelected} onClick={()=>handleTransformToolSelect(Tool.SCALE)}/>
           </BtnGroup>
           <Sep/>
           <BtnGroup>
             <AddBoxButton onClick={handleAddBox}/>
             <SubtractBoxButton onClick={handleSubtract} disabled={!selectedShapeId||!hasIntersectingShapes} className={hasIntersectingShapes?'text-red-400 hover:bg-red-50 hover:text-red-500':''}/>
             <GrpSep/>
-            <TBtn icon={<FolderOpen size={16}/>} label="Katalog" accent onClick={onOpenCatalog}/>
+            <TBtn icon={<FolderOpen size={16}/>} label="Catalog" accent onClick={onOpenCatalog}/>
           </BtnGroup>
         </div>
 
@@ -458,8 +572,8 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
           boxShadow:'0 8px 28px rgba(0,0,0,0.1)',
         }}>
           {[
-            {icon:<SlidersHorizontal size={13}/>,label:'Polilini Düzenle',tool:Tool.POLYLINE_EDIT},
-            {icon:<GitBranch size={13}/>,label:'Polilini Çiz',tool:Tool.POLYLINE},
+            {icon:<SlidersHorizontal size={13}/>,label:'Edit Polyline',tool:Tool.POLYLINE_EDIT},
+            {icon:<GitBranch size={13}/>,label:'Draw Polyline',tool:Tool.POLYLINE},
           ].map(it=>(
             <button key={it.label} className="tb-mi" style={menuItemBase}
               onClick={()=>{setActiveTool(it.tool);setShowPolylineMenu(false);}}>
