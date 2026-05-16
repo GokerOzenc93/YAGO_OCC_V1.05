@@ -1,25 +1,13 @@
 import React, { useState } from 'react';
 import * as THREE from 'three';
 import { Tool, useAppStore, ModificationType, CameraType, SnapType, ViewMode, OrthoMode } from '../store';
-import {
-  Search, Settings, HelpCircle, LogOut,
-  FilePlus, FileDown, Save, Upload,
-  Undo2, Redo2, Scissors, Copy, ClipboardPaste, Eraser,
-  MousePointer2, Move, Navigation, RefreshCcw, Maximize2,
-  Box, Cog, SlidersHorizontal, MinusSquare, PanelLeft,
-  Camera, CameraOff, Crosshair, FolderOpen,
-  BoxSelect, ScanEye, Cuboid as Cube,
-  Grid2x2 as Grid, Layers, Eye, Cylinder, Package, Square, FlipHorizontal,
-  Maximize, Maximize2 as Area, BarChart3, FileText,
-  GitBranch, Target, RotateCw, Zap,
-  InspectionPanel as Intersection, MapPin, Ruler, Monitor,
-  RotateCcw, ArrowDownUp,
-} from 'lucide-react';
 import { createReplicadBox, convertReplicadToThreeGeometry, performBooleanCut } from './ReplicadService';
 import {
+  Icon, IconButton,
   AddBoxButton, SubtractBoxButton,
   CameraPerspectiveButton, CameraOrthographicButton,
   ViewSolidButton, ViewWireframeButton, ViewXRayButton,
+  LinearModeOnButton, LinearModeOffButton,
 } from './icons';
 
 interface ToolbarProps { onOpenCatalog: () => void; }
@@ -94,7 +82,7 @@ const TBtn: React.FC<TBtnProps> = ({
       className={className}
       style={{
         position:'relative', display:'flex', alignItems:'center', justifyContent:'center',
-        width:'28px', height:'28px', borderRadius:'6px', border:'none',
+        width:'30px', height:'30px', borderRadius:'6px', border:'none',
         background:bg, boxShadow:shadow, color,
         cursor: disabled ? 'not-allowed' : 'pointer', flexShrink:0, outline:'none',
         transition:'background 0.1s,color 0.1s,box-shadow 0.1s,transform 0.1s',
@@ -226,19 +214,116 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
     } catch (err) { alert(`Failed to subtract: ${(err as Error).message}`); }
   };
 
+  /* ─── Menu definitions ─── */
   const menus = [
-    {label:'File',items:[{icon:<FilePlus size={11}/>,label:'New Project',shortcut:'Ctrl+N'},{icon:<Upload size={11}/>,label:'Open Project...',shortcut:'Ctrl+O'},{type:'separator'},{icon:<Save size={11}/>,label:'Save',shortcut:'Ctrl+S'},{icon:<FileDown size={11}/>,label:'Save As...',shortcut:'Ctrl+Shift+S'},{type:'separator'},{icon:<Upload size={11}/>,label:'Import...',shortcut:'Ctrl+I'},{icon:<FileDown size={11}/>,label:'Export...',shortcut:'Ctrl+E'}]},
-    {label:'Edit',items:[{icon:<Undo2 size={11}/>,label:'Undo',shortcut:'Ctrl+Z'},{icon:<Redo2 size={11}/>,label:'Redo',shortcut:'Ctrl+Y'},{type:'separator'},{icon:<Scissors size={11}/>,label:'Cut',shortcut:'Ctrl+X'},{icon:<Copy size={11}/>,label:'Copy',shortcut:'Ctrl+C'},{icon:<ClipboardPaste size={11}/>,label:'Paste',shortcut:'Ctrl+V'},{type:'separator'},{icon:<Eraser size={11}/>,label:'Delete',shortcut:'Del'}]},
-    {label:'View',items:[{icon:<Grid size={11}/>,label:'Show Grid',shortcut:'G'},{icon:<Layers size={11}/>,label:'Show Layers',shortcut:'L'},{icon:<Eye size={11}/>,label:'Visibility',shortcut:'V'},{type:'separator'},{icon:<Cube size={11}/>,label:'Solid View',shortcut:'1'},{icon:<BoxSelect size={11}/>,label:'Wireframe View',shortcut:'2'},{icon:<ScanEye size={11}/>,label:'X-Ray View',shortcut:'3'},{type:'separator'},{label:'Zoom In',shortcut:'Ctrl++'},{label:'Zoom Out',shortcut:'Ctrl+-'},{label:'Fit to View',shortcut:'F'}]},
-    {label:'Place',items:[{icon:<Box size={11}/>,label:'Add Box',shortcut:'B'},{icon:<Cylinder size={11}/>,label:'Add Cylinder',shortcut:'C'},{icon:<Package size={11}/>,label:'3D Objects',shortcut:'3'},{type:'separator'},{icon:<Square size={11}/>,label:'2D Shapes',shortcut:'2'},{icon:<GitBranch size={11}/>,label:'Drawing Tools',shortcut:'L'}]},
-    {label:'Modify',items:[{icon:<Move size={11}/>,label:'Move',shortcut:'M'},{icon:<RotateCcw size={11}/>,label:'Rotate',shortcut:'R'},{icon:<Maximize size={11}/>,label:'Scale',shortcut:'S'},{type:'separator'},{icon:<FlipHorizontal size={11}/>,label:'Mirror',shortcut:'Mi'},{icon:<Copy size={11}/>,label:'Array',shortcut:'Ar'},{icon:<SlidersHorizontal size={11}/>,label:'Edit',shortcut:'E'}]},
-    {label:'Snap',items:[{icon:<Target size={11}/>,label:'Endpoint Snap',shortcut:'End'},{icon:<Navigation size={11}/>,label:'Midpoint Snap',shortcut:'Mid'},{icon:<Crosshair size={11}/>,label:'Center Snap',shortcut:'Cen'},{icon:<RotateCw size={11}/>,label:'Quadrant Snap',shortcut:'Qua'},{icon:<Zap size={11}/>,label:'Perpendicular Snap',shortcut:'Per'},{icon:<Intersection size={11}/>,label:'Intersection Snap',shortcut:'Int'},{icon:<MapPin size={11}/>,label:'Nearest Snap',shortcut:'Nea'},{type:'separator'},{icon:<Settings size={11}/>,label:'Snap Settings',shortcut:'Ctrl+Snap'}]},
-    {label:'Measure',items:[{icon:<Ruler size={11}/>,label:'Distance',shortcut:'D'},{icon:<Ruler size={11}/>,label:'Angle',shortcut:'A'},{icon:<Area size={11}/>,label:'Area',shortcut:'Ar'},{type:'separator'},{icon:<Ruler size={11}/>,label:'Add Dimension',shortcut:'Ctrl+D'},{icon:<Settings size={11}/>,label:'Dimension Style',shortcut:'Ctrl+M'}]},
-    {label:'Display',items:[{icon:<Monitor size={11}/>,label:'Render Settings',shortcut:'R'},{icon:<Eye size={11}/>,label:'View Modes',shortcut:'V'},{icon:<Camera size={11}/>,label:'Camera Settings',shortcut:'C'},{type:'separator'},{icon:<Layers size={11}/>,label:'Material Editor',shortcut:'M'},{icon:<Settings size={11}/>,label:'Lighting',shortcut:'L'}]},
-    {label:'Settings',items:[{icon:<Cog size={11}/>,label:'General Settings',shortcut:'Ctrl+,'},{icon:<Grid size={11}/>,label:'Grid Settings',shortcut:'G'},{icon:<Ruler size={11}/>,label:'Unit Settings',shortcut:'U'},{type:'separator'},{icon:<Settings size={11}/>,label:'Toolbar',shortcut:'T'},{icon:<PanelLeft size={11}/>,label:'Panel Layout',shortcut:'P'}]},
-    {label:'Report',items:[{icon:<FileText size={11}/>,label:'Project Report',shortcut:'Ctrl+R'},{icon:<BarChart3 size={11}/>,label:'Material List',shortcut:'Ctrl+L'},{icon:<FileText size={11}/>,label:'Dimension Report',shortcut:'Ctrl+M'},{type:'separator'},{icon:<FileDown size={11}/>,label:'PDF Export',shortcut:'Ctrl+P'},{icon:<FileDown size={11}/>,label:'Excel Export',shortcut:'Ctrl+E'}]},
-    {label:'Window',items:[{icon:<PanelLeft size={11}/>,label:'New Window',shortcut:'Ctrl+N'},{icon:<Layers size={11}/>,label:'Window Layout',shortcut:'Ctrl+W'},{type:'separator'},{icon:<Monitor size={11}/>,label:'Full Screen',shortcut:'F11'},{icon:<PanelLeft size={11}/>,label:'Hide Panels',shortcut:'Tab'}]},
-    {label:'Help',items:[{icon:<HelpCircle size={11}/>,label:'User Manual',shortcut:'F1'},{icon:<HelpCircle size={11}/>,label:'Keyboard Shortcuts',shortcut:'Ctrl+?'},{icon:<Monitor size={11}/>,label:'Video Tutorials',shortcut:'Ctrl+T'},{type:'separator'},{icon:<HelpCircle size={11}/>,label:'About',shortcut:'Ctrl+H'},{icon:<HelpCircle size={11}/>,label:'Check Updates',shortcut:'Ctrl+U'}]},
+    {label:'File',items:[
+      {icon:<Icon name="file-plus" size={11}/>,label:'New Project',shortcut:'Ctrl+N'},
+      {icon:<Icon name="upload" size={11}/>,label:'Open Project...',shortcut:'Ctrl+O'},
+      {type:'separator'},
+      {icon:<Icon name="save" size={11}/>,label:'Save',shortcut:'Ctrl+S'},
+      {icon:<Icon name="file-down" size={11}/>,label:'Save As...',shortcut:'Ctrl+Shift+S'},
+      {type:'separator'},
+      {icon:<Icon name="upload" size={11}/>,label:'Import...',shortcut:'Ctrl+I'},
+      {icon:<Icon name="file-down" size={11}/>,label:'Export...',shortcut:'Ctrl+E'},
+    ]},
+    {label:'Edit',items:[
+      {icon:<Icon name="undo-2" size={11}/>,label:'Undo',shortcut:'Ctrl+Z'},
+      {icon:<Icon name="redo-2" size={11}/>,label:'Redo',shortcut:'Ctrl+Y'},
+      {type:'separator'},
+      {icon:<Icon name="scissors" size={11}/>,label:'Cut',shortcut:'Ctrl+X'},
+      {icon:<Icon name="copy" size={11}/>,label:'Copy',shortcut:'Ctrl+C'},
+      {icon:<Icon name="clipboard-paste" size={11}/>,label:'Paste',shortcut:'Ctrl+V'},
+      {type:'separator'},
+      {icon:<Icon name="eraser" size={11}/>,label:'Delete',shortcut:'Del'},
+    ]},
+    {label:'View',items:[
+      {icon:<Icon name="grid-2x2" size={11}/>,label:'Show Grid',shortcut:'G'},
+      {icon:<Icon name="layers" size={11}/>,label:'Show Layers',shortcut:'L'},
+      {icon:<Icon name="eye" size={11}/>,label:'Visibility',shortcut:'V'},
+      {type:'separator'},
+      {icon:<Icon name="cuboid" size={11}/>,label:'Solid View',shortcut:'1'},
+      {icon:<Icon name="box-select" size={11}/>,label:'Wireframe View',shortcut:'2'},
+      {icon:<Icon name="scan-eye" size={11}/>,label:'X-Ray View',shortcut:'3'},
+      {type:'separator'},
+      {label:'Zoom In',shortcut:'Ctrl++'},
+      {label:'Zoom Out',shortcut:'Ctrl+-'},
+      {label:'Fit to View',shortcut:'F'},
+    ]},
+    {label:'Place',items:[
+      {icon:<Icon name="box" size={11}/>,label:'Add Box',shortcut:'B'},
+      {icon:<Icon name="cylinder" size={11}/>,label:'Add Cylinder',shortcut:'C'},
+      {icon:<Icon name="package" size={11}/>,label:'3D Objects',shortcut:'3'},
+      {type:'separator'},
+      {icon:<Icon name="square" size={11}/>,label:'2D Shapes',shortcut:'2'},
+      {icon:<Icon name="git-branch" size={11}/>,label:'Drawing Tools',shortcut:'L'},
+    ]},
+    {label:'Modify',items:[
+      {icon:<Icon name="move" size={11}/>,label:'Move',shortcut:'M'},
+      {icon:<Icon name="rotate-ccw" size={11}/>,label:'Rotate',shortcut:'R'},
+      {icon:<Icon name="maximize" size={11}/>,label:'Scale',shortcut:'S'},
+      {type:'separator'},
+      {icon:<Icon name="flip-horizontal" size={11}/>,label:'Mirror',shortcut:'Mi'},
+      {icon:<Icon name="copy" size={11}/>,label:'Array',shortcut:'Ar'},
+      {icon:<Icon name="sliders-horizontal" size={11}/>,label:'Edit',shortcut:'E'},
+    ]},
+    {label:'Snap',items:[
+      {icon:<Icon name="target" size={11}/>,label:'Endpoint Snap',shortcut:'End'},
+      {icon:<Icon name="navigation" size={11}/>,label:'Midpoint Snap',shortcut:'Mid'},
+      {icon:<Icon name="crosshair" size={11}/>,label:'Center Snap',shortcut:'Cen'},
+      {icon:<Icon name="rotate-cw" size={11}/>,label:'Quadrant Snap',shortcut:'Qua'},
+      {icon:<Icon name="zap" size={11}/>,label:'Perpendicular Snap',shortcut:'Per'},
+      {icon:<Icon name="inspection-panel" size={11}/>,label:'Intersection Snap',shortcut:'Int'},
+      {icon:<Icon name="map-pin" size={11}/>,label:'Nearest Snap',shortcut:'Nea'},
+      {type:'separator'},
+      {icon:<Icon name="settings" size={11}/>,label:'Snap Settings',shortcut:'Ctrl+Snap'},
+    ]},
+    {label:'Measure',items:[
+      {icon:<Icon name="ruler" size={11}/>,label:'Distance',shortcut:'D'},
+      {icon:<Icon name="ruler" size={11}/>,label:'Angle',shortcut:'A'},
+      {icon:<Icon name="maximize-2" size={11}/>,label:'Area',shortcut:'Ar'},
+      {type:'separator'},
+      {icon:<Icon name="ruler" size={11}/>,label:'Add Dimension',shortcut:'Ctrl+D'},
+      {icon:<Icon name="settings" size={11}/>,label:'Dimension Style',shortcut:'Ctrl+M'},
+    ]},
+    {label:'Display',items:[
+      {icon:<Icon name="monitor" size={11}/>,label:'Render Settings',shortcut:'R'},
+      {icon:<Icon name="eye" size={11}/>,label:'View Modes',shortcut:'V'},
+      {icon:<Icon name="camera" size={11}/>,label:'Camera Settings',shortcut:'C'},
+      {type:'separator'},
+      {icon:<Icon name="layers" size={11}/>,label:'Material Editor',shortcut:'M'},
+      {icon:<Icon name="settings" size={11}/>,label:'Lighting',shortcut:'L'},
+    ]},
+    {label:'Settings',items:[
+      {icon:<Icon name="cog" size={11}/>,label:'General Settings',shortcut:'Ctrl+,'},
+      {icon:<Icon name="grid-2x2" size={11}/>,label:'Grid Settings',shortcut:'G'},
+      {icon:<Icon name="ruler" size={11}/>,label:'Unit Settings',shortcut:'U'},
+      {type:'separator'},
+      {icon:<Icon name="settings" size={11}/>,label:'Toolbar',shortcut:'T'},
+      {icon:<Icon name="panel-left" size={11}/>,label:'Panel Layout',shortcut:'P'},
+    ]},
+    {label:'Report',items:[
+      {icon:<Icon name="file-text" size={11}/>,label:'Project Report',shortcut:'Ctrl+R'},
+      {icon:<Icon name="bar-chart-3" size={11}/>,label:'Material List',shortcut:'Ctrl+L'},
+      {icon:<Icon name="file-text" size={11}/>,label:'Dimension Report',shortcut:'Ctrl+M'},
+      {type:'separator'},
+      {icon:<Icon name="file-down" size={11}/>,label:'PDF Export',shortcut:'Ctrl+P'},
+      {icon:<Icon name="file-down" size={11}/>,label:'Excel Export',shortcut:'Ctrl+E'},
+    ]},
+    {label:'Window',items:[
+      {icon:<Icon name="panel-left" size={11}/>,label:'New Window',shortcut:'Ctrl+N'},
+      {icon:<Icon name="layers" size={11}/>,label:'Window Layout',shortcut:'Ctrl+W'},
+      {type:'separator'},
+      {icon:<Icon name="monitor" size={11}/>,label:'Full Screen',shortcut:'F11'},
+      {icon:<Icon name="panel-left" size={11}/>,label:'Hide Panels',shortcut:'Tab'},
+    ]},
+    {label:'Help',items:[
+      {icon:<Icon name="help-circle" size={11}/>,label:'User Manual',shortcut:'F1'},
+      {icon:<Icon name="help-circle" size={11}/>,label:'Keyboard Shortcuts',shortcut:'Ctrl+?'},
+      {icon:<Icon name="monitor" size={11}/>,label:'Video Tutorials',shortcut:'Ctrl+T'},
+      {type:'separator'},
+      {icon:<Icon name="help-circle" size={11}/>,label:'About',shortcut:'Ctrl+H'},
+      {icon:<Icon name="help-circle" size={11}/>,label:'Check Updates',shortcut:'Ctrl+U'},
+    ]},
   ];
 
   const dropStyle: React.CSSProperties = {
@@ -354,7 +439,12 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
 
             {/* Search */}
             <div style={{position:'relative',display:'flex',alignItems:'center'}}>
-              <Search size={12} style={{position:'absolute',left:'10px',color:'#b0aaa4',pointerEvents:'none'}}/>
+              <span style={{
+                position:'absolute', left:'10px', pointerEvents:'none',
+                color:'#b0aaa4', display:'inline-flex',
+              }}>
+                <Icon name="search" size={12}/>
+              </span>
               <input
                 type="text" placeholder="Search..."
                 style={{
@@ -398,26 +488,21 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
                 ? <CameraPerspectiveButton onClick={handleCameraToggle}/>
                 : <CameraOrthographicButton onClick={handleCameraToggle}/>
               }
-              <TBtn
-                icon={<Crosshair size={14}/>}
-                label={`Linear Mode: ${orthoMode===OrthoMode.ON?'On':'Off'}`}
-                active={orthoMode===OrthoMode.ON}
-                onClick={()=>toggleOrthoMode()}
-              />
+              {orthoMode===OrthoMode.ON
+                ? <LinearModeOnButton  onClick={()=>toggleOrthoMode()}/>
+                : <LinearModeOffButton onClick={()=>toggleOrthoMode()}/>
+              }
               <GrpSep/>
-              <TBtn icon={<Settings size={14}/>} label="Settings"/>
-              <TBtn icon={<HelpCircle size={14}/>} label="Help"/>
+              <IconButton icon="settings"    title="Settings"/>
+              <IconButton icon="help-circle" title="Help"/>
               <GrpSep/>
-              <TBtn icon={<LogOut size={14}/>} label="Exit" exit onClick={()=>{/* handle exit */}}/>
+              <IconButton icon="log-out"     title="Exit" tone="exit" onClick={()=>{/* handle exit */}}/>
             </BtnGroup>
           </div>
         </div>
 
         {/* ══════════════════════════════════════════════
             ROW 2 · MENU BAR — Premium milled-bone surface
-            • Gradient background with depth
-            • Inset top highlight + bottom shadow
-            • Subtle texture via layered box-shadows
         ══════════════════════════════════════════════ */}
         <div style={{
           position:'relative',
@@ -427,19 +512,14 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
           background:T.menuBg,
           borderBottom:`1px solid ${T.menuBorder}`,
           boxShadow:[
-            /* Inner top highlight — looks like light catching the milled edge */
             'inset 0 1px 0 rgba(255,255,255,0.85)',
-            /* Inner bottom shade — subtle depression */
             'inset 0 -1px 0 rgba(140,120,100,0.08)',
-            /* Inner side accents — wall feeling */
             'inset 1px 0 0 rgba(255,255,255,0.4)',
             'inset -1px 0 0 rgba(140,120,100,0.04)',
-            /* Drop shadow underneath — separates from row 3 */
             '0 1px 0 rgba(255,255,255,0.45)',
             '0 2px 4px -1px rgba(60,50,40,0.06)',
           ].join(','),
         }}>
-          {/* Subtle horizontal "grain" texture overlay — barely visible but adds depth */}
           <div style={{
             position:'absolute',
             inset:0,
@@ -535,29 +615,29 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
           boxShadow:'inset 0 1px 0 rgba(255,255,255,0.85),inset 0 -1px 0 rgba(140,120,100,0.06),0 1px 4px rgba(60,50,40,0.04)',
         }}>
           <BtnGroup>
-            <TBtn icon={<FilePlus size={16}/>} label="New (Ctrl+N)"/>
-            <TBtn icon={<Save size={16}/>}     label="Save (Ctrl+S)"/>
-            <TBtn icon={<FileDown size={16}/>} label="Save As"/>
+            <TBtn icon={<Icon name="file-plus" size={18}/>} label="New (Ctrl+N)"/>
+            <TBtn icon={<Icon name="save" size={18}/>}      label="Save (Ctrl+S)"/>
+            <TBtn icon={<Icon name="file-down" size={18}/>} label="Save As"/>
           </BtnGroup>
           <Sep/>
           <BtnGroup>
-            <TBtn icon={<Undo2 size={16}/>} label="Undo (Ctrl+Z)"/>
-            <TBtn icon={<Redo2 size={16}/>} label="Redo (Ctrl+Y)"/>
+            <TBtn icon={<Icon name="undo-2" size={18}/>} label="Undo (Ctrl+Z)"/>
+            <TBtn icon={<Icon name="redo-2" size={18}/>} label="Redo (Ctrl+Y)"/>
           </BtnGroup>
           <Sep/>
           <BtnGroup>
-            <TBtn icon={<MousePointer2 size={16}/>} label="Select (V)" active={activeTool===Tool.SELECT} onClick={()=>setActiveTool(Tool.SELECT)}/>
-            <TBtn icon={<Move size={16}/>} label="Move (M)" active={activeTool===Tool.MOVE} disabled={!selectedShapeId} onClick={()=>handleTransformToolSelect(Tool.MOVE)}/>
-            <TBtn icon={<Navigation size={16}/>} label="Point to Point" active={activeTool===Tool.POINT_TO_POINT_MOVE} disabled={!selectedShapeId} onClick={()=>handleTransformToolSelect(Tool.POINT_TO_POINT_MOVE)}/>
-            <TBtn icon={<RefreshCcw size={16}/>} label="Rotate (R)" active={activeTool===Tool.ROTATE} disabled={!selectedShapeId} onClick={()=>handleTransformToolSelect(Tool.ROTATE)}/>
-            <TBtn icon={<Maximize2 size={16}/>} label={isBoxSelected?'Scale — disabled for box':'Scale (S)'} active={activeTool===Tool.SCALE} disabled={!selectedShapeId||isBoxSelected} onClick={()=>handleTransformToolSelect(Tool.SCALE)}/>
+            <TBtn icon={<Icon name="mouse-pointer-2" size={18}/>} label="Select (V)" active={activeTool===Tool.SELECT} onClick={()=>setActiveTool(Tool.SELECT)}/>
+            <TBtn icon={<Icon name="move" size={18}/>} label="Move (M)" active={activeTool===Tool.MOVE} disabled={!selectedShapeId} onClick={()=>handleTransformToolSelect(Tool.MOVE)}/>
+            <TBtn icon={<Icon name="navigation" size={18}/>} label="Point to Point" active={activeTool===Tool.POINT_TO_POINT_MOVE} disabled={!selectedShapeId} onClick={()=>handleTransformToolSelect(Tool.POINT_TO_POINT_MOVE)}/>
+            <TBtn icon={<Icon name="refresh-ccw" size={18}/>} label="Rotate (R)" active={activeTool===Tool.ROTATE} disabled={!selectedShapeId} onClick={()=>handleTransformToolSelect(Tool.ROTATE)}/>
+            <TBtn icon={<Icon name="maximize-2" size={18}/>} label={isBoxSelected?'Scale — disabled for box':'Scale (S)'} active={activeTool===Tool.SCALE} disabled={!selectedShapeId||isBoxSelected} onClick={()=>handleTransformToolSelect(Tool.SCALE)}/>
           </BtnGroup>
           <Sep/>
           <BtnGroup>
             <AddBoxButton onClick={handleAddBox}/>
             <SubtractBoxButton onClick={handleSubtract} disabled={!selectedShapeId||!hasIntersectingShapes} className={hasIntersectingShapes?'text-red-400 hover:bg-red-50 hover:text-red-500':''}/>
             <GrpSep/>
-            <TBtn icon={<FolderOpen size={16}/>} label="Catalog" accent onClick={onOpenCatalog}/>
+            <IconButton icon="folder-open" title="Catalog" onClick={onOpenCatalog}/>
           </BtnGroup>
         </div>
 
@@ -572,8 +652,8 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
           boxShadow:'0 8px 28px rgba(0,0,0,0.1)',
         }}>
           {[
-            {icon:<SlidersHorizontal size={13}/>,label:'Edit Polyline',tool:Tool.POLYLINE_EDIT},
-            {icon:<GitBranch size={13}/>,label:'Draw Polyline',tool:Tool.POLYLINE},
+            {icon:<Icon name="sliders-horizontal" size={13}/>,label:'Edit Polyline',tool:Tool.POLYLINE_EDIT},
+            {icon:<Icon name="git-branch" size={13}/>,label:'Draw Polyline',tool:Tool.POLYLINE},
           ].map(it=>(
             <button key={it.label} className="tb-mi" style={menuItemBase}
               onClick={()=>{setActiveTool(it.tool);setShowPolylineMenu(false);}}>
