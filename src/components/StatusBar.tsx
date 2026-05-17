@@ -17,10 +17,11 @@ const T = {
 const Pair: React.FC<{ label: string; value: React.ReactNode; valueColor?: string; mono?: boolean }> = ({
   label, value, valueColor = T.valueClr, mono = false,
 }) => (
-  <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+  <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexShrink: 0 }}>
     <span style={{
       color: T.labelClr, fontSize: '11px', fontWeight: 420,
       letterSpacing: '0.04em', textTransform: 'uppercase',
+      whiteSpace: 'nowrap',
     }}>
       {label}
     </span>
@@ -30,6 +31,7 @@ const Pair: React.FC<{ label: string; value: React.ReactNode; valueColor?: strin
       fontFamily: mono
         ? "'SF Mono','Fira Code','Cascadia Code',monospace"
         : "'Inter',system-ui,sans-serif",
+      whiteSpace: 'nowrap',
     }}>
       {value}
     </span>
@@ -47,7 +49,7 @@ const StatusBar: React.FC = () => {
 
   return (
     <div
-      className="absolute left-0 right-0 z-20"
+      className="fixed left-0 right-0 z-20"
       style={{
         bottom: '38px',
         height: '26px',
@@ -57,8 +59,10 @@ const StatusBar: React.FC = () => {
         gap: '10px',
         background: T.bg,
         borderTop: `1px solid ${T.border}`,
+        borderBottom: `1px solid ${T.border}`,
         boxShadow: T.topShine,
         fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif",
+        overflow: 'hidden',
       }}
     >
       {/* Live status dot */}
