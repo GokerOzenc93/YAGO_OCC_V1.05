@@ -83,6 +83,16 @@ const ICONS = {
   'ruler':               '/icons/ruler.svg',
   'monitor':             '/icons/monitor.svg',
   'arrow-down-up':       '/icons/arrow-down-up.svg',
+
+  // snaps (custom CAD-style)
+  'snap-endpoint':       '/icons/snap-endpoint.svg',
+  'snap-midpoint':       '/icons/snap-midpoint.svg',
+  'snap-center':         '/icons/snap-center.svg',
+  'snap-quadrant':       '/icons/snap-quadrant.svg',
+  'snap-intersection':   '/icons/snap-intersection.svg',
+
+  // dimension
+  'dimension':           '/icons/dimension.svg',
 } as const;
 
 export type IconName = keyof typeof ICONS;

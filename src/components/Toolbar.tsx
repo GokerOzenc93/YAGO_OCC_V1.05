@@ -634,8 +634,47 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
           </BtnGroup>
           <Sep/>
           <BtnGroup>
+            <TBtn
+              icon={<Icon name="snap-endpoint" size={18}/>}
+              label="Uç Nokta (Endpoint)"
+              active={snapSettings.endpoint}
+              onClick={()=>toggleSnapSetting(SnapType.ENDPOINT)}
+            />
+            <TBtn
+              icon={<Icon name="snap-midpoint" size={18}/>}
+              label="Orta Nokta (Midpoint)"
+              active={snapSettings.midpoint}
+              onClick={()=>toggleSnapSetting(SnapType.MIDPOINT)}
+            />
+            <TBtn
+              icon={<Icon name="snap-center" size={18}/>}
+              label="Merkez (Center)"
+              active={snapSettings.center}
+              onClick={()=>toggleSnapSetting(SnapType.CENTER)}
+            />
+            <TBtn
+              icon={<Icon name="snap-quadrant" size={18}/>}
+              label="Daire Çeyreği (Quadrant)"
+              onClick={()=>console.warn('Quadrant snap not wired yet — add SnapType.QUADRANT to store')}
+            />
+            <TBtn
+              icon={<Icon name="snap-intersection" size={18}/>}
+              label="Kesişim (Intersection)"
+              active={snapSettings.intersection}
+              onClick={()=>toggleSnapSetting(SnapType.INTERSECTION)}
+            />
+          </BtnGroup>
+          <Sep/>
+          <BtnGroup>
             <AddBoxButton onClick={handleAddBox}/>
             <SubtractBoxButton onClick={handleSubtract} disabled={!selectedShapeId||!hasIntersectingShapes} className={hasIntersectingShapes?'text-red-400 hover:bg-red-50 hover:text-red-500':''}/>
+            <GrpSep/>
+            <IconButton
+              icon="dimension"
+              title="Ölçülendirme"
+              onClick={()=>setActiveTool(Tool.DIMENSION)}
+              className={activeTool===Tool.DIMENSION ? 'bg-orange-50 ring-1 ring-orange-200' : ''}
+            />
             <GrpSep/>
             <IconButton icon="folder-open" title="Catalog" onClick={onOpenCatalog}/>
           </BtnGroup>
