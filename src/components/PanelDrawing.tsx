@@ -4,7 +4,7 @@ import { useAppStore, ViewMode } from '../store';
 import { useShallow } from 'zustand/react/shallow';
 import { extractFacesFromGeometry, groupCoplanarFaces, createFaceHighlightGeometry } from './FaceEditor';
 
-// ─── RENK YÖNETİMİ (High-Fidelity Beyaz ve Keskin Renkler) ───────────────────
+// ─── RENK YÖNETİMİ ───────────────────────────────────────────────────────
 const PANEL_COLORS = {
   role: {
     left:    '#ff4d4d',
@@ -15,22 +15,51 @@ const PANEL_COLORS = {
     front:   '#f39c12',
     shelf:   '#9b59b6',
     divider: '#1abc9c',
-    default: '#ffffff', // Varsayılan artık saf beyaz
+    default: '#ffffff',
   },
   selected: {
     panel:         '#ff0000',
-    panelEmissive: '#330000', // Aşırı parlama yapmayan derin kırmızı
+    panelEmissive: '#330000',
     edge:          '#000000',
     shapeEdge:     '#000000',
   },
   edge: {
-    default: '#2c3e50', // Biraz daha yumuşak ama keskin bir koyu gri/mavi
+    default: '#1f2933',
   },
   arrow: {
     color:    '#f1c40f',
     emissive: '#f1c40f',
   },
 } as const;
+
+// ─── Z-FIGHTING ÇÖZÜMÜ — geometriyi hiç bozmadan ─────────────────────────
+//
+// Strateji üç katmanlı:
+//
+// (1) Mesh: hafif positive polygonOffset → kendi edge'inin altında kalsın.
+//     Komşu panelin mesh'inden farklı offset alır mı? Hayır, ama
+//     LessEqualDepth kuralı edge'lere kazandırır.
+//
+// (2) Edge: negative polygonOffset → mesh'in üzerinde net çizilsin.
+//
+// (3) Edge material: depthFunc = LessEqualDepth. Eşit derinlikte bile
+//     edge kazanır → komşu panelin mesh'i edge'i ÖRTEMEZ.
+//
+// (4) renderOrder: tüm mesh'ler çizildikten SONRA edge'ler çizilir
+//     (renderOrder=1). Böylece komşu panelin mesh'i edge'in üzerine
+//     yazamaz — çünkü edge en son çiziliyor ve LessEqual sayesinde
+//     o depth'te de geçiyor.
+//
+// Geometri HİÇ değiştirilmiyor. Paneller fiziksel olarak doğru
+// konumda kalıyor. Hiç inflate yok.
+const MESH_OFFSET_FACTOR = 1.0;
+const MESH_OFFSET_UNITS  = 1.0;
+const EDGE_OFFSET_FACTOR = -1.0;
+const EDGE_OFFSET_UNITS  = -2.0;
+const EDGE_RENDER_ORDER  = 1;
+
+// Edge tespit eşiği — gereksiz iç üçgen kenarlarını eler.
+const EDGE_ANGLE_THRESHOLD = 15;
 
 interface PanelDrawingProps {
   shape: any;
@@ -112,11 +141,11 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
       )
     );
 
-  // Kenar Geometrisi (Angle Threshold 5 derece ile çok keskin)
+  // Edge geometrisi — orijinal geometriden, hiç bozulma yok
   const edgeGeometry = useMemo(() => {
     if (!shape.geometry) return null;
     try {
-      return new THREE.EdgesGeometry(shape.geometry, 5);
+      return new THREE.EdgesGeometry(shape.geometry, EDGE_ANGLE_THRESHOLD);
     } catch (error) {
       return null;
     }
@@ -171,7 +200,6 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   const handleClick = (e: any) => {
     e.stopPropagation();
     if (isFaceExtrudeTarget) return;
-    // Panel yüzey seçim modu
     if (panelSurfaceSelectMode && waitingForSurfaceSelection && e.faceIndex !== undefined) {
       const clickedFaceIndex = e.faceIndex;
       const groupIndex = faceGroups.findIndex(group => group.faceIndices.includes(clickedFaceIndex));
@@ -204,6 +232,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
       rotation={shape.rotation}
       scale={shape.scale}
     >
+      {/* ── SOLID MOD ────────────────────────────────────────────────── */}
       {!isWireframe && !isXray && (
         <mesh
           ref={meshRef}
@@ -214,55 +243,58 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
         >
           <meshLambertMaterial
             color={materialColor}
-            emissive={isPanelRowSelected ? PANEL_COLORS.selected.panelEmissive : '#333232'}
+            emissive={isPanelRowSelected ? PANEL_COLORS.selected.panelEmissive : '#2a2a2a'}
             emissiveIntensity={1}
             side={THREE.DoubleSide}
             transparent={isFaceExtrudeXray}
             opacity={isFaceExtrudeXray ? 0.12 : 1}
             depthWrite={!isFaceExtrudeXray}
             polygonOffset
-            polygonOffsetFactor={4}
-            polygonOffsetUnits={8}
+            polygonOffsetFactor={MESH_OFFSET_FACTOR}
+            polygonOffsetUnits={MESH_OFFSET_UNITS}
           />
         </mesh>
       )}
 
-      {!isWireframe && edgeGeometry && (
+      {!isWireframe && !isXray && edgeGeometry && (
         <lineSegments
           geometry={edgeGeometry}
           raycast={() => null}
-          renderOrder={1}
+          renderOrder={EDGE_RENDER_ORDER}
         >
           <lineBasicMaterial
             color={edgeColor}
-            linewidth={1}
-            transparent={true}
+            transparent={false}
+            opacity={1}
             depthTest={true}
-            depthWrite={false}        // ✅ DÜZELTME: Z-buffer kirlenmesini önler
-            opacity={isSelected || isPanelRowSelected ? 1.0 : 0.9}
+            depthWrite={true}
+            depthFunc={THREE.LessEqualDepth}
+            polygonOffset
+            polygonOffsetFactor={EDGE_OFFSET_FACTOR}
+            polygonOffsetUnits={EDGE_OFFSET_UNITS}
           />
         </lineSegments>
       )}
 
-      {/* Wireframe Modu */}
+      {/* ── WIREFRAME MOD ────────────────────────────────────────────── */}
       {isWireframe && edgeGeometry && (
         <lineSegments
           geometry={edgeGeometry}
           raycast={() => null}
-          renderOrder={1}
+          renderOrder={EDGE_RENDER_ORDER}
         >
           <lineBasicMaterial
             color={edgeColor}
-            linewidth={1.5}
-            transparent={true}
+            transparent={false}
+            opacity={1}
             depthTest={true}
-            depthWrite={false}
-            opacity={1.0}
+            depthWrite={true}
+            depthFunc={THREE.LessEqualDepth}
           />
         </lineSegments>
       )}
 
-      {/* X-Ray Modu */}
+      {/* ── X-RAY MOD ────────────────────────────────────────────────── */}
       {isXray && (
         <>
           <mesh
@@ -274,35 +306,36 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           >
             <meshLambertMaterial
               color={materialColor}
-              emissive={isPanelRowSelected ? PANEL_COLORS.selected.panelEmissive : '#333232'}
+              emissive={isPanelRowSelected ? PANEL_COLORS.selected.panelEmissive : '#2a2a2a'}
               emissiveIntensity={1}
               side={THREE.DoubleSide}
               transparent={true}
               opacity={0.35}
+              depthWrite={false}
               polygonOffset
-              polygonOffsetFactor={4}
-              polygonOffsetUnits={8}
+              polygonOffsetFactor={MESH_OFFSET_FACTOR}
+              polygonOffsetUnits={MESH_OFFSET_UNITS}
             />
           </mesh>
           {edgeGeometry && (
             <lineSegments
               geometry={edgeGeometry}
               raycast={() => null}
-              renderOrder={1}
+              renderOrder={EDGE_RENDER_ORDER}
             >
               <lineBasicMaterial
                 color={edgeColor}
-                linewidth={1}
                 transparent={true}
+                opacity={0.85}
                 depthTest={false}
                 depthWrite={false}
-                opacity={0.8}
               />
             </lineSegments>
           )}
         </>
       )}
 
+      {/* ── FACE EXTRUDE OVERLAY ─────────────────────────────────────── */}
       {isFaceExtrudeTarget && (
         <>
           <mesh
