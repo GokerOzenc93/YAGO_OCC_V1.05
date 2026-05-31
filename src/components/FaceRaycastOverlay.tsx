@@ -637,7 +637,8 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
     if (hasOverlap) clippedPoly = subtractPolygon(clippedPoly, ccwFootprint);
   }
   if (clippedPoly.length < 3) return null;
-  const finalCornersWorld = clippedPoly.map(p => startWorld.clone().addScaledVector(u, p.x).addScaledVector(v, p.y));
+  // Use planeOrigin (on the face surface) not startWorld (0.5mm outside) so stored vertices lie on the face
+  const finalCornersWorld = clippedPoly.map(p => planeOrigin.clone().addScaledVector(u, p.x).addScaledVector(v, p.y));
   const centerW = new THREE.Vector3();
   finalCornersWorld.forEach(c => centerW.add(c));
   centerW.divideScalar(finalCornersWorld.length);
