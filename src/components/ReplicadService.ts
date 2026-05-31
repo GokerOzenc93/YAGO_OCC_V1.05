@@ -418,10 +418,20 @@ export const createPanelFromVirtualFace = async (
   v3s.forEach(v => center.add(v));
   center.divideScalar(v3s.length);
 
-  const projected: [number, number][] = v3s.map(v => {
+  let projected: [number, number][] = v3s.map(v => {
     const d = new THREE.Vector3().subVectors(v, center);
     return [d.dot(uAxis), d.dot(vAxis)] as [number, number];
   });
+
+  // Ensure CCW winding — replicad treats CW polygons as holes
+  let signedArea = 0;
+  for (let i = 0; i < projected.length; i++) {
+    const j = (i + 1) % projected.length;
+    signedArea += projected[i][0] * projected[j][1] - projected[j][0] * projected[i][1];
+  }
+  if (signedArea < 0) {
+    projected = projected.slice().reverse();
+  }
 
   let sketch = draw().movePointerTo(projected[0]);
   for (let i = 1; i < projected.length; i++) {
