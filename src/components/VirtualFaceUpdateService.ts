@@ -597,8 +597,8 @@ function reraycastVirtualFaceFallback(
     clampedClickWorld = clickWorld.clone().clamp(groupBboxWorld.min, groupBboxWorld.max);
   }
 
-  const startWorld = clampedClickWorld.clone().addScaledVector(worldNormal, 0.5);
-  const planeOrigin = startWorld.clone();
+  const planeOrigin = clampedClickWorld.clone();
+  const startWorld = planeOrigin.clone().addScaledVector(worldNormal, 0.5);
 
   const faceIndicesForBoundary = strictFaceIndices && strictFaceIndices.length > 0
     ? strictFaceIndices : matchedGroup.faceIndices;
