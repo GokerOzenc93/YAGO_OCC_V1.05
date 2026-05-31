@@ -142,7 +142,7 @@ export async function reshapePanelToParentFace(panelId: string): Promise<void> {
     ? new THREE.Vector3(1, 0, 0)
     : new THREE.Vector3(0, 1, 0);
   const uAxis = new THREE.Vector3().crossVectors(n, up).normalize();
-  const vAxis = new THREE.Vector3().crossVectors(uAxis, n).normalize();
+  const vAxis = new THREE.Vector3().crossVectors(n, uAxis).normalize();
 
   const origin = new THREE.Vector3(...vf.center);
   const to2D = (p: THREE.Vector3): P2 => {

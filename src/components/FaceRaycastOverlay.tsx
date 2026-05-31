@@ -20,7 +20,7 @@ export function getFacePlaneAxes(normal: THREE.Vector3): { u: THREE.Vector3; v: 
   const absX = Math.abs(n.x), absY = Math.abs(n.y), absZ = Math.abs(n.z);
   const up = absY > absX && absY > absZ ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
   const u = new THREE.Vector3().crossVectors(n, up).normalize();
-  const v = new THREE.Vector3().crossVectors(u, n).normalize();
+  const v = new THREE.Vector3().crossVectors(n, u).normalize();
   return { u, v };
 }
 
