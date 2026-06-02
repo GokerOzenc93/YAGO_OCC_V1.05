@@ -3,10 +3,6 @@ import { X, GripVertical, RotateCw, Trash2, MoveVertical, Check, Pencil, Shapes,
 import { useAppStore } from '../store';
 import { extractFacesFromGeometry, groupCoplanarFaces, CoplanarFaceGroup } from './FaceEditor';
 import { findExistingStepForFace } from './FaceExtrudeService';
-import {
-  getFacePlaneAxes, getShapeMatrix, projectTo2D, ensureCCW, collectBoundaryEdgesWorld,
-  type Point2D,
-} from './FaceRaycastOverlay';
 import type { FilletData } from './Fillet';
 import * as THREE from 'three';
 
@@ -104,366 +100,99 @@ function getDimsFromGeo(geo: THREE.BufferGeometry, arrowRotated?: boolean) {
 type Dims = NonNullable<ReturnType<typeof getDimsFromGeo>>;
 interface PanelEditorProps { isOpen: boolean; onClose: () => void; embedded?: boolean; }
 
-/* ── helpers ─────────────────────────────────────────────────────────── */
+/* ── 2D Panel Preview — Three.js orthographic canvas render ─────────── */
+function PanelPreview2D({ dims, shape }: { dims: Dims; shape?: any }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
 
-// Chain unordered boundary edges into ordered rings (returns possibly multiple rings: outer + holes)
-function chainEdgesIntoRings(edges: Array<{ a: Point2D; b: Point2D }>, tol = 1.0): Point2D[][] {
-  const remaining = [...edges];
-  const rings: Point2D[][] = [];
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !shape?.geometry) return;
 
-  while (remaining.length > 0) {
-    const ring: Point2D[] = [remaining[0].a, remaining[0].b];
-    remaining.splice(0, 1);
+    const w = canvas.clientWidth || 320;
+    const h = canvas.clientHeight || 140;
+    canvas.width = w * window.devicePixelRatio;
+    canvas.height = h * window.devicePixelRatio;
 
-    for (let iter = 0; iter < remaining.length * 2 + 10; iter++) {
-      const last = ring[ring.length - 1];
-      let found = false;
-      for (let i = 0; i < remaining.length; i++) {
-        const { a, b } = remaining[i];
-        const dA = Math.hypot(a.x - last.x, a.y - last.y);
-        const dB = Math.hypot(b.x - last.x, b.y - last.y);
-        if (dA < tol) { ring.push(b); remaining.splice(i, 1); found = true; break; }
-        if (dB < tol) { ring.push(a); remaining.splice(i, 1); found = true; break; }
-      }
-      if (!found) break;
-      // Check if ring closed back to start
-      const first = ring[0], last2 = ring[ring.length - 1];
-      if (ring.length > 3 && Math.hypot(first.x - last2.x, first.y - last2.y) < tol) {
-        ring.pop();
-        break;
-      }
-    }
-    if (ring.length >= 3) rings.push(ring);
-  }
-  return rings;
-}
+    // Renderer
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setSize(w, h, false);
+    renderer.setClearColor(0x00000000, 0);
 
-// Remove collinear intermediate points (keeps concave corners, removes straight-line clutter)
-function simplifyRing(ring: Point2D[], dot_tol = 0.9998): Point2D[] {
-  if (ring.length <= 3) return ring;
-  const out: Point2D[] = [];
-  const n = ring.length;
-  for (let i = 0; i < n; i++) {
-    const prev = ring[(i - 1 + n) % n];
-    const curr = ring[i];
-    const next = ring[(i + 1) % n];
-    const dx1 = curr.x - prev.x, dy1 = curr.y - prev.y;
-    const dx2 = next.x - curr.x, dy2 = next.y - curr.y;
-    const d1 = Math.hypot(dx1, dy1), d2 = Math.hypot(dx2, dy2);
-    if (d1 < 1e-6 || d2 < 1e-6) continue; // duplicate — skip
-    const dot = (dx1 * dx2 + dy1 * dy2) / (d1 * d2);
-    if (dot < dot_tol) out.push(curr); // keep if non-collinear
-  }
-  return out.length >= 3 ? out : ring;
-}
+    // Scene — single mesh, no position/rotation applied (render in local space)
+    const scene = new THREE.Scene();
 
-// Largest ring by bounding area = outer contour
-function largestRing(rings: Point2D[][]): Point2D[] | null {
-  if (!rings.length) return null;
-  let best = rings[0];
-  let bestArea = 0;
-  for (const r of rings) {
-    const xs = r.map(p => p.x), ys = r.map(p => p.y);
-    const a = (Math.max(...xs) - Math.min(...xs)) * (Math.max(...ys) - Math.min(...ys));
-    if (a > bestArea) { bestArea = a; best = r; }
-  }
-  return best;
-}
+    const material = new THREE.MeshLambertMaterial({ color: 0xf5f0e8, side: THREE.DoubleSide });
+    const mesh = new THREE.Mesh(shape.geometry, material);
+    scene.add(mesh);
 
-function extractTopFaceOutline(shape: any): Point2D[] | null {
-  if (!shape?.geometry) return null;
+    // Edges overlay
+    const edgesGeo = new THREE.EdgesGeometry(shape.geometry, 15);
+    const edgesMat = new THREE.LineBasicMaterial({ color: 0x57534e });
+    scene.add(new THREE.LineSegments(edgesGeo, edgesMat));
 
-  const faces = extractFacesFromGeometry(shape.geometry);
-  const groups = groupCoplanarFaces(faces);
+    // Lighting
+    scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    dirLight.position.set(0, 1, 0);
+    scene.add(dirLight);
 
-  // Pick the largest flat (axis-aligned) face group — the top/bottom face
-  let best: CoplanarFaceGroup | null = null;
-  for (const g of groups) {
-    const mx = Math.abs(g.normal.x), my = Math.abs(g.normal.y), mz = Math.abs(g.normal.z);
-    if (Math.max(mx, my, mz) < 0.9) continue;
-    if (!best || g.totalArea > best.totalArea) best = g;
-  }
-  if (!best) return null;
+    // Fit geometry into orthographic camera looking top-down (Y axis)
+    const bbox = new THREE.Box3().setFromObject(mesh);
+    const size = new THREE.Vector3();
+    const center = new THREE.Vector3();
+    bbox.getSize(size);
+    bbox.getCenter(center);
 
-  const localToWorld = getShapeMatrix(shape);
-  const worldNormal = best.normal.clone().transformDirection(localToWorld).normalize();
-  const { u, v } = getFacePlaneAxes(worldNormal);
+    // Determine which axis is "thickness" (smallest) and look along it
+    const dims3 = [size.x, size.y, size.z];
+    const minIdx = dims3.indexOf(Math.min(...dims3));
+    const lookDir = [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1)][minIdx];
 
-  const boundaryEdges = collectBoundaryEdgesWorld(faces, best.faceIndices, localToWorld);
-  if (boundaryEdges.length < 3) return null;
+    // Orthographic camera sized to fit shape with padding
+    const planarW = minIdx === 0 ? size.z : size.x;
+    const planarH = minIdx === 1 ? size.z : (minIdx === 2 ? size.y : size.z);
+    const aspect = w / h;
+    const padFactor = 1.15;
+    const halfW = Math.max(planarW, planarH * aspect) * padFactor / 2;
+    const halfH = halfW / aspect;
 
-  // Stable centroid origin
-  const origin = new THREE.Vector3();
-  for (const e of boundaryEdges) origin.add(e.v1).add(e.v2);
-  origin.divideScalar(boundaryEdges.length * 2);
+    const camera = new THREE.OrthographicCamera(-halfW, halfW, halfH, -halfH, -10000, 10000);
+    // position camera along the "thin" axis, looking at center
+    camera.position.copy(center).addScaledVector(lookDir, 1000);
+    camera.lookAt(center);
+    camera.up.set(0, minIdx === 0 ? 1 : 0, minIdx === 2 ? 1 : 0);
 
-  // Project and filter micro-edges
-  const edges2D = boundaryEdges
-    .map(e => ({ a: projectTo2D(e.v1, origin, u, v), b: projectTo2D(e.v2, origin, u, v) }))
-    .filter(e => Math.hypot(e.b.x - e.a.x, e.b.y - e.a.y) > 0.2);
+    renderer.render(scene, camera);
 
-  const rings = chainEdgesIntoRings(edges2D, 1.5);
-  const outer = largestRing(rings);
-  if (!outer || outer.length < 3) return null;
-
-  const simplified = simplifyRing(outer);
-  return ensureCCW(simplified);
-}
-
-// Compute the 2D bounding rect of a subtraction on the panel's top face
-// Returns { x, y, w, h } in the same 2D coordinate system as outline
-function getSubtractionRect2D(
-  sub: any,
-  parentShape: any,
-  u: THREE.Vector3,
-  v: THREE.Vector3,
-  origin: THREE.Vector3,
-): { x: number; y: number; w: number; h: number } | null {
-  if (!sub?.geometry) return null;
-  const localToWorld = getShapeMatrix(parentShape);
-  const pos = sub.geometry.getAttribute('position');
-  if (!pos) return null;
-  const pts2D: Point2D[] = [];
-  for (let i = 0; i < pos.count; i++) {
-    const local = new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i));
-    const world = local.applyMatrix4(localToWorld);
-    pts2D.push(projectTo2D(world, origin, u, v));
-  }
-  if (!pts2D.length) return null;
-  const xs = pts2D.map(p => p.x), ys = pts2D.map(p => p.y);
-  const minX = Math.min(...xs), maxX = Math.max(...xs);
-  const minY = Math.min(...ys), maxY = Math.max(...ys);
-  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
-}
-
-// Get the 2D origin+axes used for the outline (reused for subtraction rects)
-function getTopFaceProjectionAxes(shape: any): { u: THREE.Vector3; v: THREE.Vector3; origin: THREE.Vector3 } | null {
-  if (!shape?.geometry) return null;
-  const faces = extractFacesFromGeometry(shape.geometry);
-  const groups = groupCoplanarFaces(faces);
-  let best: CoplanarFaceGroup | null = null;
-  for (const g of groups) {
-    const mx = Math.abs(g.normal.x), my = Math.abs(g.normal.y), mz = Math.abs(g.normal.z);
-    if (Math.max(mx, my, mz) < 0.9) continue;
-    if (!best || g.totalArea > best.totalArea) best = g;
-  }
-  if (!best) return null;
-  const localToWorld = getShapeMatrix(shape);
-  const worldNormal = best.normal.clone().transformDirection(localToWorld).normalize();
-  const { u, v } = getFacePlaneAxes(worldNormal);
-  const boundaryEdges = collectBoundaryEdgesWorld(faces, best.faceIndices, localToWorld);
-  if (!boundaryEdges.length) return null;
-  const origin = new THREE.Vector3();
-  for (const e of boundaryEdges) origin.add(e.v1).add(e.v2);
-  origin.divideScalar(boundaryEdges.length * 2);
-  return { u, v, origin };
-}
-
-function pts2svgPath(pts: Point2D[], scaleF: number, tx: number, ty: number): string {
-  if (!pts.length) return '';
-  const [first, ...rest] = pts;
-  const toSvg = (p: Point2D) => `${(p.x * scaleF + tx).toFixed(2)},${(p.y * scaleF + ty).toFixed(2)}`;
-  return `M ${toSvg(first)} L ${rest.map(toSvg).join(' L ')} Z`;
-}
-
-/* ── Dimension line helper ───────────────────────────────────────────── */
-function DimLine({ x1, y1, x2, y2, label, offset = 10, tickLen = 6, color = '#a8a29e', labelBg = 'rgba(245,242,237,0.97)', textColor = '#1c1917', fontSize = 10 }:
-  { x1: number; y1: number; x2: number; y2: number; label: string; offset?: number; tickLen?: number; color?: string; labelBg?: string; textColor?: string; fontSize?: number }) {
-  const dx = x2 - x1, dy = y2 - y1;
-  const len = Math.hypot(dx, dy);
-  if (len < 1) return null;
-  // perpendicular unit
-  const px = -dy / len, py = dx / len;
-  // offset both endpoints
-  const ax = x1 + px * offset, ay = y1 + py * offset;
-  const bx = x2 + px * offset, by = y2 + py * offset;
-  const arrowLen = 4;
-  // midpoint for label
-  const mx = (ax + bx) / 2, my = (ay + by) / 2;
-  const lw = Math.max(label.length * fontSize * 0.62, 28);
-  return (
-    <g>
-      {/* extension lines */}
-      <line x1={x1 + px * 2} y1={y1 + py * 2} x2={ax + px * (tickLen / 2)} y2={ay + py * (tickLen / 2)} stroke={color} strokeWidth="0.7"/>
-      <line x1={x2 + px * 2} y1={y2 + py * 2} x2={bx + px * (tickLen / 2)} y2={by + py * (tickLen / 2)} stroke={color} strokeWidth="0.7"/>
-      {/* dim line */}
-      <line x1={ax} y1={ay} x2={bx} y2={by} stroke={color} strokeWidth="0.8"/>
-      {/* arrowheads */}
-      <polygon points={`${ax},${ay} ${ax + (dx / len) * arrowLen + py * 2},${ay + (dy / len) * arrowLen - px * 2} ${ax + (dx / len) * arrowLen - py * 2},${ay + (dy / len) * arrowLen + px * 2}`} fill={color}/>
-      <polygon points={`${bx},${by} ${bx - (dx / len) * arrowLen + py * 2},${by - (dy / len) * arrowLen - px * 2} ${bx - (dx / len) * arrowLen - py * 2},${by - (dy / len) * arrowLen + px * 2}`} fill={color}/>
-      {/* label */}
-      <rect x={mx - lw / 2} y={my - fontSize - 1} width={lw} height={fontSize + 4} rx={2.5} fill={labelBg}/>
-      <text x={mx} y={my + 0.5} textAnchor="middle" dominantBaseline="middle" fontSize={fontSize} fill={textColor} fontFamily="monospace" fontWeight="700">{label}</text>
-    </g>
-  );
-}
-
-/* ── 2D Panel Preview ────────────────────────────────────────────────── */
-function PanelPreview2D({ dims, steps, shape }: { dims: Dims; steps: any[]; shape?: any }) {
-  const PAD_LEFT = 14, PAD_TOP = 20, PAD_RIGHT = 50, PAD_BOT = 14;
-  const svgW = 360, svgH = 170;
-  const maxW = svgW - PAD_LEFT - PAD_RIGHT;
-  const maxH = svgH - PAD_TOP - PAD_BOT;
-
-  // Extract real concave outline from geometry boundary edges
-  const ring = useMemo(() => shape ? extractTopFaceOutline(shape) : null, [shape]);
-
-  // Projection axes (shared between outline and subtraction rects)
-  const projAxes = useMemo(() => shape ? getTopFaceProjectionAxes(shape) : null, [shape]);
-
-  // Fit ring into canvas
-  const { svgPath, tx, ty, scaleF, fitW, fitH, fitOx, fitOy } = useMemo(() => {
-    const fallbackSf = Math.min(maxW / Math.max(dims.primary, 1), maxH / Math.max(dims.secondary, 1));
-    const rw = dims.primary * fallbackSf, rh = dims.secondary * fallbackSf;
-    const fallback = {
-      svgPath: null as string | null, tx: 0, ty: 0, scaleF: fallbackSf,
-      fitW: rw, fitH: rh, fitOx: PAD_LEFT + (maxW - rw) / 2, fitOy: PAD_TOP + (maxH - rh) / 2,
+    return () => {
+      renderer.dispose();
+      material.dispose();
+      edgesGeo.dispose();
+      edgesMat.dispose();
     };
-    if (!ring || ring.length < 3) return fallback;
-
-    const xs = ring.map(p => p.x), ys = ring.map(p => p.y);
-    const minX = Math.min(...xs), maxX = Math.max(...xs);
-    const minY = Math.min(...ys), maxY = Math.max(...ys);
-    const bW = maxX - minX || 1, bH = maxY - minY || 1;
-    const sf = Math.min(maxW / bW, maxH / bH);
-    const scaledW = bW * sf, scaledH = bH * sf;
-    const tx = PAD_LEFT + (maxW - scaledW) / 2 - minX * sf;
-    const ty = PAD_TOP + (maxH - scaledH) / 2 - minY * sf;
-    return {
-      svgPath: pts2svgPath(ring, sf, tx, ty),
-      tx, ty, scaleF: sf,
-      fitW: scaledW, fitH: scaledH,
-      fitOx: PAD_LEFT + (maxW - scaledW) / 2,
-      fitOy: PAD_TOP + (maxH - scaledH) / 2,
-    };
-  }, [ring, dims, maxW, maxH]);
-
-  // Subtraction rects in SVG space
-  const subRects = useMemo(() => {
-    if (!shape?.subtractionGeometries?.length || !projAxes) return [];
-    return (shape.subtractionGeometries as any[]).map(sub => {
-      const r = getSubtractionRect2D(sub, shape, projAxes.u, projAxes.v, projAxes.origin);
-      if (!r) return null;
-      return {
-        svgX: r.x * scaleF + tx,
-        svgY: r.y * scaleF + ty,
-        svgW: r.w * scaleF,
-        svgH: r.h * scaleF,
-        rawW: Math.round(r.w),
-        rawH: Math.round(r.h),
-      };
-    }).filter(Boolean) as Array<{ svgX: number; svgY: number; svgW: number; svgH: number; rawW: number; rawH: number }>;
-  }, [shape, projAxes, scaleF, tx, ty]);
-
-  const dimOx = fitOx, dimOy = fitOy, dimW = fitW, dimH = fitH;
-  const arrowLen = 5;
-
-  const stepLines = steps.map((s: any) => {
-    const label: string = s.axisLabel || '';
-    const isHoriz = label.startsWith('X') || label.startsWith('x');
-    return { isHoriz, value: s.value };
-  });
+  }, [shape]);
 
   return (
-    <svg width="100%" viewBox={`0 0 ${svgW} ${svgH}`} style={{ display: 'block' }}>
-      <defs>
-        <pattern id="hatch2d" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
-          <line x1="0" y1="0" x2="0" y2="6" stroke="rgba(234,88,12,0.09)" strokeWidth="2"/>
-        </pattern>
-        <filter id="shadow2d" x="-20%" y="-20%" width="140%" height="140%">
-          <feDropShadow dx="1.5" dy="2" stdDeviation="2.5" floodOpacity="0.12"/>
-        </filter>
-        {svgPath && <clipPath id="shapeClip"><path d={svgPath}/></clipPath>}
-      </defs>
-
-      {svgPath ? (
-        <>
-          <path d={svgPath} fill="url(#hatch2d)" filter="url(#shadow2d)"/>
-          <path d={svgPath} fill="rgba(255,252,247,0.88)"/>
-          <g clipPath="url(#shapeClip)">
-            {stepLines.map((sl, i) => {
-              if (sl.isHoriz) {
-                const x = dimOx + dimW * Math.min(sl.value / Math.max(dims.primary, 1), 0.97);
-                return <line key={i} x1={x} y1={dimOy} x2={x} y2={dimOy + dimH} stroke="rgba(234,88,12,0.5)" strokeWidth="1" strokeDasharray="4 2.5"/>;
-              } else {
-                const y = dimOy + dimH * Math.min(sl.value / Math.max(dims.secondary, 1), 0.97);
-                return <line key={i} x1={dimOx} y1={y} x2={dimOx + dimW} y2={y} stroke="rgba(234,88,12,0.5)" strokeWidth="1" strokeDasharray="4 2.5"/>;
-              }
-            })}
-          </g>
-          <path d={svgPath} fill="none" stroke="#78716c" strokeWidth="1.3"/>
-        </>
-      ) : (
-        <>
-          <rect x={dimOx} y={dimOy} width={dimW} height={dimH} rx={3} fill="url(#hatch2d)" filter="url(#shadow2d)"/>
-          <rect x={dimOx} y={dimOy} width={dimW} height={dimH} rx={3} fill="rgba(255,252,247,0.88)"/>
-          {stepLines.map((sl, i) => {
-            if (sl.isHoriz) {
-              const x = dimOx + dimW * Math.min(sl.value / Math.max(dims.primary, 1), 0.97);
-              return <line key={i} x1={x} y1={dimOy} x2={x} y2={dimOy + dimH} stroke="rgba(234,88,12,0.5)" strokeWidth="1" strokeDasharray="4 2.5"/>;
-            } else {
-              const y = dimOy + dimH * Math.min(sl.value / Math.max(dims.secondary, 1), 0.97);
-              return <line key={i} x1={dimOx} y1={y} x2={dimOx + dimW} y2={y} stroke="rgba(234,88,12,0.5)" strokeWidth="1" strokeDasharray="4 2.5"/>;
-            }
-          })}
-          <rect x={dimOx} y={dimOy} width={dimW} height={dimH} rx={3} fill="none" stroke="#78716c" strokeWidth="1.3"/>
-        </>
-      )}
-
-      {/* Subtraction dimension annotations */}
-      {subRects.map((r, i) => (
-        <g key={i}>
-          {/* Width dim inside notch */}
-          {r.rawW > 1 && (
-            <DimLine
-              x1={r.svgX} y1={r.svgY + r.svgH / 2}
-              x2={r.svgX + r.svgW} y2={r.svgY + r.svgH / 2}
-              label={`${r.rawW}`}
-              offset={-r.svgH * 0.28}
-              color="#6366f1"
-              labelBg="rgba(238,242,255,0.95)"
-              textColor="#4338ca"
-              fontSize={9}
-            />
-          )}
-          {/* Height dim inside notch */}
-          {r.rawH > 1 && (
-            <DimLine
-              x1={r.svgX + r.svgW / 2} y1={r.svgY}
-              x2={r.svgX + r.svgW / 2} y2={r.svgY + r.svgH}
-              label={`${r.rawH}`}
-              offset={r.svgW * 0.28}
-              color="#6366f1"
-              labelBg="rgba(238,242,255,0.95)"
-              textColor="#4338ca"
-              fontSize={9}
-            />
-          )}
-        </g>
-      ))}
-
-      {/* W dimension — above */}
-      <line x1={dimOx} y1={dimOy - 10} x2={dimOx + dimW} y2={dimOy - 10} stroke="#a8a29e" strokeWidth="0.8"/>
-      <line x1={dimOx} y1={dimOy - 4} x2={dimOx} y2={dimOy - 17} stroke="#a8a29e" strokeWidth="0.8"/>
-      <line x1={dimOx + dimW} y1={dimOy - 4} x2={dimOx + dimW} y2={dimOy - 17} stroke="#a8a29e" strokeWidth="0.8"/>
-      <polygon points={`${dimOx},${dimOy-10} ${dimOx+arrowLen},${dimOy-12.5} ${dimOx+arrowLen},${dimOy-7.5}`} fill="#a8a29e"/>
-      <polygon points={`${dimOx+dimW},${dimOy-10} ${dimOx+dimW-arrowLen},${dimOy-12.5} ${dimOx+dimW-arrowLen},${dimOy-7.5}`} fill="#a8a29e"/>
-      <rect x={dimOx + dimW/2 - 24} y={dimOy - 18} width={48} height={14} rx={3} fill="rgba(245,242,237,0.97)"/>
-      <text x={dimOx + dimW/2} y={dimOy - 7} textAnchor="middle" fontSize="11" fill="#1c1917" fontFamily="monospace" fontWeight="700">{dims.primary}</text>
-
-      {/* H dimension — right */}
-      <line x1={dimOx + dimW + 10} y1={dimOy} x2={dimOx + dimW + 10} y2={dimOy + dimH} stroke="#a8a29e" strokeWidth="0.8"/>
-      <line x1={dimOx + dimW + 4} y1={dimOy} x2={dimOx + dimW + 16} y2={dimOy} stroke="#a8a29e" strokeWidth="0.8"/>
-      <line x1={dimOx + dimW + 4} y1={dimOy + dimH} x2={dimOx + dimW + 16} y2={dimOy + dimH} stroke="#a8a29e" strokeWidth="0.8"/>
-      <polygon points={`${dimOx+dimW+10},${dimOy} ${dimOx+dimW+7.5},${dimOy+arrowLen} ${dimOx+dimW+12.5},${dimOy+arrowLen}`} fill="#a8a29e"/>
-      <polygon points={`${dimOx+dimW+10},${dimOy+dimH} ${dimOx+dimW+7.5},${dimOy+dimH-arrowLen} ${dimOx+dimW+12.5},${dimOy+dimH-arrowLen}`} fill="#a8a29e"/>
-      <rect x={dimOx + dimW + 18} y={dimOy + dimH/2 - 8} width={40} height={14} rx={3} fill="rgba(245,242,237,0.97)"/>
-      <text x={dimOx + dimW + 38} y={dimOy + dimH/2 + 3} textAnchor="middle" fontSize="11" fill="#1c1917" fontFamily="monospace" fontWeight="700">{dims.secondary}</text>
-
-      {/* Thickness pill */}
-      <rect x={dimOx + 4} y={dimOy + dimH - 17} width={46} height={14} rx={4} fill="rgba(41,37,36,0.78)"/>
-      <text x={dimOx + 27} y={dimOy + dimH - 7} textAnchor="middle" fontSize="10" fill="rgba(255,255,255,0.95)" fontFamily="monospace" fontWeight="700">T {dims.thickness}</text>
-    </svg>
+    <div style={{ position: 'relative', width: '100%' }}>
+      <canvas
+        ref={canvasRef}
+        style={{ display: 'block', width: '100%', height: '140px', borderRadius: '6px' }}
+      />
+      {/* Dimension pills */}
+      <div style={{ position: 'absolute', top: 6, left: '50%', transform: 'translateX(-50%)',
+        background: 'rgba(245,242,237,0.95)', border: '1px solid #d6d3d1', borderRadius: 4,
+        padding: '1px 8px', fontSize: 11, fontFamily: 'monospace', fontWeight: 700, color: '#1c1917',
+        whiteSpace: 'nowrap', pointerEvents: 'none' }}>
+        {dims.primary} × {dims.secondary}
+      </div>
+      <div style={{ position: 'absolute', bottom: 6, left: 8,
+        background: 'rgba(41,37,36,0.78)', borderRadius: 4,
+        padding: '1px 8px', fontSize: 10, fontFamily: 'monospace', fontWeight: 700, color: 'rgba(255,255,255,0.95)',
+        pointerEvents: 'none' }}>
+        T {dims.thickness}
+      </div>
+    </div>
   );
 }
 
@@ -741,7 +470,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         {/* 2D Preview */}
         {activeDims && (
           <div className="rounded-xl bg-gradient-to-b from-[#f8f5f0] to-[#f0ece4] border border-stone-200/80 overflow-hidden px-2 pt-3 pb-2">
-            <PanelPreview2D dims={activeDims} steps={activeSteps} shape={activePanel}/>
+            <PanelPreview2D dims={activeDims} shape={activePanel}/>
           </div>
         )}
 
