@@ -242,10 +242,8 @@ function PanelPreview2D({ dims, shape }: { dims: Dims; shape?: any }) {
 
       const planarDims = dims3.filter((_, i) => i !== minIdx);
       const aspect = w / h;
-      // Fit the panel so it always fills the viewport regardless of shape.
-      // Compute the half-sizes that would be required by each planar dimension,
-      // then take the larger one so nothing is ever clipped.
-      const pad = 1.15;
+      // Reserve ~18% of each side for dimension line labels so they never clip.
+      const pad = 1.42;
       const halfWFromW = (planarDims[0] / 2) * pad;
       const halfWFromH = (planarDims[1] / 2) * pad * aspect;
       const halfW = Math.max(halfWFromW, halfWFromH);
@@ -315,21 +313,25 @@ function PanelPreview2D({ dims, shape }: { dims: Dims; shape?: any }) {
           const len = Math.hypot(dx, dy);
           if (len < 4) return null;
           const px = -dy / len, py = dx / len;
-          const off = 22;
+          // Scale offset proportionally to canvas size so labels always fit inside the viewport
+          const off = Math.min(canvasSize.w, canvasSize.h) * 0.075;
+          const arrowSz = Math.max(3, off * 0.25);
+          const fontSize = Math.max(9, Math.min(13, canvasSize.w * 0.024));
           const ax = lbl.ex1 + px * off, ay = lbl.ey1 + py * off;
           const bx = lbl.ex2 + px * off, by = lbl.ey2 + py * off;
           const mx = (ax + bx) / 2, my = (ay + by) / 2;
           const txt = String(lbl.length);
-          const labelW = Math.max(txt.length * 8 + 14, 38);
+          const labelW = Math.max(txt.length * fontSize * 0.65 + 12, 32);
+          const labelH = fontSize + 7;
           return (
             <g key={i}>
               <line x1={lbl.ex1 + px * 2} y1={lbl.ey1 + py * 2} x2={ax} y2={ay} stroke="#a8a29e" strokeWidth="0.9"/>
               <line x1={lbl.ex2 + px * 2} y1={lbl.ey2 + py * 2} x2={bx} y2={by} stroke="#a8a29e" strokeWidth="0.9"/>
               <line x1={ax} y1={ay} x2={bx} y2={by} stroke="#a8a29e" strokeWidth="1.2"/>
-              <polygon points={`${ax},${ay} ${ax+(dx/len)*5+py*2.5},${ay+(dy/len)*5-px*2.5} ${ax+(dx/len)*5-py*2.5},${ay+(dy/len)*5+px*2.5}`} fill="#a8a29e"/>
-              <polygon points={`${bx},${by} ${bx-(dx/len)*5+py*2.5},${by-(dy/len)*5-px*2.5} ${bx-(dx/len)*5-py*2.5},${by-(dy/len)*5+px*2.5}`} fill="#a8a29e"/>
-              <rect x={mx - labelW / 2} y={my - 8.5} width={labelW} height={16} rx={4} fill="rgba(245,242,237,0.97)" stroke="#d6d3d1" strokeWidth="0.7"/>
-              <text x={mx} y={my + 5.5} textAnchor="middle" fontSize="11" fill="#1c1917" fontFamily="monospace" fontWeight="700">{txt}</text>
+              <polygon points={`${ax},${ay} ${ax+(dx/len)*arrowSz+py*arrowSz*0.5},${ay+(dy/len)*arrowSz-px*arrowSz*0.5} ${ax+(dx/len)*arrowSz-py*arrowSz*0.5},${ay+(dy/len)*arrowSz+px*arrowSz*0.5}`} fill="#a8a29e"/>
+              <polygon points={`${bx},${by} ${bx-(dx/len)*arrowSz+py*arrowSz*0.5},${by-(dy/len)*arrowSz-px*arrowSz*0.5} ${bx-(dx/len)*arrowSz-py*arrowSz*0.5},${by-(dy/len)*arrowSz+px*arrowSz*0.5}`} fill="#a8a29e"/>
+              <rect x={mx - labelW / 2} y={my - labelH / 2} width={labelW} height={labelH} rx={3} fill="rgba(245,242,237,0.97)" stroke="#d6d3d1" strokeWidth="0.7"/>
+              <text x={mx} y={my + fontSize * 0.36} textAnchor="middle" fontSize={fontSize} fill="#1c1917" fontFamily="monospace" fontWeight="700">{txt}</text>
             </g>
           );
         })}
@@ -823,7 +825,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       )}
 
       {/* Canvas — flex-1, fills remaining space */}
-      <div className="flex-1 mx-2 mb-1 rounded-xl bg-gradient-to-b from-[#f8f5f0] to-[#ede8df] border border-stone-200/80 overflow-hidden relative" style={{ minHeight: 260 }}>
+      <div className="flex-1 mx-2 mb-1 rounded-xl bg-gradient-to-b from-[#f8f5f0] to-[#ede8df] border border-stone-200/80 overflow-hidden relative" style={{ minHeight: 320 }}>
         {activeDims && activePanel
           ? <PanelPreview2D key={activePanel.id} dims={activeDims} shape={activePanel}/>
           : (
