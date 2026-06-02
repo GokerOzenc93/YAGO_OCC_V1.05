@@ -114,73 +114,73 @@ function project3D(p: THREE.Vector3, camera: THREE.OrthographicCamera, w: number
   return { x: (ndc.x + 1) / 2 * w, y: (1 - ndc.y) / 2 * h };
 }
 
-// Collect visible outer edges from the top face of the geometry and return dimension labels
+// Collect the two principal dimension labels (longest H + longest V edge on top face)
 function computeEdgeLabels(
   geometry: THREE.BufferGeometry,
   camera: THREE.OrthographicCamera,
   w: number,
   h: number,
-  thicknessAxis: number, // 0=x,1=y,2=z — the thin axis, skip those edges
+  thicknessAxis: number,
 ): EdgeDimLabel[] {
   const edgesGeo = new THREE.EdgesGeometry(geometry, 15);
   const pos = edgesGeo.getAttribute('position');
   if (!pos) { edgesGeo.dispose(); return []; }
 
-  // Group edges by their 3D length to deduplicate parallel/repeated edges
-  // Keep only edges whose midpoint projects to the "top" face (max along thicknessAxis)
   const bbox = new THREE.Box3().setFromBufferAttribute(pos as THREE.BufferAttribute);
   const bboxSize = new THREE.Vector3(); bbox.getSize(bboxSize);
-  const bboxCenter = new THREE.Vector3(); bbox.getCenter(bboxCenter);
-
-  // The "top" coordinate along the thickness axis
   const axisKeys: Array<'x' | 'y' | 'z'> = ['x', 'y', 'z'];
   const thinKey = axisKeys[thicknessAxis];
   const topVal = bbox.max[thinKey];
-  const botVal = bbox.min[thinKey];
   const tol = bboxSize[thinKey] * 0.05 + 0.5;
 
-  const labels: EdgeDimLabel[] = [];
-  const seen = new Set<string>();
+  // Planar axes (the two non-thickness axes)
+  const planarAxes = axisKeys.filter((_, i) => i !== thicknessAxis);
+
+  // Collect all top-face planar edges, grouped by which planar axis they run along
+  type CandEdge = { len3D: number; a: THREE.Vector3; b: THREE.Vector3; mid: THREE.Vector3 };
+  const byAxis: Record<string, CandEdge[]> = { [planarAxes[0]]: [], [planarAxes[1]]: [] };
 
   for (let i = 0; i < pos.count; i += 2) {
     const a = new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i));
     const b = new THREE.Vector3(pos.getX(i + 1), pos.getY(i + 1), pos.getZ(i + 1));
-
     const mid = new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5);
     const len3D = a.distanceTo(b);
-
-    // Skip near-zero edges
     if (len3D < 0.5) continue;
-
-    // Skip thickness edges (edges that run along the thin axis — both endpoints differ mainly on thinKey)
+    // Skip thickness edges
     const da = Math.abs(a[thinKey] - b[thinKey]);
-    if (da > len3D * 0.7) continue; // mostly along thin axis = thickness edge
+    if (da > len3D * 0.7) continue;
+    // Only top face
+    if (Math.abs(mid[thinKey] - topVal) > tol) continue;
 
-    // Only edges on the top face (or very near it)
-    if (Math.abs(mid[thinKey] - topVal) > tol && Math.abs(mid[thinKey] - botVal) > tol) continue;
-    // prefer top face
-    const onTop = Math.abs(mid[thinKey] - topVal) <= tol;
-    if (!onTop) continue;
+    // Determine primary planar axis of this edge
+    for (const ak of planarAxes) {
+      const diff = Math.abs(a[ak] - b[ak]);
+      if (diff > len3D * 0.6) {
+        byAxis[ak].push({ len3D, a, b, mid });
+        break;
+      }
+    }
+  }
 
-    // Deduplicate by rounded length + midpoint bucket
-    const key = `${Math.round(len3D)}_${Math.round(mid.x/5)}_${Math.round(mid.y/5)}_${Math.round(mid.z/5)}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
+  edgesGeo.dispose();
 
-    const sa = project3D(a, camera, w, h);
-    const sb = project3D(b, camera, w, h);
-    const sm = project3D(mid, camera, w, h);
-
+  const labels: EdgeDimLabel[] = [];
+  for (const ak of planarAxes) {
+    const candidates = byAxis[ak];
+    if (candidates.length === 0) continue;
+    // Pick the longest edge along this axis
+    const best = candidates.reduce((prev, cur) => cur.len3D > prev.len3D ? cur : prev);
+    const sa = project3D(best.a, camera, w, h);
+    const sb = project3D(best.b, camera, w, h);
+    const sm = project3D(best.mid, camera, w, h);
     labels.push({
       sx: sm.x, sy: sm.y,
       ex1: sa.x, ey1: sa.y,
       ex2: sb.x, ey2: sb.y,
-      length: Math.round(len3D),
+      length: Math.round(best.len3D),
       isThickness: false,
     });
   }
-
-  edgesGeo.dispose();
   return labels;
 }
 
@@ -289,14 +289,21 @@ function PanelPreview2D({ dims, shape }: { dims: Dims; shape?: any }) {
     };
   }, [shape]);
 
-  const visibleLabels = useMemo(() => {
-    const result: EdgeDimLabel[] = [];
-    for (const lbl of edgeLabels) {
-      const tooClose = result.some(r => Math.hypot(r.sx - lbl.sx, r.sy - lbl.sy) < 22 && r.length === lbl.length);
-      if (!tooClose) result.push(lbl);
-    }
-    return result;
-  }, [edgeLabels]);
+  const hasSub = Array.isArray(shape?.subtractionGeometries) && shape.subtractionGeometries.length > 0;
+
+  // Collect subtract dimension strings from parameters
+  const subDims = useMemo(() => {
+    if (!hasSub) return [];
+    return (shape.subtractionGeometries as any[]).flatMap((sg: any) => {
+      const p = sg.parameters;
+      if (!p) return [];
+      const out: { label: string; value: string }[] = [];
+      if (p.width) out.push({ label: 'W', value: p.width });
+      if (p.height) out.push({ label: 'H', value: p.height });
+      if (p.depth) out.push({ label: 'D', value: p.depth });
+      return out;
+    });
+  }, [shape?.subtractionGeometries, hasSub]);
 
   return (
     <div ref={wrapRef} style={{ position: 'absolute', inset: 0, userSelect: 'none' }}>
@@ -308,15 +315,14 @@ function PanelPreview2D({ dims, shape }: { dims: Dims; shape?: any }) {
         style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'visible' }}
         viewBox={`0 0 ${canvasSize.w} ${canvasSize.h}`}
       >
-        {visibleLabels.map((lbl, i) => {
+        {!hasSub && edgeLabels.map((lbl, i) => {
           const dx = lbl.ex2 - lbl.ex1, dy = lbl.ey2 - lbl.ey1;
           const len = Math.hypot(dx, dy);
           if (len < 4) return null;
           const px = -dy / len, py = dx / len;
-          // Scale offset proportionally to canvas size so labels always fit inside the viewport
-          const off = Math.min(canvasSize.w, canvasSize.h) * 0.075;
-          const arrowSz = Math.max(3, off * 0.25);
-          const fontSize = Math.max(9, Math.min(13, canvasSize.w * 0.024));
+          const off = Math.min(canvasSize.w, canvasSize.h) * 0.085;
+          const arrowSz = Math.max(3, off * 0.28);
+          const fontSize = Math.max(9, Math.min(13, canvasSize.w * 0.026));
           const ax = lbl.ex1 + px * off, ay = lbl.ey1 + py * off;
           const bx = lbl.ex2 + px * off, by = lbl.ey2 + py * off;
           const mx = (ax + bx) / 2, my = (ay + by) / 2;
@@ -336,6 +342,19 @@ function PanelPreview2D({ dims, shape }: { dims: Dims; shape?: any }) {
           );
         })}
       </svg>
+
+      {/* Subtract dimension badges — shown only when panel has subtractions */}
+      {hasSub && subDims.length > 0 && (
+        <div style={{ position: 'absolute', top: 10, right: 10, display: 'flex', flexDirection: 'column', gap: 5, alignItems: 'flex-end', pointerEvents: 'none' }}>
+          <div style={{ fontSize: 10, fontFamily: 'monospace', fontWeight: 600, color: '#92400e', letterSpacing: '0.04em', textTransform: 'uppercase', opacity: 0.75 }}>Kesim</div>
+          {subDims.map((d, i) => (
+            <div key={i} style={{ background: 'rgba(254,243,199,0.95)', border: '1px solid #fcd34d', borderRadius: 5, padding: '2px 9px', fontSize: 12, fontFamily: 'monospace', fontWeight: 700, color: '#78350f' }}>
+              {d.label} {d.value}
+            </div>
+          ))}
+        </div>
+      )}
+
       <div style={{ position: 'absolute', bottom: 10, left: 12,
         background: 'rgba(41,37,36,0.82)', borderRadius: 5,
         padding: '3px 10px', fontSize: 12, fontFamily: 'monospace', fontWeight: 700, color: 'rgba(255,255,255,0.97)',
