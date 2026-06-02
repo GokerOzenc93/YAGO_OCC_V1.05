@@ -591,7 +591,7 @@ const Scene: React.FC = () => {
   return (
     <>
       <ErrorBoundary>
-        <Canvas shadows gl={{ antialias:true, alpha:false, preserveDrawingBuffer:true, powerPreference:'high-performance', logarithmicDepthBuffer:true }} dpr={[1,2]} onContextMenu={e=>e.preventDefault()} onCreated={handleCreated}>
+        <Canvas shadows gl={{ antialias:true, alpha:false, preserveDrawingBuffer:true, powerPreference:'high-performance' }} dpr={[1,2]} onContextMenu={e=>e.preventDefault()} onCreated={handleCreated}>
           <color attach="background" args={['#fdfcfa']} />
           <CameraController controlsRef={controlsRef} cameraType={cameraType} />
 
