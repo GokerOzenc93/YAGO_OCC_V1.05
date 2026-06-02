@@ -893,6 +893,7 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     if (!raycastMode) return;
     if (e.button === 2) {
       e.stopPropagation(); e.nativeEvent?.preventDefault?.();
+      window.addEventListener('contextmenu', (ev) => ev.preventDefault(), { capture: true, once: true });
       if (pending) { addVirtualFace(pending.virtualFace); setPending(null); lastClickRef.current = null; setRaycastMode(false); }
       return;
     }
