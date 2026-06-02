@@ -164,28 +164,28 @@ function PanelPreview2D({ dims, steps }: { dims: Dims; steps: any[] }) {
       <rect x={ox} y={oy} width={rw} height={rh} rx={3} fill="none" stroke="#78716c" strokeWidth="1.2"/>
 
       {/* W dimension — above */}
-      <line x1={ox} y1={oy - 8} x2={ox + rw} y2={oy - 8} stroke="#a8a29e" strokeWidth="0.8"/>
-      <line x1={ox} y1={oy - 3} x2={ox} y2={oy - 13} stroke="#a8a29e" strokeWidth="0.8"/>
-      <line x1={ox + rw} y1={oy - 3} x2={ox + rw} y2={oy - 13} stroke="#a8a29e" strokeWidth="0.8"/>
+      <line x1={ox} y1={oy - 10} x2={ox + rw} y2={oy - 10} stroke="#a8a29e" strokeWidth="0.8"/>
+      <line x1={ox} y1={oy - 4} x2={ox} y2={oy - 16} stroke="#a8a29e" strokeWidth="0.8"/>
+      <line x1={ox + rw} y1={oy - 4} x2={ox + rw} y2={oy - 16} stroke="#a8a29e" strokeWidth="0.8"/>
       {/* arrowheads W */}
-      <polygon points={`${ox},${oy-8} ${ox+arrowLen},${oy-8-2.5} ${ox+arrowLen},${oy-8+2.5}`} fill="#a8a29e"/>
-      <polygon points={`${ox+rw},${oy-8} ${ox+rw-arrowLen},${oy-8-2.5} ${ox+rw-arrowLen},${oy-8+2.5}`} fill="#a8a29e"/>
-      <rect x={ox + rw/2 - 16} y={oy - 14} width={32} height={10} rx={2} fill="rgba(245,242,237,0.95)"/>
-      <text x={ox + rw / 2} y={oy - 7} textAnchor="middle" fontSize="8" fill="#44403c" fontFamily="monospace" fontWeight="700">{dims.primary}</text>
+      <polygon points={`${ox},${oy-10} ${ox+arrowLen},${oy-10-2.5} ${ox+arrowLen},${oy-10+2.5}`} fill="#a8a29e"/>
+      <polygon points={`${ox+rw},${oy-10} ${ox+rw-arrowLen},${oy-10-2.5} ${ox+rw-arrowLen},${oy-10+2.5}`} fill="#a8a29e"/>
+      <rect x={ox + rw/2 - 22} y={oy - 17} width={44} height={13} rx={3} fill="rgba(245,242,237,0.97)"/>
+      <text x={ox + rw / 2} y={oy - 7} textAnchor="middle" fontSize="11" fill="#1c1917" fontFamily="monospace" fontWeight="700">{dims.primary}</text>
 
       {/* H dimension — right */}
-      <line x1={ox + rw + 9} y1={oy} x2={ox + rw + 9} y2={oy + rh} stroke="#a8a29e" strokeWidth="0.8"/>
-      <line x1={ox + rw + 4} y1={oy} x2={ox + rw + 14} y2={oy} stroke="#a8a29e" strokeWidth="0.8"/>
-      <line x1={ox + rw + 4} y1={oy + rh} x2={ox + rw + 14} y2={oy + rh} stroke="#a8a29e" strokeWidth="0.8"/>
+      <line x1={ox + rw + 10} y1={oy} x2={ox + rw + 10} y2={oy + rh} stroke="#a8a29e" strokeWidth="0.8"/>
+      <line x1={ox + rw + 5} y1={oy} x2={ox + rw + 15} y2={oy} stroke="#a8a29e" strokeWidth="0.8"/>
+      <line x1={ox + rw + 5} y1={oy + rh} x2={ox + rw + 15} y2={oy + rh} stroke="#a8a29e" strokeWidth="0.8"/>
       {/* arrowheads H */}
-      <polygon points={`${ox+rw+9},${oy} ${ox+rw+9-2.5},${oy+arrowLen} ${ox+rw+9+2.5},${oy+arrowLen}`} fill="#a8a29e"/>
-      <polygon points={`${ox+rw+9},${oy+rh} ${ox+rw+9-2.5},${oy+rh-arrowLen} ${ox+rw+9+2.5},${oy+rh-arrowLen}`} fill="#a8a29e"/>
-      <rect x={ox + rw + 16} y={oy + rh/2 - 6} width={28} height={10} rx={2} fill="rgba(245,242,237,0.95)"/>
-      <text x={ox + rw + 30} y={oy + rh/2 + 2} textAnchor="middle" fontSize="8" fill="#44403c" fontFamily="monospace" fontWeight="700">{dims.secondary}</text>
+      <polygon points={`${ox+rw+10},${oy} ${ox+rw+10-2.5},${oy+arrowLen} ${ox+rw+10+2.5},${oy+arrowLen}`} fill="#a8a29e"/>
+      <polygon points={`${ox+rw+10},${oy+rh} ${ox+rw+10-2.5},${oy+rh-arrowLen} ${ox+rw+10+2.5},${oy+rh-arrowLen}`} fill="#a8a29e"/>
+      <rect x={ox + rw + 18} y={oy + rh/2 - 8} width={38} height={14} rx={3} fill="rgba(245,242,237,0.97)"/>
+      <text x={ox + rw + 37} y={oy + rh/2 + 3} textAnchor="middle" fontSize="11" fill="#1c1917" fontFamily="monospace" fontWeight="700">{dims.secondary}</text>
 
       {/* Thickness pill — bottom-left corner */}
-      <rect x={ox + 3} y={oy + rh - 14} width={34} height={11} rx={3} fill="rgba(41,37,36,0.72)"/>
-      <text x={ox + 20} y={oy + rh - 6.5} textAnchor="middle" fontSize="7" fill="rgba(255,255,255,0.92)" fontFamily="monospace" fontWeight="700">T {dims.thickness}</text>
+      <rect x={ox + 4} y={oy + rh - 17} width={46} height={14} rx={4} fill="rgba(41,37,36,0.78)"/>
+      <text x={ox + 27} y={oy + rh - 7} textAnchor="middle" fontSize="10" fill="rgba(255,255,255,0.95)" fontFamily="monospace" fontWeight="700">T {dims.thickness}</text>
     </svg>
   );
 }
@@ -383,7 +383,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
           onDrop={e => { e.preventDefault(); onDrop(vi); }}
           onClick={e => { stop(e); rc(); }}
           className={`
-            group relative flex items-center gap-1.5 px-2 py-1.5 rounded-md cursor-pointer
+            group relative flex items-center gap-2 px-2.5 py-2.5 rounded-lg cursor-pointer
             transition-all duration-150 select-none
             ${sel
               ? 'bg-orange-50 ring-1 ring-orange-300 shadow-sm'
@@ -399,12 +399,12 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
             onDragEnd={() => { setDragIndex(null); setDropIndex(null); }}
             onClick={stop}
             className="cursor-grab active:cursor-grabbing text-stone-300 hover:text-stone-400 shrink-0"
-          ><GripVertical size={13}/></span>
+          ><GripVertical size={15}/></span>
 
           {/* Index badge */}
-          <span className={`shrink-0 w-7 h-5 flex items-center justify-center rounded text-[10px] font-bold font-mono
+          <span className={`shrink-0 w-8 h-7 flex items-center justify-center rounded-md text-sm font-bold font-mono
             ${vf.hasPanel ? 'bg-green-100 text-green-700' : 'bg-stone-100 text-stone-400'}`}>
-            V{vi+1}
+            {vi+1}
           </span>
 
           {/* Note input */}
@@ -415,39 +415,39 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
             onChange={e => updateVirtualFace(vf.id, { description: e.target.value })}
             placeholder="note…"
             style={{ width: '27mm' }}
-            className="px-1.5 py-0.5 text-xs bg-transparent border-b border-transparent hover:border-stone-300 focus:border-orange-400 rounded-none outline-none text-stone-700 placeholder:text-stone-300 transition-colors"
+            className="px-2 py-1 text-sm bg-transparent border-b border-transparent hover:border-stone-300 focus:border-orange-400 rounded-none outline-none text-stone-700 placeholder:text-stone-300 transition-colors"
           />
 
           {/* Dims inline */}
           {dims && (
-            <span className="flex items-center gap-0.5 text-[10px] font-mono text-stone-400 shrink-0 leading-none" onClick={stop}>
-              <span className="text-stone-300">W</span><span className="text-stone-500 font-semibold">{dims.primary}</span>
-              <span className="text-stone-200 mx-0.5">·</span>
-              <span className="text-stone-300">H</span><span className="text-stone-500 font-semibold">{dims.secondary}</span>
-              <span className="text-stone-200 mx-0.5">·</span>
-              <span className="text-stone-300">T</span><span className="text-stone-500 font-semibold">{dims.thickness}</span>
+            <span className="flex items-center gap-1 text-xs font-mono shrink-0 leading-none" onClick={stop}>
+              <span className="text-stone-400">W</span><span className="text-stone-700 font-bold">{dims.primary}</span>
+              <span className="text-stone-300">·</span>
+              <span className="text-stone-400">H</span><span className="text-stone-700 font-bold">{dims.secondary}</span>
+              <span className="text-stone-300">·</span>
+              <span className="text-stone-400">T</span><span className="text-stone-700 font-bold">{dims.thickness}</span>
             </span>
           )}
 
           {/* Action buttons — reveal on hover/select */}
-          <div className={`ml-auto flex items-center gap-0.5 transition-opacity ${sel ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`} onClick={stop}>
+          <div className={`ml-auto flex items-center gap-1 transition-opacity ${sel ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`} onClick={stop}>
             <input type="checkbox" checked={vf.hasPanel} onClick={stop}
               onChange={async () => { if (vf.hasPanel) removeVP(vf.id); else await createVP(vf.id, vi); }}
-              className="w-3.5 h-3.5 rounded text-green-500 focus:ring-green-400 cursor-pointer accent-green-500"
-              title={`Toggle panel V${vi+1}`}/>
+              className="w-4 h-4 rounded text-green-500 focus:ring-green-400 cursor-pointer accent-green-500"
+              title={`Toggle panel ${vi+1}`}/>
             <button disabled={!vf.hasPanel} onClick={e => { stop(e); toggleArrow(vp); }}
-              className={`p-0.5 rounded transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-blue-500' : 'text-stone-300 hover:text-stone-500'}`}
-              title="Rotate arrow"><RotateCw size={11}/></button>
+              className={`p-1 rounded transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-blue-500' : 'text-stone-300 hover:text-stone-500'}`}
+              title="Rotate arrow"><RotateCw size={13}/></button>
             <button disabled={!vf.hasPanel||!vp} onClick={async e => {
               stop(e); if (!vp) return;
               const { reshapePanelToParentFace } = await import('./PanelReshapeService');
               await reshapePanelToParentFace(vp.id);
             }}
-              className={`p-0.5 rounded transition-colors ${!vf.hasPanel||!vp ? 'text-stone-200 cursor-not-allowed' : 'text-stone-300 hover:text-teal-600'}`}
-              title="Match parent face"><Shapes size={11}/></button>
+              className={`p-1 rounded transition-colors ${!vf.hasPanel||!vp ? 'text-stone-200 cursor-not-allowed' : 'text-stone-300 hover:text-teal-600'}`}
+              title="Match parent face"><Shapes size={13}/></button>
             <button onClick={e => { stop(e); if (vf.hasPanel) removeVP(vf.id); deleteVirtualFace(vf.id); }}
-              className="p-0.5 rounded text-stone-300 hover:text-red-400 transition-colors"
-              title="Delete face"><Trash2 size={11}/></button>
+              className="p-1 rounded text-stone-300 hover:text-red-400 transition-colors"
+              title="Delete face"><Trash2 size={13}/></button>
           </div>
         </div>
       );
