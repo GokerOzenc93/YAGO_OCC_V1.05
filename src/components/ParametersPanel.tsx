@@ -72,6 +72,54 @@ const ParameterRow: React.FC<ParameterRowProps> = ({ label, value, onChange, dis
   );
 };
 
+const DimCell: React.FC<{ label: string; value: number; onChange: (v: number) => void }> = ({ label, value, onChange }) => {
+  const [inputValue, setInputValue] = useState(value.toString());
+  const [isFocused, setIsFocused] = useState(false);
+
+  useEffect(() => { if (!isFocused) setInputValue(value.toString()); }, [value, isFocused]);
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const v = e.target.value;
+    setInputValue(v);
+    if (v !== '' && v !== '-' && v !== '.') {
+      const p = parseFloat(v);
+      if (!isNaN(p)) onChange(p);
+    }
+  };
+
+  const handleBlur = () => {
+    setIsFocused(false);
+    const p = parseFloat(inputValue);
+    if (isNaN(p)) setInputValue(value.toString());
+    else { onChange(p); setInputValue(p.toString()); }
+  };
+
+  return (
+    <div className={`flex items-center gap-0.5 flex-1 min-w-0 px-1 py-0.5 rounded transition-colors ${isFocused ? 'bg-orange-50 ring-1 ring-orange-300' : 'hover:bg-stone-50'}`}>
+      <span className="text-xs font-mono font-bold text-gray-500 select-none shrink-0">{label}</span>
+      <input
+        type="text"
+        value={inputValue}
+        onChange={handleChange}
+        onFocus={() => setIsFocused(true)}
+        onBlur={handleBlur}
+        className="w-full min-w-0 px-0.5 text-xs font-mono text-gray-800 bg-transparent border-b border-transparent focus:border-orange-400 outline-none rounded-none"
+      />
+    </div>
+  );
+};
+
+const DimRow: React.FC<{ values: number[]; setters: Array<(v: number) => void> }> = ({ values, setters }) => {
+  const labels = ['W', 'H', 'D'];
+  return (
+    <div className="flex gap-0.5 items-center py-0.5 px-1">
+      {labels.map((label, i) => (
+        <DimCell key={label} label={label} value={values[i]} onChange={setters[i]} />
+      ))}
+    </div>
+  );
+};
+
 export function ParametersPanel({ isOpen, onClose, embedded = false }: ParametersPanelProps) {
   const {
     selectedShapeId, shapes, updateShape, vertexEditMode, setVertexEditMode,
@@ -333,10 +381,10 @@ export function ParametersPanel({ isOpen, onClose, embedded = false }: Parameter
   const paramContent = selectedShape ? (
     <div className="space-y-0">
       <div className="space-y-0">
-        {(['width', 'height', 'depth'] as const).map((dim, i) => (
-          <ParameterRow key={dim} label={['W', 'H', 'D'][i]} value={[width, height, depth][i]}
-            onChange={v => { [setWidth, setHeight, setDepth][i](v); }} description={['Width', 'Height', 'Depth'][i]} />
-        ))}
+        <DimRow
+          values={[width, height, depth]}
+          setters={[setWidth, setHeight, setDepth]}
+        />
         {[['RX', rotX, setRotX, 'Rotation X'], ['RY', rotY, setRotY, 'Rotation Y'], ['RZ', rotZ, setRotZ, 'Rotation Z']].map(([label, val, set, desc]) => (
           <ParameterRow key={label as string} label={label as string} value={val as number} onChange={set as (v: number) => void}
             display={(val as number).toFixed(1) + '°'} description={desc as string} step={1} />
