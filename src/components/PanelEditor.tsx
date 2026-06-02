@@ -289,7 +289,7 @@ function PanelPreview2D({ dims, shape }: { dims: Dims; shape?: any }) {
   }, [edgeLabels]);
 
   return (
-    <div ref={wrapRef} style={{ position: 'relative', width: '100%', height: '100%', userSelect: 'none' }}>
+    <div ref={wrapRef} style={{ position: 'absolute', inset: 0, userSelect: 'none' }}>
       <canvas
         ref={canvasRef}
         style={{ display: 'block', position: 'absolute', inset: 0, width: '100%', height: '100%' }}
@@ -396,7 +396,6 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
             parameters: { width: s[def], height: s[alt], depth: PANEL_THICKNESS, parentShapeId: parentShape.id, faceIndex: -(vi + 1), virtualFaceId: vf.id, arrowRotated: false },
           }));
           updateVirtualFace(vf.id, { hasPanel: true });
-          setSelectedPanelRow(`vf-${vf.id}`, null, parentShape.id);
         } catch (e) { console.error('Auto panel creation failed:', e); }
       }
     })();
@@ -508,6 +507,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       const p = findVPanel(shapes, sid, vfId);
       if (p) useAppStore.getState().deleteShape(p.id);
       updateVirtualFace(vfId, { hasPanel: false });
+      if (selectedPanelRow === `vf-${vfId}`) setSelectedPanelRow(null);
     };
     const onDrop = async (toIndex: number) => {
       const from = dragIndex;
@@ -803,10 +803,14 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       )}
 
       {/* Canvas — flex-1, fills remaining space */}
-      <div className="flex-1 min-h-0 mx-2 mb-1 rounded-xl bg-gradient-to-b from-[#f8f5f0] to-[#ede8df] border border-stone-200/80 overflow-hidden flex items-center justify-center">
+      <div className="flex-1 min-h-0 mx-2 mb-1 rounded-xl bg-gradient-to-b from-[#f8f5f0] to-[#ede8df] border border-stone-200/80 overflow-hidden relative">
         {activeDims && activePanel
           ? <PanelPreview2D dims={activeDims} shape={activePanel}/>
-          : <span className="text-xs text-stone-400">Panel yok</span>
+          : (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <span className="text-xs text-stone-400">Panel yok</span>
+            </div>
+          )
         }
       </div>
 
