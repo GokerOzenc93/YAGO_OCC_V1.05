@@ -514,9 +514,7 @@ const Scene: React.FC = () => {
   }, [selectedShapeId, secondarySelectedShapeId, deleteShape, selectShape, exitIsolation, setVertexEditMode, setFaceEditMode, clearFilletFaces]);
 
   useEffect(() => {
-    const blockContextMenu = (e: MouseEvent) => {
-      if (useAppStore.getState().raycastMode) e.preventDefault();
-    };
+    const blockContextMenu = (e: MouseEvent) => { e.preventDefault(); };
     window.addEventListener('contextmenu', blockContextMenu, true);
     return () => window.removeEventListener('contextmenu', blockContextMenu, true);
   }, []);
