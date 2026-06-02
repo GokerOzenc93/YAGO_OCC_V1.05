@@ -514,6 +514,14 @@ const Scene: React.FC = () => {
   }, [selectedShapeId, secondarySelectedShapeId, deleteShape, selectShape, exitIsolation, setVertexEditMode, setFaceEditMode, clearFilletFaces]);
 
   useEffect(() => {
+    const blockContextMenu = (e: MouseEvent) => {
+      if (useAppStore.getState().raycastMode) e.preventDefault();
+    };
+    window.addEventListener('contextmenu', blockContextMenu, true);
+    return () => window.removeEventListener('contextmenu', blockContextMenu, true);
+  }, []);
+
+  useEffect(() => {
     (window as any).handleVertexOffset = (newValue: number) => {
       const cs = useAppStore.getState();
       const { selectedShapeId: sid, selectedVertexIndex: vi, vertexDirection: vd } = cs;
@@ -562,9 +570,11 @@ const Scene: React.FC = () => {
   }, [filletMode, selectedFilletFaces.length]);
 
   const handleContextMenu = useCallback((e: any, shapeId: string) => {
+    e.nativeEvent?.preventDefault?.();
+    e.nativeEvent?.stopPropagation?.();
     const state = useAppStore.getState();
     if (state.vertexEditMode || state.faceEditMode || state.raycastMode) return;
-    e.nativeEvent.preventDefault(); state.selectShape(shapeId);
+    state.selectShape(shapeId);
     setContextMenu({ x: e.nativeEvent.clientX, y: e.nativeEvent.clientY, shapeId, shapeType: state.shapes.find(s=>s.id===shapeId)?.type||'unknown' });
   }, []);
 
