@@ -226,7 +226,8 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
       : shape.id;
     if (selectedShapeId !== targetId) selectShape(targetId);
     if ((panelSurfaceSelectMode || panelSelectMode) && parentShapeId) {
-      setSelectedPanelRow(faceIndex ?? null, extraRowId || null, parentShapeId);
+      const rowKey = virtualFaceId ? `vf-${virtualFaceId}` : (faceIndex ?? null);
+      setSelectedPanelRow(rowKey, extraRowId || null, parentShapeId);
     }
     selectSecondaryShape(null);
   };
