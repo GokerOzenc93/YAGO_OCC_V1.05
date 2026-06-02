@@ -73,6 +73,7 @@ export interface VirtualFace {
   center:[number,number,number];
   vertices:[number,number,number][];
   description:string;hasPanel:boolean;
+  panelRemovedByUser?:boolean;
   raycastRecipe?:VirtualFaceRaycastRecipe;
   parentFaceShape?:boolean;
   faceGroupDescriptor?:FaceDescriptor;

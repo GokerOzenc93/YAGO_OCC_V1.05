@@ -257,10 +257,16 @@ function PanelPreview2D({ dims, shape }: { dims: Dims; shape?: any }) {
       setEdgeLabels(computeEdgeLabels(shape.geometry, camera, w, h, minIdx));
     };
 
-    // Use rAF to ensure the container is laid out before reading its size
-    const raf = requestAnimationFrame(() => {
-      if (!disposed) render(wrap.clientWidth || 320, wrap.clientHeight || 300);
-    });
+    // Try up to ~600ms (20 frames) to get a non-zero size before giving up
+    let rafId = 0;
+    let attempts = 0;
+    const tryRender = () => {
+      if (disposed) return;
+      const w = wrap.clientWidth, h = wrap.clientHeight;
+      if (w > 0 && h > 0) { render(w, h); return; }
+      if (++attempts < 20) rafId = requestAnimationFrame(tryRender);
+    };
+    rafId = requestAnimationFrame(tryRender);
 
     const ro = new ResizeObserver(entries => {
       const { width, height } = entries[0].contentRect;
@@ -270,7 +276,7 @@ function PanelPreview2D({ dims, shape }: { dims: Dims; shape?: any }) {
 
     return () => {
       disposed = true;
-      cancelAnimationFrame(raf);
+      cancelAnimationFrame(rafId);
       ro.disconnect();
       renderer?.dispose();
       material?.dispose();
@@ -381,6 +387,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     const currentShapes = useAppStore.getState().shapes;
     const pending = virtualFaces.filter(vf =>
       !vf.hasPanel &&
+      !vf.panelRemovedByUser &&
       !currentShapes.some(s => s.type === 'panel' && s.parameters?.virtualFaceId === vf.id)
     );
     if (!pending.length) return;
@@ -507,13 +514,13 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         const pa = r.axes.slice(1).map(a => a.i).sort((a, b) => a - b), [def, alt] = [pa[0], pa[1]], s = [r.size.x, r.size.y, r.size.z];
         addShape(makePanelBase(selectedShape, { geometry: g, replicadShape: rp,
           parameters: { width: s[def], height: s[alt], depth: PANEL_THICKNESS, parentShapeId: sid, faceIndex: -(vi+1), virtualFaceId: vf.id, arrowRotated: false } }));
-        updateVirtualFace(vf.id, { hasPanel: true });
+        updateVirtualFace(vf.id, { hasPanel: true, panelRemovedByUser: false });
       } catch (e) { console.error('Failed to create virtual panel:', e); }
     };
     const removeVP = (vfId: string) => {
       const p = findVPanel(shapes, sid, vfId);
       if (p) useAppStore.getState().deleteShape(p.id);
-      updateVirtualFace(vfId, { hasPanel: false });
+      updateVirtualFace(vfId, { hasPanel: false, panelRemovedByUser: true });
       if (selectedPanelRow === `vf-${vfId}`) setSelectedPanelRow(null);
     };
     const onDrop = async (toIndex: number) => {
@@ -810,9 +817,9 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       )}
 
       {/* Canvas — flex-1, fills remaining space */}
-      <div className="flex-1 min-h-0 mx-2 mb-1 rounded-xl bg-gradient-to-b from-[#f8f5f0] to-[#ede8df] border border-stone-200/80 overflow-hidden relative">
+      <div className="flex-1 mx-2 mb-1 rounded-xl bg-gradient-to-b from-[#f8f5f0] to-[#ede8df] border border-stone-200/80 overflow-hidden relative" style={{ minHeight: 180 }}>
         {activeDims && activePanel
-          ? <PanelPreview2D dims={activeDims} shape={activePanel}/>
+          ? <PanelPreview2D key={activePanel.id} dims={activeDims} shape={activePanel}/>
           : (
             <div className="absolute inset-0 flex items-center justify-center">
               <span className="text-xs text-stone-400">Panel yok</span>
