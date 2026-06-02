@@ -375,7 +375,14 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
   }, [selectedShapeId]);
 
   useEffect(() => {
-    const pending = virtualFaces.filter(vf => !vf.hasPanel);
+    // Only auto-create panels for faces that have no panel shape yet in the store.
+    // Faces where the user explicitly removed the panel (hasPanel: false, but shape was deleted)
+    // must NOT be recreated — we detect them by checking if a matching panel shape exists.
+    const currentShapes = useAppStore.getState().shapes;
+    const pending = virtualFaces.filter(vf =>
+      !vf.hasPanel &&
+      !currentShapes.some(s => s.type === 'panel' && s.parameters?.virtualFaceId === vf.id)
+    );
     if (!pending.length) return;
     (async () => {
       const { createPanelFromVirtualFace, convertReplicadToThreeGeometry } = await import('./ReplicadService');
@@ -855,18 +862,16 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         <div className="flex items-center gap-2"><GripVertical size={13} className="text-stone-300"/><span className="text-xs font-semibold text-stone-600 tracking-wide uppercase">Panel Editor</span></div>
         <div className="flex items-center gap-1.5">{panelToolbar}<button onClick={onClose} className="p-1 hover:bg-stone-200 rounded-md transition-colors"><X size={13} className="text-stone-400"/></button></div>
       </div>
-      <div style={{ maxHeight: 'calc(100vh - 200px)', overflowY: 'auto' }}>
-        {isPreviewMode ? (
-          <div style={{ height: 'min(70vh, 500px)' }}>
-            {previewPane}
-          </div>
-        ) : (
-          <>
-            <div className="p-2 space-y-0.5">{faceListSection}</div>
-            {panelDetailSection && <div className="px-2 pb-3 pt-1 border-t border-stone-100 space-y-3">{panelDetailSection}</div>}
-          </>
-        )}
-      </div>
+      {isPreviewMode ? (
+        <div style={{ height: 'min(72vh, 520px)', display: 'flex', flexDirection: 'column' }}>
+          {previewPane}
+        </div>
+      ) : (
+        <div style={{ maxHeight: 'calc(100vh - 200px)', overflowY: 'auto' }}>
+          <div className="p-2 space-y-0.5">{faceListSection}</div>
+          {panelDetailSection && <div className="px-2 pb-3 pt-1 border-t border-stone-100 space-y-3">{panelDetailSection}</div>}
+        </div>
+      )}
     </div>
   );
 }
