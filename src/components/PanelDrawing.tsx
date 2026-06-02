@@ -1,5 +1,6 @@
 import React, { useRef, useMemo, useState, useEffect } from 'react';
 import * as THREE from 'three';
+import { Line } from '@react-three/drei';
 import { useAppStore, ViewMode } from '../store';
 import { useShallow } from 'zustand/react/shallow';
 import { extractFacesFromGeometry, groupCoplanarFaces, createFaceHighlightGeometry } from './FaceEditor';
@@ -20,11 +21,13 @@ const PANEL_COLORS = {
   selected: {
     panel:         '#ff0000',
     panelEmissive: '#330000',
-    edge:          '#000000',
-    shapeEdge:     '#000000',
+    edge:          '#111418',
+    shapeEdge:     '#111418',
   },
   edge: {
-    default: '#1f2933',
+    // Yumuşak gri — koyu siyah yerine. Düşük belirginlik + birleşim
+    // yerlerinde ağır görünmez.
+    default: '#5b6470',
   },
   arrow: {
     color:    '#f1c40f',
@@ -32,31 +35,21 @@ const PANEL_COLORS = {
   },
 } as const;
 
-// ─── Z-FIGHTING ÇÖZÜMÜ — geometriyi hiç bozmadan ─────────────────────────
+// ─── Z-FIGHTING + ÇİZGİ KALİTESİ ─────────────────────────────────────────
 //
-// Strateji üç katmanlı:
-//
-// (1) Mesh: hafif positive polygonOffset → kendi edge'inin altında kalsın.
-//     Komşu panelin mesh'inden farklı offset alır mı? Hayır, ama
-//     LessEqualDepth kuralı edge'lere kazandırır.
-//
-// (2) Edge: negative polygonOffset → mesh'in üzerinde net çizilsin.
-//
-// (3) Edge material: depthFunc = LessEqualDepth. Eşit derinlikte bile
-//     edge kazanır → komşu panelin mesh'i edge'i ÖRTEMEZ.
-//
-// (4) renderOrder: tüm mesh'ler çizildikten SONRA edge'ler çizilir
-//     (renderOrder=1). Böylece komşu panelin mesh'i edge'in üzerine
-//     yazamaz — çünkü edge en son çiziliyor ve LessEqual sayesinde
-//     o depth'te de geçiyor.
-//
-// Geometri HİÇ değiştirilmiyor. Paneller fiziksel olarak doğru
-// konumda kalıyor. Hiç inflate yok.
+// Mesh hafif positive polygonOffset alır (kendi edge'inin altına iner),
+// edge negative polygonOffset alır (mesh'in üzerinde net çizilir).
+// Kenarlar drei <Line> (Line2 / LineMaterial) ile çizilir: antialias'lı,
+// kesintisiz, gerçek piksel genişliğinde. Çizgiler OPAK — iki komşu panelin
+// kenarı aynı yere denk gelse bile üst üste binip koyulaşmaz.
 const MESH_OFFSET_FACTOR = 1.0;
 const MESH_OFFSET_UNITS  = 1.0;
 const EDGE_OFFSET_FACTOR = -1.0;
 const EDGE_OFFSET_UNITS  = -2.0;
 const EDGE_RENDER_ORDER  = 1;
+
+// En ince pürüzsüz çizgi (piksel). Belirginlik renk açıklığıyla ayarlanır.
+const EDGE_LINE_WIDTH = 1.0;
 
 // Edge tespit eşiği — gereksiz iç üçgen kenarlarını eler.
 const EDGE_ANGLE_THRESHOLD = 15;
@@ -151,6 +144,18 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     }
   }, [shape.geometry]);
 
+  // EdgesGeometry'yi <Line segments> için nokta çiftlerine çeviriyoruz.
+  const edgePoints = useMemo<[number, number, number][] | null>(() => {
+    if (!edgeGeometry) return null;
+    const pos = edgeGeometry.getAttribute('position');
+    if (!pos) return null;
+    const pts: [number, number, number][] = [];
+    for (let i = 0; i < pos.count; i++) {
+      pts.push([pos.getX(i), pos.getY(i), pos.getZ(i)]);
+    }
+    return pts.length ? pts : null;
+  }, [edgeGeometry]);
+
   const isFaceExtrudeTarget = faceExtrudeMode && shape.id === faceExtrudeTargetPanelId;
   const isFaceExtrudeXray = faceExtrudeMode && shape.id !== faceExtrudeTargetPanelId;
   const isRaycastOnParent = raycastMode && parentShapeId && parentShapeId === selectedShapeId;
@@ -196,6 +201,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     : isSelected
       ? PANEL_COLORS.selected.shapeEdge
       : PANEL_COLORS.edge.default;
+  const edgeWidth = (isSelected || isPanelRowSelected) ? EDGE_LINE_WIDTH + 0.5 : EDGE_LINE_WIDTH;
 
   const handleClick = (e: any) => {
     e.stopPropagation();
@@ -256,42 +262,36 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
         </mesh>
       )}
 
-      {!isWireframe && !isXray && edgeGeometry && (
-        <lineSegments
-          geometry={edgeGeometry}
-          raycast={() => null}
+      {!isWireframe && !isXray && edgePoints && (
+        <Line
+          points={edgePoints}
+          segments
+          color={edgeColor}
+          lineWidth={edgeWidth}
+          transparent={false}
+          depthTest
+          depthWrite
+          polygonOffset
+          polygonOffsetFactor={EDGE_OFFSET_FACTOR}
+          polygonOffsetUnits={EDGE_OFFSET_UNITS}
           renderOrder={EDGE_RENDER_ORDER}
-        >
-          <lineBasicMaterial
-            color={edgeColor}
-            transparent={false}
-            opacity={1}
-            depthTest={true}
-            depthWrite={true}
-            depthFunc={THREE.LessEqualDepth}
-            polygonOffset
-            polygonOffsetFactor={EDGE_OFFSET_FACTOR}
-            polygonOffsetUnits={EDGE_OFFSET_UNITS}
-          />
-        </lineSegments>
+          raycast={() => null}
+        />
       )}
 
       {/* ── WIREFRAME MOD ────────────────────────────────────────────── */}
-      {isWireframe && edgeGeometry && (
-        <lineSegments
-          geometry={edgeGeometry}
-          raycast={() => null}
+      {isWireframe && edgePoints && (
+        <Line
+          points={edgePoints}
+          segments
+          color={edgeColor}
+          lineWidth={edgeWidth}
+          transparent={false}
+          depthTest
+          depthWrite
           renderOrder={EDGE_RENDER_ORDER}
-        >
-          <lineBasicMaterial
-            color={edgeColor}
-            transparent={false}
-            opacity={1}
-            depthTest={true}
-            depthWrite={true}
-            depthFunc={THREE.LessEqualDepth}
-          />
-        </lineSegments>
+          raycast={() => null}
+        />
       )}
 
       {/* ── X-RAY MOD ────────────────────────────────────────────────── */}
@@ -317,20 +317,18 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
               polygonOffsetUnits={MESH_OFFSET_UNITS}
             />
           </mesh>
-          {edgeGeometry && (
-            <lineSegments
-              geometry={edgeGeometry}
-              raycast={() => null}
+          {edgePoints && (
+            <Line
+              points={edgePoints}
+              segments
+              color={edgeColor}
+              lineWidth={edgeWidth}
+              transparent={false}
+              depthTest={false}
+              depthWrite={false}
               renderOrder={EDGE_RENDER_ORDER}
-            >
-              <lineBasicMaterial
-                color={edgeColor}
-                transparent={true}
-                opacity={0.85}
-                depthTest={false}
-                depthWrite={false}
-              />
-            </lineSegments>
+              raycast={() => null}
+            />
           )}
         </>
       )}

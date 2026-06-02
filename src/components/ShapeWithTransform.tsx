@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState, useMemo, useCallback } from 'react';
-import { TransformControls } from '@react-three/drei';
+import { TransformControls, Line } from '@react-three/drei';
 import { useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { useAppStore, Tool, ViewMode } from '../store';
@@ -9,6 +9,11 @@ import { FilletEdgeLines } from './Fillet';
 import { FaceEditor } from './FaceEditor';
 import { RoleLabels } from './RoleLabels';
 import { FaceRaycastOverlay, VirtualFaceOverlay } from './FaceRaycastOverlay';
+
+// Kenar çizgileri panellerdekiyle aynı stil: ince, antialias'lı (Line2),
+// opak ve yumuşak gri. Belirginlik renk açıklığıyla ayarlanır.
+const EDGE_LINE_WIDTH = 1.0;
+const EDGE_COLOR = '#5b6470';
 
 interface ShapeWithTransformProps {
   shape: any;
@@ -111,6 +116,19 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     if (!localGeometry) return null;
     try { return new THREE.EdgesGeometry(localGeometry, 5); } catch { return null; }
   }, [edgeGeometry, localGeometry]);
+
+  // EdgesGeometry'yi drei <Line segments> için nokta çiftlerine çeviriyoruz.
+  const edgePoints = useMemo<[number, number, number][] | null>(() => {
+    const g = resolvedEdgeGeometry;
+    if (!g) return null;
+    const pos = g.getAttribute('position');
+    if (!pos) return null;
+    const pts: [number, number, number][] = [];
+    for (let i = 0; i < pos.count; i++) {
+      pts.push([pos.getX(i), pos.getY(i), pos.getZ(i)]);
+    }
+    return pts.length ? pts : null;
+  }, [resolvedEdgeGeometry]);
 
   // ── Kenar geometrisi ve vertex modification yükleyici ──────────────────────
   useEffect(() => {
@@ -501,11 +519,6 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
               receiveShadow
               {...(suppressPanelRaycast ? { raycast: noopRaycast } : {})}
             >
-              {/*
-                ✅ MATERYAL DÜZELTMELERİ:
-                roughness: 0.4 → 0.92  — speküler ışık patlaması önlendi
-                polygonOffset eklendi  — Z-fighting önlendi
-              */}
               <meshStandardMaterial
                 color={isPanel ? panelColor : '#c8c8c8'}
                 emissive={(isPanelRowSelected || isVirtualPanelRowSelected) ? panelColor : '#000000'}
@@ -523,17 +536,18 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
               />
             </mesh>
 
-            {showOutlines && resolvedEdgeGeometry && (
-              <lineSegments geometry={resolvedEdgeGeometry!} renderOrder={1}>
-                <lineBasicMaterial
-                  color='#000000'
-                  linewidth={2}
-                  opacity={1}
-                  transparent={false}
-                  depthTest={true}
-                  depthWrite={false}
-                />
-              </lineSegments>
+            {showOutlines && edgePoints && (
+              <Line
+                points={edgePoints}
+                segments
+                color={EDGE_COLOR}
+                lineWidth={isSelected ? EDGE_LINE_WIDTH + 0.5 : EDGE_LINE_WIDTH}
+                transparent={false}
+                depthTest
+                depthWrite={false}
+                renderOrder={1}
+                raycast={() => null}
+              />
             )}
           </>
         )}
@@ -547,28 +561,18 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
               visible={false}
               {...(suppressPanelRaycast ? { raycast: noopRaycast } : {})}
             />
-            {showOutlines && resolvedEdgeGeometry && (
-              <>
-                <lineSegments geometry={resolvedEdgeGeometry!} renderOrder={1}>
-                  <lineBasicMaterial
-                    color={isSelected ? '#60a5fa' : shouldShowAsReference ? '#ef4444' : '#000000'}
-                    linewidth={isSelected || shouldShowAsReference ? 3.5 : 2.5}
-                    depthTest={true}
-                    depthWrite={false}
-                  />
-                </lineSegments>
-
-                <lineSegments geometry={resolvedEdgeGeometry!} renderOrder={2}>
-                  <lineBasicMaterial
-                    color={isSelected ? '#1e40af' : shouldShowAsReference ? '#991b1b' : '#000000'}
-                    linewidth={isSelected || shouldShowAsReference ? 2 : 1.5}
-                    transparent
-                    opacity={0.4}
-                    depthTest={true}
-                    depthWrite={false}
-                  />
-                </lineSegments>
-              </>
+            {showOutlines && edgePoints && (
+              <Line
+                points={edgePoints}
+                segments
+                color={isSelected ? '#60a5fa' : shouldShowAsReference ? '#ef4444' : EDGE_COLOR}
+                lineWidth={isSelected || shouldShowAsReference ? EDGE_LINE_WIDTH + 0.75 : EDGE_LINE_WIDTH + 0.25}
+                transparent={false}
+                depthTest
+                depthWrite
+                renderOrder={1}
+                raycast={() => null}
+              />
             )}
           </>
         )}
@@ -597,17 +601,18 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
               />
             </mesh>
 
-            {showOutlines && resolvedEdgeGeometry && (
-              <lineSegments geometry={resolvedEdgeGeometry!} renderOrder={1}>
-                <lineBasicMaterial
-                  color={isSelected ? '#1e40af' : shouldShowAsReference ? '#991b1b' : '#000000'}
-                  linewidth={isSelected || shouldShowAsReference ? 3 : 2.5}
-                  depthTest={true}
-                  transparent={false}
-                  opacity={1}
-                  depthWrite={false}
-                />
-              </lineSegments>
+            {showOutlines && edgePoints && (
+              <Line
+                points={edgePoints}
+                segments
+                color={isSelected ? '#1e40af' : shouldShowAsReference ? '#991b1b' : EDGE_COLOR}
+                lineWidth={isSelected || shouldShowAsReference ? EDGE_LINE_WIDTH + 0.5 : EDGE_LINE_WIDTH}
+                transparent={false}
+                depthTest
+                depthWrite={false}
+                renderOrder={1}
+                raycast={() => null}
+              />
             )}
           </>
         )}
@@ -661,4 +666,3 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
 });
 
 ShapeWithTransform.displayName = 'ShapeWithTransform';
-
