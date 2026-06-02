@@ -13,13 +13,6 @@ function geoAxesSize(geo: THREE.BufferGeometry) {
   return { axes, size };
 }
 
-function roleBasedAxes(planeAxes: number[], role?: string | null) {
-  let [def, alt] = [planeAxes[0], planeAxes[1]];
-  const r = role?.toLowerCase();
-  if ((r === 'left' || r === 'right') && planeAxes.includes(1)) { def = 1; alt = planeAxes.find(a => a !== 1) ?? planeAxes[1]; }
-  else if ((r === 'top' || r === 'bottom') && planeAxes.includes(0)) { def = 0; alt = planeAxes.find(a => a !== 0) ?? planeAxes[1]; }
-  return { def, alt };
-}
 
 export async function rebuildPanelsForParent(parentShapeId: string): Promise<void> {
   if (rebuildInFlight.has(parentShapeId)) return;
@@ -135,7 +128,7 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
         const paramUpdates: Record<string, any> = { ...panel.parameters, baseReplicadShape: rp };
         if (r) {
           const pa = r.axes.slice(1).map(a => a.i).sort((a, b) => a - b);
-          const { def, alt } = roleBasedAxes(pa, panel.parameters?.faceRole);
+          const [def, alt] = [pa[0], pa[1]];
           const s = [r.size.x, r.size.y, r.size.z];
           paramUpdates.width = s[def];
           paramUpdates.height = s[alt];

@@ -7,17 +7,6 @@ import { extractFacesFromGeometry, groupCoplanarFaces, createFaceHighlightGeomet
 
 // ─── RENK YÖNETİMİ ───────────────────────────────────────────────────────
 const PANEL_COLORS = {
-  role: {
-    left:    '#ff4d4d',
-    right:   '#ff4d4d',
-    top:     '#4d94ff',
-    bottom:  '#4d94ff',
-    back:    '#2ecc71',
-    front:   '#f39c12',
-    shelf:   '#9b59b6',
-    divider: '#1abc9c',
-    default: '#ffffff',
-  },
   selected: {
     panel:         '#ff0000',
     panelEmissive: '#330000',
@@ -187,14 +176,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   const isWireframe = viewMode === ViewMode.WIREFRAME;
   const isXray = viewMode === ViewMode.XRAY;
 
-  const faceRole = shape.parameters?.faceRole;
-  const getRoleColor = (role: string | undefined): string => {
-    if (!role) return shape.color || PANEL_COLORS.role.default;
-    return (PANEL_COLORS.role as Record<string, string>)[role]
-      ?? (shape.color || PANEL_COLORS.role.default);
-  };
-
-  const baseColor = getRoleColor(faceRole);
+  const baseColor = shape.color || '#ffffff';
   const materialColor = isPanelRowSelected ? PANEL_COLORS.selected.panel : baseColor;
   const edgeColor = isPanelRowSelected
     ? PANEL_COLORS.selected.edge

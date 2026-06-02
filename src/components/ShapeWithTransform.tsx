@@ -7,7 +7,6 @@ import { useShallow } from 'zustand/react/shallow';
 import { SubtractionMesh } from './SubtractionMesh';
 import { FilletEdgeLines } from './Fillet';
 import { FaceEditor } from './FaceEditor';
-import { RoleLabels } from './RoleLabels';
 import { FaceRaycastOverlay, VirtualFaceOverlay } from './FaceRaycastOverlay';
 
 // Kenar çizgileri panellerdekiyle aynı stil: ince, antialias'lı (Line2),
@@ -41,14 +40,12 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     setSelectedSubtractionIndex,
     setShowParametersPanel,
     showOutlines,
-    showRoleNumbers,
     selectedPanelRow,
     selectedPanelRowParentId,
     setSelectedPanelRow,
     panelSelectMode,
     faceEditMode,
     filletMode,
-    roleEditMode,
     setSelectedVertexIndex,
     setVertexDirection,
     panelSurfaceSelectMode,
@@ -71,14 +68,12 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     setSelectedSubtractionIndex: state.setSelectedSubtractionIndex,
     setShowParametersPanel: state.setShowParametersPanel,
     showOutlines: state.showOutlines,
-    showRoleNumbers: state.showRoleNumbers,
     selectedPanelRow: state.selectedPanelRow,
     selectedPanelRowParentId: state.selectedPanelRowParentId,
     setSelectedPanelRow: state.setSelectedPanelRow,
     panelSelectMode: state.panelSelectMode,
     faceEditMode: state.faceEditMode,
     filletMode: state.filletMode,
-    roleEditMode: state.roleEditMode,
     setSelectedVertexIndex: state.setSelectedVertexIndex,
     setVertexDirection: state.setVertexDirection,
     panelSurfaceSelectMode: state.panelSurfaceSelectMode,
@@ -632,14 +627,6 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
         {isSelected && (faceEditMode || (panelSurfaceSelectMode && waitingForSurfaceSelection)) && (
           <FaceEditor
             key={`face-editor-${shape.id}-${shape.geometry?.uuid || ''}-${(shape.fillets || []).length}`}
-            shape={shape}
-            isActive={true}
-          />
-        )}
-
-        {(showRoleNumbers || roleEditMode) && isSelected && (
-          <RoleLabels
-            key={`role-labels-${shape.id}-${shape.geometry?.uuid || ''}`}
             shape={shape}
             isActive={true}
           />

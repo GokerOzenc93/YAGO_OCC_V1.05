@@ -706,7 +706,7 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
     normal: [localNormal.x, localNormal.y, localNormal.z],
     center: [centerLocal.x, centerLocal.y, centerLocal.z],
     vertices: cornersLocal.map(c => [c.x, c.y, c.z] as [number, number, number]),
-    role: null, roleSelected: true, description: '', hasPanel: false,
+    description: '', hasPanel: false,
     raycastRecipe: faceGroupDescriptor ? {
       clickLocalPoint: [clickLocal.x, clickLocal.y, clickLocal.z],
       faceGroupNormal: [localNormal.x, localNormal.y, localNormal.z],

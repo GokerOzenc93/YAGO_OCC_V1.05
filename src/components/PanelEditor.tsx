@@ -1,15 +1,12 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { X, GripVertical, RotateCw, Trash2, MoveVertical, Check, Pencil, Shapes } from 'lucide-react';
-import { faceLabelRoleDefaultsService } from './GlobalSettingsDatabase';
 import { useAppStore } from '../store';
-import type { FaceRole } from '../store';
 import { extractFacesFromGeometry, groupCoplanarFaces, CoplanarFaceGroup } from './FaceEditor';
 import { findExistingStepForFace } from './FaceExtrudeService';
 import type { FilletData } from './Fillet';
 import * as THREE from 'three';
 
 const AXIS_ORDER: Record<string, number> = { 'x+': 0, 'x-': 1, 'y+': 2, 'y-': 3, 'z+': 4, 'z-': 5 };
-const ROLE_OPTIONS: FaceRole[] = ['Left', 'Right', 'Top', 'Bottom', 'Back', 'Door'];
 const PANEL_THICKNESS = 18;
 const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
 const genId = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
@@ -21,14 +18,6 @@ function getAxisDir(n: THREE.Vector3): string | null {
   if (n.y > t) return 'y+'; if (n.y < -t) return 'y-';
   if (n.z > t) return 'z+'; if (n.z < -t) return 'z-';
   return null;
-}
-
-function roleBasedAxes(planeAxes: number[], role?: string | null) {
-  let [def, alt] = [planeAxes[0], planeAxes[1]];
-  const r = role?.toLowerCase();
-  if ((r === 'left' || r === 'right') && planeAxes.includes(1)) { def = 1; alt = planeAxes.find(a => a !== 1) ?? planeAxes[1]; }
-  else if ((r === 'top' || r === 'bottom') && planeAxes.includes(0)) { def = 0; alt = planeAxes.find(a => a !== 0) ?? planeAxes[1]; }
-  return { def, alt };
 }
 
 function geoAxes(geo: THREE.BufferGeometry) {
@@ -101,10 +90,10 @@ function makePanelBase(shape: any, extra: Record<string, any>) {
     position: [...shape.position] as [number,number,number], rotation: shape.rotation, scale: [...shape.scale] as [number,number,number], color: '#ffffff', ...extra };
 }
 
-function getDimsFromGeo(geo: THREE.BufferGeometry, role?: string | null, arrowRotated?: boolean) {
+function getDimsFromGeo(geo: THREE.BufferGeometry, arrowRotated?: boolean) {
   const r = geoAxes(geo); if (!r) return null;
   const pa = r.axes.slice(1).map(a => a.i).sort((a, b) => a - b);
-  const { def, alt } = roleBasedAxes(pa, role);
+  const [def, alt] = [pa[0], pa[1]];
   const target = arrowRotated ? alt : def, secondary = pa.find(a => a !== target) ?? pa[0], s = [r.size.x, r.size.y, r.size.z];
   return { primary: r1(s[target]), secondary: r1(s[secondary]), thickness: r1(s[r.axes[0].i]), w: r1(r.size.x), h: r1(r.size.y), d: r1(r.size.z) };
 }
@@ -113,7 +102,7 @@ type Dims = NonNullable<ReturnType<typeof getDimsFromGeo>>;
 interface PanelEditorProps { isOpen: boolean; onClose: () => void; embedded?: boolean; }
 
 export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorProps) {
-  const { selectedShapeId, shapes, updateShape, addShape, showOutlines, setShowOutlines, showRoleNumbers, setShowRoleNumbers,
+  const { selectedShapeId, shapes, updateShape, addShape, showOutlines, setShowOutlines,
     selectedPanelRow, setSelectedPanelRow, panelSelectMode, setPanelSelectMode, raycastMode, setRaycastMode,
     showVirtualFaces, setShowVirtualFaces, virtualFaces, updateVirtualFace, deleteVirtualFace, reorderVirtualFaces, pendingPanelCreation,
     faceExtrudeMode, setFaceExtrudeMode, faceExtrudeTargetPanelId,
@@ -141,7 +130,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
   useEffect(() => { setSelectedPanelRow(null); }, [selectedShapeId]);
 
   useEffect(() => {
-    const pending = virtualFaces.filter(vf => vf.roleSelected && !vf.hasPanel);
+    const pending = virtualFaces.filter(vf => !vf.hasPanel);
     if (!pending.length) return;
     (async () => {
       const { createPanelFromVirtualFace, convertReplicadToThreeGeometry } = await import('./ReplicadService');
@@ -154,12 +143,12 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
           const g = convertReplicadToThreeGeometry(rp);
           const r = geoAxes(g); if (!r) continue;
           const pa = r.axes.slice(1).map(a => a.i).sort((a, b) => a - b);
-          const { def, alt } = roleBasedAxes(pa, vf.role);
+          const [def, alt] = [pa[0], pa[1]];
           const s = [r.size.x, r.size.y, r.size.z];
           const vi = virtualFaces.filter(f => f.shapeId === vf.shapeId).findIndex(f => f.id === vf.id);
           useAppStore.getState().addShape(makePanelBase(parentShape, {
             geometry: g, replicadShape: rp,
-            parameters: { width: s[def], height: s[alt], depth: PANEL_THICKNESS, parentShapeId: parentShape.id, faceIndex: -(vi + 1), faceRole: vf.role, virtualFaceId: vf.id, arrowRotated: false, roleless: vf.role === null },
+            parameters: { width: s[def], height: s[alt], depth: PANEL_THICKNESS, parentShapeId: parentShape.id, faceIndex: -(vi + 1), virtualFaceId: vf.id, arrowRotated: false },
           }));
           updateVirtualFace(vf.id, { hasPanel: true });
           setSelectedPanelRow(`vf-${vf.id}`, null, parentShape.id);
@@ -182,19 +171,6 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
   useEffect(() => { if (!(isOpen || embedded)) { setSelectedPanelRow(null); setPanelSelectMode(false); if (faceExtrudeMode) setFaceExtrudeMode(false); } }, [isOpen, embedded]);
   useEffect(() => { if (selectedPanelRow !== null) rowRefs.current.get(selectedPanelRow)?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, [selectedPanelRow]);
   useEffect(() => {
-    if (!selectedShape?.geometry) return;
-    (async () => {
-      const ld = await faceLabelRoleDefaultsService.getAll();
-      const geo = selectedShape.geometry, faces = extractFacesFromGeometry(geo), groups = groupCoplanarFaces(faces);
-      const bb = new THREE.Box3().setFromBufferAttribute(geo.getAttribute('position'));
-      const { axis } = classifyFaceGroups(groups, selectedShape.fillets || [], computeCuttingPlanes(bb, selectedShape.subtractionGeometries || []));
-      const sorted = Array.from(axis.entries()).sort(([a], [b]) => (AXIS_ORDER[a] ?? 99) - (AXIS_ORDER[b] ?? 99));
-      const nr: Record<number, FaceRole> = {};
-      sorted.forEach(([, gis], ri) => { const rn = ri + 1; gis.forEach((gi, si) => { const l = gis.length > 1 ? `${rn}-${si+1}` : `${rn}`; if (ld[l]) nr[gi] = ld[l] as FaceRole; }); });
-      updateShape(selectedShape.id, { faceRoles: nr });
-    })();
-  }, [selectedShape?.id, selectedShape?.geometry]);
-  useEffect(() => {
     if (!pendingPanelCreation || (!isOpen && !embedded)) return;
     const cid = pendingPanelCreation.surfaceConstraint?.constraintPanelId; if (!cid) return;
     const vf = virtualFaces.find(f => f.id === cid); if (!vf || vf.hasPanel) return;
@@ -205,7 +181,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         const { createPanelFromVirtualFace, convertReplicadToThreeGeometry } = await import('./ReplicadService');
         const rp = await createPanelFromVirtualFace(vf.vertices, vf.normal, PANEL_THICKNESS); if (!rp) return;
         addShape(makePanelBase(cs, { geometry: convertReplicadToThreeGeometry(rp), replicadShape: rp,
-          parameters: { width: 0, height: 0, depth: PANEL_THICKNESS, parentShapeId: cs.id, faceIndex: -(vi+1), faceRole: vf.role, virtualFaceId: vf.id } }));
+          parameters: { width: 0, height: 0, depth: PANEL_THICKNESS, parentShapeId: cs.id, faceIndex: -(vi+1), virtualFaceId: vf.id } }));
         updateVirtualFace(vf.id, { hasPanel: true });
       } catch (err) { console.error('Failed to create panel for virtual face via click:', err); }
     })();
@@ -246,9 +222,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
 
   const panelToolbar = (
     <div className="flex items-center gap-1 flex-wrap">
-      {tb(showVirtualFaces, () => setShowVirtualFaces(!showVirtualFaces), 'Raycast', ['text-green-700 bg-green-100 ring-1 ring-green-400', 'text-slate-500 hover:bg-stone-200'])}
       {tb(showOutlines, () => setShowOutlines(!showOutlines), 'Outline', ['text-blue-700 bg-blue-100 ring-1 ring-blue-400', 'text-slate-500 hover:bg-stone-200'])}
-      {tb(showRoleNumbers, () => setShowRoleNumbers(!showRoleNumbers), 'Roles', ['text-orange-700 bg-orange-100 ring-1 ring-orange-400', 'text-slate-500 hover:bg-stone-200'])}
       {tb(raycastMode, () => setRaycastMode(!raycastMode), 'Add Face', ['text-amber-700 bg-amber-100 ring-1 ring-amber-400', 'text-slate-500 hover:bg-stone-200'])}
       {tb(panelSelectMode, () => setPanelSelectMode(!panelSelectMode), panelSelectMode ? 'Panel' : 'Body', ['text-violet-700 bg-violet-100 ring-1 ring-violet-400', 'text-slate-500 hover:bg-stone-200'])}
     </div>
@@ -266,9 +240,9 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
             const { createPanelFromVirtualFace, convertReplicadToThreeGeometry } = await import('./ReplicadService');
             const rp = await createPanelFromVirtualFace(vf.vertices, vf.normal, PANEL_THICKNESS); if (!rp) return;
             const g = convertReplicadToThreeGeometry(rp), r = geoAxes(g); if (!r) return;
-            const pa = r.axes.slice(1).map(a => a.i).sort((a, b) => a - b), { def, alt } = roleBasedAxes(pa, vf.role), s = [r.size.x, r.size.y, r.size.z];
+            const pa = r.axes.slice(1).map(a => a.i).sort((a, b) => a - b), [def, alt] = [pa[0], pa[1]], s = [r.size.x, r.size.y, r.size.z];
             addShape(makePanelBase(selectedShape, { geometry: g, replicadShape: rp,
-              parameters: { width: s[def], height: s[alt], depth: PANEL_THICKNESS, parentShapeId: sid, faceIndex: -(vi+1), faceRole: vf.role, virtualFaceId: vf.id, arrowRotated: false, roleless: vf.roleSelected && vf.role === null } }));
+              parameters: { width: s[def], height: s[alt], depth: PANEL_THICKNESS, parentShapeId: sid, faceIndex: -(vi+1), virtualFaceId: vf.id, arrowRotated: false } }));
             updateVirtualFace(vf.id, { hasPanel: true });
           } catch (e) { console.error('Failed to create virtual panel:', e); }
         };
@@ -277,11 +251,6 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
           if (p) useAppStore.getState().deleteShape(p.id);
           updateVirtualFace(vfId, { hasPanel: false });
         };
-        const roleSel = (val: string, onChange: (v: string) => void, bc = 'border-transparent') => (
-          <select value={val} disabled={isOff} onClick={stop} onChange={e => onChange(e.target.value)} style={{ width: '28mm' }}
-            className={`px-1 py-0.5 text-xs border-b rounded-none bg-transparent ${isOff ? 'text-stone-400 border-stone-200' : `text-gray-700 ${bc} hover:border-gray-300 focus:border-orange-400`}`}>
-            <option value="">—</option>{ROLE_OPTIONS.map(r => <option key={r} value={r}>{r}</option>)}<option value="__none__">Roleless</option></select>
-        );
         const onDrop = async (toIndex: number) => {
           const from = dragIndex;
           setDragIndex(null); setDropIndex(null);
@@ -294,8 +263,6 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
           <div className="space-y-0 pt-2 border-t border-stone-200">
             {svf.map((vf, vi) => {
               const vp = findVPanel(shapes, sid, vf.id), ar = vp?.parameters?.arrowRotated||false, sel = selectedPanelRow === `vf-${vf.id}`;
-              const roleChosen = !!vf.roleSelected;
-              const selVal = roleChosen ? (vf.role || '__none__') : '';
               const rc = () => { setSelectedPanelRow(`vf-${vf.id}`, null, sid); };
               const isDragging = dragIndex === vi;
               const isDropTarget = dropIndex === vi && dragIndex !== null && dragIndex !== vi;
@@ -317,12 +284,6 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                   <input type="radio" name="ps" checked={sel} disabled={isOff} onChange={e => { stop(e); rc(); }}
                     className={`w-3.5 h-3.5 ${isOff ? 'text-stone-300 cursor-not-allowed' : 'text-orange-500 focus:ring-orange-400 cursor-pointer'}`} onClick={stop} />
                   <span className="w-8 text-xs font-mono font-bold text-center text-green-700 select-none" onClick={stop}>V{vi+1}</span>
-                  {roleSel(selVal, v => {
-                    if (v === '') { updateVirtualFace(vf.id, { role: null, roleSelected: false }); if (vp) updateShape(vp.id, { parameters: { ...vp.parameters, faceRole: null, roleless: false } }); return; }
-                    const nr: FaceRole = v === '__none__' ? null : (v as FaceRole);
-                    updateVirtualFace(vf.id, { role: nr, roleSelected: true });
-                    if (vp) updateShape(vp.id, { parameters: { ...vp.parameters, faceRole: nr, roleless: v === '__none__' } });
-                  }, 'border-transparent')}
                   <input type="text" value={vf.description||''} disabled={isOff} onClick={stop} onChange={e => updateVirtualFace(vf.id, { description: e.target.value })}
                     placeholder="note" style={{ width: '32mm' }}
                     className={`px-1 py-0.5 text-xs bg-transparent border-b rounded-none ${isOff ? 'text-stone-400 border-stone-200 placeholder:text-stone-300' : 'text-gray-600 border-transparent hover:border-gray-300 focus:border-orange-400 placeholder:text-stone-300'}`} />
@@ -354,7 +315,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     let dims: Dims | null = null, cpId: string | null = null;
     if (typeof selectedPanelRow === 'string' && selectedPanelRow.startsWith('vf-')) {
       const vp = findVPanel(shapes, selectedShape.id, selectedPanelRow.replace('vf-','')); cpId = vp?.id||null;
-      if (vp?.geometry) dims = getDimsFromGeo(vp.geometry, vp.parameters?.faceRole, vp.parameters?.arrowRotated);
+      if (vp?.geometry) dims = getDimsFromGeo(vp.geometry, vp.parameters?.arrowRotated);
     }
     if (!dims) return null;
     const isExt = faceExtrudeMode && !!cpId, panel = cpId ? shapes.find(s => s.id === cpId) : null;

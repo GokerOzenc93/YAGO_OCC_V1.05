@@ -36,8 +36,6 @@ export interface SubtractedGeometry {
   parameters?:SubtractionParameters;
 }
 
-export type FaceRole='Left'|'Right'|'Top'|'Bottom'|'Back'|'Door'|null;
-
 export interface EdgeAnchor {
   edgeV1Local:[number,number,number];
   edgeV2Local:[number,number,number];
@@ -74,8 +72,7 @@ export interface VirtualFace {
   normal:[number,number,number];
   center:[number,number,number];
   vertices:[number,number,number][];
-  role:FaceRole;description:string;hasPanel:boolean;
-  roleSelected?:boolean;
+  description:string;hasPanel:boolean;
   raycastRecipe?:VirtualFaceRaycastRecipe;
   parentFaceShape?:boolean;
   faceGroupDescriptor?:FaceDescriptor;
@@ -96,7 +93,6 @@ export interface Shape {
   isReferenceBox?:boolean;
   subtractionGeometries?:SubtractedGeometry[];
   fillets?:FilletInfo[];
-  faceRoles?:Record<number,FaceRole>;
   faceDescriptions?:Record<number,string>;
   faceGroupDescriptors?:Record<number,FaceDescriptor>;
 }
@@ -154,8 +150,6 @@ interface AppState{
 
   showParametersPanel:boolean;setShowParametersPanel:(b:boolean)=>void;
   showOutlines:boolean;setShowOutlines:(b:boolean)=>void;
-  showRoleNumbers:boolean;setShowRoleNumbers:(b:boolean)=>void;
-
   selectedPanelRow:number|string|null;
   selectedPanelRowExtraId:string|null;
   selectedPanelRowParentId:string|null;
@@ -182,9 +176,6 @@ interface AppState{
   selectedFilletFaceData:Array<{normal:[number,number,number];center:[number,number,number];planeD?:number}>;
   addFilletFaceData:(d:{normal:[number,number,number];center:[number,number,number];planeD?:number})=>void;
   clearFilletFaceData:()=>void;
-
-  roleEditMode:boolean;setRoleEditMode:(b:boolean)=>void;
-  updateFaceRole:(sid:string,f:number,r:FaceRole)=>void;
 
   raycastMode:boolean;setRaycastMode:(b:boolean)=>void;
   raycastResults:Array<{origin:[number,number,number];direction:[number,number,number];hitPoint:[number,number,number]}>;
@@ -217,8 +208,6 @@ export const useAppStore=create<AppState>((set,get)=>({
   /* KISA UI STATES */
   showParametersPanel:false,setShowParametersPanel:(b)=>set({showParametersPanel:b}),
   showOutlines:true,setShowOutlines:(b)=>set({showOutlines:b}),
-  showRoleNumbers:false,setShowRoleNumbers:(b)=>set({showRoleNumbers:b}),
-
   selectedPanelRow:null,selectedPanelRowExtraId:null,selectedPanelRowParentId:null,
   setSelectedPanelRow:(i,e,parentId)=>set({selectedPanelRow:i,selectedPanelRowExtraId:e||null,selectedPanelRowParentId:parentId||null}),
   panelSelectMode:false,setPanelSelectMode:(b)=>set({panelSelectMode:b,selectedPanelRow:null,selectedPanelRowExtraId:null,selectedPanelRowParentId:null}),
@@ -237,9 +226,6 @@ export const useAppStore=create<AppState>((set,get)=>({
   clearFilletFaces:()=>set({selectedFilletFaces:[],selectedFilletFaceData:[]}),
   selectedFilletFaceData:[],addFilletFaceData:(d)=>set((s)=>({selectedFilletFaceData:[...s.selectedFilletFaceData,d]})),
   clearFilletFaceData:()=>set({selectedFilletFaceData:[]}),
-
-  roleEditMode:false,setRoleEditMode:(b)=>set({roleEditMode:b}),
-  updateFaceRole:(sid,f,r)=>set((s)=>({shapes:s.shapes.map(x=>x.id===sid?{...x,faceRoles:{...(x.faceRoles||{}),[f]:r}}:x)})),
 
   raycastMode:false,setRaycastMode:(e)=>set({raycastMode:e,raycastResults:e?get().raycastResults:[]}),
   raycastResults:[],setRaycastResults:(r)=>set({raycastResults:r}),
