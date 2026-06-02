@@ -475,6 +475,7 @@ const CameraController: React.FC<{ controlsRef: React.RefObject<any>; cameraType
 ══════════════════════════════════════════════════════════ */
 const Scene: React.FC = () => {
   const controlsRef = useRef<any>(null);
+  const raycastModeWasActiveRef = useRef(false);
 
   const {
     shapes, cameraType, selectedShapeId, secondarySelectedShapeId, selectShape,
@@ -514,11 +515,18 @@ const Scene: React.FC = () => {
   }, [selectedShapeId, secondarySelectedShapeId, deleteShape, selectShape, exitIsolation, setVertexEditMode, setFaceEditMode, clearFilletFaces]);
 
   useEffect(() => {
-    const blockContextMenu = (e: MouseEvent) => {
-      if (useAppStore.getState().raycastMode) e.preventDefault();
+    const onPointerDown = () => {
+      raycastModeWasActiveRef.current = useAppStore.getState().raycastMode;
     };
+    const blockContextMenu = (e: MouseEvent) => {
+      if (raycastModeWasActiveRef.current || useAppStore.getState().raycastMode) e.preventDefault();
+    };
+    window.addEventListener('pointerdown', onPointerDown, true);
     window.addEventListener('contextmenu', blockContextMenu, true);
-    return () => window.removeEventListener('contextmenu', blockContextMenu, true);
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('contextmenu', blockContextMenu, true);
+    };
   }, []);
 
   useEffect(() => {
