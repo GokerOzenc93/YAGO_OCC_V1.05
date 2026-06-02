@@ -351,8 +351,12 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
 
   const activePanelId = useMemo(() => {
     if (!selectedShape || selectedPanelRow === null) return null;
+    // Virtual face panel: row key is "vf-{id}"
     if (typeof selectedPanelRow === 'string' && selectedPanelRow.startsWith('vf-'))
       return findVPanel(shapes, selectedShape.id, selectedPanelRow.replace('vf-', ''))?.id || null;
+    // Legacy panel: row key is faceIndex (number)
+    if (typeof selectedPanelRow === 'number')
+      return shapes.find(s => s.type === 'panel' && s.parameters?.parentShapeId === selectedShape.id && s.parameters?.faceIndex === selectedPanelRow)?.id || null;
     return null;
   }, [selectedShape, selectedPanelRow, shapes]);
 
@@ -362,7 +366,11 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     : null;
   const activeSteps = activePanel?.parameters?.extrudeSteps || [];
 
-  useEffect(() => { setSelectedPanelRow(null); }, [selectedShapeId]);
+  const { selectedPanelRowParentId } = useAppStore();
+  useEffect(() => {
+    if (selectedShapeId !== useAppStore.getState().selectedPanelRowParentId)
+      setSelectedPanelRow(null);
+  }, [selectedShapeId]);
 
   useEffect(() => {
     const pending = virtualFaces.filter(vf => !vf.hasPanel);
