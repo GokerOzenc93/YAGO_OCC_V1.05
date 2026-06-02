@@ -383,7 +383,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
           onDrop={e => { e.preventDefault(); onDrop(vi); }}
           onClick={e => { stop(e); rc(); }}
           className={`
-            group relative flex items-center gap-2 px-2.5 py-2.5 rounded-lg cursor-pointer
+            group relative flex items-center gap-2 px-2.5 py-1.5 rounded-lg cursor-pointer
             transition-all duration-150 select-none
             ${sel
               ? 'bg-orange-50 ring-1 ring-orange-300 shadow-sm'
@@ -402,8 +402,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
           ><GripVertical size={15}/></span>
 
           {/* Index badge */}
-          <span className={`shrink-0 w-8 h-7 flex items-center justify-center rounded-md text-sm font-bold font-mono
-            ${vf.hasPanel ? 'bg-green-100 text-green-700' : 'bg-stone-100 text-stone-400'}`}>
+          <span className="shrink-0 w-7 h-6 flex items-center justify-center rounded-md text-sm font-bold font-mono bg-stone-100 text-stone-500">
             {vi+1}
           </span>
 
@@ -429,8 +428,8 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
             </span>
           )}
 
-          {/* Action buttons — reveal on hover/select */}
-          <div className={`ml-auto flex items-center gap-1 transition-opacity ${sel ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`} onClick={stop}>
+          {/* Action buttons — always visible */}
+          <div className="ml-auto flex items-center gap-1 shrink-0" onClick={stop}>
             <input type="checkbox" checked={vf.hasPanel} onClick={stop}
               onChange={async () => { if (vf.hasPanel) removeVP(vf.id); else await createVP(vf.id, vi); }}
               className="w-4 h-4 rounded text-green-500 focus:ring-green-400 cursor-pointer accent-green-500"
@@ -596,15 +595,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
           {/* Face list — max 50% height, scrollable */}
           <div className="shrink-0" style={{ maxHeight: '50%', overflowY: 'auto' }}>
             <div className="px-2 pt-2 pb-1">
-              <div className="flex items-center gap-1.5 px-1 mb-1.5">
-                <span className="text-[10px] font-semibold text-stone-400 uppercase tracking-widest">Faces</span>
-                {virtualFaces.filter(v => v.shapeId === selectedShape.id).length > 0 && (
-                  <span className="text-[10px] text-stone-300 font-mono">
-                    {virtualFaces.filter(v => v.shapeId === selectedShape.id).length}
-                  </span>
-                )}
-              </div>
-              <div className="space-y-0.5">
+              <div className="space-y-px">
                 {faceListSection}
               </div>
             </div>
