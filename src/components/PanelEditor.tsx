@@ -106,31 +106,68 @@ interface PanelEditorProps { isOpen: boolean; onClose: () => void; embedded?: bo
 
 /* ── helpers ─────────────────────────────────────────────────────────── */
 
-// Chain unordered boundary edges into an ordered polygon ring
-function chainEdges2D(edges: Array<{ a: Point2D; b: Point2D }>, tol = 0.5): Point2D[] {
-  if (!edges.length) return [];
+// Chain unordered boundary edges into ordered rings (returns possibly multiple rings: outer + holes)
+function chainEdgesIntoRings(edges: Array<{ a: Point2D; b: Point2D }>, tol = 1.0): Point2D[][] {
   const remaining = [...edges];
-  const ring: Point2D[] = [remaining[0].a, remaining[0].b];
-  remaining.splice(0, 1);
+  const rings: Point2D[][] = [];
 
   while (remaining.length > 0) {
-    const last = ring[ring.length - 1];
-    let found = false;
-    for (let i = 0; i < remaining.length; i++) {
-      const { a, b } = remaining[i];
-      const dA = Math.hypot(a.x - last.x, a.y - last.y);
-      const dB = Math.hypot(b.x - last.x, b.y - last.y);
-      if (dA < tol) { ring.push(b); remaining.splice(i, 1); found = true; break; }
-      if (dB < tol) { ring.push(a); remaining.splice(i, 1); found = true; break; }
+    const ring: Point2D[] = [remaining[0].a, remaining[0].b];
+    remaining.splice(0, 1);
+
+    for (let iter = 0; iter < remaining.length * 2 + 10; iter++) {
+      const last = ring[ring.length - 1];
+      let found = false;
+      for (let i = 0; i < remaining.length; i++) {
+        const { a, b } = remaining[i];
+        const dA = Math.hypot(a.x - last.x, a.y - last.y);
+        const dB = Math.hypot(b.x - last.x, b.y - last.y);
+        if (dA < tol) { ring.push(b); remaining.splice(i, 1); found = true; break; }
+        if (dB < tol) { ring.push(a); remaining.splice(i, 1); found = true; break; }
+      }
+      if (!found) break;
+      // Check if ring closed back to start
+      const first = ring[0], last2 = ring[ring.length - 1];
+      if (ring.length > 3 && Math.hypot(first.x - last2.x, first.y - last2.y) < tol) {
+        ring.pop();
+        break;
+      }
     }
-    if (!found) break; // discontinuous — stop
+    if (ring.length >= 3) rings.push(ring);
   }
-  // Remove last point if it closes back to first
-  if (ring.length > 1) {
-    const first = ring[0], last = ring[ring.length - 1];
-    if (Math.hypot(first.x - last.x, first.y - last.y) < tol) ring.pop();
+  return rings;
+}
+
+// Remove collinear intermediate points (keeps concave corners, removes straight-line clutter)
+function simplifyRing(ring: Point2D[], dot_tol = 0.9998): Point2D[] {
+  if (ring.length <= 3) return ring;
+  const out: Point2D[] = [];
+  const n = ring.length;
+  for (let i = 0; i < n; i++) {
+    const prev = ring[(i - 1 + n) % n];
+    const curr = ring[i];
+    const next = ring[(i + 1) % n];
+    const dx1 = curr.x - prev.x, dy1 = curr.y - prev.y;
+    const dx2 = next.x - curr.x, dy2 = next.y - curr.y;
+    const d1 = Math.hypot(dx1, dy1), d2 = Math.hypot(dx2, dy2);
+    if (d1 < 1e-6 || d2 < 1e-6) continue; // duplicate — skip
+    const dot = (dx1 * dx2 + dy1 * dy2) / (d1 * d2);
+    if (dot < dot_tol) out.push(curr); // keep if non-collinear
   }
-  return ring;
+  return out.length >= 3 ? out : ring;
+}
+
+// Largest ring by bounding area = outer contour
+function largestRing(rings: Point2D[][]): Point2D[] | null {
+  if (!rings.length) return null;
+  let best = rings[0];
+  let bestArea = 0;
+  for (const r of rings) {
+    const xs = r.map(p => p.x), ys = r.map(p => p.y);
+    const a = (Math.max(...xs) - Math.min(...xs)) * (Math.max(...ys) - Math.min(...ys));
+    if (a > bestArea) { bestArea = a; best = r; }
+  }
+  return best;
 }
 
 function extractTopFaceOutline(shape: any): Point2D[] | null {
@@ -139,7 +176,7 @@ function extractTopFaceOutline(shape: any): Point2D[] | null {
   const faces = extractFacesFromGeometry(shape.geometry);
   const groups = groupCoplanarFaces(faces);
 
-  // pick the largest flat axis-aligned face group
+  // Pick the largest flat (axis-aligned) face group — the top/bottom face
   let best: CoplanarFaceGroup | null = null;
   for (const g of groups) {
     const mx = Math.abs(g.normal.x), my = Math.abs(g.normal.y), mz = Math.abs(g.normal.z);
@@ -155,24 +192,71 @@ function extractTopFaceOutline(shape: any): Point2D[] | null {
   const boundaryEdges = collectBoundaryEdgesWorld(faces, best.faceIndices, localToWorld);
   if (boundaryEdges.length < 3) return null;
 
-  // Use centroid as stable projection origin
+  // Stable centroid origin
   const origin = new THREE.Vector3();
   for (const e of boundaryEdges) origin.add(e.v1).add(e.v2);
   origin.divideScalar(boundaryEdges.length * 2);
 
-  // Project edges to 2D
-  const edges2D = boundaryEdges.map(e => ({
-    a: projectTo2D(e.v1, origin, u, v),
-    b: projectTo2D(e.v2, origin, u, v),
-  }));
+  // Project and filter micro-edges
+  const edges2D = boundaryEdges
+    .map(e => ({ a: projectTo2D(e.v1, origin, u, v), b: projectTo2D(e.v2, origin, u, v) }))
+    .filter(e => Math.hypot(e.b.x - e.a.x, e.b.y - e.a.y) > 0.2);
 
-  // Filter near-zero-length edges
-  const filtered = edges2D.filter(e => Math.hypot(e.b.x - e.a.x, e.b.y - e.a.y) > 0.1);
+  const rings = chainEdgesIntoRings(edges2D, 1.5);
+  const outer = largestRing(rings);
+  if (!outer || outer.length < 3) return null;
 
-  const ring = chainEdges2D(filtered);
-  if (ring.length < 3) return null;
+  const simplified = simplifyRing(outer);
+  return ensureCCW(simplified);
+}
 
-  return ensureCCW(ring);
+// Compute the 2D bounding rect of a subtraction on the panel's top face
+// Returns { x, y, w, h } in the same 2D coordinate system as outline
+function getSubtractionRect2D(
+  sub: any,
+  parentShape: any,
+  u: THREE.Vector3,
+  v: THREE.Vector3,
+  origin: THREE.Vector3,
+): { x: number; y: number; w: number; h: number } | null {
+  if (!sub?.geometry) return null;
+  const localToWorld = getShapeMatrix(parentShape);
+  const pos = sub.geometry.getAttribute('position');
+  if (!pos) return null;
+  const pts2D: Point2D[] = [];
+  for (let i = 0; i < pos.count; i++) {
+    const local = new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i));
+    const world = local.applyMatrix4(localToWorld);
+    pts2D.push(projectTo2D(world, origin, u, v));
+  }
+  if (!pts2D.length) return null;
+  const xs = pts2D.map(p => p.x), ys = pts2D.map(p => p.y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+
+// Get the 2D origin+axes used for the outline (reused for subtraction rects)
+function getTopFaceProjectionAxes(shape: any): { u: THREE.Vector3; v: THREE.Vector3; origin: THREE.Vector3 } | null {
+  if (!shape?.geometry) return null;
+  const faces = extractFacesFromGeometry(shape.geometry);
+  const groups = groupCoplanarFaces(faces);
+  let best: CoplanarFaceGroup | null = null;
+  for (const g of groups) {
+    const mx = Math.abs(g.normal.x), my = Math.abs(g.normal.y), mz = Math.abs(g.normal.z);
+    if (Math.max(mx, my, mz) < 0.9) continue;
+    if (!best || g.totalArea > best.totalArea) best = g;
+  }
+  if (!best) return null;
+  const localToWorld = getShapeMatrix(shape);
+  const worldNormal = best.normal.clone().transformDirection(localToWorld).normalize();
+  const { u, v } = getFacePlaneAxes(worldNormal);
+  const boundaryEdges = collectBoundaryEdgesWorld(faces, best.faceIndices, localToWorld);
+  if (!boundaryEdges.length) return null;
+  const origin = new THREE.Vector3();
+  for (const e of boundaryEdges) origin.add(e.v1).add(e.v2);
+  origin.divideScalar(boundaryEdges.length * 2);
+  return { u, v, origin };
 }
 
 function pts2svgPath(pts: Point2D[], scaleF: number, tx: number, ty: number): string {
@@ -182,15 +266,50 @@ function pts2svgPath(pts: Point2D[], scaleF: number, tx: number, ty: number): st
   return `M ${toSvg(first)} L ${rest.map(toSvg).join(' L ')} Z`;
 }
 
+/* ── Dimension line helper ───────────────────────────────────────────── */
+function DimLine({ x1, y1, x2, y2, label, offset = 10, tickLen = 6, color = '#a8a29e', labelBg = 'rgba(245,242,237,0.97)', textColor = '#1c1917', fontSize = 10 }:
+  { x1: number; y1: number; x2: number; y2: number; label: string; offset?: number; tickLen?: number; color?: string; labelBg?: string; textColor?: string; fontSize?: number }) {
+  const dx = x2 - x1, dy = y2 - y1;
+  const len = Math.hypot(dx, dy);
+  if (len < 1) return null;
+  // perpendicular unit
+  const px = -dy / len, py = dx / len;
+  // offset both endpoints
+  const ax = x1 + px * offset, ay = y1 + py * offset;
+  const bx = x2 + px * offset, by = y2 + py * offset;
+  const arrowLen = 4;
+  // midpoint for label
+  const mx = (ax + bx) / 2, my = (ay + by) / 2;
+  const lw = Math.max(label.length * fontSize * 0.62, 28);
+  return (
+    <g>
+      {/* extension lines */}
+      <line x1={x1 + px * 2} y1={y1 + py * 2} x2={ax + px * (tickLen / 2)} y2={ay + py * (tickLen / 2)} stroke={color} strokeWidth="0.7"/>
+      <line x1={x2 + px * 2} y1={y2 + py * 2} x2={bx + px * (tickLen / 2)} y2={by + py * (tickLen / 2)} stroke={color} strokeWidth="0.7"/>
+      {/* dim line */}
+      <line x1={ax} y1={ay} x2={bx} y2={by} stroke={color} strokeWidth="0.8"/>
+      {/* arrowheads */}
+      <polygon points={`${ax},${ay} ${ax + (dx / len) * arrowLen + py * 2},${ay + (dy / len) * arrowLen - px * 2} ${ax + (dx / len) * arrowLen - py * 2},${ay + (dy / len) * arrowLen + px * 2}`} fill={color}/>
+      <polygon points={`${bx},${by} ${bx - (dx / len) * arrowLen + py * 2},${by - (dy / len) * arrowLen - px * 2} ${bx - (dx / len) * arrowLen - py * 2},${by - (dy / len) * arrowLen + px * 2}`} fill={color}/>
+      {/* label */}
+      <rect x={mx - lw / 2} y={my - fontSize - 1} width={lw} height={fontSize + 4} rx={2.5} fill={labelBg}/>
+      <text x={mx} y={my + 0.5} textAnchor="middle" dominantBaseline="middle" fontSize={fontSize} fill={textColor} fontFamily="monospace" fontWeight="700">{label}</text>
+    </g>
+  );
+}
+
 /* ── 2D Panel Preview ────────────────────────────────────────────────── */
 function PanelPreview2D({ dims, steps, shape }: { dims: Dims; steps: any[]; shape?: any }) {
-  const PAD_LEFT = 14, PAD_TOP = 18, PAD_RIGHT = 48, PAD_BOT = 14;
-  const svgW = 360, svgH = 164;
+  const PAD_LEFT = 14, PAD_TOP = 20, PAD_RIGHT = 50, PAD_BOT = 14;
+  const svgW = 360, svgH = 170;
   const maxW = svgW - PAD_LEFT - PAD_RIGHT;
   const maxH = svgH - PAD_TOP - PAD_BOT;
 
   // Extract real concave outline from geometry boundary edges
   const ring = useMemo(() => shape ? extractTopFaceOutline(shape) : null, [shape]);
+
+  // Projection axes (shared between outline and subtraction rects)
+  const projAxes = useMemo(() => shape ? getTopFaceProjectionAxes(shape) : null, [shape]);
 
   // Fit ring into canvas
   const { svgPath, tx, ty, scaleF, fitW, fitH, fitOx, fitOy } = useMemo(() => {
@@ -218,6 +337,23 @@ function PanelPreview2D({ dims, steps, shape }: { dims: Dims; steps: any[]; shap
       fitOy: PAD_TOP + (maxH - scaledH) / 2,
     };
   }, [ring, dims, maxW, maxH]);
+
+  // Subtraction rects in SVG space
+  const subRects = useMemo(() => {
+    if (!shape?.subtractionGeometries?.length || !projAxes) return [];
+    return (shape.subtractionGeometries as any[]).map(sub => {
+      const r = getSubtractionRect2D(sub, shape, projAxes.u, projAxes.v, projAxes.origin);
+      if (!r) return null;
+      return {
+        svgX: r.x * scaleF + tx,
+        svgY: r.y * scaleF + ty,
+        svgW: r.w * scaleF,
+        svgH: r.h * scaleF,
+        rawW: Math.round(r.w),
+        rawH: Math.round(r.h),
+      };
+    }).filter(Boolean) as Array<{ svgX: number; svgY: number; svgW: number; svgH: number; rawW: number; rawH: number }>;
+  }, [shape, projAxes, scaleF, tx, ty]);
 
   const dimOx = fitOx, dimOy = fitOy, dimW = fitW, dimH = fitH;
   const arrowLen = 5;
@@ -270,9 +406,41 @@ function PanelPreview2D({ dims, steps, shape }: { dims: Dims; steps: any[]; shap
               return <line key={i} x1={dimOx} y1={y} x2={dimOx + dimW} y2={y} stroke="rgba(234,88,12,0.5)" strokeWidth="1" strokeDasharray="4 2.5"/>;
             }
           })}
-          <rect x={ox} y={oy} width={rw} height={rh} rx={3} fill="none" stroke="#78716c" strokeWidth="1.3"/>
+          <rect x={dimOx} y={dimOy} width={dimW} height={dimH} rx={3} fill="none" stroke="#78716c" strokeWidth="1.3"/>
         </>
       )}
+
+      {/* Subtraction dimension annotations */}
+      {subRects.map((r, i) => (
+        <g key={i}>
+          {/* Width dim inside notch */}
+          {r.rawW > 1 && (
+            <DimLine
+              x1={r.svgX} y1={r.svgY + r.svgH / 2}
+              x2={r.svgX + r.svgW} y2={r.svgY + r.svgH / 2}
+              label={`${r.rawW}`}
+              offset={-r.svgH * 0.28}
+              color="#6366f1"
+              labelBg="rgba(238,242,255,0.95)"
+              textColor="#4338ca"
+              fontSize={9}
+            />
+          )}
+          {/* Height dim inside notch */}
+          {r.rawH > 1 && (
+            <DimLine
+              x1={r.svgX + r.svgW / 2} y1={r.svgY}
+              x2={r.svgX + r.svgW / 2} y2={r.svgY + r.svgH}
+              label={`${r.rawH}`}
+              offset={r.svgW * 0.28}
+              color="#6366f1"
+              labelBg="rgba(238,242,255,0.95)"
+              textColor="#4338ca"
+              fontSize={9}
+            />
+          )}
+        </g>
+      ))}
 
       {/* W dimension — above */}
       <line x1={dimOx} y1={dimOy - 10} x2={dimOx + dimW} y2={dimOy - 10} stroke="#a8a29e" strokeWidth="0.8"/>
