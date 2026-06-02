@@ -286,7 +286,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                     className={`w-3.5 h-3.5 ${isOff ? 'text-stone-300 cursor-not-allowed' : 'text-orange-500 focus:ring-orange-400 cursor-pointer'}`} onClick={stop} />
                   <span className="w-8 text-xs font-mono font-bold text-center text-green-700 select-none" onClick={stop}>V{vi+1}</span>
                   <input type="text" value={vf.description||''} disabled={isOff} onClick={stop} onChange={e => updateVirtualFace(vf.id, { description: e.target.value })}
-                    placeholder="note" style={{ width: '22mm' }}
+                    placeholder="note" style={{ width: '27mm' }}
                     className={`px-1 py-0.5 text-xs bg-transparent border-b rounded-none ${isOff ? 'text-stone-400 border-stone-200 placeholder:text-stone-300' : 'text-gray-600 border-transparent hover:border-gray-300 focus:border-orange-400 placeholder:text-stone-300'}`} />
                   {dims && (
                     <span className="flex items-center gap-1 text-xs font-mono text-stone-400 select-none shrink-0" onClick={stop}>
