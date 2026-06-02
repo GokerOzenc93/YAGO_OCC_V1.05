@@ -4,8 +4,7 @@ import { useAppStore } from '../store';
 import { extractFacesFromGeometry, groupCoplanarFaces, CoplanarFaceGroup } from './FaceEditor';
 import { findExistingStepForFace } from './FaceExtrudeService';
 import {
-  getFacePlaneAxes, getShapeMatrix, projectTo2D, convexHull2D, getSubtractorFootprints2D,
-  subtractPolygon, ensureCCW, collectBoundaryEdgesWorld,
+  getFacePlaneAxes, getShapeMatrix, projectTo2D, ensureCCW, collectBoundaryEdgesWorld,
   type Point2D,
 } from './FaceRaycastOverlay';
 import type { FilletData } from './Fillet';
@@ -106,63 +105,81 @@ type Dims = NonNullable<ReturnType<typeof getDimsFromGeo>>;
 interface PanelEditorProps { isOpen: boolean; onClose: () => void; embedded?: boolean; }
 
 /* ── helpers ─────────────────────────────────────────────────────────── */
-function extractTopFaceOutline(shape: any): { outer: Point2D[]; holes: Point2D[][] } | null {
+
+// Chain unordered boundary edges into an ordered polygon ring
+function chainEdges2D(edges: Array<{ a: Point2D; b: Point2D }>, tol = 0.5): Point2D[] {
+  if (!edges.length) return [];
+  const remaining = [...edges];
+  const ring: Point2D[] = [remaining[0].a, remaining[0].b];
+  remaining.splice(0, 1);
+
+  while (remaining.length > 0) {
+    const last = ring[ring.length - 1];
+    let found = false;
+    for (let i = 0; i < remaining.length; i++) {
+      const { a, b } = remaining[i];
+      const dA = Math.hypot(a.x - last.x, a.y - last.y);
+      const dB = Math.hypot(b.x - last.x, b.y - last.y);
+      if (dA < tol) { ring.push(b); remaining.splice(i, 1); found = true; break; }
+      if (dB < tol) { ring.push(a); remaining.splice(i, 1); found = true; break; }
+    }
+    if (!found) break; // discontinuous — stop
+  }
+  // Remove last point if it closes back to first
+  if (ring.length > 1) {
+    const first = ring[0], last = ring[ring.length - 1];
+    if (Math.hypot(first.x - last.x, first.y - last.y) < tol) ring.pop();
+  }
+  return ring;
+}
+
+function extractTopFaceOutline(shape: any): Point2D[] | null {
   if (!shape?.geometry) return null;
 
   const faces = extractFacesFromGeometry(shape.geometry);
   const groups = groupCoplanarFaces(faces);
 
-  // pick the largest flat face group (the "top" surface — largest area, axis-aligned normal)
+  // pick the largest flat axis-aligned face group
   let best: CoplanarFaceGroup | null = null;
   for (const g of groups) {
-    const abs = Math.abs(g.normal.x) + Math.abs(g.normal.y) + Math.abs(g.normal.z);
-    if (abs < 0.9) continue; // skip curved
+    const mx = Math.abs(g.normal.x), my = Math.abs(g.normal.y), mz = Math.abs(g.normal.z);
+    if (Math.max(mx, my, mz) < 0.9) continue;
     if (!best || g.totalArea > best.totalArea) best = g;
   }
   if (!best) return null;
 
   const localToWorld = getShapeMatrix(shape);
-  const worldNormal = best.normal.clone().transformDirection(localToWorld);
+  const worldNormal = best.normal.clone().transformDirection(localToWorld).normalize();
   const { u, v } = getFacePlaneAxes(worldNormal);
 
-  // collect all boundary edges of the largest face group
   const boundaryEdges = collectBoundaryEdgesWorld(faces, best.faceIndices, localToWorld);
   if (boundaryEdges.length < 3) return null;
 
-  // gather all unique projected points
-  const rawPts: Point2D[] = [];
-  for (const e of boundaryEdges) {
-    const worldCenter = new THREE.Vector3().addVectors(e.v1, e.v2).multiplyScalar(0.5);
-    rawPts.push(projectTo2D(e.v1, worldCenter, u, v));
-    rawPts.push(projectTo2D(e.v2, worldCenter, u, v));
-  }
+  // Use centroid as stable projection origin
+  const origin = new THREE.Vector3();
+  for (const e of boundaryEdges) origin.add(e.v1).add(e.v2);
+  origin.divideScalar(boundaryEdges.length * 2);
 
-  // re-project all around a single stable origin
-  const originWorld = new THREE.Vector3();
-  for (const e of boundaryEdges) originWorld.add(e.v1).add(e.v2);
-  originWorld.divideScalar(boundaryEdges.length * 2);
+  // Project edges to 2D
+  const edges2D = boundaryEdges.map(e => ({
+    a: projectTo2D(e.v1, origin, u, v),
+    b: projectTo2D(e.v2, origin, u, v),
+  }));
 
-  const pts2D = boundaryEdges.flatMap(e => [
-    projectTo2D(e.v1, originWorld, u, v),
-    projectTo2D(e.v2, originWorld, u, v),
-  ]);
+  // Filter near-zero-length edges
+  const filtered = edges2D.filter(e => Math.hypot(e.b.x - e.a.x, e.b.y - e.a.y) > 0.1);
 
-  const outer = ensureCCW(convexHull2D(pts2D));
-  if (outer.length < 3) return null;
+  const ring = chainEdges2D(filtered);
+  if (ring.length < 3) return null;
 
-  // subtraction cutouts
-  const subs = shape.subtractionGeometries || [];
-  let holes: Point2D[][] = [];
-  if (subs.length > 0) {
-    const footprints = getSubtractorFootprints2D(subs, localToWorld, worldNormal, originWorld, u, v, 50);
-    holes = footprints;
-  }
-
-  return { outer, holes };
+  return ensureCCW(ring);
 }
 
-function pts2svgPolygon(pts: Point2D[], scaleF: number, tx: number, ty: number): string {
-  return pts.map(p => `${(p.x * scaleF + tx).toFixed(1)},${(p.y * scaleF + ty).toFixed(1)}`).join(' ');
+function pts2svgPath(pts: Point2D[], scaleF: number, tx: number, ty: number): string {
+  if (!pts.length) return '';
+  const [first, ...rest] = pts;
+  const toSvg = (p: Point2D) => `${(p.x * scaleF + tx).toFixed(2)},${(p.y * scaleF + ty).toFixed(2)}`;
+  return `M ${toSvg(first)} L ${rest.map(toSvg).join(' L ')} Z`;
 }
 
 /* ── 2D Panel Preview ────────────────────────────────────────────────── */
@@ -172,52 +189,44 @@ function PanelPreview2D({ dims, steps, shape }: { dims: Dims; steps: any[]; shap
   const maxW = svgW - PAD_LEFT - PAD_RIGHT;
   const maxH = svgH - PAD_TOP - PAD_BOT;
 
-  // Try to extract real outline from geometry
-  const outline = useMemo(() => shape ? extractTopFaceOutline(shape) : null, [shape]);
+  // Extract real concave outline from geometry boundary edges
+  const ring = useMemo(() => shape ? extractTopFaceOutline(shape) : null, [shape]);
 
-  // Compute bounding box of outline pts to fit in canvas
-  const { scaledOuter, scaledHoles, tx, ty, scaleF, bboxW, bboxH } = useMemo(() => {
-    if (!outline) return { scaledOuter: null, scaledHoles: [], tx: 0, ty: 0, scaleF: 1, bboxW: 0, bboxH: 0 };
-    const all = outline.outer;
-    const minX = Math.min(...all.map(p => p.x));
-    const maxX = Math.max(...all.map(p => p.x));
-    const minY = Math.min(...all.map(p => p.y));
-    const maxY = Math.max(...all.map(p => p.y));
-    const bboxW = maxX - minX || 1;
-    const bboxH = maxY - minY || 1;
-    const sf = Math.min(maxW / bboxW, maxH / bboxH);
-    const scaledW = bboxW * sf, scaledH = bboxH * sf;
+  // Fit ring into canvas
+  const { svgPath, tx, ty, scaleF, fitW, fitH, fitOx, fitOy } = useMemo(() => {
+    const fallbackSf = Math.min(maxW / Math.max(dims.primary, 1), maxH / Math.max(dims.secondary, 1));
+    const rw = dims.primary * fallbackSf, rh = dims.secondary * fallbackSf;
+    const fallback = {
+      svgPath: null as string | null, tx: 0, ty: 0, scaleF: fallbackSf,
+      fitW: rw, fitH: rh, fitOx: PAD_LEFT + (maxW - rw) / 2, fitOy: PAD_TOP + (maxH - rh) / 2,
+    };
+    if (!ring || ring.length < 3) return fallback;
+
+    const xs = ring.map(p => p.x), ys = ring.map(p => p.y);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minY = Math.min(...ys), maxY = Math.max(...ys);
+    const bW = maxX - minX || 1, bH = maxY - minY || 1;
+    const sf = Math.min(maxW / bW, maxH / bH);
+    const scaledW = bW * sf, scaledH = bH * sf;
     const tx = PAD_LEFT + (maxW - scaledW) / 2 - minX * sf;
     const ty = PAD_TOP + (maxH - scaledH) / 2 - minY * sf;
-    return { scaledOuter: outline.outer, scaledHoles: outline.holes, tx, ty, scaleF: sf, bboxW, bboxH };
-  }, [outline, maxW, maxH]);
+    return {
+      svgPath: pts2svgPath(ring, sf, tx, ty),
+      tx, ty, scaleF: sf,
+      fitW: scaledW, fitH: scaledH,
+      fitOx: PAD_LEFT + (maxW - scaledW) / 2,
+      fitOy: PAD_TOP + (maxH - scaledH) / 2,
+    };
+  }, [ring, dims, maxW, maxH]);
 
-  // Fallback rect dims when no outline
-  const rw = dims.primary * Math.min(maxW / Math.max(dims.primary, 1), maxH / Math.max(dims.secondary, 1));
-  const rh = dims.secondary * Math.min(maxW / Math.max(dims.primary, 1), maxH / Math.max(dims.secondary, 1));
-  const fallbackScale = Math.min(maxW / Math.max(dims.primary, 1), maxH / Math.max(dims.secondary, 1));
-  const ox = PAD_LEFT + (maxW - rw) / 2, oy = PAD_TOP + (maxH - rh) / 2;
-
-  // Dimension label positions based on outline bbox or fallback rect
-  const dimW = scaledOuter ? bboxW * scaleF : rw;
-  const dimH = scaledOuter ? bboxH * scaleF : rh;
-  const dimOx = scaledOuter ? (PAD_LEFT + (maxW - dimW) / 2) : ox;
-  const dimOy = scaledOuter ? (PAD_TOP + (maxH - dimH) / 2) : oy;
-
+  const dimOx = fitOx, dimOy = fitOy, dimW = fitW, dimH = fitH;
   const arrowLen = 5;
 
-  // Step lines — map along primary/secondary axes
   const stepLines = steps.map((s: any) => {
     const label: string = s.axisLabel || '';
     const isHoriz = label.startsWith('X') || label.startsWith('x');
-    return { isHoriz, value: s.value, label, isFixed: s.isFixed };
+    return { isHoriz, value: s.value };
   });
-
-  // Build SVG path for shape with holes using even-odd fill
-  const outlinePath = scaledOuter
-    ? `M ${pts2svgPolygon(scaledOuter, scaleF, tx, ty).replace(/ /g, ' L ')} Z`
-      + scaledHoles.map(h => ` M ${pts2svgPolygon(h, scaleF, tx, ty).replace(/ /g, ' L ')} Z`).join('')
-    : null;
 
   return (
     <svg width="100%" viewBox={`0 0 ${svgW} ${svgH}`} style={{ display: 'block' }}>
@@ -228,55 +237,37 @@ function PanelPreview2D({ dims, steps, shape }: { dims: Dims; steps: any[]; shap
         <filter id="shadow2d" x="-20%" y="-20%" width="140%" height="140%">
           <feDropShadow dx="1.5" dy="2" stdDeviation="2.5" floodOpacity="0.12"/>
         </filter>
-        {outlinePath && (
-          <clipPath id="shapeClip">
-            <path d={outlinePath} fillRule="evenodd"/>
-          </clipPath>
-        )}
+        {svgPath && <clipPath id="shapeClip"><path d={svgPath}/></clipPath>}
       </defs>
 
-      {outlinePath ? (
+      {svgPath ? (
         <>
-          {/* Hatch fill */}
-          <path d={outlinePath} fillRule="evenodd" fill="url(#hatch2d)" filter="url(#shadow2d)"/>
-          {/* Light fill */}
-          <path d={outlinePath} fillRule="evenodd" fill="rgba(255,252,247,0.88)"/>
-          {/* Step lines clipped to shape */}
+          <path d={svgPath} fill="url(#hatch2d)" filter="url(#shadow2d)"/>
+          <path d={svgPath} fill="rgba(255,252,247,0.88)"/>
           <g clipPath="url(#shapeClip)">
             {stepLines.map((sl, i) => {
               if (sl.isHoriz) {
-                const frac = Math.min(sl.value / Math.max(dims.primary, 1), 0.97);
-                const x = dimOx + dimW * frac;
-                return (
-                  <g key={i}>
-                    <line x1={x} y1={dimOy} x2={x} y2={dimOy + dimH} stroke="rgba(234,88,12,0.5)" strokeWidth="1" strokeDasharray="4 2.5"/>
-                  </g>
-                );
+                const x = dimOx + dimW * Math.min(sl.value / Math.max(dims.primary, 1), 0.97);
+                return <line key={i} x1={x} y1={dimOy} x2={x} y2={dimOy + dimH} stroke="rgba(234,88,12,0.5)" strokeWidth="1" strokeDasharray="4 2.5"/>;
               } else {
-                const frac = Math.min(sl.value / Math.max(dims.secondary, 1), 0.97);
-                const y = dimOy + dimH * frac;
-                return (
-                  <g key={i}>
-                    <line x1={dimOx} y1={y} x2={dimOx + dimW} y2={y} stroke="rgba(234,88,12,0.5)" strokeWidth="1" strokeDasharray="4 2.5"/>
-                  </g>
-                );
+                const y = dimOy + dimH * Math.min(sl.value / Math.max(dims.secondary, 1), 0.97);
+                return <line key={i} x1={dimOx} y1={y} x2={dimOx + dimW} y2={y} stroke="rgba(234,88,12,0.5)" strokeWidth="1" strokeDasharray="4 2.5"/>;
               }
             })}
           </g>
-          {/* Outline border */}
-          <path d={outlinePath} fillRule="evenodd" fill="none" stroke="#78716c" strokeWidth="1.3"/>
+          <path d={svgPath} fill="none" stroke="#78716c" strokeWidth="1.3"/>
         </>
       ) : (
         <>
-          <rect x={ox} y={oy} width={rw} height={rh} rx={3} fill="url(#hatch2d)" filter="url(#shadow2d)"/>
-          <rect x={ox} y={oy} width={rw} height={rh} rx={3} fill="rgba(255,252,247,0.88)"/>
+          <rect x={dimOx} y={dimOy} width={dimW} height={dimH} rx={3} fill="url(#hatch2d)" filter="url(#shadow2d)"/>
+          <rect x={dimOx} y={dimOy} width={dimW} height={dimH} rx={3} fill="rgba(255,252,247,0.88)"/>
           {stepLines.map((sl, i) => {
             if (sl.isHoriz) {
-              const x = ox + rw * Math.min(sl.value / Math.max(dims.primary, 1), 0.97);
-              return <line key={i} x1={x} y1={oy} x2={x} y2={oy + rh} stroke="rgba(234,88,12,0.5)" strokeWidth="1" strokeDasharray="4 2.5"/>;
+              const x = dimOx + dimW * Math.min(sl.value / Math.max(dims.primary, 1), 0.97);
+              return <line key={i} x1={x} y1={dimOy} x2={x} y2={dimOy + dimH} stroke="rgba(234,88,12,0.5)" strokeWidth="1" strokeDasharray="4 2.5"/>;
             } else {
-              const y = oy + rh * Math.min(sl.value / Math.max(dims.secondary, 1), 0.97);
-              return <line key={i} x1={ox} y1={y} x2={ox + rw} y2={y} stroke="rgba(234,88,12,0.5)" strokeWidth="1" strokeDasharray="4 2.5"/>;
+              const y = dimOy + dimH * Math.min(sl.value / Math.max(dims.secondary, 1), 0.97);
+              return <line key={i} x1={dimOx} y1={y} x2={dimOx + dimW} y2={y} stroke="rgba(234,88,12,0.5)" strokeWidth="1" strokeDasharray="4 2.5"/>;
             }
           })}
           <rect x={ox} y={oy} width={rw} height={rh} rx={3} fill="none" stroke="#78716c" strokeWidth="1.3"/>
