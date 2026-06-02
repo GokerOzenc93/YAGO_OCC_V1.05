@@ -1,6 +1,6 @@
-import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useRef, useEffect, useLayoutEffect, useState, useCallback, useMemo } from 'react';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
-import { OrbitControls, GizmoHelper, useGizmoContext, PerspectiveCamera, OrthographicCamera } from '@react-three/drei';
+import { OrbitControls, GizmoHelper, PerspectiveCamera, OrthographicCamera } from '@react-three/drei';
 import * as THREE from 'three';
 import { useAppStore, CameraType } from '../store';
 import { useShallow } from 'zustand/react/shallow';
@@ -213,11 +213,13 @@ const CompassRing: React.FC = () => {
 
 /* ══════════════════════════════════════════════════════════
    MAIN VIEW CUBE
+   Snap is delegated to CameraController via window.__snapView so the
+   real up-vector is applied to the MAIN camera (drei's tweenCamera
+   ignores the up argument, which caused crooked top/front views).
 ══════════════════════════════════════════════════════════ */
 const ViewCube: React.FC = () => {
-  const { tweenCamera } = useGizmoContext();
-  const { camera }      = useThree();
-  const cubeRef         = useRef<THREE.Group>(null);
+  const { camera } = useThree();
+  const cubeRef    = useRef<THREE.Group>(null);
 
   useFrame(() => {
     if (!cubeRef.current) return;
@@ -225,8 +227,8 @@ const ViewCube: React.FC = () => {
   });
 
   const snap = useCallback((dir: [number,number,number], up: [number,number,number] = [0,1,0]) => {
-    tweenCamera(new THREE.Vector3(...dir), new THREE.Vector3(...up), 1);
-  }, [tweenCamera]);
+    (window as any).__snapView?.(new THREE.Vector3(...dir), new THREE.Vector3(...up));
+  }, []);
 
   const S = 1, H = 0.5, FW = 0.68, EW = 0.155, D = 0.003;
 
@@ -272,27 +274,28 @@ const ViewCube: React.FC = () => {
     { pos:[-P,-EC,0], rot:[0,Math.PI/2,0],   geo:'h', dir:norm(-1,-1,0), up:[0,1,0]  },
     { pos:[-P,0,-EC], rot:[0,Math.PI/2,0],   geo:'v', dir:norm(-1,0,-1), up:[0,1,0]  },
     { pos:[-P,0,EC],  rot:[0,Math.PI/2,0],   geo:'v', dir:norm(-1,0,1),  up:[0,1,0]  },
-    // TOP
-    { pos:[0,P,EC],   rot:[-Math.PI/2,0,0],  geo:'h', dir:norm(0,1,1),   up:[0,0,-1] },
-    { pos:[0,P,-EC],  rot:[-Math.PI/2,0,0],  geo:'h', dir:norm(0,1,-1),  up:[0,0,-1] },
-    { pos:[-EC,P,0],  rot:[-Math.PI/2,0,0],  geo:'v', dir:norm(-1,1,0),  up:[0,0,-1] },
-    { pos:[EC,P,0],   rot:[-Math.PI/2,0,0],  geo:'v', dir:norm(1,1,0),   up:[0,0,-1] },
-    // BOTTOM
-    { pos:[0,-P,EC],  rot:[Math.PI/2,0,0],   geo:'h', dir:norm(0,-1,1),  up:[0,0,1]  },
-    { pos:[0,-P,-EC], rot:[Math.PI/2,0,0],   geo:'h', dir:norm(0,-1,-1), up:[0,0,1]  },
-    { pos:[-EC,-P,0], rot:[Math.PI/2,0,0],   geo:'v', dir:norm(-1,-1,0), up:[0,0,1]  },
-    { pos:[EC,-P,0],  rot:[Math.PI/2,0,0],   geo:'v', dir:norm(1,-1,0),  up:[0,0,1]  },
+    // TOP (diagonal edges → world-up so the ground stays level)
+    { pos:[0,P,EC],   rot:[-Math.PI/2,0,0],  geo:'h', dir:norm(0,1,1),   up:[0,1,0]  },
+    { pos:[0,P,-EC],  rot:[-Math.PI/2,0,0],  geo:'h', dir:norm(0,1,-1),  up:[0,1,0]  },
+    { pos:[-EC,P,0],  rot:[-Math.PI/2,0,0],  geo:'v', dir:norm(-1,1,0),  up:[0,1,0]  },
+    { pos:[EC,P,0],   rot:[-Math.PI/2,0,0],  geo:'v', dir:norm(1,1,0),   up:[0,1,0]  },
+    // BOTTOM (diagonal edges → world-up so the ground stays level)
+    { pos:[0,-P,EC],  rot:[Math.PI/2,0,0],   geo:'h', dir:norm(0,-1,1),  up:[0,1,0]  },
+    { pos:[0,-P,-EC], rot:[Math.PI/2,0,0],   geo:'h', dir:norm(0,-1,-1), up:[0,1,0]  },
+    { pos:[-EC,-P,0], rot:[Math.PI/2,0,0],   geo:'v', dir:norm(-1,-1,0), up:[0,1,0]  },
+    { pos:[EC,-P,0],  rot:[Math.PI/2,0,0],   geo:'v', dir:norm(1,-1,0),  up:[0,1,0]  },
   ];
 
+  /* Corners are isometric/diagonal → world-up keeps the ground horizontal */
   const CORNERS: { pos: V3; dir: V3; up: V3 }[] = [
-    { pos:[ H, H, H], dir:norm(1,1,1),    up:[0,0,-1] },
-    { pos:[-H, H, H], dir:norm(-1,1,1),   up:[0,0,-1] },
-    { pos:[ H,-H, H], dir:norm(1,-1,1),   up:[0,0,1]  },
-    { pos:[-H,-H, H], dir:norm(-1,-1,1),  up:[0,0,1]  },
-    { pos:[ H, H,-H], dir:norm(1,1,-1),   up:[0,0,-1] },
-    { pos:[-H, H,-H], dir:norm(-1,1,-1),  up:[0,0,-1] },
-    { pos:[ H,-H,-H], dir:norm(1,-1,-1),  up:[0,0,1]  },
-    { pos:[-H,-H,-H], dir:norm(-1,-1,-1), up:[0,0,1]  },
+    { pos:[ H, H, H], dir:norm(1,1,1),    up:[0,1,0] },
+    { pos:[-H, H, H], dir:norm(-1,1,1),   up:[0,1,0] },
+    { pos:[ H,-H, H], dir:norm(1,-1,1),   up:[0,1,0] },
+    { pos:[-H,-H, H], dir:norm(-1,-1,1),  up:[0,1,0] },
+    { pos:[ H, H,-H], dir:norm(1,1,-1),   up:[0,1,0] },
+    { pos:[-H, H,-H], dir:norm(-1,1,-1),  up:[0,1,0] },
+    { pos:[ H,-H,-H], dir:norm(1,-1,-1),  up:[0,1,0] },
+    { pos:[-H,-H,-H], dir:norm(-1,-1,-1), up:[0,1,0] },
   ];
 
   return (
@@ -322,25 +325,112 @@ const ViewCube: React.FC = () => {
 /* ══════════════════════════════════════════════════════════
    CAMERA CONTROLLER
 ══════════════════════════════════════════════════════════ */
+/* Perspective uses a fixed field of view (standard CAD "lens" — it never
+   drifts). The ortho<->perspective toggle keeps this constant and matches
+   the on-screen scale via ortho zoom one way and camera distance the other. */
+const PERSP_FOV = 45;
+
 const CameraController: React.FC<{ controlsRef: React.RefObject<any>; cameraType: CameraType }> = ({ controlsRef, cameraType }) => {
   const cameraRef = useRef<THREE.PerspectiveCamera | THREE.OrthographicCamera>(null);
-  const savedRef  = useRef<{ position: THREE.Vector3; target: THREE.Vector3; zoom: number; perspectiveFov: number } | null>(null);
+  const savedRef  = useRef<{ position: THREE.Vector3; target: THREE.Vector3; up: THREE.Vector3; zoom: number; perspectiveFov: number } | null>(null);
   const prevType  = useRef<CameraType>(cameraType);
+  const { size }  = useThree();  // actual canvas size in CSS px (not window)
+
+  /* Custom snap — pure orbit around the target at constant radius.
+     The camera direction is spherically interpolated (slerp) instead of
+     linearly interpolating position, so the view never dollies toward the
+     target mid-transition; it just rotates in place. Damping is disabled
+     during the tween so the view lands exactly on the first click. */
+  const snapToView = useCallback((dir: THREE.Vector3, up: THREE.Vector3) => {
+    const cam = cameraRef.current;
+    const controls = controlsRef.current;
+    if (!cam || !controls) return;
+
+    const target  = controls.target.clone();
+    const dist    = cam.position.distanceTo(target);
+    if (dist < 1e-6) return;
+
+    const startDir = cam.position.clone().sub(target).normalize();
+    const endDir   = dir.clone().normalize();
+    const startUp  = cam.up.clone();
+    const endUp    = up.clone().normalize();
+
+    /* Rotation that carries startDir onto endDir — we apply a fraction of
+       it each frame, keeping |position - target| === dist throughout. */
+    const fullRot = new THREE.Quaternion().setFromUnitVectors(startDir, endDir);
+    const identity = new THREE.Quaternion();
+    const frameRot = new THREE.Quaternion();
+    const curDir   = new THREE.Vector3();
+
+    const wasDamping = controls.enableDamping;
+    controls.enableDamping = false;
+
+    const t0 = performance.now(), dur = 350;
+    const tick = () => {
+      const raw = Math.min((performance.now() - t0) / dur, 1);
+      const e = raw < 0.5 ? 2 * raw * raw : 1 - Math.pow(-2 * raw + 2, 2) / 2; // easeInOutQuad
+
+      frameRot.copy(identity).slerp(fullRot, e);
+      curDir.copy(startDir).applyQuaternion(frameRot);
+      cam.position.copy(target).addScaledVector(curDir, dist);
+      cam.up.copy(startUp).lerp(endUp, e).normalize();
+      cam.lookAt(target);
+      if (cam instanceof THREE.OrthographicCamera) cam.updateProjectionMatrix();
+      controls.update();
+
+      if (raw < 1) {
+        requestAnimationFrame(tick);
+      } else {
+        cam.position.copy(target).addScaledVector(endDir, dist);
+        cam.up.copy(endUp);
+        cam.lookAt(target);
+        controls.update();
+        controls.enableDamping = wasDamping;
+      }
+    };
+    tick();
+  }, [controlsRef]);
 
   useEffect(() => {
-    if (prevType.current !== cameraType && savedRef.current && cameraRef.current && controlsRef.current) {
-      cameraRef.current.position.copy(savedRef.current.position);
-      controlsRef.current.target.copy(savedRef.current.target);
-      if (cameraType === CameraType.ORTHOGRAPHIC && cameraRef.current instanceof THREE.OrthographicCamera) {
-        const dist = savedRef.current.position.distanceTo(savedRef.current.target);
-        const fovR = (savedRef.current.perspectiveFov || 45) * Math.PI / 180;
-        cameraRef.current.zoom = window.innerHeight / (2 * dist * Math.tan(fovR / 2));
-        cameraRef.current.updateProjectionMatrix();
-      }
-      controlsRef.current.update();
+    (window as any).__snapView = snapToView;
+    return () => { delete (window as any).__snapView; };
+  }, [snapToView]);
+
+  /* Ortho <-> Perspective toggle — standard CAD behavior, fixed eye.
+     The camera never moves and the FOV is fixed. Gaze, target and up are
+     untouched. Only the projection type changes:
+       perspective -> ortho :  set ortho zoom to match the current scale
+       ortho -> perspective :  just restore the perspective (same eye + fov)
+     Because nothing depends on the target sitting on the object, this is
+     immune to panning and to moving objects — the view can't fly off. */
+  useLayoutEffect(() => {
+    if (prevType.current === cameraType) return;
+    const saved = savedRef.current;
+    const cam = cameraRef.current;
+    const controls = controlsRef.current;
+    if (!saved || !cam || !controls) { prevType.current = cameraType; return; }
+
+    const target = saved.target.clone();
+    const dist   = saved.position.distanceTo(target) || 1;
+    const h      = size.height || window.innerHeight;
+    const fovR   = PERSP_FOV * Math.PI / 180;
+
+    controls.target.copy(target);
+    cam.position.copy(saved.position);  // stay put — no dolly
+    cam.up.copy(saved.up);
+
+    if (cameraType === CameraType.ORTHOGRAPHIC && cam instanceof THREE.OrthographicCamera) {
+      cam.zoom = h / (2 * dist * Math.tan(fovR / 2));  // match current scale at the focus plane
+      cam.updateProjectionMatrix();
+    } else if (cameraType === CameraType.PERSPECTIVE && cam instanceof THREE.PerspectiveCamera) {
+      cam.fov = PERSP_FOV;
+      cam.updateProjectionMatrix();
     }
+
+    cam.lookAt(target);
+    controls.update();
     prevType.current = cameraType;
-  }, [cameraType, controlsRef]);
+  }, [cameraType, controlsRef, size.height]);
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -348,17 +438,36 @@ const CameraController: React.FC<{ controlsRef: React.RefObject<any>; cameraType
         savedRef.current = {
           position: cameraRef.current.position.clone(),
           target:   controlsRef.current.target.clone(),
+          up:       cameraRef.current.up.clone(),
           zoom:     cameraRef.current instanceof THREE.OrthographicCamera ? cameraRef.current.zoom : 1,
-          perspectiveFov: cameraRef.current instanceof THREE.PerspectiveCamera ? cameraRef.current.fov : 45,
+          perspectiveFov: PERSP_FOV,
         };
       }
     }, 100);
     return () => clearInterval(id);
   }, [controlsRef]);
 
+  /* Mount props recomputed ONLY when the camera type changes (a real
+     remount). Otherwise the same stable refs are returned so R3F never
+     re-applies them mid-interaction and OrbitControls owns the camera.
+     The camera position is always the saved one (never moved); only the
+     ortho zoom is derived, with the SAME formula the toggle effect uses. */
+  const mount = useMemo(() => {
+    const s = savedRef.current;
+    if (!s) return { position: [2000, 2000, 2000] as [number, number, number], zoom: 0.25 };
+    const dist = s.position.distanceTo(s.target) || 1;
+    const h    = size.height || window.innerHeight;
+    const fovR = PERSP_FOV * Math.PI / 180;
+    return {
+      position: s.position.toArray() as [number, number, number],
+      zoom: h / (2 * dist * Math.tan(fovR / 2)),
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cameraType]);
+
   return cameraType === CameraType.PERSPECTIVE
-    ? <PerspectiveCamera  ref={cameraRef as React.RefObject<THREE.PerspectiveCamera>}  makeDefault position={savedRef.current?.position.toArray() || [2000,2000,2000]} fov={45}   near={1}      far={50000} />
-    : <OrthographicCamera ref={cameraRef as React.RefObject<THREE.OrthographicCamera>} makeDefault position={savedRef.current?.position.toArray() || [2000,2000,2000]} zoom={0.0} near={-50000} far={50000} />;
+    ? <PerspectiveCamera  ref={cameraRef as React.RefObject<THREE.PerspectiveCamera>}  makeDefault position={mount.position} fov={PERSP_FOV} near={1}      far={50000} />
+    : <OrthographicCamera ref={cameraRef as React.RefObject<THREE.OrthographicCamera>} makeDefault position={mount.position} zoom={mount.zoom} near={-50000} far={50000} />;
 };
 
 /* ══════════════════════════════════════════════════════════
@@ -472,10 +581,10 @@ const Scene: React.FC = () => {
   };
 
   const handleCreated = useCallback(({ gl }: { gl: THREE.WebGLRenderer }) => {
-    gl.toneMapping = THREE.ACESFilmicToneMapping; gl.toneMappingExposure = 1.0;
-   gl.shadowMap.type = THREE.PCFSoftShadowMap;
-   gl.outputColorSpace = THREE.SRGBColorSpace;
-    gl.shadowMap.type = THREE.PCFSoftShadowMap; gl.outputColorSpace = THREE.SRGBColorSpace;
+    gl.toneMapping = THREE.ACESFilmicToneMapping;
+    gl.toneMappingExposure = 1.0;
+    gl.shadowMap.type = THREE.PCFSoftShadowMap;
+    gl.outputColorSpace = THREE.SRGBColorSpace;
     gl.domElement.addEventListener('webglcontextlost', e => { e.preventDefault(); console.warn('WebGL context lost'); });
   }, []);
 
@@ -487,7 +596,7 @@ const Scene: React.FC = () => {
           <CameraController controlsRef={controlsRef} cameraType={cameraType} />
 
           <ambientLight intensity={4.0} />
-          <hemisphereLight intensity={0.0} groundColor="#cccccc" color="#fffcf2" />  
+          <hemisphereLight intensity={0.0} groundColor="#cccccc" color="#fffcf2" />
           <directionalLight position={[1500,2500,1500]} intensity={4.8} castShadow
             shadow-mapSize-width={2048} shadow-mapSize-height={2048} shadow-bias={-0.0005}
             shadow-camera-far={15000} shadow-camera-left={-3000} shadow-camera-right={3000}
@@ -496,7 +605,9 @@ const Scene: React.FC = () => {
           <directionalLight position={[0,2000,-2000]} intensity={0.3} />
           <directionalLight position={[500,500,3000]} intensity={0.5} />
 
-          <OrbitControls ref={controlsRef} makeDefault target={[0,0,0]} enableDamping dampingFactor={0.05} rotateSpeed={0.8} maxDistance={25000} minDistance={50} />
+          {/* dampingFactor'ı yükselttim (0.05 → 0.2): bırakınca daha çabuk durur.
+              Hiç kaymasın istersen enableDamping yerine enableDamping={false} yap. */}
+          <OrbitControls ref={controlsRef} makeDefault target={[0,0,0]} enableDamping dampingFactor={0.2} rotateSpeed={0.8} maxDistance={25000} minDistance={50} />
 
           {shapes.map(shape => {
             const isSel = selectedShapeId === shape.id;
@@ -516,7 +627,7 @@ const Scene: React.FC = () => {
 
           {/*
             scale=42  → cube size unchanged
-            margin right=116, margin bottom=140
+            margin right=125, margin bottom=155
             Extra bottom margin gives room for the now-larger compass ring + labels
           */}
           <GizmoHelper alignment="bottom-right" margin={[125, 155]}>
