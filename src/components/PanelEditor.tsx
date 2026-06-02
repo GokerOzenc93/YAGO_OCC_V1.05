@@ -100,70 +100,163 @@ function getDimsFromGeo(geo: THREE.BufferGeometry, arrowRotated?: boolean) {
 type Dims = NonNullable<ReturnType<typeof getDimsFromGeo>>;
 interface PanelEditorProps { isOpen: boolean; onClose: () => void; embedded?: boolean; }
 
+/* ── Edge dimension label types ──────────────────────────────────────── */
+interface EdgeDimLabel {
+  sx: number; sy: number; // screen midpoint
+  ex1: number; ey1: number; ex2: number; ey2: number; // screen endpoints
+  length: number; // real-world length
+  isThickness: boolean;
+}
+
+// Project a 3D point to canvas pixel coordinates via orthographic camera
+function project3D(p: THREE.Vector3, camera: THREE.OrthographicCamera, w: number, h: number): { x: number; y: number } {
+  const ndc = p.clone().project(camera);
+  return { x: (ndc.x + 1) / 2 * w, y: (1 - ndc.y) / 2 * h };
+}
+
+// Collect visible outer edges from the top face of the geometry and return dimension labels
+function computeEdgeLabels(
+  geometry: THREE.BufferGeometry,
+  camera: THREE.OrthographicCamera,
+  w: number,
+  h: number,
+  thicknessAxis: number, // 0=x,1=y,2=z — the thin axis, skip those edges
+): EdgeDimLabel[] {
+  const edgesGeo = new THREE.EdgesGeometry(geometry, 15);
+  const pos = edgesGeo.getAttribute('position');
+  if (!pos) { edgesGeo.dispose(); return []; }
+
+  // Group edges by their 3D length to deduplicate parallel/repeated edges
+  // Keep only edges whose midpoint projects to the "top" face (max along thicknessAxis)
+  const bbox = new THREE.Box3().setFromBufferAttribute(pos as THREE.BufferAttribute);
+  const bboxSize = new THREE.Vector3(); bbox.getSize(bboxSize);
+  const bboxCenter = new THREE.Vector3(); bbox.getCenter(bboxCenter);
+
+  // The "top" coordinate along the thickness axis
+  const axisKeys: Array<'x' | 'y' | 'z'> = ['x', 'y', 'z'];
+  const thinKey = axisKeys[thicknessAxis];
+  const topVal = bbox.max[thinKey];
+  const botVal = bbox.min[thinKey];
+  const tol = bboxSize[thinKey] * 0.05 + 0.5;
+
+  const labels: EdgeDimLabel[] = [];
+  const seen = new Set<string>();
+
+  for (let i = 0; i < pos.count; i += 2) {
+    const a = new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i));
+    const b = new THREE.Vector3(pos.getX(i + 1), pos.getY(i + 1), pos.getZ(i + 1));
+
+    const mid = new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5);
+    const len3D = a.distanceTo(b);
+
+    // Skip near-zero edges
+    if (len3D < 0.5) continue;
+
+    // Skip thickness edges (edges that run along the thin axis — both endpoints differ mainly on thinKey)
+    const da = Math.abs(a[thinKey] - b[thinKey]);
+    if (da > len3D * 0.7) continue; // mostly along thin axis = thickness edge
+
+    // Only edges on the top face (or very near it)
+    if (Math.abs(mid[thinKey] - topVal) > tol && Math.abs(mid[thinKey] - botVal) > tol) continue;
+    // prefer top face
+    const onTop = Math.abs(mid[thinKey] - topVal) <= tol;
+    if (!onTop) continue;
+
+    // Deduplicate by rounded length + midpoint bucket
+    const key = `${Math.round(len3D)}_${Math.round(mid.x/5)}_${Math.round(mid.y/5)}_${Math.round(mid.z/5)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const sa = project3D(a, camera, w, h);
+    const sb = project3D(b, camera, w, h);
+    const sm = project3D(mid, camera, w, h);
+
+    labels.push({
+      sx: sm.x, sy: sm.y,
+      ex1: sa.x, ey1: sa.y,
+      ex2: sb.x, ey2: sb.y,
+      length: Math.round(len3D),
+      isThickness: false,
+    });
+  }
+
+  edgesGeo.dispose();
+  return labels;
+}
+
 /* ── 2D Panel Preview — Three.js orthographic canvas render ─────────── */
 function PanelPreview2D({ dims, shape }: { dims: Dims; shape?: any }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [edgeLabels, setEdgeLabels] = useState<EdgeDimLabel[]>([]);
+  const [canvasSize, setCanvasSize] = useState({ w: 320, h: 160 });
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !shape?.geometry) return;
 
     const w = canvas.clientWidth || 320;
-    const h = canvas.clientHeight || 140;
+    const h = canvas.clientHeight || 160;
     canvas.width = w * window.devicePixelRatio;
     canvas.height = h * window.devicePixelRatio;
+    setCanvasSize({ w, h });
 
-    // Renderer
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
     renderer.setPixelRatio(window.devicePixelRatio);
     renderer.setSize(w, h, false);
     renderer.setClearColor(0x00000000, 0);
 
-    // Scene — single mesh, no position/rotation applied (render in local space)
     const scene = new THREE.Scene();
 
     const material = new THREE.MeshLambertMaterial({ color: 0xf5f0e8, side: THREE.DoubleSide });
     const mesh = new THREE.Mesh(shape.geometry, material);
     scene.add(mesh);
 
-    // Edges overlay
     const edgesGeo = new THREE.EdgesGeometry(shape.geometry, 15);
-    const edgesMat = new THREE.LineBasicMaterial({ color: 0x57534e });
+    const edgesMat = new THREE.LineBasicMaterial({ color: 0x78716c });
     scene.add(new THREE.LineSegments(edgesGeo, edgesMat));
 
-    // Lighting
-    scene.add(new THREE.AmbientLight(0xffffff, 0.7));
-    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-    dirLight.position.set(0, 1, 0);
-    scene.add(dirLight);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.75));
+    const dir = new THREE.DirectionalLight(0xffffff, 0.7);
+    dir.position.set(0, 1, 0);
+    scene.add(dir);
 
-    // Fit geometry into orthographic camera looking top-down (Y axis)
+    // Bounding box
     const bbox = new THREE.Box3().setFromObject(mesh);
-    const size = new THREE.Vector3();
-    const center = new THREE.Vector3();
-    bbox.getSize(size);
-    bbox.getCenter(center);
+    const size = new THREE.Vector3(), center = new THREE.Vector3();
+    bbox.getSize(size); bbox.getCenter(center);
 
-    // Determine which axis is "thickness" (smallest) and look along it
+    // Thickness axis = smallest dimension
     const dims3 = [size.x, size.y, size.z];
     const minIdx = dims3.indexOf(Math.min(...dims3));
-    const lookDir = [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1)][minIdx];
+    const lookDir = [
+      new THREE.Vector3(1, 0, 0),
+      new THREE.Vector3(0, 1, 0),
+      new THREE.Vector3(0, 0, 1),
+    ][minIdx];
 
-    // Orthographic camera sized to fit shape with padding
-    const planarW = minIdx === 0 ? size.z : size.x;
-    const planarH = minIdx === 1 ? size.z : (minIdx === 2 ? size.y : size.z);
+    // Fit camera — leave extra padding for dimension labels
+    const planarDims = dims3.filter((_, i) => i !== minIdx);
     const aspect = w / h;
-    const padFactor = 1.15;
-    const halfW = Math.max(planarW, planarH * aspect) * padFactor / 2;
+    const padFactor = 1.35;
+    const halfW = Math.max(planarDims[0], planarDims[1] * aspect) * padFactor / 2;
     const halfH = halfW / aspect;
 
     const camera = new THREE.OrthographicCamera(-halfW, halfW, halfH, -halfH, -10000, 10000);
-    // position camera along the "thin" axis, looking at center
     camera.position.copy(center).addScaledVector(lookDir, 1000);
     camera.lookAt(center);
-    camera.up.set(0, minIdx === 0 ? 1 : 0, minIdx === 2 ? 1 : 0);
+    // Choose "up" so panel looks natural (longest dim horizontal)
+    if (minIdx === 1) camera.up.set(0, 0, -1); // Y is thin → looking down → Z goes up in SVG
+    else if (minIdx === 0) camera.up.set(0, 1, 0);
+    else camera.up.set(0, 1, 0);
+    camera.updateProjectionMatrix();
+    camera.updateMatrixWorld();
 
     renderer.render(scene, camera);
+
+    // Compute edge labels after render
+    const labels = computeEdgeLabels(shape.geometry, camera, w, h, minIdx);
+    setEdgeLabels(labels);
 
     return () => {
       renderer.dispose();
@@ -173,19 +266,57 @@ function PanelPreview2D({ dims, shape }: { dims: Dims; shape?: any }) {
     };
   }, [shape]);
 
+  // Deduplicate labels that are too close together (keep longest/most distinct)
+  const visibleLabels = useMemo(() => {
+    const result: EdgeDimLabel[] = [];
+    for (const lbl of edgeLabels) {
+      const tooClose = result.some(r => Math.hypot(r.sx - lbl.sx, r.sy - lbl.sy) < 22 && r.length === lbl.length);
+      if (!tooClose) result.push(lbl);
+    }
+    return result;
+  }, [edgeLabels]);
+
   return (
-    <div style={{ position: 'relative', width: '100%' }}>
+    <div ref={wrapRef} style={{ position: 'relative', width: '100%', userSelect: 'none' }}>
       <canvas
         ref={canvasRef}
-        style={{ display: 'block', width: '100%', height: '140px', borderRadius: '6px' }}
+        style={{ display: 'block', width: '100%', height: '160px', borderRadius: '6px' }}
       />
-      {/* Dimension pills */}
-      <div style={{ position: 'absolute', top: 6, left: '50%', transform: 'translateX(-50%)',
-        background: 'rgba(245,242,237,0.95)', border: '1px solid #d6d3d1', borderRadius: 4,
-        padding: '1px 8px', fontSize: 11, fontFamily: 'monospace', fontWeight: 700, color: '#1c1917',
-        whiteSpace: 'nowrap', pointerEvents: 'none' }}>
-        {dims.primary} × {dims.secondary}
-      </div>
+      {/* SVG overlay for edge dimension labels */}
+      <svg
+        style={{ position: 'absolute', inset: 0, width: '100%', height: '160px', pointerEvents: 'none', overflow: 'visible' }}
+        viewBox={`0 0 ${canvasSize.w} ${canvasSize.h}`}
+      >
+        {visibleLabels.map((lbl, i) => {
+          const dx = lbl.ex2 - lbl.ex1, dy = lbl.ey2 - lbl.ey1;
+          const len = Math.hypot(dx, dy);
+          if (len < 4) return null;
+          // perpendicular outward offset
+          const px = -dy / len, py = dx / len;
+          const off = 13;
+          const ax = lbl.ex1 + px * off, ay = lbl.ey1 + py * off;
+          const bx = lbl.ex2 + px * off, by = lbl.ey2 + py * off;
+          const mx = (ax + bx) / 2, my = (ay + by) / 2;
+          const txt = String(lbl.length);
+          const labelW = Math.max(txt.length * 6.2 + 8, 28);
+          return (
+            <g key={i}>
+              {/* extension ticks */}
+              <line x1={lbl.ex1 + px * 2} y1={lbl.ey1 + py * 2} x2={ax} y2={ay} stroke="#a8a29e" strokeWidth="0.7"/>
+              <line x1={lbl.ex2 + px * 2} y1={lbl.ey2 + py * 2} x2={bx} y2={by} stroke="#a8a29e" strokeWidth="0.7"/>
+              {/* dim line */}
+              <line x1={ax} y1={ay} x2={bx} y2={by} stroke="#a8a29e" strokeWidth="0.9"/>
+              {/* arrowheads */}
+              <polygon points={`${ax},${ay} ${ax+(dx/len)*4+py*2},${ay+(dy/len)*4-px*2} ${ax+(dx/len)*4-py*2},${ay+(dy/len)*4+px*2}`} fill="#a8a29e"/>
+              <polygon points={`${bx},${by} ${bx-(dx/len)*4+py*2},${by-(dy/len)*4-px*2} ${bx-(dx/len)*4-py*2},${by-(dy/len)*4+px*2}`} fill="#a8a29e"/>
+              {/* label */}
+              <rect x={mx - labelW / 2} y={my - 7} width={labelW} height={13} rx={3} fill="rgba(245,242,237,0.96)" stroke="#d6d3d1" strokeWidth="0.5"/>
+              <text x={mx} y={my + 4.5} textAnchor="middle" fontSize="9" fill="#1c1917" fontFamily="monospace" fontWeight="700">{txt}</text>
+            </g>
+          );
+        })}
+      </svg>
+      {/* Thickness pill */}
       <div style={{ position: 'absolute', bottom: 6, left: 8,
         background: 'rgba(41,37,36,0.78)', borderRadius: 4,
         padding: '1px 8px', fontSize: 10, fontFamily: 'monospace', fontWeight: 700, color: 'rgba(255,255,255,0.95)',
