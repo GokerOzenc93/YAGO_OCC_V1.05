@@ -280,11 +280,11 @@ function PanelPreview2D({ dims, shape }: { dims: Dims; shape?: any }) {
     <div ref={wrapRef} style={{ position: 'relative', width: '100%', userSelect: 'none' }}>
       <canvas
         ref={canvasRef}
-        style={{ display: 'block', width: '100%', height: '160px', borderRadius: '6px' }}
+        style={{ display: 'block', width: '100%', height: '100%', borderRadius: '6px' }}
       />
       {/* SVG overlay for edge dimension labels */}
       <svg
-        style={{ position: 'absolute', inset: 0, width: '100%', height: '160px', pointerEvents: 'none', overflow: 'visible' }}
+        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'visible' }}
         viewBox={`0 0 ${canvasSize.w} ${canvasSize.h}`}
       >
         {visibleLabels.map((lbl, i) => {
@@ -720,44 +720,67 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     );
   })();
 
-  if (embedded) return (
+  const isPreviewMode = selectedPanelRow !== null && !!activePanelId;
+
+  // ── Shared preview pane (full panel detail, big canvas) ────────────────
+  const previewPane = isPreviewMode ? (
     <div className="flex flex-col h-full min-h-0">
-      {/* Toolbar */}
+      {/* Header row */}
+      <div className="px-3 py-2 border-b border-stone-100 flex items-center gap-2 shrink-0">
+        <button
+          onClick={() => setSelectedPanelRow(null)}
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold text-stone-500 hover:text-stone-800 hover:bg-stone-100 transition-all"
+        >
+          <ChevronRight size={12} className="rotate-180"/> Liste
+        </button>
+        {/* Selected row mini-label */}
+        {activeDims && (
+          <span className="text-xs font-mono text-stone-400 truncate">
+            {activeDims.primary} × {activeDims.secondary} × <span className="text-stone-300">T{activeDims.thickness}</span>
+          </span>
+        )}
+        <div className="ml-auto">{panelToolbar}</div>
+      </div>
+
+      {/* Big preview — flex-1 so it fills available space */}
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        <div className="px-3 pt-3 pb-1">
+          {activeDims && (
+            <div className="rounded-xl bg-gradient-to-b from-[#f8f5f0] to-[#ede8df] border border-stone-200/80 overflow-hidden p-2" style={{ height: 'min(55vh, 340px)' }}>
+              <PanelPreview2D dims={activeDims} shape={activePanel}/>
+            </div>
+          )}
+        </div>
+        <div className="px-3 pb-3 pt-2 space-y-3">
+          {panelDetailSection}
+        </div>
+      </div>
+    </div>
+  ) : null;
+
+  // ── List pane ──────────────────────────────────────────────────────────
+  const listPane = (
+    <div className="flex flex-col h-full min-h-0">
       <div className="px-3 py-2 border-b border-stone-100 flex items-center justify-between shrink-0">
         {panelToolbar}
       </div>
-
       {selectedShape ? (
-        <>
-          {/* Face list — max 50% height, scrollable */}
-          <div className="shrink-0" style={{ maxHeight: '50%', overflowY: 'auto' }}>
-            <div className="px-2 pt-2 pb-1">
-              <div className="space-y-px">
-                {faceListSection}
-              </div>
-            </div>
+        <div className="flex-1 min-h-0 overflow-y-auto">
+          <div className="px-2 pt-2 pb-2 space-y-px">
+            {faceListSection}
           </div>
-
-          {/* Detail section — remaining space, scrollable */}
-          <div className="flex-1 min-h-0 overflow-y-auto border-t border-stone-100">
-            <div className="px-2 py-2.5">
-              {panelDetailSection || (
-                <div className="flex flex-col items-center justify-center py-8 text-center">
-                  <div className="w-8 h-8 rounded-lg bg-stone-100 flex items-center justify-center mb-2">
-                    <ChevronRight size={14} className="text-stone-300"/>
-                  </div>
-                  <span className="text-xs text-stone-400">Select a face above</span>
-                  <span className="text-[10px] text-stone-300 mt-0.5">to see preview and controls</span>
-                </div>
-              )}
-            </div>
-          </div>
-        </>
+        </div>
       ) : (
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center text-stone-400 text-xs py-4">No shape selected</div>
         </div>
       )}
+    </div>
+  );
+
+  if (embedded) return (
+    <div className="flex flex-col h-full min-h-0">
+      {isPreviewMode ? previewPane : listPane}
     </div>
   );
 
@@ -767,9 +790,17 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         <div className="flex items-center gap-2"><GripVertical size={13} className="text-stone-300"/><span className="text-xs font-semibold text-stone-600 tracking-wide uppercase">Panel Editor</span></div>
         <div className="flex items-center gap-1.5">{panelToolbar}<button onClick={onClose} className="p-1 hover:bg-stone-200 rounded-md transition-colors"><X size={13} className="text-stone-400"/></button></div>
       </div>
-      <div className="max-h-[calc(100vh-200px)] overflow-y-auto">
-        <div className="p-2 space-y-0.5">{faceListSection}</div>
-        {panelDetailSection && <div className="px-2 pb-3 pt-1 border-t border-stone-100 space-y-3">{panelDetailSection}</div>}
+      <div style={{ maxHeight: 'calc(100vh - 200px)', overflowY: 'auto' }}>
+        {isPreviewMode ? (
+          <div style={{ height: 'min(70vh, 500px)' }}>
+            {previewPane}
+          </div>
+        ) : (
+          <>
+            <div className="p-2 space-y-0.5">{faceListSection}</div>
+            {panelDetailSection && <div className="px-2 pb-3 pt-1 border-t border-stone-100 space-y-3">{panelDetailSection}</div>}
+          </>
+        )}
       </div>
     </div>
   );
