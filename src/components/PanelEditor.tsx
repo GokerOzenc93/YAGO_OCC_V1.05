@@ -263,6 +263,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
           <div className="space-y-0 pt-2 border-t border-stone-200">
             {svf.map((vf, vi) => {
               const vp = findVPanel(shapes, sid, vf.id), ar = vp?.parameters?.arrowRotated||false, sel = selectedPanelRow === `vf-${vf.id}`;
+              const dims = vp?.geometry ? getDimsFromGeo(vp.geometry, ar) : null;
               const rc = () => { setSelectedPanelRow(`vf-${vf.id}`, null, sid); };
               const isDragging = dragIndex === vi;
               const isDropTarget = dropIndex === vi && dragIndex !== null && dragIndex !== vi;
@@ -285,8 +286,19 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                     className={`w-3.5 h-3.5 ${isOff ? 'text-stone-300 cursor-not-allowed' : 'text-orange-500 focus:ring-orange-400 cursor-pointer'}`} onClick={stop} />
                   <span className="w-8 text-xs font-mono font-bold text-center text-green-700 select-none" onClick={stop}>V{vi+1}</span>
                   <input type="text" value={vf.description||''} disabled={isOff} onClick={stop} onChange={e => updateVirtualFace(vf.id, { description: e.target.value })}
-                    placeholder="note" style={{ width: '32mm' }}
+                    placeholder="note" style={{ width: '22mm' }}
                     className={`px-1 py-0.5 text-xs bg-transparent border-b rounded-none ${isOff ? 'text-stone-400 border-stone-200 placeholder:text-stone-300' : 'text-gray-600 border-transparent hover:border-gray-300 focus:border-orange-400 placeholder:text-stone-300'}`} />
+                  {dims && (
+                    <span className="flex items-center gap-1 text-xs font-mono text-stone-400 select-none shrink-0" onClick={stop}>
+                      {[['W', dims.primary], ['H', dims.secondary], ['T', dims.thickness]].map(([l, v], i) => (
+                        <React.Fragment key={l as string}>
+                          {i > 0 && <span className="text-stone-200">·</span>}
+                          <span className="text-stone-300">{l}</span>
+                          <span className="text-stone-500 font-semibold">{v}</span>
+                        </React.Fragment>
+                      ))}
+                    </span>
+                  )}
                   <div className="ml-1 flex items-center gap-0.5">
                     <input type="checkbox" checked={vf.hasPanel} disabled={isOff} onClick={stop}
                       onChange={async () => { if (vf.hasPanel) removeVP(vf.id); else await createVP(vf.id, vi); }}
