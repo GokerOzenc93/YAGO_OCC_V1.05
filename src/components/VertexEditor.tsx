@@ -16,15 +16,13 @@ const VertexPoint: React.FC<{
   isHovered: boolean;
   isSelected: boolean;
   onClick: (e: any) => void;
-  onContextMenu: (e: any) => void;
   onPointerOver: () => void;
   onPointerOut: () => void;
-}> = ({ position, index, isHovered, isSelected, onClick, onContextMenu, onPointerOver, onPointerOut }) => {
+}> = ({ position, index, isHovered, isSelected, onClick, onPointerOver, onPointerOut }) => {
   return (
     <mesh
       position={position}
       onClick={onClick}
-      onContextMenu={onContextMenu}
       onPointerOver={(e) => {
         e.stopPropagation();
         onPointerOver();
@@ -335,7 +333,6 @@ export const VertexEditor: React.FC<VertexEditorProps> = ({
             isHovered={hoveredIndex === index}
             isSelected={selectedIndex === index}
             onClick={(e) => handleVertexClick(index, e)}
-            onContextMenu={(e) => handleVertexRightClick(index, e)}
             onPointerOver={() => setHoveredIndex(index)}
             onPointerOut={() => setHoveredIndex(null)}
           />

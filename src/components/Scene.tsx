@@ -4,7 +4,6 @@ import { OrbitControls, GizmoHelper, PerspectiveCamera, OrthographicCamera } fro
 import * as THREE from 'three';
 import { useAppStore, CameraType } from '../store';
 import { useShallow } from 'zustand/react/shallow';
-import ContextMenu from './ContextMenu';
 import SaveDialog from './SaveDialog';
 import { catalogService } from './Database';
 import { VertexEditor } from './VertexEditor';
@@ -475,7 +474,6 @@ const CameraController: React.FC<{ controlsRef: React.RefObject<any>; cameraType
 ══════════════════════════════════════════════════════════ */
 const Scene: React.FC = () => {
   const controlsRef = useRef<any>(null);
-  const raycastModeWasActiveRef = useRef(false);
 
   const {
     shapes, cameraType, selectedShapeId, secondarySelectedShapeId, selectShape,
@@ -501,7 +499,6 @@ const Scene: React.FC = () => {
     panelSurfaceSelectMode: state.panelSurfaceSelectMode, setSelectedPanelRow: state.setSelectedPanelRow,
   })));
 
-  const [contextMenu, setContextMenu] = useState<{ x:number; y:number; shapeId:string; shapeType:string }|null>(null);
   const [saveDialog,  setSaveDialog ] = useState<{ isOpen:boolean; shapeId:string|null }>({ isOpen:false, shapeId:null });
 
   useEffect(() => {
@@ -515,18 +512,9 @@ const Scene: React.FC = () => {
   }, [selectedShapeId, secondarySelectedShapeId, deleteShape, selectShape, exitIsolation, setVertexEditMode, setFaceEditMode, clearFilletFaces]);
 
   useEffect(() => {
-    const onPointerDown = () => {
-      raycastModeWasActiveRef.current = useAppStore.getState().raycastMode;
-    };
-    const blockContextMenu = (e: MouseEvent) => {
-      if (raycastModeWasActiveRef.current || useAppStore.getState().raycastMode) e.preventDefault();
-    };
-    window.addEventListener('pointerdown', onPointerDown, true);
+    const blockContextMenu = (e: MouseEvent) => e.preventDefault();
     window.addEventListener('contextmenu', blockContextMenu, true);
-    return () => {
-      window.removeEventListener('pointerdown', onPointerDown, true);
-      window.removeEventListener('contextmenu', blockContextMenu, true);
-    };
+    return () => window.removeEventListener('contextmenu', blockContextMenu, true);
   }, []);
 
   useEffect(() => {
@@ -577,14 +565,6 @@ const Scene: React.FC = () => {
     return () => { delete (window as any).handleFilletRadius; delete (window as any).pendingFilletOperation; };
   }, [filletMode, selectedFilletFaces.length]);
 
-  const handleContextMenu = useCallback((e: any, shapeId: string) => {
-    e.nativeEvent?.preventDefault?.();
-    e.nativeEvent?.stopPropagation?.();
-    const state = useAppStore.getState();
-    if (state.vertexEditMode || state.faceEditMode || state.raycastMode) return;
-    state.selectShape(shapeId);
-    setContextMenu({ x: e.nativeEvent.clientX, y: e.nativeEvent.clientY, shapeId, shapeType: state.shapes.find(s=>s.id===shapeId)?.type||'unknown' });
-  }, []);
 
   const captureSnapshot = () => { const c = document.querySelector('canvas'); return c ? c.toDataURL('image/png') : null; };
 
@@ -609,7 +589,7 @@ const Scene: React.FC = () => {
   return (
     <>
       <ErrorBoundary>
-        <Canvas shadows gl={{ antialias:true, alpha:false, preserveDrawingBuffer:true, powerPreference:'high-performance' }} dpr={[1,2]} onContextMenu={e=>e.preventDefault()} onCreated={handleCreated}>
+        <Canvas shadows gl={{ antialias:true, alpha:false, preserveDrawingBuffer:true, powerPreference:'high-performance' }} dpr={[1,2]} onCreated={handleCreated}>
           <color attach="background" args={['#fdfcfa']} />
           <CameraController controlsRef={controlsRef} cameraType={cameraType} />
 
@@ -632,7 +612,7 @@ const Scene: React.FC = () => {
             if (shape.type === 'panel') return <PanelDrawing key={shape.id} shape={shape} isSelected={isSel} />;
             return (
               <React.Fragment key={shape.id}>
-                <ShapeWithTransform shape={shape} isSelected={isSel} orbitControlsRef={controlsRef} onContextMenu={handleContextMenu} />
+                <ShapeWithTransform shape={shape} isSelected={isSel} orbitControlsRef={controlsRef} />
                 {isSel && vertexEditMode && <VertexEditor shape={shape} isActive onVertexSelect={i=>setSelectedVertexIndex(i)} onDirectionChange={d=>setVertexDirection(d)} />}
               </React.Fragment>
             );
@@ -657,17 +637,7 @@ const Scene: React.FC = () => {
         </Canvas>
       </ErrorBoundary>
 
-      {contextMenu && (
-        <ContextMenu
-          position={{ x:contextMenu.x, y:contextMenu.y }}
-          shapeId={contextMenu.shapeId} shapeType={contextMenu.shapeType}
-          onClose={() => setContextMenu(null)}
-          onEdit={() => { isolateShape(contextMenu.shapeId); setContextMenu(null); }}
-          onCopy={() => { copyShape(contextMenu.shapeId); setContextMenu(null); }}
-          onDelete={() => { deleteShape(contextMenu.shapeId); setContextMenu(null); }}
-          onSave={() => { setSaveDialog({ isOpen:true, shapeId:contextMenu.shapeId }); setContextMenu(null); }}
-        />
-      )}
+
       <SaveDialog isOpen={saveDialog.isOpen} onClose={() => setSaveDialog({ isOpen:false, shapeId:null })} onSave={handleSave} shapeId={saveDialog.shapeId||''} captureSnapshot={captureSnapshot} />
     </>
   );

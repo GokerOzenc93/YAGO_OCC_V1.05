@@ -186,7 +186,7 @@ export const FaceEditor: React.FC<FaceEditorProps> = ({ shape, isActive }) => {
         onPointerMove={handlePointerMove}
         onPointerOut={handlePointerOut}
         onPointerDown={handlePointerDown}
-        onContextMenu={(e) => e.stopPropagation()}
+
       />
 
       {selectedFilletGeometries.map((geom, idx) => (

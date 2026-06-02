@@ -19,14 +19,12 @@ interface ShapeWithTransformProps {
   shape: any;
   isSelected: boolean;
   orbitControlsRef: any;
-  onContextMenu: (e: any, shapeId: string) => void;
 }
 
 export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(({
   shape,
   isSelected,
   orbitControlsRef,
-  onContextMenu
 }) => {
   const {
     selectShape,
@@ -497,10 +495,6 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
           e.stopPropagation();
           selectShape(shape.id);
           setShowParametersPanel(true);
-        }}
-        onContextMenu={(e) => {
-          e.stopPropagation();
-          onContextMenu(e, shape.id);
         }}
       >
         {/* Subtraction görselleştirme */}

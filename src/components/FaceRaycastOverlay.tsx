@@ -892,8 +892,7 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
   const handlePointerDown = (e: any) => {
     if (!raycastMode) return;
     if (e.button === 2) {
-      e.stopPropagation(); e.nativeEvent?.preventDefault?.();
-      window.addEventListener('contextmenu', (ev) => ev.preventDefault(), { capture: true, once: true });
+      e.stopPropagation();
       if (pending) { addVirtualFace(pending.virtualFace); setPending(null); lastClickRef.current = null; setRaycastMode(false); }
       return;
     }
@@ -967,17 +966,10 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     setHoveredGroupIndex(targetGroupIndex);
     setPending(buildPreview(previewClickPoint, faceGroups[targetGroupIndex], faces, localToWorld, worldToLocal, childPanels, shape.id, shape.subtractionGeometries || [], shape.geometry, shapeVirtualFaces));
   };
-  const handleContextMenu = (e: any) => {
-    // Always suppress native context menu in raycast mode
-    e.stopPropagation();
-    e.nativeEvent?.preventDefault?.();
-    e.nativeEvent?.stopPropagation?.();
-    if (pending) { addVirtualFace(pending.virtualFace); setPending(null); lastClickRef.current = null; setRaycastMode(false); }
-  };
   if (!raycastMode) return null;
   return (
     <>
-      <mesh geometry={shape.geometry} visible={false} onPointerMove={handlePointerMove} onPointerOut={handlePointerOut} onPointerDown={handlePointerDown} onContextMenu={handleContextMenu} />
+      <mesh geometry={shape.geometry} visible={false} onPointerMove={handlePointerMove} onPointerOut={handlePointerOut} onPointerDown={handlePointerDown} />
       {hoverHighlightGeometry && (
         <mesh geometry={hoverHighlightGeometry} raycast={() => null}>
           <meshBasicMaterial color={hoveredGroupIndex !== null && groupHasVirtualFace(hoveredGroupIndex) ? RAYCAST_COLORS.hoverHasVF : RAYCAST_COLORS.hoverEmpty} transparent opacity={0.28} side={THREE.DoubleSide} polygonOffset polygonOffsetFactor={-1} polygonOffsetUnits={-1} />
