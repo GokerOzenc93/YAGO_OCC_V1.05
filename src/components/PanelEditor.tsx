@@ -324,21 +324,16 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
   ) : <div className="text-center text-stone-500 text-xs py-4">No shape selected</div>;
 
   const dimsSection = selectedShape && selectedPanelRow !== null && (() => {
-    let dims: Dims | null = null, cpId: string | null = null;
+    let cpId: string | null = null;
     if (typeof selectedPanelRow === 'string' && selectedPanelRow.startsWith('vf-')) {
       const vp = findVPanel(shapes, selectedShape.id, selectedPanelRow.replace('vf-','')); cpId = vp?.id||null;
-      if (vp?.geometry) dims = getDimsFromGeo(vp.geometry, vp.parameters?.arrowRotated);
     }
-    if (!dims) return null;
+    if (!cpId) return null;
     const isExt = faceExtrudeMode && !!cpId, panel = cpId ? shapes.find(s => s.id === cpId) : null;
     const steps = panel?.parameters?.extrudeSteps || [], hf = faceExtrudeSelectedFace !== null;
     return (
       <div className="border-t border-orange-200 bg-orange-50 px-3 py-2 rounded-b-lg">
         <div className="flex items-center gap-2">
-          {[['W',dims.primary],['H',dims.secondary],['T',dims.thickness]].map(([l,v],idx) => (
-            <React.Fragment key={l as string}>{idx>0&&<div className="w-px h-4 bg-orange-200 shrink-0"/>}
-              <div className="flex items-center gap-1.5"><span className="text-xs text-stone-400 font-medium uppercase tracking-wide">{l}</span>
-                <span className="text-xs font-bold text-slate-800 font-mono">{v}</span></div></React.Fragment>))}
           {isExt && <>
             <div className="w-px h-4 bg-orange-200 shrink-0"/>
             <input type="text" inputMode="numeric" value={faceExtrudeThickness} onChange={e => setFaceExtrudeThickness(Number(e.target.value)||0)} disabled={!hf}
