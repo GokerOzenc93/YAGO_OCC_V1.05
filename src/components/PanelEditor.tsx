@@ -726,11 +726,11 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     );
   })();
 
-  const isPreviewMode = selectedPanelRow !== null && !!activePanelId;
+  const isPreviewMode = selectedPanelRow !== null;
 
   // Selected face row (rendered in preview header)
   const selectedFaceRow = (() => {
-    if (!selectedShape || !isPreviewMode) return null;
+    if (!selectedShape || selectedPanelRow === null) return null;
     const sid = selectedShape.id;
     const svf = virtualFaces.filter(vf => vf.shapeId === sid);
     const vfId = typeof selectedPanelRow === 'string' && selectedPanelRow.startsWith('vf-')
@@ -803,11 +803,12 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       )}
 
       {/* Canvas — flex-1, fills remaining space */}
-      {activeDims && (
-        <div className="flex-1 min-h-0 mx-2 mb-1 rounded-xl bg-gradient-to-b from-[#f8f5f0] to-[#ede8df] border border-stone-200/80 overflow-hidden">
-          <PanelPreview2D dims={activeDims} shape={activePanel}/>
-        </div>
-      )}
+      <div className="flex-1 min-h-0 mx-2 mb-1 rounded-xl bg-gradient-to-b from-[#f8f5f0] to-[#ede8df] border border-stone-200/80 overflow-hidden flex items-center justify-center">
+        {activeDims && activePanel
+          ? <PanelPreview2D dims={activeDims} shape={activePanel}/>
+          : <span className="text-xs text-stone-400">Panel yok</span>
+        }
+      </div>
 
       {/* Extrude controls + steps — scrollable footer */}
       {panelDetailSection && (
