@@ -242,7 +242,13 @@ function PanelPreview2D({ dims, shape }: { dims: Dims; shape?: any }) {
 
       const planarDims = dims3.filter((_, i) => i !== minIdx);
       const aspect = w / h;
-      const halfW = Math.max(planarDims[0], planarDims[1] * aspect) * 1.35 / 2;
+      // Fit the panel so it always fills the viewport regardless of shape.
+      // Compute the half-sizes that would be required by each planar dimension,
+      // then take the larger one so nothing is ever clipped.
+      const pad = 1.15;
+      const halfWFromW = (planarDims[0] / 2) * pad;
+      const halfWFromH = (planarDims[1] / 2) * pad * aspect;
+      const halfW = Math.max(halfWFromW, halfWFromH);
       const halfH = halfW / aspect;
 
       const camera = new THREE.OrthographicCamera(-halfW, halfW, halfH, -halfH, -10000, 10000);
