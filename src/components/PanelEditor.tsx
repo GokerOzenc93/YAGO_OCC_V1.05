@@ -191,90 +191,92 @@ function PanelPreview2D({ dims, shape }: { dims: Dims; shape?: any }) {
   const [edgeLabels, setEdgeLabels] = useState<EdgeDimLabel[]>([]);
   const [canvasSize, setCanvasSize] = useState({ w: 320, h: 300 });
 
-  const doRender = (w: number, h: number) => {
-    const canvas = canvasRef.current;
-    if (!canvas || !shape?.geometry) return () => {};
-
-    canvas.width = w * window.devicePixelRatio;
-    canvas.height = h * window.devicePixelRatio;
-    setCanvasSize({ w, h });
-
-    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
-    renderer.setPixelRatio(window.devicePixelRatio);
-    renderer.setSize(w, h, false);
-    renderer.setClearColor(0x00000000, 0);
-
-    const scene = new THREE.Scene();
-    const material = new THREE.MeshLambertMaterial({ color: 0xf5f0e8, side: THREE.DoubleSide });
-    const mesh = new THREE.Mesh(shape.geometry, material);
-    scene.add(mesh);
-
-    const edgesGeo = new THREE.EdgesGeometry(shape.geometry, 15);
-    const edgesMat = new THREE.LineBasicMaterial({ color: 0x78716c });
-    scene.add(new THREE.LineSegments(edgesGeo, edgesMat));
-
-    scene.add(new THREE.AmbientLight(0xffffff, 0.75));
-    const dir = new THREE.DirectionalLight(0xffffff, 0.7);
-    dir.position.set(0, 1, 0);
-    scene.add(dir);
-
-    const bbox = new THREE.Box3().setFromObject(mesh);
-    const size = new THREE.Vector3(), center = new THREE.Vector3();
-    bbox.getSize(size); bbox.getCenter(center);
-
-    const dims3 = [size.x, size.y, size.z];
-    const minIdx = dims3.indexOf(Math.min(...dims3));
-    const lookDir = [
-      new THREE.Vector3(1, 0, 0),
-      new THREE.Vector3(0, 1, 0),
-      new THREE.Vector3(0, 0, 1),
-    ][minIdx];
-
-    const planarDims = dims3.filter((_, i) => i !== minIdx);
-    const aspect = w / h;
-    const padFactor = 1.35;
-    const halfW = Math.max(planarDims[0], planarDims[1] * aspect) * padFactor / 2;
-    const halfH = halfW / aspect;
-
-    const camera = new THREE.OrthographicCamera(-halfW, halfW, halfH, -halfH, -10000, 10000);
-    camera.position.copy(center).addScaledVector(lookDir, 1000);
-    camera.lookAt(center);
-    if (minIdx === 1) camera.up.set(0, 0, -1);
-    else camera.up.set(0, 1, 0);
-    camera.updateProjectionMatrix();
-    camera.updateMatrixWorld();
-
-    renderer.render(scene, camera);
-
-    const labels = computeEdgeLabels(shape.geometry, camera, w, h, minIdx);
-    setEdgeLabels(labels);
-
-    return () => {
-      renderer.dispose();
-      material.dispose();
-      edgesGeo.dispose();
-      edgesMat.dispose();
-    };
-  };
-
   useEffect(() => {
     const wrap = wrapRef.current;
-    if (!wrap) return;
+    const canvas = canvasRef.current;
+    if (!wrap || !canvas || !shape?.geometry) return;
 
-    // Initial render once the element is sized
-    let cleanup = doRender(wrap.clientWidth || 320, wrap.clientHeight || 300);
+    let disposed = false;
+    let renderer: THREE.WebGLRenderer | null = null;
+    let material: THREE.MeshLambertMaterial | null = null;
+    let edgesGeo: THREE.EdgesGeometry | null = null;
+    let edgesMat: THREE.LineBasicMaterial | null = null;
 
-    // Re-render when wrapper resizes
+    const render = (w: number, h: number) => {
+      if (disposed) return;
+      renderer?.dispose();
+      material?.dispose();
+      edgesGeo?.dispose();
+      edgesMat?.dispose();
+
+      canvas.width = w * window.devicePixelRatio;
+      canvas.height = h * window.devicePixelRatio;
+      setCanvasSize({ w, h });
+
+      renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setSize(w, h, false);
+      renderer.setClearColor(0x00000000, 0);
+
+      const scene = new THREE.Scene();
+      material = new THREE.MeshLambertMaterial({ color: 0xf5f0e8, side: THREE.DoubleSide });
+      const mesh = new THREE.Mesh(shape.geometry, material);
+      scene.add(mesh);
+
+      edgesGeo = new THREE.EdgesGeometry(shape.geometry, 15);
+      edgesMat = new THREE.LineBasicMaterial({ color: 0x78716c });
+      scene.add(new THREE.LineSegments(edgesGeo, edgesMat));
+
+      scene.add(new THREE.AmbientLight(0xffffff, 0.75));
+      const dir = new THREE.DirectionalLight(0xffffff, 0.7);
+      dir.position.set(0, 1, 0);
+      scene.add(dir);
+
+      const bbox = new THREE.Box3().setFromObject(mesh);
+      const sz = new THREE.Vector3(), center = new THREE.Vector3();
+      bbox.getSize(sz); bbox.getCenter(center);
+
+      const dims3 = [sz.x, sz.y, sz.z];
+      const minIdx = dims3.indexOf(Math.min(...dims3));
+      const lookDirs = [new THREE.Vector3(1,0,0), new THREE.Vector3(0,1,0), new THREE.Vector3(0,0,1)];
+
+      const planarDims = dims3.filter((_, i) => i !== minIdx);
+      const aspect = w / h;
+      const halfW = Math.max(planarDims[0], planarDims[1] * aspect) * 1.35 / 2;
+      const halfH = halfW / aspect;
+
+      const camera = new THREE.OrthographicCamera(-halfW, halfW, halfH, -halfH, -10000, 10000);
+      camera.position.copy(center).addScaledVector(lookDirs[minIdx], 1000);
+      camera.lookAt(center);
+      if (minIdx === 1) camera.up.set(0, 0, -1);
+      else camera.up.set(0, 1, 0);
+      camera.updateProjectionMatrix();
+      camera.updateMatrixWorld();
+
+      renderer.render(scene, camera);
+      setEdgeLabels(computeEdgeLabels(shape.geometry, camera, w, h, minIdx));
+    };
+
+    // Use rAF to ensure the container is laid out before reading its size
+    const raf = requestAnimationFrame(() => {
+      if (!disposed) render(wrap.clientWidth || 320, wrap.clientHeight || 300);
+    });
+
     const ro = new ResizeObserver(entries => {
       const { width, height } = entries[0].contentRect;
-      if (width > 0 && height > 0) {
-        cleanup?.();
-        cleanup = doRender(width, height);
-      }
+      if (width > 0 && height > 0) render(width, height);
     });
     ro.observe(wrap);
 
-    return () => { ro.disconnect(); cleanup?.(); };
+    return () => {
+      disposed = true;
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+      renderer?.dispose();
+      material?.dispose();
+      edgesGeo?.dispose();
+      edgesMat?.dispose();
+    };
   }, [shape]);
 
   const visibleLabels = useMemo(() => {
