@@ -309,28 +309,28 @@ function PanelPreview2D({ dims, shape }: { dims: Dims; shape?: any }) {
           const len = Math.hypot(dx, dy);
           if (len < 4) return null;
           const px = -dy / len, py = dx / len;
-          const off = 14;
+          const off = 22;
           const ax = lbl.ex1 + px * off, ay = lbl.ey1 + py * off;
           const bx = lbl.ex2 + px * off, by = lbl.ey2 + py * off;
           const mx = (ax + bx) / 2, my = (ay + by) / 2;
           const txt = String(lbl.length);
-          const labelW = Math.max(txt.length * 6.5 + 10, 30);
+          const labelW = Math.max(txt.length * 8 + 14, 38);
           return (
             <g key={i}>
-              <line x1={lbl.ex1 + px * 2} y1={lbl.ey1 + py * 2} x2={ax} y2={ay} stroke="#a8a29e" strokeWidth="0.7"/>
-              <line x1={lbl.ex2 + px * 2} y1={lbl.ey2 + py * 2} x2={bx} y2={by} stroke="#a8a29e" strokeWidth="0.7"/>
-              <line x1={ax} y1={ay} x2={bx} y2={by} stroke="#a8a29e" strokeWidth="0.9"/>
-              <polygon points={`${ax},${ay} ${ax+(dx/len)*4+py*2},${ay+(dy/len)*4-px*2} ${ax+(dx/len)*4-py*2},${ay+(dy/len)*4+px*2}`} fill="#a8a29e"/>
-              <polygon points={`${bx},${by} ${bx-(dx/len)*4+py*2},${by-(dy/len)*4-px*2} ${bx-(dx/len)*4-py*2},${by-(dy/len)*4+px*2}`} fill="#a8a29e"/>
-              <rect x={mx - labelW / 2} y={my - 7} width={labelW} height={13} rx={3} fill="rgba(245,242,237,0.96)" stroke="#d6d3d1" strokeWidth="0.5"/>
-              <text x={mx} y={my + 4.5} textAnchor="middle" fontSize="9" fill="#1c1917" fontFamily="monospace" fontWeight="700">{txt}</text>
+              <line x1={lbl.ex1 + px * 2} y1={lbl.ey1 + py * 2} x2={ax} y2={ay} stroke="#a8a29e" strokeWidth="0.9"/>
+              <line x1={lbl.ex2 + px * 2} y1={lbl.ey2 + py * 2} x2={bx} y2={by} stroke="#a8a29e" strokeWidth="0.9"/>
+              <line x1={ax} y1={ay} x2={bx} y2={by} stroke="#a8a29e" strokeWidth="1.2"/>
+              <polygon points={`${ax},${ay} ${ax+(dx/len)*5+py*2.5},${ay+(dy/len)*5-px*2.5} ${ax+(dx/len)*5-py*2.5},${ay+(dy/len)*5+px*2.5}`} fill="#a8a29e"/>
+              <polygon points={`${bx},${by} ${bx-(dx/len)*5+py*2.5},${by-(dy/len)*5-px*2.5} ${bx-(dx/len)*5-py*2.5},${by-(dy/len)*5+px*2.5}`} fill="#a8a29e"/>
+              <rect x={mx - labelW / 2} y={my - 8.5} width={labelW} height={16} rx={4} fill="rgba(245,242,237,0.97)" stroke="#d6d3d1" strokeWidth="0.7"/>
+              <text x={mx} y={my + 5.5} textAnchor="middle" fontSize="11" fill="#1c1917" fontFamily="monospace" fontWeight="700">{txt}</text>
             </g>
           );
         })}
       </svg>
-      <div style={{ position: 'absolute', bottom: 6, left: 8,
-        background: 'rgba(41,37,36,0.78)', borderRadius: 4,
-        padding: '1px 8px', fontSize: 10, fontFamily: 'monospace', fontWeight: 700, color: 'rgba(255,255,255,0.95)',
+      <div style={{ position: 'absolute', bottom: 10, left: 12,
+        background: 'rgba(41,37,36,0.82)', borderRadius: 5,
+        padding: '3px 10px', fontSize: 12, fontFamily: 'monospace', fontWeight: 700, color: 'rgba(255,255,255,0.97)',
         pointerEvents: 'none' }}>
         T {dims.thickness}
       </div>
@@ -798,15 +798,15 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
   // ── Shared preview pane (full panel detail, big canvas) ────────────────
   const previewPane = isPreviewMode ? (
     <div className="flex flex-col h-full min-h-0">
-      {/* Toolbar + back button */}
+      {/* Toolbar: tools left, back button right */}
       <div className="px-3 py-2 border-b border-stone-100 flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-1.5">{panelToolbar}</div>
         <button
           onClick={() => setSelectedPanelRow(null)}
-          className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold text-stone-500 hover:text-stone-800 hover:bg-stone-100 transition-all"
+          className="ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold text-stone-500 hover:text-stone-800 hover:bg-stone-100 transition-all"
         >
-          <ChevronRight size={12} className="rotate-180"/> Liste
+          Liste <ChevronRight size={12}/>
         </button>
-        <div className="ml-auto">{panelToolbar}</div>
       </div>
 
       {/* Selected row card — always visible at top */}
@@ -817,7 +817,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       )}
 
       {/* Canvas — flex-1, fills remaining space */}
-      <div className="flex-1 mx-2 mb-1 rounded-xl bg-gradient-to-b from-[#f8f5f0] to-[#ede8df] border border-stone-200/80 overflow-hidden relative" style={{ minHeight: 180 }}>
+      <div className="flex-1 mx-2 mb-1 rounded-xl bg-gradient-to-b from-[#f8f5f0] to-[#ede8df] border border-stone-200/80 overflow-hidden relative" style={{ minHeight: 260 }}>
         {activeDims && activePanel
           ? <PanelPreview2D key={activePanel.id} dims={activeDims} shape={activePanel}/>
           : (
@@ -830,7 +830,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
 
       {/* Extrude controls + steps — scrollable footer */}
       {panelDetailSection && (
-        <div className="shrink-0 overflow-y-auto border-t border-stone-100 px-2 py-2 space-y-3" style={{ maxHeight: '40%' }}>
+        <div className="shrink-0 overflow-y-auto border-t border-stone-100 px-2 py-2 space-y-3" style={{ maxHeight: '35%' }}>
           {panelDetailSection}
         </div>
       )}
@@ -864,13 +864,13 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
   );
 
   return (
-    <div className="fixed bg-white rounded-xl shadow-xl border border-stone-200 z-50 overflow-hidden" style={{ left: `${position.x}px`, top: `${position.y}px`, width: '390px' }}>
+    <div className="fixed bg-white rounded-xl shadow-xl border border-stone-200 z-50 overflow-hidden" style={{ left: `${position.x}px`, top: `${position.y}px`, width: isPreviewMode ? '500px' : '390px', transition: 'width 0.2s ease' }}>
       <div className="flex items-center justify-between px-3 py-2 bg-stone-50 border-b border-stone-200 select-none" style={{ cursor: isDraggingWindow ? 'grabbing' : 'grab' }} onMouseDown={handleMouseDown}>
         <div className="flex items-center gap-2"><GripVertical size={13} className="text-stone-300"/><span className="text-xs font-semibold text-stone-600 tracking-wide uppercase">Panel Editor</span></div>
         <div className="flex items-center gap-1.5">{panelToolbar}<button onClick={onClose} className="p-1 hover:bg-stone-200 rounded-md transition-colors"><X size={13} className="text-stone-400"/></button></div>
       </div>
       {isPreviewMode ? (
-        <div style={{ height: 'min(72vh, 520px)', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ height: 'min(80vh, 640px)', display: 'flex', flexDirection: 'column' }}>
           {previewPane}
         </div>
       ) : (
