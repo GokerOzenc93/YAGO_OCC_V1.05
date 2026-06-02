@@ -3,6 +3,11 @@ import { X, GripVertical, RotateCw, Trash2, MoveVertical, Check, Pencil, Shapes,
 import { useAppStore } from '../store';
 import { extractFacesFromGeometry, groupCoplanarFaces, CoplanarFaceGroup } from './FaceEditor';
 import { findExistingStepForFace } from './FaceExtrudeService';
+import {
+  getFacePlaneAxes, getShapeMatrix, projectTo2D, convexHull2D, getSubtractorFootprints2D,
+  subtractPolygon, ensureCCW, collectBoundaryEdgesWorld,
+  type Point2D,
+} from './FaceRaycastOverlay';
 import type { FilletData } from './Fillet';
 import * as THREE from 'three';
 
@@ -100,92 +105,205 @@ function getDimsFromGeo(geo: THREE.BufferGeometry, arrowRotated?: boolean) {
 type Dims = NonNullable<ReturnType<typeof getDimsFromGeo>>;
 interface PanelEditorProps { isOpen: boolean; onClose: () => void; embedded?: boolean; }
 
+/* ── helpers ─────────────────────────────────────────────────────────── */
+function extractTopFaceOutline(shape: any): { outer: Point2D[]; holes: Point2D[][] } | null {
+  if (!shape?.geometry) return null;
+
+  const faces = extractFacesFromGeometry(shape.geometry);
+  const groups = groupCoplanarFaces(faces);
+
+  // pick the largest flat face group (the "top" surface — largest area, axis-aligned normal)
+  let best: CoplanarFaceGroup | null = null;
+  for (const g of groups) {
+    const abs = Math.abs(g.normal.x) + Math.abs(g.normal.y) + Math.abs(g.normal.z);
+    if (abs < 0.9) continue; // skip curved
+    if (!best || g.totalArea > best.totalArea) best = g;
+  }
+  if (!best) return null;
+
+  const localToWorld = getShapeMatrix(shape);
+  const worldNormal = best.normal.clone().transformDirection(localToWorld);
+  const { u, v } = getFacePlaneAxes(worldNormal);
+
+  // collect all boundary edges of the largest face group
+  const boundaryEdges = collectBoundaryEdgesWorld(faces, best.faceIndices, localToWorld);
+  if (boundaryEdges.length < 3) return null;
+
+  // gather all unique projected points
+  const rawPts: Point2D[] = [];
+  for (const e of boundaryEdges) {
+    const worldCenter = new THREE.Vector3().addVectors(e.v1, e.v2).multiplyScalar(0.5);
+    rawPts.push(projectTo2D(e.v1, worldCenter, u, v));
+    rawPts.push(projectTo2D(e.v2, worldCenter, u, v));
+  }
+
+  // re-project all around a single stable origin
+  const originWorld = new THREE.Vector3();
+  for (const e of boundaryEdges) originWorld.add(e.v1).add(e.v2);
+  originWorld.divideScalar(boundaryEdges.length * 2);
+
+  const pts2D = boundaryEdges.flatMap(e => [
+    projectTo2D(e.v1, originWorld, u, v),
+    projectTo2D(e.v2, originWorld, u, v),
+  ]);
+
+  const outer = ensureCCW(convexHull2D(pts2D));
+  if (outer.length < 3) return null;
+
+  // subtraction cutouts
+  const subs = shape.subtractionGeometries || [];
+  let holes: Point2D[][] = [];
+  if (subs.length > 0) {
+    const footprints = getSubtractorFootprints2D(subs, localToWorld, worldNormal, originWorld, u, v, 50);
+    holes = footprints;
+  }
+
+  return { outer, holes };
+}
+
+function pts2svgPolygon(pts: Point2D[], scaleF: number, tx: number, ty: number): string {
+  return pts.map(p => `${(p.x * scaleF + tx).toFixed(1)},${(p.y * scaleF + ty).toFixed(1)}`).join(' ');
+}
+
 /* ── 2D Panel Preview ────────────────────────────────────────────────── */
-function PanelPreview2D({ dims, steps }: { dims: Dims; steps: any[] }) {
-  const svgRef = useRef<SVGSVGElement>(null);
-  const PAD_LEFT = 12, PAD_TOP = 16, PAD_RIGHT = 40, PAD_BOT = 12;
-  const svgW = 360, svgH = 160;
-  const maxW = svgW - PAD_LEFT - PAD_RIGHT, maxH = svgH - PAD_TOP - PAD_BOT;
-  const scaleX = maxW / Math.max(dims.primary, 1);
-  const scaleY = maxH / Math.max(dims.secondary, 1);
-  const scale = Math.min(scaleX, scaleY);
-  const rw = dims.primary * scale, rh = dims.secondary * scale;
+function PanelPreview2D({ dims, steps, shape }: { dims: Dims; steps: any[]; shape?: any }) {
+  const PAD_LEFT = 14, PAD_TOP = 18, PAD_RIGHT = 48, PAD_BOT = 14;
+  const svgW = 360, svgH = 164;
+  const maxW = svgW - PAD_LEFT - PAD_RIGHT;
+  const maxH = svgH - PAD_TOP - PAD_BOT;
+
+  // Try to extract real outline from geometry
+  const outline = useMemo(() => shape ? extractTopFaceOutline(shape) : null, [shape]);
+
+  // Compute bounding box of outline pts to fit in canvas
+  const { scaledOuter, scaledHoles, tx, ty, scaleF, bboxW, bboxH } = useMemo(() => {
+    if (!outline) return { scaledOuter: null, scaledHoles: [], tx: 0, ty: 0, scaleF: 1, bboxW: 0, bboxH: 0 };
+    const all = outline.outer;
+    const minX = Math.min(...all.map(p => p.x));
+    const maxX = Math.max(...all.map(p => p.x));
+    const minY = Math.min(...all.map(p => p.y));
+    const maxY = Math.max(...all.map(p => p.y));
+    const bboxW = maxX - minX || 1;
+    const bboxH = maxY - minY || 1;
+    const sf = Math.min(maxW / bboxW, maxH / bboxH);
+    const scaledW = bboxW * sf, scaledH = bboxH * sf;
+    const tx = PAD_LEFT + (maxW - scaledW) / 2 - minX * sf;
+    const ty = PAD_TOP + (maxH - scaledH) / 2 - minY * sf;
+    return { scaledOuter: outline.outer, scaledHoles: outline.holes, tx, ty, scaleF: sf, bboxW, bboxH };
+  }, [outline, maxW, maxH]);
+
+  // Fallback rect dims when no outline
+  const rw = dims.primary * Math.min(maxW / Math.max(dims.primary, 1), maxH / Math.max(dims.secondary, 1));
+  const rh = dims.secondary * Math.min(maxW / Math.max(dims.primary, 1), maxH / Math.max(dims.secondary, 1));
+  const fallbackScale = Math.min(maxW / Math.max(dims.primary, 1), maxH / Math.max(dims.secondary, 1));
   const ox = PAD_LEFT + (maxW - rw) / 2, oy = PAD_TOP + (maxH - rh) / 2;
 
-  // Build step lines: each step has axisLabel (e.g. "X+"), value
+  // Dimension label positions based on outline bbox or fallback rect
+  const dimW = scaledOuter ? bboxW * scaleF : rw;
+  const dimH = scaledOuter ? bboxH * scaleF : rh;
+  const dimOx = scaledOuter ? (PAD_LEFT + (maxW - dimW) / 2) : ox;
+  const dimOy = scaledOuter ? (PAD_TOP + (maxH - dimH) / 2) : oy;
+
+  const arrowLen = 5;
+
+  // Step lines — map along primary/secondary axes
   const stepLines = steps.map((s: any) => {
     const label: string = s.axisLabel || '';
     const isHoriz = label.startsWith('X') || label.startsWith('x');
     return { isHoriz, value: s.value, label, isFixed: s.isFixed };
   });
 
-  const arrowLen = 5;
+  // Build SVG path for shape with holes using even-odd fill
+  const outlinePath = scaledOuter
+    ? `M ${pts2svgPolygon(scaledOuter, scaleF, tx, ty).replace(/ /g, ' L ')} Z`
+      + scaledHoles.map(h => ` M ${pts2svgPolygon(h, scaleF, tx, ty).replace(/ /g, ' L ')} Z`).join('')
+    : null;
+
   return (
-    <svg ref={svgRef} width="100%" viewBox={`0 0 ${svgW} ${svgH}`} style={{ display: 'block' }}>
+    <svg width="100%" viewBox={`0 0 ${svgW} ${svgH}`} style={{ display: 'block' }}>
       <defs>
         <pattern id="hatch2d" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
           <line x1="0" y1="0" x2="0" y2="6" stroke="rgba(234,88,12,0.09)" strokeWidth="2"/>
         </pattern>
-        <filter id="shadow2d" x="-10%" y="-10%" width="120%" height="120%">
-          <feDropShadow dx="1.5" dy="2" stdDeviation="2" floodOpacity="0.10"/>
+        <filter id="shadow2d" x="-20%" y="-20%" width="140%" height="140%">
+          <feDropShadow dx="1.5" dy="2" stdDeviation="2.5" floodOpacity="0.12"/>
         </filter>
+        {outlinePath && (
+          <clipPath id="shapeClip">
+            <path d={outlinePath} fillRule="evenodd"/>
+          </clipPath>
+        )}
       </defs>
 
-      {/* Panel body */}
-      <rect x={ox} y={oy} width={rw} height={rh} rx={3} fill="url(#hatch2d)" filter="url(#shadow2d)"/>
-      <rect x={ox} y={oy} width={rw} height={rh} rx={3} fill="rgba(255,252,247,0.88)"/>
-
-      {/* Step lines */}
-      {stepLines.map((sl, i) => {
-        if (sl.isHoriz) {
-          const frac = Math.min(sl.value / Math.max(dims.primary, 1), 0.97);
-          const x = ox + rw * frac;
-          return (
-            <g key={i}>
-              <line x1={x} y1={oy + 1} x2={x} y2={oy + rh - 1} stroke="rgba(234,88,12,0.5)" strokeWidth="1" strokeDasharray="4 2.5"/>
-              <rect x={x - 10} y={oy + 3} width={20} height={9} rx={1.5} fill="rgba(255,237,213,0.9)"/>
-              <text x={x} y={oy + 10} textAnchor="middle" fontSize="6" fill="#c2410c" fontFamily="monospace" fontWeight="700">{sl.value}</text>
-            </g>
-          );
-        } else {
-          const frac = Math.min(sl.value / Math.max(dims.secondary, 1), 0.97);
-          const y = oy + rh * frac;
-          return (
-            <g key={i}>
-              <line x1={ox + 1} y1={y} x2={ox + rw - 1} y2={y} stroke="rgba(234,88,12,0.5)" strokeWidth="1" strokeDasharray="4 2.5"/>
-              <rect x={ox + 3} y={y - 9} width={20} height={9} rx={1.5} fill="rgba(255,237,213,0.9)"/>
-              <text x={ox + 13} y={y - 2} textAnchor="middle" fontSize="6" fill="#c2410c" fontFamily="monospace" fontWeight="700">{sl.value}</text>
-            </g>
-          );
-        }
-      })}
-
-      {/* Panel border */}
-      <rect x={ox} y={oy} width={rw} height={rh} rx={3} fill="none" stroke="#78716c" strokeWidth="1.2"/>
+      {outlinePath ? (
+        <>
+          {/* Hatch fill */}
+          <path d={outlinePath} fillRule="evenodd" fill="url(#hatch2d)" filter="url(#shadow2d)"/>
+          {/* Light fill */}
+          <path d={outlinePath} fillRule="evenodd" fill="rgba(255,252,247,0.88)"/>
+          {/* Step lines clipped to shape */}
+          <g clipPath="url(#shapeClip)">
+            {stepLines.map((sl, i) => {
+              if (sl.isHoriz) {
+                const frac = Math.min(sl.value / Math.max(dims.primary, 1), 0.97);
+                const x = dimOx + dimW * frac;
+                return (
+                  <g key={i}>
+                    <line x1={x} y1={dimOy} x2={x} y2={dimOy + dimH} stroke="rgba(234,88,12,0.5)" strokeWidth="1" strokeDasharray="4 2.5"/>
+                  </g>
+                );
+              } else {
+                const frac = Math.min(sl.value / Math.max(dims.secondary, 1), 0.97);
+                const y = dimOy + dimH * frac;
+                return (
+                  <g key={i}>
+                    <line x1={dimOx} y1={y} x2={dimOx + dimW} y2={y} stroke="rgba(234,88,12,0.5)" strokeWidth="1" strokeDasharray="4 2.5"/>
+                  </g>
+                );
+              }
+            })}
+          </g>
+          {/* Outline border */}
+          <path d={outlinePath} fillRule="evenodd" fill="none" stroke="#78716c" strokeWidth="1.3"/>
+        </>
+      ) : (
+        <>
+          <rect x={ox} y={oy} width={rw} height={rh} rx={3} fill="url(#hatch2d)" filter="url(#shadow2d)"/>
+          <rect x={ox} y={oy} width={rw} height={rh} rx={3} fill="rgba(255,252,247,0.88)"/>
+          {stepLines.map((sl, i) => {
+            if (sl.isHoriz) {
+              const x = ox + rw * Math.min(sl.value / Math.max(dims.primary, 1), 0.97);
+              return <line key={i} x1={x} y1={oy} x2={x} y2={oy + rh} stroke="rgba(234,88,12,0.5)" strokeWidth="1" strokeDasharray="4 2.5"/>;
+            } else {
+              const y = oy + rh * Math.min(sl.value / Math.max(dims.secondary, 1), 0.97);
+              return <line key={i} x1={ox} y1={y} x2={ox + rw} y2={y} stroke="rgba(234,88,12,0.5)" strokeWidth="1" strokeDasharray="4 2.5"/>;
+            }
+          })}
+          <rect x={ox} y={oy} width={rw} height={rh} rx={3} fill="none" stroke="#78716c" strokeWidth="1.3"/>
+        </>
+      )}
 
       {/* W dimension — above */}
-      <line x1={ox} y1={oy - 10} x2={ox + rw} y2={oy - 10} stroke="#a8a29e" strokeWidth="0.8"/>
-      <line x1={ox} y1={oy - 4} x2={ox} y2={oy - 16} stroke="#a8a29e" strokeWidth="0.8"/>
-      <line x1={ox + rw} y1={oy - 4} x2={ox + rw} y2={oy - 16} stroke="#a8a29e" strokeWidth="0.8"/>
-      {/* arrowheads W */}
-      <polygon points={`${ox},${oy-10} ${ox+arrowLen},${oy-10-2.5} ${ox+arrowLen},${oy-10+2.5}`} fill="#a8a29e"/>
-      <polygon points={`${ox+rw},${oy-10} ${ox+rw-arrowLen},${oy-10-2.5} ${ox+rw-arrowLen},${oy-10+2.5}`} fill="#a8a29e"/>
-      <rect x={ox + rw/2 - 22} y={oy - 17} width={44} height={13} rx={3} fill="rgba(245,242,237,0.97)"/>
-      <text x={ox + rw / 2} y={oy - 7} textAnchor="middle" fontSize="11" fill="#1c1917" fontFamily="monospace" fontWeight="700">{dims.primary}</text>
+      <line x1={dimOx} y1={dimOy - 10} x2={dimOx + dimW} y2={dimOy - 10} stroke="#a8a29e" strokeWidth="0.8"/>
+      <line x1={dimOx} y1={dimOy - 4} x2={dimOx} y2={dimOy - 17} stroke="#a8a29e" strokeWidth="0.8"/>
+      <line x1={dimOx + dimW} y1={dimOy - 4} x2={dimOx + dimW} y2={dimOy - 17} stroke="#a8a29e" strokeWidth="0.8"/>
+      <polygon points={`${dimOx},${dimOy-10} ${dimOx+arrowLen},${dimOy-12.5} ${dimOx+arrowLen},${dimOy-7.5}`} fill="#a8a29e"/>
+      <polygon points={`${dimOx+dimW},${dimOy-10} ${dimOx+dimW-arrowLen},${dimOy-12.5} ${dimOx+dimW-arrowLen},${dimOy-7.5}`} fill="#a8a29e"/>
+      <rect x={dimOx + dimW/2 - 24} y={dimOy - 18} width={48} height={14} rx={3} fill="rgba(245,242,237,0.97)"/>
+      <text x={dimOx + dimW/2} y={dimOy - 7} textAnchor="middle" fontSize="11" fill="#1c1917" fontFamily="monospace" fontWeight="700">{dims.primary}</text>
 
       {/* H dimension — right */}
-      <line x1={ox + rw + 10} y1={oy} x2={ox + rw + 10} y2={oy + rh} stroke="#a8a29e" strokeWidth="0.8"/>
-      <line x1={ox + rw + 5} y1={oy} x2={ox + rw + 15} y2={oy} stroke="#a8a29e" strokeWidth="0.8"/>
-      <line x1={ox + rw + 5} y1={oy + rh} x2={ox + rw + 15} y2={oy + rh} stroke="#a8a29e" strokeWidth="0.8"/>
-      {/* arrowheads H */}
-      <polygon points={`${ox+rw+10},${oy} ${ox+rw+10-2.5},${oy+arrowLen} ${ox+rw+10+2.5},${oy+arrowLen}`} fill="#a8a29e"/>
-      <polygon points={`${ox+rw+10},${oy+rh} ${ox+rw+10-2.5},${oy+rh-arrowLen} ${ox+rw+10+2.5},${oy+rh-arrowLen}`} fill="#a8a29e"/>
-      <rect x={ox + rw + 18} y={oy + rh/2 - 8} width={38} height={14} rx={3} fill="rgba(245,242,237,0.97)"/>
-      <text x={ox + rw + 37} y={oy + rh/2 + 3} textAnchor="middle" fontSize="11" fill="#1c1917" fontFamily="monospace" fontWeight="700">{dims.secondary}</text>
+      <line x1={dimOx + dimW + 10} y1={dimOy} x2={dimOx + dimW + 10} y2={dimOy + dimH} stroke="#a8a29e" strokeWidth="0.8"/>
+      <line x1={dimOx + dimW + 4} y1={dimOy} x2={dimOx + dimW + 16} y2={dimOy} stroke="#a8a29e" strokeWidth="0.8"/>
+      <line x1={dimOx + dimW + 4} y1={dimOy + dimH} x2={dimOx + dimW + 16} y2={dimOy + dimH} stroke="#a8a29e" strokeWidth="0.8"/>
+      <polygon points={`${dimOx+dimW+10},${dimOy} ${dimOx+dimW+7.5},${dimOy+arrowLen} ${dimOx+dimW+12.5},${dimOy+arrowLen}`} fill="#a8a29e"/>
+      <polygon points={`${dimOx+dimW+10},${dimOy+dimH} ${dimOx+dimW+7.5},${dimOy+dimH-arrowLen} ${dimOx+dimW+12.5},${dimOy+dimH-arrowLen}`} fill="#a8a29e"/>
+      <rect x={dimOx + dimW + 18} y={dimOy + dimH/2 - 8} width={40} height={14} rx={3} fill="rgba(245,242,237,0.97)"/>
+      <text x={dimOx + dimW + 38} y={dimOy + dimH/2 + 3} textAnchor="middle" fontSize="11" fill="#1c1917" fontFamily="monospace" fontWeight="700">{dims.secondary}</text>
 
-      {/* Thickness pill — bottom-left corner */}
-      <rect x={ox + 4} y={oy + rh - 17} width={46} height={14} rx={4} fill="rgba(41,37,36,0.78)"/>
-      <text x={ox + 27} y={oy + rh - 7} textAnchor="middle" fontSize="10" fill="rgba(255,255,255,0.95)" fontFamily="monospace" fontWeight="700">T {dims.thickness}</text>
+      {/* Thickness pill */}
+      <rect x={dimOx + 4} y={dimOy + dimH - 17} width={46} height={14} rx={4} fill="rgba(41,37,36,0.78)"/>
+      <text x={dimOx + 27} y={dimOy + dimH - 7} textAnchor="middle" fontSize="10" fill="rgba(255,255,255,0.95)" fontFamily="monospace" fontWeight="700">T {dims.thickness}</text>
     </svg>
   );
 }
@@ -464,7 +582,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         {/* 2D Preview */}
         {activeDims && (
           <div className="rounded-xl bg-gradient-to-b from-[#f8f5f0] to-[#f0ece4] border border-stone-200/80 overflow-hidden px-2 pt-3 pb-2">
-            <PanelPreview2D dims={activeDims} steps={activeSteps}/>
+            <PanelPreview2D dims={activeDims} steps={activeSteps} shape={activePanel}/>
           </div>
         )}
 
