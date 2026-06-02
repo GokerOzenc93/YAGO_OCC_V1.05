@@ -103,14 +103,14 @@ interface PanelEditorProps { isOpen: boolean; onClose: () => void; embedded?: bo
 /* ── 2D Panel Preview ────────────────────────────────────────────────── */
 function PanelPreview2D({ dims, steps }: { dims: Dims; steps: any[] }) {
   const svgRef = useRef<SVGSVGElement>(null);
-  const PAD = 18;
-  const svgW = 220, svgH = 110;
-  const maxW = svgW - PAD * 2, maxH = svgH - PAD * 2;
+  const PAD_LEFT = 12, PAD_TOP = 16, PAD_RIGHT = 40, PAD_BOT = 12;
+  const svgW = 360, svgH = 160;
+  const maxW = svgW - PAD_LEFT - PAD_RIGHT, maxH = svgH - PAD_TOP - PAD_BOT;
   const scaleX = maxW / Math.max(dims.primary, 1);
   const scaleY = maxH / Math.max(dims.secondary, 1);
-  const scale = Math.min(scaleX, scaleY, 0.9);
+  const scale = Math.min(scaleX, scaleY);
   const rw = dims.primary * scale, rh = dims.secondary * scale;
-  const ox = (svgW - rw) / 2, oy = (svgH - rh) / 2;
+  const ox = PAD_LEFT + (maxW - rw) / 2, oy = PAD_TOP + (maxH - rh) / 2;
 
   // Build step lines: each step has axisLabel (e.g. "X+"), value
   const stepLines = steps.map((s: any) => {
@@ -119,55 +119,73 @@ function PanelPreview2D({ dims, steps }: { dims: Dims; steps: any[] }) {
     return { isHoriz, value: s.value, label, isFixed: s.isFixed };
   });
 
+  const arrowLen = 5;
   return (
-    <svg ref={svgRef} width={svgW} height={svgH} viewBox={`0 0 ${svgW} ${svgH}`} style={{ overflow: 'visible' }}>
+    <svg ref={svgRef} width="100%" viewBox={`0 0 ${svgW} ${svgH}`} style={{ display: 'block' }}>
       <defs>
-        <pattern id="hatch" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
-          <line x1="0" y1="0" x2="0" y2="5" stroke="rgba(234,88,12,0.10)" strokeWidth="1.5"/>
+        <pattern id="hatch2d" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+          <line x1="0" y1="0" x2="0" y2="6" stroke="rgba(234,88,12,0.09)" strokeWidth="2"/>
         </pattern>
+        <filter id="shadow2d" x="-10%" y="-10%" width="120%" height="120%">
+          <feDropShadow dx="1.5" dy="2" stdDeviation="2" floodOpacity="0.10"/>
+        </filter>
       </defs>
-      {/* Shadow */}
-      <rect x={ox + 2} y={oy + 2} width={rw} height={rh} rx={2} fill="rgba(40,30,20,0.06)" />
-      {/* Panel fill */}
-      <rect x={ox} y={oy} width={rw} height={rh} rx={2} fill="url(#hatch)" stroke="none"/>
-      <rect x={ox} y={oy} width={rw} height={rh} rx={2} fill="rgba(255,251,245,0.82)" stroke="none"/>
+
+      {/* Panel body */}
+      <rect x={ox} y={oy} width={rw} height={rh} rx={3} fill="url(#hatch2d)" filter="url(#shadow2d)"/>
+      <rect x={ox} y={oy} width={rw} height={rh} rx={3} fill="rgba(255,252,247,0.88)"/>
+
       {/* Step lines */}
       {stepLines.map((sl, i) => {
         if (sl.isHoriz) {
-          const frac = Math.min(sl.value / Math.max(dims.primary, 1), 0.95);
+          const frac = Math.min(sl.value / Math.max(dims.primary, 1), 0.97);
           const x = ox + rw * frac;
           return (
             <g key={i}>
-              <line x1={x} y1={oy} x2={x} y2={oy + rh} stroke="rgba(234,88,12,0.55)" strokeWidth="1" strokeDasharray="3 2"/>
-              <text x={x + 3} y={oy + 9} fontSize="6" fill="#ea580c" fontFamily="monospace" opacity="0.8">{sl.value}</text>
+              <line x1={x} y1={oy + 1} x2={x} y2={oy + rh - 1} stroke="rgba(234,88,12,0.5)" strokeWidth="1" strokeDasharray="4 2.5"/>
+              <rect x={x - 10} y={oy + 3} width={20} height={9} rx={1.5} fill="rgba(255,237,213,0.9)"/>
+              <text x={x} y={oy + 10} textAnchor="middle" fontSize="6" fill="#c2410c" fontFamily="monospace" fontWeight="700">{sl.value}</text>
             </g>
           );
         } else {
-          const frac = Math.min(sl.value / Math.max(dims.secondary, 1), 0.95);
+          const frac = Math.min(sl.value / Math.max(dims.secondary, 1), 0.97);
           const y = oy + rh * frac;
           return (
             <g key={i}>
-              <line x1={ox} y1={y} x2={ox + rw} y2={y} stroke="rgba(234,88,12,0.55)" strokeWidth="1" strokeDasharray="3 2"/>
-              <text x={ox + 3} y={y - 2} fontSize="6" fill="#ea580c" fontFamily="monospace" opacity="0.8">{sl.value}</text>
+              <line x1={ox + 1} y1={y} x2={ox + rw - 1} y2={y} stroke="rgba(234,88,12,0.5)" strokeWidth="1" strokeDasharray="4 2.5"/>
+              <rect x={ox + 3} y={y - 9} width={20} height={9} rx={1.5} fill="rgba(255,237,213,0.9)"/>
+              <text x={ox + 13} y={y - 2} textAnchor="middle" fontSize="6" fill="#c2410c" fontFamily="monospace" fontWeight="700">{sl.value}</text>
             </g>
           );
         }
       })}
-      {/* Border */}
-      <rect x={ox} y={oy} width={rw} height={rh} rx={2} fill="none" stroke="#44403c" strokeWidth="1.2"/>
-      {/* Dim arrows — W */}
-      <line x1={ox} y1={oy - 6} x2={ox + rw} y2={oy - 6} stroke="#706b65" strokeWidth="0.8"/>
-      <line x1={ox} y1={oy - 9} x2={ox} y2={oy - 3} stroke="#706b65" strokeWidth="0.8"/>
-      <line x1={ox + rw} y1={oy - 9} x2={ox + rw} y2={oy - 3} stroke="#706b65" strokeWidth="0.8"/>
-      <text x={ox + rw / 2} y={oy - 8} textAnchor="middle" fontSize="7" fill="#44403c" fontFamily="monospace" fontWeight="600">{dims.primary}</text>
-      {/* Dim arrows — H */}
-      <line x1={ox + rw + 6} y1={oy} x2={ox + rw + 6} y2={oy + rh} stroke="#706b65" strokeWidth="0.8"/>
-      <line x1={ox + rw + 3} y1={oy} x2={ox + rw + 9} y2={oy} stroke="#706b65" strokeWidth="0.8"/>
-      <line x1={ox + rw + 3} y1={oy + rh} x2={ox + rw + 9} y2={oy + rh} stroke="#706b65" strokeWidth="0.8"/>
-      <text x={ox + rw + 9} y={oy + rh / 2 + 2.5} textAnchor="start" fontSize="7" fill="#44403c" fontFamily="monospace" fontWeight="600">{dims.secondary}</text>
-      {/* Thickness badge */}
-      <rect x={ox + 2} y={oy + rh - 14} width={28} height={11} rx={2} fill="rgba(40,30,20,0.55)"/>
-      <text x={ox + 16} y={oy + rh - 6} textAnchor="middle" fontSize="6.5" fill="#fff" fontFamily="monospace" fontWeight="700">T {dims.thickness}</text>
+
+      {/* Panel border */}
+      <rect x={ox} y={oy} width={rw} height={rh} rx={3} fill="none" stroke="#78716c" strokeWidth="1.2"/>
+
+      {/* W dimension — above */}
+      <line x1={ox} y1={oy - 8} x2={ox + rw} y2={oy - 8} stroke="#a8a29e" strokeWidth="0.8"/>
+      <line x1={ox} y1={oy - 3} x2={ox} y2={oy - 13} stroke="#a8a29e" strokeWidth="0.8"/>
+      <line x1={ox + rw} y1={oy - 3} x2={ox + rw} y2={oy - 13} stroke="#a8a29e" strokeWidth="0.8"/>
+      {/* arrowheads W */}
+      <polygon points={`${ox},${oy-8} ${ox+arrowLen},${oy-8-2.5} ${ox+arrowLen},${oy-8+2.5}`} fill="#a8a29e"/>
+      <polygon points={`${ox+rw},${oy-8} ${ox+rw-arrowLen},${oy-8-2.5} ${ox+rw-arrowLen},${oy-8+2.5}`} fill="#a8a29e"/>
+      <rect x={ox + rw/2 - 16} y={oy - 14} width={32} height={10} rx={2} fill="rgba(245,242,237,0.95)"/>
+      <text x={ox + rw / 2} y={oy - 7} textAnchor="middle" fontSize="8" fill="#44403c" fontFamily="monospace" fontWeight="700">{dims.primary}</text>
+
+      {/* H dimension — right */}
+      <line x1={ox + rw + 9} y1={oy} x2={ox + rw + 9} y2={oy + rh} stroke="#a8a29e" strokeWidth="0.8"/>
+      <line x1={ox + rw + 4} y1={oy} x2={ox + rw + 14} y2={oy} stroke="#a8a29e" strokeWidth="0.8"/>
+      <line x1={ox + rw + 4} y1={oy + rh} x2={ox + rw + 14} y2={oy + rh} stroke="#a8a29e" strokeWidth="0.8"/>
+      {/* arrowheads H */}
+      <polygon points={`${ox+rw+9},${oy} ${ox+rw+9-2.5},${oy+arrowLen} ${ox+rw+9+2.5},${oy+arrowLen}`} fill="#a8a29e"/>
+      <polygon points={`${ox+rw+9},${oy+rh} ${ox+rw+9-2.5},${oy+rh-arrowLen} ${ox+rw+9+2.5},${oy+rh-arrowLen}`} fill="#a8a29e"/>
+      <rect x={ox + rw + 16} y={oy + rh/2 - 6} width={28} height={10} rx={2} fill="rgba(245,242,237,0.95)"/>
+      <text x={ox + rw + 30} y={oy + rh/2 + 2} textAnchor="middle" fontSize="8" fill="#44403c" fontFamily="monospace" fontWeight="700">{dims.secondary}</text>
+
+      {/* Thickness pill — bottom-left corner */}
+      <rect x={ox + 3} y={oy + rh - 14} width={34} height={11} rx={3} fill="rgba(41,37,36,0.72)"/>
+      <text x={ox + 20} y={oy + rh - 6.5} textAnchor="middle" fontSize="7" fill="rgba(255,255,255,0.92)" fontFamily="monospace" fontWeight="700">T {dims.thickness}</text>
     </svg>
   );
 }
@@ -446,16 +464,8 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       <div className="flex flex-col gap-3">
         {/* 2D Preview */}
         {activeDims && (
-          <div className="rounded-xl bg-gradient-to-b from-stone-50 to-stone-100/60 border border-stone-200 overflow-hidden">
-            <div className="px-3 pt-2.5 pb-0.5 flex items-center justify-between">
-              <span className="text-[10px] font-semibold text-stone-400 uppercase tracking-widest">Preview</span>
-              <span className="text-[10px] font-mono text-stone-400">
-                {activeDims.primary} × {activeDims.secondary} × {activeDims.thickness}
-              </span>
-            </div>
-            <div className="flex items-center justify-center py-1">
-              <PanelPreview2D dims={activeDims} steps={activeSteps}/>
-            </div>
+          <div className="rounded-xl bg-gradient-to-b from-[#f8f5f0] to-[#f0ece4] border border-stone-200/80 overflow-hidden px-2 pt-3 pb-2">
+            <PanelPreview2D dims={activeDims} steps={activeSteps}/>
           </div>
         )}
 
@@ -529,56 +539,43 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
           )}
         </div>
 
-        {/* Extrude Steps */}
+        {/* Extrude Steps — compact inline chips */}
         {activeSteps.length > 0 && (
-          <div className="rounded-xl bg-white border border-stone-200 overflow-hidden">
-            <div className="px-3 py-2 border-b border-stone-100 flex items-center justify-between">
-              <span className="text-[10px] font-semibold text-stone-400 uppercase tracking-widest">Extrude Steps</span>
-              <span className="text-[10px] text-stone-300 font-mono">{activeSteps.length} step{activeSteps.length !== 1 ? 's' : ''}</span>
-            </div>
-            <div className="p-2 space-y-1">
+          <div className="rounded-lg border border-stone-200 bg-white overflow-hidden">
+            <div className="px-2.5 py-1.5 flex items-center gap-1.5 flex-wrap">
+              <span className="text-[9px] font-bold text-stone-300 uppercase tracking-widest mr-0.5 shrink-0">Steps</span>
               {activeSteps.map((s: any) => (
-                <div key={s.id} className="group flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-stone-50 transition-colors">
-                  <span className="text-[10px] font-bold text-orange-600 bg-orange-50 border border-orange-200 rounded px-1.5 py-0.5 font-mono min-w-[28px] text-center shrink-0">
-                    {s.axisLabel}
-                  </span>
-
-                  {editingStepId === s.id ? (
-                    <div className="flex items-center gap-1.5 flex-1">
-                      <input
-                        type="text" inputMode="numeric" autoFocus
-                        value={editingStepValue}
-                        onChange={e => setEditingStepValue(Number(e.target.value)||0)}
-                        onKeyDown={e => { if (e.key==='Enter') saveStep(activePanelId,s.id,editingStepValue); else if (e.key==='Escape') setEditingStepId(null); }}
-                        className="flex-1 h-6 px-2 text-xs font-mono text-center border border-orange-300 rounded-md bg-white focus:outline-none focus:border-orange-400"
-                      />
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${s.isFixed ? 'text-blue-600 bg-blue-50' : 'text-stone-500 bg-stone-100'}`}>
-                        {s.isFixed ? 'Fix' : 'Dyn'}
-                      </span>
-                      <button onClick={() => saveStep(activePanelId,s.id,editingStepValue)}
-                        className="flex items-center justify-center w-5 h-5 rounded border border-green-400 bg-green-500 text-white hover:bg-green-600 transition-colors shrink-0"><Check size={10}/></button>
-                      <button onClick={() => setEditingStepId(null)}
-                        className="flex items-center justify-center w-5 h-5 rounded border border-stone-300 bg-white text-stone-500 hover:bg-stone-100 transition-colors shrink-0"><X size={10}/></button>
+                editingStepId === s.id ? (
+                  <div key={s.id} className="flex items-center gap-1 bg-orange-50 border border-orange-200 rounded-md px-1.5 py-0.5">
+                    <span className="text-[9px] font-bold text-orange-500 font-mono shrink-0">{s.axisLabel}</span>
+                    <input
+                      type="text" inputMode="numeric" autoFocus
+                      value={editingStepValue}
+                      onChange={e => setEditingStepValue(Number(e.target.value)||0)}
+                      onKeyDown={e => { if (e.key==='Enter') saveStep(activePanelId,s.id,editingStepValue); else if (e.key==='Escape') setEditingStepId(null); }}
+                      className="w-12 h-4 px-1 text-[10px] font-mono text-center border border-orange-300 rounded bg-white focus:outline-none"
+                    />
+                    <button onClick={() => saveStep(activePanelId,s.id,editingStepValue)}
+                      className="text-green-500 hover:text-green-600 shrink-0"><Check size={9}/></button>
+                    <button onClick={() => setEditingStepId(null)}
+                      className="text-stone-400 hover:text-stone-600 shrink-0"><X size={9}/></button>
+                  </div>
+                ) : (
+                  <div key={s.id} className="group flex items-center gap-1 bg-stone-50 border border-stone-200 rounded-md px-1.5 py-0.5 hover:border-orange-200 hover:bg-orange-50 transition-all cursor-default">
+                    <span className="text-[9px] font-bold text-orange-500 font-mono shrink-0">{s.axisLabel}</span>
+                    <span className="text-[10px] font-mono text-stone-700 font-semibold">{s.value}</span>
+                    <span className={`text-[8px] font-semibold shrink-0 ${s.isFixed ? 'text-blue-400' : 'text-stone-300'}`}>{s.isFixed ? 'F' : 'D'}</span>
+                    <div className="hidden group-hover:flex items-center gap-0.5 ml-0.5">
+                      <button onClick={() => { setEditingStepId(s.id); setEditingStepValue(s.value); }}
+                        className="text-orange-400 hover:text-orange-600 transition-colors"><Pencil size={8}/></button>
+                      <button onClick={async () => {
+                        const ps = shapes.find(x => x.id === activePanelId); if (!ps) return;
+                        const { deleteExtrudeStep } = await import('./FaceExtrudeService');
+                        await deleteExtrudeStep(ps, s.id, updateShape);
+                      }} className="text-red-300 hover:text-red-500 transition-colors"><Trash2 size={8}/></button>
                     </div>
-                  ) : (
-                    <>
-                      <span className="text-xs font-mono text-stone-700 font-semibold flex-1">{s.value}</span>
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold shrink-0 ${s.isFixed ? 'text-blue-600 bg-blue-50' : 'text-stone-500 bg-stone-100'}`}>
-                        {s.isFixed ? 'Fix' : 'Dyn'}
-                      </span>
-                      <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-                        <button onClick={() => { setEditingStepId(s.id); setEditingStepValue(s.value); }}
-                          className="flex items-center justify-center w-5 h-5 rounded border border-orange-200 bg-white text-orange-500 hover:bg-orange-50 transition-colors"><Pencil size={9}/></button>
-                        <button onClick={async () => {
-                          const ps = shapes.find(x => x.id === activePanelId); if (!ps) return;
-                          const { deleteExtrudeStep } = await import('./FaceExtrudeService');
-                          await deleteExtrudeStep(ps, s.id, updateShape);
-                        }}
-                          className="flex items-center justify-center w-5 h-5 rounded border border-red-200 bg-white text-red-400 hover:bg-red-50 transition-colors"><Trash2 size={9}/></button>
-                      </div>
-                    </>
-                  )}
-                </div>
+                  </div>
+                )
               ))}
             </div>
           </div>
