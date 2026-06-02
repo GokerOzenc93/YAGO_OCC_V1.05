@@ -469,7 +469,11 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
           } else if (panelSelectMode && isPanel && shape.parameters?.parentShapeId) {
             const parentId = shape.parameters.parentShapeId;
             if (selectedShapeId !== parentId) selectShape(parentId);
-            setSelectedPanelRow(shape.parameters.faceIndex ?? null, shape.parameters.extraRowId || null, parentId);
+            // Virtual face panels use 'vf-{id}' row key; legacy panels use faceIndex number
+            const rowKey = shape.parameters?.virtualFaceId
+              ? `vf-${shape.parameters.virtualFaceId}`
+              : (shape.parameters.faceIndex ?? null);
+            setSelectedPanelRow(rowKey, shape.parameters.extraRowId || null, parentId);
             selectSecondaryShape(null);
           } else if (panelSelectMode && !isPanel) {
             selectShape(shape.id);

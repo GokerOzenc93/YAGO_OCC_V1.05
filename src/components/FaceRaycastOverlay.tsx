@@ -718,24 +718,42 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
   return { rayLines: lines, originLocal: clickWorld.clone().sub(parentPos), geo, edgeGeo, virtualFace };
 }
 
+// Refined neutral palette — slate/zinc tones, subtle and professional
+const RAYCAST_COLORS = {
+  rayLine:        0x94a3b8, // slate-400 — muted line
+  hitDot:         0x64748b, // slate-500 — subtle endpoint
+  originDot:      0xe2e8f0, // slate-200 — bright origin
+  previewFill:    0x38bdf8, // sky-400 — clean ice blue fill
+  previewEdge:    0x0ea5e9, // sky-500 — crisper boundary
+  hoverEmpty:     0xfcd34d, // amber-300 — warm highlight for empty face
+  hoverHasVF:     0x7dd3fc, // sky-300 — cool highlight for placed face
+  vfFill:         0x38bdf8, // sky-400 — consistent with preview
+  vfFillHovered:  0x0ea5e9, // sky-500
+  vfEdge:         0x0369a1, // sky-700 — visible edge
+};
+
 const RayLine3D: React.FC<{ start: THREE.Vector3; end: THREE.Vector3 }> = React.memo(({ start, end }) => {
   const geometry = useMemo(() => new THREE.BufferGeometry().setFromPoints([start, end]), [start.x, start.y, start.z, end.x, end.y, end.z]);
-  return <lineSegments geometry={geometry} raycast={() => null}><lineBasicMaterial color={0xf97316} linewidth={2} depthTest={false} transparent opacity={0.9} /></lineSegments>;
+  return (
+    <lineSegments geometry={geometry} raycast={() => null}>
+      <lineBasicMaterial color={RAYCAST_COLORS.rayLine} linewidth={1.5} depthTest={false} transparent opacity={0.7} />
+    </lineSegments>
+  );
 });
 RayLine3D.displayName = 'RayLine3D';
 
 const HitDot: React.FC<{ position: THREE.Vector3 }> = React.memo(({ position }) => (
   <mesh position={[position.x, position.y, position.z]} raycast={() => null}>
-    <sphereGeometry args={[2.5, 8, 8]} />
-    <meshBasicMaterial color={0xef4444} depthTest={false} transparent opacity={0.9} />
+    <sphereGeometry args={[2, 8, 8]} />
+    <meshBasicMaterial color={RAYCAST_COLORS.hitDot} depthTest={false} transparent opacity={0.8} />
   </mesh>
 ));
 HitDot.displayName = 'HitDot';
 
 const OriginDot: React.FC<{ position: THREE.Vector3 }> = React.memo(({ position }) => (
   <mesh position={[position.x, position.y, position.z]} raycast={() => null}>
-    <sphereGeometry args={[3.5, 8, 8]} />
-    <meshBasicMaterial color={0xfbbf24} depthTest={false} transparent opacity={0.95} />
+    <sphereGeometry args={[3, 8, 8]} />
+    <meshBasicMaterial color={RAYCAST_COLORS.originDot} depthTest={false} transparent opacity={0.9} />
   </mesh>
 ));
 OriginDot.displayName = 'OriginDot';
@@ -802,10 +820,10 @@ export const VirtualFaceOverlay: React.FC<VirtualFaceOverlayProps> = ({ shape })
               onPointerOver={(e) => { e.stopPropagation(); setHoveredId(surface.id); }}
               onPointerOut={(e) => { e.stopPropagation(); setHoveredId(null); }}
             >
-              <meshBasicMaterial color={isHovered && panelSurfaceSelectMode ? 0x00cc44 : 0x22c55e} transparent opacity={isHovered ? 0.65 : 0.38} side={THREE.DoubleSide} polygonOffset polygonOffsetFactor={-2} polygonOffsetUnits={-2} depthTest={false} />
+              <meshBasicMaterial color={isHovered && panelSurfaceSelectMode ? RAYCAST_COLORS.vfFillHovered : RAYCAST_COLORS.vfFill} transparent opacity={isHovered ? 0.55 : 0.30} side={THREE.DoubleSide} polygonOffset polygonOffsetFactor={-2} polygonOffsetUnits={-2} depthTest={false} />
             </mesh>
             <lineSegments geometry={surface.edgeGeo}>
-              <lineBasicMaterial color={0x16a34a} linewidth={2} depthTest={false} transparent opacity={0.9} />
+              <lineBasicMaterial color={RAYCAST_COLORS.vfEdge} linewidth={2} depthTest={false} transparent opacity={0.85} />
             </lineSegments>
           </React.Fragment>
         );
@@ -949,7 +967,10 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     setPending(buildPreview(previewClickPoint, faceGroups[targetGroupIndex], faces, localToWorld, worldToLocal, childPanels, shape.id, shape.subtractionGeometries || [], shape.geometry, shapeVirtualFaces));
   };
   const handleContextMenu = (e: any) => {
-    e.stopPropagation(); e.nativeEvent?.preventDefault?.();
+    // Always suppress native context menu in raycast mode
+    e.stopPropagation();
+    e.nativeEvent?.preventDefault?.();
+    e.nativeEvent?.stopPropagation?.();
     if (pending) { addVirtualFace(pending.virtualFace); setPending(null); lastClickRef.current = null; setRaycastMode(false); }
   };
   if (!raycastMode) return null;
@@ -958,7 +979,7 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
       <mesh geometry={shape.geometry} visible={false} onPointerMove={handlePointerMove} onPointerOut={handlePointerOut} onPointerDown={handlePointerDown} onContextMenu={handleContextMenu} />
       {hoverHighlightGeometry && (
         <mesh geometry={hoverHighlightGeometry} raycast={() => null}>
-          <meshBasicMaterial color={hoveredGroupIndex !== null && groupHasVirtualFace(hoveredGroupIndex) ? 0x60a5fa : 0xfbbf24} transparent opacity={0.35} side={THREE.DoubleSide} polygonOffset polygonOffsetFactor={-1} polygonOffsetUnits={-1} />
+          <meshBasicMaterial color={hoveredGroupIndex !== null && groupHasVirtualFace(hoveredGroupIndex) ? RAYCAST_COLORS.hoverHasVF : RAYCAST_COLORS.hoverEmpty} transparent opacity={0.28} side={THREE.DoubleSide} polygonOffset polygonOffsetFactor={-1} polygonOffsetUnits={-1} />
         </mesh>
       )}
       {pending && (
@@ -971,10 +992,10 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
             </React.Fragment>
           ))}
           <mesh geometry={pending.geo} raycast={() => null}>
-            <meshBasicMaterial color={0x22c55e} transparent opacity={0.5} side={THREE.DoubleSide} polygonOffset polygonOffsetFactor={-2} polygonOffsetUnits={-2} depthTest={false} />
+            <meshBasicMaterial color={RAYCAST_COLORS.previewFill} transparent opacity={0.38} side={THREE.DoubleSide} polygonOffset polygonOffsetFactor={-2} polygonOffsetUnits={-2} depthTest={false} />
           </mesh>
           <lineSegments geometry={pending.edgeGeo} raycast={() => null}>
-            <lineBasicMaterial color={0x16a34a} linewidth={2} depthTest={false} transparent opacity={0.9} />
+            <lineBasicMaterial color={RAYCAST_COLORS.previewEdge} linewidth={2} depthTest={false} transparent opacity={1.0} />
           </lineSegments>
         </>
       )}

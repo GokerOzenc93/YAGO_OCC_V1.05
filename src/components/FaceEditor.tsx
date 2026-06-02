@@ -195,13 +195,14 @@ export const FaceEditor: React.FC<FaceEditorProps> = ({ shape, isActive }) => {
           geometry={geom}
         >
           <meshBasicMaterial
-            color={0xff0000}
+            color={0x0ea5e9}
             transparent
-            opacity={0.6}
+            opacity={0.55}
             side={THREE.DoubleSide}
             polygonOffset
-            polygonOffsetFactor={-1}
-            polygonOffsetUnits={-1}
+            polygonOffsetFactor={-2}
+            polygonOffsetUnits={-2}
+            depthTest={false}
           />
         </mesh>
       ))}
@@ -211,13 +212,14 @@ export const FaceEditor: React.FC<FaceEditorProps> = ({ shape, isActive }) => {
           geometry={highlightGeometry}
         >
           <meshBasicMaterial
-            color={0xff0000}
+            color={0x38bdf8}
             transparent
-            opacity={0.5}
+            opacity={0.45}
             side={THREE.DoubleSide}
             polygonOffset
-            polygonOffsetFactor={-1}
-            polygonOffsetUnits={-1}
+            polygonOffsetFactor={-2}
+            polygonOffsetUnits={-2}
+            depthTest={false}
           />
         </mesh>
       )}
@@ -226,7 +228,7 @@ export const FaceEditor: React.FC<FaceEditorProps> = ({ shape, isActive }) => {
         <lineSegments
           geometry={boundaryEdgesGeometry}
         >
-          <lineBasicMaterial color={0x000000} linewidth={2} />
+          <lineBasicMaterial color={0xffffff} linewidth={2} depthTest={false} transparent opacity={0.9} />
         </lineSegments>
       )}
     </>
