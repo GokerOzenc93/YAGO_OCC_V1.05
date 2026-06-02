@@ -563,7 +563,7 @@ const Scene: React.FC = () => {
 
   const handleContextMenu = useCallback((e: any, shapeId: string) => {
     const state = useAppStore.getState();
-    if (state.vertexEditMode || state.faceEditMode) return;
+    if (state.vertexEditMode || state.faceEditMode || state.raycastMode) return;
     e.nativeEvent.preventDefault(); state.selectShape(shapeId);
     setContextMenu({ x: e.nativeEvent.clientX, y: e.nativeEvent.clientY, shapeId, shapeType: state.shapes.find(s=>s.id===shapeId)?.type||'unknown' });
   }, []);
