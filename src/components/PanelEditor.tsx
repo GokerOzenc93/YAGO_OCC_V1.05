@@ -189,14 +189,12 @@ function PanelPreview2D({ dims, shape }: { dims: Dims; shape?: any }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [edgeLabels, setEdgeLabels] = useState<EdgeDimLabel[]>([]);
-  const [canvasSize, setCanvasSize] = useState({ w: 320, h: 160 });
+  const [canvasSize, setCanvasSize] = useState({ w: 320, h: 300 });
 
-  useEffect(() => {
+  const doRender = (w: number, h: number) => {
     const canvas = canvasRef.current;
-    if (!canvas || !shape?.geometry) return;
+    if (!canvas || !shape?.geometry) return () => {};
 
-    const w = canvas.clientWidth || 320;
-    const h = canvas.clientHeight || 160;
     canvas.width = w * window.devicePixelRatio;
     canvas.height = h * window.devicePixelRatio;
     setCanvasSize({ w, h });
@@ -207,7 +205,6 @@ function PanelPreview2D({ dims, shape }: { dims: Dims; shape?: any }) {
     renderer.setClearColor(0x00000000, 0);
 
     const scene = new THREE.Scene();
-
     const material = new THREE.MeshLambertMaterial({ color: 0xf5f0e8, side: THREE.DoubleSide });
     const mesh = new THREE.Mesh(shape.geometry, material);
     scene.add(mesh);
@@ -221,12 +218,10 @@ function PanelPreview2D({ dims, shape }: { dims: Dims; shape?: any }) {
     dir.position.set(0, 1, 0);
     scene.add(dir);
 
-    // Bounding box
     const bbox = new THREE.Box3().setFromObject(mesh);
     const size = new THREE.Vector3(), center = new THREE.Vector3();
     bbox.getSize(size); bbox.getCenter(center);
 
-    // Thickness axis = smallest dimension
     const dims3 = [size.x, size.y, size.z];
     const minIdx = dims3.indexOf(Math.min(...dims3));
     const lookDir = [
@@ -235,7 +230,6 @@ function PanelPreview2D({ dims, shape }: { dims: Dims; shape?: any }) {
       new THREE.Vector3(0, 0, 1),
     ][minIdx];
 
-    // Fit camera — leave extra padding for dimension labels
     const planarDims = dims3.filter((_, i) => i !== minIdx);
     const aspect = w / h;
     const padFactor = 1.35;
@@ -245,16 +239,13 @@ function PanelPreview2D({ dims, shape }: { dims: Dims; shape?: any }) {
     const camera = new THREE.OrthographicCamera(-halfW, halfW, halfH, -halfH, -10000, 10000);
     camera.position.copy(center).addScaledVector(lookDir, 1000);
     camera.lookAt(center);
-    // Choose "up" so panel looks natural (longest dim horizontal)
-    if (minIdx === 1) camera.up.set(0, 0, -1); // Y is thin → looking down → Z goes up in SVG
-    else if (minIdx === 0) camera.up.set(0, 1, 0);
+    if (minIdx === 1) camera.up.set(0, 0, -1);
     else camera.up.set(0, 1, 0);
     camera.updateProjectionMatrix();
     camera.updateMatrixWorld();
 
     renderer.render(scene, camera);
 
-    // Compute edge labels after render
     const labels = computeEdgeLabels(shape.geometry, camera, w, h, minIdx);
     setEdgeLabels(labels);
 
@@ -264,9 +255,28 @@ function PanelPreview2D({ dims, shape }: { dims: Dims; shape?: any }) {
       edgesGeo.dispose();
       edgesMat.dispose();
     };
+  };
+
+  useEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+
+    // Initial render once the element is sized
+    let cleanup = doRender(wrap.clientWidth || 320, wrap.clientHeight || 300);
+
+    // Re-render when wrapper resizes
+    const ro = new ResizeObserver(entries => {
+      const { width, height } = entries[0].contentRect;
+      if (width > 0 && height > 0) {
+        cleanup?.();
+        cleanup = doRender(width, height);
+      }
+    });
+    ro.observe(wrap);
+
+    return () => { ro.disconnect(); cleanup?.(); };
   }, [shape]);
 
-  // Deduplicate labels that are too close together (keep longest/most distinct)
   const visibleLabels = useMemo(() => {
     const result: EdgeDimLabel[] = [];
     for (const lbl of edgeLabels) {
@@ -277,12 +287,11 @@ function PanelPreview2D({ dims, shape }: { dims: Dims; shape?: any }) {
   }, [edgeLabels]);
 
   return (
-    <div ref={wrapRef} style={{ position: 'relative', width: '100%', userSelect: 'none' }}>
+    <div ref={wrapRef} style={{ position: 'relative', width: '100%', height: '100%', userSelect: 'none' }}>
       <canvas
         ref={canvasRef}
-        style={{ display: 'block', width: '100%', height: '100%', borderRadius: '6px' }}
+        style={{ display: 'block', position: 'absolute', inset: 0, width: '100%', height: '100%' }}
       />
-      {/* SVG overlay for edge dimension labels */}
       <svg
         style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'visible' }}
         viewBox={`0 0 ${canvasSize.w} ${canvasSize.h}`}
@@ -291,32 +300,26 @@ function PanelPreview2D({ dims, shape }: { dims: Dims; shape?: any }) {
           const dx = lbl.ex2 - lbl.ex1, dy = lbl.ey2 - lbl.ey1;
           const len = Math.hypot(dx, dy);
           if (len < 4) return null;
-          // perpendicular outward offset
           const px = -dy / len, py = dx / len;
-          const off = 13;
+          const off = 14;
           const ax = lbl.ex1 + px * off, ay = lbl.ey1 + py * off;
           const bx = lbl.ex2 + px * off, by = lbl.ey2 + py * off;
           const mx = (ax + bx) / 2, my = (ay + by) / 2;
           const txt = String(lbl.length);
-          const labelW = Math.max(txt.length * 6.2 + 8, 28);
+          const labelW = Math.max(txt.length * 6.5 + 10, 30);
           return (
             <g key={i}>
-              {/* extension ticks */}
               <line x1={lbl.ex1 + px * 2} y1={lbl.ey1 + py * 2} x2={ax} y2={ay} stroke="#a8a29e" strokeWidth="0.7"/>
               <line x1={lbl.ex2 + px * 2} y1={lbl.ey2 + py * 2} x2={bx} y2={by} stroke="#a8a29e" strokeWidth="0.7"/>
-              {/* dim line */}
               <line x1={ax} y1={ay} x2={bx} y2={by} stroke="#a8a29e" strokeWidth="0.9"/>
-              {/* arrowheads */}
               <polygon points={`${ax},${ay} ${ax+(dx/len)*4+py*2},${ay+(dy/len)*4-px*2} ${ax+(dx/len)*4-py*2},${ay+(dy/len)*4+px*2}`} fill="#a8a29e"/>
               <polygon points={`${bx},${by} ${bx-(dx/len)*4+py*2},${by-(dy/len)*4-px*2} ${bx-(dx/len)*4-py*2},${by-(dy/len)*4+px*2}`} fill="#a8a29e"/>
-              {/* label */}
               <rect x={mx - labelW / 2} y={my - 7} width={labelW} height={13} rx={3} fill="rgba(245,242,237,0.96)" stroke="#d6d3d1" strokeWidth="0.5"/>
               <text x={mx} y={my + 4.5} textAnchor="middle" fontSize="9" fill="#1c1917" fontFamily="monospace" fontWeight="700">{txt}</text>
             </g>
           );
         })}
       </svg>
-      {/* Thickness pill */}
       <div style={{ position: 'absolute', bottom: 6, left: 8,
         background: 'rgba(41,37,36,0.78)', borderRadius: 4,
         padding: '1px 8px', fontSize: 10, fontFamily: 'monospace', fontWeight: 700, color: 'rgba(255,255,255,0.95)',
@@ -598,13 +601,6 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
 
     return (
       <div className="flex flex-col gap-3">
-        {/* 2D Preview */}
-        {activeDims && (
-          <div className="rounded-xl bg-gradient-to-b from-[#f8f5f0] to-[#f0ece4] border border-stone-200/80 overflow-hidden px-2 pt-3 pb-2">
-            <PanelPreview2D dims={activeDims} shape={activePanel}/>
-          </div>
-        )}
-
         {/* Face Extrude Controls */}
         <div className="rounded-xl bg-gradient-to-b from-white to-stone-50/80 border border-stone-200 overflow-hidden">
           <div className="px-3 py-2 flex items-center gap-2 border-b border-stone-100">
@@ -722,10 +718,63 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
 
   const isPreviewMode = selectedPanelRow !== null && !!activePanelId;
 
+  // Selected face row (rendered in preview header)
+  const selectedFaceRow = (() => {
+    if (!selectedShape || !isPreviewMode) return null;
+    const sid = selectedShape.id;
+    const svf = virtualFaces.filter(vf => vf.shapeId === sid);
+    const vfId = typeof selectedPanelRow === 'string' && selectedPanelRow.startsWith('vf-')
+      ? selectedPanelRow.replace('vf-', '') : null;
+    if (!vfId) return null;
+    const vi = svf.findIndex(f => f.id === vfId);
+    const vf = svf[vi];
+    if (!vf) return null;
+    const vp = findVPanel(shapes, sid, vf.id);
+    const ar = vp?.parameters?.arrowRotated || false;
+    const dims = vp?.geometry ? getDimsFromGeo(vp.geometry, ar) : null;
+    return (
+      <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-orange-50 ring-1 ring-orange-300 shadow-sm select-none">
+        <span className="shrink-0 w-7 h-6 flex items-center justify-center rounded-md text-sm font-bold font-mono bg-orange-100 text-orange-600">
+          {vi + 1}
+        </span>
+        <input
+          type="text"
+          value={vf.description || ''}
+          onClick={stop}
+          onChange={e => updateVirtualFace(vf.id, { description: e.target.value })}
+          placeholder="note…"
+          style={{ width: '27mm' }}
+          className="px-2 py-1 text-sm bg-transparent border-b border-transparent hover:border-stone-300 focus:border-orange-400 rounded-none outline-none text-stone-700 placeholder:text-stone-300 transition-colors"
+        />
+        {dims && (
+          <span className="flex items-center gap-1 text-xs font-mono shrink-0 leading-none">
+            <span className="text-stone-400">W</span><span className="text-stone-700 font-bold">{dims.primary}</span>
+            <span className="text-stone-300">·</span>
+            <span className="text-stone-400">H</span><span className="text-stone-700 font-bold">{dims.secondary}</span>
+            <span className="text-stone-300">·</span>
+            <span className="text-stone-400">T</span><span className="text-stone-700 font-bold">{dims.thickness}</span>
+          </span>
+        )}
+        <div className="ml-auto flex items-center gap-1 shrink-0" onClick={stop}>
+          <button disabled={!vf.hasPanel} onClick={e => { stop(e); toggleArrow(vp); }}
+            className={`p-1 rounded transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-blue-500' : 'text-stone-300 hover:text-stone-500'}`}
+            title="Rotate arrow"><RotateCw size={13}/></button>
+          <button disabled={!vf.hasPanel || !vp} onClick={async e => {
+            stop(e); if (!vp) return;
+            const { reshapePanelToParentFace } = await import('./PanelReshapeService');
+            await reshapePanelToParentFace(vp.id);
+          }}
+            className={`p-1 rounded transition-colors ${!vf.hasPanel || !vp ? 'text-stone-200 cursor-not-allowed' : 'text-stone-300 hover:text-teal-600'}`}
+            title="Match parent face"><Shapes size={13}/></button>
+        </div>
+      </div>
+    );
+  })();
+
   // ── Shared preview pane (full panel detail, big canvas) ────────────────
   const previewPane = isPreviewMode ? (
     <div className="flex flex-col h-full min-h-0">
-      {/* Header row */}
+      {/* Toolbar + back button */}
       <div className="px-3 py-2 border-b border-stone-100 flex items-center gap-2 shrink-0">
         <button
           onClick={() => setSelectedPanelRow(null)}
@@ -733,28 +782,29 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         >
           <ChevronRight size={12} className="rotate-180"/> Liste
         </button>
-        {/* Selected row mini-label */}
-        {activeDims && (
-          <span className="text-xs font-mono text-stone-400 truncate">
-            {activeDims.primary} × {activeDims.secondary} × <span className="text-stone-300">T{activeDims.thickness}</span>
-          </span>
-        )}
         <div className="ml-auto">{panelToolbar}</div>
       </div>
 
-      {/* Big preview — flex-1 so it fills available space */}
-      <div className="flex-1 min-h-0 overflow-y-auto">
-        <div className="px-3 pt-3 pb-1">
-          {activeDims && (
-            <div className="rounded-xl bg-gradient-to-b from-[#f8f5f0] to-[#ede8df] border border-stone-200/80 overflow-hidden p-2" style={{ height: 'min(55vh, 340px)' }}>
-              <PanelPreview2D dims={activeDims} shape={activePanel}/>
-            </div>
-          )}
+      {/* Selected row card — always visible at top */}
+      {selectedFaceRow && (
+        <div className="px-2 pt-2 pb-1 shrink-0">
+          {selectedFaceRow}
         </div>
-        <div className="px-3 pb-3 pt-2 space-y-3">
+      )}
+
+      {/* Canvas — flex-1, fills remaining space */}
+      {activeDims && (
+        <div className="flex-1 min-h-0 mx-2 mb-1 rounded-xl bg-gradient-to-b from-[#f8f5f0] to-[#ede8df] border border-stone-200/80 overflow-hidden">
+          <PanelPreview2D dims={activeDims} shape={activePanel}/>
+        </div>
+      )}
+
+      {/* Extrude controls + steps — scrollable footer */}
+      {panelDetailSection && (
+        <div className="shrink-0 overflow-y-auto border-t border-stone-100 px-2 py-2 space-y-3" style={{ maxHeight: '40%' }}>
           {panelDetailSection}
         </div>
-      </div>
+      )}
     </div>
   ) : null;
 
