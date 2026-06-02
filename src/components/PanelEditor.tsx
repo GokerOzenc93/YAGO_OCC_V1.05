@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { X, GripVertical, RotateCw, Trash2, MoveVertical, Check, Pencil, Shapes } from 'lucide-react';
+import { X, GripVertical, RotateCw, Trash2, MoveVertical, Check, Pencil, Shapes, ChevronRight } from 'lucide-react';
 import { useAppStore } from '../store';
 import { extractFacesFromGeometry, groupCoplanarFaces, CoplanarFaceGroup } from './FaceEditor';
 import { findExistingStepForFace } from './FaceExtrudeService';
@@ -82,7 +82,6 @@ function classifyFaceGroups(groups: CoplanarFaceGroup[], fillets: FilletData[], 
   return { axis, subs, fills };
 }
 
-
 const findVPanel = (shapes: any[], pid: string, vfId: string) => shapes.find(s => s.type === 'panel' && s.parameters?.parentShapeId === pid && s.parameters?.virtualFaceId === vfId);
 
 function makePanelBase(shape: any, extra: Record<string, any>) {
@@ -101,6 +100,78 @@ function getDimsFromGeo(geo: THREE.BufferGeometry, arrowRotated?: boolean) {
 type Dims = NonNullable<ReturnType<typeof getDimsFromGeo>>;
 interface PanelEditorProps { isOpen: boolean; onClose: () => void; embedded?: boolean; }
 
+/* ── 2D Panel Preview ────────────────────────────────────────────────── */
+function PanelPreview2D({ dims, steps }: { dims: Dims; steps: any[] }) {
+  const svgRef = useRef<SVGSVGElement>(null);
+  const PAD = 18;
+  const svgW = 220, svgH = 110;
+  const maxW = svgW - PAD * 2, maxH = svgH - PAD * 2;
+  const scaleX = maxW / Math.max(dims.primary, 1);
+  const scaleY = maxH / Math.max(dims.secondary, 1);
+  const scale = Math.min(scaleX, scaleY, 0.9);
+  const rw = dims.primary * scale, rh = dims.secondary * scale;
+  const ox = (svgW - rw) / 2, oy = (svgH - rh) / 2;
+
+  // Build step lines: each step has axisLabel (e.g. "X+"), value
+  const stepLines = steps.map((s: any) => {
+    const label: string = s.axisLabel || '';
+    const isHoriz = label.startsWith('X') || label.startsWith('x');
+    return { isHoriz, value: s.value, label, isFixed: s.isFixed };
+  });
+
+  return (
+    <svg ref={svgRef} width={svgW} height={svgH} viewBox={`0 0 ${svgW} ${svgH}`} style={{ overflow: 'visible' }}>
+      <defs>
+        <pattern id="hatch" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+          <line x1="0" y1="0" x2="0" y2="5" stroke="rgba(234,88,12,0.10)" strokeWidth="1.5"/>
+        </pattern>
+      </defs>
+      {/* Shadow */}
+      <rect x={ox + 2} y={oy + 2} width={rw} height={rh} rx={2} fill="rgba(40,30,20,0.06)" />
+      {/* Panel fill */}
+      <rect x={ox} y={oy} width={rw} height={rh} rx={2} fill="url(#hatch)" stroke="none"/>
+      <rect x={ox} y={oy} width={rw} height={rh} rx={2} fill="rgba(255,251,245,0.82)" stroke="none"/>
+      {/* Step lines */}
+      {stepLines.map((sl, i) => {
+        if (sl.isHoriz) {
+          const frac = Math.min(sl.value / Math.max(dims.primary, 1), 0.95);
+          const x = ox + rw * frac;
+          return (
+            <g key={i}>
+              <line x1={x} y1={oy} x2={x} y2={oy + rh} stroke="rgba(234,88,12,0.55)" strokeWidth="1" strokeDasharray="3 2"/>
+              <text x={x + 3} y={oy + 9} fontSize="6" fill="#ea580c" fontFamily="monospace" opacity="0.8">{sl.value}</text>
+            </g>
+          );
+        } else {
+          const frac = Math.min(sl.value / Math.max(dims.secondary, 1), 0.95);
+          const y = oy + rh * frac;
+          return (
+            <g key={i}>
+              <line x1={ox} y1={y} x2={ox + rw} y2={y} stroke="rgba(234,88,12,0.55)" strokeWidth="1" strokeDasharray="3 2"/>
+              <text x={ox + 3} y={y - 2} fontSize="6" fill="#ea580c" fontFamily="monospace" opacity="0.8">{sl.value}</text>
+            </g>
+          );
+        }
+      })}
+      {/* Border */}
+      <rect x={ox} y={oy} width={rw} height={rh} rx={2} fill="none" stroke="#44403c" strokeWidth="1.2"/>
+      {/* Dim arrows — W */}
+      <line x1={ox} y1={oy - 6} x2={ox + rw} y2={oy - 6} stroke="#706b65" strokeWidth="0.8"/>
+      <line x1={ox} y1={oy - 9} x2={ox} y2={oy - 3} stroke="#706b65" strokeWidth="0.8"/>
+      <line x1={ox + rw} y1={oy - 9} x2={ox + rw} y2={oy - 3} stroke="#706b65" strokeWidth="0.8"/>
+      <text x={ox + rw / 2} y={oy - 8} textAnchor="middle" fontSize="7" fill="#44403c" fontFamily="monospace" fontWeight="600">{dims.primary}</text>
+      {/* Dim arrows — H */}
+      <line x1={ox + rw + 6} y1={oy} x2={ox + rw + 6} y2={oy + rh} stroke="#706b65" strokeWidth="0.8"/>
+      <line x1={ox + rw + 3} y1={oy} x2={ox + rw + 9} y2={oy} stroke="#706b65" strokeWidth="0.8"/>
+      <line x1={ox + rw + 3} y1={oy + rh} x2={ox + rw + 9} y2={oy + rh} stroke="#706b65" strokeWidth="0.8"/>
+      <text x={ox + rw + 9} y={oy + rh / 2 + 2.5} textAnchor="start" fontSize="7" fill="#44403c" fontFamily="monospace" fontWeight="600">{dims.secondary}</text>
+      {/* Thickness badge */}
+      <rect x={ox + 2} y={oy + rh - 14} width={28} height={11} rx={2} fill="rgba(40,30,20,0.55)"/>
+      <text x={ox + 16} y={oy + rh - 6} textAnchor="middle" fontSize="6.5" fill="#fff" fontFamily="monospace" fontWeight="700">T {dims.thickness}</text>
+    </svg>
+  );
+}
+
 export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorProps) {
   const { selectedShapeId, shapes, updateShape, addShape, showOutlines, setShowOutlines,
     selectedPanelRow, setSelectedPanelRow, panelSelectMode, setPanelSelectMode, raycastMode, setRaycastMode,
@@ -113,7 +184,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
   const [dropIndex, setDropIndex] = useState<number | null>(null);
 
   const [position, setPosition] = useState({ x: 100, y: 100 });
-  const [isDragging, setIsDragging] = useState(false);
+  const [isDraggingWindow, setIsDraggingWindow] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const [editingStepId, setEditingStepId] = useState<string | null>(null);
   const [editingStepValue, setEditingStepValue] = useState(0);
@@ -126,6 +197,12 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       return findVPanel(shapes, selectedShape.id, selectedPanelRow.replace('vf-', ''))?.id || null;
     return null;
   }, [selectedShape, selectedPanelRow, shapes]);
+
+  const activePanel = activePanelId ? shapes.find(s => s.id === activePanelId) : null;
+  const activeDims = activePanel?.geometry
+    ? getDimsFromGeo(activePanel.geometry, activePanel.parameters?.arrowRotated)
+    : null;
+  const activeSteps = activePanel?.parameters?.extrudeSteps || [];
 
   useEffect(() => { setSelectedPanelRow(null); }, [selectedShapeId]);
 
@@ -156,10 +233,12 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       }
     })();
   }, [virtualFaces]);
+
   useEffect(() => {
     if (faceExtrudeMode && activePanelId && activePanelId !== faceExtrudeTargetPanelId)
       { setFaceExtrudeTargetPanelId(activePanelId); setFaceExtrudeSelectedFace(null); setFaceExtrudeHoveredFace(null); }
   }, [faceExtrudeMode, activePanelId, faceExtrudeTargetPanelId]);
+
   useEffect(() => {
     if (faceExtrudeSelectedFace === null || !activePanelId) return;
     const ps = shapes.find(s => s.id === activePanelId); if (!ps?.geometry) return;
@@ -168,8 +247,10 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     const existing = findExistingStepForFace(steps, g.normal.clone().normalize(), g.center.clone());
     if (existing) { setFaceExtrudeThickness(existing.value); setFaceExtrudeFixedMode(existing.isFixed); }
   }, [faceExtrudeSelectedFace, activePanelId, shapes]);
+
   useEffect(() => { if (!(isOpen || embedded)) { setSelectedPanelRow(null); setPanelSelectMode(false); if (faceExtrudeMode) setFaceExtrudeMode(false); } }, [isOpen, embedded]);
   useEffect(() => { if (selectedPanelRow !== null) rowRefs.current.get(selectedPanelRow)?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, [selectedPanelRow]);
+
   useEffect(() => {
     if (!pendingPanelCreation || (!isOpen && !embedded)) return;
     const cid = pendingPanelCreation.surfaceConstraint?.constraintPanelId; if (!cid) return;
@@ -198,15 +279,15 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     if (!raycastMode) { setShowOutlines(false); }
   }, [selectedShape?.id, shapes.length, raycastMode]);
 
-  const handleMouseDown = (e: React.MouseEvent) => { e.preventDefault(); setIsDragging(true); setDragOffset({ x: e.clientX - position.x, y: e.clientY - position.y }); };
+  const handleMouseDown = (e: React.MouseEvent) => { e.preventDefault(); setIsDraggingWindow(true); setDragOffset({ x: e.clientX - position.x, y: e.clientY - position.y }); };
   useEffect(() => {
-    if (!isDragging) return;
+    if (!isDraggingWindow) return;
     document.body.style.userSelect = 'none'; document.body.style.cursor = 'grabbing';
     const onMove = (e: MouseEvent) => { e.preventDefault(); setPosition({ x: e.clientX - dragOffset.x, y: e.clientY - dragOffset.y }); };
-    const onUp = () => setIsDragging(false);
+    const onUp = () => setIsDraggingWindow(false);
     document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp);
     return () => { document.body.style.userSelect = ''; document.body.style.cursor = ''; document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
-  }, [isDragging, dragOffset]);
+  }, [isDraggingWindow, dragOffset]);
 
   const saveStep = async (pid: string | null, stepId: string, val: number) => {
     if (!pid) return; const ps = shapes.find(s => s.id === pid); if (!ps) return;
@@ -217,186 +298,354 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
   if (!isOpen && !embedded) return null;
 
   const tb = (active: boolean, onClick: () => void, label: string, cls: [string, string]) => (
-    <button onClick={onClick} className={`px-1.5 py-0.5 rounded text-xs font-semibold transition-colors ${active ? cls[0] : cls[1]}`}>{label}</button>
+    <button onClick={onClick} className={`px-2 py-1 rounded text-xs font-semibold transition-all duration-150 ${active ? cls[0] : cls[1]}`}>{label}</button>
   );
 
   const panelToolbar = (
-    <div className="flex items-center gap-1 flex-wrap">
-      {tb(showOutlines, () => setShowOutlines(!showOutlines), 'Outline', ['text-blue-700 bg-blue-100 ring-1 ring-blue-400', 'text-slate-500 hover:bg-stone-200'])}
-      {tb(raycastMode, () => setRaycastMode(!raycastMode), 'Add Face', ['text-amber-700 bg-amber-100 ring-1 ring-amber-400', 'text-slate-500 hover:bg-stone-200'])}
-      {tb(panelSelectMode, () => setPanelSelectMode(!panelSelectMode), panelSelectMode ? 'Panel' : 'Body', ['text-violet-700 bg-violet-100 ring-1 ring-violet-400', 'text-slate-500 hover:bg-stone-200'])}
+    <div className="flex items-center gap-1.5 flex-wrap">
+      {tb(showOutlines, () => setShowOutlines(!showOutlines), 'Outline', ['text-blue-700 bg-blue-100 ring-1 ring-blue-400 shadow-sm', 'text-stone-500 hover:bg-stone-200'])}
+      {tb(raycastMode, () => setRaycastMode(!raycastMode), 'Add Face', ['text-amber-700 bg-amber-100 ring-1 ring-amber-400 shadow-sm', 'text-stone-500 hover:bg-stone-200'])}
+      {tb(panelSelectMode, () => setPanelSelectMode(!panelSelectMode), panelSelectMode ? 'Panel' : 'Body', ['text-violet-700 bg-violet-100 ring-1 ring-violet-400 shadow-sm', 'text-stone-500 hover:bg-stone-200'])}
     </div>
   );
 
-  const panelContent = selectedShape ? (
-    <div className="space-y-2">
-      {(() => {
-        const geo = selectedShape.geometry; if (!geo) return null;
-        const isOff = false, sid = selectedShape.id;
-        const svf = virtualFaces.filter(vf => vf.shapeId === sid);
-        const createVP = async (_: string, vi: number) => {
-          const vf = svf[vi]; if (!vf) return;
-          try {
-            const { createPanelFromVirtualFace, convertReplicadToThreeGeometry } = await import('./ReplicadService');
-            const rp = await createPanelFromVirtualFace(vf.vertices, vf.normal, PANEL_THICKNESS); if (!rp) return;
-            const g = convertReplicadToThreeGeometry(rp), r = geoAxes(g); if (!r) return;
-            const pa = r.axes.slice(1).map(a => a.i).sort((a, b) => a - b), [def, alt] = [pa[0], pa[1]], s = [r.size.x, r.size.y, r.size.z];
-            addShape(makePanelBase(selectedShape, { geometry: g, replicadShape: rp,
-              parameters: { width: s[def], height: s[alt], depth: PANEL_THICKNESS, parentShapeId: sid, faceIndex: -(vi+1), virtualFaceId: vf.id, arrowRotated: false } }));
-            updateVirtualFace(vf.id, { hasPanel: true });
-          } catch (e) { console.error('Failed to create virtual panel:', e); }
-        };
-        const removeVP = (vfId: string) => {
-          const p = findVPanel(shapes, sid, vfId);
-          if (p) useAppStore.getState().deleteShape(p.id);
-          updateVirtualFace(vfId, { hasPanel: false });
-        };
-        const onDrop = async (toIndex: number) => {
-          const from = dragIndex;
-          setDragIndex(null); setDropIndex(null);
-          if (from === null || from === toIndex) return;
-          reorderVirtualFaces(sid, from, toIndex);
-          const { rebuildPanelsForParent } = await import('./PanelRebuildService');
-          await rebuildPanelsForParent(sid);
-        };
-        return (
-          <div className="space-y-0 pt-2 border-t border-stone-200">
-            {svf.map((vf, vi) => {
-              const vp = findVPanel(shapes, sid, vf.id), ar = vp?.parameters?.arrowRotated||false, sel = selectedPanelRow === `vf-${vf.id}`;
-              const dims = vp?.geometry ? getDimsFromGeo(vp.geometry, ar) : null;
-              const rc = () => { setSelectedPanelRow(`vf-${vf.id}`, null, sid); };
-              const isDragging = dragIndex === vi;
-              const isDropTarget = dropIndex === vi && dragIndex !== null && dragIndex !== vi;
-              return (
-                <div key={vf.id}
-                  onDragOver={e => { if (dragIndex !== null) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (dropIndex !== vi) setDropIndex(vi); } }}
-                  onDragLeave={() => { if (dropIndex === vi) setDropIndex(null); }}
-                  onDrop={e => { e.preventDefault(); onDrop(vi); }}
-                  className={`flex w-fit gap-1 items-center py-0.5 px-1 rounded transition-colors ${sel ? 'bg-orange-50 ring-1 ring-orange-300' : 'hover:bg-stone-50'} ${isDragging ? 'opacity-40' : ''} ${isDropTarget ? 'ring-1 ring-blue-400 bg-blue-50' : ''} ${vf.hasPanel ? 'cursor-pointer' : ''}`}
-                  onClick={e => { stop(e); rc(); }}>
-                  <span
-                    draggable
-                    onDragStart={e => { stop(e); setDragIndex(vi); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(vi)); }}
-                    onDragEnd={() => { setDragIndex(null); setDropIndex(null); }}
-                    onClick={stop}
-                    className="cursor-grab active:cursor-grabbing text-stone-300 hover:text-stone-500"
-                    title="Drag to reorder"
-                  ><GripVertical size={12} /></span>
-                  <input type="radio" name="ps" checked={sel} disabled={isOff} onChange={e => { stop(e); rc(); }}
-                    className={`w-3.5 h-3.5 ${isOff ? 'text-stone-300 cursor-not-allowed' : 'text-orange-500 focus:ring-orange-400 cursor-pointer'}`} onClick={stop} />
-                  <span className="w-8 text-xs font-mono font-bold text-center text-green-700 select-none" onClick={stop}>V{vi+1}</span>
-                  <input type="text" value={vf.description||''} disabled={isOff} onClick={stop} onChange={e => updateVirtualFace(vf.id, { description: e.target.value })}
-                    placeholder="note" style={{ width: '27mm' }}
-                    className={`px-1 py-0.5 text-xs bg-transparent border-b rounded-none ${isOff ? 'text-stone-400 border-stone-200 placeholder:text-stone-300' : 'text-gray-600 border-transparent hover:border-gray-300 focus:border-orange-400 placeholder:text-stone-300'}`} />
-                  {dims && (
-                    <span className="flex items-center gap-1 text-xs font-mono text-stone-400 select-none shrink-0" onClick={stop}>
-                      {[['W', dims.primary], ['H', dims.secondary], ['T', dims.thickness]].map(([l, v], i) => (
-                        <React.Fragment key={l as string}>
-                          {i > 0 && <span className="text-stone-200">·</span>}
-                          <span className="text-stone-300">{l}</span>
-                          <span className="text-stone-500 font-semibold">{v}</span>
-                        </React.Fragment>
-                      ))}
-                    </span>
-                  )}
-                  <div className="ml-1 flex items-center gap-0.5">
-                    <input type="checkbox" checked={vf.hasPanel} disabled={isOff} onClick={stop}
-                      onChange={async () => { if (vf.hasPanel) removeVP(vf.id); else await createVP(vf.id, vi); }}
-                      className={`w-3.5 h-3.5 rounded ${isOff ? 'text-stone-300 cursor-not-allowed' : 'text-green-500 focus:ring-green-400 cursor-pointer'}`} title={`Toggle virtual face V${vi+1}`} />
-                    <button disabled={isOff||!vf.hasPanel} onClick={e => { stop(e); toggleArrow(vp); }}
-                      className={`p-0.5 rounded transition-colors ${isOff||!vf.hasPanel ? 'text-stone-300 cursor-not-allowed' : ar ? 'text-blue-500' : 'text-stone-300 hover:text-stone-500'}`}
-                      title="Rotate arrow direction"><RotateCw size={12} /></button>
-                    <button disabled={isOff||!vf.hasPanel||!vp} onClick={async e => {
-                      stop(e); if (!vp) return;
-                      const { reshapePanelToParentFace } = await import('./PanelReshapeService');
-                      await reshapePanelToParentFace(vp.id);
-                    }}
-                      className={`p-0.5 rounded transition-colors ${isOff||!vf.hasPanel||!vp ? 'text-stone-300 cursor-not-allowed' : 'text-stone-400 hover:text-teal-600'}`}
-                      title="Match parent face shape"><Shapes size={12} /></button>
-                    <button disabled={isOff} onClick={e => { stop(e); if (vf.hasPanel) removeVP(vf.id); deleteVirtualFace(vf.id); }}
-                      className="p-0.5 rounded text-stone-300 hover:text-red-400 transition-colors" title="Delete virtual face"><Trash2 size={12} /></button>
-                  </div>
-                </div>);
-            })}
-          </div>);
-      })()}
-    </div>
-  ) : <div className="text-center text-stone-500 text-xs py-4">No shape selected</div>;
+  /* ── Face list ──────────────────────────────────────────────────────── */
+  const faceListSection = selectedShape ? (() => {
+    const geo = selectedShape.geometry; if (!geo) return null;
+    const sid = selectedShape.id;
+    const svf = virtualFaces.filter(vf => vf.shapeId === sid);
+    if (!svf.length) return (
+      <div className="flex flex-col items-center justify-center py-6 text-center">
+        <div className="w-8 h-8 rounded-lg bg-stone-100 flex items-center justify-center mb-2">
+          <MoveVertical size={14} className="text-stone-400"/>
+        </div>
+        <span className="text-xs text-stone-400">No faces added yet</span>
+        <span className="text-[10px] text-stone-300 mt-0.5">Use Add Face mode to create panels</span>
+      </div>
+    );
 
-  const dimsSection = selectedShape && selectedPanelRow !== null && (() => {
-    let cpId: string | null = null;
-    if (typeof selectedPanelRow === 'string' && selectedPanelRow.startsWith('vf-')) {
-      const vp = findVPanel(shapes, selectedShape.id, selectedPanelRow.replace('vf-','')); cpId = vp?.id||null;
-    }
-    if (!cpId) return null;
-    const isExt = faceExtrudeMode && !!cpId, panel = cpId ? shapes.find(s => s.id === cpId) : null;
-    const steps = panel?.parameters?.extrudeSteps || [], hf = faceExtrudeSelectedFace !== null;
-    return (
-      <div className="border-t border-orange-200 bg-orange-50 px-3 py-2 rounded-b-lg">
-        <div className="flex items-center gap-2">
-          {isExt && <>
-            <div className="w-px h-4 bg-orange-200 shrink-0"/>
-            <input type="text" inputMode="numeric" value={faceExtrudeThickness} onChange={e => setFaceExtrudeThickness(Number(e.target.value)||0)} disabled={!hf}
-              className={`w-14 h-6 px-1 text-xs font-mono text-center border rounded focus:outline-none focus:border-orange-500 ${hf ? 'bg-white border-orange-300' : 'bg-orange-100 border-orange-200 text-orange-300 cursor-not-allowed'}`} />
-            <div className={`flex rounded overflow-hidden border shrink-0 ${hf ? 'border-orange-300' : 'border-orange-200 opacity-40'}`}>
-              {[true,false].map(f => <button key={String(f)} disabled={!hf} onClick={() => setFaceExtrudeFixedMode(f)}
-                className={`px-1.5 h-6 text-xs font-semibold transition-colors ${!f?'border-l border-orange-300':''} ${faceExtrudeFixedMode===f?'bg-orange-500 text-white':'bg-white text-orange-600 hover:bg-orange-50'}`}>{f?'Fix':'Din'}</button>)}
-            </div></>}
-          <div className="ml-auto flex items-center gap-1">
-            <button onClick={e => { stop(e); faceExtrudeMode ? setFaceExtrudeMode(false) : cpId && (setFaceExtrudeTargetPanelId(cpId), setFaceExtrudeMode(true)); }}
-              className={`flex items-center justify-center w-6 h-6 rounded border transition-colors shrink-0 ${isExt ? 'border-orange-500 bg-orange-500 text-white shadow-sm' : 'border-orange-300 bg-white hover:bg-orange-100 text-orange-600'}`}
-              title="Face Extrude"><MoveVertical size={12}/></button>
-            {isExt && <button disabled={!hf} onClick={async () => {
-              if (!hf||!cpId) return; const ps = shapes.find(s => s.id === cpId); if (!ps) return;
-              const { executeFaceExtrude } = await import('./FaceExtrudeService');
-              await executeFaceExtrude({ panelShape: ps, faceGroupIndex: faceExtrudeSelectedFace!, value: faceExtrudeThickness, isFixed: faceExtrudeFixedMode, shapes, updateShape });
-              setFaceExtrudeSelectedFace(null);
-              setFaceExtrudeMode(false);
-            }} className={`flex items-center justify-center w-6 h-6 rounded border transition-colors shrink-0 ${hf ? 'border-green-400 bg-green-500 text-white hover:bg-green-600' : 'border-orange-200 bg-orange-100 text-orange-300 cursor-not-allowed'}`}
-              title="Onayla"><Check size={12}/></button>}
+    const createVP = async (_: string, vi: number) => {
+      const vf = svf[vi]; if (!vf) return;
+      try {
+        const { createPanelFromVirtualFace, convertReplicadToThreeGeometry } = await import('./ReplicadService');
+        const rp = await createPanelFromVirtualFace(vf.vertices, vf.normal, PANEL_THICKNESS); if (!rp) return;
+        const g = convertReplicadToThreeGeometry(rp), r = geoAxes(g); if (!r) return;
+        const pa = r.axes.slice(1).map(a => a.i).sort((a, b) => a - b), [def, alt] = [pa[0], pa[1]], s = [r.size.x, r.size.y, r.size.z];
+        addShape(makePanelBase(selectedShape, { geometry: g, replicadShape: rp,
+          parameters: { width: s[def], height: s[alt], depth: PANEL_THICKNESS, parentShapeId: sid, faceIndex: -(vi+1), virtualFaceId: vf.id, arrowRotated: false } }));
+        updateVirtualFace(vf.id, { hasPanel: true });
+      } catch (e) { console.error('Failed to create virtual panel:', e); }
+    };
+    const removeVP = (vfId: string) => {
+      const p = findVPanel(shapes, sid, vfId);
+      if (p) useAppStore.getState().deleteShape(p.id);
+      updateVirtualFace(vfId, { hasPanel: false });
+    };
+    const onDrop = async (toIndex: number) => {
+      const from = dragIndex;
+      setDragIndex(null); setDropIndex(null);
+      if (from === null || from === toIndex) return;
+      reorderVirtualFaces(sid, from, toIndex);
+      const { rebuildPanelsForParent } = await import('./PanelRebuildService');
+      await rebuildPanelsForParent(sid);
+    };
+
+    return svf.map((vf, vi) => {
+      const vp = findVPanel(shapes, sid, vf.id), ar = vp?.parameters?.arrowRotated||false, sel = selectedPanelRow === `vf-${vf.id}`;
+      const dims = vp?.geometry ? getDimsFromGeo(vp.geometry, ar) : null;
+      const rc = () => { setSelectedPanelRow(`vf-${vf.id}`, null, sid); };
+      const isRowDragging = dragIndex === vi;
+      const isDropTarget = dropIndex === vi && dragIndex !== null && dragIndex !== vi;
+
+      return (
+        <div
+          key={vf.id}
+          onDragOver={e => { if (dragIndex !== null) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (dropIndex !== vi) setDropIndex(vi); } }}
+          onDragLeave={() => { if (dropIndex === vi) setDropIndex(null); }}
+          onDrop={e => { e.preventDefault(); onDrop(vi); }}
+          onClick={e => { stop(e); rc(); }}
+          className={`
+            group relative flex items-center gap-1.5 px-2 py-1.5 rounded-md cursor-pointer
+            transition-all duration-150 select-none
+            ${sel
+              ? 'bg-orange-50 ring-1 ring-orange-300 shadow-sm'
+              : 'hover:bg-stone-50 ring-1 ring-transparent hover:ring-stone-200'}
+            ${isRowDragging ? 'opacity-40' : ''}
+            ${isDropTarget ? 'ring-1 ring-blue-400 bg-blue-50' : ''}
+          `}
+        >
+          {/* Drag handle */}
+          <span
+            draggable
+            onDragStart={e => { stop(e); setDragIndex(vi); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(vi)); }}
+            onDragEnd={() => { setDragIndex(null); setDropIndex(null); }}
+            onClick={stop}
+            className="cursor-grab active:cursor-grabbing text-stone-300 hover:text-stone-400 shrink-0"
+          ><GripVertical size={13}/></span>
+
+          {/* Index badge */}
+          <span className={`shrink-0 w-7 h-5 flex items-center justify-center rounded text-[10px] font-bold font-mono
+            ${vf.hasPanel ? 'bg-green-100 text-green-700' : 'bg-stone-100 text-stone-400'}`}>
+            V{vi+1}
+          </span>
+
+          {/* Note input */}
+          <input
+            type="text"
+            value={vf.description||''}
+            onClick={stop}
+            onChange={e => updateVirtualFace(vf.id, { description: e.target.value })}
+            placeholder="note…"
+            style={{ width: '27mm' }}
+            className="px-1.5 py-0.5 text-xs bg-transparent border-b border-transparent hover:border-stone-300 focus:border-orange-400 rounded-none outline-none text-stone-700 placeholder:text-stone-300 transition-colors"
+          />
+
+          {/* Dims inline */}
+          {dims && (
+            <span className="flex items-center gap-0.5 text-[10px] font-mono text-stone-400 shrink-0 leading-none" onClick={stop}>
+              <span className="text-stone-300">W</span><span className="text-stone-500 font-semibold">{dims.primary}</span>
+              <span className="text-stone-200 mx-0.5">·</span>
+              <span className="text-stone-300">H</span><span className="text-stone-500 font-semibold">{dims.secondary}</span>
+              <span className="text-stone-200 mx-0.5">·</span>
+              <span className="text-stone-300">T</span><span className="text-stone-500 font-semibold">{dims.thickness}</span>
+            </span>
+          )}
+
+          {/* Action buttons — reveal on hover/select */}
+          <div className={`ml-auto flex items-center gap-0.5 transition-opacity ${sel ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`} onClick={stop}>
+            <input type="checkbox" checked={vf.hasPanel} onClick={stop}
+              onChange={async () => { if (vf.hasPanel) removeVP(vf.id); else await createVP(vf.id, vi); }}
+              className="w-3.5 h-3.5 rounded text-green-500 focus:ring-green-400 cursor-pointer accent-green-500"
+              title={`Toggle panel V${vi+1}`}/>
+            <button disabled={!vf.hasPanel} onClick={e => { stop(e); toggleArrow(vp); }}
+              className={`p-0.5 rounded transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-blue-500' : 'text-stone-300 hover:text-stone-500'}`}
+              title="Rotate arrow"><RotateCw size={11}/></button>
+            <button disabled={!vf.hasPanel||!vp} onClick={async e => {
+              stop(e); if (!vp) return;
+              const { reshapePanelToParentFace } = await import('./PanelReshapeService');
+              await reshapePanelToParentFace(vp.id);
+            }}
+              className={`p-0.5 rounded transition-colors ${!vf.hasPanel||!vp ? 'text-stone-200 cursor-not-allowed' : 'text-stone-300 hover:text-teal-600'}`}
+              title="Match parent face"><Shapes size={11}/></button>
+            <button onClick={e => { stop(e); if (vf.hasPanel) removeVP(vf.id); deleteVirtualFace(vf.id); }}
+              className="p-0.5 rounded text-stone-300 hover:text-red-400 transition-colors"
+              title="Delete face"><Trash2 size={11}/></button>
           </div>
         </div>
-        {steps.length > 0 && <div className="mt-1.5 border-t border-orange-200 pt-1.5 space-y-1">
-          {steps.map((s: any) => <div key={s.id} className="flex items-center gap-1.5 group">
-            <span className="text-xs font-bold text-orange-600 bg-orange-200 rounded px-1 py-0.5 font-mono min-w-[24px] text-center">{s.axisLabel}</span>
-            {editingStepId === s.id ? <>
-              <input type="text" inputMode="numeric" autoFocus value={editingStepValue} onChange={e => setEditingStepValue(Number(e.target.value)||0)}
-                onKeyDown={e => { if (e.key==='Enter') saveStep(cpId,s.id,editingStepValue); else if (e.key==='Escape') setEditingStepId(null); }}
-                className="w-14 h-5 px-1 text-xs font-mono text-center border border-orange-400 rounded bg-white focus:outline-none focus:border-orange-500"/>
-              <span className="text-xs text-stone-400">{s.isFixed?'Fix':'Din'}</span>
-              <button onClick={() => saveStep(cpId,s.id,editingStepValue)} className="flex items-center justify-center w-5 h-5 rounded border border-green-400 bg-green-500 text-white hover:bg-green-600 transition-colors" title="Kaydet"><Check size={10}/></button>
-              <button onClick={() => setEditingStepId(null)} className="flex items-center justify-center w-5 h-5 rounded border border-stone-300 bg-white text-stone-500 hover:bg-stone-100 transition-colors" title="Iptal"><X size={10}/></button>
-            </> : <>
-              <span className="text-xs font-mono text-slate-700 font-semibold">{s.value}</span>
-              <span className="text-xs text-stone-400">{s.isFixed?'Fix':'Din'}</span>
-              <div className="ml-auto flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                <button onClick={() => { setEditingStepId(s.id); setEditingStepValue(s.value); }}
-                  className="flex items-center justify-center w-5 h-5 rounded border border-orange-300 bg-white text-orange-500 hover:bg-orange-100 transition-colors" title="Duzenle"><Pencil size={9}/></button>
-                <button onClick={async () => { if (!cpId) return; const ps = shapes.find(x => x.id === cpId); if (!ps) return; const { deleteExtrudeStep } = await import('./FaceExtrudeService'); await deleteExtrudeStep(ps, s.id, updateShape); }}
-                  className="flex items-center justify-center w-5 h-5 rounded border border-red-300 bg-white text-red-500 hover:bg-red-50 transition-colors" title="Sil"><Trash2 size={9}/></button>
-              </div></>}
-          </div>)}
-        </div>}
-      </div>);
+      );
+    });
+  })() : null;
+
+  /* ── Panel detail section (preview + extrude controls + steps) ─────── */
+  const panelDetailSection = (() => {
+    if (!activePanelId || !activePanel) return null;
+    const isExt = faceExtrudeMode && !!activePanelId;
+    const hf = faceExtrudeSelectedFace !== null;
+
+    return (
+      <div className="flex flex-col gap-3">
+        {/* 2D Preview */}
+        {activeDims && (
+          <div className="rounded-xl bg-gradient-to-b from-stone-50 to-stone-100/60 border border-stone-200 overflow-hidden">
+            <div className="px-3 pt-2.5 pb-0.5 flex items-center justify-between">
+              <span className="text-[10px] font-semibold text-stone-400 uppercase tracking-widest">Preview</span>
+              <span className="text-[10px] font-mono text-stone-400">
+                {activeDims.primary} × {activeDims.secondary} × {activeDims.thickness}
+              </span>
+            </div>
+            <div className="flex items-center justify-center py-1">
+              <PanelPreview2D dims={activeDims} steps={activeSteps}/>
+            </div>
+          </div>
+        )}
+
+        {/* Face Extrude Controls */}
+        <div className="rounded-xl bg-gradient-to-b from-white to-stone-50/80 border border-stone-200 overflow-hidden">
+          <div className="px-3 py-2 flex items-center gap-2 border-b border-stone-100">
+            <span className="text-[10px] font-semibold text-stone-400 uppercase tracking-widest flex-1">Face Extrude</span>
+            <button
+              onClick={e => { stop(e); faceExtrudeMode ? setFaceExtrudeMode(false) : (setFaceExtrudeTargetPanelId(activePanelId), setFaceExtrudeMode(true)); }}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold transition-all duration-150
+                ${isExt
+                  ? 'bg-orange-500 text-white shadow-sm ring-1 ring-orange-400'
+                  : 'bg-white text-stone-600 border border-stone-300 hover:border-orange-300 hover:text-orange-600'}`}
+            >
+              <MoveVertical size={11}/>
+              {isExt ? 'Active' : 'Enable'}
+            </button>
+          </div>
+
+          {isExt && (
+            <div className="px-3 py-2.5 flex items-center gap-2">
+              <div className="flex-1">
+                <label className="text-[10px] text-stone-400 mb-1 block">Thickness</label>
+                <input
+                  type="text" inputMode="numeric"
+                  value={faceExtrudeThickness}
+                  onChange={e => setFaceExtrudeThickness(Number(e.target.value)||0)}
+                  disabled={!hf}
+                  className={`w-full h-7 px-2 text-xs font-mono text-center border rounded-md focus:outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100 transition-all
+                    ${hf ? 'bg-white border-stone-300' : 'bg-stone-50 border-stone-200 text-stone-300 cursor-not-allowed'}`}
+                />
+              </div>
+              <div className="flex-1">
+                <label className="text-[10px] text-stone-400 mb-1 block">Mode</label>
+                <div className={`flex rounded-md overflow-hidden border ${hf ? 'border-stone-300' : 'border-stone-200 opacity-50'}`}>
+                  {[true, false].map(f => (
+                    <button key={String(f)} disabled={!hf} onClick={() => setFaceExtrudeFixedMode(f)}
+                      className={`flex-1 h-7 text-xs font-semibold transition-colors ${!f ? 'border-l border-stone-200' : ''}
+                        ${faceExtrudeFixedMode === f
+                          ? 'bg-orange-500 text-white'
+                          : 'bg-white text-stone-500 hover:bg-stone-50'}`}
+                    >{f ? 'Fixed' : 'Dynamic'}</button>
+                  ))}
+                </div>
+              </div>
+              <button
+                disabled={!hf}
+                onClick={async () => {
+                  if (!hf || !activePanelId) return;
+                  const ps = shapes.find(s => s.id === activePanelId); if (!ps) return;
+                  const { executeFaceExtrude } = await import('./FaceExtrudeService');
+                  await executeFaceExtrude({ panelShape: ps, faceGroupIndex: faceExtrudeSelectedFace!, value: faceExtrudeThickness, isFixed: faceExtrudeFixedMode, shapes, updateShape });
+                  setFaceExtrudeSelectedFace(null);
+                  setFaceExtrudeMode(false);
+                }}
+                className={`self-end mb-0.5 flex items-center justify-center w-7 h-7 rounded-md border transition-all
+                  ${hf
+                    ? 'border-green-400 bg-green-500 text-white hover:bg-green-600 shadow-sm'
+                    : 'border-stone-200 bg-stone-50 text-stone-300 cursor-not-allowed'}`}
+                title="Apply"
+              ><Check size={13}/></button>
+            </div>
+          )}
+
+          {!isExt && (
+            <div className="px-3 py-2.5">
+              <p className="text-[10px] text-stone-400 leading-relaxed">
+                Select a face in 3D view to offset it along its normal axis.
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* Extrude Steps */}
+        {activeSteps.length > 0 && (
+          <div className="rounded-xl bg-white border border-stone-200 overflow-hidden">
+            <div className="px-3 py-2 border-b border-stone-100 flex items-center justify-between">
+              <span className="text-[10px] font-semibold text-stone-400 uppercase tracking-widest">Extrude Steps</span>
+              <span className="text-[10px] text-stone-300 font-mono">{activeSteps.length} step{activeSteps.length !== 1 ? 's' : ''}</span>
+            </div>
+            <div className="p-2 space-y-1">
+              {activeSteps.map((s: any) => (
+                <div key={s.id} className="group flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-stone-50 transition-colors">
+                  <span className="text-[10px] font-bold text-orange-600 bg-orange-50 border border-orange-200 rounded px-1.5 py-0.5 font-mono min-w-[28px] text-center shrink-0">
+                    {s.axisLabel}
+                  </span>
+
+                  {editingStepId === s.id ? (
+                    <div className="flex items-center gap-1.5 flex-1">
+                      <input
+                        type="text" inputMode="numeric" autoFocus
+                        value={editingStepValue}
+                        onChange={e => setEditingStepValue(Number(e.target.value)||0)}
+                        onKeyDown={e => { if (e.key==='Enter') saveStep(activePanelId,s.id,editingStepValue); else if (e.key==='Escape') setEditingStepId(null); }}
+                        className="flex-1 h-6 px-2 text-xs font-mono text-center border border-orange-300 rounded-md bg-white focus:outline-none focus:border-orange-400"
+                      />
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${s.isFixed ? 'text-blue-600 bg-blue-50' : 'text-stone-500 bg-stone-100'}`}>
+                        {s.isFixed ? 'Fix' : 'Dyn'}
+                      </span>
+                      <button onClick={() => saveStep(activePanelId,s.id,editingStepValue)}
+                        className="flex items-center justify-center w-5 h-5 rounded border border-green-400 bg-green-500 text-white hover:bg-green-600 transition-colors shrink-0"><Check size={10}/></button>
+                      <button onClick={() => setEditingStepId(null)}
+                        className="flex items-center justify-center w-5 h-5 rounded border border-stone-300 bg-white text-stone-500 hover:bg-stone-100 transition-colors shrink-0"><X size={10}/></button>
+                    </div>
+                  ) : (
+                    <>
+                      <span className="text-xs font-mono text-stone-700 font-semibold flex-1">{s.value}</span>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold shrink-0 ${s.isFixed ? 'text-blue-600 bg-blue-50' : 'text-stone-500 bg-stone-100'}`}>
+                        {s.isFixed ? 'Fix' : 'Dyn'}
+                      </span>
+                      <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                        <button onClick={() => { setEditingStepId(s.id); setEditingStepValue(s.value); }}
+                          className="flex items-center justify-center w-5 h-5 rounded border border-orange-200 bg-white text-orange-500 hover:bg-orange-50 transition-colors"><Pencil size={9}/></button>
+                        <button onClick={async () => {
+                          const ps = shapes.find(x => x.id === activePanelId); if (!ps) return;
+                          const { deleteExtrudeStep } = await import('./FaceExtrudeService');
+                          await deleteExtrudeStep(ps, s.id, updateShape);
+                        }}
+                          className="flex items-center justify-center w-5 h-5 rounded border border-red-200 bg-white text-red-400 hover:bg-red-50 transition-colors"><Trash2 size={9}/></button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    );
   })();
 
   if (embedded) return (
-    <div className="flex flex-col h-full">
-      <div className="px-2.5 py-1.5 border-b border-stone-100 flex items-center justify-between">
+    <div className="flex flex-col h-full min-h-0">
+      {/* Toolbar */}
+      <div className="px-3 py-2 border-b border-stone-100 flex items-center justify-between shrink-0">
         {panelToolbar}
       </div>
-      <div className="px-2.5 py-2 overflow-y-auto flex-1">{panelContent}</div>
-      {dimsSection}
+
+      {selectedShape ? (
+        <>
+          {/* Face list — max 50% height, scrollable */}
+          <div className="shrink-0" style={{ maxHeight: '50%', overflowY: 'auto' }}>
+            <div className="px-2 pt-2 pb-1">
+              <div className="flex items-center gap-1.5 px-1 mb-1.5">
+                <span className="text-[10px] font-semibold text-stone-400 uppercase tracking-widest">Faces</span>
+                {virtualFaces.filter(v => v.shapeId === selectedShape.id).length > 0 && (
+                  <span className="text-[10px] text-stone-300 font-mono">
+                    {virtualFaces.filter(v => v.shapeId === selectedShape.id).length}
+                  </span>
+                )}
+              </div>
+              <div className="space-y-0.5">
+                {faceListSection}
+              </div>
+            </div>
+          </div>
+
+          {/* Detail section — remaining space, scrollable */}
+          <div className="flex-1 min-h-0 overflow-y-auto border-t border-stone-100">
+            <div className="px-2 py-2.5">
+              {panelDetailSection || (
+                <div className="flex flex-col items-center justify-center py-8 text-center">
+                  <div className="w-8 h-8 rounded-lg bg-stone-100 flex items-center justify-center mb-2">
+                    <ChevronRight size={14} className="text-stone-300"/>
+                  </div>
+                  <span className="text-xs text-stone-400">Select a face above</span>
+                  <span className="text-[10px] text-stone-300 mt-0.5">to see preview and controls</span>
+                </div>
+              )}
+            </div>
+          </div>
+        </>
+      ) : (
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-center text-stone-400 text-xs py-4">No shape selected</div>
+        </div>
+      )}
     </div>
   );
 
   return (
-    <div className="fixed bg-white rounded-md shadow-lg border border-stone-200 z-50" style={{ left: `${position.x}px`, top: `${position.y}px`, width: '370px' }}>
-      <div className="flex items-center justify-between px-2.5 py-1.5 bg-stone-50 border-b border-stone-200 rounded-t-md select-none" style={{ cursor: isDragging ? 'grabbing' : 'grab' }} onMouseDown={handleMouseDown}>
-        <div className="flex items-center gap-1.5"><GripVertical size={12} className="text-stone-300"/><span className="text-xs font-semibold text-stone-600 tracking-wide uppercase">Parameters</span></div>
-        <div className="flex items-center gap-1">{panelToolbar}<button onClick={onClose} className="p-0.5 hover:bg-stone-200 rounded transition-colors"><X size={12} className="text-stone-400"/></button></div>
+    <div className="fixed bg-white rounded-xl shadow-xl border border-stone-200 z-50 overflow-hidden" style={{ left: `${position.x}px`, top: `${position.y}px`, width: '390px' }}>
+      <div className="flex items-center justify-between px-3 py-2 bg-stone-50 border-b border-stone-200 select-none" style={{ cursor: isDraggingWindow ? 'grabbing' : 'grab' }} onMouseDown={handleMouseDown}>
+        <div className="flex items-center gap-2"><GripVertical size={13} className="text-stone-300"/><span className="text-xs font-semibold text-stone-600 tracking-wide uppercase">Panel Editor</span></div>
+        <div className="flex items-center gap-1.5">{panelToolbar}<button onClick={onClose} className="p-1 hover:bg-stone-200 rounded-md transition-colors"><X size={13} className="text-stone-400"/></button></div>
       </div>
-      <div className="px-2.5 py-2 max-h-[calc(100vh-200px)] overflow-y-auto">{panelContent}</div>
-      {dimsSection}
-    </div>);
+      <div className="max-h-[calc(100vh-200px)] overflow-y-auto">
+        <div className="p-2 space-y-0.5">{faceListSection}</div>
+        {panelDetailSection && <div className="px-2 pb-3 pt-1 border-t border-stone-100 space-y-3">{panelDetailSection}</div>}
+      </div>
+    </div>
+  );
 }
