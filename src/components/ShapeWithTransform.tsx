@@ -479,6 +479,15 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
             selectShape(shape.id);
             selectSecondaryShape(null);
             setSelectedPanelRow(null);
+          } else if (isPanel && shape.parameters?.parentShapeId) {
+            // Even outside panelSelectMode: clicking a panel selects parent and highlights editor row
+            const parentId = shape.parameters.parentShapeId;
+            selectShape(parentId);
+            selectSecondaryShape(null);
+            const rowKey = shape.parameters?.virtualFaceId
+              ? `vf-${shape.parameters.virtualFaceId}`
+              : (shape.parameters.faceIndex ?? null);
+            setSelectedPanelRow(rowKey, shape.parameters.extraRowId || null, parentId);
           } else {
             selectShape(shape.id);
             selectSecondaryShape(null);
