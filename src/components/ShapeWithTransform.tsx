@@ -443,41 +443,30 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
   const suppressPanelRaycast = isPanel && raycastMode && parentShapeId === selectedShapeId;
   const noopRaycast = useCallback(() => {}, []);
 
-  // Direction arrow for panels: computed from local geometry bbox
+  // Direction arrow for panels: X=width, Y=height, Z=depth(thickness) per ReplicadService
   const panelArrow = useMemo(() => {
-    if (!isPanel || !localGeometry || !shape.parameters?.parentShapeId) return null;
-    const pos = localGeometry.getAttribute('position');
-    if (!pos) return null;
-    const bbox = new THREE.Box3().setFromBufferAttribute(pos as THREE.BufferAttribute);
-    const size = new THREE.Vector3(); bbox.getSize(size);
-    const center = new THREE.Vector3(); bbox.getCenter(center);
-
-    // Find thickness axis (smallest) and two face axes
-    const sorted = ([0, 1, 2] as const).map(i => ({ i, v: [size.x, size.y, size.z][i] })).sort((a, b) => a.v - b.v);
-    const thickIdx = sorted[0].i;
-    const faceIdxs = [sorted[1].i, sorted[2].i].sort((a, b) => a - b) as [number, number];
-    const [defIdx, altIdx] = faceIdxs;
+    if (!isPanel || !shape.parameters?.parentShapeId) return null;
+    const W = parseFloat(shape.parameters?.width) || 0;
+    const H = parseFloat(shape.parameters?.height) || 0;
+    const T = parseFloat(shape.parameters?.depth) || 18;
+    if (W < 1 || H < 1) return null;
 
     const arrowRotated = !!shape.parameters?.arrowRotated;
-    const wAxisIdx = arrowRotated ? altIdx : defIdx;
+    const len = Math.min(W, H) * 0.22;
 
-    // Position arrow at center of the +thickness face, slightly outside
-    const keys = ['x', 'y', 'z'] as const;
-    const arrowOrigin = center.clone();
-    arrowOrigin[keys[thickIdx]] = bbox.max[keys[thickIdx]] + 2;
+    // Position: center of top face (+Z), slightly above
+    const pos: [number, number, number] = [W / 2, H / 2, T + 3];
 
-    // Arrow direction along W axis
-    const dir = new THREE.Vector3();
-    dir.setComponent(wAxisIdx, 1);
+    // Cone defaults to pointing +Y; rotate to point along W axis.
+    // arrowRotated=false → W=X → rotate -90° around Z
+    // arrowRotated=true  → W=Y → no rotation
+    const quat = arrowRotated
+      ? new THREE.Quaternion()
+      : new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -Math.PI / 2);
 
-    // Scale arrow to 25% of panel's W dimension
-    const len = size[keys[wAxisIdx]] * 0.22;
-
-    // Quaternion to rotate cone (default up=Y) to face W direction
-    const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
-
-    return { origin: arrowOrigin, quat, len };
-  }, [isPanel, localGeometry, shape.parameters?.parentShapeId, shape.parameters?.arrowRotated]);
+    return { pos, quat: quat.toArray() as [number, number, number, number], len };
+  }, [isPanel, shape.parameters?.parentShapeId, shape.parameters?.width,
+      shape.parameters?.height, shape.parameters?.depth, shape.parameters?.arrowRotated]);
 
   if (shape.isolated === false) return null;
   if (isParentRebuilding)       return null;
@@ -658,19 +647,19 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
         {/* ── PANEL DIRECTION ARROW ─────────────────────────────────────── */}
         {panelArrow && (
           <group
-            position={panelArrow.origin.toArray() as [number, number, number]}
-            quaternion={panelArrow.quat as unknown as THREE.Quaternion}
-            raycast={() => null}
+            position={panelArrow.pos}
+            quaternion={panelArrow.quat}
+            renderOrder={10}
           >
             {/* shaft */}
-            <mesh position={[0, panelArrow.len * 0.28, 0]}>
+            <mesh position={[0, panelArrow.len * 0.28, 0]} renderOrder={10}>
               <cylinderGeometry args={[panelArrow.len * 0.045, panelArrow.len * 0.045, panelArrow.len * 0.55, 8]} />
-              <meshBasicMaterial color="#e85d04" depthTest={false} />
+              <meshBasicMaterial color="#e85d04" depthTest={false} transparent opacity={0.95} />
             </mesh>
             {/* head */}
-            <mesh position={[0, panelArrow.len * 0.72, 0]}>
+            <mesh position={[0, panelArrow.len * 0.72, 0]} renderOrder={10}>
               <coneGeometry args={[panelArrow.len * 0.12, panelArrow.len * 0.28, 8]} />
-              <meshBasicMaterial color="#e85d04" depthTest={false} />
+              <meshBasicMaterial color="#e85d04" depthTest={false} transparent opacity={0.95} />
             </mesh>
           </group>
         )}

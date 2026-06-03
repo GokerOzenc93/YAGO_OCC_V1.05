@@ -243,22 +243,26 @@ function PanelPreview2D({ dims, shape, arrowRotated }: { dims: Dims; shape?: any
       const aspect = w / h;
       const pad = 1.42;
 
-      // Determine which world axis maps to screen-right and which to screen-up.
-      // When looking along axis `minIdx`, the up vector determines screen-Y.
-      // minIdx=1 (look along Y) → up=−Z, so screen-X=X, screen-Y=Z
-      // minIdx=0 (look along X) → up=+Y, so screen-X=Z, screen-Y=Y
-      // minIdx=2 (look along Z) → up=+Y, so screen-X=X, screen-Y=Y
-      let screenW: number, screenH: number;
-      if (minIdx === 1) {
-        screenW = dims3[0]; // X → screen horizontal
-        screenH = dims3[2]; // Z → screen vertical
-      } else if (minIdx === 0) {
-        screenW = dims3[2]; // Z → screen horizontal
-        screenH = dims3[1]; // Y → screen vertical
-      } else {
-        screenW = dims3[0]; // X → screen horizontal
-        screenH = dims3[1]; // Y → screen vertical
-      }
+      // Find the two face axes (non-thickness). def = smaller index, alt = larger.
+      // arrowRotated=false → W is on def axis (screen horizontal)
+      // arrowRotated=true  → W is on alt axis (screen horizontal)
+      // Camera up is chosen so that the W axis always maps to screen-right.
+      const faceAxes = [0, 1, 2].filter(i => i !== minIdx).sort((a, b) => a - b);
+      const [defIdx, altIdx] = faceAxes;
+      const wAxisIdx = arrowRotated ? altIdx : defIdx;
+      const hAxisIdx = arrowRotated ? defIdx : altIdx;
+      const screenW = dims3[wAxisIdx];
+      const screenH = dims3[hAxisIdx];
+
+      // Compute camera up: we need the camera's right axis = +W axis.
+      // Three.js lookAt: x_cam = normalize(cross(up, z_back)), where z_back = -lookDir.
+      // We need x_cam = unit vector along wAxisIdx.
+      // Solution: up = cross(z_back, x_cam_desired)... derive per-axis:
+      const zBack = lookDirs[minIdx].clone().negate(); // camera z_back
+      const xDesired = new THREE.Vector3(); xDesired.setComponent(wAxisIdx, 1); // want W right
+      const upVec = new THREE.Vector3().crossVectors(zBack, xDesired).normalize();
+      // Fallback: if degenerate, use Y
+      if (upVec.lengthSq() < 0.01) upVec.set(0, 1, 0);
 
       const halfWFromW = (screenW / 2) * pad;
       const halfWFromH = (screenH / 2) * pad * aspect;
@@ -267,8 +271,7 @@ function PanelPreview2D({ dims, shape, arrowRotated }: { dims: Dims; shape?: any
 
       const camera = new THREE.OrthographicCamera(-halfW, halfW, halfH, -halfH, -10000, 10000);
       camera.position.copy(center).addScaledVector(lookDirs[minIdx], 1000);
-      if (minIdx === 1) camera.up.set(0, 0, -1);
-      else camera.up.set(0, 1, 0);
+      camera.up.copy(upVec);
       camera.lookAt(center);
       camera.updateProjectionMatrix();
       camera.updateMatrixWorld();
@@ -303,7 +306,7 @@ function PanelPreview2D({ dims, shape, arrowRotated }: { dims: Dims; shape?: any
       edgesGeo?.dispose();
       edgesMat?.dispose();
     };
-  }, [shape]);
+  }, [shape, arrowRotated]);
 
   const hasSub = Array.isArray(shape?.subtractionGeometries) && shape.subtractionGeometries.length > 0;
 
