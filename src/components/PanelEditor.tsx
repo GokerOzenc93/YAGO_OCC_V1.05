@@ -254,14 +254,10 @@ function PanelPreview2D({ dims, shape, arrowRotated }: { dims: Dims; shape?: any
       const screenW = dims3[wAxisIdx];
       const screenH = dims3[hAxisIdx];
 
-      // Compute camera up: we need the camera's right axis = +W axis.
-      // Three.js lookAt: x_cam = normalize(cross(up, z_back)), where z_back = -lookDir.
-      // We need x_cam = unit vector along wAxisIdx.
-      // Solution: up = cross(z_back, x_cam_desired)... derive per-axis:
-      const zBack = lookDirs[minIdx].clone().negate(); // camera z_back
-      const xDesired = new THREE.Vector3(); xDesired.setComponent(wAxisIdx, 1); // want W right
-      const upVec = new THREE.Vector3().crossVectors(zBack, xDesired).normalize();
-      // Fallback: if degenerate, use Y
+      // Camera up: solve cross(up, z_cam) = wDir for up, where z_cam = lookDirs[minIdx].
+      // Solution: up = cross(z_cam, wDir).
+      const wDir = new THREE.Vector3(); wDir.setComponent(wAxisIdx, 1);
+      const upVec = new THREE.Vector3().crossVectors(lookDirs[minIdx], wDir).normalize();
       if (upVec.lengthSq() < 0.01) upVec.set(0, 1, 0);
 
       const halfWFromW = (screenW / 2) * pad;
@@ -385,7 +381,7 @@ function PanelPreview2D({ dims, shape, arrowRotated }: { dims: Dims; shape?: any
           T {dims.thickness}
         </div>
         <svg width="28" height="28" viewBox="0 0 28 28"
-          style={{ transform: arrowRotated ? 'rotate(90deg)' : 'none', transition: 'transform 0.25s ease' }}>
+          style={{ transform: arrowRotated ? 'none' : 'rotate(90deg)', transition: 'transform 0.25s ease' }}>
           {/* circle background */}
           <circle cx="14" cy="14" r="13" fill="rgba(41,37,36,0.82)" />
           {/* arrow shaft */}
