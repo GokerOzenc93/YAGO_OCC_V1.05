@@ -185,7 +185,7 @@ function computeEdgeLabels(
 }
 
 /* ── 2D Panel Preview — Three.js orthographic canvas render ─────────── */
-function PanelPreview2D({ dims, shape }: { dims: Dims; shape?: any }) {
+function PanelPreview2D({ dims, shape, arrowRotated }: { dims: Dims; shape?: any; arrowRotated?: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [edgeLabels, setEdgeLabels] = useState<EdgeDimLabel[]>([]);
@@ -269,8 +269,14 @@ function PanelPreview2D({ dims, shape }: { dims: Dims; shape?: any }) {
       const camera = new THREE.OrthographicCamera(-halfW, halfW, halfH, -halfH, -10000, 10000);
       camera.position.copy(center).addScaledVector(lookDirs[minIdx], 1000);
       camera.lookAt(center);
+      // Base up vector per look axis
       if (minIdx === 1) camera.up.set(0, 0, -1);
       else camera.up.set(0, 1, 0);
+      // arrowRotated: rotate camera up 90° around the look axis to spin the preview
+      if (arrowRotated) {
+        const lookDir = lookDirs[minIdx].clone().normalize();
+        camera.up.applyAxisAngle(lookDir, Math.PI / 2);
+      }
       camera.updateProjectionMatrix();
       camera.updateMatrixWorld();
 
@@ -304,7 +310,7 @@ function PanelPreview2D({ dims, shape }: { dims: Dims; shape?: any }) {
       edgesGeo?.dispose();
       edgesMat?.dispose();
     };
-  }, [shape]);
+  }, [shape, arrowRotated]);
 
   const hasSub = Array.isArray(shape?.subtractionGeometries) && shape.subtractionGeometries.length > 0;
 
@@ -372,11 +378,25 @@ function PanelPreview2D({ dims, shape }: { dims: Dims; shape?: any }) {
         </div>
       )}
 
-      <div style={{ position: 'absolute', bottom: 10, left: 12,
-        background: 'rgba(41,37,36,0.82)', borderRadius: 5,
-        padding: '3px 10px', fontSize: 12, fontFamily: 'monospace', fontWeight: 700, color: 'rgba(255,255,255,0.97)',
-        pointerEvents: 'none' }}>
-        T {dims.thickness}
+      {/* Direction arrow — rotates 90° when arrowRotated is true */}
+      <div style={{
+        position: 'absolute', bottom: 10, left: 12, display: 'flex', alignItems: 'center', gap: 6, pointerEvents: 'none',
+      }}>
+        <div style={{
+          background: 'rgba(41,37,36,0.82)', borderRadius: 5,
+          padding: '3px 10px', fontSize: 12, fontFamily: 'monospace', fontWeight: 700, color: 'rgba(255,255,255,0.97)',
+        }}>
+          T {dims.thickness}
+        </div>
+        <svg width="28" height="28" viewBox="0 0 28 28"
+          style={{ transform: arrowRotated ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.25s ease' }}>
+          {/* circle background */}
+          <circle cx="14" cy="14" r="13" fill="rgba(41,37,36,0.82)" />
+          {/* arrow shaft */}
+          <line x1="14" y1="20" x2="14" y2="9" stroke="white" strokeWidth="2" strokeLinecap="round"/>
+          {/* arrowhead */}
+          <polygon points="14,5 10,11 18,11" fill="white"/>
+        </svg>
       </div>
     </div>
   );
@@ -863,7 +883,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       {/* Canvas — flex-1, fills remaining space */}
       <div className="flex-1 mx-2 mb-1 rounded-xl bg-gradient-to-b from-[#f8f5f0] to-[#ede8df] border border-stone-200/80 overflow-hidden relative" style={{ minHeight: 320 }}>
         {activeDims && activePanel
-          ? <PanelPreview2D key={activePanel.id} dims={activeDims} shape={activePanel}/>
+          ? <PanelPreview2D key={activePanel.id} dims={activeDims} shape={activePanel} arrowRotated={!!activePanel.parameters?.arrowRotated}/>
           : (
             <div className="absolute inset-0 flex items-center justify-center">
               <span className="text-xs text-stone-400">Panel yok</span>
