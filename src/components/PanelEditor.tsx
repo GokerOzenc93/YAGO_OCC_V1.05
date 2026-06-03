@@ -260,24 +260,16 @@ function PanelPreview2D({ dims, shape, arrowRotated }: { dims: Dims; shape?: any
         screenH = dims3[1]; // Y → screen vertical
       }
 
-      // When arrowRotated the camera up is rotated 90°, so screenW↔screenH swap for frustum fit
-      const fitW = arrowRotated ? screenH : screenW;
-      const fitH = arrowRotated ? screenW : screenH;
-
-      const halfWFromW = (fitW / 2) * pad;
-      const halfWFromH = (fitH / 2) * pad * aspect;
+      const halfWFromW = (screenW / 2) * pad;
+      const halfWFromH = (screenH / 2) * pad * aspect;
       const halfW = Math.max(halfWFromW, halfWFromH);
       const halfH = halfW / aspect;
 
       const camera = new THREE.OrthographicCamera(-halfW, halfW, halfH, -halfH, -10000, 10000);
       camera.position.copy(center).addScaledVector(lookDirs[minIdx], 1000);
-      camera.lookAt(center);
       if (minIdx === 1) camera.up.set(0, 0, -1);
       else camera.up.set(0, 1, 0);
-      if (arrowRotated) {
-        const lookDir = lookDirs[minIdx].clone().normalize();
-        camera.up.applyAxisAngle(lookDir, Math.PI / 2);
-      }
+      camera.lookAt(center);
       camera.updateProjectionMatrix();
       camera.updateMatrixWorld();
 
@@ -311,7 +303,7 @@ function PanelPreview2D({ dims, shape, arrowRotated }: { dims: Dims; shape?: any
       edgesGeo?.dispose();
       edgesMat?.dispose();
     };
-  }, [shape, arrowRotated]);
+  }, [shape]);
 
   const hasSub = Array.isArray(shape?.subtractionGeometries) && shape.subtractionGeometries.length > 0;
 
@@ -331,6 +323,12 @@ function PanelPreview2D({ dims, shape, arrowRotated }: { dims: Dims; shape?: any
 
   return (
     <div ref={wrapRef} style={{ position: 'absolute', inset: 0, userSelect: 'none' }}>
+      <div style={{
+        position: 'absolute', inset: 0,
+        transform: arrowRotated ? 'rotate(90deg)' : 'none',
+        transition: 'transform 0.25s ease',
+        transformOrigin: 'center center',
+      }}>
       <canvas
         ref={canvasRef}
         style={{ display: 'block', position: 'absolute', inset: 0, width: '100%', height: '100%' }}
@@ -366,6 +364,7 @@ function PanelPreview2D({ dims, shape, arrowRotated }: { dims: Dims; shape?: any
           );
         })}
       </svg>
+      </div>{/* end rotate wrapper */}
 
       {/* Subtract dimension badges — shown only when panel has subtractions */}
       {hasSub && subDims.length > 0 && (
@@ -390,7 +389,7 @@ function PanelPreview2D({ dims, shape, arrowRotated }: { dims: Dims; shape?: any
           T {dims.thickness}
         </div>
         <svg width="28" height="28" viewBox="0 0 28 28"
-          style={{ transform: arrowRotated ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.25s ease' }}>
+          style={{ transform: arrowRotated ? 'rotate(90deg)' : 'none', transition: 'transform 0.25s ease' }}>
           {/* circle background */}
           <circle cx="14" cy="14" r="13" fill="rgba(41,37,36,0.82)" />
           {/* arrow shaft */}
