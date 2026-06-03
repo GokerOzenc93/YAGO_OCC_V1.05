@@ -240,12 +240,29 @@ function PanelPreview2D({ dims, shape }: { dims: Dims; shape?: any }) {
       const minIdx = dims3.indexOf(Math.min(...dims3));
       const lookDirs = [new THREE.Vector3(1,0,0), new THREE.Vector3(0,1,0), new THREE.Vector3(0,0,1)];
 
-      const planarDims = dims3.filter((_, i) => i !== minIdx);
       const aspect = w / h;
-      // Reserve ~18% of each side for dimension line labels so they never clip.
       const pad = 1.42;
-      const halfWFromW = (planarDims[0] / 2) * pad;
-      const halfWFromH = (planarDims[1] / 2) * pad * aspect;
+
+      // Determine which world axis maps to screen-right and which to screen-up.
+      // When looking along axis `minIdx`, the up vector determines screen-Y.
+      // minIdx=1 (look along Y) → up=−Z, so screen-X=X, screen-Y=Z
+      // minIdx=0 (look along X) → up=+Y, so screen-X=Z, screen-Y=Y
+      // minIdx=2 (look along Z) → up=+Y, so screen-X=X, screen-Y=Y
+      let screenW: number, screenH: number;
+      if (minIdx === 1) {
+        screenW = dims3[0]; // X → screen horizontal
+        screenH = dims3[2]; // Z → screen vertical
+      } else if (minIdx === 0) {
+        screenW = dims3[2]; // Z → screen horizontal
+        screenH = dims3[1]; // Y → screen vertical
+      } else {
+        screenW = dims3[0]; // X → screen horizontal
+        screenH = dims3[1]; // Y → screen vertical
+      }
+
+      // Fit both dimensions: pick the halfW that satisfies both constraints.
+      const halfWFromW = (screenW / 2) * pad;
+      const halfWFromH = (screenH / 2) * pad * aspect;
       const halfW = Math.max(halfWFromW, halfWFromH);
       const halfH = halfW / aspect;
 
