@@ -260,19 +260,20 @@ function PanelPreview2D({ dims, shape, arrowRotated }: { dims: Dims; shape?: any
         screenH = dims3[1]; // Y → screen vertical
       }
 
-      // Fit both dimensions: pick the halfW that satisfies both constraints.
-      const halfWFromW = (screenW / 2) * pad;
-      const halfWFromH = (screenH / 2) * pad * aspect;
+      // When arrowRotated the camera up is rotated 90°, so screenW↔screenH swap for frustum fit
+      const fitW = arrowRotated ? screenH : screenW;
+      const fitH = arrowRotated ? screenW : screenH;
+
+      const halfWFromW = (fitW / 2) * pad;
+      const halfWFromH = (fitH / 2) * pad * aspect;
       const halfW = Math.max(halfWFromW, halfWFromH);
       const halfH = halfW / aspect;
 
       const camera = new THREE.OrthographicCamera(-halfW, halfW, halfH, -halfH, -10000, 10000);
       camera.position.copy(center).addScaledVector(lookDirs[minIdx], 1000);
       camera.lookAt(center);
-      // Base up vector per look axis
       if (minIdx === 1) camera.up.set(0, 0, -1);
       else camera.up.set(0, 1, 0);
-      // arrowRotated: rotate camera up 90° around the look axis to spin the preview
       if (arrowRotated) {
         const lookDir = lookDirs[minIdx].clone().normalize();
         camera.up.applyAxisAngle(lookDir, Math.PI / 2);
