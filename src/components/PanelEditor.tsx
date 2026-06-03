@@ -323,12 +323,6 @@ function PanelPreview2D({ dims, shape, arrowRotated }: { dims: Dims; shape?: any
 
   return (
     <div ref={wrapRef} style={{ position: 'absolute', inset: 0, userSelect: 'none' }}>
-      <div style={{
-        position: 'absolute', inset: 0,
-        transform: arrowRotated ? 'rotate(90deg)' : 'none',
-        transition: 'transform 0.25s ease',
-        transformOrigin: 'center center',
-      }}>
       <canvas
         ref={canvasRef}
         style={{ display: 'block', position: 'absolute', inset: 0, width: '100%', height: '100%' }}
@@ -364,7 +358,6 @@ function PanelPreview2D({ dims, shape, arrowRotated }: { dims: Dims; shape?: any
           );
         })}
       </svg>
-      </div>{/* end rotate wrapper */}
 
       {/* Subtract dimension badges — shown only when panel has subtractions */}
       {hasSub && subDims.length > 0 && (

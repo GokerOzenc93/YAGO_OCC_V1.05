@@ -443,6 +443,42 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
   const suppressPanelRaycast = isPanel && raycastMode && parentShapeId === selectedShapeId;
   const noopRaycast = useCallback(() => {}, []);
 
+  // Direction arrow for panels: computed from local geometry bbox
+  const panelArrow = useMemo(() => {
+    if (!isPanel || !localGeometry || !shape.parameters?.parentShapeId) return null;
+    const pos = localGeometry.getAttribute('position');
+    if (!pos) return null;
+    const bbox = new THREE.Box3().setFromBufferAttribute(pos as THREE.BufferAttribute);
+    const size = new THREE.Vector3(); bbox.getSize(size);
+    const center = new THREE.Vector3(); bbox.getCenter(center);
+
+    // Find thickness axis (smallest) and two face axes
+    const sorted = ([0, 1, 2] as const).map(i => ({ i, v: [size.x, size.y, size.z][i] })).sort((a, b) => a.v - b.v);
+    const thickIdx = sorted[0].i;
+    const faceIdxs = [sorted[1].i, sorted[2].i].sort((a, b) => a - b) as [number, number];
+    const [defIdx, altIdx] = faceIdxs;
+
+    const arrowRotated = !!shape.parameters?.arrowRotated;
+    const wAxisIdx = arrowRotated ? altIdx : defIdx;
+
+    // Position arrow at center of the +thickness face, slightly outside
+    const keys = ['x', 'y', 'z'] as const;
+    const arrowOrigin = center.clone();
+    arrowOrigin[keys[thickIdx]] = bbox.max[keys[thickIdx]] + 2;
+
+    // Arrow direction along W axis
+    const dir = new THREE.Vector3();
+    dir.setComponent(wAxisIdx, 1);
+
+    // Scale arrow to 25% of panel's W dimension
+    const len = size[keys[wAxisIdx]] * 0.22;
+
+    // Quaternion to rotate cone (default up=Y) to face W direction
+    const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+
+    return { origin: arrowOrigin, quat, len };
+  }, [isPanel, localGeometry, shape.parameters?.parentShapeId, shape.parameters?.arrowRotated]);
+
   if (shape.isolated === false) return null;
   if (isParentRebuilding)       return null;
   if (!localGeometry)           return null;
@@ -617,6 +653,26 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
               />
             )}
           </>
+        )}
+
+        {/* ── PANEL DIRECTION ARROW ─────────────────────────────────────── */}
+        {panelArrow && (
+          <group
+            position={panelArrow.origin.toArray() as [number, number, number]}
+            quaternion={panelArrow.quat as unknown as THREE.Quaternion}
+            raycast={() => null}
+          >
+            {/* shaft */}
+            <mesh position={[0, panelArrow.len * 0.28, 0]}>
+              <cylinderGeometry args={[panelArrow.len * 0.045, panelArrow.len * 0.045, panelArrow.len * 0.55, 8]} />
+              <meshBasicMaterial color="#e85d04" depthTest={false} />
+            </mesh>
+            {/* head */}
+            <mesh position={[0, panelArrow.len * 0.72, 0]}>
+              <coneGeometry args={[panelArrow.len * 0.12, panelArrow.len * 0.28, 8]} />
+              <meshBasicMaterial color="#e85d04" depthTest={false} />
+            </mesh>
+          </group>
         )}
 
         {/* ── EK KATMANLAR ──────────────────────────────────────────────── */}
