@@ -132,25 +132,53 @@ async function applyOneExtrudeStep(
     return null;
   }
 
+  const box = new THREE.Box3().setFromBufferAttribute(
+    geometry.getAttribute('position') as THREE.BufferAttribute
+  );
+
   const stepCenter = new THREE.Vector3(...step.faceCenter);
+  const stepNorm = new THREE.Vector3(...step.faceNormal).normalize();
+
+  // Determine the expected bbox boundary for this axis direction.
+  // The outer face of the panel lives at the bbox extreme; inner slot walls
+  // are set back from it. When stepCenter is near the bbox boundary (the user
+  // clicked on the outer face), we apply a heavy penalty to candidate groups
+  // that are far from the boundary so that inner slot walls are never
+  // preferred over the outer face.
+  const absNX = Math.abs(stepNorm.x), absNY = Math.abs(stepNorm.y), absNZ = Math.abs(stepNorm.z);
+  type AxisKey = 'x' | 'y' | 'z';
+  let axisKey: AxisKey;
+  let expectedBoundary: number;
+  if (absNX >= absNY && absNX >= absNZ) {
+    axisKey = 'x';
+    expectedBoundary = stepNorm.x > 0 ? box.max.x : box.min.x;
+  } else if (absNY >= absNX && absNY >= absNZ) {
+    axisKey = 'y';
+    expectedBoundary = stepNorm.y > 0 ? box.max.y : box.min.y;
+  } else {
+    axisKey = 'z';
+    expectedBoundary = stepNorm.z > 0 ? box.max.z : box.min.z;
+  }
+  const BOUNDARY_TOL = 5.0;
+  const stepNearBoundary = Math.abs(stepCenter[axisKey] - expectedBoundary) < BOUNDARY_TOL;
+
   let bestGroup = aligned[0];
   if (aligned.length > 1) {
-    let bestDist = Infinity;
+    let bestScore = Infinity;
     for (const g of aligned) {
-      const d = g.center.distanceTo(stepCenter);
-      if (d < bestDist) {
-        bestDist = d;
-        bestGroup = g;
-      }
+      const distToStep = g.center.distanceTo(stepCenter);
+      // If the user clicked near the bbox boundary (outer face intent), penalise
+      // any candidate group whose centre is NOT on the boundary — these are inner
+      // slot/recess faces that should never be preferred over the outer face.
+      const distToBoundary = Math.abs(g.center[axisKey] - expectedBoundary);
+      const boundaryPenalty = stepNearBoundary && distToBoundary > BOUNDARY_TOL ? 10000 : 0;
+      const score = distToStep + boundaryPenalty;
+      if (score < bestScore) { bestScore = score; bestGroup = g; }
     }
   }
 
   const faceNormal = bestGroup.normal.clone().normalize();
   const faceCenter = bestGroup.center.clone();
-
-  const box = new THREE.Box3().setFromBufferAttribute(
-    geometry.getAttribute('position') as THREE.BufferAttribute
-  );
 
   let extrudeAmount: number;
   if (step.isFixed) {
