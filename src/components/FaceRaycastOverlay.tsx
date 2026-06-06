@@ -557,6 +557,25 @@ interface PendingPreview {
   virtualFace: VirtualFace;
 }
 
+/**
+ * Returns true if the given world-space point falls inside the VirtualFace polygon.
+ * Used to distinguish "click on existing panel area" vs "click in void area" when
+ * a face group is partially covered by a shortened panel.
+ */
+export function isWorldPointInsideVF(worldPt: THREE.Vector3, vf: VirtualFace, worldToLocal: THREE.Matrix4): boolean {
+  if (vf.vertices.length < 3) return false;
+  const localPt = worldPt.clone().applyMatrix4(worldToLocal);
+  const normal = new THREE.Vector3(vf.normal[0], vf.normal[1], vf.normal[2]).normalize();
+  const { u, v } = getFacePlaneAxes(normal);
+  const ref = new THREE.Vector3(vf.vertices[0][0], vf.vertices[0][1], vf.vertices[0][2]);
+  const hitRel = localPt.clone().sub(ref);
+  const poly2D: Point2D[] = vf.vertices.map(vtx => {
+    const rel = new THREE.Vector3(vtx[0], vtx[1], vtx[2]).sub(ref);
+    return { x: rel.dot(u), y: rel.dot(v) };
+  });
+  return isPointInsidePolygon({ x: hitRel.dot(u), y: hitRel.dot(v) }, poly2D);
+}
+
 export function collectVirtualFaceObstacleEdgesWorld(virtualFaces: VirtualFace[], excludeId: string | null, shapeLocalToWorld: THREE.Matrix4, facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, planeTolerance: number = 20): Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> {
   const edges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> = [];
   for (const vf of virtualFaces) {
@@ -904,7 +923,13 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     const clickLocal = clickPoint.clone().applyMatrix4(worldToLocal);
 
     const isSameSpot = lastClickRef.current && lastClickRef.current.point.distanceTo(clickLocal) < 5;
-    const hoveredIsDefined = groupHasVirtualFace(hoveredGroupIndex);
+    // A face is considered "defined" (has an active panel under the cursor) only when
+    // the actual click point falls INSIDE the virtual face polygon — not just because
+    // the face group center is near a VF center.  This lets users click in the void
+    // area left by a shortened panel even though the face group still "owns" a VF.
+    const vfForHovered = findVirtualFaceForGroup(hoveredGroupIndex);
+    const hoveredIsDefined = vfForHovered !== null && vfForHovered.hasPanel
+      && isWorldPointInsideVF(clickPoint, vfForHovered, worldToLocal);
 
     let targetGroupIndex = hoveredGroupIndex;
     let previewClickPoint = clickPoint;
@@ -917,7 +942,9 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
       const candidateGroups: Array<{ index: number; depth: number; hitPoint: THREE.Vector3 }> = [];
 
       for (let gi = 0; gi < faceGroups.length; gi++) {
-        if (groupHasVirtualFace(gi)) continue;
+        // Skip this face group only when the ray's hit point on its plane is actually
+        // INSIDE an existing panel VF — void areas on the same group are allowed.
+        const vfForGi = findVirtualFaceForGroup(gi);
         const group = faceGroups[gi];
         const groupNormalWorld = group.normal.clone().normalize().applyMatrix3(
           new THREE.Matrix3().getNormalMatrix(localToWorld)
@@ -928,6 +955,10 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
         const t = planePoint.clone().sub(rayOrigin).dot(groupNormalWorld) / denom;
         if (t < 0) continue;
         const hitOnPlane = rayOrigin.clone().addScaledVector(rayDir, t);
+
+        // Skip if the hit point on this plane falls inside an active panel's VF polygon.
+        // Do NOT skip void areas (hit point outside the VF) — those are valid targets.
+        if (vfForGi?.hasPanel && isWorldPointInsideVF(hitOnPlane, vfForGi, worldToLocal)) continue;
 
         let inside = false;
         for (const fi of group.faceIndices) {
