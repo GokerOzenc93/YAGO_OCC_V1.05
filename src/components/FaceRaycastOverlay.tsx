@@ -870,19 +870,12 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     lastClickRef.current = null;
   }, [shape.geometry, shape.id, geometryUuid]);
   useEffect(() => { if (!raycastMode) { setHoveredGroupIndex(null); setPending(null); lastClickRef.current = null; } }, [raycastMode]);
-  const childPanels = useMemo(() => {
-    const panels = allShapes.filter(s => s.type === 'panel' && s.parameters?.parentShapeId === shape.id);
-    return panels.map(p => {
-      const base = p.parameters?.baseReplicadShape;
-      if (!base || !(p.parameters?.extrudeSteps?.length)) return p;
-      try {
-        const baseGeo = convertReplicadToThreeGeometry(base);
-        return { ...p, geometry: baseGeo, replicadShape: base };
-      } catch {
-        return p;
-      }
-    });
-  }, [allShapes, shape.id]);
+  // Use current (post-extrude) geometry so that shortened panels produce correct
+  // obstacle edges — the void area left by a shortened panel must be visitable.
+  const childPanels = useMemo(
+    () => allShapes.filter(s => s.type === 'panel' && s.parameters?.parentShapeId === shape.id),
+    [allShapes, shape.id]
+  );
   const findVirtualFaceForGroup = useCallback((gi: number) => {
     if (gi < 0 || gi >= faceGroups.length || shapeVirtualFaces.length === 0) return null;
     const gn = faceGroups[gi].normal.clone().normalize();

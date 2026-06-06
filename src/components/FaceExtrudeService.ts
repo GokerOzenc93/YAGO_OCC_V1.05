@@ -327,34 +327,34 @@ function syncVFToPanel(
   const parentLW = computeShapeMatrix(parentShape);
   const parentWL = parentLW.clone().invert();
 
-  // VF plane in world space
-  const normalMatrix = new THREE.Matrix3().getNormalMatrix(parentLW);
-  const vfNormalWorld = new THREE.Vector3(vfNormal[0], vfNormal[1], vfNormal[2])
-    .applyMatrix3(normalMatrix).normalize();
-  const vfOriginWorld = new THREE.Vector3(vfVertex0[0], vfVertex0[1], vfVertex0[2])
-    .applyMatrix4(parentLW);
+  // Work entirely in parent local space to avoid floating-point drift from
+  // double-transforming through world space.
+  const panelToParent = new THREE.Matrix4().multiplyMatrices(parentWL, panelLW);
 
-  // Collect panel geometry vertices projected onto the VF plane (parent local space)
+  const vfNormalLocal = new THREE.Vector3(vfNormal[0], vfNormal[1], vfNormal[2]).normalize();
+  const vfOriginLocal = new THREE.Vector3(vfVertex0[0], vfVertex0[1], vfVertex0[2]);
+
   const positions = panelGeo.getAttribute('position') as THREE.BufferAttribute;
-  const TOLERANCE = 2.0;
+  // Panel geometry is typically 18mm thick; use half-thickness as tolerance so
+  // only the face touching the parent (distance ≈ 0) is collected.
+  const TOLERANCE = 5.0;
   const seen = new Map<string, THREE.Vector3>();
 
   for (let i = 0; i < positions.count; i++) {
-    const vWorld = new THREE.Vector3(positions.getX(i), positions.getY(i), positions.getZ(i))
-      .applyMatrix4(panelLW);
-    const dist = Math.abs(vfNormalWorld.dot(vWorld.clone().sub(vfOriginWorld)));
+    const pParent = new THREE.Vector3(
+      positions.getX(i), positions.getY(i), positions.getZ(i)
+    ).applyMatrix4(panelToParent);
+    const dist = Math.abs(vfNormalLocal.dot(pParent.clone().sub(vfOriginLocal)));
     if (dist < TOLERANCE) {
-      const parentLocal = vWorld.clone().applyMatrix4(parentWL);
-      const key = `${parentLocal.x.toFixed(1)},${parentLocal.y.toFixed(1)},${parentLocal.z.toFixed(1)}`;
-      if (!seen.has(key)) seen.set(key, parentLocal);
+      const key = `${pParent.x.toFixed(1)},${pParent.y.toFixed(1)},${pParent.z.toFixed(1)}`;
+      if (!seen.has(key)) seen.set(key, pParent);
     }
   }
 
   const pts3D = Array.from(seen.values());
   if (pts3D.length < 3) return;
 
-  // Project to 2D and compute convex hull
-  const vfNormalLocal = new THREE.Vector3(vfNormal[0], vfNormal[1], vfNormal[2]).normalize();
+  // Project to face-plane 2D and compute convex hull
   const { u, v } = facePlaneAxes(vfNormalLocal);
   const ref = pts3D[0];
   const pts2D = pts3D.map(p => {
