@@ -27,6 +27,11 @@ export interface FaceExtrudeParams {
   updateShape: (id: string, updates: Partial<Shape>) => void;
   /** Local-space click point captured from the Three.js pointer event. */
   clickPoint?: [number, number, number];
+  /** VF id, normal, and first vertex for updating the virtual face polygon after extrude. */
+  virtualFaceId?: string;
+  vfNormal?: [number, number, number];
+  vfVertex0?: [number, number, number];
+  updateVirtualFace?: (id: string, updates: any) => void;
 }
 
 function getAxisLabel(normal: THREE.Vector3): string {
@@ -267,10 +272,119 @@ async function applyOneExtrudeStep(
   return { replicadShape: finalShape, geometry: newGeometry };
 }
 
+// ── Virtual face vertex update helpers ───────────────────────────────────────
+
+function computeShapeMatrix(shape: Shape): THREE.Matrix4 {
+  const pos = new THREE.Vector3(shape.position[0], shape.position[1], shape.position[2]);
+  const quat = new THREE.Quaternion().setFromEuler(
+    new THREE.Euler(shape.rotation[0], shape.rotation[1], shape.rotation[2], 'XYZ')
+  );
+  const scl = new THREE.Vector3(shape.scale[0], shape.scale[1], shape.scale[2]);
+  return new THREE.Matrix4().compose(pos, quat, scl);
+}
+
+function facePlaneAxes(n: THREE.Vector3): { u: THREE.Vector3; v: THREE.Vector3 } {
+  const norm = n.clone().normalize();
+  const up = Math.abs(norm.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+  const u = new THREE.Vector3().crossVectors(norm, up).normalize();
+  const v = new THREE.Vector3().crossVectors(norm, u).normalize();
+  return { u, v };
+}
+
+function convexHull2D(pts: { x: number; y: number }[]): { x: number; y: number }[] {
+  if (pts.length <= 3) return pts;
+  const sorted = [...pts].sort((a, b) => a.x !== b.x ? a.x - b.x : a.y - b.y);
+  const cross = (o: any, a: any, b: any) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+  const lower: { x: number; y: number }[] = [];
+  const upper: { x: number; y: number }[] = [];
+  for (const p of sorted) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+    lower.push(p);
+  }
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], sorted[i]) <= 0) upper.pop();
+    upper.push(sorted[i]);
+  }
+  lower.pop(); upper.pop();
+  return [...lower, ...upper];
+}
+
+/**
+ * Recomputes the VF polygon from the panel's current geometry footprint on the VF plane.
+ * This is called after face extrude so that the VF accurately represents the shortened
+ * panel area, allowing the void area to be clicked and filled.
+ */
+function syncVFToPanel(
+  panelGeo: THREE.BufferGeometry,
+  panelShape: Shape,
+  parentShape: Shape,
+  vfNormal: [number, number, number],
+  vfVertex0: [number, number, number],
+  vfId: string,
+  updateVirtualFace: (id: string, updates: any) => void
+): void {
+  const panelLW = computeShapeMatrix(panelShape);
+  const parentLW = computeShapeMatrix(parentShape);
+  const parentWL = parentLW.clone().invert();
+
+  // VF plane in world space
+  const normalMatrix = new THREE.Matrix3().getNormalMatrix(parentLW);
+  const vfNormalWorld = new THREE.Vector3(vfNormal[0], vfNormal[1], vfNormal[2])
+    .applyMatrix3(normalMatrix).normalize();
+  const vfOriginWorld = new THREE.Vector3(vfVertex0[0], vfVertex0[1], vfVertex0[2])
+    .applyMatrix4(parentLW);
+
+  // Collect panel geometry vertices projected onto the VF plane (parent local space)
+  const positions = panelGeo.getAttribute('position') as THREE.BufferAttribute;
+  const TOLERANCE = 2.0;
+  const seen = new Map<string, THREE.Vector3>();
+
+  for (let i = 0; i < positions.count; i++) {
+    const vWorld = new THREE.Vector3(positions.getX(i), positions.getY(i), positions.getZ(i))
+      .applyMatrix4(panelLW);
+    const dist = Math.abs(vfNormalWorld.dot(vWorld.clone().sub(vfOriginWorld)));
+    if (dist < TOLERANCE) {
+      const parentLocal = vWorld.clone().applyMatrix4(parentWL);
+      const key = `${parentLocal.x.toFixed(1)},${parentLocal.y.toFixed(1)},${parentLocal.z.toFixed(1)}`;
+      if (!seen.has(key)) seen.set(key, parentLocal);
+    }
+  }
+
+  const pts3D = Array.from(seen.values());
+  if (pts3D.length < 3) return;
+
+  // Project to 2D and compute convex hull
+  const vfNormalLocal = new THREE.Vector3(vfNormal[0], vfNormal[1], vfNormal[2]).normalize();
+  const { u, v } = facePlaneAxes(vfNormalLocal);
+  const ref = pts3D[0];
+  const pts2D = pts3D.map(p => {
+    const d = p.clone().sub(ref);
+    return { x: d.dot(u), y: d.dot(v) };
+  });
+  const hull = convexHull2D(pts2D);
+  if (hull.length < 3) return;
+
+  const newVerts: [number, number, number][] = hull.map(h => {
+    const p = ref.clone().addScaledVector(u, h.x).addScaledVector(v, h.y);
+    return [p.x, p.y, p.z];
+  });
+  const centroid = new THREE.Vector3();
+  newVerts.forEach(([x, y, z]) => centroid.add(new THREE.Vector3(x, y, z)));
+  centroid.divideScalar(newVerts.length);
+
+  updateVirtualFace(vfId, {
+    vertices: newVerts,
+    center: [centroid.x, centroid.y, centroid.z] as [number, number, number],
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 export async function rebuildFromSteps(
   panelShape: Shape,
   steps: ExtrudeStep[],
-  updateShape: (id: string, updates: Partial<Shape>) => void
+  updateShape: (id: string, updates: Partial<Shape>) => void,
+  onUpdated?: (geo: THREE.BufferGeometry) => void
 ): Promise<boolean> {
   if (!panelShape.parameters?.baseReplicadShape) return false;
 
@@ -333,6 +447,7 @@ export async function rebuildFromSteps(
     },
   });
 
+  onUpdated?.(currentGeometry);
   return true;
 }
 
@@ -452,17 +567,23 @@ export async function executeFaceExtrude(params: FaceExtrudeParams): Promise<boo
     newSteps = [...existingSteps, newStep];
   }
 
-  return rebuildFromSteps(
-    {
-      ...panel,
-      parameters: {
-        ...panel.parameters,
-        baseReplicadShape: panel.parameters.baseReplicadShape || panel.replicadShape,
-      },
+  const updatedPanel: Shape = {
+    ...panel,
+    parameters: {
+      ...panel.parameters,
+      baseReplicadShape: panel.parameters.baseReplicadShape || panel.replicadShape,
     },
-    newSteps,
-    updateShape
-  );
+  };
+
+  return rebuildFromSteps(updatedPanel, newSteps, updateShape, (geo) => {
+    const { virtualFaceId, vfNormal, vfVertex0, updateVirtualFace } = params;
+    if (virtualFaceId && vfNormal && vfVertex0 && updateVirtualFace) {
+      const parentShape = params.shapes.find(s => s.id === panel.parameters?.parentShapeId);
+      if (parentShape) {
+        syncVFToPanel(geo, updatedPanel, parentShape, vfNormal, vfVertex0, virtualFaceId, updateVirtualFace);
+      }
+    }
+  });
 }
 
 export async function deleteExtrudeStep(

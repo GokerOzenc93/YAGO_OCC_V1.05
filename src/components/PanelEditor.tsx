@@ -928,7 +928,21 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                   if (!hf || !activePanelId) return;
                   const ps = shapes.find(s => s.id === activePanelId); if (!ps) return;
                   const { executeFaceExtrude } = await import('./FaceExtrudeService');
-                  await executeFaceExtrude({ panelShape: ps, faceGroupIndex: faceExtrudeSelectedFace!, value: faceExtrudeThickness, isFixed: faceExtrudeFixedMode, shapes, updateShape, clickPoint: faceExtrudeClickPoint ?? undefined });
+                  const vfId = ps.parameters?.virtualFaceId as string | undefined;
+                  const vf = vfId ? virtualFaces.find(f => f.id === vfId) : undefined;
+                  await executeFaceExtrude({
+                    panelShape: ps,
+                    faceGroupIndex: faceExtrudeSelectedFace!,
+                    value: faceExtrudeThickness,
+                    isFixed: faceExtrudeFixedMode,
+                    shapes,
+                    updateShape,
+                    clickPoint: faceExtrudeClickPoint ?? undefined,
+                    virtualFaceId: vfId,
+                    vfNormal: vf?.normal as [number,number,number] | undefined,
+                    vfVertex0: vf?.vertices?.[0] as [number,number,number] | undefined,
+                    updateVirtualFace,
+                  });
                   setFaceExtrudeSelectedFace(null);
                   setFaceExtrudeMode(false);
                 }}
