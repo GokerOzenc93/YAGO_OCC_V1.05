@@ -145,19 +145,31 @@ async function applyOneExtrudeStep(
   const box = new THREE.Box3().setFromBufferAttribute(
     geometry.getAttribute('position') as THREE.BufferAttribute
   );
-  const size = new THREE.Vector3();
-  box.getSize(size);
 
   let extrudeAmount: number;
   if (step.isFixed) {
+    // Measure the current distance from the selected face to the opposite
+    // bounding-box boundary along the face's normal. Using the face centre
+    // position (not the full bbox size) gives the correct result even for
+    // stepped / L-shaped panels where the selected face is not at the bbox edge.
     const absX = Math.abs(faceNormal.x);
     const absY = Math.abs(faceNormal.y);
     const absZ = Math.abs(faceNormal.z);
-    let currentDimension: number;
-    if (absX >= absY && absX >= absZ) currentDimension = size.x;
-    else if (absY >= absX && absY >= absZ) currentDimension = size.y;
-    else currentDimension = size.z;
-    extrudeAmount = step.value - currentDimension;
+    let faceDist: number;
+    if (absX >= absY && absX >= absZ) {
+      faceDist = faceNormal.x > 0
+        ? faceCenter.x - box.min.x
+        : box.max.x - faceCenter.x;
+    } else if (absY >= absX && absY >= absZ) {
+      faceDist = faceNormal.y > 0
+        ? faceCenter.y - box.min.y
+        : box.max.y - faceCenter.y;
+    } else {
+      faceDist = faceNormal.z > 0
+        ? faceCenter.z - box.min.z
+        : box.max.z - faceCenter.z;
+    }
+    extrudeAmount = step.value - faceDist;
   } else {
     extrudeAmount = step.value;
   }
@@ -306,16 +318,18 @@ export async function executeFaceExtrude(params: FaceExtrudeParams): Promise<boo
     const box = new THREE.Box3().setFromBufferAttribute(
       panel.geometry!.getAttribute('position') as THREE.BufferAttribute
     );
-    const size = new THREE.Vector3();
-    box.getSize(size);
     const absX = Math.abs(faceNormal.x);
     const absY = Math.abs(faceNormal.y);
     const absZ = Math.abs(faceNormal.z);
-    let currentDimension: number;
-    if (absX >= absY && absX >= absZ) currentDimension = size.x;
-    else if (absY >= absX && absY >= absZ) currentDimension = size.y;
-    else currentDimension = size.z;
-    extrudeAmount = value - currentDimension;
+    let faceDist: number;
+    if (absX >= absY && absX >= absZ) {
+      faceDist = faceNormal.x > 0 ? faceCenter.x - box.min.x : box.max.x - faceCenter.x;
+    } else if (absY >= absX && absY >= absZ) {
+      faceDist = faceNormal.y > 0 ? faceCenter.y - box.min.y : box.max.y - faceCenter.y;
+    } else {
+      faceDist = faceNormal.z > 0 ? faceCenter.z - box.min.z : box.max.z - faceCenter.z;
+    }
+    extrudeAmount = value - faceDist;
   } else {
     extrudeAmount = value;
   }
