@@ -649,7 +649,16 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     if (faceExtrudeSelectedFace === null || !activePanelId) return;
     const ps = shapes.find(s => s.id === activePanelId); if (!ps?.geometry) return;
     const steps = ps.parameters?.extrudeSteps || []; if (!steps.length) return;
-    const g = groupCoplanarFaces(extractFacesFromGeometry(ps.geometry))[faceExtrudeSelectedFace]; if (!g) return;
+    const groups = groupCoplanarFaces(extractFacesFromGeometry(ps.geometry));
+    let g = groups[faceExtrudeSelectedFace]; if (!g) return;
+    // Snap curved (fillet) face to nearest axis-aligned flat face
+    const gn = g.normal.clone().normalize();
+    const isFlatGroup = Math.abs(gn.x) > 0.9 || Math.abs(gn.y) > 0.9 || Math.abs(gn.z) > 0.9;
+    if (!isFlatGroup) {
+      const axLbl = (n: THREE.Vector3) => { const a=[Math.abs(n.x),Math.abs(n.y),Math.abs(n.z)]; const i=a.indexOf(Math.max(...a)); return (i===0?(n.x>0?'X+':'X-'):i===1?(n.y>0?'Y+':'Y-'):(n.z>0?'Z+':'Z-')); };
+      const flat = groups.filter(f => { const fn=f.normal.clone().normalize(); return (Math.abs(fn.x)>0.9||Math.abs(fn.y)>0.9||Math.abs(fn.z)>0.9) && axLbl(fn)===axLbl(gn); }).sort((a,b)=>a.center.distanceTo(g!.center)-b.center.distanceTo(g!.center))[0];
+      if (flat) g = flat;
+    }
     const existing = findExistingStepForFace(steps, g.normal.clone().normalize(), g.center.clone());
     if (existing) { setFaceExtrudeThickness(existing.value); setFaceExtrudeFixedMode(existing.isFixed); }
   }, [faceExtrudeSelectedFace, activePanelId, shapes]);

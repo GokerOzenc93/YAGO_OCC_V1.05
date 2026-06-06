@@ -5,6 +5,30 @@ import { useAppStore, ViewMode } from '../store';
 import { useShallow } from 'zustand/react/shallow';
 import { extractFacesFromGeometry, groupCoplanarFaces, createFaceHighlightGeometry } from './FaceEditor';
 
+function snapToFlatGroup(gi: number, groups: ReturnType<typeof groupCoplanarFaces>): number {
+  if (gi < 0 || gi >= groups.length) return gi;
+  const n = groups[gi].normal.clone().normalize();
+  const isFlat = Math.abs(n.x) > 0.9 || Math.abs(n.y) > 0.9 || Math.abs(n.z) > 0.9;
+  if (isFlat) return gi;
+  const axisOf = (v: THREE.Vector3) => {
+    const a = [Math.abs(v.x), Math.abs(v.y), Math.abs(v.z)];
+    const i = a.indexOf(Math.max(...a));
+    return i === 0 ? (v.x > 0 ? 'X+' : 'X-') : i === 1 ? (v.y > 0 ? 'Y+' : 'Y-') : (v.z > 0 ? 'Z+' : 'Z-');
+  };
+  const axLbl = axisOf(n);
+  const center = groups[gi].center;
+  let bestIdx = gi, bestDist = Infinity;
+  groups.forEach((g, idx) => {
+    const gn = g.normal.clone().normalize();
+    const flat = Math.abs(gn.x) > 0.9 || Math.abs(gn.y) > 0.9 || Math.abs(gn.z) > 0.9;
+    if (flat && axisOf(gn) === axLbl) {
+      const d = g.center.distanceTo(center);
+      if (d < bestDist) { bestDist = d; bestIdx = idx; }
+    }
+  });
+  return bestIdx;
+}
+
 // ─── RENK YÖNETİMİ ───────────────────────────────────────────────────────
 const PANEL_COLORS = {
   selected: {
@@ -327,8 +351,9 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
               e.stopPropagation();
               const fi = e.faceIndex;
               if (fi !== undefined && fi !== null) {
-                const gi = faceGroups.findIndex(g => g.faceIndices.includes(fi));
-                if (gi !== -1) {
+                const raw = faceGroups.findIndex(g => g.faceIndices.includes(fi));
+                if (raw !== -1) {
+                  const gi = snapToFlatGroup(raw, faceGroups);
                   setFaceExtrudeSelectedFace(gi);
                   setHoveredExtrudeGroup(gi);
                   setFaceExtrudeHoveredFace(gi);
@@ -339,8 +364,9 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
               e.stopPropagation();
               const fi = e.faceIndex;
               if (fi !== undefined && fi !== null) {
-                const gi = faceGroups.findIndex(g => g.faceIndices.includes(fi));
-                if (gi !== -1) {
+                const raw = faceGroups.findIndex(g => g.faceIndices.includes(fi));
+                if (raw !== -1) {
+                  const gi = snapToFlatGroup(raw, faceGroups);
                   setHoveredExtrudeGroup(gi);
                   setFaceExtrudeHoveredFace(gi);
                 }

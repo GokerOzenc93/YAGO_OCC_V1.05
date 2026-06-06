@@ -116,10 +116,16 @@ async function applyOneExtrudeStep(
   const groups = groupCoplanarFaces(faces);
   const stepNormal = new THREE.Vector3(...step.faceNormal);
 
-  const aligned = groups.filter(g => {
+  // Prefer flat (axis-aligned) groups first; fall back to the full list so
+  // that legacy steps with slightly curved stored normals still resolve.
+  const flatAligned = groups.filter(g => {
     const gNorm = g.normal.clone().normalize();
-    const gLabel = getAxisLabel(gNorm);
-    return gLabel === step.axisLabel && gNorm.dot(stepNormal) > 0.7;
+    const isFlat = Math.abs(gNorm.x) > 0.9 || Math.abs(gNorm.y) > 0.9 || Math.abs(gNorm.z) > 0.9;
+    return isFlat && getAxisLabel(gNorm) === step.axisLabel;
+  });
+  const aligned = flatAligned.length > 0 ? flatAligned : groups.filter(g => {
+    const gNorm = g.normal.clone().normalize();
+    return getAxisLabel(gNorm) === step.axisLabel && gNorm.dot(stepNormal) > 0.5;
   });
   if (aligned.length === 0) {
     console.warn(`[applyOneExtrudeStep] No aligned face group for axis ${step.axisLabel}. Groups:`, groups.map(g => getAxisLabel(g.normal.clone().normalize())));
@@ -285,9 +291,30 @@ export async function executeFaceExtrude(params: FaceExtrudeParams): Promise<boo
 
   if (faceGroupIndex < 0 || faceGroupIndex >= groups.length) return false;
 
-  const selectedGroup = groups[faceGroupIndex];
-  const faceNormal = selectedGroup.normal.clone().normalize();
-  const faceCenter = selectedGroup.center.clone();
+  // Snap curved (fillet) face groups to the nearest axis-aligned flat face.
+  // A curved group has no normal component above ~0.9; selecting one would
+  // produce a non-axis-aligned step that mismatches stored flat-face steps.
+  const rawGroup = groups[faceGroupIndex];
+  let faceNormal = rawGroup.normal.clone().normalize();
+  let faceCenter = rawGroup.center.clone();
+
+  const isFlat = (n: THREE.Vector3) =>
+    Math.abs(n.x) > 0.9 || Math.abs(n.y) > 0.9 || Math.abs(n.z) > 0.9;
+
+  if (!isFlat(faceNormal)) {
+    const axLbl = getAxisLabel(faceNormal);
+    const candidate = groups
+      .filter(g => {
+        const n = g.normal.clone().normalize();
+        return isFlat(n) && getAxisLabel(n) === axLbl;
+      })
+      .sort((a, b) => a.center.distanceTo(rawGroup.center) - b.center.distanceTo(rawGroup.center))[0];
+    if (candidate) {
+      faceNormal = candidate.normal.clone().normalize();
+      faceCenter = candidate.center.clone();
+    }
+  }
+
   const axisLabel = getAxisLabel(faceNormal);
 
   if (!panel.parameters?.baseReplicadShape) {
