@@ -141,6 +141,12 @@ function computeAllEdgeDimLabels(
   center.setComponent(thicknessAxis, topZ);
   const screenCenter = project3D(center, camera, w, h);
 
+  // Minimum edge length: 4% of the shorter planar dimension.
+  // This eliminates tiny fillet arc segments near the junction with straight
+  // edges — their chord length is far below any meaningful panel measurement.
+  const planarDims = planarKeys.map(ak => bbox.max[ak] - bbox.min[ak]);
+  const minEdgeLen = Math.max(8, Math.min(...planarDims) * 0.04);
+
   const labels: EdgeDimLabel[] = [];
 
   for (let i = 0; i < pos.count; i += 2) {
@@ -148,7 +154,8 @@ function computeAllEdgeDimLabels(
     const b = new THREE.Vector3(pos.getX(i + 1), pos.getY(i + 1), pos.getZ(i + 1));
     const mid = new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5);
     const len3D = a.distanceTo(b);
-    if (len3D < 1) continue;
+    // Reject edges shorter than the minimum meaningful panel edge length
+    if (len3D < minEdgeLen) continue;
     // Top face only
     if (Math.abs(mid[thinKey] - topZ) > tol) continue;
     // Not a thickness edge
@@ -156,12 +163,12 @@ function computeAllEdgeDimLabels(
 
     // Both endpoints must lie on the panel's outer bounding-box boundary in
     // at least one planar axis. Fillet arc segments curve away from the panel
-    // edge so at least one of their endpoints is never on a bbox extreme,
-    // which lets us reject them regardless of fillet radius size.
+    // edge so at least one of their endpoints is never on a bbox extreme.
+    // Use a tight tolerance so only truly flush endpoints pass.
     const onExtreme = (pt: THREE.Vector3): boolean => {
       for (const ak of planarKeys) {
         const mn = bbox.min[ak], mx = bbox.max[ak];
-        if (Math.abs(pt[ak] - mn) < 2.0 || Math.abs(pt[ak] - mx) < 2.0) return true;
+        if (Math.abs(pt[ak] - mn) < 0.6 || Math.abs(pt[ak] - mx) < 0.6) return true;
       }
       return false;
     };
