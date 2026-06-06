@@ -265,28 +265,12 @@ export async function rebuildFromSteps(
   const newWidth = sortedAxes[0].size;
   const newHeight = sortedAxes[1].size;
 
-  // Re-apply fillets on the new shape so they are preserved after extrude.
-  let finalReplicad = currentReplicad;
-  let finalGeometry = currentGeometry;
-  const fillets = panelShape.fillets ?? [];
-  if (fillets.length > 0) {
-    try {
-      const { updateFilletCentersForNewGeometry, applyFillets } = await import('./ShapeUpdaterService');
-      const updatedFillets = await updateFilletCentersForNewGeometry(
-        fillets, currentGeometry,
-        { width: newWidth, height: newHeight, depth: originalThickness }
-      );
-      finalReplicad = await applyFillets(currentReplicad, updatedFillets, { width: newWidth, height: newHeight, depth: originalThickness });
-      finalGeometry = convertReplicadToThreeGeometry(finalReplicad);
-    } catch (e) {
-      console.warn('[rebuildFromSteps] Could not re-apply fillets after extrude:', e);
-    }
-  }
-
+  // Face extrude changes the panel topology; fillets are invalidated and
+  // must be cleared so stale fillet data is not re-applied later.
   updateShape(panelShape.id, {
-    geometry: finalGeometry,
-    replicadShape: finalReplicad,
-    fillets,
+    geometry: currentGeometry,
+    replicadShape: currentReplicad,
+    fillets: [],
     parameters: {
       ...panelShape.parameters,
       width: Math.round(newWidth * 10) / 10,
