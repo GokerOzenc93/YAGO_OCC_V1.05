@@ -106,6 +106,7 @@ interface EdgeDimLabel {
   ex1: number; ey1: number; ex2: number; ey2: number; // screen endpoints
   length: number; // real-world length
   isThickness: boolean;
+  nx: number; ny: number; // outward perpendicular (screen space, unit vector)
 }
 
 // Project a 3D point to canvas pixel coordinates via orthographic camera
@@ -115,60 +116,71 @@ function project3D(p: THREE.Vector3, camera: THREE.OrthographicCamera, w: number
 }
 
 // Collect the two principal dimension labels (longest H + longest V edge on top face)
-// Outer panel dimension labels — always uses the bounding-box extremities so
-// labels never appear inside a notched/subtracted panel, and the offset
-// direction is forced outward from the panel centre.
-function computeOuterDimLabels(
+// All top-face edge dimension labels — every planar edge segment on the top
+// face gets its own annotation. Offset direction is always away from the
+// panel material (outward from the panel centroid in screen space).
+function computeAllEdgeDimLabels(
   geometry: THREE.BufferGeometry,
   camera: THREE.OrthographicCamera,
   w: number,
   h: number,
   thicknessAxis: number,
 ): EdgeDimLabel[] {
-  const pos = geometry.getAttribute('position');
-  if (!pos) return [];
-  const bbox = new THREE.Box3().setFromBufferAttribute(pos as THREE.BufferAttribute);
-  const center = new THREE.Vector3(); bbox.getCenter(center);
+  const edgesGeo = new THREE.EdgesGeometry(geometry, 15);
+  const pos = edgesGeo.getAttribute('position');
+  if (!pos) { edgesGeo.dispose(); return []; }
+
   const keys = ['x', 'y', 'z'] as const;
   const thinKey = keys[thicknessAxis];
   const planarKeys = keys.filter((_, i) => i !== thicknessAxis) as Array<'x' | 'y' | 'z'>;
+
+  const bbox = new THREE.Box3().setFromBufferAttribute(pos as THREE.BufferAttribute);
   const topZ = bbox.max[thinKey];
-  const screenCenter = project3D(center.clone().setComponent(thicknessAxis, topZ), camera, w, h);
+  const tol = (bbox.max[thinKey] - bbox.min[thinKey]) * 0.05 + 0.5;
+  const center = new THREE.Vector3(); bbox.getCenter(center);
+  center.setComponent(thicknessAxis, topZ);
+  const screenCenter = project3D(center, camera, w, h);
 
   const labels: EdgeDimLabel[] = [];
-  for (let pi = 0; pi < planarKeys.length; pi++) {
-    const ak = planarKeys[pi];
-    const ok = planarKeys[1 - pi];
 
-    // Outer edge: at bbox.max[ok] end, spanning full bbox along ak
-    const a = new THREE.Vector3();
-    const b = new THREE.Vector3();
-    a[thinKey] = topZ; b[thinKey] = topZ;
-    a[ak] = bbox.min[ak]; b[ak] = bbox.max[ak];
-    a[ok] = bbox.max[ok]; b[ok] = bbox.max[ok];
+  for (let i = 0; i < pos.count; i += 2) {
+    const a = new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i));
+    const b = new THREE.Vector3(pos.getX(i + 1), pos.getY(i + 1), pos.getZ(i + 1));
+    const mid = new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5);
+    const len3D = a.distanceTo(b);
+    if (len3D < 1) continue;
+    // Top face only
+    if (Math.abs(mid[thinKey] - topZ) > tol) continue;
+    // Not a thickness edge
+    if (Math.abs(a[thinKey] - b[thinKey]) > len3D * 0.5) continue;
+
+    // Must run primarily along one planar axis
+    let axisMatch = false;
+    for (const ak of planarKeys) {
+      if (Math.abs(a[ak] - b[ak]) > len3D * 0.6) { axisMatch = true; break; }
+    }
+    if (!axisMatch) continue;
 
     const sa = project3D(a, camera, w, h);
     const sb = project3D(b, camera, w, h);
-    const midX = (sa.x + sb.x) / 2;
-    const midY = (sa.y + sb.y) / 2;
+    const dx = sb.x - sa.x, dy = sb.y - sa.y;
+    const slen = Math.hypot(dx, dy);
+    if (slen < 4) continue;
 
-    // Perpendicular direction — ensure it points AWAY from panel centre
-    const ddx = sb.x - sa.x, ddy = sb.y - sa.y;
-    const dlen = Math.hypot(ddx, ddy);
-    if (dlen < 1) continue;
-    let px = -ddy / dlen, py = ddx / dlen;
-    if ((midX - screenCenter.x) * px + (midY - screenCenter.y) * py < 0) {
-      px = -px; py = -py;
-    }
+    const midX = (sa.x + sb.x) / 2, midY = (sa.y + sb.y) / 2;
+    let nx = -dy / slen, ny = dx / slen;
+    if ((midX - screenCenter.x) * nx + (midY - screenCenter.y) * ny < 0) { nx = -nx; ny = -ny; }
 
     labels.push({
       sx: midX, sy: midY,
-      ex1: sa.x, ey1: sa.y,
-      ex2: sb.x, ey2: sb.y,
-      length: Math.round(bbox.max[ak] - bbox.min[ak]),
+      ex1: sa.x, ey1: sa.y, ex2: sb.x, ey2: sb.y,
+      length: Math.round(len3D),
       isThickness: false,
+      nx, ny,
     });
   }
+
+  edgesGeo.dispose();
   return labels;
 }
 
@@ -213,11 +225,15 @@ function computeSubDimLabels(
 
       const sa = project3D(a, camera, w, h);
       const sb = project3D(b, camera, w, h);
+      const dx = sb.x - sa.x, dy = sb.y - sa.y;
+      const slen = Math.hypot(dx, dy);
+      const nx = slen > 0 ? -dy / slen : 0;
+      const ny = slen > 0 ? dx / slen : 0;
       labels.push({
         sx: (sa.x + sb.x) / 2, sy: (sa.y + sb.y) / 2,
         ex1: sa.x, ey1: sa.y, ex2: sb.x, ey2: sb.y,
         length: Math.round(bbox.max[ak] - bbox.min[ak]),
-        isThickness: false,
+        isThickness: false, nx, ny,
       });
     }
     return labels;
@@ -335,7 +351,7 @@ function PanelPreview2D({ dims, shape, arrowRotated }: { dims: Dims; shape?: any
 
       renderer.render(scene, camera);
 
-      setEdgeLabels(computeOuterDimLabels(shape.geometry, camera, w, h, minIdx));
+      setEdgeLabels(computeAllEdgeDimLabels(shape.geometry, camera, w, h, minIdx));
       setSubLabelSets(computeSubDimLabels(subGeos, camera, w, h, minIdx));
     };
 
@@ -393,7 +409,7 @@ function PanelPreview2D({ dims, shape, arrowRotated }: { dims: Dims; shape?: any
         style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'visible' }}
         viewBox={`0 0 ${canvasSize.w} ${canvasSize.h}`}
       >
-        {/* ── Main outer dimensions (always shown) ── */}
+        {/* ── All edge segment dimensions ── */}
         {edgeLabels.map((lbl, i) => {
           const dx = lbl.ex2 - lbl.ex1, dy = lbl.ey2 - lbl.ey1;
           const len = Math.hypot(dx, dy);
@@ -401,11 +417,7 @@ function PanelPreview2D({ dims, shape, arrowRotated }: { dims: Dims; shape?: any
           const off = Math.min(canvasSize.w, canvasSize.h) * 0.085;
           const arrowSz = Math.max(3, off * 0.28);
           const fontSize = Math.max(9, Math.min(13, canvasSize.w * 0.026));
-          // Recompute outward perpendicular in screen space
-          const midX = lbl.sx, midY = lbl.sy;
-          const cx = canvasSize.w / 2, cy = canvasSize.h / 2;
-          let px = -dy / len, py = dx / len;
-          if ((midX - cx) * px + (midY - cy) * py < 0) { px = -px; py = -py; }
+          const px = lbl.nx, py = lbl.ny;
           const ax = lbl.ex1 + px * off, ay = lbl.ey1 + py * off;
           const bx = lbl.ex2 + px * off, by = lbl.ey2 + py * off;
           const mx = (ax + bx) / 2, my = (ay + by) / 2;
