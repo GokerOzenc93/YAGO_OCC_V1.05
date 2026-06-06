@@ -383,21 +383,81 @@ function PanelPreview2D({ dims, shape, arrowRotated }: { dims: Dims; shape?: any
     };
   }, [shape, arrowRotated]);
 
-  const hasSub = Array.isArray(shape?.subtractionGeometries) && shape.subtractionGeometries.length > 0;
+  // Resolve label positions with collision avoidance.
+  // Longer edges get priority (placed first at base offset); others step outward.
+  const resolvedMainLabels = useMemo(() => {
+    if (edgeLabels.length === 0) return [];
+    const fs = Math.max(9, Math.min(13, canvasSize.w * 0.026));
+    const offBase = Math.min(canvasSize.w, canvasSize.h) * 0.085;
+    const pad = 4;
 
-  // Collect subtract dimension strings from parameters
-  const subDims = useMemo(() => {
-    if (!hasSub) return [];
-    return (shape.subtractionGeometries as any[]).flatMap((sg: any) => {
-      const p = sg.parameters;
-      if (!p) return [];
-      const out: { label: string; value: string }[] = [];
-      if (p.width) out.push({ label: 'W', value: p.width });
-      if (p.height) out.push({ label: 'H', value: p.height });
-      if (p.depth) out.push({ label: 'D', value: p.depth });
-      return out;
+    // Sort longest first so outer boundary edges claim the first slot
+    const sorted = [...edgeLabels].sort((a, b) => b.length - a.length);
+    const placed: { cx: number; cy: number; hw: number; hh: number }[] = [];
+
+    const hits = (cx: number, cy: number, hw: number, hh: number) =>
+      placed.some(p => Math.abs(p.cx - cx) < p.hw + hw + pad && Math.abs(p.cy - cy) < p.hh + hh + pad);
+
+    return sorted.map(lbl => {
+      const txt = String(lbl.length);
+      const lw = Math.max(txt.length * fs * 0.65 + 12, 32) / 2;
+      const lh = (fs + 7) / 2;
+      let mult = 1;
+      while (mult <= 5) {
+        const o = offBase * mult;
+        const ax = lbl.ex1 + lbl.nx * o, ay = lbl.ey1 + lbl.ny * o;
+        const bx = lbl.ex2 + lbl.nx * o, by = lbl.ey2 + lbl.ny * o;
+        const mx = (ax + bx) / 2, my = (ay + by) / 2;
+        if (!hits(mx, my, lw, lh)) { placed.push({ cx: mx, cy: my, hw: lw, hh: lh }); return { lbl, mult }; }
+        mult += 0.8;
+      }
+      const o = offBase * mult;
+      const ax = lbl.ex1 + lbl.nx * o, ay = lbl.ey1 + lbl.ny * o;
+      const bx = lbl.ex2 + lbl.nx * o, by = lbl.ey2 + lbl.ny * o;
+      placed.push({ cx: (ax + bx) / 2, cy: (ay + by) / 2, hw: lw, hh: lh });
+      return { lbl, mult };
     });
-  }, [shape?.subtractionGeometries, hasSub]);
+  }, [edgeLabels, canvasSize]);
+
+  // Same collision avoidance for sub labels, seeded with main label boxes
+  const resolvedSubLabels = useMemo(() => {
+    if (subLabelSets.length === 0) return [];
+    const fs = Math.max(8, Math.min(11, canvasSize.w * 0.022));
+    const offBase = Math.min(canvasSize.w, canvasSize.h) * 0.05;
+    const pad = 3;
+
+    // Seed occupied boxes from main labels
+    const mainFs = Math.max(9, Math.min(13, canvasSize.w * 0.026));
+    const mainOffBase = Math.min(canvasSize.w, canvasSize.h) * 0.085;
+    const placed: { cx: number; cy: number; hw: number; hh: number }[] = resolvedMainLabels.map(({ lbl, mult }) => {
+      const o = mainOffBase * mult;
+      const ax = lbl.ex1 + lbl.nx * o, ay = lbl.ey1 + lbl.ny * o;
+      const bx = lbl.ex2 + lbl.nx * o, by = lbl.ey2 + lbl.ny * o;
+      const txt = String(lbl.length);
+      return { cx: (ax + bx) / 2, cy: (ay + by) / 2, hw: Math.max(txt.length * mainFs * 0.65 + 12, 32) / 2, hh: (mainFs + 7) / 2 };
+    });
+
+    const hits = (cx: number, cy: number, hw: number, hh: number) =>
+      placed.some(p => Math.abs(p.cx - cx) < p.hw + hw + pad && Math.abs(p.cy - cy) < p.hh + hh + pad);
+
+    return subLabelSets.map(lbls =>
+      lbls.map(lbl => {
+        const txt = String(lbl.length);
+        const lw = Math.max(txt.length * fs * 0.65 + 10, 28) / 2;
+        const lh = (fs + 6) / 2;
+        // Sub labels offset along nx/ny from their centre
+        let mult = 0;
+        while (mult <= 4) {
+          const o = offBase * mult;
+          const mx = lbl.sx + lbl.nx * o, my = lbl.sy + lbl.ny * o;
+          if (!hits(mx, my, lw, lh)) { placed.push({ cx: mx, cy: my, hw: lw, hh: lh }); return { lbl, mult }; }
+          mult += 0.8;
+        }
+        placed.push({ cx: lbl.sx + lbl.nx * offBase * mult, cy: lbl.sy + lbl.ny * offBase * mult, hw: lw, hh: lh });
+        return { lbl, mult };
+      })
+    );
+  }, [subLabelSets, resolvedMainLabels, canvasSize]);
 
   return (
     <div ref={wrapRef} style={{ position: 'absolute', inset: 0, userSelect: 'none' }}>
@@ -409,17 +469,18 @@ function PanelPreview2D({ dims, shape, arrowRotated }: { dims: Dims; shape?: any
         style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'visible' }}
         viewBox={`0 0 ${canvasSize.w} ${canvasSize.h}`}
       >
-        {/* ── All edge segment dimensions ── */}
-        {edgeLabels.map((lbl, i) => {
+        {/* ── All edge segment dimensions (collision-resolved) ── */}
+        {resolvedMainLabels.map(({ lbl, mult }, i) => {
           const dx = lbl.ex2 - lbl.ex1, dy = lbl.ey2 - lbl.ey1;
           const len = Math.hypot(dx, dy);
           if (len < 4) return null;
-          const off = Math.min(canvasSize.w, canvasSize.h) * 0.085;
-          const arrowSz = Math.max(3, off * 0.28);
+          const offBase = Math.min(canvasSize.w, canvasSize.h) * 0.085;
+          const o = offBase * mult;
+          const arrowSz = Math.max(3, offBase * 0.28);
           const fontSize = Math.max(9, Math.min(13, canvasSize.w * 0.026));
           const px = lbl.nx, py = lbl.ny;
-          const ax = lbl.ex1 + px * off, ay = lbl.ey1 + py * off;
-          const bx = lbl.ex2 + px * off, by = lbl.ey2 + py * off;
+          const ax = lbl.ex1 + px * o, ay = lbl.ey1 + py * o;
+          const bx = lbl.ex2 + px * o, by = lbl.ey2 + py * o;
           const mx = (ax + bx) / 2, my = (ay + by) / 2;
           const txt = String(lbl.length);
           const labelW = Math.max(txt.length * fontSize * 0.65 + 12, 32);
@@ -437,27 +498,26 @@ function PanelPreview2D({ dims, shape, arrowRotated }: { dims: Dims; shape?: any
           );
         })}
 
-        {/* ── Subtraction cut dimensions (amber) ── */}
-        {subLabelSets.map((lbls, si) =>
-          lbls.map((lbl, i) => {
+        {/* ── Subtraction cut dimensions, amber, collision-resolved ── */}
+        {resolvedSubLabels.map((lbls, si) =>
+          lbls.map(({ lbl, mult }, i) => {
             const dx = lbl.ex2 - lbl.ex1, dy = lbl.ey2 - lbl.ey1;
             const len = Math.hypot(dx, dy);
             if (len < 4) return null;
-            const off = Math.min(canvasSize.w, canvasSize.h) * 0.05;
-            const arrowSz = Math.max(2, off * 0.35);
+            const offBase = Math.min(canvasSize.w, canvasSize.h) * 0.05;
+            const o = offBase * mult;
+            const arrowSz = Math.max(2, offBase * 0.35);
             const fontSize = Math.max(8, Math.min(11, canvasSize.w * 0.022));
-            // Dimension line runs through the cut centre — no outward offset
-            const ax = lbl.ex1, ay = lbl.ey1;
-            const bx = lbl.ex2, by = lbl.ey2;
-            const mx = lbl.sx, my = lbl.sy;
+            const mx = lbl.sx + lbl.nx * o, my = lbl.sy + lbl.ny * o;
             const txt = String(lbl.length);
             const labelW = Math.max(txt.length * fontSize * 0.65 + 10, 28);
             const labelH = fontSize + 6;
             return (
               <g key={`sub-${si}-${i}`}>
-                <line x1={ax} y1={ay} x2={bx} y2={by} stroke="#d97706" strokeWidth="1.1" strokeDasharray="3,2"/>
-                <polygon points={`${ax},${ay} ${ax+(dx/len)*arrowSz},${ay+(dy/len)*arrowSz}`} fill="#d97706"/>
-                <polygon points={`${bx},${by} ${bx-(dx/len)*arrowSz},${by-(dy/len)*arrowSz}`} fill="#d97706"/>
+                <line x1={lbl.ex1} y1={lbl.ey1} x2={lbl.ex2} y2={lbl.ey2} stroke="#d97706" strokeWidth="1.1" strokeDasharray="3,2"/>
+                <polygon points={`${lbl.ex1},${lbl.ey1} ${lbl.ex1+(dx/len)*arrowSz},${lbl.ey1+(dy/len)*arrowSz}`} fill="#d97706"/>
+                <polygon points={`${lbl.ex2},${lbl.ey2} ${lbl.ex2-(dx/len)*arrowSz},${lbl.ey2-(dy/len)*arrowSz}`} fill="#d97706"/>
+                <line x1={(lbl.ex1+lbl.ex2)/2} y1={(lbl.ey1+lbl.ey2)/2} x2={mx} y2={my} stroke="#d97706" strokeWidth="0.7" strokeDasharray="2,2"/>
                 <rect x={mx - labelW / 2} y={my - labelH / 2} width={labelW} height={labelH} rx={3} fill="rgba(255,247,220,0.97)" stroke="#f59e0b" strokeWidth="0.8"/>
                 <text x={mx} y={my + fontSize * 0.36} textAnchor="middle" fontSize={fontSize} fill="#92400e" fontFamily="monospace" fontWeight="700">{txt}</text>
               </g>
