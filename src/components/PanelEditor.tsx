@@ -154,16 +154,23 @@ function computeAllEdgeDimLabels(
     // Not a thickness edge
     if (Math.abs(a[thinKey] - b[thinKey]) > len3D * 0.5) continue;
 
-    // Must run primarily along one planar axis AND the perpendicular component
-    // must stay nearly constant — this eliminates fillet arc segments which
-    // change in both planar axes simultaneously.
+    // Both endpoints must lie on the panel's outer bounding-box boundary in
+    // at least one planar axis. Fillet arc segments curve away from the panel
+    // edge so at least one of their endpoints is never on a bbox extreme,
+    // which lets us reject them regardless of fillet radius size.
+    const onExtreme = (pt: THREE.Vector3): boolean => {
+      for (const ak of planarKeys) {
+        const mn = bbox.min[ak], mx = bbox.max[ak];
+        if (Math.abs(pt[ak] - mn) < 2.0 || Math.abs(pt[ak] - mx) < 2.0) return true;
+      }
+      return false;
+    };
+    if (!onExtreme(a) || !onExtreme(b)) continue;
+
+    // Must run primarily along one planar axis (skip diagonal edges)
     let axisMatch = false;
     for (const ak of planarKeys) {
-      if (Math.abs(a[ak] - b[ak]) > len3D * 0.6) {
-        const ok = planarKeys.find(k => k !== ak)!;
-        if (Math.abs(a[ok] - b[ok]) < len3D * 0.2) { axisMatch = true; }
-        break;
-      }
+      if (Math.abs(a[ak] - b[ak]) > len3D * 0.6) { axisMatch = true; break; }
     }
     if (!axisMatch) continue;
 
