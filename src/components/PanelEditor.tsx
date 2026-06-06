@@ -115,73 +115,113 @@ function project3D(p: THREE.Vector3, camera: THREE.OrthographicCamera, w: number
 }
 
 // Collect the two principal dimension labels (longest H + longest V edge on top face)
-function computeEdgeLabels(
+// Outer panel dimension labels — always uses the bounding-box extremities so
+// labels never appear inside a notched/subtracted panel, and the offset
+// direction is forced outward from the panel centre.
+function computeOuterDimLabels(
   geometry: THREE.BufferGeometry,
   camera: THREE.OrthographicCamera,
   w: number,
   h: number,
   thicknessAxis: number,
 ): EdgeDimLabel[] {
-  const edgesGeo = new THREE.EdgesGeometry(geometry, 15);
-  const pos = edgesGeo.getAttribute('position');
-  if (!pos) { edgesGeo.dispose(); return []; }
-
+  const pos = geometry.getAttribute('position');
+  if (!pos) return [];
   const bbox = new THREE.Box3().setFromBufferAttribute(pos as THREE.BufferAttribute);
-  const bboxSize = new THREE.Vector3(); bbox.getSize(bboxSize);
-  const axisKeys: Array<'x' | 'y' | 'z'> = ['x', 'y', 'z'];
-  const thinKey = axisKeys[thicknessAxis];
-  const topVal = bbox.max[thinKey];
-  const tol = bboxSize[thinKey] * 0.05 + 0.5;
-
-  // Planar axes (the two non-thickness axes)
-  const planarAxes = axisKeys.filter((_, i) => i !== thicknessAxis);
-
-  // Collect all top-face planar edges, grouped by which planar axis they run along
-  type CandEdge = { len3D: number; a: THREE.Vector3; b: THREE.Vector3; mid: THREE.Vector3 };
-  const byAxis: Record<string, CandEdge[]> = { [planarAxes[0]]: [], [planarAxes[1]]: [] };
-
-  for (let i = 0; i < pos.count; i += 2) {
-    const a = new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i));
-    const b = new THREE.Vector3(pos.getX(i + 1), pos.getY(i + 1), pos.getZ(i + 1));
-    const mid = new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5);
-    const len3D = a.distanceTo(b);
-    if (len3D < 0.5) continue;
-    // Skip thickness edges
-    const da = Math.abs(a[thinKey] - b[thinKey]);
-    if (da > len3D * 0.7) continue;
-    // Only top face
-    if (Math.abs(mid[thinKey] - topVal) > tol) continue;
-
-    // Determine primary planar axis of this edge
-    for (const ak of planarAxes) {
-      const diff = Math.abs(a[ak] - b[ak]);
-      if (diff > len3D * 0.6) {
-        byAxis[ak].push({ len3D, a, b, mid });
-        break;
-      }
-    }
-  }
-
-  edgesGeo.dispose();
+  const center = new THREE.Vector3(); bbox.getCenter(center);
+  const keys = ['x', 'y', 'z'] as const;
+  const thinKey = keys[thicknessAxis];
+  const planarKeys = keys.filter((_, i) => i !== thicknessAxis) as Array<'x' | 'y' | 'z'>;
+  const topZ = bbox.max[thinKey];
+  const screenCenter = project3D(center.clone().setComponent(thicknessAxis, topZ), camera, w, h);
 
   const labels: EdgeDimLabel[] = [];
-  for (const ak of planarAxes) {
-    const candidates = byAxis[ak];
-    if (candidates.length === 0) continue;
-    // Pick the longest edge along this axis
-    const best = candidates.reduce((prev, cur) => cur.len3D > prev.len3D ? cur : prev);
-    const sa = project3D(best.a, camera, w, h);
-    const sb = project3D(best.b, camera, w, h);
-    const sm = project3D(best.mid, camera, w, h);
+  for (let pi = 0; pi < planarKeys.length; pi++) {
+    const ak = planarKeys[pi];
+    const ok = planarKeys[1 - pi];
+
+    // Outer edge: at bbox.max[ok] end, spanning full bbox along ak
+    const a = new THREE.Vector3();
+    const b = new THREE.Vector3();
+    a[thinKey] = topZ; b[thinKey] = topZ;
+    a[ak] = bbox.min[ak]; b[ak] = bbox.max[ak];
+    a[ok] = bbox.max[ok]; b[ok] = bbox.max[ok];
+
+    const sa = project3D(a, camera, w, h);
+    const sb = project3D(b, camera, w, h);
+    const midX = (sa.x + sb.x) / 2;
+    const midY = (sa.y + sb.y) / 2;
+
+    // Perpendicular direction — ensure it points AWAY from panel centre
+    const ddx = sb.x - sa.x, ddy = sb.y - sa.y;
+    const dlen = Math.hypot(ddx, ddy);
+    if (dlen < 1) continue;
+    let px = -ddy / dlen, py = ddx / dlen;
+    if ((midX - screenCenter.x) * px + (midY - screenCenter.y) * py < 0) {
+      px = -px; py = -py;
+    }
+
     labels.push({
-      sx: sm.x, sy: sm.y,
+      sx: midX, sy: midY,
       ex1: sa.x, ey1: sa.y,
       ex2: sb.x, ey2: sb.y,
-      length: Math.round(best.len3D),
+      length: Math.round(bbox.max[ak] - bbox.min[ak]),
       isThickness: false,
     });
   }
   return labels;
+}
+
+// Per-subtraction dimension labels shown over the cut area.
+function computeSubDimLabels(
+  subGeos: any[],
+  camera: THREE.OrthographicCamera,
+  w: number,
+  h: number,
+  thicknessAxis: number,
+): EdgeDimLabel[][] {
+  const keys = ['x', 'y', 'z'] as const;
+  const thinKey = keys[thicknessAxis];
+  const planarKeys = keys.filter((_, i) => i !== thicknessAxis) as Array<'x' | 'y' | 'z'>;
+
+  return subGeos.map(sg => {
+    if (!sg?.geometry) return [];
+    const pos = sg.geometry.getAttribute('position');
+    if (!pos) return [];
+
+    const rot = sg.relativeRotation || [0, 0, 0];
+    const rotM = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rot[0], rot[1], rot[2], 'XYZ'));
+    const off = new THREE.Vector3(...((sg.relativeOffset || [0, 0, 0]) as number[]));
+
+    const points: THREE.Vector3[] = [];
+    for (let i = 0; i < pos.count; i++) {
+      points.push(new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(rotM).add(off));
+    }
+    const bbox = new THREE.Box3().setFromPoints(points);
+    const topVal = bbox.max[thinKey];
+    const boxCenter = new THREE.Vector3(); bbox.getCenter(boxCenter);
+
+    const labels: EdgeDimLabel[] = [];
+    for (let pi = 0; pi < planarKeys.length; pi++) {
+      const ak = planarKeys[pi];
+      const ok = planarKeys[1 - pi];
+
+      const a = new THREE.Vector3(); const b = new THREE.Vector3();
+      a[thinKey] = topVal; b[thinKey] = topVal;
+      a[ak] = bbox.min[ak]; b[ak] = bbox.max[ak];
+      a[ok] = boxCenter[ok]; b[ok] = boxCenter[ok];
+
+      const sa = project3D(a, camera, w, h);
+      const sb = project3D(b, camera, w, h);
+      labels.push({
+        sx: (sa.x + sb.x) / 2, sy: (sa.y + sb.y) / 2,
+        ex1: sa.x, ey1: sa.y, ex2: sb.x, ey2: sb.y,
+        length: Math.round(bbox.max[ak] - bbox.min[ak]),
+        isThickness: false,
+      });
+    }
+    return labels;
+  });
 }
 
 /* ── 2D Panel Preview — Three.js orthographic canvas render ─────────── */
@@ -189,6 +229,7 @@ function PanelPreview2D({ dims, shape, arrowRotated }: { dims: Dims; shape?: any
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [edgeLabels, setEdgeLabels] = useState<EdgeDimLabel[]>([]);
+  const [subLabelSets, setSubLabelSets] = useState<EdgeDimLabel[][]>([]);
   const [canvasSize, setCanvasSize] = useState({ w: 320, h: 300 });
 
   useEffect(() => {
@@ -272,8 +313,30 @@ function PanelPreview2D({ dims, shape, arrowRotated }: { dims: Dims; shape?: any
       camera.updateProjectionMatrix();
       camera.updateMatrixWorld();
 
+      // Render subtraction outlines in amber on the canvas
+      const subGeos = Array.isArray(shape.subtractionGeometries) ? shape.subtractionGeometries : [];
+      const subOutlineMaterials: THREE.LineBasicMaterial[] = [];
+      subGeos.forEach((sg: any) => {
+        if (!sg?.geometry) return;
+        const rot = sg.relativeRotation || [0, 0, 0];
+        const rotM = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rot[0], rot[1], rot[2], 'XYZ'));
+        const off = new THREE.Vector3(...((sg.relativeOffset || [0, 0, 0]) as number[]));
+        const sgMesh = new THREE.Mesh(sg.geometry);
+        sgMesh.matrix.copy(rotM); sgMesh.matrix.setPosition(off);
+        sgMesh.matrixAutoUpdate = false;
+        const sgEdgesGeo = new THREE.EdgesGeometry(sg.geometry, 15);
+        const sgMat = new THREE.LineBasicMaterial({ color: 0xd97706 });
+        subOutlineMaterials.push(sgMat);
+        const sgLines = new THREE.LineSegments(sgEdgesGeo, sgMat);
+        sgLines.matrix.copy(rotM); sgLines.matrix.setPosition(off);
+        sgLines.matrixAutoUpdate = false;
+        scene.add(sgLines);
+      });
+
       renderer.render(scene, camera);
-      setEdgeLabels(computeEdgeLabels(shape.geometry, camera, w, h, minIdx));
+
+      setEdgeLabels(computeOuterDimLabels(shape.geometry, camera, w, h, minIdx));
+      setSubLabelSets(computeSubDimLabels(subGeos, camera, w, h, minIdx));
     };
 
     // Try up to ~600ms (20 frames) to get a non-zero size before giving up
@@ -330,14 +393,19 @@ function PanelPreview2D({ dims, shape, arrowRotated }: { dims: Dims; shape?: any
         style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'visible' }}
         viewBox={`0 0 ${canvasSize.w} ${canvasSize.h}`}
       >
-        {!hasSub && edgeLabels.map((lbl, i) => {
+        {/* ── Main outer dimensions (always shown) ── */}
+        {edgeLabels.map((lbl, i) => {
           const dx = lbl.ex2 - lbl.ex1, dy = lbl.ey2 - lbl.ey1;
           const len = Math.hypot(dx, dy);
           if (len < 4) return null;
-          const px = -dy / len, py = dx / len;
           const off = Math.min(canvasSize.w, canvasSize.h) * 0.085;
           const arrowSz = Math.max(3, off * 0.28);
           const fontSize = Math.max(9, Math.min(13, canvasSize.w * 0.026));
+          // Recompute outward perpendicular in screen space
+          const midX = lbl.sx, midY = lbl.sy;
+          const cx = canvasSize.w / 2, cy = canvasSize.h / 2;
+          let px = -dy / len, py = dx / len;
+          if ((midX - cx) * px + (midY - cy) * py < 0) { px = -px; py = -py; }
           const ax = lbl.ex1 + px * off, ay = lbl.ey1 + py * off;
           const bx = lbl.ex2 + px * off, by = lbl.ey2 + py * off;
           const mx = (ax + bx) / 2, my = (ay + by) / 2;
@@ -345,7 +413,7 @@ function PanelPreview2D({ dims, shape, arrowRotated }: { dims: Dims; shape?: any
           const labelW = Math.max(txt.length * fontSize * 0.65 + 12, 32);
           const labelH = fontSize + 7;
           return (
-            <g key={i}>
+            <g key={`outer-${i}`}>
               <line x1={lbl.ex1 + px * 2} y1={lbl.ey1 + py * 2} x2={ax} y2={ay} stroke="#a8a29e" strokeWidth="0.9"/>
               <line x1={lbl.ex2 + px * 2} y1={lbl.ey2 + py * 2} x2={bx} y2={by} stroke="#a8a29e" strokeWidth="0.9"/>
               <line x1={ax} y1={ay} x2={bx} y2={by} stroke="#a8a29e" strokeWidth="1.2"/>
@@ -356,19 +424,35 @@ function PanelPreview2D({ dims, shape, arrowRotated }: { dims: Dims; shape?: any
             </g>
           );
         })}
-      </svg>
 
-      {/* Subtract dimension badges — shown only when panel has subtractions */}
-      {hasSub && subDims.length > 0 && (
-        <div style={{ position: 'absolute', top: 10, right: 10, display: 'flex', flexDirection: 'column', gap: 5, alignItems: 'flex-end', pointerEvents: 'none' }}>
-          <div style={{ fontSize: 10, fontFamily: 'monospace', fontWeight: 600, color: '#92400e', letterSpacing: '0.04em', textTransform: 'uppercase', opacity: 0.75 }}>Kesim</div>
-          {subDims.map((d, i) => (
-            <div key={i} style={{ background: 'rgba(254,243,199,0.95)', border: '1px solid #fcd34d', borderRadius: 5, padding: '2px 9px', fontSize: 12, fontFamily: 'monospace', fontWeight: 700, color: '#78350f' }}>
-              {d.label} {d.value}
-            </div>
-          ))}
-        </div>
-      )}
+        {/* ── Subtraction cut dimensions (amber) ── */}
+        {subLabelSets.map((lbls, si) =>
+          lbls.map((lbl, i) => {
+            const dx = lbl.ex2 - lbl.ex1, dy = lbl.ey2 - lbl.ey1;
+            const len = Math.hypot(dx, dy);
+            if (len < 4) return null;
+            const off = Math.min(canvasSize.w, canvasSize.h) * 0.05;
+            const arrowSz = Math.max(2, off * 0.35);
+            const fontSize = Math.max(8, Math.min(11, canvasSize.w * 0.022));
+            // Dimension line runs through the cut centre — no outward offset
+            const ax = lbl.ex1, ay = lbl.ey1;
+            const bx = lbl.ex2, by = lbl.ey2;
+            const mx = lbl.sx, my = lbl.sy;
+            const txt = String(lbl.length);
+            const labelW = Math.max(txt.length * fontSize * 0.65 + 10, 28);
+            const labelH = fontSize + 6;
+            return (
+              <g key={`sub-${si}-${i}`}>
+                <line x1={ax} y1={ay} x2={bx} y2={by} stroke="#d97706" strokeWidth="1.1" strokeDasharray="3,2"/>
+                <polygon points={`${ax},${ay} ${ax+(dx/len)*arrowSz},${ay+(dy/len)*arrowSz}`} fill="#d97706"/>
+                <polygon points={`${bx},${by} ${bx-(dx/len)*arrowSz},${by-(dy/len)*arrowSz}`} fill="#d97706"/>
+                <rect x={mx - labelW / 2} y={my - labelH / 2} width={labelW} height={labelH} rx={3} fill="rgba(255,247,220,0.97)" stroke="#f59e0b" strokeWidth="0.8"/>
+                <text x={mx} y={my + fontSize * 0.36} textAnchor="middle" fontSize={fontSize} fill="#92400e" fontFamily="monospace" fontWeight="700">{txt}</text>
+              </g>
+            );
+          })
+        )}
+      </svg>
 
       {/* Direction arrow — rotates 90° when arrowRotated is true */}
       <div style={{
