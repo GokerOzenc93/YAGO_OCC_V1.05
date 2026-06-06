@@ -154,10 +154,16 @@ function computeAllEdgeDimLabels(
     // Not a thickness edge
     if (Math.abs(a[thinKey] - b[thinKey]) > len3D * 0.5) continue;
 
-    // Must run primarily along one planar axis
+    // Must run primarily along one planar axis AND the perpendicular component
+    // must stay nearly constant — this eliminates fillet arc segments which
+    // change in both planar axes simultaneously.
     let axisMatch = false;
     for (const ak of planarKeys) {
-      if (Math.abs(a[ak] - b[ak]) > len3D * 0.6) { axisMatch = true; break; }
+      if (Math.abs(a[ak] - b[ak]) > len3D * 0.6) {
+        const ok = planarKeys.find(k => k !== ak)!;
+        if (Math.abs(a[ok] - b[ok]) < len3D * 0.2) { axisMatch = true; }
+        break;
+      }
     }
     if (!axisMatch) continue;
 
@@ -817,12 +823,12 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
 
           {/* Dims inline */}
           {dims && (
-            <span className="flex items-center gap-1 text-xs font-mono shrink-0 leading-none" onClick={stop}>
-              <span className="text-stone-400">W</span><span className="text-stone-700 font-bold">{dims.primary}</span>
-              <span className="text-stone-300">·</span>
-              <span className="text-stone-400">H</span><span className="text-stone-700 font-bold">{dims.secondary}</span>
-              <span className="text-stone-300">·</span>
-              <span className="text-stone-400">T</span><span className="text-stone-700 font-bold">{dims.thickness}</span>
+            <span className="flex items-center gap-0.5 text-xs font-mono shrink-0 leading-none tabular-nums" onClick={stop}>
+              <span className="text-stone-400">W</span><span className="text-stone-700 font-bold inline-block min-w-[32px] text-right">{dims.primary}</span>
+              <span className="text-stone-300 mx-0.5">·</span>
+              <span className="text-stone-400">H</span><span className="text-stone-700 font-bold inline-block min-w-[32px] text-right">{dims.secondary}</span>
+              <span className="text-stone-300 mx-0.5">·</span>
+              <span className="text-stone-400">T</span><span className="text-stone-700 font-bold inline-block min-w-[20px] text-right">{dims.thickness}</span>
             </span>
           )}
 
