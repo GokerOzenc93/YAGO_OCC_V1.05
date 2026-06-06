@@ -174,7 +174,7 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({ parametersContent, panelEdito
     return () => window.removeEventListener('pointerdown', onPointerDown, true);
   }, [isOpen, isPinned]);
 
-  const sidebarWidth = 425;
+  const sidebarWidth = 435;
   const isVisible = isOpen || isPinned;
 
   return (
