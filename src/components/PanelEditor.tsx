@@ -248,10 +248,16 @@ function PanelPreview2D({ dims, shape, arrowRotated }: { dims: Dims; shape?: any
   const [subLabelSets, setSubLabelSets] = useState<EdgeDimLabel[][]>([]);
   const [canvasSize, setCanvasSize] = useState({ w: 320, h: 300 });
 
+  // Always-current ref so RAF callbacks never read stale closure values
+  const shapeRef = useRef<any>(null);
+  shapeRef.current = shape;
+  const arrowRotatedRef = useRef(arrowRotated);
+  arrowRotatedRef.current = arrowRotated;
+
   useEffect(() => {
     const wrap = wrapRef.current;
     const canvas = canvasRef.current;
-    if (!wrap || !canvas || !shape?.geometry) return;
+    if (!wrap || !canvas) return;
 
     let disposed = false;
     let renderer: THREE.WebGLRenderer | null = null;
@@ -260,7 +266,12 @@ function PanelPreview2D({ dims, shape, arrowRotated }: { dims: Dims; shape?: any
     let edgesMat: THREE.LineBasicMaterial | null = null;
 
     const render = (w: number, h: number) => {
-      if (disposed) return;
+      // Always read the latest shape from the ref — prevents stale closure
+      // when two rapid store updates happen (e.g. executeFaceExtrude first
+      // writes parameters, then geometry).
+      const shape = shapeRef.current;
+      const arrowRotated = arrowRotatedRef.current;
+      if (disposed || !shape?.geometry) return;
       renderer?.dispose();
       material?.dispose();
       edgesGeo?.dispose();
@@ -381,7 +392,9 @@ function PanelPreview2D({ dims, shape, arrowRotated }: { dims: Dims; shape?: any
       edgesGeo?.dispose();
       edgesMat?.dispose();
     };
-  }, [shape, arrowRotated]);
+  // Depend on the geometry UUID so the effect re-runs even if the shape
+  // object reference is somehow reused but the geometry was replaced.
+  }, [shape?.geometry?.uuid, arrowRotated]);
 
   // Resolve label positions with collision avoidance.
   // Longer edges get priority (placed first at base offset); others step outward.
