@@ -123,7 +123,7 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           }
         }
 
-        const geometry = convertReplicadToThreeGeometry(rp);
+        let geometry = convertReplicadToThreeGeometry(rp);
         const r = geoAxesSize(geometry);
         const paramUpdates: Record<string, any> = { ...panel.parameters, baseReplicadShape: rp };
         if (r) {
@@ -133,48 +133,34 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           paramUpdates.width = s[def];
           paramUpdates.height = s[alt];
         }
-        const rebuiltPanel = { ...panel, geometry, replicadShape: rp, parameters: paramUpdates };
+        let rebuiltPanel: any = { ...panel, geometry, replicadShape: rp, parameters: paramUpdates };
+
+        // Apply extrude steps immediately so subsequent panels see the correct
+        // (shortened) geometry as an obstacle during their VF recalculation.
+        const steps = panel.parameters?.extrudeSteps || [];
+        if (steps.length > 0) {
+          const captured: Partial<typeof rebuiltPanel> = {};
+          const captureUpdate = (id: string, updates: any) => {
+            if (id === panel.id) Object.assign(captured, updates);
+          };
+          try {
+            await rebuildFromSteps(rebuiltPanel, steps, captureUpdate as any);
+            if (captured.geometry || captured.replicadShape || captured.parameters) {
+              rebuiltPanel = {
+                ...rebuiltPanel,
+                ...captured,
+                parameters: { ...rebuiltPanel.parameters, ...(captured.parameters || {}) },
+              };
+            }
+          } catch (err) {
+            console.error('Failed to apply extrude steps during rebuild for panel', panel.id, err);
+          }
+        }
+
         workingShapes = [...workingShapes, rebuiltPanel];
       } catch (err) {
         console.error('Failed to rebuild panel', panel.id, err);
         workingShapes = [...workingShapes, panel];
-      }
-    }
-
-    useAppStore.setState(state => {
-      const rebuiltById = new Map<string, any>();
-      for (const s of workingShapes) {
-        if (s.type === 'panel' && s.parameters?.parentShapeId === parentShapeId) rebuiltById.set(s.id, s);
-      }
-      return {
-        shapes: state.shapes.map(s => rebuiltById.get(s.id) || s),
-        virtualFaces: workingVirtualFaces,
-      };
-    });
-
-    for (const panel of siblingsOrdered) {
-      const idx = workingShapes.findIndex(s => s.id === panel.id);
-      if (idx < 0) continue;
-      const current = workingShapes[idx];
-      const steps = current.parameters?.extrudeSteps || [];
-      if (steps.length === 0) continue;
-
-      const captured: Partial<typeof current> = {};
-      const captureUpdate = (id: string, updates: any) => {
-        if (id === panel.id) Object.assign(captured, updates);
-      };
-      try {
-        await rebuildFromSteps(current, steps, captureUpdate as any);
-        if (captured.geometry || captured.replicadShape || captured.parameters) {
-          const merged = {
-            ...current,
-            ...captured,
-            parameters: { ...current.parameters, ...(captured.parameters || {}) },
-          };
-          workingShapes[idx] = merged;
-        }
-      } catch (err) {
-        console.error('Failed to apply extrude steps for panel', panel.id, err);
       }
     }
 
