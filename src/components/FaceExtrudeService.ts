@@ -265,9 +265,28 @@ export async function rebuildFromSteps(
   const newWidth = sortedAxes[0].size;
   const newHeight = sortedAxes[1].size;
 
+  // Re-apply fillets on the new shape so they are preserved after extrude.
+  let finalReplicad = currentReplicad;
+  let finalGeometry = currentGeometry;
+  const fillets = panelShape.fillets ?? [];
+  if (fillets.length > 0) {
+    try {
+      const { updateFilletCentersForNewGeometry, applyFillets } = await import('./ShapeUpdaterService');
+      const updatedFillets = await updateFilletCentersForNewGeometry(
+        fillets, currentGeometry,
+        { width: newWidth, height: newHeight, depth: originalThickness }
+      );
+      finalReplicad = await applyFillets(currentReplicad, updatedFillets, { width: newWidth, height: newHeight, depth: originalThickness });
+      finalGeometry = convertReplicadToThreeGeometry(finalReplicad);
+    } catch (e) {
+      console.warn('[rebuildFromSteps] Could not re-apply fillets after extrude:', e);
+    }
+  }
+
   updateShape(panelShape.id, {
-    geometry: currentGeometry,
-    replicadShape: currentReplicad,
+    geometry: finalGeometry,
+    replicadShape: finalReplicad,
+    fillets,
     parameters: {
       ...panelShape.parameters,
       width: Math.round(newWidth * 10) / 10,
@@ -318,18 +337,29 @@ export async function executeFaceExtrude(params: FaceExtrudeParams): Promise<boo
   const axisLabel = getAxisLabel(faceNormal);
 
   if (!panel.parameters?.baseReplicadShape) {
-    panel = {
-      ...panel,
-      parameters: {
-        ...panel.parameters,
-        baseReplicadShape: panel.replicadShape,
-      },
-    };
-    updateShape(panel.id, {
-      parameters: {
-        ...panel.parameters,
-      },
-    });
+    // Build the pre-fillet base shape: box + subtractions (no fillets).
+    // Using panel.replicadShape directly would capture the filleted topology
+    // which causes OpenCASCADE boolean operations to fail or give wrong results.
+    const { createReplicadBox, performBooleanCut } = await import('./ReplicadService');
+    const W = panel.parameters?.width ?? 1;
+    const H = panel.parameters?.height ?? 1;
+    const D = panel.parameters?.depth ?? 1;
+    let baseShape: any = await createReplicadBox({ width: W, height: H, depth: D });
+    for (const sub of (panel.subtractionGeometries ?? [])) {
+      try {
+        let w: number, h: number, d: number;
+        if (sub.parameters) {
+          w = parseFloat(sub.parameters.width); h = parseFloat(sub.parameters.height); d = parseFloat(sub.parameters.depth);
+        } else {
+          const B = new THREE.Box3().setFromBufferAttribute(sub.geometry.getAttribute('position') as THREE.BufferAttribute);
+          const S = new THREE.Vector3(); B.getSize(S); w = S.x; h = S.y; d = S.z;
+        }
+        const SB = await createReplicadBox({ width: w, height: h, depth: d });
+        baseShape = await performBooleanCut(baseShape, SB, undefined, sub.relativeOffset, undefined, sub.relativeRotation ?? [0,0,0], undefined, sub.scale ?? [1,1,1]);
+      } catch { /* skip failed subtraction */ }
+    }
+    panel = { ...panel, parameters: { ...panel.parameters, baseReplicadShape: baseShape } };
+    updateShape(panel.id, { parameters: { ...panel.parameters } });
   }
 
   const existingSteps: ExtrudeStep[] = panel.parameters?.extrudeSteps || [];
