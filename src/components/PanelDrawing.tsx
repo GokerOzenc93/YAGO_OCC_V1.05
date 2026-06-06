@@ -100,6 +100,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     setFaceExtrudeHoveredFace,
     faceExtrudeSelectedFace,
     setFaceExtrudeSelectedFace,
+    setFaceExtrudeClickPoint,
     raycastMode
   } = useAppStore(useShallow(state => ({
     selectShape: state.selectShape,
@@ -118,6 +119,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     setFaceExtrudeHoveredFace: state.setFaceExtrudeHoveredFace,
     faceExtrudeSelectedFace: state.faceExtrudeSelectedFace,
     setFaceExtrudeSelectedFace: state.setFaceExtrudeSelectedFace,
+    setFaceExtrudeClickPoint: state.setFaceExtrudeClickPoint,
     raycastMode: state.raycastMode
   })));
 
@@ -363,6 +365,18 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
                   setFaceExtrudeSelectedFace(gi);
                   setHoveredExtrudeGroup(gi);
                   setFaceExtrudeHoveredFace(gi);
+                  // Convert world-space click to local space so the extrude
+                  // service can use it as a sample point for face matching.
+                  if (e.point) {
+                    const pos = new THREE.Vector3(shape.position[0], shape.position[1], shape.position[2]);
+                    const quat = new THREE.Quaternion().setFromEuler(
+                      new THREE.Euler(shape.rotation[0], shape.rotation[1], shape.rotation[2], 'XYZ')
+                    );
+                    const scl = new THREE.Vector3(shape.scale[0], shape.scale[1], shape.scale[2]);
+                    const m = new THREE.Matrix4().compose(pos, quat, scl).invert();
+                    const local = e.point.clone().applyMatrix4(m);
+                    setFaceExtrudeClickPoint([local.x, local.y, local.z]);
+                  }
                 }
               }
             }}

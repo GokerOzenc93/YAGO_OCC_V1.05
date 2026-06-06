@@ -589,7 +589,8 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     showVirtualFaces, setShowVirtualFaces, virtualFaces, updateVirtualFace, deleteVirtualFace, reorderVirtualFaces, pendingPanelCreation,
     faceExtrudeMode, setFaceExtrudeMode, faceExtrudeTargetPanelId,
     setFaceExtrudeTargetPanelId, faceExtrudeSelectedFace, setFaceExtrudeSelectedFace, setFaceExtrudeHoveredFace,
-    faceExtrudeThickness, setFaceExtrudeThickness, faceExtrudeFixedMode, setFaceExtrudeFixedMode } = useAppStore();
+    faceExtrudeThickness, setFaceExtrudeThickness, faceExtrudeFixedMode, setFaceExtrudeFixedMode,
+    faceExtrudeClickPoint } = useAppStore();
 
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
@@ -927,7 +928,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                   if (!hf || !activePanelId) return;
                   const ps = shapes.find(s => s.id === activePanelId); if (!ps) return;
                   const { executeFaceExtrude } = await import('./FaceExtrudeService');
-                  await executeFaceExtrude({ panelShape: ps, faceGroupIndex: faceExtrudeSelectedFace!, value: faceExtrudeThickness, isFixed: faceExtrudeFixedMode, shapes, updateShape });
+                  await executeFaceExtrude({ panelShape: ps, faceGroupIndex: faceExtrudeSelectedFace!, value: faceExtrudeThickness, isFixed: faceExtrudeFixedMode, shapes, updateShape, clickPoint: faceExtrudeClickPoint ?? undefined });
                   setFaceExtrudeSelectedFace(null);
                   setFaceExtrudeMode(false);
                 }}

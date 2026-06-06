@@ -13,6 +13,9 @@ export interface ExtrudeStep {
   value: number;
   isFixed: boolean;
   timestamp: number;
+  /** Local-space point on the clicked face surface — used to uniquely
+   *  identify the correct replicad face regardless of center/normal ambiguity. */
+  samplePoint?: [number, number, number];
 }
 
 export interface FaceExtrudeParams {
@@ -22,6 +25,8 @@ export interface FaceExtrudeParams {
   isFixed: boolean;
   shapes: Shape[];
   updateShape: (id: string, updates: Partial<Shape>) => void;
+  /** Local-space click point captured from the Three.js pointer event. */
+  clickPoint?: [number, number, number];
 }
 
 function getAxisLabel(normal: THREE.Vector3): string {
@@ -55,13 +60,14 @@ export function findExistingStepForFace(
 function findMatchingReplicadFace(
   replicadShape: any,
   targetNormal: THREE.Vector3,
-  targetCenter: THREE.Vector3
+  targetCenter: THREE.Vector3,
+  samplePoint?: THREE.Vector3
 ): any | null {
   const faces = replicadShape.faces;
   if (!faces || faces.length === 0) return null;
 
   const targetLabel = getAxisLabel(targetNormal);
-  const candidates: Array<{ face: any; dot: number; dist: number }> = [];
+  const candidates: Array<{ face: any; dot: number; dist: number; minPtDist: number }> = [];
 
   for (let i = 0; i < faces.length; i++) {
     const face = faces[i];
@@ -75,8 +81,9 @@ function findMatchingReplicadFace(
       if (dot < 0.5) continue;
 
       let center = new THREE.Vector3();
+      let minPtDist = Infinity;
       try {
-        const faceMesh = face.mesh({ tolerance: 0.5, angularTolerance: 30 });
+        const faceMesh = face.mesh({ tolerance: 1.0, angularTolerance: 15 });
         if (faceMesh.vertices && faceMesh.vertices.length >= 3) {
           let sx = 0, sy = 0, sz = 0;
           const nv = faceMesh.vertices.length / 3;
@@ -84,15 +91,22 @@ function findMatchingReplicadFace(
             sx += faceMesh.vertices[j];
             sy += faceMesh.vertices[j + 1];
             sz += faceMesh.vertices[j + 2];
+            if (samplePoint) {
+              const vx = faceMesh.vertices[j] - samplePoint.x;
+              const vy = faceMesh.vertices[j + 1] - samplePoint.y;
+              const vz = faceMesh.vertices[j + 2] - samplePoint.z;
+              const d = Math.sqrt(vx * vx + vy * vy + vz * vz);
+              if (d < minPtDist) minPtDist = d;
+            }
           }
           center = new THREE.Vector3(sx / nv, sy / nv, sz / nv);
         }
       } catch {
-        candidates.push({ face, dot, dist: Infinity });
+        candidates.push({ face, dot, dist: Infinity, minPtDist: Infinity });
         continue;
       }
 
-      candidates.push({ face, dot, dist: center.distanceTo(targetCenter) });
+      candidates.push({ face, dot, dist: center.distanceTo(targetCenter), minPtDist });
     } catch {
       continue;
     }
@@ -100,7 +114,15 @@ function findMatchingReplicadFace(
 
   if (candidates.length === 0) return null;
   if (candidates.length === 1) return candidates[0].face;
-  candidates.sort((a, b) => a.dist - b.dist || b.dot - a.dot);
+
+  // When a sample point is available, prefer the replicad face whose
+  // tessellation is CLOSEST to that point. The correct face contains the
+  // click point so its minPtDist ≈ 0; inner slot walls are much farther.
+  if (samplePoint) {
+    candidates.sort((a, b) => a.minPtDist - b.minPtDist || b.dot - a.dot);
+  } else {
+    candidates.sort((a, b) => a.dist - b.dist || b.dot - a.dot);
+  }
   return candidates[0].face;
 }
 
@@ -213,7 +235,10 @@ async function applyOneExtrudeStep(
     return null;
   }
 
-  const matchingFace = findMatchingReplicadFace(currentShape, faceNormal, faceCenter);
+  const samplePt = step.samplePoint
+    ? new THREE.Vector3(...step.samplePoint)
+    : undefined;
+  const matchingFace = findMatchingReplicadFace(currentShape, faceNormal, faceCenter, samplePt);
   if (!matchingFace) {
     console.warn(`[applyOneExtrudeStep] No matching replicad face for normal ${faceNormal.toArray()} center ${faceCenter.toArray()}`);
     return null;
@@ -416,6 +441,7 @@ export async function executeFaceExtrude(params: FaceExtrudeParams): Promise<boo
     value,
     isFixed,
     timestamp: Date.now(),
+    samplePoint: params.clickPoint,
   };
 
   let newSteps: ExtrudeStep[];

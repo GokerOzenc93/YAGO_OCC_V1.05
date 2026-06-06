@@ -186,6 +186,8 @@ interface AppState{
   faceExtrudeTargetPanelId:string|null;setFaceExtrudeTargetPanelId:(id:string|null)=>void;
   faceExtrudeHoveredFace:number|null;setFaceExtrudeHoveredFace:(i:number|null)=>void;
   faceExtrudeSelectedFace:number|null;setFaceExtrudeSelectedFace:(i:number|null)=>void;
+  /** Local-space click point from the pointer-down event that selected the face. */
+  faceExtrudeClickPoint:[number,number,number]|null;setFaceExtrudeClickPoint:(p:[number,number,number]|null)=>void;
   faceExtrudeThickness:number;setFaceExtrudeThickness:(v:number)=>void;
   faceExtrudeFixedMode:boolean;setFaceExtrudeFixedMode:(b:boolean)=>void;
 
@@ -231,10 +233,11 @@ export const useAppStore=create<AppState>((set,get)=>({
   raycastMode:false,setRaycastMode:(e)=>set({raycastMode:e,raycastResults:e?get().raycastResults:[]}),
   raycastResults:[],setRaycastResults:(r)=>set({raycastResults:r}),
 
-  faceExtrudeMode:false,setFaceExtrudeMode:(b)=>set({faceExtrudeMode:b,faceExtrudeHoveredFace:null,faceExtrudeSelectedFace:null,...(!b?{faceExtrudeTargetPanelId:null}:{})}),
+  faceExtrudeMode:false,setFaceExtrudeMode:(b)=>set({faceExtrudeMode:b,faceExtrudeHoveredFace:null,faceExtrudeSelectedFace:null,faceExtrudeClickPoint:null,...(!b?{faceExtrudeTargetPanelId:null}:{})}),
   faceExtrudeTargetPanelId:null,setFaceExtrudeTargetPanelId:(id)=>set({faceExtrudeTargetPanelId:id}),
   faceExtrudeHoveredFace:null,setFaceExtrudeHoveredFace:(i)=>set({faceExtrudeHoveredFace:i}),
   faceExtrudeSelectedFace:null,setFaceExtrudeSelectedFace:(i)=>set({faceExtrudeSelectedFace:i}),
+  faceExtrudeClickPoint:null,setFaceExtrudeClickPoint:(p)=>set({faceExtrudeClickPoint:p}),
   faceExtrudeThickness:18,setFaceExtrudeThickness:(v)=>set({faceExtrudeThickness:v}),
   faceExtrudeFixedMode:true,setFaceExtrudeFixedMode:(b)=>set({faceExtrudeFixedMode:b}),
 
