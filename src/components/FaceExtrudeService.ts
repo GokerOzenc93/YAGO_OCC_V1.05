@@ -120,7 +120,7 @@ async function applyOneExtrudeStep(
   // that legacy steps with slightly curved stored normals still resolve.
   const flatAligned = groups.filter(g => {
     const gNorm = g.normal.clone().normalize();
-    const isFlat = Math.abs(gNorm.x) > 0.9 || Math.abs(gNorm.y) > 0.9 || Math.abs(gNorm.z) > 0.9;
+    const isFlat = Math.abs(gNorm.x) > 0.999 || Math.abs(gNorm.y) > 0.999 || Math.abs(gNorm.z) > 0.999;
     return isFlat && getAxisLabel(gNorm) === step.axisLabel;
   });
   const aligned = flatAligned.length > 0 ? flatAligned : groups.filter(g => {
@@ -301,8 +301,11 @@ export async function executeFaceExtrude(params: FaceExtrudeParams): Promise<boo
   let faceNormal = rawGroup.normal.clone().normalize();
   let faceCenter = rawGroup.center.clone();
 
+  // Must match the isAxisAligned threshold in GeometryUtils (0.999) so that
+  // fillet arc faces (classified "curved" by groupCoplanarFaces) are correctly
+  // snapped to the nearest true flat face instead of extruded directly.
   const isFlat = (n: THREE.Vector3) =>
-    Math.abs(n.x) > 0.9 || Math.abs(n.y) > 0.9 || Math.abs(n.z) > 0.9;
+    Math.abs(n.x) > 0.999 || Math.abs(n.y) > 0.999 || Math.abs(n.z) > 0.999;
 
   if (!isFlat(faceNormal)) {
     const axLbl = getAxisLabel(faceNormal);

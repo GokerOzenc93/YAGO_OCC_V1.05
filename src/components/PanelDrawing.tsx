@@ -5,10 +5,16 @@ import { useAppStore, ViewMode } from '../store';
 import { useShallow } from 'zustand/react/shallow';
 import { extractFacesFromGeometry, groupCoplanarFaces, createFaceHighlightGeometry } from './FaceEditor';
 
+// Threshold must match isAxisAligned() in GeometryUtils (0.999) so that any
+// face groupCoplanarFaces considers "curved" is also considered non-flat here.
+// Using 0.9 was too permissive: fillet arc faces near the flat-face boundary
+// (abs(normal) ≈ 0.95–0.998) passed as flat and got extruded instead of snapping.
+const FLAT_NORMAL_THRESHOLD = 0.999;
+
 function snapToFlatGroup(gi: number, groups: ReturnType<typeof groupCoplanarFaces>): number {
   if (gi < 0 || gi >= groups.length) return gi;
   const n = groups[gi].normal.clone().normalize();
-  const isFlat = Math.abs(n.x) > 0.9 || Math.abs(n.y) > 0.9 || Math.abs(n.z) > 0.9;
+  const isFlat = Math.abs(n.x) > FLAT_NORMAL_THRESHOLD || Math.abs(n.y) > FLAT_NORMAL_THRESHOLD || Math.abs(n.z) > FLAT_NORMAL_THRESHOLD;
   if (isFlat) return gi;
   const axisOf = (v: THREE.Vector3) => {
     const a = [Math.abs(v.x), Math.abs(v.y), Math.abs(v.z)];
@@ -20,7 +26,7 @@ function snapToFlatGroup(gi: number, groups: ReturnType<typeof groupCoplanarFace
   let bestIdx = gi, bestDist = Infinity;
   groups.forEach((g, idx) => {
     const gn = g.normal.clone().normalize();
-    const flat = Math.abs(gn.x) > 0.9 || Math.abs(gn.y) > 0.9 || Math.abs(gn.z) > 0.9;
+    const flat = Math.abs(gn.x) > FLAT_NORMAL_THRESHOLD || Math.abs(gn.y) > FLAT_NORMAL_THRESHOLD || Math.abs(gn.z) > FLAT_NORMAL_THRESHOLD;
     if (flat && axisOf(gn) === axLbl) {
       const d = g.center.distanceTo(center);
       if (d < bestDist) { bestDist = d; bestIdx = idx; }
