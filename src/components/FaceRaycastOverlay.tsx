@@ -367,6 +367,21 @@ function isInsideEdge(p: Point2D, edgeStart: Point2D, edgeEnd: Point2D): boolean
   return (edgeEnd.x - edgeStart.x) * (p.y - edgeStart.y) - (edgeEnd.y - edgeStart.y) * (p.x - edgeStart.x) >= 0;
 }
 
+// Returns true only when all cross-products have the same sign (convex polygon).
+// Sutherland-Hodgman clip requires a convex clip polygon; skip it for non-convex faces.
+function isConvexPolygon2D(poly: Point2D[]): boolean {
+  if (poly.length < 3) return false;
+  let sign = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i + 1) % poly.length], c = poly[(i + 2) % poly.length];
+    const cross = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+    if (Math.abs(cross) < 1e-9) continue;
+    if (sign === 0) sign = Math.sign(cross);
+    else if (Math.sign(cross) !== sign) return false;
+  }
+  return true;
+}
+
 function lineIntersect2D(p1: Point2D, p2: Point2D, p3: Point2D, p4: Point2D): Point2D | null {
   const x1 = p1.x, y1 = p1.y, x2 = p2.x, y2 = p2.y;
   const x3 = p3.x, y3 = p3.y, x4 = p4.x, y4 = p4.y;
@@ -662,11 +677,16 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
   const boundaryLoop2D = buildBoundaryLoop2D(boundaryEdges, startWorld, u, v);
   if (boundaryLoop2D && boundaryLoop2D.length >= 3) {
     const ccwBoundary = ensureCCW(boundaryLoop2D);
-    const clipped = sutherlandHodgmanClip(rect2D, ccwBoundary);
-    if (clipped.length >= 3) {
-      rect2D = clipped;
-    } else {
-      rect2D = ccwBoundary;
+    // Sutherland-Hodgman requires a CONVEX clip polygon.
+    // For non-convex faces (L-shapes, U-shapes, etc.) skip the clip — the boundary
+    // edges already limit each ray, so rect2D is already within the face boundary.
+    if (isConvexPolygon2D(ccwBoundary)) {
+      const clipped = sutherlandHodgmanClip(rect2D, ccwBoundary);
+      if (clipped.length >= 3) {
+        rect2D = clipped;
+      } else {
+        rect2D = ccwBoundary;
+      }
     }
   }
   const footprints = getSubtractorFootprints2D(subtractions, localToWorld, worldNormal, planeOrigin, u, v, 50);
