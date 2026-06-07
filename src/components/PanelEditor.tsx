@@ -761,8 +761,16 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     );
 
     // Group VFs by face normal direction so same-face panels appear together.
-    const normalKey = (vf: typeof svf[0]) =>
-      vf.normal.map(n => (Math.round(n * 10) / 10).toFixed(1)).join(',');
+    // Two VFs belong to the same face group only when they share both the same
+    // normal direction AND the same plane (normal · center ≈ same offset).
+    // This prevents parallel faces at different depths from being merged.
+    const normalKey = (vf: typeof svf[0]) => {
+      const nStr = vf.normal.map(n => (Math.round(n * 10) / 10).toFixed(1)).join(',');
+      const [nx, ny, nz] = vf.normal;
+      const [cx, cy, cz] = vf.center;
+      const planeOffset = (Math.round((nx * cx + ny * cy + nz * cz) * 2) / 2).toFixed(1);
+      return `${nStr}@${planeOffset}`;
+    };
     // Build ordered groups preserving first-seen order of normals.
     const groupOrder: string[] = [];
     const groupMap = new Map<string, typeof svf>();
