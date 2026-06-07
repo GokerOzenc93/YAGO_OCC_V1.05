@@ -630,9 +630,106 @@ export function collectVirtualFaceObstacleEdgesWorld(virtualFaces: VirtualFace[]
 function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces: FaceData[], localToWorld: THREE.Matrix4, worldToLocal: THREE.Matrix4, childPanels: any[], shapeId: string, subtractions: any[] = [], geometry?: THREE.BufferGeometry, shapeVirtualFaces: VirtualFace[] = []): PendingPreview | null {
   const normalMatrix = new THREE.Matrix3().getNormalMatrix(localToWorld);
   const planeOrigin = clickWorld.clone();
+
+  // ── Curved face branch ──────────────────────────────────────────────────────
+  // For curved (non-planar) faces, skip ray-casting and use the UV bounding box
+  // of all face vertices projected onto the average-normal plane instead.
+  if (group.isCurved) {
+    const localNormal = group.normal.clone().normalize();
+    const worldNormal = localNormal.clone().applyMatrix3(normalMatrix).normalize();
+    const { u, v } = getFacePlaneAxes(worldNormal);
+
+    const allVertsWorld: THREE.Vector3[] = [];
+    group.faceIndices.forEach(fi => {
+      const face = faces[fi];
+      if (!face) return;
+      face.vertices.forEach(vtx => allVertsWorld.push(vtx.clone().applyMatrix4(localToWorld)));
+    });
+    if (allVertsWorld.length < 3) return null;
+
+    const nComp = clickWorld.dot(worldNormal);
+    const uCoords = allVertsWorld.map(vtx => vtx.dot(u));
+    const vCoords = allVertsWorld.map(vtx => vtx.dot(v));
+    const uMin = Math.min(...uCoords), uMax = Math.max(...uCoords);
+    const vMin = Math.min(...vCoords), vMax = Math.max(...vCoords);
+    if (uMax - uMin < 1 || vMax - vMin < 1) return null;
+
+    const buildWP = (uc: number, vc: number) =>
+      new THREE.Vector3().addScaledVector(u, uc).addScaledVector(v, vc).addScaledVector(worldNormal, nComp);
+
+    const cornersWorld = [
+      buildWP(uMax, vMax), buildWP(uMin, vMax),
+      buildWP(uMin, vMin), buildWP(uMax, vMin),
+    ];
+    const planeOriginW = buildWP((uMin + uMax) / 2, (vMin + vMax) / 2);
+
+    let poly2D: Point2D[] = ensureCCW(cornersWorld.map(c => projectTo2D(c, planeOriginW, u, v)));
+
+    const footprints = getSubtractorFootprints2D(subtractions, localToWorld, worldNormal, planeOriginW, u, v, 50);
+    for (const fp of footprints) {
+      const ccwFp = ensureCCW(fp);
+      if (ccwFp.some(p => isPointInsidePolygon(p, poly2D)) || poly2D.some(p => isPointInsidePolygon(p, ccwFp))) {
+        poly2D = subtractPolygon(poly2D, ccwFp);
+      }
+    }
+    if (poly2D.length < 3) return null;
+
+    const finalCornersWorld = poly2D.map(p => planeOriginW.clone().addScaledVector(u, p.x).addScaledVector(v, p.y));
+    const centerW = new THREE.Vector3();
+    finalCornersWorld.forEach(c => centerW.add(c));
+    centerW.divideScalar(finalCornersWorld.length);
+
+    const cornersLocal = finalCornersWorld.map(c => c.clone().applyMatrix4(worldToLocal));
+    const centerLocal = centerW.clone().applyMatrix4(worldToLocal);
+
+    const triIndices = earClipTriangulate(poly2D);
+    const localPositions = new Float32Array(triIndices.length * 3);
+    for (let i = 0; i < triIndices.length; i++) {
+      const cl = cornersLocal[triIndices[i]];
+      localPositions[i * 3] = cl.x; localPositions[i * 3 + 1] = cl.y; localPositions[i * 3 + 2] = cl.z;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(localPositions, 3));
+    geo.computeVertexNormals();
+
+    const edgeVerts: number[] = [];
+    for (let i = 0; i < cornersLocal.length; i++) {
+      const a = cornersLocal[i], b = cornersLocal[(i + 1) % cornersLocal.length];
+      edgeVerts.push(a.x, a.y, a.z, b.x, b.y, b.z);
+    }
+    const edgeGeo = new THREE.BufferGeometry();
+    edgeGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(edgeVerts), 3));
+
+    const clickLocal = clickWorld.clone().applyMatrix4(worldToLocal);
+    let faceGroupDescriptor: import('../store').FaceDescriptor | undefined;
+    if (geometry && group.faceIndices.length > 0) {
+      const repFace = faces[group.faceIndices[0]];
+      if (repFace) faceGroupDescriptor = createFaceDescriptor(repFace, geometry);
+    }
+
+    const parentPos = new THREE.Vector3();
+    localToWorld.decompose(parentPos, new THREE.Quaternion(), new THREE.Vector3());
+
+    const newId = `vf-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
+    const virtualFace: VirtualFace = {
+      id: newId, shapeId,
+      normal: [localNormal.x, localNormal.y, localNormal.z],
+      center: [centerLocal.x, centerLocal.y, centerLocal.z],
+      vertices: cornersLocal.map(c => [c.x, c.y, c.z] as [number, number, number]),
+      description: '', hasPanel: false,
+      raycastRecipe: faceGroupDescriptor ? {
+        clickLocalPoint: [clickLocal.x, clickLocal.y, clickLocal.z],
+        faceGroupNormal: [localNormal.x, localNormal.y, localNormal.z],
+        faceGroupDescriptor,
+        isCurvedFace: true,
+      } : undefined,
+    };
+    return { rayLines: [], originLocal: clickWorld.clone().sub(parentPos), geo, edgeGeo, virtualFace };
+  }
+  // ── End curved face branch ──────────────────────────────────────────────────
+
   const strictIndices = filterStrictCoplanarFaceIndices(faces, group.faceIndices, localToWorld, normalMatrix, planeOrigin, group.normal);
-  const refFaceIdx = strictIndices[0] ?? group.faceIndices[0];
-  const refFace = faces[refFaceIdx];
+  const refFace = faces[strictIndices[0] ?? group.faceIndices[0]];
   const localNormal = refFace ? refFace.normal.clone().normalize() : group.normal.clone().normalize();
   const worldNormal = localNormal.clone().applyMatrix3(normalMatrix).normalize();
   let { u, v } = getFacePlaneAxes(worldNormal);

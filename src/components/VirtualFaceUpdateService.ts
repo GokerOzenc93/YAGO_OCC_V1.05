@@ -447,6 +447,62 @@ function extractUniqueBoundaryEdgesLocal(
   return result;
 }
 
+function regenerateCurvedFaceVF(
+  vf: VirtualFace,
+  shape: Shape,
+  faces: FaceData[],
+  faceGroups: CoplanarFaceGroup[],
+  localToWorld: THREE.Matrix4,
+  worldToLocal: THREE.Matrix4
+): VirtualFace | null {
+  const matchedGroup = findMatchingFaceGroup(vf, faces, faceGroups, shape.geometry);
+  if (!matchedGroup) return null;
+
+  const normalMatrix = new THREE.Matrix3().getNormalMatrix(localToWorld);
+  const localNormal = matchedGroup.normal.clone().normalize();
+  const worldNormal = localNormal.clone().applyMatrix3(normalMatrix).normalize();
+  const { u, v } = getFacePlaneAxes(worldNormal);
+
+  const allVertsWorld: THREE.Vector3[] = [];
+  matchedGroup.faceIndices.forEach(fi => {
+    const face = faces[fi];
+    if (!face) return;
+    face.vertices.forEach(vtx => allVertsWorld.push(vtx.clone().applyMatrix4(localToWorld)));
+  });
+  if (allVertsWorld.length < 3) return null;
+
+  // Use the stored VF center's normal component so the panel stays at the same
+  // depth after parent shape changes.
+  const storedCenter = new THREE.Vector3(vf.center[0], vf.center[1], vf.center[2])
+    .applyMatrix4(localToWorld);
+  const nComp = storedCenter.dot(worldNormal);
+
+  const uCoords = allVertsWorld.map(vtx => vtx.dot(u));
+  const vCoords = allVertsWorld.map(vtx => vtx.dot(v));
+  const uMin = Math.min(...uCoords), uMax = Math.max(...uCoords);
+  const vMin = Math.min(...vCoords), vMax = Math.max(...vCoords);
+  if (uMax - uMin < 1 || vMax - vMin < 1) return null;
+
+  const buildWP = (uc: number, vc: number) =>
+    new THREE.Vector3().addScaledVector(u, uc).addScaledVector(v, vc).addScaledVector(worldNormal, nComp);
+
+  const cornersWorld = [
+    buildWP(uMax, vMax), buildWP(uMin, vMax),
+    buildWP(uMin, vMin), buildWP(uMax, vMin),
+  ];
+  const cornersLocal = cornersWorld.map(c => c.clone().applyMatrix4(worldToLocal));
+  const centerLocal = new THREE.Vector3();
+  cornersLocal.forEach(c => centerLocal.add(c));
+  centerLocal.divideScalar(cornersLocal.length);
+
+  return {
+    ...vf,
+    normal: [localNormal.x, localNormal.y, localNormal.z],
+    center: [centerLocal.x, centerLocal.y, centerLocal.z],
+    vertices: cornersLocal.map(c => [c.x, c.y, c.z] as [number, number, number]),
+  };
+}
+
 function reraycastVirtualFace(
   vf: VirtualFace,
   shape: Shape,
@@ -458,6 +514,11 @@ function reraycastVirtualFace(
   shapeFaces: VirtualFace[]
 ): VirtualFace | null {
   if (!vf.raycastRecipe) return null;
+
+  // Curved faces use bounding-box projection, not ray-casting.
+  if (vf.raycastRecipe.isCurvedFace) {
+    return regenerateCurvedFaceVF(vf, shape, faces, faceGroups, localToWorld, worldToLocal);
+  }
 
   const matchedGroup = findMatchingFaceGroup(vf, faces, faceGroups, shape.geometry);
   if (!matchedGroup) return null;

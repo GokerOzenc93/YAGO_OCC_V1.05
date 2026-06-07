@@ -65,6 +65,7 @@ export interface VirtualFaceRaycastRecipe {
   normalizedClickUV?:[number,number];
   edgeAnchors?:EdgeAnchor[];
   normalizedHitDistances?:NormalizedHitDistances;
+  isCurvedFace?:boolean;
 }
 
 export interface VirtualFace {

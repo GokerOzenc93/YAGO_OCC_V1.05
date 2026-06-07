@@ -14,6 +14,7 @@ export interface CoplanarFaceGroup {
   faceIndices: number[];
   center: THREE.Vector3;
   totalArea: number;
+  isCurved?: boolean;
 }
 
 export function extractFacesFromGeometry(geometry: THREE.BufferGeometry): FaceData[] {
@@ -186,7 +187,8 @@ export function groupCoplanarFaces(
       normal: avgNormal,
       faceIndices: currentGroup,
       center: avgCenter,
-      totalArea
+      totalArea,
+      isCurved: startSurfaceType === 'curved',
     });
   }
 
