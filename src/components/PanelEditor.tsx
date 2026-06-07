@@ -586,7 +586,7 @@ function PanelPreview2D({ dims, shape, arrowRotated }: { dims: Dims; shape?: any
 export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorProps) {
   const { selectedShapeId, shapes, updateShape, addShape, showOutlines, setShowOutlines,
     selectedPanelRow, setSelectedPanelRow, panelSelectMode, setPanelSelectMode, raycastMode, setRaycastMode,
-    showVirtualFaces, setShowVirtualFaces, virtualFaces, updateVirtualFace, deleteVirtualFace, reorderVirtualFaces, pendingPanelCreation,
+    showVirtualFaces, setShowVirtualFaces, virtualFaces, updateVirtualFace, deleteVirtualFace, reorderVirtualFaces, reorderVirtualFaceGroup, pendingPanelCreation,
     faceExtrudeMode, setFaceExtrudeMode, faceExtrudeTargetPanelId,
     setFaceExtrudeTargetPanelId, faceExtrudeSelectedFace, setFaceExtrudeSelectedFace, setFaceExtrudeHoveredFace,
     faceExtrudeThickness, setFaceExtrudeThickness, faceExtrudeFixedMode, setFaceExtrudeFixedMode,
@@ -760,6 +760,21 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       </div>
     );
 
+    // Group VFs by face normal direction so same-face panels appear together.
+    const normalKey = (vf: typeof svf[0]) =>
+      vf.normal.map(n => (Math.round(n * 10) / 10).toFixed(1)).join(',');
+    // Build ordered groups preserving first-seen order of normals.
+    const groupOrder: string[] = [];
+    const groupMap = new Map<string, typeof svf>();
+    for (const vf of svf) {
+      const k = normalKey(vf);
+      if (!groupMap.has(k)) { groupMap.set(k, []); groupOrder.push(k); }
+      groupMap.get(k)!.push(vf);
+    }
+    const faceGroupsList = groupOrder.map(k => groupMap.get(k)!);
+    // Flat ordered list matching the grouped display order
+    const orderedVfs = faceGroupsList.flat();
+
     const createVP = async (_: string, vi: number) => {
       const vf = svf[vi]; if (!vf) return;
       try {
@@ -778,98 +793,195 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       updateVirtualFace(vfId, { hasPanel: false, panelRemovedByUser: true });
       if (selectedPanelRow === `vf-${vfId}`) setSelectedPanelRow(null);
     };
-    const onDrop = async (toIndex: number) => {
-      const from = dragIndex;
+
+    // Group-level drag: dragging any row in a group moves the whole group.
+    const onGroupDrop = async (draggedGroupKey: string, targetGroupKey: string) => {
       setDragIndex(null); setDropIndex(null);
-      if (from === null || from === toIndex) return;
-      reorderVirtualFaces(sid, from, toIndex);
+      if (draggedGroupKey === targetGroupKey) return;
+      const draggedGroup = groupMap.get(draggedGroupKey)!;
+      const targetGroup = groupMap.get(targetGroupKey)!;
+      // Insert dragged group before the target group
+      reorderVirtualFaceGroup(sid, draggedGroup.map(v => v.id), targetGroup[0].id);
+      const { rebuildPanelsForParent } = await import('./PanelRebuildService');
+      await rebuildPanelsForParent(sid);
+    };
+    const onGroupDropAtEnd = async (draggedGroupKey: string) => {
+      setDragIndex(null); setDropIndex(null);
+      const draggedGroup = groupMap.get(draggedGroupKey)!;
+      reorderVirtualFaceGroup(sid, draggedGroup.map(v => v.id), null);
       const { rebuildPanelsForParent } = await import('./PanelRebuildService');
       await rebuildPanelsForParent(sid);
     };
 
-    return svf.map((vf, vi) => {
-      const vp = findVPanel(shapes, sid, vf.id), ar = vp?.parameters?.arrowRotated||false, sel = selectedPanelRow === `vf-${vf.id}`;
-      const dims = vp?.geometry ? getDimsFromGeo(vp.geometry, ar) : null;
-      const rc = () => { setSelectedPanelRow(`vf-${vf.id}`, null, sid); };
-      const isRowDragging = dragIndex === vi;
-      const isDropTarget = dropIndex === vi && dragIndex !== null && dragIndex !== vi;
+    const elements: React.ReactNode[] = [];
+    let globalIdx = 0;
 
-      return (
-        <div
-          key={vf.id}
-          onDragOver={e => { if (dragIndex !== null) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (dropIndex !== vi) setDropIndex(vi); } }}
-          onDragLeave={() => { if (dropIndex === vi) setDropIndex(null); }}
-          onDrop={e => { e.preventDefault(); onDrop(vi); }}
-          onClick={e => { stop(e); rc(); }}
-          className={`
-            group relative flex items-center gap-2 px-2.5 py-1.5 rounded-lg cursor-pointer
-            transition-all duration-150 select-none
-            ${sel
-              ? 'bg-orange-50 ring-1 ring-orange-300 shadow-sm'
-              : 'hover:bg-stone-50 ring-1 ring-transparent hover:ring-stone-200'}
-            ${isRowDragging ? 'opacity-40' : ''}
-            ${isDropTarget ? 'ring-1 ring-blue-400 bg-blue-50' : ''}
-          `}
-        >
-          {/* Drag handle */}
-          <span
-            draggable
-            onDragStart={e => { stop(e); setDragIndex(vi); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(vi)); }}
-            onDragEnd={() => { setDragIndex(null); setDropIndex(null); }}
-            onClick={stop}
-            className="cursor-grab active:cursor-grabbing text-stone-300 hover:text-stone-400 shrink-0"
-          ><GripVertical size={15}/></span>
+    faceGroupsList.forEach((group, gi) => {
+      const groupKey = normalKey(group[0]);
+      const isGroupMulti = group.length > 1;
+      const isDraggingThisGroup = dragIndex !== null && group.some(vf => {
+        const idx = orderedVfs.findIndex(v => v.id === vf.id);
+        return idx === dragIndex;
+      });
+      const isDropTargetGroup = dropIndex !== null && (() => {
+        const firstIdx = orderedVfs.findIndex(v => v.id === group[0].id);
+        return dropIndex === firstIdx;
+      })();
 
-          {/* Index badge */}
-          <span className="shrink-0 w-7 h-6 flex items-center justify-center rounded-md text-sm font-bold font-mono bg-stone-100 text-stone-500">
-            {vi+1}
-          </span>
+      group.forEach((vf, subIdx) => {
+        const vi = svf.findIndex(v => v.id === vf.id);
+        const displayIdx = globalIdx + 1;
+        globalIdx++;
+        const orderedIdx = orderedVfs.findIndex(v => v.id === vf.id);
+        const vp = findVPanel(shapes, sid, vf.id), ar = vp?.parameters?.arrowRotated||false, sel = selectedPanelRow === `vf-${vf.id}`;
+        const dims = vp?.geometry ? getDimsFromGeo(vp.geometry, ar) : null;
+        const isFirst = subIdx === 0;
+        const isLast = subIdx === group.length - 1;
 
-          {/* Note input */}
-          <input
-            type="text"
-            value={vf.description||''}
-            onClick={stop}
-            onChange={e => updateVirtualFace(vf.id, { description: e.target.value })}
-            placeholder="note…"
-            style={{ width: '27mm' }}
-            className="px-2 py-1 text-sm bg-transparent border-b border-transparent hover:border-stone-300 focus:border-orange-400 rounded-none outline-none text-stone-700 placeholder:text-stone-300 transition-colors"
-          />
-
-          {/* Dims inline */}
-          {dims && (
-            <span className="flex items-center gap-0.5 text-xs font-mono shrink-0 leading-none tabular-nums" onClick={stop}>
-              <span className="text-stone-400">W</span><span className="text-stone-700 font-bold inline-block min-w-[32px] text-right">{dims.primary}</span>
-              <span className="text-stone-300 mx-0.5">·</span>
-              <span className="text-stone-400">H</span><span className="text-stone-700 font-bold inline-block min-w-[32px] text-right">{dims.secondary}</span>
-              <span className="text-stone-300 mx-0.5">·</span>
-              <span className="text-stone-400">T</span><span className="text-stone-700 font-bold inline-block min-w-[20px] text-right">{dims.thickness}</span>
-            </span>
-          )}
-
-          {/* Action buttons — always visible */}
-          <div className="ml-auto flex items-center gap-1 shrink-0" onClick={stop}>
-            <input type="checkbox" checked={vf.hasPanel} onClick={stop}
-              onChange={async () => { if (vf.hasPanel) removeVP(vf.id); else await createVP(vf.id, vi); }}
-              className="w-4 h-4 rounded text-green-500 focus:ring-green-400 cursor-pointer accent-green-500"
-              title={`Toggle panel ${vi+1}`}/>
-            <button disabled={!vf.hasPanel} onClick={e => { stop(e); toggleArrow(vp); }}
-              className={`p-1 rounded transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-blue-500' : 'text-stone-300 hover:text-stone-500'}`}
-              title="Rotate arrow"><RotateCw size={13}/></button>
-            <button disabled={!vf.hasPanel||!vp} onClick={async e => {
-              stop(e); if (!vp) return;
-              const { reshapePanelToParentFace } = await import('./PanelReshapeService');
-              await reshapePanelToParentFace(vp.id);
+        elements.push(
+          <div
+            key={vf.id}
+            onDragOver={e => {
+              if (dragIndex !== null) {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                const firstIdx = orderedVfs.findIndex(v => v.id === group[0].id);
+                if (dropIndex !== firstIdx) setDropIndex(firstIdx);
+              }
             }}
-              className={`p-1 rounded transition-colors ${!vf.hasPanel||!vp ? 'text-stone-200 cursor-not-allowed' : 'text-stone-300 hover:text-teal-600'}`}
-              title="Match parent face"><Shapes size={13}/></button>
-            <button onClick={e => { stop(e); if (vf.hasPanel) removeVP(vf.id); deleteVirtualFace(vf.id); }}
-              className="p-1 rounded text-stone-300 hover:text-red-400 transition-colors"
-              title="Delete face"><Trash2 size={13}/></button>
+            onDragLeave={e => {
+              const firstIdx = orderedVfs.findIndex(v => v.id === group[0].id);
+              if (dropIndex === firstIdx) setDropIndex(null);
+            }}
+            onDrop={e => {
+              e.preventDefault();
+              if (dragIndex === null) return;
+              const draggingVf = orderedVfs[dragIndex];
+              const draggingKey = normalKey(draggingVf);
+              if (isFirst) onGroupDrop(draggingKey, groupKey);
+            }}
+            onClick={e => { stop(e); setSelectedPanelRow(`vf-${vf.id}`, null, sid); }}
+            className={`
+              group relative flex items-center gap-2 px-2.5 py-1.5 cursor-pointer
+              transition-all duration-150 select-none
+              ${isGroupMulti && isFirst ? 'rounded-t-lg' : ''}
+              ${isGroupMulti && isLast ? 'rounded-b-lg' : ''}
+              ${!isGroupMulti ? 'rounded-lg' : ''}
+              ${sel
+                ? 'bg-orange-50 ring-1 ring-orange-300 shadow-sm'
+                : isGroupMulti
+                  ? 'hover:bg-sky-50/60 ring-1 ring-transparent hover:ring-sky-200/70'
+                  : 'hover:bg-stone-50 ring-1 ring-transparent hover:ring-stone-200'}
+              ${isDraggingThisGroup ? 'opacity-40' : ''}
+              ${isDropTargetGroup && isFirst ? 'ring-1 ring-blue-400 bg-blue-50' : ''}
+              ${isGroupMulti && !isFirst ? 'border-t border-sky-100/80' : ''}
+            `}
+          >
+            {/* Group connector line for multi-panel faces */}
+            {isGroupMulti && (
+              <div className={`absolute left-[18px] w-px bg-sky-200
+                ${isFirst ? 'top-1/2 bottom-0' : isLast ? 'top-0 bottom-1/2' : 'top-0 bottom-0'}
+              `} style={{ zIndex: 0 }} />
+            )}
+
+            {/* Drag handle — drags the whole face group */}
+            <span
+              draggable
+              onDragStart={e => {
+                stop(e);
+                setDragIndex(orderedIdx);
+                e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.setData('text/plain', groupKey);
+              }}
+              onDragEnd={() => { setDragIndex(null); setDropIndex(null); }}
+              onClick={stop}
+              className="cursor-grab active:cursor-grabbing text-stone-300 hover:text-stone-400 shrink-0 relative z-10"
+              title={isGroupMulti ? 'Drag to move entire face group' : 'Drag to reorder'}
+            ><GripVertical size={15}/></span>
+
+            {/* Index badge — dot connector for sub-rows */}
+            {isGroupMulti && !isFirst ? (
+              <span className="shrink-0 w-7 h-6 flex items-center justify-center relative z-10">
+                <span className="w-1.5 h-1.5 rounded-full bg-sky-300" />
+              </span>
+            ) : (
+              <span className="shrink-0 w-7 h-6 flex items-center justify-center rounded-md text-sm font-bold font-mono bg-stone-100 text-stone-500 relative z-10">
+                {displayIdx}
+              </span>
+            )}
+
+            {/* Note input */}
+            <input
+              type="text"
+              value={vf.description||''}
+              onClick={stop}
+              onChange={e => updateVirtualFace(vf.id, { description: e.target.value })}
+              placeholder="note…"
+              style={{ width: '27mm' }}
+              className="px-2 py-1 text-sm bg-transparent border-b border-transparent hover:border-stone-300 focus:border-orange-400 rounded-none outline-none text-stone-700 placeholder:text-stone-300 transition-colors"
+            />
+
+            {/* Dims inline */}
+            {dims && (
+              <span className="flex items-center gap-0.5 text-xs font-mono shrink-0 leading-none tabular-nums" onClick={stop}>
+                <span className="text-stone-400">W</span><span className="text-stone-700 font-bold inline-block min-w-[32px] text-right">{dims.primary}</span>
+                <span className="text-stone-300 mx-0.5">·</span>
+                <span className="text-stone-400">H</span><span className="text-stone-700 font-bold inline-block min-w-[32px] text-right">{dims.secondary}</span>
+                <span className="text-stone-300 mx-0.5">·</span>
+                <span className="text-stone-400">T</span><span className="text-stone-700 font-bold inline-block min-w-[20px] text-right">{dims.thickness}</span>
+              </span>
+            )}
+
+            {/* Action buttons */}
+            <div className="ml-auto flex items-center gap-1 shrink-0" onClick={stop}>
+              <input type="checkbox" checked={vf.hasPanel} onClick={stop}
+                onChange={async () => { if (vf.hasPanel) removeVP(vf.id); else await createVP(vf.id, vi); }}
+                className="w-4 h-4 rounded text-green-500 focus:ring-green-400 cursor-pointer accent-green-500"
+                title={`Toggle panel ${displayIdx}`}/>
+              <button disabled={!vf.hasPanel} onClick={e => { stop(e); toggleArrow(vp); }}
+                className={`p-1 rounded transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-blue-500' : 'text-stone-300 hover:text-stone-500'}`}
+                title="Rotate arrow"><RotateCw size={13}/></button>
+              <button disabled={!vf.hasPanel||!vp} onClick={async e => {
+                stop(e); if (!vp) return;
+                const { reshapePanelToParentFace } = await import('./PanelReshapeService');
+                await reshapePanelToParentFace(vp.id);
+              }}
+                className={`p-1 rounded transition-colors ${!vf.hasPanel||!vp ? 'text-stone-200 cursor-not-allowed' : 'text-stone-300 hover:text-teal-600'}`}
+                title="Match parent face"><Shapes size={13}/></button>
+              <button onClick={e => { stop(e); if (vf.hasPanel) removeVP(vf.id); deleteVirtualFace(vf.id); }}
+                className="p-1 rounded text-stone-300 hover:text-red-400 transition-colors"
+                title="Delete face"><Trash2 size={13}/></button>
+            </div>
           </div>
-        </div>
-      );
+        );
+      });
+
+      // Gap between groups (drop zone after each group)
+      if (gi < faceGroupsList.length - 1) {
+        elements.push(
+          <div key={`gap-${gi}`} className="h-1" />
+        );
+      }
     });
+
+    // Drop zone at the very end (to drop a group at the end of the list)
+    elements.push(
+      <div
+        key="drop-end"
+        className={`h-2 rounded transition-all ${dropIndex === -1 ? 'bg-blue-100 ring-1 ring-blue-300' : ''}`}
+        onDragOver={e => { if (dragIndex !== null) { e.preventDefault(); setDropIndex(-1); } }}
+        onDragLeave={() => { if (dropIndex === -1) setDropIndex(null); }}
+        onDrop={e => {
+          e.preventDefault();
+          if (dragIndex === null) return;
+          const draggingVf = orderedVfs[dragIndex];
+          const draggingKey = normalKey(draggingVf);
+          onGroupDropAtEnd(draggingKey);
+        }}
+      />
+    );
+
+    return elements;
   })() : null;
 
   /* ── Panel detail section (preview + extrude controls + steps) ─────── */
