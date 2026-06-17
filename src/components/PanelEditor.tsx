@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { X, GripVertical, RotateCw, Trash2, MoveVertical, Check, Pencil, Shapes, ChevronRight } from 'lucide-react';
+import { X, GripVertical, ArrowUp, Trash2, MoveVertical, Check, Pencil, Shapes, ChevronRight } from 'lucide-react';
 import { useAppStore } from '../store';
 import { extractFacesFromGeometry, groupCoplanarFaces, CoplanarFaceGroup } from './FaceEditor';
 import { findExistingStepForFace } from './FaceExtrudeService';
@@ -414,7 +414,7 @@ function PanelPreview2D({ shape, arrowRotated }: { dims: Dims; shape?: any; arro
 
     const padH = 1.12, padV = 1.12;
     const halfV = maxV * padV;
-    const dockRoom = halfV * 0.08;
+    const dockRoom = halfV * 0.42;
     const ratioTop = halfV, ratioBot = halfV + dockRoom;
     let vSpan = ratioTop + ratioBot;
     let halfH = (vSpan / 2) * aspect;
@@ -553,7 +553,6 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const [editingStepId, setEditingStepId] = useState<string | null>(null);
   const [editingStepValue, setEditingStepValue] = useState(0);
-  const [extrudeRaw, setExtrudeRaw] = useState<string | null>(null);
   const rowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const selectedShape = shapes.find(s => s.id === selectedShapeId);
 
@@ -614,8 +613,6 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     if (faceExtrudeMode && activePanelId && activePanelId !== faceExtrudeTargetPanelId)
       { setFaceExtrudeTargetPanelId(activePanelId); setFaceExtrudeSelectedFace(null); setFaceExtrudeHoveredFace(null); }
   }, [faceExtrudeMode, activePanelId, faceExtrudeTargetPanelId]);
-
-  useEffect(() => { setExtrudeRaw(null); }, [faceExtrudeSelectedFace, activePanelId]);
 
   useEffect(() => {
     if (faceExtrudeSelectedFace === null || !activePanelId) return;
@@ -766,101 +763,38 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     const elements: React.ReactNode[] = [];
     let globalIdx = 0;
 
-    faceGroupsList.forEach((group, gi) => {
+    faceGroupsList.forEach((group) => {
       const groupKey = normalKey(group[0]);
       const isGroupMulti = group.length > 1;
-      const isDraggingThisGroup = dragIndex !== null && group.some(vf => {
-        const idx = orderedVfs.findIndex(v => v.id === vf.id);
-        return idx === dragIndex;
-      });
-      const isDropTargetGroup = dropIndex !== null && (() => {
-        const firstIdx = orderedVfs.findIndex(v => v.id === group[0].id);
-        return dropIndex === firstIdx;
-      })();
+      const groupFirstIdx = orderedVfs.findIndex(v => v.id === group[0].id);
+      const isDraggingThisGroup = dragIndex !== null && group.some(vf => orderedVfs.findIndex(v => v.id === vf.id) === dragIndex);
+      const isDropTargetGroup = dropIndex !== null && dropIndex === groupFirstIdx;
+      const anySel = group.some(vf => selectedPanelRow === `vf-${vf.id}`);
 
-      group.forEach((vf, subIdx) => {
+      const innerRows = group.map((vf, subIdx) => {
         const vi = svf.findIndex(v => v.id === vf.id);
         const displayIdx = globalIdx + 1;
         globalIdx++;
-        const orderedIdx = orderedVfs.findIndex(v => v.id === vf.id);
-        const vp = findVPanel(shapes, sid, vf.id), ar = vp?.parameters?.arrowRotated||false, sel = selectedPanelRow === `vf-${vf.id}`;
+        const vp = findVPanel(shapes, sid, vf.id), ar = vp?.parameters?.arrowRotated || false, sel = selectedPanelRow === `vf-${vf.id}`;
         const dims = vp?.geometry ? getDimsFromGeo(vp.geometry, ar) : null;
-        const isFirst = subIdx === 0;
-        const isLast = subIdx === group.length - 1;
 
-        elements.push(
+        return (
           <div
             key={vf.id}
-            onDragOver={e => {
-              if (dragIndex !== null) {
-                e.preventDefault();
-                e.dataTransfer.dropEffect = 'move';
-                const firstIdx = orderedVfs.findIndex(v => v.id === group[0].id);
-                if (dropIndex !== firstIdx) setDropIndex(firstIdx);
-              }
-            }}
-            onDragLeave={e => {
-              const firstIdx = orderedVfs.findIndex(v => v.id === group[0].id);
-              if (dropIndex === firstIdx) setDropIndex(null);
-            }}
-            onDrop={e => {
-              e.preventDefault();
-              if (dragIndex === null) return;
-              const draggingVf = orderedVfs[dragIndex];
-              const draggingKey = normalKey(draggingVf);
-              if (isFirst) onGroupDrop(draggingKey, groupKey);
-            }}
             onClick={e => { stop(e); setSelectedPanelRow(`vf-${vf.id}`, null, sid); }}
-            className={`
-              group relative flex items-center gap-1 pl-2 pr-1 py-1 cursor-pointer
-              transition-all duration-150 select-none
-              ${isGroupMulti && isFirst ? 'rounded-t-lg' : ''}
-              ${isGroupMulti && isLast ? 'rounded-b-lg' : ''}
-              ${!isGroupMulti ? 'rounded-lg' : ''}
-              ${sel
-                ? 'bg-orange-50 ring-1 ring-orange-300 shadow-sm'
-                : isGroupMulti
-                  ? 'hover:bg-sky-50/60 ring-1 ring-transparent hover:ring-sky-200/70'
-                  : 'hover:bg-stone-50 ring-1 ring-transparent hover:ring-stone-200'}
-              ${isDraggingThisGroup ? 'opacity-40' : ''}
-              ${isDropTargetGroup && isFirst ? 'ring-1 ring-blue-400 bg-blue-50' : ''}
-              ${isGroupMulti && !isFirst ? 'border-t border-sky-100/80' : ''}
-            `}
+            className={`group/row relative flex items-center gap-1 pl-1.5 pr-1 py-px cursor-pointer transition-colors
+              ${sel ? 'bg-orange-50' : 'hover:bg-orange-50/50'}`}
           >
-            {isGroupMulti && (
-              <div className={`absolute left-[18px] w-px bg-sky-200
-                ${isFirst ? 'top-1/2 bottom-0' : isLast ? 'top-0 bottom-1/2' : 'top-0 bottom-0'}
-              `} style={{ zIndex: 0 }} />
-            )}
-
-            <span
-              draggable
-              onDragStart={e => {
-                stop(e);
-                setDragIndex(orderedIdx);
-                e.dataTransfer.effectAllowed = 'move';
-                e.dataTransfer.setData('text/plain', groupKey);
-              }}
-              onDragEnd={() => { setDragIndex(null); setDropIndex(null); }}
-              onClick={stop}
-              className="cursor-grab active:cursor-grabbing text-stone-300 hover:text-stone-500 shrink-0 relative z-10 flex items-center justify-center w-4"
-              title={isGroupMulti ? 'Drag to move entire face group' : 'Drag to reorder'}
-            ><GripVertical size={14}/></span>
-
-            {isGroupMulti && !isFirst ? (
-              <span className="shrink-0 w-5 h-5 flex items-center justify-center relative z-10">
-                <span className="w-1.5 h-1.5 rounded-full bg-sky-300" />
-              </span>
-            ) : (
-              <span className={`shrink-0 inline-flex items-center justify-center min-w-[20px] h-5 px-1 rounded-full text-[11px] font-semibold font-mono tabular-nums relative z-10 transition-colors
-                ${sel ? 'bg-orange-500 text-white shadow-sm' : 'bg-stone-100 text-stone-500 ring-1 ring-stone-200/70'}`}>
-                {displayIdx}
-              </span>
-            )}
+            <span className={`shrink-0 inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full text-[11px] font-semibold tabular-nums transition-all
+              ${sel
+                ? 'bg-gradient-to-b from-orange-400 to-orange-500 text-white shadow-sm ring-1 ring-orange-500/30'
+                : 'bg-gradient-to-b from-white to-stone-100 text-stone-600 ring-1 ring-stone-200 shadow-sm group-hover/row:ring-orange-200 group-hover/row:text-orange-600'}`}>
+              {displayIdx}
+            </span>
 
             <input
               type="text"
-              value={vf.description||''}
+              value={vf.description || ''}
               onClick={stop}
               onChange={e => updateVirtualFace(vf.id, { description: e.target.value })}
               placeholder="not…"
@@ -868,8 +802,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
             />
 
             {dims && (
-              <span onClick={stop}
-                className="shrink-0 inline-flex items-center text-xs leading-none tabular-nums px-0.5">
+              <span onClick={stop} className="shrink-0 inline-flex items-center text-xs leading-none tabular-nums px-0.5">
                 <span className="text-stone-400 font-medium">W</span><span className="text-stone-700 font-semibold ml-1">{dims.primary}</span>
                 <span className="text-stone-300 mx-1.5">·</span>
                 <span className="text-stone-400 font-medium">H</span><span className="text-stone-700 font-semibold ml-1">{dims.secondary}</span>
@@ -889,14 +822,14 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
 
               <button disabled={!vf.hasPanel} onClick={e => { stop(e); toggleArrow(vp); }}
                 className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-orange-500 hover:bg-stone-100' : 'text-stone-400 hover:bg-stone-100 hover:text-stone-600'}`}
-                title="Oku döndür"><RotateCw size={13}/></button>
+                title="Ok yönünü değiştir"><ArrowUp size={14} className={`transition-transform duration-200 ${ar ? '' : 'rotate-90'}`}/></button>
 
-              <button disabled={!vf.hasPanel||!vp} onClick={async e => {
+              <button disabled={!vf.hasPanel || !vp} onClick={async e => {
                 stop(e); if (!vp) return;
                 const { reshapePanelToParentFace } = await import('./PanelReshapeService');
                 await reshapePanelToParentFace(vp.id);
               }}
-                className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel||!vp ? 'text-stone-200 cursor-not-allowed' : 'text-stone-400 hover:bg-stone-100 hover:text-stone-600'}`}
+                className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel || !vp ? 'text-stone-200 cursor-not-allowed' : 'text-stone-400 hover:bg-stone-100 hover:text-stone-600'}`}
                 title="Ana yüze eşitle"><Shapes size={13}/></button>
 
               <button onClick={e => { stop(e); if (vf.hasPanel) removeVP(vf.id); deleteVirtualFace(vf.id); }}
@@ -907,9 +840,50 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         );
       });
 
-      if (gi < faceGroupsList.length - 1) {
-        elements.push(<div key={`gap-${gi}`} className="h-px" />);
-      }
+      elements.push(
+        <div
+          key={groupKey}
+          onDragOver={e => {
+            if (dragIndex !== null) {
+              e.preventDefault();
+              e.dataTransfer.dropEffect = 'move';
+              if (dropIndex !== groupFirstIdx) setDropIndex(groupFirstIdx);
+            }
+          }}
+          onDragLeave={() => { if (dropIndex === groupFirstIdx) setDropIndex(null); }}
+          onDrop={e => {
+            e.preventDefault();
+            if (dragIndex === null) return;
+            onGroupDrop(normalKey(orderedVfs[dragIndex]), groupKey);
+          }}
+          className={`relative flex items-stretch rounded-lg overflow-hidden transition-all
+            ${anySel
+              ? 'ring-1 ring-orange-300 shadow-sm'
+              : isGroupMulti
+                ? 'ring-1 ring-stone-200 bg-white shadow-sm hover:ring-stone-300'
+                : 'ring-1 ring-transparent hover:ring-orange-200/70'}
+            ${isDraggingThisGroup ? 'opacity-40' : ''}
+            ${isDropTargetGroup ? '!ring-blue-400 bg-blue-50' : ''}`}
+        >
+          <span
+            draggable
+            onDragStart={e => {
+              stop(e);
+              setDragIndex(groupFirstIdx);
+              e.dataTransfer.effectAllowed = 'move';
+              e.dataTransfer.setData('text/plain', groupKey);
+            }}
+            onDragEnd={() => { setDragIndex(null); setDropIndex(null); }}
+            onClick={stop}
+            className={`cursor-grab active:cursor-grabbing shrink-0 w-6 self-stretch flex items-center justify-center text-stone-300 hover:text-stone-600 hover:bg-stone-100 active:bg-stone-200 transition-colors ${isGroupMulti ? 'border-r border-stone-200/60' : ''}`}
+            title={isGroupMulti ? 'Sürükleyerek tüm grubu taşı' : 'Sürükleyerek sırala'}
+          ><GripVertical size={15}/></span>
+
+          <div className="flex-1 min-w-0 flex flex-col">
+            {innerRows}
+          </div>
+        </div>
+      );
     });
 
     elements.push(
@@ -938,12 +912,10 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     color, outline: 'none', padding: 0, transition: 'background 0.12s',
   });
 
-  const previewFooter = (() => {
+  const extrudeDock = (() => {
     if (!activePanelId || !activePanel) return null;
     const isExt = faceExtrudeMode && !!activePanelId;
     const hf = faceExtrudeSelectedFace !== null;
-
-    if (!isExt && activeSteps.length === 0) return null;
 
     const seg = (f: boolean): React.CSSProperties => ({
       flex: 1, minWidth: 44, height: 24, fontSize: 10, fontWeight: 700, letterSpacing: '0.02em',
@@ -972,36 +944,42 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       setFaceExtrudeMode(false);
     };
 
-    const milledRow: React.CSSProperties = { height: 1, background: 'linear-gradient(to right,transparent,rgba(60,50,40,0.13) 14%,rgba(60,50,40,0.13) 86%,transparent)' };
-
     return (
       <div style={{
-        margin: '8px 8px 8px', borderRadius: 12, overflow: 'hidden',
-        background: 'linear-gradient(180deg,#faf8f4 0%,#efeae1 100%)',
-        border: '1px solid rgba(60,50,40,0.13)',
-        boxShadow: '0 1px 2px rgba(40,30,20,0.05),0 10px 22px -14px rgba(40,30,20,0.30),inset 0 1px 0 rgba(255,255,255,0.95),inset 0 -1px 0 rgba(140,120,100,0.09)',
+        position: 'absolute', left: 8, right: 8, bottom: 8, zIndex: 5, borderRadius: 11,
+        background: 'linear-gradient(180deg,rgba(250,248,244,0.82),rgba(240,236,228,0.88))',
+        backdropFilter: 'blur(16px) saturate(160%)', WebkitBackdropFilter: 'blur(16px) saturate(160%)',
+        border: '1px solid rgba(60,50,40,0.12)',
+        boxShadow: '0 8px 22px -10px rgba(40,30,20,0.28),0 0 0 0.5px rgba(60,50,40,0.05),inset 0 1px 0 rgba(255,255,255,0.92)',
+        display: 'flex', flexDirection: 'column', overflow: 'hidden',
         fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif",
       }}>
-        {isExt && (
-          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, rowGap: 8, padding: '8px 10px' }}>
-          {hf ? (
+        <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, rowGap: 6, padding: '7px 9px' }}>
+          <button
+            onClick={e => { stop(e); faceExtrudeMode ? setFaceExtrudeMode(false) : (setFaceExtrudeTargetPanelId(activePanelId), setFaceExtrudeMode(true)); }}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 4, height: 24, padding: '0 10px', borderRadius: 6,
+              fontSize: 10.5, fontWeight: 700, cursor: 'pointer', border: 'none', outline: 'none', flexShrink: 0,
+              background: isExt ? 'linear-gradient(180deg,#f97316,#ea580c)' : 'linear-gradient(180deg,#fff,#f1ede6)',
+              color: isExt ? '#fff' : '#57534e',
+              boxShadow: isExt
+                ? '0 1px 2px rgba(234,88,12,0.4),inset 0 1px 0 rgba(255,255,255,0.25)'
+                : '0 1px 2px rgba(40,30,20,0.08),0 0 0 0.5px rgba(60,50,40,0.12),inset 0 1px 0 rgba(255,255,255,0.9)',
+              transition: 'all 0.15s',
+            }}
+          >
+            <MoveVertical size={10} />{isExt ? 'Active' : 'Enable'}
+          </button>
+
+          {isExt && (hf ? (
             <>
               <input
-                type="text"
-                value={extrudeRaw ?? String(faceExtrudeThickness)}
-                onFocus={() => setExtrudeRaw(String(faceExtrudeThickness))}
-                onBlur={() => { const n = Number(extrudeRaw); setFaceExtrudeThickness(Number.isFinite(n) ? n : 0); setExtrudeRaw(null); }}
-                onChange={e => {
-                  const raw = e.target.value;
-                  if (!/^-?\d*$/.test(raw)) return;
-                  setExtrudeRaw(raw);
-                  if (raw !== '' && raw !== '-') { const n = Number(raw); if (Number.isFinite(n)) setFaceExtrudeThickness(n); }
-                }}
+                type="text" inputMode="numeric" value={faceExtrudeThickness}
+                onChange={e => setFaceExtrudeThickness(Number(e.target.value) || 0)}
                 style={{
-                  flex: 1, minWidth: 96, height: 26, textAlign: 'left', paddingLeft: 10, paddingRight: 8,
-                  fontFamily: 'monospace', fontSize: 12.5, fontWeight: 600,
+                  width: 52, height: 26, textAlign: 'center', fontFamily: 'monospace', fontSize: 12, fontWeight: 600,
                   color: '#1c1917', background: 'linear-gradient(180deg,#fff,#fbfaf6)', border: '1px solid rgba(60,50,40,0.16)',
-                  borderRadius: 6, outline: 'none', boxShadow: 'inset 0 1px 2px rgba(40,30,20,0.05)',
+                  borderRadius: 6, outline: 'none', boxShadow: 'inset 0 1px 2px rgba(40,30,20,0.05)', flexShrink: 0,
                 }}
               />
               <div style={{ display: 'flex', borderRadius: 6, overflow: 'hidden', border: '1px solid rgba(60,50,40,0.16)', flexShrink: 0 }}>
@@ -1009,21 +987,13 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                   <button key={String(f)} onClick={() => setFaceExtrudeFixedMode(f)} style={seg(f)}>{f ? 'Fixed' : 'Dyn'}</button>
                 ))}
               </div>
-              <button onClick={onApply} title="Uygula" style={{
-                width: 28, height: 26, borderRadius: 6, border: 'none', cursor: 'pointer', outline: 'none', flexShrink: 0,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              <button onClick={onApply} style={{
+                height: 26, padding: '0 12px', borderRadius: 6, border: 'none', cursor: 'pointer', outline: 'none', flexShrink: 0,
+                display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, fontWeight: 700, letterSpacing: '0.01em',
                 background: 'linear-gradient(180deg,#f97316,#ea580c)', color: '#fff',
                 boxShadow: '0 2px 6px -1px rgba(234,88,12,0.42),inset 0 1px 0 rgba(255,255,255,0.28)',
               }}>
-                <Check size={14} />
-              </button>
-              <button onClick={e => { stop(e); setExtrudeRaw(null); setFaceExtrudeSelectedFace(null); setFaceExtrudeMode(false); }} title="Çık" style={{
-                width: 28, height: 26, borderRadius: 6, border: '1px solid rgba(60,50,40,0.16)', cursor: 'pointer', outline: 'none', flexShrink: 0,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                background: 'linear-gradient(180deg,#fff,#f1ede6)', color: '#78716c',
-                boxShadow: '0 1px 2px rgba(40,30,20,0.08),inset 0 1px 0 rgba(255,255,255,0.9)',
-              }}>
-                <X size={14} />
+                <Check size={12} /> Uygula
               </button>
             </>
           ) : (
@@ -1034,14 +1004,11 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
               <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#ea580c' }} />
               <span style={{ fontSize: 10.5, fontWeight: 500, color: '#9a3412' }}>3D görünümde yüzey seç</span>
             </div>
-          )}
-          </div>
-        )}
-
-        {isExt && activeSteps.length > 0 && <div style={milledRow} />}
+          ))}
+        </div>
 
         {activeSteps.length > 0 && (
-          <div style={{ padding: '6px 10px', display: 'flex', alignItems: 'center', gap: 6, overflowX: 'auto' }}>
+          <div style={{ borderTop: '1px solid rgba(60,50,40,0.08)', padding: '6px 9px', display: 'flex', alignItems: 'center', gap: 6, overflowX: 'auto' }}>
             <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.07em', textTransform: 'uppercase', color: '#a8a29e', flexShrink: 0 }}>Adımlar</span>
             {activeSteps.map((s: any) => (
               editingStepId === s.id ? (
@@ -1074,25 +1041,18 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     );
   })();
 
-  const chipDir = !!activePanel?.parameters?.arrowRotated;
-  const previewInfoChip = (activePanel && activeDims) ? (
+  // Thickness shown as a minimal "T" chip in the bottom-left — stays put while orbiting.
+  const chipBottom = activeSteps.length > 0 ? 84 : 52;
+  const thicknessChip = activeDims ? (
     <div style={{
-      position: 'absolute', left: 10, bottom: 10, zIndex: 6,
-      display: 'inline-flex', alignItems: 'center', gap: 8, padding: '4px 11px 4px 7px', borderRadius: 9,
-      background: 'linear-gradient(180deg,rgba(252,250,246,0.92),rgba(238,233,225,0.92))',
-      backdropFilter: 'blur(12px) saturate(150%)', WebkitBackdropFilter: 'blur(12px) saturate(150%)',
-      border: '1px solid rgba(60,50,40,0.14)',
-      boxShadow: '0 4px 12px -5px rgba(40,30,20,0.28),0 0 0 0.5px rgba(60,50,40,0.05),inset 0 1px 0 rgba(255,255,255,0.92),inset 0 -1px 0 rgba(140,120,100,0.10)',
+      position: 'absolute', left: 10, bottom: chipBottom, zIndex: 6, display: 'inline-flex', alignItems: 'center', gap: 5,
+      padding: '4px 9px', borderRadius: 8,
+      background: 'rgba(250,248,244,0.9)', backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)',
+      border: '1px solid rgba(60,50,40,0.12)',
+      boxShadow: '0 2px 8px -3px rgba(40,30,20,0.2),inset 0 1px 0 rgba(255,255,255,0.9)',
       fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif",
     }}>
-      <svg width="17" height="17" viewBox="0 0 28 28" style={{ flexShrink: 0, transform: chipDir ? 'none' : 'rotate(90deg)', transition: 'transform 0.25s ease' }}>
-        <circle cx="14" cy="14" r="13" fill="rgba(68,64,60,0.92)" />
-        <circle cx="14" cy="14" r="13" fill="none" stroke="rgba(255,255,255,0.12)" strokeWidth="0.75" />
-        <line x1="14" y1="20" x2="14" y2="9" stroke="#f5f1ea" strokeWidth="2" strokeLinecap="round" />
-        <polygon points="14,5 10,11 18,11" fill="#f5f1ea" />
-      </svg>
-      <div style={{ width: 1, height: 13, background: 'linear-gradient(to bottom,transparent,rgba(60,50,40,0.22),transparent)' }} />
-      <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '0.06em', color: '#8c857e' }}>T</span>
+      <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', color: '#8c857e' }}>T</span>
       <span style={{ fontFamily: 'monospace', fontSize: 12.5, fontWeight: 700, color: '#1c1917' }}>{activeDims.thickness}</span>
     </div>
   ) : null;
@@ -1135,16 +1095,9 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
           </span>
         )}
         <div className="flex items-center gap-0.5 shrink-0" onClick={stop}>
-          <button disabled={!vf.hasPanel || !vp} onClick={e => {
-            stop(e); if (!vp) return;
-            if (faceExtrudeMode) { setFaceExtrudeMode(false); }
-            else { setFaceExtrudeTargetPanelId(vp.id); setFaceExtrudeMode(true); }
-          }}
-            className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel || !vp ? 'text-stone-200 cursor-not-allowed' : faceExtrudeMode ? 'text-orange-500 bg-orange-100' : 'text-stone-400 hover:bg-orange-100/60 hover:text-stone-600'}`}
-            title={faceExtrudeMode ? 'Extrude modunu kapat' : 'Paneli extrude et'}><Pencil size={13}/></button>
           <button disabled={!vf.hasPanel} onClick={e => { stop(e); toggleArrow(vp); }}
             className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-orange-500 hover:bg-orange-100' : 'text-stone-400 hover:bg-orange-100/60 hover:text-stone-600'}`}
-            title="Oku döndür"><RotateCw size={13}/></button>
+            title="Ok yönünü değiştir"><ArrowUp size={14} className={`transition-transform duration-200 ${ar ? '' : 'rotate-90'}`}/></button>
           <button disabled={!vf.hasPanel || !vp} onClick={async e => {
             stop(e); if (!vp) return;
             const { reshapePanelToParentFace } = await import('./PanelReshapeService');
@@ -1176,7 +1129,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         </div>
       )}
 
-      <div className="flex-1 mx-2 rounded-xl bg-gradient-to-b from-[#f6f2ec] to-[#e7e1d6] border border-stone-200/80 overflow-hidden relative" style={{ minHeight: 300 }}>
+      <div className="flex-1 mx-2 mb-2 rounded-xl bg-gradient-to-b from-[#f6f2ec] to-[#e7e1d6] border border-stone-200/80 overflow-hidden relative" style={{ minHeight: 380 }}>
         {activeDims && activePanel
           ? <PanelPreview2D key={activePanel.id} dims={activeDims} shape={activePanel} arrowRotated={!!activePanel.parameters?.arrowRotated}/>
           : (
@@ -1185,10 +1138,9 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
             </div>
           )
         }
-        {previewInfoChip}
+        {thicknessChip}
+        {extrudeDock}
       </div>
-
-      {previewFooter}
     </div>
   ) : null;
 
@@ -1230,7 +1182,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         </div>
       ) : (
         <div style={{ maxHeight: 'calc(100vh - 200px)', overflowY: 'auto' }}>
-          <div className="p-2 space-y-0.5">{faceListSection}</div>
+          <div className="p-2 space-y-px">{faceListSection}</div>
         </div>
       )}
     </div>
