@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { X, GripVertical, ArrowUp, Trash2, MoveVertical, Check, Pencil, Shapes, ChevronRight } from 'lucide-react';
+import { X, GripVertical, ArrowUp, RotateCw, Move, Trash2, MoveVertical, Check, Pencil, Shapes, ChevronRight } from 'lucide-react';
 import { useAppStore } from '../store';
 import { extractFacesFromGeometry, groupCoplanarFaces, CoplanarFaceGroup } from './FaceEditor';
 import { findExistingStepForFace } from './FaceExtrudeService';
@@ -350,11 +350,12 @@ function PanelPreview2D({ shape, arrowRotated }: { dims: Dims; shape?: any; arro
     const dims3 = [sz.x, sz.y, sz.z];
     const minIdx = dims3.indexOf(Math.min(...dims3)); // thickness axis
 
-    // Consistent frame: width = larger planar extent, height = smaller, n = w×h.
-    const planar = [0, 1, 2].filter(i => i !== minIdx);
-    const e0 = sz.getComponent(planar[0]), e1 = sz.getComponent(planar[1]);
-    let wIdx = e0 >= e1 ? planar[0] : planar[1];
-    let hIdx = e0 >= e1 ? planar[1] : planar[0];
+    // Stable frame: width/height are tied to the planar AXES (low index = width),
+    // matching getDimsFromGeo — so an extrude that changes which side is larger
+    // never auto-rotates the preview. Orientation flips only via the arrow toggle.
+    const planar = [0, 1, 2].filter(i => i !== minIdx).sort((a, b) => a - b);
+    let wIdx = planar[0];
+    let hIdx = planar[1];
     if (arrowRotated) { const t = wIdx; wIdx = hIdx; hIdx = t; }
     const wDir = new THREE.Vector3(); wDir.setComponent(wIdx, 1);
     const hDir = new THREE.Vector3(); hDir.setComponent(hIdx, 1);
@@ -782,13 +783,15 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
           <div
             key={vf.id}
             onClick={e => { stop(e); setSelectedPanelRow(`vf-${vf.id}`, null, sid); }}
-            className={`group/row relative flex items-center gap-1 pl-1.5 pr-1 py-px cursor-pointer transition-colors
-              ${sel ? 'bg-orange-50' : 'hover:bg-orange-50/50'}`}
+            className={`group/row relative flex items-center gap-1.5 pl-2.5 pr-1 py-px cursor-pointer transition-colors duration-150
+              ${sel ? 'bg-[#fff6ec]' : 'hover:bg-[#faf6ef]'}`}
           >
+            {sel && <span className="absolute left-0 top-0 bottom-0 w-[2.5px] rounded-r-sm bg-gradient-to-b from-orange-400 to-orange-500" />}
+
             <span className={`shrink-0 inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full text-[11px] font-semibold tabular-nums transition-all
               ${sel
-                ? 'bg-gradient-to-b from-orange-400 to-orange-500 text-white shadow-sm ring-1 ring-orange-500/30'
-                : 'bg-gradient-to-b from-white to-stone-100 text-stone-600 ring-1 ring-stone-200 shadow-sm group-hover/row:ring-orange-200 group-hover/row:text-orange-600'}`}>
+                ? 'bg-gradient-to-b from-orange-400 to-orange-500 text-white ring-1 ring-orange-500/40 shadow-[0_1px_3px_rgba(234,88,12,0.35)]'
+                : 'bg-gradient-to-b from-white to-[#efe9df] text-stone-600 ring-1 ring-[#e4ded4] shadow-[0_1px_1.5px_rgba(68,64,60,0.08),inset_0_1px_0_rgba(255,255,255,0.9)] group-hover/row:ring-[#e7b487] group-hover/row:text-orange-600'}`}>
               {displayIdx}
             </span>
 
@@ -798,7 +801,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
               onClick={stop}
               onChange={e => updateVirtualFace(vf.id, { description: e.target.value })}
               placeholder="not…"
-              className="flex-1 min-w-0 px-1.5 py-1 text-xs bg-transparent border-b border-transparent hover:border-stone-300 focus:border-orange-400 rounded-none outline-none text-stone-700 placeholder:text-stone-300 transition-colors"
+              className="flex-1 min-w-0 px-1 py-1 text-xs bg-transparent border-b border-transparent hover:border-[#dcd5ca] focus:border-orange-400 rounded-none outline-none text-stone-700 placeholder:text-stone-300 transition-colors"
             />
 
             {dims && (
@@ -813,7 +816,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
 
             <div className="flex items-center gap-0.5 shrink-0" onClick={stop}>
               <button onClick={async () => { if (vf.hasPanel) removeVP(vf.id); else await createVP(vf.id, vi); }}
-                className="w-[22px] h-[22px] rounded-md flex items-center justify-center text-stone-400 hover:bg-stone-100 transition-colors"
+                className="w-[22px] h-[22px] rounded-md flex items-center justify-center text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700 transition-colors"
                 title={vf.hasPanel ? 'Paneli kaldır' : 'Panel oluştur'}>
                 <span className={`w-3.5 h-3.5 rounded-[3px] border flex items-center justify-center transition-colors ${vf.hasPanel ? 'bg-orange-500 border-orange-500' : 'border-stone-300'}`}>
                   {vf.hasPanel && <Check size={10} strokeWidth={3} className="text-white"/>}
@@ -821,7 +824,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
               </button>
 
               <button disabled={!vf.hasPanel} onClick={e => { stop(e); toggleArrow(vp); }}
-                className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-orange-500 hover:bg-stone-100' : 'text-stone-400 hover:bg-stone-100 hover:text-stone-600'}`}
+                className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-orange-500 hover:bg-[#f1ece4]' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
                 title="Ok yönünü değiştir"><ArrowUp size={14} className={`transition-transform duration-200 ${ar ? '' : 'rotate-90'}`}/></button>
 
               <button disabled={!vf.hasPanel || !vp} onClick={async e => {
@@ -829,7 +832,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                 const { reshapePanelToParentFace } = await import('./PanelReshapeService');
                 await reshapePanelToParentFace(vp.id);
               }}
-                className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel || !vp ? 'text-stone-200 cursor-not-allowed' : 'text-stone-400 hover:bg-stone-100 hover:text-stone-600'}`}
+                className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel || !vp ? 'text-stone-200 cursor-not-allowed' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
                 title="Ana yüze eşitle"><Shapes size={13}/></button>
 
               <button onClick={e => { stop(e); if (vf.hasPanel) removeVP(vf.id); deleteVirtualFace(vf.id); }}
@@ -856,13 +859,11 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
             if (dragIndex === null) return;
             onGroupDrop(normalKey(orderedVfs[dragIndex]), groupKey);
           }}
-          className={`relative flex items-stretch rounded-lg overflow-hidden transition-all
+          className={`relative flex items-stretch rounded-lg overflow-hidden transition-all duration-150
             ${anySel
-              ? 'ring-1 ring-orange-300 shadow-sm'
-              : isGroupMulti
-                ? 'ring-1 ring-stone-200 bg-white shadow-sm hover:ring-stone-300'
-                : 'ring-1 ring-transparent hover:ring-orange-200/70'}
-            ${isDraggingThisGroup ? 'opacity-40' : ''}
+              ? 'bg-white ring-1 ring-[#f3c89e] shadow-[0_2px_10px_-3px_rgba(234,88,12,0.20),0_1px_2px_rgba(68,64,60,0.06)]'
+              : 'bg-white ring-1 ring-[#e7e2da] shadow-[0_1px_2px_rgba(68,64,60,0.05),0_1px_1px_rgba(68,64,60,0.03)] hover:ring-[#dbd4c9] hover:shadow-[0_3px_10px_-3px_rgba(68,64,60,0.12),0_1px_2px_rgba(68,64,60,0.05)]'}
+            ${isDraggingThisGroup ? 'opacity-40 scale-[0.99]' : ''}
             ${isDropTargetGroup ? '!ring-blue-400 bg-blue-50' : ''}`}
         >
           <span
@@ -875,7 +876,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
             }}
             onDragEnd={() => { setDragIndex(null); setDropIndex(null); }}
             onClick={stop}
-            className={`cursor-grab active:cursor-grabbing shrink-0 w-6 self-stretch flex items-center justify-center text-stone-300 hover:text-stone-600 hover:bg-stone-100 active:bg-stone-200 transition-colors ${isGroupMulti ? 'border-r border-stone-200/60' : ''}`}
+            className="cursor-grab active:cursor-grabbing shrink-0 w-6 self-stretch flex items-center justify-center text-stone-300/90 hover:text-stone-600 bg-gradient-to-b from-[#fbf9f5] to-[#f4efe7] hover:from-[#f4efe7] hover:to-[#ebe4d9] active:to-[#e3dbce] border-r border-[#ece6dc] transition-colors"
             title={isGroupMulti ? 'Sürükleyerek tüm grubu taşı' : 'Sürükleyerek sırala'}
           ><GripVertical size={15}/></span>
 
@@ -1072,6 +1073,13 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     const vp = findVPanel(shapes, sid, vf.id);
     const ar = vp?.parameters?.arrowRotated || false;
     const dims = vp?.geometry ? getDimsFromGeo(vp.geometry, ar) : null;
+    const isExtrudingThis = faceExtrudeMode && faceExtrudeTargetPanelId === vp?.id;
+    const enterTransform = (mode: 'translate' | 'rotate') => {
+      if (!vp) return;
+      const st: any = useAppStore.getState();
+      st.setSelectedShapeId?.(vp.id); st.setSelectedShape?.(vp.id);
+      st.setTransformMode?.(mode); st.setGizmoMode?.(mode);
+    };
     return (
       <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-orange-50 ring-1 ring-orange-300 shadow-sm select-none">
         <span className="shrink-0 inline-flex items-center justify-center min-w-[20px] h-5 px-1 rounded-full text-[11px] font-semibold font-mono tabular-nums bg-orange-500 text-white shadow-sm">
@@ -1083,7 +1091,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
           onClick={stop}
           onChange={e => updateVirtualFace(vf.id, { description: e.target.value })}
           placeholder="not…"
-          className="flex-1 min-w-0 px-1.5 py-1 text-xs bg-transparent border-b border-transparent hover:border-stone-300 focus:border-orange-400 rounded-none outline-none text-stone-700 placeholder:text-stone-300 transition-colors"
+          className="flex-1 min-w-0 px-1 py-1 text-xs bg-transparent border-b border-transparent hover:border-[#dcd5ca] focus:border-orange-400 rounded-none outline-none text-stone-700 placeholder:text-stone-300 transition-colors"
         />
         {dims && (
           <span className="shrink-0 inline-flex items-center text-xs leading-none tabular-nums px-0.5">
@@ -1095,6 +1103,22 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
           </span>
         )}
         <div className="flex items-center gap-0.5 shrink-0" onClick={stop}>
+          <button disabled={!vf.hasPanel} onClick={e => { stop(e); enterTransform('translate'); }}
+            className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : 'text-stone-400 hover:bg-orange-100/60 hover:text-stone-600'}`}
+            title="Taşı (move)"><Move size={13}/></button>
+
+          <button disabled={!vf.hasPanel} onClick={e => { stop(e); enterTransform('rotate'); }}
+            className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : 'text-stone-400 hover:bg-orange-100/60 hover:text-stone-600'}`}
+            title="Döndür (rotation)"><RotateCw size={13}/></button>
+
+          <button disabled={!vf.hasPanel} onClick={e => {
+            stop(e); if (!vp) return;
+            if (isExtrudingThis) setFaceExtrudeMode(false);
+            else { setFaceExtrudeTargetPanelId(vp.id); setFaceExtrudeMode(true); }
+          }}
+            className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : isExtrudingThis ? 'bg-orange-500 text-white shadow-[0_1px_3px_rgba(234,88,12,0.35)]' : 'text-stone-400 hover:bg-orange-100/60 hover:text-stone-600'}`}
+            title="Yüz çıkıntısı (extrude)"><MoveVertical size={13}/></button>
+
           <button disabled={!vf.hasPanel} onClick={e => { stop(e); toggleArrow(vp); }}
             className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-orange-500 hover:bg-orange-100' : 'text-stone-400 hover:bg-orange-100/60 hover:text-stone-600'}`}
             title="Ok yönünü değiştir"><ArrowUp size={14} className={`transition-transform duration-200 ${ar ? '' : 'rotate-90'}`}/></button>
@@ -1152,7 +1176,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       </div>
       {selectedShape ? (
         <div className="flex-1 min-h-0 overflow-y-auto">
-          <div className="px-1.5 pt-1.5 pb-1.5 space-y-px">
+          <div className="px-2 pt-2 pb-2 space-y-1">
             {faceListSection}
           </div>
         </div>
@@ -1182,7 +1206,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         </div>
       ) : (
         <div style={{ maxHeight: 'calc(100vh - 200px)', overflowY: 'auto' }}>
-          <div className="p-2 space-y-px">{faceListSection}</div>
+          <div className="p-2 space-y-1">{faceListSection}</div>
         </div>
       )}
     </div>
