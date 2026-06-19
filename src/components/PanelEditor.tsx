@@ -824,7 +824,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
               </button>
 
               <button disabled={!vf.hasPanel} onClick={e => { stop(e); toggleArrow(vp); }}
-                className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-orange-500 hover:bg-[#f1ece4]' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
+                className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-stone-700 bg-[#f1ece4]' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
                 title="Ok yönünü değiştir"><ArrowUp size={14} className={`transition-transform duration-200 ${ar ? '' : 'rotate-90'}`}/></button>
 
               <button disabled={!vf.hasPanel || !vp} onClick={async e => {
@@ -1042,22 +1042,6 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     );
   })();
 
-  // Thickness shown as a minimal "T" chip in the bottom-left — stays put while orbiting.
-  const chipBottom = (faceExtrudeMode || activeSteps.length > 0) ? (activeSteps.length > 0 ? 84 : 52) : 12;
-  const thicknessChip = activeDims ? (
-    <div style={{
-      position: 'absolute', left: 10, bottom: chipBottom, zIndex: 6, display: 'inline-flex', alignItems: 'center', gap: 5,
-      padding: '4px 9px', borderRadius: 8,
-      background: 'rgba(250,248,244,0.9)', backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)',
-      border: '1px solid rgba(60,50,40,0.12)',
-      boxShadow: '0 2px 8px -3px rgba(40,30,20,0.2),inset 0 1px 0 rgba(255,255,255,0.9)',
-      fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif",
-    }}>
-      <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', color: '#8c857e' }}>T</span>
-      <span style={{ fontFamily: 'monospace', fontSize: 12.5, fontWeight: 700, color: '#1c1917' }}>{activeDims.thickness}</span>
-    </div>
-  ) : null;
-
   const isPreviewMode = selectedPanelRow !== null;
 
   const selectedFaceRow = (() => {
@@ -1098,17 +1082,15 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
             <span className="text-stone-400 font-medium">W</span><span className="text-stone-700 font-semibold ml-1">{dims.primary}</span>
             <span className="text-stone-300 mx-1.5">·</span>
             <span className="text-stone-400 font-medium">H</span><span className="text-stone-700 font-semibold ml-1">{dims.secondary}</span>
-            <span className="text-stone-300 mx-1.5">·</span>
-            <span className="text-stone-400 font-medium">T</span><span className="text-stone-700 font-semibold ml-1">{dims.thickness}</span>
           </span>
         )}
         <div className="flex items-center gap-0.5 shrink-0" onClick={stop}>
           <button disabled={!vf.hasPanel} onClick={e => { stop(e); enterTransform('translate'); }}
-            className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : 'text-stone-400 hover:bg-orange-100/60 hover:text-stone-600'}`}
+            className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
             title="Taşı (move)"><Move size={13}/></button>
 
           <button disabled={!vf.hasPanel} onClick={e => { stop(e); enterTransform('rotate'); }}
-            className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : 'text-stone-400 hover:bg-orange-100/60 hover:text-stone-600'}`}
+            className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
             title="Döndür (rotation)"><RotateCw size={13}/></button>
 
           <button disabled={!vf.hasPanel} onClick={e => {
@@ -1120,15 +1102,27 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
             title="Yüz çıkıntısı (extrude)"><MoveVertical size={13}/></button>
 
           <button disabled={!vf.hasPanel} onClick={e => { stop(e); toggleArrow(vp); }}
-            className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-orange-500 hover:bg-orange-100' : 'text-stone-400 hover:bg-orange-100/60 hover:text-stone-600'}`}
+            className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-stone-700 bg-[#f1ece4]' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
             title="Ok yönünü değiştir"><ArrowUp size={14} className={`transition-transform duration-200 ${ar ? '' : 'rotate-90'}`}/></button>
           <button disabled={!vf.hasPanel || !vp} onClick={async e => {
             stop(e); if (!vp) return;
             const { reshapePanelToParentFace } = await import('./PanelReshapeService');
             await reshapePanelToParentFace(vp.id);
           }}
-            className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel || !vp ? 'text-stone-200 cursor-not-allowed' : 'text-stone-400 hover:bg-orange-100/60 hover:text-stone-600'}`}
+            className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel || !vp ? 'text-stone-200 cursor-not-allowed' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
             title="Ana yüze eşitle"><Shapes size={13}/></button>
+
+          <button onClick={() => { if (vf.hasPanel) removeVP(vf.id); else createVP(vf.id, vi); }}
+            className="w-[22px] h-[22px] rounded-md flex items-center justify-center text-stone-400 hover:bg-[#f1ece4] transition-colors"
+            title={vf.hasPanel ? 'Paneli kaldır' : 'Panel oluştur'}>
+            <span className={`w-3.5 h-3.5 rounded-[3px] border flex items-center justify-center transition-colors ${vf.hasPanel ? 'bg-orange-500 border-orange-500' : 'border-stone-300'}`}>
+              {vf.hasPanel && <Check size={10} strokeWidth={3} className="text-white"/>}
+            </span>
+          </button>
+
+          <button onClick={e => { stop(e); if (vf.hasPanel) removeVP(vf.id); deleteVirtualFace(vf.id); }}
+            className="w-[22px] h-[22px] rounded-md flex items-center justify-center text-stone-400 hover:bg-red-50 hover:text-red-500 transition-colors"
+            title="Yüzü sil"><Trash2 size={13}/></button>
         </div>
       </div>
     );
@@ -1162,7 +1156,6 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
             </div>
           )
         }
-        {thicknessChip}
         {extrudeDock}
       </div>
     </div>
