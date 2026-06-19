@@ -917,14 +917,26 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     if (!activePanelId || !activePanel) return null;
     const isExt = faceExtrudeMode && !!activePanelId;
     const hf = faceExtrudeSelectedFace !== null;
+    if (!isExt && activeSteps.length === 0) return null;
 
     const seg = (f: boolean): React.CSSProperties => ({
-      flex: 1, minWidth: 44, height: 24, fontSize: 10, fontWeight: 700, letterSpacing: '0.02em',
+      flex: 1, minWidth: 0, height: 28, fontSize: 10, fontWeight: 700, letterSpacing: '0.03em',
       border: 'none', outline: 'none', cursor: hf ? 'pointer' : 'not-allowed',
       borderLeft: !f ? '1px solid rgba(60,50,40,0.10)' : 'none',
-      background: faceExtrudeFixedMode === f ? 'linear-gradient(180deg,#f97316,#ea580c)' : 'rgba(255,255,255,0.65)',
-      color: faceExtrudeFixedMode === f ? '#fff' : '#78716c', transition: 'all 0.12s',
+      background: faceExtrudeFixedMode === f ? '#e8e1d5' : 'rgba(255,255,255,0.45)',
+      color: faceExtrudeFixedMode === f ? '#44403c' : '#a8a29e',
+      boxShadow: faceExtrudeFixedMode === f ? 'inset 0 1px 2px rgba(60,50,40,0.14)' : 'none',
+      transition: 'all 0.12s',
     });
+
+    const exitBtn = (
+      <button onClick={e => { stop(e); setFaceExtrudeSelectedFace(null); setFaceExtrudeMode(false); }}
+        title="Çıkış" style={{
+          flexShrink: 0, width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          borderRadius: 7, border: '1px solid rgba(60,50,40,0.12)', cursor: 'pointer', outline: 'none',
+          background: 'rgba(255,255,255,0.55)', color: '#78716c', transition: 'all 0.12s',
+        }}><X size={13} /></button>
+    );
 
     const onApply = async () => {
       if (!hf || !activePanelId) return;
@@ -948,86 +960,74 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     return (
       <div style={{
         position: 'absolute', left: 8, right: 8, bottom: 8, zIndex: 5, borderRadius: 11,
-        background: 'linear-gradient(180deg,rgba(250,248,244,0.82),rgba(240,236,228,0.88))',
-        backdropFilter: 'blur(16px) saturate(160%)', WebkitBackdropFilter: 'blur(16px) saturate(160%)',
-        border: '1px solid rgba(60,50,40,0.12)',
-        boxShadow: '0 8px 22px -10px rgba(40,30,20,0.28),0 0 0 0.5px rgba(60,50,40,0.05),inset 0 1px 0 rgba(255,255,255,0.92)',
+        background: 'linear-gradient(180deg,rgba(250,248,244,0.86),rgba(239,235,227,0.9))',
+        backdropFilter: 'blur(16px) saturate(150%)', WebkitBackdropFilter: 'blur(16px) saturate(150%)',
+        border: '1px solid rgba(60,50,40,0.13)',
+        boxShadow: '0 10px 24px -12px rgba(40,30,20,0.30),0 0 0 0.5px rgba(60,50,40,0.05),inset 0 1px 0 rgba(255,255,255,0.92)',
         display: 'flex', flexDirection: 'column', overflow: 'hidden',
         fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif",
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, rowGap: 6, padding: '7px 9px' }}>
-          <button
-            onClick={e => { stop(e); faceExtrudeMode ? setFaceExtrudeMode(false) : (setFaceExtrudeTargetPanelId(activePanelId), setFaceExtrudeMode(true)); }}
-            style={{
-              display: 'inline-flex', alignItems: 'center', gap: 4, height: 24, padding: '0 10px', borderRadius: 6,
-              fontSize: 10.5, fontWeight: 700, cursor: 'pointer', border: 'none', outline: 'none', flexShrink: 0,
-              background: isExt ? 'linear-gradient(180deg,#f97316,#ea580c)' : 'linear-gradient(180deg,#fff,#f1ede6)',
-              color: isExt ? '#fff' : '#57534e',
-              boxShadow: isExt
-                ? '0 1px 2px rgba(234,88,12,0.4),inset 0 1px 0 rgba(255,255,255,0.25)'
-                : '0 1px 2px rgba(40,30,20,0.08),0 0 0 0.5px rgba(60,50,40,0.12),inset 0 1px 0 rgba(255,255,255,0.9)',
-              transition: 'all 0.15s',
-            }}
-          >
-            <MoveVertical size={10} />{isExt ? 'Active' : 'Enable'}
-          </button>
-
-          {isExt && (hf ? (
-            <>
-              <input
-                type="text" inputMode="numeric" value={faceExtrudeThickness}
-                onChange={e => setFaceExtrudeThickness(Number(e.target.value) || 0)}
-                style={{
-                  width: 52, height: 26, textAlign: 'center', fontFamily: 'monospace', fontSize: 12, fontWeight: 600,
-                  color: '#1c1917', background: 'linear-gradient(180deg,#fff,#fbfaf6)', border: '1px solid rgba(60,50,40,0.16)',
-                  borderRadius: 6, outline: 'none', boxShadow: 'inset 0 1px 2px rgba(40,30,20,0.05)', flexShrink: 0,
-                }}
-              />
-              <div style={{ display: 'flex', borderRadius: 6, overflow: 'hidden', border: '1px solid rgba(60,50,40,0.16)', flexShrink: 0 }}>
-                {[true, false].map(f => (
-                  <button key={String(f)} onClick={() => setFaceExtrudeFixedMode(f)} style={seg(f)}>{f ? 'Fixed' : 'Dyn'}</button>
-                ))}
-              </div>
-              <button onClick={onApply} style={{
-                height: 26, padding: '0 12px', borderRadius: 6, border: 'none', cursor: 'pointer', outline: 'none', flexShrink: 0,
-                display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, fontWeight: 700, letterSpacing: '0.01em',
-                background: 'linear-gradient(180deg,#f97316,#ea580c)', color: '#fff',
-                boxShadow: '0 2px 6px -1px rgba(234,88,12,0.42),inset 0 1px 0 rgba(255,255,255,0.28)',
-              }}>
-                <Check size={12} /> Uygula
-              </button>
-            </>
-          ) : (
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: 6, padding: '4px 9px', borderRadius: 7, flexShrink: 0,
-              background: 'rgba(234,88,12,0.07)', border: '1px solid rgba(234,88,12,0.16)',
-            }}>
-              <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#ea580c' }} />
-              <span style={{ fontSize: 10.5, fontWeight: 500, color: '#9a3412' }}>3D görünümde yüzey seç</span>
-            </div>
-          ))}
-        </div>
+        {isExt && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 9px' }}>
+            {hf ? (
+              <>
+                <input
+                  type="text" inputMode="numeric" value={faceExtrudeThickness}
+                  onChange={e => setFaceExtrudeThickness(Number(e.target.value) || 0)}
+                  style={{
+                    flex: 1, minWidth: 0, height: 28, textAlign: 'center', fontFamily: 'monospace', fontSize: 13, fontWeight: 600,
+                    color: '#1c1917', background: 'linear-gradient(180deg,#fff,#faf8f3)', border: '1px solid rgba(60,50,40,0.16)',
+                    borderRadius: 7, outline: 'none', boxShadow: 'inset 0 1px 2px rgba(40,30,20,0.06)',
+                  }}
+                />
+                <div style={{ display: 'flex', width: 86, flexShrink: 0, borderRadius: 7, overflow: 'hidden', border: '1px solid rgba(60,50,40,0.16)' }}>
+                  {[true, false].map(f => (
+                    <button key={String(f)} onClick={() => setFaceExtrudeFixedMode(f)} style={seg(f)}>{f ? 'Fixed' : 'Dyn'}</button>
+                  ))}
+                </div>
+                <button onClick={onApply} title="Uygula" style={{
+                  flexShrink: 0, width: 32, height: 28, borderRadius: 7, border: 'none', cursor: 'pointer', outline: 'none',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  background: 'linear-gradient(180deg,#5b5346,#44403c)', color: '#fff',
+                  boxShadow: '0 1px 2px rgba(40,30,20,0.25),inset 0 1px 0 rgba(255,255,255,0.18)',
+                }}><Check size={15} strokeWidth={2.5} /></button>
+                {exitBtn}
+              </>
+            ) : (
+              <>
+                <div style={{
+                  flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 7, height: 28, padding: '0 10px', borderRadius: 7,
+                  background: 'rgba(120,113,108,0.08)', border: '1px solid rgba(60,50,40,0.10)',
+                }}>
+                  <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#a8a29e', flexShrink: 0 }} />
+                  <span style={{ fontSize: 11, fontWeight: 500, color: '#78716c', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>3B görünümde yüzey seç</span>
+                </div>
+                {exitBtn}
+              </>
+            )}
+          </div>
+        )}
 
         {activeSteps.length > 0 && (
-          <div style={{ borderTop: '1px solid rgba(60,50,40,0.08)', padding: '6px 9px', display: 'flex', alignItems: 'center', gap: 6, overflowX: 'auto' }}>
+          <div style={{ borderTop: isExt ? '1px solid rgba(60,50,40,0.08)' : 'none', padding: '6px 9px', display: 'flex', alignItems: 'center', gap: 6, overflowX: 'auto' }}>
             <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.07em', textTransform: 'uppercase', color: '#a8a29e', flexShrink: 0 }}>Adımlar</span>
             {activeSteps.map((s: any) => (
               editingStepId === s.id ? (
-                <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '3px 6px', borderRadius: 6, background: 'rgba(234,88,12,0.08)', border: '1px solid rgba(234,88,12,0.22)', flexShrink: 0 }}>
-                  <span style={{ fontSize: 9, fontWeight: 800, fontFamily: 'monospace', color: '#ea580c' }}>{s.axisLabel}</span>
+                <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '3px 6px', borderRadius: 6, background: 'rgba(120,113,108,0.10)', border: '1px solid rgba(60,50,40,0.16)', flexShrink: 0 }}>
+                  <span style={{ fontSize: 9, fontWeight: 800, fontFamily: 'monospace', color: '#6b6253' }}>{s.axisLabel}</span>
                   <input type="text" inputMode="numeric" autoFocus value={editingStepValue}
                     onChange={e => setEditingStepValue(Number(e.target.value) || 0)}
                     onKeyDown={e => { if (e.key === 'Enter') saveStep(activePanelId, s.id, editingStepValue); else if (e.key === 'Escape') setEditingStepId(null); }}
-                    style={{ width: 46, height: 20, textAlign: 'center', fontFamily: 'monospace', fontSize: 10.5, fontWeight: 600, color: '#1c1917', background: '#fff', border: '1px solid rgba(234,88,12,0.4)', borderRadius: 4, outline: 'none' }} />
-                  <button onClick={() => saveStep(activePanelId, s.id, editingStepValue)} style={iconBtn('#ea580c')}><Check size={11} /></button>
+                    style={{ width: 46, height: 20, textAlign: 'center', fontFamily: 'monospace', fontSize: 10.5, fontWeight: 600, color: '#1c1917', background: '#fff', border: '1px solid rgba(60,50,40,0.3)', borderRadius: 4, outline: 'none' }} />
+                  <button onClick={() => saveStep(activePanelId, s.id, editingStepValue)} style={iconBtn('#5b5346')}><Check size={11} /></button>
                   <button onClick={() => setEditingStepId(null)} style={iconBtn('#a8a29e')}><X size={11} /></button>
                 </div>
               ) : (
-                <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '3px 7px', borderRadius: 6, background: 'linear-gradient(180deg,rgba(255,255,255,0.7),rgba(244,241,234,0.55))', border: '1px solid rgba(60,50,40,0.10)', flexShrink: 0 }}>
-                  <span style={{ fontSize: 9, fontWeight: 800, fontFamily: 'monospace', color: '#ea580c' }}>{s.axisLabel}</span>
+                <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '3px 7px', borderRadius: 6, background: 'linear-gradient(180deg,rgba(255,255,255,0.75),rgba(244,241,234,0.6))', border: '1px solid rgba(60,50,40,0.10)', flexShrink: 0 }}>
+                  <span style={{ fontSize: 9, fontWeight: 800, fontFamily: 'monospace', color: '#6b6253' }}>{s.axisLabel}</span>
                   <span style={{ fontSize: 11, fontFamily: 'monospace', fontWeight: 700, color: '#1c1917' }}>{s.value}</span>
-                  <span style={{ fontSize: 7.5, fontWeight: 700, padding: '1px 4px', borderRadius: 3, background: s.isFixed ? 'rgba(234,88,12,0.12)' : 'rgba(120,113,108,0.12)', color: s.isFixed ? '#c2410c' : '#78716c' }}>{s.isFixed ? 'F' : 'D'}</span>
-                  <button onClick={() => { setEditingStepId(s.id); setEditingStepValue(s.value); }} style={iconBtn('#ea580c')}><Pencil size={10} /></button>
+                  <span style={{ fontSize: 7.5, fontWeight: 700, padding: '1px 4px', borderRadius: 3, background: 'rgba(120,113,108,0.14)', color: '#57534e' }}>{s.isFixed ? 'F' : 'D'}</span>
+                  <button onClick={() => { setEditingStepId(s.id); setEditingStepValue(s.value); }} style={iconBtn('#78716c')}><Pencil size={10} /></button>
                   <button onClick={async () => {
                     const ps = shapes.find(x => x.id === activePanelId); if (!ps) return;
                     const { deleteExtrudeStep } = await import('./FaceExtrudeService');
@@ -1043,7 +1043,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
   })();
 
   // Thickness shown as a minimal "T" chip in the bottom-left — stays put while orbiting.
-  const chipBottom = activeSteps.length > 0 ? 84 : 52;
+  const chipBottom = (faceExtrudeMode || activeSteps.length > 0) ? (activeSteps.length > 0 ? 84 : 52) : 12;
   const thicknessChip = activeDims ? (
     <div style={{
       position: 'absolute', left: 10, bottom: chipBottom, zIndex: 6, display: 'inline-flex', alignItems: 'center', gap: 5,
@@ -1116,7 +1116,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
             if (isExtrudingThis) setFaceExtrudeMode(false);
             else { setFaceExtrudeTargetPanelId(vp.id); setFaceExtrudeMode(true); }
           }}
-            className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : isExtrudingThis ? 'bg-orange-500 text-white shadow-[0_1px_3px_rgba(234,88,12,0.35)]' : 'text-stone-400 hover:bg-orange-100/60 hover:text-stone-600'}`}
+            className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : isExtrudingThis ? 'bg-gradient-to-b from-[#5b5346] to-[#44403c] text-white shadow-[0_1px_2px_rgba(40,30,20,0.25)]' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
             title="Yüz çıkıntısı (extrude)"><MoveVertical size={13}/></button>
 
           <button disabled={!vf.hasPanel} onClick={e => { stop(e); toggleArrow(vp); }}
