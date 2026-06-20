@@ -286,6 +286,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           castShadow
           receiveShadow
           onClick={handleClick}
+          {...(isMoveMode ? { raycast: () => null } : {})}
         >
           <meshLambertMaterial
             color={materialColor}
@@ -460,6 +461,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
         const HR = 8.5; // head radius
         const HL = 20; // head length
         const SL = AL - HL;
+        const HIT_R = 18; // hit area radius (larger for easier clicking)
         const axes: Array<{ axis: 'X'|'Y'|'Z'; dir: THREE.Vector3; color: string }> = [
           { axis: 'X', dir: new THREE.Vector3(1, 0, 0), color: '#ef4444' },
           { axis: 'Y', dir: new THREE.Vector3(0, 1, 0), color: '#22c55e' },
@@ -468,17 +470,28 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
         return axes.map(({ axis, dir, color }) => {
           const shaftPos = new THREE.Vector3().copy(zp).addScaledVector(dir, SL / 2);
           const headPos = new THREE.Vector3().copy(zp).addScaledVector(dir, SL + HL / 2);
+          const centerPos = new THREE.Vector3().copy(zp).addScaledVector(dir, AL / 2);
           const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
           return (
-            <group key={axis}
-              onClick={(e) => { e.stopPropagation(); setPanelMoveActiveAxis(axis); }}
-              onPointerEnter={() => { (document.body.style as any).cursor = 'pointer'; }}
-              onPointerLeave={() => { (document.body.style as any).cursor = 'default'; }}
-            >
+            <group key={axis}>
+              {/* Invisible wide hit area — always on top of panel mesh */}
+              <mesh
+                position={centerPos}
+                quaternion={q}
+                renderOrder={20}
+                onClick={(e) => { e.stopPropagation(); setPanelMoveActiveAxis(axis); }}
+                onPointerEnter={() => { (document.body.style as any).cursor = 'pointer'; }}
+                onPointerLeave={() => { (document.body.style as any).cursor = 'default'; }}
+              >
+                <cylinderGeometry args={[HIT_R, HIT_R, AL, 8]} />
+                <meshBasicMaterial transparent opacity={0} depthTest={false} depthWrite={false} />
+              </mesh>
+              {/* Visual shaft */}
               <mesh position={shaftPos} quaternion={q} renderOrder={15}>
                 <cylinderGeometry args={[SR, SR, SL, 8]} />
                 <meshBasicMaterial color={color} depthTest={false} transparent opacity={0.92} />
               </mesh>
+              {/* Visual head */}
               <mesh position={headPos} quaternion={q} renderOrder={15}>
                 <coneGeometry args={[HR, HL, 8]} />
                 <meshBasicMaterial color={color} depthTest={false} transparent opacity={0.92} />
