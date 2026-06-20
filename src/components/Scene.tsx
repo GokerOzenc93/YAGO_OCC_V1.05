@@ -2,7 +2,7 @@ import React, { useRef, useEffect, useLayoutEffect, useState, useCallback, useMe
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { OrbitControls, GizmoHelper, PerspectiveCamera, OrthographicCamera } from '@react-three/drei';
 import * as THREE from 'three';
-import { useAppStore, CameraType, Tool } from '../store';
+import { useAppStore, CameraType } from '../store';
 import { useShallow } from 'zustand/react/shallow';
 import SaveDialog from './SaveDialog';
 import { catalogService } from './Database';
@@ -12,7 +12,6 @@ import { ShapeWithTransform } from './ShapeWithTransform';
 import { getReplicadVertices } from './VertexEditorService';
 import { PanelDrawing } from './PanelDrawing';
 import { ErrorBoundary } from './ErrorBoundary';
-import { PanelMoveOverlay } from './PanelMoveOverlay';
 
 /* ══════════════════════════════════════════════════════════
    VIEW-CUBE GIZMO
@@ -483,7 +482,7 @@ const Scene: React.FC = () => {
     vertexDirection, setVertexDirection, addVertexModification,
     subtractionViewMode, faceEditMode, setFaceEditMode,
     filletMode, selectedFilletFaces, clearFilletFaces, selectedFilletFaceData,
-    updateShape, panelSelectMode, panelSurfaceSelectMode, setSelectedPanelRow, activeTool,
+    updateShape, panelSelectMode, panelSurfaceSelectMode, setSelectedPanelRow,
   } = useAppStore(useShallow(state => ({
     shapes: state.shapes, cameraType: state.cameraType,
     selectedShapeId: state.selectedShapeId, secondarySelectedShapeId: state.secondarySelectedShapeId,
@@ -498,7 +497,6 @@ const Scene: React.FC = () => {
     clearFilletFaces: state.clearFilletFaces, selectedFilletFaceData: state.selectedFilletFaceData,
     updateShape: state.updateShape, panelSelectMode: state.panelSelectMode,
     panelSurfaceSelectMode: state.panelSurfaceSelectMode, setSelectedPanelRow: state.setSelectedPanelRow,
-    activeTool: state.activeTool,
   })));
 
   const [saveDialog,  setSaveDialog ] = useState<{ isOpen:boolean; shapeId:string|null }>({ isOpen:false, shapeId:null });
@@ -612,17 +610,8 @@ const Scene: React.FC = () => {
           {shapes.map(shape => {
             const isSel = selectedShapeId === shape.id;
             if (shape.type === 'panel') {
-              const showMoveOverlay = isSel && activeTool === Tool.MOVE;
-              const parentShape = showMoveOverlay
-                ? shapes.find(s => s.id === shape.parameters?.parentShapeId)
-                : undefined;
               return (
-                <React.Fragment key={shape.id}>
-                  <PanelDrawing shape={shape} isSelected={isSel} />
-                  {showMoveOverlay && parentShape && (
-                    <PanelMoveOverlay panelShape={shape} parentShape={parentShape} />
-                  )}
-                </React.Fragment>
+                <PanelDrawing key={shape.id} shape={shape} isSelected={isSel} orbitControlsRef={controlsRef} />
               );
             }
             return (

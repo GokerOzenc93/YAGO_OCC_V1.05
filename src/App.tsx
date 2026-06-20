@@ -8,6 +8,7 @@ import CatalogPanel from './components/CatalogPanel';
 import LeftSidebar from './components/LeftSidebar';
 import { ParametersPanel } from './components/ParametersPanel';
 import { PanelEditor } from './components/PanelEditor';
+import { PanelMoveInputOverlay } from './components/PanelMoveOverlay';
 import { useAppStore } from './store';
 import { catalogService, CatalogItem } from './components/Database';
 import { initReplicad } from './components/ReplicadService';
@@ -260,6 +261,8 @@ function App() {
         onDelete={handleDeleteFromCatalog}
         items={catalogItems}
       />
+
+      <PanelMoveInputOverlay />
     </div>
   );
 }

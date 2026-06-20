@@ -1,9 +1,10 @@
-import React, { useRef, useMemo, useState, useEffect } from 'react';
+import React, { useRef, useMemo, useState, useEffect, useCallback } from 'react';
 import * as THREE from 'three';
-import { Line } from '@react-three/drei';
-import { useAppStore, ViewMode } from '../store';
+import { Line, TransformControls } from '@react-three/drei';
+import { useAppStore, ViewMode, Tool } from '../store';
 import { useShallow } from 'zustand/react/shallow';
 import { extractFacesFromGeometry, groupCoplanarFaces, createFaceHighlightGeometry } from './FaceEditor';
+import { setActiveMoveAxis } from './PanelMoveOverlay';
 
 // Threshold must match isAxisAligned() in GeometryUtils (0.999) so that any
 // face groupCoplanarFaces considers "curved" is also considered non-flat here.
@@ -76,13 +77,17 @@ const EDGE_ANGLE_THRESHOLD = 15;
 interface PanelDrawingProps {
   shape: any;
   isSelected: boolean;
+  orbitControlsRef?: React.RefObject<any>;
 }
 
 export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   shape,
-  isSelected
+  isSelected,
+  orbitControlsRef,
 }) => {
   const meshRef = useRef<THREE.Mesh>(null);
+  const groupRef = useRef<THREE.Group>(null);
+  const cleanupMoveRef = useRef<(() => void) | null>(null);
   const {
     selectShape,
     selectSecondaryShape,
@@ -101,7 +106,9 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     faceExtrudeSelectedFace,
     setFaceExtrudeSelectedFace,
     setFaceExtrudeClickPoint,
-    raycastMode
+    raycastMode,
+    activeTool,
+    updateShape,
   } = useAppStore(useShallow(state => ({
     selectShape: state.selectShape,
     selectSecondaryShape: state.selectSecondaryShape,
@@ -120,12 +127,76 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     faceExtrudeSelectedFace: state.faceExtrudeSelectedFace,
     setFaceExtrudeSelectedFace: state.setFaceExtrudeSelectedFace,
     setFaceExtrudeClickPoint: state.setFaceExtrudeClickPoint,
-    raycastMode: state.raycastMode
+    raycastMode: state.raycastMode,
+    activeTool: state.activeTool,
+    updateShape: state.updateShape,
   })));
 
   const [faceGroups, setFaceGroups] = useState<any[]>([]);
   const [faces, setFaces] = useState<any[]>([]);
   const [hoveredExtrudeGroup, setHoveredExtrudeGroup] = useState<number | null>(null);
+
+  // ── Position sync: keep Three.js group in sync with shape.position ─────────
+  useEffect(() => {
+    if (!groupRef.current) return;
+    groupRef.current.position.set(shape.position[0], shape.position[1], shape.position[2]);
+  }, [shape.position]);
+
+  // ── TransformControls callback ref for panel move mode ──────────────────────
+  const transformMoveRefCallback = useCallback((controls: any) => {
+    if (cleanupMoveRef.current) {
+      cleanupMoveRef.current();
+      cleanupMoveRef.current = null;
+    }
+    if (!controls || !groupRef.current) return;
+
+    let dragging = false;
+    const initialPos = new THREE.Vector3();
+
+    const onMouseDown = () => {
+      // controls.axis is set when user presses on an axis handle
+      const ax = controls.axis as string | null;
+      if (ax === 'X' || ax === 'Y' || ax === 'Z') {
+        setActiveMoveAxis({ panelId: shape.id, axis: ax as 'X' | 'Y' | 'Z' });
+        // Immediately cancel the drag so TransformControls doesn't move anything
+        controls.dragging = false;
+      }
+    };
+
+    const onDraggingChanged = (e: any) => {
+      dragging = e.value;
+      if (orbitControlsRef?.current) orbitControlsRef.current.enabled = !e.value;
+      if (e.value && groupRef.current) initialPos.copy(groupRef.current.position);
+      if (!e.value && groupRef.current && dragging === false) {
+        const fp = groupRef.current.position.toArray() as [number, number, number];
+        updateShape(shape.id, { position: fp });
+      }
+    };
+
+    const onChange = () => {
+      if (dragging && groupRef.current) {
+        // live update during drag
+        const cp = groupRef.current.position.toArray() as [number, number, number];
+        updateShape(shape.id, { position: cp });
+      }
+    };
+
+    controls.addEventListener('mouseDown', onMouseDown);
+    controls.addEventListener('dragging-changed', onDraggingChanged);
+    controls.addEventListener('change', onChange);
+
+    cleanupMoveRef.current = () => {
+      controls.removeEventListener('mouseDown', onMouseDown);
+      controls.removeEventListener('dragging-changed', onDraggingChanged);
+      controls.removeEventListener('change', onChange);
+    };
+  }, [shape.id, orbitControlsRef, updateShape]);
+
+  // Cleanup on unmount
+  useEffect(() => () => {
+    if (cleanupMoveRef.current) { cleanupMoveRef.current(); cleanupMoveRef.current = null; }
+    setActiveMoveAxis(null);
+  }, []);
 
   useEffect(() => {
     if (!shape.geometry) return;
@@ -247,7 +318,9 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   };
 
   return (
+    <>
     <group
+      ref={groupRef}
       name={`shape-${shape.id}`}
       position={shape.position}
       rotation={shape.rotation}
@@ -427,5 +500,16 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
         </>
       )}
     </group>
+
+    {/* TransformControls for panel move mode */}
+    {isSelected && activeTool === Tool.MOVE && groupRef.current && (
+      <TransformControls
+        ref={transformMoveRefCallback}
+        object={groupRef.current}
+        mode="translate"
+        size={0.8}
+      />
+    )}
+    </>
   );
 });
