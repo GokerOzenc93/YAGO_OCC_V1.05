@@ -1,13 +1,10 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { X, GripVertical, ArrowUp, RotateCw, Move, Trash2, MoveVertical, Check, Pencil, Shapes, ChevronRight } from 'lucide-react';
+import { X, GripVertical, RotateCw, Trash2, MoveVertical, Check, Pencil, Shapes, ChevronRight } from 'lucide-react';
 import { useAppStore } from '../store';
 import { extractFacesFromGeometry, groupCoplanarFaces, CoplanarFaceGroup } from './FaceEditor';
 import { findExistingStepForFace } from './FaceExtrudeService';
 import type { FilletData } from './Fillet';
 import * as THREE from 'three';
-import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
-import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
-import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 
 const AXIS_ORDER: Record<string, number> = { 'x+': 0, 'x-': 1, 'y+': 2, 'y-': 3, 'z+': 4, 'z-': 5 };
 const PANEL_THICKNESS = 18;
@@ -102,437 +99,486 @@ function getDimsFromGeo(geo: THREE.BufferGeometry, arrowRotated?: boolean) {
 
 type Dims = NonNullable<ReturnType<typeof getDimsFromGeo>>;
 interface PanelEditorProps { isOpen: boolean; onClose: () => void; embedded?: boolean; }
-type Pt = { x: number; y: number };
 
-// Project a 3D point to canvas pixel coordinates via the preview camera
-function project3D(p: THREE.Vector3, camera: THREE.OrthographicCamera, w: number, h: number): Pt {
+/* ── Edge dimension label types ──────────────────────────────────────── */
+interface EdgeDimLabel {
+  sx: number; sy: number; // screen midpoint
+  ex1: number; ey1: number; ex2: number; ey2: number; // screen endpoints
+  length: number; // real-world length
+  isThickness: boolean;
+  nx: number; ny: number; // outward perpendicular (screen space, unit vector)
+}
+
+// Project a 3D point to canvas pixel coordinates via orthographic camera
+function project3D(p: THREE.Vector3, camera: THREE.OrthographicCamera, w: number, h: number): { x: number; y: number } {
   const ndc = p.clone().project(camera);
   return { x: (ndc.x + 1) / 2 * w, y: (1 - ndc.y) / 2 * h };
 }
 
-/* ── Cut (subtraction) dimension geometry ────────────────────────────── */
-// Each cut yields two dimensions (width + height). Each is offset just outside
-// one cut edge toward the nearer panel edge, so the two lines never cross.
-function cutBoxToDims(
-  mn0: number, mx0: number, mn1: number, mx1: number, topVal: number,
-  p0: number, p1: number, thinAxis: number,
-  pMin0: number, pMax0: number, pMin1: number, pMax1: number, gap: number,
-): GroundDimWorld[] {
-  const mk = (v0: number, v1: number) => { const p = new THREE.Vector3(); p.setComponent(p0, v0); p.setComponent(p1, v1); p.setComponent(thinAxis, topVal); return p; };
-  const w0 = mx0 - mn0, w1 = mx1 - mn1;
-  const dims: GroundDimWorld[] = [];
-  if (w0 > 0.5) {
-    const nearMin1 = (mn1 - pMin1) <= (pMax1 - mx1);
-    const hEdge = nearMin1 ? mn1 : mx1, hOff = nearMin1 ? hEdge - gap : hEdge + gap;
-    dims.push({ fa: mk(mn0, hEdge), fb: mk(mx0, hEdge), da: mk(mn0, hOff), db: mk(mx0, hOff), length: Math.round(w0) });
+// Collect the two principal dimension labels (longest H + longest V edge on top face)
+// All top-face edge dimension labels — every planar edge segment on the top
+// face gets its own annotation. Offset direction is always away from the
+// panel material (outward from the panel centroid in screen space).
+function computeAllEdgeDimLabels(
+  geometry: THREE.BufferGeometry,
+  camera: THREE.OrthographicCamera,
+  w: number,
+  h: number,
+  thicknessAxis: number,
+): EdgeDimLabel[] {
+  const edgesGeo = new THREE.EdgesGeometry(geometry, 15);
+  const pos = edgesGeo.getAttribute('position');
+  if (!pos) { edgesGeo.dispose(); return []; }
+
+  const keys = ['x', 'y', 'z'] as const;
+  const thinKey = keys[thicknessAxis];
+  const planarKeys = keys.filter((_, i) => i !== thicknessAxis) as Array<'x' | 'y' | 'z'>;
+
+  const bbox = new THREE.Box3().setFromBufferAttribute(pos as THREE.BufferAttribute);
+  const topZ = bbox.max[thinKey];
+  const tol = (bbox.max[thinKey] - bbox.min[thinKey]) * 0.05 + 0.5;
+  const center = new THREE.Vector3(); bbox.getCenter(center);
+  center.setComponent(thicknessAxis, topZ);
+  const screenCenter = project3D(center, camera, w, h);
+
+  // Minimum edge length: 4% of the shorter planar dimension.
+  // This eliminates tiny fillet arc segments near the junction with straight
+  // edges — their chord length is far below any meaningful panel measurement.
+  const planarDims = planarKeys.map(ak => bbox.max[ak] - bbox.min[ak]);
+  const minEdgeLen = Math.max(8, Math.min(...planarDims) * 0.04);
+
+  const labels: EdgeDimLabel[] = [];
+
+  for (let i = 0; i < pos.count; i += 2) {
+    const a = new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i));
+    const b = new THREE.Vector3(pos.getX(i + 1), pos.getY(i + 1), pos.getZ(i + 1));
+    const mid = new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5);
+    const len3D = a.distanceTo(b);
+    // Reject edges shorter than the minimum meaningful panel edge length
+    if (len3D < minEdgeLen) continue;
+    // Top face only
+    if (Math.abs(mid[thinKey] - topZ) > tol) continue;
+    // Not a thickness edge
+    if (Math.abs(a[thinKey] - b[thinKey]) > len3D * 0.5) continue;
+
+    // Both endpoints must lie on the panel's outer bounding-box boundary in
+    // at least one planar axis. Fillet arc segments curve away from the panel
+    // edge so at least one of their endpoints is never on a bbox extreme.
+    // Use a tight tolerance so only truly flush endpoints pass.
+    const onExtreme = (pt: THREE.Vector3): boolean => {
+      for (const ak of planarKeys) {
+        const mn = bbox.min[ak], mx = bbox.max[ak];
+        if (Math.abs(pt[ak] - mn) < 0.6 || Math.abs(pt[ak] - mx) < 0.6) return true;
+      }
+      return false;
+    };
+    if (!onExtreme(a) || !onExtreme(b)) continue;
+
+    // Must run primarily along one planar axis (skip diagonal edges)
+    let axisMatch = false;
+    for (const ak of planarKeys) {
+      if (Math.abs(a[ak] - b[ak]) > len3D * 0.6) { axisMatch = true; break; }
+    }
+    if (!axisMatch) continue;
+
+    const sa = project3D(a, camera, w, h);
+    const sb = project3D(b, camera, w, h);
+    const dx = sb.x - sa.x, dy = sb.y - sa.y;
+    const slen = Math.hypot(dx, dy);
+    if (slen < 4) continue;
+
+    const midX = (sa.x + sb.x) / 2, midY = (sa.y + sb.y) / 2;
+    let nx = -dy / slen, ny = dx / slen;
+    if ((midX - screenCenter.x) * nx + (midY - screenCenter.y) * ny < 0) { nx = -nx; ny = -ny; }
+
+    labels.push({
+      sx: midX, sy: midY,
+      ex1: sa.x, ey1: sa.y, ex2: sb.x, ey2: sb.y,
+      length: Math.round(len3D),
+      isThickness: false,
+      nx, ny,
+    });
   }
-  if (w1 > 0.5) {
-    const nearMin0 = (mn0 - pMin0) <= (pMax0 - mx0);
-    const wEdge = nearMin0 ? mn0 : mx0, wOff = nearMin0 ? wEdge - gap : wEdge + gap;
-    dims.push({ fa: mk(wEdge, mn1), fb: mk(wEdge, mx1), da: mk(wOff, mn1), db: mk(wOff, mx1), length: Math.round(w1) });
-  }
-  return dims;
+
+  edgesGeo.dispose();
+  return labels;
 }
 
-// Cut dims from explicit subtraction tools, placed on the panel top face.
-function cutDimsFromSubGeos(
-  subGeos: any[], panelBbox: THREE.Box3, panelSize: THREE.Vector3, thinAxis: number, nDir: THREE.Vector3,
-): GroundDimWorld[] {
+// Per-subtraction dimension labels shown over the cut area.
+function computeSubDimLabels(
+  subGeos: any[],
+  camera: THREE.OrthographicCamera,
+  w: number,
+  h: number,
+  thicknessAxis: number,
+): EdgeDimLabel[][] {
   const keys = ['x', 'y', 'z'] as const;
-  const thinKey = keys[thinAxis];
-  const planar = [0, 1, 2].filter(i => i !== thinAxis);
-  const p0 = planar[0], p1 = planar[1], k0 = keys[p0], k1 = keys[p1];
-  const topVal = nDir.getComponent(thinAxis) > 0 ? panelBbox.max[thinKey] : panelBbox.min[thinKey];
-  const span0 = panelSize.getComponent(p0), span1 = panelSize.getComponent(p1);
-  const gap = Math.min(span0, span1) * 0.045;
-  const out: GroundDimWorld[] = [];
-  const v = new THREE.Vector3();
-  subGeos.forEach(sg => {
-    if (!sg?.geometry) return;
-    const pos = sg.geometry.getAttribute('position'); if (!pos) return;
+  const thinKey = keys[thicknessAxis];
+  const planarKeys = keys.filter((_, i) => i !== thicknessAxis) as Array<'x' | 'y' | 'z'>;
+
+  return subGeos.map(sg => {
+    if (!sg?.geometry) return [];
+    const pos = sg.geometry.getAttribute('position');
+    if (!pos) return [];
+
     const rot = sg.relativeRotation || [0, 0, 0];
     const rotM = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rot[0], rot[1], rot[2], 'XYZ'));
     const off = new THREE.Vector3(...((sg.relativeOffset || [0, 0, 0]) as number[]));
-    let mn0 = Infinity, mx0 = -Infinity, mn1 = Infinity, mx1 = -Infinity;
+
+    const points: THREE.Vector3[] = [];
     for (let i = 0; i < pos.count; i++) {
-      v.set(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(rotM).add(off);
-      const c0 = v.getComponent(p0), c1 = v.getComponent(p1);
-      mn0 = Math.min(mn0, c0); mx0 = Math.max(mx0, c0); mn1 = Math.min(mn1, c1); mx1 = Math.max(mx1, c1);
+      points.push(new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(rotM).add(off));
     }
-    mn0 = Math.max(mn0, panelBbox.min[k0]); mx0 = Math.min(mx0, panelBbox.max[k0]);
-    mn1 = Math.max(mn1, panelBbox.min[k1]); mx1 = Math.min(mx1, panelBbox.max[k1]);
-    out.push(...cutBoxToDims(mn0, mx0, mn1, mx1, topVal, p0, p1, thinAxis, panelBbox.min[k0], panelBbox.max[k0], panelBbox.min[k1], panelBbox.max[k1], gap));
+    const bbox = new THREE.Box3().setFromPoints(points);
+    const topVal = bbox.max[thinKey];
+    const boxCenter = new THREE.Vector3(); bbox.getCenter(boxCenter);
+
+    const labels: EdgeDimLabel[] = [];
+    for (let pi = 0; pi < planarKeys.length; pi++) {
+      const ak = planarKeys[pi];
+      const ok = planarKeys[1 - pi];
+
+      const a = new THREE.Vector3(); const b = new THREE.Vector3();
+      a[thinKey] = topVal; b[thinKey] = topVal;
+      a[ak] = bbox.min[ak]; b[ak] = bbox.max[ak];
+      a[ok] = boxCenter[ok]; b[ok] = boxCenter[ok];
+
+      const sa = project3D(a, camera, w, h);
+      const sb = project3D(b, camera, w, h);
+      const dx = sb.x - sa.x, dy = sb.y - sa.y;
+      const slen = Math.hypot(dx, dy);
+      const nx = slen > 0 ? -dy / slen : 0;
+      const ny = slen > 0 ? dx / slen : 0;
+      labels.push({
+        sx: (sa.x + sb.x) / 2, sy: (sa.y + sb.y) / 2,
+        ex1: sa.x, ey1: sa.y, ex2: sb.x, ey2: sb.y,
+        length: Math.round(bbox.max[ak] - bbox.min[ak]),
+        isThickness: false, nx, ny,
+      });
+    }
+    return labels;
   });
-  return out;
 }
 
-// Cut dims from interior top-face edges (cuts baked into the mesh).
-function computeCutDimsWorld(
-  geometry: THREE.BufferGeometry, thinAxis: number, nDir: THREE.Vector3,
-): GroundDimWorld[] {
-  const eg = new THREE.EdgesGeometry(geometry, 15);
-  const pos = eg.getAttribute('position');
-  if (!pos) { eg.dispose(); return []; }
-  const keys = ['x', 'y', 'z'] as const;
-  const thinKey = keys[thinAxis];
-  const planar = [0, 1, 2].filter(i => i !== thinAxis);
-  const p0 = planar[0], p1 = planar[1], k0 = keys[p0], k1 = keys[p1];
-  const bbox = new THREE.Box3().setFromBufferAttribute(pos as THREE.BufferAttribute);
-  const topVal = nDir.getComponent(thinAxis) > 0 ? bbox.max[thinKey] : bbox.min[thinKey];
-  const thinExt = bbox.max[thinKey] - bbox.min[thinKey];
-  const tolT = Math.max(thinExt * 0.15, 0.6);
-  const span0 = bbox.max[k0] - bbox.min[k0], span1 = bbox.max[k1] - bbox.min[k1];
-  const tolE = Math.max(Math.min(span0, span1) * 0.01, 0.4);
-  const minLen = Math.max(Math.min(span0, span1) * 0.03, 4);
-  const gap = Math.min(span0, span1) * 0.045;
-  const onLine = (av: number, bv: number, val: number) => Math.abs(av - val) < tolE && Math.abs(bv - val) < tolE;
-
-  type Seg = { a0: number; a1: number; b0: number; b1: number };
-  const segs: Seg[] = [];
-  const comp = [0, 0, 0];
-  for (let i = 0; i < pos.count; i += 2) {
-    comp[0] = pos.getX(i); comp[1] = pos.getY(i); comp[2] = pos.getZ(i);
-    const aThin = comp[thinAxis], a0 = comp[p0], a1 = comp[p1];
-    comp[0] = pos.getX(i + 1); comp[1] = pos.getY(i + 1); comp[2] = pos.getZ(i + 1);
-    const bThin = comp[thinAxis], b0 = comp[p0], b1 = comp[p1];
-    if (Math.abs(aThin - topVal) > tolT || Math.abs(bThin - topVal) > tolT) continue;
-    if (onLine(a0, b0, bbox.min[k0]) || onLine(a0, b0, bbox.max[k0]) ||
-        onLine(a1, b1, bbox.min[k1]) || onLine(a1, b1, bbox.max[k1])) continue;
-    if (Math.hypot(b0 - a0, b1 - a1) < minLen) continue;
-    segs.push({ a0, a1, b0, b1 });
-  }
-  eg.dispose();
-  if (!segs.length) return [];
-
-  const qstep = Math.max(tolE * 2, 0.8);
-  const q = (val: number) => Math.round(val / qstep);
-  const parent = segs.map((_, i) => i);
-  const find = (x: number): number => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
-  const union = (a: number, b: number) => { const ra = find(a), rb = find(b); if (ra !== rb) parent[ra] = rb; };
-  const ptMap = new Map<string, number>();
-  segs.forEach((s, i) => {
-    [[s.a0, s.a1], [s.b0, s.b1]].forEach(([x, y]) => {
-      const kk = q(x) + ',' + q(y);
-      if (ptMap.has(kk)) union(i, ptMap.get(kk)!); else ptMap.set(kk, i);
-    });
-  });
-  const clusters = new Map<number, Seg[]>();
-  segs.forEach((s, i) => { const r = find(i); if (!clusters.has(r)) clusters.set(r, []); clusters.get(r)!.push(s); });
-
-  const out: GroundDimWorld[] = [];
-  let count = 0;
-  clusters.forEach(arr => {
-    if (count > 16) return;
-    let mn0 = Infinity, mx0 = -Infinity, mn1 = Infinity, mx1 = -Infinity;
-    arr.forEach(s => { mn0 = Math.min(mn0, s.a0, s.b0); mx0 = Math.max(mx0, s.a0, s.b0); mn1 = Math.min(mn1, s.a1, s.b1); mx1 = Math.max(mx1, s.a1, s.b1); });
-    if ((mx0 - mn0) <= span0 * 0.02 && (mx1 - mn1) <= span1 * 0.02) return;
-    const dd = cutBoxToDims(mn0, mx0, mn1, mx1, topVal, p0, p1, thinAxis, bbox.min[k0], bbox.max[k0], bbox.min[k1], bbox.max[k1], gap);
-    out.push(...dd); count += dd.length;
-  });
-  return out;
-}
-
-/* ── Ground-plane dimension lines ─────────────────────────────────────
-   Width (along the width axis) sits on the +height ground edge (back); depth
-   (along the height axis) sits on the +width ground edge (right). Both are
-   anchored to the panel's own frame, so they don't flicker as the camera
-   orbits. Thickness is shown separately as an info chip, not a dimension. */
-interface GroundDimWorld { fa: THREE.Vector3; fb: THREE.Vector3; da: THREE.Vector3; db: THREE.Vector3; length: number; }
-
-function computeGroundDimWorld(
-  geometry: THREE.BufferGeometry,
-  wIdx: number, hIdx: number, thinAxis: number, up: THREE.Vector3,
-): GroundDimWorld[] {
-  const pos = geometry.getAttribute('position');
-  if (!pos) return [];
-  const bbox = new THREE.Box3().setFromBufferAttribute(pos as THREE.BufferAttribute);
-  const size = new THREE.Vector3(); bbox.getSize(size);
-  const cen = new THREE.Vector3(); bbox.getCenter(cen);
-  const keys = ['x', 'y', 'z'] as const;
-  const wKey = keys[wIdx], hKey = keys[hIdx], thinKey = keys[thinAxis];
-
-  const vOf = (v: THREE.Vector3) => v.dot(up);
-  const cMax = cen.clone(); cMax.setComponent(thinAxis, bbox.max[thinKey]);
-  const cMin = cen.clone(); cMin.setComponent(thinAxis, bbox.min[thinKey]);
-  const groundVal = vOf(cMin) <= vOf(cMax) ? bbox.min[thinKey] : bbox.max[thinKey];
-
-  const wExt = size.getComponent(wIdx), hExt = size.getComponent(hIdx);
-  const gOff = Math.max(wExt, hExt) * 0.16;
-  const mk = (wv: number, hv: number) => {
-    const p = new THREE.Vector3();
-    p.setComponent(wIdx, wv); p.setComponent(hIdx, hv); p.setComponent(thinAxis, groundVal);
-    return p;
-  };
-
-  const dims: GroundDimWorld[] = [];
-  // width (wAxis extent) on +height ground edge
-  {
-    const he = bbox.max[hKey], off = he + gOff;
-    dims.push({ fa: mk(bbox.min[wKey], he), fb: mk(bbox.max[wKey], he), da: mk(bbox.min[wKey], off), db: mk(bbox.max[wKey], off), length: Math.round(wExt) });
-  }
-  // depth (hAxis extent) on +width ground edge
-  {
-    const we = bbox.max[wKey], off = we + gOff;
-    dims.push({ fa: mk(we, bbox.min[hKey]), fb: mk(we, bbox.max[hKey]), da: mk(off, bbox.min[hKey]), db: mk(off, bbox.max[hKey]), length: Math.round(hExt) });
-  }
-  return dims;
-}
-
-interface GroundRender { fa: Pt; fb: Pt; da: Pt; db: Pt; cx: number; cy: number; value: number; }
-
-/* ── Panel Preview — consistent dimetric view, orbit L/R, ground dims ── */
-function PanelPreview2D({ shape, arrowRotated }: { dims: Dims; shape?: any; arrowRotated?: boolean }) {
+/* ── 2D Panel Preview — Three.js orthographic canvas render ─────────── */
+function PanelPreview2D({ dims, shape, arrowRotated }: { dims: Dims; shape?: any; arrowRotated?: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
-  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
-  const [dimDraw, setDimDraw] = useState<{ ground: GroundRender[] }>({ ground: [] });
-  const [canvasSize, setCanvasSize] = useState({ w: 0, h: 0 });
-  const [az, setAz] = useState(22);
+  const [edgeLabels, setEdgeLabels] = useState<EdgeDimLabel[]>([]);
+  const [subLabelSets, setSubLabelSets] = useState<EdgeDimLabel[][]>([]);
+  const [canvasSize, setCanvasSize] = useState({ w: 320, h: 300 });
 
-  const shapeRef = useRef<any>(null); shapeRef.current = shape;
-  const arrowRotatedRef = useRef(arrowRotated); arrowRotatedRef.current = arrowRotated;
-  const azRef = useRef(az); azRef.current = az;
-  const dragRef = useRef<{ x: number; az: number } | null>(null);
+  // Always-current ref so RAF callbacks never read stale closure values
+  const shapeRef = useRef<any>(null);
+  shapeRef.current = shape;
+  const arrowRotatedRef = useRef(arrowRotated);
+  arrowRotatedRef.current = arrowRotated;
 
   useEffect(() => {
-    const canvas = canvasRef.current, wrap = wrapRef.current;
-    if (!canvas || !wrap) return;
-    const r = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
-    r.setPixelRatio(window.devicePixelRatio);
-    r.setClearColor(0x000000, 0);
-    rendererRef.current = r;
+    const wrap = wrapRef.current;
+    const canvas = canvasRef.current;
+    if (!wrap || !canvas) return;
 
-    let raf = 0, tries = 0;
-    const measure = () => {
-      const w = wrap.clientWidth, h = wrap.clientHeight;
-      if (w > 0 && h > 0) setCanvasSize({ w: Math.round(w), h: Math.round(h) });
-      else if (++tries < 20) raf = requestAnimationFrame(measure);
+    let disposed = false;
+    let renderer: THREE.WebGLRenderer | null = null;
+    let material: THREE.MeshLambertMaterial | null = null;
+    let edgesGeo: THREE.EdgesGeometry | null = null;
+    let edgesMat: THREE.LineBasicMaterial | null = null;
+
+    const render = (w: number, h: number) => {
+      // Always read the latest shape from the ref — prevents stale closure
+      // when two rapid store updates happen (e.g. executeFaceExtrude first
+      // writes parameters, then geometry).
+      const shape = shapeRef.current;
+      const arrowRotated = arrowRotatedRef.current;
+      if (disposed || !shape?.geometry) return;
+      renderer?.dispose();
+      material?.dispose();
+      edgesGeo?.dispose();
+      edgesMat?.dispose();
+
+      canvas.width = w * window.devicePixelRatio;
+      canvas.height = h * window.devicePixelRatio;
+      setCanvasSize({ w, h });
+
+      renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setSize(w, h, false);
+      renderer.setClearColor(0x00000000, 0);
+
+      const scene = new THREE.Scene();
+      material = new THREE.MeshLambertMaterial({ color: 0xf5f0e8, side: THREE.DoubleSide });
+      const mesh = new THREE.Mesh(shape.geometry, material);
+      scene.add(mesh);
+
+      edgesGeo = new THREE.EdgesGeometry(shape.geometry, 15);
+      edgesMat = new THREE.LineBasicMaterial({ color: 0x78716c });
+      scene.add(new THREE.LineSegments(edgesGeo, edgesMat));
+
+      scene.add(new THREE.AmbientLight(0xffffff, 0.75));
+      const dir = new THREE.DirectionalLight(0xffffff, 0.7);
+      dir.position.set(0, 1, 0);
+      scene.add(dir);
+
+      const bbox = new THREE.Box3().setFromObject(mesh);
+      const sz = new THREE.Vector3(), center = new THREE.Vector3();
+      bbox.getSize(sz); bbox.getCenter(center);
+
+      const dims3 = [sz.x, sz.y, sz.z];
+      const minIdx = dims3.indexOf(Math.min(...dims3));
+      const lookDirs = [new THREE.Vector3(1,0,0), new THREE.Vector3(0,1,0), new THREE.Vector3(0,0,1)];
+
+      const aspect = w / h;
+      const pad = 1.42;
+
+      // Find the two face axes (non-thickness). def = smaller index, alt = larger.
+      // arrowRotated=false → W is on def axis (screen horizontal)
+      // arrowRotated=true  → W is on alt axis (screen horizontal)
+      // Camera up is chosen so that the W axis always maps to screen-right.
+      const faceAxes = [0, 1, 2].filter(i => i !== minIdx).sort((a, b) => a - b);
+      const [defIdx, altIdx] = faceAxes;
+      const wAxisIdx = arrowRotated ? altIdx : defIdx;
+      const hAxisIdx = arrowRotated ? defIdx : altIdx;
+      const screenW = dims3[wAxisIdx];
+      const screenH = dims3[hAxisIdx];
+
+      // Camera up: solve cross(up, z_cam) = wDir for up, where z_cam = lookDirs[minIdx].
+      // Solution: up = cross(z_cam, wDir).
+      const wDir = new THREE.Vector3(); wDir.setComponent(wAxisIdx, 1);
+      const upVec = new THREE.Vector3().crossVectors(lookDirs[minIdx], wDir).normalize();
+      if (upVec.lengthSq() < 0.01) upVec.set(0, 1, 0);
+
+      const halfWFromW = (screenW / 2) * pad;
+      const halfWFromH = (screenH / 2) * pad * aspect;
+      const halfW = Math.max(halfWFromW, halfWFromH);
+      const halfH = halfW / aspect;
+
+      const camera = new THREE.OrthographicCamera(-halfW, halfW, halfH, -halfH, -10000, 10000);
+      camera.position.copy(center).addScaledVector(lookDirs[minIdx], 1000);
+      camera.up.copy(upVec);
+      camera.lookAt(center);
+      camera.updateProjectionMatrix();
+      camera.updateMatrixWorld();
+
+      // Render subtraction outlines in amber on the canvas
+      const subGeos = Array.isArray(shape.subtractionGeometries) ? shape.subtractionGeometries : [];
+      const subOutlineMaterials: THREE.LineBasicMaterial[] = [];
+      subGeos.forEach((sg: any) => {
+        if (!sg?.geometry) return;
+        const rot = sg.relativeRotation || [0, 0, 0];
+        const rotM = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rot[0], rot[1], rot[2], 'XYZ'));
+        const off = new THREE.Vector3(...((sg.relativeOffset || [0, 0, 0]) as number[]));
+        const sgMesh = new THREE.Mesh(sg.geometry);
+        sgMesh.matrix.copy(rotM); sgMesh.matrix.setPosition(off);
+        sgMesh.matrixAutoUpdate = false;
+        const sgEdgesGeo = new THREE.EdgesGeometry(sg.geometry, 15);
+        const sgMat = new THREE.LineBasicMaterial({ color: 0xd97706 });
+        subOutlineMaterials.push(sgMat);
+        const sgLines = new THREE.LineSegments(sgEdgesGeo, sgMat);
+        sgLines.matrix.copy(rotM); sgLines.matrix.setPosition(off);
+        sgLines.matrixAutoUpdate = false;
+        scene.add(sgLines);
+      });
+
+      renderer.render(scene, camera);
+
+      setEdgeLabels(computeAllEdgeDimLabels(shape.geometry, camera, w, h, minIdx));
+      setSubLabelSets(computeSubDimLabels(subGeos, camera, w, h, minIdx));
     };
-    raf = requestAnimationFrame(measure);
-    const ro = new ResizeObserver(es => {
-      const { width, height } = es[0].contentRect;
-      if (width > 0 && height > 0) setCanvasSize({ w: Math.round(width), h: Math.round(height) });
+
+    // Try up to ~600ms (20 frames) to get a non-zero size before giving up
+    let rafId = 0;
+    let attempts = 0;
+    const tryRender = () => {
+      if (disposed) return;
+      const w = wrap.clientWidth, h = wrap.clientHeight;
+      if (w > 0 && h > 0) { render(w, h); return; }
+      if (++attempts < 20) rafId = requestAnimationFrame(tryRender);
+    };
+    rafId = requestAnimationFrame(tryRender);
+
+    const ro = new ResizeObserver(entries => {
+      const { width, height } = entries[0].contentRect;
+      if (width > 0 && height > 0) render(width, height);
     });
     ro.observe(wrap);
-    return () => { cancelAnimationFrame(raf); ro.disconnect(); r.dispose(); rendererRef.current = null; };
-  }, []);
 
-  useEffect(() => {
-    const renderer = rendererRef.current, canvas = canvasRef.current;
-    const shape = shapeRef.current, arrowRotated = arrowRotatedRef.current;
-    const { w, h } = canvasSize;
-    if (!renderer || !canvas || !shape?.geometry || w <= 0 || h <= 0) return;
+    return () => {
+      disposed = true;
+      cancelAnimationFrame(rafId);
+      ro.disconnect();
+      renderer?.dispose();
+      material?.dispose();
+      edgesGeo?.dispose();
+      edgesMat?.dispose();
+    };
+  // Depend on the geometry UUID so the effect re-runs even if the shape
+  // object reference is somehow reused but the geometry was replaced.
+  }, [shape?.geometry?.uuid, arrowRotated]);
 
-    const dpr = window.devicePixelRatio;
-    canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
-    renderer.setSize(w, h, false);
-
-    const disposables: Array<{ dispose: () => void }> = [];
-    const scene = new THREE.Scene();
-
-    const material = new THREE.MeshStandardMaterial({ color: 0xece5d8, roughness: 0.72, metalness: 0.0, side: THREE.DoubleSide });
-    disposables.push(material);
-    scene.add(new THREE.Mesh(shape.geometry, material));
-
-    const edgesGeo = new THREE.EdgesGeometry(shape.geometry, 18);
-    const lineGeo = new LineSegmentsGeometry().fromEdgesGeometry(edgesGeo);
-    const lineMat = new LineMaterial({ color: 0x44403c, linewidth: 1.5, worldUnits: false, alphaToCoverage: true });
-    lineMat.resolution.set(w, h);
-    disposables.push(edgesGeo, lineGeo, lineMat);
-    const panelLines = new LineSegments2(lineGeo, lineMat);
-    panelLines.computeLineDistances();
-    scene.add(panelLines);
-
-    const bbox = new THREE.Box3().setFromObject(scene);
-    const sz = new THREE.Vector3(), center = new THREE.Vector3();
-    bbox.getSize(sz); bbox.getCenter(center);
-
-    const dims3 = [sz.x, sz.y, sz.z];
-    const minIdx = dims3.indexOf(Math.min(...dims3)); // thickness axis
-
-    // Stable frame: width/height are tied to the planar AXES (low index = width),
-    // matching getDimsFromGeo — so an extrude that changes which side is larger
-    // never auto-rotates the preview. Orientation flips only via the arrow toggle.
-    const planar = [0, 1, 2].filter(i => i !== minIdx).sort((a, b) => a - b);
-    let wIdx = planar[0];
-    let hIdx = planar[1];
-    if (arrowRotated) { const t = wIdx; wIdx = hIdx; hIdx = t; }
-    const wDir = new THREE.Vector3(); wDir.setComponent(wIdx, 1);
-    const hDir = new THREE.Vector3(); hDir.setComponent(hIdx, 1);
-    const nDir = new THREE.Vector3().crossVectors(wDir, hDir).normalize();
-
-    const elev = THREE.MathUtils.degToRad(15);
-    const azim = THREE.MathUtils.degToRad(azRef.current);
-    const camOffset = new THREE.Vector3()
-      .addScaledVector(nDir, Math.cos(elev) * Math.cos(azim))
-      .addScaledVector(wDir, Math.cos(elev) * Math.sin(azim))
-      .addScaledVector(hDir, Math.sin(elev))
-      .normalize();
-    const camDist = 4000;
-
-    scene.add(new THREE.HemisphereLight(0xfff7ec, 0x8c8170, 0.62));
-    scene.add(new THREE.AmbientLight(0xffffff, 0.16));
-    const key = new THREE.DirectionalLight(0xffffff, 0.9);
-    key.position.copy(nDir).multiplyScalar(3).addScaledVector(hDir, 2).addScaledVector(wDir, 1.4);
-    scene.add(key);
-    const fill = new THREE.DirectionalLight(0xeaf0ff, 0.20);
-    fill.position.copy(nDir).addScaledVector(hDir, -1.6).addScaledVector(wDir, -2.2);
-    scene.add(fill);
-    const rim = new THREE.DirectionalLight(0xffffff, 0.15);
-    rim.position.copy(nDir).multiplyScalar(-1).addScaledVector(hDir, 1).addScaledVector(wDir, 0.6);
-    scene.add(rim);
-
-    const aspect = w / h;
-    const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -40000, 40000);
-    camera.position.copy(center).addScaledVector(camOffset, camDist);
-    camera.up.copy(hDir);
-    camera.lookAt(center);
-    camera.updateMatrixWorld();
-
-    const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
-    const upW   = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
-
-    const dimsW = computeGroundDimWorld(shape.geometry, wIdx, hIdx, minIdx, upW);
-
-    const subGeos = Array.isArray(shape.subtractionGeometries) ? shape.subtractionGeometries : [];
-    const cutsW = subGeos.length
-      ? cutDimsFromSubGeos(subGeos, bbox, sz, minIdx, nDir)
-      : computeCutDimsWorld(shape.geometry, minIdx, nDir);
-    const allDimsW = [...dimsW, ...cutsW];
-
-    const allW: THREE.Vector3[] = [];
-    for (const X of [bbox.min.x, bbox.max.x])
-      for (const Y of [bbox.min.y, bbox.max.y])
-        for (const Z of [bbox.min.z, bbox.max.z]) allW.push(new THREE.Vector3(X, Y, Z));
-    allDimsW.forEach(d => { allW.push(d.fa, d.fb, d.da, d.db); });
-
-    let maxU = 0, maxV = 0;
-    allW.forEach(p => {
-      const d = p.clone().sub(center);
-      maxU = Math.max(maxU, Math.abs(d.dot(right)));
-      maxV = Math.max(maxV, Math.abs(d.dot(upW)));
-    });
-
-    const padH = 1.12, padV = 1.12;
-    const halfV = maxV * padV;
-    const dockRoom = halfV * 0.42;
-    const ratioTop = halfV, ratioBot = halfV + dockRoom;
-    let vSpan = ratioTop + ratioBot;
-    let halfH = (vSpan / 2) * aspect;
-    const needH = maxU * padH;
-    if (halfH < needH) { vSpan *= needH / halfH; halfH = needH; }
-    const topB = vSpan * ratioTop / (ratioTop + ratioBot);
-    const botB = vSpan * ratioBot / (ratioTop + ratioBot);
-    camera.left = -halfH; camera.right = halfH; camera.top = topB; camera.bottom = -botB;
-    camera.updateProjectionMatrix();
-    camera.updateMatrixWorld();
-
-    // Cut outlines (amber) from explicit subtraction tools, if any
-    subGeos.forEach((sg: any) => {
-      if (!sg?.geometry) return;
-      const rot = sg.relativeRotation || [0, 0, 0];
-      const rotM = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rot[0], rot[1], rot[2], 'XYZ'));
-      const off = new THREE.Vector3(...((sg.relativeOffset || [0, 0, 0]) as number[]));
-      const sgEdgesGeo = new THREE.EdgesGeometry(sg.geometry, 18);
-      const sgLineGeo = new LineSegmentsGeometry().fromEdgesGeometry(sgEdgesGeo);
-      const sgMat = new LineMaterial({ color: 0xd97706, linewidth: 1.4, worldUnits: false, alphaToCoverage: true });
-      sgMat.resolution.set(w, h);
-      disposables.push(sgEdgesGeo, sgLineGeo, sgMat);
-      const sgLines = new LineSegments2(sgLineGeo, sgMat);
-      sgLines.matrix.copy(rotM); sgLines.matrix.setPosition(off);
-      sgLines.matrixAutoUpdate = false;
-      scene.add(sgLines);
-    });
-
-    renderer.render(scene, camera);
-
-    // ── Project dimensions (outer + cuts share one style) and resolve collisions ──
-    const fsG = Math.max(10, Math.min(13.5, w * 0.027));
-    const boxHalf = (val: number, fs: number) => ({ hw: Math.max(String(val).length * fs * 0.62 + 12, 30) / 2, hh: (fs + 8) / 2 });
-    const norm = (x: number, y: number) => { const l = Math.hypot(x, y) || 1; return { x: x / l, y: y / l }; };
-
-    const screen = allDimsW.map(d => ({
-      fa: project3D(d.fa, camera, w, h), fb: project3D(d.fb, camera, w, h),
-      da: project3D(d.da, camera, w, h), db: project3D(d.db, camera, w, h), length: d.length,
-    }));
-    const items = screen.map(d => {
-      const out = norm(d.da.x - d.fa.x, d.da.y - d.fa.y);
-      const b = boxHalf(d.length, fsG);
-      return { d, out, cx: (d.da.x + d.db.x) / 2, cy: (d.da.y + d.db.y) / 2, hw: b.hw, hh: b.hh };
-    });
-
-    const placed: Array<{ cx: number; cy: number; hw: number; hh: number }> = [];
+  // Resolve label positions with collision avoidance.
+  // Longer edges get priority (placed first at base offset); others step outward.
+  const resolvedMainLabels = useMemo(() => {
+    if (edgeLabels.length === 0) return [];
+    const fs = Math.max(9, Math.min(13, canvasSize.w * 0.026));
+    const offBase = Math.min(canvasSize.w, canvasSize.h) * 0.085;
     const pad = 4;
-    const hits = (cx: number, cy: number, hw: number, hh: number) =>
-      placed.some(pp => Math.abs(pp.cx - cx) < pp.hw + hw + pad && Math.abs(pp.cy - cy) < pp.hh + hh + pad);
 
-    const ground: GroundRender[] = items.map(it => {
-      let push = 0; const step = Math.max(it.hh * 2, 16); let cx = it.cx, cy = it.cy, guard = 0;
-      while (hits(cx, cy, it.hw, it.hh) && guard < 12) { push += step; cx = it.cx + it.out.x * push; cy = it.cy + it.out.y * push; guard++; }
-      placed.push({ cx, cy, hw: it.hw, hh: it.hh });
-      return {
-        fa: it.d.fa, fb: it.d.fb,
-        da: { x: it.d.da.x + it.out.x * push, y: it.d.da.y + it.out.y * push },
-        db: { x: it.d.db.x + it.out.x * push, y: it.d.db.y + it.out.y * push },
-        cx, cy, value: it.d.length,
-      };
+    // Sort longest first so outer boundary edges claim the first slot
+    const sorted = [...edgeLabels].sort((a, b) => b.length - a.length);
+    const placed: { cx: number; cy: number; hw: number; hh: number }[] = [];
+
+    const hits = (cx: number, cy: number, hw: number, hh: number) =>
+      placed.some(p => Math.abs(p.cx - cx) < p.hw + hw + pad && Math.abs(p.cy - cy) < p.hh + hh + pad);
+
+    return sorted.map(lbl => {
+      const txt = String(lbl.length);
+      const lw = Math.max(txt.length * fs * 0.65 + 12, 32) / 2;
+      const lh = (fs + 7) / 2;
+      let mult = 1;
+      while (mult <= 5) {
+        const o = offBase * mult;
+        const ax = lbl.ex1 + lbl.nx * o, ay = lbl.ey1 + lbl.ny * o;
+        const bx = lbl.ex2 + lbl.nx * o, by = lbl.ey2 + lbl.ny * o;
+        const mx = (ax + bx) / 2, my = (ay + by) / 2;
+        if (!hits(mx, my, lw, lh)) { placed.push({ cx: mx, cy: my, hw: lw, hh: lh }); return { lbl, mult }; }
+        mult += 0.8;
+      }
+      const o = offBase * mult;
+      const ax = lbl.ex1 + lbl.nx * o, ay = lbl.ey1 + lbl.ny * o;
+      const bx = lbl.ex2 + lbl.nx * o, by = lbl.ey2 + lbl.ny * o;
+      placed.push({ cx: (ax + bx) / 2, cy: (ay + by) / 2, hw: lw, hh: lh });
+      return { lbl, mult };
+    });
+  }, [edgeLabels, canvasSize]);
+
+  // Same collision avoidance for sub labels, seeded with main label boxes
+  const resolvedSubLabels = useMemo(() => {
+    if (subLabelSets.length === 0) return [];
+    const fs = Math.max(8, Math.min(11, canvasSize.w * 0.022));
+    const offBase = Math.min(canvasSize.w, canvasSize.h) * 0.05;
+    const pad = 3;
+
+    // Seed occupied boxes from main labels
+    const mainFs = Math.max(9, Math.min(13, canvasSize.w * 0.026));
+    const mainOffBase = Math.min(canvasSize.w, canvasSize.h) * 0.085;
+    const placed: { cx: number; cy: number; hw: number; hh: number }[] = resolvedMainLabels.map(({ lbl, mult }) => {
+      const o = mainOffBase * mult;
+      const ax = lbl.ex1 + lbl.nx * o, ay = lbl.ey1 + lbl.ny * o;
+      const bx = lbl.ex2 + lbl.nx * o, by = lbl.ey2 + lbl.ny * o;
+      const txt = String(lbl.length);
+      return { cx: (ax + bx) / 2, cy: (ay + by) / 2, hw: Math.max(txt.length * mainFs * 0.65 + 12, 32) / 2, hh: (mainFs + 7) / 2 };
     });
 
-    setDimDraw({ ground });
-    disposables.forEach(d => d.dispose());
-  }, [shape?.geometry?.uuid, arrowRotated, az, canvasSize.w, canvasSize.h]);
+    const hits = (cx: number, cy: number, hw: number, hh: number) =>
+      placed.some(p => Math.abs(p.cx - cx) < p.hw + hw + pad && Math.abs(p.cy - cy) < p.hh + hh + pad);
 
-  const onPointerDown = (e: React.PointerEvent) => {
-    dragRef.current = { x: e.clientX, az: azRef.current };
-    try { (e.currentTarget as Element).setPointerCapture(e.pointerId); } catch {}
-  };
-  const onPointerMove = (e: React.PointerEvent) => {
-    const d = dragRef.current; if (!d) return;
-    setAz(Math.max(-55, Math.min(55, d.az + (e.clientX - d.x) * 0.35)));
-  };
-  const onPointerUp = () => { dragRef.current = null; };
-
-  const fsG = Math.max(10, Math.min(13.5, canvasSize.w * 0.027));
+    return subLabelSets.map(lbls =>
+      lbls.map(lbl => {
+        const txt = String(lbl.length);
+        const lw = Math.max(txt.length * fs * 0.65 + 10, 28) / 2;
+        const lh = (fs + 6) / 2;
+        // Sub labels offset along nx/ny from their centre
+        let mult = 0;
+        while (mult <= 4) {
+          const o = offBase * mult;
+          const mx = lbl.sx + lbl.nx * o, my = lbl.sy + lbl.ny * o;
+          if (!hits(mx, my, lw, lh)) { placed.push({ cx: mx, cy: my, hw: lw, hh: lh }); return { lbl, mult }; }
+          mult += 0.8;
+        }
+        placed.push({ cx: lbl.sx + lbl.nx * offBase * mult, cy: lbl.sy + lbl.ny * offBase * mult, hw: lw, hh: lh });
+        return { lbl, mult };
+      })
+    );
+  }, [subLabelSets, resolvedMainLabels, canvasSize]);
 
   return (
-    <div
-      ref={wrapRef}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      onPointerLeave={onPointerUp}
-      style={{ position: 'absolute', inset: 0, userSelect: 'none', cursor: 'ew-resize', touchAction: 'none' }}
-    >
+    <div ref={wrapRef} style={{ position: 'absolute', inset: 0, userSelect: 'none' }}>
       <canvas
         ref={canvasRef}
-        style={{
-          display: 'block', position: 'absolute', inset: 0, width: '100%', height: '100%',
-          filter: 'drop-shadow(0 12px 18px rgba(60,45,30,0.22)) drop-shadow(0 2px 3px rgba(60,45,30,0.14))',
-        }}
+        style={{ display: 'block', position: 'absolute', inset: 0, width: '100%', height: '100%' }}
       />
       <svg
         style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'visible' }}
         viewBox={`0 0 ${canvasSize.w} ${canvasSize.h}`}
       >
-        {dimDraw.ground.map((d, i) => {
-          const dx = d.db.x - d.da.x, dy = d.db.y - d.da.y, L = Math.hypot(dx, dy) || 1;
-          const ux = dx / L, uy = dy / L, px = -uy, py = ux;
-          const asz = Math.max(5, Math.min(9, canvasSize.w * 0.017));
-          const txt = String(d.value);
-          const lw = Math.max(txt.length * fsG * 0.62 + 12, 30), lh = fsG + 8;
+        {/* ── All edge segment dimensions (collision-resolved) ── */}
+        {resolvedMainLabels.map(({ lbl, mult }, i) => {
+          const dx = lbl.ex2 - lbl.ex1, dy = lbl.ey2 - lbl.ey1;
+          const len = Math.hypot(dx, dy);
+          if (len < 4) return null;
+          const offBase = Math.min(canvasSize.w, canvasSize.h) * 0.085;
+          const o = offBase * mult;
+          const arrowSz = Math.max(3, offBase * 0.28);
+          const fontSize = Math.max(9, Math.min(13, canvasSize.w * 0.026));
+          const px = lbl.nx, py = lbl.ny;
+          const ax = lbl.ex1 + px * o, ay = lbl.ey1 + py * o;
+          const bx = lbl.ex2 + px * o, by = lbl.ey2 + py * o;
+          const mx = (ax + bx) / 2, my = (ay + by) / 2;
+          const txt = String(lbl.length);
+          const labelW = Math.max(txt.length * fontSize * 0.65 + 12, 32);
+          const labelH = fontSize + 7;
           return (
-            <g key={`gd-${i}`}>
-              <line x1={d.fa.x} y1={d.fa.y} x2={d.da.x} y2={d.da.y} stroke="#b3a89a" strokeWidth="0.9"/>
-              <line x1={d.fb.x} y1={d.fb.y} x2={d.db.x} y2={d.db.y} stroke="#b3a89a" strokeWidth="0.9"/>
-              <line x1={d.da.x} y1={d.da.y} x2={d.db.x} y2={d.db.y} stroke="#8c857e" strokeWidth="1.2"/>
-              <polygon points={`${d.da.x},${d.da.y} ${d.da.x+ux*asz+px*asz*0.45},${d.da.y+uy*asz+py*asz*0.45} ${d.da.x+ux*asz-px*asz*0.45},${d.da.y+uy*asz-py*asz*0.45}`} fill="#8c857e"/>
-              <polygon points={`${d.db.x},${d.db.y} ${d.db.x-ux*asz+px*asz*0.45},${d.db.y-uy*asz+py*asz*0.45} ${d.db.x-ux*asz-px*asz*0.45},${d.db.y-uy*asz-py*asz*0.45}`} fill="#8c857e"/>
-              <rect x={d.cx - lw / 2} y={d.cy - lh / 2} width={lw} height={lh} rx={4} fill="rgba(248,245,240,0.97)" stroke="#cfc8bd" strokeWidth="0.7"/>
-              <text x={d.cx} y={d.cy + fsG * 0.36} textAnchor="middle" fontSize={fsG} fill="#1c1917" fontFamily="monospace" fontWeight="700">{txt}</text>
+            <g key={`outer-${i}`}>
+              <line x1={lbl.ex1 + px * 2} y1={lbl.ey1 + py * 2} x2={ax} y2={ay} stroke="#a8a29e" strokeWidth="0.9"/>
+              <line x1={lbl.ex2 + px * 2} y1={lbl.ey2 + py * 2} x2={bx} y2={by} stroke="#a8a29e" strokeWidth="0.9"/>
+              <line x1={ax} y1={ay} x2={bx} y2={by} stroke="#a8a29e" strokeWidth="1.2"/>
+              <polygon points={`${ax},${ay} ${ax+(dx/len)*arrowSz+py*arrowSz*0.5},${ay+(dy/len)*arrowSz-px*arrowSz*0.5} ${ax+(dx/len)*arrowSz-py*arrowSz*0.5},${ay+(dy/len)*arrowSz+px*arrowSz*0.5}`} fill="#a8a29e"/>
+              <polygon points={`${bx},${by} ${bx-(dx/len)*arrowSz+py*arrowSz*0.5},${by-(dy/len)*arrowSz-px*arrowSz*0.5} ${bx-(dx/len)*arrowSz-py*arrowSz*0.5},${by-(dy/len)*arrowSz+px*arrowSz*0.5}`} fill="#a8a29e"/>
+              <rect x={mx - labelW / 2} y={my - labelH / 2} width={labelW} height={labelH} rx={3} fill="rgba(245,242,237,0.97)" stroke="#d6d3d1" strokeWidth="0.7"/>
+              <text x={mx} y={my + fontSize * 0.36} textAnchor="middle" fontSize={fontSize} fill="#1c1917" fontFamily="monospace" fontWeight="700">{txt}</text>
             </g>
           );
         })}
+
+        {/* ── Subtraction cut dimensions, amber, collision-resolved ── */}
+        {resolvedSubLabels.map((lbls, si) =>
+          lbls.map(({ lbl, mult }, i) => {
+            const dx = lbl.ex2 - lbl.ex1, dy = lbl.ey2 - lbl.ey1;
+            const len = Math.hypot(dx, dy);
+            if (len < 4) return null;
+            const offBase = Math.min(canvasSize.w, canvasSize.h) * 0.05;
+            const o = offBase * mult;
+            const arrowSz = Math.max(2, offBase * 0.35);
+            const fontSize = Math.max(8, Math.min(11, canvasSize.w * 0.022));
+            const mx = lbl.sx + lbl.nx * o, my = lbl.sy + lbl.ny * o;
+            const txt = String(lbl.length);
+            const labelW = Math.max(txt.length * fontSize * 0.65 + 10, 28);
+            const labelH = fontSize + 6;
+            return (
+              <g key={`sub-${si}-${i}`}>
+                <line x1={lbl.ex1} y1={lbl.ey1} x2={lbl.ex2} y2={lbl.ey2} stroke="#d97706" strokeWidth="1.1" strokeDasharray="3,2"/>
+                <polygon points={`${lbl.ex1},${lbl.ey1} ${lbl.ex1+(dx/len)*arrowSz},${lbl.ey1+(dy/len)*arrowSz}`} fill="#d97706"/>
+                <polygon points={`${lbl.ex2},${lbl.ey2} ${lbl.ex2-(dx/len)*arrowSz},${lbl.ey2-(dy/len)*arrowSz}`} fill="#d97706"/>
+                <line x1={(lbl.ex1+lbl.ex2)/2} y1={(lbl.ey1+lbl.ey2)/2} x2={mx} y2={my} stroke="#d97706" strokeWidth="0.7" strokeDasharray="2,2"/>
+                <rect x={mx - labelW / 2} y={my - labelH / 2} width={labelW} height={labelH} rx={3} fill="rgba(255,247,220,0.97)" stroke="#f59e0b" strokeWidth="0.8"/>
+                <text x={mx} y={my + fontSize * 0.36} textAnchor="middle" fontSize={fontSize} fill="#92400e" fontFamily="monospace" fontWeight="700">{txt}</text>
+              </g>
+            );
+          })
+        )}
       </svg>
+
+      {/* Direction arrow — rotates 90° when arrowRotated is true */}
+      <div style={{
+        position: 'absolute', bottom: 10, left: 12, display: 'flex', alignItems: 'center', gap: 6, pointerEvents: 'none',
+      }}>
+        <div style={{
+          background: 'rgba(41,37,36,0.82)', borderRadius: 5,
+          padding: '3px 10px', fontSize: 12, fontFamily: 'monospace', fontWeight: 700, color: 'rgba(255,255,255,0.97)',
+        }}>
+          T {dims.thickness}
+        </div>
+        <svg width="28" height="28" viewBox="0 0 28 28"
+          style={{ transform: arrowRotated ? 'none' : 'rotate(90deg)', transition: 'transform 0.25s ease' }}>
+          {/* circle background */}
+          <circle cx="14" cy="14" r="13" fill="rgba(41,37,36,0.82)" />
+          {/* arrow shaft */}
+          <line x1="14" y1="20" x2="14" y2="9" stroke="white" strokeWidth="2" strokeLinecap="round"/>
+          {/* arrowhead */}
+          <polygon points="14,5 10,11 18,11" fill="white"/>
+        </svg>
+      </div>
     </div>
   );
 }
@@ -559,8 +605,10 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
 
   const activePanelId = useMemo(() => {
     if (!selectedShape || selectedPanelRow === null) return null;
+    // Virtual face panel: row key is "vf-{id}"
     if (typeof selectedPanelRow === 'string' && selectedPanelRow.startsWith('vf-'))
       return findVPanel(shapes, selectedShape.id, selectedPanelRow.replace('vf-', ''))?.id || null;
+    // Legacy panel: row key is faceIndex (number)
     if (typeof selectedPanelRow === 'number')
       return shapes.find(s => s.type === 'panel' && s.parameters?.parentShapeId === selectedShape.id && s.parameters?.faceIndex === selectedPanelRow)?.id || null;
     return null;
@@ -579,6 +627,9 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
   }, [selectedShapeId]);
 
   useEffect(() => {
+    // Only auto-create panels for faces that have no panel shape yet in the store.
+    // Faces where the user explicitly removed the panel (hasPanel: false, but shape was deleted)
+    // must NOT be recreated — we detect them by checking if a matching panel shape exists.
     const currentShapes = useAppStore.getState().shapes;
     const pending = virtualFaces.filter(vf =>
       !vf.hasPanel &&
@@ -621,6 +672,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     const steps = ps.parameters?.extrudeSteps || []; if (!steps.length) return;
     const groups = groupCoplanarFaces(extractFacesFromGeometry(ps.geometry));
     let g = groups[faceExtrudeSelectedFace]; if (!g) return;
+    // Snap curved (fillet) face to nearest axis-aligned flat face
     const gn = g.normal.clone().normalize();
     const isFlatGroup = Math.abs(gn.x) > 0.9 || Math.abs(gn.y) > 0.9 || Math.abs(gn.z) > 0.9;
     if (!isFlatGroup) {
@@ -708,6 +760,10 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       </div>
     );
 
+    // Group VFs by face normal direction so same-face panels appear together.
+    // Two VFs belong to the same face group only when they share both the same
+    // normal direction AND the same plane (normal · center ≈ same offset).
+    // This prevents parallel faces at different depths from being merged.
     const normalKey = (vf: typeof svf[0]) => {
       const nStr = vf.normal.map(n => (Math.round(n * 10) / 10).toFixed(1)).join(',');
       const [nx, ny, nz] = vf.normal;
@@ -715,6 +771,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       const planeOffset = (Math.round((nx * cx + ny * cy + nz * cz) * 2) / 2).toFixed(1);
       return `${nStr}@${planeOffset}`;
     };
+    // Build ordered groups preserving first-seen order of normals.
     const groupOrder: string[] = [];
     const groupMap = new Map<string, typeof svf>();
     for (const vf of svf) {
@@ -723,6 +780,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       groupMap.get(k)!.push(vf);
     }
     const faceGroupsList = groupOrder.map(k => groupMap.get(k)!);
+    // Flat ordered list matching the grouped display order
     const orderedVfs = faceGroupsList.flat();
 
     const createVP = async (_: string, vi: number) => {
@@ -744,11 +802,13 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       if (selectedPanelRow === `vf-${vfId}`) setSelectedPanelRow(null);
     };
 
+    // Group-level drag: dragging any row in a group moves the whole group.
     const onGroupDrop = async (draggedGroupKey: string, targetGroupKey: string) => {
       setDragIndex(null); setDropIndex(null);
       if (draggedGroupKey === targetGroupKey) return;
       const draggedGroup = groupMap.get(draggedGroupKey)!;
       const targetGroup = groupMap.get(targetGroupKey)!;
+      // Insert dragged group before the target group
       reorderVirtualFaceGroup(sid, draggedGroup.map(v => v.id), targetGroup[0].id);
       const { rebuildPanelsForParent } = await import('./PanelRebuildService');
       await rebuildPanelsForParent(sid);
@@ -764,129 +824,155 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     const elements: React.ReactNode[] = [];
     let globalIdx = 0;
 
-    faceGroupsList.forEach((group) => {
+    faceGroupsList.forEach((group, gi) => {
       const groupKey = normalKey(group[0]);
       const isGroupMulti = group.length > 1;
-      const groupFirstIdx = orderedVfs.findIndex(v => v.id === group[0].id);
-      const isDraggingThisGroup = dragIndex !== null && group.some(vf => orderedVfs.findIndex(v => v.id === vf.id) === dragIndex);
-      const isDropTargetGroup = dropIndex !== null && dropIndex === groupFirstIdx;
-      const anySel = group.some(vf => selectedPanelRow === `vf-${vf.id}`);
+      const isDraggingThisGroup = dragIndex !== null && group.some(vf => {
+        const idx = orderedVfs.findIndex(v => v.id === vf.id);
+        return idx === dragIndex;
+      });
+      const isDropTargetGroup = dropIndex !== null && (() => {
+        const firstIdx = orderedVfs.findIndex(v => v.id === group[0].id);
+        return dropIndex === firstIdx;
+      })();
 
-      const innerRows = group.map((vf, subIdx) => {
+      group.forEach((vf, subIdx) => {
         const vi = svf.findIndex(v => v.id === vf.id);
         const displayIdx = globalIdx + 1;
         globalIdx++;
-        const vp = findVPanel(shapes, sid, vf.id), ar = vp?.parameters?.arrowRotated || false, sel = selectedPanelRow === `vf-${vf.id}`;
+        const orderedIdx = orderedVfs.findIndex(v => v.id === vf.id);
+        const vp = findVPanel(shapes, sid, vf.id), ar = vp?.parameters?.arrowRotated||false, sel = selectedPanelRow === `vf-${vf.id}`;
         const dims = vp?.geometry ? getDimsFromGeo(vp.geometry, ar) : null;
+        const isFirst = subIdx === 0;
+        const isLast = subIdx === group.length - 1;
 
-        return (
+        elements.push(
           <div
             key={vf.id}
+            onDragOver={e => {
+              if (dragIndex !== null) {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                const firstIdx = orderedVfs.findIndex(v => v.id === group[0].id);
+                if (dropIndex !== firstIdx) setDropIndex(firstIdx);
+              }
+            }}
+            onDragLeave={e => {
+              const firstIdx = orderedVfs.findIndex(v => v.id === group[0].id);
+              if (dropIndex === firstIdx) setDropIndex(null);
+            }}
+            onDrop={e => {
+              e.preventDefault();
+              if (dragIndex === null) return;
+              const draggingVf = orderedVfs[dragIndex];
+              const draggingKey = normalKey(draggingVf);
+              if (isFirst) onGroupDrop(draggingKey, groupKey);
+            }}
             onClick={e => { stop(e); setSelectedPanelRow(`vf-${vf.id}`, null, sid); }}
-            className={`group/row relative flex items-center gap-1.5 pl-2.5 pr-1 py-px cursor-pointer transition-colors duration-150
-              ${sel ? 'bg-[#fff6ec]' : 'hover:bg-[#faf6ef]'}`}
-          >
-            {sel && <span className="absolute left-0 top-0 bottom-0 w-[2.5px] rounded-r-sm bg-gradient-to-b from-orange-400 to-orange-500" />}
-
-            <span className={`shrink-0 inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full text-[11px] font-semibold tabular-nums transition-all
+            className={`
+              group relative flex items-center gap-2 px-2.5 py-1.5 cursor-pointer
+              transition-all duration-150 select-none
+              ${isGroupMulti && isFirst ? 'rounded-t-lg' : ''}
+              ${isGroupMulti && isLast ? 'rounded-b-lg' : ''}
+              ${!isGroupMulti ? 'rounded-lg' : ''}
               ${sel
-                ? 'bg-gradient-to-b from-orange-400 to-orange-500 text-white ring-1 ring-orange-500/40 shadow-[0_1px_3px_rgba(234,88,12,0.35)]'
-                : 'bg-gradient-to-b from-white to-[#efe9df] text-stone-600 ring-1 ring-[#e4ded4] shadow-[0_1px_1.5px_rgba(68,64,60,0.08),inset_0_1px_0_rgba(255,255,255,0.9)] group-hover/row:ring-[#e7b487] group-hover/row:text-orange-600'}`}>
-              {displayIdx}
-            </span>
+                ? 'bg-orange-50 ring-1 ring-orange-300 shadow-sm'
+                : isGroupMulti
+                  ? 'hover:bg-sky-50/60 ring-1 ring-transparent hover:ring-sky-200/70'
+                  : 'hover:bg-stone-50 ring-1 ring-transparent hover:ring-stone-200'}
+              ${isDraggingThisGroup ? 'opacity-40' : ''}
+              ${isDropTargetGroup && isFirst ? 'ring-1 ring-blue-400 bg-blue-50' : ''}
+              ${isGroupMulti && !isFirst ? 'border-t border-sky-100/80' : ''}
+            `}
+          >
+            {/* Group connector line for multi-panel faces */}
+            {isGroupMulti && (
+              <div className={`absolute left-[18px] w-px bg-sky-200
+                ${isFirst ? 'top-1/2 bottom-0' : isLast ? 'top-0 bottom-1/2' : 'top-0 bottom-0'}
+              `} style={{ zIndex: 0 }} />
+            )}
 
-            <input
-              type="text"
-              value={vf.description || ''}
+            {/* Drag handle — drags the whole face group */}
+            <span
+              draggable
+              onDragStart={e => {
+                stop(e);
+                setDragIndex(orderedIdx);
+                e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.setData('text/plain', groupKey);
+              }}
+              onDragEnd={() => { setDragIndex(null); setDropIndex(null); }}
               onClick={stop}
-              onChange={e => updateVirtualFace(vf.id, { description: e.target.value })}
-              placeholder="not…"
-              className="flex-1 min-w-0 px-1 py-1 text-xs bg-transparent border-b border-transparent hover:border-[#dcd5ca] focus:border-orange-400 rounded-none outline-none text-stone-700 placeholder:text-stone-300 transition-colors"
-            />
+              className="cursor-grab active:cursor-grabbing text-stone-300 hover:text-stone-400 shrink-0 relative z-10"
+              title={isGroupMulti ? 'Drag to move entire face group' : 'Drag to reorder'}
+            ><GripVertical size={15}/></span>
 
-            {dims && (
-              <span onClick={stop} className="shrink-0 inline-flex items-center text-xs leading-none tabular-nums px-0.5">
-                <span className="text-stone-400 font-medium">W</span><span className="text-stone-700 font-semibold ml-1">{dims.primary}</span>
-                <span className="text-stone-300 mx-1.5">·</span>
-                <span className="text-stone-400 font-medium">H</span><span className="text-stone-700 font-semibold ml-1">{dims.secondary}</span>
-                <span className="text-stone-300 mx-1.5">·</span>
-                <span className="text-stone-400 font-medium">T</span><span className="text-stone-700 font-semibold ml-1">{dims.thickness}</span>
+            {/* Index badge — dot connector for sub-rows */}
+            {isGroupMulti && !isFirst ? (
+              <span className="shrink-0 w-7 h-6 flex items-center justify-center relative z-10">
+                <span className="w-1.5 h-1.5 rounded-full bg-sky-300" />
+              </span>
+            ) : (
+              <span className="shrink-0 w-7 h-6 flex items-center justify-center rounded-md text-sm font-bold font-mono bg-stone-100 text-stone-500 relative z-10">
+                {displayIdx}
               </span>
             )}
 
-            <div className="flex items-center gap-0.5 shrink-0" onClick={stop}>
-              <button onClick={async () => { if (vf.hasPanel) removeVP(vf.id); else await createVP(vf.id, vi); }}
-                className="w-[22px] h-[22px] rounded-md flex items-center justify-center text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700 transition-colors"
-                title={vf.hasPanel ? 'Paneli kaldır' : 'Panel oluştur'}>
-                <span className={`w-3.5 h-3.5 rounded-[3px] border flex items-center justify-center transition-colors ${vf.hasPanel ? 'bg-orange-500 border-orange-500' : 'border-stone-300'}`}>
-                  {vf.hasPanel && <Check size={10} strokeWidth={3} className="text-white"/>}
-                </span>
-              </button>
+            {/* Note input */}
+            <input
+              type="text"
+              value={vf.description||''}
+              onClick={stop}
+              onChange={e => updateVirtualFace(vf.id, { description: e.target.value })}
+              placeholder="note…"
+              style={{ width: '27mm' }}
+              className="px-2 py-1 text-sm bg-transparent border-b border-transparent hover:border-stone-300 focus:border-orange-400 rounded-none outline-none text-stone-700 placeholder:text-stone-300 transition-colors"
+            />
 
+            {/* Dims inline */}
+            {dims && (
+              <span className="flex items-center gap-0.5 text-xs font-mono shrink-0 leading-none tabular-nums" onClick={stop}>
+                <span className="text-stone-400">W</span><span className="text-stone-700 font-bold inline-block min-w-[32px] text-right">{dims.primary}</span>
+                <span className="text-stone-300 mx-0.5">·</span>
+                <span className="text-stone-400">H</span><span className="text-stone-700 font-bold inline-block min-w-[32px] text-right">{dims.secondary}</span>
+                <span className="text-stone-300 mx-0.5">·</span>
+                <span className="text-stone-400">T</span><span className="text-stone-700 font-bold inline-block min-w-[20px] text-right">{dims.thickness}</span>
+              </span>
+            )}
+
+            {/* Action buttons */}
+            <div className="ml-auto flex items-center gap-1 shrink-0" onClick={stop}>
+              <input type="checkbox" checked={vf.hasPanel} onClick={stop}
+                onChange={async () => { if (vf.hasPanel) removeVP(vf.id); else await createVP(vf.id, vi); }}
+                className="w-4 h-4 rounded text-green-500 focus:ring-green-400 cursor-pointer accent-green-500"
+                title={`Toggle panel ${displayIdx}`}/>
               <button disabled={!vf.hasPanel} onClick={e => { stop(e); toggleArrow(vp); }}
-                className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-stone-700 bg-[#f1ece4]' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
-                title="Ok yönünü değiştir"><ArrowUp size={14} className={`transition-transform duration-200 ${ar ? '' : 'rotate-90'}`}/></button>
-
-              <button disabled={!vf.hasPanel || !vp} onClick={async e => {
+                className={`p-1 rounded transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-blue-500' : 'text-stone-300 hover:text-stone-500'}`}
+                title="Rotate arrow"><RotateCw size={13}/></button>
+              <button disabled={!vf.hasPanel||!vp} onClick={async e => {
                 stop(e); if (!vp) return;
                 const { reshapePanelToParentFace } = await import('./PanelReshapeService');
                 await reshapePanelToParentFace(vp.id);
               }}
-                className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel || !vp ? 'text-stone-200 cursor-not-allowed' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
-                title="Ana yüze eşitle"><Shapes size={13}/></button>
-
+                className={`p-1 rounded transition-colors ${!vf.hasPanel||!vp ? 'text-stone-200 cursor-not-allowed' : 'text-stone-300 hover:text-teal-600'}`}
+                title="Match parent face"><Shapes size={13}/></button>
               <button onClick={e => { stop(e); if (vf.hasPanel) removeVP(vf.id); deleteVirtualFace(vf.id); }}
-                className="w-[22px] h-[22px] rounded-md flex items-center justify-center text-stone-400 hover:bg-red-50 hover:text-red-500 transition-colors"
-                title="Yüzü sil"><Trash2 size={13}/></button>
+                className="p-1 rounded text-stone-300 hover:text-red-400 transition-colors"
+                title="Delete face"><Trash2 size={13}/></button>
             </div>
           </div>
         );
       });
 
-      elements.push(
-        <div
-          key={groupKey}
-          onDragOver={e => {
-            if (dragIndex !== null) {
-              e.preventDefault();
-              e.dataTransfer.dropEffect = 'move';
-              if (dropIndex !== groupFirstIdx) setDropIndex(groupFirstIdx);
-            }
-          }}
-          onDragLeave={() => { if (dropIndex === groupFirstIdx) setDropIndex(null); }}
-          onDrop={e => {
-            e.preventDefault();
-            if (dragIndex === null) return;
-            onGroupDrop(normalKey(orderedVfs[dragIndex]), groupKey);
-          }}
-          className={`relative flex items-stretch rounded-lg overflow-hidden transition-all duration-150
-            ${anySel
-              ? 'bg-white ring-1 ring-[#f3c89e] shadow-[0_2px_10px_-3px_rgba(234,88,12,0.20),0_1px_2px_rgba(68,64,60,0.06)]'
-              : 'bg-white ring-1 ring-[#e7e2da] shadow-[0_1px_2px_rgba(68,64,60,0.05),0_1px_1px_rgba(68,64,60,0.03)] hover:ring-[#dbd4c9] hover:shadow-[0_3px_10px_-3px_rgba(68,64,60,0.12),0_1px_2px_rgba(68,64,60,0.05)]'}
-            ${isDraggingThisGroup ? 'opacity-40 scale-[0.99]' : ''}
-            ${isDropTargetGroup ? '!ring-blue-400 bg-blue-50' : ''}`}
-        >
-          <span
-            draggable
-            onDragStart={e => {
-              stop(e);
-              setDragIndex(groupFirstIdx);
-              e.dataTransfer.effectAllowed = 'move';
-              e.dataTransfer.setData('text/plain', groupKey);
-            }}
-            onDragEnd={() => { setDragIndex(null); setDropIndex(null); }}
-            onClick={stop}
-            className="cursor-grab active:cursor-grabbing shrink-0 w-6 self-stretch flex items-center justify-center text-stone-300/90 hover:text-stone-600 bg-gradient-to-b from-[#fbf9f5] to-[#f4efe7] hover:from-[#f4efe7] hover:to-[#ebe4d9] active:to-[#e3dbce] border-r border-[#ece6dc] transition-colors"
-            title={isGroupMulti ? 'Sürükleyerek tüm grubu taşı' : 'Sürükleyerek sırala'}
-          ><GripVertical size={15}/></span>
-
-          <div className="flex-1 min-w-0 flex flex-col">
-            {innerRows}
-          </div>
-        </div>
-      );
+      // Gap between groups (drop zone after each group)
+      if (gi < faceGroupsList.length - 1) {
+        elements.push(
+          <div key={`gap-${gi}`} className="h-1" />
+        );
+      }
     });
 
+    // Drop zone at the very end (to drop a group at the end of the list)
     elements.push(
       <div
         key="drop-end"
@@ -906,136 +992,137 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     return elements;
   })() : null;
 
-  /* ── Integrated bottom dock (foot of the preview canvas) ─────────────── */
-  const iconBtn = (color: string): React.CSSProperties => ({
-    width: 20, height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center',
-    borderRadius: 5, border: 'none', background: 'transparent', cursor: 'pointer',
-    color, outline: 'none', padding: 0, transition: 'background 0.12s',
-  });
-
-  const extrudeDock = (() => {
+  /* ── Panel detail section (preview + extrude controls + steps) ─────── */
+  const panelDetailSection = (() => {
     if (!activePanelId || !activePanel) return null;
     const isExt = faceExtrudeMode && !!activePanelId;
     const hf = faceExtrudeSelectedFace !== null;
-    if (!isExt && activeSteps.length === 0) return null;
-
-    const seg = (f: boolean): React.CSSProperties => ({
-      flex: 1, minWidth: 0, height: 28, fontSize: 10, fontWeight: 700, letterSpacing: '0.03em',
-      border: 'none', outline: 'none', cursor: hf ? 'pointer' : 'not-allowed',
-      borderLeft: !f ? '1px solid rgba(60,50,40,0.10)' : 'none',
-      background: faceExtrudeFixedMode === f ? '#e8e1d5' : 'rgba(255,255,255,0.45)',
-      color: faceExtrudeFixedMode === f ? '#44403c' : '#a8a29e',
-      boxShadow: faceExtrudeFixedMode === f ? 'inset 0 1px 2px rgba(60,50,40,0.14)' : 'none',
-      transition: 'all 0.12s',
-    });
-
-    const exitBtn = (
-      <button onClick={e => { stop(e); setFaceExtrudeSelectedFace(null); setFaceExtrudeMode(false); }}
-        title="Çıkış" style={{
-          flexShrink: 0, width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
-          borderRadius: 7, border: '1px solid rgba(60,50,40,0.12)', cursor: 'pointer', outline: 'none',
-          background: 'rgba(255,255,255,0.55)', color: '#78716c', transition: 'all 0.12s',
-        }}><X size={13} /></button>
-    );
-
-    const onApply = async () => {
-      if (!hf || !activePanelId) return;
-      const ps = shapes.find(s => s.id === activePanelId); if (!ps) return;
-      const { executeFaceExtrude } = await import('./FaceExtrudeService');
-      const vfId = ps.parameters?.virtualFaceId as string | undefined;
-      const vf = vfId ? virtualFaces.find(f => f.id === vfId) : undefined;
-      await executeFaceExtrude({
-        panelShape: ps, faceGroupIndex: faceExtrudeSelectedFace!,
-        value: faceExtrudeThickness, isFixed: faceExtrudeFixedMode,
-        shapes, updateShape, clickPoint: faceExtrudeClickPoint ?? undefined,
-        virtualFaceId: vfId,
-        vfNormal: vf?.normal as [number, number, number] | undefined,
-        vfVertex0: vf?.vertices?.[0] as [number, number, number] | undefined,
-        updateVirtualFace,
-      });
-      setFaceExtrudeSelectedFace(null);
-      setFaceExtrudeMode(false);
-    };
 
     return (
-      <div style={{
-        position: 'absolute', left: 8, right: 8, bottom: 8, zIndex: 5, borderRadius: 11,
-        background: 'linear-gradient(180deg,rgba(250,248,244,0.86),rgba(239,235,227,0.9))',
-        backdropFilter: 'blur(16px) saturate(150%)', WebkitBackdropFilter: 'blur(16px) saturate(150%)',
-        border: '1px solid rgba(60,50,40,0.13)',
-        boxShadow: '0 10px 24px -12px rgba(40,30,20,0.30),0 0 0 0.5px rgba(60,50,40,0.05),inset 0 1px 0 rgba(255,255,255,0.92)',
-        display: 'flex', flexDirection: 'column', overflow: 'hidden',
-        fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif",
-      }}>
-        {isExt && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 9px' }}>
-            {hf ? (
-              <>
+      <div className="flex flex-col gap-3">
+        {/* Face Extrude Controls */}
+        <div className="rounded-xl bg-gradient-to-b from-white to-stone-50/80 border border-stone-200 overflow-hidden">
+          <div className="px-3 py-2 flex items-center gap-2 border-b border-stone-100">
+            <span className="text-[10px] font-semibold text-stone-400 uppercase tracking-widest flex-1">Face Extrude</span>
+            <button
+              onClick={e => { stop(e); faceExtrudeMode ? setFaceExtrudeMode(false) : (setFaceExtrudeTargetPanelId(activePanelId), setFaceExtrudeMode(true)); }}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold transition-all duration-150
+                ${isExt
+                  ? 'bg-orange-500 text-white shadow-sm ring-1 ring-orange-400'
+                  : 'bg-white text-stone-600 border border-stone-300 hover:border-orange-300 hover:text-orange-600'}`}
+            >
+              <MoveVertical size={11}/>
+              {isExt ? 'Active' : 'Enable'}
+            </button>
+          </div>
+
+          {isExt && (
+            <div className="px-3 py-2.5 flex items-center gap-2">
+              <div className="flex-1">
+                <label className="text-[10px] text-stone-400 mb-1 block">Thickness</label>
                 <input
-                  type="text" inputMode="numeric" value={faceExtrudeThickness}
-                  onChange={e => setFaceExtrudeThickness(Number(e.target.value) || 0)}
-                  style={{
-                    flex: 1, minWidth: 0, height: 28, textAlign: 'center', fontFamily: 'monospace', fontSize: 13, fontWeight: 600,
-                    color: '#1c1917', background: 'linear-gradient(180deg,#fff,#faf8f3)', border: '1px solid rgba(60,50,40,0.16)',
-                    borderRadius: 7, outline: 'none', boxShadow: 'inset 0 1px 2px rgba(40,30,20,0.06)',
-                  }}
+                  type="text" inputMode="numeric"
+                  value={faceExtrudeThickness}
+                  onChange={e => setFaceExtrudeThickness(Number(e.target.value)||0)}
+                  disabled={!hf}
+                  className={`w-full h-7 px-2 text-xs font-mono text-center border rounded-md focus:outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100 transition-all
+                    ${hf ? 'bg-white border-stone-300' : 'bg-stone-50 border-stone-200 text-stone-300 cursor-not-allowed'}`}
                 />
-                <div style={{ display: 'flex', width: 86, flexShrink: 0, borderRadius: 7, overflow: 'hidden', border: '1px solid rgba(60,50,40,0.16)' }}>
+              </div>
+              <div className="flex-1">
+                <label className="text-[10px] text-stone-400 mb-1 block">Mode</label>
+                <div className={`flex rounded-md overflow-hidden border ${hf ? 'border-stone-300' : 'border-stone-200 opacity-50'}`}>
                   {[true, false].map(f => (
-                    <button key={String(f)} onClick={() => setFaceExtrudeFixedMode(f)} style={seg(f)}>{f ? 'Fixed' : 'Dyn'}</button>
+                    <button key={String(f)} disabled={!hf} onClick={() => setFaceExtrudeFixedMode(f)}
+                      className={`flex-1 h-7 text-xs font-semibold transition-colors ${!f ? 'border-l border-stone-200' : ''}
+                        ${faceExtrudeFixedMode === f
+                          ? 'bg-orange-500 text-white'
+                          : 'bg-white text-stone-500 hover:bg-stone-50'}`}
+                    >{f ? 'Fixed' : 'Dynamic'}</button>
                   ))}
                 </div>
-                <button onClick={onApply} title="Uygula" style={{
-                  flexShrink: 0, width: 32, height: 28, borderRadius: 7, border: 'none', cursor: 'pointer', outline: 'none',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  background: 'linear-gradient(180deg,#5b5346,#44403c)', color: '#fff',
-                  boxShadow: '0 1px 2px rgba(40,30,20,0.25),inset 0 1px 0 rgba(255,255,255,0.18)',
-                }}><Check size={15} strokeWidth={2.5} /></button>
-                {exitBtn}
-              </>
-            ) : (
-              <>
-                <div style={{
-                  flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 7, height: 28, padding: '0 10px', borderRadius: 7,
-                  background: 'rgba(120,113,108,0.08)', border: '1px solid rgba(60,50,40,0.10)',
-                }}>
-                  <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#a8a29e', flexShrink: 0 }} />
-                  <span style={{ fontSize: 11, fontWeight: 500, color: '#78716c', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>3B görünümde yüzey seç</span>
-                </div>
-                {exitBtn}
-              </>
-            )}
-          </div>
-        )}
+              </div>
+              <button
+                disabled={!hf}
+                onClick={async () => {
+                  if (!hf || !activePanelId) return;
+                  const ps = shapes.find(s => s.id === activePanelId); if (!ps) return;
+                  const { executeFaceExtrude } = await import('./FaceExtrudeService');
+                  const vfId = ps.parameters?.virtualFaceId as string | undefined;
+                  const vf = vfId ? virtualFaces.find(f => f.id === vfId) : undefined;
+                  await executeFaceExtrude({
+                    panelShape: ps,
+                    faceGroupIndex: faceExtrudeSelectedFace!,
+                    value: faceExtrudeThickness,
+                    isFixed: faceExtrudeFixedMode,
+                    shapes,
+                    updateShape,
+                    clickPoint: faceExtrudeClickPoint ?? undefined,
+                    virtualFaceId: vfId,
+                    vfNormal: vf?.normal as [number,number,number] | undefined,
+                    vfVertex0: vf?.vertices?.[0] as [number,number,number] | undefined,
+                    updateVirtualFace,
+                  });
+                  setFaceExtrudeSelectedFace(null);
+                  setFaceExtrudeMode(false);
+                }}
+                className={`self-end mb-0.5 flex items-center justify-center w-7 h-7 rounded-md border transition-all
+                  ${hf
+                    ? 'border-green-400 bg-green-500 text-white hover:bg-green-600 shadow-sm'
+                    : 'border-stone-200 bg-stone-50 text-stone-300 cursor-not-allowed'}`}
+                title="Apply"
+              ><Check size={13}/></button>
+            </div>
+          )}
 
+          {!isExt && (
+            <div className="px-3 py-2.5">
+              <p className="text-[10px] text-stone-400 leading-relaxed">
+                Select a face in 3D view to offset it along its normal axis.
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* Extrude Steps — compact inline chips */}
         {activeSteps.length > 0 && (
-          <div style={{ borderTop: isExt ? '1px solid rgba(60,50,40,0.08)' : 'none', padding: '6px 9px', display: 'flex', alignItems: 'center', gap: 6, overflowX: 'auto' }}>
-            <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.07em', textTransform: 'uppercase', color: '#a8a29e', flexShrink: 0 }}>Adımlar</span>
-            {activeSteps.map((s: any) => (
-              editingStepId === s.id ? (
-                <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '3px 6px', borderRadius: 6, background: 'rgba(120,113,108,0.10)', border: '1px solid rgba(60,50,40,0.16)', flexShrink: 0 }}>
-                  <span style={{ fontSize: 9, fontWeight: 800, fontFamily: 'monospace', color: '#6b6253' }}>{s.axisLabel}</span>
-                  <input type="text" inputMode="numeric" autoFocus value={editingStepValue}
-                    onChange={e => setEditingStepValue(Number(e.target.value) || 0)}
-                    onKeyDown={e => { if (e.key === 'Enter') saveStep(activePanelId, s.id, editingStepValue); else if (e.key === 'Escape') setEditingStepId(null); }}
-                    style={{ width: 46, height: 20, textAlign: 'center', fontFamily: 'monospace', fontSize: 10.5, fontWeight: 600, color: '#1c1917', background: '#fff', border: '1px solid rgba(60,50,40,0.3)', borderRadius: 4, outline: 'none' }} />
-                  <button onClick={() => saveStep(activePanelId, s.id, editingStepValue)} style={iconBtn('#5b5346')}><Check size={11} /></button>
-                  <button onClick={() => setEditingStepId(null)} style={iconBtn('#a8a29e')}><X size={11} /></button>
-                </div>
-              ) : (
-                <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '3px 7px', borderRadius: 6, background: 'linear-gradient(180deg,rgba(255,255,255,0.75),rgba(244,241,234,0.6))', border: '1px solid rgba(60,50,40,0.10)', flexShrink: 0 }}>
-                  <span style={{ fontSize: 9, fontWeight: 800, fontFamily: 'monospace', color: '#6b6253' }}>{s.axisLabel}</span>
-                  <span style={{ fontSize: 11, fontFamily: 'monospace', fontWeight: 700, color: '#1c1917' }}>{s.value}</span>
-                  <span style={{ fontSize: 7.5, fontWeight: 700, padding: '1px 4px', borderRadius: 3, background: 'rgba(120,113,108,0.14)', color: '#57534e' }}>{s.isFixed ? 'F' : 'D'}</span>
-                  <button onClick={() => { setEditingStepId(s.id); setEditingStepValue(s.value); }} style={iconBtn('#78716c')}><Pencil size={10} /></button>
-                  <button onClick={async () => {
-                    const ps = shapes.find(x => x.id === activePanelId); if (!ps) return;
-                    const { deleteExtrudeStep } = await import('./FaceExtrudeService');
-                    await deleteExtrudeStep(ps, s.id, updateShape);
-                  }} style={iconBtn('#ef4444')}><Trash2 size={10} /></button>
-                </div>
-              )
-            ))}
+          <div className="rounded-lg border border-stone-200 bg-white overflow-hidden">
+            <div className="px-2.5 py-1.5 flex items-center gap-1.5 flex-wrap">
+              <span className="text-[9px] font-bold text-stone-300 uppercase tracking-widest mr-0.5 shrink-0">Steps</span>
+              {activeSteps.map((s: any) => (
+                editingStepId === s.id ? (
+                  <div key={s.id} className="flex items-center gap-1 bg-orange-50 border border-orange-200 rounded-md px-1.5 py-0.5">
+                    <span className="text-[9px] font-bold text-orange-500 font-mono shrink-0">{s.axisLabel}</span>
+                    <input
+                      type="text" inputMode="numeric" autoFocus
+                      value={editingStepValue}
+                      onChange={e => setEditingStepValue(Number(e.target.value)||0)}
+                      onKeyDown={e => { if (e.key==='Enter') saveStep(activePanelId,s.id,editingStepValue); else if (e.key==='Escape') setEditingStepId(null); }}
+                      className="w-12 h-4 px-1 text-[10px] font-mono text-center border border-orange-300 rounded bg-white focus:outline-none"
+                    />
+                    <button onClick={() => saveStep(activePanelId,s.id,editingStepValue)}
+                      className="text-green-500 hover:text-green-600 shrink-0"><Check size={9}/></button>
+                    <button onClick={() => setEditingStepId(null)}
+                      className="text-stone-400 hover:text-stone-600 shrink-0"><X size={9}/></button>
+                  </div>
+                ) : (
+                  <div key={s.id} className="group flex items-center gap-1 bg-stone-50 border border-stone-200 rounded-md px-1.5 py-0.5 hover:border-orange-200 hover:bg-orange-50 transition-all cursor-default">
+                    <span className="text-[9px] font-bold text-orange-500 font-mono shrink-0">{s.axisLabel}</span>
+                    <span className="text-[10px] font-mono text-stone-700 font-semibold">{s.value}</span>
+                    <span className={`text-[8px] font-semibold shrink-0 ${s.isFixed ? 'text-blue-400' : 'text-stone-300'}`}>{s.isFixed ? 'F' : 'D'}</span>
+                    <div className="hidden group-hover:flex items-center gap-0.5 ml-0.5">
+                      <button onClick={() => { setEditingStepId(s.id); setEditingStepValue(s.value); }}
+                        className="text-orange-400 hover:text-orange-600 transition-colors"><Pencil size={8}/></button>
+                      <button onClick={async () => {
+                        const ps = shapes.find(x => x.id === activePanelId); if (!ps) return;
+                        const { deleteExtrudeStep } = await import('./FaceExtrudeService');
+                        await deleteExtrudeStep(ps, s.id, updateShape);
+                      }} className="text-red-300 hover:text-red-500 transition-colors"><Trash2 size={8}/></button>
+                    </div>
+                  </div>
+                )
+              ))}
+            </div>
           </div>
         )}
       </div>
@@ -1044,6 +1131,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
 
   const isPreviewMode = selectedPanelRow !== null;
 
+  // Selected face row (rendered in preview header)
   const selectedFaceRow = (() => {
     if (!selectedShape || selectedPanelRow === null) return null;
     const sid = selectedShape.id;
@@ -1057,16 +1145,9 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     const vp = findVPanel(shapes, sid, vf.id);
     const ar = vp?.parameters?.arrowRotated || false;
     const dims = vp?.geometry ? getDimsFromGeo(vp.geometry, ar) : null;
-    const isExtrudingThis = faceExtrudeMode && faceExtrudeTargetPanelId === vp?.id;
-    const enterTransform = (mode: 'translate' | 'rotate') => {
-      if (!vp) return;
-      const st: any = useAppStore.getState();
-      st.setSelectedShapeId?.(vp.id); st.setSelectedShape?.(vp.id);
-      st.setTransformMode?.(mode); st.setGizmoMode?.(mode);
-    };
     return (
-      <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-orange-50 ring-1 ring-orange-300 shadow-sm select-none">
-        <span className="shrink-0 inline-flex items-center justify-center min-w-[20px] h-5 px-1 rounded-full text-[11px] font-semibold font-mono tabular-nums bg-orange-500 text-white shadow-sm">
+      <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-orange-50 ring-1 ring-orange-300 shadow-sm select-none">
+        <span className="shrink-0 w-7 h-6 flex items-center justify-center rounded-md text-sm font-bold font-mono bg-orange-100 text-orange-600">
           {vi + 1}
         </span>
         <input
@@ -1074,63 +1155,39 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
           value={vf.description || ''}
           onClick={stop}
           onChange={e => updateVirtualFace(vf.id, { description: e.target.value })}
-          placeholder="not…"
-          className="flex-1 min-w-0 px-1 py-1 text-xs bg-transparent border-b border-transparent hover:border-[#dcd5ca] focus:border-orange-400 rounded-none outline-none text-stone-700 placeholder:text-stone-300 transition-colors"
+          placeholder="note…"
+          style={{ width: '27mm' }}
+          className="px-2 py-1 text-sm bg-transparent border-b border-transparent hover:border-stone-300 focus:border-orange-400 rounded-none outline-none text-stone-700 placeholder:text-stone-300 transition-colors"
         />
         {dims && (
-          <span className="shrink-0 inline-flex items-center text-xs leading-none tabular-nums px-0.5">
-            <span className="text-stone-400 font-medium">W</span><span className="text-stone-700 font-semibold ml-1">{dims.primary}</span>
-            <span className="text-stone-300 mx-1.5">·</span>
-            <span className="text-stone-400 font-medium">H</span><span className="text-stone-700 font-semibold ml-1">{dims.secondary}</span>
+          <span className="flex items-center gap-1 text-xs font-mono shrink-0 leading-none">
+            <span className="text-stone-400">W</span><span className="text-stone-700 font-bold">{dims.primary}</span>
+            <span className="text-stone-300">·</span>
+            <span className="text-stone-400">H</span><span className="text-stone-700 font-bold">{dims.secondary}</span>
+            <span className="text-stone-300">·</span>
+            <span className="text-stone-400">T</span><span className="text-stone-700 font-bold">{dims.thickness}</span>
           </span>
         )}
-        <div className="flex items-center gap-0.5 shrink-0" onClick={stop}>
-          <button disabled={!vf.hasPanel} onClick={e => { stop(e); enterTransform('translate'); }}
-            className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
-            title="Taşı (move)"><Move size={13}/></button>
-
-          <button disabled={!vf.hasPanel} onClick={e => { stop(e); enterTransform('rotate'); }}
-            className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
-            title="Döndür (rotation)"><RotateCw size={13}/></button>
-
-          <button disabled={!vf.hasPanel} onClick={e => {
-            stop(e); if (!vp) return;
-            if (isExtrudingThis) setFaceExtrudeMode(false);
-            else { setFaceExtrudeTargetPanelId(vp.id); setFaceExtrudeMode(true); }
-          }}
-            className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : isExtrudingThis ? 'bg-gradient-to-b from-[#5b5346] to-[#44403c] text-white shadow-[0_1px_2px_rgba(40,30,20,0.25)]' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
-            title="Yüz çıkıntısı (extrude)"><MoveVertical size={13}/></button>
-
+        <div className="ml-auto flex items-center gap-1 shrink-0" onClick={stop}>
           <button disabled={!vf.hasPanel} onClick={e => { stop(e); toggleArrow(vp); }}
-            className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-stone-700 bg-[#f1ece4]' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
-            title="Ok yönünü değiştir"><ArrowUp size={14} className={`transition-transform duration-200 ${ar ? '' : 'rotate-90'}`}/></button>
+            className={`p-1 rounded transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-blue-500' : 'text-stone-300 hover:text-stone-500'}`}
+            title="Rotate arrow"><RotateCw size={13}/></button>
           <button disabled={!vf.hasPanel || !vp} onClick={async e => {
             stop(e); if (!vp) return;
             const { reshapePanelToParentFace } = await import('./PanelReshapeService');
             await reshapePanelToParentFace(vp.id);
           }}
-            className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel || !vp ? 'text-stone-200 cursor-not-allowed' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
-            title="Ana yüze eşitle"><Shapes size={13}/></button>
-
-          <button onClick={() => { if (vf.hasPanel) removeVP(vf.id); else createVP(vf.id, vi); }}
-            className="w-[22px] h-[22px] rounded-md flex items-center justify-center text-stone-400 hover:bg-[#f1ece4] transition-colors"
-            title={vf.hasPanel ? 'Paneli kaldır' : 'Panel oluştur'}>
-            <span className={`w-3.5 h-3.5 rounded-[3px] border flex items-center justify-center transition-colors ${vf.hasPanel ? 'bg-orange-500 border-orange-500' : 'border-stone-300'}`}>
-              {vf.hasPanel && <Check size={10} strokeWidth={3} className="text-white"/>}
-            </span>
-          </button>
-
-          <button onClick={e => { stop(e); if (vf.hasPanel) removeVP(vf.id); deleteVirtualFace(vf.id); }}
-            className="w-[22px] h-[22px] rounded-md flex items-center justify-center text-stone-400 hover:bg-red-50 hover:text-red-500 transition-colors"
-            title="Yüzü sil"><Trash2 size={13}/></button>
+            className={`p-1 rounded transition-colors ${!vf.hasPanel || !vp ? 'text-stone-200 cursor-not-allowed' : 'text-stone-300 hover:text-teal-600'}`}
+            title="Match parent face"><Shapes size={13}/></button>
         </div>
       </div>
     );
   })();
 
-  // ── Shared preview pane ────────────────────────────────────────────────
+  // ── Shared preview pane (full panel detail, big canvas) ────────────────
   const previewPane = isPreviewMode ? (
     <div className="flex flex-col h-full min-h-0">
+      {/* Toolbar: tools left, back button right */}
       <div className="px-3 py-2 border-b border-stone-100 flex items-center gap-2 shrink-0">
         <div className="flex items-center gap-1.5">{panelToolbar}</div>
         <button
@@ -1141,13 +1198,15 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         </button>
       </div>
 
+      {/* Selected row card — always visible at top */}
       {selectedFaceRow && (
         <div className="px-2 pt-2 pb-1 shrink-0">
           {selectedFaceRow}
         </div>
       )}
 
-      <div className="flex-1 mx-2 mb-2 rounded-xl bg-gradient-to-b from-[#f6f2ec] to-[#e7e1d6] border border-stone-200/80 overflow-hidden relative" style={{ minHeight: 380 }}>
+      {/* Canvas — flex-1, fills remaining space */}
+      <div className="flex-1 mx-2 mb-1 rounded-xl bg-gradient-to-b from-[#f8f5f0] to-[#ede8df] border border-stone-200/80 overflow-hidden relative" style={{ minHeight: 320 }}>
         {activeDims && activePanel
           ? <PanelPreview2D key={activePanel.id} dims={activeDims} shape={activePanel} arrowRotated={!!activePanel.parameters?.arrowRotated}/>
           : (
@@ -1156,8 +1215,14 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
             </div>
           )
         }
-        {extrudeDock}
       </div>
+
+      {/* Extrude controls + steps — scrollable footer */}
+      {panelDetailSection && (
+        <div className="shrink-0 overflow-y-auto border-t border-stone-100 px-2 py-2 space-y-3" style={{ maxHeight: '35%' }}>
+          {panelDetailSection}
+        </div>
+      )}
     </div>
   ) : null;
 
@@ -1169,7 +1234,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       </div>
       {selectedShape ? (
         <div className="flex-1 min-h-0 overflow-y-auto">
-          <div className="px-2 pt-2 pb-2 space-y-1">
+          <div className="px-2 pt-2 pb-2 space-y-px">
             {faceListSection}
           </div>
         </div>
@@ -1188,18 +1253,19 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
   );
 
   return (
-    <div className="fixed bg-white rounded-xl shadow-xl border border-stone-200 z-50 overflow-hidden" style={{ left: `${position.x}px`, top: `${position.y}px`, width: isPreviewMode ? '540px' : '400px', transition: 'width 0.2s ease' }}>
+    <div className="fixed bg-white rounded-xl shadow-xl border border-stone-200 z-50 overflow-hidden" style={{ left: `${position.x}px`, top: `${position.y}px`, width: isPreviewMode ? '510px' : '400px', transition: 'width 0.2s ease' }}>
       <div className="flex items-center justify-between px-3 py-2 bg-stone-50 border-b border-stone-200 select-none" style={{ cursor: isDraggingWindow ? 'grabbing' : 'grab' }} onMouseDown={handleMouseDown}>
         <div className="flex items-center gap-2"><GripVertical size={13} className="text-stone-300"/><span className="text-xs font-semibold text-stone-600 tracking-wide uppercase">Panel Editor</span></div>
         <div className="flex items-center gap-1.5">{panelToolbar}<button onClick={onClose} className="p-1 hover:bg-stone-200 rounded-md transition-colors"><X size={13} className="text-stone-400"/></button></div>
       </div>
       {isPreviewMode ? (
-        <div style={{ height: 'min(86vh, 760px)', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ height: 'min(80vh, 640px)', display: 'flex', flexDirection: 'column' }}>
           {previewPane}
         </div>
       ) : (
         <div style={{ maxHeight: 'calc(100vh - 200px)', overflowY: 'auto' }}>
-          <div className="p-2 space-y-1">{faceListSection}</div>
+          <div className="p-2 space-y-0.5">{faceListSection}</div>
+          {panelDetailSection && <div className="px-2 pb-3 pt-1 border-t border-stone-100 space-y-3">{panelDetailSection}</div>}
         </div>
       )}
     </div>
