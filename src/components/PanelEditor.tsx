@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { X, GripVertical, ArrowUp, RotateCw, Move, Trash2, MoveVertical, Check, Pencil, Shapes, ChevronRight } from 'lucide-react';
-import { useAppStore } from '../store';
+import { useAppStore, Tool } from '../store';
 import { extractFacesFromGeometry, groupCoplanarFaces, CoplanarFaceGroup } from './FaceEditor';
 import { findExistingStepForFace } from './FaceExtrudeService';
 import type { FilletData } from './Fillet';
@@ -1060,9 +1060,9 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     const isExtrudingThis = faceExtrudeMode && faceExtrudeTargetPanelId === vp?.id;
     const enterTransform = (mode: 'translate' | 'rotate') => {
       if (!vp) return;
-      const st: any = useAppStore.getState();
-      st.setSelectedShapeId?.(vp.id); st.setSelectedShape?.(vp.id);
-      st.setTransformMode?.(mode); st.setGizmoMode?.(mode);
+      const st = useAppStore.getState();
+      st.selectShape(vp.id);
+      if (mode === 'translate') st.setActiveTool(Tool.MOVE);
     };
     return (
       <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-orange-50 ring-1 ring-orange-300 shadow-sm select-none">
