@@ -544,7 +544,9 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     faceExtrudeMode, setFaceExtrudeMode, faceExtrudeTargetPanelId,
     setFaceExtrudeTargetPanelId, faceExtrudeSelectedFace, setFaceExtrudeSelectedFace, setFaceExtrudeHoveredFace,
     faceExtrudeThickness, setFaceExtrudeThickness, faceExtrudeFixedMode, setFaceExtrudeFixedMode,
-    faceExtrudeClickPoint } = useAppStore();
+    faceExtrudeClickPoint,
+    panelMoveTargetId, setPanelMoveTargetId, panelMoveActiveAxis, setPanelMoveActiveAxis,
+  } = useAppStore();
 
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
@@ -554,6 +556,9 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const [editingStepId, setEditingStepId] = useState<string | null>(null);
   const [editingStepValue, setEditingStepValue] = useState(0);
+  const [moveInputValue, setMoveInputValue] = useState('');
+  const [editingMoveStepId, setEditingMoveStepId] = useState<string | null>(null);
+  const [editingMoveStepValue, setEditingMoveStepValue] = useState(0);
   const rowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const selectedShape = shapes.find(s => s.id === selectedShapeId);
 
@@ -571,6 +576,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     ? getDimsFromGeo(activePanel.geometry, activePanel.parameters?.arrowRotated)
     : null;
   const activeSteps = activePanel?.parameters?.extrudeSteps || [];
+  const moveSteps = activePanel?.parameters?.moveSteps || [];
 
   const { selectedPanelRowParentId } = useAppStore();
   useEffect(() => {
@@ -1042,6 +1048,173 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     );
   })();
 
+  /* ── Panel move dock ──────────────────────────────────────────────────── */
+  const moveDock = (() => {
+    if (!activePanelId || !activePanel) return null;
+    const isMove = panelMoveTargetId === activePanelId;
+    if (!isMove && moveSteps.length === 0) return null;
+
+    const axisColor = { X: '#ef4444', Y: '#22c55e', Z: '#3b82f6' };
+    const hasAxis = panelMoveActiveAxis !== null;
+
+    const onApplyMove = () => {
+      const dist = parseFloat(moveInputValue);
+      if (isNaN(dist) || dist === 0 || !panelMoveActiveAxis || !activePanelId) return;
+      const panel = shapes.find(s => s.id === activePanelId); if (!panel) return;
+      const ax = panelMoveActiveAxis;
+      const delta: [number, number, number] = [ax === 'X' ? dist : 0, ax === 'Y' ? dist : 0, ax === 'Z' ? dist : 0];
+      const cur = panel.position as [number, number, number];
+      const newPos: [number, number, number] = [cur[0] + delta[0], cur[1] + delta[1], cur[2] + delta[2]];
+      const stepId = `move-${Date.now()}`;
+      const prevSteps = panel.parameters?.moveSteps || [];
+      updateShape(activePanelId, {
+        position: newPos,
+        parameters: { ...panel.parameters, moveSteps: [...prevSteps, { id: stepId, axis: ax, value: dist }] },
+      });
+      setMoveInputValue('');
+      setPanelMoveActiveAxis(null);
+    };
+
+    const onSaveMoveStep = (stepId: string, newVal: number) => {
+      const panel = shapes.find(s => s.id === activePanelId); if (!panel) return;
+      const steps: any[] = panel.parameters?.moveSteps || [];
+      const idx = steps.findIndex((s: any) => s.id === stepId); if (idx === -1) return;
+      // Compute delta relative to old value
+      const oldVal = steps[idx].value as number;
+      const ax = steps[idx].axis as 'X' | 'Y' | 'Z';
+      const diff = newVal - oldVal;
+      const cur = panel.position as [number, number, number];
+      const newPos: [number, number, number] = [
+        cur[0] + (ax === 'X' ? diff : 0),
+        cur[1] + (ax === 'Y' ? diff : 0),
+        cur[2] + (ax === 'Z' ? diff : 0),
+      ];
+      const updatedSteps = steps.map((s: any) => s.id === stepId ? { ...s, value: newVal } : s);
+      updateShape(activePanelId, {
+        position: newPos,
+        parameters: { ...panel.parameters, moveSteps: updatedSteps },
+      });
+      setEditingMoveStepId(null);
+    };
+
+    const onDeleteMoveStep = (stepId: string) => {
+      const panel = shapes.find(s => s.id === activePanelId); if (!panel) return;
+      const steps: any[] = panel.parameters?.moveSteps || [];
+      const step = steps.find((s: any) => s.id === stepId); if (!step) return;
+      const ax = step.axis as 'X' | 'Y' | 'Z';
+      const val = step.value as number;
+      const cur = panel.position as [number, number, number];
+      const newPos: [number, number, number] = [
+        cur[0] - (ax === 'X' ? val : 0),
+        cur[1] - (ax === 'Y' ? val : 0),
+        cur[2] - (ax === 'Z' ? val : 0),
+      ];
+      const updatedSteps = steps.filter((s: any) => s.id !== stepId);
+      updateShape(activePanelId, {
+        position: newPos,
+        parameters: { ...panel.parameters, moveSteps: updatedSteps },
+      });
+    };
+
+    const exitBtn = (
+      <button onClick={e => { stop(e); setPanelMoveTargetId(null); }}
+        title="Çıkış" style={{
+          flexShrink: 0, width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          borderRadius: 7, border: '1px solid rgba(60,50,40,0.12)', cursor: 'pointer', outline: 'none',
+          background: 'rgba(255,255,255,0.55)', color: '#78716c', transition: 'all 0.12s',
+        }}><X size={13} /></button>
+    );
+
+    return (
+      <div style={{
+        position: 'absolute', left: 8, right: 8, bottom: extrudeDock ? 56 : 8, zIndex: 6, borderRadius: 11,
+        background: 'linear-gradient(180deg,rgba(250,248,244,0.86),rgba(239,235,227,0.9))',
+        backdropFilter: 'blur(16px) saturate(150%)', WebkitBackdropFilter: 'blur(16px) saturate(150%)',
+        border: '1px solid rgba(60,50,40,0.13)',
+        boxShadow: '0 10px 24px -12px rgba(40,30,20,0.30),0 0 0 0.5px rgba(60,50,40,0.05),inset 0 1px 0 rgba(255,255,255,0.92)',
+        display: 'flex', flexDirection: 'column', overflow: 'hidden',
+        fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif",
+      }}>
+        {isMove && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 9px' }}>
+            {hasAxis ? (
+              <>
+                {/* Axis badge */}
+                <span style={{
+                  flexShrink: 0, width: 22, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  borderRadius: 6, background: axisColor[panelMoveActiveAxis!], color: '#fff',
+                  fontSize: 11, fontWeight: 800, fontFamily: 'monospace',
+                }}>
+                  {panelMoveActiveAxis}
+                </span>
+                <input
+                  type="text" inputMode="numeric" value={moveInputValue}
+                  autoFocus
+                  onChange={e => setMoveInputValue(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') onApplyMove(); else if (e.key === 'Escape') { setPanelMoveActiveAxis(null); setMoveInputValue(''); } }}
+                  placeholder="Mesafe (mm)"
+                  style={{
+                    flex: 1, minWidth: 0, height: 28, textAlign: 'center', fontFamily: 'monospace', fontSize: 13, fontWeight: 600,
+                    color: '#1c1917', background: 'linear-gradient(180deg,#fff,#faf8f3)', border: '1px solid rgba(60,50,40,0.16)',
+                    borderRadius: 7, outline: 'none', boxShadow: 'inset 0 1px 2px rgba(40,30,20,0.06)',
+                  }}
+                />
+                <button onClick={onApplyMove} title="Uygula" style={{
+                  flexShrink: 0, width: 32, height: 28, borderRadius: 7, border: 'none', cursor: 'pointer', outline: 'none',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  background: 'linear-gradient(180deg,#5b5346,#44403c)', color: '#fff',
+                  boxShadow: '0 1px 2px rgba(40,30,20,0.25),inset 0 1px 0 rgba(255,255,255,0.18)',
+                }}><Check size={15} strokeWidth={2.5} /></button>
+                <button onClick={e => { stop(e); setPanelMoveActiveAxis(null); setMoveInputValue(''); }} title="İptal" style={{
+                  flexShrink: 0, width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  borderRadius: 7, border: '1px solid rgba(60,50,40,0.12)', cursor: 'pointer', outline: 'none',
+                  background: 'rgba(255,255,255,0.55)', color: '#78716c',
+                }}><X size={13} /></button>
+              </>
+            ) : (
+              <>
+                <div style={{
+                  flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 7, height: 28, padding: '0 10px', borderRadius: 7,
+                  background: 'rgba(120,113,108,0.08)', border: '1px solid rgba(60,50,40,0.10)',
+                }}>
+                  <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#a8a29e', flexShrink: 0 }} />
+                  <span style={{ fontSize: 11, fontWeight: 500, color: '#78716c', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>3B görünümde bir ok seç</span>
+                </div>
+                {exitBtn}
+              </>
+            )}
+          </div>
+        )}
+
+        {moveSteps.length > 0 && (
+          <div style={{ borderTop: isMove ? '1px solid rgba(60,50,40,0.08)' : 'none', padding: '6px 9px', display: 'flex', alignItems: 'center', gap: 6, overflowX: 'auto' }}>
+            <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.07em', textTransform: 'uppercase', color: '#a8a29e', flexShrink: 0 }}>Hareket</span>
+            {moveSteps.map((s: any) => (
+              editingMoveStepId === s.id ? (
+                <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '3px 6px', borderRadius: 6, background: 'rgba(120,113,108,0.10)', border: '1px solid rgba(60,50,40,0.16)', flexShrink: 0 }}>
+                  <span style={{ fontSize: 9, fontWeight: 800, fontFamily: 'monospace', color: axisColor[s.axis as 'X'|'Y'|'Z'] }}>{s.axis}</span>
+                  <input type="text" inputMode="numeric" autoFocus value={editingMoveStepValue}
+                    onChange={e => setEditingMoveStepValue(Number(e.target.value) || 0)}
+                    onKeyDown={e => { if (e.key === 'Enter') onSaveMoveStep(s.id, editingMoveStepValue); else if (e.key === 'Escape') setEditingMoveStepId(null); }}
+                    style={{ width: 46, height: 20, textAlign: 'center', fontFamily: 'monospace', fontSize: 10.5, fontWeight: 600, color: '#1c1917', background: '#fff', border: '1px solid rgba(60,50,40,0.3)', borderRadius: 4, outline: 'none' }} />
+                  <button onClick={() => onSaveMoveStep(s.id, editingMoveStepValue)} style={iconBtn('#5b5346')}><Check size={11} /></button>
+                  <button onClick={() => setEditingMoveStepId(null)} style={iconBtn('#a8a29e')}><X size={11} /></button>
+                </div>
+              ) : (
+                <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '3px 7px', borderRadius: 6, background: 'linear-gradient(180deg,rgba(255,255,255,0.75),rgba(244,241,234,0.6))', border: '1px solid rgba(60,50,40,0.10)', flexShrink: 0 }}>
+                  <span style={{ fontSize: 9, fontWeight: 800, fontFamily: 'monospace', color: axisColor[s.axis as 'X'|'Y'|'Z'] }}>{s.axis}</span>
+                  <span style={{ fontSize: 11, fontFamily: 'monospace', fontWeight: 700, color: '#1c1917' }}>{s.value}</span>
+                  <button onClick={() => { setEditingMoveStepId(s.id); setEditingMoveStepValue(s.value); }} style={iconBtn('#78716c')}><Pencil size={10} /></button>
+                  <button onClick={() => onDeleteMoveStep(s.id)} style={iconBtn('#ef4444')}><Trash2 size={10} /></button>
+                </div>
+              )
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  })();
+
   const isPreviewMode = selectedPanelRow !== null;
 
   const selectedFaceRow = (() => {
@@ -1061,8 +1234,11 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     const enterTransform = (mode: 'translate' | 'rotate') => {
       if (!vp) return;
       const st = useAppStore.getState();
-      st.selectShape(vp.id);
-      if (mode === 'translate') st.setActiveTool(Tool.MOVE);
+      if (mode === 'translate') {
+        st.setPanelMoveTargetId(vp.id);
+        st.setPanelMoveActiveAxis(null);
+        st.setActiveTool(Tool.MOVE);
+      }
     };
     return (
       <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-orange-50 ring-1 ring-orange-300 shadow-sm select-none">
@@ -1157,6 +1333,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
           )
         }
         {extrudeDock}
+        {moveDock}
       </div>
     </div>
   ) : null;

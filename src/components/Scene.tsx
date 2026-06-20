@@ -611,7 +611,7 @@ const Scene: React.FC = () => {
             const isSel = selectedShapeId === shape.id;
             if (shape.type === 'panel') {
               return (
-                <PanelDrawing key={shape.id} shape={shape} isSelected={isSel} orbitControlsRef={controlsRef} />
+                <PanelDrawing key={shape.id} shape={shape} isSelected={isSel} />
               );
             }
             return (
