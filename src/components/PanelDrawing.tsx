@@ -83,6 +83,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   isSelected,
 }) => {
   const meshRef = useRef<THREE.Mesh>(null);
+  const groupRef = useRef<THREE.Group>(null);
   const {
     selectShape,
     selectSecondaryShape,
