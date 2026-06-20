@@ -1071,8 +1071,8 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         position: newPos,
         parameters: { ...panel.parameters, moveSteps: [...prevSteps, { id: stepId, axis: ax, value: dist }] },
       });
+      // Clear input but keep axis active so user can do another step immediately
       setMoveInputValue('');
-      setPanelMoveActiveAxis(null);
     };
 
     const onSaveMoveStep = (stepId: string, newVal: number) => {
@@ -1117,12 +1117,22 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     };
 
     const exitBtn = (
-      <button onClick={e => { stop(e); setPanelMoveTargetId(null); }}
+      <button onClick={e => { stop(e); setPanelMoveTargetId(null); setPanelMoveActiveAxis(null); setMoveInputValue(''); }}
         title="Çıkış" style={{
           flexShrink: 0, width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
           borderRadius: 7, border: '1px solid rgba(60,50,40,0.12)', cursor: 'pointer', outline: 'none',
           background: 'rgba(255,255,255,0.55)', color: '#78716c', transition: 'all 0.12s',
         }}><X size={13} /></button>
+    );
+
+    const doneBtn = (
+      <button onClick={e => { stop(e); setPanelMoveTargetId(null); setPanelMoveActiveAxis(null); setMoveInputValue(''); }}
+        title="Taşımayı bitir" style={{
+          flexShrink: 0, width: 32, height: 28, borderRadius: 7, border: 'none', cursor: 'pointer', outline: 'none',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: 'linear-gradient(180deg,#5b5346,#44403c)', color: '#fff',
+          boxShadow: '0 1px 2px rgba(40,30,20,0.25),inset 0 1px 0 rgba(255,255,255,0.18)',
+        }}><Check size={15} strokeWidth={2.5} /></button>
     );
 
     return (
@@ -1159,13 +1169,14 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                     borderRadius: 7, outline: 'none', boxShadow: 'inset 0 1px 2px rgba(40,30,20,0.06)',
                   }}
                 />
-                <button onClick={onApplyMove} title="Uygula" style={{
+                <button onClick={onApplyMove} title="Adım uygula" style={{
                   flexShrink: 0, width: 32, height: 28, borderRadius: 7, border: 'none', cursor: 'pointer', outline: 'none',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  background: 'linear-gradient(180deg,#5b5346,#44403c)', color: '#fff',
-                  boxShadow: '0 1px 2px rgba(40,30,20,0.25),inset 0 1px 0 rgba(255,255,255,0.18)',
+                  background: 'linear-gradient(180deg,#2563eb,#1d4ed8)', color: '#fff',
+                  boxShadow: '0 1px 2px rgba(20,20,40,0.25),inset 0 1px 0 rgba(255,255,255,0.18)',
                 }}><Check size={15} strokeWidth={2.5} /></button>
-                <button onClick={e => { stop(e); setPanelMoveActiveAxis(null); setMoveInputValue(''); }} title="İptal" style={{
+                {doneBtn}
+                <button onClick={e => { stop(e); setPanelMoveActiveAxis(null); setMoveInputValue(''); }} title="Ok seçimini iptal et" style={{
                   flexShrink: 0, width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
                   borderRadius: 7, border: '1px solid rgba(60,50,40,0.12)', cursor: 'pointer', outline: 'none',
                   background: 'rgba(255,255,255,0.55)', color: '#78716c',
@@ -1180,6 +1191,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                   <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#a8a29e', flexShrink: 0 }} />
                   <span style={{ fontSize: 11, fontWeight: 500, color: '#78716c', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>3B görünümde bir ok seç</span>
                 </div>
+                {doneBtn}
                 {exitBtn}
               </>
             )}

@@ -52,7 +52,8 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     waitingForSurfaceSelection,
     raycastMode,
     shapes,
-    rebuildingShapeIds
+    rebuildingShapeIds,
+    panelMoveTargetId,
   } = useAppStore(useShallow(state => ({
     selectShape: state.selectShape,
     selectSecondaryShape: state.selectSecondaryShape,
@@ -80,7 +81,8 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     waitingForSurfaceSelection: state.waitingForSurfaceSelection,
     raycastMode: state.raycastMode,
     shapes: state.shapes,
-    rebuildingShapeIds: state.rebuildingShapeIds
+    rebuildingShapeIds: state.rebuildingShapeIds,
+    panelMoveTargetId: state.panelMoveTargetId,
   })));
 
   const { scene } = useThree();
@@ -691,7 +693,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
       </group>
 
       {/* ── TRANSFORM CONTROLS ────────────────────────────────────────────── */}
-      {isSelected && activeTool !== Tool.SELECT && groupRef.current && !shape.isReferenceBox && !panelSelectMode && (
+      {isSelected && activeTool !== Tool.SELECT && groupRef.current && !shape.isReferenceBox && !panelSelectMode && !panelMoveTargetId && (
         <TransformControls
           key={geometryKey}
           ref={transformRefCallback}
