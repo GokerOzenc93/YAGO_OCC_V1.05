@@ -225,19 +225,38 @@ function computeAutoExtendLength(
 
   const pivotVec = new THREE.Vector3(...pivot);
 
-  // Compute ACTUAL world centroid (not geometry origin) to determine direction
+  // Compute ACTUAL world centroid (geometry bbox center in world space)
   const bboxCenter = new THREE.Vector3();
   panelLocalBbox.getCenter(bboxCenter);
   const actualWorldCenter = bboxCenter.clone().applyQuaternion(panelQuat)
     .add(new THREE.Vector3(...newPosition));
 
-  const centerDirFromPivot = actualWorldCenter.clone().sub(pivotVec);
-  const dotWithDir = centerDirFromPivot.dot(worldDir);
-  const directionSign = dotWithDir >= 0 ? 1 : -1;
-  const rayDir = worldDir.clone().multiplyScalar(directionSign);
+  // Try both directions independently and pick the valid one.
+  // This is necessary because when the pivot is on an OBB face, one direction
+  // exits immediately (t=0 → null) while the other goes inward correctly.
+  const dist1 = rayIntersectOBBPlanes(pivotVec, worldDir.clone(), obbPlanes);
+  const dist2 = rayIntersectOBBPlanes(pivotVec, worldDir.clone().negate(), obbPlanes);
 
-  const maxDist = rayIntersectOBBPlanes(pivotVec, rayDir, obbPlanes);
-  if (maxDist === null || maxDist < 1) return null;
+  const valid1 = dist1 !== null && dist1 > 1;
+  const valid2 = dist2 !== null && dist2 > 1;
+
+  let maxDist: number;
+  let directionSign: number;
+
+  if (valid1 && valid2) {
+    // Both valid: use actual centroid direction to pick the right one
+    const dot = actualWorldCenter.clone().sub(pivotVec).dot(worldDir);
+    directionSign = dot >= 0 ? 1 : -1;
+    maxDist = directionSign === 1 ? dist1! : dist2!;
+  } else if (valid1) {
+    directionSign = 1;
+    maxDist = dist1!;
+  } else if (valid2) {
+    directionSign = -1;
+    maxDist = dist2!;
+  } else {
+    return null;
+  }
 
   const parentId = panelShape.parameters?.parentShapeId;
   const siblings = shapes.filter(
@@ -273,7 +292,7 @@ function computeAutoExtendLength(
     const sibWorldBbox = new THREE.Box3().setFromPoints(sibCorners);
 
     const sibHit = new THREE.Vector3();
-    const sibRay = new THREE.Ray(pivotVec.clone(), rayDir);
+    const sibRay = new THREE.Ray(pivotVec.clone(), worldDir.clone().multiplyScalar(directionSign));
     if (sibRay.intersectBox(sibWorldBbox, sibHit)) {
       const dist = sibHit.distanceTo(pivotVec);
       if (dist > 0.5 && dist < closestCollision) {
