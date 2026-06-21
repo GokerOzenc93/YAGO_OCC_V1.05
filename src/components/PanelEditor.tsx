@@ -1103,14 +1103,6 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
           }}
             className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel || !vp ? 'text-stone-200 cursor-not-allowed' : vf.alignToParentFace ? 'text-orange-600 bg-orange-50 ring-1 ring-orange-200' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
             title="Ana yüze eşitle"><Shapes size={13}/></button>
-
-          <button onClick={() => { if (vf.hasPanel) removeVP(vf.id); else createVP(vf.id, vi); }}
-            className="w-[22px] h-[22px] rounded-md flex items-center justify-center text-stone-400 hover:bg-[#f1ece4] transition-colors"
-            title={vf.hasPanel ? 'Paneli kaldır' : 'Panel oluştur'}>
-            <span className={`w-3.5 h-3.5 rounded-[3px] border flex items-center justify-center transition-colors ${vf.hasPanel ? 'bg-orange-500 border-orange-500' : 'border-stone-300'}`}>
-              {vf.hasPanel && <Check size={10} strokeWidth={3} className="text-white"/>}
-            </span>
-          </button>
         </div>
       </div>
     );
