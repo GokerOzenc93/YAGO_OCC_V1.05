@@ -772,107 +772,6 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     const elements: React.ReactNode[] = [];
     let globalIdx = 0;
 
-    // Render a single panel row (shared by both single and multi-panel groups)
-    const renderPanelRow = (vf: typeof svf[0], vi: number, displayIdx: number, withGrip: boolean, groupKey: string) => {
-      const vp = findVPanel(shapes, sid, vf.id), ar = vp?.parameters?.arrowRotated || false, sel = selectedPanelRow === `vf-${vf.id}`;
-      const dims = vp?.geometry ? getDimsFromGeo(vp.geometry, ar) : null;
-      const groupFirstIdx = orderedVfs.findIndex(v => v.id === vf.id);
-
-      return (
-        <div
-          key={vf.id}
-          onClick={e => { stop(e); setSelectedPanelRow(`vf-${vf.id}`, null, sid); }}
-          className={`group/row relative flex items-center gap-1.5 pr-1 py-px cursor-pointer transition-colors duration-150
-            ${sel ? 'bg-[#fff6ec]' : 'hover:bg-[#faf6ef]'}
-            ${withGrip ? '' : 'pl-2.5'}`}
-          onDragOver={withGrip ? e => {
-            if (dragIndex !== null) {
-              e.preventDefault();
-              e.dataTransfer.dropEffect = 'move';
-              if (dropIndex !== groupFirstIdx) setDropIndex(groupFirstIdx);
-            }
-          } : undefined}
-          onDragLeave={withGrip ? () => { if (dropIndex === groupFirstIdx) setDropIndex(null); } : undefined}
-          onDrop={withGrip ? e => {
-            e.preventDefault();
-            if (dragIndex === null) return;
-            onGroupDrop(normalKey(orderedVfs[dragIndex]), groupKey);
-          } : undefined}
-        >
-          {sel && <span className="absolute left-0 top-0 bottom-0 w-[2.5px] rounded-r-sm bg-gradient-to-b from-orange-400 to-orange-500" />}
-
-          {/* Inline grip for single-panel rows */}
-          {withGrip && (
-            <span
-              draggable
-              onDragStart={e => {
-                stop(e);
-                setDragIndex(groupFirstIdx);
-                e.dataTransfer.effectAllowed = 'move';
-                e.dataTransfer.setData('text/plain', groupKey);
-              }}
-              onDragEnd={() => { setDragIndex(null); setDropIndex(null); }}
-              onClick={stop}
-              className="cursor-grab active:cursor-grabbing shrink-0 w-5 self-stretch flex items-center justify-center text-stone-300/90 hover:text-stone-500 transition-colors"
-              title="Sürükleyerek sırala"
-            ><GripVertical size={13}/></span>
-          )}
-
-          <span className={`shrink-0 inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full text-[11px] font-semibold tabular-nums transition-all
-            ${sel
-              ? 'bg-gradient-to-b from-orange-400 to-orange-500 text-white ring-1 ring-orange-500/40 shadow-[0_1px_3px_rgba(234,88,12,0.35)]'
-              : 'bg-gradient-to-b from-white to-[#efe9df] text-stone-600 ring-1 ring-[#e4ded4] shadow-[0_1px_1.5px_rgba(68,64,60,0.08),inset_0_1px_0_rgba(255,255,255,0.9)] group-hover/row:ring-[#e7b487] group-hover/row:text-orange-600'}`}>
-            {displayIdx}
-          </span>
-
-          <input
-            type="text"
-            value={vf.description || ''}
-            onClick={stop}
-            onChange={e => updateVirtualFace(vf.id, { description: e.target.value })}
-            placeholder="not…"
-            className="flex-1 min-w-0 px-1 py-1 text-xs bg-transparent border-b border-transparent hover:border-[#dcd5ca] focus:border-orange-400 rounded-none outline-none text-stone-700 placeholder:text-stone-300 transition-colors"
-          />
-
-          {dims && (
-            <span onClick={stop} className="shrink-0 inline-flex items-center text-xs leading-none tabular-nums px-0.5">
-              <span className="text-stone-400 font-medium">W</span><span className="text-stone-700 font-semibold ml-1">{dims.primary}</span>
-              <span className="text-stone-300 mx-1.5">·</span>
-              <span className="text-stone-400 font-medium">H</span><span className="text-stone-700 font-semibold ml-1">{dims.secondary}</span>
-              <span className="text-stone-300 mx-1.5">·</span>
-              <span className="text-stone-400 font-medium">T</span><span className="text-stone-700 font-semibold ml-1">{dims.thickness}</span>
-            </span>
-          )}
-
-          <div className="flex items-center gap-0.5 shrink-0" onClick={stop}>
-            <button onClick={async () => { if (vf.hasPanel) removeVP(vf.id); else await createVP(vf.id, vi); }}
-              className="w-[22px] h-[22px] rounded-md flex items-center justify-center text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700 transition-colors"
-              title={vf.hasPanel ? 'Paneli kaldır' : 'Panel oluştur'}>
-              <span className={`w-3.5 h-3.5 rounded-[3px] border flex items-center justify-center transition-colors ${vf.hasPanel ? 'bg-orange-500 border-orange-500' : 'border-stone-300'}`}>
-                {vf.hasPanel && <Check size={10} strokeWidth={3} className="text-white"/>}
-              </span>
-            </button>
-
-            <button disabled={!vf.hasPanel} onClick={e => { stop(e); toggleArrow(vp); }}
-              className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-stone-700 bg-[#f1ece4]' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
-              title="Ok yönünü değiştir"><ArrowUp size={14} className={`transition-transform duration-200 ${ar ? '' : 'rotate-90'}`}/></button>
-
-            <button disabled={!vf.hasPanel || !vp} onClick={async e => {
-              stop(e); if (!vp) return;
-              const { reshapePanelToParentFace } = await import('./PanelReshapeService');
-              await reshapePanelToParentFace(vp.id);
-            }}
-              className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel || !vp ? 'text-stone-200 cursor-not-allowed' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
-              title="Ana yüze eşitle"><Shapes size={13}/></button>
-
-            <button onClick={e => { stop(e); if (vf.hasPanel) removeVP(vf.id); deleteVirtualFace(vf.id); }}
-              className="w-[22px] h-[22px] rounded-md flex items-center justify-center text-stone-400 hover:bg-red-50 hover:text-red-500 transition-colors"
-              title="Yüzü sil"><Trash2 size={13}/></button>
-          </div>
-        </div>
-      );
-    };
-
     faceGroupsList.forEach((group) => {
       const groupKey = normalKey(group[0]);
       const isGroupMulti = group.length > 1;
@@ -881,91 +780,119 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       const isDropTargetGroup = dropIndex !== null && dropIndex === groupFirstIdx;
       const anySel = group.some(vf => selectedPanelRow === `vf-${vf.id}`);
 
-      if (!isGroupMulti) {
-        // ── Single-panel row: inline grip, individually draggable ──────────
-        const vf = group[0];
+      const innerRows = group.map((vf, subIdx) => {
         const vi = svf.findIndex(v => v.id === vf.id);
         const displayIdx = globalIdx + 1;
         globalIdx++;
+        const vp = findVPanel(shapes, sid, vf.id), ar = vp?.parameters?.arrowRotated || false, sel = selectedPanelRow === `vf-${vf.id}`;
+        const dims = vp?.geometry ? getDimsFromGeo(vp.geometry, ar) : null;
 
-        elements.push(
+        return (
           <div
-            key={groupKey}
-            className={`relative rounded-lg overflow-hidden transition-all duration-150
-              ${anySel
-                ? 'bg-white ring-1 ring-[#f3c89e] shadow-[0_2px_10px_-3px_rgba(234,88,12,0.20),0_1px_2px_rgba(68,64,60,0.06)]'
-                : 'bg-white ring-1 ring-[#e7e2da] shadow-[0_1px_2px_rgba(68,64,60,0.05),0_1px_1px_rgba(68,64,60,0.03)] hover:ring-[#dbd4c9] hover:shadow-[0_3px_10px_-3px_rgba(68,64,60,0.12),0_1px_2px_rgba(68,64,60,0.05)]'}
-              ${isDraggingThisGroup ? 'opacity-40 scale-[0.99]' : ''}
-              ${isDropTargetGroup ? '!ring-blue-400 bg-blue-50' : ''}`}
+            key={vf.id}
+            onClick={e => { stop(e); setSelectedPanelRow(`vf-${vf.id}`, null, sid); }}
+            className={`group/row relative flex items-center gap-1.5 pl-2.5 pr-1 py-px cursor-pointer transition-colors duration-150
+              ${sel ? 'bg-[#fff6ec]' : 'hover:bg-[#faf6ef]'}`}
           >
-            {renderPanelRow(vf, vi, displayIdx, true, groupKey)}
-          </div>
-        );
-      } else {
-        // ── Multi-panel group: group header with grip, rows not individually draggable ──
-        const innerRows = group.map((vf) => {
-          const vi = svf.findIndex(v => v.id === vf.id);
-          const displayIdx = globalIdx + 1;
-          globalIdx++;
-          return renderPanelRow(vf, vi, displayIdx, false, groupKey);
-        });
+            {sel && <span className="absolute left-0 top-0 bottom-0 w-[2.5px] rounded-r-sm bg-gradient-to-b from-orange-400 to-orange-500" />}
 
-        // Compute a readable face label (e.g. "+Z", "-X") from the dominant normal
-        const [nx, ny, nz] = group[0].normal;
-        const absN = [Math.abs(nx), Math.abs(ny), Math.abs(nz)];
-        const dominantAxis = absN.indexOf(Math.max(...absN));
-        const dominantSign = [nx, ny, nz][dominantAxis] > 0 ? '+' : '−';
-        const axisLabel = `${dominantSign}${'XYZ'[dominantAxis]}`;
+            <span className={`shrink-0 inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full text-[11px] font-semibold tabular-nums transition-all
+              ${sel
+                ? 'bg-gradient-to-b from-orange-400 to-orange-500 text-white ring-1 ring-orange-500/40 shadow-[0_1px_3px_rgba(234,88,12,0.35)]'
+                : 'bg-gradient-to-b from-white to-[#efe9df] text-stone-600 ring-1 ring-[#e4ded4] shadow-[0_1px_1.5px_rgba(68,64,60,0.08),inset_0_1px_0_rgba(255,255,255,0.9)] group-hover/row:ring-[#e7b487] group-hover/row:text-orange-600'}`}>
+              {displayIdx}
+            </span>
 
-        elements.push(
-          <div
-            key={groupKey}
-            onDragOver={e => {
-              if (dragIndex !== null) {
-                e.preventDefault();
-                e.dataTransfer.dropEffect = 'move';
-                if (dropIndex !== groupFirstIdx) setDropIndex(groupFirstIdx);
-              }
-            }}
-            onDragLeave={() => { if (dropIndex === groupFirstIdx) setDropIndex(null); }}
-            onDrop={e => {
-              e.preventDefault();
-              if (dragIndex === null) return;
-              onGroupDrop(normalKey(orderedVfs[dragIndex]), groupKey);
-            }}
-            className={`relative rounded-lg overflow-hidden transition-all duration-150
-              ${anySel
-                ? 'bg-white ring-1 ring-[#f3c89e] shadow-[0_2px_10px_-3px_rgba(234,88,12,0.20),0_1px_2px_rgba(68,64,60,0.06)]'
-                : 'bg-white ring-1 ring-[#e7e2da] shadow-[0_1px_2px_rgba(68,64,60,0.05),0_1px_1px_rgba(68,64,60,0.03)] hover:ring-[#dbd4c9] hover:shadow-[0_3px_10px_-3px_rgba(68,64,60,0.12),0_1px_2px_rgba(68,64,60,0.05)]'}
-              ${isDraggingThisGroup ? 'opacity-40 scale-[0.99]' : ''}
-              ${isDropTargetGroup ? '!ring-blue-400 bg-blue-50' : ''}`}
-          >
-            {/* Group header — drag handle for entire group */}
-            <div
-              draggable
-              onDragStart={e => {
-                stop(e);
-                setDragIndex(groupFirstIdx);
-                e.dataTransfer.effectAllowed = 'move';
-                e.dataTransfer.setData('text/plain', groupKey);
-              }}
-              onDragEnd={() => { setDragIndex(null); setDropIndex(null); }}
+            <input
+              type="text"
+              value={vf.description || ''}
               onClick={stop}
-              className="flex items-center gap-1.5 px-2 py-[3px] bg-gradient-to-b from-[#f7f2eb] to-[#f0ebe0] border-b border-[#e8e1d5] cursor-grab active:cursor-grabbing select-none"
-              title="Sürükleyerek grubu taşı"
-            >
-              <GripVertical size={12} className="text-stone-400 shrink-0"/>
-              <span className="text-[10px] font-semibold text-stone-500 tabular-nums tracking-wide">{axisLabel}</span>
-              <span className="text-[10px] text-stone-400">{group.length} panel</span>
-              <span className="ml-auto text-[9px] text-stone-300 font-medium uppercase tracking-wider">grup</span>
-            </div>
+              onChange={e => updateVirtualFace(vf.id, { description: e.target.value })}
+              placeholder="not…"
+              className="flex-1 min-w-0 px-1 py-1 text-xs bg-transparent border-b border-transparent hover:border-[#dcd5ca] focus:border-orange-400 rounded-none outline-none text-stone-700 placeholder:text-stone-300 transition-colors"
+            />
 
-            <div className="flex flex-col">
-              {innerRows}
+            {dims && (
+              <span onClick={stop} className="shrink-0 inline-flex items-center text-xs leading-none tabular-nums px-0.5">
+                <span className="text-stone-400 font-medium">W</span><span className="text-stone-700 font-semibold ml-1">{dims.primary}</span>
+                <span className="text-stone-300 mx-1.5">·</span>
+                <span className="text-stone-400 font-medium">H</span><span className="text-stone-700 font-semibold ml-1">{dims.secondary}</span>
+                <span className="text-stone-300 mx-1.5">·</span>
+                <span className="text-stone-400 font-medium">T</span><span className="text-stone-700 font-semibold ml-1">{dims.thickness}</span>
+              </span>
+            )}
+
+            <div className="flex items-center gap-0.5 shrink-0" onClick={stop}>
+              <button onClick={async () => { if (vf.hasPanel) removeVP(vf.id); else await createVP(vf.id, vi); }}
+                className="w-[22px] h-[22px] rounded-md flex items-center justify-center text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700 transition-colors"
+                title={vf.hasPanel ? 'Paneli kaldır' : 'Panel oluştur'}>
+                <span className={`w-3.5 h-3.5 rounded-[3px] border flex items-center justify-center transition-colors ${vf.hasPanel ? 'bg-orange-500 border-orange-500' : 'border-stone-300'}`}>
+                  {vf.hasPanel && <Check size={10} strokeWidth={3} className="text-white"/>}
+                </span>
+              </button>
+
+              <button disabled={!vf.hasPanel} onClick={e => { stop(e); toggleArrow(vp); }}
+                className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-stone-700 bg-[#f1ece4]' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
+                title="Ok yönünü değiştir"><ArrowUp size={14} className={`transition-transform duration-200 ${ar ? '' : 'rotate-90'}`}/></button>
+
+              <button disabled={!vf.hasPanel || !vp} onClick={async e => {
+                stop(e); if (!vp) return;
+                const { reshapePanelToParentFace } = await import('./PanelReshapeService');
+                await reshapePanelToParentFace(vp.id);
+              }}
+                className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel || !vp ? 'text-stone-200 cursor-not-allowed' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
+                title="Ana yüze eşitle"><Shapes size={13}/></button>
+
+              <button onClick={e => { stop(e); if (vf.hasPanel) removeVP(vf.id); deleteVirtualFace(vf.id); }}
+                className="w-[22px] h-[22px] rounded-md flex items-center justify-center text-stone-400 hover:bg-red-50 hover:text-red-500 transition-colors"
+                title="Yüzü sil"><Trash2 size={13}/></button>
             </div>
           </div>
         );
-      }
+      });
+
+      elements.push(
+        <div
+          key={groupKey}
+          onDragOver={e => {
+            if (dragIndex !== null) {
+              e.preventDefault();
+              e.dataTransfer.dropEffect = 'move';
+              if (dropIndex !== groupFirstIdx) setDropIndex(groupFirstIdx);
+            }
+          }}
+          onDragLeave={() => { if (dropIndex === groupFirstIdx) setDropIndex(null); }}
+          onDrop={e => {
+            e.preventDefault();
+            if (dragIndex === null) return;
+            onGroupDrop(normalKey(orderedVfs[dragIndex]), groupKey);
+          }}
+          className={`relative flex items-stretch rounded-lg overflow-hidden transition-all duration-150
+            ${anySel
+              ? 'bg-white ring-1 ring-[#f3c89e] shadow-[0_2px_10px_-3px_rgba(234,88,12,0.20),0_1px_2px_rgba(68,64,60,0.06)]'
+              : 'bg-white ring-1 ring-[#e7e2da] shadow-[0_1px_2px_rgba(68,64,60,0.05),0_1px_1px_rgba(68,64,60,0.03)] hover:ring-[#dbd4c9] hover:shadow-[0_3px_10px_-3px_rgba(68,64,60,0.12),0_1px_2px_rgba(68,64,60,0.05)]'}
+            ${isDraggingThisGroup ? 'opacity-40 scale-[0.99]' : ''}
+            ${isDropTargetGroup ? '!ring-blue-400 bg-blue-50' : ''}`}
+        >
+          <span
+            draggable
+            onDragStart={e => {
+              stop(e);
+              setDragIndex(groupFirstIdx);
+              e.dataTransfer.effectAllowed = 'move';
+              e.dataTransfer.setData('text/plain', groupKey);
+            }}
+            onDragEnd={() => { setDragIndex(null); setDropIndex(null); }}
+            onClick={stop}
+            className="cursor-grab active:cursor-grabbing shrink-0 w-6 self-stretch flex items-center justify-center text-stone-300/90 hover:text-stone-600 bg-gradient-to-b from-[#fbf9f5] to-[#f4efe7] hover:from-[#f4efe7] hover:to-[#ebe4d9] active:to-[#e3dbce] border-r border-[#ece6dc] transition-colors"
+            title={isGroupMulti ? 'Sürükleyerek tüm grubu taşı' : 'Sürükleyerek sırala'}
+          ><GripVertical size={15}/></span>
+
+          <div className="flex-1 min-w-0 flex flex-col">
+            {innerRows}
+          </div>
+        </div>
+      );
     });
 
     elements.push(
