@@ -633,30 +633,27 @@ function reraycastVirtualFaceFallback(
 ): VirtualFace | null {
   let clampedClickWorld: THREE.Vector3;
 
-  const normalizedUV = vf.raycastRecipe!.normalizedClickUV;
-  if (normalizedUV) {
-    const extent = computeFaceGroupExtent(groupVerticesWorld, u, v);
+  // Use the stored VF center (transformed to current world coords) as the ray origin.
+  // The VF center represents where the panel actually sits, giving stable re-raycasting
+  // regardless of where on the face the user originally clicked.
+  // Only fall back to the stored click point if the center is unavailable.
+  const groupBboxWorld = new THREE.Box3().setFromPoints(groupVerticesWorld);
+  const vfCenterWorld = new THREE.Vector3(vf.center[0], vf.center[1], vf.center[2])
+    .applyMatrix4(localToWorld)
+    .clamp(groupBboxWorld.min, groupBboxWorld.max);
 
-    const worldU = extent.uMin + normalizedUV[0] * extent.uSpan;
-    const worldV = extent.vMin + normalizedUV[1] * extent.vSpan;
+  const groupCenterWorld = new THREE.Vector3();
+  groupVerticesWorld.forEach(vw => groupCenterWorld.add(vw));
+  groupCenterWorld.divideScalar(groupVerticesWorld.length);
 
-    const groupCenter = new THREE.Vector3();
-    groupVerticesWorld.forEach(vw => groupCenter.add(vw));
-    groupCenter.divideScalar(groupVerticesWorld.length);
-
-    clampedClickWorld = groupCenter.clone()
-      .addScaledVector(u, worldU - groupCenter.dot(u))
-      .addScaledVector(v, worldV - groupCenter.dot(v));
-  } else {
-    const clickLocal = new THREE.Vector3(
-      vf.raycastRecipe!.clickLocalPoint[0],
-      vf.raycastRecipe!.clickLocalPoint[1],
-      vf.raycastRecipe!.clickLocalPoint[2]
-    );
-    const clickWorld = clickLocal.clone().applyMatrix4(localToWorld);
-    const groupBboxWorld = new THREE.Box3().setFromPoints(groupVerticesWorld);
-    clampedClickWorld = clickWorld.clone().clamp(groupBboxWorld.min, groupBboxWorld.max);
-  }
+  // Project the VF center onto the face plane (remove normal component, add face center's normal component)
+  const vfCenterU = vfCenterWorld.dot(u);
+  const vfCenterV = vfCenterWorld.dot(v);
+  const faceNComp = groupCenterWorld.dot(worldNormal);
+  clampedClickWorld = new THREE.Vector3()
+    .addScaledVector(u, vfCenterU)
+    .addScaledVector(v, vfCenterV)
+    .addScaledVector(worldNormal, faceNComp);
 
   const planeOrigin = clampedClickWorld.clone();
   const startWorld = planeOrigin.clone().addScaledVector(worldNormal, 0.5);
