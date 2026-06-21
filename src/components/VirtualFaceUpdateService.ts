@@ -553,7 +553,11 @@ function reraycastVirtualFace(
 
   const nhd = vf.raycastRecipe.normalizedHitDistances;
   const allBoundary = !!nhd && !!nhd.uPosIsBoundary && !!nhd.uNegIsBoundary && !!nhd.vPosIsBoundary && !!nhd.vNegIsBoundary;
-  const siblingPanelsExist = childPanels.some(p => p.parameters?.virtualFaceId !== vf.id);
+  // Moved panels are no longer "on" their original face — don't count them as siblings
+  const siblingPanelsExist = childPanels.some(p =>
+    p.parameters?.virtualFaceId !== vf.id &&
+    !vfIdBelongsToMovedPanel(p.parameters?.virtualFaceId, childPanels)
+  );
   if (nhd && allBoundary && !siblingPanelsExist) {
     const result = reconstructFromNormalizedDistances(
       vf, nhd, groupVerticesWorld, worldNormal, u, v,
@@ -669,14 +673,22 @@ function reraycastVirtualFaceFallback(
   const panelsExcludingSelf = childPanels.filter(
     p => p.parameters?.virtualFaceId !== vf.id
   );
+  // Exclude moved panels — they are no longer on the face so should not block new panels
+  const panelsOnFace = panelsExcludingSelf.filter(
+    p => !vfIdBelongsToMovedPanel(p.parameters?.virtualFaceId, childPanels)
+  );
+  // Also exclude VFs whose panels have moved, so their face area is available again
+  const shapeFacesForObstacles = shapeFaces.filter(
+    f => f.id === vf.id || !vfIdBelongsToMovedPanel(f.id, childPanels)
+  );
   const panelObstacleEdges = collectPanelObstacleEdgesWorld(
-    panelsExcludingSelf, worldNormal, planeOrigin, 20
+    panelsOnFace, worldNormal, planeOrigin, 20
   );
   const subObstacleEdges = collectSubtractionObstacleEdgesWorld(
     subtractions, localToWorld, worldNormal, planeOrigin, 20
   );
   const vfObstacleEdges = collectVirtualFaceObstacleEdgesWorld(
-    shapeFaces, vf.id, localToWorld, worldNormal, planeOrigin, 20
+    shapeFacesForObstacles, vf.id, localToWorld, worldNormal, planeOrigin, 20
   );
   const obstacleEdges = [...panelObstacleEdges, ...subObstacleEdges, ...vfObstacleEdges];
 
@@ -739,6 +751,17 @@ function reraycastVirtualFaceFallback(
   };
 }
 
+/**
+ * Returns true if the panel linked to a given virtualFaceId has been moved
+ * away from its original face (has any non-zero moveStep).
+ */
+function vfIdBelongsToMovedPanel(vfId: string, childPanels: any[]): boolean {
+  const panel = childPanels.find(p => p.parameters?.virtualFaceId === vfId);
+  if (!panel) return false;
+  const steps: any[] = panel.parameters?.moveSteps || [];
+  return steps.some((s: any) => (s.value || 0) !== 0);
+}
+
 export function recalculateVirtualFacesForShape(
   shape: Shape,
   virtualFaces: VirtualFace[],
@@ -772,7 +795,8 @@ export function recalculateVirtualFacesForShape(
     } else {
       const subtractions = shape.subtractionGeometries || [];
       const panelsExcludingSelf = childPanels.filter(
-        p => p.parameters?.virtualFaceId !== vf.id
+        p => p.parameters?.virtualFaceId !== vf.id &&
+          !vfIdBelongsToMovedPanel(p.parameters?.virtualFaceId, childPanels)
       );
       const clipped = clipVirtualFaceAgainstSubtractionsAndPanels(
         vf, subtractions, panelsExcludingSelf, localToWorld, worldToLocal
