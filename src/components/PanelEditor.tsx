@@ -927,7 +927,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     if (!activePanelId || !activePanel) return null;
     const isExt = faceExtrudeMode && !!activePanelId;
     const hf = faceExtrudeSelectedFace !== null;
-    if (!isExt && activeSteps.length === 0) return null;
+    if (!isExt) return null;
 
     const seg = (f: boolean): React.CSSProperties => ({
       flex: 1, minWidth: 0, height: 28, fontSize: 10, fontWeight: 700, letterSpacing: '0.03em',
@@ -970,84 +970,51 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     return (
       <div style={{
         position: 'absolute', left: 8, right: 8, bottom: 8, zIndex: 5, borderRadius: 11,
-        background: 'linear-gradient(180deg,rgba(250,248,244,0.86),rgba(239,235,227,0.9))',
+        background: 'linear-gradient(180deg,rgba(250,248,244,0.90),rgba(239,235,227,0.94))',
         backdropFilter: 'blur(16px) saturate(150%)', WebkitBackdropFilter: 'blur(16px) saturate(150%)',
         border: '1px solid rgba(60,50,40,0.13)',
         boxShadow: '0 10px 24px -12px rgba(40,30,20,0.30),0 0 0 0.5px rgba(60,50,40,0.05),inset 0 1px 0 rgba(255,255,255,0.92)',
         display: 'flex', flexDirection: 'column', overflow: 'hidden',
         fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif",
       }}>
-        {isExt && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 9px' }}>
-            {hf ? (
-              <>
-                <input
-                  type="text" inputMode="numeric" value={faceExtrudeThickness}
-                  onChange={e => setFaceExtrudeThickness(Number(e.target.value) || 0)}
-                  style={{
-                    flex: 1, minWidth: 0, height: 28, textAlign: 'center', fontFamily: 'monospace', fontSize: 13, fontWeight: 600,
-                    color: '#1c1917', background: 'linear-gradient(180deg,#fff,#faf8f3)', border: '1px solid rgba(60,50,40,0.16)',
-                    borderRadius: 7, outline: 'none', boxShadow: 'inset 0 1px 2px rgba(40,30,20,0.06)',
-                  }}
-                />
-                <div style={{ display: 'flex', width: 86, flexShrink: 0, borderRadius: 7, overflow: 'hidden', border: '1px solid rgba(60,50,40,0.16)' }}>
-                  {[true, false].map(f => (
-                    <button key={String(f)} onClick={() => setFaceExtrudeFixedMode(f)} style={seg(f)}>{f ? 'Fixed' : 'Dyn'}</button>
-                  ))}
-                </div>
-                <button onClick={onApply} title="Uygula" style={{
-                  flexShrink: 0, width: 32, height: 28, borderRadius: 7, border: 'none', cursor: 'pointer', outline: 'none',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  background: 'linear-gradient(180deg,#5b5346,#44403c)', color: '#fff',
-                  boxShadow: '0 1px 2px rgba(40,30,20,0.25),inset 0 1px 0 rgba(255,255,255,0.18)',
-                }}><Check size={15} strokeWidth={2.5} /></button>
-                {exitBtn}
-              </>
-            ) : (
-              <>
-                <div style={{
-                  flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 7, height: 28, padding: '0 10px', borderRadius: 7,
-                  background: 'rgba(120,113,108,0.08)', border: '1px solid rgba(60,50,40,0.10)',
-                }}>
-                  <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#a8a29e', flexShrink: 0 }} />
-                  <span style={{ fontSize: 11, fontWeight: 500, color: '#78716c', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>3B görünümde yüzey seç</span>
-                </div>
-                {exitBtn}
-              </>
-            )}
-          </div>
-        )}
-
-        {activeSteps.length > 0 && (
-          <div style={{ borderTop: isExt ? '1px solid rgba(60,50,40,0.08)' : 'none', padding: '6px 9px', display: 'flex', alignItems: 'center', gap: 6, overflowX: 'auto' }}>
-            <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.07em', textTransform: 'uppercase', color: '#a8a29e', flexShrink: 0 }}>Adımlar</span>
-            {activeSteps.map((s: any) => (
-              editingStepId === s.id ? (
-                <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '3px 6px', borderRadius: 6, background: 'rgba(120,113,108,0.10)', border: '1px solid rgba(60,50,40,0.16)', flexShrink: 0 }}>
-                  <span style={{ fontSize: 9, fontWeight: 800, fontFamily: 'monospace', color: '#6b6253' }}>{s.axisLabel}</span>
-                  <input type="text" inputMode="numeric" autoFocus value={editingStepValue}
-                    onChange={e => setEditingStepValue(Number(e.target.value) || 0)}
-                    onKeyDown={e => { if (e.key === 'Enter') saveStep(activePanelId, s.id, editingStepValue); else if (e.key === 'Escape') setEditingStepId(null); }}
-                    style={{ width: 46, height: 20, textAlign: 'center', fontFamily: 'monospace', fontSize: 10.5, fontWeight: 600, color: '#1c1917', background: '#fff', border: '1px solid rgba(60,50,40,0.3)', borderRadius: 4, outline: 'none' }} />
-                  <button onClick={() => saveStep(activePanelId, s.id, editingStepValue)} style={iconBtn('#5b5346')}><Check size={11} /></button>
-                  <button onClick={() => setEditingStepId(null)} style={iconBtn('#a8a29e')}><X size={11} /></button>
-                </div>
-              ) : (
-                <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '3px 7px', borderRadius: 6, background: 'linear-gradient(180deg,rgba(255,255,255,0.75),rgba(244,241,234,0.6))', border: '1px solid rgba(60,50,40,0.10)', flexShrink: 0 }}>
-                  <span style={{ fontSize: 9, fontWeight: 800, fontFamily: 'monospace', color: '#6b6253' }}>{s.axisLabel}</span>
-                  <span style={{ fontSize: 11, fontFamily: 'monospace', fontWeight: 700, color: '#1c1917' }}>{s.value}</span>
-                  <span style={{ fontSize: 7.5, fontWeight: 700, padding: '1px 4px', borderRadius: 3, background: 'rgba(120,113,108,0.14)', color: '#57534e' }}>{s.isFixed ? 'F' : 'D'}</span>
-                  <button onClick={() => { setEditingStepId(s.id); setEditingStepValue(s.value); }} style={iconBtn('#78716c')}><Pencil size={10} /></button>
-                  <button onClick={async () => {
-                    const ps = shapes.find(x => x.id === activePanelId); if (!ps) return;
-                    const { deleteExtrudeStep } = await import('./FaceExtrudeService');
-                    await deleteExtrudeStep(ps, s.id, updateShape);
-                  }} style={iconBtn('#ef4444')}><Trash2 size={10} /></button>
-                </div>
-              )
-            ))}
-          </div>
-        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 9px' }}>
+          {hf ? (
+            <>
+              <input
+                type="text" inputMode="numeric" value={faceExtrudeThickness}
+                onChange={e => setFaceExtrudeThickness(Number(e.target.value) || 0)}
+                style={{
+                  flex: 1, minWidth: 0, height: 28, textAlign: 'center', fontFamily: 'monospace', fontSize: 13, fontWeight: 600,
+                  color: '#1c1917', background: 'linear-gradient(180deg,#fff,#faf8f3)', border: '1px solid rgba(60,50,40,0.16)',
+                  borderRadius: 7, outline: 'none', boxShadow: 'inset 0 1px 2px rgba(40,30,20,0.06)',
+                }}
+              />
+              <div style={{ display: 'flex', width: 86, flexShrink: 0, borderRadius: 7, overflow: 'hidden', border: '1px solid rgba(60,50,40,0.16)' }}>
+                {[true, false].map(f => (
+                  <button key={String(f)} onClick={() => setFaceExtrudeFixedMode(f)} style={seg(f)}>{f ? 'Fixed' : 'Dyn'}</button>
+                ))}
+              </div>
+              <button onClick={onApply} title="Uygula" style={{
+                flexShrink: 0, width: 32, height: 28, borderRadius: 7, border: 'none', cursor: 'pointer', outline: 'none',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: 'linear-gradient(180deg,#5b5346,#44403c)', color: '#fff',
+                boxShadow: '0 1px 2px rgba(40,30,20,0.25),inset 0 1px 0 rgba(255,255,255,0.18)',
+              }}><Check size={15} strokeWidth={2.5} /></button>
+              {exitBtn}
+            </>
+          ) : (
+            <>
+              <div style={{
+                flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 7, height: 28, padding: '0 10px', borderRadius: 7,
+                background: 'rgba(120,113,108,0.08)', border: '1px solid rgba(60,50,40,0.10)',
+              }}>
+                <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#a8a29e', flexShrink: 0 }} />
+                <span style={{ fontSize: 11, fontWeight: 500, color: '#78716c', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>3B görünümde yüzey seç</span>
+              </div>
+              {exitBtn}
+            </>
+          )}
+        </div>
       </div>
     );
   })();
@@ -1137,14 +1104,11 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     );
   })();
 
-  // ── Move dock (similar to extrudeDock) ───────────────────────────────────
+  // ── Move dock — only the active-command input row (no steps list here) ──
   const moveDock = (() => {
-    if (!activePanelId || !activePanel) return null;
-    const isMoving = panelMoveMode && !!activePanelId;
+    if (!activePanelId || !panelMoveMode) return null;
     const hasAxis = panelMoveAxis !== null;
-    if (!isMoving && activeMoveSteps.length === 0) return null;
-
-    const axisColors: Record<string, string> = { 'x+': '#dc2626', 'x-': '#991b1b', 'y+': '#16a34a', 'y-': '#166534', 'z+': '#2563eb', 'z-': '#1e3a8a' };
+    const axisColors: Record<string, string> = { 'x+': '#dc2626', 'x-': '#b91c1c', 'y+': '#16a34a', 'y-': '#15803d', 'z+': '#2563eb', 'z-': '#1d4ed8' };
 
     const exitBtn = (
       <button onClick={e => { stop(e); setPanelMoveAxis(null); setPanelMoveMode(false); }}
@@ -1165,6 +1129,66 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       setPanelMoveMode(false);
     };
 
+    return (
+      <div style={{
+        position: 'absolute', left: 8, right: 8, bottom: 8, zIndex: 5, borderRadius: 11,
+        background: 'linear-gradient(180deg,rgba(250,248,244,0.90),rgba(239,235,227,0.94))',
+        backdropFilter: 'blur(16px) saturate(150%)', WebkitBackdropFilter: 'blur(16px) saturate(150%)',
+        border: '1px solid rgba(60,50,40,0.13)',
+        boxShadow: '0 10px 24px -12px rgba(40,30,20,0.30),0 0 0 0.5px rgba(60,50,40,0.05),inset 0 1px 0 rgba(255,255,255,0.92)',
+        display: 'flex', flexDirection: 'column', overflow: 'hidden',
+        fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif",
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 9px' }}>
+          {hasAxis ? (
+            <>
+              <span style={{ fontSize: 10, fontWeight: 800, fontFamily: 'monospace', color: axisColors[panelMoveAxis!] || '#44403c', padding: '2px 8px', borderRadius: 5, background: 'rgba(120,113,108,0.10)', border: '1px solid rgba(60,50,40,0.12)' }}>
+                {panelMoveAxis!.toUpperCase()}
+              </span>
+              <input
+                type="text" inputMode="numeric" autoFocus value={panelMoveValue}
+                onChange={e => setPanelMoveValue(Number(e.target.value) || 0)}
+                onKeyDown={e => { if (e.key === 'Enter') onApply(); if (e.key === 'Escape') { setPanelMoveAxis(null); setPanelMoveMode(false); } }}
+                style={{
+                  flex: 1, minWidth: 0, height: 28, textAlign: 'center', fontFamily: 'monospace', fontSize: 13, fontWeight: 600,
+                  color: '#1c1917', background: 'linear-gradient(180deg,#fff,#faf8f3)', border: '1px solid rgba(60,50,40,0.16)',
+                  borderRadius: 7, outline: 'none', boxShadow: 'inset 0 1px 2px rgba(40,30,20,0.06)',
+                }}
+              />
+              <button onClick={onApply} title="Uygula" style={{
+                flexShrink: 0, width: 32, height: 28, borderRadius: 7, border: 'none', cursor: 'pointer', outline: 'none',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: 'linear-gradient(180deg,#5b5346,#44403c)', color: '#fff',
+                boxShadow: '0 1px 2px rgba(40,30,20,0.25),inset 0 1px 0 rgba(255,255,255,0.18)',
+              }}><Check size={15} strokeWidth={2.5} /></button>
+              {exitBtn}
+            </>
+          ) : (
+            <>
+              <div style={{
+                flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 7, height: 28, padding: '0 10px', borderRadius: 7,
+                background: 'rgba(120,113,108,0.08)', border: '1px solid rgba(60,50,40,0.10)',
+              }}>
+                <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#a8a29e', flexShrink: 0 }} />
+                <span style={{ fontSize: 11, fontWeight: 500, color: '#78716c', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>3B görünümde yön oku seç</span>
+              </div>
+              {exitBtn}
+            </>
+          )}
+        </div>
+      </div>
+    );
+  })();
+
+  // ── Unified steps panel (below preview, scrollable) ──────────────────────
+  const stepsPanel = (() => {
+    if (!activePanelId || !activePanel) return null;
+    const hasExtrudeSteps = activeSteps.length > 0;
+    const hasMoveSteps = activeMoveSteps.length > 0;
+    if (!hasExtrudeSteps && !hasMoveSteps) return null;
+
+    const axisColors: Record<string, string> = { 'x+': '#dc2626', 'x-': '#b91c1c', 'y+': '#16a34a', 'y-': '#15803d', 'z+': '#2563eb', 'z-': '#1d4ed8' };
+
     const saveMoveStep = async (pid: string | null, stepId: string, val: number) => {
       if (!pid) return; const ps = shapes.find(s => s.id === pid); if (!ps) return;
       const { updateMoveStep } = await import('./PanelMoveService');
@@ -1173,91 +1197,82 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     };
 
     return (
-      <div style={{
-        position: 'absolute', left: 8, right: 8, bottom: 8, zIndex: 5, borderRadius: 11,
-        background: 'linear-gradient(180deg,rgba(250,248,244,0.86),rgba(239,235,227,0.9))',
-        backdropFilter: 'blur(16px) saturate(150%)', WebkitBackdropFilter: 'blur(16px) saturate(150%)',
-        border: '1px solid rgba(60,50,40,0.13)',
-        boxShadow: '0 10px 24px -12px rgba(40,30,20,0.30),0 0 0 0.5px rgba(60,50,40,0.05),inset 0 1px 0 rgba(255,255,255,0.92)',
-        display: 'flex', flexDirection: 'column', overflow: 'hidden',
-        fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif",
-      }}>
-        {isMoving && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 9px' }}>
-            {hasAxis ? (
-              <>
-                <span style={{ fontSize: 10, fontWeight: 800, fontFamily: 'monospace', color: axisColors[panelMoveAxis!] || '#44403c', padding: '2px 6px', borderRadius: 4, background: 'rgba(120,113,108,0.08)' }}>
-                  {panelMoveAxis!.toUpperCase()}
-                </span>
-                <input
-                  type="text" inputMode="numeric" value={panelMoveValue}
-                  onChange={e => setPanelMoveValue(Number(e.target.value) || 0)}
-                  onKeyDown={e => { if (e.key === 'Enter') onApply(); }}
-                  style={{
-                    flex: 1, minWidth: 0, height: 28, textAlign: 'center', fontFamily: 'monospace', fontSize: 13, fontWeight: 600,
-                    color: '#1c1917', background: 'linear-gradient(180deg,#fff,#faf8f3)', border: '1px solid rgba(60,50,40,0.16)',
-                    borderRadius: 7, outline: 'none', boxShadow: 'inset 0 1px 2px rgba(40,30,20,0.06)',
-                  }}
-                />
-                <button onClick={onApply} title="Uygula" style={{
-                  flexShrink: 0, width: 32, height: 28, borderRadius: 7, border: 'none', cursor: 'pointer', outline: 'none',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  background: 'linear-gradient(180deg,#5b5346,#44403c)', color: '#fff',
-                  boxShadow: '0 1px 2px rgba(40,30,20,0.25),inset 0 1px 0 rgba(255,255,255,0.18)',
-                }}><Check size={15} strokeWidth={2.5} /></button>
-                {exitBtn}
-              </>
-            ) : (
-              <>
-                <div style={{
-                  flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 7, height: 28, padding: '0 10px', borderRadius: 7,
-                  background: 'rgba(120,113,108,0.08)', border: '1px solid rgba(60,50,40,0.10)',
-                }}>
-                  <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#a8a29e', flexShrink: 0 }} />
-                  <span style={{ fontSize: 11, fontWeight: 500, color: '#78716c', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>3B görünümde yön oku seç</span>
-                </div>
-                {exitBtn}
-              </>
-            )}
-          </div>
-        )}
+      <div className="shrink-0 border-t border-stone-100 bg-[#faf8f4]" style={{ fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif" }}>
+        <div className="overflow-y-auto" style={{ maxHeight: 180 }}>
+          {hasExtrudeSteps && (
+            <div className="px-3 pt-2.5 pb-1.5">
+              <div className="flex items-center gap-2 mb-1.5">
+                <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#a8a29e' }}>Extrude adımları</span>
+                <div className="flex-1 h-px bg-stone-200/70" />
+              </div>
+              <div className="flex flex-col gap-1">
+                {activeSteps.map((s: any, idx: number) => (
+                  <div key={s.id} className="flex items-center gap-2 px-2 py-1 rounded-lg bg-white ring-1 ring-stone-200/80 shadow-[0_1px_2px_rgba(68,64,60,0.05)]">
+                    <span className="shrink-0 text-[10px] font-bold text-stone-400 tabular-nums w-4 text-center">{idx + 1}</span>
+                    <span className="shrink-0 min-w-[26px] text-center text-[10px] font-extrabold font-mono px-1.5 py-0.5 rounded-md" style={{ background: 'rgba(68,64,60,0.07)', color: '#57534e' }}>{s.axisLabel}</span>
+                    {editingStepId === s.id ? (
+                      <>
+                        <input type="text" inputMode="numeric" autoFocus value={editingStepValue}
+                          onChange={e => setEditingStepValue(Number(e.target.value) || 0)}
+                          onKeyDown={e => { if (e.key === 'Enter') saveStep(activePanelId, s.id, editingStepValue); else if (e.key === 'Escape') setEditingStepId(null); }}
+                          className="flex-1 min-w-0 h-6 text-center font-mono text-xs font-semibold text-stone-800 bg-white border border-stone-300 rounded-md outline-none focus:border-orange-400" />
+                        <button onClick={() => saveStep(activePanelId, s.id, editingStepValue)} style={iconBtn('#5b5346')}><Check size={11} /></button>
+                        <button onClick={() => setEditingStepId(null)} style={iconBtn('#a8a29e')}><X size={11} /></button>
+                      </>
+                    ) : (
+                      <>
+                        <span className="flex-1 font-mono text-xs font-bold text-stone-800 tabular-nums">{s.value}</span>
+                        <span className="shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-sm bg-stone-100 text-stone-500">{s.isFixed ? 'Fixed' : 'Dyn'}</span>
+                        <button onClick={() => { setEditingStepId(s.id); setEditingStepValue(s.value); }} style={iconBtn('#78716c')}><Pencil size={10} /></button>
+                        <button onClick={async () => { const ps = shapes.find(x => x.id === activePanelId); if (!ps) return; const { deleteExtrudeStep } = await import('./FaceExtrudeService'); await deleteExtrudeStep(ps, s.id, updateShape); }} style={iconBtn('#ef4444')}><Trash2 size={10} /></button>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
-        {activeMoveSteps.length > 0 && (
-          <div style={{ borderTop: isMoving ? '1px solid rgba(60,50,40,0.08)' : 'none', padding: '6px 9px', display: 'flex', alignItems: 'center', gap: 6, overflowX: 'auto' }}>
-            <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.07em', textTransform: 'uppercase', color: '#a8a29e', flexShrink: 0 }}>Taşıma</span>
-            {activeMoveSteps.map((s: any) => (
-              editingMoveStepId === s.id ? (
-                <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '3px 6px', borderRadius: 6, background: 'rgba(120,113,108,0.10)', border: '1px solid rgba(60,50,40,0.16)', flexShrink: 0 }}>
-                  <span style={{ fontSize: 9, fontWeight: 800, fontFamily: 'monospace', color: axisColors[s.axis] || '#6b6253' }}>{s.axis.toUpperCase()}</span>
-                  <input type="text" inputMode="numeric" autoFocus value={editingMoveStepValue}
-                    onChange={e => setEditingMoveStepValue(Number(e.target.value) || 0)}
-                    onKeyDown={e => { if (e.key === 'Enter') saveMoveStep(activePanelId, s.id, editingMoveStepValue); else if (e.key === 'Escape') setEditingMoveStepId(null); }}
-                    style={{ width: 46, height: 20, textAlign: 'center', fontFamily: 'monospace', fontSize: 10.5, fontWeight: 600, color: '#1c1917', background: '#fff', border: '1px solid rgba(60,50,40,0.3)', borderRadius: 4, outline: 'none' }} />
-                  <button onClick={() => saveMoveStep(activePanelId, s.id, editingMoveStepValue)} style={iconBtn('#5b5346')}><Check size={11} /></button>
-                  <button onClick={() => setEditingMoveStepId(null)} style={iconBtn('#a8a29e')}><X size={11} /></button>
-                </div>
-              ) : (
-                <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '3px 7px', borderRadius: 6, background: 'linear-gradient(180deg,rgba(255,255,255,0.75),rgba(244,241,234,0.6))', border: '1px solid rgba(60,50,40,0.10)', flexShrink: 0 }}>
-                  <span style={{ fontSize: 9, fontWeight: 800, fontFamily: 'monospace', color: axisColors[s.axis] || '#6b6253' }}>{s.axis.toUpperCase()}</span>
-                  <span style={{ fontSize: 11, fontFamily: 'monospace', fontWeight: 700, color: '#1c1917' }}>{s.value}</span>
-                  <button onClick={() => { setEditingMoveStepId(s.id); setEditingMoveStepValue(s.value); }} style={iconBtn('#78716c')}><Pencil size={10} /></button>
-                  <button onClick={async () => {
-                    const ps = shapes.find(x => x.id === activePanelId); if (!ps) return;
-                    const { deleteMoveStep } = await import('./PanelMoveService');
-                    await deleteMoveStep(ps, s.id, shapes, updateShape);
-                  }} style={iconBtn('#ef4444')}><Trash2 size={10} /></button>
-                </div>
-              )
-            ))}
-          </div>
-        )}
+          {hasMoveSteps && (
+            <div className="px-3 pt-2 pb-2.5">
+              <div className="flex items-center gap-2 mb-1.5">
+                <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#a8a29e' }}>Taşıma adımları</span>
+                <div className="flex-1 h-px bg-stone-200/70" />
+              </div>
+              <div className="flex flex-col gap-1">
+                {activeMoveSteps.map((s: any, idx: number) => (
+                  <div key={s.id} className="flex items-center gap-2 px-2 py-1 rounded-lg bg-white ring-1 ring-stone-200/80 shadow-[0_1px_2px_rgba(68,64,60,0.05)]">
+                    <span className="shrink-0 text-[10px] font-bold text-stone-400 tabular-nums w-4 text-center">{idx + 1}</span>
+                    <span className="shrink-0 min-w-[26px] text-center text-[10px] font-extrabold font-mono px-1.5 py-0.5 rounded-md" style={{ color: axisColors[s.axis] || '#57534e', background: 'rgba(68,64,60,0.06)' }}>{s.axis.toUpperCase()}</span>
+                    {editingMoveStepId === s.id ? (
+                      <>
+                        <input type="text" inputMode="numeric" autoFocus value={editingMoveStepValue}
+                          onChange={e => setEditingMoveStepValue(Number(e.target.value) || 0)}
+                          onKeyDown={e => { if (e.key === 'Enter') saveMoveStep(activePanelId, s.id, editingMoveStepValue); else if (e.key === 'Escape') setEditingMoveStepId(null); }}
+                          className="flex-1 min-w-0 h-6 text-center font-mono text-xs font-semibold text-stone-800 bg-white border border-stone-300 rounded-md outline-none focus:border-orange-400" />
+                        <button onClick={() => saveMoveStep(activePanelId, s.id, editingMoveStepValue)} style={iconBtn('#5b5346')}><Check size={11} /></button>
+                        <button onClick={() => setEditingMoveStepId(null)} style={iconBtn('#a8a29e')}><X size={11} /></button>
+                      </>
+                    ) : (
+                      <>
+                        <span className="flex-1 font-mono text-xs font-bold text-stone-800 tabular-nums">{s.value}</span>
+                        <button onClick={() => { setEditingMoveStepId(s.id); setEditingMoveStepValue(s.value); }} style={iconBtn('#78716c')}><Pencil size={10} /></button>
+                        <button onClick={async () => { const ps = shapes.find(x => x.id === activePanelId); if (!ps) return; const { deleteMoveStep } = await import('./PanelMoveService'); await deleteMoveStep(ps, s.id, shapes, updateShape); }} style={iconBtn('#ef4444')}><Trash2 size={10} /></button>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     );
   })();
 
   // ── Shared preview pane ────────────────────────────────────────────────
   const previewPane = isPreviewMode ? (
-    <div className="flex flex-col h-full min-h-0">
+    <div className="flex flex-col h-full min-h-0 overflow-hidden">
       <div className="px-3 py-2 border-b border-stone-100 flex items-center gap-2 shrink-0">
         <div className="flex items-center gap-1.5">{panelToolbar}</div>
         <button
@@ -1274,7 +1289,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         </div>
       )}
 
-      <div className="flex-1 mx-2 mb-2 rounded-xl bg-gradient-to-b from-[#f6f2ec] to-[#e7e1d6] border border-stone-200/80 overflow-hidden relative" style={{ minHeight: 380 }}>
+      <div className="shrink-0 mx-2 rounded-xl bg-gradient-to-b from-[#f6f2ec] to-[#e7e1d6] border border-stone-200/80 overflow-hidden relative" style={{ height: 280 }}>
         {activeDims && activePanel
           ? <PanelPreview2D key={activePanel.id} dims={activeDims} shape={activePanel} arrowRotated={!!activePanel.parameters?.arrowRotated}/>
           : (
@@ -1286,6 +1301,8 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         {extrudeDock}
         {moveDock}
       </div>
+
+      {stepsPanel}
     </div>
   ) : null;
 
@@ -1322,7 +1339,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         <div className="flex items-center gap-1.5">{panelToolbar}<button onClick={onClose} className="p-1 hover:bg-stone-200 rounded-md transition-colors"><X size={13} className="text-stone-400"/></button></div>
       </div>
       {isPreviewMode ? (
-        <div style={{ height: 'min(86vh, 760px)', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ height: 'min(86vh, 820px)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           {previewPane}
         </div>
       ) : (
