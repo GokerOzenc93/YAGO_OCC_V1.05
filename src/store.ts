@@ -201,6 +201,7 @@ interface AppState{
   panelRotateMode:boolean;setPanelRotateMode:(b:boolean)=>void;
   panelRotateTargetPanelId:string|null;setPanelRotateTargetPanelId:(id:string|null)=>void;
   panelRotatePivot:[number,number,number]|null;setPanelRotatePivot:(p:[number,number,number]|null)=>void;
+  panelRotateAxis:'x'|'y'|'z'|null;setPanelRotateAxis:(a:'x'|'y'|'z'|null)=>void;
   panelRotateAngle:number;setPanelRotateAngle:(v:number)=>void;
 
   showVirtualFaces:boolean;setShowVirtualFaces:(b:boolean)=>void;
@@ -259,9 +260,10 @@ export const useAppStore=create<AppState>((set,get)=>({
   panelMoveAxis:null,setPanelMoveAxis:(a)=>set({panelMoveAxis:a}),
   panelMoveValue:0,setPanelMoveValue:(v)=>set({panelMoveValue:v}),
 
-  panelRotateMode:false,setPanelRotateMode:(b)=>set({panelRotateMode:b,...(!b?{panelRotateTargetPanelId:null,panelRotatePivot:null,panelRotateAngle:0}:{})}),
+  panelRotateMode:false,setPanelRotateMode:(b)=>set({panelRotateMode:b,...(!b?{panelRotateTargetPanelId:null,panelRotatePivot:null,panelRotateAxis:null,panelRotateAngle:0}:{})}),
   panelRotateTargetPanelId:null,setPanelRotateTargetPanelId:(id)=>set({panelRotateTargetPanelId:id}),
   panelRotatePivot:null,setPanelRotatePivot:(p)=>set({panelRotatePivot:p}),
+  panelRotateAxis:null,setPanelRotateAxis:(a)=>set({panelRotateAxis:a}),
   panelRotateAngle:0,setPanelRotateAngle:(v)=>set({panelRotateAngle:v}),
 
   showVirtualFaces:true,setShowVirtualFaces:(b)=>set({showVirtualFaces:b}),

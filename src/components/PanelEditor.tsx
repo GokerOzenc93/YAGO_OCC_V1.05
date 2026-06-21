@@ -548,7 +548,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     panelMoveMode, setPanelMoveMode, panelMoveTargetPanelId, setPanelMoveTargetPanelId,
     panelMoveAxis, setPanelMoveAxis, panelMoveValue, setPanelMoveValue,
     panelRotateMode, setPanelRotateMode, panelRotateTargetPanelId, setPanelRotateTargetPanelId,
-    panelRotatePivot, setPanelRotatePivot, panelRotateAngle, setPanelRotateAngle } = useAppStore();
+    panelRotatePivot, setPanelRotatePivot, panelRotateAxis, setPanelRotateAxis, panelRotateAngle, setPanelRotateAngle } = useAppStore();
 
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
@@ -1199,13 +1199,14 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     );
   })();
 
-  // ── Rotate dock — pivot selection + angle input ──
+  // ── Rotate dock — pivot selection + axis selection + angle input ──
   const rotateDock = (() => {
     if (!activePanelId || !panelRotateMode) return null;
     const hasPivot = panelRotatePivot !== null;
+    const hasAxis = panelRotateAxis !== null;
 
     const exitBtn = (
-      <button onClick={e => { stop(e); setPanelRotatePivot(null); setPanelRotateMode(false); }}
+      <button onClick={e => { stop(e); setPanelRotatePivot(null); setPanelRotateAxis(null); setPanelRotateMode(false); }}
         title="Çıkış" style={{
           flexShrink: 0, width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
           borderRadius: 7, border: '1px solid rgba(60,50,40,0.12)', cursor: 'pointer', outline: 'none',
@@ -1213,16 +1214,32 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         }}><X size={13} /></button>
     );
 
+    const axisColors: Record<string, string> = { x: '#dc2626', y: '#16a34a', z: '#2563eb' };
+
     const onApply = async () => {
-      if (!hasPivot || !activePanelId) return;
+      if (!hasPivot || !hasAxis || !activePanelId) return;
       const ps = shapes.find(s => s.id === activePanelId); if (!ps) return;
-      const { executePanelRotate, getPanelNormalAxis } = await import('./PanelRotateService');
-      const axis = getPanelNormalAxis(ps);
-      await executePanelRotate({ panelShape: ps, pivot: panelRotatePivot!, angleDeg: panelRotateAngle, axis, shapes, updateShape });
+      const { executePanelRotate } = await import('./PanelRotateService');
+      const axisVec: [number, number, number] = panelRotateAxis === 'x' ? [1, 0, 0] : panelRotateAxis === 'y' ? [0, 1, 0] : [0, 0, 1];
+      await executePanelRotate({ panelShape: ps, pivot: panelRotatePivot!, angleDeg: panelRotateAngle, axis: axisVec, shapes, updateShape });
       setPanelRotatePivot(null);
+      setPanelRotateAxis(null);
       setPanelRotateAngle(0);
       setPanelRotateMode(false);
     };
+
+    const axisBtn = (axis: 'x' | 'y' | 'z') => (
+      <button key={axis} onClick={e => { stop(e); setPanelRotateAxis(axis); }}
+        style={{
+          width: 32, height: 28, borderRadius: 7, border: 'none', cursor: 'pointer', outline: 'none',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: panelRotateAxis === axis ? axisColors[axis] : 'rgba(120,113,108,0.10)',
+          color: panelRotateAxis === axis ? '#fff' : axisColors[axis],
+          fontFamily: 'monospace', fontSize: 13, fontWeight: 900,
+          boxShadow: panelRotateAxis === axis ? '0 1px 3px rgba(0,0,0,0.2)' : 'none',
+          transition: 'all 0.12s',
+        }}>{axis.toUpperCase()}</button>
+    );
 
     return (
       <div style={{
@@ -1235,21 +1252,21 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif",
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 9px' }}>
-          {hasPivot ? (
+          {hasPivot && hasAxis ? (
             <>
-              <span style={{ fontSize: 10, fontWeight: 800, fontFamily: 'monospace', color: '#ea580c', padding: '2px 8px', borderRadius: 5, background: 'rgba(234,88,12,0.10)', border: '1px solid rgba(234,88,12,0.20)' }}>
-                ROT
+              <span style={{ fontSize: 10, fontWeight: 800, fontFamily: 'monospace', color: axisColors[panelRotateAxis!], padding: '2px 8px', borderRadius: 5, background: 'rgba(68,64,60,0.07)', border: '1px solid rgba(60,50,40,0.12)' }}>
+                {panelRotateAxis!.toUpperCase()}
               </span>
               <input
                 type="text" inputMode="numeric" autoFocus value={panelRotateAngle}
                 onChange={e => setPanelRotateAngle(Number(e.target.value) || 0)}
-                onKeyDown={e => { if (e.key === 'Enter') onApply(); if (e.key === 'Escape') { setPanelRotatePivot(null); setPanelRotateMode(false); } }}
+                onKeyDown={e => { if (e.key === 'Enter') onApply(); if (e.key === 'Escape') { setPanelRotatePivot(null); setPanelRotateAxis(null); setPanelRotateMode(false); } }}
                 style={{
                   flex: 1, minWidth: 0, height: 28, textAlign: 'center', fontFamily: 'monospace', fontSize: 13, fontWeight: 600,
                   color: '#1c1917', background: 'linear-gradient(180deg,#fff,#faf8f3)', border: '1px solid rgba(60,50,40,0.16)',
                   borderRadius: 7, outline: 'none', boxShadow: 'inset 0 1px 2px rgba(40,30,20,0.06)',
                 }}
-                placeholder="Açı (derece)"
+                placeholder="Açı (°)"
               />
               <span style={{ fontSize: 10, fontWeight: 600, color: '#78716c' }}>°</span>
               <button onClick={onApply} title="Uygula" style={{
@@ -1258,6 +1275,15 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                 background: 'linear-gradient(180deg,#5b5346,#44403c)', color: '#fff',
                 boxShadow: '0 1px 2px rgba(40,30,20,0.25),inset 0 1px 0 rgba(255,255,255,0.18)',
               }}><Check size={15} strokeWidth={2.5} /></button>
+              {exitBtn}
+            </>
+          ) : hasPivot && !hasAxis ? (
+            <>
+              <span style={{ fontSize: 10, fontWeight: 500, color: '#78716c', whiteSpace: 'nowrap' }}>Eksen:</span>
+              {axisBtn('x')}
+              {axisBtn('y')}
+              {axisBtn('z')}
+              <div style={{ flex: 1 }} />
               {exitBtn}
             </>
           ) : (
@@ -1371,10 +1397,13 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                 <div className="flex-1 h-px bg-stone-200/70" />
               </div>
               <div className="flex flex-col gap-1">
-                {activeRotateSteps.map((s: any, idx: number) => (
+                {activeRotateSteps.map((s: any, idx: number) => {
+                  const stepAxisLabel = s.axis[0] === 1 ? 'X' : s.axis[1] === 1 ? 'Y' : 'Z';
+                  const stepAxisColor = s.axis[0] === 1 ? '#dc2626' : s.axis[1] === 1 ? '#16a34a' : '#2563eb';
+                  return (
                   <div key={s.id} className="flex items-center gap-2 px-2 py-1 rounded-lg bg-white ring-1 ring-stone-200/80 shadow-[0_1px_2px_rgba(68,64,60,0.05)]">
                     <span className="shrink-0 text-[10px] font-bold text-stone-400 tabular-nums w-4 text-center">{idx + 1}</span>
-                    <span className="shrink-0 min-w-[26px] text-center text-[10px] font-extrabold font-mono px-1.5 py-0.5 rounded-md" style={{ color: '#ea580c', background: 'rgba(234,88,12,0.08)' }}>ROT</span>
+                    <span className="shrink-0 min-w-[26px] text-center text-[10px] font-extrabold font-mono px-1.5 py-0.5 rounded-md" style={{ color: stepAxisColor, background: 'rgba(68,64,60,0.06)' }}>{stepAxisLabel}</span>
                     {editingRotateStepId === s.id ? (
                       <>
                         <input type="text" inputMode="numeric" autoFocus value={editingRotateStepValue}
@@ -1392,7 +1421,8 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                       </>
                     )}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}
