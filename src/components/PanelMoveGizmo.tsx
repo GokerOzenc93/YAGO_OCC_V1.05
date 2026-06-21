@@ -5,7 +5,7 @@ import { useAppStore } from '../store';
 import type { Shape } from '../store';
 
 const RENDER_ORDER = 999;
-const GAP_RATIO = 0.08; // gap between panel face and arrow start, relative to panel size
+const GAP_RATIO = 0.08;
 
 interface ArrowProps {
   direction: [number, number, number];
@@ -53,10 +53,11 @@ function MoveArrow({ direction, axisLabel, color, hoverColor, origin, length, on
     origin[2] + direction[2] * (shaftLength + coneHeight / 2),
   ];
 
+  // Label is positioned at the cone tip — always outside the panel, never occluded
   const labelPos: [number, number, number] = [
-    origin[0] + direction[0] * (length + length * 0.18),
-    origin[1] + direction[1] * (length + length * 0.18),
-    origin[2] + direction[2] * (length + length * 0.18),
+    origin[0] + direction[0] * (length + length * 0.22),
+    origin[1] + direction[1] * (length + length * 0.22),
+    origin[2] + direction[2] * (length + length * 0.22),
   ];
 
   const activeColor = isSelected ? '#ffffff' : hovered ? hoverColor : color;
@@ -75,55 +76,54 @@ function MoveArrow({ direction, axisLabel, color, hoverColor, origin, length, on
     metalness: 0.4,
   };
 
-  const handlers = {
-    onPointerEnter: (e: { stopPropagation: () => void }) => { e.stopPropagation(); setHovered(true); document.body.style.cursor = 'pointer'; },
-    onPointerLeave: (e: { stopPropagation: () => void }) => { e.stopPropagation(); setHovered(false); document.body.style.cursor = 'default'; },
-    onClick: (e: { stopPropagation: () => void }) => { e.stopPropagation(); onSelect(axisLabel); },
+  // All interaction is handled via the HTML label to avoid 3D raycasting occlusion.
+  // When the panel is against a cube face, the cube's onClick fires first and
+  // stopPropagation() blocks the 3D mesh events behind it. HTML DOM events bypass this.
+  const handleLabelClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    onSelect(axisLabel);
   };
+  const handleLabelEnter = () => { setHovered(true); document.body.style.cursor = 'pointer'; };
+  const handleLabelLeave = () => { setHovered(false); document.body.style.cursor = 'default'; };
 
   return (
     <group>
-      {/* Invisible wide hit zone shaft */}
-      <mesh position={shaftCenter} rotation={rotation} renderOrder={RENDER_ORDER} {...handlers}>
-        <cylinderGeometry args={[shaftRadius * 2.8, shaftRadius * 2.8, shaftLength, 8]} />
-        <meshBasicMaterial visible={false} transparent opacity={0} depthTest={false} />
-      </mesh>
-
-      {/* Visible shaft */}
-      <mesh position={shaftCenter} rotation={rotation} renderOrder={RENDER_ORDER} {...handlers}>
+      {/* Visible shaft — no event handlers, purely visual */}
+      <mesh position={shaftCenter} rotation={rotation} renderOrder={RENDER_ORDER}>
         <cylinderGeometry args={[shaftRadius, shaftRadius, shaftLength, 12]} />
         <meshStandardMaterial {...matProps} />
       </mesh>
 
-      {/* Invisible wide hit zone cone */}
-      <mesh position={coneCenter} rotation={rotation} renderOrder={RENDER_ORDER} {...handlers}>
-        <coneGeometry args={[coneRadius * 2, coneHeight * 1.5, 8]} />
-        <meshBasicMaterial visible={false} transparent opacity={0} depthTest={false} />
-      </mesh>
-
-      {/* Visible cone */}
-      <mesh position={coneCenter} rotation={rotation} renderOrder={RENDER_ORDER} {...handlers}>
+      {/* Visible cone — no event handlers, purely visual */}
+      <mesh position={coneCenter} rotation={rotation} renderOrder={RENDER_ORDER}>
         <coneGeometry args={[coneRadius, coneHeight, 16]} />
         <meshStandardMaterial {...matProps} />
       </mesh>
 
-      {/* Label */}
+      {/* Label — handles ALL interaction via DOM events, bypasses 3D raycasting occlusion */}
       <Html position={labelPos} center zIndexRange={[999, 1000]} style={{ pointerEvents: 'none' }}>
         <div
+          onClick={handleLabelClick}
+          onMouseEnter={handleLabelEnter}
+          onMouseLeave={handleLabelLeave}
           style={{
+            pointerEvents: 'auto',
+            cursor: 'pointer',
             background: isSelected ? color : 'transparent',
             color: isSelected ? '#fff' : '#000',
             fontFamily: '"Inter", "SF Pro Display", system-ui, sans-serif',
             fontSize: '13px',
             fontWeight: 900,
             letterSpacing: '0.06em',
-            padding: '1px 4px',
-            borderRadius: '3px',
+            padding: '3px 7px',
+            borderRadius: '4px',
             border: 'none',
             userSelect: 'none',
             whiteSpace: 'nowrap',
-            textShadow: isSelected ? 'none' : '0 0 3px #fff, 0 0 6px #fff, 0 1px 0 #fff',
+            textShadow: isSelected ? 'none' : '0 0 4px #fff, 0 0 8px #fff',
             lineHeight: '1.4',
+            minWidth: '28px',
+            textAlign: 'center',
           }}
         >
           {AXIS_DISPLAY[axisLabel]}
@@ -184,9 +184,7 @@ export function PanelMoveGizmo({ panelShape }: PanelMoveGizmoProps) {
     const size = new THREE.Vector3();
     bbox.getSize(size);
     const maxDim = Math.max(size.x, size.y, size.z);
-    // Arrow length is short — about 20% of max panel dimension
     const len = maxDim * 0.2;
-    // Gap from face to arrow start
     const gap = maxDim * GAP_RATIO;
 
     const gapped = (lx: number, ly: number, lz: number, dx: number, dy: number, dz: number): [number, number, number] => {
