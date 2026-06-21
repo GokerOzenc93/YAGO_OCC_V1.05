@@ -132,31 +132,52 @@ interface PanelMoveGizmoProps {
 export function PanelMoveGizmo({ panelShape }: PanelMoveGizmoProps) {
   const { panelMoveAxis, setPanelMoveAxis } = useAppStore();
 
-  const gizmoOrigin = useMemo<[number, number, number]>(() => {
-    if (!panelShape.geometry) return panelShape.position;
+  const { gizmoOrigin, axisOrigins, arrowLength } = useMemo(() => {
+    const fallback = panelShape.position;
+    if (!panelShape.geometry) {
+      const o = fallback;
+      return { gizmoOrigin: o, axisOrigins: { 'x+': o, 'x-': o, 'y+': o, 'y-': o, 'z+': o, 'z-': o }, arrowLength: 80 };
+    }
     const pos = panelShape.geometry.getAttribute('position') as THREE.BufferAttribute;
-    if (!pos) return panelShape.position;
-    const bbox = new THREE.Box3().setFromBufferAttribute(pos);
+    if (!pos) {
+      const o = fallback;
+      return { gizmoOrigin: o, axisOrigins: { 'x+': o, 'x-': o, 'y+': o, 'y-': o, 'z+': o, 'z-': o }, arrowLength: 80 };
+    }
 
-    const localOrigin = new THREE.Vector3(bbox.min.x, bbox.min.y, bbox.min.z);
+    const bbox = new THREE.Box3().setFromBufferAttribute(pos);
     const mat = new THREE.Matrix4().compose(
       new THREE.Vector3(...panelShape.position),
       new THREE.Quaternion().setFromEuler(new THREE.Euler(...panelShape.rotation, 'XYZ')),
       new THREE.Vector3(...panelShape.scale)
     );
-    localOrigin.applyMatrix4(mat);
-    return [localOrigin.x, localOrigin.y, localOrigin.z];
-  }, [panelShape.position, panelShape.rotation, panelShape.scale, panelShape.geometry]);
 
-  const arrowLength = useMemo(() => {
-    if (!panelShape.geometry) return 80;
-    const pos = panelShape.geometry.getAttribute('position') as THREE.BufferAttribute;
-    if (!pos) return 80;
-    const bbox = new THREE.Box3().setFromBufferAttribute(pos);
+    const toWorld = (lx: number, ly: number, lz: number): [number, number, number] => {
+      const v = new THREE.Vector3(lx, ly, lz).applyMatrix4(mat);
+      return [v.x, v.y, v.z];
+    };
+
+    const mn = bbox.min;
+    const mx = bbox.max;
+
+    const origin = toWorld(mn.x, mn.y, mn.z);
+
     const size = new THREE.Vector3();
     bbox.getSize(size);
-    return Math.max(size.x, size.y, size.z) * 0.5;
-  }, [panelShape.geometry]);
+    const len = Math.max(size.x, size.y, size.z) * 0.5;
+
+    return {
+      gizmoOrigin: origin,
+      axisOrigins: {
+        'x+': toWorld(mx.x, mn.y, mn.z),
+        'x-': toWorld(mn.x, mn.y, mn.z),
+        'y+': toWorld(mn.x, mx.y, mn.z),
+        'y-': toWorld(mn.x, mn.y, mn.z),
+        'z+': toWorld(mn.x, mn.y, mx.z),
+        'z-': toWorld(mn.x, mn.y, mn.z),
+      } as Record<string, [number, number, number]>,
+      arrowLength: len,
+    };
+  }, [panelShape.position, panelShape.rotation, panelShape.scale, panelShape.geometry]);
 
   const handleSelect = (axis: 'x+' | 'x-' | 'y+' | 'y-' | 'z+' | 'z-') => {
     setPanelMoveAxis(axis === panelMoveAxis ? null : axis);
@@ -181,7 +202,7 @@ export function PanelMoveGizmo({ panelShape }: PanelMoveGizmoProps) {
           axisLabel={axis}
           color={color}
           hoverColor={hover}
-          origin={gizmoOrigin}
+          origin={axisOrigins[axis]}
           length={arrowLength}
           onSelect={handleSelect}
           selectedAxis={panelMoveAxis}
