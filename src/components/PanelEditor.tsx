@@ -1080,6 +1080,8 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       });
       setActiveMoveAxis(null);
       setMoveInputValue('');
+      setPanelMoveTargetId(null);
+      setPanelMoveActiveAxis(null);
       // Rebuild siblings so their geometry accounts for the moved panel
       const parentId = panel.parameters?.parentShapeId;
       if (parentId) {
