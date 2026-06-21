@@ -840,14 +840,21 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
               <button disabled={!vf.hasPanel || !vp} onClick={async e => {
                 stop(e); if (!vp) return;
                 const newVal = !vf.alignToParentFace;
-                updateVirtualFace(vf.id, { alignToParentFace: newVal });
+                updateVirtualFace(vf.id, { alignToParentFace: newVal, parentFaceShape: newVal });
                 if (newVal) {
                   const { reshapePanelToParentFace } = await import('./PanelReshapeService');
                   await reshapePanelToParentFace(vp.id);
+                } else {
+                  const { rebuildPanelsForParent } = await import('./PanelRebuildService');
+                  await rebuildPanelsForParent(sid);
                 }
               }}
                 className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel || !vp ? 'text-stone-200 cursor-not-allowed' : vf.alignToParentFace ? 'text-orange-600 bg-orange-50 ring-1 ring-orange-200' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
                 title="Ana yüze eşitle"><Shapes size={13}/></button>
+
+              <button onClick={e => { stop(e); if (vf.hasPanel) removeVP(vf.id); deleteVirtualFace(vf.id); }}
+                className="w-[22px] h-[22px] rounded-md flex items-center justify-center text-stone-400 hover:bg-red-50 hover:text-red-500 transition-colors"
+                title="Yüzü sil"><Trash2 size={13}/></button>
             </div>
           </div>
         );
@@ -1085,10 +1092,13 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
           <button disabled={!vf.hasPanel || !vp} onClick={async e => {
             stop(e); if (!vp) return;
             const newVal = !vf.alignToParentFace;
-            updateVirtualFace(vf.id, { alignToParentFace: newVal });
+            updateVirtualFace(vf.id, { alignToParentFace: newVal, parentFaceShape: newVal });
             if (newVal) {
               const { reshapePanelToParentFace } = await import('./PanelReshapeService');
               await reshapePanelToParentFace(vp.id);
+            } else {
+              const { rebuildPanelsForParent } = await import('./PanelRebuildService');
+              await rebuildPanelsForParent(sid);
             }
           }}
             className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel || !vp ? 'text-stone-200 cursor-not-allowed' : vf.alignToParentFace ? 'text-orange-600 bg-orange-50 ring-1 ring-orange-200' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
@@ -1101,10 +1111,6 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
               {vf.hasPanel && <Check size={10} strokeWidth={3} className="text-white"/>}
             </span>
           </button>
-
-          <button onClick={e => { stop(e); if (vf.hasPanel) removeVP(vf.id); deleteVirtualFace(vf.id); }}
-            className="w-[22px] h-[22px] rounded-md flex items-center justify-center text-stone-400 hover:bg-red-50 hover:text-red-500 transition-colors"
-            title="Yüzü sil"><Trash2 size={13}/></button>
         </div>
       </div>
     );
