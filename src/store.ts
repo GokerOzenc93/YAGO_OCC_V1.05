@@ -78,6 +78,7 @@ export interface VirtualFace {
   raycastRecipe?:VirtualFaceRaycastRecipe;
   parentFaceShape?:boolean;
   faceGroupDescriptor?:FaceDescriptor;
+  alignToParentFace?:boolean;
 }
 
 export interface Shape {

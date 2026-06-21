@@ -839,15 +839,15 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
 
               <button disabled={!vf.hasPanel || !vp} onClick={async e => {
                 stop(e); if (!vp) return;
-                const { reshapePanelToParentFace } = await import('./PanelReshapeService');
-                await reshapePanelToParentFace(vp.id);
+                const newVal = !vf.alignToParentFace;
+                updateVirtualFace(vf.id, { alignToParentFace: newVal });
+                if (newVal) {
+                  const { reshapePanelToParentFace } = await import('./PanelReshapeService');
+                  await reshapePanelToParentFace(vp.id);
+                }
               }}
-                className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel || !vp ? 'text-stone-200 cursor-not-allowed' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
+                className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel || !vp ? 'text-stone-200 cursor-not-allowed' : vf.alignToParentFace ? 'text-orange-600 bg-orange-50 ring-1 ring-orange-200' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
                 title="Ana yüze eşitle"><Shapes size={13}/></button>
-
-              <button onClick={e => { stop(e); if (vf.hasPanel) removeVP(vf.id); deleteVirtualFace(vf.id); }}
-                className="w-[22px] h-[22px] rounded-md flex items-center justify-center text-stone-400 hover:bg-red-50 hover:text-red-500 transition-colors"
-                title="Yüzü sil"><Trash2 size={13}/></button>
             </div>
           </div>
         );
@@ -1054,6 +1054,8 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
             <span className="text-stone-400 font-medium">W</span><span className="text-stone-700 font-semibold ml-1">{dims.primary}</span>
             <span className="text-stone-300 mx-1.5">·</span>
             <span className="text-stone-400 font-medium">H</span><span className="text-stone-700 font-semibold ml-1">{dims.secondary}</span>
+            <span className="text-stone-300 mx-1.5">·</span>
+            <span className="text-stone-400 font-medium">T</span><span className="text-stone-700 font-semibold ml-1">{dims.thickness}</span>
           </span>
         )}
         <div className="flex items-center gap-0.5 shrink-0" onClick={stop}>
@@ -1082,10 +1084,14 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
             title="Ok yönünü değiştir"><ArrowUp size={14} className={`transition-transform duration-200 ${ar ? '' : 'rotate-90'}`}/></button>
           <button disabled={!vf.hasPanel || !vp} onClick={async e => {
             stop(e); if (!vp) return;
-            const { reshapePanelToParentFace } = await import('./PanelReshapeService');
-            await reshapePanelToParentFace(vp.id);
+            const newVal = !vf.alignToParentFace;
+            updateVirtualFace(vf.id, { alignToParentFace: newVal });
+            if (newVal) {
+              const { reshapePanelToParentFace } = await import('./PanelReshapeService');
+              await reshapePanelToParentFace(vp.id);
+            }
           }}
-            className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel || !vp ? 'text-stone-200 cursor-not-allowed' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
+            className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel || !vp ? 'text-stone-200 cursor-not-allowed' : vf.alignToParentFace ? 'text-orange-600 bg-orange-50 ring-1 ring-orange-200' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
             title="Ana yüze eşitle"><Shapes size={13}/></button>
 
           <button onClick={() => { if (vf.hasPanel) removeVP(vf.id); else createVP(vf.id, vi); }}
