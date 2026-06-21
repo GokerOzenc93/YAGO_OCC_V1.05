@@ -1080,6 +1080,13 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       });
       setActiveMoveAxis(null);
       setMoveInputValue('');
+      // Rebuild siblings so their geometry accounts for the moved panel
+      const parentId = panel.parameters?.parentShapeId;
+      if (parentId) {
+        import('./PanelRebuildService').then(({ rebuildPanelsForParent }) => {
+          rebuildPanelsForParent(parentId);
+        }).catch(err => console.error('rebuild after move failed:', err));
+      }
     };
 
     const onSaveMoveStep = (stepId: string, newVal: number) => {
@@ -1098,6 +1105,12 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       const updatedSteps = steps.map((s: any) => s.id === stepId ? { ...s, value: newVal } : s);
       updateShape(activePanelId, { position: newPos, parameters: { ...panel.parameters, moveSteps: updatedSteps } });
       setEditingMoveStepId(null);
+      const parentId = panel.parameters?.parentShapeId;
+      if (parentId) {
+        import('./PanelRebuildService').then(({ rebuildPanelsForParent }) => {
+          rebuildPanelsForParent(parentId);
+        }).catch(() => {});
+      }
     };
 
     const onDeleteMoveStep = (stepId: string) => {
@@ -1114,6 +1127,12 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       ];
       const updatedSteps = steps.filter((s: any) => s.id !== stepId);
       updateShape(activePanelId, { position: newPos, parameters: { ...panel.parameters, moveSteps: updatedSteps } });
+      const parentId = panel.parameters?.parentShapeId;
+      if (parentId) {
+        import('./PanelRebuildService').then(({ rebuildPanelsForParent }) => {
+          rebuildPanelsForParent(parentId);
+        }).catch(() => {});
+      }
     };
 
     return (

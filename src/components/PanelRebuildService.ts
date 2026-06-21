@@ -13,6 +13,41 @@ function geoAxesSize(geo: THREE.BufferGeometry) {
   return { axes, size };
 }
 
+/**
+ * Returns the world-space offset accumulated from a panel's moveSteps.
+ * The panel's geometry lives in virtual-face-space; the position field and
+ * moveSteps together describe how far the panel has been displaced from that
+ * base position. We need this offset to translate the replicadShape (which
+ * is stored in virtual-face-space) before using it as a boolean cutter.
+ */
+function getAccumulatedMoveOffset(panel: any): [number, number, number] {
+  const steps: any[] = panel.parameters?.moveSteps || [];
+  let dx = 0, dy = 0, dz = 0;
+  for (const step of steps) {
+    const v: number = step.value || 0;
+    if (step.axis === 'X') dx += v;
+    else if (step.axis === 'Y') dy += v;
+    else if (step.axis === 'Z') dz += v;
+  }
+  return [dx, dy, dz];
+}
+
+/**
+ * Returns the replicadShape of a panel, translated by its cumulative
+ * moveSteps offset so it occupies the correct world position for boolean ops.
+ */
+function getOffsetReplicadShape(panel: any): any {
+  const shape = panel.replicadShape;
+  if (!shape) return null;
+  const [dx, dy, dz] = getAccumulatedMoveOffset(panel);
+  if (dx === 0 && dy === 0 && dz === 0) return shape;
+  try {
+    return shape.translate(dx, dy, dz);
+  } catch {
+    return shape;
+  }
+}
+
 
 export async function rebuildPanelsForParent(parentShapeId: string): Promise<void> {
   if (rebuildInFlight.has(parentShapeId)) return;
@@ -116,7 +151,8 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           );
           for (const sib of siblingPanelShapes) {
             try {
-              rp = await performBooleanCut(rp, sib.replicadShape);
+              const sibShape = getOffsetReplicadShape(sib);
+              if (sibShape) rp = await performBooleanCut(rp, sibShape);
             } catch (err) {
               console.error('Failed to subtract sibling panel from parent-face-shape panel:', err);
             }
