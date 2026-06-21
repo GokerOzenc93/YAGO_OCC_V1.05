@@ -52,6 +52,12 @@ function getOffsetReplicadShape(panel: any): any {
 export async function rebuildPanelsForParent(parentShapeId: string): Promise<void> {
   if (rebuildInFlight.has(parentShapeId)) return;
   rebuildInFlight.add(parentShapeId);
+
+  // Snapshot the VF order before any async work so we can detect reorders that
+  // happen while we are awaiting Replicad operations.
+  const startVfOrder = useAppStore.getState().virtualFaces.map(f => f.id).join(',');
+  let needsReRebuild = false;
+
   try {
     const store = useAppStore.getState();
     const parent = store.shapes.find(s => s.id === parentShapeId);
@@ -200,10 +206,6 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
       }
     }
 
-    // Snapshot the VF order we started with so we can detect reorders that happened
-    // while we were awaiting Replicad operations.
-    const startVfOrder = store.virtualFaces.map(f => f.id).join(',');
-
     useAppStore.setState(state => {
       const rebuiltById = new Map<string, any>();
       const liveParent = state.shapes.find(s => s.id === parentShapeId);
@@ -255,15 +257,19 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
     });
 
     // If the VF ordering changed while we were running (a reorder was blocked by
-    // rebuildInFlight), fire another rebuild now that the lock is released so the
+    // rebuildInFlight), schedule another rebuild once the lock is released so the
     // panel geometries reflect the new order.
     const currentVfOrder = useAppStore.getState().virtualFaces.map(f => f.id).join(',');
     if (currentVfOrder !== startVfOrder) {
-      rebuildInFlight.delete(parentShapeId);
-      rebuildPanelsForParent(parentShapeId);
-      return;
+      needsReRebuild = true;
     }
   } finally {
     rebuildInFlight.delete(parentShapeId);
+  }
+
+  // Trigger the re-rebuild AFTER the finally block has released the lock so the
+  // recursive call is not immediately blocked by rebuildInFlight.
+  if (needsReRebuild) {
+    rebuildPanelsForParent(parentShapeId);
   }
 }
