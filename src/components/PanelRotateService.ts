@@ -298,9 +298,10 @@ async function rebuildPanelGeometry(
   const longestAxisIdx = axes[2].i;
   const secondAxisIdx = axes[1].i;
   const secondLen = axes[1].v;
+  const thinAxisIdx = axes[0].i;
 
   const dims: [number, number, number] = [0, 0, 0];
-  dims[axes[0].i] = thickness;
+  dims[thinAxisIdx] = thickness;
   dims[longestAxisIdx] = newLength;
   dims[secondAxisIdx] = secondLen;
 
@@ -309,7 +310,7 @@ async function rebuildPanelGeometry(
     const rp = await createReplicadBox({ width: dims[0], height: dims[1], depth: dims[2] });
     const geometry = convertReplicadToThreeGeometry(rp);
 
-    // Center the geometry so position represents the centroid
+    // Center the geometry at local origin
     const newGeoAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
     const newGeoBbox = new THREE.Box3().setFromBufferAttribute(newGeoAttr);
     const geoCenter = new THREE.Vector3();
@@ -327,51 +328,47 @@ async function rebuildPanelGeometry(
     geometry.computeBoundingBox();
     geometry.computeBoundingSphere();
 
-    // Position: keep the second-axis and thickness offsets from pivot,
-    // only replace the longest-axis component with newLength/2
+    // GUARANTEED APPROACH: find pivot in panel local space, then compute
+    // the position that places that same local point at the world pivot.
     const panelQuat = new THREE.Quaternion().setFromEuler(
       new THREE.Euler(...panelShape.rotation, 'XYZ')
     );
-    const localLongDir = new THREE.Vector3(
-      longestAxisIdx === 0 ? 1 : 0,
-      longestAxisIdx === 1 ? 1 : 0,
-      longestAxisIdx === 2 ? 1 : 0
-    );
-    const localSecondDir = new THREE.Vector3(
-      secondAxisIdx === 0 ? 1 : 0,
-      secondAxisIdx === 1 ? 1 : 0,
-      secondAxisIdx === 2 ? 1 : 0
-    );
-    const thinAxisIdx = axes[0].i;
-    const localThinDir = new THREE.Vector3(
-      thinAxisIdx === 0 ? 1 : 0,
-      thinAxisIdx === 1 ? 1 : 0,
-      thinAxisIdx === 2 ? 1 : 0
-    );
-
-    const worldLongDir = localLongDir.clone().applyQuaternion(panelQuat).normalize();
-    const worldSecondDir = localSecondDir.clone().applyQuaternion(panelQuat).normalize();
-    const worldThinDir = localThinDir.clone().applyQuaternion(panelQuat).normalize();
-
     const pivotVec = new THREE.Vector3(...pivot);
-    const panelPos = new THREE.Vector3(...panelShape.position);
-    const toPanelFromPivot = panelPos.clone().sub(pivotVec);
 
-    // Decompose offset into panel's local axes
-    const longComponent = toPanelFromPivot.dot(worldLongDir);
-    const secondComponent = toPanelFromPivot.dot(worldSecondDir);
-    const thinComponent = toPanelFromPivot.dot(worldThinDir);
+    // Transform world pivot into the panel's local coordinate system
+    const panelWorldMatrix = new THREE.Matrix4().compose(
+      new THREE.Vector3(...panelShape.position),
+      panelQuat,
+      new THREE.Vector3(1, 1, 1)
+    );
+    const invMatrix = panelWorldMatrix.clone().invert();
+    const localPivot = pivotVec.clone().applyMatrix4(invMatrix);
 
-    // Replace only the longest-axis component with newLength/2 (same sign as original)
-    const sign = longComponent >= 0 ? 1 : -1;
-    const newLongComponent = sign * newLength * 0.5;
+    // Snap pivot to the nearest corner/edge of the original geometry bbox
+    const origCenter = new THREE.Vector3();
+    panelLocalBbox.getCenter(origCenter);
+    const relPivot = localPivot.clone().sub(origCenter);
 
-    const newCenter = pivotVec.clone()
-      .add(worldLongDir.clone().multiplyScalar(newLongComponent))
-      .add(worldSecondDir.clone().multiplyScalar(secondComponent))
-      .add(worldThinDir.clone().multiplyScalar(thinComponent));
+    // For the new centered geometry (bbox from -halfSize to +halfSize):
+    // Map the pivot's relative position to the new dimensions.
+    // Along longest axis: snap to the nearest end (-newLength/2 or +newLength/2)
+    // Along second axis: preserve the relative position (same dimension)
+    // Along thin axis: preserve the relative position (same dimension)
+    const newLocalPivot = new THREE.Vector3();
+    const pivotLongRel = relPivot.getComponent(longestAxisIdx);
+    // Snap to the nearest end of the longest axis
+    const pivotAtNearEnd = pivotLongRel <= 0 ? -1 : 1;
+    newLocalPivot.setComponent(longestAxisIdx, pivotAtNearEnd * newLength * 0.5);
+    newLocalPivot.setComponent(secondAxisIdx, relPivot.getComponent(secondAxisIdx));
+    newLocalPivot.setComponent(thinAxisIdx, relPivot.getComponent(thinAxisIdx));
 
-    const newPos: [number, number, number] = [newCenter.x, newCenter.y, newCenter.z];
+    // position = worldPivot - rotation * newLocalPivot
+    const rotatedLocalPivot = newLocalPivot.clone().applyQuaternion(panelQuat);
+    const newPos: [number, number, number] = [
+      pivotVec.x - rotatedLocalPivot.x,
+      pivotVec.y - rotatedLocalPivot.y,
+      pivotVec.z - rotatedLocalPivot.z,
+    ];
 
     updateShape(panelShape.id, {
       geometry,
