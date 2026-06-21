@@ -13,7 +13,7 @@ const AXIS_COLORS: Record<AxisKey, string> = {
   Z: '#3b82f6',
 };
 
-// ── Input panel (appears bottom-center when an axis is selected) ─────────────
+// ── Input panel (bottom-center when an axis is active) ───────────────────────
 interface PanelMoveInputPanelProps {
   axis: AxisKey;
   panelId: string;
@@ -35,34 +35,21 @@ const PanelMoveInputPanel: React.FC<PanelMoveInputPanelProps> = ({ axis, panelId
   const apply = useCallback(() => {
     const dist = parseFloat(value);
     if (isNaN(dist) || dist === 0) { onDone(); return; }
-
     const panel = shapes.find(s => s.id === panelId);
     if (!panel) { onDone(); return; }
-
     const delta: [number, number, number] = [
       axis === 'X' ? dist : 0,
       axis === 'Y' ? dist : 0,
       axis === 'Z' ? dist : 0,
     ];
-
-    const currentPos = panel.position as [number, number, number];
-    const newPos: [number, number, number] = [
-      currentPos[0] + delta[0],
-      currentPos[1] + delta[1],
-      currentPos[2] + delta[2],
-    ];
-
+    const cur = panel.position as [number, number, number];
+    const newPos: [number, number, number] = [cur[0] + delta[0], cur[1] + delta[1], cur[2] + delta[2]];
     const stepId = `move-${Date.now()}`;
     const prevSteps = panel.parameters?.moveSteps || [];
-
     updateShape(panelId, {
       position: newPos,
-      parameters: {
-        ...panel.parameters,
-        moveSteps: [...prevSteps, { id: stepId, axis, value: dist }],
-      },
+      parameters: { ...panel.parameters, moveSteps: [...prevSteps, { id: stepId, axis, value: dist }] },
     });
-
     onDone();
   }, [value, axis, panelId, shapes, updateShape, onDone]);
 
@@ -76,24 +63,15 @@ const PanelMoveInputPanel: React.FC<PanelMoveInputPanelProps> = ({ axis, panelId
   return createPortal(
     <div
       style={{
-        position: 'fixed',
-        bottom: 24,
-        left: '50%',
-        transform: 'translateX(-50%)',
-        zIndex: 9999,
-        display: 'flex',
-        alignItems: 'center',
-        gap: 8,
+        position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)',
+        zIndex: 9999, display: 'flex', alignItems: 'center', gap: 8,
         padding: '10px 14px',
-        background: 'linear-gradient(180deg,rgba(250,248,244,0.95),rgba(239,235,227,0.97))',
+        background: 'linear-gradient(180deg,rgba(250,248,244,0.97),rgba(239,235,227,0.98))',
         backdropFilter: 'blur(16px) saturate(160%)',
         WebkitBackdropFilter: 'blur(16px) saturate(160%)',
-        border: '1px solid rgba(60,50,40,0.15)',
-        borderRadius: 10,
+        border: '1px solid rgba(60,50,40,0.15)', borderRadius: 10,
         boxShadow: '0 8px 28px -6px rgba(40,30,20,0.28),0 0 0 0.5px rgba(60,50,40,0.06),inset 0 1px 0 rgba(255,255,255,0.90)',
-        fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif",
-        minWidth: 280,
-        pointerEvents: 'all',
+        fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif", minWidth: 280, pointerEvents: 'all',
       }}
       onPointerDown={e => e.stopPropagation()}
       onClick={e => e.stopPropagation()}
@@ -101,22 +79,14 @@ const PanelMoveInputPanel: React.FC<PanelMoveInputPanelProps> = ({ axis, panelId
       <span style={{
         display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
         width: 22, height: 22, borderRadius: 5, flexShrink: 0,
-        background: axisColor, color: '#fff',
-        fontSize: 11, fontWeight: 800, fontFamily: 'monospace',
+        background: axisColor, color: '#fff', fontSize: 11, fontWeight: 800, fontFamily: 'monospace',
         boxShadow: `0 1px 3px ${axisColor}66`,
-      }}>
-        {axis}
-      </span>
-      <span style={{ fontSize: 11, color: '#78716c', fontWeight: 500, flexShrink: 0 }}>
-        Mesafe (mm)
-      </span>
+      }}>{axis}</span>
+      <span style={{ fontSize: 11, color: '#78716c', fontWeight: 500, flexShrink: 0 }}>Mesafe (mm)</span>
       <input
-        ref={inputRef}
-        type="number"
-        value={value}
+        ref={inputRef} type="number" value={value}
         onChange={e => setValue(e.target.value)}
-        onKeyDown={handleKeyDown}
-        placeholder="0"
+        onKeyDown={handleKeyDown} placeholder="0"
         style={{
           flex: 1, height: 28, textAlign: 'center', fontFamily: 'monospace',
           fontSize: 13, fontWeight: 600, color: '#1c1917',
@@ -136,29 +106,51 @@ const PanelMoveInputPanel: React.FC<PanelMoveInputPanelProps> = ({ axis, panelId
       <button onClick={onDone} style={{
         flexShrink: 0, height: 28, width: 28, borderRadius: 7,
         border: '1px solid rgba(60,50,40,0.14)', cursor: 'pointer',
-        background: 'rgba(120,113,108,0.07)',
-        color: '#78716c', fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: 'rgba(120,113,108,0.07)', color: '#78716c', fontSize: 13,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
       }}>✕</button>
     </div>,
     document.body
   );
 };
 
-// ── Shared state for active move axis ────────────────────────────────────────
+// ── Module-level reactive stores ─────────────────────────────────────────────
+
+// Active axis selection
 let _activeMoveAxis: { panelId: string; axis: AxisKey } | null = null;
-const _listeners = new Set<() => void>();
+const _axisListeners = new Set<() => void>();
 
 export function setActiveMoveAxis(v: { panelId: string; axis: AxisKey } | null) {
   _activeMoveAxis = v;
-  _listeners.forEach(fn => fn());
+  _axisListeners.forEach(fn => fn());
 }
 
 export function useActiveMoveAxis() {
   const [val, setVal] = useState(_activeMoveAxis);
   useEffect(() => {
     const fn = () => setVal(_activeMoveAxis);
-    _listeners.add(fn);
-    return () => { _listeners.delete(fn); };
+    _axisListeners.add(fn);
+    return () => { _axisListeners.delete(fn); };
+  }, []);
+  return val;
+}
+
+// Arrow screen positions (updated by R3F useFrame, consumed by HTML layer)
+interface ArrowPos { axis: AxisKey; sign: 1 | -1; x: number; y: number; behind: boolean }
+let _arrowPositions: ArrowPos[] = [];
+const _posListeners = new Set<() => void>();
+
+function setArrowPositions(positions: ArrowPos[]) {
+  _arrowPositions = positions;
+  _posListeners.forEach(fn => fn());
+}
+
+function useArrowPositions() {
+  const [val, setVal] = useState<ArrowPos[]>(_arrowPositions);
+  useEffect(() => {
+    const fn = () => setVal([..._arrowPositions]);
+    _posListeners.add(fn);
+    return () => { _posListeners.delete(fn); };
   }, []);
   return val;
 }
@@ -173,15 +165,15 @@ const ARROW_DEFS: Array<{ axis: AxisKey; sign: 1 | -1; dir: [number, number, num
   { axis: 'Z', sign: -1, dir: [0, 0, -1] },
 ];
 
-// ── Inner component that lives INSIDE Canvas (has access to useThree/useFrame) ─
-interface ArrowsInnerProps {
+// ── R3F-only component: lives INSIDE Canvas, projects 3D→2D each frame ────────
+// Renders nothing in the 3D scene; only updates the module-level position store.
+interface PanelMoveArrowsR3FProps {
   panelId: string;
   canvasEl: HTMLCanvasElement | null;
-  onPositionUpdate: (positions: Array<{ axis: AxisKey; sign: 1 | -1; x: number; y: number; behind: boolean }>) => void;
 }
 
-const ArrowsInner: React.FC<ArrowsInnerProps> = ({ panelId, canvasEl, onPositionUpdate }) => {
-  const { camera, size } = useThree();
+export const PanelMoveArrowsR3F: React.FC<PanelMoveArrowsR3FProps> = ({ panelId, canvasEl }) => {
+  const { camera } = useThree();
   const { shapes } = useAppStore(useShallow(s => ({ shapes: s.shapes })));
 
   const panel = useMemo(() => shapes.find(s => s.id === panelId), [shapes, panelId]);
@@ -199,10 +191,9 @@ const ArrowsInner: React.FC<ArrowsInnerProps> = ({ panelId, canvasEl, onPosition
       if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
     }
     const local = new THREE.Vector3((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2);
-    // Transform local bbox center to world space
-    const worldPos = new THREE.Vector3(...panel.position);
-    const worldRot = new THREE.Euler(...panel.rotation);
-    const worldScl = new THREE.Vector3(...panel.scale);
+    const worldPos = new THREE.Vector3(...(panel.position as [number, number, number]));
+    const worldRot = new THREE.Euler(...(panel.rotation as [number, number, number]));
+    const worldScl = new THREE.Vector3(...(panel.scale as [number, number, number]));
     const mat = new THREE.Matrix4().compose(worldPos, new THREE.Quaternion().setFromEuler(worldRot), worldScl);
     return local.applyMatrix4(mat);
   }, [panel]);
@@ -223,15 +214,13 @@ const ArrowsInner: React.FC<ArrowsInnerProps> = ({ panelId, canvasEl, onPosition
     const sizeX = (maxX - minX) * s[0];
     const sizeY = (maxY - minY) * s[1];
     const sizeZ = (maxZ - minZ) * s[2];
-    return Math.max(sizeX, sizeY, sizeZ) * 0.7 + 80;
+    return Math.max(sizeX, sizeY, sizeZ) * 0.6 + 90;
   }, [panel]);
 
   useFrame(() => {
     if (!worldCenter || !canvasEl) return;
-
     const rect = canvasEl.getBoundingClientRect();
     const w = rect.width, h = rect.height;
-
     const positions = ARROW_DEFS.map(({ axis, sign, dir }) => {
       const tip = worldCenter.clone().addScaledVector(new THREE.Vector3(...dir), arrowOffset);
       const ndc = tip.clone().project(camera);
@@ -240,72 +229,47 @@ const ArrowsInner: React.FC<ArrowsInnerProps> = ({ panelId, canvasEl, onPosition
       const behind = ndc.z > 1;
       return { axis, sign, x, y, behind };
     });
-
-    onPositionUpdate(positions);
+    setArrowPositions(positions);
   });
+
+  // Clear positions when unmounted
+  useEffect(() => () => { setArrowPositions([]); }, []);
 
   return null;
 };
 
-// ── HTML arrow button rendered as an absolutely positioned overlay ────────────
-interface ArrowPos { axis: AxisKey; sign: 1 | -1; x: number; y: number; behind: boolean }
-
-interface ArrowButtonProps {
-  ap: ArrowPos;
-  onSelect: (axis: AxisKey) => void;
-}
-
-const ArrowButton: React.FC<ArrowButtonProps> = ({ ap, onSelect }) => {
+// ── HTML arrow button ─────────────────────────────────────────────────────────
+const ArrowButton: React.FC<{ ap: ArrowPos; onSelect: (axis: AxisKey) => void }> = ({ ap, onSelect }) => {
   const [hovered, setHovered] = useState(false);
   if (ap.behind) return null;
-
   const color = AXIS_COLORS[ap.axis];
   const label = `${ap.axis}${ap.sign > 0 ? '+' : '−'}`;
-
   return (
     <button
-      onPointerEnter={() => setHovered(true)}
-      onPointerLeave={() => setHovered(false)}
+      onPointerEnter={() => { setHovered(true); document.body.style.cursor = 'pointer'; }}
+      onPointerLeave={() => { setHovered(false); document.body.style.cursor = 'default'; }}
       onPointerDown={e => { e.stopPropagation(); e.preventDefault(); onSelect(ap.axis); }}
       style={{
-        position: 'fixed',
-        left: ap.x,
-        top: ap.y,
-        transform: 'translate(-50%, -50%)',
-        zIndex: 8888,
-        width: 44,
-        height: 44,
-        borderRadius: '50%',
+        position: 'fixed', left: ap.x, top: ap.y, transform: 'translate(-50%, -50%)',
+        zIndex: 8888, width: 46, height: 46, borderRadius: '50%',
         border: `2.5px solid ${color}`,
-        background: hovered
-          ? color
-          : `rgba(255,255,255,0.92)`,
+        background: hovered ? color : 'rgba(255,255,255,0.95)',
         color: hovered ? '#fff' : color,
-        fontSize: 11,
-        fontWeight: 800,
-        fontFamily: 'monospace',
-        cursor: 'pointer',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
+        fontSize: 11, fontWeight: 800, fontFamily: 'monospace', cursor: 'pointer',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
         boxShadow: hovered
           ? `0 4px 16px ${color}66, 0 0 0 3px ${color}33`
-          : `0 2px 8px rgba(0,0,0,0.18), 0 0 0 1px ${color}22`,
-        transition: 'background 0.12s, color 0.12s, box-shadow 0.12s',
-        pointerEvents: 'all',
-        userSelect: 'none',
-        lineHeight: 1,
-        letterSpacing: '0.02em',
+          : `0 2px 10px rgba(0,0,0,0.2), 0 0 0 1px ${color}22`,
+        transition: 'background 0.1s, color 0.1s, box-shadow 0.1s',
+        pointerEvents: 'all', userSelect: 'none', lineHeight: 1,
       }}
       title={`${ap.axis} ekseninde taşı`}
-    >
-      {label}
-    </button>
+    >{label}</button>
   );
 };
 
-// ── Bridge: holds projected positions in React state, updated via useFrame ────
-export const PanelMoveArrowsBridge: React.FC<{ canvasEl: HTMLCanvasElement | null }> = ({ canvasEl }) => {
+// ── Pure-HTML component: lives OUTSIDE Canvas, reads from module-level store ──
+export const PanelMoveArrowsHtml: React.FC = () => {
   const { activeTool, panelMoveTargetId, setPanelMoveActiveAxis, setPanelMoveTargetId } = useAppStore(
     useShallow(s => ({
       activeTool: s.activeTool,
@@ -315,9 +279,8 @@ export const PanelMoveArrowsBridge: React.FC<{ canvasEl: HTMLCanvasElement | nul
     }))
   );
 
-  const [positions, setPositions] = useState<ArrowPos[]>([]);
+  const positions = useArrowPositions();
   const active = useActiveMoveAxis();
-
   const isActive = activeTool === Tool.MOVE && !!panelMoveTargetId;
 
   const handleSelect = useCallback((axis: AxisKey) => {
@@ -331,32 +294,21 @@ export const PanelMoveArrowsBridge: React.FC<{ canvasEl: HTMLCanvasElement | nul
     setPanelMoveTargetId(null);
   }, [setPanelMoveTargetId]);
 
-  if (!isActive || !panelMoveTargetId) return null;
+  if (!isActive) return null;
 
   return (
     <>
-      {/* Inner component inside the R3F canvas tree that uses useFrame */}
-      <ArrowsInner
-        panelId={panelMoveTargetId}
-        canvasEl={canvasEl}
-        onPositionUpdate={setPositions}
-      />
-
-      {/* HTML arrows rendered outside canvas via portal */}
+      {/* Arrow buttons — hidden while input panel is open */}
       {!active && positions.length > 0 && createPortal(
         <div style={{ position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 8888 }}>
           {positions.map(ap => (
-            <ArrowButton
-              key={`${ap.axis}${ap.sign}`}
-              ap={ap}
-              onSelect={handleSelect}
-            />
+            <ArrowButton key={`${ap.axis}${ap.sign}`} ap={ap} onSelect={handleSelect} />
           ))}
         </div>,
         document.body
       )}
 
-      {/* Input panel when axis selected */}
+      {/* Input panel after axis selected */}
       {active && (
         <PanelMoveInputPanel
           key={`${active.panelId}-${active.axis}`}
@@ -369,13 +321,11 @@ export const PanelMoveArrowsBridge: React.FC<{ canvasEl: HTMLCanvasElement | nul
   );
 };
 
-// ── Legacy overlay (kept for backward compat if used elsewhere) ───────────────
+// ── Legacy export kept for any remaining references ───────────────────────────
 export const PanelMoveInputOverlay: React.FC = () => {
   const { activeTool } = useAppStore(useShallow(s => ({ activeTool: s.activeTool })));
   const active = useActiveMoveAxis();
-
   if (activeTool !== Tool.MOVE || !active) return null;
-
   return (
     <PanelMoveInputPanel
       key={`${active.panelId}-${active.axis}`}

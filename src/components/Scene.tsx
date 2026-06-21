@@ -12,7 +12,7 @@ import { ShapeWithTransform } from './ShapeWithTransform';
 import { getReplicadVertices } from './VertexEditorService';
 import { PanelDrawing } from './PanelDrawing';
 import { ErrorBoundary } from './ErrorBoundary';
-import { PanelMoveArrowsBridge } from './PanelMoveOverlay';
+import { PanelMoveArrowsR3F, PanelMoveArrowsHtml } from './PanelMoveOverlay';
 
 /* ══════════════════════════════════════════════════════════
    VIEW-CUBE GIZMO
@@ -485,6 +485,7 @@ const Scene: React.FC = () => {
     subtractionViewMode, faceEditMode, setFaceEditMode,
     filletMode, selectedFilletFaces, clearFilletFaces, selectedFilletFaceData,
     updateShape, panelSelectMode, panelSurfaceSelectMode, setSelectedPanelRow,
+    panelMoveTargetId,
   } = useAppStore(useShallow(state => ({
     shapes: state.shapes, cameraType: state.cameraType,
     selectedShapeId: state.selectedShapeId, secondarySelectedShapeId: state.secondarySelectedShapeId,
@@ -499,6 +500,7 @@ const Scene: React.FC = () => {
     clearFilletFaces: state.clearFilletFaces, selectedFilletFaceData: state.selectedFilletFaceData,
     updateShape: state.updateShape, panelSelectMode: state.panelSelectMode,
     panelSurfaceSelectMode: state.panelSurfaceSelectMode, setSelectedPanelRow: state.setSelectedPanelRow,
+    panelMoveTargetId: state.panelMoveTargetId,
   })));
 
   const [saveDialog,  setSaveDialog ] = useState<{ isOpen:boolean; shapeId:string|null }>({ isOpen:false, shapeId:null });
@@ -610,7 +612,7 @@ const Scene: React.FC = () => {
               Hiç kaymasın istersen enableDamping yerine enableDamping={false} yap. */}
           <OrbitControls ref={controlsRef} makeDefault target={[0,0,0]} enableDamping dampingFactor={0.2} rotateSpeed={0.8} maxDistance={25000} minDistance={50} />
 
-          <PanelMoveArrowsBridge canvasEl={canvasEl} />
+          <PanelMoveArrowsR3F panelId={panelMoveTargetId || ''} canvasEl={canvasEl} />
 
           {shapes.map(shape => {
             const isSel = selectedShapeId === shape.id;
@@ -646,6 +648,7 @@ const Scene: React.FC = () => {
         </Canvas>
       </ErrorBoundary>
 
+      <PanelMoveArrowsHtml />
 
       <SaveDialog isOpen={saveDialog.isOpen} onClose={() => setSaveDialog({ isOpen:false, shapeId:null })} onSave={handleSave} shapeId={saveDialog.shapeId||''} captureSnapshot={captureSnapshot} />
     </>
