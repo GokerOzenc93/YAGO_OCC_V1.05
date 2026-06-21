@@ -616,6 +616,15 @@ function reraycastVirtualFace(
   );
 }
 
+function nearestPointOnSegment2D(p: Point2D, a: Point2D, b: Point2D): Point2D {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy;
+  if (len2 < 1e-10) return a;
+  let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2;
+  t = Math.max(0, Math.min(1, t));
+  return { x: a.x + t * dx, y: a.y + t * dy };
+}
+
 function reraycastVirtualFaceFallback(
   vf: VirtualFace,
   shape: Shape,
@@ -631,8 +640,6 @@ function reraycastVirtualFaceFallback(
   v: THREE.Vector3,
   strictFaceIndices?: number[]
 ): VirtualFace | null {
-  const groupBboxWorld = new THREE.Box3().setFromPoints(groupVerticesWorld);
-
   const groupCenterWorld = new THREE.Vector3();
   groupVerticesWorld.forEach(vw => groupCenterWorld.add(vw));
   groupCenterWorld.divideScalar(groupVerticesWorld.length);
@@ -647,20 +654,82 @@ function reraycastVirtualFaceFallback(
     p => p.parameters?.virtualFaceId !== vf.id
   );
 
-  // Compute the old VF extent in u/v coordinates for crossover detection
+  // Compute the old VF center in face u/v coordinates
   const vfVerticesWorld = vf.vertices.map(([x, y, z]) =>
     new THREE.Vector3(x, y, z).applyMatrix4(localToWorld)
   );
   const vfVertsU = vfVerticesWorld.map(vw => vw.dot(u));
   const vfVertsV = vfVerticesWorld.map(vw => vw.dot(v));
-  const oldUMin = Math.min(...vfVertsU), oldUMax = Math.max(...vfVertsU);
-  const oldVMin = Math.min(...vfVertsV), oldVMax = Math.max(...vfVertsV);
-  const oldUCenter = (oldUMin + oldUMax) / 2;
-  const oldVCenter = (oldVMin + oldVMax) / 2;
+  const oldUCenter = (Math.min(...vfVertsU) + Math.max(...vfVertsU)) / 2;
+  const oldVCenter = (Math.min(...vfVertsV) + Math.max(...vfVertsV)) / 2;
 
-  // Use old VF center as initial ray origin
+  // Compute obstacle panel footprints on the face as 2D polygons (u/v coords)
+  const obstacleFootprints2D: Point2D[][] = [];
+  for (const panel of panelsExcludingSelf) {
+    if (!panel.geometry) continue;
+    const m = new THREE.Matrix4().compose(
+      new THREE.Vector3(...panel.position),
+      new THREE.Quaternion().setFromEuler(
+        new THREE.Euler(panel.rotation[0], panel.rotation[1], panel.rotation[2], 'XYZ')
+      ),
+      new THREE.Vector3(...panel.scale)
+    );
+    const posAttr = panel.geometry.getAttribute('position');
+    if (!posAttr) continue;
+    const onPlane: Point2D[] = [];
+    for (let i = 0; i < posAttr.count; i++) {
+      const wp = new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)).applyMatrix4(m);
+      const d = worldNormal.dot(new THREE.Vector3().subVectors(wp, groupCenterWorld));
+      if (Math.abs(d) < 20) {
+        onPlane.push({ x: wp.dot(u), y: wp.dot(v) });
+      }
+    }
+    if (onPlane.length < 3) continue;
+    const hull = convexHull2D(onPlane);
+    if (hull.length >= 3) obstacleFootprints2D.push(hull);
+  }
+
+  // Check if VF center is inside any obstacle footprint; if so, find nearest free point
   let rayOriginU = oldUCenter;
   let rayOriginV = oldVCenter;
+  const originPt: Point2D = { x: rayOriginU, y: rayOriginV };
+
+  for (const footprint of obstacleFootprints2D) {
+    if (isPointInsidePolygon(originPt, footprint)) {
+      // VF center is inside this obstacle — find nearest point on its boundary
+      let bestDist = Infinity;
+      let bestPt: Point2D = originPt;
+      for (let i = 0; i < footprint.length; i++) {
+        const a = footprint[i];
+        const b = footprint[(i + 1) % footprint.length];
+        const nearest = nearestPointOnSegment2D(originPt, a, b);
+        const dx = nearest.x - originPt.x, dy = nearest.y - originPt.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestPt = nearest;
+        }
+      }
+      // Offset slightly outward from the obstacle boundary (toward the old VF center side)
+      const offsetDx = bestPt.x - originPt.x;
+      const offsetDy = bestPt.y - originPt.y;
+      const offsetLen = Math.sqrt(offsetDx * offsetDx + offsetDy * offsetDy);
+      if (offsetLen > 0.01) {
+        // Move 5mm past the boundary, away from obstacle center
+        rayOriginU = bestPt.x + (offsetDx / offsetLen) * 5;
+        rayOriginV = bestPt.y + (offsetDy / offsetLen) * 5;
+      } else {
+        rayOriginU = bestPt.x;
+        rayOriginV = bestPt.y;
+      }
+      break;
+    }
+  }
+
+  // Clamp to face extent
+  const extent = computeFaceGroupExtent(groupVerticesWorld, u, v);
+  rayOriginU = Math.max(extent.uMin + 1, Math.min(extent.uMax - 1, rayOriginU));
+  rayOriginV = Math.max(extent.vMin + 1, Math.min(extent.vMax - 1, rayOriginV));
 
   // Helper: build a world point on the face plane from u/v coords
   const buildOrigin = (uCoord: number, vCoord: number) =>
@@ -669,82 +738,35 @@ function reraycastVirtualFaceFallback(
       .addScaledVector(v, vCoord)
       .addScaledVector(worldNormal, faceNComp);
 
-  // Helper: cast 4 rays from a given u/v origin and return distances
-  const castFromOrigin = (originU: number, originV: number) => {
-    const origin = buildOrigin(originU, originV);
-    const start = origin.clone().addScaledVector(worldNormal, 0.5);
-    const panelObs = collectPanelObstacleEdgesWorld(panelsExcludingSelf, worldNormal, origin, 20);
-    const subObs = collectSubtractionObstacleEdgesWorld(subtractions, localToWorld, worldNormal, origin, 20);
-    const vfObs = collectVirtualFaceObstacleEdgesWorld(shapeFaces, vf.id, localToWorld, worldNormal, origin, 20);
-    const obstacles = [...panelObs, ...subObs, ...vfObs];
-    const dirs = [u, u.clone().negate(), v, v.clone().negate()];
-    const dists: number[] = [];
-    for (const dir of dirs) {
-      const hit = castRayOnFaceWorld(start, dir, boundaryEdgesWorld, obstacles, u, v, origin, 5000);
-      dists.push(hit.distanceTo(start));
-    }
-    return dists; // [uPos, uNeg, vPos, vNeg]
-  };
-
-  // First cast from old VF center
-  let [uPosT, uNegT, vPosT, vNegT] = castFromOrigin(rayOriginU, rayOriginV);
-
-  // Detect obstacle crossover: if an obstacle moved past the ray origin, the resulting
-  // VF will be on the WRONG side. Detect by checking if the new VF extent overlaps
-  // poorly with the old VF extent. If a direction now gives a much larger distance
-  // than the old VF's extent in that direction, the origin likely crossed an obstacle.
-  const nhd = vf.raycastRecipe?.normalizedHitDistances;
-  const oldUSpan = oldUMax - oldUMin;
-  const oldVSpan = oldVMax - oldVMin;
-  let relocated = false;
-
-  if (nhd && (oldUSpan > 1 || oldVSpan > 1)) {
-    // Check each direction: if it was previously bounded by an obstacle (not boundary)
-    // and now gives a hit distance much larger than the original, the obstacle crossed over.
-    const CROSS_THRESHOLD = 1.8; // new distance > 1.8x old span = likely crossover
-
-    let newU = rayOriginU;
-    let newV = rayOriginV;
-
-    // v+ was obstacle, now distance is much larger than old span
-    if (!nhd.vPosIsBoundary && vPosT > oldVSpan * CROSS_THRESHOLD) {
-      // Obstacle that was above (v+) has moved below (past) the center.
-      // Panel should stay on the lower side. Move origin toward v- boundary.
-      newV = oldVMin + Math.min(oldVSpan * 0.1, 10);
-      relocated = true;
-    }
-    // v- was obstacle, now distance is much larger than old span
-    else if (!nhd.vNegIsBoundary && vNegT > oldVSpan * CROSS_THRESHOLD) {
-      // Obstacle that was below (v-) has moved above (past) the center.
-      // Panel should stay on the upper side. Move origin toward v+ boundary.
-      newV = oldVMax - Math.min(oldVSpan * 0.1, 10);
-      relocated = true;
-    }
-
-    // u+ was obstacle, now distance is much larger than old span
-    if (!nhd.uPosIsBoundary && uPosT > oldUSpan * CROSS_THRESHOLD) {
-      newU = oldUMin + Math.min(oldUSpan * 0.1, 10);
-      relocated = true;
-    }
-    // u- was obstacle, now distance is much larger than old span
-    else if (!nhd.uNegIsBoundary && uNegT > oldUSpan * CROSS_THRESHOLD) {
-      newU = oldUMax - Math.min(oldUSpan * 0.1, 10);
-      relocated = true;
-    }
-
-    if (relocated) {
-      // Clamp to face bbox
-      const extent = computeFaceGroupExtent(groupVerticesWorld, u, v);
-      newU = Math.max(extent.uMin + 1, Math.min(extent.uMax - 1, newU));
-      newV = Math.max(extent.vMin + 1, Math.min(extent.vMax - 1, newV));
-      rayOriginU = newU;
-      rayOriginV = newV;
-      [uPosT, uNegT, vPosT, vNegT] = castFromOrigin(rayOriginU, rayOriginV);
-    }
-  }
-
   const planeOrigin = buildOrigin(rayOriginU, rayOriginV);
   const startWorld = planeOrigin.clone().addScaledVector(worldNormal, 0.5);
+
+  const panelObstacleEdges = collectPanelObstacleEdgesWorld(
+    panelsExcludingSelf, worldNormal, planeOrigin, 20
+  );
+  const subObstacleEdges = collectSubtractionObstacleEdgesWorld(
+    subtractions, localToWorld, worldNormal, planeOrigin, 20
+  );
+  const vfObstacleEdges = collectVirtualFaceObstacleEdgesWorld(
+    shapeFaces, vf.id, localToWorld, worldNormal, planeOrigin, 20
+  );
+  const obstacleEdges = [...panelObstacleEdges, ...subObstacleEdges, ...vfObstacleEdges];
+
+  const maxDist = 5000;
+  const directions = [u, u.clone().negate(), v, v.clone().negate()];
+
+  const hitPointsWorld: THREE.Vector3[] = [];
+  for (const dir of directions) {
+    const hit = castRayOnFaceWorld(startWorld, dir, boundaryEdgesWorld, obstacleEdges, u, v, planeOrigin, maxDist);
+    hitPointsWorld.push(hit);
+  }
+
+  if (hitPointsWorld.length < 4) return null;
+
+  const uPosT = hitPointsWorld[0].distanceTo(startWorld);
+  const uNegT = hitPointsWorld[1].distanceTo(startWorld);
+  const vPosT = hitPointsWorld[2].distanceTo(startWorld);
+  const vNegT = hitPointsWorld[3].distanceTo(startWorld);
 
   let rect2D: Point2D[] = ensureCCW([
     { x: uPosT, y: vPosT },
