@@ -109,7 +109,8 @@ function computeInwardSign(
   return dotPositive >= dotNegative ? 1 : -1;
 }
 
-function getParentWorldBbox(panelShape: Shape, shapes: Shape[]): THREE.Box3 | null {
+
+function getParentOBBPlanes(panelShape: Shape, shapes: Shape[]): { normal: THREE.Vector3; d: number }[] | null {
   const parentId = panelShape.parameters?.parentShapeId;
   if (!parentId) return null;
   const parent = shapes.find(s => s.id === parentId);
@@ -118,25 +119,69 @@ function getParentWorldBbox(panelShape: Shape, shapes: Shape[]): THREE.Box3 | nu
   const pos = parent.geometry.getAttribute('position') as THREE.BufferAttribute;
   if (!pos) return null;
   const bbox = new THREE.Box3().setFromBufferAttribute(pos);
-  const mat = new THREE.Matrix4().compose(
-    new THREE.Vector3(...parent.position),
-    new THREE.Quaternion().setFromEuler(new THREE.Euler(...parent.rotation, 'XYZ')),
-    new THREE.Vector3(...parent.scale)
-  );
 
-  const corners: THREE.Vector3[] = [];
-  const mn = bbox.min;
-  const mx = bbox.max;
-  for (let xi = 0; xi <= 1; xi++)
-    for (let yi = 0; yi <= 1; yi++)
-      for (let zi = 0; zi <= 1; zi++)
-        corners.push(new THREE.Vector3(
-          xi === 0 ? mn.x : mx.x,
-          yi === 0 ? mn.y : mx.y,
-          zi === 0 ? mn.z : mx.z
-        ).applyMatrix4(mat));
+  const parentQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(...parent.rotation, 'XYZ'));
+  const parentPos = new THREE.Vector3(...parent.position);
+  const parentScale = new THREE.Vector3(...parent.scale);
 
-  return new THREE.Box3().setFromPoints(corners);
+  const center = new THREE.Vector3();
+  bbox.getCenter(center);
+  center.multiply(parentScale).applyQuaternion(parentQuat).add(parentPos);
+
+  const halfSize = new THREE.Vector3();
+  bbox.getSize(halfSize).multiply(parentScale).multiplyScalar(0.5);
+
+  const axisX = new THREE.Vector3(1, 0, 0).applyQuaternion(parentQuat).normalize();
+  const axisY = new THREE.Vector3(0, 1, 0).applyQuaternion(parentQuat).normalize();
+  const axisZ = new THREE.Vector3(0, 0, 1).applyQuaternion(parentQuat).normalize();
+
+  const planes: { normal: THREE.Vector3; d: number }[] = [];
+  const axesAndHalves: [THREE.Vector3, number][] = [
+    [axisX, halfSize.x],
+    [axisY, halfSize.y],
+    [axisZ, halfSize.z],
+  ];
+
+  for (const [axis, half] of axesAndHalves) {
+    const p1 = center.clone().add(axis.clone().multiplyScalar(half));
+    planes.push({ normal: axis.clone(), d: axis.dot(p1) });
+    const p2 = center.clone().sub(axis.clone().multiplyScalar(half));
+    planes.push({ normal: axis.clone().negate(), d: axis.clone().negate().dot(p2) });
+  }
+
+  return planes;
+}
+
+function rayIntersectOBBPlanes(
+  origin: THREE.Vector3,
+  dir: THREE.Vector3,
+  planes: { normal: THREE.Vector3; d: number }[]
+): number | null {
+  let tMin = -Infinity;
+  let tMax = Infinity;
+
+  for (const plane of planes) {
+    const denom = plane.normal.dot(dir);
+    const dist = plane.d - plane.normal.dot(origin);
+
+    if (Math.abs(denom) < 1e-9) {
+      if (dist < 0) return null;
+      continue;
+    }
+
+    const t = dist / denom;
+
+    if (denom < 0) {
+      tMin = Math.max(tMin, t);
+    } else {
+      tMax = Math.min(tMax, t);
+    }
+  }
+
+  if (tMin > tMax) return null;
+  if (tMax < 0) return null;
+
+  return tMax > 0.01 ? tMax : null;
 }
 
 function computeAutoExtendLength(
@@ -148,8 +193,8 @@ function computeAutoExtendLength(
 ): number | null {
   if (!panelShape.geometry) return null;
 
-  const parentBbox = getParentWorldBbox(panelShape, shapes);
-  if (!parentBbox) return null;
+  const obbPlanes = getParentOBBPlanes(panelShape, shapes);
+  if (!obbPlanes) return null;
 
   const panelAttr = panelShape.geometry.getAttribute('position') as THREE.BufferAttribute;
   if (!panelAttr) return null;
@@ -180,14 +225,8 @@ function computeAutoExtendLength(
   const dotWithDir = panelDirFromPivot.dot(worldDir);
   const rayDir = dotWithDir >= 0 ? worldDir.clone() : worldDir.clone().negate();
 
-  let maxDist = 0;
-  const ray = new THREE.Ray(pivotVec.clone(), rayDir);
-  const hit = new THREE.Vector3();
-  if (ray.intersectBox(parentBbox, hit)) {
-    maxDist = hit.distanceTo(pivotVec);
-  }
-
-  if (maxDist < 1) return null;
+  const maxDist = rayIntersectOBBPlanes(pivotVec, rayDir, obbPlanes);
+  if (maxDist === null || maxDist < 1) return null;
 
   const parentId = panelShape.parameters?.parentShapeId;
   const siblings = shapes.filter(
@@ -259,7 +298,6 @@ async function rebuildPanelGeometry(
   const longestAxisIdx = axes[2].i;
   const secondAxisIdx = axes[1].i;
   const secondLen = axes[1].v;
-  const oldLength = axes[2].v;
 
   const dims: [number, number, number] = [0, 0, 0];
   dims[axes[0].i] = thickness;
@@ -271,6 +309,25 @@ async function rebuildPanelGeometry(
     const rp = await createReplicadBox({ width: dims[0], height: dims[1], depth: dims[2] });
     const geometry = convertReplicadToThreeGeometry(rp);
 
+    // Center the geometry so position represents the centroid
+    const newGeoAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
+    const newGeoBbox = new THREE.Box3().setFromBufferAttribute(newGeoAttr);
+    const geoCenter = new THREE.Vector3();
+    newGeoBbox.getCenter(geoCenter);
+    const positions = geometry.getAttribute('position') as THREE.BufferAttribute;
+    for (let i = 0; i < positions.count; i++) {
+      positions.setXYZ(
+        i,
+        positions.getX(i) - geoCenter.x,
+        positions.getY(i) - geoCenter.y,
+        positions.getZ(i) - geoCenter.z
+      );
+    }
+    positions.needsUpdate = true;
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+
+    // Position = pivot + direction * (newLength / 2)
     const panelQuat = new THREE.Quaternion().setFromEuler(
       new THREE.Euler(...panelShape.rotation, 'XYZ')
     );
@@ -284,18 +341,14 @@ async function rebuildPanelGeometry(
     const pivotVec = new THREE.Vector3(...pivot);
     const panelPos = new THREE.Vector3(...panelShape.position);
     const toPanelFromPivot = panelPos.clone().sub(pivotVec);
-    const projOnLong = toPanelFromPivot.dot(worldLongDir);
+    const dotWithDir = toPanelFromPivot.dot(worldLongDir);
+    const sign = dotWithDir >= 0 ? 1 : -1;
 
-    const lengthDiff = newLength - oldLength;
-    const posShift = worldLongDir.clone().multiplyScalar(
-      Math.sign(projOnLong) * lengthDiff * 0.5
+    const newCenter = pivotVec.clone().add(
+      worldLongDir.clone().multiplyScalar(sign * newLength * 0.5)
     );
 
-    const newPos: [number, number, number] = [
-      panelShape.position[0] + posShift.x,
-      panelShape.position[1] + posShift.y,
-      panelShape.position[2] + posShift.z,
-    ];
+    const newPos: [number, number, number] = [newCenter.x, newCenter.y, newCenter.z];
 
     updateShape(panelShape.id, {
       geometry,
