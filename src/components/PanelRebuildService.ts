@@ -200,6 +200,10 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
       }
     }
 
+    // Snapshot the VF order we started with so we can detect reorders that happened
+    // while we were awaiting Replicad operations.
+    const startVfOrder = store.virtualFaces.map(f => f.id).join(',');
+
     useAppStore.setState(state => {
       const rebuiltById = new Map<string, any>();
       const liveParent = state.shapes.find(s => s.id === parentShapeId);
@@ -237,11 +241,28 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           });
         }
       }
+
+      // Merge VF content (updated vertices/centers/normals) into the CURRENT store order.
+      // If the user reordered VFs while we were awaiting, state.virtualFaces already has
+      // the new order — we must not overwrite it with our stale workingVirtualFaces order.
+      const freshVfById = new Map(workingVirtualFaces.map(f => [f.id, f]));
+      const mergedVirtualFaces = state.virtualFaces.map(f => freshVfById.get(f.id) || f);
+
       return {
         shapes: state.shapes.map(s => rebuiltById.get(s.id) || s),
-        virtualFaces: workingVirtualFaces,
+        virtualFaces: mergedVirtualFaces,
       };
     });
+
+    // If the VF ordering changed while we were running (a reorder was blocked by
+    // rebuildInFlight), fire another rebuild now that the lock is released so the
+    // panel geometries reflect the new order.
+    const currentVfOrder = useAppStore.getState().virtualFaces.map(f => f.id).join(',');
+    if (currentVfOrder !== startVfOrder) {
+      rebuildInFlight.delete(parentShapeId);
+      rebuildPanelsForParent(parentShapeId);
+      return;
+    }
   } finally {
     rebuildInFlight.delete(parentShapeId);
   }
