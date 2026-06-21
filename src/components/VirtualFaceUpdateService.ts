@@ -693,7 +693,10 @@ function reraycastVirtualFaceFallback(
   let [uPosT, uNegT, vPosT, vNegT] = castFromOrigin(rayOriginU, rayOriginV);
 
   // Crossover detection: if an obstacle moved past the VF center, the resulting VF
-  // will NOT contain the old VF's boundary edges. Detect this and relocate.
+  // will NOT contain the old VF's boundary edges. This ONLY applies when the panel
+  // was originally bounded by an obstacle on one side — meaning the obstacle could
+  // have moved past the center. If all sides were boundaries at placement time,
+  // shrinkage from a new obstacle is legitimate and should NOT trigger relocation.
   const nhd = vf.raycastRecipe?.normalizedHitDistances;
   if (nhd) {
     // Compute the new VF extent in absolute u/v coords
@@ -707,22 +710,26 @@ function reraycastVirtualFaceFallback(
     let targetV = rayOriginV;
     const MARGIN = 5;
 
-    // If v- was a boundary (fixed body edge), the old vMin should be inside the new VF.
-    // If it's not, the origin crossed an obstacle to the wrong side.
-    if (nhd.vNegIsBoundary && newVMin > oldVMin + MARGIN) {
+    // Crossover in v: an obstacle that was in v+ direction moved past center to v- side.
+    // Detection: v- was a boundary AND v+ was an obstacle (the obstacle that could cross).
+    // Result: the old vMin boundary is no longer reachable (newVMin > oldVMin).
+    if (nhd.vNegIsBoundary && !nhd.vPosIsBoundary && newVMin > oldVMin + MARGIN) {
       targetV = oldVMin + MARGIN;
       needsRelocation = true;
     }
-    // If v+ was a boundary, the old vMax should be inside the new VF.
-    else if (nhd.vPosIsBoundary && newVMax < oldVMax - MARGIN) {
+    // Crossover in v: an obstacle that was in v- direction moved past center to v+ side.
+    else if (nhd.vPosIsBoundary && !nhd.vNegIsBoundary && newVMax < oldVMax - MARGIN) {
       targetV = oldVMax - MARGIN;
       needsRelocation = true;
     }
 
-    if (nhd.uNegIsBoundary && newUMin > oldUMin + MARGIN) {
+    // Crossover in u: obstacle from u+ moved past center to u- side.
+    if (nhd.uNegIsBoundary && !nhd.uPosIsBoundary && newUMin > oldUMin + MARGIN) {
       targetU = oldUMin + MARGIN;
       needsRelocation = true;
-    } else if (nhd.uPosIsBoundary && newUMax < oldUMax - MARGIN) {
+    }
+    // Crossover in u: obstacle from u- moved past center to u+ side.
+    else if (nhd.uPosIsBoundary && !nhd.uNegIsBoundary && newUMax < oldUMax - MARGIN) {
       targetU = oldUMax - MARGIN;
       needsRelocation = true;
     }
