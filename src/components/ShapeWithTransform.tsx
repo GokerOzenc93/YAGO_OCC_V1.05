@@ -495,6 +495,11 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
               : (shape.parameters.faceIndex ?? null);
             setSelectedPanelRow(rowKey, shape.parameters.extraRowId || null, parentId);
             selectSecondaryShape(null);
+            // Activate move arrows immediately
+            const st = useAppStore.getState();
+            st.setPanelMoveTargetId(shape.id);
+            st.setPanelMoveActiveAxis(null);
+            st.setActiveTool(Tool.MOVE);
           } else if (panelSelectMode && !isPanel) {
             selectShape(shape.id);
             selectSecondaryShape(null);
