@@ -1,10 +1,10 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
+import { useThree, useFrame } from '@react-three/fiber';
+import * as THREE from 'three';
 import { useAppStore, Tool } from '../store';
 import { useShallow } from 'zustand/react/shallow';
 
-// Axis key as reported by TransformControls .axis property
-// 'X' | 'Y' | 'Z' | 'XY' | 'XZ' | 'YZ' | 'XYZ' — we only care about single axes
 type AxisKey = 'X' | 'Y' | 'Z';
 
 const AXIS_COLORS: Record<AxisKey, string> = {
@@ -13,6 +13,7 @@ const AXIS_COLORS: Record<AxisKey, string> = {
   Z: '#3b82f6',
 };
 
+// ── Input panel (appears bottom-center when an axis is selected) ─────────────
 interface PanelMoveInputPanelProps {
   axis: AxisKey;
   panelId: string;
@@ -51,14 +52,15 @@ const PanelMoveInputPanel: React.FC<PanelMoveInputPanelProps> = ({ axis, panelId
       currentPos[2] + delta[2],
     ];
 
-    const currentOffset = panel.parameters?.panelOffset as [number, number, number] | undefined;
-    const newOffset: [number, number, number] = currentOffset
-      ? [currentOffset[0] + delta[0], currentOffset[1] + delta[1], currentOffset[2] + delta[2]]
-      : delta;
+    const stepId = `move-${Date.now()}`;
+    const prevSteps = panel.parameters?.moveSteps || [];
 
     updateShape(panelId, {
       position: newPos,
-      parameters: { ...panel.parameters, panelOffset: newOffset },
+      parameters: {
+        ...panel.parameters,
+        moveSteps: [...prevSteps, { id: stepId, axis, value: dist }],
+      },
     });
 
     onDone();
@@ -96,7 +98,6 @@ const PanelMoveInputPanel: React.FC<PanelMoveInputPanelProps> = ({ axis, panelId
       onPointerDown={e => e.stopPropagation()}
       onClick={e => e.stopPropagation()}
     >
-      {/* Axis badge */}
       <span style={{
         display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
         width: 22, height: 22, borderRadius: 5, flexShrink: 0,
@@ -106,13 +107,9 @@ const PanelMoveInputPanel: React.FC<PanelMoveInputPanelProps> = ({ axis, panelId
       }}>
         {axis}
       </span>
-
-      {/* Label */}
       <span style={{ fontSize: 11, color: '#78716c', fontWeight: 500, flexShrink: 0 }}>
         Mesafe (mm)
       </span>
-
-      {/* Input */}
       <input
         ref={inputRef}
         type="number"
@@ -121,57 +118,33 @@ const PanelMoveInputPanel: React.FC<PanelMoveInputPanelProps> = ({ axis, panelId
         onKeyDown={handleKeyDown}
         placeholder="0"
         style={{
-          flex: 1,
-          height: 28,
-          textAlign: 'center',
-          fontFamily: 'monospace',
-          fontSize: 13,
-          fontWeight: 600,
-          color: '#1c1917',
+          flex: 1, height: 28, textAlign: 'center', fontFamily: 'monospace',
+          fontSize: 13, fontWeight: 600, color: '#1c1917',
           background: 'linear-gradient(180deg,#fff,#faf8f3)',
-          border: '1px solid rgba(60,50,40,0.16)',
-          borderRadius: 7,
-          outline: 'none',
-          boxShadow: 'inset 0 1px 2px rgba(40,30,20,0.06)',
-          minWidth: 0,
+          border: '1px solid rgba(60,50,40,0.16)', borderRadius: 7, outline: 'none',
+          boxShadow: 'inset 0 1px 2px rgba(40,30,20,0.06)', minWidth: 0,
         }}
         autoFocus
       />
-
-      {/* Apply */}
-      <button
-        onClick={apply}
-        style={{
-          flexShrink: 0, height: 28, padding: '0 12px', borderRadius: 7, border: 'none',
-          cursor: 'pointer', outline: 'none',
-          background: 'linear-gradient(180deg,#5b5346,#44403c)',
-          color: '#fff', fontSize: 12, fontWeight: 700,
-          boxShadow: '0 1px 2px rgba(40,30,20,0.25),inset 0 1px 0 rgba(255,255,255,0.18)',
-        }}
-      >
-        Uygula
-      </button>
-
-      {/* Cancel */}
-      <button
-        onClick={onDone}
-        style={{
-          flexShrink: 0, height: 28, width: 28, borderRadius: 7,
-          border: '1px solid rgba(60,50,40,0.14)', cursor: 'pointer',
-          background: 'rgba(120,113,108,0.07)',
-          color: '#78716c', fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'center',
-        }}
-      >
-        ✕
-      </button>
+      <button onClick={apply} style={{
+        flexShrink: 0, height: 28, padding: '0 12px', borderRadius: 7, border: 'none',
+        cursor: 'pointer', outline: 'none',
+        background: 'linear-gradient(180deg,#5b5346,#44403c)',
+        color: '#fff', fontSize: 12, fontWeight: 700,
+        boxShadow: '0 1px 2px rgba(40,30,20,0.25),inset 0 1px 0 rgba(255,255,255,0.18)',
+      }}>Uygula</button>
+      <button onClick={onDone} style={{
+        flexShrink: 0, height: 28, width: 28, borderRadius: 7,
+        border: '1px solid rgba(60,50,40,0.14)', cursor: 'pointer',
+        background: 'rgba(120,113,108,0.07)',
+        color: '#78716c', fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}>✕</button>
     </div>,
     document.body
   );
 };
 
-// ── State for active move axis (shared between PanelDrawing and overlay) ────
-// Stored in a simple module-level mutable so it survives re-renders without
-// adding noise to the global Zustand store.
+// ── Shared state for active move axis ────────────────────────────────────────
 let _activeMoveAxis: { panelId: string; axis: AxisKey } | null = null;
 const _listeners = new Set<() => void>();
 
@@ -190,7 +163,213 @@ export function useActiveMoveAxis() {
   return val;
 }
 
-// ── Main export: renders the floating input panel when an axis is active ────
+// ── Arrow directions ──────────────────────────────────────────────────────────
+const ARROW_DEFS: Array<{ axis: AxisKey; sign: 1 | -1; dir: [number, number, number] }> = [
+  { axis: 'X', sign:  1, dir: [1, 0, 0] },
+  { axis: 'X', sign: -1, dir: [-1, 0, 0] },
+  { axis: 'Y', sign:  1, dir: [0, 1, 0] },
+  { axis: 'Y', sign: -1, dir: [0, -1, 0] },
+  { axis: 'Z', sign:  1, dir: [0, 0, 1] },
+  { axis: 'Z', sign: -1, dir: [0, 0, -1] },
+];
+
+// ── Inner component that lives INSIDE Canvas (has access to useThree/useFrame) ─
+interface ArrowsInnerProps {
+  panelId: string;
+  canvasEl: HTMLCanvasElement | null;
+  onPositionUpdate: (positions: Array<{ axis: AxisKey; sign: 1 | -1; x: number; y: number; behind: boolean }>) => void;
+}
+
+const ArrowsInner: React.FC<ArrowsInnerProps> = ({ panelId, canvasEl, onPositionUpdate }) => {
+  const { camera, size } = useThree();
+  const { shapes } = useAppStore(useShallow(s => ({ shapes: s.shapes })));
+
+  const panel = useMemo(() => shapes.find(s => s.id === panelId), [shapes, panelId]);
+
+  const worldCenter = useMemo(() => {
+    if (!panel?.geometry) return null;
+    const pos = panel.geometry.getAttribute('position');
+    if (!pos) return null;
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+      if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+    }
+    const local = new THREE.Vector3((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2);
+    // Transform local bbox center to world space
+    const worldPos = new THREE.Vector3(...panel.position);
+    const worldRot = new THREE.Euler(...panel.rotation);
+    const worldScl = new THREE.Vector3(...panel.scale);
+    const mat = new THREE.Matrix4().compose(worldPos, new THREE.Quaternion().setFromEuler(worldRot), worldScl);
+    return local.applyMatrix4(mat);
+  }, [panel]);
+
+  const arrowOffset = useMemo(() => {
+    if (!panel?.geometry) return 120;
+    const pos = panel.geometry.getAttribute('position');
+    if (!pos) return 120;
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+      if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+    }
+    const s = panel.scale as [number, number, number];
+    const sizeX = (maxX - minX) * s[0];
+    const sizeY = (maxY - minY) * s[1];
+    const sizeZ = (maxZ - minZ) * s[2];
+    return Math.max(sizeX, sizeY, sizeZ) * 0.7 + 80;
+  }, [panel]);
+
+  useFrame(() => {
+    if (!worldCenter || !canvasEl) return;
+
+    const rect = canvasEl.getBoundingClientRect();
+    const w = rect.width, h = rect.height;
+
+    const positions = ARROW_DEFS.map(({ axis, sign, dir }) => {
+      const tip = worldCenter.clone().addScaledVector(new THREE.Vector3(...dir), arrowOffset);
+      const ndc = tip.clone().project(camera);
+      const x = rect.left + (ndc.x + 1) / 2 * w;
+      const y = rect.top + (1 - ndc.y) / 2 * h;
+      const behind = ndc.z > 1;
+      return { axis, sign, x, y, behind };
+    });
+
+    onPositionUpdate(positions);
+  });
+
+  return null;
+};
+
+// ── HTML arrow button rendered as an absolutely positioned overlay ────────────
+interface ArrowPos { axis: AxisKey; sign: 1 | -1; x: number; y: number; behind: boolean }
+
+interface ArrowButtonProps {
+  ap: ArrowPos;
+  onSelect: (axis: AxisKey) => void;
+}
+
+const ArrowButton: React.FC<ArrowButtonProps> = ({ ap, onSelect }) => {
+  const [hovered, setHovered] = useState(false);
+  if (ap.behind) return null;
+
+  const color = AXIS_COLORS[ap.axis];
+  const label = `${ap.axis}${ap.sign > 0 ? '+' : '−'}`;
+
+  return (
+    <button
+      onPointerEnter={() => setHovered(true)}
+      onPointerLeave={() => setHovered(false)}
+      onPointerDown={e => { e.stopPropagation(); e.preventDefault(); onSelect(ap.axis); }}
+      style={{
+        position: 'fixed',
+        left: ap.x,
+        top: ap.y,
+        transform: 'translate(-50%, -50%)',
+        zIndex: 8888,
+        width: 44,
+        height: 44,
+        borderRadius: '50%',
+        border: `2.5px solid ${color}`,
+        background: hovered
+          ? color
+          : `rgba(255,255,255,0.92)`,
+        color: hovered ? '#fff' : color,
+        fontSize: 11,
+        fontWeight: 800,
+        fontFamily: 'monospace',
+        cursor: 'pointer',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        boxShadow: hovered
+          ? `0 4px 16px ${color}66, 0 0 0 3px ${color}33`
+          : `0 2px 8px rgba(0,0,0,0.18), 0 0 0 1px ${color}22`,
+        transition: 'background 0.12s, color 0.12s, box-shadow 0.12s',
+        pointerEvents: 'all',
+        userSelect: 'none',
+        lineHeight: 1,
+        letterSpacing: '0.02em',
+      }}
+      title={`${ap.axis} ekseninde taşı`}
+    >
+      {label}
+    </button>
+  );
+};
+
+// ── Bridge: holds projected positions in React state, updated via useFrame ────
+export const PanelMoveArrowsBridge: React.FC<{ canvasEl: HTMLCanvasElement | null }> = ({ canvasEl }) => {
+  const { activeTool, panelMoveTargetId, setPanelMoveActiveAxis, setPanelMoveTargetId } = useAppStore(
+    useShallow(s => ({
+      activeTool: s.activeTool,
+      panelMoveTargetId: s.panelMoveTargetId,
+      setPanelMoveActiveAxis: s.setPanelMoveActiveAxis,
+      setPanelMoveTargetId: s.setPanelMoveTargetId,
+    }))
+  );
+
+  const [positions, setPositions] = useState<ArrowPos[]>([]);
+  const active = useActiveMoveAxis();
+
+  const isActive = activeTool === Tool.MOVE && !!panelMoveTargetId;
+
+  const handleSelect = useCallback((axis: AxisKey) => {
+    if (!panelMoveTargetId) return;
+    setPanelMoveActiveAxis(axis);
+    setActiveMoveAxis({ panelId: panelMoveTargetId, axis });
+  }, [panelMoveTargetId, setPanelMoveActiveAxis]);
+
+  const handleDone = useCallback(() => {
+    setActiveMoveAxis(null);
+    setPanelMoveTargetId(null);
+  }, [setPanelMoveTargetId]);
+
+  if (!isActive || !panelMoveTargetId) return null;
+
+  return (
+    <>
+      {/* Inner component inside the R3F canvas tree that uses useFrame */}
+      <ArrowsInner
+        panelId={panelMoveTargetId}
+        canvasEl={canvasEl}
+        onPositionUpdate={setPositions}
+      />
+
+      {/* HTML arrows rendered outside canvas via portal */}
+      {!active && positions.length > 0 && createPortal(
+        <div style={{ position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 8888 }}>
+          {positions.map(ap => (
+            <ArrowButton
+              key={`${ap.axis}${ap.sign}`}
+              ap={ap}
+              onSelect={handleSelect}
+            />
+          ))}
+        </div>,
+        document.body
+      )}
+
+      {/* Input panel when axis selected */}
+      {active && (
+        <PanelMoveInputPanel
+          key={`${active.panelId}-${active.axis}`}
+          axis={active.axis}
+          panelId={active.panelId}
+          onDone={handleDone}
+        />
+      )}
+    </>
+  );
+};
+
+// ── Legacy overlay (kept for backward compat if used elsewhere) ───────────────
 export const PanelMoveInputOverlay: React.FC = () => {
   const { activeTool } = useAppStore(useShallow(s => ({ activeTool: s.activeTool })));
   const active = useActiveMoveAxis();

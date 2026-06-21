@@ -4,7 +4,6 @@ import { Line } from '@react-three/drei';
 import { useAppStore, ViewMode, Tool } from '../store';
 import { useShallow } from 'zustand/react/shallow';
 import { extractFacesFromGeometry, groupCoplanarFaces, createFaceHighlightGeometry } from './FaceEditor';
-
 // Threshold must match isAxisAligned() in GeometryUtils (0.999) so that any
 // face groupCoplanarFaces considers "curved" is also considered non-flat here.
 // Using 0.9 was too permissive: fillet arc faces near the flat-face boundary
@@ -199,23 +198,8 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     }
   }, [disableRaycast]);
 
-  // ── Move mode: bbox center + arrow axes ──────────────────────────────────
+  // ── Move mode: disable panel mesh raycast so HTML arrows can be clicked ─────
   const isMoveMode = activeTool === Tool.MOVE && panelMoveTargetId === shape.id;
-
-  const bboxCenter = useMemo((): THREE.Vector3 | null => {
-    if (!isMoveMode || !shape.geometry) return null;
-    const pos = shape.geometry.getAttribute('position');
-    if (!pos) return null;
-    let minX = Infinity, minY = Infinity, minZ = Infinity;
-    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-    for (let i = 0; i < pos.count; i++) {
-      const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
-      if (x < minX) minX = x; if (x > maxX) maxX = x;
-      if (y < minY) minY = y; if (y > maxY) maxY = y;
-      if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
-    }
-    return new THREE.Vector3((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2);
-  }, [isMoveMode, shape.geometry]);
 
   const extrudeHighlightGeometry = useMemo(() => {
     if (!isFaceExtrudeTarget || hoveredExtrudeGroup === null || !faceGroups[hoveredExtrudeGroup] || faces.length === 0) return null;
@@ -455,63 +439,6 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
         </>
       )}
 
-      {/* ── MOVE MODE ARROWS ────────────────────────────────────────────── */}
-      {isMoveMode && bboxCenter && (() => {
-        const center = bboxCenter;
-        const AL = 120;  // total arrow length (shaft + head)
-        const SR = 5;    // shaft radius
-        const HR = 13;   // head radius
-        const HL = 28;   // head length
-        const SL = AL - HL;
-        const HIT_R = 22; // invisible hit cylinder radius
-        const axes: Array<{ axis: 'X'|'Y'|'Z'; dir: THREE.Vector3; color: string }> = [
-          { axis: 'X', dir: new THREE.Vector3(1, 0, 0), color: '#ef4444' },
-          { axis: 'Y', dir: new THREE.Vector3(0, 1, 0), color: '#22c55e' },
-          { axis: 'Z', dir: new THREE.Vector3(0, 0, 1), color: '#3b82f6' },
-        ];
-        return axes.map(({ axis, dir, color }) => {
-          const shaftPos = new THREE.Vector3().copy(center).addScaledVector(dir, SL / 2);
-          const headPos  = new THREE.Vector3().copy(center).addScaledVector(dir, SL + HL / 2);
-          const hitPos   = new THREE.Vector3().copy(center).addScaledVector(dir, AL / 2);
-          const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
-          return (
-            <group key={axis}>
-              {/* Invisible hit cylinder — visible=false keeps it fully invisible
-                  while still receiving pointer events (unlike opacity=0/transparent) */}
-              <mesh
-                position={hitPos}
-                quaternion={q}
-                renderOrder={20}
-                visible={false}
-                onClick={(e) => { e.stopPropagation(); setPanelMoveActiveAxis(axis); }}
-                onPointerEnter={() => { (document.body.style as any).cursor = 'pointer'; }}
-                onPointerLeave={() => { (document.body.style as any).cursor = 'default'; }}
-              >
-                <cylinderGeometry args={[HIT_R, HIT_R, AL, 8]} />
-                <meshBasicMaterial />
-              </mesh>
-              {/* Visual shaft */}
-              <mesh position={shaftPos} quaternion={q} renderOrder={15}>
-                <cylinderGeometry args={[SR, SR, SL, 8]} />
-                <meshBasicMaterial color={color} depthTest={false} transparent opacity={0.95} />
-              </mesh>
-              {/* Visual head */}
-              <mesh position={headPos} quaternion={q} renderOrder={15}>
-                <coneGeometry args={[HR, HL, 8]} />
-                <meshBasicMaterial color={color} depthTest={false} transparent opacity={0.95} />
-              </mesh>
-            </group>
-          );
-        });
-      })()}
-
-      {/* Center sphere */}
-      {isMoveMode && bboxCenter && (
-        <mesh position={bboxCenter} renderOrder={15}>
-          <sphereGeometry args={[11, 14, 14]} />
-          <meshBasicMaterial color="#f59e0b" depthTest={false} transparent opacity={0.95} />
-        </mesh>
-      )}
     </group>
   </>
   );

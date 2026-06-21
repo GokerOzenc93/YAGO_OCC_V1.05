@@ -12,6 +12,7 @@ import { ShapeWithTransform } from './ShapeWithTransform';
 import { getReplicadVertices } from './VertexEditorService';
 import { PanelDrawing } from './PanelDrawing';
 import { ErrorBoundary } from './ErrorBoundary';
+import { PanelMoveArrowsBridge } from './PanelMoveOverlay';
 
 /* ══════════════════════════════════════════════════════════
    VIEW-CUBE GIZMO
@@ -474,6 +475,7 @@ const CameraController: React.FC<{ controlsRef: React.RefObject<any>; cameraType
 ══════════════════════════════════════════════════════════ */
 const Scene: React.FC = () => {
   const controlsRef = useRef<any>(null);
+  const [canvasEl, setCanvasEl] = useState<HTMLCanvasElement | null>(null);
 
   const {
     shapes, cameraType, selectedShapeId, secondarySelectedShapeId, selectShape,
@@ -579,6 +581,7 @@ const Scene: React.FC = () => {
   };
 
   const handleCreated = useCallback(({ gl }: { gl: THREE.WebGLRenderer }) => {
+    setCanvasEl(gl.domElement);
     gl.toneMapping = THREE.ACESFilmicToneMapping;
     gl.toneMappingExposure = 1.0;
     gl.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -606,6 +609,8 @@ const Scene: React.FC = () => {
           {/* dampingFactor'ı yükselttim (0.05 → 0.2): bırakınca daha çabuk durur.
               Hiç kaymasın istersen enableDamping yerine enableDamping={false} yap. */}
           <OrbitControls ref={controlsRef} makeDefault target={[0,0,0]} enableDamping dampingFactor={0.2} rotateSpeed={0.8} maxDistance={25000} minDistance={50} />
+
+          <PanelMoveArrowsBridge canvasEl={canvasEl} />
 
           {shapes.map(shape => {
             const isSel = selectedShapeId === shape.id;
