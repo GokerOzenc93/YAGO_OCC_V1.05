@@ -12,6 +12,7 @@ import { ShapeWithTransform } from './ShapeWithTransform';
 import { getReplicadVertices } from './VertexEditorService';
 import { PanelDrawing } from './PanelDrawing';
 import { PanelMoveGizmo } from './PanelMoveGizmo';
+import { PanelRotateGizmo } from './PanelRotateGizmo';
 import { ErrorBoundary } from './ErrorBoundary';
 
 /* ══════════════════════════════════════════════════════════
@@ -481,6 +482,14 @@ function PanelMoveGizmoWrapper({ shapes }: { shapes: any[] }) {
   return <PanelMoveGizmo panelShape={panel} />;
 }
 
+function PanelRotateGizmoWrapper({ shapes }: { shapes: any[] }) {
+  const { panelRotateMode, panelRotateTargetPanelId } = useAppStore();
+  if (!panelRotateMode || !panelRotateTargetPanelId) return null;
+  const panel = shapes.find((s: any) => s.id === panelRotateTargetPanelId);
+  if (!panel || panel.type !== 'panel') return null;
+  return <PanelRotateGizmo panelShape={panel} />;
+}
+
 /* ══════════════════════════════════════════════════════════
    SCENE
 ══════════════════════════════════════════════════════════ */
@@ -631,6 +640,7 @@ const Scene: React.FC = () => {
           })}
 
           <PanelMoveGizmoWrapper shapes={shapes} />
+          <PanelRotateGizmoWrapper shapes={shapes} />
 
           <mesh position={[0,-1,0]} rotation={[-Math.PI/2,0,0]} receiveShadow>
             <planeGeometry args={[30000,30000]} />

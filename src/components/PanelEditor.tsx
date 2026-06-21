@@ -546,7 +546,9 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     faceExtrudeThickness, setFaceExtrudeThickness, faceExtrudeFixedMode, setFaceExtrudeFixedMode,
     faceExtrudeClickPoint,
     panelMoveMode, setPanelMoveMode, panelMoveTargetPanelId, setPanelMoveTargetPanelId,
-    panelMoveAxis, setPanelMoveAxis, panelMoveValue, setPanelMoveValue } = useAppStore();
+    panelMoveAxis, setPanelMoveAxis, panelMoveValue, setPanelMoveValue,
+    panelRotateMode, setPanelRotateMode, panelRotateTargetPanelId, setPanelRotateTargetPanelId,
+    panelRotatePivot, setPanelRotatePivot, panelRotateAngle, setPanelRotateAngle } = useAppStore();
 
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
@@ -558,6 +560,8 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
   const [editingStepValue, setEditingStepValue] = useState(0);
   const [editingMoveStepId, setEditingMoveStepId] = useState<string | null>(null);
   const [editingMoveStepValue, setEditingMoveStepValue] = useState(0);
+  const [editingRotateStepId, setEditingRotateStepId] = useState<string | null>(null);
+  const [editingRotateStepValue, setEditingRotateStepValue] = useState(0);
   const rowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const selectedShape = shapes.find(s => s.id === selectedShapeId);
 
@@ -576,6 +580,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     : null;
   const activeSteps = activePanel?.parameters?.extrudeSteps || [];
   const activeMoveSteps = activePanel?.parameters?.moveSteps || [];
+  const activeRotateSteps = activePanel?.parameters?.rotateSteps || [];
 
   const { selectedPanelRowParentId } = useAppStore();
   useEffect(() => {
@@ -624,6 +629,11 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     if (panelMoveMode && activePanelId && activePanelId !== panelMoveTargetPanelId)
       { setPanelMoveTargetPanelId(activePanelId); setPanelMoveAxis(null); setPanelMoveValue(0); }
   }, [panelMoveMode, activePanelId, panelMoveTargetPanelId]);
+
+  useEffect(() => {
+    if (panelRotateMode && activePanelId && activePanelId !== panelRotateTargetPanelId)
+      { setPanelRotateTargetPanelId(activePanelId); setPanelRotatePivot(null); setPanelRotateAngle(0); }
+  }, [panelRotateMode, activePanelId, panelRotateTargetPanelId]);
 
   useEffect(() => {
     if (faceExtrudeSelectedFace === null || !activePanelId) return;
@@ -1043,6 +1053,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     const dims = vp?.geometry ? getDimsFromGeo(vp.geometry, ar) : null;
     const isExtrudingThis = faceExtrudeMode && faceExtrudeTargetPanelId === vp?.id;
     const isMovingThis = panelMoveMode && panelMoveTargetPanelId === vp?.id;
+    const isRotatingThis = panelRotateMode && panelRotateTargetPanelId === vp?.id;
     return (
       <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-orange-50 ring-1 ring-orange-300 shadow-sm select-none">
         <span className="shrink-0 inline-flex items-center justify-center min-w-[20px] h-5 px-1 rounded-full text-[11px] font-semibold font-mono tabular-nums bg-orange-500 text-white shadow-sm">
@@ -1069,13 +1080,17 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
           <button disabled={!vf.hasPanel} onClick={e => {
             stop(e); if (!vp) return;
             if (isMovingThis) setPanelMoveMode(false);
-            else { setPanelMoveTargetPanelId(vp.id); setPanelMoveMode(true); if (faceExtrudeMode) setFaceExtrudeMode(false); }
+            else { setPanelMoveTargetPanelId(vp.id); setPanelMoveMode(true); if (faceExtrudeMode) setFaceExtrudeMode(false); if (panelRotateMode) setPanelRotateMode(false); }
           }}
             className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : isMovingThis ? 'bg-gradient-to-b from-[#5b5346] to-[#44403c] text-white shadow-[0_1px_2px_rgba(40,30,20,0.25)]' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
             title="Taşı (move)"><Move size={13}/></button>
 
-          <button disabled={!vf.hasPanel}
-            className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
+          <button disabled={!vf.hasPanel} onClick={e => {
+            stop(e); if (!vp) return;
+            if (isRotatingThis) setPanelRotateMode(false);
+            else { setPanelRotateTargetPanelId(vp.id); setPanelRotateMode(true); if (panelMoveMode) setPanelMoveMode(false); if (faceExtrudeMode) setFaceExtrudeMode(false); }
+          }}
+            className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : isRotatingThis ? 'bg-gradient-to-b from-[#5b5346] to-[#44403c] text-white shadow-[0_1px_2px_rgba(40,30,20,0.25)]' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
             title="Döndür (rotation)"><RotateCw size={13}/></button>
 
           <button disabled={!vf.hasPanel} onClick={e => {
@@ -1184,12 +1199,91 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     );
   })();
 
+  // ── Rotate dock — pivot selection + angle input ──
+  const rotateDock = (() => {
+    if (!activePanelId || !panelRotateMode) return null;
+    const hasPivot = panelRotatePivot !== null;
+
+    const exitBtn = (
+      <button onClick={e => { stop(e); setPanelRotatePivot(null); setPanelRotateMode(false); }}
+        title="Çıkış" style={{
+          flexShrink: 0, width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          borderRadius: 7, border: '1px solid rgba(60,50,40,0.12)', cursor: 'pointer', outline: 'none',
+          background: 'rgba(255,255,255,0.55)', color: '#78716c', transition: 'all 0.12s',
+        }}><X size={13} /></button>
+    );
+
+    const onApply = async () => {
+      if (!hasPivot || !activePanelId) return;
+      const ps = shapes.find(s => s.id === activePanelId); if (!ps) return;
+      const { executePanelRotate, getPanelNormalAxis } = await import('./PanelRotateService');
+      const axis = getPanelNormalAxis(ps);
+      await executePanelRotate({ panelShape: ps, pivot: panelRotatePivot!, angleDeg: panelRotateAngle, axis, shapes, updateShape });
+      setPanelRotatePivot(null);
+      setPanelRotateAngle(0);
+      setPanelRotateMode(false);
+    };
+
+    return (
+      <div style={{
+        position: 'absolute', left: 8, right: 8, bottom: 8, zIndex: 5, borderRadius: 11,
+        background: 'linear-gradient(180deg,rgba(250,248,244,0.90),rgba(239,235,227,0.94))',
+        backdropFilter: 'blur(16px) saturate(150%)', WebkitBackdropFilter: 'blur(16px) saturate(150%)',
+        border: '1px solid rgba(60,50,40,0.13)',
+        boxShadow: '0 10px 24px -12px rgba(40,30,20,0.30),0 0 0 0.5px rgba(60,50,40,0.05),inset 0 1px 0 rgba(255,255,255,0.92)',
+        display: 'flex', flexDirection: 'column', overflow: 'hidden',
+        fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif",
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 9px' }}>
+          {hasPivot ? (
+            <>
+              <span style={{ fontSize: 10, fontWeight: 800, fontFamily: 'monospace', color: '#ea580c', padding: '2px 8px', borderRadius: 5, background: 'rgba(234,88,12,0.10)', border: '1px solid rgba(234,88,12,0.20)' }}>
+                ROT
+              </span>
+              <input
+                type="text" inputMode="numeric" autoFocus value={panelRotateAngle}
+                onChange={e => setPanelRotateAngle(Number(e.target.value) || 0)}
+                onKeyDown={e => { if (e.key === 'Enter') onApply(); if (e.key === 'Escape') { setPanelRotatePivot(null); setPanelRotateMode(false); } }}
+                style={{
+                  flex: 1, minWidth: 0, height: 28, textAlign: 'center', fontFamily: 'monospace', fontSize: 13, fontWeight: 600,
+                  color: '#1c1917', background: 'linear-gradient(180deg,#fff,#faf8f3)', border: '1px solid rgba(60,50,40,0.16)',
+                  borderRadius: 7, outline: 'none', boxShadow: 'inset 0 1px 2px rgba(40,30,20,0.06)',
+                }}
+                placeholder="Açı (derece)"
+              />
+              <span style={{ fontSize: 10, fontWeight: 600, color: '#78716c' }}>°</span>
+              <button onClick={onApply} title="Uygula" style={{
+                flexShrink: 0, width: 32, height: 28, borderRadius: 7, border: 'none', cursor: 'pointer', outline: 'none',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: 'linear-gradient(180deg,#5b5346,#44403c)', color: '#fff',
+                boxShadow: '0 1px 2px rgba(40,30,20,0.25),inset 0 1px 0 rgba(255,255,255,0.18)',
+              }}><Check size={15} strokeWidth={2.5} /></button>
+              {exitBtn}
+            </>
+          ) : (
+            <>
+              <div style={{
+                flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 7, height: 28, padding: '0 10px', borderRadius: 7,
+                background: 'rgba(120,113,108,0.08)', border: '1px solid rgba(60,50,40,0.10)',
+              }}>
+                <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#ea580c', flexShrink: 0 }} />
+                <span style={{ fontSize: 11, fontWeight: 500, color: '#78716c', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>3B görünümde dönüş merkezi seç</span>
+              </div>
+              {exitBtn}
+            </>
+          )}
+        </div>
+      </div>
+    );
+  })();
+
   // ── Unified steps panel (below preview, scrollable) ──────────────────────
   const stepsPanel = (() => {
     if (!activePanelId || !activePanel) return null;
     const hasExtrudeSteps = activeSteps.length > 0;
     const hasMoveSteps = activeMoveSteps.length > 0;
-    if (!hasExtrudeSteps && !hasMoveSteps) return null;
+    const hasRotateSteps = activeRotateSteps.length > 0;
+    if (!hasExtrudeSteps && !hasMoveSteps && !hasRotateSteps) return null;
 
     const axisColors: Record<string, string> = { 'x+': '#dc2626', 'x-': '#b91c1c', 'y+': '#16a34a', 'y-': '#15803d', 'z+': '#2563eb', 'z-': '#1d4ed8' };
 
@@ -1269,6 +1363,39 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
               </div>
             </div>
           )}
+
+          {hasRotateSteps && (
+            <div className="px-3 pt-2 pb-2.5">
+              <div className="flex items-center gap-2 mb-1.5">
+                <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#a8a29e' }}>Döndürme adımları</span>
+                <div className="flex-1 h-px bg-stone-200/70" />
+              </div>
+              <div className="flex flex-col gap-1">
+                {activeRotateSteps.map((s: any, idx: number) => (
+                  <div key={s.id} className="flex items-center gap-2 px-2 py-1 rounded-lg bg-white ring-1 ring-stone-200/80 shadow-[0_1px_2px_rgba(68,64,60,0.05)]">
+                    <span className="shrink-0 text-[10px] font-bold text-stone-400 tabular-nums w-4 text-center">{idx + 1}</span>
+                    <span className="shrink-0 min-w-[26px] text-center text-[10px] font-extrabold font-mono px-1.5 py-0.5 rounded-md" style={{ color: '#ea580c', background: 'rgba(234,88,12,0.08)' }}>ROT</span>
+                    {editingRotateStepId === s.id ? (
+                      <>
+                        <input type="text" inputMode="numeric" autoFocus value={editingRotateStepValue}
+                          onChange={e => setEditingRotateStepValue(Number(e.target.value) || 0)}
+                          onKeyDown={e => { if (e.key === 'Enter') { (async () => { const ps = shapes.find(x => x.id === activePanelId); if (!ps) return; const { updateRotateStep } = await import('./PanelRotateService'); await updateRotateStep(ps, s.id, editingRotateStepValue, shapes, updateShape); setEditingRotateStepId(null); })(); } else if (e.key === 'Escape') setEditingRotateStepId(null); }}
+                          className="flex-1 min-w-0 h-6 text-center font-mono text-xs font-semibold text-stone-800 bg-white border border-stone-300 rounded-md outline-none focus:border-orange-400" />
+                        <button onClick={async () => { const ps = shapes.find(x => x.id === activePanelId); if (!ps) return; const { updateRotateStep } = await import('./PanelRotateService'); await updateRotateStep(ps, s.id, editingRotateStepValue, shapes, updateShape); setEditingRotateStepId(null); }} style={iconBtn('#5b5346')}><Check size={11} /></button>
+                        <button onClick={() => setEditingRotateStepId(null)} style={iconBtn('#a8a29e')}><X size={11} /></button>
+                      </>
+                    ) : (
+                      <>
+                        <span className="flex-1 font-mono text-xs font-bold text-stone-800 tabular-nums">{s.angleDeg}°</span>
+                        <button onClick={() => { setEditingRotateStepId(s.id); setEditingRotateStepValue(s.angleDeg); }} style={iconBtn('#78716c')}><Pencil size={10} /></button>
+                        <button onClick={async () => { const ps = shapes.find(x => x.id === activePanelId); if (!ps) return; const { deleteRotateStep } = await import('./PanelRotateService'); await deleteRotateStep(ps, s.id, shapes, updateShape); }} style={iconBtn('#ef4444')}><Trash2 size={10} /></button>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -1304,6 +1431,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         }
         {extrudeDock}
         {moveDock}
+        {rotateDock}
       </div>
 
       {stepsPanel}
