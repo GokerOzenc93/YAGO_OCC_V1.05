@@ -553,12 +553,7 @@ function reraycastVirtualFace(
 
   const nhd = vf.raycastRecipe.normalizedHitDistances;
   const allBoundary = !!nhd && !!nhd.uPosIsBoundary && !!nhd.uNegIsBoundary && !!nhd.vPosIsBoundary && !!nhd.vNegIsBoundary;
-  // Use VF world-center as a proxy planeOrigin to test if siblings are on this face
-  const vfCenterWorld = new THREE.Vector3(...vf.center).applyMatrix4(localToWorld);
-  const siblingPanelsExist = childPanels.some(
-    p => p.parameters?.virtualFaceId !== vf.id &&
-      isPanelOnFacePlane(p, worldNormal, vfCenterWorld, 20)
-  );
+  const siblingPanelsExist = childPanels.some(p => p.parameters?.virtualFaceId !== vf.id);
   if (nhd && allBoundary && !siblingPanelsExist) {
     const result = reconstructFromNormalizedDistances(
       vf, nhd, groupVerticesWorld, worldNormal, u, v,
@@ -674,27 +669,14 @@ function reraycastVirtualFaceFallback(
   const panelsExcludingSelf = childPanels.filter(
     p => p.parameters?.virtualFaceId !== vf.id
   );
-  // Only panels whose geometry actually intersects the face plane are obstacles.
-  // Panels that have been displaced off the face (by moveSteps or any other means)
-  // should not block new panel placement.
-  const panelsOnFace = panelsExcludingSelf.filter(
-    p => isPanelOnFacePlane(p, worldNormal, planeOrigin, 20)
-  );
-  // Only use VF boundaries of panels that are geometrically still on the face
-  const vfIdsOnFace = new Set(
-    panelsOnFace.map(p => p.parameters?.virtualFaceId as string).filter(Boolean)
-  );
-  const shapeFacesForObstacles = shapeFaces.filter(
-    f => f.id === vf.id || vfIdsOnFace.has(f.id)
-  );
   const panelObstacleEdges = collectPanelObstacleEdgesWorld(
-    panelsOnFace, worldNormal, planeOrigin, 20
+    panelsExcludingSelf, worldNormal, planeOrigin, 20
   );
   const subObstacleEdges = collectSubtractionObstacleEdgesWorld(
     subtractions, localToWorld, worldNormal, planeOrigin, 20
   );
   const vfObstacleEdges = collectVirtualFaceObstacleEdgesWorld(
-    shapeFacesForObstacles, vf.id, localToWorld, worldNormal, planeOrigin, 20
+    shapeFaces, vf.id, localToWorld, worldNormal, planeOrigin, 20
   );
   const obstacleEdges = [...panelObstacleEdges, ...subObstacleEdges, ...vfObstacleEdges];
 
@@ -757,36 +739,6 @@ function reraycastVirtualFaceFallback(
   };
 }
 
-/**
- * Geometrically checks if a panel's actual transformed geometry has any vertex
- * within `tolerance` mm of the given face plane. This is the canonical way to
- * decide if a panel occupies a face — it works regardless of how the panel was
- * moved (moveSteps, position edits, etc.).
- */
-function isPanelOnFacePlane(
-  panel: any,
-  worldNormal: THREE.Vector3,
-  facePlaneOrigin: THREE.Vector3,
-  tolerance: number
-): boolean {
-  if (!panel.geometry) return false;
-  const posAttr = panel.geometry.getAttribute('position');
-  if (!posAttr) return false;
-  const m = new THREE.Matrix4().compose(
-    new THREE.Vector3(...(panel.position as [number, number, number])),
-    new THREE.Quaternion().setFromEuler(
-      new THREE.Euler(...(panel.rotation as [number, number, number]), 'XYZ')
-    ),
-    new THREE.Vector3(...(panel.scale as [number, number, number]))
-  );
-  for (let i = 0; i < posAttr.count; i++) {
-    const wp = new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)).applyMatrix4(m);
-    const d = worldNormal.dot(new THREE.Vector3().subVectors(wp, facePlaneOrigin));
-    if (Math.abs(d) < tolerance) return true;
-  }
-  return false;
-}
-
 export function recalculateVirtualFacesForShape(
   shape: Shape,
   virtualFaces: VirtualFace[],
@@ -819,14 +771,8 @@ export function recalculateVirtualFacesForShape(
       updatedMap.set(vf.id, reraycast || vf);
     } else {
       const subtractions = shape.subtractionGeometries || [];
-      // Compute VF world center to use as face plane origin for geometric check
-      const vfCenterWorld = new THREE.Vector3(...vf.center).applyMatrix4(localToWorld);
-      const localNormalForClip = new THREE.Vector3(...vf.normal).normalize();
-      const normalMatrixForClip = new THREE.Matrix3().getNormalMatrix(localToWorld);
-      const worldNormalForClip = localNormalForClip.clone().applyMatrix3(normalMatrixForClip).normalize();
       const panelsExcludingSelf = childPanels.filter(
-        p => p.parameters?.virtualFaceId !== vf.id &&
-          isPanelOnFacePlane(p, worldNormalForClip, vfCenterWorld, 20)
+        p => p.parameters?.virtualFaceId !== vf.id
       );
       const clipped = clipVirtualFaceAgainstSubtractionsAndPanels(
         vf, subtractions, panelsExcludingSelf, localToWorld, worldToLocal

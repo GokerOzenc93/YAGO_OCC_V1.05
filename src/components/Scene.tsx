@@ -12,7 +12,6 @@ import { ShapeWithTransform } from './ShapeWithTransform';
 import { getReplicadVertices } from './VertexEditorService';
 import { PanelDrawing } from './PanelDrawing';
 import { ErrorBoundary } from './ErrorBoundary';
-import { PanelMoveArrowsR3F, PanelMoveArrowsHtml } from './PanelMoveOverlay';
 
 /* ══════════════════════════════════════════════════════════
    VIEW-CUBE GIZMO
@@ -475,7 +474,6 @@ const CameraController: React.FC<{ controlsRef: React.RefObject<any>; cameraType
 ══════════════════════════════════════════════════════════ */
 const Scene: React.FC = () => {
   const controlsRef = useRef<any>(null);
-  const [canvasEl, setCanvasEl] = useState<HTMLCanvasElement | null>(null);
 
   const {
     shapes, cameraType, selectedShapeId, secondarySelectedShapeId, selectShape,
@@ -485,7 +483,6 @@ const Scene: React.FC = () => {
     subtractionViewMode, faceEditMode, setFaceEditMode,
     filletMode, selectedFilletFaces, clearFilletFaces, selectedFilletFaceData,
     updateShape, panelSelectMode, panelSurfaceSelectMode, setSelectedPanelRow,
-    panelMoveTargetId,
   } = useAppStore(useShallow(state => ({
     shapes: state.shapes, cameraType: state.cameraType,
     selectedShapeId: state.selectedShapeId, secondarySelectedShapeId: state.secondarySelectedShapeId,
@@ -500,7 +497,6 @@ const Scene: React.FC = () => {
     clearFilletFaces: state.clearFilletFaces, selectedFilletFaceData: state.selectedFilletFaceData,
     updateShape: state.updateShape, panelSelectMode: state.panelSelectMode,
     panelSurfaceSelectMode: state.panelSurfaceSelectMode, setSelectedPanelRow: state.setSelectedPanelRow,
-    panelMoveTargetId: state.panelMoveTargetId,
   })));
 
   const [saveDialog,  setSaveDialog ] = useState<{ isOpen:boolean; shapeId:string|null }>({ isOpen:false, shapeId:null });
@@ -583,7 +579,6 @@ const Scene: React.FC = () => {
   };
 
   const handleCreated = useCallback(({ gl }: { gl: THREE.WebGLRenderer }) => {
-    setCanvasEl(gl.domElement);
     gl.toneMapping = THREE.ACESFilmicToneMapping;
     gl.toneMappingExposure = 1.0;
     gl.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -612,15 +607,9 @@ const Scene: React.FC = () => {
               Hiç kaymasın istersen enableDamping yerine enableDamping={false} yap. */}
           <OrbitControls ref={controlsRef} makeDefault target={[0,0,0]} enableDamping dampingFactor={0.2} rotateSpeed={0.8} maxDistance={25000} minDistance={50} />
 
-          <PanelMoveArrowsR3F panelId={panelMoveTargetId || ''} canvasEl={canvasEl} />
-
           {shapes.map(shape => {
             const isSel = selectedShapeId === shape.id;
-            if (shape.type === 'panel') {
-              return (
-                <PanelDrawing key={shape.id} shape={shape} isSelected={isSel} />
-              );
-            }
+            if (shape.type === 'panel') return <PanelDrawing key={shape.id} shape={shape} isSelected={isSel} />;
             return (
               <React.Fragment key={shape.id}>
                 <ShapeWithTransform shape={shape} isSelected={isSel} orbitControlsRef={controlsRef} />
@@ -648,7 +637,6 @@ const Scene: React.FC = () => {
         </Canvas>
       </ErrorBoundary>
 
-      <PanelMoveArrowsHtml />
 
       <SaveDialog isOpen={saveDialog.isOpen} onClose={() => setSaveDialog({ isOpen:false, shapeId:null })} onSave={handleSave} shapeId={saveDialog.shapeId||''} captureSnapshot={captureSnapshot} />
     </>

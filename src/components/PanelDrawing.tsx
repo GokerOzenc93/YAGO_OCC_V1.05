@@ -1,9 +1,10 @@
 import React, { useRef, useMemo, useState, useEffect } from 'react';
 import * as THREE from 'three';
 import { Line } from '@react-three/drei';
-import { useAppStore, ViewMode, Tool } from '../store';
+import { useAppStore, ViewMode } from '../store';
 import { useShallow } from 'zustand/react/shallow';
 import { extractFacesFromGeometry, groupCoplanarFaces, createFaceHighlightGeometry } from './FaceEditor';
+
 // Threshold must match isAxisAligned() in GeometryUtils (0.999) so that any
 // face groupCoplanarFaces considers "curved" is also considered non-flat here.
 // Using 0.9 was too permissive: fillet arc faces near the flat-face boundary
@@ -79,10 +80,9 @@ interface PanelDrawingProps {
 
 export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   shape,
-  isSelected,
+  isSelected
 }) => {
   const meshRef = useRef<THREE.Mesh>(null);
-  const groupRef = useRef<THREE.Group>(null);
   const {
     selectShape,
     selectSecondaryShape,
@@ -101,10 +101,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     faceExtrudeSelectedFace,
     setFaceExtrudeSelectedFace,
     setFaceExtrudeClickPoint,
-    raycastMode,
-    activeTool,
-    panelMoveTargetId,
-    setPanelMoveActiveAxis,
+    raycastMode
   } = useAppStore(useShallow(state => ({
     selectShape: state.selectShape,
     selectSecondaryShape: state.selectSecondaryShape,
@@ -123,10 +120,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     faceExtrudeSelectedFace: state.faceExtrudeSelectedFace,
     setFaceExtrudeSelectedFace: state.setFaceExtrudeSelectedFace,
     setFaceExtrudeClickPoint: state.setFaceExtrudeClickPoint,
-    raycastMode: state.raycastMode,
-    activeTool: state.activeTool,
-    panelMoveTargetId: state.panelMoveTargetId,
-    setPanelMoveActiveAxis: state.setPanelMoveActiveAxis,
+    raycastMode: state.raycastMode
   })));
 
   const [faceGroups, setFaceGroups] = useState<any[]>([]);
@@ -198,9 +192,6 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     }
   }, [disableRaycast]);
 
-  // ── Move mode: disable panel mesh raycast so HTML arrows can be clicked ─────
-  const isMoveMode = activeTool === Tool.MOVE && panelMoveTargetId === shape.id;
-
   const extrudeHighlightGeometry = useMemo(() => {
     if (!isFaceExtrudeTarget || hoveredExtrudeGroup === null || !faceGroups[hoveredExtrudeGroup] || faces.length === 0) return null;
     if (hoveredExtrudeGroup === faceExtrudeSelectedFace) return null;
@@ -256,9 +247,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   };
 
   return (
-    <>
     <group
-      ref={groupRef}
       name={`shape-${shape.id}`}
       position={shape.position}
       rotation={shape.rotation}
@@ -272,8 +261,8 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           castShadow
           receiveShadow
           onClick={handleClick}
-          {...(isMoveMode ? { raycast: () => null } : {})}
-        >          <meshLambertMaterial
+        >
+          <meshLambertMaterial
             color={materialColor}
             emissive={isPanelRowSelected ? PANEL_COLORS.selected.panelEmissive : '#2a2a2a'}
             emissiveIntensity={1}
@@ -329,7 +318,6 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
             castShadow
             receiveShadow
             onClick={handleClick}
-            {...(isMoveMode ? { raycast: () => null } : {})}
           >
             <meshLambertMaterial
               color={materialColor}
@@ -438,8 +426,6 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           )}
         </>
       )}
-
     </group>
-  </>
   );
 });
