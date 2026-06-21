@@ -192,6 +192,11 @@ interface AppState{
   faceExtrudeThickness:number;setFaceExtrudeThickness:(v:number)=>void;
   faceExtrudeFixedMode:boolean;setFaceExtrudeFixedMode:(b:boolean)=>void;
 
+  panelMoveMode:boolean;setPanelMoveMode:(b:boolean)=>void;
+  panelMoveTargetPanelId:string|null;setPanelMoveTargetPanelId:(id:string|null)=>void;
+  panelMoveAxis:'x+'|'x-'|'y+'|'y-'|'z+'|'z-'|null;setPanelMoveAxis:(a:'x+'|'x-'|'y+'|'y-'|'z+'|'z-'|null)=>void;
+  panelMoveValue:number;setPanelMoveValue:(v:number)=>void;
+
   showVirtualFaces:boolean;setShowVirtualFaces:(b:boolean)=>void;
   virtualFaces:VirtualFace[];
   addVirtualFace:(v:VirtualFace)=>void;
@@ -242,6 +247,11 @@ export const useAppStore=create<AppState>((set,get)=>({
   faceExtrudeClickPoint:null,setFaceExtrudeClickPoint:(p)=>set({faceExtrudeClickPoint:p}),
   faceExtrudeThickness:18,setFaceExtrudeThickness:(v)=>set({faceExtrudeThickness:v}),
   faceExtrudeFixedMode:true,setFaceExtrudeFixedMode:(b)=>set({faceExtrudeFixedMode:b}),
+
+  panelMoveMode:false,setPanelMoveMode:(b)=>set({panelMoveMode:b,...(!b?{panelMoveTargetPanelId:null,panelMoveAxis:null,panelMoveValue:0}:{})}),
+  panelMoveTargetPanelId:null,setPanelMoveTargetPanelId:(id)=>set({panelMoveTargetPanelId:id}),
+  panelMoveAxis:null,setPanelMoveAxis:(a)=>set({panelMoveAxis:a}),
+  panelMoveValue:0,setPanelMoveValue:(v)=>set({panelMoveValue:v}),
 
   showVirtualFaces:true,setShowVirtualFaces:(b)=>set({showVirtualFaces:b}),
   virtualFaces:[],

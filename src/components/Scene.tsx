@@ -11,6 +11,7 @@ import { applyFilletToShape } from './Fillet';
 import { ShapeWithTransform } from './ShapeWithTransform';
 import { getReplicadVertices } from './VertexEditorService';
 import { PanelDrawing } from './PanelDrawing';
+import { PanelMoveGizmo } from './PanelMoveGizmo';
 import { ErrorBoundary } from './ErrorBoundary';
 
 /* ══════════════════════════════════════════════════════════
@@ -470,6 +471,17 @@ const CameraController: React.FC<{ controlsRef: React.RefObject<any>; cameraType
 };
 
 /* ══════════════════════════════════════════════════════════
+   PANEL MOVE GIZMO WRAPPER
+══════════════════════════════════════════════════════════ */
+function PanelMoveGizmoWrapper({ shapes }: { shapes: any[] }) {
+  const { panelMoveMode, panelMoveTargetPanelId } = useAppStore();
+  if (!panelMoveMode || !panelMoveTargetPanelId) return null;
+  const panel = shapes.find((s: any) => s.id === panelMoveTargetPanelId);
+  if (!panel || panel.type !== 'panel') return null;
+  return <PanelMoveGizmo panelShape={panel} />;
+}
+
+/* ══════════════════════════════════════════════════════════
    SCENE
 ══════════════════════════════════════════════════════════ */
 const Scene: React.FC = () => {
@@ -617,6 +629,8 @@ const Scene: React.FC = () => {
               </React.Fragment>
             );
           })}
+
+          <PanelMoveGizmoWrapper shapes={shapes} />
 
           <mesh position={[0,-1,0]} rotation={[-Math.PI/2,0,0]} receiveShadow>
             <planeGeometry args={[30000,30000]} />
