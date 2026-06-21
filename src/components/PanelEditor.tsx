@@ -717,6 +717,10 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     );
 
     const normalKey = (vf: typeof svf[0]) => {
+      // A panel that has been explicitly moved must be its own group, regardless of plane,
+      // because it may have shifted laterally (parallel to the face) and n·center wouldn't detect that.
+      const vfPanel = findVPanel(shapes, sid, vf.id);
+      if ((vfPanel?.parameters?.moveSteps as any[] | undefined)?.length) return `moved-${vf.id}`;
       const nStr = vf.normal.map(n => (Math.round(n * 10) / 10).toFixed(1)).join(',');
       const [nx, ny, nz] = vf.normal;
       const [cx, cy, cz] = vf.center;
