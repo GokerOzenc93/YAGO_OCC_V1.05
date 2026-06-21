@@ -111,18 +111,18 @@ function MoveArrow({ direction, axisLabel, color, hoverColor, origin, length, on
       <Html position={labelPos} center zIndexRange={[999, 1000]} style={{ pointerEvents: 'none' }}>
         <div
           style={{
-            background: isSelected ? color : hovered ? 'rgba(0,0,0,0.75)' : 'rgba(0,0,0,0.62)',
-            color: isSelected ? '#fff' : '#fff',
+            background: isSelected ? color : 'transparent',
+            color: isSelected ? '#fff' : '#000',
             fontFamily: '"Inter", "SF Pro Display", system-ui, sans-serif',
-            fontSize: '12px',
-            fontWeight: 800,
+            fontSize: '13px',
+            fontWeight: 900,
             letterSpacing: '0.06em',
-            padding: '2px 6px',
-            borderRadius: '4px',
-            border: `1.5px solid ${isSelected ? '#fff' : color}`,
+            padding: '1px 4px',
+            borderRadius: '3px',
+            border: 'none',
             userSelect: 'none',
             whiteSpace: 'nowrap',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.5)',
+            textShadow: isSelected ? 'none' : '0 0 3px #fff, 0 0 6px #fff, 0 1px 0 #fff',
             lineHeight: '1.4',
           }}
         >
