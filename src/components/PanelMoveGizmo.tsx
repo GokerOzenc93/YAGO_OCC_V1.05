@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
 import * as THREE from 'three';
+import { Html } from '@react-three/drei';
 import { useAppStore } from '../store';
 import type { Shape } from '../store';
 
@@ -45,6 +46,12 @@ function MoveArrow({ direction, axisLabel, color, hoverColor, origin, length, on
     origin[2] + direction[2] * (shaftLength + coneHeight / 2),
   ];
 
+  const labelPos: [number, number, number] = [
+    origin[0] + direction[0] * (length + coneHeight * 0.1),
+    origin[1] + direction[1] * (length + coneHeight * 0.1),
+    origin[2] + direction[2] * (length + coneHeight * 0.1),
+  ];
+
   const activeColor = isSelected ? '#ffffff' : hovered ? hoverColor : color;
   const emissiveColor = isSelected ? new THREE.Color(color) : hovered ? new THREE.Color(hoverColor) : new THREE.Color(0x000000);
   const emissiveInt = isSelected ? 0.8 : hovered ? 0.4 : 0;
@@ -59,59 +66,57 @@ function MoveArrow({ direction, axisLabel, color, hoverColor, origin, length, on
     emissiveIntensity: emissiveInt,
   };
 
+  const handlers = {
+    onPointerEnter: (e: { stopPropagation: () => void }) => { e.stopPropagation(); setHovered(true); document.body.style.cursor = 'pointer'; },
+    onPointerLeave: (e: { stopPropagation: () => void }) => { e.stopPropagation(); setHovered(false); document.body.style.cursor = 'default'; },
+    onClick: (e: { stopPropagation: () => void }) => { e.stopPropagation(); onSelect(axisLabel); },
+  };
+
+  const labelText = axisLabel.replace('x', 'X').replace('y', 'Y').replace('z', 'Z').replace('+', '+').replace('-', '-');
+
   return (
     <group>
-      {/* Wider invisible hit zone shaft */}
-      <mesh
-        position={shaftCenter}
-        rotation={rotation}
-        renderOrder={RENDER_ORDER}
-        onPointerEnter={e => { e.stopPropagation(); setHovered(true); document.body.style.cursor = 'pointer'; }}
-        onPointerLeave={e => { e.stopPropagation(); setHovered(false); document.body.style.cursor = 'default'; }}
-        onClick={e => { e.stopPropagation(); onSelect(axisLabel); }}
-      >
+      {/* Invisible wide hit zone shaft */}
+      <mesh position={shaftCenter} rotation={rotation} renderOrder={RENDER_ORDER} {...handlers}>
         <cylinderGeometry args={[shaftRadius * 2.5, shaftRadius * 2.5, shaftLength, 8]} />
         <meshBasicMaterial visible={false} transparent opacity={0} depthTest={false} />
       </mesh>
 
       {/* Visible shaft */}
-      <mesh
-        position={shaftCenter}
-        rotation={rotation}
-        renderOrder={RENDER_ORDER}
-        onPointerEnter={e => { e.stopPropagation(); setHovered(true); document.body.style.cursor = 'pointer'; }}
-        onPointerLeave={e => { e.stopPropagation(); setHovered(false); document.body.style.cursor = 'default'; }}
-        onClick={e => { e.stopPropagation(); onSelect(axisLabel); }}
-      >
+      <mesh position={shaftCenter} rotation={rotation} renderOrder={RENDER_ORDER} {...handlers}>
         <cylinderGeometry args={[shaftRadius, shaftRadius, shaftLength, 12]} />
         <meshStandardMaterial {...matProps} />
       </mesh>
 
-      {/* Wider invisible hit zone cone */}
-      <mesh
-        position={coneCenter}
-        rotation={rotation}
-        renderOrder={RENDER_ORDER}
-        onPointerEnter={e => { e.stopPropagation(); setHovered(true); document.body.style.cursor = 'pointer'; }}
-        onPointerLeave={e => { e.stopPropagation(); setHovered(false); document.body.style.cursor = 'default'; }}
-        onClick={e => { e.stopPropagation(); onSelect(axisLabel); }}
-      >
-        <coneGeometry args={[coneRadius * 1.6, coneHeight, 8]} />
+      {/* Invisible wide hit zone cone */}
+      <mesh position={coneCenter} rotation={rotation} renderOrder={RENDER_ORDER} {...handlers}>
+        <coneGeometry args={[coneRadius * 1.8, coneHeight * 1.4, 8]} />
         <meshBasicMaterial visible={false} transparent opacity={0} depthTest={false} />
       </mesh>
 
       {/* Visible cone */}
-      <mesh
-        position={coneCenter}
-        rotation={rotation}
-        renderOrder={RENDER_ORDER}
-        onPointerEnter={e => { e.stopPropagation(); setHovered(true); document.body.style.cursor = 'pointer'; }}
-        onPointerLeave={e => { e.stopPropagation(); setHovered(false); document.body.style.cursor = 'default'; }}
-        onClick={e => { e.stopPropagation(); onSelect(axisLabel); }}
-      >
+      <mesh position={coneCenter} rotation={rotation} renderOrder={RENDER_ORDER} {...handlers}>
         <coneGeometry args={[coneRadius, coneHeight, 16]} />
         <meshStandardMaterial {...matProps} />
       </mesh>
+
+      {/* Label */}
+      <Html position={labelPos} center style={{ pointerEvents: 'none' }}>
+        <span
+          style={{
+            color: isSelected ? '#ffffff' : hovered ? hoverColor : color,
+            fontFamily: 'monospace',
+            fontSize: '11px',
+            fontWeight: 700,
+            letterSpacing: '0.04em',
+            textShadow: '0 1px 3px #000, 0 0 6px #000',
+            userSelect: 'none',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {labelText}
+        </span>
+      </Html>
     </group>
   );
 }
@@ -132,16 +137,16 @@ interface PanelMoveGizmoProps {
 export function PanelMoveGizmo({ panelShape }: PanelMoveGizmoProps) {
   const { panelMoveAxis, setPanelMoveAxis } = useAppStore();
 
-  const { gizmoOrigin, axisOrigins, arrowLength } = useMemo(() => {
+  const { centerOrigin, axisOrigins, arrowLength } = useMemo(() => {
     const fallback = panelShape.position;
     if (!panelShape.geometry) {
       const o = fallback;
-      return { gizmoOrigin: o, axisOrigins: { 'x+': o, 'x-': o, 'y+': o, 'y-': o, 'z+': o, 'z-': o }, arrowLength: 80 };
+      return { centerOrigin: o, axisOrigins: { 'x+': o, 'x-': o, 'y+': o, 'y-': o, 'z+': o, 'z-': o }, arrowLength: 80 };
     }
     const pos = panelShape.geometry.getAttribute('position') as THREE.BufferAttribute;
     if (!pos) {
       const o = fallback;
-      return { gizmoOrigin: o, axisOrigins: { 'x+': o, 'x-': o, 'y+': o, 'y-': o, 'z+': o, 'z-': o }, arrowLength: 80 };
+      return { centerOrigin: o, axisOrigins: { 'x+': o, 'x-': o, 'y+': o, 'y-': o, 'z+': o, 'z-': o }, arrowLength: 80 };
     }
 
     const bbox = new THREE.Box3().setFromBufferAttribute(pos);
@@ -158,22 +163,25 @@ export function PanelMoveGizmo({ panelShape }: PanelMoveGizmoProps) {
 
     const mn = bbox.min;
     const mx = bbox.max;
+    const cx = (mn.x + mx.x) / 2;
+    const cy = (mn.y + mx.y) / 2;
+    const cz = (mn.z + mx.z) / 2;
 
-    const origin = toWorld(mn.x, mn.y, mn.z);
+    const center = toWorld(cx, cy, cz);
 
     const size = new THREE.Vector3();
     bbox.getSize(size);
-    const len = Math.max(size.x, size.y, size.z) * 0.5;
+    const len = Math.max(size.x, size.y, size.z) * 0.55;
 
     return {
-      gizmoOrigin: origin,
+      centerOrigin: center,
       axisOrigins: {
-        'x+': toWorld(mx.x, mn.y, mn.z),
-        'x-': toWorld(mn.x, mn.y, mn.z),
-        'y+': toWorld(mn.x, mx.y, mn.z),
-        'y-': toWorld(mn.x, mn.y, mn.z),
-        'z+': toWorld(mn.x, mn.y, mx.z),
-        'z-': toWorld(mn.x, mn.y, mn.z),
+        'x+': toWorld(mx.x, cy, cz),
+        'x-': toWorld(mn.x, cy, cz),
+        'y+': toWorld(cx, mx.y, cz),
+        'y-': toWorld(cx, mn.y, cz),
+        'z+': toWorld(cx, cy, mx.z),
+        'z-': toWorld(cx, cy, mn.z),
       } as Record<string, [number, number, number]>,
       arrowLength: len,
     };
@@ -184,17 +192,17 @@ export function PanelMoveGizmo({ panelShape }: PanelMoveGizmoProps) {
   };
 
   const axes: Array<{ axis: 'x+' | 'x-' | 'y+' | 'y-' | 'z+' | 'z-'; dir: [number, number, number]; color: string; hover: string }> = [
-    { axis: 'x+', dir: [1, 0, 0], color: '#dc2626', hover: '#ef4444' },
+    { axis: 'x+', dir: [1, 0, 0],  color: '#dc2626', hover: '#ef4444' },
     { axis: 'x-', dir: [-1, 0, 0], color: '#b91c1c', hover: '#ef4444' },
-    { axis: 'y+', dir: [0, 1, 0], color: '#16a34a', hover: '#22c55e' },
+    { axis: 'y+', dir: [0, 1, 0],  color: '#16a34a', hover: '#22c55e' },
     { axis: 'y-', dir: [0, -1, 0], color: '#15803d', hover: '#22c55e' },
-    { axis: 'z+', dir: [0, 0, 1], color: '#2563eb', hover: '#3b82f6' },
+    { axis: 'z+', dir: [0, 0, 1],  color: '#2563eb', hover: '#3b82f6' },
     { axis: 'z-', dir: [0, 0, -1], color: '#1d4ed8', hover: '#3b82f6' },
   ];
 
   return (
     <group>
-      <OriginSphere position={gizmoOrigin} size={arrowLength * 0.09} />
+      <OriginSphere position={centerOrigin} size={arrowLength * 0.07} />
       {axes.map(({ axis, dir, color, hover }) => (
         <MoveArrow
           key={axis}
