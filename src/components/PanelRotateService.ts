@@ -187,6 +187,7 @@ function rayIntersectOBBPlanes(
 interface AutoExtendResult {
   length: number;
   directionSign: number; // +1 = extends in +localLongDir, -1 = extends in -localLongDir
+  longestAxisIdx: number; // the local axis index (0,1,2) to extend along
 }
 
 function computeAutoExtendLength(
@@ -207,56 +208,75 @@ function computeAutoExtendLength(
   const panelSize = new THREE.Vector3();
   panelLocalBbox.getSize(panelSize);
 
-  const axes = [
+  const sorted = [
     { i: 0, v: panelSize.x },
     { i: 1, v: panelSize.y },
     { i: 2, v: panelSize.z },
   ].sort((a, b) => a.v - b.v);
-  const longAxes = axes.slice(1).sort((a, b) => b.v - a.v);
-  const longestLocalAxis = longAxes[0].i;
+
+  // thinnest is always sorted[0]; the other two are candidates for longest axis.
+  // When both face dims are equal (square panel), we must try both to find the
+  // one with a valid ray intersection — otherwise the wrong axis gets picked.
+  const candidateLongAxes = sorted.slice(1); // [second, longest] by size
 
   const panelQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(...newRotation, 'XYZ'));
-  const localDir = new THREE.Vector3(
-    longestLocalAxis === 0 ? 1 : 0,
-    longestLocalAxis === 1 ? 1 : 0,
-    longestLocalAxis === 2 ? 1 : 0
-  );
-  const worldDir = localDir.clone().applyQuaternion(panelQuat).normalize();
-
   const pivotVec = new THREE.Vector3(...pivot);
 
-  // Compute ACTUAL world centroid (geometry bbox center in world space)
   const bboxCenter = new THREE.Vector3();
   panelLocalBbox.getCenter(bboxCenter);
   const actualWorldCenter = bboxCenter.clone().applyQuaternion(panelQuat)
     .add(new THREE.Vector3(...newPosition));
 
-  // Try both directions independently and pick the valid one.
-  // This is necessary because when the pivot is on an OBB face, one direction
-  // exits immediately (t=0 → null) while the other goes inward correctly.
-  const dist1 = rayIntersectOBBPlanes(pivotVec, worldDir.clone(), obbPlanes);
-  const dist2 = rayIntersectOBBPlanes(pivotVec, worldDir.clone().negate(), obbPlanes);
+  let bestDist = -1;
+  let bestDirSign = 1;
+  let bestAxisIdx = candidateLongAxes[1].i; // default to geometrically-longest
 
-  const valid1 = dist1 !== null && dist1 > 1;
-  const valid2 = dist2 !== null && dist2 > 1;
+  for (const candidate of candidateLongAxes) {
+    const localDir = new THREE.Vector3(
+      candidate.i === 0 ? 1 : 0,
+      candidate.i === 1 ? 1 : 0,
+      candidate.i === 2 ? 1 : 0
+    );
+    const worldDir = localDir.clone().applyQuaternion(panelQuat).normalize();
 
-  let maxDist: number;
-  let directionSign: number;
+    const d1 = rayIntersectOBBPlanes(pivotVec, worldDir.clone(), obbPlanes);
+    const d2 = rayIntersectOBBPlanes(pivotVec, worldDir.clone().negate(), obbPlanes);
 
-  if (valid1 && valid2) {
-    // Both valid: use actual centroid direction to pick the right one
-    const dot = actualWorldCenter.clone().sub(pivotVec).dot(worldDir);
-    directionSign = dot >= 0 ? 1 : -1;
-    maxDist = directionSign === 1 ? dist1! : dist2!;
-  } else if (valid1) {
-    directionSign = 1;
-    maxDist = dist1!;
-  } else if (valid2) {
-    directionSign = -1;
-    maxDist = dist2!;
-  } else {
-    return null;
+    const v1 = d1 !== null && d1 > 1;
+    const v2 = d2 !== null && d2 > 1;
+
+    // When both are valid for this axis, use centroid direction to pick sign
+    let chosenDist = -1;
+    let chosenSign = 1;
+    if (v1 && v2) {
+      const dot = actualWorldCenter.clone().sub(pivotVec).dot(worldDir);
+      chosenSign = dot >= 0 ? 1 : -1;
+      chosenDist = chosenSign === 1 ? d1! : d2!;
+    } else if (v1) {
+      chosenSign = 1;
+      chosenDist = d1!;
+    } else if (v2) {
+      chosenSign = -1;
+      chosenDist = d2!;
+    }
+
+    if (chosenDist > bestDist) {
+      bestDist = chosenDist;
+      bestDirSign = chosenSign;
+      bestAxisIdx = candidate.i;
+    }
   }
+
+  if (bestDist < 1) return null;
+
+  // Build the final worldDir from the chosen axis
+  const bestLocalDir = new THREE.Vector3(
+    bestAxisIdx === 0 ? 1 : 0,
+    bestAxisIdx === 1 ? 1 : 0,
+    bestAxisIdx === 2 ? 1 : 0
+  );
+  const bestWorldDir = bestLocalDir.clone().applyQuaternion(panelQuat).normalize()
+    .multiplyScalar(bestDirSign);
 
   const parentId = panelShape.parameters?.parentShapeId;
   const siblings = shapes.filter(
@@ -266,7 +286,7 @@ function computeAutoExtendLength(
       s.geometry
   );
 
-  let closestCollision = maxDist;
+  let closestCollision = bestDist;
 
   for (const sib of siblings) {
     const sibAttr = sib.geometry!.getAttribute('position') as THREE.BufferAttribute;
@@ -292,7 +312,7 @@ function computeAutoExtendLength(
     const sibWorldBbox = new THREE.Box3().setFromPoints(sibCorners);
 
     const sibHit = new THREE.Vector3();
-    const sibRay = new THREE.Ray(pivotVec.clone(), worldDir.clone().multiplyScalar(directionSign));
+    const sibRay = new THREE.Ray(pivotVec.clone(), bestWorldDir.clone());
     if (sibRay.intersectBox(sibWorldBbox, sibHit)) {
       const dist = sibHit.distanceTo(pivotVec);
       if (dist > 0.5 && dist < closestCollision) {
@@ -301,7 +321,7 @@ function computeAutoExtendLength(
     }
   }
 
-  return { length: closestCollision, directionSign };
+  return { length: closestCollision, directionSign: bestDirSign, longestAxisIdx: bestAxisIdx };
 }
 
 async function rebuildPanelGeometry(
@@ -309,6 +329,7 @@ async function rebuildPanelGeometry(
   newLength: number,
   pivot: [number, number, number],
   directionSign: number,
+  longestAxisIdx: number,
   updateShape: (id: string, updates: Partial<Shape>) => void
 ): Promise<void> {
   if (!panelShape.geometry) return;
@@ -326,10 +347,11 @@ async function rebuildPanelGeometry(
   ].sort((a, b) => a.v - b.v);
 
   const thickness = axes[0].v;
-  const longestAxisIdx = axes[2].i;
-  const secondAxisIdx = axes[1].i;
-  const secondLen = axes[1].v;
   const thinAxisIdx = axes[0].i;
+  // Use the longestAxisIdx passed from computeAutoExtendLength to guarantee
+  // both functions operate on the SAME axis (critical for square panels).
+  const secondAxisIdx = axes.find(a => a.i !== longestAxisIdx && a.i !== thinAxisIdx)!.i;
+  const secondLen = panelSize.getComponent(secondAxisIdx);
 
   const dims: [number, number, number] = [0, 0, 0];
   dims[thinAxisIdx] = thickness;
@@ -462,7 +484,7 @@ export async function executePanelRotate(params: PanelRotateParams): Promise<boo
         rotateSteps: newSteps,
       },
     };
-    await rebuildPanelGeometry(updatedPanel, extendResult.length, pivot, extendResult.directionSign, updateShape);
+    await rebuildPanelGeometry(updatedPanel, extendResult.length, pivot, extendResult.directionSign, extendResult.longestAxisIdx, updateShape);
   }
 
   await rebuildSiblingsAfterRotate(panelShape, shapes);
@@ -501,7 +523,7 @@ export async function updateRotateStep(
       rotation: result.rotation,
       parameters: { ...panelShape.parameters, rotateSteps: newSteps },
     };
-    await rebuildPanelGeometry(updatedPanel, extendResult.length, pivotForExtend, extendResult.directionSign, updateShape);
+    await rebuildPanelGeometry(updatedPanel, extendResult.length, pivotForExtend, extendResult.directionSign, extendResult.longestAxisIdx, updateShape);
   }
 
   await rebuildSiblingsAfterRotate(panelShape, shapes);
