@@ -553,10 +553,11 @@ function reraycastVirtualFace(
 
   const nhd = vf.raycastRecipe.normalizedHitDistances;
   const allBoundary = !!nhd && !!nhd.uPosIsBoundary && !!nhd.uNegIsBoundary && !!nhd.vPosIsBoundary && !!nhd.vNegIsBoundary;
-  // Moved panels are no longer "on" their original face — don't count them as siblings
-  const siblingPanelsExist = childPanels.some(p =>
-    p.parameters?.virtualFaceId !== vf.id &&
-    !vfIdBelongsToMovedPanel(p.parameters?.virtualFaceId, childPanels)
+  // Use VF world-center as a proxy planeOrigin to test if siblings are on this face
+  const vfCenterWorld = new THREE.Vector3(...vf.center).applyMatrix4(localToWorld);
+  const siblingPanelsExist = childPanels.some(
+    p => p.parameters?.virtualFaceId !== vf.id &&
+      isPanelOnFacePlane(p, worldNormal, vfCenterWorld, 20)
   );
   if (nhd && allBoundary && !siblingPanelsExist) {
     const result = reconstructFromNormalizedDistances(
@@ -673,13 +674,18 @@ function reraycastVirtualFaceFallback(
   const panelsExcludingSelf = childPanels.filter(
     p => p.parameters?.virtualFaceId !== vf.id
   );
-  // Exclude moved panels — they are no longer on the face so should not block new panels
+  // Only panels whose geometry actually intersects the face plane are obstacles.
+  // Panels that have been displaced off the face (by moveSteps or any other means)
+  // should not block new panel placement.
   const panelsOnFace = panelsExcludingSelf.filter(
-    p => !vfIdBelongsToMovedPanel(p.parameters?.virtualFaceId, childPanels)
+    p => isPanelOnFacePlane(p, worldNormal, planeOrigin, 20)
   );
-  // Also exclude VFs whose panels have moved, so their face area is available again
+  // Only use VF boundaries of panels that are geometrically still on the face
+  const vfIdsOnFace = new Set(
+    panelsOnFace.map(p => p.parameters?.virtualFaceId as string).filter(Boolean)
+  );
   const shapeFacesForObstacles = shapeFaces.filter(
-    f => f.id === vf.id || !vfIdBelongsToMovedPanel(f.id, childPanels)
+    f => f.id === vf.id || vfIdsOnFace.has(f.id)
   );
   const panelObstacleEdges = collectPanelObstacleEdgesWorld(
     panelsOnFace, worldNormal, planeOrigin, 20
@@ -752,14 +758,33 @@ function reraycastVirtualFaceFallback(
 }
 
 /**
- * Returns true if the panel linked to a given virtualFaceId has been moved
- * away from its original face (has any non-zero moveStep).
+ * Geometrically checks if a panel's actual transformed geometry has any vertex
+ * within `tolerance` mm of the given face plane. This is the canonical way to
+ * decide if a panel occupies a face — it works regardless of how the panel was
+ * moved (moveSteps, position edits, etc.).
  */
-function vfIdBelongsToMovedPanel(vfId: string, childPanels: any[]): boolean {
-  const panel = childPanels.find(p => p.parameters?.virtualFaceId === vfId);
-  if (!panel) return false;
-  const steps: any[] = panel.parameters?.moveSteps || [];
-  return steps.some((s: any) => (s.value || 0) !== 0);
+function isPanelOnFacePlane(
+  panel: any,
+  worldNormal: THREE.Vector3,
+  facePlaneOrigin: THREE.Vector3,
+  tolerance: number
+): boolean {
+  if (!panel.geometry) return false;
+  const posAttr = panel.geometry.getAttribute('position');
+  if (!posAttr) return false;
+  const m = new THREE.Matrix4().compose(
+    new THREE.Vector3(...(panel.position as [number, number, number])),
+    new THREE.Quaternion().setFromEuler(
+      new THREE.Euler(...(panel.rotation as [number, number, number]), 'XYZ')
+    ),
+    new THREE.Vector3(...(panel.scale as [number, number, number]))
+  );
+  for (let i = 0; i < posAttr.count; i++) {
+    const wp = new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)).applyMatrix4(m);
+    const d = worldNormal.dot(new THREE.Vector3().subVectors(wp, facePlaneOrigin));
+    if (Math.abs(d) < tolerance) return true;
+  }
+  return false;
 }
 
 export function recalculateVirtualFacesForShape(
@@ -794,9 +819,14 @@ export function recalculateVirtualFacesForShape(
       updatedMap.set(vf.id, reraycast || vf);
     } else {
       const subtractions = shape.subtractionGeometries || [];
+      // Compute VF world center to use as face plane origin for geometric check
+      const vfCenterWorld = new THREE.Vector3(...vf.center).applyMatrix4(localToWorld);
+      const localNormalForClip = new THREE.Vector3(...vf.normal).normalize();
+      const normalMatrixForClip = new THREE.Matrix3().getNormalMatrix(localToWorld);
+      const worldNormalForClip = localNormalForClip.clone().applyMatrix3(normalMatrixForClip).normalize();
       const panelsExcludingSelf = childPanels.filter(
         p => p.parameters?.virtualFaceId !== vf.id &&
-          !vfIdBelongsToMovedPanel(p.parameters?.virtualFaceId, childPanels)
+          isPanelOnFacePlane(p, worldNormalForClip, vfCenterWorld, 20)
       );
       const clipped = clipVirtualFaceAgainstSubtractionsAndPanels(
         vf, subtractions, panelsExcludingSelf, localToWorld, worldToLocal
