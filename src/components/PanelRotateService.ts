@@ -184,13 +184,18 @@ function rayIntersectOBBPlanes(
   return tMax > 0.01 ? tMax : null;
 }
 
+interface AutoExtendResult {
+  length: number;
+  directionSign: number; // +1 = extends in +localLongDir, -1 = extends in -localLongDir
+}
+
 function computeAutoExtendLength(
   panelShape: Shape,
   newPosition: [number, number, number],
   newRotation: [number, number, number],
   pivot: [number, number, number],
   shapes: Shape[]
-): number | null {
+): AutoExtendResult | null {
   if (!panelShape.geometry) return null;
 
   const obbPlanes = getParentOBBPlanes(panelShape, shapes);
@@ -219,11 +224,17 @@ function computeAutoExtendLength(
   const worldDir = localDir.clone().applyQuaternion(panelQuat).normalize();
 
   const pivotVec = new THREE.Vector3(...pivot);
-  const panelCenter = new THREE.Vector3(...newPosition);
 
-  const panelDirFromPivot = panelCenter.clone().sub(pivotVec);
-  const dotWithDir = panelDirFromPivot.dot(worldDir);
-  const rayDir = dotWithDir >= 0 ? worldDir.clone() : worldDir.clone().negate();
+  // Compute ACTUAL world centroid (not geometry origin) to determine direction
+  const bboxCenter = new THREE.Vector3();
+  panelLocalBbox.getCenter(bboxCenter);
+  const actualWorldCenter = bboxCenter.clone().applyQuaternion(panelQuat)
+    .add(new THREE.Vector3(...newPosition));
+
+  const centerDirFromPivot = actualWorldCenter.clone().sub(pivotVec);
+  const dotWithDir = centerDirFromPivot.dot(worldDir);
+  const directionSign = dotWithDir >= 0 ? 1 : -1;
+  const rayDir = worldDir.clone().multiplyScalar(directionSign);
 
   const maxDist = rayIntersectOBBPlanes(pivotVec, rayDir, obbPlanes);
   if (maxDist === null || maxDist < 1) return null;
@@ -271,13 +282,14 @@ function computeAutoExtendLength(
     }
   }
 
-  return closestCollision;
+  return { length: closestCollision, directionSign };
 }
 
 async function rebuildPanelGeometry(
   panelShape: Shape,
   newLength: number,
   pivot: [number, number, number],
+  directionSign: number,
   updateShape: (id: string, updates: Partial<Shape>) => void
 ): Promise<void> {
   if (!panelShape.geometry) return;
@@ -328,12 +340,15 @@ async function rebuildPanelGeometry(
     geometry.computeBoundingBox();
     geometry.computeBoundingSphere();
 
-    // GUARANTEED APPROACH: find pivot in panel local space, then compute
-    // the position that places that same local point at the world pivot.
     const panelQuat = new THREE.Quaternion().setFromEuler(
       new THREE.Euler(...panelShape.rotation, 'XYZ')
     );
     const pivotVec = new THREE.Vector3(...pivot);
+
+    // The pivot is at one end of the panel along the longest axis.
+    // directionSign tells us: the panel extends in directionSign * localLongDir from the pivot.
+    // For centered geometry: pivot is at -directionSign * newLength/2 along longest axis.
+    // We also need to preserve the second-axis and thin-axis offsets from pivot.
 
     // Transform world pivot into the panel's local coordinate system
     const panelWorldMatrix = new THREE.Matrix4().compose(
@@ -344,21 +359,16 @@ async function rebuildPanelGeometry(
     const invMatrix = panelWorldMatrix.clone().invert();
     const localPivot = pivotVec.clone().applyMatrix4(invMatrix);
 
-    // Snap pivot to the nearest corner/edge of the original geometry bbox
+    // Get pivot position relative to the original geometry's bbox center
     const origCenter = new THREE.Vector3();
     panelLocalBbox.getCenter(origCenter);
     const relPivot = localPivot.clone().sub(origCenter);
 
-    // For the new centered geometry (bbox from -halfSize to +halfSize):
-    // Map the pivot's relative position to the new dimensions.
-    // Along longest axis: snap to the nearest end (-newLength/2 or +newLength/2)
-    // Along second axis: preserve the relative position (same dimension)
-    // Along thin axis: preserve the relative position (same dimension)
+    // For the new centered geometry:
+    // - Along longest axis: pivot is at the OPPOSITE end from extension direction
+    //   Extension goes in +directionSign * localLongDir, so pivot is at -directionSign * newLength/2
     const newLocalPivot = new THREE.Vector3();
-    const pivotLongRel = relPivot.getComponent(longestAxisIdx);
-    // Snap to the nearest end of the longest axis
-    const pivotAtNearEnd = pivotLongRel <= 0 ? -1 : 1;
-    newLocalPivot.setComponent(longestAxisIdx, pivotAtNearEnd * newLength * 0.5);
+    newLocalPivot.setComponent(longestAxisIdx, -directionSign * newLength * 0.5);
     newLocalPivot.setComponent(secondAxisIdx, relPivot.getComponent(secondAxisIdx));
     newLocalPivot.setComponent(thinAxisIdx, relPivot.getComponent(thinAxisIdx));
 
@@ -420,8 +430,8 @@ export async function executePanelRotate(params: PanelRotateParams): Promise<boo
     },
   });
 
-  const extendedLen = computeAutoExtendLength(panelShape, result.position, result.rotation, pivot, shapes);
-  if (extendedLen !== null && extendedLen > 1) {
+  const extendResult = computeAutoExtendLength(panelShape, result.position, result.rotation, pivot, shapes);
+  if (extendResult !== null && extendResult.length > 1) {
     const updatedPanel: Shape = {
       ...panelShape,
       position: result.position,
@@ -433,7 +443,7 @@ export async function executePanelRotate(params: PanelRotateParams): Promise<boo
         rotateSteps: newSteps,
       },
     };
-    await rebuildPanelGeometry(updatedPanel, extendedLen, pivot, updateShape);
+    await rebuildPanelGeometry(updatedPanel, extendResult.length, pivot, extendResult.directionSign, updateShape);
   }
 
   await rebuildSiblingsAfterRotate(panelShape, shapes);
@@ -464,15 +474,15 @@ export async function updateRotateStep(
 
   const updatedStep = newSteps.find(s => s.id === stepId);
   const pivotForExtend: [number, number, number] = updatedStep?.pivot ?? newSteps[newSteps.length - 1]?.pivot ?? [0, 0, 0];
-  const extendedLen = computeAutoExtendLength(panelShape, result.position, result.rotation, pivotForExtend, shapes);
-  if (extendedLen !== null && extendedLen > 1) {
+  const extendResult = computeAutoExtendLength(panelShape, result.position, result.rotation, pivotForExtend, shapes);
+  if (extendResult !== null && extendResult.length > 1) {
     const updatedPanel: Shape = {
       ...panelShape,
       position: result.position,
       rotation: result.rotation,
       parameters: { ...panelShape.parameters, rotateSteps: newSteps },
     };
-    await rebuildPanelGeometry(updatedPanel, extendedLen, pivotForExtend, updateShape);
+    await rebuildPanelGeometry(updatedPanel, extendResult.length, pivotForExtend, extendResult.directionSign, updateShape);
   }
 
   await rebuildSiblingsAfterRotate(panelShape, shapes);
