@@ -1078,6 +1078,16 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         position: newPos,
         parameters: { ...panel.parameters, moveSteps: [...prevSteps, { id: stepId, axis, value: delta }] },
       });
+      // Keep the virtual face centre in sync so normalKey splits this panel into its own group
+      const vfId = panel.parameters?.virtualFaceId as string | undefined;
+      if (vfId) {
+        const vf = virtualFaces.find(f => f.id === vfId);
+        if (vf) updateVirtualFace(vfId, { center: [
+          vf.center[0] + (axis === 'X' ? delta : 0),
+          vf.center[1] + (axis === 'Y' ? delta : 0),
+          vf.center[2] + (axis === 'Z' ? delta : 0),
+        ] as [number,number,number] });
+      }
       setActiveMoveAxis(null);
       setMoveInputValue('');
       setPanelMoveTargetId(null);
@@ -1106,6 +1116,15 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       ];
       const updatedSteps = steps.map((s: any) => s.id === stepId ? { ...s, value: newVal } : s);
       updateShape(activePanelId, { position: newPos, parameters: { ...panel.parameters, moveSteps: updatedSteps } });
+      const vfIdSave = panel.parameters?.virtualFaceId as string | undefined;
+      if (vfIdSave) {
+        const vfSave = virtualFaces.find(f => f.id === vfIdSave);
+        if (vfSave) updateVirtualFace(vfIdSave, { center: [
+          vfSave.center[0] + (ax === 'X' ? diff : 0),
+          vfSave.center[1] + (ax === 'Y' ? diff : 0),
+          vfSave.center[2] + (ax === 'Z' ? diff : 0),
+        ] as [number,number,number] });
+      }
       setEditingMoveStepId(null);
       const parentId = panel.parameters?.parentShapeId;
       if (parentId) {
@@ -1129,6 +1148,15 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       ];
       const updatedSteps = steps.filter((s: any) => s.id !== stepId);
       updateShape(activePanelId, { position: newPos, parameters: { ...panel.parameters, moveSteps: updatedSteps } });
+      const vfIdDel = panel.parameters?.virtualFaceId as string | undefined;
+      if (vfIdDel) {
+        const vfDel = virtualFaces.find(f => f.id === vfIdDel);
+        if (vfDel) updateVirtualFace(vfIdDel, { center: [
+          vfDel.center[0] - (ax === 'X' ? val : 0),
+          vfDel.center[1] - (ax === 'Y' ? val : 0),
+          vfDel.center[2] - (ax === 'Z' ? val : 0),
+        ] as [number,number,number] });
+      }
       const parentId = panel.parameters?.parentShapeId;
       if (parentId) {
         import('./PanelRebuildService').then(({ rebuildPanelsForParent }) => {
