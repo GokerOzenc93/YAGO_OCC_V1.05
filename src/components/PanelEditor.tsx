@@ -8,6 +8,7 @@ import * as THREE from 'three';
 import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
+import { useActiveMoveAxis, setActiveMoveAxis } from './PanelMoveOverlay';
 
 const AXIS_ORDER: Record<string, number> = { 'x+': 0, 'x-': 1, 'y+': 2, 'y-': 3, 'z+': 4, 'z-': 5 };
 const PANEL_THICKNESS = 18;
@@ -558,6 +559,8 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
   const [editingStepValue, setEditingStepValue] = useState(0);
   const [editingMoveStepId, setEditingMoveStepId] = useState<string | null>(null);
   const [editingMoveStepValue, setEditingMoveStepValue] = useState(0);
+  const [moveInputValue, setMoveInputValue] = useState('');
+  const activeMoveAxis = useActiveMoveAxis();
   const rowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const selectedShape = shapes.find(s => s.id === selectedShapeId);
 
@@ -1054,6 +1057,30 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     if (!isMove && moveSteps.length === 0) return null;
 
     const axisColor = { X: '#ef4444', Y: '#22c55e', Z: '#3b82f6' };
+    const hasAxisSelected = isMove && activeMoveAxis && activeMoveAxis.panelId === activePanelId;
+
+    const onApplyMove = () => {
+      if (!hasAxisSelected || !activePanelId) return;
+      const dist = parseFloat(moveInputValue);
+      if (isNaN(dist) || dist === 0) { setActiveMoveAxis(null); setMoveInputValue(''); return; }
+      const panel = shapes.find(s => s.id === activePanelId); if (!panel) return;
+      const { axis, sign } = activeMoveAxis!;
+      const delta = dist * sign;
+      const cur = panel.position as [number, number, number];
+      const newPos: [number, number, number] = [
+        cur[0] + (axis === 'X' ? delta : 0),
+        cur[1] + (axis === 'Y' ? delta : 0),
+        cur[2] + (axis === 'Z' ? delta : 0),
+      ];
+      const stepId = `move-${Date.now()}`;
+      const prevSteps = panel.parameters?.moveSteps || [];
+      updateShape(activePanelId, {
+        position: newPos,
+        parameters: { ...panel.parameters, moveSteps: [...prevSteps, { id: stepId, axis, value: delta }] },
+      });
+      setActiveMoveAxis(null);
+      setMoveInputValue('');
+    };
 
     const onSaveMoveStep = (stepId: string, newVal: number) => {
       const panel = shapes.find(s => s.id === activePanelId); if (!panel) return;
@@ -1101,45 +1128,95 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       }}>
         {isMove && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 9px' }}>
-            <div style={{
-              flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 7, height: 28, padding: '0 10px', borderRadius: 7,
-              background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.18)',
-            }}>
-              <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#3b82f6', flexShrink: 0, animation: 'pulse 1.5s ease-in-out infinite' }} />
-              <span style={{ fontSize: 11, fontWeight: 500, color: '#3b82f6' }}>3B sahnede taşıma oku seç</span>
-            </div>
-            <button onClick={e => { stop(e); setPanelMoveTargetId(null); setPanelMoveActiveAxis(null); }}
-              title="Çıkış" style={{
-                flexShrink: 0, width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                borderRadius: 7, border: '1px solid rgba(60,50,40,0.12)', cursor: 'pointer', outline: 'none',
-                background: 'rgba(255,255,255,0.55)', color: '#78716c', transition: 'all 0.12s',
-              }}><X size={13} /></button>
+            {hasAxisSelected ? (
+              <>
+                <span style={{
+                  flexShrink: 0, minWidth: 32, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  borderRadius: 6, padding: '0 7px',
+                  background: axisColor[activeMoveAxis!.axis], color: '#fff',
+                  fontSize: 12, fontWeight: 800, fontFamily: 'monospace',
+                  boxShadow: `0 1px 4px ${axisColor[activeMoveAxis!.axis]}55`,
+                }}>
+                  {activeMoveAxis!.sign > 0 ? '+' : '−'}{activeMoveAxis!.axis}
+                </span>
+                <span style={{ fontSize: 10, color: '#78716c', fontWeight: 500, flexShrink: 0 }}>mm</span>
+                <input
+                  type="number"
+                  value={moveInputValue}
+                  autoFocus
+                  onChange={e => setMoveInputValue(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') onApplyMove();
+                    if (e.key === 'Escape') { setActiveMoveAxis(null); setMoveInputValue(''); }
+                  }}
+                  placeholder="0"
+                  style={{
+                    flex: 1, minWidth: 0, height: 28, textAlign: 'center',
+                    fontFamily: 'monospace', fontSize: 13, fontWeight: 600, color: '#1c1917',
+                    background: 'linear-gradient(180deg,#fff,#faf8f3)',
+                    border: '1px solid rgba(60,50,40,0.16)', borderRadius: 7, outline: 'none',
+                    boxShadow: 'inset 0 1px 2px rgba(40,30,20,0.06)',
+                  }}
+                />
+                <button onClick={onApplyMove} title="Uygula" style={{
+                  flexShrink: 0, width: 32, height: 28, borderRadius: 7, border: 'none', cursor: 'pointer', outline: 'none',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  background: 'linear-gradient(180deg,#5b5346,#44403c)', color: '#fff',
+                  boxShadow: '0 1px 2px rgba(40,30,20,0.25),inset 0 1px 0 rgba(255,255,255,0.18)',
+                }}><Check size={15} strokeWidth={2.5} /></button>
+                <button onClick={() => { setActiveMoveAxis(null); setMoveInputValue(''); }} title="İptal" style={{
+                  flexShrink: 0, width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  borderRadius: 7, border: '1px solid rgba(60,50,40,0.12)', cursor: 'pointer', outline: 'none',
+                  background: 'rgba(255,255,255,0.55)', color: '#78716c',
+                }}><X size={12} /></button>
+              </>
+            ) : (
+              <>
+                <div style={{
+                  flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 7, height: 28, padding: '0 10px', borderRadius: 7,
+                  background: 'rgba(59,130,246,0.07)', border: '1px solid rgba(59,130,246,0.18)',
+                }}>
+                  <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#3b82f6', flexShrink: 0 }} />
+                  <span style={{ fontSize: 11, fontWeight: 500, color: '#3b82f6' }}>3B sahnede ok seç</span>
+                </div>
+                <button onClick={e => { stop(e); setActiveMoveAxis(null); setPanelMoveTargetId(null); setPanelMoveActiveAxis(null); setMoveInputValue(''); }}
+                  title="Çıkış" style={{
+                    flexShrink: 0, width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    borderRadius: 7, border: '1px solid rgba(60,50,40,0.12)', cursor: 'pointer', outline: 'none',
+                    background: 'rgba(255,255,255,0.55)', color: '#78716c', transition: 'all 0.12s',
+                  }}><X size={13} /></button>
+              </>
+            )}
           </div>
         )}
 
         {moveSteps.length > 0 && (
           <div style={{ borderTop: isMove ? '1px solid rgba(60,50,40,0.08)' : 'none', padding: '6px 9px', display: 'flex', alignItems: 'center', gap: 6, overflowX: 'auto' }}>
             <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.07em', textTransform: 'uppercase', color: '#a8a29e', flexShrink: 0 }}>Hareket</span>
-            {moveSteps.map((s: any) => (
-              editingMoveStepId === s.id ? (
+            {moveSteps.map((s: any) => {
+              const signedVal: number = s.value;
+              const absVal = Math.abs(signedVal);
+              const signLabel = signedVal >= 0 ? '+' : '−';
+              const col = axisColor[s.axis as 'X'|'Y'|'Z'];
+              return editingMoveStepId === s.id ? (
                 <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '3px 6px', borderRadius: 6, background: 'rgba(120,113,108,0.10)', border: '1px solid rgba(60,50,40,0.16)', flexShrink: 0 }}>
-                  <span style={{ fontSize: 9, fontWeight: 800, fontFamily: 'monospace', color: axisColor[s.axis as 'X'|'Y'|'Z'] }}>{s.axis}</span>
-                  <input type="text" inputMode="numeric" autoFocus value={editingMoveStepValue}
+                  <span style={{ fontSize: 9, fontWeight: 800, fontFamily: 'monospace', color: col }}>{s.axis}</span>
+                  <input type="number" autoFocus value={editingMoveStepValue}
                     onChange={e => setEditingMoveStepValue(Number(e.target.value) || 0)}
                     onKeyDown={e => { if (e.key === 'Enter') onSaveMoveStep(s.id, editingMoveStepValue); else if (e.key === 'Escape') setEditingMoveStepId(null); }}
-                    style={{ width: 46, height: 20, textAlign: 'center', fontFamily: 'monospace', fontSize: 10.5, fontWeight: 600, color: '#1c1917', background: '#fff', border: '1px solid rgba(60,50,40,0.3)', borderRadius: 4, outline: 'none' }} />
+                    style={{ width: 50, height: 20, textAlign: 'center', fontFamily: 'monospace', fontSize: 10.5, fontWeight: 600, color: '#1c1917', background: '#fff', border: '1px solid rgba(60,50,40,0.3)', borderRadius: 4, outline: 'none' }} />
                   <button onClick={() => onSaveMoveStep(s.id, editingMoveStepValue)} style={iconBtn('#5b5346')}><Check size={11} /></button>
                   <button onClick={() => setEditingMoveStepId(null)} style={iconBtn('#a8a29e')}><X size={11} /></button>
                 </div>
               ) : (
-                <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '3px 7px', borderRadius: 6, background: 'linear-gradient(180deg,rgba(255,255,255,0.75),rgba(244,241,234,0.6))', border: '1px solid rgba(60,50,40,0.10)', flexShrink: 0 }}>
-                  <span style={{ fontSize: 9, fontWeight: 800, fontFamily: 'monospace', color: axisColor[s.axis as 'X'|'Y'|'Z'] }}>{s.axis}</span>
-                  <span style={{ fontSize: 11, fontFamily: 'monospace', fontWeight: 700, color: '#1c1917' }}>{s.value}</span>
-                  <button onClick={() => { setEditingMoveStepId(s.id); setEditingMoveStepValue(s.value); }} style={iconBtn('#78716c')}><Pencil size={10} /></button>
+                <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '3px 7px', borderRadius: 6, background: 'linear-gradient(180deg,rgba(255,255,255,0.75),rgba(244,241,234,0.6))', border: '1px solid rgba(60,50,40,0.10)', flexShrink: 0 }}>
+                  <span style={{ fontSize: 10, fontWeight: 800, fontFamily: 'monospace', color: col }}>{signLabel}{s.axis}</span>
+                  <span style={{ fontSize: 11, fontFamily: 'monospace', fontWeight: 700, color: '#1c1917' }}>{absVal}</span>
+                  <button onClick={() => { setEditingMoveStepId(s.id); setEditingMoveStepValue(signedVal); }} style={iconBtn('#78716c')}><Pencil size={10} /></button>
                   <button onClick={() => onDeleteMoveStep(s.id)} style={iconBtn('#ef4444')}><Trash2 size={10} /></button>
                 </div>
-              )
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
