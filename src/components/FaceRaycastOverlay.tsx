@@ -835,7 +835,14 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
       const uSpan = uMax - uMin, vSpan = vMax - vMin;
       if (uSpan > 0 && vSpan > 0) {
         const clickU = clickWorld.dot(u), clickV = clickWorld.dot(v);
-        normalizedClickUV = [Math.max(0, Math.min(1, (clickU - uMin) / uSpan)), Math.max(0, Math.min(1, (clickV - vMin) / vSpan))];
+        // When all 4 rays hit boundary edges (panel fills the entire face, no obstacle panels
+        // initially blocking any ray), store face-center [0.5, 0.5] instead of the actual
+        // click UV. This makes fallback re-raycasting stable after sibling panels move,
+        // regardless of where the user originally clicked on the face.
+        const allHitBoundary = hitIsBoundary[0] && hitIsBoundary[1] && hitIsBoundary[2] && hitIsBoundary[3];
+        normalizedClickUV = allHitBoundary
+          ? [0.5, 0.5]
+          : [Math.max(0, Math.min(1, (clickU - uMin) / uSpan)), Math.max(0, Math.min(1, (clickV - vMin) / vSpan))];
         const hitUPos = clickU + uPosT;
         const hitUNeg = clickU - uNegT;
         const hitVPos = clickV + vPosT;
