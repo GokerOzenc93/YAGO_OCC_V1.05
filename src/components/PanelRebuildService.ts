@@ -52,12 +52,6 @@ function getOffsetReplicadShape(panel: any): any {
 export async function rebuildPanelsForParent(parentShapeId: string): Promise<void> {
   if (rebuildInFlight.has(parentShapeId)) return;
   rebuildInFlight.add(parentShapeId);
-
-  // Snapshot the VF order before any async work so we can detect reorders that
-  // happen while we are awaiting Replicad operations.
-  const startVfOrder = useAppStore.getState().virtualFaces.map(f => f.id).join(',');
-  let needsReRebuild = false;
-
   try {
     const store = useAppStore.getState();
     const parent = store.shapes.find(s => s.id === parentShapeId);
@@ -208,68 +202,15 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
 
     useAppStore.setState(state => {
       const rebuiltById = new Map<string, any>();
-      const liveParent = state.shapes.find(s => s.id === parentShapeId);
-      const parentPos = liveParent?.position as [number, number, number] | undefined;
-
       for (const s of workingShapes) {
-        if (s.type === 'panel' && s.parameters?.parentShapeId === parentShapeId) {
-          // Use the live moveSteps from the current store state, not from the async
-          // snapshot — the user may have applied additional moves while this rebuild
-          // was running, and we must not roll those back.
-          const live = state.shapes.find(x => x.id === s.id);
-          const moveSteps: any[] = live?.parameters?.moveSteps ?? s.parameters?.moveSteps ?? [];
-
-          // Recompute position geometrically: parent world position + accumulated move offsets.
-          // This is the canonical formula and cannot be invalidated by ordering changes or
-          // rebuild race conditions.
-          let position: [number, number, number];
-          if (parentPos && moveSteps.length > 0) {
-            let dx = 0, dy = 0, dz = 0;
-            for (const step of moveSteps) {
-              if (step.axis === 'X') dx += step.value ?? 0;
-              else if (step.axis === 'Y') dy += step.value ?? 0;
-              else if (step.axis === 'Z') dz += step.value ?? 0;
-            }
-            position = [parentPos[0] + dx, parentPos[1] + dy, parentPos[2] + dz];
-          } else {
-            // No moves: keep the live position so we don't overwrite unmoved-panel state.
-            position = live?.position ?? s.position;
-          }
-
-          rebuiltById.set(s.id, {
-            ...s,
-            position,
-            parameters: { ...s.parameters, moveSteps },
-          });
-        }
+        if (s.type === 'panel' && s.parameters?.parentShapeId === parentShapeId) rebuiltById.set(s.id, s);
       }
-
-      // Merge VF content (updated vertices/centers/normals) into the CURRENT store order.
-      // If the user reordered VFs while we were awaiting, state.virtualFaces already has
-      // the new order — we must not overwrite it with our stale workingVirtualFaces order.
-      const freshVfById = new Map(workingVirtualFaces.map(f => [f.id, f]));
-      const mergedVirtualFaces = state.virtualFaces.map(f => freshVfById.get(f.id) || f);
-
       return {
         shapes: state.shapes.map(s => rebuiltById.get(s.id) || s),
-        virtualFaces: mergedVirtualFaces,
+        virtualFaces: workingVirtualFaces,
       };
     });
-
-    // If the VF ordering changed while we were running (a reorder was blocked by
-    // rebuildInFlight), schedule another rebuild once the lock is released so the
-    // panel geometries reflect the new order.
-    const currentVfOrder = useAppStore.getState().virtualFaces.map(f => f.id).join(',');
-    if (currentVfOrder !== startVfOrder) {
-      needsReRebuild = true;
-    }
   } finally {
     rebuildInFlight.delete(parentShapeId);
-  }
-
-  // Trigger the re-rebuild AFTER the finally block has released the lock so the
-  // recursive call is not immediately blocked by rebuildInFlight.
-  if (needsReRebuild) {
-    rebuildPanelsForParent(parentShapeId);
   }
 }

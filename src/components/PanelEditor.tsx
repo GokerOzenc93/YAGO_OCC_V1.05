@@ -756,29 +756,21 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       if (selectedPanelRow === `vf-${vfId}`) setSelectedPanelRow(null);
     };
 
-    const reshapeAllPanelsForParent = async (parentId: string) => {
-      const { reshapePanelToParentFace } = await import('./PanelReshapeService');
-      const panels = useAppStore.getState().shapes.filter(
-        s => s.type === 'panel' && s.parameters?.parentShapeId === parentId && s.parameters?.virtualFaceId
-      );
-      for (const p of panels) {
-        await reshapePanelToParentFace(p.id);
-      }
-    };
-
     const onGroupDrop = async (draggedGroupKey: string, targetGroupKey: string) => {
       setDragIndex(null); setDropIndex(null);
       if (draggedGroupKey === targetGroupKey) return;
       const draggedGroup = groupMap.get(draggedGroupKey)!;
       const targetGroup = groupMap.get(targetGroupKey)!;
       reorderVirtualFaceGroup(sid, draggedGroup.map(v => v.id), targetGroup[0].id);
-      await reshapeAllPanelsForParent(sid);
+      const { rebuildPanelsForParent } = await import('./PanelRebuildService');
+      await rebuildPanelsForParent(sid);
     };
     const onGroupDropAtEnd = async (draggedGroupKey: string) => {
       setDragIndex(null); setDropIndex(null);
       const draggedGroup = groupMap.get(draggedGroupKey)!;
       reorderVirtualFaceGroup(sid, draggedGroup.map(v => v.id), null);
-      await reshapeAllPanelsForParent(sid);
+      const { rebuildPanelsForParent } = await import('./PanelRebuildService');
+      await rebuildPanelsForParent(sid);
     };
 
     const elements: React.ReactNode[] = [];
@@ -802,16 +794,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         return (
           <div
             key={vf.id}
-            onClick={e => {
-              stop(e);
-              setSelectedPanelRow(`vf-${vf.id}`, null, sid);
-              if (vp?.id) {
-                const st = useAppStore.getState();
-                st.setPanelMoveTargetId(vp.id);
-                st.setPanelMoveActiveAxis(null);
-                st.setActiveTool(Tool.MOVE);
-              }
-            }}
+            onClick={e => { stop(e); setSelectedPanelRow(`vf-${vf.id}`, null, sid); }}
             className={`group/row relative flex items-center gap-1.5 pl-2.5 pr-1 py-px cursor-pointer transition-colors duration-150
               ${sel ? 'bg-[#fff6ec]' : 'hover:bg-[#faf6ef]'}`}
           >
