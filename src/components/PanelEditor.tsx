@@ -756,21 +756,29 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       if (selectedPanelRow === `vf-${vfId}`) setSelectedPanelRow(null);
     };
 
+    const reshapeAllPanelsForParent = async (parentId: string) => {
+      const { reshapePanelToParentFace } = await import('./PanelReshapeService');
+      const panels = useAppStore.getState().shapes.filter(
+        s => s.type === 'panel' && s.parameters?.parentShapeId === parentId && s.parameters?.virtualFaceId
+      );
+      for (const p of panels) {
+        await reshapePanelToParentFace(p.id);
+      }
+    };
+
     const onGroupDrop = async (draggedGroupKey: string, targetGroupKey: string) => {
       setDragIndex(null); setDropIndex(null);
       if (draggedGroupKey === targetGroupKey) return;
       const draggedGroup = groupMap.get(draggedGroupKey)!;
       const targetGroup = groupMap.get(targetGroupKey)!;
       reorderVirtualFaceGroup(sid, draggedGroup.map(v => v.id), targetGroup[0].id);
-      const { rebuildPanelsForParent } = await import('./PanelRebuildService');
-      await rebuildPanelsForParent(sid);
+      await reshapeAllPanelsForParent(sid);
     };
     const onGroupDropAtEnd = async (draggedGroupKey: string) => {
       setDragIndex(null); setDropIndex(null);
       const draggedGroup = groupMap.get(draggedGroupKey)!;
       reorderVirtualFaceGroup(sid, draggedGroup.map(v => v.id), null);
-      const { rebuildPanelsForParent } = await import('./PanelRebuildService');
-      await rebuildPanelsForParent(sid);
+      await reshapeAllPanelsForParent(sid);
     };
 
     const elements: React.ReactNode[] = [];
