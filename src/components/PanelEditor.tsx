@@ -794,7 +794,16 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         return (
           <div
             key={vf.id}
-            onClick={e => { stop(e); setSelectedPanelRow(`vf-${vf.id}`, null, sid); }}
+            onClick={e => {
+              stop(e);
+              setSelectedPanelRow(`vf-${vf.id}`, null, sid);
+              if (vp?.id) {
+                const st = useAppStore.getState();
+                st.setPanelMoveTargetId(vp.id);
+                st.setPanelMoveActiveAxis(null);
+                st.setActiveTool(Tool.MOVE);
+              }
+            }}
             className={`group/row relative flex items-center gap-1.5 pl-2.5 pr-1 py-px cursor-pointer transition-colors duration-150
               ${sel ? 'bg-[#fff6ec]' : 'hover:bg-[#faf6ef]'}`}
           >
