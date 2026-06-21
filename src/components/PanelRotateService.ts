@@ -327,7 +327,8 @@ async function rebuildPanelGeometry(
     geometry.computeBoundingBox();
     geometry.computeBoundingSphere();
 
-    // Position = pivot + direction * (newLength / 2)
+    // Position: keep the second-axis and thickness offsets from pivot,
+    // only replace the longest-axis component with newLength/2
     const panelQuat = new THREE.Quaternion().setFromEuler(
       new THREE.Euler(...panelShape.rotation, 'XYZ')
     );
@@ -336,17 +337,39 @@ async function rebuildPanelGeometry(
       longestAxisIdx === 1 ? 1 : 0,
       longestAxisIdx === 2 ? 1 : 0
     );
+    const localSecondDir = new THREE.Vector3(
+      secondAxisIdx === 0 ? 1 : 0,
+      secondAxisIdx === 1 ? 1 : 0,
+      secondAxisIdx === 2 ? 1 : 0
+    );
+    const thinAxisIdx = axes[0].i;
+    const localThinDir = new THREE.Vector3(
+      thinAxisIdx === 0 ? 1 : 0,
+      thinAxisIdx === 1 ? 1 : 0,
+      thinAxisIdx === 2 ? 1 : 0
+    );
+
     const worldLongDir = localLongDir.clone().applyQuaternion(panelQuat).normalize();
+    const worldSecondDir = localSecondDir.clone().applyQuaternion(panelQuat).normalize();
+    const worldThinDir = localThinDir.clone().applyQuaternion(panelQuat).normalize();
 
     const pivotVec = new THREE.Vector3(...pivot);
     const panelPos = new THREE.Vector3(...panelShape.position);
     const toPanelFromPivot = panelPos.clone().sub(pivotVec);
-    const dotWithDir = toPanelFromPivot.dot(worldLongDir);
-    const sign = dotWithDir >= 0 ? 1 : -1;
 
-    const newCenter = pivotVec.clone().add(
-      worldLongDir.clone().multiplyScalar(sign * newLength * 0.5)
-    );
+    // Decompose offset into panel's local axes
+    const longComponent = toPanelFromPivot.dot(worldLongDir);
+    const secondComponent = toPanelFromPivot.dot(worldSecondDir);
+    const thinComponent = toPanelFromPivot.dot(worldThinDir);
+
+    // Replace only the longest-axis component with newLength/2 (same sign as original)
+    const sign = longComponent >= 0 ? 1 : -1;
+    const newLongComponent = sign * newLength * 0.5;
+
+    const newCenter = pivotVec.clone()
+      .add(worldLongDir.clone().multiplyScalar(newLongComponent))
+      .add(worldSecondDir.clone().multiplyScalar(secondComponent))
+      .add(worldThinDir.clone().multiplyScalar(thinComponent));
 
     const newPos: [number, number, number] = [newCenter.x, newCenter.y, newCenter.z];
 
