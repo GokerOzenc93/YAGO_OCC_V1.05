@@ -631,32 +631,12 @@ function reraycastVirtualFaceFallback(
   v: THREE.Vector3,
   strictFaceIndices?: number[]
 ): VirtualFace | null {
-  let clampedClickWorld: THREE.Vector3;
-
-  // Use the stored VF center (transformed to current world coords) as the ray origin.
-  // The VF center represents where the panel actually sits, giving stable re-raycasting
-  // regardless of where on the face the user originally clicked.
-  // Only fall back to the stored click point if the center is unavailable.
   const groupBboxWorld = new THREE.Box3().setFromPoints(groupVerticesWorld);
-  const vfCenterWorld = new THREE.Vector3(vf.center[0], vf.center[1], vf.center[2])
-    .applyMatrix4(localToWorld)
-    .clamp(groupBboxWorld.min, groupBboxWorld.max);
 
   const groupCenterWorld = new THREE.Vector3();
   groupVerticesWorld.forEach(vw => groupCenterWorld.add(vw));
   groupCenterWorld.divideScalar(groupVerticesWorld.length);
-
-  // Project the VF center onto the face plane (remove normal component, add face center's normal component)
-  const vfCenterU = vfCenterWorld.dot(u);
-  const vfCenterV = vfCenterWorld.dot(v);
   const faceNComp = groupCenterWorld.dot(worldNormal);
-  clampedClickWorld = new THREE.Vector3()
-    .addScaledVector(u, vfCenterU)
-    .addScaledVector(v, vfCenterV)
-    .addScaledVector(worldNormal, faceNComp);
-
-  const planeOrigin = clampedClickWorld.clone();
-  const startWorld = planeOrigin.clone().addScaledVector(worldNormal, 0.5);
 
   const faceIndicesForBoundary = strictFaceIndices && strictFaceIndices.length > 0
     ? strictFaceIndices : matchedGroup.faceIndices;
@@ -666,32 +646,105 @@ function reraycastVirtualFaceFallback(
   const panelsExcludingSelf = childPanels.filter(
     p => p.parameters?.virtualFaceId !== vf.id
   );
-  const panelObstacleEdges = collectPanelObstacleEdgesWorld(
-    panelsExcludingSelf, worldNormal, planeOrigin, 20
-  );
-  const subObstacleEdges = collectSubtractionObstacleEdgesWorld(
-    subtractions, localToWorld, worldNormal, planeOrigin, 20
-  );
-  const vfObstacleEdges = collectVirtualFaceObstacleEdgesWorld(
-    shapeFaces, vf.id, localToWorld, worldNormal, planeOrigin, 20
-  );
-  const obstacleEdges = [...panelObstacleEdges, ...subObstacleEdges, ...vfObstacleEdges];
 
-  const maxDist = 5000;
-  const directions = [u, u.clone().negate(), v, v.clone().negate()];
+  // Compute the old VF extent in u/v coordinates for crossover detection
+  const vfVerticesWorld = vf.vertices.map(([x, y, z]) =>
+    new THREE.Vector3(x, y, z).applyMatrix4(localToWorld)
+  );
+  const vfVertsU = vfVerticesWorld.map(vw => vw.dot(u));
+  const vfVertsV = vfVerticesWorld.map(vw => vw.dot(v));
+  const oldUMin = Math.min(...vfVertsU), oldUMax = Math.max(...vfVertsU);
+  const oldVMin = Math.min(...vfVertsV), oldVMax = Math.max(...vfVertsV);
+  const oldUCenter = (oldUMin + oldUMax) / 2;
+  const oldVCenter = (oldVMin + oldVMax) / 2;
 
-  const hitPointsWorld: THREE.Vector3[] = [];
-  for (const dir of directions) {
-    const hit = castRayOnFaceWorld(startWorld, dir, boundaryEdgesWorld, obstacleEdges, u, v, planeOrigin, maxDist);
-    hitPointsWorld.push(hit);
+  // Use old VF center as initial ray origin
+  let rayOriginU = oldUCenter;
+  let rayOriginV = oldVCenter;
+
+  // Helper: build a world point on the face plane from u/v coords
+  const buildOrigin = (uCoord: number, vCoord: number) =>
+    new THREE.Vector3()
+      .addScaledVector(u, uCoord)
+      .addScaledVector(v, vCoord)
+      .addScaledVector(worldNormal, faceNComp);
+
+  // Helper: cast 4 rays from a given u/v origin and return distances
+  const castFromOrigin = (originU: number, originV: number) => {
+    const origin = buildOrigin(originU, originV);
+    const start = origin.clone().addScaledVector(worldNormal, 0.5);
+    const panelObs = collectPanelObstacleEdgesWorld(panelsExcludingSelf, worldNormal, origin, 20);
+    const subObs = collectSubtractionObstacleEdgesWorld(subtractions, localToWorld, worldNormal, origin, 20);
+    const vfObs = collectVirtualFaceObstacleEdgesWorld(shapeFaces, vf.id, localToWorld, worldNormal, origin, 20);
+    const obstacles = [...panelObs, ...subObs, ...vfObs];
+    const dirs = [u, u.clone().negate(), v, v.clone().negate()];
+    const dists: number[] = [];
+    for (const dir of dirs) {
+      const hit = castRayOnFaceWorld(start, dir, boundaryEdgesWorld, obstacles, u, v, origin, 5000);
+      dists.push(hit.distanceTo(start));
+    }
+    return dists; // [uPos, uNeg, vPos, vNeg]
+  };
+
+  // First cast from old VF center
+  let [uPosT, uNegT, vPosT, vNegT] = castFromOrigin(rayOriginU, rayOriginV);
+
+  // Detect obstacle crossover: if an obstacle moved past the ray origin, the resulting
+  // VF will be on the WRONG side. Detect by checking if the new VF extent overlaps
+  // poorly with the old VF extent. If a direction now gives a much larger distance
+  // than the old VF's extent in that direction, the origin likely crossed an obstacle.
+  const nhd = vf.raycastRecipe?.normalizedHitDistances;
+  const oldUSpan = oldUMax - oldUMin;
+  const oldVSpan = oldVMax - oldVMin;
+  let relocated = false;
+
+  if (nhd && (oldUSpan > 1 || oldVSpan > 1)) {
+    // Check each direction: if it was previously bounded by an obstacle (not boundary)
+    // and now gives a hit distance much larger than the original, the obstacle crossed over.
+    const CROSS_THRESHOLD = 1.8; // new distance > 1.8x old span = likely crossover
+
+    let newU = rayOriginU;
+    let newV = rayOriginV;
+
+    // v+ was obstacle, now distance is much larger than old span
+    if (!nhd.vPosIsBoundary && vPosT > oldVSpan * CROSS_THRESHOLD) {
+      // Obstacle that was above (v+) has moved below (past) the center.
+      // Panel should stay on the lower side. Move origin toward v- boundary.
+      newV = oldVMin + Math.min(oldVSpan * 0.1, 10);
+      relocated = true;
+    }
+    // v- was obstacle, now distance is much larger than old span
+    else if (!nhd.vNegIsBoundary && vNegT > oldVSpan * CROSS_THRESHOLD) {
+      // Obstacle that was below (v-) has moved above (past) the center.
+      // Panel should stay on the upper side. Move origin toward v+ boundary.
+      newV = oldVMax - Math.min(oldVSpan * 0.1, 10);
+      relocated = true;
+    }
+
+    // u+ was obstacle, now distance is much larger than old span
+    if (!nhd.uPosIsBoundary && uPosT > oldUSpan * CROSS_THRESHOLD) {
+      newU = oldUMin + Math.min(oldUSpan * 0.1, 10);
+      relocated = true;
+    }
+    // u- was obstacle, now distance is much larger than old span
+    else if (!nhd.uNegIsBoundary && uNegT > oldUSpan * CROSS_THRESHOLD) {
+      newU = oldUMax - Math.min(oldUSpan * 0.1, 10);
+      relocated = true;
+    }
+
+    if (relocated) {
+      // Clamp to face bbox
+      const extent = computeFaceGroupExtent(groupVerticesWorld, u, v);
+      newU = Math.max(extent.uMin + 1, Math.min(extent.uMax - 1, newU));
+      newV = Math.max(extent.vMin + 1, Math.min(extent.vMax - 1, newV));
+      rayOriginU = newU;
+      rayOriginV = newV;
+      [uPosT, uNegT, vPosT, vNegT] = castFromOrigin(rayOriginU, rayOriginV);
+    }
   }
 
-  if (hitPointsWorld.length < 4) return null;
-
-  const uPosT = hitPointsWorld[0].distanceTo(startWorld);
-  const uNegT = hitPointsWorld[1].distanceTo(startWorld);
-  const vPosT = hitPointsWorld[2].distanceTo(startWorld);
-  const vNegT = hitPointsWorld[3].distanceTo(startWorld);
+  const planeOrigin = buildOrigin(rayOriginU, rayOriginV);
+  const startWorld = planeOrigin.clone().addScaledVector(worldNormal, 0.5);
 
   let rect2D: Point2D[] = ensureCCW([
     { x: uPosT, y: vPosT },
