@@ -341,7 +341,9 @@ async function rebuildPanelGeometry(
   pivot: [number, number, number],
   directionSign: number,
   longestAxisIdx: number,
-  updateShape: (id: string, updates: Partial<Shape>) => void
+  updateShape: (id: string, updates: Partial<Shape>) => void,
+  stepBasePosition?: [number, number, number],
+  stepBaseRotation?: [number, number, number]
 ): Promise<void> {
   if (!panelShape.geometry) return;
 
@@ -359,8 +361,6 @@ async function rebuildPanelGeometry(
 
   const thickness = axes[0].v;
   const thinAxisIdx = axes[0].i;
-  // Use the longestAxisIdx passed from computeAutoExtendLength to guarantee
-  // both functions operate on the SAME axis (critical for square panels).
   const secondAxisIdx = axes.find(a => a.i !== longestAxisIdx && a.i !== thinAxisIdx)!.i;
   const secondLen = panelSize.getComponent(secondAxisIdx);
 
@@ -373,37 +373,36 @@ async function rebuildPanelGeometry(
     const { createReplicadBox, convertReplicadToThreeGeometry } = await import('./ReplicadService');
     const rp = await createReplicadBox({ width: dims[0], height: dims[1], depth: dims[2] });
     const geometry = convertReplicadToThreeGeometry(rp);
-    // NOTE: Do NOT center the geometry. replicad produces a box from (0,0,0) to (W,H,D).
-    // Keeping it uncentered ensures face extrude (which also creates uncentered base shapes)
-    // can match face centers correctly. Centering here causes a coord-system mismatch.
 
     const panelQuat = new THREE.Quaternion().setFromEuler(
       new THREE.Euler(...panelShape.rotation, 'XYZ')
     );
     const pivotVec = new THREE.Vector3(...pivot);
 
-    // Transform world pivot into the panel's current local coordinate system
-    const panelWorldMatrix = new THREE.Matrix4().compose(
-      new THREE.Vector3(...panelShape.position),
-      panelQuat,
+    // Compute the pivot's relative position on the secondary and thin axes.
+    // When editing after a rebuild, panelShape.position is the rotated ORIGINAL center
+    // but panelShape.geometry is the REBUILT geometry (different longest-axis dimension).
+    // Using stepBasePosition/stepBaseRotation (the panel state before any rotation was applied)
+    // gives the correct local pivot because secondary/thin dims never change during rebuild.
+    const refPos = stepBasePosition ?? panelShape.position;
+    const refRot = stepBaseRotation ?? panelShape.rotation;
+    const refQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(...refRot, 'XYZ'));
+    const refMatrix = new THREE.Matrix4().compose(
+      new THREE.Vector3(...refPos),
+      refQuat,
       new THREE.Vector3(1, 1, 1)
     );
-    const invMatrix = panelWorldMatrix.clone().invert();
-    const localPivot = pivotVec.clone().applyMatrix4(invMatrix);
+    const localPivotRef = pivotVec.clone().applyMatrix4(refMatrix.clone().invert());
 
-    // Get pivot position relative to the original geometry's bbox center
-    const origCenter = new THREE.Vector3();
-    panelLocalBbox.getCenter(origCenter);
-    const relPivot = localPivot.clone().sub(origCenter);
+    // relPivot on secondary/thin uses the reference-based local pivot.
+    // Secondary/thin bbox centers are the same regardless of rebuild (dims unchanged).
+    const relPivotSecond = localPivotRef.getComponent(secondAxisIdx) - secondLen * 0.5;
+    const relPivotThin = localPivotRef.getComponent(thinAxisIdx) - thickness * 0.5;
 
-    // For the new UNCENTERED geometry (bbox from 0 to dims):
-    // - Along longest axis: pivot at 0 if extension goes in +dir (directionSign=1),
-    //   pivot at newLength if extension goes in -dir (directionSign=-1)
-    // - Along second/thin axis: dims/2 + same relative offset as in original bbox
     const newLocalPivot = new THREE.Vector3();
     newLocalPivot.setComponent(longestAxisIdx, directionSign === 1 ? 0 : newLength);
-    newLocalPivot.setComponent(secondAxisIdx, secondLen * 0.5 + relPivot.getComponent(secondAxisIdx));
-    newLocalPivot.setComponent(thinAxisIdx, thickness * 0.5 + relPivot.getComponent(thinAxisIdx));
+    newLocalPivot.setComponent(secondAxisIdx, secondLen * 0.5 + relPivotSecond);
+    newLocalPivot.setComponent(thinAxisIdx, thickness * 0.5 + relPivotThin);
 
     // position = worldPivot - rotation * newLocalPivot
     const rotatedLocalPivot = newLocalPivot.clone().applyQuaternion(panelQuat);
@@ -425,7 +424,6 @@ async function rebuildPanelGeometry(
         autoExtendedLength: newLength,
         autoExtendDirSign: directionSign,
         autoExtendLongestAxisIdx: longestAxisIdx,
-        // Update base shape so subsequent face extrudes use the correct geometry
         baseReplicadShape: rp,
       },
     });
@@ -527,7 +525,7 @@ export async function updateRotateStep(
       rotation: result.rotation,
       parameters: { ...panelShape.parameters, rotateSteps: newSteps },
     };
-    await rebuildPanelGeometry(updatedPanel, extendResult.length, pivotForExtend, extendResult.directionSign, extendResult.longestAxisIdx, updateShape);
+    await rebuildPanelGeometry(updatedPanel, extendResult.length, pivotForExtend, extendResult.directionSign, extendResult.longestAxisIdx, updateShape, stepBase, stepBaseRot);
   } else if (panelShape.parameters?.autoExtendedLength != null) {
     // Panel was previously auto-extended but extension is now blocked (extendResult null
     // or length ≤ 1 due to a nearby sibling touching the pivot). Rebuild geometry at the
@@ -544,7 +542,7 @@ export async function updateRotateStep(
         rotation: result.rotation,
         parameters: { ...panelShape.parameters, rotateSteps: newSteps },
       };
-      await rebuildPanelGeometry(updatedPanel, fallbackLength, pivotForExtend, dirSign, longAxisIdx, updateShape);
+      await rebuildPanelGeometry(updatedPanel, fallbackLength, pivotForExtend, dirSign, longAxisIdx, updateShape, stepBase, stepBaseRot);
     } else {
       updateShape(panelShape.id, {
         position: result.position,
