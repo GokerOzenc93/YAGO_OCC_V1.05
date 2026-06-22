@@ -227,10 +227,11 @@ function computeAutoExtendLength(
   const panelQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(...newRotation, 'XYZ'));
   const pivotVec = new THREE.Vector3(...pivot);
 
-  const bboxCenter = new THREE.Vector3();
-  panelLocalBbox.getCenter(bboxCenter);
-  const actualWorldCenter = bboxCenter.clone().applyQuaternion(panelQuat)
-    .add(new THREE.Vector3(...newPosition));
+  // Use the parent's center to determine extension direction. The parent center is always
+  // inside the cube, so extending from pivot toward it guarantees the panel goes inward.
+  // This is much more reliable than using the panel centroid (which can end up on the
+  // wrong side of the pivot after rotation, causing the panel to extend outward).
+  const parentCenter = getParentCenter(panelShape, shapes);
 
   let bestDist = -1;
   let bestDirSign = 1;
@@ -250,12 +251,16 @@ function computeAutoExtendLength(
     const v1 = d1 !== null && d1 > 1;
     const v2 = d2 !== null && d2 > 1;
 
-    // When both are valid for this axis, use centroid direction to pick sign
+    // When both directions hit the cube, use parent center to pick the inward direction
     let chosenDist = -1;
     let chosenSign = 1;
     if (v1 && v2) {
-      const dot = actualWorldCenter.clone().sub(pivotVec).dot(worldDir);
-      chosenSign = dot >= 0 ? 1 : -1;
+      if (parentCenter) {
+        const dot = parentCenter.clone().sub(pivotVec).dot(worldDir);
+        chosenSign = dot >= 0 ? 1 : -1;
+      } else {
+        chosenSign = d1! >= d2! ? 1 : -1;
+      }
       chosenDist = chosenSign === 1 ? d1! : d2!;
     } else if (v1) {
       chosenSign = 1;
