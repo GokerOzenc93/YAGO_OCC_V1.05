@@ -316,6 +316,12 @@ function computeAutoExtendLength(
 
     const sibWorldBbox = new THREE.Box3().setFromPoints(sibCorners);
 
+    // Skip siblings whose bbox already contains the pivot (they are adjacent to
+    // the pivot corner and are not blocking the extension — they are simply
+    // touching/sharing that corner). Expand slightly to handle floating-point edge cases.
+    const expandedSibBbox = sibWorldBbox.clone().expandByScalar(0.5);
+    if (expandedSibBbox.containsPoint(pivotVec)) continue;
+
     const sibHit = new THREE.Vector3();
     const sibRay = new THREE.Ray(pivotVec.clone(), bestWorldDir.clone());
     if (sibRay.intersectBox(sibWorldBbox, sibHit)) {
@@ -519,8 +525,32 @@ export async function updateRotateStep(
       parameters: { ...panelShape.parameters, rotateSteps: newSteps },
     };
     await rebuildPanelGeometry(updatedPanel, extendResult.length, pivotForExtend, extendResult.directionSign, extendResult.longestAxisIdx, updateShape);
+  } else if (panelShape.parameters?.autoExtendedLength != null) {
+    // Panel was previously auto-extended but extension is now blocked (extendResult null
+    // or length ≤ 1 due to a nearby sibling touching the pivot). Rebuild geometry at the
+    // new rotation angle using the previously stored extended length so the panel stays
+    // correctly positioned relative to the pivot rather than jumping to result.position
+    // (which is the pre-rebuild origin and would place the panel completely outside the cube).
+    const fallbackLength = panelShape.parameters.autoExtendedLength as number;
+    if (fallbackLength > 1) {
+      const dirSign = extendResult?.directionSign ?? 1;
+      const longAxisIdx = extendResult?.longestAxisIdx ?? 0;
+      const updatedPanel: Shape = {
+        ...panelShape,
+        position: result.position,
+        rotation: result.rotation,
+        parameters: { ...panelShape.parameters, rotateSteps: newSteps },
+      };
+      await rebuildPanelGeometry(updatedPanel, fallbackLength, pivotForExtend, dirSign, longAxisIdx, updateShape);
+    } else {
+      updateShape(panelShape.id, {
+        position: result.position,
+        rotation: result.rotation,
+        parameters: { ...panelShape.parameters, rotateSteps: newSteps },
+      });
+    }
   } else {
-    // No auto-extend: just update position/rotation with existing geometry.
+    // No auto-extend and no prior extension: just update position/rotation with existing geometry.
     updateShape(panelShape.id, {
       position: result.position,
       rotation: result.rotation,
