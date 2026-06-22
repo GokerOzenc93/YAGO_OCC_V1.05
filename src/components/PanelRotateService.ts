@@ -362,36 +362,16 @@ async function rebuildPanelGeometry(
     const { createReplicadBox, convertReplicadToThreeGeometry } = await import('./ReplicadService');
     const rp = await createReplicadBox({ width: dims[0], height: dims[1], depth: dims[2] });
     const geometry = convertReplicadToThreeGeometry(rp);
-
-    // Center the geometry at local origin
-    const newGeoAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
-    const newGeoBbox = new THREE.Box3().setFromBufferAttribute(newGeoAttr);
-    const geoCenter = new THREE.Vector3();
-    newGeoBbox.getCenter(geoCenter);
-    const positions = geometry.getAttribute('position') as THREE.BufferAttribute;
-    for (let i = 0; i < positions.count; i++) {
-      positions.setXYZ(
-        i,
-        positions.getX(i) - geoCenter.x,
-        positions.getY(i) - geoCenter.y,
-        positions.getZ(i) - geoCenter.z
-      );
-    }
-    positions.needsUpdate = true;
-    geometry.computeBoundingBox();
-    geometry.computeBoundingSphere();
+    // NOTE: Do NOT center the geometry. replicad produces a box from (0,0,0) to (W,H,D).
+    // Keeping it uncentered ensures face extrude (which also creates uncentered base shapes)
+    // can match face centers correctly. Centering here causes a coord-system mismatch.
 
     const panelQuat = new THREE.Quaternion().setFromEuler(
       new THREE.Euler(...panelShape.rotation, 'XYZ')
     );
     const pivotVec = new THREE.Vector3(...pivot);
 
-    // The pivot is at one end of the panel along the longest axis.
-    // directionSign tells us: the panel extends in directionSign * localLongDir from the pivot.
-    // For centered geometry: pivot is at -directionSign * newLength/2 along longest axis.
-    // We also need to preserve the second-axis and thin-axis offsets from pivot.
-
-    // Transform world pivot into the panel's local coordinate system
+    // Transform world pivot into the panel's current local coordinate system
     const panelWorldMatrix = new THREE.Matrix4().compose(
       new THREE.Vector3(...panelShape.position),
       panelQuat,
@@ -405,13 +385,14 @@ async function rebuildPanelGeometry(
     panelLocalBbox.getCenter(origCenter);
     const relPivot = localPivot.clone().sub(origCenter);
 
-    // For the new centered geometry:
-    // - Along longest axis: pivot is at the OPPOSITE end from extension direction
-    //   Extension goes in +directionSign * localLongDir, so pivot is at -directionSign * newLength/2
+    // For the new UNCENTERED geometry (bbox from 0 to dims):
+    // - Along longest axis: pivot at 0 if extension goes in +dir (directionSign=1),
+    //   pivot at newLength if extension goes in -dir (directionSign=-1)
+    // - Along second/thin axis: dims/2 + same relative offset as in original bbox
     const newLocalPivot = new THREE.Vector3();
-    newLocalPivot.setComponent(longestAxisIdx, -directionSign * newLength * 0.5);
-    newLocalPivot.setComponent(secondAxisIdx, relPivot.getComponent(secondAxisIdx));
-    newLocalPivot.setComponent(thinAxisIdx, relPivot.getComponent(thinAxisIdx));
+    newLocalPivot.setComponent(longestAxisIdx, directionSign === 1 ? 0 : newLength);
+    newLocalPivot.setComponent(secondAxisIdx, secondLen * 0.5 + relPivot.getComponent(secondAxisIdx));
+    newLocalPivot.setComponent(thinAxisIdx, thickness * 0.5 + relPivot.getComponent(thinAxisIdx));
 
     // position = worldPivot - rotation * newLocalPivot
     const rotatedLocalPivot = newLocalPivot.clone().applyQuaternion(panelQuat);
@@ -430,6 +411,8 @@ async function rebuildPanelGeometry(
         width: secondLen,
         height: newLength,
         autoExtendedLength: newLength,
+        // Update base shape so subsequent face extrudes use the correct geometry
+        baseReplicadShape: rp,
       },
     });
   } catch (err) {
