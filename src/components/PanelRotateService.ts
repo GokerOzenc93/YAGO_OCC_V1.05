@@ -7,6 +7,11 @@ export interface RotateStep {
   angleDeg: number;
   axis: [number, number, number];
   timestamp: number;
+  // The panel's actual position/rotation immediately before this step was applied.
+  // Stored so each step can be replayed in isolation from the correct geometric base.
+  // Older steps without these fields fall back to the panel-level baseRotatePosition.
+  stepBasePosition?: [number, number, number];
+  stepBaseRotation?: [number, number, number];
 }
 
 export interface PanelRotateParams {
@@ -425,11 +430,12 @@ export async function executePanelRotate(params: PanelRotateParams): Promise<boo
 
   if (Math.abs(angleDeg) < 0.001) return false;
 
-  // Store the angle exactly as entered — no sign flip. inwardSign was previously
-  // applied here, but it caused updateRotateStep to store edits with a different
-  // sign convention, making every edit accumulate instead of replace the rotation.
-  const basePosition = computeBasePosition(panelShape);
-  const baseRotation = computeBaseRotation(panelShape);
+  // Use the panel's current actual position as the base for the new step.
+  // If a prior rotation already rebuilt the geometry (moving the origin from P0 to P1),
+  // replaying from P0 would produce the wrong position for step2. Starting from the
+  // actual current state (P1) is always correct.
+  const currentPosition = [...panelShape.position] as [number, number, number];
+  const currentRotation = [...panelShape.rotation] as [number, number, number];
   const existingSteps: RotateStep[] = panelShape.parameters?.rotateSteps || [];
 
   const newStep: RotateStep = {
@@ -438,18 +444,25 @@ export async function executePanelRotate(params: PanelRotateParams): Promise<boo
     angleDeg,
     axis,
     timestamp: Date.now(),
+    stepBasePosition: currentPosition,
+    stepBaseRotation: currentRotation,
   };
 
   const newSteps = [...existingSteps, newStep];
-  const result = applyRotateSteps(basePosition, baseRotation, newSteps);
+  // Apply only the new step from the current actual position (not all steps from P0).
+  const result = applyRotateSteps(currentPosition, currentRotation, [newStep]);
+
+  // Preserve the original P0/R0 base for backward-compat (used by fallback in updateRotateStep).
+  const legacyBasePosition = computeBasePosition(panelShape);
+  const legacyBaseRotation = computeBaseRotation(panelShape);
 
   updateShape(panelShape.id, {
     position: result.position,
     rotation: result.rotation,
     parameters: {
       ...panelShape.parameters,
-      baseRotatePosition: basePosition,
-      baseRotateRotation: baseRotation,
+      baseRotatePosition: legacyBasePosition,
+      baseRotateRotation: legacyBaseRotation,
       rotateSteps: newSteps,
     },
   });
@@ -462,8 +475,8 @@ export async function executePanelRotate(params: PanelRotateParams): Promise<boo
       rotation: result.rotation,
       parameters: {
         ...panelShape.parameters,
-        baseRotatePosition: basePosition,
-        baseRotateRotation: baseRotation,
+        baseRotatePosition: legacyBasePosition,
+        baseRotateRotation: legacyBaseRotation,
         rotateSteps: newSteps,
       },
     };
@@ -483,12 +496,17 @@ export async function updateRotateStep(
 ): Promise<boolean> {
   const steps: RotateStep[] = panelShape.parameters?.rotateSteps || [];
   const newSteps = steps.map(s => s.id === stepId ? { ...s, angleDeg: newAngleDeg } : s);
-  const basePosition = computeBasePosition(panelShape);
-  const baseRotation = computeBaseRotation(panelShape);
-  const result = applyRotateSteps(basePosition, baseRotation, newSteps);
+  const updatedStep = newSteps.find(s => s.id === stepId)!;
 
-  const updatedStep = newSteps.find(s => s.id === stepId);
-  const pivotForExtend: [number, number, number] = updatedStep?.pivot ?? newSteps[newSteps.length - 1]?.pivot ?? [0, 0, 0];
+  // Replay only the single edited step from its own stored base.
+  // This is critical for panels that have been auto-extended: replaying all steps
+  // from the original P0 would produce the wrong position because prior geometry
+  // rebuilds moved the panel's origin (P0 → P1 after step1's rebuild, etc.).
+  const stepBase = (updatedStep.stepBasePosition ?? computeBasePosition(panelShape)) as [number, number, number];
+  const stepBaseRot = (updatedStep.stepBaseRotation ?? computeBaseRotation(panelShape)) as [number, number, number];
+  const result = applyRotateSteps(stepBase, stepBaseRot, [updatedStep]);
+
+  const pivotForExtend: [number, number, number] = updatedStep.pivot;
   const extendResult = computeAutoExtendLength(panelShape, result.position, result.rotation, pivotForExtend, shapes);
 
   if (extendResult !== null && extendResult.length > 1) {
@@ -524,14 +542,18 @@ export async function deleteRotateStep(
   updateShape: (id: string, updates: Partial<Shape>) => void
 ): Promise<boolean> {
   const steps: RotateStep[] = panelShape.parameters?.rotateSteps || [];
-  const newSteps = steps.filter(s => s.id !== stepId);
-  const basePosition = computeBasePosition(panelShape);
-  const baseRotation = computeBaseRotation(panelShape);
-  const result = applyRotateSteps(basePosition, baseRotation, newSteps);
+  const deletedStep = steps.find(s => s.id === stepId);
+  // Remove the deleted step and all subsequent steps (they were derived from it).
+  const deletedIdx = steps.findIndex(s => s.id === stepId);
+  const newSteps = deletedIdx >= 0 ? steps.slice(0, deletedIdx) : steps.filter(s => s.id !== stepId);
+
+  // Restore to the state that existed immediately before the deleted step was applied.
+  const restorePos = (deletedStep?.stepBasePosition ?? computeBasePosition(panelShape)) as [number, number, number];
+  const restoreRot = (deletedStep?.stepBaseRotation ?? computeBaseRotation(panelShape)) as [number, number, number];
 
   updateShape(panelShape.id, {
-    position: result.position,
-    rotation: result.rotation,
+    position: restorePos,
+    rotation: restoreRot,
     parameters: {
       ...panelShape.parameters,
       rotateSteps: newSteps,
