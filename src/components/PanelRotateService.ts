@@ -425,9 +425,9 @@ export async function executePanelRotate(params: PanelRotateParams): Promise<boo
 
   if (Math.abs(angleDeg) < 0.001) return false;
 
-  const inwardSign = computeInwardSign(panelShape, pivot, axis, shapes);
-  const effectiveAngle = angleDeg * inwardSign;
-
+  // Store the angle exactly as entered — no sign flip. inwardSign was previously
+  // applied here, but it caused updateRotateStep to store edits with a different
+  // sign convention, making every edit accumulate instead of replace the rotation.
   const basePosition = computeBasePosition(panelShape);
   const baseRotation = computeBaseRotation(panelShape);
   const existingSteps: RotateStep[] = panelShape.parameters?.rotateSteps || [];
@@ -435,7 +435,7 @@ export async function executePanelRotate(params: PanelRotateParams): Promise<boo
   const newStep: RotateStep = {
     id: `rot-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
     pivot,
-    angleDeg: effectiveAngle,
+    angleDeg,
     axis,
     timestamp: Date.now(),
   };
@@ -487,19 +487,13 @@ export async function updateRotateStep(
   const baseRotation = computeBaseRotation(panelShape);
   const result = applyRotateSteps(basePosition, baseRotation, newSteps);
 
-  updateShape(panelShape.id, {
-    position: result.position,
-    rotation: result.rotation,
-    parameters: {
-      ...panelShape.parameters,
-      rotateSteps: newSteps,
-    },
-  });
-
   const updatedStep = newSteps.find(s => s.id === stepId);
   const pivotForExtend: [number, number, number] = updatedStep?.pivot ?? newSteps[newSteps.length - 1]?.pivot ?? [0, 0, 0];
   const extendResult = computeAutoExtendLength(panelShape, result.position, result.rotation, pivotForExtend, shapes);
+
   if (extendResult !== null && extendResult.length > 1) {
+    // Rebuild geometry first — this also sets the correct position in one shot,
+    // avoiding a visual jump from an intermediate updateShape with stale geometry.
     const updatedPanel: Shape = {
       ...panelShape,
       position: result.position,
@@ -507,6 +501,16 @@ export async function updateRotateStep(
       parameters: { ...panelShape.parameters, rotateSteps: newSteps },
     };
     await rebuildPanelGeometry(updatedPanel, extendResult.length, pivotForExtend, extendResult.directionSign, extendResult.longestAxisIdx, updateShape);
+  } else {
+    // No auto-extend: just update position/rotation with existing geometry.
+    updateShape(panelShape.id, {
+      position: result.position,
+      rotation: result.rotation,
+      parameters: {
+        ...panelShape.parameters,
+        rotateSteps: newSteps,
+      },
+    });
   }
 
   await rebuildSiblingsAfterRotate(panelShape, shapes);
