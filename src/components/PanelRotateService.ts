@@ -417,11 +417,14 @@ async function rebuildPanelGeometry(
       geometry,
       replicadShape: rp,
       position: newPos,
+      rotation: panelShape.rotation,
       parameters: {
         ...panelShape.parameters,
         width: secondLen,
         height: newLength,
         autoExtendedLength: newLength,
+        autoExtendDirSign: directionSign,
+        autoExtendLongestAxisIdx: longestAxisIdx,
         // Update base shape so subsequent face extrudes use the correct geometry
         baseReplicadShape: rp,
       },
@@ -533,8 +536,8 @@ export async function updateRotateStep(
     // (which is the pre-rebuild origin and would place the panel completely outside the cube).
     const fallbackLength = panelShape.parameters.autoExtendedLength as number;
     if (fallbackLength > 1) {
-      const dirSign = extendResult?.directionSign ?? 1;
-      const longAxisIdx = extendResult?.longestAxisIdx ?? 0;
+      const dirSign = extendResult?.directionSign ?? (panelShape.parameters?.autoExtendDirSign as number ?? 1);
+      const longAxisIdx = extendResult?.longestAxisIdx ?? (panelShape.parameters?.autoExtendLongestAxisIdx as number ?? 0);
       const updatedPanel: Shape = {
         ...panelShape,
         position: result.position,
