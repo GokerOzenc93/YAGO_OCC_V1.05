@@ -1,176 +1,12 @@
 import { useState, useMemo } from 'react';
 import * as THREE from 'three';
+import { Html } from '@react-three/drei';
 import { useAppStore } from '../store';
 import type { Shape } from '../store';
 
 const RENDER_ORDER = 999;
 
-interface PivotPointProps {
-  position: [number, number, number];
-  onSelect: (pos: [number, number, number]) => void;
-  isSelected: boolean;
-}
-
-function PivotPoint({ position, onSelect, isSelected }: PivotPointProps) {
-  const [hovered, setHovered] = useState(false);
-  const visualSize = isSelected ? 4.5 : hovered ? 4 : 2.8;
-  const hitSize = 10;
-  const color = isSelected ? '#ea580c' : hovered ? '#f97316' : '#57534e';
-
-  return (
-    <group position={position}>
-      <mesh
-        renderOrder={RENDER_ORDER + 1}
-        onPointerOver={e => { e.stopPropagation(); setHovered(true); document.body.style.cursor = 'pointer'; }}
-        onPointerOut={e => { e.stopPropagation(); setHovered(false); document.body.style.cursor = 'default'; }}
-        onClick={e => { e.stopPropagation(); onSelect(position); }}
-      >
-        <sphereGeometry args={[hitSize, 8, 8]} />
-        <meshBasicMaterial visible={false} depthTest={false} />
-      </mesh>
-
-      {(hovered || isSelected) && (
-        <mesh renderOrder={RENDER_ORDER}>
-          <ringGeometry args={[visualSize * 1.8, visualSize * 2.5, 24]} />
-          <meshBasicMaterial
-            color={isSelected ? '#ea580c' : '#f97316'}
-            transparent
-            opacity={isSelected ? 0.25 : 0.15}
-            depthTest={false}
-            side={THREE.DoubleSide}
-          />
-        </mesh>
-      )}
-
-      <mesh renderOrder={RENDER_ORDER + 1}>
-        <sphereGeometry args={[visualSize, 16, 16]} />
-        <meshStandardMaterial
-          color={color}
-          emissive={new THREE.Color(color)}
-          emissiveIntensity={isSelected ? 1.0 : hovered ? 0.7 : 0.3}
-          transparent
-          opacity={1}
-          depthTest={false}
-          roughness={0.15}
-          metalness={0.5}
-        />
-      </mesh>
-    </group>
-  );
-}
-
-function RotationArc({ pivot, axis, radius }: { pivot: [number, number, number]; axis: 'x' | 'y' | 'z'; radius: number }) {
-  const arcGeometry = useMemo(() => {
-    const segments = 48;
-    const angle = Math.PI * 1.5;
-    const points: THREE.Vector3[] = [];
-
-    for (let i = 0; i <= segments; i++) {
-      const t = (i / segments) * angle;
-      let x = 0, y = 0, z = 0;
-      if (axis === 'z') {
-        x = Math.cos(t) * radius;
-        y = Math.sin(t) * radius;
-      } else if (axis === 'y') {
-        x = Math.cos(t) * radius;
-        z = Math.sin(t) * radius;
-      } else {
-        y = Math.cos(t) * radius;
-        z = Math.sin(t) * radius;
-      }
-      points.push(new THREE.Vector3(x, y, z));
-    }
-
-    const curve = new THREE.CatmullRomCurve3(points, false);
-    const tubeGeo = new THREE.TubeGeometry(curve, segments, radius * 0.035, 8, false);
-    return tubeGeo;
-  }, [axis, radius]);
-
-  const arrowGeometry = useMemo(() => {
-    const angle = Math.PI * 1.5;
-    const coneH = radius * 0.2;
-    const coneR = radius * 0.08;
-    const geo = new THREE.ConeGeometry(coneR, coneH, 12);
-
-    let tipX = 0, tipY = 0, tipZ = 0;
-    let tangentX = 0, tangentY = 0, tangentZ = 0;
-
-    if (axis === 'z') {
-      tipX = Math.cos(angle) * radius;
-      tipY = Math.sin(angle) * radius;
-      tangentX = -Math.sin(angle);
-      tangentY = Math.cos(angle);
-    } else if (axis === 'y') {
-      tipX = Math.cos(angle) * radius;
-      tipZ = Math.sin(angle) * radius;
-      tangentX = -Math.sin(angle);
-      tangentZ = Math.cos(angle);
-    } else {
-      tipY = Math.cos(angle) * radius;
-      tipZ = Math.sin(angle) * radius;
-      tangentY = -Math.sin(angle);
-      tangentZ = Math.cos(angle);
-    }
-
-    const tangent = new THREE.Vector3(tangentX, tangentY, tangentZ).normalize();
-    const up = new THREE.Vector3(0, 1, 0);
-    const quat = new THREE.Quaternion().setFromUnitVectors(up, tangent);
-    const mat = new THREE.Matrix4().compose(
-      new THREE.Vector3(tipX, tipY, tipZ),
-      quat,
-      new THREE.Vector3(1, 1, 1)
-    );
-    geo.applyMatrix4(mat);
-    return geo;
-  }, [axis, radius]);
-
-  const color = axis === 'x' ? '#dc2626' : axis === 'y' ? '#16a34a' : '#2563eb';
-
-  return (
-    <group position={pivot}>
-      <mesh geometry={arcGeometry} renderOrder={RENDER_ORDER + 2}>
-        <meshStandardMaterial
-          color={color}
-          emissive={new THREE.Color(color)}
-          emissiveIntensity={0.6}
-          transparent
-          opacity={0.85}
-          depthTest={false}
-          roughness={0.3}
-          metalness={0.3}
-        />
-      </mesh>
-      <mesh geometry={arrowGeometry} renderOrder={RENDER_ORDER + 2}>
-        <meshStandardMaterial
-          color={color}
-          emissive={new THREE.Color(color)}
-          emissiveIntensity={0.6}
-          transparent
-          opacity={0.9}
-          depthTest={false}
-          roughness={0.3}
-          metalness={0.3}
-        />
-      </mesh>
-
-      {/* Translucent disc to show the rotation plane */}
-      <mesh renderOrder={RENDER_ORDER}
-        rotation={axis === 'x' ? [0, 0, Math.PI / 2] : axis === 'y' ? [0, 0, 0] : [Math.PI / 2, 0, 0]}
-      >
-        <ringGeometry args={[radius * 0.15, radius * 1.05, 48]} />
-        <meshBasicMaterial
-          color={color}
-          transparent
-          opacity={0.06}
-          depthTest={false}
-          side={THREE.DoubleSide}
-        />
-      </mesh>
-    </group>
-  );
-}
-
-function getPanelAllCorners(panelShape: Shape): [number, number, number][] {
+function getPanelCorners(panelShape: Shape): [number, number, number][] {
   const points: [number, number, number][] = [];
   if (!panelShape.geometry) return points;
 
@@ -201,12 +37,179 @@ function getPanelAllCorners(panelShape: Shape): [number, number, number][] {
   points.push(toWorld(mx.x, mx.y, mx.z));
   points.push(toWorld(mn.x, mx.y, mx.z));
 
+  // Midpoints of edges (along the two longest axes, skipping thin axis)
+  const size = new THREE.Vector3();
+  bbox.getSize(size);
+  const axes = [
+    { i: 0, v: size.x },
+    { i: 1, v: size.y },
+    { i: 2, v: size.z },
+  ].sort((a, b) => a.v - b.v);
+  const thinIdx = axes[0].i;
+
   const cx = (mn.x + mx.x) / 2;
   const cy = (mn.y + mx.y) / 2;
   const cz = (mn.z + mx.z) / 2;
-  points.push(toWorld(cx, cy, cz));
+
+  // Edge midpoints (skip thin axis edges — they are too close to corners)
+  if (thinIdx !== 0) {
+    points.push(toWorld(cx, mn.y, mn.z));
+    points.push(toWorld(cx, mx.y, mn.z));
+    points.push(toWorld(cx, mn.y, mx.z));
+    points.push(toWorld(cx, mx.y, mx.z));
+  }
+  if (thinIdx !== 1) {
+    points.push(toWorld(mn.x, cy, mn.z));
+    points.push(toWorld(mx.x, cy, mn.z));
+    points.push(toWorld(mn.x, cy, mx.z));
+    points.push(toWorld(mx.x, cy, mx.z));
+  }
+  if (thinIdx !== 2) {
+    points.push(toWorld(mn.x, mn.y, cz));
+    points.push(toWorld(mx.x, mn.y, cz));
+    points.push(toWorld(mn.x, mx.y, cz));
+    points.push(toWorld(mx.x, mx.y, cz));
+  }
 
   return points;
+}
+
+function PivotPoint({ position, onSelect, isSelected }: {
+  position: [number, number, number];
+  onSelect: (pos: [number, number, number]) => void;
+  isSelected: boolean;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const visualSize = isSelected ? 5 : hovered ? 4.5 : 3.5;
+  const color = isSelected ? '#ea580c' : hovered ? '#f97316' : '#78716c';
+
+  return (
+    <group position={position}>
+      {/* Visual sphere — always rendered on top */}
+      <mesh renderOrder={RENDER_ORDER + 1}>
+        <sphereGeometry args={[visualSize, 16, 16]} />
+        <meshStandardMaterial
+          color={color}
+          emissive={new THREE.Color(color)}
+          emissiveIntensity={isSelected ? 1.0 : hovered ? 0.7 : 0.3}
+          transparent
+          opacity={1}
+          depthTest={false}
+          roughness={0.15}
+          metalness={0.5}
+        />
+      </mesh>
+      {/* White ring for contrast */}
+      {(hovered || isSelected) && (
+        <mesh renderOrder={RENDER_ORDER}>
+          <ringGeometry args={[visualSize * 1.6, visualSize * 2.2, 24]} />
+          <meshBasicMaterial
+            color={isSelected ? '#ea580c' : '#f97316'}
+            transparent
+            opacity={0.2}
+            depthTest={false}
+            side={THREE.DoubleSide}
+          />
+        </mesh>
+      )}
+      {/* HTML hit area — always clickable, bypasses 3D raycasting */}
+      <Html center zIndexRange={[999, 1000]} style={{ pointerEvents: 'none' }}>
+        <div
+          onClick={(e) => { e.stopPropagation(); onSelect(position); }}
+          onMouseEnter={() => { setHovered(true); document.body.style.cursor = 'pointer'; }}
+          onMouseLeave={() => { setHovered(false); document.body.style.cursor = 'default'; }}
+          style={{
+            pointerEvents: 'auto',
+            width: 22,
+            height: 22,
+            borderRadius: '50%',
+            cursor: 'pointer',
+            transform: 'translate(-50%, -50%)',
+            position: 'absolute',
+            left: '50%',
+            top: '50%',
+          }}
+        />
+      </Html>
+    </group>
+  );
+}
+
+function RotationRing({ pivot, axis, radius, onAxisClick }: {
+  pivot: [number, number, number];
+  axis: 'x' | 'y' | 'z';
+  radius: number;
+  onAxisClick: (axis: 'x' | 'y' | 'z') => void;
+}) {
+  const [hovered, setHovered] = useState(false);
+
+  const arcGeometry = useMemo(() => {
+    const segments = 48;
+    const angle = Math.PI * 2;
+    const points: THREE.Vector3[] = [];
+
+    for (let i = 0; i <= segments; i++) {
+      const t = (i / segments) * angle;
+      let x = 0, y = 0, z = 0;
+      if (axis === 'z') { x = Math.cos(t) * radius; y = Math.sin(t) * radius; }
+      else if (axis === 'y') { x = Math.cos(t) * radius; z = Math.sin(t) * radius; }
+      else { y = Math.cos(t) * radius; z = Math.sin(t) * radius; }
+      points.push(new THREE.Vector3(x, y, z));
+    }
+
+    const curve = new THREE.CatmullRomCurve3(points, true);
+    return new THREE.TubeGeometry(curve, segments, radius * 0.04, 8, true);
+  }, [axis, radius]);
+
+  const color = axis === 'x' ? '#dc2626' : axis === 'y' ? '#16a34a' : '#2563eb';
+  const labelOffset: [number, number, number] = axis === 'x'
+    ? [pivot[0], pivot[1] + radius + 12, pivot[2]]
+    : axis === 'y'
+    ? [pivot[0] + radius + 12, pivot[1], pivot[2]]
+    : [pivot[0] + radius + 12, pivot[1], pivot[2]];
+
+  return (
+    <group position={pivot}>
+      <mesh geometry={arcGeometry} renderOrder={RENDER_ORDER + 2}>
+        <meshStandardMaterial
+          color={color}
+          emissive={new THREE.Color(color)}
+          emissiveIntensity={hovered ? 0.9 : 0.5}
+          transparent
+          opacity={hovered ? 1 : 0.7}
+          depthTest={false}
+          roughness={0.3}
+          metalness={0.3}
+        />
+      </mesh>
+      {/* Clickable label — HTML so it's always on top */}
+      <Html position={[labelOffset[0] - pivot[0], labelOffset[1] - pivot[1], labelOffset[2] - pivot[2]]} center zIndexRange={[999, 1000]} style={{ pointerEvents: 'none' }}>
+        <div
+          onClick={(e) => { e.stopPropagation(); onAxisClick(axis); }}
+          onMouseEnter={() => { setHovered(true); document.body.style.cursor = 'pointer'; }}
+          onMouseLeave={() => { setHovered(false); document.body.style.cursor = 'default'; }}
+          style={{
+            pointerEvents: 'auto',
+            cursor: 'pointer',
+            background: hovered ? color : 'rgba(255,255,255,0.9)',
+            color: hovered ? '#fff' : color,
+            fontFamily: '"Inter", system-ui, sans-serif',
+            fontSize: '12px',
+            fontWeight: 900,
+            padding: '3px 8px',
+            borderRadius: '6px',
+            border: `2px solid ${color}`,
+            userSelect: 'none',
+            whiteSpace: 'nowrap',
+            boxShadow: '0 2px 4px rgba(0,0,0,0.15)',
+            transition: 'all 0.12s',
+          }}
+        >
+          {axis.toUpperCase()}
+        </div>
+      </Html>
+    </group>
+  );
 }
 
 function getPanelArcRadius(panelShape: Shape): number {
@@ -217,7 +220,7 @@ function getPanelArcRadius(panelShape: Shape): number {
   const size = new THREE.Vector3();
   bbox.getSize(size);
   const maxDim = Math.max(size.x, size.y, size.z);
-  return maxDim * 0.4;
+  return maxDim * 0.35;
 }
 
 interface PanelRotateGizmoProps {
@@ -225,9 +228,9 @@ interface PanelRotateGizmoProps {
 }
 
 export function PanelRotateGizmo({ panelShape }: PanelRotateGizmoProps) {
-  const { panelRotatePivot, setPanelRotatePivot, panelRotateAxis } = useAppStore();
+  const { panelRotatePivot, setPanelRotatePivot, setPanelRotateAxis } = useAppStore();
 
-  const pivotPoints = useMemo(() => getPanelAllCorners(panelShape), [panelShape]);
+  const pivotPoints = useMemo(() => getPanelCorners(panelShape), [panelShape]);
   const arcRadius = useMemo(() => getPanelArcRadius(panelShape), [panelShape]);
 
   const isPointSelected = (world: [number, number, number]) => {
@@ -239,23 +242,32 @@ export function PanelRotateGizmo({ panelShape }: PanelRotateGizmoProps) {
     );
   };
 
+  const handlePivotSelect = (pos: [number, number, number]) => {
+    setPanelRotatePivot(pos);
+    setPanelRotateAxis(null);
+  };
+
+  const handleAxisClick = (axis: 'x' | 'y' | 'z') => {
+    setPanelRotateAxis(axis);
+  };
+
   return (
     <group>
       {pivotPoints.map((pt, i) => (
         <PivotPoint
           key={i}
           position={pt}
-          onSelect={setPanelRotatePivot}
+          onSelect={handlePivotSelect}
           isSelected={isPointSelected(pt)}
         />
       ))}
 
-      {panelRotatePivot && panelRotateAxis && (
-        <RotationArc
-          pivot={panelRotatePivot}
-          axis={panelRotateAxis}
-          radius={arcRadius}
-        />
+      {panelRotatePivot && (
+        <>
+          <RotationRing pivot={panelRotatePivot} axis="x" radius={arcRadius} onAxisClick={handleAxisClick} />
+          <RotationRing pivot={panelRotatePivot} axis="y" radius={arcRadius} onAxisClick={handleAxisClick} />
+          <RotationRing pivot={panelRotatePivot} axis="z" radius={arcRadius} onAxisClick={handleAxisClick} />
+        </>
       )}
     </group>
   );

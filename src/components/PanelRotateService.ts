@@ -7,113 +7,39 @@ export interface RotateStep {
   angleDeg: number;
   axis: [number, number, number];
   timestamp: number;
-  // The panel's actual position/rotation immediately before this step was applied.
-  // Stored so each step can be replayed in isolation from the correct geometric base.
-  // Older steps without these fields fall back to the panel-level baseRotatePosition.
-  stepBasePosition?: [number, number, number];
-  stepBaseRotation?: [number, number, number];
+  // The panel's position/rotation immediately before this step was first applied.
+  stepBasePosition: [number, number, number];
+  stepBaseRotation: [number, number, number];
 }
 
-export interface PanelRotateParams {
-  panelShape: Shape;
-  pivot: [number, number, number];
-  angleDeg: number;
-  axis: [number, number, number];
-  shapes: Shape[];
-  updateShape: (id: string, updates: Partial<Shape>) => void;
-}
-
-function computeBaseRotation(panelShape: Shape): [number, number, number] {
-  return panelShape.parameters?.baseRotateRotation ?? [...panelShape.rotation] as [number, number, number];
-}
-
-function computeBasePosition(panelShape: Shape): [number, number, number] {
-  return panelShape.parameters?.baseRotatePosition ?? panelShape.parameters?.baseMovePosition ?? [...panelShape.position] as [number, number, number];
-}
-
-export function applyRotateSteps(
-  basePosition: [number, number, number],
-  baseRotation: [number, number, number],
-  steps: RotateStep[]
+// Apply a single rotation step from a given base position/rotation.
+function applySingleStep(
+  basePos: [number, number, number],
+  baseRot: [number, number, number],
+  step: RotateStep
 ): { position: [number, number, number]; rotation: [number, number, number] } {
-  let pos = new THREE.Vector3(...basePosition);
-  let rot = new THREE.Quaternion().setFromEuler(new THREE.Euler(...baseRotation, 'XYZ'));
+  const pos = new THREE.Vector3(...basePos);
+  const rot = new THREE.Quaternion().setFromEuler(new THREE.Euler(...baseRot, 'XYZ'));
 
-  for (const step of steps) {
-    const pivot = new THREE.Vector3(...step.pivot);
-    const rotAxis = new THREE.Vector3(...step.axis).normalize();
-    const angle = THREE.MathUtils.degToRad(step.angleDeg);
-    const stepQuat = new THREE.Quaternion().setFromAxisAngle(rotAxis, angle);
+  const pivot = new THREE.Vector3(...step.pivot);
+  const rotAxis = new THREE.Vector3(...step.axis).normalize();
+  const angle = THREE.MathUtils.degToRad(step.angleDeg);
+  const stepQuat = new THREE.Quaternion().setFromAxisAngle(rotAxis, angle);
 
-    const offset = pos.clone().sub(pivot);
-    offset.applyQuaternion(stepQuat);
-    pos = pivot.clone().add(offset);
+  const offset = pos.clone().sub(pivot);
+  offset.applyQuaternion(stepQuat);
+  const newPos = pivot.clone().add(offset);
 
-    rot = stepQuat.clone().multiply(rot);
-  }
+  const newRot = stepQuat.clone().multiply(rot);
+  const euler = new THREE.Euler().setFromQuaternion(newRot, 'XYZ');
 
-  const euler = new THREE.Euler().setFromQuaternion(rot, 'XYZ');
   return {
-    position: [pos.x, pos.y, pos.z],
+    position: [newPos.x, newPos.y, newPos.z],
     rotation: [euler.x, euler.y, euler.z],
   };
 }
 
-function getParentCenter(panelShape: Shape, shapes: Shape[]): THREE.Vector3 | null {
-  const parentId = panelShape.parameters?.parentShapeId;
-  if (!parentId) return null;
-  const parent = shapes.find(s => s.id === parentId);
-  if (!parent || !parent.geometry) return null;
-
-  const pos = parent.geometry.getAttribute('position') as THREE.BufferAttribute;
-  if (!pos) return null;
-  const bbox = new THREE.Box3().setFromBufferAttribute(pos);
-  const center = new THREE.Vector3();
-  bbox.getCenter(center);
-
-  const mat = new THREE.Matrix4().compose(
-    new THREE.Vector3(...parent.position),
-    new THREE.Quaternion().setFromEuler(new THREE.Euler(...parent.rotation, 'XYZ')),
-    new THREE.Vector3(...parent.scale)
-  );
-  center.applyMatrix4(mat);
-  return center;
-}
-
-function computeInwardSign(
-  panelShape: Shape,
-  pivot: [number, number, number],
-  axis: [number, number, number],
-  shapes: Shape[]
-): number {
-  const parentCenter = getParentCenter(panelShape, shapes);
-  if (!parentCenter) return 1;
-
-  const panelCenter = new THREE.Vector3(...panelShape.position);
-  const pivotVec = new THREE.Vector3(...pivot);
-
-  const toPanel = panelCenter.clone().sub(pivotVec);
-  if (toPanel.length() < 0.01) return 1;
-  toPanel.normalize();
-
-  const toParent = parentCenter.clone().sub(pivotVec);
-  if (toParent.length() < 0.01) return 1;
-  toParent.normalize();
-
-  const rotAxis = new THREE.Vector3(...axis).normalize();
-  const testAngle = THREE.MathUtils.degToRad(5);
-
-  const testQuat = new THREE.Quaternion().setFromAxisAngle(rotAxis, testAngle);
-  const rotatedPos = toPanel.clone().applyQuaternion(testQuat);
-  const dotPositive = rotatedPos.dot(toParent);
-
-  const testQuatNeg = new THREE.Quaternion().setFromAxisAngle(rotAxis, -testAngle);
-  const rotatedNeg = toPanel.clone().applyQuaternion(testQuatNeg);
-  const dotNegative = rotatedNeg.dot(toParent);
-
-  return dotPositive >= dotNegative ? 1 : -1;
-}
-
+// --- Auto-extension helpers ---
 
 function getParentOBBPlanes(panelShape: Shape, shapes: Shape[]): { normal: THREE.Vector3; d: number }[] | null {
   const parentId = panelShape.parameters?.parentShapeId;
@@ -175,7 +101,6 @@ function rayIntersectOBBPlanes(
     }
 
     const t = dist / denom;
-
     if (denom < 0) {
       tMin = Math.max(tMin, t);
     } else {
@@ -185,14 +110,13 @@ function rayIntersectOBBPlanes(
 
   if (tMin > tMax) return null;
   if (tMax < 0) return null;
-
   return tMax > 0.01 ? tMax : null;
 }
 
 interface AutoExtendResult {
   length: number;
-  directionSign: number; // +1 = extends in +localLongDir, -1 = extends in -localLongDir
-  longestAxisIdx: number; // the local axis index (0,1,2) to extend along
+  directionSign: number;
+  longestAxisIdx: number;
 }
 
 function computeAutoExtendLength(
@@ -219,10 +143,7 @@ function computeAutoExtendLength(
     { i: 2, v: panelSize.z },
   ].sort((a, b) => a.v - b.v);
 
-  // thinnest is always sorted[0]; the other two are candidates for longest axis.
-  // When both face dims are equal (square panel), we must try both to find the
-  // one with a valid ray intersection — otherwise the wrong axis gets picked.
-  const candidateLongAxes = sorted.slice(1); // [second, longest] by size
+  const candidateLongAxes = sorted.slice(1);
 
   const panelQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(...newRotation, 'XYZ'));
   const pivotVec = new THREE.Vector3(...pivot);
@@ -234,7 +155,7 @@ function computeAutoExtendLength(
 
   let bestDist = -1;
   let bestDirSign = 1;
-  let bestAxisIdx = candidateLongAxes[1].i; // default to geometrically-longest
+  let bestAxisIdx = candidateLongAxes[1].i;
 
   for (const candidate of candidateLongAxes) {
     const localDir = new THREE.Vector3(
@@ -250,7 +171,6 @@ function computeAutoExtendLength(
     const v1 = d1 !== null && d1 > 1;
     const v2 = d2 !== null && d2 > 1;
 
-    // When both are valid for this axis, use centroid direction to pick sign
     let chosenDist = -1;
     let chosenSign = 1;
     if (v1 && v2) {
@@ -274,7 +194,6 @@ function computeAutoExtendLength(
 
   if (bestDist < 1) return null;
 
-  // Build the final worldDir from the chosen axis
   const bestLocalDir = new THREE.Vector3(
     bestAxisIdx === 0 ? 1 : 0,
     bestAxisIdx === 1 ? 1 : 0,
@@ -315,10 +234,6 @@ function computeAutoExtendLength(
           ).applyMatrix4(sibMat));
 
     const sibWorldBbox = new THREE.Box3().setFromPoints(sibCorners);
-
-    // Skip siblings whose bbox already contains the pivot (they are adjacent to
-    // the pivot corner and are not blocking the extension — they are simply
-    // touching/sharing that corner). Expand slightly to handle floating-point edge cases.
     const expandedSibBbox = sibWorldBbox.clone().expandByScalar(0.5);
     if (expandedSibBbox.containsPoint(pivotVec)) continue;
 
@@ -359,8 +274,6 @@ async function rebuildPanelGeometry(
 
   const thickness = axes[0].v;
   const thinAxisIdx = axes[0].i;
-  // Use the longestAxisIdx passed from computeAutoExtendLength to guarantee
-  // both functions operate on the SAME axis (critical for square panels).
   const secondAxisIdx = axes.find(a => a.i !== longestAxisIdx && a.i !== thinAxisIdx)!.i;
   const secondLen = panelSize.getComponent(secondAxisIdx);
 
@@ -373,16 +286,12 @@ async function rebuildPanelGeometry(
     const { createReplicadBox, convertReplicadToThreeGeometry } = await import('./ReplicadService');
     const rp = await createReplicadBox({ width: dims[0], height: dims[1], depth: dims[2] });
     const geometry = convertReplicadToThreeGeometry(rp);
-    // NOTE: Do NOT center the geometry. replicad produces a box from (0,0,0) to (W,H,D).
-    // Keeping it uncentered ensures face extrude (which also creates uncentered base shapes)
-    // can match face centers correctly. Centering here causes a coord-system mismatch.
 
     const panelQuat = new THREE.Quaternion().setFromEuler(
       new THREE.Euler(...panelShape.rotation, 'XYZ')
     );
     const pivotVec = new THREE.Vector3(...pivot);
 
-    // Transform world pivot into the panel's current local coordinate system
     const panelWorldMatrix = new THREE.Matrix4().compose(
       new THREE.Vector3(...panelShape.position),
       panelQuat,
@@ -391,21 +300,15 @@ async function rebuildPanelGeometry(
     const invMatrix = panelWorldMatrix.clone().invert();
     const localPivot = pivotVec.clone().applyMatrix4(invMatrix);
 
-    // Get pivot position relative to the original geometry's bbox center
     const origCenter = new THREE.Vector3();
     panelLocalBbox.getCenter(origCenter);
     const relPivot = localPivot.clone().sub(origCenter);
 
-    // For the new UNCENTERED geometry (bbox from 0 to dims):
-    // - Along longest axis: pivot at 0 if extension goes in +dir (directionSign=1),
-    //   pivot at newLength if extension goes in -dir (directionSign=-1)
-    // - Along second/thin axis: dims/2 + same relative offset as in original bbox
     const newLocalPivot = new THREE.Vector3();
     newLocalPivot.setComponent(longestAxisIdx, directionSign === 1 ? 0 : newLength);
     newLocalPivot.setComponent(secondAxisIdx, secondLen * 0.5 + relPivot.getComponent(secondAxisIdx));
     newLocalPivot.setComponent(thinAxisIdx, thickness * 0.5 + relPivot.getComponent(thinAxisIdx));
 
-    // position = worldPivot - rotation * newLocalPivot
     const rotatedLocalPivot = newLocalPivot.clone().applyQuaternion(panelQuat);
     const newPos: [number, number, number] = [
       pivotVec.x - rotatedLocalPivot.x,
@@ -422,24 +325,45 @@ async function rebuildPanelGeometry(
         width: secondLen,
         height: newLength,
         autoExtendedLength: newLength,
-        // Update base shape so subsequent face extrudes use the correct geometry
         baseReplicadShape: rp,
       },
     });
   } catch (err) {
-    console.error('[PanelRotateService] Failed to rebuild panel geometry for auto-extend:', err);
+    console.error('[PanelRotateService] Failed to rebuild panel geometry:', err);
   }
 }
 
-export async function executePanelRotate(params: PanelRotateParams): Promise<boolean> {
-  const { panelShape, pivot, angleDeg, axis, shapes, updateShape } = params;
+async function rebuildSiblingsAfterRotate(rotatedPanel: Shape, shapes: Shape[]): Promise<void> {
+  const parentId = rotatedPanel.parameters?.parentShapeId;
+  if (!parentId) return;
 
+  const parentShape = shapes.find(s => s.id === parentId);
+  if (!parentShape) return;
+
+  try {
+    const { useAppStore } = await import('../store');
+    const store = useAppStore.getState();
+    store.recalculateVirtualFacesForShape(parentId);
+
+    const { rebuildPanelsForParent } = await import('./PanelRebuildService');
+    await rebuildPanelsForParent(parentId);
+  } catch (err) {
+    console.error('[PanelRotateService] Failed to rebuild siblings:', err);
+  }
+}
+
+// --- Public API ---
+
+export async function executePanelRotate(
+  panelShape: Shape,
+  pivot: [number, number, number],
+  angleDeg: number,
+  axis: [number, number, number],
+  shapes: Shape[],
+  updateShape: (id: string, updates: Partial<Shape>) => void
+): Promise<boolean> {
   if (Math.abs(angleDeg) < 0.001) return false;
 
-  // Use the panel's current actual position as the base for the new step.
-  // If a prior rotation already rebuilt the geometry (moving the origin from P0 to P1),
-  // replaying from P0 would produce the wrong position for step2. Starting from the
-  // actual current state (P1) is always correct.
   const currentPosition = [...panelShape.position] as [number, number, number];
   const currentRotation = [...panelShape.rotation] as [number, number, number];
   const existingSteps: RotateStep[] = panelShape.parameters?.rotateSteps || [];
@@ -455,20 +379,13 @@ export async function executePanelRotate(params: PanelRotateParams): Promise<boo
   };
 
   const newSteps = [...existingSteps, newStep];
-  // Apply only the new step from the current actual position (not all steps from P0).
-  const result = applyRotateSteps(currentPosition, currentRotation, [newStep]);
-
-  // Preserve the original P0/R0 base for backward-compat (used by fallback in updateRotateStep).
-  const legacyBasePosition = computeBasePosition(panelShape);
-  const legacyBaseRotation = computeBaseRotation(panelShape);
+  const result = applySingleStep(currentPosition, currentRotation, newStep);
 
   updateShape(panelShape.id, {
     position: result.position,
     rotation: result.rotation,
     parameters: {
       ...panelShape.parameters,
-      baseRotatePosition: legacyBasePosition,
-      baseRotateRotation: legacyBaseRotation,
       rotateSteps: newSteps,
     },
   });
@@ -479,12 +396,7 @@ export async function executePanelRotate(params: PanelRotateParams): Promise<boo
       ...panelShape,
       position: result.position,
       rotation: result.rotation,
-      parameters: {
-        ...panelShape.parameters,
-        baseRotatePosition: legacyBasePosition,
-        baseRotateRotation: legacyBaseRotation,
-        rotateSteps: newSteps,
-      },
+      parameters: { ...panelShape.parameters, rotateSteps: newSteps },
     };
     await rebuildPanelGeometry(updatedPanel, extendResult.length, pivot, extendResult.directionSign, extendResult.longestAxisIdx, updateShape);
   }
@@ -504,54 +416,27 @@ export async function updateRotateStep(
   const stepIdx = steps.findIndex(s => s.id === stepId);
   if (stepIdx < 0) return false;
 
-  const newSteps = steps.map(s => s.id === stepId ? { ...s, angleDeg: newAngleDeg } : s);
-  const updatedStep = newSteps[stepIdx];
+  const updatedSteps = steps.map(s => s.id === stepId ? { ...s, angleDeg: newAngleDeg } : s);
+  const step = updatedSteps[stepIdx];
 
-  // Replay the edited step from its own stored base position/rotation.
-  // Each step stores the panel's actual state immediately before it was applied,
-  // which accounts for any geometry rebuilds (auto-extend) that happened between steps.
-  const stepBase = (updatedStep.stepBasePosition ?? computeBasePosition(panelShape)) as [number, number, number];
-  const stepBaseRot = (updatedStep.stepBaseRotation ?? computeBaseRotation(panelShape)) as [number, number, number];
-  const result = applyRotateSteps(stepBase, stepBaseRot, [updatedStep]);
+  // Replay from the step's own stored base — this accounts for geometry rebuilds between steps.
+  const result = applySingleStep(step.stepBasePosition, step.stepBaseRotation, step);
+  const pivot = step.pivot;
 
-  const pivotForExtend: [number, number, number] = updatedStep.pivot;
-  const extendResult = computeAutoExtendLength(panelShape, result.position, result.rotation, pivotForExtend, shapes);
-
+  const extendResult = computeAutoExtendLength(panelShape, result.position, result.rotation, pivot, shapes);
   if (extendResult !== null && extendResult.length > 1) {
     const updatedPanel: Shape = {
       ...panelShape,
       position: result.position,
       rotation: result.rotation,
-      parameters: { ...panelShape.parameters, rotateSteps: newSteps },
+      parameters: { ...panelShape.parameters, rotateSteps: updatedSteps },
     };
-    await rebuildPanelGeometry(updatedPanel, extendResult.length, pivotForExtend, extendResult.directionSign, extendResult.longestAxisIdx, updateShape);
-  } else if (panelShape.parameters?.autoExtendedLength != null) {
-    const fallbackLength = panelShape.parameters.autoExtendedLength as number;
-    if (fallbackLength > 1) {
-      const dirSign = extendResult?.directionSign ?? 1;
-      const longAxisIdx = extendResult?.longestAxisIdx ?? 0;
-      const updatedPanel: Shape = {
-        ...panelShape,
-        position: result.position,
-        rotation: result.rotation,
-        parameters: { ...panelShape.parameters, rotateSteps: newSteps },
-      };
-      await rebuildPanelGeometry(updatedPanel, fallbackLength, pivotForExtend, dirSign, longAxisIdx, updateShape);
-    } else {
-      updateShape(panelShape.id, {
-        position: result.position,
-        rotation: result.rotation,
-        parameters: { ...panelShape.parameters, rotateSteps: newSteps },
-      });
-    }
+    await rebuildPanelGeometry(updatedPanel, extendResult.length, pivot, extendResult.directionSign, extendResult.longestAxisIdx, updateShape);
   } else {
     updateShape(panelShape.id, {
       position: result.position,
       rotation: result.rotation,
-      parameters: {
-        ...panelShape.parameters,
-        rotateSteps: newSteps,
-      },
+      parameters: { ...panelShape.parameters, rotateSteps: updatedSteps, autoExtendedLength: undefined },
     });
   }
 
@@ -566,22 +451,18 @@ export async function deleteRotateStep(
   updateShape: (id: string, updates: Partial<Shape>) => void
 ): Promise<boolean> {
   const steps: RotateStep[] = panelShape.parameters?.rotateSteps || [];
-  const deletedStep = steps.find(s => s.id === stepId);
-  // Remove the deleted step and all subsequent steps (they were derived from it).
   const deletedIdx = steps.findIndex(s => s.id === stepId);
-  const newSteps = deletedIdx >= 0 ? steps.slice(0, deletedIdx) : steps.filter(s => s.id !== stepId);
+  if (deletedIdx < 0) return false;
 
-  // Restore to the state that existed immediately before the deleted step was applied.
-  const restorePos = (deletedStep?.stepBasePosition ?? computeBasePosition(panelShape)) as [number, number, number];
-  const restoreRot = (deletedStep?.stepBaseRotation ?? computeBaseRotation(panelShape)) as [number, number, number];
+  const deletedStep = steps[deletedIdx];
+  // Remove deleted step and all subsequent steps (they depend on positions after the deleted one).
+  const newSteps = steps.slice(0, deletedIdx);
 
-  // If there are remaining steps, we need to apply auto-extension for the last remaining step.
   if (newSteps.length > 0) {
+    // Remaining steps exist — position panel at end of last remaining step.
     const lastStep = newSteps[newSteps.length - 1];
-    const lastStepBase = (lastStep.stepBasePosition ?? computeBasePosition(panelShape)) as [number, number, number];
-    const lastStepBaseRot = (lastStep.stepBaseRotation ?? computeBaseRotation(panelShape)) as [number, number, number];
-    const lastResult = applyRotateSteps(lastStepBase, lastStepBaseRot, [lastStep]);
-    const lastPivot: [number, number, number] = lastStep.pivot;
+    const lastResult = applySingleStep(lastStep.stepBasePosition, lastStep.stepBaseRotation, lastStep);
+    const lastPivot = lastStep.pivot;
 
     const extendResult = computeAutoExtendLength(panelShape, lastResult.position, lastResult.rotation, lastPivot, shapes);
     if (extendResult !== null && extendResult.length > 1) {
@@ -589,41 +470,24 @@ export async function deleteRotateStep(
         ...panelShape,
         position: lastResult.position,
         rotation: lastResult.rotation,
-        parameters: {
-          ...panelShape.parameters,
-          rotateSteps: newSteps,
-          autoExtendedLength: undefined,
-        },
+        parameters: { ...panelShape.parameters, rotateSteps: newSteps, autoExtendedLength: undefined },
       };
       await rebuildPanelGeometry(restoredPanel, extendResult.length, lastPivot, extendResult.directionSign, extendResult.longestAxisIdx, updateShape);
-      await rebuildSiblingsAfterRotate(panelShape, shapes);
-      return true;
+    } else {
+      updateShape(panelShape.id, {
+        position: lastResult.position,
+        rotation: lastResult.rotation,
+        parameters: { ...panelShape.parameters, rotateSteps: newSteps, autoExtendedLength: undefined },
+      });
     }
-
-    // Remaining steps exist but no auto-extension — position to end of last remaining step.
+  } else {
+    // No remaining steps — restore to position before the deleted step was applied.
     updateShape(panelShape.id, {
-      position: lastResult.position,
-      rotation: lastResult.rotation,
-      parameters: {
-        ...panelShape.parameters,
-        rotateSteps: newSteps,
-        autoExtendedLength: undefined,
-      },
+      position: deletedStep.stepBasePosition,
+      rotation: deletedStep.stepBaseRotation,
+      parameters: { ...panelShape.parameters, rotateSteps: [], autoExtendedLength: undefined },
     });
-    await rebuildSiblingsAfterRotate(panelShape, shapes);
-    return true;
   }
-
-  // No remaining steps — restore to pre-rotation base position.
-  updateShape(panelShape.id, {
-    position: restorePos,
-    rotation: restoreRot,
-    parameters: {
-      ...panelShape.parameters,
-      rotateSteps: newSteps,
-      autoExtendedLength: undefined,
-    },
-  });
 
   await rebuildSiblingsAfterRotate(panelShape, shapes);
   return true;
@@ -655,26 +519,4 @@ export function getPanelNormalAxis(panelShape: Shape): [number, number, number] 
   localNormal.applyQuaternion(quat).normalize();
 
   return [localNormal.x, localNormal.y, localNormal.z];
-}
-
-async function rebuildSiblingsAfterRotate(
-  rotatedPanel: Shape,
-  shapes: Shape[]
-): Promise<void> {
-  const parentId = rotatedPanel.parameters?.parentShapeId;
-  if (!parentId) return;
-
-  const parentShape = shapes.find(s => s.id === parentId);
-  if (!parentShape) return;
-
-  try {
-    const { useAppStore } = await import('../store');
-    const store = useAppStore.getState();
-    store.recalculateVirtualFacesForShape(parentId);
-
-    const { rebuildPanelsForParent } = await import('./PanelRebuildService');
-    await rebuildPanelsForParent(parentId);
-  } catch (err) {
-    console.error('[PanelRotateService] Failed to rebuild siblings after rotate:', err);
-  }
 }

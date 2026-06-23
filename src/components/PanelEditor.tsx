@@ -560,6 +560,8 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
   const [editingStepValue, setEditingStepValue] = useState(0);
   const [editingMoveStepId, setEditingMoveStepId] = useState<string | null>(null);
   const [editingMoveStepValue, setEditingMoveStepValue] = useState(0);
+  const [editingRotateStepId, setEditingRotateStepId] = useState<string | null>(null);
+  const [editingRotateStepValue, setEditingRotateStepValue] = useState(0);
   const rowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const selectedShape = shapes.find(s => s.id === selectedShapeId);
 
@@ -1219,7 +1221,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       const ps = shapes.find(s => s.id === activePanelId); if (!ps) return;
       const { executePanelRotate } = await import('./PanelRotateService');
       const axisVec: [number, number, number] = panelRotateAxis === 'x' ? [1, 0, 0] : panelRotateAxis === 'y' ? [0, 1, 0] : [0, 0, 1];
-      await executePanelRotate({ panelShape: ps, pivot: panelRotatePivot!, angleDeg: -panelRotateAngle, axis: axisVec, shapes, updateShape });
+      await executePanelRotate(ps, panelRotatePivot!, -panelRotateAngle, axisVec, shapes, updateShape);
       setPanelRotatePivot(null);
       setPanelRotateAxis(null);
       setPanelRotateAngle(0);
@@ -1277,11 +1279,16 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
             </>
           ) : hasPivot && !hasAxis ? (
             <>
-              <span style={{ fontSize: 10, fontWeight: 500, color: '#78716c', whiteSpace: 'nowrap' }}>Eksen:</span>
+              <div style={{
+                flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 7, height: 28, padding: '0 10px', borderRadius: 7,
+                background: 'rgba(120,113,108,0.08)', border: '1px solid rgba(60,50,40,0.10)',
+              }}>
+                <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#ea580c', flexShrink: 0 }} />
+                <span style={{ fontSize: 11, fontWeight: 500, color: '#78716c', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>Eksen seç (X / Y / Z)</span>
+              </div>
               {axisBtn('x')}
               {axisBtn('y')}
               {axisBtn('z')}
-              <div style={{ flex: 1 }} />
               {exitBtn}
             </>
           ) : (
@@ -1398,11 +1405,37 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                 {activeRotateSteps.map((s: any, idx: number) => {
                   const stepAxisLabel = s.axis[0] === 1 ? 'X' : s.axis[1] === 1 ? 'Y' : 'Z';
                   const stepAxisColor = s.axis[0] === 1 ? '#dc2626' : s.axis[1] === 1 ? '#16a34a' : '#2563eb';
+                  const isEditing = editingRotateStepId === s.id;
                   return (
                   <div key={s.id} className="flex items-center gap-2 px-2 py-1 rounded-lg bg-white ring-1 ring-stone-200/80 shadow-[0_1px_2px_rgba(68,64,60,0.05)]">
                     <span className="shrink-0 text-[10px] font-bold text-stone-400 tabular-nums w-4 text-center">{idx + 1}</span>
                     <span className="shrink-0 min-w-[26px] text-center text-[10px] font-extrabold font-mono px-1.5 py-0.5 rounded-md" style={{ color: stepAxisColor, background: 'rgba(68,64,60,0.06)' }}>{stepAxisLabel}</span>
-                    <span className="flex-1 font-mono text-xs font-bold text-stone-800 tabular-nums">{s.angleDeg}°</span>
+                    {isEditing ? (
+                      <input
+                        type="text" inputMode="numeric" autoFocus
+                        value={editingRotateStepValue}
+                        onChange={e => setEditingRotateStepValue(Number(e.target.value) || 0)}
+                        onKeyDown={async e => {
+                          if (e.key === 'Enter') {
+                            const ps = shapes.find(x => x.id === activePanelId); if (!ps) return;
+                            const { updateRotateStep } = await import('./PanelRotateService');
+                            await updateRotateStep(ps, s.id, -editingRotateStepValue, shapes, updateShape);
+                            setEditingRotateStepId(null);
+                          }
+                          if (e.key === 'Escape') setEditingRotateStepId(null);
+                        }}
+                        onBlur={() => setEditingRotateStepId(null)}
+                        className="flex-1 min-w-0 h-5 text-center font-mono text-xs font-bold text-stone-800 tabular-nums bg-stone-50 border border-stone-300 rounded px-1 outline-none focus:border-stone-500"
+                      />
+                    ) : (
+                      <span className="flex-1 font-mono text-xs font-bold text-stone-800 tabular-nums">{Math.round(-s.angleDeg)}°</span>
+                    )}
+                    {!isEditing && (
+                      <button onClick={() => { setEditingRotateStepId(s.id); setEditingRotateStepValue(Math.round(-s.angleDeg)); }} style={iconBtn('#78716c')}><Pencil size={10} /></button>
+                    )}
+                    {isEditing && (
+                      <button onClick={async () => { const ps = shapes.find(x => x.id === activePanelId); if (!ps) return; const { updateRotateStep } = await import('./PanelRotateService'); await updateRotateStep(ps, s.id, -editingRotateStepValue, shapes, updateShape); setEditingRotateStepId(null); }} style={iconBtn('#16a34a')}><Check size={10} /></button>
+                    )}
                     <button onClick={async () => { const ps = shapes.find(x => x.id === activePanelId); if (!ps) return; const { deleteRotateStep } = await import('./PanelRotateService'); await deleteRotateStep(ps, s.id, shapes, updateShape); }} style={iconBtn('#ef4444')}><Trash2 size={10} /></button>
                   </div>
                   );
