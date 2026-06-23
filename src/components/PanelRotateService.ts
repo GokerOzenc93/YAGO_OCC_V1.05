@@ -575,6 +575,33 @@ export async function deleteRotateStep(
   const restorePos = (deletedStep?.stepBasePosition ?? computeBasePosition(panelShape)) as [number, number, number];
   const restoreRot = (deletedStep?.stepBaseRotation ?? computeBaseRotation(panelShape)) as [number, number, number];
 
+  // If there are remaining steps, we need to apply auto-extension for the last remaining step.
+  if (newSteps.length > 0) {
+    const lastStep = newSteps[newSteps.length - 1];
+    const lastStepBase = (lastStep.stepBasePosition ?? computeBasePosition(panelShape)) as [number, number, number];
+    const lastStepBaseRot = (lastStep.stepBaseRotation ?? computeBaseRotation(panelShape)) as [number, number, number];
+    const lastResult = applyRotateSteps(lastStepBase, lastStepBaseRot, [lastStep]);
+    const lastPivot: [number, number, number] = lastStep.pivot;
+
+    const extendResult = computeAutoExtendLength(panelShape, lastResult.position, lastResult.rotation, lastPivot, shapes);
+    if (extendResult !== null && extendResult.length > 1) {
+      const restoredPanel: Shape = {
+        ...panelShape,
+        position: lastResult.position,
+        rotation: lastResult.rotation,
+        parameters: {
+          ...panelShape.parameters,
+          rotateSteps: newSteps,
+          autoExtendedLength: undefined,
+        },
+      };
+      await rebuildPanelGeometry(restoredPanel, extendResult.length, lastPivot, extendResult.directionSign, extendResult.longestAxisIdx, updateShape);
+      await rebuildSiblingsAfterRotate(panelShape, shapes);
+      return true;
+    }
+  }
+
+  // No remaining steps, or no auto-extension needed — just restore.
   updateShape(panelShape.id, {
     position: restorePos,
     rotation: restoreRot,

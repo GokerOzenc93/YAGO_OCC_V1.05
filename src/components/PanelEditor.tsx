@@ -560,8 +560,6 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
   const [editingStepValue, setEditingStepValue] = useState(0);
   const [editingMoveStepId, setEditingMoveStepId] = useState<string | null>(null);
   const [editingMoveStepValue, setEditingMoveStepValue] = useState(0);
-  const [editingRotateStepId, setEditingRotateStepId] = useState<string | null>(null);
-  const [editingRotateStepValue, setEditingRotateStepValue] = useState(0);
   const rowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const selectedShape = shapes.find(s => s.id === selectedShapeId);
 
@@ -1221,7 +1219,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       const ps = shapes.find(s => s.id === activePanelId); if (!ps) return;
       const { executePanelRotate } = await import('./PanelRotateService');
       const axisVec: [number, number, number] = panelRotateAxis === 'x' ? [1, 0, 0] : panelRotateAxis === 'y' ? [0, 1, 0] : [0, 0, 1];
-      await executePanelRotate({ panelShape: ps, pivot: panelRotatePivot!, angleDeg: panelRotateAngle, axis: axisVec, shapes, updateShape });
+      await executePanelRotate({ panelShape: ps, pivot: panelRotatePivot!, angleDeg: -panelRotateAngle, axis: axisVec, shapes, updateShape });
       setPanelRotatePivot(null);
       setPanelRotateAxis(null);
       setPanelRotateAngle(0);
@@ -1404,22 +1402,8 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                   <div key={s.id} className="flex items-center gap-2 px-2 py-1 rounded-lg bg-white ring-1 ring-stone-200/80 shadow-[0_1px_2px_rgba(68,64,60,0.05)]">
                     <span className="shrink-0 text-[10px] font-bold text-stone-400 tabular-nums w-4 text-center">{idx + 1}</span>
                     <span className="shrink-0 min-w-[26px] text-center text-[10px] font-extrabold font-mono px-1.5 py-0.5 rounded-md" style={{ color: stepAxisColor, background: 'rgba(68,64,60,0.06)' }}>{stepAxisLabel}</span>
-                    {editingRotateStepId === s.id ? (
-                      <>
-                        <input type="text" inputMode="numeric" autoFocus value={editingRotateStepValue}
-                          onChange={e => setEditingRotateStepValue(Number(e.target.value) || 0)}
-                          onKeyDown={e => { if (e.key === 'Enter') { (async () => { const ps = shapes.find(x => x.id === activePanelId); if (!ps) return; const { updateRotateStep } = await import('./PanelRotateService'); await updateRotateStep(ps, s.id, editingRotateStepValue, shapes, updateShape); setEditingRotateStepId(null); })(); } else if (e.key === 'Escape') setEditingRotateStepId(null); }}
-                          className="flex-1 min-w-0 h-6 text-center font-mono text-xs font-semibold text-stone-800 bg-white border border-stone-300 rounded-md outline-none focus:border-orange-400" />
-                        <button onClick={async () => { const ps = shapes.find(x => x.id === activePanelId); if (!ps) return; const { updateRotateStep } = await import('./PanelRotateService'); await updateRotateStep(ps, s.id, editingRotateStepValue, shapes, updateShape); setEditingRotateStepId(null); }} style={iconBtn('#5b5346')}><Check size={11} /></button>
-                        <button onClick={() => setEditingRotateStepId(null)} style={iconBtn('#a8a29e')}><X size={11} /></button>
-                      </>
-                    ) : (
-                      <>
-                        <span className="flex-1 font-mono text-xs font-bold text-stone-800 tabular-nums">{s.angleDeg}°</span>
-                        <button onClick={() => { setEditingRotateStepId(s.id); setEditingRotateStepValue(s.angleDeg); }} style={iconBtn('#78716c')}><Pencil size={10} /></button>
-                        <button onClick={async () => { const ps = shapes.find(x => x.id === activePanelId); if (!ps) return; const { deleteRotateStep } = await import('./PanelRotateService'); await deleteRotateStep(ps, s.id, shapes, updateShape); }} style={iconBtn('#ef4444')}><Trash2 size={10} /></button>
-                      </>
-                    )}
+                    <span className="flex-1 font-mono text-xs font-bold text-stone-800 tabular-nums">{s.angleDeg}°</span>
+                    <button onClick={async () => { const ps = shapes.find(x => x.id === activePanelId); if (!ps) return; const { deleteRotateStep } = await import('./PanelRotateService'); await deleteRotateStep(ps, s.id, shapes, updateShape); }} style={iconBtn('#ef4444')}><Trash2 size={10} /></button>
                   </div>
                   );
                 })}
