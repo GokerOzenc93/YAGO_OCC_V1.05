@@ -1,6 +1,5 @@
 import * as THREE from 'three';
 import { useAppStore } from '../store';
-import { applyRotateSteps, type RotateStep } from './PanelRotateService';
 
 const rebuildInFlight = new Set<string>();
 
@@ -12,35 +11,6 @@ function geoAxesSize(geo: THREE.BufferGeometry) {
   bbox.getSize(size);
   const axes = [{ i: 0, v: size.x }, { i: 1, v: size.y }, { i: 2, v: size.z }].sort((a, b) => a.v - b.v);
   return { axes, size };
-}
-
-function reapplyRotateSteps(
-  basePosition: [number, number, number],
-  baseRotation: [number, number, number],
-  steps: RotateStep[]
-): { position: [number, number, number]; rotation: [number, number, number]; updatedSteps: RotateStep[] } {
-  if (steps.length === 0) {
-    return { position: basePosition, rotation: baseRotation, updatedSteps: [] };
-  }
-
-  let currentPos = basePosition;
-  let currentRot = baseRotation;
-  const updatedSteps: RotateStep[] = [];
-
-  for (const step of steps) {
-    const updatedStep: RotateStep = {
-      ...step,
-      stepBasePosition: [...currentPos] as [number, number, number],
-      stepBaseRotation: [...currentRot] as [number, number, number],
-    };
-    updatedSteps.push(updatedStep);
-
-    const result = applyRotateSteps(currentPos, currentRot, [updatedStep]);
-    currentPos = result.position;
-    currentRot = result.rotation;
-  }
-
-  return { position: currentPos, rotation: currentRot, updatedSteps };
 }
 
 
@@ -90,7 +60,14 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
       workingVirtualFaces = workingVirtualFaces.map(f => freshById.get(f.id) || f);
       builtVfIds.add(currentVfId);
 
+      // Panels with active rotateSteps keep their current geometry/position/rotation.
+      // They've already been extended by PanelRotateService. We just add them
+      // as-is so other panels see them as obstacles.
       const hasRotateSteps = panel.parameters?.rotateSteps && panel.parameters.rotateSteps.length > 0;
+      if (hasRotateSteps) {
+        workingShapes = [...workingShapes, panel];
+        continue;
+      }
 
       const vf = freshFaces.find(f => f.id === currentVfId);
       if (!vf || vf.vertices.length < 3) {
@@ -187,24 +164,6 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           } catch (err) {
             console.error('Failed to apply extrude steps during rebuild for panel', panel.id, err);
           }
-        }
-
-        if (hasRotateSteps) {
-          const rotateSteps: RotateStep[] = panel.parameters.rotateSteps;
-          const newBasePos = [...rebuiltPanel.position] as [number, number, number];
-          const newBaseRot = [...rebuiltPanel.rotation] as [number, number, number];
-          const { position, rotation, updatedSteps } = reapplyRotateSteps(newBasePos, newBaseRot, rotateSteps);
-          rebuiltPanel = {
-            ...rebuiltPanel,
-            position,
-            rotation,
-            parameters: {
-              ...rebuiltPanel.parameters,
-              rotateSteps: updatedSteps,
-              baseRotatePosition: newBasePos,
-              baseRotateRotation: newBaseRot,
-            },
-          };
         }
 
         workingShapes = [...workingShapes, rebuiltPanel];

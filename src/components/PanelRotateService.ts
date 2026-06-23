@@ -501,44 +501,28 @@ export async function updateRotateStep(
   updateShape: (id: string, updates: Partial<Shape>) => void
 ): Promise<boolean> {
   const steps: RotateStep[] = panelShape.parameters?.rotateSteps || [];
+  const stepIdx = steps.findIndex(s => s.id === stepId);
+  if (stepIdx < 0) return false;
+
   const newSteps = steps.map(s => s.id === stepId ? { ...s, angleDeg: newAngleDeg } : s);
+  const updatedStep = newSteps[stepIdx];
 
-  // Find the base position/rotation before any rotation was applied.
-  // This is the first step's stepBasePosition, or the panel-level base.
-  const basePos = (steps[0]?.stepBasePosition ?? computeBasePosition(panelShape)) as [number, number, number];
-  const baseRot = (steps[0]?.stepBaseRotation ?? computeBaseRotation(panelShape)) as [number, number, number];
+  // Replay the edited step from its own stored base position/rotation.
+  // Each step stores the panel's actual state immediately before it was applied,
+  // which accounts for any geometry rebuilds (auto-extend) that happened between steps.
+  const stepBase = (updatedStep.stepBasePosition ?? computeBasePosition(panelShape)) as [number, number, number];
+  const stepBaseRot = (updatedStep.stepBaseRotation ?? computeBaseRotation(panelShape)) as [number, number, number];
+  const result = applyRotateSteps(stepBase, stepBaseRot, [updatedStep]);
 
-  // Replay ALL steps sequentially from the base, updating stepBase for each.
-  let currentPos = basePos;
-  let currentRot = baseRot;
-  const replayedSteps: RotateStep[] = [];
-
-  for (const step of newSteps) {
-    const updatedStep: RotateStep = {
-      ...step,
-      stepBasePosition: [...currentPos] as [number, number, number],
-      stepBaseRotation: [...currentRot] as [number, number, number],
-    };
-    replayedSteps.push(updatedStep);
-    const result = applyRotateSteps(currentPos, currentRot, [updatedStep]);
-    currentPos = result.position;
-    currentRot = result.rotation;
-  }
-
-  const finalPosition = currentPos;
-  const finalRotation = currentRot;
-
-  // Check auto-extend using the edited step's pivot
-  const editedStep = replayedSteps.find(s => s.id === stepId)!;
-  const pivotForExtend: [number, number, number] = editedStep.pivot;
-  const extendResult = computeAutoExtendLength(panelShape, finalPosition, finalRotation, pivotForExtend, shapes);
+  const pivotForExtend: [number, number, number] = updatedStep.pivot;
+  const extendResult = computeAutoExtendLength(panelShape, result.position, result.rotation, pivotForExtend, shapes);
 
   if (extendResult !== null && extendResult.length > 1) {
     const updatedPanel: Shape = {
       ...panelShape,
-      position: finalPosition,
-      rotation: finalRotation,
-      parameters: { ...panelShape.parameters, rotateSteps: replayedSteps, baseRotatePosition: basePos, baseRotateRotation: baseRot },
+      position: result.position,
+      rotation: result.rotation,
+      parameters: { ...panelShape.parameters, rotateSteps: newSteps },
     };
     await rebuildPanelGeometry(updatedPanel, extendResult.length, pivotForExtend, extendResult.directionSign, extendResult.longestAxisIdx, updateShape);
   } else if (panelShape.parameters?.autoExtendedLength != null) {
@@ -548,27 +532,25 @@ export async function updateRotateStep(
       const longAxisIdx = extendResult?.longestAxisIdx ?? 0;
       const updatedPanel: Shape = {
         ...panelShape,
-        position: finalPosition,
-        rotation: finalRotation,
-        parameters: { ...panelShape.parameters, rotateSteps: replayedSteps, baseRotatePosition: basePos, baseRotateRotation: baseRot },
+        position: result.position,
+        rotation: result.rotation,
+        parameters: { ...panelShape.parameters, rotateSteps: newSteps },
       };
       await rebuildPanelGeometry(updatedPanel, fallbackLength, pivotForExtend, dirSign, longAxisIdx, updateShape);
     } else {
       updateShape(panelShape.id, {
-        position: finalPosition,
-        rotation: finalRotation,
-        parameters: { ...panelShape.parameters, rotateSteps: replayedSteps, baseRotatePosition: basePos, baseRotateRotation: baseRot },
+        position: result.position,
+        rotation: result.rotation,
+        parameters: { ...panelShape.parameters, rotateSteps: newSteps },
       });
     }
   } else {
     updateShape(panelShape.id, {
-      position: finalPosition,
-      rotation: finalRotation,
+      position: result.position,
+      rotation: result.rotation,
       parameters: {
         ...panelShape.parameters,
-        rotateSteps: replayedSteps,
-        baseRotatePosition: basePos,
-        baseRotateRotation: baseRot,
+        rotateSteps: newSteps,
       },
     });
   }
