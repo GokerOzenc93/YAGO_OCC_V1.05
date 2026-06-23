@@ -81,31 +81,33 @@ function RotationRing({ center, axis, radius, onSelect, selectedAxis }: Rotation
   const isSelected = selectedAxis === axis;
   const colors = AXIS_COLORS[axis];
 
-  const { geometry, rotation, labelPos } = useMemo(() => {
+  const { geometry, eulerRotation, labelPos } = useMemo(() => {
     const segments = 64;
     const points: THREE.Vector3[] = [];
     for (let i = 0; i <= segments; i++) {
       const angle = (i / segments) * Math.PI * 2;
-      const x = Math.cos(angle) * radius;
-      const y = Math.sin(angle) * radius;
-      points.push(new THREE.Vector3(x, y, 0));
+      points.push(new THREE.Vector3(Math.cos(angle) * radius, Math.sin(angle) * radius, 0));
     }
     const geo = new THREE.BufferGeometry().setFromPoints(points);
 
-    let rot: [number, number, number] = [0, 0, 0];
-    let lPos: [number, number, number] = [center[0], center[1], center[2]];
+    // Circle is drawn in XY plane (normal = Z).
+    // X ring: perpendicular to X -> lies in YZ plane -> rotate 90 around Y
+    // Y ring: perpendicular to Y -> lies in XZ plane -> rotate 90 around X
+    // Z ring: perpendicular to Z -> lies in XY plane -> no rotation
+    let euler: THREE.Euler;
+    let lPos: [number, number, number];
     if (axis === 'x') {
-      rot = [0, Math.PI / 2, 0];
-      lPos = [center[0], center[1] + radius + 8, center[2]];
+      euler = new THREE.Euler(0, Math.PI / 2, 0);
+      lPos = [center[0], center[1], center[2] + radius + 10];
     } else if (axis === 'y') {
-      rot = [Math.PI / 2, 0, 0];
-      lPos = [center[0] + radius + 8, center[1], center[2]];
+      euler = new THREE.Euler(Math.PI / 2, 0, 0);
+      lPos = [center[0] + radius + 10, center[1], center[2]];
     } else {
-      rot = [0, 0, 0];
-      lPos = [center[0], center[1] + radius + 8, center[2]];
+      euler = new THREE.Euler(0, 0, 0);
+      lPos = [center[0], center[1] + radius + 10, center[2]];
     }
 
-    return { geometry: geo, rotation: rot, labelPos: lPos };
+    return { geometry: geo, eulerRotation: euler, labelPos: lPos };
   }, [center, axis, radius]);
 
   const color = isSelected ? '#ffffff' : hovered ? colors.hover : colors.main;
@@ -118,17 +120,15 @@ function RotationRing({ center, axis, radius, onSelect, selectedAxis }: Rotation
       depthTest: false,
     });
     const line = new THREE.Line(geometry, mat);
+    line.position.set(center[0], center[1], center[2]);
+    line.rotation.copy(eulerRotation);
     line.renderOrder = RENDER_ORDER;
     return line;
-  }, [geometry, color, isSelected, hovered]);
+  }, [geometry, color, isSelected, hovered, center, eulerRotation]);
 
   return (
     <group>
-      <primitive
-        object={lineObj}
-        position={center}
-        rotation={rotation}
-      />
+      <primitive object={lineObj} />
 
       <Html position={labelPos} center zIndexRange={[999, 1000]} style={{ pointerEvents: 'none' }}>
         <div
