@@ -19,22 +19,38 @@ const VertexPoint: React.FC<{
   onPointerOver: () => void;
   onPointerOut: () => void;
 }> = ({ position, index, isHovered, isSelected, onClick, onPointerOver, onPointerOut }) => {
+  const size = isSelected ? 12 : isHovered ? 10 : 8;
+  const color = isSelected ? '#f97316' : isHovered ? '#ef4444' : '#dc2626';
+  const outlineSize = size + 2.5;
+
   return (
-    <mesh
-      position={position}
-      onClick={onClick}
-      onPointerOver={(e) => {
-        e.stopPropagation();
-        onPointerOver();
-      }}
-      onPointerOut={(e) => {
-        e.stopPropagation();
-        onPointerOut();
-      }}
-    >
-      <sphereGeometry args={[isSelected ? 8 : 6, 16, 16]} />
-      <meshBasicMaterial color={isHovered ? '#ef4444' : isSelected ? '#f97316' : '#1f2937'} />
-    </mesh>
+    <group position={position}>
+      {/* Outline ring for contrast */}
+      <mesh
+        renderOrder={998}
+      >
+        <sphereGeometry args={[outlineSize, 16, 16]} />
+        <meshBasicMaterial color="#ffffff" transparent opacity={0.9} depthTest={false} />
+      </mesh>
+      {/* Main point */}
+      <mesh
+        renderOrder={999}
+        onClick={onClick}
+        onPointerOver={(e) => {
+          e.stopPropagation();
+          onPointerOver();
+          document.body.style.cursor = 'pointer';
+        }}
+        onPointerOut={(e) => {
+          e.stopPropagation();
+          onPointerOut();
+          document.body.style.cursor = 'default';
+        }}
+      >
+        <sphereGeometry args={[size, 16, 16]} />
+        <meshBasicMaterial color={color} depthTest={false} />
+      </mesh>
+    </group>
   );
 };
 

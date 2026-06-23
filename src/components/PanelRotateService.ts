@@ -502,61 +502,73 @@ export async function updateRotateStep(
 ): Promise<boolean> {
   const steps: RotateStep[] = panelShape.parameters?.rotateSteps || [];
   const newSteps = steps.map(s => s.id === stepId ? { ...s, angleDeg: newAngleDeg } : s);
-  const updatedStep = newSteps.find(s => s.id === stepId)!;
 
-  // Replay only the single edited step from its own stored base.
-  // This is critical for panels that have been auto-extended: replaying all steps
-  // from the original P0 would produce the wrong position because prior geometry
-  // rebuilds moved the panel's origin (P0 → P1 after step1's rebuild, etc.).
-  const stepBase = (updatedStep.stepBasePosition ?? computeBasePosition(panelShape)) as [number, number, number];
-  const stepBaseRot = (updatedStep.stepBaseRotation ?? computeBaseRotation(panelShape)) as [number, number, number];
-  const result = applyRotateSteps(stepBase, stepBaseRot, [updatedStep]);
+  // Find the base position/rotation before any rotation was applied.
+  // This is the first step's stepBasePosition, or the panel-level base.
+  const basePos = (steps[0]?.stepBasePosition ?? computeBasePosition(panelShape)) as [number, number, number];
+  const baseRot = (steps[0]?.stepBaseRotation ?? computeBaseRotation(panelShape)) as [number, number, number];
 
-  const pivotForExtend: [number, number, number] = updatedStep.pivot;
-  const extendResult = computeAutoExtendLength(panelShape, result.position, result.rotation, pivotForExtend, shapes);
+  // Replay ALL steps sequentially from the base, updating stepBase for each.
+  let currentPos = basePos;
+  let currentRot = baseRot;
+  const replayedSteps: RotateStep[] = [];
+
+  for (const step of newSteps) {
+    const updatedStep: RotateStep = {
+      ...step,
+      stepBasePosition: [...currentPos] as [number, number, number],
+      stepBaseRotation: [...currentRot] as [number, number, number],
+    };
+    replayedSteps.push(updatedStep);
+    const result = applyRotateSteps(currentPos, currentRot, [updatedStep]);
+    currentPos = result.position;
+    currentRot = result.rotation;
+  }
+
+  const finalPosition = currentPos;
+  const finalRotation = currentRot;
+
+  // Check auto-extend using the edited step's pivot
+  const editedStep = replayedSteps.find(s => s.id === stepId)!;
+  const pivotForExtend: [number, number, number] = editedStep.pivot;
+  const extendResult = computeAutoExtendLength(panelShape, finalPosition, finalRotation, pivotForExtend, shapes);
 
   if (extendResult !== null && extendResult.length > 1) {
-    // Rebuild geometry first — this also sets the correct position in one shot,
-    // avoiding a visual jump from an intermediate updateShape with stale geometry.
     const updatedPanel: Shape = {
       ...panelShape,
-      position: result.position,
-      rotation: result.rotation,
-      parameters: { ...panelShape.parameters, rotateSteps: newSteps },
+      position: finalPosition,
+      rotation: finalRotation,
+      parameters: { ...panelShape.parameters, rotateSteps: replayedSteps, baseRotatePosition: basePos, baseRotateRotation: baseRot },
     };
     await rebuildPanelGeometry(updatedPanel, extendResult.length, pivotForExtend, extendResult.directionSign, extendResult.longestAxisIdx, updateShape);
   } else if (panelShape.parameters?.autoExtendedLength != null) {
-    // Panel was previously auto-extended but extension is now blocked (extendResult null
-    // or length ≤ 1 due to a nearby sibling touching the pivot). Rebuild geometry at the
-    // new rotation angle using the previously stored extended length so the panel stays
-    // correctly positioned relative to the pivot rather than jumping to result.position
-    // (which is the pre-rebuild origin and would place the panel completely outside the cube).
     const fallbackLength = panelShape.parameters.autoExtendedLength as number;
     if (fallbackLength > 1) {
       const dirSign = extendResult?.directionSign ?? 1;
       const longAxisIdx = extendResult?.longestAxisIdx ?? 0;
       const updatedPanel: Shape = {
         ...panelShape,
-        position: result.position,
-        rotation: result.rotation,
-        parameters: { ...panelShape.parameters, rotateSteps: newSteps },
+        position: finalPosition,
+        rotation: finalRotation,
+        parameters: { ...panelShape.parameters, rotateSteps: replayedSteps, baseRotatePosition: basePos, baseRotateRotation: baseRot },
       };
       await rebuildPanelGeometry(updatedPanel, fallbackLength, pivotForExtend, dirSign, longAxisIdx, updateShape);
     } else {
       updateShape(panelShape.id, {
-        position: result.position,
-        rotation: result.rotation,
-        parameters: { ...panelShape.parameters, rotateSteps: newSteps },
+        position: finalPosition,
+        rotation: finalRotation,
+        parameters: { ...panelShape.parameters, rotateSteps: replayedSteps, baseRotatePosition: basePos, baseRotateRotation: baseRot },
       });
     }
   } else {
-    // No auto-extend and no prior extension: just update position/rotation with existing geometry.
     updateShape(panelShape.id, {
-      position: result.position,
-      rotation: result.rotation,
+      position: finalPosition,
+      rotation: finalRotation,
       parameters: {
         ...panelShape.parameters,
-        rotateSteps: newSteps,
+        rotateSteps: replayedSteps,
+        baseRotatePosition: basePos,
+        baseRotateRotation: baseRot,
       },
     });
   }
