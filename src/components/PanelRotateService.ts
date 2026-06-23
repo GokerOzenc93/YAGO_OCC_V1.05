@@ -459,29 +459,16 @@ export async function deleteRotateStep(
   const newSteps = steps.slice(0, deletedIdx);
 
   if (newSteps.length > 0) {
-    // Remaining steps exist — position panel at end of last remaining step.
-    const lastStep = newSteps[newSteps.length - 1];
-    const lastResult = applySingleStep(lastStep.stepBasePosition, lastStep.stepBaseRotation, lastStep);
-    const lastPivot = lastStep.pivot;
-
-    const extendResult = computeAutoExtendLength(panelShape, lastResult.position, lastResult.rotation, lastPivot, shapes);
-    if (extendResult !== null && extendResult.length > 1) {
-      const restoredPanel: Shape = {
-        ...panelShape,
-        position: lastResult.position,
-        rotation: lastResult.rotation,
-        parameters: { ...panelShape.parameters, rotateSteps: newSteps, autoExtendedLength: undefined },
-      };
-      await rebuildPanelGeometry(restoredPanel, extendResult.length, lastPivot, extendResult.directionSign, extendResult.longestAxisIdx, updateShape);
-    } else {
-      updateShape(panelShape.id, {
-        position: lastResult.position,
-        rotation: lastResult.rotation,
-        parameters: { ...panelShape.parameters, rotateSteps: newSteps, autoExtendedLength: undefined },
-      });
-    }
+    // The deleted step's stepBasePosition/Rotation IS the panel's actual state after the
+    // last remaining step was fully applied (including any auto-extension). Use it directly.
+    updateShape(panelShape.id, {
+      position: deletedStep.stepBasePosition,
+      rotation: deletedStep.stepBaseRotation,
+      parameters: { ...panelShape.parameters, rotateSteps: newSteps, autoExtendedLength: undefined },
+    });
   } else {
-    // No remaining steps — restore to position before the deleted step was applied.
+    // No remaining steps — restore to position before the first/deleted step was applied,
+    // then let rebuildPanelsForParent rebuild the panel from VF.
     updateShape(panelShape.id, {
       position: deletedStep.stepBasePosition,
       rotation: deletedStep.stepBaseRotation,

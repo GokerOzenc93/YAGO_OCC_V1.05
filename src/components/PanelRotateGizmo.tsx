@@ -162,11 +162,14 @@ function RotationRing({ pivot, axis, radius, onAxisClick }: {
   }, [axis, radius]);
 
   const color = axis === 'x' ? '#dc2626' : axis === 'y' ? '#16a34a' : '#2563eb';
-  const labelOffset: [number, number, number] = axis === 'x'
-    ? [pivot[0], pivot[1] + radius + 12, pivot[2]]
+
+  // Label position relative to the ring center (group is already at pivot).
+  // Place label at the "top" of each ring so they don't overlap.
+  const labelPos: [number, number, number] = axis === 'x'
+    ? [0, radius + 14, 0]
     : axis === 'y'
-    ? [pivot[0] + radius + 12, pivot[1], pivot[2]]
-    : [pivot[0] + radius + 12, pivot[1], pivot[2]];
+    ? [0, 0, radius + 14]
+    : [radius + 14, 0, 0];
 
   return (
     <group position={pivot}>
@@ -183,7 +186,7 @@ function RotationRing({ pivot, axis, radius, onAxisClick }: {
         />
       </mesh>
       {/* Clickable label — HTML so it's always on top */}
-      <Html position={[labelOffset[0] - pivot[0], labelOffset[1] - pivot[1], labelOffset[2] - pivot[2]]} center zIndexRange={[999, 1000]} style={{ pointerEvents: 'none' }}>
+      <Html position={labelPos} center zIndexRange={[999, 1000]} style={{ pointerEvents: 'none' }}>
         <div
           onClick={(e) => { e.stopPropagation(); onAxisClick(axis); }}
           onMouseEnter={() => { setHovered(true); document.body.style.cursor = 'pointer'; }}
