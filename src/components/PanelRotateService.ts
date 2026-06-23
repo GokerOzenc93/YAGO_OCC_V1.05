@@ -39,34 +39,35 @@ function applySingleStep(
   };
 }
 
-// --- Auto-extension helpers ---
+// --- OBB helpers ---
 
-function getParentOBBPlanes(panelShape: Shape, shapes: Shape[]): { normal: THREE.Vector3; d: number }[] | null {
-  const parentId = panelShape.parameters?.parentShapeId;
-  if (!parentId) return null;
-  const parent = shapes.find(s => s.id === parentId);
-  if (!parent || !parent.geometry) return null;
+interface OBBPlane {
+  normal: THREE.Vector3;
+  d: number;
+}
 
-  const pos = parent.geometry.getAttribute('position') as THREE.BufferAttribute;
+function getShapeOBBPlanes(shape: Shape): OBBPlane[] | null {
+  if (!shape.geometry) return null;
+  const pos = shape.geometry.getAttribute('position') as THREE.BufferAttribute;
   if (!pos) return null;
   const bbox = new THREE.Box3().setFromBufferAttribute(pos);
 
-  const parentQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(...parent.rotation, 'XYZ'));
-  const parentPos = new THREE.Vector3(...parent.position);
-  const parentScale = new THREE.Vector3(...parent.scale);
+  const quat = new THREE.Quaternion().setFromEuler(new THREE.Euler(...shape.rotation, 'XYZ'));
+  const shapePos = new THREE.Vector3(...shape.position);
+  const shapeScale = new THREE.Vector3(...shape.scale);
 
   const center = new THREE.Vector3();
   bbox.getCenter(center);
-  center.multiply(parentScale).applyQuaternion(parentQuat).add(parentPos);
+  center.multiply(shapeScale).applyQuaternion(quat).add(shapePos);
 
   const halfSize = new THREE.Vector3();
-  bbox.getSize(halfSize).multiply(parentScale).multiplyScalar(0.5);
+  bbox.getSize(halfSize).multiply(shapeScale).multiplyScalar(0.5);
 
-  const axisX = new THREE.Vector3(1, 0, 0).applyQuaternion(parentQuat).normalize();
-  const axisY = new THREE.Vector3(0, 1, 0).applyQuaternion(parentQuat).normalize();
-  const axisZ = new THREE.Vector3(0, 0, 1).applyQuaternion(parentQuat).normalize();
+  const axisX = new THREE.Vector3(1, 0, 0).applyQuaternion(quat).normalize();
+  const axisY = new THREE.Vector3(0, 1, 0).applyQuaternion(quat).normalize();
+  const axisZ = new THREE.Vector3(0, 0, 1).applyQuaternion(quat).normalize();
 
-  const planes: { normal: THREE.Vector3; d: number }[] = [];
+  const planes: OBBPlane[] = [];
   const axesAndHalves: [THREE.Vector3, number][] = [
     [axisX, halfSize.x],
     [axisY, halfSize.y],
@@ -83,10 +84,18 @@ function getParentOBBPlanes(panelShape: Shape, shapes: Shape[]): { normal: THREE
   return planes;
 }
 
+function getParentOBBPlanes(panelShape: Shape, shapes: Shape[]): OBBPlane[] | null {
+  const parentId = panelShape.parameters?.parentShapeId;
+  if (!parentId) return null;
+  const parent = shapes.find(s => s.id === parentId);
+  if (!parent) return null;
+  return getShapeOBBPlanes(parent);
+}
+
 function rayIntersectOBBPlanes(
   origin: THREE.Vector3,
   dir: THREE.Vector3,
-  planes: { normal: THREE.Vector3; d: number }[]
+  planes: OBBPlane[]
 ): number | null {
   let tMin = -Infinity;
   let tMax = Infinity;
@@ -112,6 +121,40 @@ function rayIntersectOBBPlanes(
   if (tMax < 0) return null;
   return tMax > 0.01 ? tMax : null;
 }
+
+// Ray-OBB intersection returning entry distance (tMin) for sibling collision.
+function rayIntersectOBBEntry(
+  origin: THREE.Vector3,
+  dir: THREE.Vector3,
+  planes: OBBPlane[]
+): number | null {
+  let tMin = -Infinity;
+  let tMax = Infinity;
+
+  for (const plane of planes) {
+    const denom = plane.normal.dot(dir);
+    const dist = plane.d - plane.normal.dot(origin);
+
+    if (Math.abs(denom) < 1e-9) {
+      if (dist < 0) return null;
+      continue;
+    }
+
+    const t = dist / denom;
+    if (denom < 0) {
+      tMin = Math.max(tMin, t);
+    } else {
+      tMax = Math.min(tMax, t);
+    }
+  }
+
+  if (tMin > tMax) return null;
+  if (tMin < 0 && tMax < 0) return null;
+  // Return the ENTRY point (tMin) if positive; if ray starts inside (tMin<0), return 0.
+  return tMin > 0.5 ? tMin : null;
+}
+
+// --- Auto-extension ---
 
 interface AutoExtendResult {
   length: number;
@@ -202,6 +245,7 @@ function computeAutoExtendLength(
   const bestWorldDir = bestLocalDir.clone().applyQuaternion(panelQuat).normalize()
     .multiplyScalar(bestDirSign);
 
+  // Use OBB-based sibling collision (not world-AABB) for accurate interaction with rotated panels.
   const parentId = panelShape.parameters?.parentShapeId;
   const siblings = shapes.filter(
     s => s.type === 'panel' &&
@@ -213,42 +257,29 @@ function computeAutoExtendLength(
   let closestCollision = bestDist;
 
   for (const sib of siblings) {
-    const sibAttr = sib.geometry!.getAttribute('position') as THREE.BufferAttribute;
-    if (!sibAttr) continue;
-    const sibBbox = new THREE.Box3().setFromBufferAttribute(sibAttr);
-    const sibMat = new THREE.Matrix4().compose(
-      new THREE.Vector3(...sib.position),
-      new THREE.Quaternion().setFromEuler(new THREE.Euler(...sib.rotation, 'XYZ')),
-      new THREE.Vector3(...sib.scale)
-    );
-    const sibCorners: THREE.Vector3[] = [];
-    const sMn = sibBbox.min;
-    const sMx = sibBbox.max;
-    for (let xi = 0; xi <= 1; xi++)
-      for (let yi = 0; yi <= 1; yi++)
-        for (let zi = 0; zi <= 1; zi++)
-          sibCorners.push(new THREE.Vector3(
-            xi === 0 ? sMn.x : sMx.x,
-            yi === 0 ? sMn.y : sMx.y,
-            zi === 0 ? sMn.z : sMx.z
-          ).applyMatrix4(sibMat));
+    const sibOBB = getShapeOBBPlanes(sib);
+    if (!sibOBB) continue;
 
-    const sibWorldBbox = new THREE.Box3().setFromPoints(sibCorners);
-    const expandedSibBbox = sibWorldBbox.clone().expandByScalar(0.5);
-    if (expandedSibBbox.containsPoint(pivotVec)) continue;
+    // Check if pivot is inside sibling OBB — skip if so.
+    const pivotInsideSib = rayIntersectOBBEntry(pivotVec, bestWorldDir.clone(), sibOBB);
+    // Also test with negated direction to confirm we're not inside.
+    const pivotInsideNeg = rayIntersectOBBEntry(pivotVec, bestWorldDir.clone().negate(), sibOBB);
+    if (pivotInsideSib === null && pivotInsideNeg === null) {
+      // Ray misses sibling in both directions — no collision.
+      continue;
+    }
+    // If entry is null (meaning origin is inside or ray misses), skip this sibling.
+    if (pivotInsideSib === null) continue;
 
-    const sibHit = new THREE.Vector3();
-    const sibRay = new THREE.Ray(pivotVec.clone(), bestWorldDir.clone());
-    if (sibRay.intersectBox(sibWorldBbox, sibHit)) {
-      const dist = sibHit.distanceTo(pivotVec);
-      if (dist > 0.5 && dist < closestCollision) {
-        closestCollision = dist;
-      }
+    if (pivotInsideSib < closestCollision) {
+      closestCollision = pivotInsideSib;
     }
   }
 
   return { length: closestCollision, directionSign: bestDirSign, longestAxisIdx: bestAxisIdx };
 }
+
+// --- Geometry rebuild ---
 
 async function rebuildPanelGeometry(
   panelShape: Shape,
@@ -292,6 +323,20 @@ async function rebuildPanelGeometry(
     );
     const pivotVec = new THREE.Vector3(...pivot);
 
+    // Position the new geometry so that the pivot end stays at the world pivot.
+    // The pivot is at local [0 or newLength] on the longestAxis, and centered on others.
+    const newBboxAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
+    const newBbox = new THREE.Box3().setFromBufferAttribute(newBboxAttr);
+    const newSize = new THREE.Vector3();
+    newBbox.getSize(newSize);
+
+    const newLocalPivot = new THREE.Vector3();
+    newLocalPivot.setComponent(longestAxisIdx, directionSign === 1 ? 0 : newLength);
+    newLocalPivot.setComponent(secondAxisIdx, newSize.getComponent(secondAxisIdx) * 0.5);
+    newLocalPivot.setComponent(thinAxisIdx, newSize.getComponent(thinAxisIdx) * 0.5);
+
+    // Adjust for any off-center offset of the pivot on secondary/thin axes.
+    // Use old geometry + position to determine the actual local pivot offset.
     const panelWorldMatrix = new THREE.Matrix4().compose(
       new THREE.Vector3(...panelShape.position),
       panelQuat,
@@ -299,15 +344,13 @@ async function rebuildPanelGeometry(
     );
     const invMatrix = panelWorldMatrix.clone().invert();
     const localPivot = pivotVec.clone().applyMatrix4(invMatrix);
-
     const origCenter = new THREE.Vector3();
     panelLocalBbox.getCenter(origCenter);
     const relPivot = localPivot.clone().sub(origCenter);
 
-    const newLocalPivot = new THREE.Vector3();
-    newLocalPivot.setComponent(longestAxisIdx, directionSign === 1 ? 0 : newLength);
-    newLocalPivot.setComponent(secondAxisIdx, secondLen * 0.5 + relPivot.getComponent(secondAxisIdx));
-    newLocalPivot.setComponent(thinAxisIdx, thickness * 0.5 + relPivot.getComponent(thinAxisIdx));
+    // Apply secondary/thin offsets from original pivot relationship.
+    newLocalPivot.setComponent(secondAxisIdx, newSize.getComponent(secondAxisIdx) * 0.5 + relPivot.getComponent(secondAxisIdx));
+    newLocalPivot.setComponent(thinAxisIdx, newSize.getComponent(thinAxisIdx) * 0.5 + relPivot.getComponent(thinAxisIdx));
 
     const rotatedLocalPivot = newLocalPivot.clone().applyQuaternion(panelQuat);
     const newPos: [number, number, number] = [
@@ -332,6 +375,8 @@ async function rebuildPanelGeometry(
     console.error('[PanelRotateService] Failed to rebuild panel geometry:', err);
   }
 }
+
+// --- Sibling rebuild ---
 
 async function rebuildSiblingsAfterRotate(rotatedPanel: Shape, shapes: Shape[]): Promise<void> {
   const parentId = rotatedPanel.parameters?.parentShapeId;
@@ -381,6 +426,7 @@ export async function executePanelRotate(
   const newSteps = [...existingSteps, newStep];
   const result = applySingleStep(currentPosition, currentRotation, newStep);
 
+  // First update position/rotation so the panel is at post-rotation state.
   updateShape(panelShape.id, {
     position: result.position,
     rotation: result.rotation,
@@ -390,6 +436,8 @@ export async function executePanelRotate(
     },
   });
 
+  // Compute auto-extension using the post-rotation state.
+  // Use the CURRENT geometry for axis detection (it correctly identifies thin vs long axes).
   const extendResult = computeAutoExtendLength(panelShape, result.position, result.rotation, pivot, shapes);
   if (extendResult !== null && extendResult.length > 1) {
     const updatedPanel: Shape = {
@@ -419,15 +467,23 @@ export async function updateRotateStep(
   const updatedSteps = steps.map(s => s.id === stepId ? { ...s, angleDeg: newAngleDeg } : s);
   const step = updatedSteps[stepIdx];
 
-  // Replay from the step's own stored base — this accounts for geometry rebuilds between steps.
+  // Replay from the step's own stored base.
   const result = applySingleStep(step.stepBasePosition, step.stepBaseRotation, step);
   const pivot = step.pivot;
 
-  const extendResult = computeAutoExtendLength(panelShape, result.position, result.rotation, pivot, shapes);
+  // Use step's base state as reference for geometry — this is the panel's state BEFORE
+  // this step was applied, consistent with the original geometry dimensions.
+  const refPanel: Shape = {
+    ...panelShape,
+    position: step.stepBasePosition,
+    rotation: step.stepBaseRotation,
+  };
+
+  const extendResult = computeAutoExtendLength(refPanel, result.position, result.rotation, pivot, shapes);
   if (extendResult !== null && extendResult.length > 1) {
     const updatedPanel: Shape = {
       ...panelShape,
-      position: result.position,
+      position: step.stepBasePosition,
       rotation: result.rotation,
       parameters: { ...panelShape.parameters, rotateSteps: updatedSteps },
     };
@@ -455,40 +511,43 @@ export async function deleteRotateStep(
   if (deletedIdx < 0) return false;
 
   const deletedStep = steps[deletedIdx];
-  // Remove deleted step and all subsequent steps (they depend on positions after the deleted one).
+  // Remove deleted step and all subsequent steps.
   const newSteps = steps.slice(0, deletedIdx);
 
   if (newSteps.length > 0) {
     const lastStep = newSteps[newSteps.length - 1];
 
-    // deletedStep.stepBasePosition/Rotation is the panel's ACTUAL state after lastStep
-    // was fully applied (rotation + auto-extension). Use it as reference for rebuildPanelGeometry
-    // so that (position, geometry) are consistent — secondary/thin axes never change during
-    // extension, so relPivot on those axes will be correct even though the long axis may differ.
+    // Replay the last remaining step to get its post-rotation state.
+    const lastResult = applySingleStep(lastStep.stepBasePosition, lastStep.stepBaseRotation, lastStep);
+
+    // Use lastStep's base state as reference for geometry (same logic as updateRotateStep).
     const refPanel: Shape = {
       ...panelShape,
-      position: deletedStep.stepBasePosition,
-      rotation: deletedStep.stepBaseRotation,
+      position: lastStep.stepBasePosition,
+      rotation: lastStep.stepBaseRotation,
       parameters: { ...panelShape.parameters, rotateSteps: newSteps, autoExtendedLength: undefined },
     };
 
-    // Compute auto-extension for the last remaining step's post-rotation state.
-    const lastResult = applySingleStep(lastStep.stepBasePosition, lastStep.stepBaseRotation, lastStep);
     const extendResult = computeAutoExtendLength(refPanel, lastResult.position, lastResult.rotation, lastStep.pivot, shapes);
 
     if (extendResult !== null && extendResult.length > 1) {
-      await rebuildPanelGeometry(refPanel, extendResult.length, lastStep.pivot, extendResult.directionSign, extendResult.longestAxisIdx, updateShape);
+      const geoRefPanel: Shape = {
+        ...panelShape,
+        position: lastStep.stepBasePosition,
+        rotation: lastResult.rotation,
+        parameters: { ...panelShape.parameters, rotateSteps: newSteps, autoExtendedLength: undefined },
+      };
+      await rebuildPanelGeometry(geoRefPanel, extendResult.length, lastStep.pivot, extendResult.directionSign, extendResult.longestAxisIdx, updateShape);
     } else {
+      // No extension needed — place at post-rotation of last step.
       updateShape(panelShape.id, {
-        position: deletedStep.stepBasePosition,
-        rotation: deletedStep.stepBaseRotation,
-        parameters: refPanel.parameters,
+        position: lastResult.position,
+        rotation: lastResult.rotation,
+        parameters: { ...panelShape.parameters, rotateSteps: newSteps, autoExtendedLength: undefined },
       });
     }
   } else {
     // No remaining steps — restore to position before the deleted step was applied.
-    // rebuildPanelsForParent (called by rebuildSiblingsAfterRotate) will rebuild
-    // the panel from VF since rotateSteps is now empty.
     updateShape(panelShape.id, {
       position: deletedStep.stepBasePosition,
       rotation: deletedStep.stepBaseRotation,
