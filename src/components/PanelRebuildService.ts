@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { useAppStore } from '../store';
+import { applyRotateSteps, type RotateStep } from './PanelRotateService';
 
 const rebuildInFlight = new Set<string>();
 
@@ -155,6 +156,23 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           } catch (err) {
             console.error('Failed to apply extrude steps during rebuild for panel', panel.id, err);
           }
+        }
+
+        // Apply rotation steps: re-derive position and rotation from the stored
+        // base values so that subsequent siblings see the rotated panel as an
+        // obstacle. The auto-extend/trim for the rotated panel is handled by the
+        // boolean intersection with the parent and sibling cuts above.
+        const rotateSteps: RotateStep[] = panel.parameters?.rotateSteps || [];
+        if (rotateSteps.length > 0) {
+          const basePos: [number, number, number] = panel.parameters?.baseRotatePosition ?? [...panel.position];
+          const baseRot: [number, number, number] = panel.parameters?.baseRotateRotation ?? [...panel.rotation];
+          const { position: newPos, rotation: newRot } = applyRotateSteps(basePos, baseRot, rotateSteps);
+          rebuiltPanel = {
+            ...rebuiltPanel,
+            position: newPos,
+            rotation: newRot,
+            parameters: { ...rebuiltPanel.parameters, baseRotatePosition: basePos, baseRotateRotation: baseRot, rotateSteps },
+          };
         }
 
         workingShapes = [...workingShapes, rebuiltPanel];
