@@ -459,16 +459,34 @@ export async function deleteRotateStep(
   const newSteps = steps.slice(0, deletedIdx);
 
   if (newSteps.length > 0) {
-    // The deleted step's stepBasePosition/Rotation IS the panel's actual state after the
-    // last remaining step was fully applied (including any auto-extension). Use it directly.
-    updateShape(panelShape.id, {
-      position: deletedStep.stepBasePosition,
-      rotation: deletedStep.stepBaseRotation,
-      parameters: { ...panelShape.parameters, rotateSteps: newSteps, autoExtendedLength: undefined },
-    });
+    // Remaining steps exist. Recompute auto-extension for the last remaining step
+    // so the geometry matches that step's angle (not the deleted step's extension).
+    const lastStep = newSteps[newSteps.length - 1];
+    const lastResult = applySingleStep(lastStep.stepBasePosition, lastStep.stepBaseRotation, lastStep);
+    const lastPivot = lastStep.pivot;
+
+    const extendResult = computeAutoExtendLength(panelShape, lastResult.position, lastResult.rotation, lastPivot, shapes);
+    if (extendResult !== null && extendResult.length > 1) {
+      const restoredPanel: Shape = {
+        ...panelShape,
+        position: lastResult.position,
+        rotation: lastResult.rotation,
+        parameters: { ...panelShape.parameters, rotateSteps: newSteps, autoExtendedLength: undefined },
+      };
+      await rebuildPanelGeometry(restoredPanel, extendResult.length, lastPivot, extendResult.directionSign, extendResult.longestAxisIdx, updateShape);
+    } else {
+      // No extension needed — use the deleted step's base (which is the post-extension
+      // state of the last remaining step, already correct).
+      updateShape(panelShape.id, {
+        position: deletedStep.stepBasePosition,
+        rotation: deletedStep.stepBaseRotation,
+        parameters: { ...panelShape.parameters, rotateSteps: newSteps, autoExtendedLength: undefined },
+      });
+    }
   } else {
-    // No remaining steps — restore to position before the first/deleted step was applied,
-    // then let rebuildPanelsForParent rebuild the panel from VF.
+    // No remaining steps — restore to position before the deleted step was applied.
+    // rebuildPanelsForParent (called by rebuildSiblingsAfterRotate) will rebuild
+    // the panel from VF since rotateSteps is now empty.
     updateShape(panelShape.id, {
       position: deletedStep.stepBasePosition,
       rotation: deletedStep.stepBaseRotation,
