@@ -599,9 +599,22 @@ export async function deleteRotateStep(
       await rebuildSiblingsAfterRotate(panelShape, shapes);
       return true;
     }
+
+    // Remaining steps exist but no auto-extension — position to end of last remaining step.
+    updateShape(panelShape.id, {
+      position: lastResult.position,
+      rotation: lastResult.rotation,
+      parameters: {
+        ...panelShape.parameters,
+        rotateSteps: newSteps,
+        autoExtendedLength: undefined,
+      },
+    });
+    await rebuildSiblingsAfterRotate(panelShape, shapes);
+    return true;
   }
 
-  // No remaining steps, or no auto-extension needed — just restore.
+  // No remaining steps — restore to pre-rotation base position.
   updateShape(panelShape.id, {
     position: restorePos,
     rotation: restoreRot,
