@@ -60,15 +60,6 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
       workingVirtualFaces = workingVirtualFaces.map(f => freshById.get(f.id) || f);
       builtVfIds.add(currentVfId);
 
-      // Panels with active rotateSteps keep their current geometry/position/rotation.
-      // They've already been extended by PanelRotateService. We just add them
-      // as-is so other panels see them as obstacles.
-      const hasRotateSteps = panel.parameters?.rotateSteps && panel.parameters.rotateSteps.length > 0;
-      if (hasRotateSteps) {
-        workingShapes = [...workingShapes, panel];
-        continue;
-      }
-
       const vf = freshFaces.find(f => f.id === currentVfId);
       if (!vf || vf.vertices.length < 3) {
         workingShapes = [...workingShapes, panel];
