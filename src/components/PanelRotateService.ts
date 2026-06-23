@@ -459,28 +459,30 @@ export async function deleteRotateStep(
   const newSteps = steps.slice(0, deletedIdx);
 
   if (newSteps.length > 0) {
-    // Remaining steps exist. Recompute auto-extension for the last remaining step
-    // so the geometry matches that step's angle (not the deleted step's extension).
     const lastStep = newSteps[newSteps.length - 1];
-    const lastResult = applySingleStep(lastStep.stepBasePosition, lastStep.stepBaseRotation, lastStep);
-    const lastPivot = lastStep.pivot;
 
-    const extendResult = computeAutoExtendLength(panelShape, lastResult.position, lastResult.rotation, lastPivot, shapes);
+    // deletedStep.stepBasePosition/Rotation is the panel's ACTUAL state after lastStep
+    // was fully applied (rotation + auto-extension). Use it as reference for rebuildPanelGeometry
+    // so that (position, geometry) are consistent — secondary/thin axes never change during
+    // extension, so relPivot on those axes will be correct even though the long axis may differ.
+    const refPanel: Shape = {
+      ...panelShape,
+      position: deletedStep.stepBasePosition,
+      rotation: deletedStep.stepBaseRotation,
+      parameters: { ...panelShape.parameters, rotateSteps: newSteps, autoExtendedLength: undefined },
+    };
+
+    // Compute auto-extension for the last remaining step's post-rotation state.
+    const lastResult = applySingleStep(lastStep.stepBasePosition, lastStep.stepBaseRotation, lastStep);
+    const extendResult = computeAutoExtendLength(refPanel, lastResult.position, lastResult.rotation, lastStep.pivot, shapes);
+
     if (extendResult !== null && extendResult.length > 1) {
-      const restoredPanel: Shape = {
-        ...panelShape,
-        position: lastResult.position,
-        rotation: lastResult.rotation,
-        parameters: { ...panelShape.parameters, rotateSteps: newSteps, autoExtendedLength: undefined },
-      };
-      await rebuildPanelGeometry(restoredPanel, extendResult.length, lastPivot, extendResult.directionSign, extendResult.longestAxisIdx, updateShape);
+      await rebuildPanelGeometry(refPanel, extendResult.length, lastStep.pivot, extendResult.directionSign, extendResult.longestAxisIdx, updateShape);
     } else {
-      // No extension needed — use the deleted step's base (which is the post-extension
-      // state of the last remaining step, already correct).
       updateShape(panelShape.id, {
         position: deletedStep.stepBasePosition,
         rotation: deletedStep.stepBaseRotation,
-        parameters: { ...panelShape.parameters, rotateSteps: newSteps, autoExtendedLength: undefined },
+        parameters: refPanel.parameters,
       });
     }
   } else {
