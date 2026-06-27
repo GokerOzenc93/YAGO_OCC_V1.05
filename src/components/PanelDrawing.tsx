@@ -38,10 +38,10 @@ function snapToFlatGroup(gi: number, groups: ReturnType<typeof groupCoplanarFace
 // ─── RENK YÖNETİMİ ───────────────────────────────────────────────────────
 const PANEL_COLORS = {
   selected: {
-    panel:         '#ff0000',
-    panelEmissive: '#330000',
-    edge:          '#111418',
-    shapeEdge:     '#111418',
+    panel:         '#a8917a',
+    panelEmissive: '#2a2a2a',
+    edge:          '#a8917a',   // ← soft taupe, sıcak toprak tonu
+    shapeEdge:     '#a8917a',
   },
   edge: {
     // Yumuşak gri — koyu siyah yerine. Düşük belirginlik + birleşim
@@ -215,8 +215,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     : isSelected
       ? PANEL_COLORS.selected.shapeEdge
       : PANEL_COLORS.edge.default;
-  const edgeWidth = (isSelected || isPanelRowSelected) ? EDGE_LINE_WIDTH + 0.5 : EDGE_LINE_WIDTH;
-
+      const edgeWidth = (isSelected || isPanelRowSelected) ? EDGE_LINE_WIDTH + 1.5 : EDGE_LINE_WIDTH;
   const handleClick = (e: any) => {
     e.stopPropagation();
     if (isFaceExtrudeTarget) return;
@@ -403,9 +402,9 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           {extrudeHighlightGeometry && (
             <mesh geometry={extrudeHighlightGeometry} renderOrder={11}>
               <meshBasicMaterial
-                color={0x38bdf8}
+                color={0xef4444}        /* red-500 — hover için baskın kırmızı */
                 transparent
-                opacity={0.55}
+                opacity={0.75}
                 side={THREE.DoubleSide}
                 depthTest={false}
                 depthWrite={false}
@@ -415,9 +414,9 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           {extrudeSelectedGeometry && (
             <mesh geometry={extrudeSelectedGeometry} renderOrder={12}>
               <meshBasicMaterial
-                color={0xf97316}
+                color={0xdc2626}        /* red-600 — seçim için koyu kırmızı */
                 transparent
-                opacity={0.75}
+                opacity={0.9}
                 side={THREE.DoubleSide}
                 depthTest={false}
                 depthWrite={false}
