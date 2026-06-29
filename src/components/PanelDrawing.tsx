@@ -1,6 +1,7 @@
 import React, { useRef, useMemo, useState, useEffect } from 'react';
 import * as THREE from 'three';
 import { Line } from '@react-three/drei';
+import { useThree } from '@react-three/fiber';
 import { useAppStore, ViewMode } from '../store';
 import { useShallow } from 'zustand/react/shallow';
 import { extractFacesFromGeometry, groupCoplanarFaces, createFaceHighlightGeometry } from './FaceEditor';
@@ -36,12 +37,16 @@ function snapToFlatGroup(gi: number, groups: ReturnType<typeof groupCoplanarFace
 }
 
 // ─── RENK YÖNETİMİ ───────────────────────────────────────────────────────
+// Seçim profesyonel CAD konvansiyonuyla: DOLGU asla değişmez, vurgu kenardan
+// (doygun aksan rengi + kalın stroke) ve seçili panelde çapraz TARAMA ile gelir.
 const PANEL_COLORS = {
   selected: {
-    panel:         '#a8917a',
+    // Şekil (parent) seçili kenar aksanı.
+    shapeEdge:     '#e8590c',
+    // Tarama (hatch) çizgi rengi — belli belirsiz, grimsi.
+    hatch:         '#8a9097',
+    // Nötr emissive — panel dolgusu seçimde solmaz.
     panelEmissive: '#2a2a2a',
-    edge:          '#a8917a',   // ← soft taupe, sıcak toprak tonu
-    shapeEdge:     '#a8917a',
   },
   edge: {
     // Yumuşak gri — koyu siyah yerine. Düşük belirginlik + birleşim
@@ -53,6 +58,34 @@ const PANEL_COLORS = {
     emissive: '#f1c40f',
   },
 } as const;
+
+// ─── SEÇİM TARAMASI (HATCH) ──────────────────────────────────────────────
+// 45° çapraz çizgiler, EKRAN UZAYINDA sabit aralıklı (gl_FragCoord). Panel
+// ölçeğinden / UV'den bağımsız → her panelde aynı sıklıkta, gerçek CAD taraması.
+// Çizgiler arası boşluk şeffaf (discard) — "soft wash" yok, net tarama var.
+const HATCH_VERT = /* glsl */`
+  void main() {
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+const HATCH_FRAG = /* glsl */`
+  precision mediump float;
+  uniform vec3  uColor;
+  uniform float uSpacing;     // çizgiler arası (CSS px)
+  uniform float uThickness;   // çizgi kalınlığı (CSS px)
+  uniform float uOpacity;
+  uniform float uPixelRatio;  // CSS px → cihaz pikseli (drei <Line> ile eşleşsin diye)
+  void main() {
+    float pr = max(uPixelRatio, 1.0);
+    float d = gl_FragCoord.x + gl_FragCoord.y;      // 45° diagonal
+    float m = mod(d, uSpacing * pr);
+    float t = uThickness * pr;
+    // ~1px yumuşak kenarla antialias
+    float line = 1.0 - smoothstep(t, t + pr, m);
+    if (line < 0.02) discard;
+    gl_FragColor = vec4(uColor, uOpacity * line);
+  }
+`;
 
 // ─── Z-FIGHTING + ÇİZGİ KALİTESİ ─────────────────────────────────────────
 //
@@ -83,6 +116,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   isSelected
 }) => {
   const meshRef = useRef<THREE.Mesh>(null);
+  const { gl } = useThree();
   const {
     selectShape,
     selectSecondaryShape,
@@ -177,6 +211,33 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     return pts.length ? pts : null;
   }, [edgeGeometry]);
 
+  // Seçim taraması materyali — tek instance, hook sırası bozulmasın diye
+  // erken return'den ÖNCE kuruluyor.
+  const hatchMaterial = useMemo(() => new THREE.ShaderMaterial({
+    uniforms: {
+      uColor:      { value: new THREE.Color(PANEL_COLORS.selected.hatch) },
+      uSpacing:    { value: 7.0 },   // CSS px — çizgiler arası
+      uThickness:  { value: 2.0 },   // CSS px — outline ağırlığında + bir tık
+      uOpacity:    { value: 0.35 },
+      uPixelRatio: { value: 1.0 },
+    },
+    vertexShader: HATCH_VERT,
+    fragmentShader: HATCH_FRAG,
+    transparent: true,
+    depthTest: true,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
+  }), []);
+
+  // Tarama kalınlığı/aralığı CSS px; cihaz pikseline ölçekle ki drei <Line>
+  // (Line2, CSS px) ile aynı görünür kalınlıkta olsun.
+  useEffect(() => {
+    hatchMaterial.uniforms.uPixelRatio.value = gl.getPixelRatio();
+  }, [gl, hatchMaterial]);
+
   const isFaceExtrudeTarget = faceExtrudeMode && shape.id === faceExtrudeTargetPanelId;
   const isFaceExtrudeXray = faceExtrudeMode && shape.id !== faceExtrudeTargetPanelId;
   const isRaycastOnParent = raycastMode && parentShapeId && parentShapeId === selectedShapeId;
@@ -209,13 +270,16 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   const isXray = viewMode === ViewMode.XRAY;
 
   const baseColor = shape.color || '#ffffff';
-  const materialColor = isPanelRowSelected ? PANEL_COLORS.selected.panel : baseColor;
-  const edgeColor = isPanelRowSelected
-    ? PANEL_COLORS.selected.edge
-    : isSelected
-      ? PANEL_COLORS.selected.shapeEdge
-      : PANEL_COLORS.edge.default;
-      const edgeWidth = (isSelected || isPanelRowSelected) ? EDGE_LINE_WIDTH + 1.5 : EDGE_LINE_WIDTH;
+  // Dolgu seçimde değişmez — seçim yalnız kırmızı tarama ile gösterilir.
+  const materialColor = baseColor;
+  // Seçili panelin kenarı normal kalır (siyah kalın çerçeve yok); seçim
+  // kırmızı tarama ile gösterilir. Parent seçimde turuncu aksan korunur.
+  const edgeColor = isSelected ? PANEL_COLORS.selected.shapeEdge : PANEL_COLORS.edge.default;
+  const edgeWidth = isSelected ? EDGE_LINE_WIDTH + 1.5 : EDGE_LINE_WIDTH;
+
+  // Tarama yalnız panel satırı seçiliyken ve dolgu görünen modlarda.
+  const showHatch = isPanelRowSelected && !isWireframe;
+
   const handleClick = (e: any) => {
     e.stopPropagation();
     if (isFaceExtrudeTarget) return;
@@ -276,6 +340,13 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
         </mesh>
       )}
 
+      {/* Seçim taraması (solid mod) */}
+      {showHatch && !isXray && (
+        <mesh geometry={shape.geometry} renderOrder={2} raycast={() => null}>
+          <primitive object={hatchMaterial} attach="material" />
+        </mesh>
+      )}
+
       {!isWireframe && !isXray && edgePoints && (
         <Line
           points={edgePoints}
@@ -331,6 +402,12 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
               polygonOffsetUnits={MESH_OFFSET_UNITS}
             />
           </mesh>
+          {/* Seçim taraması (x-ray mod) */}
+          {showHatch && (
+            <mesh geometry={shape.geometry} renderOrder={2} raycast={() => null}>
+              <primitive object={hatchMaterial} attach="material" />
+            </mesh>
+          )}
           {edgePoints && (
             <Line
               points={edgePoints}
@@ -402,9 +479,9 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           {extrudeHighlightGeometry && (
             <mesh geometry={extrudeHighlightGeometry} renderOrder={11}>
               <meshBasicMaterial
-                color={0xef4444}        /* red-500 — hover için baskın kırmızı */
+                color={0x38bdf8}
                 transparent
-                opacity={0.75}
+                opacity={0.55}
                 side={THREE.DoubleSide}
                 depthTest={false}
                 depthWrite={false}
@@ -414,9 +491,9 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           {extrudeSelectedGeometry && (
             <mesh geometry={extrudeSelectedGeometry} renderOrder={12}>
               <meshBasicMaterial
-                color={0xdc2626}        /* red-600 — seçim için koyu kırmızı */
+                color={0xf97316}
                 transparent
-                opacity={0.9}
+                opacity={0.75}
                 side={THREE.DoubleSide}
                 depthTest={false}
                 depthWrite={false}
