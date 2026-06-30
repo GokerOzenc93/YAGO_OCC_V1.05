@@ -654,12 +654,12 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
             {/* shaft */}
             <mesh position={[0, panelArrow.len * 0.28, 0]} renderOrder={10}>
               <cylinderGeometry args={[panelArrow.len * 0.045, panelArrow.len * 0.045, panelArrow.len * 0.55, 8]} />
-              <meshBasicMaterial color="#e85d04" depthTest={false} transparent opacity={0.95} />
+              <meshBasicMaterial color="#ff0000" depthTest={false} transparent opacity={0.95} />
             </mesh>
             {/* head */}
             <mesh position={[0, panelArrow.len * 0.72, 0]} renderOrder={10}>
               <coneGeometry args={[panelArrow.len * 0.12, panelArrow.len * 0.28, 8]} />
-              <meshBasicMaterial color="#e85d04" depthTest={false} transparent opacity={0.95} />
+              <meshBasicMaterial color="#ff0000" depthTest={false} transparent opacity={0.95} />
             </mesh>
           </group>
         )}

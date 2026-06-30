@@ -54,8 +54,8 @@ const PANEL_COLORS = {
     default: '#5b6470',
   },
   arrow: {
-    fill:    '#2563eb',  // profesyonel mavi (blue-600) — 2B ok gövdesi
-    outline: '#1e3a8a',  // koyu mavi kenar (blue-900)
+    fill:    '#ff0000',  // tam kırmızı — 2B ok gövdesi
+    outline: '#7f1d1d',  // koyu kırmızı kenar (red-900)
   },
 } as const;
 
@@ -480,7 +480,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           {extrudeHighlightGeometry && (
             <mesh geometry={extrudeHighlightGeometry} renderOrder={11}>
               <meshBasicMaterial
-                color={0x38bdf8}
+                color={0xff0000}
                 transparent
                 opacity={0.55}
                 side={THREE.DoubleSide}
@@ -492,9 +492,9 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           {extrudeSelectedGeometry && (
             <mesh geometry={extrudeSelectedGeometry} renderOrder={12}>
               <meshBasicMaterial
-                color={0xf97316}
+                color={0xff0000}
                 transparent
-                opacity={0.75}
+                opacity={0.85}
                 side={THREE.DoubleSide}
                 depthTest={false}
                 depthWrite={false}
