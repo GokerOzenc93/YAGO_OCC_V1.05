@@ -413,9 +413,9 @@ function PanelPreview2D({ shape, arrowRotated }: { dims: Dims; shape?: any; arro
       maxV = Math.max(maxV, Math.abs(d.dot(upW)));
     });
 
-    const padH = 1.12, padV = 1.12;
+    const padH = 1.06, padV = 1.06;
     const halfV = maxV * padV;
-    const dockRoom = halfV * 0.42;
+    const dockRoom = halfV * 0.18;
     const ratioTop = halfV, ratioBot = halfV + dockRoom;
     let vSpan = ratioTop + ratioBot;
     let halfH = (vSpan / 2) * aspect;
@@ -1433,7 +1433,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         </div>
       )}
 
-      <div className="shrink-0 mx-2 rounded-xl bg-gradient-to-b from-[#f6f2ec] to-[#e7e1d6] border border-stone-200/80 overflow-hidden relative" style={{ height: 280 }}>
+      <div className="shrink-0 mx-2 rounded-xl bg-gradient-to-b from-[#f6f2ec] to-[#e7e1d6] border border-stone-200/80 overflow-hidden relative" style={{ height: 360 }}>
         {activeDims && activePanel
           ? <PanelPreview2D key={activePanel.id} dims={activeDims} shape={activePanel} arrowRotated={!!activePanel.parameters?.arrowRotated}/>
           : (

@@ -54,8 +54,8 @@ const PANEL_COLORS = {
     default: '#5b6470',
   },
   arrow: {
-    color:    '#f1c40f',
-    emissive: '#f1c40f',
+    fill:    '#2563eb',  // profesyonel mavi (blue-600) — 2B ok gövdesi
+    outline: '#1e3a8a',  // koyu mavi kenar (blue-900)
   },
 } as const;
 
@@ -174,6 +174,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   const faceIndex = shape.parameters?.faceIndex;
   const extraRowId = shape.parameters?.extraRowId;
   const virtualFaceId = shape.parameters?.virtualFaceId;
+  const faceRole = shape.parameters?.faceRole;
   const isParentSelected = parentShapeId === selectedShapeId;
 
   const isPanelRowSelected = isParentSelected &&
@@ -502,6 +503,137 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           )}
         </>
       )}
+
+      {/* ── PANEL YÖN OKU (seçili panel satırında) ──────────────────── */}
+      {isPanelRowSelected && (
+        <DirectionArrow
+          geometry={shape.geometry}
+          faceRole={faceRole}
+          arrowRotated={shape.parameters?.arrowRotated || false}
+        />
+      )}
     </group>
   );
 });
+
+// ─── DirectionArrow (Yön Oku — düz/2B mavi) ──────────────────────────────
+// Panelin yüzeyine yatık duran, ışıktan etkilenmeyen (flat) mavi ok. Kalın
+// çubuk + koni baş tek bir düz silüet (ShapeGeometry) olarak çizilir; koyu
+// mavi ince kenar çizgisi profesyonel görünüm verir. depthTest=false ile her
+// zaman panelin üstünde net görünür. Yön, arrowRotated ile değişir.
+interface DirectionArrowProps {
+  geometry: THREE.BufferGeometry;
+  faceRole?: string;
+  arrowRotated?: boolean;
+}
+
+const DirectionArrow: React.FC<DirectionArrowProps> = React.memo(({
+  geometry,
+  faceRole,
+  arrowRotated = false,
+}) => {
+  const arrowConfig = useMemo(() => {
+    if (!geometry) return null;
+    const posAttr = geometry.getAttribute('position');
+    if (!posAttr) return null;
+
+    const bbox = new THREE.Box3().setFromBufferAttribute(posAttr as THREE.BufferAttribute);
+    const center = new THREE.Vector3();
+    const size = new THREE.Vector3();
+    bbox.getCenter(center);
+    bbox.getSize(size);
+
+    const axes = [
+      { index: 0, value: size.x },
+      { index: 1, value: size.y },
+      { index: 2, value: size.z },
+    ].sort((a, b) => a.value - b.value);
+
+    const thinAxisIndex = axes[0].index;
+    const thinHalf = axes[0].value / 2;
+    const planeAxes = axes.slice(1).map(a => a.index).sort((a, b) => a - b);
+
+    const role = faceRole?.toLowerCase();
+    let targetAxis = (role === 'left' || role === 'right') && planeAxes.includes(1) ? 1 :
+                     (role === 'top' || role === 'bottom') && planeAxes.includes(0) ? 0 : planeAxes[0];
+    if (arrowRotated) targetAxis = planeAxes.find(a => a !== targetAxis) ?? planeAxes[1];
+    const otherAxis = planeAxes.find(a => a !== targetAxis) ?? planeAxes[1];
+
+    // Yüzey düzlemi tabanı: dirVec=ok yönü, perpVec=düzlemde dik, zAxis=normal
+    const dirVec  = new THREE.Vector3().setComponent(targetAxis, 1);
+    const perpVec = new THREE.Vector3().setComponent(otherAxis, 1);
+    const zAxis   = new THREE.Vector3().crossVectors(dirVec, perpVec).normalize();
+    const basis = new THREE.Matrix4().makeBasis(dirVec, perpVec, zAxis);
+    const quat = new THREE.Quaternion().setFromRotationMatrix(basis);
+
+    // İnce eksen boyunca hafif dışa ofset (yüzeye otursun, z-fight olmasın)
+    const normalUnit = new THREE.Vector3().setComponent(thinAxisIndex, 1);
+    const position = center.clone().addScaledVector(normalUnit, thinHalf + 3);
+
+    // Düz ok silüeti (+X yönünde), panele oranlı boyut
+    const planeSpan = Math.min(size.getComponent(planeAxes[0]), size.getComponent(planeAxes[1]));
+    const L  = THREE.MathUtils.clamp(planeSpan * 0.5, 90, 260);
+    const sw = L * 0.20;   // kalın çubuk genişliği
+    const hw = L * 0.46;   // ok başı genişliği
+    const hl = L * 0.34;   // ok başı uzunluğu
+    const sx = -L / 2, ex = L / 2, neck = ex - hl;
+
+    const shape = new THREE.Shape();
+    shape.moveTo(sx, -sw / 2);
+    shape.lineTo(neck, -sw / 2);
+    shape.lineTo(neck, -hw / 2);
+    shape.lineTo(ex, 0);
+    shape.lineTo(neck, hw / 2);
+    shape.lineTo(neck, sw / 2);
+    shape.lineTo(sx, sw / 2);
+    shape.closePath();
+
+    const arrowGeo = new THREE.ShapeGeometry(shape);
+    const outline: [number, number, number][] = [
+      [sx, -sw / 2, 0], [neck, -sw / 2, 0], [neck, -hw / 2, 0], [ex, 0, 0],
+      [neck, hw / 2, 0], [neck, sw / 2, 0], [sx, sw / 2, 0], [sx, -sw / 2, 0],
+    ];
+
+    return {
+      position: position.toArray() as [number, number, number],
+      quaternion: quat.toArray() as [number, number, number, number],
+      arrowGeo,
+      outline,
+    };
+  }, [geometry, faceRole, arrowRotated]);
+
+  // ShapeGeometry'yi bağımlılık değişince/unmount'ta temizle
+  useEffect(() => () => { arrowConfig?.arrowGeo?.dispose(); }, [arrowConfig]);
+
+  if (!arrowConfig) return null;
+
+  return (
+    <group position={arrowConfig.position} quaternion={arrowConfig.quaternion} renderOrder={11}>
+      {/* Düz mavi gövde (flat/unlit → 2B görünür) */}
+      <mesh geometry={arrowConfig.arrowGeo} renderOrder={11} raycast={() => null}>
+        <meshBasicMaterial
+          color={PANEL_COLORS.arrow.fill}
+          side={THREE.DoubleSide}
+          depthTest={false}
+          depthWrite={false}
+          transparent
+          opacity={0.95}
+        />
+      </mesh>
+      {/* Koyu mavi ince kenar — profesyonel silüet */}
+      <Line
+        points={arrowConfig.outline}
+        color={PANEL_COLORS.arrow.outline}
+        lineWidth={2}
+        transparent={false}
+        depthTest={false}
+        depthWrite={false}
+        renderOrder={12}
+        raycast={() => null}
+      />
+    </group>
+  );
+});
+
+PanelDrawing.displayName = 'PanelDrawing';
+DirectionArrow.displayName = 'DirectionArrow';
