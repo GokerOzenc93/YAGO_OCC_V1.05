@@ -396,7 +396,8 @@ export const createPanelFromFace = async (
 export const createPanelFromVirtualFace = async (
   vertices: [number, number, number][],
   normal: [number, number, number],
-  panelThickness: number
+  panelThickness: number,
+  planeExpand: number = 0
 ): Promise<any> => {
   await initReplicad();
 
@@ -422,6 +423,26 @@ export const createPanelFromVirtualFace = async (
     const d = new THREE.Vector3().subVectors(v, center);
     return [d.dot(uAxis), d.dot(vAxis)] as [number, number];
   });
+
+  // Düzlem-içi büyütme: döndürülmüş panelde slab'ı kübü aşacak kadar genişletir;
+  // sonrasında (ters döndürülmüş) parent-küp kesişimi paneli açıya göre tam
+  // duvara kadar kırpar (grow & shrink to fit).
+  //
+  // ÖNEMLİ: Köşeleri tek tek dışarı itmek, başka panelin açtığı ÇENTİKLİ/konkav
+  // sanal yüzeyde çokgeni kendine katlar ve dev/bozuk katı üretir. Bunun yerine
+  // sanal yüzeyin SINIR DİKDÖRTGENİNİ büyütüp onu kullanırız — her zaman konveks,
+  // asla kendine katlanmaz. Çentikler zaten küp kesişimi + kardeş kesimiyle
+  // yeniden oluşur.
+  if (planeExpand > 0) {
+    let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+    for (const [pu, pv] of projected) {
+      if (pu < minU) minU = pu; if (pu > maxU) maxU = pu;
+      if (pv < minV) minV = pv; if (pv > maxV) maxV = pv;
+    }
+    minU -= planeExpand; maxU += planeExpand;
+    minV -= planeExpand; maxV += planeExpand;
+    projected = [[minU, minV], [maxU, minV], [maxU, maxV], [minU, maxV]];
+  }
 
   // Ensure CCW winding — replicad treats CW polygons as holes
   let signedArea = 0;

@@ -14,6 +14,46 @@ function geoAxesSize(geo: THREE.BufferGeometry) {
   return { axes, size };
 }
 
+// Referans küpü, panelin YEREL (döndürülmemiş) çerçevesine taşır: paneli
+// döndürmek yerine küpü TERS döndürüp kesişiriz. Böylece panel geometrisi düz
+// kalır (önizleme ve ölçü stabil), ama kırpma panelin gerçek açısına göre
+// doğru olur. Adımlar TERS sırada ve negatif açıyla, parent-yerel pivotlar
+// etrafında uygulanır — bu, ileri rotasyon transform'unun tam tersidir.
+// (Matematiksel olarak: clip_local = S ∩ R⁻¹·C, her parentPos için geçerli.)
+function inverseRotateReplicadByLocalSteps(
+  shape: any,
+  steps: RotateStep[],
+  parentPos: [number, number, number]
+): any {
+  let r = shape;
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const step = steps[i];
+    if (Math.abs(step.value) < 1e-6) continue;
+    const pivotLocal: [number, number, number] = [
+      step.pivot[0] - parentPos[0],
+      step.pivot[1] - parentPos[1],
+      step.pivot[2] - parentPos[2],
+    ];
+    const axis: [number, number, number] =
+      step.axis === 'x' ? [1, 0, 0] : step.axis === 'y' ? [0, 1, 0] : [0, 0, 1];
+    r = r.rotate(-step.value, pivotLocal, axis);
+  }
+  return r;
+}
+
+// Parent (referans küp) en büyük kenarı — döndürülmüş paneli kübü aşacak kadar
+// büyütmek için güvenli marj.
+function parentMaxDim(parent: any): number {
+  const geo = parent?.geometry;
+  if (geo) {
+    const s = geoAxesSize(geo);
+    if (s) return Math.max(s.size.x, s.size.y, s.size.z);
+  }
+  const p = parent?.parameters || {};
+  const m = Math.max(parseFloat(p.width) || 0, parseFloat(p.height) || 0, parseFloat(p.depth) || 0);
+  return m > 0 ? m : 2000;
+}
+
 
 export async function rebuildPanelsForParent(parentShapeId: string): Promise<void> {
   if (rebuildInFlight.has(parentShapeId)) return;
@@ -69,7 +109,21 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
 
       try {
         const thickness = panel.parameters?.depth || 18;
-        let rp = await createPanelFromVirtualFace(vf.vertices, vf.normal, thickness);
+
+        // Döndürülmüş panelde slab'ı düzleminde büyüt; aşağıda (ters döndürülmüş)
+        // parent kesişimi paneli açıya göre tam duvara kadar büyütüp küçültür.
+        // Yalnızca parent kesişimi yapılacaksa uygula, yoksa dev panel oluşurdu.
+        const rotateSteps: RotateStep[] = panel.parameters?.rotateSteps || [];
+        const isRotated = rotateSteps.length > 0;
+        const parentPos: [number, number, number] = [...parent.position] as [number, number, number];
+        // Panel döndürülmüşse büyüme/kırpma "Ana yüze eşitle" düğmesine BAĞLI
+        // OLMAMALI: dönünce otomatik olarak kübe göre uzayıp kırpılsın. Bu yüzden
+        // parent kesişimi, döndürülmüş panelde parentFaceShape bayrağı kapalı olsa
+        // da (parent.replicadShape varsa) devreye girer.
+        const willIntersectParent = !!(parent.replicadShape && (vf.parentFaceShape || isRotated));
+        const planeExpand = (isRotated && willIntersectParent) ? parentMaxDim(parent) : 0;
+
+        let rp = await createPanelFromVirtualFace(vf.vertices, vf.normal, thickness, planeExpand);
         if (!rp) {
           workingShapes = [...workingShapes, panel];
           continue;
@@ -77,11 +131,26 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
 
         const parentHasFillets = !!(parent.fillets && parent.fillets.length > 0 && parent.replicadShape);
 
-        if (vf.parentFaceShape && parent.replicadShape) {
+        if (willIntersectParent) {
           try {
-            rp = await performBooleanIntersection(rp, parent.replicadShape);
+            // Küpü panelin yerel (döndürülmemiş) çerçevesine taşı: paneli
+            // döndürmek yerine küpü ters döndürüp kesişiriz → geometri düz kalır
+            // (önizleme/ölçü stabil), kırpma açıya göre doğru olur.
+            const cube = rotateSteps.length > 0
+              ? inverseRotateReplicadByLocalSteps(parent.replicadShape, rotateSteps, parentPos)
+              : parent.replicadShape;
+            rp = await performBooleanIntersection(rp, cube);
           } catch (err) {
             console.error('Failed to intersect panel with parent:', err);
+            // GÜVENLİK: büyütülmüş slab kırpılamadıysa dev panel olarak kalmasın —
+            // normal (büyütmesiz) sanal yüzeyle yeniden kur.
+            if (planeExpand > 0) {
+              try {
+                rp = await createPanelFromVirtualFace(vf.vertices, vf.normal, thickness, 0);
+              } catch (err2) {
+                console.error('Fallback panel rebuild (no expand) also failed:', err2);
+              }
+            }
           }
         }
 
@@ -158,11 +227,9 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           }
         }
 
-        // Apply rotation steps: re-derive position and rotation from the stored
-        // base values so that subsequent siblings see the rotated panel as an
-        // obstacle. The auto-extend/trim for the rotated panel is handled by the
-        // boolean intersection with the parent and sibling cuts above.
-        const rotateSteps: RotateStep[] = panel.parameters?.rotateSteps || [];
+        // Rotasyonu transform olarak uygula (geometri düz kalır; kırpma yukarıda
+        // küpü ters döndürerek açıya göre yapıldı). Sonraki kardeşler bu paneli
+        // engel olarak görür.
         if (rotateSteps.length > 0) {
           const basePos: [number, number, number] = panel.parameters?.baseRotatePosition ?? [...panel.position];
           const baseRot: [number, number, number] = panel.parameters?.baseRotateRotation ?? [...panel.rotation];
