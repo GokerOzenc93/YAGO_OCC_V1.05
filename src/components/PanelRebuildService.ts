@@ -3,6 +3,11 @@ import { useAppStore } from '../store';
 import { applyRotateSteps, type RotateStep } from './PanelRotateService';
 
 const rebuildInFlight = new Set<string>();
+// Rebuild sürerken gelen istekler SESSİZCE DÜŞÜRÜLMEMELİ: aksi halde açı
+// editi/silmesi hiç işlenmez ve panel "ölçüsünü güncellememeye başlar".
+// Bunun yerine bekleyen istek işaretlenir ve mevcut tur biter bitmez EN GÜNCEL
+// store durumuyla bir tur daha koşulur.
+const rebuildPending = new Set<string>();
 
 function geoAxesSize(geo: THREE.BufferGeometry) {
   const pos = geo.getAttribute('position');
@@ -20,12 +25,21 @@ function geoAxesSize(geo: THREE.BufferGeometry) {
 // doğru olur. Adımlar TERS sırada ve negatif açıyla, parent-yerel pivotlar
 // etrafında uygulanır — bu, ileri rotasyon transform'unun tam tersidir.
 // (Matematiksel olarak: clip_local = S ∩ R⁻¹·C, her parentPos için geçerli.)
+//
+// !!! KRİTİK — REPLICAD TRANSFORM TÜKETİMİ !!!
+// replicad'de Shape.rotate/translate/scale/mirror, YENİ şekli döndürürken
+// ORİJİNALİN OCC nesnesini SİLER (kaynakta `this.delete()`). Yani buraya
+// parent.replicadShape doğrudan verilirse İLK döndürmede parent küpün şekli
+// kalıcı olarak yok edilir; store'daki sarmalayıcı ölü nesneye işaret eder ve
+// sonraki HER işlem (açı editi, silme, hatta yeni panel döndürme) bozulur.
+// Bu yüzden zincire girmeden önce MUTLAKA clone alınır — zincirin ara
+// sonuçları bizim malımızdır, onların tüketilmesi sorun değildir.
 function inverseRotateReplicadByLocalSteps(
   shape: any,
   steps: RotateStep[],
   parentPos: [number, number, number]
 ): any {
-  let r = shape;
+  let r = typeof shape?.clone === 'function' ? shape.clone() : shape;
   for (let i = steps.length - 1; i >= 0; i--) {
     const step = steps[i];
     if (Math.abs(step.value) < 1e-6) continue;
@@ -39,6 +53,94 @@ function inverseRotateReplicadByLocalSteps(
     r = r.rotate(-step.value, pivotLocal, axis);
   }
   return r;
+}
+
+// İLERİ rotasyon: bir replicad katısını, panelin rotate adımlarını SIRAYLA ve
+// POZİTİF açıyla uygulayarak dünya (parent-yerel) çerçevesine taşır. Döndürülmüş
+// bir KARDEŞ panelin replicadShape'i kendi döndürülmemiş çerçevesinde durduğu
+// için, kesici olarak kullanılmadan önce bu fonksiyonla gerçek (dönmüş) dünya
+// konumuna getirilmelidir — aksi halde kesim panelin ESKİ (dönmemiş) yerinde
+// yapılır ve komşu panelden saçma büyüklükte parça koparır.
+function forwardRotateReplicadByLocalSteps(
+  shape: any,
+  steps: RotateStep[],
+  parentPos: [number, number, number]
+): any {
+  // KRİTİK: replicad transformları orijinali SİLER — kardeşin store'daki
+  // replicadShape'ini yok etmemek için önce clone (bkz. yukarıdaki not).
+  let r = typeof shape?.clone === 'function' ? shape.clone() : shape;
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+    if (Math.abs(step.value) < 1e-6) continue;
+    const pivotLocal: [number, number, number] = [
+      step.pivot[0] - parentPos[0],
+      step.pivot[1] - parentPos[1],
+      step.pivot[2] - parentPos[2],
+    ];
+    const axis: [number, number, number] =
+      step.axis === 'x' ? [1, 0, 0] : step.axis === 'y' ? [0, 1, 0] : [0, 0, 1];
+    r = r.rotate(step.value, pivotLocal, axis);
+  }
+  return r;
+}
+
+// Kardeş paneli, kesilecek panelin ÇERÇEVESİNE taşır:
+// 1) Kardeş dönmüşse: kendi adımlarıyla İLERİ döndür → gerçek dünya konumu.
+// 2) Kesilecek panel dönmüşse: onun adımlarıyla TERS döndür → panelin yerel
+//    (döndürülmemiş) çerçevesi. Böylece boolean kesim her iki panelin de gerçek
+//    açısına göre doğru yerde yapılır (parent küp kesişimindeki desenle aynı).
+function siblingCutterInPanelFrame(
+  sib: any,
+  panelSteps: RotateStep[],
+  parentPos: [number, number, number]
+): any | null {
+  let cutter = sib?.replicadShape;
+  if (!cutter) return null;
+  const sibSteps: RotateStep[] = sib.parameters?.rotateSteps || [];
+  if (sibSteps.length > 0) {
+    cutter = forwardRotateReplicadByLocalSteps(cutter, sibSteps, parentPos);
+  }
+  if (panelSteps.length > 0) {
+    cutter = inverseRotateReplicadByLocalSteps(cutter, panelSteps, parentPos);
+  }
+  return cutter;
+}
+
+// OCC boolean kesişimi, TAM ÇAKIŞIK/teğet yüzeylerde sayısal olarak kırılgandır.
+// Dönmüş panelde slab'ın dış yüzü küp duvar düzlemiyle çakışıktır ve pivot da
+// genelde tam bu düzlem üzerindedir (köşe/merkez seçimi) — bazı açı değerlerinde
+// kesişim fırlatır. Fırlatınca panel uzatılamaz ve "ölçü güncellenmiyor" olarak
+// görünür. Merdiven: (1) doğrudan dene, (2) küpü 1 mikron kaydırıp dene (tam
+// çakışıklığı kırar, mobilya ölçeğinde görünmez), (3) slab'ı hafif farklı
+// genişletmeyle yeniden kurup dene (kenar çakışıklıklarını kırar).
+async function intersectWithRetries(
+  slab: any,
+  cube: any,
+  rebuildSlab: (expand: number) => Promise<any>,
+  planeExpand: number,
+  performBooleanIntersection: (a: any, b: any) => Promise<any>
+): Promise<any | null> {
+  try {
+    return await performBooleanIntersection(slab, cube);
+  } catch (e1) {
+    console.warn('[RotateRebuild] intersection attempt 1 failed, retrying with nudged cube:', e1);
+  }
+  try {
+    // KRİTİK: translate orijinali SİLER — cube, rotateSteps boşken doğrudan
+    // parent.replicadShape olabilir ve 3. deneme de cube'u tekrar kullanır.
+    // Bu yüzden kaydırılmış kopya clone üzerinden üretilir.
+    const nudged = (typeof cube?.clone === 'function' ? cube.clone() : cube).translate(0.001, 0.001, 0.001);
+    return await performBooleanIntersection(slab, nudged);
+  } catch (e2) {
+    console.warn('[RotateRebuild] intersection attempt 2 (nudged cube) failed, retrying with re-expanded slab:', e2);
+  }
+  try {
+    const slab2 = await rebuildSlab(Math.max(0, planeExpand - 0.37));
+    if (slab2) return await performBooleanIntersection(slab2, cube);
+  } catch (e3) {
+    console.error('[RotateRebuild] intersection attempt 3 (re-expanded slab) failed:', e3);
+  }
+  return null;
 }
 
 // Parent (referans küp) en büyük kenarı — döndürülmüş paneli kübü aşacak kadar
@@ -56,7 +158,11 @@ function parentMaxDim(parent: any): number {
 
 
 export async function rebuildPanelsForParent(parentShapeId: string): Promise<void> {
-  if (rebuildInFlight.has(parentShapeId)) return;
+  if (rebuildInFlight.has(parentShapeId)) {
+    rebuildPending.add(parentShapeId);
+    console.info('[PanelRebuild] rebuild already in flight for', parentShapeId, '— queued a re-run');
+    return;
+  }
   rebuildInFlight.add(parentShapeId);
   try {
     const store = useAppStore.getState();
@@ -132,16 +238,26 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
         const parentHasFillets = !!(parent.fillets && parent.fillets.length > 0 && parent.replicadShape);
 
         if (willIntersectParent) {
-          try {
-            // Küpü panelin yerel (döndürülmemiş) çerçevesine taşı: paneli
-            // döndürmek yerine küpü ters döndürüp kesişiriz → geometri düz kalır
-            // (önizleme/ölçü stabil), kırpma açıya göre doğru olur.
-            const cube = rotateSteps.length > 0
-              ? inverseRotateReplicadByLocalSteps(parent.replicadShape, rotateSteps, parentPos)
-              : parent.replicadShape;
-            rp = await performBooleanIntersection(rp, cube);
-          } catch (err) {
-            console.error('Failed to intersect panel with parent:', err);
+          // Küpü panelin yerel (döndürülmemiş) çerçevesine taşı: paneli
+          // döndürmek yerine küpü ters döndürüp kesişiriz → geometri düz kalır
+          // (önizleme/ölçü stabil), kırpma açıya göre doğru olur.
+          const cube = rotateSteps.length > 0
+            ? inverseRotateReplicadByLocalSteps(parent.replicadShape, rotateSteps, parentPos)
+            : parent.replicadShape;
+          console.info('[RotateRebuild] intersecting panel', panel.id, {
+            steps: rotateSteps.length, planeExpand,
+          });
+          const intersected = await intersectWithRetries(
+            rp, cube,
+            (expand: number) => createPanelFromVirtualFace(vf.vertices, vf.normal, thickness, expand),
+            planeExpand,
+            performBooleanIntersection
+          );
+          if (intersected) {
+            rp = intersected;
+          } else {
+            console.error('[RotateRebuild] ALL intersection attempts failed for panel', panel.id,
+              '— falling back to unexpanded slab (panel will NOT auto-extend this round)');
             // GÜVENLİK: büyütülmüş slab kırpılamadıysa dev panel olarak kalmasın —
             // normal (büyütmesiz) sanal yüzeyle yeniden kur.
             if (planeExpand > 0) {
@@ -150,6 +266,40 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
               } catch (err2) {
                 console.error('Fallback panel rebuild (no expand) also failed:', err2);
               }
+            }
+          }
+        }
+
+        // DÖNMÜŞ PANEL KARDEŞ KESİMİ: Dönmüş panel yukarıda kübe kadar
+        // uzatıldığı için kardeş panellerin İÇİNDEN geçebilir; bu hem görsel
+        // çakışma yaratır hem de kardeşlerin sanal yüzeylerini taşan kısma göre
+        // saçma şekilde kırptırırdı. Küpteki desenle aynı: kardeş geometrisi
+        // panelin yerel çerçevesine taşınıp (ileri + ters rotasyon) kesilir.
+        // Dönmüş panel otomatik uzayan taraf olduğu için TÜM kardeşlere yol
+        // verir — henüz rebuild edilmemiş (sırada sonra gelen) kardeşler dahil.
+        if (isRotated) {
+          const rebuiltIds = new Set(
+            workingShapes
+              .filter(s => s.type === 'panel' && s.parameters?.parentShapeId === parentShapeId)
+              .map(s => s.id)
+          );
+          const rotCutters = [
+            ...workingShapes.filter(
+              s => s.type === 'panel' &&
+                s.parameters?.parentShapeId === parentShapeId &&
+                s.id !== panel.id &&
+                s.replicadShape
+            ),
+            ...siblingsOrdered.filter(
+              s => s.id !== panel.id && !rebuiltIds.has(s.id) && s.replicadShape
+            ),
+          ];
+          for (const sib of rotCutters) {
+            try {
+              const cutter = siblingCutterInPanelFrame(sib, rotateSteps, parentPos);
+              if (cutter) rp = await performBooleanCut(rp, cutter);
+            } catch (err) {
+              console.error('Failed to subtract sibling from rotated panel:', err);
             }
           }
         }
@@ -178,17 +328,25 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
             }
           }
 
-          const siblingPanelShapes = workingShapes.filter(
-            s => s.type === 'panel' &&
-              s.parameters?.parentShapeId === parentShapeId &&
-              s.id !== panel.id &&
-              s.replicadShape
-          );
-          for (const sib of siblingPanelShapes) {
-            try {
-              rp = await performBooleanCut(rp, sib.replicadShape);
-            } catch (err) {
-              console.error('Failed to subtract sibling panel from parent-face-shape panel:', err);
+          // isRotated ise kardeşler yukarıda zaten (frame-düzeltmeli) kesildi;
+          // burada tekrar kesme. Değilse: kardeş DÖNMÜŞ olabilir — ham
+          // replicadShape'i dönmemiş çerçevede durduğundan doğrudan kesici
+          // olarak kullanmak kesimi yanlış yerde yapar (panelin eski konumunda
+          // koca dilim koparırdı). siblingCutterInPanelFrame bunu düzeltir.
+          if (!isRotated) {
+            const siblingPanelShapes = workingShapes.filter(
+              s => s.type === 'panel' &&
+                s.parameters?.parentShapeId === parentShapeId &&
+                s.id !== panel.id &&
+                s.replicadShape
+            );
+            for (const sib of siblingPanelShapes) {
+              try {
+                const cutter = siblingCutterInPanelFrame(sib, rotateSteps, parentPos);
+                if (cutter) rp = await performBooleanCut(rp, cutter);
+              } catch (err) {
+                console.error('Failed to subtract sibling panel from parent-face-shape panel:', err);
+              }
             }
           }
         }
@@ -261,5 +419,10 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
     });
   } finally {
     rebuildInFlight.delete(parentShapeId);
+    if (rebuildPending.has(parentShapeId)) {
+      rebuildPending.delete(parentShapeId);
+      // Mevcut tur sürerken gelen istek(ler) için en güncel durumla bir tur daha.
+      await rebuildPanelsForParent(parentShapeId);
+    }
   }
 }

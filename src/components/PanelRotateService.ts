@@ -64,9 +64,13 @@ export async function executePanelRotate(params: PanelRotateParams): Promise<boo
 
   if (Math.abs(value) < 0.001) return false;
 
-  const basePosition = computeBasePosition(panelShape);
-  const baseRotation = computeBaseRotation(panelShape);
-  const existingSteps: RotateStep[] = panelShape.parameters?.rotateSteps || [];
+  // SİGORTA: UI'dan gelen referans bayat olabilir — store'daki güncel hali baz al.
+  const { useAppStore } = await import('../store');
+  const fresh = useAppStore.getState().shapes.find(s => s.id === panelShape.id) || panelShape;
+
+  const basePosition = computeBasePosition(fresh);
+  const baseRotation = computeBaseRotation(fresh);
+  const existingSteps: RotateStep[] = fresh.parameters?.rotateSteps || [];
 
   const newStep: RotateStep = {
     id: `rot-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
@@ -79,18 +83,18 @@ export async function executePanelRotate(params: PanelRotateParams): Promise<boo
   const newSteps = [...existingSteps, newStep];
   const { position: newPosition, rotation: newRotation } = applyRotateSteps(basePosition, baseRotation, newSteps);
 
-  updateShape(panelShape.id, {
+  updateShape(fresh.id, {
     position: newPosition,
     rotation: newRotation,
     parameters: {
-      ...panelShape.parameters,
+      ...fresh.parameters,
       baseRotatePosition: basePosition,
       baseRotateRotation: baseRotation,
       rotateSteps: newSteps,
     },
   });
 
-  await rebuildSiblingsAfterRotate(panelShape, shapes);
+  await rebuildSiblingsAfterRotate(fresh, shapes);
   return true;
 }
 
@@ -101,22 +105,27 @@ export async function updateRotateStep(
   shapes: Shape[],
   updateShape: (id: string, updates: Partial<Shape>) => void
 ): Promise<boolean> {
-  const steps: RotateStep[] = panelShape.parameters?.rotateSteps || [];
+  // SİGORTA: UI'dan gelen referans bayat olabilir (önceki rebuild parametreleri
+  // değiştirmiş olabilir). Her zaman store'daki güncel hali baz al.
+  const { useAppStore } = await import('../store');
+  const fresh = useAppStore.getState().shapes.find(s => s.id === panelShape.id) || panelShape;
+
+  const steps: RotateStep[] = fresh.parameters?.rotateSteps || [];
   const newSteps = steps.map(s => s.id === stepId ? { ...s, value: newValue } : s);
-  const basePosition = computeBasePosition(panelShape);
-  const baseRotation = computeBaseRotation(panelShape);
+  const basePosition = computeBasePosition(fresh);
+  const baseRotation = computeBaseRotation(fresh);
   const { position: newPosition, rotation: newRotation } = applyRotateSteps(basePosition, baseRotation, newSteps);
 
-  updateShape(panelShape.id, {
+  updateShape(fresh.id, {
     position: newPosition,
     rotation: newRotation,
     parameters: {
-      ...panelShape.parameters,
+      ...fresh.parameters,
       rotateSteps: newSteps,
     },
   });
 
-  await rebuildSiblingsAfterRotate(panelShape, shapes);
+  await rebuildSiblingsAfterRotate(fresh, shapes);
   return true;
 }
 
@@ -126,22 +135,35 @@ export async function deleteRotateStep(
   shapes: Shape[],
   updateShape: (id: string, updates: Partial<Shape>) => void
 ): Promise<boolean> {
-  const steps: RotateStep[] = panelShape.parameters?.rotateSteps || [];
+  const { useAppStore } = await import('../store');
+  const fresh = useAppStore.getState().shapes.find(s => s.id === panelShape.id) || panelShape;
+
+  const steps: RotateStep[] = fresh.parameters?.rotateSteps || [];
   const newSteps = steps.filter(s => s.id !== stepId);
-  const basePosition = computeBasePosition(panelShape);
-  const baseRotation = computeBaseRotation(panelShape);
+  const basePosition = computeBasePosition(fresh);
+  const baseRotation = computeBaseRotation(fresh);
   const { position: newPosition, rotation: newRotation } = applyRotateSteps(basePosition, baseRotation, newSteps);
 
-  updateShape(panelShape.id, {
+  const newParams: Record<string, any> = {
+    ...fresh.parameters,
+    rotateSteps: newSteps,
+  };
+  // Son adım da silindiyse taban kayıtlarını temizle: panel artık dönmemiş
+  // durumda ve bir SONRAKİ döndürme kendi güncel konumunu taban almalı. Bayat
+  // taban bırakmak, aradaki taşıma/extrude işlemlerinden sonra yapılacak yeni
+  // döndürmede konum bozulmasına yol açar.
+  if (newSteps.length === 0) {
+    delete newParams.baseRotatePosition;
+    delete newParams.baseRotateRotation;
+  }
+
+  updateShape(fresh.id, {
     position: newPosition,
     rotation: newRotation,
-    parameters: {
-      ...panelShape.parameters,
-      rotateSteps: newSteps,
-    },
+    parameters: newParams,
   });
 
-  await rebuildSiblingsAfterRotate(panelShape, shapes);
+  await rebuildSiblingsAfterRotate(fresh, shapes);
   return true;
 }
 
@@ -156,10 +178,14 @@ async function rebuildSiblingsAfterRotate(
   if (!parentShape) return;
 
   try {
-    const { useAppStore } = await import('../store');
-    const store = useAppStore.getState();
-    store.recalculateVirtualFacesForShape(parentId);
-
+    // NOT: Burada daha önce store.recalculateVirtualFacesForShape(parentId)
+    // çağrılıyordu. Bu çağrı, dönen panelin YENİ açıdaki transform'u ile ESKİ
+    // açıya göre kırpılmış BAYAT geometrisinin karışımını engel olarak kullanıp
+    // sanal yüzeyleri kirletiyordu. Reçetesiz (clip-only) sanal yüzeyler asla
+    // geri büyümediği için her açı editinde küçülme KALICI olarak birikiyor ve
+    // panel gitgide kısalıyordu. rebuildPanelsForParent zaten her panel için
+    // doğru engel kümesiyle kendi sıralı VF recalc'ını yapıyor — erken çağrı
+    // hem gereksiz hem zararlıydı, kaldırıldı.
     const { rebuildPanelsForParent } = await import('./PanelRebuildService');
     await rebuildPanelsForParent(parentId);
   } catch (err) {
