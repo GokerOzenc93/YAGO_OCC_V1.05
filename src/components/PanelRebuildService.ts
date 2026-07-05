@@ -112,6 +112,205 @@ function siblingCutterInPanelFrame(
   return cutter;
 }
 
+// ─── GÖNYE (AÇILI) BİRLEŞİM YARDIMCILARI ─────────────────────────────────
+// Dönmüş bir panele değen düz panellerin kalınlık ucu kare kalırsa eğimli
+// yüzeyle arasında kama boşluğu oluşur. Çözüm: düz panel dönmüş paneli sanal
+// yüzey engeli olarak GÖRMEZ (içinden/ötesine uzar), sonra dönmüş panelin
+// temas yüzü düzleminden geçen dev bir YARIM-UZAY slabı ile kesilir → ucu
+// eğimle birebir örtüşen tek parça panel. Gövde kesimi yerine yarım-uzay
+// kullanılır çünkü düz panel dönmüş panelin arkasına taşarsa gövde kesimi
+// paneli İKİ parçaya bölerdi.
+
+function box3Corners(b: THREE.Box3): THREE.Vector3[] {
+  return [
+    new THREE.Vector3(b.min.x, b.min.y, b.min.z),
+    new THREE.Vector3(b.max.x, b.min.y, b.min.z),
+    new THREE.Vector3(b.min.x, b.max.y, b.min.z),
+    new THREE.Vector3(b.max.x, b.max.y, b.min.z),
+    new THREE.Vector3(b.min.x, b.min.y, b.max.z),
+    new THREE.Vector3(b.max.x, b.min.y, b.max.z),
+    new THREE.Vector3(b.min.x, b.max.y, b.max.z),
+    new THREE.Vector3(b.max.x, b.max.y, b.max.z),
+  ];
+}
+
+function compositeQuatFromSteps(steps: RotateStep[]): THREE.Quaternion {
+  const q = new THREE.Quaternion();
+  for (const step of steps) {
+    const axisVec = new THREE.Vector3(
+      step.axis === 'x' ? 1 : 0,
+      step.axis === 'y' ? 1 : 0,
+      step.axis === 'z' ? 1 : 0
+    );
+    q.premultiply(new THREE.Quaternion().setFromAxisAngle(axisVec, (step.value * Math.PI) / 180));
+  }
+  return q;
+}
+
+// Dönmüş panelin dünya uzayındaki slab bandı: normal = VF normalinin bileşik
+// rotasyonla döndürülmüşü; bant sınırları panelin GERÇEK geometrisinin bu
+// normale izdüşümünden AMPİRİK olarak ölçülür — ekstrüzyon yönü varsayımı yok.
+function rotatedPanelWorldBand(
+  R: any,
+  vfR: any,
+  stepsR: RotateStep[]
+): { nW: THREE.Vector3; dMin: number; dMax: number } | null {
+  if (!R?.geometry || !vfR?.normal) return null;
+  const pos = R.geometry.getAttribute('position');
+  if (!pos) return null;
+  const nW = new THREE.Vector3(vfR.normal[0], vfR.normal[1], vfR.normal[2])
+    .normalize()
+    .applyQuaternion(compositeQuatFromSteps(stepsR));
+  const m = new THREE.Matrix4().compose(
+    new THREE.Vector3(...(R.position as [number, number, number])),
+    new THREE.Quaternion().setFromEuler(new THREE.Euler(R.rotation[0], R.rotation[1], R.rotation[2], 'XYZ')),
+    new THREE.Vector3(...((R.scale || [1, 1, 1]) as [number, number, number]))
+  );
+  let dMin = Infinity, dMax = -Infinity;
+  const tmp = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    tmp.set(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(m);
+    const d = nW.dot(tmp);
+    if (d < dMin) dMin = d;
+    if (d > dMax) dMax = d;
+  }
+  if (!isFinite(dMin) || !isFinite(dMax)) return null;
+  return { nW, dMin, dMax };
+}
+
+// Düz paneli (rp) dönmüş kardeşe DOĞRU yönlü bir şeritle uzatır ve dönmüş
+// kardeşin temas yüzü düzleminde açılı keser. Sanal yüzey en yakın temas
+// çizgisinde durduğu için (bölge seçimi korunur), aradaki kama hacmi bu
+// şeritle kazanılır; yarım-uzay kesimi şeridi tam gönye düzlemine biçer.
+// Dönüş: kesilmiş (veya temas yoksa DEĞİŞMEMİŞ) rp; null → belirsiz durum,
+// çağıran gövde kesimine düşmeli.
+async function cutByRotatedSiblingMiter(
+  rp: any,
+  rotatedSib: any,
+  vfS: any,
+  thicknessS: number,
+  parentPos: [number, number, number],
+  parentMax: number,
+  workingVirtualFaces: any[],
+  createPanelFromVirtualFace: (verts: any, normal: any, t: number, e: number) => Promise<any>,
+  performBooleanCut: (a: any, b: any, ...rest: any[]) => Promise<any>,
+  parentReplicad: any,
+  performBooleanIntersection: (a: any, b: any) => Promise<any>
+): Promise<any | null> {
+  const vfR = workingVirtualFaces.find(f => f.id === rotatedSib.parameters?.virtualFaceId);
+  if (!vfR) return null;
+  const stepsR: RotateStep[] = rotatedSib.parameters?.rotateSteps || [];
+  const band = rotatedPanelWorldBand(rotatedSib, vfR, stepsR);
+  if (!band) return null;
+  const { nW, dMin, dMax } = band;
+
+  // BROAD-PHASE: düz panelin kutusu banda değmiyorsa temas yok — dokunma.
+  const sBox = worldAABBFromVF(vfS, thicknessS, parentPos);
+  if (sBox) {
+    let allBelow = true, allAbove = true;
+    for (const c of box3Corners(sBox)) {
+      const d = nW.dot(c);
+      if (d > dMin - 0.5) allBelow = false;
+      if (d < dMax + 0.5) allAbove = false;
+    }
+    if (allBelow || allAbove) return rp;
+  }
+
+  // Düz panelin referans merkezi bandın hangi tarafında?
+  const c = new THREE.Vector3();
+  for (const v of vfS.vertices) {
+    c.add(new THREE.Vector3(v[0] + parentPos[0], v[1] + parentPos[1], v[2] + parentPos[2]));
+  }
+  c.divideScalar(vfS.vertices.length);
+  const dS = nW.dot(c);
+  const dC = (dMin + dMax) / 2;
+  // Merkez bandın içindeyse hangi yüze gönye yapılacağı belirsiz → gövde kesimi.
+  if (Math.abs(dS - dC) <= (dMax - dMin) / 2) return null;
+
+  const near = dS < dC ? dMin : dMax;                       // S'nin değdiği yüzün ofseti
+  const away = dS < dC ? nW.clone() : nW.clone().negate();  // S'den uzağa bakan yön
+
+  // ── YÖNLÜ ŞERİT UZATMASI ──
+  // S'nin düzlemi içinde, R'nin düzlemine DOĞRU birim yön: nW'nin düzlem-içi
+  // bileşeni, d'yi dS'den near'a taşıyan işaretle.
+  const nS = new THREE.Vector3(vfS.normal[0], vfS.normal[1], vfS.normal[2]).normalize();
+  const e = nW.clone().sub(nS.clone().multiplyScalar(nW.dot(nS)));
+  if (e.length() < 0.05) return rp; // düzlemler ~paralel: yüz-yüze temas, gönye anlamsız
+  e.normalize();
+  // e boyunca hareket d'yi dS'den near'a taşımalı: işaretler uyuşmuyorsa çevir
+  if (Math.sign(nW.dot(e)) !== Math.sign(near - dS)) e.negate();
+  const u2 = e; // R'ye doğru
+  const v2 = new THREE.Vector3().crossVectors(nS, u2).normalize();
+
+  // VF köşelerini (u2, v2) tabanında kutula
+  let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+  for (const v of vfS.vertices) {
+    const w = new THREE.Vector3(v[0] + parentPos[0], v[1] + parentPos[1], v[2] + parentPos[2]).sub(c);
+    const pu = w.dot(u2), pv = w.dot(v2);
+    if (pu < minU) minU = pu; if (pu > maxU) maxU = pu;
+    if (pv < minV) minV = pv; if (pv > maxV) maxV = pv;
+  }
+
+  // Aşma payı: bandın derinliği + S kalınlığının eğime katkısı, u2 boyunca
+  // d-değişim hızına bölünür; küçük marj eklenir, parent boyutuyla sınırlanır.
+  const slopeRate = Math.max(0.15, Math.abs(nW.dot(u2)));
+  const overshoot = Math.min(
+    parentMax,
+    ((dMax - dMin) + thicknessS * Math.abs(nW.dot(nS))) / slopeRate + 5
+  );
+  // Şerit, VF'nin R'ye bakan (çapraz kırpılmış olabilecek) kenarını da örtsün
+  const backlap = Math.min(maxU - minU, overshoot);
+
+  const mkStrip = (su: number, sv: number): [number, number, number] => {
+    const w = c.clone().addScaledVector(u2, su).addScaledVector(v2, sv);
+    return [w.x - parentPos[0], w.y - parentPos[1], w.z - parentPos[2]];
+  };
+  const stripVerts: [number, number, number][] = [
+    mkStrip(maxU - backlap, minV),
+    mkStrip(maxU + overshoot, minV),
+    mkStrip(maxU + overshoot, maxV),
+    mkStrip(maxU - backlap, maxV),
+  ];
+  try {
+    let strip = await createPanelFromVirtualFace(stripVerts, vfS.normal, thicknessS, 0);
+    if (strip) {
+      // Şerit küp duvarını aşmasın (özellikle R duvara yakınsa)
+      if (parentReplicad) {
+        try { strip = await performBooleanIntersection(strip, parentReplicad); } catch { /* opsiyonel */ }
+      }
+      rp = rp.fuse(strip);
+    }
+  } catch (err) {
+    console.warn('[Miter] strip extension failed, proceeding with plain half-space cut:', err);
+  }
+
+  // ── YARIM-UZAY GÖNYE KESİMİ ──
+  const p0 = c.clone().add(nW.clone().multiplyScalar(near - dS)); // merkezi yakın düzleme izdüşür
+  const up = (Math.abs(away.y) > Math.abs(away.x) && Math.abs(away.y) > Math.abs(away.z))
+    ? new THREE.Vector3(1, 0, 0)
+    : new THREE.Vector3(0, 1, 0);
+  const u = new THREE.Vector3().crossVectors(away, up).normalize();
+  const vv = new THREE.Vector3().crossVectors(away, u).normalize();
+  const L = 3 * parentMax;
+  const mk = (su: number, sv: number): [number, number, number] => {
+    const w = p0.clone().addScaledVector(u, su * L).addScaledVector(vv, sv * L);
+    return [w.x - parentPos[0], w.y - parentPos[1], w.z - parentPos[2]];
+  };
+  const verts: [number, number, number][] = [mk(-1, -1), mk(1, -1), mk(1, 1), mk(-1, 1)];
+
+  // createPanelFromVirtualFace, verilen normalin EKSİ yönünde ekstrüde eder
+  // (ReplicadService: extrude(-thickness)). Dolgunun +away tarafını (S'nin
+  // ötesini) kaplaması için normal = -away verilir.
+  const halfSpace = await createPanelFromVirtualFace(
+    verts,
+    [-away.x, -away.y, -away.z] as [number, number, number],
+    3 * parentMax,
+    0
+  );
+  if (!halfSpace) return null;
+  return await performBooleanCut(rp, halfSpace);
+}
+
 // ─── BROAD-PHASE ÖN ELEME ────────────────────────────────────────────────
 // OCC boolean'ları ana thread'de çalışır ve teğet/çakışık yüzeylerde patolojik
 // derecede yavaşlayabilir (UI donar, fare kasar). Bu yüzden her kardeş kesimi
@@ -318,6 +517,11 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
       );
       const filteredForRecalc = [...otherShapeVfs, ...activeSiblingVfs];
 
+      // NOT: Dönmüş kardeşler sanal yüzey ENGELİ olarak KORUNUR — kullanıcının
+      // tıkladığı bölge (dönen panelin altı/üstü) sanal yüzeyi belirler ve bu
+      // bölge seçimi kaybolmamalıdır. (Önceki sürümde buradan dışlanmaları,
+      // yüzeyin karşı bölgeye kaymasına yol açıyordu.) Gönye için gereken uzama,
+      // aşağıda dönen panele DOĞRU yönlü bir şeritle sağlanır.
       const freshFaces = recalculateVirtualFacesForShape(parent, filteredForRecalc, workingShapes);
       const freshById = new Map(freshFaces.map(f => [f.id, f]));
       workingVirtualFaces = workingVirtualFaces.map(f => freshById.get(f.id) || f);
@@ -387,29 +591,20 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
         }
 
         // DÖNMÜŞ PANEL KARDEŞ KESİMİ: Dönmüş panel yukarıda kübe kadar
-        // uzatıldığı için kardeş panellerin İÇİNDEN geçebilir; bu hem görsel
-        // çakışma yaratır hem de kardeşlerin sanal yüzeylerini taşan kısma göre
-        // saçma şekilde kırptırırdı. Küpteki desenle aynı: kardeş geometrisi
-        // panelin yerel çerçevesine taşınıp (ileri + ters rotasyon) kesilir.
-        // Dönmüş panel otomatik uzayan taraf olduğu için TÜM kardeşlere yol
-        // verir — henüz rebuild edilmemiş (sırada sonra gelen) kardeşler dahil.
+        // uzatıldığı için kardeş panellerin İÇİNDEN geçebilir. Küpteki desenle
+        // aynı: kardeş geometrisi panelin yerel çerçevesine taşınıp kesilir.
+        // SIRALAMA KURALI: Dönmüş panel yalnızca kendinden ÖNCE gelen (yüksek
+        // öncelikli, workingShapes'te zaten kurulu) kardeşlere yol verir.
+        // SONRAKİ (düşük öncelikli) paneller ise dönmüş panele yol verir —
+        // onlar kendi turlarında yarım-uzay gönye kesimiyle açılı biçilir.
+        // İkisinin birden kesilmesi karşılıklı geri çekilme = boşluk üretirdi.
         if (isRotated) {
-          const rebuiltIds = new Set(
-            workingShapes
-              .filter(s => s.type === 'panel' && s.parameters?.parentShapeId === parentShapeId)
-              .map(s => s.id)
+          const rotCutters = workingShapes.filter(
+            s => s.type === 'panel' &&
+              s.parameters?.parentShapeId === parentShapeId &&
+              s.id !== panel.id &&
+              s.replicadShape
           );
-          const rotCutters = [
-            ...workingShapes.filter(
-              s => s.type === 'panel' &&
-                s.parameters?.parentShapeId === parentShapeId &&
-                s.id !== panel.id &&
-                s.replicadShape
-            ),
-            ...siblingsOrdered.filter(
-              s => s.id !== panel.id && !rebuiltIds.has(s.id) && s.replicadShape
-            ),
-          ];
           for (const sib of rotCutters) {
             // BROAD-PHASE: kardeş, dönmüş slab bandına girmiyorsa (yalnızca
             // değiyorsa/uzağındaysa) boolean HİÇ çağrılmaz — hem hız hem de
@@ -420,6 +615,39 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
               if (cutter) rp = await performBooleanCut(rp, cutter);
             } catch (err) {
               console.error('Failed to subtract sibling from rotated panel:', err);
+            }
+          }
+        }
+
+        // GÖNYE (AÇILI) BİRLEŞİM: Bu düz panel, kendinden ÖNCE gelen dönmüş
+        // kardeşlerin üstüne/ötesine uzamış olabilir (VF hesabında onlar engel
+        // sayılmadı). Her biri için temas yüzü düzleminden geçen yarım-uzay ile
+        // kesilir → kalınlık ucu eğimle tam örtüşür, tek parça kalır. Belirsiz
+        // durumda (panel merkezi bandın içinde) gövde kesimine düşülür.
+        if (!isRotated) {
+          const rotatedEarlierSibs = workingShapes.filter(
+            s => s.type === 'panel' &&
+              s.parameters?.parentShapeId === parentShapeId &&
+              s.id !== panel.id &&
+              s.replicadShape &&
+              ((s.parameters?.rotateSteps?.length ?? 0) > 0)
+          );
+          for (const rsib of rotatedEarlierSibs) {
+            try {
+              const res = await cutByRotatedSiblingMiter(
+                rp, rsib, vf, thickness, parentPos, parentMaxDim(parent),
+                workingVirtualFaces, createPanelFromVirtualFace, performBooleanCut,
+                parent.replicadShape, performBooleanIntersection
+              );
+              if (res) {
+                rp = res;
+              } else {
+                // Belirsiz durum: frame-düzeltmeli gövde kesimi
+                const cutter = siblingCutterInPanelFrame(rsib, rotateSteps, parentPos);
+                if (cutter) rp = await performBooleanCut(rp, cutter);
+              }
+            } catch (err) {
+              console.error('Miter cut against rotated sibling failed:', err);
             }
           }
         }
@@ -449,17 +677,16 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           }
 
           // isRotated ise kardeşler yukarıda zaten (frame-düzeltmeli) kesildi;
-          // burada tekrar kesme. Değilse: kardeş DÖNMÜŞ olabilir — ham
-          // replicadShape'i dönmemiş çerçevede durduğundan doğrudan kesici
-          // olarak kullanmak kesimi yanlış yerde yapar (panelin eski konumunda
-          // koca dilim koparırdı). siblingCutterInPanelFrame bunu düzeltir.
+          // burada tekrar kesme. Dönmüş kardeşler de yukarıdaki GÖNYE bloğunda
+          // yarım-uzayla kesildi — burada yalnızca DÜZ kardeşler gövde kesilir.
           if (!isRotated) {
             const panelBox = worldAABBFromVF(vf, thickness, parentPos);
             const siblingPanelShapes = workingShapes.filter(
               s => s.type === 'panel' &&
                 s.parameters?.parentShapeId === parentShapeId &&
                 s.id !== panel.id &&
-                s.replicadShape
+                s.replicadShape &&
+                ((s.parameters?.rotateSteps?.length ?? 0) === 0)
             );
             for (const sib of siblingPanelShapes) {
               // BROAD-PHASE: hacimsel iç içe geçme yoksa (sadece değme dahil)
