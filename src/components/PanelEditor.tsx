@@ -558,12 +558,36 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
   const [isDraggingWindow, setIsDraggingWindow] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const [editingStepId, setEditingStepId] = useState<string | null>(null);
-  const [editingStepValue, setEditingStepValue] = useState(0);
+  const [editingStepValue, setEditingStepValue] = useState('0');
   const [editingMoveStepId, setEditingMoveStepId] = useState<string | null>(null);
-  const [editingMoveStepValue, setEditingMoveStepValue] = useState(0);
+  const [editingMoveStepValue, setEditingMoveStepValue] = useState('0');
   const [editingRotateStepId, setEditingRotateStepId] = useState<string | null>(null);
-  const [editingRotateStepValue, setEditingRotateStepValue] = useState(0);
+  const [editingRotateStepValue, setEditingRotateStepValue] = useState('0');
+  // Local string state for dock inputs to allow typing leading - / + signs
+  const [extrudeThicknessStr, setExtrudeThicknessStr] = useState(String(faceExtrudeThickness));
+  const [moveValueStr, setMoveValueStr] = useState('0');
+  const [rotateValueStr, setRotateValueStr] = useState('0');
+  const prevMoveAxisRef = useRef(panelMoveAxis);
+  const prevRotateAxisRef = useRef(panelRotateAxis);
   const rowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+
+  // Reset local string state when axis selection changes (new input session)
+  useEffect(() => {
+    if (prevMoveAxisRef.current !== panelMoveAxis) {
+      prevMoveAxisRef.current = panelMoveAxis;
+      setMoveValueStr('0');
+      setPanelMoveValue(0);
+    }
+  }, [panelMoveAxis]);
+
+  useEffect(() => {
+    if (prevRotateAxisRef.current !== panelRotateAxis) {
+      prevRotateAxisRef.current = panelRotateAxis;
+      setRotateValueStr('0');
+      setPanelRotateValue(0);
+    }
+  }, [panelRotateAxis]);
+
   const selectedShape = shapes.find(s => s.id === selectedShapeId);
 
   const activePanelId = useMemo(() => {
@@ -995,8 +1019,18 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
           {hf ? (
             <>
               <input
-                type="text" inputMode="numeric" value={faceExtrudeThickness}
-                onChange={e => setFaceExtrudeThickness(Number(e.target.value) || 0)}
+                type="text" inputMode="numeric" value={extrudeThicknessStr}
+                onChange={e => {
+                  const v = e.target.value;
+                  setExtrudeThicknessStr(v);
+                  const p = parseFloat(v);
+                  if (!isNaN(p)) setFaceExtrudeThickness(p);
+                }}
+                onBlur={() => {
+                  const p = parseFloat(extrudeThicknessStr);
+                  if (isNaN(p)) { setExtrudeThicknessStr(String(faceExtrudeThickness)); }
+                  else { setFaceExtrudeThickness(p); setExtrudeThicknessStr(String(p)); }
+                }}
                 style={{
                   flex: 1, minWidth: 0, height: 28, textAlign: 'center', fontFamily: 'monospace', fontSize: 13, fontWeight: 600,
                   color: '#1c1917', background: 'linear-gradient(180deg,#fff,#faf8f3)', border: '1px solid rgba(60,50,40,0.16)',
@@ -1142,6 +1176,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       await executePanelMove({ panelShape: ps, axis: panelMoveAxis!, value: panelMoveValue, shapes, updateShape });
       setPanelMoveAxis(null);
       setPanelMoveValue(0);
+      setMoveValueStr('0');
       setPanelMoveMode(false);
     };
 
@@ -1162,8 +1197,18 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                 {panelMoveAxis!.toUpperCase()}
               </span>
               <input
-                type="text" inputMode="numeric" autoFocus value={panelMoveValue}
-                onChange={e => setPanelMoveValue(Number(e.target.value) || 0)}
+                type="text" inputMode="numeric" autoFocus value={moveValueStr}
+                onChange={e => {
+                  const v = e.target.value;
+                  setMoveValueStr(v);
+                  const p = parseFloat(v);
+                  if (!isNaN(p)) setPanelMoveValue(p);
+                }}
+                onBlur={() => {
+                  const p = parseFloat(moveValueStr);
+                  if (isNaN(p)) { setMoveValueStr('0'); setPanelMoveValue(0); }
+                  else { setPanelMoveValue(p); setMoveValueStr(String(p)); }
+                }}
                 onKeyDown={e => { if (e.key === 'Enter') onApply(); if (e.key === 'Escape') { setPanelMoveAxis(null); setPanelMoveMode(false); } }}
                 style={{
                   flex: 1, minWidth: 0, height: 28, textAlign: 'center', fontFamily: 'monospace', fontSize: 13, fontWeight: 600,
@@ -1219,6 +1264,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       await executePanelRotate({ panelShape: ps, axis: panelRotateAxis!, value: panelRotateValue, pivot: panelRotatePivot!, shapes, updateShape });
       setPanelRotateAxis(null);
       setPanelRotateValue(0);
+      setRotateValueStr('0');
     };
 
     return (
@@ -1238,8 +1284,18 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                 {panelRotateAxis!.toUpperCase()}
               </span>
               <input
-                type="text" inputMode="numeric" autoFocus value={panelRotateValue}
-                onChange={e => setPanelRotateValue(Number(e.target.value) || 0)}
+                type="text" inputMode="numeric" autoFocus value={rotateValueStr}
+                onChange={e => {
+                  const v = e.target.value;
+                  setRotateValueStr(v);
+                  const p = parseFloat(v);
+                  if (!isNaN(p)) setPanelRotateValue(p);
+                }}
+                onBlur={() => {
+                  const p = parseFloat(rotateValueStr);
+                  if (isNaN(p)) { setRotateValueStr('0'); setPanelRotateValue(0); }
+                  else { setPanelRotateValue(p); setRotateValueStr(String(p)); }
+                }}
                 onKeyDown={e => { if (e.key === 'Enter') onApply(); if (e.key === 'Escape') { setPanelRotateAxis(null); setPanelRotateMode(false); } }}
                 style={{
                   flex: 1, minWidth: 0, height: 28, textAlign: 'center', fontFamily: 'monospace', fontSize: 13, fontWeight: 600,
@@ -1347,7 +1403,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                     <>
                       <input type="text" inputMode="numeric" autoFocus value={editValue}
                         onChange={e => {
-                          const v = Number(e.target.value) || 0;
+                          const v = e.target.value;
                           if (s.stepType === 'extrude') setEditingStepValue(v);
                           else if (s.stepType === 'move') setEditingMoveStepValue(v);
                           else setEditingRotateStepValue(v);
@@ -1355,13 +1411,17 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                         onKeyDown={e => {
                           if (e.key === 'Escape') { setEditingStepId(null); setEditingMoveStepId(null); setEditingRotateStepId(null); return; }
                           if (e.key !== 'Enter') return;
-                          if (s.stepType === 'extrude') saveStep(activePanelId, s.id, editingStepValue);
-                          else saveTransformStep(activePanelId, s.id, editValue);
+                          const parsed = parseFloat(editValue as string);
+                          if (isNaN(parsed)) return;
+                          if (s.stepType === 'extrude') saveStep(activePanelId, s.id, parsed);
+                          else saveTransformStep(activePanelId, s.id, parsed);
                         }}
                         className="flex-1 min-w-0 h-6 text-center font-mono text-xs font-semibold text-stone-800 bg-white border border-stone-300 rounded-md outline-none focus:border-orange-400" />
                       <button onClick={() => {
-                        if (s.stepType === 'extrude') saveStep(activePanelId, s.id, editingStepValue);
-                        else saveTransformStep(activePanelId, s.id, editValue);
+                        const parsed = parseFloat(editValue as string);
+                        if (isNaN(parsed)) return;
+                        if (s.stepType === 'extrude') saveStep(activePanelId, s.id, parsed);
+                        else saveTransformStep(activePanelId, s.id, parsed);
                       }} style={iconBtn('#5b5346')}><Check size={11} /></button>
                       <button onClick={() => { setEditingStepId(null); setEditingMoveStepId(null); setEditingRotateStepId(null); }} style={iconBtn('#a8a29e')}><X size={11} /></button>
                     </>
@@ -1372,9 +1432,9 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                         <span className="shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-sm bg-stone-100 text-stone-500">{s.isFixed ? 'F' : 'D'}</span>
                       )}
                       <button onClick={() => {
-                        if (s.stepType === 'extrude') { setEditingStepId(s.id); setEditingStepValue(s.value); }
-                        else if (s.stepType === 'move') { setEditingMoveStepId(s.id); setEditingMoveStepValue(s.value); }
-                        else { setEditingRotateStepId(s.id); setEditingRotateStepValue(s.value); }
+                        if (s.stepType === 'extrude') { setEditingStepId(s.id); setEditingStepValue(String(s.value)); }
+                        else if (s.stepType === 'move') { setEditingMoveStepId(s.id); setEditingMoveStepValue(String(s.value)); }
+                        else { setEditingRotateStepId(s.id); setEditingRotateStepValue(String(s.value)); }
                       }} style={iconBtn('#78716c')}><Pencil size={10} /></button>
                       <button onClick={async () => {
                         const ps = shapes.find(x => x.id === activePanelId); if (!ps) return;

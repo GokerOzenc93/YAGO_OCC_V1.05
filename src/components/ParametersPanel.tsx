@@ -81,7 +81,7 @@ const DimCell: React.FC<{ label: string; value: number; onChange: (v: number) =>
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const v = e.target.value;
     setInputValue(v);
-    if (v !== '' && v !== '-' && v !== '.') {
+    if (v !== '' && v !== '-' && v !== '+' && v !== '.' && !/^[+-]$/.test(v)) {
       const p = parseFloat(v);
       if (!isNaN(p)) onChange(p);
     }
