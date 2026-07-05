@@ -8,6 +8,12 @@ const rebuildInFlight = new Set<string>();
 // Bunun yerine bekleyen istek işaretlenir ve mevcut tur biter bitmez EN GÜNCEL
 // store durumuyla bir tur daha koşulur.
 const rebuildPending = new Set<string>();
+// Kuyruk, kademeli tetiklemelerde (state değişimi → yeni istek → tekrar tur)
+// kendi kendini besleyip UI'ı kilitleyebilecek sonsuz rebuild döngüsüne
+// dönüşmesin diye ardışık tekrar sayısı sınırlanır. Sınır aşılırsa uyarı
+// loglanır ve kuyruk boşaltılır; bir sonraki DIŞ istek sayacı sıfırlar.
+const rebuildRerunCount = new Map<string, number>();
+const MAX_QUEUED_RERUNS = 2;
 
 function geoAxesSize(geo: THREE.BufferGeometry) {
   const pos = geo.getAttribute('position');
@@ -104,6 +110,116 @@ function siblingCutterInPanelFrame(
     cutter = inverseRotateReplicadByLocalSteps(cutter, panelSteps, parentPos);
   }
   return cutter;
+}
+
+// ─── BROAD-PHASE ÖN ELEME ────────────────────────────────────────────────
+// OCC boolean'ları ana thread'de çalışır ve teğet/çakışık yüzeylerde patolojik
+// derecede yavaşlayabilir (UI donar, fare kasar). Bu yüzden her kardeş kesimi
+// öncesi UCUZ bir geometrik test yapılır; hacimsel çakışma imkânsızsa boolean
+// hiç çağrılmaz. Yalnızca DEĞEN (penetrasyonsuz) paneller de elenir — temas,
+// kesim gerektirmez ve tam çakışık yüzey boolean'ı en yavaş/kırılgan durumdur.
+
+function worldAABBOfPanel(p: any): THREE.Box3 | null {
+  if (!p?.geometry) return null;
+  const pos = p.geometry.getAttribute('position');
+  if (!pos) return null;
+  const box = new THREE.Box3().setFromBufferAttribute(pos as THREE.BufferAttribute);
+  const m = new THREE.Matrix4().compose(
+    new THREE.Vector3(...(p.position as [number, number, number])),
+    new THREE.Quaternion().setFromEuler(new THREE.Euler(p.rotation[0], p.rotation[1], p.rotation[2], 'XYZ')),
+    new THREE.Vector3(...((p.scale || [1, 1, 1]) as [number, number, number]))
+  );
+  return box.applyMatrix4(m);
+}
+
+// İki dünya-AABB'si en az minPen kadar İÇ İÇE geçiyor mu? (sadece değme → false)
+function aabbsPenetrate(a: THREE.Box3, b: THREE.Box3, minPen = 0.01): boolean {
+  return (
+    a.min.x < b.max.x - minPen && a.max.x > b.min.x + minPen &&
+    a.min.y < b.max.y - minPen && a.max.y > b.min.y + minPen &&
+    a.min.z < b.max.z - minPen && a.max.z > b.min.z + minPen
+  );
+}
+
+// Sanal yüzeyden kurulan (dönmemiş) slab'ın konservatif dünya kutusu:
+// VF köşe kutusu + kalınlık payı. Broad-phase için yeterli.
+function worldAABBFromVF(
+  vf: any,
+  thickness: number,
+  parentPos: [number, number, number]
+): THREE.Box3 | null {
+  if (!vf?.vertices || vf.vertices.length < 3) return null;
+  const box = new THREE.Box3();
+  for (const v of vf.vertices) {
+    box.expandByPoint(new THREE.Vector3(v[0] + parentPos[0], v[1] + parentPos[1], v[2] + parentPos[2]));
+  }
+  box.expandByScalar(thickness + 0.5);
+  return box;
+}
+
+// DÖNMÜŞ panel için kesin slab-bandı testi: dönmüş panel, VF düzleminin
+// döndürülmüş kopyası boyunca [düzlem - kalınlık, düzlem] bandında yaşar.
+// Kardeşin dünya kutusunun 8 köşesi tamamen bandın dışındaysa kesişim
+// imkânsızdır → boolean atlanır. 8 nokta çarpımı — bedava.
+function siblingIntersectsRotatedSlab(
+  sib: any,
+  vf: any,
+  thickness: number,
+  steps: RotateStep[],
+  parentPos: [number, number, number]
+): boolean {
+  const sibBox = worldAABBOfPanel(sib);
+  if (!sibBox || !vf?.vertices || vf.vertices.length < 1) return true; // test edilemiyorsa güvenli taraf: kes
+
+  // Bileşik rotasyon kuaterniyonu (adımlar sırayla, premultiply)
+  const q = new THREE.Quaternion();
+  for (const step of steps) {
+    const axisVec = new THREE.Vector3(
+      step.axis === 'x' ? 1 : 0,
+      step.axis === 'y' ? 1 : 0,
+      step.axis === 'z' ? 1 : 0
+    );
+    q.premultiply(new THREE.Quaternion().setFromAxisAngle(axisVec, (step.value * Math.PI) / 180));
+  }
+  const nWorld = new THREE.Vector3(vf.normal[0], vf.normal[1], vf.normal[2]).normalize().applyQuaternion(q);
+
+  // VF'nin ilk köşesini dünyaya taşı ve adımları pivotlar etrafında ileri uygula
+  let p = new THREE.Vector3(
+    vf.vertices[0][0] + parentPos[0],
+    vf.vertices[0][1] + parentPos[1],
+    vf.vertices[0][2] + parentPos[2]
+  );
+  for (const step of steps) {
+    const pivot = new THREE.Vector3(...step.pivot);
+    const axisVec = new THREE.Vector3(
+      step.axis === 'x' ? 1 : 0,
+      step.axis === 'y' ? 1 : 0,
+      step.axis === 'z' ? 1 : 0
+    );
+    const sq = new THREE.Quaternion().setFromAxisAngle(axisVec, (step.value * Math.PI) / 180);
+    p = pivot.clone().add(p.sub(pivot).applyQuaternion(sq));
+  }
+  const d0 = nWorld.dot(p);
+  const bandMin = d0 - thickness - 0.5;
+  const bandMax = d0 + 0.5;
+
+  const cs = [
+    new THREE.Vector3(sibBox.min.x, sibBox.min.y, sibBox.min.z),
+    new THREE.Vector3(sibBox.max.x, sibBox.min.y, sibBox.min.z),
+    new THREE.Vector3(sibBox.min.x, sibBox.max.y, sibBox.min.z),
+    new THREE.Vector3(sibBox.max.x, sibBox.max.y, sibBox.min.z),
+    new THREE.Vector3(sibBox.min.x, sibBox.min.y, sibBox.max.z),
+    new THREE.Vector3(sibBox.max.x, sibBox.min.y, sibBox.max.z),
+    new THREE.Vector3(sibBox.min.x, sibBox.max.y, sibBox.max.z),
+    new THREE.Vector3(sibBox.max.x, sibBox.max.y, sibBox.max.z),
+  ];
+  let allBelow = true, allAbove = true;
+  for (const c of cs) {
+    const d = nWorld.dot(c);
+    if (d > bandMin) allBelow = false;
+    if (d < bandMax) allAbove = false;
+  }
+  return !(allBelow || allAbove);
 }
 
 // OCC boolean kesişimi, TAM ÇAKIŞIK/teğet yüzeylerde sayısal olarak kırılgandır.
@@ -295,6 +411,10 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
             ),
           ];
           for (const sib of rotCutters) {
+            // BROAD-PHASE: kardeş, dönmüş slab bandına girmiyorsa (yalnızca
+            // değiyorsa/uzağındaysa) boolean HİÇ çağrılmaz — hem hız hem de
+            // teğet-yüzey boolean donmalarından kaçınma.
+            if (!siblingIntersectsRotatedSlab(sib, vf, thickness, rotateSteps, parentPos)) continue;
             try {
               const cutter = siblingCutterInPanelFrame(sib, rotateSteps, parentPos);
               if (cutter) rp = await performBooleanCut(rp, cutter);
@@ -334,6 +454,7 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           // olarak kullanmak kesimi yanlış yerde yapar (panelin eski konumunda
           // koca dilim koparırdı). siblingCutterInPanelFrame bunu düzeltir.
           if (!isRotated) {
+            const panelBox = worldAABBFromVF(vf, thickness, parentPos);
             const siblingPanelShapes = workingShapes.filter(
               s => s.type === 'panel' &&
                 s.parameters?.parentShapeId === parentShapeId &&
@@ -341,6 +462,11 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
                 s.replicadShape
             );
             for (const sib of siblingPanelShapes) {
+              // BROAD-PHASE: hacimsel iç içe geçme yoksa (sadece değme dahil)
+              // boolean atlanır — teğet yüzey kesimleri hem gereksiz hem OCC
+              // için en yavaş/kırılgan durumdur.
+              const sibBox = worldAABBOfPanel(sib);
+              if (panelBox && sibBox && !aabbsPenetrate(panelBox, sibBox)) continue;
               try {
                 const cutter = siblingCutterInPanelFrame(sib, rotateSteps, parentPos);
                 if (cutter) rp = await performBooleanCut(rp, cutter);
@@ -421,8 +547,18 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
     rebuildInFlight.delete(parentShapeId);
     if (rebuildPending.has(parentShapeId)) {
       rebuildPending.delete(parentShapeId);
-      // Mevcut tur sürerken gelen istek(ler) için en güncel durumla bir tur daha.
-      await rebuildPanelsForParent(parentShapeId);
+      const n = (rebuildRerunCount.get(parentShapeId) || 0) + 1;
+      rebuildRerunCount.set(parentShapeId, n);
+      if (n <= MAX_QUEUED_RERUNS) {
+        // Mevcut tur sürerken gelen istek(ler) için en güncel durumla bir tur daha.
+        await rebuildPanelsForParent(parentShapeId);
+      } else {
+        console.warn('[PanelRebuild] queued re-run cap reached for', parentShapeId,
+          '— possible rebuild cascade, skipping further automatic re-runs');
+        rebuildRerunCount.delete(parentShapeId);
+      }
+    } else {
+      rebuildRerunCount.delete(parentShapeId);
     }
   }
 }
