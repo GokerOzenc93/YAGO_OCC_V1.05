@@ -14,16 +14,20 @@ const FLAT_NORMAL_THRESHOLD = 0.999;
 
 function snapToFlatGroup(gi: number, groups: ReturnType<typeof groupCoplanarFaces>): number {
   if (gi < 0 || gi >= groups.length) return gi;
-  const n = groups[gi].normal.clone().normalize();
+  const group = groups[gi];
+  const n = group.normal.clone().normalize();
   const isFlat = Math.abs(n.x) > FLAT_NORMAL_THRESHOLD || Math.abs(n.y) > FLAT_NORMAL_THRESHOLD || Math.abs(n.z) > FLAT_NORMAL_THRESHOLD;
   if (isFlat) return gi;
+  // If the group is not marked as curved (it's a coplanar flat surface like a miter cut),
+  // keep it as-is rather than snapping to a nearby axis-aligned face.
+  if (!group.isCurved) return gi;
   const axisOf = (v: THREE.Vector3) => {
     const a = [Math.abs(v.x), Math.abs(v.y), Math.abs(v.z)];
     const i = a.indexOf(Math.max(...a));
     return i === 0 ? (v.x > 0 ? 'X+' : 'X-') : i === 1 ? (v.y > 0 ? 'Y+' : 'Y-') : (v.z > 0 ? 'Z+' : 'Z-');
   };
   const axLbl = axisOf(n);
-  const center = groups[gi].center;
+  const center = group.center;
   let bestIdx = gi, bestDist = Infinity;
   groups.forEach((g, idx) => {
     const gn = g.normal.clone().normalize();

@@ -81,20 +81,25 @@ function calculateSurfaceType(
   const neighbors = adjacencyMap.get(face.faceIndex);
   if (!neighbors || neighbors.size === 0) return 'curved';
 
-  let hasAxisAlignedNeighbor = false;
+  let hasCoplanarNeighbor = false;
   let hasCurvedNeighbor = false;
 
   for (const neighborIdx of neighbors) {
     const neighbor = faces[neighborIdx];
-    if (isAxisAligned(neighbor.normal, 0.999)) hasAxisAlignedNeighbor = true;
-
     const dot = face.normal.dot(neighbor.normal);
     const angle = Math.acos(Math.min(1, Math.max(-1, dot))) * (180 / Math.PI);
-    if (angle > 2 && angle < 50) hasCurvedNeighbor = true;
+    if (angle < 2) {
+      hasCoplanarNeighbor = true;
+    } else if (angle > 2 && angle < 50) {
+      hasCurvedNeighbor = true;
+    }
   }
 
-  if (hasCurvedNeighbor && !isAxisAligned(face.normal, 0.999)) return 'curved';
-  if (hasAxisAlignedNeighbor && isAxisAligned(face.normal, 0.999)) return 'flat';
+  // If this face has coplanar neighbors (same normal), it's a flat surface
+  // even if not axis-aligned (e.g. miter cuts, angled faces).
+  if (hasCoplanarNeighbor) return 'flat';
+
+  if (hasCurvedNeighbor) return 'curved';
   return 'curved';
 }
 
