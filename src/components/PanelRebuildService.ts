@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { useAppStore } from '../store';
 import { applyRotateSteps, type RotateStep } from './PanelRotateService';
+import { applyTransformSteps, type TransformStep } from './PanelTransformService';
 
 const rebuildInFlight = new Set<string>();
 // Rebuild sürerken gelen istekler SESSİZCE DÜŞÜRÜLMEMELİ: aksi halde açı
@@ -738,10 +739,28 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           }
         }
 
-        // Rotasyonu transform olarak uygula (geometri düz kalır; kırpma yukarıda
-        // küpü ters döndürerek açıya göre yapıldı). Sonraki kardeşler bu paneli
-        // engel olarak görür.
-        if (rotateSteps.length > 0) {
+        // Tüm transform adımlarını (move + rotate) sırayla uygula.
+        // Geometri düz kalır; kırpma yukarıda küpü ters döndürerek açıya
+        // göre yapıldı. Sonraki kardeşler bu paneli engel olarak görür.
+        const transformSteps: TransformStep[] = panel.parameters?.transformSteps || [];
+        if (transformSteps.length > 0) {
+          const basePos: [number, number, number] = panel.parameters?.baseTransformPosition ?? [...panel.position];
+          const baseRot: [number, number, number] = panel.parameters?.baseTransformRotation ?? [...panel.rotation];
+          const { position: newPos, rotation: newRot } = applyTransformSteps(basePos, baseRot, transformSteps);
+          rebuiltPanel = {
+            ...rebuiltPanel,
+            position: newPos,
+            rotation: newRot,
+            parameters: {
+              ...rebuiltPanel.parameters,
+              baseTransformPosition: basePos,
+              baseTransformRotation: baseRot,
+              transformSteps,
+              rotateSteps,
+            },
+          };
+        } else if (rotateSteps.length > 0) {
+          // Legacy: eski rotateSteps varsa ama transformSteps yoksa eskiyi uygula
           const basePos: [number, number, number] = panel.parameters?.baseRotatePosition ?? [...panel.position];
           const baseRot: [number, number, number] = panel.parameters?.baseRotateRotation ?? [...panel.rotation];
           const { position: newPos, rotation: newRot } = applyRotateSteps(basePos, baseRot, rotateSteps);

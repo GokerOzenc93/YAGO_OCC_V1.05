@@ -582,6 +582,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
   const activeSteps = activePanel?.parameters?.extrudeSteps || [];
   const activeMoveSteps = activePanel?.parameters?.moveSteps || [];
   const activeRotateSteps = activePanel?.parameters?.rotateSteps || [];
+  const activeTransformSteps = activePanel?.parameters?.transformSteps || [];
 
   const { selectedPanelRowParentId } = useAppStore();
   useEffect(() => {
@@ -1287,128 +1288,110 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
   const stepsPanel = (() => {
     if (!activePanelId || !activePanel) return null;
     const hasExtrudeSteps = activeSteps.length > 0;
-    const hasMoveSteps = activeMoveSteps.length > 0;
-    const hasRotateSteps = activeRotateSteps.length > 0;
-    if (!hasExtrudeSteps && !hasMoveSteps && !hasRotateSteps) return null;
+    const hasTransformSteps = activeTransformSteps.length > 0;
+    if (!hasExtrudeSteps && !hasTransformSteps) return null;
 
-    const axisColors: Record<string, string> = { 'x+': '#dc2626', 'x-': '#b91c1c', 'y+': '#16a34a', 'y-': '#15803d', 'z+': '#2563eb', 'z-': '#1d4ed8' };
-
-    const saveMoveStep = async (pid: string | null, stepId: string, val: number) => {
-      if (!pid) return; const ps = shapes.find(s => s.id === pid); if (!ps) return;
-      const { updateMoveStep } = await import('./PanelMoveService');
-      await updateMoveStep(ps, stepId, val, shapes, updateShape);
-      setEditingMoveStepId(null);
+    const axisColors: Record<string, string> = { 'x+': '#dc2626', 'x-': '#b91c1c', 'y+': '#16a34a', 'y-': '#15803d', 'z+': '#2563eb', 'z-': '#1d4ed8', x: '#dc2626', y: '#16a34a', z: '#2563eb' };
+    const typeBadge: Record<string, { label: string; bg: string; color: string }> = {
+      move: { label: 'Tasi', bg: 'rgba(34,197,94,0.12)', color: '#15803d' },
+      rotate: { label: 'Don', bg: 'rgba(59,130,246,0.12)', color: '#1d4ed8' },
+      extrude: { label: 'Ext', bg: 'rgba(245,158,11,0.12)', color: '#b45309' },
     };
 
-    const saveRotateStep = async (pid: string | null, stepId: string, val: number) => {
+    const saveTransformStep = async (pid: string | null, stepId: string, val: number) => {
       if (!pid) return; const ps = shapes.find(s => s.id === pid); if (!ps) return;
-      const { updateRotateStep } = await import('./PanelRotateService');
-      await updateRotateStep(ps, stepId, val, shapes, updateShape);
+      const { updateTransformStep } = await import('./PanelTransformService');
+      await updateTransformStep(ps, stepId, val, shapes, updateShape);
+      setEditingMoveStepId(null);
       setEditingRotateStepId(null);
     };
 
+    // Build unified ordered list: extrude steps + transform steps sorted by timestamp
+    const allSteps: Array<{ id: string; stepType: string; axis: string; value: number; timestamp: number; isFixed?: boolean; original: any }> = [];
+
+    for (const s of activeSteps) {
+      allSteps.push({ id: s.id, stepType: 'extrude', axis: s.axisLabel, value: s.value, timestamp: s.timestamp, isFixed: s.isFixed, original: s });
+    }
+    for (const s of activeTransformSteps) {
+      const ax = s.type === 'move' ? s.axis : s.axis;
+      allSteps.push({ id: s.id, stepType: s.type, axis: ax, value: s.value, timestamp: s.timestamp, original: s });
+    }
+    allSteps.sort((a, b) => a.timestamp - b.timestamp);
+
     return (
       <div className="shrink-0 border-t border-stone-100 bg-[#faf8f4]" style={{ fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif" }}>
-        <div className="overflow-y-auto" style={{ maxHeight: 180 }}>
-          {hasExtrudeSteps && (
-            <div className="px-3 pt-2.5 pb-1.5">
-              <div className="flex items-center gap-2 mb-1.5">
-                <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#a8a29e' }}>Extrude adımları</span>
-                <div className="flex-1 h-px bg-stone-200/70" />
-              </div>
-              <div className="flex flex-col gap-1">
-                {activeSteps.map((s: any, idx: number) => (
-                  <div key={s.id} className="flex items-center gap-2 px-2 py-1 rounded-lg bg-white ring-1 ring-stone-200/80 shadow-[0_1px_2px_rgba(68,64,60,0.05)]">
-                    <span className="shrink-0 text-[10px] font-bold text-stone-400 tabular-nums w-4 text-center">{idx + 1}</span>
-                    <span className="shrink-0 min-w-[26px] text-center text-[10px] font-extrabold font-mono px-1.5 py-0.5 rounded-md" style={{ background: 'rgba(68,64,60,0.07)', color: '#57534e' }}>{s.axisLabel}</span>
-                    {editingStepId === s.id ? (
-                      <>
-                        <input type="text" inputMode="numeric" autoFocus value={editingStepValue}
-                          onChange={e => setEditingStepValue(Number(e.target.value) || 0)}
-                          onKeyDown={e => { if (e.key === 'Enter') saveStep(activePanelId, s.id, editingStepValue); else if (e.key === 'Escape') setEditingStepId(null); }}
-                          className="flex-1 min-w-0 h-6 text-center font-mono text-xs font-semibold text-stone-800 bg-white border border-stone-300 rounded-md outline-none focus:border-orange-400" />
-                        <button onClick={() => saveStep(activePanelId, s.id, editingStepValue)} style={iconBtn('#5b5346')}><Check size={11} /></button>
-                        <button onClick={() => setEditingStepId(null)} style={iconBtn('#a8a29e')}><X size={11} /></button>
-                      </>
-                    ) : (
-                      <>
-                        <span className="flex-1 font-mono text-xs font-bold text-stone-800 tabular-nums">{s.value}</span>
-                        <span className="shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-sm bg-stone-100 text-stone-500">{s.isFixed ? 'Fixed' : 'Dyn'}</span>
-                        <button onClick={() => { setEditingStepId(s.id); setEditingStepValue(s.value); }} style={iconBtn('#78716c')}><Pencil size={10} /></button>
-                        <button onClick={async () => { const ps = shapes.find(x => x.id === activePanelId); if (!ps) return; const { deleteExtrudeStep } = await import('./FaceExtrudeService'); await deleteExtrudeStep(ps, s.id, updateShape); }} style={iconBtn('#ef4444')}><Trash2 size={10} /></button>
-                      </>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+        <div className="px-3 pt-2 pb-1">
+          <div className="flex items-center gap-2 mb-1.5">
+            <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#a8a29e' }}>Islem adimlari</span>
+            <div className="flex-1 h-px bg-stone-200/70" />
+          </div>
+        </div>
+        <div className="overflow-y-auto px-3 pb-2.5" style={{ maxHeight: 200 }}>
+          <div className="flex flex-col gap-1">
+            {allSteps.map((s, idx) => {
+              const badge = typeBadge[s.stepType] || typeBadge.move;
+              const isEditingThis = (s.stepType === 'extrude' && editingStepId === s.id)
+                || (s.stepType === 'move' && editingMoveStepId === s.id)
+                || (s.stepType === 'rotate' && editingRotateStepId === s.id);
+              const editValue = s.stepType === 'extrude' ? editingStepValue
+                : s.stepType === 'move' ? editingMoveStepValue
+                : editingRotateStepValue;
 
-          {hasMoveSteps && (
-            <div className="px-3 pt-2 pb-2.5">
-              <div className="flex items-center gap-2 mb-1.5">
-                <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#a8a29e' }}>Tasima adimlari</span>
-                <div className="flex-1 h-px bg-stone-200/70" />
-              </div>
-              <div className="flex flex-col gap-1">
-                {activeMoveSteps.map((s: any, idx: number) => (
-                  <div key={s.id} className="flex items-center gap-2 px-2 py-1 rounded-lg bg-white ring-1 ring-stone-200/80 shadow-[0_1px_2px_rgba(68,64,60,0.05)]">
-                    <span className="shrink-0 text-[10px] font-bold text-stone-400 tabular-nums w-4 text-center">{idx + 1}</span>
-                    <span className="shrink-0 min-w-[26px] text-center text-[10px] font-extrabold font-mono px-1.5 py-0.5 rounded-md" style={{ color: axisColors[s.axis] || '#57534e', background: 'rgba(68,64,60,0.06)' }}>{s.axis.toUpperCase()}</span>
-                    {editingMoveStepId === s.id ? (
-                      <>
-                        <input type="text" inputMode="numeric" autoFocus value={editingMoveStepValue}
-                          onChange={e => setEditingMoveStepValue(Number(e.target.value) || 0)}
-                          onKeyDown={e => { if (e.key === 'Enter') saveMoveStep(activePanelId, s.id, editingMoveStepValue); else if (e.key === 'Escape') setEditingMoveStepId(null); }}
-                          className="flex-1 min-w-0 h-6 text-center font-mono text-xs font-semibold text-stone-800 bg-white border border-stone-300 rounded-md outline-none focus:border-orange-400" />
-                        <button onClick={() => saveMoveStep(activePanelId, s.id, editingMoveStepValue)} style={iconBtn('#5b5346')}><Check size={11} /></button>
-                        <button onClick={() => setEditingMoveStepId(null)} style={iconBtn('#a8a29e')}><X size={11} /></button>
-                      </>
-                    ) : (
-                      <>
-                        <span className="flex-1 font-mono text-xs font-bold text-stone-800 tabular-nums">{s.value}</span>
-                        <button onClick={() => { setEditingMoveStepId(s.id); setEditingMoveStepValue(s.value); }} style={iconBtn('#78716c')}><Pencil size={10} /></button>
-                        <button onClick={async () => { const ps = shapes.find(x => x.id === activePanelId); if (!ps) return; const { deleteMoveStep } = await import('./PanelMoveService'); await deleteMoveStep(ps, s.id, shapes, updateShape); }} style={iconBtn('#ef4444')}><Trash2 size={10} /></button>
-                      </>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+              return (
+                <div key={s.id} className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-white ring-1 ring-stone-200/80 shadow-[0_1px_2px_rgba(68,64,60,0.05)]">
+                  <span className="shrink-0 text-[10px] font-bold text-stone-400 tabular-nums w-4 text-center">{idx + 1}</span>
+                  <span className="shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-sm" style={{ background: badge.bg, color: badge.color }}>{badge.label}</span>
+                  <span className="shrink-0 min-w-[22px] text-center text-[10px] font-extrabold font-mono px-1 py-0.5 rounded-md" style={{ color: axisColors[s.axis] || '#57534e', background: 'rgba(68,64,60,0.06)' }}>{s.axis.toUpperCase()}</span>
 
-          {hasRotateSteps && (
-            <div className="px-3 pt-2 pb-2.5">
-              <div className="flex items-center gap-2 mb-1.5">
-                <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#a8a29e' }}>Dondurme adimlari</span>
-                <div className="flex-1 h-px bg-stone-200/70" />
-              </div>
-              <div className="flex flex-col gap-1">
-                {activeRotateSteps.map((s: any, idx: number) => (
-                  <div key={s.id} className="flex items-center gap-2 px-2 py-1 rounded-lg bg-white ring-1 ring-stone-200/80 shadow-[0_1px_2px_rgba(68,64,60,0.05)]">
-                    <span className="shrink-0 text-[10px] font-bold text-stone-400 tabular-nums w-4 text-center">{idx + 1}</span>
-                    <span className="shrink-0 min-w-[26px] text-center text-[10px] font-extrabold font-mono px-1.5 py-0.5 rounded-md" style={{ color: axisColors[s.axis] || '#57534e', background: 'rgba(68,64,60,0.06)' }}>{s.axis.toUpperCase()}</span>
-                    {editingRotateStepId === s.id ? (
-                      <>
-                        <input type="text" inputMode="numeric" autoFocus value={editingRotateStepValue}
-                          onChange={e => setEditingRotateStepValue(Number(e.target.value) || 0)}
-                          onKeyDown={e => { if (e.key === 'Enter') saveRotateStep(activePanelId, s.id, editingRotateStepValue); else if (e.key === 'Escape') setEditingRotateStepId(null); }}
-                          className="flex-1 min-w-0 h-6 text-center font-mono text-xs font-semibold text-stone-800 bg-white border border-stone-300 rounded-md outline-none focus:border-orange-400" />
-                        <button onClick={() => saveRotateStep(activePanelId, s.id, editingRotateStepValue)} style={iconBtn('#5b5346')}><Check size={11} /></button>
-                        <button onClick={() => setEditingRotateStepId(null)} style={iconBtn('#a8a29e')}><X size={11} /></button>
-                      </>
-                    ) : (
-                      <>
-                        <span className="flex-1 font-mono text-xs font-bold text-stone-800 tabular-nums">{s.value}°</span>
-                        <button onClick={() => { setEditingRotateStepId(s.id); setEditingRotateStepValue(s.value); }} style={iconBtn('#78716c')}><Pencil size={10} /></button>
-                        <button onClick={async () => { const ps = shapes.find(x => x.id === activePanelId); if (!ps) return; const { deleteRotateStep } = await import('./PanelRotateService'); await deleteRotateStep(ps, s.id, shapes, updateShape); }} style={iconBtn('#ef4444')}><Trash2 size={10} /></button>
-                      </>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+                  {isEditingThis ? (
+                    <>
+                      <input type="text" inputMode="numeric" autoFocus value={editValue}
+                        onChange={e => {
+                          const v = Number(e.target.value) || 0;
+                          if (s.stepType === 'extrude') setEditingStepValue(v);
+                          else if (s.stepType === 'move') setEditingMoveStepValue(v);
+                          else setEditingRotateStepValue(v);
+                        }}
+                        onKeyDown={e => {
+                          if (e.key === 'Escape') { setEditingStepId(null); setEditingMoveStepId(null); setEditingRotateStepId(null); return; }
+                          if (e.key !== 'Enter') return;
+                          if (s.stepType === 'extrude') saveStep(activePanelId, s.id, editingStepValue);
+                          else saveTransformStep(activePanelId, s.id, editValue);
+                        }}
+                        className="flex-1 min-w-0 h-6 text-center font-mono text-xs font-semibold text-stone-800 bg-white border border-stone-300 rounded-md outline-none focus:border-orange-400" />
+                      <button onClick={() => {
+                        if (s.stepType === 'extrude') saveStep(activePanelId, s.id, editingStepValue);
+                        else saveTransformStep(activePanelId, s.id, editValue);
+                      }} style={iconBtn('#5b5346')}><Check size={11} /></button>
+                      <button onClick={() => { setEditingStepId(null); setEditingMoveStepId(null); setEditingRotateStepId(null); }} style={iconBtn('#a8a29e')}><X size={11} /></button>
+                    </>
+                  ) : (
+                    <>
+                      <span className="flex-1 font-mono text-xs font-bold text-stone-800 tabular-nums">{s.value}{s.stepType === 'rotate' ? '\u00B0' : ''}</span>
+                      {s.stepType === 'extrude' && s.isFixed !== undefined && (
+                        <span className="shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-sm bg-stone-100 text-stone-500">{s.isFixed ? 'F' : 'D'}</span>
+                      )}
+                      <button onClick={() => {
+                        if (s.stepType === 'extrude') { setEditingStepId(s.id); setEditingStepValue(s.value); }
+                        else if (s.stepType === 'move') { setEditingMoveStepId(s.id); setEditingMoveStepValue(s.value); }
+                        else { setEditingRotateStepId(s.id); setEditingRotateStepValue(s.value); }
+                      }} style={iconBtn('#78716c')}><Pencil size={10} /></button>
+                      <button onClick={async () => {
+                        const ps = shapes.find(x => x.id === activePanelId); if (!ps) return;
+                        if (s.stepType === 'extrude') {
+                          const { deleteExtrudeStep } = await import('./FaceExtrudeService');
+                          await deleteExtrudeStep(ps, s.id, updateShape);
+                        } else {
+                          const { deleteTransformStep } = await import('./PanelTransformService');
+                          await deleteTransformStep(ps, s.id, shapes, updateShape);
+                        }
+                      }} style={iconBtn('#ef4444')}><Trash2 size={10} /></button>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
       </div>
     );
