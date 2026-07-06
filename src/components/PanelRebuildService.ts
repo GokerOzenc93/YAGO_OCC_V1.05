@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { useAppStore } from '../store';
-import { applyRotateSteps, type RotateStep } from './PanelRotateService';
+import { type RotateStep } from './PanelRotateService';
 import { applyTransformSteps, type TransformStep } from './PanelTransformService';
 
 const rebuildInFlight = new Set<string>();
@@ -543,19 +543,10 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
         const rawRotateSteps: RotateStep[] = panel.parameters?.rotateSteps || [];
         const isRotated = rawRotateSteps.length > 0;
         const parentPos: [number, number, number] = [...parent.position] as [number, number, number];
-        // Parent yeniden boyutlandırıldığında rotateSteps'teki pivot eski VF
-        // merkezine bağlıdır. Slab yeni VF merkezinden oluşturulduğu için pivotu
-        // güncelliyoruz — geometry kesişimi ve THREE.js group konumu tutarlı olur.
-        const rotateSteps: RotateStep[] = isRotated
-          ? rawRotateSteps.map(step => ({
-              ...step,
-              pivot: [
-                parentPos[0] + vf.center[0],
-                parentPos[1] + vf.center[1],
-                parentPos[2] + vf.center[2],
-              ] as [number, number, number],
-            }))
-          : rawRotateSteps;
+        // rotateSteps'i doğrudan kullan — pivot'lar ilk kaydedildikleri haliyle
+        // doğru. Geometry intersection slab'ı parentMaxDim kadar büyütüyor,
+        // pivot farkı intersection'ı bozmaz.
+        const rotateSteps: RotateStep[] = rawRotateSteps;
         // Panel döndürülmüşse büyüme/kırpma "Ana yüze eşitle" düğmesine BAĞLI
         // OLMAMALI: dönünce otomatik olarak kübe göre uzayıp kırpılsın. Bu yüzden
         // parent kesişimi, döndürülmüş panelde parentFaceShape bayrağı kapalı olsa
@@ -572,46 +563,69 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
         const parentHasFillets = !!(parent.fillets && parent.fillets.length > 0 && parent.replicadShape);
 
         if (willIntersectParent) {
-          // Küpü panelin yerel (döndürülmemiş) çerçevesine taşı: paneli
-          // döndürmek yerine küpü ters döndürüp kesişiriz → geometri düz kalır
-          // (önizleme/ölçü stabil), kırpma açıya göre doğru olur.
-          const cube = rotateSteps.length > 0
-            ? inverseRotateReplicadByLocalSteps(parent.replicadShape, rotateSteps, parentPos)
-            : parent.replicadShape;
-          console.info('[RotateRebuild] intersecting panel', panel.id, {
-            steps: rotateSteps.length, planeExpand,
-          });
-          const intersected = await intersectWithRetries(
-            rp, cube,
-            (expand: number) => createPanelFromVirtualFace(vf.vertices, vf.normal, thickness, expand),
-            planeExpand,
-            performBooleanIntersection
-          );
-          if (intersected) {
-            rp = intersected;
+          // DÖNMÜŞ PANEL KESİŞİMİ: Paneli DÖNDÜRMEDİĞİMİZDE (geometri düz,
+          // THREE.js rotation uygular) 18mm kalınlıktaki slab yalnızca kübün
+          // 18mm/cos(a) genişliğindeki dilimini yakalar — büyük açılarda panel
+          // küpün duvarına ulaşamaz (boşluk). Çözüm: slab'ı İLERİ döndürüp
+          // (döndürmüş çerçevede 18mm kalınlık oluşturup) döndürülmemiş küp ile
+          // kesişiriz — sonuç gerçek 3D panel geometrisidir ve THREE.js rotation
+          // sıfırlanır. Bu, rotation açısından bağımsız olarak doğru kırpma verir.
+          if (rotateSteps.length > 0) {
+            const rotatedSlab = forwardRotateReplicadByLocalSteps(rp, rotateSteps, parentPos);
+            console.info('[RotateRebuild] forward-rotated slab intersect for panel', panel.id, {
+              steps: rotateSteps.length, planeExpand,
+            });
+            const intersected = await intersectWithRetries(
+              rotatedSlab, parent.replicadShape,
+              async (expand: number) => {
+                const fresh = await createPanelFromVirtualFace(vf.vertices, vf.normal, thickness, expand);
+                return fresh ? forwardRotateReplicadByLocalSteps(fresh, rotateSteps, parentPos) : null;
+              },
+              planeExpand,
+              performBooleanIntersection
+            );
+            if (intersected) {
+              rp = intersected;
+            } else {
+              console.error('[RotateRebuild] ALL intersection attempts failed for panel', panel.id,
+                '— falling back to unexpanded rotated slab');
+              if (planeExpand > 0) {
+                try {
+                  const fresh = await createPanelFromVirtualFace(vf.vertices, vf.normal, thickness, 0);
+                  if (fresh) rp = forwardRotateReplicadByLocalSteps(fresh, rotateSteps, parentPos);
+                } catch (err2) {
+                  console.error('Fallback panel rebuild also failed:', err2);
+                }
+              }
+            }
           } else {
-            console.error('[RotateRebuild] ALL intersection attempts failed for panel', panel.id,
-              '— falling back to unexpanded slab (panel will NOT auto-extend this round)');
-            // GÜVENLİK: büyütülmüş slab kırpılamadıysa dev panel olarak kalmasın —
-            // normal (büyütmesiz) sanal yüzeyle yeniden kur.
-            if (planeExpand > 0) {
-              try {
-                rp = await createPanelFromVirtualFace(vf.vertices, vf.normal, thickness, 0);
-              } catch (err2) {
-                console.error('Fallback panel rebuild (no expand) also failed:', err2);
+            // Dönmemiş panel: eski mantık — doğrudan parent ile kesiştir
+            const cube = parent.replicadShape;
+            console.info('[RotateRebuild] non-rotated intersect for panel', panel.id);
+            const intersected = await intersectWithRetries(
+              rp, cube,
+              (expand: number) => createPanelFromVirtualFace(vf.vertices, vf.normal, thickness, expand),
+              planeExpand,
+              performBooleanIntersection
+            );
+            if (intersected) {
+              rp = intersected;
+            } else {
+              console.error('[RotateRebuild] intersection failed for non-rotated panel', panel.id);
+              if (planeExpand > 0) {
+                try {
+                  rp = await createPanelFromVirtualFace(vf.vertices, vf.normal, thickness, 0);
+                } catch (err2) {
+                  console.error('Fallback non-rotated rebuild failed:', err2);
+                }
               }
             }
           }
         }
 
-        // DÖNMÜŞ PANEL KARDEŞ KESİMİ: Dönmüş panel yukarıda kübe kadar
-        // uzatıldığı için kardeş panellerin İÇİNDEN geçebilir. Küpteki desenle
-        // aynı: kardeş geometrisi panelin yerel çerçevesine taşınıp kesilir.
-        // SIRALAMA KURALI: Dönmüş panel yalnızca kendinden ÖNCE gelen (yüksek
-        // öncelikli, workingShapes'te zaten kurulu) kardeşlere yol verir.
-        // SONRAKİ (düşük öncelikli) paneller ise dönmüş panele yol verir —
-        // onlar kendi turlarında yarım-uzay gönye kesimiyle açılı biçilir.
-        // İkisinin birden kesilmesi karşılıklı geri çekilme = boşluk üretirdi.
+        // DÖNMÜŞ PANEL KARDEŞ KESİMİ: Geometri zaten parent-yerel uzayda
+        // döndürülmüş durumda. Kardeş panellerin replicadShape'leri de aynı
+        // uzayda olduğu için doğrudan boolean kesim yapılır.
         if (isRotated) {
           const rotCutters = workingShapes.filter(
             s => s.type === 'panel' &&
@@ -620,13 +634,11 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
               s.replicadShape
           );
           for (const sib of rotCutters) {
-            // BROAD-PHASE: kardeş, dönmüş slab bandına girmiyorsa (yalnızca
-            // değiyorsa/uzağındaysa) boolean HİÇ çağrılmaz — hem hız hem de
-            // teğet-yüzey boolean donmalarından kaçınma.
             if (!siblingIntersectsRotatedSlab(sib, vf, thickness, rotateSteps, parentPos)) continue;
             try {
-              const cutter = siblingCutterInPanelFrame(sib, rotateSteps, parentPos);
-              if (cutter) rp = await performBooleanCut(rp, cutter);
+              // Kardeşin replicadShape'i zaten parent-yerel uzayda; doğrudan kes
+              const sibShape = sib.replicadShape;
+              if (sibShape) rp = await performBooleanCut(rp, typeof sibShape.clone === 'function' ? sibShape.clone() : sibShape);
             } catch (err) {
               console.error('Failed to subtract sibling from rotated panel:', err);
             }
@@ -753,25 +765,48 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
         }
 
         // Tüm transform adımlarını (move + rotate) sırayla uygula.
-        // Geometri düz kalır; kırpma yukarıda küpü ters döndürerek açıya
-        // göre yapıldı. Sonraki kardeşler bu paneli engel olarak görür.
+        // DÖNMÜŞ PANEL: Geometri zaten döndürülmüş durumda (forward-rotate +
+        // intersection). THREE.js group'a yalnızca MOVE adımlarını uygula,
+        // rotation geometriye gömülü olduğu için group.rotation = [0,0,0] kalır.
+        // DÜZGÜN PANEL: Rotation yoksa eski mantık korunur.
         const transformSteps: TransformStep[] = panel.parameters?.transformSteps || [];
-        if (transformSteps.length > 0) {
+        if (isRotated && transformSteps.length > 0) {
+          // Geometry rotasyonu içerdiğinden yalnızca move adımlarını pozisyona uygula
+          const basePos: [number, number, number] = panel.parameters?.baseTransformPosition ?? [...parent.position] as [number, number, number];
+          let pos = new THREE.Vector3(...basePos);
+          for (const step of transformSteps) {
+            if (step.type === 'move') {
+              const dir = step.axis === 'x+' ? [1,0,0] : step.axis === 'x-' ? [-1,0,0]
+                : step.axis === 'y+' ? [0,1,0] : step.axis === 'y-' ? [0,-1,0]
+                : step.axis === 'z+' ? [0,0,1] : [0,0,-1];
+              pos.add(new THREE.Vector3(...dir).multiplyScalar(step.value));
+            }
+          }
+          rebuiltPanel = {
+            ...rebuiltPanel,
+            position: [pos.x, pos.y, pos.z] as [number, number, number],
+            rotation: [0, 0, 0] as [number, number, number],
+            parameters: {
+              ...rebuiltPanel.parameters,
+              baseTransformPosition: basePos,
+              baseTransformRotation: [0, 0, 0] as [number, number, number],
+              transformSteps,
+              rotateSteps,
+            },
+          };
+        } else if (isRotated && rotateSteps.length > 0) {
+          // Legacy: transformSteps yok ama rotateSteps var. Geometri zaten dönük.
+          const basePos: [number, number, number] = panel.parameters?.baseRotatePosition ?? [...parent.position] as [number, number, number];
+          rebuiltPanel = {
+            ...rebuiltPanel,
+            position: basePos,
+            rotation: [0, 0, 0] as [number, number, number],
+            parameters: { ...rebuiltPanel.parameters, baseRotatePosition: basePos, baseRotateRotation: [0, 0, 0] as [number, number, number], rotateSteps },
+          };
+        } else if (transformSteps.length > 0) {
           const basePos: [number, number, number] = panel.parameters?.baseTransformPosition ?? [...panel.position];
           const baseRot: [number, number, number] = panel.parameters?.baseTransformRotation ?? [...panel.rotation];
-          // Parent boyut değişince pivot'lar eski VF merkezine bağlı kalır ve
-          // THREE.js group konumunu yanlış hesaplatır. Geometri kesişimiyle
-          // tutarlı olması için pivot'ları yeni VF merkezine taşı.
-          const updatedSteps: TransformStep[] = transformSteps.map(step => {
-            if (step.type !== 'rotate') return step;
-            const newPivot: [number, number, number] = [
-              parentPos[0] + vf.center[0],
-              parentPos[1] + vf.center[1],
-              parentPos[2] + vf.center[2],
-            ];
-            return { ...step, pivot: newPivot };
-          });
-          const { position: newPos, rotation: newRot } = applyTransformSteps(basePos, baseRot, updatedSteps);
+          const { position: newPos, rotation: newRot } = applyTransformSteps(basePos, baseRot, transformSteps);
           rebuiltPanel = {
             ...rebuiltPanel,
             position: newPos,
@@ -780,21 +815,9 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
               ...rebuiltPanel.parameters,
               baseTransformPosition: basePos,
               baseTransformRotation: baseRot,
-              transformSteps: updatedSteps,
-              rotateSteps: updatedSteps.filter((s: TransformStep) => s.type === 'rotate') as RotateStep[],
+              transformSteps,
+              rotateSteps,
             },
-          };
-        } else if (rotateSteps.length > 0) {
-          // Legacy: eski rotateSteps varsa ama transformSteps yoksa eskiyi uygula.
-          // rotateSteps zaten VF merkezine göre güncellenmiş durumda.
-          const basePos: [number, number, number] = panel.parameters?.baseRotatePosition ?? [...panel.position];
-          const baseRot: [number, number, number] = panel.parameters?.baseRotateRotation ?? [...panel.rotation];
-          const { position: newPos, rotation: newRot } = applyRotateSteps(basePos, baseRot, rotateSteps);
-          rebuiltPanel = {
-            ...rebuiltPanel,
-            position: newPos,
-            rotation: newRot,
-            parameters: { ...rebuiltPanel.parameters, baseRotatePosition: basePos, baseRotateRotation: baseRot, rotateSteps },
           };
         }
 
