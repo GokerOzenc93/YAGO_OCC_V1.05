@@ -744,9 +744,46 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
         // göre yapıldı. Sonraki kardeşler bu paneli engel olarak görür.
         const transformSteps: TransformStep[] = panel.parameters?.transformSteps || [];
         if (transformSteps.length > 0) {
-          const basePos: [number, number, number] = panel.parameters?.baseTransformPosition ?? [...panel.position];
-          const baseRot: [number, number, number] = panel.parameters?.baseTransformRotation ?? [...panel.rotation];
-          const { position: newPos, rotation: newRot } = applyTransformSteps(basePos, baseRot, transformSteps);
+          // Panel'in doğal THREE.js group konumu her zaman parent.position'dır.
+          const basePos: [number, number, number] = [...parent.position] as [number, number, number];
+          const baseRot: [number, number, number] = panel.parameters?.baseTransformRotation ?? [0, 0, 0] as [number, number, number];
+
+          // Parent yeniden boyutlandırıldığında döndürme adımlarının pivot noktası
+          // eski panel geometrisine göre hesaplanmıştı. Yeni VF merkezinden
+          // güncellenmesi gerekir: pivot'un VF yüzeyine göre göreli ofseti korunur.
+          //
+          // eskiVFDünyaMerkezi = eski baseTransformPosition'dan (≈parent.position)
+          // göreli VF offset'i bilinmediğinden, eski panel geometrisinin bbox
+          // merkezini kullanıyoruz.
+          const newVfWorldCenter = new THREE.Vector3(
+            parentPos[0] + vf.center[0],
+            parentPos[1] + vf.center[1],
+            parentPos[2] + vf.center[2],
+          );
+
+          let oldVfWorldCenter: THREE.Vector3;
+          if (panel.geometry) {
+            const bbox = new THREE.Box3().setFromBufferAttribute(
+              panel.geometry.getAttribute('position') as THREE.BufferAttribute
+            );
+            const oldLocalCenter = new THREE.Vector3(); bbox.getCenter(oldLocalCenter);
+            // panel.position ≈ parent.position (transform'dan sonra değişmiş olabilir)
+            // Eski doğal konumu (parent.position) + yerel merkezi kullan
+            const oldNaturalPos = new THREE.Vector3(...(panel.parameters?.baseTransformPosition ?? [...parentPos]) as [number,number,number]);
+            oldVfWorldCenter = oldNaturalPos.clone().add(oldLocalCenter);
+          } else {
+            oldVfWorldCenter = new THREE.Vector3(...(panel.parameters?.baseTransformPosition ?? [...parentPos]) as [number,number,number]);
+          }
+
+          const updatedSteps = transformSteps.map(step => {
+            if (step.type !== 'rotate') return step;
+            // Yeni pivot = yeni VF merkezi + (eski pivot - eski VF merkezi)
+            const pivotDelta = new THREE.Vector3(...step.pivot as [number,number,number]).sub(oldVfWorldCenter);
+            const newPivot = newVfWorldCenter.clone().add(pivotDelta);
+            return { ...step, pivot: [newPivot.x, newPivot.y, newPivot.z] as [number, number, number] };
+          });
+
+          const { position: newPos, rotation: newRot } = applyTransformSteps(basePos, baseRot, updatedSteps);
           rebuiltPanel = {
             ...rebuiltPanel,
             position: newPos,
@@ -755,8 +792,8 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
               ...rebuiltPanel.parameters,
               baseTransformPosition: basePos,
               baseTransformRotation: baseRot,
-              transformSteps,
-              rotateSteps,
+              transformSteps: updatedSteps,
+              rotateSteps: updatedSteps.filter((s: TransformStep) => s.type === 'rotate') as RotateStep[],
             },
           };
         } else if (rotateSteps.length > 0) {
