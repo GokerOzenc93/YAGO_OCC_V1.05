@@ -540,9 +540,22 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
         // Döndürülmüş panelde slab'ı düzleminde büyüt; aşağıda (ters döndürülmüş)
         // parent kesişimi paneli açıya göre tam duvara kadar büyütüp küçültür.
         // Yalnızca parent kesişimi yapılacaksa uygula, yoksa dev panel oluşurdu.
-        const rotateSteps: RotateStep[] = panel.parameters?.rotateSteps || [];
-        const isRotated = rotateSteps.length > 0;
+        const rawRotateSteps: RotateStep[] = panel.parameters?.rotateSteps || [];
+        const isRotated = rawRotateSteps.length > 0;
         const parentPos: [number, number, number] = [...parent.position] as [number, number, number];
+        // Parent yeniden boyutlandırıldığında rotateSteps'teki pivot eski VF
+        // merkezine bağlıdır. Slab yeni VF merkezinden oluşturulduğu için pivotu
+        // güncelliyoruz — geometry kesişimi ve THREE.js group konumu tutarlı olur.
+        const rotateSteps: RotateStep[] = isRotated
+          ? rawRotateSteps.map(step => ({
+              ...step,
+              pivot: [
+                parentPos[0] + vf.center[0],
+                parentPos[1] + vf.center[1],
+                parentPos[2] + vf.center[2],
+              ] as [number, number, number],
+            }))
+          : rawRotateSteps;
         // Panel döndürülmüşse büyüme/kırpma "Ana yüze eşitle" düğmesine BAĞLI
         // OLMAMALI: dönünce otomatik olarak kübe göre uzayıp kırpılsın. Bu yüzden
         // parent kesişimi, döndürülmüş panelde parentFaceShape bayrağı kapalı olsa
@@ -744,45 +757,20 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
         // göre yapıldı. Sonraki kardeşler bu paneli engel olarak görür.
         const transformSteps: TransformStep[] = panel.parameters?.transformSteps || [];
         if (transformSteps.length > 0) {
-          // Panel'in doğal THREE.js group konumu her zaman parent.position'dır.
-          const basePos: [number, number, number] = [...parent.position] as [number, number, number];
-          const baseRot: [number, number, number] = panel.parameters?.baseTransformRotation ?? [0, 0, 0] as [number, number, number];
-
-          // Parent yeniden boyutlandırıldığında döndürme adımlarının pivot noktası
-          // eski panel geometrisine göre hesaplanmıştı. Yeni VF merkezinden
-          // güncellenmesi gerekir: pivot'un VF yüzeyine göre göreli ofseti korunur.
-          //
-          // eskiVFDünyaMerkezi = eski baseTransformPosition'dan (≈parent.position)
-          // göreli VF offset'i bilinmediğinden, eski panel geometrisinin bbox
-          // merkezini kullanıyoruz.
-          const newVfWorldCenter = new THREE.Vector3(
-            parentPos[0] + vf.center[0],
-            parentPos[1] + vf.center[1],
-            parentPos[2] + vf.center[2],
-          );
-
-          let oldVfWorldCenter: THREE.Vector3;
-          if (panel.geometry) {
-            const bbox = new THREE.Box3().setFromBufferAttribute(
-              panel.geometry.getAttribute('position') as THREE.BufferAttribute
-            );
-            const oldLocalCenter = new THREE.Vector3(); bbox.getCenter(oldLocalCenter);
-            // panel.position ≈ parent.position (transform'dan sonra değişmiş olabilir)
-            // Eski doğal konumu (parent.position) + yerel merkezi kullan
-            const oldNaturalPos = new THREE.Vector3(...(panel.parameters?.baseTransformPosition ?? [...parentPos]) as [number,number,number]);
-            oldVfWorldCenter = oldNaturalPos.clone().add(oldLocalCenter);
-          } else {
-            oldVfWorldCenter = new THREE.Vector3(...(panel.parameters?.baseTransformPosition ?? [...parentPos]) as [number,number,number]);
-          }
-
-          const updatedSteps = transformSteps.map(step => {
+          const basePos: [number, number, number] = panel.parameters?.baseTransformPosition ?? [...panel.position];
+          const baseRot: [number, number, number] = panel.parameters?.baseTransformRotation ?? [...panel.rotation];
+          // Parent boyut değişince pivot'lar eski VF merkezine bağlı kalır ve
+          // THREE.js group konumunu yanlış hesaplatır. Geometri kesişimiyle
+          // tutarlı olması için pivot'ları yeni VF merkezine taşı.
+          const updatedSteps: TransformStep[] = transformSteps.map(step => {
             if (step.type !== 'rotate') return step;
-            // Yeni pivot = yeni VF merkezi + (eski pivot - eski VF merkezi)
-            const pivotDelta = new THREE.Vector3(...step.pivot as [number,number,number]).sub(oldVfWorldCenter);
-            const newPivot = newVfWorldCenter.clone().add(pivotDelta);
-            return { ...step, pivot: [newPivot.x, newPivot.y, newPivot.z] as [number, number, number] };
+            const newPivot: [number, number, number] = [
+              parentPos[0] + vf.center[0],
+              parentPos[1] + vf.center[1],
+              parentPos[2] + vf.center[2],
+            ];
+            return { ...step, pivot: newPivot };
           });
-
           const { position: newPos, rotation: newRot } = applyTransformSteps(basePos, baseRot, updatedSteps);
           rebuiltPanel = {
             ...rebuiltPanel,
@@ -797,7 +785,8 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
             },
           };
         } else if (rotateSteps.length > 0) {
-          // Legacy: eski rotateSteps varsa ama transformSteps yoksa eskiyi uygula
+          // Legacy: eski rotateSteps varsa ama transformSteps yoksa eskiyi uygula.
+          // rotateSteps zaten VF merkezine göre güncellenmiş durumda.
           const basePos: [number, number, number] = panel.parameters?.baseRotatePosition ?? [...panel.position];
           const baseRot: [number, number, number] = panel.parameters?.baseRotateRotation ?? [...panel.rotation];
           const { position: newPos, rotation: newRot } = applyRotateSteps(basePos, baseRot, rotateSteps);
