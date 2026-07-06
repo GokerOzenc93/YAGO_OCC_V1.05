@@ -1,7 +1,6 @@
 import * as THREE from 'three';
 import { useAppStore } from '../store';
-import { type RotateStep } from './PanelRotateService';
-import { applyTransformSteps, type TransformStep } from './PanelTransformService';
+import { applyRotateSteps, vfPlaneBasis, type RotateStep } from './PanelRotateService';
 
 const rebuildInFlight = new Set<string>();
 // Rebuild sürerken gelen istekler SESSİZCE DÜŞÜRÜLMEMELİ: aksi halde açı
@@ -187,6 +186,7 @@ function rotatedPanelWorldBand(
 // çağıran gövde kesimine düşmeli.
 async function cutByRotatedSiblingMiter(
   rp: any,
+  panelS: any,
   rotatedSib: any,
   vfS: any,
   thicknessS: number,
@@ -205,22 +205,33 @@ async function cutByRotatedSiblingMiter(
   if (!band) return null;
   const { nW, dMin, dMax } = band;
 
-  // BROAD-PHASE: düz panelin kutusu banda değmiyorsa temas yok — dokunma.
-  const sBox = worldAABBFromVF(vfS, thicknessS, parentPos);
-  if (sBox) {
+  // TAŞIMA FARKINDALIĞI: Panelin geometri çerçevesi, GÜNCEL panel.position
+  // üzerinden dünyaya taşınır (taşınmamış panelde parentPos ile aynıdır).
+  // Böylece taşınmış panellerde gönye/şerit doğru yerde hesaplanır.
+  const posS: [number, number, number] = [panelS.position[0], panelS.position[1], panelS.position[2]];
+
+  // İLİŞKİ TESTİ: Panel bu dönmüş kardeşle "ilişkili" mi? Taşınmamış (VF'nin
+  // asıl yerindeki) VEYA taşınmış konumdaki kutusu banda değiyorsa ilişkilidir.
+  // Böylece dönmüş panele teğet bir panel TAŞINDIĞINDA da ilişki korunur ve
+  // aşağıdaki şerit, açılan boşluğu kapatacak şekilde paneli yeniden uzatır —
+  // panel her konumda teğetliğini ve ölçüsünü günceller.
+  const touchesBand = (basePos: [number, number, number]): boolean => {
+    const box = worldAABBFromVF(vfS, thicknessS, basePos);
+    if (!box) return true;
     let allBelow = true, allAbove = true;
-    for (const c of box3Corners(sBox)) {
+    for (const c of box3Corners(box)) {
       const d = nW.dot(c);
       if (d > dMin - 0.5) allBelow = false;
       if (d < dMax + 0.5) allAbove = false;
     }
-    if (allBelow || allAbove) return rp;
-  }
+    return !(allBelow || allAbove);
+  };
+  if (!touchesBand(posS) && !touchesBand(parentPos)) return rp;
 
   // Düz panelin referans merkezi bandın hangi tarafında?
   const c = new THREE.Vector3();
   for (const v of vfS.vertices) {
-    c.add(new THREE.Vector3(v[0] + parentPos[0], v[1] + parentPos[1], v[2] + parentPos[2]));
+    c.add(new THREE.Vector3(v[0] + posS[0], v[1] + posS[1], v[2] + posS[2]));
   }
   c.divideScalar(vfS.vertices.length);
   const dS = nW.dot(c);
@@ -246,25 +257,29 @@ async function cutByRotatedSiblingMiter(
   // VF köşelerini (u2, v2) tabanında kutula
   let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
   for (const v of vfS.vertices) {
-    const w = new THREE.Vector3(v[0] + parentPos[0], v[1] + parentPos[1], v[2] + parentPos[2]).sub(c);
+    const w = new THREE.Vector3(v[0] + posS[0], v[1] + posS[1], v[2] + posS[2]).sub(c);
     const pu = w.dot(u2), pv = w.dot(v2);
     if (pu < minU) minU = pu; if (pu > maxU) maxU = pu;
     if (pv < minV) minV = pv; if (pv > maxV) maxV = pv;
   }
 
-  // Aşma payı: bandın derinliği + S kalınlığının eğime katkısı, u2 boyunca
-  // d-değişim hızına bölünür; küçük marj eklenir, parent boyutuyla sınırlanır.
+  // Aşma payı: panelin R'ye bakan kenarından bandın UZAK yüzüne kadar olan
+  // GERÇEK mesafe ölçülür (panel taşınıp boşluk açıldıysa boşluk da dahil) +
+  // kalınlığın eğime katkısı; u2 boyunca d-değişim hızına bölünür. Böylece
+  // şerit her konumda temas düzlemini garanti aşar, yarım-uzay fazlasını biçer.
   const slopeRate = Math.max(0.15, Math.abs(nW.dot(u2)));
+  const far = near === dMin ? dMax : dMin;
+  const dEdgeFar = nW.dot(c.clone().addScaledVector(u2, maxU));
   const overshoot = Math.min(
     parentMax,
-    ((dMax - dMin) + thicknessS * Math.abs(nW.dot(nS))) / slopeRate + 5
+    (Math.abs(far - dEdgeFar) + thicknessS * Math.abs(nW.dot(nS))) / slopeRate + 5
   );
   // Şerit, VF'nin R'ye bakan (çapraz kırpılmış olabilecek) kenarını da örtsün
   const backlap = Math.min(maxU - minU, overshoot);
 
   const mkStrip = (su: number, sv: number): [number, number, number] => {
     const w = c.clone().addScaledVector(u2, su).addScaledVector(v2, sv);
-    return [w.x - parentPos[0], w.y - parentPos[1], w.z - parentPos[2]];
+    return [w.x - posS[0], w.y - posS[1], w.z - posS[2]];
   };
   const stripVerts: [number, number, number][] = [
     mkStrip(maxU - backlap, minV),
@@ -275,9 +290,17 @@ async function cutByRotatedSiblingMiter(
   try {
     let strip = await createPanelFromVirtualFace(stripVerts, vfS.normal, thicknessS, 0);
     if (strip) {
-      // Şerit küp duvarını aşmasın (özellikle R duvara yakınsa)
+      // Şerit küp duvarını aşmasın (özellikle R duvara yakınsa). Küp
+      // parent çerçevesinde durur; panel taşınmışsa küpün KOPYASI panel
+      // çerçevesine kaydırılır (clone şart: translate orijinali siler).
       if (parentReplicad) {
-        try { strip = await performBooleanIntersection(strip, parentReplicad); } catch { /* opsiyonel */ }
+        try {
+          const dx = parentPos[0] - posS[0], dy = parentPos[1] - posS[1], dz = parentPos[2] - posS[2];
+          const cubeInPanelFrame = (Math.abs(dx) + Math.abs(dy) + Math.abs(dz)) > 1e-6
+            ? parentReplicad.clone().translate(dx, dy, dz)
+            : parentReplicad;
+          strip = await performBooleanIntersection(strip, cubeInPanelFrame);
+        } catch { /* opsiyonel */ }
       }
       rp = rp.fuse(strip);
     }
@@ -295,7 +318,7 @@ async function cutByRotatedSiblingMiter(
   const L = 3 * parentMax;
   const mk = (su: number, sv: number): [number, number, number] => {
     const w = p0.clone().addScaledVector(u, su * L).addScaledVector(vv, sv * L);
-    return [w.x - parentPos[0], w.y - parentPos[1], w.z - parentPos[2]];
+    return [w.x - posS[0], w.y - posS[1], w.z - posS[2]];
   };
   const verts: [number, number, number][] = [mk(-1, -1), mk(1, -1), mk(1, 1), mk(-1, 1)];
 
@@ -310,6 +333,151 @@ async function cutByRotatedSiblingMiter(
   );
   if (!halfSpace) return null;
   return await performBooleanCut(rp, halfSpace);
+}
+
+// DÖNMÜŞ panelin (rp, kendi döndürülmemiş yerel çerçevesinde) bir kardeşin
+// temas yüzü düzleminde kesilmesi. Gövde kesimi, dönmüş panel kardeşin
+// İÇİNDEN geçtiğinde onu İKİ parçaya böler (uzak parça "hayalet panel" olarak
+// görünür). Yarım-uzay kesimi tek parça bırakır ve iki dönmüş panel arasında
+// da doğru gönye üretir. Düzlem, panelin GÜNCEL position/rotation değerleri
+// üzerinden yerel çerçeveye taşınır — panel taşınmış olsa bile doğru çalışır.
+// Dönüş: kesilmiş rp; null → belirsiz durum (merkez bandın içinde), çağıran
+// gövde kesimine düşmeli.
+async function cutRotatedPanelBySiblingHalfSpace(
+  rp: any,
+  panelS: any,
+  sib: any,
+  vfS: any,
+  parentPos: [number, number, number],
+  parentMax: number,
+  workingVirtualFaces: any[],
+  createPanelFromVirtualFace: (verts: any, normal: any, t: number, e: number) => Promise<any>,
+  performBooleanCut: (a: any, b: any, ...rest: any[]) => Promise<any>
+): Promise<any | null> {
+  const vfSib = workingVirtualFaces.find(f => f.id === sib.parameters?.virtualFaceId);
+  if (!vfSib) return null;
+  const sibSteps: RotateStep[] = sib.parameters?.rotateSteps || [];
+  const band = rotatedPanelWorldBand(sib, vfSib, sibSteps);
+  if (!band) return null;
+  const { nW, dMin, dMax } = band;
+
+  // Panelin dünya merkezi: yerel VF merkezi, panelin GÜNCEL transformuyla
+  // dünyaya taşınır (taşıma + dönme dahil, varsayım yok).
+  const posS = new THREE.Vector3(panelS.position[0], panelS.position[1], panelS.position[2]);
+  const qS = new THREE.Quaternion().setFromEuler(
+    new THREE.Euler(panelS.rotation[0], panelS.rotation[1], panelS.rotation[2], 'XYZ')
+  );
+  const cLocal = new THREE.Vector3();
+  for (const v of vfS.vertices) cLocal.add(new THREE.Vector3(v[0], v[1], v[2]));
+  cLocal.divideScalar(vfS.vertices.length);
+  const cWorld = cLocal.clone().applyQuaternion(qS).add(posS);
+
+  const dS = nW.dot(cWorld);
+  const dC = (dMin + dMax) / 2;
+  if (Math.abs(dS - dC) <= (dMax - dMin) / 2) return null; // belirsiz → gövde kesimi
+
+  const near = dS < dC ? dMin : dMax;
+  const awayW = dS < dC ? nW.clone() : nW.clone().negate();
+  const p0w = cWorld.clone().add(nW.clone().multiplyScalar(near - dS));
+
+  // Düzlemi panelin YEREL (döndürülmemiş geometri) çerçevesine taşı:
+  // g = qS⁻¹ · (w − posS)
+  const qInv = qS.clone().invert();
+  const awayL = awayW.clone().applyQuaternion(qInv).normalize();
+  const p0l = p0w.clone().sub(posS).applyQuaternion(qInv);
+
+  const up = (Math.abs(awayL.y) > Math.abs(awayL.x) && Math.abs(awayL.y) > Math.abs(awayL.z))
+    ? new THREE.Vector3(1, 0, 0)
+    : new THREE.Vector3(0, 1, 0);
+  const u = new THREE.Vector3().crossVectors(awayL, up).normalize();
+  const vv = new THREE.Vector3().crossVectors(awayL, u).normalize();
+  const L = 3 * parentMax;
+  const mk = (su: number, sv: number): [number, number, number] => {
+    const w = p0l.clone().addScaledVector(u, su * L).addScaledVector(vv, sv * L);
+    return [w.x, w.y, w.z];
+  };
+  const verts: [number, number, number][] = [mk(-1, -1), mk(1, -1), mk(1, 1), mk(-1, 1)];
+
+  const halfSpace = await createPanelFromVirtualFace(
+    verts,
+    [-awayL.x, -awayL.y, -awayL.z] as [number, number, number],
+    3 * parentMax,
+    0
+  );
+  if (!halfSpace) return null;
+  return await performBooleanCut(rp, halfSpace);
+}
+
+// ─── PİVOT YENİDEN BAĞLAMA ───────────────────────────────────────────────
+// Döndürme adımlarının pivotları, adım anında parent kutusuna ORANSAL olarak
+// kaydedilir (pivotFrac). Parent yeniden boyutlandığında mutlak dünya pivotu
+// bayatlar: slab yeni yüz konumuna taşınırken ters döndürülmüş küp eski pivot
+// etrafında döner ve kesişim kayar → panelde boşluk. Bu fonksiyon pivotları
+// GÜNCEL parent kutusundan yeniden türetir; pivotFrac'sız eski adımlar mutlak
+// pivotla aynen kullanılır (geriye uyumlu).
+function effectiveRotateSteps(
+  steps: RotateStep[],
+  parent: any,
+  parentPos: [number, number, number],
+  vf: any
+): RotateStep[] {
+  if (!steps.length) return steps;
+
+  // ASIL ÇIPA: panelin GÜNCEL sanal yüzeyi. Yakalamadaki kuralın birebir
+  // aynısıyla (vfPlaneBasis + dikdörtgen oranları) pivot yeniden türetilir.
+  let vfCtx: { c: THREE.Vector3; u: THREE.Vector3; v: THREE.Vector3; n: THREE.Vector3; minU: number; su: number; minV: number; sv: number } | null = null;
+  if (vf?.vertices?.length >= 3 && vf.normal) {
+    const { n, u, v } = vfPlaneBasis(vf.normal);
+    const c = new THREE.Vector3();
+    for (const vv of vf.vertices) {
+      c.add(new THREE.Vector3(vv[0] + parentPos[0], vv[1] + parentPos[1], vv[2] + parentPos[2]));
+    }
+    c.divideScalar(vf.vertices.length);
+    let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+    for (const vv of vf.vertices) {
+      const w = new THREE.Vector3(vv[0] + parentPos[0], vv[1] + parentPos[1], vv[2] + parentPos[2]).sub(c);
+      const pu = w.dot(u), pv = w.dot(v);
+      if (pu < minU) minU = pu; if (pu > maxU) maxU = pu;
+      if (pv < minV) minV = pv; if (pv > maxV) maxV = pv;
+    }
+    const su = maxU - minU, sv = maxV - minV;
+    if (su > 1e-6 && sv > 1e-6) vfCtx = { c, u, v, n, minU, su, minV, sv };
+  }
+
+  // YEDEK: parent kutusu oranları
+  let bbCtx: { min: THREE.Vector3; size: THREE.Vector3 } | null = null;
+  if (parent?.geometry) {
+    const posAttr = parent.geometry.getAttribute('position');
+    if (posAttr) {
+      const bb = new THREE.Box3().setFromBufferAttribute(posAttr as THREE.BufferAttribute);
+      const size = new THREE.Vector3();
+      bb.getSize(size);
+      bbCtx = { min: bb.min.clone(), size };
+    }
+  }
+
+  return steps.map(s => {
+    const vfF = (s as any).pivotVfFrac as [number, number, number] | undefined;
+    if (vfF && vfCtx) {
+      const p = vfCtx.c.clone()
+        .addScaledVector(vfCtx.u, vfCtx.minU + vfF[0] * vfCtx.su)
+        .addScaledVector(vfCtx.v, vfCtx.minV + vfF[1] * vfCtx.sv)
+        .addScaledVector(vfCtx.n, vfF[2]);
+      return { ...s, pivot: [p.x, p.y, p.z] as [number, number, number] };
+    }
+    const f = (s as any).pivotFrac as [number, number, number] | undefined;
+    if (f && bbCtx) {
+      return {
+        ...s,
+        pivot: [
+          parentPos[0] + bbCtx.min.x + f[0] * bbCtx.size.x,
+          parentPos[1] + bbCtx.min.y + f[1] * bbCtx.size.y,
+          parentPos[2] + bbCtx.min.z + f[2] * bbCtx.size.z,
+        ] as [number, number, number],
+      };
+    }
+    return s;
+  });
 }
 
 // ─── BROAD-PHASE ÖN ELEME ────────────────────────────────────────────────
@@ -536,17 +704,87 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
 
       try {
         const thickness = panel.parameters?.depth || 18;
+        // DİKKAT: parentPos, aşağıdaki göç/pivot bloklarından ÖNCE tanımlanmalı
+        // (TDZ hatası tüm rebuild'i sessizce boşa çıkarıyordu).
+        const parentPos: [number, number, number] = [...parent.position] as [number, number, number];
 
         // Döndürülmüş panelde slab'ı düzleminde büyüt; aşağıda (ters döndürülmüş)
         // parent kesişimi paneli açıya göre tam duvara kadar büyütüp küçültür.
         // Yalnızca parent kesişimi yapılacaksa uygula, yoksa dev panel oluşurdu.
-        const rawRotateSteps: RotateStep[] = panel.parameters?.rotateSteps || [];
-        const isRotated = rawRotateSteps.length > 0;
-        const parentPos: [number, number, number] = [...parent.position] as [number, number, number];
-        // rotateSteps'i doğrudan kullan — pivot'lar ilk kaydedildikleri haliyle
-        // doğru. Geometry intersection slab'ı parentMaxDim kadar büyütüyor,
-        // pivot farkı intersection'ı bozmaz.
-        const rotateSteps: RotateStep[] = rawRotateSteps;
+        let rotateStepsRaw: RotateStep[] = panel.parameters?.rotateSteps || [];
+        // LEGACY GÖÇ: pivotFrac'sız eski adımlar ilk karşılaşmada güncel parent
+        // kutusundan oransal pivota geçirilir ve parametrelere kalıcı yazılır.
+        // Parent, göçten ÖNCE boyutlanmadıysa göç birebir doğrudur; sonrasında
+        // tüm yeniden boyutlandırmalara karşı korumalı hale gelir. (Parent zaten
+        // boyutlanmış BOZUK bir adım ancak yeniden döndürülerek düzelir.)
+        if (
+          rotateStepsRaw.length > 0 &&
+          rotateStepsRaw.some(s => !(s as any).pivotFrac) &&
+          parent?.geometry
+        ) {
+          const posAttr = parent.geometry.getAttribute('position');
+          if (posAttr) {
+            const bb = new THREE.Box3().setFromBufferAttribute(posAttr as THREE.BufferAttribute);
+            const size = new THREE.Vector3();
+            bb.getSize(size);
+            rotateStepsRaw = rotateStepsRaw.map(s => {
+              if ((s as any).pivotFrac) return s;
+              const pl: [number, number, number] = [
+                s.pivot[0] - parentPos[0],
+                s.pivot[1] - parentPos[1],
+                s.pivot[2] - parentPos[2],
+              ];
+              return {
+                ...s,
+                pivotFrac: [
+                  size.x > 1e-6 ? (pl[0] - bb.min.x) / size.x : 0,
+                  size.y > 1e-6 ? (pl[1] - bb.min.y) / size.y : 0,
+                  size.z > 1e-6 ? (pl[2] - bb.min.z) / size.z : 0,
+                ] as [number, number, number],
+              };
+            });
+            // Ek olarak sanal yüzey çıpası da türet (asıl mekanizma)
+            if (vf?.vertices?.length >= 3 && vf.normal) {
+              const { n, u, v } = vfPlaneBasis(vf.normal);
+              const c = new THREE.Vector3();
+              for (const vv of vf.vertices) c.add(new THREE.Vector3(vv[0] + parentPos[0], vv[1] + parentPos[1], vv[2] + parentPos[2]));
+              c.divideScalar(vf.vertices.length);
+              let mnU = Infinity, mxU = -Infinity, mnV = Infinity, mxV = -Infinity;
+              for (const vv of vf.vertices) {
+                const w = new THREE.Vector3(vv[0] + parentPos[0], vv[1] + parentPos[1], vv[2] + parentPos[2]).sub(c);
+                const pu = w.dot(u), pv = w.dot(v);
+                if (pu < mnU) mnU = pu; if (pu > mxU) mxU = pu;
+                if (pv < mnV) mnV = pv; if (pv > mxV) mxV = pv;
+              }
+              const su = mxU - mnU, sv = mxV - mnV;
+              if (su > 1e-6 && sv > 1e-6) {
+                rotateStepsRaw = rotateStepsRaw.map(s => {
+                  if ((s as any).pivotVfFrac) return s;
+                  const pw = new THREE.Vector3(s.pivot[0], s.pivot[1], s.pivot[2]).sub(c);
+                  return { ...s, pivotVfFrac: [
+                    (pw.dot(u) - mnU) / su,
+                    (pw.dot(v) - mnV) / sv,
+                    pw.dot(n),
+                  ] as [number, number, number] };
+                });
+              }
+            }
+            console.info('[RotateRebuild] migrated legacy rotate step pivots to fractional anchors for panel', panel.id);
+          }
+        }
+        // Pivotları GÜNCEL sanal yüzeyden (yedek: parent kutusu) yeniden türet.
+        // Parametrelere HAM adımlar yazılır.
+        const rotateSteps: RotateStep[] = effectiveRotateSteps(rotateStepsRaw, parent, parentPos, vf);
+        if (rotateSteps.length > 0) {
+          const s0: any = rotateSteps[0];
+          const raw0: any = rotateStepsRaw[0];
+          console.info('[RotateRebuild] pivot resolve', panel.id, {
+            source: raw0?.pivotVfFrac ? 'vfFrac' : (raw0?.pivotFrac ? 'parentFrac' : 'absolute'),
+            rawPivot: raw0?.pivot,
+            effectivePivot: s0?.pivot,
+          });
+        }
+        const isRotated = rotateSteps.length > 0;
         // Panel döndürülmüşse büyüme/kırpma "Ana yüze eşitle" düğmesine BAĞLI
         // OLMAMALI: dönünce otomatik olarak kübe göre uzayıp kırpılsın. Bu yüzden
         // parent kesişimi, döndürülmüş panelde parentFaceShape bayrağı kapalı olsa
@@ -563,69 +801,46 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
         const parentHasFillets = !!(parent.fillets && parent.fillets.length > 0 && parent.replicadShape);
 
         if (willIntersectParent) {
-          // DÖNMÜŞ PANEL KESİŞİMİ: Paneli DÖNDÜRMEDİĞİMİZDE (geometri düz,
-          // THREE.js rotation uygular) 18mm kalınlıktaki slab yalnızca kübün
-          // 18mm/cos(a) genişliğindeki dilimini yakalar — büyük açılarda panel
-          // küpün duvarına ulaşamaz (boşluk). Çözüm: slab'ı İLERİ döndürüp
-          // (döndürmüş çerçevede 18mm kalınlık oluşturup) döndürülmemiş küp ile
-          // kesişiriz — sonuç gerçek 3D panel geometrisidir ve THREE.js rotation
-          // sıfırlanır. Bu, rotation açısından bağımsız olarak doğru kırpma verir.
-          if (rotateSteps.length > 0) {
-            const rotatedSlab = forwardRotateReplicadByLocalSteps(rp, rotateSteps, parentPos);
-            console.info('[RotateRebuild] forward-rotated slab intersect for panel', panel.id, {
-              steps: rotateSteps.length, planeExpand,
-            });
-            const intersected = await intersectWithRetries(
-              rotatedSlab, parent.replicadShape,
-              async (expand: number) => {
-                const fresh = await createPanelFromVirtualFace(vf.vertices, vf.normal, thickness, expand);
-                return fresh ? forwardRotateReplicadByLocalSteps(fresh, rotateSteps, parentPos) : null;
-              },
-              planeExpand,
-              performBooleanIntersection
-            );
-            if (intersected) {
-              rp = intersected;
-            } else {
-              console.error('[RotateRebuild] ALL intersection attempts failed for panel', panel.id,
-                '— falling back to unexpanded rotated slab');
-              if (planeExpand > 0) {
-                try {
-                  const fresh = await createPanelFromVirtualFace(vf.vertices, vf.normal, thickness, 0);
-                  if (fresh) rp = forwardRotateReplicadByLocalSteps(fresh, rotateSteps, parentPos);
-                } catch (err2) {
-                  console.error('Fallback panel rebuild also failed:', err2);
-                }
-              }
-            }
+          // Küpü panelin yerel (döndürülmemiş) çerçevesine taşı: paneli
+          // döndürmek yerine küpü ters döndürüp kesişiriz → geometri düz kalır
+          // (önizleme/ölçü stabil), kırpma açıya göre doğru olur.
+          const cube = rotateSteps.length > 0
+            ? inverseRotateReplicadByLocalSteps(parent.replicadShape, rotateSteps, parentPos)
+            : parent.replicadShape;
+          console.info('[RotateRebuild] intersecting panel', panel.id, {
+            steps: rotateSteps.length, planeExpand,
+          });
+          const intersected = await intersectWithRetries(
+            rp, cube,
+            (expand: number) => createPanelFromVirtualFace(vf.vertices, vf.normal, thickness, expand),
+            planeExpand,
+            performBooleanIntersection
+          );
+          if (intersected) {
+            rp = intersected;
           } else {
-            // Dönmemiş panel: eski mantık — doğrudan parent ile kesiştir
-            const cube = parent.replicadShape;
-            console.info('[RotateRebuild] non-rotated intersect for panel', panel.id);
-            const intersected = await intersectWithRetries(
-              rp, cube,
-              (expand: number) => createPanelFromVirtualFace(vf.vertices, vf.normal, thickness, expand),
-              planeExpand,
-              performBooleanIntersection
-            );
-            if (intersected) {
-              rp = intersected;
-            } else {
-              console.error('[RotateRebuild] intersection failed for non-rotated panel', panel.id);
-              if (planeExpand > 0) {
-                try {
-                  rp = await createPanelFromVirtualFace(vf.vertices, vf.normal, thickness, 0);
-                } catch (err2) {
-                  console.error('Fallback non-rotated rebuild failed:', err2);
-                }
+            console.error('[RotateRebuild] ALL intersection attempts failed for panel', panel.id,
+              '— falling back to unexpanded slab (panel will NOT auto-extend this round)');
+            // GÜVENLİK: büyütülmüş slab kırpılamadıysa dev panel olarak kalmasın —
+            // normal (büyütmesiz) sanal yüzeyle yeniden kur.
+            if (planeExpand > 0) {
+              try {
+                rp = await createPanelFromVirtualFace(vf.vertices, vf.normal, thickness, 0);
+              } catch (err2) {
+                console.error('Fallback panel rebuild (no expand) also failed:', err2);
               }
             }
           }
         }
 
-        // DÖNMÜŞ PANEL KARDEŞ KESİMİ: Geometri zaten parent-yerel uzayda
-        // döndürülmüş durumda. Kardeş panellerin replicadShape'leri de aynı
-        // uzayda olduğu için doğrudan boolean kesim yapılır.
+        // DÖNMÜŞ PANEL KARDEŞ KESİMİ: Dönmüş panel yukarıda kübe kadar
+        // uzatıldığı için kardeş panellerin İÇİNDEN geçebilir. Küpteki desenle
+        // aynı: kardeş geometrisi panelin yerel çerçevesine taşınıp kesilir.
+        // SIRALAMA KURALI: Dönmüş panel yalnızca kendinden ÖNCE gelen (yüksek
+        // öncelikli, workingShapes'te zaten kurulu) kardeşlere yol verir.
+        // SONRAKİ (düşük öncelikli) paneller ise dönmüş panele yol verir —
+        // onlar kendi turlarında yarım-uzay gönye kesimiyle açılı biçilir.
+        // İkisinin birden kesilmesi karşılıklı geri çekilme = boşluk üretirdi.
         if (isRotated) {
           const rotCutters = workingShapes.filter(
             s => s.type === 'panel' &&
@@ -634,11 +849,25 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
               s.replicadShape
           );
           for (const sib of rotCutters) {
+            // BROAD-PHASE: kardeş, dönmüş slab bandına girmiyorsa (yalnızca
+            // değiyorsa/uzağındaysa) boolean HİÇ çağrılmaz — hem hız hem de
+            // teğet-yüzey boolean donmalarından kaçınma.
             if (!siblingIntersectsRotatedSlab(sib, vf, thickness, rotateSteps, parentPos)) continue;
             try {
-              // Kardeşin replicadShape'i zaten parent-yerel uzayda; doğrudan kes
-              const sibShape = sib.replicadShape;
-              if (sibShape) rp = await performBooleanCut(rp, typeof sibShape.clone === 'function' ? sibShape.clone() : sibShape);
+              // ÖNCE yarım-uzay: gövde kesimi, dönmüş panel kardeşin içinden
+              // geçtiğinde onu İKİYE bölerdi (uzak parça "hayalet panel").
+              // Yarım-uzay tek parça bırakır ve dönmüş-dönmüş temasında da
+              // doğru gönye üretir. Belirsiz durumda gövde kesimine düşülür.
+              const res = await cutRotatedPanelBySiblingHalfSpace(
+                rp, panel, sib, vf, parentPos, parentMaxDim(parent),
+                workingVirtualFaces, createPanelFromVirtualFace, performBooleanCut
+              );
+              if (res) {
+                rp = res;
+              } else {
+                const cutter = siblingCutterInPanelFrame(sib, rotateSteps, parentPos);
+                if (cutter) rp = await performBooleanCut(rp, cutter);
+              }
             } catch (err) {
               console.error('Failed to subtract sibling from rotated panel:', err);
             }
@@ -661,7 +890,7 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           for (const rsib of rotatedEarlierSibs) {
             try {
               const res = await cutByRotatedSiblingMiter(
-                rp, rsib, vf, thickness, parentPos, parentMaxDim(parent),
+                rp, panel, rsib, vf, thickness, parentPos, parentMaxDim(parent),
                 workingVirtualFaces, createPanelFromVirtualFace, performBooleanCut,
                 parent.replicadShape, performBooleanIntersection
               );
@@ -764,60 +993,18 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           }
         }
 
-        // Tüm transform adımlarını (move + rotate) sırayla uygula.
-        // DÖNMÜŞ PANEL: Geometri zaten döndürülmüş durumda (forward-rotate +
-        // intersection). THREE.js group'a yalnızca MOVE adımlarını uygula,
-        // rotation geometriye gömülü olduğu için group.rotation = [0,0,0] kalır.
-        // DÜZGÜN PANEL: Rotation yoksa eski mantık korunur.
-        const transformSteps: TransformStep[] = panel.parameters?.transformSteps || [];
-        if (isRotated && transformSteps.length > 0) {
-          // Geometry rotasyonu içerdiğinden yalnızca move adımlarını pozisyona uygula
-          const basePos: [number, number, number] = panel.parameters?.baseTransformPosition ?? [...parent.position] as [number, number, number];
-          let pos = new THREE.Vector3(...basePos);
-          for (const step of transformSteps) {
-            if (step.type === 'move') {
-              const dir = step.axis === 'x+' ? [1,0,0] : step.axis === 'x-' ? [-1,0,0]
-                : step.axis === 'y+' ? [0,1,0] : step.axis === 'y-' ? [0,-1,0]
-                : step.axis === 'z+' ? [0,0,1] : [0,0,-1];
-              pos.add(new THREE.Vector3(...dir).multiplyScalar(step.value));
-            }
-          }
-          rebuiltPanel = {
-            ...rebuiltPanel,
-            position: [pos.x, pos.y, pos.z] as [number, number, number],
-            rotation: [0, 0, 0] as [number, number, number],
-            parameters: {
-              ...rebuiltPanel.parameters,
-              baseTransformPosition: basePos,
-              baseTransformRotation: [0, 0, 0] as [number, number, number],
-              transformSteps,
-              rotateSteps,
-            },
-          };
-        } else if (isRotated && rotateSteps.length > 0) {
-          // Legacy: transformSteps yok ama rotateSteps var. Geometri zaten dönük.
-          const basePos: [number, number, number] = panel.parameters?.baseRotatePosition ?? [...parent.position] as [number, number, number];
-          rebuiltPanel = {
-            ...rebuiltPanel,
-            position: basePos,
-            rotation: [0, 0, 0] as [number, number, number],
-            parameters: { ...rebuiltPanel.parameters, baseRotatePosition: basePos, baseRotateRotation: [0, 0, 0] as [number, number, number], rotateSteps },
-          };
-        } else if (transformSteps.length > 0) {
-          const basePos: [number, number, number] = panel.parameters?.baseTransformPosition ?? [...panel.position];
-          const baseRot: [number, number, number] = panel.parameters?.baseTransformRotation ?? [...panel.rotation];
-          const { position: newPos, rotation: newRot } = applyTransformSteps(basePos, baseRot, transformSteps);
+        // Rotasyonu transform olarak uygula (geometri düz kalır; kırpma yukarıda
+        // küpü ters döndürerek açıya göre yapıldı). Sonraki kardeşler bu paneli
+        // engel olarak görür.
+        if (rotateSteps.length > 0) {
+          const basePos: [number, number, number] = panel.parameters?.baseRotatePosition ?? [...panel.position];
+          const baseRot: [number, number, number] = panel.parameters?.baseRotateRotation ?? [...panel.rotation];
+          const { position: newPos, rotation: newRot } = applyRotateSteps(basePos, baseRot, rotateSteps);
           rebuiltPanel = {
             ...rebuiltPanel,
             position: newPos,
             rotation: newRot,
-            parameters: {
-              ...rebuiltPanel.parameters,
-              baseTransformPosition: basePos,
-              baseTransformRotation: baseRot,
-              transformSteps,
-              rotateSteps,
-            },
+            parameters: { ...rebuiltPanel.parameters, baseRotatePosition: basePos, baseRotateRotation: baseRot, rotateSteps: rotateStepsRaw },
           };
         }
 
