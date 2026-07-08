@@ -13,6 +13,10 @@ import {
   collectSubtractionObstacleEdgesWorld,
   collectVirtualFaceObstacleEdgesWorld,
   castRayOnFaceWorld,
+  castRayOnFaceWorldDetailed,
+  clipPolygonByLine2D,
+  computeVisibilityPolygon2D,
+  simplifyCollinear2D,
   convexHull2D,
   pickDominantEdgeDirection,
   type Point2D,
@@ -744,14 +748,48 @@ function reraycastVirtualFaceFallback(
   }
 
   const planeOrigin = buildOrigin(rayOriginU, rayOriginV);
-  const startWorld = planeOrigin.clone().addScaledVector(worldNormal, 0.5);
 
-  let rect2D: Point2D[] = ensureCCW([
-    { x: uPosT, y: vPosT },
-    { x: -uNegT, y: vPosT },
-    { x: -uNegT, y: -vNegT },
-    { x: uPosT, y: -vNegT },
-  ]);
+  // SERİ IŞIN: yakalama tarafıyla (buildPreview) BİREBİR aynı görünürlük
+  // çokgeni algoritması kullanılır — aksi halde ilk rebuild'de bölge tekrar
+  // dikdörtgene çökerdi. Işın demeti açık uca kaçarsa (kapanmayan sınır)
+  // eski dikdörtgen davranışına düşülür.
+  const panelObsF = collectPanelObstacleEdgesWorld(panelsExcludingSelf, worldNormal, planeOrigin, 20);
+  const subObsF = collectSubtractionObstacleEdgesWorld(subtractions, localToWorld, worldNormal, planeOrigin, 20);
+  const vfObsF = collectVirtualFaceObstacleEdgesWorld(shapeFaces, vf.id, localToWorld, worldNormal, planeOrigin, 20);
+  const segs2D = [...boundaryEdgesWorld, ...panelObsF, ...subObsF, ...vfObsF].map(e => {
+    const a = projectTo2D(e.v1, planeOrigin, u, v);
+    const b = projectTo2D(e.v2, planeOrigin, u, v);
+    return { ax: a.x, ay: a.y, bx: b.x, by: b.y };
+  });
+  const vis = computeVisibilityPolygon2D(segs2D, 5000);
+  let visPoly = vis.poly;
+  // STABİLİZASYON (yakalama tarafıyla birebir): 4 ana eksen ışınının çarptığı
+  // kenar doğrularıyla kırpılır — L/U yüzeylerde reflex köşe kaması kesilir,
+  // bölge tıklama/merkez konumundan bağımsız stabil kalır.
+  if (visPoly.length >= 3) {
+    const obstaclesF = [...panelObsF, ...subObsF, ...vfObsF];
+    const startF = planeOrigin.clone().addScaledVector(worldNormal, 0.5);
+    const dirsF = [u, u.clone().negate(), v, v.clone().negate()];
+    for (const dir of dirsF) {
+      const res = castRayOnFaceWorldDetailed(startF, dir, boundaryEdgesWorld, obstaclesF, u, v, planeOrigin, 5000);
+      if (!res.hitEdge) continue;
+      const a2 = projectTo2D(res.hitEdge.v1, planeOrigin, u, v);
+      const b2 = projectTo2D(res.hitEdge.v2, planeOrigin, u, v);
+      const clipped = clipPolygonByLine2D(visPoly, a2, b2);
+      if (clipped.length >= 3) visPoly = clipped;
+    }
+    visPoly = simplifyCollinear2D(visPoly, 0.05);
+  }
+  const visValid = visPoly.length >= 3 && !visPoly.some(p => Math.hypot(p.x, p.y) >= 5000 - 1);
+
+  let rect2D: Point2D[] = visValid
+    ? ensureCCW(visPoly)
+    : ensureCCW([
+        { x: uPosT, y: vPosT },
+        { x: -uNegT, y: vPosT },
+        { x: -uNegT, y: -vNegT },
+        { x: uPosT, y: -vNegT },
+      ]);
 
   const footprints = getSubtractorFootprints2D(
     subtractions, localToWorld, worldNormal, planeOrigin, u, v, 50

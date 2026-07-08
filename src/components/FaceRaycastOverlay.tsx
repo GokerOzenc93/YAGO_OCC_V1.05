@@ -66,6 +66,118 @@ function raySegmentIntersect2D(ox: number, oy: number, dx: number, dy: number, a
   return null;
 }
 
+// ── SERİ IŞIN: görünürlük çokgeni ────────────────────────────────────────────
+// Tıklanan noktadan, düzlemdeki TÜM sınır+engel kenarlarına doğru ışın demeti
+// atılır: her kenar ucuna (±epsilon açıyla) hedefli ışınlar + düzgün dağılımlı
+// yelpaze. Sonuç, tıklanan noktadan "görünen" serbest bölgenin TAM çokgenidir:
+// eğik (döndürülmüş) bir panel yüzeyi kestiğinde bölge o eğik çizgiyi birebir
+// izler — dik durumlarda ise sonuç mevcut davranışla aynı dikdörtgendir.
+// NOT: Bu, yüzeyi "ana yüze eşitle" gibi birebir kopyalamaz; yalnızca tıklanan
+// noktanın etrafındaki erişilebilir alanın şeklini üretir.
+export interface VisibilityFanResult { poly: Point2D[]; samples: Point2D[]; }
+
+export function computeVisibilityPolygon2D(
+  segments: Array<{ ax: number; ay: number; bx: number; by: number }>,
+  maxDist: number,
+  fanCount: number = 48
+): VisibilityFanResult {
+  const angles: number[] = [];
+  // Kenar ucu hedefli ışınların açısal ofseti, raySegmentIntersect2D'nin
+  // kenar-parametresi toleransını (±1e-4 × kenar boyu) güvenle aşacak kadar
+  // geniş olmalı; yoksa köşeyi teğet geçmesi gereken ışın komşu kenara
+  // "çarpmış" sayılır ve köşe arkasındaki bölge hiç örneklenmez.
+  const EPS = 4e-3;
+  for (const s of segments) {
+    const a1 = Math.atan2(s.ay, s.ax);
+    const a2 = Math.atan2(s.by, s.bx);
+    angles.push(a1 - EPS, a1, a1 + EPS, a2 - EPS, a2, a2 + EPS);
+  }
+  for (let i = 0; i < fanCount; i++) angles.push((i / fanCount) * Math.PI * 2 - Math.PI);
+  angles.sort((a, b) => a - b);
+
+  const samples: Point2D[] = [];
+  let lastA = Infinity;
+  for (const ang of angles) {
+    if (Math.abs(ang - lastA) < 1e-7) continue;
+    lastA = ang;
+    const dx = Math.cos(ang), dy = Math.sin(ang);
+    let minT = maxDist;
+    for (const s of segments) {
+      const t = raySegmentIntersect2D(0, 0, dx, dy, s.ax, s.ay, s.bx, s.by);
+      if (t !== null && t < minT) minT = t;
+    }
+    samples.push({ x: dx * minT, y: dy * minT });
+  }
+  return { poly: simplifyCollinear2D(samples, 0.05), samples };
+}
+
+// Açısal örnekleme aynı doğru üzerinde çok sayıda ara nokta üretir; düz
+// kenarlardaki eşdoğrusal noktalar temizlenir ki dikdörtgen bölgeler yine
+// 4 köşeli çıksın ve OCC'ye giden çokgen sade kalsın.
+export function simplifyCollinear2D(poly: Point2D[], eps: number): Point2D[] {
+  const pts: Point2D[] = [];
+  for (const p of poly) {
+    const last = pts[pts.length - 1];
+    if (!last || Math.hypot(p.x - last.x, p.y - last.y) > eps) pts.push(p);
+  }
+  if (pts.length > 1) {
+    const f = pts[0], l = pts[pts.length - 1];
+    if (Math.hypot(f.x - l.x, f.y - l.y) <= eps) pts.pop();
+  }
+  if (pts.length < 3) return pts;
+  // İTERATİF sadeleştirme: nokta, HAYATTA KALAN komşularının doğrusuna olan
+  // uzaklığıyla değerlendirilir ve tek tek elenir. Tek geçişli yerel test,
+  // köşe etrafındaki sıkı ışın kümelerinde (epsilon ışınları 0.02-0.07mm
+  // aralıklı nokta üretir) HER noktayı bitişik komşusuna göre "eşdoğrusal"
+  // görüp gerçek köşeyi de kümeyle birlikte siliyordu — L yüzeyde bölgenin
+  // yarısının kaybolmasının kök nedeni buydu.
+  let changed = true;
+  while (changed && pts.length > 3) {
+    changed = false;
+    let i = 0;
+    while (i < pts.length && pts.length > 3) {
+      const n = pts.length;
+      const a = pts[(i - 1 + n) % n];
+      const b = pts[i];
+      const c = pts[(i + 1) % n];
+      const cross = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+      const len = Math.hypot(c.x - a.x, c.y - a.y) || 1;
+      if (Math.abs(cross) / len <= eps) {
+        pts.splice(i, 1);
+        changed = true;
+      } else {
+        i++;
+      }
+    }
+  }
+  return pts;
+}
+
+// Çokgeni, (a,b) doğrusunun ORİJİN (tıklama noktası) tarafındaki yarı
+// düzlemiyle kırpar. Görünürlük çokgeninin iç bükey (L, U) yüzeylerde reflex
+// köşe arkasına uzattığı kamayı kesmek için kullanılır: 4 ana eksen ışınının
+// çarptığı kenarların doğrularıyla kırpınca dikdörtgen yüzeyde sonuç değişmez,
+// L kolunda stabil dikdörtgen kalır, eğik engelde yamuk korunur.
+export function clipPolygonByLine2D(poly: Point2D[], a: Point2D, b: Point2D): Point2D[] {
+  const ex = b.x - a.x, ey = b.y - a.y;
+  const side = (p: Point2D) => ex * (p.y - a.y) - ey * (p.x - a.x);
+  const s0 = side({ x: 0, y: 0 });
+  if (Math.abs(s0) < 1e-6) return poly; // tıklama doğrunun üstünde — kırpma belirsiz, atla
+  const keep = (p: Point2D) => side(p) * s0 >= -1e-9;
+  const out: Point2D[] = [];
+  for (let i = 0; i < poly.length; i++) {
+    const cur = poly[i], nxt = poly[(i + 1) % poly.length];
+    const cIn = keep(cur), nIn = keep(nxt);
+    if (cIn) out.push(cur);
+    if (cIn !== nIn) {
+      const d1 = side(cur), d2 = side(nxt);
+      const t = d1 / (d1 - d2);
+      out.push({ x: cur.x + (nxt.x - cur.x) * t, y: cur.y + (nxt.y - cur.y) * t });
+    }
+  }
+  return out;
+}
+
 function computePanelPlaneIntersectionEdges(panel: any, facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3): Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> {
   const panelMatrix = getShapeMatrix(panel);
   const posAttr = panel.geometry.getAttribute('position');
@@ -526,14 +638,14 @@ export function ensureCCW(poly: Point2D[]): Point2D[] {
   return area < 0 ? [...poly].reverse() : poly;
 }
 
-interface RayHitResult {
+export interface RayHitResult {
   hitPoint: THREE.Vector3;
   hitEdge: { v1: THREE.Vector3; v2: THREE.Vector3 } | null;
   edgeT: number;
   isBoundaryEdge: boolean;
 }
 
-function castRayOnFaceWorldDetailed(originWorld: THREE.Vector3, dirWorld: THREE.Vector3, boundaryEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>, obstacleEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>, u: THREE.Vector3, v: THREE.Vector3, planeOrigin: THREE.Vector3, maxDist: number): RayHitResult {
+export function castRayOnFaceWorldDetailed(originWorld: THREE.Vector3, dirWorld: THREE.Vector3, boundaryEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>, obstacleEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>, u: THREE.Vector3, v: THREE.Vector3, planeOrigin: THREE.Vector3, maxDist: number): RayHitResult {
   const o2d = projectTo2D(originWorld, planeOrigin, u, v);
   const dir2d = { x: dirWorld.dot(u), y: dirWorld.dot(v) };
   let tMin = maxDist, hitEdge: { v1: THREE.Vector3; v2: THREE.Vector3 } | null = null, hitEdgeT = 0, isBoundary = false;
@@ -751,6 +863,7 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
   const lines: RayLine[] = [];
   const hitPointsWorld: THREE.Vector3[] = [];
   const hitIsBoundary: boolean[] = [];
+  const hitEdgesWorld: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 } | null> = [];
   const edgeAnchors: EdgeAnchor[] = [];
   const parentPos = new THREE.Vector3();
   localToWorld.decompose(parentPos, new THREE.Quaternion(), new THREE.Vector3());
@@ -760,6 +873,7 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
     lines.push({ start: startWorld.clone().sub(parentPos), end: result.hitPoint.clone().sub(parentPos) });
     hitPointsWorld.push(result.hitPoint);
     hitIsBoundary.push(result.isBoundaryEdge);
+    hitEdgesWorld.push(result.hitEdge);
     if (result.hitEdge) {
       const v1Local = result.hitEdge.v1.clone().applyMatrix4(worldToLocal);
       const v2Local = result.hitEdge.v2.clone().applyMatrix4(worldToLocal);
@@ -770,7 +884,66 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
   const [uPosHit, uNegHit, vPosHit, vNegHit] = hitPointsWorld;
   const uPosT = uPosHit.distanceTo(startWorld), uNegT = uNegHit.distanceTo(startWorld);
   const vPosT = vPosHit.distanceTo(startWorld), vNegT = vNegHit.distanceTo(startWorld);
-  let rect2D: Point2D[] = ensureCCW([{ x: uPosT, y: vPosT }, { x: -uNegT, y: vPosT }, { x: -uNegT, y: -vNegT }, { x: uPosT, y: -vNegT }]);
+  // SERİ IŞIN: bölge şekli, 4 eksen ışınının dikdörtgeni yerine tıklanan
+  // noktadan atılan ışın demetinin görünürlük çokgeninden türetilir. Eğik
+  // engellerde (döndürülmüş panel vb.) bölge engel çizgisini birebir izler;
+  // dik engellerde sonuç eski dikdörtgenle aynıdır. Herhangi bir ışın açık
+  // uca kaçarsa (sınır halkası kapanmamışsa) eski dikdörtgene düşülür.
+  const segs2D = [...boundaryEdges, ...obstacleEdges].map(e => {
+    const a = projectTo2D(e.v1, planeOrigin, u, v);
+    const b = projectTo2D(e.v2, planeOrigin, u, v);
+    return { ax: a.x, ay: a.y, bx: b.x, by: b.y };
+  });
+  const vis = computeVisibilityPolygon2D(segs2D, maxDist);
+  let visPoly = vis.poly;
+  // STABİLİZASYON: görünürlük çokgeni, iç bükey yüzeylerde (L/U) reflex köşe
+  // arkasına tıklamaya duyarlı bir kama uzatır. 4 ana eksen ışınının çarptığı
+  // kenarların DOĞRULARIYLA (tıklama tarafı) kırpılır: kama kesilir, sonuç
+  // tıklama noktasından bağımsız stabilleşir; eğik kenar takibi korunur.
+  if (visPoly.length >= 3) {
+    for (const he of hitEdgesWorld) {
+      if (!he) continue;
+      const a2 = projectTo2D(he.v1, planeOrigin, u, v);
+      const b2 = projectTo2D(he.v2, planeOrigin, u, v);
+      const clipped = clipPolygonByLine2D(visPoly, a2, b2);
+      if (clipped.length >= 3) visPoly = clipped;
+    }
+    visPoly = simplifyCollinear2D(visPoly, 0.05);
+  }
+  const visValid = visPoly.length >= 3 && !visPoly.some(p => Math.hypot(p.x, p.y) >= maxDist - 1);
+  let rect2D: Point2D[] = visValid
+    ? ensureCCW(visPoly)
+    : ensureCCW([{ x: uPosT, y: vPosT }, { x: -uNegT, y: vPosT }, { x: -uNegT, y: -vNegT }, { x: uPosT, y: -vNegT }]);
+  // Yelpaze ışınları görselleştirilir (en fazla ~32 çizgi): kullanıcı
+  // taramanın bölgeyi nasıl belirlediğini görür.
+  if (visValid) {
+    const fanPts = vis.samples.map(p => {
+      // örnek noktaları da kırpılmış bölgeye çekilir: ışın çizgileri kesilen
+      // kamaya taşmasın
+      let q = p;
+      for (const he of hitEdgesWorld) {
+        if (!he) continue;
+        const a2 = projectTo2D(he.v1, planeOrigin, u, v);
+        const b2 = projectTo2D(he.v2, planeOrigin, u, v);
+        const ex = b2.x - a2.x, ey = b2.y - a2.y;
+        const side = (pt: Point2D) => ex * (pt.y - a2.y) - ey * (pt.x - a2.x);
+        const s0 = side({ x: 0, y: 0 });
+        if (Math.abs(s0) < 1e-6) continue;
+        const sq = side(q);
+        if (sq * s0 < 0) {
+          const t = s0 / (s0 - sq); // orijinden q'ya giden ışının doğruyla kesişimi
+          q = { x: q.x * t, y: q.y * t };
+        }
+      }
+      return q;
+    });
+    const step = Math.max(1, Math.ceil(fanPts.length / 32));
+    for (let i = 0; i < fanPts.length; i += step) {
+      const p = fanPts[i];
+      const endW = planeOrigin.clone().addScaledVector(u, p.x).addScaledVector(v, p.y).add(offset);
+      lines.push({ start: startWorld.clone().sub(parentPos), end: endW.sub(parentPos) });
+    }
+  }
   const boundaryLoop2D = buildBoundaryLoop2D(boundaryEdges, startWorld, u, v);
   if (boundaryLoop2D && boundaryLoop2D.length >= 3) {
     const ccwBoundary = ensureCCW(boundaryLoop2D);
