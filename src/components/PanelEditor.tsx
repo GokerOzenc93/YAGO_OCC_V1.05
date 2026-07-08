@@ -604,9 +604,17 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     ? getDimsFromGeo(activePanel.geometry, activePanel.parameters?.arrowRotated)
     : null;
   const activeSteps = activePanel?.parameters?.extrudeSteps || [];
-  const activeMoveSteps = activePanel?.parameters?.moveSteps || [];
-  const activeRotateSteps = activePanel?.parameters?.rotateSteps || [];
-  const activeTransformSteps = activePanel?.parameters?.transformSteps || [];
+  // Birleşik liste asıl kaynaktır; henüz göçmemiş eski panellerde moveSteps/
+  // rotateSteps zaman damgasına göre birleştirilip gösterilir (id'ler korunur,
+  // düzenle/sil PanelTransformService üzerinden otomatik göçü tetikler).
+  const activeTransformSteps = (() => {
+    const t = activePanel?.parameters?.transformSteps;
+    if (t?.length) return t;
+    return [
+      ...(activePanel?.parameters?.moveSteps || []).map((s: any) => ({ ...s, type: 'move' })),
+      ...(activePanel?.parameters?.rotateSteps || []).map((s: any) => ({ ...s, type: 'rotate' })),
+    ].sort((a: any, b: any) => (a.timestamp || 0) - (b.timestamp || 0));
+  })();
 
   const { selectedPanelRowParentId } = useAppStore();
   useEffect(() => {

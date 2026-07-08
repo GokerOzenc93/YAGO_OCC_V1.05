@@ -15,6 +15,10 @@ export interface RotateTransformStep {
   axis: 'x' | 'y' | 'z';
   value: number;
   pivot: [number, number, number];
+  // Pivot çıpaları PanelRotateService'te hesaplanır ve adımla birlikte taşınır;
+  // rebuild pivotu her seferinde güncel sanal yüzeyden yeniden türetir.
+  pivotFrac?: [number, number, number];
+  pivotVfFrac?: [number, number, number];
   timestamp: number;
 }
 
@@ -67,27 +71,99 @@ export function applyTransformSteps(
   };
 }
 
-function getBaseTransform(panelShape: Shape): {
+// ── Tek doğruluk kaynağı çözümleyici ─────────────────────────────────────
+// transformSteps varsa onu kullanır; yoksa ESKİ sistemin moveSteps/rotateSteps
+// dizilerini zaman damgasına göre birleştirip birleşik listeye GÖÇ eder.
+// Taban konum/rotasyon, hangi sistem daha önce başladıysa onun tabanıdır —
+// eski sistemde ikinci sistemin tabanı, birincinin sonucundan yakalanıyordu,
+// dolayısıyla en erken taban tüm zinciri doğru üretir.
+export function resolveUnifiedTransform(panelShape: Shape): {
+  steps: TransformStep[];
   basePosition: [number, number, number];
   baseRotation: [number, number, number];
+  migrated: boolean;
 } {
-  return {
-    basePosition: panelShape.parameters?.baseTransformPosition ?? [...panelShape.position] as [number, number, number],
-    baseRotation: panelShape.parameters?.baseTransformRotation ?? [...panelShape.rotation] as [number, number, number],
+  const p = panelShape.parameters || {};
+  const existing: TransformStep[] = p.transformSteps || [];
+  if (existing.length > 0) {
+    return {
+      steps: existing,
+      basePosition: p.baseTransformPosition ?? [...panelShape.position] as [number, number, number],
+      baseRotation: p.baseTransformRotation ?? [...panelShape.rotation] as [number, number, number],
+      migrated: false,
+    };
+  }
+
+  const legacyMoves: any[] = p.moveSteps || [];
+  const legacyRotates: any[] = p.rotateSteps || [];
+  if (legacyMoves.length === 0 && legacyRotates.length === 0) {
+    return {
+      steps: [],
+      basePosition: [...panelShape.position] as [number, number, number],
+      baseRotation: [...panelShape.rotation] as [number, number, number],
+      migrated: false,
+    };
+  }
+
+  const steps: TransformStep[] = [
+    ...legacyMoves.map(s => ({ ...s, type: 'move' as const })),
+    ...legacyRotates.map(s => ({ ...s, type: 'rotate' as const })),
+  ].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+
+  const firstMoveTs = legacyMoves.length ? Math.min(...legacyMoves.map(s => s.timestamp || 0)) : Infinity;
+  const firstRotTs = legacyRotates.length ? Math.min(...legacyRotates.map(s => s.timestamp || 0)) : Infinity;
+  const basePosition: [number, number, number] =
+    (firstMoveTs <= firstRotTs ? p.baseMovePosition : p.baseRotatePosition)
+    ?? p.baseRotatePosition ?? p.baseMovePosition
+    ?? [...panelShape.position] as [number, number, number];
+  const baseRotation: [number, number, number] =
+    p.baseRotateRotation ?? [...panelShape.rotation] as [number, number, number];
+
+  return { steps, basePosition, baseRotation, migrated: true };
+}
+
+// Parametre paketini birleşik listeden üretir: transformSteps asıl kaynak,
+// rotateSteps ise PanelRebuildService'in geometri (gönye/kesim) tarafı için
+// senkron tutulan AYNA kopyadır. Eski moveSteps anahtarı göçte temizlenir.
+function buildParams(
+  fresh: Shape,
+  steps: TransformStep[],
+  basePosition: [number, number, number],
+  baseRotation: [number, number, number]
+): Record<string, any> {
+  const params: Record<string, any> = {
+    ...fresh.parameters,
+    transformSteps: steps,
+    rotateSteps: steps.filter(s => s.type === 'rotate'),
   };
+  delete params.moveSteps;
+  delete params.baseMovePosition;
+
+  if (steps.length === 0) {
+    delete params.baseTransformPosition;
+    delete params.baseTransformRotation;
+    delete params.baseRotatePosition;
+    delete params.baseRotateRotation;
+  } else {
+    params.baseTransformPosition = basePosition;
+    params.baseTransformRotation = baseRotation;
+    // Eski rebuild yolu için uyumluluk aynası
+    params.baseRotatePosition = basePosition;
+    params.baseRotateRotation = baseRotation;
+  }
+  return params;
 }
 
 export async function executeTransformStep(
   panelShape: Shape,
-  step: Omit<TransformStep, 'id' | 'timestamp'>,
+  step: Omit<MoveTransformStep, 'id' | 'timestamp'> | Omit<RotateTransformStep, 'id' | 'timestamp'>,
   shapes: Shape[],
   updateShape: (id: string, updates: Partial<Shape>) => void
 ): Promise<boolean> {
   const { useAppStore } = await import('../store');
   const fresh = useAppStore.getState().shapes.find(s => s.id === panelShape.id) || panelShape;
 
-  const { basePosition, baseRotation } = getBaseTransform(fresh);
-  const existingSteps: TransformStep[] = fresh.parameters?.transformSteps || [];
+  const { steps: existingSteps, basePosition, baseRotation } = resolveUnifiedTransform(fresh);
 
   const newStep: TransformStep = {
     ...step,
@@ -101,14 +177,7 @@ export async function executeTransformStep(
   updateShape(fresh.id, {
     position: newPosition,
     rotation: newRotation,
-    parameters: {
-      ...fresh.parameters,
-      baseTransformPosition: basePosition,
-      baseTransformRotation: baseRotation,
-      transformSteps: newSteps,
-      // Keep rotateSteps in sync for PanelRebuildService geometry operations
-      rotateSteps: newSteps.filter(s => s.type === 'rotate'),
-    },
+    parameters: buildParams(fresh, newSteps, basePosition, baseRotation),
   });
 
   await rebuildSiblingsAfterTransform(fresh, shapes);
@@ -125,19 +194,14 @@ export async function updateTransformStep(
   const { useAppStore } = await import('../store');
   const fresh = useAppStore.getState().shapes.find(s => s.id === panelShape.id) || panelShape;
 
-  const steps: TransformStep[] = fresh.parameters?.transformSteps || [];
+  const { steps, basePosition, baseRotation } = resolveUnifiedTransform(fresh);
   const newSteps = steps.map(s => s.id === stepId ? { ...s, value: newValue } : s);
-  const { basePosition, baseRotation } = getBaseTransform(fresh);
   const { position: newPosition, rotation: newRotation } = applyTransformSteps(basePosition, baseRotation, newSteps);
 
   updateShape(fresh.id, {
     position: newPosition,
     rotation: newRotation,
-    parameters: {
-      ...fresh.parameters,
-      transformSteps: newSteps,
-      rotateSteps: newSteps.filter(s => s.type === 'rotate'),
-    },
+    parameters: buildParams(fresh, newSteps, basePosition, baseRotation),
   });
 
   await rebuildSiblingsAfterTransform(fresh, shapes);
@@ -153,26 +217,14 @@ export async function deleteTransformStep(
   const { useAppStore } = await import('../store');
   const fresh = useAppStore.getState().shapes.find(s => s.id === panelShape.id) || panelShape;
 
-  const steps: TransformStep[] = fresh.parameters?.transformSteps || [];
+  const { steps, basePosition, baseRotation } = resolveUnifiedTransform(fresh);
   const newSteps = steps.filter(s => s.id !== stepId);
-  const { basePosition, baseRotation } = getBaseTransform(fresh);
   const { position: newPosition, rotation: newRotation } = applyTransformSteps(basePosition, baseRotation, newSteps);
-
-  const newParams: Record<string, any> = {
-    ...fresh.parameters,
-    transformSteps: newSteps,
-    rotateSteps: newSteps.filter(s => s.type === 'rotate'),
-  };
-
-  if (newSteps.length === 0) {
-    delete newParams.baseTransformPosition;
-    delete newParams.baseTransformRotation;
-  }
 
   updateShape(fresh.id, {
     position: newPosition,
     rotation: newRotation,
-    parameters: newParams,
+    parameters: buildParams(fresh, newSteps, basePosition, baseRotation),
   });
 
   await rebuildSiblingsAfterTransform(fresh, shapes);

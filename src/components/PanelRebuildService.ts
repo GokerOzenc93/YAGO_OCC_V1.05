@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { useAppStore } from '../store';
 import { applyRotateSteps, vfPlaneBasis, type RotateStep } from './PanelRotateService';
+import { applyTransformSteps, type TransformStep } from './PanelTransformService';
 
 const rebuildInFlight = new Set<string>();
 // Rebuild sürerken gelen istekler SESSİZCE DÜŞÜRÜLMEMELİ: aksi halde açı
@@ -996,7 +997,37 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
         // Rotasyonu transform olarak uygula (geometri düz kalır; kırpma yukarıda
         // küpü ters döndürerek açıya göre yapıldı). Sonraki kardeşler bu paneli
         // engel olarak görür.
-        if (rotateSteps.length > 0) {
+        const tStepsRaw: TransformStep[] = panel.parameters?.transformSteps || [];
+        if (tStepsRaw.length > 0) {
+          // BİRLEŞİK YOL: taşıma+döndürme adımları tek listede, uygulama
+          // sırası korunur. Döndürme adımlarının pivotları, yukarıda güncel
+          // sanal yüzeyden türetilen (effective) değerlerle id bazında eşlenir;
+          // parametrelere HAM (göçmüş çıpalı) adımlar yazılır.
+          const effById = new Map(rotateSteps.map(s => [s.id, s]));
+          const rawById = new Map(rotateStepsRaw.map(s => [s.id, s]));
+          const tEff = tStepsRaw.map(s =>
+            s.type === 'rotate' && effById.has(s.id) ? { ...s, ...effById.get(s.id)!, type: 'rotate' as const } : s);
+          const tRaw = tStepsRaw.map(s =>
+            s.type === 'rotate' && rawById.has(s.id) ? { ...s, ...rawById.get(s.id)!, type: 'rotate' as const } : s);
+          const basePos: [number, number, number] =
+            panel.parameters?.baseTransformPosition ?? panel.parameters?.baseRotatePosition ?? [...panel.position];
+          const baseRot: [number, number, number] =
+            panel.parameters?.baseTransformRotation ?? panel.parameters?.baseRotateRotation ?? [...panel.rotation];
+          const { position: newPos, rotation: newRot } = applyTransformSteps(basePos, baseRot, tEff);
+          rebuiltPanel = {
+            ...rebuiltPanel,
+            position: newPos,
+            rotation: newRot,
+            parameters: {
+              ...rebuiltPanel.parameters,
+              baseTransformPosition: basePos, baseTransformRotation: baseRot,
+              baseRotatePosition: basePos, baseRotateRotation: baseRot,
+              transformSteps: tRaw,
+              rotateSteps: tRaw.filter(s => s.type === 'rotate'),
+            },
+          };
+        } else if (rotateSteps.length > 0) {
+          // ESKİ YOL: yalnızca rotateSteps olan (henüz göçmemiş) paneller.
           const basePos: [number, number, number] = panel.parameters?.baseRotatePosition ?? [...panel.position];
           const baseRot: [number, number, number] = panel.parameters?.baseRotateRotation ?? [...panel.rotation];
           const { position: newPos, rotation: newRot } = applyRotateSteps(basePos, baseRot, rotateSteps);
