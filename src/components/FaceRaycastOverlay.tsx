@@ -274,6 +274,39 @@ export function collectPanelObstacleEdgesWorld(panelShapes: any[], facePlaneNorm
     }
     if (panelEdges.length === 0) continue;
 
+    // ── ALTA GÖMÜLÜ (KAPAĞI DÜZLEMDE) PANEL FİLTRESİ ─────────────────────
+    // Bir dik duvar panelin ÜST KAPAĞI bu yüzeyle çakışık olabilir (duvar,
+    // yüzeye kadar yükselip durur). Bu kapak bir "engel" sayılırsa, yüzeye
+    // SONRADAN atılan üst panel duvarın kapağını delik gibi görüp bölgesini
+    // o dörtgenin etrafına büzer — panel sıra değişince yerinden oynamasının
+    // (L küpte üst panel kayması) kök nedeni budur. Oysa üst panel duvarın
+    // ÜSTÜNÜ ÖRTER; duvar onu engellememelidir.
+    // Ayrım: panelin GÖVDESİ tümüyle yüzeyin İÇ tarafındaysa (yüzey
+    // normalinin TERS yönünde; yani parçanın içine doğru iniyorsa) ve
+    // normalin POZİTİF yönünde yüzeyi aşmıyorsa, bu alta gömülü bir duvardır
+    // → engel değildir. Gövdesi yüzeyin üstüne çıkan gerçek bölmeler engel
+    // olarak kalır (aşağıdaki sınır filtresi + görünürlük taraması işler).
+    {
+      const pm = getShapeMatrix(panel);
+      const posAttr = panel.geometry.getAttribute('position') as THREE.BufferAttribute;
+      let maxAbove = -Infinity;   // normal + yönünde en fazla ne kadar aşıyor
+      let minSigned = Infinity;   // en negatif (iç) taraf
+      const tmp = new THREE.Vector3();
+      for (let vi = 0; vi < posAttr.count; vi++) {
+        tmp.set(posAttr.getX(vi), posAttr.getY(vi), posAttr.getZ(vi)).applyMatrix4(pm);
+        const signed = facePlaneNormal.dot(new THREE.Vector3().subVectors(tmp, facePlaneOrigin));
+        if (signed > maxAbove) maxAbove = signed;
+        if (signed < minSigned) minSigned = signed;
+      }
+      const thickness = Number(panel.parameters?.thickness) || 18;
+      // Kapak düzlemde (maxAbove ≈ 0) ve gövde içeriye iniyorsa (minSigned
+      // belirgin negatif) → alta gömülü duvar. Üste taşan paneller
+      // (maxAbove > eşik) muaf tutulmaz.
+      const risesAbove = maxAbove > planeTolerance + 0.5;
+      const bodyGoesInside = minSigned < -(thickness * 0.5 + planeTolerance);
+      if (!risesAbove && bodyGoesInside) continue;
+    }
+
     // ── SINIRA YAPIŞIK KOMŞU FİLTRESİ ─────────────────────────────────────
     // Komşu yüzdeki bir panelin (örn. eğik üst yüz paneli) bu düzlemle
     // kesişim izi, yüz SINIRINA yapışık ~kalınlık genişliğinde bir şerittir.

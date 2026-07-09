@@ -507,6 +507,43 @@ function regenerateCurvedFaceVF(
   };
 }
 
+// Sıralanmamış sınır kenarlarını (v1→v2 çiftleri) 2B sıralı bir köşe halkasına
+// dizer. Uç noktaları anahtarlayıp komşuları zincirler; kopuk/çoklu halka
+// durumunda en uzun zinciri döndürür (nokta-içinde testi için yeterli).
+function orderEdgesToRing2D(
+  edges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>,
+  u: THREE.Vector3,
+  v: THREE.Vector3
+): Array<{ x: number; y: number }> {
+  if (edges.length < 3) return [];
+  const key = (p: THREE.Vector3) => `${Math.round(p.dot(u) * 100)},${Math.round(p.dot(v) * 100)}`;
+  const adj = new Map<string, { k: string; p: THREE.Vector3 }[]>();
+  const ptByKey = new Map<string, THREE.Vector3>();
+  for (const e of edges) {
+    const ka = key(e.v1), kb = key(e.v2);
+    ptByKey.set(ka, e.v1); ptByKey.set(kb, e.v2);
+    if (!adj.has(ka)) adj.set(ka, []);
+    if (!adj.has(kb)) adj.set(kb, []);
+    adj.get(ka)!.push({ k: kb, p: e.v2 });
+    adj.get(kb)!.push({ k: ka, p: e.v1 });
+  }
+  const startK = adj.keys().next().value as string;
+  const ring: Array<{ x: number; y: number }> = [];
+  const visited = new Set<string>();
+  let cur = startK, prev = '';
+  for (let guard = 0; guard < edges.length + 2; guard++) {
+    visited.add(cur);
+    const p = ptByKey.get(cur)!;
+    ring.push({ x: p.dot(u), y: p.dot(v) });
+    const neigh = adj.get(cur) || [];
+    const nxt = neigh.find(n => n.k !== prev && !visited.has(n.k));
+    if (!nxt) break;
+    prev = cur; cur = nxt.k;
+    if (cur === startK) break;
+  }
+  return ring.length >= 3 ? ring : [];
+}
+
 function reraycastVirtualFace(
   vf: VirtualFace,
   shape: Shape,
@@ -681,7 +718,7 @@ function reraycastVirtualFaceFallback(
   const castFromOrigin = (originU: number, originV: number) => {
     const origin = buildOrigin(originU, originV);
     const start = origin.clone().addScaledVector(worldNormal, 0.5);
-    const panelObs = collectPanelObstacleEdgesWorld(panelsExcludingSelf, worldNormal, origin, 20);
+    const panelObs = collectPanelObstacleEdgesWorld(panelsExcludingSelf, worldNormal, origin, 20, boundaryEdgesWorld);
     const subObs = collectSubtractionObstacleEdgesWorld(subtractions, localToWorld, worldNormal, origin, 20);
     const vfObs = collectVirtualFaceObstacleEdgesWorld(shapeFaces, vf.id, localToWorld, worldNormal, origin, 20);
     const obstacles = [...panelObs, ...subObs, ...vfObs];
@@ -703,7 +740,29 @@ function reraycastVirtualFaceFallback(
   rayOriginU = Math.max(extent.uMin + 1, Math.min(extent.uMax - 1, rayOriginU));
   rayOriginV = Math.max(extent.vMin + 1, Math.min(extent.vMax - 1, rayOriginV));
 
-  // First cast from old VF center
+  // İÇBÜKEY (L/U) YÜZ GÜVENLİĞİ: clickUV, yüz SINIR KUTUSUNA oranlıdır.
+  // Tüm ışınlar sınıra çarptığında yakalama tarafı bunu [0.5,0.5] (kutu
+  // merkezi) olarak kaydeder — dışbükey yüzde stabildir. Ama L/U gibi içbükey
+  // yüzde kutu merkezi ÇENTİK BOŞLUĞUNA düşebilir; origin boşlukta olunca
+  // ışınlar reflex köşeden kaçıp bölge patlar (panel sıra değişince yerinden
+  // oynamasının kök nedeni buydu). Çözüm: reconstruct edilen origin gerçek yüz
+  // poligonunun DIŞINDAysa, kullanıcının GERÇEK tıklama noktasına (clickLocal)
+  // düşülür — o her zaman yüzün içindedir.
+  {
+    // Sınır kenarlarını sıralı bir halkaya diz (isPointInsidePolygon sıralı
+    // köşe ister). Kenarlar rastgele sırada gelir; uçları eşleştirerek zincirle.
+    const ring2D = orderEdgesToRing2D(boundaryEdgesWorld, u, v);
+    const originInside = ring2D.length >= 3
+      && isPointInsidePolygon({ x: rayOriginU, y: rayOriginV }, ring2D);
+    if (!originInside && vf.raycastRecipe?.clickLocalPoint) {
+      const clw = new THREE.Vector3(...vf.raycastRecipe.clickLocalPoint).applyMatrix4(localToWorld);
+      const cu = clw.dot(u), cv = clw.dot(v);
+      if (ring2D.length < 3 || isPointInsidePolygon({ x: cu, y: cv }, ring2D)) {
+        rayOriginU = Math.max(extent.uMin + 1, Math.min(extent.uMax - 1, cu));
+        rayOriginV = Math.max(extent.vMin + 1, Math.min(extent.vMax - 1, cv));
+      }
+    }
+  }
   let [uPosT, uNegT, vPosT, vNegT] = castFromOrigin(rayOriginU, rayOriginV);
 
   // Crossover detection: if an obstacle moved past the VF center, the resulting VF
@@ -763,7 +822,7 @@ function reraycastVirtualFaceFallback(
   // çokgeni algoritması kullanılır — aksi halde ilk rebuild'de bölge tekrar
   // dikdörtgene çökerdi. Işın demeti açık uca kaçarsa (kapanmayan sınır)
   // eski dikdörtgen davranışına düşülür.
-  const panelObsF = collectPanelObstacleEdgesWorld(panelsExcludingSelf, worldNormal, planeOrigin, 20);
+  const panelObsF = collectPanelObstacleEdgesWorld(panelsExcludingSelf, worldNormal, planeOrigin, 20, boundaryEdgesWorld);
   const subObsF = collectSubtractionObstacleEdgesWorld(subtractions, localToWorld, worldNormal, planeOrigin, 20);
   const vfObsF = collectVirtualFaceObstacleEdgesWorld(shapeFaces, vf.id, localToWorld, worldNormal, planeOrigin, 20);
   const obstaclesF = [...panelObsF, ...subObsF, ...vfObsF];
