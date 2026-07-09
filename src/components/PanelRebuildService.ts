@@ -628,6 +628,48 @@ async function intersectWithRetries(
   return null;
 }
 
+// ─── REFERANS HACİM ──────────────────────────────────────────────────────
+// Parent'ın SUBTRACTOR'SUZ taban hacmi (parent-yerel çerçevede keskin kutu).
+// Kaynak öncelik: parameters.scaledBaseVertices (subtraction öncesi taban
+// köşeleri) → geometri sınır kutusu. Dönmüş panel bu hacimle kesişir: duvara
+// kadar uzar/açılı biçilir ama yüzeydeki subtractor oyuklarını devralmaz.
+// NOT: Kutu keskindir — parent'ta fillet varsa panel fillet yarıçapı kadar
+// köşeye taşabilir; bu bilinçli bir sadelik tercihi (fillet yeniden uygulamak
+// pahalı ve kırılgan).
+async function buildParentReferenceVolume(
+  parent: any,
+  createPanelFromVirtualFace: (verts: any, normal: any, t: number, e: number) => Promise<any>
+): Promise<any | null> {
+  try {
+    let min: THREE.Vector3 | null = null, max: THREE.Vector3 | null = null;
+    const sbv = parent?.parameters?.scaledBaseVertices;
+    if (Array.isArray(sbv) && sbv.length >= 4) {
+      min = new THREE.Vector3(Infinity, Infinity, Infinity);
+      max = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+      for (const v of sbv) {
+        min.min(new THREE.Vector3(v[0], v[1], v[2]));
+        max.max(new THREE.Vector3(v[0], v[1], v[2]));
+      }
+    } else if (parent?.geometry) {
+      const posAttr = parent.geometry.getAttribute('position');
+      if (!posAttr) return null;
+      const bb = new THREE.Box3().setFromBufferAttribute(posAttr as THREE.BufferAttribute);
+      min = bb.min.clone(); max = bb.max.clone();
+    }
+    if (!min || !max) return null;
+    const h = max.y - min.y;
+    if (h <= 1e-3 || max.x - min.x <= 1e-3 || max.z - min.z <= 1e-3) return null;
+    // Üst yüz köşelerinden -Y yönüne ekstrüzyon → tam taban kutusu
+    const topVerts: [number, number, number][] = [
+      [min.x, max.y, min.z], [max.x, max.y, min.z], [max.x, max.y, max.z], [min.x, max.y, max.z],
+    ];
+    return await createPanelFromVirtualFace(topVerts, [0, 1, 0], h, 0);
+  } catch (err) {
+    console.warn('[RotateRebuild] reference volume build failed, falling back to parent solid:', err);
+    return null;
+  }
+}
+
 // Parent (referans küp) en büyük kenarı — döndürülmüş paneli kübü aşacak kadar
 // büyütmek için güvenli marj.
 function parentMaxDim(parent: any): number {
@@ -786,10 +828,15 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           });
         }
         const isRotated = rotateSteps.length > 0;
-        // Panel döndürülmüşse büyüme/kırpma "Ana yüze eşitle" düğmesine BAĞLI
-        // OLMAMALI: dönünce otomatik olarak kübe göre uzayıp kırpılsın. Bu yüzden
-        // parent kesişimi, döndürülmüş panelde parentFaceShape bayrağı kapalı olsa
-        // da (parent.replicadShape varsa) devreye girer.
+        // Dönmüş panelde büyüme + kırpma (grow & shrink to fit) HER ZAMAN
+        // çalışır: panel açıya göre referans hacmin duvarlarına kadar uzar ve
+        // kenarları açılı biçilir. FARK, kesişilen katının SEÇİMİNDE:
+        //  - parentFaceShape AÇIK ("ana yüze eşitle") → subtractor'lı GERÇEK
+        //    parent katısı; panel yüzeyin oyuklu şeklini birebir alır.
+        //  - bayrak KAPALI → subtractor'SUZ REFERANS HACİM (taban kutu);
+        //    panel duvarlara göre uzar/kesilir ama yüzeydeki subtractor
+        //    oyuklarının şeklini ALMAZ. (Kullanıcı kuralı: dönüş yüzeyin
+        //    şeklini vermesin, referans hacme göre uzasın.)
         const willIntersectParent = !!(parent.replicadShape && (vf.parentFaceShape || isRotated));
         const planeExpand = (isRotated && willIntersectParent) ? parentMaxDim(parent) : 0;
 
@@ -802,12 +849,18 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
         const parentHasFillets = !!(parent.fillets && parent.fillets.length > 0 && parent.replicadShape);
 
         if (willIntersectParent) {
+          // Kesişim katısı: bayrak açıksa gerçek (subtractor'lı) parent;
+          // değilse subtractor'suz referans hacim. Referans hacim kurulamazsa
+          // güvenli geri dönüş gerçek parent katısıdır.
+          const intersectSolid = vf.parentFaceShape
+            ? parent.replicadShape
+            : ((await buildParentReferenceVolume(parent, createPanelFromVirtualFace)) ?? parent.replicadShape);
           // Küpü panelin yerel (döndürülmemiş) çerçevesine taşı: paneli
           // döndürmek yerine küpü ters döndürüp kesişiriz → geometri düz kalır
           // (önizleme/ölçü stabil), kırpma açıya göre doğru olur.
           const cube = rotateSteps.length > 0
-            ? inverseRotateReplicadByLocalSteps(parent.replicadShape, rotateSteps, parentPos)
-            : parent.replicadShape;
+            ? inverseRotateReplicadByLocalSteps(intersectSolid, rotateSteps, parentPos)
+            : intersectSolid;
           console.info('[RotateRebuild] intersecting panel', panel.id, {
             steps: rotateSteps.length, planeExpand,
           });
@@ -834,8 +887,8 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           }
         }
 
-        // DÖNMÜŞ PANEL KARDEŞ KESİMİ: Dönmüş panel yukarıda kübe kadar
-        // uzatıldığı için kardeş panellerin İÇİNDEN geçebilir. Küpteki desenle
+        // DÖNMÜŞ PANEL KARDEŞ KESİMİ: Dönme hareketi (ve bayrak açıksa küpe
+        // uzatma) paneli kardeş panellerin İÇİNDEN geçirebilir. Küpteki desenle
         // aynı: kardeş geometrisi panelin yerel çerçevesine taşınıp kesilir.
         // SIRALAMA KURALI: Dönmüş panel yalnızca kendinden ÖNCE gelen (yüksek
         // öncelikli, workingShapes'te zaten kurulu) kardeşlere yol verir.

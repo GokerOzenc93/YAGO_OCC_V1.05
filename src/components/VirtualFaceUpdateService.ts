@@ -663,6 +663,12 @@ function reraycastVirtualFaceFallback(
 
   let rayOriginU = oldUCenter;
   let rayOriginV = oldVCenter;
+  // TIKLAMA ÇIPASI: yeniden türetme, VF merkezinden değil kullanıcının
+  // KAYITLI tıklama noktasından yapılır (yakalama ile birebir aynı köken).
+  // Merkez her recalc'ta kaydığı için küçük ama birikimli sapmalar üretiyordu;
+  // tıklama noktası kullanıcının gerçek niyetidir ve parent boyutlanınca
+  // oransal (normalizedClickUV) taşınır.
+  const clickUV = vf.raycastRecipe?.normalizedClickUV;
 
   // Helper: build a world point on the face plane from u/v coords
   const buildOrigin = (uCoord: number, vCoord: number) =>
@@ -690,6 +696,10 @@ function reraycastVirtualFaceFallback(
 
   // Clamp to face extent
   const extent = computeFaceGroupExtent(groupVerticesWorld, u, v);
+  if (clickUV) {
+    rayOriginU = extent.uMin + clickUV[0] * extent.uSpan;
+    rayOriginV = extent.vMin + clickUV[1] * extent.vSpan;
+  }
   rayOriginU = Math.max(extent.uMin + 1, Math.min(extent.uMax - 1, rayOriginU));
   rayOriginV = Math.max(extent.vMin + 1, Math.min(extent.vMax - 1, rayOriginV));
 
@@ -756,7 +766,34 @@ function reraycastVirtualFaceFallback(
   const panelObsF = collectPanelObstacleEdgesWorld(panelsExcludingSelf, worldNormal, planeOrigin, 20);
   const subObsF = collectSubtractionObstacleEdgesWorld(subtractions, localToWorld, worldNormal, planeOrigin, 20);
   const vfObsF = collectVirtualFaceObstacleEdgesWorld(shapeFaces, vf.id, localToWorld, worldNormal, planeOrigin, 20);
-  const segs2D = [...boundaryEdgesWorld, ...panelObsF, ...subObsF, ...vfObsF].map(e => {
+  const obstaclesF = [...panelObsF, ...subObsF, ...vfObsF];
+  const startF = planeOrigin.clone().addScaledVector(worldNormal, 0.5);
+  const dirsF = [u, u.clone().negate(), v, v.clone().negate()];
+  const axisHits = dirsF.map(dir =>
+    castRayOnFaceWorldDetailed(startF, dir, boundaryEdgesWorld, obstaclesF, u, v, planeOrigin, 5000)
+  ); // [u+, u-, v+, v-]
+
+  // ── BÖLGE KİLİDİ ─────────────────────────────────────────────────────
+  // Kullanıcı "ana yüze eşitle" DEMEDİKÇE, tıklamayla seçilen bölge yüze
+  // eşitlenmemelidir. Yakalama anında bir yön ENGELLE sınırlandıysa
+  // (IsBoundary=false) ama şu an o yönde engel BULUNAMIYORSA — ya rebuild
+  // sırasındaki eksik bağlam (kardeş panel henüz workingShapes'e eklenmedi;
+  // kanıtlanmış "yüze otomatik eşitleme" kök nedeni) ya da engel silinmiştir —
+  // VF'ye dokunulmaz, kullanıcının bölgesi aynen korunur. Engel yalnızca
+  // TAŞINDIYSA ışın onu yeni yerinde bulur ve bölge normal şekilde ona kadar
+  // güncellenir (teğet takibi bozulmaz).
+  if (nhd && !vf.parentFaceShape && !vf.alignToParentFace) {
+    const captureObstacleBounded = [
+      !nhd.uPosIsBoundary, !nhd.uNegIsBoundary, !nhd.vPosIsBoundary, !nhd.vNegIsBoundary,
+    ];
+    for (let di = 0; di < 4; di++) {
+      if (captureObstacleBounded[di] && axisHits[di].isBoundaryEdge) {
+        return { ...vf };
+      }
+    }
+  }
+
+  const segs2D = [...boundaryEdgesWorld, ...obstaclesF].map(e => {
     const a = projectTo2D(e.v1, planeOrigin, u, v);
     const b = projectTo2D(e.v2, planeOrigin, u, v);
     return { ax: a.x, ay: a.y, bx: b.x, by: b.y };
@@ -767,11 +804,7 @@ function reraycastVirtualFaceFallback(
   // kenar doğrularıyla kırpılır — L/U yüzeylerde reflex köşe kaması kesilir,
   // bölge tıklama/merkez konumundan bağımsız stabil kalır.
   if (visPoly.length >= 3) {
-    const obstaclesF = [...panelObsF, ...subObsF, ...vfObsF];
-    const startF = planeOrigin.clone().addScaledVector(worldNormal, 0.5);
-    const dirsF = [u, u.clone().negate(), v, v.clone().negate()];
-    for (const dir of dirsF) {
-      const res = castRayOnFaceWorldDetailed(startF, dir, boundaryEdgesWorld, obstaclesF, u, v, planeOrigin, 5000);
+    for (const res of axisHits) {
       if (!res.hitEdge) continue;
       const a2 = projectTo2D(res.hitEdge.v1, planeOrigin, u, v);
       const b2 = projectTo2D(res.hitEdge.v2, planeOrigin, u, v);
