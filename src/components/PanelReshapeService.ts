@@ -156,10 +156,14 @@ export async function reshapePanelToParentFace(panelId: string): Promise<void> {
   const origWindingPositive = signedArea(vfOrig2D) > 0;
 
   const boundary2D = forceWinding(boundaryLocal.map(to2D), true);
-  const vfClip2D = forceWinding(vfOrig2D, true);
 
-  let clipped = clipSH(boundary2D, vfClip2D);
-  if (clipped.length < 3) clipped = boundary2D;
+  // "ANA YÜZE EŞİTLE" = HER ZAMAN tüm parent yüzünü doldur (kullanıcı kuralı).
+  // Bölge büyüklüğü ve döndürme fark etmez: tıklanan küçük bölge değil, gerçek
+  // parent yüz sınırı kullanılır. (Eski sürüm sınırı mevcut VF bölgesiyle
+  // clipSH ile kırpıyordu; bu, dönmüş panelde küçük ayak iziyle kesişip
+  // eşitlemeyi etkisiz bırakıyordu — kök neden buydu. Düz panelde de bölge
+  // küçükse küçük kalıyordu; artık ikisinde de tam yüz doldurulur.)
+  const clipped: P2[] = boundary2D;
 
   // Deduplicate close points.
   const EPS = 0.2;
