@@ -984,11 +984,18 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
               }
             }
           }
+        }
 
-          // isRotated ise kardeşler yukarıda zaten (frame-düzeltmeli) kesildi;
-          // burada tekrar kesme. Dönmüş kardeşler de yukarıdaki GÖNYE bloğunda
-          // yarım-uzayla kesildi — burada yalnızca DÜZ kardeşler gövde kesilir.
-          if (!isRotated) {
+        // DÜZ KARDEŞ GÖVDE KESİMİ — HER düz panelde çalışır (parentFaceShape
+        // bayrağından BAĞIMSIZ). Bu blok eskiden yanlışlıkla parentFaceShape
+        // kapısının içindeydi: bayrak kapalı bölge panellerinde düz-düz
+        // çakışmalar hiç kesilmiyordu. VF komşu-filtre düzeltmesiyle paneller
+        // yüz sınırına kadar uzandığından, komşu yüz paneliyle eğik kenardaki
+        // kama çakışması ancak bu gövde kesimiyle temizlenir. Broad-phase AABB
+        // testi teğet/uzak çiftlerde boolean'ı zaten atlar. isRotated ise
+        // kardeşler yukarıda (frame-düzeltmeli) kesildi; dönmüş kardeşler de
+        // GÖNYE bloğunda yarım-uzayla kesildi — burada yalnızca DÜZ kardeşler.
+        if (!isRotated) {
             const panelBox = worldAABBFromVF(vf, thickness, parentPos);
             const siblingPanelShapes = workingShapes.filter(
               s => s.type === 'panel' &&
@@ -1007,11 +1014,10 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
                 const cutter = siblingCutterInPanelFrame(sib, rotateSteps, parentPos);
                 if (cutter) rp = await performBooleanCut(rp, cutter);
               } catch (err) {
-                console.error('Failed to subtract sibling panel from parent-face-shape panel:', err);
+                console.error('Failed to subtract sibling panel from straight sibling cut:', err);
               }
             }
           }
-        }
 
         let geometry = convertReplicadToThreeGeometry(rp);
         const r = geoAxesSize(geometry);

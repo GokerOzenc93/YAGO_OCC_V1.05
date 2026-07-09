@@ -240,32 +240,81 @@ function computePanelPlaneIntersectionEdges(panel: any, facePlaneNormal: THREE.V
   return edges;
 }
 
-export function collectPanelObstacleEdgesWorld(panelShapes: any[], facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, planeTolerance: number = 1.5): Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> {
+function pointToSegmentDistance3D(p: THREE.Vector3, a: THREE.Vector3, b: THREE.Vector3): number {
+  const ab = new THREE.Vector3().subVectors(b, a);
+  const ap = new THREE.Vector3().subVectors(p, a);
+  const len2 = ab.lengthSq();
+  if (len2 < 1e-12) return ap.length();
+  const t = Math.max(0, Math.min(1, ap.dot(ab) / len2));
+  return new THREE.Vector3().copy(a).addScaledVector(ab, t).distanceTo(p);
+}
+
+export function collectPanelObstacleEdgesWorld(panelShapes: any[], facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, planeTolerance: number = 1.5, boundaryEdges?: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>): Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> {
   const obstacleEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> = [];
   for (const panel of panelShapes) {
     if (!panel.geometry) continue;
     const panelMatrix = getShapeMatrix(panel);
     const edgesGeo = new THREE.EdgesGeometry(panel.geometry);
     const edgePos = edgesGeo.getAttribute('position');
-    let hasCoplanarEdges = false;
+    const panelEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> = [];
     for (let i = 0; i < edgePos.count; i += 2) {
       const va = new THREE.Vector3(edgePos.getX(i), edgePos.getY(i), edgePos.getZ(i)).applyMatrix4(panelMatrix);
       const vb = new THREE.Vector3(edgePos.getX(i + 1), edgePos.getY(i + 1), edgePos.getZ(i + 1)).applyMatrix4(panelMatrix);
       const distA = Math.abs(facePlaneNormal.dot(new THREE.Vector3().subVectors(va, facePlaneOrigin)));
       const distB = Math.abs(facePlaneNormal.dot(new THREE.Vector3().subVectors(vb, facePlaneOrigin)));
       if (distA < planeTolerance && distB < planeTolerance) {
-        obstacleEdges.push({ v1: va, v2: vb });
-        hasCoplanarEdges = true;
+        panelEdges.push({ v1: va, v2: vb });
       }
     }
     edgesGeo.dispose();
 
-    if (!hasCoplanarEdges) {
+    if (panelEdges.length === 0) {
       const crossEdges = computePanelPlaneIntersectionEdges(panel, facePlaneNormal, facePlaneOrigin);
-      if (crossEdges.length > 0) {
-        obstacleEdges.push(...crossEdges);
-      }
+      panelEdges.push(...crossEdges);
     }
+    if (panelEdges.length === 0) continue;
+
+    // ── SINIRA YAPIŞIK KOMŞU FİLTRESİ ─────────────────────────────────────
+    // Komşu yüzdeki bir panelin (örn. eğik üst yüz paneli) bu düzlemle
+    // kesişim izi, yüz SINIRINA yapışık ~kalınlık genişliğinde bir şerittir.
+    // Bu şerit engel sayılırsa bölge sınıra değil şeridin iç kenarına kadar
+    // gider ve panelde kalınlık (18mm) kadar girinti/köşe basamağı oluşur.
+    // Kural: panelin izindeki TÜM uç noktalar yüz sınır halkasına
+    // (kalınlık×1.5 + tolerans) mesafesindeyse bu bir kenar-komşusudur —
+    // engel OLMAZ; birleşim gövde/gönye kesimlerinin işidir. İzi yüzün
+    // İÇİNDEN geçen paneller (orta bölme, eğik duvar) engel olarak kalır.
+    if (boundaryEdges && boundaryEdges.length > 0) {
+      const thickness = Number(panel.parameters?.thickness) || 18;
+      const hugMargin = thickness * 1.5 + planeTolerance + 2;
+      // ÖNEMLİ: yalnızca uç noktalara bakmak yetmez — yüzü boydan boya kesen
+      // eğimli bir panelin izinin uçları tam sınır kenarları üzerinde biter ve
+      // panel yanlışlıkla "kenar komşusu" sanılıp engellikten çıkardı (bölge
+      // tüm yüze açılırdı). Bu yüzden her iz kenarı BOYUNCA örnekleme yapılır:
+      // izin HERHANGİ bir noktası sınırdan uzaksa panel iç engeldir ve kalır.
+      const distToBoundary = (pt: THREE.Vector3): number => {
+        let minD = Infinity;
+        for (const be of boundaryEdges) {
+          const d = pointToSegmentDistance3D(pt, be.v1, be.v2);
+          if (d < minD) minD = d;
+          if (minD <= hugMargin) break;
+        }
+        return minD;
+      };
+      let allHugBoundary = true;
+      for (const e of panelEdges) {
+        const len = e.v1.distanceTo(e.v2);
+        const samples = Math.max(2, Math.ceil(len / Math.max(hugMargin * 0.5, 5)) + 1);
+        for (let si = 0; si < samples; si++) {
+          const t = samples === 1 ? 0 : si / (samples - 1);
+          const pt = new THREE.Vector3().lerpVectors(e.v1, e.v2, t);
+          if (distToBoundary(pt) > hugMargin) { allHugBoundary = false; break; }
+        }
+        if (!allHugBoundary) break;
+      }
+      if (allHugBoundary) continue;
+    }
+
+    obstacleEdges.push(...panelEdges);
   }
   return obstacleEdges;
 }
@@ -851,7 +900,7 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
     u = dominant.clone();
     v = new THREE.Vector3().crossVectors(worldNormal, u).normalize();
   }
-  const panelEdges = collectPanelObstacleEdgesWorld(childPanels, worldNormal, planeOrigin, 1.5);
+  const panelEdges = collectPanelObstacleEdgesWorld(childPanels, worldNormal, planeOrigin, 1.5, boundaryEdges);
   const subEdges = collectSubtractionObstacleEdgesWorld(subtractions, localToWorld, worldNormal, planeOrigin, 20);
   const vfEdges = collectVirtualFaceObstacleEdgesWorld(shapeVirtualFaces, null, localToWorld, worldNormal, planeOrigin, 20);
   const obstacleEdges = [...panelEdges, ...subEdges, ...vfEdges];
