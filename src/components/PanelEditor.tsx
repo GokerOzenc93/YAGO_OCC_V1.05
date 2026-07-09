@@ -540,7 +540,7 @@ function PanelPreview2D({ shape, arrowRotated }: { dims: Dims; shape?: any; arro
 export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorProps) {
   const { selectedShapeId, shapes, updateShape, addShape, showOutlines, setShowOutlines,
     selectedPanelRow, setSelectedPanelRow, panelSelectMode, setPanelSelectMode, raycastMode, setRaycastMode,
-    showVirtualFaces, setShowVirtualFaces, virtualFaces, updateVirtualFace, deleteVirtualFace, reorderVirtualFaces, reorderVirtualFaceGroup, pendingPanelCreation,
+    showVirtualFaces, setShowVirtualFaces, virtualFaces, updateVirtualFace, deleteVirtualFace, reorderVirtualFaces, reorderVirtualFaceGroup, pendingPanelCreation, hoveredPanelVfId,
     faceExtrudeMode, setFaceExtrudeMode, faceExtrudeTargetPanelId,
     setFaceExtrudeTargetPanelId, faceExtrudeSelectedFace, setFaceExtrudeSelectedFace, setFaceExtrudeHoveredFace,
     faceExtrudeThickness, setFaceExtrudeThickness, faceExtrudeFixedMode, setFaceExtrudeFixedMode,
@@ -553,6 +553,9 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
 
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
+  // Tutamaç KAVRAMA geri bildirimi: mousedown anında grup "kalkmış" görünür,
+  // böylece sürüklemeye başlamadan önce grubun gerçekten tutulduğu bellidir.
+  const [armedGroupKey, setArmedGroupKey] = useState<string | null>(null);
 
   const [position, setPosition] = useState({ x: 100, y: 100 });
   const [isDraggingWindow, setIsDraggingWindow] = useState(false);
@@ -793,21 +796,24 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       if (selectedPanelRow === `vf-${vfId}`) setSelectedPanelRow(null);
     };
 
-    const onGroupDrop = async (draggedGroupKey: string, targetGroupKey: string) => {
+    // Sürüklenen grup, hedefin ÖNCESİNE (targetFirstId) yerleşir; null = en son.
+    const doReorder = async (draggedGroupKey: string, targetFirstId: string | null) => {
       setDragIndex(null); setDropIndex(null);
-      if (draggedGroupKey === targetGroupKey) return;
-      const draggedGroup = groupMap.get(draggedGroupKey)!;
-      const targetGroup = groupMap.get(targetGroupKey)!;
-      reorderVirtualFaceGroup(sid, draggedGroup.map(v => v.id), targetGroup[0].id);
+      const draggedGroup = groupMap.get(draggedGroupKey);
+      if (!draggedGroup) return;
+      reorderVirtualFaceGroup(sid, draggedGroup.map(v => v.id), targetFirstId);
       const { rebuildPanelsForParent } = await import('./PanelRebuildService');
       await rebuildPanelsForParent(sid);
     };
-    const onGroupDropAtEnd = async (draggedGroupKey: string) => {
-      setDragIndex(null); setDropIndex(null);
-      const draggedGroup = groupMap.get(draggedGroupKey)!;
-      reorderVirtualFaceGroup(sid, draggedGroup.map(v => v.id), null);
-      const { rebuildPanelsForParent } = await import('./PanelRebuildService');
-      await rebuildPanelsForParent(sid);
+    // KULLANICI KURALI: bırakma HER ZAMAN üzerine gelinen grubun ALTINA yerleşir
+    // (satırın üstünde/altında olmak fark etmez). Store insert-BEFORE çalıştığı
+    // için hedef = üzerine gelinen grubun BİR SONRAKİ grubunun ilk id'si.
+    const onGroupDropBelow = async (draggedGroupKey: string, hoveredGroupKey: string) => {
+      if (draggedGroupKey === hoveredGroupKey) { setDragIndex(null); setDropIndex(null); return; }
+      const idx = faceGroupsList.findIndex(g => normalKey(g[0]) === hoveredGroupKey);
+      const nextG = idx >= 0 ? faceGroupsList[idx + 1] : undefined;
+      if (nextG && normalKey(nextG[0]) === draggedGroupKey) { setDragIndex(null); setDropIndex(null); return; } // zaten hemen altında
+      await doReorder(draggedGroupKey, nextG ? nextG[0].id : null);
     };
 
     const elements: React.ReactNode[] = [];
@@ -833,7 +839,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
             key={vf.id}
             onClick={e => { stop(e); setSelectedPanelRow(`vf-${vf.id}`, null, sid); }}
             className={`group/row relative flex items-center gap-1.5 pl-2.5 pr-1 py-px cursor-pointer transition-colors duration-150
-              ${sel ? 'bg-[#fff6ec]' : 'hover:bg-[#faf6ef]'}`}
+              ${sel ? 'bg-[#fff6ec]' : hoveredPanelVfId === vf.id ? 'bg-[#fef9c3]' : 'hover:bg-[#faf6ef]'}`}
           >
             {sel && <span className="absolute left-0 top-0 bottom-0 w-[2.5px] rounded-r-sm bg-gradient-to-b from-orange-400 to-orange-500" />}
 
@@ -903,61 +909,86 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         <div
           key={groupKey}
           onDragOver={e => {
-            if (dragIndex !== null) {
+            if (dragIndex !== null && !isDraggingThisGroup) {
               e.preventDefault();
               e.dataTransfer.dropEffect = 'move';
               if (dropIndex !== groupFirstIdx) setDropIndex(groupFirstIdx);
             }
           }}
-          onDragLeave={() => { if (dropIndex === groupFirstIdx) setDropIndex(null); }}
           onDrop={e => {
             e.preventDefault();
             if (dragIndex === null) return;
-            onGroupDrop(normalKey(orderedVfs[dragIndex]), groupKey);
+            onGroupDropBelow(normalKey(orderedVfs[dragIndex]), groupKey);
           }}
           className={`relative flex items-stretch rounded-lg overflow-hidden transition-all duration-150
             ${anySel
               ? 'bg-white ring-1 ring-[#f3c89e] shadow-[0_2px_10px_-3px_rgba(234,88,12,0.20),0_1px_2px_rgba(68,64,60,0.06)]'
               : 'bg-white ring-1 ring-[#e7e2da] shadow-[0_1px_2px_rgba(68,64,60,0.05),0_1px_1px_rgba(68,64,60,0.03)] hover:ring-[#dbd4c9] hover:shadow-[0_3px_10px_-3px_rgba(68,64,60,0.12),0_1px_2px_rgba(68,64,60,0.05)]'}
             ${isDraggingThisGroup ? 'opacity-40 scale-[0.99]' : ''}
-            ${isDropTargetGroup ? '!ring-blue-400 bg-blue-50' : ''}`}
+            ${armedGroupKey === groupKey && !isDraggingThisGroup ? '!ring-orange-400 shadow-[0_4px_14px_-4px_rgba(234,88,12,0.35)] scale-[1.01]' : ''}
+            ${isDropTargetGroup ? '!ring-amber-400 bg-amber-50/60' : ''}`}
         >
           <span
             draggable
+            onMouseDown={() => setArmedGroupKey(groupKey)}
+            onMouseUp={() => setArmedGroupKey(null)}
+            onMouseLeave={() => { if (dragIndex === null) setArmedGroupKey(null); }}
             onDragStart={e => {
               stop(e);
               setDragIndex(groupFirstIdx);
               e.dataTransfer.effectAllowed = 'move';
               e.dataTransfer.setData('text/plain', groupKey);
             }}
-            onDragEnd={() => { setDragIndex(null); setDropIndex(null); }}
+            onDragEnd={() => { setDragIndex(null); setDropIndex(null); setArmedGroupKey(null); }}
             onClick={stop}
-            className="cursor-grab active:cursor-grabbing shrink-0 w-6 self-stretch flex items-center justify-center text-stone-300/90 hover:text-stone-600 bg-gradient-to-b from-[#fbf9f5] to-[#f4efe7] hover:from-[#f4efe7] hover:to-[#ebe4d9] active:to-[#e3dbce] border-r border-[#ece6dc] transition-colors"
+            className={`cursor-grab active:cursor-grabbing shrink-0 w-8 self-stretch flex items-center justify-center border-r transition-colors
+              ${armedGroupKey === groupKey
+                ? 'text-white bg-gradient-to-b from-orange-400 to-orange-500 border-orange-500/50'
+                : 'text-stone-300/90 hover:text-orange-600 bg-gradient-to-b from-[#fbf9f5] to-[#f4efe7] hover:from-[#fff3e4] hover:to-[#ffe9d0] border-[#ece6dc]'}`}
             title={isGroupMulti ? 'Sürükleyerek tüm grubu taşı' : 'Sürükleyerek sırala'}
-          ><GripVertical size={15}/></span>
+          ><GripVertical size={16}/></span>
 
           <div className="flex-1 min-w-0 flex flex-col">
             {innerRows}
           </div>
         </div>
       );
+
+      // YERLEŞİM GÖSTERGESİ: sürüklenen öğe TAM BURAYA (bu grubun altına)
+      // yerleşecek — ince çizgi yerine kalın, parlak amber bant.
+      if (isDropTargetGroup && !isDraggingThisGroup) {
+        elements.push(
+          <div key={`${groupKey}-drop-ind`} className="pointer-events-none h-[7px] mx-1 -my-0.5 rounded-full bg-gradient-to-r from-amber-400 via-orange-400 to-amber-400 shadow-[0_0_10px_rgba(245,158,11,0.65),0_1px_2px_rgba(180,83,9,0.3)]" />
+        );
+      }
     });
 
-    elements.push(
-      <div
-        key="drop-end"
-        className={`h-2 rounded transition-all ${dropIndex === -1 ? 'bg-blue-100 ring-1 ring-blue-300' : ''}`}
-        onDragOver={e => { if (dragIndex !== null) { e.preventDefault(); setDropIndex(-1); } }}
-        onDragLeave={() => { if (dropIndex === -1) setDropIndex(null); }}
-        onDrop={e => {
-          e.preventDefault();
-          if (dragIndex === null) return;
-          const draggingVf = orderedVfs[dragIndex];
-          const draggingKey = normalKey(draggingVf);
-          onGroupDropAtEnd(draggingKey);
-        }}
-      />
-    );
+    // "Altına yerleş" kuralıyla en alta taşımak için son satırın üzerine
+    // bırakmak yeterli. En ÜSTE taşıma: listenin başında, sürükleme sırasında
+    // aktifleşen ince bir tutma alanı; üzerine gelinince DİĞER yerleşim
+    // çizgileriyle aynı stilde turuncu bant görünür ve oraya bırakılır.
+    if (dragIndex !== null && faceGroupsList.length > 0) {
+      const firstGroup = faceGroupsList[0];
+      const draggingIsFirst = normalKey(orderedVfs[dragIndex]) === normalKey(firstGroup[0]);
+      if (!draggingIsFirst) {
+        elements.unshift(
+          <div
+            key="drop-top"
+            onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (dropIndex !== -2) setDropIndex(-2); }}
+            onDrop={e => {
+              e.preventDefault();
+              if (dragIndex === null) return;
+              doReorder(normalKey(orderedVfs[dragIndex]), firstGroup[0].id);
+            }}
+            className="h-4 -mb-1 flex items-center"
+          >
+            {dropIndex === -2 && (
+              <div className="pointer-events-none w-full h-[7px] mx-1 rounded-full bg-gradient-to-r from-amber-400 via-orange-400 to-amber-400 shadow-[0_0_10px_rgba(245,158,11,0.65),0_1px_2px_rgba(180,83,9,0.3)]" />
+            )}
+          </div>
+        );
+      }
+    }
 
     return elements;
   })() : null;

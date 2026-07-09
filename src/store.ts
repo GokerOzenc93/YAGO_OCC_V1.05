@@ -172,6 +172,7 @@ interface AppState{
   faceEditMode:boolean;setFaceEditMode:(b:boolean)=>void;
   selectedFaceIndex:number|null;setSelectedFaceIndex:(i:number|null)=>void;
   hoveredFaceIndex:number|null;setHoveredFaceIndex:(i:number|null)=>void;
+  hoveredPanelVfId:string|null;setHoveredPanelVfId:(id:string|null)=>void;
 
   filletMode:boolean;setFilletMode:(b:boolean)=>void;
   selectedFilletFaces:number[];setSelectedFilletFaces:(f:number[])=>void;
@@ -237,6 +238,7 @@ export const useAppStore=create<AppState>((set,get)=>({
   faceEditMode:false,setFaceEditMode:(b)=>set({faceEditMode:b}),
   selectedFaceIndex:null,setSelectedFaceIndex:(i)=>set({selectedFaceIndex:i}),
   hoveredFaceIndex:null,setHoveredFaceIndex:(i)=>set({hoveredFaceIndex:i}),
+  hoveredPanelVfId:null,setHoveredPanelVfId:(id)=>set({hoveredPanelVfId:id}),
 
   filletMode:false,setFilletMode:(e)=>set({filletMode:e,selectedFilletFaces:e?[]:[],selectedFilletFaceData:e?[]:[]}),
   selectedFilletFaces:[],setSelectedFilletFaces:(f)=>set({selectedFilletFaces:f}),

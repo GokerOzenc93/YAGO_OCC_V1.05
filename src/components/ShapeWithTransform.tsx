@@ -35,6 +35,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     viewMode,
     subtractionViewMode,
     hoveredSubtractionIndex,
+    hoveredPanelVfId,
     setHoveredSubtractionIndex,
     selectedSubtractionIndex,
     setSelectedSubtractionIndex,
@@ -63,6 +64,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     viewMode: state.viewMode,
     subtractionViewMode: state.subtractionViewMode,
     hoveredSubtractionIndex: state.hoveredSubtractionIndex,
+    hoveredPanelVfId: state.hoveredPanelVfId,
     setHoveredSubtractionIndex: state.setHoveredSubtractionIndex,
     selectedSubtractionIndex: state.selectedSubtractionIndex,
     setSelectedSubtractionIndex: state.setSelectedSubtractionIndex,
@@ -436,9 +438,16 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     shape.parameters?.virtualFaceId &&
     `vf-${shape.parameters.virtualFaceId}` === selectedPanelRow;
 
+  const isPanelHovered = isPanel &&
+    !!shape.parameters?.virtualFaceId &&
+    hoveredPanelVfId === shape.parameters.virtualFaceId;
+
+  // Hover: sarıya yakın ton (seçim kırmızısı her zaman önceliklidir)
   const panelColor = (isPanelRowSelected || isVirtualPanelRowSelected)
     ? '#ef4444'
-    : (shape.color || '#ffffff');
+    : isPanelHovered
+      ? '#f5dd7a'
+      : (shape.color || '#ffffff');
 
   const suppressPanelRaycast = isPanel && raycastMode && parentShapeId === selectedShapeId;
   const noopRaycast = useCallback(() => {}, []);
@@ -545,11 +554,21 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
               castShadow
               receiveShadow
               {...(suppressPanelRaycast ? { raycast: noopRaycast } : {})}
+              // 3B'de panel üzerine gelinince LeftSidebar'daki satırı hafif
+              // sarı yakmak için hover senkronu (yalnızca sanal-yüz panelleri)
+              onPointerOver={isPanel && shape.parameters?.virtualFaceId ? (e: any) => {
+                e.stopPropagation();
+                useAppStore.getState().setHoveredPanelVfId(shape.parameters.virtualFaceId);
+              } : undefined}
+              onPointerOut={isPanel && shape.parameters?.virtualFaceId ? () => {
+                const st = useAppStore.getState();
+                if (st.hoveredPanelVfId === shape.parameters.virtualFaceId) st.setHoveredPanelVfId(null);
+              } : undefined}
             >
               <meshStandardMaterial
                 color={isPanel ? panelColor : '#c8c8c8'}
-                emissive={(isPanelRowSelected || isVirtualPanelRowSelected) ? panelColor : '#000000'}
-                emissiveIntensity={(isPanelRowSelected || isVirtualPanelRowSelected) ? 0.4 : 0}
+                emissive={(isPanelRowSelected || isVirtualPanelRowSelected) ? panelColor : isPanelHovered ? '#eab308' : '#000000'}
+                emissiveIntensity={(isPanelRowSelected || isVirtualPanelRowSelected) ? 0.4 : isPanelHovered ? 0.22 : 0}
                 metalness={0}
                 roughness={isPanel ? 0.92 : 1.0}
                 transparent
@@ -613,11 +632,21 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
               castShadow
               receiveShadow
               {...(suppressPanelRaycast ? { raycast: noopRaycast } : {})}
+              // 3B'de panel üzerine gelinince LeftSidebar'daki satırı hafif
+              // sarı yakmak için hover senkronu (yalnızca sanal-yüz panelleri)
+              onPointerOver={isPanel && shape.parameters?.virtualFaceId ? (e: any) => {
+                e.stopPropagation();
+                useAppStore.getState().setHoveredPanelVfId(shape.parameters.virtualFaceId);
+              } : undefined}
+              onPointerOut={isPanel && shape.parameters?.virtualFaceId ? () => {
+                const st = useAppStore.getState();
+                if (st.hoveredPanelVfId === shape.parameters.virtualFaceId) st.setHoveredPanelVfId(null);
+              } : undefined}
             >
               <meshStandardMaterial
                 color={isPanel ? panelColor : shouldShowAsReference ? '#ef4444' : '#c8c8c8'}
-                emissive={(isPanelRowSelected || isVirtualPanelRowSelected) ? panelColor : '#000000'}
-                emissiveIntensity={(isPanelRowSelected || isVirtualPanelRowSelected) ? 0.4 : 0}
+                emissive={(isPanelRowSelected || isVirtualPanelRowSelected) ? panelColor : isPanelHovered ? '#eab308' : '#000000'}
+                emissiveIntensity={(isPanelRowSelected || isVirtualPanelRowSelected) ? 0.4 : isPanelHovered ? 0.22 : 0}
                 metalness={0}
                 roughness={isPanel ? 0.92 : 1.0}
                 transparent
