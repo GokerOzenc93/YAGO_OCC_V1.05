@@ -92,10 +92,11 @@ function forwardRotateReplicadByLocalSteps(
 }
 
 // Kardeş paneli, kesilecek panelin ÇERÇEVESİNE taşır:
-// 1) Kardeş dönmüşse: kendi adımlarıyla İLERİ döndür → gerçek dünya konumu.
-// 2) Kesilecek panel dönmüşse: onun adımlarıyla TERS döndür → panelin yerel
+// 1) Kardeş taşınmışsa: taşıma ofsetini (sib.position - parentPos) uygula.
+// 2) Kardeş dönmüşse: kendi adımlarıyla İLERİ döndür → gerçek dünya konumu.
+// 3) Kesilecek panel dönmüşse: onun adımlarıyla TERS döndür → panelin yerel
 //    (döndürülmemiş) çerçevesi. Böylece boolean kesim her iki panelin de gerçek
-//    açısına göre doğru yerde yapılır (parent küp kesişimindeki desenle aynı).
+//    açısına ve konumuna göre doğru yerde yapılır.
 function siblingCutterInPanelFrame(
   sib: any,
   panelSteps: RotateStep[],
@@ -103,6 +104,17 @@ function siblingCutterInPanelFrame(
 ): any | null {
   let cutter = sib?.replicadShape;
   if (!cutter) return null;
+
+  // Taşıma ofseti: replicadShape parent-yerel VF konumunda; sib.position
+  // parentPos + taşıma_ofseti içerir. Fark sıfırdan farklıysa cutter'ı kaydır.
+  const sibPos: [number, number, number] = sib.position || parentPos;
+  const dx = sibPos[0] - parentPos[0];
+  const dy = sibPos[1] - parentPos[1];
+  const dz = sibPos[2] - parentPos[2];
+  if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01 || Math.abs(dz) > 0.01) {
+    cutter = (typeof cutter.clone === 'function' ? cutter.clone() : cutter).translate(dx, dy, dz);
+  }
+
   const sibSteps: RotateStep[] = sib.parameters?.rotateSteps || [];
   if (sibSteps.length > 0) {
     cutter = forwardRotateReplicadByLocalSteps(cutter, sibSteps, parentPos);
