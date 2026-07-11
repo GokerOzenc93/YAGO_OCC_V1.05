@@ -1131,7 +1131,7 @@ function clipVirtualFaceAgainstSubtractionsAndPanels(
     subtractions, localToWorld, worldNormal, planeOrigin, u, v, 50
   );
   const panelFootprints = getPanelFootprints2D(
-    siblingPanels, worldNormal, planeOrigin, u, v, 2.0
+    siblingPanels, worldNormal, planeOrigin, u, v, 3.0
   );
   const allFootprints = [...subFootprints, ...panelFootprints];
 

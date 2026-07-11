@@ -969,7 +969,7 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
     u = dominant.clone();
     v = new THREE.Vector3().crossVectors(worldNormal, u).normalize();
   }
-  const panelEdges = collectPanelObstacleEdgesWorld(childPanels, worldNormal, planeOrigin, 1.5, boundaryEdges);
+  const panelEdges = collectPanelObstacleEdgesWorld(childPanels, worldNormal, planeOrigin, 3.0, boundaryEdges);
   const subEdges = collectSubtractionObstacleEdgesWorld(subtractions, localToWorld, worldNormal, planeOrigin, 20);
   const vfEdges = collectVirtualFaceObstacleEdgesWorld(shapeVirtualFaces, null, localToWorld, worldNormal, planeOrigin, 20);
   const obstacleEdges = [...panelEdges, ...subEdges, ...vfEdges];
