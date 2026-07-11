@@ -92,32 +92,43 @@ function forwardRotateReplicadByLocalSteps(
 }
 
 // Kardeş paneli, kesilecek panelin ÇERÇEVESİNE taşır:
-// 1) Kardeş taşınmışsa: taşıma ofsetini (sib.position - parentPos) uygula.
-// 2) Kardeş dönmüşse: kendi adımlarıyla İLERİ döndür → gerçek dünya konumu.
-// 3) Kesilecek panel dönmüşse: onun adımlarıyla TERS döndür → panelin yerel
+// 1) Kardeş dönmüşse: kendi adımlarıyla İLERİ döndür → gerçek dünya konumu.
+// 2) Kesilecek panel dönmüşse: onun adımlarıyla TERS döndür → panelin yerel
 //    (döndürülmemiş) çerçevesi. Böylece boolean kesim her iki panelin de gerçek
-//    açısına ve konumuna göre doğru yerde yapılır.
+//    açısına göre doğru yerde yapılır (parent küp kesişimindeki desenle aynı).
 function siblingCutterInPanelFrame(
   sib: any,
   panelSteps: RotateStep[],
-  parentPos: [number, number, number]
+  parentPos: [number, number, number],
+  panelPos?: [number, number, number]
 ): any | null {
   let cutter = sib?.replicadShape;
   if (!cutter) return null;
-
-  // Taşıma ofseti: replicadShape parent-yerel VF konumunda; sib.position
-  // parentPos + taşıma_ofseti içerir. Fark sıfırdan farklıysa cutter'ı kaydır.
-  const sibPos: [number, number, number] = sib.position || parentPos;
-  const dx = sibPos[0] - parentPos[0];
-  const dy = sibPos[1] - parentPos[1];
-  const dz = sibPos[2] - parentPos[2];
-  if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01 || Math.abs(dz) > 0.01) {
-    cutter = (typeof cutter.clone === 'function' ? cutter.clone() : cutter).translate(dx, dy, dz);
-  }
-
+  // Klon şart: aşağıdaki translate/rotate zinciri replicad'de orijinal OCC
+  // nesnesini kalıcı siler — kardeşin saklanan katısı bozulmamalı.
+  cutter = typeof cutter.clone === 'function' ? cutter.clone() : cutter;
   const sibSteps: RotateStep[] = sib.parameters?.rotateSteps || [];
   if (sibSteps.length > 0) {
     cutter = forwardRotateReplicadByLocalSteps(cutter, sibSteps, parentPos);
+  }
+  // TAŞIMA FARKINDALIĞI: dönüş adımları pozun DÖNÜŞ kaynaklı kısmını üretir;
+  // kalan fark saf ötelemedir (move adımları / elle taşıma). Kesici, kardeşin
+  // GERÇEK konumuna ötelenir ve panelin kendi ötelemesi düşülür — aksi halde
+  // taşınmış dominant kardeş, sonrakileri ESKİ yerinde "keser" ve yeni yerinde
+  // kısaltma hiç görünmezdi (kök neden buydu).
+  const poseFromRot = (steps: RotateStep[]): [number, number, number] => {
+    if (!steps.length) return parentPos;
+    const r = applyRotateSteps(parentPos, [0, 0, 0], steps);
+    return r.position;
+  };
+  const sibExp = poseFromRot(sibSteps);
+  const panExp = poseFromRot(panelSteps);
+  const pPos = panelPos ?? parentPos;
+  const dx = (sib.position[0] - sibExp[0]) - (pPos[0] - panExp[0]);
+  const dy = (sib.position[1] - sibExp[1]) - (pPos[1] - panExp[1]);
+  const dz = (sib.position[2] - sibExp[2]) - (pPos[2] - panExp[2]);
+  if (Math.abs(dx) + Math.abs(dy) + Math.abs(dz) > 1e-6) {
+    cutter = cutter.translate(dx, dy, dz);
   }
   if (panelSteps.length > 0) {
     cutter = inverseRotateReplicadByLocalSteps(cutter, panelSteps, parentPos);
@@ -419,6 +430,64 @@ async function cutRotatedPanelBySiblingHalfSpace(
   );
   if (!halfSpace) return null;
   return await performBooleanCut(rp, halfSpace);
+}
+
+// Düz (dönmemiş) dominant kardeşin, düz bir paneli KENDİ TEMAS DÜZLEMİNDE
+// yarım-uzayla kesmesi. KÖK NEDEN: kardeş katısı panelin TAM İÇİNE gömülüyse
+// (hiçbir dış sınıra değmiyorsa) OCC gövde-kesimi "iç boşluk" üretemeyip kesimi
+// SESSİZCE ATLAR — panel kısalmaz, iç içe geçme kalır. Yarım-uzay dolgusu
+// panelin bir dış sınırına kadar uzandığından bu asla olmaz: kesim her konumda
+// (kardeş üstte/altta/ortada) tek boolean'la temiz çalışır. Düzlem = kardeşin
+// bu panele bakan yüzü; panel o düzlemin kardeş tarafında kalan kısmı silinir.
+// Dönüş: kesilmiş rp | null (belirsiz: tek düzlemle ayrılamıyorsa → çağıran
+// gövde kesimine düşer).
+async function cutFlatPanelBySiblingHalfSpace(
+  rp: any,
+  panel: any,
+  sib: any,
+  vf: any,
+  parentMax: number
+): Promise<any | null> {
+  try {
+    const posP: [number, number, number] = [panel.position[0], panel.position[1], panel.position[2]];
+
+    const sibBox = worldAABBOfPanel(sib);
+    if (!sibBox) return null;
+    const sc = new THREE.Vector3(); sibBox.getCenter(sc);
+    const ss = new THREE.Vector3(); sibBox.getSize(ss);
+    const sd = [ss.x, ss.y, ss.z];
+    let ta = 0; for (let i = 1; i < 3; i++) if (sd[i] < sd[ta]) ta = i;
+    const nAxis = new THREE.Vector3(ta === 0 ? 1 : 0, ta === 1 ? 1 : 0, ta === 2 ? 1 : 0);
+
+    const pc = new THREE.Vector3();
+    for (const v of vf.vertices) pc.add(new THREE.Vector3(v[0] + posP[0], v[1] + posP[1], v[2] + posP[2]));
+    pc.divideScalar(vf.vertices.length);
+
+    const sign = pc.clone().sub(sc).dot(nAxis) >= 0 ? 1 : -1;
+    const away = nAxis.clone().multiplyScalar(-sign);
+    const faceOffset = (ta === 0 ? ss.x : ta === 1 ? ss.y : ss.z) / 2;
+    const p0 = sc.clone().addScaledVector(nAxis, sign * faceOffset);
+
+    const up = (Math.abs(away.y) > Math.abs(away.x) && Math.abs(away.y) > Math.abs(away.z))
+      ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+    const u = new THREE.Vector3().crossVectors(away, up).normalize();
+    const vv = new THREE.Vector3().crossVectors(away, u).normalize();
+    const L = 3 * parentMax;
+    const mk = (su: number, sv: number): [number, number, number] => {
+      const w = p0.clone().addScaledVector(u, su * L).addScaledVector(vv, sv * L);
+      return [w.x - posP[0], w.y - posP[1], w.z - posP[2]];
+    };
+    const verts: [number, number, number][] = [mk(-1, -1), mk(1, -1), mk(1, 1), mk(-1, 1)];
+    const { createPanelFromVirtualFace, performBooleanCut } = await import('./ReplicadService');
+    const halfSpace = await createPanelFromVirtualFace(
+      verts, [-away.x, -away.y, -away.z] as [number, number, number], 3 * parentMax, 0
+    );
+    if (!halfSpace) return null;
+    return await performBooleanCut(rp, halfSpace);
+  } catch (err) {
+    console.warn('[FlatHalfSpace] cut failed, falling back to body cut:', err);
+    return null;
+  }
 }
 
 // ─── PİVOT YENİDEN BAĞLAMA ───────────────────────────────────────────────
@@ -931,7 +1000,8 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
               if (res) {
                 rp = res;
               } else {
-                const cutter = siblingCutterInPanelFrame(sib, rotateSteps, parentPos);
+                const cutter = siblingCutterInPanelFrame(sib, rotateSteps, parentPos,
+                  [panel.position[0], panel.position[1], panel.position[2]]);
                 if (cutter) rp = await performBooleanCut(rp, cutter);
               }
             } catch (err) {
@@ -964,7 +1034,8 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
                 rp = res;
               } else {
                 // Belirsiz durum: frame-düzeltmeli gövde kesimi
-                const cutter = siblingCutterInPanelFrame(rsib, rotateSteps, parentPos);
+                const cutter = siblingCutterInPanelFrame(rsib, rotateSteps, parentPos,
+                  [panel.position[0], panel.position[1], panel.position[2]]);
                 if (cutter) rp = await performBooleanCut(rp, cutter);
               }
             } catch (err) {
@@ -1008,7 +1079,19 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
         // kardeşler yukarıda (frame-düzeltmeli) kesildi; dönmüş kardeşler de
         // GÖNYE bloğunda yarım-uzayla kesildi — burada yalnızca DÜZ kardeşler.
         if (!isRotated) {
-            const panelBox = worldAABBFromVF(vf, thickness, parentPos);
+            // BROAD-PHASE kutusu VF'den DEĞİL, gönye uzantısı dahil GERÇEK
+            // katıdan alınır: VF kutusu miter şeridini bilmediğinden uzatılmış
+            // uç komşuya girse bile kutular "sadece değiyor" görünüp kesim
+            // atlanıyordu (ölçülen 18x30 kalıcı iç içe geçmenin kök nedeni).
+            let panelBox: THREE.Box3 | null = null;
+            try {
+              const bb = rp?.boundingBox?.bounds;
+              if (bb) panelBox = new THREE.Box3(
+                new THREE.Vector3(bb[0][0] + panel.position[0], bb[0][1] + panel.position[1], bb[0][2] + panel.position[2]),
+                new THREE.Vector3(bb[1][0] + panel.position[0], bb[1][1] + panel.position[1], bb[1][2] + panel.position[2])
+              );
+            } catch { /* boundingBox erişilemezse VF kutusuna düş */ }
+            if (!panelBox) panelBox = worldAABBFromVF(vf, thickness, [panel.position[0], panel.position[1], panel.position[2]]);
             const siblingPanelShapes = workingShapes.filter(
               s => s.type === 'panel' &&
                 s.parameters?.parentShapeId === parentShapeId &&
@@ -1023,8 +1106,51 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
               const sibBox = worldAABBOfPanel(sib);
               if (panelBox && sibBox && !aabbsPenetrate(panelBox, sibBox)) continue;
               try {
-                const cutter = siblingCutterInPanelFrame(sib, rotateSteps, parentPos);
-                if (cutter) rp = await performBooleanCut(rp, cutter);
+                // ÖNCE YARIM-UZAY: kardeşin temas düzleminden kes. Kardeş
+                // panelin tam içine gömülü olsa bile (taşınmış dominant panel)
+                // dolgu bir dış sınıra uzandığından OCC kesimi atlamaz — düz
+                // gövde-kesiminin "iç boşluk" no-op'u böylece aşılır. Yarım-uzay
+                // yalnızca panel-kardeş çifti TEK DÜZLEMLE ayrılabildiğinde
+                // (dik/teğet konum) doğru sonucu verir; belirsizse (null) veya
+                // hacmi hiç azaltmazsa GÖVDE KESİMİNE düşülür (eş düzlemli /
+                // çakışan L-köşe gibi durumlar için).
+                let cutDone = false;
+                // YARIM-UZAY yalnızca DİK/YIĞILI çiftlerde geçerli: kardeşin
+                // temas düzlemi normali panelin düzlemi İÇİNDE olmalı (kardeş
+                // panele dik oturuyor). EŞ DÜZLEMLİ kardeşlerde (ikisi de aynı
+                // yüzün komşusu; kalınlık eksenleri paralel) yarım-uzay yanlış
+                // tarafı silip paneli yok eder → onlarda GÖVDE KESİMİ kullanılır.
+                const perpendicular = (() => {
+                  const sBox = worldAABBOfPanel(sib);
+                  if (!sBox || !vf?.normal) return false;
+                  const ss2 = new THREE.Vector3(); sBox.getSize(ss2);
+                  const sdA = [ss2.x, ss2.y, ss2.z];
+                  let sta = 0; for (let i = 1; i < 3; i++) if (sdA[i] < sdA[sta]) sta = i;
+                  const sibNormal = new THREE.Vector3(sta === 0 ? 1 : 0, sta === 1 ? 1 : 0, sta === 2 ? 1 : 0);
+                  const pn = new THREE.Vector3(vf.normal[0], vf.normal[1], vf.normal[2]).normalize();
+                  // Kardeş normali panel normaline ~DİK ise kardeş panele diktir
+                  // (temas düzlemi panelin içinde). |dot| küçük → dik/yığılı.
+                  return Math.abs(sibNormal.dot(pn)) < 0.35;
+                })();
+                const hs = perpendicular
+                  ? await cutFlatPanelBySiblingHalfSpace(rp, panel, sib, vf, parentMaxDim(parent))
+                  : null;
+                if (hs) {
+                  let shrank = true;
+                  try {
+                    const before = rp?.boundingBox?.bounds, after = hs?.boundingBox?.bounds;
+                    if (before && after) {
+                      const vol = (b: any) => (b[1][0]-b[0][0])*(b[1][1]-b[0][1])*(b[1][2]-b[0][2]);
+                      shrank = vol(after) < vol(before) - 1; // en az 1mm³ küçüldü
+                    }
+                  } catch { /* ölçülemezse kabul et */ }
+                  if (shrank) { rp = hs; cutDone = true; }
+                }
+                if (!cutDone) {
+                  const cutter = siblingCutterInPanelFrame(sib, rotateSteps, parentPos,
+                    [panel.position[0], panel.position[1], panel.position[2]]);
+                  if (cutter) rp = await performBooleanCut(rp, cutter);
+                }
               } catch (err) {
                 console.error('Failed to subtract sibling panel from straight sibling cut:', err);
               }
