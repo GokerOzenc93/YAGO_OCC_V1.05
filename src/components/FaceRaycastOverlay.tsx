@@ -272,6 +272,24 @@ export function collectPanelObstacleEdgesWorld(panelShapes: any[], facePlaneNorm
       const crossEdges = computePanelPlaneIntersectionEdges(panel, facePlaneNormal, facePlaneOrigin);
       panelEdges.push(...crossEdges);
     }
+    // Taşınmış/döndürülmüş paneller tolerans dışına çıkar ve kesişim de boş
+    // dönebilir. Bu durumda panelin tüm kenarlarını yüzey düzlemine ortografik
+    // olarak yansıt — panel kendi yüzeyinde hala engel olmalıdır.
+    if (panelEdges.length === 0 && panel.parameters?.transformSteps?.length > 0) {
+      const edgesGeo2 = new THREE.EdgesGeometry(panel.geometry);
+      const ep2 = edgesGeo2.getAttribute('position');
+      for (let i = 0; i < ep2.count; i += 2) {
+        const va = new THREE.Vector3(ep2.getX(i), ep2.getY(i), ep2.getZ(i)).applyMatrix4(panelMatrix);
+        const vb = new THREE.Vector3(ep2.getX(i + 1), ep2.getY(i + 1), ep2.getZ(i + 1)).applyMatrix4(panelMatrix);
+        // Orthographic projection onto face plane
+        const projA = va.clone().addScaledVector(facePlaneNormal, -facePlaneNormal.dot(new THREE.Vector3().subVectors(va, facePlaneOrigin)));
+        const projB = vb.clone().addScaledVector(facePlaneNormal, -facePlaneNormal.dot(new THREE.Vector3().subVectors(vb, facePlaneOrigin)));
+        if (projA.distanceTo(projB) > 0.1) {
+          panelEdges.push({ v1: projA, v2: projB });
+        }
+      }
+      edgesGeo2.dispose();
+    }
     if (panelEdges.length === 0) continue;
 
     // ── ALTA GÖMÜLÜ (KAPAĞI DÜZLEMDE) PANEL FİLTRESİ ─────────────────────
@@ -797,6 +815,14 @@ export function isWorldPointInsidePanelFootprint(
     const wp = new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)).applyMatrix4(panelMatrix);
     const dist = Math.abs(facePlaneNormal.dot(new THREE.Vector3().subVectors(wp, facePlaneOrigin)));
     if (dist < planeTolerance) pts2D.push(projectTo2D(wp, facePlaneOrigin, u, v));
+  }
+  // Taşınmış/döndürülmüş panel: tolerans dahilinde yeterli nokta yoksa TÜM
+  // noktaları düzleme ortografik yansıtarak iz hesapla.
+  if (pts2D.length < 3 && panel.parameters?.transformSteps?.length > 0) {
+    for (let i = 0; i < posAttr.count; i++) {
+      const wp = new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)).applyMatrix4(panelMatrix);
+      pts2D.push(projectTo2D(wp, facePlaneOrigin, u, v));
+    }
   }
   if (pts2D.length < 3) return false;
   const hull = convexHull2D(pts2D);

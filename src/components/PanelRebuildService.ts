@@ -931,6 +931,21 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
 
         const parentHasFillets = !!(parent.fillets && parent.fillets.length > 0 && parent.replicadShape);
 
+        // NET TAŞIMA OFSETİ: Panel taşındıysa, kırpma sınırlarını taşıma
+        // miktarı kadar geri kaydır. Yoksa applyTransformSteps pozisyona taşıma
+        // eklediğinde geometri parent hacmin dışına taşar.
+        const netMoveOffset: [number, number, number] = [0, 0, 0];
+        const tStepsForMove: TransformStep[] = panel.parameters?.transformSteps || [];
+        for (const ts of tStepsForMove) {
+          if (ts.type === 'move') {
+            const ax = ts.axis;
+            const sign = ax.endsWith('+') ? 1 : -1;
+            const dim = ax[0] as 'x' | 'y' | 'z';
+            const idx = dim === 'x' ? 0 : dim === 'y' ? 1 : 2;
+            netMoveOffset[idx] += sign * ts.value;
+          }
+        }
+
         if (willIntersectParent) {
           // Kesişim katısı: bayrak açıksa gerçek (subtractor'lı) parent;
           // değilse subtractor'suz referans hacim. Referans hacim kurulamazsa
@@ -941,9 +956,17 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           // Küpü panelin yerel (döndürülmemiş) çerçevesine taşı: paneli
           // döndürmek yerine küpü ters döndürüp kesişiriz → geometri düz kalır
           // (önizleme/ölçü stabil), kırpma açıya göre doğru olur.
-          const cube = rotateSteps.length > 0
+          let cube = rotateSteps.length > 0
             ? inverseRotateReplicadByLocalSteps(intersectSolid, rotateSteps, parentPos)
             : intersectSolid;
+          // Taşıma ofseti varsa kesişim katısını ters yöne kaydır: kırpma
+          // sınırları, panelin son konumuna göre doğru yerde kalır.
+          const hasMoveOffset = Math.abs(netMoveOffset[0]) > 0.001 ||
+            Math.abs(netMoveOffset[1]) > 0.001 || Math.abs(netMoveOffset[2]) > 0.001;
+          if (hasMoveOffset) {
+            cube = (typeof cube?.clone === 'function' ? cube.clone() : cube)
+              .translate([-netMoveOffset[0], -netMoveOffset[1], -netMoveOffset[2]]);
+          }
           console.info('[RotateRebuild] intersecting panel', panel.id, {
             steps: rotateSteps.length, planeExpand,
           });
