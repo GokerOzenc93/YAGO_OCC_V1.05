@@ -55,8 +55,9 @@ function inverseRotateReplicadByLocalSteps(
       step.pivot[1] - parentPos[1],
       step.pivot[2] - parentPos[2],
     ];
-    const axis: [number, number, number] =
-      step.axis === 'x' ? [1, 0, 0] : step.axis === 'y' ? [0, 1, 0] : [0, 0, 1];
+    const axis: [number, number, number] = (step as any).axisVec
+      ? (step as any).axisVec
+      : (step.axis === 'x' ? [1, 0, 0] : step.axis === 'y' ? [0, 1, 0] : [0, 0, 1]);
     r = r.rotate(-step.value, pivotLocal, axis);
   }
   return r;
@@ -84,8 +85,9 @@ function forwardRotateReplicadByLocalSteps(
       step.pivot[1] - parentPos[1],
       step.pivot[2] - parentPos[2],
     ];
-    const axis: [number, number, number] =
-      step.axis === 'x' ? [1, 0, 0] : step.axis === 'y' ? [0, 1, 0] : [0, 0, 1];
+    const axis: [number, number, number] = (step as any).axisVec
+      ? (step as any).axisVec
+      : (step.axis === 'x' ? [1, 0, 0] : step.axis === 'y' ? [0, 1, 0] : [0, 0, 1]);
     r = r.rotate(step.value, pivotLocal, axis);
   }
   return r;

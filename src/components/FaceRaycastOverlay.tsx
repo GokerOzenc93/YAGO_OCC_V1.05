@@ -299,11 +299,21 @@ export function collectPanelObstacleEdgesWorld(panelShapes: any[], facePlaneNorm
         if (signed < minSigned) minSigned = signed;
       }
       const thickness = Number(panel.parameters?.thickness) || 18;
-      // Kapak düzlemde (maxAbove ≈ 0) ve gövde içeriye iniyorsa (minSigned
-      // belirgin negatif) → alta gömülü duvar. Üste taşan paneller
-      // (maxAbove > eşik) muaf tutulmaz.
-      const risesAbove = maxAbove > planeTolerance + 0.5;
-      const bodyGoesInside = minSigned < -(thickness * 0.5 + planeTolerance);
+      // Kapak düzlemde (maxAbove ≈ 0) ve gövde DERİNE iniyorsa → alta gömülü
+      // duvar. KRİTİK EŞİK: aynı yüzdeki kardeş bir panelin gövde derinliği
+      // tam KENDİ KALINLIĞI kadardır (yüzeye yatan slab) — o bir engel olarak
+      // KALMALIDIR, yoksa baskın panel sonrakileri kısaltamaz (dominantlık
+      // hatasının kök nedeni buydu: 0.5×kalınlık eşiği kardeşleri de
+      // filtreliyordu). Bu yüzden yalnızca kalınlığının belirgin ötesine
+      // (>1.5×) inen gövdeler "duvar" sayılır.
+      // EŞİKLER TOLERANSTAN BAĞIMSIZ SABİT: yakalama (tol=1.5) ile rebuild
+      // yeniden türetmesi (tol=20) AYNI kararı vermek zorunda. Eşik toleransa
+      // bağlıyken, dönen panelin yüzeyden taşması 2-20.5mm penceresine düşen
+      // ÖLÇÜLERDE yakalama engeli görüyor (highlight doğru) ama rebuild
+      // filtreliyordu → bölge bantsız türetilip panel yanlış (üst) bölgeye
+      // kayıyordu; taşma ölçü/açıya bağlı olduğundan hata "bazen" oluşuyordu.
+      const risesAbove = maxAbove > 2.0;
+      const bodyGoesInside = minSigned < -(thickness * 1.5 + 2.0);
       if (!risesAbove && bodyGoesInside) continue;
     }
 

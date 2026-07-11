@@ -16,6 +16,12 @@ export function vfPlaneBasis(normal: [number, number, number]): {
 export interface RotateStep {
   id: string;
   axis: 'x' | 'y' | 'z';
+  // PANEL-YEREL EKSEN: kullanıcının seçtiği dünya ekseni (axis), panelin kendi
+  // düzlemine göre yorumlanıp buraya VEKTÖR olarak yazılır. Böylece yan/ön/üst
+  // fark etmeksizin dönüş paneli "yerinde eğer", dünya ekseni yön savurmaz.
+  // Varsa applyRotateSteps + rebuild bunu kullanır; yoksa (eski adımlar) letter
+  // 'axis' dünya ekseni olarak kullanılır (geriye tam uyumlu).
+  axisVec?: [number, number, number];
   value: number;
   pivot: [number, number, number];
   // Pivotun, adım oluşturma ANINDAKİ parent kutusuna oransal konumu (0..1).
@@ -52,11 +58,13 @@ export function applyRotateSteps(
   for (const step of steps) {
     const pivot = new THREE.Vector3(...step.pivot);
     const angleRad = (step.value * Math.PI) / 180;
-    const axisVec = new THREE.Vector3(
-      step.axis === 'x' ? 1 : 0,
-      step.axis === 'y' ? 1 : 0,
-      step.axis === 'z' ? 1 : 0
-    );
+    const axisVec = step.axisVec
+      ? new THREE.Vector3(...step.axisVec).normalize()
+      : new THREE.Vector3(
+          step.axis === 'x' ? 1 : 0,
+          step.axis === 'y' ? 1 : 0,
+          step.axis === 'z' ? 1 : 0
+        );
 
     const stepQuat = new THREE.Quaternion().setFromAxisAngle(axisVec, angleRad);
     quat.premultiply(stepQuat);
@@ -81,6 +89,28 @@ export async function executePanelRotate(params: PanelRotateParams): Promise<boo
   // SİGORTA: UI'dan gelen referans bayat olabilir — store'daki güncel hali baz al.
   const { useAppStore } = await import('../store');
   const fresh = useAppStore.getState().shapes.find(s => s.id === panelShape.id) || panelShape;
+
+  // ── PANEL-YEREL EKSEN EŞLEME ─────────────────────────────────────────────
+  // Kullanıcının seçtiği DÜNYA ekseni (x/y/z), panelin sanal yüzey düzlemine
+  // göre yorumlanır: düzlemdeki (u/v) eksenlerden dünya eksenine EN YAKIN olanı
+  // seçilir → dönüş paneli her yüzde "yerinde eğer". Dünya ekseni panelin
+  // NORMALİNE en yakınsa (paneli kendi düzleminde döndürme niyeti) normal
+  // kullanılır. Böylece üst/ön yüzde davranış değişmez (orada u/v zaten dünya
+  // eksenleriyle çakışır), yalnızca yan yüzlerde savrulma düzelir.
+  let axisVec: [number, number, number] | undefined;
+  const vfForAxis = useAppStore.getState().virtualFaces?.find(
+    (f: any) => f.id === fresh.parameters?.virtualFaceId
+  );
+  if (vfForAxis?.normal) {
+    const { n, u, v } = vfPlaneBasis(vfForAxis.normal);
+    const wa = new THREE.Vector3(axis === 'x' ? 1 : 0, axis === 'y' ? 1 : 0, axis === 'z' ? 1 : 0);
+    const du = Math.abs(wa.dot(u)), dv = Math.abs(wa.dot(v)), dn = Math.abs(wa.dot(n));
+    const chosen = (dn >= du && dn >= dv) ? n : (du >= dv ? u : v);
+    // İşaret çevirme YOK: seçilen yerel eksen ham haliyle kullanılır. İşaret
+    // çevirmek dönüşü ters yöne (paneli hacimden DIŞARI savuran yöne) çeviriyor;
+    // ham yerel eksen dönüşü hacmin İÇİNE eğerek paneli tam boy korur.
+    axisVec = [chosen.x, chosen.y, chosen.z];
+  }
 
   // Pivotu parent kutusuna ORANSAL bağla: parent boyutlanınca pivot da yüzle
   // birlikte taşınır (köşe pivotu köşede kalır). Geometri okunamazsa mutlak
@@ -145,7 +175,7 @@ export async function executePanelRotate(params: PanelRotateParams): Promise<boo
   const { executeTransformStep } = await import('./PanelTransformService');
   return executeTransformStep(
     fresh,
-    { type: 'rotate', axis, value, pivot, pivotFrac, pivotVfFrac },
+    { type: 'rotate', axis, axisVec, value, pivot, pivotFrac, pivotVfFrac },
     shapes,
     updateShape
   );

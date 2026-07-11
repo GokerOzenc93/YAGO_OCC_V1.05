@@ -13,6 +13,8 @@ export interface RotateTransformStep {
   id: string;
   type: 'rotate';
   axis: 'x' | 'y' | 'z';
+  // Panel-yerel dönüş ekseni (vektör). Bkz. PanelRotateService.RotateStep.
+  axisVec?: [number, number, number];
   value: number;
   pivot: [number, number, number];
   // Pivot çıpaları PanelRotateService'te hesaplanır ve adımla birlikte taşınır;
@@ -51,11 +53,13 @@ export function applyTransformSteps(
     } else {
       const pivot = new THREE.Vector3(...step.pivot);
       const angleRad = (step.value * Math.PI) / 180;
-      const axisVec = new THREE.Vector3(
-        step.axis === 'x' ? 1 : 0,
-        step.axis === 'y' ? 1 : 0,
-        step.axis === 'z' ? 1 : 0
-      );
+      const axisVec = (step as any).axisVec
+        ? new THREE.Vector3(...(step as any).axisVec).normalize()
+        : new THREE.Vector3(
+            step.axis === 'x' ? 1 : 0,
+            step.axis === 'y' ? 1 : 0,
+            step.axis === 'z' ? 1 : 0
+          );
       const stepQuat = new THREE.Quaternion().setFromAxisAngle(axisVec, angleRad);
       quat.premultiply(stepQuat);
       const offset = pos.clone().sub(pivot);
