@@ -178,68 +178,6 @@ export function clipPolygonByLine2D(poly: Point2D[], a: Point2D, b: Point2D): Po
   return out;
 }
 
-function computePanelPlaneIntersectionEdges(panel: any, facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3): Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> {
-  const panelMatrix = getShapeMatrix(panel);
-  const posAttr = panel.geometry.getAttribute('position');
-  const indexAttr = panel.geometry.getIndex();
-  if (!posAttr) return [];
-
-  const planeD = facePlaneNormal.dot(facePlaneOrigin);
-  const intersectionPoints: THREE.Vector3[] = [];
-
-  const triCount = indexAttr ? indexAttr.count / 3 : posAttr.count / 3;
-  for (let t = 0; t < triCount; t++) {
-    const idx = indexAttr
-      ? [indexAttr.getX(t * 3), indexAttr.getX(t * 3 + 1), indexAttr.getX(t * 3 + 2)]
-      : [t * 3, t * 3 + 1, t * 3 + 2];
-    const verts = idx.map(i =>
-      new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)).applyMatrix4(panelMatrix)
-    );
-    const dists = verts.map(v => facePlaneNormal.dot(v) - planeD);
-
-    for (let e = 0; e < 3; e++) {
-      const eNext = (e + 1) % 3;
-      const dA = dists[e], dB = dists[eNext];
-      if ((dA > 0 && dB < 0) || (dA < 0 && dB > 0)) {
-        const tParam = dA / (dA - dB);
-        intersectionPoints.push(
-          new THREE.Vector3().lerpVectors(verts[e], verts[eNext], tParam)
-        );
-      } else if (Math.abs(dA) < 0.01) {
-        intersectionPoints.push(verts[e].clone());
-      }
-    }
-  }
-
-  if (intersectionPoints.length < 2) return [];
-
-  const { u, v } = getFacePlaneAxes(facePlaneNormal);
-  const pts2DWithWorld = intersectionPoints.map(p => ({
-    world: p,
-    x: p.dot(u),
-    y: p.dot(v)
-  }));
-
-  const hull2D = convexHull2D(pts2DWithWorld.map(p => ({ x: p.x, y: p.y })));
-  if (hull2D.length < 2) return [];
-
-  const hullWorld = hull2D.map(h => {
-    let bestDist = Infinity;
-    let bestPt = intersectionPoints[0];
-    for (const pw of pts2DWithWorld) {
-      const d = (pw.x - h.x) ** 2 + (pw.y - h.y) ** 2;
-      if (d < bestDist) { bestDist = d; bestPt = pw.world; }
-    }
-    return bestPt;
-  });
-
-  const edges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> = [];
-  for (let i = 0; i < hullWorld.length; i++) {
-    edges.push({ v1: hullWorld[i], v2: hullWorld[(i + 1) % hullWorld.length] });
-  }
-  return edges;
-}
-
 function pointToSegmentDistance3D(p: THREE.Vector3, a: THREE.Vector3, b: THREE.Vector3): number {
   const ab = new THREE.Vector3().subVectors(b, a);
   const ap = new THREE.Vector3().subVectors(p, a);
@@ -249,109 +187,76 @@ function pointToSegmentDistance3D(p: THREE.Vector3, a: THREE.Vector3, b: THREE.V
   return new THREE.Vector3().copy(a).addScaledVector(ab, t).distanceTo(p);
 }
 
-export function collectPanelObstacleEdgesWorld(panelShapes: any[], facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, planeTolerance: number = 1.5, boundaryEdges?: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>): Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> {
+export function collectPanelObstacleEdgesWorld(panelShapes: any[], facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, planeTolerance: number = 3.0, boundaryEdges?: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>): Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> {
   const obstacleEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> = [];
   for (const panel of panelShapes) {
     if (!panel.geometry) continue;
     const panelMatrix = getShapeMatrix(panel);
-    const edgesGeo = new THREE.EdgesGeometry(panel.geometry);
-    const edgePos = edgesGeo.getAttribute('position');
+    const posAttr = panel.geometry.getAttribute('position') as THREE.BufferAttribute;
+    if (!posAttr) continue;
+
+    // Compute signed distances of ALL panel vertices to the face plane.
+    // This determines whether the panel is: flush on face, buried below, or
+    // crossing the face (divider wall).
+    let maxAbove = -Infinity;
+    let minSigned = Infinity;
+    const worldVerts: THREE.Vector3[] = [];
+    const signedDists: number[] = [];
+    const tmp = new THREE.Vector3();
+    for (let vi = 0; vi < posAttr.count; vi++) {
+      tmp.set(posAttr.getX(vi), posAttr.getY(vi), posAttr.getZ(vi)).applyMatrix4(panelMatrix);
+      worldVerts.push(tmp.clone());
+      const signed = facePlaneNormal.dot(new THREE.Vector3().subVectors(tmp, facePlaneOrigin));
+      signedDists.push(signed);
+      if (signed > maxAbove) maxAbove = signed;
+      if (signed < minSigned) minSigned = signed;
+    }
+
+    // ALTA GOMULU filtresi: panelin govdesi tamamen yuzey altindaysa engel
+    // degil (dik duvar kapaklari). Kalinliginin 1.5 katindan daha derine inen
+    // ve yuzeyin ustune cikmayanlar "duvar" sayilir.
+    const thickness = Number(panel.parameters?.thickness) || 18;
+    const risesAbove = maxAbove > 2.0;
+    const bodyGoesInside = minSigned < -(thickness * 1.5 + 2.0);
+    if (!risesAbove && bodyGoesInside) continue;
+
+    // Collect on-plane vertices: vertices within tolerance of face plane.
+    // For panels that are flush on the face (normal case), this captures the
+    // front face outline. For moved/rotated panels or panels where no vertices
+    // are on-plane, project ALL vertices orthographically onto the face plane.
+    const { u, v } = getFacePlaneAxes(facePlaneNormal);
+    let pts2D: Array<{ x: number; y: number }> = [];
+    for (let vi = 0; vi < worldVerts.length; vi++) {
+      if (Math.abs(signedDists[vi]) < planeTolerance) {
+        pts2D.push(projectTo2D(worldVerts[vi], facePlaneOrigin, u, v));
+      }
+    }
+    // Fallback: if not enough vertices on-plane, project all vertices
+    if (pts2D.length < 3) {
+      pts2D = [];
+      for (let vi = 0; vi < worldVerts.length; vi++) {
+        pts2D.push(projectTo2D(worldVerts[vi], facePlaneOrigin, u, v));
+      }
+    }
+    if (pts2D.length < 3) continue;
+
+    // Compute convex hull of projected vertices = panel's footprint on face
+    const hull = convexHull2D(pts2D);
+    if (hull.length < 3) continue;
+
+    // Convert hull edges back to 3D world positions on the face plane
     const panelEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> = [];
-    for (let i = 0; i < edgePos.count; i += 2) {
-      const va = new THREE.Vector3(edgePos.getX(i), edgePos.getY(i), edgePos.getZ(i)).applyMatrix4(panelMatrix);
-      const vb = new THREE.Vector3(edgePos.getX(i + 1), edgePos.getY(i + 1), edgePos.getZ(i + 1)).applyMatrix4(panelMatrix);
-      const distA = Math.abs(facePlaneNormal.dot(new THREE.Vector3().subVectors(va, facePlaneOrigin)));
-      const distB = Math.abs(facePlaneNormal.dot(new THREE.Vector3().subVectors(vb, facePlaneOrigin)));
-      if (distA < planeTolerance && distB < planeTolerance) {
-        panelEdges.push({ v1: va, v2: vb });
-      }
-    }
-    edgesGeo.dispose();
-
-    if (panelEdges.length === 0) {
-      const crossEdges = computePanelPlaneIntersectionEdges(panel, facePlaneNormal, facePlaneOrigin);
-      panelEdges.push(...crossEdges);
-    }
-    // Taşınmış/döndürülmüş paneller tolerans dışına çıkar ve kesişim de boş
-    // dönebilir. Bu durumda panelin tüm kenarlarını yüzey düzlemine ortografik
-    // olarak yansıt — panel kendi yüzeyinde hala engel olmalıdır.
-    if (panelEdges.length === 0 && panel.parameters?.transformSteps?.length > 0) {
-      const edgesGeo2 = new THREE.EdgesGeometry(panel.geometry);
-      const ep2 = edgesGeo2.getAttribute('position');
-      for (let i = 0; i < ep2.count; i += 2) {
-        const va = new THREE.Vector3(ep2.getX(i), ep2.getY(i), ep2.getZ(i)).applyMatrix4(panelMatrix);
-        const vb = new THREE.Vector3(ep2.getX(i + 1), ep2.getY(i + 1), ep2.getZ(i + 1)).applyMatrix4(panelMatrix);
-        // Orthographic projection onto face plane
-        const projA = va.clone().addScaledVector(facePlaneNormal, -facePlaneNormal.dot(new THREE.Vector3().subVectors(va, facePlaneOrigin)));
-        const projB = vb.clone().addScaledVector(facePlaneNormal, -facePlaneNormal.dot(new THREE.Vector3().subVectors(vb, facePlaneOrigin)));
-        if (projA.distanceTo(projB) > 0.1) {
-          panelEdges.push({ v1: projA, v2: projB });
-        }
-      }
-      edgesGeo2.dispose();
-    }
-    if (panelEdges.length === 0) continue;
-
-    // ── ALTA GÖMÜLÜ (KAPAĞI DÜZLEMDE) PANEL FİLTRESİ ─────────────────────
-    // Bir dik duvar panelin ÜST KAPAĞI bu yüzeyle çakışık olabilir (duvar,
-    // yüzeye kadar yükselip durur). Bu kapak bir "engel" sayılırsa, yüzeye
-    // SONRADAN atılan üst panel duvarın kapağını delik gibi görüp bölgesini
-    // o dörtgenin etrafına büzer — panel sıra değişince yerinden oynamasının
-    // (L küpte üst panel kayması) kök nedeni budur. Oysa üst panel duvarın
-    // ÜSTÜNÜ ÖRTER; duvar onu engellememelidir.
-    // Ayrım: panelin GÖVDESİ tümüyle yüzeyin İÇ tarafındaysa (yüzey
-    // normalinin TERS yönünde; yani parçanın içine doğru iniyorsa) ve
-    // normalin POZİTİF yönünde yüzeyi aşmıyorsa, bu alta gömülü bir duvardır
-    // → engel değildir. Gövdesi yüzeyin üstüne çıkan gerçek bölmeler engel
-    // olarak kalır (aşağıdaki sınır filtresi + görünürlük taraması işler).
-    {
-      const pm = getShapeMatrix(panel);
-      const posAttr = panel.geometry.getAttribute('position') as THREE.BufferAttribute;
-      let maxAbove = -Infinity;   // normal + yönünde en fazla ne kadar aşıyor
-      let minSigned = Infinity;   // en negatif (iç) taraf
-      const tmp = new THREE.Vector3();
-      for (let vi = 0; vi < posAttr.count; vi++) {
-        tmp.set(posAttr.getX(vi), posAttr.getY(vi), posAttr.getZ(vi)).applyMatrix4(pm);
-        const signed = facePlaneNormal.dot(new THREE.Vector3().subVectors(tmp, facePlaneOrigin));
-        if (signed > maxAbove) maxAbove = signed;
-        if (signed < minSigned) minSigned = signed;
-      }
-      const thickness = Number(panel.parameters?.thickness) || 18;
-      // Kapak düzlemde (maxAbove ≈ 0) ve gövde DERİNE iniyorsa → alta gömülü
-      // duvar. KRİTİK EŞİK: aynı yüzdeki kardeş bir panelin gövde derinliği
-      // tam KENDİ KALINLIĞI kadardır (yüzeye yatan slab) — o bir engel olarak
-      // KALMALIDIR, yoksa baskın panel sonrakileri kısaltamaz (dominantlık
-      // hatasının kök nedeni buydu: 0.5×kalınlık eşiği kardeşleri de
-      // filtreliyordu). Bu yüzden yalnızca kalınlığının belirgin ötesine
-      // (>1.5×) inen gövdeler "duvar" sayılır.
-      // EŞİKLER TOLERANSTAN BAĞIMSIZ SABİT: yakalama (tol=1.5) ile rebuild
-      // yeniden türetmesi (tol=20) AYNI kararı vermek zorunda. Eşik toleransa
-      // bağlıyken, dönen panelin yüzeyden taşması 2-20.5mm penceresine düşen
-      // ÖLÇÜLERDE yakalama engeli görüyor (highlight doğru) ama rebuild
-      // filtreliyordu → bölge bantsız türetilip panel yanlış (üst) bölgeye
-      // kayıyordu; taşma ölçü/açıya bağlı olduğundan hata "bazen" oluşuyordu.
-      const risesAbove = maxAbove > 2.0;
-      const bodyGoesInside = minSigned < -(thickness * 1.5 + 2.0);
-      if (!risesAbove && bodyGoesInside) continue;
+    for (let i = 0; i < hull.length; i++) {
+      const a = hull[i], b = hull[(i + 1) % hull.length];
+      const v1 = facePlaneOrigin.clone().addScaledVector(u, a.x).addScaledVector(v, a.y);
+      const v2 = facePlaneOrigin.clone().addScaledVector(u, b.x).addScaledVector(v, b.y);
+      panelEdges.push({ v1, v2 });
     }
 
-    // ── SINIRA YAPIŞIK KOMŞU FİLTRESİ ─────────────────────────────────────
-    // Komşu yüzdeki bir panelin (örn. eğik üst yüz paneli) bu düzlemle
-    // kesişim izi, yüz SINIRINA yapışık ~kalınlık genişliğinde bir şerittir.
-    // Bu şerit engel sayılırsa bölge sınıra değil şeridin iç kenarına kadar
-    // gider ve panelde kalınlık (18mm) kadar girinti/köşe basamağı oluşur.
-    // Kural: panelin izindeki TÜM uç noktalar yüz sınır halkasına
-    // (kalınlık×1.5 + tolerans) mesafesindeyse bu bir kenar-komşusudur —
-    // engel OLMAZ; birleşim gövde/gönye kesimlerinin işidir. İzi yüzün
-    // İÇİNDEN geçen paneller (orta bölme, eğik duvar) engel olarak kalır.
+    // SINIRA YAPISIK KOMSU filtresi: panelin tum kenarlari yuz sinirina
+    // yapisiksa (ornegin komsu yuzdeki duvar) engel sayilmaz.
     if (boundaryEdges && boundaryEdges.length > 0) {
-      const thickness = Number(panel.parameters?.thickness) || 18;
       const hugMargin = thickness * 1.5 + planeTolerance + 2;
-      // ÖNEMLİ: yalnızca uç noktalara bakmak yetmez — yüzü boydan boya kesen
-      // eğimli bir panelin izinin uçları tam sınır kenarları üzerinde biter ve
-      // panel yanlışlıkla "kenar komşusu" sanılıp engellikten çıkardı (bölge
-      // tüm yüze açılırdı). Bu yüzden her iz kenarı BOYUNCA örnekleme yapılır:
-      // izin HERHANGİ bir noktası sınırdan uzaksa panel iç engeldir ve kalır.
       const distToBoundary = (pt: THREE.Vector3): number => {
         let minD = Infinity;
         for (const be of boundaryEdges) {
@@ -816,9 +721,9 @@ export function isWorldPointInsidePanelFootprint(
     const dist = Math.abs(facePlaneNormal.dot(new THREE.Vector3().subVectors(wp, facePlaneOrigin)));
     if (dist < planeTolerance) pts2D.push(projectTo2D(wp, facePlaneOrigin, u, v));
   }
-  // Taşınmış/döndürülmüş panel: tolerans dahilinde yeterli nokta yoksa TÜM
-  // noktaları düzleme ortografik yansıtarak iz hesapla.
-  if (pts2D.length < 3 && panel.parameters?.transformSteps?.length > 0) {
+  // Fallback: project ALL vertices when on-plane count is too low
+  if (pts2D.length < 3) {
+    pts2D.length = 0;
     for (let i = 0; i < posAttr.count; i++) {
       const wp = new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)).applyMatrix4(panelMatrix);
       pts2D.push(projectTo2D(wp, facePlaneOrigin, u, v));

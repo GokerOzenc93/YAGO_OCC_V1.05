@@ -1086,9 +1086,9 @@ function getPanelFootprints2D(
         onPlane.push(projectTo2D(wp, facePlaneOrigin, u, v));
       }
     }
-    // Taşınmış/döndürülmüş panel: tolerans dahilinde yeterli nokta yoksa tüm
-    // noktaları düzleme ortografik yansıtarak iz hesapla.
-    if (onPlane.length < 3 && panel.parameters?.transformSteps?.length > 0) {
+    // Fallback: project ALL vertices when on-plane count is too low
+    if (onPlane.length < 3) {
+      onPlane.length = 0;
       for (let i = 0; i < posAttr.count; i++) {
         const wp = new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)).applyMatrix4(m);
         onPlane.push(projectTo2D(wp, facePlaneOrigin, u, v));
