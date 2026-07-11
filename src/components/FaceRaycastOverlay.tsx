@@ -195,49 +195,55 @@ export function collectPanelObstacleEdgesWorld(panelShapes: any[], facePlaneNorm
     const posAttr = panel.geometry.getAttribute('position') as THREE.BufferAttribute;
     if (!posAttr) continue;
 
-    // Compute signed distances of ALL panel vertices to the face plane.
-    // This determines whether the panel is: flush on face, buried below, or
-    // crossing the face (divider wall).
-    let maxAbove = -Infinity;
-    let minSigned = Infinity;
-    const worldVerts: THREE.Vector3[] = [];
-    const signedDists: number[] = [];
+    const { u, v } = getFacePlaneAxes(facePlaneNormal);
+
+    // Collect on-plane vertices + project all for fallback
+    const onPlanePts: Array<{ x: number; y: number }> = [];
+    const allPts: Array<{ x: number; y: number }> = [];
     const tmp = new THREE.Vector3();
+    let minSigned = Infinity, maxSigned = -Infinity;
     for (let vi = 0; vi < posAttr.count; vi++) {
       tmp.set(posAttr.getX(vi), posAttr.getY(vi), posAttr.getZ(vi)).applyMatrix4(panelMatrix);
-      worldVerts.push(tmp.clone());
       const signed = facePlaneNormal.dot(new THREE.Vector3().subVectors(tmp, facePlaneOrigin));
-      signedDists.push(signed);
-      if (signed > maxAbove) maxAbove = signed;
-      if (signed < minSigned) minSigned = signed;
-    }
-
-    // ALTA GOMULU filtresi: panelin govdesi tamamen yuzey altindaysa engel
-    // degil (dik duvar kapaklari). Kalinliginin 1.5 katindan daha derine inen
-    // ve yuzeyin ustune cikmayanlar "duvar" sayilir.
-    const thickness = Number(panel.parameters?.thickness) || 18;
-    const risesAbove = maxAbove > 2.0;
-    const bodyGoesInside = minSigned < -(thickness * 1.5 + 2.0);
-    if (!risesAbove && bodyGoesInside) continue;
-
-    // Collect on-plane vertices: vertices within tolerance of face plane.
-    // For panels that are flush on the face (normal case), this captures the
-    // front face outline. For moved/rotated panels or panels where no vertices
-    // are on-plane, project ALL vertices orthographically onto the face plane.
-    const { u, v } = getFacePlaneAxes(facePlaneNormal);
-    let pts2D: Array<{ x: number; y: number }> = [];
-    for (let vi = 0; vi < worldVerts.length; vi++) {
-      if (Math.abs(signedDists[vi]) < planeTolerance) {
-        pts2D.push(projectTo2D(worldVerts[vi], facePlaneOrigin, u, v));
+      minSigned = Math.min(minSigned, signed);
+      maxSigned = Math.max(maxSigned, signed);
+      const p2d = projectTo2D(tmp, facePlaneOrigin, u, v);
+      allPts.push(p2d);
+      if (Math.abs(signed) < planeTolerance) {
+        onPlanePts.push(p2d);
       }
     }
-    // Fallback: if not enough vertices on-plane, project all vertices
-    if (pts2D.length < 3) {
-      pts2D = [];
-      for (let vi = 0; vi < worldVerts.length; vi++) {
-        pts2D.push(projectTo2D(worldVerts[vi], facePlaneOrigin, u, v));
+
+    // Panel crosses the face plane if it has vertices on BOTH sides (or touches
+    // from one side). Use intersection logic for true cross-plane panels:
+    // project ALL vertices when the panel straddles the plane.
+    const crossesPlane = minSigned < -planeTolerance && maxSigned > planeTolerance;
+    const touchesPlane = onPlanePts.length >= 3;
+
+    // For cross-plane panels: compute intersection contour by projecting only
+    // the vertices near the plane (within an expanded tolerance that captures
+    // the slice cross-section). For touching panels: use on-plane points.
+    let pts2D: Array<{ x: number; y: number }>;
+    if (crossesPlane) {
+      // Panel genuinely crosses through the face — use a wider tolerance to
+      // capture the cross-section, or fallback to all points
+      const crossTol = Math.min(Math.abs(maxSigned - minSigned) * 0.5, 50);
+      const crossPts: Array<{ x: number; y: number }> = [];
+      for (let vi = 0; vi < posAttr.count; vi++) {
+        tmp.set(posAttr.getX(vi), posAttr.getY(vi), posAttr.getZ(vi)).applyMatrix4(panelMatrix);
+        const signed = facePlaneNormal.dot(new THREE.Vector3().subVectors(tmp, facePlaneOrigin));
+        if (Math.abs(signed) < crossTol) {
+          crossPts.push(projectTo2D(tmp, facePlaneOrigin, u, v));
+        }
       }
+      pts2D = crossPts.length >= 3 ? crossPts : allPts;
+    } else if (touchesPlane) {
+      pts2D = onPlanePts;
+    } else {
+      // Panel is entirely on one side and doesn't touch — skip it
+      continue;
     }
+    console.log('[OBSTACLE] panel:', panel.id, 'signed:', minSigned.toFixed(1), '→', maxSigned.toFixed(1), 'crosses:', crossesPlane, 'touches:', touchesPlane, 'pts:', pts2D.length);
     if (pts2D.length < 3) continue;
 
     // Compute convex hull of projected vertices = panel's footprint on face
@@ -245,42 +251,12 @@ export function collectPanelObstacleEdgesWorld(panelShapes: any[], facePlaneNorm
     if (hull.length < 3) continue;
 
     // Convert hull edges back to 3D world positions on the face plane
-    const panelEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> = [];
     for (let i = 0; i < hull.length; i++) {
       const a = hull[i], b = hull[(i + 1) % hull.length];
       const v1 = facePlaneOrigin.clone().addScaledVector(u, a.x).addScaledVector(v, a.y);
       const v2 = facePlaneOrigin.clone().addScaledVector(u, b.x).addScaledVector(v, b.y);
-      panelEdges.push({ v1, v2 });
+      obstacleEdges.push({ v1, v2 });
     }
-
-    // SINIRA YAPISIK KOMSU filtresi: panelin tum kenarlari yuz sinirina
-    // yapisiksa (ornegin komsu yuzdeki duvar) engel sayilmaz.
-    if (boundaryEdges && boundaryEdges.length > 0) {
-      const hugMargin = thickness * 1.5 + planeTolerance + 2;
-      const distToBoundary = (pt: THREE.Vector3): number => {
-        let minD = Infinity;
-        for (const be of boundaryEdges) {
-          const d = pointToSegmentDistance3D(pt, be.v1, be.v2);
-          if (d < minD) minD = d;
-          if (minD <= hugMargin) break;
-        }
-        return minD;
-      };
-      let allHugBoundary = true;
-      for (const e of panelEdges) {
-        const len = e.v1.distanceTo(e.v2);
-        const samples = Math.max(2, Math.ceil(len / Math.max(hugMargin * 0.5, 5)) + 1);
-        for (let si = 0; si < samples; si++) {
-          const t = samples === 1 ? 0 : si / (samples - 1);
-          const pt = new THREE.Vector3().lerpVectors(e.v1, e.v2, t);
-          if (distToBoundary(pt) > hugMargin) { allHugBoundary = false; break; }
-        }
-        if (!allHugBoundary) break;
-      }
-      if (allHugBoundary) continue;
-    }
-
-    obstacleEdges.push(...panelEdges);
   }
   return obstacleEdges;
 }
@@ -874,10 +850,11 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
     u = dominant.clone();
     v = new THREE.Vector3().crossVectors(worldNormal, u).normalize();
   }
-  const panelEdges = collectPanelObstacleEdgesWorld(childPanels, worldNormal, planeOrigin, 3.0, boundaryEdges);
+  const panelEdges = collectPanelObstacleEdgesWorld(childPanels, worldNormal, planeOrigin, 20, boundaryEdges);
   const subEdges = collectSubtractionObstacleEdgesWorld(subtractions, localToWorld, worldNormal, planeOrigin, 20);
   const vfEdges = collectVirtualFaceObstacleEdgesWorld(shapeVirtualFaces, null, localToWorld, worldNormal, planeOrigin, 20);
   const obstacleEdges = [...panelEdges, ...subEdges, ...vfEdges];
+  console.log('[RAYCAST DEBUG] childPanels:', childPanels.length, 'panelEdges:', panelEdges.length, 'subEdges:', subEdges.length, 'vfEdges:', vfEdges.length, 'total obstacles:', obstacleEdges.length);
   const maxDist = 5000;
   const offset = worldNormal.clone().multiplyScalar(0.5);
   const startWorld = clickWorld.clone().add(offset);
@@ -917,6 +894,7 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
     const b = projectTo2D(e.v2, planeOrigin, u, v);
     return { ax: a.x, ay: a.y, bx: b.x, by: b.y };
   });
+  console.log('[RAYCAST DEBUG] segs2D count:', segs2D.length, 'boundaryEdges:', boundaryEdges.length, 'obstacleEdges:', obstacleEdges.length);
   const vis = computeVisibilityPolygon2D(segs2D, maxDist);
   let visPoly = vis.poly;
   // STABİLİZASYON: görünürlük çokgeni, iç bükey yüzeylerde (L/U) reflex köşe
@@ -934,6 +912,7 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
     visPoly = simplifyCollinear2D(visPoly, 0.05);
   }
   const visValid = visPoly.length >= 3 && !visPoly.some(p => Math.hypot(p.x, p.y) >= maxDist - 1);
+  console.log('[RAYCAST DEBUG] visValid:', visValid, 'visPoly.length:', visPoly.length, 'maxPt:', visPoly.length > 0 ? Math.max(...visPoly.map(p => Math.hypot(p.x, p.y))).toFixed(1) : 'N/A');
   let rect2D: Point2D[] = visValid
     ? ensureCCW(visPoly)
     : ensureCCW([{ x: uPosT, y: vPosT }, { x: -uNegT, y: vPosT }, { x: -uNegT, y: -vNegT }, { x: uPosT, y: -vNegT }]);
