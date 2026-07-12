@@ -817,7 +817,14 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
       // bölge seçimi kaybolmamalıdır. (Önceki sürümde buradan dışlanmaları,
       // yüzeyin karşı bölgeye kaymasına yol açıyordu.) Gönye için gereken uzama,
       // aşağıda dönen panele DOĞRU yönlü bir şeritle sağlanır.
-      const freshFaces = recalculateVirtualFacesForShape(parent, filteredForRecalc, workingShapes);
+      // YETKİ: Bu iterasyonda bağlam yalnızca SIRASI GELEN panelin VF'si için
+      // tamdır — workingShapes tam olarak ÖNCEKİ kardeşleri içerir ki bu,
+      // baskınlık (dominance) semantiğinin kendisidir: önce gelen panel yüz
+      // alanını kazanır, sonra gelenler ona göre kısalır. Yetkili VF'de
+      // çözülemeyen panel bağı "o panel artık benden sonra" demektir ve bölge
+      // sınıra kadar yayılır (sıra değişince kısa kalma hatasının düzeltmesi).
+      // Diğer VF'ler eksik bağlamla korunur; kendi iterasyonlarında güncellenir.
+      const freshFaces = recalculateVirtualFacesForShape(parent, filteredForRecalc, workingShapes, new Set([currentVfId]));
       const freshById = new Map(freshFaces.map(f => [f.id, f]));
       workingVirtualFaces = workingVirtualFaces.map(f => freshById.get(f.id) || f);
       builtVfIds.add(currentVfId);

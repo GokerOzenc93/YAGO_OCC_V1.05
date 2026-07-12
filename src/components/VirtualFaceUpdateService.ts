@@ -759,7 +759,8 @@ function reraycastVirtualFace(
   localToWorld: THREE.Matrix4,
   worldToLocal: THREE.Matrix4,
   childPanels: any[],
-  shapeFaces: VirtualFace[]
+  shapeFaces: VirtualFace[],
+  authoritative: boolean
 ): VirtualFace | null {
   if (!vf.raycastRecipe) return null;
 
@@ -883,7 +884,7 @@ function reraycastVirtualFace(
 
   return reraycastVirtualFaceFallback(
     vf, shape, faces, matchedGroup, localToWorld, worldToLocal,
-    childPanels, shapeFaces, groupVerticesWorld, worldNormal, u, v, strictIndices
+    childPanels, shapeFaces, groupVerticesWorld, worldNormal, u, v, authoritative, strictIndices
   );
 }
 
@@ -901,6 +902,7 @@ function reraycastVirtualFaceFallback(
   worldNormal: THREE.Vector3,
   u: THREE.Vector3,
   v: THREE.Vector3,
+  authoritative: boolean,
   strictFaceIndices?: number[]
 ): VirtualFace | null {
   const groupCenterWorld = new THREE.Vector3();
@@ -980,6 +982,31 @@ function reraycastVirtualFaceFallback(
   let anchoredU = false, anchoredV = false;
   if (anchors && nhd) {
     const siblingFaces = shapeFaces.filter(f => f.id !== vf.id);
+
+    // ── YETKİ AYRIMI (dominance / eksik bağlam) ──────────────────────────
+    // Bir bağ sahibi bağlamda YOKSA iki olasılık vardır ve ikisi zıt davranış
+    // ister: (a) rebuild ara geçişi — kardeş panel henüz workingShapes'e
+    // eklenmedi → VF'ye DOKUNMA; (b) panel sırası değişti — o kardeş artık
+    // bu panelden SONRA geliyor, bu paneli sınırlayamaz → bölge sınıra kadar
+    // YAYILMALI (baskınlık). Recalc bunu tek başına ayırt edemez; ayrımı
+    // çağıran yapar: authoritative=true ise bu VF için bağlam TAMDIR
+    // (boru hattı, sırası gelen panelin recalc'ında yalnızca ÖNCEKİ
+    // kardeşleri verir — baskınlık semantiğinin ta kendisi), çözülemeyen
+    // sahip sınıra düşer ve bölge yayılır. authoritative=false ise bağlam
+    // eksik demektir; VF olduğu gibi korunur.
+    if (!authoritative) {
+      const ownerMissing = (o: string | null): boolean => {
+        if (!o) return false;
+        if (o.startsWith('panel:')) return !panelsExcludingSelf.some(pp => pp.id === o.slice(6));
+        if (o.startsWith('vf:')) return !siblingFaces.some(f => f.id === o.slice(3));
+        if (o.startsWith('sub:')) return !subtractions[parseInt(o.slice(4), 10)];
+        return false;
+      };
+      if ([anchors.uPos, anchors.uNeg, anchors.vPos, anchors.vNeg].some(ownerMissing)) {
+        return { ...vf };
+      }
+    }
+
     const res = resolveAnchoredOrigin(
       anchors, nhd, panelsExcludingSelf, siblingFaces, subtractions,
       localToWorld, worldNormal, u, v, faceNComp, extent,
@@ -1101,7 +1128,11 @@ function reraycastVirtualFaceFallback(
   // VF'ye dokunulmaz, kullanıcının bölgesi aynen korunur. Engel yalnızca
   // TAŞINDIYSA ışın onu yeni yerinde bulur ve bölge normal şekilde ona kadar
   // güncellenir (teğet takibi bozulmaz).
-  if (nhd && !vf.parentFaceShape && !vf.alignToParentFace) {
+  // Yetkili (bağlamı tam) recalc'ta kilit YOKTUR: yakalamada engel olan yön
+  // artık sınıra çıkıyorsa bu, engelin gerçekten kalktığı/sonraya alındığı
+  // anlamına gelir ve bölge sınıra kadar yayılır (baskınlık). Kilit yalnızca
+  // eksik bağlamlı ara recalc'ları korur.
+  if (nhd && !authoritative && !vf.parentFaceShape && !vf.alignToParentFace) {
     const captureObstacleBounded = [
       !nhd.uPosIsBoundary, !nhd.uNegIsBoundary, !nhd.vPosIsBoundary, !nhd.vNegIsBoundary,
     ];
@@ -1189,7 +1220,7 @@ function reraycastVirtualFaceFallback(
       nhd.uPosIsBoundary, nhd.uNegIsBoundary, nhd.vPosIsBoundary, nhd.vNegIsBoundary,
     ];
     const classesMatch = axisHits.every((h, i) => h.isBoundaryEdge === capBoundary[i]);
-    if (classesMatch) {
+    if (classesMatch || authoritative) {
       const dU = axisHits.map(h => h.hitPoint.distanceTo(startF));
       refreshedRecipe = {
         ...refreshedRecipe,
@@ -1222,7 +1253,14 @@ function reraycastVirtualFaceFallback(
 export function recalculateVirtualFacesForShape(
   shape: Shape,
   virtualFaces: VirtualFace[],
-  allShapes?: any[]
+  allShapes?: any[],
+  /**
+   * Bağlamı TAM olan VF kimlikleri. 'all' → tüm VF'ler için bağlam tam
+   * (store üzerinden tam sahne ile çağrı). Küme → yalnızca o VF'ler yetkili;
+   * kalanlar eksik-bağlam korumasıyla işlenir (rebuild ara geçişleri).
+   * Varsayılan 'all' — tek bilinen ikinci çağıran store'dur ve tam sahne verir.
+   */
+  authoritativeVfIds: Set<string> | 'all' = 'all'
 ): VirtualFace[] {
   const shapeFaces = virtualFaces.filter(vf => vf.shapeId === shape.id);
   if (shapeFaces.length === 0) return virtualFaces;
@@ -1245,8 +1283,9 @@ export function recalculateVirtualFacesForShape(
       const regen = regenerateParentFaceShapeVF(vf, shape, faces, faceGroups, localToWorld);
       updatedMap.set(vf.id, regen || vf);
     } else if (vf.raycastRecipe) {
+      const authoritative = authoritativeVfIds === 'all' || authoritativeVfIds.has(vf.id);
       const reraycast = reraycastVirtualFace(
-        vf, shape, faces, faceGroups, localToWorld, worldToLocal, childPanels, shapeFaces
+        vf, shape, faces, faceGroups, localToWorld, worldToLocal, childPanels, shapeFaces, authoritative
       );
       updatedMap.set(vf.id, reraycast || vf);
     } else {
