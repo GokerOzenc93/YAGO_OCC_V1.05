@@ -187,8 +187,16 @@ function pointToSegmentDistance3D(p: THREE.Vector3, a: THREE.Vector3, b: THREE.V
   return new THREE.Vector3().copy(a).addScaledVector(ab, t).distanceTo(p);
 }
 
-export function collectPanelObstacleEdgesWorld(panelShapes: any[], facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, planeTolerance: number = 3.0, boundaryEdges?: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>): Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> {
-  const obstacleEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> = [];
+/**
+ * Engel kenarı. `ownerId` — bu kenarı ÜRETEN komşunun kimliği:
+ *   'panel:<shapeId>' | 'vf:<virtualFaceId>' | 'sub:<index>'
+ * Sınır (boundary) kenarlarında tanımsızdır. Bölgenin parametrik bağını
+ * (hangi panele yaslandığını) kurmak için kullanılır.
+ */
+export interface ObstacleEdge { v1: THREE.Vector3; v2: THREE.Vector3; ownerId?: string; }
+
+export function collectPanelObstacleEdgesWorld(panelShapes: any[], facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, planeTolerance: number = 3.0, boundaryEdges?: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>): ObstacleEdge[] {
+  const obstacleEdges: ObstacleEdge[] = [];
   for (const panel of panelShapes) {
     if (!panel.geometry) continue;
     const panelMatrix = getShapeMatrix(panel);
@@ -251,11 +259,12 @@ export function collectPanelObstacleEdgesWorld(panelShapes: any[], facePlaneNorm
     if (hull.length < 3) continue;
 
     // Convert hull edges back to 3D world positions on the face plane
+    const ownerId = `panel:${panel.id}`;
     for (let i = 0; i < hull.length; i++) {
       const a = hull[i], b = hull[(i + 1) % hull.length];
       const v1 = facePlaneOrigin.clone().addScaledVector(u, a.x).addScaledVector(v, a.y);
       const v2 = facePlaneOrigin.clone().addScaledVector(u, b.x).addScaledVector(v, b.y);
-      obstacleEdges.push({ v1, v2 });
+      obstacleEdges.push({ v1, v2, ownerId });
     }
   }
   return obstacleEdges;
@@ -276,10 +285,12 @@ export function getSubtractionWorldMatrix(parentLocalToWorld: THREE.Matrix4, sub
   return new THREE.Matrix4().multiplyMatrices(parentLocalToWorld, groupMatrix).multiply(meshMatrix);
 }
 
-export function collectSubtractionObstacleEdgesWorld(subtractions: any[], parentLocalToWorld: THREE.Matrix4, facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, planeTolerance: number = 20): Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> {
-  const edges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> = [];
-  for (const sub of subtractions) {
+export function collectSubtractionObstacleEdgesWorld(subtractions: any[], parentLocalToWorld: THREE.Matrix4, facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, planeTolerance: number = 20): ObstacleEdge[] {
+  const edges: ObstacleEdge[] = [];
+  for (let si = 0; si < subtractions.length; si++) {
+    const sub = subtractions[si];
     if (!sub || !sub.geometry) continue;
+    const ownerId = `sub:${si}`;
     const subWorldMatrix = getSubtractionWorldMatrix(parentLocalToWorld, sub);
     const edgesGeo = new THREE.EdgesGeometry(sub.geometry);
     const edgePos = edgesGeo.getAttribute('position');
@@ -288,7 +299,7 @@ export function collectSubtractionObstacleEdgesWorld(subtractions: any[], parent
       const vb = new THREE.Vector3(edgePos.getX(i + 1), edgePos.getY(i + 1), edgePos.getZ(i + 1)).applyMatrix4(subWorldMatrix);
       const distA = Math.abs(facePlaneNormal.dot(new THREE.Vector3().subVectors(va, facePlaneOrigin)));
       const distB = Math.abs(facePlaneNormal.dot(new THREE.Vector3().subVectors(vb, facePlaneOrigin)));
-      if (distA < planeTolerance && distB < planeTolerance) edges.push({ v1: va, v2: vb });
+      if (distA < planeTolerance && distB < planeTolerance) edges.push({ v1: va, v2: vb, ownerId });
     }
     edgesGeo.dispose();
   }
@@ -631,15 +642,17 @@ export function ensureCCW(poly: Point2D[]): Point2D[] {
 
 export interface RayHitResult {
   hitPoint: THREE.Vector3;
-  hitEdge: { v1: THREE.Vector3; v2: THREE.Vector3 } | null;
+  hitEdge: ObstacleEdge | null;
   edgeT: number;
   isBoundaryEdge: boolean;
+  /** Işını durduran komşunun kimliği ('panel:<id>' | 'vf:<id>' | 'sub:<i>'); sınıra çarptıysa null. */
+  hitOwnerId: string | null;
 }
 
-export function castRayOnFaceWorldDetailed(originWorld: THREE.Vector3, dirWorld: THREE.Vector3, boundaryEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>, obstacleEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>, u: THREE.Vector3, v: THREE.Vector3, planeOrigin: THREE.Vector3, maxDist: number): RayHitResult {
+export function castRayOnFaceWorldDetailed(originWorld: THREE.Vector3, dirWorld: THREE.Vector3, boundaryEdges: ObstacleEdge[], obstacleEdges: ObstacleEdge[], u: THREE.Vector3, v: THREE.Vector3, planeOrigin: THREE.Vector3, maxDist: number): RayHitResult {
   const o2d = projectTo2D(originWorld, planeOrigin, u, v);
   const dir2d = { x: dirWorld.dot(u), y: dirWorld.dot(v) };
-  let tMin = maxDist, hitEdge: { v1: THREE.Vector3; v2: THREE.Vector3 } | null = null, hitEdgeT = 0, isBoundary = false;
+  let tMin = maxDist, hitEdge: ObstacleEdge | null = null, hitEdgeT = 0, isBoundary = false;
   for (const edge of boundaryEdges) {
     const a2d = projectTo2D(edge.v1, planeOrigin, u, v), b2d = projectTo2D(edge.v2, planeOrigin, u, v);
     const t = raySegmentIntersect2D(o2d.x, o2d.y, dir2d.x, dir2d.y, a2d.x, a2d.y, b2d.x, b2d.y);
@@ -660,7 +673,13 @@ export function castRayOnFaceWorldDetailed(originWorld: THREE.Vector3, dirWorld:
       hitEdgeT = eLen > 1e-8 ? ((hitX - a2d.x) * ex + (hitY - a2d.y) * ey) / (eLen * eLen) : 0;
     }
   }
-  return { hitPoint: originWorld.clone().addScaledVector(dirWorld, tMin), hitEdge, edgeT: Math.max(0, Math.min(1, hitEdgeT)), isBoundaryEdge: isBoundary };
+  return {
+    hitPoint: originWorld.clone().addScaledVector(dirWorld, tMin),
+    hitEdge,
+    edgeT: Math.max(0, Math.min(1, hitEdgeT)),
+    isBoundaryEdge: isBoundary,
+    hitOwnerId: isBoundary ? null : (hitEdge?.ownerId ?? null),
+  };
 }
 
 export function castRayOnFaceWorld(originWorld: THREE.Vector3, dirWorld: THREE.Vector3, boundaryEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>, obstacleEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>, u: THREE.Vector3, v: THREE.Vector3, planeOrigin: THREE.Vector3, maxDist: number): THREE.Vector3 {
@@ -723,22 +742,23 @@ function isWorldPointInsidePanelForVF(
   return isWorldPointInsidePanelFootprint(worldPt, panel, facePlaneNormal, facePlaneOrigin);
 }
 
-export function collectVirtualFaceObstacleEdgesWorld(virtualFaces: VirtualFace[], excludeId: string | null, shapeLocalToWorld: THREE.Matrix4, facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, planeTolerance: number = 20): Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> {
-  const edges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> = [];
+export function collectVirtualFaceObstacleEdgesWorld(virtualFaces: VirtualFace[], excludeId: string | null, shapeLocalToWorld: THREE.Matrix4, facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, planeTolerance: number = 20): ObstacleEdge[] {
+  const edges: ObstacleEdge[] = [];
   for (const vf of virtualFaces) {
     if (vf.id === excludeId || vf.vertices.length < 3) continue;
+    const ownerId = `vf:${vf.id}`;
     const worldVerts = vf.vertices.map(vtx => new THREE.Vector3(vtx[0], vtx[1], vtx[2]).applyMatrix4(shapeLocalToWorld));
     for (let i = 0; i < worldVerts.length; i++) {
       const va = worldVerts[i], vb = worldVerts[(i + 1) % worldVerts.length];
       const distA = Math.abs(facePlaneNormal.dot(new THREE.Vector3().subVectors(va, facePlaneOrigin)));
       const distB = Math.abs(facePlaneNormal.dot(new THREE.Vector3().subVectors(vb, facePlaneOrigin)));
-      if (distA < planeTolerance && distB < planeTolerance) edges.push({ v1: va, v2: vb });
+      if (distA < planeTolerance && distB < planeTolerance) edges.push({ v1: va, v2: vb, ownerId });
     }
   }
   return edges;
 }
 
-function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces: FaceData[], localToWorld: THREE.Matrix4, worldToLocal: THREE.Matrix4, childPanels: any[], shapeId: string, subtractions: any[] = [], geometry?: THREE.BufferGeometry, shapeVirtualFaces: VirtualFace[] = []): PendingPreview | null {
+export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces: FaceData[], localToWorld: THREE.Matrix4, worldToLocal: THREE.Matrix4, childPanels: any[], shapeId: string, subtractions: any[] = [], geometry?: THREE.BufferGeometry, shapeVirtualFaces: VirtualFace[] = []): PendingPreview | null {
   const normalMatrix = new THREE.Matrix3().getNormalMatrix(localToWorld);
   const planeOrigin = clickWorld.clone();
 
@@ -863,7 +883,8 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
   const lines: RayLine[] = [];
   const hitPointsWorld: THREE.Vector3[] = [];
   const hitIsBoundary: boolean[] = [];
-  const hitEdgesWorld: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 } | null> = [];
+  const hitEdgesWorld: Array<ObstacleEdge | null> = [];
+  const hitOwnerIds: Array<string | null> = [];
   const edgeAnchors: EdgeAnchor[] = [];
   const parentPos = new THREE.Vector3();
   localToWorld.decompose(parentPos, new THREE.Quaternion(), new THREE.Vector3());
@@ -874,6 +895,7 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
     hitPointsWorld.push(result.hitPoint);
     hitIsBoundary.push(result.isBoundaryEdge);
     hitEdgesWorld.push(result.hitEdge);
+    hitOwnerIds.push(result.hitOwnerId);
     if (result.hitEdge) {
       const v1Local = result.hitEdge.v1.clone().applyMatrix4(worldToLocal);
       const v2Local = result.hitEdge.v2.clone().applyMatrix4(worldToLocal);
@@ -1052,6 +1074,21 @@ function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces
       faceGroupDescriptor, normalizedClickUV,
       edgeAnchors: edgeAnchors.length === 4 ? edgeAnchors : undefined,
       normalizedHitDistances,
+      // PARAMETRİK BAĞ: bölgeyi hangi komşunun sınırladığını kaydet. Yeniden
+      // türetmede ışın kökeni yüzün tamamına DEĞİL bu bağlara göre kurulur.
+      anchorOwners: {
+        uPos: hitOwnerIds[0] ?? null,
+        uNeg: hitOwnerIds[1] ?? null,
+        vPos: hitOwnerIds[2] ?? null,
+        vNeg: hitOwnerIds[3] ?? null,
+      },
+      // EKSEN SABİTLEME: u ekseni yerel yön olarak kaydedilir; yeniden
+      // türetme aynı tabanı kullanır (baskın kenar terslemesine bağışık).
+      planeAxisULocal: (() => {
+        const nm = new THREE.Matrix3().getNormalMatrix(worldToLocal);
+        const ul = u.clone().applyMatrix3(nm).normalize();
+        return [ul.x, ul.y, ul.z] as [number, number, number];
+      })(),
     } : undefined,
   };
   return { rayLines: lines, originLocal: clickWorld.clone().sub(parentPos), geo, edgeGeo, virtualFace };
