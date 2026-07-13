@@ -196,7 +196,7 @@ export async function reshapePanelToParentFace(panelId: string): Promise<void> {
             parentFaceShape: true,
             alignToParentFace: true,
             faceGroupDescriptor: group.faceIndices[0] !== undefined && faces[group.faceIndices[0]]
-              ? createFaceDescriptor(faces[group.faceIndices[0]], parent.geometry)
+              ? createFaceDescriptor(faces[group.faceIndices[0]], parent.geometry, faces)
               : undefined,
           }
         : f

@@ -1021,7 +1021,7 @@ export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup
     let faceGroupDescriptor: import('../store').FaceDescriptor | undefined;
     if (geometry && group.faceIndices.length > 0) {
       const repFace = faces[group.faceIndices[0]];
-      if (repFace) faceGroupDescriptor = createFaceDescriptor(repFace, geometry);
+      if (repFace) faceGroupDescriptor = createFaceDescriptor(repFace, geometry, faces);
     }
 
     const parentPos = new THREE.Vector3();
@@ -1222,7 +1222,7 @@ export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup
   let faceGroupDescriptor: import('../store').FaceDescriptor | undefined;
   if (geometry && group.faceIndices.length > 0) {
     const representativeFace = faces[group.faceIndices[0]];
-    if (representativeFace) faceGroupDescriptor = createFaceDescriptor(representativeFace, geometry);
+    if (representativeFace) faceGroupDescriptor = createFaceDescriptor(representativeFace, geometry, faces);
   }
   let normalizedClickUV: [number, number] | undefined;
   let normalizedHitDistances: NormalizedHitDistances | undefined;

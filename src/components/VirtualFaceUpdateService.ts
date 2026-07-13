@@ -29,6 +29,8 @@ import {
   extractFacesFromGeometry,
   groupCoplanarFaces,
   findFaceByDescriptor,
+  resolveAxisPlaneByRank,
+  inPlaneCenterDiff,
   type FaceData,
   type CoplanarFaceGroup,
 } from './FaceEditor';
@@ -52,6 +54,53 @@ function findMatchingFaceGroup(
 
   if (candidateGroups.length === 0) return null;
 
+  // ─── ÖLÇEKTEN BAĞIMSIZ YÜZ KİMLİĞİ (iki aşamalı) ──────────────────────────
+  // Aynı normale sahip birden çok yüz olduğunda eşleme şimdiye dek MUTLAK
+  // düzlem konumuna göre yapılıyordu. İki ayrı bozulma üretiyordu:
+  //   (a) PARALEL düzlemler (L profil: dış duvar + çentik duvarı) — küp
+  //       büyüyünce düzlemler taşınır; büyüme aradaki boşluğu aşınca eski
+  //       konuma "en yakın" düzlem ÖBÜR yüz olur ve panel oraya atlar.
+  //   (b) AYNI DÜZLEMDE kopuk yüzler (U profil, çift çentik) — düzlem farkı
+  //       ikisinde de sıfırdır; eski kod ilk adayı seçip yüzeyler arasında
+  //       rastgele zıplar. "Aynı düzlemdeki başka yüzeye yerleşiyor" tam bu.
+  //
+  // Çözüm, ölçekten bağımsız iki aşamalı kimlik:
+  //   1) RANK  → hangi DÜZLEM (aynı yönlü ayrık düzlemler içindeki sıra;
+  //              yeniden boyutlandırma sırayı değiştirmez).
+  //   2) DÜZLEM-İÇİ NORMALİZE MERKEZ → o düzlemdeki hangi KOPUK YÜZ.
+  const desc: any = vf.raycastRecipe?.faceGroupDescriptor ?? (vf as any).faceGroupDescriptor;
+  if (desc?.axisDirection && desc.axisRank !== undefined && desc.axisRankCount !== undefined) {
+    const wantPos = resolveAxisPlaneByRank(faces, desc.axisDirection, desc.axisRank, desc.axisRankCount);
+    if (wantPos !== null) {
+      const axis = (desc.axisDirection as string)[0] as 'x' | 'y' | 'z';
+      const onPlane = candidateGroups.filter(g => {
+        const c = axis === 'x' ? g.center.x : axis === 'y' ? g.center.y : g.center.z;
+        return Math.abs(c - wantPos) <= 1.0;
+      });
+      if (onPlane.length === 1) return onPlane[0];
+      if (onPlane.length > 1) {
+        const bb = new THREE.Box3().setFromBufferAttribute(
+          geometry.getAttribute('position') as THREE.BufferAttribute
+        );
+        const size = new THREE.Vector3();
+        bb.getSize(size);
+        const norm = (p: THREE.Vector3): [number, number, number] => [
+          size.x > 1e-6 ? (p.x - bb.min.x) / size.x : 0.5,
+          size.y > 1e-6 ? (p.y - bb.min.y) / size.y : 0.5,
+          size.z > 1e-6 ? (p.z - bb.min.z) / size.z : 0.5,
+        ];
+        let best: CoplanarFaceGroup | null = null;
+        let bestD = Infinity;
+        for (const g of onPlane) {
+          const d = inPlaneCenterDiff(norm(g.center), desc.normalizedCenter, desc.axisDirection);
+          if (d < bestD) { bestD = d; best = g; }
+        }
+        if (best) return best;
+      }
+      // Bu rank'te hiç aday yoksa (topoloji beklenmedik) eski yollara düşülür.
+    }
+  }
+
   if (vf.faceGroupDescriptor) {
     const matchedFace = findFaceByDescriptor(vf.faceGroupDescriptor, faces, geometry);
     if (matchedFace) {
@@ -66,44 +115,19 @@ function findMatchingFaceGroup(
 
   let bestGroup: CoplanarFaceGroup | null = null;
 
-  // Step 1: Find groups on the same plane (matching plane offset along normal).
-  // Among all coplanar candidates, pick the one whose center is closest to the
-  // VF center. This correctly disambiguates multiple coplanar face groups (e.g.
-  // inner vs outer faces of an L-shape) even when both have identical plane
-  // offsets — the VF center lies within (or nearest to) the correct group.
   const vfPlaneOffset = vfCenter.dot(vfNormal);
-  const PLANE_TOL = 5;
-  const coplanarCandidates: CoplanarFaceGroup[] = [];
-  let minPlaneDiff = Infinity;
+  let bestPlaneDiff = Infinity;
   for (const group of candidateGroups) {
     const groupNormal = group.normal.clone().normalize();
-    const planeDiff = Math.abs(group.center.dot(groupNormal) - vfPlaneOffset);
-    if (planeDiff < minPlaneDiff) minPlaneDiff = planeDiff;
-    if (planeDiff < PLANE_TOL) coplanarCandidates.push(group);
-  }
-
-  // Also accept the single best-plane-match if none fall within tolerance
-  if (coplanarCandidates.length === 0) {
-    for (const group of candidateGroups) {
-      const groupNormal = group.normal.clone().normalize();
-      const planeDiff = Math.abs(group.center.dot(groupNormal) - vfPlaneOffset);
-      if (planeDiff === minPlaneDiff) { coplanarCandidates.push(group); break; }
+    const groupPlaneOffset = group.center.dot(groupNormal);
+    const planeDiff = Math.abs(groupPlaneOffset - vfPlaneOffset);
+    if (planeDiff < bestPlaneDiff) {
+      bestPlaneDiff = planeDiff;
+      bestGroup = group;
     }
   }
 
-  if (coplanarCandidates.length === 1) return coplanarCandidates[0];
-  if (coplanarCandidates.length > 1) {
-    // Multiple groups on the same plane — pick the one whose center is closest
-    // to the VF center (both are in the plane so this is the in-plane distance).
-    let bestDist = Infinity;
-    for (const group of coplanarCandidates) {
-      const dist = vfCenter.distanceTo(group.center);
-      if (dist < bestDist) { bestDist = dist; bestGroup = group; }
-    }
-    if (bestGroup) return bestGroup;
-  }
-
-
+  if (bestGroup && bestPlaneDiff < 5) return bestGroup;
 
   let bestDist = Infinity;
   bestGroup = null;
