@@ -66,19 +66,44 @@ function findMatchingFaceGroup(
 
   let bestGroup: CoplanarFaceGroup | null = null;
 
+  // Step 1: Find groups on the same plane (matching plane offset along normal).
+  // Among all coplanar candidates, pick the one whose center is closest to the
+  // VF center. This correctly disambiguates multiple coplanar face groups (e.g.
+  // inner vs outer faces of an L-shape) even when both have identical plane
+  // offsets — the VF center lies within (or nearest to) the correct group.
   const vfPlaneOffset = vfCenter.dot(vfNormal);
-  let bestPlaneDiff = Infinity;
+  const PLANE_TOL = 5;
+  const coplanarCandidates: CoplanarFaceGroup[] = [];
+  let minPlaneDiff = Infinity;
   for (const group of candidateGroups) {
     const groupNormal = group.normal.clone().normalize();
-    const groupPlaneOffset = group.center.dot(groupNormal);
-    const planeDiff = Math.abs(groupPlaneOffset - vfPlaneOffset);
-    if (planeDiff < bestPlaneDiff) {
-      bestPlaneDiff = planeDiff;
-      bestGroup = group;
+    const planeDiff = Math.abs(group.center.dot(groupNormal) - vfPlaneOffset);
+    if (planeDiff < minPlaneDiff) minPlaneDiff = planeDiff;
+    if (planeDiff < PLANE_TOL) coplanarCandidates.push(group);
+  }
+
+  // Also accept the single best-plane-match if none fall within tolerance
+  if (coplanarCandidates.length === 0) {
+    for (const group of candidateGroups) {
+      const groupNormal = group.normal.clone().normalize();
+      const planeDiff = Math.abs(group.center.dot(groupNormal) - vfPlaneOffset);
+      if (planeDiff === minPlaneDiff) { coplanarCandidates.push(group); break; }
     }
   }
 
-  if (bestGroup && bestPlaneDiff < 5) return bestGroup;
+  if (coplanarCandidates.length === 1) return coplanarCandidates[0];
+  if (coplanarCandidates.length > 1) {
+    // Multiple groups on the same plane — pick the one whose center is closest
+    // to the VF center (both are in the plane so this is the in-plane distance).
+    let bestDist = Infinity;
+    for (const group of coplanarCandidates) {
+      const dist = vfCenter.distanceTo(group.center);
+      if (dist < bestDist) { bestDist = dist; bestGroup = group; }
+    }
+    if (bestGroup) return bestGroup;
+  }
+
+
 
   let bestDist = Infinity;
   bestGroup = null;

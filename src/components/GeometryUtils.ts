@@ -366,37 +366,36 @@ export function findFaceByDescriptor(
     if (isFlatSurface) {
       if (faceAxisDir !== targetAxisDir) continue;
 
-      if (descriptor.axisPosition !== undefined && faceDescriptor.axisPosition !== undefined) {
-        const axisDiff = Math.abs(faceDescriptor.axisPosition - descriptor.axisPosition);
-        const score = axisDiff;
-        if (score < bestScore) {
-          bestScore = score;
-          bestMatch = face;
-        }
-      } else {
-        let relevantCenterDiff = 0;
-        if (targetAxisDir === 'x+' || targetAxisDir === 'x-') {
-          relevantCenterDiff = Math.sqrt(
-            Math.pow(faceDescriptor.normalizedCenter[1] - descriptor.normalizedCenter[1], 2) +
-            Math.pow(faceDescriptor.normalizedCenter[2] - descriptor.normalizedCenter[2], 2)
-          );
-        } else if (targetAxisDir === 'y+' || targetAxisDir === 'y-') {
-          relevantCenterDiff = Math.sqrt(
-            Math.pow(faceDescriptor.normalizedCenter[0] - descriptor.normalizedCenter[0], 2) +
-            Math.pow(faceDescriptor.normalizedCenter[2] - descriptor.normalizedCenter[2], 2)
-          );
-        } else if (targetAxisDir === 'z+' || targetAxisDir === 'z-') {
-          relevantCenterDiff = Math.sqrt(
-            Math.pow(faceDescriptor.normalizedCenter[0] - descriptor.normalizedCenter[0], 2) +
-            Math.pow(faceDescriptor.normalizedCenter[1] - descriptor.normalizedCenter[1], 2)
-          );
-        }
+      // Always use normalized center for resize-stable matching.
+      // axisPosition (absolute coords) breaks when the shape is resized.
+      // Compare all 3 normalized dimensions: the axis component distinguishes
+      // coplanar faces at different depths, the other two distinguish faces
+      // in the same plane family at different positions.
+      let relevantCenterDiff = 0;
+      if (targetAxisDir === 'x+' || targetAxisDir === 'x-') {
+        relevantCenterDiff = Math.sqrt(
+          Math.pow(faceDescriptor.normalizedCenter[0] - descriptor.normalizedCenter[0], 2) * 4 +
+          Math.pow(faceDescriptor.normalizedCenter[1] - descriptor.normalizedCenter[1], 2) +
+          Math.pow(faceDescriptor.normalizedCenter[2] - descriptor.normalizedCenter[2], 2)
+        );
+      } else if (targetAxisDir === 'y+' || targetAxisDir === 'y-') {
+        relevantCenterDiff = Math.sqrt(
+          Math.pow(faceDescriptor.normalizedCenter[0] - descriptor.normalizedCenter[0], 2) +
+          Math.pow(faceDescriptor.normalizedCenter[1] - descriptor.normalizedCenter[1], 2) * 4 +
+          Math.pow(faceDescriptor.normalizedCenter[2] - descriptor.normalizedCenter[2], 2)
+        );
+      } else if (targetAxisDir === 'z+' || targetAxisDir === 'z-') {
+        relevantCenterDiff = Math.sqrt(
+          Math.pow(faceDescriptor.normalizedCenter[0] - descriptor.normalizedCenter[0], 2) +
+          Math.pow(faceDescriptor.normalizedCenter[1] - descriptor.normalizedCenter[1], 2) +
+          Math.pow(faceDescriptor.normalizedCenter[2] - descriptor.normalizedCenter[2], 2) * 4
+        );
+      }
 
-        const score = relevantCenterDiff * 10;
-        if (score < bestScore) {
-          bestScore = score;
-          bestMatch = face;
-        }
+      const score = relevantCenterDiff * 10;
+      if (score < bestScore) {
+        bestScore = score;
+        bestMatch = face;
       }
     } else {
       const dotProduct = targetNormal.dot(face.normal);
