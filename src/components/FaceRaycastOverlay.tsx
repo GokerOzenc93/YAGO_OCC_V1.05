@@ -195,10 +195,194 @@ function pointToSegmentDistance3D(p: THREE.Vector3, a: THREE.Vector3, b: THREE.V
  */
 export interface ObstacleEdge { v1: THREE.Vector3; v2: THREE.Vector3; ownerId?: string; }
 
-export function collectPanelObstacleEdgesWorld(panelShapes: any[], facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, planeTolerance: number = 3.0, boundaryEdges?: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>): ObstacleEdge[] {
+/**
+ * Bu yüz düzleminde "ana yüzeye eşitlenmiş" (alignToParentFace) kardeş VF'lerin
+ * kimlikleri. Eşitlenmiş panel TANIM GEREĞİ parent yüzünün TAMAMINI doldurur
+ * (PanelReshapeService: "HER ZAMAN tüm parent yüzünü doldur") ve yüz düzleminde
+ * FLUSH durur. Dolayısıyla aynı yüze atılan başka bir paneli in-plane olarak
+ * SINIRLAYAMAZ — onun ÜZERİNE istiflenir (lamine olur).
+ *
+ * Buna rağmen ışın atma onu bir engel sayıyordu: gövde konturu (yüz poligonu,
+ * çentikli/açılı olabilir) ışınları durdurup görünürlük çokgenini o şekle
+ * sokuyordu. Sonuç: ilk panel 4 kenarlı çıkarken, ondan SONRAKİ her panel
+ * sorgusuz yüzün şeklini alıyordu. Bu VF'leri engel kümesinden çıkarıyoruz;
+ * böylece her panel varsayılan olarak normal DİKDÖRTGEN yerleşir ve yüz şekli
+ * yalnızca kullanıcı "ana yüzeye eşitle"ye bastığında verilir.
+ *
+ * DİKKAT: yalnızca AYNI DÜZLEMDEKİ eşitlenmiş VF'ler elenir. Başka bir yüze
+ * (ör. sol yüze) eşitlenmiş panel, bu yüzü dik olarak kesiyorsa GERÇEK bir
+ * engeldir ve korunur.
+ */
+/**
+ * BÖLGEYİ DİKDÖRTGENE İNDİRGE — tıklamayı içeren EN BÜYÜK ALANLI eksen hizalı
+ * dikdörtgen.
+ *
+ * Kullanıcı kuralı: her panel önce NORMAL bir DİKDÖRTGEN olarak yerleşir; yüzün
+ * şeklini (L basamağı, çentik, açılı duvar) yalnızca "ana yüzeye eşitle"
+ * düğmesiyle alır.
+ *
+ * ÖNCEKİ SÜRÜMÜN HATASI (bu yüzden highlight tıklanan yerle uyuşmuyordu):
+ * kenarlar SABİT bir sırayla (uMax → vMax → uMin → vMin) açgözlü daraltılıyordu.
+ * Bu iki şekilde bozuluyordu:
+ *   1) İhlal ilk denenen kenarı daraltmakla giderilemiyorsa, ikili arama o
+ *      kenarı SIFIRA çekiyordu (dejenere dikdörtgen "kısıt kesmiyor" sayıldığı
+ *      için "geçerli" görünüyordu) ve bölge çöküyordu.
+ *   2) Giderilebildiğinde bile sonuç sıraya bağlıydı: tıklamayla ilgisiz, ince
+ *      bir şerit çıkabiliyordu.
+ *
+ * DOĞRU TANIM: kökeni (tıklama noktasını) içeren, hiçbir kısıt segmentini
+ * kesmeyen, ALANI EN BÜYÜK eksen hizalı dikdörtgen. Aday v sınırları segment
+ * uçlarından türetilir; her (vMin, vMax) çifti için uMax ve uMin bağımsız ikili
+ * aramayla büyütülür (v aralığı sabitken u yönünde büyümek monotondur). En
+ * büyük alanlı geçerli aday seçilir — deterministik, sıradan bağımsız, sezgisel.
+ */
+export function reduceRegionToRectangle2D(
+  segsIn: Array<{ ax: number; ay: number; bx: number; by: number }>,
+  seed: { uMin: number; uMax: number; vMin: number; vMax: number }
+): Point2D[] | null {
+  const EPS = 0.1;      // dikdörtgen kenarları kısıtlara TEĞET geçer (ışın orada
+                        // durdu); içe verilen bu pay teğetliği "kesişim" saymaz.
+  const MIN_DIM = 0.5;
+  const MAX_CAND = 14;  // yoğun tessele edilmiş yüzlerde aday patlamasını sınırla
+
+  if (seed.uMax <= MIN_DIM || seed.vMax <= MIN_DIM ||
+      seed.uMin >= -MIN_DIM || seed.vMin >= -MIN_DIM) return null;
+
+  // Geniş faz: tohum kutusuna değmeyen segmentler hiçbir daraltmada rol oynayamaz
+  // (daraltma kutuyu yalnızca KÜÇÜLTÜR).
+  const bx0 = seed.uMin - EPS, bx1 = seed.uMax + EPS;
+  const by0 = seed.vMin - EPS, by1 = seed.vMax + EPS;
+  const segs = segsIn.filter(sg =>
+    Math.max(sg.ax, sg.bx) >= bx0 && Math.min(sg.ax, sg.bx) <= bx1 &&
+    Math.max(sg.ay, sg.by) >= by0 && Math.min(sg.ay, sg.by) <= by1
+  );
+
+  const crosses = (p1: Point2D, p2: Point2D, q1: Point2D, q2: Point2D): boolean => {
+    const d = (a: Point2D, b: Point2D, c: Point2D) =>
+      (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+    const d1 = d(q1, q2, p1), d2 = d(q1, q2, p2);
+    const d3 = d(p1, p2, q1), d4 = d(p1, p2, q2);
+    return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+           ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+  };
+
+  // Dejenere dikdörtgen GEÇERSİZDİR — eski sürümün çökme kaynağı buydu.
+  const rectClear = (uMin: number, uMax: number, vMin: number, vMax: number): boolean => {
+    const a = uMin + EPS, b = uMax - EPS, c = vMin + EPS, e = vMax - EPS;
+    if (b - a < MIN_DIM || e - c < MIN_DIM) return false;
+    const corners: Point2D[] = [
+      { x: b, y: e }, { x: a, y: e }, { x: a, y: c }, { x: b, y: c },
+    ];
+    for (let i = 0; i < 4; i++) {
+      const p1 = corners[i], p2 = corners[(i + 1) % 4];
+      for (const sg of segs) {
+        if (crosses(p1, p2, { x: sg.ax, y: sg.ay }, { x: sg.bx, y: sg.by })) return false;
+      }
+    }
+    // TAMAMEN İÇERİDE kalan kısıt: hiçbir kenarı kesmez ama dikdörtgeni geçersiz
+    // kılar (ör. yüzün ortasındaki küçük bir panel/çentik). Kenar kesişimi tek
+    // başına yeterli değildir; uç nokta kapsama testi şart.
+    for (const sg of segs) {
+      if ((sg.ax > a && sg.ax < b && sg.ay > c && sg.ay < e) ||
+          (sg.bx > a && sg.bx < b && sg.by > c && sg.by < e)) return false;
+    }
+    return true;
+  };
+
+  // Aday sınırlar: segment uçlarının ilgili koordinatları + tohum sınırı.
+  const candidates = (lo: number, hi: number, pick: (p: { x: number; y: number }) => number): number[] => {
+    const set = new Set<number>([hi]);
+    for (const sg of segs) {
+      for (const p of [{ x: sg.ax, y: sg.ay }, { x: sg.bx, y: sg.by }]) {
+        const c = pick(p);
+        if (c > lo + 1e-6 && c < hi - 1e-6) set.add(Math.round(c * 100) / 100);
+      }
+    }
+    const arr = [...set].sort((x, y) => Math.abs(y) - Math.abs(x)); // büyükten küçüğe (alan önceliği)
+    return arr.slice(0, MAX_CAND);
+  };
+  // HIZLI YOL: tohum (4 eksen ışınının dikdörtgeni) zaten hiçbir kısıtı
+  // kesmiyor ve içermiyorsa — düz yüz + dik komşular, vakaların büyük
+  // çoğunluğu — aday aramasına hiç girme.
+  if (rectClear(seed.uMin, seed.uMax, seed.vMin, seed.vMax)) {
+    return ensureCCW([
+      { x: seed.uMax, y: seed.vMax }, { x: seed.uMin, y: seed.vMax },
+      { x: seed.uMin, y: seed.vMin }, { x: seed.uMax, y: seed.vMin },
+    ]);
+  }
+
+  const vPosCand = candidates(0, seed.vMax, p => p.y);
+  const vNegCand = candidates(0, -seed.vMin, p => -p.y).map(x => -x);
+
+  // v aralığı SABİTKEN u yönünde büyümek monotondur (kökenin bir yanını
+  // genişletmek diğer yanı etkilemez) → ikili arama kesin sonuç verir.
+  const SEEDW = MIN_DIM + 2 * EPS; // kökenin çevresinde tutulan minik pay
+  const growU = (vMin: number, vMax: number, sign: 1 | -1): number => {
+    const limit = sign === 1 ? seed.uMax : -seed.uMin;
+    if (limit < SEEDW) return 0;
+    const ok = (m: number) => sign === 1
+      ? rectClear(-SEEDW, m, vMin, vMax)
+      : rectClear(-m, SEEDW, vMin, vMax);
+    if (!ok(SEEDW)) return 0;          // köken bu v bandında zaten sıkışık
+    let lo = SEEDW, hi = limit;
+    if (ok(limit)) return limit;
+    for (let it = 0; it < 22; it++) {
+      const mid = (lo + hi) / 2;
+      if (ok(mid)) lo = mid; else hi = mid;
+    }
+    return lo;
+  };
+
+  let best: { uMin: number; uMax: number; vMin: number; vMax: number; area: number } | null = null;
+  for (const vMax of vPosCand) {
+    for (const vMin of vNegCand) {
+      if (vMax - vMin < MIN_DIM) continue;
+      const uMax = growU(vMin, vMax, 1);
+      if (uMax < MIN_DIM) continue;
+      const uMin = -growU(vMin, vMax, -1);
+      if (-uMin < MIN_DIM) continue;
+      if (!rectClear(uMin, uMax, vMin, vMax)) continue;
+      const area = (uMax - uMin) * (vMax - vMin);
+      if (!best || area > best.area) best = { uMin, uMax, vMin, vMax, area };
+    }
+  }
+
+  if (!best) {
+    console.warn('[Raycast] tıklamayı içeren geçerli dikdörtgen bulunamadı — özgün bölge korunuyor');
+    return null;
+  }
+  return ensureCCW([
+    { x: best.uMax, y: best.vMax }, { x: best.uMin, y: best.vMax },
+    { x: best.uMin, y: best.vMin }, { x: best.uMax, y: best.vMin },
+  ]);
+}
+
+export function collectCoplanarAlignedVfIds(
+  virtualFaces: VirtualFace[],
+  facePlaneNormalLocal: THREE.Vector3,
+  facePlaneOriginLocal: THREE.Vector3,
+  planeTolerance: number = 1.0
+): Set<string> {
+  const out = new Set<string>();
+  const n = facePlaneNormalLocal.clone().normalize();
+  const d = facePlaneOriginLocal.dot(n);
+  for (const vf of virtualFaces) {
+    if (!vf.alignToParentFace && !vf.parentFaceShape) continue;
+    const vn = new THREE.Vector3(vf.normal[0], vf.normal[1], vf.normal[2]).normalize();
+    if (Math.abs(vn.dot(n)) < 0.99) continue;
+    const vc = new THREE.Vector3(vf.center[0], vf.center[1], vf.center[2]);
+    if (Math.abs(vc.dot(n) - d) > planeTolerance) continue;
+    out.add(vf.id);
+  }
+  return out;
+}
+
+export function collectPanelObstacleEdgesWorld(panelShapes: any[], facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, planeTolerance: number = 3.0, boundaryEdges?: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>, excludeVfIds?: Set<string>): ObstacleEdge[] {
   const obstacleEdges: ObstacleEdge[] = [];
   for (const panel of panelShapes) {
     if (!panel.geometry) continue;
+    // Aynı düzlemde eşitlenmiş panel = lamine katman, in-plane engel DEĞİL.
+    if (excludeVfIds && excludeVfIds.has(panel.parameters?.virtualFaceId)) continue;
     const panelMatrix = getShapeMatrix(panel);
     const posAttr = panel.geometry.getAttribute('position') as THREE.BufferAttribute;
     if (!posAttr) continue;
@@ -742,10 +926,12 @@ function isWorldPointInsidePanelForVF(
   return isWorldPointInsidePanelFootprint(worldPt, panel, facePlaneNormal, facePlaneOrigin);
 }
 
-export function collectVirtualFaceObstacleEdgesWorld(virtualFaces: VirtualFace[], excludeId: string | null, shapeLocalToWorld: THREE.Matrix4, facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, planeTolerance: number = 20): ObstacleEdge[] {
+export function collectVirtualFaceObstacleEdgesWorld(virtualFaces: VirtualFace[], excludeId: string | null, shapeLocalToWorld: THREE.Matrix4, facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, planeTolerance: number = 20, excludeVfIds?: Set<string>): ObstacleEdge[] {
   const edges: ObstacleEdge[] = [];
   for (const vf of virtualFaces) {
     if (vf.id === excludeId || vf.vertices.length < 3) continue;
+    // Aynı düzlemde eşitlenmiş kardeş VF de engel sayılmaz (yukarıdaki gerekçe).
+    if (excludeVfIds && excludeVfIds.has(vf.id)) continue;
     const ownerId = `vf:${vf.id}`;
     const worldVerts = vf.vertices.map(vtx => new THREE.Vector3(vtx[0], vtx[1], vtx[2]).applyMatrix4(shapeLocalToWorld));
     for (let i = 0; i < worldVerts.length; i++) {
@@ -870,9 +1056,12 @@ export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup
     u = dominant.clone();
     v = new THREE.Vector3().crossVectors(worldNormal, u).normalize();
   }
-  const panelEdges = collectPanelObstacleEdgesWorld(childPanels, worldNormal, planeOrigin, 20, boundaryEdges);
+  // Bu düzlemde EŞİTLENMİŞ kardeşler engel değildir (bkz. collectCoplanarAlignedVfIds).
+  const planeOriginLocal = planeOrigin.clone().applyMatrix4(worldToLocal);
+  const alignedVfIds = collectCoplanarAlignedVfIds(shapeVirtualFaces, localNormal, planeOriginLocal);
+  const panelEdges = collectPanelObstacleEdgesWorld(childPanels, worldNormal, planeOrigin, 20, boundaryEdges, alignedVfIds);
   const subEdges = collectSubtractionObstacleEdgesWorld(subtractions, localToWorld, worldNormal, planeOrigin, 20);
-  const vfEdges = collectVirtualFaceObstacleEdgesWorld(shapeVirtualFaces, null, localToWorld, worldNormal, planeOrigin, 20);
+  const vfEdges = collectVirtualFaceObstacleEdgesWorld(shapeVirtualFaces, null, localToWorld, worldNormal, planeOrigin, 20, alignedVfIds);
   const obstacleEdges = [...panelEdges, ...subEdges, ...vfEdges];
   console.log('[RAYCAST DEBUG] childPanels:', childPanels.length, 'panelEdges:', panelEdges.length, 'subEdges:', subEdges.length, 'vfEdges:', vfEdges.length, 'total obstacles:', obstacleEdges.length);
   const maxDist = 5000;
@@ -991,6 +1180,21 @@ export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup
     if (hasOverlap) clippedPoly = subtractPolygon(clippedPoly, ccwFootprint);
   }
   if (clippedPoly.length < 3) return null;
+  // VARSAYILAN BİÇİM: DİKDÖRTGEN. Yüzün konturunu (L basamağı, açılı duvar,
+  // çentik) takip eden N-kenarlı bölge, panelin sorgusuz yüz şeklini almasına
+  // yol açıyordu. Bölge, güvenli poligonun içinde kalan en büyük eksen hizalı
+  // dikdörtgene indirgenir; yüz şekli yalnızca "ana yüzeye eşitle" ile verilir.
+  const rectSegs = [...segs2D];
+  for (const fp of footprints) {
+    for (let i = 0; i < fp.length; i++) {
+      const a = fp[i], b = fp[(i + 1) % fp.length];
+      rectSegs.push({ ax: a.x, ay: a.y, bx: b.x, by: b.y });
+    }
+  }
+  const rectReduced = reduceRegionToRectangle2D(rectSegs, {
+    uMin: -uNegT, uMax: uPosT, vMin: -vNegT, vMax: vPosT,
+  });
+  if (rectReduced) clippedPoly = rectReduced;
   // Use planeOrigin (on the face surface) not startWorld (0.5mm outside) so stored vertices lie on the face
   const finalCornersWorld = clippedPoly.map(p => planeOrigin.clone().addScaledVector(u, p.x).addScaledVector(v, p.y));
   const centerW = new THREE.Vector3();
