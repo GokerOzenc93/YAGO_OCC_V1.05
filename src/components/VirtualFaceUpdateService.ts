@@ -12,6 +12,9 @@ import {
   collectPanelObstacleEdgesWorld,
   collectSubtractionObstacleEdgesWorld,
   collectVirtualFaceObstacleEdgesWorld,
+  collectCoplanarAlignedVfIds,
+  reduceRegionToRectangle2D,
+  collectCoplanarAlignedVfIds,
   castRayOnFaceWorld,
   castRayOnFaceWorldDetailed,
   clipPolygonByLine2D,
@@ -919,6 +922,17 @@ function reraycastVirtualFaceFallback(
     p => p.parameters?.virtualFaceId !== vf.id
   );
 
+  // EŞİTLENMİŞ KARDEŞLER ENGEL DEĞİL: aynı düzlemde "ana yüzeye eşitle" almış
+  // panel parent yüzünü tümüyle doldurur ve flush durur; bu panelin ÜZERİNE
+  // istiflenir, onu in-plane sınırlamaz. Konturu (yüz poligonu) engel sayılırsa
+  // bölge sorgusuz yüz şeklini alır — her panelin varsayılan olarak DİKDÖRTGEN
+  // yerleşmesi gerekirken. Yakalama (buildPreview) ile birebir aynı eleme.
+  const alignedVfIds = collectCoplanarAlignedVfIds(
+    shapeFaces.filter(f => f.id !== vf.id),
+    new THREE.Vector3(vf.normal[0], vf.normal[1], vf.normal[2]),
+    new THREE.Vector3(vf.center[0], vf.center[1], vf.center[2])
+  );
+
   // Compute the old VF extent in face u/v coordinates
   const vfVerticesWorld = vf.vertices.map(([x, y, z]) =>
     new THREE.Vector3(x, y, z).applyMatrix4(localToWorld)
@@ -950,9 +964,9 @@ function reraycastVirtualFaceFallback(
   const castFromOrigin = (originU: number, originV: number) => {
     const origin = buildOrigin(originU, originV);
     const start = origin.clone().addScaledVector(worldNormal, 0.5);
-    const panelObs = collectPanelObstacleEdgesWorld(panelsExcludingSelf, worldNormal, origin, 20, boundaryEdgesWorld);
+    const panelObs = collectPanelObstacleEdgesWorld(panelsExcludingSelf, worldNormal, origin, 20, boundaryEdgesWorld, alignedVfIds);
     const subObs = collectSubtractionObstacleEdgesWorld(subtractions, localToWorld, worldNormal, origin, 20);
-    const vfObs = collectVirtualFaceObstacleEdgesWorld(shapeFaces, vf.id, localToWorld, worldNormal, origin, 20);
+    const vfObs = collectVirtualFaceObstacleEdgesWorld(shapeFaces, vf.id, localToWorld, worldNormal, origin, 20, alignedVfIds);
     const obstacles = [...panelObs, ...subObs, ...vfObs];
     const dirs = [u, u.clone().negate(), v, v.clone().negate()];
     const dists: number[] = [];
@@ -1109,9 +1123,9 @@ function reraycastVirtualFaceFallback(
   // çokgeni algoritması kullanılır — aksi halde ilk rebuild'de bölge tekrar
   // dikdörtgene çökerdi. Işın demeti açık uca kaçarsa (kapanmayan sınır)
   // eski dikdörtgen davranışına düşülür.
-  const panelObsF = collectPanelObstacleEdgesWorld(panelsExcludingSelf, worldNormal, planeOrigin, 20, boundaryEdgesWorld);
+  const panelObsF = collectPanelObstacleEdgesWorld(panelsExcludingSelf, worldNormal, planeOrigin, 20, boundaryEdgesWorld, alignedVfIds);
   const subObsF = collectSubtractionObstacleEdgesWorld(subtractions, localToWorld, worldNormal, planeOrigin, 20);
-  const vfObsF = collectVirtualFaceObstacleEdgesWorld(shapeFaces, vf.id, localToWorld, worldNormal, planeOrigin, 20);
+  const vfObsF = collectVirtualFaceObstacleEdgesWorld(shapeFaces, vf.id, localToWorld, worldNormal, planeOrigin, 20, alignedVfIds);
   const obstaclesF = [...panelObsF, ...subObsF, ...vfObsF];
   const startF = planeOrigin.clone().addScaledVector(worldNormal, 0.5);
   const dirsF = [u, u.clone().negate(), v, v.clone().negate()];
@@ -1190,6 +1204,21 @@ function reraycastVirtualFaceFallback(
   }
 
   if (clippedPoly.length < 3) return null;
+
+  // VARSAYILAN BİÇİM: DİKDÖRTGEN (yakalama tarafıyla birebir aynı indirgeme).
+  // Eşitlenmiş VF'ler bu yola hiç girmez (regenerateParentFaceShapeVF ile
+  // yüz poligonunu alırlar), dolayısıyla "ana yüzeye eşitle" davranışı korunur.
+  const rectSegsF = [...segs2D];
+  for (const fp of footprints) {
+    for (let i = 0; i < fp.length; i++) {
+      const a = fp[i], b = fp[(i + 1) % fp.length];
+      rectSegsF.push({ ax: a.x, ay: a.y, bx: b.x, by: b.y });
+    }
+  }
+  const rectReducedF = reduceRegionToRectangle2D(rectSegsF, {
+    uMin: -uNegT, uMax: uPosT, vMin: -vNegT, vMax: vPosT,
+  });
+  if (rectReducedF) clippedPoly = rectReducedF;
 
   const cornersWorld = clippedPoly.map(p =>
     planeOrigin.clone().addScaledVector(u, p.x).addScaledVector(v, p.y)

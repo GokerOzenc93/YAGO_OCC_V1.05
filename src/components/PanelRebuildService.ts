@@ -1280,9 +1280,24 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
       for (const s of workingShapes) {
         if (s.type === 'panel' && s.parameters?.parentShapeId === parentShapeId) rebuiltById.set(s.id, s);
       }
+      // ── KAYIP GÜNCELLEME KORUMASI (sıra değişiminin yutulması) ────────────
+      // ESKİ HALİ: `virtualFaces: workingVirtualFaces` — rebuild BAŞINDA alınan
+      // anlık görüntü, sonunda dizinin TAMAMI olarak geri yazılıyordu. Rebuild
+      // uzun sürer (replicad boolean'ları) ve bu sırada kullanıcı panel SIRASINI
+      // değiştirirse akış şuydu: süren tur bitince eski-sıralı anlık görüntü
+      // store'a yazılır → SIRA GERİ ALINIR → kuyruktaki tekrar-koşum geri
+      // alınmış (eski) sırayla çalışır → "sırayı değiştirdim ama birleşimler
+      // değişmedi". Aynı yutulma bu aralıkta yapılan updateVirtualFace /
+      // addVirtualFace için de geçerliydi.
+      //
+      // DOĞRUSU: bu turun ürettiği TAZE VF İÇERİKLERİ kimlikle eşlenir; dizinin
+      // SIRASI ve ÜYELİĞİ ise store'un GÜNCEL halinden alınır. Böylece tur
+      // sürerken yapılan sıra değişikliği/eklemeler korunur; kuyruktaki
+      // tekrar-koşum da en güncel sırayla, doğru birleşimleri üretir.
+      const freshVfById = new Map(workingVirtualFaces.map(f => [f.id, f]));
       return {
         shapes: state.shapes.map(s => rebuiltById.get(s.id) || s),
-        virtualFaces: workingVirtualFaces,
+        virtualFaces: state.virtualFaces.map(f => freshVfById.get(f.id) || f),
       };
     });
   } finally {
