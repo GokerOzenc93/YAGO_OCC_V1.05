@@ -89,6 +89,16 @@ export interface VirtualFaceRaycastRecipe {
    * değişiminde yer değiştirmesinin iki kök nedeninden biri buydu.
    */
   planeAxisULocal?:[number,number,number];
+  /**
+   * 4 KENAR KİPİ (kalıcı): "ana yüzeye eşitle" kaldırıldığında panel, yüzün
+   * iç bükeyliği (çentik/L basamağı) HİÇ YOKMUŞ gibi en dış ölçüye uzanan
+   * dörtgendir. Bu niyet reçeteye yazılır ki sonraki rebuild/resize'larda
+   * ışınlar çentik sınırında dursa bile dörtgen dış ölçüye genişletilmeye
+   * devam etsin — aksi halde panel ilk rebuild'de çentiğe geri büzülür.
+   * Doğal (bayraksız) dörtgen yakalamalar bu alanı almaz ve eski davranışta
+   * kalır (ör. kanat tıklaması kanat panelidir).
+   */
+  ignoreFaceConcavity?:boolean;
   isCurvedFace?:boolean;
 }
 

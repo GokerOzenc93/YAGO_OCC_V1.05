@@ -213,6 +213,165 @@ export interface ObstacleEdge { v1: THREE.Vector3; v2: THREE.Vector3; ownerId?: 
  * (ör. sol yüze) eşitlenmiş panel, bu yüzü dik olarak kesiyorsa GERÇEK bir
  * engeldir ve korunur.
  */
+/**
+ * BÖLGEYİ DİKDÖRTGENE İNDİRGE — tıklamayı (köken) içeren EN BÜYÜK ALANLI eksen
+ * hizalı dikdörtgen.
+ *
+ * SÖZLEŞME ("ana yüzeye eşitle" anahtarı): bayrak KAPALIYKEN panel her koşulda
+ * 4 kenarlıdır; yüzün şekli (L/U, çentik) yalnızca bayrak AÇIKKEN verilir.
+ * Bu fonksiyon bayraksız yoldaki dörtgeni üretir.
+ *
+ * Aday v sınırları kısıt segmenti uçlarından türetilir; her (vMin, vMax) çifti
+ * için u yönleri bağımsız ikili aramayla büyütülür (v aralığı sabitken u'da
+ * büyümek monotondur) ve alanı en büyük geçerli aday seçilir — deterministik,
+ * sıradan bağımsız. Kısıt testi SEGMENT KESİŞİMİ ile yapılır (görünürlük
+ * çokgeninin köşe yongalarına bağışık). Kısıtlar dikdörtgense sonuç tohumla
+ * birebir aynıdır (hızlı yol) — düz yüzlerde davranış değişmez.
+ */
+export function reduceRegionToRectangle2D(
+  segsIn: Array<{ ax: number; ay: number; bx: number; by: number }>,
+  seed: { uMin: number; uMax: number; vMin: number; vMax: number }
+): Point2D[] | null {
+  const EPS = 0.1;
+  const MIN_DIM = 0.5;
+  const MAX_CAND = 14;
+
+  if (seed.uMax <= MIN_DIM || seed.vMax <= MIN_DIM ||
+      seed.uMin >= -MIN_DIM || seed.vMin >= -MIN_DIM) return null;
+
+  const bx0 = seed.uMin - EPS, bx1 = seed.uMax + EPS;
+  const by0 = seed.vMin - EPS, by1 = seed.vMax + EPS;
+  const segs = segsIn.filter(sg =>
+    Math.max(sg.ax, sg.bx) >= bx0 && Math.min(sg.ax, sg.bx) <= bx1 &&
+    Math.max(sg.ay, sg.by) >= by0 && Math.min(sg.ay, sg.by) <= by1
+  );
+
+  const crosses = (p1: Point2D, p2: Point2D, q1: Point2D, q2: Point2D): boolean => {
+    const d = (a: Point2D, b: Point2D, c: Point2D) =>
+      (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+    const d1 = d(q1, q2, p1), d2 = d(q1, q2, p2);
+    const d3 = d(p1, p2, q1), d4 = d(p1, p2, q2);
+    return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+           ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+  };
+
+  const rectClear = (uMin: number, uMax: number, vMin: number, vMax: number): boolean => {
+    const a = uMin + EPS, b = uMax - EPS, c = vMin + EPS, e = vMax - EPS;
+    if (b - a < MIN_DIM || e - c < MIN_DIM) return false; // dejenere = GEÇERSİZ
+    const corners: Point2D[] = [
+      { x: b, y: e }, { x: a, y: e }, { x: a, y: c }, { x: b, y: c },
+    ];
+    for (let i = 0; i < 4; i++) {
+      const p1 = corners[i], p2 = corners[(i + 1) % 4];
+      for (const sg of segs) {
+        if (crosses(p1, p2, { x: sg.ax, y: sg.ay }, { x: sg.bx, y: sg.by })) return false;
+      }
+    }
+    // Tamamen içeride kalan kısıt (kenar kesmeyen orta engel) da geçersiz kılar.
+    for (const sg of segs) {
+      if ((sg.ax > a && sg.ax < b && sg.ay > c && sg.ay < e) ||
+          (sg.bx > a && sg.bx < b && sg.by > c && sg.by < e)) return false;
+    }
+    return true;
+  };
+
+  // HIZLI YOL: tohum zaten temizse (düz yüz + dik komşular) aday aramasına girme.
+  if (rectClear(seed.uMin, seed.uMax, seed.vMin, seed.vMax)) {
+    return ensureCCW([
+      { x: seed.uMax, y: seed.vMax }, { x: seed.uMin, y: seed.vMax },
+      { x: seed.uMin, y: seed.vMin }, { x: seed.uMax, y: seed.vMin },
+    ]);
+  }
+
+  const candidates = (lo: number, hi: number, pick: (p: { x: number; y: number }) => number): number[] => {
+    const set = new Set<number>([hi]);
+    for (const sg of segs) {
+      for (const p of [{ x: sg.ax, y: sg.ay }, { x: sg.bx, y: sg.by }]) {
+        const c = pick(p);
+        if (c > lo + 1e-6 && c < hi - 1e-6) set.add(Math.round(c * 100) / 100);
+      }
+    }
+    return [...set].sort((x, y) => Math.abs(y) - Math.abs(x)).slice(0, MAX_CAND);
+  };
+  const vPosCand = candidates(0, seed.vMax, p => p.y);
+  const vNegCand = candidates(0, -seed.vMin, p => -p.y).map(x => -x);
+
+  const SEEDW = MIN_DIM + 2 * EPS;
+  const growU = (vMin: number, vMax: number, sign: 1 | -1): number => {
+    const limit = sign === 1 ? seed.uMax : -seed.uMin;
+    if (limit < SEEDW) return 0;
+    const ok = (m: number) => sign === 1
+      ? rectClear(-SEEDW, m, vMin, vMax)
+      : rectClear(-m, SEEDW, vMin, vMax);
+    if (!ok(SEEDW)) return 0;
+    let lo = SEEDW, hi = limit;
+    if (ok(limit)) return limit;
+    for (let it = 0; it < 22; it++) {
+      const mid = (lo + hi) / 2;
+      if (ok(mid)) lo = mid; else hi = mid;
+    }
+    return lo;
+  };
+
+  // ── SEÇİM ÖNCELİĞİ: EN UZAK IŞIN UZANIMI → SONRA ALAN ─────────────────────
+  // Kullanıcı kuralı: dörtgen, ışının EN UZAĞA ulaştığı noktaya göre çizilmeli.
+  // Salt en-büyük-alan seçimi, iç bükey köşenin belirsiz bölgesinde bazen o
+  // yönü kesip paneli "kısa" bırakıyordu (ör. ışın x'te 600'e ulaşmışken alan
+  // uğruna x=400'de biten kanat seçiliyordu). Adaylar artık, tohumun ışın
+  // uzanımlarını |uzunluk| önceliğiyle koruyup korumadıklarına göre
+  // SÖZLÜKSEL olarak karşılaştırılır; ancak eşitlikte alan belirler.
+  const PRES_TOL = 0.6;
+  const extentPriority: Array<{ key: 'uMax' | 'uMin' | 'vMax' | 'vMin'; val: number }> = [
+    { key: 'uMax', val: seed.uMax }, { key: 'uMin', val: seed.uMin },
+    { key: 'vMax', val: seed.vMax }, { key: 'vMin', val: seed.vMin },
+  ].sort((a, b) => Math.abs(b.val) - Math.abs(a.val));
+
+  type Cand = { uMin: number; uMax: number; vMin: number; vMax: number; area: number; pres: number[] };
+  const preserved = (c: Cand): number[] =>
+    extentPriority.map(e => Math.abs((c as any)[e.key] - e.val) <= PRES_TOL ? 1 : 0);
+  const better = (a: Cand, b: Cand): boolean => {
+    for (let i = 0; i < 4; i++) {
+      if (a.pres[i] !== b.pres[i]) return a.pres[i] > b.pres[i];
+    }
+    return a.area > b.area;
+  };
+
+  let best: Cand | null = null;
+  for (const vMax of vPosCand) {
+    for (const vMin of vNegCand) {
+      if (vMax - vMin < MIN_DIM) continue;
+      const uMax = growU(vMin, vMax, 1);
+      if (uMax < MIN_DIM) continue;
+      const uMin = -growU(vMin, vMax, -1);
+      if (-uMin < MIN_DIM) continue;
+      if (!rectClear(uMin, uMax, vMin, vMax)) continue;
+      const c: Cand = { uMin, uMax, vMin, vMax, area: (uMax - uMin) * (vMax - vMin), pres: [] };
+      c.pres = preserved(c);
+      if (!best || better(c, best)) best = c;
+    }
+  }
+  // u yönü baskın uzanımsa v-aday tarama yönü onu üretmemiş olabilir:
+  // tohum v aralığının tamamı yerine ışının u uçlarını koruyan şeridi de dene.
+  {
+    const uMax0 = seed.uMax, uMin0 = seed.uMin;
+    for (const vMax of vPosCand) {
+      for (const vMin of vNegCand) {
+        if (vMax - vMin < MIN_DIM) continue;
+        if (!rectClear(uMin0, uMax0, vMin, vMax)) continue;
+        const c: Cand = { uMin: uMin0, uMax: uMax0, vMin, vMax, area: (uMax0 - uMin0) * (vMax - vMin), pres: [] };
+        c.pres = preserved(c);
+        if (!best || better(c, best)) best = c;
+      }
+    }
+  }
+
+  if (!best) return null; // çağıran şekilli bölgeyi korur — yüz asla seçilemez olmaz
+  return ensureCCW([
+    { x: best.uMax, y: best.vMax }, { x: best.uMin, y: best.vMax },
+    { x: best.uMin, y: best.vMin }, { x: best.uMax, y: best.vMin },
+  ]);
+}
+
 export function collectCoplanarAlignedVfIds(
   virtualFaces: VirtualFace[],
   facePlaneNormalLocal: THREE.Vector3,
@@ -1036,13 +1195,76 @@ export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup
     if (hasOverlap) clippedPoly = subtractPolygon(clippedPoly, ccwFootprint);
   }
   if (clippedPoly.length < 3) return null;
-  // BÖLGE = IŞINLARIN GÖRDÜĞÜ ŞEKİL. Görünürlük çokgeni ne veriyorsa bölge odur:
-  // ışınlar L yüzün her yerine ulaşıyorsa panel L olur, dikdörtgen bir alan
-  // görüyorlarsa dikdörtgen olur. (Bir ara sürümde bölge zorla eksen hizalı
-  // dikdörtgene indirgeniyordu; bu, ışınlar şekli GÖRSE bile paneli düz
-  // çizdiriyordu ve yanlıştı. Panellerin komşularından yüz şeklini SORGUSUZ
-  // devralması sorunu ise bununla değil, eş düzlemli EŞİTLENMİŞ kardeşlerin
-  // engel kümesinden çıkarılmasıyla çözülür — bkz. collectCoplanarAlignedVfIds.)
+  // ── "ANA YÜZEYE EŞİTLE" SÖZLEŞMESİ ────────────────────────────────────────
+  // Bayrak AÇIK  → panel yüzün şeklini alır.
+  // Bayrak KAPALI → panel HER KOŞULDA 4 kenarlıdır.
+  // Işınlar yüzün şeklini görüyorsa (bölge >4 köşe ve yüzün tamamını
+  // kaplıyorsa) panel o şekliyle yerleşir ve bayrak OTOMATİK AÇIK gelir —
+  // satırdaki düğme basılı görünür; kullanıcı kaldırırsa rebuild bölgeyi
+  // 4 kenara indirger. Bölge şekilli ama KISMİ ise (ör. raf bandı L yüzde)
+  // varsayılan kural gereği baştan 4 kenara indirgenir.
+  let autoAlign = false;
+  let captureIgnoreConcavity = false;
+  if (clippedPoly.length > 4) {
+    // Yüz grubunun dünya alanı (üçgen alanları toplamı)
+    let groupArea = 0;
+    for (const fi of group.faceIndices) {
+      const fc = faces[fi];
+      if (!fc) continue;
+      const a = fc.vertices[0].clone().applyMatrix4(localToWorld);
+      const b = fc.vertices[1].clone().applyMatrix4(localToWorld);
+      const c = fc.vertices[2].clone().applyMatrix4(localToWorld);
+      groupArea += new THREE.Vector3().subVectors(b, a)
+        .cross(new THREE.Vector3().subVectors(c, a)).length() / 2;
+    }
+    let regionArea = 0;
+    for (let i = 0; i < clippedPoly.length; i++) {
+      const p1 = clippedPoly[i], p2 = clippedPoly[(i + 1) % clippedPoly.length];
+      regionArea += p1.x * p2.y - p2.x * p1.y;
+    }
+    regionArea = Math.abs(regionArea) / 2;
+
+    if (groupArea > 1e-6 && regionArea / groupArea >= 0.97) {
+      autoAlign = true; // yüzün tamamı → şekil kalır, düğme basılı gelir
+    } else {
+      // 4 KENAR KURALI: yüzün kendi İÇ BÜKEYLİĞİ (çentik, L basamağı) YOK
+      // SAYILIR — "sanki hiç subtract edilmemiş gibi" panel yüzün EN DIŞ
+      // ölçüsüne uzanır. Sınıra çarpan ışın yönleri yüz bbox'ına genişletilir;
+      // GERÇEK engellere (kardeş panel / VF / subtractor) çarpan yönler engel
+      // mesafesinde kalır ve indirgeme yalnızca ENGEL segmentlerine karşı
+      // yapılır (sınır segmentleri hariç).
+      const faceExt = { uMin: Infinity, uMax: -Infinity, vMin: Infinity, vMax: -Infinity };
+      for (const e of boundaryEdges) {
+        for (const q of [e.v1, e.v2]) {
+          const p2 = projectTo2D(q, planeOrigin, u, v);
+          if (p2.x < faceExt.uMin) faceExt.uMin = p2.x;
+          if (p2.x > faceExt.uMax) faceExt.uMax = p2.x;
+          if (p2.y < faceExt.vMin) faceExt.vMin = p2.y;
+          if (p2.y > faceExt.vMax) faceExt.vMax = p2.y;
+        }
+      }
+      const seedExp = {
+        uMax: hitIsBoundary[0] ? faceExt.uMax : uPosT,
+        uMin: hitIsBoundary[1] ? faceExt.uMin : -uNegT,
+        vMax: hitIsBoundary[2] ? faceExt.vMax : vPosT,
+        vMin: hitIsBoundary[3] ? faceExt.vMin : -vNegT,
+      };
+      const obsSegs = obstacleEdges.map(e => {
+        const a = projectTo2D(e.v1, planeOrigin, u, v);
+        const b = projectTo2D(e.v2, planeOrigin, u, v);
+        return { ax: a.x, ay: a.y, bx: b.x, by: b.y };
+      });
+      for (const fp of footprints) {
+        for (let i = 0; i < fp.length; i++) {
+          const a = fp[i], b = fp[(i + 1) % fp.length];
+          obsSegs.push({ ax: a.x, ay: a.y, bx: b.x, by: b.y });
+        }
+      }
+      const rect = reduceRegionToRectangle2D(obsSegs, seedExp);
+      if (rect) { clippedPoly = rect; captureIgnoreConcavity = true; }
+      else autoAlign = true; // indirgenemedi → şekli koru, tutarlılık için bayrak açık
+    }
+  }
   // Use planeOrigin (on the face surface) not startWorld (0.5mm outside) so stored vertices lie on the face
   const finalCornersWorld = clippedPoly.map(p => planeOrigin.clone().addScaledVector(u, p.x).addScaledVector(v, p.y));
   const centerW = new THREE.Vector3();
@@ -1120,6 +1342,7 @@ export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup
     center: [centerLocal.x, centerLocal.y, centerLocal.z],
     vertices: cornersLocal.map(c => [c.x, c.y, c.z] as [number, number, number]),
     description: '', hasPanel: false,
+    ...(autoAlign ? { alignToParentFace: true, parentFaceShape: true } : {}),
     raycastRecipe: faceGroupDescriptor ? {
       clickLocalPoint: [clickLocal.x, clickLocal.y, clickLocal.z],
       faceGroupNormal: [localNormal.x, localNormal.y, localNormal.z],
@@ -1136,6 +1359,7 @@ export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup
       },
       // EKSEN SABİTLEME: u ekseni yerel yön olarak kaydedilir; yeniden
       // türetme aynı tabanı kullanır (baskın kenar terslemesine bağışık).
+      ...(captureIgnoreConcavity ? { ignoreFaceConcavity: true } : {}),
       planeAxisULocal: (() => {
         const nm = new THREE.Matrix3().getNormalMatrix(worldToLocal);
         const ul = u.clone().applyMatrix3(nm).normalize();

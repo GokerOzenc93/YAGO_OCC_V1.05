@@ -23,6 +23,7 @@ import {
   pickDominantEdgeDirection,
   getSubtractionWorldMatrix,
   type Point2D,
+  reduceRegionToRectangle2D,
 } from './FaceRaycastOverlay';
 import {
   extractFacesFromGeometry,
@@ -888,7 +889,21 @@ function reraycastVirtualFace(
   // çokgen olarak yeniden üretilir.
   const capturedQuad = vf.vertices.length <= 4;
 
-  if (nhd && allBoundary && !siblingPanelsExist && capturedQuad) {
+  // Kısayollar ayrıca YÜZÜN KENDİSİNİN dörtgen olmasını gerektirir: bölgeyi yüz
+  // bbox'ından kurdukları için L/U yüzlerde çentiği bilmezler ve bayraksız
+  // (4 kenar) bir VF'yi çentiğin ÜZERİNDEN geçen bir dikdörtgene büyütürler.
+  // Şekilli yüzlerde tam fallback çalışır; orada bölge gerçek kısıt
+  // segmentlerine karşı indirgenir.
+  let faceIsQuadCache: boolean | null = null;
+  const faceIsQuad = (): boolean => {
+    if (faceIsQuadCache !== null) return faceIsQuadCache;
+    const be = collectBoundaryEdgesWorld(faces, strictIndices, localToWorld);
+    const ring = orderEdgesToRing2D(be, u, v);
+    faceIsQuadCache = ring.length > 0 && simplifyCollinear2D(ring, 0.05).length <= 4;
+    return faceIsQuadCache;
+  };
+
+  if (nhd && allBoundary && !siblingPanelsExist && capturedQuad && faceIsQuad()) {
     const result = reconstructFromNormalizedDistances(
       vf, nhd, groupVerticesWorld, worldNormal, u, v,
       localToWorld, worldToLocal, localNormal, shape, uniqueBoundaryEdgesLocal
@@ -898,7 +913,7 @@ function reraycastVirtualFace(
 
   const edgeAnchors = vf.raycastRecipe.edgeAnchors;
 
-  if (edgeAnchors && edgeAnchors.length === 4 && allBoundary && !siblingPanelsExist && capturedQuad) {
+  if (edgeAnchors && edgeAnchors.length === 4 && allBoundary && !siblingPanelsExist && capturedQuad && faceIsQuad()) {
     const faceGroupCenterLocal = matchedGroup.center.clone();
     const anchorHitPoints = reconstructHitPointsFromAnchors(
       edgeAnchors, uniqueBoundaryEdgesLocal, localToWorld, localNormal, faceGroupCenterLocal
@@ -1264,9 +1279,40 @@ function reraycastVirtualFaceFallback(
 
   if (clippedPoly.length < 3) return null;
 
-  // BÖLGE = IŞINLARIN GÖRDÜĞÜ ŞEKİL (yakalama tarafıyla birebir aynı kural).
-  // Dikdörtgene zorlama YOK: rebuild sonrası da bölge, ışınların o anki
-  // geometride gerçekten gördüğü çokgendir.
+  // ── "ANA YÜZEYE EŞİTLE" SÖZLEŞMESİ (rebuild tarafı) ───────────────────────
+  // Bayrak KAPALIYKEN panel HER KOŞULDA 4 kenarlıdır: ışınlar yüzün şeklini
+  // görse bile bölge, tıklamayı içeren en büyük dikdörtgene indirgenir.
+  // Düğme kapatıldığında tetiklenen rebuild bu satırdan geçer — şekilli panel
+  // otomatik 4 kenara döner. Bayrak AÇIK VF'ler bu yola hiç girmez
+  // (recalculateVirtualFacesForShape onları regenerateParentFaceShapeVF ile
+  // yüzün şekline eşitler).
+  let markIgnoreConcavity = false;
+  if (!vf.alignToParentFace && !vf.parentFaceShape &&
+      (clippedPoly.length > 4 || vf.raycastRecipe?.ignoreFaceConcavity)) {
+    // 4 KENAR KURALI: yüzün kendi İÇ BÜKEYLİĞİ YOK SAYILIR — panel, "sanki hiç
+    // subtract edilmemiş gibi" yüzün EN DIŞ ölçüsüne uzanır. Sınıra çarpan ışın
+    // yönleri yüz bbox'ına genişletilir; GERÇEK engellere çarpan yönler engel
+    // mesafesinde kalır ve indirgeme yalnızca ENGEL segmentlerine karşı yapılır.
+    const seedExp = {
+      uMax: axisHits[0].isBoundaryEdge ? (extent.uMax - rayOriginU) : uPosT,
+      uMin: axisHits[1].isBoundaryEdge ? (extent.uMin - rayOriginU) : -uNegT,
+      vMax: axisHits[2].isBoundaryEdge ? (extent.vMax - rayOriginV) : vPosT,
+      vMin: axisHits[3].isBoundaryEdge ? (extent.vMin - rayOriginV) : -vNegT,
+    };
+    const obsSegsF = obstaclesF.map((e: any) => {
+      const a = projectTo2D(e.v1, planeOrigin, u, v);
+      const b = projectTo2D(e.v2, planeOrigin, u, v);
+      return { ax: a.x, ay: a.y, bx: b.x, by: b.y };
+    });
+    for (const fp of footprints) {
+      for (let i = 0; i < fp.length; i++) {
+        const a = fp[i], b = fp[(i + 1) % fp.length];
+        obsSegsF.push({ ax: a.x, ay: a.y, bx: b.x, by: b.y });
+      }
+    }
+    const rect = reduceRegionToRectangle2D(obsSegsF, seedExp);
+    if (rect) { clippedPoly = rect; markIgnoreConcavity = true; } // indirgenemezse şekil korunur
+  }
 
   const cornersWorld = clippedPoly.map(p =>
     planeOrigin.clone().addScaledVector(u, p.x).addScaledVector(v, p.y)
@@ -1316,6 +1362,10 @@ function reraycastVirtualFaceFallback(
         },
       };
     }
+  }
+
+  if (markIgnoreConcavity && refreshedRecipe && !refreshedRecipe.ignoreFaceConcavity) {
+    refreshedRecipe = { ...refreshedRecipe, ignoreFaceConcavity: true };
   }
 
   return {
