@@ -13,7 +13,6 @@ import {
   collectSubtractionObstacleEdgesWorld,
   collectVirtualFaceObstacleEdgesWorld,
   collectCoplanarAlignedVfIds,
-  reduceRegionToRectangle2D,
   collectCoplanarAlignedVfIds,
   castRayOnFaceWorld,
   castRayOnFaceWorldDetailed,
@@ -878,7 +877,18 @@ function reraycastVirtualFace(
   const nhd = vf.raycastRecipe.normalizedHitDistances;
   const allBoundary = !!nhd && !!nhd.uPosIsBoundary && !!nhd.uNegIsBoundary && !!nhd.vPosIsBoundary && !!nhd.vNegIsBoundary;
   const siblingPanelsExist = childPanels.some(p => p.parameters?.virtualFaceId !== vf.id);
-  if (nhd && allBoundary && !siblingPanelsExist) {
+
+  // ── KISAYOL YALNIZCA DÖRTGEN BÖLGELERDE GEÇERLİDİR ────────────────────────
+  // Aşağıdaki iki hızlı yol (normalize mesafeler / kenar çıpaları) bölgeyi 4
+  // KÖŞEDEN yeniden kurar. Bölge gerçekte L/U şeklindeyse (ışınlar yüzün
+  // girintili konturunun tamamını görüyorsa) bu kısayol şekli SİLER ve paneli
+  // düz çizdirir — yakalamada 6 köşe olan bölge rebuild sonrası 4 köşeye
+  // düşüyordu. Şekilli bölgeler tam ışın-yeniden-atma yoluna (fallback)
+  // gönderilir; orada bölge, ışınların o anki geometride gerçekten gördüğü
+  // çokgen olarak yeniden üretilir.
+  const capturedQuad = vf.vertices.length <= 4;
+
+  if (nhd && allBoundary && !siblingPanelsExist && capturedQuad) {
     const result = reconstructFromNormalizedDistances(
       vf, nhd, groupVerticesWorld, worldNormal, u, v,
       localToWorld, worldToLocal, localNormal, shape, uniqueBoundaryEdgesLocal
@@ -888,7 +898,7 @@ function reraycastVirtualFace(
 
   const edgeAnchors = vf.raycastRecipe.edgeAnchors;
 
-  if (edgeAnchors && edgeAnchors.length === 4 && allBoundary && !siblingPanelsExist) {
+  if (edgeAnchors && edgeAnchors.length === 4 && allBoundary && !siblingPanelsExist && capturedQuad) {
     const faceGroupCenterLocal = matchedGroup.center.clone();
     const anchorHitPoints = reconstructHitPointsFromAnchors(
       edgeAnchors, uniqueBoundaryEdgesLocal, localToWorld, localNormal, faceGroupCenterLocal
@@ -1254,20 +1264,9 @@ function reraycastVirtualFaceFallback(
 
   if (clippedPoly.length < 3) return null;
 
-  // VARSAYILAN BİÇİM: DİKDÖRTGEN (yakalama tarafıyla birebir aynı indirgeme).
-  // Eşitlenmiş VF'ler bu yola hiç girmez (regenerateParentFaceShapeVF ile
-  // yüz poligonunu alırlar), dolayısıyla "ana yüzeye eşitle" davranışı korunur.
-  const rectSegsF = [...segs2D];
-  for (const fp of footprints) {
-    for (let i = 0; i < fp.length; i++) {
-      const a = fp[i], b = fp[(i + 1) % fp.length];
-      rectSegsF.push({ ax: a.x, ay: a.y, bx: b.x, by: b.y });
-    }
-  }
-  const rectReducedF = reduceRegionToRectangle2D(rectSegsF, {
-    uMin: -uNegT, uMax: uPosT, vMin: -vNegT, vMax: vPosT,
-  });
-  if (rectReducedF) clippedPoly = rectReducedF;
+  // BÖLGE = IŞINLARIN GÖRDÜĞÜ ŞEKİL (yakalama tarafıyla birebir aynı kural).
+  // Dikdörtgene zorlama YOK: rebuild sonrası da bölge, ışınların o anki
+  // geometride gerçekten gördüğü çokgendir.
 
   const cornersWorld = clippedPoly.map(p =>
     planeOrigin.clone().addScaledVector(u, p.x).addScaledVector(v, p.y)
