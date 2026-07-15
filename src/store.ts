@@ -58,21 +58,6 @@ export interface NormalizedHitDistances {
   vNegAbsDist:number;
 }
 
-/**
- * PARAMETRİK BAĞ (anchor) — bölgeyi YAKALAMA anında hangi komşunun sınırladığı.
- * Her yön için: null  → yüzün kendi SINIR kenarı (parent büyüyünce birlikte taşınır)
- *               'panel:<id>' / 'vf:<id>' / 'sub:<i>' → o KOMŞU (parent büyüse de
- *               kendi mutlak konumunda kalır; oransal ölçeklenmemeli).
- * Bu ayrım olmadan ışın kökeni yüzün tamamına oranla ölçeklenir ve kübü
- * büyütünce köken komşu panelin ÖTE tarafına atlar (bölge yer değiştirir).
- */
-export interface RaycastAnchorOwners {
-  uPos:string|null;
-  uNeg:string|null;
-  vPos:string|null;
-  vNeg:string|null;
-}
-
 export interface VirtualFaceRaycastRecipe {
   clickLocalPoint:[number,number,number];
   faceGroupNormal:[number,number,number];
@@ -80,25 +65,6 @@ export interface VirtualFaceRaycastRecipe {
   normalizedClickUV?:[number,number];
   edgeAnchors?:EdgeAnchor[];
   normalizedHitDistances?:NormalizedHitDistances;
-  anchorOwners?:RaycastAnchorOwners;
-  /**
-   * EKSEN SABİTLEME: yakalama anındaki u ekseni (parent-YEREL yön). Yeniden
-   * türetmede u/v tabanı baskın kenardan DEĞİL bu vektörden kurulur. Baskın
-   * kenar yönü, yüzün en-boy oranı terslenince (ör. 600×720 → 900×720) döner
-   * ve reçetedeki tüm u/v verisini geçersiz kılar — panellerin boyut
-   * değişiminde yer değiştirmesinin iki kök nedeninden biri buydu.
-   */
-  planeAxisULocal?:[number,number,number];
-  /**
-   * 4 KENAR KİPİ (kalıcı): "ana yüzeye eşitle" kaldırıldığında panel, yüzün
-   * iç bükeyliği (çentik/L basamağı) HİÇ YOKMUŞ gibi en dış ölçüye uzanan
-   * dörtgendir. Bu niyet reçeteye yazılır ki sonraki rebuild/resize'larda
-   * ışınlar çentik sınırında dursa bile dörtgen dış ölçüye genişletilmeye
-   * devam etsin — aksi halde panel ilk rebuild'de çentiğe geri büzülür.
-   * Doğal (bayraksız) dörtgen yakalamalar bu alanı almaz ve eski davranışta
-   * kalır (ör. kanat tıklaması kanat panelidir).
-   */
-  ignoreFaceConcavity?:boolean;
   isCurvedFace?:boolean;
 }
 

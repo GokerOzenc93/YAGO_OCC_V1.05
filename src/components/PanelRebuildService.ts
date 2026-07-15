@@ -817,14 +817,7 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
       // bölge seçimi kaybolmamalıdır. (Önceki sürümde buradan dışlanmaları,
       // yüzeyin karşı bölgeye kaymasına yol açıyordu.) Gönye için gereken uzama,
       // aşağıda dönen panele DOĞRU yönlü bir şeritle sağlanır.
-      // YETKİ: Bu iterasyonda bağlam yalnızca SIRASI GELEN panelin VF'si için
-      // tamdır — workingShapes tam olarak ÖNCEKİ kardeşleri içerir ki bu,
-      // baskınlık (dominance) semantiğinin kendisidir: önce gelen panel yüz
-      // alanını kazanır, sonra gelenler ona göre kısalır. Yetkili VF'de
-      // çözülemeyen panel bağı "o panel artık benden sonra" demektir ve bölge
-      // sınıra kadar yayılır (sıra değişince kısa kalma hatasının düzeltmesi).
-      // Diğer VF'ler eksik bağlamla korunur; kendi iterasyonlarında güncellenir.
-      const freshFaces = recalculateVirtualFacesForShape(parent, filteredForRecalc, workingShapes, new Set([currentVfId]));
+      const freshFaces = recalculateVirtualFacesForShape(parent, filteredForRecalc, workingShapes);
       const freshById = new Map(freshFaces.map(f => [f.id, f]));
       workingVirtualFaces = workingVirtualFaces.map(f => freshById.get(f.id) || f);
       builtVfIds.add(currentVfId);
@@ -1280,24 +1273,9 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
       for (const s of workingShapes) {
         if (s.type === 'panel' && s.parameters?.parentShapeId === parentShapeId) rebuiltById.set(s.id, s);
       }
-      // ── KAYIP GÜNCELLEME KORUMASI (sıra değişiminin yutulması) ────────────
-      // ESKİ HALİ: `virtualFaces: workingVirtualFaces` — rebuild BAŞINDA alınan
-      // anlık görüntü, sonunda dizinin TAMAMI olarak geri yazılıyordu. Rebuild
-      // uzun sürer (replicad boolean'ları) ve bu sırada kullanıcı panel SIRASINI
-      // değiştirirse akış şuydu: süren tur bitince eski-sıralı anlık görüntü
-      // store'a yazılır → SIRA GERİ ALINIR → kuyruktaki tekrar-koşum geri
-      // alınmış (eski) sırayla çalışır → "sırayı değiştirdim ama birleşimler
-      // değişmedi". Aynı yutulma bu aralıkta yapılan updateVirtualFace /
-      // addVirtualFace için de geçerliydi.
-      //
-      // DOĞRUSU: bu turun ürettiği TAZE VF İÇERİKLERİ kimlikle eşlenir; dizinin
-      // SIRASI ve ÜYELİĞİ ise store'un GÜNCEL halinden alınır. Böylece tur
-      // sürerken yapılan sıra değişikliği/eklemeler korunur; kuyruktaki
-      // tekrar-koşum da en güncel sırayla, doğru birleşimleri üretir.
-      const freshVfById = new Map(workingVirtualFaces.map(f => [f.id, f]));
       return {
         shapes: state.shapes.map(s => rebuiltById.get(s.id) || s),
-        virtualFaces: state.virtualFaces.map(f => freshVfById.get(f.id) || f),
+        virtualFaces: workingVirtualFaces,
       };
     });
   } finally {

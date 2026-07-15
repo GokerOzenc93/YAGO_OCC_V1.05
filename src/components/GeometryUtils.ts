@@ -307,70 +307,10 @@ function getAxisDirection(normal: THREE.Vector3): 'x+' | 'x-' | 'y+' | 'y-' | 'z
   return null;
 }
 
-/**
- * AYNI NORMALLİ ÇOK YÜZ AYRIMI (L/U profiller): eksen hizalı yüzler şimdiye dek
- * MUTLAK eksen konumuyla (axisPosition) eşleniyordu. L-küpte aynı normale sahip
- * iki paralel yüz vardır (dış duvar + çentik iç duvarı). Gövde genişleyince dış
- * yüz uzaklaşır; büyüme, iki yüz arasındaki boşluğu aştığı anda eski mutlak
- * konuma EN YAKIN yüz artık ÖBÜR yüzdür ve panel oraya atlar ("belli bir
- * ölçüden sonra başka yüzeye yerleşme" hatasının kök nedeni).
- *
- * Çözüm: aynı eksen yönünü paylaşan yüzlerin ayrık düzlemleri konuma göre
- * sıralanır ve yüzün SIRASI (axisRank) + toplam düzlem sayısı (axisRankCount)
- * kaydedilir. Sıra, yeniden boyutlandırmada değişmez (topoloji korunur) —
- * ölçekten bağımsız, deterministik kimlik. allFaces verilmezse alanlar boş
- * kalır ve eski davranış sürer (geriye dönük uyumlu).
- */
-function computeAxisPlaneClusters(
-  allFaces: FaceData[],
-  axisDir: string,
-  pick: (f: FaceData) => number,
-  tol: number
-): number[] {
-  const positions: number[] = [];
-  for (const f of allFaces) {
-    if (getAxisDirection(f.normal) !== axisDir) continue;
-    const p = pick(f);
-    if (!positions.some(q => Math.abs(q - p) <= tol)) positions.push(p);
-  }
-  return positions.sort((a, b) => a - b);
-}
-
-/** Düzlem-İÇİ normalize merkez farkı (eksen bileşeni hariç). Ölçekten bağımsız. */
-export function inPlaneCenterDiff(
-  a: [number, number, number] | number[],
-  b: [number, number, number] | number[],
-  axisDir: string
-): number {
-  const ax = axisDir[0];
-  const i1 = ax === 'x' ? 1 : 0;
-  const i2 = ax === 'z' ? 1 : 2;
-  return Math.hypot(a[i1] - b[i1], a[i2] - b[i2]);
-}
-
-/**
- * Kayıtlı rank'in GÜNCEL geometride karşılık geldiği eksen düzlemi konumu.
- * Düzlem sayısı kayıtla örtüşmüyorsa (topoloji değişti) null döner.
- */
-export function resolveAxisPlaneByRank(
-  faces: FaceData[],
-  axisDir: string,
-  rank: number,
-  rankCount: number
-): number | null {
-  const ax = axisDir[0] as 'x' | 'y' | 'z';
-  const pick = (f: FaceData) => ax === 'x' ? f.center.x : ax === 'y' ? f.center.y : f.center.z;
-  const clusters = computeAxisPlaneClusters(faces, axisDir, pick, 1.0);
-  if (clusters.length !== rankCount) return null;
-  const v = clusters[rank];
-  return v === undefined ? null : v;
-}
-
 export function createFaceDescriptor(
   face: FaceData,
-  geometry: THREE.BufferGeometry,
-  allFaces?: FaceData[]
-): { normal: [number, number, number]; normalizedCenter: [number, number, number]; area: number; isCurved?: boolean; axisDirection?: 'x+' | 'x-' | 'y+' | 'y-' | 'z+' | 'z-' | null; axisPosition?: number; axisRank?: number; axisRankCount?: number } {
+  geometry: THREE.BufferGeometry
+): { normal: [number, number, number]; normalizedCenter: [number, number, number]; area: number; isCurved?: boolean; axisDirection?: 'x+' | 'x-' | 'y+' | 'y-' | 'z+' | 'z-' | null; axisPosition?: number } {
   const boundingBox = new THREE.Box3().setFromBufferAttribute(
     geometry.getAttribute('position')
   );
@@ -397,37 +337,23 @@ export function createFaceDescriptor(
     axisPosition = face.center.z;
   }
 
-  // Eksen sırası: aynı yönlü ayrık düzlemler içinde bu yüzün konum sırası.
-  let axisRank: number | undefined;
-  let axisRankCount: number | undefined;
-  if (allFaces && axisDirection && axisPosition !== undefined) {
-    const axis = axisDirection[0] as 'x' | 'y' | 'z';
-    const pick = (f: FaceData) => axis === 'x' ? f.center.x : axis === 'y' ? f.center.y : f.center.z;
-    const clusters = computeAxisPlaneClusters(allFaces, axisDirection, pick, 1.0);
-    const idx = clusters.findIndex(q => Math.abs(q - (axisPosition as number)) <= 1.0);
-    if (idx >= 0) { axisRank = idx; axisRankCount = clusters.length; }
-  }
-
   return {
     normal: [face.normal.x, face.normal.y, face.normal.z],
     normalizedCenter,
     area: face.area,
     isCurved,
     axisDirection,
-    axisPosition,
-    axisRank,
-    axisRankCount
+    axisPosition
   };
 }
 
 export function findFaceByDescriptor(
-  descriptor: { normal: [number, number, number]; normalizedCenter: [number, number, number]; area: number; isCurved?: boolean; axisDirection?: string | null; axisPosition?: number; axisRank?: number; axisRankCount?: number },
+  descriptor: { normal: [number, number, number]; normalizedCenter: [number, number, number]; area: number; isCurved?: boolean; axisDirection?: string | null; axisPosition?: number },
   faces: FaceData[],
   geometry: THREE.BufferGeometry
 ): FaceData | null {
   let bestMatch: FaceData | null = null;
   let bestScore = Infinity;
-  let currentClusters: number[] | null = null;
 
   const targetNormal = new THREE.Vector3(...descriptor.normal);
   const targetAxisDir = descriptor.axisDirection || getAxisDirection(targetNormal);
@@ -439,36 +365,6 @@ export function findFaceByDescriptor(
 
     if (isFlatSurface) {
       if (faceAxisDir !== targetAxisDir) continue;
-
-      // SIRA EŞLEMESİ: kayıtta rank varsa ve güncel geometrideki aynı yönlü
-      // ayrık düzlem sayısı kayıtla örtüşüyorsa, yüz MUTLAK konumla değil
-      // SIRASIYLA seçilir — genişletme dış yüzü ne kadar uzaklaştırırsa
-      // uzaklaştırsın panel kendi yüzünde kalır. Düzlem sayısı değiştiyse
-      // (topoloji değişti) mutlak-konum eski davranışına düşülür.
-      if (
-        descriptor.axisRank !== undefined &&
-        descriptor.axisRankCount !== undefined &&
-        faceDescriptor.axisPosition !== undefined
-      ) {
-        if (currentClusters === null) {
-          const axis = (targetAxisDir as string)[0] as 'x' | 'y' | 'z';
-          const pick = (f: FaceData) => axis === 'x' ? f.center.x : axis === 'y' ? f.center.y : f.center.z;
-          currentClusters = computeAxisPlaneClusters(faces, targetAxisDir as string, pick, 1.0);
-        }
-        if (currentClusters.length === descriptor.axisRankCount) {
-          const want = currentClusters[descriptor.axisRank];
-          // Rank YALNIZCA DÜZLEMİ seçer. Yanlış düzlemdeki yüz elenir.
-          if (Math.abs(faceDescriptor.axisPosition - want) > 1.0) continue;
-          // DOĞRU DÜZLEM İÇİNDE: aynı düzlemde KOPUK birden çok yüz olabilir
-          // (U profil, çift çentik). Bunlar arasında ayrım düzlem-içi
-          // normalize merkez mesafesiyle yapılır — ölçekten bağımsız.
-          // (Eski sürüm burada tüm yüzlere aynı skoru verip ilkini seçiyordu:
-          // "aynı düzlemdeki başka yüzeye yerleşme" hatasının kök nedeni.)
-          const score = inPlaneCenterDiff(faceDescriptor.normalizedCenter, descriptor.normalizedCenter, targetAxisDir as string);
-          if (score < bestScore) { bestScore = score; bestMatch = face; }
-          continue;
-        }
-      }
 
       if (descriptor.axisPosition !== undefined && faceDescriptor.axisPosition !== undefined) {
         const axisDiff = Math.abs(faceDescriptor.axisPosition - descriptor.axisPosition);

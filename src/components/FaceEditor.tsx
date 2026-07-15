@@ -17,8 +17,6 @@ export {
   getFaceWorldNormal,
   createFaceDescriptor,
   findFaceByDescriptor,
-  resolveAxisPlaneByRank,
-  inPlaneCenterDiff,
 } from './GeometryUtils';
 
 import {

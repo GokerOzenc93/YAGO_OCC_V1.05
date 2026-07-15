@@ -66,7 +66,14 @@ function raySegmentIntersect2D(ox: number, oy: number, dx: number, dy: number, a
   return null;
 }
 
-// Visibility polygon: fan of rays from origin against all boundary+obstacle segments.
+// ── SERİ IŞIN: görünürlük çokgeni ────────────────────────────────────────────
+// Tıklanan noktadan, düzlemdeki TÜM sınır+engel kenarlarına doğru ışın demeti
+// atılır: her kenar ucuna (±epsilon açıyla) hedefli ışınlar + düzgün dağılımlı
+// yelpaze. Sonuç, tıklanan noktadan "görünen" serbest bölgenin TAM çokgenidir:
+// eğik (döndürülmüş) bir panel yüzeyi kestiğinde bölge o eğik çizgiyi birebir
+// izler — dik durumlarda ise sonuç mevcut davranışla aynı dikdörtgendir.
+// NOT: Bu, yüzeyi "ana yüze eşitle" gibi birebir kopyalamaz; yalnızca tıklanan
+// noktanın etrafındaki erişilebilir alanın şeklini üretir.
 export interface VisibilityFanResult { poly: Point2D[]; samples: Point2D[]; }
 
 export function computeVisibilityPolygon2D(
@@ -75,7 +82,10 @@ export function computeVisibilityPolygon2D(
   fanCount: number = 48
 ): VisibilityFanResult {
   const angles: number[] = [];
-
+  // Kenar ucu hedefli ışınların açısal ofseti, raySegmentIntersect2D'nin
+  // kenar-parametresi toleransını (±1e-4 × kenar boyu) güvenle aşacak kadar
+  // geniş olmalı; yoksa köşeyi teğet geçmesi gereken ışın komşu kenara
+  // "çarpmış" sayılır ve köşe arkasındaki bölge hiç örneklenmez.
   const EPS = 4e-3;
   for (const s of segments) {
     const a1 = Math.atan2(s.ay, s.ax);
@@ -101,7 +111,9 @@ export function computeVisibilityPolygon2D(
   return { poly: simplifyCollinear2D(samples, 0.05), samples };
 }
 
-// Remove collinear points so rectangles stay 4-cornered.
+// Açısal örnekleme aynı doğru üzerinde çok sayıda ara nokta üretir; düz
+// kenarlardaki eşdoğrusal noktalar temizlenir ki dikdörtgen bölgeler yine
+// 4 köşeli çıksın ve OCC'ye giden çokgen sade kalsın.
 export function simplifyCollinear2D(poly: Point2D[], eps: number): Point2D[] {
   const pts: Point2D[] = [];
   for (const p of poly) {
@@ -113,7 +125,12 @@ export function simplifyCollinear2D(poly: Point2D[], eps: number): Point2D[] {
     if (Math.hypot(f.x - l.x, f.y - l.y) <= eps) pts.pop();
   }
   if (pts.length < 3) return pts;
-
+  // İTERATİF sadeleştirme: nokta, HAYATTA KALAN komşularının doğrusuna olan
+  // uzaklığıyla değerlendirilir ve tek tek elenir. Tek geçişli yerel test,
+  // köşe etrafındaki sıkı ışın kümelerinde (epsilon ışınları 0.02-0.07mm
+  // aralıklı nokta üretir) HER noktayı bitişik komşusuna göre "eşdoğrusal"
+  // görüp gerçek köşeyi de kümeyle birlikte siliyordu — L yüzeyde bölgenin
+  // yarısının kaybolmasının kök nedeni buydu.
   let changed = true;
   while (changed && pts.length > 3) {
     changed = false;
@@ -136,7 +153,11 @@ export function simplifyCollinear2D(poly: Point2D[], eps: number): Point2D[] {
   return pts;
 }
 
-// Clip polygon to the origin-side half-plane defined by line (a,b).
+// Çokgeni, (a,b) doğrusunun ORİJİN (tıklama noktası) tarafındaki yarı
+// düzlemiyle kırpar. Görünürlük çokgeninin iç bükey (L, U) yüzeylerde reflex
+// köşe arkasına uzattığı kamayı kesmek için kullanılır: 4 ana eksen ışınının
+// çarptığı kenarların doğrularıyla kırpınca dikdörtgen yüzeyde sonuç değişmez,
+// L kolunda stabil dikdörtgen kalır, eğik engelde yamuk korunur.
 export function clipPolygonByLine2D(poly: Point2D[], a: Point2D, b: Point2D): Point2D[] {
   const ex = b.x - a.x, ey = b.y - a.y;
   const side = (p: Point2D) => ex * (p.y - a.y) - ey * (p.x - a.x);
@@ -166,173 +187,10 @@ function pointToSegmentDistance3D(p: THREE.Vector3, a: THREE.Vector3, b: THREE.V
   return new THREE.Vector3().copy(a).addScaledVector(ab, t).distanceTo(p);
 }
 
-
-export interface ObstacleEdge { v1: THREE.Vector3; v2: THREE.Vector3; ownerId?: string; }
-
-// Reduce region to the largest axis-aligned rectangle containing the origin.
-export function reduceRegionToRectangle2D(
-  segsIn: Array<{ ax: number; ay: number; bx: number; by: number }>,
-  seed: { uMin: number; uMax: number; vMin: number; vMax: number }
-): Point2D[] | null {
-  const EPS = 0.1;
-  const MIN_DIM = 0.5;
-  const MAX_CAND = 14;
-
-  if (seed.uMax <= MIN_DIM || seed.vMax <= MIN_DIM ||
-      seed.uMin >= -MIN_DIM || seed.vMin >= -MIN_DIM) return null;
-
-  const bx0 = seed.uMin - EPS, bx1 = seed.uMax + EPS;
-  const by0 = seed.vMin - EPS, by1 = seed.vMax + EPS;
-  const segs = segsIn.filter(sg =>
-    Math.max(sg.ax, sg.bx) >= bx0 && Math.min(sg.ax, sg.bx) <= bx1 &&
-    Math.max(sg.ay, sg.by) >= by0 && Math.min(sg.ay, sg.by) <= by1
-  );
-
-  const crosses = (p1: Point2D, p2: Point2D, q1: Point2D, q2: Point2D): boolean => {
-    const d = (a: Point2D, b: Point2D, c: Point2D) =>
-      (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-    const d1 = d(q1, q2, p1), d2 = d(q1, q2, p2);
-    const d3 = d(p1, p2, q1), d4 = d(p1, p2, q2);
-    return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
-           ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
-  };
-
-  const rectClear = (uMin: number, uMax: number, vMin: number, vMax: number): boolean => {
-    const a = uMin + EPS, b = uMax - EPS, c = vMin + EPS, e = vMax - EPS;
-    if (b - a < MIN_DIM || e - c < MIN_DIM) return false; // dejenere = GEÇERSİZ
-    const corners: Point2D[] = [
-      { x: b, y: e }, { x: a, y: e }, { x: a, y: c }, { x: b, y: c },
-    ];
-    for (let i = 0; i < 4; i++) {
-      const p1 = corners[i], p2 = corners[(i + 1) % 4];
-      for (const sg of segs) {
-        if (crosses(p1, p2, { x: sg.ax, y: sg.ay }, { x: sg.bx, y: sg.by })) return false;
-      }
-    }
-
-    for (const sg of segs) {
-      if ((sg.ax > a && sg.ax < b && sg.ay > c && sg.ay < e) ||
-          (sg.bx > a && sg.bx < b && sg.by > c && sg.by < e)) return false;
-    }
-    return true;
-  };
-
-
-  if (rectClear(seed.uMin, seed.uMax, seed.vMin, seed.vMax)) {
-    return ensureCCW([
-      { x: seed.uMax, y: seed.vMax }, { x: seed.uMin, y: seed.vMax },
-      { x: seed.uMin, y: seed.vMin }, { x: seed.uMax, y: seed.vMin },
-    ]);
-  }
-
-  const candidates = (lo: number, hi: number, pick: (p: { x: number; y: number }) => number): number[] => {
-    const set = new Set<number>([hi]);
-    for (const sg of segs) {
-      for (const p of [{ x: sg.ax, y: sg.ay }, { x: sg.bx, y: sg.by }]) {
-        const c = pick(p);
-        if (c > lo + 1e-6 && c < hi - 1e-6) set.add(Math.round(c * 100) / 100);
-      }
-    }
-    return [...set].sort((x, y) => Math.abs(y) - Math.abs(x)).slice(0, MAX_CAND);
-  };
-  const vPosCand = candidates(0, seed.vMax, p => p.y);
-  const vNegCand = candidates(0, -seed.vMin, p => -p.y).map(x => -x);
-
-  const SEEDW = MIN_DIM + 2 * EPS;
-  const growU = (vMin: number, vMax: number, sign: 1 | -1): number => {
-    const limit = sign === 1 ? seed.uMax : -seed.uMin;
-    if (limit < SEEDW) return 0;
-    const ok = (m: number) => sign === 1
-      ? rectClear(-SEEDW, m, vMin, vMax)
-      : rectClear(-m, SEEDW, vMin, vMax);
-    if (!ok(SEEDW)) return 0;
-    let lo = SEEDW, hi = limit;
-    if (ok(limit)) return limit;
-    for (let it = 0; it < 22; it++) {
-      const mid = (lo + hi) / 2;
-      if (ok(mid)) lo = mid; else hi = mid;
-    }
-    return lo;
-  };
-
-  // Priority: preserve longest ray extents, then area.
-  const PRES_TOL = 0.6;
-  const extentPriority: Array<{ key: 'uMax' | 'uMin' | 'vMax' | 'vMin'; val: number }> = [
-    { key: 'uMax', val: seed.uMax }, { key: 'uMin', val: seed.uMin },
-    { key: 'vMax', val: seed.vMax }, { key: 'vMin', val: seed.vMin },
-  ].sort((a, b) => Math.abs(b.val) - Math.abs(a.val));
-
-  type Cand = { uMin: number; uMax: number; vMin: number; vMax: number; area: number; pres: number[] };
-  const preserved = (c: Cand): number[] =>
-    extentPriority.map(e => Math.abs((c as any)[e.key] - e.val) <= PRES_TOL ? 1 : 0);
-  const better = (a: Cand, b: Cand): boolean => {
-    for (let i = 0; i < 4; i++) {
-      if (a.pres[i] !== b.pres[i]) return a.pres[i] > b.pres[i];
-    }
-    return a.area > b.area;
-  };
-
-  let best: Cand | null = null;
-  for (const vMax of vPosCand) {
-    for (const vMin of vNegCand) {
-      if (vMax - vMin < MIN_DIM) continue;
-      const uMax = growU(vMin, vMax, 1);
-      if (uMax < MIN_DIM) continue;
-      const uMin = -growU(vMin, vMax, -1);
-      if (-uMin < MIN_DIM) continue;
-      if (!rectClear(uMin, uMax, vMin, vMax)) continue;
-      const c: Cand = { uMin, uMax, vMin, vMax, area: (uMax - uMin) * (vMax - vMin), pres: [] };
-      c.pres = preserved(c);
-      if (!best || better(c, best)) best = c;
-    }
-  }
-
-  {
-    const uMax0 = seed.uMax, uMin0 = seed.uMin;
-    for (const vMax of vPosCand) {
-      for (const vMin of vNegCand) {
-        if (vMax - vMin < MIN_DIM) continue;
-        if (!rectClear(uMin0, uMax0, vMin, vMax)) continue;
-        const c: Cand = { uMin: uMin0, uMax: uMax0, vMin, vMax, area: (uMax0 - uMin0) * (vMax - vMin), pres: [] };
-        c.pres = preserved(c);
-        if (!best || better(c, best)) best = c;
-      }
-    }
-  }
-
-  if (!best) return null; // çağıran şekilli bölgeyi korur — yüz asla seçilemez olmaz
-  return ensureCCW([
-    { x: best.uMax, y: best.vMax }, { x: best.uMin, y: best.vMax },
-    { x: best.uMin, y: best.vMin }, { x: best.uMax, y: best.vMin },
-  ]);
-}
-
-export function collectCoplanarAlignedVfIds(
-  virtualFaces: VirtualFace[],
-  facePlaneNormalLocal: THREE.Vector3,
-  facePlaneOriginLocal: THREE.Vector3,
-  planeTolerance: number = 1.0
-): Set<string> {
-  const out = new Set<string>();
-  const n = facePlaneNormalLocal.clone().normalize();
-  const d = facePlaneOriginLocal.dot(n);
-  for (const vf of virtualFaces) {
-    if (!vf.alignToParentFace && !vf.parentFaceShape) continue;
-    const vn = new THREE.Vector3(vf.normal[0], vf.normal[1], vf.normal[2]).normalize();
-    if (Math.abs(vn.dot(n)) < 0.99) continue;
-    const vc = new THREE.Vector3(vf.center[0], vf.center[1], vf.center[2]);
-    if (Math.abs(vc.dot(n) - d) > planeTolerance) continue;
-    out.add(vf.id);
-  }
-  return out;
-}
-
-export function collectPanelObstacleEdgesWorld(panelShapes: any[], facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, planeTolerance: number = 3.0, boundaryEdges?: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>, excludeVfIds?: Set<string>): ObstacleEdge[] {
-  const obstacleEdges: ObstacleEdge[] = [];
+export function collectPanelObstacleEdgesWorld(panelShapes: any[], facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, planeTolerance: number = 3.0, boundaryEdges?: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>): Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> {
+  const obstacleEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> = [];
   for (const panel of panelShapes) {
     if (!panel.geometry) continue;
-
-    if (excludeVfIds && excludeVfIds.has(panel.parameters?.virtualFaceId)) continue;
     const panelMatrix = getShapeMatrix(panel);
     const posAttr = panel.geometry.getAttribute('position') as THREE.BufferAttribute;
     if (!posAttr) continue;
@@ -385,6 +243,7 @@ export function collectPanelObstacleEdgesWorld(panelShapes: any[], facePlaneNorm
       // Panel is entirely on one side and doesn't touch — skip it
       continue;
     }
+    console.log('[OBSTACLE] panel:', panel.id, 'signed:', minSigned.toFixed(1), '→', maxSigned.toFixed(1), 'crosses:', crossesPlane, 'touches:', touchesPlane, 'pts:', pts2D.length);
     if (pts2D.length < 3) continue;
 
     // Compute convex hull of projected vertices = panel's footprint on face
@@ -392,12 +251,11 @@ export function collectPanelObstacleEdgesWorld(panelShapes: any[], facePlaneNorm
     if (hull.length < 3) continue;
 
     // Convert hull edges back to 3D world positions on the face plane
-    const ownerId = `panel:${panel.id}`;
     for (let i = 0; i < hull.length; i++) {
       const a = hull[i], b = hull[(i + 1) % hull.length];
       const v1 = facePlaneOrigin.clone().addScaledVector(u, a.x).addScaledVector(v, a.y);
       const v2 = facePlaneOrigin.clone().addScaledVector(u, b.x).addScaledVector(v, b.y);
-      obstacleEdges.push({ v1, v2, ownerId });
+      obstacleEdges.push({ v1, v2 });
     }
   }
   return obstacleEdges;
@@ -418,12 +276,10 @@ export function getSubtractionWorldMatrix(parentLocalToWorld: THREE.Matrix4, sub
   return new THREE.Matrix4().multiplyMatrices(parentLocalToWorld, groupMatrix).multiply(meshMatrix);
 }
 
-export function collectSubtractionObstacleEdgesWorld(subtractions: any[], parentLocalToWorld: THREE.Matrix4, facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, planeTolerance: number = 20): ObstacleEdge[] {
-  const edges: ObstacleEdge[] = [];
-  for (let si = 0; si < subtractions.length; si++) {
-    const sub = subtractions[si];
+export function collectSubtractionObstacleEdgesWorld(subtractions: any[], parentLocalToWorld: THREE.Matrix4, facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, planeTolerance: number = 20): Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> {
+  const edges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> = [];
+  for (const sub of subtractions) {
     if (!sub || !sub.geometry) continue;
-    const ownerId = `sub:${si}`;
     const subWorldMatrix = getSubtractionWorldMatrix(parentLocalToWorld, sub);
     const edgesGeo = new THREE.EdgesGeometry(sub.geometry);
     const edgePos = edgesGeo.getAttribute('position');
@@ -432,7 +288,7 @@ export function collectSubtractionObstacleEdgesWorld(subtractions: any[], parent
       const vb = new THREE.Vector3(edgePos.getX(i + 1), edgePos.getY(i + 1), edgePos.getZ(i + 1)).applyMatrix4(subWorldMatrix);
       const distA = Math.abs(facePlaneNormal.dot(new THREE.Vector3().subVectors(va, facePlaneOrigin)));
       const distB = Math.abs(facePlaneNormal.dot(new THREE.Vector3().subVectors(vb, facePlaneOrigin)));
-      if (distA < planeTolerance && distB < planeTolerance) edges.push({ v1: va, v2: vb, ownerId });
+      if (distA < planeTolerance && distB < planeTolerance) edges.push({ v1: va, v2: vb });
     }
     edgesGeo.dispose();
   }
@@ -616,7 +472,7 @@ function isInsideEdge(p: Point2D, edgeStart: Point2D, edgeEnd: Point2D): boolean
 
 // Returns true only when all cross-products have the same sign (convex polygon).
 // Sutherland-Hodgman clip requires a convex clip polygon; skip it for non-convex faces.
-export function isConvexPolygon2D(poly: Point2D[]): boolean {
+function isConvexPolygon2D(poly: Point2D[]): boolean {
   if (poly.length < 3) return false;
   let sign = 0;
   for (let i = 0; i < poly.length; i++) {
@@ -775,17 +631,15 @@ export function ensureCCW(poly: Point2D[]): Point2D[] {
 
 export interface RayHitResult {
   hitPoint: THREE.Vector3;
-  hitEdge: ObstacleEdge | null;
+  hitEdge: { v1: THREE.Vector3; v2: THREE.Vector3 } | null;
   edgeT: number;
   isBoundaryEdge: boolean;
-
-  hitOwnerId: string | null;
 }
 
-export function castRayOnFaceWorldDetailed(originWorld: THREE.Vector3, dirWorld: THREE.Vector3, boundaryEdges: ObstacleEdge[], obstacleEdges: ObstacleEdge[], u: THREE.Vector3, v: THREE.Vector3, planeOrigin: THREE.Vector3, maxDist: number): RayHitResult {
+export function castRayOnFaceWorldDetailed(originWorld: THREE.Vector3, dirWorld: THREE.Vector3, boundaryEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>, obstacleEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>, u: THREE.Vector3, v: THREE.Vector3, planeOrigin: THREE.Vector3, maxDist: number): RayHitResult {
   const o2d = projectTo2D(originWorld, planeOrigin, u, v);
   const dir2d = { x: dirWorld.dot(u), y: dirWorld.dot(v) };
-  let tMin = maxDist, hitEdge: ObstacleEdge | null = null, hitEdgeT = 0, isBoundary = false;
+  let tMin = maxDist, hitEdge: { v1: THREE.Vector3; v2: THREE.Vector3 } | null = null, hitEdgeT = 0, isBoundary = false;
   for (const edge of boundaryEdges) {
     const a2d = projectTo2D(edge.v1, planeOrigin, u, v), b2d = projectTo2D(edge.v2, planeOrigin, u, v);
     const t = raySegmentIntersect2D(o2d.x, o2d.y, dir2d.x, dir2d.y, a2d.x, a2d.y, b2d.x, b2d.y);
@@ -806,13 +660,7 @@ export function castRayOnFaceWorldDetailed(originWorld: THREE.Vector3, dirWorld:
       hitEdgeT = eLen > 1e-8 ? ((hitX - a2d.x) * ex + (hitY - a2d.y) * ey) / (eLen * eLen) : 0;
     }
   }
-  return {
-    hitPoint: originWorld.clone().addScaledVector(dirWorld, tMin),
-    hitEdge,
-    edgeT: Math.max(0, Math.min(1, hitEdgeT)),
-    isBoundaryEdge: isBoundary,
-    hitOwnerId: isBoundary ? null : (hitEdge?.ownerId ?? null),
-  };
+  return { hitPoint: originWorld.clone().addScaledVector(dirWorld, tMin), hitEdge, edgeT: Math.max(0, Math.min(1, hitEdgeT)), isBoundaryEdge: isBoundary };
 }
 
 export function castRayOnFaceWorld(originWorld: THREE.Vector3, dirWorld: THREE.Vector3, boundaryEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>, obstacleEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>, u: THREE.Vector3, v: THREE.Vector3, planeOrigin: THREE.Vector3, maxDist: number): THREE.Vector3 {
@@ -875,25 +723,22 @@ function isWorldPointInsidePanelForVF(
   return isWorldPointInsidePanelFootprint(worldPt, panel, facePlaneNormal, facePlaneOrigin);
 }
 
-export function collectVirtualFaceObstacleEdgesWorld(virtualFaces: VirtualFace[], excludeId: string | null, shapeLocalToWorld: THREE.Matrix4, facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, planeTolerance: number = 20, excludeVfIds?: Set<string>): ObstacleEdge[] {
-  const edges: ObstacleEdge[] = [];
+export function collectVirtualFaceObstacleEdgesWorld(virtualFaces: VirtualFace[], excludeId: string | null, shapeLocalToWorld: THREE.Matrix4, facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, planeTolerance: number = 20): Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> {
+  const edges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> = [];
   for (const vf of virtualFaces) {
     if (vf.id === excludeId || vf.vertices.length < 3) continue;
-  
-    if (excludeVfIds && excludeVfIds.has(vf.id)) continue;
-    const ownerId = `vf:${vf.id}`;
     const worldVerts = vf.vertices.map(vtx => new THREE.Vector3(vtx[0], vtx[1], vtx[2]).applyMatrix4(shapeLocalToWorld));
     for (let i = 0; i < worldVerts.length; i++) {
       const va = worldVerts[i], vb = worldVerts[(i + 1) % worldVerts.length];
       const distA = Math.abs(facePlaneNormal.dot(new THREE.Vector3().subVectors(va, facePlaneOrigin)));
       const distB = Math.abs(facePlaneNormal.dot(new THREE.Vector3().subVectors(vb, facePlaneOrigin)));
-      if (distA < planeTolerance && distB < planeTolerance) edges.push({ v1: va, v2: vb, ownerId });
+      if (distA < planeTolerance && distB < planeTolerance) edges.push({ v1: va, v2: vb });
     }
   }
   return edges;
 }
 
-export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces: FaceData[], localToWorld: THREE.Matrix4, worldToLocal: THREE.Matrix4, childPanels: any[], shapeId: string, subtractions: any[] = [], geometry?: THREE.BufferGeometry, shapeVirtualFaces: VirtualFace[] = []): PendingPreview | null {
+function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces: FaceData[], localToWorld: THREE.Matrix4, worldToLocal: THREE.Matrix4, childPanels: any[], shapeId: string, subtractions: any[] = [], geometry?: THREE.BufferGeometry, shapeVirtualFaces: VirtualFace[] = []): PendingPreview | null {
   const normalMatrix = new THREE.Matrix3().getNormalMatrix(localToWorld);
   const planeOrigin = clickWorld.clone();
 
@@ -970,7 +815,7 @@ export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup
     let faceGroupDescriptor: import('../store').FaceDescriptor | undefined;
     if (geometry && group.faceIndices.length > 0) {
       const repFace = faces[group.faceIndices[0]];
-      if (repFace) faceGroupDescriptor = createFaceDescriptor(repFace, geometry, faces);
+      if (repFace) faceGroupDescriptor = createFaceDescriptor(repFace, geometry);
     }
 
     const parentPos = new THREE.Vector3();
@@ -1005,13 +850,11 @@ export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup
     u = dominant.clone();
     v = new THREE.Vector3().crossVectors(worldNormal, u).normalize();
   }
-
-  const planeOriginLocal = planeOrigin.clone().applyMatrix4(worldToLocal);
-  const alignedVfIds = collectCoplanarAlignedVfIds(shapeVirtualFaces, localNormal, planeOriginLocal);
-  const panelEdges = collectPanelObstacleEdgesWorld(childPanels, worldNormal, planeOrigin, 20, boundaryEdges, alignedVfIds);
+  const panelEdges = collectPanelObstacleEdgesWorld(childPanels, worldNormal, planeOrigin, 20, boundaryEdges);
   const subEdges = collectSubtractionObstacleEdgesWorld(subtractions, localToWorld, worldNormal, planeOrigin, 20);
-  const vfEdges = collectVirtualFaceObstacleEdgesWorld(shapeVirtualFaces, null, localToWorld, worldNormal, planeOrigin, 20, alignedVfIds);
+  const vfEdges = collectVirtualFaceObstacleEdgesWorld(shapeVirtualFaces, null, localToWorld, worldNormal, planeOrigin, 20);
   const obstacleEdges = [...panelEdges, ...subEdges, ...vfEdges];
+  console.log('[RAYCAST DEBUG] childPanels:', childPanels.length, 'panelEdges:', panelEdges.length, 'subEdges:', subEdges.length, 'vfEdges:', vfEdges.length, 'total obstacles:', obstacleEdges.length);
   const maxDist = 5000;
   const offset = worldNormal.clone().multiplyScalar(0.5);
   const startWorld = clickWorld.clone().add(offset);
@@ -1020,8 +863,7 @@ export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup
   const lines: RayLine[] = [];
   const hitPointsWorld: THREE.Vector3[] = [];
   const hitIsBoundary: boolean[] = [];
-  const hitEdgesWorld: Array<ObstacleEdge | null> = [];
-  const hitOwnerIds: Array<string | null> = [];
+  const hitEdgesWorld: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 } | null> = [];
   const edgeAnchors: EdgeAnchor[] = [];
   const parentPos = new THREE.Vector3();
   localToWorld.decompose(parentPos, new THREE.Quaternion(), new THREE.Vector3());
@@ -1032,7 +874,6 @@ export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup
     hitPointsWorld.push(result.hitPoint);
     hitIsBoundary.push(result.isBoundaryEdge);
     hitEdgesWorld.push(result.hitEdge);
-    hitOwnerIds.push(result.hitOwnerId);
     if (result.hitEdge) {
       const v1Local = result.hitEdge.v1.clone().applyMatrix4(worldToLocal);
       const v2Local = result.hitEdge.v2.clone().applyMatrix4(worldToLocal);
@@ -1043,15 +884,23 @@ export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup
   const [uPosHit, uNegHit, vPosHit, vNegHit] = hitPointsWorld;
   const uPosT = uPosHit.distanceTo(startWorld), uNegT = uNegHit.distanceTo(startWorld);
   const vPosT = vPosHit.distanceTo(startWorld), vNegT = vNegHit.distanceTo(startWorld);
-
+  // SERİ IŞIN: bölge şekli, 4 eksen ışınının dikdörtgeni yerine tıklanan
+  // noktadan atılan ışın demetinin görünürlük çokgeninden türetilir. Eğik
+  // engellerde (döndürülmüş panel vb.) bölge engel çizgisini birebir izler;
+  // dik engellerde sonuç eski dikdörtgenle aynıdır. Herhangi bir ışın açık
+  // uca kaçarsa (sınır halkası kapanmamışsa) eski dikdörtgene düşülür.
   const segs2D = [...boundaryEdges, ...obstacleEdges].map(e => {
     const a = projectTo2D(e.v1, planeOrigin, u, v);
     const b = projectTo2D(e.v2, planeOrigin, u, v);
     return { ax: a.x, ay: a.y, bx: b.x, by: b.y };
   });
+  console.log('[RAYCAST DEBUG] segs2D count:', segs2D.length, 'boundaryEdges:', boundaryEdges.length, 'obstacleEdges:', obstacleEdges.length);
   const vis = computeVisibilityPolygon2D(segs2D, maxDist);
   let visPoly = vis.poly;
-  // Stabilize: clip visibility polygon by axis-hit edge lines to remove reflex wedges.
+  // STABİLİZASYON: görünürlük çokgeni, iç bükey yüzeylerde (L/U) reflex köşe
+  // arkasına tıklamaya duyarlı bir kama uzatır. 4 ana eksen ışınının çarptığı
+  // kenarların DOĞRULARIYLA (tıklama tarafı) kırpılır: kama kesilir, sonuç
+  // tıklama noktasından bağımsız stabilleşir; eğik kenar takibi korunur.
   if (visPoly.length >= 3) {
     for (const he of hitEdgesWorld) {
       if (!he) continue;
@@ -1063,13 +912,16 @@ export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup
     visPoly = simplifyCollinear2D(visPoly, 0.05);
   }
   const visValid = visPoly.length >= 3 && !visPoly.some(p => Math.hypot(p.x, p.y) >= maxDist - 1);
+  console.log('[RAYCAST DEBUG] visValid:', visValid, 'visPoly.length:', visPoly.length, 'maxPt:', visPoly.length > 0 ? Math.max(...visPoly.map(p => Math.hypot(p.x, p.y))).toFixed(1) : 'N/A');
   let rect2D: Point2D[] = visValid
     ? ensureCCW(visPoly)
     : ensureCCW([{ x: uPosT, y: vPosT }, { x: -uNegT, y: vPosT }, { x: -uNegT, y: -vNegT }, { x: uPosT, y: -vNegT }]);
-
+  // Yelpaze ışınları görselleştirilir (en fazla ~32 çizgi): kullanıcı
+  // taramanın bölgeyi nasıl belirlediğini görür.
   if (visValid) {
     const fanPts = vis.samples.map(p => {
-
+      // örnek noktaları da kırpılmış bölgeye çekilir: ışın çizgileri kesilen
+      // kamaya taşmasın
       let q = p;
       for (const he of hitEdgesWorld) {
         if (!he) continue;
@@ -1117,86 +969,6 @@ export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup
     if (hasOverlap) clippedPoly = subtractPolygon(clippedPoly, ccwFootprint);
   }
   if (clippedPoly.length < 3) return null;
-  // autoAlign: when region covers the entire face shape, set alignToParentFace.
-  // Otherwise always reduce to rectangle.
-  let autoAlign = false;
-  let captureIgnoreConcavity = false;
-  if (clippedPoly.length > 4) {
-    // Yüz grubunun dünya alanı (üçgen alanları toplamı)
-    let groupArea = 0;
-    for (const fi of group.faceIndices) {
-      const fc = faces[fi];
-      if (!fc) continue;
-      const a = fc.vertices[0].clone().applyMatrix4(localToWorld);
-      const b = fc.vertices[1].clone().applyMatrix4(localToWorld);
-      const c = fc.vertices[2].clone().applyMatrix4(localToWorld);
-      groupArea += new THREE.Vector3().subVectors(b, a)
-        .cross(new THREE.Vector3().subVectors(c, a)).length() / 2;
-    }
-    let regionArea = 0;
-    for (let i = 0; i < clippedPoly.length; i++) {
-      const p1 = clippedPoly[i], p2 = clippedPoly[(i + 1) % clippedPoly.length];
-      regionArea += p1.x * p2.y - p2.x * p1.y;
-    }
-    regionArea = Math.abs(regionArea) / 2;
-
-
-    const boundaryNonConvex = !!(boundaryLoop2D && boundaryLoop2D.length >= 3 &&
-      !isConvexPolygon2D(ensureCCW(boundaryLoop2D)));
-
-    const hasRealObstacleHit = hitIsBoundary.some(b => !b);
-
-    if (groupArea > 1e-6 && regionArea / groupArea >= 0.97 && !hasRealObstacleHit) {
-      autoAlign = true;
-    } else if (boundaryNonConvex && hasRealObstacleHit) {
-      // Non-convex face with real obstacles: keep the face shape (visibility
-      // polygon). Rectangle reduction on L/U faces with perpendicular
-      // obstacles would collapse to a single arm instead of the full L.
-      autoAlign = true;
-    } else {
-      // Always try rectangle reduction: boundary-hit directions expand to
-      // face bbox, obstacle-hit directions keep their distance.
-      const faceExt = { uMin: Infinity, uMax: -Infinity, vMin: Infinity, vMax: -Infinity };
-      for (const e of boundaryEdges) {
-        for (const q of [e.v1, e.v2]) {
-          const p2 = projectTo2D(q, planeOrigin, u, v);
-          if (p2.x < faceExt.uMin) faceExt.uMin = p2.x;
-          if (p2.x > faceExt.uMax) faceExt.uMax = p2.x;
-          if (p2.y < faceExt.vMin) faceExt.vMin = p2.y;
-          if (p2.y > faceExt.vMax) faceExt.vMax = p2.y;
-        }
-      }
-      const seedExp = {
-        uMax: hitIsBoundary[0] ? faceExt.uMax : uPosT,
-        uMin: hitIsBoundary[1] ? faceExt.uMin : -uNegT,
-        vMax: hitIsBoundary[2] ? faceExt.vMax : vPosT,
-        vMin: hitIsBoundary[3] ? faceExt.vMin : -vNegT,
-      };
-      const obsSegs = obstacleEdges.map(e => {
-        const a = projectTo2D(e.v1, planeOrigin, u, v);
-        const b = projectTo2D(e.v2, planeOrigin, u, v);
-        return { ax: a.x, ay: a.y, bx: b.x, by: b.y };
-      });
-      for (const fp of footprints) {
-        for (let i = 0; i < fp.length; i++) {
-          const a = fp[i], b = fp[(i + 1) % fp.length];
-          obsSegs.push({ ax: a.x, ay: a.y, bx: b.x, by: b.y });
-        }
-      }
-      // On non-convex faces, boundary edges constrain the rectangle to
-      // prevent overflow past the notch/step.
-      if (boundaryNonConvex) {
-        for (const e of boundaryEdges) {
-          const a = projectTo2D(e.v1, planeOrigin, u, v);
-          const b = projectTo2D(e.v2, planeOrigin, u, v);
-          obsSegs.push({ ax: a.x, ay: a.y, bx: b.x, by: b.y });
-        }
-      }
-      const rect = reduceRegionToRectangle2D(obsSegs, seedExp);
-      if (rect) { clippedPoly = rect; captureIgnoreConcavity = true; }
-      else autoAlign = true;
-    }
-  }
   // Use planeOrigin (on the face surface) not startWorld (0.5mm outside) so stored vertices lie on the face
   const finalCornersWorld = clippedPoly.map(p => planeOrigin.clone().addScaledVector(u, p.x).addScaledVector(v, p.y));
   const centerW = new THREE.Vector3();
@@ -1224,7 +996,7 @@ export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup
   let faceGroupDescriptor: import('../store').FaceDescriptor | undefined;
   if (geometry && group.faceIndices.length > 0) {
     const representativeFace = faces[group.faceIndices[0]];
-    if (representativeFace) faceGroupDescriptor = createFaceDescriptor(representativeFace, geometry, faces);
+    if (representativeFace) faceGroupDescriptor = createFaceDescriptor(representativeFace, geometry);
   }
   let normalizedClickUV: [number, number] | undefined;
   let normalizedHitDistances: NormalizedHitDistances | undefined;
@@ -1274,27 +1046,12 @@ export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup
     center: [centerLocal.x, centerLocal.y, centerLocal.z],
     vertices: cornersLocal.map(c => [c.x, c.y, c.z] as [number, number, number]),
     description: '', hasPanel: false,
-    ...(autoAlign ? { alignToParentFace: true, parentFaceShape: true } : {}),
     raycastRecipe: faceGroupDescriptor ? {
       clickLocalPoint: [clickLocal.x, clickLocal.y, clickLocal.z],
       faceGroupNormal: [localNormal.x, localNormal.y, localNormal.z],
       faceGroupDescriptor, normalizedClickUV,
       edgeAnchors: edgeAnchors.length === 4 ? edgeAnchors : undefined,
       normalizedHitDistances,
-
-      anchorOwners: {
-        uPos: hitOwnerIds[0] ?? null,
-        uNeg: hitOwnerIds[1] ?? null,
-        vPos: hitOwnerIds[2] ?? null,
-        vNeg: hitOwnerIds[3] ?? null,
-      },
-
-      ...(captureIgnoreConcavity ? { ignoreFaceConcavity: true } : {}),
-      planeAxisULocal: (() => {
-        const nm = new THREE.Matrix3().getNormalMatrix(worldToLocal);
-        const ul = u.clone().applyMatrix3(nm).normalize();
-        return [ul.x, ul.y, ul.z] as [number, number, number];
-      })(),
     } : undefined,
   };
   return { rayLines: lines, originLocal: clickWorld.clone().sub(parentPos), geo, edgeGeo, virtualFace };
