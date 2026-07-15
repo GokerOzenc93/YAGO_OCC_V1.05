@@ -1148,6 +1148,11 @@ export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup
 
     if (groupArea > 1e-6 && regionArea / groupArea >= 0.97 && !hasRealObstacleHit) {
       autoAlign = true;
+    } else if (boundaryNonConvex && hasRealObstacleHit) {
+      // Non-convex face with real obstacles: keep the face shape (visibility
+      // polygon). Rectangle reduction on L/U faces with perpendicular
+      // obstacles would collapse to a single arm instead of the full L.
+      autoAlign = true;
     } else {
       // Always try rectangle reduction: boundary-hit directions expand to
       // face bbox, obstacle-hit directions keep their distance.
