@@ -616,7 +616,7 @@ function isInsideEdge(p: Point2D, edgeStart: Point2D, edgeEnd: Point2D): boolean
 
 // Returns true only when all cross-products have the same sign (convex polygon).
 // Sutherland-Hodgman clip requires a convex clip polygon; skip it for non-convex faces.
-function isConvexPolygon2D(poly: Point2D[]): boolean {
+export function isConvexPolygon2D(poly: Point2D[]): boolean {
   if (poly.length < 3) return false;
   let sign = 0;
   for (let i = 0; i < poly.length; i++) {
@@ -1175,6 +1175,15 @@ export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup
       for (const fp of footprints) {
         for (let i = 0; i < fp.length; i++) {
           const a = fp[i], b = fp[(i + 1) % fp.length];
+          obsSegs.push({ ax: a.x, ay: a.y, bx: b.x, by: b.y });
+        }
+      }
+      // On non-convex faces, boundary edges constrain the rectangle to
+      // prevent overflow past the notch/step.
+      if (boundaryNonConvex) {
+        for (const e of boundaryEdges) {
+          const a = projectTo2D(e.v1, planeOrigin, u, v);
+          const b = projectTo2D(e.v2, planeOrigin, u, v);
           obsSegs.push({ ax: a.x, ay: a.y, bx: b.x, by: b.y });
         }
       }

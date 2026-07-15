@@ -23,6 +23,7 @@ import {
   getSubtractionWorldMatrix,
   type Point2D,
   reduceRegionToRectangle2D,
+  isConvexPolygon2D,
 } from './FaceRaycastOverlay';
 import {
   extractFacesFromGeometry,
@@ -1223,6 +1224,15 @@ function reraycastVirtualFaceFallback(
     for (const fp of footprints) {
       for (let i = 0; i < fp.length; i++) {
         const a = fp[i], b = fp[(i + 1) % fp.length];
+        obsSegsF.push({ ax: a.x, ay: a.y, bx: b.x, by: b.y });
+      }
+    }
+    // On non-convex faces, include boundary edges to prevent rectangle overflow
+    const faceIsNonConvex = ring2D.length >= 3 && !isConvexPolygon2D(ensureCCW(ring2D));
+    if (faceIsNonConvex) {
+      for (const e of boundaryEdgesWorld) {
+        const a = projectTo2D(e.v1, planeOrigin, u, v);
+        const b = projectTo2D(e.v2, planeOrigin, u, v);
         obsSegsF.push({ ax: a.x, ay: a.y, bx: b.x, by: b.y });
       }
     }
