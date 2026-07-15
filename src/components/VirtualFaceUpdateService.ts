@@ -13,7 +13,6 @@ import {
   collectSubtractionObstacleEdgesWorld,
   collectVirtualFaceObstacleEdgesWorld,
   collectCoplanarAlignedVfIds,
-  collectCoplanarAlignedVfIds,
   castRayOnFaceWorld,
   castRayOnFaceWorldDetailed,
   clipPolygonByLine2D,
@@ -1408,7 +1407,26 @@ export function recalculateVirtualFacesForShape(
   for (const vf of shapeFaces) {
     if (vf.parentFaceShape) {
       const regen = regenerateParentFaceShapeVF(vf, shape, faces, faceGroups, localToWorld);
-      updatedMap.set(vf.id, regen || vf);
+      let result = regen || vf;
+      // GERÇEK kardeş panel sınırı KORUNUR: yerleştirme anında bölgeyi bir
+      // panel sınırladıysa, rebuild'de VF tüm yüze geri genişleyip kardeşin
+      // üstüne binmemeli. Lamine katmanlar (aynı düzleme eşitlenmiş VF'ler,
+      // bkz. collectCoplanarAlignedVfIds) ve VF'nin kendi paneli hariçtir —
+      // yerleştirme ışınlarıyla aynı sözleşme.
+      const localNormalVf = new THREE.Vector3(vf.normal[0], vf.normal[1], vf.normal[2]).normalize();
+      const planeOriginLocalVf = new THREE.Vector3(vf.center[0], vf.center[1], vf.center[2]);
+      const alignedIds = collectCoplanarAlignedVfIds(shapeFaces, localNormalVf, planeOriginLocalVf);
+      const panelsForClip = childPanels.filter(p =>
+        p.parameters?.virtualFaceId !== vf.id &&
+        !alignedIds.has(p.parameters?.virtualFaceId)
+      );
+      if (panelsForClip.length > 0) {
+        const clipped = clipVirtualFaceAgainstSubtractionsAndPanels(
+          result, [], panelsForClip, localToWorld, worldToLocal
+        );
+        if (clipped) result = clipped;
+      }
+      updatedMap.set(vf.id, result);
     } else if (vf.raycastRecipe) {
       const authoritative = authoritativeVfIds === 'all' || authoritativeVfIds.has(vf.id);
       const reraycast = reraycastVirtualFace(

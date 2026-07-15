@@ -450,7 +450,6 @@ export function collectPanelObstacleEdgesWorld(panelShapes: any[], facePlaneNorm
       // Panel is entirely on one side and doesn't touch — skip it
       continue;
     }
-    console.log('[OBSTACLE] panel:', panel.id, 'signed:', minSigned.toFixed(1), '→', maxSigned.toFixed(1), 'crosses:', crossesPlane, 'touches:', touchesPlane, 'pts:', pts2D.length);
     if (pts2D.length < 3) continue;
 
     // Compute convex hull of projected vertices = panel's footprint on face
@@ -1078,7 +1077,6 @@ export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup
   const subEdges = collectSubtractionObstacleEdgesWorld(subtractions, localToWorld, worldNormal, planeOrigin, 20);
   const vfEdges = collectVirtualFaceObstacleEdgesWorld(shapeVirtualFaces, null, localToWorld, worldNormal, planeOrigin, 20, alignedVfIds);
   const obstacleEdges = [...panelEdges, ...subEdges, ...vfEdges];
-  console.log('[RAYCAST DEBUG] childPanels:', childPanels.length, 'panelEdges:', panelEdges.length, 'subEdges:', subEdges.length, 'vfEdges:', vfEdges.length, 'total obstacles:', obstacleEdges.length);
   const maxDist = 5000;
   const offset = worldNormal.clone().multiplyScalar(0.5);
   const startWorld = clickWorld.clone().add(offset);
@@ -1120,7 +1118,6 @@ export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup
     const b = projectTo2D(e.v2, planeOrigin, u, v);
     return { ax: a.x, ay: a.y, bx: b.x, by: b.y };
   });
-  console.log('[RAYCAST DEBUG] segs2D count:', segs2D.length, 'boundaryEdges:', boundaryEdges.length, 'obstacleEdges:', obstacleEdges.length);
   const vis = computeVisibilityPolygon2D(segs2D, maxDist);
   let visPoly = vis.poly;
   // STABİLİZASYON: görünürlük çokgeni, iç bükey yüzeylerde (L/U) reflex köşe
@@ -1138,7 +1135,6 @@ export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup
     visPoly = simplifyCollinear2D(visPoly, 0.05);
   }
   const visValid = visPoly.length >= 3 && !visPoly.some(p => Math.hypot(p.x, p.y) >= maxDist - 1);
-  console.log('[RAYCAST DEBUG] visValid:', visValid, 'visPoly.length:', visPoly.length, 'maxPt:', visPoly.length > 0 ? Math.max(...visPoly.map(p => Math.hypot(p.x, p.y))).toFixed(1) : 'N/A');
   let rect2D: Point2D[] = visValid
     ? ensureCCW(visPoly)
     : ensureCCW([{ x: uPosT, y: vPosT }, { x: -uNegT, y: vPosT }, { x: -uNegT, y: -vNegT }, { x: uPosT, y: -vNegT }]);
@@ -1224,8 +1220,21 @@ export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup
     }
     regionArea = Math.abs(regionArea) / 2;
 
+    // Yapısal iç bükeylik tespiti: L/U yüzlerde sınır halkası dış bükey DEĞİLDİR.
+    const boundaryNonConvex = !!(boundaryLoop2D && boundaryLoop2D.length >= 3 &&
+      !isConvexPolygon2D(ensureCCW(boundaryLoop2D)));
+    // Işınlardan en az biri GERÇEK engele (kardeş panel / VF / subtractor) çarptı mı?
+    const hasRealObstacleHit = hitIsBoundary.some(b => !b);
+
     if (groupArea > 1e-6 && regionArea / groupArea >= 0.97) {
       autoAlign = true; // yüzün tamamı → şekil kalır, düğme basılı gelir
+    } else if (boundaryNonConvex && hasRealObstacleHit) {
+      // İÇ BÜKEY YÜZ + GERÇEK ENGEL: 4-kenar indirgeme YAPILMAZ. Bbox
+      // genişletmesi L/U çentiğinin üzerine taşar ve panel boşlukta kalırdı.
+      // Bölge, hem engel kenarını hem yüzün gerçek şeklini izleyen haliyle
+      // korunur; bayrak açık gelir (kullanıcı kaldırırsa rebuild 4 kenara
+      // indirger).
+      autoAlign = true;
     } else {
       // 4 KENAR KURALI: yüzün kendi İÇ BÜKEYLİĞİ (çentik, L basamağı) YOK
       // SAYILIR — "sanki hiç subtract edilmemiş gibi" panel yüzün EN DIŞ
