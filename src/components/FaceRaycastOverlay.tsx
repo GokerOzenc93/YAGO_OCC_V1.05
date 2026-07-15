@@ -66,14 +66,7 @@ function raySegmentIntersect2D(ox: number, oy: number, dx: number, dy: number, a
   return null;
 }
 
-// ── SERİ IŞIN: görünürlük çokgeni ────────────────────────────────────────────
-// Tıklanan noktadan, düzlemdeki TÜM sınır+engel kenarlarına doğru ışın demeti
-// atılır: her kenar ucuna (±epsilon açıyla) hedefli ışınlar + düzgün dağılımlı
-// yelpaze. Sonuç, tıklanan noktadan "görünen" serbest bölgenin TAM çokgenidir:
-// eğik (döndürülmüş) bir panel yüzeyi kestiğinde bölge o eğik çizgiyi birebir
-// izler — dik durumlarda ise sonuç mevcut davranışla aynı dikdörtgendir.
-// NOT: Bu, yüzeyi "ana yüze eşitle" gibi birebir kopyalamaz; yalnızca tıklanan
-// noktanın etrafındaki erişilebilir alanın şeklini üretir.
+// Visibility polygon: fan of rays from origin against all boundary+obstacle segments.
 export interface VisibilityFanResult { poly: Point2D[]; samples: Point2D[]; }
 
 export function computeVisibilityPolygon2D(
@@ -82,10 +75,7 @@ export function computeVisibilityPolygon2D(
   fanCount: number = 48
 ): VisibilityFanResult {
   const angles: number[] = [];
-  // Kenar ucu hedefli ışınların açısal ofseti, raySegmentIntersect2D'nin
-  // kenar-parametresi toleransını (±1e-4 × kenar boyu) güvenle aşacak kadar
-  // geniş olmalı; yoksa köşeyi teğet geçmesi gereken ışın komşu kenara
-  // "çarpmış" sayılır ve köşe arkasındaki bölge hiç örneklenmez.
+
   const EPS = 4e-3;
   for (const s of segments) {
     const a1 = Math.atan2(s.ay, s.ax);
@@ -111,9 +101,7 @@ export function computeVisibilityPolygon2D(
   return { poly: simplifyCollinear2D(samples, 0.05), samples };
 }
 
-// Açısal örnekleme aynı doğru üzerinde çok sayıda ara nokta üretir; düz
-// kenarlardaki eşdoğrusal noktalar temizlenir ki dikdörtgen bölgeler yine
-// 4 köşeli çıksın ve OCC'ye giden çokgen sade kalsın.
+// Remove collinear points so rectangles stay 4-cornered.
 export function simplifyCollinear2D(poly: Point2D[], eps: number): Point2D[] {
   const pts: Point2D[] = [];
   for (const p of poly) {
@@ -125,12 +113,7 @@ export function simplifyCollinear2D(poly: Point2D[], eps: number): Point2D[] {
     if (Math.hypot(f.x - l.x, f.y - l.y) <= eps) pts.pop();
   }
   if (pts.length < 3) return pts;
-  // İTERATİF sadeleştirme: nokta, HAYATTA KALAN komşularının doğrusuna olan
-  // uzaklığıyla değerlendirilir ve tek tek elenir. Tek geçişli yerel test,
-  // köşe etrafındaki sıkı ışın kümelerinde (epsilon ışınları 0.02-0.07mm
-  // aralıklı nokta üretir) HER noktayı bitişik komşusuna göre "eşdoğrusal"
-  // görüp gerçek köşeyi de kümeyle birlikte siliyordu — L yüzeyde bölgenin
-  // yarısının kaybolmasının kök nedeni buydu.
+
   let changed = true;
   while (changed && pts.length > 3) {
     changed = false;
@@ -153,11 +136,7 @@ export function simplifyCollinear2D(poly: Point2D[], eps: number): Point2D[] {
   return pts;
 }
 
-// Çokgeni, (a,b) doğrusunun ORİJİN (tıklama noktası) tarafındaki yarı
-// düzlemiyle kırpar. Görünürlük çokgeninin iç bükey (L, U) yüzeylerde reflex
-// köşe arkasına uzattığı kamayı kesmek için kullanılır: 4 ana eksen ışınının
-// çarptığı kenarların doğrularıyla kırpınca dikdörtgen yüzeyde sonuç değişmez,
-// L kolunda stabil dikdörtgen kalır, eğik engelde yamuk korunur.
+// Clip polygon to the origin-side half-plane defined by line (a,b).
 export function clipPolygonByLine2D(poly: Point2D[], a: Point2D, b: Point2D): Point2D[] {
   const ex = b.x - a.x, ey = b.y - a.y;
   const side = (p: Point2D) => ex * (p.y - a.y) - ey * (p.x - a.x);
@@ -187,47 +166,10 @@ function pointToSegmentDistance3D(p: THREE.Vector3, a: THREE.Vector3, b: THREE.V
   return new THREE.Vector3().copy(a).addScaledVector(ab, t).distanceTo(p);
 }
 
-/**
- * Engel kenarı. `ownerId` — bu kenarı ÜRETEN komşunun kimliği:
- *   'panel:<shapeId>' | 'vf:<virtualFaceId>' | 'sub:<index>'
- * Sınır (boundary) kenarlarında tanımsızdır. Bölgenin parametrik bağını
- * (hangi panele yaslandığını) kurmak için kullanılır.
- */
+
 export interface ObstacleEdge { v1: THREE.Vector3; v2: THREE.Vector3; ownerId?: string; }
 
-/**
- * Bu yüz düzleminde "ana yüzeye eşitlenmiş" (alignToParentFace) kardeş VF'lerin
- * kimlikleri. Eşitlenmiş panel TANIM GEREĞİ parent yüzünün TAMAMINI doldurur
- * (PanelReshapeService: "HER ZAMAN tüm parent yüzünü doldur") ve yüz düzleminde
- * FLUSH durur. Dolayısıyla aynı yüze atılan başka bir paneli in-plane olarak
- * SINIRLAYAMAZ — onun ÜZERİNE istiflenir (lamine olur).
- *
- * Buna rağmen ışın atma onu bir engel sayıyordu: gövde konturu (yüz poligonu,
- * çentikli/açılı olabilir) ışınları durdurup görünürlük çokgenini o şekle
- * sokuyordu. Sonuç: ilk panel 4 kenarlı çıkarken, ondan SONRAKİ her panel
- * sorgusuz yüzün şeklini alıyordu. Bu VF'leri engel kümesinden çıkarıyoruz;
- * böylece her panel varsayılan olarak normal DİKDÖRTGEN yerleşir ve yüz şekli
- * yalnızca kullanıcı "ana yüzeye eşitle"ye bastığında verilir.
- *
- * DİKKAT: yalnızca AYNI DÜZLEMDEKİ eşitlenmiş VF'ler elenir. Başka bir yüze
- * (ör. sol yüze) eşitlenmiş panel, bu yüzü dik olarak kesiyorsa GERÇEK bir
- * engeldir ve korunur.
- */
-/**
- * BÖLGEYİ DİKDÖRTGENE İNDİRGE — tıklamayı (köken) içeren EN BÜYÜK ALANLI eksen
- * hizalı dikdörtgen.
- *
- * SÖZLEŞME ("ana yüzeye eşitle" anahtarı): bayrak KAPALIYKEN panel her koşulda
- * 4 kenarlıdır; yüzün şekli (L/U, çentik) yalnızca bayrak AÇIKKEN verilir.
- * Bu fonksiyon bayraksız yoldaki dörtgeni üretir.
- *
- * Aday v sınırları kısıt segmenti uçlarından türetilir; her (vMin, vMax) çifti
- * için u yönleri bağımsız ikili aramayla büyütülür (v aralığı sabitken u'da
- * büyümek monotondur) ve alanı en büyük geçerli aday seçilir — deterministik,
- * sıradan bağımsız. Kısıt testi SEGMENT KESİŞİMİ ile yapılır (görünürlük
- * çokgeninin köşe yongalarına bağışık). Kısıtlar dikdörtgense sonuç tohumla
- * birebir aynıdır (hızlı yol) — düz yüzlerde davranış değişmez.
- */
+// Reduce region to the largest axis-aligned rectangle containing the origin.
 export function reduceRegionToRectangle2D(
   segsIn: Array<{ ax: number; ay: number; bx: number; by: number }>,
   seed: { uMin: number; uMax: number; vMin: number; vMax: number }
@@ -267,7 +209,7 @@ export function reduceRegionToRectangle2D(
         if (crosses(p1, p2, { x: sg.ax, y: sg.ay }, { x: sg.bx, y: sg.by })) return false;
       }
     }
-    // Tamamen içeride kalan kısıt (kenar kesmeyen orta engel) da geçersiz kılar.
+
     for (const sg of segs) {
       if ((sg.ax > a && sg.ax < b && sg.ay > c && sg.ay < e) ||
           (sg.bx > a && sg.bx < b && sg.by > c && sg.by < e)) return false;
@@ -275,7 +217,7 @@ export function reduceRegionToRectangle2D(
     return true;
   };
 
-  // HIZLI YOL: tohum zaten temizse (düz yüz + dik komşular) aday aramasına girme.
+
   if (rectClear(seed.uMin, seed.uMax, seed.vMin, seed.vMax)) {
     return ensureCCW([
       { x: seed.uMax, y: seed.vMax }, { x: seed.uMin, y: seed.vMax },
@@ -313,13 +255,7 @@ export function reduceRegionToRectangle2D(
     return lo;
   };
 
-  // ── SEÇİM ÖNCELİĞİ: EN UZAK IŞIN UZANIMI → SONRA ALAN ─────────────────────
-  // Kullanıcı kuralı: dörtgen, ışının EN UZAĞA ulaştığı noktaya göre çizilmeli.
-  // Salt en-büyük-alan seçimi, iç bükey köşenin belirsiz bölgesinde bazen o
-  // yönü kesip paneli "kısa" bırakıyordu (ör. ışın x'te 600'e ulaşmışken alan
-  // uğruna x=400'de biten kanat seçiliyordu). Adaylar artık, tohumun ışın
-  // uzanımlarını |uzunluk| önceliğiyle koruyup korumadıklarına göre
-  // SÖZLÜKSEL olarak karşılaştırılır; ancak eşitlikte alan belirler.
+  // Priority: preserve longest ray extents, then area.
   const PRES_TOL = 0.6;
   const extentPriority: Array<{ key: 'uMax' | 'uMin' | 'vMax' | 'vMin'; val: number }> = [
     { key: 'uMax', val: seed.uMax }, { key: 'uMin', val: seed.uMin },
@@ -350,8 +286,7 @@ export function reduceRegionToRectangle2D(
       if (!best || better(c, best)) best = c;
     }
   }
-  // u yönü baskın uzanımsa v-aday tarama yönü onu üretmemiş olabilir:
-  // tohum v aralığının tamamı yerine ışının u uçlarını koruyan şeridi de dene.
+
   {
     const uMax0 = seed.uMax, uMin0 = seed.uMin;
     for (const vMax of vPosCand) {
@@ -396,7 +331,7 @@ export function collectPanelObstacleEdgesWorld(panelShapes: any[], facePlaneNorm
   const obstacleEdges: ObstacleEdge[] = [];
   for (const panel of panelShapes) {
     if (!panel.geometry) continue;
-    // Aynı düzlemde eşitlenmiş panel = lamine katman, in-plane engel DEĞİL.
+
     if (excludeVfIds && excludeVfIds.has(panel.parameters?.virtualFaceId)) continue;
     const panelMatrix = getShapeMatrix(panel);
     const posAttr = panel.geometry.getAttribute('position') as THREE.BufferAttribute;
@@ -843,7 +778,7 @@ export interface RayHitResult {
   hitEdge: ObstacleEdge | null;
   edgeT: number;
   isBoundaryEdge: boolean;
-  /** Işını durduran komşunun kimliği ('panel:<id>' | 'vf:<id>' | 'sub:<i>'); sınıra çarptıysa null. */
+
   hitOwnerId: string | null;
 }
 
@@ -944,7 +879,7 @@ export function collectVirtualFaceObstacleEdgesWorld(virtualFaces: VirtualFace[]
   const edges: ObstacleEdge[] = [];
   for (const vf of virtualFaces) {
     if (vf.id === excludeId || vf.vertices.length < 3) continue;
-    // Aynı düzlemde eşitlenmiş kardeş VF de engel sayılmaz (yukarıdaki gerekçe).
+  
     if (excludeVfIds && excludeVfIds.has(vf.id)) continue;
     const ownerId = `vf:${vf.id}`;
     const worldVerts = vf.vertices.map(vtx => new THREE.Vector3(vtx[0], vtx[1], vtx[2]).applyMatrix4(shapeLocalToWorld));
@@ -1070,7 +1005,7 @@ export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup
     u = dominant.clone();
     v = new THREE.Vector3().crossVectors(worldNormal, u).normalize();
   }
-  // Bu düzlemde EŞİTLENMİŞ kardeşler engel değildir (bkz. collectCoplanarAlignedVfIds).
+
   const planeOriginLocal = planeOrigin.clone().applyMatrix4(worldToLocal);
   const alignedVfIds = collectCoplanarAlignedVfIds(shapeVirtualFaces, localNormal, planeOriginLocal);
   const panelEdges = collectPanelObstacleEdgesWorld(childPanels, worldNormal, planeOrigin, 20, boundaryEdges, alignedVfIds);
@@ -1108,11 +1043,7 @@ export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup
   const [uPosHit, uNegHit, vPosHit, vNegHit] = hitPointsWorld;
   const uPosT = uPosHit.distanceTo(startWorld), uNegT = uNegHit.distanceTo(startWorld);
   const vPosT = vPosHit.distanceTo(startWorld), vNegT = vNegHit.distanceTo(startWorld);
-  // SERİ IŞIN: bölge şekli, 4 eksen ışınının dikdörtgeni yerine tıklanan
-  // noktadan atılan ışın demetinin görünürlük çokgeninden türetilir. Eğik
-  // engellerde (döndürülmüş panel vb.) bölge engel çizgisini birebir izler;
-  // dik engellerde sonuç eski dikdörtgenle aynıdır. Herhangi bir ışın açık
-  // uca kaçarsa (sınır halkası kapanmamışsa) eski dikdörtgene düşülür.
+
   const segs2D = [...boundaryEdges, ...obstacleEdges].map(e => {
     const a = projectTo2D(e.v1, planeOrigin, u, v);
     const b = projectTo2D(e.v2, planeOrigin, u, v);
@@ -1120,10 +1051,7 @@ export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup
   });
   const vis = computeVisibilityPolygon2D(segs2D, maxDist);
   let visPoly = vis.poly;
-  // STABİLİZASYON: görünürlük çokgeni, iç bükey yüzeylerde (L/U) reflex köşe
-  // arkasına tıklamaya duyarlı bir kama uzatır. 4 ana eksen ışınının çarptığı
-  // kenarların DOĞRULARIYLA (tıklama tarafı) kırpılır: kama kesilir, sonuç
-  // tıklama noktasından bağımsız stabilleşir; eğik kenar takibi korunur.
+  // Stabilize: clip visibility polygon by axis-hit edge lines to remove reflex wedges.
   if (visPoly.length >= 3) {
     for (const he of hitEdgesWorld) {
       if (!he) continue;
@@ -1138,12 +1066,10 @@ export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup
   let rect2D: Point2D[] = visValid
     ? ensureCCW(visPoly)
     : ensureCCW([{ x: uPosT, y: vPosT }, { x: -uNegT, y: vPosT }, { x: -uNegT, y: -vNegT }, { x: uPosT, y: -vNegT }]);
-  // Yelpaze ışınları görselleştirilir (en fazla ~32 çizgi): kullanıcı
-  // taramanın bölgeyi nasıl belirlediğini görür.
+
   if (visValid) {
     const fanPts = vis.samples.map(p => {
-      // örnek noktaları da kırpılmış bölgeye çekilir: ışın çizgileri kesilen
-      // kamaya taşmasın
+
       let q = p;
       for (const he of hitEdgesWorld) {
         if (!he) continue;
@@ -1191,14 +1117,8 @@ export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup
     if (hasOverlap) clippedPoly = subtractPolygon(clippedPoly, ccwFootprint);
   }
   if (clippedPoly.length < 3) return null;
-  // ── "ANA YÜZEYE EŞİTLE" SÖZLEŞMESİ ────────────────────────────────────────
-  // Bayrak AÇIK  → panel yüzün şeklini alır.
-  // Bayrak KAPALI → panel HER KOŞULDA 4 kenarlıdır.
-  // Işınlar yüzün şeklini görüyorsa (bölge >4 köşe ve yüzün tamamını
-  // kaplıyorsa) panel o şekliyle yerleşir ve bayrak OTOMATİK AÇIK gelir —
-  // satırdaki düğme basılı görünür; kullanıcı kaldırırsa rebuild bölgeyi
-  // 4 kenara indirger. Bölge şekilli ama KISMİ ise (ör. raf bandı L yüzde)
-  // varsayılan kural gereği baştan 4 kenara indirgenir.
+  // autoAlign: when region covers the entire face shape, set alignToParentFace.
+  // Otherwise always reduce to rectangle.
   let autoAlign = false;
   let captureIgnoreConcavity = false;
   if (clippedPoly.length > 4) {
@@ -1220,28 +1140,17 @@ export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup
     }
     regionArea = Math.abs(regionArea) / 2;
 
-    // Yapısal iç bükeylik tespiti: L/U yüzlerde sınır halkası dış bükey DEĞİLDİR.
+
     const boundaryNonConvex = !!(boundaryLoop2D && boundaryLoop2D.length >= 3 &&
       !isConvexPolygon2D(ensureCCW(boundaryLoop2D)));
-    // Işınlardan en az biri GERÇEK engele (kardeş panel / VF / subtractor) çarptı mı?
+
     const hasRealObstacleHit = hitIsBoundary.some(b => !b);
 
-    if (groupArea > 1e-6 && regionArea / groupArea >= 0.97) {
-      autoAlign = true; // yüzün tamamı → şekil kalır, düğme basılı gelir
-    } else if (boundaryNonConvex && hasRealObstacleHit) {
-      // İÇ BÜKEY YÜZ + GERÇEK ENGEL: 4-kenar indirgeme YAPILMAZ. Bbox
-      // genişletmesi L/U çentiğinin üzerine taşar ve panel boşlukta kalırdı.
-      // Bölge, hem engel kenarını hem yüzün gerçek şeklini izleyen haliyle
-      // korunur; bayrak açık gelir (kullanıcı kaldırırsa rebuild 4 kenara
-      // indirger).
+    if (groupArea > 1e-6 && regionArea / groupArea >= 0.97 && !hasRealObstacleHit) {
       autoAlign = true;
     } else {
-      // 4 KENAR KURALI: yüzün kendi İÇ BÜKEYLİĞİ (çentik, L basamağı) YOK
-      // SAYILIR — "sanki hiç subtract edilmemiş gibi" panel yüzün EN DIŞ
-      // ölçüsüne uzanır. Sınıra çarpan ışın yönleri yüz bbox'ına genişletilir;
-      // GERÇEK engellere (kardeş panel / VF / subtractor) çarpan yönler engel
-      // mesafesinde kalır ve indirgeme yalnızca ENGEL segmentlerine karşı
-      // yapılır (sınır segmentleri hariç).
+      // Always try rectangle reduction: boundary-hit directions expand to
+      // face bbox, obstacle-hit directions keep their distance.
       const faceExt = { uMin: Infinity, uMax: -Infinity, vMin: Infinity, vMax: -Infinity };
       for (const e of boundaryEdges) {
         for (const q of [e.v1, e.v2]) {
@@ -1271,7 +1180,7 @@ export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup
       }
       const rect = reduceRegionToRectangle2D(obsSegs, seedExp);
       if (rect) { clippedPoly = rect; captureIgnoreConcavity = true; }
-      else autoAlign = true; // indirgenemedi → şekli koru, tutarlılık için bayrak açık
+      else autoAlign = true;
     }
   }
   // Use planeOrigin (on the face surface) not startWorld (0.5mm outside) so stored vertices lie on the face
@@ -1358,16 +1267,14 @@ export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup
       faceGroupDescriptor, normalizedClickUV,
       edgeAnchors: edgeAnchors.length === 4 ? edgeAnchors : undefined,
       normalizedHitDistances,
-      // PARAMETRİK BAĞ: bölgeyi hangi komşunun sınırladığını kaydet. Yeniden
-      // türetmede ışın kökeni yüzün tamamına DEĞİL bu bağlara göre kurulur.
+
       anchorOwners: {
         uPos: hitOwnerIds[0] ?? null,
         uNeg: hitOwnerIds[1] ?? null,
         vPos: hitOwnerIds[2] ?? null,
         vNeg: hitOwnerIds[3] ?? null,
       },
-      // EKSEN SABİTLEME: u ekseni yerel yön olarak kaydedilir; yeniden
-      // türetme aynı tabanı kullanır (baskın kenar terslemesine bağışık).
+
       ...(captureIgnoreConcavity ? { ignoreFaceConcavity: true } : {}),
       planeAxisULocal: (() => {
         const nm = new THREE.Matrix3().getNormalMatrix(worldToLocal);

@@ -53,20 +53,7 @@ function findMatchingFaceGroup(
 
   if (candidateGroups.length === 0) return null;
 
-  // ─── ÖLÇEKTEN BAĞIMSIZ YÜZ KİMLİĞİ (iki aşamalı) ──────────────────────────
-  // Aynı normale sahip birden çok yüz olduğunda eşleme şimdiye dek MUTLAK
-  // düzlem konumuna göre yapılıyordu. İki ayrı bozulma üretiyordu:
-  //   (a) PARALEL düzlemler (L profil: dış duvar + çentik duvarı) — küp
-  //       büyüyünce düzlemler taşınır; büyüme aradaki boşluğu aşınca eski
-  //       konuma "en yakın" düzlem ÖBÜR yüz olur ve panel oraya atlar.
-  //   (b) AYNI DÜZLEMDE kopuk yüzler (U profil, çift çentik) — düzlem farkı
-  //       ikisinde de sıfırdır; eski kod ilk adayı seçip yüzeyler arasında
-  //       rastgele zıplar. "Aynı düzlemdeki başka yüzeye yerleşiyor" tam bu.
-  //
-  // Çözüm, ölçekten bağımsız iki aşamalı kimlik:
-  //   1) RANK  → hangi DÜZLEM (aynı yönlü ayrık düzlemler içindeki sıra;
-  //              yeniden boyutlandırma sırayı değiştirmez).
-  //   2) DÜZLEM-İÇİ NORMALİZE MERKEZ → o düzlemdeki hangi KOPUK YÜZ.
+  // Scale-independent face identity: axis rank + in-plane normalized center
   const desc: any = vf.raycastRecipe?.faceGroupDescriptor ?? (vf as any).faceGroupDescriptor;
   if (desc?.axisDirection && desc.axisRank !== undefined && desc.axisRankCount !== undefined) {
     const wantPos = resolveAxisPlaneByRank(faces, desc.axisDirection, desc.axisRank, desc.axisRankCount);
@@ -844,14 +831,7 @@ function reraycastVirtualFace(
   if (groupVerticesWorld.length === 0) return null;
 
   const uniqueBoundaryEdgesLocal = extractUniqueBoundaryEdgesLocal(faces, strictIndices);
-  // ── EKSEN SABİTLEME ──────────────────────────────────────────────────────
-  // Yakalama anında kaydedilen u ekseni (parent-yerel) varsa taban ONDAN
-  // kurulur. Baskın kenar yönü (pickDominantEdgeDirection) yüzün en-boy
-  // oranına bağlıdır: küp 600×720'den 900×720'ye büyüyünce baskın yön
-  // düşeyden yataya DÖNER, reçetedeki tüm u/v verisi (clickUV, mesafeler,
-  // bağlar) ters eksende okunur ve panel bambaşka yere yerleşir. Sabit eksen
-  // bu sınıf hatayı kökten kapatır. Eski kayıtlar (alan yoksa) baskın kenar
-  // davranışına düşer — geriye dönük uyumlu.
+  // Pinned u-axis prevents axis flip on aspect ratio change
   const pinnedULocal = vf.raycastRecipe.planeAxisULocal;
   let axisPinned = false;
   if (pinnedULocal) {
@@ -878,21 +858,10 @@ function reraycastVirtualFace(
   const allBoundary = !!nhd && !!nhd.uPosIsBoundary && !!nhd.uNegIsBoundary && !!nhd.vPosIsBoundary && !!nhd.vNegIsBoundary;
   const siblingPanelsExist = childPanels.some(p => p.parameters?.virtualFaceId !== vf.id);
 
-  // ── KISAYOL YALNIZCA DÖRTGEN BÖLGELERDE GEÇERLİDİR ────────────────────────
-  // Aşağıdaki iki hızlı yol (normalize mesafeler / kenar çıpaları) bölgeyi 4
-  // KÖŞEDEN yeniden kurar. Bölge gerçekte L/U şeklindeyse (ışınlar yüzün
-  // girintili konturunun tamamını görüyorsa) bu kısayol şekli SİLER ve paneli
-  // düz çizdirir — yakalamada 6 köşe olan bölge rebuild sonrası 4 köşeye
-  // düşüyordu. Şekilli bölgeler tam ışın-yeniden-atma yoluna (fallback)
-  // gönderilir; orada bölge, ışınların o anki geometride gerçekten gördüğü
-  // çokgen olarak yeniden üretilir.
+  // Shortcut only for quad regions; shaped regions go to full fallback
   const capturedQuad = vf.vertices.length <= 4;
 
-  // Kısayollar ayrıca YÜZÜN KENDİSİNİN dörtgen olmasını gerektirir: bölgeyi yüz
-  // bbox'ından kurdukları için L/U yüzlerde çentiği bilmezler ve bayraksız
-  // (4 kenar) bir VF'yi çentiğin ÜZERİNDEN geçen bir dikdörtgene büyütürler.
-  // Şekilli yüzlerde tam fallback çalışır; orada bölge gerçek kısıt
-  // segmentlerine karşı indirgenir.
+  // Shortcuts also require the face itself to be quad-shaped
   let faceIsQuadCache: boolean | null = null;
   const faceIsQuad = (): boolean => {
     if (faceIsQuadCache !== null) return faceIsQuadCache;
@@ -995,11 +964,7 @@ function reraycastVirtualFaceFallback(
     p => p.parameters?.virtualFaceId !== vf.id
   );
 
-  // EŞİTLENMİŞ KARDEŞLER ENGEL DEĞİL: aynı düzlemde "ana yüzeye eşitle" almış
-  // panel parent yüzünü tümüyle doldurur ve flush durur; bu panelin ÜZERİNE
-  // istiflenir, onu in-plane sınırlamaz. Konturu (yüz poligonu) engel sayılırsa
-  // bölge sorgusuz yüz şeklini alır — her panelin varsayılan olarak DİKDÖRTGEN
-  // yerleşmesi gerekirken. Yakalama (buildPreview) ile birebir aynı eleme.
+  // Aligned siblings are not obstacles (they stack on top, not in-plane)
   const alignedVfIds = collectCoplanarAlignedVfIds(
     shapeFaces.filter(f => f.id !== vf.id),
     new THREE.Vector3(vf.normal[0], vf.normal[1], vf.normal[2]),
@@ -1019,11 +984,7 @@ function reraycastVirtualFaceFallback(
 
   let rayOriginU = oldUCenter;
   let rayOriginV = oldVCenter;
-  // TIKLAMA ÇIPASI: yeniden türetme, VF merkezinden değil kullanıcının
-  // KAYITLI tıklama noktasından yapılır (yakalama ile birebir aynı köken).
-  // Merkez her recalc'ta kaydığı için küçük ama birikimli sapmalar üretiyordu;
-  // tıklama noktası kullanıcının gerçek niyetidir ve parent boyutlanınca
-  // oransal (normalizedClickUV) taşınır.
+  // Use stored click point as origin (not VF center) to prevent drift
   const clickUV = vf.raycastRecipe?.normalizedClickUV;
 
   // Helper: build a world point on the face plane from u/v coords
@@ -1059,28 +1020,15 @@ function reraycastVirtualFaceFallback(
   rayOriginU = Math.max(extent.uMin + 1, Math.min(extent.uMax - 1, rayOriginU));
   rayOriginV = Math.max(extent.vMin + 1, Math.min(extent.vMax - 1, rayOriginV));
 
-  // ── PARAMETRİK BAĞ (anchor) İLE KÖKEN KURULUMU ───────────────────────────
-  // clickUV yüzün TAMAMINA oranlıdır; bölge bir komşu panele yaslanıyorsa
-  // parent büyüyünce köken o panelin öte tarafına atlar. Bağlar kayıtlıysa
-  // köken, [alt bağ, üst bağ] aralığında YAKALAMADAKİ ORAN korunarak kurulur:
-  // sınır bağları parent ile taşınır, panel bağları panelin güncel yerinde kalır.
+  // Anchor-based origin: resolve against neighbor panels/boundaries
   const nhd = vf.raycastRecipe?.normalizedHitDistances;
   const anchors = vf.raycastRecipe?.anchorOwners;
   let anchoredU = false, anchoredV = false;
   if (anchors && nhd) {
     const siblingFaces = shapeFaces.filter(f => f.id !== vf.id);
 
-    // ── YETKİ AYRIMI (dominance / eksik bağlam) ──────────────────────────
-    // Bir bağ sahibi bağlamda YOKSA iki olasılık vardır ve ikisi zıt davranış
-    // ister: (a) rebuild ara geçişi — kardeş panel henüz workingShapes'e
-    // eklenmedi → VF'ye DOKUNMA; (b) panel sırası değişti — o kardeş artık
-    // bu panelden SONRA geliyor, bu paneli sınırlayamaz → bölge sınıra kadar
-    // YAYILMALI (baskınlık). Recalc bunu tek başına ayırt edemez; ayrımı
-    // çağıran yapar: authoritative=true ise bu VF için bağlam TAMDIR
-    // (boru hattı, sırası gelen panelin recalc'ında yalnızca ÖNCEKİ
-    // kardeşleri verir — baskınlık semantiğinin ta kendisi), çözülemeyen
-    // sahip sınıra düşer ve bölge yayılır. authoritative=false ise bağlam
-    // eksik demektir; VF olduğu gibi korunur.
+    // Dominance: if authoritative, missing owners fall to boundary;
+    // otherwise preserve VF unchanged (incomplete context).
     if (!authoritative) {
       const ownerMissing = (o: string | null): boolean => {
         if (!o) return false;
@@ -1105,14 +1053,8 @@ function reraycastVirtualFaceFallback(
     anchoredV = res.anchoredV;
   }
 
-  // İÇBÜKEY (L/U) YÜZ GÜVENLİĞİ: clickUV, yüz SINIR KUTUSUNA oranlıdır.
-  // Tüm ışınlar sınıra çarptığında yakalama tarafı bunu [0.5,0.5] (kutu
-  // merkezi) olarak kaydeder — dışbükey yüzde stabildir. Ama L/U gibi içbükey
-  // yüzde kutu merkezi ÇENTİK BOŞLUĞUNA düşebilir; origin boşlukta olunca
-  // ışınlar reflex köşeden kaçıp bölge patlar (panel sıra değişince yerinden
-  // oynamasının kök nedeni buydu). Çözüm: reconstruct edilen origin gerçek yüz
-  // poligonunun DIŞINDAysa, kullanıcının GERÇEK tıklama noktasına (clickLocal)
-  // düşülür — o her zaman yüzün içindedir.
+  // Concave face safety: if origin lands outside the face polygon (e.g.
+  // in a notch gap), fall back to the stored click point.
   {
     // Sınır kenarlarını sıralı bir halkaya diz (isPointInsidePolygon sıralı
     // köşe ister). Kenarlar rastgele sırada gelir; uçları eşleştirerek zincirle.
@@ -1192,10 +1134,7 @@ function reraycastVirtualFaceFallback(
 
   const planeOrigin = buildOrigin(rayOriginU, rayOriginV);
 
-  // SERİ IŞIN: yakalama tarafıyla (buildPreview) BİREBİR aynı görünürlük
-  // çokgeni algoritması kullanılır — aksi halde ilk rebuild'de bölge tekrar
-  // dikdörtgene çökerdi. Işın demeti açık uca kaçarsa (kapanmayan sınır)
-  // eski dikdörtgen davranışına düşülür.
+  // Full visibility polygon (same algorithm as buildPreview)
   const panelObsF = collectPanelObstacleEdgesWorld(panelsExcludingSelf, worldNormal, planeOrigin, 20, boundaryEdgesWorld, alignedVfIds);
   const subObsF = collectSubtractionObstacleEdgesWorld(subtractions, localToWorld, worldNormal, planeOrigin, 20);
   const vfObsF = collectVirtualFaceObstacleEdgesWorld(shapeFaces, vf.id, localToWorld, worldNormal, planeOrigin, 20, alignedVfIds);
@@ -1206,19 +1145,8 @@ function reraycastVirtualFaceFallback(
     castRayOnFaceWorldDetailed(startF, dir, boundaryEdgesWorld, obstaclesF, u, v, planeOrigin, 5000)
   ); // [u+, u-, v+, v-]
 
-  // ── BÖLGE KİLİDİ ─────────────────────────────────────────────────────
-  // Kullanıcı "ana yüze eşitle" DEMEDİKÇE, tıklamayla seçilen bölge yüze
-  // eşitlenmemelidir. Yakalama anında bir yön ENGELLE sınırlandıysa
-  // (IsBoundary=false) ama şu an o yönde engel BULUNAMIYORSA — ya rebuild
-  // sırasındaki eksik bağlam (kardeş panel henüz workingShapes'e eklenmedi;
-  // kanıtlanmış "yüze otomatik eşitleme" kök nedeni) ya da engel silinmiştir —
-  // VF'ye dokunulmaz, kullanıcının bölgesi aynen korunur. Engel yalnızca
-  // TAŞINDIYSA ışın onu yeni yerinde bulur ve bölge normal şekilde ona kadar
-  // güncellenir (teğet takibi bozulmaz).
-  // Yetkili (bağlamı tam) recalc'ta kilit YOKTUR: yakalamada engel olan yön
-  // artık sınıra çıkıyorsa bu, engelin gerçekten kalktığı/sonraya alındığı
-  // anlamına gelir ve bölge sınıra kadar yayılır (baskınlık). Kilit yalnızca
-  // eksik bağlamlı ara recalc'ları korur.
+  // Region lock: in non-authoritative recalc, if an obstacle-bounded
+  // direction now sees boundary (missing context), preserve VF unchanged.
   if (nhd && !authoritative && !vf.parentFaceShape && !vf.alignToParentFace) {
     const captureObstacleBounded = [
       !nhd.uPosIsBoundary, !nhd.uNegIsBoundary, !nhd.vPosIsBoundary, !nhd.vNegIsBoundary,
@@ -1237,9 +1165,7 @@ function reraycastVirtualFaceFallback(
   });
   const vis = computeVisibilityPolygon2D(segs2D, 5000);
   let visPoly = vis.poly;
-  // STABİLİZASYON (yakalama tarafıyla birebir): 4 ana eksen ışınının çarptığı
-  // kenar doğrularıyla kırpılır — L/U yüzeylerde reflex köşe kaması kesilir,
-  // bölge tıklama/merkez konumundan bağımsız stabil kalır.
+  // Clip visibility polygon by axis-hit edge lines for stability
   if (visPoly.length >= 3) {
     for (const res of axisHits) {
       if (!res.hitEdge) continue;
@@ -1278,20 +1204,11 @@ function reraycastVirtualFaceFallback(
 
   if (clippedPoly.length < 3) return null;
 
-  // ── "ANA YÜZEYE EŞİTLE" SÖZLEŞMESİ (rebuild tarafı) ───────────────────────
-  // Bayrak KAPALIYKEN panel HER KOŞULDA 4 kenarlıdır: ışınlar yüzün şeklini
-  // görse bile bölge, tıklamayı içeren en büyük dikdörtgene indirgenir.
-  // Düğme kapatıldığında tetiklenen rebuild bu satırdan geçer — şekilli panel
-  // otomatik 4 kenara döner. Bayrak AÇIK VF'ler bu yola hiç girmez
-  // (recalculateVirtualFacesForShape onları regenerateParentFaceShapeVF ile
-  // yüzün şekline eşitler).
+  // Rectangle reduction: when alignToParentFace is OFF, always reduce to 4 corners
   let markIgnoreConcavity = false;
   if (!vf.alignToParentFace && !vf.parentFaceShape &&
       (clippedPoly.length > 4 || vf.raycastRecipe?.ignoreFaceConcavity)) {
-    // 4 KENAR KURALI: yüzün kendi İÇ BÜKEYLİĞİ YOK SAYILIR — panel, "sanki hiç
-    // subtract edilmemiş gibi" yüzün EN DIŞ ölçüsüne uzanır. Sınıra çarpan ışın
-    // yönleri yüz bbox'ına genişletilir; GERÇEK engellere çarpan yönler engel
-    // mesafesinde kalır ve indirgeme yalnızca ENGEL segmentlerine karşı yapılır.
+    // Expand boundary-hit directions to face bbox; keep obstacle-hit distances
     const seedExp = {
       uMax: axisHits[0].isBoundaryEdge ? (extent.uMax - rayOriginU) : uPosT,
       uMin: axisHits[1].isBoundaryEdge ? (extent.uMin - rayOriginU) : -uNegT,
@@ -1324,20 +1241,10 @@ function reraycastVirtualFaceFallback(
 
   const localNormal = matchedGroup.normal.clone().normalize();
 
-  // ── BAĞLARI TAZELE ───────────────────────────────────────────────────────
-  // Bölge artık hangi komşulara yaslanıyorsa reçete onu yansıtmalı: aksi halde
-  // yakalamadan SONRA eklenen bir panel bağ olarak kaydedilmez ve bir sonraki
-  // boyut değişiminde köken yine yanlış banda düşer. Köken zaten bu bağlardan
-  // ve oranlardan türetildiği için geri yazım sabit noktadır — sürüklenme olmaz.
+  // Refresh anchor owners to reflect current neighbors
   let refreshedRecipe = vf.raycastRecipe;
   if (refreshedRecipe && nhd) {
-    // SINIF KORUMASI: geri-yazım yalnızca her dört yönün SINIFI yakalamayla
-    // örtüşüyorsa yapılır (sınır↔sınır, engel↔engel). Rebuild ara geçişleri
-    // eksik bağlamla çalışır (kardeş paneller henüz workingShapes'te değil);
-    // sınıfı değişen tek bir yön bile bağlamın eksik olduğunun kanıtıdır ve
-    // reçeteye yazmak bağları kalıcı bozar. Sınıflar örtüşünce yazmak
-    // güvenlidir: köken bu bağlardan türediği için işlem sabit noktadır,
-    // yeni eklenen bir panel yakın bağ olduysa sahibi güncellenir.
+    // Only write back if boundary/obstacle classification matches capture
     const capBoundary = [
       nhd.uPosIsBoundary, nhd.uNegIsBoundary, nhd.vPosIsBoundary, nhd.vNegIsBoundary,
     ];
@@ -1648,64 +1555,4 @@ function clipVirtualFaceAgainstSubtractionsAndPanels(
   };
 }
 
-function clipVirtualFaceAgainstSubtractions(
-  vf: VirtualFace,
-  subtractions: any[],
-  localToWorld: THREE.Matrix4,
-  worldToLocal: THREE.Matrix4
-): VirtualFace | null {
-  if (vf.vertices.length < 3) return null;
 
-  const localNormal = new THREE.Vector3(vf.normal[0], vf.normal[1], vf.normal[2]).normalize();
-  const normalMatrix = new THREE.Matrix3().getNormalMatrix(localToWorld);
-  const worldNormal = localNormal.clone().applyMatrix3(normalMatrix).normalize();
-
-  const { u, v } = getFacePlaneAxes(worldNormal);
-
-  const cornersWorld = vf.vertices.map(vtx =>
-    new THREE.Vector3(vtx[0], vtx[1], vtx[2]).applyMatrix4(localToWorld)
-  );
-
-  const centerWorld = new THREE.Vector3();
-  cornersWorld.forEach(c => centerWorld.add(c));
-  centerWorld.divideScalar(cornersWorld.length);
-  const planeOrigin = centerWorld.clone();
-
-  const poly2D: Point2D[] = cornersWorld.map(c => projectTo2D(c, planeOrigin, u, v));
-  let clippedPoly = ensureCCW(poly2D);
-
-  const footprints = getSubtractorFootprints2D(
-    subtractions, localToWorld, worldNormal, planeOrigin, u, v, 50
-  );
-
-  if (footprints.length === 0) return null;
-
-  let changed = false;
-  for (const footprint of footprints) {
-    const ccwFootprint = ensureCCW(footprint);
-    const hasOverlap =
-      ccwFootprint.some(p => isPointInsidePolygon(p, clippedPoly)) ||
-      clippedPoly.some(p => isPointInsidePolygon(p, ccwFootprint));
-    if (hasOverlap) {
-      clippedPoly = subtractPolygon(clippedPoly, ccwFootprint);
-      changed = true;
-    }
-  }
-
-  if (!changed) return null;
-  if (clippedPoly.length < 3) return null;
-
-  const newCornersLocal = clippedPoly.map(p =>
-    planeOrigin.clone().addScaledVector(u, p.x).addScaledVector(v, p.y).applyMatrix4(worldToLocal)
-  );
-
-  const newCenter = new THREE.Vector3();
-  newCornersLocal.forEach(c => newCenter.add(c));
-  newCenter.divideScalar(newCornersLocal.length);
-
-  return {
-    ...vf,
-    vertices: newCornersLocal.map(c => [c.x, c.y, c.z] as [number, number, number]),
-    center: [newCenter.x, newCenter.y, newCenter.z],
-  };
-}
