@@ -817,7 +817,14 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
       // bölge seçimi kaybolmamalıdır. (Önceki sürümde buradan dışlanmaları,
       // yüzeyin karşı bölgeye kaymasına yol açıyordu.) Gönye için gereken uzama,
       // aşağıda dönen panele DOĞRU yönlü bir şeritle sağlanır.
-      const freshFaces = recalculateVirtualFacesForShape(parent, filteredForRecalc, workingShapes);
+      // YETKİ: Bu iterasyonda bağlam yalnızca SIRASI GELEN panelin VF'si için
+      // tamdır — workingShapes tam olarak ÖNCEKİ kardeşleri içerir ki bu,
+      // baskınlık (dominance) semantiğinin kendisidir: önce gelen panel yüz
+      // alanını kazanır, sonra gelenler ona göre kısalır. Yetkili VF'de
+      // çözülemeyen panel bağı "o panel artık benden sonra" demektir ve bölge
+      // sınıra kadar yayılır (sıra değişince kısa kalma hatasının düzeltmesi).
+      // Diğer VF'ler eksik bağlamla korunur; kendi iterasyonlarında güncellenir.
+      const freshFaces = recalculateVirtualFacesForShape(parent, filteredForRecalc, workingShapes, new Set([currentVfId]));
       const freshById = new Map(freshFaces.map(f => [f.id, f]));
       workingVirtualFaces = workingVirtualFaces.map(f => freshById.get(f.id) || f);
       builtVfIds.add(currentVfId);
@@ -1157,7 +1164,29 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
                   // (temas düzlemi panelin içinde). |dot| küçük → dik/yığılı.
                   return Math.abs(sibNormal.dot(pn)) < 0.35;
                 })();
-                const hs = perpendicular
+                // ORTA-AÇIKLIK KORUMASI: yarım-uzay yalnızca kardeş panelin
+                // UCUNDA/KENARINDA otururken geçerlidir. Kardeş (ör. dikey
+                // bölme) panelin ORTASINDAN geçiyorsa — kardeşin normal ekseni
+                // boyunca panelin HER İKİ yanında da malzeme varsa — çift tek
+                // düzlemle ayrılamaz; yarım-uzay panelin bir yarısını komple
+                // siler. İki bölmeli L kurulumunda iki kesim panelin iki
+                // yarısını da silip paneli YOK EDİYORDU ("panel yerleşiyor,
+                // saniyesinde kayboluyor, ölçüler 0" hatasının kök nedeni).
+                // Orta-açıklıkta gövde kesimine düşülür: panel bölme yuvasını
+                // çentikler ve iki tarafıyla yaşar.
+                const sibMidSpan = (() => {
+                  if (!panelBox || !sibBox) return false;
+                  const ss3 = new THREE.Vector3(); sibBox.getSize(ss3);
+                  const dims = [ss3.x, ss3.y, ss3.z];
+                  let ax = 0; for (let i = 1; i < 3; i++) if (dims[i] < dims[ax]) ax = i;
+                  const pMin = [panelBox.min.x, panelBox.min.y, panelBox.min.z][ax];
+                  const pMax = [panelBox.max.x, panelBox.max.y, panelBox.max.z][ax];
+                  const sMin = [sibBox.min.x, sibBox.min.y, sibBox.min.z][ax];
+                  const sMax = [sibBox.max.x, sibBox.max.y, sibBox.max.z][ax];
+                  const eps = 5; // mm — kenar payı: bundan fazlası "iki yanda da malzeme"
+                  return sMin > pMin + eps && sMax < pMax - eps;
+                })();
+                const hs = (perpendicular && !sibMidSpan)
                   ? await cutFlatPanelBySiblingHalfSpace(rp, panel, sib, vf, parentMaxDim(parent))
                   : null;
                 if (hs) {
@@ -1273,9 +1302,24 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
       for (const s of workingShapes) {
         if (s.type === 'panel' && s.parameters?.parentShapeId === parentShapeId) rebuiltById.set(s.id, s);
       }
+      // ── KAYIP GÜNCELLEME KORUMASI (sıra değişiminin yutulması) ────────────
+      // ESKİ HALİ: `virtualFaces: workingVirtualFaces` — rebuild BAŞINDA alınan
+      // anlık görüntü, sonunda dizinin TAMAMI olarak geri yazılıyordu. Rebuild
+      // uzun sürer (replicad boolean'ları) ve bu sırada kullanıcı panel SIRASINI
+      // değiştirirse akış şuydu: süren tur bitince eski-sıralı anlık görüntü
+      // store'a yazılır → SIRA GERİ ALINIR → kuyruktaki tekrar-koşum geri
+      // alınmış (eski) sırayla çalışır → "sırayı değiştirdim ama birleşimler
+      // değişmedi". Aynı yutulma bu aralıkta yapılan updateVirtualFace /
+      // addVirtualFace için de geçerliydi.
+      //
+      // DOĞRUSU: bu turun ürettiği TAZE VF İÇERİKLERİ kimlikle eşlenir; dizinin
+      // SIRASI ve ÜYELİĞİ ise store'un GÜNCEL halinden alınır. Böylece tur
+      // sürerken yapılan sıra değişikliği/eklemeler korunur; kuyruktaki
+      // tekrar-koşum da en güncel sırayla, doğru birleşimleri üretir.
+      const freshVfById = new Map(workingVirtualFaces.map(f => [f.id, f]));
       return {
         shapes: state.shapes.map(s => rebuiltById.get(s.id) || s),
-        virtualFaces: workingVirtualFaces,
+        virtualFaces: state.virtualFaces.map(f => freshVfById.get(f.id) || f),
       };
     });
   } finally {
