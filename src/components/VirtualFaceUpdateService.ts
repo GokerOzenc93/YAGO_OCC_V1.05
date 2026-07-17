@@ -27,11 +27,70 @@ import {
   extractFacesFromGeometry,
   groupCoplanarFaces,
   findFaceByDescriptor,
-  resolveAxisPlaneByRank,
-  inPlaneCenterDiff,
   type FaceData,
   type CoplanarFaceGroup,
 } from './FaceEditor';
+
+// ── YEREL YARDIMCILAR (kendi kendine yeterlilik) ────────────────────────────
+// Bu iki fonksiyon eskiden './FaceEditor'den import ediliyordu; ancak
+// FaceEditor/GeometryUtils'in bazı sürümleri bunları export etmez ve eksik
+// export TÜM modülün yüklenmesini çökertir → rebuildPanelsForParent'ın dynamic
+// import'u patlar, try/catch yutar ve PANELLER HİÇ GÜNCELLENMEZ (küp resize'da
+// panellerin sabit kalması hatasının kök nedeni). Modül artık dış dosya
+// sürümünden bağımsız çalışsın diye yerel tanımlandılar.
+
+/**
+ * Ölçekten bağımsız düzlem kimliği, 1. aşama: aynı YÖNLÜ (işaretli normal)
+ * yüzlerin eksen boyunca ayrık düzlem konumlarını kümeleyip sıralar ve
+ * axisRank sırasındaki düzlemin konumunu döndürür. Yeniden boyutlandırma
+ * konumları taşır ama SIRAYI değiştirmez. Rank aralık dışıysa null.
+ */
+function resolveAxisPlaneByRank(
+  faces: FaceData[],
+  axisDirection: string,
+  axisRank: number,
+  _axisRankCount: number
+): number | null {
+  const axis = axisDirection[0] as 'x' | 'y' | 'z';
+  const sign = axisDirection.includes('-') ? -1 : 1;
+  const axisVec = new THREE.Vector3(
+    axis === 'x' ? sign : 0, axis === 'y' ? sign : 0, axis === 'z' ? sign : 0
+  );
+  const positions: number[] = [];
+  for (const f of faces) {
+    if (f.normal.dot(axisVec) > 0.9) {
+      positions.push(axis === 'x' ? f.center.x : axis === 'y' ? f.center.y : f.center.z);
+    }
+  }
+  if (positions.length === 0) return null;
+  positions.sort((a, b) => a - b);
+  const clusters: number[] = [];
+  for (const p of positions) {
+    if (clusters.length === 0 || Math.abs(p - clusters[clusters.length - 1]) > 1.0) clusters.push(p);
+    else clusters[clusters.length - 1] = (clusters[clusters.length - 1] + p) / 2;
+  }
+  if (axisRank < 0 || axisRank >= clusters.length) return null;
+  return clusters[axisRank];
+}
+
+/**
+ * 2. aşama: normalize merkezlerin DÜZLEM-İÇİ farkı — eksen bileşeni hariç
+ * tutulur; aynı düzlemdeki kopuk yüzlerden doğrusunu ayırt eder.
+ */
+function inPlaneCenterDiff(
+  a: [number, number, number],
+  b: [number, number, number] | undefined,
+  axisDirection: string
+): number {
+  const axis = axisDirection[0];
+  const skip = axis === 'x' ? 0 : axis === 'y' ? 1 : 2;
+  let d = 0;
+  for (let i = 0; i < 3; i++) {
+    if (i === skip) continue;
+    d += Math.abs(a[i] - (b?.[i] ?? 0.5));
+  }
+  return d;
+}
 
 function findMatchingFaceGroup(
   vf: VirtualFace,
