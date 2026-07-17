@@ -884,15 +884,11 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
 
               <button disabled={!vf.hasPanel || !vp} onClick={async e => {
                 stop(e); if (!vp) return;
-                const newVal = !vf.alignToParentFace;
-                updateVirtualFace(vf.id, { alignToParentFace: newVal, parentFaceShape: newVal });
-                if (newVal) {
-                  const { reshapePanelToParentFace } = await import('./PanelReshapeService');
-                  await reshapePanelToParentFace(vp.id);
-                } else {
-                  const { rebuildPanelsForParent } = await import('./PanelRebuildService');
-                  await rebuildPanelsForParent(sid);
-                }
+                // AÇ: paneli tam yüz şekline büyüt (snapshot servis içinde alınır)
+                // KAPAT: snapshot'tan eşitleme öncesi hale birebir dön
+                const svc = await import('./PanelReshapeService');
+                if (!vf.alignToParentFace) await svc.reshapePanelToParentFace(vp.id);
+                else await svc.restorePanelFromParentFace(vp.id);
               }}
                 className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel || !vp ? 'text-stone-200 cursor-not-allowed' : vf.alignToParentFace ? 'text-orange-600 bg-orange-50 ring-1 ring-orange-200' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
                 title="Ana yüze eşitle"><Shapes size={13}/></button>
@@ -1176,15 +1172,11 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
             title="Ok yönünü değiştir"><ArrowUp size={14} className={`transition-transform duration-200 ${ar ? '' : 'rotate-90'}`}/></button>
           <button disabled={!vf.hasPanel || !vp} onClick={async e => {
             stop(e); if (!vp) return;
-            const newVal = !vf.alignToParentFace;
-            updateVirtualFace(vf.id, { alignToParentFace: newVal, parentFaceShape: newVal });
-            if (newVal) {
-              const { reshapePanelToParentFace } = await import('./PanelReshapeService');
-              await reshapePanelToParentFace(vp.id);
-            } else {
-              const { rebuildPanelsForParent } = await import('./PanelRebuildService');
-              await rebuildPanelsForParent(sid);
-            }
+            // AÇ: paneli tam yüz şekline büyüt (snapshot servis içinde alınır)
+            // KAPAT: snapshot'tan eşitleme öncesi hale birebir dön
+            const svc = await import('./PanelReshapeService');
+            if (!vf.alignToParentFace) await svc.reshapePanelToParentFace(vp.id);
+            else await svc.restorePanelFromParentFace(vp.id);
           }}
             className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel || !vp ? 'text-stone-200 cursor-not-allowed' : vf.alignToParentFace ? 'text-orange-600 bg-orange-50 ring-1 ring-orange-200' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
             title="Ana yüze eşitle"><Shapes size={13}/></button>

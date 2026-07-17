@@ -79,6 +79,9 @@ export interface VirtualFace {
   parentFaceShape?:boolean;
   faceGroupDescriptor?:FaceDescriptor;
   alignToParentFace?:boolean;
+  /** "Ana yüze eşitle" AÇILMADAN önceki VF snapshot'ı — kapatınca birebir geri yüklenir */
+  preAlignVertices?:[number,number,number][];
+  preAlignCenter?:[number,number,number];
 }
 
 export interface Shape {

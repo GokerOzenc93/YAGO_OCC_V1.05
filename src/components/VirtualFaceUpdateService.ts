@@ -23,6 +23,7 @@ import {
   getSubtractionWorldMatrix,
   type Point2D,
 } from './FaceRaycastOverlay';
+import { computeFaceBoundingRectLocal } from './PanelReshapeService';
 import {
   extractFacesFromGeometry,
   groupCoplanarFaces,
@@ -1455,50 +1456,6 @@ export function recalculateVirtualFacesForShape(
   return virtualFaces.map(vf => updatedMap.get(vf.id) || vf);
 }
 
-function extractParentBoundaryLoopLocal(
-  faces: FaceData[],
-  faceIndices: number[]
-): THREE.Vector3[] | null {
-  type Edge = { a: THREE.Vector3; b: THREE.Vector3; ak: string; bk: string };
-  const keyOf = (p: THREE.Vector3) => `${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)}`;
-  const map = new Map<string, { e: Edge; count: number }>();
-  for (const fi of faceIndices) {
-    const f = faces[fi]; if (!f) continue;
-    for (let i = 0; i < 3; i++) {
-      const a = f.vertices[i], b = f.vertices[(i + 1) % 3];
-      const ak = keyOf(a), bk = keyOf(b);
-      const k = ak < bk ? `${ak}|${bk}` : `${bk}|${ak}`;
-      if (!map.has(k)) map.set(k, { e: { a: a.clone(), b: b.clone(), ak, bk }, count: 0 });
-      map.get(k)!.count++;
-    }
-  }
-  const boundary: Edge[] = [];
-  map.forEach(v => { if (v.count === 1) boundary.push(v.e); });
-  if (boundary.length < 3) return null;
-  const adj = new Map<string, { other: string; point: THREE.Vector3 }[]>();
-  for (const e of boundary) {
-    if (!adj.has(e.ak)) adj.set(e.ak, []);
-    if (!adj.has(e.bk)) adj.set(e.bk, []);
-    adj.get(e.ak)!.push({ other: e.bk, point: e.b });
-    adj.get(e.bk)!.push({ other: e.ak, point: e.a });
-  }
-  const startKey = boundary[0].ak;
-  const loop: THREE.Vector3[] = [boundary[0].a];
-  const visited = new Set<string>();
-  let cur = startKey, prev = '';
-  while (true) {
-    visited.add(cur);
-    const neigh = adj.get(cur) || [];
-    const next = neigh.find(n => n.other !== prev && !visited.has(n.other));
-    if (!next) break;
-    loop.push(next.point);
-    prev = cur; cur = next.other;
-    if (cur === startKey) break;
-    if (loop.length > boundary.length + 2) break;
-  }
-  return loop.length >= 3 ? loop : null;
-}
-
 function regenerateParentFaceShapeVF(
   vf: VirtualFace,
   shape: Shape,
@@ -1506,6 +1463,10 @@ function regenerateParentFaceShapeVF(
   faceGroups: CoplanarFaceGroup[],
   localToWorld: THREE.Matrix4
 ): VirtualFace | null {
+  // "Ana yüze eşitle" VF'leri parent-LOCAL uzayda, PanelReshapeService ile
+  // AYNI bounding-rect mantığıyla yeniden üretilir (küp resize sonrası
+  // tutarlılık). Gerçek yüz şekli rebuild'deki OCC intersection'dan gelir;
+  // eski boundary-loop takibi (delikli/konkav yüzde kırılgan) kaldırıldı.
   const matchedGroup = findMatchingFaceGroup(vf, faces, faceGroups, shape.geometry);
   if (!matchedGroup) return null;
 
@@ -1514,37 +1475,22 @@ function regenerateParentFaceShapeVF(
     faces, matchedGroup.faceIndices, localToWorld, normalMatrix
   );
 
-  const boundaryLocal = extractParentBoundaryLoopLocal(faces, strictIndicesForPFS);
-  if (!boundaryLocal || boundaryLocal.length < 3) return null;
-
   const refFacePFS = faces[strictIndicesForPFS[0]];
   const localNormal = refFacePFS ? refFacePFS.normal.clone().normalize() : matchedGroup.normal.clone().normalize();
-  const worldNormal = localNormal.clone().applyMatrix3(normalMatrix).normalize();
-  const { u, v } = getFacePlaneAxes(worldNormal);
 
-  const boundaryWorld = boundaryLocal.map(p => p.clone().applyMatrix4(localToWorld));
-  const centerWorld = new THREE.Vector3();
-  boundaryWorld.forEach(c => centerWorld.add(c));
-  centerWorld.divideScalar(boundaryWorld.length);
-  const planeOrigin = centerWorld.clone();
-
-  const poly: Point2D[] = ensureCCW(
-    boundaryWorld.map(c => projectTo2D(c, planeOrigin, u, v))
+  const rect = computeFaceBoundingRectLocal(
+    faces, strictIndicesForPFS, localNormal, matchedGroup.center.clone()
   );
-  if (poly.length < 3) return null;
-
-  const newCornersLocal = poly.map(p =>
-    planeOrigin.clone().addScaledVector(u, p.x).addScaledVector(v, p.y)
-  ).map(cw => cw.clone().applyMatrix4(new THREE.Matrix4().copy(localToWorld).invert()));
+  if (!rect) return null;
 
   const newCenter = new THREE.Vector3();
-  newCornersLocal.forEach(c => newCenter.add(c));
-  newCenter.divideScalar(newCornersLocal.length);
+  rect.forEach(c => newCenter.add(c));
+  newCenter.divideScalar(rect.length);
 
   return {
     ...vf,
     normal: [localNormal.x, localNormal.y, localNormal.z],
-    vertices: newCornersLocal.map(c => [c.x, c.y, c.z] as [number, number, number]),
+    vertices: rect.map(c => [c.x, c.y, c.z] as [number, number, number]),
     center: [newCenter.x, newCenter.y, newCenter.z],
   };
 }
