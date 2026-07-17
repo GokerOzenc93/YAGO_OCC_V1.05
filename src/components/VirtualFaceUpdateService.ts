@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { VirtualFace, Shape, EdgeAnchor, NormalizedHitDistances } from '../store';
+import type { VirtualFace, Shape, EdgeAnchor, NormalizedHitDistances, RaycastAnchorOwners } from '../store';
 import {
   getFacePlaneAxes,
   getShapeMatrix,
@@ -12,6 +12,7 @@ import {
   collectPanelObstacleEdgesWorld,
   collectSubtractionObstacleEdgesWorld,
   collectVirtualFaceObstacleEdgesWorld,
+  collectCoplanarAlignedVfIds,
   castRayOnFaceWorld,
   castRayOnFaceWorldDetailed,
   clipPolygonByLine2D,
@@ -19,12 +20,15 @@ import {
   simplifyCollinear2D,
   convexHull2D,
   pickDominantEdgeDirection,
+  getSubtractionWorldMatrix,
   type Point2D,
 } from './FaceRaycastOverlay';
 import {
   extractFacesFromGeometry,
   groupCoplanarFaces,
   findFaceByDescriptor,
+  resolveAxisPlaneByRank,
+  inPlaneCenterDiff,
   type FaceData,
   type CoplanarFaceGroup,
 } from './FaceEditor';
@@ -47,6 +51,53 @@ function findMatchingFaceGroup(
   }
 
   if (candidateGroups.length === 0) return null;
+
+  // ─── ÖLÇEKTEN BAĞIMSIZ YÜZ KİMLİĞİ (iki aşamalı) ──────────────────────────
+  // Aynı normale sahip birden çok yüz olduğunda eşleme şimdiye dek MUTLAK
+  // düzlem konumuna göre yapılıyordu. İki ayrı bozulma üretiyordu:
+  //   (a) PARALEL düzlemler (L profil: dış duvar + çentik duvarı) — küp
+  //       büyüyünce düzlemler taşınır; büyüme aradaki boşluğu aşınca eski
+  //       konuma "en yakın" düzlem ÖBÜR yüz olur ve panel oraya atlar.
+  //   (b) AYNI DÜZLEMDE kopuk yüzler (U profil, çift çentik) — düzlem farkı
+  //       ikisinde de sıfırdır; eski kod ilk adayı seçip yüzeyler arasında
+  //       rastgele zıplar. "Aynı düzlemdeki başka yüzeye yerleşiyor" tam bu.
+  //
+  // Çözüm, ölçekten bağımsız iki aşamalı kimlik:
+  //   1) RANK  → hangi DÜZLEM (aynı yönlü ayrık düzlemler içindeki sıra;
+  //              yeniden boyutlandırma sırayı değiştirmez).
+  //   2) DÜZLEM-İÇİ NORMALİZE MERKEZ → o düzlemdeki hangi KOPUK YÜZ.
+  const desc: any = vf.raycastRecipe?.faceGroupDescriptor ?? (vf as any).faceGroupDescriptor;
+  if (desc?.axisDirection && desc.axisRank !== undefined && desc.axisRankCount !== undefined) {
+    const wantPos = resolveAxisPlaneByRank(faces, desc.axisDirection, desc.axisRank, desc.axisRankCount);
+    if (wantPos !== null) {
+      const axis = (desc.axisDirection as string)[0] as 'x' | 'y' | 'z';
+      const onPlane = candidateGroups.filter(g => {
+        const c = axis === 'x' ? g.center.x : axis === 'y' ? g.center.y : g.center.z;
+        return Math.abs(c - wantPos) <= 1.0;
+      });
+      if (onPlane.length === 1) return onPlane[0];
+      if (onPlane.length > 1) {
+        const bb = new THREE.Box3().setFromBufferAttribute(
+          geometry.getAttribute('position') as THREE.BufferAttribute
+        );
+        const size = new THREE.Vector3();
+        bb.getSize(size);
+        const norm = (p: THREE.Vector3): [number, number, number] => [
+          size.x > 1e-6 ? (p.x - bb.min.x) / size.x : 0.5,
+          size.y > 1e-6 ? (p.y - bb.min.y) / size.y : 0.5,
+          size.z > 1e-6 ? (p.z - bb.min.z) / size.z : 0.5,
+        ];
+        let best: CoplanarFaceGroup | null = null;
+        let bestD = Infinity;
+        for (const g of onPlane) {
+          const d = inPlaneCenterDiff(norm(g.center), desc.normalizedCenter, desc.axisDirection);
+          if (d < bestD) { bestD = d; best = g; }
+        }
+        if (best) return best;
+      }
+      // Bu rank'te hiç aday yoksa (topoloji beklenmedik) eski yollara düşülür.
+    }
+  }
 
   if (vf.faceGroupDescriptor) {
     const matchedFace = findFaceByDescriptor(vf.faceGroupDescriptor, faces, geometry);
@@ -544,6 +595,212 @@ function orderEdgesToRing2D(
   return ring.length >= 3 ? ring : [];
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PARAMETRİK BAĞ ÇÖZÜMÜ (anchor resolution)
+//
+// SORUN: Işın kökeni şimdiye kadar `normalizedClickUV` ile, yani YÜZÜN TAMAMINA
+// oranlanarak yeniden kuruluyordu. Bölge bir KOMŞU PANELE yaslandığında bu yanlış:
+// komşu panel, parent kutu büyüyünce kendi mutlak konumunda kalır (ör. tabandan
+// 80 mm), ama oranlı köken yüzle birlikte ölçeklenip panelin ÖTE tarafına atlar.
+// Sonuç: kübün yüksekliği artınca panel, referans panelin ALTINDA değil ÜSTÜNDE
+// oluşur — bildirilen hata tam olarak budur.
+//
+// ÇÖZÜM: Yakalama anında her yönün neye yaslandığı (`anchorOwners`) kaydedilir.
+// Yeniden türetmede her eksen için ALT ve ÜST bağ ayrı ayrı çözülür:
+//   • sınır (null)  → yüzün güncel u/v uç değeri (parent ile birlikte taşınır)
+//   • komşu (owner) → komşunun YÜZ ÜZERİNDEKİ güncel ayak izinin YAKIN kenarı
+// Köken, bu iki bağ arasında YAKALAMADAKİ ORANI koruyacak şekilde kurulur.
+// Işın atma / görünürlük çokgeni algoritması hiç değişmez — sadece köken artık
+// doğru bantta doğuyor.
+// ─────────────────────────────────────────────────────────────────────────────
+
+type UVPoint = { u: number; v: number };
+
+/** Bir komşunun (panel / kardeş VF / çıkarma kutusu) yüz düzlemindeki ayak izi. */
+function collectOwnerFootprintUV(
+  ownerId: string,
+  panels: any[],
+  shapeFaces: VirtualFace[],
+  subtractions: any[],
+  localToWorld: THREE.Matrix4,
+  worldNormal: THREE.Vector3,
+  u: THREE.Vector3,
+  v: THREE.Vector3,
+  faceNComp: number,
+  planeTol: number
+): UVPoint[] | null {
+  const pts: UVPoint[] = [];
+  const push = (wp: THREE.Vector3) => {
+    const signed = wp.dot(worldNormal) - faceNComp;
+    if (Math.abs(signed) < planeTol) pts.push({ u: wp.dot(u), v: wp.dot(v) });
+  };
+
+  if (ownerId.startsWith('panel:')) {
+    const id = ownerId.slice(6);
+    const panel = panels.find(p => p.id === id);
+    if (!panel || !panel.geometry) return null;
+    const m = getShapeMatrix(panel);
+    const pos = panel.geometry.getAttribute('position') as THREE.BufferAttribute;
+    if (!pos) return null;
+    const tmp = new THREE.Vector3();
+    // Panel yüzü DELİP geçiyorsa (kesişim) sadece düzleme yakın köşeler değil,
+    // düzlemin iki yanındaki köşeler de dikkate alınmalı: bu durumda ayak izi
+    // tüm köşelerin izdüşümüdür.
+    let minS = Infinity, maxS = -Infinity;
+    for (let i = 0; i < pos.count; i++) {
+      tmp.set(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(m);
+      const s = tmp.dot(worldNormal) - faceNComp;
+      if (s < minS) minS = s;
+      if (s > maxS) maxS = s;
+    }
+    const crosses = minS < -planeTol && maxS > planeTol;
+    for (let i = 0; i < pos.count; i++) {
+      tmp.set(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(m);
+      if (crosses) pts.push({ u: tmp.dot(u), v: tmp.dot(v) });
+      else push(tmp.clone());
+    }
+  } else if (ownerId.startsWith('vf:')) {
+    const id = ownerId.slice(3);
+    const sib = shapeFaces.find(f => f.id === id);
+    if (!sib || sib.vertices.length < 3) return null;
+    sib.vertices.forEach(([x, y, z]) =>
+      push(new THREE.Vector3(x, y, z).applyMatrix4(localToWorld))
+    );
+  } else if (ownerId.startsWith('sub:')) {
+    const idx = parseInt(ownerId.slice(4), 10);
+    const sub = subtractions[idx];
+    if (!sub || !sub.geometry) return null;
+    const m = getSubtractionWorldMatrix(localToWorld, sub);
+    const pos = sub.geometry.getAttribute('position') as THREE.BufferAttribute;
+    if (!pos) return null;
+    for (let i = 0; i < pos.count; i++) {
+      push(new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(m));
+    }
+  } else {
+    return null;
+  }
+
+  return pts.length >= 3 ? pts : null;
+}
+
+interface AnchoredOriginResult {
+  originU: number;
+  originV: number;
+  anchoredU: boolean;
+  anchoredV: boolean;
+}
+
+/**
+ * Kökeni, yakalamadaki bağlara (sınır ve/veya komşu panel) göre yeniden kurar.
+ * Herhangi bir eksende bağ çözülemezse o eksen `anchored=false` döner ve
+ * çağıran taraf eski (oransal) davranışa düşer — geriye dönük uyumlu.
+ */
+function resolveAnchoredOrigin(
+  anchors: RaycastAnchorOwners,
+  nhd: NormalizedHitDistances,
+  panels: any[],
+  shapeFaces: VirtualFace[],
+  subtractions: any[],
+  localToWorld: THREE.Matrix4,
+  worldNormal: THREE.Vector3,
+  u: THREE.Vector3,
+  v: THREE.Vector3,
+  faceNComp: number,
+  extent: { uMin: number; uMax: number; vMin: number; vMax: number },
+  fallbackU: number,
+  fallbackV: number
+): AnchoredOriginResult {
+  const PLANE_TOL = 20;
+  const MIN_SPAN = 1.0;
+
+  // Ayak izlerini bir kez çöz, iki geçişte de yeniden kullan.
+  const cache = new Map<string, UVPoint[] | null>();
+  const footprintOf = (ownerId: string | null): UVPoint[] | null => {
+    if (!ownerId) return null;
+    if (!cache.has(ownerId)) {
+      cache.set(ownerId, collectOwnerFootprintUV(
+        ownerId, panels, shapeFaces, subtractions,
+        localToWorld, worldNormal, u, v, faceNComp, PLANE_TOL
+      ));
+    }
+    return cache.get(ownerId) ?? null;
+  };
+
+  // Yön için bağ koordinatını çöz. `crossCoord` verilirse, komşunun DİK
+  // eksendeki ayak izi bandı bu koordinatı kapsamıyorsa o komşu gerçekte
+  // yolda değildir → sınıra düşülür.
+  const resolve = (
+    dir: 'u+' | 'u-' | 'v+' | 'v-',
+    ownerId: string | null,
+    crossCoord: number | null
+  ): { coord: number; fromOwner: boolean } => {
+    const boundaryCoord =
+      dir === 'u+' ? extent.uMax :
+      dir === 'u-' ? extent.uMin :
+      dir === 'v+' ? extent.vMax : extent.vMin;
+
+    const fp = footprintOf(ownerId);
+    if (!fp) return { coord: boundaryCoord, fromOwner: false };
+
+    const alongU = dir === 'u+' || dir === 'u-';
+    const along = fp.map(p => (alongU ? p.u : p.v));
+    const cross = fp.map(p => (alongU ? p.v : p.u));
+
+    if (crossCoord !== null) {
+      const cMin = Math.min(...cross), cMax = Math.max(...cross);
+      const PAD = 0.5;
+      if (crossCoord < cMin - PAD || crossCoord > cMax + PAD) {
+        // Komşu bu şeritte değil → o yönde artık sınır var.
+        return { coord: boundaryCoord, fromOwner: false };
+      }
+    }
+
+    // Işının çarptığı YAKIN kenar: +yön için minimum, −yön için maksimum.
+    const near = (dir === 'u+' || dir === 'v+') ? Math.min(...along) : Math.max(...along);
+    if (!isFinite(near)) return { coord: boundaryCoord, fromOwner: false };
+    return { coord: near, fromOwner: true };
+  };
+
+  // Yakalamadaki oran: köken, [neg bağ, pos bağ] aralığının neresindeydi?
+  const uSpanCap = nhd.uNegAbsDist + nhd.uPosAbsDist;
+  const vSpanCap = nhd.vNegAbsDist + nhd.vPosAbsDist;
+  const uFrac = uSpanCap > 1e-6 ? nhd.uNegAbsDist / uSpanCap : 0.5;
+  const vFrac = vSpanCap > 1e-6 ? nhd.vNegAbsDist / vSpanCap : 0.5;
+
+  let originU = fallbackU;
+  let originV = fallbackV;
+  let anchoredU = false;
+  let anchoredV = false;
+
+  // İki geçiş: 1) çapraz filtre olmadan kaba köken, 2) kaba kökenle şerit
+  // filtresi uygulanarak kesin köken. Dik/eksen hizalı panellerde ilk geçiş
+  // zaten kesindir; eğik veya kısmi panellerde ikinci geçiş düzeltir.
+  for (let pass = 0; pass < 2; pass++) {
+    const crossV = pass === 0 ? null : originV;
+    const crossU = pass === 0 ? null : originU;
+
+    const uNeg = resolve('u-', anchors.uNeg, crossV);
+    const uPos = resolve('u+', anchors.uPos, crossV);
+    const vNeg = resolve('v-', anchors.vNeg, crossU);
+    const vPos = resolve('v+', anchors.vPos, crossU);
+
+    if (uPos.coord - uNeg.coord > MIN_SPAN) {
+      originU = uNeg.coord + uFrac * (uPos.coord - uNeg.coord);
+      anchoredU = uNeg.fromOwner || uPos.fromOwner;
+    }
+    if (vPos.coord - vNeg.coord > MIN_SPAN) {
+      originV = vNeg.coord + vFrac * (vPos.coord - vNeg.coord);
+      anchoredV = vNeg.fromOwner || vPos.fromOwner;
+    }
+  }
+
+  originU = Math.max(extent.uMin + 0.5, Math.min(extent.uMax - 0.5, originU));
+  originV = Math.max(extent.vMin + 0.5, Math.min(extent.vMax - 0.5, originV));
+
+  return { originU, originV, anchoredU, anchoredV };
+}
+
 function reraycastVirtualFace(
   vf: VirtualFace,
   shape: Shape,
@@ -552,7 +809,8 @@ function reraycastVirtualFace(
   localToWorld: THREE.Matrix4,
   worldToLocal: THREE.Matrix4,
   childPanels: any[],
-  shapeFaces: VirtualFace[]
+  shapeFaces: VirtualFace[],
+  authoritative: boolean
 ): VirtualFace | null {
   if (!vf.raycastRecipe) return null;
 
@@ -585,17 +843,65 @@ function reraycastVirtualFace(
   if (groupVerticesWorld.length === 0) return null;
 
   const uniqueBoundaryEdgesLocal = extractUniqueBoundaryEdgesLocal(faces, strictIndices);
-  const boundaryEdgesWorldForDominant = collectBoundaryEdgesWorld(faces, strictIndices, localToWorld);
-  const dominant = pickDominantEdgeDirection(boundaryEdgesWorldForDominant, worldNormal);
-  if (dominant) {
-    u = dominant.clone();
-    v = new THREE.Vector3().crossVectors(worldNormal, u).normalize();
+  // ── EKSEN SABİTLEME ──────────────────────────────────────────────────────
+  // Yakalama anında kaydedilen u ekseni (parent-yerel) varsa taban ONDAN
+  // kurulur. Baskın kenar yönü (pickDominantEdgeDirection) yüzün en-boy
+  // oranına bağlıdır: küp 600×720'den 900×720'ye büyüyünce baskın yön
+  // düşeyden yataya DÖNER, reçetedeki tüm u/v verisi (clickUV, mesafeler,
+  // bağlar) ters eksende okunur ve panel bambaşka yere yerleşir. Sabit eksen
+  // bu sınıf hatayı kökten kapatır. Eski kayıtlar (alan yoksa) baskın kenar
+  // davranışına düşer — geriye dönük uyumlu.
+  const pinnedULocal = vf.raycastRecipe.planeAxisULocal;
+  let axisPinned = false;
+  if (pinnedULocal) {
+    const uW = new THREE.Vector3(pinnedULocal[0], pinnedULocal[1], pinnedULocal[2])
+      .applyMatrix3(normalMatrix);
+    // normale dik bileşeni al (ölçek/çarpıklık payı) ve normalize et
+    uW.addScaledVector(worldNormal, -uW.dot(worldNormal));
+    if (uW.lengthSq() > 1e-8) {
+      u = uW.normalize();
+      v = new THREE.Vector3().crossVectors(worldNormal, u).normalize();
+      axisPinned = true;
+    }
+  }
+  if (!axisPinned) {
+    const boundaryEdgesWorldForDominant = collectBoundaryEdgesWorld(faces, strictIndices, localToWorld);
+    const dominant = pickDominantEdgeDirection(boundaryEdgesWorldForDominant, worldNormal);
+    if (dominant) {
+      u = dominant.clone();
+      v = new THREE.Vector3().crossVectors(worldNormal, u).normalize();
+    }
   }
 
   const nhd = vf.raycastRecipe.normalizedHitDistances;
   const allBoundary = !!nhd && !!nhd.uPosIsBoundary && !!nhd.uNegIsBoundary && !!nhd.vPosIsBoundary && !!nhd.vNegIsBoundary;
   const siblingPanelsExist = childPanels.some(p => p.parameters?.virtualFaceId !== vf.id);
-  if (nhd && allBoundary && !siblingPanelsExist) {
+
+  // ── KISAYOL YALNIZCA DÖRTGEN BÖLGELERDE GEÇERLİDİR ────────────────────────
+  // Aşağıdaki iki hızlı yol (normalize mesafeler / kenar çıpaları) bölgeyi 4
+  // KÖŞEDEN yeniden kurar. Bölge gerçekte L/U şeklindeyse (ışınlar yüzün
+  // girintili konturunun tamamını görüyorsa) bu kısayol şekli SİLER ve paneli
+  // düz çizdirir — yakalamada 6 köşe olan bölge rebuild sonrası 4 köşeye
+  // düşüyordu. Şekilli bölgeler tam ışın-yeniden-atma yoluna (fallback)
+  // gönderilir; orada bölge, ışınların o anki geometride gerçekten gördüğü
+  // çokgen olarak yeniden üretilir.
+  const capturedQuad = vf.vertices.length <= 4;
+
+  // Kısayollar ayrıca YÜZÜN KENDİSİNİN dörtgen olmasını gerektirir: bölgeyi yüz
+  // bbox'ından kurdukları için L/U yüzlerde çentiği bilmezler ve bayraksız
+  // (4 kenar) bir VF'yi çentiğin ÜZERİNDEN geçen bir dikdörtgene büyütürler.
+  // Şekilli yüzlerde tam fallback çalışır; orada bölge gerçek kısıt
+  // segmentlerine karşı indirgenir.
+  let faceIsQuadCache: boolean | null = null;
+  const faceIsQuad = (): boolean => {
+    if (faceIsQuadCache !== null) return faceIsQuadCache;
+    const be = collectBoundaryEdgesWorld(faces, strictIndices, localToWorld);
+    const ring = orderEdgesToRing2D(be, u, v);
+    faceIsQuadCache = ring.length > 0 && simplifyCollinear2D(ring, 0.05).length <= 4;
+    return faceIsQuadCache;
+  };
+
+  if (nhd && allBoundary && !siblingPanelsExist && capturedQuad && faceIsQuad()) {
     const result = reconstructFromNormalizedDistances(
       vf, nhd, groupVerticesWorld, worldNormal, u, v,
       localToWorld, worldToLocal, localNormal, shape, uniqueBoundaryEdgesLocal
@@ -605,7 +911,7 @@ function reraycastVirtualFace(
 
   const edgeAnchors = vf.raycastRecipe.edgeAnchors;
 
-  if (edgeAnchors && edgeAnchors.length === 4 && allBoundary && !siblingPanelsExist) {
+  if (edgeAnchors && edgeAnchors.length === 4 && allBoundary && !siblingPanelsExist && capturedQuad && faceIsQuad()) {
     const faceGroupCenterLocal = matchedGroup.center.clone();
     const anchorHitPoints = reconstructHitPointsFromAnchors(
       edgeAnchors, uniqueBoundaryEdgesLocal, localToWorld, localNormal, faceGroupCenterLocal
@@ -653,7 +959,7 @@ function reraycastVirtualFace(
 
   return reraycastVirtualFaceFallback(
     vf, shape, faces, matchedGroup, localToWorld, worldToLocal,
-    childPanels, shapeFaces, groupVerticesWorld, worldNormal, u, v, strictIndices
+    childPanels, shapeFaces, groupVerticesWorld, worldNormal, u, v, authoritative, strictIndices
   );
 }
 
@@ -671,6 +977,7 @@ function reraycastVirtualFaceFallback(
   worldNormal: THREE.Vector3,
   u: THREE.Vector3,
   v: THREE.Vector3,
+  authoritative: boolean,
   strictFaceIndices?: number[]
 ): VirtualFace | null {
   const groupCenterWorld = new THREE.Vector3();
@@ -685,6 +992,17 @@ function reraycastVirtualFaceFallback(
 
   const panelsExcludingSelf = childPanels.filter(
     p => p.parameters?.virtualFaceId !== vf.id
+  );
+
+  // EŞİTLENMİŞ KARDEŞLER ENGEL DEĞİL: aynı düzlemde "ana yüzeye eşitle" almış
+  // panel parent yüzünü tümüyle doldurur ve flush durur; bu panelin ÜZERİNE
+  // istiflenir, onu in-plane sınırlamaz. Konturu (yüz poligonu) engel sayılırsa
+  // bölge sorgusuz yüz şeklini alır — her panelin varsayılan olarak DİKDÖRTGEN
+  // yerleşmesi gerekirken. Yakalama (buildPreview) ile birebir aynı eleme.
+  const alignedVfIds = collectCoplanarAlignedVfIds(
+    shapeFaces.filter(f => f.id !== vf.id),
+    new THREE.Vector3(vf.normal[0], vf.normal[1], vf.normal[2]),
+    new THREE.Vector3(vf.center[0], vf.center[1], vf.center[2])
   );
 
   // Compute the old VF extent in face u/v coordinates
@@ -718,9 +1036,9 @@ function reraycastVirtualFaceFallback(
   const castFromOrigin = (originU: number, originV: number) => {
     const origin = buildOrigin(originU, originV);
     const start = origin.clone().addScaledVector(worldNormal, 0.5);
-    const panelObs = collectPanelObstacleEdgesWorld(panelsExcludingSelf, worldNormal, origin, 20, boundaryEdgesWorld);
+    const panelObs = collectPanelObstacleEdgesWorld(panelsExcludingSelf, worldNormal, origin, 20, boundaryEdgesWorld, alignedVfIds);
     const subObs = collectSubtractionObstacleEdgesWorld(subtractions, localToWorld, worldNormal, origin, 20);
-    const vfObs = collectVirtualFaceObstacleEdgesWorld(shapeFaces, vf.id, localToWorld, worldNormal, origin, 20);
+    const vfObs = collectVirtualFaceObstacleEdgesWorld(shapeFaces, vf.id, localToWorld, worldNormal, origin, 20, alignedVfIds);
     const obstacles = [...panelObs, ...subObs, ...vfObs];
     const dirs = [u, u.clone().negate(), v, v.clone().negate()];
     const dists: number[] = [];
@@ -740,6 +1058,52 @@ function reraycastVirtualFaceFallback(
   rayOriginU = Math.max(extent.uMin + 1, Math.min(extent.uMax - 1, rayOriginU));
   rayOriginV = Math.max(extent.vMin + 1, Math.min(extent.vMax - 1, rayOriginV));
 
+  // ── PARAMETRİK BAĞ (anchor) İLE KÖKEN KURULUMU ───────────────────────────
+  // clickUV yüzün TAMAMINA oranlıdır; bölge bir komşu panele yaslanıyorsa
+  // parent büyüyünce köken o panelin öte tarafına atlar. Bağlar kayıtlıysa
+  // köken, [alt bağ, üst bağ] aralığında YAKALAMADAKİ ORAN korunarak kurulur:
+  // sınır bağları parent ile taşınır, panel bağları panelin güncel yerinde kalır.
+  const nhd = vf.raycastRecipe?.normalizedHitDistances;
+  const anchors = vf.raycastRecipe?.anchorOwners;
+  let anchoredU = false, anchoredV = false;
+  if (anchors && nhd) {
+    const siblingFaces = shapeFaces.filter(f => f.id !== vf.id);
+
+    // ── YETKİ AYRIMI (dominance / eksik bağlam) ──────────────────────────
+    // Bir bağ sahibi bağlamda YOKSA iki olasılık vardır ve ikisi zıt davranış
+    // ister: (a) rebuild ara geçişi — kardeş panel henüz workingShapes'e
+    // eklenmedi → VF'ye DOKUNMA; (b) panel sırası değişti — o kardeş artık
+    // bu panelden SONRA geliyor, bu paneli sınırlayamaz → bölge sınıra kadar
+    // YAYILMALI (baskınlık). Recalc bunu tek başına ayırt edemez; ayrımı
+    // çağıran yapar: authoritative=true ise bu VF için bağlam TAMDIR
+    // (boru hattı, sırası gelen panelin recalc'ında yalnızca ÖNCEKİ
+    // kardeşleri verir — baskınlık semantiğinin ta kendisi), çözülemeyen
+    // sahip sınıra düşer ve bölge yayılır. authoritative=false ise bağlam
+    // eksik demektir; VF olduğu gibi korunur.
+    if (!authoritative) {
+      const ownerMissing = (o: string | null): boolean => {
+        if (!o) return false;
+        if (o.startsWith('panel:')) return !panelsExcludingSelf.some(pp => pp.id === o.slice(6));
+        if (o.startsWith('vf:')) return !siblingFaces.some(f => f.id === o.slice(3));
+        if (o.startsWith('sub:')) return !subtractions[parseInt(o.slice(4), 10)];
+        return false;
+      };
+      if ([anchors.uPos, anchors.uNeg, anchors.vPos, anchors.vNeg].some(ownerMissing)) {
+        return { ...vf };
+      }
+    }
+
+    const res = resolveAnchoredOrigin(
+      anchors, nhd, panelsExcludingSelf, siblingFaces, subtractions,
+      localToWorld, worldNormal, u, v, faceNComp, extent,
+      rayOriginU, rayOriginV
+    );
+    rayOriginU = res.originU;
+    rayOriginV = res.originV;
+    anchoredU = res.anchoredU;
+    anchoredV = res.anchoredV;
+  }
+
   // İÇBÜKEY (L/U) YÜZ GÜVENLİĞİ: clickUV, yüz SINIR KUTUSUNA oranlıdır.
   // Tüm ışınlar sınıra çarptığında yakalama tarafı bunu [0.5,0.5] (kutu
   // merkezi) olarak kaydeder — dışbükey yüzde stabildir. Ama L/U gibi içbükey
@@ -758,8 +1122,11 @@ function reraycastVirtualFaceFallback(
       const clw = new THREE.Vector3(...vf.raycastRecipe.clickLocalPoint).applyMatrix4(localToWorld);
       const cu = clw.dot(u), cv = clw.dot(v);
       if (ring2D.length < 3 || isPointInsidePolygon({ x: cu, y: cv }, ring2D)) {
-        rayOriginU = Math.max(extent.uMin + 1, Math.min(extent.uMax - 1, cu));
-        rayOriginV = Math.max(extent.vMin + 1, Math.min(extent.vMax - 1, cv));
+        // BAĞLI EKSENE DOKUNMA: clickLocal MUTLAK bir noktadır; bağ (anchor) ile
+        // çözülmüş eksende onu geri yazmak parametrikliği bozar. Sadece bağsız
+        // eksenler tıklama noktasına düşürülür.
+        if (!anchoredU) rayOriginU = Math.max(extent.uMin + 1, Math.min(extent.uMax - 1, cu));
+        if (!anchoredV) rayOriginV = Math.max(extent.vMin + 1, Math.min(extent.vMax - 1, cv));
       }
     }
   }
@@ -770,8 +1137,7 @@ function reraycastVirtualFaceFallback(
   // was originally bounded by an obstacle on one side — meaning the obstacle could
   // have moved past the center. If all sides were boundaries at placement time,
   // shrinkage from a new obstacle is legitimate and should NOT trigger relocation.
-  const nhd = vf.raycastRecipe?.normalizedHitDistances;
-  if (nhd) {
+  if (nhd && !(anchoredU && anchoredV)) {
     // Compute the new VF extent in absolute u/v coords
     const newUMin = rayOriginU - uNegT;
     const newUMax = rayOriginU + uPosT;
@@ -786,25 +1152,32 @@ function reraycastVirtualFaceFallback(
     // Crossover in v: an obstacle that was in v+ direction moved past center to v- side.
     // Detection: v- was a boundary AND v+ was an obstacle (the obstacle that could cross).
     // Result: the old vMin boundary is no longer reachable (newVMin > oldVMin).
-    if (nhd.vNegIsBoundary && !nhd.vPosIsBoundary && newVMin > oldVMin + MARGIN) {
-      targetV = oldVMin + MARGIN;
-      needsRelocation = true;
-    }
-    // Crossover in v: an obstacle that was in v- direction moved past center to v+ side.
-    else if (nhd.vPosIsBoundary && !nhd.vNegIsBoundary && newVMax < oldVMax - MARGIN) {
-      targetV = oldVMax - MARGIN;
-      needsRelocation = true;
+    // Bağ (anchor) ile çözülen eksende crossover sezgiseline gerek yoktur —
+    // köken zaten komşunun güncel yerine göre kuruldu; sezgisel burada sadece
+    // gürültü üretir. Yalnızca bağsız (eski kayıt / çözülemeyen) eksende çalışır.
+    if (!anchoredV) {
+      if (nhd.vNegIsBoundary && !nhd.vPosIsBoundary && newVMin > oldVMin + MARGIN) {
+        targetV = oldVMin + MARGIN;
+        needsRelocation = true;
+      }
+      // Crossover in v: an obstacle that was in v- direction moved past center to v+ side.
+      else if (nhd.vPosIsBoundary && !nhd.vNegIsBoundary && newVMax < oldVMax - MARGIN) {
+        targetV = oldVMax - MARGIN;
+        needsRelocation = true;
+      }
     }
 
-    // Crossover in u: obstacle from u+ moved past center to u- side.
-    if (nhd.uNegIsBoundary && !nhd.uPosIsBoundary && newUMin > oldUMin + MARGIN) {
-      targetU = oldUMin + MARGIN;
-      needsRelocation = true;
-    }
-    // Crossover in u: obstacle from u- moved past center to u+ side.
-    else if (nhd.uPosIsBoundary && !nhd.uNegIsBoundary && newUMax < oldUMax - MARGIN) {
-      targetU = oldUMax - MARGIN;
-      needsRelocation = true;
+    if (!anchoredU) {
+      // Crossover in u: obstacle from u+ moved past center to u- side.
+      if (nhd.uNegIsBoundary && !nhd.uPosIsBoundary && newUMin > oldUMin + MARGIN) {
+        targetU = oldUMin + MARGIN;
+        needsRelocation = true;
+      }
+      // Crossover in u: obstacle from u- moved past center to u+ side.
+      else if (nhd.uPosIsBoundary && !nhd.uNegIsBoundary && newUMax < oldUMax - MARGIN) {
+        targetU = oldUMax - MARGIN;
+        needsRelocation = true;
+      }
     }
 
     if (needsRelocation) {
@@ -822,9 +1195,9 @@ function reraycastVirtualFaceFallback(
   // çokgeni algoritması kullanılır — aksi halde ilk rebuild'de bölge tekrar
   // dikdörtgene çökerdi. Işın demeti açık uca kaçarsa (kapanmayan sınır)
   // eski dikdörtgen davranışına düşülür.
-  const panelObsF = collectPanelObstacleEdgesWorld(panelsExcludingSelf, worldNormal, planeOrigin, 20, boundaryEdgesWorld);
+  const panelObsF = collectPanelObstacleEdgesWorld(panelsExcludingSelf, worldNormal, planeOrigin, 20, boundaryEdgesWorld, alignedVfIds);
   const subObsF = collectSubtractionObstacleEdgesWorld(subtractions, localToWorld, worldNormal, planeOrigin, 20);
-  const vfObsF = collectVirtualFaceObstacleEdgesWorld(shapeFaces, vf.id, localToWorld, worldNormal, planeOrigin, 20);
+  const vfObsF = collectVirtualFaceObstacleEdgesWorld(shapeFaces, vf.id, localToWorld, worldNormal, planeOrigin, 20, alignedVfIds);
   const obstaclesF = [...panelObsF, ...subObsF, ...vfObsF];
   const startF = planeOrigin.clone().addScaledVector(worldNormal, 0.5);
   const dirsF = [u, u.clone().negate(), v, v.clone().negate()];
@@ -841,7 +1214,11 @@ function reraycastVirtualFaceFallback(
   // VF'ye dokunulmaz, kullanıcının bölgesi aynen korunur. Engel yalnızca
   // TAŞINDIYSA ışın onu yeni yerinde bulur ve bölge normal şekilde ona kadar
   // güncellenir (teğet takibi bozulmaz).
-  if (nhd && !vf.parentFaceShape && !vf.alignToParentFace) {
+  // Yetkili (bağlamı tam) recalc'ta kilit YOKTUR: yakalamada engel olan yön
+  // artık sınıra çıkıyorsa bu, engelin gerçekten kalktığı/sonraya alındığı
+  // anlamına gelir ve bölge sınıra kadar yayılır (baskınlık). Kilit yalnızca
+  // eksik bağlamlı ara recalc'ları korur.
+  if (nhd && !authoritative && !vf.parentFaceShape && !vf.alignToParentFace) {
     const captureObstacleBounded = [
       !nhd.uPosIsBoundary, !nhd.uNegIsBoundary, !nhd.vPosIsBoundary, !nhd.vNegIsBoundary,
     ];
@@ -900,6 +1277,13 @@ function reraycastVirtualFaceFallback(
 
   if (clippedPoly.length < 3) return null;
 
+  // ── BÖLGE = IŞINLARIN GÖRDÜĞÜ ŞEKİL (rebuild tarafı, yakalamayla birebir) ──
+  // Dörtgene ZORLAMA YOK. clippedPoly, görünürlük çokgeninin sınır + engel +
+  // subtractor kırpması sonrası halidir; yerleştirmede ne üretildiyse rebuild
+  // de aynısını üretir. Işınlar 4 kenar görüyorsa 4 kenar, L/U görüyorsa o
+  // şekil korunur. Böylece "yerleşim doğru, rebuild sonrası küçülüyor" sınıfı
+  // hatalar kökten kapanır: iki taraf aynı algoritmayı çalıştırır.
+
   const cornersWorld = clippedPoly.map(p =>
     planeOrigin.clone().addScaledVector(u, p.x).addScaledVector(v, p.y)
   );
@@ -911,18 +1295,65 @@ function reraycastVirtualFaceFallback(
 
   const localNormal = matchedGroup.normal.clone().normalize();
 
+  // ── BAĞLARI TAZELE ───────────────────────────────────────────────────────
+  // Bölge artık hangi komşulara yaslanıyorsa reçete onu yansıtmalı: aksi halde
+  // yakalamadan SONRA eklenen bir panel bağ olarak kaydedilmez ve bir sonraki
+  // boyut değişiminde köken yine yanlış banda düşer. Köken zaten bu bağlardan
+  // ve oranlardan türetildiği için geri yazım sabit noktadır — sürüklenme olmaz.
+  let refreshedRecipe = vf.raycastRecipe;
+  if (refreshedRecipe && nhd) {
+    // SINIF KORUMASI: geri-yazım yalnızca her dört yönün SINIFI yakalamayla
+    // örtüşüyorsa yapılır (sınır↔sınır, engel↔engel). Rebuild ara geçişleri
+    // eksik bağlamla çalışır (kardeş paneller henüz workingShapes'te değil);
+    // sınıfı değişen tek bir yön bile bağlamın eksik olduğunun kanıtıdır ve
+    // reçeteye yazmak bağları kalıcı bozar. Sınıflar örtüşünce yazmak
+    // güvenlidir: köken bu bağlardan türediği için işlem sabit noktadır,
+    // yeni eklenen bir panel yakın bağ olduysa sahibi güncellenir.
+    const capBoundary = [
+      nhd.uPosIsBoundary, nhd.uNegIsBoundary, nhd.vPosIsBoundary, nhd.vNegIsBoundary,
+    ];
+    const classesMatch = axisHits.every((h, i) => h.isBoundaryEdge === capBoundary[i]);
+    if (classesMatch || authoritative) {
+      const dU = axisHits.map(h => h.hitPoint.distanceTo(startF));
+      refreshedRecipe = {
+        ...refreshedRecipe,
+        anchorOwners: {
+          uPos: axisHits[0].hitOwnerId,
+          uNeg: axisHits[1].hitOwnerId,
+          vPos: axisHits[2].hitOwnerId,
+          vNeg: axisHits[3].hitOwnerId,
+        },
+        normalizedHitDistances: {
+          ...nhd,
+          uPosAbsDist: dU[0],
+          uNegAbsDist: dU[1],
+          vPosAbsDist: dU[2],
+          vNegAbsDist: dU[3],
+        },
+      };
+    }
+  }
+
   return {
     ...vf,
     normal: [localNormal.x, localNormal.y, localNormal.z],
     center: [centerLocal.x, centerLocal.y, centerLocal.z],
     vertices: cornersLocal.map(c => [c.x, c.y, c.z] as [number, number, number]),
+    raycastRecipe: refreshedRecipe,
   };
 }
 
 export function recalculateVirtualFacesForShape(
   shape: Shape,
   virtualFaces: VirtualFace[],
-  allShapes?: any[]
+  allShapes?: any[],
+  /**
+   * Bağlamı TAM olan VF kimlikleri. 'all' → tüm VF'ler için bağlam tam
+   * (store üzerinden tam sahne ile çağrı). Küme → yalnızca o VF'ler yetkili;
+   * kalanlar eksik-bağlam korumasıyla işlenir (rebuild ara geçişleri).
+   * Varsayılan 'all' — tek bilinen ikinci çağıran store'dur ve tam sahne verir.
+   */
+  authoritativeVfIds: Set<string> | 'all' = 'all'
 ): VirtualFace[] {
   const shapeFaces = virtualFaces.filter(vf => vf.shapeId === shape.id);
   if (shapeFaces.length === 0) return virtualFaces;
@@ -945,8 +1376,9 @@ export function recalculateVirtualFacesForShape(
       const regen = regenerateParentFaceShapeVF(vf, shape, faces, faceGroups, localToWorld);
       updatedMap.set(vf.id, regen || vf);
     } else if (vf.raycastRecipe) {
+      const authoritative = authoritativeVfIds === 'all' || authoritativeVfIds.has(vf.id);
       const reraycast = reraycastVirtualFace(
-        vf, shape, faces, faceGroups, localToWorld, worldToLocal, childPanels, shapeFaces
+        vf, shape, faces, faceGroups, localToWorld, worldToLocal, childPanels, shapeFaces, authoritative
       );
       updatedMap.set(vf.id, reraycast || vf);
     } else {
