@@ -1187,6 +1187,43 @@ function reraycastVirtualFaceFallback(
         // eksenler tıklama noktasına düşürülür.
         if (!anchoredU) rayOriginU = Math.max(extent.uMin + 1, Math.min(extent.uMax - 1, cu));
         if (!anchoredV) rayOriginV = Math.max(extent.vMin + 1, Math.min(extent.vMax - 1, cv));
+      } else {
+        // SON ÇARE — TIKLAMA NOKTASI DA YÜZ DIŞINDA: subtractor (ör. U çentiği)
+        // taşınıp kullanıcının tıkladığı noktanın ÜZERİNE gelmiş olabilir;
+        // origin çentik içinde kalırsa ışınlar boşluktan atılır ve bölge
+        // patlar ("subtractor taşınınca panel şeklini kaybediyor" hatası).
+        // Origin, GÜNCEL yüz üçgenlerinin origin'e en yakın noktasına çekilir
+        // ve o üçgenin ağırlık merkezine doğru 1mm içeri itilir — üçgen
+        // konveks olduğundan sonuç garantili yüz içidir; nokta geçersiz
+        // kalınca en yakın geçerli yüzeye "tutunur".
+        const p0 = { x: rayOriginU, y: rayOriginV };
+        let bestQ: Point2D | null = null, bestCen: Point2D | null = null, bestD = Infinity;
+        const closestOnSeg = (p: Point2D, a: Point2D, b: Point2D): Point2D => {
+          const abx = b.x - a.x, aby = b.y - a.y;
+          const t = Math.max(0, Math.min(1, ((p.x - a.x) * abx + (p.y - a.y) * aby) / (abx * abx + aby * aby || 1)));
+          return { x: a.x + abx * t, y: a.y + aby * t };
+        };
+        for (const fi of strictIndices) {
+          const f = faces[fi];
+          if (!f) continue;
+          const [a, b, c] = f.vertices.map(vv => {
+            const w = vv.clone().applyMatrix4(localToWorld);
+            return { x: w.dot(u), y: w.dot(v) } as Point2D;
+          });
+          const cen: Point2D = { x: (a.x + b.x + c.x) / 3, y: (a.y + b.y + c.y) / 3 };
+          for (const q of [closestOnSeg(p0, a, b), closestOnSeg(p0, b, c), closestOnSeg(p0, c, a)]) {
+            const d = Math.hypot(q.x - p0.x, q.y - p0.y);
+            if (d < bestD) { bestD = d; bestQ = q; bestCen = cen; }
+          }
+        }
+        if (bestQ && bestCen) {
+          const dx = bestCen.x - bestQ.x, dy = bestCen.y - bestQ.y;
+          const len = Math.hypot(dx, dy) || 1;
+          const tU = bestQ.x + (dx / len) * 1;
+          const tV = bestQ.y + (dy / len) * 1;
+          if (!anchoredU) rayOriginU = tU;
+          if (!anchoredV) rayOriginV = tV;
+        }
       }
     }
   }
