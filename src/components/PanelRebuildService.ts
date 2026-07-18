@@ -936,44 +936,15 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           continue;
         }
 
-        // ÇOKLU IŞIN BÖLGELERİ (Ctrl+tık): her ek nokta kendi bölge çokgenini
-        // üretmiştir; ekstrüzyonları birincil panele OCC union ile kaynatılır.
-        // Çakışan bölgeler OCC'de sorunsuz birleşir — 2D çokgen birleşimi
-        // gerekmez. Karmaşık (U/L) yüzlerde tek ışının ulaşamadığı yerler bu
-        // yolla "ana yüze eşitle"ye gerek kalmadan kapsanır. Dönmüş panelde
-        // grow&shrink birincil bölgeden çalışır; ek bölgeler atlanır.
-        if (!isRotated && vf.extraRegions && vf.extraRegions.length > 0) {
-          try {
-            const { performBooleanUnion } = await import('./ReplicadService');
-            for (const ring of vf.extraRegions) {
-              if (!ring || ring.length < 3) continue;
-              try {
-                const extra = await createPanelFromVirtualFace(ring, vf.normal, thickness, 0);
-                if (extra) rp = await performBooleanUnion(rp, extra);
-              } catch (err) {
-                console.error('Ek ışın bölgesi birleşimi başarısız, bölge atlandı:', err);
-              }
-            }
-          } catch (err) {
-            console.error('Ek bölge union modülü yüklenemedi:', err);
-          }
-        }
-
-        // "ANA YÜZE EŞİTLE" (düz panel): slab ∩ parent yerine parent'ın GERÇEK
-        // yüzlerini extrude et. Sığ ceplerde (derinlik < panel kalınlığı)
-        // slab∩parent, cebin altında "kalınlık − cep derinliği" kadar ince bir
-        // dilim (sliver) bırakıyordu; yüz-extrusion cep tabanını (farklı
-        // düzlem) hiç dahil etmediği için sliver oluşmaz ve girintili/çok
-        // parçalı yüz şekli OCC yüz topolojisinden birebir gelir. Başarısız
-        // olursa aşağıdaki intersection yoluna düşülür.
         let faceExtrudedOk = false;
-        // Bölge noktası: kullanıcının TIKLADIĞI bölgenin merkezi. Eşitleme
-        // açıldığında vf.center sınır dikdörtgeninin merkezine kayar ve iki
-        // ayrık bölge arasında (ör. çentiğin üstünde) kalabilir; eşitleme
-        // öncesi merkez (preAlignCenter) doğru bölgeyi işaret eder.
-        const regionPoint: [number, number, number] =
-          ((vf as any).preAlignCenter as [number, number, number] | undefined) || vf.center;
-        if (vf.parentFaceShape && !isRotated && parent.replicadShape) {
+        // Bölge noktası: VF merkezi = tıklanan yüz bileşeninin alan-ağırlıklı
+        // merkezi; yüz-extrusion seed'i ve kardeş-kesimi sonrası bölge seçimi
+        // bu noktaya en yakın parçayı tutar.
+        const regionPoint: [number, number, number] = vf.center;
+        // TAM YUZ MODELI: her duz panel, tiklanan yuzun OCC yuz-extrusion'u
+        // olarak uretilir (parentFaceShape bayragi kosul olmaktan cikti - tum
+        // paneller tam yuz kaplar; kardes kesimleri ve bolge secimi asagida).
+        if (!isRotated && parent.replicadShape) {
           try {
             const { createPanelFromParentFaces } = await import('./ReplicadService');
             const faceRp = await createPanelFromParentFaces(

@@ -36,38 +36,6 @@ export interface SubtractedGeometry {
   parameters?:SubtractionParameters;
 }
 
-export interface EdgeAnchor {
-  edgeV1Local:[number,number,number];
-  edgeV2Local:[number,number,number];
-  t:number;
-  direction:'u+'|'u-'|'v+'|'v-';
-}
-
-export interface NormalizedHitDistances {
-  uPosFromEdge:number;
-  uNegFromEdge:number;
-  vPosFromEdge:number;
-  vNegFromEdge:number;
-  uPosIsBoundary:boolean;
-  uNegIsBoundary:boolean;
-  vPosIsBoundary:boolean;
-  vNegIsBoundary:boolean;
-  uPosAbsDist:number;
-  uNegAbsDist:number;
-  vPosAbsDist:number;
-  vNegAbsDist:number;
-}
-
-export interface VirtualFaceRaycastRecipe {
-  clickLocalPoint:[number,number,number];
-  faceGroupNormal:[number,number,number];
-  faceGroupDescriptor:FaceDescriptor;
-  normalizedClickUV?:[number,number];
-  edgeAnchors?:EdgeAnchor[];
-  normalizedHitDistances?:NormalizedHitDistances;
-  isCurvedFace?:boolean;
-}
-
 export interface VirtualFace {
   id:string;shapeId:string;
   normal:[number,number,number];
@@ -75,19 +43,10 @@ export interface VirtualFace {
   vertices:[number,number,number][];
   description:string;hasPanel:boolean;
   panelRemovedByUser?:boolean;
-  raycastRecipe?:VirtualFaceRaycastRecipe;
-  /** Ctrl+tık ile eklenen EK ışın bölgelerinin çokgen köşeleri (parent-yerel).
-   *  Panel, birincil vertices + bu ringlerin OCC union'ı olarak üretilir. */
-  extraRegions?:[number,number,number][][];
-  /** Her ek bölgenin kendi ışın reçetesi — küp resize'ında bölge bu reçeteyle
-   *  yeniden ışınlanır (birincil raycastRecipe ile aynı mekanizma). */
-  extraRecipes?:VirtualFaceRaycastRecipe[];
+  /** TAM YÜZ MODELİ: VF = tıklanan yüz bileşeninin gerçek konturu; resize'da
+   *  yüz eşlemesiyle (regenerateParentFaceShapeVF) güncellenir. */
   parentFaceShape?:boolean;
   faceGroupDescriptor?:FaceDescriptor;
-  alignToParentFace?:boolean;
-  /** "Ana yüze eşitle" AÇILMADAN önceki VF snapshot'ı — kapatınca birebir geri yüklenir */
-  preAlignVertices?:[number,number,number][];
-  preAlignCenter?:[number,number,number];
 }
 
 export interface Shape {

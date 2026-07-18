@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { X, GripVertical, ArrowUp, RotateCw, Move, Trash2, MoveVertical, Check, Pencil, Shapes, ChevronRight } from 'lucide-react';
+import { X, GripVertical, ArrowUp, RotateCw, Move, Trash2, MoveVertical, Check, Pencil, ChevronRight } from 'lucide-react';
 import { useAppStore } from '../store';
 import { extractFacesFromGeometry, groupCoplanarFaces, CoplanarFaceGroup } from './FaceEditor';
 import { findExistingStepForFace } from './FaceExtrudeService';
@@ -882,17 +882,6 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                 className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-stone-700 bg-[#f1ece4]' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
                 title="Ok yönünü değiştir"><ArrowUp size={14} className={`transition-transform duration-200 ${ar ? '' : 'rotate-90'}`}/></button>
 
-              <button disabled={!vf.hasPanel || !vp} onClick={async e => {
-                stop(e); if (!vp) return;
-                // AÇ: paneli tam yüz şekline büyüt (snapshot servis içinde alınır)
-                // KAPAT: snapshot'tan eşitleme öncesi hale birebir dön
-                const svc = await import('./PanelReshapeService');
-                if (!vf.alignToParentFace) await svc.reshapePanelToParentFace(vp.id);
-                else await svc.restorePanelFromParentFace(vp.id);
-              }}
-                className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel || !vp ? 'text-stone-200 cursor-not-allowed' : vf.alignToParentFace ? 'text-orange-600 bg-orange-50 ring-1 ring-orange-200' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
-                title="Ana yüze eşitle"><Shapes size={13}/></button>
-
               <button onClick={e => { stop(e); if (vf.hasPanel) removeVP(vf.id); deleteVirtualFace(vf.id); }}
                 className="w-[22px] h-[22px] rounded-md flex items-center justify-center text-stone-400 hover:bg-red-50 hover:text-red-500 transition-colors"
                 title="Yüzü sil"><Trash2 size={13}/></button>
@@ -1170,16 +1159,6 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
           <button disabled={!vf.hasPanel} onClick={e => { stop(e); toggleArrow(vp); }}
             className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-stone-700 bg-[#f1ece4]' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
             title="Ok yönünü değiştir"><ArrowUp size={14} className={`transition-transform duration-200 ${ar ? '' : 'rotate-90'}`}/></button>
-          <button disabled={!vf.hasPanel || !vp} onClick={async e => {
-            stop(e); if (!vp) return;
-            // AÇ: paneli tam yüz şekline büyüt (snapshot servis içinde alınır)
-            // KAPAT: snapshot'tan eşitleme öncesi hale birebir dön
-            const svc = await import('./PanelReshapeService');
-            if (!vf.alignToParentFace) await svc.reshapePanelToParentFace(vp.id);
-            else await svc.restorePanelFromParentFace(vp.id);
-          }}
-            className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel || !vp ? 'text-stone-200 cursor-not-allowed' : vf.alignToParentFace ? 'text-orange-600 bg-orange-50 ring-1 ring-orange-200' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
-            title="Ana yüze eşitle"><Shapes size={13}/></button>
         </div>
       </div>
     );
