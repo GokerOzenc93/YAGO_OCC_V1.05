@@ -944,15 +944,64 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
         // parçalı yüz şekli OCC yüz topolojisinden birebir gelir. Başarısız
         // olursa aşağıdaki intersection yoluna düşülür.
         let faceExtrudedOk = false;
+        // Bölge noktası: kullanıcının TIKLADIĞI bölgenin merkezi. Eşitleme
+        // açıldığında vf.center sınır dikdörtgeninin merkezine kayar ve iki
+        // ayrık bölge arasında (ör. çentiğin üstünde) kalabilir; eşitleme
+        // öncesi merkez (preAlignCenter) doğru bölgeyi işaret eder.
+        const regionPoint: [number, number, number] =
+          ((vf as any).preAlignCenter as [number, number, number] | undefined) || vf.center;
         if (vf.parentFaceShape && !isRotated && parent.replicadShape) {
           try {
             const { createPanelFromParentFaces } = await import('./ReplicadService');
             const faceRp = await createPanelFromParentFaces(
-              parent.replicadShape, vf.normal, vf.center, thickness
+              parent.replicadShape, vf.normal, vf.center, thickness, regionPoint
             );
             if (faceRp) { rp = faceRp; faceExtrudedOk = true; }
           } catch (err) {
             console.error('Yüz-extrusion panel üretimi başarısız, intersection fallback:', err);
+          }
+        }
+
+        // EŞ-DÜZLEMLİ KARDEŞ ÖN-KESİMİ (yalnız yüz-extrusion panelinde):
+        // Panel artık TÜM yüzü kapladığından, aynı yüzeydeki eş-düzlemli
+        // kardeş panel panelin içinde TAM ÇAKIŞIK kalır; OCC gövde kesimi
+        // yüzeyler birebir çakışınca toleransa bağlı sessizce no-op yapabilir
+        // → panel kardeşin içine geçer ("kimi zaman içine geçiyor" hatası).
+        // Çare: kesiciyi panel normali yönünde ±pay kaydırıp İKİ kez kesmek —
+        // kaydırılan kesici panel yüzeyinden taşar, kesim asla no-op olmaz ve
+        // iki kesim birlikte tam kalınlığı temizler. Dik kardeşler aşağıdaki
+        // mevcut yarım-uzay/gövde kesim bloğuna bırakılır.
+        if (faceExtrudedOk) {
+          const EPS = 2; // mm — yüzey çakışıklığını kıran kaydırma payı
+          const pn = new THREE.Vector3(vf.normal[0], vf.normal[1], vf.normal[2]).normalize();
+          const coplanarSibs = workingShapes.filter(
+            s => s.type === 'panel' &&
+              s.parameters?.parentShapeId === parentShapeId &&
+              s.id !== panel.id &&
+              s.replicadShape &&
+              ((s.parameters?.rotateSteps?.length ?? 0) === 0)
+          );
+          for (const sib of coplanarSibs) {
+            try {
+              // Eş-düzlemlilik: kardeşin en ince (kalınlık) ekseni panel
+              // normaline ~paralel ise kardeş aynı yüzeyde yatıyor demektir.
+              const sBox = worldAABBOfPanel(sib);
+              if (!sBox) continue;
+              const ss = new THREE.Vector3(); sBox.getSize(ss);
+              const dims = [ss.x, ss.y, ss.z];
+              let thin = 0; for (let i = 1; i < 3; i++) if (dims[i] < dims[thin]) thin = i;
+              const sibNormal = new THREE.Vector3(thin === 0 ? 1 : 0, thin === 1 ? 1 : 0, thin === 2 ? 1 : 0);
+              if (Math.abs(sibNormal.dot(pn)) < 0.9) continue; // eş-düzlemli değil → mevcut bloğa
+              for (const shift of [EPS, -EPS]) {
+                const cutter = siblingCutterInPanelFrame(sib, rotateSteps, parentPos,
+                  [panel.position[0], panel.position[1], panel.position[2]]);
+                if (!cutter) break;
+                const shifted = cutter.translate(pn.x * shift, pn.y * shift, pn.z * shift);
+                rp = await performBooleanCut(rp, shifted);
+              }
+            } catch (err) {
+              console.error('Eş-düzlem kardeş ön-kesimi başarısız:', err);
+            }
           }
         }
 
@@ -1230,6 +1279,20 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
               }
             }
           }
+
+        // BÖLGE SEÇİMİ (yalnız yüz-extrusion panelinde): Kardeş kesimleri
+        // paneli birden çok AYRIK parçaya böldüyse (ör. dikey bölme ortadan
+        // geçti), yalnızca kullanıcının tıkladığı bölgedeki parça tutulur.
+        // Kardeşin öte tarafındaki artık parça ("bir yerlerde ince panel
+        // kalıyor") burada atılır. Tek parçaysa katı aynen kalır.
+        if (faceExtrudedOk) {
+          try {
+            const { keepSolidNearestPoint } = await import('./ReplicadService');
+            rp = await keepSolidNearestPoint(rp, regionPoint);
+          } catch (err) {
+            console.error('Bölge seçimi başarısız, panel çok parçalı kalabilir:', err);
+          }
+        }
 
         let geometry = convertReplicadToThreeGeometry(rp);
         const r = geoAxesSize(geometry);

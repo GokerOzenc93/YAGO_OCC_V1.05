@@ -263,13 +263,20 @@ export const performBooleanIntersection = async (
 
 /**
  * "Ana yüze eşitle" panelini parent katının GERÇEK yüz geometrisinden üretir.
- * VF düzlemindeki (aynı yönde normal, düzleme mesafe ~0) planar yüzler
+ * VF düzlemindeki (aynı yönde normal, düzleme mesafe ~0) planar yüzlerden,
+ * seedPoint'e en yakın yüzün KENAR/KÖŞE PAYLAŞAN BAĞLANTILI BİLEŞENİ alınır,
  * -normal yönünde kalınlık kadar extrude edilip birleştirilir.
  *
  * Slab ∩ parent yaklaşımının aksine, düzlemin ALTINDA kalan sığ cep/girinti
  * tabanları (derinlik < panel kalınlığı) dahil edilmez — cebin altında ince
- * dilim (sliver) kalmaz. Girintili/L-şekilli/çok parçalı yüzler OCC'nin
- * kendi yüz topolojisinden birebir gelir; ışın veya kontur takibi gerekmez.
+ * dilim (sliver) kalmaz. Girintili/L-şekilli yüz şekli OCC'nin kendi yüz
+ * topolojisinden birebir gelir; ışın veya kontur takibi gerekmez.
+ *
+ * BAĞLANTILI BİLEŞEN KURALI: Aynı düzlemde birden çok AYRIK yüz varsa (ör.
+ * çentiğin böldüğü iki kanat, aynı yüzeyde yan yana iki panel bölgesi) bunlar
+ * ASLA tek panelde birleştirilmez — yalnızca seedPoint'in bulunduğu fiziksel
+ * olarak bitişik parça alınır. Aksi halde küp büyüyünce eş-düzleme gelen iki
+ * panel birbirinin içine geçiyordu.
  *
  * Uygun yüz bulunamazsa null döner; çağıran intersection fallback'ine düşer.
  */
@@ -277,15 +284,18 @@ export const createPanelFromParentFaces = async (
   parentShape: any,
   normal: [number, number, number],
   planePoint: [number, number, number],
-  panelThickness: number
+  panelThickness: number,
+  seedPoint?: [number, number, number]
 ): Promise<any | null> => {
   await initReplicad();
   const { basicFaceExtrusion, Vector } = await import('replicad');
 
   const n = new THREE.Vector3(...normal).normalize();
   const PLANE_TOL = 0.5; // mm — VF düzleminden sapma toleransı
+  const seed = seedPoint ?? planePoint;
 
-  const solids: any[] = [];
+  // 1) Düzlemdeki uygun yüzleri topla
+  const eligible: any[] = [];
   try {
     for (const f of parentShape.faces) {
       try {
@@ -299,12 +309,7 @@ export const createPanelFromParentFaces = async (
           (c.y - planePoint[1]) * n.y +
           (c.z - planePoint[2]) * n.z;
         if (Math.abs(dist) > PLANE_TOL) continue; // farklı düzlem (ör. cep tabanı) → atla
-        solids.push(
-          basicFaceExtrusion(
-            f,
-            new Vector([-n.x * panelThickness, -n.y * panelThickness, -n.z * panelThickness])
-          )
-        );
+        eligible.push(f);
       } catch {
         // Tek yüz hatası tüm üretimi bozmasın
       }
@@ -313,7 +318,57 @@ export const createPanelFromParentFaces = async (
     console.error('createPanelFromParentFaces yüz taraması başarısız:', err);
     return null;
   }
+  if (eligible.length === 0) return null;
 
+  // 2) Fiziksel bitişiklik: yüzlerin sınır vertex'leri (yuvarlanmış key)
+  //    üzerinden kenar/köşe paylaşımı. Ayrık yüzler ayrı bileşendir.
+  const vertexKeys = (f: any): Set<string> => {
+    const keys = new Set<string>();
+    try {
+      for (const e of f.edges) {
+        for (const p of [e.startPoint, e.endPoint]) {
+          if (!p) continue;
+          keys.add(`${p.x.toFixed(1)},${p.y.toFixed(1)},${p.z.toFixed(1)}`);
+        }
+      }
+    } catch { /* kenarsız/bozuk yüz: boş küme → tek başına bileşen */ }
+    return keys;
+  };
+  const keySets = eligible.map(vertexKeys);
+  const share = (a: Set<string>, b: Set<string>): boolean => {
+    for (const k of a) if (b.has(k)) return true;
+    return false;
+  };
+
+  // 3) Seed: seedPoint'e merkezi en yakın yüz; BFS ile bağlantılı bileşeni
+  let seedIdx = 0, best = Infinity;
+  for (let i = 0; i < eligible.length; i++) {
+    const c = eligible[i].center;
+    const d = Math.hypot(c.x - seed[0], c.y - seed[1], c.z - seed[2]);
+    if (d < best) { best = d; seedIdx = i; }
+  }
+  const comp = new Set<number>([seedIdx]);
+  const stack = [seedIdx];
+  while (stack.length) {
+    const i = stack.pop()!;
+    for (let j = 0; j < eligible.length; j++) {
+      if (comp.has(j)) continue;
+      if (share(keySets[i], keySets[j])) { comp.add(j); stack.push(j); }
+    }
+  }
+
+  // 4) Yalnız bileşendeki yüzleri extrude et ve birleştir
+  const solids: any[] = [];
+  for (const i of comp) {
+    try {
+      solids.push(
+        basicFaceExtrusion(
+          eligible[i],
+          new Vector([-n.x * panelThickness, -n.y * panelThickness, -n.z * panelThickness])
+        )
+      );
+    } catch { /* tek yüz hatası tümünü bozmasın */ }
+  }
   if (solids.length === 0) return null;
 
   let out = solids[0];
@@ -325,6 +380,55 @@ export const createPanelFromParentFaces = async (
     }
   }
   return out;
+};
+
+/**
+ * Çok parçalı (compound) bir katıdan yalnızca verilen noktaya en yakın SOLID
+ * parçayı tutar; tek parçaysa katıyı olduğu gibi döndürür.
+ *
+ * "Ana yüze eşitle" panelini kardeş panel kesimi İKİYE BÖLDÜĞÜNDE (ör. dikey
+ * bölme panelin ortasından geçer), kardeşin ÖTE tarafındaki parça kullanıcının
+ * seçmediği bölgedir ve panelde kalmamalıdır ("bir yerlerde ince panel
+ * kalıyor" hatasının kök nedeni). Nokta, panelin ORİJİNAL (eşitleme öncesi)
+ * VF merkezi olmalıdır — kullanıcının tıkladığı bölgeyi temsil eder.
+ * Mesafe, parça AABB'sine clamp mesafesidir (nokta parçanın içindeyse 0).
+ */
+export const keepSolidNearestPoint = async (
+  shape: any,
+  point: [number, number, number]
+): Promise<any> => {
+  try {
+    const { getOC, Solid } = await import('replicad');
+    const oc = getOC();
+    const parts: any[] = [];
+    const exp = new oc.TopExp_Explorer_2(
+      shape.wrapped,
+      oc.TopAbs_ShapeEnum.TopAbs_SOLID,
+      oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+    );
+    while (exp.More()) {
+      parts.push(new Solid(oc.TopoDS.Solid_1(exp.Current())));
+      exp.Next();
+    }
+    exp.delete();
+    if (parts.length <= 1) return shape;
+
+    let bestPart: any = null;
+    let bestDist = Infinity;
+    for (const p of parts) {
+      const bb = p.boundingBox.bounds;
+      const dx = Math.max(bb[0][0] - point[0], 0, point[0] - bb[1][0]);
+      const dy = Math.max(bb[0][1] - point[1], 0, point[1] - bb[1][1]);
+      const dz = Math.max(bb[0][2] - point[2], 0, point[2] - bb[1][2]);
+      const d = Math.hypot(dx, dy, dz);
+      if (d < bestDist) { bestDist = d; bestPart = p; }
+    }
+    // Klon şart: alt-shape parent compound'a bağlı; bağımsız kopya döndürülür.
+    return bestPart ? bestPart.clone() : shape;
+  } catch (err) {
+    console.error('keepSolidNearestPoint başarısız, katı olduğu gibi bırakıldı:', err);
+    return shape;
+  }
 };
 
 export const createPanelFromFace = async (
