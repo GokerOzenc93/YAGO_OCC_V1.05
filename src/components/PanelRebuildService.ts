@@ -936,6 +936,29 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           continue;
         }
 
+        // ÇOKLU IŞIN BÖLGELERİ (Ctrl+tık): her ek nokta kendi bölge çokgenini
+        // üretmiştir; ekstrüzyonları birincil panele OCC union ile kaynatılır.
+        // Çakışan bölgeler OCC'de sorunsuz birleşir — 2D çokgen birleşimi
+        // gerekmez. Karmaşık (U/L) yüzlerde tek ışının ulaşamadığı yerler bu
+        // yolla "ana yüze eşitle"ye gerek kalmadan kapsanır. Dönmüş panelde
+        // grow&shrink birincil bölgeden çalışır; ek bölgeler atlanır.
+        if (!isRotated && vf.extraRegions && vf.extraRegions.length > 0) {
+          try {
+            const { performBooleanUnion } = await import('./ReplicadService');
+            for (const ring of vf.extraRegions) {
+              if (!ring || ring.length < 3) continue;
+              try {
+                const extra = await createPanelFromVirtualFace(ring, vf.normal, thickness, 0);
+                if (extra) rp = await performBooleanUnion(rp, extra);
+              } catch (err) {
+                console.error('Ek ışın bölgesi birleşimi başarısız, bölge atlandı:', err);
+              }
+            }
+          } catch (err) {
+            console.error('Ek bölge union modülü yüklenemedi:', err);
+          }
+        }
+
         // "ANA YÜZE EŞİTLE" (düz panel): slab ∩ parent yerine parent'ın GERÇEK
         // yüzlerini extrude et. Sığ ceplerde (derinlik < panel kalınlığı)
         // slab∩parent, cebin altında "kalınlık − cep derinliği" kadar ince bir

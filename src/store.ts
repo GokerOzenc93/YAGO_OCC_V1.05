@@ -76,6 +76,12 @@ export interface VirtualFace {
   description:string;hasPanel:boolean;
   panelRemovedByUser?:boolean;
   raycastRecipe?:VirtualFaceRaycastRecipe;
+  /** Ctrl+tık ile eklenen EK ışın bölgelerinin çokgen köşeleri (parent-yerel).
+   *  Panel, birincil vertices + bu ringlerin OCC union'ı olarak üretilir. */
+  extraRegions?:[number,number,number][][];
+  /** Her ek bölgenin kendi ışın reçetesi — küp resize'ında bölge bu reçeteyle
+   *  yeniden ışınlanır (birincil raycastRecipe ile aynı mekanizma). */
+  extraRecipes?:VirtualFaceRaycastRecipe[];
   parentFaceShape?:boolean;
   faceGroupDescriptor?:FaceDescriptor;
   alignToParentFace?:boolean;

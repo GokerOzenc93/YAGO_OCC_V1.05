@@ -893,6 +893,53 @@ interface PendingPreview {
 }
 
 /**
+ * ÇOKLU IŞIN BİRLEŞTİRME: Ctrl+tık ile eklenen her noktanın buildPreview
+ * sonucu ayrı bir bölgedir. Birincil bölge VF'nin vertices/center/recipe'sini
+ * verir; ek bölgeler extraRegions (köşeler) + extraRecipes (resize'da yeniden
+ * ışınlama reçetesi) olarak taşınır. Önizleme geometrileri ve ışın çizgileri
+ * yan yana eklenir — çakışan bölgeler görselde üst üste biner (zararsız),
+ * asıl birleşim panel üretiminde OCC union ile yapılır.
+ */
+function mergePreviews(previews: PendingPreview[], visualOnly: PendingPreview[] = []): PendingPreview {
+  const primary = previews[0];
+  if (previews.length === 1 && visualOnly.length === 0) return primary;
+  const concatGeo = (geos: THREE.BufferGeometry[]): THREE.BufferGeometry => {
+    let total = 0;
+    for (const g of geos) total += g.getAttribute('position').count;
+    const pos = new Float32Array(total * 3);
+    let off = 0;
+    for (const g of geos) {
+      const a = g.getAttribute('position') as THREE.BufferAttribute;
+      pos.set(a.array as Float32Array, off);
+      off += a.count * 3;
+    }
+    const out = new THREE.BufferGeometry();
+    out.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    out.computeVertexNormals();
+    return out;
+  };
+  const rest = previews.slice(1);
+  const virtualFace: VirtualFace = {
+    ...primary.virtualFace,
+    extraRegions: rest.map(pv => pv.virtualFace.vertices),
+    extraRecipes: rest
+      .map(pv => pv.virtualFace.raycastRecipe)
+      .filter((r): r is NonNullable<typeof r> => !!r),
+  };
+  // visualOnly: derinlik döngüsü sırasında gezilen YABANCI düzlemin bölgesi.
+  // Görselde (geo/edge/ışın) gösterilir ama VF'ye DAHİL EDİLMEZ — sağ tık
+  // onayı yalnızca birikim düzlemindeki bölgeleri işler.
+  const allVisual = [...previews, ...visualOnly];
+  return {
+    rayLines: allVisual.flatMap(pv => pv.rayLines),
+    originLocal: primary.originLocal,
+    geo: concatGeo(allVisual.map(pv => pv.geo)),
+    edgeGeo: concatGeo(allVisual.map(pv => pv.edgeGeo)),
+    virtualFace,
+  };
+}
+
+/**
  * Returns true if the given world-space point falls inside the panel's CURRENT geometry
  * footprint projected onto the face plane. Used to detect void areas left by shortened
  * panels, without relying on VF polygons (which stay as original full-face for rebuild).
@@ -958,7 +1005,7 @@ export function collectVirtualFaceObstacleEdgesWorld(virtualFaces: VirtualFace[]
   return edges;
 }
 
-export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces: FaceData[], localToWorld: THREE.Matrix4, worldToLocal: THREE.Matrix4, childPanels: any[], shapeId: string, subtractions: any[] = [], geometry?: THREE.BufferGeometry, shapeVirtualFaces: VirtualFace[] = []): PendingPreview | null {
+export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces: FaceData[], localToWorld: THREE.Matrix4, worldToLocal: THREE.Matrix4, childPanels: any[], shapeId: string, subtractions: any[] = [], geometry?: THREE.BufferGeometry, shapeVirtualFaces: VirtualFace[] = [], pinClickUV: boolean = false): PendingPreview | null {
   const normalMatrix = new THREE.Matrix3().getNormalMatrix(localToWorld);
   const planeOrigin = clickWorld.clone();
 
@@ -1253,7 +1300,15 @@ export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup
         // click UV. This makes fallback re-raycasting stable after sibling panels move,
         // regardless of where the user originally clicked on the face.
         const allHitBoundary = hitIsBoundary[0] && hitIsBoundary[1] && hitIsBoundary[2] && hitIsBoundary[3];
-        normalizedClickUV = allHitBoundary
+        // ÇOKLU IŞIN SABİTLEME (pinClickUV): tek-nokta tam-yüz panelde 4 ışın
+        // da sınıra çarpınca UV yüz merkezine [0.5,0.5] çekilir (resize
+        // stabilitesi). ÇOKLU noktada bu snap FELAKETTİR: L/U yüzünde bacak
+        // içindeki noktanın 4 ışını da sınıra çarpabilir; reçete bölgeyi yüz
+        // bbox MERKEZİNE taşır ve yeniden ışınlamada bölge yanlış yere (hatta
+        // çentiğe) atlar — "3 nokta seçince panel yanlış atılıyor" hatasının
+        // kök nedeni. pinClickUV=true iken her bölge GERÇEK tıklama UV'sine
+        // sabitlenir.
+        normalizedClickUV = (allHitBoundary && !pinClickUV)
           ? [0.5, 0.5]
           : [Math.max(0, Math.min(1, (clickU - uMin) / uSpan)), Math.max(0, Math.min(1, (clickV - vMin) / vSpan))];
         const hitUPos = clickU + uPosT;
@@ -1431,6 +1486,14 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
   const [hoveredGroupIndex, setHoveredGroupIndex] = useState<number | null>(null);
   const [pending, setPending] = useState<PendingPreview | null>(null);
   const lastClickRef = useRef<{ point: THREE.Vector3; groupIndex: number; cycleIndex: number } | null>(null);
+  // ÇOKLU IŞIN NOKTALARI: Ctrl+tık ile aynı yüz grubuna eklenen dünya-uzayı
+  // noktalar. Her nokta kendi görünürlük bölgesini üretir; bölgeler tek
+  // panelde OCC union ile birleşir. Normal tık listeyi sıfırlar.
+  // lastSpotAppended: son tıkta bu noktadan listeye GEÇİCİ bir nokta eklendi
+  // mi — derinlik döngüsünde aynı noktaya tekrar basılınca bu nokta
+  // değiştirilir (döngü birikim düzleminde) veya çıkarılır (yabancı düzleme
+  // geçildi); böylece döngü adımları birikimi kirletmez.
+  const multiRef = useRef<{ groupIndex: number; points: THREE.Vector3[]; lastSpotAppended?: boolean } | null>(null);
   const shapeVirtualFaces = useMemo(() => virtualFaces.filter(vf => vf.shapeId === shape.id), [virtualFaces, shape.id]);
   const geometryUuid = shape.geometry?.uuid || '';
   const localToWorld = useMemo(() => getShapeMatrix(shape), [shape.position[0], shape.position[1], shape.position[2], shape.rotation[0], shape.rotation[1], shape.rotation[2], shape.scale[0], shape.scale[1], shape.scale[2]]);
@@ -1441,8 +1504,9 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     setFaceGroups(groupCoplanarFaces(extractFacesFromGeometry(shape.geometry)));
     setPending(null);
     lastClickRef.current = null;
+    multiRef.current = null;
   }, [shape.geometry, shape.id, geometryUuid]);
-  useEffect(() => { if (!raycastMode) { setHoveredGroupIndex(null); setPending(null); lastClickRef.current = null; } }, [raycastMode]);
+  useEffect(() => { if (!raycastMode) { setHoveredGroupIndex(null); setPending(null); lastClickRef.current = null; multiRef.current = null; } }, [raycastMode]);
   // Use current (post-extrude) geometry so that shortened panels produce correct
   // obstacle edges — the void area left by a shortened panel must be visitable.
   const childPanels = useMemo(
@@ -1478,7 +1542,7 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     if (!raycastMode) return;
     if (e.button === 2) {
       e.stopPropagation();
-      if (pending) { addVirtualFace(pending.virtualFace); setPending(null); lastClickRef.current = null; setRaycastMode(false); }
+      if (pending) { addVirtualFace(pending.virtualFace); setPending(null); lastClickRef.current = null; multiRef.current = null; setRaycastMode(false); }
       return;
     }
     if (e.button !== 0) return;
@@ -1572,7 +1636,51 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     }
 
     setHoveredGroupIndex(targetGroupIndex);
-    setPending(buildPreview(previewClickPoint, faceGroups[targetGroupIndex], faces, localToWorld, worldToLocal, childPanels, shape.id, shape.subtractionGeometries || [], shape.geometry, shapeVirtualFaces));
+    // ÇOKLU IŞIN + DERİNLİK DÖNGÜSÜ:
+    //  • Ctrl'süz tık → birikim sıfırlanır, normal tek-nokta davranışı.
+    //  • Ctrl+tık, hedef düzlem BİRİKİM düzlemiyse → nokta eklenir (aynı
+    //    noktada döngüyle geri gelindiyse önceki geçici nokta değiştirilir).
+    //  • Ctrl+tık, hedef YABANCI düzlemse (öndeki yüz araya girdi / döngü
+    //    başka düzlemde) → birikim KORUNUR, döngünün önceki adımında eklenen
+    //    geçici nokta çıkarılır; yabancı bölge yalnızca görsel gösterilir.
+    //    Kullanıcı aynı noktaya basmaya devam ederek döngüyü birikim
+    //    düzlemine getirdiğinde nokta oraya eklenir.
+    const isCtrl = !!(e.ctrlKey || e.metaKey || e.nativeEvent?.ctrlKey || e.nativeEvent?.metaKey);
+    const mkPreview = (pt: THREE.Vector3, gi: number, pin: boolean = false) =>
+      buildPreview(pt, faceGroups[gi], faces, localToWorld, worldToLocal, childPanels, shape.id, shape.subtractionGeometries || [], shape.geometry, shapeVirtualFaces, pin);
+    const nonNull = (pv: PendingPreview | null): pv is PendingPreview => pv !== null;
+
+    if (isCtrl && pending && multiRef.current) {
+      const acc = multiRef.current;
+      if (targetGroupIndex === acc.groupIndex) {
+        // Birikim düzlemi: ekle veya (aynı noktada döngü) geçici noktayı değiştir
+        const pts = [...acc.points];
+        if (isSameSpot && acc.lastSpotAppended && pts.length > 0) pts[pts.length - 1] = previewClickPoint;
+        else pts.push(previewClickPoint);
+        multiRef.current = { groupIndex: acc.groupIndex, points: pts, lastSpotAppended: true };
+        const previews = pts.map(pt => mkPreview(pt, acc.groupIndex, pts.length > 1)).filter(nonNull);
+        if (previews.length > 0) setPending(mergePreviews(previews));
+        return;
+      }
+      // Yabancı düzlem: birikimi koru; önceki döngü adımının geçici noktasını çıkar
+      const pts = (isSameSpot && acc.lastSpotAppended) ? acc.points.slice(0, -1) : [...acc.points];
+      const accPreviews = pts.map(pt => mkPreview(pt, acc.groupIndex, pts.length > 1)).filter(nonNull);
+      const foreign = mkPreview(previewClickPoint, targetGroupIndex);
+      if (accPreviews.length > 0) {
+        multiRef.current = { groupIndex: acc.groupIndex, points: pts, lastSpotAppended: false };
+        setPending(mergePreviews(accPreviews, foreign ? [foreign] : []));
+      } else if (foreign) {
+        // Birikim boşaldı: yabancı düzlem yeni birikim olur
+        multiRef.current = { groupIndex: targetGroupIndex, points: [previewClickPoint], lastSpotAppended: true };
+        setPending(foreign);
+      }
+      return;
+    }
+
+    // Ctrl'süz veya birikim yok: tek nokta / yeni birikim başlangıcı
+    const pv = mkPreview(previewClickPoint, targetGroupIndex);
+    multiRef.current = pv ? { groupIndex: targetGroupIndex, points: [previewClickPoint], lastSpotAppended: true } : null;
+    setPending(pv);
   };
   if (!raycastMode) return null;
   return (

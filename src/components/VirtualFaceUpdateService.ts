@@ -1440,7 +1440,29 @@ export function recalculateVirtualFacesForShape(
       const reraycast = reraycastVirtualFace(
         vf, shape, faces, faceGroups, localToWorld, worldToLocal, childPanels, shapeFaces, authoritative
       );
-      updatedMap.set(vf.id, reraycast || vf);
+      let merged: VirtualFace = reraycast || vf;
+      // ÇOKLU IŞIN BÖLGELERİ: her ek bölge, KENDİ reçetesiyle (birincil ile
+      // aynı mekanizma) yeniden ışınlanır — küp büyüyünce her bölge kendi
+      // tıklama noktasına/bağlarına göre parametrik olarak yeniden kurulur.
+      // Bir ek bölgenin yeniden ışınlanması başarısız olursa eski köşeleri
+      // korunur (bölge kaybolmaz).
+      if (vf.extraRecipes && vf.extraRecipes.length > 0) {
+        const oldRegions = vf.extraRegions || [];
+        const newRegions: [number, number, number][][] = [];
+        vf.extraRecipes.forEach((er, i) => {
+          try {
+            const tempVf: VirtualFace = { ...vf, raycastRecipe: er, extraRecipes: undefined, extraRegions: undefined };
+            const r = reraycastVirtualFace(
+              tempVf, shape, faces, faceGroups, localToWorld, worldToLocal, childPanels, shapeFaces, authoritative
+            );
+            newRegions.push(r?.vertices && r.vertices.length >= 3 ? r.vertices : (oldRegions[i] || []));
+          } catch {
+            newRegions.push(oldRegions[i] || []);
+          }
+        });
+        merged = { ...merged, extraRegions: newRegions.filter(r => r.length >= 3), extraRecipes: vf.extraRecipes };
+      }
+      updatedMap.set(vf.id, merged);
     } else {
       const subtractions = shape.subtractionGeometries || [];
       const panelsExcludingSelf = childPanels.filter(
