@@ -936,6 +936,26 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           continue;
         }
 
+        // "ANA YÜZE EŞİTLE" (düz panel): slab ∩ parent yerine parent'ın GERÇEK
+        // yüzlerini extrude et. Sığ ceplerde (derinlik < panel kalınlığı)
+        // slab∩parent, cebin altında "kalınlık − cep derinliği" kadar ince bir
+        // dilim (sliver) bırakıyordu; yüz-extrusion cep tabanını (farklı
+        // düzlem) hiç dahil etmediği için sliver oluşmaz ve girintili/çok
+        // parçalı yüz şekli OCC yüz topolojisinden birebir gelir. Başarısız
+        // olursa aşağıdaki intersection yoluna düşülür.
+        let faceExtrudedOk = false;
+        if (vf.parentFaceShape && !isRotated && parent.replicadShape) {
+          try {
+            const { createPanelFromParentFaces } = await import('./ReplicadService');
+            const faceRp = await createPanelFromParentFaces(
+              parent.replicadShape, vf.normal, vf.center, thickness
+            );
+            if (faceRp) { rp = faceRp; faceExtrudedOk = true; }
+          } catch (err) {
+            console.error('Yüz-extrusion panel üretimi başarısız, intersection fallback:', err);
+          }
+        }
+
         const parentHasFillets = !!(parent.fillets && parent.fillets.length > 0 && parent.replicadShape);
 
         // NET TAŞIMA OFSETİ: Panel taşındıysa, kırpma sınırlarını taşıma
@@ -953,7 +973,7 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           }
         }
 
-        if (willIntersectParent) {
+        if (willIntersectParent && !faceExtrudedOk) {
           // Kesişim katısı: bayrak açıksa gerçek (subtractor'lı) parent;
           // değilse subtractor'suz referans hacim. Referans hacim kurulamazsa
           // güvenli geri dönüş gerçek parent katısıdır.

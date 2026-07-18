@@ -261,6 +261,72 @@ export const performBooleanIntersection = async (
   }
 };
 
+/**
+ * "Ana yüze eşitle" panelini parent katının GERÇEK yüz geometrisinden üretir.
+ * VF düzlemindeki (aynı yönde normal, düzleme mesafe ~0) planar yüzler
+ * -normal yönünde kalınlık kadar extrude edilip birleştirilir.
+ *
+ * Slab ∩ parent yaklaşımının aksine, düzlemin ALTINDA kalan sığ cep/girinti
+ * tabanları (derinlik < panel kalınlığı) dahil edilmez — cebin altında ince
+ * dilim (sliver) kalmaz. Girintili/L-şekilli/çok parçalı yüzler OCC'nin
+ * kendi yüz topolojisinden birebir gelir; ışın veya kontur takibi gerekmez.
+ *
+ * Uygun yüz bulunamazsa null döner; çağıran intersection fallback'ine düşer.
+ */
+export const createPanelFromParentFaces = async (
+  parentShape: any,
+  normal: [number, number, number],
+  planePoint: [number, number, number],
+  panelThickness: number
+): Promise<any | null> => {
+  await initReplicad();
+  const { basicFaceExtrusion, Vector } = await import('replicad');
+
+  const n = new THREE.Vector3(...normal).normalize();
+  const PLANE_TOL = 0.5; // mm — VF düzleminden sapma toleransı
+
+  const solids: any[] = [];
+  try {
+    for (const f of parentShape.faces) {
+      try {
+        if (f.geomType !== 'PLANE') continue;
+        const c = f.center;
+        const fn = f.normalAt(c);
+        const dot = fn.x * n.x + fn.y * n.y + fn.z * n.z;
+        if (dot < 0.99) continue; // dışa bakan, aynı yönlü yüzler
+        const dist =
+          (c.x - planePoint[0]) * n.x +
+          (c.y - planePoint[1]) * n.y +
+          (c.z - planePoint[2]) * n.z;
+        if (Math.abs(dist) > PLANE_TOL) continue; // farklı düzlem (ör. cep tabanı) → atla
+        solids.push(
+          basicFaceExtrusion(
+            f,
+            new Vector([-n.x * panelThickness, -n.y * panelThickness, -n.z * panelThickness])
+          )
+        );
+      } catch {
+        // Tek yüz hatası tüm üretimi bozmasın
+      }
+    }
+  } catch (err) {
+    console.error('createPanelFromParentFaces yüz taraması başarısız:', err);
+    return null;
+  }
+
+  if (solids.length === 0) return null;
+
+  let out = solids[0];
+  for (let i = 1; i < solids.length; i++) {
+    try {
+      out = await performBooleanUnion(out, solids[i]);
+    } catch (err) {
+      console.error('createPanelFromParentFaces union başarısız, parça atlandı:', err);
+    }
+  }
+  return out;
+};
+
 export const createPanelFromFace = async (
   replicadShape: any,
   faceNormal: [number, number, number],
