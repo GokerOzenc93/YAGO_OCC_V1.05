@@ -973,7 +973,8 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           try {
             const { createPanelFromParentFaces } = await import('./ReplicadService');
             const faceRp = await createPanelFromParentFaces(
-              parent.replicadShape, vf.normal, vf.center, thickness, regionPoint
+              parent.replicadShape, vf.normal, vf.center, thickness, regionPoint,
+              vf.vertices as [number, number, number][] | undefined
             );
             if (faceRp) { rp = faceRp; faceExtrudedOk = true; }
           } catch (err) {
