@@ -401,10 +401,11 @@ export const createPanelFromParentFaces = async (
  */
 export const keepSolidNearestPoint = async (
   shape: any,
-  point: [number, number, number]
+  point: [number, number, number],
+  inwardDir?: [number, number, number]
 ): Promise<any> => {
   try {
-    const { getOC, Solid } = await import('replicad');
+    const { getOC, Solid, makeBaseBox } = await import('replicad');
     const oc = getOC();
     const parts: any[] = [];
     const exp = new oc.TopExp_Explorer_2(
@@ -419,14 +420,41 @@ export const keepSolidNearestPoint = async (
     exp.delete();
     if (parts.length <= 1) return shape;
 
+    // Prob noktası: yüzeydeki tıklama, panel normali boyunca 2mm İÇERİ
+    // itilir — nokta kesin tek parçanın hacmindedir.
+    const pp: [number, number, number] = inwardDir
+      ? [point[0] - inwardDir[0] * 2, point[1] - inwardDir[1] * 2, point[2] - inwardDir[2] * 2]
+      : point;
+
+    const clampDist = (p: any): number => {
+      const bb = p.boundingBox.bounds;
+      const dx = Math.max(bb[0][0] - pp[0], 0, pp[0] - bb[1][0]);
+      const dy = Math.max(bb[0][1] - pp[1], 0, pp[1] - bb[1][1]);
+      const dz = Math.max(bb[0][2] - pp[2], 0, pp[2] - bb[1][2]);
+      return Math.hypot(dx, dy, dz);
+    };
+    // EĞİK KESİM BELİRSİZLİĞİ: dönmüş kardeş paneli çaprazlama kestiğinde
+    // parçaların AABB'leri ÖRTÜŞÜR ve tıklama noktası birden çok kutunun
+    // içinde kalır (mesafe=0 beraberliği) — AABB testi yanlış parçayı
+    // seçebilir ("açılı panelin boşluğuna tıkladım, panel alta yerleşti").
+    // Beraberlikte GERÇEK katı-içi test yapılır: prob noktasında 2mm küp,
+    // hangi parçanın hacmiyle kesişiyorsa o parça kazanır.
+    const zero = parts.filter(p => clampDist(p) < 1e-6);
+    if (zero.length > 1) {
+      for (const p of zero) {
+        try {
+          const probe = makeBaseBox(2, 2, 2).translate([pp[0] - 1, pp[1] - 1, pp[2] - 1]);
+          const hit = probe.intersect(p.clone());
+          const bb = hit.boundingBox.bounds;
+          if (isFinite(bb[0][0]) && bb[1][0] - bb[0][0] > 1e-6) return p.clone();
+        } catch { /* prob başarısızsa sıradaki parçaya bak */ }
+      }
+    }
+
     let bestPart: any = null;
     let bestDist = Infinity;
     for (const p of parts) {
-      const bb = p.boundingBox.bounds;
-      const dx = Math.max(bb[0][0] - point[0], 0, point[0] - bb[1][0]);
-      const dy = Math.max(bb[0][1] - point[1], 0, point[1] - bb[1][1]);
-      const dz = Math.max(bb[0][2] - point[2], 0, point[2] - bb[1][2]);
-      const d = Math.hypot(dx, dy, dz);
+      const d = clampDist(p);
       if (d < bestDist) { bestDist = d; bestPart = p; }
     }
     // Klon şart: alt-shape parent compound'a bağlı; bağımsız kopya döndürülür.

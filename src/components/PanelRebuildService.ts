@@ -24,6 +24,25 @@ function geoAxesSize(geo: THREE.BufferGeometry) {
   bbox.getSize(size);
   const axes = [{ i: 0, v: size.x }, { i: 1, v: size.y }, { i: 2, v: size.z }].sort((a, b) => a.v - b.v);
   return { axes, size };
+
+/**
+ * GÜVENLİ KESİM: performBooleanCut sonucu panelin TAMAMINI yutarsa (boş
+ * compound / okunamayan bounds) kesim GERİ ALINIR ve panel kesimsiz haliyle
+ * devam eder. Eş-düzlem + dönmüş kardeş kombinasyonlarında tek bir hatalı
+ * kesici tüm paneli süpürebiliyordu ("SEÇİM bbox= hata" → boş panel).
+ */
+async function safeCut(rp: any, cutter: any, label: string): Promise<any> {
+  const { performBooleanCut } = await import('./ReplicadService');
+  const out = await performBooleanCut(rp, cutter);
+  try {
+    const bb = out?.boundingBox?.bounds;
+    const ok = bb && isFinite(bb[0][0]) &&
+      [bb[1][0] - bb[0][0], bb[1][1] - bb[0][1], bb[1][2] - bb[0][2]].filter(s => s > 0.5).length >= 2;
+    if (ok) return out;
+  } catch { /* bounds okunamadı → boş say */ }
+  console.error('[YAGO][KESİM] kesim paneli tamamen yuttu, GERİ ALINDI:', label);
+  return rp;
+}
 }
 
 // Referans küpü, panelin YEREL (döndürülmemiş) çerçevesine taşır: paneli
@@ -1028,7 +1047,7 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
                   [panel.position[0], panel.position[1], panel.position[2]]);
                 if (!cutter) break;
                 const shifted = cutter.translate(pn.x * shift, pn.y * shift, pn.z * shift);
-                rp = await performBooleanCut(rp, shifted);
+                rp = await safeCut(rp, shifted, `eş-düzlem ${sib.id}`);
               }
             } catch (err) {
               console.error('Eş-düzlem kardeş ön-kesimi başarısız:', err);
@@ -1134,7 +1153,7 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
               } else {
                 const cutter = siblingCutterInPanelFrame(sib, rotateSteps, parentPos,
                   [panel.position[0], panel.position[1], panel.position[2]]);
-                if (cutter) rp = await performBooleanCut(rp, cutter);
+                if (cutter) rp = await safeCut(rp, cutter, (typeof sib !== 'undefined' ? (sib as any).id : (typeof rsib !== 'undefined' ? (rsib as any).id : 'kardeş')));
               }
             } catch (err) {
               console.error('Failed to subtract sibling from rotated panel:', err);
@@ -1168,7 +1187,7 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
                 // Belirsiz durum: frame-düzeltmeli gövde kesimi
                 const cutter = siblingCutterInPanelFrame(rsib, rotateSteps, parentPos,
                   [panel.position[0], panel.position[1], panel.position[2]]);
-                if (cutter) rp = await performBooleanCut(rp, cutter);
+                if (cutter) rp = await safeCut(rp, cutter, (typeof sib !== 'undefined' ? (sib as any).id : (typeof rsib !== 'undefined' ? (rsib as any).id : 'kardeş')));
               }
             } catch (err) {
               console.error('Miter cut against rotated sibling failed:', err);
@@ -1303,7 +1322,7 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
                 if (!cutDone) {
                   const cutter = siblingCutterInPanelFrame(sib, rotateSteps, parentPos,
                     [panel.position[0], panel.position[1], panel.position[2]]);
-                  if (cutter) rp = await performBooleanCut(rp, cutter);
+                  if (cutter) rp = await safeCut(rp, cutter, (typeof sib !== 'undefined' ? (sib as any).id : (typeof rsib !== 'undefined' ? (rsib as any).id : 'kardeş')));
                 }
               } catch (err) {
                 console.error('Failed to subtract sibling panel from straight sibling cut:', err);
@@ -1319,7 +1338,7 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
         if (faceExtrudedOk) {
           try {
             const { keepSolidNearestPoint } = await import('./ReplicadService');
-            rp = await keepSolidNearestPoint(rp, regionPoint);
+            rp = await keepSolidNearestPoint(rp, regionPoint, vf.normal);
             console.log('[YAGO][SEÇİM]', panel.id, 'seçim sonrası bbox=',
               (() => { try { const bb = rp?.boundingBox?.bounds;
                 return bb ? bb[0].map((n:number)=>n.toFixed(0)).join(',')+' .. '+bb[1].map((n:number)=>n.toFixed(0)).join(',') : 'yok'; } catch { return 'hata'; } })());
@@ -1330,11 +1349,15 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           // kesimler paneli yutar ve "ölçüsü 0 panel" doğar. Böyle bir sonuç
           // ASLA yazılmaz: panelin önceki geometrisi korunur ve durum loglanır
           // (kullanıcı kardeşi kısaltınca sonraki rebuild paneli yeniden
-          // büyütür).
-          try {
-            const bb = rp?.boundingBox?.bounds;
-            const spans = bb ? [bb[1][0] - bb[0][0], bb[1][1] - bb[0][1], bb[1][2] - bb[0][2]] : [0, 0, 0];
-            const degenerate = !bb || !isFinite(spans[0]) || spans.filter(s => s > 0.5).length < 2;
+          // büyütür). Bounds okunamaması da (boş compound exception'ı) boş
+          // sayılır — koruma her koşulda devrededir.
+          {
+            let degenerate = false;
+            try {
+              const bb = rp?.boundingBox?.bounds;
+              const spans = bb ? [bb[1][0] - bb[0][0], bb[1][1] - bb[0][1], bb[1][2] - bb[0][2]] : [0, 0, 0];
+              degenerate = !bb || !isFinite(spans[0]) || spans.filter(s => s > 0.5).length < 2;
+            } catch { degenerate = true; }
             if (degenerate) {
               console.error('Panel bölgesi kardeşlerce tamamen kaplandı; önceki geometri korunuyor:', panel.id);
               if (panel.replicadShape) {
@@ -1344,7 +1367,7 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
                 continue;
               }
             }
-          } catch { /* bbox okunamadıysa akışa devam */ }
+          }
         }
 
         let geometry = convertReplicadToThreeGeometry(rp);
@@ -1425,6 +1448,22 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
             parameters: { ...rebuiltPanel.parameters, baseRotatePosition: basePos, baseRotateRotation: baseRot, rotateSteps: rotateStepsRaw },
           };
         }
+
+        // ÖLÇÜ SENKRONU: extrude/taşıma/döndürme adımları geometriyi
+        // değiştirmiş olabilir; width/height SON geometriden yeniden
+        // hesaplanır — "taşınan panel ölçüsünü güncellemiyor" hatası burada
+        // kapanır. (Kalınlık ekseni dışındaki iki eksenin span'i.)
+        try {
+          const rFinal = geoAxesSize(rebuiltPanel.geometry);
+          if (rFinal) {
+            const paF = rFinal.axes.slice(1).map(a => a.i).sort((a, b) => a - b);
+            const sF = [rFinal.size.x, rFinal.size.y, rFinal.size.z];
+            rebuiltPanel = {
+              ...rebuiltPanel,
+              parameters: { ...rebuiltPanel.parameters, width: sF[paF[0]], height: sF[paF[1]] },
+            };
+          }
+        } catch { /* ölçü senkronu başarısızsa mevcut değerler kalır */ }
 
         workingShapes = [...workingShapes, rebuiltPanel];
       } catch (err) {
