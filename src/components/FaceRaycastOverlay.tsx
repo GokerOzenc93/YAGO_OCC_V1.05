@@ -569,9 +569,17 @@ export function computeFaceComponentContour(
     const f = faces[fi];
     if (!f) continue;
     if (pointInTriangle3D(seedLocal, f.vertices[0], f.vertices[1], f.vertices[2])) { seedFi = fi; break; }
-    const c = f.vertices[0].clone().add(f.vertices[1]).add(f.vertices[2]).multiplyScalar(1 / 3);
-    const d = c.distanceTo(seedLocal);
-    if (d < bestD) { bestD = d; seedFi = fi; }
+    // İçeren üçgen yoksa: en yakın MERKEZ değil, üçgen ÜZERİNDEKİ en yakın
+    // nokta (kenar clamp) — büyük üçgen merkez-uzak olsa da doğru komşu seçilir.
+    let dMin = Infinity;
+    for (let k = 0; k < 3; k++) {
+      const a = f.vertices[k], b = f.vertices[(k + 1) % 3];
+      const ab = new THREE.Vector3().subVectors(b, a);
+      const t = Math.max(0, Math.min(1, new THREE.Vector3().subVectors(seedLocal, a).dot(ab) / (ab.lengthSq() || 1)));
+      const q = a.clone().addScaledVector(ab, t);
+      dMin = Math.min(dMin, q.distanceTo(seedLocal));
+    }
+    if (dMin < bestD) { bestD = dMin; seedFi = fi; }
   }
   if (seedFi === -1) return null;
 

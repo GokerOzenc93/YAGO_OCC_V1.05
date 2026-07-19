@@ -966,6 +966,15 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
             .addScaledVector(nV, planeN);
           return [pt.x, pt.y, pt.z] as [number, number, number];
         })();
+        console.log('[YAGO][BÖLGE]', panel.id,
+          'regionUV=', panel.parameters?.regionUV,
+          'regionPoint=', regionPoint.map(n => n.toFixed(1)).join(','),
+          'vfCenter=', vf.center.map(n => n.toFixed(1)).join(','),
+          'vfVertsN=', vf.vertices.length,
+          'vfBBox=', (() => { let a=[Infinity,Infinity,Infinity],b=[-Infinity,-Infinity,-Infinity];
+            for (const [x,y,z] of vf.vertices){a[0]=Math.min(a[0],x);a[1]=Math.min(a[1],y);a[2]=Math.min(a[2],z);
+              b[0]=Math.max(b[0],x);b[1]=Math.max(b[1],y);b[2]=Math.max(b[2],z);}
+            return a.map(n=>n.toFixed(0)).join(',')+' .. '+b.map(n=>n.toFixed(0)).join(','); })());
         // TAM YUZ MODELI: her duz panel, tiklanan yuzun OCC yuz-extrusion'u
         // olarak uretilir (parentFaceShape bayragi kosul olmaktan cikti - tum
         // paneller tam yuz kaplar; kardes kesimleri ve bolge secimi asagida).
@@ -973,12 +982,14 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           try {
             const { createPanelFromParentFaces } = await import('./ReplicadService');
             const faceRp = await createPanelFromParentFaces(
-              parent.replicadShape, vf.normal, vf.center, thickness, regionPoint,
-              vf.vertices as [number, number, number][] | undefined
+              parent.replicadShape, vf.normal, vf.center, thickness, regionPoint
             );
             if (faceRp) { rp = faceRp; faceExtrudedOk = true; }
+            console.log('[YAGO][ÜRETİM]', panel.id, 'faceExtrudedOk=', faceExtrudedOk,
+              'rpBBox=', (() => { try { const bb = rp?.boundingBox?.bounds;
+                return bb ? bb[0].map((n:number)=>n.toFixed(0)).join(',')+' .. '+bb[1].map((n:number)=>n.toFixed(0)).join(',') : 'yok'; } catch { return 'hata'; } })());
           } catch (err) {
-            console.error('Yüz-extrusion panel üretimi başarısız, intersection fallback:', err);
+            console.error('[YAGO][ÜRETİM] yüz-extrusion HATA, slab fallback devrede:', panel.id, err);
           }
         }
 
@@ -1309,6 +1320,9 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           try {
             const { keepSolidNearestPoint } = await import('./ReplicadService');
             rp = await keepSolidNearestPoint(rp, regionPoint);
+            console.log('[YAGO][SEÇİM]', panel.id, 'seçim sonrası bbox=',
+              (() => { try { const bb = rp?.boundingBox?.bounds;
+                return bb ? bb[0].map((n:number)=>n.toFixed(0)).join(',')+' .. '+bb[1].map((n:number)=>n.toFixed(0)).join(',') : 'yok'; } catch { return 'hata'; } })());
           } catch (err) {
             console.error('Bölge seçimi başarısız, panel çok parçalı kalabilir:', err);
           }

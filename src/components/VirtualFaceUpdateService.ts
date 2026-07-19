@@ -147,36 +147,61 @@ function findMatchingFaceGroup(
     }
   }
 
+  // Grup AABB'sine clamp mesafesi: merkez grubun içindeyse 0.
+  const clampDistToGroup = (g: CoplanarFaceGroup): number => {
+    const bb = new THREE.Box3();
+    g.faceIndices.forEach(fi => {
+      const face = faces[fi];
+      if (face) face.vertices.forEach(vv => bb.expandByPoint(vv));
+    });
+    const cl = vfCenter.clone().clamp(bb.min, bb.max);
+    return cl.distanceTo(vfCenter);
+  };
+
   if (vf.faceGroupDescriptor) {
     const matchedFace = findFaceByDescriptor(vf.faceGroupDescriptor, faces, geometry);
     if (matchedFace) {
       const matchedGroup = candidateGroups.find(g =>
         g.faceIndices.includes(matchedFace.faceIndex)
       );
-      if (matchedGroup) return matchedGroup;
+      // MERKEZ-TUTARLILIK SÜZGECİ: descriptor tek-üçgen eşleşmesidir ve
+      // resize sonrası yanlış bileşene kayabilir; grup, VF merkezini
+      // (±5mm) gerçekten kapsıyorsa kabul edilir, aksi halde merkez
+      // tabanlı seçime düşülür.
+      if (matchedGroup && clampDistToGroup(matchedGroup) <= 5) return matchedGroup;
     }
   }
 
   if (candidateGroups.length === 1) return candidateGroups[0];
 
-  let bestGroup: CoplanarFaceGroup | null = null;
-
+  // ─── AYNI DÜZLEMDEKİ KOPUK YÜZLER İÇİN BERABERLİK KIRICI ───
+  // Aynı normalde birden çok grup varsa (U/çift-kule: sol yüz + sağ yüz
+  // AYNI düzlemde) düzlem-offset farkı ikisinde de sıfırdır; eski kod
+  // `<` karşılaştırmasıyla İLK adayı tutuyordu → panel hep SOL bileşene
+  // savruluyordu ("sağa tıkladım sola yerleşti" hatasının kök nedeni,
+  // loglarla kanıtlandı: eskiMerkez=993 → yeniMerkez=84, kontur 0..282).
+  // Doğrusu: en iyi offset'e ±0.5mm yakın TÜM adaylar içinden VF
+  // merkezine (grup AABB clamp mesafesi; içindeyse 0) EN YAKIN grup.
   const vfPlaneOffset = vfCenter.dot(vfNormal);
-  let bestPlaneDiff = Infinity;
-  for (const group of candidateGroups) {
-    const groupNormal = group.normal.clone().normalize();
-    const groupPlaneOffset = group.center.dot(groupNormal);
-    const planeDiff = Math.abs(groupPlaneOffset - vfPlaneOffset);
-    if (planeDiff < bestPlaneDiff) {
-      bestPlaneDiff = planeDiff;
-      bestGroup = group;
+  const planeDiffOf = (g: CoplanarFaceGroup): number => {
+    const gn = g.normal.clone().normalize();
+    return Math.abs(g.center.dot(gn) - vfPlaneOffset);
+  };
+  let minPlaneDiff = Infinity;
+  for (const g of candidateGroups) minPlaneDiff = Math.min(minPlaneDiff, planeDiffOf(g));
+  if (minPlaneDiff < 5) {
+    const samePlane = candidateGroups.filter(g => planeDiffOf(g) <= minPlaneDiff + 0.5);
+    let best: CoplanarFaceGroup | null = null;
+    let bestD = Infinity;
+    for (const g of samePlane) {
+      const d = clampDistToGroup(g);
+      if (d < bestD) { bestD = d; best = g; }
     }
+    if (best) return best;
   }
 
-  if (bestGroup && bestPlaneDiff < 5) return bestGroup;
-
+  let bestGroup: CoplanarFaceGroup | null = null;
   let bestDist = Infinity;
-  bestGroup = null;
   for (const group of candidateGroups) {
     const groupBBox = new THREE.Box3();
     group.faceIndices.forEach(fi => {
@@ -500,6 +525,12 @@ function regenerateParentFaceShapeVF(
     .addScaledVector(v, newB.yMin + rv * newB.ySpan)
     .addScaledVector(localNormal, planeN);
 
+  console.log('[YAGO][REGEN]', vf.id,
+    'eskiMerkez=', vf.center.map(n => n.toFixed(1)).join(','),
+    'yeniMerkez=', [newCenter.x, newCenter.y, newCenter.z].map(n => n.toFixed(1)).join(','),
+    'konturBBoxU=', `${newB.xMin.toFixed(0)}..${newB.xMax.toFixed(0)}`,
+    'ru,rv=', `${ru.toFixed(2)},${rv.toFixed(2)}`,
+    'köşeN=', contour.corners.length);
   return {
     ...vf,
     normal: [localNormal.x, localNormal.y, localNormal.z],

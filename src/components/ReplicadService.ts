@@ -285,8 +285,7 @@ export const createPanelFromParentFaces = async (
   normal: [number, number, number],
   planePoint: [number, number, number],
   panelThickness: number,
-  seedPoint?: [number, number, number],
-  contourVertices?: [number, number, number][]
+  seedPoint?: [number, number, number]
 ): Promise<any | null> => {
   await initReplicad();
   const { basicFaceExtrusion, Vector } = await import('replicad');
@@ -321,113 +320,52 @@ export const createPanelFromParentFaces = async (
   }
   if (eligible.length === 0) return null;
 
-  // Düzlem 2D eksenleri (kontur nokta-içinde testi için)
-  const ax = Math.abs(n.x), ay = Math.abs(n.y), az = Math.abs(n.z);
-  const uAxis = az >= ax && az >= ay ? new THREE.Vector3(1, 0, 0)
-    : ax >= ay ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
-  const vAxis = new THREE.Vector3().crossVectors(n, uAxis).normalize();
-  uAxis.crossVectors(vAxis, n).normalize();
-  const project2D = (p: [number, number, number]) => ({
-    x: uAxis.x * p[0] + uAxis.y * p[1] + uAxis.z * p[2],
-    y: vAxis.x * p[0] + vAxis.y * p[1] + vAxis.z * p[2],
-  });
-  // Ray-casting nokta-içinde-çokgen testi (2D)
-  const pointInPoly = (px: number, py: number, poly: Array<{ x: number; y: number }>): boolean => {
-    let inside = false;
-    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-      const xi = poly[i].x, yi = poly[i].y, xj = poly[j].x, yj = poly[j].y;
-      const intersect = ((yi > py) !== (yj > py)) &&
-        (px < (xj - xi) * (py - yi) / ((yj - yi) || 1e-12) + xi);
-      if (intersect) inside = !inside;
-    }
-    return inside;
+  // 2) Fiziksel bitişiklik: yüzlerin sınır vertex'leri (yuvarlanmış key)
+  //    üzerinden kenar/köşe paylaşımı. Ayrık yüzler ayrı bileşendir.
+  const vertexKeys = (f: any): Set<string> => {
+    const keys = new Set<string>();
+    try {
+      for (const e of f.edges) {
+        for (const p of [e.startPoint, e.endPoint]) {
+          if (!p) continue;
+          keys.add(`${p.x.toFixed(1)},${p.y.toFixed(1)},${p.z.toFixed(1)}`);
+        }
+      }
+    } catch { /* kenarsız/bozuk yüz: boş küme → tek başına bileşen */ }
+    return keys;
+  };
+  const keySets = eligible.map(vertexKeys);
+  const share = (a: Set<string>, b: Set<string>): boolean => {
+    for (const k of a) if (b.has(k)) return true;
+    return false;
   };
 
-  // 2) KONTUR SEÇİMİ (birincil yol): VF kontur vertex'leri (highlight'ın
-  //    gösterdiği poligon) verildiyse, mesh merkezini konturun İÇİNE düşen
-  //    tüm uygun OCC yüzlerini seç. Bu, panel ile highlight arasında BIREBIR
-  //    eşleşme sağlar — seed/BFS türetmesi kadar kırılgan DEĞILDIR: kontur
-  //    zaten tıklanan bağlantılı bileşenin sınırıdır, OCC yüz seçimi de
-  //    onunla örtüşür. "Kırmızıya tıkla, sarıya yerleş" hatası bu yolla
-  //    oluşamaz çünkü seçim kriteri highlight'ın kendisidir.
-  let selected: Set<number> | null = null;
-  if (contourVertices && contourVertices.length >= 3) {
-    const poly = contourVertices.map(project2D);
-    selected = new Set<number>();
-    for (let i = 0; i < eligible.length; i++) {
-      try {
-        const fm = eligible[i].mesh({ tolerance: 1.0, angularTolerance: 15 });
-        if (!fm.vertices || fm.vertices.length < 3) continue;
-        // Yüz mesh centroid'i kontur içindeyse → seç. (Tessellasyon farkı
-        // yüz sınırı üzerinden geçse bile centroid güvenli bir testtir.)
-        let sx = 0, sy = 0, sz = 0, nv = 0;
-        for (let j = 0; j < fm.vertices.length; j += 3) {
-          sx += fm.vertices[j]; sy += fm.vertices[j + 1]; sz += fm.vertices[j + 2]; nv++;
-        }
-        if (nv === 0) continue;
-        const proj = project2D([sx / nv, sy / nv, sz / nv]);
-        if (pointInPoly(proj.x, proj.y, poly)) selected.add(i);
-      } catch { /* mesh alınamadı → bu yüzü atla */ }
-    }
-    if (selected.size === 0) selected = null; // boşsa fallback'e düş
+  // 3) Seed: seedPoint'e merkezi en yakın yüz; BFS ile bağlantılı bileşeni
+  let seedIdx = 0, best = Infinity;
+  for (let i = 0; i < eligible.length; i++) {
+    const c = eligible[i].center;
+    const d = Math.hypot(c.x - seed[0], c.y - seed[1], c.z - seed[2]);
+    if (d < best) { best = d; seedIdx = i; }
   }
-
-  // 3) FALLBACK: kontur yoksa veya hiç yüz seçemediyse, seed + BFS ile
-  //    bağlantılı bileşeni türet (eski davranış).
-  if (selected === null) {
-    const vertexKeys = (f: any): Set<string> => {
-      const keys = new Set<string>();
-      try {
-        for (const e of f.edges) {
-          for (const p of [e.startPoint, e.endPoint]) {
-            if (!p) continue;
-            keys.add(`${p.x.toFixed(1)},${p.y.toFixed(1)},${p.z.toFixed(1)}`);
-          }
-        }
-      } catch { /* kenarsız/bozuk yüz: boş küme → tek başına bileşen */ }
-      return keys;
-    };
-    const keySets = eligible.map(vertexKeys);
-    const share = (a: Set<string>, b: Set<string>): boolean => {
-      for (const k of a) if (b.has(k)) return true;
-      return false;
-    };
-    // Seed: seedPoint'i İÇEREN (veya tessellasyonu en yakın) yüz.
-    let seedIdx = 0, best = Infinity;
-    for (let i = 0; i < eligible.length; i++) {
-      let minPtDist = Infinity;
-      try {
-        const fm = eligible[i].mesh({ tolerance: 1.0, angularTolerance: 15 });
-        if (fm.vertices && fm.vertices.length >= 3) {
-          for (let j = 0; j < fm.vertices.length; j += 3) {
-            const dx = fm.vertices[j] - seed[0];
-            const dy = fm.vertices[j + 1] - seed[1];
-            const dz = fm.vertices[j + 2] - seed[2];
-            const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
-            if (d < minPtDist) minPtDist = d;
-          }
-        }
-      } catch { /* mesh alınamadıysa center mesafesine düş */ }
-      if (!isFinite(minPtDist)) {
-        const c = eligible[i].center;
-        minPtDist = Math.hypot(c.x - seed[0], c.y - seed[1], c.z - seed[2]);
-      }
-      if (minPtDist < best) { best = minPtDist; seedIdx = i; }
-    }
-    selected = new Set<number>([seedIdx]);
-    const stack = [seedIdx];
-    while (stack.length) {
-      const i = stack.pop()!;
-      for (let j = 0; j < eligible.length; j++) {
-        if (selected.has(j)) continue;
-        if (share(keySets[i], keySets[j])) { selected.add(j); stack.push(j); }
-      }
+  const comp = new Set<number>([seedIdx]);
+  const stack = [seedIdx];
+  while (stack.length) {
+    const i = stack.pop()!;
+    for (let j = 0; j < eligible.length; j++) {
+      if (comp.has(j)) continue;
+      if (share(keySets[i], keySets[j])) { comp.add(j); stack.push(j); }
     }
   }
+  try {
+    const sc = eligible[seedIdx].center;
+    console.log('[YAGO][YÜZ]', 'uygunYüz=', eligible.length, 'seedYüzMerkez=',
+      `${sc.x.toFixed(1)},${sc.y.toFixed(1)},${sc.z.toFixed(1)}`, 'seedNokta=',
+      seed.map(n => n.toFixed(1)).join(','), 'bileşen=', comp.size);
+  } catch { /* tanı logu */ }
 
-  // 4) Seçili yüzleri extrude et ve birleştir
+  // 4) Yalnız bileşendeki yüzleri extrude et ve birleştir
   const solids: any[] = [];
-  for (const i of selected) {
+  for (const i of comp) {
     try {
       solids.push(
         basicFaceExtrusion(
