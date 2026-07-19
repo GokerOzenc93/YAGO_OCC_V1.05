@@ -340,12 +340,32 @@ export const createPanelFromParentFaces = async (
     return false;
   };
 
-  // 3) Seed: seedPoint'e merkezi en yakın yüz; BFS ile bağlantılı bileşeni
+  // 3) Seed: seedPoint'i İÇEREN (veya tessellasyonu en yakın) yüz; BFS ile
+  //    bağlantılı bileşeni. Yüz MERKEZİ kullanırsak, tıklama noktası büyük bir
+  //    yüzün kenarında olduğunda komşu küçük yüzün merkezi daha yakın çıkar ve
+  //    panel yanlış yüze yerleşirdi ("kırmızıya tıklayınca sarıya yerleşti",
+  //    ardından üst üste bindiğinde 0 ölçü). Bu, findMatchingReplicadFace'in
+  //    kullandığı minPtDist yöntemiyle birebir aynı — doğruluğu kanıtlanmıştır.
   let seedIdx = 0, best = Infinity;
   for (let i = 0; i < eligible.length; i++) {
-    const c = eligible[i].center;
-    const d = Math.hypot(c.x - seed[0], c.y - seed[1], c.z - seed[2]);
-    if (d < best) { best = d; seedIdx = i; }
+    let minPtDist = Infinity;
+    try {
+      const fm = eligible[i].mesh({ tolerance: 1.0, angularTolerance: 15 });
+      if (fm.vertices && fm.vertices.length >= 3) {
+        for (let j = 0; j < fm.vertices.length; j += 3) {
+          const dx = fm.vertices[j] - seed[0];
+          const dy = fm.vertices[j + 1] - seed[1];
+          const dz = fm.vertices[j + 2] - seed[2];
+          const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+          if (d < minPtDist) minPtDist = d;
+        }
+      }
+    } catch { /* mesh alınamadıysa center mesafesine düş */ }
+    if (!isFinite(minPtDist)) {
+      const c = eligible[i].center;
+      minPtDist = Math.hypot(c.x - seed[0], c.y - seed[1], c.z - seed[2]);
+    }
+    if (minPtDist < best) { best = minPtDist; seedIdx = i; }
   }
   const comp = new Set<number>([seedIdx]);
   const stack = [seedIdx];
