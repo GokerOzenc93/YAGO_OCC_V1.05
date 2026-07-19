@@ -450,6 +450,48 @@ interface PendingPreview {
  * footprint projected onto the face plane. Used to detect void areas left by shortened
  * panels, without relying on VF polygons (which stay as original full-face for rebuild).
  */
+/** Panelin, verilen yüz DÜZLEMİNE değen 2D ayak izi (u/v hull). Panel düzleme
+ *  değmiyorsa (on-plane köşe < 3) null döner — o yüzeyde engel değildir. */
+export function panelFootprintOnPlane(
+  panel: any,
+  facePlaneNormal: THREE.Vector3,
+  facePlaneOrigin: THREE.Vector3,
+  u: THREE.Vector3,
+  v: THREE.Vector3,
+  planeTolerance: number = 5.0
+): Point2D[] | null {
+  if (!panel.geometry) return null;
+  const panelMatrix = getShapeMatrix(panel);
+  const posAttr = panel.geometry.getAttribute('position') as THREE.BufferAttribute;
+  const pts2D: Point2D[] = [];
+  for (let i = 0; i < posAttr.count; i++) {
+    const wp = new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)).applyMatrix4(panelMatrix);
+    const dist = Math.abs(facePlaneNormal.dot(new THREE.Vector3().subVectors(wp, facePlaneOrigin)));
+    if (dist < planeTolerance) pts2D.push(projectTo2D(wp, facePlaneOrigin, u, v));
+  }
+  if (pts2D.length < 3) return null;
+  const hull = convexHull2D(pts2D);
+  return hull.length >= 3 ? hull : null;
+}
+
+/** Tıklanan düzlem noktası, bu yüzeye değen HERHANGİ bir panelin ayak izi
+ *  içinde mi? İçindeyse o paneli döndürür (taşınmış paneller dahil — VF
+ *  konumundan bağımsız, panelin GÜNCEL geometrisiyle test edilir). */
+export function findPanelCoveringPoint(
+  worldPt: THREE.Vector3,
+  childPanels: any[],
+  facePlaneNormal: THREE.Vector3,
+  facePlaneOrigin: THREE.Vector3
+): any | null {
+  const { u, v } = getFacePlaneAxes(facePlaneNormal);
+  const p2 = projectTo2D(worldPt, facePlaneOrigin, u, v);
+  for (const panel of childPanels) {
+    const fp = panelFootprintOnPlane(panel, facePlaneNormal, facePlaneOrigin, u, v);
+    if (fp && isPointInsidePolygon(p2, fp)) return panel;
+  }
+  return null;
+}
+
 export function isWorldPointInsidePanelFootprint(
   worldPt: THREE.Vector3,
   panel: any,
@@ -479,18 +521,6 @@ export function isWorldPointInsidePanelFootprint(
   const hull = convexHull2D(pts2D);
   if (hull.length < 3) return false;
   return isPointInsidePolygon(projectTo2D(worldPt, facePlaneOrigin, u, v), hull);
-}
-
-function isWorldPointInsidePanelForVF(
-  worldPt: THREE.Vector3,
-  vf: VirtualFace,
-  childPanels: any[],
-  facePlaneNormal: THREE.Vector3,
-  facePlaneOrigin: THREE.Vector3
-): boolean {
-  const panel = childPanels.find(p => p.parameters?.virtualFaceId === vf.id);
-  if (!panel) return false;
-  return isWorldPointInsidePanelFootprint(worldPt, panel, facePlaneNormal, facePlaneOrigin);
 }
 
 export function collectVirtualFaceObstacleEdgesWorld(virtualFaces: VirtualFace[], excludeId: string | null, shapeLocalToWorld: THREE.Matrix4, facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, planeTolerance: number = 20, excludeVfIds?: Set<string>): ObstacleEdge[] {
@@ -621,26 +651,116 @@ export function buildFacePreview(
   faces: FaceData[],
   worldToLocal: THREE.Matrix4,
   shapeId: string,
-  geometry?: THREE.BufferGeometry
+  geometry?: THREE.BufferGeometry,
+  childPanels: any[] = []
 ): PendingPreview | null {
   const clickLocal = clickWorld.clone().applyMatrix4(worldToLocal);
   const contour = computeFaceComponentContour(faces, group.faceIndices, clickLocal, group.normal);
   if (!contour) return null;
 
-  // Önizleme geometrileri: bileşen üçgenleri (dolgu) + sınır (çizgi)
+  // ─── AKIŞLA ERİŞİLEBİLİR BÖLGE HIGHLIGHT'I ───
+  // Highlight = tıklanan noktadan, bu yüzeye DEĞEN panellerin ayak izleri
+  // (footprint) etrafında dolaşarak erişilebilen serbest alan. Panel yüzü
+  // TAM bölüyorsa yalnız tıklanan taraf; panel kısaysa etrafından "sızılır"
+  // ve yüzün tamamı seçilir — OCC üretim zinciri (kardeş kesimi + bağlantılı
+  // parça seçimi) ile birebir aynı semantik. Grid + flood-fill ile hesaplanır;
+  // VF kimliği (kontur/merkez) değişmez, yalnız görsel bölge daralır.
+  const nrm = group.normal.clone().normalize();
+  const { u, v } = getFacePlaneAxes(nrm);
+  const ring2D: Point2D[] = contour.corners.map(c => ({ x: c.dot(u), y: c.dot(v) }));
+  const planeN = contour.corners[0].dot(nrm);
+  const planeOriginLocal = new THREE.Vector3().addScaledVector(nrm, planeN);
+  const footprints: Point2D[][] = [];
+  for (const panel of childPanels) {
+    if (panel.parameters?.parentShapeId && panel.parameters.parentShapeId !== shapeId) continue;
+    const fp = panelFootprintOnPlane(panel, nrm, planeOriginLocal, u, v);
+    if (fp) footprints.push(fp);
+  }
+
+  let uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity;
+  for (const q of ring2D) { uMin = Math.min(uMin, q.x); uMax = Math.max(uMax, q.x); vMin = Math.min(vMin, q.y); vMax = Math.max(vMax, q.y); }
+  const uSpan = Math.max(uMax - uMin, 1e-6), vSpan = Math.max(vMax - vMin, 1e-6);
+  const cell = Math.min(20, Math.max(2, Math.max(uSpan, vSpan) / 140));
+  const nx = Math.min(240, Math.max(1, Math.ceil(uSpan / cell)));
+  const ny = Math.min(240, Math.max(1, Math.ceil(vSpan / cell)));
+  const cw = uSpan / nx, ch = vSpan / ny;
+  const inFree = (cx: number, cy: number): boolean => {
+    const pt = { x: uMin + (cx + 0.5) * cw, y: vMin + (cy + 0.5) * ch };
+    if (!isPointInsidePolygon(pt, ring2D)) return false;
+    for (const fp of footprints) if (isPointInsidePolygon(pt, fp)) return false;
+    return true;
+  };
+  const free = new Uint8Array(nx * ny);
+  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) free[j * nx + i] = inFree(i, j) ? 1 : 0;
+
+  const cu = clickLocal.dot(u), cv = clickLocal.dot(v);
+  let ci = Math.max(0, Math.min(nx - 1, Math.floor((cu - uMin) / cw)));
+  let cj = Math.max(0, Math.min(ny - 1, Math.floor((cv - vMin) / ch)));
+  if (!free[cj * nx + ci]) {
+    // Tıklama hücresi dolu/dışarıda (kenar durumu): en yakın serbest hücre
+    let bd = Infinity, bi = ci, bj = cj;
+    for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+      if (!free[j * nx + i]) continue;
+      const d = (i - ci) * (i - ci) + (j - cj) * (j - cj);
+      if (d < bd) { bd = d; bi = i; bj = j; }
+    }
+    ci = bi; cj = bj;
+  }
+  const reach = new Uint8Array(nx * ny);
+  if (free[cj * nx + ci]) {
+    const q: number[] = [cj * nx + ci];
+    reach[cj * nx + ci] = 1;
+    while (q.length) {
+      const idx = q.pop()!;
+      const i = idx % nx, j = (idx / nx) | 0;
+      const nb = [[i - 1, j], [i + 1, j], [i, j - 1], [i, j + 1]];
+      for (const [a, b] of nb) {
+        if (a < 0 || b < 0 || a >= nx || b >= ny) continue;
+        const k = b * nx + a;
+        if (free[k] && !reach[k]) { reach[k] = 1; q.push(k); }
+      }
+    }
+  }
+
+  const to3D = (px: number, py: number) => new THREE.Vector3()
+    .addScaledVector(u, px).addScaledVector(v, py).addScaledVector(nrm, planeN);
   const pos: number[] = [];
-  for (const fi of contour.comp) {
-    const f = faces[fi]!;
-    for (const vv of f.vertices) pos.push(vv.x, vv.y, vv.z);
+  const epos: number[] = [];
+  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+    if (!reach[j * nx + i]) continue;
+    const x0 = uMin + i * cw, x1 = x0 + cw, y0 = vMin + j * ch, y1 = y0 + ch;
+    const p00 = to3D(x0, y0), p10 = to3D(x1, y0), p11 = to3D(x1, y1), p01 = to3D(x0, y1);
+    pos.push(p00.x, p00.y, p00.z, p10.x, p10.y, p10.z, p11.x, p11.y, p11.z,
+             p00.x, p00.y, p00.z, p11.x, p11.y, p11.z, p01.x, p01.y, p01.z);
+    // Sınır kenarı: komşusu erişilemezse çiz
+    const bnd: Array<[THREE.Vector3, THREE.Vector3]> = [];
+    if (i === 0 || !reach[j * nx + i - 1]) bnd.push([p00, p01]);
+    if (i === nx - 1 || !reach[j * nx + i + 1]) bnd.push([p10, p11]);
+    if (j === 0 || !reach[(j - 1) * nx + i]) bnd.push([p00, p10]);
+    if (j === ny - 1 || !reach[(j + 1) * nx + i]) bnd.push([p01, p11]);
+    for (const [a, b] of bnd) epos.push(a.x, a.y, a.z, b.x, b.y, b.z);
+  }
+  // Güvence: hiç hücre yoksa tam bileşen dolgusuna düş
+  if (pos.length === 0) {
+    for (const fi of contour.comp) {
+      const f = faces[fi]!;
+      for (const vv of f.vertices) pos.push(vv.x, vv.y, vv.z);
+    }
+    for (const e of contour.boundary) epos.push(e.a.x, e.a.y, e.a.z, e.b.x, e.b.y, e.b.z);
   }
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3));
   geo.computeVertexNormals();
-  const epos: number[] = [];
-  for (const e of contour.boundary) epos.push(e.a.x, e.a.y, e.a.z, e.b.x, e.b.y, e.b.z);
   const edgeGeo = new THREE.BufferGeometry();
   edgeGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(epos), 3));
 
+  console.log('[YAGO][TIK]', 'clickLocal=',
+    `${clickLocal.x.toFixed(1)},${clickLocal.y.toFixed(1)},${clickLocal.z.toFixed(1)}`,
+    'konturKöşeN=', contour.corners.length,
+    'konturBBox=', (() => { let a=[Infinity,Infinity,Infinity],b=[-Infinity,-Infinity,-Infinity];
+      for (const c of contour.corners){a[0]=Math.min(a[0],c.x);a[1]=Math.min(a[1],c.y);a[2]=Math.min(a[2],c.z);
+        b[0]=Math.max(b[0],c.x);b[1]=Math.max(b[1],c.y);b[2]=Math.max(b[2],c.z);}
+      return a.map(n=>n.toFixed(0)).join(',')+' .. '+b.map(n=>n.toFixed(0)).join(','); })());
   const localNormal = group.normal.clone().normalize();
   // BÖLGE KİMLİĞİ: merkez, bileşen merkezi DEĞİL kullanıcının TIKLADIĞI
   // noktadır. Aynı yüzdeki iki panelin VF'leri aynı konturu taşısa da
@@ -850,18 +970,16 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     // the click point falls inside the panel's CURRENT GEOMETRY footprint on the face
     // plane — not the VF polygon (which stays as original full-face for correct rebuild).
     // This lets users click in the void left by a shortened panel.
-    const vfsForHovered = findVirtualFacesForGroup(hoveredGroupIndex);
     const _normalMatrix = new THREE.Matrix3().getNormalMatrix(localToWorld);
-    // Aynı yüzde birden çok panel olabilir: tıklanan nokta HERHANGİ birinin
-    // güncel gövdesi içindeyse yüz o noktada "tanımlıdır" (derinlik döngüsü
-    // veya panel seçimi devreye girer); panellerin arasındaki boşluk serbesttir.
-    const definedVf = vfsForHovered.find(cvf => {
-      if (!cvf.hasPanel) return false;
-      const nW = new THREE.Vector3(cvf.normal[0], cvf.normal[1], cvf.normal[2])
-        .applyMatrix3(_normalMatrix).normalize();
-      return isWorldPointInsidePanelForVF(clickPoint, cvf, childPanels, nW, clickPoint);
-    }) || null;
-    const hoveredIsDefined = definedVf !== null;
+    // PANEL-İÇİ TIKLAMA: tıklanan düzlem noktası, bu yüzeye DEĞEN herhangi
+    // bir panelin ayak izi içindeyse yüz o noktada "tanımlıdır" — panel
+    // TAŞINMIŞ olsa bile (test VF konumuna değil panelin GÜNCEL geometrisine
+    // dayanır). Panellerin arasındaki/dışındaki boşluk serbesttir ve
+    // highlight yalnız oradan akar.
+    const hoveredNormalW = faceGroups[hoveredGroupIndex].normal.clone()
+      .applyMatrix3(_normalMatrix).normalize();
+    const coveringPanel = findPanelCoveringPoint(clickPoint, childPanels, hoveredNormalW, clickPoint);
+    const hoveredIsDefined = coveringPanel !== null;
 
     let targetGroupIndex = hoveredGroupIndex;
     let previewClickPoint = clickPoint;
@@ -876,7 +994,7 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
       for (let gi = 0; gi < faceGroups.length; gi++) {
         // Skip this face group only when the ray's hit point on its plane is actually
         // INSIDE an existing panel VF — void areas on the same group are allowed.
-        const vfsForGi = findVirtualFacesForGroup(gi);
+
         const group = faceGroups[gi];
         const groupNormalWorld = group.normal.clone().normalize().applyMatrix3(
           new THREE.Matrix3().getNormalMatrix(localToWorld)
@@ -894,9 +1012,7 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
           const giNormalW = group.normal.clone().normalize().applyMatrix3(
             new THREE.Matrix3().getNormalMatrix(localToWorld)
           ).normalize();
-          const covered = vfsForGi.some(cvf => cvf.hasPanel
-            && isWorldPointInsidePanelForVF(hitOnPlane, cvf, childPanels, giNormalW, hitOnPlane));
-          if (covered) continue;
+          if (findPanelCoveringPoint(hitOnPlane, childPanels, giNormalW, hitOnPlane)) continue;
         }
 
         let inside = false;
@@ -926,7 +1042,8 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
       previewClickPoint = cycleCandidates[nextCycleIndex].hitPoint;
       lastClickRef.current = { point: clickLocal, groupIndex: targetGroupIndex, cycleIndex: nextCycleIndex };
     } else if (hoveredIsDefined) {
-      if (definedVf) setSelectedPanelRow(`vf-${definedVf.id}`, null, shape.id);
+      const vfId = coveringPanel?.parameters?.virtualFaceId;
+      if (vfId) setSelectedPanelRow(`vf-${vfId}`, null, shape.id);
       return;
     } else {
       lastClickRef.current = { point: clickLocal, groupIndex: targetGroupIndex, cycleIndex: 0 };
@@ -935,7 +1052,7 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     setHoveredGroupIndex(targetGroupIndex);
     // TAM YÜZ SEÇİMİ: tıklanan yüzün bağlantılı bileşeni komple seçilir.
     // Derinlik döngüsü (aynı noktaya tekrar tıklayınca arkadaki yüz) korunur.
-    setPending(buildFacePreview(previewClickPoint, faceGroups[targetGroupIndex], faces, worldToLocal, shape.id, shape.geometry));
+    setPending(buildFacePreview(previewClickPoint, faceGroups[targetGroupIndex], faces, worldToLocal, shape.id, shape.geometry, childPanels));
   };
   if (!raycastMode) return null;
   return (
