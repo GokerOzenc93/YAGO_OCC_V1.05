@@ -533,7 +533,7 @@ export function computeFaceComponentContour(
   faceIndices: number[],
   seedLocal: THREE.Vector3,
   groupNormal: THREE.Vector3
-): { comp: number[]; corners: THREE.Vector3[]; center: THREE.Vector3; boundary: Array<{ a: THREE.Vector3; b: THREE.Vector3 }> } | null {
+): { comp: number[]; seedFi: number; corners: THREE.Vector3[]; center: THREE.Vector3; boundary: Array<{ a: THREE.Vector3; b: THREE.Vector3 }> } | null {
   let seedFi = -1, bestD = Infinity;
   for (const fi of faceIndices) {
     const f = faces[fi];
@@ -612,7 +612,7 @@ export function computeFaceComponentContour(
   }
   if (areaSum > 0) center.multiplyScalar(1 / areaSum);
 
-  return { comp: [...comp], corners, center, boundary };
+  return { comp: [...comp], seedFi, corners, center, boundary };
 }
 
 export function buildFacePreview(
@@ -620,7 +620,8 @@ export function buildFacePreview(
   group: CoplanarFaceGroup,
   faces: FaceData[],
   worldToLocal: THREE.Matrix4,
-  shapeId: string
+  shapeId: string,
+  geometry?: THREE.BufferGeometry
 ): PendingPreview | null {
   const clickLocal = clickWorld.clone().applyMatrix4(worldToLocal);
   const contour = computeFaceComponentContour(faces, group.faceIndices, clickLocal, group.normal);
@@ -641,15 +642,24 @@ export function buildFacePreview(
   edgeGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(epos), 3));
 
   const localNormal = group.normal.clone().normalize();
+  // BÖLGE KİMLİĞİ: merkez, bileşen merkezi DEĞİL kullanıcının TIKLADIĞI
+  // noktadır. Aynı yüzdeki iki panelin VF'leri aynı konturu taşısa da
+  // merkezleri farklı kalır; rebuild'deki bölge seçimi ve kardeş kesimi bu
+  // kimliğe göre doğru tarafı tutar. (Bileşen merkezine çökertmek, iki
+  // paneli özdeşleştirip üst üste bindiriyordu.)
   const virtualFace: VirtualFace = {
     id: `vf-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
     shapeId,
     normal: [localNormal.x, localNormal.y, localNormal.z],
-    center: [contour.center.x, contour.center.y, contour.center.z],
+    center: [clickLocal.x, clickLocal.y, clickLocal.z],
     vertices: contour.corners.map(c => [c.x, c.y, c.z] as [number, number, number]),
     description: '',
     hasPanel: false,
     parentFaceShape: true,
+    // ÖLÇEK-BAĞIMSIZ YÜZ KİMLİĞİ: resize'da regen, yüzü bu descriptor ile
+    // bulur (normalize merkez + eksen) — "en yakın düzlem" tahmini yerine
+    // kesin eşleşme; VF asla komşu bir yüze (ör. çentik yanağına) savrulmaz.
+    faceGroupDescriptor: geometry ? createFaceDescriptor(faces[contour.seedFi], geometry) : undefined,
   };
   return { geo, edgeGeo, virtualFace };
 }
@@ -793,18 +803,21 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     () => allShapes.filter(s => s.type === 'panel' && s.parameters?.parentShapeId === shape.id),
     [allShapes, shape.id]
   );
-  const findVirtualFaceForGroup = useCallback((gi: number) => {
-    if (gi < 0 || gi >= faceGroups.length || shapeVirtualFaces.length === 0) return null;
+  // Aynı DÜZLEMDEKİ tüm VF'ler (merkez artık tıklama noktası olduğundan
+  // grup merkeziyle nokta eşleşmesi yerine düzlem eşleşmesi kullanılır;
+  // bir yüzde birden çok panel olabilir → liste döner).
+  const findVirtualFacesForGroup = useCallback((gi: number): VirtualFace[] => {
+    if (gi < 0 || gi >= faceGroups.length || shapeVirtualFaces.length === 0) return [];
     const gn = faceGroups[gi].normal.clone().normalize();
     const gc = faceGroups[gi].center.clone();
-    return shapeVirtualFaces.find(vf => {
+    return shapeVirtualFaces.filter(vf => {
       const vn = new THREE.Vector3(...vf.normal).normalize();
       if (Math.abs(gn.dot(vn)) < 0.98) return false;
       const vc = new THREE.Vector3(...vf.center);
-      return gc.distanceTo(vc) < 2;
-    }) || null;
+      return Math.abs(vc.clone().sub(gc).dot(gn)) < 2; // düzleme mesafe
+    });
   }, [faceGroups, shapeVirtualFaces]);
-  const groupHasVirtualFace = useCallback((gi: number) => findVirtualFaceForGroup(gi) !== null, [findVirtualFaceForGroup]);
+  const groupHasVirtualFace = useCallback((gi: number) => findVirtualFacesForGroup(gi).length > 0, [findVirtualFacesForGroup]);
   const hoverHighlightGeometry = useMemo(() => {
     if (hoveredGroupIndex === null || !faceGroups[hoveredGroupIndex]) return null;
     return createFaceHighlightGeometry(faces, faceGroups[hoveredGroupIndex].faceIndices);
@@ -837,15 +850,18 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     // the click point falls inside the panel's CURRENT GEOMETRY footprint on the face
     // plane — not the VF polygon (which stays as original full-face for correct rebuild).
     // This lets users click in the void left by a shortened panel.
-    const vfForHovered = findVirtualFaceForGroup(hoveredGroupIndex);
+    const vfsForHovered = findVirtualFacesForGroup(hoveredGroupIndex);
     const _normalMatrix = new THREE.Matrix3().getNormalMatrix(localToWorld);
-    const hoveredFaceNormalWorld = vfForHovered
-      ? new THREE.Vector3(vfForHovered.normal[0], vfForHovered.normal[1], vfForHovered.normal[2])
-          .applyMatrix3(_normalMatrix).normalize()
-      : null;
-    const hoveredIsDefined = vfForHovered !== null && vfForHovered.hasPanel
-      && hoveredFaceNormalWorld !== null
-      && isWorldPointInsidePanelForVF(clickPoint, vfForHovered, childPanels, hoveredFaceNormalWorld, clickPoint);
+    // Aynı yüzde birden çok panel olabilir: tıklanan nokta HERHANGİ birinin
+    // güncel gövdesi içindeyse yüz o noktada "tanımlıdır" (derinlik döngüsü
+    // veya panel seçimi devreye girer); panellerin arasındaki boşluk serbesttir.
+    const definedVf = vfsForHovered.find(cvf => {
+      if (!cvf.hasPanel) return false;
+      const nW = new THREE.Vector3(cvf.normal[0], cvf.normal[1], cvf.normal[2])
+        .applyMatrix3(_normalMatrix).normalize();
+      return isWorldPointInsidePanelForVF(clickPoint, cvf, childPanels, nW, clickPoint);
+    }) || null;
+    const hoveredIsDefined = definedVf !== null;
 
     let targetGroupIndex = hoveredGroupIndex;
     let previewClickPoint = clickPoint;
@@ -860,7 +876,7 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
       for (let gi = 0; gi < faceGroups.length; gi++) {
         // Skip this face group only when the ray's hit point on its plane is actually
         // INSIDE an existing panel VF — void areas on the same group are allowed.
-        const vfForGi = findVirtualFaceForGroup(gi);
+        const vfsForGi = findVirtualFacesForGroup(gi);
         const group = faceGroups[gi];
         const groupNormalWorld = group.normal.clone().normalize().applyMatrix3(
           new THREE.Matrix3().getNormalMatrix(localToWorld)
@@ -874,11 +890,13 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
 
         // Skip if the hit point on this plane falls inside the panel's current geometry
         // footprint. Do NOT skip void areas — those are valid raycast targets.
-        if (vfForGi?.hasPanel) {
+        {
           const giNormalW = group.normal.clone().normalize().applyMatrix3(
             new THREE.Matrix3().getNormalMatrix(localToWorld)
           ).normalize();
-          if (isWorldPointInsidePanelForVF(hitOnPlane, vfForGi, childPanels, giNormalW, hitOnPlane)) continue;
+          const covered = vfsForGi.some(cvf => cvf.hasPanel
+            && isWorldPointInsidePanelForVF(hitOnPlane, cvf, childPanels, giNormalW, hitOnPlane));
+          if (covered) continue;
         }
 
         let inside = false;
@@ -908,8 +926,7 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
       previewClickPoint = cycleCandidates[nextCycleIndex].hitPoint;
       lastClickRef.current = { point: clickLocal, groupIndex: targetGroupIndex, cycleIndex: nextCycleIndex };
     } else if (hoveredIsDefined) {
-      const existingVf = findVirtualFaceForGroup(hoveredGroupIndex);
-      if (existingVf?.hasPanel) setSelectedPanelRow(`vf-${existingVf.id}`, null, shape.id);
+      if (definedVf) setSelectedPanelRow(`vf-${definedVf.id}`, null, shape.id);
       return;
     } else {
       lastClickRef.current = { point: clickLocal, groupIndex: targetGroupIndex, cycleIndex: 0 };
@@ -918,7 +935,7 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     setHoveredGroupIndex(targetGroupIndex);
     // TAM YÜZ SEÇİMİ: tıklanan yüzün bağlantılı bileşeni komple seçilir.
     // Derinlik döngüsü (aynı noktaya tekrar tıklayınca arkadaki yüz) korunur.
-    setPending(buildFacePreview(previewClickPoint, faceGroups[targetGroupIndex], faces, worldToLocal, shape.id));
+    setPending(buildFacePreview(previewClickPoint, faceGroups[targetGroupIndex], faces, worldToLocal, shape.id, shape.geometry));
   };
   if (!raycastMode) return null;
   return (

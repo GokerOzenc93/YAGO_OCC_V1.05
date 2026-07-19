@@ -92,6 +92,34 @@ function makePanelBase(shape: any, extra: Record<string, any>) {
     position: [...shape.position] as [number,number,number], rotation: shape.rotation, scale: [...shape.scale] as [number,number,number], color: '#ffffff', ...extra };
 }
 
+/** BÖLGE KİMLİĞİ: tıklama noktasının (vf.center) yüz konturu bbox'ındaki
+ *  u/v ORANI. Panele yazılır ve rebuild her seferinde güncel konturdan
+ *  mutlaklaştırır — kimlik hiçbir VF regen/eşleşme katmanından geçmez,
+ *  resize'da oransal (parametrik) taşınır. */
+function computeRegionUV(vf: any): [number, number] | undefined {
+  try {
+    const n = new THREE.Vector3(vf.normal[0], vf.normal[1], vf.normal[2]).normalize();
+    const ax = Math.abs(n.x), ay = Math.abs(n.y), az = Math.abs(n.z);
+    const u = az >= ax && az >= ay ? new THREE.Vector3(1, 0, 0)
+      : ax >= ay ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+    const v = new THREE.Vector3().crossVectors(n, u).normalize();
+    u.crossVectors(v, n).normalize();
+    let uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity;
+    for (const [x, y, z] of vf.vertices) {
+      const p3 = new THREE.Vector3(x, y, z);
+      const pu = p3.dot(u), pv = p3.dot(v);
+      uMin = Math.min(uMin, pu); uMax = Math.max(uMax, pu);
+      vMin = Math.min(vMin, pv); vMax = Math.max(vMax, pv);
+    }
+    const c = new THREE.Vector3(vf.center[0], vf.center[1], vf.center[2]);
+    const uSpan = Math.max(uMax - uMin, 1e-6), vSpan = Math.max(vMax - vMin, 1e-6);
+    return [
+      Math.max(0, Math.min(1, (c.dot(u) - uMin) / uSpan)),
+      Math.max(0, Math.min(1, (c.dot(v) - vMin) / vSpan)),
+    ];
+  } catch { return undefined; }
+}
+
 function getDimsFromGeo(geo: THREE.BufferGeometry, arrowRotated?: boolean) {
   const r = geoAxes(geo); if (!r) return null;
   const pa = r.axes.slice(1).map(a => a.i).sort((a, b) => a - b);
@@ -635,6 +663,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     if (!pending.length) return;
     (async () => {
       const { createPanelFromVirtualFace, convertReplicadToThreeGeometry } = await import('./ReplicadService');
+      const parentIdsToRebuild = new Set<string>();
       for (const vf of pending) {
         const parentShape = useAppStore.getState().shapes.find(s => s.id === vf.shapeId);
         if (!parentShape) continue;
@@ -649,10 +678,23 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
           const vi = virtualFaces.filter(f => f.shapeId === vf.shapeId).findIndex(f => f.id === vf.id);
           useAppStore.getState().addShape(makePanelBase(parentShape, {
             geometry: g, replicadShape: rp,
-            parameters: { width: s[def], height: s[alt], depth: PANEL_THICKNESS, parentShapeId: parentShape.id, faceIndex: -(vi + 1), virtualFaceId: vf.id, arrowRotated: false },
+            parameters: { width: s[def], height: s[alt], depth: PANEL_THICKNESS, parentShapeId: parentShape.id, faceIndex: -(vi + 1), virtualFaceId: vf.id, arrowRotated: false, regionUV: computeRegionUV(vf) },
           }));
           updateVirtualFace(vf.id, { hasPanel: true });
+          parentIdsToRebuild.add(parentShape.id);
         } catch (e) { console.error('Auto panel creation failed:', e); }
+      }
+      // İLK OLUŞTURMA REBUILD'E BAĞLANIR: yukarıdaki geometri yalnızca
+      // geçici VF prizmasıdır (tam yüz kaplar, kardeş kesimi yok). Aynı yüzde
+      // başka paneller varken bu hali bırakmak paneli yanlış bölgeye/üst üste
+      // koyar. Rebuild, yüz-extrusion + kardeş kesimleri + bölge seçimiyle
+      // paneli tıklanan bölgeye oturtur — atılan panel her zaman doğru yerde
+      // doğar.
+      for (const pid of parentIdsToRebuild) {
+        try {
+          const { rebuildPanelsForParent } = await import('./PanelRebuildService');
+          await rebuildPanelsForParent(pid);
+        } catch (e) { console.error('İlk oluşturma rebuild tetikleme hatası:', e); }
       }
     })();
   }, [virtualFaces]);
@@ -698,7 +740,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         const { createPanelFromVirtualFace, convertReplicadToThreeGeometry } = await import('./ReplicadService');
         const rp = await createPanelFromVirtualFace(vf.vertices, vf.normal, PANEL_THICKNESS); if (!rp) return;
         addShape(makePanelBase(cs, { geometry: convertReplicadToThreeGeometry(rp), replicadShape: rp,
-          parameters: { width: 0, height: 0, depth: PANEL_THICKNESS, parentShapeId: cs.id, faceIndex: -(vi+1), virtualFaceId: vf.id } }));
+          parameters: { width: 0, height: 0, depth: PANEL_THICKNESS, parentShapeId: cs.id, faceIndex: -(vi+1), virtualFaceId: vf.id, regionUV: computeRegionUV(vf) } }));
         updateVirtualFace(vf.id, { hasPanel: true });
       } catch (err) { console.error('Failed to create panel for virtual face via click:', err); }
     })();
@@ -785,7 +827,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         const g = convertReplicadToThreeGeometry(rp), r = geoAxes(g); if (!r) return;
         const pa = r.axes.slice(1).map(a => a.i).sort((a, b) => a - b), [def, alt] = [pa[0], pa[1]], s = [r.size.x, r.size.y, r.size.z];
         addShape(makePanelBase(selectedShape, { geometry: g, replicadShape: rp,
-          parameters: { width: s[def], height: s[alt], depth: PANEL_THICKNESS, parentShapeId: sid, faceIndex: -(vi+1), virtualFaceId: vf.id, arrowRotated: false } }));
+          parameters: { width: s[def], height: s[alt], depth: PANEL_THICKNESS, parentShapeId: sid, faceIndex: -(vi+1), virtualFaceId: vf.id, arrowRotated: false, regionUV: computeRegionUV(vf) } }));
         updateVirtualFace(vf.id, { hasPanel: true, panelRemovedByUser: false });
       } catch (e) { console.error('Failed to create virtual panel:', e); }
     };

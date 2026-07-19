@@ -424,10 +424,14 @@ export function recalculateVirtualFacesForShape(
   const updatedMap = new Map<string, VirtualFace>();
 
   for (const vf of shapeFaces) {
-    if (vf.parentFaceShape || (vf as any).raycastRecipe) {
-      // TAM YÜZ MODELİ: tüm paneller yüz konturu VF'sidir. Eski ışın-reçeteli
-      // (raycastRecipe) kayıtlar da aynı yola yönlendirilir — merkezlerine en
-      // yakın yüz bileşeninin konturuna zarifçe göç ederler.
+    if (vf.parentFaceShape) {
+      // TAM YÜZ MODELİ: yalnız yeni (parentFaceShape) VF'ler kontur regen'ine
+      // girer. ESKİ ışın-reçeteli VF'ler BİLEREK regen dışıdır: onları yüz
+      // konturuna yönlendirmek, VF'yi merkezlerine yakın YANLIŞ bir parent
+      // yüzüne (ör. bölmenin 10mm yanındaki çentik yanağına) savuruyor ve
+      // ikinci rebuild dalgasında tüm panelleri kaydırıyordu ("ilk yarım
+      // saniye doğru, sonra bozuluyor"). Eski VF'ler else dalında yalnızca
+      // kırpılır; yüzleri ve merkezleri değişmez.
       const regen = regenerateParentFaceShapeVF(vf, shape, faces, faceGroups, localToWorld);
       updatedMap.set(vf.id, regen || vf);
     } else {
@@ -472,11 +476,35 @@ function regenerateParentFaceShapeVF(
   const contour = computeFaceComponentContour(faces, strictIndices, seed, localNormal);
   if (!contour) return null;
 
+  // BÖLGE KİMLİĞİ PARAMETRİK TAŞINIR: merkez, kullanıcının tıklama noktasıdır
+  // ve bileşen merkezine ÇÖKERTİLMEZ (aynı yüzdeki iki panelin kimliklerini
+  // özdeşleştirip üst üste bindiriyordu / ölçüyü 0 yapıyordu). Eski konturun
+  // u/v bbox'ındaki ORANI korunarak yeni kontur bbox'ına taşınır — küp
+  // büyüyünce merkez oransal hareket eder, farklı panellerin merkezleri
+  // farklı kalır.
+  const { u, v } = getFacePlaneAxes(localNormal);
+  const uvOf = (p3: THREE.Vector3) => ({ x: p3.dot(u), y: p3.dot(v) });
+  const bboxOf = (pts: { x: number; y: number }[]) => {
+    let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
+    for (const q of pts) { xMin = Math.min(xMin, q.x); xMax = Math.max(xMax, q.x); yMin = Math.min(yMin, q.y); yMax = Math.max(yMax, q.y); }
+    return { xMin, xMax, yMin, yMax, xSpan: Math.max(xMax - xMin, 1e-6), ySpan: Math.max(yMax - yMin, 1e-6) };
+  };
+  const oldB = bboxOf(vf.vertices.map(([x, y, z]) => uvOf(new THREE.Vector3(x, y, z))));
+  const cUV = uvOf(seed);
+  const ru = Math.max(0, Math.min(1, (cUV.x - oldB.xMin) / oldB.xSpan));
+  const rv = Math.max(0, Math.min(1, (cUV.y - oldB.yMin) / oldB.ySpan));
+  const newB = bboxOf(contour.corners.map(c => uvOf(c)));
+  const planeN = contour.corners[0].dot(localNormal);
+  const newCenter = new THREE.Vector3()
+    .addScaledVector(u, newB.xMin + ru * newB.xSpan)
+    .addScaledVector(v, newB.yMin + rv * newB.ySpan)
+    .addScaledVector(localNormal, planeN);
+
   return {
     ...vf,
     normal: [localNormal.x, localNormal.y, localNormal.z],
     vertices: contour.corners.map(c => [c.x, c.y, c.z] as [number, number, number]),
-    center: [contour.center.x, contour.center.y, contour.center.z],
+    center: [newCenter.x, newCenter.y, newCenter.z],
   };
 }
 

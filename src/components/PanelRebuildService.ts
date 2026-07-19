@@ -937,10 +937,35 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
         }
 
         let faceExtrudedOk = false;
-        // Bölge noktası: VF merkezi = tıklanan yüz bileşeninin alan-ağırlıklı
-        // merkezi; yüz-extrusion seed'i ve kardeş-kesimi sonrası bölge seçimi
-        // bu noktaya en yakın parçayı tutar.
-        const regionPoint: [number, number, number] = vf.center;
+        // BÖLGE KİMLİĞİ: panelin yaratılışında kilitlenen regionUV (tıklama
+        // noktasının yüz konturundaki oranı), GÜNCEL VF konturundan
+        // mutlaklaştırılır. Kimlik VF regen/eşleşme katmanlarından geçmez —
+        // "kırmızıya tıkladım sarıya yerleşti" sınıfı kaymalar imkansızlaşır;
+        // resize'da oran korunarak parametrik taşınır. regionUV yoksa (eski
+        // panel) vf.center kullanılır.
+        const regionPoint: [number, number, number] = (() => {
+          const rUV = panel.parameters?.regionUV as [number, number] | undefined;
+          if (!rUV || vf.vertices.length < 3) return vf.center;
+          const nV = new THREE.Vector3(vf.normal[0], vf.normal[1], vf.normal[2]).normalize();
+          const ax = Math.abs(nV.x), ay = Math.abs(nV.y), az = Math.abs(nV.z);
+          const uV = az >= ax && az >= ay ? new THREE.Vector3(1, 0, 0)
+            : ax >= ay ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+          const vV = new THREE.Vector3().crossVectors(nV, uV).normalize();
+          uV.crossVectors(vV, nV).normalize();
+          let uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity, planeN = 0;
+          vf.vertices.forEach(([x, y, z], i) => {
+            const p3 = new THREE.Vector3(x, y, z);
+            const pu = p3.dot(uV), pv = p3.dot(vV);
+            uMin = Math.min(uMin, pu); uMax = Math.max(uMax, pu);
+            vMin = Math.min(vMin, pv); vMax = Math.max(vMax, pv);
+            if (i === 0) planeN = p3.dot(nV);
+          });
+          const pt = new THREE.Vector3()
+            .addScaledVector(uV, uMin + rUV[0] * Math.max(uMax - uMin, 1e-6))
+            .addScaledVector(vV, vMin + rUV[1] * Math.max(vMax - vMin, 1e-6))
+            .addScaledVector(nV, planeN);
+          return [pt.x, pt.y, pt.z] as [number, number, number];
+        })();
         // TAM YUZ MODELI: her duz panel, tiklanan yuzun OCC yuz-extrusion'u
         // olarak uretilir (parentFaceShape bayragi kosul olmaktan cikti - tum
         // paneller tam yuz kaplar; kardes kesimleri ve bolge secimi asagida).
@@ -1286,6 +1311,25 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           } catch (err) {
             console.error('Bölge seçimi başarısız, panel çok parçalı kalabilir:', err);
           }
+          // DEJENERE KORUMASI: kardeşler tıklanan bölgeyi tamamen kapladıysa
+          // kesimler paneli yutar ve "ölçüsü 0 panel" doğar. Böyle bir sonuç
+          // ASLA yazılmaz: panelin önceki geometrisi korunur ve durum loglanır
+          // (kullanıcı kardeşi kısaltınca sonraki rebuild paneli yeniden
+          // büyütür).
+          try {
+            const bb = rp?.boundingBox?.bounds;
+            const spans = bb ? [bb[1][0] - bb[0][0], bb[1][1] - bb[0][1], bb[1][2] - bb[0][2]] : [0, 0, 0];
+            const degenerate = !bb || !isFinite(spans[0]) || spans.filter(s => s > 0.5).length < 2;
+            if (degenerate) {
+              console.error('Panel bölgesi kardeşlerce tamamen kaplandı; önceki geometri korunuyor:', panel.id);
+              if (panel.replicadShape) {
+                rp = panel.replicadShape.clone();
+              } else {
+                workingShapes = [...workingShapes, panel];
+                continue;
+              }
+            }
+          } catch { /* bbox okunamadıysa akışa devam */ }
         }
 
         let geometry = convertReplicadToThreeGeometry(rp);
