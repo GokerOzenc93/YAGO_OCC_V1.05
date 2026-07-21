@@ -24,6 +24,7 @@ function geoAxesSize(geo: THREE.BufferGeometry) {
   bbox.getSize(size);
   const axes = [{ i: 0, v: size.x }, { i: 1, v: size.y }, { i: 2, v: size.z }].sort((a, b) => a.v - b.v);
   return { axes, size };
+}
 
 /**
  * GÜVENLİ KESİM: performBooleanCut sonucu panelin TAMAMINI yutarsa (boş
@@ -42,7 +43,6 @@ async function safeCut(rp: any, cutter: any, label: string): Promise<any> {
   } catch { /* bounds okunamadı → boş say */ }
   console.error('[YAGO][KESİM] kesim paneli tamamen yuttu, GERİ ALINDI:', label);
   return rp;
-}
 }
 
 // Referans küpü, panelin YEREL (döndürülmemiş) çerçevesine taşır: paneli
@@ -1375,17 +1375,19 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
 
           for (const sib of parentSibs) {
             try {
-              const off = [
-                (sib.position?.[0] ?? 0) - panel.position[0],
-                (sib.position?.[1] ?? 0) - panel.position[1],
-                (sib.position?.[2] ?? 0) - panel.position[2],
-              ];
-              const sibLocal = {
-                geometry: sib.geometry, position: off,
+              // rp PARENT UZAYINDA üretildi (createPanelFromParentFaces,
+              // panel.position İÇERMEZ). Kesici de parent uzayında olmalı;
+              // kardeşin footprint'i MUTLAK parent-yerel konumundan hesaplanır
+              // (panel.position farkı UYGULANMAZ). Eskiden off=sib.pos-panel.pos
+              // veriliyordu → kesici panel merkezine kayıyor, rp ile uzay
+              // uyuşmuyor ve kesim bölgeyi ıskalıyordu (panel y[0..582] kaldı).
+              const sibAbs = {
+                geometry: sib.geometry,
+                position: [sib.position?.[0] ?? 0, sib.position?.[1] ?? 0, sib.position?.[2] ?? 0],
                 rotation: sib.rotation, scale: sib.scale, parameters: sib.parameters,
               };
-              const fp = panelFootprintOnPlane(sibLocal as any, pn, planeOriginLocal, uVec, vVec, thickness + 5);
-              console.log('[YAGO][İZDÜŞÜM] kardeş', sib.id, 'off=', off.map(n2 => n2.toFixed(0)).join(','),
+              const fp = panelFootprintOnPlane(sibAbs as any, pn, planeOriginLocal, uVec, vVec, thickness + 5);
+              console.log('[YAGO][İZDÜŞÜM] kardeş', sib.id, 'sibPos=', sibAbs.position.map(n2 => n2.toFixed(0)).join(','),
                 'fpKöşe=', fp ? fp.length : 'null',
                 'fpBBox=', fp && fp.length ? (() => { let a=[Infinity,Infinity],b=[-Infinity,-Infinity];
                   for (const p of fp){a[0]=Math.min(a[0],p.x);a[1]=Math.min(a[1],p.y);b[0]=Math.max(b[0],p.x);b[1]=Math.max(b[1],p.y);}
