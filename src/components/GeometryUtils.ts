@@ -347,56 +347,6 @@ export function createFaceDescriptor(
   };
 }
 
-export function resolveAxisPlaneByRank(
-  faces: FaceData[],
-  axisDirection: string,
-  axisRank: number,
-  axisRankCount: number
-): number | null {
-  const axis = axisDirection[0] as 'x' | 'y' | 'z';
-  const dir = axisDirection[1] as '+' | '-';
-
-  const candidates = faces.filter(f => {
-    const ad = getAxisDirection(f.normal);
-    return ad === axisDirection;
-  });
-  if (candidates.length === 0) return null;
-
-  const sorted = candidates.slice().sort((a, b) => {
-    const av = axis === 'x' ? a.center.x : axis === 'y' ? a.center.y : a.center.z;
-    const bv = axis === 'x' ? b.center.x : axis === 'y' ? b.center.y : b.center.z;
-    return dir === '+' ? av - bv : bv - av;
-  });
-
-  const uniquePositions: number[] = [];
-  for (const f of sorted) {
-    const v = axis === 'x' ? f.center.x : axis === 'y' ? f.center.y : f.center.z;
-    if (uniquePositions.length === 0 || Math.abs(v - uniquePositions[uniquePositions.length - 1]) > 0.5) {
-      uniquePositions.push(v);
-    }
-  }
-
-  if (axisRankCount > 0 && axisRankCount !== uniquePositions.length) {
-    if (axisRank >= uniquePositions.length) return null;
-  }
-
-  if (axisRank < 0 || axisRank >= uniquePositions.length) return null;
-  return uniquePositions[axisRank];
-}
-
-export function inPlaneCenterDiff(
-  normCenter1: [number, number, number],
-  normCenter2: [number, number, number],
-  axisDirection: string
-): number {
-  const axis = axisDirection[0] as 'x' | 'y' | 'z';
-  let sum = 0;
-  if (axis !== 'x') sum += Math.pow(normCenter1[0] - normCenter2[0], 2);
-  if (axis !== 'y') sum += Math.pow(normCenter1[1] - normCenter2[1], 2);
-  if (axis !== 'z') sum += Math.pow(normCenter1[2] - normCenter2[2], 2);
-  return Math.sqrt(sum);
-}
-
 export function findFaceByDescriptor(
   descriptor: { normal: [number, number, number]; normalizedCenter: [number, number, number]; area: number; isCurved?: boolean; axisDirection?: string | null; axisPosition?: number },
   faces: FaceData[],

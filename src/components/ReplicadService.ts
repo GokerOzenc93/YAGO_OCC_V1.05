@@ -15,12 +15,9 @@ export const initReplicad = async () => {
   if (window.__ocInitPromise) return window.__ocInitPromise;
 
   window.__ocInitPromise = (async () => {
-    console.log('Initializing OpenCascade...');
     const oc = await initOpenCascade();
-    console.log('OpenCascade loaded');
     setOC(oc);
     window.__ocInstance = oc;
-    console.log('Replicad initialized');
     return oc;
   })().catch((error) => {
     window.__ocInitPromise = undefined;
@@ -50,12 +47,6 @@ export const createReplicadBox = async (params: ReplicadBoxParams): Promise<any>
   const oc = await initReplicad();
   const { width, height, depth } = params;
 
-  console.log('🔨 Creating box with replicad API...', {
-    width: `${width} (X axis)`,
-    height: `${height} (Y axis)`,
-    depth: `${depth} (Z axis)`
-  });
-
   const { draw } = await import('replicad');
 
   const boxSketch = draw()
@@ -67,7 +58,6 @@ export const createReplicadBox = async (params: ReplicadBoxParams): Promise<any>
     .sketchOnPlane()
     .extrude(depth);
 
-  console.log('✅ Replicad box created with origin at bottom-left-back corner');
   return boxSketch;
 };
 
@@ -75,15 +65,12 @@ export const createReplicadCylinder = async (params: ReplicadCylinderParams): Pr
   const oc = await initReplicad();
   const { radius, height } = params;
 
-  console.log('🔨 Creating cylinder with replicad API...');
-
   const { drawCircle } = await import('replicad');
   const cylinder = drawCircle(radius)
     .sketchOnPlane()
     .extrude(height)
     .translate(radius, radius, 0);
 
-  console.log('✅ Replicad cylinder created with origin at bottom-left-back corner:', { radius, height });
   return cylinder;
 };
 
@@ -91,46 +78,24 @@ export const createReplicadSphere = async (params: ReplicadSphereParams): Promis
   const oc = await initReplicad();
   const { radius } = params;
 
-  console.log('🔨 Creating sphere with replicad API...');
-
   const { drawCircle } = await import('replicad');
   const sphere = drawCircle(radius)
     .sketchOnPlane()
     .revolve()
     .translate(radius, radius, radius);
 
-  console.log('✅ Replicad sphere created with origin at bottom-left-back corner:', { radius });
   return sphere;
 };
 
 export const convertReplicadToThreeGeometry = (shape: any): THREE.BufferGeometry => {
   try {
-    console.log('🔄 Converting Replicad shape to Three.js geometry...');
-    console.log('Shape object:', shape);
-
     const mesh = shape.mesh({ tolerance: 0.1, angularTolerance: 30 });
-    console.log('Mesh data:', mesh);
+    if (!mesh.vertices || !mesh.triangles) throw new Error('Invalid mesh data');
 
     const vertices: number[] = [];
     const indices: number[] = [];
-
-    if (mesh.vertices && mesh.triangles) {
-      console.log('Raw mesh data:', {
-        verticesLength: mesh.vertices.length,
-        trianglesLength: mesh.triangles.length
-      });
-
-      for (let i = 0; i < mesh.vertices.length; i++) {
-        vertices.push(mesh.vertices[i]);
-      }
-
-      for (let i = 0; i < mesh.triangles.length; i++) {
-        indices.push(mesh.triangles[i]);
-      }
-    } else {
-      console.error('❌ Mesh vertices or triangles missing');
-      throw new Error('Invalid mesh data');
-    }
+    for (let i = 0; i < mesh.vertices.length; i++) vertices.push(mesh.vertices[i]);
+    for (let i = 0; i < mesh.triangles.length; i++) indices.push(mesh.triangles[i]);
 
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
@@ -139,16 +104,9 @@ export const convertReplicadToThreeGeometry = (shape: any): THREE.BufferGeometry
     geometry.computeBoundingBox();
     geometry.computeBoundingSphere();
 
-    console.log('✅ Converted Replicad shape to Three.js geometry:', {
-      vertices: vertices.length / 3,
-      triangles: indices.length / 3,
-      boundingBox: geometry.boundingBox
-    });
-
     return geometry;
   } catch (error) {
-    console.error('❌ Failed to convert Replicad shape to Three.js geometry:', error);
-    console.error('Error details:', error);
+    console.error('convertReplicadToThreeGeometry failed:', error);
     throw error;
   }
 };
@@ -191,36 +149,28 @@ export const performBooleanCut = async (
 ): Promise<any> => {
   await initReplicad();
 
-  console.log('🔪 Performing boolean cut operation...');
-  console.log('Base shape (stays in local space):', baseShape);
-  console.log('Cutting shape transforms:', { position: cuttingPosition, rotation: cuttingRotation, scale: cuttingScale });
 
   try {
     let transformedCutting = cuttingShape;
 
     if (cuttingScale && (cuttingScale[0] !== 1 || cuttingScale[1] !== 1 || cuttingScale[2] !== 1)) {
-      console.log('📏 Scaling cutting shape by:', cuttingScale);
       transformedCutting = transformedCutting.scale(cuttingScale[0], cuttingScale[1], cuttingScale[2]);
     }
 
     if (cuttingRotation && (cuttingRotation[0] !== 0 || cuttingRotation[1] !== 0 || cuttingRotation[2] !== 0)) {
-      console.log('🔄 Rotating cutting shape by:', cuttingRotation);
       if (cuttingRotation[0] !== 0) transformedCutting = transformedCutting.rotate(cuttingRotation[0] * (180 / Math.PI), [0, 0, 0], [1, 0, 0]);
       if (cuttingRotation[1] !== 0) transformedCutting = transformedCutting.rotate(cuttingRotation[1] * (180 / Math.PI), [0, 0, 0], [0, 1, 0]);
       if (cuttingRotation[2] !== 0) transformedCutting = transformedCutting.rotate(cuttingRotation[2] * (180 / Math.PI), [0, 0, 0], [0, 0, 1]);
     }
 
     if (cuttingPosition && (cuttingPosition[0] !== 0 || cuttingPosition[1] !== 0 || cuttingPosition[2] !== 0)) {
-      console.log('📍 Translating cutting shape by relative offset:', cuttingPosition);
       transformedCutting = transformedCutting.translate(cuttingPosition[0], cuttingPosition[1], cuttingPosition[2]);
     }
 
     const result = baseShape.cut(transformedCutting);
-    console.log('✅ Boolean cut completed:', result);
-
     return result;
   } catch (error) {
-    console.error('❌ Boolean cut failed:', error);
+    console.error('Boolean cut failed:', error);
     throw error;
   }
 };
@@ -230,15 +180,10 @@ export const performBooleanUnion = async (
   shape2: any
 ): Promise<any> => {
   await initReplicad();
-
-  console.log('🔗 Performing boolean union operation...');
-
   try {
-    const result = shape1.fuse(shape2);
-    console.log('✅ Boolean union completed:', result);
-    return result;
+    return shape1.fuse(shape2);
   } catch (error) {
-    console.error('❌ Boolean union failed:', error);
+    console.error('Boolean union failed:', error);
     throw error;
   }
 };
@@ -248,16 +193,265 @@ export const performBooleanIntersection = async (
   shape2: any
 ): Promise<any> => {
   await initReplicad();
-
-  console.log('🔀 Performing boolean intersection operation...');
-
   try {
-    const result = shape1.intersect(shape2);
-    console.log('✅ Boolean intersection completed:', result);
-    return result;
+    return shape1.intersect(shape2);
   } catch (error) {
-    console.error('❌ Boolean intersection failed:', error);
+    console.error('Boolean intersection failed:', error);
     throw error;
+  }
+};
+
+/**
+ * "Ana yüze eşitle" panelini parent katının GERÇEK yüz geometrisinden üretir.
+ * VF düzlemindeki (aynı yönde normal, düzleme mesafe ~0) planar yüzlerden,
+ * seedPoint'e en yakın yüzün KENAR/KÖŞE PAYLAŞAN BAĞLANTILI BİLEŞENİ alınır,
+ * -normal yönünde kalınlık kadar extrude edilip birleştirilir.
+ *
+ * Slab ∩ parent yaklaşımının aksine, düzlemin ALTINDA kalan sığ cep/girinti
+ * tabanları (derinlik < panel kalınlığı) dahil edilmez — cebin altında ince
+ * dilim (sliver) kalmaz. Girintili/L-şekilli yüz şekli OCC'nin kendi yüz
+ * topolojisinden birebir gelir; ışın veya kontur takibi gerekmez.
+ *
+ * BAĞLANTILI BİLEŞEN KURALI: Aynı düzlemde birden çok AYRIK yüz varsa (ör.
+ * çentiğin böldüğü iki kanat, aynı yüzeyde yan yana iki panel bölgesi) bunlar
+ * ASLA tek panelde birleştirilmez — yalnızca seedPoint'in bulunduğu fiziksel
+ * olarak bitişik parça alınır. Aksi halde küp büyüyünce eş-düzleme gelen iki
+ * panel birbirinin içine geçiyordu.
+ *
+ * Uygun yüz bulunamazsa null döner; çağıran intersection fallback'ine düşer.
+ */
+export const createPanelFromParentFaces = async (
+  parentShape: any,
+  normal: [number, number, number],
+  planePoint: [number, number, number],
+  panelThickness: number,
+  seedPoint?: [number, number, number],
+  contourVertices?: [number, number, number][]
+): Promise<any | null> => {
+  await initReplicad();
+  const { basicFaceExtrusion, Vector } = await import('replicad');
+
+  const n = new THREE.Vector3(...normal).normalize();
+  const PLANE_TOL = 0.5;
+  const seed = seedPoint ?? planePoint;
+
+  // 1) Collect eligible coplanar faces
+  const eligible: any[] = [];
+  try {
+    for (const f of parentShape.faces) {
+      try {
+        if (f.geomType !== 'PLANE') continue;
+        const c = f.center;
+        const fn = f.normalAt(c);
+        const dot = fn.x * n.x + fn.y * n.y + fn.z * n.z;
+        if (dot < 0.99) continue;
+        const dist =
+          (c.x - planePoint[0]) * n.x +
+          (c.y - planePoint[1]) * n.y +
+          (c.z - planePoint[2]) * n.z;
+        if (Math.abs(dist) > PLANE_TOL) continue;
+        eligible.push(f);
+      } catch { /* skip broken face */ }
+    }
+  } catch (err) {
+    console.error('createPanelFromParentFaces face scan failed:', err);
+    return null;
+  }
+  if (eligible.length === 0) return null;
+
+  // 2D projection helpers for contour point-in-polygon test
+  const ax = Math.abs(n.x), ay = Math.abs(n.y), az = Math.abs(n.z);
+  const uAxis = az >= ax && az >= ay ? new THREE.Vector3(1, 0, 0)
+    : ax >= ay ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+  const vAxis = new THREE.Vector3().crossVectors(n, uAxis).normalize();
+  uAxis.crossVectors(vAxis, n).normalize();
+  const project2D = (p: [number, number, number]) => ({
+    x: uAxis.x * p[0] + uAxis.y * p[1] + uAxis.z * p[2],
+    y: vAxis.x * p[0] + vAxis.y * p[1] + vAxis.z * p[2],
+  });
+  const pointInPoly = (px: number, py: number, poly: Array<{ x: number; y: number }>): boolean => {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const xi = poly[i].x, yi = poly[i].y, xj = poly[j].x, yj = poly[j].y;
+      if (((yi > py) !== (yj > py)) &&
+        (px < (xj - xi) * (py - yi) / ((yj - yi) || 1e-12) + xi))
+        inside = !inside;
+    }
+    return inside;
+  };
+
+  // 2) PRIMARY PATH: select OCC faces whose mesh centroid falls inside the
+  //    highlight contour polygon. This guarantees panel = highlight.
+  let selected: Set<number> | null = null;
+  if (contourVertices && contourVertices.length >= 3) {
+    const poly = contourVertices.map(project2D);
+    selected = new Set<number>();
+    for (let i = 0; i < eligible.length; i++) {
+      try {
+        const fm = eligible[i].mesh({ tolerance: 1.0, angularTolerance: 15 });
+        if (!fm.vertices || fm.vertices.length < 3) continue;
+        let sx = 0, sy = 0, sz = 0, nv = 0;
+        for (let j = 0; j < fm.vertices.length; j += 3) {
+          sx += fm.vertices[j]; sy += fm.vertices[j + 1]; sz += fm.vertices[j + 2]; nv++;
+        }
+        if (nv === 0) continue;
+        const proj = project2D([sx / nv, sy / nv, sz / nv]);
+        if (pointInPoly(proj.x, proj.y, poly)) selected.add(i);
+      } catch { /* skip unmeshable face */ }
+    }
+    if (selected.size === 0) selected = null;
+  }
+
+  // 3) FALLBACK: seed + BFS (old behavior)
+  if (selected === null) {
+    const vertexKeys = (f: any): Set<string> => {
+      const keys = new Set<string>();
+      try {
+        for (const e of f.edges) {
+          for (const p of [e.startPoint, e.endPoint]) {
+            if (!p) continue;
+            keys.add(`${p.x.toFixed(1)},${p.y.toFixed(1)},${p.z.toFixed(1)}`);
+          }
+        }
+      } catch {}
+      return keys;
+    };
+    const keySets = eligible.map(vertexKeys);
+    const share = (a: Set<string>, b: Set<string>): boolean => {
+      for (const k of a) if (b.has(k)) return true;
+      return false;
+    };
+    let seedIdx = 0, bestD = Infinity;
+    for (let i = 0; i < eligible.length; i++) {
+      let minPtDist = Infinity;
+      try {
+        const fm = eligible[i].mesh({ tolerance: 1.0, angularTolerance: 15 });
+        if (fm.vertices && fm.vertices.length >= 3) {
+          for (let j = 0; j < fm.vertices.length; j += 3) {
+            const dx = fm.vertices[j] - seed[0];
+            const dy = fm.vertices[j + 1] - seed[1];
+            const dz = fm.vertices[j + 2] - seed[2];
+            const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+            if (d < minPtDist) minPtDist = d;
+          }
+        }
+      } catch {}
+      if (!isFinite(minPtDist)) {
+        const c = eligible[i].center;
+        minPtDist = Math.hypot(c.x - seed[0], c.y - seed[1], c.z - seed[2]);
+      }
+      if (minPtDist < bestD) { bestD = minPtDist; seedIdx = i; }
+    }
+    selected = new Set<number>([seedIdx]);
+    const stack = [seedIdx];
+    while (stack.length) {
+      const ii = stack.pop()!;
+      for (let j = 0; j < eligible.length; j++) {
+        if (selected.has(j)) continue;
+        if (share(keySets[ii], keySets[j])) { selected.add(j); stack.push(j); }
+      }
+    }
+  }
+
+  // 4) Extrude selected faces and fuse
+  const solids: any[] = [];
+  for (const i of selected) {
+    try {
+      solids.push(
+        basicFaceExtrusion(
+          eligible[i],
+          new Vector([-n.x * panelThickness, -n.y * panelThickness, -n.z * panelThickness])
+        )
+      );
+    } catch { /* skip individual face failure */ }
+  }
+  if (solids.length === 0) return null;
+
+  let out = solids[0];
+  for (let i = 1; i < solids.length; i++) {
+    try {
+      out = await performBooleanUnion(out, solids[i]);
+    } catch (err) {
+      console.error('createPanelFromParentFaces union başarısız, parça atlandı:', err);
+    }
+  }
+  return out;
+};
+
+/**
+ * Çok parçalı (compound) bir katıdan yalnızca verilen noktaya en yakın SOLID
+ * parçayı tutar; tek parçaysa katıyı olduğu gibi döndürür.
+ *
+ * "Ana yüze eşitle" panelini kardeş panel kesimi İKİYE BÖLDÜĞÜNDE (ör. dikey
+ * bölme panelin ortasından geçer), kardeşin ÖTE tarafındaki parça kullanıcının
+ * seçmediği bölgedir ve panelde kalmamalıdır ("bir yerlerde ince panel
+ * kalıyor" hatasının kök nedeni). Nokta, panelin ORİJİNAL (eşitleme öncesi)
+ * VF merkezi olmalıdır — kullanıcının tıkladığı bölgeyi temsil eder.
+ * Mesafe, parça AABB'sine clamp mesafesidir (nokta parçanın içindeyse 0).
+ */
+export const keepSolidNearestPoint = async (
+  shape: any,
+  point: [number, number, number],
+  inwardDir?: [number, number, number]
+): Promise<any> => {
+  try {
+    const { getOC, Solid, makeBaseBox } = await import('replicad');
+    const oc = getOC();
+    const parts: any[] = [];
+    const exp = new oc.TopExp_Explorer_2(
+      shape.wrapped,
+      oc.TopAbs_ShapeEnum.TopAbs_SOLID,
+      oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+    );
+    while (exp.More()) {
+      parts.push(new Solid(oc.TopoDS.Solid_1(exp.Current())));
+      exp.Next();
+    }
+    exp.delete();
+    if (parts.length <= 1) return shape;
+
+    // Prob noktası: yüzeydeki tıklama, panel normali boyunca 2mm İÇERİ
+    // itilir — nokta kesin tek parçanın hacmindedir.
+    const pp: [number, number, number] = inwardDir
+      ? [point[0] - inwardDir[0] * 2, point[1] - inwardDir[1] * 2, point[2] - inwardDir[2] * 2]
+      : point;
+
+    const clampDist = (p: any): number => {
+      const bb = p.boundingBox.bounds;
+      const dx = Math.max(bb[0][0] - pp[0], 0, pp[0] - bb[1][0]);
+      const dy = Math.max(bb[0][1] - pp[1], 0, pp[1] - bb[1][1]);
+      const dz = Math.max(bb[0][2] - pp[2], 0, pp[2] - bb[1][2]);
+      return Math.hypot(dx, dy, dz);
+    };
+    // EĞİK KESİM BELİRSİZLİĞİ: dönmüş kardeş paneli çaprazlama kestiğinde
+    // parçaların AABB'leri ÖRTÜŞÜR ve tıklama noktası birden çok kutunun
+    // içinde kalır (mesafe=0 beraberliği) — AABB testi yanlış parçayı
+    // seçebilir ("açılı panelin boşluğuna tıkladım, panel alta yerleşti").
+    // Beraberlikte GERÇEK katı-içi test yapılır: prob noktasında 2mm küp,
+    // hangi parçanın hacmiyle kesişiyorsa o parça kazanır.
+    const zero = parts.filter(p => clampDist(p) < 1e-6);
+    if (zero.length > 1) {
+      for (const p of zero) {
+        try {
+          const probe = makeBaseBox(2, 2, 2).translate([pp[0] - 1, pp[1] - 1, pp[2] - 1]);
+          const hit = probe.intersect(p.clone());
+          const bb = hit.boundingBox.bounds;
+          if (isFinite(bb[0][0]) && bb[1][0] - bb[0][0] > 1e-6) return p.clone();
+        } catch { /* prob başarısızsa sıradaki parçaya bak */ }
+      }
+    }
+
+    let bestPart: any = null;
+    let bestDist = Infinity;
+    for (const p of parts) {
+      const d = clampDist(p);
+      if (d < bestDist) { bestDist = d; bestPart = p; }
+    }
+    // Klon şart: alt-shape parent compound'a bağlı; bağımsız kopya döndürülür.
+    return bestPart ? bestPart.clone() : shape;
+  } catch (err) {
+    console.error('keepSolidNearestPoint başarısız, katı olduğu gibi bırakıldı:', err);
+    return shape;
   }
 };
 
@@ -270,36 +464,17 @@ export const createPanelFromFace = async (
 ): Promise<any> => {
   await initReplicad();
 
-  console.log('🎨 Creating panel from face...', {
-    faceNormal,
-    faceCenter,
-    panelThickness,
-    hasConstraint: !!constraintGeometry
-  });
-
   try {
     const faces = replicadShape.faces;
-    console.log(`📋 Found ${faces.length} faces in shape`);
-
-    interface FaceCandidate {
-      face: any;
-      dot: number;
-      center: [number, number, number] | null;
-    }
-
+    interface FaceCandidate { face: any; dot: number; center: [number, number, number] | null; }
     const candidates: FaceCandidate[] = [];
 
     for (let i = 0; i < faces.length; i++) {
       const face = faces[i];
-
       try {
         const normalVec = face.normalAt(0.5, 0.5);
         const normal = [normalVec.x, normalVec.y, normalVec.z];
-        const dot =
-          normal[0] * faceNormal[0] +
-          normal[1] * faceNormal[1] +
-          normal[2] * faceNormal[2];
-
+        const dot = normal[0] * faceNormal[0] + normal[1] * faceNormal[1] + normal[2] * faceNormal[2];
         if (dot > 0.7) {
           let center: [number, number, number] | null = null;
           try {
@@ -308,31 +483,20 @@ export const createPanelFromFace = async (
               let sx = 0, sy = 0, sz = 0;
               const nv = faceMesh.vertices.length / 3;
               for (let j = 0; j < faceMesh.vertices.length; j += 3) {
-                sx += faceMesh.vertices[j];
-                sy += faceMesh.vertices[j + 1];
-                sz += faceMesh.vertices[j + 2];
+                sx += faceMesh.vertices[j]; sy += faceMesh.vertices[j + 1]; sz += faceMesh.vertices[j + 2];
               }
               center = [sx / nv, sy / nv, sz / nv];
             }
-          } catch (meshErr) {
-            console.warn(`Could not mesh face ${i} for center:`, meshErr);
-          }
+          } catch { /* skip */ }
           candidates.push({ face, dot, center });
-          console.log(`Face ${i} candidate: dot=${dot.toFixed(4)}, center=`, center);
         }
-      } catch (err) {
-        console.warn(`⚠️ Could not get normal for face ${i}:`, err);
-      }
+      } catch { /* skip face */ }
     }
 
-    let matchingFace = null;
+    if (candidates.length === 0) return null;
 
-    if (candidates.length === 0) {
-      console.warn('⚠️ No matching face found');
-      return null;
-    } else if (candidates.length === 1) {
-      matchingFace = candidates[0].face;
-    } else {
+    let matchingFace = candidates[0].face;
+    if (candidates.length > 1) {
       let bestDist = Infinity;
       for (const candidate of candidates) {
         if (candidate.center) {
@@ -341,54 +505,32 @@ export const createPanelFromFace = async (
             (candidate.center[1] - faceCenter[1]) ** 2 +
             (candidate.center[2] - faceCenter[2]) ** 2
           );
-          if (dist < bestDist) {
-            bestDist = dist;
-            matchingFace = candidate.face;
-          }
+          if (dist < bestDist) { bestDist = dist; matchingFace = candidate.face; }
         }
-      }
-      if (!matchingFace) {
-        matchingFace = candidates[0].face;
       }
     }
 
-    console.log('✅ Found matching face from', candidates.length, 'candidates');
-
     const normalVec = matchingFace.normalAt(0.5, 0.5);
-    const extrusionDirection = [
-      -normalVec.x,
-      -normalVec.y,
-      -normalVec.z
-    ];
-
+    const extrusionDirection = [-normalVec.x, -normalVec.y, -normalVec.z];
     const oc = await initReplicad();
     const vec = new oc.gp_Vec_4(
       extrusionDirection[0] * panelThickness,
       extrusionDirection[1] * panelThickness,
       extrusionDirection[2] * panelThickness
     );
-
     const prismBuilder = new oc.BRepPrimAPI_MakePrism_1(matchingFace.wrapped, vec, false, true);
     prismBuilder.Build(new oc.Message_ProgressRange_1());
     const solid = prismBuilder.Shape();
-
     const { cast } = await import('replicad');
     let panel = cast(solid);
 
     if (constraintGeometry) {
-      console.log('🔀 Applying constraint intersection...');
-      try {
-        panel = await performBooleanIntersection(panel, constraintGeometry);
-        console.log('✅ Constraint intersection applied successfully');
-      } catch (error) {
-        console.error('❌ Failed to apply constraint intersection:', error);
-      }
+      try { panel = await performBooleanIntersection(panel, constraintGeometry); }
+      catch (error) { console.error('Constraint intersection failed:', error); }
     }
-
-    console.log('✅ Panel created from face successfully');
     return panel;
   } catch (error) {
-    console.error('❌ Failed to create panel from face:', error);
+    console.error('createPanelFromFace failed:', error);
     throw error;
   }
 };
