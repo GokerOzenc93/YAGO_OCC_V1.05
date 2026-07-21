@@ -99,10 +99,11 @@ function makePanelBase(shape: any, extra: Record<string, any>) {
 function computeRegionUV(vf: any): [number, number] | undefined {
   try {
     const n = new THREE.Vector3(vf.normal[0], vf.normal[1], vf.normal[2]).normalize();
-    const absX = Math.abs(n.x), absY = Math.abs(n.y), absZ = Math.abs(n.z);
-    const up = absY > absX && absY > absZ ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
-    const u = new THREE.Vector3().crossVectors(n, up).normalize();
+    const ax = Math.abs(n.x), ay = Math.abs(n.y), az = Math.abs(n.z);
+    const u = az >= ax && az >= ay ? new THREE.Vector3(1, 0, 0)
+      : ax >= ay ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
     const v = new THREE.Vector3().crossVectors(n, u).normalize();
+    u.crossVectors(v, n).normalize();
     let uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity;
     for (const [x, y, z] of vf.vertices) {
       const p3 = new THREE.Vector3(x, y, z);

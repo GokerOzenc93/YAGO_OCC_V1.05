@@ -966,10 +966,11 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           const rUV = panel.parameters?.regionUV as [number, number] | undefined;
           if (!rUV || vf.vertices.length < 3) return vf.center;
           const nV = new THREE.Vector3(vf.normal[0], vf.normal[1], vf.normal[2]).normalize();
-          const absX = Math.abs(nV.x), absY = Math.abs(nV.y), absZ = Math.abs(nV.z);
-          const up = absY > absX && absY > absZ ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
-          const uV = new THREE.Vector3().crossVectors(nV, up).normalize();
+          const ax = Math.abs(nV.x), ay = Math.abs(nV.y), az = Math.abs(nV.z);
+          const uV = az >= ax && az >= ay ? new THREE.Vector3(1, 0, 0)
+            : ax >= ay ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
           const vV = new THREE.Vector3().crossVectors(nV, uV).normalize();
+          uV.crossVectors(vV, nV).normalize();
           let uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity, planeN = 0;
           vf.vertices.forEach(([x, y, z], i) => {
             const p3 = new THREE.Vector3(x, y, z);

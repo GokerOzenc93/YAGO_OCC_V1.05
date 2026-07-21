@@ -442,7 +442,6 @@ export function castRayOnFaceWorld(originWorld: THREE.Vector3, dirWorld: THREE.V
 interface PendingPreview {
   geo: THREE.BufferGeometry;
   edgeGeo: THREE.BufferGeometry;
-  refFaceGeo: THREE.BufferGeometry;
   virtualFace: VirtualFace;
 }
 
@@ -797,19 +796,6 @@ export function buildFacePreview(
   const edgeGeo = new THREE.BufferGeometry();
   edgeGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(epos), 3));
 
-  // Reference face geometry: full contour triangulated as a fan from centroid
-  const refPos: number[] = [];
-  const centroid = new THREE.Vector3();
-  contour.corners.forEach(c => centroid.add(c));
-  centroid.divideScalar(contour.corners.length);
-  for (let i = 0; i < contour.corners.length; i++) {
-    const a = contour.corners[i];
-    const b = contour.corners[(i + 1) % contour.corners.length];
-    refPos.push(centroid.x, centroid.y, centroid.z, a.x, a.y, a.z, b.x, b.y, b.z);
-  }
-  const refFaceGeo = new THREE.BufferGeometry();
-  refFaceGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(refPos), 3));
-  refFaceGeo.computeVertexNormals();
   console.log('[YAGO][TIK]', 'clickLocal=',
     `${clickLocal.x.toFixed(1)},${clickLocal.y.toFixed(1)},${clickLocal.z.toFixed(1)}`,
     'konturKöşeN=', contour.corners.length,
@@ -838,7 +824,7 @@ export function buildFacePreview(
     // kesin eşleşme; VF asla komşu bir yüze (ör. çentik yanağına) savrulmaz.
     faceGroupDescriptor: geometry ? createFaceDescriptor(faces[contour.seedFi], geometry) : undefined,
   };
-  return { geo, edgeGeo, refFaceGeo, virtualFace };
+  return { geo, edgeGeo, virtualFace };
 }
 
 // Refined neutral palette — slate/zinc tones, subtle and professional
@@ -853,7 +839,6 @@ const RAYCAST_COLORS = {
   vfFill:         0x38bdf8, // sky-400 — consistent with preview
   vfFillHovered:  0x0ea5e9, // sky-500
   vfEdge:         0x0369a1, // sky-700 — visible edge
-  refFaceFill:    0xf59e0b, // amber-500 — reference face (distinct from preview blue)
 };
 
 const RayLine3D: React.FC<{ start: THREE.Vector3; end: THREE.Vector3 }> = React.memo(({ start, end }) => {
@@ -1123,9 +1108,6 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
       )}
       {pending && (
         <>
-          <mesh geometry={pending.refFaceGeo} raycast={() => null}>
-            <meshBasicMaterial color={RAYCAST_COLORS.refFaceFill} transparent opacity={0.18} side={THREE.DoubleSide} polygonOffset polygonOffsetFactor={-3} polygonOffsetUnits={-3} depthTest={false} />
-          </mesh>
           <mesh geometry={pending.geo} raycast={() => null}>
             <meshBasicMaterial color={RAYCAST_COLORS.previewFill} transparent opacity={0.38} side={THREE.DoubleSide} polygonOffset polygonOffsetFactor={-2} polygonOffsetUnits={-2} depthTest={false} />
           </mesh>
