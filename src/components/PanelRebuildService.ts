@@ -1074,15 +1074,12 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
         }
 
         if (willIntersectParent && !faceExtrudedOk) {
-          // Kesişim katısı: DÖNMÜŞ panellerde HER ZAMAN temiz referans kutu
-          // kullanılır — parent'ın subtractor'lı karmaşık şekli, ters
-          // döndürüldüğünde compound (çoklu katı) üretebilir ve yanlış parça
-          // seçimi paneli alt/ön yüze taşırır. Temiz kutu konveks olduğundan
-          // her zaman tek katı üretir. Düz panellerde vf.parentFaceShape
-          // bayragı subtractor'lı gerçek şekli kullanmaya devam eder.
-          const intersectSolid = (isRotated || !vf.parentFaceShape)
-            ? ((await buildParentReferenceVolume(parent, createPanelFromVirtualFace)) ?? parent.replicadShape)
-            : parent.replicadShape;
+          // Kesişim katısı: bayrak açıksa gerçek (subtractor'lı) parent;
+          // değilse subtractor'suz referans hacim. Referans hacim kurulamazsa
+          // güvenli geri dönüş gerçek parent katısıdır.
+          const intersectSolid = vf.parentFaceShape
+            ? parent.replicadShape
+            : ((await buildParentReferenceVolume(parent, createPanelFromVirtualFace)) ?? parent.replicadShape);
           // Küpü panelin yerel (döndürülmemiş) çerçevesine taşı: paneli
           // döndürmek yerine küpü ters döndürüp kesişiriz → geometri düz kalır
           // (önizleme/ölçü stabil), kırpma açıya göre doğru olur.
@@ -1173,7 +1170,7 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
             // üst ve alt bölüm gibi). Tıklanan bölgeye en yakın katıyı tut.
             try {
               const { keepSolidNearestPoint } = await import('./ReplicadService');
-              rp = await keepSolidNearestPoint(rp, regionPoint, isRotated ? undefined : vf.normal);
+              rp = await keepSolidNearestPoint(rp, regionPoint, vf.normal);
             } catch { /* tek katıysa zaten aynen kalır */ }
           } else {
             console.error('[RotateRebuild] ALL intersection attempts failed for panel', panel.id,
