@@ -677,6 +677,10 @@ interface AnchoredOriginResult {
   originV: number;
   anchoredU: boolean;
   anchoredV: boolean;
+  uNegCoord: number;
+  uPosCoord: number;
+  vNegCoord: number;
+  vPosCoord: number;
 }
 
 /**
@@ -760,6 +764,10 @@ function resolveAnchoredOrigin(
   let originV = fallbackV;
   let anchoredU = false;
   let anchoredV = false;
+  let uNegCoord = extent.uMin;
+  let uPosCoord = extent.uMax;
+  let vNegCoord = extent.vMin;
+  let vPosCoord = extent.vMax;
 
   // İki geçiş: 1) çapraz filtre olmadan kaba köken, 2) kaba kökenle şerit
   // filtresi uygulanarak kesin köken. Dik/eksen hizalı panellerde ilk geçiş
@@ -776,17 +784,21 @@ function resolveAnchoredOrigin(
     if (uPos.coord - uNeg.coord > MIN_SPAN) {
       originU = uNeg.coord + uFrac * (uPos.coord - uNeg.coord);
       anchoredU = uNeg.fromOwner || uPos.fromOwner;
+      uNegCoord = uNeg.coord;
+      uPosCoord = uPos.coord;
     }
     if (vPos.coord - vNeg.coord > MIN_SPAN) {
       originV = vNeg.coord + vFrac * (vPos.coord - vNeg.coord);
       anchoredV = vNeg.fromOwner || vPos.fromOwner;
+      vNegCoord = vNeg.coord;
+      vPosCoord = vPos.coord;
     }
   }
 
   originU = Math.max(extent.uMin + 0.5, Math.min(extent.uMax - 0.5, originU));
   originV = Math.max(extent.vMin + 0.5, Math.min(extent.vMax - 0.5, originV));
 
-  return { originU, originV, anchoredU, anchoredV };
+  return { originU, originV, anchoredU, anchoredV, uNegCoord, uPosCoord, vNegCoord, vPosCoord };
 }
 
 function reraycastVirtualFace(
@@ -955,80 +967,27 @@ function reraycastVirtualFaceFallback(
   groupCenterWorld.divideScalar(groupVerticesWorld.length);
   const faceNComp = groupCenterWorld.dot(worldNormal);
 
-  const faceIndicesForBoundary = strictFaceIndices && strictFaceIndices.length > 0
-    ? strictFaceIndices : matchedGroup.faceIndices;
-  const boundaryEdgesWorld = collectBoundaryEdgesWorld(faces, faceIndicesForBoundary, localToWorld);
   const subtractions = shape.subtractionGeometries || [];
-
   const panelsExcludingSelf = childPanels.filter(
     p => p.parameters?.virtualFaceId !== vf.id
   );
 
-  // Aligned siblings are not obstacles (they stack on top, not in-plane)
-  const alignedVfIds = collectCoplanarAlignedVfIds(
-    shapeFaces.filter(f => f.id !== vf.id),
-    new THREE.Vector3(vf.normal[0], vf.normal[1], vf.normal[2]),
-    new THREE.Vector3(vf.center[0], vf.center[1], vf.center[2])
-  );
-
-  // Compute the old VF extent in face u/v coordinates
-  const vfVerticesWorld = vf.vertices.map(([x, y, z]) =>
-    new THREE.Vector3(x, y, z).applyMatrix4(localToWorld)
-  );
-  const vfVertsU = vfVerticesWorld.map(vw => vw.dot(u));
-  const vfVertsV = vfVerticesWorld.map(vw => vw.dot(v));
-  const oldUMin = Math.min(...vfVertsU), oldUMax = Math.max(...vfVertsU);
-  const oldVMin = Math.min(...vfVertsV), oldVMax = Math.max(...vfVertsV);
-  const oldUCenter = (oldUMin + oldUMax) / 2;
-  const oldVCenter = (oldVMin + oldVMax) / 2;
-
-  let rayOriginU = oldUCenter;
-  let rayOriginV = oldVCenter;
-  // Use stored click point as origin (not VF center) to prevent drift
-  const clickUV = vf.raycastRecipe?.normalizedClickUV;
-
-  // Helper: build a world point on the face plane from u/v coords
-  const buildOrigin = (uCoord: number, vCoord: number) =>
-    new THREE.Vector3()
-      .addScaledVector(u, uCoord)
-      .addScaledVector(v, vCoord)
-      .addScaledVector(worldNormal, faceNComp);
-
-  // Helper: cast 4 rays from a given u/v origin
-  const castFromOrigin = (originU: number, originV: number) => {
-    const origin = buildOrigin(originU, originV);
-    const start = origin.clone().addScaledVector(worldNormal, 0.5);
-    const panelObs = collectPanelObstacleEdgesWorld(panelsExcludingSelf, worldNormal, origin, 20, boundaryEdgesWorld, alignedVfIds);
-    const subObs = collectSubtractionObstacleEdgesWorld(subtractions, localToWorld, worldNormal, origin, 20);
-    const vfObs = collectVirtualFaceObstacleEdgesWorld(shapeFaces, vf.id, localToWorld, worldNormal, origin, 20, alignedVfIds);
-    const obstacles = [...panelObs, ...subObs, ...vfObs];
-    const dirs = [u, u.clone().negate(), v, v.clone().negate()];
-    const dists: number[] = [];
-    for (const dir of dirs) {
-      const hit = castRayOnFaceWorld(start, dir, boundaryEdgesWorld, obstacles, u, v, origin, 5000);
-      dists.push(hit.distanceTo(start));
-    }
-    return dists; // [uPos, uNeg, vPos, vNeg]
-  };
-
-  // Clamp to face extent
   const extent = computeFaceGroupExtent(groupVerticesWorld, u, v);
-  if (clickUV) {
-    rayOriginU = extent.uMin + clickUV[0] * extent.uSpan;
-    rayOriginV = extent.vMin + clickUV[1] * extent.vSpan;
-  }
-  rayOriginU = Math.max(extent.uMin + 1, Math.min(extent.uMax - 1, rayOriginU));
-  rayOriginV = Math.max(extent.vMin + 1, Math.min(extent.vMax - 1, rayOriginV));
+  if (extent.uSpan <= 0 || extent.vSpan <= 0) return null;
 
-  // Anchor-based origin: resolve against neighbor panels/boundaries
   const nhd = vf.raycastRecipe?.normalizedHitDistances;
   const anchors = vf.raycastRecipe?.anchorOwners;
-  let anchoredU = false, anchoredV = false;
+
+  let originU = (extent.uMin + extent.uMax) / 2;
+  let originV = (extent.vMin + extent.vMax) / 2;
+  let uNegCoord = extent.uMin;
+  let uPosCoord = extent.uMax;
+  let vNegCoord = extent.vMin;
+  let vPosCoord = extent.vMax;
+
   if (anchors && nhd) {
     const siblingFaces = shapeFaces.filter(f => f.id !== vf.id);
 
-    // Dominance: if authoritative, missing owners fall to boundary;
-    // otherwise preserve VF unchanged (incomplete context).
     if (!authoritative) {
       const ownerMissing = (o: string | null): boolean => {
         if (!o) return false;
@@ -1045,154 +1004,47 @@ function reraycastVirtualFaceFallback(
     const res = resolveAnchoredOrigin(
       anchors, nhd, panelsExcludingSelf, siblingFaces, subtractions,
       localToWorld, worldNormal, u, v, faceNComp, extent,
-      rayOriginU, rayOriginV
+      originU, originV
     );
-    rayOriginU = res.originU;
-    rayOriginV = res.originV;
-    anchoredU = res.anchoredU;
-    anchoredV = res.anchoredV;
+    originU = res.originU;
+    originV = res.originV;
+    uNegCoord = res.uNegCoord;
+    uPosCoord = res.uPosCoord;
+    vNegCoord = res.vNegCoord;
+    vPosCoord = res.vPosCoord;
   }
 
-  // Concave face safety: if origin lands outside the face polygon (e.g.
-  // in a notch gap), fall back to the stored click point.
-  {
-    // Sınır kenarlarını sıralı bir halkaya diz (isPointInsidePolygon sıralı
-    // köşe ister). Kenarlar rastgele sırada gelir; uçları eşleştirerek zincirle.
-    const ring2D = orderEdgesToRing2D(boundaryEdgesWorld, u, v);
-    const originInside = ring2D.length >= 3
-      && isPointInsidePolygon({ x: rayOriginU, y: rayOriginV }, ring2D);
-    if (!originInside && vf.raycastRecipe?.clickLocalPoint) {
-      const clw = new THREE.Vector3(...vf.raycastRecipe.clickLocalPoint).applyMatrix4(localToWorld);
-      const cu = clw.dot(u), cv = clw.dot(v);
-      if (ring2D.length < 3 || isPointInsidePolygon({ x: cu, y: cv }, ring2D)) {
-        // BAĞLI EKSENE DOKUNMA: clickLocal MUTLAK bir noktadır; bağ (anchor) ile
-        // çözülmüş eksende onu geri yazmak parametrikliği bozar. Sadece bağsız
-        // eksenler tıklama noktasına düşürülür.
-        if (!anchoredU) rayOriginU = Math.max(extent.uMin + 1, Math.min(extent.uMax - 1, cu));
-        if (!anchoredV) rayOriginV = Math.max(extent.vMin + 1, Math.min(extent.vMax - 1, cv));
-      }
-    }
-  }
-  let [uPosT, uNegT, vPosT, vNegT] = castFromOrigin(rayOriginU, rayOriginV);
+  originU = Math.max(extent.uMin + 0.5, Math.min(extent.uMax - 0.5, originU));
+  originV = Math.max(extent.vMin + 0.5, Math.min(extent.vMax - 0.5, originV));
 
-  // Crossover detection: if an obstacle moved past the VF center, the resulting VF
-  // will NOT contain the old VF's boundary edges. This ONLY applies when the panel
-  // was originally bounded by an obstacle on one side — meaning the obstacle could
-  // have moved past the center. If all sides were boundaries at placement time,
-  // shrinkage from a new obstacle is legitimate and should NOT trigger relocation.
-  if (nhd && !(anchoredU && anchoredV)) {
-    // Compute the new VF extent in absolute u/v coords
-    const newUMin = rayOriginU - uNegT;
-    const newUMax = rayOriginU + uPosT;
-    const newVMin = rayOriginV - vNegT;
-    const newVMax = rayOriginV + vPosT;
+  const planeOrigin = new THREE.Vector3()
+    .addScaledVector(u, originU)
+    .addScaledVector(v, originV)
+    .addScaledVector(worldNormal, faceNComp);
 
-    let needsRelocation = false;
-    let targetU = rayOriginU;
-    let targetV = rayOriginV;
-    const MARGIN = 5;
-
-    // Crossover in v: an obstacle that was in v+ direction moved past center to v- side.
-    // Detection: v- was a boundary AND v+ was an obstacle (the obstacle that could cross).
-    // Result: the old vMin boundary is no longer reachable (newVMin > oldVMin).
-    // Bağ (anchor) ile çözülen eksende crossover sezgiseline gerek yoktur —
-    // köken zaten komşunun güncel yerine göre kuruldu; sezgisel burada sadece
-    // gürültü üretir. Yalnızca bağsız (eski kayıt / çözülemeyen) eksende çalışır.
-    if (!anchoredV) {
-      if (nhd.vNegIsBoundary && !nhd.vPosIsBoundary && newVMin > oldVMin + MARGIN) {
-        targetV = oldVMin + MARGIN;
-        needsRelocation = true;
-      }
-      // Crossover in v: an obstacle that was in v- direction moved past center to v+ side.
-      else if (nhd.vPosIsBoundary && !nhd.vNegIsBoundary && newVMax < oldVMax - MARGIN) {
-        targetV = oldVMax - MARGIN;
-        needsRelocation = true;
-      }
-    }
-
-    if (!anchoredU) {
-      // Crossover in u: obstacle from u+ moved past center to u- side.
-      if (nhd.uNegIsBoundary && !nhd.uPosIsBoundary && newUMin > oldUMin + MARGIN) {
-        targetU = oldUMin + MARGIN;
-        needsRelocation = true;
-      }
-      // Crossover in u: obstacle from u- moved past center to u+ side.
-      else if (nhd.uPosIsBoundary && !nhd.uNegIsBoundary && newUMax < oldUMax - MARGIN) {
-        targetU = oldUMax - MARGIN;
-        needsRelocation = true;
-      }
-    }
-
-    if (needsRelocation) {
-      targetU = Math.max(extent.uMin + 1, Math.min(extent.uMax - 1, targetU));
-      targetV = Math.max(extent.vMin + 1, Math.min(extent.vMax - 1, targetV));
-      rayOriginU = targetU;
-      rayOriginV = targetV;
-      [uPosT, uNegT, vPosT, vNegT] = castFromOrigin(rayOriginU, rayOriginV);
-    }
-  }
-
-  const planeOrigin = buildOrigin(rayOriginU, rayOriginV);
-
-  // Full visibility polygon (same algorithm as buildPreview)
-  const panelObsF = collectPanelObstacleEdgesWorld(panelsExcludingSelf, worldNormal, planeOrigin, 20, boundaryEdgesWorld, alignedVfIds);
-  const subObsF = collectSubtractionObstacleEdgesWorld(subtractions, localToWorld, worldNormal, planeOrigin, 20);
-  const vfObsF = collectVirtualFaceObstacleEdgesWorld(shapeFaces, vf.id, localToWorld, worldNormal, planeOrigin, 20, alignedVfIds);
-  const obstaclesF = [...panelObsF, ...subObsF, ...vfObsF];
-  const startF = planeOrigin.clone().addScaledVector(worldNormal, 0.5);
-  const dirsF = [u, u.clone().negate(), v, v.clone().negate()];
-  const axisHits = dirsF.map(dir =>
-    castRayOnFaceWorldDetailed(startF, dir, boundaryEdgesWorld, obstaclesF, u, v, planeOrigin, 5000)
-  ); // [u+, u-, v+, v-]
-
-  // Region lock: in non-authoritative recalc, if an obstacle-bounded
-  // direction now sees boundary (missing context), preserve VF unchanged.
-  if (nhd && !authoritative && !vf.parentFaceShape && !vf.alignToParentFace) {
-    const captureObstacleBounded = [
-      !nhd.uPosIsBoundary, !nhd.uNegIsBoundary, !nhd.vPosIsBoundary, !nhd.vNegIsBoundary,
-    ];
-    for (let di = 0; di < 4; di++) {
-      if (captureObstacleBounded[di] && axisHits[di].isBoundaryEdge) {
-        return { ...vf };
-      }
-    }
-  }
-
-  const segs2D = [...boundaryEdgesWorld, ...obstaclesF].map(e => {
-    const a = projectTo2D(e.v1, planeOrigin, u, v);
-    const b = projectTo2D(e.v2, planeOrigin, u, v);
-    return { ax: a.x, ay: a.y, bx: b.x, by: b.y };
-  });
-  const vis = computeVisibilityPolygon2D(segs2D, 5000);
-  let visPoly = vis.poly;
-  // Clip visibility polygon by axis-hit edge lines for stability
-  if (visPoly.length >= 3) {
-    for (const res of axisHits) {
-      if (!res.hitEdge) continue;
-      const a2 = projectTo2D(res.hitEdge.v1, planeOrigin, u, v);
-      const b2 = projectTo2D(res.hitEdge.v2, planeOrigin, u, v);
-      const clipped = clipPolygonByLine2D(visPoly, a2, b2);
-      if (clipped.length >= 3) visPoly = clipped;
-    }
-    visPoly = simplifyCollinear2D(visPoly, 0.05);
-  }
-  const visValid = visPoly.length >= 3 && !visPoly.some(p => Math.hypot(p.x, p.y) >= 5000 - 1);
-
-  let rect2D: Point2D[] = visValid
-    ? ensureCCW(visPoly)
-    : ensureCCW([
-        { x: uPosT, y: vPosT },
-        { x: -uNegT, y: vPosT },
-        { x: -uNegT, y: -vNegT },
-        { x: uPosT, y: -vNegT },
-      ]);
+  const rect2D: Point2D[] = ensureCCW([
+    { x: uPosCoord - originU, y: vPosCoord - originV },
+    { x: uNegCoord - originU, y: vPosCoord - originV },
+    { x: uNegCoord - originU, y: vNegCoord - originV },
+    { x: uPosCoord - originU, y: vNegCoord - originV },
+  ]);
 
   const footprints = getSubtractorFootprints2D(
     subtractions, localToWorld, worldNormal, planeOrigin, u, v, 50
   );
 
+  const alignedVfIds = collectCoplanarAlignedVfIds(
+    shapeFaces.filter(f => f.id !== vf.id),
+    new THREE.Vector3(vf.normal[0], vf.normal[1], vf.normal[2]),
+    new THREE.Vector3(vf.center[0], vf.center[1], vf.center[2])
+  );
+  const panelFootprints = getPanelFootprints2D(
+    panelsExcludingSelf.filter(p => !alignedVfIds.has(p.parameters?.virtualFaceId)),
+    worldNormal, planeOrigin, u, v, 3.0
+  );
+
   let clippedPoly = rect2D;
-  for (const footprint of footprints) {
+  for (const footprint of [...footprints, ...panelFootprints]) {
     const ccwFootprint = ensureCCW(footprint);
     const hasOverlap =
       ccwFootprint.some(p => isPointInsidePolygon(p, clippedPoly)) ||
@@ -1203,32 +1055,6 @@ function reraycastVirtualFaceFallback(
   }
 
   if (clippedPoly.length < 3) return null;
-
-  // Rectangle reduction: when alignToParentFace is OFF, always reduce to 4 corners
-  let markIgnoreConcavity = false;
-  if (!vf.alignToParentFace && !vf.parentFaceShape &&
-      (clippedPoly.length > 4 || vf.raycastRecipe?.ignoreFaceConcavity)) {
-    // Expand boundary-hit directions to face bbox; keep obstacle-hit distances
-    const seedExp = {
-      uMax: axisHits[0].isBoundaryEdge ? (extent.uMax - rayOriginU) : uPosT,
-      uMin: axisHits[1].isBoundaryEdge ? (extent.uMin - rayOriginU) : -uNegT,
-      vMax: axisHits[2].isBoundaryEdge ? (extent.vMax - rayOriginV) : vPosT,
-      vMin: axisHits[3].isBoundaryEdge ? (extent.vMin - rayOriginV) : -vNegT,
-    };
-    const obsSegsF = obstaclesF.map((e: any) => {
-      const a = projectTo2D(e.v1, planeOrigin, u, v);
-      const b = projectTo2D(e.v2, planeOrigin, u, v);
-      return { ax: a.x, ay: a.y, bx: b.x, by: b.y };
-    });
-    for (const fp of footprints) {
-      for (let i = 0; i < fp.length; i++) {
-        const a = fp[i], b = fp[(i + 1) % fp.length];
-        obsSegsF.push({ ax: a.x, ay: a.y, bx: b.x, by: b.y });
-      }
-    }
-    const rect = reduceRegionToRectangle2D(obsSegsF, seedExp);
-    if (rect) { clippedPoly = rect; markIgnoreConcavity = true; } // indirgenemezse şekil korunur
-  }
 
   const cornersWorld = clippedPoly.map(p =>
     planeOrigin.clone().addScaledVector(u, p.x).addScaledVector(v, p.y)
@@ -1241,37 +1067,13 @@ function reraycastVirtualFaceFallback(
 
   const localNormal = matchedGroup.normal.clone().normalize();
 
-  // Refresh anchor owners to reflect current neighbors
   let refreshedRecipe = vf.raycastRecipe;
   if (refreshedRecipe && nhd) {
-    // Only write back if boundary/obstacle classification matches capture
-    const capBoundary = [
-      nhd.uPosIsBoundary, nhd.uNegIsBoundary, nhd.vPosIsBoundary, nhd.vNegIsBoundary,
-    ];
-    const classesMatch = axisHits.every((h, i) => h.isBoundaryEdge === capBoundary[i]);
-    if (classesMatch || authoritative) {
-      const dU = axisHits.map(h => h.hitPoint.distanceTo(startF));
-      refreshedRecipe = {
-        ...refreshedRecipe,
-        anchorOwners: {
-          uPos: axisHits[0].hitOwnerId,
-          uNeg: axisHits[1].hitOwnerId,
-          vPos: axisHits[2].hitOwnerId,
-          vNeg: axisHits[3].hitOwnerId,
-        },
-        normalizedHitDistances: {
-          ...nhd,
-          uPosAbsDist: dU[0],
-          uNegAbsDist: dU[1],
-          vPosAbsDist: dU[2],
-          vNegAbsDist: dU[3],
-        },
-      };
-    }
-  }
-
-  if (markIgnoreConcavity && refreshedRecipe && !refreshedRecipe.ignoreFaceConcavity) {
-    refreshedRecipe = { ...refreshedRecipe, ignoreFaceConcavity: true };
+    refreshedRecipe = {
+      ...refreshedRecipe,
+      anchorOwners: anchors ?? refreshedRecipe.anchorOwners,
+      normalizedHitDistances: nhd,
+    };
   }
 
   return {
