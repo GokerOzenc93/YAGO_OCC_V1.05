@@ -988,7 +988,7 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
         // TAM YUZ MODELI: her duz panel, tiklanan yuzun OCC yuz-extrusion'u
         // olarak uretilir (parentFaceShape bayragi kosul olmaktan cikti - tum
         // paneller tam yuz kaplar; kardes kesimleri ve bolge secimi asagida).
-        if (!isRotated && parent.replicadShape) {
+        if (parent.replicadShape) {
           try {
             const { createPanelFromParentFaces } = await import('./ReplicadService');
             const faceRp = await createPanelFromParentFaces(
