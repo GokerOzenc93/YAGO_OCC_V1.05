@@ -985,15 +985,6 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
             .addScaledVector(nV, planeN);
           return [pt.x, pt.y, pt.z] as [number, number, number];
         })();
-        console.log('[YAGO][BÖLGE]', panel.id,
-          'regionUV=', panel.parameters?.regionUV,
-          'regionPoint=', regionPoint.map(n => n.toFixed(1)).join(','),
-          'vfCenter=', vf.center.map(n => n.toFixed(1)).join(','),
-          'vfVertsN=', vf.vertices.length,
-          'vfBBox=', (() => { let a=[Infinity,Infinity,Infinity],b=[-Infinity,-Infinity,-Infinity];
-            for (const [x,y,z] of vf.vertices){a[0]=Math.min(a[0],x);a[1]=Math.min(a[1],y);a[2]=Math.min(a[2],z);
-              b[0]=Math.max(b[0],x);b[1]=Math.max(b[1],y);b[2]=Math.max(b[2],z);}
-            return a.map(n=>n.toFixed(0)).join(',')+' .. '+b.map(n=>n.toFixed(0)).join(','); })());
         // TAM YUZ MODELI: her duz panel, tiklanan yuzun OCC yuz-extrusion'u
         // olarak uretilir (parentFaceShape bayragi kosul olmaktan cikti - tum
         // paneller tam yuz kaplar; kardes kesimleri ve bolge secimi asagida).
@@ -1001,12 +992,10 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           try {
             const { createPanelFromParentFaces } = await import('./ReplicadService');
             const faceRp = await createPanelFromParentFaces(
-              parent.replicadShape, vf.normal, vf.center, thickness, regionPoint
+              parent.replicadShape, vf.normal, vf.center, thickness, regionPoint,
+              vf.vertices as [number, number, number][] | undefined
             );
             if (faceRp) { rp = faceRp; faceExtrudedOk = true; }
-            console.log('[YAGO][ÜRETİM]', panel.id, 'faceExtrudedOk=', faceExtrudedOk,
-              'rpBBox=', (() => { try { const bb = rp?.boundingBox?.bounds;
-                return bb ? bb[0].map((n:number)=>n.toFixed(0)).join(',')+' .. '+bb[1].map((n:number)=>n.toFixed(0)).join(',') : 'yok'; } catch { return 'hata'; } })());
           } catch (err) {
             console.error('[YAGO][ÜRETİM] yüz-extrusion HATA, slab fallback devrede:', panel.id, err);
           }
@@ -1104,6 +1093,12 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           );
           if (intersected) {
             rp = intersected;
+            // BÖLGE SEÇİMİ: Kesişim sonucu compound olabilir (U-şeklinde parent'ta
+            // üst ve alt bölüm gibi). Tıklanan bölgeye en yakın katıyı tut.
+            try {
+              const { keepSolidNearestPoint } = await import('./ReplicadService');
+              rp = await keepSolidNearestPoint(rp, regionPoint, vf.normal);
+            } catch { /* tek katıysa zaten aynen kalır */ }
           } else {
             console.error('[RotateRebuild] ALL intersection attempts failed for panel', panel.id,
               '— falling back to unexpanded slab (panel will NOT auto-extend this round)');
@@ -1366,9 +1361,6 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           );
           const recordedIds = new Set<string>((vf as any).touchingSiblingIds || []);
           const refreshedIds = new Set<string>(recordedIds);
-          console.log('[YAGO][İZDÜŞÜM] GİRİŞ', panel.id, 'nAxis=', nAxis, 'plane=', planeName,
-            'dilim=', `${lo.toFixed(0)}..${hi.toFixed(0)}`, 'kardeşN=', parentSibs.length,
-            'kayıtlıN=', recordedIds.size, 'kayıtlı=', [...recordedIds].join(','));
 
           const { panelFootprintOnPlane } = await import('./FaceRaycastOverlay');
           const { draw } = await import('replicad');
@@ -1387,11 +1379,6 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
                 rotation: sib.rotation, scale: sib.scale, parameters: sib.parameters,
               };
               const fp = panelFootprintOnPlane(sibAbs as any, pn, planeOriginLocal, uVec, vVec, thickness + 5);
-              console.log('[YAGO][İZDÜŞÜM] kardeş', sib.id, 'sibPos=', sibAbs.position.map(n2 => n2.toFixed(0)).join(','),
-                'fpKöşe=', fp ? fp.length : 'null',
-                'fpBBox=', fp && fp.length ? (() => { let a=[Infinity,Infinity],b=[-Infinity,-Infinity];
-                  for (const p of fp){a[0]=Math.min(a[0],p.x);a[1]=Math.min(a[1],p.y);b[0]=Math.max(b[0],p.x);b[1]=Math.max(b[1],p.y);}
-                  return `${a[0].toFixed(0)},${a[1].toFixed(0)}..${b[0].toFixed(0)},${b[1].toFixed(0)}`; })() : '-');
               if (!fp || fp.length < 3) {
                 if (recordedIds.has(sib.id)) refreshedIds.delete(sib.id);
                 continue;
@@ -1421,11 +1408,8 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           try {
             const { keepSolidNearestPoint } = await import('./ReplicadService');
             rp = await keepSolidNearestPoint(rp, regionPoint, vf.normal);
-            console.log('[YAGO][SEÇİM]', panel.id, 'seçim sonrası bbox=',
-              (() => { try { const bb = rp?.boundingBox?.bounds;
-                return bb ? bb[0].map((n:number)=>n.toFixed(0)).join(',')+' .. '+bb[1].map((n:number)=>n.toFixed(0)).join(',') : 'yok'; } catch { return 'hata'; } })());
           } catch (err) {
-            console.error('Bölge seçimi başarısız, panel çok parçalı kalabilir:', err);
+            console.error('Bölge seçimi başarısız:', err);
           }
           // DEJENERE KORUMASI: kardeşler tıklanan bölgeyi tamamen kapladıysa
           // kesimler paneli yutar ve "ölçüsü 0 panel" doğar. Böyle bir sonuç
@@ -1454,7 +1438,13 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
 
         let geometry = convertReplicadToThreeGeometry(rp);
         const r = geoAxesSize(geometry);
-        const paramUpdates: Record<string, any> = { ...panel.parameters, baseReplicadShape: rp };
+        const paramUpdates: Record<string, any> = {
+          ...panel.parameters,
+          baseReplicadShape: rp,
+          attachedFaceNormal: vf.normal,
+          attachedFaceCenter: vf.center,
+          attachedParentShapeId: parentShapeId,
+        };
         if (r) {
           const pa = r.axes.slice(1).map(a => a.i).sort((a, b) => a - b);
           const [def, alt] = [pa[0], pa[1]];
