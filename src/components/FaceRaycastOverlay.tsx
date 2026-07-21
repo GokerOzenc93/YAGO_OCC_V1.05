@@ -464,12 +464,28 @@ export function panelFootprintOnPlane(
   const panelMatrix = getShapeMatrix(panel);
   const posAttr = panel.geometry.getAttribute('position') as THREE.BufferAttribute;
   const pts2D: Point2D[] = [];
+  let nMin = Infinity, nMax = -Infinity;
+  const all2D: Point2D[] = [];
   for (let i = 0; i < posAttr.count; i++) {
     const wp = new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)).applyMatrix4(panelMatrix);
-    const dist = Math.abs(facePlaneNormal.dot(new THREE.Vector3().subVectors(wp, facePlaneOrigin)));
-    if (dist < planeTolerance) pts2D.push(projectTo2D(wp, facePlaneOrigin, u, v));
+    const signed = facePlaneNormal.dot(new THREE.Vector3().subVectors(wp, facePlaneOrigin));
+    nMin = Math.min(nMin, signed); nMax = Math.max(nMax, signed);
+    const p2 = projectTo2D(wp, facePlaneOrigin, u, v);
+    all2D.push(p2);
+    if (Math.abs(signed) < planeTolerance) pts2D.push(p2);
   }
-  if (pts2D.length < 3) return null;
+  if (pts2D.length < 3) {
+    // EĞİK PANEL İZDÜŞÜMÜ: dönmüş panel düzleme yalnız bir kenarıyla değer
+    // (düzlem-üstü köşe < 3). Panel yüzeye gerçekten DOKUNUYORSA (aralığı
+    // düzlemi kapsıyorsa) TÜM izdüşüm hull'u engel sayılır — highlight ve
+    // üretim (izdüşüm kesimi) aynı kuralı paylaşır. Yüzeyden uzaktaki panel
+    // engel değildir (etrafından "sızılır").
+    if (nMin <= planeTolerance && nMax >= -planeTolerance && all2D.length >= 3) {
+      const hullAll = convexHull2D(all2D);
+      return hullAll.length >= 3 ? hullAll : null;
+    }
+    return null;
+  }
   const hull = convexHull2D(pts2D);
   return hull.length >= 3 ? hull : null;
 }
@@ -679,10 +695,11 @@ export function buildFacePreview(
   const planeN = contour.corners[0].dot(nrm);
   const planeOriginLocal = new THREE.Vector3().addScaledVector(nrm, planeN);
   const footprints: Point2D[][] = [];
+  const touchingSiblingIds: string[] = [];
   for (const panel of childPanels) {
     if (panel.parameters?.parentShapeId && panel.parameters.parentShapeId !== shapeId) continue;
     const fp = panelFootprintOnPlane(panel, nrm, planeOriginLocal, u, v);
-    if (fp) footprints.push(fp);
+    if (fp) { footprints.push(fp); if (panel.id) touchingSiblingIds.push(panel.id); }
   }
 
   let uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity;
@@ -748,14 +765,13 @@ export function buildFacePreview(
     if (j === ny - 1 || !reach[(j + 1) * nx + i]) bnd.push([p01, p11]);
     for (const [a, b] of bnd) epos.push(a.x, a.y, a.z, b.x, b.y, b.z);
   }
-  // Güvence: hiç hücre yoksa tam bileşen dolgusuna düş
-  if (pos.length === 0) {
-    for (const fi of contour.comp) {
-      const f = faces[fi]!;
-      for (const vv of f.vertices) pos.push(vv.x, vv.y, vv.z);
-    }
-    for (const e of contour.boundary) epos.push(e.a.x, e.a.y, e.a.z, e.b.x, e.b.y, e.b.z);
-  }
+  // YER YOKSA HIGHLIGHT YOK: yüzeyin tamamı kardeş izdüşümleriyle kaplıysa
+  // (ör. tam-yüz eğik panel altındaki yüzey) serbest hücre kalmaz. Eskiden
+  // burada "tam yüze düş" güvencesi vardı — kullanıcıyı kaplı yüzeye panel
+  // atmaya davet ediyor, üretimde de kesimler paneli komple yutuyordu
+  // ("panel aşağıya yerleşti"). Artık null dönülür: highlight çıkmaz,
+  // panel yaratılmaz; kullanıcı yer olmadığını anında görür.
+  if (pos.length === 0) return null;
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3));
   geo.computeVertexNormals();
@@ -784,6 +800,7 @@ export function buildFacePreview(
     description: '',
     hasPanel: false,
     parentFaceShape: true,
+    touchingSiblingIds,
     // ÖLÇEK-BAĞIMSIZ YÜZ KİMLİĞİ: resize'da regen, yüzü bu descriptor ile
     // bulur (normalize merkez + eksen) — "en yakın düzlem" tahmini yerine
     // kesin eşleşme; VF asla komşu bir yüze (ör. çentik yanağına) savrulmaz.

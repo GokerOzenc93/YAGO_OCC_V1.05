@@ -1330,6 +1330,86 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
             }
           }
 
+        // KARDEŞ İZDÜŞÜM KESİMİ (yalnız yüz-extrusion panelinde):
+        // Kaynak = VF'ye YAKALAMA anında yazılan touchingSiblingIds (KİMLİK).
+        // Üretimde her kardeşin GÜNCEL geometrisinden, HIGHLIGHT İLE BİREBİR
+        // AYNI footprint (panelFootprintOnPlane → u/v hull) hesaplanır ve o
+        // hull, yüzey normali ekseni boyunca prizma olarak kesici yapılır.
+        // KRİTİK: eskiden kardeşin AABB'si kesiliyordu; döndürülmüş panelde
+        // AABB, eğik footprint'ten ÇOK BÜYÜK olduğundan üretim, highlight'ın
+        // serbest bıraktığı yeri de kesip paneli başka yere kaçırıyordu
+        // ("dönünce panel highlight'a değil başka yere gidiyor"). Artık ikisi
+        // aynı hull'u paylaşır → tam örtüşür. Yüz normali eksenel olduğundan
+        // (nAxis bir ana eksen) footprint eksen-hizalı sketch düzleminde
+        // çizilip nAxis boyunca extrude edilir — replicad'de sağlam yol.
+        if (faceExtrudedOk) {
+          const pn = new THREE.Vector3(vf.normal[0], vf.normal[1], vf.normal[2]).normalize();
+          const nAxis = [Math.abs(pn.x), Math.abs(pn.y), Math.abs(pn.z)].indexOf(
+            Math.max(Math.abs(pn.x), Math.abs(pn.y), Math.abs(pn.z)));
+          let vLo = Infinity, vHi = -Infinity;
+          for (const c of vf.vertices) { vLo = Math.min(vLo, c[nAxis]); vHi = Math.max(vHi, c[nAxis]); }
+          const lo = vLo - thickness, hi = vHi;
+          const DEEP = 60, depth = (hi - lo) + 2 * DEEP, base = lo - DEEP;
+
+          const planeName = nAxis === 2 ? 'XY' : nAxis === 1 ? 'XZ' : 'YZ';
+          const axU = nAxis === 0 ? 1 : 0;
+          const axV = nAxis === 2 ? 1 : 2;
+          const uVec = new THREE.Vector3(axU === 0 ? 1 : 0, axU === 1 ? 1 : 0, axU === 2 ? 1 : 0);
+          const vVec = new THREE.Vector3(axV === 0 ? 1 : 0, axV === 1 ? 1 : 0, axV === 2 ? 1 : 0);
+          const planeOriginLocal = new THREE.Vector3();
+          planeOriginLocal.setComponent(nAxis, vLo);
+
+          const parentSibs = workingShapes.filter(
+            s => s.type === 'panel' &&
+              s.parameters?.parentShapeId === parentShapeId &&
+              s.id !== panel.id && s.geometry
+          );
+          const recordedIds = new Set<string>((vf as any).touchingSiblingIds || []);
+          const refreshedIds = new Set<string>(recordedIds);
+          console.log('[YAGO][İZDÜŞÜM] GİRİŞ', panel.id, 'nAxis=', nAxis, 'plane=', planeName,
+            'dilim=', `${lo.toFixed(0)}..${hi.toFixed(0)}`, 'kardeşN=', parentSibs.length,
+            'kayıtlıN=', recordedIds.size, 'kayıtlı=', [...recordedIds].join(','));
+
+          const { panelFootprintOnPlane } = await import('./FaceRaycastOverlay');
+          const { draw } = await import('replicad');
+
+          for (const sib of parentSibs) {
+            try {
+              const off = [
+                (sib.position?.[0] ?? 0) - panel.position[0],
+                (sib.position?.[1] ?? 0) - panel.position[1],
+                (sib.position?.[2] ?? 0) - panel.position[2],
+              ];
+              const sibLocal = {
+                geometry: sib.geometry, position: off,
+                rotation: sib.rotation, scale: sib.scale, parameters: sib.parameters,
+              };
+              const fp = panelFootprintOnPlane(sibLocal as any, pn, planeOriginLocal, uVec, vVec, thickness + 5);
+              console.log('[YAGO][İZDÜŞÜM] kardeş', sib.id, 'off=', off.map(n2 => n2.toFixed(0)).join(','),
+                'fpKöşe=', fp ? fp.length : 'null',
+                'fpBBox=', fp && fp.length ? (() => { let a=[Infinity,Infinity],b=[-Infinity,-Infinity];
+                  for (const p of fp){a[0]=Math.min(a[0],p.x);a[1]=Math.min(a[1],p.y);b[0]=Math.max(b[0],p.x);b[1]=Math.max(b[1],p.y);}
+                  return `${a[0].toFixed(0)},${a[1].toFixed(0)}..${b[0].toFixed(0)},${b[1].toFixed(0)}`; })() : '-');
+              if (!fp || fp.length < 3) {
+                if (recordedIds.has(sib.id)) refreshedIds.delete(sib.id);
+                continue;
+              }
+              refreshedIds.add(sib.id);
+
+              let dr = draw();
+              fp.forEach((p, idx) => {
+                const c: [number, number] = [p.x, p.y];
+                dr = idx === 0 ? dr.movePointerTo(c) : dr.lineTo(c);
+              });
+              const cutter = dr.close().sketchOnPlane(planeName as any, base).extrude(depth);
+              rp = await safeCut(rp, cutter, `izdüşüm ${sib.id}`);
+            } catch (err) {
+              console.error('[YAGO][İZDÜŞÜM] kesim başarısız:', sib.id, err);
+            }
+          }
+          (vf as any).touchingSiblingIds = [...refreshedIds];
+        }
+
         // BÖLGE SEÇİMİ (yalnız yüz-extrusion panelinde): Kardeş kesimleri
         // paneli birden çok AYRIK parçaya böldüyse (ör. dikey bölme ortadan
         // geçti), yalnızca kullanıcının tıkladığı bölgedeki parça tutulur.

@@ -47,6 +47,12 @@ export interface VirtualFace {
    *  yüz eşlemesiyle (regenerateParentFaceShapeVF) güncellenir. */
   parentFaceShape?:boolean;
   faceGroupDescriptor?:FaceDescriptor;
+  /** YAKALAMA ANINDA bu yüzeye DEĞEN kardeş panellerin id'leri (KİMLİK, konum
+   *  değil). Üretimde bu kardeşlerin GÜNCEL geometrisi okunur → taşıma/döndürme
+   *  sonrası doğru çalışır; sıralama mantığı korunur (kimlik sabit, geometri
+   *  canlı). Rebuild bu listeyi her seferinde tazeler (yeni değen kardeşler
+   *  eklenir), böylece sonradan taşınıp yüzeye giren panel de yakalanır. */
+  touchingSiblingIds?:string[];
 }
 
 export interface Shape {

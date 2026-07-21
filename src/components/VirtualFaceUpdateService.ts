@@ -248,48 +248,6 @@ function findMatchingFaceGroup(
   return bestGroup;
 }
 
-function filterStrictCoplanarIndices(
-  faces: FaceData[],
-  groupIndices: number[],
-  localToWorld: THREE.Matrix4,
-  normalMatrix: THREE.Matrix3,
-  normalDotTol: number = 0.99999,
-  planeDistTol: number = 0.05
-): number[] {
-  if (groupIndices.length === 0) return [];
-  let bestIdx = groupIndices[0];
-  let bestArea = 0;
-  for (const fi of groupIndices) {
-    const face = faces[fi];
-    if (!face) continue;
-    const a = face.vertices[0], b = face.vertices[1], c = face.vertices[2];
-    const area = new THREE.Vector3().crossVectors(
-      new THREE.Vector3().subVectors(b, a),
-      new THREE.Vector3().subVectors(c, a)
-    ).length();
-    if (area > bestArea) { bestArea = area; bestIdx = fi; }
-  }
-  const refFace = faces[bestIdx];
-  const refNormalW = refFace.normal.clone().applyMatrix3(normalMatrix).normalize();
-  const refPointW = refFace.center.clone().applyMatrix4(localToWorld);
-  const result: number[] = [];
-  for (const fi of groupIndices) {
-    const face = faces[fi];
-    if (!face) continue;
-    const nW = face.normal.clone().applyMatrix3(normalMatrix).normalize();
-    if (nW.dot(refNormalW) < normalDotTol) continue;
-    let maxPlaneDist = 0;
-    for (const vLocal of face.vertices) {
-      const vW = vLocal.clone().applyMatrix4(localToWorld);
-      const d = Math.abs(refNormalW.dot(new THREE.Vector3().subVectors(vW, refPointW)));
-      if (d > maxPlaneDist) maxPlaneDist = d;
-    }
-    if (maxPlaneDist > planeDistTol) continue;
-    result.push(fi);
-  }
-  return result.length > 0 ? result : groupIndices;
-}
-
 function computeFaceGroupExtent(
   groupVerticesWorld: THREE.Vector3[],
   u: THREE.Vector3,
@@ -489,16 +447,16 @@ function regenerateParentFaceShapeVF(
   const matchedGroup = findMatchingFaceGroup(vf, faces, faceGroups, shape.geometry);
   if (!matchedGroup) return null;
 
-  const normalMatrix = new THREE.Matrix3().getNormalMatrix(localToWorld);
-  const strictIndices = filterStrictCoplanarIndices(
-    faces, matchedGroup.faceIndices, localToWorld, normalMatrix
-  );
-  if (strictIndices.length === 0) return null;
-
-  const refFace = faces[strictIndices[0]];
-  const localNormal = refFace ? refFace.normal.clone().normalize() : matchedGroup.normal.clone().normalize();
+  // YAKALAMA İLE TAM SİMETRİ: yakalama (buildFacePreview) grubu OLDUĞU GİBİ
+  // kullanır ve kontur doğru çıkar. Regen'in eski strict-coplanar filtresi
+  // EKSENEL OLMAYAN (eğik kesilmiş) yüzlerde üçgenlerin çoğunu eleyip grubu
+  // kopuk adacıklara bölüyordu; seed'in adası 18mm'lik mini parça kalıyor,
+  // VF normal/merkez bozulup panel YAN yüze savruluyordu (log kanıtı:
+  // köşeN 42→4, konturBBoxU 0..18, seedYüzMerkez x=0). Filtre kaldırıldı;
+  // normal de yakalamadaki gibi GRUP normalidir.
+  const localNormal = matchedGroup.normal.clone().normalize();
   const seed = new THREE.Vector3(vf.center[0], vf.center[1], vf.center[2]);
-  const contour = computeFaceComponentContour(faces, strictIndices, seed, localNormal);
+  const contour = computeFaceComponentContour(faces, matchedGroup.faceIndices, seed, localNormal);
   if (!contour) return null;
 
   // BÖLGE KİMLİĞİ PARAMETRİK TAŞINIR: merkez, kullanıcının tıklama noktasıdır
