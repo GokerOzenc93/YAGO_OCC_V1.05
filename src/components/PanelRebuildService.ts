@@ -182,11 +182,13 @@ function box3Corners(b: THREE.Box3): THREE.Vector3[] {
 function compositeQuatFromSteps(steps: RotateStep[]): THREE.Quaternion {
   const q = new THREE.Quaternion();
   for (const step of steps) {
-    const axisVec = new THREE.Vector3(
-      step.axis === 'x' ? 1 : 0,
-      step.axis === 'y' ? 1 : 0,
-      step.axis === 'z' ? 1 : 0
-    );
+    const axisVec = (step as any).axisVec
+      ? new THREE.Vector3(...(step as any).axisVec).normalize()
+      : new THREE.Vector3(
+          step.axis === 'x' ? 1 : 0,
+          step.axis === 'y' ? 1 : 0,
+          step.axis === 'z' ? 1 : 0
+        );
     q.premultiply(new THREE.Quaternion().setFromAxisAngle(axisVec, (step.value * Math.PI) / 180));
   }
   return q;
@@ -566,7 +568,17 @@ function effectiveRotateSteps(
         .addScaledVector(vfCtx.u, vfCtx.minU + vfF[0] * vfCtx.su)
         .addScaledVector(vfCtx.v, vfCtx.minV + vfF[1] * vfCtx.sv)
         .addScaledVector(vfCtx.n, vfF[2]);
-      return { ...s, pivot: [p.x, p.y, p.z] as [number, number, number] };
+      const recomputed: [number, number, number] = [p.x, p.y, p.z];
+      // Güvenlik: VF kardeş panel etkisiyle değiştiyse yeniden hesaplanan
+      // pivot orijinalden çok sapabilir. Bu durumda orijinal mutlak pivotu
+      // koru — kasıtlı boyut değişikliği (resize) küçük sapmalara neden olur
+      // ve ona izin verilir; kardeş kaynaklı büyük sapmalar reddedilir.
+      const orig = s.pivot;
+      const drift = Math.hypot(
+        recomputed[0] - orig[0], recomputed[1] - orig[1], recomputed[2] - orig[2]
+      );
+      if (drift > 5) return s;
+      return { ...s, pivot: recomputed };
     }
     const f = (s as any).pivotFrac as [number, number, number] | undefined;
     if (f && bbCtx) {
@@ -1062,12 +1074,15 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
         }
 
         if (willIntersectParent && !faceExtrudedOk) {
-          // Kesişim katısı: bayrak açıksa gerçek (subtractor'lı) parent;
-          // değilse subtractor'suz referans hacim. Referans hacim kurulamazsa
-          // güvenli geri dönüş gerçek parent katısıdır.
-          const intersectSolid = vf.parentFaceShape
-            ? parent.replicadShape
-            : ((await buildParentReferenceVolume(parent, createPanelFromVirtualFace)) ?? parent.replicadShape);
+          // Kesişim katısı: DÖNMÜŞ panellerde HER ZAMAN temiz referans kutu
+          // kullanılır — parent'ın subtractor'lı karmaşık şekli, ters
+          // döndürüldüğünde compound (çoklu katı) üretebilir ve yanlış parça
+          // seçimi paneli alt/ön yüze taşırır. Temiz kutu konveks olduğundan
+          // her zaman tek katı üretir. Düz panellerde vf.parentFaceShape
+          // bayragı subtractor'lı gerçek şekli kullanmaya devam eder.
+          const intersectSolid = (isRotated || !vf.parentFaceShape)
+            ? ((await buildParentReferenceVolume(parent, createPanelFromVirtualFace)) ?? parent.replicadShape)
+            : parent.replicadShape;
           // Küpü panelin yerel (döndürülmemiş) çerçevesine taşı: paneli
           // döndürmek yerine küpü ters döndürüp kesişiriz → geometri düz kalır
           // (önizleme/ölçü stabil), kırpma açıya göre doğru olur.
@@ -1093,14 +1108,71 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           );
           if (intersected) {
             rp = intersected;
+            // BANT KIRPMASI (dönmüş panel): genişletilmiş slab, ters döndürülmüş
+            // küple kesiştiğinde VF düzleminin ÖTESİNDEKİ (yan/ön) duvarlara da
+            // taşan büyük bir L/T-şekil oluşabilir. Bu taşmayı kırpmak için
+            // VF normal yönünde [VF_plane - thickness - margin, VF_plane + margin]
+            // bandıyla sınırlandırırız. Bant, panelin OLDUĞU YÜZEY civarını tutar;
+            // yan yüzlere taşan kısımları keser.
+            if (isRotated) {
+              try {
+                const nBand = new THREE.Vector3(vf.normal[0], vf.normal[1], vf.normal[2]).normalize();
+                // VF düzlem ofseti: VF köşelerinin normal yönündeki izdüşümü
+                let vfPlaneD = 0;
+                for (const vtx of vf.vertices) {
+                  vfPlaneD += vtx[0] * nBand.x + vtx[1] * nBand.y + vtx[2] * nBand.z;
+                }
+                vfPlaneD /= vf.vertices.length;
+                // Bant sınırları: panelin kalınlık yönünde uzandığı alan + 2mm pay
+                const bandMargin = 2;
+                const bandMax = vfPlaneD + bandMargin;
+                const bandMin = vfPlaneD - thickness - bandMargin;
+                // Bant DIŞINI kesmek için iki yarım-uzay:
+                // 1) bandMax üstünü kes (normal yönünde taşma)
+                // 2) bandMin altını kes (ters normal yönünde taşma)
+                const L = parentMaxDim(parent) * 3;
+                const up2 = Math.abs(nBand.y) > 0.9
+                  ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+                const uB = new THREE.Vector3().crossVectors(nBand, up2).normalize();
+                const vB = new THREE.Vector3().crossVectors(nBand, uB).normalize();
+                // Üst düzlem kesici: normal yönünde bandMax'tan başlayıp dışarı giden slab
+                const mkTop = (su: number, sv: number): [number, number, number] => {
+                  const w = new THREE.Vector3()
+                    .addScaledVector(nBand, bandMax)
+                    .addScaledVector(uB, su * L)
+                    .addScaledVector(vB, sv * L);
+                  return [w.x, w.y, w.z];
+                };
+                const topVerts: [number, number, number][] = [
+                  mkTop(-1, -1), mkTop(1, -1), mkTop(1, 1), mkTop(-1, 1)
+                ];
+                const topCutter = await createPanelFromVirtualFace(
+                  topVerts, [-nBand.x, -nBand.y, -nBand.z], L, 0
+                );
+                if (topCutter) rp = await safeCut(rp, topCutter, 'band-top');
+                // Alt düzlem kesici
+                const mkBot = (su: number, sv: number): [number, number, number] => {
+                  const w = new THREE.Vector3()
+                    .addScaledVector(nBand, bandMin)
+                    .addScaledVector(uB, su * L)
+                    .addScaledVector(vB, sv * L);
+                  return [w.x, w.y, w.z];
+                };
+                const botVerts: [number, number, number][] = [
+                  mkBot(-1, -1), mkBot(1, -1), mkBot(1, 1), mkBot(-1, 1)
+                ];
+                const botCutter = await createPanelFromVirtualFace(
+                  botVerts, [nBand.x, nBand.y, nBand.z], L, 0
+                );
+                if (botCutter) rp = await safeCut(rp, botCutter, 'band-bot');
+              } catch (err) {
+                console.warn('[RotateRebuild] band clipping failed, proceeding without:', err);
+              }
+            }
             // BÖLGE SEÇİMİ: Kesişim sonucu compound olabilir (U-şeklinde parent'ta
             // üst ve alt bölüm gibi). Tıklanan bölgeye en yakın katıyı tut.
             try {
               const { keepSolidNearestPoint } = await import('./ReplicadService');
-              // Dönmüş panelde parent ters-döndürüldüğünden yüzey eğik olur;
-              // vf.normal (orijinal yüz normali) boyunca 2mm içeri itmek noktayı
-              // eğik katıdan çıkarıp yanlış parçayı seçebilir. Dönmüş panelde
-              // inwardDir verilmez — nokta yüzeyde olduğu gibi kullanılır.
               rp = await keepSolidNearestPoint(rp, regionPoint, isRotated ? undefined : vf.normal);
             } catch { /* tek katıysa zaten aynen kalır */ }
           } else {
