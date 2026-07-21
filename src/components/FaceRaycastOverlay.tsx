@@ -1,7 +1,7 @@
 import React, { useMemo, useState, useEffect, useRef, useCallback } from 'react';
 import * as THREE from 'three';
 import { useAppStore } from '../store';
-import type { VirtualFace } from '../store';
+import type { VirtualFace, EdgeAnchor, NormalizedHitDistances } from '../store';
 import {
   extractFacesFromGeometry,
   groupCoplanarFaces,
@@ -12,6 +12,7 @@ import {
 } from './FaceEditor';
 import { convertReplicadToThreeGeometry } from './ReplicadService';
 
+interface RayLine { start: THREE.Vector3; end: THREE.Vector3; }
 interface FaceRaycastOverlayProps { shape: any; allShapes?: any[]; }
 
 export function getFacePlaneAxes(normal: THREE.Vector3): { u: THREE.Vector3; v: THREE.Vector3 } {
@@ -30,6 +31,26 @@ export function getShapeMatrix(shape: any): THREE.Matrix4 {
   return new THREE.Matrix4().compose(pos, quat, scale);
 }
 
+export function collectBoundaryEdgesWorld(faces: FaceData[], faceIndices: number[], localToWorld: THREE.Matrix4): Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> {
+  const edgeMap = new Map<string, { v1: THREE.Vector3; v2: THREE.Vector3; count: number }>();
+  faceIndices.forEach(fi => {
+    const face = faces[fi];
+    if (!face) return;
+    for (let i = 0; i < 3; i++) {
+      const va = face.vertices[i].clone().applyMatrix4(localToWorld);
+      const vb = face.vertices[(i + 1) % 3].clone().applyMatrix4(localToWorld);
+      const ka = `${va.x.toFixed(2)},${va.y.toFixed(2)},${va.z.toFixed(2)}`;
+      const kb = `${vb.x.toFixed(2)},${vb.y.toFixed(2)},${vb.z.toFixed(2)}`;
+      const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+      if (!edgeMap.has(key)) edgeMap.set(key, { v1: va, v2: vb, count: 0 });
+      edgeMap.get(key)!.count++;
+    }
+  });
+  const boundary: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> = [];
+  edgeMap.forEach(e => { if (e.count === 1) boundary.push({ v1: e.v1, v2: e.v2 }); });
+  return boundary;
+}
+
 export function projectTo2D(p: THREE.Vector3, origin: THREE.Vector3, u: THREE.Vector3, v: THREE.Vector3): { x: number; y: number } {
   const d = new THREE.Vector3().subVectors(p, origin);
   return { x: d.dot(u), y: d.dot(v) };
@@ -45,49 +66,343 @@ function raySegmentIntersect2D(ox: number, oy: number, dx: number, dy: number, a
   return null;
 }
 
-// ── SERİ IŞIN: görünürlük çokgeni ────────────────────────────────────────────
-// Tıklanan noktadan, düzlemdeki TÜM sınır+engel kenarlarına doğru ışın demeti
-// atılır: her kenar ucuna (±epsilon açıyla) hedefli ışınlar + düzgün dağılımlı
-// yelpaze. Sonuç, tıklanan noktadan "görünen" serbest bölgenin TAM çokgenidir:
-// eğik (döndürülmüş) bir panel yüzeyi kestiğinde bölge o eğik çizgiyi birebir
-// izler — dik durumlarda ise sonuç mevcut davranışla aynı dikdörtgendir.
-// NOT: Bu, yüzeyi "ana yüze eşitle" gibi birebir kopyalamaz; yalnızca tıklanan
-// noktanın etrafındaki erişilebilir alanın şeklini üretir.
+// Visibility polygon: fan of rays from origin against all boundary+obstacle segments.
+export interface VisibilityFanResult { poly: Point2D[]; samples: Point2D[]; }
+
+export function computeVisibilityPolygon2D(
+  segments: Array<{ ax: number; ay: number; bx: number; by: number }>,
+  maxDist: number,
+  fanCount: number = 48
+): VisibilityFanResult {
+  const angles: number[] = [];
+
+  const EPS = 4e-3;
+  for (const s of segments) {
+    const a1 = Math.atan2(s.ay, s.ax);
+    const a2 = Math.atan2(s.by, s.bx);
+    angles.push(a1 - EPS, a1, a1 + EPS, a2 - EPS, a2, a2 + EPS);
+  }
+  for (let i = 0; i < fanCount; i++) angles.push((i / fanCount) * Math.PI * 2 - Math.PI);
+  angles.sort((a, b) => a - b);
+
+  const samples: Point2D[] = [];
+  let lastA = Infinity;
+  for (const ang of angles) {
+    if (Math.abs(ang - lastA) < 1e-7) continue;
+    lastA = ang;
+    const dx = Math.cos(ang), dy = Math.sin(ang);
+    let minT = maxDist;
+    for (const s of segments) {
+      const t = raySegmentIntersect2D(0, 0, dx, dy, s.ax, s.ay, s.bx, s.by);
+      if (t !== null && t < minT) minT = t;
+    }
+    samples.push({ x: dx * minT, y: dy * minT });
+  }
+  return { poly: simplifyCollinear2D(samples, 0.05), samples };
+}
+
+// Remove collinear points so rectangles stay 4-cornered.
+export function simplifyCollinear2D(poly: Point2D[], eps: number): Point2D[] {
+  const pts: Point2D[] = [];
+  for (const p of poly) {
+    const last = pts[pts.length - 1];
+    if (!last || Math.hypot(p.x - last.x, p.y - last.y) > eps) pts.push(p);
+  }
+  if (pts.length > 1) {
+    const f = pts[0], l = pts[pts.length - 1];
+    if (Math.hypot(f.x - l.x, f.y - l.y) <= eps) pts.pop();
+  }
+  if (pts.length < 3) return pts;
+
+  let changed = true;
+  while (changed && pts.length > 3) {
+    changed = false;
+    let i = 0;
+    while (i < pts.length && pts.length > 3) {
+      const n = pts.length;
+      const a = pts[(i - 1 + n) % n];
+      const b = pts[i];
+      const c = pts[(i + 1) % n];
+      const cross = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+      const len = Math.hypot(c.x - a.x, c.y - a.y) || 1;
+      if (Math.abs(cross) / len <= eps) {
+        pts.splice(i, 1);
+        changed = true;
+      } else {
+        i++;
+      }
+    }
+  }
+  return pts;
+}
+
+// Clip polygon to the origin-side half-plane defined by line (a,b).
+export function clipPolygonByLine2D(poly: Point2D[], a: Point2D, b: Point2D): Point2D[] {
+  const ex = b.x - a.x, ey = b.y - a.y;
+  const side = (p: Point2D) => ex * (p.y - a.y) - ey * (p.x - a.x);
+  const s0 = side({ x: 0, y: 0 });
+  if (Math.abs(s0) < 1e-6) return poly; // tıklama doğrunun üstünde — kırpma belirsiz, atla
+  const keep = (p: Point2D) => side(p) * s0 >= -1e-9;
+  const out: Point2D[] = [];
+  for (let i = 0; i < poly.length; i++) {
+    const cur = poly[i], nxt = poly[(i + 1) % poly.length];
+    const cIn = keep(cur), nIn = keep(nxt);
+    if (cIn) out.push(cur);
+    if (cIn !== nIn) {
+      const d1 = side(cur), d2 = side(nxt);
+      const t = d1 / (d1 - d2);
+      out.push({ x: cur.x + (nxt.x - cur.x) * t, y: cur.y + (nxt.y - cur.y) * t });
+    }
+  }
+  return out;
+}
+
+function pointToSegmentDistance3D(p: THREE.Vector3, a: THREE.Vector3, b: THREE.Vector3): number {
+  const ab = new THREE.Vector3().subVectors(b, a);
+  const ap = new THREE.Vector3().subVectors(p, a);
+  const len2 = ab.lengthSq();
+  if (len2 < 1e-12) return ap.length();
+  const t = Math.max(0, Math.min(1, ap.dot(ab) / len2));
+  return new THREE.Vector3().copy(a).addScaledVector(ab, t).distanceTo(p);
+}
+
+
 export interface ObstacleEdge { v1: THREE.Vector3; v2: THREE.Vector3; ownerId?: string; }
 
-/**
- * Bu yüz düzleminde "ana yüzeye eşitlenmiş" (alignToParentFace) kardeş VF'lerin
- * kimlikleri. Eşitlenmiş panel TANIM GEREĞİ parent yüzünün TAMAMINI doldurur
- * (PanelReshapeService: "HER ZAMAN tüm parent yüzünü doldur") ve yüz düzleminde
- * FLUSH durur. Dolayısıyla aynı yüze atılan başka bir paneli in-plane olarak
- * SINIRLAYAMAZ — onun ÜZERİNE istiflenir (lamine olur).
- *
- * Buna rağmen ışın atma onu bir engel sayıyordu: gövde konturu (yüz poligonu,
- * çentikli/açılı olabilir) ışınları durdurup görünürlük çokgenini o şekle
- * sokuyordu. Sonuç: ilk panel 4 kenarlı çıkarken, ondan SONRAKİ her panel
- * sorgusuz yüzün şeklini alıyordu. Bu VF'leri engel kümesinden çıkarıyoruz;
- * böylece her panel varsayılan olarak normal DİKDÖRTGEN yerleşir ve yüz şekli
- * yalnızca kullanıcı "ana yüzeye eşitle"ye bastığında verilir.
- *
- * DİKKAT: yalnızca AYNI DÜZLEMDEKİ eşitlenmiş VF'ler elenir. Başka bir yüze
- * (ör. sol yüze) eşitlenmiş panel, bu yüzü dik olarak kesiyorsa GERÇEK bir
- * engeldir ve korunur.
- */
-/**
- * BÖLGEYİ DİKDÖRTGENE İNDİRGE — tıklamayı (köken) içeren EN BÜYÜK ALANLI eksen
- * hizalı dikdörtgen.
- *
- * SÖZLEŞME ("ana yüzeye eşitle" anahtarı): bayrak KAPALIYKEN panel her koşulda
- * 4 kenarlıdır; yüzün şekli (L/U, çentik) yalnızca bayrak AÇIKKEN verilir.
- * Bu fonksiyon bayraksız yoldaki dörtgeni üretir.
- *
- * Aday v sınırları kısıt segmenti uçlarından türetilir; her (vMin, vMax) çifti
- * için u yönleri bağımsız ikili aramayla büyütülür (v aralığı sabitken u'da
- * büyümek monotondur) ve alanı en büyük geçerli aday seçilir — deterministik,
- * sıradan bağımsız. Kısıt testi SEGMENT KESİŞİMİ ile yapılır (görünürlük
- * çokgeninin köşe yongalarına bağışık). Kısıtlar dikdörtgense sonuç tohumla
- * birebir aynıdır (hızlı yol) — düz yüzlerde davranış değişmez.
- */
+// Reduce region to the largest axis-aligned rectangle containing the origin.
+export function reduceRegionToRectangle2D(
+  segsIn: Array<{ ax: number; ay: number; bx: number; by: number }>,
+  seed: { uMin: number; uMax: number; vMin: number; vMax: number }
+): Point2D[] | null {
+  const EPS = 0.1;
+  const MIN_DIM = 0.5;
+  const MAX_CAND = 14;
+
+  if (seed.uMax <= MIN_DIM || seed.vMax <= MIN_DIM ||
+      seed.uMin >= -MIN_DIM || seed.vMin >= -MIN_DIM) return null;
+
+  const bx0 = seed.uMin - EPS, bx1 = seed.uMax + EPS;
+  const by0 = seed.vMin - EPS, by1 = seed.vMax + EPS;
+  const segs = segsIn.filter(sg =>
+    Math.max(sg.ax, sg.bx) >= bx0 && Math.min(sg.ax, sg.bx) <= bx1 &&
+    Math.max(sg.ay, sg.by) >= by0 && Math.min(sg.ay, sg.by) <= by1
+  );
+
+  const crosses = (p1: Point2D, p2: Point2D, q1: Point2D, q2: Point2D): boolean => {
+    const d = (a: Point2D, b: Point2D, c: Point2D) =>
+      (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+    const d1 = d(q1, q2, p1), d2 = d(q1, q2, p2);
+    const d3 = d(p1, p2, q1), d4 = d(p1, p2, q2);
+    return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+           ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+  };
+
+  const rectClear = (uMin: number, uMax: number, vMin: number, vMax: number): boolean => {
+    const a = uMin + EPS, b = uMax - EPS, c = vMin + EPS, e = vMax - EPS;
+    if (b - a < MIN_DIM || e - c < MIN_DIM) return false; // dejenere = GEÇERSİZ
+    const corners: Point2D[] = [
+      { x: b, y: e }, { x: a, y: e }, { x: a, y: c }, { x: b, y: c },
+    ];
+    for (let i = 0; i < 4; i++) {
+      const p1 = corners[i], p2 = corners[(i + 1) % 4];
+      for (const sg of segs) {
+        if (crosses(p1, p2, { x: sg.ax, y: sg.ay }, { x: sg.bx, y: sg.by })) return false;
+      }
+    }
+
+    for (const sg of segs) {
+      if ((sg.ax > a && sg.ax < b && sg.ay > c && sg.ay < e) ||
+          (sg.bx > a && sg.bx < b && sg.by > c && sg.by < e)) return false;
+    }
+    return true;
+  };
+
+
+  if (rectClear(seed.uMin, seed.uMax, seed.vMin, seed.vMax)) {
+    return ensureCCW([
+      { x: seed.uMax, y: seed.vMax }, { x: seed.uMin, y: seed.vMax },
+      { x: seed.uMin, y: seed.vMin }, { x: seed.uMax, y: seed.vMin },
+    ]);
+  }
+
+  const candidates = (lo: number, hi: number, pick: (p: { x: number; y: number }) => number): number[] => {
+    const set = new Set<number>([hi]);
+    for (const sg of segs) {
+      for (const p of [{ x: sg.ax, y: sg.ay }, { x: sg.bx, y: sg.by }]) {
+        const c = pick(p);
+        if (c > lo + 1e-6 && c < hi - 1e-6) set.add(Math.round(c * 100) / 100);
+      }
+    }
+    return [...set].sort((x, y) => Math.abs(y) - Math.abs(x)).slice(0, MAX_CAND);
+  };
+  const vPosCand = candidates(0, seed.vMax, p => p.y);
+  const vNegCand = candidates(0, -seed.vMin, p => -p.y).map(x => -x);
+
+  const SEEDW = MIN_DIM + 2 * EPS;
+  const growU = (vMin: number, vMax: number, sign: 1 | -1): number => {
+    const limit = sign === 1 ? seed.uMax : -seed.uMin;
+    if (limit < SEEDW) return 0;
+    const ok = (m: number) => sign === 1
+      ? rectClear(-SEEDW, m, vMin, vMax)
+      : rectClear(-m, SEEDW, vMin, vMax);
+    if (!ok(SEEDW)) return 0;
+    let lo = SEEDW, hi = limit;
+    if (ok(limit)) return limit;
+    for (let it = 0; it < 22; it++) {
+      const mid = (lo + hi) / 2;
+      if (ok(mid)) lo = mid; else hi = mid;
+    }
+    return lo;
+  };
+
+  // Priority: preserve longest ray extents, then area.
+  const PRES_TOL = 0.6;
+  const extentPriority: Array<{ key: 'uMax' | 'uMin' | 'vMax' | 'vMin'; val: number }> = [
+    { key: 'uMax', val: seed.uMax }, { key: 'uMin', val: seed.uMin },
+    { key: 'vMax', val: seed.vMax }, { key: 'vMin', val: seed.vMin },
+  ].sort((a, b) => Math.abs(b.val) - Math.abs(a.val));
+
+  type Cand = { uMin: number; uMax: number; vMin: number; vMax: number; area: number; pres: number[] };
+  const preserved = (c: Cand): number[] =>
+    extentPriority.map(e => Math.abs((c as any)[e.key] - e.val) <= PRES_TOL ? 1 : 0);
+  const better = (a: Cand, b: Cand): boolean => {
+    for (let i = 0; i < 4; i++) {
+      if (a.pres[i] !== b.pres[i]) return a.pres[i] > b.pres[i];
+    }
+    return a.area > b.area;
+  };
+
+  let best: Cand | null = null;
+  for (const vMax of vPosCand) {
+    for (const vMin of vNegCand) {
+      if (vMax - vMin < MIN_DIM) continue;
+      const uMax = growU(vMin, vMax, 1);
+      if (uMax < MIN_DIM) continue;
+      const uMin = -growU(vMin, vMax, -1);
+      if (-uMin < MIN_DIM) continue;
+      if (!rectClear(uMin, uMax, vMin, vMax)) continue;
+      const c: Cand = { uMin, uMax, vMin, vMax, area: (uMax - uMin) * (vMax - vMin), pres: [] };
+      c.pres = preserved(c);
+      if (!best || better(c, best)) best = c;
+    }
+  }
+
+  {
+    const uMax0 = seed.uMax, uMin0 = seed.uMin;
+    for (const vMax of vPosCand) {
+      for (const vMin of vNegCand) {
+        if (vMax - vMin < MIN_DIM) continue;
+        if (!rectClear(uMin0, uMax0, vMin, vMax)) continue;
+        const c: Cand = { uMin: uMin0, uMax: uMax0, vMin, vMax, area: (uMax0 - uMin0) * (vMax - vMin), pres: [] };
+        c.pres = preserved(c);
+        if (!best || better(c, best)) best = c;
+      }
+    }
+  }
+
+  if (!best) return null; // çağıran şekilli bölgeyi korur — yüz asla seçilemez olmaz
+  return ensureCCW([
+    { x: best.uMax, y: best.vMax }, { x: best.uMin, y: best.vMax },
+    { x: best.uMin, y: best.vMin }, { x: best.uMax, y: best.vMin },
+  ]);
+}
+
+export function collectCoplanarAlignedVfIds(
+  virtualFaces: VirtualFace[],
+  facePlaneNormalLocal: THREE.Vector3,
+  facePlaneOriginLocal: THREE.Vector3,
+  planeTolerance: number = 1.0
+): Set<string> {
+  const out = new Set<string>();
+  const n = facePlaneNormalLocal.clone().normalize();
+  const d = facePlaneOriginLocal.dot(n);
+  for (const vf of virtualFaces) {
+    if (!vf.alignToParentFace && !vf.parentFaceShape) continue;
+    const vn = new THREE.Vector3(vf.normal[0], vf.normal[1], vf.normal[2]).normalize();
+    if (Math.abs(vn.dot(n)) < 0.99) continue;
+    const vc = new THREE.Vector3(vf.center[0], vf.center[1], vf.center[2]);
+    if (Math.abs(vc.dot(n) - d) > planeTolerance) continue;
+    out.add(vf.id);
+  }
+  return out;
+}
+
+export function collectPanelObstacleEdgesWorld(panelShapes: any[], facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, planeTolerance: number = 3.0, boundaryEdges?: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>, excludeVfIds?: Set<string>): ObstacleEdge[] {
+  const obstacleEdges: ObstacleEdge[] = [];
+  for (const panel of panelShapes) {
+    if (!panel.geometry) continue;
+
+    if (excludeVfIds && excludeVfIds.has(panel.parameters?.virtualFaceId)) continue;
+    const panelMatrix = getShapeMatrix(panel);
+    const posAttr = panel.geometry.getAttribute('position') as THREE.BufferAttribute;
+    if (!posAttr) continue;
+
+    const { u, v } = getFacePlaneAxes(facePlaneNormal);
+
+    // Collect on-plane vertices + project all for fallback
+    const onPlanePts: Array<{ x: number; y: number }> = [];
+    const allPts: Array<{ x: number; y: number }> = [];
+    const tmp = new THREE.Vector3();
+    let minSigned = Infinity, maxSigned = -Infinity;
+    for (let vi = 0; vi < posAttr.count; vi++) {
+      tmp.set(posAttr.getX(vi), posAttr.getY(vi), posAttr.getZ(vi)).applyMatrix4(panelMatrix);
+      const signed = facePlaneNormal.dot(new THREE.Vector3().subVectors(tmp, facePlaneOrigin));
+      minSigned = Math.min(minSigned, signed);
+      maxSigned = Math.max(maxSigned, signed);
+      const p2d = projectTo2D(tmp, facePlaneOrigin, u, v);
+      allPts.push(p2d);
+      if (Math.abs(signed) < planeTolerance) {
+        onPlanePts.push(p2d);
+      }
+    }
+
+    // Panel crosses the face plane if it has vertices on BOTH sides (or touches
+    // from one side). Use intersection logic for true cross-plane panels:
+    // project ALL vertices when the panel straddles the plane.
+    const crossesPlane = minSigned < -planeTolerance && maxSigned > planeTolerance;
+    const touchesPlane = onPlanePts.length >= 3;
+
+    // For cross-plane panels: compute intersection contour by projecting only
+    // the vertices near the plane (within an expanded tolerance that captures
+    // the slice cross-section). For touching panels: use on-plane points.
+    let pts2D: Array<{ x: number; y: number }>;
+    if (crossesPlane) {
+      // Panel genuinely crosses through the face — use a wider tolerance to
+      // capture the cross-section, or fallback to all points
+      const crossTol = Math.min(Math.abs(maxSigned - minSigned) * 0.5, 50);
+      const crossPts: Array<{ x: number; y: number }> = [];
+      for (let vi = 0; vi < posAttr.count; vi++) {
+        tmp.set(posAttr.getX(vi), posAttr.getY(vi), posAttr.getZ(vi)).applyMatrix4(panelMatrix);
+        const signed = facePlaneNormal.dot(new THREE.Vector3().subVectors(tmp, facePlaneOrigin));
+        if (Math.abs(signed) < crossTol) {
+          crossPts.push(projectTo2D(tmp, facePlaneOrigin, u, v));
+        }
+      }
+      pts2D = crossPts.length >= 3 ? crossPts : allPts;
+    } else if (touchesPlane) {
+      pts2D = onPlanePts;
+    } else {
+      // Panel is entirely on one side and doesn't touch — skip it
+      continue;
+    }
+    if (pts2D.length < 3) continue;
+
+    // Compute convex hull of projected vertices = panel's footprint on face
+    const hull = convexHull2D(pts2D);
+    if (hull.length < 3) continue;
+
+    // Convert hull edges back to 3D world positions on the face plane
+    const ownerId = `panel:${panel.id}`;
+    for (let i = 0; i < hull.length; i++) {
+      const a = hull[i], b = hull[(i + 1) % hull.length];
+      const v1 = facePlaneOrigin.clone().addScaledVector(u, a.x).addScaledVector(v, a.y);
+      const v2 = facePlaneOrigin.clone().addScaledVector(u, b.x).addScaledVector(v, b.y);
+      obstacleEdges.push({ v1, v2, ownerId });
+    }
+  }
+  return obstacleEdges;
+}
+
 export function getSubtractionWorldMatrix(parentLocalToWorld: THREE.Matrix4, subtraction: any): THREE.Matrix4 {
   const box = new THREE.Box3().setFromBufferAttribute(subtraction.geometry.attributes.position as THREE.BufferAttribute);
   const size = new THREE.Vector3(), center = new THREE.Vector3();
@@ -101,6 +416,27 @@ export function getSubtractionWorldMatrix(parentLocalToWorld: THREE.Matrix4, sub
   );
   const meshMatrix = new THREE.Matrix4().makeTranslation(meshOffset.x, meshOffset.y, meshOffset.z);
   return new THREE.Matrix4().multiplyMatrices(parentLocalToWorld, groupMatrix).multiply(meshMatrix);
+}
+
+export function collectSubtractionObstacleEdgesWorld(subtractions: any[], parentLocalToWorld: THREE.Matrix4, facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, planeTolerance: number = 20): ObstacleEdge[] {
+  const edges: ObstacleEdge[] = [];
+  for (let si = 0; si < subtractions.length; si++) {
+    const sub = subtractions[si];
+    if (!sub || !sub.geometry) continue;
+    const ownerId = `sub:${si}`;
+    const subWorldMatrix = getSubtractionWorldMatrix(parentLocalToWorld, sub);
+    const edgesGeo = new THREE.EdgesGeometry(sub.geometry);
+    const edgePos = edgesGeo.getAttribute('position');
+    for (let i = 0; i < edgePos.count; i += 2) {
+      const va = new THREE.Vector3(edgePos.getX(i), edgePos.getY(i), edgePos.getZ(i)).applyMatrix4(subWorldMatrix);
+      const vb = new THREE.Vector3(edgePos.getX(i + 1), edgePos.getY(i + 1), edgePos.getZ(i + 1)).applyMatrix4(subWorldMatrix);
+      const distA = Math.abs(facePlaneNormal.dot(new THREE.Vector3().subVectors(va, facePlaneOrigin)));
+      const distB = Math.abs(facePlaneNormal.dot(new THREE.Vector3().subVectors(vb, facePlaneOrigin)));
+      if (distA < planeTolerance && distB < planeTolerance) edges.push({ v1: va, v2: vb, ownerId });
+    }
+    edgesGeo.dispose();
+  }
+  return edges;
 }
 
 export type Point2D = { x: number; y: number };
@@ -140,6 +476,50 @@ export function convexHull2D(points: Point2D[]): Point2D[] {
   }
   lower.pop(); upper.pop();
   return lower.concat(upper);
+}
+
+function filterStrictCoplanarFaceIndices(
+  faces: FaceData[],
+  groupIndices: number[],
+  localToWorld: THREE.Matrix4,
+  normalMatrix: THREE.Matrix3,
+  clickWorld: THREE.Vector3,
+  _groupNormalLocal: THREE.Vector3,
+  normalDotTol: number = 0.99999,
+  planeDistTol: number = 0.05
+): number[] {
+  if (groupIndices.length === 0) return [];
+  let bestIdx = groupIndices[0];
+  let bestDist = Infinity;
+  for (const fi of groupIndices) {
+    const face = faces[fi];
+    if (!face) continue;
+    const nW = face.normal.clone().applyMatrix3(normalMatrix).normalize();
+    const cw = face.center.clone().applyMatrix4(localToWorld);
+    const offset = new THREE.Vector3().subVectors(clickWorld, cw);
+    const planeOffset = offset.clone().addScaledVector(nW, -offset.dot(nW));
+    const d = planeOffset.length() + Math.abs(offset.dot(nW)) * 5;
+    if (d < bestDist) { bestDist = d; bestIdx = fi; }
+  }
+  const refFace = faces[bestIdx];
+  const refNormalW = refFace.normal.clone().applyMatrix3(normalMatrix).normalize();
+  const refPointW = refFace.center.clone().applyMatrix4(localToWorld);
+  const result: number[] = [];
+  for (const fi of groupIndices) {
+    const face = faces[fi];
+    if (!face) continue;
+    const nW = face.normal.clone().applyMatrix3(normalMatrix).normalize();
+    if (nW.dot(refNormalW) < normalDotTol) continue;
+    let maxPlaneDist = 0;
+    for (const vLocal of face.vertices) {
+      const vW = vLocal.clone().applyMatrix4(localToWorld);
+      const d = Math.abs(refNormalW.dot(new THREE.Vector3().subVectors(vW, refPointW)));
+      if (d > maxPlaneDist) maxPlaneDist = d;
+    }
+    if (maxPlaneDist > planeDistTol) continue;
+    result.push(fi);
+  }
+  return result.length > 0 ? result : [bestIdx];
 }
 
 export function pickDominantEdgeDirection(
@@ -236,7 +616,7 @@ function isInsideEdge(p: Point2D, edgeStart: Point2D, edgeEnd: Point2D): boolean
 
 // Returns true only when all cross-products have the same sign (convex polygon).
 // Sutherland-Hodgman clip requires a convex clip polygon; skip it for non-convex faces.
-export function isConvexPolygon2D(poly: Point2D[]): boolean {
+function isConvexPolygon2D(poly: Point2D[]): boolean {
   if (poly.length < 3) return false;
   let sign = 0;
   for (let i = 0; i < poly.length; i++) {
@@ -398,7 +778,7 @@ export interface RayHitResult {
   hitEdge: ObstacleEdge | null;
   edgeT: number;
   isBoundaryEdge: boolean;
-  /** Işını durduran komşunun kimliği ('panel:<id>' | 'vf:<id>' | 'sub:<i>'); sınıra çarptıysa null. */
+
   hitOwnerId: string | null;
 }
 
@@ -440,6 +820,8 @@ export function castRayOnFaceWorld(originWorld: THREE.Vector3, dirWorld: THREE.V
 }
 
 interface PendingPreview {
+  rayLines: RayLine[];
+  originLocal: THREE.Vector3;
   geo: THREE.BufferGeometry;
   edgeGeo: THREE.BufferGeometry;
   virtualFace: VirtualFace;
@@ -450,64 +832,6 @@ interface PendingPreview {
  * footprint projected onto the face plane. Used to detect void areas left by shortened
  * panels, without relying on VF polygons (which stay as original full-face for rebuild).
  */
-/** Panelin, verilen yüz DÜZLEMİNE değen 2D ayak izi (u/v hull). Panel düzleme
- *  değmiyorsa (on-plane köşe < 3) null döner — o yüzeyde engel değildir. */
-export function panelFootprintOnPlane(
-  panel: any,
-  facePlaneNormal: THREE.Vector3,
-  facePlaneOrigin: THREE.Vector3,
-  u: THREE.Vector3,
-  v: THREE.Vector3,
-  planeTolerance: number = 5.0
-): Point2D[] | null {
-  if (!panel.geometry) return null;
-  const panelMatrix = getShapeMatrix(panel);
-  const posAttr = panel.geometry.getAttribute('position') as THREE.BufferAttribute;
-  const pts2D: Point2D[] = [];
-  let nMin = Infinity, nMax = -Infinity;
-  const all2D: Point2D[] = [];
-  for (let i = 0; i < posAttr.count; i++) {
-    const wp = new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)).applyMatrix4(panelMatrix);
-    const signed = facePlaneNormal.dot(new THREE.Vector3().subVectors(wp, facePlaneOrigin));
-    nMin = Math.min(nMin, signed); nMax = Math.max(nMax, signed);
-    const p2 = projectTo2D(wp, facePlaneOrigin, u, v);
-    all2D.push(p2);
-    if (Math.abs(signed) < planeTolerance) pts2D.push(p2);
-  }
-  if (pts2D.length < 3) {
-    // EĞİK PANEL İZDÜŞÜMÜ: dönmüş panel düzleme yalnız bir kenarıyla değer
-    // (düzlem-üstü köşe < 3). Panel yüzeye gerçekten DOKUNUYORSA (aralığı
-    // düzlemi kapsıyorsa) TÜM izdüşüm hull'u engel sayılır — highlight ve
-    // üretim (izdüşüm kesimi) aynı kuralı paylaşır. Yüzeyden uzaktaki panel
-    // engel değildir (etrafından "sızılır").
-    if (nMin <= planeTolerance && nMax >= -planeTolerance && all2D.length >= 3) {
-      const hullAll = convexHull2D(all2D);
-      return hullAll.length >= 3 ? hullAll : null;
-    }
-    return null;
-  }
-  const hull = convexHull2D(pts2D);
-  return hull.length >= 3 ? hull : null;
-}
-
-/** Tıklanan düzlem noktası, bu yüzeye değen HERHANGİ bir panelin ayak izi
- *  içinde mi? İçindeyse o paneli döndürür (taşınmış paneller dahil — VF
- *  konumundan bağımsız, panelin GÜNCEL geometrisiyle test edilir). */
-export function findPanelCoveringPoint(
-  worldPt: THREE.Vector3,
-  childPanels: any[],
-  facePlaneNormal: THREE.Vector3,
-  facePlaneOrigin: THREE.Vector3
-): any | null {
-  const { u, v } = getFacePlaneAxes(facePlaneNormal);
-  const p2 = projectTo2D(worldPt, facePlaneOrigin, u, v);
-  for (const panel of childPanels) {
-    const fp = panelFootprintOnPlane(panel, facePlaneNormal, facePlaneOrigin, u, v);
-    if (fp && isPointInsidePolygon(p2, fp)) return panel;
-  }
-  return null;
-}
-
 export function isWorldPointInsidePanelFootprint(
   worldPt: THREE.Vector3,
   panel: any,
@@ -539,11 +863,23 @@ export function isWorldPointInsidePanelFootprint(
   return isPointInsidePolygon(projectTo2D(worldPt, facePlaneOrigin, u, v), hull);
 }
 
+function isWorldPointInsidePanelForVF(
+  worldPt: THREE.Vector3,
+  vf: VirtualFace,
+  childPanels: any[],
+  facePlaneNormal: THREE.Vector3,
+  facePlaneOrigin: THREE.Vector3
+): boolean {
+  const panel = childPanels.find(p => p.parameters?.virtualFaceId === vf.id);
+  if (!panel) return false;
+  return isWorldPointInsidePanelFootprint(worldPt, panel, facePlaneNormal, facePlaneOrigin);
+}
+
 export function collectVirtualFaceObstacleEdgesWorld(virtualFaces: VirtualFace[], excludeId: string | null, shapeLocalToWorld: THREE.Matrix4, facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, planeTolerance: number = 20, excludeVfIds?: Set<string>): ObstacleEdge[] {
   const edges: ObstacleEdge[] = [];
   for (const vf of virtualFaces) {
     if (vf.id === excludeId || vf.vertices.length < 3) continue;
-    // Aynı düzlemde eşitlenmiş kardeş VF de engel sayılmaz (yukarıdaki gerekçe).
+  
     if (excludeVfIds && excludeVfIds.has(vf.id)) continue;
     const ownerId = `vf:${vf.id}`;
     const worldVerts = vf.vertices.map(vtx => new THREE.Vector3(vtx[0], vtx[1], vtx[2]).applyMatrix4(shapeLocalToWorld));
@@ -557,274 +893,397 @@ export function collectVirtualFaceObstacleEdgesWorld(virtualFaces: VirtualFace[]
   return edges;
 }
 
-/**
- * TAM YÜZ SEÇİMİ: Tıklanan noktadan, o noktayı içeren yüz ÜÇGENİNİN
- * kenar/köşe paylaşan BAĞLANTILI BİLEŞENİ toplanır; VF bu bileşenin sınır
- * konturudur. Panel her zaman tıklanan yüzün TAMAMINA yayılır (üretim
- * PanelRebuildService'te OCC yüz-extrusion ile yapılır; kısaltılmış kardeş
- * paneller kesilir, tıklanan taraf tutulur). Işın/görünürlük çokgeni ve
- * reçete mekanizması kaldırıldı — VF parentFaceShape olarak işaretlenir ve
- * resize'da yüz eşlemesiyle (regenerateParentFaceShapeVF) güncellenir.
- */
-/**
- * Bir yüz grubundan, seed noktasına en yakın/onu içeren üçgenin kenar-köşe
- * paylaşan BAĞLANTILI BİLEŞENİNİ toplar; bileşenin sınır konturunu (sıralı
- * köşeler), sınır kenarlarını, üçgen indekslerini ve alan-ağırlıklı merkezini
- * döndürür. Hem yakalama önizlemesi (buildFacePreview) hem resize regen'i
- * (regenerateParentFaceShapeVF) aynı mantığı kullanır — VF her zaman tıklanan
- * bileşenin GERÇEK konturudur; ayrık eş-düzlem parçalar asla birleşmez.
- */
-export function computeFaceComponentContour(
-  faces: FaceData[],
-  faceIndices: number[],
-  seedLocal: THREE.Vector3,
-  groupNormal: THREE.Vector3
-): { comp: number[]; seedFi: number; corners: THREE.Vector3[]; center: THREE.Vector3; boundary: Array<{ a: THREE.Vector3; b: THREE.Vector3 }> } | null {
-  let seedFi = -1, bestD = Infinity;
-  for (const fi of faceIndices) {
-    const f = faces[fi];
-    if (!f) continue;
-    if (pointInTriangle3D(seedLocal, f.vertices[0], f.vertices[1], f.vertices[2])) { seedFi = fi; break; }
-    // İçeren üçgen yoksa: en yakın MERKEZ değil, üçgen ÜZERİNDEKİ en yakın
-    // nokta (kenar clamp) — büyük üçgen merkez-uzak olsa da doğru komşu seçilir.
-    let dMin = Infinity;
-    for (let k = 0; k < 3; k++) {
-      const a = f.vertices[k], b = f.vertices[(k + 1) % 3];
-      const ab = new THREE.Vector3().subVectors(b, a);
-      const t = Math.max(0, Math.min(1, new THREE.Vector3().subVectors(seedLocal, a).dot(ab) / (ab.lengthSq() || 1)));
-      const q = a.clone().addScaledVector(ab, t);
-      dMin = Math.min(dMin, q.distanceTo(seedLocal));
-    }
-    if (dMin < bestD) { bestD = dMin; seedFi = fi; }
-  }
-  if (seedFi === -1) return null;
+export function buildPreview(clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces: FaceData[], localToWorld: THREE.Matrix4, worldToLocal: THREE.Matrix4, childPanels: any[], shapeId: string, subtractions: any[] = [], geometry?: THREE.BufferGeometry, shapeVirtualFaces: VirtualFace[] = []): PendingPreview | null {
+  const normalMatrix = new THREE.Matrix3().getNormalMatrix(localToWorld);
+  const planeOrigin = clickWorld.clone();
 
-  const vKey = (v3: THREE.Vector3) => `${v3.x.toFixed(1)},${v3.y.toFixed(1)},${v3.z.toFixed(1)}`;
-  const triKeys = new Map<number, string[]>();
-  for (const fi of faceIndices) {
-    const f = faces[fi];
-    if (f) triKeys.set(fi, f.vertices.map(vKey));
-  }
-  const comp = new Set<number>([seedFi]);
-  const stack = [seedFi];
-  while (stack.length) {
-    const cur = stack.pop()!;
-    const ck = new Set(triKeys.get(cur) || []);
-    for (const [fi, ks] of triKeys) {
-      if (comp.has(fi)) continue;
-      if (ks.some(k => ck.has(k))) { comp.add(fi); stack.push(fi); }
-    }
-  }
+  // ── Curved face branch ──────────────────────────────────────────────────────
+  // For curved (non-planar) faces, skip ray-casting and use the UV bounding box
+  // of all face vertices projected onto the average-normal plane instead.
+  if (group.isCurved) {
+    const localNormal = group.normal.clone().normalize();
+    const worldNormal = localNormal.clone().applyMatrix3(normalMatrix).normalize();
+    const { u, v } = getFacePlaneAxes(worldNormal);
 
-  const edgeMap = new Map<string, { a: THREE.Vector3; b: THREE.Vector3; n: number }>();
-  for (const fi of comp) {
-    const f = faces[fi]!;
-    for (let i = 0; i < 3; i++) {
-      const a = f.vertices[i], b = f.vertices[(i + 1) % 3];
-      const k = [vKey(a), vKey(b)].sort().join('|');
-      const e = edgeMap.get(k);
-      if (e) e.n++; else edgeMap.set(k, { a: a.clone(), b: b.clone(), n: 1 });
-    }
-  }
-  const boundary = [...edgeMap.values()].filter(e => e.n === 1);
-  if (boundary.length < 3) return null;
-
-  const remaining = boundary.map(e => ({ a: e.a, b: e.b }));
-  const ring: THREE.Vector3[] = [remaining[0].a, remaining[0].b];
-  remaining.splice(0, 1);
-  let guard = boundary.length * 2;
-  while (remaining.length > 0 && guard-- > 0) {
-    const tk = vKey(ring[ring.length - 1]);
-    const idx = remaining.findIndex(e => vKey(e.a) === tk || vKey(e.b) === tk);
-    if (idx === -1) break;
-    const e = remaining[idx];
-    ring.push(vKey(e.a) === tk ? e.b : e.a);
-    remaining.splice(idx, 1);
-  }
-  if (ring.length >= 2 && vKey(ring[0]) === vKey(ring[ring.length - 1])) ring.pop();
-  if (ring.length < 3) return null;
-
-  const { u, v } = getFacePlaneAxes(groupNormal.clone().normalize());
-  const ring2D = ring.map(p3 => ({ x: p3.dot(u), y: p3.dot(v) }));
-  const keep: number[] = [];
-  for (let i = 0; i < ring2D.length; i++) {
-    const a = ring2D[(i - 1 + ring2D.length) % ring2D.length], b = ring2D[i], c = ring2D[(i + 1) % ring2D.length];
-    const cross = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-    if (Math.abs(cross) > 0.05) keep.push(i);
-  }
-  const corners = keep.length >= 3 ? keep.map(i => ring[i]) : ring;
-
-  const center = new THREE.Vector3();
-  let areaSum = 0;
-  for (const fi of comp) {
-    const f = faces[fi]!;
-    const ar = new THREE.Vector3().subVectors(f.vertices[1], f.vertices[0])
-      .cross(new THREE.Vector3().subVectors(f.vertices[2], f.vertices[0])).length() / 2;
-    const c = f.vertices[0].clone().add(f.vertices[1]).add(f.vertices[2]).multiplyScalar(1 / 3);
-    center.addScaledVector(c, ar);
-    areaSum += ar;
-  }
-  if (areaSum > 0) center.multiplyScalar(1 / areaSum);
-
-  return { comp: [...comp], seedFi, corners, center, boundary };
-}
-
-export function buildFacePreview(
-  clickWorld: THREE.Vector3,
-  group: CoplanarFaceGroup,
-  faces: FaceData[],
-  worldToLocal: THREE.Matrix4,
-  shapeId: string,
-  geometry?: THREE.BufferGeometry,
-  childPanels: any[] = []
-): PendingPreview | null {
-  const clickLocal = clickWorld.clone().applyMatrix4(worldToLocal);
-  const contour = computeFaceComponentContour(faces, group.faceIndices, clickLocal, group.normal);
-  if (!contour) return null;
-
-  // ─── AKIŞLA ERİŞİLEBİLİR BÖLGE HIGHLIGHT'I ───
-  // Highlight = tıklanan noktadan, bu yüzeye DEĞEN panellerin ayak izleri
-  // (footprint) etrafında dolaşarak erişilebilen serbest alan. Panel yüzü
-  // TAM bölüyorsa yalnız tıklanan taraf; panel kısaysa etrafından "sızılır"
-  // ve yüzün tamamı seçilir — OCC üretim zinciri (kardeş kesimi + bağlantılı
-  // parça seçimi) ile birebir aynı semantik. Grid + flood-fill ile hesaplanır;
-  // VF kimliği (kontur/merkez) değişmez, yalnız görsel bölge daralır.
-  //
-  // UZAY UYUMU: Kontur ve düzlem YEREL uzaydadır (faceIndices yerel geometriden
-  // gelir). panelFootprintOnPlane panel köşelerini DÜNYA uzayına taşır
-  // (getShapeMatrix). Karşılaştırma doğru olsun diye panel ayak izleri dünya→
-  // yerel ters-dönüşümüyle yerel düzleme getirilir.
-  const nrm = group.normal.clone().normalize();
-  const { u, v } = getFacePlaneAxes(nrm);
-  const ring2D: Point2D[] = contour.corners.map(c => ({ x: c.dot(u), y: c.dot(v) }));
-  const planeN = contour.corners[0].dot(nrm);
-  const planeOriginLocal = new THREE.Vector3().addScaledVector(nrm, planeN);
-  const footprints: Point2D[][] = [];
-  const touchingSiblingIds: string[] = [];
-  for (const panel of childPanels) {
-    if (panel.parameters?.parentShapeId && panel.parameters.parentShapeId !== shapeId) continue;
-    // Ayak izini DÜNYA uzayında hesapla, sonra her köşeyi yerel uzaya taşı.
-    const fpWorld = panelFootprintOnPlane(panel, nrm, planeOriginLocal, u, v);
-    if (!fpWorld) continue;
-    const fpLocal: Point2D[] = fpWorld.map(p => {
-      const wp = new THREE.Vector3()
-        .addScaledVector(u, p.x)
-        .addScaledVector(v, p.y)
-        .addScaledVector(nrm, planeN);
-      const lp = wp.applyMatrix4(worldToLocal);
-      return { x: lp.dot(u), y: lp.dot(v) };
+    const allVertsWorld: THREE.Vector3[] = [];
+    group.faceIndices.forEach(fi => {
+      const face = faces[fi];
+      if (!face) return;
+      face.vertices.forEach(vtx => allVertsWorld.push(vtx.clone().applyMatrix4(localToWorld)));
     });
-    if (fpLocal.length >= 3) {
-      footprints.push(fpLocal);
-      if (panel.id) touchingSiblingIds.push(panel.id);
+    if (allVertsWorld.length < 3) return null;
+
+    const nComp = clickWorld.dot(worldNormal);
+    const uCoords = allVertsWorld.map(vtx => vtx.dot(u));
+    const vCoords = allVertsWorld.map(vtx => vtx.dot(v));
+    const uMin = Math.min(...uCoords), uMax = Math.max(...uCoords);
+    const vMin = Math.min(...vCoords), vMax = Math.max(...vCoords);
+    if (uMax - uMin < 1 || vMax - vMin < 1) return null;
+
+    const buildWP = (uc: number, vc: number) =>
+      new THREE.Vector3().addScaledVector(u, uc).addScaledVector(v, vc).addScaledVector(worldNormal, nComp);
+
+    const cornersWorld = [
+      buildWP(uMax, vMax), buildWP(uMin, vMax),
+      buildWP(uMin, vMin), buildWP(uMax, vMin),
+    ];
+    const planeOriginW = buildWP((uMin + uMax) / 2, (vMin + vMax) / 2);
+
+    let poly2D: Point2D[] = ensureCCW(cornersWorld.map(c => projectTo2D(c, planeOriginW, u, v)));
+
+    const footprints = getSubtractorFootprints2D(subtractions, localToWorld, worldNormal, planeOriginW, u, v, 50);
+    for (const fp of footprints) {
+      const ccwFp = ensureCCW(fp);
+      if (ccwFp.some(p => isPointInsidePolygon(p, poly2D)) || poly2D.some(p => isPointInsidePolygon(p, ccwFp))) {
+        poly2D = subtractPolygon(poly2D, ccwFp);
+      }
     }
+    if (poly2D.length < 3) return null;
+
+    const finalCornersWorld = poly2D.map(p => planeOriginW.clone().addScaledVector(u, p.x).addScaledVector(v, p.y));
+    const centerW = new THREE.Vector3();
+    finalCornersWorld.forEach(c => centerW.add(c));
+    centerW.divideScalar(finalCornersWorld.length);
+
+    const cornersLocal = finalCornersWorld.map(c => c.clone().applyMatrix4(worldToLocal));
+    const centerLocal = centerW.clone().applyMatrix4(worldToLocal);
+
+    const triIndices = earClipTriangulate(poly2D);
+    const localPositions = new Float32Array(triIndices.length * 3);
+    for (let i = 0; i < triIndices.length; i++) {
+      const cl = cornersLocal[triIndices[i]];
+      localPositions[i * 3] = cl.x; localPositions[i * 3 + 1] = cl.y; localPositions[i * 3 + 2] = cl.z;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(localPositions, 3));
+    geo.computeVertexNormals();
+
+    const edgeVerts: number[] = [];
+    for (let i = 0; i < cornersLocal.length; i++) {
+      const a = cornersLocal[i], b = cornersLocal[(i + 1) % cornersLocal.length];
+      edgeVerts.push(a.x, a.y, a.z, b.x, b.y, b.z);
+    }
+    const edgeGeo = new THREE.BufferGeometry();
+    edgeGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(edgeVerts), 3));
+
+    const clickLocal = clickWorld.clone().applyMatrix4(worldToLocal);
+    let faceGroupDescriptor: import('../store').FaceDescriptor | undefined;
+    if (geometry && group.faceIndices.length > 0) {
+      const repFace = faces[group.faceIndices[0]];
+      if (repFace) faceGroupDescriptor = createFaceDescriptor(repFace, geometry, faces);
+    }
+
+    const parentPos = new THREE.Vector3();
+    localToWorld.decompose(parentPos, new THREE.Quaternion(), new THREE.Vector3());
+
+    const newId = `vf-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
+    const virtualFace: VirtualFace = {
+      id: newId, shapeId,
+      normal: [localNormal.x, localNormal.y, localNormal.z],
+      center: [centerLocal.x, centerLocal.y, centerLocal.z],
+      vertices: cornersLocal.map(c => [c.x, c.y, c.z] as [number, number, number]),
+      description: '', hasPanel: false,
+      raycastRecipe: faceGroupDescriptor ? {
+        clickLocalPoint: [clickLocal.x, clickLocal.y, clickLocal.z],
+        faceGroupNormal: [localNormal.x, localNormal.y, localNormal.z],
+        faceGroupDescriptor,
+        isCurvedFace: true,
+      } : undefined,
+    };
+    return { rayLines: [], originLocal: clickWorld.clone().sub(parentPos), geo, edgeGeo, virtualFace };
+  }
+  // ── End curved face branch ──────────────────────────────────────────────────
+
+  const strictIndices = filterStrictCoplanarFaceIndices(faces, group.faceIndices, localToWorld, normalMatrix, planeOrigin, group.normal);
+  const refFace = faces[strictIndices[0] ?? group.faceIndices[0]];
+  const localNormal = refFace ? refFace.normal.clone().normalize() : group.normal.clone().normalize();
+  const worldNormal = localNormal.clone().applyMatrix3(normalMatrix).normalize();
+  let { u, v } = getFacePlaneAxes(worldNormal);
+  const boundaryEdges = collectBoundaryEdgesWorld(faces, strictIndices, localToWorld);
+  const dominant = pickDominantEdgeDirection(boundaryEdges, worldNormal);
+  if (dominant) {
+    u = dominant.clone();
+    v = new THREE.Vector3().crossVectors(worldNormal, u).normalize();
   }
 
-  let uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity;
-  for (const q of ring2D) { uMin = Math.min(uMin, q.x); uMax = Math.max(uMax, q.x); vMin = Math.min(vMin, q.y); vMax = Math.max(vMax, q.y); }
-  const uSpan = Math.max(uMax - uMin, 1e-6), vSpan = Math.max(vMax - vMin, 1e-6);
-  const cell = Math.min(20, Math.max(2, Math.max(uSpan, vSpan) / 140));
-  const nx = Math.min(240, Math.max(1, Math.ceil(uSpan / cell)));
-  const ny = Math.min(240, Math.max(1, Math.ceil(vSpan / cell)));
-  const cw = uSpan / nx, ch = vSpan / ny;
-  const inFree = (cx: number, cy: number): boolean => {
-    const pt = { x: uMin + (cx + 0.5) * cw, y: vMin + (cy + 0.5) * ch };
-    if (!isPointInsidePolygon(pt, ring2D)) return false;
-    for (const fp of footprints) if (isPointInsidePolygon(pt, fp)) return false;
-    return true;
-  };
-  const free = new Uint8Array(nx * ny);
-  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) free[j * nx + i] = inFree(i, j) ? 1 : 0;
-
-  const cu = clickLocal.dot(u), cv = clickLocal.dot(v);
-  let ci = Math.max(0, Math.min(nx - 1, Math.floor((cu - uMin) / cw)));
-  let cj = Math.max(0, Math.min(ny - 1, Math.floor((cv - vMin) / ch)));
-  if (!free[cj * nx + ci]) {
-    // Tıklama hücresi dolu/dışarıda (kenar durumu): en yakın serbest hücre
-    let bd = Infinity, bi = ci, bj = cj;
-    for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
-      if (!free[j * nx + i]) continue;
-      const d = (i - ci) * (i - ci) + (j - cj) * (j - cj);
-      if (d < bd) { bd = d; bi = i; bj = j; }
+  const planeOriginLocal = planeOrigin.clone().applyMatrix4(worldToLocal);
+  const alignedVfIds = collectCoplanarAlignedVfIds(shapeVirtualFaces, localNormal, planeOriginLocal);
+  const panelEdges = collectPanelObstacleEdgesWorld(childPanels, worldNormal, planeOrigin, 20, boundaryEdges, alignedVfIds);
+  const subEdges = collectSubtractionObstacleEdgesWorld(subtractions, localToWorld, worldNormal, planeOrigin, 20);
+  const vfEdges = collectVirtualFaceObstacleEdgesWorld(shapeVirtualFaces, null, localToWorld, worldNormal, planeOrigin, 20, alignedVfIds);
+  const obstacleEdges = [...panelEdges, ...subEdges, ...vfEdges];
+  const maxDist = 5000;
+  const offset = worldNormal.clone().multiplyScalar(0.5);
+  const startWorld = clickWorld.clone().add(offset);
+  const dirLabels: Array<'u+' | 'u-' | 'v+' | 'v-'> = ['u+', 'u-', 'v+', 'v-'];
+  const directions = [u, u.clone().negate(), v, v.clone().negate()];
+  const lines: RayLine[] = [];
+  const hitPointsWorld: THREE.Vector3[] = [];
+  const hitIsBoundary: boolean[] = [];
+  const hitEdgesWorld: Array<ObstacleEdge | null> = [];
+  const hitOwnerIds: Array<string | null> = [];
+  const edgeAnchors: EdgeAnchor[] = [];
+  const parentPos = new THREE.Vector3();
+  localToWorld.decompose(parentPos, new THREE.Quaternion(), new THREE.Vector3());
+  for (let di = 0; di < directions.length; di++) {
+    const dir = directions[di];
+    const result = castRayOnFaceWorldDetailed(startWorld, dir, boundaryEdges, obstacleEdges, u, v, planeOrigin, maxDist);
+    lines.push({ start: startWorld.clone().sub(parentPos), end: result.hitPoint.clone().sub(parentPos) });
+    hitPointsWorld.push(result.hitPoint);
+    hitIsBoundary.push(result.isBoundaryEdge);
+    hitEdgesWorld.push(result.hitEdge);
+    hitOwnerIds.push(result.hitOwnerId);
+    if (result.hitEdge) {
+      const v1Local = result.hitEdge.v1.clone().applyMatrix4(worldToLocal);
+      const v2Local = result.hitEdge.v2.clone().applyMatrix4(worldToLocal);
+      edgeAnchors.push({ edgeV1Local: [v1Local.x, v1Local.y, v1Local.z], edgeV2Local: [v2Local.x, v2Local.y, v2Local.z], t: result.edgeT, direction: dirLabels[di] });
     }
-    ci = bi; cj = bj;
   }
-  const reach = new Uint8Array(nx * ny);
-  if (free[cj * nx + ci]) {
-    const q: number[] = [cj * nx + ci];
-    reach[cj * nx + ci] = 1;
-    while (q.length) {
-      const idx = q.pop()!;
-      const i = idx % nx, j = (idx / nx) | 0;
-      const nb = [[i - 1, j], [i + 1, j], [i, j - 1], [i, j + 1]];
-      for (const [a, b] of nb) {
-        if (a < 0 || b < 0 || a >= nx || b >= ny) continue;
-        const k = b * nx + a;
-        if (free[k] && !reach[k]) { reach[k] = 1; q.push(k); }
+  if (hitPointsWorld.length < 4) return null;
+  const [uPosHit, uNegHit, vPosHit, vNegHit] = hitPointsWorld;
+  const uPosT = uPosHit.distanceTo(startWorld), uNegT = uNegHit.distanceTo(startWorld);
+  const vPosT = vPosHit.distanceTo(startWorld), vNegT = vNegHit.distanceTo(startWorld);
+
+  const segs2D = [...boundaryEdges, ...obstacleEdges].map(e => {
+    const a = projectTo2D(e.v1, planeOrigin, u, v);
+    const b = projectTo2D(e.v2, planeOrigin, u, v);
+    return { ax: a.x, ay: a.y, bx: b.x, by: b.y };
+  });
+  const vis = computeVisibilityPolygon2D(segs2D, maxDist);
+  let visPoly = vis.poly;
+  // Stabilize: clip visibility polygon by axis-hit edge lines to remove reflex wedges.
+  if (visPoly.length >= 3) {
+    for (const he of hitEdgesWorld) {
+      if (!he) continue;
+      const a2 = projectTo2D(he.v1, planeOrigin, u, v);
+      const b2 = projectTo2D(he.v2, planeOrigin, u, v);
+      const clipped = clipPolygonByLine2D(visPoly, a2, b2);
+      if (clipped.length >= 3) visPoly = clipped;
+    }
+    visPoly = simplifyCollinear2D(visPoly, 0.05);
+  }
+  const visValid = visPoly.length >= 3 && !visPoly.some(p => Math.hypot(p.x, p.y) >= maxDist - 1);
+  let rect2D: Point2D[] = visValid
+    ? ensureCCW(visPoly)
+    : ensureCCW([{ x: uPosT, y: vPosT }, { x: -uNegT, y: vPosT }, { x: -uNegT, y: -vNegT }, { x: uPosT, y: -vNegT }]);
+
+  if (visValid) {
+    const fanPts = vis.samples.map(p => {
+
+      let q = p;
+      for (const he of hitEdgesWorld) {
+        if (!he) continue;
+        const a2 = projectTo2D(he.v1, planeOrigin, u, v);
+        const b2 = projectTo2D(he.v2, planeOrigin, u, v);
+        const ex = b2.x - a2.x, ey = b2.y - a2.y;
+        const side = (pt: Point2D) => ex * (pt.y - a2.y) - ey * (pt.x - a2.x);
+        const s0 = side({ x: 0, y: 0 });
+        if (Math.abs(s0) < 1e-6) continue;
+        const sq = side(q);
+        if (sq * s0 < 0) {
+          const t = s0 / (s0 - sq); // orijinden q'ya giden ışının doğruyla kesişimi
+          q = { x: q.x * t, y: q.y * t };
+        }
+      }
+      return q;
+    });
+    const step = Math.max(1, Math.ceil(fanPts.length / 32));
+    for (let i = 0; i < fanPts.length; i += step) {
+      const p = fanPts[i];
+      const endW = planeOrigin.clone().addScaledVector(u, p.x).addScaledVector(v, p.y).add(offset);
+      lines.push({ start: startWorld.clone().sub(parentPos), end: endW.sub(parentPos) });
+    }
+  }
+  const boundaryLoop2D = buildBoundaryLoop2D(boundaryEdges, startWorld, u, v);
+  if (boundaryLoop2D && boundaryLoop2D.length >= 3) {
+    const ccwBoundary = ensureCCW(boundaryLoop2D);
+    // Sutherland-Hodgman requires a CONVEX clip polygon.
+    // For non-convex faces (L-shapes, U-shapes, etc.) skip the clip — the boundary
+    // edges already limit each ray, so rect2D is already within the face boundary.
+    if (isConvexPolygon2D(ccwBoundary)) {
+      const clipped = sutherlandHodgmanClip(rect2D, ccwBoundary);
+      if (clipped.length >= 3) {
+        rect2D = clipped;
+      } else {
+        rect2D = ccwBoundary;
       }
     }
   }
-
-  const to3D = (px: number, py: number) => new THREE.Vector3()
-    .addScaledVector(u, px).addScaledVector(v, py).addScaledVector(nrm, planeN);
-  const pos: number[] = [];
-  const epos: number[] = [];
-  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
-    if (!reach[j * nx + i]) continue;
-    const x0 = uMin + i * cw, x1 = x0 + cw, y0 = vMin + j * ch, y1 = y0 + ch;
-    const p00 = to3D(x0, y0), p10 = to3D(x1, y0), p11 = to3D(x1, y1), p01 = to3D(x0, y1);
-    pos.push(p00.x, p00.y, p00.z, p10.x, p10.y, p10.z, p11.x, p11.y, p11.z,
-             p00.x, p00.y, p00.z, p11.x, p11.y, p11.z, p01.x, p01.y, p01.z);
-    // Sınır kenarı: komşusu erişilemezse çiz
-    const bnd: Array<[THREE.Vector3, THREE.Vector3]> = [];
-    if (i === 0 || !reach[j * nx + i - 1]) bnd.push([p00, p01]);
-    if (i === nx - 1 || !reach[j * nx + i + 1]) bnd.push([p10, p11]);
-    if (j === 0 || !reach[(j - 1) * nx + i]) bnd.push([p00, p10]);
-    if (j === ny - 1 || !reach[(j + 1) * nx + i]) bnd.push([p01, p11]);
-    for (const [a, b] of bnd) epos.push(a.x, a.y, a.z, b.x, b.y, b.z);
+  const footprints = getSubtractorFootprints2D(subtractions, localToWorld, worldNormal, planeOrigin, u, v, 50);
+  let clippedPoly = rect2D;
+  for (const footprint of footprints) {
+    const ccwFootprint = ensureCCW(footprint);
+    const hasOverlap = ccwFootprint.some(p => isPointInsidePolygon(p, clippedPoly)) || clippedPoly.some(p => isPointInsidePolygon(p, ccwFootprint));
+    if (hasOverlap) clippedPoly = subtractPolygon(clippedPoly, ccwFootprint);
   }
-  // YER YOKSA HIGHLIGHT YOK: yüzeyin tamamı kardeş izdüşümleriyle kaplıysa
-  // (ör. tam-yüz eğik panel altındaki yüzey) serbest hücre kalmaz. Eskiden
-  // burada "tam yüze düş" güvencesi vardı — kullanıcıyı kaplı yüzeye panel
-  // atmaya davet ediyor, üretimde de kesimler paneli komple yutuyordu
-  // ("panel aşağıya yerleşti"). Artık null dönülür: highlight çıkmaz,
-  // panel yaratılmaz; kullanıcı yer olmadığını anında görür.
-  if (pos.length === 0) return null;
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3));
-  geo.computeVertexNormals();
-  const edgeGeo = new THREE.BufferGeometry();
-  edgeGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(epos), 3));
+  if (clippedPoly.length < 3) return null;
+  // autoAlign: when region covers the entire face shape, set alignToParentFace.
+  // Otherwise always reduce to rectangle.
+  let autoAlign = false;
+  let captureIgnoreConcavity = false;
+  if (clippedPoly.length > 4) {
+    // Yüz grubunun dünya alanı (üçgen alanları toplamı)
+    let groupArea = 0;
+    for (const fi of group.faceIndices) {
+      const fc = faces[fi];
+      if (!fc) continue;
+      const a = fc.vertices[0].clone().applyMatrix4(localToWorld);
+      const b = fc.vertices[1].clone().applyMatrix4(localToWorld);
+      const c = fc.vertices[2].clone().applyMatrix4(localToWorld);
+      groupArea += new THREE.Vector3().subVectors(b, a)
+        .cross(new THREE.Vector3().subVectors(c, a)).length() / 2;
+    }
+    let regionArea = 0;
+    for (let i = 0; i < clippedPoly.length; i++) {
+      const p1 = clippedPoly[i], p2 = clippedPoly[(i + 1) % clippedPoly.length];
+      regionArea += p1.x * p2.y - p2.x * p1.y;
+    }
+    regionArea = Math.abs(regionArea) / 2;
 
-  console.log('[YAGO][TIK]', 'clickLocal=',
-    `${clickLocal.x.toFixed(1)},${clickLocal.y.toFixed(1)},${clickLocal.z.toFixed(1)}`,
-    'konturKöşeN=', contour.corners.length,
-    'konturBBox=', (() => { let a=[Infinity,Infinity,Infinity],b=[-Infinity,-Infinity,-Infinity];
-      for (const c of contour.corners){a[0]=Math.min(a[0],c.x);a[1]=Math.min(a[1],c.y);a[2]=Math.min(a[2],c.z);
-        b[0]=Math.max(b[0],c.x);b[1]=Math.max(b[1],c.y);b[2]=Math.max(b[2],c.z);}
-      return a.map(n=>n.toFixed(0)).join(',')+' .. '+b.map(n=>n.toFixed(0)).join(','); })());
-  const localNormal = group.normal.clone().normalize();
-  // BÖLGE KİMLİĞİ: merkez, bileşen merkezi DEĞİL kullanıcının TIKLADIĞI
-  // noktadır. Aynı yüzdeki iki panelin VF'leri aynı konturu taşısa da
-  // merkezleri farklı kalır; rebuild'deki bölge seçimi ve kardeş kesimi bu
-  // kimliğe göre doğru tarafı tutar. (Bileşen merkezine çökertmek, iki
-  // paneli özdeşleştirip üst üste bindiriyordu.)
+
+    const boundaryNonConvex = !!(boundaryLoop2D && boundaryLoop2D.length >= 3 &&
+      !isConvexPolygon2D(ensureCCW(boundaryLoop2D)));
+
+    const hasRealObstacleHit = hitIsBoundary.some(b => !b);
+
+    if (groupArea > 1e-6 && regionArea / groupArea >= 0.97 && !hasRealObstacleHit) {
+      autoAlign = true;
+    } else {
+      // Always try rectangle reduction: boundary-hit directions expand to
+      // face bbox, obstacle-hit directions keep their distance.
+      const faceExt = { uMin: Infinity, uMax: -Infinity, vMin: Infinity, vMax: -Infinity };
+      for (const e of boundaryEdges) {
+        for (const q of [e.v1, e.v2]) {
+          const p2 = projectTo2D(q, planeOrigin, u, v);
+          if (p2.x < faceExt.uMin) faceExt.uMin = p2.x;
+          if (p2.x > faceExt.uMax) faceExt.uMax = p2.x;
+          if (p2.y < faceExt.vMin) faceExt.vMin = p2.y;
+          if (p2.y > faceExt.vMax) faceExt.vMax = p2.y;
+        }
+      }
+      const seedExp = {
+        uMax: hitIsBoundary[0] ? faceExt.uMax : uPosT,
+        uMin: hitIsBoundary[1] ? faceExt.uMin : -uNegT,
+        vMax: hitIsBoundary[2] ? faceExt.vMax : vPosT,
+        vMin: hitIsBoundary[3] ? faceExt.vMin : -vNegT,
+      };
+      const obsSegs = obstacleEdges.map(e => {
+        const a = projectTo2D(e.v1, planeOrigin, u, v);
+        const b = projectTo2D(e.v2, planeOrigin, u, v);
+        return { ax: a.x, ay: a.y, bx: b.x, by: b.y };
+      });
+      for (const fp of footprints) {
+        for (let i = 0; i < fp.length; i++) {
+          const a = fp[i], b = fp[(i + 1) % fp.length];
+          obsSegs.push({ ax: a.x, ay: a.y, bx: b.x, by: b.y });
+        }
+      }
+      const rect = reduceRegionToRectangle2D(obsSegs, seedExp);
+      if (rect) { clippedPoly = rect; captureIgnoreConcavity = true; }
+      else autoAlign = true;
+    }
+  }
+  // Use planeOrigin (on the face surface) not startWorld (0.5mm outside) so stored vertices lie on the face
+  const finalCornersWorld = clippedPoly.map(p => planeOrigin.clone().addScaledVector(u, p.x).addScaledVector(v, p.y));
+  const centerW = new THREE.Vector3();
+  finalCornersWorld.forEach(c => centerW.add(c));
+  centerW.divideScalar(finalCornersWorld.length);
+  const cornersLocal = finalCornersWorld.map(c => c.clone().applyMatrix4(worldToLocal));
+  const centerLocal = centerW.clone().applyMatrix4(worldToLocal);
+  const triIndices = earClipTriangulate(clippedPoly);
+  const localPositions = new Float32Array(triIndices.length * 3);
+  for (let i = 0; i < triIndices.length; i++) {
+    const cl = cornersLocal[triIndices[i]];
+    localPositions[i * 3] = cl.x; localPositions[i * 3 + 1] = cl.y; localPositions[i * 3 + 2] = cl.z;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(localPositions, 3));
+  geo.computeVertexNormals();
+  const edgeVerts: number[] = [];
+  for (let i = 0; i < cornersLocal.length; i++) {
+    const a = cornersLocal[i], b = cornersLocal[(i + 1) % cornersLocal.length];
+    edgeVerts.push(a.x, a.y, a.z, b.x, b.y, b.z);
+  }
+  const edgeGeo = new THREE.BufferGeometry();
+  edgeGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(edgeVerts), 3));
+  const clickLocal = clickWorld.clone().applyMatrix4(worldToLocal);
+  let faceGroupDescriptor: import('../store').FaceDescriptor | undefined;
+  if (geometry && group.faceIndices.length > 0) {
+    const representativeFace = faces[group.faceIndices[0]];
+    if (representativeFace) faceGroupDescriptor = createFaceDescriptor(representativeFace, geometry, faces);
+  }
+  let normalizedClickUV: [number, number] | undefined;
+  let normalizedHitDistances: NormalizedHitDistances | undefined;
+  {
+    const faceWorldVerts: THREE.Vector3[] = [];
+    group.faceIndices.forEach(fi => { const face = faces[fi]; if (!face) return; face.vertices.forEach(v3 => faceWorldVerts.push(v3.clone().applyMatrix4(localToWorld))); });
+    if (faceWorldVerts.length > 0) {
+      const faceVertsU = faceWorldVerts.map(vw => vw.dot(u)), faceVertsV = faceWorldVerts.map(vw => vw.dot(v));
+      const uMin = Math.min(...faceVertsU), uMax = Math.max(...faceVertsU);
+      const vMin = Math.min(...faceVertsV), vMax = Math.max(...faceVertsV);
+      const uSpan = uMax - uMin, vSpan = vMax - vMin;
+      if (uSpan > 0 && vSpan > 0) {
+        const clickU = clickWorld.dot(u), clickV = clickWorld.dot(v);
+        // When all 4 rays hit boundary edges (panel fills the entire face, no obstacle panels
+        // initially blocking any ray), store face-center [0.5, 0.5] instead of the actual
+        // click UV. This makes fallback re-raycasting stable after sibling panels move,
+        // regardless of where the user originally clicked on the face.
+        const allHitBoundary = hitIsBoundary[0] && hitIsBoundary[1] && hitIsBoundary[2] && hitIsBoundary[3];
+        normalizedClickUV = allHitBoundary
+          ? [0.5, 0.5]
+          : [Math.max(0, Math.min(1, (clickU - uMin) / uSpan)), Math.max(0, Math.min(1, (clickV - vMin) / vSpan))];
+        const hitUPos = clickU + uPosT;
+        const hitUNeg = clickU - uNegT;
+        const hitVPos = clickV + vPosT;
+        const hitVNeg = clickV - vNegT;
+        normalizedHitDistances = {
+          uPosFromEdge: uMax - hitUPos,
+          uNegFromEdge: hitUNeg - uMin,
+          vPosFromEdge: vMax - hitVPos,
+          vNegFromEdge: hitVNeg - vMin,
+          uPosIsBoundary: hitIsBoundary[0],
+          uNegIsBoundary: hitIsBoundary[1],
+          vPosIsBoundary: hitIsBoundary[2],
+          vNegIsBoundary: hitIsBoundary[3],
+          uPosAbsDist: uPosT,
+          uNegAbsDist: uNegT,
+          vPosAbsDist: vPosT,
+          vNegAbsDist: vNegT,
+        };
+      }
+    }
+  }
+  const newId = `vf-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
   const virtualFace: VirtualFace = {
-    id: `vf-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
-    shapeId,
+    id: newId, shapeId,
     normal: [localNormal.x, localNormal.y, localNormal.z],
-    center: [clickLocal.x, clickLocal.y, clickLocal.z],
-    vertices: contour.corners.map(c => [c.x, c.y, c.z] as [number, number, number]),
-    description: '',
-    hasPanel: false,
-    parentFaceShape: true,
-    touchingSiblingIds,
-    // ÖLÇEK-BAĞIMSIZ YÜZ KİMLİĞİ: resize'da regen, yüzü bu descriptor ile
-    // bulur (normalize merkez + eksen) — "en yakın düzlem" tahmini yerine
-    // kesin eşleşme; VF asla komşu bir yüze (ör. çentik yanağına) savrulmaz.
-    faceGroupDescriptor: geometry ? createFaceDescriptor(faces[contour.seedFi], geometry) : undefined,
+    center: [centerLocal.x, centerLocal.y, centerLocal.z],
+    vertices: cornersLocal.map(c => [c.x, c.y, c.z] as [number, number, number]),
+    description: '', hasPanel: false,
+    ...(autoAlign ? { alignToParentFace: true, parentFaceShape: true } : {}),
+    raycastRecipe: faceGroupDescriptor ? {
+      clickLocalPoint: [clickLocal.x, clickLocal.y, clickLocal.z],
+      faceGroupNormal: [localNormal.x, localNormal.y, localNormal.z],
+      faceGroupDescriptor, normalizedClickUV,
+      edgeAnchors: edgeAnchors.length === 4 ? edgeAnchors : undefined,
+      normalizedHitDistances,
+
+      anchorOwners: {
+        uPos: hitOwnerIds[0] ?? null,
+        uNeg: hitOwnerIds[1] ?? null,
+        vPos: hitOwnerIds[2] ?? null,
+        vNeg: hitOwnerIds[3] ?? null,
+      },
+
+      ...(captureIgnoreConcavity ? { ignoreFaceConcavity: true } : {}),
+      planeAxisULocal: (() => {
+        const nm = new THREE.Matrix3().getNormalMatrix(worldToLocal);
+        const ul = u.clone().applyMatrix3(nm).normalize();
+        return [ul.x, ul.y, ul.z] as [number, number, number];
+      })(),
+    } : undefined,
   };
-  return { geo, edgeGeo, virtualFace };
+  return { rayLines: lines, originLocal: clickWorld.clone().sub(parentPos), geo, edgeGeo, virtualFace };
 }
 
 // Refined neutral palette — slate/zinc tones, subtle and professional
@@ -966,21 +1425,18 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     () => allShapes.filter(s => s.type === 'panel' && s.parameters?.parentShapeId === shape.id),
     [allShapes, shape.id]
   );
-  // Aynı DÜZLEMDEKİ tüm VF'ler (merkez artık tıklama noktası olduğundan
-  // grup merkeziyle nokta eşleşmesi yerine düzlem eşleşmesi kullanılır;
-  // bir yüzde birden çok panel olabilir → liste döner).
-  const findVirtualFacesForGroup = useCallback((gi: number): VirtualFace[] => {
-    if (gi < 0 || gi >= faceGroups.length || shapeVirtualFaces.length === 0) return [];
+  const findVirtualFaceForGroup = useCallback((gi: number) => {
+    if (gi < 0 || gi >= faceGroups.length || shapeVirtualFaces.length === 0) return null;
     const gn = faceGroups[gi].normal.clone().normalize();
     const gc = faceGroups[gi].center.clone();
-    return shapeVirtualFaces.filter(vf => {
+    return shapeVirtualFaces.find(vf => {
       const vn = new THREE.Vector3(...vf.normal).normalize();
       if (Math.abs(gn.dot(vn)) < 0.98) return false;
       const vc = new THREE.Vector3(...vf.center);
-      return Math.abs(vc.clone().sub(gc).dot(gn)) < 2; // düzleme mesafe
-    });
+      return gc.distanceTo(vc) < 2;
+    }) || null;
   }, [faceGroups, shapeVirtualFaces]);
-  const groupHasVirtualFace = useCallback((gi: number) => findVirtualFacesForGroup(gi).length > 0, [findVirtualFacesForGroup]);
+  const groupHasVirtualFace = useCallback((gi: number) => findVirtualFaceForGroup(gi) !== null, [findVirtualFaceForGroup]);
   const hoverHighlightGeometry = useMemo(() => {
     if (hoveredGroupIndex === null || !faceGroups[hoveredGroupIndex]) return null;
     return createFaceHighlightGeometry(faces, faceGroups[hoveredGroupIndex].faceIndices);
@@ -1013,16 +1469,15 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     // the click point falls inside the panel's CURRENT GEOMETRY footprint on the face
     // plane — not the VF polygon (which stays as original full-face for correct rebuild).
     // This lets users click in the void left by a shortened panel.
+    const vfForHovered = findVirtualFaceForGroup(hoveredGroupIndex);
     const _normalMatrix = new THREE.Matrix3().getNormalMatrix(localToWorld);
-    // PANEL-İÇİ TIKLAMA: tıklanan düzlem noktası, bu yüzeye DEĞEN herhangi
-    // bir panelin ayak izi içindeyse yüz o noktada "tanımlıdır" — panel
-    // TAŞINMIŞ olsa bile (test VF konumuna değil panelin GÜNCEL geometrisine
-    // dayanır). Panellerin arasındaki/dışındaki boşluk serbesttir ve
-    // highlight yalnız oradan akar.
-    const hoveredNormalW = faceGroups[hoveredGroupIndex].normal.clone()
-      .applyMatrix3(_normalMatrix).normalize();
-    const coveringPanel = findPanelCoveringPoint(clickPoint, childPanels, hoveredNormalW, clickPoint);
-    const hoveredIsDefined = coveringPanel !== null;
+    const hoveredFaceNormalWorld = vfForHovered
+      ? new THREE.Vector3(vfForHovered.normal[0], vfForHovered.normal[1], vfForHovered.normal[2])
+          .applyMatrix3(_normalMatrix).normalize()
+      : null;
+    const hoveredIsDefined = vfForHovered !== null && vfForHovered.hasPanel
+      && hoveredFaceNormalWorld !== null
+      && isWorldPointInsidePanelForVF(clickPoint, vfForHovered, childPanels, hoveredFaceNormalWorld, clickPoint);
 
     let targetGroupIndex = hoveredGroupIndex;
     let previewClickPoint = clickPoint;
@@ -1037,7 +1492,7 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
       for (let gi = 0; gi < faceGroups.length; gi++) {
         // Skip this face group only when the ray's hit point on its plane is actually
         // INSIDE an existing panel VF — void areas on the same group are allowed.
-
+        const vfForGi = findVirtualFaceForGroup(gi);
         const group = faceGroups[gi];
         const groupNormalWorld = group.normal.clone().normalize().applyMatrix3(
           new THREE.Matrix3().getNormalMatrix(localToWorld)
@@ -1051,11 +1506,11 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
 
         // Skip if the hit point on this plane falls inside the panel's current geometry
         // footprint. Do NOT skip void areas — those are valid raycast targets.
-        {
+        if (vfForGi?.hasPanel) {
           const giNormalW = group.normal.clone().normalize().applyMatrix3(
             new THREE.Matrix3().getNormalMatrix(localToWorld)
           ).normalize();
-          if (findPanelCoveringPoint(hitOnPlane, childPanels, giNormalW, hitOnPlane)) continue;
+          if (isWorldPointInsidePanelForVF(hitOnPlane, vfForGi, childPanels, giNormalW, hitOnPlane)) continue;
         }
 
         let inside = false;
@@ -1085,17 +1540,15 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
       previewClickPoint = cycleCandidates[nextCycleIndex].hitPoint;
       lastClickRef.current = { point: clickLocal, groupIndex: targetGroupIndex, cycleIndex: nextCycleIndex };
     } else if (hoveredIsDefined) {
-      const vfId = coveringPanel?.parameters?.virtualFaceId;
-      if (vfId) setSelectedPanelRow(`vf-${vfId}`, null, shape.id);
+      const existingVf = findVirtualFaceForGroup(hoveredGroupIndex);
+      if (existingVf?.hasPanel) setSelectedPanelRow(`vf-${existingVf.id}`, null, shape.id);
       return;
     } else {
       lastClickRef.current = { point: clickLocal, groupIndex: targetGroupIndex, cycleIndex: 0 };
     }
 
     setHoveredGroupIndex(targetGroupIndex);
-    // TAM YÜZ SEÇİMİ: tıklanan yüzün bağlantılı bileşeni komple seçilir.
-    // Derinlik döngüsü (aynı noktaya tekrar tıklayınca arkadaki yüz) korunur.
-    setPending(buildFacePreview(previewClickPoint, faceGroups[targetGroupIndex], faces, worldToLocal, shape.id, shape.geometry, childPanels));
+    setPending(buildPreview(previewClickPoint, faceGroups[targetGroupIndex], faces, localToWorld, worldToLocal, childPanels, shape.id, shape.subtractionGeometries || [], shape.geometry, shapeVirtualFaces));
   };
   if (!raycastMode) return null;
   return (
@@ -1108,6 +1561,13 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
       )}
       {pending && (
         <>
+          <OriginDot position={pending.originLocal} />
+          {pending.rayLines.map((line, i) => (
+            <React.Fragment key={i}>
+              <RayLine3D start={line.start} end={line.end} />
+              <HitDot position={line.end} />
+            </React.Fragment>
+          ))}
           <mesh geometry={pending.geo} raycast={() => null}>
             <meshBasicMaterial color={RAYCAST_COLORS.previewFill} transparent opacity={0.38} side={THREE.DoubleSide} polygonOffset polygonOffsetFactor={-2} polygonOffsetUnits={-2} depthTest={false} />
           </mesh>

@@ -63,19 +63,17 @@ async function safeCut(rp: any, cutter: any, label: string): Promise<any> {
 function inverseRotateReplicadByLocalSteps(
   shape: any,
   steps: RotateStep[],
-  parentPos: [number, number, number],
-  parentRot?: [number, number, number]
+  parentPos: [number, number, number]
 ): any {
   let r = typeof shape?.clone === 'function' ? shape.clone() : shape;
-  const parentInvQuat = parentRot
-    ? new THREE.Quaternion().setFromEuler(new THREE.Euler(parentRot[0], parentRot[1], parentRot[2], 'XYZ')).invert()
-    : null;
   for (let i = steps.length - 1; i >= 0; i--) {
     const step = steps[i];
     if (Math.abs(step.value) < 1e-6) continue;
-    const worldPivot = new THREE.Vector3(step.pivot[0], step.pivot[1], step.pivot[2]).sub(new THREE.Vector3(...parentPos));
-    if (parentInvQuat) worldPivot.applyQuaternion(parentInvQuat);
-    const pivotLocal: [number, number, number] = [worldPivot.x, worldPivot.y, worldPivot.z];
+    const pivotLocal: [number, number, number] = [
+      step.pivot[0] - parentPos[0],
+      step.pivot[1] - parentPos[1],
+      step.pivot[2] - parentPos[2],
+    ];
     const axis: [number, number, number] = (step as any).axisVec
       ? (step as any).axisVec
       : (step.axis === 'x' ? [1, 0, 0] : step.axis === 'y' ? [0, 1, 0] : [0, 0, 1]);
@@ -93,21 +91,19 @@ function inverseRotateReplicadByLocalSteps(
 function forwardRotateReplicadByLocalSteps(
   shape: any,
   steps: RotateStep[],
-  parentPos: [number, number, number],
-  parentRot?: [number, number, number]
+  parentPos: [number, number, number]
 ): any {
   // KRİTİK: replicad transformları orijinali SİLER — kardeşin store'daki
   // replicadShape'ini yok etmemek için önce clone (bkz. yukarıdaki not).
   let r = typeof shape?.clone === 'function' ? shape.clone() : shape;
-  const parentInvQuat = parentRot
-    ? new THREE.Quaternion().setFromEuler(new THREE.Euler(parentRot[0], parentRot[1], parentRot[2], 'XYZ')).invert()
-    : null;
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
     if (Math.abs(step.value) < 1e-6) continue;
-    const worldPivot = new THREE.Vector3(step.pivot[0], step.pivot[1], step.pivot[2]).sub(new THREE.Vector3(...parentPos));
-    if (parentInvQuat) worldPivot.applyQuaternion(parentInvQuat);
-    const pivotLocal: [number, number, number] = [worldPivot.x, worldPivot.y, worldPivot.z];
+    const pivotLocal: [number, number, number] = [
+      step.pivot[0] - parentPos[0],
+      step.pivot[1] - parentPos[1],
+      step.pivot[2] - parentPos[2],
+    ];
     const axis: [number, number, number] = (step as any).axisVec
       ? (step as any).axisVec
       : (step.axis === 'x' ? [1, 0, 0] : step.axis === 'y' ? [0, 1, 0] : [0, 0, 1]);
@@ -125,8 +121,7 @@ function siblingCutterInPanelFrame(
   sib: any,
   panelSteps: RotateStep[],
   parentPos: [number, number, number],
-  panelPos?: [number, number, number],
-  parentRot?: [number, number, number]
+  panelPos?: [number, number, number]
 ): any | null {
   let cutter = sib?.replicadShape;
   if (!cutter) return null;
@@ -135,7 +130,7 @@ function siblingCutterInPanelFrame(
   cutter = typeof cutter.clone === 'function' ? cutter.clone() : cutter;
   const sibSteps: RotateStep[] = sib.parameters?.rotateSteps || [];
   if (sibSteps.length > 0) {
-    cutter = forwardRotateReplicadByLocalSteps(cutter, sibSteps, parentPos, parentRot);
+    cutter = forwardRotateReplicadByLocalSteps(cutter, sibSteps, parentPos);
   }
   // TAŞIMA FARKINDALIĞI: dönüş adımları pozun DÖNÜŞ kaynaklı kısmını üretir;
   // kalan fark saf ötelemedir (move adımları / elle taşıma). Kesici, kardeşin
@@ -157,7 +152,7 @@ function siblingCutterInPanelFrame(
     cutter = cutter.translate(dx, dy, dz);
   }
   if (panelSteps.length > 0) {
-    cutter = inverseRotateReplicadByLocalSteps(cutter, panelSteps, parentPos, parentRot);
+    cutter = inverseRotateReplicadByLocalSteps(cutter, panelSteps, parentPos);
   }
   return cutter;
 }
@@ -1050,7 +1045,7 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
               if (Math.abs(sibNormal.dot(pn)) < 0.9) continue; // eş-düzlemli değil → mevcut bloğa
               for (const shift of [EPS, -EPS]) {
                 const cutter = siblingCutterInPanelFrame(sib, rotateSteps, parentPos,
-                  [panel.position[0], panel.position[1], panel.position[2]], parent.rotation);
+                  [panel.position[0], panel.position[1], panel.position[2]]);
                 if (!cutter) break;
                 const shifted = cutter.translate(pn.x * shift, pn.y * shift, pn.z * shift);
                 rp = await safeCut(rp, shifted, `eş-düzlem ${sib.id}`);
@@ -1089,7 +1084,7 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           // döndürmek yerine küpü ters döndürüp kesişiriz → geometri düz kalır
           // (önizleme/ölçü stabil), kırpma açıya göre doğru olur.
           let cube = rotateSteps.length > 0
-            ? inverseRotateReplicadByLocalSteps(intersectSolid, rotateSteps, parentPos, parent.rotation)
+            ? inverseRotateReplicadByLocalSteps(intersectSolid, rotateSteps, parentPos)
             : intersectSolid;
           // Taşıma ofseti varsa kesişim katısını ters yöne kaydır: kırpma
           // sınırları, panelin son konumuna göre doğru yerde kalır.
@@ -1225,7 +1220,7 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
                 rp = res;
               } else {
                 const cutter = siblingCutterInPanelFrame(sib, rotateSteps, parentPos,
-                  [panel.position[0], panel.position[1], panel.position[2]], parent.rotation);
+                  [panel.position[0], panel.position[1], panel.position[2]]);
                 if (cutter) rp = await safeCut(rp, cutter, (typeof sib !== 'undefined' ? (sib as any).id : (typeof rsib !== 'undefined' ? (rsib as any).id : 'kardeş')));
               }
             } catch (err) {
@@ -1259,7 +1254,7 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
               } else {
                 // Belirsiz durum: frame-düzeltmeli gövde kesimi
                 const cutter = siblingCutterInPanelFrame(rsib, rotateSteps, parentPos,
-                  [panel.position[0], panel.position[1], panel.position[2]], parent.rotation);
+                  [panel.position[0], panel.position[1], panel.position[2]]);
                 if (cutter) rp = await safeCut(rp, cutter, (typeof sib !== 'undefined' ? (sib as any).id : (typeof rsib !== 'undefined' ? (rsib as any).id : 'kardeş')));
               }
             } catch (err) {
