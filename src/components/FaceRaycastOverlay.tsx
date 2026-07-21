@@ -689,6 +689,11 @@ export function buildFacePreview(
   // ve yüzün tamamı seçilir — OCC üretim zinciri (kardeş kesimi + bağlantılı
   // parça seçimi) ile birebir aynı semantik. Grid + flood-fill ile hesaplanır;
   // VF kimliği (kontur/merkez) değişmez, yalnız görsel bölge daralır.
+  //
+  // UZAY UYUMU: Kontur ve düzlem YEREL uzaydadır (faceIndices yerel geometriden
+  // gelir). panelFootprintOnPlane panel köşelerini DÜNYA uzayına taşır
+  // (getShapeMatrix). Karşılaştırma doğru olsun diye panel ayak izleri dünya→
+  // yerel ters-dönüşümüyle yerel düzleme getirilir.
   const nrm = group.normal.clone().normalize();
   const { u, v } = getFacePlaneAxes(nrm);
   const ring2D: Point2D[] = contour.corners.map(c => ({ x: c.dot(u), y: c.dot(v) }));
@@ -698,8 +703,21 @@ export function buildFacePreview(
   const touchingSiblingIds: string[] = [];
   for (const panel of childPanels) {
     if (panel.parameters?.parentShapeId && panel.parameters.parentShapeId !== shapeId) continue;
-    const fp = panelFootprintOnPlane(panel, nrm, planeOriginLocal, u, v);
-    if (fp) { footprints.push(fp); if (panel.id) touchingSiblingIds.push(panel.id); }
+    // Ayak izini DÜNYA uzayında hesapla, sonra her köşeyi yerel uzaya taşı.
+    const fpWorld = panelFootprintOnPlane(panel, nrm, planeOriginLocal, u, v);
+    if (!fpWorld) continue;
+    const fpLocal: Point2D[] = fpWorld.map(p => {
+      const wp = new THREE.Vector3()
+        .addScaledVector(u, p.x)
+        .addScaledVector(v, p.y)
+        .addScaledVector(nrm, planeN);
+      const lp = wp.applyMatrix4(worldToLocal);
+      return { x: lp.dot(u), y: lp.dot(v) };
+    });
+    if (fpLocal.length >= 3) {
+      footprints.push(fpLocal);
+      if (panel.id) touchingSiblingIds.push(panel.id);
+    }
   }
 
   let uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity;

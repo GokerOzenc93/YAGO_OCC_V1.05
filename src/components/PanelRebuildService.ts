@@ -988,7 +988,7 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
         // TAM YUZ MODELI: her duz panel, tiklanan yuzun OCC yuz-extrusion'u
         // olarak uretilir (parentFaceShape bayragi kosul olmaktan cikti - tum
         // paneller tam yuz kaplar; kardes kesimleri ve bolge secimi asagida).
-        if (parent.replicadShape) {
+        if (!isRotated && parent.replicadShape) {
           try {
             const { createPanelFromParentFaces } = await import('./ReplicadService');
             const faceRp = await createPanelFromParentFaces(
@@ -1097,7 +1097,11 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
             // üst ve alt bölüm gibi). Tıklanan bölgeye en yakın katıyı tut.
             try {
               const { keepSolidNearestPoint } = await import('./ReplicadService');
-              rp = await keepSolidNearestPoint(rp, regionPoint, vf.normal);
+              // Dönmüş panelde parent ters-döndürüldüğünden yüzey eğik olur;
+              // vf.normal (orijinal yüz normali) boyunca 2mm içeri itmek noktayı
+              // eğik katıdan çıkarıp yanlış parçayı seçebilir. Dönmüş panelde
+              // inwardDir verilmez — nokta yüzeyde olduğu gibi kullanılır.
+              rp = await keepSolidNearestPoint(rp, regionPoint, isRotated ? undefined : vf.normal);
             } catch { /* tek katıysa zaten aynen kalır */ }
           } else {
             console.error('[RotateRebuild] ALL intersection attempts failed for panel', panel.id,
