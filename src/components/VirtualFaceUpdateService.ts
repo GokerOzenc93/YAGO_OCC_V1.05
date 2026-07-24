@@ -9,6 +9,7 @@ import {
   getSubtractorFootprints2D,
   isPointInsidePolygon,
   computeFreeRegionLocal,
+  panelFootprintInParentLocal,
   projectTo2D,
   subtractPolygon,
   type Point2D,
@@ -478,11 +479,22 @@ function regenerateParentFaceShapeVF(
     for (const q of pts) { xMin = Math.min(xMin, q.x); xMax = Math.max(xMax, q.x); yMin = Math.min(yMin, q.y); yMax = Math.max(yMax, q.y); }
     return { xMin, xMax, yMin, yMax, xSpan: Math.max(xMax - xMin, 1e-6), ySpan: Math.max(yMax - yMin, 1e-6) };
   };
-  const oldB = bboxOf(vf.vertices.map(([x, y, z]) => uvOf(new THREE.Vector3(x, y, z))));
   const cUV = uvOf(seed);
-  const ru = Math.max(0, Math.min(1, (cUV.x - oldB.xMin) / oldB.xSpan));
-  const rv = Math.max(0, Math.min(1, (cUV.y - oldB.yMin) / oldB.ySpan));
   const newB = bboxOf(contour.corners.map(c => uvOf(c)));
+  // ORAN TABANI SİMETRİSİ: Oran, bir önceki regen'in kaydettiği HAM kontur
+  // bbox'ına (rawFaceBBox) göre hesaplanır ve yeni HAM kontur bbox'ına
+  // haritalanır — İKİ UÇTA AYNI TABAN. Eski hata: oran, ayak izi ÇIKARILMIŞ
+  // vf.vertices bbox'ından (kardeşe bağımlı, ör. v[320..600]) hesaplanıp HAM
+  // yüz bbox'ına (v[0..600]) haritalanıyordu; her rebuild dalgasında merkez
+  // sistematik kayıp clamp ile yüz kenarına yapışıyordu (log kanıtı:
+  // 443.1 → (443.1-320)/280×600 = 263.8 → clamp(263.5-320)/280=0 → 0.0).
+  // rawFaceBBox yoksa (ilk regen / eski VF) merkez MUTLAK korunur (anchorB =
+  // newB → birim dönüşüm): yüz değişmediyse zaten doğru; değiştiyse bir
+  // sonraki turdan itibaren kayıtlı ham taban devrededir. Kardeş hareketi VF
+  // oran tabanını artık asla oynatamaz.
+  const anchorB = (vf as any).rawFaceBBox as ReturnType<typeof bboxOf> | undefined ?? newB;
+  const ru = Math.max(0, Math.min(1, (cUV.x - anchorB.xMin) / anchorB.xSpan));
+  const rv = Math.max(0, Math.min(1, (cUV.y - anchorB.yMin) / anchorB.ySpan));
   const planeN = contour.corners[0].dot(localNormal);
   const newCenter = new THREE.Vector3()
     .addScaledVector(u, newB.xMin + ru * newB.xSpan)
@@ -493,6 +505,26 @@ function regenerateParentFaceShapeVF(
   // ve tık anında doğru kırpılmış VF, ilk REGEN'de tam yüzle geri eziliyordu.
   // Artık iki yol tek kaynaktan beslendiği için ayrışamazlar.
   let cornersOut = contour.corners;
+
+  // TEŞHİS: Her kardeşin BU yüz düzlemindeki ayak izinin gerçek u×v boyutu ve
+  // modu (yatık/kesit). "Sağ panel v%58 çöktü" hatasında ayak izini büyüten
+  // kardeşi ve ayak izinin gerçekten büyük mü yoksa footprint'e YANLIŞ geometri
+  // mi girdiğini gösterir. planeN = yüz düzleminin normal-ofseti.
+  try {
+    for (const sp of siblingPanels) {
+      const fp = panelFootprintInParentLocal(sp, worldToLocal, localNormal, planeN, u, v);
+      if (!fp) { continue; }
+      let fuMin = Infinity, fuMax = -Infinity, fvMin = Infinity, fvMax = -Infinity;
+      for (const q of fp) { fuMin = Math.min(fuMin, q.x); fuMax = Math.max(fuMax, q.x); fvMin = Math.min(fvMin, q.y); fvMax = Math.max(fvMax, q.y); }
+      const rot = (sp.parameters?.rotateSteps?.length ?? 0) > 0;
+      console.log('[YAGO][AYAKİZİ]', vf.id, '<-', sp.id,
+        'boyut=', `${(fuMax - fuMin).toFixed(0)}x${(fvMax - fvMin).toFixed(0)}`,
+        'u=', `${fuMin.toFixed(0)}..${fuMax.toFixed(0)}`,
+        'v=', `${fvMin.toFixed(0)}..${fvMax.toFixed(0)}`,
+        'köşeN=', fp.length, rot ? 'DÖNMÜŞ' : 'düz');
+    }
+  } catch { /* teşhis opsiyonel */ }
+
   const region = computeFreeRegionLocal(
     contour.corners, localNormal, seed, siblingPanels, worldToLocal, shape.id
   );
@@ -502,17 +534,47 @@ function regenerateParentFaceShapeVF(
       .addScaledVector(localNormal, planeN));
   }
 
+  // TEŞHİS: Regen'in ÜRETTİĞİ VF çokgeninin gerçek u/v boyutu. Kıymık
+  // (sliver) ise iki boyuttan biri çok küçük olur — böylece "sağ panel kıymık"
+  // hatasının regen'de mi (VF gerçekten ince üretiliyor) yoksa rebuild
+  // kesiminde mi (VF dolu ama panel yanlış biçiliyor) doğduğu log'dan KESİN
+  // ayrılır. outSpan çıkarma öncesi HAM kontura oranlanır: ayak izi bölgeyi
+  // ne kadar çökertti?
+  let outUMin = Infinity, outUMax = -Infinity, outVMin = Infinity, outVMax = -Infinity;
+  for (const c of cornersOut) {
+    const pu = c.dot(u), pv = c.dot(v);
+    outUMin = Math.min(outUMin, pu); outUMax = Math.max(outUMax, pu);
+    outVMin = Math.min(outVMin, pv); outVMax = Math.max(outVMax, pv);
+  }
+  const outUSpan = outUMax - outUMin, outVSpan = outVMax - outVMin;
+  const rawUSpan = newB.xSpan, rawVSpan = newB.ySpan;
+  const uShrink = (1 - outUSpan / Math.max(rawUSpan, 1e-6));
+  const vShrink = (1 - outVSpan / Math.max(rawVSpan, 1e-6));
+  const isSliver = outUSpan < 30 || outVSpan < 30;
+
   console.log('[YAGO][REGEN]', vf.id,
     'yeniMerkez=', [newCenter.x, newCenter.y, newCenter.z].map(n => n.toFixed(1)).join(','),
     'hamKöşeN=', contour.corners.length, 'VFköşeN=', cornersOut.length,
     'ayakİziN=', region ? region.footprints.length : -1,
-    'kardeşN=', siblingPanels.length);
-  return {
+    'kardeşN=', siblingPanels.length,
+    'oranTabanı=', (vf as any).rawFaceBBox ? 'kayıtlıHam' : 'mutlak(ilk)',
+    'VFboyut=', `${outUSpan.toFixed(0)}x${outVSpan.toFixed(0)}`,
+    'küçülme=', `u%${(uShrink * 100).toFixed(0)} v%${(vShrink * 100).toFixed(0)}`,
+    isSliver ? '⚠️KIYMIK(regen)' : 'dolu');
+  const out: VirtualFace = {
     ...vf,
     normal: [localNormal.x, localNormal.y, localNormal.z],
     vertices: cornersOut.map(c => [c.x, c.y, c.z] as [number, number, number]),
     center: [newCenter.x, newCenter.y, newCenter.z],
   };
+  // HAM kontur bbox'ı bir SONRAKİ regen'in oran tabanı olarak VF'de taşınır
+  // (tip dışı alan; spread kopyalarında korunur). vf.vertices ayak izi
+  // çıkarılmış bölge olduğundan oran tabanı olarak ASLA kullanılamaz.
+  (out as any).rawFaceBBox = {
+    xMin: newB.xMin, xMax: newB.xMax, yMin: newB.yMin, yMax: newB.yMax,
+    xSpan: newB.xSpan, ySpan: newB.ySpan,
+  };
+  return out;
 }
 
 function getPanelFootprints2D(

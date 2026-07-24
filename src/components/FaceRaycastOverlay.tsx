@@ -719,11 +719,13 @@ export function panelFootprintInParentLocal(
   if (pts.length < 3) return null;
   const out: Point2D[] = [];
   // Düzleme yatık köşeler
+  let flatVertCount = 0;
   for (let i = 0; i < pts.length; i++) {
-    if (Math.abs(d[i]) < tol) out.push({ x: pts[i].dot(u), y: pts[i].dot(v) });
+    if (Math.abs(d[i]) < tol) { out.push({ x: pts[i].dot(u), y: pts[i].dot(v) }); flatVertCount++; }
   }
   // EĞİK PANEL: düzlemi kesiyorsa gerçek KESİT (siluet değil)
-  if (dMin < -tol && dMax > tol) {
+  const pierces = dMin < -tol && dMax > tol;
+  if (pierces) {
     const idx = panel.geometry.getIndex();
     const cnt = idx ? idx.count : pos.count;
     const at = (k: number) => (idx ? idx.getX(k) : k);
@@ -744,7 +746,44 @@ export function panelFootprintInParentLocal(
   // Düzleme hiç değmiyorsa ayak izi YOK (hayalet kırpma olmaz)
   if (out.length < 3) return null;
   const hull = convexHull2D(out);
-  return hull.length >= 3 ? hull : null;
+  if (hull.length < 3) return null;
+
+  // ── SALT-KESİT KENAR-TEMASI KAPISI ──────────────────────────────────────
+  // Dönmüş bir panel bu yüzü SADECE deliyorsa (yüze YATIK hiçbir yüzeyi yok:
+  // flatVertCount==0) ve ürettiği kesit İNCE bir şerit ise (dar kenarı ~panel
+  // kalınlığı mertebesinde), bu bir ENGEL değil KENAR-TEMASIdır: panel yüzün
+  // ÖNÜNDE durmuyor, yalnız kenarıyla değiyor. Bunu ayak izi (bloklayan alan)
+  // saymak, computeFreeRegionLocal'da yüzü ortadan bölen bir "duvar" gibi
+  // davranıp bölgenin yarısını sildiriyordu (log kanıtı: dönmüş kardeş ayak
+  // izi 600x~20, v konumu -345→-239→-180 kayıyor, VF %40-58 çöküyor,
+  // "sağ panel hatalı yerleşti"). Kenar-teması VF'yi oymaz; rebuild'de
+  // yarım-uzay/gövde kesimiyle (kardeş kesimi) doğru biçilir.
+  //
+  // Düz komşu panel de yüze 18mm kalınlık KENARIYLA değer ama o YATIK yüzeyle
+  // yaslanır (flatVertCount>0) → gerçek engeldir, bu kapıdan GEÇMEZ. Yatık yüz
+  // yoksa ve şerit inceyse yalnız kesit-teması vardır → engel sayılmaz.
+  if (pierces && flatVertCount === 0) {
+    let huMin = Infinity, huMax = -Infinity, hvMin = Infinity, hvMax = -Infinity;
+    for (const q of hull) { huMin = Math.min(huMin, q.x); huMax = Math.max(huMax, q.x); hvMin = Math.min(hvMin, q.y); hvMax = Math.max(hvMax, q.y); }
+    const minSpan = Math.min(huMax - huMin, hvMax - hvMin);
+    // İnce eşiği: panel kalınlığının biraz üstü. Panel geometrisinin en ince
+    // ekseninden (kalınlık) türetilir; bulunamazsa güvenli sabit (40mm).
+    const gp = panel.geometry.getAttribute('position');
+    let pMinX = Infinity, pMaxX = -Infinity, pMinY = Infinity, pMaxY = -Infinity, pMinZ = Infinity, pMaxZ = -Infinity;
+    for (let i = 0; i < gp.count; i++) {
+      const x = gp.getX(i), y = gp.getY(i), z = gp.getZ(i);
+      pMinX = Math.min(pMinX, x); pMaxX = Math.max(pMaxX, x);
+      pMinY = Math.min(pMinY, y); pMaxY = Math.max(pMaxY, y);
+      pMinZ = Math.min(pMinZ, z); pMaxZ = Math.max(pMaxZ, z);
+    }
+    const panelThk = Math.min(pMaxX - pMinX, pMaxY - pMinY, pMaxZ - pMinZ);
+    const thinThreshold = Math.max(panelThk, 18) + 12; // kalınlık + pay
+    if (minSpan <= thinThreshold) {
+      return null; // salt kenar-teması → engel değil
+    }
+  }
+
+  return hull;
 }
 
 /** reach hücrelerinin sınırını sıralı 2B halkaya çevirir. */
