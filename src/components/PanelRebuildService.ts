@@ -1018,6 +1018,41 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
           }
         }
 
+        // VF-PRİZMA KIRPMASI ("highlight = panel" yapısal zorlaması): Tam-yüz
+        // modeli, bölge seçimini kontur-içi OCC yüz seçimi + kardeş kesimi +
+        // keepSolidNearestPoint üçlüsüne bırakır. Bu zincir İKİ noktada kırılır:
+        // (1) parent yüzü bölünmemiş TEK OCC yüzüyse centroid'i eğik VF
+        // konturunun DIŞINDA kalır → kontur seçimi boş → BFS tam yüzü alır;
+        // (2) DÖNMÜŞ kardeşin gövde kesimi yüzün etrafını saran TEK BAĞLANTILI
+        // kalıntı bırakır (harness doğrulaması: -20° Z-dönüşlü kardeş kesimi
+        // 1 parça, bbox=tüm yüz) → keepSolidNearestPoint'in seçeceği ayrık
+        // parça yoktur. Sonuç: 1 sn doğru görünen VF-slab, rebuild'de
+        // tüm-yüz-eksi-kardeş şekliyle ezilir ("panel alta fırlıyor").
+        // Çare: rp'yi GÜNCEL VF çokgeninin prizmasıyla kesiştir. VF her
+        // rebuild'de REGEN ile yeniden hesaplandığından parametrik davranış
+        // korunur (engel kalkarsa VF büyür, panel de büyür); VF tüm yüzü
+        // kapladığında kesişim no-op'tur (çakışık yan yüzler harness'ta
+        // sorunsuz). Prizma derinliği 3x kalınlık: yanal kırpma esastır,
+        // normal yönünde rp zaten bant içindedir.
+        if (faceExtrudedOk && vf.vertices?.length >= 3) {
+          try {
+            const vfPrism = await createPanelFromVirtualFace(
+              vf.vertices, vf.normal, thickness * 3, 0
+            );
+            if (vfPrism) {
+              const clipped = await performBooleanIntersection(rp, vfPrism);
+              const cb = clipped?.boundingBox?.bounds;
+              if (cb && isFinite(cb[0][0]) && (cb[1][0] - cb[0][0]) > 1e-3) {
+                rp = clipped;
+              } else {
+                console.warn('[YAGO][ÜRETİM] VF-prizma kırpması boş sonuç verdi, atlandı:', panel.id);
+              }
+            }
+          } catch (err) {
+            console.warn('[YAGO][ÜRETİM] VF-prizma kırpması başarısız, tam-yüz panelle devam:', panel.id, err);
+          }
+        }
+
         // EŞ-DÜZLEMLİ KARDEŞ ÖN-KESİMİ (yalnız yüz-extrusion panelinde):
         // Panel artık TÜM yüzü kapladığından, aynı yüzeydeki eş-düzlemli
         // kardeş panel panelin içinde TAM ÇAKIŞIK kalır; OCC gövde kesimi

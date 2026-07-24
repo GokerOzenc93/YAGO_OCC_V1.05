@@ -243,8 +243,17 @@ export const createPanelFromParentFaces = async (
         if (f.geomType !== 'PLANE') continue;
         const c = f.center;
         const fn = f.normalAt(c);
-        const dot = fn.x * n.x + fn.y * n.y + fn.z * n.z;
-        if (dot < 0.99) continue;
+        // Yüz normalini highlight yolundaki gibi MUTLAK karşılaştır. Dönmüş
+        // panel boolean ile yeniden kurulunca OCC yüz normali, highlight'ın
+        // türettiği n'e göre TERS yönlü olabilir (dot ≈ -1). İşaretli
+        // karşılaştırma tüm eğik yüzleri eler → eligible boş → return null →
+        // "mavi çizgi çıkıyor ama panel atılmıyor". FaceRaycastOverlay
+        // Math.abs(dot) kullanır (bkz. findVirtualFaceForGroup); burada da
+        // öyle olmalı. Eşik 0.966 (cos 15°) eğik yüz mesh/Brep normal
+        // farkını soğurur; aşağıdaki düzlem-mesafe testi (PLANE_TOL) paralel
+        // karşı yüzleri zaten ayıkladığından abs güvenlidir.
+        const dot = Math.abs(fn.x * n.x + fn.y * n.y + fn.z * n.z);
+        if (dot < 0.966) continue;
         const dist =
           (c.x - planePoint[0]) * n.x +
           (c.y - planePoint[1]) * n.y +
@@ -586,11 +595,41 @@ export const createPanelFromVirtualFace = async (
     projected = [[minU, minV], [maxU, minV], [maxU, maxV], [minU, maxV]];
   }
 
+  // ÇİFT KÖŞE TEMİZLİĞİ: Sanal yüzey çokgeni Sutherland-Hodgman kırpmadan
+  // (subtractPolygon/clipSH) gelir; eğik ayak izi kenarı yüz köşesinin tam
+  // üstünden geçtiğinde kırpıcı kesişim noktasını mevcut köşeyle BİREBİR AYNI
+  // üretip ikisini de çıktıya basar. draw().lineTo(aynı nokta) sıfır-uzunluklu
+  // kenarda OCC'nin NUMERİK WASM exception fırlatmasına yol açar ("Auto panel
+  // creation failed: 19365648" sınıfı) → panel hiç üretilmez. Ardışık çiftler
+  // (wrap-around: son=ilk dahil) burada ayıklanır; harness doğrulaması:
+  // yalnız BİREBİR çift tetikler, 1e-7 fark OCC'de sorunsuzdur.
+  const DUP_TOL = 1e-4;
+  const cleaned: [number, number][] = [];
+  for (const p of projected) {
+    const prev = cleaned[cleaned.length - 1];
+    if (prev && Math.hypot(p[0] - prev[0], p[1] - prev[1]) < DUP_TOL) continue;
+    cleaned.push(p);
+  }
+  while (cleaned.length >= 2) {
+    const f = cleaned[0], l = cleaned[cleaned.length - 1];
+    if (Math.hypot(f[0] - l[0], f[1] - l[1]) < DUP_TOL) cleaned.pop(); else break;
+  }
+  if (cleaned.length < 3) {
+    console.warn('[YAGO][ÜRETİM] createPanelFromVirtualFace: dejenere çokgen (temizlik sonrası <3 köşe), panel atlandı. hamKöşeN=', vertices.length);
+    return null;
+  }
+  projected = cleaned;
+
   // Ensure CCW winding — replicad treats CW polygons as holes
   let signedArea = 0;
   for (let i = 0; i < projected.length; i++) {
     const j = (i + 1) % projected.length;
     signedArea += projected[i][0] * projected[j][1] - projected[j][0] * projected[i][1];
+  }
+  // SIFIR-ALAN KAPISI: kırpma artığı kıymık bölge OCC'ye gitmeden elenir.
+  if (Math.abs(signedArea) / 2 < 1e-3) {
+    console.warn('[YAGO][ÜRETİM] createPanelFromVirtualFace: sıfır-alan çokgen, panel atlandı. alan=', Math.abs(signedArea) / 2);
+    return null;
   }
   if (signedArea < 0) {
     projected = projected.slice().reverse();

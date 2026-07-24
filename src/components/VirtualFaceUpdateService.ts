@@ -8,6 +8,7 @@ import {
   getShapeMatrix,
   getSubtractorFootprints2D,
   isPointInsidePolygon,
+  computeFreeRegionLocal,
   projectTo2D,
   subtractPolygon,
   type Point2D,
@@ -415,7 +416,10 @@ export function recalculateVirtualFacesForShape(
       // ikinci rebuild dalgasında tüm panelleri kaydırıyordu ("ilk yarım
       // saniye doğru, sonra bozuluyor"). Eski VF'ler else dalında yalnızca
       // kırpılır; yüzleri ve merkezleri değişmez.
-      const regen = regenerateParentFaceShapeVF(vf, shape, faces, faceGroups, localToWorld);
+      const regen = regenerateParentFaceShapeVF(
+        vf, shape, faces, faceGroups, localToWorld, worldToLocal,
+        childPanels.filter(p => p.parameters?.virtualFaceId !== vf.id)
+      );
       updatedMap.set(vf.id, regen || vf);
     } else {
       const subtractions = shape.subtractionGeometries || [];
@@ -437,7 +441,9 @@ function regenerateParentFaceShapeVF(
   shape: Shape,
   faces: FaceData[],
   faceGroups: CoplanarFaceGroup[],
-  localToWorld: THREE.Matrix4
+  localToWorld: THREE.Matrix4,
+  worldToLocal: THREE.Matrix4,
+  siblingPanels: any[] = []
 ): VirtualFace | null {
   // TAM YÜZ MODELİ: VF, eşleşen yüz grubunda VF merkezine en yakın üçgenin
   // BAĞLANTILI BİLEŞENİNİN gerçek konturu olarak yeniden üretilir (yakalama
@@ -483,16 +489,28 @@ function regenerateParentFaceShapeVF(
     .addScaledVector(v, newB.yMin + rv * newB.ySpan)
     .addScaledVector(localNormal, planeN);
 
+  // KIRPMA: yakalama ile AYNI fonksiyon. Eskiden burada ham kontur yazılıyordu
+  // ve tık anında doğru kırpılmış VF, ilk REGEN'de tam yüzle geri eziliyordu.
+  // Artık iki yol tek kaynaktan beslendiği için ayrışamazlar.
+  let cornersOut = contour.corners;
+  const region = computeFreeRegionLocal(
+    contour.corners, localNormal, seed, siblingPanels, worldToLocal, shape.id
+  );
+  if (region && region.polygon.length >= 3) {
+    cornersOut = region.polygon.map(p2 => new THREE.Vector3()
+      .addScaledVector(u, p2.x).addScaledVector(v, p2.y)
+      .addScaledVector(localNormal, planeN));
+  }
+
   console.log('[YAGO][REGEN]', vf.id,
-    'eskiMerkez=', vf.center.map(n => n.toFixed(1)).join(','),
     'yeniMerkez=', [newCenter.x, newCenter.y, newCenter.z].map(n => n.toFixed(1)).join(','),
-    'konturBBoxU=', `${newB.xMin.toFixed(0)}..${newB.xMax.toFixed(0)}`,
-    'ru,rv=', `${ru.toFixed(2)},${rv.toFixed(2)}`,
-    'köşeN=', contour.corners.length);
+    'hamKöşeN=', contour.corners.length, 'VFköşeN=', cornersOut.length,
+    'ayakİziN=', region ? region.footprints.length : -1,
+    'kardeşN=', siblingPanels.length);
   return {
     ...vf,
     normal: [localNormal.x, localNormal.y, localNormal.z],
-    vertices: contour.corners.map(c => [c.x, c.y, c.z] as [number, number, number]),
+    vertices: cornersOut.map(c => [c.x, c.y, c.z] as [number, number, number]),
     center: [newCenter.x, newCenter.y, newCenter.z],
   };
 }
