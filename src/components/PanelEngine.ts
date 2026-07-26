@@ -228,30 +228,54 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
     performBooleanCut, performBooleanIntersection,
   } = await import('./ReplicadService');
 
-  const shapes = store.shapes;
-  const updateShape = store.updateShape;
-  const updateVirtualFace = (store as any).updateVirtualFace as ((id: string, u: any) => void) | undefined;
+  // TAZE STATE: yukarıdaki await import'lar sırasında store güncellenebilir;
+  // tüm okumalar bu taze snapshot'tan yapılır (bayat sıra/şekil önlenir).
+  const fresh = useAppStore.getState();
+  const shapes = fresh.shapes;
+  const parentFresh = shapes.find(s => s.id === parentShapeId) || parent;
+  const updateShape = fresh.updateShape;
+  const updateVirtualFace = (fresh as any).updateVirtualFace as ((id: string, u: any) => void) | undefined;
 
-  // K1: yerleşim sırası = timestamp (id içindeki) sırası.
+  // K1 SIRA KAYNAĞI: Kullanıcı panel sırasını UI'da VF listesini yeniden
+  // sıralayarak değiştirir (reorderVirtualFaces / reorderVirtualFaceGroup →
+  // store.virtualFaces dizisinin SIRASI). Sıra, panelin VF'sinin bu dizideki
+  // İNDEKSİNDEN okunur. ÖNEMLİ: dizinin TAZE hali kullanılır — üstteki await
+  // import'lar sırasında store güncellenmiş olabilir; fonksiyon başındaki
+  // snapshot bayatlayabilir (vf#? teşhisinin olası kökü).
+  const freshVirtualFaces = useAppStore.getState().virtualFaces;
+  const vfOrder = new Map<string, number>();
+  freshVirtualFaces.forEach((f, i) => vfOrder.set(f.id, i));
+  const orderOf = (s: Shape): number => {
+    const vfId = (s.parameters as any)?.virtualFaceId;
+    const idx = vfId != null ? vfOrder.get(vfId) : undefined;
+    if (idx == null && vfId != null) {
+      console.warn('[YAGO][SIRA] vf bulunamadı! panel=', s.id.slice(-6),
+        'aranan vfId=', vfId,
+        'store vfIds(ilk3)=', freshVirtualFaces.slice(0, 3).map(f => f.id));
+    }
+    return idx != null ? idx : 1e9 + panelTs(s) / 1e13;
+  };
   const children = shapes
     .filter(s => s.type === 'panel' && (s.parameters as any)?.parentShapeId === parentShapeId)
-    .sort((a, b) => panelTs(a) - panelTs(b));
+    .sort((a, b) => orderOf(a) - orderOf(b));
   if (children.length === 0) return;
+  console.log('[YAGO][SIRA]', parentShapeId, 'panel sırası=',
+    children.map(c => `${c.id.slice(-6)}(vf#${orderOf(c) < 1e9 ? orderOf(c) : '?'})`).join(' → '));
 
   // 1) BÖLGE OTORİTESİ: tüm VF'ler güncel geometri + kardeşlerle yenilenir.
   //    (rawFaceBBox mutlak çıpa + sideRelations sözleşmesi VFS içinde yaşar.)
   let vfs: VirtualFace[] = recalculateVirtualFacesForShape(
-    parent, store.virtualFaces, shapes, 'all'
+    parentFresh, freshVirtualFaces, shapes, 'all'
   );
   if (updateVirtualFace) {
     for (const f of vfs) updateVirtualFace(f.id, f);
   }
 
-  const parentPos: [number, number, number] = [...(parent.position as any)] as any;
+  const parentPos: [number, number, number] = [...(parentFresh.position as any)] as any;
   const parentMax = Math.max(
-    parseFloat((parent.parameters as any)?.width) || 0,
-    parseFloat((parent.parameters as any)?.height) || 0,
-    parseFloat((parent.parameters as any)?.depth) || 0
+    parseFloat((parentFresh.parameters as any)?.width) || 0,
+    parseFloat((parentFresh.parameters as any)?.height) || 0,
+    parseFloat((parentFresh.parameters as any)?.depth) || 0
   ) || 2000;
 
   // Önce gelenlerin taze katıları — id → replicad katı + meta.
@@ -415,9 +439,9 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
       // sınır yüzeyinde biçilir (istenen: "kübün referans sınırlarına çarpıp
       // durmalı, ölçüsünü açıya göre güncellemeli"). Kesişim panel katısını
       // yok ederse (tam dışarıda) uygulanmaz — güvenlik.
-      if ((parent as any).replicadShape) {
+      if ((parentFresh as any).replicadShape) {
         try {
-          const clipped = await performBooleanIntersection(rp, safeClone((parent as any).replicadShape));
+          const clipped = await performBooleanIntersection(rp, safeClone((parentFresh as any).replicadShape));
           const cb = bb6(clipped);
           if (cb && isFinite(cb[0]) && (cb[3] - cb[0]) > 1e-3 && (cb[4] - cb[1]) > 1e-3 && (cb[5] - cb[2]) > 1e-3) {
             rp = clipped;

@@ -406,6 +406,33 @@ export function recalculateVirtualFacesForShape(
     s => s.type === 'panel' && s.parameters?.parentShapeId === shape.id
   );
 
+  // ── SIRA ÖNCELİĞİ (bölge katmanı) ────────────────────────────────────────
+  // Köşe/bindirme önceliğini asıl belirleyen AYAK İZİ kırpmasıdır: hangi
+  // panelin ayak izi hangi VF'ye damgalanırsa o panel köşede TAM boy kalır,
+  // öteki kısalır. Bu yüzden öncelik BURADA uygulanır: bir VF'ye yalnız
+  // kendisinden daha ÖNCELİKLİ (virtualFaces dizisinde daha ÖNCE gelen)
+  // kardeşlerin ayak izleri damgalanır. Kullanıcı sırayı değiştirince
+  // (reorderVirtualFaceGroup) damga yönü döner → basan↔basılan güncellenir.
+  // İSTİSNA: DÖNMÜŞ kardeşin ayak izi sıra-üstüdür (dönüş bilinçli eylemdir;
+  // motor K2 gönyesiyle tutarlı) ve her VF'ye damgalanır.
+  const vfIndexOf = new Map<string, number>();
+  virtualFaces.forEach((f, i) => vfIndexOf.set(f.id, i));
+  const isRotatedPanel = (p: any): boolean =>
+    ((p?.parameters?.rotateSteps?.length ?? 0) > 0) ||
+    (Array.isArray(p?.parameters?.transformSteps) &&
+      p.parameters.transformSteps.some((st: any) => st?.type === 'rotate'));
+  const panelPriority = (p: any): number => {
+    const idx = vfIndexOf.get(p?.parameters?.virtualFaceId);
+    return idx != null ? idx : Number.MAX_SAFE_INTEGER;
+  };
+  const stampingPanelsFor = (vfId: string): any[] => {
+    const myIdx = vfIndexOf.get(vfId);
+    return childPanels.filter(p =>
+      p.parameters?.virtualFaceId !== vfId &&
+      (isRotatedPanel(p) || (myIdx != null && panelPriority(p) < myIdx))
+    );
+  };
+
   const updatedMap = new Map<string, VirtualFace>();
 
   for (const vf of shapeFaces) {
@@ -419,14 +446,12 @@ export function recalculateVirtualFacesForShape(
       // kırpılır; yüzleri ve merkezleri değişmez.
       const regen = regenerateParentFaceShapeVF(
         vf, shape, faces, faceGroups, localToWorld, worldToLocal,
-        childPanels.filter(p => p.parameters?.virtualFaceId !== vf.id)
+        stampingPanelsFor(vf.id)
       );
       updatedMap.set(vf.id, regen || vf);
     } else {
       const subtractions = shape.subtractionGeometries || [];
-      const panelsExcludingSelf = childPanels.filter(
-        p => p.parameters?.virtualFaceId !== vf.id
-      );
+      const panelsExcludingSelf = stampingPanelsFor(vf.id);
       const clipped = clipVirtualFaceAgainstSubtractionsAndPanels(
         vf, subtractions, panelsExcludingSelf, localToWorld, worldToLocal
       );

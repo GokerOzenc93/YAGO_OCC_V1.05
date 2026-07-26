@@ -249,7 +249,7 @@ export const useAppStore=create<AppState>((set,get)=>({
   addVirtualFace:(v)=>set((s)=>({virtualFaces:[...s.virtualFaces,v]})),
   updateVirtualFace:(id,u)=>set((s)=>({virtualFaces:s.virtualFaces.map(f=>f.id===id?{...f,...u}:f)})),
   deleteVirtualFace:(id)=>set((s)=>({virtualFaces:s.virtualFaces.filter(f=>f.id!==id)})),
-  reorderVirtualFaces:(shapeId,fromIndex,toIndex)=>set((s)=>{
+  reorderVirtualFaces:(shapeId,fromIndex,toIndex)=>{set((s)=>{
     const shapeFaces=s.virtualFaces.filter(f=>f.shapeId===shapeId);
     if(fromIndex<0||fromIndex>=shapeFaces.length||toIndex<0||toIndex>=shapeFaces.length||fromIndex===toIndex)return{};
     const reordered=[...shapeFaces];
@@ -258,8 +258,11 @@ export const useAppStore=create<AppState>((set,get)=>({
     const queue=[...reordered];
     const next=s.virtualFaces.map(f=>f.shapeId===shapeId?queue.shift()!:f);
     return{virtualFaces:next};
-  }),
-  reorderVirtualFaceGroup:(shapeId,fromIds,toGroupFirstId)=>set((s)=>{
+  });
+  // SIRA DEĞİŞTİ → paneller yeni öncelikle yeniden üretilir (basan↔basılan güncellenir).
+  import('./components/PanelRebuildService').then(({rebuildPanelsForParent})=>rebuildPanelsForParent(shapeId));
+  },
+  reorderVirtualFaceGroup:(shapeId,fromIds,toGroupFirstId)=>{set((s)=>{
     const shapeFaces=s.virtualFaces.filter(f=>f.shapeId===shapeId);
     const fromSet=new Set(fromIds);
     const group=shapeFaces.filter(f=>fromSet.has(f.id));
@@ -270,7 +273,10 @@ export const useAppStore=create<AppState>((set,get)=>({
     const queue=[...rest];
     const next=s.virtualFaces.map(f=>f.shapeId===shapeId?queue.shift()!:f);
     return{virtualFaces:next};
-  }),
+  });
+  // SIRA DEĞİŞTİ → paneller yeni öncelikle yeniden üretilir.
+  import('./components/PanelRebuildService').then(({rebuildPanelsForParent})=>rebuildPanelsForParent(shapeId));
+  },
   getVirtualFacesForShape:(sid)=>get().virtualFaces.filter(f=>f.shapeId===sid),
   recalculateVirtualFacesForShape:(sid)=>{
     const s=get(),sh=s.shapes.find(x=>x.id===sid);
