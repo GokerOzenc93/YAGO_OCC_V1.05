@@ -425,11 +425,21 @@ export function recalculateVirtualFacesForShape(
     const idx = vfIndexOf.get(p?.parameters?.virtualFaceId);
     return idx != null ? idx : Number.MAX_SAFE_INTEGER;
   };
+  const hasMoveSteps = (p: any): boolean => {
+    const steps = Array.isArray(p?.parameters?.transformSteps) ? p.parameters.transformSteps : [];
+    return steps.some((st: any) => st?.type === 'move');
+  };
   const stampingPanelsFor = (vfId: string): any[] => {
     const myIdx = vfIndexOf.get(vfId);
+    // Taşınan panelin VF'si TÜM kardeşler tarafından kırpılır (yalnızca
+    // önceki sıradakiler değil). K1 önceliği statik yerleşim içindir —
+    // kullanıcı bir paneli açıkça taşıdığında, o panel komşusunun içine
+    // girmemeli; komşunun ayak izine kırpılarak yaslanmalıdır.
+    const ownerPanel = childPanels.find(p => p.parameters?.virtualFaceId === vfId);
+    const ownerMoved = ownerPanel ? hasMoveSteps(ownerPanel) : false;
     return childPanels.filter(p =>
       p.parameters?.virtualFaceId !== vfId &&
-      (isRotatedPanel(p) || (myIdx != null && panelPriority(p) < myIdx))
+      (isRotatedPanel(p) || ownerMoved || (myIdx != null && panelPriority(p) < myIdx))
     );
   };
 
