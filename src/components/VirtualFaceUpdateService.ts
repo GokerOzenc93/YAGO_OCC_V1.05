@@ -413,13 +413,21 @@ export function recalculateVirtualFacesForShape(
   // kendisinden daha ÖNCELİKLİ (virtualFaces dizisinde daha ÖNCE gelen)
   // kardeşlerin ayak izleri damgalanır. Kullanıcı sırayı değiştirince
   // (reorderVirtualFaceGroup) damga yönü döner → basan↔basılan güncellenir.
-  // BAĞ KARARLILIĞI: Dönmüş panelin ayak izi artık kardeş VF'lere ZORLA
-  // damgalanmaz. Dönüş açısı büyüdükçe ayak izi yüzeyi süpürür ve komşu VF'yi
-  // aşırı kırpar → komşu panel küçülür/zıplar. VF (yüz bağını) sabit tutmak
-  // için dönmüş panel de aynı öncelik kuralına uyar: yalnızca kendinden ÖNCE
-  // gelen kardeşler damgalar. Asıl geometrik kesim Phase B'de (boolean) yapılır.
+  // BAĞ KARARLILIĞI (yüz-ID bağı): VF bölgesi, panelin YÜZE BAĞLI olduğunu
+  // temsil eder. Dönmüş panel artık o yüzde düz bir panel değildir — ayak izi
+  // açıyla büyüdükçe yüzeyi süpürür ve komşu VF'nin seed'ini örter; bölge
+  // hesabı komşuyu yanlış bölgeye taşır ("dönen panelin üstüne fırladı").
+  // Dönmüş panelin yüzeyle geometrik etkileşimi Phase B'de (gönye/gövde kesimi)
+  // yapılır — VF bölgesine HİÇBİR ZAMAN damgalanmaz. Yalnızca DÜZ ve önceliği
+  // yüksek (VF dizisinde daha önce gelen) kardeşler damgalar.
   const vfIndexOf = new Map<string, number>();
   virtualFaces.forEach((f, i) => vfIndexOf.set(f.id, i));
+  const isRotatedPanel = (p: any): boolean => {
+    const t = p?.parameters?.transformSteps;
+    if (Array.isArray(t) && t.some((st: any) => st?.type === 'rotate')) return true;
+    const rs = p?.parameters?.rotateSteps;
+    return Array.isArray(rs) && rs.length > 0;
+  };
   const panelPriority = (p: any): number => {
     const idx = vfIndexOf.get(p?.parameters?.virtualFaceId);
     return idx != null ? idx : Number.MAX_SAFE_INTEGER;
@@ -428,6 +436,7 @@ export function recalculateVirtualFacesForShape(
     const myIdx = vfIndexOf.get(vfId);
     return childPanels.filter(p =>
       p.parameters?.virtualFaceId !== vfId &&
+      !isRotatedPanel(p) &&
       (myIdx != null && panelPriority(p) < myIdx)
     );
   };
