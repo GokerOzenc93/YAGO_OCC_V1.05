@@ -1104,7 +1104,7 @@ export function computeFreeRegionLocal(
           console.log('[YAGO][BÖLGE] süreklilik: seed karşı bileşende kaldı, önceki bölgeyle örtüşen bileşen seçildi. örtüşme=', bo);
         }
       }
-    } else if (nComp === 1) {
+    } else if (nComp === 1 && footprints.length > 0) {
       // TEK BAĞLANTILI SÜREKLİLİK: şerit ayak izi yüz kenarına ulaşmayıp
       // boşluk bıraktığında bölge tek bileşen kalır; ama kırpma çizgisinin
       // hangi tarafı tutacağını ÇAPA belirler. Statik seed engel süpürmesiyle
