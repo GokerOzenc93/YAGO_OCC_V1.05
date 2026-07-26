@@ -262,15 +262,6 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
   console.log('[YAGO][SIRA]', parentShapeId, 'panel sırası=',
     children.map(c => `${c.id.slice(-6)}(vf#${orderOf(c) < 1e9 ? orderOf(c) : '?'})`).join(' → '));
 
-  // 1) BÖLGE OTORİTESİ: tüm VF'ler güncel geometri + kardeşlerle yenilenir.
-  //    (rawFaceBBox mutlak çıpa + sideRelations sözleşmesi VFS içinde yaşar.)
-  let vfs: VirtualFace[] = recalculateVirtualFacesForShape(
-    parentFresh, freshVirtualFaces, shapes, 'all'
-  );
-  if (updateVirtualFace) {
-    for (const f of vfs) updateVirtualFace(f.id, f);
-  }
-
   const parentPos: [number, number, number] = [...(parentFresh.position as any)] as any;
   const parentMax = Math.max(
     parseFloat((parentFresh.parameters as any)?.width) || 0,
@@ -278,46 +269,31 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
     parseFloat((parentFresh.parameters as any)?.depth) || 0
   ) || 2000;
 
-  // Önce gelenlerin taze katıları — id → replicad katı + meta.
   const builtSolid = new Map<string, any>();
   const builtGrown = new Map<string, any>();
   const builtBand = new Map<string, { nW: THREE.Vector3; dMin: number; dMax: number } | null>();
   const meta = new Map<string, { att: PanelAttachment; thickness: number; isRotated: boolean; steps: TransformStep[] }>();
 
-  // ── FAZ A: TÜM taban+adım katıları KESİMSİZ üretilir ─────────────────────
-  // Kesici havuzu sıradan bağımsız hazırlanır: SONRA yerleştirilen dönmüş bir
-  // panel, ÖNCE yerleştirilen düz paneli kesebilsin diye (K2 sıra-üstüdür;
-  // "panel dönünce onu etkileyen paneller güncellenmeli"). Kesiciler ham
-  // (kesimsiz) katılardır — temas hacmini en doğru ham hacim tanımlar.
+  // ── ÖN-GEÇİŞ: taşıma/dönme UYGULANMIŞ ham geometrileri ERKEN yaz ──────────
+  // KRİTİK SIRA: VF regen (aşağıda) komşu VF'leri panellerin GÜNCEL
+  // geometrisinden kırpar. Ama move/rotate yalnız ADIM parametresi yazar,
+  // geometriyi değil — bu yüzden regen taşınan panelin ESKİ ayak izini görüp
+  // komşuları eski konuma göre kırpıyordu ("panel taşınınca komşular
+  // küçülüp büyümüyor"). Çözüm: adım-uygulanmış ham geometriyi regen'den ÖNCE
+  // store'a yaz. Böylece regen taze ayak izlerini görür; kesimler Faz B'de.
+  const vfsPre: VirtualFace[] = recalculateVirtualFacesForShape(
+    parentFresh, freshVirtualFaces, shapes, 'all'
+  );
   for (const panel of children) {
     try {
-      const att = getPanelAttachment(panel, vfs);
-      if (!att) {
-        console.warn('[YAGO][MOTOR] bağ kaydı yok, panel atlandı:', panel.id);
-        continue;
-      }
+      const att = getPanelAttachment(panel, vfsPre);
+      if (!att) continue;
       const thickness = parseFloat((panel.parameters as any)?.panelThickness) || 18;
       const steps = getUnifiedSteps(panel);
       const isRotated = steps.some(s => s.type === 'rotate');
-
-      // K5: taban = güncel VF çokgeni (highlight = panel).
-      // GROW & SHRINK (dönmüş panel): Panel VF'nin düz izdüşümü kadar üretilip
-      // döndürülürse, eğik hipotenüs düz projeksiyondan uzun olduğundan panel
-      // açılı boşluğu DOLDURAMAZ ("ölçüsü büyümüyor"). Bu yüzden dönmüş panelin
-      // tabanı planeExpand ile BÜYÜK üretilir; döndürülür; sonra K6 ebeveyn
-      // kesişimi + komşu kesimleri onu açıya göre tam duvara/komşuya kadar
-      // KIRPAR. Böylece dönme açısı arttıkça panel kendini uzatıp gerçek
-      // temasa dayanır. Düz panel expand almaz (highlight=panel birebir).
       const expand = isRotated ? parentMax : 0;
-      let rp = await createPanelFromVirtualFace(
-        att.vf.vertices, att.vf.normal, thickness, expand
-      );
-      if (!rp) {
-        console.warn('[YAGO][MOTOR] taban üretilemedi (dejenere VF?), panel atlandı:', panel.id);
-        continue;
-      }
-
-      // ADIM TEKRARI — sıralı, çerçeve-duyarlı, parametrik pivotlu.
+      let rp = await createPanelFromVirtualFace(att.vf.vertices, att.vf.normal, thickness, expand);
+      if (!rp) continue;
       const { ops } = composeSteps(steps, att.vf);
       const applyOps = (solid: any) => {
         let s = solid;
@@ -328,24 +304,31 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
         return s;
       };
       rp = applyOps(rp);
-
-      // KESİCİ HAVUZU: dönmüş panel KESİCİ olarak kullanılırken (kardeşleri
-      // keserken) GERÇEK boyutunda olmalı — expand'li grow katısı kardeşleri
-      // fazla keser. Bu yüzden dönmüş panel için ayrıca expand'siz gerçek katı
-      // üretilip havuza o konur; düz panelde grow==gerçek (expand=0).
       let cutterSolid = rp;
       if (isRotated) {
         const trueBase = await createPanelFromVirtualFace(att.vf.vertices, att.vf.normal, thickness, 0);
         if (trueBase) cutterSolid = applyOps(trueBase);
       }
-
-      builtSolid.set(panel.id, cutterSolid);          // havuz: gerçek katı (kesici)
-      builtGrown.set(panel.id, rp);                   // kendi grow katısı (kırpılacak)
+      builtSolid.set(panel.id, cutterSolid);
+      builtGrown.set(panel.id, rp);
       builtBand.set(panel.id, isRotated ? rotatedBand(panel, att.vf, thickness) : null);
       meta.set(panel.id, { att, thickness, isRotated, steps });
+      // Adım-uygulanmış HAM geometriyi erken yaz → regen taze ayak izini görsün.
+      const gPre = convertReplicadToThreeGeometry(cutterSolid);
+      updateShape(panel.id, { geometry: gPre, position: parentPos, rotation: [0, 0, 0] } as any);
     } catch (err) {
-      console.error('[YAGO][MOTOR] Faz A hatası:', panel.id, err);
+      console.error('[YAGO][MOTOR] ön-geçiş hatası:', panel.id, err);
     }
+  }
+
+  // 1) BÖLGE OTORİTESİ: artık paneller GÜNCEL (taşınmış) geometride — komşu
+  //    VF'ler doğru ayak izleriyle kırpılır ("küçülüp büyüme" düzelir).
+  const freshShapes = useAppStore.getState().shapes;
+  let vfs: VirtualFace[] = recalculateVirtualFacesForShape(
+    parentFresh, useAppStore.getState().virtualFaces, freshShapes, 'all'
+  );
+  if (updateVirtualFace) {
+    for (const f of vfs) updateVirtualFace(f.id, f);
   }
 
   // ── FAZ B: KURAL TABLOSU ile birleşim kesimleri ──────────────────────────
