@@ -465,7 +465,11 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
           // iç-içe geçmeyi temizler. Kardeşi 2mm şişirerek (her yöne ölçekle)
           // ince temas kenarlarında boolean motoru hassasiyet sorunu yaşamasın.
           try {
-            const sibBody = builtSolid.get(sib.id) ?? sibSolid;
+            // Dönmüş dominant panelin GÖRSEL mesh'i genişletilmiş (builtGrown)
+            // versiyondur. Submissive düz paneli O şekle göre kesilmeli ki
+            // aralarında görsel iç-içe geçme kalmasın. builtSolid (gerçek boyut)
+            // kullanılırsa kesim yetersiz kalır ve genişletilmiş panel içine girer.
+            const sibBody = builtGrown.get(sib.id) ?? builtSolid.get(sib.id) ?? sibSolid;
             const bodyResult = await performBooleanCut(safeClone(rp), safeClone(sibBody));
             const bodyB = bb6(bodyResult);
             const rpB = bb6(rp);
@@ -533,49 +537,6 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
     }
   }
 
-  // ── KÜRPMA GEÇİŞİ ──────────────────────────────────────────────────────
-  // Dönmüş (genişletilmiş) paneller kutu sınırına kadar uzanır (K6), ama
-  // kardeş panellerin İÇİNE de girmiş olabilirler. Burada her dönmüş panelin
-  // görsel mesh'ini tüm kardeşlerin gerçek gövdesiyle (builtSolid) keserek
-  // iç-içe geçmeyi önleriz. Tüm paneller zaten build edilmiş olduğundan
-  // builtSolid haritası tam doludur.
-  for (let pi = 0; pi < children.length; pi++) {
-    const panel = children[pi];
-    const m = meta.get(panel.id);
-    if (!m) continue;
-    const isRotated = m.steps.some((st: any) => st.type === 'rotate');
-    if (!isRotated) continue;
-
-    let rp: any = finalSolids.get(panel.id);
-    if (!rp) continue;
-    let changed = false;
-
-    for (let si = 0; si < children.length; si++) {
-      if (si === pi) continue;
-      const sib = children[si];
-      const sibSolid = builtSolid.get(sib.id);
-      if (!sibSolid) continue;
-      if (!aabbTouch(rp, sibSolid)) continue;
-      try {
-        const result = await performBooleanCut(safeClone(rp), safeClone(sibSolid));
-        const rb = bb6(result);
-        if (rb && (rb[3] - rb[0]) > 1e-3 && (rb[4] - rb[1]) > 1e-3 && (rb[5] - rb[2]) > 1e-3) {
-          rp = result;
-          changed = true;
-        }
-      } catch { /* kırpma başarısız — atla */ }
-    }
-
-    if (changed) {
-      const geometry = convertReplicadToThreeGeometry(rp);
-      updateShape(panel.id, {
-        geometry,
-        position: parentPos,
-        rotation: [0, 0, 0],
-        replicadShape: rp,
-      } as any);
-    }
-  }
 }
 
 // ── K2 yarım-uzay kurucusu ────────────────────────────────────────────────
