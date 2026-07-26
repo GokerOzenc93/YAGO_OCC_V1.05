@@ -198,8 +198,11 @@ export function rotatedBand(
 // ── Rebuild orkestrasyonu ─────────────────────────────────────────────────
 const inFlight = new Set<string>();
 const pending = new Set<string>();
+const generation = new Map<string, number>();
 
 export async function rebuildPanelsForParent(parentShapeId: string): Promise<void> {
+  const gen = (generation.get(parentShapeId) ?? 0) + 1;
+  generation.set(parentShapeId, gen);
   if (inFlight.has(parentShapeId)) {
     pending.add(parentShapeId);
     console.info('[PanelRebuild] rebuild already in flight for', parentShapeId, '— queued a re-run');
@@ -207,7 +210,7 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
   }
   inFlight.add(parentShapeId);
   try {
-    await rebuildOnce(parentShapeId);
+    await rebuildOnce(parentShapeId, gen);
   } finally {
     inFlight.delete(parentShapeId);
     if (pending.has(parentShapeId)) {
@@ -217,10 +220,12 @@ export async function rebuildPanelsForParent(parentShapeId: string): Promise<voi
   }
 }
 
-async function rebuildOnce(parentShapeId: string): Promise<void> {
+async function rebuildOnce(parentShapeId: string, gen: number): Promise<void> {
   const store = useAppStore.getState();
   const parent = store.shapes.find(s => s.id === parentShapeId);
   if (!parent) return;
+  // Eğer bu rebuild başlarken daha yenisi istendiyse, hiç başlama.
+  if (generation.get(parentShapeId) !== gen) return;
 
   const { recalculateVirtualFacesForShape } = await import('./VirtualFaceUpdateService');
   const {
@@ -314,6 +319,9 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
       builtBand.set(panel.id, isRotated ? rotatedBand(panel, att.vf, thickness) : null);
       meta.set(panel.id, { att, thickness, isRotated, steps });
       // Adım-uygulanmış HAM geometriyi erken yaz → regen taze ayak izini görsün.
+      // STALE GUARD: daha yeni rebuild istendiyse yazma — bayat geometriyi
+      // ekrana basıp bir-adım-gecikmeli kesimi önler.
+      if (generation.get(parentShapeId) !== gen) return;
       const gPre = convertReplicadToThreeGeometry(cutterSolid);
       updateShape(panel.id, { geometry: gPre, position: parentPos, rotation: [0, 0, 0] } as any);
     } catch (err) {
@@ -449,6 +457,8 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
         } catch (e) { console.warn('[YAGO][MOTOR] K6 kesişim hatası:', e); }
       }
 
+      // STALE GUARD: nihai kesim sonucunu yazmadan önce yenilenme kontrolü.
+      if (generation.get(parentShapeId) !== gen) return;
       // ÖNEMLİ: kesici havuzu (builtSolid) HAM kalır — nihai katıyı havuza
       // yazmak sıraya bağımlılığı arka kapıdan geri sokar. Nihai katı yalnız
       // şekle gider.
