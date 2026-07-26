@@ -434,11 +434,24 @@ export function recalculateVirtualFacesForShape(
   };
   const stampingPanelsFor = (vfId: string): any[] => {
     const myIdx = vfIndexOf.get(vfId);
-    return childPanels.filter(p =>
-      p.parameters?.virtualFaceId !== vfId &&
-      !isRotatedPanel(p) &&
-      (myIdx != null && panelPriority(p) < myIdx)
-    );
+    return childPanels
+      .filter(p =>
+        p.parameters?.virtualFaceId !== vfId &&
+        (myIdx != null && panelPriority(p) < myIdx)
+      )
+      .map(p => {
+        // Dönmüş panelin ayak izi, dönmüş geometriden değil, VF'nin (yüze bağlı
+        // düz bölge) köşelerinden gelir. Dönüş açıyı büyüttükçe geometrik ayak
+        // izi yüzeyi süpürür ve silueti yanlış bölge üretir. VF köşeleri
+        // panelin yüzde gerçekten kapladığı düz alanı temsil eder.
+        if (isRotatedPanel(p)) {
+          const pvf = virtualFaces.find(f => f.id === p.parameters?.virtualFaceId);
+          if (pvf?.vertices && pvf.vertices.length >= 3) {
+          return { ...p, __flatFootprintVertices: pvf.vertices };
+          }
+        }
+        return p;
+      });
   };
 
   const updatedMap = new Map<string, VirtualFace>();

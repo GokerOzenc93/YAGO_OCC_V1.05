@@ -709,6 +709,21 @@ export function panelFootprintInParentLocal(
   nrm: THREE.Vector3, planeN: number,
   u: THREE.Vector3, v: THREE.Vector3, tol = 3.0
 ): Point2D[] | null {
+  // DÖNMÜŞ PANEL DÜZ AYAK İZİ: panel döndüğünde geometrik siluet yüzeyi süpürür
+  // ve yanlış/abartılı ayak izi üretir. VF köşeleri panelin yüzde gerçekten
+  // kapladığı düz alanı temsil eder. Çağıran taraf (__flatFootprintVertices)
+  // bu köşeleri iletirse, doğrudan u/v düzlemine izdüşürülür — dönüş açısından
+  // bağımsız sabit ayak izi.
+  const flatVerts: [number, number, number][] | undefined = panel?.__flatFootprintVertices;
+  if (flatVerts && flatVerts.length >= 3) {
+    const out: Point2D[] = [];
+    for (const c of flatVerts) {
+      const w = new THREE.Vector3(c[0], c[1], c[2]).applyMatrix4(parentWorldToLocal);
+      out.push({ x: w.dot(u), y: w.dot(v) });
+    }
+    const hull = convexHull2D(out);
+    return hull.length >= 3 ? hull : null;
+  }
   if (!panel?.geometry) return null;
   const pos = panel.geometry.getAttribute('position');
   if (!pos) return null;
