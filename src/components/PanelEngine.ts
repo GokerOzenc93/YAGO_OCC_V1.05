@@ -381,7 +381,11 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
   for (let pi = 0; pi < children.length; pi++) {
     const panel = children[pi];
     const m = meta.get(panel.id);
-    let rp = builtGrown.get(panel.id) ?? builtSolid.get(panel.id);
+    // DÖNMÜŞ panelin GÖRSEL çıktısı gerçek boyut (builtSolid) olmalıdır.
+    // builtGrown (genişletilmiş) yalnız kardeşleri kesmek içindir (gönye yarım-uzayının
+    // hammaddesi), panelin kendisinin görüntüsü değil. Düz panelde expand=0 olduğundan
+    // builtGrown === builtSolid'dir → değişiklik yok.
+    let rp = builtSolid.get(panel.id) ?? builtGrown.get(panel.id);
     if (!m || !rp) continue;
     const { att, thickness, isRotated } = m;
     try {
@@ -431,15 +435,9 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
           else if (!isRotated && !sibRotated) mode = 'flat'; // düz ← düz: K1 flat
           else mode = 'body';                              // dönmüş submissive: gövde kesimi
         }
-        console.log('[YAGO][MOD]', panel.id, 'vs', sib.id, 'sibDominant=', sibDominant, 'isRotated=', isRotated, 'sibRotated=', sibRotated, 'mode=', mode);
         if (mode === 'none') continue;
 
-        if (!aabbTouch(rp, sibSolid)) {
-          console.log('[YAGO][AABB-ATLA]', panel.id, '<-', sib.id, 'mode=', mode,
-            'rpBB=', bb6(rp)?.map((n: number) => n.toFixed(0)).join(','),
-            'sibBB=', bb6(sibSolid)?.map((n: number) => n.toFixed(0)).join(','));
-          continue;
-        }
+        if (!aabbTouch(rp, sibSolid)) continue;
 
         if (mode === 'miter') {
           const band = builtBand.get(sib.id) ?? rotatedBand(sib, sm.att.vf, sm.thickness);
@@ -470,29 +468,18 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
           // iç-içe geçmeyi temizler. Kardeşi 2mm şişirerek (her yöne ölçekle)
           // ince temas kenarlarında boolean motoru hassasiyet sorunu yaşamasın.
           try {
-            const sibGrown = builtSolid.get(sib.id) ?? sibSolid;
-            const rpBefore = bb6(rp);
-            const sibBB = bb6(sibGrown);
-            console.log('[YAGO][GÖVDE-KESİM-HAZIRLIK]', panel.id, '<-', sib.id,
-              'rpBB=', rpBefore?.map((n: number) => n.toFixed(0)).join(','),
-              'sibBB=', sibBB?.map((n: number) => n.toFixed(0)).join(','));
-            const bodyResult = await performBooleanCut(safeClone(rp), safeClone(sibGrown));
+            const sibBody = builtSolid.get(sib.id) ?? sibSolid;
+            const bodyResult = await performBooleanCut(safeClone(rp), safeClone(sibBody));
             const bodyB = bb6(bodyResult);
-            const rpB = rpBefore;
-            console.log('[YAGO][GÖVDE-KESİM-SONUÇ]', panel.id, '<-', sib.id,
-              'sonuçBB=', bodyB?.map((n: number) => n.toFixed(0)).join(','),
-              'delta=', rpB && bodyB ? bbDelta(rpB, bodyB).toFixed(1) : 'N/A');
+            const rpB = bb6(rp);
             if (bodyB && rpB &&
                 (bodyB[3] - bodyB[0]) > 1e-3 &&
                 (bodyB[4] - bodyB[1]) > 1e-3 &&
                 (bodyB[5] - bodyB[2]) > 1e-3 &&
                 bbDelta(rpB, bodyB) > 0.5) {
               rp = bodyResult;
-              console.log('[YAGO][GÖVDE-KESİM]', panel.id, '<-', sib.id, 'gönye sonrası gövde kesimi uygulandı');
-            } else {
-              console.log('[YAGO][GÖVDE-KESİM-ATLA]', panel.id, '<-', sib.id, 'delta yetersiz veya geçersiz sonuç');
             }
-          } catch (e) { console.warn('[YAGO][MOTOR] gönye-sonrası gövde kesim hatası:', e); }
+          } catch (e) { /* gönye sonrası gövde kesim başarısız — sorun değil */ }
           continue;
         }
 
