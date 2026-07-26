@@ -456,11 +456,37 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
             }
             console.log('[YAGO][GÖNYE]', panel.id, '<-', sib.id, 'değişim=', d.toFixed(1));
             if (d > 0.001) rp = attempt;
-            continue;
           }
-          // gönye kurulamadı (taşma yok vb.) → dönmüş kardeşin GÖVDESİYLE kes
-          try { rp = await performBooleanCut(rp, safeClone(sibSolid)); }
-          catch (e) { console.warn('[YAGO][MOTOR] gönye-yedek gövde kesim hatası:', e); }
+          // Gönye kesiminden SONRA (veya gönye kurulamadıysa) dönmüş kardeşin
+          // GERÇEK GÖVDESİYLE boolean çıkarma yap. Gönye yalnızca düzlemsel bir
+          // yarım-uzay kesimidir ve büyük açılarda (ör. -30°) eğimli panelin
+          // gerçek geometrisi o düzlemin ötesine taşar. Gövde kesimi kalan
+          // iç-içe geçmeyi temizler. Kardeşi 2mm şişirerek (her yöne ölçekle)
+          // ince temas kenarlarında boolean motoru hassasiyet sorunu yaşamasın.
+          try {
+            const sibGrown = builtSolid.get(sib.id) ?? sibSolid;
+            const rpBefore = bb6(rp);
+            const sibBB = bb6(sibGrown);
+            console.log('[YAGO][GÖVDE-KESİM-HAZIRLIK]', panel.id, '<-', sib.id,
+              'rpBB=', rpBefore?.map((n: number) => n.toFixed(0)).join(','),
+              'sibBB=', sibBB?.map((n: number) => n.toFixed(0)).join(','));
+            const bodyResult = await performBooleanCut(safeClone(rp), safeClone(sibGrown));
+            const bodyB = bb6(bodyResult);
+            const rpB = rpBefore;
+            console.log('[YAGO][GÖVDE-KESİM-SONUÇ]', panel.id, '<-', sib.id,
+              'sonuçBB=', bodyB?.map((n: number) => n.toFixed(0)).join(','),
+              'delta=', rpB && bodyB ? bbDelta(rpB, bodyB).toFixed(1) : 'N/A');
+            if (bodyB && rpB &&
+                (bodyB[3] - bodyB[0]) > 1e-3 &&
+                (bodyB[4] - bodyB[1]) > 1e-3 &&
+                (bodyB[5] - bodyB[2]) > 1e-3 &&
+                bbDelta(rpB, bodyB) > 0.5) {
+              rp = bodyResult;
+              console.log('[YAGO][GÖVDE-KESİM]', panel.id, '<-', sib.id, 'gönye sonrası gövde kesimi uygulandı');
+            } else {
+              console.log('[YAGO][GÖVDE-KESİM-ATLA]', panel.id, '<-', sib.id, 'delta yetersiz veya geçersiz sonuç');
+            }
+          } catch (e) { console.warn('[YAGO][MOTOR] gönye-sonrası gövde kesim hatası:', e); }
           continue;
         }
 
