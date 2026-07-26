@@ -425,38 +425,12 @@ export function recalculateVirtualFacesForShape(
     const idx = vfIndexOf.get(p?.parameters?.virtualFaceId);
     return idx != null ? idx : Number.MAX_SAFE_INTEGER;
   };
-  const hasMoveSteps = (p: any): boolean => {
-    const steps = Array.isArray(p?.parameters?.transformSteps) ? p.parameters.transformSteps : [];
-    return steps.some((st: any) => st?.type === 'move');
-  };
   const stampingPanelsFor = (vfId: string): any[] => {
     const myIdx = vfIndexOf.get(vfId);
-    const ownerPanel = childPanels.find(p => p.parameters?.virtualFaceId === vfId);
-    if (!ownerPanel) return [];
-    const ownerMoved = hasMoveSteps(ownerPanel);
-    const ownerRotated = isRotatedPanel(ownerPanel);
-    // VF ayak-izi kırpması, Faz B kesim kurallarıyla BİREBİR AYNI olmalıdır:
-    // yalnızca KESİLEN panelin bölgesi küçülür; kesen panel tam boy korunur.
-    //   sahip \ kardeş │ dönmüş      │ düz (statik)    │ düz (taşınan)
-    //   ──────────────┼─────────────┼────────────────┼────────────────
-    //   düz           │ evet (gönye)│ K1: öncekiyse  │ evet (taşınan kesilir)
-    //   dönmüş        │ K1: öncekiyse│ evet (gövde)  │ evet (gövde)
-    return childPanels.filter(p => {
-      if (p.parameters?.virtualFaceId === vfId) return false;
-      const sibRotated = isRotatedPanel(p);
-      const sibMoved = hasMoveSteps(p);
-      const sibIdx = panelPriority(p);
-      if (ownerRotated) {
-        if (sibRotated) return sibIdx < (myIdx ?? Infinity); // K1
-        return true; // dönmüş ← düz: her sıra
-      } else {
-        if (sibRotated) return true; // düz ← dönmüş: gönye
-        // düz ← düz
-        if (ownerMoved && !sibMoved) return true;   // taşınan kesilir
-        if (!ownerMoved && sibMoved) return false;  // statik korunur
-        return sibIdx < (myIdx ?? Infinity);         // K1 (both-moved/both-static)
-      }
-    });
+    return childPanels.filter(p =>
+      p.parameters?.virtualFaceId !== vfId &&
+      (isRotatedPanel(p) || (myIdx != null && panelPriority(p) < myIdx))
+    );
   };
 
   const updatedMap = new Map<string, VirtualFace>();

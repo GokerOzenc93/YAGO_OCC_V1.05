@@ -350,30 +350,37 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
         const sibSolid = builtSolid.get(sib.id);
         if (!sm || !sibSolid) continue;
         const sibRotated = sm.isRotated;
-        const earlier = si < pi;
-        const panelMoved = m.steps.some(s => s.type === 'move');
-        const sibMoved = sm.steps.some(s => s.type === 'move');
 
-        // Kural tablosu (GÜNCEL — dinamik konum tabanlı):
-        //   Kesilen \ Kesici │ önceki DÜZ │ sonraki DÜZ │ DÖNMÜŞ
-        //   ─────────────────┼────────────┼─────────────┼──────────────
-        //   DÜZ panel (statik)│ K1 flat   │   —         │  K2 GÖNYE
-        //   DÜZ panel (taşınan)│ flat     │  flat       │  K2 GÖNYE
-        //   DÖNMÜŞ panel      │  K4 gövde │  K4 gövde   │  öncekiyse K4
-        // TAŞINAN panel, durduğu yerde TÜM düz komşularına yaslanır (kesilir) —
-        // sıra fark etmez. Statik komşu tam boy korunur (o kesilmez). Böylece
-        // "paneli taşıyınca komşunun içine giriyor" düzelir: taşınan panel
-        // komşusunun yüzeyinde biçilir. Her ikisi taşınmışsa K1 sırası karar verir
-        // (önceki tam boy, sonraki kısalır). Her ikisi statikse yine K1 geçerlidir.
-        let mode: 'none' | 'miter' | 'flat' | 'body' = 'none';
-        if (!isRotated && sibRotated) mode = 'miter';               // düz ← dönmüş: gönye
-        else if (!isRotated && !sibRotated) {
-          if (panelMoved && !sibMoved) mode = 'flat';              // taşınan ← statik: taşınan kesilir
-          else if (!panelMoved && sibMoved) mode = 'none';          // statik ← taşınan: statik korunur
-          else if (earlier) mode = 'flat';                          // K1: önceki düz keser (both-moved veya both-static)
+        // ── GEOMETRİK DOMINANS ──────────────────────────────────────────
+        // "panelin kalınlık tarafı yüzeyine denk geliyorsa o yüzey dominant
+        //  yüzeydir, taşınırsa geometrik olarak o yüzek her zaman keser
+        //  kısaltır" — bir panelin kalınlık KENARI komşunun geniş YÜZEYİNE
+        // değiyorsa, YÜZEY sahibi dominanttır: tam boy korunur, kenarı
+        // değen panel KISALIR. Sıra (indeks) yalnızca beraberlik durumunda
+        // (her ikisi de kenar-yüzey veya ikisi de düzlem) karar verir.
+        //
+        //   dominant = yüzeyi alınan panel (kesen, tam boy)
+        //   submissive = kenarı değen panel (kesilen, kısalır)
+        const tA = thinAxis(rp);
+        const tB = thinAxis(sibSolid);
+        const dot = Math.abs(tA.dot(tB));
+        const perp = dot < 0.3;
+        let sibDominant = si < pi; // varsayılan: önceki (alt sıra) dominant
+        if (perp) {
+          const panelEdgeMeetsSib = edgeWithinFace(rp, sibSolid);
+          const sibEdgeMeetsPanel = edgeWithinFace(sibSolid, rp);
+          if (panelEdgeMeetsSib && !sibEdgeMeetsPanel) sibDominant = true;
+          else if (sibEdgeMeetsPanel && !panelEdgeMeetsSib) sibDominant = false;
         }
-        else if (isRotated && !sibRotated) mode = 'body';           // dönmüş ← düz: her sıra
-        else if (isRotated && sibRotated && earlier) mode = 'body'; // dönmüş ← önceki dönmüş
+
+        // Yalnızca submissive (kesilen) panel işlenir. Dominant panel tam
+        // boy korunur — onu sibling döngüsünde kendi sırası geldiğinde keser.
+        let mode: 'none' | 'miter' | 'flat' | 'body' = 'none';
+        if (sibDominant) {
+          if (!isRotated && sibRotated) mode = 'miter';   // düz submissive ← dönmüş dominant: gönye
+          else if (!isRotated && !sibRotated) mode = 'flat'; // düz ← düz: K1 flat
+          else mode = 'body';                              // dönmüş submissive: gövde kesimi
+        }
         if (mode === 'none') continue;
 
         if (!aabbTouch(rp, sibSolid)) continue; // K4 ön-eleme
@@ -539,4 +546,15 @@ function thinAxis(s: any): THREE.Vector3 {
 function coplanarThin(a: any, b: any): boolean {
   const ta = thinAxis(a), tb = thinAxis(b);
   return Math.abs(ta.dot(tb)) > 0.9;
+}
+function edgeWithinFace(aSolid: any, bSolid: any): boolean {
+  const tB = thinAxis(bSolid);
+  const bB = bb6(bSolid), bA = bb6(aSolid);
+  if (!bB || !bA) return false;
+  const aCx = (bA[0] + bA[3]) / 2, aCy = (bA[1] + bA[4]) / 2, aCz = (bA[2] + bA[5]) / 2;
+  const aProj = tB.x * aCx + tB.y * aCy + tB.z * aCz;
+  const d0 = tB.x * bB[0] + tB.y * bB[1] + tB.z * bB[2];
+  const d1 = tB.x * bB[3] + tB.y * bB[4] + tB.z * bB[5];
+  const bMin = Math.min(d0, d1), bMax = Math.max(d0, d1);
+  return aProj >= bMin - 2 && aProj <= bMax + 2;
 }
