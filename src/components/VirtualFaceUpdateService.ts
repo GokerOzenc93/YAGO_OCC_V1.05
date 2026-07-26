@@ -413,14 +413,13 @@ export function recalculateVirtualFacesForShape(
   // kendisinden daha ÖNCELİKLİ (virtualFaces dizisinde daha ÖNCE gelen)
   // kardeşlerin ayak izleri damgalanır. Kullanıcı sırayı değiştirince
   // (reorderVirtualFaceGroup) damga yönü döner → basan↔basılan güncellenir.
-  // İSTİSNA: DÖNMÜŞ kardeşin ayak izi sıra-üstüdür (dönüş bilinçli eylemdir;
-  // motor K2 gönyesiyle tutarlı) ve her VF'ye damgalanır.
+  // BAĞ KARARLILIĞI: Dönmüş panelin ayak izi artık kardeş VF'lere ZORLA
+  // damgalanmaz. Dönüş açısı büyüdükçe ayak izi yüzeyi süpürür ve komşu VF'yi
+  // aşırı kırpar → komşu panel küçülür/zıplar. VF (yüz bağını) sabit tutmak
+  // için dönmüş panel de aynı öncelik kuralına uyar: yalnızca kendinden ÖNCE
+  // gelen kardeşler damgalar. Asıl geometrik kesim Phase B'de (boolean) yapılır.
   const vfIndexOf = new Map<string, number>();
   virtualFaces.forEach((f, i) => vfIndexOf.set(f.id, i));
-  const isRotatedPanel = (p: any): boolean =>
-    ((p?.parameters?.rotateSteps?.length ?? 0) > 0) ||
-    (Array.isArray(p?.parameters?.transformSteps) &&
-      p.parameters.transformSteps.some((st: any) => st?.type === 'rotate'));
   const panelPriority = (p: any): number => {
     const idx = vfIndexOf.get(p?.parameters?.virtualFaceId);
     return idx != null ? idx : Number.MAX_SAFE_INTEGER;
@@ -429,7 +428,7 @@ export function recalculateVirtualFacesForShape(
     const myIdx = vfIndexOf.get(vfId);
     return childPanels.filter(p =>
       p.parameters?.virtualFaceId !== vfId &&
-      (isRotatedPanel(p) || (myIdx != null && panelPriority(p) < myIdx))
+      (myIdx != null && panelPriority(p) < myIdx)
     );
   };
 
