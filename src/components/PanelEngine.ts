@@ -411,7 +411,13 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
         const panelEdgeMeetsSib = edgeWithinFace(rp, sibSolid, sibThin);
         const sibEdgeMeetsPanel = edgeWithinFace(sibSolid, rp, panelThin);
         let sibDominant: boolean;
-        if (panelEdgeMeetsSib && !sibEdgeMeetsPanel) {
+        // Dönmüş panel her zaman dominanttır: yüzey bağını ve yerini korur,
+        // diğer paneller onun dönmüş haline göre kesilir.
+        if (sibRotated && !isRotated) {
+          sibDominant = true;
+        } else if (isRotated && !sibRotated) {
+          sibDominant = false;
+        } else if (panelEdgeMeetsSib && !sibEdgeMeetsPanel) {
           sibDominant = true;
         } else if (sibEdgeMeetsPanel && !panelEdgeMeetsSib) {
           sibDominant = false;
