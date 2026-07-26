@@ -709,21 +709,6 @@ export function panelFootprintInParentLocal(
   nrm: THREE.Vector3, planeN: number,
   u: THREE.Vector3, v: THREE.Vector3, tol = 3.0
 ): Point2D[] | null {
-  // DÖNMÜŞ PANEL DÜZ AYAK İZİ: panel döndüğünde geometrik siluet yüzeyi süpürür
-  // ve yanlış/abartılı ayak izi üretir. VF köşeleri panelin yüzde gerçekten
-  // kapladığı düz alanı temsil eder. Çağıran taraf (__flatFootprintVertices)
-  // bu köşeleri iletirse, doğrudan u/v düzlemine izdüşürülür — dönüş açısından
-  // bağımsız sabit ayak izi.
-  const flatVerts: [number, number, number][] | undefined = panel?.__flatFootprintVertices;
-  if (flatVerts && flatVerts.length >= 3) {
-    const out: Point2D[] = [];
-    for (const c of flatVerts) {
-      const w = new THREE.Vector3(c[0], c[1], c[2]).applyMatrix4(parentWorldToLocal);
-      out.push({ x: w.dot(u), y: w.dot(v) });
-    }
-    const hull = convexHull2D(out);
-    return hull.length >= 3 ? hull : null;
-  }
   if (!panel?.geometry) return null;
   const pos = panel.geometry.getAttribute('position');
   if (!pos) return null;
@@ -1068,12 +1053,54 @@ export function computeFreeRegionLocal(
       }
       if (bi >= 0) {
         if (bi !== ci || bj !== cj) {
-          console.log('[YAGO][BÖLGE] bağ-ilişkisi: çapa kayıtlı tarafa zorlandı. kısıtN=', constraints.length);
+          console.log('[YAGO][BÖLGE] bağ-ilişkisi: çapa kayıtlı tarafa zorlandı. kısıtN=', constraints.length,
+            'kayıtlıTaraf=', constraints.map(k => k.sign).join(','),
+            'çapa(', bi, ',', bj, ') seed(', ci, ',', cj, ')');
         }
         ci = bi; cj = bj;
         relationChosen = true;
       } else {
-        console.log('[YAGO][BÖLGE] bağ-ilişkisi: kayıtlı taraf yok olmuş, yeniden çözülüyor.');
+        // Kayıtlı tarafta seed'e yakın serbest hücre yok; ama taraf sözleşmesi
+        // MUTLAKTIR (zıplamayı önlemek için). Kayıtlı tarafı sağlayan HERHANGİ
+        // bir serbest hücre varsa (en büyük bileşenin merkezi) ona git; hiç
+        // yoksa ancak o zaman sezgisele düş.
+        let fb = -1, fbi = -1, fbj = -1, fbCount = 0;
+        // kayıtlı tarafı sağlayan serbest hücrelerin sayısı + merkezi
+        let sumI = 0, sumJ = 0, cnt = 0;
+        for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+          if (!free[j * nx + i]) continue;
+          const pt = { x: uMin + (i + 0.5) * cw, y: vMin + (j + 0.5) * ch };
+          let ok = true;
+          for (const k of constraints) {
+            const s = (pt.x - k.c.x) * k.p.x + (pt.y - k.c.y) * k.p.y;
+            if (s * k.sign < 0) { ok = false; break; }
+          }
+          if (ok) { sumI += i; sumJ += j; cnt++; }
+        }
+        if (cnt > 0) {
+          // merkeze en yakın serbest, kayıtlı-taraf hücresi
+          const tI = sumI / cnt, tJ = sumJ / cnt;
+          for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+            if (!free[j * nx + i]) continue;
+            const pt = { x: uMin + (i + 0.5) * cw, y: vMin + (j + 0.5) * ch };
+            let ok = true;
+            for (const k of constraints) {
+              const s = (pt.x - k.c.x) * k.p.x + (pt.y - k.c.y) * k.p.y;
+              if (s * k.sign < 0) { ok = false; break; }
+            }
+            if (!ok) continue;
+            const dd = (i - tI) * (i - tI) + (j - tJ) * (j - tJ);
+            if (fb < 0 || dd < fb) { fb = dd; fbi = i; fbj = j; }
+            fbCount++;
+          }
+        }
+        if (fbi >= 0) {
+          console.log('[YAGO][BÖLGE] bağ-ilişkisi: seed kayıtlı tarafta değil ama sözleşme korunuyor → kayıtlı taraf merkezine gidildi. serbestN=', fbCount);
+          ci = fbi; cj = fbj;
+          relationChosen = true;
+        } else {
+          console.log('[YAGO][BÖLGE] bağ-ilişkisi: kayıtlı taraf TAMAMEN doldu (yüz yok oldu) → yeniden çözülüyor. kısıtN=', constraints.length);
+        }
       }
     }
   }

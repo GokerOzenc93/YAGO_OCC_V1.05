@@ -318,12 +318,15 @@ export const createPanelFromVirtualFace = async (
 
   const n = new THREE.Vector3(...normal).normalize();
 
+  // up: normale EN DİK dünya ekseni (en küçük |bileşen|). Eski "dominant
+  // bileşen" seçimi 45° gibi iki bileşenin eşit olduğu normallerde dejenere
+  // cross üretip u/v tabanını bozuyordu (dönmüş panel kesimi -45° civarı hiç
+  // çalışmıyordu — kök buydu). En dik eksen her yönelimde sağlam taban verir.
+  const anx = Math.abs(n.x), any_ = Math.abs(n.y), anz = Math.abs(n.z);
   let up: THREE.Vector3;
-  if (Math.abs(n.y) > Math.abs(n.x) && Math.abs(n.y) > Math.abs(n.z)) {
-    up = new THREE.Vector3(1, 0, 0);
-  } else {
-    up = new THREE.Vector3(0, 1, 0);
-  }
+  if (anx <= any_ && anx <= anz) up = new THREE.Vector3(1, 0, 0);
+  else if (any_ <= anx && any_ <= anz) up = new THREE.Vector3(0, 1, 0);
+  else up = new THREE.Vector3(0, 0, 1);
   const uAxis = new THREE.Vector3().crossVectors(n, up).normalize();
   const vAxis = new THREE.Vector3().crossVectors(n, uAxis).normalize();
 
