@@ -351,19 +351,27 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
         if (!sm || !sibSolid) continue;
         const sibRotated = sm.isRotated;
         const earlier = si < pi;
+        const panelMoved = m.steps.some(s => s.type === 'move');
+        const sibMoved = sm.steps.some(s => s.type === 'move');
 
-        // Kural tablosu (GÜNCEL):
+        // Kural tablosu (GÜNCEL — dinamik konum tabanlı):
         //   Kesilen \ Kesici │ önceki DÜZ │ sonraki DÜZ │ DÖNMÜŞ
         //   ─────────────────┼────────────┼─────────────┼──────────────
-        //   DÜZ panel        │  K1 flat   │   —         │  K2 GÖNYE
-        //   DÖNMÜŞ panel     │  K4 gövde  │  K4 gövde   │  öncekiyse K4
-        // DÖNMÜŞ panel artık düz komşularla da GÖVDE-kesilir (sıra fark etmez):
-        // dönen panel bir düz panele/duvara çarpınca kendi ucu o yüzeyde
-        // biçilmeli ("çevresindeki panellere çarpıp durmalı, ölçüsü açıya göre
-        // güncellenmeli"). Dönmüş-dönmüş çiftlerde sıra önceliği (K1) korunur.
+        //   DÜZ panel (statik)│ K1 flat   │   —         │  K2 GÖNYE
+        //   DÜZ panel (taşınan)│ flat     │  flat       │  K2 GÖNYE
+        //   DÖNMÜŞ panel      │  K4 gövde │  K4 gövde   │  öncekiyse K4
+        // TAŞINAN panel, durduğu yerde TÜM düz komşularına yaslanır (kesilir) —
+        // sıra fark etmez. Statik komşu tam boy korunur (o kesilmez). Böylece
+        // "paneli taşıyınca komşunun içine giriyor" düzelir: taşınan panel
+        // komşusunun yüzeyinde biçilir. Her ikisi taşınmışsa K1 sırası karar verir
+        // (önceki tam boy, sonraki kısalır). Her ikisi statikse yine K1 geçerlidir.
         let mode: 'none' | 'miter' | 'flat' | 'body' = 'none';
         if (!isRotated && sibRotated) mode = 'miter';               // düz ← dönmüş: gönye
-        else if (!isRotated && !sibRotated && earlier) mode = 'flat'; // düz ← önceki düz: K1
+        else if (!isRotated && !sibRotated) {
+          if (panelMoved && !sibMoved) mode = 'flat';              // taşınan ← statik: taşınan kesilir
+          else if (!panelMoved && sibMoved) mode = 'none';          // statik ← taşınan: statik korunur
+          else if (earlier) mode = 'flat';                          // K1: önceki düz keser (both-moved veya both-static)
+        }
         else if (isRotated && !sibRotated) mode = 'body';           // dönmüş ← düz: her sıra
         else if (isRotated && sibRotated && earlier) mode = 'body'; // dönmüş ← önceki dönmüş
         if (mode === 'none') continue;

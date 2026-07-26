@@ -431,16 +431,32 @@ export function recalculateVirtualFacesForShape(
   };
   const stampingPanelsFor = (vfId: string): any[] => {
     const myIdx = vfIndexOf.get(vfId);
-    // Taşınan panelin VF'si TÜM kardeşler tarafından kırpılır (yalnızca
-    // önceki sıradakiler değil). K1 önceliği statik yerleşim içindir —
-    // kullanıcı bir paneli açıkça taşıdığında, o panel komşusunun içine
-    // girmemeli; komşunun ayak izine kırpılarak yaslanmalıdır.
     const ownerPanel = childPanels.find(p => p.parameters?.virtualFaceId === vfId);
-    const ownerMoved = ownerPanel ? hasMoveSteps(ownerPanel) : false;
-    return childPanels.filter(p =>
-      p.parameters?.virtualFaceId !== vfId &&
-      (isRotatedPanel(p) || ownerMoved || (myIdx != null && panelPriority(p) < myIdx))
-    );
+    if (!ownerPanel) return [];
+    const ownerMoved = hasMoveSteps(ownerPanel);
+    const ownerRotated = isRotatedPanel(ownerPanel);
+    // VF ayak-izi kırpması, Faz B kesim kurallarıyla BİREBİR AYNI olmalıdır:
+    // yalnızca KESİLEN panelin bölgesi küçülür; kesen panel tam boy korunur.
+    //   sahip \ kardeş │ dönmüş      │ düz (statik)    │ düz (taşınan)
+    //   ──────────────┼─────────────┼────────────────┼────────────────
+    //   düz           │ evet (gönye)│ K1: öncekiyse  │ evet (taşınan kesilir)
+    //   dönmüş        │ K1: öncekiyse│ evet (gövde)  │ evet (gövde)
+    return childPanels.filter(p => {
+      if (p.parameters?.virtualFaceId === vfId) return false;
+      const sibRotated = isRotatedPanel(p);
+      const sibMoved = hasMoveSteps(p);
+      const sibIdx = panelPriority(p);
+      if (ownerRotated) {
+        if (sibRotated) return sibIdx < (myIdx ?? Infinity); // K1
+        return true; // dönmüş ← düz: her sıra
+      } else {
+        if (sibRotated) return true; // düz ← dönmüş: gönye
+        // düz ← düz
+        if (ownerMoved && !sibMoved) return true;   // taşınan kesilir
+        if (!ownerMoved && sibMoved) return false;  // statik korunur
+        return sibIdx < (myIdx ?? Infinity);         // K1 (both-moved/both-static)
+      }
+    });
   };
 
   const updatedMap = new Map<string, VirtualFace>();
