@@ -378,14 +378,11 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
   //   ─────────────────┼────────────┼─────────────┼───────────────────────
   //   DÜZ panel        │  K1 (evet) │   hayır     │  K2 GÖNYE (evet)
   //   DÖNMÜŞ panel     │   hayır    │   hayır     │  önceki dönmüşse K4
+  const finalSolids = new Map<string, any>();
   for (let pi = 0; pi < children.length; pi++) {
     const panel = children[pi];
     const m = meta.get(panel.id);
-    // DÖNMÜŞ panelin GÖRSEL çıktısı gerçek boyut (builtSolid) olmalıdır.
-    // builtGrown (genişletilmiş) yalnız kardeşleri kesmek içindir (gönye yarım-uzayının
-    // hammaddesi), panelin kendisinin görüntüsü değil. Düz panelde expand=0 olduğundan
-    // builtGrown === builtSolid'dir → değişiklik yok.
-    let rp = builtSolid.get(panel.id) ?? builtGrown.get(panel.id);
+    let rp = builtGrown.get(panel.id) ?? builtSolid.get(panel.id);
     if (!m || !rp) continue;
     const { att, thickness, isRotated } = m;
     try {
@@ -521,6 +518,7 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
       // ÖNEMLİ: kesici havuzu (builtSolid) HAM kalır — nihai katıyı havuza
       // yazmak sıraya bağımlılığı arka kapıdan geri sokar. Nihai katı yalnız
       // şekle gider.
+      finalSolids.set(panel.id, rp);
       const geometry = convertReplicadToThreeGeometry(rp);
       updateShape(panel.id, {
         geometry,
@@ -532,6 +530,50 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
         'adımN=', m.steps.length, isRotated ? 'DÖNMÜŞ' : 'düz');
     } catch (err) {
       console.error('[YAGO][MOTOR] panel rebuild hatası, önceki geometri korunuyor:', panel.id, err);
+    }
+  }
+
+  // ── KÜRPMA GEÇİŞİ ──────────────────────────────────────────────────────
+  // Dönmüş (genişletilmiş) paneller kutu sınırına kadar uzanır (K6), ama
+  // kardeş panellerin İÇİNE de girmiş olabilirler. Burada her dönmüş panelin
+  // görsel mesh'ini tüm kardeşlerin gerçek gövdesiyle (builtSolid) keserek
+  // iç-içe geçmeyi önleriz. Tüm paneller zaten build edilmiş olduğundan
+  // builtSolid haritası tam doludur.
+  for (let pi = 0; pi < children.length; pi++) {
+    const panel = children[pi];
+    const m = meta.get(panel.id);
+    if (!m) continue;
+    const isRotated = m.steps.some((st: any) => st.type === 'rotate');
+    if (!isRotated) continue;
+
+    let rp: any = finalSolids.get(panel.id);
+    if (!rp) continue;
+    let changed = false;
+
+    for (let si = 0; si < children.length; si++) {
+      if (si === pi) continue;
+      const sib = children[si];
+      const sibSolid = builtSolid.get(sib.id);
+      if (!sibSolid) continue;
+      if (!aabbTouch(rp, sibSolid)) continue;
+      try {
+        const result = await performBooleanCut(safeClone(rp), safeClone(sibSolid));
+        const rb = bb6(result);
+        if (rb && (rb[3] - rb[0]) > 1e-3 && (rb[4] - rb[1]) > 1e-3 && (rb[5] - rb[2]) > 1e-3) {
+          rp = result;
+          changed = true;
+        }
+      } catch { /* kırpma başarısız — atla */ }
+    }
+
+    if (changed) {
+      const geometry = convertReplicadToThreeGeometry(rp);
+      updateShape(panel.id, {
+        geometry,
+        position: parentPos,
+        rotation: [0, 0, 0],
+        replicadShape: rp,
+      } as any);
     }
   }
 }
