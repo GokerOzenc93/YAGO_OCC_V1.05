@@ -2,6 +2,12 @@ import * as THREE from 'three';
 import type { Shape } from '../store';
 import { executeTransformStep, updateTransformStep, deleteTransformStep } from './PanelTransformService';
 
+// ═══════════════════════════════════════════════════════════════════════════
+// PanelMoveService — İNCE ADAPTÖR. Taşıma, birleşik adım listesine tek 'move'
+// adımı olarak yazılır; PanelEngine sıralı tekrar eder (dönüşten SONRAKİ
+// taşıma dönmüş eksenleri izler — adımlar birbirini dinler).
+// ═══════════════════════════════════════════════════════════════════════════
+
 export interface MoveStep {
   id: string;
   axis: 'x+' | 'x-' | 'y+' | 'y-' | 'z+' | 'z-';

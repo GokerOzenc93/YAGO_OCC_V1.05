@@ -13,7 +13,7 @@ import {
   projectTo2D,
   subtractPolygon,
   type Point2D,
-} from './FaceRaycastOverlay';
+} from './FaceRegion';
 import {
   extractFacesFromGeometry,
   groupCoplanarFaces,
@@ -525,8 +525,17 @@ function regenerateParentFaceShapeVF(
     }
   } catch { /* teşhis opsiyonel */ }
 
+  // BÖLGE SÜREKLİLİĞİ: vf.vertices önceki bölge çokgenidir. Dönmüş kardeşin
+  // şeridi yüzü ikiye bölüp statik seed'in üstünden süpürüldüğünde (-32°→-33°
+  // taraf zıplaması) bileşen seçimi önceki bölgeyle örtüşmeye göre yapılır.
+  const prevRegion = (vf.vertices && vf.vertices.length >= 3)
+    ? vf.vertices.map(([x, y, z]) => new THREE.Vector3(x, y, z))
+    : undefined;
+  // KALICI BAĞ İLİŞKİSİ: önceki regen'lerin kaydettiği kardeş→taraf işaretleri
+  // kısıt olarak geçilir; taraf seçimi deterministikleşir (öneri: Goker).
+  const storedRel = (vf as any).sideRelations as Record<string, number> | undefined;
   const region = computeFreeRegionLocal(
-    contour.corners, localNormal, seed, siblingPanels, worldToLocal, shape.id
+    contour.corners, localNormal, seed, siblingPanels, worldToLocal, shape.id, prevRegion, storedRel
   );
   if (region && region.polygon.length >= 3) {
     cornersOut = region.polygon.map(p2 => new THREE.Vector3()
@@ -574,6 +583,12 @@ function regenerateParentFaceShapeVF(
     xMin: newB.xMin, xMax: newB.xMax, yMin: newB.yMin, yMax: newB.yMax,
     xSpan: newB.xSpan, ySpan: newB.ySpan,
   };
+  // BAĞ İLİŞKİLERİ KALICILAŞTIRMA: yeni hesaplanan taraf işaretleri, eski
+  // kayıtların ÜZERİNE birleştirilir. Birleştirme sayesinde bir kardeşin ayak
+  // izi geçici bir dalgada kaybolsa bile (rebuild transienti) eski kaydı
+  // korunur; kardeş geri geldiğinde aynı tarafa bağlanır. Silinmiş panellerin
+  // bayat kayıtları zararsızdır (id bir daha eşleşmez).
+  (out as any).sideRelations = { ...(storedRel || {}), ...(region?.sideRelations || {}) };
   return out;
 }
 

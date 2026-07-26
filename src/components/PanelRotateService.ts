@@ -1,8 +1,19 @@
 import * as THREE from 'three';
 import type { Shape } from '../store';
 
-// Sanal yüzey için DETERMİNİSTİK düzlem tabanı — pivot çıpalama iki uçta da
-// (yakalama ve rebuild) birebir aynı kuralla hesaplanmalıdır.
+// ═══════════════════════════════════════════════════════════════════════════
+// PanelRotateService — İNCE ADAPTÖR.
+// Görsel katmanın (PanelEditor) ve VF regen'in beklediği imzaları korur;
+// dönüş artık BİRLEŞİK adım listesine yazılır ve PanelEngine yeniden üretir.
+// Korunan kurallar:
+//  • PANEL-YEREL EKSEN: kullanıcının dünya ekseni, panelin VF düzlem tabanına
+//    (u/v/n) en yakın yerel eksene eşlenir → dönüş her yüzde "yerinde eğer".
+//  • PİVOT ÇIPALARI: pivotVfFrac (VF'ye oransal, ASIL) + pivotFrac (parent
+//    kutusuna oransal, yedek) + mutlak pivot (son çare). Rebuild pivotu her
+//    seferinde güncel yüzeyden türetir — parametrik.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Deterministik VF düzlem tabanı — yakalama ve rebuild aynı kuralı kullanır. */
 export function vfPlaneBasis(normal: [number, number, number]): {
   n: THREE.Vector3; u: THREE.Vector3; v: THREE.Vector3;
 } {
@@ -16,23 +27,10 @@ export function vfPlaneBasis(normal: [number, number, number]): {
 export interface RotateStep {
   id: string;
   axis: 'x' | 'y' | 'z';
-  // PANEL-YEREL EKSEN: kullanıcının seçtiği dünya ekseni (axis), panelin kendi
-  // düzlemine göre yorumlanıp buraya VEKTÖR olarak yazılır. Böylece yan/ön/üst
-  // fark etmeksizin dönüş paneli "yerinde eğer", dünya ekseni yön savurmaz.
-  // Varsa applyRotateSteps + rebuild bunu kullanır; yoksa (eski adımlar) letter
-  // 'axis' dünya ekseni olarak kullanılır (geriye tam uyumlu).
   axisVec?: [number, number, number];
   value: number;
   pivot: [number, number, number];
-  // Pivotun, adım oluşturma ANINDAKİ parent kutusuna oransal konumu (0..1).
-  // Parent yeniden boyutlanınca rebuild pivotu bu oranlardan güncel kutuya
-  // göre yeniden türetir — mutlak dünya pivotu bayatlayıp boşluk yaratmaz.
   pivotFrac?: [number, number, number];
-  // ASIL ÇIPA: Pivotun, panelin KENDİ sanal yüzeyine oransal konumu.
-  // [fu, fv, dn]: yüzey dikdörtgeninde (deterministik u/v tabanında) 0..1
-  // oranları + normal boyunca mm ofseti. Rebuild pivotu her seferinde GÜNCEL
-  // yüzeyden türetir: yüzey nereye taşınırsa (küp boyutlanması dahil) pivot
-  // da onunla taşınır. pivotFrac ve mutlak pivot yedek olarak kalır.
   pivotVfFrac?: [number, number, number];
   timestamp: number;
 }
@@ -46,136 +44,85 @@ export interface PanelRotateParams {
   updateShape: (id: string, updates: Partial<Shape>) => void;
 }
 
+/** Saf önizleme: adımları position/rotation üzerinde sırayla uygular. */
 export function applyRotateSteps(
   basePosition: [number, number, number],
   baseRotation: [number, number, number],
   steps: RotateStep[]
 ): { position: [number, number, number]; rotation: [number, number, number] } {
   let pos = new THREE.Vector3(...basePosition);
-  let rot = new THREE.Euler(...baseRotation, 'XYZ');
-  let quat = new THREE.Quaternion().setFromEuler(rot);
-
+  const quat = new THREE.Quaternion().setFromEuler(new THREE.Euler(...baseRotation, 'XYZ'));
   for (const step of steps) {
     const pivot = new THREE.Vector3(...step.pivot);
     const angleRad = (step.value * Math.PI) / 180;
     const axisVec = step.axisVec
       ? new THREE.Vector3(...step.axisVec).normalize()
-      : new THREE.Vector3(
-          step.axis === 'x' ? 1 : 0,
-          step.axis === 'y' ? 1 : 0,
-          step.axis === 'z' ? 1 : 0
-        );
-
+      : new THREE.Vector3(step.axis === 'x' ? 1 : 0, step.axis === 'y' ? 1 : 0, step.axis === 'z' ? 1 : 0);
     const stepQuat = new THREE.Quaternion().setFromAxisAngle(axisVec, angleRad);
     quat.premultiply(stepQuat);
-
-    const offset = pos.clone().sub(pivot);
-    offset.applyQuaternion(stepQuat);
-    pos = pivot.clone().add(offset);
+    pos = pivot.clone().add(pos.sub(pivot).applyQuaternion(stepQuat));
   }
-
-  const finalEuler = new THREE.Euler().setFromQuaternion(quat, 'XYZ');
-  return {
-    position: [pos.x, pos.y, pos.z],
-    rotation: [finalEuler.x, finalEuler.y, finalEuler.z],
-  };
+  const e = new THREE.Euler().setFromQuaternion(quat, 'XYZ');
+  return { position: [pos.x, pos.y, pos.z], rotation: [e.x, e.y, e.z] };
 }
 
 export async function executePanelRotate(params: PanelRotateParams): Promise<boolean> {
   const { panelShape, axis, value, pivot, shapes, updateShape } = params;
-
   if (Math.abs(value) < 0.001) return false;
 
-  // SİGORTA: UI'dan gelen referans bayat olabilir — store'daki güncel hali baz al.
   const { useAppStore } = await import('../store');
-  const fresh = useAppStore.getState().shapes.find(s => s.id === panelShape.id) || panelShape;
+  const state = useAppStore.getState();
+  const fresh = state.shapes.find(s => s.id === panelShape.id) || panelShape;
 
-  // ── PANEL-YEREL EKSEN EŞLEME ─────────────────────────────────────────────
-  // Kullanıcının seçtiği DÜNYA ekseni (x/y/z), panelin sanal yüzey düzlemine
-  // göre yorumlanır: düzlemdeki (u/v) eksenlerden dünya eksenine EN YAKIN olanı
-  // seçilir → dönüş paneli her yüzde "yerinde eğer". Dünya ekseni panelin
-  // NORMALİNE en yakınsa (paneli kendi düzleminde döndürme niyeti) normal
-  // kullanılır. Böylece üst/ön yüzde davranış değişmez (orada u/v zaten dünya
-  // eksenleriyle çakışır), yalnızca yan yüzlerde savrulma düzelir.
+  // PANEL-YEREL EKSEN EŞLEME + PİVOT ÇIPALARI (VF'den).
   let axisVec: [number, number, number] | undefined;
-  const vfForAxis = useAppStore.getState().virtualFaces?.find(
-    (f: any) => f.id === fresh.parameters?.virtualFaceId
-  );
-  if (vfForAxis?.normal) {
-    const { n, u, v } = vfPlaneBasis(vfForAxis.normal);
+  let pivotVfFrac: [number, number, number] | undefined;
+  let pivotFrac: [number, number, number] | undefined;
+
+  const vf = state.virtualFaces?.find((f: any) => f.id === (fresh.parameters as any)?.virtualFaceId);
+  if (vf?.normal) {
+    const { n, u, v } = vfPlaneBasis(vf.normal as [number, number, number]);
     const wa = new THREE.Vector3(axis === 'x' ? 1 : 0, axis === 'y' ? 1 : 0, axis === 'z' ? 1 : 0);
     const du = Math.abs(wa.dot(u)), dv = Math.abs(wa.dot(v)), dn = Math.abs(wa.dot(n));
-    const chosen = (dn >= du && dn >= dv) ? n : (du >= dv ? u : v);
-    // İşaret çevirme YOK: seçilen yerel eksen ham haliyle kullanılır. İşaret
-    // çevirmek dönüşü ters yöne (paneli hacimden DIŞARI savuran yöne) çeviriyor;
-    // ham yerel eksen dönüşü hacmin İÇİNE eğerek paneli tam boy korur.
+    const chosen = dn >= du && dn >= dv ? n : du >= dv ? u : v;
     axisVec = [chosen.x, chosen.y, chosen.z];
+
+    // pivotVfFrac: pivotun VF dikdörtgenindeki oranı + normal ofseti.
+    let uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity, nOff = 0;
+    for (const c of vf.vertices) {
+      const w = new THREE.Vector3(c[0], c[1], c[2]);
+      uMin = Math.min(uMin, w.dot(u)); uMax = Math.max(uMax, w.dot(u));
+      vMin = Math.min(vMin, w.dot(v)); vMax = Math.max(vMax, w.dot(v));
+      nOff = w.dot(n);
+    }
+    const pw = new THREE.Vector3(...pivot);
+    const pu = pw.dot(u), pv = pw.dot(v), pn = pw.dot(n);
+    const su = Math.max(uMax - uMin, 1e-6), sv = Math.max(vMax - vMin, 1e-6);
+    pivotVfFrac = [
+      Math.max(0, Math.min(1, (pu - uMin) / su)),
+      Math.max(0, Math.min(1, (pv - vMin) / sv)),
+      pn - nOff,
+    ];
   }
 
-  // Pivotu parent kutusuna ORANSAL bağla: parent boyutlanınca pivot da yüzle
-  // birlikte taşınır (köşe pivotu köşede kalır). Geometri okunamazsa mutlak
-  // pivot ile eski davranışa düşülür.
-  let pivotFrac: [number, number, number] | undefined;
-  const parentShapeForPivot =
-    useAppStore.getState().shapes.find(s => s.id === fresh.parameters?.parentShapeId);
-  if (parentShapeForPivot?.geometry) {
-    const posAttr = parentShapeForPivot.geometry.getAttribute('position');
-    if (posAttr) {
-      const bb = new THREE.Box3().setFromBufferAttribute(posAttr as THREE.BufferAttribute);
-      const size = new THREE.Vector3();
-      bb.getSize(size);
-      const pl: [number, number, number] = [
-        pivot[0] - parentShapeForPivot.position[0],
-        pivot[1] - parentShapeForPivot.position[1],
-        pivot[2] - parentShapeForPivot.position[2],
-      ];
-      pivotFrac = [
-        size.x > 1e-6 ? (pl[0] - bb.min.x) / size.x : 0,
-        size.y > 1e-6 ? (pl[1] - bb.min.y) / size.y : 0,
-        size.z > 1e-6 ? (pl[2] - bb.min.z) / size.z : 0,
-      ];
-    }
+  // pivotFrac: parent kutusuna oransal yedek çıpa.
+  const parent = state.shapes.find(s => s.id === (fresh.parameters as any)?.parentShapeId);
+  if (parent) {
+    const w = parseFloat((parent.parameters as any)?.width) || 1;
+    const h = parseFloat((parent.parameters as any)?.height) || 1;
+    const d = parseFloat((parent.parameters as any)?.depth) || 1;
+    const pp = parent.position as any;
+    pivotFrac = [
+      (pivot[0] - pp[0]) / w,
+      (pivot[1] - pp[1]) / h,
+      (pivot[2] - pp[2]) / d,
+    ];
   }
 
-  // ASIL ÇIPA: pivotu panelin kendi sanal yüzeyine oransal bağla.
-  let pivotVfFrac: [number, number, number] | undefined;
-  const vfForPivot = useAppStore.getState().virtualFaces?.find(
-    (f: any) => f.id === fresh.parameters?.virtualFaceId
-  );
-  if (vfForPivot?.vertices?.length >= 3 && parentShapeForPivot) {
-    const { n, u, v } = vfPlaneBasis(vfForPivot.normal);
-    const pp = parentShapeForPivot.position;
-    const cWorld = new THREE.Vector3();
-    for (const vv of vfForPivot.vertices) {
-      cWorld.add(new THREE.Vector3(vv[0] + pp[0], vv[1] + pp[1], vv[2] + pp[2]));
-    }
-    cWorld.divideScalar(vfForPivot.vertices.length);
-    let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
-    for (const vv of vfForPivot.vertices) {
-      const w = new THREE.Vector3(vv[0] + pp[0], vv[1] + pp[1], vv[2] + pp[2]).sub(cWorld);
-      const pu = w.dot(u), pv = w.dot(v);
-      if (pu < minU) minU = pu; if (pu > maxU) maxU = pu;
-      if (pv < minV) minV = pv; if (pv > maxV) maxV = pv;
-    }
-    const pw = new THREE.Vector3(pivot[0], pivot[1], pivot[2]).sub(cWorld);
-    const su = maxU - minU, sv = maxV - minV;
-    if (su > 1e-6 && sv > 1e-6) {
-      pivotVfFrac = [
-        (pw.dot(u) - minU) / su,
-        (pw.dot(v) - minV) / sv,
-        pw.dot(n),
-      ];
-    }
-  }
-
-  // BİRLEŞİK KAYIT: adım, taşıma adımlarıyla aynı transformSteps listesine
-  // yazılır (tek doğruluk kaynağı). rotateSteps aynası ve taban kayıtları
-  // PanelTransformService tarafından senkron tutulur — UI'daki birleşik
-  // "işlem adımları" listesi de bu listeden beslenir.
   const { executeTransformStep } = await import('./PanelTransformService');
   return executeTransformStep(
     fresh,
-    { type: 'rotate', axis, axisVec, value, pivot, pivotFrac, pivotVfFrac },
+    { type: 'rotate', axis, value, pivot, axisVec, pivotFrac, pivotVfFrac },
     shapes,
     updateShape
   );
@@ -188,8 +135,6 @@ export async function updateRotateStep(
   shapes: Shape[],
   updateShape: (id: string, updates: Partial<Shape>) => void
 ): Promise<boolean> {
-  // Birleşik sisteme delege edilir; eski rotateSteps kayıtları orada
-  // transformSteps'e otomatik göç eder (id'ler korunur).
   const { updateTransformStep } = await import('./PanelTransformService');
   return updateTransformStep(panelShape, stepId, newValue, shapes, updateShape);
 }
@@ -200,46 +145,31 @@ export async function deleteRotateStep(
   shapes: Shape[],
   updateShape: (id: string, updates: Partial<Shape>) => void
 ): Promise<boolean> {
-  // Birleşik sisteme delege edilir; son adım silinirse taban kayıtları
-  // (baseTransform* ve baseRotate*) orada temizlenir — bayat taban kalmaz.
   const { deleteTransformStep } = await import('./PanelTransformService');
   return deleteTransformStep(panelShape, stepId, shapes, updateShape);
 }
 
+/** Görsel yardımcılar (gizmo/step listesi) — davranış korunuyor. */
 export function getPanelVertices(panelShape: Shape): [number, number, number][] {
   if (!panelShape.geometry) return [];
   const pos = panelShape.geometry.getAttribute('position') as THREE.BufferAttribute;
   if (!pos) return [];
-
-  const mat = new THREE.Matrix4().compose(
-    new THREE.Vector3(...panelShape.position),
-    new THREE.Quaternion().setFromEuler(new THREE.Euler(...panelShape.rotation, 'XYZ')),
-    new THREE.Vector3(...panelShape.scale)
-  );
-
-  const seen = new Map<string, [number, number, number]>();
+  const out: [number, number, number][] = [];
+  const seen = new Set<string>();
   for (let i = 0; i < pos.count; i++) {
-    const v = new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(mat);
-    const key = `${v.x.toFixed(1)},${v.y.toFixed(1)},${v.z.toFixed(1)}`;
-    if (!seen.has(key)) seen.set(key, [v.x, v.y, v.z]);
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    const k = `${x.toFixed(2)},${y.toFixed(2)},${z.toFixed(2)}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push([x + panelShape.position[0], y + panelShape.position[1], z + panelShape.position[2]]);
   }
-  return Array.from(seen.values());
+  return out;
 }
 
 export function getPanelCenter(panelShape: Shape): [number, number, number] {
-  if (!panelShape.geometry) return [...panelShape.position] as [number, number, number];
-  const pos = panelShape.geometry.getAttribute('position') as THREE.BufferAttribute;
-  if (!pos) return [...panelShape.position] as [number, number, number];
-
-  const bbox = new THREE.Box3().setFromBufferAttribute(pos);
-  const center = new THREE.Vector3();
-  bbox.getCenter(center);
-
-  const mat = new THREE.Matrix4().compose(
-    new THREE.Vector3(...panelShape.position),
-    new THREE.Quaternion().setFromEuler(new THREE.Euler(...panelShape.rotation, 'XYZ')),
-    new THREE.Vector3(...panelShape.scale)
-  );
-  center.applyMatrix4(mat);
-  return [center.x, center.y, center.z];
+  const verts = getPanelVertices(panelShape);
+  if (verts.length === 0) return [...panelShape.position] as [number, number, number];
+  const c: [number, number, number] = [0, 0, 0];
+  for (const v of verts) { c[0] += v[0]; c[1] += v[1]; c[2] += v[2]; }
+  return [c[0] / verts.length, c[1] / verts.length, c[2] / verts.length];
 }
