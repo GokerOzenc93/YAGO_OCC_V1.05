@@ -431,9 +431,15 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
           else if (!isRotated && !sibRotated) mode = 'flat'; // düz ← düz: K1 flat
           else mode = 'body';                              // dönmüş submissive: gövde kesimi
         }
+        console.log('[YAGO][MOD]', panel.id, 'vs', sib.id, 'sibDominant=', sibDominant, 'isRotated=', isRotated, 'sibRotated=', sibRotated, 'mode=', mode);
         if (mode === 'none') continue;
 
-        if (!aabbTouch(rp, sibSolid)) continue; // K4 ön-eleme
+        if (!aabbTouch(rp, sibSolid)) {
+          console.log('[YAGO][AABB-ATLA]', panel.id, '<-', sib.id, 'mode=', mode,
+            'rpBB=', bb6(rp)?.map((n: number) => n.toFixed(0)).join(','),
+            'sibBB=', bb6(sibSolid)?.map((n: number) => n.toFixed(0)).join(','));
+          continue;
+        }
 
         if (mode === 'miter') {
           const band = builtBand.get(sib.id) ?? rotatedBand(sib, sm.att.vf, sm.thickness);
