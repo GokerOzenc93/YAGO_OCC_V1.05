@@ -601,12 +601,28 @@ function edgeWithinFace(aSolid: any, bSolid: any, bThinAxis?: THREE.Vector3): bo
   const tB = bThinAxis ?? thinAxis(bSolid);
   const bB = bb6(bSolid), bA = bb6(aSolid);
   if (!bB || !bA) return false;
-  const aCx = (bA[0] + bA[3]) / 2, aCy = (bA[1] + bA[4]) / 2, aCz = (bA[2] + bA[5]) / 2;
-  const aProj = tB.x * aCx + tB.y * aCy + tB.z * aCz;
+  // A'nın tB eksenindeki TAM aralığı (yalnızca merkez değil): dönmüş panelin
+  // merkezi açı büyüdükçe kayar ve B'nin kalınlık slab'ından çıkar — ama kenarı
+  // hâlâ yüzeye değer. Merkez yerine AABB köşelerinin tB üzerindeki izdüşüm
+  // aralığını kullan: A'nın herhangi bir parçası B'nin slab'ına giriyorsa,
+  // A'nın kenarı B'nin yüzeyine değiyor demektir.
+  const aCorners = [
+    [bA[0], bA[1], bA[2]], [bA[3], bA[1], bA[2]],
+    [bA[0], bA[4], bA[2]], [bA[3], bA[4], bA[2]],
+    [bA[0], bA[1], bA[5]], [bA[3], bA[1], bA[5]],
+    [bA[0], bA[4], bA[5]], [bA[3], bA[4], bA[5]],
+  ];
+  let aMin = Infinity, aMax = -Infinity;
+  for (const c of aCorners) {
+    const p = tB.x * c[0] + tB.y * c[1] + tB.z * c[2];
+    if (p < aMin) aMin = p;
+    if (p > aMax) aMax = p;
+  }
   const d0 = tB.x * bB[0] + tB.y * bB[1] + tB.z * bB[2];
   const d1 = tB.x * bB[3] + tB.y * bB[4] + tB.z * bB[5];
   const bMin = Math.min(d0, d1), bMax = Math.max(d0, d1);
-  return aProj >= bMin - 2 && aProj <= bMax + 2;
+  // A'nın aralığı B'nin slab'ıyla örtüşüyorsa kenar-yüzey teması var.
+  return aMax >= bMin - 2 && aMin <= bMax + 2;
 }
 function panelThinAxisWorld(att: PanelAttachment, steps: TransformStep[]): THREE.Vector3 {
   const n0 = new THREE.Vector3(...(att.vf.normal as [number, number, number])).normalize();
