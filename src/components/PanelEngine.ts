@@ -198,6 +198,7 @@ export function rotatedBand(
 // ── Rebuild orkestrasyonu ─────────────────────────────────────────────────
 const inFlight = new Set<string>();
 const pending = new Set<string>();
+const dominanceRelations = new Map<string, string>();
 
 export async function rebuildPanelsForParent(parentShapeId: string): Promise<void> {
   if (inFlight.has(parentShapeId)) {
@@ -392,26 +393,34 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
         if (!sm || !sibSolid) continue;
         const sibRotated = sm.isRotated;
 
-        // ── GEOMETRİK DOMINANS ──────────────────────────────────────────
-        // "panelin kalınlık tarafı yüzeyine denk geliyorsa o yüzey dominant
-        //  yüzeydir, taşınırsa geometrik olarak o yüzek her zaman keser
-        //  kısaltır" — bir panelin kalınlık KENARI komşunun geniş YÜZEYİNE
-        // değiyorsa, YÜZEY sahibi dominanttır: tam boy korunur, kenarı
-        // değen panel KISALIR. Sıra (indeks) yalnızca beraberlik durumunda
-        // (her ikisi de kenar-yüzey veya ikisi de düzlem) karar verir.
+        // ── GEOMETRİK DOMINANS (açıdan bağımsız) ──────────────────────────
+        // Bir panelin kalınlık KENARI komşunun geniş YÜZEYİNE değiyorsa,
+        // YÜZEY sahibi dominanttır: tam boy korunur, kenarı değen panel KISALIR.
+        // Eski `perp` eşiği (dot<0.3) büyük açılarda (ör. -30°) geometric
+        // kontrolü tamamen atlıyor ve yanlış sıraya düşüyordu. Artık her
+        // açıda edgeWithinFace çalışır; sonuç kalıcı dominanceRelations'da
+        // saklanır ki açı değişse bile ilişki kararlı kalır.
         //
         //   dominant = yüzeyi alınan panel (kesen, tam boy)
         //   submissive = kenarı değen panel (kesilen, kısalır)
-        const tA = thinAxis(rp);
-        const tB = thinAxis(sibSolid);
-        const dot = Math.abs(tA.dot(tB));
-        const perp = dot < 0.3;
-        let sibDominant = si < pi; // varsayılan: önceki (alt sıra) dominant
-        if (perp) {
-          const panelEdgeMeetsSib = edgeWithinFace(rp, sibSolid);
-          const sibEdgeMeetsPanel = edgeWithinFace(sibSolid, rp);
-          if (panelEdgeMeetsSib && !sibEdgeMeetsPanel) sibDominant = true;
-          else if (sibEdgeMeetsPanel && !panelEdgeMeetsSib) sibDominant = false;
+        const pairKey = panel.id < sib.id ? `${panel.id}|${sib.id}` : `${sib.id}|${panel.id}`;
+        const storedDominant = dominanceRelations.get(pairKey) ?? null;
+        const panelThin = panelThinAxisWorld(m.att, m.steps);
+        const sibThin = panelThinAxisWorld(sm.att, sm.steps);
+        const panelEdgeMeetsSib = edgeWithinFace(rp, sibSolid, sibThin);
+        const sibEdgeMeetsPanel = edgeWithinFace(sibSolid, rp, panelThin);
+        let sibDominant: boolean;
+        if (panelEdgeMeetsSib && !sibEdgeMeetsPanel) {
+          sibDominant = true;
+        } else if (sibEdgeMeetsPanel && !panelEdgeMeetsSib) {
+          sibDominant = false;
+        } else if (storedDominant) {
+          sibDominant = storedDominant === sib.id;
+        } else {
+          sibDominant = si < pi;
+        }
+        if (aabbTouch(rp, sibSolid)) {
+          dominanceRelations.set(pairKey, sibDominant ? sib.id : panel.id);
         }
 
         // Yalnızca submissive (kesilen) panel işlenir. Dominant panel tam
@@ -588,8 +597,8 @@ function coplanarThin(a: any, b: any): boolean {
   const ta = thinAxis(a), tb = thinAxis(b);
   return Math.abs(ta.dot(tb)) > 0.9;
 }
-function edgeWithinFace(aSolid: any, bSolid: any): boolean {
-  const tB = thinAxis(bSolid);
+function edgeWithinFace(aSolid: any, bSolid: any, bThinAxis?: THREE.Vector3): boolean {
+  const tB = bThinAxis ?? thinAxis(bSolid);
   const bB = bb6(bSolid), bA = bb6(aSolid);
   if (!bB || !bA) return false;
   const aCx = (bA[0] + bA[3]) / 2, aCy = (bA[1] + bA[4]) / 2, aCz = (bA[2] + bA[5]) / 2;
@@ -598,4 +607,10 @@ function edgeWithinFace(aSolid: any, bSolid: any): boolean {
   const d1 = tB.x * bB[3] + tB.y * bB[4] + tB.z * bB[5];
   const bMin = Math.min(d0, d1), bMax = Math.max(d0, d1);
   return aProj >= bMin - 2 && aProj <= bMax + 2;
+}
+function panelThinAxisWorld(att: PanelAttachment, steps: TransformStep[]): THREE.Vector3 {
+  const n0 = new THREE.Vector3(...(att.vf.normal as [number, number, number])).normalize();
+  if (!steps.length) return n0;
+  const { quat } = composeSteps(steps, att.vf);
+  return n0.clone().applyQuaternion(quat).normalize();
 }
