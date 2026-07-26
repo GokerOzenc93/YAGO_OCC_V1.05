@@ -434,7 +434,11 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
         }
         if (mode === 'none') continue;
 
-        if (!aabbTouch(rp, sibSolid)) continue;
+        // Dönmüş kardeşin GÖRSEL gövdesi genişletilmiştir (builtGrown). AABB
+        // temas kontrolünü O şekille yap — gerçek boyut (builtSolid) taşımayabilir
+        // ve kesim atlanabilir.
+        const sibVisual = sibRotated ? (builtGrown.get(sib.id) ?? sibSolid) : sibSolid;
+        if (!aabbTouch(rp, sibVisual)) continue;
 
         if (mode === 'miter') {
           const band = builtBand.get(sib.id) ?? rotatedBand(sib, sm.att.vf, sm.thickness);
