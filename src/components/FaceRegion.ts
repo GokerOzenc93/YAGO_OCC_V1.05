@@ -703,6 +703,54 @@ export interface FreeRegionResult {
   sideRelations: Record<string, number>;
 }
 
+interface RotOp { pivot: THREE.Vector3; axis: THREE.Vector3; angleRad: number }
+
+/**
+ * Panel parametrelerinden (rotateSteps / transformSteps) dönüş işlemlerini çıkarır.
+ * PanelEngine.composeSteps ile aynı mantık, ancak bağımlılık döngüsünden kaçınmak
+ * için basitleştirilmiş versiyon. Pivot ve axis DÜNYA koordinatlarında.
+ */
+function buildRotationOpsFromPanel(panel: any): RotOp[] {
+  const params = panel?.parameters;
+  if (!params) return [];
+  const steps: any[] = [];
+  if (Array.isArray(params.transformSteps)) {
+    for (const s of params.transformSteps) {
+      if (s?.type === 'rotate') steps.push(s);
+    }
+  } else if (Array.isArray(params.rotateSteps)) {
+    for (const s of params.rotateSteps) steps.push(s);
+  }
+  if (steps.length === 0) return [];
+
+  const ops: RotOp[] = [];
+  for (const s of steps) {
+    const deg = s.value || 0;
+    if (Math.abs(deg) < 1e-6) continue;
+    const angleRad = (deg * Math.PI) / 180;
+    const axis = s.axisVec
+      ? new THREE.Vector3(...s.axisVec).normalize()
+      : letterToVec(s.axis);
+    const pivot = s.pivot
+      ? new THREE.Vector3(...s.pivot)
+      : new THREE.Vector3();
+    ops.push({ pivot, axis, angleRad });
+  }
+  return ops;
+}
+
+function letterToVec(a: string): THREE.Vector3 {
+  switch (a) {
+    case 'x+': return new THREE.Vector3(1, 0, 0);
+    case 'x-': return new THREE.Vector3(-1, 0, 0);
+    case 'y+': return new THREE.Vector3(0, 1, 0);
+    case 'y-': return new THREE.Vector3(0, -1, 0);
+    case 'z+': return new THREE.Vector3(0, 0, 1);
+    case 'z-': return new THREE.Vector3(0, 0, -1);
+    default: return new THREE.Vector3(0, 0, 0);
+  }
+}
+
 /** Panelin ayak izi — PARENT YEREL uzayında, tek dönüşüm zinciriyle. */
 export function panelFootprintInParentLocal(
   panel: any, parentWorldToLocal: THREE.Matrix4,
@@ -730,13 +778,27 @@ export function panelFootprintInParentLocal(
   for (let i = 0; i < pts.length; i++) {
     if (Math.abs(d[i]) < tol) { out.push({ x: pts[i].dot(u), y: pts[i].dot(v) }); flatVertCount++; }
   }
-  // DÖNMÜŞ PANEL: TÜM köşeleri hedef düzleme izdüşür (tam siluet).
-  // Kesit/düzlem-mesafe filtreleri atlanır — her açıda kararlı sonuç verir.
+  // DÖNMÜŞ PANEL: Düz geometri köşelerine rotateSteps dönüşümünü uygulayıp
+  // TÜM köşeleri hedef düzleme izdüşürür. Geometri henüz dönmemiş olsa bile
+  // doğru silueti verir — dönüş açısından bağımsız, kararlı sonuç.
   if (isRotated) {
-    const allProj: Point2D[] = [];
-    for (let i = 0; i < pts.length; i++) {
-      allProj.push({ x: pts[i].dot(u), y: pts[i].dot(v) });
-    }
+    const rotOps = buildRotationOpsFromPanel(panel);
+    // Pivot ve eksenler DÜNYA koordinatında — parentWorldToLocal ile dönüştür
+    const localOps = rotOps.map(op => ({
+      pivot: op.pivot.clone().applyMatrix4(parentWorldToLocal),
+      axis: op.axis.clone().transformDirection(parentWorldToLocal).normalize(),
+      angleRad: op.angleRad,
+    }));
+    const rotated: THREE.Vector3[] = pts.map(p => {
+      const v3 = p.clone();
+      for (const op of localOps) {
+        v3.sub(op.pivot);
+        v3.applyAxisAngle(op.axis, op.angleRad);
+        v3.add(op.pivot);
+      }
+      return v3;
+    });
+    const allProj: Point2D[] = rotated.map(rp => ({ x: rp.dot(u), y: rp.dot(v) }));
     if (allProj.length < 3) return null;
     const hull = convexHull2D(allProj);
     return hull.length >= 3 ? hull : null;

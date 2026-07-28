@@ -626,6 +626,48 @@ function regenerateParentFaceShapeVF(
   return out;
 }
 
+interface RotOp { pivot: THREE.Vector3; axis: THREE.Vector3; angleRad: number }
+
+function buildRotationOps(panel: any): RotOp[] {
+  const params = panel?.parameters;
+  if (!params) return [];
+  const steps: any[] = [];
+  if (Array.isArray(params.transformSteps)) {
+    for (const s of params.transformSteps) {
+      if (s?.type === 'rotate') steps.push(s);
+    }
+  } else if (Array.isArray(params.rotateSteps)) {
+    for (const s of params.rotateSteps) steps.push(s);
+  }
+  if (steps.length === 0) return [];
+  const ops: RotOp[] = [];
+  for (const s of steps) {
+    const deg = s.value || 0;
+    if (Math.abs(deg) < 1e-6) continue;
+    const angleRad = (deg * Math.PI) / 180;
+    const axis = s.axisVec
+      ? new THREE.Vector3(...s.axisVec).normalize()
+      : axisToVec(s.axis);
+    const pivot = s.pivot
+      ? new THREE.Vector3(...s.pivot)
+      : new THREE.Vector3();
+    ops.push({ pivot, axis, angleRad });
+  }
+  return ops;
+}
+
+function axisToVec(a: string): THREE.Vector3 {
+  switch (a) {
+    case 'x+': return new THREE.Vector3(1, 0, 0);
+    case 'x-': return new THREE.Vector3(-1, 0, 0);
+    case 'y+': return new THREE.Vector3(0, 1, 0);
+    case 'y-': return new THREE.Vector3(0, -1, 0);
+    case 'z+': return new THREE.Vector3(0, 0, 1);
+    case 'z-': return new THREE.Vector3(0, 0, -1);
+    default: return new THREE.Vector3(0, 0, 0);
+  }
+}
+
 function getPanelFootprints2D(
   panels: any[],
   facePlaneNormal: THREE.Vector3,
@@ -645,13 +687,20 @@ function getPanelFootprints2D(
       new THREE.Vector3(...panel.scale)
     );
 
-    // DÖNMÜŞ PANEL: TÜM köşeleri hedef düzleme izdüşür (tam siluet).
+    // DÖNMÜŞ PANEL: Düz geometri köşelerine rotateSteps dönüşümünü uygulayıp
+    // TÜM köşeleri hedef düzleme izdüşürür.
     if (panel.__isRotatedPanel) {
       const posAttr = panel.geometry.getAttribute('position');
       if (!posAttr) continue;
+      const rotOps = buildRotationOps(panel);
       const allProj: Point2D[] = [];
       for (let i = 0; i < posAttr.count; i++) {
         const wp = new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)).applyMatrix4(m);
+        for (const op of rotOps) {
+          wp.sub(op.pivot);
+          wp.applyAxisAngle(op.axis, op.angleRad);
+          wp.add(op.pivot);
+        }
         allProj.push(projectTo2D(wp, facePlaneOrigin, u, v));
       }
       if (allProj.length < 3) continue;
