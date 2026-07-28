@@ -9,7 +9,6 @@ import {
   getSubtractorFootprints2D,
   isPointInsidePolygon,
   computeFreeRegionLocal,
-  getDominantFaceWorldVertices,
   panelFootprintInParentLocal,
   projectTo2D,
   subtractPolygon,
@@ -646,15 +645,18 @@ function getPanelFootprints2D(
       new THREE.Vector3(...panel.scale)
     );
 
-    // DÖNMÜŞ PANEL: dominant yüzey izdüşümü — düzlem mesafe filtresine
-    // güvenmek yerine en büyük yüzeyin köşelerini u/v'ye izdüşürür.
+    // DÖNMÜŞ PANEL: TÜM köşeleri hedef düzleme izdüşür (tam siluet).
     if (panel.__isRotatedPanel) {
-      const domVerts = getDominantFaceWorldVertices(panel.geometry, m);
-      if (domVerts && domVerts.length >= 3) {
-        const proj: Point2D[] = domVerts.map(wp => projectTo2D(wp, facePlaneOrigin, u, v));
-        const hull = convexHull2D(proj);
-        if (hull.length >= 3) footprints.push(hull);
+      const posAttr = panel.geometry.getAttribute('position');
+      if (!posAttr) continue;
+      const allProj: Point2D[] = [];
+      for (let i = 0; i < posAttr.count; i++) {
+        const wp = new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)).applyMatrix4(m);
+        allProj.push(projectTo2D(wp, facePlaneOrigin, u, v));
       }
+      if (allProj.length < 3) continue;
+      const hull = convexHull2D(allProj);
+      if (hull.length >= 3) footprints.push(hull);
       continue;
     }
 
