@@ -167,43 +167,6 @@ function axisLetterToVec(a: string): THREE.Vector3 {
   }
 }
 
-// ── DOMİNANT KESİCİ YÜZ (saf, geometri problamadan) ──────────────────────
-// KURAL (Goker): Bir panelin komşularını kesen "dominant yüzü" HER ZAMAN
-// GENİŞ yüzüdür (kalınlığı olmayan taraf) — asla kalınlık kenarı değil. Panel
-// çok dönünce ince kalınlık bandı yanlış tarafı seçip kesici düzlemi panelin
-// kalınlığına sokuyordu ("kesici tarafı kalınlığa geçmiş gibi"). Bu yüzden
-// kesici, kalınlık aralığı [dMin,dMax] DEĞİL, geniş yüzün TEK düzlemidir:
-//   nW = VF normali (geniş yüz normali) adımlarla döndürülmüş
-//   dFace = geniş yüz düzleminin ofseti (panelin DIŞ geniş yüzü — komşuya bakan)
-// Kesilen panel bu düzleme kadar kesilir; kalınlık artık taraf seçimine
-// karışmaz. dMin/dMax yalnız GERİ-UYUM için döndürülür (dFace ± thickness/2).
-export function rotatedBand(
-  panel: Shape,
-  vf: VirtualFace,
-  thickness: number
-): { nW: THREE.Vector3; dMin: number; dMax: number; dFace: number } | null {
-  const steps = getUnifiedSteps(panel);
-  const { quat, ops } = composeSteps(steps, vf);
-  const n0 = new THREE.Vector3(...(vf.normal as [number, number, number])).normalize();
-  const nW = n0.clone().applyQuaternion(quat).normalize();
-  // Panelin geniş-yüz düzlemi: VF merkezinin (adımlarla taşınmış) nW izdüşümü.
-  // Panel -normal yönüne ekstrüde olduğundan iki geniş yüz vardır: dış yüz
-  // (VF düzlemi, dFace) ve iç yüz (dFace - thickness). DOMİNANT = dış yüz;
-  // komşu bu düzleme dayanır.
-  let c = new THREE.Vector3();
-  for (const v of vf.vertices) c.add(new THREE.Vector3(v[0], v[1], v[2]));
-  c.divideScalar(vf.vertices.length);
-  for (const op of ops) {
-    if (op.kind === 'translate') c.add(op.d);
-    else {
-      const q = new THREE.Quaternion().setFromAxisAngle(op.axis, (op.deg * Math.PI) / 180);
-      c.sub(op.pivot).applyQuaternion(q).add(op.pivot);
-    }
-  }
-  const dFace = nW.dot(c);
-  return { nW, dFace, dMin: dFace - thickness, dMax: dFace };
-}
-
 // ── Rebuild orkestrasyonu ─────────────────────────────────────────────────
 const inFlight = new Set<string>();
 const pending = new Set<string>();
@@ -267,11 +230,18 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
   const children = shapes
     .filter(s => s.type === 'panel' && (s.parameters as any)?.parentShapeId === parentShapeId)
     .sort((a, b) => orderOf(a) - orderOf(b));
+  // TEŞHİS: sahnedeki TÜM paneller ve parent bağları — neden tek panel toplanıyor?
+  const allPanels = shapes.filter(s => s.type === 'panel');
+  console.log('[YAGO][CHILDREN] parent=', parentShapeId.slice(-6),
+    'toplananN=', children.length, '/ sahnedekiN=', allPanels.length,
+    '| tümPaneller=', allPanels.map(p => `${p.id.slice(-6)}[parent=${String((p.parameters as any)?.parentShapeId || '?').slice(-6)}]`).join(' '));
   if (children.length === 0) return;
   console.log('[YAGO][SIRA]', parentShapeId, 'panel sırası=',
     children.map(c => `${c.id.slice(-6)}(vf#${orderOf(c) < 1e9 ? orderOf(c) : '?'})`).join(' → '));
 
   const parentPos: [number, number, number] = [...(parentFresh.position as any)] as any;
+  // Grow için ebeveyn en büyük boyutu (dönmüş panel bu kadar genişletilip
+  // döndürülür ki açılı boşluğa erişsin; fazlalık K6 küp kesişimiyle kırpılır).
   const parentMax = Math.max(
     parseFloat((parentFresh.parameters as any)?.width) || 0,
     parseFloat((parentFresh.parameters as any)?.height) || 0,
@@ -280,13 +250,17 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
 
   const builtSolid = new Map<string, any>();
   const builtGrown = new Map<string, any>();
-  const builtBand = new Map<string, { nW: THREE.Vector3; dMin: number; dMax: number; dFace: number } | null>();
   const meta = new Map<string, { att: PanelAttachment; thickness: number; isRotated: boolean; steps: TransformStep[] }>();
 
-  // Katı üretimi (taban + adımlar). writeEarly=true ise adım-uygulanmış HAM
+  // Katı üretimi (taban + adımlar). writeEarly=true ise adım-uygulanmış
   // geometri store'a hemen yazılır (VF regen taşınmış ayak izlerini görsün).
+  // KRİTİK SADELEŞTİRME: move ve rotate AYNI yoldan geçer. Panel hangi adımı
+  // (move/rotate) taşırsa taşısın, GERÇEK katısından (expand=0, doğru kalınlık)
+  // üretilir, adımlar uygulanır. Dönmüş panele ÖZEL grow/band/expand YOK —
+  // bunlar iç içe geçme ve fazla kalınlık hatalarının kaynağıydı. Move zaten
+  // böyle çalışıp doğru sonuç veriyordu; rotate de aynısını yapar.
   const buildSolids = async (vfsIn: VirtualFace[], writeEarly: boolean) => {
-    builtSolid.clear(); builtGrown.clear(); builtBand.clear(); meta.clear();
+    builtSolid.clear(); builtGrown.clear(); meta.clear();
     for (const panel of children) {
       try {
         const att = getPanelAttachment(panel, vfsIn);
@@ -294,9 +268,6 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
         const thickness = parseFloat((panel.parameters as any)?.panelThickness) || 18;
         const steps = getUnifiedSteps(panel);
         const isRotated = steps.some(s => s.type === 'rotate');
-        const expand = isRotated ? parentMax : 0;
-        let rp = await createPanelFromVirtualFace(att.vf.vertices, att.vf.normal, thickness, expand);
-        if (!rp) continue;
         const { ops } = composeSteps(steps, att.vf);
         const applyOps = (solid: any) => {
           let s = solid;
@@ -306,22 +277,44 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
           }
           return s;
         };
+
+        // GROW & SHRINK (dönmüş panel): Panel VF'nin düz izdüşümü kadar
+        // üretilip döndürülürse, eğik hipotenüs düz projeksiyondan uzun
+        // olduğundan panel açılı boşluğu DOLDURAMAZ ("ölçüsü büyümüyor"). Bu
+        // yüzden dönmüş panelin tabanı planeExpand ile BÜYÜK üretilir (SINIR
+        // DİKDÖRTGENİ — her zaman düzlemsel, extrude doğru 18mm kalınlık verir);
+        // döndürülür; sonra K6 küp kesişimi + komşu kesimleri onu açıya göre
+        // ilk engele kadar KIRPAR. Düz panel expand almaz (highlight=panel).
+        const expand = isRotated ? parentMax : 0;
+        let rp = await createPanelFromVirtualFace(att.vf.vertices, att.vf.normal, thickness, expand);
+        if (!rp) continue;
         rp = applyOps(rp);
+
+        // Kesici havuzu: dönmüş panelde grow'lu katı komşuları fazla keser;
+        // gerçek boyut (expand=0) ayrı üretilir. İkinci üretim başarısız olursa
+        // (dejenere VF vb.) grow'lu katıya düşülür — üretim HİÇ patlamasın.
         let cutterSolid = rp;
         if (isRotated) {
-          const trueBase = await createPanelFromVirtualFace(att.vf.vertices, att.vf.normal, thickness, 0);
-          if (trueBase) cutterSolid = applyOps(trueBase);
+          try {
+            const real = await createPanelFromVirtualFace(att.vf.vertices, att.vf.normal, thickness, 0);
+            if (real) cutterSolid = applyOps(real);
+          } catch (e2) {
+            console.warn('[YAGO][MOTOR] gerçek kesici üretilemedi, grow kullanılıyor:', panel.id);
+            cutterSolid = rp;
+          }
         }
+
         builtSolid.set(panel.id, cutterSolid);
         builtGrown.set(panel.id, rp);
-        builtBand.set(panel.id, isRotated ? rotatedBand(panel, att.vf, thickness) : null);
         meta.set(panel.id, { att, thickness, isRotated, steps });
         if (writeEarly) {
           const gPre = convertReplicadToThreeGeometry(cutterSolid);
           updateShape(panel.id, { geometry: gPre, position: parentPos, rotation: [0, 0, 0] } as any);
         }
       } catch (err) {
-        console.error('[YAGO][MOTOR] katı üretim hatası:', panel.id, err);
+        console.error('[YAGO][MOTOR] katı üretim hatası:', panel.id,
+          'mesaj=', (err as any)?.message || String(err),
+          'isRotated=', (getUnifiedSteps(panel) || []).some(s => s.type === 'rotate'));
       }
     }
   };
@@ -351,101 +344,53 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
   // Aynı dalga içinde yeni bölgelerle yeniden üretim döngüyü kapatır.
   await buildSolids(vfs, false);
 
-  // ── FAZ B: ÖNCELİK-TABANLI birleşim kesimleri ────────────────────────────
-  // TEMEL KURAL (Goker): Öncelik = YERLEŞME SIRASI. Bir panel YALNIZCA
-  // kendinden daha ÖNCELİKLİ (dizide ÖNCE gelen = üst sıra) kardeşlerin
-  // DOMİNANT yüzüne göre kısalır. Kesen = önce gelen; kesilen = sonra gelen.
-  //   • Kesen DÖNMÜŞ ise → kesilen, kesenin DOMİNANT (geniş) yüz düzlemine
-  //     kadar kısalır (K2 dominant-yüz kesimi). Üst sıradaki panel döndüğünde
-  //     kendi dominant yüzüyle alttakileri keser — istenen davranış.
-  //   • Kesen DÜZ ise → düz gövde/eş-düzlem kesimi (K1/K3).
-  // Böylece "ilk attığım paneli döndürünce kendi dominant yüzüne göre
-  // alttakini kısaltmalı" sağlanır; kesenin sırası HER ZAMAN belirleyicidir.
+  // ── FAZ B: ÖNCELİK KESİMİ + EBEVEYN SINIRI ───────────────────────────────
+  // Öncelik = yerleşme sırası (children zaten UI sırasına göre). Her panel,
+  // kendinden ÖNCE gelen (üst sıra) kardeşlerin GERÇEK katısıyla kesilir →
+  // dönmüş bir üst-sıra panel, alt sıradaki panelleri kendisiyle SINIRLAR
+  // (dominant panel dönük olsa bile alttakini keser). Kesici havuzu (builtSolid)
+  // GERÇEK katıdır (grow değil) — grow'lu kesici alttakini fazla keserdi.
+  // Kesilen panel ise grow'lu (builtGrown) başlar ki dönünce uzayıp komşuya
+  // dayanabilsin. Sonra K6 küple sınırlanır.
   for (let pi = 0; pi < children.length; pi++) {
     const panel = children[pi];
     const m = meta.get(panel.id);
     let rp = builtGrown.get(panel.id) ?? builtSolid.get(panel.id);
     if (!m || !rp) continue;
-    const { att, thickness, isRotated } = m;
+    const { isRotated } = m;
     try {
-      for (let si = 0; si < children.length; si++) {
-        if (si === pi) continue;
+      // ÖNCELİK KESİMİ: kendinden önce gelen kardeşlerle kesilir. Kesici olarak
+      // dönmüş komşunun GROW'lu katısı kullanılır — dönmüş panel ince (18mm)
+      // olduğundan gerçek katısı kesilen paneli yalnız ince bir dilimde keser
+      // (yetersiz, iç içe kalır). Grow'lu katı eğik hat boyunca TAM keser;
+      // fazlalık sonra K6 küp kesişimiyle temizlenir. Düz komşu gerçek katısıyla
+      // keser (grow'a gerek yok, zaten çakışır).
+      for (let si = 0; si < pi; si++) {
         const sib = children[si];
         const sm = meta.get(sib.id);
-        const sibSolid = builtSolid.get(sib.id);
-        if (!sm || !sibSolid) continue;
-        const sibRotated = sm.isRotated;
-        const earlier = si < pi; // kesen (sib) bu panelden ÖNCE mi geldi?
-
-        // Yalnız ÖNCEKİ (daha öncelikli) kardeşler bu paneli keser. Tek istisna
-        // KORUNUR: bu panel dönmüşse, kendi grow katısı SONRAKİ düz komşulara da
-        // çarpıp durmalı (dönme bilinçli eylem) — ama bu, kesenin dominant
-        // yüzüyle değil, çarptığı düz komşunun gövdesiyle sınırlanır.
-        let mode: 'none' | 'miter' | 'flat' | 'body' = 'none';
-        if (earlier) {
-          // Kesen önce geldi → dominant. Dönmüşse dominant-yüz gönyesi, düzse düz.
-          mode = sibRotated ? 'miter' : 'flat';
-        }
-        // NOT: Bu panel dönmüş olsa bile SONRAKİ (daha düşük öncelikli)
-        // komşularda DURMAZ — onlar bu panele yol verir (öncelik mutlak). Dönmüş
-        // panel yalnız ÖNCEKİ komşulara ve kübe (K6) dayanır. Böylece "üst
-        // sıradaki dönmüş panel alttakini keser, alttakine çarpıp kısalmaz".
-        if (mode === 'none') continue;
-
-        if (!aabbTouch(rp, sibSolid)) continue;
-
-        if (mode === 'miter') {
-          // K2 (DÜZELTİLMİŞ): "highlight = panel" ilkesi. Kesilen panelin TABANI
-          // zaten bölge katmanında dönmüş komşunun ayak iziyle kırpılmış geliyor
-          // (log: sağ VF 600→473, v%21 küçülme — bölge DOĞRU). Bu yüzden motor
-          // ARTIK ayrı bir dominant-yüz düzlemi HESAPLAMAZ: eski rotatedBand
-          // panelin KENDİ VF merkezinden dMin/dMax türetiyordu (dMin=569),
-          // oysa gerçek kesim çizgisi bölgenin gördüğü ayak izinde (v≈-454..-472)
-          // — iki katman farklı geometri kullanıyordu, kesim yanlış/yetersizdi.
-          // Kalınlık boyunca eğik kesim için SADECE dönmüş komşunun GERÇEK
-          // (grow'lu) gövdesiyle keseriz; taban zaten 2B'de doğru kırpık.
-          const before0 = bb6(rp);
-          const sibCutter = builtGrown.get(sib.id) ?? sibSolid;
-          const sibReal = sibSolid;
-          console.log('[YAGO][GÖVDE-TEŞHİS]', panel.id.slice(-6), '<-', sib.id.slice(-6),
-            'kesilen bbox=[', (before0 || []).map(x => x.toFixed(0)).join(','), ']',
-            'kesen(grow) bbox=[', (bb6(sibCutter) || []).map(x => x.toFixed(0)).join(','), ']',
-            'kesen(gerçek) bbox=[', (bb6(sibReal) || []).map(x => x.toFixed(0)).join(','), ']');
-          try {
-            const bodyCut = await performBooleanCut(safeClone(rp), safeClone(sibCutter));
-            const db = bbDelta(before0, bb6(bodyCut));
-            const afterB = bb6(bodyCut);
-            console.log('[YAGO][GÖVDE-TEŞHİS] kesim sonrası bbox=[', (afterB || []).map(x => x.toFixed(0)).join(','), '] değişim=', db.toFixed(1));
-            if (db > 0.001) rp = bodyCut;
-          } catch (e) { console.warn('[YAGO][MOTOR] gövde kesim hatası:', e); }
-          const dTotal = bbDelta(before0, bb6(rp));
-          console.log('[YAGO][GÖNYE]', panel.id, '<-', sib.id, '(gövde) değişim=', dTotal.toFixed(1));
-          continue;
-        }
-
-        if (mode === 'flat' && coplanarThin(rp, sibSolid)) {
-          // K3 EŞ-DÜZLEM: ±EPS çift kesim
-          const n = thinAxis(sibSolid);
-          for (const sgn of [2, -2]) {
-            try {
-              const shifted = safeClone(sibSolid).translate(n.x * sgn, n.y * sgn, n.z * sgn);
-              rp = await performBooleanCut(rp, shifted);
-            } catch (e) { console.warn('[YAGO][MOTOR] K3 kesim hatası:', e); }
-          }
-          continue;
-        }
-
-        // K4 GÖVDE (flat-earlier veya rotated-rotated)
+        if (!sm) continue;
+        const cutter = sm.isRotated
+          ? (builtGrown.get(sib.id) ?? builtSolid.get(sib.id))  // dönmüş: grow (tam keser)
+          : builtSolid.get(sib.id);                              // düz: gerçek
+        if (!cutter) continue;
+        if (!aabbTouch(rp, cutter)) continue;
+        const before = bb6(rp);
+        console.log('[YAGO][KESİM-GEO]', panel.id.slice(-6), 'kesilen=[', (before || []).map(x => x.toFixed(0)).join(','),
+          '] <-', sib.id.slice(-6), sm.isRotated ? '(dönmüş-grow)' : '(düz)',
+          'kesici=[', (bb6(cutter) || []).map(x => x.toFixed(0)).join(','), ']');
         try {
-          rp = await performBooleanCut(rp, safeClone(sibSolid));
-        } catch (e) { console.warn('[YAGO][MOTOR] K4 kesim hatası:', panel.id, '<-', sib.id, e); }
+          const cut = await performBooleanCut(safeClone(rp), safeClone(cutter));
+          const ab = bb6(cut);
+          const alive = ab && (ab[3] - ab[0]) > 1 && (ab[4] - ab[1]) > 1 && (ab[5] - ab[2]) > 1;
+          const d = bbDelta(before, ab);
+          if (d > 0.001 && alive) rp = cut;
+          console.log('[YAGO][KESİM]', panel.id.slice(-6), '<-', sib.id.slice(-6),
+            sm.isRotated ? '(dönmüş)' : '(düz)', 'değişim=', d.toFixed(1), alive ? '' : '(BOŞ)');
+        } catch (e) { console.warn('[YAGO][MOTOR] kesim hatası:', panel.id.slice(-6), '<-', sib.id.slice(-6), e); }
       }
 
-      // K6: EBEVEYN SINIRI — artık DÖNMÜŞ panel de kesişimlenir. Dönen panel
-      // küpün referans sınırına çarpınca açısına göre KISALIR ve kalınlık ucu
-      // sınır yüzeyinde biçilir (istenen: "kübün referans sınırlarına çarpıp
-      // durmalı, ölçüsünü açıya göre güncellemeli"). Kesişim panel katısını
-      // yok ederse (tam dışarıda) uygulanmaz — güvenlik.
+      // K6: EBEVEYN SINIRI — panel küple kesişimlenir (grow fazlalığı + küp
+      // dışına taşan kısım kırpılır). Kesişim paneli yok ederse uygulanmaz.
       if ((parentFresh as any).replicadShape) {
         try {
           const clipped = await performBooleanIntersection(rp, safeClone((parentFresh as any).replicadShape));
@@ -458,9 +403,6 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
         } catch (e) { console.warn('[YAGO][MOTOR] K6 kesişim hatası:', e); }
       }
 
-      // ÖNEMLİ: kesici havuzu (builtSolid) HAM kalır — nihai katıyı havuza
-      // yazmak sıraya bağımlılığı arka kapıdan geri sokar. Nihai katı yalnız
-      // şekle gider.
       const geometry = convertReplicadToThreeGeometry(rp);
       updateShape(panel.id, {
         geometry,
@@ -468,94 +410,17 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
         rotation: [0, 0, 0],
         replicadShape: rp,
       } as any);
+      const fb = bb6(rp);
+      const minDim = fb ? Math.min(fb[3] - fb[0], fb[4] - fb[1], fb[5] - fb[2]) : -1;
       console.log('[YAGO][MOTOR] panel yeniden üretildi:', panel.id,
-        'adımN=', m.steps.length, isRotated ? 'DÖNMÜŞ' : 'düz');
+        'adımN=', m.steps.length, isRotated ? 'DÖNMÜŞ' : 'düz',
+        'kalınlık(min boyut)=', minDim.toFixed(1), '(beklenen', m.thickness, ')');
     } catch (err) {
       console.error('[YAGO][MOTOR] panel rebuild hatası, önceki geometri korunuyor:', panel.id, err);
     }
   }
 }
 
-// ── K2 DOMİNANT-YÜZ KESİMİ ─────────────────────────────────────────────────
-// Kesilen panel, dönmüş kesenin DOMİNANT (geniş dış) yüz DÜZLEMİNE kadar
-// kesilir. Kalınlık bandı taraf seçimine karışmaz → panel çok dönse de kesici
-// asla kalınlığa geçmez. away = kesilen panelin bu düzlemi aştığı (silinecek)
-// yön; kesilen panelin merkezinin düzleme göre tarafından türetilir.
-async function miterHalfSpace(
-  rp: any,
-  band: { nW: THREE.Vector3; dMin: number; dMax: number; dFace: number } | null,
-  vf: VirtualFace,
-  panel: Shape,
-  parentMax: number,
-  createPanelFromVirtualFace: (v: any, n: any, t: number, e: number) => Promise<any>,
-  mirrored = false
-): Promise<any | null> {
-  if (!band) return null;
-  const { nW, dMin, dMax } = band;
-  // Kesilen panelin merkezi ve nW-yönündeki kenar aralığı (kendi geometrisinden).
-  const box = bb6(rp);
-  if (!box) return null;
-  let dEdgeMax = -Infinity, dEdgeMin = Infinity;
-  const cx = (box[0] + box[3]) / 2, cy = (box[1] + box[4]) / 2, cz = (box[2] + box[5]) / 2;
-  for (const x of [box[0], box[3]]) for (const y of [box[1], box[4]]) for (const z of [box[2], box[5]]) {
-    const d = nW.x * x + nW.y * y + nW.z * z;
-    dEdgeMax = Math.max(dEdgeMax, d); dEdgeMin = Math.min(dEdgeMin, d);
-  }
-  const dCenter = nW.x * cx + nW.y * cy + nW.z * cz;
-
-  // DOMİNANT YÜZ SEÇİMİ (kök düzeltme): Dönmüş panelin kalınlık bandı
-  // [dMin, dMax]. Kesilen panel bu banda KENDİ TARAFINDAN dayanır:
-  //   • Panel tümüyle bandın ALTINDAysa (dEdgeMax <= dMax civarı, merkez<dMin)
-  //     → dönmüş panelin ALT yüzü (dMin) keser; panelin d>dMin kısmı silinir.
-  //   • Panel tümüyle bandın ÜSTÜndeyse → ÜST yüz (dMax) keser.
-  //   • Panel bandı deliyorsa → merkeze en yakın yüz (panelin ilk gördüğü).
-  // Eski kod hep dMax alıyordu → alttan yaklaşan panel 18mm fazla uzayıp
-  // dönmüş panelin İÇİNE giriyordu (log: dCenter=419 band[569,587], dMax
-  // seçilince panel üstten kesiliyordu). Panelin merkezi bandın hangi
-  // tarafındaysa o taraftaki yüz doğru kesim düzlemidir.
-  let dFace: number;
-  if (dCenter <= dMin) dFace = dMin;        // panel bandın altında → alt yüz keser
-  else if (dCenter >= dMax) dFace = dMax;   // panel bandın üstünde → üst yüz keser
-  else dFace = Math.abs(dMax - dCenter) <= Math.abs(dMin - dCenter) ? dMax : dMin; // delerse en yakın
-
-  // Kesilen panel dominant düzlemin hangi tarafında? O taraf KORUNUR; düzlemin
-  // öte yanına taşan kısım silinir.
-  const belowFace = dCenter < dFace;
-  const away = belowFace ? nW.clone() : nW.clone().negate();
-  const overhang = belowFace ? (dEdgeMax - dFace) : (dFace - dEdgeMin);
-  console.log('[YAGO][GÖNYE-DETAY]', panel.id.slice(-6), '<- kesen dominant',
-    'nW=(', nW.x.toFixed(2), nW.y.toFixed(2), nW.z.toFixed(2), ')',
-    'dMin=', dMin.toFixed(0), 'dMax=', dMax.toFixed(0), 'seçilen dFace=', dFace.toFixed(0),
-    'dCenter=', dCenter.toFixed(0), 'dEdge=[', dEdgeMin.toFixed(0), ',', dEdgeMax.toFixed(0), ']',
-    'taraf=', belowFace ? 'alt' : 'üst', 'taşma=', overhang.toFixed(0));
-  if (overhang < 0.5) return null; // panel düzlemi aşmıyor → kesime gerek yok
-
-  // Kesici düzlem tam dFace'te. Yarım-uzay slabı dFace'ten +away tarafını doldurur.
-  const p0Base = new THREE.Vector3(cx, cy, cz);
-  const p0 = p0Base.clone().add(nW.clone().multiplyScalar(dFace - dCenter)); // dFace düzleminde
-  // up: away'e EN DİK dünya ekseni (en küçük |bileşen|). -45° gibi away'in iki
-  // bileşeninin EŞİT olduğu açılarda eski "dominant bileşen" seçimi dejenere
-  // cross üretip slab'ı geçersiz kılıyordu (kesim -45° civarı hiç olmuyordu —
-  // kök buydu). En dik eksen her açıda sağlam bir taban verir.
-  const ax = Math.abs(away.x), ay = Math.abs(away.y), az = Math.abs(away.z);
-  const up = (ax <= ay && ax <= az)
-    ? new THREE.Vector3(1, 0, 0)
-    : (ay <= ax && ay <= az)
-      ? new THREE.Vector3(0, 1, 0)
-      : new THREE.Vector3(0, 0, 1);
-  const u = new THREE.Vector3().crossVectors(away, up).normalize();
-  const vv = new THREE.Vector3().crossVectors(away, u).normalize();
-  const L = 3 * parentMax;
-  const base = mirrored ? p0.clone().addScaledVector(away, L) : p0.clone();
-  const nrm: [number, number, number] = mirrored
-    ? [away.x, away.y, away.z]
-    : [-away.x, -away.y, -away.z];
-  const mk = (su: number, sv: number): [number, number, number] => {
-    const w = base.clone().addScaledVector(u, su * L).addScaledVector(vv, sv * L);
-    return [w.x, w.y, w.z];
-  };
-  return await createPanelFromVirtualFace([mk(-1, -1), mk(1, -1), mk(1, 1), mk(-1, 1)], nrm, L, 0);
-}
 
 // ── küçük yardımcılar ─────────────────────────────────────────────────────
 function panelTs(s: Shape): number {
@@ -568,24 +433,15 @@ function bb6(s: any): number[] | null {
 }
 function bbDelta(a: number[] | null, b: number[] | null): number {
   if (!a || !b) return Infinity;
-  return a.reduce((s, v, i) => s + Math.abs(v - b[i]), 0);
+  let d = 0;
+  for (let i = 0; i < 6; i++) d += Math.abs(a[i] - b[i]);
+  return d;
 }
 function aabbTouch(a: any, b: any): boolean {
-  const A = bb6(a), B = bb6(b);
-  if (!A || !B) return true;
-  return A[0] <= B[3] + 0.5 && B[0] <= A[3] + 0.5 &&
-         A[1] <= B[4] + 0.5 && B[1] <= A[4] + 0.5 &&
-         A[2] <= B[5] + 0.5 && B[2] <= A[5] + 0.5;
-}
-function thinAxis(s: any): THREE.Vector3 {
-  const b = bb6(s);
-  if (!b) return new THREE.Vector3(0, 0, 1);
-  const sx = b[3] - b[0], sy = b[4] - b[1], sz = b[5] - b[2];
-  if (sx <= sy && sx <= sz) return new THREE.Vector3(1, 0, 0);
-  if (sy <= sx && sy <= sz) return new THREE.Vector3(0, 1, 0);
-  return new THREE.Vector3(0, 0, 1);
-}
-function coplanarThin(a: any, b: any): boolean {
-  const ta = thinAxis(a), tb = thinAxis(b);
-  return Math.abs(ta.dot(tb)) > 0.9;
+  const ba = bb6(a), bb = bb6(b);
+  if (!ba || !bb) return false;
+  const eps = 1;
+  return ba[0] <= bb[3] + eps && ba[3] >= bb[0] - eps &&
+         ba[1] <= bb[4] + eps && ba[4] >= bb[1] - eps &&
+         ba[2] <= bb[5] + eps && ba[5] >= bb[2] - eps;
 }
