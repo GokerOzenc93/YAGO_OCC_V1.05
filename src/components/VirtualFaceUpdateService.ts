@@ -9,6 +9,7 @@ import {
   getSubtractorFootprints2D,
   isPointInsidePolygon,
   computeFreeRegionLocal,
+  getDominantFaceWorldVertices,
   panelFootprintInParentLocal,
   projectTo2D,
   subtractPolygon,
@@ -439,19 +440,7 @@ export function recalculateVirtualFacesForShape(
         p.parameters?.virtualFaceId !== vfId &&
         (myIdx != null && panelPriority(p) < myIdx)
       )
-      .map(p => {
-        // Dönmüş panelin ayak izi, dönmüş geometriden değil, VF'nin (yüze bağlı
-        // düz bölge) köşelerinden gelir. Dönüş açıyı büyüttükçe geometrik ayak
-        // izi yüzeyi süpürür ve silueti yanlış bölge üretir. VF köşeleri
-        // panelin yüzde gerçekten kapladığı düz alanı temsil eder.
-        if (isRotatedPanel(p)) {
-          const pvf = virtualFaces.find(f => f.id === p.parameters?.virtualFaceId);
-          if (pvf?.vertices && pvf.vertices.length >= 3) {
-          return { ...p, __flatFootprintVertices: pvf.vertices };
-          }
-        }
-        return p;
-      });
+      .map(p => isRotatedPanel(p) ? { ...p, __isRotatedPanel: true } : p);
   };
 
   const updatedMap = new Map<string, VirtualFace>();
@@ -656,6 +645,19 @@ function getPanelFootprints2D(
       ),
       new THREE.Vector3(...panel.scale)
     );
+
+    // DÖNMÜŞ PANEL: dominant yüzey izdüşümü — düzlem mesafe filtresine
+    // güvenmek yerine en büyük yüzeyin köşelerini u/v'ye izdüşürür.
+    if (panel.__isRotatedPanel) {
+      const domVerts = getDominantFaceWorldVertices(panel.geometry, m);
+      if (domVerts && domVerts.length >= 3) {
+        const proj: Point2D[] = domVerts.map(wp => projectTo2D(wp, facePlaneOrigin, u, v));
+        const hull = convexHull2D(proj);
+        if (hull.length >= 3) footprints.push(hull);
+      }
+      continue;
+    }
+
     const posAttr = panel.geometry.getAttribute('position');
     if (!posAttr) continue;
     const onPlane: Point2D[] = [];
@@ -666,7 +668,6 @@ function getPanelFootprints2D(
         onPlane.push(projectTo2D(wp, facePlaneOrigin, u, v));
       }
     }
-    // Fallback: project ALL vertices when on-plane count is too low
     if (onPlane.length < 3) {
       onPlane.length = 0;
       for (let i = 0; i < posAttr.count; i++) {

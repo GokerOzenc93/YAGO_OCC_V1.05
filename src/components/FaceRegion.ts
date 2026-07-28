@@ -703,6 +703,74 @@ export interface FreeRegionResult {
   sideRelations: Record<string, number>;
 }
 
+/**
+ * Panelin mesh'indeki en büyük (alanca) düzlemsel yüzeyi (dominant face) bulur.
+ * Üçgenleri normal benzerliğine göre gruplar, en geniş grubun DÜNYA
+ * koordinatlarındaki köşelerini döndürür.
+ */
+export function getDominantFaceWorldVertices(
+  geo: THREE.BufferGeometry,
+  M: THREE.Matrix4
+): THREE.Vector3[] | null {
+  const pos = geo.getAttribute('position');
+  if (!pos || pos.count < 3) return null;
+  const idx = geo.getIndex();
+  const triCount = idx ? Math.floor(idx.count / 3) : Math.floor(pos.count / 3);
+  if (triCount === 0) return null;
+
+  const getVtx = (k: number) => {
+    const i = idx ? idx.getX(k) : k;
+    return new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(M);
+  };
+
+  const triNormals: THREE.Vector3[] = [];
+  const triAreas: number[] = [];
+  const triVerts: THREE.Vector3[][] = [];
+  for (let t = 0; t < triCount; t++) {
+    const a = getVtx(t * 3), b = getVtx(t * 3 + 1), c = getVtx(t * 3 + 2);
+    const ab = new THREE.Vector3().subVectors(b, a);
+    const ac = new THREE.Vector3().subVectors(c, a);
+    const cross = new THREE.Vector3().crossVectors(ab, ac);
+    const area = cross.length() * 0.5;
+    if (area < 1e-8) { triNormals.push(new THREE.Vector3()); triAreas.push(0); triVerts.push([a, b, c]); continue; }
+    triNormals.push(cross.normalize());
+    triAreas.push(area);
+    triVerts.push([a, b, c]);
+  }
+
+  const groupId = new Int32Array(triCount).fill(-1);
+  let nextGroup = 0;
+  const groupArea: number[] = [];
+  const COS_THRESH = 0.99;
+  for (let i = 0; i < triCount; i++) {
+    if (groupId[i] >= 0 || triAreas[i] < 1e-8) continue;
+    const gid = nextGroup++;
+    groupId[i] = gid;
+    let totalArea = triAreas[i];
+    for (let j = i + 1; j < triCount; j++) {
+      if (groupId[j] >= 0 || triAreas[j] < 1e-8) continue;
+      if (Math.abs(triNormals[i].dot(triNormals[j])) > COS_THRESH) {
+        groupId[j] = gid;
+        totalArea += triAreas[j];
+      }
+    }
+    groupArea[gid] = totalArea;
+  }
+  if (nextGroup === 0) return null;
+
+  let bestGid = 0;
+  for (let g = 1; g < nextGroup; g++) {
+    if (groupArea[g] > groupArea[bestGid]) bestGid = g;
+  }
+
+  const verts: THREE.Vector3[] = [];
+  for (let i = 0; i < triCount; i++) {
+    if (groupId[i] !== bestGid) continue;
+    verts.push(...triVerts[i]);
+  }
+  return verts.length >= 3 ? verts : null;
+}
+
 /** Panelin ayak izi — PARENT YEREL uzayında, tek dönüşüm zinciriyle. */
 export function panelFootprintInParentLocal(
   panel: any, parentWorldToLocal: THREE.Matrix4,
@@ -713,6 +781,20 @@ export function panelFootprintInParentLocal(
   const pos = panel.geometry.getAttribute('position');
   if (!pos) return null;
   const M = new THREE.Matrix4().multiplyMatrices(parentWorldToLocal, getShapeMatrix(panel));
+  const isRotated = panel.__isRotatedPanel === true;
+
+  // DÖNMÜŞ PANEL: dominant yüzey izdüşümü. Geometrik siluet/kesit yerine
+  // panelin en büyük yüzeyinin (dominant face) köşelerini hedef düzleme
+  // ortogonal olarak izdüşürür. Dönüş açısından bağımsız, kararlı sonuç verir.
+  if (isRotated) {
+    const domVerts = getDominantFaceWorldVertices(panel.geometry, M);
+    if (domVerts && domVerts.length >= 3) {
+      const proj: Point2D[] = domVerts.map(wp => ({ x: wp.dot(u), y: wp.dot(v) }));
+      const hull = convexHull2D(proj);
+      return hull.length >= 3 ? hull : null;
+    }
+    return null;
+  }
   const pts: THREE.Vector3[] = []; const d: number[] = [];
   let dMin = Infinity, dMax = -Infinity;
   for (let i = 0; i < pos.count; i++) {
