@@ -687,13 +687,14 @@ function getPanelFootprints2D(
       new THREE.Vector3(...panel.scale)
     );
 
-    // DÖNMÜŞ PANEL: Düz geometri köşelerine rotateSteps dönüşümünü uygulayıp
-    // TÜM köşeleri hedef düzleme izdüşürür.
+    // DÖNMÜŞ PANEL: Düz geometri köşelerine rotateSteps uygulanır, ardından
+    // hedef düzlemle KESİT alınır (sadece panel kalınlığı kadar ince şerit).
     if (panel.__isRotatedPanel) {
       const posAttr = panel.geometry.getAttribute('position');
       if (!posAttr) continue;
       const rotOps = buildRotationOps(panel);
-      const allProj: Point2D[] = [];
+      const pts: THREE.Vector3[] = [];
+      const dist: number[] = [];
       for (let i = 0; i < posAttr.count; i++) {
         const wp = new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)).applyMatrix4(m);
         for (const op of rotOps) {
@@ -701,10 +702,38 @@ function getPanelFootprints2D(
           wp.applyAxisAngle(op.axis, op.angleRad);
           wp.add(op.pivot);
         }
-        allProj.push(projectTo2D(wp, facePlaneOrigin, u, v));
+        pts.push(wp);
+        dist.push(facePlaneNormal.dot(new THREE.Vector3().subVectors(wp, facePlaneOrigin)));
       }
-      if (allProj.length < 3) continue;
-      const hull = convexHull2D(allProj);
+      const dMin = Math.min(...dist), dMax = Math.max(...dist);
+      const rOut: Point2D[] = [];
+      // Düzleme oturanlar
+      for (let i = 0; i < pts.length; i++) {
+        if (Math.abs(dist[i]) < planeTolerance) {
+          rOut.push(projectTo2D(pts[i], facePlaneOrigin, u, v));
+        }
+      }
+      // Düzlemi deliyorsa: kenar-düzlem kesit noktaları
+      if (dMin < -planeTolerance && dMax > planeTolerance) {
+        const idx = panel.geometry.getIndex();
+        const cnt = idx ? idx.count : posAttr.count;
+        const at = (k: number) => (idx ? idx.getX(k) : k);
+        for (let t = 0; t + 2 < cnt; t += 3) {
+          const tri = [at(t), at(t + 1), at(t + 2)];
+          for (let e = 0; e < 3; e++) {
+            const ai = tri[e], bi = tri[(e + 1) % 3];
+            const da = dist[ai], db = dist[bi];
+            if ((da > 0 && db > 0) || (da < 0 && db < 0)) continue;
+            const den = da - db;
+            if (Math.abs(den) < 1e-9) continue;
+            const sT = da / den;
+            const ix = pts[ai].clone().lerp(pts[bi], sT);
+            rOut.push(projectTo2D(ix, facePlaneOrigin, u, v));
+          }
+        }
+      }
+      if (rOut.length < 3) continue;
+      const hull = convexHull2D(rOut);
       if (hull.length >= 3) footprints.push(hull);
       continue;
     }
