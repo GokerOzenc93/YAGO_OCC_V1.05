@@ -1056,7 +1056,11 @@ export function computeFreeRegionLocal(
     const fp = panelFootprintInParentLocal(panel, parentWorldToLocal, nrm, planeN, u, v);
     if (!fp) continue;
     footprints.push(fp);
-    fpRotated.push((panel?.parameters?.rotateSteps?.length ?? 0) > 0);
+    // Dönüş zaten footprint'e uygulandı — uzak-teğet ötelemesi KAPATILIR.
+    // Eski davranış: dönmüş panelin düz (18mm) izi uzak-teğete ötelenirdi.
+    // Yeni: rotateSteps köşelere uygulanıp tam siluet hesaplandığı için
+    // footprint doğrudan kullanılır, ekstra öteleme gerekmez.
+    fpRotated.push(false);
     fpIds.push(panel?.id ?? null);
     if (panel.id) touchingSiblingIds.push(panel.id);
   }
