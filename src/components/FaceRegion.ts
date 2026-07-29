@@ -703,7 +703,13 @@ export interface FreeRegionResult {
   sideRelations: Record<string, number>;
 }
 
-interface RotOp { pivot: THREE.Vector3; axis: THREE.Vector3; angleRad: number }
+interface RotOp {
+  kind?: 'rotate' | 'translate';
+  pivot?: THREE.Vector3;
+  axis?: THREE.Vector3;
+  angleRad?: number;
+  d?: THREE.Vector3;
+}
 
 /**
  * Panel parametrelerinden (rotateSteps / transformSteps) dönüş işlemlerini çıkarır.
@@ -711,6 +717,9 @@ interface RotOp { pivot: THREE.Vector3; axis: THREE.Vector3; angleRad: number }
  * için basitleştirilmiş versiyon. Pivot ve axis DÜNYA koordinatlarında.
  */
 function buildRotationOpsFromPanel(panel: any): RotOp[] {
+  // composeSteps ile önceden çözülmüş (doğru pivot + zincirlenmiş eksen) ops
+  // varsa onu kullan — gerçek panel dönüşüyle bire bir eşleşir.
+  if (Array.isArray(panel?.__composedOps)) return panel.__composedOps;
   const params = panel?.parameters;
   if (!params) return [];
   const steps: any[] = [];
@@ -734,7 +743,7 @@ function buildRotationOpsFromPanel(panel: any): RotOp[] {
     const pivot = s.pivot
       ? new THREE.Vector3(...s.pivot)
       : new THREE.Vector3();
-    ops.push({ pivot, axis, angleRad });
+    ops.push({ kind: 'rotate', pivot, axis, angleRad });
   }
   return ops;
 }
@@ -778,54 +787,28 @@ export function panelFootprintInParentLocal(
   for (let i = 0; i < pts.length; i++) {
     if (Math.abs(d[i]) < tol) { out.push({ x: pts[i].dot(u), y: pts[i].dot(v) }); flatVertCount++; }
   }
-  // DÖNMÜŞ PANEL: Düz geometrideki köşelere rotateSteps dönüşümü uygulanır,
-  // ardından hedef düzlemle KESİT alınır. "Tüm köşe izdüşümü" panelin
-  // derinliğini de kapsar ve aşırı büyük iz üretir; kesit ise sadece panelin
-  // yüzey düzlemini fiilen DELDİĞİ ince şeridi verir (≈ panel kalınlığı).
+  // DÖNMÜŞ PANEL: composeSteps'ten çözülmüş DOĞRU dönüşüm (gerçek panel dönüşü
+  // ile bire bir pivot/eksen) düz köşelere uygulanır, ardından TÜM köşeler
+  // hedef düzleme izdüşürülür (tam siluet). Önceki fazla-kısaltma bayat
+  // ham s.pivot yüzünden izin kaymasından kaynaklanıyordu; artık pivot
+  // pivotVfFrac'tan doğru çözüldüğü için iz doğru yerde ve doğru boyutta.
   if (isRotated) {
     const rotOps = buildRotationOpsFromPanel(panel);
     const localOps = rotOps.map(op => ({
-      pivot: op.pivot.clone().applyMatrix4(parentWorldToLocal),
-      axis: op.axis.clone().transformDirection(parentWorldToLocal).normalize(),
-      angleRad: op.angleRad,
+      kind: op.kind || 'rotate',
+      pivot: op.pivot ? op.pivot.clone().applyMatrix4(parentWorldToLocal) : undefined,
+      axis: op.axis ? op.axis.clone().transformDirection(parentWorldToLocal).normalize() : undefined,
+      angleRad: op.angleRad || 0,
+      d: op.d ? op.d.clone().transformDirection(parentWorldToLocal) : undefined,
     }));
-    // Köşelere dönüş uygula
-    const rPts: THREE.Vector3[] = pts.map(p => {
+    const rOut: Point2D[] = pts.map(p => {
       const v3 = p.clone();
       for (const op of localOps) {
-        v3.sub(op.pivot);
-        v3.applyAxisAngle(op.axis, op.angleRad);
-        v3.add(op.pivot);
+        if (op.kind === 'translate') { if (op.d) v3.add(op.d); }
+        else if (op.pivot && op.axis) { v3.sub(op.pivot); v3.applyAxisAngle(op.axis, op.angleRad); v3.add(op.pivot); }
       }
-      return v3;
+      return { x: v3.dot(u), y: v3.dot(v) };
     });
-    // Düzlem mesafelerini yeniden hesapla
-    const rD: number[] = rPts.map(p => p.dot(nrm) - planeN);
-    const rDmin = Math.min(...rD), rDmax = Math.max(...rD);
-    // Düzleme oturanlar (tam temas)
-    const rOut: Point2D[] = [];
-    for (let i = 0; i < rPts.length; i++) {
-      if (Math.abs(rD[i]) < tol) rOut.push({ x: rPts[i].dot(u), y: rPts[i].dot(v) });
-    }
-    // Düzlemi deliyorsa: kenar-düzlem kesit noktaları
-    if (rDmin < -tol && rDmax > tol) {
-      const idx = panel.geometry.getIndex();
-      const cnt = idx ? idx.count : pos.count;
-      const at = (k: number) => (idx ? idx.getX(k) : k);
-      for (let t = 0; t + 2 < cnt; t += 3) {
-        const tri = [at(t), at(t + 1), at(t + 2)];
-        for (let e = 0; e < 3; e++) {
-          const ai = tri[e], bi = tri[(e + 1) % 3];
-          const da = rD[ai], db = rD[bi];
-          if ((da > 0 && db > 0) || (da < 0 && db < 0)) continue;
-          const den = da - db;
-          if (Math.abs(den) < 1e-9) continue;
-          const sT = da / den;
-          const ix = rPts[ai].clone().lerp(rPts[bi], sT);
-          rOut.push({ x: ix.dot(u), y: ix.dot(v) });
-        }
-      }
-    }
     if (rOut.length < 3) return null;
     const hull = convexHull2D(rOut);
     return hull.length >= 3 ? hull : null;

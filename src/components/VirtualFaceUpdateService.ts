@@ -21,6 +21,7 @@ import {
   type FaceData,
   type CoplanarFaceGroup,
 } from './FaceEditor';
+import { composeSteps, getUnifiedSteps } from './PanelEngine';
 
 // ── YEREL YARDIMCILAR (kendi kendine yeterlilik) ────────────────────────────
 // Bu iki fonksiyon eskiden './FaceEditor'den import ediliyordu; ancak
@@ -439,7 +440,25 @@ export function recalculateVirtualFacesForShape(
         p.parameters?.virtualFaceId !== vfId &&
         (myIdx != null && panelPriority(p) < myIdx)
       )
-      .map(p => isRotatedPanel(p) ? { ...p, __isRotatedPanel: true } : p);
+      .map(p => {
+        if (!isRotatedPanel(p)) return p;
+        // Ayak izi dönüşümü, GERÇEK panel dönüşüyle bire bir aynı olmalı:
+        // aynı composeSteps + panelin KENDİ VF'sinden çözülen pivot (pivotVfFrac).
+        // Aksi halde ham s.pivot bayat kalıp izi kaydırıyor ve fazla kısaltıyordu.
+        const ownVf = virtualFaces.find(f => f.id === (p.parameters as any)?.virtualFaceId);
+        let composedOps: RotOp[] | undefined;
+        if (ownVf) {
+          try {
+            const { ops } = composeSteps(getUnifiedSteps(p), ownVf);
+            composedOps = ops.map((o: any) =>
+              o.kind === 'rotate'
+                ? { kind: 'rotate', pivot: o.pivot, axis: o.axis, angleRad: (o.deg * Math.PI) / 180 }
+                : { kind: 'translate', d: o.d }
+            );
+          } catch { composedOps = undefined; }
+        }
+        return { ...p, __isRotatedPanel: true, __composedOps: composedOps };
+      });
   };
 
   const updatedMap = new Map<string, VirtualFace>();
@@ -626,9 +645,18 @@ function regenerateParentFaceShapeVF(
   return out;
 }
 
-interface RotOp { pivot: THREE.Vector3; axis: THREE.Vector3; angleRad: number }
+interface RotOp {
+  kind?: 'rotate' | 'translate';
+  pivot?: THREE.Vector3;
+  axis?: THREE.Vector3;
+  angleRad?: number;
+  d?: THREE.Vector3;
+}
 
 function buildRotationOps(panel: any): RotOp[] {
+  // composeSteps ile önceden çözülmüş (doğru pivot + zincirlenmiş eksen) ops
+  // varsa onu kullan — gerçek panel dönüşüyle bire bir.
+  if (Array.isArray(panel?.__composedOps)) return panel.__composedOps;
   const params = panel?.parameters;
   if (!params) return [];
   const steps: any[] = [];
@@ -687,50 +715,20 @@ function getPanelFootprints2D(
       new THREE.Vector3(...panel.scale)
     );
 
-    // DÖNMÜŞ PANEL: Düz geometri köşelerine rotateSteps uygulanır, ardından
-    // hedef düzlemle KESİT alınır (sadece panel kalınlığı kadar ince şerit).
+    // DÖNMÜŞ PANEL: composeSteps'ten çözülmüş DOĞRU dönüşüm düz köşelere
+    // uygulanır, ardından TÜM köşeler hedef düzleme izdüşürülür (tam siluet).
     if (panel.__isRotatedPanel) {
       const posAttr = panel.geometry.getAttribute('position');
       if (!posAttr) continue;
       const rotOps = buildRotationOps(panel);
-      const pts: THREE.Vector3[] = [];
-      const dist: number[] = [];
+      const rOut: Point2D[] = [];
       for (let i = 0; i < posAttr.count; i++) {
         const wp = new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)).applyMatrix4(m);
         for (const op of rotOps) {
-          wp.sub(op.pivot);
-          wp.applyAxisAngle(op.axis, op.angleRad);
-          wp.add(op.pivot);
+          if (op.kind === 'translate') { if (op.d) wp.add(op.d); }
+          else if (op.pivot && op.axis) { wp.sub(op.pivot); wp.applyAxisAngle(op.axis, op.angleRad || 0); wp.add(op.pivot); }
         }
-        pts.push(wp);
-        dist.push(facePlaneNormal.dot(new THREE.Vector3().subVectors(wp, facePlaneOrigin)));
-      }
-      const dMin = Math.min(...dist), dMax = Math.max(...dist);
-      const rOut: Point2D[] = [];
-      // Düzleme oturanlar
-      for (let i = 0; i < pts.length; i++) {
-        if (Math.abs(dist[i]) < planeTolerance) {
-          rOut.push(projectTo2D(pts[i], facePlaneOrigin, u, v));
-        }
-      }
-      // Düzlemi deliyorsa: kenar-düzlem kesit noktaları
-      if (dMin < -planeTolerance && dMax > planeTolerance) {
-        const idx = panel.geometry.getIndex();
-        const cnt = idx ? idx.count : posAttr.count;
-        const at = (k: number) => (idx ? idx.getX(k) : k);
-        for (let t = 0; t + 2 < cnt; t += 3) {
-          const tri = [at(t), at(t + 1), at(t + 2)];
-          for (let e = 0; e < 3; e++) {
-            const ai = tri[e], bi = tri[(e + 1) % 3];
-            const da = dist[ai], db = dist[bi];
-            if ((da > 0 && db > 0) || (da < 0 && db < 0)) continue;
-            const den = da - db;
-            if (Math.abs(den) < 1e-9) continue;
-            const sT = da / den;
-            const ix = pts[ai].clone().lerp(pts[bi], sT);
-            rOut.push(projectTo2D(ix, facePlaneOrigin, u, v));
-          }
-        }
+        rOut.push(projectTo2D(wp, facePlaneOrigin, u, v));
       }
       if (rOut.length < 3) continue;
       const hull = convexHull2D(rOut);
