@@ -202,55 +202,69 @@ function panelWorldMatrix(panelShape: Shape): THREE.Matrix4 {
   );
 }
 
-// 8 köşe (üst yüz 4 + alt yüz 4) — mesh köşeleri değil, temiz bbox köşeleri.
+// 8 köşe — AABB yerine geometrinin GERÇEK benzersiz köşeleri kullanılır.
+// Dönmüş panellerde geometri zaten dönmüş halde saklanıyor (rotation=[0,0,0]);
+// AABB bunu kapsayan eksen-hizalı kutu verir ve köşeler sapardı.
 function computeCorners(panelShape: Shape): [number, number, number][] {
   if (!panelShape.geometry) return [];
   const pos = panelShape.geometry.getAttribute('position') as THREE.BufferAttribute;
   if (!pos) return [];
 
-  const bbox = new THREE.Box3().setFromBufferAttribute(pos);
-  const { min, max } = bbox;
-
-  const corners = [
-    new THREE.Vector3(min.x, min.y, min.z),
-    new THREE.Vector3(max.x, min.y, min.z),
-    new THREE.Vector3(max.x, max.y, min.z),
-    new THREE.Vector3(min.x, max.y, min.z),
-    new THREE.Vector3(min.x, min.y, max.z),
-    new THREE.Vector3(max.x, min.y, max.z),
-    new THREE.Vector3(max.x, max.y, max.z),
-    new THREE.Vector3(min.x, max.y, max.z),
-  ];
+  const seen = new Map<string, THREE.Vector3>();
+  for (let i = 0; i < pos.count; i++) {
+    const v = new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i));
+    const key = `${Math.round(v.x * 100)},${Math.round(v.y * 100)},${Math.round(v.z * 100)}`;
+    if (!seen.has(key)) seen.set(key, v);
+  }
 
   const mat = panelWorldMatrix(panelShape);
-  return corners.map(c => {
-    const w = c.applyMatrix4(mat);
-    return [w.x, w.y, w.z] as [number, number, number];
-  });
+  const result: [number, number, number][] = [];
+  for (const v of seen.values()) {
+    const w = v.clone().applyMatrix4(mat);
+    result.push([w.x, w.y, w.z]);
+  }
+  return result;
 }
 
-// Orta noktalar — en ince eksene dik olan iki büyük yüzün (üst + alt) merkezi.
+// Orta noktalar — gerçek köşelerden kalınlık yönünü bulup iki geniş yüzün merkezini hesaplar.
 function computeFaceCenters(panelShape: Shape): [number, number, number][] {
   if (!panelShape.geometry) return [];
   const pos = panelShape.geometry.getAttribute('position') as THREE.BufferAttribute;
   if (!pos) return [];
 
-  const bbox = new THREE.Box3().setFromBufferAttribute(pos);
-  const size = new THREE.Vector3(); bbox.getSize(size);
-  const center = new THREE.Vector3(); bbox.getCenter(center);
+  const seen = new Map<string, THREE.Vector3>();
+  for (let i = 0; i < pos.count; i++) {
+    const v = new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i));
+    const key = `${Math.round(v.x * 100)},${Math.round(v.y * 100)},${Math.round(v.z * 100)}`;
+    if (!seen.has(key)) seen.set(key, v);
+  }
+  const corners = [...seen.values()];
+  if (corners.length < 8) return [];
 
-  // En ince eksen = kalınlık; ona dik yüzler büyük yüzlerdir.
-  const dims = [size.x, size.y, size.z];
-  const thin = dims.indexOf(Math.min(...dims));
-  const minC = [bbox.min.x, bbox.min.y, bbox.min.z][thin];
-  const maxC = [bbox.max.x, bbox.max.y, bbox.max.z][thin];
+  let minD = Infinity;
+  const thickDir = new THREE.Vector3(0, 1, 0);
+  for (let i = 0; i < corners.length; i++) {
+    for (let j = i + 1; j < corners.length; j++) {
+      const d = corners[i].distanceTo(corners[j]);
+      if (d > 0.01 && d < minD) { minD = d; thickDir.copy(corners[j]).sub(corners[i]).normalize(); }
+    }
+  }
 
-  const top = center.clone(); top.setComponent(thin, maxC);
-  const bot = center.clone(); bot.setComponent(thin, minC);
+  const projs = corners.map(c => c.dot(thickDir));
+  const mid = (Math.min(...projs) + Math.max(...projs)) / 2;
+  const g1: THREE.Vector3[] = [], g2: THREE.Vector3[] = [];
+  for (let i = 0; i < corners.length; i++) {
+    (projs[i] <= mid ? g1 : g2).push(corners[i]);
+  }
+  const avg = (pts: THREE.Vector3[]) => {
+    const c = new THREE.Vector3();
+    for (const p of pts) c.add(p);
+    return c.divideScalar(pts.length || 1);
+  };
 
   const mat = panelWorldMatrix(panelShape);
-  return [top, bot].map(p => {
-    const w = p.applyMatrix4(mat);
+  return [avg(g1), avg(g2)].map(p => {
+    const w = p.clone().applyMatrix4(mat);
     return [w.x, w.y, w.z] as [number, number, number];
   });
 }
