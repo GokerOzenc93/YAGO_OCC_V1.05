@@ -120,12 +120,19 @@ function computeRegionUV(vf: any): [number, number] | undefined {
   } catch { return undefined; }
 }
 
-function getDimsFromGeo(geo: THREE.BufferGeometry, arrowRotated?: boolean) {
+function getDimsFromGeo(geo: THREE.BufferGeometry, arrowRotated?: boolean, panelThickness?: number) {
   const r = geoAxes(geo); if (!r) return null;
   const pa = r.axes.slice(1).map(a => a.i).sort((a, b) => a - b);
   const [def, alt] = [pa[0], pa[1]];
   const target = arrowRotated ? alt : def, secondary = pa.find(a => a !== target) ?? pa[0], s = [r.size.x, r.size.y, r.size.z];
-  return { primary: r1(s[target]), secondary: r1(s[secondary]), thickness: r1(s[r.axes[0].i]), w: r1(r.size.x), h: r1(r.size.y), d: r1(r.size.z) };
+  // KALINLIK: panelThickness parametresinden alınır — geometrinin eksen-hizalı
+  // bbox'ından DEĞİL. Dönmüş panelde bbox eğik olduğundan en küçük boyut bile
+  // gerçek kalınlıktan (18) çok büyük çıkıyordu (ör. 145.9). Parametre her zaman
+  // doğru kalınlığı tutar; yoksa (eski panel) bbox'a düşülür.
+  const thickness = (panelThickness != null && panelThickness > 0)
+    ? r1(panelThickness)
+    : r1(s[r.axes[0].i]);
+  return { primary: r1(s[target]), secondary: r1(s[secondary]), thickness, w: r1(r.size.x), h: r1(r.size.y), d: r1(r.size.z) };
 }
 
 type Dims = NonNullable<ReturnType<typeof getDimsFromGeo>>;
@@ -632,7 +639,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
 
   const activePanel = activePanelId ? shapes.find(s => s.id === activePanelId) : null;
   const activeDims = activePanel?.geometry
-    ? getDimsFromGeo(activePanel.geometry, activePanel.parameters?.arrowRotated)
+    ? getDimsFromGeo(activePanel.geometry, activePanel.parameters?.arrowRotated, parseFloat((activePanel.parameters as any)?.panelThickness) || 18)
     : null;
   const activeSteps = activePanel?.parameters?.extrudeSteps || [];
   // Birleşik liste asıl kaynaktır; henüz göçmemiş eski panellerde moveSteps/
@@ -874,7 +881,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         const displayIdx = globalIdx + 1;
         globalIdx++;
         const vp = findVPanel(shapes, sid, vf.id), ar = vp?.parameters?.arrowRotated || false, sel = selectedPanelRow === `vf-${vf.id}`;
-        const dims = vp?.geometry ? getDimsFromGeo(vp.geometry, ar) : null;
+        const dims = vp?.geometry ? getDimsFromGeo(vp.geometry, ar, parseFloat((vp.parameters as any)?.panelThickness) || 18) : null;
 
         return (
           <div
@@ -1147,7 +1154,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     if (!vf) return null;
     const vp = findVPanel(shapes, sid, vf.id);
     const ar = vp?.parameters?.arrowRotated || false;
-    const dims = vp?.geometry ? getDimsFromGeo(vp.geometry, ar) : null;
+    const dims = vp?.geometry ? getDimsFromGeo(vp.geometry, ar, parseFloat((vp.parameters as any)?.panelThickness) || 18) : null;
     const isExtrudingThis = faceExtrudeMode && faceExtrudeTargetPanelId === vp?.id;
     const isMovingThis = panelMoveMode && panelMoveTargetPanelId === vp?.id;
     const isRotatingThis = panelRotateMode && panelRotateTargetPanelId === vp?.id;
