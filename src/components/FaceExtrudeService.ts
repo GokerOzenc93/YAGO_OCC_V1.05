@@ -272,209 +272,87 @@ async function applyOneExtrudeStep(
   return { replicadShape: finalShape, geometry: newGeometry };
 }
 
-// ── Virtual face vertex update helpers ───────────────────────────────────────
-
-function computeShapeMatrix(shape: Shape): THREE.Matrix4 {
-  const pos = new THREE.Vector3(shape.position[0], shape.position[1], shape.position[2]);
-  const quat = new THREE.Quaternion().setFromEuler(
-    new THREE.Euler(shape.rotation[0], shape.rotation[1], shape.rotation[2], 'XYZ')
-  );
-  const scl = new THREE.Vector3(shape.scale[0], shape.scale[1], shape.scale[2]);
-  return new THREE.Matrix4().compose(pos, quat, scl);
-}
-
-function facePlaneAxes(n: THREE.Vector3): { u: THREE.Vector3; v: THREE.Vector3 } {
-  const norm = n.clone().normalize();
-  const up = Math.abs(norm.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
-  const u = new THREE.Vector3().crossVectors(norm, up).normalize();
-  const v = new THREE.Vector3().crossVectors(norm, u).normalize();
-  return { u, v };
-}
-
-function convexHull2D(pts: { x: number; y: number }[]): { x: number; y: number }[] {
-  if (pts.length <= 3) return pts;
-  const sorted = [...pts].sort((a, b) => a.x !== b.x ? a.x - b.x : a.y - b.y);
-  const cross = (o: any, a: any, b: any) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
-  const lower: { x: number; y: number }[] = [];
-  const upper: { x: number; y: number }[] = [];
-  for (const p of sorted) {
-    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
-    lower.push(p);
-  }
-  for (let i = sorted.length - 1; i >= 0; i--) {
-    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], sorted[i]) <= 0) upper.pop();
-    upper.push(sorted[i]);
-  }
-  lower.pop(); upper.pop();
-  return [...lower, ...upper];
-}
-
-/**
- * Recomputes the VF polygon from the panel's current geometry footprint on the VF plane.
- * This is called after face extrude so that the VF accurately represents the shortened
- * panel area, allowing the void area to be clicked and filled.
- */
-function syncVFToPanel(
-  panelGeo: THREE.BufferGeometry,
-  panelShape: Shape,
-  parentShape: Shape,
-  vfNormal: [number, number, number],
-  vfVertex0: [number, number, number],
-  vfId: string,
-  updateVirtualFace: (id: string, updates: any) => void
-): void {
-  const panelLW = computeShapeMatrix(panelShape);
-  const parentLW = computeShapeMatrix(parentShape);
-  const parentWL = parentLW.clone().invert();
-
-  // Work entirely in parent local space to avoid floating-point drift from
-  // double-transforming through world space.
-  const panelToParent = new THREE.Matrix4().multiplyMatrices(parentWL, panelLW);
-
-  const vfNormalLocal = new THREE.Vector3(vfNormal[0], vfNormal[1], vfNormal[2]).normalize();
-  const vfOriginLocal = new THREE.Vector3(vfVertex0[0], vfVertex0[1], vfVertex0[2]);
-
-  const positions = panelGeo.getAttribute('position') as THREE.BufferAttribute;
-  // Panel geometry is typically 18mm thick; use half-thickness as tolerance so
-  // only the face touching the parent (distance ≈ 0) is collected.
-  const TOLERANCE = 5.0;
-  const seen = new Map<string, THREE.Vector3>();
-
-  for (let i = 0; i < positions.count; i++) {
-    const pParent = new THREE.Vector3(
-      positions.getX(i), positions.getY(i), positions.getZ(i)
-    ).applyMatrix4(panelToParent);
-    const dist = Math.abs(vfNormalLocal.dot(pParent.clone().sub(vfOriginLocal)));
-    if (dist < TOLERANCE) {
-      const key = `${pParent.x.toFixed(1)},${pParent.y.toFixed(1)},${pParent.z.toFixed(1)}`;
-      if (!seen.has(key)) seen.set(key, pParent);
-    }
-  }
-
-  const pts3D = Array.from(seen.values());
-  if (pts3D.length < 3) return;
-
-  // Project to face-plane 2D and compute convex hull
-  const { u, v } = facePlaneAxes(vfNormalLocal);
-  const ref = pts3D[0];
-  const pts2D = pts3D.map(p => {
-    const d = p.clone().sub(ref);
-    return { x: d.dot(u), y: d.dot(v) };
-  });
-  const hull = convexHull2D(pts2D);
-  if (hull.length < 3) return;
-
-  const newVerts: [number, number, number][] = hull.map(h => {
-    const p = ref.clone().addScaledVector(u, h.x).addScaledVector(v, h.y);
-    return [p.x, p.y, p.z];
-  });
-  const centroid = new THREE.Vector3();
-  newVerts.forEach(([x, y, z]) => centroid.add(new THREE.Vector3(x, y, z)));
-  centroid.divideScalar(newVerts.length);
-
-  updateVirtualFace(vfId, {
-    vertices: newVerts,
-    center: [centroid.x, centroid.y, centroid.z] as [number, number, number],
-  });
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function rebuildFromSteps(
-  panelShape: Shape,
-  steps: ExtrudeStep[],
-  updateShape: (id: string, updates: Partial<Shape>) => void,
-  onUpdated?: (geo: THREE.BufferGeometry) => void
-): Promise<boolean> {
-  if (!panelShape.parameters?.baseReplicadShape) return false;
-
+/**
+ * Verilen (DOĞRU ÇERÇEVEDE üretilmiş) katıya extrude adımlarını sırayla uygular.
+ * Katı, çağıran tarafından panelin GÜNCEL çerçevesinde verilir (VF panelinden
+ * üretilmiş + transform adımları işlenmiş). Adımların faceNormal/faceCenter/
+ * samplePoint verisi de aynı çerçevede yakalandığı için eşleşme birebir tutar.
+ *
+ * KÖK NEDEN (bu düzeltmenin sebebi): Eski akış tabanı createReplicadBox ile
+ * ORIGIN'de bir kutu kuruyordu. PanelEngine'e geçince panel geometrisi artık
+ * parent-yerel VF konumunda üretiliyor; origin kutusu YANLIŞ ÇERÇEVEDEYDİ →
+ * onaylayınca panel "alakasız yere" ışınlanıyordu. Taban artık çağıranın verdiği
+ * doğru-çerçeve katıdan geldiği için ışınlanma yok ("highlight = panel").
+ */
+export async function applyExtrudeSteps(
+  shape: any,
+  steps: ExtrudeStep[]
+): Promise<{ shape: any; geometry: THREE.BufferGeometry } | null> {
+  if (!steps || steps.length === 0) return null;
   const { convertReplicadToThreeGeometry } = await import('./ReplicadService');
 
-  let currentReplicad = panelShape.parameters.baseReplicadShape;
+  let currentReplicad = shape;
   let currentGeometry = convertReplicadToThreeGeometry(currentReplicad);
-  let anyStepApplied = false;
+  let anyApplied = false;
 
   for (const step of steps) {
     const result = await applyOneExtrudeStep(currentReplicad, step, currentGeometry);
     if (result) {
       currentReplicad = result.replicadShape;
       currentGeometry = result.geometry;
-      anyStepApplied = true;
+      anyApplied = true;
     } else {
-      console.warn(`[rebuildFromSteps] Step ${step.axisLabel} (id=${step.id}) failed to apply`);
+      console.warn(`[YAGO][EXTRUDE] Adım uygulanamadı: ${step.axisLabel} (id=${step.id})`);
     }
   }
 
-  if (!anyStepApplied) {
-    console.warn(`[rebuildFromSteps] No extrude steps applied for panel ${panelShape.id}`);
+  if (!anyApplied) return null;
+  return { shape: currentReplicad, geometry: currentGeometry };
+}
+
+// ── Onay / düzenleme / silme: hepsi SPEC'i (extrudeSteps) günceller + rebuild ──
+// Geometri artık BURADA yazılmaz. Tek gerçek kaynak parameters.extrudeSteps'tir;
+// PanelEngine rebuild'i VF panelini üretir, transform + extrude adımlarını
+// doğru çerçevede uygular ve geometriyi yazar. Böylece extrude hem tıklanan yüze
+// oturur hem de sonraki rebuild'lerde (resize/move/kardeş) KORUNUR.
+async function commitStepsAndRebuild(
+  panel: Shape,
+  steps: ExtrudeStep[],
+  updateShape: (id: string, updates: Partial<Shape>) => void
+): Promise<boolean> {
+  updateShape(panel.id, {
+    parameters: { ...panel.parameters, extrudeSteps: steps },
+  } as any);
+  const parentId = (panel.parameters as any)?.parentShapeId as string | undefined;
+  if (parentId) {
+    const { rebuildPanelsForParent } = await import('./PanelRebuildService');
+    await rebuildPanelsForParent(parentId);
   }
-
-  const newBox = new THREE.Box3().setFromBufferAttribute(
-    currentGeometry.getAttribute('position') as THREE.BufferAttribute
-  );
-  const newSize = new THREE.Vector3();
-  newBox.getSize(newSize);
-
-  const baseGeometry = convertReplicadToThreeGeometry(panelShape.parameters.baseReplicadShape);
-  const baseBox = new THREE.Box3().setFromBufferAttribute(
-    baseGeometry.getAttribute('position') as THREE.BufferAttribute
-  );
-  const baseSize = new THREE.Vector3();
-  baseBox.getSize(baseSize);
-  const baseSizes = [baseSize.x, baseSize.y, baseSize.z];
-  const thicknessAxis = baseSizes.indexOf(Math.min(...baseSizes));
-  const originalThickness = baseSizes[thicknessAxis];
-
-  const sizeArr = [newSize.x, newSize.y, newSize.z];
-  const sortedAxes = [0, 1, 2]
-    .map(a => ({ axis: a, size: sizeArr[a] }))
-    .sort((a, b) => b.size - a.size);
-  const newWidth = sortedAxes[0].size;
-  const newHeight = sortedAxes[1].size;
-
-  // Face extrude changes the panel topology; fillets are invalidated and
-  // must be cleared so stale fillet data is not re-applied later.
-  updateShape(panelShape.id, {
-    geometry: currentGeometry,
-    replicadShape: currentReplicad,
-    fillets: [],
-    parameters: {
-      ...panelShape.parameters,
-      width: Math.round(newWidth * 10) / 10,
-      height: Math.round(newHeight * 10) / 10,
-      depth: Math.round(originalThickness * 10) / 10,
-      extrudeSteps: steps,
-    },
-  });
-
-  onUpdated?.(currentGeometry);
   return true;
 }
 
 export async function executeFaceExtrude(params: FaceExtrudeParams): Promise<boolean> {
   const { faceGroupIndex, value, isFixed, updateShape } = params;
-  let panel = params.panelShape;
+  const panel = params.panelShape;
 
-  if (!panel.geometry || !panel.replicadShape) return false;
+  if (!panel.geometry) return false;
 
   const faces = extractFacesFromGeometry(panel.geometry);
   const groups = groupCoplanarFaces(faces);
-
   if (faceGroupIndex < 0 || faceGroupIndex >= groups.length) return false;
 
-  // Snap curved (fillet) face groups to the nearest axis-aligned flat face.
-  // A curved group has no normal component above ~0.9; selecting one would
-  // produce a non-axis-aligned step that mismatches stored flat-face steps.
+  // Tıklanan yüz grubu — normal/merkez GÜNCEL (parent-yerel) geometri
+  // çerçevesinde okunur; clickPoint (samplePoint) da aynı çerçevede yakalandı.
   const rawGroup = groups[faceGroupIndex];
   let faceNormal = rawGroup.normal.clone().normalize();
   let faceCenter = rawGroup.center.clone();
 
-  // Must match the isAxisAligned threshold in GeometryUtils (0.999) so that
-  // fillet arc faces (classified "curved" by groupCoplanarFaces) are correctly
-  // snapped to the nearest true flat face instead of extruded directly.
+  // Fillet (eğri) yüz grubunu en yakın eksen-hizalı düz yüze yasla; aksi halde
+  // eksen-dışı bir adım üretilir ve saklı düz-yüz adımlarıyla eşleşmez.
   const isFlat = (n: THREE.Vector3) =>
     Math.abs(n.x) > 0.999 || Math.abs(n.y) > 0.999 || Math.abs(n.z) > 0.999;
-
   if (!isFlat(faceNormal)) {
     const axLbl = getAxisLabel(faceNormal);
     const candidate = groups
@@ -490,63 +368,17 @@ export async function executeFaceExtrude(params: FaceExtrudeParams): Promise<boo
   }
 
   const axisLabel = getAxisLabel(faceNormal);
-
-  if (!panel.parameters?.baseReplicadShape) {
-    // Build the pre-fillet base shape: box + subtractions (no fillets).
-    // Using panel.replicadShape directly would capture the filleted topology
-    // which causes OpenCASCADE boolean operations to fail or give wrong results.
-    const { createReplicadBox, performBooleanCut } = await import('./ReplicadService');
-    const W = panel.parameters?.width ?? 1;
-    const H = panel.parameters?.height ?? 1;
-    const D = panel.parameters?.depth ?? 1;
-    let baseShape: any = await createReplicadBox({ width: W, height: H, depth: D });
-    for (const sub of (panel.subtractionGeometries ?? [])) {
-      try {
-        let w: number, h: number, d: number;
-        if (sub.parameters) {
-          w = parseFloat(sub.parameters.width); h = parseFloat(sub.parameters.height); d = parseFloat(sub.parameters.depth);
-        } else {
-          const B = new THREE.Box3().setFromBufferAttribute(sub.geometry.getAttribute('position') as THREE.BufferAttribute);
-          const S = new THREE.Vector3(); B.getSize(S); w = S.x; h = S.y; d = S.z;
-        }
-        const SB = await createReplicadBox({ width: w, height: h, depth: d });
-        baseShape = await performBooleanCut(baseShape, SB, undefined, sub.relativeOffset, undefined, sub.relativeRotation ?? [0,0,0], undefined, sub.scale ?? [1,1,1]);
-      } catch { /* skip failed subtraction */ }
-    }
-    panel = { ...panel, parameters: { ...panel.parameters, baseReplicadShape: baseShape } };
-    updateShape(panel.id, { parameters: { ...panel.parameters } });
-  }
-
   const existingSteps: ExtrudeStep[] = panel.parameters?.extrudeSteps || [];
 
+  // Aynı yüz için mevcut adım? (aynı eksen + merkez yakınlığı) → güncelle.
   const existingIdx = existingSteps.findIndex(s => {
     if (s.axisLabel !== axisLabel) return false;
     const sc = new THREE.Vector3(...s.faceCenter);
     return sc.distanceTo(faceCenter) < 1.0;
   });
 
-  let extrudeAmount: number;
-  if (isFixed) {
-    const box = new THREE.Box3().setFromBufferAttribute(
-      panel.geometry!.getAttribute('position') as THREE.BufferAttribute
-    );
-    const absX = Math.abs(faceNormal.x);
-    const absY = Math.abs(faceNormal.y);
-    const absZ = Math.abs(faceNormal.z);
-    let faceDist: number;
-    if (absX >= absY && absX >= absZ) {
-      faceDist = faceNormal.x > 0 ? faceCenter.x - box.min.x : box.max.x - faceCenter.x;
-    } else if (absY >= absX && absY >= absZ) {
-      faceDist = faceNormal.y > 0 ? faceCenter.y - box.min.y : box.max.y - faceCenter.y;
-    } else {
-      faceDist = faceNormal.z > 0 ? faceCenter.z - box.min.z : box.max.z - faceCenter.z;
-    }
-    extrudeAmount = value - faceDist;
-  } else {
-    extrudeAmount = value;
-  }
-
-  if (Math.abs(extrudeAmount) < 0.01 && existingIdx === -1) return false;
+  // Dinamik modda değer=delta; ~0 ve yeni adımsa işlem yok.
+  if (!isFixed && Math.abs(value) < 0.01 && existingIdx === -1) return false;
 
   const newStep: ExtrudeStep = {
     id: `ext-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
@@ -559,31 +391,11 @@ export async function executeFaceExtrude(params: FaceExtrudeParams): Promise<boo
     samplePoint: params.clickPoint,
   };
 
-  let newSteps: ExtrudeStep[];
-  if (existingIdx >= 0) {
-    newSteps = [...existingSteps];
-    newSteps[existingIdx] = newStep;
-  } else {
-    newSteps = [...existingSteps, newStep];
-  }
+  const newSteps = existingIdx >= 0
+    ? existingSteps.map((s, i) => (i === existingIdx ? newStep : s))
+    : [...existingSteps, newStep];
 
-  const updatedPanel: Shape = {
-    ...panel,
-    parameters: {
-      ...panel.parameters,
-      baseReplicadShape: panel.parameters.baseReplicadShape || panel.replicadShape,
-    },
-  };
-
-  return rebuildFromSteps(updatedPanel, newSteps, updateShape, (geo) => {
-    const { virtualFaceId, vfNormal, vfVertex0, updateVirtualFace } = params;
-    if (virtualFaceId && vfNormal && vfVertex0 && updateVirtualFace) {
-      const parentShape = params.shapes.find(s => s.id === panel.parameters?.parentShapeId);
-      if (parentShape) {
-        syncVFToPanel(geo, updatedPanel, parentShape, vfNormal, vfVertex0, virtualFaceId, updateVirtualFace);
-      }
-    }
-  });
+  return commitStepsAndRebuild(panel, newSteps, updateShape);
 }
 
 export async function deleteExtrudeStep(
@@ -593,8 +405,7 @@ export async function deleteExtrudeStep(
 ): Promise<boolean> {
   const steps: ExtrudeStep[] = panelShape.parameters?.extrudeSteps || [];
   const newSteps = steps.filter(s => s.id !== stepId);
-
-  return rebuildFromSteps(panelShape, newSteps, updateShape);
+  return commitStepsAndRebuild(panelShape, newSteps, updateShape);
 }
 
 export async function updateExtrudeStep(
@@ -604,9 +415,6 @@ export async function updateExtrudeStep(
   updateShape: (id: string, updates: Partial<Shape>) => void
 ): Promise<boolean> {
   const steps: ExtrudeStep[] = panelShape.parameters?.extrudeSteps || [];
-  const newSteps = steps.map(s =>
-    s.id === stepId ? { ...s, value: newValue } : s
-  );
-
-  return rebuildFromSteps(panelShape, newSteps, updateShape);
+  const newSteps = steps.map(s => (s.id === stepId ? { ...s, value: newValue } : s));
+  return commitStepsAndRebuild(panelShape, newSteps, updateShape);
 }
