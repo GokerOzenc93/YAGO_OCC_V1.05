@@ -9,6 +9,7 @@ import {
   getSubtractorFootprints2D,
   isPointInsidePolygon,
   computeFreeRegionLocal,
+  meshOnPlaneBoundary2D,
   panelFootprintInParentLocal,
   projectTo2D,
   subtractPolygon,
@@ -754,6 +755,8 @@ function getPanelFootprints2D(
       }
     }
     if (onPlane.length < 3) continue;
+    const boundary = meshOnPlaneBoundary2D(panel.geometry, m, facePlaneNormal, facePlaneOrigin, u, v, planeTolerance);
+    if (boundary && boundary.length >= 3) { footprints.push(boundary); continue; }
     const hull = convexHull2D(onPlane);
     if (hull.length >= 3) footprints.push(hull);
   }

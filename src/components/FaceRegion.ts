@@ -215,6 +215,71 @@ export function buildBoundaryLoop2D(
   return loop.length >= 3 ? loop : null;
 }
 
+/**
+ * Mesh geometrisinin düzlem-üstü üçgenlerinden gerçek sınır çokgenini çıkarır.
+ * İçbükey (concave) şekiller (ör. U-shape) doğru korunur. Zincir başarısız
+ * olursa convexHull'a düşer.
+ */
+export function meshOnPlaneBoundary2D(
+  geometry: THREE.BufferGeometry,
+  panelMatrix: THREE.Matrix4,
+  facePlaneNormal: THREE.Vector3,
+  facePlaneOrigin: THREE.Vector3,
+  u: THREE.Vector3,
+  v: THREE.Vector3,
+  planeTolerance: number
+): Point2D[] | null {
+  const posAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
+  if (!posAttr || posAttr.count < 3) return null;
+  const idx = geometry.getIndex();
+  const triCount = idx ? idx.count / 3 : posAttr.count / 3;
+  if (triCount < 1) return null;
+
+  const worldPts: THREE.Vector3[] = [];
+  const onPlane: boolean[] = [];
+  for (let i = 0; i < posAttr.count; i++) {
+    const wp = new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)).applyMatrix4(panelMatrix);
+    worldPts.push(wp);
+    const dist = Math.abs(facePlaneNormal.dot(new THREE.Vector3().subVectors(wp, facePlaneOrigin)));
+    onPlane.push(dist < planeTolerance);
+  }
+
+  const at = (k: number) => (idx ? idx.getX(k) : k);
+  const edgeCount = new Map<string, number>();
+  const edgeData = new Map<string, { v1: THREE.Vector3; v2: THREE.Vector3 }>();
+  const edgeKey = (a: number, b: number) => a < b ? `${a}_${b}` : `${b}_${a}`;
+
+  for (let t = 0; t < triCount; t++) {
+    const i0 = at(t * 3), i1 = at(t * 3 + 1), i2 = at(t * 3 + 2);
+    if (!onPlane[i0] || !onPlane[i1] || !onPlane[i2]) continue;
+    const triEdges = [[i0, i1], [i1, i2], [i2, i0]];
+    for (const [a, b] of triEdges) {
+      const key = edgeKey(a, b);
+      edgeCount.set(key, (edgeCount.get(key) || 0) + 1);
+      if (!edgeData.has(key)) edgeData.set(key, { v1: worldPts[a], v2: worldPts[b] });
+    }
+  }
+
+  const boundaryEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> = [];
+  for (const [key, count] of edgeCount) {
+    if (count === 1) {
+      const e = edgeData.get(key)!;
+      boundaryEdges.push(e);
+    }
+  }
+
+  if (boundaryEdges.length < 3) return null;
+  const origin = facePlaneOrigin;
+  const loop = buildBoundaryLoop2D(boundaryEdges, origin, u, v);
+  if (loop && loop.length >= 3) return loop;
+
+  const pts2D: Point2D[] = [];
+  for (let i = 0; i < worldPts.length; i++) {
+    if (onPlane[i]) pts2D.push(projectTo2D(worldPts[i], facePlaneOrigin, u, v));
+  }
+  return pts2D.length >= 3 ? convexHull2D(pts2D) : null;
+}
+
 export function sutherlandHodgmanClip(subject: Point2D[], clip: Point2D[]): Point2D[] {
   let output = [...subject];
   for (let i = 0; i < clip.length && output.length > 0; i++) {
@@ -476,17 +541,14 @@ export function panelFootprintOnPlane(
     if (Math.abs(signed) < planeTolerance) pts2D.push(p2);
   }
   if (pts2D.length < 3) {
-    // EĞİK PANEL İZDÜŞÜMÜ: dönmüş panel düzleme yalnız bir kenarıyla değer
-    // (düzlem-üstü köşe < 3). Panel yüzeye gerçekten DOKUNUYORSA (aralığı
-    // düzlemi kapsıyorsa) TÜM izdüşüm hull'u engel sayılır — highlight ve
-    // üretim (izdüşüm kesimi) aynı kuralı paylaşır. Yüzeyden uzaktaki panel
-    // engel değildir (etrafından "sızılır").
     if (nMin <= planeTolerance && nMax >= -planeTolerance && all2D.length >= 3) {
       const hullAll = convexHull2D(all2D);
       return hullAll.length >= 3 ? hullAll : null;
     }
     return null;
   }
+  const boundary = meshOnPlaneBoundary2D(panel.geometry, panelMatrix, facePlaneNormal, facePlaneOrigin, u, v, planeTolerance);
+  if (boundary && boundary.length >= 3) return boundary;
   const hull = convexHull2D(pts2D);
   return hull.length >= 3 ? hull : null;
 }
@@ -518,15 +580,18 @@ export function isWorldPointInsidePanelFootprint(
 ): boolean {
   if (!panel.geometry) return false;
   const panelMatrix = getShapeMatrix(panel);
-  const posAttr = panel.geometry.getAttribute('position') as THREE.BufferAttribute;
   const { u, v } = getFacePlaneAxes(facePlaneNormal);
+  const boundary = meshOnPlaneBoundary2D(panel.geometry, panelMatrix, facePlaneNormal, facePlaneOrigin, u, v, planeTolerance);
+  if (boundary && boundary.length >= 3) {
+    return isPointInsidePolygon(projectTo2D(worldPt, facePlaneOrigin, u, v), boundary);
+  }
+  const posAttr = panel.geometry.getAttribute('position') as THREE.BufferAttribute;
   const pts2D: Point2D[] = [];
   for (let i = 0; i < posAttr.count; i++) {
     const wp = new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)).applyMatrix4(panelMatrix);
     const dist = Math.abs(facePlaneNormal.dot(new THREE.Vector3().subVectors(wp, facePlaneOrigin)));
     if (dist < planeTolerance) pts2D.push(projectTo2D(wp, facePlaneOrigin, u, v));
   }
-  // Fallback: project ALL vertices when on-plane count is too low
   if (pts2D.length < 3) {
     pts2D.length = 0;
     for (let i = 0; i < posAttr.count; i++) {
@@ -835,6 +900,38 @@ export function panelFootprintInParentLocal(
   }
   // Düzleme hiç değmiyorsa ayak izi YOK (hayalet kırpma olmaz)
   if (out.length < 3) return null;
+  // İçbükey sınır çıkarımı: düzlem-üstü üçgenlerin kenar-halkası
+  {
+    const idx = panel.geometry.getIndex();
+    const cnt = idx ? idx.count : pos.count;
+    const at2 = (k: number) => (idx ? idx.getX(k) : k);
+    const edgeCount2 = new Map<string, number>();
+    const edgeData2 = new Map<string, { p1: Point2D; p2: Point2D }>();
+    const eKey = (a: number, b: number) => a < b ? `${a}_${b}` : `${b}_${a}`;
+    for (let t = 0; t + 2 < cnt; t += 3) {
+      const i0 = at2(t), i1 = at2(t + 1), i2 = at2(t + 2);
+      if (Math.abs(d[i0]) >= tol || Math.abs(d[i1]) >= tol || Math.abs(d[i2]) >= tol) continue;
+      const tri2 = [[i0, i1], [i1, i2], [i2, i0]];
+      for (const [a, b] of tri2) {
+        const key = eKey(a, b);
+        edgeCount2.set(key, (edgeCount2.get(key) || 0) + 1);
+        if (!edgeData2.has(key)) {
+          edgeData2.set(key, { p1: { x: pts[a].dot(u), y: pts[a].dot(v) }, p2: { x: pts[b].dot(u), y: pts[b].dot(v) } });
+        }
+      }
+    }
+    const bEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }> = [];
+    for (const [key, c] of edgeCount2) {
+      if (c === 1) {
+        const ed = edgeData2.get(key)!;
+        bEdges.push({ v1: new THREE.Vector3(ed.p1.x, ed.p1.y, 0), v2: new THREE.Vector3(ed.p2.x, ed.p2.y, 0) });
+      }
+    }
+    if (bEdges.length >= 3) {
+      const loop2 = buildBoundaryLoop2D(bEdges, new THREE.Vector3(0, 0, 0), new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0));
+      if (loop2 && loop2.length >= 3) return loop2;
+    }
+  }
   const hull = convexHull2D(out);
   if (hull.length < 3) return null;
 
