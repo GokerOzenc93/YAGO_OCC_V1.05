@@ -216,71 +216,6 @@ export function buildBoundaryLoop2D(
 }
 
 /**
- * buildBoundaryLoop2D'nin ÇOK-DÖNGÜ sürümü: sınır kenarları BİRDEN ÇOK ayrık
- * halka içeriyorsa (ör. U-şeklinde bir parentFaceShape slab'ının bir yüzle
- * İKİ AYRIK kol boyunca teması) hepsini ayrı ayrı döndürür. Tek-döngü sürüm
- * yalnız edges[0]'ın halkasını izleyip diğer kol(lar)ı DÜŞÜRÜYORDU; bu yüzden
- * çok-bileşenli slab'ın ayak izi tek kola çöküyor, öbür kule yüzünde şerit
- * eksik kalıp panel slab'ın içine giriyordu. Her halka kenarları tüketilerek
- * çıkarılır; ≥3 köşe ve alanı sıfırdan büyük olanlar döner.
- */
-export function buildAllBoundaryLoops2D(
-  boundaryEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>,
-  origin: THREE.Vector3,
-  u: THREE.Vector3,
-  v: THREE.Vector3
-): Point2D[][] {
-  if (boundaryEdges.length < 3) return [];
-  const keyOf = (p: Point2D) => `${p.x.toFixed(2)},${p.y.toFixed(2)}`;
-  type E = { ak: string; bk: string; a: Point2D; b: Point2D; used: boolean };
-  const edges: E[] = boundaryEdges.map(e => {
-    const a = projectTo2D(e.v1, origin, u, v);
-    const b = projectTo2D(e.v2, origin, u, v);
-    return { a, b, ak: keyOf(a), bk: keyOf(b), used: false };
-  }).filter(e => e.ak !== e.bk);
-  const adj = new Map<string, { other: string; point: Point2D; ei: number }[]>();
-  edges.forEach((e, ei) => {
-    if (!adj.has(e.ak)) adj.set(e.ak, []);
-    if (!adj.has(e.bk)) adj.set(e.bk, []);
-    adj.get(e.ak)!.push({ other: e.bk, point: e.b, ei });
-    adj.get(e.bk)!.push({ other: e.ak, point: e.a, ei });
-  });
-  const polyArea = (poly: Point2D[]) => {
-    let s = 0;
-    for (let i = 0; i < poly.length; i++) {
-      const p = poly[i], q = poly[(i + 1) % poly.length];
-      s += p.x * q.y - q.x * p.y;
-    }
-    return Math.abs(s) / 2;
-  };
-  const loops: Point2D[][] = [];
-  for (let start = 0; start < edges.length; start++) {
-    if (edges[start].used) continue;
-    edges[start].used = true;
-    const startKey = edges[start].ak;
-    const loop: Point2D[] = [edges[start].a];
-    let cur = edges[start].bk;
-    loop.push(edges[start].b);
-    let guard = edges.length + 2;
-    while (guard-- > 0) {
-      if (cur === startKey) break;
-      const neigh = adj.get(cur) || [];
-      const next = neigh.find(n => !edges[n.ei].used);
-      if (!next) break;
-      edges[next.ei].used = true;
-      loop.push(next.point);
-      cur = next.other;
-    }
-    if (loop.length >= 2) {
-      const first = loop[0], last = loop[loop.length - 1];
-      if (Math.abs(first.x - last.x) < 0.05 && Math.abs(first.y - last.y) < 0.05) loop.pop();
-    }
-    if (loop.length >= 3 && polyArea(loop) > 1.0) loops.push(loop);
-  }
-  return loops;
-}
-
-/**
  * Mesh geometrisinin düzlem-üstü üçgenlerinden gerçek sınır çokgenini çıkarır.
  * İçbükey (concave) şekiller (ör. U-shape) doğru korunur. Zincir başarısız
  * olursa convexHull'a düşer.
@@ -895,7 +830,7 @@ export function panelFootprintInParentLocal(
   panel: any, parentWorldToLocal: THREE.Matrix4,
   nrm: THREE.Vector3, planeN: number,
   u: THREE.Vector3, v: THREE.Vector3, tol = 3.0
-): Point2D[][] | null {
+): Point2D[] | null {
   if (!panel?.geometry) return null;
   const pos = panel.geometry.getAttribute('position');
   if (!pos) return null;
@@ -941,7 +876,7 @@ export function panelFootprintInParentLocal(
     });
     if (rOut.length < 3) return null;
     const hull = convexHull2D(rOut);
-    return hull.length >= 3 ? [hull] : null;
+    return hull.length >= 3 ? hull : null;
   }
   // EĞİK PANEL: düzlemi kesiyorsa gerçek KESİT (siluet değil)
   const pierces = dMin < -tol && dMax > tol;
@@ -976,14 +911,6 @@ export function panelFootprintInParentLocal(
     for (let t = 0; t + 2 < cnt; t += 3) {
       const i0 = at2(t), i1 = at2(t + 1), i2 = at2(t + 2);
       if (Math.abs(d[i0]) >= tol || Math.abs(d[i1]) >= tol || Math.abs(d[i2]) >= tol) continue;
-      // DEJENERE DÜZ ÜÇGEN KAPISI: çizgisel (sıfır-alanlı) bir düz üçgen, U
-      // çentiği gibi ayrık kolları BİRLEŞTİREN sahte köprü kenarları üretir ve
-      // iki kol tek halkaya çöker. 2B izdüşüm alanı ~0 olan üçgen atlanır.
-      const q0 = { x: pts[i0].dot(u), y: pts[i0].dot(v) };
-      const q1 = { x: pts[i1].dot(u), y: pts[i1].dot(v) };
-      const q2 = { x: pts[i2].dot(u), y: pts[i2].dot(v) };
-      const area2 = Math.abs((q1.x - q0.x) * (q2.y - q0.y) - (q2.x - q0.x) * (q1.y - q0.y));
-      if (area2 < 1.0) continue;
       const tri2 = [[i0, i1], [i1, i2], [i2, i0]];
       for (const [a, b] of tri2) {
         const key = eKey(a, b);
@@ -1001,12 +928,8 @@ export function panelFootprintInParentLocal(
       }
     }
     if (bEdges.length >= 3) {
-      // ÇOK-BİLEŞEN: U gibi çok-kollu bir slab bu düzleme BİRDEN ÇOK ayrık
-      // kolla değebilir. Tek-döngü izleme yalnız bir kolu döndürüp öbür kule
-      // yüzünde şeridi eksik bırakıyordu (panel slab'ın içine giriyordu).
-      // Tüm halkalar ayrı ayrı çıkarılır; her biri bağımsız ayak izidir.
-      const loops = buildAllBoundaryLoops2D(bEdges, new THREE.Vector3(0, 0, 0), new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0));
-      if (loops.length > 0) return loops;
+      const loop2 = buildBoundaryLoop2D(bEdges, new THREE.Vector3(0, 0, 0), new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0));
+      if (loop2 && loop2.length >= 3) return loop2;
     }
   }
   const hull = convexHull2D(out);
@@ -1047,7 +970,7 @@ export function panelFootprintInParentLocal(
     }
   }
 
-  return [hull];
+  return hull;
 }
 
 /** reach hücrelerinin sınırını sıralı 2B halkaya çevirir. */
@@ -1237,20 +1160,15 @@ export function computeFreeRegionLocal(
   for (const panel of siblingPanels) {
     if (parentShapeId && panel?.parameters?.parentShapeId &&
         panel.parameters.parentShapeId !== parentShapeId) continue;
-    const fps = panelFootprintInParentLocal(panel, parentWorldToLocal, nrm, planeN, u, v);
-    if (!fps || fps.length === 0) continue;
-    // ÇOK-BİLEŞEN: U gibi çok-kollu bir slab bir yüze birden çok AYRIK kolla
-    // değer; her kol bağımsız bir ayak izi olarak eklenir. Tek poligona
-    // çökertilseydi bir kule yüzünde şerit eksik kalıp panel içine girerdi.
-    for (const fp of fps) {
-      footprints.push(fp);
-      // Dönüş zaten footprint'e uygulandı — uzak-teğet ötelemesi KAPATILIR.
-      // Eski davranış: dönmüş panelin düz (18mm) izi uzak-teğete ötelenirdi.
-      // Yeni: rotateSteps köşelere uygulanıp tam siluet hesaplandığı için
-      // footprint doğrudan kullanılır, ekstra öteleme gerekmez.
-      fpRotated.push(false);
-      fpIds.push(panel?.id ?? null);
-    }
+    const fp = panelFootprintInParentLocal(panel, parentWorldToLocal, nrm, planeN, u, v);
+    if (!fp) continue;
+    footprints.push(fp);
+    // Dönüş zaten footprint'e uygulandı — uzak-teğet ötelemesi KAPATILIR.
+    // Eski davranış: dönmüş panelin düz (18mm) izi uzak-teğete ötelenirdi.
+    // Yeni: rotateSteps köşelere uygulanıp tam siluet hesaplandığı için
+    // footprint doğrudan kullanılır, ekstra öteleme gerekmez.
+    fpRotated.push(false);
+    fpIds.push(panel?.id ?? null);
     if (panel.id) touchingSiblingIds.push(panel.id);
   }
 

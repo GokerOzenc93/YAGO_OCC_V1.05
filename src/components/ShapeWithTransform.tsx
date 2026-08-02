@@ -53,10 +53,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     waitingForSurfaceSelection,
     raycastMode,
     shapes,
-    rebuildingShapeIds,
-    faceExtrudeMode,
-    faceExtrudeValueMode,
-    faceExtrudeSelectedFace
+    rebuildingShapeIds
   } = useAppStore(useShallow(state => ({
     selectShape: state.selectShape,
     selectSecondaryShape: state.selectSecondaryShape,
@@ -85,10 +82,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     waitingForSurfaceSelection: state.waitingForSurfaceSelection,
     raycastMode: state.raycastMode,
     shapes: state.shapes,
-    rebuildingShapeIds: state.rebuildingShapeIds,
-    faceExtrudeMode: state.faceExtrudeMode,
-    faceExtrudeValueMode: state.faceExtrudeValueMode,
-    faceExtrudeSelectedFace: state.faceExtrudeSelectedFace
+    rebuildingShapeIds: state.rebuildingShapeIds
   })));
 
   const { scene } = useThree();
@@ -456,12 +450,6 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
       : (shape.color || '#ffffff');
 
   const suppressPanelRaycast = isPanel && raycastMode && parentShapeId === selectedShapeId;
-  // REFERANS EXTRUDE: kesici panelin yüzü seçildikten sonra bu şekil bir
-  // "referans yüz" adayıdır. Seçim FaceReferenceOverlay'in pick-mesh'i ile
-  // yapılır; bu yüzden şeklin kendi tıklaması/raycast'i bastırılır (çakışma ve
-  // yanlış seçim önlenir).
-  const refPickActive = faceExtrudeMode && faceExtrudeValueMode === 'ref' && faceExtrudeSelectedFace !== null;
-  const suppressRaycast = suppressPanelRaycast || refPickActive;
   const noopRaycast = useCallback(() => {}, []);
 
   // Direction arrow for panels: X=width, Y=height, Z=depth(thickness) per ReplicadService
@@ -500,9 +488,6 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
         ref={groupRef}
         name={`shape-${shape.id}`}
         onClick={(e) => {
-          // Referans-yüz seçimi aktifken tıklama FaceReferenceOverlay'e aittir;
-          // buradaki seçim/gizmo mantığı devre dışı kalır.
-          if (refPickActive) { e.stopPropagation(); return; }
           if (panelSelectMode && hasPanels) return;
           e.stopPropagation();
           if (e.nativeEvent.ctrlKey || e.nativeEvent.metaKey) {
@@ -568,7 +553,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
               geometry={localGeometry}
               castShadow
               receiveShadow
-              {...(suppressRaycast ? { raycast: noopRaycast } : {})}
+              {...(suppressPanelRaycast ? { raycast: noopRaycast } : {})}
               // 3B'de panel üzerine gelinince LeftSidebar'daki satırı hafif
               // sarı yakmak için hover senkronu (yalnızca sanal-yüz panelleri)
               onPointerOver={isPanel && shape.parameters?.virtualFaceId ? (e: any) => {
@@ -620,7 +605,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
               ref={meshRef}
               geometry={localGeometry}
               visible={false}
-              {...(suppressRaycast ? { raycast: noopRaycast } : {})}
+              {...(suppressPanelRaycast ? { raycast: noopRaycast } : {})}
             />
             {showOutlines && edgePoints && (
               <Line
@@ -646,7 +631,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
               geometry={localGeometry}
               castShadow
               receiveShadow
-              {...(suppressRaycast ? { raycast: noopRaycast } : {})}
+              {...(suppressPanelRaycast ? { raycast: noopRaycast } : {})}
               // 3B'de panel üzerine gelinince LeftSidebar'daki satırı hafif
               // sarı yakmak için hover senkronu (yalnızca sanal-yüz panelleri)
               onPointerOver={isPanel && shape.parameters?.virtualFaceId ? (e: any) => {

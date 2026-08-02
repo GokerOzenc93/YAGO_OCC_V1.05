@@ -566,21 +566,16 @@ function regenerateParentFaceShapeVF(
   // mi girdiğini gösterir. planeN = yüz düzleminin normal-ofseti.
   try {
     for (const sp of siblingPanels) {
-      const fps = panelFootprintInParentLocal(sp, worldToLocal, localNormal, planeN, u, v);
-      if (!fps) { continue; }
+      const fp = panelFootprintInParentLocal(sp, worldToLocal, localNormal, planeN, u, v);
+      if (!fp) { continue; }
+      let fuMin = Infinity, fuMax = -Infinity, fvMin = Infinity, fvMax = -Infinity;
+      for (const q of fp) { fuMin = Math.min(fuMin, q.x); fuMax = Math.max(fuMax, q.x); fvMin = Math.min(fvMin, q.y); fvMax = Math.max(fvMax, q.y); }
       const rot = (sp.parameters?.rotateSteps?.length ?? 0) > 0;
-      // ÇOK-BİLEŞEN: U gibi çok-kollu slab bir yüze birden çok ayrık kolla
-      // değer; her kol ayrı satırda loglanır (kolN = kaçıncı kol).
-      fps.forEach((fp, kolN) => {
-        let fuMin = Infinity, fuMax = -Infinity, fvMin = Infinity, fvMax = -Infinity;
-        for (const q of fp) { fuMin = Math.min(fuMin, q.x); fuMax = Math.max(fuMax, q.x); fvMin = Math.min(fvMin, q.y); fvMax = Math.max(fvMax, q.y); }
-        console.log('[YAGO][AYAKİZİ]', vf.id, '<-', sp.id,
-          fps.length > 1 ? `kol${kolN + 1}/${fps.length}` : '',
-          'boyut=', `${(fuMax - fuMin).toFixed(0)}x${(fvMax - fvMin).toFixed(0)}`,
-          'u=', `${fuMin.toFixed(0)}..${fuMax.toFixed(0)}`,
-          'v=', `${fvMin.toFixed(0)}..${fvMax.toFixed(0)}`,
-          'köşeN=', fp.length, rot ? 'DÖNMÜŞ' : 'düz');
-      });
+      console.log('[YAGO][AYAKİZİ]', vf.id, '<-', sp.id,
+        'boyut=', `${(fuMax - fuMin).toFixed(0)}x${(fvMax - fvMin).toFixed(0)}`,
+        'u=', `${fuMin.toFixed(0)}..${fuMax.toFixed(0)}`,
+        'v=', `${fvMin.toFixed(0)}..${fvMax.toFixed(0)}`,
+        'köşeN=', fp.length, rot ? 'DÖNMÜŞ' : 'düz');
     }
   } catch { /* teşhis opsiyonel */ }
 
