@@ -11,6 +11,7 @@ import { applyFilletToShape } from './Fillet';
 import { ShapeWithTransform } from './ShapeWithTransform';
 import { getReplicadVertices } from './VertexEditorService';
 import { PanelDrawing } from './PanelDrawing';
+import { FaceReferenceOverlay } from './FaceReferenceOverlay';
 import { PanelMoveGizmo } from './PanelMoveGizmo';
 import { PanelRotateGizmo } from './PanelRotateGizmo';
 import { ErrorBoundary } from './ErrorBoundary';
@@ -641,6 +642,9 @@ const Scene: React.FC = () => {
 
           <PanelMoveGizmoWrapper shapes={shapes} />
           <PanelRotateGizmoWrapper shapes={shapes} />
+
+          {/* Face Extrude "Ref" modu: hedef-dışı şekillerde referans-yüz seçimi */}
+          <FaceReferenceOverlay shapes={shapes} />
 
           <mesh position={[0,-1,0]} rotation={[-Math.PI/2,0,0]} receiveShadow>
             <planeGeometry args={[30000,30000]} />
