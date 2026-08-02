@@ -157,6 +157,9 @@ function findMatchingReplicadFace(
 export interface ExtrudeApplyContext {
   panelWorldOffset?: [number, number, number];
   shapes?: Shape[];
+  /** Kesici panelin PARENT'ının (küp) yerel bbox'u — panel-yerel çerçevede.
+   *  Referans uzatması sonucu parent hacmine kırpılır (dışarı taşmayı önler). */
+  parentLocalBox?: { min: [number, number, number]; max: [number, number, number] };
 }
 
 /**
@@ -247,7 +250,8 @@ async function applyReferencePlaneCut(
   box: THREE.Box3,
   matchingFace: any,
   plane: { P: THREE.Vector3; N: THREE.Vector3 },
-  oc: any
+  oc: any,
+  ctx?: ExtrudeApplyContext
 ): Promise<{ replicadShape: any; geometry: THREE.BufferGeometry } | null> {
   const { convertReplicadToThreeGeometry } = await import('./ReplicadService');
   const { createReplicadBox } = await import('./ReplicadService');
@@ -266,16 +270,15 @@ async function applyReferencePlaneCut(
   const diag = size.length();
   const removeDir = N.clone().multiplyScalar(Math.sign(denom) || 1).normalize();
 
-  // 1) UZAT — SADECE gerekiyorsa. Panel removeDir yönünde düzlemi ZATEN aşıyorsa
-  //    (bbox köşesi düzlemi geçmiş) UZATMA YOK, yalnız kesim → döndürülmüş panelde
-  //    yana (perpendiküler eksende) ŞİŞME olmaz. Yalnız panel düzleme ULAŞAMIYORSA
-  //    faceNormal boyunca MİNİMUM kadar uzatılır (aşırı taşma yok).
+  // 1) UZAT — SADECE panel düzleme ULAŞAMIYORSA, faceNormal boyunca MİNİMUM kadar.
+  //    Panel zaten düzlemi aşıyorsa uzatma yok (yalnız kesim). Aşırı taşma
+  //    yaratmamak için pay küçük tutulur; kalan taşma (2) ve (3)'te budanır.
   let panelMaxProj = -Infinity;
   for (const cx of [box.min.x, box.max.x])
     for (const cy of [box.min.y, box.max.y])
       for (const cz of [box.min.z, box.max.z])
         panelMaxProj = Math.max(panelMaxProj, removeDir.dot(new THREE.Vector3(cx, cy, cz)));
-  const deficit = removeDir.dot(P) - panelMaxProj; // >0 ise panel düzleme ulaşamıyor
+  const deficit = removeDir.dot(P) - panelMaxProj;
   const growth = deficit > 0 ? deficit / Math.abs(denom) + 20 : 0;
 
   let grown = currentShape;
@@ -286,8 +289,7 @@ async function applyReferencePlaneCut(
     grown = currentShape.fuse(cast(pb.Shape()));
   }
 
-  // 2) KES: referans düzlemiyle yarım-uzay. Büyük kutu; yerel +Z → removeDir;
-  //    Z=0 yüzü düzlem üzerinde (P). Kutu X/Y ortalı, Z∈[0,L].
+  // 2) KES: referans düzlemiyle yarım-uzay (uç yüzeyle çakışık = açılı birleşim).
   const L = diag * 4 + 100;
   let cutter = await createReplicadBox({ width: L, height: L, depth: L });
   cutter = cutter.translate(-L / 2, -L / 2, 0);
@@ -298,10 +300,27 @@ async function applyReferencePlaneCut(
   const deg = angle * 180 / Math.PI;
   if (deg > 1e-3) cutter = cutter.rotate(deg, [0, 0, 0], [axis.x, axis.y, axis.z]);
   cutter = cutter.translate(P.x, P.y, P.z);
+  let result = grown.cut(cutter);
 
-  const result = grown.cut(cutter);
-  console.log('[YAGO][EXTRUDE][REF] açılı kesim: kesimAçısı=', deg.toFixed(1),
-    '° uzatma=', growth.toFixed(1), '(deficit=', deficit.toFixed(1), ')');
+  // 3) KIRP: uzattıysak, sonucu PARENT hacmine (küp) kırp → uzatma parent'ın
+  //    dışına (ör. tabanın altına) sarkamaz. Yatık panel duvara hacim içinde
+  //    ulaşabildiği kadar ulaşır; ulaşamıyorsa taşmadan olduğu yerde kalır.
+  if (growth > 0 && ctx?.parentLocalBox) {
+    const { min, max } = ctx.parentLocalBox;
+    const m = 1; // çakışık sınır yüzlerini yanlışlıkla budamamak için küçük pay
+    const cw = (max[0] - min[0]) + 2 * m;
+    const ch = (max[1] - min[1]) + 2 * m;
+    const cd = (max[2] - min[2]) + 2 * m;
+    if (cw > 0 && ch > 0 && cd > 0) {
+      let clip = await createReplicadBox({ width: cw, height: ch, depth: cd });
+      clip = clip.translate(min[0] - m, min[1] - m, min[2] - m);
+      try { result = result.intersect(clip); }
+      catch (e) { console.warn('[YAGO][EXTRUDE][REF] parent kırpma başarısız, atlandı', (e as any)?.message); }
+    }
+  }
+
+  console.log('[YAGO][EXTRUDE][REF] yüzeye birleştir: kesimAçısı=', deg.toFixed(1),
+    '° uzatma=', growth.toFixed(1), (growth > 0 && ctx?.parentLocalBox ? '(parent hacmine kırpıldı)' : ''));
   const newGeometry = convertReplicadToThreeGeometry(result);
   return { replicadShape: result, geometry: newGeometry };
 }
@@ -442,7 +461,7 @@ async function applyOneExtrudeStep(
   if (step.referenceShapeId && ctx?.shapes) {
     const plane = resolveReferenceLocalPlane(step, ctx);
     if (plane) {
-      const cutRes = await applyReferencePlaneCut(currentShape, faceNormal, box, matchingFace, plane, oc);
+      const cutRes = await applyReferencePlaneCut(currentShape, faceNormal, box, matchingFace, plane, oc, ctx);
       if (cutRes) return cutRes;
     }
     // Açılı kesim atlandı (düzlem yok/tanımsız) → düz yola düş; ölçü ~0 ise iş yok.

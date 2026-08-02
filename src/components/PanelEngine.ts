@@ -205,6 +205,34 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
 
   const parentPos: [number, number, number] = [...(parentFresh.position as any)] as any;
 
+  // PARENT (küp) yerel bbox'u — panel-yerel çerçevede (dünya = yerel + parentPos,
+  // panel rotation=0). Referans uzatması bu hacme kırpılır → dışarı taşma olmaz.
+  // Küpün kendi rotation/scale'i uygulanır (öteleme parentPos ile sadeleşir).
+  let parentLocalBox: { min: [number, number, number]; max: [number, number, number] } | undefined;
+  try {
+    const pg: any = (parentFresh as any).geometry;
+    if (pg) {
+      pg.computeBoundingBox?.();
+      const pbb = pg.boundingBox;
+      if (pbb) {
+        const pquat = new THREE.Quaternion().setFromEuler(
+          new THREE.Euler(parentFresh.rotation[0], parentFresh.rotation[1], parentFresh.rotation[2], 'XYZ')
+        );
+        const pscl = new THREE.Vector3(parentFresh.scale[0], parentFresh.scale[1], parentFresh.scale[2]);
+        const pmtx = new THREE.Matrix4().compose(new THREE.Vector3(0, 0, 0), pquat, pscl);
+        const mn = new THREE.Vector3(Infinity, Infinity, Infinity);
+        const mx = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+        for (const cx of [pbb.min.x, pbb.max.x])
+          for (const cy of [pbb.min.y, pbb.max.y])
+            for (const cz of [pbb.min.z, pbb.max.z]) {
+              const v = new THREE.Vector3(cx, cy, cz).applyMatrix4(pmtx);
+              mn.min(v); mx.max(v);
+            }
+        parentLocalBox = { min: [mn.x, mn.y, mn.z], max: [mx.x, mx.y, mx.z] };
+      }
+    }
+  } catch { /* kırpma bilgisi yoksa referans yine çalışır, sadece kırpma atlanır */ }
+
   // ═══════════════════════════════════════════════════════════════════════
   // YENİ TEMİZ MOTOR — SADECE ÜRETİM, KESİM YOK
   // Kullanıcı isteği: dönme kesim/kural mekanizması tamamen kaldırıldı. Yeni
@@ -256,6 +284,7 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
             const ext = await applyExtrudeSteps(rp, extrudeSteps, {
               panelWorldOffset: parentPos,
               shapes: useAppStore.getState().shapes,
+              parentLocalBox,
             });
             if (ext) {
               rp = ext.shape;
