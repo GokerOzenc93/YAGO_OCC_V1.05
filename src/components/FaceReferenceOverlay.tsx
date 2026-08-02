@@ -209,6 +209,7 @@ export const FaceReferenceOverlay: React.FC<OverlayProps> = ({ shapes }) => {
     await executeFaceExtrudeToReference({
       panelShape: ps,
       faceGroupIndex: selFace,
+      referenceShapeId: cand.shapeId,
       referencePointWorld: cand.point,
       referenceNormalWorld: cand.normal,
       updateShape,

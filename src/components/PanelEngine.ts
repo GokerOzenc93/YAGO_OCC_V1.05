@@ -250,7 +250,13 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
         if (Array.isArray(extrudeSteps) && extrudeSteps.length > 0) {
           try {
             const { applyExtrudeSteps } = await import('./FaceExtrudeService');
-            const ext = await applyExtrudeSteps(rp, extrudeSteps);
+            // CANLI REFERANS bağlamı: panelin dünya offset'i (=parentPos, çünkü
+            // aşağıda position:parentPos, rotation:0 yazılır) + referans şeklin
+            // GÜNCEL geometrisi için taze shapes anlık görüntüsü.
+            const ext = await applyExtrudeSteps(rp, extrudeSteps, {
+              panelWorldOffset: parentPos,
+              shapes: useAppStore.getState().shapes,
+            });
             if (ext) {
               rp = ext.shape;
               const eb = new THREE.Box3().setFromBufferAttribute(

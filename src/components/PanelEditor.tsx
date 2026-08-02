@@ -1077,6 +1077,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         const { executeFaceExtrudeToReference } = await import('./FaceExtrudeService');
         await executeFaceExtrudeToReference({
           panelShape: ps, faceGroupIndex: faceExtrudeSelectedFace!,
+          referenceShapeId: faceExtrudeRefCandidate.shapeId,
           referencePointWorld: faceExtrudeRefCandidate.point,
           referenceNormalWorld: faceExtrudeRefCandidate.normal,
           updateShape, clickPoint: faceExtrudeClickPoint ?? undefined,
@@ -1547,15 +1548,21 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                     </>
                   ) : (
                     <>
-                      <span className="flex-1 font-mono text-xs font-bold text-stone-800 tabular-nums">{s.value}{s.stepType === 'rotate' ? '\u00B0' : ''}</span>
+                      {s.stepType === 'extrude' && s.mode === 'ref' ? (
+                        <span className="flex-1 font-mono text-xs font-bold text-emerald-700 tabular-nums" title="Canlı referans yüz — referans şekil değişince otomatik güncellenir">↪ ref</span>
+                      ) : (
+                        <span className="flex-1 font-mono text-xs font-bold text-stone-800 tabular-nums">{s.value}{s.stepType === 'rotate' ? '\u00B0' : ''}</span>
+                      )}
                       {s.stepType === 'extrude' && s.isFixed !== undefined && (
                         <span className="shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-sm bg-stone-100 text-stone-500">{s.mode === 'ref' ? 'R' : s.isFixed ? 'F' : 'D'}</span>
                       )}
+                      {!(s.stepType === 'extrude' && s.mode === 'ref') && (
                       <button onClick={() => {
                         if (s.stepType === 'extrude') { setEditingStepId(s.id); setEditingStepValue(String(s.value)); }
                         else if (s.stepType === 'move') { setEditingMoveStepId(s.id); setEditingMoveStepValue(String(s.value)); }
                         else { setEditingRotateStepId(s.id); setEditingRotateStepValue(String(s.value)); }
                       }} style={iconBtn('#78716c')}><Pencil size={10} /></button>
+                      )}
                       <button onClick={async () => {
                         const ps = shapes.find(x => x.id === activePanelId); if (!ps) return;
                         if (s.stepType === 'extrude') {
