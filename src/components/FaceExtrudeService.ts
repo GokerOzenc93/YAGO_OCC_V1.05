@@ -160,20 +160,19 @@ export interface ExtrudeApplyContext {
 }
 
 /**
- * CANLI REFERANS ÇÖZÜMLEME: adımın referans şeklinin, kayıtlı normale sahip DIŞ
- * SINIR yüzünü GÜNCEL geometride yeniden bulur ve kesici panelin yerel çerçevesine
- * göre "net ölçü"yü döndürür. Böylece referans büyür/küçülür/taşınırsa panel takip
- * eder. Bulunamazsa null → çağıran dondurulmuş step.value'ya düşer.
+ * CANLI REFERANS DÜZLEMİ: adımın referans şeklinin, kayıtlı normale sahip DIŞ
+ * SINIR yüzünü GÜNCEL geometride yeniden bulur ve kesici panelin YEREL çerçevesinde
+ * {P (düzlem noktası), N (düzlem normali)} olarak döndürür. Panel yerel→dünya SAF
+ * ÖTELEMEDİR (PanelEngine: position=parentPos, rotation=0), bu yüzden N dünya=yerel,
+ * P = dünyaMerkez − offset. Bulunamazsa null.
  *
  * "Dış sınır yüzü" = o normal yönünde merkez izdüşümü EN BÜYÜK olan grup (kutu/panel
  * için tekildir). Resize'da bu yüz dışa/içe kayar; her rebuild'de yeniden bulunur.
  */
-function resolveReferenceNetDim(
+function resolveReferenceLocalPlane(
   step: ExtrudeStep,
-  faceNormal: THREE.Vector3,
-  box: THREE.Box3,
   ctx?: ExtrudeApplyContext
-): number | null {
+): { P: THREE.Vector3; N: THREE.Vector3 } | null {
   if (!step.referenceShapeId || !step.referenceNormalWorld || !ctx?.shapes) return null;
   const refShape = ctx.shapes.find(s => s.id === step.referenceShapeId);
   if (!refShape || !refShape.geometry) return null;
@@ -189,35 +188,122 @@ function resolveReferenceNetDim(
   const refL2W = new THREE.Matrix4().compose(rPos, rQuat, rScl);
   const refNMat = new THREE.Matrix3().getNormalMatrix(refL2W);
 
-  const rFaces = extractFacesFromGeometry(refShape.geometry);
-  const rGroups = groupCoplanarFaces(rFaces);
+  const rGroups = groupCoplanarFaces(extractFacesFromGeometry(refShape.geometry));
   let bestCenterW: THREE.Vector3 | null = null;
+  let bestNormalW: THREE.Vector3 | null = null;
   let bestProj = -Infinity;
   for (const g of rGroups) {
     const wN = g.normal.clone().applyMatrix3(refNMat).normalize();
     if (wN.dot(refN) < 0.9) continue; // aynı yön yüzler
     const wC = g.center.clone().applyMatrix4(refL2W);
     const proj = wC.dot(refN);        // bu normal yönünde en dıştaki = sınır yüzü
-    if (proj > bestProj) { bestProj = proj; bestCenterW = wC; }
+    if (proj > bestProj) { bestProj = proj; bestCenterW = wC; bestNormalW = wN; }
   }
-  if (!bestCenterW) return null;
+  if (!bestCenterW || !bestNormalW) return null;
 
-  // Referans noktasını kesici panelin yerel çerçevesine taşı (dünya = yerel + offset).
   const off = ctx.panelWorldOffset ?? [0, 0, 0];
-  const refLocal = bestCenterW.clone().sub(new THREE.Vector3(off[0], off[1], off[2]));
+  const P = bestCenterW.clone().sub(new THREE.Vector3(off[0], off[1], off[2]));
+  const N = bestNormalW.clone(); // ötelemede yön değişmez → yerel normal = dünya normal
+  return { P, N };
+}
 
-  // Net ölçü, kesici yüzün ekseni/işareti boyunca (Fixed ile aynı çerçeve).
+/**
+ * Referans düzleminin kesici yüz ekseni boyunca "net ölçü"sü (düz/dik birleşim
+ * için yedek yol). Fixed ile aynı çerçeve: karşı bbox sınırından düzleme mesafe.
+ */
+function resolveReferenceNetDim(
+  step: ExtrudeStep,
+  faceNormal: THREE.Vector3,
+  box: THREE.Box3,
+  ctx?: ExtrudeApplyContext
+): number | null {
+  const plane = resolveReferenceLocalPlane(step, ctx);
+  if (!plane) return null;
+  const refLocal = plane.P;
   const aX = Math.abs(faceNormal.x), aY = Math.abs(faceNormal.y), aZ = Math.abs(faceNormal.z);
   let coord: number, minC: number, maxC: number, positive: boolean;
   if (aX >= aY && aX >= aZ) { coord = refLocal.x; minC = box.min.x; maxC = box.max.x; positive = faceNormal.x > 0; }
   else if (aY >= aX && aY >= aZ) { coord = refLocal.y; minC = box.min.y; maxC = box.max.y; positive = faceNormal.y > 0; }
   else { coord = refLocal.z; minC = box.min.z; maxC = box.max.z; positive = faceNormal.z > 0; }
-
   const netDim = positive ? coord - minC : maxC - coord;
   if (!isFinite(netDim)) return null;
-  console.log('[YAGO][EXTRUDE][REF] canlı çözüm: refŞekil=', step.referenceShapeId,
-    'refYerel=', coord.toFixed(1), 'netÖlçü=', netDim.toFixed(1));
   return netDim;
+}
+
+/**
+ * AÇILI REFERANS BİRLEŞİMİ (döndürülmüş panel): kesici panelin seçili yüzünü
+ * önce faceNormal boyunca referans düzlemini AŞACAK kadar UZATIR (kanıtlanmış
+ * prizma yolu), sonra düzlemle yarım-uzay KESER. Sonuç: panel ucu referans
+ * yüzeyle TAM ÇAKIŞIK biter → panel döndüyse geometrik olarak AÇILI birleşir.
+ *
+ * KESİLECEK TARAF: seçili yüzün ilerleme yönüyle (faceNormal) hizalı taraf →
+ * removeDir = N·sign(N·faceNormal). Bu her zaman faceNormal yarım-uzayını verir;
+ * uzat/kes (grow/shrink) ve ters normalde de doğrudur (OCC harness ile doğrulandı:
+ * eksen/oblik düzlem, eksen/döndürülmüş panel → uçtaki tüm nokta düzlemde).
+ */
+async function applyReferencePlaneCut(
+  currentShape: any,
+  faceNormal: THREE.Vector3,
+  box: THREE.Box3,
+  matchingFace: any,
+  plane: { P: THREE.Vector3; N: THREE.Vector3 },
+  oc: any
+): Promise<{ replicadShape: any; geometry: THREE.BufferGeometry } | null> {
+  const { convertReplicadToThreeGeometry } = await import('./ReplicadService');
+  const { createReplicadBox } = await import('./ReplicadService');
+  const { cast } = await import('replicad');
+
+  const { P, N } = plane;
+  const denom = faceNormal.dot(N);
+  // Düzlem, ilerleme yönüne (faceNormal) neredeyse dik ise açılı kesim tanımsız →
+  // çağıran yedek (düz) yola düşsün.
+  if (Math.abs(denom) < 0.05) {
+    console.warn('[YAGO][EXTRUDE][REF] düzlem faceNormal\'e ~dik → açılı kesim atlandı (düz yola düşülüyor)');
+    return null;
+  }
+
+  const size = box.getSize(new THREE.Vector3());
+  const diag = size.length();
+  const removeDir = N.clone().multiplyScalar(Math.sign(denom) || 1).normalize();
+
+  // 1) UZAT — SADECE gerekiyorsa. Panel removeDir yönünde düzlemi ZATEN aşıyorsa
+  //    (bbox köşesi düzlemi geçmiş) UZATMA YOK, yalnız kesim → döndürülmüş panelde
+  //    yana (perpendiküler eksende) ŞİŞME olmaz. Yalnız panel düzleme ULAŞAMIYORSA
+  //    faceNormal boyunca MİNİMUM kadar uzatılır (aşırı taşma yok).
+  let panelMaxProj = -Infinity;
+  for (const cx of [box.min.x, box.max.x])
+    for (const cy of [box.min.y, box.max.y])
+      for (const cz of [box.min.z, box.max.z])
+        panelMaxProj = Math.max(panelMaxProj, removeDir.dot(new THREE.Vector3(cx, cy, cz)));
+  const deficit = removeDir.dot(P) - panelMaxProj; // >0 ise panel düzleme ulaşamıyor
+  const growth = deficit > 0 ? deficit / Math.abs(denom) + 20 : 0;
+
+  let grown = currentShape;
+  if (growth > 0) {
+    const gVec = new oc.gp_Vec_4(faceNormal.x * growth, faceNormal.y * growth, faceNormal.z * growth);
+    const pb = new oc.BRepPrimAPI_MakePrism_1(matchingFace.wrapped, gVec, false, true);
+    pb.Build(new oc.Message_ProgressRange_1());
+    grown = currentShape.fuse(cast(pb.Shape()));
+  }
+
+  // 2) KES: referans düzlemiyle yarım-uzay. Büyük kutu; yerel +Z → removeDir;
+  //    Z=0 yüzü düzlem üzerinde (P). Kutu X/Y ortalı, Z∈[0,L].
+  const L = diag * 4 + 100;
+  let cutter = await createReplicadBox({ width: L, height: L, depth: L });
+  cutter = cutter.translate(-L / 2, -L / 2, 0);
+  const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), removeDir);
+  const angle = 2 * Math.acos(Math.min(1, Math.max(-1, q.w)));
+  const s = Math.sqrt(Math.max(0, 1 - q.w * q.w));
+  const axis = s < 1e-6 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(q.x / s, q.y / s, q.z / s);
+  const deg = angle * 180 / Math.PI;
+  if (deg > 1e-3) cutter = cutter.rotate(deg, [0, 0, 0], [axis.x, axis.y, axis.z]);
+  cutter = cutter.translate(P.x, P.y, P.z);
+
+  const result = grown.cut(cutter);
+  console.log('[YAGO][EXTRUDE][REF] açılı kesim: kesimAçısı=', deg.toFixed(1),
+    '° uzatma=', growth.toFixed(1), '(deficit=', deficit.toFixed(1), ')');
+  const newGeometry = convertReplicadToThreeGeometry(result);
+  return { replicadShape: result, geometry: newGeometry };
 }
 
 async function applyOneExtrudeStep(
@@ -336,7 +422,7 @@ async function applyOneExtrudeStep(
     extrudeAmount = effectiveValue;
   }
 
-  if (Math.abs(extrudeAmount) < 0.01) {
+  if (Math.abs(extrudeAmount) < 0.01 && !step.referenceShapeId) {
     console.warn(`[applyOneExtrudeStep] Extrude amount too small: ${extrudeAmount} for step ${step.axisLabel}`);
     return null;
   }
@@ -348,6 +434,22 @@ async function applyOneExtrudeStep(
   if (!matchingFace) {
     console.warn(`[applyOneExtrudeStep] No matching replicad face for normal ${faceNormal.toArray()} center ${faceCenter.toArray()}`);
     return null;
+  }
+
+  // AÇILI REFERANS BİRLEŞİMİ: referans adımı ise, seçili yüzü referans DÜZLEMİNE
+  // kadar uzat/kes; panel döndüyse uç, yüzeyle açılı biter (düz prizma yerine
+  // yarım-uzay kesimi). Düzlem çözülemez/tanımsızsa aşağıdaki düz yola düşülür.
+  if (step.referenceShapeId && ctx?.shapes) {
+    const plane = resolveReferenceLocalPlane(step, ctx);
+    if (plane) {
+      const cutRes = await applyReferencePlaneCut(currentShape, faceNormal, box, matchingFace, plane, oc);
+      if (cutRes) return cutRes;
+    }
+    // Açılı kesim atlandı (düzlem yok/tanımsız) → düz yola düş; ölçü ~0 ise iş yok.
+    if (Math.abs(extrudeAmount) < 0.01) {
+      console.warn(`[applyOneExtrudeStep] Ref fallback amount too small: ${extrudeAmount}`);
+      return null;
+    }
   }
 
   const extVec: [number, number, number] = [
