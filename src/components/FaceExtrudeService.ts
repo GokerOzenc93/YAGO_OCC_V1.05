@@ -12,6 +12,10 @@ export interface ExtrudeStep {
   axisLabel: string;
   value: number;
   isFixed: boolean;
+  /** Değerin nasıl belirlendiği (yalnızca gösterim/rozet için). 'ref' adımları
+   *  geometrik olarak Fixed gibi uygulanır (isFixed=true); referans yüzden
+   *  otomatik hesaplanan net ölçüyü taşırlar. */
+  mode?: 'fixed' | 'dyn' | 'ref';
   timestamp: number;
   /** Local-space point on the clicked face surface — used to uniquely
    *  identify the correct replicad face regardless of center/normal ambiguity. */
@@ -23,6 +27,8 @@ export interface FaceExtrudeParams {
   faceGroupIndex: number;
   value: number;
   isFixed: boolean;
+  /** Adıma yazılacak değer-modu etiketi (varsayılan: isFixed'den türetilir). */
+  mode?: 'fixed' | 'dyn' | 'ref';
   shapes: Shape[];
   updateShape: (id: string, updates: Partial<Shape>) => void;
   /** Local-space click point captured from the Three.js pointer event. */
@@ -387,6 +393,7 @@ export async function executeFaceExtrude(params: FaceExtrudeParams): Promise<boo
     axisLabel,
     value,
     isFixed,
+    mode: params.mode ?? (isFixed ? 'fixed' : 'dyn'),
     timestamp: Date.now(),
     samplePoint: params.clickPoint,
   };
@@ -396,6 +403,95 @@ export async function executeFaceExtrude(params: FaceExtrudeParams): Promise<boo
     : [...existingSteps, newStep];
 
   return commitStepsAndRebuild(panel, newSteps, updateShape);
+}
+
+export interface FaceExtrudeToReferenceParams {
+  /** Kesici panel (yüzü seçili olan). */
+  panelShape: Shape;
+  /** Kesici panelin seçili yüz grubu (GÜNCEL geometri indeksi). */
+  faceGroupIndex: number;
+  /** Referans yüzün DÜNYA uzayındaki bir noktası (yüz merkezi önerilir). */
+  referencePointWorld: [number, number, number];
+  /** Referans yüzün DÜNYA normali (yalnız bilgi amaçlı; ölçü eksen izdüşümüyle
+   *  hesaplandığı için zorunlu değil). */
+  referenceNormalWorld?: [number, number, number];
+  updateShape: (id: string, updates: Partial<Shape>) => void;
+  clickPoint?: [number, number, number];
+  virtualFaceId?: string;
+  vfNormal?: [number, number, number];
+  vfVertex0?: [number, number, number];
+  updateVirtualFace?: (id: string, updates: any) => void;
+}
+
+/**
+ * REFERANS MODU: Kesici panelin seçili yüzünü, BAŞKA bir panel/küpün seçilen
+ * yüz düzlemine kadar uzatır/keser. Referans düzlemi, kesici panelin YEREL
+ * çerçevesine taşınır ve seçili yüzün ekseni boyunca bir "net ölçü" (Fixed
+ * value) olarak ifade edilir. Böylece hiçbir yeni geometri yolu gerekmez:
+ * mevcut Fixed uygulaması (extrudeAmount = value − faceDist) referans düzlemine
+ * tam olarak oturmayı sağlar.
+ *
+ * KÖK MANTIK: Fixed value = "karşı bbox sınırından seçili yüze olan net mesafe".
+ * Referans düzleminin yerel eksen koordinatı refCoord ise, karşı sınırdan
+ * refCoord'a olan mesafe hedef net ölçüdür. Uygulama anında faceDist mevcut yüz
+ * konumundan ölçüldüğü için extrudeAmount = refCoord − mevcutYüzKoordinatı olur;
+ * yani seçili yüz tam referans düzlemine taşınır (pozitif→uzat, negatif→kes).
+ */
+export async function executeFaceExtrudeToReference(
+  params: FaceExtrudeToReferenceParams
+): Promise<boolean> {
+  const panel = params.panelShape;
+  if (!panel.geometry) return false;
+
+  const faces = extractFacesFromGeometry(panel.geometry);
+  const groups = groupCoplanarFaces(faces);
+  const g = groups[params.faceGroupIndex];
+  if (!g) return false;
+
+  // Seçili yüzün baskın ekseni + işareti (net ölçü yalnızca bunları gerektirir;
+  // hafif eğri normalde bile baskın eksen aynı kalır).
+  const gn = g.normal.clone().normalize();
+  const absX = Math.abs(gn.x), absY = Math.abs(gn.y), absZ = Math.abs(gn.z);
+  const axis = absX >= absY && absX >= absZ ? 0 : absY >= absZ ? 1 : 2;
+  const positive = gn.getComponent(axis) > 0;
+
+  // Kesici panelin bbox'u (yerel) + referans noktasının yerel koordinatı.
+  const box = new THREE.Box3().setFromBufferAttribute(
+    panel.geometry.getAttribute('position') as THREE.BufferAttribute
+  );
+  const pos = new THREE.Vector3(panel.position[0], panel.position[1], panel.position[2]);
+  const quat = new THREE.Quaternion().setFromEuler(
+    new THREE.Euler(panel.rotation[0], panel.rotation[1], panel.rotation[2], 'XYZ')
+  );
+  const scl = new THREE.Vector3(panel.scale[0], panel.scale[1], panel.scale[2]);
+  const worldToLocal = new THREE.Matrix4().compose(pos, quat, scl).invert();
+
+  const refLocal = new THREE.Vector3(...params.referencePointWorld).applyMatrix4(worldToLocal);
+  const refCoord = refLocal.getComponent(axis);
+  const minC = box.min.getComponent(axis);
+  const maxC = box.max.getComponent(axis);
+  const netDim = positive ? refCoord - minC : maxC - refCoord;
+
+  console.log('[YAGO][EXTRUDE][REF] eksen=', ['X', 'Y', 'Z'][axis],
+    positive ? '+' : '-', 'refYerel=', refCoord.toFixed(1),
+    'netÖlçü=', netDim.toFixed(1));
+
+  if (!isFinite(netDim)) return false;
+
+  return executeFaceExtrude({
+    panelShape: panel,
+    faceGroupIndex: params.faceGroupIndex,
+    value: netDim,
+    isFixed: true,
+    mode: 'ref',
+    shapes: [],
+    updateShape: params.updateShape,
+    clickPoint: params.clickPoint,
+    virtualFaceId: params.virtualFaceId,
+    vfNormal: params.vfNormal,
+    vfVertex0: params.vfVertex0,
+    updateVirtualFace: params.updateVirtualFace,
+  });
 }
 
 export async function deleteExtrudeStep(
