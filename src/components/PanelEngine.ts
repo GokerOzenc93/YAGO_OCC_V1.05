@@ -335,6 +335,96 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
 
   // AŞAMA 3: yeni VF'lerle son üretim (bölge güncellemesi geometriye yansısın).
   await buildAndWrite(vfs);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // AŞAMA 4: REFERANS-KARDEŞ BİRLEŞİM KESİMİ (butt/gönye) — SON KATILAR ÜZERİNDE.
+  //
+  // KÖK NEDEN ("referans verince paneller iç içe geçiyor"): Referans düzlem
+  // kesimi (FaceExtrudeService) hedef paneli referans YÜZEYE getirir, ama iki
+  // panelin ÖRTÜŞEN hacmini (köşe bandı) kaldırmaz. Bu çıkarmayı extrude adımının
+  // İÇİNDE yapmak GÜVENİLMEZDİR: buildAndWrite panelleri ÖNCELİK sırasında üretir;
+  // hedef (öncelik-önce) referanstan ÖNCE üretildiği için referans panelin katısı
+  // o an ESKİ/KISA olabiliyor. Üstteki panel referansa kırpılınca ayak izi kalkar
+  // ve referans panel SONRADAN tam boya BÜYÜR → adım içindeki çıkarma boşa gider,
+  // paneller iç içe kalır ("panel yokmuş gibi davranıyor").
+  //
+  // Çözüm: TÜM paneller (AŞAMA 3) üretildikten SONRA, referans-kardeş çakışmasını
+  // burada SON katılar üzerinde temizle. Referans panel artık son (tam) halinde
+  // olduğundan çıkarma DOĞRU hacmi kaldırır → temiz birleşim, iç içe geçme yok.
+  // Semantik: hedef, açıkça referansladığı panele DAYANIR (öncelikten bağımsız).
+  //
+  //   • Bu GLOBAL otomatik kardeş kesimi DEĞİLDİR; yalnız kullanıcının kurduğu
+  //     referans bağı olan panellerde çalışır.
+  //   • Referans KÜP ise (type!=='panel') atlanır → küp referansı davranışı
+  //     (düzlem kesimi + parent kırpma) aynen korunur, regresyon yok.
+  //   • Çakışma yoksa (dokunma / açılı temas) boolean cut NO-OP'tur (değişim=0)
+  //     → döndürme senaryosunu bozmaz.
+  //   • Çerçeve: tüm paneller parent-yerel (position=parentPos, rotation=0) →
+  //     katılar aynı koordinatta; doğrudan cut geçerli.
+  //
+  // KESİM YÖNÜ = ÖNCELİK (dominant yüze göre): Örtüşmeyi HER ZAMAN DÜŞÜK öncelikli
+  // panelden kaldırırız; YÜKSEK öncelikli panel dokunulmadan tam boyunda kalır.
+  //   • Neden: kullanıcı önce tepe panelini (sıra 1) attı → o baskındır. Tepe,
+  //     referansladığı dominant yüze (ör. x=478) kadar TAM uzanmalı; komşunun
+  //     kalınlığı (18mm) kadar KISALMAMALI. Kısalan taraf, düşük öncelikli komşu
+  //     olmalı (onun köşesi budanır → dominant yüzde temiz butt birleşimi).
+  //   • Önceki hata: her zaman HEDEFTEN referans katısını çıkarıyordu; hedef
+  //     yüksek öncelikli olduğunda onu 18mm kısaltıyordu. Artık öncelik belirler.
+  //   • Öncelik = VF'nin store.virtualFaces indeksidir (küçük indeks = önce =
+  //     yüksek öncelik) → orderOf().
+  try {
+    const afterShapes = useAppStore.getState().shapes;
+    const builtSolid = new Map<string, any>();      // SON (değişmez) üretilmiş katılar
+    for (const s of afterShapes) {
+      if (s.type === 'panel' && (s as any).replicadShape) builtSolid.set(s.id, (s as any).replicadShape);
+    }
+    // Yalnız BİR KEZ işlenecek yönlü çift kümesi (mükerrer/karşılıklı referansta
+    // aynı düşük-öncelikli paneli iki kez budamamak için).
+    const notched = new Map<string, any>();         // düşük panel id → güncel katı
+    const donePair = new Set<string>();
+    for (const panel of children) {
+      const steps: any[] = (panel.parameters as any)?.extrudeSteps || [];
+      const refIds = Array.from(new Set(
+        steps.filter(st => st && st.referenceShapeId).map(st => st.referenceShapeId as string)
+      ));
+      if (refIds.length === 0) continue;
+      for (const rid of refIds) {
+        if (rid === panel.id) continue;
+        const refShape = afterShapes.find(s => s.id === rid);
+        // Yalnız KARDEŞ PANEL referansında çıkar; küp/eksik katı → atla
+        // (küp referansı davranışı: düzlem kesimi + parent kırpma korunur).
+        if (!refShape || refShape.type !== 'panel') continue;
+        const a = panel.id, b = rid;
+        const pairKey = orderOf(panel) <= orderOf(refShape) ? a + '|' + b : b + '|' + a;
+        if (donePair.has(pairKey)) continue;
+        donePair.add(pairKey);
+        // ÖNCELİK: küçük orderOf = yüksek öncelik = dokunulmaz (hi). Diğeri (lo)
+        // budanır. Eşitlikte hedef (panel) yüksek sayılır.
+        const hiId = orderOf(panel) <= orderOf(refShape) ? a : b;
+        const loId = hiId === a ? b : a;
+        const hiSolid = builtSolid.get(hiId);
+        const loSolid = notched.get(loId) ?? builtSolid.get(loId);
+        if (!hiSolid || !loSolid) continue;
+        try {
+          const cut = loSolid.cut(hiSolid);   // DÜŞÜK panelden YÜKSEK'i çıkar
+          notched.set(loId, cut);
+          console.log('[YAGO][MOTOR] referans-kardeş birleşim kesimi (dominant yüz):',
+            'kesilen(düşük)=', loId, 'referans(yüksek)=', hiId);
+        } catch (err) {
+          console.warn('[YAGO][MOTOR] referans-kardeş kesimi başarısız, atlandı:', loId, hiId,
+            (err as any)?.message || String(err));
+        }
+      }
+    }
+    // Budanan (düşük öncelikli) panelleri tek seferde yaz.
+    for (const [id, solid] of notched) {
+      const geometry = convertReplicadToThreeGeometry(solid);
+      updateShape(id, { geometry, replicadShape: solid } as any);
+    }
+  } catch (err) {
+    console.error('[YAGO][MOTOR] AŞAMA 4 referans-kardeş kesimi hatası:',
+      (err as any)?.message || String(err));
+  }
 }
 
 
