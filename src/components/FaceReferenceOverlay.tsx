@@ -119,6 +119,9 @@ export const FaceReferenceOverlay: React.FC<OverlayProps> = ({ shapes }) => {
     faceExtrudeMode, faceExtrudeValueMode, faceExtrudeTargetPanelId,
     faceExtrudeSelectedFace, faceExtrudeRefCandidate,
     setFaceExtrudeRefCandidate, setFaceExtrudeSelectedFace, setFaceExtrudeMode,
+    panelRotateMode, panelRotateValueMode, panelRotateTargetPanelId,
+    panelRotatePivot, panelRotateAxis, panelRotateRefCandidate,
+    setPanelRotateRefCandidate, setPanelRotateValueMode, setPanelRotateAxis,
     updateShape, updateVirtualFace,
   } = useAppStore(useShallow(state => ({
     faceExtrudeMode: state.faceExtrudeMode,
@@ -129,22 +132,40 @@ export const FaceReferenceOverlay: React.FC<OverlayProps> = ({ shapes }) => {
     setFaceExtrudeRefCandidate: state.setFaceExtrudeRefCandidate,
     setFaceExtrudeSelectedFace: state.setFaceExtrudeSelectedFace,
     setFaceExtrudeMode: state.setFaceExtrudeMode,
+    panelRotateMode: state.panelRotateMode,
+    panelRotateValueMode: state.panelRotateValueMode,
+    panelRotateTargetPanelId: state.panelRotateTargetPanelId,
+    panelRotatePivot: state.panelRotatePivot,
+    panelRotateAxis: state.panelRotateAxis,
+    panelRotateRefCandidate: state.panelRotateRefCandidate,
+    setPanelRotateRefCandidate: state.setPanelRotateRefCandidate,
+    setPanelRotateValueMode: state.setPanelRotateValueMode,
+    setPanelRotateAxis: state.setPanelRotateAxis,
     updateShape: state.updateShape,
     updateVirtualFace: state.updateVirtualFace,
   })));
 
+  // ── Mod ayrımı: extrude-ref mı, rotate-ref mi? Aynı seçim katmanı, farklı
+  //    onay eylemi. Extrude yolu, rotate-ref kapalıyken birebir korunur. ──
+  const rotateRefActive = panelRotateMode && panelRotateValueMode === 'ref'
+    && panelRotatePivot !== null && panelRotateAxis !== null && !!panelRotateTargetPanelId;
+  const mode: 'extrude' | 'rotate' = rotateRefActive ? 'rotate' : 'extrude';
+  const targetId = rotateRefActive ? panelRotateTargetPanelId : faceExtrudeTargetPanelId;
+  const refCandidate = rotateRefActive ? panelRotateRefCandidate : faceExtrudeRefCandidate;
+  const setRefCandidate = rotateRefActive ? setPanelRotateRefCandidate : setFaceExtrudeRefCandidate;
+
   const [hover, setHover] = useState<FaceRef | null>(null);
   const lastClick = useRef<{ point: THREE.Vector3 | null; idx: number }>({ point: null, idx: 0 });
 
-  const active = faceExtrudeMode && faceExtrudeValueMode === 'ref'
-    && faceExtrudeSelectedFace !== null && !!faceExtrudeTargetPanelId;
+  const active = rotateRefActive || (faceExtrudeMode && faceExtrudeValueMode === 'ref'
+    && faceExtrudeSelectedFace !== null && !!faceExtrudeTargetPanelId);
 
   // Aday şekiller (hedef panel hariç) için yüz gruplarını bir kez hesapla.
   const targets = useMemo(() => {
     const m = new Map<string, TargetEntry>();
     if (!active) return m;
     for (const shape of shapes) {
-      if (shape.id === faceExtrudeTargetPanelId) continue;
+      if (shape.id === targetId) continue;
       if (!shape.geometry) continue;
       if (shape.isolated === false) continue;
       const faces = extractFacesFromGeometry(shape.geometry);
@@ -152,7 +173,7 @@ export const FaceReferenceOverlay: React.FC<OverlayProps> = ({ shapes }) => {
       m.set(shape.id, { shape, faces, groups });
     }
     return m;
-  }, [shapes, faceExtrudeTargetPanelId, active]);
+  }, [shapes, targetId, active]);
 
   useEffect(() => { if (!active) { setHover(null); lastClick.current = { point: null, idx: 0 }; } }, [active]);
 
@@ -196,12 +217,41 @@ export const FaceReferenceOverlay: React.FC<OverlayProps> = ({ shapes }) => {
 
   const onConfirm = useCallback(async () => {
     const st = useAppStore.getState();
+
+    // ── ROTATE-REF: pivot/eksen çevresinde referans yüzeye değene kadar döndür ──
+    const rotActive = st.panelRotateMode && st.panelRotateValueMode === 'ref'
+      && st.panelRotatePivot !== null && st.panelRotateAxis !== null && !!st.panelRotateTargetPanelId;
+    if (rotActive) {
+      const cand = st.panelRotateRefCandidate;
+      const rid = st.panelRotateTargetPanelId!;
+      if (!cand) return;
+      const ps = st.shapes.find(s => s.id === rid);
+      if (!ps) return;
+      const { executeRotateToReference } = await import('./PanelRotateService');
+      await executeRotateToReference({
+        panelShape: ps,
+        axis: st.panelRotateAxis!,
+        pivot: st.panelRotatePivot!,
+        referencePointWorld: cand.point,
+        referenceNormalWorld: cand.normal,
+        shapes: st.shapes,
+        updateShape,
+      });
+      setHover(null);
+      lastClick.current = { point: null, idx: 0 };
+      setPanelRotateRefCandidate(null);
+      setPanelRotateValueMode('fixed');
+      setPanelRotateAxis(null);
+      return;
+    }
+
+    // ── EXTRUDE-REF (mevcut davranış, aynen korunur) ──
     const cand = st.faceExtrudeRefCandidate;
-    const targetId = st.faceExtrudeTargetPanelId;
+    const eTargetId = st.faceExtrudeTargetPanelId;
     const selFace = st.faceExtrudeSelectedFace;
     const clickPt = st.faceExtrudeClickPoint;
-    if (!cand || !targetId || selFace === null) return;
-    const ps = st.shapes.find(s => s.id === targetId);
+    if (!cand || !eTargetId || selFace === null) return;
+    const ps = st.shapes.find(s => s.id === eTargetId);
     if (!ps) return;
     const vfId = ps.parameters?.virtualFaceId as string | undefined;
     const vf = vfId ? st.virtualFaces.find(f => f.id === vfId) : undefined;
@@ -224,11 +274,12 @@ export const FaceReferenceOverlay: React.FC<OverlayProps> = ({ shapes }) => {
     setFaceExtrudeRefCandidate(null);
     setFaceExtrudeSelectedFace(null);
     setFaceExtrudeMode(false);
-  }, [updateShape, updateVirtualFace, setFaceExtrudeRefCandidate, setFaceExtrudeSelectedFace, setFaceExtrudeMode]);
+  }, [updateShape, updateVirtualFace, setFaceExtrudeRefCandidate, setFaceExtrudeSelectedFace, setFaceExtrudeMode,
+      setPanelRotateRefCandidate, setPanelRotateValueMode, setPanelRotateAxis]);
 
   const onDown = useCallback((e: any) => {
     e.stopPropagation();
-    if (e.button === 2) { if (useAppStore.getState().faceExtrudeRefCandidate) onConfirm(); return; }
+    if (e.button === 2) { const s = useAppStore.getState(); if (s.panelRotateRefCandidate || s.faceExtrudeRefCandidate) onConfirm(); return; }
     if (e.button !== 0) return;
     const r = resolve(e);
     if (!r.length) return;
@@ -246,18 +297,18 @@ export const FaceReferenceOverlay: React.FC<OverlayProps> = ({ shapes }) => {
     const nMat = new THREE.Matrix3().getNormalMatrix(shapeLocalToWorld(entry.shape));
     const nW = g.normal.clone().applyMatrix3(nMat).normalize();
 
-    console.log('[YAGO][EXTRUDE][REF] aday yüz=', chosen.shapeId,
+    console.log(`[YAGO][${mode === 'rotate' ? 'ROT' : 'EXTRUDE'}][REF] aday yüz=`, chosen.shapeId,
       entry.shape.type === 'panel' ? '(panel)' : '(küp)', 'grup=', chosen.groupIndex,
       'derinlik#', idx, '/', r.length,
       'nokta=', `${chosen.point.x.toFixed(1)},${chosen.point.y.toFixed(1)},${chosen.point.z.toFixed(1)}`);
 
-    setFaceExtrudeRefCandidate({
+    setRefCandidate({
       shapeId: chosen.shapeId,
       groupIndex: chosen.groupIndex,
       point: [chosen.point.x, chosen.point.y, chosen.point.z],
       normal: [nW.x, nW.y, nW.z],
     });
-  }, [resolve, targets, onConfirm, setFaceExtrudeRefCandidate]);
+  }, [resolve, targets, onConfirm, setRefCandidate, mode]);
 
   if (!active) return null;
 
@@ -266,8 +317,8 @@ export const FaceReferenceOverlay: React.FC<OverlayProps> = ({ shapes }) => {
       {Array.from(targets.values()).map(entry => {
         const sid = entry.shape.id;
         const hoveredHere = hover && hover.shapeId === sid ? hover.groupIndex : null;
-        const candHere = faceExtrudeRefCandidate && faceExtrudeRefCandidate.shapeId === sid
-          ? faceExtrudeRefCandidate.groupIndex : null;
+        const candHere = refCandidate && refCandidate.shapeId === sid
+          ? refCandidate.groupIndex : null;
         return (
           <RefPickTarget
             key={sid}

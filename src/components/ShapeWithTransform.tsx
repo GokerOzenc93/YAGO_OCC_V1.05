@@ -56,7 +56,11 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     rebuildingShapeIds,
     faceExtrudeMode,
     faceExtrudeValueMode,
-    faceExtrudeSelectedFace
+    faceExtrudeSelectedFace,
+    panelRotateMode,
+    panelRotateValueMode,
+    panelRotatePivot,
+    panelRotateAxis
   } = useAppStore(useShallow(state => ({
     selectShape: state.selectShape,
     selectSecondaryShape: state.selectSecondaryShape,
@@ -88,7 +92,11 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     rebuildingShapeIds: state.rebuildingShapeIds,
     faceExtrudeMode: state.faceExtrudeMode,
     faceExtrudeValueMode: state.faceExtrudeValueMode,
-    faceExtrudeSelectedFace: state.faceExtrudeSelectedFace
+    faceExtrudeSelectedFace: state.faceExtrudeSelectedFace,
+    panelRotateMode: state.panelRotateMode,
+    panelRotateValueMode: state.panelRotateValueMode,
+    panelRotatePivot: state.panelRotatePivot,
+    panelRotateAxis: state.panelRotateAxis
   })));
 
   const { scene } = useThree();
@@ -460,7 +468,11 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
   // "referans yüz" adayıdır. Seçim FaceReferenceOverlay'in pick-mesh'i ile
   // yapılır; bu yüzden şeklin kendi tıklaması/raycast'i bastırılır (çakışma ve
   // yanlış seçim önlenir).
-  const refPickActive = faceExtrudeMode && faceExtrudeValueMode === 'ref' && faceExtrudeSelectedFace !== null;
+  const refPickActive = (faceExtrudeMode && faceExtrudeValueMode === 'ref' && faceExtrudeSelectedFace !== null)
+    // ROTATE-REF: pivot+eksen seçilip Ref moduna geçildiğinde de referans-yüz
+    // seçimi aktiftir; şeklin kendi tıklaması/raycast'i FaceReferenceOverlay
+    // lehine bastırılır (aynı extrude-ref davranışı).
+    || (panelRotateMode && panelRotateValueMode === 'ref' && panelRotatePivot !== null && panelRotateAxis !== null);
   const suppressRaycast = suppressPanelRaycast || refPickActive;
   const noopRaycast = useCallback(() => {}, []);
 

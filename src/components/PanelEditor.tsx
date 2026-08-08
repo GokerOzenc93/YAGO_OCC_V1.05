@@ -585,7 +585,8 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     panelMoveAxis, setPanelMoveAxis, panelMoveValue, setPanelMoveValue,
     panelRotateMode, setPanelRotateMode, panelRotateTargetPanelId, setPanelRotateTargetPanelId,
     panelRotatePivot, setPanelRotatePivot, setPanelRotatePivotType,
-    panelRotateAxis, setPanelRotateAxis, panelRotateValue, setPanelRotateValue } = useAppStore();
+    panelRotateAxis, setPanelRotateAxis, panelRotateValue, setPanelRotateValue,
+    panelRotateValueMode, setPanelRotateValueMode, panelRotateRefCandidate, setPanelRotateRefCandidate } = useAppStore();
 
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
@@ -1388,6 +1389,42 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       setRotateValueStr('0');
     };
 
+    // Referansla döndürme onayı: pivot/eksen çevresinde referans yüzeye
+    // değene kadar döndür (açı FaceReferenceOverlay adayından hesaplanır).
+    // Not: aynı onay sağ-tık ile de FaceReferenceOverlay'de tetiklenir.
+    const isRotRef = panelRotateValueMode === 'ref';
+    const onConfirmRef = async () => {
+      const cand = panelRotateRefCandidate;
+      if (!cand || !hasAxis || !hasPivot || !activePanelId) return;
+      const ps = shapes.find(s => s.id === activePanelId); if (!ps) return;
+      const { executeRotateToReference } = await import('./PanelRotateService');
+      await executeRotateToReference({
+        panelShape: ps, axis: panelRotateAxis!, pivot: panelRotatePivot!,
+        referencePointWorld: cand.point, referenceNormalWorld: cand.normal,
+        shapes, updateShape,
+      });
+      setPanelRotateRefCandidate(null);
+      setPanelRotateValueMode('fixed');
+      setPanelRotateAxis(null);
+      setPanelRotateValue(0);
+      setRotateValueStr('0');
+    };
+    const rotSeg = (m: 'fixed' | 'ref', first: boolean): React.CSSProperties => ({
+      flexShrink: 0, height: 28, padding: '0 8px', fontSize: 10, fontWeight: 800, cursor: 'pointer', outline: 'none',
+      fontFamily: "'Inter',system-ui,sans-serif",
+      border: '1px solid rgba(60,50,40,0.14)', borderLeft: first ? '1px solid rgba(60,50,40,0.14)' : 'none',
+      borderRadius: first ? '6px 0 0 6px' : '0 6px 6px 0',
+      background: panelRotateValueMode === m ? '#e8e1d5' : 'rgba(255,255,255,0.45)',
+      color: panelRotateValueMode === m ? '#44403c' : '#a8a29e',
+      boxShadow: panelRotateValueMode === m ? 'inset 0 1px 2px rgba(60,50,40,0.14)' : 'none',
+    });
+    const rotSegToggle = (
+      <div style={{ display: 'flex', flexShrink: 0 }}>
+        <button onClick={e => { stop(e); setPanelRotateValueMode('fixed'); }} style={rotSeg('fixed', true)}>Açı</button>
+        <button onClick={e => { stop(e); setPanelRotateValueMode('ref'); }} style={rotSeg('ref', false)}>Ref</button>
+      </div>
+    );
+
     return (
       <div style={{
         position: 'absolute', left: 8, right: 8, bottom: 8, zIndex: 5, borderRadius: 11,
@@ -1404,34 +1441,59 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
               <span style={{ fontSize: 10, fontWeight: 800, fontFamily: 'monospace', color: axisColors[panelRotateAxis!] || '#44403c', padding: '2px 8px', borderRadius: 5, background: 'rgba(120,113,108,0.10)', border: '1px solid rgba(60,50,40,0.12)' }}>
                 {panelRotateAxis!.toUpperCase()}
               </span>
-              <input
-                type="text" inputMode="numeric" autoFocus value={rotateValueStr}
-                onChange={e => {
-                  const v = e.target.value;
-                  setRotateValueStr(v);
-                  const p = parseFloat(v);
-                  if (!isNaN(p)) setPanelRotateValue(p);
-                }}
-                onBlur={() => {
-                  const p = parseFloat(rotateValueStr);
-                  if (isNaN(p)) { setRotateValueStr('0'); setPanelRotateValue(0); }
-                  else { setPanelRotateValue(p); setRotateValueStr(String(p)); }
-                }}
-                onKeyDown={e => { if (e.key === 'Enter') onApply(); if (e.key === 'Escape') { setPanelRotateAxis(null); setPanelRotateMode(false); } }}
-                style={{
-                  flex: 1, minWidth: 0, height: 28, textAlign: 'center', fontFamily: 'monospace', fontSize: 13, fontWeight: 600,
-                  color: '#1c1917', background: 'linear-gradient(180deg,#fff,#faf8f3)', border: '1px solid rgba(60,50,40,0.16)',
-                  borderRadius: 7, outline: 'none', boxShadow: 'inset 0 1px 2px rgba(40,30,20,0.06)',
-                }}
-              />
-              <span style={{ fontSize: 10, fontWeight: 600, color: '#78716c' }}>deg</span>
-              <button onClick={onApply} title="Uygula" style={{
-                flexShrink: 0, width: 32, height: 28, borderRadius: 7, border: 'none', cursor: 'pointer', outline: 'none',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                background: 'linear-gradient(180deg,#5b5346,#44403c)', color: '#fff',
-                boxShadow: '0 1px 2px rgba(40,30,20,0.25),inset 0 1px 0 rgba(255,255,255,0.18)',
-              }}><Check size={15} strokeWidth={2.5} /></button>
-              {exitBtn}
+              {rotSegToggle}
+              {isRotRef ? (
+                <>
+                  <div style={{
+                    flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 7, height: 28, padding: '0 10px', borderRadius: 7,
+                    background: 'rgba(120,113,108,0.08)', border: '1px solid rgba(60,50,40,0.10)',
+                  }}>
+                    <span style={{ width: 5, height: 5, borderRadius: '50%', background: panelRotateRefCandidate ? '#10b981' : '#ea580c', flexShrink: 0 }} />
+                    <span style={{ fontSize: 11, fontWeight: 500, color: '#78716c', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {panelRotateRefCandidate ? 'Referans seçildi • onayla' : 'Referans yüz sec • sag tik'}
+                    </span>
+                  </div>
+                  <button onClick={onConfirmRef} disabled={!panelRotateRefCandidate} title="Referansı onayla" style={{
+                    flexShrink: 0, width: 32, height: 28, borderRadius: 7, border: 'none', outline: 'none',
+                    cursor: panelRotateRefCandidate ? 'pointer' : 'not-allowed',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    background: panelRotateRefCandidate ? 'linear-gradient(180deg,#5b5346,#44403c)' : 'rgba(120,113,108,0.25)',
+                    color: '#fff', boxShadow: '0 1px 2px rgba(40,30,20,0.25),inset 0 1px 0 rgba(255,255,255,0.18)',
+                  }}><Check size={15} strokeWidth={2.5} /></button>
+                  {exitBtn}
+                </>
+              ) : (
+                <>
+                  <input
+                    type="text" inputMode="numeric" autoFocus value={rotateValueStr}
+                    onChange={e => {
+                      const v = e.target.value;
+                      setRotateValueStr(v);
+                      const p = parseFloat(v);
+                      if (!isNaN(p)) setPanelRotateValue(p);
+                    }}
+                    onBlur={() => {
+                      const p = parseFloat(rotateValueStr);
+                      if (isNaN(p)) { setRotateValueStr('0'); setPanelRotateValue(0); }
+                      else { setPanelRotateValue(p); setRotateValueStr(String(p)); }
+                    }}
+                    onKeyDown={e => { if (e.key === 'Enter') onApply(); if (e.key === 'Escape') { setPanelRotateAxis(null); setPanelRotateMode(false); } }}
+                    style={{
+                      flex: 1, minWidth: 0, height: 28, textAlign: 'center', fontFamily: 'monospace', fontSize: 13, fontWeight: 600,
+                      color: '#1c1917', background: 'linear-gradient(180deg,#fff,#faf8f3)', border: '1px solid rgba(60,50,40,0.16)',
+                      borderRadius: 7, outline: 'none', boxShadow: 'inset 0 1px 2px rgba(40,30,20,0.06)',
+                    }}
+                  />
+                  <span style={{ fontSize: 10, fontWeight: 600, color: '#78716c' }}>deg</span>
+                  <button onClick={onApply} title="Uygula" style={{
+                    flexShrink: 0, width: 32, height: 28, borderRadius: 7, border: 'none', cursor: 'pointer', outline: 'none',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    background: 'linear-gradient(180deg,#5b5346,#44403c)', color: '#fff',
+                    boxShadow: '0 1px 2px rgba(40,30,20,0.25),inset 0 1px 0 rgba(255,255,255,0.18)',
+                  }}><Check size={15} strokeWidth={2.5} /></button>
+                  {exitBtn}
+                </>
+              )}
             </>
           ) : hasPivot ? (
             <>

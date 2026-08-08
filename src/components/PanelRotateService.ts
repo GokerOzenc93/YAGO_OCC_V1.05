@@ -128,6 +128,118 @@ export async function executePanelRotate(params: PanelRotateParams): Promise<boo
   );
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// REFERANS İLE DÖNDÜRME (rotate-ref) — "face extrude gibi".
+// Kullanıcı: pivot + eksen seçer (mevcut gizmo), Ref moduna geçer, başka bir
+// şekilde referans yüzü tıklar. Onayda panel, seçtiği pivot/eksen çevresinde
+// referans DÜZLEME İLK DEĞENE kadar döner. Extrude-ref MESAFE hesaplar; burada
+// AÇI hesaplanır — eksen/pivot kullanıcıdan, değer (açı) referanstan.
+//
+// Matematik: dönüş dünya ekseni a (pivot P'den geçer), referans düzlem (nR·x=d).
+// Her köşe V için w=V−P; w_par=(w·a)a, w_perp=w−w_par. θ dönüşü sonrası
+//   nR·Rot(w) = nR·w_par + cosθ·(nR·w_perp) + sinθ·(nR·(a×w_perp))
+// Düzleme değme: nR·Rot(w)+nR·P = d  →  A cosθ + B sinθ = C
+//   A=nR·w_perp, B=nR·(a×w_perp), C=d−nR·P−nR·w_par.
+// Çözüm: R=hypot(A,B); |C|≤R ise θ=atan2(B,A)±acos(C/R). Tüm köşelerin tüm
+// çözümleri arasından EN KÜÇÜK |θ| = ilk temas (panel yüzeye ilk değdiği an).
+// ═══════════════════════════════════════════════════════════════════════════
+
+function uniqueWorldVertices(panelShape: Shape): THREE.Vector3[] {
+  if (!panelShape.geometry) return [];
+  const pos = panelShape.geometry.getAttribute('position') as THREE.BufferAttribute;
+  if (!pos) return [];
+  const seen = new Set<string>();
+  const out: THREE.Vector3[] = [];
+  const [ox, oy, oz] = panelShape.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    const k = `${Math.round(x * 100)},${Math.round(y * 100)},${Math.round(z * 100)}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    // Panel-yerel geometri + position (rotation=0, scale=1 baked) → dünya köşesi.
+    out.push(new THREE.Vector3(x + ox, y + oy, z + oz));
+  }
+  return out;
+}
+
+export interface RotateToReferenceParams {
+  panelShape: Shape;
+  axis: 'x' | 'y' | 'z';
+  pivot: [number, number, number];                 // dünya, kullanıcı seçimli
+  referencePointWorld: [number, number, number];    // dünya
+  referenceNormalWorld: [number, number, number];    // dünya
+  shapes: Shape[];
+  updateShape: (id: string, updates: Partial<Shape>) => void;
+}
+
+export async function executeRotateToReference(params: RotateToReferenceParams): Promise<boolean> {
+  const { panelShape, axis, pivot, referencePointWorld, referenceNormalWorld, shapes, updateShape } = params;
+
+  const { useAppStore } = await import('../store');
+  const state = useAppStore.getState();
+  const fresh = state.shapes.find(s => s.id === panelShape.id) || panelShape;
+
+  // 1) Dönüş DÜNYA ekseni — motorun (composeSteps) kullanacağıyla AYNI kural:
+  //    eksen harfi → VF tabanının (u/v/n) en yakınına eşlenir → birleşik
+  //    çerçeveyle (önceki adımların dönüşü) döndürülür.
+  const vf = state.virtualFaces?.find((f: any) => f.id === (fresh.parameters as any)?.virtualFaceId);
+  if (!vf?.normal) { console.warn('[YAGO][ROT-REF] VF bulunamadı, iptal.'); return false; }
+  const { n, u, v } = vfPlaneBasis(vf.normal as [number, number, number]);
+  const wa = new THREE.Vector3(axis === 'x' ? 1 : 0, axis === 'y' ? 1 : 0, axis === 'z' ? 1 : 0);
+  const du = Math.abs(wa.dot(u)), dv = Math.abs(wa.dot(v)), dn = Math.abs(wa.dot(n));
+  const axisLocal = dn >= du && dn >= dv ? n : du >= dv ? u : v;
+
+  const { getUnifiedSteps, composeSteps } = await import('./PanelEngine');
+  const steps = getUnifiedSteps(fresh);
+  const frame = composeSteps(steps, vf as any).quat;
+  const a = axisLocal.clone().applyQuaternion(frame).normalize();
+
+  // 2) Panelin GÜNCEL dünya köşeleri.
+  const verts = uniqueWorldVertices(fresh);
+  if (verts.length === 0) { console.warn('[YAGO][ROT-REF] köşe yok, iptal.'); return false; }
+
+  // 3) Her köşe için düzleme değme açısını çöz; en küçük |θ| = ilk temas.
+  const P = new THREE.Vector3(...pivot);
+  const nR = new THREE.Vector3(...referenceNormalWorld).normalize();
+  const d = nR.dot(new THREE.Vector3(...referencePointWorld));
+  const EPS = (0.02 * Math.PI) / 180; // ~0.02°: "zaten değiyor" durumunu atla
+
+  let best: number | null = null;
+  for (const V of verts) {
+    const w = V.clone().sub(P);
+    const wPar = a.clone().multiplyScalar(w.dot(a));
+    const wPerp = w.clone().sub(wPar);
+    const A = nR.dot(wPerp);
+    const B = nR.dot(new THREE.Vector3().crossVectors(a, wPerp));
+    const C = d - nR.dot(P) - nR.dot(wPar);
+    const R = Math.hypot(A, B);
+    if (R < 1e-9) continue;              // köşe eksene diküm; düzleme açıyla ulaşamaz
+    const c = C / R;
+    if (c < -1 || c > 1) continue;       // bu köşe düzleme hiç ulaşamıyor
+    const phi = Math.atan2(B, A);
+    const ac = Math.acos(Math.max(-1, Math.min(1, c)));
+    for (let th of [phi + ac, phi - ac]) {
+      while (th > Math.PI) th -= 2 * Math.PI;
+      while (th < -Math.PI) th += 2 * Math.PI;
+      if (Math.abs(th) < EPS) continue;  // zaten temas → atla
+      if (best === null || Math.abs(th) < Math.abs(best)) best = th;
+    }
+  }
+
+  if (best === null) {
+    console.warn('[YAGO][ROT-REF] referans yüzeye bu eksen/pivotla ulaşılamıyor.');
+    return false;
+  }
+
+  const deg = (best * 180) / Math.PI;
+  console.log('[YAGO][ROT-REF] hesaplanan açı=', deg.toFixed(2), '° eksen=', axis,
+    'pivot=', pivot.map(x => x.toFixed(1)).join(','),
+    'refN=', referenceNormalWorld.map(x => x.toFixed(2)).join(','));
+
+  // 4) Mevcut döndürme boru hattını kullan (pivot çıpaları + adım yazımı orada).
+  return executePanelRotate({ panelShape: fresh, axis, value: deg, pivot, shapes, updateShape });
+}
+
 export async function updateRotateStep(
   panelShape: Shape,
   stepId: string,

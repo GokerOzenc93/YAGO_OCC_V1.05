@@ -139,7 +139,11 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     faceExtrudeSelectedFace,
     setFaceExtrudeSelectedFace,
     setFaceExtrudeClickPoint,
-    raycastMode
+    raycastMode,
+    panelRotateMode,
+    panelRotateValueMode,
+    panelRotatePivot,
+    panelRotateAxis
   } = useAppStore(useShallow(state => ({
     selectShape: state.selectShape,
     selectSecondaryShape: state.selectSecondaryShape,
@@ -158,7 +162,11 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     faceExtrudeSelectedFace: state.faceExtrudeSelectedFace,
     setFaceExtrudeSelectedFace: state.setFaceExtrudeSelectedFace,
     setFaceExtrudeClickPoint: state.setFaceExtrudeClickPoint,
-    raycastMode: state.raycastMode
+    raycastMode: state.raycastMode,
+    panelRotateMode: state.panelRotateMode,
+    panelRotateValueMode: state.panelRotateValueMode,
+    panelRotatePivot: state.panelRotatePivot,
+    panelRotateAxis: state.panelRotateAxis
   })));
 
   const [faceGroups, setFaceGroups] = useState<any[]>([]);
@@ -246,7 +254,11 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   const isFaceExtrudeTarget = faceExtrudeMode && shape.id === faceExtrudeTargetPanelId;
   const isFaceExtrudeXray = faceExtrudeMode && shape.id !== faceExtrudeTargetPanelId;
   const isRaycastOnParent = raycastMode && parentShapeId && parentShapeId === selectedShapeId;
-  const disableRaycast = isFaceExtrudeTarget || isFaceExtrudeXray || isRaycastOnParent;
+  // ROTATE-REF: referans-yüz seçimi aktifken TÜM panellerin kendi raycast'i
+  // bastırılır; seçim yalnız FaceReferenceOverlay pick-mesh'i ile yapılır.
+  const isRotateRefActive = panelRotateMode && panelRotateValueMode === 'ref'
+    && panelRotatePivot !== null && panelRotateAxis !== null;
+  const disableRaycast = isFaceExtrudeTarget || isFaceExtrudeXray || isRaycastOnParent || isRotateRefActive;
 
   useEffect(() => {
     const mesh = meshRef.current;
