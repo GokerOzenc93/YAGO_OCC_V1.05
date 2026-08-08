@@ -55,6 +55,19 @@ export interface VirtualFace {
   touchingSiblingIds?:string[];
 }
 
+/** REFERANS EXTRUDE ADAYI: kullanıcı, kesici panelin yüzünü seçtikten sonra
+ *  BAŞKA bir panel/küpün bir yüzüne sol tıklayınca burası dolar (aday). Sağ
+ *  tık ile onaylanınca bu düzlem, extrude'un ulaşacağı hedef ölçü olur.
+ *  point/normal DÜNYA uzayındadır; onay anında hedef panelin yerel çerçevesine
+ *  taşınıp Fixed (net ölçü) değerine çevrilir. */
+export interface FaceExtrudeRefCandidate {
+  shapeId:string;
+  /** Referans şeklin yüz grubu indeksi (yalnız yeşil vurgu için). */
+  groupIndex:number;
+  point:[number,number,number];
+  normal:[number,number,number];
+}
+
 export interface Shape {
   id:string;type:string;
   position:[number,number,number];
@@ -166,7 +179,10 @@ interface AppState{
   /** Local-space click point from the pointer-down event that selected the face. */
   faceExtrudeClickPoint:[number,number,number]|null;setFaceExtrudeClickPoint:(p:[number,number,number]|null)=>void;
   faceExtrudeThickness:number;setFaceExtrudeThickness:(v:number)=>void;
-  faceExtrudeFixedMode:boolean;setFaceExtrudeFixedMode:(b:boolean)=>void;
+  /** Değer modu: 'fixed'=seçilen yüzden net ölçü, 'dyn'=mevcut ölçüye +/- delta,
+   *  'ref'=başka panel/küpün bir yüzünü referans alıp o düzleme kadar uzat/kes. */
+  faceExtrudeValueMode:'fixed'|'dyn'|'ref';setFaceExtrudeValueMode:(m:'fixed'|'dyn'|'ref')=>void;
+  faceExtrudeRefCandidate:FaceExtrudeRefCandidate|null;setFaceExtrudeRefCandidate:(c:FaceExtrudeRefCandidate|null)=>void;
 
   panelMoveMode:boolean;setPanelMoveMode:(b:boolean)=>void;
   panelMoveTargetPanelId:string|null;setPanelMoveTargetPanelId:(id:string|null)=>void;
@@ -179,6 +195,8 @@ interface AppState{
   panelRotatePivotType:'center'|'vertex'|null;setPanelRotatePivotType:(t:'center'|'vertex'|null)=>void;
   panelRotateAxis:'x'|'y'|'z'|null;setPanelRotateAxis:(a:'x'|'y'|'z'|null)=>void;
   panelRotateValue:number;setPanelRotateValue:(v:number)=>void;
+  panelRotateValueMode:'fixed'|'ref';setPanelRotateValueMode:(m:'fixed'|'ref')=>void;
+  panelRotateRefCandidate:FaceExtrudeRefCandidate|null;setPanelRotateRefCandidate:(c:FaceExtrudeRefCandidate|null)=>void;
 
   showVirtualFaces:boolean;setShowVirtualFaces:(b:boolean)=>void;
   virtualFaces:VirtualFace[];
@@ -224,20 +242,23 @@ export const useAppStore=create<AppState>((set,get)=>({
   raycastMode:false,setRaycastMode:(e)=>set({raycastMode:e,raycastResults:e?get().raycastResults:[]}),
   raycastResults:[],setRaycastResults:(r)=>set({raycastResults:r}),
 
-  faceExtrudeMode:false,setFaceExtrudeMode:(b)=>set({faceExtrudeMode:b,faceExtrudeHoveredFace:null,faceExtrudeSelectedFace:null,faceExtrudeClickPoint:null,...(!b?{faceExtrudeTargetPanelId:null}:{})}),
+  faceExtrudeMode:false,setFaceExtrudeMode:(b)=>set({faceExtrudeMode:b,faceExtrudeHoveredFace:null,faceExtrudeSelectedFace:null,faceExtrudeClickPoint:null,faceExtrudeRefCandidate:null,...(!b?{faceExtrudeTargetPanelId:null}:{})}),
   faceExtrudeTargetPanelId:null,setFaceExtrudeTargetPanelId:(id)=>set({faceExtrudeTargetPanelId:id}),
   faceExtrudeHoveredFace:null,setFaceExtrudeHoveredFace:(i)=>set({faceExtrudeHoveredFace:i}),
   faceExtrudeSelectedFace:null,setFaceExtrudeSelectedFace:(i)=>set({faceExtrudeSelectedFace:i}),
   faceExtrudeClickPoint:null,setFaceExtrudeClickPoint:(p)=>set({faceExtrudeClickPoint:p}),
   faceExtrudeThickness:18,setFaceExtrudeThickness:(v)=>set({faceExtrudeThickness:v}),
-  faceExtrudeFixedMode:true,setFaceExtrudeFixedMode:(b)=>set({faceExtrudeFixedMode:b}),
+  faceExtrudeValueMode:'fixed',setFaceExtrudeValueMode:(m)=>set({faceExtrudeValueMode:m,...(m!=='ref'?{faceExtrudeRefCandidate:null}:{})}),
+  faceExtrudeRefCandidate:null,setFaceExtrudeRefCandidate:(c)=>set({faceExtrudeRefCandidate:c}),
 
   panelMoveMode:false,setPanelMoveMode:(b)=>set({panelMoveMode:b,...(!b?{panelMoveTargetPanelId:null,panelMoveAxis:null,panelMoveValue:0}:{})}),
   panelMoveTargetPanelId:null,setPanelMoveTargetPanelId:(id)=>set({panelMoveTargetPanelId:id}),
   panelMoveAxis:null,setPanelMoveAxis:(a)=>set({panelMoveAxis:a}),
   panelMoveValue:0,setPanelMoveValue:(v)=>set({panelMoveValue:v}),
 
-  panelRotateMode:false,setPanelRotateMode:(b)=>set({panelRotateMode:b,...(!b?{panelRotateTargetPanelId:null,panelRotatePivot:null,panelRotatePivotType:null,panelRotateAxis:null,panelRotateValue:0}:{})}),
+  panelRotateMode:false,setPanelRotateMode:(b)=>set({panelRotateMode:b,...(!b?{panelRotateTargetPanelId:null,panelRotatePivot:null,panelRotatePivotType:null,panelRotateAxis:null,panelRotateValue:0,panelRotateValueMode:'fixed',panelRotateRefCandidate:null}:{})}),
+  panelRotateValueMode:'fixed',setPanelRotateValueMode:(m)=>set({panelRotateValueMode:m,...(m!=='ref'?{panelRotateRefCandidate:null}:{})}),
+  panelRotateRefCandidate:null,setPanelRotateRefCandidate:(c)=>set({panelRotateRefCandidate:c}),
   panelRotateTargetPanelId:null,setPanelRotateTargetPanelId:(id)=>set({panelRotateTargetPanelId:id}),
   panelRotatePivot:null,setPanelRotatePivot:(p)=>set({panelRotatePivot:p}),
   panelRotatePivotType:null,setPanelRotatePivotType:(t)=>set({panelRotatePivotType:t}),
