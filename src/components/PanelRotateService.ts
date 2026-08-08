@@ -144,43 +144,6 @@ export async function executePanelRotate(params: PanelRotateParams): Promise<boo
 // çözümleri arasından EN KÜÇÜK |θ| = ilk temas (panel yüzeye ilk değdiği an).
 // ═══════════════════════════════════════════════════════════════════════════
 
-/**
- * Panelin TAM BOYUTLU dünya köşeleri — mevcut (kısa) geometri yerine VF çokgeni
- * + kalınlıktan üretilir. Dönüş açısı referans yüzeye değme hesabında bu köşeler
- * kullanılır ki panel sonradan uzadığında/yeniden üretildiğinde dönüş açısı hâlâ
- * doğru olsun (kısa geometriye göre hesaplanan açı çok küçük çıkar, uzamış panel
- * referansı aşar).
- */
-function fullSizeWorldVertices(
-  vf: { vertices: [number, number, number][]; normal: [number, number, number] },
-  thickness: number,
-  ops: Array<{ kind: 'translate'; d: THREE.Vector3 } | { kind: 'rotate'; deg: number; pivot: THREE.Vector3; axis: THREE.Vector3 }>,
-  parentPos: [number, number, number]
-): THREE.Vector3[] {
-  const n = new THREE.Vector3(vf.normal[0], vf.normal[1], vf.normal[2]).normalize();
-  const corners: THREE.Vector3[] = [];
-  for (const v of vf.vertices) {
-    const base = new THREE.Vector3(v[0], v[1], v[2]);
-    corners.push(base.clone().addScaledVector(n, thickness / 2));
-    corners.push(base.clone().addScaledVector(n, -thickness / 2));
-  }
-  for (const op of ops) {
-    if (op.kind === 'translate') {
-      for (const c of corners) c.add(op.d);
-    } else {
-      const angleRad = (op.deg * Math.PI) / 180;
-      const q = new THREE.Quaternion().setFromAxisAngle(op.axis, angleRad);
-      for (const c of corners) c.sub(op.pivot).applyQuaternion(q).add(op.pivot);
-    }
-  }
-  for (const c of corners) {
-    c.x += parentPos[0];
-    c.y += parentPos[1];
-    c.z += parentPos[2];
-  }
-  return corners;
-}
-
 export interface RotateToReferenceParams {
   panelShape: Shape;
   axis: 'x' | 'y' | 'z';
@@ -210,57 +173,42 @@ export async function executeRotateToReference(params: RotateToReferenceParams):
 
   const { getUnifiedSteps, composeSteps } = await import('./PanelEngine');
   const steps = getUnifiedSteps(fresh);
-  const { ops } = composeSteps(steps, vf as any);
-  const frame = composeSteps(steps, vf as any).quat;
+  const { quat: frame } = composeSteps(steps, vf as any);
   const a = axisLocal.clone().applyQuaternion(frame).normalize();
 
-  // 2) Panelin TAM BOYUTLU dünya köşeleri — mevcut (kısa) geometri yerine
-  //    VF çokgeni + kalınlıktan üretilir. Dönüş açısı bu köşelere göre
-  //    hesaplanır ki panel uzadığında/yeniden üretildiğinde açı hâlâ doğru olsun.
-  const thickness = parseFloat((fresh.parameters as any)?.panelThickness) || 18;
-  const parentId = (fresh.parameters as any)?.parentShapeId;
-  const parentShape = parentId ? state.shapes.find(s => s.id === parentId) : undefined;
-  const parentPos: [number, number, number] = parentShape
-    ? [...(parentShape.position as any)] as any
-    : [0, 0, 0];
-  const verts = fullSizeWorldVertices(
-    { vertices: vf.vertices as [number, number, number][], normal: vf.normal as [number, number, number] },
-    thickness, ops, parentPos
-  );
-  if (verts.length === 0) { console.warn('[YAGO][ROT-REF] köşe yok, iptal.'); return false; }
-
-  // 3) Her köşe için düzleme değme açısını çöz; en küçük |θ| = ilk temas.
-  //    Panel REFERANSA DOĞRU UZAYACAKMIŞ gibi hesaplanır: her köşenin pivotdan
-  //    olan yönü (wPerp) normalize edilir → panel o yönde sonsuz uzunlukta bir
-  //    ışın gibi davranır. Böylece açı, panelin mevcut kısa boyutuna değil,
-  //    uzayacağı konuma göre hesaplanır.
-  const P = new THREE.Vector3(...pivot);
+  // 2) Panelin mevcut yüzey normali (dünya) — VF normali + birleşik çerçeve.
+  const panelNormalWorld = n.clone().applyQuaternion(frame).normalize();
   const nR = new THREE.Vector3(...referenceNormalWorld).normalize();
-  const d = nR.dot(new THREE.Vector3(...referencePointWorld));
-  const EPS = (0.02 * Math.PI) / 180; // ~0.02°: "zaten değiyor" durumunu atla
+  const EPS = (0.02 * Math.PI) / 180;
+
+  // 3) Dönüş açısı: panelin yüzey normali, referans yüzey normaline paralel
+  //    veya anti-paralel olana kadar döndür. Panel referansa UZAYACAKMIŞ gibi
+  //    — yani açı, panelin yüzeyi referans yüzeyine yatay (flush) gelecek şekilde
+  //    hesaplanır; panelin mevcut kısa boyutu açıyı etkilemez. İki çözüt vardır
+  //    (±nR); en küçük |θ| olanı seçilir.
+  const pPerp = panelNormalWorld.clone().sub(
+    a.clone().multiplyScalar(panelNormalWorld.dot(a))
+  );
+  if (pPerp.length() < 1e-9) {
+    console.warn('[YAGO][ROT-REF] panel normali dönüş eksenine paralel, döndürülemez.');
+    return false;
+  }
 
   let best: number | null = null;
-  for (const V of verts) {
-    const w = V.clone().sub(P);
-    const wPar = a.clone().multiplyScalar(w.dot(a));
-    let wPerp = w.clone().sub(wPar);
-    if (wPerp.length() < 1e-9) continue;  // köşe pivot üzerinde
-    wPerp = wPerp.normalize();           // panel sonsuza uzıyor → yön yeterli
-    const A = nR.dot(wPerp);
-    const B = nR.dot(new THREE.Vector3().crossVectors(a, wPerp));
-    const C = d - nR.dot(P) - nR.dot(wPar);
-    const R = Math.hypot(A, B);
-    if (R < 1e-9) continue;              // köşe eksene diküm; düzleme açıyla ulaşamaz
-    const c = C / R;
-    if (c < -1 || c > 1) continue;       // bu köşe düzleme hiç ulaşamıyor
-    const phi = Math.atan2(B, A);
-    const ac = Math.acos(Math.max(-1, Math.min(1, c)));
-    for (let th of [phi + ac, phi - ac]) {
-      while (th > Math.PI) th -= 2 * Math.PI;
-      while (th < -Math.PI) th += 2 * Math.PI;
-      if (Math.abs(th) < EPS) continue;  // zaten temas → atla
-      if (best === null || Math.abs(th) < Math.abs(best)) best = th;
-    }
+  for (const sign of [1, -1]) {
+    const target = nR.clone().multiplyScalar(sign);
+    const tPerp = target.clone().sub(
+      a.clone().multiplyScalar(target.dot(a))
+    );
+    if (tPerp.length() < 1e-9) continue;
+    const cosθ = pPerp.dot(tPerp) / (pPerp.length() * tPerp.length());
+    const sinθ = new THREE.Vector3().crossVectors(a, pPerp).dot(tPerp)
+      / (pPerp.length() * tPerp.length());
+    let θ = Math.atan2(sinθ, cosθ);
+    while (θ > Math.PI) θ -= 2 * Math.PI;
+    while (θ < -Math.PI) θ += 2 * Math.PI;
+    if (Math.abs(θ) < EPS) continue;
+    if (best === null || Math.abs(θ) < Math.abs(best)) best = θ;
   }
 
   if (best === null) {
