@@ -144,22 +144,41 @@ export async function executePanelRotate(params: PanelRotateParams): Promise<boo
 // çözümleri arasından EN KÜÇÜK |θ| = ilk temas (panel yüzeye ilk değdiği an).
 // ═══════════════════════════════════════════════════════════════════════════
 
-function uniqueWorldVertices(panelShape: Shape): THREE.Vector3[] {
-  if (!panelShape.geometry) return [];
-  const pos = panelShape.geometry.getAttribute('position') as THREE.BufferAttribute;
-  if (!pos) return [];
-  const seen = new Set<string>();
-  const out: THREE.Vector3[] = [];
-  const [ox, oy, oz] = panelShape.position;
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
-    const k = `${Math.round(x * 100)},${Math.round(y * 100)},${Math.round(z * 100)}`;
-    if (seen.has(k)) continue;
-    seen.add(k);
-    // Panel-yerel geometri + position (rotation=0, scale=1 baked) → dünya köşesi.
-    out.push(new THREE.Vector3(x + ox, y + oy, z + oz));
+/**
+ * Panelin TAM BOYUTLU dünya köşeleri — mevcut (kısa) geometri yerine VF çokgeni
+ * + kalınlıktan üretilir. Dönüş açısı referans yüzeye değme hesabında bu köşeler
+ * kullanılır ki panel sonradan uzadığında/yeniden üretildiğinde dönüş açısı hâlâ
+ * doğru olsun (kısa geometriye göre hesaplanan açı çok küçük çıkar, uzamış panel
+ * referansı aşar).
+ */
+function fullSizeWorldVertices(
+  vf: { vertices: [number, number, number][]; normal: [number, number, number] },
+  thickness: number,
+  ops: Array<{ kind: 'translate'; d: THREE.Vector3 } | { kind: 'rotate'; deg: number; pivot: THREE.Vector3; axis: THREE.Vector3 }>,
+  parentPos: [number, number, number]
+): THREE.Vector3[] {
+  const n = new THREE.Vector3(vf.normal[0], vf.normal[1], vf.normal[2]).normalize();
+  const corners: THREE.Vector3[] = [];
+  for (const v of vf.vertices) {
+    const base = new THREE.Vector3(v[0], v[1], v[2]);
+    corners.push(base.clone().addScaledVector(n, thickness / 2));
+    corners.push(base.clone().addScaledVector(n, -thickness / 2));
   }
-  return out;
+  for (const op of ops) {
+    if (op.kind === 'translate') {
+      for (const c of corners) c.add(op.d);
+    } else {
+      const angleRad = (op.deg * Math.PI) / 180;
+      const q = new THREE.Quaternion().setFromAxisAngle(op.axis, angleRad);
+      for (const c of corners) c.sub(op.pivot).applyQuaternion(q).add(op.pivot);
+    }
+  }
+  for (const c of corners) {
+    c.x += parentPos[0];
+    c.y += parentPos[1];
+    c.z += parentPos[2];
+  }
+  return corners;
 }
 
 export interface RotateToReferenceParams {
@@ -191,11 +210,23 @@ export async function executeRotateToReference(params: RotateToReferenceParams):
 
   const { getUnifiedSteps, composeSteps } = await import('./PanelEngine');
   const steps = getUnifiedSteps(fresh);
+  const { ops } = composeSteps(steps, vf as any);
   const frame = composeSteps(steps, vf as any).quat;
   const a = axisLocal.clone().applyQuaternion(frame).normalize();
 
-  // 2) Panelin GÜNCEL dünya köşeleri.
-  const verts = uniqueWorldVertices(fresh);
+  // 2) Panelin TAM BOYUTLU dünya köşeleri — mevcut (kısa) geometri yerine
+  //    VF çokgeni + kalınlıktan üretilir. Dönüş açısı bu köşelere göre
+  //    hesaplanır ki panel uzadığında/yeniden üretildiğinde açı hâlâ doğru olsun.
+  const thickness = parseFloat((fresh.parameters as any)?.panelThickness) || 18;
+  const parentId = (fresh.parameters as any)?.parentShapeId;
+  const parentShape = parentId ? state.shapes.find(s => s.id === parentId) : undefined;
+  const parentPos: [number, number, number] = parentShape
+    ? [...(parentShape.position as any)] as any
+    : [0, 0, 0];
+  const verts = fullSizeWorldVertices(
+    { vertices: vf.vertices as [number, number, number][], normal: vf.normal as [number, number, number] },
+    thickness, ops, parentPos
+  );
   if (verts.length === 0) { console.warn('[YAGO][ROT-REF] köşe yok, iptal.'); return false; }
 
   // 3) Her köşe için düzleme değme açısını çöz; en küçük |θ| = ilk temas.
