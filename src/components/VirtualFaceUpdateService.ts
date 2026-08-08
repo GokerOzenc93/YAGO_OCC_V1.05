@@ -22,6 +22,7 @@ import {
   type FaceData,
   type CoplanarFaceGroup,
 } from './FaceEditor';
+import { composeSteps, getUnifiedSteps } from './PanelEngine';
 
 // ── YEREL YARDIMCILAR (kendi kendine yeterlilik) ────────────────────────────
 // Bu iki fonksiyon eskiden './FaceEditor'den import ediliyordu; ancak
@@ -435,16 +436,30 @@ export function recalculateVirtualFacesForShape(
   };
   const stampingPanelsFor = (vfId: string): any[] => {
     const myIdx = vfIndexOf.get(vfId);
-    // DÖNDÜRÜLMÜŞ PANELLER KARDEŞLERİ ETKİLEMEZ (kullanıcı isteği: bir panel
-    // döndükten sonra diğer paneller kısalmamalı, hiç etkilenmemeli). Bu yüzden
-    // döndürülmüş paneller ayak-izi basımından TAMAMEN çıkarılır; yalnız
-    // döndürülmemiş, daha yüksek öncelikli (erken indeksli) kardeşler basar.
-    // (Eski davranış: dönmüş panelin DÖNMÜŞ ayak izi kardeş VF'yi kısaltıyordu.)
-    return childPanels.filter(p =>
-      p.parameters?.virtualFaceId !== vfId &&
-      (myIdx != null && panelPriority(p) < myIdx) &&
-      !isRotatedPanel(p)
-    );
+    return childPanels
+      .filter(p =>
+        p.parameters?.virtualFaceId !== vfId &&
+        (myIdx != null && panelPriority(p) < myIdx)
+      )
+      .map(p => {
+        if (!isRotatedPanel(p)) return p;
+        // Ayak izi dönüşümü, GERÇEK panel dönüşüyle bire bir aynı olmalı:
+        // aynı composeSteps + panelin KENDİ VF'sinden çözülen pivot (pivotVfFrac).
+        // Aksi halde ham s.pivot bayat kalıp izi kaydırıyor ve fazla kısaltıyordu.
+        const ownVf = virtualFaces.find(f => f.id === (p.parameters as any)?.virtualFaceId);
+        let composedOps: RotOp[] | undefined;
+        if (ownVf) {
+          try {
+            const { ops } = composeSteps(getUnifiedSteps(p), ownVf);
+            composedOps = ops.map((o: any) =>
+              o.kind === 'rotate'
+                ? { kind: 'rotate', pivot: o.pivot, axis: o.axis, angleRad: (o.deg * Math.PI) / 180 }
+                : { kind: 'translate', d: o.d }
+            );
+          } catch { composedOps = undefined; }
+        }
+        return { ...p, __isRotatedPanel: true, __composedOps: composedOps };
+      });
   };
 
   const updatedMap = new Map<string, VirtualFace>();
@@ -551,21 +566,16 @@ function regenerateParentFaceShapeVF(
   // mi girdiğini gösterir. planeN = yüz düzleminin normal-ofseti.
   try {
     for (const sp of siblingPanels) {
-      const fps = panelFootprintInParentLocal(sp, worldToLocal, localNormal, planeN, u, v);
-      if (!fps) { continue; }
+      const fp = panelFootprintInParentLocal(sp, worldToLocal, localNormal, planeN, u, v);
+      if (!fp) { continue; }
+      let fuMin = Infinity, fuMax = -Infinity, fvMin = Infinity, fvMax = -Infinity;
+      for (const q of fp) { fuMin = Math.min(fuMin, q.x); fuMax = Math.max(fuMax, q.x); fvMin = Math.min(fvMin, q.y); fvMax = Math.max(fvMax, q.y); }
       const rot = (sp.parameters?.rotateSteps?.length ?? 0) > 0;
-      // ÇOK-BİLEŞEN: U gibi çok-kollu slab bir yüze birden çok ayrık kolla
-      // değer; her kol ayrı satırda loglanır (kolN = kaçıncı kol).
-      fps.forEach((fp, kolN) => {
-        let fuMin = Infinity, fuMax = -Infinity, fvMin = Infinity, fvMax = -Infinity;
-        for (const q of fp) { fuMin = Math.min(fuMin, q.x); fuMax = Math.max(fuMax, q.x); fvMin = Math.min(fvMin, q.y); fvMax = Math.max(fvMax, q.y); }
-        console.log('[YAGO][AYAKİZİ]', vf.id, '<-', sp.id,
-          fps.length > 1 ? `kol${kolN + 1}/${fps.length}` : '',
-          'boyut=', `${(fuMax - fuMin).toFixed(0)}x${(fvMax - fvMin).toFixed(0)}`,
-          'u=', `${fuMin.toFixed(0)}..${fuMax.toFixed(0)}`,
-          'v=', `${fvMin.toFixed(0)}..${fvMax.toFixed(0)}`,
-          'köşeN=', fp.length, rot ? 'DÖNMÜŞ' : 'düz');
-      });
+      console.log('[YAGO][AYAKİZİ]', vf.id, '<-', sp.id,
+        'boyut=', `${(fuMax - fuMin).toFixed(0)}x${(fvMax - fvMin).toFixed(0)}`,
+        'u=', `${fuMin.toFixed(0)}..${fuMax.toFixed(0)}`,
+        'v=', `${fvMin.toFixed(0)}..${fvMax.toFixed(0)}`,
+        'köşeN=', fp.length, rot ? 'DÖNMÜŞ' : 'düz');
     }
   } catch { /* teşhis opsiyonel */ }
 
