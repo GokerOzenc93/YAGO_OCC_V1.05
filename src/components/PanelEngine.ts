@@ -228,45 +228,66 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
         const att = getPanelAttachment(panel, vfsIn);
         if (!att) continue;
         const thickness = parseFloat((panel.parameters as any)?.panelThickness) || 18;
-        const steps = getUnifiedSteps(panel);
-        // Panel VF'sinden gerçek boyutta üretilir (expand=0, doğru 18mm kalınlık).
+        const transformSteps = getUnifiedSteps(panel);
+        const extrudeSteps: any[] = Array.isArray((panel.parameters as any)?.extrudeSteps)
+          ? (panel.parameters as any).extrudeSteps : [];
+
         let rp = await createPanelFromVirtualFace(att.vf.vertices, att.vf.normal, thickness, 0);
         if (!rp) continue;
-        // Adımlar (move/rotate) sırayla uygulanır — çember döndürünce panel döner.
-        const { ops } = composeSteps(steps, att.vf);
-        for (const op of ops) {
-          if (op.kind === 'translate') rp = rp.translate(op.d.x, op.d.y, op.d.z);
-          else rp = rp.rotate(op.deg, [op.pivot.x, op.pivot.y, op.pivot.z], [op.axis.x, op.axis.y, op.axis.z]);
-        }
 
-        // YÜZ EXTRUDE: panel artık DOĞRU ÇERÇEVEDE (VF'den üretildi + transform
-        // işlendi). Saklı extrudeSteps varsa aynı çerçevede uygulanır — panel
-        // tıklanan yüzden büyür/küçülür ve her rebuild'de KORUNUR. Adımın yüz
-        // verisi (normal/merkez/samplePoint) tıklama anında bu çerçevede
-        // yakalandığı için eşleşme birebir tutar; taban ARTIK origin kutusu
-        // DEĞİL → panel "alakasız yere" ışınlanmaz.
+        // ADIM SERPİŞTİRME: transform (move/rotate) ve extrude adımları
+        // TIMESTAMP sırasına göre birleştirilip uygulanır. Böylece kullanıcı
+        // önce extrude yapıp sonra döndürdüğünde, dönüş UZATILMİŞ panelin
+        // geometrisine göre hesaplanır — kısa haline göre değil.
+        type Unified =
+          | { kind: 'transform'; step: TransformStep; ts: number }
+          | { kind: 'extrude'; step: any; ts: number };
+        const unified: Unified[] = [];
+        for (const s of transformSteps) unified.push({ kind: 'transform', step: s, ts: s.timestamp || 0 });
+        for (const s of extrudeSteps) unified.push({ kind: 'extrude', step: s, ts: s.timestamp || 0 });
+        unified.sort((a, b) => a.ts - b.ts);
+
+        const frame = new THREE.Quaternion();
         let dimsUpdate: { width: number; height: number; depth: number } | null = null;
-        const extrudeSteps = (panel.parameters as any)?.extrudeSteps;
-        if (Array.isArray(extrudeSteps) && extrudeSteps.length > 0) {
-          try {
-            const { applyExtrudeSteps } = await import('./FaceExtrudeService');
-            const ext = await applyExtrudeSteps(rp, extrudeSteps);
-            if (ext) {
-              rp = ext.shape;
-              const eb = new THREE.Box3().setFromBufferAttribute(
-                ext.geometry.getAttribute('position') as THREE.BufferAttribute
-              );
-              const es = new THREE.Vector3(); eb.getSize(es);
-              const dsz = [es.x, es.y, es.z].sort((a, b) => b - a);
-              dimsUpdate = {
-                width: Math.round(dsz[0] * 10) / 10,
-                height: Math.round(dsz[1] * 10) / 10,
-                depth: Math.round(dsz[2] * 10) / 10,
-              };
+
+        for (const item of unified) {
+          if (item.kind === 'transform') {
+            const s = item.step;
+            if (s.type === 'move') {
+              const base = axisLetterToVec((s as any).axis);
+              const d = base.clone().applyQuaternion(frame).multiplyScalar((s as any).value);
+              rp = rp.translate(d.x, d.y, d.z);
+            } else {
+              const st: any = s;
+              const axis = st.axisVec
+                ? new THREE.Vector3(...st.axisVec).normalize()
+                : axisLetterToVec(st.axis + '+');
+              const worldAxis = axis.clone().applyQuaternion(frame).normalize();
+              const pivot = resolvePivot(st, att.vf);
+              rp = rp.rotate(st.value, [pivot.x, pivot.y, pivot.z], [worldAxis.x, worldAxis.y, worldAxis.z]);
+              frame.premultiply(new THREE.Quaternion().setFromAxisAngle(worldAxis, (st.value * Math.PI) / 180));
             }
-          } catch (err) {
-            console.error('[YAGO][MOTOR] extrude adımı hatası:', panel.id,
-              (err as any)?.message || String(err));
+          } else {
+            try {
+              const { applyExtrudeSteps } = await import('./FaceExtrudeService');
+              const ext = await applyExtrudeSteps(rp, [item.step]);
+              if (ext) {
+                rp = ext.shape;
+                const eb = new THREE.Box3().setFromBufferAttribute(
+                  ext.geometry.getAttribute('position') as THREE.BufferAttribute
+                );
+                const es = new THREE.Vector3(); eb.getSize(es);
+                const dsz = [es.x, es.y, es.z].sort((a, b) => b - a);
+                dimsUpdate = {
+                  width: Math.round(dsz[0] * 10) / 10,
+                  height: Math.round(dsz[1] * 10) / 10,
+                  depth: Math.round(dsz[2] * 10) / 10,
+                };
+              }
+            } catch (err) {
+              console.error('[YAGO][MOTOR] extrude adımı hatası:', panel.id,
+                (err as any)?.message || String(err));
+            }
           }
         }
 
@@ -276,8 +297,6 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
           position: parentPos,
           rotation: [0, 0, 0],
           replicadShape: rp,
-          // Boyutlar yalnız extrude uygulandıysa güncellenir (editör W/H/T doğru
-          // göstersin); aksi halde parameters'a dokunulmaz.
           ...(dimsUpdate ? { parameters: { ...panel.parameters, ...dimsUpdate } } : {}),
         } as any);
       } catch (err) {
