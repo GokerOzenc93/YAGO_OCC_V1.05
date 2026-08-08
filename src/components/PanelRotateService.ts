@@ -230,6 +230,10 @@ export async function executeRotateToReference(params: RotateToReferenceParams):
   if (verts.length === 0) { console.warn('[YAGO][ROT-REF] köşe yok, iptal.'); return false; }
 
   // 3) Her köşe için düzleme değme açısını çöz; en küçük |θ| = ilk temas.
+  //    Panel REFERANSA DOĞRU UZAYACAKMIŞ gibi hesaplanır: her köşenin pivotdan
+  //    olan yönü (wPerp) normalize edilir → panel o yönde sonsuz uzunlukta bir
+  //    ışın gibi davranır. Böylece açı, panelin mevcut kısa boyutuna değil,
+  //    uzayacağı konuma göre hesaplanır.
   const P = new THREE.Vector3(...pivot);
   const nR = new THREE.Vector3(...referenceNormalWorld).normalize();
   const d = nR.dot(new THREE.Vector3(...referencePointWorld));
@@ -239,7 +243,9 @@ export async function executeRotateToReference(params: RotateToReferenceParams):
   for (const V of verts) {
     const w = V.clone().sub(P);
     const wPar = a.clone().multiplyScalar(w.dot(a));
-    const wPerp = w.clone().sub(wPar);
+    let wPerp = w.clone().sub(wPar);
+    if (wPerp.length() < 1e-9) continue;  // köşe pivot üzerinde
+    wPerp = wPerp.normalize();           // panel sonsuza uzıyor → yön yeterli
     const A = nR.dot(wPerp);
     const B = nR.dot(new THREE.Vector3().crossVectors(a, wPerp));
     const C = d - nR.dot(P) - nR.dot(wPar);
