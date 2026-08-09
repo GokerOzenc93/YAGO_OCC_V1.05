@@ -61,10 +61,11 @@ interface TargetProps {
   onDown: (e: any) => void;
   onMove: (e: any) => void;
   onOut: (e: any) => void;
+  onCtx: (e: any) => void;
 }
 
 const RefPickTarget: React.FC<TargetProps> = React.memo(({
-  entry, hoveredGroup, candidateGroup, onDown, onMove, onOut,
+  entry, hoveredGroup, candidateGroup, onDown, onMove, onOut, onCtx,
 }) => {
   const { shape, faces, groups } = entry;
 
@@ -93,6 +94,7 @@ const RefPickTarget: React.FC<TargetProps> = React.memo(({
         onPointerDown={onDown}
         onPointerMove={onMove}
         onPointerOut={onOut}
+        onContextMenu={onCtx}
       >
         <meshBasicMaterial transparent opacity={0.01} side={THREE.DoubleSide} depthTest={false} depthWrite={false} />
       </mesh>
@@ -177,13 +179,33 @@ export const FaceReferenceOverlay: React.FC<OverlayProps> = ({ shapes }) => {
 
   useEffect(() => { if (!active) { setHover(null); lastClick.current = { point: null, idx: 0 }; } }, [active]);
 
-  // TANI: overlay aktifleştiğinde modu + pick-mesh sayısını yaz. Rotate-ref'te
-  // referans seçilemiyorsa buradan ayırt ederiz:
-  //  • "AKTİF ... pick-mesh=0"  → hiç aday yok (targetId yanlış / şekil yok)
-  //  • "AKTİF ... pick-mesh=N"  ama hover'da highlight yok → küp/panel raycast'i
-  //    bastırılmıyor (ShapeWithTransform/PanelDrawing güncel değil).
-  //  • Hiç "AKTİF" logu yok → overlay aktifleşmiyor (pivot/eksen/valueMode='ref'
-  //    ya da FaceReferenceOverlay güncel değil).
+  // MOUNT KANITI: bu bileşen Scene'de gerçekten render ediliyorsa sayfa
+  // açılışında BİR KEZ yazar. Konsolda bunu HİÇ görmüyorsan → FaceReferenceOverlay
+  // Scene.tsx'e mount EDİLMEMİŞ (import + <FaceReferenceOverlay/> eksik) → highlight
+  // asla çalışmaz ve ref modunda hiçbir yere tıklanamaz.
+  useEffect(() => {
+    console.log('%c[YAGO][REF-OVERLAY] MOUNT ✓ — Scene içinde render ediliyor', 'color:#10b981;font-weight:bold');
+    return () => console.log('[YAGO][REF-OVERLAY] UNMOUNT');
+  }, []);
+
+  // KAPSAMLI TANI: rotate modundayken her koşulun DEĞERİNİ yaz. Hangi koşul
+  // 'active'i düşürüyor buradan kesin görülür:
+  //  • valueMode= undefined  → store.ts güncel değil (panelRotateValueMode yok)
+  //  • axis= null            → eksen (X/Y/Z halkası) seçilmemiş
+  //  • pivot= yok            → dönüş noktası seçilmemiş
+  //  • targetId= null        → rotate hedefi atanmamış
+  //  • hepsi dolu ama active=false → koşul mantığı (bana bildir)
+  useEffect(() => {
+    if (!panelRotateMode) return;
+    console.log('[YAGO][REF-TANI] rotateMode=', panelRotateMode,
+      '| valueMode=', panelRotateValueMode,
+      '| pivot=', panelRotatePivot ? 'VAR' : 'yok',
+      '| axis=', panelRotateAxis,
+      '| targetId=', panelRotateTargetPanelId,
+      '→ rotateRefActive=', rotateRefActive, '| overlayActive=', active);
+  }, [panelRotateMode, panelRotateValueMode, panelRotatePivot, panelRotateAxis,
+      panelRotateTargetPanelId, rotateRefActive, active]);
+
   useEffect(() => {
     if (!active) return;
     console.log('[YAGO][REF-OVERLAY] AKTİF — mod=', mode, '| dışlanan hedef=', targetId, '| pick-mesh=', targets.size);
@@ -291,7 +313,13 @@ export const FaceReferenceOverlay: React.FC<OverlayProps> = ({ shapes }) => {
 
   const onDown = useCallback((e: any) => {
     e.stopPropagation();
-    if (e.button === 2) { const s = useAppStore.getState(); if (s.panelRotateRefCandidate || s.faceExtrudeRefCandidate) onConfirm(); return; }
+    if (e.button === 2) {
+      const s = useAppStore.getState();
+      const has = !!(s.panelRotateRefCandidate || s.faceExtrudeRefCandidate);
+      console.log('[YAGO][REF] SAĞ TIK algılandı → aday:', has ? 'VAR → onaylanıyor' : 'YOK (önce sol tıkla yüzü seç)');
+      if (has) onConfirm();
+      return;
+    }
     if (e.button !== 0) return;
     const r = resolve(e);
     if (!r.length) return;
@@ -322,6 +350,17 @@ export const FaceReferenceOverlay: React.FC<OverlayProps> = ({ shapes }) => {
     });
   }, [resolve, targets, onConfirm, setRefCandidate, mode]);
 
+  // SAĞ-TIK ONAY: contextmenu, sağ tıkta onPointerDown'dan daha güvenilir
+  // tetiklenir; tarayıcı menüsünü de engelleriz. Aday varsa onaylar.
+  const onCtx = useCallback((e: any) => {
+    e.stopPropagation();
+    e.nativeEvent?.preventDefault?.();
+    const s = useAppStore.getState();
+    const has = !!(s.panelRotateRefCandidate || s.faceExtrudeRefCandidate);
+    console.log('[YAGO][REF] contextmenu(sağ tık) → aday:', has ? 'VAR → onaylanıyor' : 'YOK (önce sol tıkla yüzü seç)');
+    if (has) onConfirm();
+  }, [onConfirm]);
+
   if (!active) return null;
 
   return (
@@ -340,6 +379,7 @@ export const FaceReferenceOverlay: React.FC<OverlayProps> = ({ shapes }) => {
             onDown={onDown}
             onMove={onMove}
             onOut={onOut}
+            onCtx={onCtx}
           />
         );
       })}

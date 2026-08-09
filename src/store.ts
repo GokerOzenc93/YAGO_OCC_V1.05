@@ -248,7 +248,7 @@ export const useAppStore=create<AppState>((set,get)=>({
   faceExtrudeSelectedFace:null,setFaceExtrudeSelectedFace:(i)=>set({faceExtrudeSelectedFace:i}),
   faceExtrudeClickPoint:null,setFaceExtrudeClickPoint:(p)=>set({faceExtrudeClickPoint:p}),
   faceExtrudeThickness:18,setFaceExtrudeThickness:(v)=>set({faceExtrudeThickness:v}),
-  faceExtrudeValueMode:'fixed',setFaceExtrudeValueMode:(m)=>set({faceExtrudeValueMode:m,...(m!=='ref'?{faceExtrudeRefCandidate:null}:{})}),
+  faceExtrudeValueMode:'fixed',setFaceExtrudeValueMode:(m)=>set({faceExtrudeValueMode:m,...(m!=='ref'?{faceExtrudeRefCandidate:null}:{raycastMode:false})}),
   faceExtrudeRefCandidate:null,setFaceExtrudeRefCandidate:(c)=>set({faceExtrudeRefCandidate:c}),
 
   panelMoveMode:false,setPanelMoveMode:(b)=>set({panelMoveMode:b,...(!b?{panelMoveTargetPanelId:null,panelMoveAxis:null,panelMoveValue:0}:{})}),
@@ -257,7 +257,7 @@ export const useAppStore=create<AppState>((set,get)=>({
   panelMoveValue:0,setPanelMoveValue:(v)=>set({panelMoveValue:v}),
 
   panelRotateMode:false,setPanelRotateMode:(b)=>set({panelRotateMode:b,...(!b?{panelRotateTargetPanelId:null,panelRotatePivot:null,panelRotatePivotType:null,panelRotateAxis:null,panelRotateValue:0,panelRotateValueMode:'fixed',panelRotateRefCandidate:null}:{})}),
-  panelRotateValueMode:'fixed',setPanelRotateValueMode:(m)=>set({panelRotateValueMode:m,...(m!=='ref'?{panelRotateRefCandidate:null}:{})}),
+  panelRotateValueMode:'fixed',setPanelRotateValueMode:(m)=>set({panelRotateValueMode:m,...(m!=='ref'?{panelRotateRefCandidate:null}:{raycastMode:false})}),
   panelRotateRefCandidate:null,setPanelRotateRefCandidate:(c)=>set({panelRotateRefCandidate:c}),
   panelRotateTargetPanelId:null,setPanelRotateTargetPanelId:(id)=>set({panelRotateTargetPanelId:id}),
   panelRotatePivot:null,setPanelRotatePivot:(p)=>set({panelRotatePivot:p}),

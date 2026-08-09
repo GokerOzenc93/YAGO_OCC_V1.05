@@ -1421,7 +1421,16 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     const rotSegToggle = (
       <div style={{ display: 'flex', flexShrink: 0 }}>
         <button onClick={e => { stop(e); setPanelRotateValueMode('fixed'); }} style={rotSeg('fixed', true)}>Açı</button>
-        <button onClick={e => { stop(e); setPanelRotateValueMode('ref'); }} style={rotSeg('ref', false)}>Ref</button>
+        <button onClick={e => { stop(e);
+          if (typeof setPanelRotateValueMode !== 'function') {
+            console.error('[YAGO][REF-TIK] setPanelRotateValueMode YOK → store.ts GÜNCEL DEĞİL. store.ts uygulayıp sayfayı tam yenile.');
+            return;
+          }
+          console.log('[YAGO][REF-TIK] Ref tıklandı → valueMode=ref | pivot=', panelRotatePivot ? 'VAR' : 'yok',
+            '| axis=', panelRotateAxis, '| targetId=', panelRotateTargetPanelId,
+            '| valueMode(önce)=', panelRotateValueMode);
+          setPanelRotateValueMode('ref');
+        }} style={rotSeg('ref', false)}>Ref</button>
       </div>
     );
 
@@ -1435,6 +1444,16 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         display: 'flex', flexDirection: 'column', overflow: 'hidden',
         fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif",
       }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 9px', fontSize: 10, fontWeight: 700,
+          fontFamily: 'monospace', color: '#57534e', borderBottom: '1px solid rgba(60,50,40,0.10)',
+          background: (hasPivot && hasAxis && isRotRef && !!panelRotateTargetPanelId) ? 'rgba(16,122,72,0.10)' : 'rgba(234,88,12,0.08)',
+        }}>
+          <span>pivot:{hasPivot ? '✓' : '✗'}</span>
+          <span>eksen:{hasAxis ? (panelRotateAxis || '?') : '✗'}</span>
+          <span>ref:{isRotRef ? '✓' : '✗'}</span>
+          <span>hedef:{panelRotateTargetPanelId ? '✓' : '✗'}</span>
+          <span style={{ marginLeft: 'auto' }}>overlay:{(hasPivot && hasAxis && isRotRef && !!panelRotateTargetPanelId) ? 'AKTİF' : 'PASİF'}</span>
+        </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 9px' }}>
           {hasAxis && hasPivot ? (
             <>
