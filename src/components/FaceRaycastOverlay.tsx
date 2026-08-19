@@ -210,18 +210,13 @@ function buildSurfaceMeshes(vf: VirtualFace): { geo: THREE.BufferGeometry; edgeG
 interface VirtualFaceOverlayProps { shape: any; }
 
 export const VirtualFaceOverlay: React.FC<VirtualFaceOverlayProps> = ({ shape }) => {
-  const { virtualFaces, showVirtualFaces, panelSurfaceSelectMode, waitingForSurfaceSelection, triggerPanelCreationForFace, setSelectedPanelRow, panelSelectMode,
-    faceExtrudeMode, faceExtrudeValueMode, faceExtrudeSelectedFace,
-    panelRotateMode, panelRotateValueMode, panelRotatePivot, panelRotateAxis } = useAppStore();
+  const { virtualFaces, showVirtualFaces, panelSurfaceSelectMode, waitingForSurfaceSelection, triggerPanelCreationForFace, setSelectedPanelRow, panelSelectMode } = useAppStore();
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const shapeFaces = useMemo(() => virtualFaces.filter(f => f.shapeId === shape.id && !f.hasPanel), [virtualFaces, shape.id]);
   const meshes = useMemo(() => {
     return shapeFaces.map(vf => { const result = buildSurfaceMeshes(vf); return result ? { id: vf.id, vf, ...result } : null; }).filter(Boolean) as Array<{ id: string; vf: VirtualFace; geo: THREE.BufferGeometry; edgeGeo: THREE.BufferGeometry }>;
   }, [shapeFaces]);
-  const refPickActive =
-    (faceExtrudeMode && faceExtrudeValueMode === 'ref' && faceExtrudeSelectedFace !== null) ||
-    (panelRotateMode && panelRotateValueMode === 'ref' && panelRotatePivot !== null && panelRotateAxis !== null);
-  if (!showVirtualFaces || meshes.length === 0 || refPickActive) return null;
+  if (!showVirtualFaces || meshes.length === 0) return null;
   return (
     <>
       {meshes.map((surface, idx) => {
@@ -255,9 +250,7 @@ export const VirtualFaceOverlay: React.FC<VirtualFaceOverlayProps> = ({ shape })
 };
 
 export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, allShapes = [] }) => {
-  const { raycastMode, setRaycastMode, addVirtualFace, virtualFaces, setSelectedPanelRow,
-    faceExtrudeMode, faceExtrudeValueMode, faceExtrudeSelectedFace,
-    panelRotateMode, panelRotateValueMode, panelRotatePivot, panelRotateAxis } = useAppStore();
+  const { raycastMode, setRaycastMode, addVirtualFace, virtualFaces, setSelectedPanelRow } = useAppStore();
   const [faces, setFaces] = useState<FaceData[]>([]);
   const [faceGroups, setFaceGroups] = useState<CoplanarFaceGroup[]>([]);
   const [hoveredGroupIndex, setHoveredGroupIndex] = useState<number | null>(null);
@@ -412,13 +405,7 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     // Derinlik döngüsü (aynı noktaya tekrar tıklayınca arkadaki yüz) korunur.
     setPending(buildFacePreview(previewClickPoint, faceGroups[targetGroupIndex], faces, worldToLocal, shape.id, shape.geometry, childPanels));
   };
-  // REF-SEÇİMİ (extrude-ref VEYA rotate-ref) aktifken bu katman YOL VERİR:
-  // aksi halde raycastMode açıkken küp üstündeki görünmez mesh referans
-  // tıklamalarını kapar ve FaceReferenceOverlay hiç olay almaz.
-  const refPickActive =
-    (faceExtrudeMode && faceExtrudeValueMode === 'ref' && faceExtrudeSelectedFace !== null) ||
-    (panelRotateMode && panelRotateValueMode === 'ref' && panelRotatePivot !== null && panelRotateAxis !== null);
-  if (!raycastMode || refPickActive) return null;
+  if (!raycastMode) return null;
   return (
     <>
       <mesh geometry={shape.geometry} visible={false} onPointerMove={handlePointerMove} onPointerOut={handlePointerOut} onPointerDown={handlePointerDown} />

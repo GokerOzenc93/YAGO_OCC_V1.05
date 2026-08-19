@@ -578,15 +578,13 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     showVirtualFaces, setShowVirtualFaces, virtualFaces, updateVirtualFace, deleteVirtualFace, reorderVirtualFaces, reorderVirtualFaceGroup, pendingPanelCreation, hoveredPanelVfId,
     faceExtrudeMode, setFaceExtrudeMode, faceExtrudeTargetPanelId,
     setFaceExtrudeTargetPanelId, faceExtrudeSelectedFace, setFaceExtrudeSelectedFace, setFaceExtrudeHoveredFace,
-    faceExtrudeThickness, setFaceExtrudeThickness, faceExtrudeValueMode, setFaceExtrudeValueMode,
-    faceExtrudeRefCandidate, setFaceExtrudeRefCandidate,
+    faceExtrudeThickness, setFaceExtrudeThickness, faceExtrudeFixedMode, setFaceExtrudeFixedMode,
     faceExtrudeClickPoint,
     panelMoveMode, setPanelMoveMode, panelMoveTargetPanelId, setPanelMoveTargetPanelId,
     panelMoveAxis, setPanelMoveAxis, panelMoveValue, setPanelMoveValue,
     panelRotateMode, setPanelRotateMode, panelRotateTargetPanelId, setPanelRotateTargetPanelId,
     panelRotatePivot, setPanelRotatePivot, setPanelRotatePivotType,
-    panelRotateAxis, setPanelRotateAxis, panelRotateValue, setPanelRotateValue,
-    panelRotateValueMode, setPanelRotateValueMode, panelRotateRefCandidate, setPanelRotateRefCandidate } = useAppStore();
+    panelRotateAxis, setPanelRotateAxis, panelRotateValue, setPanelRotateValue } = useAppStore();
 
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
@@ -732,10 +730,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       if (flat) g = flat;
     }
     const existing = findExistingStepForFace(steps, g.normal.clone().normalize(), g.center.clone());
-    if (existing) {
-      setFaceExtrudeThickness(existing.value);
-      setFaceExtrudeValueMode(existing.mode ?? (existing.isFixed ? 'fixed' : 'dyn'));
-    }
+    if (existing) { setFaceExtrudeThickness(existing.value); setFaceExtrudeFixedMode(existing.isFixed); }
   }, [faceExtrudeSelectedFace, activePanelId, shapes]);
 
   useEffect(() => { if (!(isOpen || embedded)) { setSelectedPanelRow(null); setPanelSelectMode(false); if (faceExtrudeMode) setFaceExtrudeMode(false); if (panelMoveMode) setPanelMoveMode(false); } }, [isOpen, embedded]);
@@ -1045,14 +1040,13 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     const hf = faceExtrudeSelectedFace !== null;
     if (!isExt) return null;
 
-    const isRefMode = faceExtrudeValueMode === 'ref';
-    const seg = (m: 'fixed' | 'dyn' | 'ref', first: boolean): React.CSSProperties => ({
-      flex: 1, minWidth: 0, height: 28, fontSize: 10, fontWeight: 700, letterSpacing: '0.02em',
+    const seg = (f: boolean): React.CSSProperties => ({
+      flex: 1, minWidth: 0, height: 28, fontSize: 10, fontWeight: 700, letterSpacing: '0.03em',
       border: 'none', outline: 'none', cursor: hf ? 'pointer' : 'not-allowed',
-      borderLeft: !first ? '1px solid rgba(60,50,40,0.10)' : 'none',
-      background: faceExtrudeValueMode === m ? '#e8e1d5' : 'rgba(255,255,255,0.45)',
-      color: faceExtrudeValueMode === m ? '#44403c' : '#a8a29e',
-      boxShadow: faceExtrudeValueMode === m ? 'inset 0 1px 2px rgba(60,50,40,0.14)' : 'none',
+      borderLeft: !f ? '1px solid rgba(60,50,40,0.10)' : 'none',
+      background: faceExtrudeFixedMode === f ? '#e8e1d5' : 'rgba(255,255,255,0.45)',
+      color: faceExtrudeFixedMode === f ? '#44403c' : '#a8a29e',
+      boxShadow: faceExtrudeFixedMode === f ? 'inset 0 1px 2px rgba(60,50,40,0.14)' : 'none',
       transition: 'all 0.12s',
     });
 
@@ -1068,36 +1062,12 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     const onApply = async () => {
       if (!hf || !activePanelId) return;
       const ps = shapes.find(s => s.id === activePanelId); if (!ps) return;
+      const { executeFaceExtrude } = await import('./FaceExtrudeService');
       const vfId = ps.parameters?.virtualFaceId as string | undefined;
       const vf = vfId ? virtualFaces.find(f => f.id === vfId) : undefined;
-
-      if (isRefMode) {
-        // Referans modu: onay ancak referans yüz seçildiyse (aday) mümkün.
-        // (Aynı işlem 3B'de referans yüze sağ tık ile de yapılabilir.)
-        if (!faceExtrudeRefCandidate) return;
-        const { executeFaceExtrudeToReference } = await import('./FaceExtrudeService');
-        await executeFaceExtrudeToReference({
-          panelShape: ps, faceGroupIndex: faceExtrudeSelectedFace!,
-          referenceShapeId: faceExtrudeRefCandidate.shapeId,
-          referencePointWorld: faceExtrudeRefCandidate.point,
-          referenceNormalWorld: faceExtrudeRefCandidate.normal,
-          updateShape, clickPoint: faceExtrudeClickPoint ?? undefined,
-          virtualFaceId: vfId,
-          vfNormal: vf?.normal as [number, number, number] | undefined,
-          vfVertex0: vf?.vertices?.[0] as [number, number, number] | undefined,
-          updateVirtualFace,
-        });
-        setFaceExtrudeRefCandidate(null);
-        setFaceExtrudeSelectedFace(null);
-        setFaceExtrudeMode(false);
-        return;
-      }
-
-      const { executeFaceExtrude } = await import('./FaceExtrudeService');
       await executeFaceExtrude({
         panelShape: ps, faceGroupIndex: faceExtrudeSelectedFace!,
-        value: faceExtrudeThickness, isFixed: faceExtrudeValueMode === 'fixed',
-        mode: faceExtrudeValueMode,
+        value: faceExtrudeThickness, isFixed: faceExtrudeFixedMode,
         shapes, updateShape, clickPoint: faceExtrudeClickPoint ?? undefined,
         virtualFaceId: vfId,
         vfNormal: vf?.normal as [number, number, number] | undefined,
@@ -1121,69 +1091,36 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 9px' }}>
           {hf ? (
             <>
-              {isRefMode ? (
-                // REFERANS MODU: sayı yazılmaz. Kullanıcı 3B'de başka bir
-                // panel/küpün yüzüne sol tıklar (aday), sağ tık ile onaylar.
-                // Aday seçiliyse burada onaylandığı görünür; ✓ butonu da onaylar.
-                <div style={{
-                  flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 7, height: 28,
-                  padding: '0 10px', borderRadius: 7,
-                  background: faceExtrudeRefCandidate ? 'rgba(16,122,72,0.10)' : 'rgba(234,88,12,0.08)',
-                  border: `1px solid ${faceExtrudeRefCandidate ? 'rgba(16,122,72,0.30)' : 'rgba(234,88,12,0.22)'}`,
-                }}>
-                  <span style={{
-                    width: 5, height: 5, borderRadius: '50%', flexShrink: 0,
-                    background: faceExtrudeRefCandidate ? '#10b981' : '#ea580c',
-                  }} />
-                  <span style={{
-                    fontSize: 11, fontWeight: 500,
-                    color: faceExtrudeRefCandidate ? '#166534' : '#9a3412',
-                    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-                  }}>
-                    {faceExtrudeRefCandidate ? 'Referans yüz seçildi • sağ tık / ✓ onayla' : 'Referans yüz seç (sol tık • üst üste: tekrar tıkla)'}
-                  </span>
-                </div>
-              ) : (
-                <input
-                  type="text" inputMode="numeric" value={extrudeThicknessStr}
-                  onChange={e => {
-                    const v = e.target.value;
-                    setExtrudeThicknessStr(v);
-                    const p = parseFloat(v);
-                    if (!isNaN(p)) setFaceExtrudeThickness(p);
-                  }}
-                  onBlur={() => {
-                    const p = parseFloat(extrudeThicknessStr);
-                    if (isNaN(p)) { setExtrudeThicknessStr(String(faceExtrudeThickness)); }
-                    else { setFaceExtrudeThickness(p); setExtrudeThicknessStr(String(p)); }
-                  }}
-                  style={{
-                    flex: 1, minWidth: 0, height: 28, textAlign: 'center', fontFamily: 'monospace', fontSize: 13, fontWeight: 600,
-                    color: '#1c1917', background: 'linear-gradient(180deg,#fff,#faf8f3)', border: '1px solid rgba(60,50,40,0.16)',
-                    borderRadius: 7, outline: 'none', boxShadow: 'inset 0 1px 2px rgba(40,30,20,0.06)',
-                  }}
-                />
-              )}
-              <div style={{ display: 'flex', width: 132, flexShrink: 0, borderRadius: 7, overflow: 'hidden', border: '1px solid rgba(60,50,40,0.16)' }}>
-                {(['fixed', 'dyn', 'ref'] as const).map((m, i) => (
-                  <button key={m} onClick={() => hf && setFaceExtrudeValueMode(m)} style={seg(m, i === 0)}>
-                    {m === 'fixed' ? 'Fixed' : m === 'dyn' ? 'Dyn' : 'Ref'}
-                  </button>
+              <input
+                type="text" inputMode="numeric" value={extrudeThicknessStr}
+                onChange={e => {
+                  const v = e.target.value;
+                  setExtrudeThicknessStr(v);
+                  const p = parseFloat(v);
+                  if (!isNaN(p)) setFaceExtrudeThickness(p);
+                }}
+                onBlur={() => {
+                  const p = parseFloat(extrudeThicknessStr);
+                  if (isNaN(p)) { setExtrudeThicknessStr(String(faceExtrudeThickness)); }
+                  else { setFaceExtrudeThickness(p); setExtrudeThicknessStr(String(p)); }
+                }}
+                style={{
+                  flex: 1, minWidth: 0, height: 28, textAlign: 'center', fontFamily: 'monospace', fontSize: 13, fontWeight: 600,
+                  color: '#1c1917', background: 'linear-gradient(180deg,#fff,#faf8f3)', border: '1px solid rgba(60,50,40,0.16)',
+                  borderRadius: 7, outline: 'none', boxShadow: 'inset 0 1px 2px rgba(40,30,20,0.06)',
+                }}
+              />
+              <div style={{ display: 'flex', width: 86, flexShrink: 0, borderRadius: 7, overflow: 'hidden', border: '1px solid rgba(60,50,40,0.16)' }}>
+                {[true, false].map(f => (
+                  <button key={String(f)} onClick={() => setFaceExtrudeFixedMode(f)} style={seg(f)}>{f ? 'Fixed' : 'Dyn'}</button>
                 ))}
               </div>
-              {(() => {
-                const applyDisabled = isRefMode && !faceExtrudeRefCandidate;
-                return (
-                  <button onClick={onApply} disabled={applyDisabled} title={isRefMode ? 'Referansı onayla' : 'Uygula'} style={{
-                    flexShrink: 0, width: 32, height: 28, borderRadius: 7, border: 'none',
-                    cursor: applyDisabled ? 'not-allowed' : 'pointer', outline: 'none',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    background: applyDisabled ? 'linear-gradient(180deg,#c9c2b6,#b3aca0)' : 'linear-gradient(180deg,#5b5346,#44403c)',
-                    color: '#fff', opacity: applyDisabled ? 0.7 : 1,
-                    boxShadow: '0 1px 2px rgba(40,30,20,0.25),inset 0 1px 0 rgba(255,255,255,0.18)',
-                  }}><Check size={15} strokeWidth={2.5} /></button>
-                );
-              })()}
+              <button onClick={onApply} title="Uygula" style={{
+                flexShrink: 0, width: 32, height: 28, borderRadius: 7, border: 'none', cursor: 'pointer', outline: 'none',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: 'linear-gradient(180deg,#5b5346,#44403c)', color: '#fff',
+                boxShadow: '0 1px 2px rgba(40,30,20,0.25),inset 0 1px 0 rgba(255,255,255,0.18)',
+              }}><Check size={15} strokeWidth={2.5} /></button>
               {exitBtn}
             </>
           ) : (
@@ -1389,51 +1326,6 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       setRotateValueStr('0');
     };
 
-    // Referansla döndürme onayı: pivot/eksen çevresinde referans yüzeye
-    // değene kadar döndür (açı FaceReferenceOverlay adayından hesaplanır).
-    // Not: aynı onay sağ-tık ile de FaceReferenceOverlay'de tetiklenir.
-    const isRotRef = panelRotateValueMode === 'ref';
-    const onConfirmRef = async () => {
-      const cand = panelRotateRefCandidate;
-      if (!cand || !hasAxis || !hasPivot || !activePanelId) return;
-      const ps = shapes.find(s => s.id === activePanelId); if (!ps) return;
-      const { executeRotateToReference } = await import('./PanelRotateService');
-      await executeRotateToReference({
-        panelShape: ps, axis: panelRotateAxis!, pivot: panelRotatePivot!,
-        referencePointWorld: cand.point, referenceNormalWorld: cand.normal,
-        shapes, updateShape,
-      });
-      setPanelRotateRefCandidate(null);
-      setPanelRotateValueMode('fixed');
-      setPanelRotateAxis(null);
-      setPanelRotateValue(0);
-      setRotateValueStr('0');
-    };
-    const rotSeg = (m: 'fixed' | 'ref', first: boolean): React.CSSProperties => ({
-      flexShrink: 0, height: 28, padding: '0 8px', fontSize: 10, fontWeight: 800, cursor: 'pointer', outline: 'none',
-      fontFamily: "'Inter',system-ui,sans-serif",
-      border: '1px solid rgba(60,50,40,0.14)', borderLeft: first ? '1px solid rgba(60,50,40,0.14)' : 'none',
-      borderRadius: first ? '6px 0 0 6px' : '0 6px 6px 0',
-      background: panelRotateValueMode === m ? '#e8e1d5' : 'rgba(255,255,255,0.45)',
-      color: panelRotateValueMode === m ? '#44403c' : '#a8a29e',
-      boxShadow: panelRotateValueMode === m ? 'inset 0 1px 2px rgba(60,50,40,0.14)' : 'none',
-    });
-    const rotSegToggle = (
-      <div style={{ display: 'flex', flexShrink: 0 }}>
-        <button onClick={e => { stop(e); setPanelRotateValueMode('fixed'); }} style={rotSeg('fixed', true)}>Açı</button>
-        <button onClick={e => { stop(e);
-          if (typeof setPanelRotateValueMode !== 'function') {
-            console.error('[YAGO][REF-TIK] setPanelRotateValueMode YOK → store.ts GÜNCEL DEĞİL. store.ts uygulayıp sayfayı tam yenile.');
-            return;
-          }
-          console.log('[YAGO][REF-TIK] Ref tıklandı → valueMode=ref | pivot=', panelRotatePivot ? 'VAR' : 'yok',
-            '| axis=', panelRotateAxis, '| targetId=', panelRotateTargetPanelId,
-            '| valueMode(önce)=', panelRotateValueMode);
-          setPanelRotateValueMode('ref');
-        }} style={rotSeg('ref', false)}>Ref</button>
-      </div>
-    );
-
     return (
       <div style={{
         position: 'absolute', left: 8, right: 8, bottom: 8, zIndex: 5, borderRadius: 11,
@@ -1444,75 +1336,40 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         display: 'flex', flexDirection: 'column', overflow: 'hidden',
         fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif",
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 9px', fontSize: 10, fontWeight: 700,
-          fontFamily: 'monospace', color: '#57534e', borderBottom: '1px solid rgba(60,50,40,0.10)',
-          background: (hasPivot && hasAxis && isRotRef && !!panelRotateTargetPanelId) ? 'rgba(16,122,72,0.10)' : 'rgba(234,88,12,0.08)',
-        }}>
-          <span>pivot:{hasPivot ? '✓' : '✗'}</span>
-          <span>eksen:{hasAxis ? (panelRotateAxis || '?') : '✗'}</span>
-          <span>ref:{isRotRef ? '✓' : '✗'}</span>
-          <span>hedef:{panelRotateTargetPanelId ? '✓' : '✗'}</span>
-          <span style={{ marginLeft: 'auto' }}>overlay:{(hasPivot && hasAxis && isRotRef && !!panelRotateTargetPanelId) ? 'AKTİF' : 'PASİF'}</span>
-        </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 9px' }}>
           {hasAxis && hasPivot ? (
             <>
               <span style={{ fontSize: 10, fontWeight: 800, fontFamily: 'monospace', color: axisColors[panelRotateAxis!] || '#44403c', padding: '2px 8px', borderRadius: 5, background: 'rgba(120,113,108,0.10)', border: '1px solid rgba(60,50,40,0.12)' }}>
                 {panelRotateAxis!.toUpperCase()}
               </span>
-              {rotSegToggle}
-              {isRotRef ? (
-                <>
-                  <div style={{
-                    flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 7, height: 28, padding: '0 10px', borderRadius: 7,
-                    background: 'rgba(120,113,108,0.08)', border: '1px solid rgba(60,50,40,0.10)',
-                  }}>
-                    <span style={{ width: 5, height: 5, borderRadius: '50%', background: panelRotateRefCandidate ? '#10b981' : '#ea580c', flexShrink: 0 }} />
-                    <span style={{ fontSize: 11, fontWeight: 500, color: '#78716c', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      {panelRotateRefCandidate ? 'Referans seçildi • onayla' : 'Referans yüz sec • sag tik'}
-                    </span>
-                  </div>
-                  <button onClick={onConfirmRef} disabled={!panelRotateRefCandidate} title="Referansı onayla" style={{
-                    flexShrink: 0, width: 32, height: 28, borderRadius: 7, border: 'none', outline: 'none',
-                    cursor: panelRotateRefCandidate ? 'pointer' : 'not-allowed',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    background: panelRotateRefCandidate ? 'linear-gradient(180deg,#5b5346,#44403c)' : 'rgba(120,113,108,0.25)',
-                    color: '#fff', boxShadow: '0 1px 2px rgba(40,30,20,0.25),inset 0 1px 0 rgba(255,255,255,0.18)',
-                  }}><Check size={15} strokeWidth={2.5} /></button>
-                  {exitBtn}
-                </>
-              ) : (
-                <>
-                  <input
-                    type="text" inputMode="numeric" autoFocus value={rotateValueStr}
-                    onChange={e => {
-                      const v = e.target.value;
-                      setRotateValueStr(v);
-                      const p = parseFloat(v);
-                      if (!isNaN(p)) setPanelRotateValue(p);
-                    }}
-                    onBlur={() => {
-                      const p = parseFloat(rotateValueStr);
-                      if (isNaN(p)) { setRotateValueStr('0'); setPanelRotateValue(0); }
-                      else { setPanelRotateValue(p); setRotateValueStr(String(p)); }
-                    }}
-                    onKeyDown={e => { if (e.key === 'Enter') onApply(); if (e.key === 'Escape') { setPanelRotateAxis(null); setPanelRotateMode(false); } }}
-                    style={{
-                      flex: 1, minWidth: 0, height: 28, textAlign: 'center', fontFamily: 'monospace', fontSize: 13, fontWeight: 600,
-                      color: '#1c1917', background: 'linear-gradient(180deg,#fff,#faf8f3)', border: '1px solid rgba(60,50,40,0.16)',
-                      borderRadius: 7, outline: 'none', boxShadow: 'inset 0 1px 2px rgba(40,30,20,0.06)',
-                    }}
-                  />
-                  <span style={{ fontSize: 10, fontWeight: 600, color: '#78716c' }}>deg</span>
-                  <button onClick={onApply} title="Uygula" style={{
-                    flexShrink: 0, width: 32, height: 28, borderRadius: 7, border: 'none', cursor: 'pointer', outline: 'none',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    background: 'linear-gradient(180deg,#5b5346,#44403c)', color: '#fff',
-                    boxShadow: '0 1px 2px rgba(40,30,20,0.25),inset 0 1px 0 rgba(255,255,255,0.18)',
-                  }}><Check size={15} strokeWidth={2.5} /></button>
-                  {exitBtn}
-                </>
-              )}
+              <input
+                type="text" inputMode="numeric" autoFocus value={rotateValueStr}
+                onChange={e => {
+                  const v = e.target.value;
+                  setRotateValueStr(v);
+                  const p = parseFloat(v);
+                  if (!isNaN(p)) setPanelRotateValue(p);
+                }}
+                onBlur={() => {
+                  const p = parseFloat(rotateValueStr);
+                  if (isNaN(p)) { setRotateValueStr('0'); setPanelRotateValue(0); }
+                  else { setPanelRotateValue(p); setRotateValueStr(String(p)); }
+                }}
+                onKeyDown={e => { if (e.key === 'Enter') onApply(); if (e.key === 'Escape') { setPanelRotateAxis(null); setPanelRotateMode(false); } }}
+                style={{
+                  flex: 1, minWidth: 0, height: 28, textAlign: 'center', fontFamily: 'monospace', fontSize: 13, fontWeight: 600,
+                  color: '#1c1917', background: 'linear-gradient(180deg,#fff,#faf8f3)', border: '1px solid rgba(60,50,40,0.16)',
+                  borderRadius: 7, outline: 'none', boxShadow: 'inset 0 1px 2px rgba(40,30,20,0.06)',
+                }}
+              />
+              <span style={{ fontSize: 10, fontWeight: 600, color: '#78716c' }}>deg</span>
+              <button onClick={onApply} title="Uygula" style={{
+                flexShrink: 0, width: 32, height: 28, borderRadius: 7, border: 'none', cursor: 'pointer', outline: 'none',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: 'linear-gradient(180deg,#5b5346,#44403c)', color: '#fff',
+                boxShadow: '0 1px 2px rgba(40,30,20,0.25),inset 0 1px 0 rgba(255,255,255,0.18)',
+              }}><Check size={15} strokeWidth={2.5} /></button>
+              {exitBtn}
             </>
           ) : hasPivot ? (
             <>
@@ -1565,10 +1422,10 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     };
 
     // Build unified ordered list: extrude steps + transform steps sorted by timestamp
-    const allSteps: Array<{ id: string; stepType: string; axis: string; value: number; timestamp: number; isFixed?: boolean; mode?: 'fixed' | 'dyn' | 'ref'; original: any }> = [];
+    const allSteps: Array<{ id: string; stepType: string; axis: string; value: number; timestamp: number; isFixed?: boolean; original: any }> = [];
 
     for (const s of activeSteps) {
-      allSteps.push({ id: s.id, stepType: 'extrude', axis: s.axisLabel, value: s.value, timestamp: s.timestamp, isFixed: s.isFixed, mode: s.mode, original: s });
+      allSteps.push({ id: s.id, stepType: 'extrude', axis: s.axisLabel, value: s.value, timestamp: s.timestamp, isFixed: s.isFixed, original: s });
     }
     for (const s of activeTransformSteps) {
       const ax = s.type === 'move' ? s.axis : s.axis;
@@ -1629,21 +1486,15 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                     </>
                   ) : (
                     <>
-                      {s.stepType === 'extrude' && s.mode === 'ref' ? (
-                        <span className="flex-1 font-mono text-xs font-bold text-emerald-700 tabular-nums" title="Canlı referans yüz — referans şekil değişince otomatik güncellenir">↪ ref</span>
-                      ) : (
-                        <span className="flex-1 font-mono text-xs font-bold text-stone-800 tabular-nums">{s.value}{s.stepType === 'rotate' ? '\u00B0' : ''}</span>
-                      )}
+                      <span className="flex-1 font-mono text-xs font-bold text-stone-800 tabular-nums">{s.value}{s.stepType === 'rotate' ? '\u00B0' : ''}</span>
                       {s.stepType === 'extrude' && s.isFixed !== undefined && (
-                        <span className="shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-sm bg-stone-100 text-stone-500">{s.mode === 'ref' ? 'R' : s.isFixed ? 'F' : 'D'}</span>
+                        <span className="shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-sm bg-stone-100 text-stone-500">{s.isFixed ? 'F' : 'D'}</span>
                       )}
-                      {!(s.stepType === 'extrude' && s.mode === 'ref') && (
                       <button onClick={() => {
                         if (s.stepType === 'extrude') { setEditingStepId(s.id); setEditingStepValue(String(s.value)); }
                         else if (s.stepType === 'move') { setEditingMoveStepId(s.id); setEditingMoveStepValue(String(s.value)); }
                         else { setEditingRotateStepId(s.id); setEditingRotateStepValue(String(s.value)); }
                       }} style={iconBtn('#78716c')}><Pencil size={10} /></button>
-                      )}
                       <button onClick={async () => {
                         const ps = shapes.find(x => x.id === activePanelId); if (!ps) return;
                         if (s.stepType === 'extrude') {
