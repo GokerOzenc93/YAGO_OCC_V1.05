@@ -538,14 +538,37 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           <mesh
             geometry={shape.geometry}
             renderOrder={10}
-            onPointerDown={(e: any) => {
+            onPointerDown={async (e: any) => {
               if (e.button === 2) {
-                // Sağ tık = onay
+                // Sağ tık = onay: referans yüz seçilmişse extrude uygula.
                 e.stopPropagation();
-                if (faceExtrudeRefCandidate?.faceGroupIndex !== undefined && faceExtrudeRefCandidate.faceGroupIndex >= 0) {
-                  // Onay PanelEditor'daki dock'tan yapılacak (Apply butonu).
-                  // Burada sadece olayı durdur.
-                }
+                const cand = useAppStore.getState().faceExtrudeRefCandidate;
+                const selFace = useAppStore.getState().faceExtrudeSelectedFace;
+                const targetId = useAppStore.getState().faceExtrudeTargetPanelId;
+                if (!cand || cand.faceGroupIndex < 0 || selFace === null || !targetId) return;
+                const st = useAppStore.getState();
+                const ps = st.shapes.find((s: any) => s.id === targetId);
+                if (!ps) return;
+                const { executeFaceExtrudeToReference } = await import('./FaceExtrudeService');
+                const vfId = ps.parameters?.virtualFaceId as string | undefined;
+                const vf = vfId ? st.virtualFaces.find((f: any) => f.id === vfId) : undefined;
+                await executeFaceExtrudeToReference({
+                  panelShape: ps,
+                  faceGroupIndex: selFace,
+                  refShapeId: cand.panelId,
+                  refFaceGroupIndex: cand.faceGroupIndex,
+                  refNormalWorld: cand.normalWorld,
+                  clickPoint: st.faceExtrudeClickPoint ?? undefined,
+                  shapes: st.shapes,
+                  updateShape: st.updateShape,
+                  virtualFaceId: vfId,
+                  vfNormal: vf?.normal as [number, number, number] | undefined,
+                  vfVertex0: vf?.vertices?.[0] as [number, number, number] | undefined,
+                  updateVirtualFace: st.updateVirtualFace,
+                });
+                st.setFaceExtrudeSelectedFace(null);
+                st.setFaceExtrudeMode(false);
+                st.setFaceExtrudeRefCandidate(null);
                 return;
               }
               if (e.button !== 0) return;
