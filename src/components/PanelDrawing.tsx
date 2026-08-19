@@ -297,6 +297,39 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   // Tarama yalnız panel satırı seçiliyken ve dolgu görünen modlarda.
   const showHatch = isPanelRowSelected && !isWireframe;
 
+  const handleRefRightClick = async (e: any) => {
+    if (e.button !== 2) return;
+    e.stopPropagation();
+    const cand = useAppStore.getState().faceExtrudeRefCandidate;
+    const selFace = useAppStore.getState().faceExtrudeSelectedFace;
+    const targetId = useAppStore.getState().faceExtrudeTargetPanelId;
+    if (!cand || cand.faceGroupIndex < 0 || selFace === null || !targetId) return;
+    const st = useAppStore.getState();
+    const ps = st.shapes.find((s: any) => s.id === targetId);
+    if (!ps) return;
+    const { executeFaceExtrudeToReference } = await import('./FaceExtrudeService');
+    const vfId = ps.parameters?.virtualFaceId as string | undefined;
+    const vf = vfId ? st.virtualFaces.find((f: any) => f.id === vfId) : undefined;
+    await executeFaceExtrudeToReference({
+      panelShape: ps,
+      faceGroupIndex: selFace,
+      refShapeId: cand.panelId,
+      refFaceGroupIndex: cand.faceGroupIndex,
+      refNormalWorld: cand.normalWorld,
+      refPointWorld: cand.pointWorld,
+      clickPoint: st.faceExtrudeClickPoint ?? undefined,
+      shapes: st.shapes,
+      updateShape: st.updateShape,
+      virtualFaceId: vfId,
+      vfNormal: vf?.normal as [number, number, number] | undefined,
+      vfVertex0: vf?.vertices?.[0] as [number, number, number] | undefined,
+      updateVirtualFace: st.updateVirtualFace,
+    });
+    st.setFaceExtrudeSelectedFace(null);
+    st.setFaceExtrudeMode(false);
+    st.setFaceExtrudeRefCandidate(null);
+  };
+
   const handleClick = (e: any) => {
     e.stopPropagation();
     if (isFaceExtrudeTarget) return;
@@ -304,7 +337,32 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     // - isRefSelectingPanel: henüz referans panel seçili değil, panel seç
     // - isRefCandidatePanel: referans panel seçili, yüzey seçiliyor
     if (isRefMode) {
-      if (isRefCandidatePanel) return; // overlay mesh yüzey seçimini halleder
+      if (isRefCandidatePanel) {
+        // Referans panel üzerinde yüz seçimi — tüm görünüm modlarında çalışır.
+        if (e.faceIndex !== undefined && e.faceIndex !== null) {
+          const raw = faceGroups.findIndex(g => g.faceIndices.includes(e.faceIndex));
+          if (raw !== -1) {
+            const gi = snapToFlatGroup(raw, faceGroups);
+            const grp = faceGroups[gi];
+            const pos = new THREE.Vector3(shape.position[0], shape.position[1], shape.position[2]);
+            const quat = new THREE.Quaternion().setFromEuler(
+              new THREE.Euler(shape.rotation[0], shape.rotation[1], shape.rotation[2], 'XYZ')
+            );
+            const scl = new THREE.Vector3(shape.scale[0], shape.scale[1], shape.scale[2]);
+            const m = new THREE.Matrix4().compose(pos, quat, scl);
+            const normalMatrix = new THREE.Matrix3().getNormalMatrix(m);
+            const normalWorld = grp.normal.clone().normalize().applyMatrix3(normalMatrix).normalize();
+            const pointWorld = e.point ? [e.point.x, e.point.y, e.point.z] as [number, number, number] : [0, 0, 0];
+            setFaceExtrudeRefCandidate({
+              panelId: shape.id,
+              faceGroupIndex: gi,
+              normalWorld: [normalWorld.x, normalWorld.y, normalWorld.z],
+              pointWorld,
+            });
+          }
+        }
+        return;
+      }
       if (isRefSelectingPanel) {
         if (shape.id === faceExtrudeTargetPanelId) return;
         setFaceExtrudeRefCandidate({
@@ -357,6 +415,8 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           castShadow
           receiveShadow
           onClick={handleClick}
+          onPointerDown={isRefCandidatePanel ? handleRefRightClick : undefined}
+          onContextMenu={(e: any) => { if (isRefCandidatePanel) e.stopPropagation(); }}
         >
           <meshLambertMaterial
             color={materialColor}
@@ -421,6 +481,10 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
             castShadow
             receiveShadow
             onClick={handleClick}
+          onPointerDown={isRefCandidatePanel ? handleRefRightClick : undefined}
+          onContextMenu={(e: any) => { if (isRefCandidatePanel) e.stopPropagation(); }}
+            onPointerDown={isRefCandidatePanel ? handleRefRightClick : undefined}
+            onContextMenu={(e: any) => { if (isRefCandidatePanel) e.stopPropagation(); }}
           >
             <meshLambertMaterial
               color={materialColor}
@@ -536,72 +600,12 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
         </>
       )}
 
-      {/* ── REF CANDIDATE PANEL FACE SELECTION ─────────────────────────── */}
+      {/* ── REF CANDIDATE PANEL HOVER HIGHLIGHT ─────────────────────── */}
       {isRefCandidatePanel && (
         <>
           <mesh
             geometry={shape.geometry}
             renderOrder={10}
-            onPointerDown={async (e: any) => {
-              if (e.button === 2) {
-                // Sağ tık = onay: referans yüz seçilmişse extrude uygula.
-                e.stopPropagation();
-                const cand = useAppStore.getState().faceExtrudeRefCandidate;
-                const selFace = useAppStore.getState().faceExtrudeSelectedFace;
-                const targetId = useAppStore.getState().faceExtrudeTargetPanelId;
-                if (!cand || cand.faceGroupIndex < 0 || selFace === null || !targetId) return;
-                const st = useAppStore.getState();
-                const ps = st.shapes.find((s: any) => s.id === targetId);
-                if (!ps) return;
-                const { executeFaceExtrudeToReference } = await import('./FaceExtrudeService');
-                const vfId = ps.parameters?.virtualFaceId as string | undefined;
-                const vf = vfId ? st.virtualFaces.find((f: any) => f.id === vfId) : undefined;
-                await executeFaceExtrudeToReference({
-                  panelShape: ps,
-                  faceGroupIndex: selFace,
-                  refShapeId: cand.panelId,
-                  refFaceGroupIndex: cand.faceGroupIndex,
-                  refNormalWorld: cand.normalWorld,
-                  clickPoint: st.faceExtrudeClickPoint ?? undefined,
-                  shapes: st.shapes,
-                  updateShape: st.updateShape,
-                  virtualFaceId: vfId,
-                  vfNormal: vf?.normal as [number, number, number] | undefined,
-                  vfVertex0: vf?.vertices?.[0] as [number, number, number] | undefined,
-                  updateVirtualFace: st.updateVirtualFace,
-                });
-                st.setFaceExtrudeSelectedFace(null);
-                st.setFaceExtrudeMode(false);
-                st.setFaceExtrudeRefCandidate(null);
-                return;
-              }
-              if (e.button !== 0) return;
-              e.stopPropagation();
-              const fi = e.faceIndex;
-              if (fi !== undefined && fi !== null) {
-                const raw = faceGroups.findIndex(g => g.faceIndices.includes(fi));
-                if (raw !== -1) {
-                  const gi = snapToFlatGroup(raw, faceGroups);
-                  const grp = faceGroups[gi];
-                  // Dünya uzayı normali
-                  const pos = new THREE.Vector3(shape.position[0], shape.position[1], shape.position[2]);
-                  const quat = new THREE.Quaternion().setFromEuler(
-                    new THREE.Euler(shape.rotation[0], shape.rotation[1], shape.rotation[2], 'XYZ')
-                  );
-                  const scl = new THREE.Vector3(shape.scale[0], shape.scale[1], shape.scale[2]);
-                  const m = new THREE.Matrix4().compose(pos, quat, scl);
-                  const normalMatrix = new THREE.Matrix3().getNormalMatrix(m);
-                  const normalWorld = grp.normal.clone().normalize().applyMatrix3(normalMatrix).normalize();
-                  const pointWorld = e.point ? [e.point.x, e.point.y, e.point.z] as [number, number, number] : [0, 0, 0];
-                  setFaceExtrudeRefCandidate({
-                    panelId: shape.id,
-                    faceGroupIndex: gi,
-                    normalWorld: [normalWorld.x, normalWorld.y, normalWorld.z],
-                    pointWorld,
-                  });
-                }
-              }
-            }}
             onPointerMove={(e: any) => {
               e.stopPropagation();
               const fi = e.faceIndex;

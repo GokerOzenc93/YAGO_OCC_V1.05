@@ -21,6 +21,7 @@ export interface ExtrudeStep {
   refShapeId?: string;
   refFaceGroupIndex?: number;
   refNormalWorld?: [number, number, number];
+  refPointWorld?: [number, number, number];
 }
 
 export interface FaceExtrudeParams {
@@ -54,14 +55,29 @@ function getAxisLabel(normal: THREE.Vector3): string {
 export function resolveReferenceNetDim(
   refShapeId: string,
   refFaceGroupIndex: number,
-  shapes: Shape[]
+  shapes: Shape[],
+  refNormalWorld?: [number, number, number],
+  refPointWorld?: [number, number, number]
 ): number | null {
   const refPanel = shapes.find(s => s.id === refShapeId);
   if (!refPanel?.geometry) return null;
   const faces = extractFacesFromGeometry(refPanel.geometry);
   const groups = groupCoplanarFaces(faces);
-  if (refFaceGroupIndex < 0 || refFaceGroupIndex >= groups.length) return null;
-  const group = groups[refFaceGroupIndex];
+  let group = groups[refFaceGroupIndex];
+  if (refNormalWorld && refPointWorld) {
+    const panelMatrix = new THREE.Matrix4().compose(
+      new THREE.Vector3(...refPanel.position),
+      new THREE.Quaternion().setFromEuler(new THREE.Euler(...refPanel.rotation)),
+      new THREE.Vector3(...refPanel.scale)
+    );
+    const localPoint = new THREE.Vector3(...refPointWorld).applyMatrix4(panelMatrix.invert());
+    const targetNormal = new THREE.Vector3(...refNormalWorld).transformDirection(panelMatrix);
+    const matched = groups
+      .filter(candidate => candidate.normal.clone().normalize().dot(targetNormal) > 0.8)
+      .sort((a, b) => a.center.distanceTo(localPoint) - b.center.distanceTo(localPoint))[0];
+    if (matched) group = matched;
+  }
+  if (!group) return null;
   const n = group.normal.clone().normalize();
   // Yüzün bulunduğu düzlemdeki genişlik (u/v eksenlerinde bbox)
   const { u, v } = facePlaneBasis(n);
@@ -348,7 +364,13 @@ export async function applyExtrudeSteps(
     // Ref adımı: değer, referans panelinin güncel geometrisinden çözülür.
     let effectiveStep = step;
     if (step.refShapeId && shapes) {
-      const refDim = resolveReferenceNetDim(step.refShapeId, step.refFaceGroupIndex ?? -1, shapes);
+      const refDim = resolveReferenceNetDim(
+        step.refShapeId,
+        step.refFaceGroupIndex ?? -1,
+        shapes,
+        step.refNormalWorld,
+        step.refPointWorld
+      );
       if (refDim != null) {
         effectiveStep = { ...step, value: refDim, isFixed: true };
       } else {
@@ -461,6 +483,7 @@ export interface FaceExtrudeRefParams {
   refShapeId: string;
   refFaceGroupIndex: number;
   refNormalWorld: [number, number, number];
+  refPointWorld?: [number, number, number];
   clickPoint?: [number, number, number];
   shapes: Shape[];
   updateShape: (id: string, updates: Partial<Shape>) => void;
@@ -526,6 +549,7 @@ export async function executeFaceExtrudeToReference(params: FaceExtrudeRefParams
     refShapeId,
     refFaceGroupIndex,
     refNormalWorld: params.refNormalWorld,
+    refPointWorld: params.refPointWorld,
   };
 
   const newSteps = existingIdx >= 0
