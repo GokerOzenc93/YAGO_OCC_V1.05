@@ -300,16 +300,20 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   const handleClick = (e: any) => {
     e.stopPropagation();
     if (isFaceExtrudeTarget) return;
-    // Ref modu — referans panel seçimi: ilk tıklamada paneli referans olarak kaydet.
-    if (isRefSelectingPanel) {
-      // Kendi (hedef) panele tıklama — referans olamaz.
-      if (shape.id === faceExtrudeTargetPanelId) return;
-      setFaceExtrudeRefCandidate({
-        panelId: shape.id,
-        faceGroupIndex: -1,
-        normalWorld: [0, 0, 0],
-        pointWorld: [0, 0, 0],
-      });
+    // Ref modu — tüm normal seçim mantığını atla:
+    // - isRefSelectingPanel: henüz referans panel seçili değil, panel seç
+    // - isRefCandidatePanel: referans panel seçili, yüzey seçiliyor
+    if (isRefMode) {
+      if (isRefCandidatePanel) return; // overlay mesh yüzey seçimini halleder
+      if (isRefSelectingPanel) {
+        if (shape.id === faceExtrudeTargetPanelId) return;
+        setFaceExtrudeRefCandidate({
+          panelId: shape.id,
+          faceGroupIndex: -1,
+          normalWorld: [0, 0, 0],
+          pointWorld: [0, 0, 0],
+        });
+      }
       return;
     }
     if (panelSurfaceSelectMode && waitingForSurfaceSelection && e.faceIndex !== undefined) {
