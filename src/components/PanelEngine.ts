@@ -250,7 +250,7 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
         if (Array.isArray(extrudeSteps) && extrudeSteps.length > 0) {
           try {
             const { applyExtrudeSteps } = await import('./FaceExtrudeService');
-            const ext = await applyExtrudeSteps(rp, extrudeSteps);
+            const ext = await applyExtrudeSteps(rp, extrudeSteps, useAppStore.getState().shapes);
             if (ext) {
               rp = ext.shape;
               const eb = new THREE.Box3().setFromBufferAttribute(

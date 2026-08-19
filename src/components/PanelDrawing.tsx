@@ -139,7 +139,10 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     faceExtrudeSelectedFace,
     setFaceExtrudeSelectedFace,
     setFaceExtrudeClickPoint,
-    raycastMode
+    raycastMode,
+    faceExtrudeValueMode,
+    faceExtrudeRefCandidate,
+    setFaceExtrudeRefCandidate
   } = useAppStore(useShallow(state => ({
     selectShape: state.selectShape,
     selectSecondaryShape: state.selectSecondaryShape,
@@ -158,7 +161,10 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     faceExtrudeSelectedFace: state.faceExtrudeSelectedFace,
     setFaceExtrudeSelectedFace: state.setFaceExtrudeSelectedFace,
     setFaceExtrudeClickPoint: state.setFaceExtrudeClickPoint,
-    raycastMode: state.raycastMode
+    raycastMode: state.raycastMode,
+    faceExtrudeValueMode: state.faceExtrudeValueMode,
+    faceExtrudeRefCandidate: state.faceExtrudeRefCandidate,
+    setFaceExtrudeRefCandidate: state.setFaceExtrudeRefCandidate
   })));
 
   const [faceGroups, setFaceGroups] = useState<any[]>([]);
@@ -246,7 +252,13 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   const isFaceExtrudeTarget = faceExtrudeMode && shape.id === faceExtrudeTargetPanelId;
   const isFaceExtrudeXray = faceExtrudeMode && shape.id !== faceExtrudeTargetPanelId;
   const isRaycastOnParent = raycastMode && parentShapeId && parentShapeId === selectedShapeId;
-  const disableRaycast = isFaceExtrudeTarget || isFaceExtrudeXray || isRaycastOnParent;
+  // Ref modu: hedef panel kendi yüz seçimini yapar (Normal akış).
+  // Referans panel seçimi ayrı: faceExtrudeRefCandidate henüz null ise,
+  // kullanıcı 3B'de herhangi bir panele tıklayarak referans seçer.
+  const isRefMode = faceExtrudeMode && faceExtrudeValueMode === 'ref';
+  const isRefSelectingPanel = isRefMode && !faceExtrudeRefCandidate;
+  const isRefCandidatePanel = isRefMode && faceExtrudeRefCandidate?.panelId === shape.id;
+  const disableRaycast = isFaceExtrudeTarget || isFaceExtrudeXray || isRaycastOnParent || isRefSelectingPanel;
 
   useEffect(() => {
     const mesh = meshRef.current;
@@ -288,6 +300,18 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   const handleClick = (e: any) => {
     e.stopPropagation();
     if (isFaceExtrudeTarget) return;
+    // Ref modu — referans panel seçimi: ilk tıklamada paneli referans olarak kaydet.
+    if (isRefSelectingPanel) {
+      // Kendi (hedef) panele tıklama — referans olamaz.
+      if (shape.id === faceExtrudeTargetPanelId) return;
+      setFaceExtrudeRefCandidate({
+        panelId: shape.id,
+        faceGroupIndex: -1,
+        normalWorld: [0, 0, 0],
+        pointWorld: [0, 0, 0],
+      });
+      return;
+    }
     if (panelSurfaceSelectMode && waitingForSurfaceSelection && e.faceIndex !== undefined) {
       const clickedFaceIndex = e.faceIndex;
       const groupIndex = faceGroups.findIndex(group => group.faceIndices.includes(clickedFaceIndex));
@@ -497,6 +521,94 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
             <mesh geometry={extrudeSelectedGeometry} renderOrder={12}>
               <meshBasicMaterial
                 color={0xff0000}
+                transparent
+                opacity={0.85}
+                side={THREE.DoubleSide}
+                depthTest={false}
+                depthWrite={false}
+              />
+            </mesh>
+          )}
+        </>
+      )}
+
+      {/* ── REF CANDIDATE PANEL FACE SELECTION ─────────────────────────── */}
+      {isRefCandidatePanel && (
+        <>
+          <mesh
+            geometry={shape.geometry}
+            renderOrder={10}
+            onPointerDown={(e: any) => {
+              if (e.button === 2) {
+                // Sağ tık = onay
+                e.stopPropagation();
+                if (faceExtrudeRefCandidate?.faceGroupIndex !== undefined && faceExtrudeRefCandidate.faceGroupIndex >= 0) {
+                  // Onay PanelEditor'daki dock'tan yapılacak (Apply butonu).
+                  // Burada sadece olayı durdur.
+                }
+                return;
+              }
+              if (e.button !== 0) return;
+              e.stopPropagation();
+              const fi = e.faceIndex;
+              if (fi !== undefined && fi !== null) {
+                const raw = faceGroups.findIndex(g => g.faceIndices.includes(fi));
+                if (raw !== -1) {
+                  const gi = snapToFlatGroup(raw, faceGroups);
+                  const grp = faceGroups[gi];
+                  // Dünya uzayı normali
+                  const pos = new THREE.Vector3(shape.position[0], shape.position[1], shape.position[2]);
+                  const quat = new THREE.Quaternion().setFromEuler(
+                    new THREE.Euler(shape.rotation[0], shape.rotation[1], shape.rotation[2], 'XYZ')
+                  );
+                  const scl = new THREE.Vector3(shape.scale[0], shape.scale[1], shape.scale[2]);
+                  const m = new THREE.Matrix4().compose(pos, quat, scl);
+                  const normalMatrix = new THREE.Matrix3().getNormalMatrix(m);
+                  const normalWorld = grp.normal.clone().normalize().applyMatrix3(normalMatrix).normalize();
+                  const pointWorld = e.point ? [e.point.x, e.point.y, e.point.z] as [number, number, number] : [0, 0, 0];
+                  setFaceExtrudeRefCandidate({
+                    panelId: shape.id,
+                    faceGroupIndex: gi,
+                    normalWorld: [normalWorld.x, normalWorld.y, normalWorld.z],
+                    pointWorld,
+                  });
+                }
+              }
+            }}
+            onPointerMove={(e: any) => {
+              e.stopPropagation();
+              const fi = e.faceIndex;
+              if (fi !== undefined && fi !== null) {
+                const raw = faceGroups.findIndex(g => g.faceIndices.includes(fi));
+                if (raw !== -1) {
+                  const gi = snapToFlatGroup(raw, faceGroups);
+                  setHoveredExtrudeGroup(gi);
+                }
+              }
+            }}
+            onPointerOut={(e: any) => {
+              e.stopPropagation();
+              setHoveredExtrudeGroup(null);
+            }}
+          >
+            <meshBasicMaterial transparent opacity={0.01} side={THREE.DoubleSide} depthTest={false} depthWrite={false} />
+          </mesh>
+          {hoveredExtrudeGroup !== null && faceGroups[hoveredExtrudeGroup] && (
+            <mesh geometry={createFaceHighlightGeometry(faces, faceGroups[hoveredExtrudeGroup].faceIndices)} renderOrder={11}>
+              <meshBasicMaterial
+                color={0x22c55e}
+                transparent
+                opacity={0.55}
+                side={THREE.DoubleSide}
+                depthTest={false}
+                depthWrite={false}
+              />
+            </mesh>
+          )}
+          {faceExtrudeRefCandidate?.faceGroupIndex !== undefined && faceExtrudeRefCandidate.faceGroupIndex >= 0 && faceGroups[faceExtrudeRefCandidate.faceGroupIndex] && (
+            <mesh geometry={createFaceHighlightGeometry(faces, faceGroups[faceExtrudeRefCandidate.faceGroupIndex].faceIndices)} renderOrder={12}>
+              <meshBasicMaterial
+                color={0x16a34a}
                 transparent
                 opacity={0.85}
                 side={THREE.DoubleSide}

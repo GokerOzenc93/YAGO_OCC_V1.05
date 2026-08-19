@@ -16,6 +16,11 @@ export interface ExtrudeStep {
   /** Local-space point on the clicked face surface — used to uniquely
    *  identify the correct replicad face regardless of center/normal ambiguity. */
   samplePoint?: [number, number, number];
+  /** Ref modu: referans alınan panel id + yüz grubu indeksi + dünya-uzayı normali.
+   *  value, her rebuild'de referans panelinin güncel geometrisinden çözülür. */
+  refShapeId?: string;
+  refFaceGroupIndex?: number;
+  refNormalWorld?: [number, number, number];
 }
 
 export interface FaceExtrudeParams {
@@ -41,6 +46,47 @@ function getAxisLabel(normal: THREE.Vector3): string {
   if (absX >= absY && absX >= absZ) return normal.x > 0 ? 'X+' : 'X-';
   if (absY >= absX && absY >= absZ) return normal.y > 0 ? 'Y+' : 'Y-';
   return normal.z > 0 ? 'Z+' : 'Z-';
+}
+
+/** Referans panelinin seçilen yüzeyinin güncel net boyutunu (dünya uzayında)
+ *  döndürür — referans paneli taşınmış/resize edilmiş olsa bile her rebuild'de
+ *  güncel ölçüyü verir. */
+export function resolveReferenceNetDim(
+  refShapeId: string,
+  refFaceGroupIndex: number,
+  shapes: Shape[]
+): number | null {
+  const refPanel = shapes.find(s => s.id === refShapeId);
+  if (!refPanel?.geometry) return null;
+  const faces = extractFacesFromGeometry(refPanel.geometry);
+  const groups = groupCoplanarFaces(faces);
+  if (refFaceGroupIndex < 0 || refFaceGroupIndex >= groups.length) return null;
+  const group = groups[refFaceGroupIndex];
+  const n = group.normal.clone().normalize();
+  // Yüzün bulunduğu düzlemdeki genişlik (u/v eksenlerinde bbox)
+  const { u, v } = facePlaneBasis(n);
+  let uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity;
+  for (const fi of group.faceIndices) {
+    const f = faces[fi]; if (!f) continue;
+    for (const vert of f.vertices) {
+      const p = vert.clone();
+      const pu = p.dot(u), pv = p.dot(v);
+      uMin = Math.min(uMin, pu); uMax = Math.max(uMax, pu);
+      vMin = Math.min(vMin, pv); vMax = Math.max(vMax, pv);
+    }
+  }
+  const w = uMax - uMin, h = vMax - vMin;
+  if (!isFinite(w) || !isFinite(h)) return null;
+  // Net boyut: yüzeyin büyük kenarı (basan yüzeyin genişliği)
+  return Math.max(w, h);
+}
+
+function facePlaneBasis(normal: THREE.Vector3): { u: THREE.Vector3; v: THREE.Vector3 } {
+  const n = normal.clone().normalize();
+  const up = Math.abs(n.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+  const u = new THREE.Vector3().crossVectors(up, n).normalize();
+  const v = new THREE.Vector3().crossVectors(n, u).normalize();
+  return { u, v };
 }
 
 export function findExistingStepForFace(
@@ -288,7 +334,8 @@ async function applyOneExtrudeStep(
  */
 export async function applyExtrudeSteps(
   shape: any,
-  steps: ExtrudeStep[]
+  steps: ExtrudeStep[],
+  shapes?: Shape[]
 ): Promise<{ shape: any; geometry: THREE.BufferGeometry } | null> {
   if (!steps || steps.length === 0) return null;
   const { convertReplicadToThreeGeometry } = await import('./ReplicadService');
@@ -298,7 +345,17 @@ export async function applyExtrudeSteps(
   let anyApplied = false;
 
   for (const step of steps) {
-    const result = await applyOneExtrudeStep(currentReplicad, step, currentGeometry);
+    // Ref adımı: değer, referans panelinin güncel geometrisinden çözülür.
+    let effectiveStep = step;
+    if (step.refShapeId && shapes) {
+      const refDim = resolveReferenceNetDim(step.refShapeId, step.refFaceGroupIndex ?? -1, shapes);
+      if (refDim != null) {
+        effectiveStep = { ...step, value: refDim, isFixed: true };
+      } else {
+        console.warn(`[YAGO][EXTRUDE-REF] Referans ölçüsü çözülemedi: ${step.refShapeId}`);
+      }
+    }
+    const result = await applyOneExtrudeStep(currentReplicad, effectiveStep, currentGeometry);
     if (result) {
       currentReplicad = result.replicadShape;
       currentGeometry = result.geometry;
@@ -389,6 +446,86 @@ export async function executeFaceExtrude(params: FaceExtrudeParams): Promise<boo
     isFixed,
     timestamp: Date.now(),
     samplePoint: params.clickPoint,
+  };
+
+  const newSteps = existingIdx >= 0
+    ? existingSteps.map((s, i) => (i === existingIdx ? newStep : s))
+    : [...existingSteps, newStep];
+
+  return commitStepsAndRebuild(panel, newSteps, updateShape);
+}
+
+export interface FaceExtrudeRefParams {
+  panelShape: Shape;
+  faceGroupIndex: number;
+  refShapeId: string;
+  refFaceGroupIndex: number;
+  refNormalWorld: [number, number, number];
+  clickPoint?: [number, number, number];
+  shapes: Shape[];
+  updateShape: (id: string, updates: Partial<Shape>) => void;
+  virtualFaceId?: string;
+  vfNormal?: [number, number, number];
+  vfVertex0?: [number, number, number];
+  updateVirtualFace?: (id: string, updates: any) => void;
+}
+
+/** Ref modu: extrude değerini referans panelinin yüzey ölçüsüne bağlar.
+ *  Adım isFixed=true ve ref alanlarıyla saklanır; her rebuild'de
+ *  resolveReferenceNetDim güncel ölçüyü çözüp uygular. */
+export async function executeFaceExtrudeToReference(params: FaceExtrudeRefParams): Promise<boolean> {
+  const { faceGroupIndex, refShapeId, refFaceGroupIndex, shapes, updateShape } = params;
+  const panel = params.panelShape;
+
+  if (!panel.geometry) return false;
+
+  const faces = extractFacesFromGeometry(panel.geometry);
+  const groups = groupCoplanarFaces(faces);
+  if (faceGroupIndex < 0 || faceGroupIndex >= groups.length) return false;
+
+  const rawGroup = groups[faceGroupIndex];
+  let faceNormal = rawGroup.normal.clone().normalize();
+  let faceCenter = rawGroup.center.clone();
+
+  const isFlat = (n: THREE.Vector3) =>
+    Math.abs(n.x) > 0.999 || Math.abs(n.y) > 0.999 || Math.abs(n.z) > 0.999;
+  if (!isFlat(faceNormal)) {
+    const axLbl = getAxisLabel(faceNormal);
+    const candidate = groups
+      .filter(g => {
+        const n = g.normal.clone().normalize();
+        return isFlat(n) && getAxisLabel(n) === axLbl;
+      })
+      .sort((a, b) => a.center.distanceTo(rawGroup.center) - b.center.distanceTo(rawGroup.center))[0];
+    if (candidate) {
+      faceNormal = candidate.normal.clone().normalize();
+      faceCenter = candidate.center.clone();
+    }
+  }
+
+  const axisLabel = getAxisLabel(faceNormal);
+  const existingSteps: ExtrudeStep[] = panel.parameters?.extrudeSteps || [];
+
+  const existingIdx = existingSteps.findIndex(s => {
+    if (s.axisLabel !== axisLabel) return false;
+    const sc = new THREE.Vector3(...s.faceCenter);
+    return sc.distanceTo(faceCenter) < 1.0;
+  });
+
+  // Referans ölçüsünü şimdilik 0 olarak sakla; rebuild sırasında çözülecek.
+  // value=0 geçici — applyExtrudeSteps ref alanlarını görüp resolveReferenceNetDim çağırır.
+  const newStep: ExtrudeStep = {
+    id: `ext-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+    faceNormal: [faceNormal.x, faceNormal.y, faceNormal.z],
+    faceCenter: [faceCenter.x, faceCenter.y, faceCenter.z],
+    axisLabel,
+    value: 0,
+    isFixed: true,
+    timestamp: Date.now(),
+    samplePoint: params.clickPoint,
+    refShapeId,
+    refFaceGroupIndex,
+    refNormalWorld: params.refNormalWorld,
   };
 
   const newSteps = existingIdx >= 0

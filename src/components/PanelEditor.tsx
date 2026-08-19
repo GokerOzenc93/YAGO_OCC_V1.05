@@ -579,7 +579,8 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     faceExtrudeMode, setFaceExtrudeMode, faceExtrudeTargetPanelId,
     setFaceExtrudeTargetPanelId, faceExtrudeSelectedFace, setFaceExtrudeSelectedFace, setFaceExtrudeHoveredFace,
     faceExtrudeThickness, setFaceExtrudeThickness, faceExtrudeFixedMode, setFaceExtrudeFixedMode,
-    faceExtrudeClickPoint,
+    faceExtrudeClickPoint, faceExtrudeValueMode, setFaceExtrudeValueMode,
+    faceExtrudeRefCandidate, setFaceExtrudeRefCandidate,
     panelMoveMode, setPanelMoveMode, panelMoveTargetPanelId, setPanelMoveTargetPanelId,
     panelMoveAxis, setPanelMoveAxis, panelMoveValue, setPanelMoveValue,
     panelRotateMode, setPanelRotateMode, panelRotateTargetPanelId, setPanelRotateTargetPanelId,
@@ -1040,18 +1041,22 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     const hf = faceExtrudeSelectedFace !== null;
     if (!isExt) return null;
 
-    const seg = (f: boolean): React.CSSProperties => ({
+    const isRefMode = faceExtrudeValueMode === 'ref';
+    const hasRefPanel = isRefMode && faceExtrudeRefCandidate?.panelId;
+    const hasRefFace = isRefMode && hasRefPanel && faceExtrudeRefCandidate?.faceGroupIndex !== undefined && faceExtrudeRefCandidate.faceGroupIndex >= 0;
+
+    const segMode = (mode: 'fixed'|'dyn'|'ref'): React.CSSProperties => ({
       flex: 1, minWidth: 0, height: 28, fontSize: 10, fontWeight: 700, letterSpacing: '0.03em',
       border: 'none', outline: 'none', cursor: hf ? 'pointer' : 'not-allowed',
-      borderLeft: !f ? '1px solid rgba(60,50,40,0.10)' : 'none',
-      background: faceExtrudeFixedMode === f ? '#e8e1d5' : 'rgba(255,255,255,0.45)',
-      color: faceExtrudeFixedMode === f ? '#44403c' : '#a8a29e',
-      boxShadow: faceExtrudeFixedMode === f ? 'inset 0 1px 2px rgba(60,50,40,0.14)' : 'none',
+      borderLeft: mode === 'fixed' ? 'none' : '1px solid rgba(60,50,40,0.10)',
+      background: faceExtrudeValueMode === mode ? '#e8e1d5' : 'rgba(255,255,255,0.45)',
+      color: faceExtrudeValueMode === mode ? '#44403c' : '#a8a29e',
+      boxShadow: faceExtrudeValueMode === mode ? 'inset 0 1px 2px rgba(60,50,40,0.14)' : 'none',
       transition: 'all 0.12s',
     });
 
     const exitBtn = (
-      <button onClick={e => { stop(e); setFaceExtrudeSelectedFace(null); setFaceExtrudeMode(false); }}
+      <button onClick={e => { stop(e); setFaceExtrudeSelectedFace(null); setFaceExtrudeMode(false); setFaceExtrudeRefCandidate(null); }}
         title="Çıkış" style={{
           flexShrink: 0, width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
           borderRadius: 7, border: '1px solid rgba(60,50,40,0.12)', cursor: 'pointer', outline: 'none',
@@ -1062,20 +1067,39 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     const onApply = async () => {
       if (!hf || !activePanelId) return;
       const ps = shapes.find(s => s.id === activePanelId); if (!ps) return;
-      const { executeFaceExtrude } = await import('./FaceExtrudeService');
       const vfId = ps.parameters?.virtualFaceId as string | undefined;
       const vf = vfId ? virtualFaces.find(f => f.id === vfId) : undefined;
-      await executeFaceExtrude({
-        panelShape: ps, faceGroupIndex: faceExtrudeSelectedFace!,
-        value: faceExtrudeThickness, isFixed: faceExtrudeFixedMode,
-        shapes, updateShape, clickPoint: faceExtrudeClickPoint ?? undefined,
-        virtualFaceId: vfId,
-        vfNormal: vf?.normal as [number, number, number] | undefined,
-        vfVertex0: vf?.vertices?.[0] as [number, number, number] | undefined,
-        updateVirtualFace,
-      });
+
+      if (isRefMode) {
+        if (!hasRefFace) return;
+        const { executeFaceExtrudeToReference } = await import('./FaceExtrudeService');
+        await executeFaceExtrudeToReference({
+          panelShape: ps, faceGroupIndex: faceExtrudeSelectedFace!,
+          refShapeId: faceExtrudeRefCandidate!.panelId,
+          refFaceGroupIndex: faceExtrudeRefCandidate!.faceGroupIndex,
+          refNormalWorld: faceExtrudeRefCandidate!.normalWorld,
+          clickPoint: faceExtrudeClickPoint ?? undefined,
+          shapes, updateShape,
+          virtualFaceId: vfId,
+          vfNormal: vf?.normal as [number, number, number] | undefined,
+          vfVertex0: vf?.vertices?.[0] as [number, number, number] | undefined,
+          updateVirtualFace,
+        });
+      } else {
+        const { executeFaceExtrude } = await import('./FaceExtrudeService');
+        await executeFaceExtrude({
+          panelShape: ps, faceGroupIndex: faceExtrudeSelectedFace!,
+          value: faceExtrudeThickness, isFixed: faceExtrudeFixedMode,
+          shapes, updateShape, clickPoint: faceExtrudeClickPoint ?? undefined,
+          virtualFaceId: vfId,
+          vfNormal: vf?.normal as [number, number, number] | undefined,
+          vfVertex0: vf?.vertices?.[0] as [number, number, number] | undefined,
+          updateVirtualFace,
+        });
+      }
       setFaceExtrudeSelectedFace(null);
       setFaceExtrudeMode(false);
+      setFaceExtrudeRefCandidate(null);
     };
 
     return (
@@ -1091,35 +1115,51 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 9px' }}>
           {hf ? (
             <>
-              <input
-                type="text" inputMode="numeric" value={extrudeThicknessStr}
-                onChange={e => {
-                  const v = e.target.value;
-                  setExtrudeThicknessStr(v);
-                  const p = parseFloat(v);
-                  if (!isNaN(p)) setFaceExtrudeThickness(p);
-                }}
-                onBlur={() => {
-                  const p = parseFloat(extrudeThicknessStr);
-                  if (isNaN(p)) { setExtrudeThicknessStr(String(faceExtrudeThickness)); }
-                  else { setFaceExtrudeThickness(p); setExtrudeThicknessStr(String(p)); }
-                }}
-                style={{
-                  flex: 1, minWidth: 0, height: 28, textAlign: 'center', fontFamily: 'monospace', fontSize: 13, fontWeight: 600,
-                  color: '#1c1917', background: 'linear-gradient(180deg,#fff,#faf8f3)', border: '1px solid rgba(60,50,40,0.16)',
-                  borderRadius: 7, outline: 'none', boxShadow: 'inset 0 1px 2px rgba(40,30,20,0.06)',
-                }}
-              />
-              <div style={{ display: 'flex', width: 86, flexShrink: 0, borderRadius: 7, overflow: 'hidden', border: '1px solid rgba(60,50,40,0.16)' }}>
-                {[true, false].map(f => (
-                  <button key={String(f)} onClick={() => setFaceExtrudeFixedMode(f)} style={seg(f)}>{f ? 'Fixed' : 'Dyn'}</button>
+              {!isRefMode && (
+                <input
+                  type="text" inputMode="numeric" value={extrudeThicknessStr}
+                  onChange={e => {
+                    const v = e.target.value;
+                    setExtrudeThicknessStr(v);
+                    const p = parseFloat(v);
+                    if (!isNaN(p)) setFaceExtrudeThickness(p);
+                  }}
+                  onBlur={() => {
+                    const p = parseFloat(extrudeThicknessStr);
+                    if (isNaN(p)) { setExtrudeThicknessStr(String(faceExtrudeThickness)); }
+                    else { setFaceExtrudeThickness(p); setExtrudeThicknessStr(String(p)); }
+                  }}
+                  style={{
+                    flex: 1, minWidth: 0, height: 28, textAlign: 'center', fontFamily: 'monospace', fontSize: 13, fontWeight: 600,
+                    color: '#1c1917', background: 'linear-gradient(180deg,#fff,#faf8f3)', border: '1px solid rgba(60,50,40,0.16)',
+                    borderRadius: 7, outline: 'none', boxShadow: 'inset 0 1px 2px rgba(40,30,20,0.06)',
+                  }}
+                />
+              )}
+              {isRefMode && (
+                <div style={{
+                  flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 6, height: 28, padding: '0 10px', borderRadius: 7,
+                  background: hasRefFace ? 'rgba(34,197,94,0.10)' : 'rgba(120,113,108,0.08)',
+                  border: hasRefFace ? '1px solid rgba(22,163,74,0.30)' : '1px solid rgba(60,50,40,0.10)',
+                }}>
+                  <span style={{ width: 5, height: 5, borderRadius: '50%', background: hasRefFace ? '#16a34a' : '#a8a29e', flexShrink: 0 }} />
+                  <span style={{ fontSize: 11, fontWeight: 500, color: hasRefFace ? '#15803d' : '#78716c', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {hasRefFace ? 'Referans yüzey seçildi' : hasRefPanel ? 'Referans yüzeyi seç' : 'Referans paneli seç'}
+                  </span>
+                </div>
+              )}
+              <div style={{ display: 'flex', width: isRefMode ? 120 : 86, flexShrink: 0, borderRadius: 7, overflow: 'hidden', border: '1px solid rgba(60,50,40,0.16)' }}>
+                {(['fixed','dyn','ref'] as const).map(m => (
+                  <button key={m} onClick={() => { if (hf) { setFaceExtrudeValueMode(m); if (m === 'fixed') setFaceExtrudeFixedMode(true); if (m === 'dyn') setFaceExtrudeFixedMode(false); if (m !== 'ref') setFaceExtrudeRefCandidate(null); } }} style={segMode(m)}>{m === 'fixed' ? 'Fixed' : m === 'dyn' ? 'Dyn' : 'Ref'}</button>
                 ))}
               </div>
               <button onClick={onApply} title="Uygula" style={{
                 flexShrink: 0, width: 32, height: 28, borderRadius: 7, border: 'none', cursor: 'pointer', outline: 'none',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                background: 'linear-gradient(180deg,#5b5346,#44403c)', color: '#fff',
+                background: isRefMode && !hasRefFace ? 'rgba(120,113,108,0.30)' : 'linear-gradient(180deg,#5b5346,#44403c)',
+                color: '#fff',
                 boxShadow: '0 1px 2px rgba(40,30,20,0.25),inset 0 1px 0 rgba(255,255,255,0.18)',
+                opacity: isRefMode && !hasRefFace ? 0.5 : 1,
               }}><Check size={15} strokeWidth={2.5} /></button>
               {exitBtn}
             </>
@@ -1488,7 +1528,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                     <>
                       <span className="flex-1 font-mono text-xs font-bold text-stone-800 tabular-nums">{s.value}{s.stepType === 'rotate' ? '\u00B0' : ''}</span>
                       {s.stepType === 'extrude' && s.isFixed !== undefined && (
-                        <span className="shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-sm bg-stone-100 text-stone-500">{s.isFixed ? 'F' : 'D'}</span>
+                        <span className="shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-sm bg-stone-100 text-stone-500">{(s.original as any)?.refShapeId ? 'R' : s.isFixed ? 'F' : 'D'}</span>
                       )}
                       <button onClick={() => {
                         if (s.stepType === 'extrude') { setEditingStepId(s.id); setEditingStepValue(String(s.value)); }

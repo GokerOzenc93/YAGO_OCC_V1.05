@@ -167,6 +167,11 @@ interface AppState{
   faceExtrudeClickPoint:[number,number,number]|null;setFaceExtrudeClickPoint:(p:[number,number,number]|null)=>void;
   faceExtrudeThickness:number;setFaceExtrudeThickness:(v:number)=>void;
   faceExtrudeFixedMode:boolean;setFaceExtrudeFixedMode:(b:boolean)=>void;
+  /** 'fixed' = sabit değer, 'dyn' = delta, 'ref' = referans yüzeye bağlı. */
+  faceExtrudeValueMode:'fixed'|'dyn'|'ref';setFaceExtrudeValueMode:(m:'fixed'|'dyn'|'ref')=>void;
+  /** Ref modunda seçilen referans panel id + yüz grubu indeksi. */
+  faceExtrudeRefCandidate:{panelId:string;faceGroupIndex:number;normalWorld:[number,number,number];pointWorld:[number,number,number]}|null;
+  setFaceExtrudeRefCandidate:(v:{panelId:string;faceGroupIndex:number;normalWorld:[number,number,number];pointWorld:[number,number,number]}|null)=>void;
 
   panelMoveMode:boolean;setPanelMoveMode:(b:boolean)=>void;
   panelMoveTargetPanelId:string|null;setPanelMoveTargetPanelId:(id:string|null)=>void;
@@ -224,13 +229,15 @@ export const useAppStore=create<AppState>((set,get)=>({
   raycastMode:false,setRaycastMode:(e)=>set({raycastMode:e,raycastResults:e?get().raycastResults:[]}),
   raycastResults:[],setRaycastResults:(r)=>set({raycastResults:r}),
 
-  faceExtrudeMode:false,setFaceExtrudeMode:(b)=>set({faceExtrudeMode:b,faceExtrudeHoveredFace:null,faceExtrudeSelectedFace:null,faceExtrudeClickPoint:null,...(!b?{faceExtrudeTargetPanelId:null}:{})}),
+  faceExtrudeMode:false,setFaceExtrudeMode:(b)=>set({faceExtrudeMode:b,faceExtrudeHoveredFace:null,faceExtrudeSelectedFace:null,faceExtrudeClickPoint:null,...(!b?{faceExtrudeTargetPanelId:null,faceExtrudeRefCandidate:null}:{})}),
   faceExtrudeTargetPanelId:null,setFaceExtrudeTargetPanelId:(id)=>set({faceExtrudeTargetPanelId:id}),
   faceExtrudeHoveredFace:null,setFaceExtrudeHoveredFace:(i)=>set({faceExtrudeHoveredFace:i}),
   faceExtrudeSelectedFace:null,setFaceExtrudeSelectedFace:(i)=>set({faceExtrudeSelectedFace:i}),
   faceExtrudeClickPoint:null,setFaceExtrudeClickPoint:(p)=>set({faceExtrudeClickPoint:p}),
   faceExtrudeThickness:18,setFaceExtrudeThickness:(v)=>set({faceExtrudeThickness:v}),
   faceExtrudeFixedMode:true,setFaceExtrudeFixedMode:(b)=>set({faceExtrudeFixedMode:b}),
+  faceExtrudeValueMode:'fixed',setFaceExtrudeValueMode:(m)=>set({faceExtrudeValueMode:m}),
+  faceExtrudeRefCandidate:null,setFaceExtrudeRefCandidate:(v)=>set({faceExtrudeRefCandidate:v}),
 
   panelMoveMode:false,setPanelMoveMode:(b)=>set({panelMoveMode:b,...(!b?{panelMoveTargetPanelId:null,panelMoveAxis:null,panelMoveValue:0}:{})}),
   panelMoveTargetPanelId:null,setPanelMoveTargetPanelId:(id)=>set({panelMoveTargetPanelId:id}),
