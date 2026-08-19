@@ -375,54 +375,105 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
   try {
     const afterShapes = useAppStore.getState().shapes;
     const builtSolid = new Map<string, any>();      // SON (değişmez) üretilmiş katılar
+    const bboxOf = new Map<string, { min: THREE.Vector3; max: THREE.Vector3 }>();
     for (const s of afterShapes) {
-      if (s.type === 'panel' && (s as any).replicadShape) builtSolid.set(s.id, (s as any).replicadShape);
+      if (s.type === 'panel' && (s as any).replicadShape) {
+        builtSolid.set(s.id, (s as any).replicadShape);
+        // Kaba örtüşme ön-filtresi için bbox (tüm paneller parent-yerel, aynı çerçeve).
+        const g: any = (s as any).geometry;
+        if (g) {
+          g.computeBoundingBox?.();
+          if (g.boundingBox) bboxOf.set(s.id, { min: g.boundingBox.min.clone(), max: g.boundingBox.max.clone() });
+        }
+      }
     }
-    // Yalnız BİR KEZ işlenecek yönlü çift kümesi (mükerrer/karşılıklı referansta
-    // aynı düşük-öncelikli paneli iki kez budamamak için).
-    const notched = new Map<string, any>();         // düşük panel id → güncel katı
-    const donePair = new Set<string>();
-    for (const panel of children) {
-      const steps: any[] = (panel.parameters as any)?.extrudeSteps || [];
-      const refIds = Array.from(new Set(
-        steps.filter(st => st && st.referenceShapeId).map(st => st.referenceShapeId as string)
-      ));
-      if (refIds.length === 0) continue;
-      for (const rid of refIds) {
-        if (rid === panel.id) continue;
-        const refShape = afterShapes.find(s => s.id === rid);
-        // Yalnız KARDEŞ PANEL referansında çıkar; küp/eksik katı → atla
-        // (küp referansı davranışı: düzlem kesimi + parent kırpma korunur).
-        if (!refShape || refShape.type !== 'panel') continue;
-        const a = panel.id, b = rid;
-        const pairKey = orderOf(panel) <= orderOf(refShape) ? a + '|' + b : b + '|' + a;
-        if (donePair.has(pairKey)) continue;
-        donePair.add(pairKey);
-        // ÖNCELİK: küçük orderOf = yüksek öncelik = dokunulmaz (hi). Diğeri (lo)
-        // budanır. Eşitlikte hedef (panel) yüksek sayılır.
-        const hiId = orderOf(panel) <= orderOf(refShape) ? a : b;
-        const loId = hiId === a ? b : a;
-        const hiSolid = builtSolid.get(hiId);
-        const loSolid = notched.get(loId) ?? builtSolid.get(loId);
-        if (!hiSolid || !loSolid) continue;
+
+    // GENEL KARDEŞ BİRLEŞİM (dominant YÜZEY DÜZLEMİ): referans olsun olmasın,
+    // temas eden her panel çiftinde öncelik uygulanır. Yüksek öncelikli (küçük
+    // orderOf = önce yerleştirilen = dominant) panel dokunulmaz; düşük öncelikli
+    // komşu, dominantın TEMAS YÜZÜNÜN düzlemine kadar DÜZ KISALTILIR — çentik/L
+    // OLUŞMAZ ("paneller şekil almasın").
+    //   • Gövde kesimi (lo.cut(hi)) dominant KISA olduğunda L bırakır. Onun
+    //     yerine dominantın yüzünü SONSUZ DÜZLEM alıp yarı-uzay kutusuyla düz
+    //     keseriz → lo, o düzlemde biter (temiz butt, rektangüler kalır).
+    //   • DİKLİK KAPISI: yalnız kalınlık ekseni FARKLI (birbirine dik) panellerde
+    //     uygulanır; paralel/koplanar (yan yana / üst üste) komşular kesilmez.
+    //   • bbox örtüşmesi yoksa çift atlanır (hız). Tümü parent-yerel çerçevede.
+    const { draw } = await import('replicad');
+    const boxSolid = (x0: number, x1: number, y0: number, y1: number, z0: number, z1: number): any =>
+      draw().movePointerTo([x0, y0]).lineTo([x1, y0]).lineTo([x1, y1]).lineTo([x0, y1]).close()
+        .sketchOnPlane().extrude(z1 - z0).translate(0, 0, z0);
+
+    const eps = 0.5;
+    const bboxOverlap = (a: string, b: string): boolean => {
+      const ba = bboxOf.get(a), bb = bboxOf.get(b);
+      if (!ba || !bb) return true;
+      return ba.min.x <= bb.max.x + eps && ba.max.x + eps >= bb.min.x
+          && ba.min.y <= bb.max.y + eps && ba.max.y + eps >= bb.min.y
+          && ba.min.z <= bb.max.z + eps && ba.max.z + eps >= bb.min.z;
+    };
+
+    // Öncelik sırasına diz (yüksek öncelik önce).
+    const ordered = children
+      .filter(p => builtSolid.has(p.id))
+      .sort((a, b) => orderOf(a) - orderOf(b));
+
+    const notched = new Map<string, any>();           // düşük panel id → güncel katı
+    const AX = ['x', 'y', 'z'] as const;
+
+    for (let i = 0; i < ordered.length; i++) {
+      const hi = ordered[i];
+      const hiB = bboxOf.get(hi.id);
+      if (!hiB) continue;
+      const hiExt = [hiB.max.x - hiB.min.x, hiB.max.y - hiB.min.y, hiB.max.z - hiB.min.z];
+      const tHi = hiExt.indexOf(Math.min(...hiExt));  // dominantın kalınlık ekseni
+      const A = AX[tHi];
+      const hiMin = hiB.min[A], hiMax = hiB.max[A], cHi = (hiMin + hiMax) / 2;
+
+      for (let j = i + 1; j < ordered.length; j++) {
+        const lo = ordered[j];
+        if (!bboxOverlap(hi.id, lo.id)) continue;
+        const loB = bboxOf.get(lo.id);
+        if (!loB) continue;
+        const loExt = [loB.max.x - loB.min.x, loB.max.y - loB.min.y, loB.max.z - loB.min.z];
+        const tLo = loExt.indexOf(Math.min(...loExt));
+        if (tLo === tHi) continue;                     // DİKLİK KAPISI: paralel → kesme
+        const loSolid = notched.get(lo.id) ?? builtSolid.get(lo.id);
+        if (!loSolid) continue;
+
+        const cLo = (loB.min[A] + loB.max[A]) / 2;
+        const BIG = 100000, m = 10;
+        // Kesilecek yarı-uzay: dominantın temas yüzünün ÖTE tarafını kaldır.
+        let a0: number, a1: number, faceVal: number;
+        if (cLo <= cHi) { a0 = hiMin; a1 = hiMin + BIG; faceVal = hiMin; } // lo, hi'nin −'inde → hiMin ötesi
+        else            { a0 = hiMax - BIG; a1 = hiMax; faceVal = hiMax; } // lo, hi'nin +'ında → hiMax berisi
+        // Diğer iki eksende lo'nun TÜM kesitini kapsa → uç düz kesilir (çentik yok).
+        const rx: [number, number] = [loB.min.x - m, loB.max.x + m];
+        const ry: [number, number] = [loB.min.y - m, loB.max.y + m];
+        const rz: [number, number] = [loB.min.z - m, loB.max.z + m];
+        if (A === 'x') { rx[0] = a0; rx[1] = a1; }
+        else if (A === 'y') { ry[0] = a0; ry[1] = a1; }
+        else { rz[0] = a0; rz[1] = a1; }
+
         try {
-          const cut = loSolid.cut(hiSolid);   // DÜŞÜK panelden YÜKSEK'i çıkar
-          notched.set(loId, cut);
-          console.log('[YAGO][MOTOR] referans-kardeş birleşim kesimi (dominant yüz):',
-            'kesilen(düşük)=', loId, 'referans(yüksek)=', hiId);
+          const box = boxSolid(rx[0], rx[1], ry[0], ry[1], rz[0], rz[1]);
+          const cut = loSolid.cut(box);                // dominant yüzey düzleminde DÜZ kes
+          notched.set(lo.id, cut);
+          console.log('[YAGO][MOTOR] kardeş kısaltma (dominant yüzey düzlemi): kesilen(düşük)=', lo.id,
+            'dominant(yüksek)=', hi.id, 'eksen=', A, 'yüz=', faceVal.toFixed(1));
         } catch (err) {
-          console.warn('[YAGO][MOTOR] referans-kardeş kesimi başarısız, atlandı:', loId, hiId,
+          console.warn('[YAGO][MOTOR] kardeş kısaltma başarısız, atlandı:', lo.id, hi.id,
             (err as any)?.message || String(err));
         }
       }
     }
-    // Budanan (düşük öncelikli) panelleri tek seferde yaz.
+    // Kısaltılan (düşük öncelikli) panelleri tek seferde yaz.
     for (const [id, solid] of notched) {
       const geometry = convertReplicadToThreeGeometry(solid);
       updateShape(id, { geometry, replicadShape: solid } as any);
     }
   } catch (err) {
-    console.error('[YAGO][MOTOR] AŞAMA 4 referans-kardeş kesimi hatası:',
+    console.error('[YAGO][MOTOR] AŞAMA 4 kardeş birleşim kesimi hatası:',
       (err as any)?.message || String(err));
   }
 }
