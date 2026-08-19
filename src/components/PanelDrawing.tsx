@@ -258,7 +258,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   const isRefMode = faceExtrudeMode && faceExtrudeValueMode === 'ref';
   const isRefSelectingPanel = isRefMode && !faceExtrudeRefCandidate;
   const isRefCandidatePanel = isRefMode && faceExtrudeRefCandidate?.panelId === shape.id;
-  const disableRaycast = isFaceExtrudeTarget || isFaceExtrudeXray || isRaycastOnParent || isRefSelectingPanel;
+  const disableRaycast = isFaceExtrudeTarget || (isFaceExtrudeXray && !isRefSelectingPanel && !isRefCandidatePanel) || isRaycastOnParent;
 
   useEffect(() => {
     const mesh = meshRef.current;
