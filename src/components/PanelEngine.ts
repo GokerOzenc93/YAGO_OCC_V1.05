@@ -246,6 +246,7 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
         // yakalandığı için eşleşme birebir tutar; taban ARTIK origin kutusu
         // DEĞİL → panel "alakasız yere" ışınlanmaz.
         let dimsUpdate: { width: number; height: number; depth: number } | null = null;
+        let resolvedStepsUpdate: any[] | null = null;
         const extrudeSteps = (panel.parameters as any)?.extrudeSteps;
         if (Array.isArray(extrudeSteps) && extrudeSteps.length > 0) {
           try {
@@ -263,6 +264,19 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
                 height: Math.round(dsz[1] * 10) / 10,
                 depth: Math.round(dsz[2] * 10) / 10,
               };
+              // Ref adımlarının çözülen değerini adıma yaz — editör "İşlem
+              // adımları" listesi 0 yerine gerçek miktarı (ör. -122) göstersin.
+              // Değer değişmediyse yazma (gereksiz store dalgalanmasını önle).
+              if (ext.resolved && ext.resolved.length) {
+                const byId = new Map(ext.resolved.map(r => [r.id, r.value]));
+                let changed = false;
+                const merged = extrudeSteps.map((s: any) => {
+                  const rv = byId.get(s.id);
+                  if (rv != null && s.resolvedValue !== rv) { changed = true; return { ...s, resolvedValue: rv }; }
+                  return s;
+                });
+                if (changed) resolvedStepsUpdate = merged;
+              }
             }
           } catch (err) {
             console.error('[YAGO][MOTOR] extrude adımı hatası:', panel.id,
@@ -271,14 +285,18 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
         }
 
         const geometry = convertReplicadToThreeGeometry(rp);
+        const paramPatch: any = {};
+        if (dimsUpdate) Object.assign(paramPatch, dimsUpdate);
+        if (resolvedStepsUpdate) paramPatch.extrudeSteps = resolvedStepsUpdate;
         updateShape(panel.id, {
           geometry,
           position: parentPos,
           rotation: [0, 0, 0],
           replicadShape: rp,
-          // Boyutlar yalnız extrude uygulandıysa güncellenir (editör W/H/T doğru
-          // göstersin); aksi halde parameters'a dokunulmaz.
-          ...(dimsUpdate ? { parameters: { ...panel.parameters, ...dimsUpdate } } : {}),
+          // Boyutlar/çözülen-değer yalnız gerektiğinde parameters'a yazılır
+          // (editör W/H/T ve ref adım değeri doğru göstersin); aksi halde
+          // parameters'a dokunulmaz.
+          ...(Object.keys(paramPatch).length ? { parameters: { ...panel.parameters, ...paramPatch } } : {}),
         } as any);
       } catch (err) {
         console.error('[YAGO][MOTOR] panel üretim hatası:', panel.id,

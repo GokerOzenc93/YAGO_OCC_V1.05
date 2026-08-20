@@ -22,6 +22,16 @@ export interface ExtrudeStep {
   refFaceGroupIndex?: number;
   refNormalWorld?: [number, number, number];
   refPointWorld?: [number, number, number];
+  /** Rebuild sırasında referans panelinin GÜNCEL geometrisinden çözülen
+   *  hedef düzlem — paylaşılan parent-yerel çerçevede (tüm kardeş paneller
+   *  position=parentPos + rotation=0 olduğu için aynı çerçeve). extrudeAmount
+   *  bu düzleme ulaşacak işaretli mesafeden hesaplanır. Sadece runtime'da
+   *  effectiveStep'e eklenir; kalıcı SPEC'te tutulmaz. */
+  refPlaneCenterLocal?: [number, number, number];
+  refPlaneNormalLocal?: [number, number, number];
+  /** Ref adımının en son rebuild'de çözülen işaretli extrude miktarı. Yalnız
+   *  UI gösterimi içindir (value=0 ref işaretçisi olarak korunur). */
+  resolvedValue?: number;
 }
 
 export interface FaceExtrudeParams {
@@ -49,16 +59,16 @@ function getAxisLabel(normal: THREE.Vector3): string {
   return normal.z > 0 ? 'Z+' : 'Z-';
 }
 
-/** Referans panelinin seçilen yüzeyinin güncel net boyutunu (dünya uzayında)
- *  döndürür — referans paneli taşınmış/resize edilmiş olsa bile her rebuild'de
- *  güncel ölçüyü verir. */
-export function resolveReferenceNetDim(
+/** Referans panelinin GÜNCEL geometrisinde, kullanıcının tıkladığı yüz grubunu
+ *  (normal + tıklama noktası ile) eşleştirir ve grubu döndürür. Referans paneli
+ *  taşınmış/resize edilmiş olsa bile her rebuild'de güncel grup bulunur. */
+function matchReferenceGroup(
   refShapeId: string,
   refFaceGroupIndex: number,
   shapes: Shape[],
   refNormalWorld?: [number, number, number],
   refPointWorld?: [number, number, number]
-): number | null {
+): { center: THREE.Vector3; normal: THREE.Vector3 } | null {
   const refPanel = shapes.find(s => s.id === refShapeId);
   if (!refPanel?.geometry) return null;
   const faces = extractFacesFromGeometry(refPanel.geometry);
@@ -70,7 +80,12 @@ export function resolveReferenceNetDim(
       new THREE.Quaternion().setFromEuler(new THREE.Euler(...refPanel.rotation)),
       new THREE.Vector3(...refPanel.scale)
     );
-    const localPoint = new THREE.Vector3(...refPointWorld).applyMatrix4(panelMatrix.invert());
+    // ÖNEMLİ: panelMatrix.invert() matrisi YERİNDE değiştirir. Nokta için tersini
+    // ayrı bir klonda al; normal yön dönüşümü (transformDirection) için ORİJİNAL
+    // matrisi kullan. (Eski kod invert edilmiş matrisi normal için de kullanıyordu
+    // → identity dışı dönüşte normal yanlış yöne çevriliyordu.)
+    const invMatrix = panelMatrix.clone().invert();
+    const localPoint = new THREE.Vector3(...refPointWorld).applyMatrix4(invMatrix);
     const targetNormal = new THREE.Vector3(...refNormalWorld).transformDirection(panelMatrix);
     const matched = groups
       .filter(candidate => candidate.normal.clone().normalize().dot(targetNormal) > 0.8)
@@ -78,31 +93,30 @@ export function resolveReferenceNetDim(
     if (matched) group = matched;
   }
   if (!group) return null;
-  const n = group.normal.clone().normalize();
-  // Yüzün bulunduğu düzlemdeki genişlik (u/v eksenlerinde bbox)
-  const { u, v } = facePlaneBasis(n);
-  let uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity;
-  for (const fi of group.faceIndices) {
-    const f = faces[fi]; if (!f) continue;
-    for (const vert of f.vertices) {
-      const p = vert.clone();
-      const pu = p.dot(u), pv = p.dot(v);
-      uMin = Math.min(uMin, pu); uMax = Math.max(uMax, pu);
-      vMin = Math.min(vMin, pv); vMax = Math.max(vMax, pv);
-    }
-  }
-  const w = uMax - uMin, h = vMax - vMin;
-  if (!isFinite(w) || !isFinite(h)) return null;
-  // Net boyut: yüzeyin büyük kenarı (basan yüzeyin genişliği)
-  return Math.max(w, h);
+  return { center: group.center.clone(), normal: group.normal.clone().normalize() };
 }
 
-function facePlaneBasis(normal: THREE.Vector3): { u: THREE.Vector3; v: THREE.Vector3 } {
-  const n = normal.clone().normalize();
-  const up = Math.abs(n.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
-  const u = new THREE.Vector3().crossVectors(up, n).normalize();
-  const v = new THREE.Vector3().crossVectors(n, u).normalize();
-  return { u, v };
+/** Referans yüzeyinin güncel DÜZLEMİNİ döndürür: yüz merkezi (düzlem üzerinde bir
+ *  nokta) + normali, referans panelinin parent-yerel çerçevesinde.
+ *
+ *  KÖK NEDEN (bu düzeltmenin sebebi): Eski resolveReferenceNetDim yüzeyin NET
+ *  BOYUTUNU (genişliğini) döndürüyordu; applyOneExtrudeStep bunu isFixed hedef
+ *  ölçüsü sanıp `value − faceDist` hesaplıyordu. Panel X'te 0..600 (faceDist=600)
+ *  ve referans yüzü de 600 genişse extrudeAmount = 600 − 600 = 0 → panel HİÇ
+ *  extrude olmuyordu; referansın taşınması (mesafe/işaret) tamamen görmezden
+ *  geliniyordu. Doğrusu: extrude yüzünü referans DÜZLEMİNE ulaştıran işaretli
+ *  mesafe. Bu fonksiyon o düzlemi verir; mesafe applyOneExtrudeStep'te güncel
+ *  eşleşen yüze göre hesaplanır. Tüm kardeş paneller aynı parent-yerel çerçevede
+ *  (position=parentPos, rotation=0) üretildiği için referans merkezi doğrudan
+ *  hedef panelin yüz merkeziyle karşılaştırılabilir. */
+export function resolveReferenceFacePlane(
+  refShapeId: string,
+  refFaceGroupIndex: number,
+  shapes: Shape[],
+  refNormalWorld?: [number, number, number],
+  refPointWorld?: [number, number, number]
+): { center: THREE.Vector3; normal: THREE.Vector3 } | null {
+  return matchReferenceGroup(refShapeId, refFaceGroupIndex, shapes, refNormalWorld, refPointWorld);
 }
 
 export function findExistingStepForFace(
@@ -197,7 +211,7 @@ async function applyOneExtrudeStep(
   currentShape: any,
   step: ExtrudeStep,
   geometry: THREE.BufferGeometry
-): Promise<{ replicadShape: any; geometry: THREE.BufferGeometry } | null> {
+): Promise<{ replicadShape: any; geometry: THREE.BufferGeometry; amount: number } | null> {
   const { convertReplicadToThreeGeometry, initReplicad } = await import('./ReplicadService');
   const oc = await initReplicad();
 
@@ -270,7 +284,23 @@ async function applyOneExtrudeStep(
   const faceCenter = bestGroup.center.clone();
 
   let extrudeAmount: number;
-  if (step.isFixed) {
+  if (step.refPlaneCenterLocal) {
+    // REF MODU: extrude yüzünü referans düzlemine ulaştıran işaretli mesafe.
+    // (refMerkez − yüzMerkez) · yüzNormali → +değer büyütme (fuse), −değer
+    // küçültme (cut). Kullanıcı senaryosu: referans -122 taşınmış → amount=-122.
+    const refC = new THREE.Vector3(...step.refPlaneCenterLocal);
+    // Referans yüzü extrude eksenine ~paralel değilse "ulaşma" tanımsız → atla.
+    if (step.refPlaneNormalLocal) {
+      const refN = new THREE.Vector3(...step.refPlaneNormalLocal).normalize();
+      const par = Math.abs(refN.dot(faceNormal));
+      if (par < 0.7) {
+        console.warn(`[applyOneExtrudeStep] Ref yüzü extrude eksenine paralel değil (|dot|=${par.toFixed(2)}) — adım atlandı`);
+        return null;
+      }
+    }
+    extrudeAmount = refC.clone().sub(faceCenter).dot(faceNormal);
+    console.log(`[YAGO][EXTRUDE-REF] hedefDüzlem= ${refC.toArray().map(x => x.toFixed(1)).join(',')} yüzMerkez= ${faceCenter.toArray().map(x => x.toFixed(1)).join(',')} normal= ${faceNormal.toArray().map(x => x.toFixed(0)).join(',')} miktar= ${extrudeAmount.toFixed(1)}`);
+  } else if (step.isFixed) {
     // Measure the current distance from the selected face to the opposite
     // bounding-box boundary along the face's normal. Using the face centre
     // position (not the full bbox size) gives the correct result even for
@@ -331,7 +361,7 @@ async function applyOneExtrudeStep(
     : currentShape.cut(extrudedShape);
 
   const newGeometry = convertReplicadToThreeGeometry(finalShape);
-  return { replicadShape: finalShape, geometry: newGeometry };
+  return { replicadShape: finalShape, geometry: newGeometry, amount: extrudeAmount };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -352,29 +382,44 @@ export async function applyExtrudeSteps(
   shape: any,
   steps: ExtrudeStep[],
   shapes?: Shape[]
-): Promise<{ shape: any; geometry: THREE.BufferGeometry } | null> {
+): Promise<{ shape: any; geometry: THREE.BufferGeometry; resolved: Array<{ id: string; value: number }> } | null> {
   if (!steps || steps.length === 0) return null;
   const { convertReplicadToThreeGeometry } = await import('./ReplicadService');
 
   let currentReplicad = shape;
   let currentGeometry = convertReplicadToThreeGeometry(currentReplicad);
   let anyApplied = false;
+  // Ref adımlarının çözülen (işaretli) extrude miktarı — UI'da "0" yerine
+  // gerçek değeri (ör. -122) göstermek için PanelEngine adıma geri yazar.
+  const resolved: Array<{ id: string; value: number }> = [];
 
   for (const step of steps) {
-    // Ref adımı: değer, referans panelinin güncel geometrisinden çözülür.
+    // Ref adımı: extrude yüzünü referans DÜZLEMİNE ulaştıran işaretli mesafe.
+    // Düzlem, referans panelinin GÜNCEL geometrisinden çözülür (taşınmış/resize
+    // edilmişse yeni konumdan). extrudeAmount, applyOneExtrudeStep'te güncel
+    // eşleşen yüze göre hesaplanır — böylece referans -X taşındığında panel
+    // doğru şekilde küçülür (retract/cut), büyütüldüğünde büyür (fuse).
     let effectiveStep = step;
     if (step.refShapeId && shapes) {
-      const refDim = resolveReferenceNetDim(
+      const plane = resolveReferenceFacePlane(
         step.refShapeId,
         step.refFaceGroupIndex ?? -1,
         shapes,
         step.refNormalWorld,
         step.refPointWorld
       );
-      if (refDim != null) {
-        effectiveStep = { ...step, value: refDim, isFixed: true };
+      if (plane) {
+        effectiveStep = {
+          ...step,
+          refPlaneCenterLocal: [plane.center.x, plane.center.y, plane.center.z],
+          refPlaneNormalLocal: [plane.normal.x, plane.normal.y, plane.normal.z],
+        };
       } else {
-        console.warn(`[YAGO][EXTRUDE-REF] Referans ölçüsü çözülemedi: ${step.refShapeId}`);
+        // Referans paneli silinmiş/çözülemiyor → adımı HİÇ uygulama. (Aksi halde
+        // value=0 + isFixed net-dim dalına düşüp paneli yanlışça bütünüyle
+        // kesebilirdi.)
+        console.warn(`[YAGO][EXTRUDE-REF] Referans düzlemi çözülemedi: ${step.refShapeId} — adım atlandı`);
+        continue;
       }
     }
     const result = await applyOneExtrudeStep(currentReplicad, effectiveStep, currentGeometry);
@@ -382,13 +427,18 @@ export async function applyExtrudeSteps(
       currentReplicad = result.replicadShape;
       currentGeometry = result.geometry;
       anyApplied = true;
+      // Yalnız ref adımları için çözülen değeri sakla (fixed/dyn adımların
+      // value'su zaten kullanıcının girdiği anlam — dokunma).
+      if (step.refShapeId) {
+        resolved.push({ id: step.id, value: Math.round(result.amount * 10) / 10 });
+      }
     } else {
       console.warn(`[YAGO][EXTRUDE] Adım uygulanamadı: ${step.axisLabel} (id=${step.id})`);
     }
   }
 
   if (!anyApplied) return null;
-  return { shape: currentReplicad, geometry: currentGeometry };
+  return { shape: currentReplicad, geometry: currentGeometry, resolved };
 }
 
 // ── Onay / düzenleme / silme: hepsi SPEC'i (extrudeSteps) günceller + rebuild ──
@@ -493,9 +543,11 @@ export interface FaceExtrudeRefParams {
   updateVirtualFace?: (id: string, updates: any) => void;
 }
 
-/** Ref modu: extrude değerini referans panelinin yüzey ölçüsüne bağlar.
- *  Adım isFixed=true ve ref alanlarıyla saklanır; her rebuild'de
- *  resolveReferenceNetDim güncel ölçüyü çözüp uygular. */
+/** Ref modu: extrude yüzünü referans panelinin seçilen DÜZLEMİNE ulaştırır.
+ *  Adım ref alanlarıyla saklanır (value=0 kalıcı SPEC'te tutulmaz); her
+ *  rebuild'de resolveReferenceFacePlane referansın GÜNCEL düzlemini çözer ve
+ *  extrudeAmount işaretli mesafeden hesaplanır — referans taşınırsa panel
+ *  otomatik takip eder (büyür/küçülür). */
 export async function executeFaceExtrudeToReference(params: FaceExtrudeRefParams): Promise<boolean> {
   const { faceGroupIndex, refShapeId, refFaceGroupIndex, shapes, updateShape } = params;
   const panel = params.panelShape;
@@ -535,8 +587,8 @@ export async function executeFaceExtrudeToReference(params: FaceExtrudeRefParams
     return sc.distanceTo(faceCenter) < 1.0;
   });
 
-  // Referans ölçüsünü şimdilik 0 olarak sakla; rebuild sırasında çözülecek.
-  // value=0 geçici — applyExtrudeSteps ref alanlarını görüp resolveReferenceNetDim çağırır.
+  // Değer rebuild'de çözülür (value=0 geçici) — applyExtrudeSteps ref alanlarını
+  // görüp resolveReferenceFacePlane ile hedef düzlemi ve işaretli mesafeyi bulur.
   const newStep: ExtrudeStep = {
     id: `ext-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
     faceNormal: [faceNormal.x, faceNormal.y, faceNormal.z],

@@ -1465,7 +1465,9 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     const allSteps: Array<{ id: string; stepType: string; axis: string; value: number; timestamp: number; isFixed?: boolean; original: any }> = [];
 
     for (const s of activeSteps) {
-      allSteps.push({ id: s.id, stepType: 'extrude', axis: s.axisLabel, value: s.value, timestamp: s.timestamp, isFixed: s.isFixed, original: s });
+      // Ref adımı: value=0 ref işaretçisidir; UI'da çözülen gerçek miktarı göster.
+      const dispVal = (s as any).resolvedValue != null ? (s as any).resolvedValue : s.value;
+      allSteps.push({ id: s.id, stepType: 'extrude', axis: s.axisLabel, value: dispVal, timestamp: s.timestamp, isFixed: s.isFixed, original: s });
     }
     for (const s of activeTransformSteps) {
       const ax = s.type === 'move' ? s.axis : s.axis;
@@ -1530,11 +1532,13 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                       {s.stepType === 'extrude' && s.isFixed !== undefined && (
                         <span className="shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-sm bg-stone-100 text-stone-500">{(s.original as any)?.refShapeId ? 'R' : s.isFixed ? 'F' : 'D'}</span>
                       )}
-                      <button onClick={() => {
-                        if (s.stepType === 'extrude') { setEditingStepId(s.id); setEditingStepValue(String(s.value)); }
-                        else if (s.stepType === 'move') { setEditingMoveStepId(s.id); setEditingMoveStepValue(String(s.value)); }
-                        else { setEditingRotateStepId(s.id); setEditingRotateStepValue(String(s.value)); }
-                      }} style={iconBtn('#78716c')}><Pencil size={10} /></button>
+                      {!(s.stepType === 'extrude' && (s.original as any)?.refShapeId) && (
+                        <button onClick={() => {
+                          if (s.stepType === 'extrude') { setEditingStepId(s.id); setEditingStepValue(String(s.value)); }
+                          else if (s.stepType === 'move') { setEditingMoveStepId(s.id); setEditingMoveStepValue(String(s.value)); }
+                          else { setEditingRotateStepId(s.id); setEditingRotateStepValue(String(s.value)); }
+                        }} style={iconBtn('#78716c')}><Pencil size={10} /></button>
+                      )}
                       <button onClick={async () => {
                         const ps = shapes.find(x => x.id === activePanelId); if (!ps) return;
                         if (s.stepType === 'extrude') {
