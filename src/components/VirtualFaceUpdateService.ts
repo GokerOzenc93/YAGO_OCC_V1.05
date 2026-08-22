@@ -436,21 +436,43 @@ export function recalculateVirtualFacesForShape(
   };
   // FARK YÜZEYLİ KARDEŞ DAMGALAMA: Aynı yüzde olan kardeşlerde öncelik
   // geçerlidir (öncelikli panel tam boy kalır, diğer kısalır). FARKLI yüzlerdeki
-  // kardeşler her zaman damgalar — öncelikten bağımsız. Aksi halde taşınan
-  // panel komşu yüzdeki panelin bölgesini kırpamaz ve paneller iç içe geçer.
+  // kardeşler damgalar — ANCAK extrude ile birbirine referans veren paneller
+  // birbirini DAMGALAMAZ (extrude zaten çarpışmayı çözer; ek kırpma paneli
+  // gereğinden fazla küçültür).
   const vfNormalOf = (vid: string | undefined): THREE.Vector3 | null => {
     if (!vid) return null;
     const f = virtualFaces.find(vf => vf.id === vid);
     if (!f?.normal) return null;
     return new THREE.Vector3(f.normal[0], f.normal[1], f.normal[2]).normalize();
   };
+  // Extrude referans ilişkisi: panelA → panelB referans veriyorsa, A'nın
+  // B'nin VF'sini damgalaması istenmiyor (extrude A'yı B'ye kadar keser).
+  const extrudeRefsOf = (panel: any): Set<string> => {
+    const ids = new Set<string>();
+    const es = panel?.parameters?.extrudeSteps;
+    if (Array.isArray(es)) {
+      for (const step of es) {
+        if (step.refShapeId) ids.add(step.refShapeId);
+      }
+    }
+    return ids;
+  };
   const stampingPanelsFor = (vfId: string): any[] => {
     const myIdx = vfIndexOf.get(vfId);
     const myNormal = vfNormalOf(vfId);
+    // Bu VF'nin sahibi olan paneli bul
+    const myPanel = childPanels.find(p => p.parameters?.virtualFaceId === vfId);
     return childPanels
       .filter(p => {
         if (p.parameters?.virtualFaceId === vfId) return false;
-        // Farklı yüzdeki kardeş her zaman damgalar (öncelikten bağımsız).
+        // Extrude referans ilişkisi: p, myPanel'e referans veriyorsa → p damgalamaz.
+        // myPanel, p'ye referans veriyorsa → p damgalamaz (extrude çözer).
+        if (myPanel) {
+          const pRefsMe = extrudeRefsOf(p).has(myPanel.id);
+          const iRefP = extrudeRefsOf(myPanel).has(p.id);
+          if (pRefsMe || iRefP) return false;
+        }
+        // Farklı yüzdeki kardeş damgalar (öncelikten bağımsız).
         const sibNormal = vfNormalOf(p.parameters?.virtualFaceId);
         if (myNormal && sibNormal) {
           const sameFace = Math.abs(myNormal.dot(sibNormal)) > 0.95;
