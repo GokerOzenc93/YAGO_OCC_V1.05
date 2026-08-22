@@ -299,6 +299,22 @@ async function applyOneExtrudeStep(
       }
     }
     extrudeAmount = refC.clone().sub(faceCenter).dot(faceNormal);
+    // ÇARPIŞMA KISITI: Ref modunda extrude, panel yüzünü referans düzlemine
+    // ulaştırmalı ama AŞMAMALI. Aşarsa panel komşunun içine girer (iç içe geçme).
+    // Pozitif (fuse) extrude: yüz, referans düzlemine ulaştığında dur — aşma.
+    // Negatif (cut) extrude: güvenli (panel kendini keser, komşuya giremez).
+    if (extrudeAmount > 0) {
+      const refN = step.refPlaneNormalLocal
+        ? new THREE.Vector3(...step.refPlaneNormalLocal).normalize()
+        : faceNormal.clone();
+      // Yüz merkezi → referans düzlemi mesafesi (yüz normali boyunca).
+      const distToPlane = refC.clone().sub(faceCenter).dot(faceNormal);
+      // Eğer referans normali yüz normaline zıt yöndeyse (yüzler birbirine bakıyorsa),
+      // extrude mesafesini mesafeyle sınırla — aşma yok.
+      if (refN.dot(faceNormal) < -0.5 && distToPlane > 0 && distToPlane < extrudeAmount) {
+        extrudeAmount = distToPlane;
+      }
+    }
     console.log(`[YAGO][EXTRUDE-REF] hedefDüzlem= ${refC.toArray().map(x => x.toFixed(1)).join(',')} yüzMerkez= ${faceCenter.toArray().map(x => x.toFixed(1)).join(',')} normal= ${faceNormal.toArray().map(x => x.toFixed(0)).join(',')} miktar= ${extrudeAmount.toFixed(1)}`);
   } else if (step.isFixed) {
     // Measure the current distance from the selected face to the opposite
