@@ -206,6 +206,19 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
     const es = (s.parameters as any)?.extrudeSteps;
     return Array.isArray(es) && es.length > 0;
   };
+  // BAĞIMLILIK: bir panelin extrude adımı başka bir panele referans veriyorsa,
+  // referans verilen panel ÖNCE üretilmeli (yoksa extrude bayat geometriye
+  // referans düzlemi çözer → iç içe geçme).
+  const refIdsOf = (s: Shape): Set<string> => {
+    const ids = new Set<string>();
+    const es = (s.parameters as any)?.extrudeSteps;
+    if (Array.isArray(es)) {
+      for (const step of es) {
+        if (step.refShapeId) ids.add(step.refShapeId);
+      }
+    }
+    return ids;
+  };
   const orderOf = (s: Shape): number => {
     const vfId = (s.parameters as any)?.virtualFaceId;
     const idx = vfId != null ? vfOrder.get(vfId) : undefined;
@@ -214,6 +227,12 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
   const children = shapes
     .filter(s => s.type === 'panel' && (s.parameters as any)?.parentShapeId === parentShapeId)
     .sort((a, b) => {
+      // BAĞIMLILIK ÖNCE: a, b'ye referans veriyorsa a sonra; b, a'ya referans
+      // veriyorsa b sonra.
+      const aRefsB = refIdsOf(a).has(b.id);
+      const bRefsA = refIdsOf(b).has(a.id);
+      if (aRefsB && !bRefsA) return 1;
+      if (bRefsA && !aRefsB) return -1;
       // Sabit paneller önce (0), taşınan/büyütülen paneller sonra (1).
       const aMoved = hasTransform(a) || hasExtrude(a);
       const bMoved = hasTransform(b) || hasExtrude(b);

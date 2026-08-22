@@ -434,13 +434,31 @@ export function recalculateVirtualFacesForShape(
     const idx = vfIndexOf.get(p?.parameters?.virtualFaceId);
     return idx != null ? idx : Number.MAX_SAFE_INTEGER;
   };
+  // FARK YÜZEYLİ KARDEŞ DAMGALAMA: Aynı yüzde olan kardeşlerde öncelik
+  // geçerlidir (öncelikli panel tam boy kalır, diğer kısalır). FARKLI yüzlerdeki
+  // kardeşler her zaman damgalar — öncelikten bağımsız. Aksi halde taşınan
+  // panel komşu yüzdeki panelin bölgesini kırpamaz ve paneller iç içe geçer.
+  const vfNormalOf = (vid: string | undefined): THREE.Vector3 | null => {
+    if (!vid) return null;
+    const f = virtualFaces.find(vf => vf.id === vid);
+    if (!f?.normal) return null;
+    return new THREE.Vector3(f.normal[0], f.normal[1], f.normal[2]).normalize();
+  };
   const stampingPanelsFor = (vfId: string): any[] => {
     const myIdx = vfIndexOf.get(vfId);
+    const myNormal = vfNormalOf(vfId);
     return childPanels
-      .filter(p =>
-        p.parameters?.virtualFaceId !== vfId &&
-        (myIdx != null && panelPriority(p) < myIdx)
-      )
+      .filter(p => {
+        if (p.parameters?.virtualFaceId === vfId) return false;
+        // Farklı yüzdeki kardeş her zaman damgalar (öncelikten bağımsız).
+        const sibNormal = vfNormalOf(p.parameters?.virtualFaceId);
+        if (myNormal && sibNormal) {
+          const sameFace = Math.abs(myNormal.dot(sibNormal)) > 0.95;
+          if (!sameFace) return true;
+        }
+        // Aynı yüzde öncelik geçerlidir.
+        return myIdx != null && panelPriority(p) < myIdx;
+      })
       .map(p => {
         if (!isRotatedPanel(p)) return p;
         // Ayak izi dönüşümü, GERÇEK panel dönüşüyle bire bir aynı olmalı:
