@@ -434,19 +434,23 @@ export function recalculateVirtualFacesForShape(
     const idx = vfIndexOf.get(p?.parameters?.virtualFaceId);
     return idx != null ? idx : Number.MAX_SAFE_INTEGER;
   };
-  // FARK YÜZEYLİ KARDEŞ DAMGALAMA: Aynı yüzde olan kardeşlerde öncelik
-  // geçerlidir (öncelikli panel tam boy kalır, diğer kısalır). FARKLI yüzlerdeki
-  // kardeşler damgalar — ANCAK extrude ile birbirine referans veren paneller
-  // birbirini DAMGALAMAZ (extrude zaten çarpışmayı çözer; ek kırpma paneli
-  // gereğinden fazla küçültür).
-  const vfNormalOf = (vid: string | undefined): THREE.Vector3 | null => {
-    if (!vid) return null;
-    const f = virtualFaces.find(vf => vf.id === vid);
-    if (!f?.normal) return null;
-    return new THREE.Vector3(f.normal[0], f.normal[1], f.normal[2]).normalize();
-  };
-  // Extrude referans ilişkisi: panelA → panelB referans veriyorsa, A'nın
-  // B'nin VF'sini damgalaması istenmiyor (extrude A'yı B'ye kadar keser).
+  // DAMGALAMA ÖNCELİĞİ — TEK KURAL: VF SIRASI (basan↔basılan).
+  // Bir VF'ye YALNIZ, virtualFaces dizisinde ondan DAHA ÖNCE gelen (index'i
+  // daha küçük = daha öncelikli = BASAN) kardeşlerin ayak izi damgalanır; bu
+  // VF'nin paneli o köşede KISALIR (BASILAN). Aynı yüz / farklı yüz ayrımı
+  // damgalama YÖNÜNÜ ARTIK DEĞİŞTİRMEZ.
+  //
+  // ESKİ HATA: farklı yüzdeki (dik) kardeşler "öncelikten bağımsız" KARŞILIKLI
+  // damgalıyordu (if(!sameFace) return true). basan/basılan tam da dik ilişki
+  // olduğundan (yan↔alt/üst) her iki panel de birbirini kesiyor, ikisi de
+  // kısalıyor ve LİSTE SIRASI DEĞİŞSE DE basan/basılan DÖNMÜYORDU — kullanıcının
+  // bildirdiği kilitlenme buydu. Artık tek ölçüt sıradır: kullanıcı listede
+  // sırayı değiştirince öncelik döner → basan↔basılan anında güncellenir
+  // (öndeki tam boy kalır, arkadaki onun ayak izince kısalır).
+  //
+  // Extrude referans ilişkisi korunur: birbirine extrude referansı veren
+  // paneller birbirini DAMGALAMAZ (extrude çarpışmayı zaten çözer; ek kırpma
+  // paneli gereğinden fazla küçültür).
   const extrudeRefsOf = (panel: any): Set<string> => {
     const ids = new Set<string>();
     const es = panel?.parameters?.extrudeSteps;
@@ -459,7 +463,6 @@ export function recalculateVirtualFacesForShape(
   };
   const stampingPanelsFor = (vfId: string): any[] => {
     const myIdx = vfIndexOf.get(vfId);
-    const myNormal = vfNormalOf(vfId);
     // Bu VF'nin sahibi olan paneli bul
     const myPanel = childPanels.find(p => p.parameters?.virtualFaceId === vfId);
     return childPanels
@@ -472,13 +475,8 @@ export function recalculateVirtualFacesForShape(
           const iRefP = extrudeRefsOf(myPanel).has(p.id);
           if (pRefsMe || iRefP) return false;
         }
-        // Farklı yüzdeki kardeş damgalar (öncelikten bağımsız).
-        const sibNormal = vfNormalOf(p.parameters?.virtualFaceId);
-        if (myNormal && sibNormal) {
-          const sameFace = Math.abs(myNormal.dot(sibNormal)) > 0.95;
-          if (!sameFace) return true;
-        }
-        // Aynı yüzde öncelik geçerlidir.
+        // TEK ÖNCELİK KURALI (aynı yüz + farklı yüz): yalnız daha öncelikli
+        // (VF dizisinde daha önce gelen = BASAN) kardeş damgalar.
         return myIdx != null && panelPriority(p) < myIdx;
       })
       .map(p => {
