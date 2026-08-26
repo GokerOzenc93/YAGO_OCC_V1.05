@@ -299,62 +299,51 @@ async function applyOneExtrudeStep(
         return null;
       }
     }
-    extrudeAmount = refC.clone().sub(faceCenter).dot(faceNormal);
-    // ÇARPIŞMA KISITI: Ref modunda extrude, panel yüzünü referans panelinin YAKIN
-    // yüzüne ulaştırmalı ama İÇİNE GİRMEMELİ. Kullanıcı referans panelinin UZAK
-    // yüzünü tıklamış olabilir — bu durumda naif hesap (refC - faceCenter)·n,
-    // paneli referansın İÇİNDEN geçirir (18mm kalınlık kadar iç içe geçme).
-    // Düzeltme: referans panelinin bbox'unu extrude ekseninde ölçüp, panelin son
-    // yüzünün referansın YAKIN yüzeyine denk gelmesini garanti et.
+    // REF MODU — YALNIZCA KISALTMA (kullanıcı kuralı):
+    // Extrude yüzü referans panelinin YAKIN yüzeyine DAYANIR, ama panel ASLA
+    // UZATILMAZ; referansa ulaşmak için büyüme gerekiyorsa panel olduğu gibi
+    // kalır (yalnız kısalır). Böylece taşınmış referansta iki panel iç içe
+    // geçmez — sadece extrude edilen panelin ölçüsü (kısalarak) değişir,
+    // diğer paneller aynı kalır.
+    const axN = faceNormal;
+    const facePosOnAxis = faceCenter.dot(axN);
+    // Hedef yüzey konumu (extrude ekseninde). Varsayılan: referans DÜZLEM
+    // merkezi (bbox yoksa). refC ve faceCenter AYNI parent-yerel çerçevededir
+    // (resolveReferenceFacePlane böyle döndürür).
+    let targetOnAxis = refC.dot(axN);
     if (step.refShapeId) {
       const refPanel = shapes ? shapes.find((s: any) => s.id === step.refShapeId) : null;
       if (refPanel?.geometry) {
-        const refBox = new THREE.Box3().setFromBufferAttribute(
+        // ÇERÇEVE (iç içe geçme kökü): Referans bbox'u hedef panelle AYNI
+        // parent-yerel çerçevede alınır — position offset EKLENMEZ. Tüm kardeş
+        // paneller position=parentPos ile üretildiğinden geometri köşeleri zaten
+        // ortak çerçevededir. (Eskiden refPanel.position ekleniyordu → taşınmış
+        // referansta yüzey parentPos kadar kayıp paneli R'nin İÇİNDEN geçiriyordu.)
+        const rb = new THREE.Box3().setFromBufferAttribute(
           refPanel.geometry.getAttribute('position') as THREE.BufferAttribute
         );
-        // Referans paneli parent-yerel çerçevede (position offset)
-        const refOff = new THREE.Vector3(...refPanel.position);
-        refBox.min.add(refOff);
-        refBox.max.add(refOff);
-        // Extrude yönünde referansın YAKIN yüzeyi = panele en yakın bbox sınırı.
-        const axN = faceNormal;
-        const facePosOnAxis = faceCenter.dot(axN);
-        // Referans bbox'unun extrude ekseni boyunca min/max izdüşümü
         const corners = [
-          new THREE.Vector3(refBox.min.x, refBox.min.y, refBox.min.z),
-          new THREE.Vector3(refBox.max.x, refBox.min.y, refBox.min.z),
-          new THREE.Vector3(refBox.min.x, refBox.max.y, refBox.min.z),
-          new THREE.Vector3(refBox.max.x, refBox.max.y, refBox.min.z),
-          new THREE.Vector3(refBox.min.x, refBox.min.y, refBox.max.z),
-          new THREE.Vector3(refBox.max.x, refBox.min.y, refBox.max.z),
-          new THREE.Vector3(refBox.min.x, refBox.max.y, refBox.max.z),
-          new THREE.Vector3(refBox.max.x, refBox.max.y, refBox.max.z),
+          new THREE.Vector3(rb.min.x, rb.min.y, rb.min.z),
+          new THREE.Vector3(rb.max.x, rb.min.y, rb.min.z),
+          new THREE.Vector3(rb.min.x, rb.max.y, rb.min.z),
+          new THREE.Vector3(rb.max.x, rb.max.y, rb.min.z),
+          new THREE.Vector3(rb.min.x, rb.min.y, rb.max.z),
+          new THREE.Vector3(rb.max.x, rb.min.y, rb.max.z),
+          new THREE.Vector3(rb.min.x, rb.max.y, rb.max.z),
+          new THREE.Vector3(rb.max.x, rb.max.y, rb.max.z),
         ];
-        let refMinOnAxis = Infinity, refMaxOnAxis = -Infinity;
-        for (const c of corners) {
-          const d = c.dot(axN);
-          if (d < refMinOnAxis) refMinOnAxis = d;
-          if (d > refMaxOnAxis) refMaxOnAxis = d;
-        }
-        // Panelin son yüz konumu = facePosOnAxis + extrudeAmount
-        const finalPos = facePosOnAxis + extrudeAmount;
-        // Yakın yüzey: extrude yönünde referansın bize bakan tarafı
-        if (extrudeAmount > 0) {
-          // Büyüme yönünde: yakın yüzey = refMinOnAxis
-          if (finalPos > refMinOnAxis) {
-            extrudeAmount = refMinOnAxis - facePosOnAxis;
-          }
-        } else if (extrudeAmount < 0) {
-          // Küçülme (cut) yönünde: panel küçülüyorsa overlap oluşmaz,
-          // ama hedef yanlış yüzeyse (refC uzak taraftaysa) düzelt.
-          // Panelin extrude yüzü kesim sonrası facePosOnAxis + amount'a gider.
-          // Referansın yakın yüzeyi bu yönde refMaxOnAxis olur.
-          if (finalPos < refMaxOnAxis) {
-            extrudeAmount = refMaxOnAxis - facePosOnAxis;
-          }
-        }
+        // YAKIN YÜZEY: extrude yönünde (+faceNormal) T yüzünün İLK değdiği R
+        // yüzeyi = R bbox'unun bu eksendeki EN KÜÇÜK izdüşümü. Kullanıcı R'nin
+        // UZAK yüzünü tıklasa bile panel her zaman YAKIN yüze dayanır, içine girmez.
+        let refNearOnAxis = Infinity;
+        for (const c of corners) refNearOnAxis = Math.min(refNearOnAxis, c.dot(axN));
+        targetOnAxis = refNearOnAxis;
       }
     }
+    extrudeAmount = targetOnAxis - facePosOnAxis;
+    // YALNIZ KISALT: uzatma yok. Pozitif (büyüme) miktar 0'a sabitlenir → panel
+    // referansı geçmişse yakın yüze kadar KISALIR, gerisindeyse OLDUĞU GİBİ kalır.
+    if (extrudeAmount > 0) extrudeAmount = 0;
     console.log(`[YAGO][EXTRUDE-REF] hedefDüzlem= ${refC.toArray().map(x => x.toFixed(1)).join(',')} yüzMerkez= ${faceCenter.toArray().map(x => x.toFixed(1)).join(',')} normal= ${faceNormal.toArray().map(x => x.toFixed(0)).join(',')} miktar= ${extrudeAmount.toFixed(1)}`);
   } else if (step.isFixed) {
     // Measure the current distance from the selected face to the opposite

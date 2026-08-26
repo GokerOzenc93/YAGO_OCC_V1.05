@@ -24,6 +24,48 @@ import {
 } from './FaceEditor';
 import { composeSteps, getUnifiedSteps } from './PanelEngine';
 
+// ── TABAN DAMGALAMA GEOMETRİSİ ──────────────────────────────────────────────
+// Bir kardeş panelin KUTUYA OTURAN taban dilimini (transform/extrude UYGULANMADAN)
+// döndürür: VF bölge dörtgeni (ön halka) + normal yönünde -kalınlık ötelenmiş
+// arka halka = 8 köşe. Ayak izi fonksiyonları (getPanelFootprints2D /
+// panelFootprintInParentLocal) bu köşeleri hedef düzleme izdüşürüp konveks
+// gövdesini alır — dikdörtgen bölge için birebir doğru ayak izi. Index/normal
+// verilmez; footprint yolları köşe-projeksiyon + konveks gövde ile çalışır.
+// vf.vertices parent-YEREL uzaydadır (panel de bu köşelerden üretilip
+// position=parentPos ile yerleşir); taban panel de p'nin position/rotation/scale'ini
+// aynen taşıdığından footprint doğru dünya çerçevesinde çıkar.
+function baseStampGeometryFromVf(
+  vf: VirtualFace,
+  thickness: number
+): THREE.BufferGeometry | null {
+  if (!vf.vertices || vf.vertices.length < 3) return null;
+  const N = vf.vertices.length;
+  const n = new THREE.Vector3(vf.normal[0], vf.normal[1], vf.normal[2]).normalize();
+  const front = vf.vertices.map(([x, y, z]) => new THREE.Vector3(x, y, z));
+  const back = front.map(p => p.clone().addScaledVector(n, -thickness)); // extrude(-th) ile aynı yön
+  const all = [...front, ...back];               // 0..N-1 ön, N..2N-1 arka
+  const arr = new Float32Array(all.length * 3);
+  all.forEach((p, i) => { arr[i * 3] = p.x; arr[i * 3 + 1] = p.y; arr[i * 3 + 2] = p.z; });
+
+  // DÜZGÜN İNDEKSLİ PRİZMA: kapaklar fan (basit çokgen → dış kenarlar tek
+  // kullanımlı kalır, kenar-halkası çıkarımı içbükey bölgede bile doğru),
+  // yanlar quad. Kalınlık şeridinin hedef düzlemdeki kenar-halkası bu yan
+  // üçgenlerden çıkar; footprint fonksiyonları gerçek panel mesh'i gibi çalışır.
+  const idx: number[] = [];
+  for (let i = 1; i < N - 1; i++) idx.push(0, i, i + 1);            // ön kapak
+  for (let i = 1; i < N - 1; i++) idx.push(N, N + i + 1, N + i);    // arka kapak (ters sarım)
+  for (let i = 0; i < N; i++) {                                     // yan duvarlar
+    const j = (i + 1) % N;
+    idx.push(i, j, N + j);
+    idx.push(i, N + j, N + i);
+  }
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+  g.setIndex(idx);
+  return g;
+}
+
 // ── YEREL YARDIMCILAR (kendi kendine yeterlilik) ────────────────────────────
 // Bu iki fonksiyon eskiden './FaceEditor'den import ediliyordu; ancak
 // FaceEditor/GeometryUtils'in bazı sürümleri bunları export etmez ve eksik
@@ -424,15 +466,19 @@ export function recalculateVirtualFacesForShape(
   // yüksek (VF dizisinde daha önce gelen) kardeşler damgalar.
   const vfIndexOf = new Map<string, number>();
   virtualFaces.forEach((f, i) => vfIndexOf.set(f.id, i));
+  const panelPriority = (p: any): number => {
+    const idx = vfIndexOf.get(p?.parameters?.virtualFaceId);
+    return idx != null ? idx : Number.MAX_SAFE_INTEGER;
+  };
   const isRotatedPanel = (p: any): boolean => {
     const t = p?.parameters?.transformSteps;
     if (Array.isArray(t) && t.some((st: any) => st?.type === 'rotate')) return true;
     const rs = p?.parameters?.rotateSteps;
     return Array.isArray(rs) && rs.length > 0;
   };
-  const panelPriority = (p: any): number => {
-    const idx = vfIndexOf.get(p?.parameters?.virtualFaceId);
-    return idx != null ? idx : Number.MAX_SAFE_INTEGER;
+  const hasExtrudeSteps = (p: any): boolean => {
+    const es = p?.parameters?.extrudeSteps;
+    return Array.isArray(es) && es.length > 0;
   };
   // DAMGALAMA ÖNCELİĞİ — TEK KURAL: VF SIRASI (basan↔basılan).
   // Bir VF'ye YALNIZ, virtualFaces dizisinde ondan DAHA ÖNCE gelen (index'i
@@ -480,23 +526,49 @@ export function recalculateVirtualFacesForShape(
         return myIdx != null && panelPriority(p) < myIdx;
       })
       .map(p => {
-        if (!isRotatedPanel(p)) return p;
-        // Ayak izi dönüşümü, GERÇEK panel dönüşüyle bire bir aynı olmalı:
-        // aynı composeSteps + panelin KENDİ VF'sinden çözülen pivot (pivotVfFrac).
-        // Aksi halde ham s.pivot bayat kalıp izi kaydırıyor ve fazla kısaltıyordu.
+        // composeSteps (move/rotate) → footprint fonksiyonlarının dünya
+        // çerçevesinde uygulayacağı ops (extrude HARİÇ). Hem dönmüş hem
+        // extrude'lu panelde kullanılır.
         const ownVf = virtualFaces.find(f => f.id === (p.parameters as any)?.virtualFaceId);
-        let composedOps: RotOp[] | undefined;
-        if (ownVf) {
+        const composedFromSteps = (): RotOp[] | undefined => {
+          if (!ownVf) return undefined;
           try {
             const { ops } = composeSteps(getUnifiedSteps(p), ownVf);
-            composedOps = ops.map((o: any) =>
+            return ops.map((o: any) =>
               o.kind === 'rotate'
                 ? { kind: 'rotate', pivot: o.pivot, axis: o.axis, angleRad: (o.deg * Math.PI) / 180 }
                 : { kind: 'translate', d: o.d }
             );
-          } catch { composedOps = undefined; }
+          } catch { return undefined; }
+        };
+
+        // ── YALNIZCA EXTRUDE'LU PANEL: EXTRUDE ÖNCESİ (taban) ayak izi ──
+        // Face-extrude ile büyütülen panelin komşusuna damgaladığı iz, panelin
+        // BAKED (büyümüş) mesh'inden DEĞİL, KENDİ VF BÖLGESİNDEN (taban dilim,
+        // extrude UYGULANMADAN) türetilir; üstüne yalnız move/rotate uygulanır.
+        // Böylece extrude'un büyümesi komşuya YANSIMAZ → komşu ölçüsünü korur,
+        // iki panel iç içe geçmez (kullanıcının tek istediği buydu).
+        // basan↔basılan yönü yine VF sırasına bağlı; yalnız EXTRUDE'un katkısı
+        // ayak izinden çıkarılır.
+        // NOT: extrude'suz paneller (düz yerleşim + taşıma) BU YOLA GİRMEZ —
+        // eski/çalışan CANLI MESH davranışını aynen korurlar; aksi halde
+        // yerleşimde paneller iç içe giriyordu.
+        if (hasExtrudeSteps(p) && ownVf) {
+          const th = parseFloat((p.parameters as any)?.panelThickness) || 18;
+          const baseGeo = baseStampGeometryFromVf(ownVf, th);
+          if (baseGeo) {
+            // __isRotatedPanel yolu: taban dilime (BAKED DEĞİL) yalnız move/rotate
+            // uygulanır → TEK dönüşüm, doğru konum, extrude YOK.
+            return { ...p, geometry: baseGeo, __isRotatedPanel: true, __composedOps: composedFromSteps() || [] };
+          }
         }
-        return { ...p, __isRotatedPanel: true, __composedOps: composedOps };
+
+        // ── DÜZ (extrude'suz) PANEL: 927 davranışı — CANLI MESH footprint. ──
+        // Yerleşim ve taşıma bu yolla doğru çalışıyor; DEĞİŞTİRİLMEDİ.
+        if (!isRotatedPanel(p)) return p;
+
+        // ── DÖNMÜŞ (extrude'suz) PANEL: eski davranış (canlı mesh + composeSteps). ──
+        return { ...p, __isRotatedPanel: true, __composedOps: composedFromSteps() };
       });
   };
 
