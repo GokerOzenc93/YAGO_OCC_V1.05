@@ -514,13 +514,22 @@ export function recalculateVirtualFacesForShape(
     return childPanels
       .filter(p => {
         if (p.parameters?.virtualFaceId === vfId) return false;
-        // Extrude referans ilişkisi: p, myPanel'e referans veriyorsa → p damgalamaz.
-        // myPanel, p'ye referans veriyorsa → p damgalamaz (extrude çözer).
-        if (myPanel) {
-          const pRefsMe = extrudeRefsOf(p).has(myPanel.id);
-          const iRefP = extrudeRefsOf(myPanel).has(p.id);
-          if (pRefsMe || iRefP) return false;
-        }
+        // Extrude referansı ASİMETRİK ele alınır (aksi halde referans panel
+        // extrude sırasında tam boya dönüp extrude edilen panele giriyordu):
+        //  • myPanel, p'ye extrude ile referans veriyorsa (iRefP=true): p,
+        //    myPanel'i DAMGALAMAZ. myPanel zaten p'ye kadar extrude olur; ayrıca
+        //    p ile kırpmak onu ÇİFT-KESER (gereğinden fazla küçültür).
+        //  • p, myPanel'e referans veriyorsa (p, myPanel'e extrude olan panel):
+        //    p, myPanel'i yine DAMGALAR — ama EXTRUDE ÖNCESİ (taban) ayak iziyle
+        //    (bkz. .map / baseStampGeometryFromVf). Böylece referans (basılan)
+        //    panel, extrude eden panelin izince KIRPILI/DONUK kalır; extrude
+        //    büyürken ölçüsü değişmez, yukarı çıkıp iç içe geçmez.
+        if (myPanel && extrudeRefsOf(myPanel).has(p.id)) return false;
+        // p, myPanel'e extrude ile ulaşıyorsa (p = referansa extrude olan panel):
+        // p, myPanel'i ÖNCELİKTEN BAĞIMSIZ olarak DAMGALAR. Extrude ilişkisi
+        // "p, myPanel'in üstüne oturur"u dikte eder; liste sırası ne olursa olsun
+        // referans panel (myPanel) donuk/kırpılı kalsın diye zorlanır.
+        if (myPanel && extrudeRefsOf(p).has(myPanel.id)) return true;
         // TEK ÖNCELİK KURALI (aynı yüz + farklı yüz): yalnız daha öncelikli
         // (VF dizisinde daha önce gelen = BASAN) kardeş damgalar.
         return myIdx != null && panelPriority(p) < myIdx;
@@ -833,14 +842,23 @@ function getPanelFootprints2D(
       if (!posAttr) continue;
       const rotOps = buildRotationOps(panel);
       const rOut: Point2D[] = [];
+      let minD = Infinity, maxD = -Infinity;
       for (let i = 0; i < posAttr.count; i++) {
         const wp = new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)).applyMatrix4(m);
         for (const op of rotOps) {
           if (op.kind === 'translate') { if (op.d) wp.add(op.d); }
           else if (op.pivot && op.axis) { wp.sub(op.pivot); wp.applyAxisAngle(op.axis, op.angleRad || 0); wp.add(op.pivot); }
         }
+        const d = facePlaneNormal.dot(new THREE.Vector3().subVectors(wp, facePlaneOrigin));
+        if (d < minD) minD = d;
+        if (d > maxD) maxD = d;
         rOut.push(projectTo2D(wp, facePlaneOrigin, u, v));
       }
+      // DÜZLEME-DEĞME KONTROLÜ: panel bu VF düzlemine hiç değmiyorsa (tüm köşeler
+      // düzlemin AYNI tarafında ve tolerans dışında) footprint ÜRETME. Yoksa PARALEL
+      // uzak paneller (üst↔alt) tüm siluetleriyle hedefi tümden kaplayıp "yüz yok
+      // oldu → tam kontur" ile paneli büyütüyordu (alt panelin taşması buydu).
+      if (minD > planeTolerance || maxD < -planeTolerance) continue;
       if (rOut.length < 3) continue;
       const hull = convexHull2D(rOut);
       if (hull.length >= 3) footprints.push(hull);
@@ -850,13 +868,19 @@ function getPanelFootprints2D(
     const posAttr = panel.geometry.getAttribute('position');
     if (!posAttr) continue;
     const onPlane: Point2D[] = [];
+    let minD = Infinity, maxD = -Infinity;
     for (let i = 0; i < posAttr.count; i++) {
       const wp = new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)).applyMatrix4(m);
       const d = facePlaneNormal.dot(new THREE.Vector3().subVectors(wp, facePlaneOrigin));
+      if (d < minD) minD = d;
+      if (d > maxD) maxD = d;
       if (Math.abs(d) < planeTolerance) {
         onPlane.push(projectTo2D(wp, facePlaneOrigin, u, v));
       }
     }
+    // DÜZLEME-DEĞME KONTROLÜ (yukarıdaki rotated yolla aynı gerekçe): panel bu VF
+    // düzlemine değmiyorsa footprint üretme — paralel uzak panel tam kaplayamaz.
+    if (minD > planeTolerance || maxD < -planeTolerance) continue;
     if (onPlane.length < 3) {
       onPlane.length = 0;
       for (let i = 0; i < posAttr.count; i++) {

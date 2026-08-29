@@ -846,6 +846,16 @@ export function panelFootprintInParentLocal(
     if (dd > dMax) dMax = dd;
   }
   if (pts.length < 3) return null;
+  // ── DÜZLEME-DEĞME KONTROLÜ ────────────────────────────────────────────────
+  // Panel bu yüze hiç DEĞMİYORSA (tüm köşeler düzlemin AYNI tarafında ve tolerans
+  // dışında) ayak izi YOK. Özellikle __isRotatedPanel yolu için şart: o yol tüm
+  // siluetin konveks gövdesini alır ve düzleme-değmeye BAKMAZ. Extrude'lu paneller
+  // de (VirtualFaceUpdateService .map) o yoldan geçtiği için, extrude'lu üst panel
+  // kendisine PARALEL alt/ara panelin yüzünü tüm siluetiyle KAPLIYOR → "yüz yok
+  // oldu → tam kontur" ile o panel yan panelleri dikkate almadan büyüyordu. Bu
+  // kapı, değmeyen (paralel/uzak) kardeşi ayak izi üretmeden eler; değen/kesen
+  // kardeşler (dMin≤tol≤dMax veya yatık köşe) etkilenmez.
+  if (dMin > tol || dMax < -tol) return null;
   const out: Point2D[] = [];
   // Düzleme yatık köşeler
   let flatVertCount = 0;

@@ -299,51 +299,29 @@ async function applyOneExtrudeStep(
         return null;
       }
     }
-    // REF MODU — YALNIZCA KISALTMA (kullanıcı kuralı):
-    // Extrude yüzü referans panelinin YAKIN yüzeyine DAYANIR, ama panel ASLA
-    // UZATILMAZ; referansa ulaşmak için büyüme gerekiyorsa panel olduğu gibi
-    // kalır (yalnız kısalır). Böylece taşınmış referansta iki panel iç içe
-    // geçmez — sadece extrude edilen panelin ölçüsü (kısalarak) değişir,
-    // diğer paneller aynı kalır.
-    const axN = faceNormal;
-    const facePosOnAxis = faceCenter.dot(axN);
-    // Hedef yüzey konumu (extrude ekseninde). Varsayılan: referans DÜZLEM
-    // merkezi (bbox yoksa). refC ve faceCenter AYNI parent-yerel çerçevededir
-    // (resolveReferenceFacePlane böyle döndürür).
-    let targetOnAxis = refC.dot(axN);
-    if (step.refShapeId) {
-      const refPanel = shapes ? shapes.find((s: any) => s.id === step.refShapeId) : null;
-      if (refPanel?.geometry) {
-        // ÇERÇEVE (iç içe geçme kökü): Referans bbox'u hedef panelle AYNI
-        // parent-yerel çerçevede alınır — position offset EKLENMEZ. Tüm kardeş
-        // paneller position=parentPos ile üretildiğinden geometri köşeleri zaten
-        // ortak çerçevededir. (Eskiden refPanel.position ekleniyordu → taşınmış
-        // referansta yüzey parentPos kadar kayıp paneli R'nin İÇİNDEN geçiriyordu.)
-        const rb = new THREE.Box3().setFromBufferAttribute(
-          refPanel.geometry.getAttribute('position') as THREE.BufferAttribute
-        );
-        const corners = [
-          new THREE.Vector3(rb.min.x, rb.min.y, rb.min.z),
-          new THREE.Vector3(rb.max.x, rb.min.y, rb.min.z),
-          new THREE.Vector3(rb.min.x, rb.max.y, rb.min.z),
-          new THREE.Vector3(rb.max.x, rb.max.y, rb.min.z),
-          new THREE.Vector3(rb.min.x, rb.min.y, rb.max.z),
-          new THREE.Vector3(rb.max.x, rb.min.y, rb.max.z),
-          new THREE.Vector3(rb.min.x, rb.max.y, rb.max.z),
-          new THREE.Vector3(rb.max.x, rb.max.y, rb.max.z),
-        ];
-        // YAKIN YÜZEY: extrude yönünde (+faceNormal) T yüzünün İLK değdiği R
-        // yüzeyi = R bbox'unun bu eksendeki EN KÜÇÜK izdüşümü. Kullanıcı R'nin
-        // UZAK yüzünü tıklasa bile panel her zaman YAKIN yüze dayanır, içine girmez.
-        let refNearOnAxis = Infinity;
-        for (const c of corners) refNearOnAxis = Math.min(refNearOnAxis, c.dot(axN));
-        targetOnAxis = refNearOnAxis;
-      }
-    }
-    extrudeAmount = targetOnAxis - facePosOnAxis;
-    // YALNIZ KISALT: uzatma yok. Pozitif (büyüme) miktar 0'a sabitlenir → panel
-    // referansı geçmişse yakın yüze kadar KISALIR, gerisindeyse OLDUĞU GİBİ kalır.
-    if (extrudeAmount > 0) extrudeAmount = 0;
+    // REF MODU: extrude yüzünü kullanıcının SEÇTİĞİ referans yüzüne ulaştıran
+    // işaretli mesafe. refC ve faceCenter AYNI parent-yerel çerçevededir
+    // (resolveReferenceFacePlane böyle döndürür; her rebuild'de referansın GÜNCEL
+    // konumundan yeniden çözülür → taşınan referansı doğru takip eder).
+    //
+    // SEÇİLEN YÜZE SAYGI (18mm düzeltmesi): Panel HER ZAMAN kullanıcının tıkladığı
+    // yüze dayanır — yakın/uzak yüz AYRIMI YAPILMAZ. Önceki "her zaman yakın yüze
+    // daya" mantığı, kullanıcı R'nin UZAK (sağ) yüzünü seçtiğinde paneli yakın yüze
+    // çekip tam 18mm (kalınlık) fazladan kısaltıyordu (basan/basılan karmaşası).
+    // Artık refShapeId/bbox'a gerek yok; refC seçilen yüzün düzlemidir.
+    // Panel HER ZAMAN kullanıcının SEÇTİĞİ yüze dayanır — GEREKİRSE UZAYARAK,
+    // GEREKİRSE KISALARAK. İşaretli mesafe: +değer büyüme (uzama), −değer küçülme;
+    // her ikisi de extrude yüzünü tam olarak seçilen referans yüzüne taşır.
+    //
+    // NOT (18mm düzeltmesi): Önceki "yalnız kısalt / uzama yok" clamp'i KALDIRILDI.
+    // Kullanıcı R'nin UZAK (sağ) yüzünü seçtiğinde panelin oraya ULAŞMASI için
+    // ~kalınlık kadar UZAMASI gerekiyordu; clamp bunu 0'a çekip paneli tam kalınlık
+    // kadar fazladan KISA bırakıyordu (basan/basılan karmaşası). Artık extrude edilen
+    // panel seçilen yüze birebir oturur; frame de doğru olduğundan yüzü ASLA geçmez
+    // (iç içe geçme yok). Diğer paneller extrude sırasında değişmez — bu, damgalamanın
+    // extrude'lu paneli EXTRUDE ÖNCESİ ayak iziyle işlemesiyle (VirtualFaceUpdateService)
+    // ve extrude-referansının damgalamadan hariç tutulmasıyla sağlanır.
+    extrudeAmount = refC.clone().sub(faceCenter).dot(faceNormal);
     console.log(`[YAGO][EXTRUDE-REF] hedefDüzlem= ${refC.toArray().map(x => x.toFixed(1)).join(',')} yüzMerkez= ${faceCenter.toArray().map(x => x.toFixed(1)).join(',')} normal= ${faceNormal.toArray().map(x => x.toFixed(0)).join(',')} miktar= ${extrudeAmount.toFixed(1)}`);
   } else if (step.isFixed) {
     // Measure the current distance from the selected face to the opposite
