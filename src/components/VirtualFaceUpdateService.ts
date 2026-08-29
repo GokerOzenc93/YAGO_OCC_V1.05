@@ -852,17 +852,20 @@ function regenerateParentFaceShapeVF(
   // KALICI BAĞ İLİŞKİSİ: önceki regen'lerin kaydettiği kardeş→taraf işaretleri
   // kısıt olarak geçilir; taraf seçimi deterministikleşir (öneri: Goker).
   const storedRel = (vf as any).sideRelations as Record<string, number> | undefined;
-  // BOYUT DEĞİŞİMİ: yüz boyutu önemli ölçüde değiştiyse kayıtlı taraf
-  // ilişkilerini geçersiz kıl. Eski taraf atamaları eski damga konumlarına
-  // dayanır; boyut değiştiğinde damga sınırları kayar ve eski "taraf 1"
-  // yeni geometride yanlış bölgeye denk düşebilir → panel yer değiştirir.
-  // storedRel yerine undefined geçilerek computeFreeRegionLocal doğal seed
-  // konumundan taze taraf ataması yapar. Sonraki kararlı döngüde yeni
-  // ilişkiler kaydedilir.
+  // BOYUT DEĞİŞİMİ + SOĞUMA SÜRESİ: yüz boyutu önemli ölçüde değiştiyse
+  // kayıtlı taraf ilişkilerini geçersiz kıl. Tek turda temizlemek yetmez:
+  // ilk regen bayat ayak izleriyle taze ilişki yazar, ikinci turda ayak izleri
+  // kayar ama yeni ilişkiler kısıt olarak kullanılır → panel yanlış tarafa
+  // zorlanır. Soğuma sayacı, boyut değişiminden sonra birkaç tur boyunca
+  // ilişkilerin hem kullanılmasını hem yazılmasını engeller; paneller yeniden
+  // inşa edilip ayak izleri kararlı hale geldikten SONRA taze ilişkiler
+  // doğal olarak kurulur.
+  const prevCooldown = ((vf as any)._resizeCooldown as number) || 0;
   const faceResized = anchorB !== newB && (
     Math.abs(anchorB.xSpan - newB.xSpan) > 1 || Math.abs(anchorB.ySpan - newB.ySpan) > 1
   );
-  const effectiveRel = faceResized ? undefined : storedRel;
+  const inCooldown = faceResized || prevCooldown > 0;
+  const effectiveRel = inCooldown ? undefined : storedRel;
   if (faceResized) {
     console.log('[YAGO][BOYUT-DEĞİŞİM]', vf.id,
       'eskiBBox=', `${anchorB.xSpan.toFixed(0)}x${anchorB.ySpan.toFixed(0)}`,
@@ -923,9 +926,10 @@ function regenerateParentFaceShapeVF(
   // izi geçici bir dalgada kaybolsa bile (rebuild transienti) eski kaydı
   // korunur; kardeş geri geldiğinde aynı tarafa bağlanır. Silinmiş panellerin
   // bayat kayıtları zararsızdır (id bir daha eşleşmez).
-  (out as any).sideRelations = faceResized
+  (out as any).sideRelations = inCooldown
     ? {}
     : { ...(storedRel || {}), ...(region?.sideRelations || {}) };
+  (out as any)._resizeCooldown = faceResized ? 4 : Math.max(0, prevCooldown - 1);
   return out;
 }
 
