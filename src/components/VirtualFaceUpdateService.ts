@@ -84,6 +84,56 @@ function trimmedStampGeometryFromVf(
   return buildPrismFromVertices(trimmed, vf.normal, thickness);
 }
 
+// ── ORANSAL DAMGA: düz panel boyut değişiminde ──────────────────────────────
+// Kutu boyutlandığında düz (extrude'suz) panelin baked mesh'i henüz yeniden
+// inşa edilmemiştir → eski boyutu taşır. Bu fonksiyon eski VF çokgenini
+// (kırpılmış bölge) ESKİ ham yüz bbox'ından YENİ ham yüz bbox'ına oransal
+// haritalayarak geçici bir damga geometrisi üretir. Boyut değişmemişse null
+// döner → baked mesh kullanılır. Hata bir sonraki rebuild'de sıfırlanır.
+function scaledFlatPanelStamp(
+  oldVf: VirtualFace,
+  freshRawVerts: [number, number, number][],
+  thickness: number
+): THREE.BufferGeometry | null {
+  if (!oldVf.vertices || oldVf.vertices.length < 3 || freshRawVerts.length < 3) return null;
+  const oldRaw = (oldVf as any).rawFaceBBox as
+    { xMin: number; xMax: number; yMin: number; yMax: number; xSpan: number; ySpan: number } | undefined;
+  if (!oldRaw) return null;
+
+  const n3 = new THREE.Vector3(...oldVf.normal).normalize();
+  const { u, v } = getFacePlaneAxes(n3);
+  const dotU = (a: [number, number, number]) => a[0] * u.x + a[1] * u.y + a[2] * u.z;
+  const dotV = (a: [number, number, number]) => a[0] * v.x + a[1] * v.y + a[2] * v.z;
+
+  let nxMin = Infinity, nxMax = -Infinity, nyMin = Infinity, nyMax = -Infinity;
+  for (const p of freshRawVerts) {
+    const pu = dotU(p), pv = dotV(p);
+    nxMin = Math.min(nxMin, pu); nxMax = Math.max(nxMax, pu);
+    nyMin = Math.min(nyMin, pv); nyMax = Math.max(nyMax, pv);
+  }
+  const nxSpan = Math.max(nxMax - nxMin, 1e-6);
+  const nySpan = Math.max(nyMax - nyMin, 1e-6);
+
+  if (Math.abs(oldRaw.xSpan - nxSpan) < 1 && Math.abs(oldRaw.ySpan - nySpan) < 1) return null;
+
+  const planeD = freshRawVerts[0][0] * n3.x + freshRawVerts[0][1] * n3.y + freshRawVerts[0][2] * n3.z;
+
+  const scaled: [number, number, number][] = oldVf.vertices.map(xyz => {
+    const ou = dotU(xyz), ov = dotV(xyz);
+    const ru = (ou - oldRaw.xMin) / oldRaw.xSpan;
+    const rv = (ov - oldRaw.yMin) / oldRaw.ySpan;
+    const nu = nxMin + ru * nxSpan;
+    const nv = nyMin + rv * nySpan;
+    return [
+      u.x * nu + v.x * nv + n3.x * planeD,
+      u.y * nu + v.y * nv + n3.y * planeD,
+      u.z * nu + v.z * nv + n3.z * planeD,
+    ] as [number, number, number];
+  });
+
+  return buildPrismFromVertices(scaled, [n3.x, n3.y, n3.z] as [number, number, number], thickness);
+}
+
 function buildPrismFromVertices(
   vertices: [number, number, number][],
   normal: [number, number, number],
@@ -646,7 +696,14 @@ export function recalculateVirtualFacesForShape(
           }
         }
 
-        if (!isRotatedPanel(p)) return p;
+        if (!isRotatedPanel(p)) {
+          if (ownVfRaw && ownVfFreshVerts) {
+            const th = parseFloat((p.parameters as any)?.panelThickness) || 18;
+            const scaled = scaledFlatPanelStamp(ownVfRaw, ownVfFreshVerts, th);
+            if (scaled) return { ...p, geometry: scaled };
+          }
+          return p;
+        }
 
         // ── DÖNMÜŞ (extrude'suz) PANEL: eski davranış (canlı mesh + composeSteps). ──
         return { ...p, __isRotatedPanel: true, __composedOps: composedFromSteps() };
