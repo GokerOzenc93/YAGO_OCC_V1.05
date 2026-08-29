@@ -445,36 +445,47 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     hoveredPanelVfId === shape.parameters.virtualFaceId;
 
   // Secili panelin degen kardes panellerini yesil goster (3D bbox kesisim testi)
+  // Secili panelin degen kardes panellerini yesil goster (3D bbox kesisim testi)
   const isContactSibling = useMemo(() => {
     if (!isPanel || selectedPanelRow === null) return false;
-    const selVfId = typeof selectedPanelRow === 'string' && selectedPanelRow.startsWith('vf-')
-      ? selectedPanelRow.slice(3) : null;
-    if (!selVfId) return false;
-    if (shape.parameters?.virtualFaceId === selVfId) return false;
-
     const parentId = shape.parameters?.parentShapeId;
     if (!parentId) return false;
 
-    const selPanel = shapes.find(s =>
-      s.type === 'panel' && s.parameters?.virtualFaceId === selVfId &&
-      s.parameters?.parentShapeId === parentId
-    );
+    let selVfId: string | null = null;
+    let selFaceIdx: number | null = null;
+    if (typeof selectedPanelRow === 'string' && selectedPanelRow.startsWith('vf-')) {
+      selVfId = selectedPanelRow.slice(3);
+    } else if (typeof selectedPanelRow === 'number') {
+      selFaceIdx = selectedPanelRow;
+    }
+
+    // Skip the selected panel itself
+    if (selVfId && shape.parameters?.virtualFaceId === selVfId) return false;
+    if (selFaceIdx !== null && shape.parameters?.faceIndex === selFaceIdx) return false;
+
+    // Find the selected panel
+    let selPanel: any = null;
+    if (selVfId) {
+      selPanel = shapes.find((s: any) => s.type === 'panel' && s.parameters?.virtualFaceId === selVfId && s.parameters?.parentShapeId === parentId);
+    } else if (selFaceIdx !== null) {
+      selPanel = shapes.find((s: any) => s.type === 'panel' && s.parameters?.faceIndex === selFaceIdx && s.parameters?.parentShapeId === parentId);
+    }
     if (!selPanel || selPanel.id === shape.id) return false;
 
+    // Bbox intersection test
     const selGeo = selPanel.geometry as THREE.BufferGeometry | undefined;
     const myGeo = shape.geometry as THREE.BufferGeometry | undefined;
-    if (!selGeo?.getAttribute?.('position') || !myGeo?.getAttribute?.('position')) return false;
+    const selPos = selGeo?.getAttribute?.('position') as THREE.BufferAttribute | undefined;
+    const myPos = myGeo?.getAttribute?.('position') as THREE.BufferAttribute | undefined;
+    if (!selPos || !myPos) return false;
 
-    const EPS = 1.5;
-    const boxA = new THREE.Box3().setFromBufferAttribute(
-      selGeo.getAttribute('position') as THREE.BufferAttribute
-    ).expandByScalar(EPS);
-    const boxB = new THREE.Box3().setFromBufferAttribute(
-      myGeo.getAttribute('position') as THREE.BufferAttribute
-    );
-    return boxA.intersectsBox(boxB);
+    const boxA = new THREE.Box3().setFromBufferAttribute(selPos).expandByScalar(2);
+    const boxB = new THREE.Box3().setFromBufferAttribute(myPos);
+    const hit = boxA.intersectsBox(boxB);
+    if (hit) console.log('[CONTACT]', shape.id, '↔', selPanel.id, 'INTERSECT');
+    return hit;
   }, [isPanel, selectedPanelRow, shape.id, shape.parameters?.virtualFaceId,
-      shape.parameters?.parentShapeId, shape.geometry, shapes]);
+      shape.parameters?.parentShapeId, shape.parameters?.faceIndex, shape.geometry, shapes]);
 
   const panelColor = (isPanelRowSelected || isVirtualPanelRowSelected)
     ? '#ef4444'
