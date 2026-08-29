@@ -646,22 +646,7 @@ export function recalculateVirtualFacesForShape(
           }
         }
 
-        // ── DÜZ (extrude'suz) PANEL ──
-        // Eski davranış p'nin BAKED mesh'ini döndürüyordu; ancak kutu boyut
-        // değiştirdiğinde panel henüz yeniden inşa edilmemiştir → baked mesh
-        // ESKİ boyutu taşır, damga ayak izi kutu sınırını aşar, "yüz yok oldu"
-        // tetiklenir. Artık taze VF köşelerinden taban geometrisi üretilir;
-        // boyutlar her zaman güncel geometriden gelir.
-        if (!isRotatedPanel(p)) {
-          if (ownVf) {
-            const th = parseFloat((p.parameters as any)?.panelThickness) || 18;
-            const baseGeo = baseStampGeometryFromVf(ownVf, th);
-            if (baseGeo) {
-              return { ...p, geometry: baseGeo };
-            }
-          }
-          return p;
-        }
+        if (!isRotatedPanel(p)) return p;
 
         // ── DÖNMÜŞ (extrude'suz) PANEL: eski davranış (canlı mesh + composeSteps). ──
         return { ...p, __isRotatedPanel: true, __composedOps: composedFromSteps() };
