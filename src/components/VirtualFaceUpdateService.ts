@@ -554,6 +554,30 @@ export function recalculateVirtualFacesForShape(
     }
     return ids;
   };
+  // ── ÖN-GEÇİŞ: Damga geometrisi için VF köşelerini güncel geometriden tazele ──
+  // stampingPanelsFor() giriş virtualFaces dizisinden okur; bu dizi BİR ÖNCEKİ
+  // döngünün sonucudur. Kutu boyutlandığında köşeler eskidir → damga ayak izi
+  // taşar → "yüz yok oldu" tetiklenir. Ön-geçiş her parentFaceShape VF'nin
+  // köşelerini güncel geometriden çıkarır; stampingPanelsFor bu haritaya başvurur.
+  const freshVfVertices = new Map<string, [number,number,number][]>();
+  for (const vf of shapeFaces) {
+    if (vf.parentFaceShape) {
+      const mg = findMatchingFaceGroup(vf, faces, faceGroups, shape.geometry);
+      if (mg) {
+        const ln = mg.normal.clone().normalize();
+        const sd = new THREE.Vector3(vf.center[0], vf.center[1], vf.center[2]);
+        const ct = computeFaceComponentContour(faces, mg.faceIndices, sd, ln);
+        if (ct && ct.corners.length >= 3) {
+          freshVfVertices.set(vf.id, ct.corners.map((c: THREE.Vector3) => [c.x, c.y, c.z] as [number,number,number]));
+          continue;
+        }
+      }
+    }
+    if (vf.vertices && vf.vertices.length >= 3) {
+      freshVfVertices.set(vf.id, vf.vertices);
+    }
+  }
+
   const stampingPanelsFor = (vfId: string): any[] => {
     const myIdx = vfIndexOf.get(vfId);
     const myPanel = childPanels.find(p => p.parameters?.virtualFaceId === vfId);
@@ -584,7 +608,9 @@ export function recalculateVirtualFacesForShape(
         // composeSteps (move/rotate) → footprint fonksiyonlarının dünya
         // çerçevesinde uygulayacağı ops (extrude HARİÇ). Hem dönmüş hem
         // extrude'lu panelde kullanılır.
-        const ownVf = virtualFaces.find(f => f.id === (p.parameters as any)?.virtualFaceId);
+        const ownVfRaw = virtualFaces.find(f => f.id === (p.parameters as any)?.virtualFaceId);
+        const ownVfFreshVerts = freshVfVertices.get((p.parameters as any)?.virtualFaceId);
+        const ownVf = ownVfRaw && ownVfFreshVerts ? { ...ownVfRaw, vertices: ownVfFreshVerts } : ownVfRaw;
         const composedFromSteps = (): RotOp[] | undefined => {
           if (!ownVf) return undefined;
           try {
