@@ -444,38 +444,37 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     !!shape.parameters?.virtualFaceId &&
     hoveredPanelVfId === shape.parameters.virtualFaceId;
 
-  // Secili panelin degen kardes panellerini yesil goster
+  // Secili panelin degen kardes panellerini yesil goster (3D bbox kesisim testi)
   const isContactSibling = useMemo(() => {
     if (!isPanel || selectedPanelRow === null) return false;
-
-    // Secili VF id'sini bul
     const selVfId = typeof selectedPanelRow === 'string' && selectedPanelRow.startsWith('vf-')
       ? selectedPanelRow.slice(3) : null;
     if (!selVfId) return false;
-
-    // Bu panel secili panelin kendisiyse yesil degil (kirmizi olacak)
     if (shape.parameters?.virtualFaceId === selVfId) return false;
 
-    const myVfId = shape.parameters?.virtualFaceId;
+    const parentId = shape.parameters?.parentShapeId;
+    if (!parentId) return false;
 
-    // Secili VF'in touchingSiblingIds'inde bu panelin shape.id'si var mi?
-    const selVf = virtualFaces.find(v => v.id === selVfId);
-    if (selVf?.touchingSiblingIds?.includes(shape.id)) return true;
+    const selPanel = shapes.find(s =>
+      s.type === 'panel' && s.parameters?.virtualFaceId === selVfId &&
+      s.parameters?.parentShapeId === parentId
+    );
+    if (!selPanel || selPanel.id === shape.id) return false;
 
-    // Ters yon: bu panelin VF'inin touchingSiblingIds'inde secili panel var mi?
-    if (myVfId) {
-      const myVf = virtualFaces.find(v => v.id === myVfId);
-      if (myVf?.touchingSiblingIds) {
-        // Secili panelin shape.id'sini bul
-        const selPanel = shapes.find(s =>
-          s.type === 'panel' && s.parameters?.virtualFaceId === selVfId
-        );
-        if (selPanel && myVf.touchingSiblingIds.includes(selPanel.id)) return true;
-      }
-    }
+    const selGeo = selPanel.geometry as THREE.BufferGeometry | undefined;
+    const myGeo = shape.geometry as THREE.BufferGeometry | undefined;
+    if (!selGeo?.getAttribute?.('position') || !myGeo?.getAttribute?.('position')) return false;
 
-    return false;
-  }, [isPanel, selectedPanelRow, shape.id, shape.parameters?.virtualFaceId, virtualFaces, shapes]);
+    const EPS = 1.5;
+    const boxA = new THREE.Box3().setFromBufferAttribute(
+      selGeo.getAttribute('position') as THREE.BufferAttribute
+    ).expandByScalar(EPS);
+    const boxB = new THREE.Box3().setFromBufferAttribute(
+      myGeo.getAttribute('position') as THREE.BufferAttribute
+    );
+    return boxA.intersectsBox(boxB);
+  }, [isPanel, selectedPanelRow, shape.id, shape.parameters?.virtualFaceId,
+      shape.parameters?.parentShapeId, shape.geometry, shapes]);
 
   const panelColor = (isPanelRowSelected || isVirtualPanelRowSelected)
     ? '#ef4444'
