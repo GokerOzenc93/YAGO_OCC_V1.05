@@ -137,22 +137,40 @@ function scaledFlatPanelStamp(
   return buildPrismFromVertices(scaled, [n3.x, n3.y, n3.z] as [number, number, number], thickness);
 }
 
-// Baked mesh'in düzlem ofseti taze VF düzlemiyle eşleşiyor mu? Eşleşmezse
-// mesh bayattır (VF önceki döngüde düzeltildi ama panel henüz rebuild olmadı).
+// Baked mesh bayat mı? Düzlem ofseti VEYA UV merkezi taze VF'den farklıysa
+// mesh güncellenmemiştir (VF önceki döngüde düzeltildi, panel henüz rebuild
+// olmadı). UV merkezi kontrolü, yüzey düzlemi aynı kalan ama panel yüzey
+// ÜSTÜNDE kaymış (move step sonrası) durumu yakalar.
 function isBakedMeshStale(
   geo: THREE.BufferGeometry | undefined,
   normal: THREE.Vector3,
-  freshPlaneD: number
+  freshPlaneD: number,
+  vfVertices?: [number, number, number][]
 ): boolean {
   const pos = geo?.attributes?.position as THREE.BufferAttribute | undefined;
   if (!pos || pos.count === 0) return false;
+  const limit = Math.min(pos.count, 16);
+
   let maxD = -Infinity;
-  const limit = Math.min(pos.count, 12);
+  let cx = 0, cy = 0, cz = 0;
   for (let i = 0; i < limit; i++) {
-    const d = pos.getX(i) * normal.x + pos.getY(i) * normal.y + pos.getZ(i) * normal.z;
+    const px = pos.getX(i), py = pos.getY(i), pz = pos.getZ(i);
+    const d = px * normal.x + py * normal.y + pz * normal.z;
     if (d > maxD) maxD = d;
+    cx += px; cy += py; cz += pz;
   }
-  return Math.abs(maxD - freshPlaneD) > 5;
+  if (Math.abs(maxD - freshPlaneD) > 5) return true;
+
+  if (vfVertices && vfVertices.length >= 3) {
+    cx /= limit; cy /= limit; cz /= limit;
+    let vx = 0, vy = 0, vz = 0;
+    for (const v of vfVertices) { vx += v[0]; vy += v[1]; vz += v[2]; }
+    vx /= vfVertices.length; vy /= vfVertices.length; vz /= vfVertices.length;
+    const dx = cx - vx, dy = cy - vy, dz = cz - vz;
+    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (dist > 10) return true;
+  }
+  return false;
 }
 
 function buildPrismFromVertices(
@@ -729,7 +747,7 @@ export function recalculateVirtualFacesForShape(
             if (ownVfRaw.vertices && ownVfRaw.vertices.length >= 3) {
               const n3 = new THREE.Vector3(...ownVfRaw.normal).normalize();
               const freshPlane = ownVfFreshVerts[0][0] * n3.x + ownVfFreshVerts[0][1] * n3.y + ownVfFreshVerts[0][2] * n3.z;
-              if (isBakedMeshStale(p.geometry, n3, freshPlane)) {
+              if (isBakedMeshStale(p.geometry, n3, freshPlane, ownVfRaw.vertices)) {
                 const fallback = buildPrismFromVertices(
                   ownVfRaw.vertices,
                   [n3.x, n3.y, n3.z] as [number, number, number],
