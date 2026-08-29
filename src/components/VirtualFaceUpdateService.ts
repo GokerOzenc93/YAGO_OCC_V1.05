@@ -699,24 +699,15 @@ export function recalculateVirtualFacesForShape(
         if (!isRotatedPanel(p)) {
           if (ownVfRaw && ownVfFreshVerts) {
             const th = parseFloat((p.parameters as any)?.panelThickness) || 18;
-            const scaled = scaledFlatPanelStamp(ownVfRaw, ownVfFreshVerts, th);
-            if (scaled) {
-              console.log('[YAGO][DAMGA-ÖLÇEK]', p.id, '→', vfId,
-                'ölçeklenmiş damga UYGULAND\u0130',
-                'eskiVFraw=', ownVfRaw?.vertices?.length ?? 0, 'köşe',
-                'rawBBox=', (ownVfRaw as any)?.rawFaceBBox ? 'VAR' : 'YOK',
-                'tazeKöşe=', ownVfFreshVerts.length);
-              return { ...p, geometry: scaled };
-            } else {
-              console.log('[YAGO][DAMGA-ÖLÇEK]', p.id, '→', vfId,
-                'null döndü (boyut değişmemiş veya rawBBox yok)',
-                'rawBBox=', (ownVfRaw as any)?.rawFaceBBox ? 'VAR' : 'YOK',
-                'eskiVerts=', ownVfRaw?.vertices?.length ?? 0);
+            const freshVf = { ...ownVfRaw, vertices: ownVfFreshVerts } as VirtualFace;
+            const freshStamp = baseStampGeometryFromVf(freshVf, th);
+            if (freshStamp) {
+              const composedOps = composedFromSteps();
+              if (composedOps && composedOps.length > 0) {
+                return { ...p, geometry: freshStamp, __isRotatedPanel: true, __composedOps: composedOps };
+              }
+              return { ...p, geometry: freshStamp };
             }
-          } else {
-            console.log('[YAGO][DAMGA-ÖLÇEK]', p.id, '→', vfId,
-              'ownVfRaw=', !!ownVfRaw, 'freshVerts=', !!ownVfFreshVerts,
-              'ATLANIYOR → baked mesh');
           }
           return p;
         }
