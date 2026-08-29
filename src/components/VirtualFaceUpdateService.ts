@@ -923,7 +923,9 @@ function regenerateParentFaceShapeVF(
   // izi geçici bir dalgada kaybolsa bile (rebuild transienti) eski kaydı
   // korunur; kardeş geri geldiğinde aynı tarafa bağlanır. Silinmiş panellerin
   // bayat kayıtları zararsızdır (id bir daha eşleşmez).
-  (out as any).sideRelations = { ...(storedRel || {}), ...(region?.sideRelations || {}) };
+  (out as any).sideRelations = faceResized
+    ? {}
+    : { ...(storedRel || {}), ...(region?.sideRelations || {}) };
   return out;
 }
 
