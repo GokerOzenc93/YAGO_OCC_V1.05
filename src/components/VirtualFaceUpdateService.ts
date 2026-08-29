@@ -557,20 +557,18 @@ export function recalculateVirtualFacesForShape(
   // ── ÖN-GEÇİŞ: Damga geometrisi için VF köşelerini güncel geometriden tazele ──
   // stampingPanelsFor() giriş virtualFaces dizisinden okur; bu dizi BİR ÖNCEKİ
   // döngünün sonucudur. Kutu boyutlandığında köşeler eskidir → damga ayak izi
-  // taşar → "yüz yok oldu" tetiklenir. Ön-geçiş her parentFaceShape VF'nin
-  // köşelerini güncel geometriden çıkarır; stampingPanelsFor bu haritaya başvurur.
+  // taşar → "yüz yok oldu" tetiklenir. Ön-geçiş TÜM VF'lerin köşelerini güncel
+  // geometriden çıkarır; stampingPanelsFor bu haritaya başvurur.
   const freshVfVertices = new Map<string, [number,number,number][]>();
   for (const vf of shapeFaces) {
-    if (vf.parentFaceShape) {
-      const mg = findMatchingFaceGroup(vf, faces, faceGroups, shape.geometry);
-      if (mg) {
-        const ln = mg.normal.clone().normalize();
-        const sd = new THREE.Vector3(vf.center[0], vf.center[1], vf.center[2]);
-        const ct = computeFaceComponentContour(faces, mg.faceIndices, sd, ln);
-        if (ct && ct.corners.length >= 3) {
-          freshVfVertices.set(vf.id, ct.corners.map((c: THREE.Vector3) => [c.x, c.y, c.z] as [number,number,number]));
-          continue;
-        }
+    const mg = findMatchingFaceGroup(vf, faces, faceGroups, shape.geometry);
+    if (mg) {
+      const ln = mg.normal.clone().normalize();
+      const sd = new THREE.Vector3(vf.center[0], vf.center[1], vf.center[2]);
+      const ct = computeFaceComponentContour(faces, mg.faceIndices, sd, ln);
+      if (ct && ct.corners.length >= 3) {
+        freshVfVertices.set(vf.id, ct.corners.map((c: THREE.Vector3) => [c.x, c.y, c.z] as [number,number,number]));
+        continue;
       }
     }
     if (vf.vertices && vf.vertices.length >= 3) {
@@ -648,9 +646,22 @@ export function recalculateVirtualFacesForShape(
           }
         }
 
-        // ── DÜZ (extrude'suz) PANEL: 927 davranışı — CANLI MESH footprint. ──
-        // Yerleşim ve taşıma bu yolla doğru çalışıyor; DEĞİŞTİRİLMEDİ.
-        if (!isRotatedPanel(p)) return p;
+        // ── DÜZ (extrude'suz) PANEL ──
+        // Eski davranış p'nin BAKED mesh'ini döndürüyordu; ancak kutu boyut
+        // değiştirdiğinde panel henüz yeniden inşa edilmemiştir → baked mesh
+        // ESKİ boyutu taşır, damga ayak izi kutu sınırını aşar, "yüz yok oldu"
+        // tetiklenir. Artık taze VF köşelerinden taban geometrisi üretilir;
+        // boyutlar her zaman güncel geometriden gelir.
+        if (!isRotatedPanel(p)) {
+          if (ownVf) {
+            const th = parseFloat((p.parameters as any)?.panelThickness) || 18;
+            const baseGeo = baseStampGeometryFromVf(ownVf, th);
+            if (baseGeo) {
+              return { ...p, geometry: baseGeo };
+            }
+          }
+          return p;
+        }
 
         // ── DÖNMÜŞ (extrude'suz) PANEL: eski davranış (canlı mesh + composeSteps). ──
         return { ...p, __isRotatedPanel: true, __composedOps: composedFromSteps() };
