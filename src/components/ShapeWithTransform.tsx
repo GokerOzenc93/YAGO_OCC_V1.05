@@ -446,15 +446,36 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
 
   // Secili panelin degen kardes panellerini yesil goster
   const isContactSibling = useMemo(() => {
-    if (!isPanel || !selectedPanelRow) return false;
+    if (!isPanel || selectedPanelRow === null) return false;
+
+    // Secili VF id'sini bul
     const selVfId = typeof selectedPanelRow === 'string' && selectedPanelRow.startsWith('vf-')
       ? selectedPanelRow.slice(3) : null;
     if (!selVfId) return false;
+
+    // Bu panel secili panelin kendisiyse yesil degil (kirmizi olacak)
     if (shape.parameters?.virtualFaceId === selVfId) return false;
+
+    const myVfId = shape.parameters?.virtualFaceId;
+
+    // Secili VF'in touchingSiblingIds'inde bu panelin shape.id'si var mi?
     const selVf = virtualFaces.find(v => v.id === selVfId);
-    if (!selVf?.touchingSiblingIds) return false;
-    return selVf.touchingSiblingIds.includes(shape.id);
-  }, [isPanel, selectedPanelRow, shape.id, shape.parameters?.virtualFaceId, virtualFaces]);
+    if (selVf?.touchingSiblingIds?.includes(shape.id)) return true;
+
+    // Ters yon: bu panelin VF'inin touchingSiblingIds'inde secili panel var mi?
+    if (myVfId) {
+      const myVf = virtualFaces.find(v => v.id === myVfId);
+      if (myVf?.touchingSiblingIds) {
+        // Secili panelin shape.id'sini bul
+        const selPanel = shapes.find(s =>
+          s.type === 'panel' && s.parameters?.virtualFaceId === selVfId
+        );
+        if (selPanel && myVf.touchingSiblingIds.includes(selPanel.id)) return true;
+      }
+    }
+
+    return false;
+  }, [isPanel, selectedPanelRow, shape.id, shape.parameters?.virtualFaceId, virtualFaces, shapes]);
 
   const panelColor = (isPanelRowSelected || isVirtualPanelRowSelected)
     ? '#ef4444'
