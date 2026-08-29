@@ -1216,21 +1216,30 @@ export function computeFreeRegionLocal(
   let continuityConnected = false; // tek-bileşenli süreklilik (doğrulama gevşetilir)
   let relationChosen = false;      // kayıtlı bağ ilişkisi uygulandı (doğrulama gevşetilir)
 
-  // ── ÖNCELİK 1: KALICI BAĞ İLİŞKİSİ ──────────────────────────────────────
-  // Kayıtlı taraf işaretleri varsa çapa, TÜM uygulanabilir kısıtları sağlayan
-  // serbest hücreler arasından seed'e en yakını olur. Deterministiktir: engel
-  // regen'ler arası ne kadar sıçrarsa sıçrasın panel hep kayıtlı tarafta
-  // kalır. Kısıt kümesi boşsa (o taraf geometrik olarak yok oldu) sezgisel
-  // katmanlara düşülür ve sonuçtan YENİ ilişki yazılır (ilk-temas yeniden).
-  if (storedSideRelations) {
+  // ── ÖNCELİK 1: YARI-DÜZLEM KISITLARI ──────────────────────────────────────
+  // Kayıtlı taraf işaretleri varsa onları, YOKSA seed konumundan türetilen
+  // taraf işaretlerini kullan. Seed-türevi yaklaşım sayesinde boyut değişimi
+  // sonrası bayat depolanmış ilişkilere gerek kalmaz; seed parametrik olarak
+  // doğru eşlenir ve her zaman doğru taraftadır. Deterministiktir: engel
+  // regen'ler arası ne kadar sıçrarsa sıçrasın panel hep kısıt tarafında
+  // kalır. Kısıt kümesi boşsa sezgisel katmanlara düşülür.
+  {
+    const seedPt = { x: uMin + (ci + 0.5) * cw, y: vMin + (cj + 0.5) * ch };
     const constraints: Array<{ c: Point2D; p: Point2D; sign: number }> = [];
     for (let f = 0; f < footprints.length; f++) {
       const id = fpIds[f];
       if (!id) continue;
-      const sgn = storedSideRelations[id];
-      if (sgn !== 1 && sgn !== -1) continue;
       const fr = canonicalStripFrame(footprints[f]);
-      constraints.push({ c: fr.c, p: fr.p, sign: sgn });
+      let sgn: number | undefined;
+      if (storedSideRelations) {
+        const stored = storedSideRelations[id];
+        if (stored === 1 || stored === -1) sgn = stored;
+      }
+      if (sgn === undefined) {
+        const s = (seedPt.x - fr.c.x) * fr.p.x + (seedPt.y - fr.c.y) * fr.p.y;
+        if (Math.abs(s) > 1e-6) sgn = s > 0 ? 1 : -1;
+      }
+      if (sgn !== undefined) constraints.push({ c: fr.c, p: fr.p, sign: sgn });
     }
     if (constraints.length > 0) {
       let bd = Infinity, bi = -1, bj = -1;

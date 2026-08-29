@@ -851,32 +851,22 @@ function regenerateParentFaceShapeVF(
     : undefined;
   // KALICI BAĞ İLİŞKİSİ: önceki regen'lerin kaydettiği kardeş→taraf işaretleri
   // kısıt olarak geçilir; taraf seçimi deterministikleşir (öneri: Goker).
+  // computeFreeRegionLocal artık storedSideRelations yoksa seed konumundan
+  // taraf işaretleri türetir; boyut değişimi sırasında bayat kayıtlar yerine
+  // seed doğrudan doğru tarafı belirler.
   const storedRel = (vf as any).sideRelations as Record<string, number> | undefined;
-  // BOYUT DEĞİŞİMİ + SOĞUMA SÜRESİ: yüz boyutu önemli ölçüde değiştiyse
-  // kayıtlı taraf ilişkilerini geçersiz kıl. Tek turda temizlemek yetmez:
-  // ilk regen bayat ayak izleriyle taze ilişki yazar, ikinci turda ayak izleri
-  // kayar ama yeni ilişkiler kısıt olarak kullanılır → panel yanlış tarafa
-  // zorlanır. Soğuma sayacı, boyut değişiminden sonra birkaç tur boyunca
-  // ilişkilerin hem kullanılmasını hem yazılmasını engeller; paneller yeniden
-  // inşa edilip ayak izleri kararlı hale geldikten SONRA taze ilişkiler
-  // doğal olarak kurulur.
-  const prevCooldown = ((vf as any)._resizeCooldown as number) || 0;
   const faceResized = anchorB !== newB && (
     Math.abs(anchorB.xSpan - newB.xSpan) > 1 || Math.abs(anchorB.ySpan - newB.ySpan) > 1
   );
-  const inCooldown = faceResized || prevCooldown > 0;
-  const effectiveRel = inCooldown ? undefined : storedRel;
+  const effectiveRel = faceResized ? undefined : storedRel;
   if (faceResized) {
     console.log('[YAGO][BOYUT-DEĞİŞİM]', vf.id,
       'eskiBBox=', `${anchorB.xSpan.toFixed(0)}x${anchorB.ySpan.toFixed(0)}`,
       'yeniBBox=', `${newB.xSpan.toFixed(0)}x${newB.ySpan.toFixed(0)}`,
-      '→ storedRel GEÇERSİZ KILINDI');
+      '→ storedRel GEÇERSİZ, seed-türevi kullanılacak');
   }
-  // Soğuma sırasında süreklilik bölgesini de devre dışı bırak: önceki tam
-  // genişlikteki VF, yanlış bileşenle daha fazla örtüşür; sadece seed yeterli.
-  const effectivePrev = inCooldown ? undefined : prevRegion;
   const region = computeFreeRegionLocal(
-    contour.corners, localNormal, seed, siblingPanels, worldToLocal, shape.id, effectivePrev, effectiveRel
+    contour.corners, localNormal, seed, siblingPanels, worldToLocal, shape.id, prevRegion, effectiveRel
   );
   if (region && region.polygon.length >= 3) {
     cornersOut = region.polygon.map(p2 => new THREE.Vector3()
@@ -929,10 +919,9 @@ function regenerateParentFaceShapeVF(
   // izi geçici bir dalgada kaybolsa bile (rebuild transienti) eski kaydı
   // korunur; kardeş geri geldiğinde aynı tarafa bağlanır. Silinmiş panellerin
   // bayat kayıtları zararsızdır (id bir daha eşleşmez).
-  (out as any).sideRelations = inCooldown
+  (out as any).sideRelations = faceResized
     ? {}
     : { ...(storedRel || {}), ...(region?.sideRelations || {}) };
-  (out as any)._resizeCooldown = faceResized ? 4 : Math.max(0, prevCooldown - 1);
   return out;
 }
 
