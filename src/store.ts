@@ -61,6 +61,10 @@ export interface VirtualFace {
     faceNormal:[number,number,number];
     axis:string;
   }>;
+  /** DEĞİŞMEZ TARAF SÖZLEŞMESİ: panelin her kardeş ayak izinin (kardeşPanelId)
+   *  hangi tarafında olduğu (±1). Yerleştirmede yazılır, regen STORED-WINS
+   *  birleştirdiğinden bir daha değişmez → panel ilk yerleştiği tarafta kalıcı. */
+  sideRelations?:Record<string,number>;
 }
 
 export interface Shape {

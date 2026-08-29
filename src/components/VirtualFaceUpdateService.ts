@@ -815,13 +815,22 @@ function regenerateParentFaceShapeVF(
   // newB → birim dönüşüm): yüz değişmediyse zaten doğru; değiştiyse bir
   // sonraki turdan itibaren kayıtlı ham taban devrededir. Kardeş hareketi VF
   // oran tabanını artık asla oynatamaz.
+  // ── MUTLAK ÇAPA (oransal DEĞİL) ──────────────────────────────────────────
+  // KESİN KURAL (Goker): panel nereye yerleştiyse ORADA kalır. Seed (tıklama
+  // noktası) regen'ler arası oransal olarak YENİDEN HARİTALANMAZ; yalnız güncel
+  // yüz düzlemine (planeN) yeniden izdüşürülür. Eski oransal remap, yüz bbox'ı
+  // değişince (ör. 600→333) seed'i bölmenin KARŞI tarafına kaydırıp paneli
+  // zıplatıyordu — kaldırıldı. Seed yüzün DIŞINA düşerse (aşırı küçülme) yalnız
+  // güncel yüz bbox'ına KIRPILIR: oran yok, sabit sınır. Tarafın gerçekten yok
+  // olduğu durumu taraf sözleşmesi ayrıca çözer (aşağıya bkz.). anchorB yalnız
+  // boyut-değişim TEŞHİS logu için tutulur; artık konum hesabına girmez.
   const anchorB = (vf as any).rawFaceBBox as ReturnType<typeof bboxOf> | undefined ?? newB;
-  const ru = Math.max(0, Math.min(1, (cUV.x - anchorB.xMin) / anchorB.xSpan));
-  const rv = Math.max(0, Math.min(1, (cUV.y - anchorB.yMin) / anchorB.ySpan));
+  const seedU = Math.max(newB.xMin, Math.min(newB.xMax, cUV.x));
+  const seedV = Math.max(newB.yMin, Math.min(newB.yMax, cUV.y));
   const planeN = contour.corners[0].dot(localNormal);
   const newCenter = new THREE.Vector3()
-    .addScaledVector(u, newB.xMin + ru * newB.xSpan)
-    .addScaledVector(v, newB.yMin + rv * newB.ySpan)
+    .addScaledVector(u, seedU)
+    .addScaledVector(v, seedV)
     .addScaledVector(localNormal, planeN);
 
   // KIRPMA: yakalama ile AYNI fonksiyon. Eskiden burada ham kontur yazılıyordu
@@ -863,12 +872,18 @@ function regenerateParentFaceShapeVF(
   const faceResized = anchorB !== newB && (
     Math.abs(anchorB.xSpan - newB.xSpan) > 1 || Math.abs(anchorB.ySpan - newB.ySpan) > 1
   );
-  const effectiveRel = faceResized ? undefined : storedRel;
+  // KALICI TARAF SÖZLEŞMESİ: boyut değişiminde bile taraf işaretleri ATILMAZ.
+  // Panel ilk temas ettiği tarafta KALIR. O taraf gerçekten yok olursa
+  // (footprint tarafı tamamen kaplarsa) computeFreeRegionLocal içindeki
+  // "kayıtlı taraf TAMAMEN doldu → yeniden çözülüyor" dalı TEK BAŞINA yeni
+  // tarafı yazar. Eskiden resize'da sözleşme atılıp seed-türevine düşülüyordu;
+  // oransal olarak kaymış seed yanlış tarafa işaret edince panel zıplıyordu.
+  const effectiveRel = storedRel;
   if (faceResized) {
     console.log('[YAGO][BOYUT-DEĞİŞİM]', vf.id,
       'eskiBBox=', `${anchorB.xSpan.toFixed(0)}x${anchorB.ySpan.toFixed(0)}`,
       'yeniBBox=', `${newB.xSpan.toFixed(0)}x${newB.ySpan.toFixed(0)}`,
-      '→ storedRel GEÇERSİZ, seed-türevi kullanılacak');
+      '→ taraf sözleşmesi KORUNUYOR (kalıcı), seed mutlak');
   }
   const region = computeFreeRegionLocal(
     contour.corners, localNormal, seed, siblingPanels, worldToLocal, shape.id, prevRegion, effectiveRel
@@ -924,9 +939,14 @@ function regenerateParentFaceShapeVF(
   // izi geçici bir dalgada kaybolsa bile (rebuild transienti) eski kaydı
   // korunur; kardeş geri geldiğinde aynı tarafa bağlanır. Silinmiş panellerin
   // bayat kayıtları zararsızdır (id bir daha eşleşmez).
-  (out as any).sideRelations = faceResized
-    ? {}
-    : { ...(storedRel || {}), ...(region?.sideRelations || {}) };
+  // DEĞİŞMEZ TARAF SÖZLEŞMESİ (STORED-WINS): bir kardeşin taraf işareti YALNIZ
+  // ilk kez (yerleştirmede) yazılır ve bir daha ASLA değişmez. Birleştirmede
+  // KAYITLI olan üstündür; region yalnız HENÜZ kaydı olmayan YENİ kardeşler
+  // için işaret ekler. Böylece bölücü duvarı takip ederken oluşan GEÇİCİ rebuild
+  // dalgalarında (ör. bölücü ayak izi bir an bayat kalıp "kayıtlı taraf TAMAMEN
+  // doldu → yeniden çözülüyor" tetiklenince) yeniden hesaplanan YANLIŞ işaret
+  // sözleşmeyi bozamaz. Panel, ilk yerleştiği kardeş-tarafında kalıcıdır.
+  (out as any).sideRelations = { ...(region?.sideRelations || {}), ...(storedRel || {}) };
   // TEMAS İLİŞKİLERİ: bu VF'nin ayak izi tarafından kırpılan kardeşlerin
   // id ve yüz normallerini kaydet. Boyut değişiminde taşıma adımlarının
   // oransal ölçeklenmesi bu ilişkilere dayanır.

@@ -127,6 +127,11 @@ export function buildFacePreview(
     hasPanel: false,
     parentFaceShape: true,
     touchingSiblingIds,
+    // DEĞİŞMEZ TARAF SÖZLEŞMESİ — DOĞUŞTAN KİLİT: tıklama anındaki taraf
+    // işaretleri (panelin her kardeş ayak izinin hangi tarafında olduğu) VF'ye
+    // hemen yazılır. Regen STORED-WINS birleştirdiğinden bu işaret bir daha
+    // değişmez; sonraki geçici rebuild dalgaları paneli karşı tarafa savuramaz.
+    sideRelations: region.sideRelations,
     // ÖLÇEK-BAĞIMSIZ YÜZ KİMLİĞİ: resize'da regen, yüzü bu descriptor ile
     // bulur (normalize merkez + eksen) — "en yakın düzlem" tahmini yerine
     // kesin eşleşme; VF asla komşu bir yüze (ör. çentik yanağına) savrulmaz.
