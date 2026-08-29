@@ -480,6 +480,16 @@ export function recalculateVirtualFacesForShape(
     const es = p?.parameters?.extrudeSteps;
     return Array.isArray(es) && es.length > 0;
   };
+  const hasExtrudeTowardFace = (p: any, targetFaceNormal: THREE.Vector3): boolean => {
+    const es = p?.parameters?.extrudeSteps;
+    if (!Array.isArray(es) || es.length === 0) return false;
+    for (const step of es) {
+      if (!step.faceNormal) continue;
+      const eN = new THREE.Vector3(...step.faceNormal).normalize();
+      if (Math.abs(eN.dot(targetFaceNormal)) > 0.7) return true;
+    }
+    return false;
+  };
   const hasMoveSteps = (p: any): boolean => {
     const t = p?.parameters?.transformSteps;
     return Array.isArray(t) && t.some((st: any) => st?.type === 'move');
@@ -515,7 +525,7 @@ export function recalculateVirtualFacesForShape(
           if (pVf) {
             const pNormal = new THREE.Vector3(...pVf.normal).normalize();
             const sameFace = Math.abs(myFaceNormal.dot(pNormal)) > 0.95;
-            if (!sameFace && (hasMoveSteps(p) || hasExtrudeSteps(p))) return true;
+            if (!sameFace && (hasMoveSteps(p) || hasExtrudeTowardFace(p, myFaceNormal))) return true;
           }
         }
         return myIdx != null && panelPriority(p) < myIdx;
