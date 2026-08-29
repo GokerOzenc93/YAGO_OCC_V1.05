@@ -486,7 +486,7 @@ export function recalculateVirtualFacesForShape(
     for (const step of es) {
       if (!step.faceNormal) continue;
       const eN = new THREE.Vector3(...step.faceNormal).normalize();
-      if (Math.abs(eN.dot(targetFaceNormal)) > 0.7) return true;
+      if (eN.dot(targetFaceNormal) > 0.7) return true;
     }
     return false;
   };
