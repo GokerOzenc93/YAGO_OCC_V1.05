@@ -84,12 +84,13 @@ function trimmedStampGeometryFromVf(
   return buildPrismFromVertices(trimmed, vf.normal, thickness);
 }
 
-// ── ORANSAL DAMGA: düz panel boyut değişiminde ──────────────────────────────
-// Kutu boyutlandığında düz (extrude'suz) panelin baked mesh'i henüz yeniden
-// inşa edilmemiştir → eski boyutu taşır. Bu fonksiyon eski VF çokgenini
-// (kırpılmış bölge) ESKİ ham yüz bbox'ından YENİ ham yüz bbox'ına oransal
-// haritalayarak geçici bir damga geometrisi üretir. Boyut değişmemişse null
-// döner → baked mesh kullanılır. Hata bir sonraki rebuild'de sıfırlanır.
+// ── ORANSAL DAMGA: düz panel VF→taze geometri ─────────────────────────────
+// Düz (extrude'suz) panelin baked mesh'i VF regen döngüleri arasında
+// güncellenmez. Bu fonksiyon VF'nin kırpılmış köşelerini HER ZAMAN rawFaceBBox
+// oranıyla taze yüz konturuna haritalayarak güncel damga geometrisi üretir.
+// Boyut/ofset değişmediğinde haritalama birim-dönüşümdür → sonuç aynıdır,
+// ancak baked mesh'e düşülmez; böylece panel rebuild'den ÖNCE çalışan her
+// VF döngüsünde damga DAİMA doğru konumdadır.
 function scaledFlatPanelStamp(
   oldVf: VirtualFace,
   freshRawVerts: [number, number, number][],
@@ -113,8 +114,6 @@ function scaledFlatPanelStamp(
   }
   const nxSpan = Math.max(nxMax - nxMin, 1e-6);
   const nySpan = Math.max(nyMax - nyMin, 1e-6);
-
-  if (Math.abs(oldRaw.xSpan - nxSpan) < 1 && Math.abs(oldRaw.ySpan - nySpan) < 1) return null;
 
   const planeD = freshRawVerts[0][0] * n3.x + freshRawVerts[0][1] * n3.y + freshRawVerts[0][2] * n3.z;
 
@@ -700,23 +699,7 @@ export function recalculateVirtualFacesForShape(
           if (ownVfRaw && ownVfFreshVerts) {
             const th = parseFloat((p.parameters as any)?.panelThickness) || 18;
             const scaled = scaledFlatPanelStamp(ownVfRaw, ownVfFreshVerts, th);
-            if (scaled) {
-              console.log('[YAGO][DAMGA-ÖLÇEK]', p.id, '→', vfId,
-                'ölçeklenmiş damga UYGULAND\u0130',
-                'eskiVFraw=', ownVfRaw?.vertices?.length ?? 0, 'köşe',
-                'rawBBox=', (ownVfRaw as any)?.rawFaceBBox ? 'VAR' : 'YOK',
-                'tazeKöşe=', ownVfFreshVerts.length);
-              return { ...p, geometry: scaled };
-            } else {
-              console.log('[YAGO][DAMGA-ÖLÇEK]', p.id, '→', vfId,
-                'null döndü (boyut değişmemiş veya rawBBox yok)',
-                'rawBBox=', (ownVfRaw as any)?.rawFaceBBox ? 'VAR' : 'YOK',
-                'eskiVerts=', ownVfRaw?.vertices?.length ?? 0);
-            }
-          } else {
-            console.log('[YAGO][DAMGA-ÖLÇEK]', p.id, '→', vfId,
-              'ownVfRaw=', !!ownVfRaw, 'freshVerts=', !!ownVfFreshVerts,
-              'ATLANIYOR → baked mesh');
+            if (scaled) return { ...p, geometry: scaled };
           }
           return p;
         }
