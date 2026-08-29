@@ -922,7 +922,6 @@ function regenerateParentFaceShapeVF(
   (out as any).sideRelations = faceResized
     ? {}
     : { ...(storedRel || {}), ...(region?.sideRelations || {}) };
-  if (region?.touchingSiblingIds) out.touchingSiblingIds = region.touchingSiblingIds;
   return out;
 }
 

@@ -53,8 +53,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     waitingForSurfaceSelection,
     raycastMode,
     shapes,
-    rebuildingShapeIds,
-    virtualFaces
+    rebuildingShapeIds
   } = useAppStore(useShallow(state => ({
     selectShape: state.selectShape,
     selectSecondaryShape: state.selectSecondaryShape,
@@ -83,8 +82,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     waitingForSurfaceSelection: state.waitingForSurfaceSelection,
     raycastMode: state.raycastMode,
     shapes: state.shapes,
-    rebuildingShapeIds: state.rebuildingShapeIds,
-    virtualFaces: state.virtualFaces
+    rebuildingShapeIds: state.rebuildingShapeIds
   })));
 
   const { scene } = useThree();
@@ -444,56 +442,12 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     !!shape.parameters?.virtualFaceId &&
     hoveredPanelVfId === shape.parameters.virtualFaceId;
 
-  // Secili panelin degen kardes panellerini yesil goster (3D bbox kesisim testi)
-  // Secili panelin degen kardes panellerini yesil goster (3D bbox kesisim testi)
-  const isContactSibling = useMemo(() => {
-    if (!isPanel || selectedPanelRow === null) return false;
-    const parentId = shape.parameters?.parentShapeId;
-    if (!parentId) return false;
-
-    let selVfId: string | null = null;
-    let selFaceIdx: number | null = null;
-    if (typeof selectedPanelRow === 'string' && selectedPanelRow.startsWith('vf-')) {
-      selVfId = selectedPanelRow.slice(3);
-    } else if (typeof selectedPanelRow === 'number') {
-      selFaceIdx = selectedPanelRow;
-    }
-
-    // Skip the selected panel itself
-    if (selVfId && shape.parameters?.virtualFaceId === selVfId) return false;
-    if (selFaceIdx !== null && shape.parameters?.faceIndex === selFaceIdx) return false;
-
-    // Find the selected panel
-    let selPanel: any = null;
-    if (selVfId) {
-      selPanel = shapes.find((s: any) => s.type === 'panel' && s.parameters?.virtualFaceId === selVfId && s.parameters?.parentShapeId === parentId);
-    } else if (selFaceIdx !== null) {
-      selPanel = shapes.find((s: any) => s.type === 'panel' && s.parameters?.faceIndex === selFaceIdx && s.parameters?.parentShapeId === parentId);
-    }
-    if (!selPanel || selPanel.id === shape.id) return false;
-
-    // Bbox intersection test
-    const selGeo = selPanel.geometry as THREE.BufferGeometry | undefined;
-    const myGeo = shape.geometry as THREE.BufferGeometry | undefined;
-    const selPos = selGeo?.getAttribute?.('position') as THREE.BufferAttribute | undefined;
-    const myPos = myGeo?.getAttribute?.('position') as THREE.BufferAttribute | undefined;
-    if (!selPos || !myPos) return false;
-
-    const boxA = new THREE.Box3().setFromBufferAttribute(selPos).expandByScalar(2);
-    const boxB = new THREE.Box3().setFromBufferAttribute(myPos);
-    const hit = boxA.intersectsBox(boxB);
-    if (hit) console.log('[CONTACT]', shape.id, '↔', selPanel.id, 'INTERSECT');
-    return hit;
-  }, [isPanel, selectedPanelRow, shape.id, shape.parameters?.virtualFaceId,
-      shape.parameters?.parentShapeId, shape.parameters?.faceIndex, shape.geometry, shapes]);
-
+  // Hover: sarıya yakın ton (seçim kırmızısı her zaman önceliklidir)
   const panelColor = (isPanelRowSelected || isVirtualPanelRowSelected)
     ? '#ef4444'
-    : isContactSibling
-      ? '#22c55e'
-      : isPanelHovered
-        ? '#f5dd7a'
-        : (shape.color || '#ffffff');
+    : isPanelHovered
+      ? '#f5dd7a'
+      : (shape.color || '#ffffff');
 
   const suppressPanelRaycast = isPanel && raycastMode && parentShapeId === selectedShapeId;
   const noopRaycast = useCallback(() => {}, []);
@@ -613,8 +567,8 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
             >
               <meshStandardMaterial
                 color={isPanel ? panelColor : '#c8c8c8'}
-                emissive={(isPanelRowSelected || isVirtualPanelRowSelected) ? panelColor : isContactSibling ? '#16a34a' : isPanelHovered ? '#eab308' : '#000000'}
-                emissiveIntensity={(isPanelRowSelected || isVirtualPanelRowSelected) ? 0.4 : isContactSibling ? 0.35 : isPanelHovered ? 0.22 : 0}
+                emissive={(isPanelRowSelected || isVirtualPanelRowSelected) ? panelColor : isPanelHovered ? '#eab308' : '#000000'}
+                emissiveIntensity={(isPanelRowSelected || isVirtualPanelRowSelected) ? 0.4 : isPanelHovered ? 0.22 : 0}
                 metalness={0}
                 roughness={isPanel ? 0.92 : 1.0}
                 transparent
@@ -691,8 +645,8 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
             >
               <meshStandardMaterial
                 color={isPanel ? panelColor : shouldShowAsReference ? '#ef4444' : '#c8c8c8'}
-                emissive={(isPanelRowSelected || isVirtualPanelRowSelected) ? panelColor : isContactSibling ? '#16a34a' : isPanelHovered ? '#eab308' : '#000000'}
-                emissiveIntensity={(isPanelRowSelected || isVirtualPanelRowSelected) ? 0.4 : isContactSibling ? 0.35 : isPanelHovered ? 0.22 : 0}
+                emissive={(isPanelRowSelected || isVirtualPanelRowSelected) ? panelColor : isPanelHovered ? '#eab308' : '#000000'}
+                emissiveIntensity={(isPanelRowSelected || isVirtualPanelRowSelected) ? 0.4 : isPanelHovered ? 0.22 : 0}
                 metalness={0}
                 roughness={isPanel ? 0.92 : 1.0}
                 transparent
