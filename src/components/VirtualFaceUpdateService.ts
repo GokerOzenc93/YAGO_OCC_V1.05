@@ -700,7 +700,23 @@ export function recalculateVirtualFacesForShape(
           if (ownVfRaw && ownVfFreshVerts) {
             const th = parseFloat((p.parameters as any)?.panelThickness) || 18;
             const scaled = scaledFlatPanelStamp(ownVfRaw, ownVfFreshVerts, th);
-            if (scaled) return { ...p, geometry: scaled };
+            if (scaled) {
+              console.log('[YAGO][DAMGA-ÖLÇEK]', p.id, '→', vfId,
+                'ölçeklenmiş damga UYGULAND\u0130',
+                'eskiVFraw=', ownVfRaw?.vertices?.length ?? 0, 'köşe',
+                'rawBBox=', (ownVfRaw as any)?.rawFaceBBox ? 'VAR' : 'YOK',
+                'tazeKöşe=', ownVfFreshVerts.length);
+              return { ...p, geometry: scaled };
+            } else {
+              console.log('[YAGO][DAMGA-ÖLÇEK]', p.id, '→', vfId,
+                'null döndü (boyut değişmemiş veya rawBBox yok)',
+                'rawBBox=', (ownVfRaw as any)?.rawFaceBBox ? 'VAR' : 'YOK',
+                'eskiVerts=', ownVfRaw?.vertices?.length ?? 0);
+            }
+          } else {
+            console.log('[YAGO][DAMGA-ÖLÇEK]', p.id, '→', vfId,
+              'ownVfRaw=', !!ownVfRaw, 'freshVerts=', !!ownVfFreshVerts,
+              'ATLANIYOR → baked mesh');
           }
           return p;
         }
@@ -836,8 +852,25 @@ function regenerateParentFaceShapeVF(
   // KALICI BAĞ İLİŞKİSİ: önceki regen'lerin kaydettiği kardeş→taraf işaretleri
   // kısıt olarak geçilir; taraf seçimi deterministikleşir (öneri: Goker).
   const storedRel = (vf as any).sideRelations as Record<string, number> | undefined;
+  // BOYUT DEĞİŞİMİ: yüz boyutu önemli ölçüde değiştiyse kayıtlı taraf
+  // ilişkilerini geçersiz kıl. Eski taraf atamaları eski damga konumlarına
+  // dayanır; boyut değiştiğinde damga sınırları kayar ve eski "taraf 1"
+  // yeni geometride yanlış bölgeye denk düşebilir → panel yer değiştirir.
+  // storedRel yerine undefined geçilerek computeFreeRegionLocal doğal seed
+  // konumundan taze taraf ataması yapar. Sonraki kararlı döngüde yeni
+  // ilişkiler kaydedilir.
+  const faceResized = anchorB !== newB && (
+    Math.abs(anchorB.xSpan - newB.xSpan) > 1 || Math.abs(anchorB.ySpan - newB.ySpan) > 1
+  );
+  const effectiveRel = faceResized ? undefined : storedRel;
+  if (faceResized) {
+    console.log('[YAGO][BOYUT-DEĞİŞİM]', vf.id,
+      'eskiBBox=', `${anchorB.xSpan.toFixed(0)}x${anchorB.ySpan.toFixed(0)}`,
+      'yeniBBox=', `${newB.xSpan.toFixed(0)}x${newB.ySpan.toFixed(0)}`,
+      '→ storedRel GEÇERSİZ KILINDI');
+  }
   const region = computeFreeRegionLocal(
-    contour.corners, localNormal, seed, siblingPanels, worldToLocal, shape.id, prevRegion, storedRel
+    contour.corners, localNormal, seed, siblingPanels, worldToLocal, shape.id, prevRegion, effectiveRel
   );
   if (region && region.polygon.length >= 3) {
     cornersOut = region.polygon.map(p2 => new THREE.Vector3()
