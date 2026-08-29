@@ -84,12 +84,12 @@ function trimmedStampGeometryFromVf(
   return buildPrismFromVertices(trimmed, vf.normal, thickness);
 }
 
-// ── ORANSAL DAMGA: düz panel boyut/konum değişiminde ───────────────────────
+// ── ORANSAL DAMGA: düz panel boyut değişiminde ──────────────────────────────
 // Kutu boyutlandığında düz (extrude'suz) panelin baked mesh'i henüz yeniden
-// inşa edilmemiştir → eski boyut/konumu taşır. Bu fonksiyon eski VF çokgenini
+// inşa edilmemiştir → eski boyutu taşır. Bu fonksiyon eski VF çokgenini
 // (kırpılmış bölge) ESKİ ham yüz bbox'ından YENİ ham yüz bbox'ına oransal
-// haritalayarak geçici bir damga geometrisi üretir. UV boyutları VE düzlem
-// ofseti değişmemişse null döner → baked mesh kullanılır.
+// haritalayarak geçici bir damga geometrisi üretir. Boyut değişmemişse null
+// döner → baked mesh kullanılır. Hata bir sonraki rebuild'de sıfırlanır.
 function scaledFlatPanelStamp(
   oldVf: VirtualFace,
   freshRawVerts: [number, number, number][],
@@ -114,12 +114,9 @@ function scaledFlatPanelStamp(
   const nxSpan = Math.max(nxMax - nxMin, 1e-6);
   const nySpan = Math.max(nyMax - nyMin, 1e-6);
 
-  const oldPlaneD = oldVf.vertices[0][0] * n3.x + oldVf.vertices[0][1] * n3.y + oldVf.vertices[0][2] * n3.z;
-  const planeD = freshRawVerts[0][0] * n3.x + freshRawVerts[0][1] * n3.y + freshRawVerts[0][2] * n3.z;
+  if (Math.abs(oldRaw.xSpan - nxSpan) < 1 && Math.abs(oldRaw.ySpan - nySpan) < 1) return null;
 
-  const dimChanged = Math.abs(oldRaw.xSpan - nxSpan) > 1 || Math.abs(oldRaw.ySpan - nySpan) > 1;
-  const planeChanged = Math.abs(oldPlaneD - planeD) > 1;
-  if (!dimChanged && !planeChanged) return null;
+  const planeD = freshRawVerts[0][0] * n3.x + freshRawVerts[0][1] * n3.y + freshRawVerts[0][2] * n3.z;
 
   const scaled: [number, number, number][] = oldVf.vertices.map(xyz => {
     const ou = dotU(xyz), ov = dotV(xyz);
@@ -135,42 +132,6 @@ function scaledFlatPanelStamp(
   });
 
   return buildPrismFromVertices(scaled, [n3.x, n3.y, n3.z] as [number, number, number], thickness);
-}
-
-// Baked mesh bayat mı? Düzlem ofseti VEYA UV merkezi taze VF'den farklıysa
-// mesh güncellenmemiştir (VF önceki döngüde düzeltildi, panel henüz rebuild
-// olmadı). UV merkezi kontrolü, yüzey düzlemi aynı kalan ama panel yüzey
-// ÜSTÜNDE kaymış (move step sonrası) durumu yakalar.
-function isBakedMeshStale(
-  geo: THREE.BufferGeometry | undefined,
-  normal: THREE.Vector3,
-  freshPlaneD: number,
-  vfVertices?: [number, number, number][]
-): boolean {
-  const pos = geo?.attributes?.position as THREE.BufferAttribute | undefined;
-  if (!pos || pos.count === 0) return false;
-  const limit = Math.min(pos.count, 16);
-
-  let maxD = -Infinity;
-  let cx = 0, cy = 0, cz = 0;
-  for (let i = 0; i < limit; i++) {
-    const px = pos.getX(i), py = pos.getY(i), pz = pos.getZ(i);
-    const d = px * normal.x + py * normal.y + pz * normal.z;
-    if (d > maxD) maxD = d;
-    cx += px; cy += py; cz += pz;
-  }
-  if (Math.abs(maxD - freshPlaneD) > 5) return true;
-
-  if (vfVertices && vfVertices.length >= 3) {
-    cx /= limit; cy /= limit; cz /= limit;
-    let vx = 0, vy = 0, vz = 0;
-    for (const v of vfVertices) { vx += v[0]; vy += v[1]; vz += v[2]; }
-    vx /= vfVertices.length; vy /= vfVertices.length; vz /= vfVertices.length;
-    const dx = cx - vx, dy = cy - vy, dz = cz - vz;
-    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-    if (dist > 10) return true;
-  }
-  return false;
 }
 
 function buildPrismFromVertices(
@@ -739,23 +700,23 @@ export function recalculateVirtualFacesForShape(
           if (ownVfRaw && ownVfFreshVerts) {
             const th = parseFloat((p.parameters as any)?.panelThickness) || 18;
             const scaled = scaledFlatPanelStamp(ownVfRaw, ownVfFreshVerts, th);
-            if (scaled) return { ...p, geometry: scaled };
-            // scaledFlatPanelStamp null döndü (VF düzeyinde değişim yok).
-            // Ama baked mesh hala eski konumda olabilir (VF önceki döngüde
-            // düzeltildi, panel henüz rebuild olmadı). Mesh düzlem ofsetini
-            // kontrol et.
-            if (ownVfRaw.vertices && ownVfRaw.vertices.length >= 3) {
-              const n3 = new THREE.Vector3(...ownVfRaw.normal).normalize();
-              const freshPlane = ownVfFreshVerts[0][0] * n3.x + ownVfFreshVerts[0][1] * n3.y + ownVfFreshVerts[0][2] * n3.z;
-              if (isBakedMeshStale(p.geometry, n3, freshPlane, ownVfRaw.vertices)) {
-                const fallback = buildPrismFromVertices(
-                  ownVfRaw.vertices,
-                  [n3.x, n3.y, n3.z] as [number, number, number],
-                  th
-                );
-                if (fallback) return { ...p, geometry: fallback };
-              }
+            if (scaled) {
+              console.log('[YAGO][DAMGA-ÖLÇEK]', p.id, '→', vfId,
+                'ölçeklenmiş damga UYGULAND\u0130',
+                'eskiVFraw=', ownVfRaw?.vertices?.length ?? 0, 'köşe',
+                'rawBBox=', (ownVfRaw as any)?.rawFaceBBox ? 'VAR' : 'YOK',
+                'tazeKöşe=', ownVfFreshVerts.length);
+              return { ...p, geometry: scaled };
+            } else {
+              console.log('[YAGO][DAMGA-ÖLÇEK]', p.id, '→', vfId,
+                'null döndü (boyut değişmemiş veya rawBBox yok)',
+                'rawBBox=', (ownVfRaw as any)?.rawFaceBBox ? 'VAR' : 'YOK',
+                'eskiVerts=', ownVfRaw?.vertices?.length ?? 0);
             }
+          } else {
+            console.log('[YAGO][DAMGA-ÖLÇEK]', p.id, '→', vfId,
+              'ownVfRaw=', !!ownVfRaw, 'freshVerts=', !!ownVfFreshVerts,
+              'ATLANIYOR → baked mesh');
           }
           return p;
         }
