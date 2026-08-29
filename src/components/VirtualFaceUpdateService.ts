@@ -480,23 +480,10 @@ export function recalculateVirtualFacesForShape(
     const es = p?.parameters?.extrudeSteps;
     return Array.isArray(es) && es.length > 0;
   };
-  // DAMGALAMA ÖNCELİĞİ — TEK KURAL: VF SIRASI (basan↔basılan).
-  // Bir VF'ye YALNIZ, virtualFaces dizisinde ondan DAHA ÖNCE gelen (index'i
-  // daha küçük = daha öncelikli = BASAN) kardeşlerin ayak izi damgalanır; bu
-  // VF'nin paneli o köşede KISALIR (BASILAN). Aynı yüz / farklı yüz ayrımı
-  // damgalama YÖNÜNÜ ARTIK DEĞİŞTİRMEZ.
-  //
-  // ESKİ HATA: farklı yüzdeki (dik) kardeşler "öncelikten bağımsız" KARŞILIKLI
-  // damgalıyordu (if(!sameFace) return true). basan/basılan tam da dik ilişki
-  // olduğundan (yan↔alt/üst) her iki panel de birbirini kesiyor, ikisi de
-  // kısalıyor ve LİSTE SIRASI DEĞİŞSE DE basan/basılan DÖNMÜYORDU — kullanıcının
-  // bildirdiği kilitlenme buydu. Artık tek ölçüt sıradır: kullanıcı listede
-  // sırayı değiştirince öncelik döner → basan↔basılan anında güncellenir
-  // (öndeki tam boy kalır, arkadaki onun ayak izince kısalır).
-  //
-  // Extrude referans ilişkisi korunur: birbirine extrude referansı veren
-  // paneller birbirini DAMGALAMAZ (extrude çarpışmayı zaten çözer; ek kırpma
-  // paneli gereğinden fazla küçültür).
+  const hasMoveSteps = (p: any): boolean => {
+    const t = p?.parameters?.transformSteps;
+    return Array.isArray(t) && t.some((st: any) => st?.type === 'move');
+  };
   const extrudeRefsOf = (panel: any): Set<string> => {
     const ids = new Set<string>();
     const es = panel?.parameters?.extrudeSteps;
@@ -509,29 +496,28 @@ export function recalculateVirtualFacesForShape(
   };
   const stampingPanelsFor = (vfId: string): any[] => {
     const myIdx = vfIndexOf.get(vfId);
-    // Bu VF'nin sahibi olan paneli bul
     const myPanel = childPanels.find(p => p.parameters?.virtualFaceId === vfId);
+    const myVf = virtualFaces.find(f => f.id === vfId);
+    const myFaceNormal = myVf ? new THREE.Vector3(...myVf.normal).normalize() : null;
     return childPanels
       .filter(p => {
         if (p.parameters?.virtualFaceId === vfId) return false;
-        // Extrude referansı ASİMETRİK ele alınır (aksi halde referans panel
-        // extrude sırasında tam boya dönüp extrude edilen panele giriyordu):
-        //  • myPanel, p'ye extrude ile referans veriyorsa (iRefP=true): p,
-        //    myPanel'i DAMGALAMAZ. myPanel zaten p'ye kadar extrude olur; ayrıca
-        //    p ile kırpmak onu ÇİFT-KESER (gereğinden fazla küçültür).
-        //  • p, myPanel'e referans veriyorsa (p, myPanel'e extrude olan panel):
-        //    p, myPanel'i yine DAMGALAR — ama EXTRUDE ÖNCESİ (taban) ayak iziyle
-        //    (bkz. .map / baseStampGeometryFromVf). Böylece referans (basılan)
-        //    panel, extrude eden panelin izince KIRPILI/DONUK kalır; extrude
-        //    büyürken ölçüsü değişmez, yukarı çıkıp iç içe geçmez.
         if (myPanel && extrudeRefsOf(myPanel).has(p.id)) return false;
-        // p, myPanel'e extrude ile ulaşıyorsa (p = referansa extrude olan panel):
-        // p, myPanel'i ÖNCELİKTEN BAĞIMSIZ olarak DAMGALAR. Extrude ilişkisi
-        // "p, myPanel'in üstüne oturur"u dikte eder; liste sırası ne olursa olsun
-        // referans panel (myPanel) donuk/kırpılı kalsın diye zorlanır.
         if (myPanel && extrudeRefsOf(p).has(myPanel.id)) return true;
-        // TEK ÖNCELİK KURALI (aynı yüz + farklı yüz): yalnız daha öncelikli
-        // (VF dizisinde daha önce gelen = BASAN) kardeş damgalar.
+        // FARKLI YÜZDEKİ TAŞINMIŞ/EXTRUDE'LU PANEL: Bu panel move veya
+        // extrude adımı taşıyorsa ve myPanel'den FARKLI bir yüzdeyse (dik
+        // komşu), VF sırasından BAĞIMSIZ olarak damgalar. Taşınan/extrude'lu
+        // panel fiziksel olarak myPanel'in yüzüne girmiş olabilir; eski
+        // salt-index kuralı bunu yakalayamıyordu (üst panele kardeşN=0).
+        const pVfId = p.parameters?.virtualFaceId;
+        if (pVfId && myFaceNormal) {
+          const pVf = virtualFaces.find(f => f.id === pVfId);
+          if (pVf) {
+            const pNormal = new THREE.Vector3(...pVf.normal).normalize();
+            const sameFace = Math.abs(myFaceNormal.dot(pNormal)) > 0.95;
+            if (!sameFace && (hasMoveSteps(p) || hasExtrudeSteps(p))) return true;
+          }
+        }
         return myIdx != null && panelPriority(p) < myIdx;
       })
       .map(p => {

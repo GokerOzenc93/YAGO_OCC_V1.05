@@ -358,15 +358,24 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
     );
   }
 
-  // AŞAMA 2: tüm paneller güncel konumda → VF'leri kesin ayak izleriyle yaz.
-  if (updateVirtualFace) {
-    for (const f of currentVfs) updateVirtualFace(f.id, f);
-  }
-
   // AŞAMA 3: son VF'lerle bir kez daha üret — bölge güncellemesi geometriye
   // yansısın (özellikle son panelin ayak izi öncekileri etkilediyse).
+  // VF'leri her panel arasında yeniden hesapla ki güncel geometriden doğru
+  // ayak izleri türesin (kutu büyütme sonrası bayat geometri sorunu).
   for (const panel of children) {
     await buildPanel(panel, currentVfs);
+    const updatedShapes2 = useAppStore.getState().shapes;
+    const updatedParent2 = updatedShapes2.find(s => s.id === parentShapeId) || parentFresh;
+    currentVfs = recalculateVirtualFacesForShape(
+      updatedParent2, useAppStore.getState().virtualFaces, updatedShapes2, 'all'
+    );
+  }
+
+  // AŞAMA 4: tüm paneller güncel konumda → VF'leri kesin ayak izleriyle yaz.
+  // AŞAMA 3'ten SONRA yapılır ki store, en güncel geometriyle hesaplanmış
+  // VF'leri alsın (kutu boyut değişikliğinde bayat footprint sorunu).
+  if (updateVirtualFace) {
+    for (const f of currentVfs) updateVirtualFace(f.id, f);
   }
 }
 
