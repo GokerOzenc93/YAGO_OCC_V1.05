@@ -39,9 +39,59 @@ function baseStampGeometryFromVf(
   thickness: number
 ): THREE.BufferGeometry | null {
   if (!vf.vertices || vf.vertices.length < 3) return null;
-  const N = vf.vertices.length;
-  const n = new THREE.Vector3(vf.normal[0], vf.normal[1], vf.normal[2]).normalize();
-  const front = vf.vertices.map(([x, y, z]) => new THREE.Vector3(x, y, z));
+  return buildPrismFromVertices(vf.vertices, vf.normal, thickness);
+}
+
+function trimmedStampGeometryFromVf(
+  vf: VirtualFace,
+  thickness: number,
+  extrudeSteps: any[],
+  targetFaceNormal: THREE.Vector3
+): THREE.BufferGeometry | null {
+  if (!vf.vertices || vf.vertices.length < 3) return null;
+  const trimmed: [number, number, number][] = vf.vertices.map(v => [...v] as [number, number, number]);
+  for (const step of extrudeSteps) {
+    if (!step.faceNormal) continue;
+    const eN = new THREE.Vector3(...step.faceNormal).normalize();
+    if (eN.dot(targetFaceNormal) > 0.7) continue;
+    const amount = step.resolvedValue ?? step.value ?? 0;
+    if (Math.abs(amount) < 0.01) continue;
+    const projs = trimmed.map(p => p[0] * eN.x + p[1] * eN.y + p[2] * eN.z);
+    if (amount < 0) {
+      const maxProj = Math.max(...projs);
+      const threshold = maxProj + amount;
+      for (let i = 0; i < trimmed.length; i++) {
+        if (projs[i] > threshold) {
+          const delta = threshold - projs[i];
+          trimmed[i][0] += delta * eN.x;
+          trimmed[i][1] += delta * eN.y;
+          trimmed[i][2] += delta * eN.z;
+        }
+      }
+    } else {
+      const minProj = Math.min(...projs);
+      const threshold = minProj + amount;
+      for (let i = 0; i < trimmed.length; i++) {
+        if (projs[i] < threshold) {
+          const delta = threshold - projs[i];
+          trimmed[i][0] += delta * eN.x;
+          trimmed[i][1] += delta * eN.y;
+          trimmed[i][2] += delta * eN.z;
+        }
+      }
+    }
+  }
+  return buildPrismFromVertices(trimmed, vf.normal, thickness);
+}
+
+function buildPrismFromVertices(
+  vertices: [number, number, number][],
+  normal: [number, number, number],
+  thickness: number
+): THREE.BufferGeometry | null {
+  const N = vertices.length;
+  const n = new THREE.Vector3(normal[0], normal[1], normal[2]).normalize();
+  const front = vertices.map(([x, y, z]) => new THREE.Vector3(x, y, z));
   const back = front.map(p => p.clone().addScaledVector(n, -thickness)); // extrude(-th) ile aynı yön
   const all = [...front, ...back];               // 0..N-1 ön, N..2N-1 arka
   const arr = new Float32Array(all.length * 3);
@@ -550,15 +600,25 @@ export function recalculateVirtualFacesForShape(
         // ── EXTRUDE'LU PANEL: KENAR-DUYARLI DAMGA SEÇİMİ ──
         // Extrude yönü bu VF'nin yüz normaline bakıyorsa (dot > 0.7): taban
         // (VF) geometrisini kullan — extrude büyümesi komşuya YANSIMAZ.
-        // Extrude yönü bu VF ile İLGİSİZ ise (farklı eksen): BAKED (gerçek)
-        // mesh'i kullan — böylece extrude'un paneli kısaltması ayak izinde
-        // doğru yansır (ör. üst paneli sağdan kısaltıp arka yüze 122mm boşluk
-        // açtıysak, arka yüzdeki ayak izi 122mm dar olmalı, tam VF değil).
-        if (hasExtrudeSteps(p) && ownVf && myFaceNormal && hasExtrudeTowardFace(p, myFaceNormal)) {
+        // Extrude yönü bu VF ile İLGİSİZ ise (farklı eksen): VF-tabanlı
+        // geometriyi extrude miktarı kadar BUDAYARAK kullan. Böylece:
+        //   1) Ayak izi extrude kısalmasını doğru yansıtır (tam VF değil).
+        //   2) VF köşeleri her zaman günceldir → kutu boyut değişimlerinde
+        //      ESKİ (stale) baked geometri kullanılmaz, "yüz yok oldu"
+        //      hatasına düşülmez.
+        if (hasExtrudeSteps(p) && ownVf) {
           const th = parseFloat((p.parameters as any)?.panelThickness) || 18;
-          const baseGeo = baseStampGeometryFromVf(ownVf, th);
-          if (baseGeo) {
-            return { ...p, geometry: baseGeo, __isRotatedPanel: true, __composedOps: composedFromSteps() || [] };
+          const es = (p.parameters as any)?.extrudeSteps;
+          if (myFaceNormal && hasExtrudeTowardFace(p, myFaceNormal)) {
+            const baseGeo = baseStampGeometryFromVf(ownVf, th);
+            if (baseGeo) {
+              return { ...p, geometry: baseGeo, __isRotatedPanel: true, __composedOps: composedFromSteps() || [] };
+            }
+          } else if (Array.isArray(es) && es.length > 0 && myFaceNormal) {
+            const trimGeo = trimmedStampGeometryFromVf(ownVf, th, es, myFaceNormal);
+            if (trimGeo) {
+              return { ...p, geometry: trimGeo, __isRotatedPanel: true, __composedOps: composedFromSteps() || [] };
+            }
           }
         }
 
