@@ -54,9 +54,28 @@ function trimmedStampGeometryFromVf(
     if (!step.faceNormal) continue;
     const eN = new THREE.Vector3(...step.faceNormal).normalize();
     if (eN.dot(targetFaceNormal) > 0.7) continue;
-    const amount = step.resolvedValue ?? step.value ?? 0;
-    if (Math.abs(amount) < 0.01) continue;
     const projs = trimmed.map(p => p[0] * eN.x + p[1] * eN.y + p[2] * eN.z);
+    // İŞARETLİ MİKTAR — GERÇEK EXTRUDE (applyOneExtrudeStep) İLE BİREBİR:
+    //  • ref  → resolvedValue (rebuild'de çözülmüş işaretli mesafe)
+    //  • fixed→ value − faceDist. faceDist = extrude yüzünden karşı sınıra eN
+    //    boyunca MEVCUT açıklık (= maxProj − minProj). applyOneExtrudeStep de
+    //    tam bunu yapar: hedef ölçü value, mevcut açıklıktan çıkarılır →
+    //    +uzar / −kısalır (cut). ESKİ HATA: burada ham value (+) kullanılıyordu;
+    //    fixed KISALMADA (value < açıklık) işaret + kalıp trim'i TERS yarıya
+    //    uyguluyordu → coplanar kardeş, extrude'lu panelin gerçek yarısının
+    //    ÜSTÜNE oturup iç içe giriyordu (log: yerleştirmede iz u[-222..0],
+    //    regen'de u[-600..-222]).
+    //  • dyn  → value (zaten işaretli delta)
+    let amount: number;
+    if (step.resolvedValue !== undefined && step.resolvedValue !== null) {
+      amount = step.resolvedValue;
+    } else if (step.isFixed) {
+      const spanEN = Math.max(...projs) - Math.min(...projs);
+      amount = (step.value ?? 0) - spanEN;
+    } else {
+      amount = step.value ?? 0;
+    }
+    if (Math.abs(amount) < 0.01) continue;
     if (amount < 0) {
       const maxProj = Math.max(...projs);
       const threshold = maxProj + amount;
