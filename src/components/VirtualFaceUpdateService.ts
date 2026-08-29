@@ -872,8 +872,11 @@ function regenerateParentFaceShapeVF(
       'yeniBBox=', `${newB.xSpan.toFixed(0)}x${newB.ySpan.toFixed(0)}`,
       '→ storedRel GEÇERSİZ KILINDI');
   }
+  // Soğuma sırasında süreklilik bölgesini de devre dışı bırak: önceki tam
+  // genişlikteki VF, yanlış bileşenle daha fazla örtüşür; sadece seed yeterli.
+  const effectivePrev = inCooldown ? undefined : prevRegion;
   const region = computeFreeRegionLocal(
-    contour.corners, localNormal, seed, siblingPanels, worldToLocal, shape.id, prevRegion, effectiveRel
+    contour.corners, localNormal, seed, siblingPanels, worldToLocal, shape.id, effectivePrev, effectiveRel
   );
   if (region && region.polygon.length >= 3) {
     cornersOut = region.polygon.map(p2 => new THREE.Vector3()
