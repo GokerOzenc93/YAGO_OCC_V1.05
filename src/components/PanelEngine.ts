@@ -346,34 +346,32 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
   };
 
   // SIRA-DUYARLI DÖNGÜ: her panel üretildikten sonra VF'leri yeniden hesapla
-  // ki bir sonraki panel güncel kardeş ayak izlerini görsün.
+  // ki bir sonraki panel güncel kardeş ayak izlerini görsün. currentVfs
+  // (store DEĞİL) girdi olarak geçilir — böylece her iterasyon bir öncekinin
+  // güncel VF merkezlerini/rawFaceBBox'ını kullanır; bayat store VF'leri ile
+  // damga geometrisi eski konumda kalıp yan panelleri kısaltmaz.
   for (const panel of children) {
     await buildPanel(panel, currentVfs);
-    // VF'leri güncel geometriyle yeniden hesapla — bir önceki panelin ayak izi
-    // sonraki panelin bölgesini doğru kırplsın.
     const updatedShapes = useAppStore.getState().shapes;
     const updatedParent = updatedShapes.find(s => s.id === parentShapeId) || parentFresh;
     currentVfs = recalculateVirtualFacesForShape(
-      updatedParent, useAppStore.getState().virtualFaces, updatedShapes, 'all'
+      updatedParent, currentVfs, updatedShapes, 'all'
     );
   }
 
-  // AŞAMA 3: son VF'lerle bir kez daha üret — bölge güncellemesi geometriye
-  // yansısın (özellikle son panelin ayak izi öncekileri etkilediyse).
-  // VF'leri her panel arasında yeniden hesapla ki güncel geometriden doğru
-  // ayak izleri türesin (kutu büyütme sonrası bayat geometri sorunu).
+  // AŞAMA 3: son VF'lerle bir kez daha üret — ilk geçişte build sırası
+  // yüzünden bayat geometriyle hesaplanan VF'ler düzeltilir. Her panel
+  // arasında VF'ler currentVfs üzerinden (store DEĞİL) yeniden hesaplanır.
   for (const panel of children) {
     await buildPanel(panel, currentVfs);
     const updatedShapes2 = useAppStore.getState().shapes;
     const updatedParent2 = updatedShapes2.find(s => s.id === parentShapeId) || parentFresh;
     currentVfs = recalculateVirtualFacesForShape(
-      updatedParent2, useAppStore.getState().virtualFaces, updatedShapes2, 'all'
+      updatedParent2, currentVfs, updatedShapes2, 'all'
     );
   }
 
   // AŞAMA 4: tüm paneller güncel konumda → VF'leri kesin ayak izleriyle yaz.
-  // AŞAMA 3'ten SONRA yapılır ki store, en güncel geometriyle hesaplanmış
-  // VF'leri alsın (kutu boyut değişikliğinde bayat footprint sorunu).
   if (updateVirtualFace) {
     for (const f of currentVfs) updateVirtualFace(f.id, f);
   }
