@@ -53,7 +53,8 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     waitingForSurfaceSelection,
     raycastMode,
     shapes,
-    rebuildingShapeIds
+    rebuildingShapeIds,
+    virtualFaces
   } = useAppStore(useShallow(state => ({
     selectShape: state.selectShape,
     selectSecondaryShape: state.selectSecondaryShape,
