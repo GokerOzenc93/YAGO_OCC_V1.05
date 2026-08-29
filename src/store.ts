@@ -53,6 +53,14 @@ export interface VirtualFace {
    *  canlı). Rebuild bu listeyi her seferinde tazeler (yeni değen kardeşler
    *  eklenir), böylece sonradan taşınıp yüzeye giren panel de yakalanır. */
   touchingSiblingIds?:string[];
+  /** Temas ilişkileri: bu panelin hangi kardeş panelin hangi yüzüne temas
+   *  ettiğini tutar. Boyut değişimlerinde oransal yeniden konumlandırma için
+   *  kullanılır. */
+  contactRelations?:Array<{
+    panelId:string;
+    faceNormal:[number,number,number];
+    axis:string;
+  }>;
 }
 
 export interface Shape {

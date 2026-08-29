@@ -739,7 +739,7 @@ export function recalculateVirtualFacesForShape(
       // kırpılır; yüzleri ve merkezleri değişmez.
       const regen = regenerateParentFaceShapeVF(
         vf, shape, faces, faceGroups, localToWorld, worldToLocal,
-        stampingPanelsFor(vf.id)
+        stampingPanelsFor(vf.id), virtualFaces
       );
       updatedMap.set(vf.id, regen || vf);
     } else {
@@ -762,7 +762,8 @@ function regenerateParentFaceShapeVF(
   faceGroups: CoplanarFaceGroup[],
   localToWorld: THREE.Matrix4,
   worldToLocal: THREE.Matrix4,
-  siblingPanels: any[] = []
+  siblingPanels: any[] = [],
+  virtualFaces: VirtualFace[] = []
 ): VirtualFace | null {
   // TAM YÜZ MODELİ: VF, eşleşen yüz grubunda VF merkezine en yakın üçgenin
   // BAĞLANTILI BİLEŞENİNİN gerçek konturu olarak yeniden üretilir (yakalama
@@ -922,6 +923,30 @@ function regenerateParentFaceShapeVF(
   (out as any).sideRelations = faceResized
     ? {}
     : { ...(storedRel || {}), ...(region?.sideRelations || {}) };
+  // TEMAS İLİŞKİLERİ: bu VF'nin ayak izi tarafından kırpılan kardeşlerin
+  // id ve yüz normallerini kaydet. Boyut değişiminde taşıma adımlarının
+  // oransal ölçeklenmesi bu ilişkilere dayanır.
+  const contactRelations: Array<{ panelId: string; faceNormal: [number, number, number]; axis: string }> = [];
+  if (region && region.touchingSiblingIds) {
+    for (const sibId of region.touchingSiblingIds) {
+      const sibPanel = siblingPanels.find((sp: any) => sp.id === sibId);
+      if (!sibPanel) continue;
+      const sibVfId = sibPanel.parameters?.virtualFaceId;
+      const sibVf = sibVfId ? virtualFaces.find((f: any) => f.id === sibVfId) : null;
+      if (sibVf) {
+        const n = sibVf.normal as [number, number, number];
+        const axisDir = Math.abs(n[0]) > 0.5 ? (n[0] > 0 ? 'x+' : 'x-') :
+                        Math.abs(n[1]) > 0.5 ? (n[1] > 0 ? 'y+' : 'y-') :
+                        (n[2] > 0 ? 'z+' : 'z-');
+        contactRelations.push({ panelId: sibId, faceNormal: n, axis: axisDir });
+      }
+    }
+  }
+  out.contactRelations = contactRelations.length > 0 ? contactRelations : undefined;
+  if (contactRelations.length > 0) {
+    console.log('[YAGO][TEMAS]', vf.id,
+      'temaslar=', contactRelations.map(c => `${c.panelId}(${c.axis})`).join(', '));
+  }
   return out;
 }
 

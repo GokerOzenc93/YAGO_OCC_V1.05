@@ -113,16 +113,50 @@ function resolvePivot(step: any, vf: VirtualFace): THREE.Vector3 {
   return new THREE.Vector3(...(step.pivot || [0, 0, 0]));
 }
 
+function computeCurrentVfSpan(vf: VirtualFace, axis: string): number {
+  if (!vf?.vertices || vf.vertices.length < 3) return 0;
+  const axisBase = axis[0] as 'x' | 'y' | 'z';
+  const idx = axisBase === 'x' ? 0 : axisBase === 'y' ? 1 : 2;
+  let min = Infinity, max = -Infinity;
+  for (const v of vf.vertices) {
+    const c = v[idx];
+    if (c < min) min = c;
+    if (c > max) max = c;
+  }
+  return Math.abs(max - min);
+}
+
+function resolveScaledMoveValue(step: any, vf: VirtualFace): number {
+  const original = (step as any).value as number;
+  const anchor = (step as any).anchor;
+  if (!anchor || !anchor.faceSpanAlongAxis || anchor.faceSpanAlongAxis < 1) return original;
+  const currentSpan = computeCurrentVfSpan(vf, (step as any).axis);
+  if (currentSpan < 1) return original;
+  const ratio = currentSpan / anchor.faceSpanAlongAxis;
+  if (Math.abs(ratio - 1) < 0.001) return original;
+  const scaled = original * ratio;
+  console.log('[YAGO][ANCHOR-SCALE]',
+    'eksen=', (step as any).axis,
+    'orijinal=', original.toFixed(1),
+    'eskiSpan=', anchor.faceSpanAlongAxis.toFixed(1),
+    'yeniSpan=', currentSpan.toFixed(1),
+    'oran=', ratio.toFixed(3),
+    'ölçekli=', scaled.toFixed(1),
+    'temas=', anchor.contactPanelId || 'YOK');
+  return scaled;
+}
+
 export function composeSteps(
   steps: TransformStep[],
   vf: VirtualFace
 ): { quat: THREE.Quaternion; ops: Array<{ kind: 'translate'; d: THREE.Vector3 } | { kind: 'rotate'; deg: number; pivot: THREE.Vector3; axis: THREE.Vector3 }> } {
   const ops: any[] = [];
-  const frame = new THREE.Quaternion(); // o ana kadarki birleşik dönüş
+  const frame = new THREE.Quaternion();
   for (const s of steps) {
     if (s.type === 'move') {
       const base = axisLetterToVec((s as any).axis);
-      const d = base.clone().applyQuaternion(frame).multiplyScalar((s as any).value);
+      const value = resolveScaledMoveValue(s, vf);
+      const d = base.clone().applyQuaternion(frame).multiplyScalar(value);
       ops.push({ kind: 'translate', d });
     } else if (s.type === 'rotate') {
       const st: any = s;

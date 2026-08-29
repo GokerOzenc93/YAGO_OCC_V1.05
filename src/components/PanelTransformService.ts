@@ -10,12 +10,20 @@ import type { Shape } from '../store';
 // birbirini dinler (move, o anki dönüş çerçevesinin ekseninde ilerler).
 // ═══════════════════════════════════════════════════════════════════════════
 
+export interface MoveAnchor {
+  faceSpanAlongAxis: number;
+  contactPanelId?: string;
+  contactFaceNormal?: [number, number, number];
+  parentDims: { width: number; height: number; depth: number };
+}
+
 export interface MoveTransformStep {
   id: string;
   type: 'move';
   axis: 'x+' | 'x-' | 'y+' | 'y-' | 'z+' | 'z-';
   value: number;
   timestamp: number;
+  anchor?: MoveAnchor;
 }
 
 export interface RotateTransformStep {
@@ -90,6 +98,107 @@ export function resolveUnifiedTransform(panelShape: Shape): {
   return { steps, position, rotation };
 }
 
+function computeVfSpanAlongAxis(vf: any, axis: string): number {
+  if (!vf?.vertices || vf.vertices.length < 3) return 0;
+  const axisBase = axis[0] as 'x' | 'y' | 'z';
+  const idx = axisBase === 'x' ? 0 : axisBase === 'y' ? 1 : 2;
+  let min = Infinity, max = -Infinity;
+  for (const v of vf.vertices) {
+    const c = v[idx];
+    if (c < min) min = c;
+    if (c > max) max = c;
+  }
+  return Math.abs(max - min);
+}
+
+function findContactPanel(
+  panelShape: Shape,
+  axis: string,
+  value: number,
+  state: any
+): { contactPanelId: string; contactFaceNormal: [number, number, number] } | null {
+  const parentId = (panelShape.parameters as any)?.parentShapeId;
+  const vfId = (panelShape.parameters as any)?.virtualFaceId;
+  if (!parentId || !vfId) return null;
+  const siblings = (state.shapes as Shape[]).filter(
+    s => s.type === 'panel' && s.id !== panelShape.id &&
+         (s.parameters as any)?.parentShapeId === parentId
+  );
+  if (siblings.length === 0) return null;
+  const axisBase = axis[0] as 'x' | 'y' | 'z';
+  const sign = axis.includes('-') ? -1 : 1;
+  const normal: [number, number, number] = [
+    axisBase === 'x' ? sign : 0,
+    axisBase === 'y' ? sign : 0,
+    axisBase === 'z' ? sign : 0,
+  ];
+  const myVf = (state.virtualFaces as any[]).find((f: any) => f.id === vfId);
+  if (!myVf) return null;
+  const idx = axisBase === 'x' ? 0 : axisBase === 'y' ? 1 : 2;
+  const myCenter = myVf.center[idx];
+  const targetPos = myCenter + value;
+  let best: Shape | null = null;
+  let bestDist = Infinity;
+  for (const sib of siblings) {
+    const sibVfId = (sib.parameters as any)?.virtualFaceId;
+    const sibVf = (state.virtualFaces as any[]).find((f: any) => f.id === sibVfId);
+    if (!sibVf) continue;
+    if (!sib.geometry) continue;
+    const posAttr = sib.geometry.getAttribute('position');
+    if (!posAttr) continue;
+    let sMin = Infinity, sMax = -Infinity;
+    for (let i = 0; i < posAttr.count; i++) {
+      const c = idx === 0 ? posAttr.getX(i) : idx === 1 ? posAttr.getY(i) : posAttr.getZ(i);
+      if (c < sMin) sMin = c;
+      if (c > sMax) sMax = c;
+    }
+    const nearEdge = sign > 0 ? sMin : sMax;
+    const dist = Math.abs(targetPos - nearEdge);
+    if (dist < bestDist && dist < 50) {
+      bestDist = dist;
+      best = sib;
+    }
+  }
+  if (best) {
+    return { contactPanelId: best.id, contactFaceNormal: normal };
+  }
+  return null;
+}
+
+function buildMoveAnchor(
+  panelShape: Shape,
+  axis: string,
+  value: number,
+  state: any
+): MoveAnchor | null {
+  const parentId = (panelShape.parameters as any)?.parentShapeId;
+  const vfId = (panelShape.parameters as any)?.virtualFaceId;
+  if (!parentId || !vfId) return null;
+  const parent = (state.shapes as Shape[]).find(s => s.id === parentId);
+  if (!parent) return null;
+  const vf = (state.virtualFaces as any[]).find((f: any) => f.id === vfId);
+  if (!vf) return null;
+  const faceSpan = computeVfSpanAlongAxis(vf, axis);
+  if (faceSpan < 1) return null;
+  const parentDims = {
+    width: parent.parameters?.width || 1,
+    height: parent.parameters?.height || 1,
+    depth: parent.parameters?.depth || 1,
+  };
+  const contact = findContactPanel(panelShape, axis, value, state);
+  const anchor: MoveAnchor = {
+    faceSpanAlongAxis: faceSpan,
+    parentDims,
+    ...(contact || {}),
+  };
+  console.log('[YAGO][ANCHOR] Taşıma çapası oluşturuldu:', panelShape.id,
+    'eksen=', axis, 'değer=', value,
+    'yüzSpan=', faceSpan.toFixed(1),
+    'temas=', contact?.contactPanelId || 'YOK',
+    'ebeveynBoyut=', `${parentDims.width}x${parentDims.height}x${parentDims.depth}`);
+  return anchor;
+}
+
 async function writeAndRebuild(
   panelShape: Shape,
   steps: TransformStep[],
@@ -114,9 +223,13 @@ export async function executeTransformStep(
   const { getUnifiedSteps } = await import('./PanelEngine');
   const steps = getUnifiedSteps(fresh);
   const now = Date.now();
-  const full: TransformStep = step.type === 'move'
-    ? { id: `step-${now}`, type: 'move', axis: step.axis, value: step.value, timestamp: now }
-    : { id: `step-${now}`, type: 'rotate', axis: step.axis, axisVec: step.axisVec, value: step.value, pivot: step.pivot, pivotFrac: step.pivotFrac, pivotVfFrac: step.pivotVfFrac, timestamp: now };
+  let full: TransformStep;
+  if (step.type === 'move') {
+    const anchor = buildMoveAnchor(fresh, step.axis, step.value, useAppStore.getState());
+    full = { id: `step-${now}`, type: 'move', axis: step.axis, value: step.value, timestamp: now, ...(anchor ? { anchor } : {}) };
+  } else {
+    full = { id: `step-${now}`, type: 'rotate', axis: step.axis, axisVec: step.axisVec, value: step.value, pivot: step.pivot, pivotFrac: step.pivotFrac, pivotVfFrac: step.pivotVfFrac, timestamp: now };
+  }
   return writeAndRebuild(fresh, [...steps, full], updateShape);
 }
 
