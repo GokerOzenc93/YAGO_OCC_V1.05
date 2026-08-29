@@ -547,23 +547,17 @@ export function recalculateVirtualFacesForShape(
           } catch { return undefined; }
         };
 
-        // ── YALNIZCA EXTRUDE'LU PANEL: EXTRUDE ÖNCESİ (taban) ayak izi ──
-        // Face-extrude ile büyütülen panelin komşusuna damgaladığı iz, panelin
-        // BAKED (büyümüş) mesh'inden DEĞİL, KENDİ VF BÖLGESİNDEN (taban dilim,
-        // extrude UYGULANMADAN) türetilir; üstüne yalnız move/rotate uygulanır.
-        // Böylece extrude'un büyümesi komşuya YANSIMAZ → komşu ölçüsünü korur,
-        // iki panel iç içe geçmez (kullanıcının tek istediği buydu).
-        // basan↔basılan yönü yine VF sırasına bağlı; yalnız EXTRUDE'un katkısı
-        // ayak izinden çıkarılır.
-        // NOT: extrude'suz paneller (düz yerleşim + taşıma) BU YOLA GİRMEZ —
-        // eski/çalışan CANLI MESH davranışını aynen korurlar; aksi halde
-        // yerleşimde paneller iç içe giriyordu.
-        if (hasExtrudeSteps(p) && ownVf) {
+        // ── EXTRUDE'LU PANEL: KENAR-DUYARLI DAMGA SEÇİMİ ──
+        // Extrude yönü bu VF'nin yüz normaline bakıyorsa (dot > 0.7): taban
+        // (VF) geometrisini kullan — extrude büyümesi komşuya YANSIMAZ.
+        // Extrude yönü bu VF ile İLGİSİZ ise (farklı eksen): BAKED (gerçek)
+        // mesh'i kullan — böylece extrude'un paneli kısaltması ayak izinde
+        // doğru yansır (ör. üst paneli sağdan kısaltıp arka yüze 122mm boşluk
+        // açtıysak, arka yüzdeki ayak izi 122mm dar olmalı, tam VF değil).
+        if (hasExtrudeSteps(p) && ownVf && myFaceNormal && hasExtrudeTowardFace(p, myFaceNormal)) {
           const th = parseFloat((p.parameters as any)?.panelThickness) || 18;
           const baseGeo = baseStampGeometryFromVf(ownVf, th);
           if (baseGeo) {
-            // __isRotatedPanel yolu: taban dilime (BAKED DEĞİL) yalnız move/rotate
-            // uygulanır → TEK dönüşüm, doğru konum, extrude YOK.
             return { ...p, geometry: baseGeo, __isRotatedPanel: true, __composedOps: composedFromSteps() || [] };
           }
         }
