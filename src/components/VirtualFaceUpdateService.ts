@@ -114,7 +114,25 @@ function scaledFlatPanelStamp(
   const nxSpan = Math.max(nxMax - nxMin, 1e-6);
   const nySpan = Math.max(nyMax - nyMin, 1e-6);
 
-  if (Math.abs(oldRaw.xSpan - nxSpan) < 1 && Math.abs(oldRaw.ySpan - nySpan) < 1) return null;
+  if (Math.abs(oldRaw.xSpan - nxSpan) < 1 && Math.abs(oldRaw.ySpan - nySpan) < 1) {
+    const dotN = (a: [number, number, number]) => a[0] * n3.x + a[1] * n3.y + a[2] * n3.z;
+    const oldPlaneD = dotN(oldVf.vertices[0]);
+    const newPlaneD = dotN(freshRawVerts[0]);
+    const oldCenterU = (oldRaw.xMin + oldRaw.xMax) / 2;
+    const oldCenterV = (oldRaw.yMin + oldRaw.yMax) / 2;
+    const newCenterU = (nxMin + nxMax) / 2;
+    const newCenterV = (nyMin + nyMax) / 2;
+    const dN = newPlaneD - oldPlaneD;
+    const dU = newCenterU - oldCenterU;
+    const dV = newCenterV - oldCenterV;
+    if (Math.abs(dN) < 0.5 && Math.abs(dU) < 0.5 && Math.abs(dV) < 0.5) return null;
+    const dx = n3.x * dN + u.x * dU + v.x * dV;
+    const dy = n3.y * dN + u.y * dU + v.y * dV;
+    const dz = n3.z * dN + u.z * dU + v.z * dV;
+    const translated: [number, number, number][] = oldVf.vertices.map(([x, y, z]) =>
+      [x + dx, y + dy, z + dz] as [number, number, number]);
+    return buildPrismFromVertices(translated, [n3.x, n3.y, n3.z] as [number, number, number], thickness);
+  }
 
   const planeD = freshRawVerts[0][0] * n3.x + freshRawVerts[0][1] * n3.y + freshRawVerts[0][2] * n3.z;
 
@@ -699,14 +717,9 @@ export function recalculateVirtualFacesForShape(
         if (!isRotatedPanel(p)) {
           if (ownVfRaw && ownVfFreshVerts) {
             const th = parseFloat((p.parameters as any)?.panelThickness) || 18;
-            const freshVf = { ...ownVfRaw, vertices: ownVfFreshVerts } as VirtualFace;
-            const freshStamp = baseStampGeometryFromVf(freshVf, th);
-            if (freshStamp) {
-              const composedOps = composedFromSteps();
-              if (composedOps && composedOps.length > 0) {
-                return { ...p, geometry: freshStamp, __isRotatedPanel: true, __composedOps: composedOps };
-              }
-              return { ...p, geometry: freshStamp };
+            const scaled = scaledFlatPanelStamp(ownVfRaw, ownVfFreshVerts, th);
+            if (scaled) {
+              return { ...p, geometry: scaled };
             }
           }
           return p;
