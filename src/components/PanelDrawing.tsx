@@ -226,7 +226,10 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   // hedef DIŞINDAKİ her panel, aday zaten seçili olsa bile raycast alır — çünkü
   // aynı noktaya tekrar tıklayınca ışın boyunca bir arkadaki yüze geçilir
   // (derinlik döngüsü). Aday olan panel ayrıca vurgulanır.
-  const isRefMode = faceExtrudeMode && faceExtrudeValueMode === 'ref';
+  // ÖNEMLİ: Referans seçimi ancak EXTRUDE EDİLECEK hedef yüz seçildikten sonra
+  // (faceExtrudeSelectedFace !== null) aktifleşir; aksi hâlde hedef yüzü seçerken
+  // referans overlay'leri (yeşil vurgu) erkenden çıkıp seçimi bozuyordu.
+  const isRefMode = faceExtrudeMode && faceExtrudeValueMode === 'ref' && faceExtrudeSelectedFace !== null;
   const isRefPickablePanel = isRefMode && shape.id !== faceExtrudeTargetPanelId;
   const isRefCandidatePanel = isRefMode && faceExtrudeRefCandidate?.panelId === shape.id;
   const disableRaycast = isFaceExtrudeTarget || (isFaceExtrudeXray && !isRefPickablePanel) || isRaycastOnParent;
@@ -569,7 +572,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           {hoveredExtrudeGroup !== null && faceGroups[hoveredExtrudeGroup] && (
             <mesh geometry={createFaceHighlightGeometry(faces, faceGroups[hoveredExtrudeGroup].faceIndices)} renderOrder={11} raycast={() => null}>
               <meshBasicMaterial
-                color={0x22c55e}
+                color={0x6366f1}
                 transparent
                 opacity={0.55}
                 side={THREE.DoubleSide}
@@ -581,7 +584,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           {isRefCandidatePanel && faceExtrudeRefCandidate?.faceGroupIndex !== undefined && faceExtrudeRefCandidate.faceGroupIndex >= 0 && faceGroups[faceExtrudeRefCandidate.faceGroupIndex] && (
             <mesh geometry={createFaceHighlightGeometry(faces, faceGroups[faceExtrudeRefCandidate.faceGroupIndex].faceIndices)} renderOrder={12} raycast={() => null}>
               <meshBasicMaterial
-                color={0x16a34a}
+                color={0x4f46e5}
                 transparent
                 opacity={0.85}
                 side={THREE.DoubleSide}

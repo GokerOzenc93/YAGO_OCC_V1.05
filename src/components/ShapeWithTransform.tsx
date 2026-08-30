@@ -59,6 +59,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     faceExtrudeMode,
     faceExtrudeValueMode,
     faceExtrudeTargetPanelId,
+    faceExtrudeSelectedFace,
     faceExtrudeRefCandidate,
     setFaceExtrudeRefCandidate
   } = useAppStore(useShallow(state => ({
@@ -93,6 +94,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     faceExtrudeMode: state.faceExtrudeMode,
     faceExtrudeValueMode: state.faceExtrudeValueMode,
     faceExtrudeTargetPanelId: state.faceExtrudeTargetPanelId,
+    faceExtrudeSelectedFace: state.faceExtrudeSelectedFace,
     faceExtrudeRefCandidate: state.faceExtrudeRefCandidate,
     setFaceExtrudeRefCandidate: state.setFaceExtrudeRefCandidate
   })));
@@ -482,7 +484,10 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
   // dış yüzlerinden biri referans YÜZEYİ olarak işaretlenebilir. Böylece "kübün
   // dış sınırları" da referans gösterilebilir. Onay, PanelEditor'daki Uygula (✓)
   // düğmesiyle veya bu gövdeye sağ tıklayarak yapılır.
-  const isRefMode = faceExtrudeMode && faceExtrudeValueMode === 'ref' && !isPanel;
+  // Referans seçimi ancak extrude edilecek hedef yüz seçildikten sonra aktif olur
+  // (faceExtrudeSelectedFace !== null) — yoksa hedef yüzü seçerken gövde referans
+  // overlay'i erkenden çıkıyordu.
+  const isRefMode = faceExtrudeMode && faceExtrudeValueMode === 'ref' && !isPanel && faceExtrudeSelectedFace !== null;
   const isRefCandidateShape = isRefMode && faceExtrudeRefCandidate?.panelId === shape.id;
 
   // Gövdenin bir yüz grubunu referans adayı olarak işaretle (dünya normali +
@@ -840,12 +845,12 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
             </mesh>
             {refHoverHighlight && (
               <mesh geometry={refHoverHighlight} renderOrder={11} raycast={() => null}>
-                <meshBasicMaterial color={0x22c55e} transparent opacity={0.55} side={THREE.DoubleSide} depthTest={false} depthWrite={false} />
+                <meshBasicMaterial color={0x6366f1} transparent opacity={0.55} side={THREE.DoubleSide} depthTest={false} depthWrite={false} />
               </mesh>
             )}
             {refSelectedHighlight && (
               <mesh geometry={refSelectedHighlight} renderOrder={12} raycast={() => null}>
-                <meshBasicMaterial color={0x16a34a} transparent opacity={0.85} side={THREE.DoubleSide} depthTest={false} depthWrite={false} />
+                <meshBasicMaterial color={0x4f46e5} transparent opacity={0.85} side={THREE.DoubleSide} depthTest={false} depthWrite={false} />
               </mesh>
             )}
           </>
