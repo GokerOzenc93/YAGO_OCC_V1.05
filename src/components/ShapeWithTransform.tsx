@@ -6,7 +6,9 @@ import { useAppStore, Tool, ViewMode } from '../store';
 import { useShallow } from 'zustand/react/shallow';
 import { SubtractionMesh } from './SubtractionMesh';
 import { FilletEdgeLines } from './Fillet';
-import { FaceEditor } from './FaceEditor';
+import { FaceEditor, extractFacesFromGeometry, groupCoplanarFaces, createFaceHighlightGeometry } from './FaceEditor';
+import { snapToFlatGroup } from './GeometryUtils';
+import { cycleRefFacePickFromEvent } from './FaceRefPick';
 import { FaceRaycastOverlay, VirtualFaceOverlay } from './FaceRaycastOverlay';
 
 // Kenar çizgileri panellerdekiyle aynı stil: ince, antialias'lı (Line2),
@@ -53,7 +55,12 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     waitingForSurfaceSelection,
     raycastMode,
     shapes,
-    rebuildingShapeIds
+    rebuildingShapeIds,
+    faceExtrudeMode,
+    faceExtrudeValueMode,
+    faceExtrudeTargetPanelId,
+    faceExtrudeRefCandidate,
+    setFaceExtrudeRefCandidate
   } = useAppStore(useShallow(state => ({
     selectShape: state.selectShape,
     selectSecondaryShape: state.selectSecondaryShape,
@@ -82,7 +89,12 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     waitingForSurfaceSelection: state.waitingForSurfaceSelection,
     raycastMode: state.raycastMode,
     shapes: state.shapes,
-    rebuildingShapeIds: state.rebuildingShapeIds
+    rebuildingShapeIds: state.rebuildingShapeIds,
+    faceExtrudeMode: state.faceExtrudeMode,
+    faceExtrudeValueMode: state.faceExtrudeValueMode,
+    faceExtrudeTargetPanelId: state.faceExtrudeTargetPanelId,
+    faceExtrudeRefCandidate: state.faceExtrudeRefCandidate,
+    setFaceExtrudeRefCandidate: state.setFaceExtrudeRefCandidate
   })));
 
   const { scene } = useThree();
@@ -104,6 +116,19 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
   const [localGeometry, setLocalGeometry] = useState(shape.geometry);
   const [edgeGeometry, setEdgeGeometry] = useState<THREE.BufferGeometry | null>(null);
   const [geometryKey, setGeometryKey] = useState(0);
+
+  // ── Referans (panel extrude "ref" modu) için yüz grupları ──────────────────
+  // Parent gövdenin (küp vb.) dış yüzeyleri de referans olarak seçilebilsin diye
+  // yüz grupları burada da hesaplanır. Paneller PanelDrawing'de; gövde burada.
+  const [refFaceGroups, setRefFaceGroups] = useState<any[]>([]);
+  const [refFaces, setRefFaces] = useState<any[]>([]);
+  const [hoveredRefGroup, setHoveredRefGroup] = useState<number | null>(null);
+  useEffect(() => {
+    if (!shape.geometry) { setRefFaces([]); setRefFaceGroups([]); return; }
+    const f = extractFacesFromGeometry(shape.geometry);
+    setRefFaces(f);
+    setRefFaceGroups(groupCoplanarFaces(f));
+  }, [shape.geometry]);
   const vertexModsString = useMemo(() => JSON.stringify(shape.vertexModifications || []), [shape.vertexModifications]);
 
   const resolvedEdgeGeometry = useMemo(() => {
@@ -452,6 +477,72 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
   const suppressPanelRaycast = isPanel && raycastMode && parentShapeId === selectedShapeId;
   const noopRaycast = useCallback(() => {}, []);
 
+  // ── REFERANS MODU (panel extrude → "ref") ──────────────────────────────────
+  // Gövde (parent, panel değil) hem referans NESNESİ olarak seçilebilir hem de
+  // dış yüzlerinden biri referans YÜZEYİ olarak işaretlenebilir. Böylece "kübün
+  // dış sınırları" da referans gösterilebilir. Onay, PanelEditor'daki Uygula (✓)
+  // düğmesiyle veya bu gövdeye sağ tıklayarak yapılır.
+  const isRefMode = faceExtrudeMode && faceExtrudeValueMode === 'ref' && !isPanel;
+  const isRefCandidateShape = isRefMode && faceExtrudeRefCandidate?.panelId === shape.id;
+
+  // Gövdenin bir yüz grubunu referans adayı olarak işaretle (dünya normali +
+  // dünya noktası ile) — resolveReferenceFacePlane bunları güncel düzleme çevirir.
+  // Işın boyunca DERİNLİK DÖNGÜSÜ: aynı noktaya her tıklamada bir arkadaki yüze
+  // geçer (küpün dış yüzü → arkadaki panel yüzü → onun arkası...). Tüm şekilleri
+  // (parent küp + paneller, hedef hariç) tarayan paylaşımlı FaceRefPick kullanılır.
+  const handleRefClick = useCallback((e: any): boolean => {
+    if (!isRefMode) return false;
+    if (shape.id === faceExtrudeTargetPanelId) return true; // hedefin kendisi ref olamaz
+    const allShapes = useAppStore.getState().shapes;
+    cycleRefFacePickFromEvent(e, allShapes, faceExtrudeTargetPanelId, setFaceExtrudeRefCandidate);
+    return true;
+  }, [isRefMode, shape.id, faceExtrudeTargetPanelId, setFaceExtrudeRefCandidate]);
+
+  // Sağ tıkla onay — PanelEditor'daki Uygula (✓) ile aynı sonucu verir.
+  const handleRefConfirm = useCallback(async (e: any) => {
+    if (e.button !== 2) return;
+    e.stopPropagation();
+    const st = useAppStore.getState();
+    const cand = st.faceExtrudeRefCandidate;
+    const selFace = st.faceExtrudeSelectedFace;
+    const targetId = st.faceExtrudeTargetPanelId;
+    if (!cand || cand.faceGroupIndex < 0 || selFace === null || !targetId) return;
+    const ps = st.shapes.find((s: any) => s.id === targetId);
+    if (!ps) return;
+    const { executeFaceExtrudeToReference } = await import('./FaceExtrudeService');
+    const vfId = ps.parameters?.virtualFaceId as string | undefined;
+    const vf = vfId ? st.virtualFaces.find((f: any) => f.id === vfId) : undefined;
+    await executeFaceExtrudeToReference({
+      panelShape: ps,
+      faceGroupIndex: selFace,
+      refShapeId: cand.panelId,
+      refFaceGroupIndex: cand.faceGroupIndex,
+      refNormalWorld: cand.normalWorld,
+      refPointWorld: cand.pointWorld,
+      clickPoint: st.faceExtrudeClickPoint ?? undefined,
+      shapes: st.shapes,
+      updateShape: st.updateShape,
+      virtualFaceId: vfId,
+      vfNormal: vf?.normal as [number, number, number] | undefined,
+      vfVertex0: vf?.vertices?.[0] as [number, number, number] | undefined,
+      updateVirtualFace: st.updateVirtualFace,
+    });
+    st.setFaceExtrudeSelectedFace(null);
+    st.setFaceExtrudeMode(false);
+    st.setFaceExtrudeRefCandidate(null);
+  }, []);
+
+  const refHoverHighlight = useMemo(() => {
+    if (!isRefMode || hoveredRefGroup === null || !refFaceGroups[hoveredRefGroup] || refFaces.length === 0) return null;
+    return createFaceHighlightGeometry(refFaces, refFaceGroups[hoveredRefGroup].faceIndices);
+  }, [isRefMode, hoveredRefGroup, refFaceGroups, refFaces]);
+
+  const refSelectedHighlight = useMemo(() => {
+    const gi = faceExtrudeRefCandidate?.faceGroupIndex;
+    if (!isRefCandidateShape || gi === undefined || gi < 0 || !refFaceGroups[gi] || refFaces.length === 0) return null;
+    return createFaceHighlightGeometry(refFaces, refFaceGroups[gi].faceIndices);
+  }, [isRefCandidateShape, faceExtrudeRefCandidate, refFaceGroups, refFaces]);
+
   // Direction arrow for panels: X=width, Y=height, Z=depth(thickness) per ReplicadService
   const panelArrow = useMemo(() => {
     if (!isPanel || !shape.parameters?.parentShapeId) return null;
@@ -488,6 +579,14 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
         ref={groupRef}
         name={`shape-${shape.id}`}
         onClick={(e) => {
+          // Referans modu tüm normal seçim mantığından ÖNCE: gövdeyi/gövde yüzünü
+          // referans yap. (panelSelectMode + hasPanels erken-return'ü buradan sonra
+          // gelseydi gövde hiç ref seçemezdi.)
+          if (isRefMode) {
+            e.stopPropagation();
+            handleRefClick(e);
+            return;
+          }
           if (panelSelectMode && hasPanels) return;
           e.stopPropagation();
           if (e.nativeEvent.ctrlKey || e.nativeEvent.metaKey) {
@@ -712,6 +811,44 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
             shape={shape}
             allShapes={shapes}
           />
+        )}
+
+        {/* ── REFERANS ADAYI GÖVDE: hover + seçili yüz vurgusu ──────────────
+            Gövde referans adayı olduğunda dış yüzleri hover'da yeşil parlar,
+            seçilen referans yüzü koyu yeşil kalır. Görünmez ince overlay mesh
+            pointer olaylarını yakalar; sağ tık onaylar (Uygula ✓ ile eşdeğer).
+            depthTest=false: vurgular gövde saydam/gizli olsa bile görünür. */}
+        {isRefMode && localGeometry && (
+          <>
+            <mesh
+              geometry={localGeometry}
+              renderOrder={10}
+              onClick={(e: any) => { e.stopPropagation(); handleRefClick(e); }}
+              onPointerMove={(e: any) => {
+                e.stopPropagation();
+                const fi = e.faceIndex;
+                if (fi !== undefined && fi !== null) {
+                  const raw = refFaceGroups.findIndex((g: any) => g.faceIndices.includes(fi));
+                  if (raw !== -1) setHoveredRefGroup(snapToFlatGroup(raw, refFaceGroups));
+                }
+              }}
+              onPointerOut={(e: any) => { e.stopPropagation(); setHoveredRefGroup(null); }}
+              onPointerDown={handleRefConfirm}
+              onContextMenu={(e: any) => e.stopPropagation()}
+            >
+              <meshBasicMaterial transparent opacity={0.01} side={THREE.DoubleSide} depthTest={false} depthWrite={false} />
+            </mesh>
+            {refHoverHighlight && (
+              <mesh geometry={refHoverHighlight} renderOrder={11} raycast={() => null}>
+                <meshBasicMaterial color={0x22c55e} transparent opacity={0.55} side={THREE.DoubleSide} depthTest={false} depthWrite={false} />
+              </mesh>
+            )}
+            {refSelectedHighlight && (
+              <mesh geometry={refSelectedHighlight} renderOrder={12} raycast={() => null}>
+                <meshBasicMaterial color={0x16a34a} transparent opacity={0.85} side={THREE.DoubleSide} depthTest={false} depthWrite={false} />
+              </mesh>
+            )}
+          </>
         )}
 
         {!isPanel && (

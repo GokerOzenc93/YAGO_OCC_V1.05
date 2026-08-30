@@ -200,6 +200,45 @@ export function groupCoplanarFaces(
   return groups;
 }
 
+// Threshold must match isAxisAligned() (0.999) so that any face
+// groupCoplanarFaces considers "curved" is also considered non-flat here.
+export const FLAT_NORMAL_THRESHOLD = 0.999;
+
+// Bir yüz grubunu, hover/seçim için en uygun DÜZ (eksen hizalı) gruba eşler.
+// Grup zaten düzse ya da düz-olmayan ama coplanar (isCurved=false) ise olduğu
+// gibi döner; yalnız gerçekten eğri (isCurved) gruplar en yakın aynı-eksenli
+// düz gruba çekilir. TEK KAYNAK: hem PanelDrawing hem ShapeWithTransform aynı
+// mantığı kullansın diye burada tanımlıdır (davranış tutarlılığı = stabilite).
+export function snapToFlatGroup(
+  gi: number,
+  groups: CoplanarFaceGroup[]
+): number {
+  if (gi < 0 || gi >= groups.length) return gi;
+  const group = groups[gi];
+  const n = group.normal.clone().normalize();
+  const isFlat = Math.abs(n.x) > FLAT_NORMAL_THRESHOLD || Math.abs(n.y) > FLAT_NORMAL_THRESHOLD || Math.abs(n.z) > FLAT_NORMAL_THRESHOLD;
+  if (isFlat) return gi;
+  // Düz-olmayan ama coplanar (miter/eğik yüz) grupları OLDUĞU GİBİ bırak.
+  if (!group.isCurved) return gi;
+  const axisOf = (v: THREE.Vector3) => {
+    const a = [Math.abs(v.x), Math.abs(v.y), Math.abs(v.z)];
+    const i = a.indexOf(Math.max(...a));
+    return i === 0 ? (v.x > 0 ? 'X+' : 'X-') : i === 1 ? (v.y > 0 ? 'Y+' : 'Y-') : (v.z > 0 ? 'Z+' : 'Z-');
+  };
+  const axLbl = axisOf(n);
+  const center = group.center;
+  let bestIdx = gi, bestDist = Infinity;
+  groups.forEach((g, idx) => {
+    const gn = g.normal.clone().normalize();
+    const flat = Math.abs(gn.x) > FLAT_NORMAL_THRESHOLD || Math.abs(gn.y) > FLAT_NORMAL_THRESHOLD || Math.abs(gn.z) > FLAT_NORMAL_THRESHOLD;
+    if (flat && axisOf(gn) === axLbl) {
+      const d = g.center.distanceTo(center);
+      if (d < bestDist) { bestDist = d; bestIdx = idx; }
+    }
+  });
+  return bestIdx;
+}
+
 export function createGroupBoundaryEdges(
   faces: FaceData[],
   groups: CoplanarFaceGroup[]

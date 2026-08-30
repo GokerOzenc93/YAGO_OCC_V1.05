@@ -5,40 +5,10 @@ import { useThree } from '@react-three/fiber';
 import { useAppStore, ViewMode } from '../store';
 import { useShallow } from 'zustand/react/shallow';
 import { extractFacesFromGeometry, groupCoplanarFaces, createFaceHighlightGeometry } from './FaceEditor';
-
-// Threshold must match isAxisAligned() in GeometryUtils (0.999) so that any
-// face groupCoplanarFaces considers "curved" is also considered non-flat here.
-// Using 0.9 was too permissive: fillet arc faces near the flat-face boundary
-// (abs(normal) ≈ 0.95–0.998) passed as flat and got extruded instead of snapping.
-const FLAT_NORMAL_THRESHOLD = 0.999;
-
-function snapToFlatGroup(gi: number, groups: ReturnType<typeof groupCoplanarFaces>): number {
-  if (gi < 0 || gi >= groups.length) return gi;
-  const group = groups[gi];
-  const n = group.normal.clone().normalize();
-  const isFlat = Math.abs(n.x) > FLAT_NORMAL_THRESHOLD || Math.abs(n.y) > FLAT_NORMAL_THRESHOLD || Math.abs(n.z) > FLAT_NORMAL_THRESHOLD;
-  if (isFlat) return gi;
-  // If the group is not marked as curved (it's a coplanar flat surface like a miter cut),
-  // keep it as-is rather than snapping to a nearby axis-aligned face.
-  if (!group.isCurved) return gi;
-  const axisOf = (v: THREE.Vector3) => {
-    const a = [Math.abs(v.x), Math.abs(v.y), Math.abs(v.z)];
-    const i = a.indexOf(Math.max(...a));
-    return i === 0 ? (v.x > 0 ? 'X+' : 'X-') : i === 1 ? (v.y > 0 ? 'Y+' : 'Y-') : (v.z > 0 ? 'Z+' : 'Z-');
-  };
-  const axLbl = axisOf(n);
-  const center = group.center;
-  let bestIdx = gi, bestDist = Infinity;
-  groups.forEach((g, idx) => {
-    const gn = g.normal.clone().normalize();
-    const flat = Math.abs(gn.x) > FLAT_NORMAL_THRESHOLD || Math.abs(gn.y) > FLAT_NORMAL_THRESHOLD || Math.abs(gn.z) > FLAT_NORMAL_THRESHOLD;
-    if (flat && axisOf(gn) === axLbl) {
-      const d = g.center.distanceTo(center);
-      if (d < bestDist) { bestDist = d; bestIdx = idx; }
-    }
-  });
-  return bestIdx;
-}
+// snapToFlatGroup TEK KAYNAK: hover/seçim eşlemesi PanelDrawing ve
+// ShapeWithTransform'da birebir aynı davransın diye GeometryUtils'ten gelir.
+import { snapToFlatGroup } from './GeometryUtils';
+import { cycleRefFacePickFromEvent } from './FaceRefPick';
 
 // ─── RENK YÖNETİMİ ───────────────────────────────────────────────────────
 // Seçim profesyonel CAD konvansiyonuyla: DOLGU asla değişmez, vurgu kenardan
@@ -252,13 +222,14 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   const isFaceExtrudeTarget = faceExtrudeMode && shape.id === faceExtrudeTargetPanelId;
   const isFaceExtrudeXray = faceExtrudeMode && shape.id !== faceExtrudeTargetPanelId;
   const isRaycastOnParent = raycastMode && parentShapeId && parentShapeId === selectedShapeId;
-  // Ref modu: hedef panel kendi yüz seçimini yapar (Normal akış).
-  // Referans panel seçimi ayrı: faceExtrudeRefCandidate henüz null ise,
-  // kullanıcı 3B'de herhangi bir panele tıklayarak referans seçer.
+  // Ref modu: hedef panel kendi yüz seçimini yapar (Normal akış). Referans için
+  // hedef DIŞINDAKİ her panel, aday zaten seçili olsa bile raycast alır — çünkü
+  // aynı noktaya tekrar tıklayınca ışın boyunca bir arkadaki yüze geçilir
+  // (derinlik döngüsü). Aday olan panel ayrıca vurgulanır.
   const isRefMode = faceExtrudeMode && faceExtrudeValueMode === 'ref';
-  const isRefSelectingPanel = isRefMode && !faceExtrudeRefCandidate;
+  const isRefPickablePanel = isRefMode && shape.id !== faceExtrudeTargetPanelId;
   const isRefCandidatePanel = isRefMode && faceExtrudeRefCandidate?.panelId === shape.id;
-  const disableRaycast = isFaceExtrudeTarget || (isFaceExtrudeXray && !isRefSelectingPanel && !isRefCandidatePanel) || isRaycastOnParent;
+  const disableRaycast = isFaceExtrudeTarget || (isFaceExtrudeXray && !isRefPickablePanel) || isRaycastOnParent;
 
   useEffect(() => {
     const mesh = meshRef.current;
@@ -333,45 +304,13 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   const handleClick = (e: any) => {
     e.stopPropagation();
     if (isFaceExtrudeTarget) return;
-    // Ref modu — tüm normal seçim mantığını atla:
-    // - isRefSelectingPanel: henüz referans panel seçili değil, panel seç
-    // - isRefCandidatePanel: referans panel seçili, yüzey seçiliyor
+    // Ref modu — tüm normal seçim mantığını atla. Işın boyunca DERİNLİK DÖNGÜSÜ:
+    // aynı noktaya her tıklamada bir arkadaki yüze geçer (küp dış yüzü → panel
+    // yüzü → arkası...). Tüm şekiller taranır; hedef panel hariç.
     if (isRefMode) {
-      if (isRefCandidatePanel) {
-        // Referans panel üzerinde yüz seçimi — tüm görünüm modlarında çalışır.
-        if (e.faceIndex !== undefined && e.faceIndex !== null) {
-          const raw = faceGroups.findIndex(g => g.faceIndices.includes(e.faceIndex));
-          if (raw !== -1) {
-            const gi = snapToFlatGroup(raw, faceGroups);
-            const grp = faceGroups[gi];
-            const pos = new THREE.Vector3(shape.position[0], shape.position[1], shape.position[2]);
-            const quat = new THREE.Quaternion().setFromEuler(
-              new THREE.Euler(shape.rotation[0], shape.rotation[1], shape.rotation[2], 'XYZ')
-            );
-            const scl = new THREE.Vector3(shape.scale[0], shape.scale[1], shape.scale[2]);
-            const m = new THREE.Matrix4().compose(pos, quat, scl);
-            const normalMatrix = new THREE.Matrix3().getNormalMatrix(m);
-            const normalWorld = grp.normal.clone().normalize().applyMatrix3(normalMatrix).normalize();
-            const pointWorld = e.point ? [e.point.x, e.point.y, e.point.z] as [number, number, number] : [0, 0, 0];
-            setFaceExtrudeRefCandidate({
-              panelId: shape.id,
-              faceGroupIndex: gi,
-              normalWorld: [normalWorld.x, normalWorld.y, normalWorld.z],
-              pointWorld,
-            });
-          }
-        }
-        return;
-      }
-      if (isRefSelectingPanel) {
-        if (shape.id === faceExtrudeTargetPanelId) return;
-        setFaceExtrudeRefCandidate({
-          panelId: shape.id,
-          faceGroupIndex: -1,
-          normalWorld: [0, 0, 0],
-          pointWorld: [0, 0, 0],
-        });
-      }
+      if (shape.id === faceExtrudeTargetPanelId) return;
+      const allShapes = useAppStore.getState().shapes;
+      cycleRefFacePickFromEvent(e, allShapes, faceExtrudeTargetPanelId, setFaceExtrudeRefCandidate);
       return;
     }
     if (panelSurfaceSelectMode && waitingForSurfaceSelection && e.faceIndex !== undefined) {
@@ -415,8 +354,8 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           castShadow
           receiveShadow
           onClick={handleClick}
-          onPointerDown={isRefCandidatePanel ? handleRefRightClick : undefined}
-          onContextMenu={(e: any) => { if (isRefCandidatePanel) e.stopPropagation(); }}
+          onPointerDown={isRefPickablePanel ? handleRefRightClick : undefined}
+          onContextMenu={(e: any) => { if (isRefPickablePanel) e.stopPropagation(); }}
         >
           <meshLambertMaterial
             color={materialColor}
@@ -481,10 +420,8 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
             castShadow
             receiveShadow
             onClick={handleClick}
-          onPointerDown={isRefCandidatePanel ? handleRefRightClick : undefined}
-          onContextMenu={(e: any) => { if (isRefCandidatePanel) e.stopPropagation(); }}
-            onPointerDown={isRefCandidatePanel ? handleRefRightClick : undefined}
-            onContextMenu={(e: any) => { if (isRefCandidatePanel) e.stopPropagation(); }}
+            onPointerDown={isRefPickablePanel ? handleRefRightClick : undefined}
+            onContextMenu={(e: any) => { if (isRefPickablePanel) e.stopPropagation(); }}
           >
             <meshLambertMaterial
               color={materialColor}
@@ -600,8 +537,11 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
         </>
       )}
 
-      {/* ── REF CANDIDATE PANEL HOVER HIGHLIGHT ─────────────────────── */}
-      {isRefCandidatePanel && (
+      {/* ── REF PICKABLE PANEL HOVER + SEÇİLİ YÜZ VURGUSU ────────────────
+          Hedef dışındaki her panel hover'da yeşil parlar (ışının değdiği ön
+          yüz). Derinlik döngüsüyle seçilen referans yüzü, YALNIZ o panel aday
+          olduğunda koyu yeşil kalır. */}
+      {isRefPickablePanel && (
         <>
           <mesh
             geometry={shape.geometry}
@@ -621,11 +561,13 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
               e.stopPropagation();
               setHoveredExtrudeGroup(null);
             }}
+            onPointerDown={handleRefRightClick}
+            onContextMenu={(e: any) => e.stopPropagation()}
           >
             <meshBasicMaterial transparent opacity={0.01} side={THREE.DoubleSide} depthTest={false} depthWrite={false} />
           </mesh>
           {hoveredExtrudeGroup !== null && faceGroups[hoveredExtrudeGroup] && (
-            <mesh geometry={createFaceHighlightGeometry(faces, faceGroups[hoveredExtrudeGroup].faceIndices)} renderOrder={11}>
+            <mesh geometry={createFaceHighlightGeometry(faces, faceGroups[hoveredExtrudeGroup].faceIndices)} renderOrder={11} raycast={() => null}>
               <meshBasicMaterial
                 color={0x22c55e}
                 transparent
@@ -636,8 +578,8 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
               />
             </mesh>
           )}
-          {faceExtrudeRefCandidate?.faceGroupIndex !== undefined && faceExtrudeRefCandidate.faceGroupIndex >= 0 && faceGroups[faceExtrudeRefCandidate.faceGroupIndex] && (
-            <mesh geometry={createFaceHighlightGeometry(faces, faceGroups[faceExtrudeRefCandidate.faceGroupIndex].faceIndices)} renderOrder={12}>
+          {isRefCandidatePanel && faceExtrudeRefCandidate?.faceGroupIndex !== undefined && faceExtrudeRefCandidate.faceGroupIndex >= 0 && faceGroups[faceExtrudeRefCandidate.faceGroupIndex] && (
+            <mesh geometry={createFaceHighlightGeometry(faces, faceGroups[faceExtrudeRefCandidate.faceGroupIndex].faceIndices)} renderOrder={12} raycast={() => null}>
               <meshBasicMaterial
                 color={0x16a34a}
                 transparent
