@@ -54,6 +54,8 @@ function trimmedStampGeometryFromVf(
     if (!step.faceNormal) continue;
     const eN = new THREE.Vector3(...step.faceNormal).normalize();
     if (eN.dot(targetFaceNormal) > 0.7) continue;
+    // Extrude hedef yüzden UZAKLAŞIYORSA yakın kenar yerinde kalır → atla
+    if (eN.dot(targetFaceNormal) < -0.3) continue;
     const projs = trimmed.map(p => p[0] * eN.x + p[1] * eN.y + p[2] * eN.z);
     // İŞARETLİ MİKTAR — GERÇEK EXTRUDE (applyOneExtrudeStep) İLE BİREBİR:
     //  • ref  → resolvedValue (rebuild'de çözülmüş işaretli mesafe)
