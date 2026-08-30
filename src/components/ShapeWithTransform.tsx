@@ -492,10 +492,13 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
 
   const suppressPanelRaycast = isPanel && raycastMode && parentShapeId === selectedShapeId;
   const noopRaycast = useCallback(() => {}, []);
+  // Move ref modunda (kaynak vertex seçilip hedef panel beklenirken) gövde de
+  // tıklanabilir olmalı — ışın boyunca derinlik döngüsü tüm şekilleri gezer.
+  const isMoveRefPickActive = panelMoveMode && panelMoveValueMode === 'ref' && !!panelMoveRefSourceVertex && !panelMoveRefTargetPanelId;
   // Gövdenin panelleri varsa, görünmez gövde mesh'i tıklamaları engellemesin.
-  // faceExtrude ref modunda hariç — orada gövde referans olarak seçilmeli.
+  // faceExtrude ref modunda ve move ref pick modunda hariç — gövde tıklanmalı.
   const isBodyRefMode = faceExtrudeMode && faceExtrudeValueMode === 'ref' && faceExtrudeSelectedFace !== null;
-  const suppressBodyRaycast = !isPanel && hasPanels && !panelSelectMode && !isBodyRefMode;
+  const suppressBodyRaycast = !isPanel && hasPanels && !panelSelectMode && !isBodyRefMode && !isMoveRefPickActive;
 
   // ── REFERANS MODU (panel extrude → "ref") ──────────────────────────────────
   // Gövde (parent, panel değil) hem referans NESNESİ olarak seçilebilir hem de
@@ -507,6 +510,9 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
   // overlay'i erkenden çıkıyordu.
   const isRefMode = faceExtrudeMode && faceExtrudeValueMode === 'ref' && !isPanel && faceExtrudeSelectedFace !== null;
   const isMoveRefPickMode = panelMoveMode && panelMoveValueMode === 'ref' && !!panelMoveRefSourceVertex && !panelMoveRefTargetPanelId && isPanel && shape.id !== panelMoveTargetPanelId;
+  // Gövde (parent küp) de move ref pick modunda tıklanabilir — derinlik
+  // döngüsü ışın boyunca tüm şekilleri (paneller + gövde) gezer.
+  const isMoveRefPickBody = isMoveRefPickActive && !isPanel;
   const isMoveRefTargetPanel = panelMoveMode && panelMoveValueMode === 'ref' && !!panelMoveRefSourceVertex && panelMoveRefTargetPanelId === shape.id;
   const isRefCandidateShape = isRefMode && faceExtrudeRefCandidate?.panelId === shape.id;
 
@@ -634,7 +640,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
             handleRefClick(e);
             return;
           }
-          if (isMoveRefPickMode) {
+          if (isMoveRefPickMode || isMoveRefPickBody) {
             e.stopPropagation();
             const allShapes = useAppStore.getState().shapes;
             cycleMoveRefPanelFromEvent(e, allShapes, panelMoveTargetPanelId, (id) => {
@@ -681,12 +687,12 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
           setShowParametersPanel(true);
         }}
         onPointerDown={(e: any) => {
-          if (e.button === 2 && (isMoveRefPickMode || isMoveRefTargetPanel)) {
+          if (e.button === 2 && (isMoveRefPickMode || isMoveRefPickBody || isMoveRefTargetPanel)) {
             handleMoveRefConfirm(e);
           }
         }}
         onContextMenu={(e: any) => {
-          if (isMoveRefPickMode || isMoveRefTargetPanel) e.stopPropagation();
+          if (isMoveRefPickMode || isMoveRefPickBody || isMoveRefTargetPanel) e.stopPropagation();
         }}
       >
         {/* Subtraction görselleştirme */}
