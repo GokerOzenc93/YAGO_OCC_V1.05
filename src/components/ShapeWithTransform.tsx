@@ -492,6 +492,9 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
 
   const suppressPanelRaycast = isPanel && raycastMode && parentShapeId === selectedShapeId;
   const noopRaycast = useCallback(() => {}, []);
+  // Body mode'da (panelSelectMode kapalı) gövdenin panelleri varsa, görünmez
+  // gövde mesh'i tıklamaları engellemesin — raycast'i kapat, paneller alsın.
+  const suppressBodyRaycast = !isPanel && hasPanels && !panelSelectMode && !faceExtrudeMode && !panelMoveMode;
 
   // ── REFERANS MODU (panel extrude → "ref") ──────────────────────────────────
   // Gövde (parent, panel değil) hem referans NESNESİ olarak seçilebilir hem de
@@ -712,7 +715,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
               geometry={localGeometry}
               castShadow
               receiveShadow
-              {...(suppressPanelRaycast ? { raycast: noopRaycast } : {})}
+              {...((suppressPanelRaycast || suppressBodyRaycast) ? { raycast: noopRaycast } : {})}
               // 3B'de panel üzerine gelinince LeftSidebar'daki satırı hafif
               // sarı yakmak için hover senkronu (yalnızca sanal-yüz panelleri)
               onPointerOver={isPanel && shape.parameters?.virtualFaceId ? (e: any) => {
@@ -764,7 +767,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
               ref={meshRef}
               geometry={localGeometry}
               visible={false}
-              {...(suppressPanelRaycast ? { raycast: noopRaycast } : {})}
+              {...((suppressPanelRaycast || suppressBodyRaycast) ? { raycast: noopRaycast } : {})}
             />
             {showOutlines && edgePoints && (
               <Line
@@ -790,7 +793,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
               geometry={localGeometry}
               castShadow
               receiveShadow
-              {...(suppressPanelRaycast ? { raycast: noopRaycast } : {})}
+              {...((suppressPanelRaycast || suppressBodyRaycast) ? { raycast: noopRaycast } : {})}
               // 3B'de panel üzerine gelinince LeftSidebar'daki satırı hafif
               // sarı yakmak için hover senkronu (yalnızca sanal-yüz panelleri)
               onPointerOver={isPanel && shape.parameters?.virtualFaceId ? (e: any) => {

@@ -352,6 +352,10 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
       return;
     }
     if (isFaceExtrudeTarget) return;
+    // FaceExtrude modunda hedef olmayan panellerde normal seçim yapma.
+    if (faceExtrudeMode && !isFaceExtrudeTarget) return;
+    // PanelMove modunda hedef panel dışında normal seçim yapma.
+    if (panelMoveMode && !isMoveRefTargetPanel) return;
     // Ref modu — tüm normal seçim mantığını atla. Işın boyunca DERİNLİK DÖNGÜSÜ:
     // aynı noktaya her tıklamada bir arkadaki yüze geçer (küp dış yüzü → panel
     // yüzü → arkası...). Tüm şekiller taranır; hedef panel hariç.
