@@ -189,6 +189,10 @@ interface AppState{
   panelMoveTargetPanelId:string|null;setPanelMoveTargetPanelId:(id:string|null)=>void;
   panelMoveAxis:'x+'|'x-'|'y+'|'y-'|'z+'|'z-'|null;setPanelMoveAxis:(a:'x+'|'x-'|'y+'|'y-'|'z+'|'z-'|null)=>void;
   panelMoveValue:number;setPanelMoveValue:(v:number)=>void;
+  panelMoveValueMode:'dyn'|'fixed'|'ref';setPanelMoveValueMode:(m:'dyn'|'fixed'|'ref')=>void;
+  panelMoveRefSourceVertex:[number,number,number]|null;setPanelMoveRefSourceVertex:(v:[number,number,number]|null)=>void;
+  panelMoveRefTargetPanelId:string|null;setPanelMoveRefTargetPanelId:(id:string|null)=>void;
+  panelMoveRefTargetVertex:[number,number,number]|null;setPanelMoveRefTargetVertex:(v:[number,number,number]|null)=>void;
 
   panelRotateMode:boolean;setPanelRotateMode:(b:boolean)=>void;
   panelRotateTargetPanelId:string|null;setPanelRotateTargetPanelId:(id:string|null)=>void;
@@ -251,10 +255,14 @@ export const useAppStore=create<AppState>((set,get)=>({
   faceExtrudeValueMode:'fixed',setFaceExtrudeValueMode:(m)=>set({faceExtrudeValueMode:m}),
   faceExtrudeRefCandidate:null,setFaceExtrudeRefCandidate:(v)=>set({faceExtrudeRefCandidate:v}),
 
-  panelMoveMode:false,setPanelMoveMode:(b)=>set({panelMoveMode:b,...(!b?{panelMoveTargetPanelId:null,panelMoveAxis:null,panelMoveValue:0}:{})}),
+  panelMoveMode:false,setPanelMoveMode:(b)=>set({panelMoveMode:b,...(!b?{panelMoveTargetPanelId:null,panelMoveAxis:null,panelMoveValue:0,panelMoveValueMode:'dyn' as const,panelMoveRefSourceVertex:null,panelMoveRefTargetPanelId:null,panelMoveRefTargetVertex:null}:{})}),
   panelMoveTargetPanelId:null,setPanelMoveTargetPanelId:(id)=>set({panelMoveTargetPanelId:id}),
   panelMoveAxis:null,setPanelMoveAxis:(a)=>set({panelMoveAxis:a}),
   panelMoveValue:0,setPanelMoveValue:(v)=>set({panelMoveValue:v}),
+  panelMoveValueMode:'dyn',setPanelMoveValueMode:(m)=>set({panelMoveValueMode:m,panelMoveRefSourceVertex:null,panelMoveRefTargetPanelId:null,panelMoveRefTargetVertex:null}),
+  panelMoveRefSourceVertex:null,setPanelMoveRefSourceVertex:(v)=>set({panelMoveRefSourceVertex:v}),
+  panelMoveRefTargetPanelId:null,setPanelMoveRefTargetPanelId:(id)=>set({panelMoveRefTargetPanelId:id}),
+  panelMoveRefTargetVertex:null,setPanelMoveRefTargetVertex:(v)=>set({panelMoveRefTargetVertex:v}),
 
   panelRotateMode:false,setPanelRotateMode:(b)=>set({panelRotateMode:b,...(!b?{panelRotateTargetPanelId:null,panelRotatePivot:null,panelRotatePivotType:null,panelRotateAxis:null,panelRotateValue:0}:{})}),
   panelRotateTargetPanelId:null,setPanelRotateTargetPanelId:(id)=>set({panelRotateTargetPanelId:id}),

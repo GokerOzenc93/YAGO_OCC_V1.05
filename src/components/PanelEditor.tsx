@@ -583,6 +583,10 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     faceExtrudeRefCandidate, setFaceExtrudeRefCandidate,
     panelMoveMode, setPanelMoveMode, panelMoveTargetPanelId, setPanelMoveTargetPanelId,
     panelMoveAxis, setPanelMoveAxis, panelMoveValue, setPanelMoveValue,
+    panelMoveValueMode, setPanelMoveValueMode,
+    panelMoveRefSourceVertex, setPanelMoveRefSourceVertex,
+    panelMoveRefTargetPanelId, setPanelMoveRefTargetPanelId,
+    panelMoveRefTargetVertex, setPanelMoveRefTargetVertex,
     panelRotateMode, setPanelRotateMode, panelRotateTargetPanelId, setPanelRotateTargetPanelId,
     panelRotatePivot, setPanelRotatePivot, setPanelRotatePivotType,
     panelRotateAxis, setPanelRotateAxis, panelRotateValue, setPanelRotateValue } = useAppStore();
@@ -1256,8 +1260,20 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
   // ── Move dock — only the active-command input row (no steps list here) ──
   const moveDock = (() => {
     if (!activePanelId || !panelMoveMode) return null;
+    const isRefMode = panelMoveValueMode === 'ref';
     const hasAxis = panelMoveAxis !== null;
+    const hasRefReady = isRefMode && panelMoveRefSourceVertex && panelMoveRefTargetPanelId && panelMoveRefTargetVertex;
     const axisColors: Record<string, string> = { 'x+': '#dc2626', 'x-': '#b91c1c', 'y+': '#16a34a', 'y-': '#15803d', 'z+': '#2563eb', 'z-': '#1d4ed8' };
+
+    const segMode = (mode: 'dyn'|'fixed'|'ref'): React.CSSProperties => ({
+      flex: 1, minWidth: 0, height: 28, fontSize: 10, fontWeight: 700, letterSpacing: '0.03em',
+      border: 'none', outline: 'none', cursor: 'pointer',
+      borderLeft: mode === 'dyn' ? 'none' : '1px solid rgba(60,50,40,0.10)',
+      background: panelMoveValueMode === mode ? '#e8e1d5' : 'rgba(255,255,255,0.45)',
+      color: panelMoveValueMode === mode ? '#44403c' : '#a8a29e',
+      boxShadow: panelMoveValueMode === mode ? 'inset 0 1px 2px rgba(60,50,40,0.14)' : 'none',
+      transition: 'all 0.12s',
+    });
 
     const exitBtn = (
       <button onClick={e => { stop(e); setPanelMoveAxis(null); setPanelMoveMode(false); }}
@@ -1269,15 +1285,91 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     );
 
     const onApply = async () => {
-      if (!hasAxis || !activePanelId) return;
+      if (!activePanelId) return;
       const ps = shapes.find(s => s.id === activePanelId); if (!ps) return;
-      const { executePanelMove } = await import('./PanelMoveService');
-      await executePanelMove({ panelShape: ps, axis: panelMoveAxis!, value: panelMoveValue, shapes, updateShape });
+
+      if (isRefMode) {
+        if (!hasRefReady) return;
+        const { executePanelMoveRef } = await import('./PanelMoveService');
+        await executePanelMoveRef({
+          panelShape: ps,
+          sourceVertex: panelMoveRefSourceVertex!,
+          targetPanelId: panelMoveRefTargetPanelId!,
+          targetVertex: panelMoveRefTargetVertex!,
+          shapes, updateShape,
+        });
+      } else if (panelMoveValueMode === 'fixed') {
+        if (!hasAxis) return;
+        const { executePanelMoveFixed } = await import('./PanelMoveService');
+        await executePanelMoveFixed({ panelShape: ps, axis: panelMoveAxis!, value: panelMoveValue, shapes, updateShape });
+      } else {
+        if (!hasAxis) return;
+        const { executePanelMove } = await import('./PanelMoveService');
+        await executePanelMove({ panelShape: ps, axis: panelMoveAxis!, value: panelMoveValue, shapes, updateShape });
+      }
       setPanelMoveAxis(null);
       setPanelMoveValue(0);
       setMoveValueStr('0');
       setPanelMoveMode(false);
     };
+
+    const canApply = isRefMode ? !!hasRefReady : hasAxis;
+
+    const mainContent = (() => {
+      if (isRefMode) {
+        const step = !panelMoveRefSourceVertex ? 1 : !panelMoveRefTargetPanelId ? 2 : !panelMoveRefTargetVertex ? 3 : 4;
+        const label = step === 1 ? 'Kaynak noktayı seç' : step === 2 ? 'Hedef paneli seç' : step === 3 ? 'Hedef noktayı seç' : 'Referans hazır';
+        const ready = step === 4;
+        return (
+          <div style={{
+            flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 6, height: 28, padding: '0 10px', borderRadius: 7,
+            background: ready ? 'rgba(34,197,94,0.10)' : 'rgba(120,113,108,0.08)',
+            border: ready ? '1px solid rgba(22,163,74,0.30)' : '1px solid rgba(60,50,40,0.10)',
+          }}>
+            <span style={{ width: 5, height: 5, borderRadius: '50%', background: ready ? '#16a34a' : '#a8a29e', flexShrink: 0 }} />
+            <span style={{ fontSize: 11, fontWeight: 500, color: ready ? '#15803d' : '#78716c', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
+          </div>
+        );
+      }
+      if (!hasAxis) {
+        return (
+          <div style={{
+            flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 7, height: 28, padding: '0 10px', borderRadius: 7,
+            background: 'rgba(120,113,108,0.08)', border: '1px solid rgba(60,50,40,0.10)',
+          }}>
+            <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#a8a29e', flexShrink: 0 }} />
+            <span style={{ fontSize: 11, fontWeight: 500, color: '#78716c', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>3B görünümde yön oku seç</span>
+          </div>
+        );
+      }
+      return (
+        <>
+          <span style={{ fontSize: 10, fontWeight: 800, fontFamily: 'monospace', color: axisColors[panelMoveAxis!] || '#44403c', padding: '2px 8px', borderRadius: 5, background: 'rgba(120,113,108,0.10)', border: '1px solid rgba(60,50,40,0.12)' }}>
+            {panelMoveAxis!.toUpperCase()}
+          </span>
+          <input
+            type="text" inputMode="numeric" autoFocus value={moveValueStr}
+            onChange={e => {
+              const v = e.target.value;
+              setMoveValueStr(v);
+              const p = parseFloat(v);
+              if (!isNaN(p)) setPanelMoveValue(p);
+            }}
+            onBlur={() => {
+              const p = parseFloat(moveValueStr);
+              if (isNaN(p)) { setMoveValueStr('0'); setPanelMoveValue(0); }
+              else { setPanelMoveValue(p); setMoveValueStr(String(p)); }
+            }}
+            onKeyDown={e => { if (e.key === 'Enter') onApply(); if (e.key === 'Escape') { setPanelMoveAxis(null); setPanelMoveMode(false); } }}
+            style={{
+              flex: 1, minWidth: 0, height: 28, textAlign: 'center', fontFamily: 'monospace', fontSize: 13, fontWeight: 600,
+              color: '#1c1917', background: 'linear-gradient(180deg,#fff,#faf8f3)', border: '1px solid rgba(60,50,40,0.16)',
+              borderRadius: 7, outline: 'none', boxShadow: 'inset 0 1px 2px rgba(40,30,20,0.06)',
+            }}
+          />
+        </>
+      );
+    })();
 
     return (
       <div style={{
@@ -1290,51 +1382,20 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif",
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 9px' }}>
-          {hasAxis ? (
-            <>
-              <span style={{ fontSize: 10, fontWeight: 800, fontFamily: 'monospace', color: axisColors[panelMoveAxis!] || '#44403c', padding: '2px 8px', borderRadius: 5, background: 'rgba(120,113,108,0.10)', border: '1px solid rgba(60,50,40,0.12)' }}>
-                {panelMoveAxis!.toUpperCase()}
-              </span>
-              <input
-                type="text" inputMode="numeric" autoFocus value={moveValueStr}
-                onChange={e => {
-                  const v = e.target.value;
-                  setMoveValueStr(v);
-                  const p = parseFloat(v);
-                  if (!isNaN(p)) setPanelMoveValue(p);
-                }}
-                onBlur={() => {
-                  const p = parseFloat(moveValueStr);
-                  if (isNaN(p)) { setMoveValueStr('0'); setPanelMoveValue(0); }
-                  else { setPanelMoveValue(p); setMoveValueStr(String(p)); }
-                }}
-                onKeyDown={e => { if (e.key === 'Enter') onApply(); if (e.key === 'Escape') { setPanelMoveAxis(null); setPanelMoveMode(false); } }}
-                style={{
-                  flex: 1, minWidth: 0, height: 28, textAlign: 'center', fontFamily: 'monospace', fontSize: 13, fontWeight: 600,
-                  color: '#1c1917', background: 'linear-gradient(180deg,#fff,#faf8f3)', border: '1px solid rgba(60,50,40,0.16)',
-                  borderRadius: 7, outline: 'none', boxShadow: 'inset 0 1px 2px rgba(40,30,20,0.06)',
-                }}
-              />
-              <button onClick={onApply} title="Uygula" style={{
-                flexShrink: 0, width: 32, height: 28, borderRadius: 7, border: 'none', cursor: 'pointer', outline: 'none',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                background: 'linear-gradient(180deg,#5b5346,#44403c)', color: '#fff',
-                boxShadow: '0 1px 2px rgba(40,30,20,0.25),inset 0 1px 0 rgba(255,255,255,0.18)',
-              }}><Check size={15} strokeWidth={2.5} /></button>
-              {exitBtn}
-            </>
-          ) : (
-            <>
-              <div style={{
-                flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 7, height: 28, padding: '0 10px', borderRadius: 7,
-                background: 'rgba(120,113,108,0.08)', border: '1px solid rgba(60,50,40,0.10)',
-              }}>
-                <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#a8a29e', flexShrink: 0 }} />
-                <span style={{ fontSize: 11, fontWeight: 500, color: '#78716c', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>3B görünümde yön oku seç</span>
-              </div>
-              {exitBtn}
-            </>
-          )}
+          {mainContent}
+          <div style={{ display: 'flex', width: isRefMode ? 120 : 86, flexShrink: 0, borderRadius: 7, overflow: 'hidden', border: '1px solid rgba(60,50,40,0.16)' }}>
+            {(['dyn','fixed','ref'] as const).map(m => (
+              <button key={m} onClick={() => { setPanelMoveValueMode(m); if (m !== 'ref') { setPanelMoveRefSourceVertex(null); setPanelMoveRefTargetPanelId(null); setPanelMoveRefTargetVertex(null); } if (m === 'ref') { setPanelMoveAxis(null); } }} style={segMode(m)}>{m === 'dyn' ? 'Dyn' : m === 'fixed' ? 'Fixed' : 'Ref'}</button>
+            ))}
+          </div>
+          <button onClick={onApply} title="Uygula" style={{
+            flexShrink: 0, width: 32, height: 28, borderRadius: 7, border: 'none', cursor: canApply ? 'pointer' : 'not-allowed', outline: 'none',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: canApply ? 'linear-gradient(180deg,#5b5346,#44403c)' : 'rgba(120,113,108,0.30)', color: '#fff',
+            boxShadow: canApply ? '0 1px 2px rgba(40,30,20,0.25),inset 0 1px 0 rgba(255,255,255,0.18)' : 'none',
+            opacity: canApply ? 1 : 0.5,
+          }}><Check size={15} strokeWidth={2.5} /></button>
+          {exitBtn}
         </div>
       </div>
     );

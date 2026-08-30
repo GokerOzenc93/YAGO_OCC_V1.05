@@ -53,7 +53,6 @@ function MoveArrow({ direction, axisLabel, color, hoverColor, origin, length, on
     origin[2] + direction[2] * (shaftLength + coneHeight / 2),
   ];
 
-  // Label is positioned at the cone tip — always outside the panel, never occluded
   const labelPos: [number, number, number] = [
     origin[0] + direction[0] * (length + length * 0.22),
     origin[1] + direction[1] * (length + length * 0.22),
@@ -76,9 +75,6 @@ function MoveArrow({ direction, axisLabel, color, hoverColor, origin, length, on
     metalness: 0.4,
   };
 
-  // All interaction is handled via the HTML label to avoid 3D raycasting occlusion.
-  // When the panel is against a cube face, the cube's onClick fires first and
-  // stopPropagation() blocks the 3D mesh events behind it. HTML DOM events bypass this.
   const handleLabelClick = (e: React.MouseEvent) => {
     e.stopPropagation();
     onSelect(axisLabel);
@@ -88,19 +84,16 @@ function MoveArrow({ direction, axisLabel, color, hoverColor, origin, length, on
 
   return (
     <group>
-      {/* Visible shaft — no event handlers, purely visual */}
       <mesh position={shaftCenter} rotation={rotation} renderOrder={RENDER_ORDER}>
         <cylinderGeometry args={[shaftRadius, shaftRadius, shaftLength, 12]} />
         <meshStandardMaterial {...matProps} />
       </mesh>
 
-      {/* Visible cone — no event handlers, purely visual */}
       <mesh position={coneCenter} rotation={rotation} renderOrder={RENDER_ORDER}>
         <coneGeometry args={[coneRadius, coneHeight, 16]} />
         <meshStandardMaterial {...matProps} />
       </mesh>
 
-      {/* Label — handles ALL interaction via DOM events, bypasses 3D raycasting occlusion */}
       <Html position={labelPos} center zIndexRange={[999, 1000]} style={{ pointerEvents: 'none' }}>
         <div
           onClick={handleLabelClick}
@@ -142,12 +135,66 @@ function OriginSphere({ position, size }: { position: [number, number, number]; 
   );
 }
 
+function VertexDot({ position, size, isSelected, onClick }: {
+  position: [number, number, number]; size: number; isSelected: boolean;
+  onClick: (pos: [number, number, number]) => void;
+}) {
+  const [hovered, setHovered] = useState(false);
+  return (
+    <group>
+      <mesh position={position} renderOrder={RENDER_ORDER + 1}>
+        <sphereGeometry args={[size, 16, 16]} />
+        <meshStandardMaterial
+          color={isSelected ? '#16a34a' : hovered ? '#f59e0b' : '#3b82f6'}
+          emissive={new THREE.Color(isSelected ? '#16a34a' : hovered ? '#f59e0b' : '#3b82f6')}
+          emissiveIntensity={isSelected ? 1.2 : hovered ? 0.8 : 0.4}
+          transparent opacity={1} depthTest={false} roughness={0.2} metalness={0.5}
+        />
+      </mesh>
+      <Html position={position} center zIndexRange={[1001, 1002]} style={{ pointerEvents: 'none' }}>
+        <div
+          onClick={e => { e.stopPropagation(); onClick(position); }}
+          onMouseEnter={() => { setHovered(true); document.body.style.cursor = 'pointer'; }}
+          onMouseLeave={() => { setHovered(false); document.body.style.cursor = 'default'; }}
+          style={{ pointerEvents: 'auto', cursor: 'pointer', width: 24, height: 24, borderRadius: '50%' }}
+        />
+      </Html>
+    </group>
+  );
+}
+
 interface PanelMoveGizmoProps {
   panelShape: Shape;
 }
 
+function getUniqueVertices(geo: THREE.BufferGeometry, mat: THREE.Matrix4, tolerance = 0.5): [number, number, number][] {
+  const pos = geo.getAttribute('position') as THREE.BufferAttribute;
+  if (!pos) return [];
+  const verts: [number, number, number][] = [];
+  for (let i = 0; i < pos.count; i++) {
+    const v = new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(mat);
+    const dup = verts.some(e => Math.abs(e[0] - v.x) < tolerance && Math.abs(e[1] - v.y) < tolerance && Math.abs(e[2] - v.z) < tolerance);
+    if (!dup) verts.push([v.x, v.y, v.z]);
+  }
+  return verts;
+}
+
 export function PanelMoveGizmo({ panelShape }: PanelMoveGizmoProps) {
-  const { panelMoveAxis, setPanelMoveAxis } = useAppStore();
+  const { panelMoveAxis, setPanelMoveAxis, panelMoveValueMode,
+    panelMoveRefSourceVertex, setPanelMoveRefSourceVertex,
+    panelMoveRefTargetPanelId, setPanelMoveRefTargetPanelId,
+    panelMoveRefTargetVertex, setPanelMoveRefTargetVertex,
+    shapes } = useAppStore();
+
+  const isRefMode = panelMoveValueMode === 'ref';
+
+  const mat = useMemo(() => {
+    return new THREE.Matrix4().compose(
+      new THREE.Vector3(...panelShape.position),
+      new THREE.Quaternion().setFromEuler(new THREE.Euler(...panelShape.rotation, 'XYZ')),
+      new THREE.Vector3(...panelShape.scale)
+    );
+  }, [panelShape.position, panelShape.rotation, panelShape.scale]);
 
   const { centerOrigin, axisOrigins, arrowLength } = useMemo(() => {
     const fallback = panelShape.position;
@@ -162,12 +209,6 @@ export function PanelMoveGizmo({ panelShape }: PanelMoveGizmoProps) {
     }
 
     const bbox = new THREE.Box3().setFromBufferAttribute(pos);
-    const mat = new THREE.Matrix4().compose(
-      new THREE.Vector3(...panelShape.position),
-      new THREE.Quaternion().setFromEuler(new THREE.Euler(...panelShape.rotation, 'XYZ')),
-      new THREE.Vector3(...panelShape.scale)
-    );
-
     const toWorld = (lx: number, ly: number, lz: number): [number, number, number] => {
       const v = new THREE.Vector3(lx, ly, lz).applyMatrix4(mat);
       return [v.x, v.y, v.z];
@@ -204,10 +245,40 @@ export function PanelMoveGizmo({ panelShape }: PanelMoveGizmoProps) {
       } as Record<string, [number, number, number]>,
       arrowLength: len,
     };
-  }, [panelShape.position, panelShape.rotation, panelShape.scale, panelShape.geometry]);
+  }, [panelShape.position, panelShape.rotation, panelShape.scale, panelShape.geometry, mat]);
+
+  const sourceVertices = useMemo(() => {
+    if (!isRefMode || !panelShape.geometry) return [];
+    return getUniqueVertices(panelShape.geometry, mat);
+  }, [isRefMode, panelShape.geometry, mat]);
+
+  const targetPanel = useMemo(() => {
+    if (!isRefMode || !panelMoveRefTargetPanelId) return null;
+    return shapes.find(s => s.id === panelMoveRefTargetPanelId) || null;
+  }, [isRefMode, panelMoveRefTargetPanelId, shapes]);
+
+  const targetVertices = useMemo(() => {
+    if (!targetPanel?.geometry) return [];
+    const tMat = new THREE.Matrix4().compose(
+      new THREE.Vector3(...targetPanel.position),
+      new THREE.Quaternion().setFromEuler(new THREE.Euler(...targetPanel.rotation, 'XYZ')),
+      new THREE.Vector3(...targetPanel.scale)
+    );
+    return getUniqueVertices(targetPanel.geometry, tMat);
+  }, [targetPanel]);
 
   const handleSelect = (axis: 'x+' | 'x-' | 'y+' | 'y-' | 'z+' | 'z-') => {
     setPanelMoveAxis(axis === panelMoveAxis ? null : axis);
+  };
+
+  const handleSourceVertexClick = (pos: [number, number, number]) => {
+    setPanelMoveRefSourceVertex(pos);
+    setPanelMoveRefTargetPanelId(null);
+    setPanelMoveRefTargetVertex(null);
+  };
+
+  const handleTargetVertexClick = (pos: [number, number, number]) => {
+    setPanelMoveRefTargetVertex(pos);
   };
 
   const axes: Array<{ axis: 'x+' | 'x-' | 'y+' | 'y-' | 'z+' | 'z-'; dir: [number, number, number]; color: string; hover: string }> = [
@@ -219,20 +290,46 @@ export function PanelMoveGizmo({ panelShape }: PanelMoveGizmoProps) {
     { axis: 'z-', dir: [0, 0, -1], color: '#3b82f6', hover: '#60a5fa' },
   ];
 
+  const dotSize = arrowLength * 0.18;
+  const isSourceSelected = !!panelMoveRefSourceVertex;
+  const needsTargetPanel = isSourceSelected && !panelMoveRefTargetPanelId;
+
   return (
     <group>
-      <OriginSphere position={centerOrigin} size={arrowLength * 0.22} />
-      {axes.map(({ axis, dir, color, hover }) => (
-        <MoveArrow
-          key={axis}
-          direction={dir}
-          axisLabel={axis}
-          color={color}
-          hoverColor={hover}
-          origin={axisOrigins[axis]}
-          length={arrowLength}
-          onSelect={handleSelect}
-          selectedAxis={panelMoveAxis}
+      {!isRefMode && (
+        <>
+          <OriginSphere position={centerOrigin} size={arrowLength * 0.22} />
+          {axes.map(({ axis, dir, color, hover }) => (
+            <MoveArrow
+              key={axis}
+              direction={dir}
+              axisLabel={axis}
+              color={color}
+              hoverColor={hover}
+              origin={axisOrigins[axis]}
+              length={arrowLength}
+              onSelect={handleSelect}
+              selectedAxis={panelMoveAxis}
+            />
+          ))}
+        </>
+      )}
+      {isRefMode && !needsTargetPanel && sourceVertices.map((v, i) => (
+        <VertexDot
+          key={`src-${i}`}
+          position={v}
+          size={dotSize}
+          isSelected={!!panelMoveRefSourceVertex && Math.abs(v[0] - panelMoveRefSourceVertex[0]) < 0.5 && Math.abs(v[1] - panelMoveRefSourceVertex[1]) < 0.5 && Math.abs(v[2] - panelMoveRefSourceVertex[2]) < 0.5}
+          onClick={handleSourceVertexClick}
+        />
+      ))}
+      {isRefMode && panelMoveRefTargetPanelId && targetVertices.map((v, i) => (
+        <VertexDot
+          key={`tgt-${i}`}
+          position={v}
+          size={dotSize}
+          isSelected={!!panelMoveRefTargetVertex && Math.abs(v[0] - panelMoveRefTargetVertex[0]) < 0.5 && Math.abs(v[1] - panelMoveRefTargetVertex[1]) < 0.5 && Math.abs(v[2] - panelMoveRefTargetVertex[2]) < 0.5}
+          onClick={handleTargetVertexClick}
         />
       ))}
     </group>

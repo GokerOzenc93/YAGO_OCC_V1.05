@@ -24,6 +24,10 @@ export interface MoveTransformStep {
   value: number;
   timestamp: number;
   anchor?: MoveAnchor;
+  isFixed?: boolean;
+  refSourceVertex?: [number, number, number];
+  refTargetPanelId?: string;
+  refTargetVertex?: [number, number, number];
 }
 
 export interface RotateTransformStep {
@@ -66,8 +70,14 @@ export function applyTransformSteps(
   const quat = new THREE.Quaternion().setFromEuler(new THREE.Euler(...baseRotation, 'XYZ'));
   for (const s of steps) {
     if (s.type === 'move') {
-      const base = new THREE.Vector3(...axisToVector(s.axis));
-      pos.add(base.applyQuaternion(quat).multiplyScalar(s.value));
+      const ms = s as any;
+      if (ms._refAxisVec && ms._refDist) {
+        const v = new THREE.Vector3(ms._refAxisVec[0], ms._refAxisVec[1], ms._refAxisVec[2]);
+        pos.add(v.multiplyScalar(ms._refDist));
+      } else {
+        const base = new THREE.Vector3(...axisToVector(s.axis));
+        pos.add(base.applyQuaternion(quat).multiplyScalar(s.value));
+      }
     } else {
       const axis = s.axisVec
         ? new THREE.Vector3(...s.axisVec).normalize()
@@ -213,7 +223,7 @@ async function writeAndRebuild(
 
 export async function executeTransformStep(
   panelShape: Shape,
-  step: { type: 'move'; axis: MoveTransformStep['axis']; value: number } |
+  step: { type: 'move'; axis: MoveTransformStep['axis']; value: number; isFixed?: boolean } |
         { type: 'rotate'; axis: RotateTransformStep['axis']; value: number; pivot: [number, number, number]; axisVec?: [number, number, number]; pivotFrac?: [number, number, number]; pivotVfFrac?: [number, number, number] },
   _shapes: Shape[],
   updateShape: (id: string, u: Partial<Shape>) => void
@@ -226,7 +236,7 @@ export async function executeTransformStep(
   let full: TransformStep;
   if (step.type === 'move') {
     const anchor = buildMoveAnchor(fresh, step.axis, step.value, useAppStore.getState());
-    full = { id: `step-${now}`, type: 'move', axis: step.axis, value: step.value, timestamp: now, ...(anchor ? { anchor } : {}) };
+    full = { id: `step-${now}`, type: 'move', axis: step.axis, value: step.value, timestamp: now, ...(step.isFixed ? { isFixed: true } : {}), ...(anchor ? { anchor } : {}) };
   } else {
     full = { id: `step-${now}`, type: 'rotate', axis: step.axis, axisVec: step.axisVec, value: step.value, pivot: step.pivot, pivotFrac: step.pivotFrac, pivotVfFrac: step.pivotVfFrac, timestamp: now };
   }

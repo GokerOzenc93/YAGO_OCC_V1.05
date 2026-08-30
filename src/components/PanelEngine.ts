@@ -154,10 +154,16 @@ export function composeSteps(
   const frame = new THREE.Quaternion();
   for (const s of steps) {
     if (s.type === 'move') {
-      const base = axisLetterToVec((s as any).axis);
-      const value = resolveScaledMoveValue(s, vf);
-      const d = base.clone().applyQuaternion(frame).multiplyScalar(value);
-      ops.push({ kind: 'translate', d });
+      const ms = s as any;
+      if (ms._refAxisVec && ms._refDist) {
+        const d = new THREE.Vector3(ms._refAxisVec[0], ms._refAxisVec[1], ms._refAxisVec[2]).multiplyScalar(ms._refDist);
+        ops.push({ kind: 'translate', d });
+      } else {
+        const base = axisLetterToVec(ms.axis);
+        const value = resolveScaledMoveValue(s, vf);
+        const d = base.clone().applyQuaternion(frame).multiplyScalar(value);
+        ops.push({ kind: 'translate', d });
+      }
     } else if (s.type === 'rotate') {
       const st: any = s;
       const axis = st.axisVec

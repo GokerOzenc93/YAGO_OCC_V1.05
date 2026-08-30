@@ -96,7 +96,14 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     faceExtrudeTargetPanelId: state.faceExtrudeTargetPanelId,
     faceExtrudeSelectedFace: state.faceExtrudeSelectedFace,
     faceExtrudeRefCandidate: state.faceExtrudeRefCandidate,
-    setFaceExtrudeRefCandidate: state.setFaceExtrudeRefCandidate
+    setFaceExtrudeRefCandidate: state.setFaceExtrudeRefCandidate,
+    panelMoveMode: state.panelMoveMode,
+    panelMoveValueMode: state.panelMoveValueMode,
+    panelMoveTargetPanelId: state.panelMoveTargetPanelId,
+    panelMoveRefSourceVertex: state.panelMoveRefSourceVertex,
+    panelMoveRefTargetPanelId: state.panelMoveRefTargetPanelId,
+    setPanelMoveRefTargetPanelId: state.setPanelMoveRefTargetPanelId,
+    setPanelMoveRefTargetVertex: state.setPanelMoveRefTargetVertex
   })));
 
   const { scene } = useThree();
@@ -488,6 +495,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
   // (faceExtrudeSelectedFace !== null) — yoksa hedef yüzü seçerken gövde referans
   // overlay'i erkenden çıkıyordu.
   const isRefMode = faceExtrudeMode && faceExtrudeValueMode === 'ref' && !isPanel && faceExtrudeSelectedFace !== null;
+  const isMoveRefPickMode = panelMoveMode && panelMoveValueMode === 'ref' && !!panelMoveRefSourceVertex && !panelMoveRefTargetPanelId && isPanel && shape.id !== panelMoveTargetPanelId;
   const isRefCandidateShape = isRefMode && faceExtrudeRefCandidate?.panelId === shape.id;
 
   // Gövdenin bir yüz grubunu referans adayı olarak işaretle (dünya normali +
@@ -590,6 +598,12 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
           if (isRefMode) {
             e.stopPropagation();
             handleRefClick(e);
+            return;
+          }
+          if (isMoveRefPickMode) {
+            e.stopPropagation();
+            setPanelMoveRefTargetPanelId(shape.id);
+            setPanelMoveRefTargetVertex(null);
             return;
           }
           if (panelSelectMode && hasPanels) return;
