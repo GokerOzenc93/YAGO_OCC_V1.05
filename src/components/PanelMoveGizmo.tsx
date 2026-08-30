@@ -135,19 +135,23 @@ function OriginSphere({ position, size }: { position: [number, number, number]; 
   );
 }
 
-function VertexDot({ position, size, isSelected, onClick }: {
-  position: [number, number, number]; size: number; isSelected: boolean;
+function VertexDot({ position, size, isSelected, isTarget, onClick }: {
+  position: [number, number, number]; size: number; isSelected: boolean; isTarget?: boolean;
   onClick: (pos: [number, number, number]) => void;
 }) {
   const [hovered, setHovered] = useState(false);
+  const baseColor = isTarget ? '#f97316' : '#3b82f6';
+  const selColor = isTarget ? '#ea580c' : '#16a34a';
+  const hoverColor = isTarget ? '#fb923c' : '#f59e0b';
+  const color = isSelected ? selColor : hovered ? hoverColor : baseColor;
   return (
     <group>
       <mesh position={position} renderOrder={RENDER_ORDER + 1}>
-        <sphereGeometry args={[size, 16, 16]} />
+        <sphereGeometry args={[size, 12, 12]} />
         <meshStandardMaterial
-          color={isSelected ? '#16a34a' : hovered ? '#f59e0b' : '#3b82f6'}
-          emissive={new THREE.Color(isSelected ? '#16a34a' : hovered ? '#f59e0b' : '#3b82f6')}
-          emissiveIntensity={isSelected ? 1.2 : hovered ? 0.8 : 0.4}
+          color={color}
+          emissive={new THREE.Color(color)}
+          emissiveIntensity={isSelected ? 1.0 : hovered ? 0.7 : 0.4}
           transparent opacity={1} depthTest={false} roughness={0.2} metalness={0.5}
         />
       </mesh>
@@ -156,7 +160,7 @@ function VertexDot({ position, size, isSelected, onClick }: {
           onClick={e => { e.stopPropagation(); onClick(position); }}
           onMouseEnter={() => { setHovered(true); document.body.style.cursor = 'pointer'; }}
           onMouseLeave={() => { setHovered(false); document.body.style.cursor = 'default'; }}
-          style={{ pointerEvents: 'auto', cursor: 'pointer', width: 24, height: 24, borderRadius: '50%' }}
+          style={{ pointerEvents: 'auto', cursor: 'pointer', width: 18, height: 18, borderRadius: '50%' }}
         />
       </Html>
     </group>
@@ -290,7 +294,7 @@ export function PanelMoveGizmo({ panelShape }: PanelMoveGizmoProps) {
     { axis: 'z-', dir: [0, 0, -1], color: '#3b82f6', hover: '#60a5fa' },
   ];
 
-  const dotSize = arrowLength * 0.18;
+  const dotSize = arrowLength * 0.09;
   const isSourceSelected = !!panelMoveRefSourceVertex;
   const needsTargetPanel = isSourceSelected && !panelMoveRefTargetPanelId;
 
@@ -328,6 +332,7 @@ export function PanelMoveGizmo({ panelShape }: PanelMoveGizmoProps) {
           key={`tgt-${i}`}
           position={v}
           size={dotSize}
+          isTarget
           isSelected={!!panelMoveRefTargetVertex && Math.abs(v[0] - panelMoveRefTargetVertex[0]) < 0.5 && Math.abs(v[1] - panelMoveRefTargetVertex[1]) < 0.5 && Math.abs(v[2] - panelMoveRefTargetVertex[2]) < 0.5}
           onClick={handleTargetVertexClick}
         />

@@ -124,6 +124,57 @@ const SAME_SPOT_PX = 6;
 
 export function resetRefFacePick() { lastPick = null; }
 
+// ─── MOVE REF: PANEL DERİNLİK DÖNGÜSÜ (vertex değil, panel seçimi) ──────────
+// Kaynak vertex seçildikten sonra hedef panel seçimi: aynı noktaya her tıklamada
+// ışın boyunca bir arkadaki şekle geçer (face extrude ref gibi).
+let lastMovePanelPick: { x: number; y: number; index: number; ctx: string } | null = null;
+
+export function resetMoveRefPanelPick() { lastMovePanelPick = null; }
+
+export function cycleMoveRefPanelFromEvent(
+  e: any,
+  shapes: any[],
+  sourcePanelId: string | null,
+  setTargetPanelId: (id: string) => void
+): boolean {
+  const ray: THREE.Ray | undefined = e?.ray;
+  if (!ray) return false;
+  const dir = ray.direction.clone().normalize();
+  const origin = ray.origin.clone();
+
+  // Işının deldiği tüm şekilleri (paneller + gövde) derinliğe göre sırala.
+  const cands: { id: string; depth: number }[] = [];
+  for (const s of shapes) {
+    if (!s?.geometry) continue;
+    if (s.id === sourcePanelId) continue;
+    const M = shapeMatrix(s);
+    const bbox = new THREE.Box3().setFromBufferAttribute(s.geometry.getAttribute('position'));
+    bbox.applyMatrix4(M);
+    const hit = new THREE.Vector3();
+    if (ray.intersectBox(bbox, hit)) {
+      const t = hit.clone().sub(origin).dot(dir);
+      if (t >= 0) cands.push({ id: s.id, depth: t });
+    }
+  }
+  cands.sort((a, b) => a.depth - b.depth);
+  // Tekille
+  const seen = new Set<string>();
+  const dedup = cands.filter(c => { if (seen.has(c.id)) return false; seen.add(c.id); return true; });
+  if (dedup.length === 0) return false;
+
+  const sx = e?.nativeEvent?.clientX ?? 0;
+  const sy = e?.nativeEvent?.clientY ?? 0;
+  const ctx = String(sourcePanelId ?? '');
+  const sameSpot = !!lastMovePanelPick && lastMovePanelPick.ctx === ctx &&
+    Math.hypot(sx - lastMovePanelPick.x, sy - lastMovePanelPick.y) < SAME_SPOT_PX;
+
+  const index = sameSpot ? (lastMovePanelPick!.index + 1) % dedup.length : 0;
+  lastMovePanelPick = { x: sx, y: sy, index, ctx };
+
+  setTargetPanelId(dedup[index].id);
+  return true;
+}
+
 // R3F tıklama olayından: ışın + ekran koordinatı ile adayları toplar, aynı
 // noktada arka arkaya tıklamada bir sonraki derinliğe geçer, seçilen adayı
 // faceExtrudeRefCandidate olarak yazar. Aday bulunduysa true döner.
