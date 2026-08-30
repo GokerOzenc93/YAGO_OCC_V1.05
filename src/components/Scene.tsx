@@ -472,6 +472,90 @@ const CameraController: React.FC<{ controlsRef: React.RefObject<any>; cameraType
 };
 
 /* ══════════════════════════════════════════════════════════
+   MOVE REF — SCENE-LEVEL PANEL PICKER
+   Kaynak vertex seçildikten sonra hedef panel seçimi: canvas'a her
+   tıklamada THREE.Raycaster ile tüm panel mesh'lerini tarar, aynı
+   noktaya arka arkaya tıklamada derinlik döngüsü yapar. R3F'nin
+   per-component raycast sistemini tamamen atlar → güvenilir çalışır.
+══════════════════════════════════════════════════════════ */
+const SAME_SPOT_PX = 8;
+let _movePickState: { x: number; y: number; idx: number } | null = null;
+
+function MoveRefPanelPicker({ shapes }: { shapes: any[] }) {
+  const { camera, gl } = useThree();
+  const {
+    panelMoveMode, panelMoveValueMode, panelMoveRefSourceVertex,
+    panelMoveRefTargetPanelId, panelMoveTargetPanelId,
+    setPanelMoveRefTargetPanelId, setPanelMoveRefTargetVertex,
+  } = useAppStore();
+
+  const active = panelMoveMode && panelMoveValueMode === 'ref'
+    && !!panelMoveRefSourceVertex && !panelMoveRefTargetPanelId;
+
+  useEffect(() => {
+    if (!active) return;
+    const canvas = gl.domElement;
+
+    const handler = (ev: MouseEvent) => {
+      if (ev.button !== 0) return;
+
+      const rect = canvas.getBoundingClientRect();
+      const ndcX = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+      const ndcY = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+
+      const raycaster = new THREE.Raycaster();
+      raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), camera);
+
+      // Sadece panelleri (kaynak panel hariç) raycast et.
+      const panels = shapes.filter(
+        s => s.type === 'panel' && s.geometry && s.id !== panelMoveTargetPanelId
+      );
+
+      const tempMeshes: THREE.Mesh[] = [];
+      const idMap = new Map<THREE.Mesh, string>();
+      for (const p of panels) {
+        const m = new THREE.Mesh(p.geometry);
+        m.matrixWorld.compose(
+          new THREE.Vector3(...p.position),
+          new THREE.Quaternion().setFromEuler(new THREE.Euler(...p.rotation, 'XYZ')),
+          new THREE.Vector3(...p.scale),
+        );
+        m.matrixAutoUpdate = false;
+        tempMeshes.push(m);
+        idMap.set(m, p.id);
+      }
+
+      const hits = raycaster.intersectObjects(tempMeshes, false);
+      if (hits.length === 0) return;
+
+      // Benzersiz panel id'leri (derinlik sırasında)
+      const seen = new Set<string>();
+      const ordered: string[] = [];
+      for (const h of hits) {
+        const id = idMap.get(h.object as THREE.Mesh);
+        if (id && !seen.has(id)) { seen.add(id); ordered.push(id); }
+      }
+      if (ordered.length === 0) return;
+
+      // Aynı noktaya tıklama → döngüde ilerle
+      const sameSpot = !!_movePickState &&
+        Math.hypot(ev.clientX - _movePickState.x, ev.clientY - _movePickState.y) < SAME_SPOT_PX;
+      const idx = sameSpot ? (_movePickState!.idx + 1) % ordered.length : 0;
+      _movePickState = { x: ev.clientX, y: ev.clientY, idx };
+
+      setPanelMoveRefTargetPanelId(ordered[idx]);
+      setPanelMoveRefTargetVertex(null);
+    };
+
+    canvas.addEventListener('click', handler, true);
+    return () => canvas.removeEventListener('click', handler, true);
+  }, [active, shapes, camera, gl, panelMoveTargetPanelId,
+      setPanelMoveRefTargetPanelId, setPanelMoveRefTargetVertex]);
+
+  return null;
+}
+
+/* ══════════════════════════════════════════════════════════
    PANEL MOVE GIZMO WRAPPER
 ══════════════════════════════════════════════════════════ */
 function PanelMoveGizmoWrapper({ shapes }: { shapes: any[] }) {
@@ -639,6 +723,7 @@ const Scene: React.FC = () => {
             );
           })}
 
+          <MoveRefPanelPicker shapes={shapes} />
           <PanelMoveGizmoWrapper shapes={shapes} />
           <PanelRotateGizmoWrapper shapes={shapes} />
 

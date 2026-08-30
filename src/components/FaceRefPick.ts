@@ -142,18 +142,21 @@ export function cycleMoveRefPanelFromEvent(
   const dir = ray.direction.clone().normalize();
   const origin = ray.origin.clone();
 
-  // Işının deldiği tüm şekilleri (paneller + gövde) derinliğe göre sırala.
+  // Işının gerçekten deldiği tüm şekilleri (paneller) ray-triangle testi ile bul.
+  const raycaster = new THREE.Raycaster(origin, dir);
   const cands: { id: string; depth: number }[] = [];
   for (const s of shapes) {
     if (!s?.geometry) continue;
     if (s.id === sourcePanelId) continue;
+    // Sadece paneller hedef olabilir.
+    if (s.type !== 'panel') continue;
     const M = shapeMatrix(s);
-    const bbox = new THREE.Box3().setFromBufferAttribute(s.geometry.getAttribute('position'));
-    bbox.applyMatrix4(M);
-    const hit = new THREE.Vector3();
-    if (ray.intersectBox(bbox, hit)) {
-      const t = hit.clone().sub(origin).dot(dir);
-      if (t >= 0) cands.push({ id: s.id, depth: t });
+    const tempMesh = new THREE.Mesh(s.geometry);
+    tempMesh.matrixWorld.copy(M);
+    tempMesh.matrixAutoUpdate = false;
+    const hits = raycaster.intersectObject(tempMesh, false);
+    if (hits.length > 0) {
+      cands.push({ id: s.id, depth: hits[0].distance });
     }
   }
   cands.sort((a, b) => a.depth - b.depth);
