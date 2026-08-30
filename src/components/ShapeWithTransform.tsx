@@ -61,7 +61,14 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     faceExtrudeTargetPanelId,
     faceExtrudeSelectedFace,
     faceExtrudeRefCandidate,
-    setFaceExtrudeRefCandidate
+    setFaceExtrudeRefCandidate,
+    panelMoveMode,
+    panelMoveValueMode,
+    panelMoveTargetPanelId,
+    panelMoveRefSourceVertex,
+    panelMoveRefTargetPanelId,
+    setPanelMoveRefTargetPanelId,
+    setPanelMoveRefTargetVertex
   } = useAppStore(useShallow(state => ({
     selectShape: state.selectShape,
     selectSecondaryShape: state.selectSecondaryShape,
