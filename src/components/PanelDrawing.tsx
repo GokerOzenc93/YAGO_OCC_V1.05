@@ -112,7 +112,14 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     raycastMode,
     faceExtrudeValueMode,
     faceExtrudeRefCandidate,
-    setFaceExtrudeRefCandidate
+    setFaceExtrudeRefCandidate,
+    panelMoveMode,
+    panelMoveValueMode,
+    panelMoveTargetPanelId,
+    panelMoveRefSourceVertex,
+    panelMoveRefTargetPanelId,
+    setPanelMoveRefTargetPanelId,
+    setPanelMoveRefTargetVertex
   } = useAppStore(useShallow(state => ({
     selectShape: state.selectShape,
     selectSecondaryShape: state.selectSecondaryShape,
@@ -134,7 +141,14 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     raycastMode: state.raycastMode,
     faceExtrudeValueMode: state.faceExtrudeValueMode,
     faceExtrudeRefCandidate: state.faceExtrudeRefCandidate,
-    setFaceExtrudeRefCandidate: state.setFaceExtrudeRefCandidate
+    setFaceExtrudeRefCandidate: state.setFaceExtrudeRefCandidate,
+    panelMoveMode: state.panelMoveMode,
+    panelMoveValueMode: state.panelMoveValueMode,
+    panelMoveTargetPanelId: state.panelMoveTargetPanelId,
+    panelMoveRefSourceVertex: state.panelMoveRefSourceVertex,
+    panelMoveRefTargetPanelId: state.panelMoveRefTargetPanelId,
+    setPanelMoveRefTargetPanelId: state.setPanelMoveRefTargetPanelId,
+    setPanelMoveRefTargetVertex: state.setPanelMoveRefTargetVertex
   })));
 
   const [faceGroups, setFaceGroups] = useState<any[]>([]);
@@ -304,8 +318,15 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     st.setFaceExtrudeRefCandidate(null);
   };
 
+  const isMoveRefPickMode = panelMoveMode && panelMoveValueMode === 'ref' && !!panelMoveRefSourceVertex && !panelMoveRefTargetPanelId && shape.id !== panelMoveTargetPanelId;
+
   const handleClick = (e: any) => {
     e.stopPropagation();
+    if (isMoveRefPickMode) {
+      setPanelMoveRefTargetPanelId(shape.id);
+      setPanelMoveRefTargetVertex(null);
+      return;
+    }
     if (isFaceExtrudeTarget) return;
     // Ref modu — tüm normal seçim mantığını atla. Işın boyunca DERİNLİK DÖNGÜSÜ:
     // aynı noktaya her tıklamada bir arkadaki yüze geçer (küp dış yüzü → panel
