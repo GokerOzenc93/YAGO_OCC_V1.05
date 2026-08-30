@@ -246,6 +246,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   const isRefMode = faceExtrudeMode && faceExtrudeValueMode === 'ref' && faceExtrudeSelectedFace !== null;
   const isRefPickablePanel = isRefMode && shape.id !== faceExtrudeTargetPanelId;
   const isRefCandidatePanel = isRefMode && faceExtrudeRefCandidate?.panelId === shape.id;
+  const isMoveRefPickMode = panelMoveMode && panelMoveValueMode === 'ref' && !!panelMoveRefSourceVertex && !panelMoveRefTargetPanelId && shape.id !== panelMoveTargetPanelId;
   const disableRaycast = (isFaceExtrudeTarget || (isFaceExtrudeXray && !isRefPickablePanel) || isRaycastOnParent) && !isMoveRefPickMode;
 
   useEffect(() => {
@@ -338,7 +339,6 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     st.setFaceExtrudeRefCandidate(null);
   };
 
-  const isMoveRefPickMode = panelMoveMode && panelMoveValueMode === 'ref' && !!panelMoveRefSourceVertex && !panelMoveRefTargetPanelId && shape.id !== panelMoveTargetPanelId;
   const isMoveRefTargetPanel = panelMoveMode && panelMoveValueMode === 'ref' && !!panelMoveRefSourceVertex && panelMoveRefTargetPanelId === shape.id;
 
   const handleClick = (e: any) => {
