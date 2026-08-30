@@ -492,9 +492,10 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
 
   const suppressPanelRaycast = isPanel && raycastMode && parentShapeId === selectedShapeId;
   const noopRaycast = useCallback(() => {}, []);
-  // Body mode'da (panelSelectMode kapalı) gövdenin panelleri varsa, görünmez
-  // gövde mesh'i tıklamaları engellemesin — raycast'i kapat, paneller alsın.
-  const suppressBodyRaycast = !isPanel && hasPanels && !panelSelectMode && !faceExtrudeMode && !panelMoveMode;
+  // Gövdenin panelleri varsa, görünmez gövde mesh'i tıklamaları engellemesin.
+  // faceExtrude ref modunda hariç — orada gövde referans olarak seçilmeli.
+  const isBodyRefMode = faceExtrudeMode && faceExtrudeValueMode === 'ref' && faceExtrudeSelectedFace !== null;
+  const suppressBodyRaycast = !isPanel && hasPanels && !panelSelectMode && !isBodyRefMode;
 
   // ── REFERANS MODU (panel extrude → "ref") ──────────────────────────────────
   // Gövde (parent, panel değil) hem referans NESNESİ olarak seçilebilir hem de

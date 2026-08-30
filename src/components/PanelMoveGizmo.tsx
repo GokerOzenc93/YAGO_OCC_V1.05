@@ -1,6 +1,7 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { Html } from '@react-three/drei';
+import { useFrame } from '@react-three/fiber';
 import { useAppStore } from '../store';
 import type { Shape } from '../store';
 
@@ -135,35 +136,66 @@ function OriginSphere({ position, size }: { position: [number, number, number]; 
   );
 }
 
-function VertexDot({ position, size, isSelected, isTarget, onClick }: {
-  position: [number, number, number]; size: number; isSelected: boolean; isTarget?: boolean;
+// ── Çarpı işareti (PivotMark ile aynı stil) ──────────────────────────────
+// Move gizmo'da küre yerine kameraya bakan sabit piksel boyutlu çarpı (×).
+// Tam köşelerde durur, her zaman keskin ve tıklanabilir.
+interface CrossMarkProps {
+  position: [number, number, number];
+  isSelected: boolean;
+  isTarget: boolean;
   onClick: (pos: [number, number, number]) => void;
-}) {
+  innerRef?: (el: HTMLDivElement | null) => void;
+}
+
+function CrossMark({ position, isSelected, isTarget, onClick, innerRef }: CrossMarkProps) {
   const [hovered, setHovered] = useState(false);
-  const baseColor = isTarget ? '#f97316' : '#3b82f6';
-  const selColor = isTarget ? '#ea580c' : '#16a34a';
-  const hoverColor = isTarget ? '#fb923c' : '#f59e0b';
-  const color = isSelected ? selColor : hovered ? hoverColor : baseColor;
+  const active = hovered || isSelected;
+
+  // Kaynak: mavi, Hedef: turuncu
+  const baseColor = isTarget ? '#ea580c' : '#2563eb';
+  const selColor = isTarget ? '#c2410c' : '#1d4ed8';
+  const hoverColor = isTarget ? '#f97316' : '#3b82f6';
+  const stroke = isSelected ? selColor : hovered ? hoverColor : baseColor;
+  const px = active ? 20 : 16;
+  const sw = active ? 2.4 : 2;
+
   return (
-    <group>
-      <mesh position={position} renderOrder={RENDER_ORDER + 1}>
-        <sphereGeometry args={[size, 12, 12]} />
-        <meshStandardMaterial
-          color={color}
-          emissive={new THREE.Color(color)}
-          emissiveIntensity={isSelected ? 1.0 : hovered ? 0.7 : 0.4}
-          transparent opacity={1} depthTest={false} roughness={0.2} metalness={0.5}
-        />
-      </mesh>
-      <Html position={position} center zIndexRange={[1001, 1002]} style={{ pointerEvents: 'none' }}>
-        <div
-          onClick={e => { e.stopPropagation(); onClick(position); }}
-          onMouseEnter={() => { setHovered(true); document.body.style.cursor = 'pointer'; }}
-          onMouseLeave={() => { setHovered(false); document.body.style.cursor = 'default'; }}
-          style={{ pointerEvents: 'auto', cursor: 'pointer', width: 18, height: 18, borderRadius: '50%' }}
-        />
-      </Html>
-    </group>
+    <Html position={position} center zIndexRange={[999, 1000]} style={{ pointerEvents: 'none' }}>
+      <div
+        ref={innerRef}
+        onClick={e => { e.stopPropagation(); onClick(position); }}
+        onMouseEnter={() => { setHovered(true); document.body.style.cursor = 'pointer'; }}
+        onMouseLeave={() => { setHovered(false); document.body.style.cursor = 'default'; }}
+        style={{
+          pointerEvents: 'auto',
+          cursor: 'pointer',
+          width: 26,
+          height: 26,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          willChange: 'transform',
+        }}
+      >
+        <svg
+          width={px}
+          height={px}
+          viewBox="0 0 24 24"
+          fill="none"
+          style={{
+            display: 'block',
+            transition: 'width 0.12s ease, height 0.12s ease',
+            filter: 'drop-shadow(0 0 1.5px rgba(255,255,255,0.9))',
+          }}
+        >
+          {isSelected && (
+            <circle cx="12" cy="12" r="10" fill={isTarget ? 'rgba(234,88,12,0.12)' : 'rgba(37,99,235,0.12)'} stroke={stroke} strokeWidth="1.1" />
+          )}
+          <line x1="7" y1="7" x2="17" y2="17" stroke={stroke} strokeWidth={sw} strokeLinecap="round" />
+          <line x1="17" y1="7" x2="7" y2="17" stroke={stroke} strokeWidth={sw} strokeLinecap="round" />
+        </svg>
+      </div>
+    </Html>
   );
 }
 
@@ -171,16 +203,34 @@ interface PanelMoveGizmoProps {
   panelShape: Shape;
 }
 
-function getUniqueVertices(geo: THREE.BufferGeometry, mat: THREE.Matrix4, tolerance = 0.5): [number, number, number][] {
-  const pos = geo.getAttribute('position') as THREE.BufferAttribute;
+function panelWorldMatrix(panelShape: Shape): THREE.Matrix4 {
+  return new THREE.Matrix4().compose(
+    new THREE.Vector3(...panelShape.position),
+    new THREE.Quaternion().setFromEuler(new THREE.Euler(...panelShape.rotation, 'XYZ')),
+    new THREE.Vector3(...panelShape.scale)
+  );
+}
+
+// Tam köşeleri al — AABB yerine geometrinin GERÇEK benzersiz köşeleri.
+function computeCorners(panelShape: Shape): [number, number, number][] {
+  if (!panelShape.geometry) return [];
+  const pos = panelShape.geometry.getAttribute('position') as THREE.BufferAttribute;
   if (!pos) return [];
-  const verts: [number, number, number][] = [];
+
+  const seen = new Map<string, THREE.Vector3>();
   for (let i = 0; i < pos.count; i++) {
-    const v = new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(mat);
-    const dup = verts.some(e => Math.abs(e[0] - v.x) < tolerance && Math.abs(e[1] - v.y) < tolerance && Math.abs(e[2] - v.z) < tolerance);
-    if (!dup) verts.push([v.x, v.y, v.z]);
+    const v = new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i));
+    const key = `${Math.round(v.x * 100)},${Math.round(v.y * 100)},${Math.round(v.z * 100)}`;
+    if (!seen.has(key)) seen.set(key, v);
   }
-  return verts;
+
+  const mat = panelWorldMatrix(panelShape);
+  const result: [number, number, number][] = [];
+  for (const v of seen.values()) {
+    const w = v.clone().applyMatrix4(mat);
+    result.push([w.x, w.y, w.z]);
+  }
+  return result;
 }
 
 export function PanelMoveGizmo({ panelShape }: PanelMoveGizmoProps) {
@@ -192,21 +242,27 @@ export function PanelMoveGizmo({ panelShape }: PanelMoveGizmoProps) {
 
   const isRefMode = panelMoveValueMode === 'ref';
 
+  // Güncel geometriyi store'dan al — prop olarak gelen panelShape
+  // eski olabilir (extrude sonrası geometry referansı güncellenmeyebilir).
+  const freshPanel = useMemo(() => {
+    return shapes.find(s => s.id === panelShape.id) || panelShape;
+  }, [shapes, panelShape.id, panelShape]);
+
   const mat = useMemo(() => {
     return new THREE.Matrix4().compose(
-      new THREE.Vector3(...panelShape.position),
-      new THREE.Quaternion().setFromEuler(new THREE.Euler(...panelShape.rotation, 'XYZ')),
-      new THREE.Vector3(...panelShape.scale)
+      new THREE.Vector3(...freshPanel.position),
+      new THREE.Quaternion().setFromEuler(new THREE.Euler(...freshPanel.rotation, 'XYZ')),
+      new THREE.Vector3(...freshPanel.scale)
     );
-  }, [panelShape.position, panelShape.rotation, panelShape.scale]);
+  }, [freshPanel.position, freshPanel.rotation, freshPanel.scale]);
 
   const { centerOrigin, axisOrigins, arrowLength } = useMemo(() => {
-    const fallback = panelShape.position;
-    if (!panelShape.geometry) {
+    const fallback = freshPanel.position;
+    if (!freshPanel.geometry) {
       const o = fallback;
       return { centerOrigin: o, axisOrigins: { 'x+': o, 'x-': o, 'y+': o, 'y-': o, 'z+': o, 'z-': o }, arrowLength: 40 };
     }
-    const pos = panelShape.geometry.getAttribute('position') as THREE.BufferAttribute;
+    const pos = freshPanel.geometry.getAttribute('position') as THREE.BufferAttribute;
     if (!pos) {
       const o = fallback;
       return { centerOrigin: o, axisOrigins: { 'x+': o, 'x-': o, 'y+': o, 'y-': o, 'z+': o, 'z-': o }, arrowLength: 40 };
@@ -249,12 +305,12 @@ export function PanelMoveGizmo({ panelShape }: PanelMoveGizmoProps) {
       } as Record<string, [number, number, number]>,
       arrowLength: len,
     };
-  }, [panelShape.position, panelShape.rotation, panelShape.scale, panelShape.geometry, mat]);
+  }, [freshPanel.position, freshPanel.rotation, freshPanel.scale, freshPanel.geometry, mat]);
 
   const sourceVertices = useMemo(() => {
-    if (!isRefMode || !panelShape.geometry) return [];
-    return getUniqueVertices(panelShape.geometry, mat);
-  }, [isRefMode, panelShape.geometry, mat]);
+    if (!isRefMode || !freshPanel.geometry) return [];
+    return computeCorners(freshPanel);
+  }, [isRefMode, freshPanel]);
 
   const targetPanel = useMemo(() => {
     if (!isRefMode || !panelMoveRefTargetPanelId) return null;
@@ -263,13 +319,61 @@ export function PanelMoveGizmo({ panelShape }: PanelMoveGizmoProps) {
 
   const targetVertices = useMemo(() => {
     if (!targetPanel?.geometry) return [];
-    const tMat = new THREE.Matrix4().compose(
-      new THREE.Vector3(...targetPanel.position),
-      new THREE.Quaternion().setFromEuler(new THREE.Euler(...targetPanel.rotation, 'XYZ')),
-      new THREE.Vector3(...targetPanel.scale)
-    );
-    return getUniqueVertices(targetPanel.geometry, tMat);
+    return computeCorners(targetPanel);
   }, [targetPanel]);
+
+  // ── Ekran-uzayı çakışma çözümü (fan-out) ─────────────────────────────
+  // Üst üste binen çarpı işaretleri her karede birkaç piksel ayrılır.
+  const markRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const tmpVec = useRef(new THREE.Vector3());
+  const allMarks = useMemo(() => {
+    const src = sourceVertices.map(v => ({ pos: v, isTarget: false }));
+    const tgt = targetVertices.map(v => ({ pos: v, isTarget: true }));
+    return [...src, ...tgt];
+  }, [sourceVertices, targetVertices]);
+
+  useFrame(({ camera, size }) => {
+    const n = allMarks.length;
+    if (!n) return;
+
+    const sx = new Array<number>(n);
+    const sy = new Array<number>(n);
+    for (let i = 0; i < n; i++) {
+      const v = tmpVec.current.set(allMarks[i].pos[0], allMarks[i].pos[1], allMarks[i].pos[2]).project(camera);
+      sx[i] = (v.x * 0.5 + 0.5) * size.width;
+      sy[i] = (1 - (v.y * 0.5 + 0.5)) * size.height;
+    }
+
+    const dx = new Array<number>(n).fill(0);
+    const dy = new Array<number>(n).fill(0);
+    const MIN = 24;
+
+    for (let pass = 0; pass < 4; pass++) {
+      for (let i = 0; i < n; i++) {
+        for (let j = i + 1; j < n; j++) {
+          let vx = (sx[j] + dx[j]) - (sx[i] + dx[i]);
+          let vy = (sy[j] + dy[j]) - (sy[i] + dy[i]);
+          let d = Math.hypot(vx, vy);
+          if (d < MIN) {
+            if (d < 1e-3) {
+              const a = i * 2.399963;
+              vx = Math.cos(a); vy = Math.sin(a); d = 1;
+            }
+            const push = (MIN - d) / 2;
+            const ux = vx / d, uy = vy / d;
+            dx[i] -= ux * push; dy[i] -= uy * push;
+            dx[j] += ux * push; dy[j] += uy * push;
+          }
+        }
+      }
+    }
+
+    const els = markRefs.current;
+    for (let i = 0; i < n; i++) {
+      const el = els[i];
+      if (el) el.style.transform = `translate(${dx[i].toFixed(2)}px, ${dy[i].toFixed(2)}px)`;
+    }
+  });
 
   const handleSelect = (axis: 'x+' | 'x-' | 'y+' | 'y-' | 'z+' | 'z-') => {
     setPanelMoveAxis(axis === panelMoveAxis ? null : axis);
@@ -298,6 +402,9 @@ export function PanelMoveGizmo({ panelShape }: PanelMoveGizmoProps) {
   const isSourceSelected = !!panelMoveRefSourceVertex;
   const needsTargetPanel = isSourceSelected && !panelMoveRefTargetPanelId;
 
+  const vertEq = (a: [number, number, number] | null, b: [number, number, number], tol = 0.5) =>
+    !!a && Math.abs(a[0] - b[0]) < tol && Math.abs(a[1] - b[1]) < tol && Math.abs(a[2] - b[2]) < tol;
+
   return (
     <group>
       {!isRefMode && (
@@ -319,22 +426,23 @@ export function PanelMoveGizmo({ panelShape }: PanelMoveGizmoProps) {
         </>
       )}
       {isRefMode && !needsTargetPanel && sourceVertices.map((v, i) => (
-        <VertexDot
+        <CrossMark
           key={`src-${i}`}
           position={v}
-          size={dotSize}
-          isSelected={!!panelMoveRefSourceVertex && Math.abs(v[0] - panelMoveRefSourceVertex[0]) < 0.5 && Math.abs(v[1] - panelMoveRefSourceVertex[1]) < 0.5 && Math.abs(v[2] - panelMoveRefSourceVertex[2]) < 0.5}
+          isSelected={vertEq(panelMoveRefSourceVertex, v)}
+          isTarget={false}
           onClick={handleSourceVertexClick}
+          innerRef={el => { markRefs.current[i] = el; }}
         />
       ))}
       {isRefMode && panelMoveRefTargetPanelId && targetVertices.map((v, i) => (
-        <VertexDot
+        <CrossMark
           key={`tgt-${i}`}
           position={v}
-          size={dotSize}
+          isSelected={vertEq(panelMoveRefTargetVertex, v)}
           isTarget
-          isSelected={!!panelMoveRefTargetVertex && Math.abs(v[0] - panelMoveRefTargetVertex[0]) < 0.5 && Math.abs(v[1] - panelMoveRefTargetVertex[1]) < 0.5 && Math.abs(v[2] - panelMoveRefTargetVertex[2]) < 0.5}
           onClick={handleTargetVertexClick}
+          innerRef={el => { markRefs.current[sourceVertices.length + i] = el; }}
         />
       ))}
     </group>
