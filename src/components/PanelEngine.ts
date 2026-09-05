@@ -149,13 +149,28 @@ function resolveScaledMoveValue(step: any, vf: VirtualFace): number {
 export function composeSteps(
   steps: TransformStep[],
   vf: VirtualFace
-): { quat: THREE.Quaternion; ops: Array<{ kind: 'translate'; d: THREE.Vector3 } | { kind: 'rotate'; deg: number; pivot: THREE.Vector3; axis: THREE.Vector3 }> } {
+): { quat: THREE.Quaternion; ops: Array<{ kind: 'translate'; d: THREE.Vector3 } | { kind: 'refTranslate'; targetPanelId: string; sourceFrac?: [number, number, number]; targetFrac?: [number, number, number]; fallback: THREE.Vector3 } | { kind: 'rotate'; deg: number; pivot: THREE.Vector3; axis: THREE.Vector3 }> } {
   const ops: any[] = [];
   const frame = new THREE.Quaternion();
   for (const s of steps) {
     if (s.type === 'move') {
       const ms = s as any;
-      if (ms._refAxisVec && ms._refDist) {
+      // REFERANS BAĞI: hedef panele/gövdeye kilitli taşıma. Donmuş delta
+      // yerine, köşeler GÜNCEL geometriden çözülsün diye adımı buildPanel'e
+      // 'refTranslate' olarak ilet (orada rp + store geometrisi mevcut).
+      // Referans büyüyüp küçüldükçe hedef köşe kayar → panel takip eder.
+      if (ms.refTargetPanelId && (ms.refSourceFrac || ms.refTargetFrac || (ms._refAxisVec && ms._refDist))) {
+        const fallback = (ms._refAxisVec && ms._refDist)
+          ? new THREE.Vector3(ms._refAxisVec[0], ms._refAxisVec[1], ms._refAxisVec[2]).multiplyScalar(ms._refDist)
+          : new THREE.Vector3(0, 0, 0);
+        ops.push({
+          kind: 'refTranslate',
+          targetPanelId: ms.refTargetPanelId,
+          sourceFrac: ms.refSourceFrac,
+          targetFrac: ms.refTargetFrac,
+          fallback,
+        });
+      } else if (ms._refAxisVec && ms._refDist) {
         const d = new THREE.Vector3(ms._refAxisVec[0], ms._refAxisVec[1], ms._refAxisVec[2]).multiplyScalar(ms._refDist);
         ops.push({ kind: 'translate', d });
       } else {
@@ -176,6 +191,59 @@ export function composeSteps(
     }
   }
   return { quat: frame, ops };
+}
+
+// ── Referans bağı: köşe frac çözümü (geometrik) ───────────────────────────
+// Bir şeklin GÜNCEL geometrisinin DÜNYA sınır kutusu.
+function worldBboxOfShape(shape: Shape): THREE.Box3 | null {
+  if (!shape?.geometry) return null;
+  const pos = shape.geometry.getAttribute('position') as THREE.BufferAttribute;
+  if (!pos) return null;
+  const box = new THREE.Box3().setFromBufferAttribute(pos);
+  const mat = new THREE.Matrix4().compose(
+    new THREE.Vector3(...(shape.position as any)),
+    new THREE.Quaternion().setFromEuler(new THREE.Euler(...(shape.rotation as [number, number, number]), 'XYZ')),
+    new THREE.Vector3(...((shape.scale as any) || [1, 1, 1]))
+  );
+  box.applyMatrix4(mat);
+  return box;
+}
+
+function pointFromFracBox(box: THREE.Box3, f: [number, number, number]): THREE.Vector3 {
+  return new THREE.Vector3(
+    box.min.x + f[0] * (box.max.x - box.min.x),
+    box.min.y + f[1] * (box.max.y - box.min.y),
+    box.min.z + f[2] * (box.max.z - box.min.z),
+  );
+}
+
+/**
+ * Referans bağı taşıma deltasını GÜNCEL geometriden çözer.
+ *   • kaynak köşe: taşınan panelin (rp) o anki dünya kutusundan sourceFrac ile
+ *   • hedef köşe : referans şeklin (store) güncel dünya kutusundan targetFrac ile
+ *   • delta = hedef − kaynak (saf öteleme; rp uzayı ile dünya yalnız parentPos
+ *     kadar ötelenmiş olduğundan dünya-delta doğrudan rp'ye uygulanabilir).
+ * Frac/hedef geometri eksikse donmuş fallback döner (eski adımlarla uyum).
+ */
+function resolveRefTranslateDelta(
+  op: any,
+  rpWorldBox: THREE.Box3,
+): THREE.Vector3 {
+  if (!op.sourceFrac || !op.targetFrac) return op.fallback.clone();
+  const target = useAppStore.getState().shapes.find(s => s.id === op.targetPanelId);
+  const tgtBox = target ? worldBboxOfShape(target) : null;
+  if (!tgtBox) {
+    console.warn('[YAGO][REF-BAĞ] hedef geometri yok, donmuş delta kullanılıyor:', op.targetPanelId);
+    return op.fallback.clone();
+  }
+  const sourceWorld = pointFromFracBox(rpWorldBox, op.sourceFrac);
+  const targetWorld = pointFromFracBox(tgtBox, op.targetFrac);
+  const d = targetWorld.clone().sub(sourceWorld);
+  console.log('[YAGO][REF-BAĞ] çözülen delta=',
+    [d.x.toFixed(1), d.y.toFixed(1), d.z.toFixed(1)].join(','),
+    'hedef=', op.targetPanelId,
+    'hedefKöşe=', [targetWorld.x.toFixed(1), targetWorld.y.toFixed(1), targetWorld.z.toFixed(1)].join(','));
+  return d;
 }
 
 function axisLetterToVec(a: string): THREE.Vector3 {
@@ -257,6 +325,16 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
         if (step.refShapeId) ids.add(step.refShapeId);
       }
     }
+    // REFERANS BAĞI TAŞIMA: hedef panel, taşınan panelden ÖNCE üretilmeli ki
+    // güncel geometrisinden hedef köşe doğru çözülsün (bayat geometri → köşe
+    // eski konumda kalıp bağ kayardı). Hedef parent gövde ise çocuk değildir,
+    // zaten günceldir; eşleşmez, zararsız.
+    const ts = (s.parameters as any)?.transformSteps;
+    if (Array.isArray(ts)) {
+      for (const step of ts) {
+        if (step?.type === 'move' && step.refTargetPanelId) ids.add(step.refTargetPanelId);
+      }
+    }
     return ids;
   };
   const orderOf = (s: Shape): number => {
@@ -316,8 +394,25 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
       // Adımlar (move/rotate) sırayla uygulanır — çember döndürünce panel döner.
       const { ops } = composeSteps(steps, att.vf);
       for (const op of ops) {
-        if (op.kind === 'translate') rp = rp.translate(op.d.x, op.d.y, op.d.z);
-        else rp = rp.rotate(op.deg, [op.pivot.x, op.pivot.y, op.pivot.z], [op.axis.x, op.axis.y, op.axis.z]);
+        if (op.kind === 'translate') {
+          rp = rp.translate(op.d.x, op.d.y, op.d.z);
+        } else if (op.kind === 'refTranslate') {
+          // rp'nin o anki DÜNYA kutusu: mesh (yıkıcı değil) → uzay-S kutusu +
+          // parentPos. Referans şeklin güncel köşesine kilitli delta çözülür.
+          let rpWorldBox: THREE.Box3;
+          try {
+            const g = convertReplicadToThreeGeometry(rp);
+            const b = new THREE.Box3().setFromBufferAttribute(g.getAttribute('position') as THREE.BufferAttribute);
+            b.translate(new THREE.Vector3(parentPos[0], parentPos[1], parentPos[2]));
+            rpWorldBox = b;
+          } catch {
+            rpWorldBox = new THREE.Box3(new THREE.Vector3(), new THREE.Vector3());
+          }
+          const d = resolveRefTranslateDelta(op, rpWorldBox);
+          rp = rp.translate(d.x, d.y, d.z);
+        } else {
+          rp = rp.rotate(op.deg, [op.pivot.x, op.pivot.y, op.pivot.z], [op.axis.x, op.axis.y, op.axis.z]);
+        }
       }
 
       // YÜZ EXTRUDE: panel artık DOĞRU ÇERÇEVEDE (VF'den üretildi + transform

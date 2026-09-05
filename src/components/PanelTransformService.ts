@@ -28,6 +28,15 @@ export interface MoveTransformStep {
   refSourceVertex?: [number, number, number];
   refTargetPanelId?: string;
   refTargetVertex?: [number, number, number];
+  // PARAMETRİK REFERANS BAĞI (geometrik). Seçilen köşeler, ait oldukları şeklin
+  // DÜNYA sınır kutusundaki oransal konum (frac ∈ [0,1]^3) olarak saklanır.
+  // Her rebuild'de kaynak köşe (taşınan panel) ve hedef köşe (referans panel/
+  // gövde) GÜNCEL geometriden yeniden çözülür → referans büyüyüp küçüldükçe
+  // hedef köşe kayar, taşınan panel köşesi hedefe kilitli kalır. Donmuş
+  // _refAxisVec/_refDist yalnız bu alanlar yoksa (eski adımlar) yedek olarak
+  // kullanılır.
+  refSourceFrac?: [number, number, number];
+  refTargetFrac?: [number, number, number];
 }
 
 export interface RotateTransformStep {
