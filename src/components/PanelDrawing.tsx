@@ -8,7 +8,7 @@ import { extractFacesFromGeometry, groupCoplanarFaces, createFaceHighlightGeomet
 // snapToFlatGroup TEK KAYNAK: hover/seçim eşlemesi PanelDrawing ve
 // ShapeWithTransform'da birebir aynı davransın diye GeometryUtils'ten gelir.
 import { snapToFlatGroup } from './GeometryUtils';
-import { cycleRefFacePickFromEvent, cycleMoveRefPanelFromEvent } from './FaceRefPick';
+import { cycleRefFacePickFromEvent } from './FaceRefPick';
 
 // ─── RENK YÖNETİMİ ───────────────────────────────────────────────────────
 // Seçim profesyonel CAD konvansiyonuyla: DOLGU asla değişmez, vurgu kenardan
@@ -118,8 +118,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     panelMoveTargetPanelId,
     panelMoveRefSourceVertex,
     panelMoveRefTargetPanelId,
-    setPanelMoveRefTargetPanelId,
-    setPanelMoveRefTargetVertex
+    panelMoveRefTargetVertex
   } = useAppStore(useShallow(state => ({
     selectShape: state.selectShape,
     selectSecondaryShape: state.selectSecondaryShape,
@@ -147,13 +146,15 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     panelMoveTargetPanelId: state.panelMoveTargetPanelId,
     panelMoveRefSourceVertex: state.panelMoveRefSourceVertex,
     panelMoveRefTargetPanelId: state.panelMoveRefTargetPanelId,
-    setPanelMoveRefTargetPanelId: state.setPanelMoveRefTargetPanelId,
-    setPanelMoveRefTargetVertex: state.setPanelMoveRefTargetVertex
+    panelMoveRefTargetVertex: state.panelMoveRefTargetVertex
   })));
 
   const [faceGroups, setFaceGroups] = useState<any[]>([]);
   const [faces, setFaces] = useState<any[]>([]);
   const [hoveredExtrudeGroup, setHoveredExtrudeGroup] = useState<number | null>(null);
+  // Ref-move: bu panel aday olarak fare altındayken (hedef seçim aşaması) tüm
+  // panel vurgulanır — kullanıcı hangi paneli seçeceğini net görsün.
+  const [moveRefHover, setMoveRefHover] = useState(false);
 
   useEffect(() => {
     if (!shape.geometry) return;
@@ -246,7 +247,18 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   const isRefMode = faceExtrudeMode && faceExtrudeValueMode === 'ref' && faceExtrudeSelectedFace !== null;
   const isRefPickablePanel = isRefMode && shape.id !== faceExtrudeTargetPanelId;
   const isRefCandidatePanel = isRefMode && faceExtrudeRefCandidate?.panelId === shape.id;
-  const isMoveRefPickMode = panelMoveMode && panelMoveValueMode === 'ref' && !!panelMoveRefSourceVertex && !panelMoveRefTargetPanelId && shape.id !== panelMoveTargetPanelId;
+  const isMoveRefTargetPanel = panelMoveMode && panelMoveValueMode === 'ref' && !!panelMoveRefSourceVertex && panelMoveRefTargetPanelId === shape.id;
+  // Aday (hover) vurgusu: hedef panel seçim aşaması boyunca (hedef NOKTA
+  // seçilene kadar) sürer — seçili referans dışındaki paneller turuncu parlar,
+  // böylece derinlik döngüsüyle gezerken sıradaki aday görünür.
+  const isMoveRefPickMode = panelMoveMode && panelMoveValueMode === 'ref' && !!panelMoveRefSourceVertex && !panelMoveRefTargetVertex && shape.id !== panelMoveTargetPanelId && panelMoveRefTargetPanelId !== shape.id;
+  // Ref-move vurgu: hedef seçim aşamasında fare altındaki aday panel (turuncu),
+  // seçilen referans panel (yeşil) → her ikisi de KOMPLE, belirgin vurgulanır.
+  const isMoveRefHovered = isMoveRefPickMode && moveRefHover;
+  const moveRefHighlight = isMoveRefTargetPanel || isMoveRefHovered;
+  const moveRefEmissiveColor = isMoveRefTargetPanel ? '#22c55e' : '#f59e0b';
+  const moveRefEmissiveInt = isMoveRefTargetPanel ? 1.0 : 0.85;
+  const moveRefEdgeColor = isMoveRefTargetPanel ? '#15803d' : '#b45309';
   const disableRaycast = (isFaceExtrudeTarget || (isFaceExtrudeXray && !isRefPickablePanel) || isRaycastOnParent) && !isMoveRefPickMode;
 
   useEffect(() => {
@@ -258,6 +270,10 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
       mesh.raycast = THREE.Mesh.prototype.raycast;
     }
   }, [disableRaycast]);
+
+  useEffect(() => {
+    if (!isMoveRefPickMode && moveRefHover) setMoveRefHover(false);
+  }, [isMoveRefPickMode, moveRefHover]);
 
   const extrudeHighlightGeometry = useMemo(() => {
     if (!isFaceExtrudeTarget || hoveredExtrudeGroup === null || !faceGroups[hoveredExtrudeGroup] || faces.length === 0) return null;
@@ -280,31 +296,11 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   const materialColor = baseColor;
   // Seçili panelin kenarı normal kalır (siyah kalın çerçeve yok); seçim
   // kırmızı tarama ile gösterilir. Parent seçimde turuncu aksan korunur.
-  const edgeColor = isSelected ? PANEL_COLORS.selected.shapeEdge : PANEL_COLORS.edge.default;
-  const edgeWidth = isSelected ? EDGE_LINE_WIDTH + 1.5 : EDGE_LINE_WIDTH;
+  const edgeColor = moveRefHighlight ? moveRefEdgeColor : isSelected ? PANEL_COLORS.selected.shapeEdge : PANEL_COLORS.edge.default;
+  const edgeWidth = moveRefHighlight ? EDGE_LINE_WIDTH + 2.5 : isSelected ? EDGE_LINE_WIDTH + 1.5 : EDGE_LINE_WIDTH;
 
   // Tarama yalnız panel satırı seçiliyken ve dolgu görünen modlarda.
   const showHatch = isPanelRowSelected && !isWireframe;
-
-  const handleMoveRefRightClick = async (e: any) => {
-    if (e.button !== 2) return;
-    e.stopPropagation();
-    const st = useAppStore.getState();
-    if (!st.panelMoveMode || st.panelMoveValueMode !== 'ref') return;
-    if (!st.panelMoveRefSourceVertex || !st.panelMoveRefTargetPanelId || !st.panelMoveRefTargetVertex) return;
-    const ps = st.shapes.find(s => s.id === st.panelMoveTargetPanelId);
-    if (!ps) return;
-    const { executePanelMoveRef } = await import('./PanelMoveService');
-    await executePanelMoveRef({
-      panelShape: ps,
-      sourceVertex: st.panelMoveRefSourceVertex,
-      targetPanelId: st.panelMoveRefTargetPanelId,
-      targetVertex: st.panelMoveRefTargetVertex,
-      shapes: st.shapes,
-      updateShape: st.updateShape,
-    });
-    st.setPanelMoveMode(false);
-  };
 
   const handleRefRightClick = async (e: any) => {
     if (e.button !== 2) return;
@@ -339,23 +335,16 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     st.setFaceExtrudeRefCandidate(null);
   };
 
-  const isMoveRefTargetPanel = panelMoveMode && panelMoveValueMode === 'ref' && !!panelMoveRefSourceVertex && panelMoveRefTargetPanelId === shape.id;
-
   const handleClick = (e: any) => {
     e.stopPropagation();
-    if (isMoveRefPickMode) {
-      const allShapes = useAppStore.getState().shapes;
-      cycleMoveRefPanelFromEvent(e, allShapes, panelMoveTargetPanelId, (id) => {
-        setPanelMoveRefTargetPanelId(id);
-        setPanelMoveRefTargetVertex(null);
-      });
-      return;
-    }
+    // TAŞIMA MODU: normal panel seçimi YOK. Ref akışında referans panel derinlik
+    // döngüsü canvas seviyesinde (MoveRefPanelPicker) yürütülür; tıklama burada
+    // normal seçime DÜŞMEMELİ — aksi halde referans panel de seçili kalıyor ve
+    // ref modundan çıkınca vurgu üstünde takılı kalıyordu.
+    if (panelMoveMode) return;
     if (isFaceExtrudeTarget) return;
     // FaceExtrude modunda hedef olmayan panellerde normal seçim yapma.
     if (faceExtrudeMode && !isFaceExtrudeTarget) return;
-    // PanelMove modunda hedef panel dışında normal seçim yapma.
-    if (panelMoveMode && !isMoveRefTargetPanel) return;
     // Ref modu — tüm normal seçim mantığını atla. Işın boyunca DERİNLİK DÖNGÜSÜ:
     // aynı noktaya her tıklamada bir arkadaki yüze geçer (küp dış yüzü → panel
     // yüzü → arkası...). Tüm şekiller taranır; hedef panel hariç.
@@ -406,16 +395,18 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           castShadow
           receiveShadow
           onClick={handleClick}
-          onPointerDown={(e: any) => { if (isRefPickablePanel) handleRefRightClick(e); else if (isMoveRefPickMode || isMoveRefTargetPanel) handleMoveRefRightClick(e); }}
+          onPointerOver={(e: any) => { if (isMoveRefPickMode) { e.stopPropagation(); setMoveRefHover(true); } }}
+          onPointerOut={() => { if (moveRefHover) setMoveRefHover(false); }}
+          onPointerDown={(e: any) => { if (isRefPickablePanel) handleRefRightClick(e); }}
           onContextMenu={(e: any) => { if (isRefPickablePanel || isMoveRefPickMode || isMoveRefTargetPanel) e.stopPropagation(); }}
         >
           <meshLambertMaterial
             color={materialColor}
-            emissive={isPanelRowSelected ? PANEL_COLORS.selected.panelEmissive : isMoveRefTargetPanel ? '#16a34a' : '#2a2a2a'}
-            emissiveIntensity={isPanelRowSelected ? 1 : isMoveRefTargetPanel ? 0.6 : 1}
+            emissive={isPanelRowSelected ? PANEL_COLORS.selected.panelEmissive : moveRefHighlight ? moveRefEmissiveColor : '#2a2a2a'}
+            emissiveIntensity={isPanelRowSelected ? 1 : moveRefHighlight ? moveRefEmissiveInt : 1}
             side={THREE.DoubleSide}
-            transparent={isFaceExtrudeXray || isMoveRefTargetPanel}
-            opacity={isFaceExtrudeXray ? 0.12 : isMoveRefTargetPanel ? 0.4 : 1}
+            transparent={isFaceExtrudeXray || moveRefHighlight}
+            opacity={isFaceExtrudeXray ? 0.12 : isMoveRefTargetPanel ? 0.55 : isMoveRefHovered ? 0.9 : 1}
             depthWrite={!isFaceExtrudeXray && !isMoveRefTargetPanel}
             polygonOffset
             polygonOffsetFactor={MESH_OFFSET_FACTOR}
@@ -472,16 +463,18 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
             castShadow
             receiveShadow
             onClick={handleClick}
-            onPointerDown={(e: any) => { if (isRefPickablePanel) handleRefRightClick(e); else if (isMoveRefPickMode || isMoveRefTargetPanel) handleMoveRefRightClick(e); }}
+            onPointerOver={(e: any) => { if (isMoveRefPickMode) { e.stopPropagation(); setMoveRefHover(true); } }}
+            onPointerOut={() => { if (moveRefHover) setMoveRefHover(false); }}
+            onPointerDown={(e: any) => { if (isRefPickablePanel) handleRefRightClick(e); }}
             onContextMenu={(e: any) => { if (isRefPickablePanel || isMoveRefPickMode || isMoveRefTargetPanel) e.stopPropagation(); }}
           >
             <meshLambertMaterial
               color={materialColor}
-              emissive={isPanelRowSelected ? PANEL_COLORS.selected.panelEmissive : isMoveRefTargetPanel ? '#16a34a' : '#2a2a2a'}
-              emissiveIntensity={isPanelRowSelected ? 1 : isMoveRefTargetPanel ? 0.6 : 1}
+              emissive={isPanelRowSelected ? PANEL_COLORS.selected.panelEmissive : moveRefHighlight ? moveRefEmissiveColor : '#2a2a2a'}
+              emissiveIntensity={isPanelRowSelected ? 1 : moveRefHighlight ? moveRefEmissiveInt : 1}
               side={THREE.DoubleSide}
               transparent={true}
-              opacity={isMoveRefTargetPanel ? 0.4 : 0.35}
+              opacity={moveRefHighlight ? (isMoveRefTargetPanel ? 0.5 : 0.6) : 0.35}
               depthWrite={false}
               polygonOffset
               polygonOffsetFactor={MESH_OFFSET_FACTOR}

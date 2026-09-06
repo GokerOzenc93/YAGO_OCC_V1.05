@@ -8,7 +8,7 @@ import { SubtractionMesh } from './SubtractionMesh';
 import { FilletEdgeLines } from './Fillet';
 import { FaceEditor, extractFacesFromGeometry, groupCoplanarFaces, createFaceHighlightGeometry } from './FaceEditor';
 import { snapToFlatGroup } from './GeometryUtils';
-import { cycleRefFacePickFromEvent, cycleMoveRefPanelFromEvent } from './FaceRefPick';
+import { cycleRefFacePickFromEvent } from './FaceRefPick';
 import { FaceRaycastOverlay, VirtualFaceOverlay } from './FaceRaycastOverlay';
 
 // Kenar çizgileri panellerdekiyle aynı stil: ince, antialias'lı (Line2),
@@ -66,9 +66,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     panelMoveValueMode,
     panelMoveTargetPanelId,
     panelMoveRefSourceVertex,
-    panelMoveRefTargetPanelId,
-    setPanelMoveRefTargetPanelId,
-    setPanelMoveRefTargetVertex
+    panelMoveRefTargetPanelId
   } = useAppStore(useShallow(state => ({
     selectShape: state.selectShape,
     selectSecondaryShape: state.selectSecondaryShape,
@@ -108,9 +106,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     panelMoveValueMode: state.panelMoveValueMode,
     panelMoveTargetPanelId: state.panelMoveTargetPanelId,
     panelMoveRefSourceVertex: state.panelMoveRefSourceVertex,
-    panelMoveRefTargetPanelId: state.panelMoveRefTargetPanelId,
-    setPanelMoveRefTargetPanelId: state.setPanelMoveRefTargetPanelId,
-    setPanelMoveRefTargetVertex: state.setPanelMoveRefTargetVertex
+    panelMoveRefTargetPanelId: state.panelMoveRefTargetPanelId
   })));
 
   const { scene } = useThree();
@@ -139,6 +135,8 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
   const [refFaceGroups, setRefFaceGroups] = useState<any[]>([]);
   const [refFaces, setRefFaces] = useState<any[]>([]);
   const [hoveredRefGroup, setHoveredRefGroup] = useState<number | null>(null);
+  // Ref-move: gövde (parent) hedef seçim aşamasında fare altındayken vurgulanır.
+  const [moveRefHover, setMoveRefHover] = useState(false);
   useEffect(() => {
     if (!shape.geometry) { setRefFaces([]); setRefFaceGroups([]); return; }
     const f = extractFacesFromGeometry(shape.geometry);
@@ -514,6 +512,14 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
   // döngüsü ışın boyunca tüm şekilleri (paneller + gövde) gezer.
   const isMoveRefPickBody = isMoveRefPickActive && !isPanel;
   const isMoveRefTargetPanel = panelMoveMode && panelMoveValueMode === 'ref' && !!panelMoveRefSourceVertex && panelMoveRefTargetPanelId === shape.id;
+  // Gövde ref-move vurgusu: seçili referans gövde (yeşil) veya hedef seçim
+  // aşamasında fare altındaki aday gövde (turuncu) → komple, belirgin vurgu.
+  const isMoveRefHoverBody = isMoveRefPickBody && moveRefHover;
+  const moveRefBodyHighlight = isMoveRefTargetPanel || isMoveRefHoverBody;
+  const moveRefBodyEmissive = isMoveRefTargetPanel ? '#22c55e' : '#f59e0b';
+  useEffect(() => {
+    if (!isMoveRefPickBody && moveRefHover) setMoveRefHover(false);
+  }, [isMoveRefPickBody, moveRefHover]);
   const isRefCandidateShape = isRefMode && faceExtrudeRefCandidate?.panelId === shape.id;
 
   // Gövdenin bir yüz grubunu referans adayı olarak işaretle (dünya normali +
@@ -528,28 +534,6 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     cycleRefFacePickFromEvent(e, allShapes, faceExtrudeTargetPanelId, setFaceExtrudeRefCandidate);
     return true;
   }, [isRefMode, shape.id, faceExtrudeTargetPanelId, setFaceExtrudeRefCandidate]);
-
-  // Move ref sağ tıkla onay — kaynak vertex + hedef panel + hedef vertex seçilmişse
-  // hareketi uygular.
-  const handleMoveRefConfirm = useCallback(async (e: any) => {
-    if (e.button !== 2) return;
-    e.stopPropagation();
-    const st = useAppStore.getState();
-    if (!st.panelMoveMode || st.panelMoveValueMode !== 'ref') return;
-    if (!st.panelMoveRefSourceVertex || !st.panelMoveRefTargetPanelId || !st.panelMoveRefTargetVertex) return;
-    const ps = st.shapes.find(s => s.id === st.panelMoveTargetPanelId);
-    if (!ps) return;
-    const { executePanelMoveRef } = await import('./PanelMoveService');
-    await executePanelMoveRef({
-      panelShape: ps,
-      sourceVertex: st.panelMoveRefSourceVertex,
-      targetPanelId: st.panelMoveRefTargetPanelId,
-      targetVertex: st.panelMoveRefTargetVertex,
-      shapes: st.shapes,
-      updateShape: st.updateShape,
-    });
-    st.setPanelMoveMode(false);
-  }, []);
 
   // Sağ tıkla onay — PanelEditor'daki Uygula (✓) ile aynı sonucu verir.
   const handleRefConfirm = useCallback(async (e: any) => {
@@ -640,13 +624,11 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
             handleRefClick(e);
             return;
           }
-          if (isMoveRefPickMode || isMoveRefPickBody) {
+          if (panelMoveMode && panelMoveValueMode === 'ref' && !!panelMoveRefSourceVertex) {
+            // Ref akışı: gövde/panel normal seçimi YOK. Referans panel derinlik
+            // döngüsü canvas seviyesinde (MoveRefPanelPicker) yürütülür → referans
+            // panel/gövde seçili kalmaz.
             e.stopPropagation();
-            const allShapes = useAppStore.getState().shapes;
-            cycleMoveRefPanelFromEvent(e, allShapes, panelMoveTargetPanelId, (id) => {
-              setPanelMoveRefTargetPanelId(id);
-              setPanelMoveRefTargetVertex(null);
-            });
             return;
           }
           if (panelSelectMode && hasPanels) return;
@@ -686,11 +668,6 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
           selectShape(shape.id);
           setShowParametersPanel(true);
         }}
-        onPointerDown={(e: any) => {
-          if (e.button === 2 && (isMoveRefPickMode || isMoveRefPickBody || isMoveRefTargetPanel)) {
-            handleMoveRefConfirm(e);
-          }
-        }}
         onContextMenu={(e: any) => {
           if (isMoveRefPickMode || isMoveRefPickBody || isMoveRefTargetPanel) e.stopPropagation();
         }}
@@ -728,20 +705,20 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
               onPointerOver={isPanel && shape.parameters?.virtualFaceId ? (e: any) => {
                 e.stopPropagation();
                 useAppStore.getState().setHoveredPanelVfId(shape.parameters.virtualFaceId);
-              } : undefined}
+              } : (isMoveRefPickBody ? (e: any) => { e.stopPropagation(); setMoveRefHover(true); } : undefined)}
               onPointerOut={isPanel && shape.parameters?.virtualFaceId ? () => {
                 const st = useAppStore.getState();
                 if (st.hoveredPanelVfId === shape.parameters.virtualFaceId) st.setHoveredPanelVfId(null);
-              } : undefined}
+              } : (isMoveRefPickBody ? () => { if (moveRefHover) setMoveRefHover(false); } : undefined)}
             >
               <meshStandardMaterial
                 color={isPanel ? panelColor : '#c8c8c8'}
-                emissive={(isPanelRowSelected || isVirtualPanelRowSelected) ? panelColor : isMoveRefTargetPanel ? '#16a34a' : isPanelHovered ? '#eab308' : '#000000'}
-                emissiveIntensity={(isPanelRowSelected || isVirtualPanelRowSelected) ? 0.4 : isMoveRefTargetPanel ? 0.5 : isPanelHovered ? 0.22 : 0}
+                emissive={(isPanelRowSelected || isVirtualPanelRowSelected) ? panelColor : moveRefBodyHighlight ? moveRefBodyEmissive : isPanelHovered ? '#eab308' : '#000000'}
+                emissiveIntensity={(isPanelRowSelected || isVirtualPanelRowSelected) ? 0.4 : moveRefBodyHighlight ? 0.9 : isPanelHovered ? 0.22 : 0}
                 metalness={0}
                 roughness={isPanel ? 0.92 : 1.0}
                 transparent
-                opacity={hasPanels ? 0 : isPanel ? (isMoveRefTargetPanel ? 0.4 : 1) : 0.06}
+                opacity={hasPanels ? (moveRefBodyHighlight ? 0.35 : 0) : isPanel ? (isMoveRefTargetPanel ? 0.55 : 1) : (moveRefBodyHighlight ? 0.5 : 0.06)}
                 side={THREE.DoubleSide}
                 depthWrite={false}
                 flatShading={false}

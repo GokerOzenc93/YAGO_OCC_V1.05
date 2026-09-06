@@ -485,12 +485,16 @@ function MoveRefPanelPicker({ shapes }: { shapes: any[] }) {
   const { camera, gl } = useThree();
   const {
     panelMoveMode, panelMoveValueMode, panelMoveRefSourceVertex,
-    panelMoveRefTargetPanelId, panelMoveTargetPanelId,
+    panelMoveRefTargetVertex, panelMoveTargetPanelId,
     setPanelMoveRefTargetPanelId, setPanelMoveRefTargetVertex,
   } = useAppStore();
 
+  // Kaynak nokta seçildikten sonra, HEDEF NOKTA seçilene kadar aktif kalır —
+  // böylece üst üste panellerde her sol tıkta bir arkadakine geçilir (tek tek
+  // derinlik döngüsü). Hedef nokta seçilince durur (çarpı işaretleri Html
+  // olduğundan onlara tıklama canvas'ı tetiklemez → döngüyü bozmaz).
   const active = panelMoveMode && panelMoveValueMode === 'ref'
-    && !!panelMoveRefSourceVertex && !panelMoveRefTargetPanelId;
+    && !!panelMoveRefSourceVertex && !panelMoveRefTargetVertex;
 
   useEffect(() => {
     if (!active) return;
@@ -548,9 +552,68 @@ function MoveRefPanelPicker({ shapes }: { shapes: any[] }) {
     };
 
     canvas.addEventListener('click', handler, true);
-    return () => canvas.removeEventListener('click', handler, true);
+    return () => {
+      canvas.removeEventListener('click', handler, true);
+      // Döngü sayacı sıfırlansın: bir sonraki ref seçimi baştan başlar.
+      _movePickState = null;
+    };
   }, [active, shapes, camera, gl, panelMoveTargetPanelId,
       setPanelMoveRefTargetPanelId, setPanelMoveRefTargetVertex]);
+
+  return null;
+}
+
+function MoveRefConfirmOnRightClick() {
+  const { gl } = useThree();
+  const {
+    panelMoveMode, panelMoveValueMode, panelMoveRefSourceVertex,
+  } = useAppStore();
+
+  // Ref akışı aktifken (kaynak nokta seçildikten sonra) sağ tık:
+  //  • hazırsa (üç seçim tam) → onayla ve uygula (akıcı: sahnede herhangi bir
+  //    yere sağ tık yeterli, mesh üstüne tam denk getirme derdi yok).
+  //  • hazır değilse → yalnız tarayıcı menüsünü engelle.
+  const active = panelMoveMode && panelMoveValueMode === 'ref' && !!panelMoveRefSourceVertex;
+
+  useEffect(() => {
+    if (!active) return;
+    const canvas = gl.domElement;
+    let busy = false;
+
+    const handler = async (ev: MouseEvent) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (busy) return;
+      const st = useAppStore.getState();
+      if (!(st.panelMoveMode && st.panelMoveValueMode === 'ref')) return;
+      if (!st.panelMoveRefSourceVertex || !st.panelMoveRefTargetPanelId || !st.panelMoveRefTargetVertex) return;
+      const ps = st.shapes.find(s => s.id === st.panelMoveTargetPanelId);
+      if (!ps) return;
+      busy = true;
+      try {
+        const { executePanelMoveRef } = await import('./PanelMoveService');
+        await executePanelMoveRef({
+          panelShape: ps,
+          sourceVertex: st.panelMoveRefSourceVertex,
+          targetPanelId: st.panelMoveRefTargetPanelId,
+          targetVertex: st.panelMoveRefTargetVertex,
+          shapes: st.shapes,
+          updateShape: st.updateShape,
+        });
+        st.setPanelMoveMode(false);
+        // Ref modundan çıkınca panel seçili KALMASIN (kırmızı tarama temizlensin)
+        // ve derinlik döngüsü sıradan sıfırlansın.
+        st.setSelectedPanelRow(null);
+        _movePickState = null;
+      } finally {
+        busy = false;
+      }
+    };
+
+    // capture=true → orbit/başka contextmenu dinleyicilerinden önce yakala.
+    canvas.addEventListener('contextmenu', handler, true);
+    return () => canvas.removeEventListener('contextmenu', handler, true);
+  }, [active, gl]);
 
   return null;
 }
@@ -724,6 +787,7 @@ const Scene: React.FC = () => {
           })}
 
           <MoveRefPanelPicker shapes={shapes} />
+          <MoveRefConfirmOnRightClick />
           <PanelMoveGizmoWrapper shapes={shapes} />
           <PanelRotateGizmoWrapper shapes={shapes} />
 

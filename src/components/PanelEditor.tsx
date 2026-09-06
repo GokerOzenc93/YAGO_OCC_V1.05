@@ -1276,7 +1276,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     });
 
     const exitBtn = (
-      <button onClick={e => { stop(e); setPanelMoveAxis(null); setPanelMoveMode(false); }}
+      <button onClick={e => { stop(e); setPanelMoveAxis(null); setPanelMoveMode(false); if (isRefMode) setSelectedPanelRow(null); }}
         title="Çıkış" style={{
           flexShrink: 0, width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
           borderRadius: 7, border: '1px solid rgba(60,50,40,0.12)', cursor: 'pointer', outline: 'none',
@@ -1298,6 +1298,8 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
           targetVertex: panelMoveRefTargetVertex!,
           shapes, updateShape,
         });
+        // Ref onaylandı → panel seçili kalmasın.
+        setSelectedPanelRow(null);
       } else if (panelMoveValueMode === 'fixed') {
         if (!hasAxis) return;
         const { executePanelMoveFixed } = await import('./PanelMoveService');
@@ -1318,7 +1320,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     const mainContent = (() => {
       if (isRefMode) {
         const step = !panelMoveRefSourceVertex ? 1 : !panelMoveRefTargetPanelId ? 2 : !panelMoveRefTargetVertex ? 3 : 4;
-        const label = step === 1 ? 'Kaynak noktayı seç' : step === 2 ? 'Hedef paneli seç' : step === 3 ? 'Hedef noktayı seç' : 'Referans hazır';
+        const label = step === 1 ? 'Kaynak noktayı seç' : step === 2 ? 'Hedef paneli seç' : step === 3 ? 'Hedef noktayı seç' : 'Hazır — sağ tık ile onayla';
         const ready = step === 4;
         return (
           <div style={{
