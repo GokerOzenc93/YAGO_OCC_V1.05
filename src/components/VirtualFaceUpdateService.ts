@@ -77,6 +77,18 @@ function trimmedStampGeometryFromVf(
     } else {
       amount = step.value ?? 0;
     }
+    // TEŞHİS (davranışı değiştirmez): ref damgasının trim miktarı bu geçişte
+    // çözülü mü (ör. -100) yoksa çözülmemiş mi (0 → trim ATLANIR, damga tam
+    // ön-extrude boyunda kalır). Footprint'in 600↔500 zıplaması buradan
+    // doğrulanır: aynı kardeş için amount kimi geçişte -100, kimi geçişte 0 ise
+    // kök neden budur.
+    console.log('[YAGO][DAMGA-TRIM]',
+      'eN=', [eN.x, eN.y, eN.z].map(n => n.toFixed(0)).join(','),
+      step.resolvedValue !== undefined && step.resolvedValue !== null ? 'ref-çözülü'
+        : step.isFixed ? 'fixed' : 'ref-ÇÖZÜLMEMİŞ/dyn',
+      'value=', (step.value ?? 0).toFixed(1),
+      'amount=', amount.toFixed(1),
+      Math.abs(amount) < 0.01 ? '→ TRIM YOK (tam boy)' : '→ trim');
     if (Math.abs(amount) < 0.01) continue;
     if (amount < 0) {
       const maxProj = Math.max(...projs);
