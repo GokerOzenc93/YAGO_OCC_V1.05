@@ -128,6 +128,13 @@ function computeCurrentVfSpan(vf: VirtualFace, axis: string): number {
 
 function resolveScaledMoveValue(step: any, vf: VirtualFace): number {
   const original = (step as any).value as number;
+  // İLAVE ÖNLEM — FIXED adım ASLA ölçeklenmez: her rebuild'de birebir mm kalır.
+  // buildMoveAnchor fixed dahil tüm move adımlarına anchor yazdığından, fixed bir
+  // taşıma da span oranıyla ölçekleniyordu; span değişince (kardeş serbest-bölge
+  // yeniden hesabı orta paneli kısaltınca) miktar kayıp panel "başka yere kaçıyor"
+  // ve kayan ayak izi komşu paneli daha da kısaltıyordu. Parametrik (oransal)
+  // ölçekleme yalnız DYN adımlar içindir; fixed sabit ofsettir.
+  if ((step as any).isFixed) return original;
   const anchor = (step as any).anchor;
   if (!anchor || !anchor.faceSpanAlongAxis || anchor.faceSpanAlongAxis < 1) return original;
   const currentSpan = computeCurrentVfSpan(vf, (step as any).axis);
