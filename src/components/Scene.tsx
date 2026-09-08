@@ -773,7 +773,32 @@ const Scene: React.FC = () => {
 
           {/* dampingFactor'ı yükselttim (0.05 → 0.2): bırakınca daha çabuk durur.
               Hiç kaymasın istersen enableDamping yerine enableDamping={false} yap. */}
-          <OrbitControls ref={controlsRef} makeDefault target={[0,0,0]} enableDamping dampingFactor={0.2} rotateSpeed={0.8} maxDistance={25000} minDistance={50} />
+          {/* TURNTABLE GARANTİSİ: OrbitControls yörünge eksenini her update'te
+              güncel camera.up'tan hesaplar. Üst/alt görünüş camera.up'ı (0,0,∓1)
+              yaptığından, oradan döndürünce yörünge Z ekseni etrafında olur → zemin
+              (XZ) döner/kesilir ve NavCube alt yüzü takla atar. Kullanıcı döndürmeye
+              başlar başlamaz up'ı dünya-Y'sine geri alıyoruz: zemin HER ZAMAN yatay
+              kalır. Görünüm tam üst/altta kutupta olduğundan (phi≈1e-6) sıçrama
+              görünmez; ekran-üstü yönü korunur. Yan görünüşlerde up zaten Y → etkisiz. */}
+          <OrbitControls
+            ref={controlsRef}
+            makeDefault
+            target={[0,0,0]}
+            enableDamping
+            dampingFactor={0.2}
+            rotateSpeed={0.8}
+            maxDistance={25000}
+            minDistance={50}
+            onStart={() => {
+              const c: any = controlsRef.current;
+              const cam: any = c?.object;
+              if (!cam?.up) return;
+              if (cam.up.x !== 0 || cam.up.y !== 1 || cam.up.z !== 0) {
+                cam.up.set(0, 1, 0);
+                c.update();
+              }
+            }}
+          />
 
           {shapes.map(shape => {
             const isSel = selectedShapeId === shape.id;
