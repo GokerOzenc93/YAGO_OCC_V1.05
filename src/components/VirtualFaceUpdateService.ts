@@ -22,7 +22,7 @@ import {
   type FaceData,
   type CoplanarFaceGroup,
 } from './FaceEditor';
-import { composeSteps, getUnifiedSteps } from './PanelEngine';
+import { composeSteps, getUnifiedSteps, resolveRefTranslateDelta } from './PanelEngine';
 
 // ── TABAN DAMGALAMA GEOMETRİSİ ──────────────────────────────────────────────
 // Bir kardeş panelin KUTUYA OTURAN taban dilimini (transform/extrude UYGULANMADAN)
@@ -710,21 +710,33 @@ export function recalculateVirtualFacesForShape(
         const ownVfRaw = virtualFaces.find(f => f.id === (p.parameters as any)?.virtualFaceId);
         const ownVfFreshVerts = freshVfVertices.get((p.parameters as any)?.virtualFaceId);
         const ownVf = ownVfRaw && ownVfFreshVerts ? { ...ownVfRaw, vertices: ownVfFreshVerts } : ownVfRaw;
-        const composedFromSteps = (): RotOp[] | undefined => {
+        const composedFromSteps = (stampGeo?: THREE.BufferGeometry | null): RotOp[] | undefined => {
           if (!ownVf) return undefined;
           try {
             const { ops } = composeSteps(getUnifiedSteps(p), ownVf);
+            // Damga geometrisinin DÜNYA kutusu — ref deltasını güncel geometriden
+            // çözmek için gerekir (panelin taşımadan ÖNCEKİ hâli).
+            let rpBox: THREE.Box3 | null = null;
+            const gp = stampGeo?.getAttribute('position') as THREE.BufferAttribute | undefined;
+            if (gp) {
+              rpBox = new THREE.Box3().setFromBufferAttribute(gp);
+              rpBox.applyMatrix4(new THREE.Matrix4().compose(
+                new THREE.Vector3(...(p.position as any)),
+                new THREE.Quaternion().setFromEuler(
+                  new THREE.Euler(...(p.rotation as [number, number, number]), 'XYZ')),
+                new THREE.Vector3(...((p.scale as any) || [1, 1, 1]))
+              ));
+            }
             return ops.map((o: any) =>
               o.kind === 'rotate'
                 ? { kind: 'rotate', pivot: o.pivot, axis: o.axis, angleRad: (o.deg * Math.PI) / 180 }
                 // REF TAŞIMA: composeSteps bunu 'refTranslate' olarak üretir ve
-                // hazır 'd' TAŞIMAZ (delta build sırasında güncel geometriden
-                // çözülür). Eskiden burada o.d okunuyordu → undefined → damgaya
-                // HİÇ taşıma uygulanmıyordu; ref-bağlı dikme VF kenarında
-                // damgalanıp komşu paneli arkadan kısaltıyordu. Donmuş 'fallback'
-                // deltası damga için doğru konumu verir.
+                // hazır 'd' TAŞIMAZ. Donmuş 'fallback' deltası KUTU ÖLÇÜSÜ
+                // DEĞİŞİNCE ESKİR (aynı bağ 600'de −300, 900'de −600, 1200'de
+                // −900 çözülür) → damga eski yere düşüp komşuyu yanlış kırpıyordu.
+                // Motorun kullandığı çözücüyle GÜNCEL geometriden çözülür.
                 : o.kind === 'refTranslate'
-                  ? { kind: 'translate', d: o.fallback }
+                  ? { kind: 'translate', d: rpBox ? resolveRefTranslateDelta(o, rpBox) : o.fallback }
                   : { kind: 'translate', d: o.d }
             );
           } catch { return undefined; }
@@ -745,12 +757,12 @@ export function recalculateVirtualFacesForShape(
           if (myFaceNormal && hasExtrudeTowardFace(p, myFaceNormal)) {
             const baseGeo = baseStampGeometryFromVf(ownVf, th);
             if (baseGeo) {
-              return { ...p, geometry: baseGeo, __isRotatedPanel: true, __composedOps: composedFromSteps() || [] };
+              return { ...p, geometry: baseGeo, __isRotatedPanel: true, __composedOps: composedFromSteps(baseGeo) || [] };
             }
           } else if (Array.isArray(es) && es.length > 0 && myFaceNormal) {
             const trimGeo = trimmedStampGeometryFromVf(ownVf, th, es, myFaceNormal);
             if (trimGeo) {
-              return { ...p, geometry: trimGeo, __isRotatedPanel: true, __composedOps: composedFromSteps() || [] };
+              return { ...p, geometry: trimGeo, __isRotatedPanel: true, __composedOps: composedFromSteps(trimGeo) || [] };
             }
           }
         }
@@ -768,7 +780,7 @@ export function recalculateVirtualFacesForShape(
               // SOKULMAZ (o yol tam-siluet + düzleme-değme semantiği getirip
               // başka senaryoları bozuyordu); yalnızca damganın YERİ düzeltilir.
               if (hasMoveSteps(p)) {
-                const ops = composedFromSteps();
+                const ops = composedFromSteps(scaled);
                 if (Array.isArray(ops) && ops.length > 0) {
                   const d = new THREE.Vector3();
                   for (const op of ops as any[]) {
@@ -784,7 +796,7 @@ export function recalculateVirtualFacesForShape(
         }
 
         // ── DÖNMÜŞ (extrude'suz) PANEL: eski davranış (canlı mesh + composeSteps). ──
-        return { ...p, __isRotatedPanel: true, __composedOps: composedFromSteps() };
+        return { ...p, __isRotatedPanel: true, __composedOps: composedFromSteps(p.geometry) };
       });
   };
 

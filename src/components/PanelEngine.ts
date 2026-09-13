@@ -232,7 +232,7 @@ function pointFromFracBox(box: THREE.Box3, f: [number, number, number]): THREE.V
  *     kadar ötelenmiş olduğundan dünya-delta doğrudan rp'ye uygulanabilir).
  * Frac/hedef geometri eksikse donmuş fallback döner (eski adımlarla uyum).
  */
-function resolveRefTranslateDelta(
+export function resolveRefTranslateDelta(
   op: any,
   rpWorldBox: THREE.Box3,
 ): THREE.Vector3 {
