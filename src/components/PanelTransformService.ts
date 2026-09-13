@@ -226,7 +226,7 @@ async function writeAndRebuild(
   const { setUnifiedSteps, rebuildPanelsForParent } = await import('./PanelEngine');
   setUnifiedSteps(panelShape, steps, updateShape);
   const parentId = (panelShape.parameters as any)?.parentShapeId;
-  if (parentId) await rebuildPanelsForParent(parentId);
+  if (parentId) await rebuildPanelsForParent(parentId, { changedPanelId: panelShape.id, orderChanged: false });
   return true;
 }
 

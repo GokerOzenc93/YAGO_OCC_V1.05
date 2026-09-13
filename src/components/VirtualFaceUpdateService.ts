@@ -717,7 +717,15 @@ export function recalculateVirtualFacesForShape(
             return ops.map((o: any) =>
               o.kind === 'rotate'
                 ? { kind: 'rotate', pivot: o.pivot, axis: o.axis, angleRad: (o.deg * Math.PI) / 180 }
-                : { kind: 'translate', d: o.d }
+                // REF TAŞIMA: composeSteps bunu 'refTranslate' olarak üretir ve
+                // hazır 'd' TAŞIMAZ (delta build sırasında güncel geometriden
+                // çözülür). Eskiden burada o.d okunuyordu → undefined → damgaya
+                // HİÇ taşıma uygulanmıyordu; ref-bağlı dikme VF kenarında
+                // damgalanıp komşu paneli arkadan kısaltıyordu. Donmuş 'fallback'
+                // deltası damga için doğru konumu verir.
+                : o.kind === 'refTranslate'
+                  ? { kind: 'translate', d: o.fallback }
+                  : { kind: 'translate', d: o.d }
             );
           } catch { return undefined; }
         };

@@ -112,7 +112,7 @@ export async function executePanelMoveRef(params: PanelMoveRefParams): Promise<b
   };
   setUnifiedSteps(fresh, [...steps, step], updateShape);
   const parentId = (fresh.parameters as any)?.parentShapeId;
-  if (parentId) await rebuildPanelsForParent(parentId);
+  if (parentId) await rebuildPanelsForParent(parentId, { changedPanelId: fresh.id, orderChanged: false });
   return true;
 }
 

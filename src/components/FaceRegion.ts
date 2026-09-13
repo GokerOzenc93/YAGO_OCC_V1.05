@@ -1514,8 +1514,54 @@ export function computeFreeRegionLocal(
     const coverMin = (continuityConnected || relationChosen) ? 0.25 : 0.9;
     regionOk = total > 0 && cover >= coverMin && leak <= 0.1;
     if (regionOk) polygon = exact;
-    else console.warn('[YAGO][BÖLGE] çokgen grid ile uyuşmadı, tam kontur kullanıldı',
-      { kapsama: cover.toFixed(2), taşma: leak.toFixed(2), köşeN: exact.length });
+    else {
+      // GÜVENLİ YEDEK — TAM KONTUR ARTIK KULLANILMIYOR.
+      // Eski davranış doğrulama düşünce ring2D'ye (yüzün TAMAMI) dönüyordu;
+      // bu, kardeş ayak izlerini tümden yok saydığı için panelin yan panellerin
+      // İÇİNE girmesini garanti ediyordu (alt panelin sağa/sola taşması buydu).
+      // Yerine: çapayı içeren, engelleyen ayak izlerine hiç girmeyen eksen-hizalı
+      // en geniş dikdörtgen. Dikdörtgen dolap geometrisinde bu birebir doğru
+      // sınırdır ve çakışma üretemez.
+      let rx0 = -Infinity, rx1 = Infinity, ry0 = -Infinity, ry1 = Infinity;
+      let bx0 = Infinity, bx1 = -Infinity, by0 = Infinity, by1 = -Infinity;
+      for (const q of ring2D) {
+        if (q.x < bx0) bx0 = q.x; if (q.x > bx1) bx1 = q.x;
+        if (q.y < by0) by0 = q.y; if (q.y > by1) by1 = q.y;
+      }
+      rx0 = bx0; rx1 = bx1; ry0 = by0; ry1 = by1;
+      const EPS = 1e-6;
+      for (let f = 0; f < blocking.length; f++) {
+        if (blockingRotated[f]) continue;            // dönmüş şerit: açılı, dikdörtgen kırpmaya uygun değil
+        const fp = blocking[f];
+        let fx0 = Infinity, fx1 = -Infinity, fy0 = Infinity, fy1 = -Infinity;
+        for (const q of fp) {
+          if (q.x < fx0) fx0 = q.x; if (q.x > fx1) fx1 = q.x;
+          if (q.y < fy0) fy0 = q.y; if (q.y > fy1) fy1 = q.y;
+        }
+        // Ayak izi çapanın SATIRINI kesiyorsa yatay sınırı daraltır.
+        if (anchorPt.y > fy0 - EPS && anchorPt.y < fy1 + EPS) {
+          if (fx1 <= anchorPt.x + EPS && fx1 > rx0) rx0 = fx1;
+          if (fx0 >= anchorPt.x - EPS && fx0 < rx1) rx1 = fx0;
+        }
+        // Ayak izi çapanın SÜTUNUNU kesiyorsa dikey sınırı daraltır.
+        if (anchorPt.x > fx0 - EPS && anchorPt.x < fx1 + EPS) {
+          if (fy1 <= anchorPt.y + EPS && fy1 > ry0) ry0 = fy1;
+          if (fy0 >= anchorPt.y - EPS && fy0 < ry1) ry1 = fy0;
+        }
+      }
+      if (rx1 - rx0 > 0.5 && ry1 - ry0 > 0.5) {
+        polygon = [
+          { x: rx0, y: ry0 }, { x: rx1, y: ry0 },
+          { x: rx1, y: ry1 }, { x: rx0, y: ry1 },
+        ];
+        console.warn('[YAGO][BÖLGE] doğrulama düştü → güvenli serbest dikdörtgen',
+          { kapsama: cover.toFixed(2), taşma: leak.toFixed(2),
+            u: `${rx0.toFixed(0)}..${rx1.toFixed(0)}`, v: `${ry0.toFixed(0)}..${ry1.toFixed(0)}` });
+      } else {
+        console.warn('[YAGO][BÖLGE] çokgen grid ile uyuşmadı, tam kontur kullanıldı',
+          { kapsama: cover.toFixed(2), taşma: leak.toFixed(2), köşeN: exact.length });
+      }
+    }
   }
 
   // KALICI BAĞ İLİŞKİSİ ÇIKIŞI: seçilen bölgenin (nihai çapanın) her kardeş

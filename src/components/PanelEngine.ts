@@ -266,28 +266,40 @@ function axisLetterToVec(a: string): THREE.Vector3 {
 }
 
 // ── Rebuild orkestrasyonu ─────────────────────────────────────────────────
+export interface RebuildOpts {
+  // Yalnız bu panel işlem gördü (fixed/dyn/ref taşıma veya extrude) VE sıralama
+  // DEĞİŞMEDİ → sadece bu paneli yeniden üret; diğer paneller/VF'ler DOKUNULMAZ.
+  // Böylece değişmeyen panellerin ayak izleri sabit kalır, çok-fazlı rebuild'in
+  // tetiklediği damga-trim salınımı (komşu panel kısalması) oluşmaz.
+  changedPanelId?: string;
+  orderChanged?: boolean;
+}
 const inFlight = new Set<string>();
-const pending = new Set<string>();
+const pending = new Map<string, RebuildOpts | undefined>();
 
-export async function rebuildPanelsForParent(parentShapeId: string): Promise<void> {
+export async function rebuildPanelsForParent(parentShapeId: string, opts?: RebuildOpts): Promise<void> {
   if (inFlight.has(parentShapeId)) {
-    pending.add(parentShapeId);
+    // Kuyrukta TAM rebuild (opts=undefined) varsa onu KORU — en geniş kapsam
+    // kazanır; yoksa son çağrının kapsamını al.
+    const prevFull = pending.has(parentShapeId) && pending.get(parentShapeId) === undefined;
+    if (opts === undefined || !prevFull) pending.set(parentShapeId, opts);
     console.info('[PanelRebuild] rebuild already in flight for', parentShapeId, '— queued a re-run');
     return;
   }
   inFlight.add(parentShapeId);
   try {
-    await rebuildOnce(parentShapeId);
+    await rebuildOnce(parentShapeId, opts);
   } finally {
     inFlight.delete(parentShapeId);
     if (pending.has(parentShapeId)) {
+      const nextOpts = pending.get(parentShapeId);
       pending.delete(parentShapeId);
-      await rebuildPanelsForParent(parentShapeId);
+      await rebuildPanelsForParent(parentShapeId, nextOpts);
     }
   }
 }
 
-async function rebuildOnce(parentShapeId: string): Promise<void> {
+async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<void> {
   const store = useAppStore.getState();
   const parent = store.shapes.find(s => s.id === parentShapeId);
   if (!parent) return;
@@ -311,16 +323,6 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
   const freshVirtualFaces = useAppStore.getState().virtualFaces;
   const vfOrder = new Map<string, number>();
   freshVirtualFaces.forEach((f, i) => vfOrder.set(f.id, i));
-  const hasTransform = (s: Shape): boolean => {
-    const t = (s.parameters as any)?.transformSteps;
-    if (Array.isArray(t) && t.length > 0) return true;
-    const rs = (s.parameters as any)?.rotateSteps;
-    return Array.isArray(rs) && rs.length > 0;
-  };
-  const hasExtrude = (s: Shape): boolean => {
-    const es = (s.parameters as any)?.extrudeSteps;
-    return Array.isArray(es) && es.length > 0;
-  };
   // BAĞIMLILIK: bir panelin extrude adımı başka bir panele referans veriyorsa,
   // referans verilen panel ÖNCE üretilmeli (yoksa extrude bayat geometriye
   // referans düzlemi çözer → iç içe geçme).
@@ -358,13 +360,21 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
       const bRefsA = refIdsOf(b).has(a.id);
       if (aRefsB && !bRefsA) return 1;
       if (bRefsA && !aRefsB) return -1;
-      // Sabit paneller önce (0), taşınan/büyütülen paneller sonra (1).
-      const aMoved = hasTransform(a) || hasExtrude(a);
-      const bMoved = hasTransform(b) || hasExtrude(b);
-      if (aMoved !== bMoved) return aMoved ? 1 : -1;
+      // BU İKİ PANEL ARASINDA İŞLEM YOKSA → SIRALAMA (VF sırası) ÇALIŞIR.
+      // ESKİ HATA: "işlem görmüş panel her zaman sona" kuralı, aralarında hiç
+      // bağ olmayan çiftlerde de uygulanıp VF sıralamasını eziyordu. Kutu
+      // genişleyince bölücü, kendisine oturan panelden SONRA üretiliyor; panel
+      // bölücünün BAYAT (eski genişlikteki) ayak izini görüp arkadan kısalıyor,
+      // komşusu da boşluğu doldurup uzuyordu. Aralarında extrude/ref işlemi
+      // olan çiftler yukarıdaki bağımlılık dalında zaten ayrılır (sıra dışı).
       return orderOf(a) - orderOf(b);
     });
   if (children.length === 0) return;
+
+  // TEK-PANEL MODU: yalnız işlem gören panel değiştiyse ve sıralama aynıysa,
+  // sadece o paneli yeniden üret; diğer paneller/VF'ler dokunulmaz.
+  const singleMode = !!opts?.changedPanelId && !opts?.orderChanged
+    && children.some(c => c.id === opts!.changedPanelId);
 
   const parentPos: [number, number, number] = [...(parentFresh.position as any)] as any;
 
@@ -385,9 +395,13 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
   // AŞAMA 1: VF'leri güncel geometri + kardeşlerle yenile (bölge otoritesi).
   //          (Ayak izi/serbest bölge katmanı korunur — döndürme arayüzü ve
   //           çemberler bu VF'ler üzerinden çalışır.)
-  let currentVfs: VirtualFace[] = recalculateVirtualFacesForShape(
-    parentFresh, useAppStore.getState().virtualFaces, useAppStore.getState().shapes, 'all'
-  );
+  //          TEK-PANEL MODU'nda yeniden hesaplama YAPILMAZ (komşuları restamp
+  //          edip salınıma yol açıyordu); store'daki mevcut VF'ler kullanılır.
+  let currentVfs: VirtualFace[] = singleMode
+    ? useAppStore.getState().virtualFaces.filter(f => (f as any).shapeId === parentShapeId)
+    : recalculateVirtualFacesForShape(
+        parentFresh, useAppStore.getState().virtualFaces, useAppStore.getState().shapes, 'all'
+      );
 
   const buildPanel = async (panel: Shape, vfsIn: VirtualFace[]): Promise<void> => {
     try {
@@ -486,6 +500,15 @@ async function rebuildOnce(parentShapeId: string): Promise<void> {
         (err as any)?.message || String(err));
     }
   };
+
+  // TEK-PANEL MODU: yalnız işlem gören paneli üret, diğerlerine ve VF'lere
+  // DOKUNMA. Değişmeyen panellerin geometrisi/ayak izi sabit kaldığından
+  // damga-trim salınımı (komşu panel kısalması) oluşmaz.
+  if (singleMode) {
+    const panel = children.find(c => c.id === opts!.changedPanelId)!;
+    await buildPanel(panel, currentVfs);
+    return;
+  }
 
   // SIRA-DUYARLI DÖNGÜ: her panel üretildikten sonra VF'leri yeniden hesapla
   // ki bir sonraki panel güncel kardeş ayak izlerini görsün. currentVfs

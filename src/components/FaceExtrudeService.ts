@@ -480,7 +480,7 @@ async function commitStepsAndRebuild(
   const parentId = (panel.parameters as any)?.parentShapeId as string | undefined;
   if (parentId) {
     const { rebuildPanelsForParent } = await import('./PanelRebuildService');
-    await rebuildPanelsForParent(parentId);
+    await rebuildPanelsForParent(parentId, { changedPanelId: panel.id, orderChanged: false });
   }
   return true;
 }
