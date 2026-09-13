@@ -42,6 +42,75 @@ function baseStampGeometryFromVf(
   return buildPrismFromVertices(vf.vertices, vf.normal, thickness);
 }
 
+// ── DAMGA TABANI: PANELİN KENDİ VF BÖLGESİ (HAM YÜZ DEĞİL) ──────────────────
+// KÖK NEDEN: stampingPanelsFor ön-geçişi (freshVfVertices) VF köşelerini GÜNCEL
+// geometriden tazeliyor ama HAM YÜZ KONTURUNU yazıyor. Extrude'lu panelin damga
+// geometrisi bu tabandan üretildiği için, bölgesi yüzün köşesinden BAŞLAMAYAN
+// panelin ayak izi yanlış yere düşüyordu:
+//   arka panel gerçekte u 567..678 → damgası u 0..678 (tüm sol yarıyı kapladı)
+//   2. üst panel gerçekte u 567..678 → damgası u 0..111
+// Aynı yüzdeki komşu VF bunu görünce tıklanan serbest bölge "TAMAMEN doldu"
+// sanılıp yeni panel sağa savruluyor ve mevcut panelin ÜSTÜNE biniyordu.
+// ÇÖZÜM: taban, panelin KENDİ VF BÖLGESİdir (vf.vertices). Kutu boyutu
+// değiştiğinde bölge bayat kalmasın diye kayıtlı ham bbox'tan (rawFaceBBox)
+// GÜNCEL ham bbox'a taşınır — scaledFlatPanelStamp ile aynı yöntem:
+//   • ham boyut aynı → yalnız merkez/düzlem ötelemesi
+//   • ham boyut değişti → oransal haritalama
+// Kayıtlı ham taban yoksa bölge yalnız güncel düzleme izdüşürülür; güncel ham
+// yüzün DIŞINA taşıyorsa (güvenli değil) eski davranışa, ham kontura düşülür.
+function stampBaseVertsFromVf(
+  vf: VirtualFace | undefined,
+  freshRawVerts: [number, number, number][] | undefined
+): [number, number, number][] | undefined {
+  if (!vf) return freshRawVerts;
+  const region = vf.vertices as [number, number, number][] | undefined;
+  if (!region || region.length < 3) return freshRawVerts;
+  if (!freshRawVerts || freshRawVerts.length < 3) return region;
+
+  const n3 = new THREE.Vector3(...vf.normal).normalize();
+  const { u, v } = getFacePlaneAxes(n3);
+  const dU = (a: [number, number, number]) => a[0] * u.x + a[1] * u.y + a[2] * u.z;
+  const dV = (a: [number, number, number]) => a[0] * v.x + a[1] * v.y + a[2] * v.z;
+  const dN = (a: [number, number, number]) => a[0] * n3.x + a[1] * n3.y + a[2] * n3.z;
+
+  let nxMin = Infinity, nxMax = -Infinity, nyMin = Infinity, nyMax = -Infinity;
+  for (const p of freshRawVerts) {
+    const pu = dU(p), pv = dV(p);
+    if (pu < nxMin) nxMin = pu; if (pu > nxMax) nxMax = pu;
+    if (pv < nyMin) nyMin = pv; if (pv > nyMax) nyMax = pv;
+  }
+  const nxSpan = Math.max(nxMax - nxMin, 1e-6);
+  const nySpan = Math.max(nyMax - nyMin, 1e-6);
+  const planeD = dN(freshRawVerts[0]);
+  const at = (pu: number, pv: number): [number, number, number] => [
+    u.x * pu + v.x * pv + n3.x * planeD,
+    u.y * pu + v.y * pv + n3.y * planeD,
+    u.z * pu + v.z * pv + n3.z * planeD,
+  ];
+
+  const oldRaw = (vf as any).rawFaceBBox as
+    { xMin: number; xMax: number; yMin: number; yMax: number; xSpan: number; ySpan: number } | undefined;
+
+  if (!oldRaw) {
+    for (const q of region) {
+      const pu = dU(q), pv = dV(q);
+      if (pu < nxMin - 1 || pu > nxMax + 1 || pv < nyMin - 1 || pv > nyMax + 1) return freshRawVerts;
+    }
+    return region.map(q => at(dU(q), dV(q)));
+  }
+
+  if (Math.abs(oldRaw.xSpan - nxSpan) < 1 && Math.abs(oldRaw.ySpan - nySpan) < 1) {
+    const du = (nxMin + nxMax) / 2 - (oldRaw.xMin + oldRaw.xMax) / 2;
+    const dv = (nyMin + nyMax) / 2 - (oldRaw.yMin + oldRaw.yMax) / 2;
+    return region.map(q => at(dU(q) + du, dV(q) + dv));
+  }
+
+  return region.map(q => at(
+    nxMin + ((dU(q) - oldRaw.xMin) / oldRaw.xSpan) * nxSpan,
+    nyMin + ((dV(q) - oldRaw.yMin) / oldRaw.ySpan) * nySpan,
+  ));
+}
+
 function trimmedStampGeometryFromVf(
   vf: VirtualFace,
   thickness: number,
@@ -677,6 +746,16 @@ export function recalculateVirtualFacesForShape(
     }
   }
 
+  // ── DAMGA TABANI HARİTASI: her VF için PANELİN KENDİ BÖLGESİ ──────────────
+  // freshVfVertices HAM yüz konturudur (scaledFlatPanelStamp'ın ihtiyacı budur).
+  // Extrude damgası ise panelin BÖLGESİNDEN üretilmelidir; aksi hâlde ayak izi
+  // yüzün köşesinden başlayıp komşunun serbest alanını haksız yere doldurur.
+  const stampBaseVertices = new Map<string, [number, number, number][]>();
+  for (const vf of shapeFaces) {
+    const base = stampBaseVertsFromVf(vf, freshVfVertices.get(vf.id));
+    if (base && base.length >= 3) stampBaseVertices.set(vf.id, base);
+  }
+
   // ── İŞARETLİ EXTRUDE MİKTARI (damga-trim ile BİREBİR) ────────────────────
   // trimmedStampGeometryFromVf içindeki miktar çözümünün aynısı: ref adımında
   // resolvedValue, fixed adımında value − açıklık, dyn adımında value.
@@ -687,7 +766,10 @@ export function recalculateVirtualFacesForShape(
     if (step.resolvedValue !== undefined && step.resolvedValue !== null) return step.resolvedValue;
     if (!step.isFixed) return step.value ?? 0;
     const vfId = p?.parameters?.virtualFaceId;
-    const verts = (vfId ? freshVfVertices.get(vfId) : undefined)
+    // Açıklık, damganın GERÇEK tabanından (panelin VF bölgesi) ölçülür —
+    // trimmedStampGeometryFromVf de aynı tabanla trim uygular.
+    const verts = (vfId ? stampBaseVertices.get(vfId) : undefined)
+      || (vfId ? freshVfVertices.get(vfId) : undefined)
       || (vfId ? virtualFaces.find(f => f.id === vfId)?.vertices : undefined);
     if (!verts || verts.length < 3) return 0; // ölçemiyorsak "ilerlemiyor" say
     let mn = Infinity, mx = -Infinity;
@@ -787,6 +869,14 @@ export function recalculateVirtualFacesForShape(
         const ownVfRaw = virtualFaces.find(f => f.id === (p.parameters as any)?.virtualFaceId);
         const ownVfFreshVerts = freshVfVertices.get((p.parameters as any)?.virtualFaceId);
         const ownVf = ownVfRaw && ownVfFreshVerts ? { ...ownVfRaw, vertices: ownVfFreshVerts } : ownVfRaw;
+        // DAMGA TABANI: ham yüz DEĞİL, panelin kendi (güncellenmiş) VF bölgesi.
+        // composeSteps/pivot çözümü ownVf ile (ham taban) devam eder — oradaki
+        // davranış değişmez; yalnız DAMGA GEOMETRİSİ doğru tabana oturur.
+        const ownVfStampVerts = ownVfRaw
+          ? (stampBaseVertices.get(ownVfRaw.id) || ownVfFreshVerts)
+          : undefined;
+        const ownVfStamp = ownVfRaw && ownVfStampVerts
+          ? { ...ownVfRaw, vertices: ownVfStampVerts } : ownVfRaw;
         const composedFromSteps = (stampGeo?: THREE.BufferGeometry | null): RotOp[] | undefined => {
           if (!ownVf) return undefined;
           try {
@@ -839,16 +929,16 @@ export function recalculateVirtualFacesForShape(
         //   2) VF köşeleri her zaman günceldir → kutu boyut değişimlerinde
         //      ESKİ (stale) baked geometri kullanılmaz, "yüz yok oldu"
         //      hatasına düşülmez.
-        if (hasExtrudeSteps(p) && ownVf) {
+        if (hasExtrudeSteps(p) && ownVfStamp) {
           const th = parseFloat((p.parameters as any)?.panelThickness) || 18;
           const es = (p.parameters as any)?.extrudeSteps;
           if (myFaceNormal && hasExtrudeTowardFace(p, myFaceNormal)) {
-            const baseGeo = baseStampGeometryFromVf(ownVf, th);
+            const baseGeo = baseStampGeometryFromVf(ownVfStamp, th);
             if (baseGeo) {
               return { ...p, geometry: baseGeo, __isRotatedPanel: true, __composedOps: composedFromSteps(baseGeo) || [] };
             }
           } else if (Array.isArray(es) && es.length > 0 && myFaceNormal) {
-            const trimGeo = trimmedStampGeometryFromVf(ownVf, th, es, myFaceNormal);
+            const trimGeo = trimmedStampGeometryFromVf(ownVfStamp, th, es, myFaceNormal);
             if (trimGeo) {
               return { ...p, geometry: trimGeo, __isRotatedPanel: true, __composedOps: composedFromSteps(trimGeo) || [] };
             }
