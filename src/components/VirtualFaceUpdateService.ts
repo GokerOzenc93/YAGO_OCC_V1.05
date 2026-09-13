@@ -760,6 +760,23 @@ export function recalculateVirtualFacesForShape(
             const th = parseFloat((p.parameters as any)?.panelThickness) || 18;
             const scaled = scaledFlatPanelStamp(ownVfRaw, ownVfFreshVerts, th);
             if (scaled) {
+              // TAŞINMIŞ DÜZ PANEL: damga VF BÖLGESİNDEN üretilir ve taşımayı
+              // içermez → ref-bağlı panel gerçek yeri yerine VF kenarında
+              // damgalanıp komşusunu yanlış kırpıyordu (log: iz u=1182..1200,
+              // panel u=282..300). Burada damga geometrisi panelin çözülmüş
+              // ÖTELEMESİ kadar kaydırılır. DİKKAT: panel "dönmüş panel" yoluna
+              // SOKULMAZ (o yol tam-siluet + düzleme-değme semantiği getirip
+              // başka senaryoları bozuyordu); yalnızca damganın YERİ düzeltilir.
+              if (hasMoveSteps(p)) {
+                const ops = composedFromSteps();
+                if (Array.isArray(ops) && ops.length > 0) {
+                  const d = new THREE.Vector3();
+                  for (const op of ops as any[]) {
+                    if (op?.kind === 'translate' && op.d) d.add(op.d);
+                  }
+                  if (d.lengthSq() > 1e-12) scaled.translate(d.x, d.y, d.z);
+                }
+              }
               return { ...p, geometry: scaled };
             }
           }
