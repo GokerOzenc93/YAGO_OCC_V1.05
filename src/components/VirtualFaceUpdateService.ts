@@ -677,6 +677,59 @@ export function recalculateVirtualFacesForShape(
     }
   }
 
+  // ── İŞARETLİ EXTRUDE MİKTARI (damga-trim ile BİREBİR) ────────────────────
+  // trimmedStampGeometryFromVf içindeki miktar çözümünün aynısı: ref adımında
+  // resolvedValue, fixed adımında value − açıklık, dyn adımında value.
+  //   + → panel o eksende UZUYOR   − → panel o eksende KISALIYOR
+  // Açıklık, damga geometrisiyle AYNI tabandan (freshVfVertices) ölçülür ki
+  // yetki kararı ile gerçekte uygulanan trim ayrışmasın.
+  const signedExtrudeAmountOf = (p: any, step: any, eN: THREE.Vector3): number => {
+    if (step.resolvedValue !== undefined && step.resolvedValue !== null) return step.resolvedValue;
+    if (!step.isFixed) return step.value ?? 0;
+    const vfId = p?.parameters?.virtualFaceId;
+    const verts = (vfId ? freshVfVertices.get(vfId) : undefined)
+      || (vfId ? virtualFaces.find(f => f.id === vfId)?.vertices : undefined);
+    if (!verts || verts.length < 3) return 0; // ölçemiyorsak "ilerlemiyor" say
+    let mn = Infinity, mx = -Infinity;
+    for (const q of verts) {
+      const pr = q[0] * eN.x + q[1] * eN.y + q[2] * eN.z;
+      if (pr < mn) mn = pr;
+      if (pr > mx) mx = pr;
+    }
+    return (step.value ?? 0) - (mx - mn);
+  };
+
+  // ── YÖN TESTİ: kardeş BU yüze doğru gerçekten İLERLİYOR MU? ───────────────
+  // TEMEL ÇALIŞMA MANTIĞI: basan/basılan tek ve değişmez sözleşmesi VF SIRA
+  // ÖNCELİĞİdir (önce oluşan panel basandır). Damga grafiği bu sayede TEK
+  // YÖNLÜ ve döngüsüzdür; her rebuild dalgası aynı sonuca yakınsar.
+  // İSTİSNA (taşınmış/extrude'lu panel sırayı devirebilir) yalnız şu gerçek
+  // için vardır: panel adımıyla FİZİKSEL OLARAK o yüze doğru ilerleyip
+  // komşunun alanına girmiş olabilir. Bu yüzden istisna, adımın GERÇEKTEN o
+  // yüze doğru yer değiştirme ürettiği durumla sınırlıdır:
+  //     yerdeğiştirme = miktar × eN   →   (miktar × eN) · yüzNormali > 0
+  // ESKİ HATA: yalnız eN'nin yönüne bakılıyordu, miktarın İŞARETİNE değil.
+  // O eksende KISALAN panel (ör. arka panel −222 extrude) ya da adımı o yüzle
+  // İLGİSİZ eksende olan panel, düşük öncelikli olmasına rağmen yüksek
+  // öncelikli komşusunu damgalıyordu. Sonuç: (1) komşu gereksiz yere kısalıyor
+  // (dikme arka kenardan 18mm yiyip arka düzleme değmez oluyor), (2) A→B ve
+  // B→A aynı anda damgalayınca temas kaybolup geri geliyor ve bölgeler
+  // rebuild dalgaları arasında salınıyor ("paneller saçmalıyor").
+  const extrudeAdvancesTowardFace = (p: any, targetFaceNormal: THREE.Vector3 | null): boolean => {
+    if (!targetFaceNormal) return false;
+    const es = p?.parameters?.extrudeSteps;
+    if (!Array.isArray(es) || es.length === 0) return false;
+    for (const step of es) {
+      if (!step.faceNormal) continue;
+      const eN = new THREE.Vector3(...step.faceNormal).normalize();
+      const align = eN.dot(targetFaceNormal);
+      if (Math.abs(align) < 0.7) continue;           // adım bu yüzle ilgisiz eksende
+      const amount = signedExtrudeAmountOf(p, step, eN);
+      if (amount * align > 0.01) return true;        // yüze DOĞRU ilerliyor
+    }
+    return false;
+  };
+
   const stampingPanelsFor = (vfId: string): any[] => {
     const myIdx = vfIndexOf.get(vfId);
     const myPanel = childPanels.find(p => p.parameters?.virtualFaceId === vfId);
@@ -686,7 +739,15 @@ export function recalculateVirtualFacesForShape(
       .filter(p => {
         if (p.parameters?.virtualFaceId === vfId) return false;
         if (myPanel && extrudeRefsOf(myPanel).has(p.id)) return false;
-        if (myPanel && extrudeRefsOf(p).has(myPanel.id)) return true;
+        // REF-EGEMENLİĞİ ARTIK YÖNE BAĞLI: p'nin extrude adımı myPanel'i
+        // REFERANS alıyorsa bu tek başına p'yi basan yapmaz. Referans çoğu kez
+        // sadece ÖLÇÜ DATUM'udur (kullanıcı "şu panelin yüzüne kadar" der ve
+        // panel KISALIR). Yetki yalnız adım gerçekten bu yüze doğru ilerletiyorsa
+        // verilir; aksi hâlde sıra önceliği (aşağıda) geçerli kalır.
+        // Kanıt (log): arka panel −222 extrude ile KISALIYOR ama referansı üst
+        // panel olduğu için üst panelin VF'sini damgalayıp onu 18mm kısaltıyordu.
+        if (myPanel && extrudeRefsOf(p).has(myPanel.id)
+            && extrudeAdvancesTowardFace(p, myFaceNormal)) return true;
         // FARKLI YÜZDEKİ TAŞINMIŞ/EXTRUDE'LU PANEL: Bu panel move veya
         // extrude adımı taşıyorsa ve myPanel'den FARKLI bir yüzdeyse (dik
         // komşu), VF sırasından BAĞIMSIZ olarak damgalar. Taşınan/extrude'lu
@@ -698,10 +759,26 @@ export function recalculateVirtualFacesForShape(
           if (pVf) {
             const pNormal = new THREE.Vector3(...pVf.normal).normalize();
             const sameFace = Math.abs(myFaceNormal.dot(pNormal)) > 0.95;
-            if (!sameFace && (hasMoveSteps(p) || hasExtrudeTowardFace(p, myFaceNormal))) return true;
+            // YÖN TESTİ: extrude istisnası yalnız panel bu yüze DOĞRU ilerliyorsa
+            // (işaretli miktar × eN · yüzNormali > 0) sırayı devirebilir. Eskiden
+            // salt eN yönüne bakılıyordu; o eksende KISALAN panel de yetki alıp
+            // yüksek öncelikli komşusunu gereksiz yere kısaltıyordu.
+            if (!sameFace && (hasMoveSteps(p) || extrudeAdvancesTowardFace(p, myFaceNormal))) return true;
           }
         }
-        return myIdx != null && panelPriority(p) < myIdx;
+        // SIRA ÖNCELİĞİ: tek ve değişmez basan/basılan sözleşmesi.
+        const byOrder = myIdx != null && panelPriority(p) < myIdx;
+        // TEŞHİS: eski kuralın YETKİ VERECEĞİ ama yön testinin REDDETTİĞİ
+        // durumlar. Bu satırlar "gereksiz kısaltma" engellenen yerlerdir;
+        // beklenmedik bir kısalma raporlanırsa önce burası okunur.
+        if (!byOrder && myPanel && myFaceNormal
+            && (extrudeRefsOf(p).has(myPanel.id) || hasExtrudeTowardFace(p, myFaceNormal))
+            && !extrudeAdvancesTowardFace(p, myFaceNormal)) {
+          console.log('[YAGO][DAMGA-YETKI] RED', vfId, '<-', p.id,
+            '— extrude bu yüze doğru İLERLEMİYOR (kısalıyor/ilgisiz eksen)',
+            '→ sıra önceliği korundu, gereksiz kısaltma engellendi');
+        }
+        return byOrder;
       })
       .map(p => {
         // composeSteps (move/rotate) → footprint fonksiyonlarının dünya
