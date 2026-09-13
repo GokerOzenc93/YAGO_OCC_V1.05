@@ -714,6 +714,10 @@ export function recalculateVirtualFacesForShape(
           if (!ownVf) return undefined;
           try {
             const { ops } = composeSteps(getUnifiedSteps(p), ownVf);
+            // Motorun bu rebuild'de uyguladığı ref deltası (varsa) — tek kaynak.
+            const rda = (p.parameters as any)?._refDeltaApplied;
+            const refDeltaApplied = Array.isArray(rda) && rda.length === 3
+              ? new THREE.Vector3(rda[0], rda[1], rda[2]) : null;
             // Damga geometrisinin DÜNYA kutusu — ref deltasını güncel geometriden
             // çözmek için gerekir (panelin taşımadan ÖNCEKİ hâli).
             let rpBox: THREE.Box3 | null = null;
@@ -735,8 +739,15 @@ export function recalculateVirtualFacesForShape(
                 // DEĞİŞİNCE ESKİR (aynı bağ 600'de −300, 900'de −600, 1200'de
                 // −900 çözülür) → damga eski yere düşüp komşuyu yanlış kırpıyordu.
                 // Motorun kullandığı çözücüyle GÜNCEL geometriden çözülür.
+                // REF TAŞIMA: deltayı BURADA yeniden çözmüyoruz. Motor (PanelEngine)
+                // bu rebuild'de gerçekten uyguladığı deltayı panele yazar
+                // (_refDeltaApplied); damga onu okur → damga ile panelin gerçek
+                // yeri HER ZAMAN aynı. Yeniden çözüm iki tarafın farklı anlarda
+                // store'a bakıp ayrışmasına yol açıyordu (kutu ölçüsü değişince
+                // damga eski yerde kalıp komşuyu yanlış kırpıyordu).
                 : o.kind === 'refTranslate'
-                  ? { kind: 'translate', d: rpBox ? resolveRefTranslateDelta(o, rpBox) : o.fallback }
+                  ? { kind: 'translate', d: refDeltaApplied
+                      || (rpBox ? resolveRefTranslateDelta(o, rpBox) : o.fallback) }
                   : { kind: 'translate', d: o.d }
             );
           } catch { return undefined; }

@@ -414,6 +414,7 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       if (!rp) return;
       // Adımlar (move/rotate) sırayla uygulanır — çember döndürünce panel döner.
       const { ops } = composeSteps(steps, att.vf);
+      let refDeltaApplied: [number, number, number] | null = null;
       for (const op of ops) {
         if (op.kind === 'translate') {
           rp = rp.translate(op.d.x, op.d.y, op.d.z);
@@ -430,6 +431,11 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
             rpWorldBox = new THREE.Box3(new THREE.Vector3(), new THREE.Vector3());
           }
           const d = resolveRefTranslateDelta(op, rpWorldBox);
+          // TEK KAYNAK: bu rebuild'de GERÇEKTEN uygulanan ref deltası panele
+          // yazılır. Damgalama (VirtualFaceUpdateService) deltayı yeniden
+          // ÇÖZMEZ, bunu okur — aksi halde iki taraf farklı anlarda store'a
+          // bakıp ayrışıyor ve damga panelin gerçek yerini göstermiyordu.
+          refDeltaApplied = [d.x, d.y, d.z];
           rp = rp.translate(d.x, d.y, d.z);
         } else {
           rp = rp.rotate(op.deg, [op.pivot.x, op.pivot.y, op.pivot.z], [op.axis.x, op.axis.y, op.axis.z]);
@@ -485,6 +491,7 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       const paramPatch: any = {};
       if (dimsUpdate) Object.assign(paramPatch, dimsUpdate);
       if (resolvedStepsUpdate) paramPatch.extrudeSteps = resolvedStepsUpdate;
+      if (refDeltaApplied) paramPatch._refDeltaApplied = refDeltaApplied;
       // ANINDA YAZ: panel geometrisi store'a yazılır ki bir sonraki panel
       // güncel ayak izini görsün ve VF yeniden hesaplamasında bu geometri
       // kullanılsın (iç içe geçmeyi önler).

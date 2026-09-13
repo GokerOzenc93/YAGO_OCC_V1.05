@@ -1495,18 +1495,23 @@ export function computeFreeRegionLocal(
   // panel yapısal olarak doğamaz.
   let polygon = ring2D;
   let regionOk = false;
-  if (exact.length >= 3 && blocking.length > 0) {
+  // Bir aday poligonun reach ızgarasına göre kapsama/taşma ölçüsü.
+  const scorePoly = (poly: Point2D[]): { cover: number; leak: number } => {
     let total = 0, inside = 0, stray = 0;
     for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
       const pt = { x: uMin + (i + 0.5) * cw, y: vMin + (j + 0.5) * ch };
-      const isIn = isPointInsidePolygon(pt, exact);
+      const isIn = isPointInsidePolygon(pt, poly);
       if (reach[j * nx + i]) { total++; if (isIn) inside++; }
       // Dönmüş kardeş şeridi bölgeye BİLEREK dahildir (uzak-teğet kırpması);
-      // o hücreler taşma sayılmaz, yoksa doğrulama haksız yere tam-kontura düşer.
+      // o hücreler taşma sayılmaz, yoksa doğrulama haksız yere düşer.
       else if (isIn && isPointInsidePolygon(pt, ring2D) && !insideAnyRotated(pt)) stray++;
     }
-    const cover = total > 0 ? inside / total : 0;
-    const leak = total > 0 ? stray / total : 1;
+    return { cover: total > 0 ? inside / total : 0, leak: total > 0 ? stray / total : 1 };
+  };
+  if (exact.length >= 3 && blocking.length > 0) {
+    let total = 0;
+    for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) if (reach[j * nx + i]) total++;
+    const { cover, leak } = scorePoly(exact);
     // Tek-bileşenli süreklilikte reach HER İKİ tarafı da kapsar (bölge grid'de
     // bağlantılıdır); tek taraflı doğru poligon cover>=0.9'u yapısal olarak
     // geçemez ve tam-kontura düşerdi (panel tüm yüze yayılır = "üste çıktı"
@@ -1550,13 +1555,28 @@ export function computeFreeRegionLocal(
         }
       }
       if (rx1 - rx0 > 0.5 && ry1 - ry0 > 0.5) {
-        polygon = [
+        const rect: Point2D[] = [
           { x: rx0, y: ry0 }, { x: rx1, y: ry0 },
           { x: rx1, y: ry1 }, { x: rx0, y: ry1 },
         ];
-        console.warn('[YAGO][BÖLGE] doğrulama düştü → güvenli serbest dikdörtgen',
-          { kapsama: cover.toFixed(2), taşma: leak.toFixed(2),
-            u: `${rx0.toFixed(0)}..${rx1.toFixed(0)}`, v: `${ry0.toFixed(0)}..${ry1.toFixed(0)}` });
+        const rs = scorePoly(rect);
+        // ADAY SEÇİMİ — gereksiz kısaltmayı önler:
+        // Komşuya TAŞMAYAN (leak<=0.1) adaylar arasında KAPSAMASI EN YÜKSEK
+        // olan seçilir. Doğrulama yalnız kapsama yüzünden düştüyse ve kırpılmış
+        // poligon taşmıyorsa, dikdörtgen ondan dar olduğunda ONU KULLANMAYIZ —
+        // aksi halde kutu genişleyince ALAKASIZ paneller kısalıyordu.
+        const exactSafe = leak <= 0.1 && exact.length >= 3;
+        const rectSafe = rs.leak <= 0.1;
+        if (exactSafe && (!rectSafe || cover >= rs.cover)) {
+          polygon = exact;
+          console.warn('[YAGO][BÖLGE] doğrulama düştü → kırpılmış poligon korundu (taşma yok)',
+            { kapsama: cover.toFixed(2), taşma: leak.toFixed(2), dikdörtgenKapsama: rs.cover.toFixed(2) });
+        } else {
+          polygon = rect;
+          console.warn('[YAGO][BÖLGE] doğrulama düştü → güvenli serbest dikdörtgen',
+            { kapsama: cover.toFixed(2), taşma: leak.toFixed(2), yeniKapsama: rs.cover.toFixed(2),
+              u: `${rx0.toFixed(0)}..${rx1.toFixed(0)}`, v: `${ry0.toFixed(0)}..${ry1.toFixed(0)}` });
+        }
       } else {
         console.warn('[YAGO][BÖLGE] çokgen grid ile uyuşmadı, tam kontur kullanıldı',
           { kapsama: cover.toFixed(2), taşma: leak.toFixed(2), köşeN: exact.length });
