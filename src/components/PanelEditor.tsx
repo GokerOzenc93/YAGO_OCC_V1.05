@@ -1191,10 +1191,10 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
               {isRefMode && (
                 <div style={{
                   flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 6, height: 28, padding: '0 10px', borderRadius: 7,
-                  background: hasRefFace ? 'rgba(99,102,241,0.10)' : 'rgba(120,113,108,0.08)',
+                  background: hasRefFace ? 'rgba(223,174,76,0.14)' : 'rgba(120,113,108,0.08)',
                   border: hasRefFace ? '1px solid rgba(79,70,229,0.30)' : '1px solid rgba(60,50,40,0.10)',
                 }}>
-                  <span style={{ width: 5, height: 5, borderRadius: '50%', background: hasRefFace ? '#4f46e5' : '#a8a29e', flexShrink: 0 }} />
+                  <span style={{ width: 5, height: 5, borderRadius: '50%', background: hasRefFace ? '#dfae4c' : '#a8a29e', flexShrink: 0 }} />
                   <span style={{ fontSize: 11, fontWeight: 500, color: hasRefFace ? '#4338ca' : '#78716c', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {hasRefFace ? 'Referans yüzey seçildi' : hasRefPanel ? 'Referans yüzeyi seç' : 'Referans paneli seç'}
                   </span>

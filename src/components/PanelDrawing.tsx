@@ -8,7 +8,7 @@ import { extractFacesFromGeometry, groupCoplanarFaces, createFaceHighlightGeomet
 // snapToFlatGroup TEK KAYNAK: hover/seçim eşlemesi PanelDrawing ve
 // ShapeWithTransform'da birebir aynı davransın diye GeometryUtils'ten gelir.
 import { snapToFlatGroup } from './GeometryUtils';
-import { cycleRefFacePickFromEvent } from './FaceRefPick';
+import { cycleRefFacePickFromEvent, REF_COLORS } from './FaceRefPick';
 
 // ─── RENK YÖNETİMİ ───────────────────────────────────────────────────────
 // Seçim profesyonel CAD konvansiyonuyla: DOLGU asla değişmez, vurgu kenardan
@@ -252,13 +252,14 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   // seçilene kadar) sürer — seçili referans dışındaki paneller turuncu parlar,
   // böylece derinlik döngüsüyle gezerken sıradaki aday görünür.
   const isMoveRefPickMode = panelMoveMode && panelMoveValueMode === 'ref' && !!panelMoveRefSourceVertex && !panelMoveRefTargetVertex && shape.id !== panelMoveTargetPanelId && panelMoveRefTargetPanelId !== shape.id;
-  // Ref-move vurgu: hedef seçim aşamasında fare altındaki aday panel (turuncu),
-  // seçilen referans panel (yeşil) → her ikisi de KOMPLE, belirgin vurgulanır.
+  // Ref-move vurgu: hedef seçim aşamasında fare altındaki ADAY panel soft sarı
+  // (ref modunun ortak tonu), ONAYLANAN referans panel yeşil kalır — onay ile
+  // aday arasındaki fark tek bakışta okunsun diye. Her ikisi de KOMPLE vurgulanır.
   const isMoveRefHovered = isMoveRefPickMode && moveRefHover;
   const moveRefHighlight = isMoveRefTargetPanel || isMoveRefHovered;
-  const moveRefEmissiveColor = isMoveRefTargetPanel ? '#22c55e' : '#f59e0b';
-  const moveRefEmissiveInt = isMoveRefTargetPanel ? 1.0 : 0.85;
-  const moveRefEdgeColor = isMoveRefTargetPanel ? '#15803d' : '#b45309';
+  const moveRefEmissiveColor = isMoveRefTargetPanel ? '#22c55e' : REF_COLORS.hoverCss;
+  const moveRefEmissiveInt = isMoveRefTargetPanel ? 1.0 : 0.8;
+  const moveRefEdgeColor = isMoveRefTargetPanel ? '#15803d' : REF_COLORS.selectedCss;
   const disableRaycast = (isFaceExtrudeTarget || (isFaceExtrudeXray && !isRefPickablePanel) || isRaycastOnParent) && !isMoveRefPickMode;
 
   useEffect(() => {
@@ -624,9 +625,9 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           {hoveredExtrudeGroup !== null && faceGroups[hoveredExtrudeGroup] && (
             <mesh geometry={createFaceHighlightGeometry(faces, faceGroups[hoveredExtrudeGroup].faceIndices)} renderOrder={11} raycast={() => null}>
               <meshBasicMaterial
-                color={0x6366f1}
+                color={REF_COLORS.hover}
                 transparent
-                opacity={0.55}
+                opacity={REF_COLORS.hoverOpacity}
                 side={THREE.DoubleSide}
                 depthTest={false}
                 depthWrite={false}
@@ -636,9 +637,9 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           {isRefCandidatePanel && faceExtrudeRefCandidate?.faceGroupIndex !== undefined && faceExtrudeRefCandidate.faceGroupIndex >= 0 && faceGroups[faceExtrudeRefCandidate.faceGroupIndex] && (
             <mesh geometry={createFaceHighlightGeometry(faces, faceGroups[faceExtrudeRefCandidate.faceGroupIndex].faceIndices)} renderOrder={12} raycast={() => null}>
               <meshBasicMaterial
-                color={0x4f46e5}
+                color={REF_COLORS.selected}
                 transparent
-                opacity={0.85}
+                opacity={REF_COLORS.selectedOpacity}
                 side={THREE.DoubleSide}
                 depthTest={false}
                 depthWrite={false}

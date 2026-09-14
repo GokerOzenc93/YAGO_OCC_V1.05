@@ -8,7 +8,7 @@ import { SubtractionMesh } from './SubtractionMesh';
 import { FilletEdgeLines } from './Fillet';
 import { FaceEditor, extractFacesFromGeometry, groupCoplanarFaces, createFaceHighlightGeometry } from './FaceEditor';
 import { snapToFlatGroup } from './GeometryUtils';
-import { cycleRefFacePickFromEvent } from './FaceRefPick';
+import { cycleRefFacePickFromEvent, REF_COLORS } from './FaceRefPick';
 import { FaceRaycastOverlay, VirtualFaceOverlay } from './FaceRaycastOverlay';
 
 // Kenar çizgileri panellerdekiyle aynı stil: ince, antialias'lı (Line2),
@@ -528,7 +528,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
   // aşamasında fare altındaki aday gövde (turuncu) → komple, belirgin vurgu.
   const isMoveRefHoverBody = isMoveRefPickBody && moveRefHover;
   const moveRefBodyHighlight = isMoveRefTargetPanel || isMoveRefHoverBody;
-  const moveRefBodyEmissive = isMoveRefTargetPanel ? '#22c55e' : '#f59e0b';
+  const moveRefBodyEmissive = isMoveRefTargetPanel ? '#22c55e' : REF_COLORS.hoverCss;
   useEffect(() => {
     if (!isMoveRefPickBody && moveRefHover) setMoveRefHover(false);
   }, [isMoveRefPickBody, moveRefHover]);
@@ -904,12 +904,12 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
             </mesh>
             {refHoverHighlight && (
               <mesh geometry={refHoverHighlight} renderOrder={11} raycast={() => null}>
-                <meshBasicMaterial color={0x6366f1} transparent opacity={0.55} side={THREE.DoubleSide} depthTest={false} depthWrite={false} />
+                <meshBasicMaterial color={REF_COLORS.hover} transparent opacity={REF_COLORS.hoverOpacity} side={THREE.DoubleSide} depthTest={false} depthWrite={false} />
               </mesh>
             )}
             {refSelectedHighlight && (
               <mesh geometry={refSelectedHighlight} renderOrder={12} raycast={() => null}>
-                <meshBasicMaterial color={0x4f46e5} transparent opacity={0.85} side={THREE.DoubleSide} depthTest={false} depthWrite={false} />
+                <meshBasicMaterial color={REF_COLORS.selected} transparent opacity={REF_COLORS.selectedOpacity} side={THREE.DoubleSide} depthTest={false} depthWrite={false} />
               </mesh>
             )}
           </>

@@ -13,6 +13,22 @@ import { pointInTriangle3D } from './FaceRegion';
 // döngü durumu (aynı ekran noktası + sıra indeksi) burada modül düzeyinde tutulur
 // (aynı anda tek bir referans seçimi olduğundan güvenli).
 
+// ─── REFERANS MODU RENK PALETİ (TEK KAYNAK) ─────────────────────────────────
+// İSTEK (Goker): referans modundaki TÜM seçim vurguları soft sarı olsun; eski
+// indigo/mor (0x6366f1 / 0x4f46e5) çirkin duruyordu. Palet burada tutulur ki
+// PanelDrawing (panel yüzleri), ShapeWithTransform (gövde yüzleri) ve
+// PanelEditor (arayüz rozeti) aynı tondan beslensin, biri unutulup mor kalmasın.
+//   hover    → imlecin altındaki ADAY yüz (daha açık, düşük opaklık)
+//   selected → onaylanmış REFERANS yüz (bir tık doygun, daha görünür)
+export const REF_COLORS = {
+  hover: 0xf2d57e,
+  selected: 0xdfae4c,
+  hoverCss: '#f2d57e',
+  selectedCss: '#dfae4c',
+  hoverOpacity: 0.42,
+  selectedOpacity: 0.68,
+} as const;
+
 export interface RefFaceCandidate {
   shapeId: string;
   faceGroupIndex: number;

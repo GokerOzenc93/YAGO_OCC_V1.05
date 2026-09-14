@@ -8,6 +8,52 @@ import type { Shape } from '../store';
 const RENDER_ORDER = 999;
 const GAP_RATIO = 0.08;
 
+// ── EKRAN-ÖLÇEĞİ KİLİDİ ───────────────────────────────────────────────────
+// İSTEK (Goker): "okları belli bir uzaklıktan sonra bir ölçüde tut; yaklaşınca
+// da çok büyük olmasın, belli bir yaklaşmadan sonra bir ölçüde kalsın."
+// Ok uzunluğu panelin ölçüsüne bağlı SABİT dünya boyutuydu → uzakta iğne,
+// yakında devasa görünüyordu. Artık iki kilit arasında EKRANDA SABİT boy
+// hedeflenir; kilitlerin dışında dünya ölçüsü DONAR:
+//   • yakınlaşınca  → ölçek MIN_SCALE'e oturur, ok daha fazla büyümez
+//   • uzaklaşınca   → ölçek MAX_SCALE'e oturur, ok daha fazla küçülmez
+// Aradaki bantta ok ekranda ~TARGET_PX uzunluğunda kalır.
+// Kilit değerleri, ok TABAN uzunluğuna (panel en büyük ölçüsü × 0.2) orandır.
+// 600 mm'lik bir panelde taban 120 mm; 45° fov / ~800 px yükseklikte:
+//   yakın (≈500 mm)  → ölçek 0.45'e oturur → ok ~54 mm, ekranda ~93 px
+//   orta  (≈1500 mm) → ekranda sabit ~56 px
+//   uzak  (≈6000 mm) → ölçek 2.2'ye oturur → ok ~264 mm, ekranda ~38 px
+const TARGET_PX = 56;
+const MIN_SCALE = 0.45;
+const MAX_SCALE = 2.20;
+
+/** Dünya biriminde "1 CSS pikselin karşılığı" — perspektif ve ortografik için. */
+function worldPerPixel(camera: THREE.Camera, viewportHeight: number, worldPos: THREE.Vector3): number {
+  const persp = camera as THREE.PerspectiveCamera;
+  if (persp.isPerspectiveCamera) {
+    const dist = persp.position.distanceTo(worldPos);
+    return (2 * Math.tan(((persp.fov * Math.PI) / 180) / 2) * dist) / Math.max(viewportHeight, 1);
+  }
+  const ortho = camera as THREE.OrthographicCamera;
+  const span = (ortho.top - ortho.bottom) / (ortho.zoom || 1);
+  return span / Math.max(viewportHeight, 1);
+}
+
+/** Verilen grubu, taban uzunluğuna göre ekran-ölçeğine kilitler. */
+function useScreenLockedScale(
+  ref: React.RefObject<THREE.Group | THREE.Mesh>,
+  baseLength: number,
+) {
+  const wp = useRef(new THREE.Vector3());
+  useFrame(({ camera, size }) => {
+    const o = ref.current;
+    if (!o || baseLength <= 0) return;
+    o.getWorldPosition(wp.current);
+    const desired = TARGET_PX * worldPerPixel(camera, size.height, wp.current);
+    const s = THREE.MathUtils.clamp(desired / baseLength, MIN_SCALE, MAX_SCALE);
+    o.scale.setScalar(s);
+  });
+}
+
 interface ArrowProps {
   direction: [number, number, number];
   axisLabel: 'x+' | 'x-' | 'y+' | 'y-' | 'z+' | 'z-';
@@ -28,10 +74,19 @@ const AXIS_DISPLAY: Record<string, string> = {
 function MoveArrow({ direction, axisLabel, color, hoverColor, origin, length, onSelect, selectedAxis }: ArrowProps) {
   const [hovered, setHovered] = useState(false);
   const isSelected = selectedAxis === axisLabel;
+  const groupRef = useRef<THREE.Group>(null);
+  // Ölçek kilidi grubun KENDİSİNE uygulanır; grup okun tabanına (origin)
+  // oturduğu için ok her ölçekte panele yapışık kalır, merkeze doğru kaymaz.
+  useScreenLockedScale(groupRef, length);
 
-  const shaftRadius = length * 0.055;
-  const coneRadius = length * 0.16;
-  const coneHeight = length * 0.36;
+  // ── İNCE / KESKİN ORAN ──────────────────────────────────────────────────
+  // Eski oranlar (gövde 0.055, koni tabanı 0.16, koni boyu 0.36) tombul ve
+  // "yuvarlak" duruyordu. CAD gizmolarının okuması kolay ince gövde + uzun,
+  // dar uç oranına çekildi; segment sayıları da artırıldı ki silüet pürüzsüz
+  // olsun (kalın az-kenarlı koni köşeli/yuvarlak karışımı görünüyordu).
+  const shaftRadius = length * 0.026;
+  const coneRadius = length * 0.078;
+  const coneHeight = length * 0.24;
   const shaftLength = length - coneHeight;
 
   const rotation = useMemo(() => {
@@ -42,28 +97,33 @@ function MoveArrow({ direction, axisLabel, color, hoverColor, origin, length, on
     return [euler.x, euler.y, euler.z] as [number, number, number];
   }, [direction]);
 
+  // Konumlar artık GRUBA GÖRE yereldir (grup origin'de durur) — ölçek
+  // uygulandığında ok tabanından uca doğru büyür/küçülür.
   const shaftCenter: [number, number, number] = [
-    origin[0] + direction[0] * (shaftLength / 2),
-    origin[1] + direction[1] * (shaftLength / 2),
-    origin[2] + direction[2] * (shaftLength / 2),
+    direction[0] * (shaftLength / 2),
+    direction[1] * (shaftLength / 2),
+    direction[2] * (shaftLength / 2),
   ];
 
   const coneCenter: [number, number, number] = [
-    origin[0] + direction[0] * (shaftLength + coneHeight / 2),
-    origin[1] + direction[1] * (shaftLength + coneHeight / 2),
-    origin[2] + direction[2] * (shaftLength + coneHeight / 2),
+    direction[0] * (shaftLength + coneHeight / 2),
+    direction[1] * (shaftLength + coneHeight / 2),
+    direction[2] * (shaftLength + coneHeight / 2),
   ];
 
   const labelPos: [number, number, number] = [
-    origin[0] + direction[0] * (length + length * 0.22),
-    origin[1] + direction[1] * (length + length * 0.22),
-    origin[2] + direction[2] * (length + length * 0.22),
+    direction[0] * (length + length * 0.20),
+    direction[1] * (length + length * 0.20),
+    direction[2] * (length + length * 0.20),
   ];
 
-  const activeColor = isSelected ? '#ffffff' : hovered ? hoverColor : color;
-  const emissiveColor = isSelected ? new THREE.Color(color) : hovered ? new THREE.Color(hoverColor) : new THREE.Color(0x000000);
-  const emissiveInt = isSelected ? 1.0 : hovered ? 0.6 : 0.1;
-  const opacity = isSelected ? 1 : hovered ? 1 : 0.92;
+  // SOFT YÜZEY: yüksek metalness + düşük roughness parlak plastik gibi
+  // duruyordu. Mat, hafif dağınık bir yüzeye çekildi; seçilide beyaz yerine
+  // rengin açık tonu kullanılır (beyaz, açık zeminde okun silüetini yiyordu).
+  const activeColor = isSelected ? hoverColor : hovered ? hoverColor : color;
+  const emissiveColor = new THREE.Color(isSelected || hovered ? color : 0x000000);
+  const emissiveInt = isSelected ? 0.55 : hovered ? 0.35 : 0.06;
+  const opacity = isSelected || hovered ? 1 : 0.88;
 
   const matProps = {
     color: activeColor,
@@ -72,8 +132,8 @@ function MoveArrow({ direction, axisLabel, color, hoverColor, origin, length, on
     depthTest: false,
     emissive: emissiveColor,
     emissiveIntensity: emissiveInt,
-    roughness: 0.25,
-    metalness: 0.4,
+    roughness: 0.62,
+    metalness: 0.04,
   };
 
   const handleLabelClick = (e: React.MouseEvent) => {
@@ -84,14 +144,14 @@ function MoveArrow({ direction, axisLabel, color, hoverColor, origin, length, on
   const handleLabelLeave = () => { setHovered(false); document.body.style.cursor = 'default'; };
 
   return (
-    <group>
+    <group ref={groupRef} position={origin}>
       <mesh position={shaftCenter} rotation={rotation} renderOrder={RENDER_ORDER}>
-        <cylinderGeometry args={[shaftRadius, shaftRadius, shaftLength, 12]} />
+        <cylinderGeometry args={[shaftRadius, shaftRadius, shaftLength, 24]} />
         <meshStandardMaterial {...matProps} />
       </mesh>
 
       <mesh position={coneCenter} rotation={rotation} renderOrder={RENDER_ORDER}>
-        <coneGeometry args={[coneRadius, coneHeight, 16]} />
+        <coneGeometry args={[coneRadius, coneHeight, 32]} />
         <meshStandardMaterial {...matProps} />
       </mesh>
 
@@ -103,21 +163,26 @@ function MoveArrow({ direction, axisLabel, color, hoverColor, origin, length, on
           style={{
             pointerEvents: 'auto',
             cursor: 'pointer',
-            background: isSelected ? color : 'transparent',
-            color: isSelected ? '#fff' : '#000',
+            // SOFT ETİKET: kalın 900 + beyaz halo yerine, hafif buzlu bir hap
+            // ve orta kalınlık. Seçilide rengin kendisi dolgu olur.
+            background: isSelected ? color : 'rgba(252,251,249,0.82)',
+            color: isSelected ? '#fff' : '#57534e',
             fontFamily: '"Inter", "SF Pro Display", system-ui, sans-serif',
-            fontSize: '13px',
-            fontWeight: 900,
-            letterSpacing: '0.06em',
-            padding: '3px 7px',
-            borderRadius: '4px',
-            border: 'none',
+            fontSize: '11px',
+            fontWeight: 650,
+            letterSpacing: '0.04em',
+            padding: '2px 6px',
+            borderRadius: '5px',
+            border: `1px solid ${isSelected ? 'transparent' : 'rgba(60,50,40,0.10)'}`,
+            boxShadow: isSelected ? '0 1px 3px rgba(40,30,20,0.22)' : '0 1px 2px rgba(40,30,20,0.08)',
+            backdropFilter: 'blur(3px)',
+            WebkitBackdropFilter: 'blur(3px)',
             userSelect: 'none',
             whiteSpace: 'nowrap',
-            textShadow: isSelected ? 'none' : '0 0 4px #fff, 0 0 8px #fff',
-            lineHeight: '1.4',
-            minWidth: '28px',
+            lineHeight: '1.35',
+            minWidth: '24px',
             textAlign: 'center',
+            transition: 'background 0.12s, color 0.12s',
           }}
         >
           {AXIS_DISPLAY[axisLabel]}
@@ -127,11 +192,17 @@ function MoveArrow({ direction, axisLabel, color, hoverColor, origin, length, on
   );
 }
 
-function OriginSphere({ position, size }: { position: [number, number, number]; size: number }) {
+function OriginSphere({ position, size, baseLength }: { position: [number, number, number]; size: number; baseLength: number }) {
+  const ref = useRef<THREE.Mesh>(null);
+  // Oklarla AYNI tabandan kilitlenir (baseLength = ok boyu) → merkez işareti
+  // oklarla birebir aynı oranda büyür/küçülür, yakınlaşınca şişmez. Yarıçap da
+  // belirgin küçüldü: eski 0.22×ok boyu top gibi duruyordu ve gizmonun
+  // "yuvarlak" algısının asıl kaynağıydı.
+  useScreenLockedScale(ref, baseLength);
   return (
-    <mesh position={position} renderOrder={RENDER_ORDER}>
-      <sphereGeometry args={[size, 16, 16]} />
-      <meshStandardMaterial color="#e7e5e4" emissive={new THREE.Color('#a8a29e')} emissiveIntensity={0.5} transparent opacity={0.95} depthTest={false} roughness={0.3} metalness={0.3} />
+    <mesh ref={ref} position={position} renderOrder={RENDER_ORDER}>
+      <sphereGeometry args={[size, 28, 20]} />
+      <meshStandardMaterial color="#efece7" emissive={new THREE.Color('#b9b3aa')} emissiveIntensity={0.28} transparent opacity={0.9} depthTest={false} roughness={0.7} metalness={0.02} />
     </mesh>
   );
 }
@@ -390,12 +461,14 @@ export function PanelMoveGizmo({ panelShape }: PanelMoveGizmoProps) {
   };
 
   const axes: Array<{ axis: 'x+' | 'x-' | 'y+' | 'y-' | 'z+' | 'z-'; dir: [number, number, number]; color: string; hover: string }> = [
-    { axis: 'x+', dir: [1, 0, 0],  color: '#ef4444', hover: '#f87171' },
-    { axis: 'x-', dir: [-1, 0, 0], color: '#ef4444', hover: '#f87171' },
-    { axis: 'y+', dir: [0, 1, 0],  color: '#22c55e', hover: '#4ade80' },
-    { axis: 'y-', dir: [0, -1, 0], color: '#22c55e', hover: '#4ade80' },
-    { axis: 'z+', dir: [0, 0, 1],  color: '#3b82f6', hover: '#60a5fa' },
-    { axis: 'z-', dir: [0, 0, -1], color: '#3b82f6', hover: '#60a5fa' },
+    // Eksen kimliği (X kırmızı / Y yeşil / Z mavi) korunur; tonlar neon
+    // doygunluktan alınıp kemik-fildişi zeminle uyumlu, mat bir palete çekildi.
+    { axis: 'x+', dir: [1, 0, 0],  color: '#c6635d', hover: '#dd8a84' },
+    { axis: 'x-', dir: [-1, 0, 0], color: '#c6635d', hover: '#dd8a84' },
+    { axis: 'y+', dir: [0, 1, 0],  color: '#6f9e6c', hover: '#93bd8f' },
+    { axis: 'y-', dir: [0, -1, 0], color: '#6f9e6c', hover: '#93bd8f' },
+    { axis: 'z+', dir: [0, 0, 1],  color: '#6485b8', hover: '#8ba6d2' },
+    { axis: 'z-', dir: [0, 0, -1], color: '#6485b8', hover: '#8ba6d2' },
   ];
 
   const dotSize = arrowLength * 0.09;
@@ -409,7 +482,7 @@ export function PanelMoveGizmo({ panelShape }: PanelMoveGizmoProps) {
     <group>
       {!isRefMode && (
         <>
-          <OriginSphere position={centerOrigin} size={arrowLength * 0.22} />
+          <OriginSphere position={centerOrigin} size={arrowLength * 0.055} baseLength={arrowLength} />
           {axes.map(({ axis, dir, color, hover }) => (
             <MoveArrow
               key={axis}
