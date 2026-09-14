@@ -496,7 +496,19 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
   // Gövdenin panelleri varsa, görünmez gövde mesh'i tıklamaları engellemesin.
   // faceExtrude ref modunda ve move ref pick modunda hariç — gövde tıklanmalı.
   const isBodyRefMode = faceExtrudeMode && faceExtrudeValueMode === 'ref' && faceExtrudeSelectedFace !== null;
-  const suppressBodyRaycast = !isPanel && hasPanels && !panelSelectMode && !isBodyRefMode && !isMoveRefPickActive;
+  // ── GÖVDE IŞINI: BODY MODUNDA AÇIK, PANEL/YÜZ MODLARINDA KAPALI ──────────
+  // İSTEK (Goker): Body modunda blok TIKLAYARAK seçilebilmeli.
+  // ESKİ KOŞUL `!panelSelectMode` idi: gövdenin panelleri varsa gövde ışını tam
+  // da Body modunda kapatılıyor, Panel modunda açılıyordu — etiketlerin TERSİ.
+  // Üstelik Panel modunda aşağıdaki `panelSelectMode && hasPanels` erken-return'ü
+  // gövde tıklamasını zaten yutuyordu; yani gövde hiçbir modda seçilemiyordu.
+  // YENİ KURAL: görünmez gövde mesh'i yalnız panel/yüz SEÇİMİ yapılan modlarda
+  // bastırılır (panel seçimi, yüzey kısıtı seçimi, Add Face) — orada tıklamanın
+  // panellere/overlay yüzlerine ulaşması şart. Body modunda gövde tıklanabilir
+  // ve blok komple seçilir. Ref modları eskisi gibi ayrıca muaf.
+  const suppressBodyRaycast = !isPanel && hasPanels
+    && (panelSelectMode || panelSurfaceSelectMode || raycastMode)
+    && !isBodyRefMode && !isMoveRefPickActive;
 
   // ── REFERANS MODU (panel extrude → "ref") ──────────────────────────────────
   // Gövde (parent, panel değil) hem referans NESNESİ olarak seçilebilir hem de
@@ -650,17 +662,22 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
             selectSecondaryShape(null);
             setSelectedPanelRow(null);
           } else if (isPanel && shape.parameters?.parentShapeId) {
-            // Even outside panelSelectMode: clicking a panel selects parent and highlights editor row
+            // BODY MODU: panel tıklansa bile KOMPLE BLOK seçilir; panel satırı
+            // (turuncu panel vurgusu) YAZILMAZ, varsa temizlenir. Paneller
+            // normalde PanelDrawing ile çizilir — burası yedek yol, kural orayla
+            // BİREBİR aynı tutulur ki iki yoldan hangisi tıklanırsa tıklansın
+            // davranış değişmesin.
             const parentId = shape.parameters.parentShapeId;
             selectShape(parentId);
             selectSecondaryShape(null);
-            const rowKey = shape.parameters?.virtualFaceId
-              ? `vf-${shape.parameters.virtualFaceId}`
-              : (shape.parameters.faceIndex ?? null);
-            setSelectedPanelRow(rowKey, shape.parameters.extraRowId || null, parentId);
+            setSelectedPanelRow(null);
           } else {
+            // BODY MODUNDA GÖVDE TIKLAMASI buraya düşer: blok komple seçilir ve
+            // panel satırı (turuncu panel vurgusu) temizlenir — aynı blok zaten
+            // seçiliyken satır kendiliğinden düşmediği için burada açıkça silinir.
             selectShape(shape.id);
             selectSecondaryShape(null);
+            if (!isPanel && hasPanels) setSelectedPanelRow(null);
           }
         }}
         onDoubleClick={(e) => {

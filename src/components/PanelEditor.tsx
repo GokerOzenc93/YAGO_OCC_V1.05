@@ -738,7 +738,55 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     if (existing) { setFaceExtrudeThickness(existing.value); setFaceExtrudeFixedMode(existing.isFixed); }
   }, [faceExtrudeSelectedFace, activePanelId, shapes]);
 
-  useEffect(() => { if (!(isOpen || embedded)) { setSelectedPanelRow(null); setPanelSelectMode(false); if (faceExtrudeMode) setFaceExtrudeMode(false); if (panelMoveMode) setPanelMoveMode(false); } }, [isOpen, embedded]);
+  useEffect(() => { if (!(isOpen || embedded)) { setSelectedPanelRow(null); setPanelSelectMode(false); if (faceExtrudeMode) setFaceExtrudeMode(false); if (panelMoveMode) setPanelMoveMode(false); if (panelRotateMode) setPanelRotateMode(false); } }, [isOpen, embedded]);
+
+  // ── KOMUT–ARAYÜZ SENKRONU: GARANTİ ÇIKIŞ ─────────────────────────────────
+  // İSTEK (Goker): "extrude/taşıma modu arayüzden geriye doğru çıkıldığı HER
+  // durumda komuttan da çıksın, her zaman."
+  // Taşı / Döndür / Extrude düğmeleri SEÇİLİ PANEL SATIRI şeridinin içinde
+  // yaşar (o şerit selectedPanelRow === null iken hiç render edilmez). Dolayısıyla
+  // komutun tek geçerlilik koşulu: açık satırın paneli === komutun hedef paneli.
+  // Bu tek kural, geriye çıkışın BÜTÜN yollarını kapsar — ayrı ayrı çıkış
+  // noktalarına iliştirilmiş temizliklere bağlı kalmaz (biri unutulursa komut
+  // arayüzsüz açık kalıyordu):
+  //   • satır kapatıldı (× / boşluğa tıklama / setSelectedPanelRow(null))
+  //   • başka bir panel satırına geçildi
+  //   • blok seçimi değişti veya seçim kalktı
+  //   • panel silindi / VF kaldırıldı (silme akışı satırı null'a çeker)
+  //   • editör kapandı (yukarıdaki efekt)
+  // Hedef panel id'si açılışta satırla birlikte yazıldığı için mod açma anında
+  // yanlış tetiklenmez (aynı render'da ikisi de set edilir).
+  // GEÇİCİ BOŞLUK KORUMASI: yeniden üretim dalgalarında satır AÇIK kalırken
+  // activePanelId bir an null'a düşebilir. O anı "geriye çıkış" saymayız —
+  // çıkış ya satırın gerçekten kapanmasıyla (selectedPanelRow === null) ya da
+  // BAŞKA bir panelin satırına geçilmesiyle belirlenir. Panel gerçekten
+  // silindiğinde satır zaten yukarıdaki silme akışında null'a çekiliyor.
+  const uiLeftPanel = (targetId: string | null) =>
+    selectedPanelRow === null || (!!activePanelId && targetId !== activePanelId);
+  useEffect(() => {
+    if (faceExtrudeMode && uiLeftPanel(faceExtrudeTargetPanelId)) {
+      console.log('[YAGO][KOMUT-ÇIKIŞ] extrude modu kapatıldı — panel satırı arayüzde açık değil',
+        'hedef=', faceExtrudeTargetPanelId, 'açıkSatırPaneli=', activePanelId);
+      setFaceExtrudeSelectedFace(null);
+      setFaceExtrudeRefCandidate(null);
+      setFaceExtrudeMode(false);
+    }
+    if (panelMoveMode && uiLeftPanel(panelMoveTargetPanelId)) {
+      console.log('[YAGO][KOMUT-ÇIKIŞ] taşıma modu kapatıldı — panel satırı arayüzde açık değil',
+        'hedef=', panelMoveTargetPanelId, 'açıkSatırPaneli=', activePanelId);
+      setPanelMoveAxis(null);
+      setPanelMoveMode(false);
+    }
+    if (panelRotateMode && uiLeftPanel(panelRotateTargetPanelId)) {
+      console.log('[YAGO][KOMUT-ÇIKIŞ] döndürme modu kapatıldı — panel satırı arayüzde açık değil',
+        'hedef=', panelRotateTargetPanelId, 'açıkSatırPaneli=', activePanelId);
+      setPanelRotateAxis(null);
+      setPanelRotateMode(false);
+    }
+  }, [activePanelId, selectedPanelRow, selectedShapeId,
+      faceExtrudeMode, faceExtrudeTargetPanelId,
+      panelMoveMode, panelMoveTargetPanelId,
+      panelRotateMode, panelRotateTargetPanelId]);
   useEffect(() => { if (selectedPanelRow !== null) rowRefs.current.get(selectedPanelRow)?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, [selectedPanelRow]);
 
   useEffect(() => {

@@ -369,13 +369,23 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
         return;
       }
     }
-    const targetId = (panelSurfaceSelectMode || panelSelectMode) && parentShapeId
-      ? parentShapeId
-      : shape.id;
+    // ── BODY MODU: panel tıklansa bile KOMPLE BLOK seçilir ──────────────────
+    // İSTEK (Goker): "body modunda panel tıklansa bile bloğu seçsin komple".
+    // ESKİ DAVRANIŞ: Body modunda (panelSelectMode=false, panelSurfaceSelectMode
+    // =false) targetId panelin KENDİSİ oluyordu → tıklanan panel seçili şekil
+    // hâline gelip turuncu vurguyla çiziliyordu.
+    // YENİ KURAL: ebeveyni olan her panel tıklaması HER ZAMAN ebeveyn bloğu
+    // seçer. Panel satırı (turuncu panel vurgusunun kaynağı) yalnız Panel /
+    // yüzey-seçim modlarında yazılır; Body modunda varsa TEMİZLENİR — böylece
+    // önceki modda kalmış bir satır seçimi de üstte takılı kalmaz.
+    const rowSelectModes = panelSurfaceSelectMode || panelSelectMode;
+    const targetId = parentShapeId ? parentShapeId : shape.id;
     if (selectedShapeId !== targetId) selectShape(targetId);
-    if ((panelSurfaceSelectMode || panelSelectMode) && parentShapeId) {
+    if (rowSelectModes && parentShapeId) {
       const rowKey = virtualFaceId ? `vf-${virtualFaceId}` : (faceIndex ?? null);
       setSelectedPanelRow(rowKey, extraRowId || null, parentShapeId);
+    } else if (parentShapeId) {
+      setSelectedPanelRow(null);
     }
     selectSecondaryShape(null);
   };
