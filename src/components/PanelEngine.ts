@@ -373,8 +373,38 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
 
   // TEK-PANEL MODU: yalnız işlem gören panel değiştiyse ve sıralama aynıysa,
   // sadece o paneli yeniden üret; diğer paneller/VF'ler dokunulmaz.
+  //
+  // ── BASAN PANEL TEK-PANEL MODUNA GİREMEZ ────────────────────────────────
+  // KÖK NEDEN (bildirilen hata): üst panel ÖNCE yerleştirilip (VF idx 0 →
+  // BASAN) sonra aşağı taşınınca, taşıma `changedPanelId` ile çağrıldığı için
+  // tek-panel moduna düşülüyordu. Tek-panel modunda VF'ler HİÇ yeniden
+  // hesaplanmaz (aşağıdaki erken `return`) → basılan kardeşler (yan/ön
+  // paneller) taşınan panelin YENİ ayak izini hiç görmez, eski bölgelerinde
+  // kalır. Sonuç: "diğer paneller taşınan panele göre taşınmadı" ve taşınan
+  // panel onların gövdesine girer.
+  // Yan panelleri önce yerleştirince hata görülmez: orada üst panel BASILAN'dır,
+  // taşındığında kimsenin bölgesinin değişmesi gerekmez → tek-panel modu zararsız.
+  //
+  // KURAL: tek-panel modu yalnız işlem gören panelin BASILAN kardeşi YOKSA
+  // (kendisinden sonra gelen, yani damgaladığı hiçbir kardeş yoksa) geçerlidir.
+  // Aksi hâlde tam rebuild şart — damga sözleşmesi gereği onların bölgeleri
+  // panelin yeni konumuna göre yeniden çözülmelidir. Salınım koruması,
+  // en sondaki (hiç kimseyi damgalamayan) paneller için aynen korunur.
+  const changedChild = opts?.changedPanelId
+    ? children.find(c => c.id === opts.changedPanelId)
+    : undefined;
+  const changedOrder = changedChild ? orderOf(changedChild) : Infinity;
+  const pressesSiblings = !!changedChild && children.some(
+    c => c.id !== changedChild.id && orderOf(c) > changedOrder
+  );
+  if (changedChild && pressesSiblings) {
+    console.log('[YAGO][REBUILD] TEK-PANEL MODU İPTAL', changedChild.id,
+      'sıra=', changedOrder,
+      'basılanKardeşN=', children.filter(c => c.id !== changedChild.id && orderOf(c) > changedOrder).length,
+      '→ basan panel taşındı/değişti, basılan kardeşlerin VF bölgeleri yeniden çözülecek');
+  }
   const singleMode = !!opts?.changedPanelId && !opts?.orderChanged
-    && children.some(c => c.id === opts!.changedPanelId);
+    && !!changedChild && !pressesSiblings;
 
   const parentPos: [number, number, number] = [...(parentFresh.position as any)] as any;
 
