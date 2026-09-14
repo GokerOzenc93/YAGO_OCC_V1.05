@@ -812,6 +812,52 @@ export function recalculateVirtualFacesForShape(
     return false;
   };
 
+  // ── TAŞIMA YER DEĞİŞTİRMESİ (dünya çerçevesi, birleşik) ──────────────────
+  // composeSteps'in ürettiği translate/refTranslate op'larının TOPLAMI. Damga
+  // yolunda (map dalı) zaten aynı toplam kullanılıyor; burada YETKİ kararı için
+  // gerekiyor, bu yüzden filter dalında da erişilebilir tek bir yardımcıya
+  // alındı. Sonuç DÜNYA çerçevesindedir (axisLetterToVec dünya eksenleridir).
+  const moveDisplacementWorldOf = (p: any): THREE.Vector3 | null => {
+    if (!hasMoveSteps(p)) return null;
+    const vfId = p?.parameters?.virtualFaceId;
+    const ownVfRaw = vfId ? virtualFaces.find(f => f.id === vfId) : undefined;
+    if (!ownVfRaw) return null;
+    const fresh = vfId ? freshVfVertices.get(vfId) : undefined;
+    const ownVf = fresh ? { ...ownVfRaw, vertices: fresh } : ownVfRaw;
+    try {
+      const { ops } = composeSteps(getUnifiedSteps(p), ownVf as any);
+      const rda = (p.parameters as any)?._refDeltaApplied;
+      const refDelta = Array.isArray(rda) && rda.length === 3
+        ? new THREE.Vector3(rda[0], rda[1], rda[2]) : null;
+      const d = new THREE.Vector3();
+      for (const o of ops as any[]) {
+        if (o.kind === 'translate' && o.d) d.add(o.d);
+        else if (o.kind === 'refTranslate') {
+          if (refDelta) d.add(refDelta);
+          else if (o.fallback) d.add(o.fallback);
+        }
+      }
+      return d;
+    } catch { return null; }
+  };
+
+  // ── KENDİ YÜZÜNDEN GÖVDENİN İÇİNE AYRILMIŞ PANEL ─────────────────────────
+  // Panel, taşıma adımlarıyla KENDİ VF'sinin yüz düzleminden gövdenin İÇİNE
+  // (yüz normalinin TERSİNE) ayrıldıysa artık o yüzün sınır paneli değildir;
+  // gövdenin içinde yüzen bir raf/bölmedir. Bu testin sonucu paneli kırpma
+  // sonucuna DEĞİL, yalnız adımlara ve VF normaline bağlıdır → rebuild
+  // dalgaları arasında asla değişmez (salınım üretemez).
+  const MOVED_OFF_FACE_TOL = 1; // mm
+  const movedInwardOffOwnFace = (p: any): boolean => {
+    const d = moveDisplacementWorldOf(p);
+    if (!d || d.lengthSq() < 1e-9) return false;
+    const vfId = p?.parameters?.virtualFaceId;
+    const ownVf = vfId ? virtualFaces.find(f => f.id === vfId) : undefined;
+    if (!ownVf) return false;
+    const nWorld = new THREE.Vector3(...ownVf.normal).transformDirection(localToWorld).normalize();
+    return d.dot(nWorld) < -MOVED_OFF_FACE_TOL;
+  };
+
   const stampingPanelsFor = (vfId: string): any[] => {
     const myIdx = vfIndexOf.get(vfId);
     const myPanel = childPanels.find(p => p.parameters?.virtualFaceId === vfId);
@@ -841,6 +887,41 @@ export function recalculateVirtualFacesForShape(
           if (pVf) {
             const pNormal = new THREE.Vector3(...pVf.normal).normalize();
             const sameFace = Math.abs(myFaceNormal.dot(pNormal)) > 0.95;
+            // ── TAŞINAN PANEL SIRA ÜSTÜNLÜĞÜNÜ BIRAKIR ────────────────────
+            // KÖK NEDEN (bildirilen hata): üst panel ÖNCE yerleştirilip sonra
+            // AŞAĞI taşınınca, sıra önceliği (idx 0) gereği yan/ön panelleri
+            // damgalamaya devam ediyor ama KENDİSİ hiç kimse tarafından
+            // damgalanmıyordu (kardeşN=0) → tam 700 boyunda kalıp yan ve ön
+            // panellerin gövdesine giriyordu. Yan panelleri önce yerleştirince
+            // sorun görülmüyor, çünkü orada üst panel sıra gereği zaten
+            // kırpılıyor (664) ve taşındığında yan yüz düzlemlerine artık
+            // DEĞMİYOR.
+            // KURAL: bir panel taşıma adımıyla KENDİ yüzünden gövdenin İÇİNE
+            // ayrıldıysa, artık o yüzün sınır paneli değil, içeride yüzen bir
+            // raf/bölmedir → yerinde DURAN dik komşularına karşı BASILAN olur.
+            // Yetki tek yönlü DEVREDİLİR (karşılıklı damgalama üretilmez):
+            //   (1) taşınan ERKEN panel, duran GEÇ komşusunu damgalamayı bırakır
+            //   (2) duran GEÇ komşu, taşınan ERKEN paneli damgalar
+            // Taşınan panel sıraca ZATEN geç ise hiçbir şey değişmez — mevcut
+            // "taşınmış/extrude'lu panel istisnası" olduğu gibi korunur.
+            if (!sameFace) {
+              const pIdx = panelPriority(p);
+              const myIdxSafe = myIdx != null ? myIdx : Number.MAX_SAFE_INTEGER;
+              const iMoved = !!myPanel && hasMoveSteps(myPanel);
+              if (pIdx < myIdxSafe && !iMoved && movedInwardOffOwnFace(p)) {
+                console.log('[YAGO][DAMGA-YETKI] BIRAKILDI', vfId, '<-', p.id,
+                  '— panel kendi yüzünden İÇERİ taşındı (raf/bölme oldu)',
+                  '→ duran komşusuna basamaz, sıra üstünlüğü devredildi');
+                return false;
+              }
+              if (myPanel && myIdxSafe < pIdx && !hasMoveSteps(p)
+                  && movedInwardOffOwnFace(myPanel)) {
+                console.log('[YAGO][DAMGA-YETKI] DEVİR', vfId, '<-', p.id,
+                  '— bu panel kendi yüzünden İÇERİ taşındı',
+                  '→ duran geç kardeş onu damgalar (iç içe geçme önlendi)');
+                return true;
+              }
+            }
             // YÖN TESTİ: extrude istisnası yalnız panel bu yüze DOĞRU ilerliyorsa
             // (işaretli miktar × eN · yüzNormali > 0) sırayı devirebilir. Eskiden
             // salt eN yönüne bakılıyordu; o eksende KISALAN panel de yetki alıp
