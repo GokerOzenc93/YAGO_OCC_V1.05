@@ -265,6 +265,97 @@ function axisLetterToVec(a: string): THREE.Vector3 {
   }
 }
 
+// ── İÇ KÖŞE (KONKAV) BİRLEŞİMİ ────────────────────────────────────────────
+// SENARYO (Goker, L gövde): gövdenin İÇ köşesinde birbirine dik iki yüze iki
+// panel atılınca her ikisi de kendi yüzünün sınırında biter; paneller hacmin
+// içine (−n yönünde) kalınlık aldığı için köşede t1×t2 kare BOŞLUK kalır
+// (üstten bakınca görülen çentik). Kural: iki panel bir araya geldiğinde
+// SIRALAMADA ÖNCE olan panel, köşe kenarından sonraki panelin kalınlığı kadar
+// UZAR ve onun ucunu kapatır. Tek başına kalan panel hacmin içinde, yüz
+// sınırında biter (değişiklik yok).
+//
+// Tespit tamamen VF'lerden yapılır (üretim sırasından bağımsız, deterministik):
+//   P slab'ı = [dP−tP, dP] (nP boyunca),  Q slab'ı = [dQ−tQ, dQ] (nQ boyunca)
+//   KONKAV ⇔ P bölgesi nQ boyunca dQ'da BAŞLIYOR (min≈dQ) VE Q bölgesi nP
+//   boyunca dP'de BAŞLIYOR (min≈dP). Dış (konveks) köşede bölge max≈d olur →
+//   tetiklenmez; oradaki birleşim mevcut damga sözleşmesine aittir.
+// Kapsam bilerek dar: iki panel de adımsız (taşıma/dönme/extrude yok), yüzler
+// dik, köşe kenarında Q'nun boyu P'nin kenarını kapsıyor. Aksi hâlde dokunulmaz.
+const CORNER_TOL = 1.0;
+
+function hasAnySteps(p: Shape): boolean {
+  const q: any = p.parameters || {};
+  return (Array.isArray(q.transformSteps) && q.transformSteps.length > 0)
+    || (Array.isArray(q.rotateSteps) && q.rotateSteps.length > 0)
+    || (Array.isArray(q.extrudeSteps) && q.extrudeSteps.length > 0);
+}
+
+function projRange(verts: [number, number, number][], dir: THREE.Vector3): { min: number; max: number } {
+  let min = Infinity, max = -Infinity;
+  for (const c of verts) {
+    const d = c[0] * dir.x + c[1] * dir.y + c[2] * dir.z;
+    if (d < min) min = d; if (d > max) max = d;
+  }
+  return { min, max };
+}
+
+/** P (önce) ile Q (sonra) konkav iç köşede buluşuyorsa P'nin uzayacağı bilgi; yoksa null. */
+function concaveCornerJoin(
+  vfP: VirtualFace, tP: number, vfQ: VirtualFace, tQ: number
+): { nQ: THREE.Vector3; dQ: number; tQ: number } | null {
+  if (!vfP?.vertices || vfP.vertices.length < 3 || !vfQ?.vertices || vfQ.vertices.length < 3) return null;
+  const nP = new THREE.Vector3(...(vfP.normal as [number, number, number])).normalize();
+  const nQ = new THREE.Vector3(...(vfQ.normal as [number, number, number])).normalize();
+  if (Math.abs(nP.dot(nQ)) > 0.02) return null;                  // dik değil
+  const pP = projRange(vfP.vertices, nP), pQ = projRange(vfQ.vertices, nQ);
+  if (pP.max - pP.min > CORNER_TOL || pQ.max - pQ.min > CORNER_TOL) return null; // düzlemsel değil
+  const dP = (pP.min + pP.max) / 2, dQ = (pQ.min + pQ.max) / 2;
+  const pAlongQ = projRange(vfP.vertices, nQ);
+  const qAlongP = projRange(vfQ.vertices, nP);
+  if (Math.abs(pAlongQ.min - dQ) > CORNER_TOL) return null;       // P, Q düzleminde başlamıyor
+  if (Math.abs(qAlongP.min - dP) > CORNER_TOL) return null;       // Q, P düzleminde başlamıyor
+  // Ortak kenar ekseni boyunca: Q'nun köşe kenarı P'nin köşe kenarını kapsamalı
+  const e = new THREE.Vector3().crossVectors(nP, nQ).normalize();
+  const pEdge = vfP.vertices.filter(c => Math.abs(c[0] * nQ.x + c[1] * nQ.y + c[2] * nQ.z - dQ) <= CORNER_TOL);
+  const qEdge = vfQ.vertices.filter(c => Math.abs(c[0] * nP.x + c[1] * nP.y + c[2] * nP.z - dP) <= CORNER_TOL);
+  if (pEdge.length < 2 || qEdge.length < 2) return null;
+  const pe = projRange(pEdge, e), qe = projRange(qEdge, e);
+  if (pe.max - pe.min < 1) return null;
+  if (qe.min > pe.min + 2 || qe.max < pe.max - 2) return null;
+  void tP;
+  return { nQ, dQ, tQ };
+}
+
+/** Panelin üretim köşeleri: VF köşeleri + (varsa) konkav köşe uzaması. VF'nin kendisi değişmez. */
+function cornerJoinedVertices(
+  panel: Shape, vf: VirtualFace, vfs: VirtualFace[],
+  siblings: Shape[], orderOf: (s: Shape) => number
+): [number, number, number][] {
+  let verts = vf.vertices.map(c => [c[0], c[1], c[2]] as [number, number, number]);
+  if (hasAnySteps(panel)) return verts;
+  const tP = parseFloat((panel.parameters as any)?.panelThickness) || 18;
+  const myOrder = orderOf(panel);
+  for (const q of siblings) {
+    if (q.id === panel.id || orderOf(q) <= myOrder || hasAnySteps(q)) continue;
+    const qVfId = (q.parameters as any)?.virtualFaceId;
+    const vfQ = qVfId ? vfs.find(f => f.id === qVfId) : undefined;
+    if (!vfQ) continue;
+    const tQ = parseFloat((q.parameters as any)?.panelThickness) || 18;
+    const j = concaveCornerJoin(vf, tP, vfQ, tQ);
+    if (!j) continue;
+    let moved = 0;
+    verts = verts.map(c => {
+      const d = c[0] * j.nQ.x + c[1] * j.nQ.y + c[2] * j.nQ.z;
+      if (Math.abs(d - j.dQ) > CORNER_TOL) return c;
+      moved++;
+      return [c[0] - j.nQ.x * j.tQ, c[1] - j.nQ.y * j.tQ, c[2] - j.nQ.z * j.tQ] as [number, number, number];
+    });
+    console.log('[YAGO][İÇ-KÖŞE]', panel.id, 'uzadı', j.tQ.toFixed(1), 'mm →', q.id,
+      'ucunu kapatıyor (sıra', myOrder, '<', orderOf(q), ') taşınanKöşeN=', moved);
+  }
+  return verts;
+}
+
 // ── Rebuild orkestrasyonu ─────────────────────────────────────────────────
 export interface RebuildOpts {
   // Yalnız bu panel işlem gördü (fixed/dyn/ref taşıma veya extrude) VE sıralama
@@ -403,8 +494,27 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       'basılanKardeşN=', children.filter(c => c.id !== changedChild.id && orderOf(c) > changedOrder).length,
       '→ basan panel taşındı/değişti, basılan kardeşlerin VF bölgeleri yeniden çözülecek');
   }
+  // İÇ KÖŞE ORTAĞI: işlem gören panel, kendisinden ÖNCE gelen bir panelle konkav
+  // köşede buluşuyor(du)sa o panelin uzaması değişebilir (ör. taşındı → artık
+  // uzamamalı). Tek-panel modu önceki paneli yeniden üretmeyeceği için iptal.
+  const cornerPartnerOfEarlier = !!changedChild && (() => {
+    const vfsNow = useAppStore.getState().virtualFaces;
+    const vfOf = (s: Shape) => vfsNow.find(f => f.id === (s.parameters as any)?.virtualFaceId);
+    const vq = vfOf(changedChild);
+    if (!vq) return false;
+    const tQ = parseFloat((changedChild.parameters as any)?.panelThickness) || 18;
+    return children.some(c => {
+      if (c.id === changedChild.id || orderOf(c) >= changedOrder) return false;
+      const vp = vfOf(c);
+      return !!vp && !!concaveCornerJoin(vp, 18, vq, tQ);
+    });
+  })();
+  if (cornerPartnerOfEarlier) {
+    console.log('[YAGO][REBUILD] TEK-PANEL MODU İPTAL', changedChild!.id,
+      '→ önceki panelle iç köşe ortağı, köşe uzaması yeniden çözülecek');
+  }
   const singleMode = !!opts?.changedPanelId && !opts?.orderChanged
-    && !!changedChild && !pressesSiblings;
+    && !!changedChild && !pressesSiblings && !cornerPartnerOfEarlier;
 
   const parentPos: [number, number, number] = [...(parentFresh.position as any)] as any;
 
@@ -440,7 +550,10 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       const thickness = parseFloat((panel.parameters as any)?.panelThickness) || 18;
       const steps = getUnifiedSteps(panel);
       // Panel VF'sinden gerçek boyutta üretilir (expand=0, doğru 18mm kalınlık).
-      let rp = await createPanelFromVirtualFace(att.vf.vertices, att.vf.normal, thickness, 0);
+      // İÇ KÖŞE: sıralamada önce olan panel, konkav köşede buluştuğu sonraki
+      // panelin ucunu kapatacak kadar uzar (VF değişmez, yalnız üretim köşeleri).
+      const buildVerts = cornerJoinedVertices(panel, att.vf, vfsIn, children, orderOf);
+      let rp = await createPanelFromVirtualFace(buildVerts, att.vf.normal, thickness, 0);
       if (!rp) return;
       // Adımlar (move/rotate) sırayla uygulanır — çember döndürünce panel döner.
       const { ops } = composeSteps(steps, att.vf);

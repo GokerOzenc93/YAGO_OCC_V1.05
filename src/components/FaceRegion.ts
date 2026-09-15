@@ -1134,6 +1134,140 @@ export function canonicalStripFrame(fp: Point2D[]): { c: Point2D; p: Point2D } {
   return { c: { x: cx, y: cy }, p: { x: px, y: py } };
 }
 
+// ── DİKDÖRTGENSEL (RECTILINEAR) KESİN SERBEST BÖLGE ─────────────────────────
+// Yarım-düzlem kırpması her ayak izi için TEK bir sonsuz doğruyla keser; bu
+// yüzden serbest bölge İÇBÜKEY (L/U) olduğunda bölgenin bir kolunu mutlaka
+// siler. Log kanıtı (L gövde alt yüzü): highlight L-şekilli, fakat tıkta
+// VF=u[0..600] v[-288..-18] (sol kol, "1 sn X'e yerleşti"), regen'de 284x564
+// (ön kol) — iki bölme ayak izinin sonsuz doğruları L'nin birer kolunu kesti.
+// Bu fonksiyon, yüz halkası ve TÜM engelleyen ayak izleri eksen-hizalı
+// olduğunda bölgeyi koordinat-sıkıştırılmış ızgarada KESİN çözer: kırılma
+// çizgileri yalnız gerçek kenarlardır, merdiven basamağı oluşmaz. Çapadan
+// taşkın dolum → köşe "cebi" budama → tek dış halka izleme. Uygun değilse
+// (eğik kenar, delik, çoklu halka) null döner ve eski davranış aynen kalır.
+function rectilinearFreeRegion(
+  ring2D: Point2D[], blockers: Point2D[][], anchorPt: Point2D
+): Point2D[] | null {
+  const AX = 0.05;
+  if (ring2D.length < 4) return null;
+  // Halka kenarları eksen-hizalı olmalı
+  for (let k = 0; k < ring2D.length; k++) {
+    const a = ring2D[k], b = ring2D[(k + 1) % ring2D.length];
+    if (Math.abs(a.x - b.x) > AX && Math.abs(a.y - b.y) > AX) return null;
+  }
+  // Ayak izleri eksen-hizalı dikdörtgen olmalı (alan ≈ bbox alanı)
+  const rects: Array<{ x0: number; x1: number; y0: number; y1: number }> = [];
+  for (const fp of blockers) {
+    if (fp.length < 3) return null;
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, ar = 0;
+    for (let k = 0; k < fp.length; k++) {
+      const a = fp[k], b = fp[(k + 1) % fp.length];
+      x0 = Math.min(x0, a.x); x1 = Math.max(x1, a.x); y0 = Math.min(y0, a.y); y1 = Math.max(y1, a.y);
+      ar += a.x * b.y - b.x * a.y;
+    }
+    const bbA = (x1 - x0) * (y1 - y0);
+    if (bbA <= 1e-6 || Math.abs(Math.abs(ar) / 2 - bbA) > Math.max(1, bbA * 0.01)) return null;
+    rects.push({ x0, x1, y0, y1 });
+  }
+  const uniq = (vals: number[]) => {
+    vals.sort((p, q) => p - q);
+    const out: number[] = [];
+    for (const val of vals) if (!out.length || val - out[out.length - 1] > AX) out.push(val);
+    return out;
+  };
+  let bx0 = Infinity, bx1 = -Infinity, by0 = Infinity, by1 = -Infinity;
+  for (const q of ring2D) { bx0 = Math.min(bx0, q.x); bx1 = Math.max(bx1, q.x); by0 = Math.min(by0, q.y); by1 = Math.max(by1, q.y); }
+  const clampX = (x: number) => Math.max(bx0, Math.min(bx1, x));
+  const clampY = (y: number) => Math.max(by0, Math.min(by1, y));
+  const xs = uniq([...ring2D.map(q => q.x), ...rects.flatMap(r => [clampX(r.x0), clampX(r.x1)])]);
+  const ys = uniq([...ring2D.map(q => q.y), ...rects.flatMap(r => [clampY(r.y0), clampY(r.y1)])]);
+  const NX = xs.length - 1, NY = ys.length - 1;
+  if (NX < 1 || NY < 1 || NX * NY > 40000) return null;
+  const free = new Uint8Array(NX * NY);
+  for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++) {
+    const pt = { x: (xs[i] + xs[i + 1]) / 2, y: (ys[j] + ys[j + 1]) / 2 };
+    if (!isPointInsidePolygon(pt, ring2D)) continue;
+    let blocked = false;
+    for (const r of rects) if (pt.x > r.x0 && pt.x < r.x1 && pt.y > r.y0 && pt.y < r.y1) { blocked = true; break; }
+    if (!blocked) free[j * NX + i] = 1;
+  }
+  let ai = -1, aj = -1;
+  for (let i = 0; i < NX; i++) if (anchorPt.x >= xs[i] && anchorPt.x <= xs[i + 1]) { ai = i; break; }
+  for (let j = 0; j < NY; j++) if (anchorPt.y >= ys[j] && anchorPt.y <= ys[j + 1]) { aj = j; break; }
+  if (ai < 0 || aj < 0 || !free[aj * NX + ai]) return null;
+  const reached = new Uint8Array(NX * NY);
+  const stack = [aj * NX + ai];
+  reached[aj * NX + ai] = 1;
+  while (stack.length) {
+    const k0 = stack.pop()!;
+    const i = k0 % NX, j = (k0 / NX) | 0;
+    for (const [a, b] of [[i - 1, j], [i + 1, j], [i, j - 1], [i, j + 1]] as Array<[number, number]>) {
+      if (a < 0 || b < 0 || a >= NX || b >= NY) continue;
+      const k = b * NX + a;
+      if (free[k] && !reached[k]) { reached[k] = 1; stack.push(k); }
+    }
+  }
+  // KÖŞE CEBİ BUDAMA: iki bölmenin birleşim köşesinde (biri diğerince
+  // kısaltılınca) ya da yan panel ucunda kalan ≤NIB×≤NIB boşluk hücreleri,
+  // her iki eksende de yalnız TEK taraftan komşuluysa bölgeye katılmaz —
+  // aksi halde panelde 18x18 tırnak/çentik oluşurdu. İç hücreler (en az bir
+  // eksende iki komşulu) asla budanmaz; delik açılmaz.
+  const NIB = 25;
+  const R = (i: number, j: number) => i >= 0 && j >= 0 && i < NX && j < NY && reached[j * NX + i] === 1;
+  for (let changed = true; changed;) {
+    changed = false;
+    for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++) {
+      if (!reached[j * NX + i] || (i === ai && j === aj)) continue;
+      if (xs[i + 1] - xs[i] > NIB || ys[j + 1] - ys[j] > NIB) continue;
+      const both = (R(i - 1, j) && R(i + 1, j)) || (R(i, j - 1) && R(i, j + 1));
+      if (both) continue;
+      reached[j * NX + i] = 0; changed = true;
+    }
+  }
+  // Sınır kenarları (içerisi solda, CCW) — ızgara indeksleriyle
+  const edges = new Map<string, Array<[number, number]>>();
+  let edgeCount = 0;
+  const addE = (x0: number, y0: number, x1: number, y1: number) => {
+    const key = `${x0},${y0}`;
+    if (!edges.has(key)) edges.set(key, []);
+    edges.get(key)!.push([x1, y1]);
+    edgeCount++;
+  };
+  for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++) {
+    if (!R(i, j)) continue;
+    if (!R(i, j - 1)) addE(i, j, i + 1, j);
+    if (!R(i + 1, j)) addE(i + 1, j, i + 1, j + 1);
+    if (!R(i, j + 1)) addE(i + 1, j + 1, i, j + 1);
+    if (!R(i - 1, j)) addE(i, j + 1, i, j);
+  }
+  for (const lst of edges.values()) if (lst.length !== 1) return null; // sıkışma köşesi → vazgeç
+  const startKey = edges.keys().next().value as string | undefined;
+  if (!startKey) return null;
+  const loop: Array<[number, number]> = [];
+  let cur = startKey.split(',').map(Number) as [number, number];
+  for (let guard = 0; guard <= edgeCount; guard++) {
+    loop.push(cur);
+    const nxt = edges.get(`${cur[0]},${cur[1]}`)![0];
+    if (`${nxt[0]},${nxt[1]}` === startKey) break;
+    cur = nxt;
+  }
+  if (loop.length !== edgeCount) return null; // delik / çoklu halka → vazgeç
+  // Eşdoğrusal köşeleri at
+  const simp: Array<[number, number]> = [];
+  for (let k = 0; k < loop.length; k++) {
+    const p = loop[(k + loop.length - 1) % loop.length], c = loop[k], n = loop[(k + 1) % loop.length];
+    const colX = p[0] === c[0] && c[0] === n[0];
+    const colY = p[1] === c[1] && c[1] === n[1];
+    if (!colX && !colY) simp.push(c);
+  }
+  if (simp.length < 4) return null;
+  const poly: Point2D[] = simp.map(([i, j]) => ({ x: xs[i], y: ys[j] }));
+  // Halkayla aynı dönüş yönü (yarım-düzlem kırpması halkanın yönünü korurdu)
+  const sArea = (pts: Point2D[]) => { let a = 0; for (let k = 0; k < pts.length; k++) { const q = pts[k], w = pts[(k + 1) % pts.length]; a += q.x * w.y - w.x * q.y; } return a; };
+  if (Math.sign(sArea(poly)) !== Math.sign(sArea(ring2D))) poly.reverse();
+  return poly;
+}
+
 export function computeFreeRegionLocal(
   contourCorners: THREE.Vector3[],
   normalLocal: THREE.Vector3,
@@ -1508,6 +1642,27 @@ export function computeFreeRegionLocal(
     }
     return { cover: total > 0 ? inside / total : 0, leak: total > 0 ? stray / total : 1 };
   };
+  // ── İÇBÜKEY BÖLGE KURTARMA ───────────────────────────────────────────────
+  // Yarım-düzlem sonucu gördüğünüz reach bölgesinin belirgin bir kısmını
+  // kaybettiyse (L/U serbest bölge: bir kol silindi) ve geometri eksen-hizalıysa
+  // KESİN dikdörtgensel bölge denenir. Yalnız daha iyi kapsıyor ve taşmıyorsa
+  // kabul edilir; dikdörtgen/konveks bölgelerde yarım-düzlem kapsaması ~1
+  // olduğundan bu dal hiç tetiklenmez — mevcut davranış korunur.
+  if (exact.length >= 3 && blocking.length > 0 && !blockingRotated.some(Boolean)) {
+    const hp = scorePoly(exact);
+    if (hp.cover < 0.95) {
+      const rl = rectilinearFreeRegion(ring2D, blocking, anchorPt);
+      if (rl) {
+        const rs = scorePoly(rl);
+        const accepted = rs.cover >= 0.9 && rs.leak <= 0.1 && rs.cover > hp.cover;
+        console.log('[YAGO][BÖLGE] içbükey bölge: yarım-düzlem kapsama=', hp.cover.toFixed(2),
+          '→ dikdörtgensel köşeN=', rl.length, 'kapsama=', rs.cover.toFixed(2), 'taşma=', rs.leak.toFixed(2),
+          accepted ? 'KABUL' : 'RED');
+        if (accepted) exact = rl;
+      }
+    }
+  }
+
   if (exact.length >= 3 && blocking.length > 0) {
     let total = 0;
     for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) if (reach[j * nx + i]) total++;
