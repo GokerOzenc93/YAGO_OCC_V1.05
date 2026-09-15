@@ -132,11 +132,18 @@ export function buildFacePreview(
     // hemen yazılır. Regen STORED-WINS birleştirdiğinden bu işaret bir daha
     // değişmez; sonraki geçici rebuild dalgaları paneli karşı tarafa savuramaz.
     sideRelations: region.sideRelations,
+    // BÖLGE ÇAPASI (3B, parent-yerel): bölgenin içinde, serbest bir hücre.
+    // Dönüş-kesiminde "panel dönmüş kardeşin hangi tarafında" sorusunun
+    // güvenilir cevabı (merkez/seed dik açılarda yanlış tarafa düşebilir).
     // ÖLÇEK-BAĞIMSIZ YÜZ KİMLİĞİ: resize'da regen, yüzü bu descriptor ile
     // bulur (normalize merkez + eksen) — "en yakın düzlem" tahmini yerine
     // kesin eşleşme; VF asla komşu bir yüze (ör. çentik yanağına) savrulmaz.
     faceGroupDescriptor: geometry ? createFaceDescriptor(faces[contour.seedFi], geometry) : undefined,
   };
+  // BÖLGE ÇAPASI (3B, parent-yerel): bölgenin içinde serbest bir hücre. Dönüş-
+  // kesiminde "panel dönmüş kardeşin hangi tarafında" tayini (merkez/seed dik
+  // açılarda yanlış tarafa düşebilir).
+  { const a = to3D(region.anchor.x, region.anchor.y); (virtualFace as any).regionAnchor = [a.x, a.y, a.z]; }
   return { geo, edgeGeo, virtualFace };
 }
 

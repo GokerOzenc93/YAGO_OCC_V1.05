@@ -1285,6 +1285,17 @@ function rectilinearFreeRegion(
   return poly;
 }
 
+/** Panelin açısı sıfır olmayan bir DÖNÜŞ adımı var mı (damga/gerçek panel fark etmez). */
+export function panelHasRotation(panel: any): boolean {
+  const ops = panel?.__composedOps;
+  if (Array.isArray(ops) && ops.some((o: any) => o?.kind === 'rotate' && Math.abs(o.angleRad || 0) > 1e-6)) return true;
+  const p = panel?.parameters || {};
+  const ts = Array.isArray(p.transformSteps) ? p.transformSteps : [];
+  if (ts.some((st: any) => st?.type === 'rotate' && Math.abs(st.value || 0) > 1e-6)) return true;
+  const rs = Array.isArray(p.rotateSteps) ? p.rotateSteps : [];
+  return rs.some((st: any) => Math.abs(st?.value || 0) > 1e-6);
+}
+
 export function computeFreeRegionLocal(
   contourCorners: THREE.Vector3[],
   normalLocal: THREE.Vector3,
@@ -1324,11 +1335,14 @@ export function computeFreeRegionLocal(
     const fp = panelFootprintInParentLocal(panel, parentWorldToLocal, nrm, planeN, u, v);
     if (!fp) continue;
     footprints.push(fp);
-    // Dönüş zaten footprint'e uygulandı — uzak-teğet ötelemesi KAPATILIR.
-    // Eski davranış: dönmüş panelin düz (18mm) izi uzak-teğete ötelenirdi.
-    // Yeni: rotateSteps köşelere uygulanıp tam siluet hesaplandığı için
-    // footprint doğrudan kullanılır, ekstra öteleme gerekmez.
-    fpRotated.push(false);
+    // GERÇEKTEN DÖNMÜŞ kardeş (açısı ≠ 0 rotate adımı): uzak-teğet kırpması
+    // AÇIK. Bölge, dönmüş şeridin İÇİNDEN geçer; panel dönmüş kardeşle örtüşür
+    // ve PanelEngine'deki DÖNÜŞ-KESİMİ (yarım-uzay) kalınlık kenarını gerçek
+    // eğik düzleme birebir biçer — "taşımadaki gibi kısalsın, kalınlık açı
+    // alsın" (Goker). Yakın kenardan kırpılsaydı panel şeridin en alçak
+    // çizgisinde kare bitip kama boşluğu bırakırdı. Düz/extrude'lu/taşınmış
+    // kardeşlerde (dönüş yok) davranış değişmez.
+    fpRotated.push(panelHasRotation(panel));
     fpIds.push(panel?.id ?? null);
     if (panel.id) touchingSiblingIds.push(panel.id);
   }

@@ -1,70 +1,14 @@
 import { useState, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { Html } from '@react-three/drei';
+import { GizmoDot, computeRealCorners, panelWorldMatrix, resolveDotOverlap } from './GizmoDot';
 import { useFrame } from '@react-three/fiber';
 import { useAppStore } from '../store';
 import type { Shape } from '../store';
 
 const RENDER_ORDER = 999;
 
-// ── Pivot işareti — kameraya dönük, sabit piksel boyutlu mavi çarpı (×) ──
-// 3B mesh yerine Html içine SVG gömülür: her zaman keskin/anti-aliased,
-// daima aynı boyutta ve daima kameraya bakar. innerRef, ebeveynin üst üste
-// binen işaretleri piksel bazında ayırabilmesi (fan-out) için kullanılır.
-interface PivotMarkProps {
-  position: [number, number, number];
-  onSelect: () => void;
-  isSelected: boolean;
-  innerRef?: (el: HTMLDivElement | null) => void;
-}
-
-function PivotMark({ position, onSelect, isSelected, innerRef }: PivotMarkProps) {
-  const [hovered, setHovered] = useState(false);
-  const active = hovered || isSelected;
-
-  const stroke = isSelected ? '#1d4ed8' : hovered ? '#3b82f6' : '#2563eb';
-  const px = active ? 20 : 16;
-  const sw = active ? 2.4 : 2;
-
-  return (
-    <Html position={position} center zIndexRange={[999, 1000]} style={{ pointerEvents: 'none' }}>
-      <div
-        ref={innerRef}
-        onClick={e => { e.stopPropagation(); onSelect(); }}
-        onMouseEnter={() => { setHovered(true); document.body.style.cursor = 'pointer'; }}
-        onMouseLeave={() => { setHovered(false); document.body.style.cursor = 'default'; }}
-        style={{
-          pointerEvents: 'auto',
-          cursor: 'pointer',
-          width: 26,
-          height: 26,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          willChange: 'transform',
-        }}
-      >
-        <svg
-          width={px}
-          height={px}
-          viewBox="0 0 24 24"
-          fill="none"
-          style={{
-            display: 'block',
-            transition: 'width 0.12s ease, height 0.12s ease',
-            filter: 'drop-shadow(0 0 1.5px rgba(255,255,255,0.9))',
-          }}
-        >
-          {isSelected && (
-            <circle cx="12" cy="12" r="10" fill="rgba(37,99,235,0.12)" stroke={stroke} strokeWidth="1.1" />
-          )}
-          <line x1="7" y1="7" x2="17" y2="17" stroke={stroke} strokeWidth={sw} strokeLinecap="round" />
-          <line x1="17" y1="7" x2="7" y2="17" stroke={stroke} strokeWidth={sw} strokeLinecap="round" />
-        </svg>
-      </div>
-    </Html>
-  );
-}
+// Pivot noktaları: GizmoDot (taşıma referans noktalarıyla ORTAK tasarım/davranış).
 
 interface RotationRingProps {
   center: [number, number, number];
@@ -193,38 +137,7 @@ function RotationRing({ center, axis, radius, onSelect, selectedAxis }: Rotation
   );
 }
 
-// Yerel bbox + dünya matrisi yardımcıları ──────────────────────────────
-function panelWorldMatrix(panelShape: Shape): THREE.Matrix4 {
-  return new THREE.Matrix4().compose(
-    new THREE.Vector3(...panelShape.position),
-    new THREE.Quaternion().setFromEuler(new THREE.Euler(...panelShape.rotation, 'XYZ')),
-    new THREE.Vector3(...panelShape.scale)
-  );
-}
-
-// 8 köşe — AABB yerine geometrinin GERÇEK benzersiz köşeleri kullanılır.
-// Dönmüş panellerde geometri zaten dönmüş halde saklanıyor (rotation=[0,0,0]);
-// AABB bunu kapsayan eksen-hizalı kutu verir ve köşeler sapardı.
-function computeCorners(panelShape: Shape): [number, number, number][] {
-  if (!panelShape.geometry) return [];
-  const pos = panelShape.geometry.getAttribute('position') as THREE.BufferAttribute;
-  if (!pos) return [];
-
-  const seen = new Map<string, THREE.Vector3>();
-  for (let i = 0; i < pos.count; i++) {
-    const v = new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i));
-    const key = `${Math.round(v.x * 100)},${Math.round(v.y * 100)},${Math.round(v.z * 100)}`;
-    if (!seen.has(key)) seen.set(key, v);
-  }
-
-  const mat = panelWorldMatrix(panelShape);
-  const result: [number, number, number][] = [];
-  for (const v of seen.values()) {
-    const w = v.clone().applyMatrix4(mat);
-    result.push([w.x, w.y, w.z]);
-  }
-  return result;
-}
+const computeCorners = computeRealCorners;
 
 // Orta noktalar — gerçek köşelerden kalınlık yönünü bulup iki geniş yüzün merkezini hesaplar.
 function computeFaceCenters(panelShape: Shape): [number, number, number][] {
@@ -304,54 +217,14 @@ export function PanelRotateGizmo({ panelShape }: PanelRotateGizmoProps) {
     return Math.max(size.x, size.y, size.z) * 0.35;
   }, [panelShape.geometry]);
 
-  // ── Ekran-uzayı çakışma çözümü (fan-out) ─────────────────────────────
-  // Üst üste binen işaretler her karede birkaç piksel ayrılır; böylece ince
-  // panellerde ön/arka köşe işaretleri ayrı ayrı tıklanabilir.
-  const markRefs = useRef<(HTMLDivElement | null)[]>([]);
+  // ── Çakışan noktalar: yalnız TAM üst üste binenler gizlenir (GizmoDot) ──
+  const markRefs = useRef<(THREE.Group | null)[]>([]);
   const tmpVec = useRef(new THREE.Vector3());
-
   useFrame(({ camera, size }) => {
-    const n = pivots.length;
-    if (!n) return;
-
-    const sx = new Array<number>(n);
-    const sy = new Array<number>(n);
-    for (let i = 0; i < n; i++) {
-      const v = tmpVec.current.set(pivots[i].pos[0], pivots[i].pos[1], pivots[i].pos[2]).project(camera);
-      sx[i] = (v.x * 0.5 + 0.5) * size.width;
-      sy[i] = (1 - (v.y * 0.5 + 0.5)) * size.height;
-    }
-
-    const dx = new Array<number>(n).fill(0);
-    const dy = new Array<number>(n).fill(0);
-    const MIN = 24; // işaret ayırma mesafesi (px)
-
-    for (let pass = 0; pass < 4; pass++) {
-      for (let i = 0; i < n; i++) {
-        for (let j = i + 1; j < n; j++) {
-          let vx = (sx[j] + dx[j]) - (sx[i] + dx[i]);
-          let vy = (sy[j] + dy[j]) - (sy[i] + dy[i]);
-          let d = Math.hypot(vx, vy);
-          if (d < MIN) {
-            if (d < 1e-3) {
-              // Tam çakışık: altın açıyla deterministik yönde aç
-              const a = i * 2.399963;
-              vx = Math.cos(a); vy = Math.sin(a); d = 1;
-            }
-            const push = (MIN - d) / 2;
-            const ux = vx / d, uy = vy / d;
-            dx[i] -= ux * push; dy[i] -= uy * push;
-            dx[j] += ux * push; dy[j] += uy * push;
-          }
-        }
-      }
-    }
-
-    const els = markRefs.current;
-    for (let i = 0; i < n; i++) {
-      const el = els[i];
-      if (el) el.style.transform = `translate(${dx[i].toFixed(2)}px, ${dy[i].toFixed(2)}px)`;
-    }
+    resolveDotOverlap(camera, size,
+      pivots.map(pv => ({ pos: pv.pos, group: 0 })),
+      i => eq(panelRotatePivot, pivots[i].pos),
+      markRefs.current, tmpVec.current);
   });
 
   const handlePivotSelect = (point: [number, number, number], kind: PivotKind) => {
@@ -368,12 +241,13 @@ export function PanelRotateGizmo({ panelShape }: PanelRotateGizmoProps) {
     <group>
       {/* Köşe (8) + üst/alt yüz merkezi (2) — hepsi aynı mavi çarpı işareti */}
       {pivots.map((pv, i) => (
-        <PivotMark
+        <GizmoDot
           key={`pivot-${i}`}
           position={pv.pos}
-          innerRef={el => { markRefs.current[i] = el; }}
-          onSelect={() => handlePivotSelect(pv.pos, pv.kind)}
+          groupRef={el => { markRefs.current[i] = el; }}
+          onClick={() => handlePivotSelect(pv.pos, pv.kind)}
           isSelected={eq(panelRotatePivot, pv.pos)}
+          accent={pv.kind === 'center' ? '#ea580c' : '#44403c'}
         />
       ))}
 

@@ -983,8 +983,15 @@ export function recalculateVirtualFacesForShape(
           return p;
         }
 
-        // ── DÖNMÜŞ (extrude'suz) PANEL: eski davranış (canlı mesh + composeSteps). ──
-        return { ...p, __isRotatedPanel: true, __composedOps: composedFromSteps(p.geometry) };
+        // ── DÖNMÜŞ (extrude'suz) PANEL: GERÇEK geometri, ops'suz ──
+        // KÖK NEDEN (dönüş dengesizliği): store'daki geometri ZATEN DÖNMÜŞ
+        // (motor rotate uygulayıp rotation=0 ile yazar); üstüne composeSteps
+        // ops'u bir daha uygulanınca damga ÇİFT açıyla (10°→20°) düşüyordu.
+        // Dönmüş panel artık büyütülüp gövdeye/kardeşlere sığdırıldığı için
+        // (PanelEngine.fitRotatedPanel) tek doğru damga, motorun yazdığı nihai
+        // geometridir; ops uygulanmaz. (Kutu boyutlanınca bir geçiş bayat kalır;
+        // sıra-duyarlı rebuild ikinci geçişte düzeltir.)
+        return { ...p, __isRotatedPanel: true, __composedOps: [] };
       });
   };
 
@@ -1205,6 +1212,11 @@ function regenerateParentFaceShapeVF(
   // doldu → yeniden çözülüyor" tetiklenince) yeniden hesaplanan YANLIŞ işaret
   // sözleşmeyi bozamaz. Panel, ilk yerleştiği kardeş-tarafında kalıcıdır.
   (out as any).sideRelations = { ...(region?.sideRelations || {}), ...(storedRel || {}) };
+  // BÖLGE ÇAPASI (3B): dönüş-kesiminde taraf tayini için (bkz. PanelEngine).
+  if (region?.anchor) {
+    const a = new THREE.Vector3().addScaledVector(u, region.anchor.x).addScaledVector(v, region.anchor.y).addScaledVector(localNormal, planeN);
+    (out as any).regionAnchor = [a.x, a.y, a.z];
+  }
   // TEMAS İLİŞKİLERİ: bu VF'nin ayak izi tarafından kırpılan kardeşlerin
   // id ve yüz normallerini kaydet. Boyut değişiminde taşıma adımlarının
   // oransal ölçeklenmesi bu ilişkilere dayanır.
