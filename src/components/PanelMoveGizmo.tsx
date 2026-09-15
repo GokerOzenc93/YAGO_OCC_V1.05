@@ -207,67 +207,102 @@ function OriginSphere({ position, size, baseLength }: { position: [number, numbe
   );
 }
 
-// ── Çarpı işareti (PivotMark ile aynı stil) ──────────────────────────────
-// Move gizmo'da küre yerine kameraya bakan sabit piksel boyutlu çarpı (×).
-// Tam köşelerde durur, her zaman keskin ve tıklanabilir.
-interface CrossMarkProps {
+// ── Köşe noktası (referans taşıma) — 3B, KÖŞEYE KİLİTLİ ──────────────────
+// KÖK NEDEN (Goker: "noktalar köşede durmuyor, zoom'a göre kayıyor"): noktalar
+// DOM katmanında (drei <Html>) çiziliyordu. DOM düğümü canvas üstüne ayrı bir
+// katman olarak konumlanır; ek olarak ekran-uzayı çakışma çözümü noktaları
+// piksel olarak itiyordu. Nokta artık sahnenin İÇİNDE, köşenin tam dünya
+// konumunda duran, kameraya dönük bir disktir. Boyutu her karede "1 piksel
+// kaç mm" hesabıyla ekranda sabit tutulur → her zoom/açıda köşenin üstünde,
+// her mesafede aynı boyda. depthTest kapalı: panelin arkasında kalsa da görünür.
+const DOT_UNIT = new THREE.CircleGeometry(1, 32);
+const DOT_IVORY = '#fffdf9';
+
+interface VertexDotProps {
   position: [number, number, number];
   isSelected: boolean;
   isTarget: boolean;
   onClick: (pos: [number, number, number]) => void;
-  innerRef?: (el: HTMLDivElement | null) => void;
+  groupRef?: (g: THREE.Group | null) => void;
 }
 
-function CrossMark({ position, isSelected, isTarget, onClick, innerRef }: CrossMarkProps) {
+function VertexDot({ position, isSelected, isTarget, onClick, groupRef }: VertexDotProps) {
   const [hovered, setHovered] = useState(false);
-  const active = hovered || isSelected;
+  const g = useRef<THREE.Group | null>(null);
+  const accent = isTarget ? '#ea580c' : '#44403c';
+  const filled = hovered || isSelected;
+  // Ekrandaki çap (CSS px)
+  const diameterPx = isSelected ? 12 : hovered ? 13 : 10;
 
-  // Kaynak: mavi, Hedef: turuncu
-  const baseColor = isTarget ? '#ea580c' : '#2563eb';
-  const selColor = isTarget ? '#c2410c' : '#1d4ed8';
-  const hoverColor = isTarget ? '#f97316' : '#3b82f6';
-  const stroke = isSelected ? selColor : hovered ? hoverColor : baseColor;
-  const px = active ? 20 : 16;
-  const sw = active ? 2.4 : 2;
+  useFrame(({ camera, size }) => {
+    const o = g.current;
+    if (!o) return;
+    o.quaternion.copy(camera.quaternion);
+    const wpp = worldPerPixel(camera, size.height, o.position);
+    o.scale.setScalar((diameterPx / 2) * wpp);
+  });
+
+  // Tıklama önceliği: disk panellerin önünde sayılsın (mesafe 0) ve gizliyken
+  // (çakışan köşe) hiç yakalanmasın.
+  const hitRaycast = function (this: THREE.Mesh, rc: THREE.Raycaster, hits: THREE.Intersection[]) {
+    if (!g.current?.visible) return;
+    const before = hits.length;
+    THREE.Mesh.prototype.raycast.call(this, rc, hits);
+    for (let i = before; i < hits.length; i++) hits[i].distance = 0;
+  };
+
+  const mat = (color: string, opacity = 1) => (
+    <meshBasicMaterial color={color} transparent opacity={opacity} depthTest={false} depthWrite={false} toneMapped={false} />
+  );
 
   return (
-    <Html position={position} center zIndexRange={[999, 1000]} style={{ pointerEvents: 'none' }}>
-      <div
-        ref={innerRef}
+    <group
+      ref={el => { g.current = el; groupRef?.(el); }}
+      position={position}
+      renderOrder={RENDER_ORDER + 10}
+    >
+      {/* Seçim halesi */}
+      {isSelected && (
+        <mesh geometry={DOT_UNIT} scale={2.1} renderOrder={RENDER_ORDER + 10} raycast={() => null}>
+          {mat(accent, 0.2)}
+        </mesh>
+      )}
+      {/* Yumuşak gölge */}
+      <mesh geometry={DOT_UNIT} scale={1.3} position={[0.12, -0.18, 0]} renderOrder={RENDER_ORDER + 11} raycast={() => null}>
+        {mat('#281e14', 0.22)}
+      </mesh>
+      {/* Dış halka */}
+      <mesh geometry={DOT_UNIT} renderOrder={RENDER_ORDER + 12} raycast={() => null}>
+        {mat(filled ? DOT_IVORY : accent)}
+      </mesh>
+      {/* İç dolgu */}
+      <mesh geometry={DOT_UNIT} scale={0.6} renderOrder={RENDER_ORDER + 13} raycast={() => null}>
+        {mat(filled ? accent : DOT_IVORY)}
+      </mesh>
+      {/* Görünmez, geniş tıklama alanı (~24px) */}
+      <mesh
+        geometry={DOT_UNIT}
+        scale={2.4}
+        raycast={hitRaycast}
         onClick={e => { e.stopPropagation(); onClick(position); }}
-        onMouseEnter={() => { setHovered(true); document.body.style.cursor = 'pointer'; }}
-        onMouseLeave={() => { setHovered(false); document.body.style.cursor = 'default'; }}
-        style={{
-          pointerEvents: 'auto',
-          cursor: 'pointer',
-          width: 26,
-          height: 26,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          willChange: 'transform',
-        }}
+        onPointerOver={e => { e.stopPropagation(); setHovered(true); document.body.style.cursor = 'pointer'; }}
+        onPointerOut={() => { setHovered(false); document.body.style.cursor = 'default'; }}
       >
-        <svg
-          width={px}
-          height={px}
-          viewBox="0 0 24 24"
-          fill="none"
-          style={{
-            display: 'block',
-            transition: 'width 0.12s ease, height 0.12s ease',
-            filter: 'drop-shadow(0 0 1.5px rgba(255,255,255,0.9))',
-          }}
-        >
-          {isSelected && (
-            <circle cx="12" cy="12" r="10" fill={isTarget ? 'rgba(234,88,12,0.12)' : 'rgba(37,99,235,0.12)'} stroke={stroke} strokeWidth="1.1" />
-          )}
-          <line x1="7" y1="7" x2="17" y2="17" stroke={stroke} strokeWidth={sw} strokeLinecap="round" />
-          <line x1="17" y1="7" x2="7" y2="17" stroke={stroke} strokeWidth={sw} strokeLinecap="round" />
-        </svg>
-      </div>
-    </Html>
+        <meshBasicMaterial transparent opacity={0} depthTest={false} depthWrite={false} />
+      </mesh>
+    </group>
   );
+}
+
+// Gerçek KÖŞELER: tesselasyon köşelerinden yalnız özellik kenarlarının
+// (EdgesGeometry) gerçekten YÖN DEĞİŞTİRDİĞİ noktalar. Düz kenarın ortasındaki
+// tesselasyon ara noktaları (kesim/extrude sonrası oluşan T-birleşimleri) nokta
+// olarak gösterilmez.
+function isRealCorner(key: string, incident: Map<string, THREE.Vector3[]>): boolean {
+  const dirs = incident.get(key);
+  if (!dirs || dirs.length === 0) return false;
+  if (dirs.length === 2 && dirs[0].dot(dirs[1]) < -0.999) return false; // düz kenarın ara noktası
+  return true;
 }
 
 interface PanelMoveGizmoProps {
@@ -282,22 +317,31 @@ function panelWorldMatrix(panelShape: Shape): THREE.Matrix4 {
   );
 }
 
-// Tam köşeleri al — AABB yerine geometrinin GERÇEK benzersiz köşeleri.
+// Tam köşeleri al — geometrinin GERÇEK köşeleri (özellik kenarı uçları).
 function computeCorners(panelShape: Shape): [number, number, number][] {
   if (!panelShape.geometry) return [];
-  const pos = panelShape.geometry.getAttribute('position') as THREE.BufferAttribute;
-  if (!pos) return [];
-
-  const seen = new Map<string, THREE.Vector3>();
-  for (let i = 0; i < pos.count; i++) {
-    const v = new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i));
-    const key = `${Math.round(v.x * 100)},${Math.round(v.y * 100)},${Math.round(v.z * 100)}`;
-    if (!seen.has(key)) seen.set(key, v);
+  const edges = new THREE.EdgesGeometry(panelShape.geometry, 1);
+  const ep = edges.getAttribute('position') as THREE.BufferAttribute;
+  const k = (x: number, y: number, z: number) => `${Math.round(x * 100)},${Math.round(y * 100)},${Math.round(z * 100)}`;
+  const incident = new Map<string, THREE.Vector3[]>();
+  const pts = new Map<string, THREE.Vector3>();
+  for (let i = 0; i + 1 < ep.count; i += 2) {
+    const a = new THREE.Vector3(ep.getX(i), ep.getY(i), ep.getZ(i));
+    const b = new THREE.Vector3(ep.getX(i + 1), ep.getY(i + 1), ep.getZ(i + 1));
+    if (a.distanceToSquared(b) < 1e-8) continue;
+    const ka = k(a.x, a.y, a.z), kb = k(b.x, b.y, b.z);
+    const d = b.clone().sub(a).normalize();
+    if (!incident.has(ka)) incident.set(ka, []);
+    if (!incident.has(kb)) incident.set(kb, []);
+    incident.get(ka)!.push(d.clone());
+    incident.get(kb)!.push(d.clone().negate());
+    pts.set(ka, a); pts.set(kb, b);
   }
-
+  edges.dispose();
   const mat = panelWorldMatrix(panelShape);
   const result: [number, number, number][] = [];
-  for (const v of seen.values()) {
+  for (const [key, v] of pts) {
+    if (!isRealCorner(key, incident)) continue;
     const w = v.clone().applyMatrix4(mat);
     result.push([w.x, w.y, w.z]);
   }
@@ -393,9 +437,13 @@ export function PanelMoveGizmo({ panelShape }: PanelMoveGizmoProps) {
     return computeCorners(targetPanel);
   }, [targetPanel]);
 
-  // ── Ekran-uzayı çakışma çözümü (fan-out) ─────────────────────────────
-  // Üst üste binen çarpı işaretleri her karede birkaç piksel ayrılır.
-  const markRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const vertEq = (a: [number, number, number] | null, b: [number, number, number], tol = 0.5) =>
+    !!a && Math.abs(a[0] - b[0]) < tol && Math.abs(a[1] - b[1]) < tol && Math.abs(a[2] - b[2]) < tol;
+
+  // ── Çakışan köşeler: yalnız TAM üst üste binenler (≤ 4px) gizlenir ─────
+  // Kameraya en yakın olan kalır; seçili nokta her zaman görünür. Uzakta da
+  // panelin tüm köşeleri görünür (eski 12px eşiği uzakta tek nokta bırakıyordu).
+  const markRefs = useRef<(THREE.Group | null)[]>([]);
   const tmpVec = useRef(new THREE.Vector3());
   const allMarks = useMemo(() => {
     const src = sourceVertices.map(v => ({ pos: v, isTarget: false }));
@@ -406,43 +454,35 @@ export function PanelMoveGizmo({ panelShape }: PanelMoveGizmoProps) {
   useFrame(({ camera, size }) => {
     const n = allMarks.length;
     if (!n) return;
-
-    const sx = new Array<number>(n);
-    const sy = new Array<number>(n);
+    const OVERLAP_PX = 4;
+    const sx = new Array<number>(n), sy = new Array<number>(n), dist = new Array<number>(n);
     for (let i = 0; i < n; i++) {
-      const v = tmpVec.current.set(allMarks[i].pos[0], allMarks[i].pos[1], allMarks[i].pos[2]).project(camera);
+      const p = allMarks[i].pos;
+      tmpVec.current.set(p[0], p[1], p[2]);
+      dist[i] = camera.position.distanceTo(tmpVec.current);
+      const v = tmpVec.current.project(camera);
       sx[i] = (v.x * 0.5 + 0.5) * size.width;
       sy[i] = (1 - (v.y * 0.5 + 0.5)) * size.height;
     }
-
-    const dx = new Array<number>(n).fill(0);
-    const dy = new Array<number>(n).fill(0);
-    const MIN = 24;
-
-    for (let pass = 0; pass < 4; pass++) {
-      for (let i = 0; i < n; i++) {
-        for (let j = i + 1; j < n; j++) {
-          let vx = (sx[j] + dx[j]) - (sx[i] + dx[i]);
-          let vy = (sy[j] + dy[j]) - (sy[i] + dy[i]);
-          let d = Math.hypot(vx, vy);
-          if (d < MIN) {
-            if (d < 1e-3) {
-              const a = i * 2.399963;
-              vx = Math.cos(a); vy = Math.sin(a); d = 1;
-            }
-            const push = (MIN - d) / 2;
-            const ux = vx / d, uy = vy / d;
-            dx[i] -= ux * push; dy[i] -= uy * push;
-            dx[j] += ux * push; dy[j] += uy * push;
-          }
-        }
+    const isSel = (i: number) => allMarks[i].isTarget
+      ? vertEq(panelMoveRefTargetVertex, allMarks[i].pos)
+      : vertEq(panelMoveRefSourceVertex, allMarks[i].pos);
+    const order = Array.from({ length: n }, (_, i) => i)
+      .sort((a, b) => (Number(isSel(b)) - Number(isSel(a))) || (dist[a] - dist[b]));
+    const shown: number[] = [];
+    const visible = new Array<boolean>(n).fill(false);
+    for (const i of order) {
+      let clash = false;
+      for (const j of shown) {
+        if (allMarks[j].isTarget !== allMarks[i].isTarget) continue;
+        if (Math.hypot(sx[i] - sx[j], sy[i] - sy[j]) < OVERLAP_PX) { clash = true; break; }
       }
+      if (!clash) { shown.push(i); visible[i] = true; }
     }
-
     const els = markRefs.current;
     for (let i = 0; i < n; i++) {
       const el = els[i];
-      if (el) el.style.transform = `translate(${dx[i].toFixed(2)}px, ${dy[i].toFixed(2)}px)`;
+      if (el && el.visible !== visible[i]) el.visible = visible[i];
     }
   });
 
@@ -475,8 +515,6 @@ export function PanelMoveGizmo({ panelShape }: PanelMoveGizmoProps) {
   const isSourceSelected = !!panelMoveRefSourceVertex;
   const needsTargetPanel = isSourceSelected && !panelMoveRefTargetPanelId;
 
-  const vertEq = (a: [number, number, number] | null, b: [number, number, number], tol = 0.5) =>
-    !!a && Math.abs(a[0] - b[0]) < tol && Math.abs(a[1] - b[1]) < tol && Math.abs(a[2] - b[2]) < tol;
 
   return (
     <group>
@@ -499,23 +537,23 @@ export function PanelMoveGizmo({ panelShape }: PanelMoveGizmoProps) {
         </>
       )}
       {isRefMode && !needsTargetPanel && sourceVertices.map((v, i) => (
-        <CrossMark
+        <VertexDot
           key={`src-${i}`}
           position={v}
           isSelected={vertEq(panelMoveRefSourceVertex, v)}
           isTarget={false}
           onClick={handleSourceVertexClick}
-          innerRef={el => { markRefs.current[i] = el; }}
+          groupRef={el => { markRefs.current[i] = el; }}
         />
       ))}
       {isRefMode && panelMoveRefTargetPanelId && targetVertices.map((v, i) => (
-        <CrossMark
+        <VertexDot
           key={`tgt-${i}`}
           position={v}
           isSelected={vertEq(panelMoveRefTargetVertex, v)}
           isTarget
           onClick={handleTargetVertexClick}
-          innerRef={el => { markRefs.current[sourceVertices.length + i] = el; }}
+          groupRef={el => { markRefs.current[sourceVertices.length + i] = el; }}
         />
       ))}
     </group>

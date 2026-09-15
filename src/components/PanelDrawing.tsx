@@ -298,7 +298,9 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   // Seçili panelin kenarı normal kalır (siyah kalın çerçeve yok); seçim
   // kırmızı tarama ile gösterilir. Parent seçimde turuncu aksan korunur.
   const edgeColor = moveRefHighlight ? moveRefEdgeColor : isSelected ? PANEL_COLORS.selected.shapeEdge : PANEL_COLORS.edge.default;
-  const edgeWidth = moveRefHighlight ? EDGE_LINE_WIDTH + 2.5 : isSelected ? EDGE_LINE_WIDTH + 1.5 : EDGE_LINE_WIDTH;
+  // Seçim kenarı İNCE ama okunur: kalınlık yerine renk kontrastı taşır
+  // (eski +2.5 / +1.5 px ağır çerçeve gibi duruyordu).
+  const edgeWidth = moveRefHighlight ? EDGE_LINE_WIDTH + 0.9 : isSelected ? EDGE_LINE_WIDTH + 0.7 : EDGE_LINE_WIDTH;
 
   // Tarama yalnız panel satırı seçiliyken ve dolgu görünen modlarda.
   const showHatch = isPanelRowSelected && !isWireframe;
