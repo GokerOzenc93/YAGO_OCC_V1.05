@@ -122,9 +122,9 @@ function trimmedStampGeometryFromVf(
   for (const step of extrudeSteps) {
     if (!step.faceNormal) continue;
     const eN = new THREE.Vector3(...step.faceNormal).normalize();
-    if (eN.dot(targetFaceNormal) > 0.7) continue;
+    const alignT = eN.dot(targetFaceNormal);
     // Extrude hedef yüzden UZAKLAŞIYORSA yakın kenar yerinde kalır → atla
-    if (eN.dot(targetFaceNormal) < -0.3) continue;
+    if (alignT < -0.3) continue;
     const projs = trimmed.map(p => p[0] * eN.x + p[1] * eN.y + p[2] * eN.z);
     // İŞARETLİ MİKTAR — GERÇEK EXTRUDE (applyOneExtrudeStep) İLE BİREBİR:
     //  • ref  → resolvedValue (rebuild'de çözülmüş işaretli mesafe)
@@ -159,6 +159,9 @@ function trimmedStampGeometryFromVf(
       'amount=', amount.toFixed(1),
       Math.abs(amount) < 0.01 ? '→ TRIM YOK (tam boy)' : '→ trim');
     if (Math.abs(amount) < 0.01) continue;
+    // Hedef yüze BAKAN extrude: yalnız KISALMA (panel bu yüzden çekiliyor)
+    // damgaya yansır; büyüme yansımaz (eski sözleşme — komşu gereksiz kısalmaz).
+    if (alignT > 0.7 && amount > 0) continue;
     if (amount < 0) {
       const maxProj = Math.max(...projs);
       const threshold = maxProj + amount;
@@ -932,7 +935,12 @@ export function recalculateVirtualFacesForShape(
         if (hasExtrudeSteps(p) && ownVfStamp) {
           const th = parseFloat((p.parameters as any)?.panelThickness) || 18;
           const es = (p.parameters as any)?.extrudeSteps;
-          if (myFaceNormal && hasExtrudeTowardFace(p, myFaceNormal)) {
+          // Bu yüze bakan extrude yüzü bu yüze doğru İLERLETMİYORSA (fixed/dyn ile
+          // KISALMA) taban DEĞİL kırpılmış damga kullanılır. Eski davranış kısalan
+          // paneli yine tam boy damgalıyordu: yan panel arkadan 300'e kısaltılınca
+          // arka paneli hâlâ 18mm kesiyordu ("küp sınırına kadar gitmeli").
+          if (myFaceNormal && hasExtrudeTowardFace(p, myFaceNormal)
+              && extrudeAdvancesTowardFace(p, myFaceNormal)) {
             const baseGeo = baseStampGeometryFromVf(ownVfStamp, th);
             if (baseGeo) {
               return { ...p, geometry: baseGeo, __isRotatedPanel: true, __composedOps: composedFromSteps(baseGeo) || [] };

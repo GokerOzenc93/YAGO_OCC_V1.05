@@ -874,16 +874,33 @@ export function panelFootprintInParentLocal(
       pivot: op.pivot ? op.pivot.clone().applyMatrix4(parentWorldToLocal) : undefined,
       axis: op.axis ? op.axis.clone().transformDirection(parentWorldToLocal).normalize() : undefined,
       angleRad: op.angleRad || 0,
-      d: op.d ? op.d.clone().transformDirection(parentWorldToLocal) : undefined,
+      // ÖTELEME VEKTÖRÜ NORMALİZE EDİLMEZ: transformDirection birim vektör
+      // döndürür → −122mm taşıma 1mm'ye iniyordu (log: taşınmış+extrude'lu
+      // yan panelin arka yüz izi u=581..599 — gerçek yeri 460..478). Yalnız
+      // dönüş/ölçek kısmı (3x3) uygulanır, uzunluk korunur.
+      d: op.d ? op.d.clone().applyMatrix3(new THREE.Matrix3().setFromMatrix4(parentWorldToLocal)) : undefined,
     }));
-    const rOut: Point2D[] = pts.map(p => {
+    const moved = pts.map(p => {
       const v3 = p.clone();
       for (const op of localOps) {
         if (op.kind === 'translate') { if (op.d) v3.add(op.d); }
         else if (op.pivot && op.axis) { v3.sub(op.pivot); v3.applyAxisAngle(op.axis, op.angleRad); v3.add(op.pivot); }
       }
-      return { x: v3.dot(u), y: v3.dot(v) };
+      return v3;
     });
+    // TAŞINMIŞ DAMGA DÜZLEME DEĞMİYORSA İZ YOK: yukarıdaki değme kapısı adımlar
+    // UYGULANMADAN (VF konumunda) bakıyor. Taşınmış panel VF yüzüne değer ama
+    // gerçekte içeri kaçmıştır; siluet yine de bu yüze izdüşürülüyor ve yüzde
+    // HAYALET iz bırakıyordu (log: yan panel −122 taşındı + fixed 300 extrude →
+    // sağ yüzde 300x582 iz; yeni panel yalnız kalan yarıya, arkaya atıldı).
+    // Öteleme içeren adımlarda değme, adımlar SONRASI yeniden sınanır. Salt
+    // dönmüş panellerin davranışı değişmez.
+    if (localOps.some(op => op.kind === 'translate' && op.d && op.d.lengthSq() > 1e-6)) {
+      let mn = Infinity, mx = -Infinity;
+      for (const q of moved) { const dd = q.dot(nrm) - planeN; if (dd < mn) mn = dd; if (dd > mx) mx = dd; }
+      if (mn > tol || mx < -tol) return null;
+    }
+    const rOut: Point2D[] = moved.map(v3 => ({ x: v3.dot(u), y: v3.dot(v) }));
     if (rOut.length < 3) return null;
     const hull = convexHull2D(rOut);
     return hull.length >= 3 ? hull : null;
