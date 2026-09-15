@@ -42,7 +42,6 @@ export interface VirtualFace {
   center:[number,number,number];
   vertices:[number,number,number][];
   description:string;hasPanel:boolean;
-  panelRemovedByUser?:boolean;
   /** TAM YÜZ MODELİ: VF = tıklanan yüz bileşeninin gerçek konturu; resize'da
    *  yüz eşlemesiyle (regenerateParentFaceShapeVF) güncellenir. */
   parentFaceShape?:boolean;

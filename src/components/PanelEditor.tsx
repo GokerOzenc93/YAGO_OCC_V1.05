@@ -667,9 +667,16 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
 
   useEffect(() => {
     const currentShapes = useAppStore.getState().shapes;
+    // ESKİ "PANELİ KAPAT/GİZLE" KALINTISI: o özellik kaldırıldı. Eski kayıtlarda
+    // paneli kapatılmış (panelRemovedByUser) yüzler kalmış olabilir; bunlar
+    // otomatik oluşturmaya düşüp paneli geri getirmesin diye bir kez silinir.
+    const legacyHidden = virtualFaces.filter(vf => !vf.hasPanel && (vf as any).panelRemovedByUser);
+    if (legacyHidden.length) {
+      for (const vf of legacyHidden) deleteVirtualFace(vf.id);
+      return;
+    }
     const pending = virtualFaces.filter(vf =>
       !vf.hasPanel &&
-      !vf.panelRemovedByUser &&
       !currentShapes.some(s => s.type === 'panel' && s.parameters?.virtualFaceId === vf.id)
     );
     if (!pending.length) return;
@@ -879,23 +886,19 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     const faceGroupsList = groupOrder.map(k => groupMap.get(k)!);
     const orderedVfs = faceGroupsList.flat();
 
-    const createVP = async (_: string, vi: number) => {
-      const vf = svf[vi]; if (!vf) return;
-      try {
-        const { createPanelFromVirtualFace, convertReplicadToThreeGeometry } = await import('./ReplicadService');
-        const rp = await createPanelFromVirtualFace(vf.vertices, vf.normal, PANEL_THICKNESS); if (!rp) return;
-        const g = convertReplicadToThreeGeometry(rp), r = geoAxes(g); if (!r) return;
-        const pa = r.axes.slice(1).map(a => a.i).sort((a, b) => a - b), [def, alt] = [pa[0], pa[1]], s = [r.size.x, r.size.y, r.size.z];
-        addShape(makePanelBase(selectedShape, { geometry: g, replicadShape: rp,
-          parameters: { width: s[def], height: s[alt], depth: PANEL_THICKNESS, parentShapeId: sid, faceIndex: -(vi+1), virtualFaceId: vf.id, arrowRotated: false, regionUV: computeRegionUV(vf) } }));
-        updateVirtualFace(vf.id, { hasPanel: true, panelRemovedByUser: false });
-      } catch (e) { console.error('Failed to create virtual panel:', e); }
-    };
-    const removeVP = (vfId: string) => {
+    // PANEL SİL: panel + yüzeyi (VF) birlikte kalıcı olarak silinir. Silinen
+    // panel kardeşlerini damgalamış olabilir; kalanlar yeni duruma göre yeniden
+    // üretilir (boşalan alanı doldursunlar).
+    const deletePanelAndFace = async (vfId: string) => {
       const p = findVPanel(shapes, sid, vfId);
       if (p) useAppStore.getState().deleteShape(p.id);
-      updateVirtualFace(vfId, { hasPanel: false, panelRemovedByUser: true });
+      deleteVirtualFace(vfId);
       if (selectedPanelRow === `vf-${vfId}`) setSelectedPanelRow(null);
+      console.log('[YAGO][SİL] panel + yüzey silindi', vfId, p?.id || '(panel yok)');
+      try {
+        const { rebuildPanelsForParent } = await import('./PanelRebuildService');
+        await rebuildPanelsForParent(sid);
+      } catch (e) { console.error('Silme sonrası rebuild hatası:', e); }
     };
 
     // Sürüklenen grup, hedefin ÖNCESİNE (targetFirstId) yerleşir; null = en son.
@@ -930,7 +933,6 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       const anySel = group.some(vf => selectedPanelRow === `vf-${vf.id}`);
 
       const innerRows = group.map((vf, subIdx) => {
-        const vi = svf.findIndex(v => v.id === vf.id);
         const displayIdx = globalIdx + 1;
         globalIdx++;
         const vp = findVPanel(shapes, sid, vf.id), ar = vp?.parameters?.arrowRotated || false, sel = selectedPanelRow === `vf-${vf.id}`;
@@ -972,21 +974,13 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
             )}
 
             <div className="flex items-center gap-0.5 shrink-0" onClick={stop}>
-              <button onClick={async () => { if (vf.hasPanel) removeVP(vf.id); else await createVP(vf.id, vi); }}
-                className="w-[22px] h-[22px] rounded-md flex items-center justify-center text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700 transition-colors"
-                title={vf.hasPanel ? 'Paneli kaldır' : 'Panel oluştur'}>
-                <span className={`w-3.5 h-3.5 rounded-[3px] border flex items-center justify-center transition-colors ${vf.hasPanel ? 'bg-orange-500 border-orange-500' : 'border-stone-300'}`}>
-                  {vf.hasPanel && <Check size={10} strokeWidth={3} className="text-white"/>}
-                </span>
-              </button>
-
               <button disabled={!vf.hasPanel} onClick={e => { stop(e); toggleArrow(vp); }}
                 className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-stone-700 bg-[#f1ece4]' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
                 title="Ok yönünü değiştir"><ArrowUp size={14} className={`transition-transform duration-200 ${ar ? '' : 'rotate-90'}`}/></button>
 
-              <button onClick={e => { stop(e); if (vf.hasPanel) removeVP(vf.id); deleteVirtualFace(vf.id); }}
+              <button onClick={e => { stop(e); void deletePanelAndFace(vf.id); }}
                 className="w-[22px] h-[22px] rounded-md flex items-center justify-center text-stone-400 hover:bg-red-50 hover:text-red-500 transition-colors"
-                title="Yüzü sil"><Trash2 size={13}/></button>
+                title="Paneli sil"><Trash2 size={13}/></button>
             </div>
           </div>
         );
