@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { useAppStore, type Shape, type VirtualFace } from '../store';
 import { vfPlaneBasis, type RotateStep } from './PanelRotateService';
 import type { TransformStep } from './PanelTransformService';
+import { getFacePlaneAxes } from './FaceRegion';
 
 /**
  * ═══════════════════════════════════════════════════════════════════════════
@@ -153,6 +154,41 @@ function resolveScaledMoveValue(step: any, vf: VirtualFace): number {
   return scaled;
 }
 
+// ── FIXED TAŞIMA = MUTLAK KONUM ───────────────────────────────────────────
+// KULLANICI SÖZLEŞMESİ (Goker): taşımada DYN, panelin yüzüne göre ofsettir —
+// yüz kayınca/kutu büyüyünce panel onu izler. FIXED ise "o pozisyonda KALIR":
+// kutu ya da komşular değişse de panel parent-yerel çerçevede aynı yerdedir,
+// diğer paneller ona göre büyüyüp küçülür.
+// ESKİ DURUM: fixed yalnız "oransal ölçekleme yok" demekti. Yüz normali
+// yönündeki taşımada (ör. sağ yan paneli X− 122) yüz açıklığı 0 olduğundan dyn
+// de hiç ölçeklenmiyordu → iki mod birebir aynı çalışıyordu.
+// ÇÖZÜM: fixed adım oluşturulurken VF'nin HAM yüz konumu taşıma ekseni boyunca
+// (fixedRef) kaydedilir. Tekrarda yüz ne kadar kaydıysa o kadar ters öteleme
+// eklenir → panelin mutlak yeri sabit. Ham yüz tabanı kullanılır (kardeş
+// damgası bölgeyi daraltınca referans oynamasın); motor rawFaceBBox'tan, damga
+// taze ham konturdan okur — ikisi aynı ham yüzü görür.
+export function vfRawMinAlong(vf: VirtualFace, axisLetter: string): number | null {
+  if (!vf?.vertices || vf.vertices.length < 3) return null;
+  const a = axisLetterToVec(axisLetter);
+  const p = new THREE.Vector3(Math.abs(a.x), Math.abs(a.y), Math.abs(a.z));
+  if (p.lengthSq() < 0.5) return null;
+  const n = new THREE.Vector3(...(vf.normal as [number, number, number])).normalize();
+  const c0 = vf.vertices[0];
+  const planeD = c0[0] * n.x + c0[1] * n.y + c0[2] * n.z;
+  const rb = (vf as any).rawFaceBBox as { xMin: number; xMax: number; yMin: number; yMax: number } | undefined;
+  let min = Infinity;
+  if (rb) {
+    const { u, v } = getFacePlaneAxes(n);
+    for (const x of [rb.xMin, rb.xMax]) for (const y of [rb.yMin, rb.yMax]) {
+      const w = new THREE.Vector3().addScaledVector(u, x).addScaledVector(v, y).addScaledVector(n, planeD);
+      min = Math.min(min, w.dot(p));
+    }
+  } else {
+    for (const c of vf.vertices) min = Math.min(min, c[0] * p.x + c[1] * p.y + c[2] * p.z);
+  }
+  return Number.isFinite(min) ? min : null;
+}
+
 export function composeSteps(
   steps: TransformStep[],
   vf: VirtualFace
@@ -184,6 +220,21 @@ export function composeSteps(
         const base = axisLetterToVec(ms.axis);
         const value = resolveScaledMoveValue(s, vf);
         const d = base.clone().applyQuaternion(frame).multiplyScalar(value);
+        // FIXED MUTLAK KONUM: yalnız dönüşsüz çerçevede (eksen dünya ekseniyle
+        // aynıyken) — dönmüş çerçevede yüz kayması eksene izdüşmez, dokunulmaz.
+        const isIdentityFrame = Math.abs(frame.w) > 0.999999;
+        if (ms.isFixed && typeof ms.fixedRef === 'number' && isIdentityFrame) {
+          const cur = vfRawMinAlong(vf, ms.axis);
+          if (cur !== null) {
+            const shift = ms.fixedRef - cur;
+            if (Math.abs(shift) > 0.01) {
+              const p = new THREE.Vector3(Math.abs(base.x), Math.abs(base.y), Math.abs(base.z));
+              d.addScaledVector(p, shift);
+              console.log('[YAGO][FIXED-TAŞI] yüz kaydı', shift.toFixed(1), 'mm telafi edildi → panel mutlak konumda',
+                'eksen=', ms.axis, 'değer=', value.toFixed(1), 'ref=', ms.fixedRef.toFixed(1), 'güncel=', cur.toFixed(1));
+            }
+          }
+        }
         ops.push({ kind: 'translate', d });
       }
     } else if (s.type === 'rotate') {
@@ -548,7 +599,22 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       const att = getPanelAttachment(panel, vfsIn);
       if (!att) return;
       const thickness = parseFloat((panel.parameters as any)?.panelThickness) || 18;
-      const steps = getUnifiedSteps(panel);
+      let steps = getUnifiedSteps(panel);
+      // ESKİ FIXED ADIMLAR: fixedRef yoksa bu rebuild'deki ham yüz konumu kaydedilir;
+      // bundan sonra panel bu mutlak konumda kalır.
+      let stepsMigrated = false;
+      {
+        let sawRotate = false;
+        steps = steps.map((st: any) => {
+          if (st.type === 'rotate') { sawRotate = true; return st; }
+          if (st.type === 'move' && st.isFixed && typeof st.fixedRef !== 'number' && !sawRotate
+              && !st.refTargetPanelId && !st._refAxisVec) {
+            const ref = vfRawMinAlong(att.vf, st.axis);
+            if (ref !== null) { stepsMigrated = true; return { ...st, fixedRef: ref }; }
+          }
+          return st;
+        });
+      }
       // Panel VF'sinden gerçek boyutta üretilir (expand=0, doğru 18mm kalınlık).
       // İÇ KÖŞE: sıralamada önce olan panel, konkav köşede buluştuğu sonraki
       // panelin ucunu kapatacak kadar uzar (VF değişmez, yalnız üretim köşeleri).
@@ -635,6 +701,7 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       if (dimsUpdate) Object.assign(paramPatch, dimsUpdate);
       if (resolvedStepsUpdate) paramPatch.extrudeSteps = resolvedStepsUpdate;
       if (refDeltaApplied) paramPatch._refDeltaApplied = refDeltaApplied;
+      if (stepsMigrated) paramPatch.transformSteps = steps;
       // ANINDA YAZ: panel geometrisi store'a yazılır ki bir sonraki panel
       // güncel ayak izini görsün ve VF yeniden hesaplamasında bu geometri
       // kullanılsın (iç içe geçmeyi önler).

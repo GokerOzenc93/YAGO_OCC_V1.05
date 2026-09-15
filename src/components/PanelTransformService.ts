@@ -25,6 +25,9 @@ export interface MoveTransformStep {
   timestamp: number;
   anchor?: MoveAnchor;
   isFixed?: boolean;
+  /** FIXED taşıma: oluşturma anında VF ham yüzünün taşıma ekseni boyunca min
+   *  konumu. Tekrarda yüz kayması telafi edilir → panel mutlak konumda kalır. */
+  fixedRef?: number;
   refSourceVertex?: [number, number, number];
   refTargetPanelId?: string;
   refTargetVertex?: [number, number, number];
@@ -245,7 +248,18 @@ export async function executeTransformStep(
   let full: TransformStep;
   if (step.type === 'move') {
     const anchor = buildMoveAnchor(fresh, step.axis, step.value, useAppStore.getState());
-    full = { id: `step-${now}`, type: 'move', axis: step.axis, value: step.value, timestamp: now, ...(step.isFixed ? { isFixed: true } : {}), ...(anchor ? { anchor } : {}) };
+    // FIXED: yüzün o anki ham konumu kaydedilir (dönüş adımı öncesindeyse).
+    let fixedRef: number | undefined;
+    if (step.isFixed && !steps.some(s => s.type === 'rotate')) {
+      const vfId = (fresh.parameters as any)?.virtualFaceId;
+      const vf = vfId ? useAppStore.getState().virtualFaces.find((f: any) => f.id === vfId) : undefined;
+      if (vf) {
+        const { vfRawMinAlong } = await import('./PanelEngine');
+        const r = vfRawMinAlong(vf, step.axis);
+        if (r !== null) fixedRef = r;
+      }
+    }
+    full = { id: `step-${now}`, type: 'move', axis: step.axis, value: step.value, timestamp: now, ...(step.isFixed ? { isFixed: true } : {}), ...(fixedRef !== undefined ? { fixedRef } : {}), ...(anchor ? { anchor } : {}) };
   } else {
     full = { id: `step-${now}`, type: 'rotate', axis: step.axis, axisVec: step.axisVec, value: step.value, pivot: step.pivot, pivotFrac: step.pivotFrac, pivotVfFrac: step.pivotVfFrac, timestamp: now };
   }

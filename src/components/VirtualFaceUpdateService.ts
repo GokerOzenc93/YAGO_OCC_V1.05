@@ -883,7 +883,9 @@ export function recalculateVirtualFacesForShape(
         const composedFromSteps = (stampGeo?: THREE.BufferGeometry | null): RotOp[] | undefined => {
           if (!ownVf) return undefined;
           try {
-            const { ops } = composeSteps(getUnifiedSteps(p), ownVf);
+            // ownVf köşeleri TAZE ham konturdur; kayıtlı rawFaceBBox bir önceki regen'den
+            // bayat kalabilir → fixed taşımanın yüz-kayması telafisi taze köşelerden okunsun.
+            const { ops } = composeSteps(getUnifiedSteps(p), { ...(ownVf as any), rawFaceBBox: undefined });
             // Motorun bu rebuild'de uyguladığı ref deltası (varsa) — tek kaynak.
             const rda = (p.parameters as any)?._refDeltaApplied;
             const refDeltaApplied = Array.isArray(rda) && rda.length === 3
