@@ -1643,7 +1643,13 @@ export function computeFreeRegionLocal(
           const dpr = nX * (q.x - a.x) + nY * (q.y - a.y);
           if (dpr > w) w = dpr;
         }
-        const off = w + 0.5;
+        // UZAK TEĞETİN 1mm İÇİ: eskiden +0.5mm DIŞINA kırpılıyordu; dönüş-kesimi
+        // (PanelEngine) yalnız dönmüş kardeşin siluet bandını oyduğu için bandın
+        // dışında kalan bu 0.5mm'lik şerit panelde eğime paralel "ince saçma bir
+        // panel" olarak kalıyordu (log: ön panel VF v[-597..0], kesim sonrası
+        // üstte kıymık). Bölge artık şeridin İÇİNDE biter; alt yüzey kesimi onu
+        // zaten temizler, kalıntı kalmaz.
+        const off = w - 1.0;
         a = { x: a.x + nX * off, y: a.y + nY * off };
         b = { x: b.x + nX * off, y: b.y + nY * off };
       }
