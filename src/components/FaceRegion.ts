@@ -12,6 +12,11 @@ import type { FaceData } from './FaceEditor';
 // Taşınan damıtılmış kurallar:
 //  • SALT-KESİT KENAR-TEMASI KAPISI (panelFootprintInParentLocal): yüzü yalnız
 //    delen dönmüş kardeşin ince kesiti engel sayılmaz.
+//  • TAM SİLUET YALNIZ SENTETİK DAMGAYA AİTTİR: __isRotatedPanel yolu (tüm
+//    köşelerin konveks gövdesi) yalnız ops UYGULANACAK sentetik damga
+//    geometrileri içindir. Motorun yazdığı GERÇEK dönmüş geometri
+//    (__rotatedRealGeom) yakalamadaki gibi KESİT/YATIK-YÜZ yolundan geçer —
+//    iki yol aynı ayak izini üretir.
 //  • ÖNCELİK ZİNCİRİ (computeFreeRegionLocal): kayıtlı bağ-ilişkisi >
 //    örtüşme sürekliliği > seed. Taraf, sözleşmeyle deterministiktir.
 //  • UZAK-TEĞET KIRPMA: dönmüş kardeş şeridinde bölge şeridin içinden geçer;
@@ -835,7 +840,22 @@ export function panelFootprintInParentLocal(
   const pos = panel.geometry.getAttribute('position');
   if (!pos) return null;
   const M = new THREE.Matrix4().multiplyMatrices(parentWorldToLocal, getShapeMatrix(panel));
-  const isRotated = panel.__isRotatedPanel === true;
+  // ── TAM SİLUET vs GERÇEK KESİT ────────────────────────────────────────────
+  // KÖK NEDEN ("mavi alana tıkladım, panel alta yerleşti"): __isRotatedPanel
+  // yolu panelin TÜM köşelerini hedef düzleme izdüşürüp konveks gövdesini alır
+  // (tam siluet). Bu, ops UYGULANMASI GEREKEN SENTETİK damga geometrileri için
+  // doğrudur (extrude taban/kırpılmış damga). Ama motorun yazdığı GERÇEK dönmüş
+  // geometride (fitRotatedPanel sonrası, ops boş) siluet, panelin yüze yalnız
+  // KENARIYLA değdiği durumda yüzün yarısını "dolu" gösteriyordu:
+  //   yakalama (tık):  ayak izi = 600x21 KESİT şeridi  → mavi bölge v[-582..-190]
+  //   regen (VF)   :  ayak izi = 600x411 TAM SİLUET   → aynı bölge "TAMAMEN doldu"
+  // Regen bu yüzden bölgeyi yeniden çözüp paneli kardeş şeridinin öbür tarafına
+  // savuruyordu. Zaten bu dosyanın tüm dönmüş-kardeş mantığı (uzak-teğet kırpma,
+  // blockingRotated, insideAnyRotated) ayak izinin bir ŞERİT olduğunu varsayar;
+  // yarım yüzü kaplayan siluet o zinciri de geçersiz kılıyordu.
+  // Gerçek dönüş kesimi zaten PanelEngine'deki yarım-uzay DÖNÜŞ-KESİM'i yapar;
+  // bölge hesabında engel olan şey panelin yüze DEĞEN alanıdır, gölgesi değil.
+  const isRotated = panel.__isRotatedPanel === true && panel.__rotatedRealGeom !== true;
   const pts: THREE.Vector3[] = []; const d: number[] = [];
   let dMin = Infinity, dMax = -Infinity;
   for (let i = 0; i < pos.count; i++) {

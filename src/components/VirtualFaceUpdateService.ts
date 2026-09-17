@@ -991,7 +991,13 @@ export function recalculateVirtualFacesForShape(
         // (PanelEngine.fitRotatedPanel) tek doğru damga, motorun yazdığı nihai
         // geometridir; ops uygulanmaz. (Kutu boyutlanınca bir geçiş bayat kalır;
         // sıra-duyarlı rebuild ikinci geçişte düzeltir.)
-        return { ...p, __isRotatedPanel: true, __composedOps: [] };
+        // __rotatedRealGeom: bu geometri SENTETİK damga değil, motorun yazdığı
+        // NİHAİ dönmüş gövdedir. Ayak izi hesabı (panelFootprintInParentLocal)
+        // bu işareti görünce tam-siluet yolundan çıkar ve yakalamayla AYNI
+        // kesit/yatık-yüz yolunu kullanır — tık anındaki mavi bölge ile regen'in
+        // ürettiği VF ayrışamaz. (Siluet yolu yalnız ops uygulanacak sentetik
+        // damgalar için kalır.)
+        return { ...p, __isRotatedPanel: true, __rotatedRealGeom: true, __composedOps: [] };
       });
   };
 
