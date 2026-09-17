@@ -477,8 +477,17 @@ async function cutByRotatedPressers(
     const keepPlus = refD > mid;
     const dNear = keepPlus ? dMax : dMin;
     const toward = keepPlus ? nR.clone() : nR.clone().negate();
-    // S bu düzlemi gerçekten geçiyor mu? (VF köşeleri R tarafına sarkıyor mu)
-    const crosses = vfS.vertices.some(c => (c[0] * nR.x + c[1] * nR.y + c[2] * nR.z - dNear) * (keepPlus ? 1 : -1) < -0.5);
+    // S bu düzlemi gerçekten geçiyor mu? VF köşeleri YÜZDEDİR; panelin
+    // kalınlığı yüzden içeri (−nS) gider. Yalnız yüz köşelerine bakınca üst
+    // yüze atılan düz panel, dönmüş üst panelin pivot ucundaki şeridin ÜSTÜNDE
+    // görünüp kesilmiyordu (log: 3 numaralı panel için DÖNÜŞ-KESİM satırı yok;
+    // köşe açı almadı). Kalınlık kadar içerideki köşeler de sınanır.
+    const thS = parseFloat((panel.parameters as any)?.panelThickness) || 18;
+    const slabPts: [number, number, number][] = [
+      ...vfS.vertices,
+      ...vfS.vertices.map(c => [c[0] - nS.x * thS, c[1] - nS.y * thS, c[2] - nS.z * thS] as [number, number, number]),
+    ];
+    const crosses = slabPts.some(c => (c[0] * nR.x + c[1] * nR.y + c[2] * nR.z - dNear) * (keepPlus ? 1 : -1) < -0.5);
     if (!crosses) continue;
     try {
       // 1) Yarım-uzay: yakın yüz düzleminde dev dikdörtgen, R gövdesine doğru uzatılır.
