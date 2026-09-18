@@ -593,9 +593,9 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
 
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
-  // Tutamaç KAVRAMA geri bildirimi: mousedown anında grup "kalkmış" görünür,
-  // böylece sürüklemeye başlamadan önce grubun gerçekten tutulduğu bellidir.
-  const [armedGroupKey, setArmedGroupKey] = useState<string | null>(null);
+  // Tutamaç KAVRAMA geri bildirimi: mousedown anında satır "kalkmış" görünür,
+  // böylece sürüklemeye başlamadan önce satırın gerçekten tutulduğu bellidir.
+  const [armedRowKey, setArmedRowKey] = useState<string | null>(null);
 
   const [position, setPosition] = useState({ x: 100, y: 100 });
   const [isDraggingWindow, setIsDraggingWindow] = useState(false);
@@ -869,22 +869,12 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       </div>
     );
 
-    const normalKey = (vf: typeof svf[0]) => {
-      const nStr = vf.normal.map(n => (Math.round(n * 10) / 10).toFixed(1)).join(',');
-      const [nx, ny, nz] = vf.normal;
-      const [cx, cy, cz] = vf.center;
-      const planeOffset = (Math.round((nx * cx + ny * cy + nz * cz) * 2) / 2).toFixed(1);
-      return `${nStr}@${planeOffset}`;
-    };
-    const groupOrder: string[] = [];
-    const groupMap = new Map<string, typeof svf>();
-    for (const vf of svf) {
-      const k = normalKey(vf);
-      if (!groupMap.has(k)) { groupMap.set(k, []); groupOrder.push(k); }
-      groupMap.get(k)!.push(vf);
-    }
-    const faceGroupsList = groupOrder.map(k => groupMap.get(k)!);
-    const orderedVfs = faceGroupsList.flat();
+    // DÜZ LİSTE — SATIR BİRLEŞTİRME YOK (Goker): eskiden aynı düzlemdeki
+    // VF'ler tek kart altında birleştiriliyordu. Bu, sonradan yerleşen panelin
+    // listede öne alınmasına ve basan/basılan sözleşmesinin (VF store sırası)
+    // görünenle çelişmesine yol açıyordu. Artık her VF, store sırasıyla kendi
+    // satırıdır; listedeki numara = VF sırası = basan/basılan önceliği.
+    const orderedVfs = svf;
 
     // PANEL SİL: panel + yüzeyi (VF) birlikte kalıcı olarak silinir. Silinen
     // panel kardeşlerini damgalamış olabilir; kalanlar yeni duruma göre yeniden
@@ -901,145 +891,130 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       } catch (e) { console.error('Silme sonrası rebuild hatası:', e); }
     };
 
-    // Sürüklenen grup, hedefin ÖNCESİNE (targetFirstId) yerleşir; null = en son.
-    const doReorder = async (draggedGroupKey: string, targetFirstId: string | null) => {
+    // Sürüklenen satır, hedefin ÖNCESİNE (targetId) yerleşir; null = en son.
+    const doReorder = async (draggedId: string, targetId: string | null) => {
       setDragIndex(null); setDropIndex(null);
-      const draggedGroup = groupMap.get(draggedGroupKey);
-      if (!draggedGroup) return;
-      reorderVirtualFaceGroup(sid, draggedGroup.map(v => v.id), targetFirstId);
+      reorderVirtualFaceGroup(sid, [draggedId], targetId);
       const { rebuildPanelsForParent } = await import('./PanelRebuildService');
       await rebuildPanelsForParent(sid);
     };
-    // KULLANICI KURALI: bırakma HER ZAMAN üzerine gelinen grubun ALTINA yerleşir
+    // KULLANICI KURALI: bırakma HER ZAMAN üzerine gelinen satırın ALTINA yerleşir
     // (satırın üstünde/altında olmak fark etmez). Store insert-BEFORE çalıştığı
-    // için hedef = üzerine gelinen grubun BİR SONRAKİ grubunun ilk id'si.
-    const onGroupDropBelow = async (draggedGroupKey: string, hoveredGroupKey: string) => {
-      if (draggedGroupKey === hoveredGroupKey) { setDragIndex(null); setDropIndex(null); return; }
-      const idx = faceGroupsList.findIndex(g => normalKey(g[0]) === hoveredGroupKey);
-      const nextG = idx >= 0 ? faceGroupsList[idx + 1] : undefined;
-      if (nextG && normalKey(nextG[0]) === draggedGroupKey) { setDragIndex(null); setDropIndex(null); return; } // zaten hemen altında
-      await doReorder(draggedGroupKey, nextG ? nextG[0].id : null);
+    // için hedef = üzerine gelinen satırın BİR SONRAKİ satırının id'si.
+    const onRowDropBelow = async (draggedId: string, hoveredId: string) => {
+      if (draggedId === hoveredId) { setDragIndex(null); setDropIndex(null); return; }
+      const idx = orderedVfs.findIndex(v => v.id === hoveredId);
+      const next = idx >= 0 ? orderedVfs[idx + 1] : undefined;
+      if (next && next.id === draggedId) { setDragIndex(null); setDropIndex(null); return; } // zaten hemen altında
+      await doReorder(draggedId, next ? next.id : null);
     };
 
     const elements: React.ReactNode[] = [];
-    let globalIdx = 0;
 
-    faceGroupsList.forEach((group) => {
-      const groupKey = normalKey(group[0]);
-      const isGroupMulti = group.length > 1;
-      const groupFirstIdx = orderedVfs.findIndex(v => v.id === group[0].id);
-      const isDraggingThisGroup = dragIndex !== null && group.some(vf => orderedVfs.findIndex(v => v.id === vf.id) === dragIndex);
-      const isDropTargetGroup = dropIndex !== null && dropIndex === groupFirstIdx;
-      const anySel = group.some(vf => selectedPanelRow === `vf-${vf.id}`);
-
-      const innerRows = group.map((vf, subIdx) => {
-        const displayIdx = globalIdx + 1;
-        globalIdx++;
-        const vp = findVPanel(shapes, sid, vf.id), ar = vp?.parameters?.arrowRotated || false, sel = selectedPanelRow === `vf-${vf.id}`;
-        const dims = vp?.geometry ? getDimsFromGeo(vp.geometry, ar, parseFloat((vp.parameters as any)?.panelThickness) || 18) : null;
-
-        return (
-          <div
-            key={vf.id}
-            onClick={e => { stop(e); setSelectedPanelRow(`vf-${vf.id}`, null, sid); }}
-            className={`group/row relative flex items-center gap-1.5 pl-2.5 pr-1 py-px cursor-pointer transition-colors duration-150
-              ${sel ? 'bg-[#fff6ec]' : hoveredPanelVfId === vf.id ? 'bg-[#fef9c3]' : 'hover:bg-[#faf6ef]'}`}
-          >
-            {sel && <span className="absolute left-0 top-0 bottom-0 w-[2.5px] rounded-r-sm bg-gradient-to-b from-orange-400 to-orange-500" />}
-
-            <span className={`shrink-0 inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full text-[11px] font-semibold tabular-nums transition-all
-              ${sel
-                ? 'bg-gradient-to-b from-orange-400 to-orange-500 text-white ring-1 ring-orange-500/40 shadow-[0_1px_3px_rgba(234,88,12,0.35)]'
-                : 'bg-gradient-to-b from-white to-[#efe9df] text-stone-600 ring-1 ring-[#e4ded4] shadow-[0_1px_1.5px_rgba(68,64,60,0.08),inset_0_1px_0_rgba(255,255,255,0.9)] group-hover/row:ring-[#e7b487] group-hover/row:text-orange-600'}`}>
-              {displayIdx}
-            </span>
-
-            <input
-              type="text"
-              value={vf.description || ''}
-              onClick={stop}
-              onChange={e => updateVirtualFace(vf.id, { description: e.target.value })}
-              placeholder="not…"
-              className="flex-1 min-w-0 px-1 py-1 text-xs bg-transparent border-b border-transparent hover:border-[#dcd5ca] focus:border-orange-400 rounded-none outline-none text-stone-700 placeholder:text-stone-300 transition-colors"
-            />
-
-            {dims && (
-              <span onClick={stop} className="shrink-0 inline-flex items-center text-xs leading-none tabular-nums px-0.5">
-                <span className="text-stone-400 font-medium">W</span><span className="text-stone-700 font-semibold ml-1">{dims.primary}</span>
-                <span className="text-stone-300 mx-1.5">·</span>
-                <span className="text-stone-400 font-medium">H</span><span className="text-stone-700 font-semibold ml-1">{dims.secondary}</span>
-                <span className="text-stone-300 mx-1.5">·</span>
-                <span className="text-stone-400 font-medium">T</span><span className="text-stone-700 font-semibold ml-1">{dims.thickness}</span>
-              </span>
-            )}
-
-            <div className="flex items-center gap-0.5 shrink-0" onClick={stop}>
-              <button disabled={!vf.hasPanel} onClick={e => { stop(e); toggleArrow(vp); }}
-                className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-stone-700 bg-[#f1ece4]' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
-                title="Ok yönünü değiştir"><ArrowUp size={14} className={`transition-transform duration-200 ${ar ? '' : 'rotate-90'}`}/></button>
-
-              <button onClick={e => { stop(e); void deletePanelAndFace(vf.id); }}
-                className="w-[22px] h-[22px] rounded-md flex items-center justify-center text-stone-400 hover:bg-red-50 hover:text-red-500 transition-colors"
-                title="Paneli sil"><Trash2 size={13}/></button>
-            </div>
-          </div>
-        );
-      });
+    orderedVfs.forEach((vf, rowIdx) => {
+      const rowKey = vf.id;
+      const displayIdx = rowIdx + 1;
+      const isDraggingThisRow = dragIndex === rowIdx;
+      const isDropTargetRow = dropIndex !== null && dropIndex === rowIdx;
+      const vp = findVPanel(shapes, sid, vf.id), ar = vp?.parameters?.arrowRotated || false, sel = selectedPanelRow === `vf-${vf.id}`;
+      const dims = vp?.geometry ? getDimsFromGeo(vp.geometry, ar, parseFloat((vp.parameters as any)?.panelThickness) || 18) : null;
 
       elements.push(
         <div
-          key={groupKey}
+          key={rowKey}
           onDragOver={e => {
-            if (dragIndex !== null && !isDraggingThisGroup) {
+            if (dragIndex !== null && !isDraggingThisRow) {
               e.preventDefault();
               e.dataTransfer.dropEffect = 'move';
-              if (dropIndex !== groupFirstIdx) setDropIndex(groupFirstIdx);
+              if (dropIndex !== rowIdx) setDropIndex(rowIdx);
             }
           }}
           onDrop={e => {
             e.preventDefault();
             if (dragIndex === null) return;
-            onGroupDropBelow(normalKey(orderedVfs[dragIndex]), groupKey);
+            onRowDropBelow(orderedVfs[dragIndex].id, rowKey);
           }}
           className={`relative flex items-stretch rounded-lg overflow-hidden transition-all duration-150
-            ${anySel
+            ${sel
               ? 'bg-white ring-1 ring-[#f3c89e] shadow-[0_2px_10px_-3px_rgba(234,88,12,0.20),0_1px_2px_rgba(68,64,60,0.06)]'
               : 'bg-white ring-1 ring-[#e7e2da] shadow-[0_1px_2px_rgba(68,64,60,0.05),0_1px_1px_rgba(68,64,60,0.03)] hover:ring-[#dbd4c9] hover:shadow-[0_3px_10px_-3px_rgba(68,64,60,0.12),0_1px_2px_rgba(68,64,60,0.05)]'}
-            ${isDraggingThisGroup ? 'opacity-40 scale-[0.99]' : ''}
-            ${armedGroupKey === groupKey && !isDraggingThisGroup ? '!ring-orange-400 shadow-[0_4px_14px_-4px_rgba(234,88,12,0.35)] scale-[1.01]' : ''}
-            ${isDropTargetGroup ? '!ring-amber-400 bg-amber-50/60' : ''}`}
+            ${isDraggingThisRow ? 'opacity-40 scale-[0.99]' : ''}
+            ${armedRowKey === rowKey && !isDraggingThisRow ? '!ring-orange-400 shadow-[0_4px_14px_-4px_rgba(234,88,12,0.35)] scale-[1.01]' : ''}
+            ${isDropTargetRow ? '!ring-amber-400 bg-amber-50/60' : ''}`}
         >
           <span
             draggable
-            onMouseDown={() => setArmedGroupKey(groupKey)}
-            onMouseUp={() => setArmedGroupKey(null)}
-            onMouseLeave={() => { if (dragIndex === null) setArmedGroupKey(null); }}
+            onMouseDown={() => setArmedRowKey(rowKey)}
+            onMouseUp={() => setArmedRowKey(null)}
+            onMouseLeave={() => { if (dragIndex === null) setArmedRowKey(null); }}
             onDragStart={e => {
               stop(e);
-              setDragIndex(groupFirstIdx);
+              setDragIndex(rowIdx);
               e.dataTransfer.effectAllowed = 'move';
-              e.dataTransfer.setData('text/plain', groupKey);
+              e.dataTransfer.setData('text/plain', rowKey);
             }}
-            onDragEnd={() => { setDragIndex(null); setDropIndex(null); setArmedGroupKey(null); }}
+            onDragEnd={() => { setDragIndex(null); setDropIndex(null); setArmedRowKey(null); }}
             onClick={stop}
             className={`cursor-grab active:cursor-grabbing shrink-0 w-8 self-stretch flex items-center justify-center border-r transition-colors
-              ${armedGroupKey === groupKey
+              ${armedRowKey === rowKey
                 ? 'text-white bg-gradient-to-b from-orange-400 to-orange-500 border-orange-500/50'
                 : 'text-stone-300/90 hover:text-orange-600 bg-gradient-to-b from-[#fbf9f5] to-[#f4efe7] hover:from-[#fff3e4] hover:to-[#ffe9d0] border-[#ece6dc]'}`}
-            title={isGroupMulti ? 'Sürükleyerek tüm grubu taşı' : 'Sürükleyerek sırala'}
+            title="Sürükleyerek sırala"
           ><GripVertical size={16}/></span>
 
           <div className="flex-1 min-w-0 flex flex-col">
-            {innerRows}
+            <div
+              onClick={e => { stop(e); setSelectedPanelRow(`vf-${vf.id}`, null, sid); }}
+              className={`group/row relative flex items-center gap-1.5 pl-2.5 pr-1 py-px cursor-pointer transition-colors duration-150
+                ${sel ? 'bg-[#fff6ec]' : hoveredPanelVfId === vf.id ? 'bg-[#fef9c3]' : 'hover:bg-[#faf6ef]'}`}
+            >
+              {sel && <span className="absolute left-0 top-0 bottom-0 w-[2.5px] rounded-r-sm bg-gradient-to-b from-orange-400 to-orange-500" />}
+
+              <span className={`shrink-0 inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full text-[11px] font-semibold tabular-nums transition-all
+                ${sel
+                  ? 'bg-gradient-to-b from-orange-400 to-orange-500 text-white ring-1 ring-orange-500/40 shadow-[0_1px_3px_rgba(234,88,12,0.35)]'
+                  : 'bg-gradient-to-b from-white to-[#efe9df] text-stone-600 ring-1 ring-[#e4ded4] shadow-[0_1px_1.5px_rgba(68,64,60,0.08),inset_0_1px_0_rgba(255,255,255,0.9)] group-hover/row:ring-[#e7b487] group-hover/row:text-orange-600'}`}>
+                {displayIdx}
+              </span>
+
+              <input
+                type="text"
+                value={vf.description || ''}
+                onClick={stop}
+                onChange={e => updateVirtualFace(vf.id, { description: e.target.value })}
+                placeholder="not…"
+                className="flex-1 min-w-0 px-1 py-1 text-xs bg-transparent border-b border-transparent hover:border-[#dcd5ca] focus:border-orange-400 rounded-none outline-none text-stone-700 placeholder:text-stone-300 transition-colors"
+              />
+
+              {dims && (
+                <span onClick={stop} className="shrink-0 inline-flex items-center text-xs leading-none tabular-nums px-0.5">
+                  <span className="text-stone-400 font-medium">W</span><span className="text-stone-700 font-semibold ml-1">{dims.primary}</span>
+                  <span className="text-stone-300 mx-1.5">·</span>
+                  <span className="text-stone-400 font-medium">H</span><span className="text-stone-700 font-semibold ml-1">{dims.secondary}</span>
+                  <span className="text-stone-300 mx-1.5">·</span>
+                  <span className="text-stone-400 font-medium">T</span><span className="text-stone-700 font-semibold ml-1">{dims.thickness}</span>
+                </span>
+              )}
+
+              <div className="flex items-center gap-0.5 shrink-0" onClick={stop}>
+                <button disabled={!vf.hasPanel} onClick={e => { stop(e); toggleArrow(vp); }}
+                  className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-stone-700 bg-[#f1ece4]' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
+                  title="Ok yönünü değiştir"><ArrowUp size={14} className={`transition-transform duration-200 ${ar ? '' : 'rotate-90'}`}/></button>
+
+                <button onClick={e => { stop(e); void deletePanelAndFace(vf.id); }}
+                  className="w-[22px] h-[22px] rounded-md flex items-center justify-center text-stone-400 hover:bg-red-50 hover:text-red-500 transition-colors"
+                  title="Paneli sil"><Trash2 size={13}/></button>
+              </div>
+            </div>
           </div>
         </div>
       );
 
-      // YERLEŞİM GÖSTERGESİ: sürüklenen öğe TAM BURAYA (bu grubun altına)
+      // YERLEŞİM GÖSTERGESİ: sürüklenen öğe TAM BURAYA (bu satırın altına)
       // yerleşecek — ince çizgi yerine kalın, parlak amber bant.
-      if (isDropTargetGroup && !isDraggingThisGroup) {
+      if (isDropTargetRow && !isDraggingThisRow) {
         elements.push(
-          <div key={`${groupKey}-drop-ind`} className="pointer-events-none h-[7px] mx-1 -my-0.5 rounded-full bg-gradient-to-r from-amber-400 via-orange-400 to-amber-400 shadow-[0_0_10px_rgba(245,158,11,0.65),0_1px_2px_rgba(180,83,9,0.3)]" />
+          <div key={`${rowKey}-drop-ind`} className="pointer-events-none h-[7px] mx-1 -my-0.5 rounded-full bg-gradient-to-r from-amber-400 via-orange-400 to-amber-400 shadow-[0_0_10px_rgba(245,158,11,0.65),0_1px_2px_rgba(180,83,9,0.3)]" />
         );
       }
     });
@@ -1048,10 +1023,9 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     // bırakmak yeterli. En ÜSTE taşıma: listenin başında, sürükleme sırasında
     // aktifleşen ince bir tutma alanı; üzerine gelinince DİĞER yerleşim
     // çizgileriyle aynı stilde turuncu bant görünür ve oraya bırakılır.
-    if (dragIndex !== null && faceGroupsList.length > 0) {
-      const firstGroup = faceGroupsList[0];
-      const draggingIsFirst = normalKey(orderedVfs[dragIndex]) === normalKey(firstGroup[0]);
-      if (!draggingIsFirst) {
+    if (dragIndex !== null && orderedVfs.length > 0) {
+      const first = orderedVfs[0];
+      if (dragIndex !== 0) {
         elements.unshift(
           <div
             key="drop-top"
@@ -1059,7 +1033,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
             onDrop={e => {
               e.preventDefault();
               if (dragIndex === null) return;
-              doReorder(normalKey(orderedVfs[dragIndex]), firstGroup[0].id);
+              doReorder(orderedVfs[dragIndex].id, first.id);
             }}
             className="h-4 -mb-1 flex items-center"
           >
@@ -1070,7 +1044,6 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         );
       }
     }
-
     return elements;
   })() : null;
 
