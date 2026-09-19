@@ -729,8 +729,34 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
     console.log('[YAGO][REBUILD] TEK-PANEL MODU İPTAL', changedChild!.id,
       '→ önceki panelle iç köşe ortağı, köşe uzaması yeniden çözülecek');
   }
+  // ── REFERANS BAĞIMLILARI TEK-PANEL MODUNU İPTAL EDER ─────────────────────
+  // KÖK NEDEN (bildirilen hata: "paneli bir noktaya referans göstererek
+  // taşıdığımda o referans nokta değiştiğinde panel güncellenmiyor; ancak
+  // sonradan panel yerleştirince güncelleniyor"):
+  // Referans bağı (taşıma → transformSteps.refTargetPanelId, yüz extrude →
+  // extrudeSteps.refShapeId) tek yönlü bir BAĞIMLILIK grafiğidir. Bu graf
+  // yalnız ÜRETİM SIRASI için kullanılıyordu (refIdsOf → children.sort);
+  // GEÇERSİZ KILMA (invalidation) için HİÇ kullanılmıyordu.
+  // Referans panelin ölçüsü değişince (extrude onayı/düzenlemesi, taşıma
+  // adımı güncellemesi) rebuild `changedPanelId = referansPanel` ile çağrılır.
+  // Referans panel VF sırasında SONDAYSA kimseyi damgalamaz → pressesSiblings
+  // false → TEK-PANEL MODU. Tek-panel modu yalnız o paneli üretir; ona bağlı
+  // panel hiç yeniden üretilmez, dolayısıyla refTranslate deltası güncel
+  // köşeden YENİDEN ÇÖZÜLMEZ ve panel eski yerinde kalır. Yeni bir panel
+  // yerleştirilince rebuild opts'suz (TAM) çağrıldığı için bağ o an çözülür —
+  // kullanıcının gördüğü "sonradan yerleşince güncelleniyor" davranışı.
+  // KURAL: değişen paneli referans alan bir kardeş varsa tam rebuild şart.
+  const refDependents = changedChild
+    ? children.filter(c => c.id !== changedChild.id && refIdsOf(c).has(changedChild.id))
+    : [];
+  if (refDependents.length > 0) {
+    console.log('[YAGO][REBUILD] TEK-PANEL MODU İPTAL', changedChild!.id,
+      '→ referans bağımlıları var:', refDependents.map(c => c.id).join(','),
+      '(referans köşe/düzlem güncel geometriden yeniden çözülecek)');
+  }
   const singleMode = !!opts?.changedPanelId && !opts?.orderChanged
-    && !!changedChild && !pressesSiblings && !cornerPartnerOfEarlier;
+    && !!changedChild && !pressesSiblings && !cornerPartnerOfEarlier
+    && refDependents.length === 0;
 
   const parentPos: [number, number, number] = [...(parentFresh.position as any)] as any;
 

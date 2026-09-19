@@ -727,6 +727,19 @@ export function recalculateVirtualFacesForShape(
     }
     return ids;
   };
+  // REF TAŞIMA HEDEFLERİ: panelin KONUMUNU TANIMLAYAN kardeş(ler). Ref taşımada
+  // panelin yeri, hedefin GÜNCEL dünya kutusundaki köşeden çözülür (frac) —
+  // yani hedef, panelin datum'udur.
+  const moveRefTargetsOf = (panel: any): Set<string> => {
+    const ids = new Set<string>();
+    const ts = panel?.parameters?.transformSteps;
+    if (Array.isArray(ts)) {
+      for (const st of ts) {
+        if (st?.type === 'move' && st.refTargetPanelId) ids.add(st.refTargetPanelId);
+      }
+    }
+    return ids;
+  };
   // ── ÖN-GEÇİŞ: Damga geometrisi için VF köşelerini güncel geometriden tazele ──
   // stampingPanelsFor() giriş virtualFaces dizisinden okur; bu dizi BİR ÖNCEKİ
   // döngünün sonucudur. Kutu boyutlandığında köşeler eskidir → damga ayak izi
@@ -824,6 +837,10 @@ export function recalculateVirtualFacesForShape(
       .filter(p => {
         if (p.parameters?.virtualFaceId === vfId) return false;
         if (myPanel && extrudeRefsOf(myPanel).has(p.id)) return false;
+        // p, ref taşımada myPanel'i HEDEF (datum) alıyor mu? Alıyorsa p'nin
+        // konumu myPanel'in GÜNCEL dünya kutusundan çözülür → p, myPanel'in
+        // bölgesini DEĞİŞTİREMEZ (aşağıdaki taşıma istisnası devre dışı).
+        const pIsRefBoundToMe = !!myPanel && moveRefTargetsOf(p).has(myPanel.id);
         // REF-EGEMENLİĞİ ARTIK YÖNE BAĞLI: p'nin extrude adımı myPanel'i
         // REFERANS alıyorsa bu tek başına p'yi basan yapmaz. Referans çoğu kez
         // sadece ÖLÇÜ DATUM'udur (kullanıcı "şu panelin yüzüne kadar" der ve
@@ -848,7 +865,31 @@ export function recalculateVirtualFacesForShape(
             // (işaretli miktar × eN · yüzNormali > 0) sırayı devirebilir. Eskiden
             // salt eN yönüne bakılıyordu; o eksende KISALAN panel de yetki alıp
             // yüksek öncelikli komşusunu gereksiz yere kısaltıyordu.
-            if (!sameFace && (hasMoveSteps(p) || extrudeAdvancesTowardFace(p, myFaceNormal))) return true;
+            // ── REF TAŞIMA DÖNGÜSÜ KIRICI (damga grafiği TEK YÖNLÜ kalmalı) ──
+            // KÖK NEDEN (bildirilen hata: "referans panel taşınıyor sonra bir
+            // daha hareket ediyor"): taşıma istisnası, ref taşımayla myPanel'e
+            // BAĞLANMIŞ p'ye de yetki veriyordu. O anda bağ ÇİFT YÖNLÜ oluyor:
+            //     myPanel.bölge ← p.ayakİzi    ve    p.konum ← myPanel.kutusu
+            // Motor hedefi önce üretir (refIdsOf sırası), sonra p'yi taşır;
+            // SONRAKİ geçişte hedef p'nin YENİ ayak iziyle küçülür → kutusu
+            // değişir → ref köşesi kayar → p BİR DAHA hareket eder, çift salınır.
+            // Log kanıtı: AYAKİZİ vf-…097043 <- panel-…116636 — damgalayan,
+            // hedefin TA KENDİSİNİ referans alan panel; hedef VF 600x600 →
+            // 600x460 → 600x109 → "TAMAMEN doldu" → 600x600 ve REF-BAĞ çözülen
+            // delta −460 → −109 → +242 → −471 → −342 diye zıplıyor.
+            // KURAL: datum'unu damgalayamazsın. İstisna iptal edilir; karar
+            // değişmez SIRA ÖNCELİĞİNE (VF sırası) bırakılır — p gerçekten
+            // basan sıradaysa aşağıdaki byOrder dalı yine yetki verir, bölge
+            // sözleşmesi bozulmaz. p'nin DİĞER kardeşler üzerindeki taşıma
+            // istisnası aynen korunur; yalnız kendi hedefi muaftır.
+            if (!sameFace && pIsRefBoundToMe && hasMoveSteps(p)
+                && !extrudeAdvancesTowardFace(p, myFaceNormal)) {
+              console.log('[YAGO][DAMGA-YETKI] RED', vfId, '<-', p.id,
+                '— p bu paneli REF TAŞIMA HEDEFİ (datum) alıyor',
+                '→ taşıma istisnası iptal, karar sıra önceliğine bırakıldı');
+            }
+            if (!sameFace && ((hasMoveSteps(p) && !pIsRefBoundToMe)
+                || extrudeAdvancesTowardFace(p, myFaceNormal))) return true;
           }
         }
         // SIRA ÖNCELİĞİ: tek ve değişmez basan/basılan sözleşmesi.
