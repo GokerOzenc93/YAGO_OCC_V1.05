@@ -740,6 +740,17 @@ export function recalculateVirtualFacesForShape(
     }
     return ids;
   };
+  // REF DÖNÜŞ hedefleri: p, hangi panelleri referans alarak dönüyor?
+  const rotateRefTargetsOf = (panel: any): Set<string> => {
+    const ids = new Set<string>();
+    const ts = panel?.parameters?.transformSteps;
+    if (Array.isArray(ts)) {
+      for (const st of ts) {
+        if (st?.type === 'rotate' && st.refTargetPanelId) ids.add(st.refTargetPanelId);
+      }
+    }
+    return ids;
+  };
   // ── ÖN-GEÇİŞ: Damga geometrisi için VF köşelerini güncel geometriden tazele ──
   // stampingPanelsFor() giriş virtualFaces dizisinden okur; bu dizi BİR ÖNCEKİ
   // döngünün sonucudur. Kutu boyutlandığında köşeler eskidir → damga ayak izi
@@ -837,6 +848,17 @@ export function recalculateVirtualFacesForShape(
       .filter(p => {
         if (p.parameters?.virtualFaceId === vfId) return false;
         if (myPanel && extrudeRefsOf(myPanel).has(p.id)) return false;
+        // ── REF DÖNÜŞ: REFERANS PANELİN ÖLÇÜSÜ DEĞİŞMEZ ───────────────────
+        // SÖZLEŞME (Goker): "referans gösterilen panel … ölçüsü aynı kalsın
+        // ama sadece dönen panelin şeklini alsın." p, myPanel'i referans
+        // alarak dönüyorsa p'nin şeridi myPanel'in BÖLGESİNİ kırpamaz (uzak-
+        // teğet kısaltması yok). Şekil uyumu bölge katmanında değil, motorda
+        // boolean oyma ile sağlanır (PanelEngine notchRefRotateTargets).
+        if (myPanel && rotateRefTargetsOf(p).has(myPanel.id)) {
+          console.log('[YAGO][DAMGA-YETKI] RED', vfId, '<-', p.id,
+            '— p bu paneli REF DÖNÜŞ HEDEFİ alıyor → bölge kırpılmaz, motor oyar');
+          return false;
+        }
         // p, ref taşımada myPanel'i HEDEF (datum) alıyor mu? Alıyorsa p'nin
         // konumu myPanel'in GÜNCEL dünya kutusundan çözülür → p, myPanel'in
         // bölgesini DEĞİŞTİREMEZ (aşağıdaki taşıma istisnası devre dışı).

@@ -505,6 +505,13 @@ async function cutByRotatedPressers(
   let out = rp;
   for (const r of siblings) {
     if (r.id === panel.id || orderOf(r) >= myOrder || !panelHasRotation(r)) continue;
+    // REF DÖNÜŞ HEDEFİ MUAF: r bu paneli referans alarak dönüyorsa panel r'nin
+    // eğik düzlemiyle KISALTILMAZ (ölçü sabit); şekil uyumu r üretildikten
+    // sonra boolean oyma ile verilir (notchRefRotateTargets).
+    if (rotateRefTargetsOf(r).has(panel.id)) {
+      console.log('[YAGO][DÖNÜŞ-KESİM] MUAF', panel.id, '<-', r.id, '— r bu paneli REF DÖNÜŞ hedefi alıyor, düzlem kesimi yok');
+      continue;
+    }
     const rGeo = useAppStore.getState().shapes.find(s => s.id === r.id)?.geometry;
     const rVfId = (r.parameters as any)?.virtualFaceId;
     const vfR = rVfId ? vfs.find(f => f.id === rVfId) : undefined;
@@ -580,6 +587,56 @@ async function cutByRotatedPressers(
 }
 
 // ── BÜYÜT & SIĞDIR: dönmüş paneli gövdeye ve basan kardeşlere göre biç ─────
+/** Panelin REF DÖNÜŞ adımlarının hedef (referans) panel id'leri. */
+function rotateRefTargetsOf(panel: Shape): Set<string> {
+  const ids = new Set<string>();
+  const ts = (panel?.parameters as any)?.transformSteps;
+  if (Array.isArray(ts)) {
+    for (const st of ts) if (st?.type === 'rotate' && st.refTargetPanelId) ids.add(st.refTargetPanelId);
+  }
+  return ids;
+}
+
+// ── REF DÖNÜŞ: REFERANS PANEL, DÖNEN PANELİN ŞEKLİNİ ALIR ─────────────────
+// SÖZLEŞME (Goker): "referans gösterilen panel dönen panelin şekline göre
+// kalınlığı kırpılmadığı noktalar oluyor … otomatik dönen panelin şekli
+// alınsın; ölçüsü aynı kalsın ama sadece dönen panelin şeklini alsın."
+// Uygulama: dönen panel (R) NİHAİ katısını aldıktan sonra referans panel (T)
+// ondan boolean olarak OYULUR: T := T − R. T'nin VF bölgesi ve ölçüleri
+// dokunulmaz (bölge katmanında R, T'yi damgalamaz; düzlem kesiminden muaf) —
+// yalnız R'nin geçtiği hacim T'den alınır. Her rebuild'de T sıfırdan üretilip
+// yeniden oyulur (R, T'ye bağımlı olduğundan hep T'den SONRA üretilir).
+async function notchRefRotateTargets(
+  rp: any, panel: Shape, updateShape: (id: string, u: Partial<Shape>) => void,
+  convertReplicadToThreeGeometry: (s: any) => THREE.BufferGeometry,
+): Promise<void> {
+  const targets = rotateRefTargetsOf(panel);
+  if (targets.size === 0) return;
+  for (const tid of targets) {
+    const t = useAppStore.getState().shapes.find(s => s.id === tid);
+    if (!t?.replicadShape || !t.geometry) continue;
+    try {
+      const tb = new THREE.Box3().setFromBufferAttribute(t.geometry.getAttribute('position') as THREE.BufferAttribute);
+      const rb = rp.boundingBox.bounds;
+      const overlaps = rb[0][0] < tb.max.x - 0.5 && rb[1][0] > tb.min.x + 0.5
+        && rb[0][1] < tb.max.y - 0.5 && rb[1][1] > tb.min.y + 0.5
+        && rb[0][2] < tb.max.z - 0.5 && rb[1][2] > tb.min.z + 0.5;
+      if (!overlaps) {
+        console.log('[YAGO][REF-DÖN-OY]', tid, '<-', panel.id, 'kutular kesişmiyor, oyma yok');
+        continue;
+      }
+      const before = t.replicadShape.boundingBox.bounds.map((v: number[]) => v.map(n => n.toFixed(0)).join(',')).join('..');
+      const notched = t.replicadShape.clone().cut(rp.clone());
+      const after = notched.boundingBox.bounds.map((v: number[]) => v.map(n => n.toFixed(0)).join(',')).join('..');
+      updateShape(tid, { geometry: convertReplicadToThreeGeometry(notched), replicadShape: notched } as any);
+      console.log('[YAGO][REF-DÖN-OY]', tid, '<-', panel.id, 'referans panel dönen panelin şekliyle oyuldu',
+        'kutu', before, '→', after, '(ölçü/VF dokunulmadı)');
+    } catch (err) {
+      console.warn('[YAGO][REF-DÖN-OY] oyma hatası:', tid, '<-', panel.id, (err as any)?.message || String(err));
+    }
+  }
+}
+
 async function fitRotatedPanel(
   rp: any, panel: Shape, parent: Shape, siblings: Shape[], orderOf: (s: Shape) => number,
 ): Promise<any> {
@@ -606,8 +663,15 @@ async function fitRotatedPanel(
   // 2) Basan (önce gelen) kardeşlerin gövdeleriyle kesim — kutu içinde örtüşen
   //    kısımlar gider, panel onların iç yüzüne açıyla dayanır.
   const myOrder = orderOf(panel);
+  const myRefTargets = rotateRefTargetsOf(panel);
   for (const b of siblings) {
     if (b.id === panel.id || orderOf(b) >= myOrder) continue;
+    // REF DÖNÜŞ HEDEFİ dönen paneli KESMEZ: şekli veren dönen paneldir —
+    // referans panel dönen panelin katısıyla oyulur (notchRefRotateTargets).
+    if (myRefTargets.has(b.id)) {
+      console.log('[YAGO][DÖNÜŞ-SIĞDIR]', panel.id, 'referans paneli ile kesilmedi <-', b.id, '(referans panel oyulacak)');
+      continue;
+    }
     const fresh = useAppStore.getState().shapes.find(s => s.id === b.id);
     if (!fresh?.replicadShape || !fresh.geometry) continue;
     try {
@@ -816,9 +880,19 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       '→ referans bağımlıları var:', refDependents.map(c => c.id).join(','),
       '(referans köşe/düzlem güncel geometriden yeniden çözülecek)');
   }
+  // ── REF DÖNÜŞ HEDEFİ OLAN PANEL TEK-PANEL MODUNA GİREMEZ ────────────────
+  // Dönen panel referans paneli OYAR (notchRefRotateTargets). Tek-panel
+  // modunda referans panel yeniden üretilmez → eski oyuk kalır, yeni açı
+  // üstüne ikinci oyuk eklenir. Tam rebuild referansı sıfırdan üretip yeniden
+  // oyar.
+  const notchesTargets = !!changedChild && rotateRefTargetsOf(changedChild).size > 0;
+  if (notchesTargets) {
+    console.log('[YAGO][REBUILD] TEK-PANEL MODU İPTAL', changedChild!.id,
+      '→ referans panel(ler)i oyuyor, referans sıfırdan üretilip yeniden oyulacak');
+  }
   const singleMode = !!opts?.changedPanelId && !opts?.orderChanged
     && !!changedChild && !pressesSiblings && !cornerPartnerOfEarlier
-    && refDependents.length === 0;
+    && refDependents.length === 0 && !notchesTargets;
 
   const parentPos: [number, number, number] = [...(parentFresh.position as any)] as any;
 
@@ -981,6 +1055,11 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       if (!panelHasRotation(panel)) {
         rp = await cutByRotatedPressers(rp, panel, att.vf, children, vfsIn, orderOf, createPanelFromVirtualFace);
       }
+
+      // REF DÖNÜŞ: nihai katı hazır → referans panel(ler) bu şekille oyulur.
+      // (Referans panel bağımlılık sırası gereği hep bu panelden ÖNCE üretildi;
+      //  aşağıdaki store yazımından bağımsız, hedefin geometrisi güncellenir.)
+      await notchRefRotateTargets(rp, panel, updateShape, convertReplicadToThreeGeometry);
 
       const geometry = convertReplicadToThreeGeometry(rp);
       const paramPatch: any = {};
