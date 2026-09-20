@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { useAppStore, type Shape, type VirtualFace } from '../store';
 import { vfPlaneBasis, signedAngleAboutAxis, angleToTouchPlane, type RotateStep } from './PanelRotateService';
 import { resolveReferenceFacePlane } from './FaceExtrudeService';
+import { extractFacesFromGeometry, groupCoplanarFaces } from './GeometryUtils';
 import type { TransformStep } from './PanelTransformService';
 import { getFacePlaneAxes, convexHull2D, panelHasRotation } from './FaceRegion';
 
@@ -190,6 +191,122 @@ export function vfRawMinAlong(vf: VirtualFace, axisLetter: string): number | nul
   return Number.isFinite(min) ? min : null;
 }
 
+
+// ── REF DÖNÜŞ: referans YÜZ ÇOKGENİ (dünya) ───────────────────────────────
+// resolveReferenceFacePlane yalnız düzlemi verir; "yüze OTURMA" için yüzün
+// gerçek köşeleri gerekir. Eşleme extrude-ref ile aynı: normal (>0.8) +
+// tıklama noktasına en yakın merkez. Köşeler dünyaya panel konumuyla taşınır.
+function resolveReferenceFacePolygon(
+  targetId: string, faceGroupIndex: number,
+  normalWorld?: [number, number, number], pointWorld?: [number, number, number]
+): { normal: THREE.Vector3; center: THREE.Vector3; vertices: THREE.Vector3[] } | null {
+  const t = useAppStore.getState().shapes.find(s => s.id === targetId);
+  if (!t?.geometry) return null;
+  const faces = extractFacesFromGeometry(t.geometry);
+  const groups = groupCoplanarFaces(faces);
+  let group = groups[faceGroupIndex];
+  const M = new THREE.Matrix4().compose(
+    new THREE.Vector3(...t.position),
+    new THREE.Quaternion().setFromEuler(new THREE.Euler(...t.rotation)),
+    new THREE.Vector3(...t.scale)
+  );
+  if (normalWorld && pointWorld) {
+    const localPoint = new THREE.Vector3(...pointWorld).applyMatrix4(M.clone().invert());
+    const targetNormal = new THREE.Vector3(...normalWorld).transformDirection(M);
+    const matched = groups
+      .filter(g => g.normal.clone().normalize().dot(targetNormal) > 0.8)
+      .sort((a, b) => a.center.distanceTo(localPoint) - b.center.distanceTo(localPoint))[0];
+    if (matched) group = matched;
+  }
+  if (!group) return null;
+  const verts: THREE.Vector3[] = [];
+  const seen = new Set<string>();
+  for (const fi of group.faceIndices) {
+    const f = faces[fi]; if (!f) continue;
+    for (const v of f.vertices) {
+      const w = v.clone().applyMatrix4(M);
+      const k = `${Math.round(w.x * 10)},${Math.round(w.y * 10)},${Math.round(w.z * 10)}`;
+      if (seen.has(k)) continue;
+      seen.add(k); verts.push(w);
+    }
+  }
+  return {
+    normal: group.normal.clone().normalize().transformDirection(M).normalize(),
+    center: group.center.clone().applyMatrix4(M),
+    vertices: verts,
+  };
+}
+
+/** Nokta, düzlemdeki konveks çokgenin içinde mi (tol mm)? */
+function pointInFacePolygon(pt: THREE.Vector3, normal: THREE.Vector3, verts: THREE.Vector3[], tol = 0.5): boolean {
+  const { u, v } = getFacePlaneAxes(normal);
+  const hull = convexHull2D(verts.map(q => ({ x: q.dot(u), y: q.dot(v) })));
+  if (hull.length < 3) return false;
+  const p = { x: pt.dot(u), y: pt.dot(v) };
+  let sign = 0;
+  for (let i = 0; i < hull.length; i++) {
+    const a = hull[i], b = hull[(i + 1) % hull.length];
+    const cr = (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+    const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    const d = cr / len;                       // kenara işaretli uzaklık (mm)
+    if (Math.abs(d) <= tol) continue;         // kenar üstü: sayma
+    const sg = d > 0 ? 1 : -1;
+    if (sign === 0) sign = sg; else if (sg !== sign) return false;
+  }
+  return true;
+}
+
+/** Bir noktayı pivot etrafında eksen boyunca deg derece döndürür. */
+function rotateAboutAxis(pt: THREE.Vector3, pivot: THREE.Vector3, axis: THREE.Vector3, deg: number): THREE.Vector3 {
+  const q = new THREE.Quaternion().setFromAxisAngle(axis.clone().normalize(), (deg * Math.PI) / 180);
+  return pt.clone().sub(pivot).applyQuaternion(q).add(pivot);
+}
+
+/**
+ * YÜZE OTURMA: dönen panelin bir BÜYÜK yüzeyi (dış/iç), pivot etrafında dönerken
+ * referans yüz çokgeninin köşesine hangi açıda DEĞER? Yüzey düzlemi
+ * m(θ)·(X − P) = k (m = döndürülmüş normal, k = yüzeyin pivota göre ofseti).
+ * Her köşe için A cosθ + B sinθ = c çözülür; `sign` yönündeki en KÜÇÜK |θ|
+ * (ilk temas) döner. Köşe yoksa / ulaşılamıyorsa null.
+ */
+function angleToRestOnPolygon(
+  pivot: THREE.Vector3, axis: THREE.Vector3, n1: THREE.Vector3, k: number,
+  verts: THREE.Vector3[], sign: number
+): { deg: number; vertex: THREE.Vector3 } | null {
+  const u = axis.clone().normalize();
+  const nPar = u.clone().multiplyScalar(u.dot(n1));
+  const nPerp = n1.clone().sub(nPar);
+  if (nPerp.length() < 1e-6) return null;
+  const w = new THREE.Vector3().crossVectors(u, nPerp);
+  // TEMAS KÖŞESİ = pivota EN YAKIN köşe (Goker: "referans hem ölçüsünü
+  // korusun hem dönen panelin şeklini alsın"). Eğik üst panel yan panelin
+  // kenarına otururken temas İÇ köşede olur: referansın ölçüsü o köşede
+  // aynen kalır, dış köşe eğime göre pahlanır → kama boşluğu kalmaz. (İlk
+  // temas olan DIŞ köşe seçilince kenar düz kalıyor, altta boşluk oluşuyordu.)
+  // Büyük yüzlerde de aynı kural üst-iç köşeyi verir, panel yüzün içine gömülmez.
+  let best: { deg: number; vertex: THREE.Vector3; dist: number } | null = null;
+  for (const V of verts) {
+    const r = V.clone().sub(pivot);
+    const A = nPerp.dot(r), B = w.dot(r), c = k - nPar.dot(r);
+    const R = Math.hypot(A, B);
+    if (R < 1e-9 || Math.abs(c) > R) continue;
+    const phi = Math.atan2(B, A), delta = Math.acos(Math.max(-1, Math.min(1, c / R)));
+    let vBest: number | null = null;
+    for (const rad of [phi - delta, phi + delta]) {
+      let d = (rad * 180) / Math.PI; while (d > 180) d -= 360; while (d <= -180) d += 360;
+      if (Math.abs(d) < 1e-6) continue;
+      if (sign !== 0 && Math.sign(d) !== sign) continue;
+      if (vBest === null || Math.abs(d) < Math.abs(vBest)) vBest = d;
+    }
+    if (vBest === null) continue;
+    const dist = r.length();
+    if (!best || dist < best.dist - 0.5 || (Math.abs(dist - best.dist) <= 0.5 && Math.abs(vBest) < Math.abs(best.deg))) {
+      best = { deg: vBest, vertex: V, dist };
+    }
+  }
+  return best ? { deg: best.deg, vertex: best.vertex } : null;
+}
+
 // ── REFERANS BAĞI DÖNÜŞ: açıyı GÜNCEL geometriden çöz ─────────────────────
 // Nişan noktası panelin VF çıpasından (refArmVfFrac), referans nokta hedef
 // şeklin GÜNCEL dünya kutusundan (refTargetFrac) çözülür; açı pivot etrafında,
@@ -197,10 +314,17 @@ export function vfRawMinAlong(vf: VirtualFace, axisLetter: string): number | nul
 // çerçevesiyle (frame) döndürülür — sıralı adımlar birbirini dinler.
 // Çözüm mümkün değilse (hedef geometri yok / nokta eksen üstünde) adımın
 // donmuş açısı kullanılır; böylece eski projeler ve kopmuş referanslar bozulmaz.
+export type RefContact = 'arm' | 'rest';
 function resolveRefRotateDeg(
   st: any, vf: VirtualFace, pivot: THREE.Vector3, axisWorld: THREE.Vector3, frame: THREE.Quaternion
-): number {
+): { deg: number; contact?: RefContact } {
   const frozen = typeof st.resolvedValue === 'number' ? st.resolvedValue : (st.value || 0);
+  const r = resolveRefRotateDegInner(st, vf, pivot, axisWorld, frame, frozen);
+  return typeof r === 'number' ? { deg: r } : r;
+}
+function resolveRefRotateDegInner(
+  st: any, vf: VirtualFace, pivot: THREE.Vector3, axisWorld: THREE.Vector3, frame: THREE.Quaternion, frozen: number
+): number | { deg: number; contact: RefContact } {
   try {
     const armPoint = st.refArmVfFrac
       ? resolveVfFracPoint(st.refArmVfFrac as [number, number, number], vf)
@@ -227,14 +351,54 @@ function resolveRefRotateDeg(
       const armWorld = armPoint.clone().sub(pivot).applyQuaternion(frame).add(pivot);
       const sol = angleToTouchPlane(pivot, armWorld, axisWorld, plane.normal, planePointWorld, frozen);
       if (!sol) return frozen;
-      if (!sol.touched) {
-        console.warn('[YAGO][REF-DÖN] nişan noktası referans yüze ULAŞAMIYOR — en yakın yaklaşma açısı:', sol.deg.toFixed(2));
+
+      // ── (a) NİŞAN YÜZE DEĞİYOR MU, YOKSA SADECE DÜZLEMİNE Mİ? ────────────
+      // KÖK NEDEN (Goker: "referans panel 200 mm olmasına rağmen panel ona göre
+      // dönmemiş, panel 100 mm olmuş"): nişan noktası referans yüzün SONSUZ
+      // düzlemine, yüzün olmadığı bir yerde (x=460; yüz x 582..600) değdi;
+      // büyüt & sığdır paneli duvara kadar uzatınca referansın üstünden aşağı
+      // geçti ve pah referansı 200→110 kısalttı. Kural: nişanın değdiği nokta
+      // yüz çokgeninin İÇİNDE değilse panel yüze OTURUR — (b).
+      const poly = resolveReferenceFacePolygon(
+        st.refTargetPanelId, st.refTargetFaceGroupIndex ?? -1, st.refTargetFaceNormal, st.refTargetFacePoint
+      );
+      const armAt = rotateAboutAxis(armWorld, pivot, axisWorld, sol.deg);
+      const armInside = !!poly && sol.touched && pointInFacePolygon(armAt, poly.normal, poly.vertices, 0.5);
+      if (armInside || !poly) {
+        if (!sol.touched) {
+          console.warn('[YAGO][REF-DÖN] nişan noktası referans yüze ULAŞAMIYOR — en yakın yaklaşma açısı:', sol.deg.toFixed(2));
+        }
+        console.log('[YAGO][REF-DÖN] çözülen açı=', sol.deg.toFixed(2), '(nişan yüze değiyor)',
+          'hedef=', st.refTargetPanelId, 'yüzN=', [plane.normal.x, plane.normal.y, plane.normal.z].map(n => n.toFixed(2)).join(','),
+          'yüzNokta=', [planePointWorld.x, planePointWorld.y, planePointWorld.z].map(n => n.toFixed(1)).join(','),
+          'nişan=', [armAt.x, armAt.y, armAt.z].map(n => n.toFixed(1)).join(','));
+        return { deg: Math.round(sol.deg * 1000) / 1000, contact: 'arm' };
       }
-      console.log('[YAGO][REF-DÖN] çözülen açı=', sol.deg.toFixed(2),
-        'hedef=', st.refTargetPanelId, 'yüzN=', [plane.normal.x, plane.normal.y, plane.normal.z].map(n => n.toFixed(2)).join(','),
-        'yüzNokta=', [planePointWorld.x, planePointWorld.y, planePointWorld.z].map(n => n.toFixed(1)).join(','),
-        'nişan=', [armWorld.x, armWorld.y, armWorld.z].map(n => n.toFixed(1)).join(','));
-      return Math.round(sol.deg * 1000) / 1000;
+
+      // ── (b) YÜZE OTURMA: dönen panelin referansa bakan BÜYÜK yüzeyi, yüz
+      //    çokgeninin köşesine değdiği İLK açıda durur → referans hiç
+      //    kesilmez, ölçüsü değişmez. Yüzey: dış (VF düzlemi, ofset 0) ya da
+      //    iç (−kalınlık); (a) açısındaki yönelime göre referans normaline en
+      //    ZIT bakan seçilir. Ofset pivotun VF düzlemine göre konumuyla düzeltilir.
+      const n0 = new THREE.Vector3(...(vf.normal as [number, number, number])).normalize();
+      const n1 = n0.clone().applyQuaternion(frame).normalize();
+      const nOff = vf.vertices.length ? new THREE.Vector3(...vf.vertices[0]).dot(n0) : 0;
+      const dP = n0.dot(pivot) - nOff;                       // pivot: 0 = dış yüz, −t = iç yüz
+      const owner = useAppStore.getState().shapes.find(s => s.type === 'panel' && (s.parameters as any)?.virtualFaceId === vf.id);
+      const thick = parseFloat((owner?.parameters as any)?.panelThickness) || 18;
+      const mOuterAtA = rotateAboutAxis(n1.clone().add(pivot), pivot, axisWorld, sol.deg).sub(pivot).normalize();
+      const useInner = mOuterAtA.dot(poly.normal) > 0;      // dış yüz referansla aynı yöne bakıyor → iç yüz oturur
+      const k = (useInner ? -thick : 0) - dP;
+      const sign = Math.sign(sol.deg) || (frozen ? Math.sign(frozen) : 0);
+      const rest = angleToRestOnPolygon(pivot, axisWorld, n1, k, poly.vertices, sign);
+      if (!rest) {
+        console.warn('[YAGO][REF-DÖN] yüze oturma çözülemedi, düzlem açısı kullanılıyor:', sol.deg.toFixed(2));
+        return Math.round(sol.deg * 1000) / 1000;
+      }
+      console.log('[YAGO][REF-DÖN] çözülen açı=', rest.deg.toFixed(2), '(YÜZE OTURMA —', useInner ? 'iç' : 'dış', 'yüzey pivota en yakın köşeye değdi)',
+        'hedef=', st.refTargetPanelId, 'düzlemAçısı=', sol.deg.toFixed(2), 'nişanDüzlemde=', [armAt.x, armAt.y, armAt.z].map(n => n.toFixed(1)).join(','),
+        'temasKöşesi=', [rest.vertex.x, rest.vertex.y, rest.vertex.z].map(n => n.toFixed(1)).join(','));
+      return { deg: Math.round(rest.deg * 1000) / 1000, contact: 'rest' };
     }
 
     const tgtBox = target ? worldBboxOfShape(target) : null;
@@ -268,11 +432,12 @@ export function composeSteps(
 ): {
   quat: THREE.Quaternion;
   ops: Array<{ kind: 'translate'; d: THREE.Vector3 } | { kind: 'refTranslate'; targetPanelId: string; sourceFrac?: [number, number, number]; targetFrac?: [number, number, number]; fallback: THREE.Vector3 } | { kind: 'rotate'; deg: number; pivot: THREE.Vector3; axis: THREE.Vector3 }>;
-  /** REF dönüş adımlarının bu geçişte çözülen açıları (adıma geri yazılır). */
-  resolvedRotations: Array<{ id: string; value: number }>;
+  /** REF dönüş adımlarının bu geçişte çözülen açıları (adıma geri yazılır) +
+   *  temas türü ('arm' = nişan yüze değdi, 'rest' = panel yüze oturdu). */
+  resolvedRotations: Array<{ id: string; value: number; contact?: RefContact; targetId?: string }>;
 } {
   const ops: any[] = [];
-  const resolvedRotations: Array<{ id: string; value: number }> = [];
+  const resolvedRotations: Array<{ id: string; value: number; contact?: RefContact; targetId?: string }> = [];
   const frame = new THREE.Quaternion();
   for (const s of steps) {
     if (s.type === 'move') {
@@ -324,10 +489,12 @@ export function composeSteps(
       const worldAxis = axis.clone().applyQuaternion(frame).normalize();
       const pivot = resolvePivot(st, vf);
       // REFERANS BAĞI: açı donmuş değil, güncel geometriden çözülür.
-      const deg = st.refTargetPanelId
-        ? resolveRefRotateDeg(st, vf, pivot, worldAxis, frame)
-        : st.value;
-      if (st.refTargetPanelId) resolvedRotations.push({ id: st.id, value: deg });
+      let deg = st.value;
+      if (st.refTargetPanelId) {
+        const r = resolveRefRotateDeg(st, vf, pivot, worldAxis, frame);
+        deg = r.deg;
+        resolvedRotations.push({ id: st.id, value: deg, contact: r.contact, targetId: st.refTargetPanelId });
+      }
       ops.push({ kind: 'rotate', deg, pivot, axis: worldAxis });
       frame.premultiply(new THREE.Quaternion().setFromAxisAngle(worldAxis, (deg * Math.PI) / 180));
     }
@@ -641,6 +808,7 @@ function rotateRefTargetsOf(panel: Shape): Set<string> {
 async function shapeRefRotateTargets(
   rp: any, panel: Shape, vf: VirtualFace,
   children: Shape[], orderOf: (s: Shape) => number,
+  refContacts: Map<string, RefContact>,
   updateShape: (id: string, u: Partial<Shape>) => void,
   convertReplicadToThreeGeometry: (s: any) => THREE.BufferGeometry,
   createPanelFromVirtualFace: (v: [number, number, number][], n: [number, number, number], t: number, e?: number) => Promise<any>,
@@ -688,8 +856,12 @@ async function shapeRefRotateTargets(
     //                 ötesindeki her şeyi gider (R'nin geçtiği hacim dahil).
     const tChild = children.find(c => c.id === tid);
     const tIsBasan = !!tChild && orderOf(tChild) < myOrder;
-    const baseHull = tIsBasan ? outerHull : innerHull;
-    const dPlane = tIsBasan ? dOuter : dInner;
+    // YÜZE OTURMA ('rest'): dominantlıktan bağımsız İÇ (alt) yüzey — referansın
+    // dönen panelin altına giren kaması gider, temas köşesindeki ölçü korunur.
+    const isRest = refContacts.get(tid) === 'rest';
+    const useOuterPlane = tIsBasan && !isRest;
+    const baseHull = useOuterPlane ? outerHull : innerHull;
+    const dPlane = useOuterPlane ? dOuter : dInner;
     if (baseHull.length < 3) continue;
     try {
       // Nişan yönü (pivot→nişan, dönmüş çerçevede, düzlem içi): çokgen bu yönde
@@ -741,7 +913,8 @@ async function shapeRefRotateTargets(
       const after = shaped.boundingBox.bounds.map((v: number[]) => v.map(n => n.toFixed(0)).join(',')).join('..');
       updateShape(tid, { geometry: convertReplicadToThreeGeometry(shaped), replicadShape: shaped } as any);
       console.log('[YAGO][REF-DÖN-PAH]', tid, '<-', panel.id,
-        tIsBasan ? 'referans BASAN: kenar dönen panelin DIŞ yüzeyine göre pahlandı' : 'referans BASILAN: dönen panelin İÇ (alt) yüzeyine göre kısaltıldı',
+        isRest ? `referans ${tIsBasan ? 'BASAN' : 'BASILAN'} + OTURMA: kenar dönen panelin İÇ (alt) yüzeyine göre pahlandı, temas köşesi korundu`
+          : tIsBasan ? 'referans BASAN: kenar dönen panelin DIŞ yüzeyine göre pahlandı' : 'referans BASILAN: dönen panelin İÇ (alt) yüzeyine göre kısaltıldı',
         'N=', [nR.x, nR.y, nR.z].map(n => n.toFixed(2)).join(','), 'D=', dPlane.toFixed(1),
         'kutu', before, '→', after, '(ölçü/VF dokunulmadı)');
     } catch (err) {
@@ -752,6 +925,7 @@ async function shapeRefRotateTargets(
 
 async function fitRotatedPanel(
   rp: any, panel: Shape, parent: Shape, siblings: Shape[], orderOf: (s: Shape) => number,
+  refContacts: Map<string, RefContact> = new Map(),
 ): Promise<any> {
   let out = rp;
   // 1) Gövde ile kesişim: panel açıya göre duvara kadar uzar, dışarı taşmaz.
@@ -787,6 +961,13 @@ async function fitRotatedPanel(
     //     uzar; T, R'nin İÇ (alt) yüzeyine göre kısaltılır (shapeRefRotateTargets).
     if (orderOf(b) >= myOrder) continue;
     const isRefTarget = myRefTargets.has(b.id);
+    // YÜZE OTURMA: referans BASAN olsa da dönen paneli kesmez — referansın
+    // dönen panelin altına giren kaması pahla gidecek (shapeRefRotateTargets);
+    // burada kesilirse dönen panelde o kama kadar çentik kalıyordu.
+    if (isRefTarget && refContacts.get(b.id) === 'rest') {
+      console.log('[YAGO][DÖNÜŞ-SIĞDIR]', panel.id, 'referansa OTURUYOR, referansla kesilmedi <-', b.id, '(referans kenarı pahlanacak)');
+      continue;
+    }
     const fresh = useAppStore.getState().shapes.find(s => s.id === b.id);
     if (!fresh?.replicadShape || !fresh.geometry) continue;
     try {
@@ -1117,8 +1298,11 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
         }
       }
 
+      // REF DÖNÜŞ temas türü (hedef → 'arm' | 'rest'): uç kesimi ve pah bunu okur.
+      const refContacts = new Map<string, RefContact>();
+      for (const r of resolvedRotations) if (r.targetId && r.contact) refContacts.set(r.targetId, r.contact);
       if (isRotated) {
-        rp = await fitRotatedPanel(rp, panel, parentFresh, children, orderOf);
+        rp = await fitRotatedPanel(rp, panel, parentFresh, children, orderOf, refContacts);
       }
 
       // YÜZ EXTRUDE: panel artık DOĞRU ÇERÇEVEDE (VF'den üretildi + transform
@@ -1174,7 +1358,7 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       // REF DÖNÜŞ: nihai katı hazır → referans panelin kenarı bu panelin dış
       // yüzeyine göre pahlanır. (Referans panel bağımlılık sırası gereği hep bu
       // panelden ÖNCE üretildi; hedefin geometrisi burada güncellenir.)
-      await shapeRefRotateTargets(rp, panel, att.vf, children, orderOf, updateShape, convertReplicadToThreeGeometry, createPanelFromVirtualFace);
+      await shapeRefRotateTargets(rp, panel, att.vf, children, orderOf, refContacts, updateShape, convertReplicadToThreeGeometry, createPanelFromVirtualFace);
 
       const geometry = convertReplicadToThreeGeometry(rp);
       const paramPatch: any = {};
