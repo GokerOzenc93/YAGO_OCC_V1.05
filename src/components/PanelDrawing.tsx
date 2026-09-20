@@ -9,6 +9,7 @@ import { extractFacesFromGeometry, groupCoplanarFaces, createFaceHighlightGeomet
 // ShapeWithTransform'da birebir aynı davransın diye GeometryUtils'ten gelir.
 import { snapToFlatGroup } from './GeometryUtils';
 import { cycleRefFacePickFromEvent, REF_COLORS } from './FaceRefPick';
+import { applyTransformSteps } from './PanelTransformService';
 
 // ─── RENK YÖNETİMİ ───────────────────────────────────────────────────────
 // Seçim profesyonel CAD konvansiyonuyla: DOLGU asla değişmez, vurgu kenardan
@@ -697,6 +698,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           geometry={shape.geometry}
           faceRole={faceRole}
           arrowRotated={shape.parameters?.arrowRotated || false}
+          transformSteps={shape.parameters?.transformSteps}
         />
       )}
     </group>
@@ -712,19 +714,43 @@ interface DirectionArrowProps {
   geometry: THREE.BufferGeometry;
   faceRole?: string;
   arrowRotated?: boolean;
+  /** Panelin sıralı dönüşüm adımları — ok, panelin KENDİ çerçevesinde ölçülür. */
+  transformSteps?: any[];
 }
 
 const DirectionArrow: React.FC<DirectionArrowProps> = React.memo(({
   geometry,
   faceRole,
   arrowRotated = false,
+  transformSteps,
 }) => {
   const arrowConfig = useMemo(() => {
     if (!geometry) return null;
     const posAttr = geometry.getAttribute('position');
     if (!posAttr) return null;
 
-    const bbox = new THREE.Box3().setFromBufferAttribute(posAttr as THREE.BufferAttribute);
+    // ── PANEL ÇERÇEVESİ (dönmüş panelde ok yerinde kalsın) ────────────────
+    // KÖK NEDEN (Goker: "panel dönse taşınsa ok her zaman panelin üzerinde
+    // gelsin"): ölçüler DÜNYA-hizalı bbox'tan alınıyordu. 33° eğik bir
+    // 600x18x600 slab'ın bbox'ı ≈600x342x600 olur → "ince eksen" Y sanılır,
+    // ok panelin ~171 mm ÜSTÜNDE havada ve panelin eğimini izlemeyen yatay
+    // bir düzlemde çizilirdi. Çözüm: panelin kendi dönüşü (transformSteps)
+    // ile TERS döndürülmüş çerçevede ölç — orada panel yine eksen-hizalı bir
+    // slab'dır, ince eksen gerçek kalınlıktır — sonra oku aynı dönüşle geri
+    // getir. Taşıma zaten geometriye işlendiği için kendiliğinden doğrudur.
+    const steps = Array.isArray(transformSteps) ? transformSteps : [];
+    const { rotation: rot } = applyTransformSteps([0, 0, 0], [0, 0, 0], steps as any);
+    const Q = new THREE.Quaternion().setFromEuler(new THREE.Euler(rot[0], rot[1], rot[2], 'XYZ'));
+    const Qinv = Q.clone().invert();
+
+    const bbox = new THREE.Box3();
+    {
+      const v = new THREE.Vector3();
+      for (let i = 0; i < posAttr.count; i++) {
+        v.fromBufferAttribute(posAttr as THREE.BufferAttribute, i).applyQuaternion(Qinv);
+        bbox.expandByPoint(v);
+      }
+    }
     const center = new THREE.Vector3();
     const size = new THREE.Vector3();
     bbox.getCenter(center);
@@ -751,11 +777,15 @@ const DirectionArrow: React.FC<DirectionArrowProps> = React.memo(({
     const perpVec = new THREE.Vector3().setComponent(otherAxis, 1);
     const zAxis   = new THREE.Vector3().crossVectors(dirVec, perpVec).normalize();
     const basis = new THREE.Matrix4().makeBasis(dirVec, perpVec, zAxis);
-    const quat = new THREE.Quaternion().setFromRotationMatrix(basis);
+    // Panel-yerel çerçevede kurulan ok, panelin dönüşüyle dünyaya taşınır.
+    const quat = new THREE.Quaternion().setFromRotationMatrix(basis).premultiply(Q);
 
-    // İnce eksen boyunca hafif dışa ofset (yüzeye otursun, z-fight olmasın)
+    // İnce eksen boyunca hafif dışa ofset (yüzeye otursun, z-fight olmasın).
+    // Eğik panelde ok YUKARI bakan büyük yüze konur — kullanıcı onu tepeden
+    // görür; dik panellerde (y≈0) yön belirleyici değildir, +yön korunur.
     const normalUnit = new THREE.Vector3().setComponent(thinAxisIndex, 1);
-    const position = center.clone().addScaledVector(normalUnit, thinHalf + 3);
+    if (normalUnit.clone().applyQuaternion(Q).y < -1e-6) normalUnit.negate();
+    const position = center.clone().addScaledVector(normalUnit, thinHalf + 3).applyQuaternion(Q);
 
     // Düz ok silüeti (+X yönünde), panele oranlı boyut
     const planeSpan = Math.min(size.getComponent(planeAxes[0]), size.getComponent(planeAxes[1]));
@@ -787,7 +817,7 @@ const DirectionArrow: React.FC<DirectionArrowProps> = React.memo(({
       arrowGeo,
       outline,
     };
-  }, [geometry, faceRole, arrowRotated]);
+  }, [geometry, faceRole, arrowRotated, transformSteps]);
 
   // ShapeGeometry'yi bağımlılık değişince/unmount'ta temizle
   useEffect(() => () => { arrowConfig?.arrowGeo?.dispose(); }, [arrowConfig]);
