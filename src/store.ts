@@ -199,6 +199,17 @@ interface AppState{
   panelRotatePivotType:'center'|'vertex'|null;setPanelRotatePivotType:(t:'center'|'vertex'|null)=>void;
   panelRotateAxis:'x'|'y'|'z'|null;setPanelRotateAxis:(a:'x'|'y'|'z'|null)=>void;
   panelRotateValue:number;setPanelRotateValue:(v:number)=>void;
+  // ── REFERANS İLE DÖNDÜRME ───────────────────────────────────────────────
+  // null = MOD HENÜZ SEÇİLMEDİ (1. adım). Bu durumda sahnede hiçbir nokta/halka
+  // çıkmaz; yalnız Dyn/Ref seçimi gösterilir (Goker: "önce hiç nokta çıkmadan
+  // mod seçimi olsun"). 'dyn' = mevcut akış (pivot → eksen → açı). 'ref' =
+  // pivot → nişan noktası → eksen → referans panel → referans nokta → sağ tık;
+  // açı her rebuild'de referans noktadan yeniden çözülür (parametrik bağ).
+  panelRotateValueMode:'dyn'|'ref'|null;setPanelRotateValueMode:(m:'dyn'|'ref'|null)=>void;
+  /** Dönen panelin, referans noktaya NİŞAN ALACAK kendi noktası. */
+  panelRotateRefArmVertex:[number,number,number]|null;setPanelRotateRefArmVertex:(v:[number,number,number]|null)=>void;
+  panelRotateRefTargetPanelId:string|null;setPanelRotateRefTargetPanelId:(id:string|null)=>void;
+  panelRotateRefTargetVertex:[number,number,number]|null;setPanelRotateRefTargetVertex:(v:[number,number,number]|null)=>void;
 
   showVirtualFaces:boolean;setShowVirtualFaces:(b:boolean)=>void;
   virtualFaces:VirtualFace[];
@@ -263,12 +274,26 @@ export const useAppStore=create<AppState>((set,get)=>({
   panelMoveRefTargetPanelId:null,setPanelMoveRefTargetPanelId:(id)=>set({panelMoveRefTargetPanelId:id}),
   panelMoveRefTargetVertex:null,setPanelMoveRefTargetVertex:(v)=>set({panelMoveRefTargetVertex:v}),
 
-  panelRotateMode:false,setPanelRotateMode:(b)=>set({panelRotateMode:b,...(!b?{panelRotateTargetPanelId:null,panelRotatePivot:null,panelRotatePivotType:null,panelRotateAxis:null,panelRotateValue:0}:{})}),
+  // Moda GİRİŞTE de alt durum sıfırlanır: her döndürme komutu 1. adımdan
+  // (mod seçimi) başlar, sahnede nokta/halka çıkmaz. Hedef panel id'si girişte
+  // korunur — satır düğmesi onu bu çağrıdan hemen ÖNCE yazıyor.
+  panelRotateMode:false,setPanelRotateMode:(b)=>set({panelRotateMode:b,
+    panelRotatePivot:null,panelRotatePivotType:null,panelRotateAxis:null,panelRotateValue:0,
+    panelRotateValueMode:null,panelRotateRefArmVertex:null,panelRotateRefTargetPanelId:null,panelRotateRefTargetVertex:null,
+    ...(!b?{panelRotateTargetPanelId:null}:{})}),
   panelRotateTargetPanelId:null,setPanelRotateTargetPanelId:(id)=>set({panelRotateTargetPanelId:id}),
   panelRotatePivot:null,setPanelRotatePivot:(p)=>set({panelRotatePivot:p}),
   panelRotatePivotType:null,setPanelRotatePivotType:(t)=>set({panelRotatePivotType:t}),
   panelRotateAxis:null,setPanelRotateAxis:(a)=>set({panelRotateAxis:a}),
   panelRotateValue:0,setPanelRotateValue:(v)=>set({panelRotateValue:v}),
+  // Mod değişiminde ref seçimleri sıfırlanır (yarım kalmış bağ taşınmasın).
+  // Mod seçimi/değişimi akışı BAŞA alır: pivot dahil tüm seçimler sıfırlanır,
+  // böylece mod seçilene kadar sahnede hiçbir nokta çıkmaz ve mod değiştirince
+  // yarım kalmış bir seçim taşınmaz.
+  panelRotateValueMode:null,setPanelRotateValueMode:(m)=>set({panelRotateValueMode:m,panelRotatePivot:null,panelRotatePivotType:null,panelRotateAxis:null,panelRotateValue:0,panelRotateRefArmVertex:null,panelRotateRefTargetPanelId:null,panelRotateRefTargetVertex:null}),
+  panelRotateRefArmVertex:null,setPanelRotateRefArmVertex:(v)=>set({panelRotateRefArmVertex:v}),
+  panelRotateRefTargetPanelId:null,setPanelRotateRefTargetPanelId:(id)=>set({panelRotateRefTargetPanelId:id}),
+  panelRotateRefTargetVertex:null,setPanelRotateRefTargetVertex:(v)=>set({panelRotateRefTargetVertex:v}),
 
   showVirtualFaces:true,setShowVirtualFaces:(b)=>set({showVirtualFaces:b}),
   virtualFaces:[],
