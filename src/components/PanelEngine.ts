@@ -640,6 +640,7 @@ function rotateRefTargetsOf(panel: Shape): Set<string> {
 // referans yüzde biter. Her rebuild'de T sıfırdan üretilip yeniden pahlanır.
 async function shapeRefRotateTargets(
   rp: any, panel: Shape, vf: VirtualFace,
+  children: Shape[], orderOf: (s: Shape) => number,
   updateShape: (id: string, u: Partial<Shape>) => void,
   convertReplicadToThreeGeometry: (s: any) => THREE.BufferGeometry,
   createPanelFromVirtualFace: (v: [number, number, number][], n: [number, number, number], t: number, e?: number) => Promise<any>,
@@ -649,10 +650,12 @@ async function shapeRefRotateTargets(
   const steps = getUnifiedSteps(panel);
   const { quat } = composeSteps(steps, vf);
   const nR = new THREE.Vector3(...(vf.normal as [number, number, number])).normalize().applyQuaternion(quat).normalize();
+  const myOrder = orderOf(panel);
 
-  // R'nin dış yüz çokgeni (nR yönünde en dış köşeler → konveks gövde).
+  // R'nin DIŞ (nR yönünde en dış) ve İÇ (en iç) yüz çokgenleri — konveks gövde.
   let outerHull: { x: number; y: number }[] = [];
-  let dOuter = -Infinity;
+  let innerHull: { x: number; y: number }[] = [];
+  let dOuter = -Infinity, dInner = Infinity;
   const { u: ur, v: vr } = getFacePlaneAxes(nR);
   try {
     const g = convertReplicadToThreeGeometry(rp);
@@ -664,27 +667,37 @@ async function shapeRefRotateTargets(
       const key = `${Math.round(p.x * 10)},${Math.round(p.y * 10)},${Math.round(p.z * 10)}`;
       if (seen.has(key)) continue;
       seen.add(key); pts.push(p);
-      dOuter = Math.max(dOuter, p.dot(nR));
+      const d = p.dot(nR);
+      dOuter = Math.max(dOuter, d); dInner = Math.min(dInner, d);
     }
-    const outer = pts.filter(p => p.dot(nR) > dOuter - 0.5);
-    outerHull = convexHull2D(outer.map(p => ({ x: p.dot(ur), y: p.dot(vr) })));
+    outerHull = convexHull2D(pts.filter(p => p.dot(nR) > dOuter - 0.5).map(p => ({ x: p.dot(ur), y: p.dot(vr) })));
+    innerHull = convexHull2D(pts.filter(p => p.dot(nR) < dInner + 0.5).map(p => ({ x: p.dot(ur), y: p.dot(vr) })));
   } catch (err) {
-    console.warn('[YAGO][REF-DÖN-PAH] dış yüz çıkarılamadı:', panel.id, (err as any)?.message || String(err));
+    console.warn('[YAGO][REF-DÖN-PAH] yüz çokgeni çıkarılamadı:', panel.id, (err as any)?.message || String(err));
     return;
   }
-  if (outerHull.length < 3 || !Number.isFinite(dOuter)) return;
+  if (!Number.isFinite(dOuter) || !Number.isFinite(dInner)) return;
 
   for (const tid of targets) {
     const t = useAppStore.getState().shapes.find(s => s.id === tid);
     if (!t?.replicadShape || !t.geometry) continue;
     const st: any = steps.find((x: any) => x.type === 'rotate' && x.refTargetPanelId === tid);
+    // SIRA: referans T dönen panelden ÖNCE mi (basan) yoksa SONRA mı (basılan)?
+    //   • T basan  → R, T'de biter; T'nin DIŞ yüzeyin ötesindeki kenarı gider.
+    //   • T basılan → R, T'nin üstünden geçer; T'nin R'nin İÇ (alt) yüzeyinin
+    //                 ötesindeki her şeyi gider (R'nin geçtiği hacim dahil).
+    const tChild = children.find(c => c.id === tid);
+    const tIsBasan = !!tChild && orderOf(tChild) < myOrder;
+    const baseHull = tIsBasan ? outerHull : innerHull;
+    const dPlane = tIsBasan ? dOuter : dInner;
+    if (baseHull.length < 3) continue;
     try {
       // Nişan yönü (pivot→nişan, dönmüş çerçevede, düzlem içi): çokgen bu yönde
       // T'nin kalınlığını geçecek kadar uzatılır — pah yalnız R'nin ucundaki
       // referans paneli kapsar, R'nin yanındaki başka panellere taşmaz.
       const tT = parseFloat((t.parameters as any)?.panelThickness) || 18;
       const ext = 3 * tT + 2;
-      let hull = outerHull;
+      let hull = baseHull;
       if (st?.refArmVfFrac) {
         const P = resolvePivot(st, vf);
         const A = resolveVfFracPoint(st.refArmVfFrac as [number, number, number], vf);
@@ -701,15 +714,15 @@ async function shapeRefRotateTargets(
         if (d.length() > 1e-6) {
           d.normalize();
           const d2 = { x: d.dot(ur), y: d.dot(vr) };
-          hull = convexHull2D([...outerHull, ...outerHull.map(q => ({ x: q.x + d2.x * ext, y: q.y + d2.y * ext }))]);
+          hull = convexHull2D([...baseHull, ...baseHull.map(q => ({ x: q.x + d2.x * ext, y: q.y + d2.y * ext }))]);
         }
       }
       if (hull.length < 3) continue;
       const poly = hull.map(q => {
-        const w = new THREE.Vector3().addScaledVector(ur, q.x).addScaledVector(vr, q.y).addScaledVector(nR, dOuter);
+        const w = new THREE.Vector3().addScaledVector(ur, q.x).addScaledVector(vr, q.y).addScaledVector(nR, dPlane);
         return [w.x, w.y, w.z] as [number, number, number];
       });
-      // Normal −nR verilir: slab −(−nR) = +nR yönünde uzar → dış yüzeyin ÖTESİ.
+      // Normal −nR verilir: slab −(−nR) = +nR yönünde uzar → seçilen yüzeyin ÖTESİ.
       const H = 100000;
       const cutter = await createPanelFromVirtualFace(poly, [-nR.x, -nR.y, -nR.z], H, 0);
       if (!cutter) continue;
@@ -727,8 +740,9 @@ async function shapeRefRotateTargets(
       const shaped = t.replicadShape.clone().cut(cutter);
       const after = shaped.boundingBox.bounds.map((v: number[]) => v.map(n => n.toFixed(0)).join(',')).join('..');
       updateShape(tid, { geometry: convertReplicadToThreeGeometry(shaped), replicadShape: shaped } as any);
-      console.log('[YAGO][REF-DÖN-PAH]', tid, '<-', panel.id, 'kenar dönen panelin dış yüzeyine göre pahlandı',
-        'dışN=', [nR.x, nR.y, nR.z].map(n => n.toFixed(2)).join(','), 'dışD=', dOuter.toFixed(1),
+      console.log('[YAGO][REF-DÖN-PAH]', tid, '<-', panel.id,
+        tIsBasan ? 'referans BASAN: kenar dönen panelin DIŞ yüzeyine göre pahlandı' : 'referans BASILAN: dönen panelin İÇ (alt) yüzeyine göre kısaltıldı',
+        'N=', [nR.x, nR.y, nR.z].map(n => n.toFixed(2)).join(','), 'D=', dPlane.toFixed(1),
         'kutu', before, '→', after, '(ölçü/VF dokunulmadı)');
     } catch (err) {
       console.warn('[YAGO][REF-DÖN-PAH] pah hatası:', tid, '<-', panel.id, (err as any)?.message || String(err));
@@ -765,12 +779,14 @@ async function fitRotatedPanel(
   const myRefTargets = rotateRefTargetsOf(panel);
   for (const b of siblings) {
     if (b.id === panel.id) continue;
-    // REF DÖNÜŞ HEDEFİ, VF SIRASINDAN BAĞIMSIZ keser: nişan noktası referans
-    // yüze DEĞER, dönen panel referans panelin içinden geçmez — ucu referans
-    // yüzde biter. (Referans panelin kenarı ise dönen panelin dış yüzeyine
-    // göre pahlanır: shapeRefRotateTargets.)
+    // SIRA SÖZLEŞMESİ REF ÇİFTİNDE DE GEÇERLİ (Goker: "panel yan panele göre
+    // önce yerleşmesine rağmen döndükten sonra diğer panelin arasında kaldı"):
+    //   • referans T ÖNCE (basan) → dönen panel T'nin gövdesiyle kesilir, ucu
+    //     referans yüzde biter; T'nin kenarı R'nin DIŞ yüzeyine göre pahlanır.
+    //   • referans T SONRA (basılan) → R kesilmez, T'nin ÜSTÜNDEN duvara kadar
+    //     uzar; T, R'nin İÇ (alt) yüzeyine göre kısaltılır (shapeRefRotateTargets).
+    if (orderOf(b) >= myOrder) continue;
     const isRefTarget = myRefTargets.has(b.id);
-    if (!isRefTarget && orderOf(b) >= myOrder) continue;
     const fresh = useAppStore.getState().shapes.find(s => s.id === b.id);
     if (!fresh?.replicadShape || !fresh.geometry) continue;
     try {
@@ -1158,7 +1174,7 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       // REF DÖNÜŞ: nihai katı hazır → referans panelin kenarı bu panelin dış
       // yüzeyine göre pahlanır. (Referans panel bağımlılık sırası gereği hep bu
       // panelden ÖNCE üretildi; hedefin geometrisi burada güncellenir.)
-      await shapeRefRotateTargets(rp, panel, att.vf, updateShape, convertReplicadToThreeGeometry, createPanelFromVirtualFace);
+      await shapeRefRotateTargets(rp, panel, att.vf, children, orderOf, updateShape, convertReplicadToThreeGeometry, createPanelFromVirtualFace);
 
       const geometry = convertReplicadToThreeGeometry(rp);
       const paramPatch: any = {};
