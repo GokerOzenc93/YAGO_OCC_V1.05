@@ -1436,15 +1436,22 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       && !!panelRotateRefTargetPanelId && !!panelRotateRefTargetVertex;
     const axisColors: Record<string, string> = { x: '#dc2626', y: '#16a34a', z: '#2563eb' };
 
-    const segRotMode = (mode: 'dyn'|'ref'): React.CSSProperties => ({
-      flex: 1, minWidth: 0, height: 28, fontSize: 10, fontWeight: 700, letterSpacing: '0.03em',
-      border: 'none', outline: 'none', cursor: 'pointer',
-      borderLeft: mode === 'dyn' ? 'none' : '1px solid rgba(60,50,40,0.10)',
-      background: panelRotateValueMode === mode ? '#e8e1d5' : 'rgba(255,255,255,0.45)',
-      color: panelRotateValueMode === mode ? '#44403c' : '#a8a29e',
-      boxShadow: panelRotateValueMode === mode ? 'inset 0 1px 2px rgba(60,50,40,0.14)' : 'none',
-      transition: 'all 0.12s',
-    });
+    // AKTİF MOD OKUNAKLI OLSUN: fildişi üstüne fildişi (taşıma segmentinin soluk
+    // tonu) burada "hiç seçilmemiş" gibi okunuyordu — ref moduna geçildiği
+    // anlaşılmıyordu. Aktif düğme, uygulamanın kendi "açık araç" dili olan koyu
+    // taş dolguya çekildi (panel satırındaki etkin Taşı/Döndür düğmeleriyle aynı).
+    const segRotMode = (mode: 'dyn'|'ref'): React.CSSProperties => {
+      const on = panelRotateValueMode === mode;
+      return {
+        flex: 1, minWidth: 0, height: 28, fontSize: 10, fontWeight: 700, letterSpacing: '0.03em',
+        border: 'none', outline: 'none', cursor: 'pointer',
+        borderLeft: mode === 'dyn' ? 'none' : '1px solid rgba(60,50,40,0.10)',
+        background: on ? 'linear-gradient(180deg,#5b5346,#44403c)' : 'rgba(255,255,255,0.45)',
+        color: on ? '#fff' : '#78716c',
+        boxShadow: on ? '0 1px 2px rgba(40,30,20,0.25),inset 0 1px 0 rgba(255,255,255,0.18)' : 'none',
+        transition: 'all 0.12s',
+      };
+    };
 
     const modeSeg = (
       <div style={{ display: 'flex', width: 84, flexShrink: 0, borderRadius: 7, overflow: 'hidden', border: '1px solid rgba(60,50,40,0.16)' }}>
@@ -1496,13 +1503,23 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
 
     // ── REF MODU: tek satır, adım durum etiketi + mod segmenti + onay ──────
     if (isRotRefMode) {
+      // ADIM SAYACI: dyn modunun 1. adım etiketiyle ("Donme noktasi sec")
+      // neredeyse aynı bir metin, ref moduna geçilip geçilmediğini
+      // belirsizleştiriyordu. Ref akışı artık kaçıncı adımda olduğunu söyler.
       const step = !hasPivot ? 1 : !hasArm ? 2 : !hasAxis ? 3 : !panelRotateRefTargetPanelId ? 4 : !panelRotateRefTargetVertex ? 5 : 6;
-      const label = step === 1 ? 'Dönme noktasını seç'
-        : step === 2 ? 'Nişan noktasını seç (aynı panel)'
-        : step === 3 ? 'Ekseni seç (X/Y/Z halkası)'
-        : step === 4 ? 'Referans paneli seç'
-        : step === 5 ? 'Referans noktayı seç'
-        : 'Hazır — sağ tık ile onayla';
+      // Şerit dar: etiket kısa tutulur, tam açıklama title'da (hover) verilir.
+      const label = step === 1 ? '1/5 · Pivot noktası'
+        : step === 2 ? '2/5 · Nişan noktası'
+        : step === 3 ? '3/5 · Eksen halkası'
+        : step === 4 ? '4/5 · Referans panel'
+        : step === 5 ? '5/5 · Referans nokta'
+        : 'Hazır — sağ tık onay';
+      const hint = step === 1 ? 'Panelin döneceği nokta (kendi köşe/merkez noktalarından)'
+        : step === 2 ? 'Referansa doğrultulacak nokta — AYNI panelin başka bir noktası'
+        : step === 3 ? 'Dönme ekseni: sahnedeki X / Y / Z halkasından seç'
+        : step === 4 ? 'Referans paneli tıkla (aynı yere tekrar tıkla → arkadaki panel)'
+        : step === 5 ? 'Referans panelin turuncu noktalarından birini seç'
+        : 'Sahnede herhangi bir yere sağ tıkla — bağ kalıcı kurulur';
       return (
         <div style={{
           position: 'absolute', left: 8, right: 8, bottom: 8, zIndex: 5, borderRadius: 11,
@@ -1514,7 +1531,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
           fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif",
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 9px' }}>
-            <div style={{
+            <div title={hint} style={{
               flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 6, height: 28, padding: '0 10px', borderRadius: 7,
               background: rotRefReady ? 'rgba(34,197,94,0.10)' : 'rgba(120,113,108,0.08)',
               border: rotRefReady ? '1px solid rgba(22,163,74,0.30)' : '1px solid rgba(60,50,40,0.10)',
