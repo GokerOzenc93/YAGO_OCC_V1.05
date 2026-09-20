@@ -70,6 +70,47 @@ export function signedAngleAboutAxis(
   return (rad * 180) / Math.PI;
 }
 
+/**
+ * ÇEMBER ∩ DÜZLEM: pivot etrafında `axis` ile dönen nişan noktası (arm), verilen
+ * DÜZLEME (n·X = n·Q) hangi açıda değer? a(θ) = a∥ + a⊥cosθ + (û×a⊥)sinθ →
+ * n·a(θ) = c çözülür: A cosθ + B sinθ = c. İki kök vardır; `prefer` derecesine
+ * en yakın olan seçilir (oluşturmada 0 = en küçük dönüş, rebuild'de önceki
+ * çözüm = süreklilik). Nokta düzleme hiç ulaşamıyorsa (|c| > √(A²+B²)) en
+ * yakın yaklaşma açısı döner ve `touched=false` işaretlenir; nişan eksen
+ * üstündeyse null.
+ */
+export function angleToTouchPlane(
+  pivot: THREE.Vector3, arm: THREE.Vector3, axis: THREE.Vector3,
+  planeNormal: THREE.Vector3, planePoint: THREE.Vector3, prefer = 0
+): { deg: number; touched: boolean } | null {
+  const u = axis.clone().normalize();
+  const n = planeNormal.clone().normalize();
+  const a0 = arm.clone().sub(pivot);
+  const aPar = u.clone().multiplyScalar(u.dot(a0));
+  const aPerp = a0.clone().sub(aPar);
+  if (aPerp.length() < 1e-6) return null;
+  const w = new THREE.Vector3().crossVectors(u, aPerp);
+  const A = n.dot(aPerp), B = n.dot(w);
+  const c = n.dot(planePoint) - n.dot(pivot) - n.dot(aPar);
+  const R = Math.hypot(A, B);
+  if (R < 1e-9) return null;
+  const phi = Math.atan2(B, A);
+  const norm = (rad: number) => { let d = (rad * 180) / Math.PI; while (d > 180) d -= 360; while (d <= -180) d += 360; return d; };
+  const nearest = (cands: number[]) => cands.reduce((best, d) => {
+    const dd = Math.abs(((d - prefer + 540) % 360) - 180);
+    const db = Math.abs(((best - prefer + 540) % 360) - 180);
+    return dd < db ? d : best;
+  });
+  if (Math.abs(c) > R) {
+    // Ulaşılamıyor: düzleme en yakın yaklaşma (c>0 → φ, c<0 → φ+π).
+    const deg = norm(c > 0 ? phi : phi + Math.PI);
+    return { deg, touched: false };
+  }
+  const delta = Math.acos(Math.max(-1, Math.min(1, c / R)));
+  const roots = [norm(phi - delta), norm(phi + delta)];
+  return { deg: nearest(roots), touched: true };
+}
+
 /** Kullanıcının dünya ekseni harfini, panelin VF tabanındaki en yakın yerel eksene eşler. */
 export function mapAxisToVfLocal(
   vf: { normal: [number, number, number] | number[] } | undefined | null,
@@ -172,12 +213,15 @@ export async function executePanelRotate(params: PanelRotateParams): Promise<boo
 // REFERANS İLE DÖNDÜRME
 // Kullanıcı sözleşmesi (Goker):
 //   1. pivot (dönme noktası)  — panelin kendi köşe/merkez noktası
-//   2. nişan noktası          — panelin, referansa doğrultulacak kendi noktası
+//   2. nişan noktası          — panelin, referansa değecek kendi noktası
 //   3. eksen                  — X/Y/Z halkası (zorunlu)
-//   4. referans panel + nokta — taşımadaki referans seçiminin AYNISI
+//   4. referans YÜZ           — başka bir panelin yüzü (extrude-ref seçimiyle aynı)
 //   5. sağ tık onay
-// Sonuç DONMUŞ bir açı değildir: adım referansı saklar, açı her rebuild'de
-// güncel geometriden yeniden çözülür → referans nokta taşındıkça panel döner.
+// Açı: nişan noktası referans yüzün DÜZLEMİNE değene kadar dönülür. DONMUŞ
+// değildir: yüz her rebuild'de referans panelin güncel geometrisinden çözülür,
+// pivot/nişan VF çıpasından → referans yüz kaydıkça panel yeniden döner.
+// Ayrıca referans panelin kenarı dönen panelin dış yüzeyiyle hizalanacak
+// şekilde pahlanır (PanelEngine.shapeRefRotateTargets).
 // ═══════════════════════════════════════════════════════════════════════════
 export interface PanelRotateRefParams {
   panelShape: Shape;
@@ -185,42 +229,17 @@ export interface PanelRotateRefParams {
   armVertex: [number, number, number];
   axis: 'x' | 'y' | 'z';
   targetPanelId: string;
-  targetVertex: [number, number, number];
+  targetFace: { faceGroupIndex: number; normalWorld: [number, number, number]; pointWorld: [number, number, number] };
   shapes: Shape[];
   updateShape: (id: string, updates: Partial<Shape>) => void;
 }
 
-/** Bir şeklin GÜNCEL geometrisinin DÜNYA sınır kutusu (motorla aynı kural). */
-function worldBboxOf(shape: Shape): { min: THREE.Vector3; max: THREE.Vector3 } | null {
-  if (!shape?.geometry) return null;
-  const pos = shape.geometry.getAttribute('position') as THREE.BufferAttribute;
-  if (!pos) return null;
-  const box = new THREE.Box3().setFromBufferAttribute(pos);
-  box.applyMatrix4(new THREE.Matrix4().compose(
-    new THREE.Vector3(...(shape.position as any)),
-    new THREE.Quaternion().setFromEuler(new THREE.Euler(...(shape.rotation as [number, number, number]), 'XYZ')),
-    new THREE.Vector3(...((shape.scale as any) || [1, 1, 1]))
-  ));
-  return { min: box.min.clone(), max: box.max.clone() };
-}
-
-function fracInBox(box: { min: THREE.Vector3; max: THREE.Vector3 }, p: [number, number, number]): [number, number, number] {
-  const fr = (a: number, b: number, x: number) => (Math.abs(b - a) < 1e-9 ? 0 : (x - a) / (b - a));
-  const c01 = (v: number) => Math.max(0, Math.min(1, v));
-  return [
-    c01(fr(box.min.x, box.max.x, p[0])),
-    c01(fr(box.min.y, box.max.y, p[1])),
-    c01(fr(box.min.z, box.max.z, p[2])),
-  ];
-}
-
 export async function executePanelRotateRef(params: PanelRotateRefParams): Promise<boolean> {
-  const { panelShape, pivot, armVertex, axis, targetPanelId, targetVertex, updateShape } = params;
+  const { panelShape, pivot, armVertex, axis, targetPanelId, targetFace, updateShape } = params;
 
   const { useAppStore } = await import('../store');
   const state = useAppStore.getState();
   const fresh = state.shapes.find(s => s.id === panelShape.id) || panelShape;
-  const targetShape = state.shapes.find(s => s.id === targetPanelId) || null;
   const vf = state.virtualFaces?.find((f: any) => f.id === (fresh.parameters as any)?.virtualFaceId);
 
   // PANEL-YEREL EKSEN: normal dönüşle BİREBİR aynı eşleme.
@@ -230,22 +249,22 @@ export async function executePanelRotateRef(params: PanelRotateRefParams): Promi
     : new THREE.Vector3(axis === 'x' ? 1 : 0, axis === 'y' ? 1 : 0, axis === 'z' ? 1 : 0);
 
   // Oluşturma anındaki açı — yalnız çözüm başarısız olursa yedek olarak kullanılır.
-  const deg0 = signedAngleAboutAxis(
-    new THREE.Vector3(...armVertex).sub(new THREE.Vector3(...pivot)),
-    new THREE.Vector3(...targetVertex).sub(new THREE.Vector3(...pivot)),
-    axisWorld
+  const sol = angleToTouchPlane(
+    new THREE.Vector3(...pivot), new THREE.Vector3(...armVertex), axisWorld,
+    new THREE.Vector3(...targetFace.normalWorld), new THREE.Vector3(...targetFace.pointWorld), 0
   );
-  if (deg0 === null) {
-    console.warn('[YAGO][REF-DÖN] nişan veya referans nokta eksen üstünde — açı tanımsız, iptal');
+  if (!sol) {
+    console.warn('[YAGO][REF-DÖN] nişan noktası eksen üstünde — açı tanımsız, iptal');
     return false;
   }
+  if (!sol.touched) {
+    console.warn('[YAGO][REF-DÖN] nişan noktası referans yüze ULAŞAMIYOR — en yakın yaklaşma açısı kullanılıyor:', sol.deg.toFixed(2));
+  }
+  const deg0 = Math.round(sol.deg * 1000) / 1000;
 
-  // ÇIPALAR: pivot ve nişan noktası VF'ye oransal; referans nokta hedef şeklin
-  // dünya kutusuna oransal (taşımadaki refTargetFrac ile aynı kural).
+  // ÇIPALAR: pivot ve nişan noktası VF'ye oransal (pivotVfFrac ile aynı kural).
   const pivotVfFrac = vf ? vfFracOfPoint(vf as any, pivot) : undefined;
   const refArmVfFrac = vf ? vfFracOfPoint(vf as any, armVertex) : undefined;
-  const tgtBox = targetShape ? worldBboxOf(targetShape) : null;
-  const refTargetFrac = tgtBox ? fracInBox(tgtBox, targetVertex) : undefined;
 
   let pivotFrac: [number, number, number] | undefined;
   const parent = state.shapes.find(s => s.id === (fresh.parameters as any)?.parentShapeId);
@@ -258,18 +277,20 @@ export async function executePanelRotateRef(params: PanelRotateRefParams): Promi
   }
 
   console.log('[YAGO][REF-DÖN] bağ kuruldu — pivotVfFrac=', pivotVfFrac,
-    'nişanVfFrac=', refArmVfFrac, 'hedefFrac=', refTargetFrac,
-    'hedef=', targetPanelId, 'eksen=', axis, 'açı0=', deg0.toFixed(2));
+    'nişanVfFrac=', refArmVfFrac, 'hedef=', targetPanelId, 'yüzGrubu=', targetFace.faceGroupIndex,
+    'yüzN=', targetFace.normalWorld.map(n => n.toFixed(2)).join(','), 'eksen=', axis, 'açı0=', deg0.toFixed(2));
 
   const { getUnifiedSteps, setUnifiedSteps, rebuildPanelsForParent } = await import('./PanelEngine');
   const steps = getUnifiedSteps(fresh);
   const now = Date.now();
   const step: any = {
     id: `step-${now}`, type: 'rotate', axis, axisVec,
-    value: Math.round(deg0 * 1000) / 1000, resolvedValue: Math.round(deg0 * 1000) / 1000,
+    value: deg0, resolvedValue: deg0,
     pivot, pivotFrac, pivotVfFrac, timestamp: now,
-    refTargetPanelId: targetPanelId, refTargetVertex: targetVertex,
-    ...(refTargetFrac ? { refTargetFrac } : {}),
+    refTargetPanelId: targetPanelId,
+    refTargetFaceGroupIndex: targetFace.faceGroupIndex,
+    refTargetFaceNormal: targetFace.normalWorld,
+    refTargetFacePoint: targetFace.pointWorld,
     refArmVertex: armVertex,
     ...(refArmVfFrac ? { refArmVfFrac } : {}),
   };

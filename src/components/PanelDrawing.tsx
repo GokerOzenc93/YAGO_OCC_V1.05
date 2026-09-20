@@ -125,8 +125,8 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     panelRotatePivot,
     panelRotateRefArmVertex,
     panelRotateAxis,
-    panelRotateRefTargetPanelId,
-    panelRotateRefTargetVertex
+    panelRotateRefFace,
+    setPanelRotateRefFace
   } = useAppStore(useShallow(state => ({
     selectShape: state.selectShape,
     selectSecondaryShape: state.selectSecondaryShape,
@@ -161,8 +161,8 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     panelRotatePivot: state.panelRotatePivot,
     panelRotateRefArmVertex: state.panelRotateRefArmVertex,
     panelRotateAxis: state.panelRotateAxis,
-    panelRotateRefTargetPanelId: state.panelRotateRefTargetPanelId,
-    panelRotateRefTargetVertex: state.panelRotateRefTargetVertex
+    panelRotateRefFace: state.panelRotateRefFace,
+    setPanelRotateRefFace: state.setPanelRotateRefFace
   })));
 
   const [faceGroups, setFaceGroups] = useState<any[]>([]);
@@ -260,24 +260,26 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   // ÖNEMLİ: Referans seçimi ancak EXTRUDE EDİLECEK hedef yüz seçildikten sonra
   // (faceExtrudeSelectedFace !== null) aktifleşir; aksi hâlde hedef yüzü seçerken
   // referans overlay'leri (yeşil vurgu) erkenden çıkıp seçimi bozuyordu.
-  const isRefMode = faceExtrudeMode && faceExtrudeValueMode === 'ref' && faceExtrudeSelectedFace !== null;
-  const isRefPickablePanel = isRefMode && shape.id !== faceExtrudeTargetPanelId;
-  const isRefCandidatePanel = isRefMode && faceExtrudeRefCandidate?.panelId === shape.id;
-  // ── REF AKIŞI (TAŞIMA + DÖNDÜRME) ORTAK VURGUSU ─────────────────────────
-  // İki akış aynı görsel sözleşmeyi paylaşır: onaylanan referans panel yeşil,
-  // aday (fare altındaki) panel turuncu; ikisi de KOMPLE vurgulanır. Döndürmede
-  // referans seçimi eksen seçildikten SONRA başlar (pivot + nişan + eksen).
-  const rotateRefActive = panelRotateMode && panelRotateValueMode === 'ref'
+  const isExtRefMode = faceExtrudeMode && faceExtrudeValueMode === 'ref' && faceExtrudeSelectedFace !== null;
+  // ── DÖNDÜRME REF: REFERANS YÜZ SEÇİMİ (extrude-ref ile AYNI akış) ────────
+  // Pivot + nişan + eksen seçildikten sonra başka bir panelin YÜZÜ referans
+  // alınır: hover'da yüz soft sarı, derinlik döngüsüyle seçilen yüz doygun
+  // sarı (REF_COLORS). Nokta/panel seçimi yok.
+  const isRotRefMode = panelRotateMode && panelRotateValueMode === 'ref'
     && !!panelRotatePivot && !!panelRotateRefArmVertex && panelRotateAxis !== null;
+  const isRefMode = isExtRefMode || isRotRefMode;
+  const refOwnerId = isExtRefMode ? faceExtrudeTargetPanelId : panelRotateTargetPanelId;
+  const refCandidate = isExtRefMode ? faceExtrudeRefCandidate : panelRotateRefFace;
+  const isRefPickablePanel = isRefMode && shape.id !== refOwnerId;
+  const isRefCandidatePanel = isRefMode && refCandidate?.panelId === shape.id;
+  // ── TAŞIMA REF VURGUSU (panel + nokta seçimi) ────────────────────────────
   const isMoveRefTargetPanel =
-    (panelMoveMode && panelMoveValueMode === 'ref' && !!panelMoveRefSourceVertex && panelMoveRefTargetPanelId === shape.id)
-    || (rotateRefActive && panelRotateRefTargetPanelId === shape.id);
+    panelMoveMode && panelMoveValueMode === 'ref' && !!panelMoveRefSourceVertex && panelMoveRefTargetPanelId === shape.id;
   // Aday (hover) vurgusu: hedef panel seçim aşaması boyunca (hedef NOKTA
   // seçilene kadar) sürer — seçili referans dışındaki paneller turuncu parlar,
   // böylece derinlik döngüsüyle gezerken sıradaki aday görünür.
   const isMoveRefPickMode =
-    (panelMoveMode && panelMoveValueMode === 'ref' && !!panelMoveRefSourceVertex && !panelMoveRefTargetVertex && shape.id !== panelMoveTargetPanelId && panelMoveRefTargetPanelId !== shape.id)
-    || (rotateRefActive && !panelRotateRefTargetVertex && shape.id !== panelRotateTargetPanelId && panelRotateRefTargetPanelId !== shape.id);
+    panelMoveMode && panelMoveValueMode === 'ref' && !!panelMoveRefSourceVertex && !panelMoveRefTargetVertex && shape.id !== panelMoveTargetPanelId && panelMoveRefTargetPanelId !== shape.id;
   // Ref-move vurgu: hedef seçim aşamasında fare altındaki ADAY panel soft sarı
   // (ref modunun ortak tonu), ONAYLANAN referans panel yeşil kalır — onay ile
   // aday arasındaki fark tek bakışta okunsun diye. Her ikisi de KOMPLE vurgulanır.
@@ -374,14 +376,22 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     // DÖNDÜRME REF MODU: aynı izolasyon — referans panel derinlik döngüsü canvas
     // seviyesinde (RotateRefPanelPicker) yürütülür; tıklama normal seçime
     // DÜŞMEMELİ, aksi halde referans panel de seçili kalıp vurgu takılıyor.
-    if (panelRotateMode && panelRotateValueMode === 'ref') return;
+    if (panelRotateMode && panelRotateValueMode === 'ref') {
+      // Referans YÜZ seçim aşaması (pivot + nişan + eksen seçildi): extrude-ref
+      // ile aynı derinlik döngüsü; yalnız PANEL yüzleri aday (gövde hariç).
+      if (isRotRefMode && shape.id !== panelRotateTargetPanelId) {
+        const panelsOnly = useAppStore.getState().shapes.filter((x: any) => x.type === 'panel');
+        cycleRefFacePickFromEvent(e, panelsOnly, panelRotateTargetPanelId, setPanelRotateRefFace);
+      }
+      return;
+    }
     if (isFaceExtrudeTarget) return;
     // FaceExtrude modunda hedef olmayan panellerde normal seçim yapma.
     if (faceExtrudeMode && !isFaceExtrudeTarget) return;
     // Ref modu — tüm normal seçim mantığını atla. Işın boyunca DERİNLİK DÖNGÜSÜ:
     // aynı noktaya her tıklamada bir arkadaki yüze geçer (küp dış yüzü → panel
     // yüzü → arkası...). Tüm şekiller taranır; hedef panel hariç.
-    if (isRefMode) {
+    if (isExtRefMode) {
       if (shape.id === faceExtrudeTargetPanelId) return;
       const allShapes = useAppStore.getState().shapes;
       cycleRefFacePickFromEvent(e, allShapes, faceExtrudeTargetPanelId, setFaceExtrudeRefCandidate);
@@ -440,7 +450,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
           onClick={handleClick}
           onPointerOver={(e: any) => { if (isMoveRefPickMode) { e.stopPropagation(); setMoveRefHover(true); } }}
           onPointerOut={() => { if (moveRefHover) setMoveRefHover(false); }}
-          onPointerDown={(e: any) => { if (isRefPickablePanel) handleRefRightClick(e); }}
+          onPointerDown={(e: any) => { if (isExtRefMode && isRefPickablePanel) handleRefRightClick(e); }}
           onContextMenu={(e: any) => { if (isRefPickablePanel || isMoveRefPickMode || isMoveRefTargetPanel) e.stopPropagation(); }}
         >
           <meshLambertMaterial
@@ -508,7 +518,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
             onClick={handleClick}
             onPointerOver={(e: any) => { if (isMoveRefPickMode) { e.stopPropagation(); setMoveRefHover(true); } }}
             onPointerOut={() => { if (moveRefHover) setMoveRefHover(false); }}
-            onPointerDown={(e: any) => { if (isRefPickablePanel) handleRefRightClick(e); }}
+            onPointerDown={(e: any) => { if (isExtRefMode && isRefPickablePanel) handleRefRightClick(e); }}
             onContextMenu={(e: any) => { if (isRefPickablePanel || isMoveRefPickMode || isMoveRefTargetPanel) e.stopPropagation(); }}
           >
             <meshLambertMaterial
@@ -649,7 +659,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
               e.stopPropagation();
               setHoveredExtrudeGroup(null);
             }}
-            onPointerDown={handleRefRightClick}
+            onPointerDown={(e: any) => { if (isExtRefMode) handleRefRightClick(e); }}
             onContextMenu={(e: any) => e.stopPropagation()}
           >
             <meshBasicMaterial transparent opacity={0.01} side={THREE.DoubleSide} depthTest={false} depthWrite={false} />
@@ -666,8 +676,8 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
               />
             </mesh>
           )}
-          {isRefCandidatePanel && faceExtrudeRefCandidate?.faceGroupIndex !== undefined && faceExtrudeRefCandidate.faceGroupIndex >= 0 && faceGroups[faceExtrudeRefCandidate.faceGroupIndex] && (
-            <mesh geometry={createFaceHighlightGeometry(faces, faceGroups[faceExtrudeRefCandidate.faceGroupIndex].faceIndices)} renderOrder={12} raycast={() => null}>
+          {isRefCandidatePanel && refCandidate?.faceGroupIndex !== undefined && refCandidate.faceGroupIndex >= 0 && faceGroups[refCandidate.faceGroupIndex] && (
+            <mesh geometry={createFaceHighlightGeometry(faces, faceGroups[refCandidate.faceGroupIndex].faceIndices)} renderOrder={12} raycast={() => null}>
               <meshBasicMaterial
                 color={REF_COLORS.selected}
                 transparent

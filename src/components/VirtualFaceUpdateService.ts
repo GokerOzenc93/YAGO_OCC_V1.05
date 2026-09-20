@@ -853,10 +853,10 @@ export function recalculateVirtualFacesForShape(
         // ama sadece dönen panelin şeklini alsın." p, myPanel'i referans
         // alarak dönüyorsa p'nin şeridi myPanel'in BÖLGESİNİ kırpamaz (uzak-
         // teğet kısaltması yok). Şekil uyumu bölge katmanında değil, motorda
-        // boolean oyma ile sağlanır (PanelEngine notchRefRotateTargets).
+        // kenar pahlama ile sağlanır (PanelEngine shapeRefRotateTargets).
         if (myPanel && rotateRefTargetsOf(p).has(myPanel.id)) {
           console.log('[YAGO][DAMGA-YETKI] RED', vfId, '<-', p.id,
-            '— p bu paneli REF DÖNÜŞ HEDEFİ alıyor → bölge kırpılmaz, motor oyar');
+            '— p bu paneli REF DÖNÜŞ HEDEFİ alıyor → bölge kırpılmaz, motor kenarı pahlar');
           return false;
         }
         // p, ref taşımada myPanel'i HEDEF (datum) alıyor mu? Alıyorsa p'nin

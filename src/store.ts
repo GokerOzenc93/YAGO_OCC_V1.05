@@ -209,7 +209,10 @@ interface AppState{
   /** Dönen panelin, referans noktaya NİŞAN ALACAK kendi noktası. */
   panelRotateRefArmVertex:[number,number,number]|null;setPanelRotateRefArmVertex:(v:[number,number,number]|null)=>void;
   panelRotateRefTargetPanelId:string|null;setPanelRotateRefTargetPanelId:(id:string|null)=>void;
-  panelRotateRefTargetVertex:[number,number,number]|null;setPanelRotateRefTargetVertex:(v:[number,number,number]|null)=>void;
+  /** Referans YÜZ (Goker: nokta değil yüz seçilir): nişan noktası bu yüzün
+   *  düzlemine değene kadar dönülür. Extrude-ref yüz seçimiyle aynı veri. */
+  panelRotateRefFace:{panelId:string;faceGroupIndex:number;normalWorld:[number,number,number];pointWorld:[number,number,number]}|null;
+  setPanelRotateRefFace:(f:{panelId:string;faceGroupIndex:number;normalWorld:[number,number,number];pointWorld:[number,number,number]}|null)=>void;
 
   showVirtualFaces:boolean;setShowVirtualFaces:(b:boolean)=>void;
   virtualFaces:VirtualFace[];
@@ -279,7 +282,7 @@ export const useAppStore=create<AppState>((set,get)=>({
   // korunur — satır düğmesi onu bu çağrıdan hemen ÖNCE yazıyor.
   panelRotateMode:false,setPanelRotateMode:(b)=>set({panelRotateMode:b,
     panelRotatePivot:null,panelRotatePivotType:null,panelRotateAxis:null,panelRotateValue:0,
-    panelRotateValueMode:null,panelRotateRefArmVertex:null,panelRotateRefTargetPanelId:null,panelRotateRefTargetVertex:null,
+    panelRotateValueMode:null,panelRotateRefArmVertex:null,panelRotateRefTargetPanelId:null,panelRotateRefFace:null,
     ...(!b?{panelRotateTargetPanelId:null}:{})}),
   panelRotateTargetPanelId:null,setPanelRotateTargetPanelId:(id)=>set({panelRotateTargetPanelId:id}),
   panelRotatePivot:null,setPanelRotatePivot:(p)=>set({panelRotatePivot:p}),
@@ -290,10 +293,11 @@ export const useAppStore=create<AppState>((set,get)=>({
   // Mod seçimi/değişimi akışı BAŞA alır: pivot dahil tüm seçimler sıfırlanır,
   // böylece mod seçilene kadar sahnede hiçbir nokta çıkmaz ve mod değiştirince
   // yarım kalmış bir seçim taşınmaz.
-  panelRotateValueMode:null,setPanelRotateValueMode:(m)=>set({panelRotateValueMode:m,panelRotatePivot:null,panelRotatePivotType:null,panelRotateAxis:null,panelRotateValue:0,panelRotateRefArmVertex:null,panelRotateRefTargetPanelId:null,panelRotateRefTargetVertex:null}),
+  panelRotateValueMode:null,setPanelRotateValueMode:(m)=>set({panelRotateValueMode:m,panelRotatePivot:null,panelRotatePivotType:null,panelRotateAxis:null,panelRotateValue:0,panelRotateRefArmVertex:null,panelRotateRefTargetPanelId:null,panelRotateRefFace:null}),
   panelRotateRefArmVertex:null,setPanelRotateRefArmVertex:(v)=>set({panelRotateRefArmVertex:v}),
   panelRotateRefTargetPanelId:null,setPanelRotateRefTargetPanelId:(id)=>set({panelRotateRefTargetPanelId:id}),
-  panelRotateRefTargetVertex:null,setPanelRotateRefTargetVertex:(v)=>set({panelRotateRefTargetVertex:v}),
+  // Yüz seçimi hedef paneli de belirler (aynı tıklamada).
+  panelRotateRefFace:null,setPanelRotateRefFace:(f)=>set({panelRotateRefFace:f,panelRotateRefTargetPanelId:f?f.panelId:null}),
 
   showVirtualFaces:true,setShowVirtualFaces:(b)=>set({showVirtualFaces:b}),
   virtualFaces:[],

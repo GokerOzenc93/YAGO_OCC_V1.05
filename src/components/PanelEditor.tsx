@@ -591,8 +591,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     panelRotatePivot, setPanelRotatePivot, setPanelRotatePivotType,
     panelRotateAxis, setPanelRotateAxis, panelRotateValue, setPanelRotateValue,
     panelRotateValueMode, setPanelRotateValueMode,
-    panelRotateRefArmVertex, panelRotateRefTargetPanelId,
-    panelRotateRefTargetVertex } = useAppStore();
+    panelRotateRefArmVertex, panelRotateRefFace } = useAppStore();
 
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
@@ -1432,8 +1431,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     const hasPivot = panelRotatePivot !== null;
     const hasAxis = panelRotateAxis !== null;
     const hasArm = panelRotateRefArmVertex !== null;
-    const rotRefReady = isRotRefMode && hasPivot && hasArm && hasAxis
-      && !!panelRotateRefTargetPanelId && !!panelRotateRefTargetVertex;
+    const rotRefReady = isRotRefMode && hasPivot && hasArm && hasAxis && !!panelRotateRefFace;
     const axisColors: Record<string, string> = { x: '#dc2626', y: '#16a34a', z: '#2563eb' };
 
     // AKTİF MOD OKUNAKLI OLSUN: fildişi üstüne fildişi (taşıma segmentinin soluk
@@ -1453,14 +1451,16 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       };
     };
 
+    const pickMode = (m: 'dyn' | 'ref') => {
+      console.log('[YAGO][DÖN-MOD] mod seçildi:', m);
+      setPanelRotateValueMode(m);
+      setRotateValueStr('0');
+    };
+
     const modeSeg = (
       <div style={{ display: 'flex', width: 84, flexShrink: 0, borderRadius: 7, overflow: 'hidden', border: '1px solid rgba(60,50,40,0.16)' }}>
         {(['dyn','ref'] as const).map(m => (
-          <button key={m} onClick={() => {
-            setPanelRotateValueMode(m);
-            setPanelRotateValue(0);
-            setRotateValueStr('0');
-          }} style={segRotMode(m)}>{m === 'dyn' ? 'Dyn' : 'Ref'}</button>
+          <button key={m} onClick={e => { stop(e); pickMode(m); }} style={segRotMode(m)}>{m === 'dyn' ? 'Dyn' : 'Ref'}</button>
         ))}
       </div>
     );
@@ -1485,8 +1485,12 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
           pivot: panelRotatePivot!,
           armVertex: panelRotateRefArmVertex!,
           axis: panelRotateAxis!,
-          targetPanelId: panelRotateRefTargetPanelId!,
-          targetVertex: panelRotateRefTargetVertex!,
+          targetPanelId: panelRotateRefFace!.panelId,
+          targetFace: {
+            faceGroupIndex: panelRotateRefFace!.faceGroupIndex,
+            normalWorld: panelRotateRefFace!.normalWorld,
+            pointWorld: panelRotateRefFace!.pointWorld,
+          },
           shapes, updateShape,
         });
         setPanelRotateMode(false);
@@ -1501,25 +1505,60 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       setRotateValueStr('0');
     };
 
+    // ── 1. ADIM: MOD SEÇİMİ ─────────────────────────────────────────────────
+    // Sahnede henüz HİÇBİR nokta/halka yok (PanelRotateGizmo mod seçilene kadar
+    // null döner). Şeritte yalnız iki geniş düğme vardır; biri seçilene kadar
+    // akış başlamaz. (Goker: "önce hiç nokta çıkmadan mod seçimi olsun, ona
+    // göre adımları takip edeyim.")
+    if (panelRotateValueMode === null) {
+      const bigMode: React.CSSProperties = {
+        flex: 1, minWidth: 0, height: 28, borderRadius: 7, fontSize: 11, fontWeight: 700, letterSpacing: '0.02em',
+        border: '1px solid rgba(60,50,40,0.16)', outline: 'none', cursor: 'pointer',
+        background: 'linear-gradient(180deg,#fff,#f3efe8)', color: '#44403c',
+        boxShadow: '0 1px 2px rgba(40,30,20,0.10),inset 0 1px 0 rgba(255,255,255,0.9)',
+        transition: 'all 0.12s', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+      };
+      return (
+        <div style={{
+          position: 'absolute', left: 8, right: 8, bottom: 8, zIndex: 5, borderRadius: 11,
+          background: 'linear-gradient(180deg,rgba(250,248,244,0.90),rgba(239,235,227,0.94))',
+          backdropFilter: 'blur(16px) saturate(150%)', WebkitBackdropFilter: 'blur(16px) saturate(150%)',
+          border: '1px solid rgba(60,50,40,0.13)',
+          boxShadow: '0 10px 24px -12px rgba(40,30,20,0.30),0 0 0 0.5px rgba(60,50,40,0.05),inset 0 1px 0 rgba(255,255,255,0.92)',
+          display: 'flex', flexDirection: 'column', overflow: 'hidden',
+          fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif",
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 9px' }}>
+            <span style={{ flexShrink: 0, fontSize: 10, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: '#a8a29e' }}>Mod</span>
+            <button onClick={e => { stop(e); pickMode('dyn'); }}
+              title="Açı gir: dönme noktası → eksen → derece"
+              style={bigMode}>Dyn · açı</button>
+            <button onClick={e => { stop(e); pickMode('ref'); }}
+              title="Referansa göre dön: pivot → nişan → eksen → referans panel + nokta → sağ tık"
+              style={bigMode}>Ref · referans</button>
+            {exitBtn}
+          </div>
+        </div>
+      );
+    }
+
     // ── REF MODU: tek satır, adım durum etiketi + mod segmenti + onay ──────
     if (isRotRefMode) {
       // ADIM SAYACI: dyn modunun 1. adım etiketiyle ("Donme noktasi sec")
       // neredeyse aynı bir metin, ref moduna geçilip geçilmediğini
       // belirsizleştiriyordu. Ref akışı artık kaçıncı adımda olduğunu söyler.
-      const step = !hasPivot ? 1 : !hasArm ? 2 : !hasAxis ? 3 : !panelRotateRefTargetPanelId ? 4 : !panelRotateRefTargetVertex ? 5 : 6;
+      const step = !hasPivot ? 1 : !hasArm ? 2 : !hasAxis ? 3 : !panelRotateRefFace ? 4 : 5;
       // Şerit dar: etiket kısa tutulur, tam açıklama title'da (hover) verilir.
-      const label = step === 1 ? '1/5 · Pivot noktası'
-        : step === 2 ? '2/5 · Nişan noktası'
-        : step === 3 ? '3/5 · Eksen halkası'
-        : step === 4 ? '4/5 · Referans panel'
-        : step === 5 ? '5/5 · Referans nokta'
+      const label = step === 1 ? '1/4 · Pivot noktası'
+        : step === 2 ? '2/4 · Nişan noktası'
+        : step === 3 ? '3/4 · Eksen halkası'
+        : step === 4 ? '4/4 · Referans yüz'
         : 'Hazır — sağ tık onay';
       const hint = step === 1 ? 'Panelin döneceği nokta (kendi köşe/merkez noktalarından)'
-        : step === 2 ? 'Referansa doğrultulacak nokta — AYNI panelin başka bir noktası'
+        : step === 2 ? 'Referans yüze DEĞECEK nokta — AYNI panelin başka bir noktası'
         : step === 3 ? 'Dönme ekseni: sahnedeki X / Y / Z halkasından seç'
-        : step === 4 ? 'Referans paneli tıkla (aynı yere tekrar tıkla → arkadaki panel)'
-        : step === 5 ? 'Referans panelin turuncu noktalarından birini seç'
-        : 'Sahnede herhangi bir yere sağ tıkla — bağ kalıcı kurulur';
+        : step === 4 ? 'Başka bir panelin yüzünü tıkla (aynı yere tekrar tıkla → arkadaki yüz). Nişan noktası bu yüze değene kadar dönülür.'
+        : 'Sahnede herhangi bir yere sağ tıkla — bağ kalıcı kurulur, referans panelin kenarı eğime göre pahlanır';
       return (
         <div style={{
           position: 'absolute', left: 8, right: 8, bottom: 8, zIndex: 5, borderRadius: 11,

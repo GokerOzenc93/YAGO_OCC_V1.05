@@ -64,8 +64,15 @@ export interface RotateTransformStep {
   //   • value         : oluşturma anındaki açı — yalnız çözüm başarısızsa yedek.
   //   • resolvedValue : son rebuild'de gerçekten uygulanan açı (UI + çerçeve).
   refTargetPanelId?: string;
+  // (eski, nokta tabanlı) referans nokta — geriye uyumluluk için okunur.
   refTargetVertex?: [number, number, number];
   refTargetFrac?: [number, number, number];
+  // (güncel, YÜZ tabanlı) referans yüz: nişan noktası bu yüzün düzlemine
+  // değene kadar dönülür. Yüz her rebuild'de referans panelin güncel
+  // geometrisinden (normal + tıklama noktası eşlemesi) yeniden bulunur.
+  refTargetFaceGroupIndex?: number;
+  refTargetFaceNormal?: [number, number, number];
+  refTargetFacePoint?: [number, number, number];
   refArmVertex?: [number, number, number];
   refArmVfFrac?: [number, number, number];
   resolvedValue?: number;

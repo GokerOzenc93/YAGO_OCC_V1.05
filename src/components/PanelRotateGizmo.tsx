@@ -202,11 +202,14 @@ export function PanelRotateGizmo({ panelShape }: PanelRotateGizmoProps) {
     panelRotateAxis, setPanelRotateAxis,
     panelRotateValueMode,
     panelRotateRefArmVertex, setPanelRotateRefArmVertex,
-    panelRotateRefTargetPanelId, setPanelRotateRefTargetPanelId,
-    panelRotateRefTargetVertex, setPanelRotateRefTargetVertex,
-    shapes,
+    setPanelRotateRefFace,
   } = useAppStore();
 
+  // ── 1. ADIM: MOD SEÇİMİ — SAHNE BOŞ ─────────────────────────────────────
+  // İSTEK (Goker): "önce hiç nokta çıkmadan mod seçimi olsun, ona göre adımları
+  // takip edeyim." Mod seçilmeden (null) hiçbir pivot noktası, halka veya
+  // referans noktası çizilmez; şeritten Dyn/Ref seçilince akış başlar.
+  const modeChosen = panelRotateValueMode !== null;
   const isRefMode = panelRotateValueMode === 'ref';
   const hasPivot = panelRotatePivot !== null;
   const hasArm = panelRotateRefArmVertex !== null;
@@ -214,27 +217,15 @@ export function PanelRotateGizmo({ panelShape }: PanelRotateGizmoProps) {
   // ── REF AKIŞI GÖRÜNÜRLÜK KURALI ─────────────────────────────────────────
   // Halkalar: dyn modunda pivot seçilince, REF modunda NİŞAN noktası da
   // seçilince çıkar — pivot/nişan seçerken halkalar tıklamayı gölgelemesin.
-  const showRings = hasPivot && (!isRefMode || hasArm);
-  // Referans panelin noktaları: eksen seçildikten SONRA ve referans panel
-  // belirlendikten sonra (taşımadaki sırayla birebir aynı).
-  const showTargetDots = isRefMode && hasPivot && hasArm && panelRotateAxis !== null
-    && !!panelRotateRefTargetPanelId;
+  const showRings = modeChosen && hasPivot && (!isRefMode || hasArm);
+  // Referans artık bir YÜZ (PanelDrawing'de extrude-ref yüz seçimiyle aynı
+  // akış); gizmoda hedef noktası yok.
 
   const pivots = useMemo<PivotEntry[]>(() => {
     const corners = computeCorners(panelShape).map(p => ({ pos: p, kind: 'vertex' as const }));
     const centers = computeFaceCenters(panelShape).map(p => ({ pos: p, kind: 'center' as const }));
     return [...corners, ...centers];
   }, [panelShape.position, panelShape.rotation, panelShape.scale, panelShape.geometry]);
-
-  const targetPanel = useMemo(() => {
-    if (!showTargetDots) return null;
-    return shapes.find(s => s.id === panelRotateRefTargetPanelId) || null;
-  }, [showTargetDots, panelRotateRefTargetPanelId, shapes]);
-
-  const targetVertices = useMemo(() => {
-    if (!targetPanel?.geometry) return [];
-    return computeCorners(targetPanel);
-  }, [targetPanel]);
 
   const ringRadius = useMemo(() => {
     if (!panelShape.geometry) return 40;
@@ -247,21 +238,12 @@ export function PanelRotateGizmo({ panelShape }: PanelRotateGizmoProps) {
   }, [panelShape.geometry]);
 
   // ── Çakışan noktalar: yalnız TAM üst üste binenler gizlenir (GizmoDot) ──
-  // Kendi noktaları (grup 0) ile referans panelin noktaları (grup 1) ayrı
-  // değerlendirilir — taşıma gizmosundaki kuralın aynısı.
   const markRefs = useRef<(THREE.Group | null)[]>([]);
   const tmpVec = useRef(new THREE.Vector3());
-  const allMarks = useMemo(() => [
-    ...pivots.map(pv => ({ pos: pv.pos, isTarget: false })),
-    ...targetVertices.map(v => ({ pos: v, isTarget: true })),
-  ], [pivots, targetVertices]);
-
   useFrame(({ camera, size }) => {
     resolveDotOverlap(camera, size,
-      allMarks.map(m => ({ pos: m.pos, group: m.isTarget ? 1 : 0 })),
-      i => allMarks[i].isTarget
-        ? vertEq(panelRotateRefTargetVertex, allMarks[i].pos)
-        : (eq(panelRotatePivot, allMarks[i].pos) || vertEq(panelRotateRefArmVertex, allMarks[i].pos)),
+      pivots.map(pv => ({ pos: pv.pos, group: 0 })),
+      i => eq(panelRotatePivot, pivots[i].pos) || vertEq(panelRotateRefArmVertex, pivots[i].pos),
       markRefs.current, tmpVec.current);
   });
 
@@ -281,8 +263,7 @@ export function PanelRotateGizmo({ panelShape }: PanelRotateGizmoProps) {
       setPanelRotatePivotType(kind);
       setPanelRotateAxis(null);
       setPanelRotateRefArmVertex(null);
-      setPanelRotateRefTargetPanelId(null);
-      setPanelRotateRefTargetVertex(null);
+      setPanelRotateRefFace(null);
       return;
     }
     if (eq(panelRotatePivot, point)) {
@@ -291,25 +272,25 @@ export function PanelRotateGizmo({ panelShape }: PanelRotateGizmoProps) {
       setPanelRotatePivotType(null);
       setPanelRotateAxis(null);
       setPanelRotateRefArmVertex(null);
-      setPanelRotateRefTargetPanelId(null);
-      setPanelRotateRefTargetVertex(null);
+      setPanelRotateRefFace(null);
       return;
     }
     // Nişan noktası (değiştirilebilir) — sonraki seçimler sıfırlanır.
     setPanelRotateRefArmVertex(point);
     setPanelRotateAxis(null);
-    setPanelRotateRefTargetPanelId(null);
-    setPanelRotateRefTargetVertex(null);
+    setPanelRotateRefFace(null);
   };
 
   const handleAxisSelect = (axis: 'x' | 'y' | 'z') => {
     setPanelRotateAxis(axis === panelRotateAxis ? null : axis);
     if (isRefMode) {
       // Eksen değişti → referans seçimi baştan (açı ekseninden ölçülür).
-      setPanelRotateRefTargetPanelId(null);
-      setPanelRotateRefTargetVertex(null);
+      setPanelRotateRefFace(null);
     }
   };
+
+  // Mod seçilmeden sahneye HİÇBİR ŞEY çizilmez (1. adım: mod seçimi).
+  if (!modeChosen) return null;
 
   return (
     <group>
@@ -339,17 +320,6 @@ export function PanelRotateGizmo({ panelShape }: PanelRotateGizmoProps) {
         </>
       )}
 
-      {/* Referans panelin noktaları — taşımadaki turuncu hedef noktalarla aynı */}
-      {showTargetDots && targetVertices.map((v, i) => (
-        <GizmoDot
-          key={`rot-tgt-${i}`}
-          position={v}
-          isSelected={vertEq(panelRotateRefTargetVertex, v)}
-          accent="#ea580c"
-          onClick={() => setPanelRotateRefTargetVertex(v)}
-          groupRef={el => { markRefs.current[pivots.length + i] = el; }}
-        />
-      ))}
     </group>
   );
 }
