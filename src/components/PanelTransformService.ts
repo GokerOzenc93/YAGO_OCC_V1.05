@@ -52,6 +52,23 @@ export interface RotateTransformStep {
   pivotFrac?: [number, number, number];
   pivotVfFrac?: [number, number, number];
   timestamp: number;
+  // ── PARAMETRİK REFERANS BAĞI (DÖNDÜRME) ─────────────────────────────────
+  // Sözleşme: panel pivot etrafında döner ve KENDİ nişan noktası (refArm...)
+  // referans panelin noktasına (refTarget...) doğrultulur. Açı DONMUŞ değildir:
+  // her rebuild'de iki nokta GÜNCEL geometriden yeniden çözülür ve açı yeniden
+  // hesaplanır → referans nokta taşındıkça/gövde büyüdükçe panel döner.
+  //   • refArmVfFrac  : nişan noktası, panelin VF dikdörtgenine oransal
+  //                     (pivotVfFrac ile AYNI çıpa kuralı — büyütme/küçültmeden
+  //                      ve dönmüş panelin "büyüt & sığdır" adımından bağımsız).
+  //   • refTargetFrac : referans nokta, hedef şeklin dünya sınır kutusuna oransal.
+  //   • value         : oluşturma anındaki açı — yalnız çözüm başarısızsa yedek.
+  //   • resolvedValue : son rebuild'de gerçekten uygulanan açı (UI + çerçeve).
+  refTargetPanelId?: string;
+  refTargetVertex?: [number, number, number];
+  refTargetFrac?: [number, number, number];
+  refArmVertex?: [number, number, number];
+  refArmVfFrac?: [number, number, number];
+  resolvedValue?: number;
 }
 
 export type TransformStep = MoveTransformStep | RotateTransformStep;
@@ -95,7 +112,9 @@ export function applyTransformSteps(
         ? new THREE.Vector3(...s.axisVec).normalize()
         : new THREE.Vector3(s.axis === 'x' ? 1 : 0, s.axis === 'y' ? 1 : 0, s.axis === 'z' ? 1 : 0);
       const worldAxis = axis.clone().applyQuaternion(quat).normalize();
-      const q = new THREE.Quaternion().setFromAxisAngle(worldAxis, (s.value * Math.PI) / 180);
+      // REF DÖNÜŞ: önizlemede son çözülen açı kullanılır (donmuş value değil).
+      const deg = typeof (s as any).resolvedValue === 'number' ? (s as any).resolvedValue : s.value;
+      const q = new THREE.Quaternion().setFromAxisAngle(worldAxis, (deg * Math.PI) / 180);
       quat.premultiply(q);
       const pivot = new THREE.Vector3(...s.pivot);
       pos = pivot.clone().add(pos.sub(pivot).applyQuaternion(q));

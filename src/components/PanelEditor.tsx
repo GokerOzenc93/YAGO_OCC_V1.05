@@ -589,7 +589,10 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     panelMoveRefTargetVertex, setPanelMoveRefTargetVertex,
     panelRotateMode, setPanelRotateMode, panelRotateTargetPanelId, setPanelRotateTargetPanelId,
     panelRotatePivot, setPanelRotatePivot, setPanelRotatePivotType,
-    panelRotateAxis, setPanelRotateAxis, panelRotateValue, setPanelRotateValue } = useAppStore();
+    panelRotateAxis, setPanelRotateAxis, panelRotateValue, setPanelRotateValue,
+    panelRotateValueMode, setPanelRotateValueMode,
+    panelRotateRefArmVertex, panelRotateRefTargetPanelId,
+    panelRotateRefTargetVertex } = useAppStore();
 
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
@@ -1419,14 +1422,44 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
   })();
 
   // ── Rotate dock — pivot + axis selection then value input ──
+  // REF MODU AKIŞI (Goker): 1) pivot  2) nişan noktası (panelin kendi noktası)
+  // 3) mod  4) eksen (X/Y/Z halkası)  5) referans panel + referans nokta
+  // 6) sağ tık onay. Onaydan sonra bağ KALICIDIR: referans nokta taşındıkça
+  // panel o noktaya nişan alacak şekilde yeniden döner.
   const rotateDock = (() => {
     if (!activePanelId || !panelRotateMode) return null;
+    const isRotRefMode = panelRotateValueMode === 'ref';
     const hasPivot = panelRotatePivot !== null;
     const hasAxis = panelRotateAxis !== null;
+    const hasArm = panelRotateRefArmVertex !== null;
+    const rotRefReady = isRotRefMode && hasPivot && hasArm && hasAxis
+      && !!panelRotateRefTargetPanelId && !!panelRotateRefTargetVertex;
     const axisColors: Record<string, string> = { x: '#dc2626', y: '#16a34a', z: '#2563eb' };
 
+    const segRotMode = (mode: 'dyn'|'ref'): React.CSSProperties => ({
+      flex: 1, minWidth: 0, height: 28, fontSize: 10, fontWeight: 700, letterSpacing: '0.03em',
+      border: 'none', outline: 'none', cursor: 'pointer',
+      borderLeft: mode === 'dyn' ? 'none' : '1px solid rgba(60,50,40,0.10)',
+      background: panelRotateValueMode === mode ? '#e8e1d5' : 'rgba(255,255,255,0.45)',
+      color: panelRotateValueMode === mode ? '#44403c' : '#a8a29e',
+      boxShadow: panelRotateValueMode === mode ? 'inset 0 1px 2px rgba(60,50,40,0.14)' : 'none',
+      transition: 'all 0.12s',
+    });
+
+    const modeSeg = (
+      <div style={{ display: 'flex', width: 84, flexShrink: 0, borderRadius: 7, overflow: 'hidden', border: '1px solid rgba(60,50,40,0.16)' }}>
+        {(['dyn','ref'] as const).map(m => (
+          <button key={m} onClick={() => {
+            setPanelRotateValueMode(m);
+            setPanelRotateValue(0);
+            setRotateValueStr('0');
+          }} style={segRotMode(m)}>{m === 'dyn' ? 'Dyn' : 'Ref'}</button>
+        ))}
+      </div>
+    );
+
     const exitBtn = (
-      <button onClick={e => { stop(e); setPanelRotateAxis(null); setPanelRotatePivot(null); setPanelRotatePivotType(null); setPanelRotateMode(false); }}
+      <button onClick={e => { stop(e); setPanelRotateAxis(null); setPanelRotatePivot(null); setPanelRotatePivotType(null); setPanelRotateMode(false); if (isRotRefMode) setSelectedPanelRow(null); }}
         title="Çıkış" style={{
           flexShrink: 0, width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
           borderRadius: 7, border: '1px solid rgba(60,50,40,0.12)', cursor: 'pointer', outline: 'none',
@@ -1435,14 +1468,78 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     );
 
     const onApply = async () => {
-      if (!hasAxis || !hasPivot || !activePanelId) return;
+      if (!activePanelId) return;
       const ps = shapes.find(s => s.id === activePanelId); if (!ps) return;
+      if (isRotRefMode) {
+        if (!rotRefReady) return;
+        const { executePanelRotateRef } = await import('./PanelRotateService');
+        await executePanelRotateRef({
+          panelShape: ps,
+          pivot: panelRotatePivot!,
+          armVertex: panelRotateRefArmVertex!,
+          axis: panelRotateAxis!,
+          targetPanelId: panelRotateRefTargetPanelId!,
+          targetVertex: panelRotateRefTargetVertex!,
+          shapes, updateShape,
+        });
+        setPanelRotateMode(false);
+        setSelectedPanelRow(null);
+        return;
+      }
+      if (!hasAxis || !hasPivot) return;
       const { executePanelRotate } = await import('./PanelRotateService');
       await executePanelRotate({ panelShape: ps, axis: panelRotateAxis!, value: panelRotateValue, pivot: panelRotatePivot!, shapes, updateShape });
       setPanelRotateAxis(null);
       setPanelRotateValue(0);
       setRotateValueStr('0');
     };
+
+    // ── REF MODU: tek satır, adım durum etiketi + mod segmenti + onay ──────
+    if (isRotRefMode) {
+      const step = !hasPivot ? 1 : !hasArm ? 2 : !hasAxis ? 3 : !panelRotateRefTargetPanelId ? 4 : !panelRotateRefTargetVertex ? 5 : 6;
+      const label = step === 1 ? 'Dönme noktasını seç'
+        : step === 2 ? 'Nişan noktasını seç (aynı panel)'
+        : step === 3 ? 'Ekseni seç (X/Y/Z halkası)'
+        : step === 4 ? 'Referans paneli seç'
+        : step === 5 ? 'Referans noktayı seç'
+        : 'Hazır — sağ tık ile onayla';
+      return (
+        <div style={{
+          position: 'absolute', left: 8, right: 8, bottom: 8, zIndex: 5, borderRadius: 11,
+          background: 'linear-gradient(180deg,rgba(250,248,244,0.90),rgba(239,235,227,0.94))',
+          backdropFilter: 'blur(16px) saturate(150%)', WebkitBackdropFilter: 'blur(16px) saturate(150%)',
+          border: '1px solid rgba(60,50,40,0.13)',
+          boxShadow: '0 10px 24px -12px rgba(40,30,20,0.30),0 0 0 0.5px rgba(60,50,40,0.05),inset 0 1px 0 rgba(255,255,255,0.92)',
+          display: 'flex', flexDirection: 'column', overflow: 'hidden',
+          fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif",
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 9px' }}>
+            <div style={{
+              flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 6, height: 28, padding: '0 10px', borderRadius: 7,
+              background: rotRefReady ? 'rgba(34,197,94,0.10)' : 'rgba(120,113,108,0.08)',
+              border: rotRefReady ? '1px solid rgba(22,163,74,0.30)' : '1px solid rgba(60,50,40,0.10)',
+            }}>
+              <span style={{ width: 5, height: 5, borderRadius: '50%', background: rotRefReady ? '#16a34a' : '#a8a29e', flexShrink: 0 }} />
+              <span style={{ fontSize: 11, fontWeight: 500, color: rotRefReady ? '#15803d' : '#78716c', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
+              {hasAxis && (
+                <span style={{ marginLeft: 'auto', fontSize: 10, fontWeight: 800, fontFamily: 'monospace', color: axisColors[panelRotateAxis!] || '#44403c' }}>
+                  {panelRotateAxis!.toUpperCase()}
+                </span>
+              )}
+            </div>
+            {modeSeg}
+            <button onClick={onApply} title="Uygula" style={{
+              flexShrink: 0, width: 32, height: 28, borderRadius: 7, border: 'none', cursor: rotRefReady ? 'pointer' : 'not-allowed', outline: 'none',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              background: rotRefReady ? 'linear-gradient(180deg,#5b5346,#44403c)' : 'rgba(120,113,108,0.30)', color: '#fff',
+              boxShadow: rotRefReady ? '0 1px 2px rgba(40,30,20,0.25),inset 0 1px 0 rgba(255,255,255,0.18)' : 'none',
+              opacity: rotRefReady ? 1 : 0.5,
+            }}><Check size={15} strokeWidth={2.5} /></button>
+            {exitBtn}
+          </div>
+        </div>
+      );
+    }
 
     return (
       <div style={{
@@ -1481,6 +1578,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                 }}
               />
               <span style={{ fontSize: 10, fontWeight: 600, color: '#78716c' }}>deg</span>
+              {modeSeg}
               <button onClick={onApply} title="Uygula" style={{
                 flexShrink: 0, width: 32, height: 28, borderRadius: 7, border: 'none', cursor: 'pointer', outline: 'none',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -1498,6 +1596,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                 <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#f59e0b', flexShrink: 0 }} />
                 <span style={{ fontSize: 11, fontWeight: 500, color: '#78716c', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>Ekseni sec (X/Y/Z halkasi)</span>
               </div>
+              {modeSeg}
               {exitBtn}
             </>
           ) : (
@@ -1509,6 +1608,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                 <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#06b6d4', flexShrink: 0 }} />
                 <span style={{ fontSize: 11, fontWeight: 500, color: '#78716c', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>Donme noktasi sec (koseler/merkez)</span>
               </div>
+              {modeSeg}
               {exitBtn}
             </>
           )}
@@ -1549,7 +1649,11 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     }
     for (const s of activeTransformSteps) {
       const ax = s.type === 'move' ? s.axis : s.axis;
-      allSteps.push({ id: s.id, stepType: s.type, axis: ax, value: s.value, timestamp: s.timestamp, original: s });
+      // REF DÖNÜŞ: listede son ÇÖZÜLEN açı gösterilir (donmuş value değil) —
+      // referans nokta taşındıkça buradaki değer de güncellenir.
+      const dispVal = (s.type === 'rotate' && typeof (s as any).resolvedValue === 'number')
+        ? (s as any).resolvedValue : s.value;
+      allSteps.push({ id: s.id, stepType: s.type, axis: ax, value: dispVal, timestamp: s.timestamp, original: s });
     }
     allSteps.sort((a, b) => a.timestamp - b.timestamp);
 
@@ -1610,7 +1714,13 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                       {s.stepType === 'extrude' && s.isFixed !== undefined && (
                         <span className="shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-sm bg-stone-100 text-stone-500">{(s.original as any)?.refShapeId ? 'R' : s.isFixed ? 'F' : 'D'}</span>
                       )}
-                      {!(s.stepType === 'extrude' && (s.original as any)?.refShapeId) && (
+                      {/* Referans bağlı adım (taşıma/dönüş) — açı/mesafe referanstan
+                          çözülür, elle düzenlenemez: R olarak işaretlenir. */}
+                      {s.stepType !== 'extrude' && (s.original as any)?.refTargetPanelId && (
+                        <span className="shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-sm bg-stone-100 text-stone-500">R</span>
+                      )}
+                      {!(s.stepType === 'extrude' && (s.original as any)?.refShapeId)
+                        && !(s.stepType === 'rotate' && (s.original as any)?.refTargetPanelId) && (
                         <button onClick={() => {
                           if (s.stepType === 'extrude') { setEditingStepId(s.id); setEditingStepValue(String(s.value)); }
                           else if (s.stepType === 'move') { setEditingMoveStepId(s.id); setEditingMoveStepValue(String(s.value)); }

@@ -118,7 +118,15 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     panelMoveTargetPanelId,
     panelMoveRefSourceVertex,
     panelMoveRefTargetPanelId,
-    panelMoveRefTargetVertex
+    panelMoveRefTargetVertex,
+    panelRotateMode,
+    panelRotateValueMode,
+    panelRotateTargetPanelId,
+    panelRotatePivot,
+    panelRotateRefArmVertex,
+    panelRotateAxis,
+    panelRotateRefTargetPanelId,
+    panelRotateRefTargetVertex
   } = useAppStore(useShallow(state => ({
     selectShape: state.selectShape,
     selectSecondaryShape: state.selectSecondaryShape,
@@ -146,7 +154,15 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     panelMoveTargetPanelId: state.panelMoveTargetPanelId,
     panelMoveRefSourceVertex: state.panelMoveRefSourceVertex,
     panelMoveRefTargetPanelId: state.panelMoveRefTargetPanelId,
-    panelMoveRefTargetVertex: state.panelMoveRefTargetVertex
+    panelMoveRefTargetVertex: state.panelMoveRefTargetVertex,
+    panelRotateMode: state.panelRotateMode,
+    panelRotateValueMode: state.panelRotateValueMode,
+    panelRotateTargetPanelId: state.panelRotateTargetPanelId,
+    panelRotatePivot: state.panelRotatePivot,
+    panelRotateRefArmVertex: state.panelRotateRefArmVertex,
+    panelRotateAxis: state.panelRotateAxis,
+    panelRotateRefTargetPanelId: state.panelRotateRefTargetPanelId,
+    panelRotateRefTargetVertex: state.panelRotateRefTargetVertex
   })));
 
   const [faceGroups, setFaceGroups] = useState<any[]>([]);
@@ -247,11 +263,21 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   const isRefMode = faceExtrudeMode && faceExtrudeValueMode === 'ref' && faceExtrudeSelectedFace !== null;
   const isRefPickablePanel = isRefMode && shape.id !== faceExtrudeTargetPanelId;
   const isRefCandidatePanel = isRefMode && faceExtrudeRefCandidate?.panelId === shape.id;
-  const isMoveRefTargetPanel = panelMoveMode && panelMoveValueMode === 'ref' && !!panelMoveRefSourceVertex && panelMoveRefTargetPanelId === shape.id;
+  // ── REF AKIŞI (TAŞIMA + DÖNDÜRME) ORTAK VURGUSU ─────────────────────────
+  // İki akış aynı görsel sözleşmeyi paylaşır: onaylanan referans panel yeşil,
+  // aday (fare altındaki) panel turuncu; ikisi de KOMPLE vurgulanır. Döndürmede
+  // referans seçimi eksen seçildikten SONRA başlar (pivot + nişan + eksen).
+  const rotateRefActive = panelRotateMode && panelRotateValueMode === 'ref'
+    && !!panelRotatePivot && !!panelRotateRefArmVertex && panelRotateAxis !== null;
+  const isMoveRefTargetPanel =
+    (panelMoveMode && panelMoveValueMode === 'ref' && !!panelMoveRefSourceVertex && panelMoveRefTargetPanelId === shape.id)
+    || (rotateRefActive && panelRotateRefTargetPanelId === shape.id);
   // Aday (hover) vurgusu: hedef panel seçim aşaması boyunca (hedef NOKTA
   // seçilene kadar) sürer — seçili referans dışındaki paneller turuncu parlar,
   // böylece derinlik döngüsüyle gezerken sıradaki aday görünür.
-  const isMoveRefPickMode = panelMoveMode && panelMoveValueMode === 'ref' && !!panelMoveRefSourceVertex && !panelMoveRefTargetVertex && shape.id !== panelMoveTargetPanelId && panelMoveRefTargetPanelId !== shape.id;
+  const isMoveRefPickMode =
+    (panelMoveMode && panelMoveValueMode === 'ref' && !!panelMoveRefSourceVertex && !panelMoveRefTargetVertex && shape.id !== panelMoveTargetPanelId && panelMoveRefTargetPanelId !== shape.id)
+    || (rotateRefActive && !panelRotateRefTargetVertex && shape.id !== panelRotateTargetPanelId && panelRotateRefTargetPanelId !== shape.id);
   // Ref-move vurgu: hedef seçim aşamasında fare altındaki ADAY panel soft sarı
   // (ref modunun ortak tonu), ONAYLANAN referans panel yeşil kalır — onay ile
   // aday arasındaki fark tek bakışta okunsun diye. Her ikisi de KOMPLE vurgulanır.
@@ -345,6 +371,10 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     // normal seçime DÜŞMEMELİ — aksi halde referans panel de seçili kalıyor ve
     // ref modundan çıkınca vurgu üstünde takılı kalıyordu.
     if (panelMoveMode) return;
+    // DÖNDÜRME REF MODU: aynı izolasyon — referans panel derinlik döngüsü canvas
+    // seviyesinde (RotateRefPanelPicker) yürütülür; tıklama normal seçime
+    // DÜŞMEMELİ, aksi halde referans panel de seçili kalıp vurgu takılıyor.
+    if (panelRotateMode && panelRotateValueMode === 'ref') return;
     if (isFaceExtrudeTarget) return;
     // FaceExtrude modunda hedef olmayan panellerde normal seçim yapma.
     if (faceExtrudeMode && !isFaceExtrudeTarget) return;

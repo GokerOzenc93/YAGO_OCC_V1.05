@@ -1316,7 +1316,8 @@ function buildRotationOps(panel: any): RotOp[] {
   if (steps.length === 0) return [];
   const ops: RotOp[] = [];
   for (const s of steps) {
-    const deg = s.value || 0;
+    // REF DÖNÜŞ: gerçek açı resolvedValue'dadır; value oluşturma anının yedeği.
+    const deg = typeof s.resolvedValue === 'number' ? s.resolvedValue : (s.value || 0);
     if (Math.abs(deg) < 1e-6) continue;
     const angleRad = (deg * Math.PI) / 180;
     const axis = s.axisVec

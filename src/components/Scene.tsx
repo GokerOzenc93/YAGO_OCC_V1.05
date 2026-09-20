@@ -13,6 +13,7 @@ import { getReplicadVertices } from './VertexEditorService';
 import { PanelDrawing } from './PanelDrawing';
 import { PanelMoveGizmo } from './PanelMoveGizmo';
 import { PanelRotateGizmo } from './PanelRotateGizmo';
+import { computeRealCorners } from './GizmoDot';
 import { ErrorBoundary } from './ErrorBoundary';
 
 /* ══════════════════════════════════════════════════════════
@@ -619,6 +620,162 @@ function MoveRefConfirmOnRightClick() {
 }
 
 /* ══════════════════════════════════════════════════════════
+   ROTATE REF — SCENE-LEVEL PANEL PICKER
+   Pivot + nişan noktası + eksen seçildikten sonra REFERANS PANEL seçimi.
+   Taşımadaki MoveRefPanelPicker ile birebir aynı davranış: canvas'a her
+   tıklamada tüm panel mesh'leri taranır, aynı noktaya arka arkaya tıklamada
+   derinlik döngüsü yapılır.
+   EK KORUMA: referans panel belirlendikten sonra, kullanıcı o panelin
+   NOKTASINA tıklıyorsa (ekranda ≤ DOT_HIT_PX) döngü ilerletilmez — aksi hâlde
+   canvas yakalayıcısı noktadan ÖNCE çalışıp paneli değiştiriyor ve seçilen
+   nokta başka panele yazılıyordu.
+══════════════════════════════════════════════════════════ */
+const DOT_HIT_PX = 14;
+let _rotatePickState: { x: number; y: number; idx: number } | null = null;
+
+function RotateRefPanelPicker({ shapes }: { shapes: any[] }) {
+  const { camera, gl } = useThree();
+  const {
+    panelRotateMode, panelRotateValueMode, panelRotatePivot,
+    panelRotateRefArmVertex, panelRotateAxis,
+    panelRotateRefTargetPanelId, panelRotateRefTargetVertex,
+    panelRotateTargetPanelId,
+    setPanelRotateRefTargetPanelId, setPanelRotateRefTargetVertex,
+  } = useAppStore();
+
+  const active = panelRotateMode && panelRotateValueMode === 'ref'
+    && !!panelRotatePivot && !!panelRotateRefArmVertex && panelRotateAxis !== null
+    && !panelRotateRefTargetVertex;
+
+  useEffect(() => {
+    if (!active) return;
+    const canvas = gl.domElement;
+
+    const handler = (ev: MouseEvent) => {
+      if (ev.button !== 0) return;
+      const rect = canvas.getBoundingClientRect();
+
+      // Aday referans panelin noktalarına tıklama → döngüyü ilerletme.
+      const st0 = useAppStore.getState();
+      if (st0.panelRotateRefTargetPanelId) {
+        const tp = st0.shapes.find((s: any) => s.id === st0.panelRotateRefTargetPanelId);
+        if (tp?.geometry) {
+          const tmp = new THREE.Vector3();
+          for (const c of computeRealCorners(tp)) {
+            tmp.set(c[0], c[1], c[2]).project(camera);
+            const sx = rect.left + (tmp.x * 0.5 + 0.5) * rect.width;
+            const sy = rect.top + (1 - (tmp.y * 0.5 + 0.5)) * rect.height;
+            if (Math.hypot(ev.clientX - sx, ev.clientY - sy) < DOT_HIT_PX) return;
+          }
+        }
+      }
+
+      const ndcX = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+      const ndcY = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+      const raycaster = new THREE.Raycaster();
+      raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), camera);
+
+      // Sadece panelleri (dönen panel hariç) raycast et.
+      const panels = shapes.filter(
+        s => s.type === 'panel' && s.geometry && s.id !== panelRotateTargetPanelId
+      );
+      const tempMeshes: THREE.Mesh[] = [];
+      const idMap = new Map<THREE.Mesh, string>();
+      for (const p of panels) {
+        const m = new THREE.Mesh(p.geometry);
+        m.matrixWorld.compose(
+          new THREE.Vector3(p.position[0], p.position[1], p.position[2]),
+          new THREE.Quaternion().setFromEuler(
+            new THREE.Euler(p.rotation[0], p.rotation[1], p.rotation[2], 'XYZ')
+          ),
+          new THREE.Vector3(p.scale[0], p.scale[1], p.scale[2]),
+        );
+        m.matrixAutoUpdate = false;
+        tempMeshes.push(m);
+        idMap.set(m, p.id);
+      }
+
+      const hits = raycaster.intersectObjects(tempMeshes, false);
+      if (hits.length === 0) return;
+      const seen = new Set<string>();
+      const ordered: string[] = [];
+      for (const h of hits) {
+        const id = idMap.get(h.object as THREE.Mesh);
+        if (id && !seen.has(id)) { seen.add(id); ordered.push(id); }
+      }
+      if (ordered.length === 0) return;
+
+      const sameSpot = !!_rotatePickState &&
+        Math.hypot(ev.clientX - _rotatePickState.x, ev.clientY - _rotatePickState.y) < SAME_SPOT_PX;
+      const idx = sameSpot ? (_rotatePickState!.idx + 1) % ordered.length : 0;
+      _rotatePickState = { x: ev.clientX, y: ev.clientY, idx };
+
+      setPanelRotateRefTargetPanelId(ordered[idx]);
+      setPanelRotateRefTargetVertex(null);
+    };
+
+    canvas.addEventListener('click', handler, true);
+    return () => {
+      canvas.removeEventListener('click', handler, true);
+      _rotatePickState = null;
+    };
+  }, [active, shapes, camera, gl, panelRotateTargetPanelId, panelRotateRefTargetPanelId,
+      setPanelRotateRefTargetPanelId, setPanelRotateRefTargetVertex]);
+
+  return null;
+}
+
+/** Ref-dönüş akışında sağ tık: hazırsa onaylar, değilse yalnız menüyü engeller. */
+function RotateRefConfirmOnRightClick() {
+  const { gl } = useThree();
+  const { panelRotateMode, panelRotateValueMode, panelRotatePivot } = useAppStore();
+  const active = panelRotateMode && panelRotateValueMode === 'ref' && !!panelRotatePivot;
+
+  useEffect(() => {
+    if (!active) return;
+    const canvas = gl.domElement;
+    let busy = false;
+
+    const handler = async (ev: MouseEvent) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (busy) return;
+      const st = useAppStore.getState();
+      if (!(st.panelRotateMode && st.panelRotateValueMode === 'ref')) return;
+      if (!st.panelRotatePivot || !st.panelRotateRefArmVertex || st.panelRotateAxis === null) return;
+      if (!st.panelRotateRefTargetPanelId || !st.panelRotateRefTargetVertex) return;
+      const ps = st.shapes.find(s => s.id === st.panelRotateTargetPanelId);
+      if (!ps) return;
+      busy = true;
+      try {
+        const { executePanelRotateRef } = await import('./PanelRotateService');
+        await executePanelRotateRef({
+          panelShape: ps,
+          pivot: st.panelRotatePivot,
+          armVertex: st.panelRotateRefArmVertex,
+          axis: st.panelRotateAxis,
+          targetPanelId: st.panelRotateRefTargetPanelId,
+          targetVertex: st.panelRotateRefTargetVertex,
+          shapes: st.shapes,
+          updateShape: st.updateShape,
+        });
+        st.setPanelRotateMode(false);
+        // Ref modundan çıkınca panel seçili KALMASIN (kırmızı tarama temizlensin).
+        st.setSelectedPanelRow(null);
+        _rotatePickState = null;
+      } finally {
+        busy = false;
+      }
+    };
+
+    canvas.addEventListener('contextmenu', handler, true);
+    return () => canvas.removeEventListener('contextmenu', handler, true);
+  }, [active, gl]);
+
+  return null;
+}
+
+/* ══════════════════════════════════════════════════════════
    PANEL MOVE GIZMO WRAPPER
 ══════════════════════════════════════════════════════════ */
 function PanelMoveGizmoWrapper({ shapes }: { shapes: any[] }) {
@@ -813,6 +970,8 @@ const Scene: React.FC = () => {
 
           <MoveRefPanelPicker shapes={shapes} />
           <MoveRefConfirmOnRightClick />
+          <RotateRefPanelPicker shapes={shapes} />
+          <RotateRefConfirmOnRightClick />
           <PanelMoveGizmoWrapper shapes={shapes} />
           <PanelRotateGizmoWrapper shapes={shapes} />
 

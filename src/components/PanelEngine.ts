@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { useAppStore, type Shape, type VirtualFace } from '../store';
-import { vfPlaneBasis, type RotateStep } from './PanelRotateService';
+import { vfPlaneBasis, signedAngleAboutAxis, type RotateStep } from './PanelRotateService';
 import type { TransformStep } from './PanelTransformService';
 import { getFacePlaneAxes, convexHull2D, panelHasRotation } from './FaceRegion';
 
@@ -42,11 +42,8 @@ export function getUnifiedSteps(panel: Shape): TransformStep[] {
   const have = new Set(t.map(s => s.id));
   for (const r of legacy) {
     if (have.has(r.id)) continue;
-    t.push({
-      id: r.id, type: 'rotate', axis: r.axis, axisVec: r.axisVec,
-      value: r.value, pivot: r.pivot, pivotFrac: r.pivotFrac,
-      pivotVfFrac: r.pivotVfFrac, timestamp: r.timestamp,
-    } as TransformStep);
+    // Tüm alanlar korunur (ref bağı alanları dahil) — aynasal göç kayıpsız olsun.
+    t.push({ ...(r as any), type: 'rotate' } as TransformStep);
   }
   t.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
   return t;
@@ -93,24 +90,27 @@ export function getPanelAttachment(
 // izler). rotate: pivot GÜNCEL VF'den (pivotVfFrac) çözülür; eksen adımda
 // saklanan panel-yerel vektördür (yoksa dünya harfi).
 
-function resolvePivot(step: any, vf: VirtualFace): THREE.Vector3 {
-  if (step.pivotVfFrac && vf) {
-    const { n, u, v } = vfPlaneBasis(vf.normal as [number, number, number]);
-    // VF dikdörtgen kutusu (u/v tabanında)
-    let uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity, nOff = 0;
-    for (const c of vf.vertices) {
-      const w = new THREE.Vector3(c[0], c[1], c[2]);
-      const pu = w.dot(u), pv = w.dot(v);
-      uMin = Math.min(uMin, pu); uMax = Math.max(uMax, pu);
-      vMin = Math.min(vMin, pv); vMax = Math.max(vMax, pv);
-      nOff = w.dot(n);
-    }
-    const [fu, fv, dn] = step.pivotVfFrac as [number, number, number];
-    return new THREE.Vector3()
-      .addScaledVector(u, uMin + fu * (uMax - uMin))
-      .addScaledVector(v, vMin + fv * (vMax - vMin))
-      .addScaledVector(n, nOff + dn);
+/** VF'ye oransal bir çıpayı (u/v frac + normal ofseti) GÜNCEL yüzeyden çözer. */
+function resolveVfFracPoint(frac: [number, number, number], vf: VirtualFace): THREE.Vector3 {
+  const { n, u, v } = vfPlaneBasis(vf.normal as [number, number, number]);
+  // VF dikdörtgen kutusu (u/v tabanında)
+  let uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity, nOff = 0;
+  for (const c of vf.vertices) {
+    const w = new THREE.Vector3(c[0], c[1], c[2]);
+    const pu = w.dot(u), pv = w.dot(v);
+    uMin = Math.min(uMin, pu); uMax = Math.max(uMax, pu);
+    vMin = Math.min(vMin, pv); vMax = Math.max(vMax, pv);
+    nOff = w.dot(n);
   }
+  const [fu, fv, dn] = frac;
+  return new THREE.Vector3()
+    .addScaledVector(u, uMin + fu * (uMax - uMin))
+    .addScaledVector(v, vMin + fv * (vMax - vMin))
+    .addScaledVector(n, nOff + dn);
+}
+
+function resolvePivot(step: any, vf: VirtualFace): THREE.Vector3 {
+  if (step.pivotVfFrac && vf) return resolveVfFracPoint(step.pivotVfFrac as [number, number, number], vf);
   return new THREE.Vector3(...(step.pivot || [0, 0, 0]));
 }
 
@@ -189,11 +189,60 @@ export function vfRawMinAlong(vf: VirtualFace, axisLetter: string): number | nul
   return Number.isFinite(min) ? min : null;
 }
 
+// ── REFERANS BAĞI DÖNÜŞ: açıyı GÜNCEL geometriden çöz ─────────────────────
+// Nişan noktası panelin VF çıpasından (refArmVfFrac), referans nokta hedef
+// şeklin GÜNCEL dünya kutusundan (refTargetFrac) çözülür; açı pivot etrafında,
+// seçilen eksene dik düzlemde ölçülür. Nişan YÖNÜ o ana kadarki dönüş
+// çerçevesiyle (frame) döndürülür — sıralı adımlar birbirini dinler.
+// Çözüm mümkün değilse (hedef geometri yok / nokta eksen üstünde) adımın
+// donmuş açısı kullanılır; böylece eski projeler ve kopmuş referanslar bozulmaz.
+function resolveRefRotateDeg(
+  st: any, vf: VirtualFace, pivot: THREE.Vector3, axisWorld: THREE.Vector3, frame: THREE.Quaternion
+): number {
+  const frozen = typeof st.resolvedValue === 'number' ? st.resolvedValue : (st.value || 0);
+  try {
+    const armPoint = st.refArmVfFrac
+      ? resolveVfFracPoint(st.refArmVfFrac as [number, number, number], vf)
+      : (st.refArmVertex ? new THREE.Vector3(...(st.refArmVertex as [number, number, number])) : null);
+    if (!armPoint) return frozen;
+
+    const target = useAppStore.getState().shapes.find(s => s.id === st.refTargetPanelId);
+    const tgtBox = target ? worldBboxOfShape(target) : null;
+    const targetPoint = (tgtBox && st.refTargetFrac)
+      ? pointFromFracBox(tgtBox, st.refTargetFrac as [number, number, number])
+      : (st.refTargetVertex ? new THREE.Vector3(...(st.refTargetVertex as [number, number, number])) : null);
+    if (!targetPoint) {
+      console.warn('[YAGO][REF-DÖN] hedef geometri yok, donmuş açı kullanılıyor:', st.refTargetPanelId);
+      return frozen;
+    }
+
+    // Nişan YÖNÜ: pivot→nişan, o ana kadarki dönüş çerçevesiyle döndürülmüş.
+    const armDir = armPoint.clone().sub(pivot).applyQuaternion(frame);
+    const tgtDir = targetPoint.clone().sub(pivot);
+    const deg = signedAngleAboutAxis(armDir, tgtDir, axisWorld);
+    if (deg === null) return frozen;
+    console.log('[YAGO][REF-DÖN] çözülen açı=', deg.toFixed(2),
+      'hedef=', st.refTargetPanelId,
+      'hedefNokta=', [targetPoint.x.toFixed(1), targetPoint.y.toFixed(1), targetPoint.z.toFixed(1)].join(','),
+      'nişan=', [armPoint.x.toFixed(1), armPoint.y.toFixed(1), armPoint.z.toFixed(1)].join(','));
+    return Math.round(deg * 1000) / 1000;
+  } catch (err) {
+    console.warn('[YAGO][REF-DÖN] açı çözümü hatası, donmuş açı:', (err as any)?.message || String(err));
+    return frozen;
+  }
+}
+
 export function composeSteps(
   steps: TransformStep[],
   vf: VirtualFace
-): { quat: THREE.Quaternion; ops: Array<{ kind: 'translate'; d: THREE.Vector3 } | { kind: 'refTranslate'; targetPanelId: string; sourceFrac?: [number, number, number]; targetFrac?: [number, number, number]; fallback: THREE.Vector3 } | { kind: 'rotate'; deg: number; pivot: THREE.Vector3; axis: THREE.Vector3 }> } {
+): {
+  quat: THREE.Quaternion;
+  ops: Array<{ kind: 'translate'; d: THREE.Vector3 } | { kind: 'refTranslate'; targetPanelId: string; sourceFrac?: [number, number, number]; targetFrac?: [number, number, number]; fallback: THREE.Vector3 } | { kind: 'rotate'; deg: number; pivot: THREE.Vector3; axis: THREE.Vector3 }>;
+  /** REF dönüş adımlarının bu geçişte çözülen açıları (adıma geri yazılır). */
+  resolvedRotations: Array<{ id: string; value: number }>;
+} {
   const ops: any[] = [];
+  const resolvedRotations: Array<{ id: string; value: number }> = [];
   const frame = new THREE.Quaternion();
   for (const s of steps) {
     if (s.type === 'move') {
@@ -244,11 +293,16 @@ export function composeSteps(
         : axisLetterToVec(st.axis + '+');
       const worldAxis = axis.clone().applyQuaternion(frame).normalize();
       const pivot = resolvePivot(st, vf);
-      ops.push({ kind: 'rotate', deg: st.value, pivot, axis: worldAxis });
-      frame.premultiply(new THREE.Quaternion().setFromAxisAngle(worldAxis, (st.value * Math.PI) / 180));
+      // REFERANS BAĞI: açı donmuş değil, güncel geometriden çözülür.
+      const deg = st.refTargetPanelId
+        ? resolveRefRotateDeg(st, vf, pivot, worldAxis, frame)
+        : st.value;
+      if (st.refTargetPanelId) resolvedRotations.push({ id: st.id, value: deg });
+      ops.push({ kind: 'rotate', deg, pivot, axis: worldAxis });
+      frame.premultiply(new THREE.Quaternion().setFromAxisAngle(worldAxis, (deg * Math.PI) / 180));
     }
   }
-  return { quat: frame, ops };
+  return { quat: frame, ops, resolvedRotations };
 }
 
 // ── Referans bağı: köşe frac çözümü (geometrik) ───────────────────────────
@@ -645,10 +699,18 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
     // güncel geometrisinden hedef köşe doğru çözülsün (bayat geometri → köşe
     // eski konumda kalıp bağ kayardı). Hedef parent gövde ise çocuk değildir,
     // zaten günceldir; eşleşmez, zararsız.
+    // REFERANS BAĞI TAŞIMA/DÖNÜŞ: hedef panel, işlem gören panelden ÖNCE
+    // üretilmeli ki güncel geometrisinden hedef köşe doğru çözülsün (bayat
+    // geometri → köşe eski konumda kalıp bağ kayardı). Aynı graf tek-panel
+    // modunu geçersiz kılmak için de kullanılır (aşağıda refDependents):
+    // referans nokta taşındığında bağlı panel yeniden üretilir → dönüş açısı
+    // yeniden çözülür. Hedef parent gövde ise çocuk değildir, eşleşmez, zararsız.
     const ts = (s.parameters as any)?.transformSteps;
     if (Array.isArray(ts)) {
       for (const step of ts) {
-        if (step?.type === 'move' && step.refTargetPanelId) ids.add(step.refTargetPanelId);
+        if ((step?.type === 'move' || step?.type === 'rotate') && step.refTargetPanelId) {
+          ids.add(step.refTargetPanelId);
+        }
       }
     }
     return ids;
@@ -824,7 +886,20 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       let rp = await createPanelFromVirtualFace(buildVerts, att.vf.normal, thickness, growAmount);
       if (!rp) return;
       // Adımlar (move/rotate) sırayla uygulanır — çember döndürünce panel döner.
-      const { ops } = composeSteps(steps, att.vf);
+      const { ops, resolvedRotations } = composeSteps(steps, att.vf);
+      // REF DÖNÜŞ: bu geçişte çözülen açı adıma yazılır (UI gerçek açıyı
+      // gösterir, bir sonraki composeSteps çerçeveyi doğru açıyla kurar).
+      // Değer değişmediyse yazılmaz — gereksiz store dalgalanması olmasın.
+      if (resolvedRotations.length) {
+        const byId = new Map(resolvedRotations.map(r => [r.id, r.value]));
+        let rotChanged = false;
+        const merged = steps.map((st: any) => {
+          const rv = byId.get(st.id);
+          if (rv != null && st.resolvedValue !== rv) { rotChanged = true; return { ...st, resolvedValue: rv }; }
+          return st;
+        });
+        if (rotChanged) { steps = merged as TransformStep[]; stepsMigrated = true; }
+      }
       let refDeltaApplied: [number, number, number] | null = null;
       for (const op of ops) {
         if (op.kind === 'translate') {

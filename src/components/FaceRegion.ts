@@ -1311,7 +1311,10 @@ export function panelHasRotation(panel: any): boolean {
   if (Array.isArray(ops) && ops.some((o: any) => o?.kind === 'rotate' && Math.abs(o.angleRad || 0) > 1e-6)) return true;
   const p = panel?.parameters || {};
   const ts = Array.isArray(p.transformSteps) ? p.transformSteps : [];
-  if (ts.some((st: any) => st?.type === 'rotate' && Math.abs(st.value || 0) > 1e-6)) return true;
+  // REF DÖNÜŞ: gerçek açı resolvedValue'dadır (value yalnız oluşturma anının
+  // donmuş yedeğidir) — dönmüş tespiti çözülen açıyı okumalı.
+  const degOf = (st: any) => (typeof st?.resolvedValue === 'number' ? st.resolvedValue : (st?.value || 0));
+  if (ts.some((st: any) => st?.type === 'rotate' && Math.abs(degOf(st)) > 1e-6)) return true;
   const rs = Array.isArray(p.rotateSteps) ? p.rotateSteps : [];
   return rs.some((st: any) => Math.abs(st?.value || 0) > 1e-6);
 }

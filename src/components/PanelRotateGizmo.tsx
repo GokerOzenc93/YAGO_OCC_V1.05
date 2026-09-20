@@ -192,20 +192,49 @@ const eq = (a: [number, number, number] | null, b: [number, number, number]) =>
 type PivotKind = 'vertex' | 'center';
 interface PivotEntry { pos: [number, number, number]; kind: PivotKind }
 
+const vertEq = (a: [number, number, number] | null, b: [number, number, number], tol = 0.5) =>
+  !!a && Math.abs(a[0] - b[0]) < tol && Math.abs(a[1] - b[1]) < tol && Math.abs(a[2] - b[2]) < tol;
+
 export function PanelRotateGizmo({ panelShape }: PanelRotateGizmoProps) {
   const {
     panelRotatePivot, setPanelRotatePivot,
     setPanelRotatePivotType,
     panelRotateAxis, setPanelRotateAxis,
+    panelRotateValueMode,
+    panelRotateRefArmVertex, setPanelRotateRefArmVertex,
+    panelRotateRefTargetPanelId, setPanelRotateRefTargetPanelId,
+    panelRotateRefTargetVertex, setPanelRotateRefTargetVertex,
+    shapes,
   } = useAppStore();
 
+  const isRefMode = panelRotateValueMode === 'ref';
   const hasPivot = panelRotatePivot !== null;
+  const hasArm = panelRotateRefArmVertex !== null;
+
+  // ── REF AKIŞI GÖRÜNÜRLÜK KURALI ─────────────────────────────────────────
+  // Halkalar: dyn modunda pivot seçilince, REF modunda NİŞAN noktası da
+  // seçilince çıkar — pivot/nişan seçerken halkalar tıklamayı gölgelemesin.
+  const showRings = hasPivot && (!isRefMode || hasArm);
+  // Referans panelin noktaları: eksen seçildikten SONRA ve referans panel
+  // belirlendikten sonra (taşımadaki sırayla birebir aynı).
+  const showTargetDots = isRefMode && hasPivot && hasArm && panelRotateAxis !== null
+    && !!panelRotateRefTargetPanelId;
 
   const pivots = useMemo<PivotEntry[]>(() => {
     const corners = computeCorners(panelShape).map(p => ({ pos: p, kind: 'vertex' as const }));
     const centers = computeFaceCenters(panelShape).map(p => ({ pos: p, kind: 'center' as const }));
     return [...corners, ...centers];
   }, [panelShape.position, panelShape.rotation, panelShape.scale, panelShape.geometry]);
+
+  const targetPanel = useMemo(() => {
+    if (!showTargetDots) return null;
+    return shapes.find(s => s.id === panelRotateRefTargetPanelId) || null;
+  }, [showTargetDots, panelRotateRefTargetPanelId, shapes]);
+
+  const targetVertices = useMemo(() => {
+    if (!targetPanel?.geometry) return [];
+    return computeCorners(targetPanel);
+  }, [targetPanel]);
 
   const ringRadius = useMemo(() => {
     if (!panelShape.geometry) return 40;
@@ -218,47 +247,109 @@ export function PanelRotateGizmo({ panelShape }: PanelRotateGizmoProps) {
   }, [panelShape.geometry]);
 
   // ── Çakışan noktalar: yalnız TAM üst üste binenler gizlenir (GizmoDot) ──
+  // Kendi noktaları (grup 0) ile referans panelin noktaları (grup 1) ayrı
+  // değerlendirilir — taşıma gizmosundaki kuralın aynısı.
   const markRefs = useRef<(THREE.Group | null)[]>([]);
   const tmpVec = useRef(new THREE.Vector3());
+  const allMarks = useMemo(() => [
+    ...pivots.map(pv => ({ pos: pv.pos, isTarget: false })),
+    ...targetVertices.map(v => ({ pos: v, isTarget: true })),
+  ], [pivots, targetVertices]);
+
   useFrame(({ camera, size }) => {
     resolveDotOverlap(camera, size,
-      pivots.map(pv => ({ pos: pv.pos, group: 0 })),
-      i => eq(panelRotatePivot, pivots[i].pos),
+      allMarks.map(m => ({ pos: m.pos, group: m.isTarget ? 1 : 0 })),
+      i => allMarks[i].isTarget
+        ? vertEq(panelRotateRefTargetVertex, allMarks[i].pos)
+        : (eq(panelRotatePivot, allMarks[i].pos) || vertEq(panelRotateRefArmVertex, allMarks[i].pos)),
       markRefs.current, tmpVec.current);
   });
 
-  const handlePivotSelect = (point: [number, number, number], kind: PivotKind) => {
-    setPanelRotatePivot(point);
-    setPanelRotatePivotType(kind);
+  // ── Kendi noktalarına tıklama ────────────────────────────────────────────
+  // dyn modu: her tıklama pivotu yeniden belirler (mevcut davranış korunur).
+  // ref modu: 1. tık pivot, 2. tık NİŞAN noktası. Seçili pivota yeniden
+  // tıklamak akışı baştan başlatır (pivot + nişan temizlenir).
+  const handleOwnDotClick = (point: [number, number, number], kind: PivotKind) => {
+    if (!isRefMode) {
+      setPanelRotatePivot(point);
+      setPanelRotatePivotType(kind);
+      setPanelRotateAxis(null);
+      return;
+    }
+    if (!hasPivot) {
+      setPanelRotatePivot(point);
+      setPanelRotatePivotType(kind);
+      setPanelRotateAxis(null);
+      setPanelRotateRefArmVertex(null);
+      setPanelRotateRefTargetPanelId(null);
+      setPanelRotateRefTargetVertex(null);
+      return;
+    }
+    if (eq(panelRotatePivot, point)) {
+      // Pivota tekrar tık → akışı sıfırla.
+      setPanelRotatePivot(null);
+      setPanelRotatePivotType(null);
+      setPanelRotateAxis(null);
+      setPanelRotateRefArmVertex(null);
+      setPanelRotateRefTargetPanelId(null);
+      setPanelRotateRefTargetVertex(null);
+      return;
+    }
+    // Nişan noktası (değiştirilebilir) — sonraki seçimler sıfırlanır.
+    setPanelRotateRefArmVertex(point);
     setPanelRotateAxis(null);
+    setPanelRotateRefTargetPanelId(null);
+    setPanelRotateRefTargetVertex(null);
   };
 
   const handleAxisSelect = (axis: 'x' | 'y' | 'z') => {
     setPanelRotateAxis(axis === panelRotateAxis ? null : axis);
+    if (isRefMode) {
+      // Eksen değişti → referans seçimi baştan (açı ekseninden ölçülür).
+      setPanelRotateRefTargetPanelId(null);
+      setPanelRotateRefTargetVertex(null);
+    }
   };
 
   return (
     <group>
-      {/* Köşe (8) + üst/alt yüz merkezi (2) — hepsi aynı mavi çarpı işareti */}
-      {pivots.map((pv, i) => (
-        <GizmoDot
-          key={`pivot-${i}`}
-          position={pv.pos}
-          groupRef={el => { markRefs.current[i] = el; }}
-          onClick={() => handlePivotSelect(pv.pos, pv.kind)}
-          isSelected={eq(panelRotatePivot, pv.pos)}
-          accent={pv.kind === 'center' ? '#ea580c' : '#44403c'}
-        />
-      ))}
+      {/* Köşe (8) + üst/alt yüz merkezi (2). Ref modunda pivot koyu taş,
+          NİŞAN noktası mavi-yeşil vurgulu kalır. */}
+      {pivots.map((pv, i) => {
+        const isPivot = eq(panelRotatePivot, pv.pos);
+        const isArm = isRefMode && vertEq(panelRotateRefArmVertex, pv.pos);
+        return (
+          <GizmoDot
+            key={`pivot-${i}`}
+            position={pv.pos}
+            groupRef={el => { markRefs.current[i] = el; }}
+            onClick={() => handleOwnDotClick(pv.pos, pv.kind)}
+            isSelected={isPivot || isArm}
+            accent={isArm ? '#0d9488' : pv.kind === 'center' ? '#ea580c' : '#44403c'}
+          />
+        );
+      })}
 
-      {/* Rotation rings shown after pivot is selected */}
-      {hasPivot && (
+      {/* Rotation rings — dyn: pivot sonrası, ref: nişan noktası sonrası */}
+      {showRings && (
         <>
           <RotationRing center={panelRotatePivot!} axis="x" radius={ringRadius} onSelect={handleAxisSelect} selectedAxis={panelRotateAxis} />
           <RotationRing center={panelRotatePivot!} axis="y" radius={ringRadius} onSelect={handleAxisSelect} selectedAxis={panelRotateAxis} />
           <RotationRing center={panelRotatePivot!} axis="z" radius={ringRadius} onSelect={handleAxisSelect} selectedAxis={panelRotateAxis} />
         </>
       )}
+
+      {/* Referans panelin noktaları — taşımadaki turuncu hedef noktalarla aynı */}
+      {showTargetDots && targetVertices.map((v, i) => (
+        <GizmoDot
+          key={`rot-tgt-${i}`}
+          position={v}
+          isSelected={vertEq(panelRotateRefTargetVertex, v)}
+          accent="#ea580c"
+          onClick={() => setPanelRotateRefTargetVertex(v)}
+          groupRef={el => { markRefs.current[pivots.length + i] = el; }}
+        />
+      ))}
     </group>
   );
 }
