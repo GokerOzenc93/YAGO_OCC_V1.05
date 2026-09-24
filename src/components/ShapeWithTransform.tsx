@@ -66,7 +66,8 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     panelMoveValueMode,
     panelMoveTargetPanelId,
     panelMoveRefSourceVertex,
-    panelMoveRefTargetPanelId
+    panelMoveRefTargetPanelId,
+    panelRotateMode
   } = useAppStore(useShallow(state => ({
     selectShape: state.selectShape,
     selectSecondaryShape: state.selectSecondaryShape,
@@ -106,7 +107,8 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     panelMoveValueMode: state.panelMoveValueMode,
     panelMoveTargetPanelId: state.panelMoveTargetPanelId,
     panelMoveRefSourceVertex: state.panelMoveRefSourceVertex,
-    panelMoveRefTargetPanelId: state.panelMoveRefTargetPanelId
+    panelMoveRefTargetPanelId: state.panelMoveRefTargetPanelId,
+    panelRotateMode: state.panelRotateMode,
   })));
 
   const { scene } = useThree();
@@ -643,6 +645,14 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
             e.stopPropagation();
             return;
           }
+          // AKTİF PANEL ARACI (Extrude / Taşı / Döndür): tıklama ARACA aittir,
+          // gövdenin normal seçim mantığı ÇALIŞMAZ. KÖK NEDEN ("extrude için
+          // kenar seçince panel edit kapanıyor"): panel kenarına yapılan tıklamada
+          // ışın önce gövde yüzüne çarpıyordu; aşağıdaki Body-modu dalı
+          // setSelectedPanelRow(null) çağırıp açık satırı — ve onunla birlikte
+          // aracın şeridini — kapatıyordu. stopPropagation YOK: arkadaki panelin
+          // kendi (araç) tıklama işleyicisi olayı almaya devam eder.
+          if (faceExtrudeMode || panelMoveMode || panelRotateMode) return;
           if (panelSelectMode && hasPanels) return;
           e.stopPropagation();
           if (e.nativeEvent.ctrlKey || e.nativeEvent.metaKey) {

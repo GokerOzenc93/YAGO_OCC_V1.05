@@ -153,9 +153,16 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({ parametersContent, panelEdito
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && (isOpen || isPinned)) {
-        setIsOpen(false); setIsPinned(false);
-      }
+      if (e.key !== 'Escape' || !(isOpen || isPinned)) return;
+      // Escape, şerit girdisinde / aktif araçta "iptal" tuşudur (taşı/döndür
+      // girişinden çıkmak gibi). Aynı basış tüm kenar çubuğunu da kapatıp açık
+      // panel satırını kaybettiriyordu. Yazı alanındayken ya da bir panel aracı
+      // (Extrude / Taşı / Döndür) açıkken kenar çubuğu KAPANMAZ.
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      const st = useAppStore.getState();
+      if (st.faceExtrudeMode || st.panelMoveMode || st.panelRotateMode) return;
+      setIsOpen(false); setIsPinned(false);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);

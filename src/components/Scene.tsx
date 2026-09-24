@@ -731,8 +731,27 @@ const Scene: React.FC = () => {
 
   useEffect(() => {
     const handle = (e: KeyboardEvent) => {
+      // YAZI ALANI KORUMASI: kısayollar input/textarea içindeyken ÇALIŞMAZ.
+      // Eskiden panel notu ya da şerit değeri yazarken basılan Delete seçili
+      // GÖVDEYİ siliyor, Escape tüm seçimi bırakıp açık panel satırını
+      // kapatıyordu ("panel edit kendi kendine kapanıyor").
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
       if (e.key === 'Delete' && selectedShapeId) deleteShape(selectedShapeId);
-      else if (e.key === 'Escape') { selectShape(null); exitIsolation(); setVertexEditMode(false); setFaceEditMode(false); clearFilletFaces(); }
+      else if (e.key === 'Escape') {
+        // AKTİF PANEL ARACI varsa Escape yalnız ARACI kapatır (şeridin ✕
+        // düğmesiyle aynı); seçim ve açık panel satırı korunur. Araç yoksa eski
+        // davranış: tüm seçim bırakılır.
+        const st = useAppStore.getState();
+        if (st.faceExtrudeMode || st.panelMoveMode || st.panelRotateMode) {
+          if (st.faceExtrudeMode) { st.setFaceExtrudeSelectedFace(null); st.setFaceExtrudeRefCandidate(null); st.setFaceExtrudeMode(false); }
+          if (st.panelMoveMode) { st.setPanelMoveAxis(null); st.setPanelMoveMode(false); }
+          if (st.panelRotateMode) { st.setPanelRotateAxis(null); st.setPanelRotatePivot(null); st.setPanelRotatePivotType(null); st.setPanelRotateMode(false); }
+          console.log('[YAGO][ESC] aktif panel aracı kapatıldı, seçim korundu');
+          return;
+        }
+        selectShape(null); exitIsolation(); setVertexEditMode(false); setFaceEditMode(false); clearFilletFaces();
+      }
       else if ((e.ctrlKey||e.metaKey) && e.key === 'g') { e.preventDefault(); if (selectedShapeId && secondarySelectedShapeId) useAppStore.getState().createGroup(selectedShapeId, secondarySelectedShapeId); }
     };
     window.addEventListener('keydown', handle);

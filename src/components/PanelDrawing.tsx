@@ -386,6 +386,10 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
       }
       return;
     }
+    // DÖNDÜRME (Dyn) MODU: aynı izolasyon — pivot/eksen seçimi gizmo ile yapılır;
+    // başka panele tıklamak normal Body-modu seçimine düşüp açık satırı
+    // (setSelectedPanelRow(null)) kapatıyordu.
+    if (panelRotateMode) return;
     if (isFaceExtrudeTarget) return;
     // FaceExtrude modunda hedef olmayan panellerde normal seçim yapma.
     if (faceExtrudeMode && !isFaceExtrudeTarget) return;
