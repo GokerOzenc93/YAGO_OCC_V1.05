@@ -315,6 +315,31 @@ function computeGroundDimWorld(
 
 interface GroundRender { fa: Pt; fb: Pt; da: Pt; db: Pt; cx: number; cy: number; value: number; }
 
+/* ── "Yüzeyin şeklini al" — panel satırı checkbox'ı (bone/ivory) ─────────
+   AÇIK: panel, yerleştiği serbest bölgenin tam şeklini alır (L/U/çentik).
+   KAPALI (varsayılan): mevcut davranış — kardeş kenarında düz kesilir.      */
+function FitShapeToggle({ checked, disabled, onToggle }: { checked: boolean; disabled?: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={checked}
+      disabled={disabled}
+      onClick={e => { e.stopPropagation(); if (!disabled) onToggle(); }}
+      title={checked ? 'Yüzeyin şeklini al: AÇIK' : 'Yüzeyin şeklini al'}
+      className={`shrink-0 w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors
+        ${disabled ? 'cursor-not-allowed opacity-40' : 'hover:bg-[#f1ece4]'}`}
+    >
+      <span className={`w-[14px] h-[14px] rounded-[4px] flex items-center justify-center transition-all duration-150
+        ${checked
+          ? 'bg-gradient-to-b from-orange-400 to-orange-500 ring-1 ring-orange-500/50 shadow-[0_1px_2px_rgba(234,88,12,0.35),inset_0_1px_0_rgba(255,255,255,0.35)]'
+          : 'bg-gradient-to-b from-white to-[#efe9df] ring-1 ring-[#d9d2c6] shadow-[inset_0_1px_1px_rgba(68,64,60,0.08)]'}`}>
+        {checked && <Check size={10} strokeWidth={3} className="text-white" />}
+      </span>
+    </button>
+  );
+}
+
 /* ── Panel Preview — consistent dimetric view, orbit L/R, ground dims ── */
 function PanelPreview2D({ shape, arrowRotated }: { dims: Dims; shape?: any; arrowRotated?: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -841,6 +866,17 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     const { updateExtrudeStep } = await import('./FaceExtrudeService'); await updateExtrudeStep(ps, stepId, val, updateShape); setEditingStepId(null);
   };
   const toggleArrow = (p: any) => { if (p) updateShape(p.id, { parameters: { ...p.parameters, arrowRotated: !p.parameters?.arrowRotated } }); };
+  // YÜZEYİN ŞEKLİNİ AL: bayrak VF'de saklanır; bölge hesabı (computeFreeRegionLocal)
+  // yalnız regen'de okur → tam rebuild ile panel yeni bölgesine göre üretilir.
+  const toggleFitShape = async (vf: any) => {
+    const next = !vf.fitFaceShape;
+    updateVirtualFace(vf.id, { fitFaceShape: next });
+    console.log('[YAGO][YÜZ-ŞEKLİ]', vf.id, next ? 'AÇIK' : 'KAPALI', '→ tam rebuild');
+    try {
+      const { rebuildPanelsForParent } = await import('./PanelRebuildService');
+      await rebuildPanelsForParent(vf.shapeId);
+    } catch (e) { console.error('[YAGO][YÜZ-ŞEKLİ] rebuild hatası:', e); }
+  };
 
   if (!isOpen && !embedded) return null;
 
@@ -999,6 +1035,8 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
               )}
 
               <div className="flex items-center gap-0.5 shrink-0" onClick={stop}>
+                <FitShapeToggle checked={!!vf.fitFaceShape} disabled={!vf.hasPanel} onToggle={() => { void toggleFitShape(vf); }} />
+
                 <button disabled={!vf.hasPanel} onClick={e => { stop(e); toggleArrow(vp); }}
                   className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-stone-700 bg-[#f1ece4]' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
                   title="Ok yönünü değiştir"><ArrowUp size={14} className={`transition-transform duration-200 ${ar ? '' : 'rotate-90'}`}/></button>
@@ -1242,6 +1280,8 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
           </span>
         )}
         <div className="flex items-center gap-0.5 shrink-0" onClick={stop}>
+          <FitShapeToggle checked={!!vf.fitFaceShape} disabled={!vf.hasPanel} onToggle={() => { void toggleFitShape(vf); }} />
+
           <button disabled={!vf.hasPanel} onClick={e => {
             stop(e); if (!vp) return;
             if (isMovingThis) setPanelMoveMode(false);

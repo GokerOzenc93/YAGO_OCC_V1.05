@@ -1124,6 +1124,82 @@ export function snapPolygonToSourceLines(
 }
 
 /**
+ * Grid'den izlenen halkayı KAYNAK KENARLARA (yüz konturu + ayak izleri) tam
+ * oturtur — snapPolygonToSourceLines'tan farkı: kenar değil KÖŞE bazlıdır.
+ * Köşegen bir kaynak kenar boyunca grid izlemesi merdiven basamağı üretir;
+ * basamak kenarları köşegene paralel olmadığı için kenar-bazlı oturtma onları
+ * yakalayamaz. Burada her köşe, toleranstaki en yakın kaynak DOĞRUSUNA
+ * izdüşürülür; iki farklı yönlü doğru varsa kesişimlerine taşınır (gerçek
+ * köşe). Ardından yinelenen ve eşdoğrusal köşeler atılır → basamaklar tek
+ * düz köşegene çöker, sonuç birebir kaynak kenarlardan oluşur.
+ */
+export function fitTracedPolygonToSources(
+  poly: Point2D[], sources: Point2D[][], tolDist: number
+): Point2D[] {
+  if (poly.length < 3) return poly;
+  type Seg = { a: Point2D; d: Point2D; len: number };
+  const segs: Seg[] = [];
+  for (const src of sources) {
+    for (let i = 0; i < src.length; i++) {
+      const a = src[i], b = src[(i + 1) % src.length];
+      const dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy);
+      if (L > 1e-6) segs.push({ a, d: { x: dx / L, y: dy / L }, len: L });
+    }
+  }
+  // Noktanın SEGMENTE (uçları tol kadar uzatılmış) uzaklığı; uzatılmış aralık
+  // dışındaysa Infinity → alakasız uzak doğrulara oturma olmaz.
+  const segDist = (q: Point2D, s: Seg): number => {
+    const t = (q.x - s.a.x) * s.d.x + (q.y - s.a.y) * s.d.y;
+    if (t < -tolDist || t > s.len + tolDist) return Infinity;
+    return Math.abs((q.x - s.a.x) * s.d.y - (q.y - s.a.y) * s.d.x);
+  };
+  const project = (q: Point2D, s: Seg): Point2D => {
+    const t = (q.x - s.a.x) * s.d.x + (q.y - s.a.y) * s.d.y;
+    return { x: s.a.x + s.d.x * t, y: s.a.y + s.d.y * t };
+  };
+  const fitted: Point2D[] = poly.map(q => {
+    const near = segs
+      .map(s => ({ s, dd: segDist(q, s) }))
+      .filter(e => e.dd <= tolDist)
+      .sort((p, r) => p.dd - r.dd);
+    if (near.length === 0) return q;
+    const s1 = near[0].s;
+    const s2 = near.find(e => Math.abs(s1.d.x * e.s.d.y - s1.d.y * e.s.d.x) > 0.15)?.s;
+    if (s2) {
+      const den = s1.d.x * s2.d.y - s1.d.y * s2.d.x;
+      const t = ((s2.a.x - s1.a.x) * s2.d.y - (s2.a.y - s1.a.y) * s2.d.x) / den;
+      const ip = { x: s1.a.x + s1.d.x * t, y: s1.a.y + s1.d.y * t };
+      if (Math.hypot(ip.x - q.x, ip.y - q.y) <= 2 * tolDist) return ip;
+    }
+    return project(q, s1);
+  });
+  // Yinelenen köşeleri at
+  const dedup: Point2D[] = [];
+  for (const p of fitted) {
+    const prev = dedup[dedup.length - 1];
+    if (!prev || Math.hypot(p.x - prev.x, p.y - prev.y) > 0.5) dedup.push(p);
+  }
+  while (dedup.length > 1 && Math.hypot(dedup[0].x - dedup[dedup.length - 1].x, dedup[0].y - dedup[dedup.length - 1].y) <= 0.5) dedup.pop();
+  // Eşdoğrusal köşeleri at (yineleyerek — basamak zinciri tek kenara çöker)
+  let out = dedup;
+  for (let pass = 0; pass < 4 && out.length > 3; pass++) {
+    const next: Point2D[] = [];
+    let removed = false;
+    for (let i = 0; i < out.length; i++) {
+      const a = out[(i - 1 + out.length) % out.length], b = out[i], c = out[(i + 1) % out.length];
+      const L = Math.hypot(c.x - a.x, c.y - a.y) || 1e-9;
+      const dist = Math.abs((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)) / L;
+      if (dist < 0.5) { removed = true; continue; }
+      next.push(b);
+    }
+    if (next.length < 3) break;
+    out = next;
+    if (!removed) break;
+  }
+  return out.length >= 3 ? out : poly;
+}
+
+/**
  * Çokgeni bir YARIM DÜZLEMLE keser: (a→b) doğrusunun SAĞ tarafında kalan
  * (cross <= 0) parça tutulur. Sutherland-Hodgman'ın tek kenarlı hâli — her
  * açıda kesin sonuç verir, köşegen kenarda tırtık üretmez.
@@ -1183,7 +1259,10 @@ export function canonicalStripFrame(fp: Point2D[]): { c: Point2D; p: Point2D } {
 // taşkın dolum → köşe "cebi" budama → tek dış halka izleme. Uygun değilse
 // (eğik kenar, delik, çoklu halka) null döner ve eski davranış aynen kalır.
 function rectilinearFreeRegion(
-  ring2D: Point2D[], blockers: Point2D[][], anchorPt: Point2D
+  ring2D: Point2D[], blockers: Point2D[][], anchorPt: Point2D,
+  // KÖŞE CEBİ BUDAMA eşiği (mm). Varsayılan 25 = mevcut davranış. YÜZEYİN
+  // ŞEKLİNİ AL modunda 0 geçilir: hiçbir cep budanmaz, bölge birebir alınır.
+  nib: number = 25
 ): Point2D[] | null {
   const AX = 0.05;
   if (ring2D.length < 4) return null;
@@ -1249,9 +1328,9 @@ function rectilinearFreeRegion(
   // her iki eksende de yalnız TEK taraftan komşuluysa bölgeye katılmaz —
   // aksi halde panelde 18x18 tırnak/çentik oluşurdu. İç hücreler (en az bir
   // eksende iki komşulu) asla budanmaz; delik açılmaz.
-  const NIB = 25;
+  const NIB = nib;
   const R = (i: number, j: number) => i >= 0 && j >= 0 && i < NX && j < NY && reached[j * NX + i] === 1;
-  for (let changed = true; changed;) {
+  for (let changed = NIB > 0; changed;) {
     changed = false;
     for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++) {
       if (!reached[j * NX + i] || (i === ai && j === aj)) continue;
@@ -1340,7 +1419,12 @@ export function computeFreeRegionLocal(
   // kanıtı: şerit z454→z189 sıçrayınca VF üste zıpladı, GÖNYE dS>near). Bu
   // kayıt, tarafı geometriden bağımsız SÖZLEŞME yapar: panel hep ilk temas
   // ettiği tarafa bağlı kalır; o taraf yok olursa yeniden çözülüp yazılır.
-  storedSideRelations?: Record<string, number>
+  storedSideRelations?: Record<string, number>,
+  // YÜZEYİN ŞEKLİNİ AL (VirtualFace.fitFaceShape): true ise sonuç poligonu,
+  // yarım-düzlem kırpması yerine çapadan taşkın dolan serbest bölgenin TAM
+  // şeklidir (bkz. aşağıdaki [YÜZ-ŞEKLİ] bloğu). Varsayılan false = mevcut
+  // davranış BİREBİR korunur; yakalama yolu bu parametreyi geçmez.
+  fitFaceShape?: boolean
 ): FreeRegionResult | null {
   if (contourCorners.length < 3) return null;
   const nrm = normalLocal.clone().normalize();
@@ -1796,6 +1880,111 @@ export function computeFreeRegionLocal(
         console.warn('[YAGO][BÖLGE] çokgen grid ile uyuşmadı, tam kontur kullanıldı',
           { kapsama: cover.toFixed(2), taşma: leak.toFixed(2), köşeN: exact.length });
       }
+    }
+  }
+
+  // ── YÜZEYİN ŞEKLİNİ AL (fitFaceShape) ────────────────────────────────────
+  // SÖZLEŞME (Goker): mod KAPALIYKEN yukarıdaki yol aynen çalışır — kardeş
+  // ayak izinin kenarı sonsuz bir çizgi gibi keser, panel o çizgide biter
+  // (kısaltılmış kardeşin yanına atılan panel, kısa kardeşin hizasından
+  // kesilir). Mod AÇIKKEN panel, çapadan taşarak dolan serbest bölgenin
+  // TAMAMINI alır: ilk gördüğü küp sınırında ya da kardeş ayak izinde durur,
+  // ama bölgenin L/U/çentikli şeklini birebir izler (kısa kardeşin etrafını
+  // sarar). Taşıma/sıralama/dönüş bilgisi zaten girdide: kardeş listesi VF
+  // sırasıyla (basan/basılan) süzülmüş, ayak izleri güncel geometriden, dönmüş
+  // kardeşler işaretli gelir.
+  //   • Düz (dönmemiş) engeller: eksen-hizalıysa koordinat-sıkıştırılmış KESİN
+  //     çözüm (rectilinearFreeRegion, cep budama KAPALI → nib=0); değilse grid
+  //     taşkın dolumu izlenip kaynak kenarlara oturtulur.
+  //   • Dönmüş engeller: mevcut sözleşme korunur — bölge şeridin UZAK teğetine
+  //     kadar girer, gerçek eğik kesimi rebuild'deki dönüş-kesimi yapar.
+  //   • Sonuç, kullanıcının gördüğü reach hücreleriyle doğrulanır; geçmezse
+  //     yukarıdaki (mod-kapalı) sonuç aynen kalır — bozuk panel doğamaz.
+  if (fitFaceShape) {
+    const straight: Point2D[][] = [];
+    const rotatedFps: Point2D[][] = [];
+    for (let f = 0; f < blocking.length; f++) (blockingRotated[f] ? rotatedFps : straight).push(blocking[f]);
+
+    let shapePoly: Point2D[] | null = null;
+    let shapeSrc = '';
+    if (straight.length === 0) {
+      shapePoly = ring2D.map(q => ({ x: q.x, y: q.y }));
+      shapeSrc = 'tam-kontur';
+    } else {
+      shapePoly = rectilinearFreeRegion(ring2D, straight, anchorPt, 0);
+      shapeSrc = 'dikdörtgensel-kesin';
+    }
+    if (!shapePoly) {
+      // GENEL YOL: eğik yüz konturu / eksen-hizasız düz engel. Dönmüş şeritler
+      // engel SAYILMAZ (uzak-teğet sözleşmesi aşağıda ayrıca uygulanır).
+      const free2 = new Uint8Array(nx * ny);
+      for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+        const pt = { x: uMin + (i + 0.5) * cw, y: vMin + (j + 0.5) * ch };
+        if (!isPointInsidePolygon(pt, ring2D)) continue;
+        let blocked = false;
+        for (const fp of straight) if (isPointInsidePolygon(pt, fp)) { blocked = true; break; }
+        if (!blocked) free2[j * nx + i] = 1;
+      }
+      const reach2 = new Uint8Array(nx * ny);
+      if (free2[cj * nx + ci]) {
+        const q: number[] = [cj * nx + ci];
+        reach2[cj * nx + ci] = 1;
+        while (q.length) {
+          const k0 = q.pop()!;
+          const i = k0 % nx, j = (k0 / nx) | 0;
+          for (const [a, b] of [[i - 1, j], [i + 1, j], [i, j - 1], [i, j + 1]] as Array<[number, number]>) {
+            if (a < 0 || b < 0 || a >= nx || b >= ny) continue;
+            const k = b * nx + a;
+            if (free2[k] && !reach2[k]) { reach2[k] = 1; q.push(k); }
+          }
+        }
+      }
+      const traced = traceReachBoundary(reach2, nx, ny, uMin, vMin, cw, ch);
+      if (traced.length >= 3) {
+        // KÖŞE bazlı oturtma: köşegen kenardaki merdiven basamakları kaynak
+        // doğruya izdüşürülüp tek düz kenara çöker (kenar-bazlı snap bunu
+        // yapamaz — basamak kenarları köşegene paralel değildir).
+        shapePoly = fitTracedPolygonToSources(traced, [ring2D, ...straight], Math.max(cw, ch) * 1.6);
+        shapeSrc = 'grid-izleme';
+      }
+    }
+
+    if (shapePoly && shapePoly.length >= 3) {
+      // Dönmüş kardeşler: mod-kapalı yolla AYNI uzak-teğet kırpması (şeridin
+      // 1mm içi). Çapaya göre dışarıda kalınan kenarlar arasından gördüğünüz
+      // bölgeyi en iyi koruyan seçilir.
+      for (const fp of rotatedFps) {
+        let best: Point2D[] | null = null, bestScore = -Infinity;
+        for (let k = 0; k < fp.length; k++) {
+          let a = fp[k], b = fp[(k + 1) % fp.length];
+          const sA = (b.x - a.x) * (anchorPt.y - a.y) - (b.y - a.y) * (anchorPt.x - a.x);
+          if (sA >= -1e-9) continue;
+          const dx = b.x - a.x, dy = b.y - a.y;
+          const len = Math.hypot(dx, dy) || 1e-9;
+          let nX = dy / len, nY = -dx / len;
+          if (nX * (anchorPt.x - a.x) + nY * (anchorPt.y - a.y) > 0) { nX = -nX; nY = -nY; }
+          let w = 0;
+          for (const q of fp) { const dpr = nX * (q.x - a.x) + nY * (q.y - a.y); if (dpr > w) w = dpr; }
+          const off = w - 1.0;
+          a = { x: a.x + nX * off, y: a.y + nY * off };
+          b = { x: b.x + nX * off, y: b.y + nY * off };
+          const cand = clipByHalfPlane(shapePoly, a, b);
+          const sc = scoreOf(cand);
+          if (sc > bestScore) { bestScore = sc; best = cand; }
+        }
+        if (best && best.length >= 3) shapePoly = best;
+      }
+
+      const ss = scorePoly(shapePoly);
+      const okShape = ss.leak <= 0.1 && ss.cover >= 0.9;
+      console.log('[YAGO][BÖLGE][YÜZ-ŞEKLİ]', okShape ? 'KABUL' : 'RED',
+        'kaynak=', shapeSrc, 'köşeN=', shapePoly.length,
+        'düzEngelN=', straight.length, 'dönmüşEngelN=', rotatedFps.length,
+        'kapsama=', ss.cover.toFixed(2), 'taşma=', ss.leak.toFixed(2),
+        okShape ? '' : '→ mod-kapalı sonuç korundu');
+      if (okShape) { polygon = shapePoly; regionOk = true; }
+    } else {
+      console.warn('[YAGO][BÖLGE][YÜZ-ŞEKLİ] şekil poligonu üretilemedi → mod-kapalı sonuç korundu');
     }
   }
 

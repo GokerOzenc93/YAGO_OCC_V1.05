@@ -1219,8 +1219,11 @@ function regenerateParentFaceShapeVF(
       'yeniBBox=', `${newB.xSpan.toFixed(0)}x${newB.ySpan.toFixed(0)}`,
       '→ taraf sözleşmesi KORUNUYOR (kalıcı), seed mutlak');
   }
+  // YÜZEYİN ŞEKLİNİ AL: panel satırındaki checkbox (VirtualFace.fitFaceShape).
+  // Yalnız REGEN yolu geçer; kapalıyken (varsayılan) bölge hesabı değişmez.
+  const fitFaceShape = !!vf.fitFaceShape;
   const region = computeFreeRegionLocal(
-    contour.corners, localNormal, seed, siblingPanels, worldToLocal, shape.id, prevRegion, effectiveRel
+    contour.corners, localNormal, seed, siblingPanels, worldToLocal, shape.id, prevRegion, effectiveRel, fitFaceShape
   );
   if (region && region.polygon.length >= 3) {
     cornersOut = region.polygon.map(p2 => new THREE.Vector3()

@@ -64,6 +64,12 @@ export interface VirtualFace {
    *  hangi tarafında olduğu (±1). Yerleştirmede yazılır, regen STORED-WINS
    *  birleştirdiğinden bir daha değişmez → panel ilk yerleştiği tarafta kalıcı. */
   sideRelations?:Record<string,number>;
+  /** YÜZEYİN ŞEKLİNİ AL (panel satırı checkbox'ı): AÇIKKEN panel, yerleştiği
+   *  serbest bölgenin TAMAMINI alır — ilk gördüğü küp/kardeş sınırında durur
+   *  ama bölgenin L/U/çentikli şeklini birebir izler (kısaltılmış kardeşin
+   *  yanında onun etrafını sarar). KAPALIYKEN (varsayılan) mevcut davranış:
+   *  kardeş kenarı yarım-düzlemle keser, panel o çizgide biter. */
+  fitFaceShape?:boolean;
 }
 
 export interface Shape {
