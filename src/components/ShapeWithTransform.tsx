@@ -8,6 +8,7 @@ import { SubtractionMesh } from './SubtractionMesh';
 import { FilletEdgeLines } from './Fillet';
 import { FaceEditor, extractFacesFromGeometry, groupCoplanarFaces, createFaceHighlightGeometry } from './FaceEditor';
 import { snapToFlatGroup } from './GeometryUtils';
+import { effectiveBodyGeometry } from './VertexEditorService';
 import { cycleRefFacePickFromEvent, REF_COLORS } from './FaceRefPick';
 import { FaceRaycastOverlay, VirtualFaceOverlay } from './FaceRaycastOverlay';
 
@@ -139,13 +140,14 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
   const [hoveredRefGroup, setHoveredRefGroup] = useState<number | null>(null);
   // Ref-move: gövde (parent) hedef seçim aşamasında fare altındayken vurgulanır.
   const [moveRefHover, setMoveRefHover] = useState(false);
+  const vertexModsString = useMemo(() => JSON.stringify(shape.vertexModifications || []), [shape.vertexModifications]);
+  // Referans yüz seçimi (extrude-ref / rotate-ref) düzenlenmiş gövde yüzlerini görür.
   useEffect(() => {
     if (!shape.geometry) { setRefFaces([]); setRefFaceGroups([]); return; }
-    const f = extractFacesFromGeometry(shape.geometry);
+    const f = extractFacesFromGeometry(effectiveBodyGeometry(shape));
     setRefFaces(f);
     setRefFaceGroups(groupCoplanarFaces(f));
-  }, [shape.geometry]);
-  const vertexModsString = useMemo(() => JSON.stringify(shape.vertexModifications || []), [shape.vertexModifications]);
+  }, [shape.geometry, vertexModsString]);
 
   const resolvedEdgeGeometry = useMemo(() => {
     if (edgeGeometry) return edgeGeometry;
@@ -173,50 +175,12 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
       const shouldUpdate = (shape.geometry && shape.geometry !== localGeometry) || hasVertexMods;
 
       if (shouldUpdate && shape.geometry) {
-        let geom = shape.geometry.clone();
-
+        // TEK KAYNAK: çizilen gövde = effectiveBodyGeometry (panel yerleştirme,
+        // VF regen ve motor da aynı geometriyi kullanır → küpün yeni şekli her
+        // yerde aynı). Düzenleme yoksa taban klonlanır (eski davranış).
+        let geom = hasVertexMods ? effectiveBodyGeometry(shape).clone() : shape.geometry.clone();
         if (hasVertexMods) {
-          const positionAttribute = geom.getAttribute('position');
-          const positions = positionAttribute.array as Float32Array;
-
-          const vertexMap = new Map<string, number[]>();
-          for (let i = 0; i < positions.length; i += 3) {
-            const x = Math.round(positions[i]     * 100) / 100;
-            const y = Math.round(positions[i + 1] * 100) / 100;
-            const z = Math.round(positions[i + 2] * 100) / 100;
-            const key = `${x},${y},${z}`;
-            const group = vertexMap.get(key) || [];
-            group.push(i);
-            vertexMap.set(key, group);
-          }
-
-          // KÖK NEDEN ("vertex editör bozulmuş, noktayı taşıyınca küp değişmiyor"):
-          // burada var olmayan `mod.vertex` alanı okunuyordu → async yükleyici
-          // TypeError ile sessizce düşüyor, mesh ve kenarlar hiç güncellenmiyordu.
-          // Eski (çalışan) sözleşme geri getirildi: taban köşe, editörle AYNI
-          // listeden (resolveBaseVertices) alınır; mesh'teki tüm kopyaları koordinatla
-          // bulunur ve eksen bazlı bileşik hedefe (composeVertexTargets) taşınır.
-          const { resolveBaseVertices, composeVertexTargets } = await import('./VertexEditorService');
-          const baseVertices = await resolveBaseVertices(shape);
-          const targets = composeVertexTargets(baseVertices, shape.vertexModifications);
-          let movedN = 0;
-          targets.forEach((target, vi) => {
-            const b = baseVertices[vi];
-            const key = `${Math.round(b.x * 100) / 100},${Math.round(b.y * 100) / 100},${Math.round(b.z * 100) / 100}`;
-            const indices = vertexMap.get(key);
-            if (!indices) return;
-            for (const idx of indices) {
-              positions[idx]     = target.x;
-              positions[idx + 1] = target.y;
-              positions[idx + 2] = target.z;
-            }
-            movedN++;
-          });
-          console.log('[YAGO][VERTEX] mesh güncellendi: düzenlemeN=', shape.vertexModifications.length,
-            'taşınanKöşeN=', movedN, 'tabanKöşeN=', baseVertices.length);
-
-          positionAttribute.needsUpdate = true;
-          geom.computeVertexNormals();
+          console.log('[YAGO][VERTEX] gövde çizimi düzenlenmiş geometriyle güncellendi: düzenlemeN=', shape.vertexModifications.length);
         }
 
         const edges = new THREE.EdgesGeometry(geom, 5);

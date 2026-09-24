@@ -5,6 +5,7 @@ import { resolveReferenceFacePlane } from './FaceExtrudeService';
 import { extractFacesFromGeometry, groupCoplanarFaces } from './GeometryUtils';
 import type { TransformStep } from './PanelTransformService';
 import { getFacePlaneAxes, convexHull2D, panelHasRotation } from './FaceRegion';
+import { effectiveBodyGeometry } from './VertexEditorService';
 
 /**
  * ═══════════════════════════════════════════════════════════════════════════
@@ -506,7 +507,8 @@ export function composeSteps(
 // Bir şeklin GÜNCEL geometrisinin DÜNYA sınır kutusu.
 function worldBboxOfShape(shape: Shape): THREE.Box3 | null {
   if (!shape?.geometry) return null;
-  const pos = shape.geometry.getAttribute('position') as THREE.BufferAttribute;
+  // Gövde vertex düzenlemesi taşıyorsa kutu düzenlenmiş geometriden okunur.
+  const pos = effectiveBodyGeometry(shape).getAttribute('position') as THREE.BufferAttribute;
   if (!pos) return null;
   const box = new THREE.Box3().setFromBufferAttribute(pos);
   const mat = new THREE.Matrix4().compose(

@@ -782,6 +782,16 @@ const Scene: React.FC = () => {
         const np: [number,number,number] = [...op] as [number,number,number]; np[ai] = newValue;
         const off: [number,number,number] = [0,0,0]; off[ai] = newValue - op[ai];
         cs.addVertexModification(sid, { vertexIndex: vi, originalPosition: op as [number,number,number], newPosition: np, direction: vd, expression: String(newValue), description: `Vertex ${vi} ${vd[0].toUpperCase()}${vd[1]==='+'?'+':'-'}`, offset: off });
+        // PANELLER YENİ ŞEKLE: gövdenin panelleri varsa VF'ler düzenlenmiş
+        // geometriyle yeniden çözülür ve paneller yeniden üretilir.
+        const hasPanels = useAppStore.getState().shapes.some(s => s.type === 'panel' && s.parameters?.parentShapeId === sid);
+        if (hasPanels) {
+          try {
+            const { rebuildPanelsForParent } = await import('./PanelRebuildService');
+            await rebuildPanelsForParent(sid);
+            console.log('[YAGO][VERTEX] düzenleme sonrası paneller yeniden üretildi:', sid);
+          } catch (e) { console.error('[YAGO][VERTEX] rebuild hatası:', e); }
+        }
       }
       (window as any).pendingVertexEdit = false; cs.setSelectedVertexIndex(null);
     };

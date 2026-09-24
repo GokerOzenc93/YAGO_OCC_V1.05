@@ -136,6 +136,81 @@ export function composeVertexTargets(base: THREE.Vector3[], mods: any[] | undefi
   return out;
 }
 
+/**
+ * VERTEX DÜZENLEMELERİNİ GEOMETRİYE UYGULA (koordinat eşlemeli, sırasız).
+ * Her düzenleme kendi `originalPosition`'ını taşır; mesh'te o koordinattaki
+ * TÜM kopyalar (bir köşe 3 yüzde 3+ kez bulunur) bulunur ve yalnız düzenlemenin
+ * EKSENİ hedef değere çekilir (aynı köşede X sonra Y taşımaları birleşir).
+ * Taban listesine/indeksine ihtiyaç yok → senkron, her geometride çalışır.
+ * Girdi değişmez; düzenleme yoksa girdinin KENDİSİ döner (klon yok).
+ */
+export function applyVertexModsToGeometry(
+  base: THREE.BufferGeometry, mods: any[] | undefined
+): THREE.BufferGeometry {
+  if (!base || !Array.isArray(mods) || mods.length === 0) return base;
+  const src = base.getAttribute('position') as THREE.BufferAttribute | undefined;
+  if (!src) return base;
+  const geom = base.clone();
+  const attr = geom.getAttribute('position') as THREE.BufferAttribute;
+  const positions = attr.array as Float32Array;
+  const K = (x: number, y: number, z: number) =>
+    `${Math.round(x * 100) / 100},${Math.round(y * 100) / 100},${Math.round(z * 100) / 100}`;
+  const vertexMap = new Map<string, number[]>();
+  for (let i = 0; i < positions.length; i += 3) {
+    const key = K(positions[i], positions[i + 1], positions[i + 2]);
+    const g = vertexMap.get(key); if (g) g.push(i); else vertexMap.set(key, [i]);
+  }
+  // Aynı taban köşeye ait düzenlemeler eksen bazlı birleştirilir.
+  const targets = new Map<string, { idx: number[]; t: [number, number, number] }>();
+  for (const mod of mods) {
+    const op = mod?.originalPosition, np = mod?.newPosition, d = mod?.direction;
+    if (!Array.isArray(op) || !Array.isArray(np) || typeof d !== 'string') continue;
+    const key = K(op[0], op[1], op[2]);
+    const idx = vertexMap.get(key);
+    if (!idx) continue;
+    const ai = d.startsWith('x') ? 0 : d.startsWith('y') ? 1 : 2;
+    const e = targets.get(key) || { idx, t: [op[0], op[1], op[2]] as [number, number, number] };
+    e.t[ai] = np[ai];
+    targets.set(key, e);
+  }
+  targets.forEach(({ idx, t }) => {
+    for (const i of idx) { positions[i] = t[0]; positions[i + 1] = t[1]; positions[i + 2] = t[2]; }
+  });
+  attr.needsUpdate = true;
+  geom.computeVertexNormals();
+  geom.computeBoundingBox();
+  geom.computeBoundingSphere();
+  return geom;
+}
+
+/** Düzenleme listesinin kimliği (önbellek anahtarı). */
+export function vertexModsKey(mods: any[] | undefined): string {
+  if (!Array.isArray(mods) || mods.length === 0) return '';
+  return JSON.stringify(mods.map(m => [m?.vertexIndex, m?.direction, m?.originalPosition, m?.newPosition]));
+}
+
+/**
+ * ETKİN GÖVDE GEOMETRİSİ — vertex düzenlemeleri uygulanmış gövde.
+ * SÖZLEŞME: store'daki `shape.geometry` her zaman TABAN'dır (replicad çıktısı);
+ * düzenlemeler çizimde, panel yerleştirmede (yüz yakalama), VF yeniden
+ * hesabında ve motorun gövde kutusunda BU fonksiyonla uygulanır. Böylece küpün
+ * "yeni şekli" tek kaynaktan gelir; panel, düzenlenmiş yüze yerleşir.
+ * Düzenleme yoksa `shape.geometry`'nin kendisi döner (davranış değişmez).
+ * Önbellek: taban geometri × düzenleme anahtarı.
+ */
+const _effCache = new WeakMap<THREE.BufferGeometry, { key: string; geo: THREE.BufferGeometry }>();
+export function effectiveBodyGeometry(shape: any): THREE.BufferGeometry {
+  const base: THREE.BufferGeometry | undefined = shape?.geometry;
+  if (!base) return base as any;
+  const key = vertexModsKey(shape.vertexModifications);
+  if (!key) return base;
+  const hit = _effCache.get(base);
+  if (hit && hit.key === key) return hit.geo;
+  const geo = applyVertexModsToGeometry(base, shape.vertexModifications);
+  _effCache.set(base, { key, geo });
+  return geo;
+}
+
 export function applyVertexModifications(
   geometry: THREE.BufferGeometry,
   modifications: VertexModification[]

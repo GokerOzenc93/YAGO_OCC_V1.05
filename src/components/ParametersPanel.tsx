@@ -278,7 +278,17 @@ export function ParametersPanel({ isOpen, onClose, embedded = false }: Parameter
   const deleteVertexModification = (index: number) => {
     const updated = vertexModifications.filter((_, i) => i !== index);
     setVertexModifications(updated);
-    if (selectedShape) updateShape(selectedShape.id, { vertexModifications: updated });
+    if (selectedShape) {
+      updateShape(selectedShape.id, { vertexModifications: updated });
+      // Paneller gövdenin geri dönen şekline göre yeniden üretilir.
+      const sid = selectedShape.id;
+      const hasPanels = useAppStore.getState().shapes.some(s => s.type === 'panel' && s.parameters?.parentShapeId === sid);
+      if (hasPanels) {
+        import('./PanelRebuildService')
+          .then(({ rebuildPanelsForParent }) => rebuildPanelsForParent(sid))
+          .catch(e => console.error('[YAGO][VERTEX] rebuild hatası:', e));
+      }
+    }
     console.log('[YAGO][VERTEX] düzenleme silindi, kalanN=', updated.length);
   };
 

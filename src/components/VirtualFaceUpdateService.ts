@@ -23,6 +23,7 @@ import {
   type CoplanarFaceGroup,
 } from './FaceEditor';
 import { composeSteps, getUnifiedSteps, resolveRefTranslateDelta } from './PanelEngine';
+import { effectiveBodyGeometry } from './VertexEditorService';
 
 // ── TABAN DAMGALAMA GEOMETRİSİ ──────────────────────────────────────────────
 // Bir kardeş panelin KUTUYA OTURAN taban dilimini (transform/extrude UYGULANMADAN)
@@ -367,7 +368,29 @@ function findMatchingFaceGroup(
     }
   }
 
-  if (candidateGroups.length === 0) return null;
+  // EĞİLMİŞ YÜZ (vertex düzenlemesi): yüzün normali VF'nin kayıtlı normalinden
+  // 18°'den fazla saptıysa yukarıdaki süzgeç boş kalır ve VF eski düzlemde
+  // takılırdı. Yedek: VF merkezine (grup AABB clamp mesafesi) EN YAKIN, yönü
+  // hâlâ aynı yarım-uzayda (dot > 0.5) olan yüz alınır; regen VF normalini bu
+  // yüzün normaline yazar → panel eğik yüzü izler, sonraki regen'ler doğrudan
+  // eşleşir. Düz gövdelerde bu dal hiç çalışmaz (aday hep bulunur).
+  if (candidateGroups.length === 0) {
+    let best: CoplanarFaceGroup | null = null, bestD = Infinity, bestDot = 0;
+    for (const g of faceGroups) {
+      const dot = vfNormal.dot(g.normal.clone().normalize());
+      if (dot <= 0.5) continue;
+      const bb = new THREE.Box3();
+      g.faceIndices.forEach(fi => { const f = faces[fi]; if (f) f.vertices.forEach(vv => bb.expandByPoint(vv)); });
+      const d = vfCenter.clone().clamp(bb.min, bb.max).distanceTo(vfCenter);
+      if (d < bestD - 1e-6 || (Math.abs(d - bestD) <= 1e-6 && dot > bestDot)) { bestD = d; best = g; bestDot = dot; }
+    }
+    if (best) {
+      console.log('[YAGO][VF-EĞİM]', vf.id, 'eğik yüz eşlendi: dot=', bestDot.toFixed(2), 'mesafe=', bestD.toFixed(1),
+        'eskiN=', vf.normal.map(n => n.toFixed(2)).join(','), 'yeniN=', [best.normal.x, best.normal.y, best.normal.z].map(n => n.toFixed(2)).join(','));
+      return best;
+    }
+    return null;
+  }
 
   // ─── ÖLÇEKTEN BAĞIMSIZ YÜZ KİMLİĞİ (iki aşamalı) ──────────────────────────
   // Aynı normale sahip birden çok yüz olduğunda eşleme şimdiye dek MUTLAK
@@ -663,6 +686,18 @@ export function recalculateVirtualFacesForShape(
   if (shapeFaces.length === 0) return virtualFaces;
 
   if (!shape.geometry) return virtualFaces;
+
+  // VERTEX DÜZENLEMELİ GÖVDE: VF'ler ve kırpma, kübün DÜZENLENMİŞ (etkin)
+  // yüzlerine göre hesaplanır — panel yeni şekle yerleşir. Düzenleme yoksa
+  // effectiveBodyGeometry taban geometrinin kendisini döndürür (değişiklik yok).
+  {
+    const eff = effectiveBodyGeometry(shape);
+    if (eff !== shape.geometry) {
+      console.log('[YAGO][VERTEX] VF regen düzenlenmiş gövde geometrisiyle:', shape.id,
+        'düzenlemeN=', (shape as any).vertexModifications?.length ?? 0);
+      shape = { ...shape, geometry: eff };
+    }
+  }
 
   const faces = extractFacesFromGeometry(shape.geometry);
   const faceGroups = groupCoplanarFaces(faces);

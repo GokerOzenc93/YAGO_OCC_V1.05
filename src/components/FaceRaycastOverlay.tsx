@@ -16,6 +16,7 @@ interface FaceRaycastOverlayProps { shape: any; allShapes?: any[]; }
 
 export * from './FaceRegion';
 import * as FR from './FaceRegion';
+import { effectiveBodyGeometry } from './VertexEditorService';
 // Yerel kısayollar (UI gövdesi bare isim kullanır):
 const {
   getFacePlaneAxes, getShapeMatrix, projectTo2D, raySegmentIntersect2D, getSubtractionWorldMatrix, getSubtractorFootprints2D, convexHull2D, pickDominantEdgeDirection, buildBoundaryLoop2D, sutherlandHodgmanClip, isInsideEdge, isConvexPolygon2D, lineIntersect2D, subtractPolygon, isPointInsidePolygon, findEdgeIntersections, segmentIntersect2D, traceHoleEdge, earClipTriangulate, pointInTriangle, sign, pointInTriangle3D, ensureCCW, castRayOnFaceWorldDetailed, castRayOnFaceWorld, panelFootprintOnPlane, findPanelCoveringPoint, isWorldPointInsidePanelFootprint, collectVirtualFaceObstacleEdgesWorld, computeFaceComponentContour, panelFootprintInParentLocal, traceReachBoundary, snapPolygonToSourceLines, clipByHalfPlane, canonicalStripFrame, computeFreeRegionLocal
@@ -270,15 +271,20 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
   const lastClickRef = useRef<{ point: THREE.Vector3; groupIndex: number; cycleIndex: number } | null>(null);
   const shapeVirtualFaces = useMemo(() => virtualFaces.filter(vf => vf.shapeId === shape.id), [virtualFaces, shape.id]);
   const geometryUuid = shape.geometry?.uuid || '';
+  // Panel yerleştirme (yüz yakalama + görünmez raycast mesh'i) düzenlenmiş
+  // gövdeyi görür — tıklanan yüz ve üretilen VF, kübün yeni şekline aittir.
+  const vertexModsKeyStr = JSON.stringify(shape.vertexModifications || []);
+  const effGeometry = useMemo(() => effectiveBodyGeometry(shape), [shape.geometry, geometryUuid, vertexModsKeyStr]);
   const localToWorld = useMemo(() => getShapeMatrix(shape), [shape.position[0], shape.position[1], shape.position[2], shape.rotation[0], shape.rotation[1], shape.rotation[2], shape.scale[0], shape.scale[1], shape.scale[2]]);
   const worldToLocal = useMemo(() => localToWorld.clone().invert(), [localToWorld]);
   useEffect(() => {
-    if (!shape.geometry) return;
-    setFaces(extractFacesFromGeometry(shape.geometry));
-    setFaceGroups(groupCoplanarFaces(extractFacesFromGeometry(shape.geometry)));
+    if (!effGeometry) return;
+    const f = extractFacesFromGeometry(effGeometry);
+    setFaces(f);
+    setFaceGroups(groupCoplanarFaces(f));
     setPending(null);
     lastClickRef.current = null;
-  }, [shape.geometry, shape.id, geometryUuid]);
+  }, [effGeometry, shape.id, geometryUuid]);
   useEffect(() => { if (!raycastMode) { setHoveredGroupIndex(null); setPending(null); lastClickRef.current = null; } }, [raycastMode]);
   // Use current (post-extrude) geometry so that shortened panels produce correct
   // obstacle edges — the void area left by a shortened panel must be visitable.
@@ -415,12 +421,12 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
     setHoveredGroupIndex(targetGroupIndex);
     // TAM YÜZ SEÇİMİ: tıklanan yüzün bağlantılı bileşeni komple seçilir.
     // Derinlik döngüsü (aynı noktaya tekrar tıklayınca arkadaki yüz) korunur.
-    setPending(buildFacePreview(previewClickPoint, faceGroups[targetGroupIndex], faces, worldToLocal, shape.id, shape.geometry, childPanels));
+    setPending(buildFacePreview(previewClickPoint, faceGroups[targetGroupIndex], faces, worldToLocal, shape.id, effGeometry, childPanels));
   };
   if (!raycastMode) return null;
   return (
     <>
-      <mesh geometry={shape.geometry} visible={false} onPointerMove={handlePointerMove} onPointerOut={handlePointerOut} onPointerDown={handlePointerDown} />
+      <mesh geometry={effGeometry} visible={false} onPointerMove={handlePointerMove} onPointerOut={handlePointerOut} onPointerDown={handlePointerDown} />
       {hoverHighlightGeometry && (
         <mesh geometry={hoverHighlightGeometry} raycast={() => null}>
           <meshBasicMaterial color={hoveredGroupIndex !== null && groupHasVirtualFace(hoveredGroupIndex) ? RAYCAST_COLORS.hoverHasVF : RAYCAST_COLORS.hoverEmpty} transparent opacity={0.28} side={THREE.DoubleSide} polygonOffset polygonOffsetFactor={-1} polygonOffsetUnits={-1} />
