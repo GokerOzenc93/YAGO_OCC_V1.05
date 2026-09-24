@@ -340,11 +340,44 @@ function FitShapeToggle({ checked, disabled, onToggle }: { checked: boolean; dis
   );
 }
 
+/* ── PAYLAŞILAN ÖNİZLEME RENDERER'I — TEK WebGL BAĞLAMI ──────────────────
+   KÖK NEDEN ("çok panel seçtim, referans küp ve paneller kayboldu"):
+   PanelPreview2D her mount'ta `new THREE.WebGLRenderer` ile YENİ bir WebGL
+   bağlamı açıyordu ve `key={activePanel.id}` yüzünden HER PANEL SEÇİMİNDE
+   yeniden mount oluyordu. Unmount'taki `renderer.dispose()` bağlamı SERBEST
+   BIRAKMAZ (yalnız three kaynaklarını siler; bağlam GC'ye kadar yaşar).
+   Tarayıcı aynı anda ~16 aktif WebGL bağlamına izin verir; sınır aşılınca
+   EN ESKİ bağlamı öldürür — o da ana sahnenin Canvas'ıdır ("THREE.
+   WebGLRenderer: Context Lost" → küp/paneller çizilmez, ama raycast CPU'da
+   olduğu için tıklamalar hâlâ "çalışıyor" gibi görünür).
+   ÇÖZÜM: tüm önizlemeler TEK, modül düzeyinde, ekran-dışı bir renderer'ı
+   paylaşır; görüntü görünür canvas'a 2D `drawImage` ile kopyalanır. 2D
+   bağlamlar WebGL sınırına sayılmaz → kaç panel seçilirse seçilsin ek WebGL
+   bağlamı sayısı en fazla 1'dir. */
+let _sharedPreviewRenderer: THREE.WebGLRenderer | null = null;
+function getSharedPreviewRenderer(): THREE.WebGLRenderer | null {
+  const cur = _sharedPreviewRenderer;
+  if (cur && !cur.getContext().isContextLost()) return cur;
+  if (cur) { try { cur.dispose(); } catch { /* yok say */ } _sharedPreviewRenderer = null; }
+  try {
+    const r = new THREE.WebGLRenderer({
+      canvas: document.createElement('canvas'),
+      antialias: true, alpha: true, preserveDrawingBuffer: true,
+    });
+    r.setClearColor(0x000000, 0);
+    _sharedPreviewRenderer = r;
+    console.log('[YAGO][ÖNİZLEME] paylaşılan önizleme renderer oluşturuldu (tek WebGL bağlamı)');
+    return r;
+  } catch (e) {
+    console.error('[YAGO][ÖNİZLEME] önizleme renderer oluşturulamadı:', e);
+    return null;
+  }
+}
+
 /* ── Panel Preview — consistent dimetric view, orbit L/R, ground dims ── */
 function PanelPreview2D({ shape, arrowRotated }: { dims: Dims; shape?: any; arrowRotated?: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
-  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const [dimDraw, setDimDraw] = useState<{ ground: GroundRender[] }>({ ground: [] });
   const [canvasSize, setCanvasSize] = useState({ w: 0, h: 0 });
   const [az, setAz] = useState(22);
@@ -357,11 +390,7 @@ function PanelPreview2D({ shape, arrowRotated }: { dims: Dims; shape?: any; arro
   useEffect(() => {
     const canvas = canvasRef.current, wrap = wrapRef.current;
     if (!canvas || !wrap) return;
-    const r = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
-    r.setPixelRatio(window.devicePixelRatio);
-    r.setClearColor(0x000000, 0);
-    rendererRef.current = r;
-
+    // Bu bileşen artık KENDİ WebGL bağlamını AÇMAZ (bkz. getSharedPreviewRenderer).
     let raf = 0, tries = 0;
     const measure = () => {
       const w = wrap.clientWidth, h = wrap.clientHeight;
@@ -374,17 +403,20 @@ function PanelPreview2D({ shape, arrowRotated }: { dims: Dims; shape?: any; arro
       if (width > 0 && height > 0) setCanvasSize({ w: Math.round(width), h: Math.round(height) });
     });
     ro.observe(wrap);
-    return () => { cancelAnimationFrame(raf); ro.disconnect(); r.dispose(); rendererRef.current = null; };
+    return () => { cancelAnimationFrame(raf); ro.disconnect(); };
   }, []);
 
   useEffect(() => {
-    const renderer = rendererRef.current, canvas = canvasRef.current;
+    const canvas = canvasRef.current;
     const shape = shapeRef.current, arrowRotated = arrowRotatedRef.current;
     const { w, h } = canvasSize;
-    if (!renderer || !canvas || !shape?.geometry || w <= 0 || h <= 0) return;
+    if (!canvas || !shape?.geometry || w <= 0 || h <= 0) return;
+    const renderer = getSharedPreviewRenderer();
+    if (!renderer) return;
 
     const dpr = window.devicePixelRatio;
     canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+    renderer.setPixelRatio(dpr);
     renderer.setSize(w, h, false);
 
     const disposables: Array<{ dispose: () => void }> = [];
@@ -392,7 +424,14 @@ function PanelPreview2D({ shape, arrowRotated }: { dims: Dims; shape?: any; arro
 
     const material = new THREE.MeshStandardMaterial({ color: 0xece5d8, roughness: 0.72, metalness: 0.0, side: THREE.DoubleSide });
     disposables.push(material);
-    scene.add(new THREE.Mesh(shape.geometry, material));
+    // KLON: paylaşılan renderer, çizdiği geometrinin GPU tamponlarını kendi
+    // bağlamında tutar. Sahnedeki (ana renderer'ın da kullandığı) geometri
+    // doğrudan verilirse, rebuild'de değişen her panel geometrisi önizleme
+    // bağlamında birikirdi. Klon çizimden sonra dispose edilir → önizleme
+    // bağlamında kalıcı tampon kalmaz; ana sahnenin geometrisine dokunulmaz.
+    const previewGeo = (shape.geometry as THREE.BufferGeometry).clone();
+    disposables.push(previewGeo);
+    scene.add(new THREE.Mesh(previewGeo, material));
 
     const edgesGeo = new THREE.EdgesGeometry(shape.geometry, 18);
     const lineGeo = new LineSegmentsGeometry().fromEdgesGeometry(edgesGeo);
@@ -505,6 +544,14 @@ function PanelPreview2D({ shape, arrowRotated }: { dims: Dims; shape?: any; arro
     });
 
     renderer.render(scene, camera);
+    // Ekran-dışı paylaşılan renderer'ın görüntüsünü bu bileşenin görünür
+    // canvas'ına kopyala (2D bağlam — WebGL bağlam sınırına sayılmaz).
+    const ctx2d = canvas.getContext('2d');
+    if (ctx2d) {
+      ctx2d.clearRect(0, 0, canvas.width, canvas.height);
+      ctx2d.drawImage(renderer.domElement, 0, 0, canvas.width, canvas.height);
+    }
+    renderer.renderLists.dispose();
 
     // ── Project dimensions (outer + cuts share one style) and resolve collisions ──
     const fsG = Math.max(10, Math.min(13.5, w * 0.027));
