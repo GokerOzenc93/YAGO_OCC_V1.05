@@ -425,6 +425,31 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({ parametersContent, panelEdito
           outline: none !important;
         }
 
+        /* Panel satırı notu — kutusuz, sessiz alan. Genel input kutusu (yukarıda)
+           satır içinde ağır duruyordu; burada yalnız üzerine gelince kıl-çizgi,
+           odakta beyaz zemin + yumuşak turuncu halka. Özgüllük (0,3,1) genel
+           kuralı (0,2,1) geçer. */
+        .bone-skin input[type="text"].yago-row-note {
+          background: transparent !important;
+          border: 1px solid transparent !important;
+          border-radius: 5px !important;
+          box-shadow: none !important;
+          height: 22px !important;
+          padding: 0 5px !important;
+          font-size: 11.5px !important;
+          font-weight: 450 !important;
+          letter-spacing: 0.005em !important;
+          color: #57534e !important;
+        }
+        .bone-skin input[type="text"].yago-row-note::placeholder { color: #c9c2b8 !important; font-weight: 400 !important; }
+        .bone-skin input[type="text"].yago-row-note:hover { border-color: #ebe5dc !important; background: rgba(255,255,255,0.6) !important; }
+        .bone-skin input[type="text"].yago-row-note:focus {
+          background: #ffffff !important;
+          border-color: rgba(249,115,22,0.45) !important;
+          box-shadow: 0 0 0 2px rgba(249,115,22,0.10) !important;
+          color: #1c1917 !important;
+        }
+
         /* Mono-style numeric inputs */
         .bone-skin input[type="text"].font-mono,
         .bone-skin input[type="number"] {

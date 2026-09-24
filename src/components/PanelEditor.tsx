@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { X, GripVertical, ArrowUp, RotateCw, Move, Trash2, MoveVertical, Check, Pencil, ChevronRight } from 'lucide-react';
+import { X, GripVertical, ArrowUp, RotateCw, Move, Trash2, MoveVertical, Check, Pencil, ChevronRight, Lock, SlidersHorizontal, Crosshair } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { useAppStore } from '../store';
 import { extractFacesFromGeometry, groupCoplanarFaces, CoplanarFaceGroup } from './FaceEditor';
 import { findExistingStepForFace } from './FaceExtrudeService';
@@ -315,6 +316,113 @@ function computeGroundDimWorld(
 
 interface GroundRender { fa: Pt; fb: Pt; da: Pt; db: Pt; cx: number; cy: number; value: number; }
 
+/* ── DOCK / İÇ PANEL TASARIM DİLİ (soft, minimal — liste satırlarıyla aynı) ──
+   Taşı / Döndür / Extrude şeritleri ve işlem adımları bu ortak tokenları
+   kullanır: sıcak kemik zemin, kıl-çizgi kenar, düz yüzeyler, gradyan yok.
+   Etkin segment KOYU TAŞ dolgudur (fildişi-üstüne-fildişi okunmuyordu —
+   aktif mod net seçilsin kuralı korunur). */
+const DOCK_FONT = "'Inter','SF Pro Text',system-ui,sans-serif";
+/* ── ÖNİZLEME GÖRÜNÜMÜ (sade, profesyonel) ─────────────────────────────────
+   Zemin: neredeyse beyaz, çok hafif sıcak dikey geçiş (desen/vinyet yok).
+   Panel: açık huş/beyaz laminat tonu. three r155+ fiziksel ışık ölçeğinde eski
+   düşük şiddetler paneli kirli griye çekiyordu; şiddetler yüzü açık, kalınlık
+   kenarını bir ton koyu verecek şekilde yeniden ayarlandı. */
+const PREVIEW_BG = 'linear-gradient(180deg,#fcfbf9 0%,#f5f3ef 100%)';
+const PREVIEW_PANEL_COLOR = 0xe9e1d3;
+const PREVIEW_EDGE_COLOR = 0x8a8278;
+const PREVIEW_LIGHT = { hemi: 1.0, ambient: 0.3, key: 1.9, fill: 0.55 };
+// ŞERİT ARTIK ÖNİZLEMENİN ÜSTÜNE BİNMEZ (Goker: "mod düğmeleri panel
+// görünümünün içine geçiyordu"): eskiden önizleme kutusunun içinde absolute
+// konumlanıp çizimin alt kısmını örtüyordu; şimdi önizlemenin hemen ALTINDA,
+// akış içinde duran ayrı bir karttır.
+const DOCK_SHELL: React.CSSProperties = {
+  position: 'relative', marginTop: 6, borderRadius: 10,
+  background: '#fdfcfa',
+  border: '1px solid #ebe5dc',
+  boxShadow: '0 1px 2px rgba(40,30,20,0.04)',
+  display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: DOCK_FONT,
+};
+const DOCK_ROW: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 5, padding: '5px 6px 6px' };
+const dockStatus = (ready = false): React.CSSProperties => ({
+  flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 7, height: 26, padding: '0 9px', borderRadius: 7,
+  background: ready ? 'rgba(22,163,74,0.07)' : '#f5f2ec',
+  border: ready ? '1px solid rgba(22,163,74,0.22)' : '1px solid transparent',
+});
+const dockDot = (color: string): React.CSSProperties => ({ width: 5, height: 5, borderRadius: '50%', background: color, flexShrink: 0 });
+const dockStatusText = (ready = false): React.CSSProperties => ({
+  fontSize: 11, fontWeight: 500, color: ready ? '#15803d' : '#78716c', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+});
+const DOCK_INPUT: React.CSSProperties = {
+  flex: 1, minWidth: 0, height: 26, textAlign: 'center',
+  fontFamily: "'SF Mono',ui-monospace,Menlo,monospace", fontSize: 12.5, fontWeight: 500, fontVariantNumeric: 'tabular-nums',
+  color: '#1c1917', background: '#ffffff', border: '1px solid #e6e0d6', borderRadius: 7, outline: 'none',
+  boxShadow: '0 1px 0 rgba(40,30,20,0.02)',
+};
+const dockApplyBtn = (enabled: boolean): React.CSSProperties => ({
+  flexShrink: 0, width: 30, height: 26, borderRadius: 7, border: 'none', outline: 'none',
+  cursor: enabled ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', justifyContent: 'center',
+  background: enabled ? '#44403c' : '#ebe6de', color: enabled ? '#ffffff' : '#b5ada3',
+  boxShadow: enabled ? '0 1px 2px rgba(40,30,20,0.22)' : 'none', transition: 'background 0.12s',
+});
+const DOCK_EXIT_BTN: React.CSSProperties = {
+  flexShrink: 0, width: 26, height: 26, display: 'flex', alignItems: 'center', justifyContent: 'center',
+  borderRadius: 7, border: 'none', cursor: 'pointer', outline: 'none', background: 'transparent', color: '#a8a29e',
+  transition: 'color 0.12s,background 0.12s',
+};
+const dockAxisTag = (color: string): React.CSSProperties => ({
+  flexShrink: 0, fontSize: 10.5, fontWeight: 700, fontFamily: DOCK_FONT, color,
+  height: 22, lineHeight: '22px', padding: '0 7px', borderRadius: 6, background: '#f5f2ec',
+});
+
+/* ── MOD ÇUBUĞU (Fixed / Dyn / Ref) ─────────────────────────────────────
+   Goker: "ref / dyn / fixed düğmeleri daha anlaşılır, geniş, şık olsun."
+   Mod seçimi artık şeridin ÜST satırında tam genişlikte: her düğmede ikon +
+   ad + kısa Türkçe açıklama. Aktif mod koyu taş dolgu (okunurluk kuralı).
+   Girdi / durum / onay ikinci satırdadır; dar tek satırda sıkışma biter. */
+type DockMode = { key: string; label: string; sub: string; Icon: LucideIcon ; title?: string };
+const DOCK_MODE_DEFS: Record<string, Omit<DockMode, 'key'>> = {
+  fixed: { label: 'Fixed', sub: 'Sabit ölçü', Icon: Lock },
+  dyn:   { label: 'Dyn',   sub: 'Dinamik',    Icon: SlidersHorizontal },
+  ref:   { label: 'Ref',   sub: 'Referansa',  Icon: Crosshair },
+};
+function DockModeBar({ modes, active, onPick, disabled, trailing }: {
+  modes: DockMode[]; active: string | null; onPick: (k: string) => void; disabled?: boolean; trailing?: React.ReactNode;
+}) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'stretch', gap: 5, padding: '6px 6px 0' }}>
+      <div style={{ flex: 1, minWidth: 0, display: 'grid', gridTemplateColumns: `repeat(${modes.length}, minmax(0,1fr))`, gap: 4 }}>
+        {modes.map(({ key, label, sub, Icon, title }) => {
+          const on = active === key;
+          return (
+            <button key={key} type="button" title={title || `${label} — ${sub}`} disabled={disabled}
+              onClick={e => { e.stopPropagation(); if (!disabled) onPick(key); }}
+              className={on ? '' : 'hover:!bg-[#faf7f2] hover:!border-[#dcd4c8]'}
+              style={{
+                height: 28, minWidth: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                padding: '0 8px', borderRadius: 7, outline: 'none', cursor: disabled ? 'not-allowed' : 'pointer',
+                border: on ? '1px solid #44403c' : '1px solid #e6e0d6',
+                background: on ? '#44403c' : '#ffffff',
+                color: on ? '#ffffff' : '#57534e',
+                boxShadow: on ? '0 1px 3px rgba(40,30,20,0.22)' : '0 1px 0 rgba(40,30,20,0.03)',
+                opacity: disabled ? 0.5 : 1, transition: 'background 0.14s,border-color 0.14s,color 0.14s',
+                fontFamily: DOCK_FONT,
+              }}>
+              <Icon size={12} strokeWidth={2} style={{ flexShrink: 0 }} />
+              <span style={{ display: 'flex', alignItems: 'baseline', gap: 5, minWidth: 0, lineHeight: 1 }}>
+                <span style={{ fontSize: 11.5, fontWeight: 600, letterSpacing: '0.01em', flexShrink: 0 }}>{label}</span>
+                <span style={{ fontSize: 10, fontWeight: 500, opacity: on ? 0.7 : 0.58, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>{sub}</span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      {trailing}
+    </div>
+  );
+}
+const dockModes = (keys: string[], overrides: Record<string, Partial<DockMode>> = {}): DockMode[] =>
+  keys.map(k => ({ key: k, ...DOCK_MODE_DEFS[k], ...(overrides[k] || {}) } as DockMode));
+
 /* ── "Yüzeyin şeklini al" — panel satırı checkbox'ı (bone/ivory) ─────────
    AÇIK: panel, yerleştiği serbest bölgenin tam şeklini alır (L/U/çentik).
    KAPALI (varsayılan): mevcut davranış — kardeş kenarında düz kesilir.      */
@@ -327,14 +435,14 @@ function FitShapeToggle({ checked, disabled, onToggle }: { checked: boolean; dis
       disabled={disabled}
       onClick={e => { e.stopPropagation(); if (!disabled) onToggle(); }}
       title={checked ? 'Yüzeyin şeklini al: AÇIK' : 'Yüzeyin şeklini al'}
-      className={`shrink-0 w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors
-        ${disabled ? 'cursor-not-allowed opacity-40' : 'hover:bg-[#f1ece4]'}`}
+      className={`shrink-0 w-5 h-5 rounded-md flex items-center justify-center transition-colors duration-150
+        ${disabled ? 'cursor-not-allowed opacity-40' : 'hover:bg-[#f3efe8]'}`}
     >
-      <span className={`w-[14px] h-[14px] rounded-[4px] flex items-center justify-center transition-all duration-150
+      <span className={`w-[13px] h-[13px] rounded-[4px] flex items-center justify-center transition-all duration-150
         ${checked
-          ? 'bg-gradient-to-b from-orange-400 to-orange-500 ring-1 ring-orange-500/50 shadow-[0_1px_2px_rgba(234,88,12,0.35),inset_0_1px_0_rgba(255,255,255,0.35)]'
-          : 'bg-gradient-to-b from-white to-[#efe9df] ring-1 ring-[#d9d2c6] shadow-[inset_0_1px_1px_rgba(68,64,60,0.08)]'}`}>
-        {checked && <Check size={10} strokeWidth={3} className="text-white" />}
+          ? 'bg-orange-500 ring-1 ring-orange-500/60 shadow-[0_1px_2px_rgba(234,88,12,0.28)]'
+          : 'bg-white ring-1 ring-[#dcd5ca] shadow-[inset_0_1px_1px_rgba(68,64,60,0.05)]'}`}>
+        {checked && <Check size={9} strokeWidth={3.2} className="text-white" />}
       </span>
     </button>
   );
@@ -422,7 +530,7 @@ function PanelPreview2D({ shape, arrowRotated }: { dims: Dims; shape?: any; arro
     const disposables: Array<{ dispose: () => void }> = [];
     const scene = new THREE.Scene();
 
-    const material = new THREE.MeshStandardMaterial({ color: 0xece5d8, roughness: 0.72, metalness: 0.0, side: THREE.DoubleSide });
+    const material = new THREE.MeshStandardMaterial({ color: PREVIEW_PANEL_COLOR, roughness: 0.9, metalness: 0.0, side: THREE.DoubleSide });
     disposables.push(material);
     // KLON: paylaşılan renderer, çizdiği geometrinin GPU tamponlarını kendi
     // bağlamında tutar. Sahnedeki (ana renderer'ın da kullandığı) geometri
@@ -435,7 +543,7 @@ function PanelPreview2D({ shape, arrowRotated }: { dims: Dims; shape?: any; arro
 
     const edgesGeo = new THREE.EdgesGeometry(shape.geometry, 18);
     const lineGeo = new LineSegmentsGeometry().fromEdgesGeometry(edgesGeo);
-    const lineMat = new LineMaterial({ color: 0x44403c, linewidth: 1.5, worldUnits: false, alphaToCoverage: true });
+    const lineMat = new LineMaterial({ color: PREVIEW_EDGE_COLOR, linewidth: 1.0, worldUnits: false, alphaToCoverage: true });
     lineMat.resolution.set(w, h);
     disposables.push(edgesGeo, lineGeo, lineMat);
     const panelLines = new LineSegments2(lineGeo, lineMat);
@@ -469,12 +577,13 @@ function PanelPreview2D({ shape, arrowRotated }: { dims: Dims; shape?: any; arro
       .normalize();
     const camDist = 4000;
 
-    scene.add(new THREE.HemisphereLight(0xfff7ec, 0x8c8170, 0.62));
-    scene.add(new THREE.AmbientLight(0xffffff, 0.16));
-    const key = new THREE.DirectionalLight(0xffffff, 0.9);
+    // Fiziksel ışık ölçeği (r155+): yüz açık laminat, kalınlık kenarı bir ton koyu.
+    scene.add(new THREE.HemisphereLight(0xffffff, 0xd9d1c4, PREVIEW_LIGHT.hemi));
+    scene.add(new THREE.AmbientLight(0xffffff, PREVIEW_LIGHT.ambient));
+    const key = new THREE.DirectionalLight(0xffffff, PREVIEW_LIGHT.key);
     key.position.copy(nDir).multiplyScalar(3).addScaledVector(hDir, 2).addScaledVector(wDir, 1.4);
     scene.add(key);
-    const fill = new THREE.DirectionalLight(0xeaf0ff, 0.20);
+    const fill = new THREE.DirectionalLight(0xf4f1ec, PREVIEW_LIGHT.fill);
     fill.position.copy(nDir).addScaledVector(hDir, -1.6).addScaledVector(wDir, -2.2);
     scene.add(fill);
     const rim = new THREE.DirectionalLight(0xffffff, 0.15);
@@ -514,7 +623,8 @@ function PanelPreview2D({ shape, arrowRotated }: { dims: Dims; shape?: any; arro
 
     const padH = 1.06, padV = 1.06;
     const halfV = maxV * padV;
-    const dockRoom = halfV * 0.18;
+    // Şerit artık önizlemenin altında (üstüne binmez) → alt pay yalnız ölçü etiketleri için.
+    const dockRoom = halfV * 0.06;
     const ratioTop = halfV, ratioBot = halfV + dockRoom;
     let vSpan = ratioTop + ratioBot;
     let halfH = (vSpan / 2) * aspect;
@@ -614,7 +724,7 @@ function PanelPreview2D({ shape, arrowRotated }: { dims: Dims; shape?: any; arro
         ref={canvasRef}
         style={{
           display: 'block', position: 'absolute', inset: 0, width: '100%', height: '100%',
-          filter: 'drop-shadow(0 12px 18px rgba(60,45,30,0.22)) drop-shadow(0 2px 3px rgba(60,45,30,0.14))',
+          filter: 'drop-shadow(0 18px 22px rgba(50,40,30,0.12)) drop-shadow(0 2px 3px rgba(50,40,30,0.08))',
         }}
       />
       <svg
@@ -629,13 +739,13 @@ function PanelPreview2D({ shape, arrowRotated }: { dims: Dims; shape?: any; arro
           const lw = Math.max(txt.length * fsG * 0.62 + 12, 30), lh = fsG + 8;
           return (
             <g key={`gd-${i}`}>
-              <line x1={d.fa.x} y1={d.fa.y} x2={d.da.x} y2={d.da.y} stroke="#b3a89a" strokeWidth="0.9"/>
-              <line x1={d.fb.x} y1={d.fb.y} x2={d.db.x} y2={d.db.y} stroke="#b3a89a" strokeWidth="0.9"/>
-              <line x1={d.da.x} y1={d.da.y} x2={d.db.x} y2={d.db.y} stroke="#8c857e" strokeWidth="1.2"/>
-              <polygon points={`${d.da.x},${d.da.y} ${d.da.x+ux*asz+px*asz*0.45},${d.da.y+uy*asz+py*asz*0.45} ${d.da.x+ux*asz-px*asz*0.45},${d.da.y+uy*asz-py*asz*0.45}`} fill="#8c857e"/>
-              <polygon points={`${d.db.x},${d.db.y} ${d.db.x-ux*asz+px*asz*0.45},${d.db.y-uy*asz+py*asz*0.45} ${d.db.x-ux*asz-px*asz*0.45},${d.db.y-uy*asz-py*asz*0.45}`} fill="#8c857e"/>
-              <rect x={d.cx - lw / 2} y={d.cy - lh / 2} width={lw} height={lh} rx={4} fill="rgba(248,245,240,0.97)" stroke="#cfc8bd" strokeWidth="0.7"/>
-              <text x={d.cx} y={d.cy + fsG * 0.36} textAnchor="middle" fontSize={fsG} fill="#1c1917" fontFamily="monospace" fontWeight="700">{txt}</text>
+              <line x1={d.fa.x} y1={d.fa.y} x2={d.da.x} y2={d.da.y} stroke="#cfc6b9" strokeWidth="0.8"/>
+              <line x1={d.fb.x} y1={d.fb.y} x2={d.db.x} y2={d.db.y} stroke="#cfc6b9" strokeWidth="0.8"/>
+              <line x1={d.da.x} y1={d.da.y} x2={d.db.x} y2={d.db.y} stroke="#a39a8f" strokeWidth="1"/>
+              <polygon points={`${d.da.x},${d.da.y} ${d.da.x+ux*asz+px*asz*0.38},${d.da.y+uy*asz+py*asz*0.38} ${d.da.x+ux*asz-px*asz*0.38},${d.da.y+uy*asz-py*asz*0.38}`} fill="#a39a8f"/>
+              <polygon points={`${d.db.x},${d.db.y} ${d.db.x-ux*asz+px*asz*0.38},${d.db.y-uy*asz+py*asz*0.38} ${d.db.x-ux*asz-px*asz*0.38},${d.db.y-uy*asz-py*asz*0.38}`} fill="#a39a8f"/>
+              <rect x={d.cx - lw / 2} y={d.cy - lh / 2} width={lw} height={lh} rx={lh / 2} fill="#ffffff" stroke="#e6e0d6" strokeWidth="0.8"/>
+              <text x={d.cx} y={d.cy + fsG * 0.36} textAnchor="middle" fontSize={fsG} fill="#44403c" fontFamily="'Inter','SF Pro Text',system-ui,sans-serif" fontWeight="600" style={{ fontVariantNumeric: 'tabular-nums' }}>{txt}</text>
             </g>
           );
         })}
@@ -686,7 +796,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
   const [rotateValueStr, setRotateValueStr] = useState('0');
   const prevMoveAxisRef = useRef(panelMoveAxis);
   const prevRotateAxisRef = useRef(panelRotateAxis);
-  const rowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const rowRefs = useRef<Map<number | string, HTMLDivElement>>(new Map());
 
   // Reset local string state when axis selection changes (new input session)
   useEffect(() => {
@@ -868,7 +978,13 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       faceExtrudeMode, faceExtrudeTargetPanelId,
       panelMoveMode, panelMoveTargetPanelId,
       panelRotateMode, panelRotateTargetPanelId]);
-  useEffect(() => { if (selectedPanelRow !== null) rowRefs.current.get(selectedPanelRow)?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, [selectedPanelRow]);
+  // AKORDEON: açılan satır (listeden ya da 3B'den seçilince) görünür alana
+  // kaydırılır; açılma animasyonu başladıktan sonra, kartın ÜSTÜ hizalanır.
+  useEffect(() => {
+    if (selectedPanelRow === null) return;
+    const t = window.setTimeout(() => rowRefs.current.get(selectedPanelRow)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 60);
+    return () => window.clearTimeout(t);
+  }, [selectedPanelRow]);
 
   useEffect(() => {
     if (!pendingPanelCreation || (!isOpen && !embedded)) return;
@@ -940,7 +1056,10 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
   );
 
   /* ── Face list ──────────────────────────────────────────────────────── */
-  const faceListSection = selectedShape ? (() => {
+  // AKORDEON LİSTE: seçili satırın altına açılan gövde (araçlar + önizleme +
+  // adımlar) şeritlere (extrudeDock/moveDock/rotateDock) ve stepsPanel'e
+  // başvurur; onlar aşağıda tanımlı olduğundan liste artık TEMBEL üretilir.
+  const renderFaceList = () => selectedShape ? (() => {
     const geo = selectedShape.geometry; if (!geo) return null;
     const sid = selectedShape.id;
     const svf = virtualFaces.filter(vf => vf.shapeId === sid);
@@ -1004,9 +1123,14 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       const vp = findVPanel(shapes, sid, vf.id), ar = vp?.parameters?.arrowRotated || false, sel = selectedPanelRow === `vf-${vf.id}`;
       const dims = vp?.geometry ? getDimsFromGeo(vp.geometry, ar, parseFloat((vp.parameters as any)?.panelThickness) || 18) : null;
 
+      const isExtrudingThis = sel && faceExtrudeMode && faceExtrudeTargetPanelId === vp?.id;
+      const isMovingThis = sel && panelMoveMode && panelMoveTargetPanelId === vp?.id;
+      const isRotatingThis = sel && panelRotateMode && panelRotateTargetPanelId === vp?.id;
+
       elements.push(
         <div
           key={rowKey}
+          ref={el => { const k = `vf-${vf.id}`; if (el) rowRefs.current.set(k, el); else rowRefs.current.delete(k); }}
           onDragOver={e => {
             if (dragIndex !== null && !isDraggingThisRow) {
               e.preventDefault();
@@ -1019,46 +1143,49 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
             if (dragIndex === null) return;
             onRowDropBelow(orderedVfs[dragIndex].id, rowKey);
           }}
-          className={`relative flex items-stretch rounded-lg overflow-hidden transition-all duration-150
+          // SOFT SATIR + AKORDEON (Goker): satır sade kart; seçilince AYNI kart
+          // aşağı doğru açılır ve altında araçlar, önizleme ve adımlar görünür.
+          className={`group/row relative flex flex-col rounded-[10px] overflow-hidden transition-[background-color,box-shadow,opacity,transform] duration-150 ease-out
             ${sel
-              ? 'bg-white ring-1 ring-[#f3c89e] shadow-[0_2px_10px_-3px_rgba(234,88,12,0.20),0_1px_2px_rgba(68,64,60,0.06)]'
-              : 'bg-white ring-1 ring-[#e7e2da] shadow-[0_1px_2px_rgba(68,64,60,0.05),0_1px_1px_rgba(68,64,60,0.03)] hover:ring-[#dbd4c9] hover:shadow-[0_3px_10px_-3px_rgba(68,64,60,0.12),0_1px_2px_rgba(68,64,60,0.05)]'}
+              ? 'bg-[#fffdf9] ring-1 ring-[#efd9c0] shadow-[0_1px_2px_rgba(234,88,12,0.05),0_8px_20px_-14px_rgba(120,70,20,0.35)] my-1'
+              : hoveredPanelVfId === vf.id
+                ? 'bg-[#fdf6e3] ring-1 ring-[#eedfb9]'
+                : 'bg-[#fdfcfa] ring-1 ring-[#ece7df] shadow-[0_1px_0_rgba(68,64,60,0.025)] hover:bg-white hover:ring-[#e2dbd0] hover:shadow-[0_1px_2px_rgba(68,64,60,0.04),0_4px_10px_-8px_rgba(68,64,60,0.18)]'}
             ${isDraggingThisRow ? 'opacity-40 scale-[0.99]' : ''}
-            ${armedRowKey === rowKey && !isDraggingThisRow ? '!ring-orange-400 shadow-[0_4px_14px_-4px_rgba(234,88,12,0.35)] scale-[1.01]' : ''}
-            ${isDropTargetRow ? '!ring-amber-400 bg-amber-50/60' : ''}`}
+            ${armedRowKey === rowKey && !isDraggingThisRow ? '!ring-orange-300 !bg-white shadow-[0_6px_16px_-8px_rgba(234,88,12,0.35)] scale-[1.006]' : ''}
+            ${isDropTargetRow ? '!ring-amber-300 !bg-[#fffbf0]' : ''}`}
         >
-          <span
-            draggable
-            onMouseDown={() => setArmedRowKey(rowKey)}
-            onMouseUp={() => setArmedRowKey(null)}
-            onMouseLeave={() => { if (dragIndex === null) setArmedRowKey(null); }}
-            onDragStart={e => {
-              stop(e);
-              setDragIndex(rowIdx);
-              e.dataTransfer.effectAllowed = 'move';
-              e.dataTransfer.setData('text/plain', rowKey);
-            }}
-            onDragEnd={() => { setDragIndex(null); setDropIndex(null); setArmedRowKey(null); }}
-            onClick={stop}
-            className={`cursor-grab active:cursor-grabbing shrink-0 w-8 self-stretch flex items-center justify-center border-r transition-colors
-              ${armedRowKey === rowKey
-                ? 'text-white bg-gradient-to-b from-orange-400 to-orange-500 border-orange-500/50'
-                : 'text-stone-300/90 hover:text-orange-600 bg-gradient-to-b from-[#fbf9f5] to-[#f4efe7] hover:from-[#fff3e4] hover:to-[#ffe9d0] border-[#ece6dc]'}`}
-            title="Sürükleyerek sırala"
-          ><GripVertical size={16}/></span>
+          {/* ── SATIR BAŞLIĞI ── */}
+          <div className={`relative flex items-stretch ${sel ? 'bg-[#fff8ef]' : ''}`}>
+            {sel && <span className="pointer-events-none absolute left-0 top-[6px] bottom-[6px] w-[2px] rounded-r-full bg-orange-500/90" />}
 
-          <div className="flex-1 min-w-0 flex flex-col">
+            <span
+              draggable
+              onMouseDown={() => setArmedRowKey(rowKey)}
+              onMouseUp={() => setArmedRowKey(null)}
+              onMouseLeave={() => { if (dragIndex === null) setArmedRowKey(null); }}
+              onDragStart={e => {
+                stop(e);
+                setDragIndex(rowIdx);
+                e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.setData('text/plain', rowKey);
+              }}
+              onDragEnd={() => { setDragIndex(null); setDropIndex(null); setArmedRowKey(null); }}
+              onClick={stop}
+              className={`cursor-grab active:cursor-grabbing shrink-0 w-[18px] ml-[3px] self-stretch flex items-center justify-center transition-colors duration-150
+                ${armedRowKey === rowKey
+                  ? 'text-orange-500'
+                  : 'text-stone-300/70 group-hover/row:text-stone-400 hover:!text-orange-500'}`}
+              title="Sürükleyerek sırala"
+            ><GripVertical size={13} strokeWidth={1.75}/></span>
+
             <div
-              onClick={e => { stop(e); setSelectedPanelRow(`vf-${vf.id}`, null, sid); }}
-              className={`group/row relative flex items-center gap-1.5 pl-2.5 pr-1 py-px cursor-pointer transition-colors duration-150
-                ${sel ? 'bg-[#fff6ec]' : hoveredPanelVfId === vf.id ? 'bg-[#fef9c3]' : 'hover:bg-[#faf6ef]'}`}
+              onClick={e => { stop(e); if (sel) setSelectedPanelRow(null); else setSelectedPanelRow(`vf-${vf.id}`, null, sid); }}
+              className="flex-1 min-w-0 relative flex items-center gap-1.5 pl-0.5 pr-1 py-[4px] cursor-pointer"
             >
-              {sel && <span className="absolute left-0 top-0 bottom-0 w-[2.5px] rounded-r-sm bg-gradient-to-b from-orange-400 to-orange-500" />}
-
-              <span className={`shrink-0 inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full text-[11px] font-semibold tabular-nums transition-all
-                ${sel
-                  ? 'bg-gradient-to-b from-orange-400 to-orange-500 text-white ring-1 ring-orange-500/40 shadow-[0_1px_3px_rgba(234,88,12,0.35)]'
-                  : 'bg-gradient-to-b from-white to-[#efe9df] text-stone-600 ring-1 ring-[#e4ded4] shadow-[0_1px_1.5px_rgba(68,64,60,0.08),inset_0_1px_0_rgba(255,255,255,0.9)] group-hover/row:ring-[#e7b487] group-hover/row:text-orange-600'}`}>
+              {/* Sıra numarası: yuvarlaksız, sade ve bir tık büyük. */}
+              <span className={`shrink-0 w-[20px] text-center text-[13px] font-semibold tabular-nums leading-none transition-colors duration-150
+                ${sel ? 'text-orange-600' : 'text-stone-400 group-hover/row:text-stone-600'}`}>
                 {displayIdx}
               </span>
 
@@ -1068,32 +1195,42 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                 onClick={stop}
                 onChange={e => updateVirtualFace(vf.id, { description: e.target.value })}
                 placeholder="not…"
-                className="flex-1 min-w-0 px-1 py-1 text-xs bg-transparent border-b border-transparent hover:border-[#dcd5ca] focus:border-orange-400 rounded-none outline-none text-stone-700 placeholder:text-stone-300 transition-colors"
+                className="yago-row-note flex-1 min-w-0 h-[22px] px-[5px] text-[11.5px] text-stone-600 bg-transparent border border-transparent rounded-[5px] outline-none placeholder:text-stone-300 hover:border-[#ebe5dc] focus:bg-white focus:border-orange-400/50 transition-colors"
               />
 
               {dims && (
-                <span onClick={stop} className="shrink-0 inline-flex items-center text-xs leading-none tabular-nums px-0.5">
-                  <span className="text-stone-400 font-medium">W</span><span className="text-stone-700 font-semibold ml-1">{dims.primary}</span>
-                  <span className="text-stone-300 mx-1.5">·</span>
-                  <span className="text-stone-400 font-medium">H</span><span className="text-stone-700 font-semibold ml-1">{dims.secondary}</span>
-                  <span className="text-stone-300 mx-1.5">·</span>
-                  <span className="text-stone-400 font-medium">T</span><span className="text-stone-700 font-semibold ml-1">{dims.thickness}</span>
+                <span onClick={stop} className="shrink-0 inline-flex items-baseline leading-none tabular-nums px-0.5 cursor-default">
+                  <span className="text-[11px] font-semibold text-stone-400">W</span><span className="text-[12.5px] font-medium text-stone-700 ml-1">{dims.primary}</span>
+                  <span className="w-px h-3 bg-[#e6e0d6] mx-2 self-center" />
+                  <span className="text-[11px] font-semibold text-stone-400">H</span><span className="text-[12.5px] font-medium text-stone-700 ml-1">{dims.secondary}</span>
+                  <span className="w-px h-3 bg-[#e6e0d6] mx-2 self-center" />
+                  <span className="text-[11px] font-semibold text-stone-400">T</span><span className="text-[12.5px] font-medium text-stone-500 ml-1">{dims.thickness}</span>
                 </span>
               )}
 
-              <div className="flex items-center gap-0.5 shrink-0" onClick={stop}>
+              <div className="flex items-center gap-px shrink-0 ml-0.5" onClick={stop}>
                 <FitShapeToggle checked={!!vf.fitFaceShape} disabled={!vf.hasPanel} onToggle={() => { void toggleFitShape(vf); }} />
 
                 <button disabled={!vf.hasPanel} onClick={e => { stop(e); toggleArrow(vp); }}
-                  className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-stone-700 bg-[#f1ece4]' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
-                  title="Ok yönünü değiştir"><ArrowUp size={14} className={`transition-transform duration-200 ${ar ? '' : 'rotate-90'}`}/></button>
+                  className={`w-5 h-5 rounded-md flex items-center justify-center transition-colors duration-150 ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-stone-700 bg-[#f1ece4]' : 'text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700'}`}
+                  title="Ok yönünü değiştir"><ArrowUp size={13} strokeWidth={1.9} className={`transition-transform duration-200 ${ar ? '' : 'rotate-90'}`}/></button>
 
+                {/* Sil: sade görünüm için yalnız satır üzerine gelince / seçiliyken görünür. */}
                 <button onClick={e => { stop(e); void deletePanelAndFace(vf.id); }}
-                  className="w-[22px] h-[22px] rounded-md flex items-center justify-center text-stone-400 hover:bg-red-50 hover:text-red-500 transition-colors"
-                  title="Paneli sil"><Trash2 size={13}/></button>
+                  className={`w-5 h-5 rounded-md flex items-center justify-center text-stone-400 hover:bg-red-50 hover:text-red-500 focus-visible:opacity-100 transition-[opacity,color,background-color] duration-150
+                    ${sel ? 'opacity-100' : 'opacity-0 group-hover/row:opacity-100'}`}
+                  title="Paneli sil"><Trash2 size={12} strokeWidth={1.9}/></button>
+
+                {/* Aç / kapa göstergesi */}
+                <span className={`w-4 h-5 flex items-center justify-center transition-[transform,color] duration-200 ${sel ? 'rotate-90 text-orange-500' : 'text-stone-300 group-hover/row:text-stone-400'}`}>
+                  <ChevronRight size={13} strokeWidth={2}/>
+                </span>
               </div>
             </div>
           </div>
+
+          {/* ── AÇILAN GÖVDE (akordeon) ── */}
+          {sel && renderExpandedBody(vf, vp, { isExtrudingThis, isMovingThis, isRotatingThis })}
         </div>
       );
 
@@ -1151,23 +1288,10 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     const hasRefPanel = isRefMode && faceExtrudeRefCandidate?.panelId;
     const hasRefFace = isRefMode && hasRefPanel && faceExtrudeRefCandidate?.faceGroupIndex !== undefined && faceExtrudeRefCandidate.faceGroupIndex >= 0;
 
-    const segMode = (mode: 'fixed'|'dyn'|'ref'): React.CSSProperties => ({
-      flex: 1, minWidth: 0, height: 28, fontSize: 10, fontWeight: 700, letterSpacing: '0.03em',
-      border: 'none', outline: 'none', cursor: hf ? 'pointer' : 'not-allowed',
-      borderLeft: mode === 'fixed' ? 'none' : '1px solid rgba(60,50,40,0.10)',
-      background: faceExtrudeValueMode === mode ? '#e8e1d5' : 'rgba(255,255,255,0.45)',
-      color: faceExtrudeValueMode === mode ? '#44403c' : '#a8a29e',
-      boxShadow: faceExtrudeValueMode === mode ? 'inset 0 1px 2px rgba(60,50,40,0.14)' : 'none',
-      transition: 'all 0.12s',
-    });
 
     const exitBtn = (
       <button onClick={e => { stop(e); setFaceExtrudeSelectedFace(null); setFaceExtrudeMode(false); setFaceExtrudeRefCandidate(null); }}
-        title="Çıkış" style={{
-          flexShrink: 0, width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
-          borderRadius: 7, border: '1px solid rgba(60,50,40,0.12)', cursor: 'pointer', outline: 'none',
-          background: 'rgba(255,255,255,0.55)', color: '#78716c', transition: 'all 0.12s',
-        }}><X size={13} /></button>
+        title="Çıkış" style={DOCK_EXIT_BTN} className="hover:!bg-[#f3efe8] hover:!text-stone-600"><X size={13} strokeWidth={2} /></button>
     );
 
     const onApply = async () => {
@@ -1209,16 +1333,15 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     };
 
     return (
-      <div style={{
-        position: 'absolute', left: 8, right: 8, bottom: 8, zIndex: 5, borderRadius: 11,
-        background: 'linear-gradient(180deg,rgba(250,248,244,0.90),rgba(239,235,227,0.94))',
-        backdropFilter: 'blur(16px) saturate(150%)', WebkitBackdropFilter: 'blur(16px) saturate(150%)',
-        border: '1px solid rgba(60,50,40,0.13)',
-        boxShadow: '0 10px 24px -12px rgba(40,30,20,0.30),0 0 0 0.5px rgba(60,50,40,0.05),inset 0 1px 0 rgba(255,255,255,0.92)',
-        display: 'flex', flexDirection: 'column', overflow: 'hidden',
-        fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif",
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 9px' }}>
+      <div style={DOCK_SHELL}>
+        {hf && (
+          <DockModeBar
+            modes={dockModes(['fixed','dyn','ref'], { fixed: { sub: 'Sabit', title: 'Fixed — sabit kalınlık' }, ref: { sub: 'Yüze', title: 'Ref — referans yüze kadar' } })}
+            active={faceExtrudeValueMode}
+            onPick={k => { const m = k as 'fixed'|'dyn'|'ref'; setFaceExtrudeValueMode(m); if (m === 'fixed') setFaceExtrudeFixedMode(true); if (m === 'dyn') setFaceExtrudeFixedMode(false); if (m !== 'ref') setFaceExtrudeRefCandidate(null); }}
+          />
+        )}
+        <div style={DOCK_ROW}>
           {hf ? (
             <>
               {!isRefMode && (
@@ -1235,48 +1358,25 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                     if (isNaN(p)) { setExtrudeThicknessStr(String(faceExtrudeThickness)); }
                     else { setFaceExtrudeThickness(p); setExtrudeThicknessStr(String(p)); }
                   }}
-                  style={{
-                    flex: 1, minWidth: 0, height: 28, textAlign: 'center', fontFamily: 'monospace', fontSize: 13, fontWeight: 600,
-                    color: '#1c1917', background: 'linear-gradient(180deg,#fff,#faf8f3)', border: '1px solid rgba(60,50,40,0.16)',
-                    borderRadius: 7, outline: 'none', boxShadow: 'inset 0 1px 2px rgba(40,30,20,0.06)',
-                  }}
+                  style={DOCK_INPUT}
                 />
               )}
               {isRefMode && (
-                <div style={{
-                  flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 6, height: 28, padding: '0 10px', borderRadius: 7,
-                  background: hasRefFace ? 'rgba(223,174,76,0.14)' : 'rgba(120,113,108,0.08)',
-                  border: hasRefFace ? '1px solid rgba(79,70,229,0.30)' : '1px solid rgba(60,50,40,0.10)',
-                }}>
-                  <span style={{ width: 5, height: 5, borderRadius: '50%', background: hasRefFace ? '#dfae4c' : '#a8a29e', flexShrink: 0 }} />
-                  <span style={{ fontSize: 11, fontWeight: 500, color: hasRefFace ? '#4338ca' : '#78716c', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                <div style={dockStatus(!!hasRefFace)}>
+                  <span style={dockDot(hasRefFace ? '#16a34a' : '#a8a29e')} />
+                  <span style={dockStatusText(!!hasRefFace)}>
                     {hasRefFace ? 'Referans yüzey seçildi' : hasRefPanel ? 'Referans yüzeyi seç' : 'Referans paneli seç'}
                   </span>
                 </div>
               )}
-              <div style={{ display: 'flex', width: isRefMode ? 120 : 86, flexShrink: 0, borderRadius: 7, overflow: 'hidden', border: '1px solid rgba(60,50,40,0.16)' }}>
-                {(['fixed','dyn','ref'] as const).map(m => (
-                  <button key={m} onClick={() => { if (hf) { setFaceExtrudeValueMode(m); if (m === 'fixed') setFaceExtrudeFixedMode(true); if (m === 'dyn') setFaceExtrudeFixedMode(false); if (m !== 'ref') setFaceExtrudeRefCandidate(null); } }} style={segMode(m)}>{m === 'fixed' ? 'Fixed' : m === 'dyn' ? 'Dyn' : 'Ref'}</button>
-                ))}
-              </div>
-              <button onClick={onApply} title="Uygula" style={{
-                flexShrink: 0, width: 32, height: 28, borderRadius: 7, border: 'none', cursor: 'pointer', outline: 'none',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                background: isRefMode && !hasRefFace ? 'rgba(120,113,108,0.30)' : 'linear-gradient(180deg,#5b5346,#44403c)',
-                color: '#fff',
-                boxShadow: '0 1px 2px rgba(40,30,20,0.25),inset 0 1px 0 rgba(255,255,255,0.18)',
-                opacity: isRefMode && !hasRefFace ? 0.5 : 1,
-              }}><Check size={15} strokeWidth={2.5} /></button>
+              <button onClick={onApply} title="Uygula" style={dockApplyBtn(!(isRefMode && !hasRefFace))}><Check size={14} strokeWidth={2.4} /></button>
               {exitBtn}
             </>
           ) : (
             <>
-              <div style={{
-                flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 7, height: 28, padding: '0 10px', borderRadius: 7,
-                background: 'rgba(120,113,108,0.08)', border: '1px solid rgba(60,50,40,0.10)',
-              }}>
-                <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#a8a29e', flexShrink: 0 }} />
-                <span style={{ fontSize: 11, fontWeight: 500, color: '#78716c', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>3B görünümde yüzey seç</span>
+              <div style={dockStatus()}>
+                <span style={dockDot('#a8a29e')} />
+                <span style={dockStatusText()}>3B görünümde yüzey seç</span>
               </div>
               {exitBtn}
             </>
@@ -1288,79 +1388,6 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
 
   const isPreviewMode = selectedPanelRow !== null;
 
-  const selectedFaceRow = (() => {
-    if (!selectedShape || selectedPanelRow === null) return null;
-    const sid = selectedShape.id;
-    const svf = virtualFaces.filter(vf => vf.shapeId === sid);
-    const vfId = typeof selectedPanelRow === 'string' && selectedPanelRow.startsWith('vf-')
-      ? selectedPanelRow.replace('vf-', '') : null;
-    if (!vfId) return null;
-    const vi = svf.findIndex(f => f.id === vfId);
-    const vf = svf[vi];
-    if (!vf) return null;
-    const vp = findVPanel(shapes, sid, vf.id);
-    const ar = vp?.parameters?.arrowRotated || false;
-    const dims = vp?.geometry ? getDimsFromGeo(vp.geometry, ar, parseFloat((vp.parameters as any)?.panelThickness) || 18) : null;
-    const isExtrudingThis = faceExtrudeMode && faceExtrudeTargetPanelId === vp?.id;
-    const isMovingThis = panelMoveMode && panelMoveTargetPanelId === vp?.id;
-    const isRotatingThis = panelRotateMode && panelRotateTargetPanelId === vp?.id;
-    return (
-      <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-orange-50 ring-1 ring-orange-300 shadow-sm select-none">
-        <span className="shrink-0 inline-flex items-center justify-center min-w-[20px] h-5 px-1 rounded-full text-[11px] font-semibold font-mono tabular-nums bg-orange-500 text-white shadow-sm">
-          {vi + 1}
-        </span>
-        <input
-          type="text"
-          value={vf.description || ''}
-          onClick={stop}
-          onChange={e => updateVirtualFace(vf.id, { description: e.target.value })}
-          placeholder="not…"
-          className="flex-1 min-w-0 px-1 py-1 text-xs bg-transparent border-b border-transparent hover:border-[#dcd5ca] focus:border-orange-400 rounded-none outline-none text-stone-700 placeholder:text-stone-300 transition-colors"
-        />
-        {dims && (
-          <span className="shrink-0 inline-flex items-center text-xs leading-none tabular-nums px-0.5">
-            <span className="text-stone-400 font-medium">W</span><span className="text-stone-700 font-semibold ml-1">{dims.primary}</span>
-            <span className="text-stone-300 mx-1.5">·</span>
-            <span className="text-stone-400 font-medium">H</span><span className="text-stone-700 font-semibold ml-1">{dims.secondary}</span>
-            <span className="text-stone-300 mx-1.5">·</span>
-            <span className="text-stone-400 font-medium">T</span><span className="text-stone-700 font-semibold ml-1">{dims.thickness}</span>
-          </span>
-        )}
-        <div className="flex items-center gap-0.5 shrink-0" onClick={stop}>
-          <FitShapeToggle checked={!!vf.fitFaceShape} disabled={!vf.hasPanel} onToggle={() => { void toggleFitShape(vf); }} />
-
-          <button disabled={!vf.hasPanel} onClick={e => {
-            stop(e); if (!vp) return;
-            if (isMovingThis) setPanelMoveMode(false);
-            else { setPanelMoveTargetPanelId(vp.id); setPanelMoveMode(true); if (faceExtrudeMode) setFaceExtrudeMode(false); }
-          }}
-            className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : isMovingThis ? 'bg-gradient-to-b from-[#5b5346] to-[#44403c] text-white shadow-[0_1px_2px_rgba(40,30,20,0.25)]' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
-            title="Taşı (move)"><Move size={13}/></button>
-
-          <button disabled={!vf.hasPanel} onClick={e => {
-            stop(e); if (!vp) return;
-            if (isRotatingThis) setPanelRotateMode(false);
-            else { setPanelRotateTargetPanelId(vp.id); setPanelRotateMode(true); if (faceExtrudeMode) setFaceExtrudeMode(false); if (panelMoveMode) setPanelMoveMode(false); }
-          }}
-            className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : isRotatingThis ? 'bg-gradient-to-b from-[#5b5346] to-[#44403c] text-white shadow-[0_1px_2px_rgba(40,30,20,0.25)]' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
-            title="Döndür (rotation)"><RotateCw size={13}/></button>
-
-          <button disabled={!vf.hasPanel} onClick={e => {
-            stop(e); if (!vp) return;
-            if (isExtrudingThis) setFaceExtrudeMode(false);
-            else { setFaceExtrudeTargetPanelId(vp.id); setFaceExtrudeMode(true); if (panelMoveMode) setPanelMoveMode(false); }
-          }}
-            className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : isExtrudingThis ? 'bg-gradient-to-b from-[#5b5346] to-[#44403c] text-white shadow-[0_1px_2px_rgba(40,30,20,0.25)]' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
-            title="Yüz çıkıntısı (extrude)"><MoveVertical size={13}/></button>
-
-          <button disabled={!vf.hasPanel} onClick={e => { stop(e); toggleArrow(vp); }}
-            className={`w-[22px] h-[22px] rounded-md flex items-center justify-center transition-colors ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-stone-700 bg-[#f1ece4]' : 'text-stone-400 hover:bg-[#f1ece4] hover:text-stone-700'}`}
-            title="Ok yönünü değiştir"><ArrowUp size={14} className={`transition-transform duration-200 ${ar ? '' : 'rotate-90'}`}/></button>
-        </div>
-      </div>
-    );
-  })();
-
   // ── Move dock — only the active-command input row (no steps list here) ──
   const moveDock = (() => {
     if (!activePanelId || !panelMoveMode) return null;
@@ -1369,23 +1396,10 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     const hasRefReady = isRefMode && panelMoveRefSourceVertex && panelMoveRefTargetPanelId && panelMoveRefTargetVertex;
     const axisColors: Record<string, string> = { 'x+': '#dc2626', 'x-': '#b91c1c', 'y+': '#16a34a', 'y-': '#15803d', 'z+': '#2563eb', 'z-': '#1d4ed8' };
 
-    const segMode = (mode: 'dyn'|'fixed'|'ref'): React.CSSProperties => ({
-      flex: 1, minWidth: 0, height: 28, fontSize: 10, fontWeight: 700, letterSpacing: '0.03em',
-      border: 'none', outline: 'none', cursor: 'pointer',
-      borderLeft: mode === 'dyn' ? 'none' : '1px solid rgba(60,50,40,0.10)',
-      background: panelMoveValueMode === mode ? '#e8e1d5' : 'rgba(255,255,255,0.45)',
-      color: panelMoveValueMode === mode ? '#44403c' : '#a8a29e',
-      boxShadow: panelMoveValueMode === mode ? 'inset 0 1px 2px rgba(60,50,40,0.14)' : 'none',
-      transition: 'all 0.12s',
-    });
 
     const exitBtn = (
       <button onClick={e => { stop(e); setPanelMoveAxis(null); setPanelMoveMode(false); if (isRefMode) setSelectedPanelRow(null); }}
-        title="Çıkış" style={{
-          flexShrink: 0, width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
-          borderRadius: 7, border: '1px solid rgba(60,50,40,0.12)', cursor: 'pointer', outline: 'none',
-          background: 'rgba(255,255,255,0.55)', color: '#78716c', transition: 'all 0.12s',
-        }}><X size={13} /></button>
+        title="Çıkış" style={DOCK_EXIT_BTN} className="hover:!bg-[#f3efe8] hover:!text-stone-600"><X size={13} strokeWidth={2} /></button>
     );
 
     const onApply = async () => {
@@ -1427,30 +1441,23 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         const label = step === 1 ? 'Kaynak noktayı seç' : step === 2 ? 'Hedef paneli seç' : step === 3 ? 'Hedef noktayı seç' : 'Hazır — sağ tık ile onayla';
         const ready = step === 4;
         return (
-          <div style={{
-            flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 6, height: 28, padding: '0 10px', borderRadius: 7,
-            background: ready ? 'rgba(34,197,94,0.10)' : 'rgba(120,113,108,0.08)',
-            border: ready ? '1px solid rgba(22,163,74,0.30)' : '1px solid rgba(60,50,40,0.10)',
-          }}>
-            <span style={{ width: 5, height: 5, borderRadius: '50%', background: ready ? '#16a34a' : '#a8a29e', flexShrink: 0 }} />
-            <span style={{ fontSize: 11, fontWeight: 500, color: ready ? '#15803d' : '#78716c', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
+          <div style={dockStatus(ready)}>
+            <span style={dockDot(ready ? '#16a34a' : '#a8a29e')} />
+            <span style={dockStatusText(ready)}>{label}</span>
           </div>
         );
       }
       if (!hasAxis) {
         return (
-          <div style={{
-            flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 7, height: 28, padding: '0 10px', borderRadius: 7,
-            background: 'rgba(120,113,108,0.08)', border: '1px solid rgba(60,50,40,0.10)',
-          }}>
-            <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#a8a29e', flexShrink: 0 }} />
-            <span style={{ fontSize: 11, fontWeight: 500, color: '#78716c', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>3B görünümde yön oku seç</span>
+          <div style={dockStatus()}>
+                <span style={dockDot('#a8a29e')} />
+                <span style={dockStatusText()}>3B görünümde yön oku seç</span>
           </div>
         );
       }
       return (
         <>
-          <span style={{ fontSize: 10, fontWeight: 800, fontFamily: 'monospace', color: axisColors[panelMoveAxis!] || '#44403c', padding: '2px 8px', borderRadius: 5, background: 'rgba(120,113,108,0.10)', border: '1px solid rgba(60,50,40,0.12)' }}>
+          <span style={dockAxisTag(axisColors[panelMoveAxis!] || '#44403c')}>
             {panelMoveAxis!.toUpperCase()}
           </span>
           <input
@@ -1467,40 +1474,22 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
               else { setPanelMoveValue(p); setMoveValueStr(String(p)); }
             }}
             onKeyDown={e => { if (e.key === 'Enter') onApply(); if (e.key === 'Escape') { setPanelMoveAxis(null); setPanelMoveMode(false); } }}
-            style={{
-              flex: 1, minWidth: 0, height: 28, textAlign: 'center', fontFamily: 'monospace', fontSize: 13, fontWeight: 600,
-              color: '#1c1917', background: 'linear-gradient(180deg,#fff,#faf8f3)', border: '1px solid rgba(60,50,40,0.16)',
-              borderRadius: 7, outline: 'none', boxShadow: 'inset 0 1px 2px rgba(40,30,20,0.06)',
-            }}
+            style={DOCK_INPUT}
           />
         </>
       );
     })();
 
     return (
-      <div style={{
-        position: 'absolute', left: 8, right: 8, bottom: 8, zIndex: 5, borderRadius: 11,
-        background: 'linear-gradient(180deg,rgba(250,248,244,0.90),rgba(239,235,227,0.94))',
-        backdropFilter: 'blur(16px) saturate(150%)', WebkitBackdropFilter: 'blur(16px) saturate(150%)',
-        border: '1px solid rgba(60,50,40,0.13)',
-        boxShadow: '0 10px 24px -12px rgba(40,30,20,0.30),0 0 0 0.5px rgba(60,50,40,0.05),inset 0 1px 0 rgba(255,255,255,0.92)',
-        display: 'flex', flexDirection: 'column', overflow: 'hidden',
-        fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif",
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 9px' }}>
+      <div style={DOCK_SHELL}>
+        <DockModeBar
+          modes={dockModes(['dyn','fixed','ref'], { dyn: { sub: 'Göreli' }, fixed: { sub: 'Sabit', title: 'Fixed — sabit konum' }, ref: { sub: 'Noktaya' } })}
+          active={panelMoveValueMode}
+          onPick={k => { const m = k as 'dyn'|'fixed'|'ref'; setPanelMoveValueMode(m); if (m !== 'ref') { setPanelMoveRefSourceVertex(null); setPanelMoveRefTargetPanelId(null); setPanelMoveRefTargetVertex(null); } if (m === 'ref') { setPanelMoveAxis(null); } }}
+        />
+        <div style={DOCK_ROW}>
           {mainContent}
-          <div style={{ display: 'flex', width: isRefMode ? 120 : 86, flexShrink: 0, borderRadius: 7, overflow: 'hidden', border: '1px solid rgba(60,50,40,0.16)' }}>
-            {(['dyn','fixed','ref'] as const).map(m => (
-              <button key={m} onClick={() => { setPanelMoveValueMode(m); if (m !== 'ref') { setPanelMoveRefSourceVertex(null); setPanelMoveRefTargetPanelId(null); setPanelMoveRefTargetVertex(null); } if (m === 'ref') { setPanelMoveAxis(null); } }} style={segMode(m)}>{m === 'dyn' ? 'Dyn' : m === 'fixed' ? 'Fixed' : 'Ref'}</button>
-            ))}
-          </div>
-          <button onClick={onApply} title="Uygula" style={{
-            flexShrink: 0, width: 32, height: 28, borderRadius: 7, border: 'none', cursor: canApply ? 'pointer' : 'not-allowed', outline: 'none',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            background: canApply ? 'linear-gradient(180deg,#5b5346,#44403c)' : 'rgba(120,113,108,0.30)', color: '#fff',
-            boxShadow: canApply ? '0 1px 2px rgba(40,30,20,0.25),inset 0 1px 0 rgba(255,255,255,0.18)' : 'none',
-            opacity: canApply ? 1 : 0.5,
-          }}><Check size={15} strokeWidth={2.5} /></button>
+          <button onClick={onApply} title="Uygula" style={dockApplyBtn(!!canApply)}><Check size={14} strokeWidth={2.4} /></button>
           {exitBtn}
         </div>
       </div>
@@ -1525,18 +1514,6 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     // tonu) burada "hiç seçilmemiş" gibi okunuyordu — ref moduna geçildiği
     // anlaşılmıyordu. Aktif düğme, uygulamanın kendi "açık araç" dili olan koyu
     // taş dolguya çekildi (panel satırındaki etkin Taşı/Döndür düğmeleriyle aynı).
-    const segRotMode = (mode: 'dyn'|'ref'): React.CSSProperties => {
-      const on = panelRotateValueMode === mode;
-      return {
-        flex: 1, minWidth: 0, height: 28, fontSize: 10, fontWeight: 700, letterSpacing: '0.03em',
-        border: 'none', outline: 'none', cursor: 'pointer',
-        borderLeft: mode === 'dyn' ? 'none' : '1px solid rgba(60,50,40,0.10)',
-        background: on ? 'linear-gradient(180deg,#5b5346,#44403c)' : 'rgba(255,255,255,0.45)',
-        color: on ? '#fff' : '#78716c',
-        boxShadow: on ? '0 1px 2px rgba(40,30,20,0.25),inset 0 1px 0 rgba(255,255,255,0.18)' : 'none',
-        transition: 'all 0.12s',
-      };
-    };
 
     const pickMode = (m: 'dyn' | 'ref') => {
       console.log('[YAGO][DÖN-MOD] mod seçildi:', m);
@@ -1544,21 +1521,17 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       setRotateValueStr('0');
     };
 
-    const modeSeg = (
-      <div style={{ display: 'flex', width: 84, flexShrink: 0, borderRadius: 7, overflow: 'hidden', border: '1px solid rgba(60,50,40,0.16)' }}>
-        {(['dyn','ref'] as const).map(m => (
-          <button key={m} onClick={e => { stop(e); pickMode(m); }} style={segRotMode(m)}>{m === 'dyn' ? 'Dyn' : 'Ref'}</button>
-        ))}
-      </div>
+    const rotModes = dockModes(['dyn','ref'], {
+      dyn: { sub: 'Açı gir', title: 'Açı gir: dönme noktası → eksen → derece' },
+      ref: { sub: 'Referansa dön', title: 'Referansa göre dön: pivot → nişan → eksen → referans yüz → sağ tık' },
+    });
+    const modeBar = (trailing?: React.ReactNode) => (
+      <DockModeBar modes={rotModes} active={panelRotateValueMode} onPick={k => pickMode(k as 'dyn' | 'ref')} trailing={trailing} />
     );
 
     const exitBtn = (
       <button onClick={e => { stop(e); setPanelRotateAxis(null); setPanelRotatePivot(null); setPanelRotatePivotType(null); setPanelRotateMode(false); if (isRotRefMode) setSelectedPanelRow(null); }}
-        title="Çıkış" style={{
-          flexShrink: 0, width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
-          borderRadius: 7, border: '1px solid rgba(60,50,40,0.12)', cursor: 'pointer', outline: 'none',
-          background: 'rgba(255,255,255,0.55)', color: '#78716c', transition: 'all 0.12s',
-        }}><X size={13} /></button>
+        title="Çıkış" style={DOCK_EXIT_BTN} className="hover:!bg-[#f3efe8] hover:!text-stone-600"><X size={13} strokeWidth={2} /></button>
     );
 
     const onApply = async () => {
@@ -1598,33 +1571,10 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     // akış başlamaz. (Goker: "önce hiç nokta çıkmadan mod seçimi olsun, ona
     // göre adımları takip edeyim.")
     if (panelRotateValueMode === null) {
-      const bigMode: React.CSSProperties = {
-        flex: 1, minWidth: 0, height: 28, borderRadius: 7, fontSize: 11, fontWeight: 700, letterSpacing: '0.02em',
-        border: '1px solid rgba(60,50,40,0.16)', outline: 'none', cursor: 'pointer',
-        background: 'linear-gradient(180deg,#fff,#f3efe8)', color: '#44403c',
-        boxShadow: '0 1px 2px rgba(40,30,20,0.10),inset 0 1px 0 rgba(255,255,255,0.9)',
-        transition: 'all 0.12s', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-      };
       return (
-        <div style={{
-          position: 'absolute', left: 8, right: 8, bottom: 8, zIndex: 5, borderRadius: 11,
-          background: 'linear-gradient(180deg,rgba(250,248,244,0.90),rgba(239,235,227,0.94))',
-          backdropFilter: 'blur(16px) saturate(150%)', WebkitBackdropFilter: 'blur(16px) saturate(150%)',
-          border: '1px solid rgba(60,50,40,0.13)',
-          boxShadow: '0 10px 24px -12px rgba(40,30,20,0.30),0 0 0 0.5px rgba(60,50,40,0.05),inset 0 1px 0 rgba(255,255,255,0.92)',
-          display: 'flex', flexDirection: 'column', overflow: 'hidden',
-          fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif",
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 9px' }}>
-            <span style={{ flexShrink: 0, fontSize: 10, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: '#a8a29e' }}>Mod</span>
-            <button onClick={e => { stop(e); pickMode('dyn'); }}
-              title="Açı gir: dönme noktası → eksen → derece"
-              style={bigMode}>Dyn · açı</button>
-            <button onClick={e => { stop(e); pickMode('ref'); }}
-              title="Referansa göre dön: pivot → nişan → eksen → referans panel + nokta → sağ tık"
-              style={bigMode}>Ref · referans</button>
-            {exitBtn}
-          </div>
+        <div style={DOCK_SHELL}>
+          {modeBar(<div style={{ display: 'flex', alignItems: 'center' }}>{exitBtn}</div>)}
+          <div style={{ padding: '5px 10px 7px', fontSize: 10.5, fontWeight: 500, color: '#a8a29e', fontFamily: DOCK_FONT }}>Döndürme modunu seç</div>
         </div>
       );
     }
@@ -1647,37 +1597,19 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         : step === 4 ? 'Başka bir panelin yüzünü tıkla (aynı yere tekrar tıkla → arkadaki yüz). Nişan noktası bu yüze değene kadar dönülür.'
         : 'Sahnede herhangi bir yere sağ tıkla — bağ kalıcı kurulur, referans panelin kenarı eğime göre pahlanır';
       return (
-        <div style={{
-          position: 'absolute', left: 8, right: 8, bottom: 8, zIndex: 5, borderRadius: 11,
-          background: 'linear-gradient(180deg,rgba(250,248,244,0.90),rgba(239,235,227,0.94))',
-          backdropFilter: 'blur(16px) saturate(150%)', WebkitBackdropFilter: 'blur(16px) saturate(150%)',
-          border: '1px solid rgba(60,50,40,0.13)',
-          boxShadow: '0 10px 24px -12px rgba(40,30,20,0.30),0 0 0 0.5px rgba(60,50,40,0.05),inset 0 1px 0 rgba(255,255,255,0.92)',
-          display: 'flex', flexDirection: 'column', overflow: 'hidden',
-          fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif",
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 9px' }}>
-            <div title={hint} style={{
-              flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 6, height: 28, padding: '0 10px', borderRadius: 7,
-              background: rotRefReady ? 'rgba(34,197,94,0.10)' : 'rgba(120,113,108,0.08)',
-              border: rotRefReady ? '1px solid rgba(22,163,74,0.30)' : '1px solid rgba(60,50,40,0.10)',
-            }}>
-              <span style={{ width: 5, height: 5, borderRadius: '50%', background: rotRefReady ? '#16a34a' : '#a8a29e', flexShrink: 0 }} />
-              <span style={{ fontSize: 11, fontWeight: 500, color: rotRefReady ? '#15803d' : '#78716c', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
+        <div style={DOCK_SHELL}>
+          {modeBar()}
+          <div style={DOCK_ROW}>
+            <div title={hint} style={dockStatus(rotRefReady)}>
+              <span style={dockDot(rotRefReady ? '#16a34a' : '#a8a29e')} />
+              <span style={dockStatusText(rotRefReady)}>{label}</span>
               {hasAxis && (
-                <span style={{ marginLeft: 'auto', fontSize: 10, fontWeight: 800, fontFamily: 'monospace', color: axisColors[panelRotateAxis!] || '#44403c' }}>
+                <span style={{ marginLeft: 'auto', fontSize: 10.5, fontWeight: 700, color: axisColors[panelRotateAxis!] || '#44403c' }}>
                   {panelRotateAxis!.toUpperCase()}
                 </span>
               )}
             </div>
-            {modeSeg}
-            <button onClick={onApply} title="Uygula" style={{
-              flexShrink: 0, width: 32, height: 28, borderRadius: 7, border: 'none', cursor: rotRefReady ? 'pointer' : 'not-allowed', outline: 'none',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              background: rotRefReady ? 'linear-gradient(180deg,#5b5346,#44403c)' : 'rgba(120,113,108,0.30)', color: '#fff',
-              boxShadow: rotRefReady ? '0 1px 2px rgba(40,30,20,0.25),inset 0 1px 0 rgba(255,255,255,0.18)' : 'none',
-              opacity: rotRefReady ? 1 : 0.5,
-            }}><Check size={15} strokeWidth={2.5} /></button>
+            <button onClick={onApply} title="Uygula" style={dockApplyBtn(!!rotRefReady)}><Check size={14} strokeWidth={2.4} /></button>
             {exitBtn}
           </div>
         </div>
@@ -1685,19 +1617,12 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     }
 
     return (
-      <div style={{
-        position: 'absolute', left: 8, right: 8, bottom: 8, zIndex: 5, borderRadius: 11,
-        background: 'linear-gradient(180deg,rgba(250,248,244,0.90),rgba(239,235,227,0.94))',
-        backdropFilter: 'blur(16px) saturate(150%)', WebkitBackdropFilter: 'blur(16px) saturate(150%)',
-        border: '1px solid rgba(60,50,40,0.13)',
-        boxShadow: '0 10px 24px -12px rgba(40,30,20,0.30),0 0 0 0.5px rgba(60,50,40,0.05),inset 0 1px 0 rgba(255,255,255,0.92)',
-        display: 'flex', flexDirection: 'column', overflow: 'hidden',
-        fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif",
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 9px' }}>
+      <div style={DOCK_SHELL}>
+        {modeBar()}
+        <div style={DOCK_ROW}>
           {hasAxis && hasPivot ? (
             <>
-              <span style={{ fontSize: 10, fontWeight: 800, fontFamily: 'monospace', color: axisColors[panelRotateAxis!] || '#44403c', padding: '2px 8px', borderRadius: 5, background: 'rgba(120,113,108,0.10)', border: '1px solid rgba(60,50,40,0.12)' }}>
+              <span style={dockAxisTag(axisColors[panelRotateAxis!] || '#44403c')}>
                 {panelRotateAxis!.toUpperCase()}
               </span>
               <input
@@ -1714,44 +1639,26 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                   else { setPanelRotateValue(p); setRotateValueStr(String(p)); }
                 }}
                 onKeyDown={e => { if (e.key === 'Enter') onApply(); if (e.key === 'Escape') { setPanelRotateAxis(null); setPanelRotateMode(false); } }}
-                style={{
-                  flex: 1, minWidth: 0, height: 28, textAlign: 'center', fontFamily: 'monospace', fontSize: 13, fontWeight: 600,
-                  color: '#1c1917', background: 'linear-gradient(180deg,#fff,#faf8f3)', border: '1px solid rgba(60,50,40,0.16)',
-                  borderRadius: 7, outline: 'none', boxShadow: 'inset 0 1px 2px rgba(40,30,20,0.06)',
-                }}
+                style={DOCK_INPUT}
               />
-              <span style={{ fontSize: 10, fontWeight: 600, color: '#78716c' }}>deg</span>
-              {modeSeg}
-              <button onClick={onApply} title="Uygula" style={{
-                flexShrink: 0, width: 32, height: 28, borderRadius: 7, border: 'none', cursor: 'pointer', outline: 'none',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                background: 'linear-gradient(180deg,#5b5346,#44403c)', color: '#fff',
-                boxShadow: '0 1px 2px rgba(40,30,20,0.25),inset 0 1px 0 rgba(255,255,255,0.18)',
-              }}><Check size={15} strokeWidth={2.5} /></button>
+              <span style={{ fontSize: 12, fontWeight: 500, color: '#a8a29e', marginLeft: -2 }}>°</span>
+              <button onClick={onApply} title="Uygula" style={dockApplyBtn(true)}><Check size={14} strokeWidth={2.4} /></button>
               {exitBtn}
             </>
           ) : hasPivot ? (
             <>
-              <div style={{
-                flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 7, height: 28, padding: '0 10px', borderRadius: 7,
-                background: 'rgba(120,113,108,0.08)', border: '1px solid rgba(60,50,40,0.10)',
-              }}>
-                <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#f59e0b', flexShrink: 0 }} />
-                <span style={{ fontSize: 11, fontWeight: 500, color: '#78716c', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>Ekseni sec (X/Y/Z halkasi)</span>
+              <div style={dockStatus()}>
+                <span style={dockDot('#f59e0b')} />
+                <span style={dockStatusText()}>Ekseni seç (X/Y/Z halkası)</span>
               </div>
-              {modeSeg}
               {exitBtn}
             </>
           ) : (
             <>
-              <div style={{
-                flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 7, height: 28, padding: '0 10px', borderRadius: 7,
-                background: 'rgba(120,113,108,0.08)', border: '1px solid rgba(60,50,40,0.10)',
-              }}>
-                <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#06b6d4', flexShrink: 0 }} />
-                <span style={{ fontSize: 11, fontWeight: 500, color: '#78716c', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>Donme noktasi sec (koseler/merkez)</span>
+              <div style={dockStatus()}>
+                <span style={dockDot('#06b6d4')} />
+                <span style={dockStatusText()}>Dönme noktası seç (köşeler/merkez)</span>
               </div>
-              {modeSeg}
               {exitBtn}
             </>
           )}
@@ -1769,9 +1676,9 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
 
     const axisColors: Record<string, string> = { 'x+': '#dc2626', 'x-': '#b91c1c', 'y+': '#16a34a', 'y-': '#15803d', 'z+': '#2563eb', 'z-': '#1d4ed8', x: '#dc2626', y: '#16a34a', z: '#2563eb' };
     const typeBadge: Record<string, { label: string; bg: string; color: string }> = {
-      move: { label: 'Tasi', bg: 'rgba(34,197,94,0.12)', color: '#15803d' },
-      rotate: { label: 'Don', bg: 'rgba(59,130,246,0.12)', color: '#1d4ed8' },
-      extrude: { label: 'Ext', bg: 'rgba(245,158,11,0.12)', color: '#b45309' },
+      move: { label: 'Taşı', bg: 'rgba(22,163,74,0.08)', color: '#15803d' },
+      rotate: { label: 'Dön', bg: 'rgba(37,99,235,0.08)', color: '#1d4ed8' },
+      extrude: { label: 'Ext', bg: 'rgba(217,119,6,0.09)', color: '#b45309' },
     };
 
     const saveTransformStep = async (pid: string | null, stepId: string, val: number) => {
@@ -1801,15 +1708,14 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     allSteps.sort((a, b) => a.timestamp - b.timestamp);
 
     return (
-      <div className="shrink-0 border-t border-stone-100 bg-[#faf8f4]" style={{ fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif" }}>
-        <div className="px-3 pt-2 pb-1">
-          <div className="flex items-center gap-2 mb-1.5">
-            <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#a8a29e' }}>Islem adimlari</span>
-            <div className="flex-1 h-px bg-stone-200/70" />
-          </div>
+      <div className="shrink-0 mt-2" style={{ fontFamily: DOCK_FONT }}>
+        <div className="px-1 pb-1.5 flex items-center gap-2">
+          <span style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#b5ada3' }}>İşlem adımları</span>
+          <span className="text-[10px] font-medium tabular-nums text-stone-300">{allSteps.length}</span>
+          <div className="flex-1 h-px bg-[#efeae2]" />
         </div>
-        <div className="overflow-y-auto px-3 pb-2.5" style={{ maxHeight: 200 }}>
-          <div className="flex flex-col gap-1">
+        <div className="overflow-y-auto" style={{ maxHeight: 200 }}>
+          <div className="flex flex-col gap-[2px] p-px">
             {allSteps.map((s, idx) => {
               const badge = typeBadge[s.stepType] || typeBadge.move;
               const isEditingThis = (s.stepType === 'extrude' && editingStepId === s.id)
@@ -1820,10 +1726,10 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                 : editingRotateStepValue;
 
               return (
-                <div key={s.id} className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-white ring-1 ring-stone-200/80 shadow-[0_1px_2px_rgba(68,64,60,0.05)]">
-                  <span className="shrink-0 text-[10px] font-bold text-stone-400 tabular-nums w-4 text-center">{idx + 1}</span>
-                  <span className="shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-sm" style={{ background: badge.bg, color: badge.color }}>{badge.label}</span>
-                  <span className="shrink-0 min-w-[22px] text-center text-[10px] font-extrabold font-mono px-1 py-0.5 rounded-md" style={{ color: axisColors[s.axis] || '#57534e', background: 'rgba(68,64,60,0.06)' }}>{s.axis.toUpperCase()}</span>
+                <div key={s.id} className="group/step flex items-center gap-1.5 pl-1.5 pr-1 h-[30px] rounded-[9px] bg-[#fdfcfa] ring-1 ring-[#ece7df] shadow-[0_1px_0_rgba(68,64,60,0.025)] hover:bg-white hover:ring-[#e2dbd0] transition-colors duration-150">
+                  <span className="shrink-0 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-[#f3efe8] text-[10px] font-semibold text-stone-500 tabular-nums leading-none">{idx + 1}</span>
+                  <span className="shrink-0 text-[10px] font-semibold px-1.5 h-[18px] leading-[18px] rounded-[5px]" style={{ background: badge.bg, color: badge.color }}>{badge.label}</span>
+                  <span className="shrink-0 min-w-[24px] text-center text-[10.5px] font-bold px-1 h-[18px] leading-[18px] rounded-[5px] bg-[#f5f2ec]" style={{ color: axisColors[s.axis] || '#57534e' }}>{s.axis.toUpperCase()}</span>
 
                   {isEditingThis ? (
                     <>
@@ -1842,7 +1748,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                           if (s.stepType === 'extrude') saveStep(activePanelId, s.id, parsed);
                           else saveTransformStep(activePanelId, s.id, parsed);
                         }}
-                        className="flex-1 min-w-0 h-6 text-center font-mono text-xs font-semibold text-stone-800 bg-white border border-stone-300 rounded-md outline-none focus:border-orange-400" />
+                        className="flex-1 min-w-0 h-[22px] text-center font-mono text-[12px] font-medium tabular-nums text-stone-800 bg-white border border-[#e6e0d6] rounded-[6px] outline-none focus:border-orange-400/60 focus:shadow-[0_0_0_2px_rgba(249,115,22,0.10)]" />
                       <button onClick={() => {
                         const parsed = parseFloat(editValue as string);
                         if (isNaN(parsed)) return;
@@ -1853,14 +1759,14 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                     </>
                   ) : (
                     <>
-                      <span className="flex-1 font-mono text-xs font-bold text-stone-800 tabular-nums">{s.value}{s.stepType === 'rotate' ? '\u00B0' : ''}</span>
+                      <span className="flex-1 pl-1 font-mono text-[12px] font-medium text-stone-700 tabular-nums">{s.value}{s.stepType === 'rotate' ? '\u00B0' : ''}</span>
                       {s.stepType === 'extrude' && s.isFixed !== undefined && (
-                        <span className="shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-sm bg-stone-100 text-stone-500">{(s.original as any)?.refShapeId ? 'R' : s.isFixed ? 'F' : 'D'}</span>
+                        <span className="shrink-0 text-[9.5px] font-semibold px-1.5 h-[18px] leading-[18px] rounded-[5px] bg-[#f3efe8] text-stone-500">{(s.original as any)?.refShapeId ? 'R' : s.isFixed ? 'F' : 'D'}</span>
                       )}
                       {/* Referans bağlı adım (taşıma/dönüş) — açı/mesafe referanstan
                           çözülür, elle düzenlenemez: R olarak işaretlenir. */}
                       {s.stepType !== 'extrude' && (s.original as any)?.refTargetPanelId && (
-                        <span className="shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-sm bg-stone-100 text-stone-500">R</span>
+                        <span className="shrink-0 text-[9.5px] font-semibold px-1.5 h-[18px] leading-[18px] rounded-[5px] bg-[#f3efe8] text-stone-500">R</span>
                       )}
                       {!(s.stepType === 'extrude' && (s.original as any)?.refShapeId)
                         && !(s.stepType === 'rotate' && (s.original as any)?.refTargetPanelId) && (
@@ -1868,7 +1774,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                           if (s.stepType === 'extrude') { setEditingStepId(s.id); setEditingStepValue(String(s.value)); }
                           else if (s.stepType === 'move') { setEditingMoveStepId(s.id); setEditingMoveStepValue(String(s.value)); }
                           else { setEditingRotateStepId(s.id); setEditingRotateStepValue(String(s.value)); }
-                        }} style={iconBtn('#78716c')}><Pencil size={10} /></button>
+                        }} style={iconBtn('#a8a29e')} className="hover:!bg-[#f3efe8] hover:!text-stone-700"><Pencil size={10.5} strokeWidth={1.9} /></button>
                       )}
                       <button onClick={async () => {
                         const ps = shapes.find(x => x.id === activePanelId); if (!ps) return;
@@ -1879,7 +1785,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                           const { deleteTransformStep } = await import('./PanelTransformService');
                           await deleteTransformStep(ps, s.id, shapes, updateShape);
                         }
-                      }} style={iconBtn('#ef4444')}><Trash2 size={10} /></button>
+                      }} style={iconBtn('#a8a29e')} className="opacity-0 group-hover/step:opacity-100 hover:!bg-red-50 hover:!text-red-500 transition-opacity"><Trash2 size={10.5} strokeWidth={1.9} /></button>
                     </>
                   )}
                 </div>
@@ -1891,53 +1797,72 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     );
   })();
 
-  // ── Shared preview pane ────────────────────────────────────────────────
-  const previewPane = isPreviewMode ? (
-    <div className="flex flex-col h-full min-h-0 overflow-hidden">
-      <div className="px-3 py-2 border-b border-stone-100 flex items-center gap-2 shrink-0">
-        <div className="flex items-center gap-1.5">{panelToolbar}</div>
-        <button
-          onClick={() => setSelectedPanelRow(null)}
-          className="ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold text-stone-500 hover:text-stone-800 hover:bg-stone-100 transition-all"
-        >
-          Liste <ChevronRight size={12}/>
-        </button>
-      </div>
-
-      {selectedFaceRow && (
-        <div className="px-2 pt-2 pb-1 shrink-0">
-          {selectedFaceRow}
+  // ── AÇILAN SATIR GÖVDESİ (eski ayrı "önizleme ekranı"nın yerine) ────────
+  // Satırın hemen altında, aynı kartın içinde aşağı doğru açılır: araç
+  // düğmeleri (Extrude / Taşı / Döndür) → panel önizlemesi (+ aktif şerit) →
+  // işlem adımları. Tüm mantık öncekiyle aynı; yalnız yerleşim değişti.
+  const renderExpandedBody = (
+    vf: any, vp: any,
+    st: { isExtrudingThis: boolean; isMovingThis: boolean; isRotatingThis: boolean },
+  ) => {
+    const toolBtn = (label: string, Icon: LucideIcon, active: boolean, onClick: () => void, title: string) => (
+      <button type="button" disabled={!vf.hasPanel} title={title}
+        onClick={e => { stop(e); if (vp) onClick(); }}
+        className={`h-[26px] min-w-0 flex items-center justify-center gap-1.5 rounded-[7px] text-[11px] font-semibold tracking-[0.01em] transition-[background-color,color,box-shadow] duration-150
+          ${!vf.hasPanel ? 'bg-white ring-1 ring-[#efeae2] text-stone-300 cursor-not-allowed'
+            : active ? 'bg-[#44403c] text-white ring-1 ring-[#44403c] shadow-[0_1px_3px_rgba(40,30,20,0.22)]'
+            : 'bg-white ring-1 ring-[#e6e0d6] text-stone-600 shadow-[0_1px_0_rgba(40,30,20,0.03)] hover:bg-[#faf7f2] hover:ring-[#dcd4c8] hover:text-stone-800'}`}>
+        <Icon size={12} strokeWidth={2} />{label}
+      </button>
+    );
+    return (
+      <div className="yago-expand px-2 pt-2 pb-2" style={{ borderTop: '1px solid #f3e6d6' }} onClick={stop}>
+        {/* Ayraç inline: bone-skin'in genel .border-t "bölüm ayracı" kuralı (margin + soluk çizgi) burada istenmiyor. */}
+        <div className="grid grid-cols-3 gap-1 mb-1.5">
+          {toolBtn('Extrude', MoveVertical, st.isExtrudingThis, () => {
+            if (st.isExtrudingThis) setFaceExtrudeMode(false);
+            else { setFaceExtrudeTargetPanelId(vp.id); setFaceExtrudeMode(true); if (panelMoveMode) setPanelMoveMode(false); }
+          }, 'Yüz çıkıntısı (extrude)')}
+          {toolBtn('Taşı', Move, st.isMovingThis, () => {
+            if (st.isMovingThis) setPanelMoveMode(false);
+            else { setPanelMoveTargetPanelId(vp.id); setPanelMoveMode(true); if (faceExtrudeMode) setFaceExtrudeMode(false); }
+          }, 'Taşı (move)')}
+          {toolBtn('Döndür', RotateCw, st.isRotatingThis, () => {
+            if (st.isRotatingThis) setPanelRotateMode(false);
+            else { setPanelRotateTargetPanelId(vp.id); setPanelRotateMode(true); if (faceExtrudeMode) setFaceExtrudeMode(false); if (panelMoveMode) setPanelMoveMode(false); }
+          }, 'Döndür (rotation)')}
         </div>
-      )}
 
-      <div className="shrink-0 mx-2 rounded-xl bg-gradient-to-b from-[#f6f2ec] to-[#e7e1d6] border border-stone-200/80 overflow-hidden relative" style={{ height: 360 }}>
-        {activeDims && activePanel
-          ? <PanelPreview2D key={activePanel.id} dims={activeDims} shape={activePanel} arrowRotated={!!activePanel.parameters?.arrowRotated}/>
-          : (
-            <div className="absolute inset-0 flex items-center justify-center">
-              <span className="text-xs text-stone-400">Panel yok</span>
-            </div>
-          )
-        }
+        <div className="rounded-[10px] ring-1 ring-[#e9e4dc] overflow-hidden relative" style={{ height: 410, background: PREVIEW_BG }}>
+          {activeDims && activePanel
+            ? <PanelPreview2D key={activePanel.id} dims={activeDims} shape={activePanel} arrowRotated={!!activePanel.parameters?.arrowRotated}/>
+            : (
+              <div className="absolute inset-0 flex items-center justify-center">
+                <span className="text-xs text-stone-400">Panel yok</span>
+              </div>
+            )
+          }
+        </div>
         {extrudeDock}
         {moveDock}
         {rotateDock}
-      </div>
 
-      {stepsPanel}
-    </div>
-  ) : null;
+        {stepsPanel}
+      </div>
+    );
+  };
 
   // ── List pane ──────────────────────────────────────────────────────────
   const listPane = (
     <div className="flex flex-col h-full min-h-0">
+      <style>{`@keyframes yagoExpand{from{opacity:0;clip-path:inset(0 0 100% 0);transform:translateY(-4px)}to{opacity:1;clip-path:inset(0 0 0 0);transform:none}}.yago-expand{animation:yagoExpand 260ms cubic-bezier(.2,.7,.2,1) both}`}</style>
       <div className="px-3 py-2 border-b border-stone-100 flex items-center justify-between shrink-0">
         {panelToolbar}
       </div>
       {selectedShape ? (
         <div className="flex-1 min-h-0 overflow-y-auto">
-          <div className="px-2 pt-2 pb-2 space-y-1">
-            {faceListSection}
+          <div className="px-1.5 pt-1.5 pb-2 space-y-[2px]">
+            {renderFaceList()}
           </div>
         </div>
       ) : (
@@ -1950,7 +1875,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
 
   if (embedded) return (
     <div className="flex flex-col h-full min-h-0">
-      {isPreviewMode ? previewPane : listPane}
+      {listPane}
     </div>
   );
 
@@ -1960,15 +1885,9 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         <div className="flex items-center gap-2"><GripVertical size={13} className="text-stone-300"/><span className="text-xs font-semibold text-stone-600 tracking-wide uppercase">Panel Editor</span></div>
         <div className="flex items-center gap-1.5">{panelToolbar}<button onClick={onClose} className="p-1 hover:bg-stone-200 rounded-md transition-colors"><X size={13} className="text-stone-400"/></button></div>
       </div>
-      {isPreviewMode ? (
-        <div style={{ height: 'min(86vh, 820px)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          {previewPane}
-        </div>
-      ) : (
-        <div style={{ maxHeight: 'calc(100vh - 200px)', overflowY: 'auto' }}>
-          <div className="p-2 space-y-1">{faceListSection}</div>
-        </div>
-      )}
+      <div style={{ maxHeight: 'calc(100vh - 200px)', overflowY: 'auto' }}>
+        <div className="p-1.5 space-y-[2px]">{renderFaceList()}</div>
+      </div>
     </div>
   );
 }
