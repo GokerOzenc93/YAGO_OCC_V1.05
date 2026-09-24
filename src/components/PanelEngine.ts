@@ -703,7 +703,12 @@ async function cutByRotatedPressers(
   })();
   let out = rp;
   for (const r of siblings) {
-    if (r.id === panel.id || orderOf(r) >= myOrder || !panelHasRotation(r)) continue;
+    if (r.id === panel.id || orderOf(r) >= myOrder) continue;
+    // Basan kardeş dönmüş DEĞİLSE ama VF'si eğikse (vertex düzenlemesi) de keser.
+    if (!panelHasRotation(r)) {
+      const rVf0 = vfs.find(f => f.id === (r.parameters as any)?.virtualFaceId);
+      if (!vfIsTilted(rVf0)) continue;
+    }
     // REF DÖNÜŞ HEDEFİ MUAF: r bu paneli referans alarak dönüyorsa panel r'nin
     // eğik düzlemiyle KISALTILMAZ (ölçü sabit); şekil uyumu r üretildikten
     // sonra dış yüzeye göre pahlama ile verilir (shapeRefRotateTargets).
@@ -925,14 +930,78 @@ async function shapeRefRotateTargets(
   }
 }
 
+/** VF normali dünya eksenlerinden birine paralel değilse yüz eğiktir (vertex düzenlemesi). */
+function vfIsTilted(vf: VirtualFace | undefined | null): boolean {
+  if (!vf?.normal) return false;
+  const n = new THREE.Vector3(...(vf.normal as [number, number, number])).normalize();
+  return Math.max(Math.abs(n.x), Math.abs(n.y), Math.abs(n.z)) < 0.999;
+}
+
+// ── ETKİN GÖVDE KATISI (vertex düzenlemeli gövde) ────────────────────────────
+// Store'daki replicadShape TABAN kutudur; gövde vertex düzenlemesi taşıyorsa
+// (yüz eğik / köşe taşınmış) dönmüş-eğik paneli o kutuyla kesmek yanlış
+// düzlemde biçer (sol üst köşe 700'e çıkmışken kutu 600'de keser). Katı,
+// düzenlenmiş mesh'in düzlemsel yüz gruplarından YARIM-UZAY kesişimiyle kurulur:
+// büyük kutudan her yüzün dış yarım-uzayı çıkarılır. Dışbükey gövdeler için
+// birebir; içbükey (içeri itilmiş köşe) gövdede dışbükey örtüdür (log'lanır).
+// Taban geometri × düzenleme anahtarı başına önbellek.
+const _bodySolidCache = new WeakMap<object, { key: string; solid: any }>();
+async function effectiveBodySolid(parent: Shape): Promise<any | null> {
+  const mods = (parent as any).vertexModifications;
+  if (!Array.isArray(mods) || mods.length === 0) return parent.replicadShape ? parent.replicadShape.clone() : null;
+  const { effectiveBodyGeometry, vertexModsKey } = await import('./VertexEditorService');
+  const key = vertexModsKey(mods);
+  const cached = parent.geometry ? _bodySolidCache.get(parent.geometry) : undefined;
+  if (cached && cached.key === key) return cached.solid.clone();
+  const { createPanelFromVirtualFace } = await import('./ReplicadService');
+  const geo = effectiveBodyGeometry(parent);
+  const faces = extractFacesFromGeometry(geo);
+  const groups = groupCoplanarFaces(faces);
+  geo.computeBoundingBox();
+  const bb = geo.boundingBox!;
+  const center = new THREE.Vector3(); bb.getCenter(center);
+  const size = new THREE.Vector3(); bb.getSize(size);
+  const M = Math.max(size.x, size.y, size.z) * 2 + 200;
+  // Büyük kutu: merkezde, her yönde M/2
+  const big = await createPanelFromVirtualFace(
+    [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([a, b]) => [center.x + a * M / 2, center.y + M / 2, center.z + b * M / 2] as [number, number, number]),
+    [0, 1, 0], M, 0);
+  if (!big) return null;
+  let solid = big;
+  let cutN = 0;
+  for (const g of groups) {
+    const n = g.normal.clone().normalize();
+    // Yüz normali gövdeden DIŞA bakar (merkez → yüz yönü ile aynı işaret)
+    if (n.dot(new THREE.Vector3().subVectors(g.center, center)) < 0) n.negate();
+    const { u, v } = getFacePlaneAxes(n);
+    const H = M * 2;
+    const rect = [[-H, -H], [H, -H], [H, H], [-H, H]].map(([a, b]) => {
+      const w = g.center.clone().addScaledVector(u, a).addScaledVector(v, b);
+      return [w.x, w.y, w.z] as [number, number, number];
+    });
+    // Dış yarım-uzay: yüz düzleminden +n yönüne H kalınlık (createPanel −normal yönüne uzar → normal = −n verilir)
+    const outside = await createPanelFromVirtualFace(rect, [-n.x, -n.y, -n.z], H, 0);
+    if (!outside) continue;
+    try { solid = solid.cut(outside); cutN++; } catch (e) { console.warn('[YAGO][GÖVDE-KATI] yarım-uzay kesimi hatası:', (e as any)?.message || e); }
+  }
+  const sb = solid.boundingBox.bounds;
+  console.log('[YAGO][GÖVDE-KATI]', parent.id, 'düzenlenmiş gövde katısı kuruldu: yüzN=', groups.length, 'kesimN=', cutN,
+    'kutu=', sb.map((q: number[]) => q.map(x => x.toFixed(0)).join(',')).join('..'),
+    'mesh=', [bb.min, bb.max].map(q => [q.x, q.y, q.z].map(x => x.toFixed(0)).join(',')).join('..'),
+    '(içbükey gövdede dışbükey örtü)');
+  if (parent.geometry) _bodySolidCache.set(parent.geometry, { key, solid });
+  return solid.clone();
+}
+
 async function fitRotatedPanel(
   rp: any, panel: Shape, parent: Shape, siblings: Shape[], orderOf: (s: Shape) => number,
   refContacts: Map<string, RefContact> = new Map(),
 ): Promise<any> {
   let out = rp;
   // 1) Gövde ile kesişim: panel açıya göre duvara kadar uzar, dışarı taşmaz.
+  //    Vertex düzenlemeli gövdede katı, düzenlenmiş yüzlerden kurulur.
   try {
-    let body = parent.replicadShape ? parent.replicadShape.clone() : null;
+    let body = await effectiveBodySolid(parent);
     if (!body) {
       const { createReplicadBox } = await import('./ReplicadService');
       const pp: any = parent.parameters || {};
@@ -1250,7 +1319,14 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       // tam duvara kadar uzar, hacmin dışına taşmaz) ve kendisinden ÖNCE gelen
       // (basan) kardeşlerin gövdeleriyle KESİLİR (onların iç yüzüne açıyla
       // dayanır). Düz panellerde büyütme yok — davranış aynen korunur.
-      const isRotated = panelHasRotation(panel);
+      // VF-EĞİMLİ (vertex düzenlemesi) panel de dönmüş gibi sığdırılır: düzlem
+      // içinde büyütülür, gövdeyle kesilir → uçları küp sınırlarında açıyla biter.
+      const vfTilted = vfIsTilted(att.vf);
+      const isRotated = panelHasRotation(panel) || vfTilted;
+      if (vfTilted && !panelHasRotation(panel)) {
+        console.log('[YAGO][EĞİK-VF]', panel.id, 'VF eğik (vertex düzenlemesi) → dönmüş gibi sığdırılacak. n=',
+          att.vf.normal.map(n => n.toFixed(2)).join(','));
+      }
       const pp: any = parentFresh.parameters || {};
       const growAmount = isRotated
         ? Math.max(parseFloat(pp.width) || 0, parseFloat(pp.height) || 0, parseFloat(pp.depth) || 0, 600) * 1.5

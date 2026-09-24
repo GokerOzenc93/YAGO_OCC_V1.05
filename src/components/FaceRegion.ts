@@ -1384,8 +1384,59 @@ function rectilinearFreeRegion(
   return poly;
 }
 
-/** Panelin açısı sıfır olmayan bir DÖNÜŞ adımı var mı (damga/gerçek panel fark etmez). */
+/**
+ * VF-EĞİMLİ LEVHA: vertex düzenlemesiyle eğilmiş bir gövde yüzüne yerleşen panel.
+ * Dönüş adımı yoktur ama levhası eksen-hizalı değildir; bölge hesabında ve
+ * dönüş-kesiminde DÖNMÜŞ kardeş gibi ele alınmalıdır (uzak-teğet kırpma +
+ * yarım-uzay kesimi) — aksi halde yan panel eğik üstün altına düz kesilir ve
+ * kalınlığı boyunca içine girer / kama boşluğu bırakır (Goker: "paneller kübün
+ * sınırlarına göre açılı kırpılmıyor"). Tespit geometriden: en büyük yüz
+ * alanlı normal herhangi bir dünya eksenine paralel değilse levha eğiktir.
+ * Sonuç geometri başına önbelleklenir. Hem gerçek hem sentetik damga için çalışır.
+ */
+const _tiltCache = new WeakMap<object, boolean>();
+export function panelIsTiltedSlab(panel: any): boolean {
+  const geo = panel?.geometry;
+  if (!geo || typeof geo.getAttribute !== 'function') return false;
+  const hit = _tiltCache.get(geo);
+  if (hit !== undefined) return hit;
+  let tilted = false;
+  try {
+    const pos = geo.getAttribute('position') as THREE.BufferAttribute;
+    const idx = geo.getIndex();
+    const cnt = idx ? idx.count : pos.count;
+    const at = (k: number) => (idx ? idx.getX(k) : k);
+    // Normal başına alan toplamı (yön işareti kanonik) → en büyük yüz yönü
+    const bins = new Map<string, { n: THREE.Vector3; a: number }>();
+    const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), n = new THREE.Vector3();
+    for (let t = 0; t + 2 < cnt; t += 3) {
+      a.fromBufferAttribute(pos, at(t)); b.fromBufferAttribute(pos, at(t + 1)); c.fromBufferAttribute(pos, at(t + 2));
+      n.crossVectors(b.sub(a), c.sub(a));
+      const area = n.length() / 2;
+      if (area < 1e-6) continue;
+      n.divideScalar(area * 2);
+      if (n.x < 0 || (Math.abs(n.x) < 1e-6 && n.y < 0) || (Math.abs(n.x) < 1e-6 && Math.abs(n.y) < 1e-6 && n.z < 0)) n.negate();
+      const key = `${n.x.toFixed(2)},${n.y.toFixed(2)},${n.z.toFixed(2)}`;
+      const e = bins.get(key);
+      if (e) e.a += area; else bins.set(key, { n: n.clone(), a: area });
+    }
+    let best: { n: THREE.Vector3; a: number } | null = null;
+    bins.forEach(e => { if (!best || e.a > best.a) best = e; });
+    if (best) {
+      const bn = (best as { n: THREE.Vector3; a: number }).n;
+      const mx = Math.max(Math.abs(bn.x), Math.abs(bn.y), Math.abs(bn.z));
+      tilted = mx < 0.999;
+    }
+  } catch { tilted = false; }
+  _tiltCache.set(geo, tilted);
+  return tilted;
+}
+
+/** Panelin açısı sıfır olmayan bir DÖNÜŞ adımı var mı (damga/gerçek panel fark etmez).
+ *  VF-eğimli levhalar da (panelIsTiltedSlab) dönmüş sayılır — bölge hesabı aynı
+ *  uzak-teğet/yarım-uzay sözleşmesini uygular. */
 export function panelHasRotation(panel: any): boolean {
+  if (panelIsTiltedSlab(panel)) return true;
   const ops = panel?.__composedOps;
   if (Array.isArray(ops) && ops.some((o: any) => o?.kind === 'rotate' && Math.abs(o.angleRad || 0) > 1e-6)) return true;
   const p = panel?.parameters || {};

@@ -13,8 +13,7 @@ import {
   panelFootprintInParentLocal,
   projectTo2D,
   subtractPolygon,
-  type Point2D,
-} from './FaceRegion';
+  type Point2D, panelIsTiltedSlab } from './FaceRegion';
 import {
   extractFacesFromGeometry,
   groupCoplanarFaces,
@@ -732,7 +731,12 @@ export function recalculateVirtualFacesForShape(
     const t = p?.parameters?.transformSteps;
     if (Array.isArray(t) && t.some((st: any) => st?.type === 'rotate')) return true;
     const rs = p?.parameters?.rotateSteps;
-    return Array.isArray(rs) && rs.length > 0;
+    if (Array.isArray(rs) && rs.length > 0) return true;
+    // VF-EĞİMLİ LEVHA (vertex düzenlemeli gövde): dönmüş panel gibi motorun
+    // yazdığı NİHAİ (gövdeye sığdırılmış) geometriyle damgalanır. Sentetik
+    // düz damga (VF bölgesi + kalınlık) gövde duvarına yalnız KENARIYLA
+    // değer → ayak izi null → yan panel üstü hiç görmeyip tavana uzuyordu.
+    return panelIsTiltedSlab(p);
   };
   const hasExtrudeSteps = (p: any): boolean => {
     const es = p?.parameters?.extrudeSteps;
