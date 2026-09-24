@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { X, GripVertical, ArrowUp, RotateCw, Move, Trash2, MoveVertical, Check, Pencil, ChevronRight, Lock, SlidersHorizontal, Crosshair } from 'lucide-react';
+import { X, GripVertical, ArrowUp, RotateCw, Move, Trash2, MoveVertical, Check, Pencil, ChevronRight, Lock, SlidersHorizontal, Crosshair, Square, LayoutPanelTop, MousePointer2 } from 'lucide-react';
+import { ToolChip, ToolChipBar } from './ToolbarChips';
 import type { LucideIcon } from 'lucide-react';
 import { useAppStore } from '../store';
 import { extractFacesFromGeometry, groupCoplanarFaces, CoplanarFaceGroup } from './FaceEditor';
@@ -390,9 +391,9 @@ const dockAxisTag = (color: string): React.CSSProperties => ({
    Girdi / durum / onay ikinci satırdadır; dar tek satırda sıkışma biter. */
 type DockMode = { key: string; label: string; sub: string; Icon: LucideIcon ; title?: string };
 const DOCK_MODE_DEFS: Record<string, Omit<DockMode, 'key'>> = {
-  fixed: { label: 'Fixed', sub: 'Sabit ölçü', Icon: Lock },
-  dyn:   { label: 'Dyn',   sub: 'Dinamik',    Icon: SlidersHorizontal },
-  ref:   { label: 'Ref',   sub: 'Referansa',  Icon: Crosshair },
+  fixed: { label: 'Fixed', sub: 'Constant', Icon: Lock },
+  dyn:   { label: 'Dyn',   sub: 'Dynamic',    Icon: SlidersHorizontal },
+  ref:   { label: 'Ref',   sub: 'Reference',  Icon: Crosshair },
 };
 function DockModeBar({ modes, active, onPick, disabled, trailing }: {
   modes: DockMode[]; active: string | null; onPick: (k: string) => void; disabled?: boolean; trailing?: React.ReactNode;
@@ -443,7 +444,7 @@ function FitShapeToggle({ checked, disabled, onToggle }: { checked: boolean; dis
       aria-checked={checked}
       disabled={disabled}
       onClick={e => { e.stopPropagation(); if (!disabled) onToggle(); }}
-      title={checked ? 'Yüzeyin şeklini al: AÇIK' : 'Yüzeyin şeklini al'}
+      title={checked ? 'Fit face shape: ON' : 'Fit face shape'}
       className={`shrink-0 w-5 h-5 rounded-md flex items-center justify-center transition-colors duration-150
         ${disabled ? 'cursor-not-allowed opacity-40' : 'hover:bg-[#f3efe8]'}`}
     >
@@ -1052,16 +1053,15 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
 
   if (!isOpen && !embedded) return null;
 
-  const tb = (active: boolean, onClick: () => void, label: string, cls: [string, string]) => (
-    <button onClick={onClick} className={`px-2 py-1 rounded text-xs font-semibold transition-all duration-150 ${active ? cls[0] : cls[1]}`}>{label}</button>
-  );
-
+  // ÜST ARAÇ ÇUBUĞU — Parameters paneliyle ORTAK bileşen (ToolbarChips).
+  // "Add Face" → "Body Panel" (Goker). Seçim modu düğmesi Body/Panel olarak kalır.
   const panelToolbar = (
-    <div className="flex items-center gap-1.5 flex-wrap">
-      {tb(showOutlines, () => setShowOutlines(!showOutlines), 'Outline', ['text-blue-700 bg-blue-100 ring-1 ring-blue-400 shadow-sm', 'text-stone-500 hover:bg-stone-200'])}
-      {tb(raycastMode, () => setRaycastMode(!raycastMode), 'Add Face', ['text-amber-700 bg-amber-100 ring-1 ring-amber-400 shadow-sm', 'text-stone-500 hover:bg-stone-200'])}
-      {tb(panelSelectMode, () => setPanelSelectMode(!panelSelectMode), panelSelectMode ? 'Panel' : 'Body', ['text-violet-700 bg-violet-100 ring-1 ring-violet-400 shadow-sm', 'text-stone-500 hover:bg-stone-200'])}
-    </div>
+    <ToolChipBar>
+      <ToolChip label="Outline" icon={Square} active={showOutlines} onClick={() => setShowOutlines(!showOutlines)} title="Show panel outlines" />
+      <ToolChip label="Body Panel" icon={LayoutPanelTop} active={raycastMode} onClick={() => setRaycastMode(!raycastMode)} title="Add a panel on a body face" />
+      <ToolChip label={panelSelectMode ? 'Panel' : 'Body'} icon={MousePointer2} active={panelSelectMode} onClick={() => setPanelSelectMode(!panelSelectMode)}
+        title={panelSelectMode ? 'Selection: Panel — click to select whole bodies' : 'Selection: Body — click to select individual panels'} />
+    </ToolChipBar>
   );
 
   /* ── Face list ──────────────────────────────────────────────────────── */
@@ -1186,7 +1186,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                 ${armedRowKey === rowKey
                   ? 'text-orange-500'
                   : 'text-stone-300/70 group-hover/row:text-stone-400 hover:!text-orange-500'}`}
-              title="Sürükleyerek sırala"
+              title="Drag to reorder"
             ><GripVertical size={13} strokeWidth={1.75}/></span>
 
             <div
@@ -1204,7 +1204,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                 value={vf.description || ''}
                 onClick={stop}
                 onChange={e => updateVirtualFace(vf.id, { description: e.target.value })}
-                placeholder="not…"
+                placeholder="note…"
                 className="yago-row-note flex-1 min-w-0 h-[22px] px-[5px] text-[11.5px] text-stone-600 bg-transparent border border-transparent rounded-[5px] outline-none placeholder:text-stone-300 hover:border-[#ebe5dc] focus:bg-white focus:border-orange-400/50 transition-colors"
               />
 
@@ -1223,13 +1223,13 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
 
                 <button disabled={!vf.hasPanel} onClick={e => { stop(e); toggleArrow(vp); }}
                   className={`w-5 h-5 rounded-md flex items-center justify-center transition-colors duration-150 ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-stone-700 bg-[#f1ece4]' : 'text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700'}`}
-                  title="Ok yönünü değiştir"><ArrowUp size={13} strokeWidth={1.9} className={`transition-transform duration-200 ${ar ? '' : 'rotate-90'}`}/></button>
+                  title="Toggle arrow direction"><ArrowUp size={13} strokeWidth={1.9} className={`transition-transform duration-200 ${ar ? '' : 'rotate-90'}`}/></button>
 
                 {/* Sil: sade görünüm için yalnız satır üzerine gelince / seçiliyken görünür. */}
                 <button onClick={e => { stop(e); void deletePanelAndFace(vf.id); }}
                   className={`w-5 h-5 rounded-md flex items-center justify-center text-stone-400 hover:bg-red-50 hover:text-red-500 focus-visible:opacity-100 transition-[opacity,color,background-color] duration-150
                     ${sel ? 'opacity-100' : 'opacity-0 group-hover/row:opacity-100'}`}
-                  title="Paneli sil"><Trash2 size={12} strokeWidth={1.9}/></button>
+                  title="Delete panel"><Trash2 size={12} strokeWidth={1.9}/></button>
 
                 {/* Aç / kapa göstergesi */}
                 <span className={`w-4 h-5 flex items-center justify-center transition-[transform,color] duration-200 ${sel ? 'rotate-90 text-orange-500' : 'text-stone-300 group-hover/row:text-stone-400'}`}>
@@ -1301,7 +1301,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
 
     const exitBtn = (
       <button onClick={e => { stop(e); setFaceExtrudeSelectedFace(null); setFaceExtrudeMode(false); setFaceExtrudeRefCandidate(null); }}
-        title="Çıkış" style={DOCK_EXIT_BTN} className="hover:!bg-[#f3efe8] hover:!text-stone-600"><X size={13} strokeWidth={2} /></button>
+        title="Exit" style={DOCK_EXIT_BTN} className="hover:!bg-[#f3efe8] hover:!text-stone-600"><X size={13} strokeWidth={2} /></button>
     );
 
     const onApply = async () => {
@@ -1346,7 +1346,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       <div style={DOCK_SHELL}>
         {hf && (
           <DockModeBar
-            modes={dockModes(['fixed','dyn','ref'], { fixed: { sub: 'Sabit', title: 'Fixed — sabit kalınlık' }, ref: { sub: 'Yüze', title: 'Ref — referans yüze kadar' } })}
+            modes={dockModes(['fixed','dyn','ref'], { fixed: { sub: 'Constant', title: 'Fixed — constant thickness' }, ref: { sub: 'To face', title: 'Ref — up to a reference face' } })}
             active={faceExtrudeValueMode}
             onPick={k => { const m = k as 'fixed'|'dyn'|'ref'; setFaceExtrudeValueMode(m); if (m === 'fixed') setFaceExtrudeFixedMode(true); if (m === 'dyn') setFaceExtrudeFixedMode(false); if (m !== 'ref') setFaceExtrudeRefCandidate(null); }}
           />
@@ -1375,18 +1375,18 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                 <div style={dockStatus(!!hasRefFace)}>
                   <span style={dockDot(hasRefFace ? '#16a34a' : '#a8a29e')} />
                   <span style={dockStatusText(!!hasRefFace)}>
-                    {hasRefFace ? 'Referans yüzey seçildi' : hasRefPanel ? 'Referans yüzeyi seç' : 'Referans paneli seç'}
+                    {hasRefFace ? 'Reference face selected' : hasRefPanel ? 'Pick the reference face' : 'Pick the reference panel'}
                   </span>
                 </div>
               )}
-              <button onClick={onApply} title="Uygula" style={dockApplyBtn(!(isRefMode && !hasRefFace))}><Check size={14} strokeWidth={2.4} /></button>
+              <button onClick={onApply} title="Apply" style={dockApplyBtn(!(isRefMode && !hasRefFace))}><Check size={14} strokeWidth={2.4} /></button>
               {exitBtn}
             </>
           ) : (
             <>
               <div style={dockStatus()}>
                 <span style={dockDot('#a8a29e')} />
-                <span style={dockStatusText()}>3B görünümde yüzey seç</span>
+                <span style={dockStatusText()}>Pick a face in the 3D view</span>
               </div>
               {exitBtn}
             </>
@@ -1409,7 +1409,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
 
     const exitBtn = (
       <button onClick={e => { stop(e); setPanelMoveAxis(null); setPanelMoveMode(false); if (isRefMode) setSelectedPanelRow(null); }}
-        title="Çıkış" style={DOCK_EXIT_BTN} className="hover:!bg-[#f3efe8] hover:!text-stone-600"><X size={13} strokeWidth={2} /></button>
+        title="Exit" style={DOCK_EXIT_BTN} className="hover:!bg-[#f3efe8] hover:!text-stone-600"><X size={13} strokeWidth={2} /></button>
     );
 
     const onApply = async () => {
@@ -1448,7 +1448,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     const mainContent = (() => {
       if (isRefMode) {
         const step = !panelMoveRefSourceVertex ? 1 : !panelMoveRefTargetPanelId ? 2 : !panelMoveRefTargetVertex ? 3 : 4;
-        const label = step === 1 ? 'Kaynak noktayı seç' : step === 2 ? 'Hedef paneli seç' : step === 3 ? 'Hedef noktayı seç' : 'Hazır — sağ tık ile onayla';
+        const label = step === 1 ? 'Pick the source point' : step === 2 ? 'Pick the target panel' : step === 3 ? 'Pick the target point' : 'Ready — right-click to confirm';
         const ready = step === 4;
         return (
           <div style={dockStatus(ready)}>
@@ -1461,7 +1461,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
         return (
           <div style={dockStatus()}>
                 <span style={dockDot('#a8a29e')} />
-                <span style={dockStatusText()}>3B görünümde yön oku seç</span>
+                <span style={dockStatusText()}>Pick a direction arrow in the 3D view</span>
           </div>
         );
       }
@@ -1493,13 +1493,13 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     return (
       <div style={DOCK_SHELL}>
         <DockModeBar
-          modes={dockModes(['dyn','fixed','ref'], { dyn: { sub: 'Göreli' }, fixed: { sub: 'Sabit', title: 'Fixed — sabit konum' }, ref: { sub: 'Noktaya' } })}
+          modes={dockModes(['dyn','fixed','ref'], { dyn: { sub: 'Relative' }, fixed: { sub: 'Absolute', title: 'Fixed — absolute position' }, ref: { sub: 'To point' } })}
           active={panelMoveValueMode}
           onPick={k => { const m = k as 'dyn'|'fixed'|'ref'; setPanelMoveValueMode(m); if (m !== 'ref') { setPanelMoveRefSourceVertex(null); setPanelMoveRefTargetPanelId(null); setPanelMoveRefTargetVertex(null); } if (m === 'ref') { setPanelMoveAxis(null); } }}
         />
         <div style={DOCK_ROW}>
           {mainContent}
-          <button onClick={onApply} title="Uygula" style={dockApplyBtn(!!canApply)}><Check size={14} strokeWidth={2.4} /></button>
+          <button onClick={onApply} title="Apply" style={dockApplyBtn(!!canApply)}><Check size={14} strokeWidth={2.4} /></button>
           {exitBtn}
         </div>
       </div>
@@ -1532,8 +1532,8 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     };
 
     const rotModes = dockModes(['dyn','ref'], {
-      dyn: { sub: 'Açı gir', title: 'Açı gir: dönme noktası → eksen → derece' },
-      ref: { sub: 'Referansa dön', title: 'Referansa göre dön: pivot → nişan → eksen → referans yüz → sağ tık' },
+      dyn: { sub: 'Angle', title: 'Enter an angle: pivot → axis → degrees' },
+      ref: { sub: 'Aim at face', title: 'Rotate to a reference: pivot → aim point → axis → reference face → right-click' },
     });
     const modeBar = (trailing?: React.ReactNode) => (
       <DockModeBar modes={rotModes} active={panelRotateValueMode} onPick={k => pickMode(k as 'dyn' | 'ref')} trailing={trailing} />
@@ -1541,7 +1541,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
 
     const exitBtn = (
       <button onClick={e => { stop(e); setPanelRotateAxis(null); setPanelRotatePivot(null); setPanelRotatePivotType(null); setPanelRotateMode(false); if (isRotRefMode) setSelectedPanelRow(null); }}
-        title="Çıkış" style={DOCK_EXIT_BTN} className="hover:!bg-[#f3efe8] hover:!text-stone-600"><X size={13} strokeWidth={2} /></button>
+        title="Exit" style={DOCK_EXIT_BTN} className="hover:!bg-[#f3efe8] hover:!text-stone-600"><X size={13} strokeWidth={2} /></button>
     );
 
     const onApply = async () => {
@@ -1584,7 +1584,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       return (
         <div style={DOCK_SHELL}>
           {modeBar(<div style={{ display: 'flex', alignItems: 'center' }}>{exitBtn}</div>)}
-          <div style={{ padding: '5px 10px 7px', fontSize: 10.5, fontWeight: 500, color: '#a8a29e', fontFamily: DOCK_FONT }}>Döndürme modunu seç</div>
+          <div style={{ padding: '5px 10px 7px', fontSize: 10.5, fontWeight: 500, color: '#a8a29e', fontFamily: DOCK_FONT }}>Choose a rotation mode</div>
         </div>
       );
     }
@@ -1596,16 +1596,16 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       // belirsizleştiriyordu. Ref akışı artık kaçıncı adımda olduğunu söyler.
       const step = !hasPivot ? 1 : !hasArm ? 2 : !hasAxis ? 3 : !panelRotateRefFace ? 4 : 5;
       // Şerit dar: etiket kısa tutulur, tam açıklama title'da (hover) verilir.
-      const label = step === 1 ? '1/4 · Pivot noktası'
-        : step === 2 ? '2/4 · Nişan noktası'
-        : step === 3 ? '3/4 · Eksen halkası'
-        : step === 4 ? '4/4 · Referans yüz'
-        : 'Hazır — sağ tık onay';
-      const hint = step === 1 ? 'Panelin döneceği nokta (kendi köşe/merkez noktalarından)'
-        : step === 2 ? 'Referans yüze DEĞECEK nokta — AYNI panelin başka bir noktası'
-        : step === 3 ? 'Dönme ekseni: sahnedeki X / Y / Z halkasından seç'
-        : step === 4 ? 'Başka bir panelin yüzünü tıkla (aynı yere tekrar tıkla → arkadaki yüz). Nişan noktası bu yüze değene kadar dönülür.'
-        : 'Sahnede herhangi bir yere sağ tıkla — bağ kalıcı kurulur, referans panelin kenarı eğime göre pahlanır';
+      const label = step === 1 ? '1/4 · Pivot point'
+        : step === 2 ? '2/4 · Aim point'
+        : step === 3 ? '3/4 · Axis ring'
+        : step === 4 ? '4/4 · Reference face'
+        : 'Ready — right-click to confirm';
+      const hint = step === 1 ? 'The point the panel rotates around (its own corners or center)'
+        : step === 2 ? 'The point that will TOUCH the reference face — another point on the SAME panel'
+        : step === 3 ? 'Rotation axis: pick the X / Y / Z ring in the scene'
+        : step === 4 ? 'Click a face on another panel (click the same spot again for the face behind). The panel rotates until the aim point touches it.'
+        : 'Right-click anywhere in the scene — the link is kept and the reference panel edge is beveled to the slope';
       return (
         <div style={DOCK_SHELL}>
           {modeBar()}
@@ -1619,7 +1619,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                 </span>
               )}
             </div>
-            <button onClick={onApply} title="Uygula" style={dockApplyBtn(!!rotRefReady)}><Check size={14} strokeWidth={2.4} /></button>
+            <button onClick={onApply} title="Apply" style={dockApplyBtn(!!rotRefReady)}><Check size={14} strokeWidth={2.4} /></button>
             {exitBtn}
           </div>
         </div>
@@ -1652,14 +1652,14 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                 style={DOCK_INPUT}
               />
               <span style={{ fontSize: 12, fontWeight: 500, color: '#a8a29e', marginLeft: -2 }}>°</span>
-              <button onClick={onApply} title="Uygula" style={dockApplyBtn(true)}><Check size={14} strokeWidth={2.4} /></button>
+              <button onClick={onApply} title="Apply" style={dockApplyBtn(true)}><Check size={14} strokeWidth={2.4} /></button>
               {exitBtn}
             </>
           ) : hasPivot ? (
             <>
               <div style={dockStatus()}>
                 <span style={dockDot('#f59e0b')} />
-                <span style={dockStatusText()}>Ekseni seç (X/Y/Z halkası)</span>
+                <span style={dockStatusText()}>Pick an axis (X/Y/Z ring)</span>
               </div>
               {exitBtn}
             </>
@@ -1667,7 +1667,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
             <>
               <div style={dockStatus()}>
                 <span style={dockDot('#06b6d4')} />
-                <span style={dockStatusText()}>Dönme noktası seç (köşeler/merkez)</span>
+                <span style={dockStatusText()}>Pick a pivot point (corners/center)</span>
               </div>
               {exitBtn}
             </>
@@ -1686,8 +1686,8 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
 
     const axisColors: Record<string, string> = { 'x+': '#dc2626', 'x-': '#b91c1c', 'y+': '#16a34a', 'y-': '#15803d', 'z+': '#2563eb', 'z-': '#1d4ed8', x: '#dc2626', y: '#16a34a', z: '#2563eb' };
     const typeBadge: Record<string, { label: string; bg: string; color: string }> = {
-      move: { label: 'Taşı', bg: 'rgba(22,163,74,0.08)', color: '#15803d' },
-      rotate: { label: 'Dön', bg: 'rgba(37,99,235,0.08)', color: '#1d4ed8' },
+      move: { label: 'Move', bg: 'rgba(22,163,74,0.08)', color: '#15803d' },
+      rotate: { label: 'Rotate', bg: 'rgba(37,99,235,0.08)', color: '#1d4ed8' },
       extrude: { label: 'Ext', bg: 'rgba(217,119,6,0.09)', color: '#b45309' },
     };
 
@@ -1720,7 +1720,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     return (
       <div className="shrink-0 mt-2" style={{ fontFamily: DOCK_FONT }}>
         <div className="px-1 pb-1.5 flex items-center gap-2">
-          <span style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#b5ada3' }}>İşlem adımları</span>
+          <span style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#b5ada3' }}>Steps</span>
           <span className="text-[10px] font-medium tabular-nums text-stone-300">{allSteps.length}</span>
           <div className="flex-1 h-px bg-[#efeae2]" />
         </div>
@@ -1832,15 +1832,15 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
           {toolBtn('Extrude', MoveVertical, st.isExtrudingThis, () => {
             if (st.isExtrudingThis) setFaceExtrudeMode(false);
             else { setFaceExtrudeTargetPanelId(vp.id); setFaceExtrudeMode(true); if (panelMoveMode) setPanelMoveMode(false); }
-          }, 'Yüz çıkıntısı (extrude)')}
-          {toolBtn('Taşı', Move, st.isMovingThis, () => {
+          }, 'Face extrude')}
+          {toolBtn('Move', Move, st.isMovingThis, () => {
             if (st.isMovingThis) setPanelMoveMode(false);
             else { setPanelMoveTargetPanelId(vp.id); setPanelMoveMode(true); if (faceExtrudeMode) setFaceExtrudeMode(false); }
-          }, 'Taşı (move)')}
-          {toolBtn('Döndür', RotateCw, st.isRotatingThis, () => {
+          }, 'Move the panel')}
+          {toolBtn('Rotate', RotateCw, st.isRotatingThis, () => {
             if (st.isRotatingThis) setPanelRotateMode(false);
             else { setPanelRotateTargetPanelId(vp.id); setPanelRotateMode(true); if (faceExtrudeMode) setFaceExtrudeMode(false); if (panelMoveMode) setPanelMoveMode(false); }
-          }, 'Döndür (rotation)')}
+          }, 'Rotate the panel')}
         </div>
 
         <div className="rounded-[10px] ring-1 ring-[#e9e4dc] overflow-hidden relative" style={{ height: 410, background: PREVIEW_BG }}>
@@ -1848,7 +1848,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
             ? <PanelPreview2D key={activePanel.id} dims={activeDims} shape={activePanel} arrowRotated={!!activePanel.parameters?.arrowRotated}/>
             : (
               <div className="absolute inset-0 flex items-center justify-center">
-                <span className="text-xs text-stone-400">Panel yok</span>
+                <span className="text-xs text-stone-400">No panel</span>
               </div>
             )
           }

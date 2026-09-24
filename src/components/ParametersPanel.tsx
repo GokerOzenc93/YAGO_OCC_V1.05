@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { X, GripVertical, Plus, Check, Trash2 } from 'lucide-react';
+import { X, GripVertical, Plus, Check, Trash2, Spline, Layers, Radius } from 'lucide-react';
+import { ToolChip, ToolChipBar } from './ToolbarChips';
 import { useAppStore } from '../store';
 import * as THREE from 'three';
 import { evaluateExpression } from './Expression';
@@ -335,7 +336,7 @@ export function ParametersPanel({ isOpen, onClose, embedded = false }: Parameter
   const renderSubParamRow = (label: string, param: SubtractionParam, paramKey: string, description: string) => (
     <div key={paramKey} className={P_ROW}>
       <span className={P_LABEL} style={{ color: '#b45309' }}>{label}</span>
-      <input type="text" value={param.expression} onChange={e => handleSubParamChange(paramKey, e.target.value)} className={P_INPUT} placeholder="ifade" />
+      <input type="text" value={param.expression} onChange={e => handleSubParamChange(paramKey, e.target.value)} className={P_INPUT} placeholder="expr" />
       <span className={P_RESULT}>{param.result.toFixed(2)}</span>
       <span className={P_DESC}>{description}</span>
     </div>
@@ -345,31 +346,32 @@ export function ParametersPanel({ isOpen, onClose, embedded = false }: Parameter
 
   const subtractionCount = selectedShape?.subtractionGeometries?.filter((s: any) => s !== null).length ?? 0;
 
-  // ARAÇ ÇUBUĞU — Panel Editör'ün (Outline / Add Face / Body) birebir aynısı.
-  const tb = (active: boolean, onClick: () => void, label: string, cls: [string, string]) => (
-    <button onClick={onClick} className={`px-2 py-1 rounded text-xs font-semibold transition-all duration-150 ${active ? cls[0] : cls[1]}`}>{label}</button>
-  );
-
+  // ÜST ARAÇ ÇUBUĞU — Panel Editor ile ORTAK bileşen (ToolbarChips). Mantık aynı.
   const paramToolbar = (
-    <div className="flex items-center gap-1.5 flex-wrap">
-      {tb(vertexEditMode, () => { setVertexEditMode(!vertexEditMode); if (!vertexEditMode) { setFilletMode(false); setFaceEditMode(false); } }, 'Vertex', ['text-orange-700 bg-orange-100 ring-1 ring-orange-400 shadow-sm', 'text-stone-500 hover:bg-stone-200'])}
-      {subtractionCount > 0 && tb(subtractionViewMode, () => { setSubtractionViewMode(!subtractionViewMode); if (!subtractionViewMode) { setFilletMode(false); setFaceEditMode(false); } }, `Sub (${subtractionCount})`, ['text-amber-700 bg-amber-100 ring-1 ring-amber-400 shadow-sm', 'text-stone-500 hover:bg-stone-200'])}
-      {tb(filletMode, () => { const n = !filletMode; setFilletMode(n); setFaceEditMode(n); clearFilletFaces(); clearFilletFaceData(); if (n) { setVertexEditMode(false); setSubtractionViewMode(false); } }, selectedFilletFaces.length > 0 ? `Fillet (${selectedFilletFaces.length}/2)` : 'Fillet', ['text-blue-700 bg-blue-100 ring-1 ring-blue-400 shadow-sm', 'text-stone-500 hover:bg-stone-200'])}
-      {tb(false, addCustomParameter, '+ Param', ['', 'text-stone-500 hover:bg-stone-200'])}
-    </div>
+    <ToolChipBar>
+      <ToolChip label="Vertex" icon={Spline} active={vertexEditMode}
+        onClick={() => { setVertexEditMode(!vertexEditMode); if (!vertexEditMode) { setFilletMode(false); setFaceEditMode(false); } }} title="Edit vertices" />
+      {subtractionCount > 0 && (
+        <ToolChip label="Subtract" icon={Layers} active={subtractionViewMode} badge={subtractionCount}
+          onClick={() => { setSubtractionViewMode(!subtractionViewMode); if (!subtractionViewMode) { setFilletMode(false); setFaceEditMode(false); } }} title="Show subtractions" />
+      )}
+      <ToolChip label="Fillet" icon={Radius} active={filletMode} badge={selectedFilletFaces.length > 0 ? `${selectedFilletFaces.length}/2` : undefined}
+        onClick={() => { const n = !filletMode; setFilletMode(n); setFaceEditMode(n); clearFilletFaces(); clearFilletFaceData(); if (n) { setVertexEditMode(false); setSubtractionViewMode(false); } }} title="Fillet two faces" />
+      <ToolChip label="Parameter" icon={Plus} onClick={addCustomParameter} title="Add a custom parameter" />
+    </ToolChipBar>
   );
 
   const paramContent = selectedShape ? (
     <div>
       {/* ÖLÇÜLER — alt alta (Goker): Genişlik / Yükseklik / Derinlik */}
-      <ParamSection title="Ölçüler">
-        <ParameterRow label="W" value={width} onChange={setWidth} unit="mm" description="Genişlik" />
-        <ParameterRow label="H" value={height} onChange={setHeight} unit="mm" description="Yükseklik" />
-        <ParameterRow label="D" value={depth} onChange={setDepth} unit="mm" description="Derinlik" />
+      <ParamSection title="Dimensions">
+        <ParameterRow label="W" value={width} onChange={setWidth} unit="mm" description="Width" />
+        <ParameterRow label="H" value={height} onChange={setHeight} unit="mm" description="Height" />
+        <ParameterRow label="D" value={depth} onChange={setDepth} unit="mm" description="Depth" />
       </ParamSection>
 
-      <ParamSection title="Döndürme">
-        {([['RX', rotX, setRotX, 'X ekseni'], ['RY', rotY, setRotY, 'Y ekseni'], ['RZ', rotZ, setRotZ, 'Z ekseni']] as Array<[string, number, (v: number) => void, string]>).map(([label, val, set, desc]) => (
+      <ParamSection title="Rotation">
+        {([['RX', rotX, setRotX, 'X axis'], ['RY', rotY, setRotY, 'Y axis'], ['RZ', rotZ, setRotZ, 'Z axis']] as Array<[string, number, (v: number) => void, string]>).map(([label, val, set, desc]) => (
           <ParameterRow key={label} label={label} value={val} onChange={set} unit="°" description={desc} step={1} />
         ))}
       </ParamSection>
@@ -379,9 +381,9 @@ export function ParametersPanel({ isOpen, onClose, embedded = false }: Parameter
           {filletRadii.map((radius, idx) => (
             <ParameterRow key={`fillet-${idx}`} label={`F${idx + 1}`} value={radius}
               onChange={v => { const r = [...filletRadii]; r[idx] = v; setFilletRadii(r); }}
-              unit="mm" description={`Fillet ${idx + 1} yarıçapı`} step={0.1}
+              unit="mm" description={`Fillet ${idx + 1} radius`} step={0.1}
               trailing={
-                <button onClick={() => selectedShape && handleDeleteFillet(idx)} title="Fillet'i sil"
+                <button onClick={() => selectedShape && handleDeleteFillet(idx)} title="Delete fillet"
                   className={`${P_ICON_BTN} opacity-0 group-hover/prow:opacity-100 hover:!bg-red-50 hover:!text-red-500`}><Trash2 size={11.5} strokeWidth={1.9} /></button>
               } />
           ))}
@@ -389,17 +391,17 @@ export function ParametersPanel({ isOpen, onClose, embedded = false }: Parameter
       )}
 
       {customParameters.length > 0 && (
-        <ParamSection title="Parametreler" count={customParameters.length}>
+        <ParamSection title="Parameters" count={customParameters.length}>
           {customParameters.map(param => (
             <div key={param.id} className={P_ROW}>
               <input type="text" value={param.name} onChange={e => updateCustomParameter(param.id, 'name', e.target.value)}
                 className={`${P_INPUT} !w-[40px] text-center !font-semibold`} />
               <input type="text" value={param.expression} onChange={e => updateCustomParameter(param.id, 'expression', e.target.value)}
-                className={`${P_INPUT} !w-[74px]`} placeholder="ifade" />
+                className={`${P_INPUT} !w-[74px]`} placeholder="expr" />
               <span className={P_RESULT}>{param.result.toFixed(2)}</span>
               <input type="text" value={param.description} onChange={e => updateCustomParameter(param.id, 'description', e.target.value)}
-                className={P_NOTE} placeholder="not…" />
-              <button onClick={() => deleteCustomParameter(param.id)} title="Sil"
+                className={P_NOTE} placeholder="note…" />
+              <button onClick={() => deleteCustomParameter(param.id)} title="Delete"
                 className={`${P_ICON_BTN} opacity-0 group-hover/prow:opacity-100 hover:!bg-red-50 hover:!text-red-500`}><Trash2 size={11.5} strokeWidth={1.9} /></button>
             </div>
           ))}
@@ -407,37 +409,37 @@ export function ParametersPanel({ isOpen, onClose, embedded = false }: Parameter
       )}
 
       {subtractionViewMode && selectedSubtractionIndex !== null && selectedShape.subtractionGeometries?.[selectedSubtractionIndex] && (
-        <ParamSection title={`Çıkarma #${selectedSubtractionIndex + 1}`} accent="#b45309"
+        <ParamSection title={`Subtraction #${selectedSubtractionIndex + 1}`} accent="#b45309"
           right={
             <div className="flex items-center gap-px">
               <button onClick={async () => { if (selectedShape && selectedSubtractionIndex !== null) await deleteSubtraction(selectedShape.id, selectedSubtractionIndex); }}
-                className={`${P_ICON_BTN} hover:!bg-red-50 hover:!text-red-500`} title="Çıkarmayı sil"><Trash2 size={11.5} strokeWidth={1.9} /></button>
-              <button onClick={() => setSelectedSubtractionIndex(null)} className={P_ICON_BTN} title="Kapat"><X size={12} strokeWidth={2} /></button>
+                className={`${P_ICON_BTN} hover:!bg-red-50 hover:!text-red-500`} title="Delete subtraction"><Trash2 size={11.5} strokeWidth={1.9} /></button>
+              <button onClick={() => setSelectedSubtractionIndex(null)} className={P_ICON_BTN} title="Close"><X size={12} strokeWidth={2} /></button>
             </div>
           }>
-          {renderSubParamRow('W', subParams.width, 'width', 'Genişlik')}
-          {renderSubParamRow('H', subParams.height, 'height', 'Yükseklik')}
-          {renderSubParamRow('D', subParams.depth, 'depth', 'Derinlik')}
-          {renderSubParamRow('X', subParams.posX, 'posX', 'Konum X')}
-          {renderSubParamRow('Y', subParams.posY, 'posY', 'Konum Y')}
-          {renderSubParamRow('Z', subParams.posZ, 'posZ', 'Konum Z')}
-          {renderSubParamRow('RX', subParams.rotX, 'rotX', 'Dönüş X')}
-          {renderSubParamRow('RY', subParams.rotY, 'rotY', 'Dönüş Y')}
-          {renderSubParamRow('RZ', subParams.rotZ, 'rotZ', 'Dönüş Z')}
+          {renderSubParamRow('W', subParams.width, 'width', 'Width')}
+          {renderSubParamRow('H', subParams.height, 'height', 'Height')}
+          {renderSubParamRow('D', subParams.depth, 'depth', 'Depth')}
+          {renderSubParamRow('X', subParams.posX, 'posX', 'Position X')}
+          {renderSubParamRow('Y', subParams.posY, 'posY', 'Position Y')}
+          {renderSubParamRow('Z', subParams.posZ, 'posZ', 'Position Z')}
+          {renderSubParamRow('RX', subParams.rotX, 'rotX', 'Rotation X')}
+          {renderSubParamRow('RY', subParams.rotY, 'rotY', 'Rotation Y')}
+          {renderSubParamRow('RZ', subParams.rotZ, 'rotZ', 'Rotation Z')}
         </ParamSection>
       )}
 
       {vertexEditMode && vertexModifications.length > 0 && (
-        <ParamSection title="Vertex düzenlemeleri" count={vertexModifications.length}>
+        <ParamSection title="Vertex edits" count={vertexModifications.length}>
           {vertexModifications.map((mod, idx) => {
             const result = evaluateExpression(mod.expression, getEvalContext());
             return (
               <div key={idx} className={P_ROW}>
                 <span className={P_LABEL} style={{ color: '#a8a29e' }}>V{mod.vertexIndex}</span>
-                <input type="text" value={mod.expression} onChange={e => updateVertexModification(idx, 'expression', e.target.value)} className={P_INPUT} placeholder="ifade" />
+                <input type="text" value={mod.expression} onChange={e => updateVertexModification(idx, 'expression', e.target.value)} className={P_INPUT} placeholder="expr" />
                 <span className={P_RESULT}>{result.toFixed(2)}</span>
                 <input type="text" value={mod.description || ''} onChange={e => updateVertexModification(idx, 'description', e.target.value)}
-                  className={P_NOTE} placeholder="not…" />
+                  className={P_NOTE} placeholder="note…" />
               </div>
             );
           })}
@@ -447,11 +449,11 @@ export function ParametersPanel({ isOpen, onClose, embedded = false }: Parameter
       {/* Uygula — Panel Editör'ün onay düğmesiyle aynı koyu taş dil. */}
       <button onClick={handleApplyChanges}
         className="w-full mt-3 h-[30px] rounded-[8px] bg-[#44403c] text-white text-[11.5px] font-semibold tracking-[0.01em] shadow-[0_1px_3px_rgba(40,30,20,0.22)] hover:bg-[#57534e] active:bg-[#292524] transition-colors duration-150 flex items-center justify-center gap-1.5">
-        <Check size={13} strokeWidth={2.4} /> Uygula
+        <Check size={13} strokeWidth={2.4} /> Apply
       </button>
     </div>
   ) : (
-    <div className="text-center text-stone-400 text-[11.5px] py-6">Seçili şekil yok</div>
+    <div className="text-center text-stone-400 text-[11.5px] py-6">No shape selected</div>
   );
 
   if (embedded) {

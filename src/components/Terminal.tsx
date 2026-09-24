@@ -178,7 +178,7 @@ const Terminal: React.FC = () => {
 
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               <StatusPair
-                label="Uzunluk"
+                label="Length"
                 value={`${polylineStatus.distance.toFixed(1)}${polylineStatus.unit}`}
                 valueColor={T.promptClr}
               />
@@ -186,14 +186,14 @@ const Terminal: React.FC = () => {
                 <>
                   <PoliSep />
                   <StatusPair
-                    label="Açı"
+                    label="Angle"
                     value={`${polylineStatus.angle.toFixed(1)}°`}
                   />
                 </>
               )}
             </div>
 
-            <StatusPair label="Mod" value="Çizim" valueColor="#047857" />
+            <StatusPair label="Mode" value="Drawing" valueColor="#047857" />
           </div>
         </div>
       )}
@@ -259,7 +259,7 @@ const Terminal: React.FC = () => {
               onKeyDown={handleKeyDown}
               onFocus={() => setInputFocus(true)}
               onBlur={() => setInputFocus(false)}
-              placeholder="Komut girin veya değer yazın..."
+              placeholder="Enter a command or value..."
               style={{
                 flex: 1, background: 'transparent', border: 'none', outline: 'none',
                 color: T.inputText,

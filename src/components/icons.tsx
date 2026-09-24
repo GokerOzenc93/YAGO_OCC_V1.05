@@ -241,29 +241,29 @@ export const IconButton: React.FC<IconButtonProps> = ({
 
 /* Named convenience exports (your existing colorful icons) */
 export const AddBoxButton: React.FC<Omit<IconButtonProps, 'icon' | 'title'>> = (props) => (
-  <IconButton icon="add-box" title="Kutu Ekle (B)" {...props} />
+  <IconButton icon="add-box" title="Add Box (B)" {...props} />
 );
 export const SubtractBoxButton: React.FC<Omit<IconButtonProps, 'icon' | 'title'>> = (props) => (
-  <IconButton icon="subtract-box" title="Kesişen Şekilleri Çıkar" {...props} />
+  <IconButton icon="subtract-box" title="Subtract Intersecting Shapes" {...props} />
 );
 export const CameraPerspectiveButton: React.FC<Omit<IconButtonProps, 'icon' | 'title'>> = (props) => (
-  <IconButton icon="camera-perspective" title="Perspektif Görünüm" {...props} />
+  <IconButton icon="camera-perspective" title="Perspective View" {...props} />
 );
 export const CameraOrthographicButton: React.FC<Omit<IconButtonProps, 'icon' | 'title'>> = (props) => (
-  <IconButton icon="camera-orthographic" title="Ortografik Görünüm" {...props} />
+  <IconButton icon="camera-orthographic" title="Orthographic View" {...props} />
 );
 export const ViewSolidButton: React.FC<Omit<IconButtonProps, 'icon' | 'title'>> = (props) => (
-  <IconButton icon="view-solid" title="Solid Görünüm" {...props} />
+  <IconButton icon="view-solid" title="Solid View" {...props} />
 );
 export const ViewWireframeButton: React.FC<Omit<IconButtonProps, 'icon' | 'title'>> = (props) => (
-  <IconButton icon="view-wireframe" title="Wireframe Görünüm" {...props} />
+  <IconButton icon="view-wireframe" title="Wireframe View" {...props} />
 );
 export const ViewXRayButton: React.FC<Omit<IconButtonProps, 'icon' | 'title'>> = (props) => (
-  <IconButton icon="view-xray" title="X-Ray Görünüm" {...props} />
+  <IconButton icon="view-xray" title="X-Ray View" {...props} />
 );
 export const LinearModeOnButton: React.FC<Omit<IconButtonProps, 'icon' | 'title'>> = (props) => (
-  <IconButton icon="linear-mode-on" title="Linear Mode: Açık" {...props} />
+  <IconButton icon="linear-mode-on" title="Linear Mode: On" {...props} />
 );
 export const LinearModeOffButton: React.FC<Omit<IconButtonProps, 'icon' | 'title'>> = (props) => (
-  <IconButton icon="linear-mode-off" title="Linear Mode: Kapalı" {...props} />
+  <IconButton icon="linear-mode-off" title="Linear Mode: Off" {...props} />
 );

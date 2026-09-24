@@ -82,12 +82,12 @@ const StatusBar: React.FC = () => {
 
       <Sep />
 
-      <Pair label="Nesne" value={shapes.length} mono />
+      <Pair label="Objects" value={shapes.length} mono />
 
       <Sep />
 
       <Pair
-        label="Seçili"
+        label="Selected"
         value={selectedShape ? `${selectedShape.type} · ${selectedShape.id.slice(0, 8)}` : '—'}
         valueColor={selectedShape ? T.accentClr : '#b0aaa4'}
         mono={!!selectedShape}
@@ -97,7 +97,7 @@ const StatusBar: React.FC = () => {
         <>
           <Sep />
           <Pair
-            label="Konum"
+            label="Position"
             value={`[${selectedShape.position.map(v => v.toFixed(1)).join(', ')}]`}
             mono
           />
@@ -119,7 +119,7 @@ const StatusBar: React.FC = () => {
       {vertexModCount > 0 && (
         <>
           <Sep />
-          <Pair label="Mod" value={vertexModCount} valueColor={T.modClr} mono />
+          <Pair label="Edits" value={vertexModCount} valueColor={T.modClr} mono />
         </>
       )}
 

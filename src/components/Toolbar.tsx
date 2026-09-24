@@ -636,30 +636,30 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
           <BtnGroup>
             <TBtn
               icon={<Icon name="snap-endpoint" size={18}/>}
-              label="Uç Nokta (Endpoint)"
+              label="Endpoint"
               active={snapSettings.endpoint}
               onClick={()=>toggleSnapSetting(SnapType.ENDPOINT)}
             />
             <TBtn
               icon={<Icon name="snap-midpoint" size={18}/>}
-              label="Orta Nokta (Midpoint)"
+              label="Midpoint"
               active={snapSettings.midpoint}
               onClick={()=>toggleSnapSetting(SnapType.MIDPOINT)}
             />
             <TBtn
               icon={<Icon name="snap-center" size={18}/>}
-              label="Merkez (Center)"
+              label="Center"
               active={snapSettings.center}
               onClick={()=>toggleSnapSetting(SnapType.CENTER)}
             />
             <TBtn
               icon={<Icon name="snap-quadrant" size={18}/>}
-              label="Daire Çeyreği (Quadrant)"
+              label="Quadrant"
               onClick={()=>console.warn('Quadrant snap not wired yet — add SnapType.QUADRANT to store')}
             />
             <TBtn
               icon={<Icon name="snap-intersection" size={18}/>}
-              label="Kesişim (Intersection)"
+              label="Intersection"
               active={snapSettings.intersection}
               onClick={()=>toggleSnapSetting(SnapType.INTERSECTION)}
             />
@@ -671,7 +671,7 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
             <GrpSep/>
             <IconButton
               icon="dimension"
-              title="Ölçülendirme"
+              title="Dimensioning"
               onClick={()=>setActiveTool(Tool.DIMENSION)}
               className={activeTool===Tool.DIMENSION ? 'bg-orange-50 ring-1 ring-orange-200' : ''}
             />
