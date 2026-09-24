@@ -322,6 +322,15 @@ interface GroundRender { fa: Pt; fb: Pt; da: Pt; db: Pt; cx: number; cy: number;
    Etkin segment KOYU TAŞ dolgudur (fildişi-üstüne-fildişi okunmuyordu —
    aktif mod net seçilsin kuralı korunur). */
 const DOCK_FONT = "'Inter','SF Pro Text',system-ui,sans-serif";
+/* SIRALAMA TUTAMACI İMLECİ (Goker: "sıra düğmesine tıklayınca fare beyaz
+   oluyor, belli olmuyor"): tarayıcının grab/grabbing eli BEYAZ dolgulu ince
+   çerçevelidir; kemik-beyaz satır zemininde kayboluyordu. Koyu taş dolgulu,
+   beyaz dış hatlı 4 yönlü taşıma imleci her zeminde okunur. Yedek: 'move'. */
+const GRIP_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(
+  "<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'>" +
+  "<path d='M12 1.8 L15.8 5.6 H13.3 V10.7 H18.4 V8.2 L22.2 12 L18.4 15.8 V13.3 H13.3 V18.4 H15.8 L12 22.2 L8.2 18.4 H10.7 V13.3 H5.6 V15.8 L1.8 12 L5.6 8.2 V10.7 H10.7 V5.6 H8.2 Z' " +
+  "fill='#292524' stroke='#ffffff' stroke-width='1.4' stroke-linejoin='round'/></svg>"
+)}") 12 12, move`;
 /* ── ÖNİZLEME GÖRÜNÜMÜ (sade, profesyonel) ─────────────────────────────────
    Zemin: neredeyse beyaz, çok hafif sıcak dikey geçiş (desen/vinyet yok).
    Panel: açık huş/beyaz laminat tonu. three r155+ fiziksel ışık ölçeğinde eski
@@ -1172,7 +1181,8 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
               }}
               onDragEnd={() => { setDragIndex(null); setDropIndex(null); setArmedRowKey(null); }}
               onClick={stop}
-              className={`cursor-grab active:cursor-grabbing shrink-0 w-[18px] ml-[3px] self-stretch flex items-center justify-center transition-colors duration-150
+              style={{ cursor: GRIP_CURSOR }}
+              className={`shrink-0 w-[18px] ml-[3px] self-stretch flex items-center justify-center transition-colors duration-150
                 ${armedRowKey === rowKey
                   ? 'text-orange-500'
                   : 'text-stone-300/70 group-hover/row:text-stone-400 hover:!text-orange-500'}`}

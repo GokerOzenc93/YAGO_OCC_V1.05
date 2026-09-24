@@ -34,10 +34,35 @@ interface ParameterRowProps {
   readOnly?: boolean;
 }
 
-const inputBase = 'px-1 py-0.5 text-xs font-mono bg-transparent border-b border-transparent hover:border-gray-300 focus:border-orange-400 rounded-none outline-none';
-const inputRO = 'px-1 py-0.5 text-xs font-mono bg-transparent text-gray-400 border-b border-transparent rounded-none';
+/* ── PARAMETRE PANELİ TASARIM DİLİ (Panel Editör ile birebir) ─────────────
+   Satırlar panel listesiyle aynı soft kart: sıcak kemik zemin, kıl-çizgi kenar,
+   2px aralık. Bölüm başlıkları "İşlem adımları" başlığıyla aynı. Değer alanı
+   kutusuz (yago-param-input; bone-skin genel input kutusunu ezer). NOT: bone-skin
+   `.text-xs.font-semibold` birleşimini başlık ("eyebrow") yapar — satırlarda
+   bilinçli olarak text-[11px] kullanılır. */
+const P_ROW = 'group/prow flex items-center gap-1.5 h-[30px] pl-1 pr-1 rounded-[9px] bg-[#fdfcfa] ring-1 ring-[#ece7df] shadow-[0_1px_0_rgba(68,64,60,0.025)] hover:bg-white hover:ring-[#e2dbd0] focus-within:!bg-white focus-within:!ring-[#f0d6ba] transition-colors duration-150';
+const P_LABEL = 'shrink-0 w-[30px] text-center text-[11px] font-semibold tracking-wide tabular-nums select-none';
+const P_INPUT = 'yago-param-input shrink-0 w-[84px] h-[22px] px-1.5 text-[12px] font-mono tabular-nums text-stone-800 bg-transparent border border-transparent rounded-[6px] outline-none placeholder:text-stone-300 hover:border-[#ebe5dc] focus:bg-white focus:border-orange-400/50 transition-colors';
+const P_RESULT = 'shrink-0 w-[56px] text-right text-[11px] tabular-nums text-stone-400 select-none';
+const P_DESC = 'flex-1 min-w-0 truncate pl-1 text-[11px] text-stone-400 select-none';
+const P_NOTE = 'yago-row-note flex-1 min-w-0 h-[22px] px-[5px] text-[11.5px] text-stone-600 bg-transparent border border-transparent rounded-[5px] outline-none placeholder:text-stone-300 hover:border-[#ebe5dc] focus:bg-white focus:border-orange-400/50 transition-colors';
+const P_ICON_BTN = 'shrink-0 w-5 h-5 rounded-md flex items-center justify-center text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700 transition-colors duration-150';
 
-const ParameterRow: React.FC<ParameterRowProps> = ({ label, value, onChange, display, description, readOnly = false }) => {
+const ParamSection: React.FC<{ title: string; count?: number; accent?: string; right?: React.ReactNode; children: React.ReactNode }> = ({ title, count, accent, right, children }) => (
+  <div className="mt-3 first:mt-0">
+    <div className="px-1 pb-1.5 flex items-center gap-2">
+      <span style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: accent || '#b5ada3', fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif" }}>{title}</span>
+      {count !== undefined && <span className="text-[10px] font-medium tabular-nums text-stone-300">{count}</span>}
+      <div className="flex-1 h-px bg-[#efeae2]" />
+      {right}
+    </div>
+    <div className="flex flex-col gap-[2px] p-px">{children}</div>
+  </div>
+);
+
+interface ParameterRowFullProps extends ParameterRowProps { unit?: string; labelColor?: string; trailing?: React.ReactNode }
+
+const ParameterRow: React.FC<ParameterRowFullProps> = ({ label, value, onChange, display, unit, description, readOnly = false, labelColor, trailing }) => {
   const [inputValue, setInputValue] = useState(value.toString());
   const [isFocused, setIsFocused] = useState(false);
 
@@ -62,60 +87,15 @@ const ParameterRow: React.FC<ParameterRowProps> = ({ label, value, onChange, dis
   };
 
   return (
-    <div className={`flex gap-1 items-center py-0.5 px-1 rounded transition-colors ${isFocused ? 'bg-orange-50 ring-1 ring-orange-300' : 'hover:bg-stone-50'}`}>
-      <span className="w-8 text-xs font-mono font-bold text-gray-500 text-center select-none">{label}</span>
+    <div className={P_ROW}>
+      <span className={P_LABEL} style={{ color: labelColor || '#a8a29e' }}>{label}</span>
       <input type="text" value={inputValue} onChange={handleChange} onFocus={() => setIsFocused(true)} onBlur={handleBlur} readOnly={readOnly}
-        className={`w-16 ${inputBase} ${readOnly ? 'text-gray-400' : 'text-gray-800'} text-left`} />
-      <span className="w-16 text-xs font-mono text-gray-400 text-left select-none">{display ?? value.toFixed(2)}</span>
-      <span className="flex-1 text-xs text-gray-400 select-none truncate">{description}</span>
-    </div>
-  );
-};
-
-const DimCell: React.FC<{ label: string; value: number; onChange: (v: number) => void }> = ({ label, value, onChange }) => {
-  const [inputValue, setInputValue] = useState(value.toString());
-  const [isFocused, setIsFocused] = useState(false);
-
-  useEffect(() => { if (!isFocused) setInputValue(value.toString()); }, [value, isFocused]);
-
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const v = e.target.value;
-    setInputValue(v);
-    if (v !== '' && v !== '-' && v !== '+' && v !== '.' && !/^[+-]$/.test(v)) {
-      const p = parseFloat(v);
-      if (!isNaN(p)) onChange(p);
-    }
-  };
-
-  const handleBlur = () => {
-    setIsFocused(false);
-    const p = parseFloat(inputValue);
-    if (isNaN(p)) setInputValue(value.toString());
-    else { onChange(p); setInputValue(p.toString()); }
-  };
-
-  return (
-    <div className={`flex items-center gap-0.5 flex-1 min-w-0 px-1 py-0.5 rounded transition-colors ${isFocused ? 'bg-orange-50 ring-1 ring-orange-300' : 'hover:bg-stone-50'}`}>
-      <span className="text-xs font-mono font-bold text-gray-500 select-none shrink-0">{label}</span>
-      <input
-        type="text"
-        value={inputValue}
-        onChange={handleChange}
-        onFocus={() => setIsFocused(true)}
-        onBlur={handleBlur}
-        className="w-full min-w-0 px-0.5 text-xs font-mono text-gray-800 bg-transparent border-b border-transparent focus:border-orange-400 outline-none rounded-none"
-      />
-    </div>
-  );
-};
-
-const DimRow: React.FC<{ values: number[]; setters: Array<(v: number) => void> }> = ({ values, setters }) => {
-  const labels = ['W', 'H', 'D'];
-  return (
-    <div className="flex gap-0.5 items-center py-0.5 px-1">
-      {labels.map((label, i) => (
-        <DimCell key={label} label={label} value={values[i]} onChange={setters[i]} />
-      ))}
+        className={P_INPUT} />
+      {unit !== undefined
+        ? <span className="shrink-0 w-[56px] -ml-1 text-left text-[11px] text-stone-400 select-none">{unit}</span>
+        : <span className={P_RESULT}>{display ?? value.toFixed(2)}</span>}
+      <span className={P_DESC}>{description}</span>
+      {trailing}
     </div>
   );
 };
@@ -353,11 +333,11 @@ export function ParametersPanel({ isOpen, onClose, embedded = false }: Parameter
   };
 
   const renderSubParamRow = (label: string, param: SubtractionParam, paramKey: string, description: string) => (
-    <div key={paramKey} className="flex gap-1 items-center py-0.5 px-1 rounded transition-colors focus-within:bg-orange-50 focus-within:ring-1 focus-within:ring-orange-300 hover:bg-stone-50">
-      <span className="w-8 text-xs font-mono font-bold text-yellow-600 text-center select-none">{label}</span>
-      <input type="text" value={param.expression} onChange={e => handleSubParamChange(paramKey, e.target.value)} className={`w-16 ${inputBase} text-gray-800`} placeholder="expr" />
-      <span className="w-16 text-xs font-mono text-gray-400 text-left select-none">{param.result.toFixed(2)}</span>
-      <span className="flex-1 text-xs text-gray-400 select-none truncate">{description}</span>
+    <div key={paramKey} className={P_ROW}>
+      <span className={P_LABEL} style={{ color: '#b45309' }}>{label}</span>
+      <input type="text" value={param.expression} onChange={e => handleSubParamChange(paramKey, e.target.value)} className={P_INPUT} placeholder="ifade" />
+      <span className={P_RESULT}>{param.result.toFixed(2)}</span>
+      <span className={P_DESC}>{description}</span>
     </div>
   );
 
@@ -365,119 +345,122 @@ export function ParametersPanel({ isOpen, onClose, embedded = false }: Parameter
 
   const subtractionCount = selectedShape?.subtractionGeometries?.filter((s: any) => s !== null).length ?? 0;
 
+  // ARAÇ ÇUBUĞU — Panel Editör'ün (Outline / Add Face / Body) birebir aynısı.
   const tb = (active: boolean, onClick: () => void, label: string, cls: [string, string]) => (
-    <button onClick={onClick} className={`px-1.5 py-0.5 rounded text-xs font-semibold transition-colors ${active ? cls[0] : cls[1]}`}>{label}</button>
+    <button onClick={onClick} className={`px-2 py-1 rounded text-xs font-semibold transition-all duration-150 ${active ? cls[0] : cls[1]}`}>{label}</button>
   );
 
   const paramToolbar = (
-    <div className="flex items-center gap-1 flex-wrap">
-      {tb(vertexEditMode, () => { setVertexEditMode(!vertexEditMode); if (!vertexEditMode) { setFilletMode(false); setFaceEditMode(false); } }, 'Vertex', ['text-orange-700 bg-orange-100 ring-1 ring-orange-400', 'text-slate-500 hover:bg-stone-200'])}
-      {subtractionCount > 0 && tb(subtractionViewMode, () => { setSubtractionViewMode(!subtractionViewMode); if (!subtractionViewMode) { setFilletMode(false); setFaceEditMode(false); } }, `Sub (${subtractionCount})`, ['text-yellow-700 bg-yellow-100 ring-1 ring-yellow-400', 'text-slate-500 hover:bg-stone-200'])}
-      {tb(filletMode, () => { const n = !filletMode; setFilletMode(n); setFaceEditMode(n); clearFilletFaces(); clearFilletFaceData(); if (n) { setVertexEditMode(false); setSubtractionViewMode(false); } }, selectedFilletFaces.length > 0 ? `Fillet (${selectedFilletFaces.length}/2)` : 'Fillet', ['text-blue-700 bg-blue-100 ring-1 ring-blue-400', 'text-slate-500 hover:bg-stone-200'])}
-      <button onClick={addCustomParameter} className="px-1.5 py-0.5 rounded text-xs font-semibold text-slate-500 hover:bg-stone-200 transition-colors">+ Param</button>
+    <div className="flex items-center gap-1.5 flex-wrap">
+      {tb(vertexEditMode, () => { setVertexEditMode(!vertexEditMode); if (!vertexEditMode) { setFilletMode(false); setFaceEditMode(false); } }, 'Vertex', ['text-orange-700 bg-orange-100 ring-1 ring-orange-400 shadow-sm', 'text-stone-500 hover:bg-stone-200'])}
+      {subtractionCount > 0 && tb(subtractionViewMode, () => { setSubtractionViewMode(!subtractionViewMode); if (!subtractionViewMode) { setFilletMode(false); setFaceEditMode(false); } }, `Sub (${subtractionCount})`, ['text-amber-700 bg-amber-100 ring-1 ring-amber-400 shadow-sm', 'text-stone-500 hover:bg-stone-200'])}
+      {tb(filletMode, () => { const n = !filletMode; setFilletMode(n); setFaceEditMode(n); clearFilletFaces(); clearFilletFaceData(); if (n) { setVertexEditMode(false); setSubtractionViewMode(false); } }, selectedFilletFaces.length > 0 ? `Fillet (${selectedFilletFaces.length}/2)` : 'Fillet', ['text-blue-700 bg-blue-100 ring-1 ring-blue-400 shadow-sm', 'text-stone-500 hover:bg-stone-200'])}
+      {tb(false, addCustomParameter, '+ Param', ['', 'text-stone-500 hover:bg-stone-200'])}
     </div>
   );
 
   const paramContent = selectedShape ? (
-    <div className="space-y-0">
-      <div className="space-y-0">
-        <DimRow
-          values={[width, height, depth]}
-          setters={[setWidth, setHeight, setDepth]}
-        />
-        {[['RX', rotX, setRotX, 'Rotation X'], ['RY', rotY, setRotY, 'Rotation Y'], ['RZ', rotZ, setRotZ, 'Rotation Z']].map(([label, val, set, desc]) => (
-          <ParameterRow key={label as string} label={label as string} value={val as number} onChange={set as (v: number) => void}
-            display={(val as number).toFixed(1) + '°'} description={desc as string} step={1} />
+    <div>
+      {/* ÖLÇÜLER — alt alta (Goker): Genişlik / Yükseklik / Derinlik */}
+      <ParamSection title="Ölçüler">
+        <ParameterRow label="W" value={width} onChange={setWidth} unit="mm" description="Genişlik" />
+        <ParameterRow label="H" value={height} onChange={setHeight} unit="mm" description="Yükseklik" />
+        <ParameterRow label="D" value={depth} onChange={setDepth} unit="mm" description="Derinlik" />
+      </ParamSection>
+
+      <ParamSection title="Döndürme">
+        {([['RX', rotX, setRotX, 'X ekseni'], ['RY', rotY, setRotY, 'Y ekseni'], ['RZ', rotZ, setRotZ, 'Z ekseni']] as Array<[string, number, (v: number) => void, string]>).map(([label, val, set, desc]) => (
+          <ParameterRow key={label} label={label} value={val} onChange={set} unit="°" description={desc} step={1} />
         ))}
-      </div>
+      </ParamSection>
 
       {filletRadii.length > 0 && (
-        <div className="space-y-0 pt-2 border-t border-stone-200">
+        <ParamSection title="Fillet" count={filletRadii.length}>
           {filletRadii.map((radius, idx) => (
-            <div key={`fillet-${idx}`} className="flex gap-0.5 items-center">
-              <div className="flex-1">
-                <ParameterRow label={`F${idx + 1}`} value={radius} onChange={v => { const r = [...filletRadii]; r[idx] = v; setFilletRadii(r); }} description={`Fillet ${idx + 1} Radius`} step={0.1} />
-              </div>
-              <button onClick={() => selectedShape && handleDeleteFillet(idx)} className="p-0.5 rounded text-stone-300 hover:text-red-400 transition-colors" title="Delete fillet">
-                <Trash2 size={12} />
-              </button>
-            </div>
+            <ParameterRow key={`fillet-${idx}`} label={`F${idx + 1}`} value={radius}
+              onChange={v => { const r = [...filletRadii]; r[idx] = v; setFilletRadii(r); }}
+              unit="mm" description={`Fillet ${idx + 1} yarıçapı`} step={0.1}
+              trailing={
+                <button onClick={() => selectedShape && handleDeleteFillet(idx)} title="Fillet'i sil"
+                  className={`${P_ICON_BTN} opacity-0 group-hover/prow:opacity-100 hover:!bg-red-50 hover:!text-red-500`}><Trash2 size={11.5} strokeWidth={1.9} /></button>
+              } />
           ))}
-        </div>
+        </ParamSection>
       )}
 
       {customParameters.length > 0 && (
-        <div className="space-y-0">
+        <ParamSection title="Parametreler" count={customParameters.length}>
           {customParameters.map(param => (
-            <div key={param.id} className="flex gap-1 items-center py-0.5 px-1 rounded transition-colors focus-within:bg-orange-50 focus-within:ring-1 focus-within:ring-orange-300 hover:bg-stone-50">
-              <input type="text" value={param.name} onChange={e => updateCustomParameter(param.id, 'name', e.target.value)} className={`w-8 ${inputBase} text-gray-800 text-center font-bold`} />
-              <input type="text" value={param.expression} onChange={e => updateCustomParameter(param.id, 'expression', e.target.value)} className={`w-16 ${inputBase} text-gray-800`} placeholder="expr" />
-              <span className="w-16 text-xs font-mono text-gray-400 text-left select-none">{param.result.toFixed(2)}</span>
+            <div key={param.id} className={P_ROW}>
+              <input type="text" value={param.name} onChange={e => updateCustomParameter(param.id, 'name', e.target.value)}
+                className={`${P_INPUT} !w-[40px] text-center !font-semibold`} />
+              <input type="text" value={param.expression} onChange={e => updateCustomParameter(param.id, 'expression', e.target.value)}
+                className={`${P_INPUT} !w-[74px]`} placeholder="ifade" />
+              <span className={P_RESULT}>{param.result.toFixed(2)}</span>
               <input type="text" value={param.description} onChange={e => updateCustomParameter(param.id, 'description', e.target.value)}
-                className="flex-1 px-1 py-0.5 text-xs bg-transparent text-gray-600 border-b border-transparent hover:border-gray-300 focus:border-orange-400 rounded-none outline-none placeholder:text-stone-300" placeholder="note" />
-              <button onClick={() => deleteCustomParameter(param.id)} className="p-0.5 rounded text-stone-300 hover:text-red-400 transition-colors" title="Delete"><X size={12} /></button>
+                className={P_NOTE} placeholder="not…" />
+              <button onClick={() => deleteCustomParameter(param.id)} title="Sil"
+                className={`${P_ICON_BTN} opacity-0 group-hover/prow:opacity-100 hover:!bg-red-50 hover:!text-red-500`}><Trash2 size={11.5} strokeWidth={1.9} /></button>
             </div>
           ))}
-        </div>
+        </ParamSection>
       )}
 
       {subtractionViewMode && selectedSubtractionIndex !== null && selectedShape.subtractionGeometries?.[selectedSubtractionIndex] && (
-        <div className="space-y-0 pt-2 border-t border-yellow-300">
-          <div className="flex items-center justify-between text-xs font-semibold text-yellow-600 mb-1">
-            <span>Subtraction #{selectedSubtractionIndex + 1}</span>
-            <div className="flex items-center gap-1">
+        <ParamSection title={`Çıkarma #${selectedSubtractionIndex + 1}`} accent="#b45309"
+          right={
+            <div className="flex items-center gap-px">
               <button onClick={async () => { if (selectedShape && selectedSubtractionIndex !== null) await deleteSubtraction(selectedShape.id, selectedSubtractionIndex); }}
-                className="p-0.5 rounded text-stone-300 hover:text-red-400 transition-colors" title="Delete subtraction"><Trash2 size={12} /></button>
-              <button onClick={() => setSelectedSubtractionIndex(null)} className="p-0.5 rounded text-stone-300 hover:text-stone-500 transition-colors" title="Close"><X size={12} /></button>
+                className={`${P_ICON_BTN} hover:!bg-red-50 hover:!text-red-500`} title="Çıkarmayı sil"><Trash2 size={11.5} strokeWidth={1.9} /></button>
+              <button onClick={() => setSelectedSubtractionIndex(null)} className={P_ICON_BTN} title="Kapat"><X size={12} strokeWidth={2} /></button>
             </div>
-          </div>
-          <div className="space-y-0.5">
-            {renderSubParamRow('W', subParams.width, 'width', 'Subtraction Width')}
-            {renderSubParamRow('H', subParams.height, 'height', 'Subtraction Height')}
-            {renderSubParamRow('D', subParams.depth, 'depth', 'Subtraction Depth')}
-            {renderSubParamRow('X', subParams.posX, 'posX', 'Subtraction Position X')}
-            {renderSubParamRow('Y', subParams.posY, 'posY', 'Subtraction Position Y')}
-            {renderSubParamRow('Z', subParams.posZ, 'posZ', 'Subtraction Position Z')}
-            {renderSubParamRow('RX', subParams.rotX, 'rotX', 'Subtraction Rotation X')}
-            {renderSubParamRow('RY', subParams.rotY, 'rotY', 'Subtraction Rotation Y')}
-            {renderSubParamRow('RZ', subParams.rotZ, 'rotZ', 'Subtraction Rotation Z')}
-          </div>
-        </div>
+          }>
+          {renderSubParamRow('W', subParams.width, 'width', 'Genişlik')}
+          {renderSubParamRow('H', subParams.height, 'height', 'Yükseklik')}
+          {renderSubParamRow('D', subParams.depth, 'depth', 'Derinlik')}
+          {renderSubParamRow('X', subParams.posX, 'posX', 'Konum X')}
+          {renderSubParamRow('Y', subParams.posY, 'posY', 'Konum Y')}
+          {renderSubParamRow('Z', subParams.posZ, 'posZ', 'Konum Z')}
+          {renderSubParamRow('RX', subParams.rotX, 'rotX', 'Dönüş X')}
+          {renderSubParamRow('RY', subParams.rotY, 'rotY', 'Dönüş Y')}
+          {renderSubParamRow('RZ', subParams.rotZ, 'rotZ', 'Dönüş Z')}
+        </ParamSection>
       )}
 
       {vertexEditMode && vertexModifications.length > 0 && (
-        <div className="space-y-0 pt-2 border-t border-stone-200">
-          <div className="text-xs font-semibold text-stone-500 mb-1">Vertex Modifications</div>
+        <ParamSection title="Vertex düzenlemeleri" count={vertexModifications.length}>
           {vertexModifications.map((mod, idx) => {
             const result = evaluateExpression(mod.expression, getEvalContext());
             return (
-              <div key={idx} className="flex gap-1 items-center py-0.5 px-1 rounded transition-colors focus-within:bg-orange-50 focus-within:ring-1 focus-within:ring-orange-300 hover:bg-stone-50">
-                <span className="w-8 text-xs font-mono font-bold text-gray-500 text-center select-none">V{mod.vertexIndex}</span>
-                <input type="text" value={mod.expression} onChange={e => updateVertexModification(idx, 'expression', e.target.value)} className={`w-16 ${inputBase} text-gray-800`} placeholder="expr" />
-                <span className="w-16 text-xs font-mono text-gray-400 text-left select-none">{result.toFixed(2)}</span>
+              <div key={idx} className={P_ROW}>
+                <span className={P_LABEL} style={{ color: '#a8a29e' }}>V{mod.vertexIndex}</span>
+                <input type="text" value={mod.expression} onChange={e => updateVertexModification(idx, 'expression', e.target.value)} className={P_INPUT} placeholder="ifade" />
+                <span className={P_RESULT}>{result.toFixed(2)}</span>
                 <input type="text" value={mod.description || ''} onChange={e => updateVertexModification(idx, 'description', e.target.value)}
-                  className="flex-1 px-1 py-0.5 text-xs bg-transparent text-gray-600 border-b border-transparent hover:border-gray-300 focus:border-orange-400 rounded-none outline-none placeholder:text-stone-300" placeholder="note" />
+                  className={P_NOTE} placeholder="not…" />
               </div>
             );
           })}
-        </div>
+        </ParamSection>
       )}
 
-      <button onClick={handleApplyChanges} className="w-full mt-3 px-3 py-1.5 bg-orange-500 text-white text-xs font-medium rounded hover:bg-orange-600 transition-colors flex items-center justify-center gap-1.5">
-        <Check size={12} /> Apply Changes
+      {/* Uygula — Panel Editör'ün onay düğmesiyle aynı koyu taş dil. */}
+      <button onClick={handleApplyChanges}
+        className="w-full mt-3 h-[30px] rounded-[8px] bg-[#44403c] text-white text-[11.5px] font-semibold tracking-[0.01em] shadow-[0_1px_3px_rgba(40,30,20,0.22)] hover:bg-[#57534e] active:bg-[#292524] transition-colors duration-150 flex items-center justify-center gap-1.5">
+        <Check size={13} strokeWidth={2.4} /> Uygula
       </button>
     </div>
   ) : (
-    <div className="text-center text-stone-500 text-xs py-4">No shape selected</div>
+    <div className="text-center text-stone-400 text-[11.5px] py-6">Seçili şekil yok</div>
   );
 
   if (embedded) {
     return (
-      <div className="flex flex-col h-full">
-        <div className="px-2.5 py-1.5 border-b border-stone-100 flex items-center justify-between">
+      <div className="flex flex-col h-full min-h-0">
+        <div className="px-3 py-2 border-b border-stone-100 flex items-center justify-between shrink-0">
           {paramToolbar}
         </div>
-        <div className="px-2.5 py-2 overflow-y-auto flex-1">
+        <div className="flex-1 min-h-0 overflow-y-auto px-1.5 pt-2 pb-2">
           {paramContent}
         </div>
       </div>
@@ -499,7 +482,7 @@ export function ParametersPanel({ isOpen, onClose, embedded = false }: Parameter
           </button>
         </div>
       </div>
-      <div className="px-2.5 py-2 max-h-[calc(100vh-200px)] overflow-y-auto">
+      <div className="px-1.5 pt-2 pb-2 max-h-[calc(100vh-200px)] overflow-y-auto">
         {paramContent}
       </div>
     </div>

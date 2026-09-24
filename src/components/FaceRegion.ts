@@ -1435,6 +1435,10 @@ export function computeFreeRegionLocal(
   const footprints: Point2D[][] = [];
   const fpRotated: boolean[] = [];
   const fpIds: (string | null)[] = [];
+  // KALINLIK ŞERİDİ: bu yüzü DİK kesen düz bir kardeşin ayak izi (kısa kenar ≈
+  // panel kalınlığı). Basan panelin bu yüzdeki "basma düzlemi" şeridin UZUN
+  // kenarıdır (panelin büyük yüzü); kısa kenar panelin UCUDUR.
+  const fpStrip: boolean[] = [];
   const touchingSiblingIds: string[] = [];
   for (const panel of siblingPanels) {
     if (parentShapeId && panel?.parameters?.parentShapeId &&
@@ -1442,6 +1446,13 @@ export function computeFreeRegionLocal(
     const fp = panelFootprintInParentLocal(panel, parentWorldToLocal, nrm, planeN, u, v);
     if (!fp) continue;
     footprints.push(fp);
+    {
+      const th = parseFloat(panel?.parameters?.panelThickness) || 18;
+      let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+      for (const q of fp) { x0 = Math.min(x0, q.x); x1 = Math.max(x1, q.x); y0 = Math.min(y0, q.y); y1 = Math.max(y1, q.y); }
+      const mn = Math.min(x1 - x0, y1 - y0), mx = Math.max(x1 - x0, y1 - y0);
+      fpStrip.push(mn <= th * 1.5 + 0.5 && mx >= 2 * mn);
+    }
     // GERÇEKTEN DÖNMÜŞ kardeş (açısı ≠ 0 rotate adımı): uzak-teğet kırpması
     // AÇIK. Bölge, dönmüş şeridin İÇİNDEN geçer; panel dönmüş kardeşle örtüşür
     // ve PanelEngine'deki DÖNÜŞ-KESİMİ (yarım-uzay) kalınlık kenarını gerçek
@@ -1687,6 +1698,7 @@ export function computeFreeRegionLocal(
   //   (b) sonuç, kullanıcının gördüğü bölgeyle uyuşuyor mu (doğrulama).
   const blocking: Point2D[][] = [];
   const blockingRotated: boolean[] = [];
+  const blockingStrip: boolean[] = [];
   for (let f = 0; f < footprints.length; f++) {
     const fp = footprints[f];
     let blocks = 0;
@@ -1694,7 +1706,7 @@ export function computeFreeRegionLocal(
       const pt = { x: uMin + (i + 0.5) * cw, y: vMin + (j + 0.5) * ch };
       if (isPointInsidePolygon(pt, ring2D) && isPointInsidePolygon(pt, fp)) { blocks = 1; break; }
     }
-    if (blocks) { blocking.push(fp); blockingRotated.push(fpRotated[f]); }
+    if (blocks) { blocking.push(fp); blockingRotated.push(fpRotated[f]); blockingStrip.push(fpStrip[f]); }
   }
 
   // Ayak izi convexHull2D çıktısıdır → KONVEKS. Bu yüzden onu dışlamak için
@@ -1730,14 +1742,43 @@ export function computeFreeRegionLocal(
     return keep - 3 * bad;
   };
 
+  // ── BASMA DÜZLEMİ TERCİHİ (mod-kapalı sözleşmesi) ─────────────────────────
+  // KÖK NEDEN (Goker: "üst paneli 100'e kısaltıp aşağı taşıyınca yan panellerin
+  // içine giriyor, yanlarda 100'lük boşluk oluşuyor"): kısaltılmış+taşınmış üst
+  // panelin yan yüzdeki izi artık yüzün ORTASINDA duran 100×18'lik bir şerittir.
+  // Kırpma kenarı "en çok alan koruyan" kenar olarak seçiliyor (şeridin ÖN UCU)
+  // ve ardından içbükey kurtarma tam bölgeyi (yüz eksi çentik) kabul ediyordu →
+  // yan panel üst panelin ÜSTÜNDEN de devam edip onu içine alıyordu. Bu, ancak
+  // "yüzeyin şeklini al" AÇIKKEN istenen davranıştır.
+  // KURAL: basan panel, basılanı BÜYÜK YÜZÜNÜN düzlemiyle (şeridin uzun kenarı)
+  // keser — ucuyla değil. Yan panel üst panelin altında biter, tüm derinlikte.
+  // Yalnız düz (dönmemiş) kalınlık şeritlerinde ve mod kapalıyken; şeridin uzun
+  // kenarına göre çapa "içeride" ise (çapa şeridin ucunun ötesinde, bandın
+  // içinde) eski kenar seçimi aynen kalır.
+  let pressedCutApplied = false;
   let exact: Point2D[] = ring2D;
   for (let f = 0; f < blocking.length; f++) {
     const fp = blocking[f];
     let best: Point2D[] | null = null, bestScore = -Infinity;
+    let pressEdges: Set<number> | null = null;
+    if (!fitFaceShape && !blockingRotated[f] && blockingStrip[f]) {
+      const fr = canonicalStripFrame(fp);           // fr.p ⟂ en uzun kenar
+      const cand = new Set<number>();
+      for (let k = 0; k < fp.length; k++) {
+        const a = fp[k], b = fp[(k + 1) % fp.length];
+        const dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy);
+        if (L < 1e-6) continue;
+        const sA = dx * (anchorPt.y - a.y) - dy * (anchorPt.x - a.x);
+        if (sA >= -1e-9) continue;                     // çapa bu kenara göre dışarıda değil
+        if (Math.abs((dx / L) * fr.p.x + (dy / L) * fr.p.y) < 0.2) cand.add(k); // uzun eksene paralel
+      }
+      if (cand.size > 0) pressEdges = cand;
+    }
     for (let k = 0; k < fp.length; k++) {
       let a = fp[k], b = fp[(k + 1) % fp.length];
       const sA = (b.x - a.x) * (anchorPt.y - a.y) - (b.y - a.y) * (anchorPt.x - a.x);
       if (sA >= -1e-9) continue;               // çapa bu kenara göre dışarıda değil
+      if (pressEdges && !pressEdges.has(k)) continue; // yalnız basma düzlemi kenarları
       if (blockingRotated[f]) {
         // Kırpma çizgisini şeridin uzak teğetine ötele: kenar normali (çapadan
         // uzağa bakan yönde) boyunca hull'un en uzak noktası kadar + 0.5mm pay.
@@ -1764,7 +1805,13 @@ export function computeFreeRegionLocal(
       const sc = scoreOf(cand);
       if (sc > bestScore) { bestScore = sc; best = cand; }
     }
-    if (best && best.length >= 3) exact = best;
+    if (best && best.length >= 3) {
+      exact = best;
+      if (pressEdges) {
+        pressedCutApplied = true;
+        console.log('[YAGO][BÖLGE][BASMA-DÜZLEMİ]', 'şerit ayak izi uzun kenarıyla (büyük yüz düzlemi) kesildi; uç kenarı yok sayıldı. köşeN=', exact.length);
+      }
+    }
   }
 
   // ── DOĞRULAMA: sonuç, kullanıcının GÖRDÜĞÜ reach hücreleriyle uyuşmalı ──
@@ -1792,7 +1839,15 @@ export function computeFreeRegionLocal(
   // KESİN dikdörtgensel bölge denenir. Yalnız daha iyi kapsıyor ve taşmıyorsa
   // kabul edilir; dikdörtgen/konveks bölgelerde yarım-düzlem kapsaması ~1
   // olduğundan bu dal hiç tetiklenmez — mevcut davranış korunur.
-  if (exact.length >= 3 && blocking.length > 0 && !blockingRotated.some(Boolean)) {
+  // BASMA DÜZLEMİ + DİKDÖRTGEN YÜZ: kurtarma bilerek ATLANIR. Basan panelin
+  // altında kalan reach hücreleri (şeridin ucunun ötesindeki alan) kaybedilmiştir;
+  // kurtarma onları geri alıp paneli basanın etrafına sardırırdı (tam da
+  // düzeltilen hata). İçbükey (L/U) YÜZ konturlarında eski davranış korunur.
+  const skipConcaveRecovery = pressedCutApplied && isConvexPolygon2D(ring2D);
+  if (skipConcaveRecovery) {
+    console.log('[YAGO][BÖLGE] içbükey kurtarma atlandı: basma düzlemi kesimi + dikdörtgen yüz (mod kapalı)');
+  }
+  if (exact.length >= 3 && blocking.length > 0 && !blockingRotated.some(Boolean) && !skipConcaveRecovery) {
     const hp = scorePoly(exact);
     if (hp.cover < 0.95) {
       const rl = rectilinearFreeRegion(ring2D, blocking, anchorPt);
@@ -1815,7 +1870,8 @@ export function computeFreeRegionLocal(
     // bağlantılıdır); tek taraflı doğru poligon cover>=0.9'u yapısal olarak
     // geçemez ve tam-kontura düşerdi (panel tüm yüze yayılır = "üste çıktı"
     // görüntüsü). Bu durumda kapsama eşiği gevşetilir; taşma sınırı kalır.
-    const coverMin = (continuityConnected || relationChosen) ? 0.25 : 0.9;
+    // Basma düzlemi kesimi de reach'in bir kısmını BİLEREK bırakır (uç ötesi).
+    const coverMin = (continuityConnected || relationChosen || pressedCutApplied) ? 0.25 : 0.9;
     regionOk = total > 0 && cover >= coverMin && leak <= 0.1;
     if (regionOk) polygon = exact;
     else {

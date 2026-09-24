@@ -457,6 +457,30 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({ parametersContent, panelEdito
           color: #1c1917 !important;
         }
 
+        /* Parametre değeri — panel satırı notuyla aynı sessiz alan, sayısal yazı. */
+        .bone-skin input[type="text"].yago-param-input {
+          background: transparent !important;
+          border: 1px solid transparent !important;
+          border-radius: 6px !important;
+          box-shadow: none !important;
+          height: 22px !important;
+          padding: 0 6px !important;
+          font-family: 'SF Mono',ui-monospace,Menlo,monospace !important;
+          font-size: 12px !important;
+          font-weight: 500 !important;
+          letter-spacing: 0 !important;
+          color: #292524 !important;
+          font-variant-numeric: tabular-nums;
+        }
+        .bone-skin input[type="text"].yago-param-input::placeholder { color: #c9c2b8 !important; }
+        .bone-skin input[type="text"].yago-param-input:hover { border-color: #ebe5dc !important; background: rgba(255,255,255,0.6) !important; }
+        .bone-skin input[type="text"].yago-param-input:focus {
+          background: #ffffff !important;
+          border-color: rgba(249,115,22,0.45) !important;
+          box-shadow: 0 0 0 2px rgba(249,115,22,0.10) !important;
+        }
+        .bone-skin input[type="text"].yago-param-input[readonly] { color: #a8a29e !important; background: transparent !important; }
+
         /* Mono-style numeric inputs */
         .bone-skin input[type="text"].font-mono,
         .bone-skin input[type="number"] {
