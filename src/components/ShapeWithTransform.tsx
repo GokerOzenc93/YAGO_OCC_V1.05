@@ -190,21 +190,30 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
             vertexMap.set(key, group);
           }
 
-          for (const mod of shape.vertexModifications) {
-            if (!mod.offset) continue;
-            const vx = Math.round(mod.vertex[0] * 100) / 100;
-            const vy = Math.round(mod.vertex[1] * 100) / 100;
-            const vz = Math.round(mod.vertex[2] * 100) / 100;
-            const key = `${vx},${vy},${vz}`;
+          // KÖK NEDEN ("vertex editör bozulmuş, noktayı taşıyınca küp değişmiyor"):
+          // burada var olmayan `mod.vertex` alanı okunuyordu → async yükleyici
+          // TypeError ile sessizce düşüyor, mesh ve kenarlar hiç güncellenmiyordu.
+          // Eski (çalışan) sözleşme geri getirildi: taban köşe, editörle AYNI
+          // listeden (resolveBaseVertices) alınır; mesh'teki tüm kopyaları koordinatla
+          // bulunur ve eksen bazlı bileşik hedefe (composeVertexTargets) taşınır.
+          const { resolveBaseVertices, composeVertexTargets } = await import('./VertexEditorService');
+          const baseVertices = await resolveBaseVertices(shape);
+          const targets = composeVertexTargets(baseVertices, shape.vertexModifications);
+          let movedN = 0;
+          targets.forEach((target, vi) => {
+            const b = baseVertices[vi];
+            const key = `${Math.round(b.x * 100) / 100},${Math.round(b.y * 100) / 100},${Math.round(b.z * 100) / 100}`;
             const indices = vertexMap.get(key);
-            if (indices) {
-              for (const idx of indices) {
-                positions[idx]     += mod.offset[0];
-                positions[idx + 1] += mod.offset[1];
-                positions[idx + 2] += mod.offset[2];
-              }
+            if (!indices) return;
+            for (const idx of indices) {
+              positions[idx]     = target.x;
+              positions[idx + 1] = target.y;
+              positions[idx + 2] = target.z;
             }
-          }
+            movedN++;
+          });
+          console.log('[YAGO][VERTEX] mesh güncellendi: düzenlemeN=', shape.vertexModifications.length,
+            'taşınanKöşeN=', movedN, 'tabanKöşeN=', baseVertices.length);
 
           positionAttribute.needsUpdate = true;
           geom.computeVertexNormals();

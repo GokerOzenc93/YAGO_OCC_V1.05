@@ -765,14 +765,19 @@ const Scene: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    (window as any).handleVertexOffset = (newValue: number) => {
+    (window as any).handleVertexOffset = async (newValue: number) => {
       const cs = useAppStore.getState();
       const { selectedShapeId: sid, selectedVertexIndex: vi, vertexDirection: vd } = cs;
       if (sid && vi !== null && vd) {
         const shape = cs.shapes.find(s => s.id === sid);
-        if (!shape?.geometry) return;
-        const posAttr = shape.geometry.getAttribute('position');
-        const op: [number,number,number] = [posAttr.getX(vi), posAttr.getY(vi), posAttr.getZ(vi)];
+        if (!shape?.parameters) return;
+        // vi, EDİTÖRÜN köşe listesinin indeksidir (mesh tamponu DEĞİL). Eskiden
+        // shape.geometry'nin vi. tampon köşesi okunuyordu → yanlış köşe taban
+        // alınıyordu. Tek kaynak: resolveBaseVertices (editör + mesh ile aynı).
+        const { resolveBaseVertices } = await import('./VertexEditorService');
+        const bv = await resolveBaseVertices(shape);
+        if (vi >= bv.length) return;
+        const op: [number,number,number] = [bv[vi].x, bv[vi].y, bv[vi].z];
         const ai = vd.startsWith('x') ? 0 : vd.startsWith('y') ? 1 : 2;
         const np: [number,number,number] = [...op] as [number,number,number]; np[ai] = newValue;
         const off: [number,number,number] = [0,0,0]; off[ai] = newValue - op[ai];

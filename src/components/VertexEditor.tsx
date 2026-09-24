@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import * as THREE from 'three';
-import { getBoxVertices, getReplicadVertices } from './VertexEditorService';
+import { getBoxVertices, getReplicadVertices, composeVertexTargets } from './VertexEditorService';
 
 interface VertexEditorProps {
   shape: any;
@@ -235,23 +235,9 @@ export const VertexEditor: React.FC<VertexEditorProps> = ({
       console.log('📍 Setting base vertices:', baseVerts);
       setVertices(baseVerts);
 
-      const modified = baseVerts.map((vertex, index) => {
-        if (shape.vertexModifications) {
-          const mod = shape.vertexModifications.find((m: any) => m.vertexIndex === index);
-          if (mod && mod.newPosition) {
-            console.log(`✓ Applying vertex ${index} modification:`, {
-              base: [vertex.x.toFixed(1), vertex.y.toFixed(1), vertex.z.toFixed(1)],
-              modified: [mod.newPosition[0].toFixed(1), mod.newPosition[1].toFixed(1), mod.newPosition[2].toFixed(1)]
-            });
-            return new THREE.Vector3(
-              mod.newPosition[0],
-              mod.newPosition[1],
-              mod.newPosition[2]
-            );
-          }
-        }
-        return vertex.clone();
-      });
+      // Mesh ile AYNI bileşim (eksen bazlı) — nokta, kübün köşesiyle birlikte hareket eder.
+      const targets = composeVertexTargets(baseVerts, shape.vertexModifications);
+      const modified = baseVerts.map((vertex, index) => (targets.get(index) || vertex).clone());
 
       console.log(`✅ Computed ${modified.length} modified vertex positions`);
       setModifiedVertices(modified);

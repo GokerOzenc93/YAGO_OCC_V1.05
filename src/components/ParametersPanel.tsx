@@ -255,15 +255,31 @@ export function ParametersPanel({ isOpen, onClose, embedded = false }: Parameter
       if (idx !== index) return mod;
       const u = { ...mod, [field]: value };
       if (field === 'expression') {
+        // SÖZLEŞME (terminal girişi ve Uygula ile AYNI): ifade, seçilen eksendeki
+        // MUTLAK koordinattır. Eskiden burada yönlü ofset sayılıyordu; satırda
+        // görünen sonuç ile Uygula'nın ürettiği konum birbirini tutmuyordu.
         const result = evaluateExpression(value, getEvalContext());
-        const sign = mod.direction.includes('-') ? -1 : 1;
-        const axis = mod.direction[0];
-        u.offset = axis === 'x' ? [result * sign, 0, 0] : axis === 'y' ? [0, result * sign, 0] : [0, 0, result * sign];
-        u.newPosition = mod.originalPosition.map((v: number, i: number) => v + u.offset[i]);
+        const ai = mod.direction.startsWith('x') ? 0 : mod.direction.startsWith('y') ? 1 : 2;
+        const np = [...mod.originalPosition] as [number, number, number];
+        np[ai] = result;
+        const off: [number, number, number] = [0, 0, 0];
+        off[ai] = result - mod.originalPosition[ai];
+        u.newPosition = np;
+        u.offset = off;
       }
       return u;
     });
     setVertexModifications(updated);
+  };
+
+  // VERTEX DÜZENLEMESİ SİL (Goker: "eklenen vertex satırı silinemiyor"): hem
+  // panel durumundan hem şekilden kaldırılır → mesh aynı anda eski hâline döner
+  // (gövde geometrisi hep TABAN'dır; düzenlemeler çizimde üstüne uygulanır).
+  const deleteVertexModification = (index: number) => {
+    const updated = vertexModifications.filter((_, i) => i !== index);
+    setVertexModifications(updated);
+    if (selectedShape) updateShape(selectedShape.id, { vertexModifications: updated });
+    console.log('[YAGO][VERTEX] düzenleme silindi, kalanN=', updated.length);
   };
 
   const handleApplyChanges = async () => {
@@ -429,7 +445,8 @@ export function ParametersPanel({ isOpen, onClose, embedded = false }: Parameter
         </ParamSection>
       )}
 
-      {vertexEditMode && vertexModifications.length > 0 && (
+      {/* Düzenlemeler Vertex modu kapalıyken de görünür → her zaman silinebilir. */}
+      {vertexModifications.length > 0 && (
         <ParamSection title="Vertex edits" count={vertexModifications.length}>
           {vertexModifications.map((mod, idx) => {
             const result = evaluateExpression(mod.expression, getEvalContext());
@@ -440,6 +457,8 @@ export function ParametersPanel({ isOpen, onClose, embedded = false }: Parameter
                 <span className={P_RESULT}>{result.toFixed(2)}</span>
                 <input type="text" value={mod.description || ''} onChange={e => updateVertexModification(idx, 'description', e.target.value)}
                   className={P_NOTE} placeholder="note…" />
+                <button onClick={() => deleteVertexModification(idx)} title="Delete vertex edit"
+                  className={`${P_ICON_BTN} opacity-0 group-hover/prow:opacity-100 focus-visible:opacity-100 hover:!bg-red-50 hover:!text-red-500`}><Trash2 size={11.5} strokeWidth={1.9} /></button>
               </div>
             );
           })}

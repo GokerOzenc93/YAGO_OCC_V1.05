@@ -99,6 +99,43 @@ export async function getReplicadVertices(replicadShape: any): Promise<THREE.Vec
   }
 }
 
+/**
+ * VERTEX DÜZENLEME — TEK KAYNAK TABAN LİSTESİ.
+ * Editördeki noktalar, terminal işleyicisi (handleVertexOffset) ve sahnedeki
+ * mesh AYNI listeyi kullanmak ZORUNDA: vertexIndex bu listenin indeksidir,
+ * mesh tamponunun indeksi DEĞİL. Öncelik VertexEditor ile birebir:
+ * scaledBaseVertices → replicad köşeleri → kutu parametreleri.
+ */
+export async function resolveBaseVertices(shape: any): Promise<THREE.Vector3[]> {
+  const p = shape?.parameters;
+  if (!p) return [];
+  if (Array.isArray(p.scaledBaseVertices) && p.scaledBaseVertices.length > 0) {
+    return p.scaledBaseVertices.map((v: number[]) => new THREE.Vector3(v[0], v[1], v[2]));
+  }
+  if (shape.replicadShape) return getReplicadVertices(shape.replicadShape);
+  if (shape.type === 'box') return getBoxVertices(p.width, p.height, p.depth);
+  return [];
+}
+
+/**
+ * Her köşenin NİHAİ konumu: taban köşeden başlanır, o köşeye ait her düzenleme
+ * yalnız KENDİ ekseninde newPosition değerini yazar (aynı eksende sonraki kazanır).
+ * Eski kod köşe başına ilk düzenlemeyi alıyor / tüm newPosition'ı kopyalıyordu —
+ * aynı köşede X sonra Y taşıyınca ilki kayboluyordu.
+ */
+export function composeVertexTargets(base: THREE.Vector3[], mods: any[] | undefined): Map<number, THREE.Vector3> {
+  const out = new Map<number, THREE.Vector3>();
+  for (const mod of mods || []) {
+    const b = base[mod?.vertexIndex];
+    if (!b || !mod?.direction || !Array.isArray(mod.newPosition)) continue;
+    const ai = mod.direction.startsWith('x') ? 0 : mod.direction.startsWith('y') ? 1 : 2;
+    const t = out.get(mod.vertexIndex) || b.clone();
+    t.setComponent(ai, mod.newPosition[ai]);
+    out.set(mod.vertexIndex, t);
+  }
+  return out;
+}
+
 export function applyVertexModifications(
   geometry: THREE.BufferGeometry,
   modifications: VertexModification[]
