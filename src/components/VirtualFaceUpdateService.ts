@@ -10,7 +10,7 @@ import {
   isPointInsidePolygon,
   computeFreeRegionLocal,
   meshOnPlaneBoundary2D,
-  panelFootprintInParentLocal,
+  panelFootprintsInParentLocal,
   projectTo2D,
   subtractPolygon,
   type Point2D, panelIsTiltedSlab } from './FaceRegion';
@@ -1217,16 +1217,22 @@ function regenerateParentFaceShapeVF(
   // mi girdiğini gösterir. planeN = yüz düzleminin normal-ofseti.
   try {
     for (const sp of siblingPanels) {
-      const fp = panelFootprintInParentLocal(sp, worldToLocal, localNormal, planeN, u, v);
-      if (!fp) { continue; }
-      let fuMin = Infinity, fuMax = -Infinity, fvMin = Infinity, fvMax = -Infinity;
-      for (const q of fp) { fuMin = Math.min(fuMin, q.x); fuMax = Math.max(fuMax, q.x); fvMin = Math.min(fvMin, q.y); fvMax = Math.max(fvMax, q.y); }
+      // ÇOK PARÇALI TEMAS: çentikli kardeş yüze ayrık şeritlerle değiyorsa her
+      // parça ayrı satır olarak loglanır (parça k/N) — bölge hesabı da aynı
+      // parçaların tümünü engel sayar (computeFreeRegionLocal).
+      const pieces = panelFootprintsInParentLocal(sp, worldToLocal, localNormal, planeN, u, v);
+      if (!pieces || pieces.length === 0) { continue; }
       const rot = (sp.parameters?.rotateSteps?.length ?? 0) > 0;
-      console.log('[YAGO][AYAKİZİ]', vf.id, '<-', sp.id,
-        'boyut=', `${(fuMax - fuMin).toFixed(0)}x${(fvMax - fvMin).toFixed(0)}`,
-        'u=', `${fuMin.toFixed(0)}..${fuMax.toFixed(0)}`,
-        'v=', `${fvMin.toFixed(0)}..${fvMax.toFixed(0)}`,
-        'köşeN=', fp.length, rot ? 'DÖNMÜŞ' : 'düz');
+      pieces.forEach((fp, k) => {
+        let fuMin = Infinity, fuMax = -Infinity, fvMin = Infinity, fvMax = -Infinity;
+        for (const q of fp) { fuMin = Math.min(fuMin, q.x); fuMax = Math.max(fuMax, q.x); fvMin = Math.min(fvMin, q.y); fvMax = Math.max(fvMax, q.y); }
+        console.log('[YAGO][AYAKİZİ]', vf.id, '<-', sp.id,
+          'boyut=', `${(fuMax - fuMin).toFixed(0)}x${(fvMax - fvMin).toFixed(0)}`,
+          'u=', `${fuMin.toFixed(0)}..${fuMax.toFixed(0)}`,
+          'v=', `${fvMin.toFixed(0)}..${fvMax.toFixed(0)}`,
+          'köşeN=', fp.length, rot ? 'DÖNMÜŞ' : 'düz',
+          pieces.length > 1 ? `parça ${k + 1}/${pieces.length}` : '');
+      });
     }
   } catch { /* teşhis opsiyonel */ }
 

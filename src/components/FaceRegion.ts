@@ -23,6 +23,10 @@ import type { FaceData } from './FaceEditor';
 //    gerçek gönyeyi rebuild'deki boolean tanımlar.
 //  • Kesin-poligon + grid doğrulaması: köşegen kenarlar tırtıksız, sonuç
 //    kullanıcının gördüğü bölgeyle uyuşmak zorunda.
+//  • ÇOK PARÇALI AYAK İZİ (panelFootprintsInParentLocal): çentikli (C/L/U)
+//    kardeş bir yüze birden fazla AYRIK şeritle değer; her şerit ayrı engeldir.
+//    Tek halka alınırsa görünmeyen şerit panelin kardeşin içine girmesine yol
+//    açar (C gövde: arka panelin üst kolu → yan panelin içi).
 // ═══════════════════════════════════════════════════════════════════════════
 
 export function getFacePlaneAxes(normal: THREE.Vector3): { u: THREE.Vector3; v: THREE.Vector3 } {
@@ -218,6 +222,72 @@ export function buildBoundaryLoop2D(
     if (loop.length > edges.length + 2) break;
   }
   return loop.length >= 3 ? loop : null;
+}
+
+/**
+ * buildBoundaryLoop2D'nin ÇOK-HALKALI sürümü: kenar-halkası grafiğindeki TÜM
+ * bağlantısız halkaları döndürür. İlk halka buildBoundaryLoop2D ile birebir
+ * aynıdır (aynı başlangıç kenarı, aynı yürüyüş) — tek-halka çağıranların
+ * davranışı değişmez.
+ *
+ * KÖK NEDEN (Goker, C gövde / arka panel): çentikli (C/L/U) bir yan panel
+ * arka yüze İKİ AYRI şeritle değer (çentiğin altı ve üstü). Tek halkalı
+ * yürüyüş yalnız ilk şeridi buluyordu; üstteki şerit ayak izinden düşünce
+ * arka panelin üst kolu yan panelin İÇİNE giriyordu (log kanıtı: 18x800
+ * v=-800..0 — 1800'lük yan panelin yalnız alt parçası).
+ */
+export function buildBoundaryLoops2D(
+  boundaryEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>,
+  origin: THREE.Vector3,
+  u: THREE.Vector3,
+  v: THREE.Vector3
+): Point2D[][] {
+  if (boundaryEdges.length < 3) return [];
+  const keyOf = (p: Point2D) => `${p.x.toFixed(2)},${p.y.toFixed(2)}`;
+  type Edge2D = { a: Point2D; b: Point2D; ak: string; bk: string };
+  const edges: Edge2D[] = boundaryEdges.map(e => {
+    const a = projectTo2D(e.v1, origin, u, v);
+    const b = projectTo2D(e.v2, origin, u, v);
+    return { a, b, ak: keyOf(a), bk: keyOf(b) };
+  });
+  const adj = new Map<string, { other: string; point: Point2D }[]>();
+  for (const e of edges) {
+    if (e.ak === e.bk) continue;
+    if (!adj.has(e.ak)) adj.set(e.ak, []);
+    if (!adj.has(e.bk)) adj.set(e.bk, []);
+    adj.get(e.ak)!.push({ other: e.bk, point: e.b });
+    adj.get(e.bk)!.push({ other: e.ak, point: e.a });
+  }
+  const loops: Point2D[][] = [];
+  const visited = new Set<string>();
+  for (const e0 of edges) {
+    if (e0.ak === e0.bk || visited.has(e0.ak)) continue;
+    const startKey = e0.ak;
+    const loop: Point2D[] = [e0.a];
+    let cur = startKey, prev = '';
+    while (true) {
+      visited.add(cur);
+      const neigh = adj.get(cur) || [];
+      const next = neigh.find(n => n.other !== prev && !visited.has(n.other));
+      if (!next) break;
+      loop.push(next.point);
+      prev = cur; cur = next.other;
+      if (cur === startKey) break;
+      if (loop.length > edges.length + 2) break;
+    }
+    if (loop.length >= 3) loops.push(loop);
+    // Aynı bağlantılı bileşenin kalan düğümleri de ziyaret edildi sayılır:
+    // yürüyüş erken takılsa bile aynı bileşenden ikinci (kısmi/yinelenen)
+    // bir halka üretilmez.
+    const stack = [startKey];
+    while (stack.length) {
+      const k = stack.pop()!;
+      for (const n of adj.get(k) || []) {
+        if (!visited.has(n.other)) { visited.add(n.other); stack.push(n.other); }
+      }
+    }
+  }
+  return loops;
 }
 
 /**
@@ -836,6 +906,25 @@ export function panelFootprintInParentLocal(
   nrm: THREE.Vector3, planeN: number,
   u: THREE.Vector3, v: THREE.Vector3, tol = 3.0
 ): Point2D[] | null {
+  // TEK-POLİGON SÖZLEŞMESİ KORUNUR: ilk parça, eski tek-halkalı sonuçla
+  // birebir aynıdır (aynı yürüyüş). Çok parçalı temas için
+  // panelFootprintsInParentLocal kullanılır.
+  const loops = panelFootprintsInParentLocal(panel, parentWorldToLocal, nrm, planeN, u, v, tol);
+  return loops && loops.length > 0 ? loops[0] : null;
+}
+
+/**
+ * Bir kardeş panelin bu yüz düzlemindeki ayak izi — TÜM BAĞLANTISIZ PARÇALAR.
+ * Çentikli (C/L/U) bir panel yüze birden fazla ayrık şeritle değebilir; her
+ * şerit ayrı bir engel poligonudur. Tek parçalı panellerde sonuç
+ * panelFootprintInParentLocal ile özdeştir ([tekPoligon]).
+ * Yüze hiç değmiyorsa null.
+ */
+export function panelFootprintsInParentLocal(
+  panel: any, parentWorldToLocal: THREE.Matrix4,
+  nrm: THREE.Vector3, planeN: number,
+  u: THREE.Vector3, v: THREE.Vector3, tol = 3.0
+): Point2D[][] | null {
   if (!panel?.geometry) return null;
   const pos = panel.geometry.getAttribute('position');
   if (!pos) return null;
@@ -923,7 +1012,7 @@ export function panelFootprintInParentLocal(
     const rOut: Point2D[] = moved.map(v3 => ({ x: v3.dot(u), y: v3.dot(v) }));
     if (rOut.length < 3) return null;
     const hull = convexHull2D(rOut);
-    return hull.length >= 3 ? hull : null;
+    return hull.length >= 3 ? [hull] : null;
   }
   // EĞİK PANEL: düzlemi kesiyorsa gerçek KESİT (siluet değil)
   const pierces = dMin < -tol && dMax > tol;
@@ -975,8 +1064,21 @@ export function panelFootprintInParentLocal(
       }
     }
     if (bEdges.length >= 3) {
-      const loop2 = buildBoundaryLoop2D(bEdges, new THREE.Vector3(0, 0, 0), new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0));
-      if (loop2 && loop2.length >= 3) return loop2;
+      // ÇOK PARÇALI TEMAS: çentikli kardeş yüze ayrık şeritlerle değiyorsa
+      // hepsi döner. Eskiden yalnız ilk halka dönüyor, diğer şeritler ayak
+      // izinden düşüyor ve panel kardeşin içine giriyordu. Çok küçük/dejenere
+      // halkalar (alan ≈ 0) elenir; sıra korunur (ilk halka = eski sonuç).
+      const loops2 = buildBoundaryLoops2D(bEdges, new THREE.Vector3(0, 0, 0), new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0));
+      const area2 = (poly: Point2D[]) => {
+        let s = 0;
+        for (let k = 0; k < poly.length; k++) {
+          const a = poly[k], b = poly[(k + 1) % poly.length];
+          s += a.x * b.y - b.x * a.y;
+        }
+        return Math.abs(s) / 2;
+      };
+      const good = loops2.filter(l => l.length >= 3 && area2(l) > 1.0);
+      if (good.length > 0) return good;
     }
   }
   const hull = convexHull2D(out);
@@ -1017,7 +1119,7 @@ export function panelFootprintInParentLocal(
     }
   }
 
-  return hull;
+  return [hull];
 }
 
 /** reach hücrelerinin sınırını sıralı 2B halkaya çevirir. */
@@ -1494,25 +1596,46 @@ export function computeFreeRegionLocal(
   for (const panel of siblingPanels) {
     if (parentShapeId && panel?.parameters?.parentShapeId &&
         panel.parameters.parentShapeId !== parentShapeId) continue;
-    const fp = panelFootprintInParentLocal(panel, parentWorldToLocal, nrm, planeN, u, v);
-    if (!fp) continue;
-    footprints.push(fp);
-    {
-      const th = parseFloat(panel?.parameters?.panelThickness) || 18;
-      let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
-      for (const q of fp) { x0 = Math.min(x0, q.x); x1 = Math.max(x1, q.x); y0 = Math.min(y0, q.y); y1 = Math.max(y1, q.y); }
-      const mn = Math.min(x1 - x0, y1 - y0), mx = Math.max(x1 - x0, y1 - y0);
-      fpStrip.push(mn <= th * 1.5 + 0.5 && mx >= 2 * mn);
+    // ÇOK PARÇALI AYAK İZİ: çentikli (C/L/U) kardeş bu yüze birden fazla
+    // ayrık şeritle değebilir; HER parça ayrı bir engeldir. Eskiden yalnız ilk
+    // parça alınıyor, kalan şeritler görülmüyor ve panel kardeşin içine
+    // giriyordu (arka C panelin üst kolu → yan panelin içi). Tek parçalı
+    // kardeşlerde liste tek elemanlıdır; davranış birebir aynıdır.
+    const pieces = panelFootprintsInParentLocal(panel, parentWorldToLocal, nrm, planeN, u, v);
+    if (!pieces || pieces.length === 0) continue;
+    const rotated = panelHasRotation(panel);
+    const th = parseFloat(panel?.parameters?.panelThickness) || 18;
+    if (pieces.length > 1) {
+      console.log('[YAGO][AYAKİZİ][ÇOK-PARÇA]', panel?.id, 'parçaN=', pieces.length,
+        pieces.map(pc => {
+          let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+          for (const q of pc) { x0 = Math.min(x0, q.x); x1 = Math.max(x1, q.x); y0 = Math.min(y0, q.y); y1 = Math.max(y1, q.y); }
+          return `u=${x0.toFixed(0)}..${x1.toFixed(0)} v=${y0.toFixed(0)}..${y1.toFixed(0)}`;
+        }).join(' | '));
     }
-    // GERÇEKTEN DÖNMÜŞ kardeş (açısı ≠ 0 rotate adımı): uzak-teğet kırpması
-    // AÇIK. Bölge, dönmüş şeridin İÇİNDEN geçer; panel dönmüş kardeşle örtüşür
-    // ve PanelEngine'deki DÖNÜŞ-KESİMİ (yarım-uzay) kalınlık kenarını gerçek
-    // eğik düzleme birebir biçer — "taşımadaki gibi kısalsın, kalınlık açı
-    // alsın" (Goker). Yakın kenardan kırpılsaydı panel şeridin en alçak
-    // çizgisinde kare bitip kama boşluğu bırakırdı. Düz/extrude'lu/taşınmış
-    // kardeşlerde (dönüş yok) davranış değişmez.
-    fpRotated.push(panelHasRotation(panel));
-    fpIds.push(panel?.id ?? null);
+    pieces.forEach((fp, k) => {
+      footprints.push(fp);
+      {
+        let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+        for (const q of fp) { x0 = Math.min(x0, q.x); x1 = Math.max(x1, q.x); y0 = Math.min(y0, q.y); y1 = Math.max(y1, q.y); }
+        const mn = Math.min(x1 - x0, y1 - y0), mx = Math.max(x1 - x0, y1 - y0);
+        fpStrip.push(mn <= th * 1.5 + 0.5 && mx >= 2 * mn);
+      }
+      // GERÇEKTEN DÖNMÜŞ kardeş (açısı ≠ 0 rotate adımı): uzak-teğet kırpması
+      // AÇIK. Bölge, dönmüş şeridin İÇİNDEN geçer; panel dönmüş kardeşle örtüşür
+      // ve PanelEngine'deki DÖNÜŞ-KESİMİ (yarım-uzay) kalınlık kenarını gerçek
+      // eğik düzleme birebir biçer — "taşımadaki gibi kısalsın, kalınlık açı
+      // alsın" (Goker). Yakın kenardan kırpılsaydı panel şeridin en alçak
+      // çizgisinde kare bitip kama boşluğu bırakırdı. Düz/extrude'lu/taşınmış
+      // kardeşlerde (dönüş yok) davranış değişmez.
+      fpRotated.push(rotated);
+      // BAĞ-İLİŞKİSİ ANAHTARI: ilk parça eski anahtarı (panel id) korur → kayıtlı
+      // taraf sözleşmeleri geçerliliğini sürdürür. Ek parçalar `${id}#k` ile
+      // ayrı sözleşme taşır; iki şerit farklı yerde olsa bile tek işaret iki
+      // parçaya zorlanmaz.
+      const pid = panel?.id ?? null;
+      fpIds.push(pid ? (k === 0 ? pid : `${pid}#${k}`) : null);
+    });
     if (panel.id) touchingSiblingIds.push(panel.id);
   }
 
