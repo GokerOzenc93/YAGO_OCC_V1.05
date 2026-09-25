@@ -993,6 +993,75 @@ async function effectiveBodySolid(parent: Shape): Promise<any | null> {
   return solid.clone();
 }
 
+/** Düzenlenmiş gövdenin EĞİK (eksen-hizasız) yüz düzlemleri — dışa bakan normal + d. */
+function tiltedBodyPlanes(parent: Shape): Array<{ n: THREE.Vector3; d: number }> {
+  const mods = (parent as any).vertexModifications;
+  if (!Array.isArray(mods) || mods.length === 0 || !parent.geometry) return [];
+  const geo = effectiveBodyGeometry(parent);
+  const groups = groupCoplanarFaces(extractFacesFromGeometry(geo));
+  geo.computeBoundingBox();
+  const center = new THREE.Vector3(); geo.boundingBox!.getCenter(center);
+  const out: Array<{ n: THREE.Vector3; d: number }> = [];
+  for (const g of groups) {
+    const n = g.normal.clone().normalize();
+    if (Math.max(Math.abs(n.x), Math.abs(n.y), Math.abs(n.z)) >= 0.999) continue;
+    if (n.dot(new THREE.Vector3().subVectors(g.center, center)) < 0) n.negate();
+    out.push({ n, d: g.center.dot(n) });
+  }
+  return out;
+}
+
+/**
+ * EĞİK YÜZE DAYANAN DÜZ PANEL — uç uzatma (Goker: "sıralamayı değiştirince yan
+ * paneller düzenlenmiş kübe göre kenarları kırpılmadan yerleşti").
+ * Yan yüzün VF bölgesi yüz sınırında biter (ör. sağ yüz 122 yüksek); ama gövdenin
+ * üstü eğik olduğundan panelin İÇ kenarı (kalınlık kadar içeride) eğik düzleme
+ * göre daha yukarıda/aşağıda kalır → eğik tavanla arasında kama kalır ve basılan
+ * üst panel bu ucun ÜSTÜNDEN geçer. Eğik yüz düzlemi üzerindeki VF köşeleri, o
+ * düzlemin VF-düzlemi içindeki dışa yönü boyunca kalınlık×3 uzatılır; gövde
+ * katısıyla kesişim (clipToBodyIfNeeded) ucu tam eğime göre pahlar.
+ * Yalnız bir VF köşesi eğik bir gövde düzlemi üzerindeyse etki eder.
+ */
+function extendVertsOnTiltedPlanes(
+  verts: [number, number, number][], vfNormal: [number, number, number],
+  planes: Array<{ n: THREE.Vector3; d: number }>, amount: number,
+): { verts: [number, number, number][]; moved: number } {
+  if (!planes.length) return { verts, moved: 0 };
+  const nv = new THREE.Vector3(...vfNormal).normalize();
+  let moved = 0;
+  const out = verts.map(c => {
+    const p = new THREE.Vector3(c[0], c[1], c[2]);
+    for (const pl of planes) {
+      if (Math.abs(p.dot(pl.n) - pl.d) > 1.0) continue;
+      // Eğik düzlemin dışa normalinin VF düzlemi içindeki bileşeni
+      const dir = pl.n.clone().addScaledVector(nv, -pl.n.dot(nv));
+      if (dir.lengthSq() < 1e-6) continue;   // eğik yüz VF'ye paralel: uzatma anlamsız
+      dir.normalize();
+      p.addScaledVector(dir, amount);
+      moved++;
+      break;
+    }
+    return [p.x, p.y, p.z] as [number, number, number];
+  });
+  return { verts: out, moved };
+}
+
+/** Düz panel, düzenlenmiş gövde katısıyla kesiştirilir (eğik uç pahı). */
+async function clipToBodyIfNeeded(rp: any, panel: Shape, parent: Shape): Promise<any> {
+  try {
+    const body = await effectiveBodySolid(parent);
+    if (!body) return rp;
+    const before = rp.boundingBox.bounds.map((v: number[]) => v.map(n => n.toFixed(0)).join(',')).join('..');
+    const out = rp.intersect(body);
+    console.log('[YAGO][EĞİK-UÇ]', panel.id, 'gövde kesişimi (eğik yüz pahı)', before, '→',
+      out.boundingBox.bounds.map((v: number[]) => v.map(n => n.toFixed(0)).join(',')).join('..'));
+    return out;
+  } catch (err) {
+    console.warn('[YAGO][EĞİK-UÇ] gövde kesişimi hatası:', panel.id, (err as any)?.message || String(err));
+    return rp;
+  }
+}
+
 async function fitRotatedPanel(
   rp: any, panel: Shape, parent: Shape, siblings: Shape[], orderOf: (s: Shape) => number,
   refContacts: Map<string, RefContact> = new Map(),
@@ -1331,7 +1400,22 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       const growAmount = isRotated
         ? Math.max(parseFloat(pp.width) || 0, parseFloat(pp.height) || 0, parseFloat(pp.depth) || 0, 600) * 1.5
         : 0;
-      let rp = await createPanelFromVirtualFace(buildVerts, att.vf.normal, thickness, growAmount);
+      // DÜZ PANEL + EĞİK GÖVDE YÜZÜ: VF'nin eğik düzlem üzerindeki köşeleri uzatılır;
+      // panel sonra gövde katısıyla kesişip ucu eğime göre pahlanır (needsBodyClip).
+      let genVerts = buildVerts;
+      let needsBodyClip = false;
+      if (!isRotated) {
+        const planes = tiltedBodyPlanes(parentFresh);
+        if (planes.length) {
+          const ext = extendVertsOnTiltedPlanes(buildVerts, att.vf.normal, planes, thickness * 3 + 2);
+          if (ext.moved > 0) {
+            genVerts = ext.verts; needsBodyClip = true;
+            console.log('[YAGO][EĞİK-UÇ]', panel.id, 'VF köşeleri eğik gövde yüzünde: uzatılanKöşeN=', ext.moved,
+              'eğikDüzlemN=', planes.length, '→ gövdeyle kesilecek');
+          }
+        }
+      }
+      let rp = await createPanelFromVirtualFace(genVerts, att.vf.normal, thickness, growAmount);
       if (!rp) return;
       // Adımlar (move/rotate) sırayla uygulanır — çember döndürünce panel döner.
       const { ops, resolvedRotations } = composeSteps(steps, att.vf);
@@ -1381,6 +1465,8 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       for (const r of resolvedRotations) if (r.targetId && r.contact) refContacts.set(r.targetId, r.contact);
       if (isRotated) {
         rp = await fitRotatedPanel(rp, panel, parentFresh, children, orderOf, refContacts);
+      } else if (needsBodyClip) {
+        rp = await clipToBodyIfNeeded(rp, panel, parentFresh);
       }
 
       // YÜZ EXTRUDE: panel artık DOĞRU ÇERÇEVEDE (VF'den üretildi + transform
