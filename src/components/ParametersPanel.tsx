@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { X, GripVertical, Plus, Check, Trash2, Spline, Layers, Radius } from 'lucide-react';
 import { ToolChip, ToolChipBar } from './ToolbarChips';
-import { useAppStore } from '../store';
+import { useAppStore, useStoreFields } from '../store';
 import * as THREE from 'three';
 import { evaluateExpression } from './Expression';
-import { applyShapeChanges, applySubtractionChanges } from './ShapeUpdaterService';
+import { applyShapeChanges } from './ShapeUpdaterService';
 
 interface CustomParameter {
   id: string;
@@ -105,9 +105,9 @@ export function ParametersPanel({ isOpen, onClose, embedded = false }: Parameter
   const {
     selectedShapeId, shapes, updateShape, vertexEditMode, setVertexEditMode,
     subtractionViewMode, setSubtractionViewMode, selectedSubtractionIndex, setSelectedSubtractionIndex,
-    deleteSubtraction, setShowParametersPanel, filletMode, setFilletMode, faceEditMode, setFaceEditMode,
+    deleteSubtraction, setShowParametersPanel, filletMode, setFilletMode, setFaceEditMode,
     selectedFilletFaces, clearFilletFaces, clearFilletFaceData,
-  } = useAppStore();
+  } = useStoreFields('selectedShapeId', 'shapes', 'updateShape', 'vertexEditMode', 'setVertexEditMode', 'subtractionViewMode', 'setSubtractionViewMode', 'selectedSubtractionIndex', 'setSelectedSubtractionIndex', 'deleteSubtraction', 'setShowParametersPanel', 'filletMode', 'setFilletMode', 'setFaceEditMode', 'selectedFilletFaces', 'clearFilletFaces', 'clearFilletFaceData');
 
   const [position, setPosition] = useState({ x: 100, y: 100 });
   const [isDragging, setIsDragging] = useState(false);
@@ -161,7 +161,7 @@ export function ParametersPanel({ isOpen, onClose, embedded = false }: Parameter
 
     const subGeo = subtraction.geometry;
     if (!subGeo) return;
-    const subBox = new THREE.Box3().setFromBufferAttribute(subGeo.getAttribute('position'));
+    const subBox = new THREE.Box3().setFromBufferAttribute(subGeo.getAttribute('position') as THREE.BufferAttribute);
     const subSize = new THREE.Vector3();
     subBox.getSize(subSize);
 
@@ -284,7 +284,7 @@ export function ParametersPanel({ isOpen, onClose, embedded = false }: Parameter
       const sid = selectedShape.id;
       const hasPanels = useAppStore.getState().shapes.some(s => s.type === 'panel' && s.parameters?.parentShapeId === sid);
       if (hasPanels) {
-        import('./PanelRebuildService')
+        import('./PanelEngine')
           .then(({ rebuildPanelsForParent }) => rebuildPanelsForParent(sid))
           .catch(e => console.error('[YAGO][VERTEX] rebuild hatası:', e));
       }
@@ -309,7 +309,7 @@ export function ParametersPanel({ isOpen, onClose, embedded = false }: Parameter
       subParams: evalSub, updateShape
     });
     if (selectedShapeId) {
-      const { rebuildPanelsForParent } = await import('./PanelRebuildService');
+      const { rebuildPanelsForParent } = await import('./PanelEngine');
       await rebuildPanelsForParent(selectedShapeId);
     }
   };
@@ -329,7 +329,7 @@ export function ParametersPanel({ isOpen, onClose, embedded = false }: Parameter
 
       for (const sub of (currentShape.subtractionGeometries || [])) {
         if (!sub) continue;
-        const subBox = new THREE.Box3().setFromBufferAttribute(sub.geometry.getAttribute('position'));
+        const subBox = new THREE.Box3().setFromBufferAttribute(sub.geometry.getAttribute('position') as THREE.BufferAttribute);
         const subSize = new THREE.Vector3();
         subBox.getSize(subSize);
         const subShape = await createReplicadBox({ width: subSize.x, height: subSize.y, depth: subSize.z });

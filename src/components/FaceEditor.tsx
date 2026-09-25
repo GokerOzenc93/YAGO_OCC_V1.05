@@ -1,27 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import * as THREE from 'three';
-import { useAppStore } from '../store';
-
-export type {
-  FaceData,
-  CoplanarFaceGroup,
-} from './GeometryUtils';
-
-export {
-  extractFacesFromGeometry,
-  groupCoplanarFaces,
-  createGroupBoundaryEdges,
-  findClosestFaceToRay,
-  createFaceHighlightGeometry,
-  getFaceWorldPosition,
-  getFaceWorldNormal,
-  createFaceDescriptor,
-  findFaceByDescriptor,
-} from './GeometryUtils';
+import { useStoreFields } from '../store';
 
 import {
-  extractFacesFromGeometry,
-  groupCoplanarFaces,
+  getFacesAndGroups,
   createFaceHighlightGeometry,
   createGroupBoundaryEdges,
   type FaceData,
@@ -35,18 +17,11 @@ interface FaceEditorProps {
 
 export const FaceEditor: React.FC<FaceEditorProps> = ({ shape, isActive }) => {
   const {
-    hoveredFaceIndex,
-    setHoveredFaceIndex,
-    selectedFaceIndex,
-    setSelectedFaceIndex,
     filletMode,
     selectedFilletFaces,
     addFilletFace,
-    addFilletFaceData,
-    panelSurfaceSelectMode,
-    waitingForSurfaceSelection,
-    triggerPanelCreationForFace
-  } = useAppStore();
+    addFilletFaceData
+  } = useStoreFields('filletMode', 'selectedFilletFaces', 'addFilletFace', 'addFilletFaceData');
 
   const [faces, setFaces] = useState<FaceData[]>([]);
   const [faceGroups, setFaceGroups] = useState<CoplanarFaceGroup[]>([]);
@@ -57,10 +32,8 @@ export const FaceEditor: React.FC<FaceEditorProps> = ({ shape, isActive }) => {
   useEffect(() => {
     if (!shape.geometry) return;
 
-    const extractedFaces = extractFacesFromGeometry(shape.geometry);
+    const { faces: extractedFaces, groups } = getFacesAndGroups(shape.geometry);
     setFaces(extractedFaces);
-
-    const groups = groupCoplanarFaces(extractedFaces);
     setFaceGroups(groups);
   }, [shape.geometry, shape.id, geometryUuid]);
 
@@ -112,7 +85,6 @@ export const FaceEditor: React.FC<FaceEditorProps> = ({ shape, isActive }) => {
         });
       }
     } else {
-      setSelectedFaceIndex(groupIndex);
     }
   };
 
@@ -129,7 +101,6 @@ export const FaceEditor: React.FC<FaceEditorProps> = ({ shape, isActive }) => {
 
       if (groupIndex !== -1) {
         setHoveredGroupIndex(groupIndex);
-        setHoveredFaceIndex(faceIndex);
       }
     }
   };
@@ -137,17 +108,10 @@ export const FaceEditor: React.FC<FaceEditorProps> = ({ shape, isActive }) => {
   const handlePointerOut = (e: any) => {
     e.stopPropagation();
     setHoveredGroupIndex(null);
-    setHoveredFaceIndex(null);
   };
 
   const handlePointerDown = (e: any) => {
     e.stopPropagation();
-
-    if (panelSurfaceSelectMode && waitingForSurfaceSelection && hoveredGroupIndex !== null) {
-      console.log('🎯 Surface clicked for panel creation, faceIndex:', hoveredGroupIndex);
-      triggerPanelCreationForFace(hoveredGroupIndex);
-      return;
-    }
 
     if (e.button === 2 && hoveredGroupIndex !== null) {
       handleFaceSelection(hoveredGroupIndex);

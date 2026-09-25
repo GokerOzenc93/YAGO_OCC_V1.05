@@ -1,26 +1,15 @@
 import React, { useMemo, useState, useEffect, useRef, useCallback } from 'react';
 import * as THREE from 'three';
-import { useAppStore } from '../store';
+import { useStoreFields } from '../store';
 import type { VirtualFace } from '../store';
+import { getFacesAndGroups, createFaceHighlightGeometry, createFaceDescriptor, type FaceData, type CoplanarFaceGroup } from './GeometryUtils';
 import {
-  extractFacesFromGeometry,
-  groupCoplanarFaces,
-  createFaceHighlightGeometry,
-  createFaceDescriptor,
-  FaceData,
-  CoplanarFaceGroup,
-} from './FaceEditor';
-import { convertReplicadToThreeGeometry } from './ReplicadService';
+  earClipTriangulate, pointInTriangle3D, findPanelCoveringPoint, computeFaceComponentContour, computeFreeRegionLocal, type Point2D,
+} from './FaceRegion';
+import { getFacePlaneAxes, getShapeMatrix } from './PanelMath';
+import { effectiveBodyGeometry } from './VertexEditorService';
 
 interface FaceRaycastOverlayProps { shape: any; allShapes?: any[]; }
-
-export * from './FaceRegion';
-import * as FR from './FaceRegion';
-import { effectiveBodyGeometry } from './VertexEditorService';
-// Yerel kısayollar (UI gövdesi bare isim kullanır):
-const {
-  getFacePlaneAxes, getShapeMatrix, projectTo2D, raySegmentIntersect2D, getSubtractionWorldMatrix, getSubtractorFootprints2D, convexHull2D, pickDominantEdgeDirection, buildBoundaryLoop2D, sutherlandHodgmanClip, isInsideEdge, isConvexPolygon2D, lineIntersect2D, subtractPolygon, isPointInsidePolygon, findEdgeIntersections, segmentIntersect2D, traceHoleEdge, earClipTriangulate, pointInTriangle, sign, pointInTriangle3D, ensureCCW, castRayOnFaceWorldDetailed, castRayOnFaceWorld, panelFootprintOnPlane, findPanelCoveringPoint, isWorldPointInsidePanelFootprint, collectVirtualFaceObstacleEdgesWorld, computeFaceComponentContour, panelFootprintInParentLocal, traceReachBoundary, snapPolygonToSourceLines, clipByHalfPlane, canonicalStripFrame, computeFreeRegionLocal
-} = FR;
 
 interface PendingPreview {
   geo: THREE.BufferGeometry;
@@ -150,43 +139,16 @@ export function buildFacePreview(
 
 // Refined neutral palette — slate/zinc tones, subtle and professional
 const RAYCAST_COLORS = {
-  rayLine:        0x94a3b8, // slate-400 — muted line
-  hitDot:         0x64748b, // slate-500 — subtle endpoint
-  originDot:      0xe2e8f0, // slate-200 — bright origin
   previewFill:    0x38bdf8, // sky-400 — clean ice blue fill
   previewEdge:    0x0ea5e9, // sky-500 — crisper boundary
   hoverEmpty:     0xfcd34d, // amber-300 — warm highlight for empty face
   hoverHasVF:     0x7dd3fc, // sky-300 — cool highlight for placed face
   vfFill:         0x38bdf8, // sky-400 — consistent with preview
-  vfFillHovered:  0x0ea5e9, // sky-500
   vfEdge:         0x0369a1, // sky-700 — visible edge
 };
 
-const RayLine3D: React.FC<{ start: THREE.Vector3; end: THREE.Vector3 }> = React.memo(({ start, end }) => {
-  const geometry = useMemo(() => new THREE.BufferGeometry().setFromPoints([start, end]), [start.x, start.y, start.z, end.x, end.y, end.z]);
-  return (
-    <lineSegments geometry={geometry} raycast={() => null}>
-      <lineBasicMaterial color={RAYCAST_COLORS.rayLine} linewidth={1.5} depthTest={false} transparent opacity={0.7} />
-    </lineSegments>
-  );
-});
-RayLine3D.displayName = 'RayLine3D';
 
-const HitDot: React.FC<{ position: THREE.Vector3 }> = React.memo(({ position }) => (
-  <mesh position={[position.x, position.y, position.z]} raycast={() => null}>
-    <sphereGeometry args={[2, 8, 8]} />
-    <meshBasicMaterial color={RAYCAST_COLORS.hitDot} depthTest={false} transparent opacity={0.8} />
-  </mesh>
-));
-HitDot.displayName = 'HitDot';
 
-const OriginDot: React.FC<{ position: THREE.Vector3 }> = React.memo(({ position }) => (
-  <mesh position={[position.x, position.y, position.z]} raycast={() => null}>
-    <sphereGeometry args={[3, 8, 8]} />
-    <meshBasicMaterial color={RAYCAST_COLORS.originDot} depthTest={false} transparent opacity={0.9} />
-  </mesh>
-));
-OriginDot.displayName = 'OriginDot';
 
 function buildSurfaceMeshes(vf: VirtualFace): { geo: THREE.BufferGeometry; edgeGeo: THREE.BufferGeometry } | null {
   if (vf.vertices.length < 3) return null;
@@ -223,7 +185,7 @@ function buildSurfaceMeshes(vf: VirtualFace): { geo: THREE.BufferGeometry; edgeG
 interface VirtualFaceOverlayProps { shape: any; }
 
 export const VirtualFaceOverlay: React.FC<VirtualFaceOverlayProps> = ({ shape }) => {
-  const { virtualFaces, showVirtualFaces, panelSurfaceSelectMode, waitingForSurfaceSelection, triggerPanelCreationForFace, setSelectedPanelRow, panelSelectMode } = useAppStore();
+  const { virtualFaces, showVirtualFaces, setSelectedPanelRow, panelSelectMode } = useStoreFields('virtualFaces', 'showVirtualFaces', 'setSelectedPanelRow', 'panelSelectMode');
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const shapeFaces = useMemo(() => virtualFaces.filter(f => f.shapeId === shape.id && !f.hasPanel), [virtualFaces, shape.id]);
   const meshes = useMemo(() => {
@@ -232,7 +194,7 @@ export const VirtualFaceOverlay: React.FC<VirtualFaceOverlayProps> = ({ shape })
   if (!showVirtualFaces || meshes.length === 0) return null;
   return (
     <>
-      {meshes.map((surface, idx) => {
+      {meshes.map((surface) => {
         const isHovered = hoveredId === surface.id;
         return (
           <React.Fragment key={surface.id}>
@@ -240,17 +202,12 @@ export const VirtualFaceOverlay: React.FC<VirtualFaceOverlayProps> = ({ shape })
               geometry={surface.geo}
               onClick={(e) => {
                 e.stopPropagation();
-                if (panelSurfaceSelectMode) {
-                  triggerPanelCreationForFace(-(idx + 1), shape.id, { center: surface.vf.center, normal: surface.vf.normal, constraintPanelId: surface.vf.id });
-                  setSelectedPanelRow(`vf-${surface.vf.id}`);
-                } else if (panelSelectMode) {
-                  setSelectedPanelRow(`vf-${surface.vf.id}`);
-                }
+                if (panelSelectMode) setSelectedPanelRow(`vf-${surface.vf.id}`);
               }}
               onPointerOver={(e) => { e.stopPropagation(); setHoveredId(surface.id); }}
               onPointerOut={(e) => { e.stopPropagation(); setHoveredId(null); }}
             >
-              <meshBasicMaterial color={isHovered && panelSurfaceSelectMode ? RAYCAST_COLORS.vfFillHovered : RAYCAST_COLORS.vfFill} transparent opacity={isHovered ? 0.55 : 0.30} side={THREE.DoubleSide} polygonOffset polygonOffsetFactor={-2} polygonOffsetUnits={-2} depthTest={false} />
+              <meshBasicMaterial color={RAYCAST_COLORS.vfFill} transparent opacity={isHovered ? 0.55 : 0.30} side={THREE.DoubleSide} polygonOffset polygonOffsetFactor={-2} polygonOffsetUnits={-2} depthTest={false} />
             </mesh>
             <lineSegments geometry={surface.edgeGeo}>
               <lineBasicMaterial color={RAYCAST_COLORS.vfEdge} linewidth={2} depthTest={false} transparent opacity={0.85} />
@@ -263,7 +220,7 @@ export const VirtualFaceOverlay: React.FC<VirtualFaceOverlayProps> = ({ shape })
 };
 
 export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, allShapes = [] }) => {
-  const { raycastMode, setRaycastMode, addVirtualFace, virtualFaces, setSelectedPanelRow } = useAppStore();
+  const { raycastMode, setRaycastMode, addVirtualFace, virtualFaces, setSelectedPanelRow } = useStoreFields('raycastMode', 'setRaycastMode', 'addVirtualFace', 'virtualFaces', 'setSelectedPanelRow');
   const [faces, setFaces] = useState<FaceData[]>([]);
   const [faceGroups, setFaceGroups] = useState<CoplanarFaceGroup[]>([]);
   const [hoveredGroupIndex, setHoveredGroupIndex] = useState<number | null>(null);
@@ -279,9 +236,9 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
   const worldToLocal = useMemo(() => localToWorld.clone().invert(), [localToWorld]);
   useEffect(() => {
     if (!effGeometry) return;
-    const f = extractFacesFromGeometry(effGeometry);
+    const { faces: f, groups } = getFacesAndGroups(effGeometry);
     setFaces(f);
-    setFaceGroups(groupCoplanarFaces(f));
+    setFaceGroups(groups);
     setPending(null);
     lastClickRef.current = null;
   }, [effGeometry, shape.id, geometryUuid]);

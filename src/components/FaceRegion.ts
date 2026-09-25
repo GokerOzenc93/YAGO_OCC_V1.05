@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import type { VirtualFace } from '../store';
-import type { FaceData } from './FaceEditor';
+import type { FaceData } from './GeometryUtils';
+import { getFacePlaneAxes, getShapeMatrix, axisDirToVec } from './PanelMath';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // FaceRegion — PANEL ATMA ZİNCİRİNİN SAF GEOMETRİ ÇEKİRDEĞİ.
@@ -29,46 +29,10 @@ import type { FaceData } from './FaceEditor';
 //    açar (C gövde: arka panelin üst kolu → yan panelin içi).
 // ═══════════════════════════════════════════════════════════════════════════
 
-export function getFacePlaneAxes(normal: THREE.Vector3): { u: THREE.Vector3; v: THREE.Vector3 } {
-  const n = normal.clone().normalize();
-  const absX = Math.abs(n.x), absY = Math.abs(n.y), absZ = Math.abs(n.z);
-  const up = absY > absX && absY > absZ ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
-  const u = new THREE.Vector3().crossVectors(n, up).normalize();
-  const v = new THREE.Vector3().crossVectors(n, u).normalize();
-  return { u, v };
-}
-
-export function getShapeMatrix(shape: any): THREE.Matrix4 {
-  const pos = new THREE.Vector3(shape.position[0], shape.position[1], shape.position[2]);
-  const quat = new THREE.Quaternion().setFromEuler(new THREE.Euler(shape.rotation[0], shape.rotation[1], shape.rotation[2], 'XYZ'));
-  const scale = new THREE.Vector3(shape.scale[0], shape.scale[1], shape.scale[2]);
-  return new THREE.Matrix4().compose(pos, quat, scale);
-}
-
 export function projectTo2D(p: THREE.Vector3, origin: THREE.Vector3, u: THREE.Vector3, v: THREE.Vector3): { x: number; y: number } {
   const d = new THREE.Vector3().subVectors(p, origin);
   return { x: d.dot(u), y: d.dot(v) };
 }
-
-export function raySegmentIntersect2D(ox: number, oy: number, dx: number, dy: number, ax: number, ay: number, bx: number, by: number): number | null {
-  const ex = bx - ax, ey = by - ay;
-  const denom = dx * ey - dy * ex;
-  if (Math.abs(denom) < 1e-10) return null;
-  const t = ((ax - ox) * ey - (ay - oy) * ex) / denom;
-  const s = ((ax - ox) * dy - (ay - oy) * dx) / denom;
-  if (t > 1e-4 && s >= -1e-4 && s <= 1.0 + 1e-4) return t;
-  return null;
-}
-
-// ── SERİ IŞIN: görünürlük çokgeni ────────────────────────────────────────────
-// Tıklanan noktadan, düzlemdeki TÜM sınır+engel kenarlarına doğru ışın demeti
-// atılır: her kenar ucuna (±epsilon açıyla) hedefli ışınlar + düzgün dağılımlı
-// yelpaze. Sonuç, tıklanan noktadan "görünen" serbest bölgenin TAM çokgenidir:
-// eğik (döndürülmüş) bir panel yüzeyi kestiğinde bölge o eğik çizgiyi birebir
-// izler — dik durumlarda ise sonuç mevcut davranışla aynı dikdörtgendir.
-// NOT: Bu, yüzeyi "ana yüze eşitle" gibi birebir kopyalamaz; yalnızca tıklanan
-// noktanın etrafındaki erişilebilir alanın şeklini üretir.
-export interface ObstacleEdge { v1: THREE.Vector3; v2: THREE.Vector3; ownerId?: string; }
 
 /**
  * Bu yüz düzleminde "ana yüzeye eşitlenmiş" (alignToParentFace) kardeş VF'lerin
@@ -155,32 +119,6 @@ export function convexHull2D(points: Point2D[]): Point2D[] {
   }
   lower.pop(); upper.pop();
   return lower.concat(upper);
-}
-
-export function pickDominantEdgeDirection(
-  boundaryEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>,
-  normal: THREE.Vector3
-): THREE.Vector3 | null {
-  const bins = new Map<string, { dir: THREE.Vector3; length: number }>();
-  for (const e of boundaryEdges) {
-    const d = new THREE.Vector3().subVectors(e.v2, e.v1);
-    const len = d.length();
-    if (len < 1e-3) continue;
-    d.divideScalar(len);
-    d.addScaledVector(normal, -d.dot(normal)).normalize();
-    let dir = d.clone();
-    if (dir.x < 0 || (Math.abs(dir.x) < 1e-6 && dir.y < 0) ||
-        (Math.abs(dir.x) < 1e-6 && Math.abs(dir.y) < 1e-6 && dir.z < 0)) {
-      dir.negate();
-    }
-    const key = `${dir.x.toFixed(3)},${dir.y.toFixed(3)},${dir.z.toFixed(3)}`;
-    const existing = bins.get(key);
-    if (existing) existing.length += len;
-    else bins.set(key, { dir, length: len });
-  }
-  let best: { dir: THREE.Vector3; length: number } | null = null;
-  bins.forEach(b => { if (!best || b.length > best.length) best = b; });
-  return best ? best.dir.clone() : null;
 }
 
 export function buildBoundaryLoop2D(
@@ -408,7 +346,6 @@ export function subtractPolygon(subject: Point2D[], hole: Point2D[]): Point2D[] 
   const invertedHole = [...hole].reverse();
   const clipped = sutherlandHodgmanClip(subject, invertedHole);
   if (clipped.length < 3) return subject;
-  const subjectEdges: [Point2D, Point2D][] = subject.map((p, i) => [p, subject[(i + 1) % subject.length]]);
   const holeEdges: [Point2D, Point2D][] = hole.map((p, i) => [p, hole[(i + 1) % hole.length]]);
   const result: Point2D[] = [];
   const EPS = 0.5;
@@ -539,52 +476,6 @@ export function ensureCCW(poly: Point2D[]): Point2D[] {
   return area < 0 ? [...poly].reverse() : poly;
 }
 
-export interface RayHitResult {
-  hitPoint: THREE.Vector3;
-  hitEdge: ObstacleEdge | null;
-  edgeT: number;
-  isBoundaryEdge: boolean;
-  /** Işını durduran komşunun kimliği ('panel:<id>' | 'vf:<id>' | 'sub:<i>'); sınıra çarptıysa null. */
-  hitOwnerId: string | null;
-}
-
-export function castRayOnFaceWorldDetailed(originWorld: THREE.Vector3, dirWorld: THREE.Vector3, boundaryEdges: ObstacleEdge[], obstacleEdges: ObstacleEdge[], u: THREE.Vector3, v: THREE.Vector3, planeOrigin: THREE.Vector3, maxDist: number): RayHitResult {
-  const o2d = projectTo2D(originWorld, planeOrigin, u, v);
-  const dir2d = { x: dirWorld.dot(u), y: dirWorld.dot(v) };
-  let tMin = maxDist, hitEdge: ObstacleEdge | null = null, hitEdgeT = 0, isBoundary = false;
-  for (const edge of boundaryEdges) {
-    const a2d = projectTo2D(edge.v1, planeOrigin, u, v), b2d = projectTo2D(edge.v2, planeOrigin, u, v);
-    const t = raySegmentIntersect2D(o2d.x, o2d.y, dir2d.x, dir2d.y, a2d.x, a2d.y, b2d.x, b2d.y);
-    if (t !== null && t < tMin) {
-      tMin = t; hitEdge = edge; isBoundary = true;
-      const hitX = o2d.x + dir2d.x * t, hitY = o2d.y + dir2d.y * t;
-      const ex = b2d.x - a2d.x, ey = b2d.y - a2d.y, eLen = Math.sqrt(ex * ex + ey * ey);
-      hitEdgeT = eLen > 1e-8 ? ((hitX - a2d.x) * ex + (hitY - a2d.y) * ey) / (eLen * eLen) : 0;
-    }
-  }
-  for (const edge of obstacleEdges) {
-    const a2d = projectTo2D(edge.v1, planeOrigin, u, v), b2d = projectTo2D(edge.v2, planeOrigin, u, v);
-    const t = raySegmentIntersect2D(o2d.x, o2d.y, dir2d.x, dir2d.y, a2d.x, a2d.y, b2d.x, b2d.y);
-    if (t !== null && t < tMin) {
-      tMin = t; hitEdge = edge; isBoundary = false;
-      const hitX = o2d.x + dir2d.x * t, hitY = o2d.y + dir2d.y * t;
-      const ex = b2d.x - a2d.x, ey = b2d.y - a2d.y, eLen = Math.sqrt(ex * ex + ey * ey);
-      hitEdgeT = eLen > 1e-8 ? ((hitX - a2d.x) * ex + (hitY - a2d.y) * ey) / (eLen * eLen) : 0;
-    }
-  }
-  return {
-    hitPoint: originWorld.clone().addScaledVector(dirWorld, tMin),
-    hitEdge,
-    edgeT: Math.max(0, Math.min(1, hitEdgeT)),
-    isBoundaryEdge: isBoundary,
-    hitOwnerId: isBoundary ? null : (hitEdge?.ownerId ?? null),
-  };
-}
-
-export function castRayOnFaceWorld(originWorld: THREE.Vector3, dirWorld: THREE.Vector3, boundaryEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>, obstacleEdges: Array<{ v1: THREE.Vector3; v2: THREE.Vector3 }>, u: THREE.Vector3, v: THREE.Vector3, planeOrigin: THREE.Vector3, maxDist: number): THREE.Vector3 {
-  return castRayOnFaceWorldDetailed(originWorld, dirWorld, boundaryEdges, obstacleEdges, u, v, planeOrigin, maxDist).hitPoint;
-}
-
 
 /**
  * Returns true if the given world-space point falls inside the panel's CURRENT geometry
@@ -644,58 +535,6 @@ export function findPanelCoveringPoint(
     if (fp && isPointInsidePolygon(p2, fp)) return panel;
   }
   return null;
-}
-
-export function isWorldPointInsidePanelFootprint(
-  worldPt: THREE.Vector3,
-  panel: any,
-  facePlaneNormal: THREE.Vector3,
-  facePlaneOrigin: THREE.Vector3,
-  planeTolerance: number = 5.0
-): boolean {
-  if (!panel.geometry) return false;
-  const panelMatrix = getShapeMatrix(panel);
-  const { u, v } = getFacePlaneAxes(facePlaneNormal);
-  const boundary = meshOnPlaneBoundary2D(panel.geometry, panelMatrix, facePlaneNormal, facePlaneOrigin, u, v, planeTolerance);
-  if (boundary && boundary.length >= 3) {
-    return isPointInsidePolygon(projectTo2D(worldPt, facePlaneOrigin, u, v), boundary);
-  }
-  const posAttr = panel.geometry.getAttribute('position') as THREE.BufferAttribute;
-  const pts2D: Point2D[] = [];
-  for (let i = 0; i < posAttr.count; i++) {
-    const wp = new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)).applyMatrix4(panelMatrix);
-    const dist = Math.abs(facePlaneNormal.dot(new THREE.Vector3().subVectors(wp, facePlaneOrigin)));
-    if (dist < planeTolerance) pts2D.push(projectTo2D(wp, facePlaneOrigin, u, v));
-  }
-  if (pts2D.length < 3) {
-    pts2D.length = 0;
-    for (let i = 0; i < posAttr.count; i++) {
-      const wp = new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)).applyMatrix4(panelMatrix);
-      pts2D.push(projectTo2D(wp, facePlaneOrigin, u, v));
-    }
-  }
-  if (pts2D.length < 3) return false;
-  const hull = convexHull2D(pts2D);
-  if (hull.length < 3) return false;
-  return isPointInsidePolygon(projectTo2D(worldPt, facePlaneOrigin, u, v), hull);
-}
-
-export function collectVirtualFaceObstacleEdgesWorld(virtualFaces: VirtualFace[], excludeId: string | null, shapeLocalToWorld: THREE.Matrix4, facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, planeTolerance: number = 20, excludeVfIds?: Set<string>): ObstacleEdge[] {
-  const edges: ObstacleEdge[] = [];
-  for (const vf of virtualFaces) {
-    if (vf.id === excludeId || vf.vertices.length < 3) continue;
-    // Aynı düzlemde eşitlenmiş kardeş VF de engel sayılmaz (yukarıdaki gerekçe).
-    if (excludeVfIds && excludeVfIds.has(vf.id)) continue;
-    const ownerId = `vf:${vf.id}`;
-    const worldVerts = vf.vertices.map(vtx => new THREE.Vector3(vtx[0], vtx[1], vtx[2]).applyMatrix4(shapeLocalToWorld));
-    for (let i = 0; i < worldVerts.length; i++) {
-      const va = worldVerts[i], vb = worldVerts[(i + 1) % worldVerts.length];
-      const distA = Math.abs(facePlaneNormal.dot(new THREE.Vector3().subVectors(va, facePlaneOrigin)));
-      const distB = Math.abs(facePlaneNormal.dot(new THREE.Vector3().subVectors(vb, facePlaneOrigin)));
-      if (distA < planeTolerance && distB < planeTolerance) edges.push({ v1: va, v2: vb, ownerId });
-    }
-  }
-  return edges;
 }
 
 /**
@@ -836,6 +675,8 @@ export interface FreeRegionResult {
   reach: Uint8Array; anchor: Point2D; regionOk: boolean;
   /** Serbest bölgenin kaynak kenarlara oturtulmuş konturu (yerel u/v). */
   polygon: Point2D[];
+  /** Her ayak izinin sahibi: panel id (ilk parça) ya da `${id}#k` (ek parçalar). */
+  footprintIds: (string | null)[];
   /** KALICI BAĞ İLİŞKİSİ: seçilen bölgenin, her kardeş ayak izinin kanonik
    *  dik eksenine göre hangi tarafta olduğu (kardeşPanelId → ±1). Çağıran
    *  bunu VF'de saklar ve sonraki regen'lerde geri geçer; taraf seçimi
@@ -879,7 +720,7 @@ function buildRotationOpsFromPanel(panel: any): RotOp[] {
     const angleRad = (deg * Math.PI) / 180;
     const axis = s.axisVec
       ? new THREE.Vector3(...s.axisVec).normalize()
-      : letterToVec(s.axis);
+      : axisDirToVec(s.axis);
     const pivot = s.pivot
       ? new THREE.Vector3(...s.pivot)
       : new THREE.Vector3();
@@ -888,30 +729,6 @@ function buildRotationOpsFromPanel(panel: any): RotOp[] {
   return ops;
 }
 
-function letterToVec(a: string): THREE.Vector3 {
-  switch (a) {
-    case 'x+': return new THREE.Vector3(1, 0, 0);
-    case 'x-': return new THREE.Vector3(-1, 0, 0);
-    case 'y+': return new THREE.Vector3(0, 1, 0);
-    case 'y-': return new THREE.Vector3(0, -1, 0);
-    case 'z+': return new THREE.Vector3(0, 0, 1);
-    case 'z-': return new THREE.Vector3(0, 0, -1);
-    default: return new THREE.Vector3(0, 0, 0);
-  }
-}
-
-/** Panelin ayak izi — PARENT YEREL uzayında, tek dönüşüm zinciriyle. */
-export function panelFootprintInParentLocal(
-  panel: any, parentWorldToLocal: THREE.Matrix4,
-  nrm: THREE.Vector3, planeN: number,
-  u: THREE.Vector3, v: THREE.Vector3, tol = 3.0
-): Point2D[] | null {
-  // TEK-POLİGON SÖZLEŞMESİ KORUNUR: ilk parça, eski tek-halkalı sonuçla
-  // birebir aynıdır (aynı yürüyüş). Çok parçalı temas için
-  // panelFootprintsInParentLocal kullanılır.
-  const loops = panelFootprintsInParentLocal(panel, parentWorldToLocal, nrm, planeN, u, v, tol);
-  return loops && loops.length > 0 ? loops[0] : null;
-}
 
 /**
  * Bir kardeş panelin bu yüz düzlemindeki ayak izi — TÜM BAĞLANTISIZ PARÇALAR.
@@ -1182,47 +999,6 @@ export function traceReachBoundary(
     if (Math.abs(cr) > 1e-6) out.push(b);
   }
   return out.length >= 3 ? out : bestRing;
-}
-
-/** İzlenen sınırı, gerçek kaynak kenarlara (yüz konturu + ayak izleri) oturtur. */
-export function snapPolygonToSourceLines(
-  poly: Point2D[], sources: Point2D[][], tolDist: number
-): Point2D[] {
-  if (poly.length < 3) return poly;
-  type Line = { p: Point2D; d: Point2D };
-  const lines: Line[] = [];
-  for (const src of sources) {
-    for (let i = 0; i < src.length; i++) {
-      const a = src[i], b = src[(i + 1) % src.length];
-      const dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy);
-      if (L > 1e-6) lines.push({ p: a, d: { x: dx / L, y: dy / L } });
-    }
-  }
-  const distToLine = (q: Point2D, l: Line) =>
-    Math.abs((q.x - l.p.x) * l.d.y - (q.y - l.p.y) * l.d.x);
-  const edgeLines: Line[] = [];
-  for (let i = 0; i < poly.length; i++) {
-    const a = poly[i], b = poly[(i + 1) % poly.length];
-    const dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy);
-    const own: Line = L > 1e-6 ? { p: a, d: { x: dx / L, y: dy / L } } : { p: a, d: { x: 1, y: 0 } };
-    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-    let best: Line | null = null, bestD = tolDist;
-    for (const l of lines) {
-      if (Math.abs(own.d.x * l.d.y - own.d.y * l.d.x) > 0.15) continue; // paralel değil
-      const dd = distToLine(mid, l);
-      if (dd < bestD) { bestD = dd; best = l; }
-    }
-    edgeLines.push(best || own);
-  }
-  const out: Point2D[] = [];
-  for (let i = 0; i < poly.length; i++) {
-    const l1 = edgeLines[(i - 1 + poly.length) % poly.length], l2 = edgeLines[i];
-    const den = l1.d.x * l2.d.y - l1.d.y * l2.d.x;
-    if (Math.abs(den) < 1e-9) { out.push(poly[i]); continue; }
-    const t = ((l2.p.x - l1.p.x) * l2.d.y - (l2.p.y - l1.p.y) * l2.d.x) / den;
-    out.push({ x: l1.p.x + l1.d.x * t, y: l1.p.y + l1.d.y * t });
-  }
-  return out;
 }
 
 /**
@@ -1639,6 +1415,65 @@ export function computeFreeRegionLocal(
     if (panel.id) touchingSiblingIds.push(panel.id);
   }
 
+  return solveFreeRegionMemo({
+    ring2D, nrm, u, v, planeN, footprints, fpRotated, fpIds, fpStrip, touchingSiblingIds,
+    seedU: seedLocal.dot(u), seedV: seedLocal.dot(v),
+    prev2D: prevRegionCorners && prevRegionCorners.length >= 3 ? prevRegionCorners.map(c => ({ x: c.dot(u), y: c.dot(v) })) : undefined,
+    storedSideRelations, fitFaceShape: !!fitFaceShape,
+  });
+}
+
+interface FreeRegionInput {
+  ring2D: Point2D[]; nrm: THREE.Vector3; u: THREE.Vector3; v: THREE.Vector3; planeN: number;
+  footprints: Point2D[][]; fpRotated: boolean[]; fpIds: (string | null)[]; fpStrip: boolean[];
+  touchingSiblingIds: string[]; seedU: number; seedV: number; prev2D?: Point2D[];
+  storedSideRelations?: Record<string, number>; fitFaceShape: boolean;
+}
+
+// ── SERBEST BÖLGE ÇÖZÜM ÖNBELLEĞİ ────────────────────────────────────────────
+// Çözüm (grid + kırpma + doğrulama) girdilerinin SAF fonksiyonudur. Rebuild her
+// panelden sonra tüm VF'leri yeniden hesapladığından aynı (yüz, ayak izleri,
+// çapa, sözleşme) girdisi defalarca çözülüyordu. Girdiler bit-bit aynıysa
+// önceki sonuç (kopyası) döner; sonuç birebir aynıdır, yalnız tekrar hesap yok.
+const _regionMemo = new Map<string, FreeRegionResult>();
+const REGION_MEMO_MAX = 400;
+function regionKey(q: FreeRegionInput): string {
+  const P = (pts: Point2D[]) => pts.map(p => `${p.x},${p.y}`).join(';');
+  return [
+    P(q.ring2D), `${q.nrm.x},${q.nrm.y},${q.nrm.z}`, q.planeN,
+    q.footprints.map(P).join('|'), q.fpRotated.join(','), q.fpIds.join(','), q.fpStrip.join(','),
+    q.touchingSiblingIds.join(','), q.seedU, q.seedV, q.prev2D ? P(q.prev2D) : '-',
+    q.storedSideRelations ? JSON.stringify(q.storedSideRelations) : '-', q.fitFaceShape ? 1 : 0,
+  ].join('#');
+}
+function solveFreeRegionMemo(q: FreeRegionInput): FreeRegionResult {
+  const key = regionKey(q);
+  let r = _regionMemo.get(key);
+  if (!r) {
+    r = solveFreeRegion(q);
+    if (_regionMemo.size >= REGION_MEMO_MAX) _regionMemo.delete(_regionMemo.keys().next().value as string);
+    _regionMemo.set(key, r);
+  }
+  // Çağıranlar sonucu VF'ye yazar — paylaşılan kapsayıcılar kopyalanır.
+  return { ...r, polygon: [...r.polygon], footprints: [...r.footprints], footprintIds: [...r.footprintIds], touchingSiblingIds: [...r.touchingSiblingIds],
+    sideRelations: { ...r.sideRelations }, reach: r.reach.slice(), anchor: { ...r.anchor }, ring2D: [...r.ring2D] };
+}
+
+/** Nokta-çokgen testi, sınır kutusu ön elemeli (isPointInsidePolygon ile birebir). */
+function makePip(poly: Point2D[]): (x: number, y: number) => boolean {
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const q of poly) { if (q.x < x0) x0 = q.x; if (q.x > x1) x1 = q.x; if (q.y < y0) y0 = q.y; if (q.y > y1) y1 = q.y; }
+  const EPS = 1e-6;
+  return (x, y) => {
+    // y kutu dışı → hiçbir kenar kesişmez; x kutunun ötesinde → kesişim sayısı çift/0.
+    if (y >= y1 || y < y0 || x > x1 + EPS || x < x0 - EPS) return false;
+    return isPointInsidePolygon({ x, y }, poly);
+  };
+}
+
+function solveFreeRegion(q: FreeRegionInput): FreeRegionResult {
+  const { ring2D, u, v, planeN, footprints, fpRotated, fpIds, fpStrip, touchingSiblingIds, storedSideRelations, fitFaceShape } = q;
+
   let uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity;
   for (const q of ring2D) {
     uMin = Math.min(uMin, q.x); uMax = Math.max(uMax, q.x);
@@ -1650,16 +1485,24 @@ export function computeFreeRegionLocal(
   const ny = Math.min(240, Math.max(1, Math.ceil(vSpan / cell)));
   const cw = uSpan / nx, ch = vSpan / ny;
 
+  // Hücre merkezleri + yüz-içi maskesi bir kez hesaplanır (tüm geçişler paylaşır).
+  const PX = new Float64Array(nx), PY = new Float64Array(ny);
+  for (let i = 0; i < nx; i++) PX[i] = uMin + (i + 0.5) * cw;
+  for (let j = 0; j < ny; j++) PY[j] = vMin + (j + 0.5) * ch;
+  const pipRing = makePip(ring2D);
+  const inRing = new Uint8Array(nx * ny);
+  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) if (pipRing(PX[i], PY[j])) inRing[j * nx + i] = 1;
+  const fpPips = footprints.map(makePip);
+
   const free = new Uint8Array(nx * ny);
   for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
-    const pt = { x: uMin + (i + 0.5) * cw, y: vMin + (j + 0.5) * ch };
-    if (!isPointInsidePolygon(pt, ring2D)) continue;
+    if (!inRing[j * nx + i]) continue;
     let blocked = false;
-    for (const fp of footprints) if (isPointInsidePolygon(pt, fp)) { blocked = true; break; }
+    for (const pip of fpPips) if (pip(PX[i], PY[j])) { blocked = true; break; }
     if (!blocked) free[j * nx + i] = 1;
   }
 
-  const cu = seedLocal.dot(u), cv = seedLocal.dot(v);
+  const cu = q.seedU, cv = q.seedV;
   let ci = Math.max(0, Math.min(nx - 1, Math.floor((cu - uMin) / cw)));
   let cj = Math.max(0, Math.min(ny - 1, Math.floor((cv - vMin) / ch)));
 
@@ -1766,8 +1609,8 @@ export function computeFreeRegionLocal(
     }
   }
 
-  if (!relationChosen && prevRegionCorners && prevRegionCorners.length >= 3) {
-    const prev2D: Point2D[] = prevRegionCorners.map(c => ({ x: c.dot(u), y: c.dot(v) }));
+  if (!relationChosen && q.prev2D) {
+    const prev2D: Point2D[] = q.prev2D;
     const label = new Int32Array(nx * ny).fill(-1);
     let nComp = 0;
     for (let s = 0; s < nx * ny; s++) {
@@ -1874,11 +1717,10 @@ export function computeFreeRegionLocal(
   const blockingRotated: boolean[] = [];
   const blockingStrip: boolean[] = [];
   for (let f = 0; f < footprints.length; f++) {
-    const fp = footprints[f];
+    const fp = footprints[f], pip = fpPips[f];
     let blocks = 0;
     for (let j = 0; j < ny && blocks === 0; j++) for (let i = 0; i < nx; i++) {
-      const pt = { x: uMin + (i + 0.5) * cw, y: vMin + (j + 0.5) * ch };
-      if (isPointInsidePolygon(pt, ring2D) && isPointInsidePolygon(pt, fp)) { blocks = 1; break; }
+      if (inRing[j * nx + i] && pip(PX[i], PY[j])) { blocks = 1; break; }
     }
     if (blocks) { blocking.push(fp); blockingRotated.push(fpRotated[f]); blockingStrip.push(fpStrip[f]); }
   }
@@ -1898,22 +1740,28 @@ export function computeFreeRegionLocal(
   // kenarını açıya birebir şekillendirir. Düz kardeşlerde davranış değişmez
   // (düz kesişimde yakın kenar = boolean sonucuyla zaten özdeştir).
   const anchorPt = { x: uMin + (ci + 0.5) * cw, y: vMin + (cj + 0.5) * ch };
-  const insideAnyRotated = (pt: Point2D): boolean => {
-    for (let f = 0; f < blocking.length; f++) {
-      if (blockingRotated[f] && isPointInsidePolygon(pt, blocking[f])) return true;
+  // Dönmüş engel şeridi içindeki hücreler (taşma sayılmaz) — bir kez.
+  const rotPips = blocking.map((fp, f) => (blockingRotated[f] ? makePip(fp) : null)).filter(Boolean) as Array<(x: number, y: number) => boolean>;
+  const inRot = new Uint8Array(nx * ny);
+  if (rotPips.length) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+    for (const pip of rotPips) if (pip(PX[i], PY[j])) { inRot[j * nx + i] = 1; break; }
+  }
+  // Aday çokgenin reach ızgarasına göre sayımı (keep/bad) — scoreOf ve scorePoly ortak.
+  const gridCount = (poly: Point2D[]) => {
+    const pip = makePip(poly);
+    let total = 0, inside = 0, stray = 0;
+    for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+      const k = j * nx + i;
+      const isIn = pip(PX[i], PY[j]);
+      if (reach[k]) { total++; if (isIn) inside++; }
+      else if (isIn && inRing[k] && !inRot[k]) stray++;
     }
-    return false;
+    return { total, inside, stray };
   };
   const scoreOf = (poly: Point2D[]): number => {
     if (poly.length < 3) return -Infinity;
-    let keep = 0, bad = 0;
-    for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
-      const pt = { x: uMin + (i + 0.5) * cw, y: vMin + (j + 0.5) * ch };
-      const isIn = isPointInsidePolygon(pt, poly);
-      if (reach[j * nx + i]) { if (isIn) keep++; }
-      else if (isIn && isPointInsidePolygon(pt, ring2D) && !insideAnyRotated(pt)) bad++;
-    }
-    return keep - 3 * bad;
+    const c = gridCount(poly);
+    return c.inside - 3 * c.stray;
   };
 
   // ── BASMA DÜZLEMİ TERCİHİ (mod-kapalı sözleşmesi) ─────────────────────────
@@ -1995,16 +1843,9 @@ export function computeFreeRegionLocal(
   let polygon = ring2D;
   let regionOk = false;
   // Bir aday poligonun reach ızgarasına göre kapsama/taşma ölçüsü.
+  // Dönmüş kardeş şeridi bölgeye BİLEREK dahildir (uzak-teğet) → taşma sayılmaz.
   const scorePoly = (poly: Point2D[]): { cover: number; leak: number } => {
-    let total = 0, inside = 0, stray = 0;
-    for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
-      const pt = { x: uMin + (i + 0.5) * cw, y: vMin + (j + 0.5) * ch };
-      const isIn = isPointInsidePolygon(pt, poly);
-      if (reach[j * nx + i]) { total++; if (isIn) inside++; }
-      // Dönmüş kardeş şeridi bölgeye BİLEREK dahildir (uzak-teğet kırpması);
-      // o hücreler taşma sayılmaz, yoksa doğrulama haksız yere düşer.
-      else if (isIn && isPointInsidePolygon(pt, ring2D) && !insideAnyRotated(pt)) stray++;
-    }
+    const { total, inside, stray } = gridCount(poly);
     return { cover: total > 0 ? inside / total : 0, leak: total > 0 ? stray / total : 1 };
   };
   // ── İÇBÜKEY BÖLGE KURTARMA ───────────────────────────────────────────────
@@ -2147,12 +1988,12 @@ export function computeFreeRegionLocal(
     if (!shapePoly) {
       // GENEL YOL: eğik yüz konturu / eksen-hizasız düz engel. Dönmüş şeritler
       // engel SAYILMAZ (uzak-teğet sözleşmesi aşağıda ayrıca uygulanır).
+      const straightPips = straight.map(makePip);
       const free2 = new Uint8Array(nx * ny);
       for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
-        const pt = { x: uMin + (i + 0.5) * cw, y: vMin + (j + 0.5) * ch };
-        if (!isPointInsidePolygon(pt, ring2D)) continue;
+        if (!inRing[j * nx + i]) continue;
         let blocked = false;
-        for (const fp of straight) if (isPointInsidePolygon(pt, fp)) { blocked = true; break; }
+        for (const pip of straightPips) if (pip(PX[i], PY[j])) { blocked = true; break; }
         if (!blocked) free2[j * nx + i] = 1;
       }
       const reach2 = new Uint8Array(nx * ny);
@@ -2233,7 +2074,7 @@ export function computeFreeRegionLocal(
   }
 
   return {
-    u, v, planeN, ring2D, footprints, touchingSiblingIds,
+    u, v, planeN, ring2D, footprints, footprintIds: fpIds, touchingSiblingIds,
     uMin, vMin, cw, ch, nx, ny, reach, regionOk,
     anchor: finalAnchor,
     polygon,

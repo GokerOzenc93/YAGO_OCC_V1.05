@@ -1,611 +1,510 @@
 import { create } from 'zustand';
+import { useShallow } from 'zustand/react/shallow';
 import * as THREE from 'three';
-import type { OpenCascadeInstance } from './vite-env';
-import { VertexModification } from './components/VertexEditorService';
+import type { VertexModification } from './components/VertexEditorService';
 
-/** VERİ YAPILARI */
+// ═══════════════════════════════════════════════════════════════════════════
+// VERİ YAPILARI
+// ═══════════════════════════════════════════════════════════════════════════
+
 export interface SubtractionParameters {
-  width:string;height:string;depth:string;
-  posX:string;posY:string;posZ:string;
-  rotX:string;rotY:string;rotZ:string;
+  width: string; height: string; depth: string;
+  posX: string; posY: string; posZ: string;
+  rotX: string; rotY: string; rotZ: string;
 }
 
 export interface FaceDescriptor {
-  normal:[number,number,number];
-  normalizedCenter:[number,number,number];
-  area:number;
-  isCurved?:boolean;
-  axisDirection?:'x+'|'x-'|'y+'|'y-'|'z+'|'z-'|null;
-  axisPosition?:number;
+  normal: [number, number, number];
+  normalizedCenter: [number, number, number];
+  area: number;
+  isCurved?: boolean;
+  axisDirection?: 'x+' | 'x-' | 'y+' | 'y-' | 'z+' | 'z-' | null;
+  axisPosition?: number;
 }
 
 export interface FilletInfo {
-  face1Descriptor:FaceDescriptor;
-  face2Descriptor:FaceDescriptor;
-  face1Data:{normal:[number,number,number];center:[number,number,number];planeD?:number};
-  face2Data:{normal:[number,number,number];center:[number,number,number];planeD?:number};
-  radius:number;
-  originalSize:{width:number;height:number;depth:number};
+  face1Descriptor: FaceDescriptor;
+  face2Descriptor: FaceDescriptor;
+  face1Data: { normal: [number, number, number]; center: [number, number, number]; planeD?: number };
+  face2Data: { normal: [number, number, number]; center: [number, number, number]; planeD?: number };
+  radius: number;
+  originalSize: { width: number; height: number; depth: number };
 }
 
 export interface SubtractedGeometry {
-  geometry:THREE.BufferGeometry;
-  relativeOffset:[number,number,number];
-  relativeRotation:[number,number,number];
-  scale:[number,number,number];
-  parameters?:SubtractionParameters;
+  geometry: THREE.BufferGeometry;
+  relativeOffset: [number, number, number];
+  relativeRotation: [number, number, number];
+  scale: [number, number, number];
+  parameters?: SubtractionParameters;
 }
 
 export interface VirtualFace {
-  id:string;shapeId:string;
-  normal:[number,number,number];
-  center:[number,number,number];
-  vertices:[number,number,number][];
-  description:string;hasPanel:boolean;
-  /** TAM YÜZ MODELİ: VF = tıklanan yüz bileşeninin gerçek konturu; resize'da
-   *  yüz eşlemesiyle (regenerateParentFaceShapeVF) güncellenir. */
-  parentFaceShape?:boolean;
-  faceGroupDescriptor?:FaceDescriptor;
-  /** YAKALAMA ANINDA bu yüzeye DEĞEN kardeş panellerin id'leri (KİMLİK, konum
-   *  değil). Üretimde bu kardeşlerin GÜNCEL geometrisi okunur → taşıma/döndürme
-   *  sonrası doğru çalışır; sıralama mantığı korunur (kimlik sabit, geometri
-   *  canlı). Rebuild bu listeyi her seferinde tazeler (yeni değen kardeşler
-   *  eklenir), böylece sonradan taşınıp yüzeye giren panel de yakalanır. */
-  touchingSiblingIds?:string[];
-  /** Temas ilişkileri: bu panelin hangi kardeş panelin hangi yüzüne temas
-   *  ettiğini tutar. Boyut değişimlerinde oransal yeniden konumlandırma için
-   *  kullanılır. */
-  contactRelations?:Array<{
-    panelId:string;
-    faceNormal:[number,number,number];
-    axis:string;
-  }>;
-  /** DEĞİŞMEZ TARAF SÖZLEŞMESİ: panelin her kardeş ayak izinin (kardeşPanelId)
-   *  hangi tarafında olduğu (±1). Yerleştirmede yazılır, regen STORED-WINS
-   *  birleştirdiğinden bir daha değişmez → panel ilk yerleştiği tarafta kalıcı. */
-  sideRelations?:Record<string,number>;
-  /** YÜZEYİN ŞEKLİNİ AL (panel satırı checkbox'ı): AÇIKKEN panel, yerleştiği
-   *  serbest bölgenin TAMAMINI alır — ilk gördüğü küp/kardeş sınırında durur
-   *  ama bölgenin L/U/çentikli şeklini birebir izler (kısaltılmış kardeşin
-   *  yanında onun etrafını sarar). KAPALIYKEN (varsayılan) mevcut davranış:
-   *  kardeş kenarı yarım-düzlemle keser, panel o çizgide biter. */
-  fitFaceShape?:boolean;
+  id: string; shapeId: string;
+  normal: [number, number, number];
+  center: [number, number, number];
+  vertices: [number, number, number][];
+  description: string; hasPanel: boolean;
+  /** TAM YÜZ MODELİ: VF = tıklanan yüz bileşeninin konturu; resize'da yüz eşlemesiyle güncellenir. */
+  parentFaceShape?: boolean;
+  faceGroupDescriptor?: FaceDescriptor;
+  /** Yakalama anında bu yüzeye DEĞEN kardeş panellerin id'leri (kimlik; geometri canlı okunur). */
+  touchingSiblingIds?: string[];
+  /** Bu panelin hangi kardeşin hangi yüzüne temas ettiği. */
+  contactRelations?: Array<{ panelId: string; faceNormal: [number, number, number]; axis: string }>;
+  /** DEĞİŞMEZ TARAF SÖZLEŞMESİ: kardeş ayak izine göre taraf (±1); stored-wins birleşir. */
+  sideRelations?: Record<string, number>;
+  /** YÜZEYİN ŞEKLİNİ AL: açıkken panel serbest bölgenin tam (L/U/çentikli) şeklini alır. */
+  fitFaceShape?: boolean;
 }
 
 export interface Shape {
-  id:string;type:string;
-  position:[number,number,number];
-  rotation:[number,number,number];
-  scale:[number,number,number];
-  geometry:THREE.BufferGeometry;
-  color?:string;
-  parameters:Record<string,any>;
-  ocShape?:any;replicadShape?:any;
-  isolated?:boolean;
-  vertexModifications?:VertexModification[];
-  groupId?:string;
-  isReferenceBox?:boolean;
-  subtractionGeometries?:SubtractedGeometry[];
-  fillets?:FilletInfo[];
-  faceDescriptions?:Record<number,string>;
-  faceGroupDescriptors?:Record<number,FaceDescriptor>;
+  id: string; type: string;
+  position: [number, number, number];
+  rotation: [number, number, number];
+  scale: [number, number, number];
+  geometry: THREE.BufferGeometry;
+  color?: string;
+  parameters: Record<string, any>;
+  ocShape?: any; replicadShape?: any;
+  isolated?: boolean;
+  vertexModifications?: VertexModification[];
+  groupId?: string;
+  isReferenceBox?: boolean;
+  subtractionGeometries?: (SubtractedGeometry | null)[];
+  fillets?: FilletInfo[];
+  faceDescriptions?: Record<number, string>;
+  faceGroupDescriptors?: Record<number, FaceDescriptor>;
 }
 
-export enum CameraType{PERSPECTIVE='perspective',ORTHOGRAPHIC='orthographic'}
-export enum Tool{
-  SELECT='Select',MOVE='Move',ROTATE='Rotate',SCALE='Scale',
-  POINT_TO_POINT_MOVE='Point to Point Move',
-  POLYLINE='Polyline',POLYLINE_EDIT='Polyline Edit',
-  RECTANGLE='Rectangle',CIRCLE='Circle',DIMENSION='Dimension'
+export enum CameraType { PERSPECTIVE = 'perspective', ORTHOGRAPHIC = 'orthographic' }
+export enum Tool {
+  SELECT = 'Select', MOVE = 'Move', ROTATE = 'Rotate', SCALE = 'Scale',
+  POINT_TO_POINT_MOVE = 'Point to Point Move',
+  POLYLINE = 'Polyline', POLYLINE_EDIT = 'Polyline Edit',
+  RECTANGLE = 'Rectangle', CIRCLE = 'Circle', DIMENSION = 'Dimension',
 }
-export enum ViewMode{WIREFRAME='wireframe',SOLID='solid',XRAY='xray'}
-export enum ModificationType{MIRROR='mirror',ARRAY='array',FILLET='fillet',CHAMFER='chamfer'}
-export enum SnapType{ENDPOINT='endpoint',MIDPOINT='midpoint',CENTER='center',PERPENDICULAR='perpendicular',INTERSECTION='intersection',NEAREST='nearest'}
-export enum OrthoMode{ON='on',OFF='off'}
+export enum ViewMode { WIREFRAME = 'wireframe', SOLID = 'solid', XRAY = 'xray' }
+export enum SnapType { ENDPOINT = 'endpoint', MIDPOINT = 'midpoint', CENTER = 'center', PERPENDICULAR = 'perpendicular', INTERSECTION = 'intersection', NEAREST = 'nearest' }
+export enum OrthoMode { ON = 'on', OFF = 'off' }
 
-/** APP STATE */
-interface AppState{
-  shapes:Shape[];addShape:(shape:Shape)=>void;updateShape:(id:string,updates:Partial<Shape>)=>void;
-  deleteShape:(id:string)=>void;copyShape:(id:string)=>void;
-  isolateShape:(id:string)=>void;exitIsolation:()=>void;extrudeShape:(id:string,dist:number)=>void;
-  checkAndPerformBooleanOperations:()=>Promise<void>;
-  selectedShapeId:string|null;selectShape:(id:string|null)=>void;
-  secondarySelectedShapeId:string|null;selectSecondaryShape:(id:string|null)=>void;
-  createGroup:(p:string,s:string)=>void;ungroupShapes:(gid:string)=>void;
+type Vec3 = [number, number, number];
+type AxisDir = 'x+' | 'x-' | 'y+' | 'y-' | 'z+' | 'z-';
+type RefFacePick = { panelId: string; faceGroupIndex: number; normalWorld: Vec3; pointWorld: Vec3 };
+type FilletFaceData = { normal: Vec3; center: Vec3; planeD?: number };
 
-  activeTool:Tool;setActiveTool:(t:Tool)=>void;
-  lastTransformTool:Tool;setLastTransformTool:(t:Tool)=>void;
-  cameraType:CameraType;setCameraType:(t:CameraType)=>void;
-  viewMode:ViewMode;setViewMode:(m:ViewMode)=>void;cycleViewMode:()=>void;
-  orthoMode:OrthoMode;toggleOrthoMode:()=>void;
+// ═══════════════════════════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════════════════════════
 
-  snapSettings:Record<SnapType,boolean>;
-  toggleSnapSetting:(t:SnapType)=>void;
+export interface AppState {
+  // Şekiller
+  shapes: Shape[];
+  addShape: (shape: Shape) => void;
+  updateShape: (id: string, updates: Partial<Shape>) => void;
+  deleteShape: (id: string) => void;
+  exitIsolation: () => void;
+  checkAndPerformBooleanOperations: () => Promise<void>;
+  selectedShapeId: string | null; selectShape: (id: string | null) => void;
+  secondarySelectedShapeId: string | null; selectSecondaryShape: (id: string | null) => void;
+  createGroup: (primaryId: string, secondaryId: string) => void;
 
-  modifyShape:(id:string,mod:any)=>void;
-  pointToPointMoveState:any;setPointToPointMoveState:(s:any)=>void;
-  enableAutoSnap:(t:Tool)=>void;
+  // Görünüm / araçlar
+  activeTool: Tool; setActiveTool: (t: Tool) => void;
+  cameraType: CameraType; setCameraType: (t: CameraType) => void;
+  viewMode: ViewMode; setViewMode: (m: ViewMode) => void; cycleViewMode: () => void;
+  orthoMode: OrthoMode; toggleOrthoMode: () => void;
+  snapSettings: Record<SnapType, boolean>; toggleSnapSetting: (t: SnapType) => void;
+  opencascadeLoading: boolean; setOpenCascadeLoading: (l: boolean) => void;
 
-  opencascadeInstance:OpenCascadeInstance|null;
-  opencascadeLoading:boolean;
-  setOpenCascadeInstance:(i:OpenCascadeInstance|null)=>void;
-  setOpenCascadeLoading:(l:boolean)=>void;
+  // Vertex düzenleme
+  vertexEditMode: boolean; setVertexEditMode: (b: boolean) => void;
+  selectedVertexIndex: number | null; setSelectedVertexIndex: (i: number | null) => void;
+  vertexDirection: AxisDir | null; setVertexDirection: (d: AxisDir) => void;
+  addVertexModification: (shapeId: string, mod: VertexModification) => void;
 
-  vertexEditMode:boolean;setVertexEditMode:(b:boolean)=>void;
-  selectedVertexIndex:number|null;setSelectedVertexIndex:(i:number|null)=>void;
-  vertexDirection:'x+'|'x-'|'y+'|'y-'|'z+'|'z-'|null;
-  setVertexDirection:(d:'x+'|'x-'|'y+'|'y-'|'z+'|'z-')=>void;
-  addVertexModification:(shapeId:string,mod:VertexModification)=>void;
+  // Çıkarma (subtraction)
+  subtractionViewMode: boolean; setSubtractionViewMode: (b: boolean) => void;
+  selectedSubtractionIndex: number | null; setSelectedSubtractionIndex: (i: number | null) => void;
+  hoveredSubtractionIndex: number | null; setHoveredSubtractionIndex: (i: number | null) => void;
+  deleteSubtraction: (shapeId: string, idx: number) => Promise<void>;
 
-  subtractionViewMode:boolean;setSubtractionViewMode:(b:boolean)=>void;
-  selectedSubtractionIndex:number|null;setSelectedSubtractionIndex:(i:number|null)=>void;
-  hoveredSubtractionIndex:number|null;setHoveredSubtractionIndex:(i:number|null)=>void;
-  deleteSubtraction:(shapeId:string,idx:number)=>Promise<void>;
+  // Paneller / editör
+  showParametersPanel: boolean; setShowParametersPanel: (b: boolean) => void;
+  showOutlines: boolean; setShowOutlines: (b: boolean) => void;
+  selectedPanelRow: number | string | null;
+  selectedPanelRowExtraId: string | null;
+  selectedPanelRowParentId: string | null;
+  setSelectedPanelRow: (i: number | string | null, e?: string | null, parentId?: string | null) => void;
+  panelSelectMode: boolean; setPanelSelectMode: (b: boolean) => void;
+  faceEditMode: boolean; setFaceEditMode: (b: boolean) => void;
+  hoveredPanelVfId: string | null; setHoveredPanelVfId: (id: string | null) => void;
 
-  showParametersPanel:boolean;setShowParametersPanel:(b:boolean)=>void;
-  showOutlines:boolean;setShowOutlines:(b:boolean)=>void;
-  selectedPanelRow:number|string|null;
-  selectedPanelRowExtraId:string|null;
-  selectedPanelRowParentId:string|null;
-  setSelectedPanelRow:(i:number|string|null,e?:string|null,parentId?:string|null)=>void;
-  panelSelectMode:boolean;setPanelSelectMode:(b:boolean)=>void;
-  panelSurfaceSelectMode:boolean;setPanelSurfaceSelectMode:(b:boolean)=>void;
-  waitingForSurfaceSelection:{extraRowId:string;sourceFaceIndex:number}|null;
-  setWaitingForSurfaceSelection:(v:{extraRowId:string;sourceFaceIndex:number}|null)=>void;
+  // Fillet
+  filletMode: boolean; setFilletMode: (b: boolean) => void;
+  selectedFilletFaces: number[]; setSelectedFilletFaces: (f: number[]) => void;
+  addFilletFace: (i: number) => void; clearFilletFaces: () => void;
+  selectedFilletFaceData: FilletFaceData[];
+  addFilletFaceData: (d: FilletFaceData) => void;
+  clearFilletFaceData: () => void;
 
-  pendingPanelCreation:{
-    faceIndex:number;timestamp:number;
-    sourceGeometryShapeId?:string;
-    surfaceConstraint?:{center:[number,number,number];normal:[number,number,number];constraintPanelId:string;};
-  }|null;
-  triggerPanelCreationForFace:(faceIndex:number,sid?:string,sc?:{center:[number,number,number];normal:[number,number,number];constraintPanelId:string;})=>void;
+  // Panel yerleştirme (yüz yakalama)
+  raycastMode: boolean; setRaycastMode: (b: boolean) => void;
 
-  faceEditMode:boolean;setFaceEditMode:(b:boolean)=>void;
-  selectedFaceIndex:number|null;setSelectedFaceIndex:(i:number|null)=>void;
-  hoveredFaceIndex:number|null;setHoveredFaceIndex:(i:number|null)=>void;
-  hoveredPanelVfId:string|null;setHoveredPanelVfId:(id:string|null)=>void;
+  // Yüz extrude
+  faceExtrudeMode: boolean; setFaceExtrudeMode: (b: boolean) => void;
+  faceExtrudeTargetPanelId: string | null; setFaceExtrudeTargetPanelId: (id: string | null) => void;
+  faceExtrudeSelectedFace: number | null; setFaceExtrudeSelectedFace: (i: number | null) => void;
+  /** Yüzü seçen tıklamanın yerel noktası. */
+  faceExtrudeClickPoint: Vec3 | null; setFaceExtrudeClickPoint: (p: Vec3 | null) => void;
+  faceExtrudeThickness: number; setFaceExtrudeThickness: (v: number) => void;
+  faceExtrudeFixedMode: boolean; setFaceExtrudeFixedMode: (b: boolean) => void;
+  /** 'fixed' = sabit ölçü, 'dyn' = delta, 'ref' = referans yüze bağlı. */
+  faceExtrudeValueMode: 'fixed' | 'dyn' | 'ref'; setFaceExtrudeValueMode: (m: 'fixed' | 'dyn' | 'ref') => void;
+  faceExtrudeRefCandidate: RefFacePick | null; setFaceExtrudeRefCandidate: (v: RefFacePick | null) => void;
 
-  filletMode:boolean;setFilletMode:(b:boolean)=>void;
-  selectedFilletFaces:number[];setSelectedFilletFaces:(f:number[])=>void;
-  addFilletFace:(i:number)=>void;clearFilletFaces:()=>void;
-  selectedFilletFaceData:Array<{normal:[number,number,number];center:[number,number,number];planeD?:number}>;
-  addFilletFaceData:(d:{normal:[number,number,number];center:[number,number,number];planeD?:number})=>void;
-  clearFilletFaceData:()=>void;
+  // Panel taşıma
+  panelMoveMode: boolean; setPanelMoveMode: (b: boolean) => void;
+  panelMoveTargetPanelId: string | null; setPanelMoveTargetPanelId: (id: string | null) => void;
+  panelMoveAxis: AxisDir | null; setPanelMoveAxis: (a: AxisDir | null) => void;
+  panelMoveValue: number; setPanelMoveValue: (v: number) => void;
+  panelMoveValueMode: 'dyn' | 'fixed' | 'ref'; setPanelMoveValueMode: (m: 'dyn' | 'fixed' | 'ref') => void;
+  panelMoveRefSourceVertex: Vec3 | null; setPanelMoveRefSourceVertex: (v: Vec3 | null) => void;
+  panelMoveRefTargetPanelId: string | null; setPanelMoveRefTargetPanelId: (id: string | null) => void;
+  panelMoveRefTargetVertex: Vec3 | null; setPanelMoveRefTargetVertex: (v: Vec3 | null) => void;
 
-  raycastMode:boolean;setRaycastMode:(b:boolean)=>void;
-  raycastResults:Array<{origin:[number,number,number];direction:[number,number,number];hitPoint:[number,number,number]}>;
-  setRaycastResults:(r:Array<{origin:[number,number,number];direction:[number,number,number];hitPoint:[number,number,number]}>)=>void;
+  // Panel döndürme
+  panelRotateMode: boolean; setPanelRotateMode: (b: boolean) => void;
+  panelRotateTargetPanelId: string | null; setPanelRotateTargetPanelId: (id: string | null) => void;
+  panelRotatePivot: Vec3 | null; setPanelRotatePivot: (p: Vec3 | null) => void;
+  panelRotatePivotType: 'center' | 'vertex' | null; setPanelRotatePivotType: (t: 'center' | 'vertex' | null) => void;
+  panelRotateAxis: 'x' | 'y' | 'z' | null; setPanelRotateAxis: (a: 'x' | 'y' | 'z' | null) => void;
+  panelRotateValue: number; setPanelRotateValue: (v: number) => void;
+  /** null = mod HENÜZ seçilmedi (sahnede nokta/halka yok). 'ref': pivot → nişan → eksen → referans yüz → sağ tık. */
+  panelRotateValueMode: 'dyn' | 'ref' | null; setPanelRotateValueMode: (m: 'dyn' | 'ref' | null) => void;
+  /** Dönen panelin referansa NİŞAN alan kendi noktası. */
+  panelRotateRefArmVertex: Vec3 | null; setPanelRotateRefArmVertex: (v: Vec3 | null) => void;
+  panelRotateRefTargetPanelId: string | null; setPanelRotateRefTargetPanelId: (id: string | null) => void;
+  /** Referans YÜZ (nokta değil): nişan bu yüzün düzlemine değene kadar döner. */
+  panelRotateRefFace: RefFacePick | null; setPanelRotateRefFace: (f: RefFacePick | null) => void;
 
-  faceExtrudeMode:boolean;setFaceExtrudeMode:(b:boolean)=>void;
-  faceExtrudeTargetPanelId:string|null;setFaceExtrudeTargetPanelId:(id:string|null)=>void;
-  faceExtrudeHoveredFace:number|null;setFaceExtrudeHoveredFace:(i:number|null)=>void;
-  faceExtrudeSelectedFace:number|null;setFaceExtrudeSelectedFace:(i:number|null)=>void;
-  /** Local-space click point from the pointer-down event that selected the face. */
-  faceExtrudeClickPoint:[number,number,number]|null;setFaceExtrudeClickPoint:(p:[number,number,number]|null)=>void;
-  faceExtrudeThickness:number;setFaceExtrudeThickness:(v:number)=>void;
-  faceExtrudeFixedMode:boolean;setFaceExtrudeFixedMode:(b:boolean)=>void;
-  /** 'fixed' = sabit değer, 'dyn' = delta, 'ref' = referans yüzeye bağlı. */
-  faceExtrudeValueMode:'fixed'|'dyn'|'ref';setFaceExtrudeValueMode:(m:'fixed'|'dyn'|'ref')=>void;
-  /** Ref modunda seçilen referans panel id + yüz grubu indeksi. */
-  faceExtrudeRefCandidate:{panelId:string;faceGroupIndex:number;normalWorld:[number,number,number];pointWorld:[number,number,number]}|null;
-  setFaceExtrudeRefCandidate:(v:{panelId:string;faceGroupIndex:number;normalWorld:[number,number,number];pointWorld:[number,number,number]}|null)=>void;
-
-  panelMoveMode:boolean;setPanelMoveMode:(b:boolean)=>void;
-  panelMoveTargetPanelId:string|null;setPanelMoveTargetPanelId:(id:string|null)=>void;
-  panelMoveAxis:'x+'|'x-'|'y+'|'y-'|'z+'|'z-'|null;setPanelMoveAxis:(a:'x+'|'x-'|'y+'|'y-'|'z+'|'z-'|null)=>void;
-  panelMoveValue:number;setPanelMoveValue:(v:number)=>void;
-  panelMoveValueMode:'dyn'|'fixed'|'ref';setPanelMoveValueMode:(m:'dyn'|'fixed'|'ref')=>void;
-  panelMoveRefSourceVertex:[number,number,number]|null;setPanelMoveRefSourceVertex:(v:[number,number,number]|null)=>void;
-  panelMoveRefTargetPanelId:string|null;setPanelMoveRefTargetPanelId:(id:string|null)=>void;
-  panelMoveRefTargetVertex:[number,number,number]|null;setPanelMoveRefTargetVertex:(v:[number,number,number]|null)=>void;
-
-  panelRotateMode:boolean;setPanelRotateMode:(b:boolean)=>void;
-  panelRotateTargetPanelId:string|null;setPanelRotateTargetPanelId:(id:string|null)=>void;
-  panelRotatePivot:[number,number,number]|null;setPanelRotatePivot:(p:[number,number,number]|null)=>void;
-  panelRotatePivotType:'center'|'vertex'|null;setPanelRotatePivotType:(t:'center'|'vertex'|null)=>void;
-  panelRotateAxis:'x'|'y'|'z'|null;setPanelRotateAxis:(a:'x'|'y'|'z'|null)=>void;
-  panelRotateValue:number;setPanelRotateValue:(v:number)=>void;
-  // ── REFERANS İLE DÖNDÜRME ───────────────────────────────────────────────
-  // null = MOD HENÜZ SEÇİLMEDİ (1. adım). Bu durumda sahnede hiçbir nokta/halka
-  // çıkmaz; yalnız Dyn/Ref seçimi gösterilir (Goker: "önce hiç nokta çıkmadan
-  // mod seçimi olsun"). 'dyn' = mevcut akış (pivot → eksen → açı). 'ref' =
-  // pivot → nişan noktası → eksen → referans panel → referans nokta → sağ tık;
-  // açı her rebuild'de referans noktadan yeniden çözülür (parametrik bağ).
-  panelRotateValueMode:'dyn'|'ref'|null;setPanelRotateValueMode:(m:'dyn'|'ref'|null)=>void;
-  /** Dönen panelin, referans noktaya NİŞAN ALACAK kendi noktası. */
-  panelRotateRefArmVertex:[number,number,number]|null;setPanelRotateRefArmVertex:(v:[number,number,number]|null)=>void;
-  panelRotateRefTargetPanelId:string|null;setPanelRotateRefTargetPanelId:(id:string|null)=>void;
-  /** Referans YÜZ (Goker: nokta değil yüz seçilir): nişan noktası bu yüzün
-   *  düzlemine değene kadar dönülür. Extrude-ref yüz seçimiyle aynı veri. */
-  panelRotateRefFace:{panelId:string;faceGroupIndex:number;normalWorld:[number,number,number];pointWorld:[number,number,number]}|null;
-  setPanelRotateRefFace:(f:{panelId:string;faceGroupIndex:number;normalWorld:[number,number,number];pointWorld:[number,number,number]}|null)=>void;
-
-  showVirtualFaces:boolean;setShowVirtualFaces:(b:boolean)=>void;
-  virtualFaces:VirtualFace[];
-  addVirtualFace:(v:VirtualFace)=>void;
-  updateVirtualFace:(id:string,u:Partial<VirtualFace>)=>void;
-  deleteVirtualFace:(id:string)=>void;
-  reorderVirtualFaces:(shapeId:string,fromIndex:number,toIndex:number)=>void;
-  reorderVirtualFaceGroup:(shapeId:string,fromIds:string[],toGroupFirstId:string|null)=>void;
-  getVirtualFacesForShape:(sid:string)=>VirtualFace[];
-  recalculateVirtualFacesForShape:(sid:string)=>void;
-
-  rebuildingShapeIds:Set<string>;
-  setShapeRebuilding:(id:string,rebuilding:boolean)=>void;
+  // Sanal yüzler (VF)
+  showVirtualFaces: boolean; setShowVirtualFaces: (b: boolean) => void;
+  virtualFaces: VirtualFace[];
+  addVirtualFace: (v: VirtualFace) => void;
+  updateVirtualFace: (id: string, u: Partial<VirtualFace>) => void;
+  deleteVirtualFace: (id: string) => void;
+  /** Sıra = basan/basılan önceliği; değişince paneller yeniden üretilir. */
+  reorderVirtualFaceGroup: (shapeId: string, fromIds: string[], toGroupFirstId: string | null) => void;
 }
 
-/** STORE */
-export const useAppStore=create<AppState>((set,get)=>({
-  shapes:[],
+const rebuildParent = (shapeId: string) =>
+  import('./components/PanelEngine').then(({ rebuildPanelsForParent }) => rebuildPanelsForParent(shapeId));
 
-  /* KISA UI STATES */
-  showParametersPanel:false,setShowParametersPanel:(b)=>set({showParametersPanel:b}),
-  showOutlines:true,setShowOutlines:(b)=>set({showOutlines:b}),
-  selectedPanelRow:null,selectedPanelRowExtraId:null,selectedPanelRowParentId:null,
-  setSelectedPanelRow:(i,e,parentId)=>set({selectedPanelRow:i,selectedPanelRowExtraId:e||null,selectedPanelRowParentId:parentId||null}),
-  panelSelectMode:false,setPanelSelectMode:(b)=>set({panelSelectMode:b,selectedPanelRow:null,selectedPanelRowExtraId:null,selectedPanelRowParentId:null}),
-  panelSurfaceSelectMode:false,setPanelSurfaceSelectMode:(b)=>set({panelSurfaceSelectMode:b}),
-  waitingForSurfaceSelection:null,setWaitingForSurfaceSelection:(v)=>set({waitingForSurfaceSelection:v}),
-  pendingPanelCreation:null,
-  triggerPanelCreationForFace:(i,sid,sc)=>set({pendingPanelCreation:{faceIndex:i,timestamp:Date.now(),sourceGeometryShapeId:sid,surfaceConstraint:sc}}),
+const bboxOfGeometry = (g: THREE.BufferGeometry) =>
+  new THREE.Box3().setFromBufferAttribute(g.getAttribute('position') as THREE.BufferAttribute);
 
-  faceEditMode:false,setFaceEditMode:(b)=>set({faceEditMode:b}),
-  selectedFaceIndex:null,setSelectedFaceIndex:(i)=>set({selectedFaceIndex:i}),
-  hoveredFaceIndex:null,setHoveredFaceIndex:(i)=>set({hoveredFaceIndex:i}),
-  hoveredPanelVfId:null,setHoveredPanelVfId:(id)=>set({hoveredPanelVfId:id}),
+export const useAppStore = create<AppState>((set, get) => ({
+  // ── Şekiller ──────────────────────────────────────────────────────────────
+  shapes: [],
+  addShape: (shape) => set((s) => ({ shapes: [...s.shapes, shape] })),
 
-  filletMode:false,setFilletMode:(e)=>set({filletMode:e,selectedFilletFaces:e?[]:[],selectedFilletFaceData:e?[]:[]}),
-  selectedFilletFaces:[],setSelectedFilletFaces:(f)=>set({selectedFilletFaces:f}),
-  addFilletFace:(i)=>set((s)=>s.selectedFilletFaces.includes(i)?s:{selectedFilletFaces:[...s.selectedFilletFaces,i]}),
-  clearFilletFaces:()=>set({selectedFilletFaces:[],selectedFilletFaceData:[]}),
-  selectedFilletFaceData:[],addFilletFaceData:(d)=>set((s)=>({selectedFilletFaceData:[...s.selectedFilletFaceData,d]})),
-  clearFilletFaceData:()=>set({selectedFilletFaceData:[]}),
-
-  raycastMode:false,setRaycastMode:(e)=>set({raycastMode:e,raycastResults:e?get().raycastResults:[]}),
-  raycastResults:[],setRaycastResults:(r)=>set({raycastResults:r}),
-
-  faceExtrudeMode:false,setFaceExtrudeMode:(b)=>set({faceExtrudeMode:b,faceExtrudeHoveredFace:null,faceExtrudeSelectedFace:null,faceExtrudeClickPoint:null,...(!b?{faceExtrudeTargetPanelId:null,faceExtrudeRefCandidate:null}:{})}),
-  faceExtrudeTargetPanelId:null,setFaceExtrudeTargetPanelId:(id)=>set({faceExtrudeTargetPanelId:id}),
-  faceExtrudeHoveredFace:null,setFaceExtrudeHoveredFace:(i)=>set({faceExtrudeHoveredFace:i}),
-  faceExtrudeSelectedFace:null,setFaceExtrudeSelectedFace:(i)=>set({faceExtrudeSelectedFace:i}),
-  faceExtrudeClickPoint:null,setFaceExtrudeClickPoint:(p)=>set({faceExtrudeClickPoint:p}),
-  faceExtrudeThickness:18,setFaceExtrudeThickness:(v)=>set({faceExtrudeThickness:v}),
-  faceExtrudeFixedMode:true,setFaceExtrudeFixedMode:(b)=>set({faceExtrudeFixedMode:b}),
-  faceExtrudeValueMode:'fixed',setFaceExtrudeValueMode:(m)=>set({faceExtrudeValueMode:m}),
-  faceExtrudeRefCandidate:null,setFaceExtrudeRefCandidate:(v)=>set({faceExtrudeRefCandidate:v}),
-
-  panelMoveMode:false,setPanelMoveMode:(b)=>set({panelMoveMode:b,...(!b?{panelMoveTargetPanelId:null,panelMoveAxis:null,panelMoveValue:0,panelMoveValueMode:'dyn' as const,panelMoveRefSourceVertex:null,panelMoveRefTargetPanelId:null,panelMoveRefTargetVertex:null}:{})}),
-  panelMoveTargetPanelId:null,setPanelMoveTargetPanelId:(id)=>set({panelMoveTargetPanelId:id}),
-  panelMoveAxis:null,setPanelMoveAxis:(a)=>set({panelMoveAxis:a}),
-  panelMoveValue:0,setPanelMoveValue:(v)=>set({panelMoveValue:v}),
-  panelMoveValueMode:'dyn',setPanelMoveValueMode:(m)=>set({panelMoveValueMode:m,panelMoveRefSourceVertex:null,panelMoveRefTargetPanelId:null,panelMoveRefTargetVertex:null}),
-  panelMoveRefSourceVertex:null,setPanelMoveRefSourceVertex:(v)=>set({panelMoveRefSourceVertex:v}),
-  panelMoveRefTargetPanelId:null,setPanelMoveRefTargetPanelId:(id)=>set({panelMoveRefTargetPanelId:id}),
-  panelMoveRefTargetVertex:null,setPanelMoveRefTargetVertex:(v)=>set({panelMoveRefTargetVertex:v}),
-
-  // Moda GİRİŞTE de alt durum sıfırlanır: her döndürme komutu 1. adımdan
-  // (mod seçimi) başlar, sahnede nokta/halka çıkmaz. Hedef panel id'si girişte
-  // korunur — satır düğmesi onu bu çağrıdan hemen ÖNCE yazıyor.
-  panelRotateMode:false,setPanelRotateMode:(b)=>set({panelRotateMode:b,
-    panelRotatePivot:null,panelRotatePivotType:null,panelRotateAxis:null,panelRotateValue:0,
-    panelRotateValueMode:null,panelRotateRefArmVertex:null,panelRotateRefTargetPanelId:null,panelRotateRefFace:null,
-    ...(!b?{panelRotateTargetPanelId:null}:{})}),
-  panelRotateTargetPanelId:null,setPanelRotateTargetPanelId:(id)=>set({panelRotateTargetPanelId:id}),
-  panelRotatePivot:null,setPanelRotatePivot:(p)=>set({panelRotatePivot:p}),
-  panelRotatePivotType:null,setPanelRotatePivotType:(t)=>set({panelRotatePivotType:t}),
-  panelRotateAxis:null,setPanelRotateAxis:(a)=>set({panelRotateAxis:a}),
-  panelRotateValue:0,setPanelRotateValue:(v)=>set({panelRotateValue:v}),
-  // Mod değişiminde ref seçimleri sıfırlanır (yarım kalmış bağ taşınmasın).
-  // Mod seçimi/değişimi akışı BAŞA alır: pivot dahil tüm seçimler sıfırlanır,
-  // böylece mod seçilene kadar sahnede hiçbir nokta çıkmaz ve mod değiştirince
-  // yarım kalmış bir seçim taşınmaz.
-  panelRotateValueMode:null,setPanelRotateValueMode:(m)=>set({panelRotateValueMode:m,panelRotatePivot:null,panelRotatePivotType:null,panelRotateAxis:null,panelRotateValue:0,panelRotateRefArmVertex:null,panelRotateRefTargetPanelId:null,panelRotateRefFace:null}),
-  panelRotateRefArmVertex:null,setPanelRotateRefArmVertex:(v)=>set({panelRotateRefArmVertex:v}),
-  panelRotateRefTargetPanelId:null,setPanelRotateRefTargetPanelId:(id)=>set({panelRotateRefTargetPanelId:id}),
-  // Yüz seçimi hedef paneli de belirler (aynı tıklamada).
-  panelRotateRefFace:null,setPanelRotateRefFace:(f)=>set({panelRotateRefFace:f,panelRotateRefTargetPanelId:f?f.panelId:null}),
-
-  showVirtualFaces:true,setShowVirtualFaces:(b)=>set({showVirtualFaces:b}),
-  virtualFaces:[],
-  addVirtualFace:(v)=>set((s)=>({virtualFaces:[...s.virtualFaces,v]})),
-  updateVirtualFace:(id,u)=>set((s)=>({virtualFaces:s.virtualFaces.map(f=>f.id===id?{...f,...u}:f)})),
-  deleteVirtualFace:(id)=>set((s)=>({virtualFaces:s.virtualFaces.filter(f=>f.id!==id)})),
-  reorderVirtualFaces:(shapeId,fromIndex,toIndex)=>{set((s)=>{
-    const shapeFaces=s.virtualFaces.filter(f=>f.shapeId===shapeId);
-    if(fromIndex<0||fromIndex>=shapeFaces.length||toIndex<0||toIndex>=shapeFaces.length||fromIndex===toIndex)return{};
-    const reordered=[...shapeFaces];
-    const[moved]=reordered.splice(fromIndex,1);
-    reordered.splice(toIndex,0,moved);
-    const queue=[...reordered];
-    const next=s.virtualFaces.map(f=>f.shapeId===shapeId?queue.shift()!:f);
-    return{virtualFaces:next};
-  });
-  // SIRA DEĞİŞTİ → paneller yeni öncelikle yeniden üretilir (basan↔basılan güncellenir).
-  import('./components/PanelRebuildService').then(({rebuildPanelsForParent})=>rebuildPanelsForParent(shapeId));
-  },
-  reorderVirtualFaceGroup:(shapeId,fromIds,toGroupFirstId)=>{set((s)=>{
-    const shapeFaces=s.virtualFaces.filter(f=>f.shapeId===shapeId);
-    const fromSet=new Set(fromIds);
-    const group=shapeFaces.filter(f=>fromSet.has(f.id));
-    const rest=shapeFaces.filter(f=>!fromSet.has(f.id));
-    const insertIdx=toGroupFirstId===null?rest.length:rest.findIndex(f=>f.id===toGroupFirstId);
-    if(insertIdx<0)return{};
-    rest.splice(insertIdx,0,...group);
-    const queue=[...rest];
-    const next=s.virtualFaces.map(f=>f.shapeId===shapeId?queue.shift()!:f);
-    return{virtualFaces:next};
-  });
-  // SIRA DEĞİŞTİ → paneller yeni öncelikle yeniden üretilir.
-  import('./components/PanelRebuildService').then(({rebuildPanelsForParent})=>rebuildPanelsForParent(shapeId));
-  },
-  getVirtualFacesForShape:(sid)=>get().virtualFaces.filter(f=>f.shapeId===sid),
-  recalculateVirtualFacesForShape:(sid)=>{
-    const s=get(),sh=s.shapes.find(x=>x.id===sid);
-    if(!sh)return;
-    const vf=s.virtualFaces.filter(v=>v.shapeId===sid);
-    if(vf.length===0)return;
-    import('./components/VirtualFaceUpdateService').then(({recalculateVirtualFacesForShape})=>{
-      const st=get(),sh2=st.shapes.find(x=>x.id===sid);
-      if(!sh2)return;
-      const up=recalculateVirtualFacesForShape(sh2,st.virtualFaces,st.shapes);
-      set({virtualFaces:up});
-    });
-  },
-
-  rebuildingShapeIds:new Set<string>(),
-  setShapeRebuilding:(id,rebuilding)=>set((s)=>{
-    const next=new Set(s.rebuildingShapeIds);
-    if(rebuilding)next.add(id);else next.delete(id);
-    return{rebuildingShapeIds:next};
-  }),
-
-  /** ----------- SHAPE ACTIONS ----------- */
-
-  addShape:(shape)=>set((s)=>({shapes:[...s.shapes,shape]})),
-
-  updateShape:(id,updates)=>set((state)=>{
-    const sh=state.shapes.find(s=>s.id===id);if(!sh) return state;
-    const up=state.shapes.map(s=>{
-      if(s.id===id)return{...s,...updates};
-      if(sh.groupId&&s.groupId===sh.groupId&&s.id!==id){
-        if('position'in updates||'rotation'in updates||'scale'in updates){
-          const pd=updates.position?[updates.position[0]-sh.position[0],updates.position[1]-sh.position[1],updates.position[2]-sh.position[2]]:[0,0,0];
-          const rd=updates.rotation?[updates.rotation[0]-sh.rotation[0],updates.rotation[1]-sh.rotation[1],updates.rotation[2]-sh.rotation[2]]:[0,0,0];
-          const sd=updates.scale?[updates.scale[0]/sh.scale[0],updates.scale[1]/sh.scale[1],updates.scale[2]/sh.scale[2]]:[1,1,1];
-          return{...s,position:[s.position[0]+pd[0],s.position[1]+pd[1],s.position[2]+pd[2]],
-                 rotation:[s.rotation[0]+rd[0],s.rotation[1]+rd[1],s.rotation[2]+rd[2]],
-                 scale:[s.scale[0]*sd[0],s.scale[1]*sd[1],s.scale[2]*sd[2]]};
-        }
+  // Gruplu şekilde konum/dönüş/ölçek değişimi grubun diğer üyelerine aynen uygulanır.
+  updateShape: (id, updates) => set((state) => {
+    const sh = state.shapes.find(s => s.id === id);
+    if (!sh) return {};
+    const shapes = state.shapes.map((s): Shape => {
+      if (s.id === id) return { ...s, ...updates };
+      if (sh.groupId && s.groupId === sh.groupId && ('position' in updates || 'rotation' in updates || 'scale' in updates)) {
+        const pd = updates.position ? [0, 1, 2].map(i => updates.position![i] - sh.position[i]) : [0, 0, 0];
+        const rd = updates.rotation ? [0, 1, 2].map(i => updates.rotation![i] - sh.rotation[i]) : [0, 0, 0];
+        const sd = updates.scale ? [0, 1, 2].map(i => updates.scale![i] / sh.scale[i]) : [1, 1, 1];
+        return {
+          ...s,
+          position: [s.position[0] + pd[0], s.position[1] + pd[1], s.position[2] + pd[2]],
+          rotation: [s.rotation[0] + rd[0], s.rotation[1] + rd[1], s.rotation[2] + rd[2]],
+          scale: [s.scale[0] * sd[0], s.scale[1] * sd[1], s.scale[2] * sd[2]],
+        };
       }
       return s;
     });
-    return{shapes:up};
+    return { shapes };
   }),
 
-  deleteShape:(id)=>set((state)=>{
-    const child=state.shapes.filter(s=>s.type==='panel'&&s.parameters?.parentShapeId===id).map(s=>s.id);
-    const all=new Set([id,...child]);
-    return{
-      shapes:state.shapes.filter(s=>!all.has(s.id)),
-      selectedShapeId:all.has(state.selectedShapeId||'')?null:state.selectedShapeId,
-      secondarySelectedShapeId:all.has(state.secondarySelectedShapeId||'')?null:state.secondarySelectedShapeId
+  // Şekil silinince çocuk panelleri de silinir.
+  deleteShape: (id) => set((state) => {
+    const all = new Set([id, ...state.shapes.filter(s => s.type === 'panel' && s.parameters?.parentShapeId === id).map(s => s.id)]);
+    return {
+      shapes: state.shapes.filter(s => !all.has(s.id)),
+      selectedShapeId: all.has(state.selectedShapeId || '') ? null : state.selectedShapeId,
+      secondarySelectedShapeId: all.has(state.secondarySelectedShapeId || '') ? null : state.secondarySelectedShapeId,
     };
   }),
 
-  copyShape:(id)=>{
-    const sh=get().shapes.find(s=>s.id===id);
-    if(sh)set((st)=>({shapes:[...st.shapes,{...sh,id:`${sh.type}-${Date.now()}`,position:[sh.position[0]+100,sh.position[1],sh.position[2]+100]}]}));
+  exitIsolation: () => set((s) => ({ shapes: s.shapes.map(x => ({ ...x, isolated: undefined })) })),
+
+  selectedShapeId: null,
+  selectShape: (id) => {
+    if (id && get().activeTool === Tool.SELECT) set({ selectedShapeId: id, activeTool: Tool.MOVE });
+    else set({ selectedShapeId: id });
+  },
+  secondarySelectedShapeId: null,
+  selectSecondaryShape: (id) => set({ secondarySelectedShapeId: id }),
+
+  createGroup: (primaryId, secondaryId) => {
+    const gid = `group-${Date.now()}`;
+    set((s) => ({
+      shapes: s.shapes.map(x => x.id === primaryId ? { ...x, groupId: gid } : x.id === secondaryId ? { ...x, groupId: gid, isReferenceBox: true } : x),
+    }));
   },
 
-  isolateShape:(id)=>set((s)=>({shapes:s.shapes.map(x=>({...x,isolated:x.id!==id?false:undefined}))})),
-  exitIsolation:()=>set((s)=>({shapes:s.shapes.map(x=>({...x,isolated:undefined}))})),
-
-  extrudeShape:(id,d)=>set((st)=>{
-    const sh=st.shapes.find(s=>s.id===id);if(!sh)return st;
-    const{extrudeGeometry}=require('./services/csg');
-    const g=extrudeGeometry(sh.geometry,d);
-    return{shapes:st.shapes.map(s=>s.id===id?{...s,geometry:g}:s)};
-  }),
-
-  selectedShapeId:null,
-  selectShape:(id)=>{
-    const t=get().activeTool;
-    id&&t===Tool.SELECT?set({selectedShapeId:id,activeTool:Tool.MOVE}):set({selectedShapeId:id});
+  // ── Görünüm / araçlar ─────────────────────────────────────────────────────
+  activeTool: Tool.SELECT, setActiveTool: (t) => set({ activeTool: t }),
+  cameraType: CameraType.PERSPECTIVE, setCameraType: (t) => set({ cameraType: t }),
+  viewMode: ViewMode.SOLID, setViewMode: (m) => set({ viewMode: m }),
+  cycleViewMode: () => {
+    const order = [ViewMode.SOLID, ViewMode.WIREFRAME, ViewMode.XRAY];
+    set({ viewMode: order[(order.indexOf(get().viewMode) + 1) % order.length] });
   },
-  secondarySelectedShapeId:null,setSecondarySelectedShapeId:null,
-  selectSecondaryShape:(id)=>set({secondarySelectedShapeId:id}),
+  orthoMode: OrthoMode.OFF,
+  toggleOrthoMode: () => set((s) => ({ orthoMode: s.orthoMode === OrthoMode.ON ? OrthoMode.OFF : OrthoMode.ON })),
+  snapSettings: { endpoint: false, midpoint: false, center: false, perpendicular: false, intersection: false, nearest: false },
+  toggleSnapSetting: (t) => set((s) => ({ snapSettings: { ...s.snapSettings, [t]: !s.snapSettings[t] } })),
+  opencascadeLoading: false, setOpenCascadeLoading: (l) => set({ opencascadeLoading: l }),
 
-  createGroup:(p,s2)=>{
-    const gid=`group-${Date.now()}`;
-    set((s)=>({shapes:s.shapes.map(x=>x.id===p?{...x,groupId:gid}:x.id===s2?{...x,groupId:gid,isReferenceBox:true}:x)}));
-  },
-
-  ungroupShapes:(gid)=>set((s)=>({
-    shapes:s.shapes.map(x=>x.groupId===gid?(({groupId,isReferenceBox,...r})=>r)(x):x),
-    selectedShapeId:null,secondarySelectedShapeId:null
+  // ── Vertex düzenleme ──────────────────────────────────────────────────────
+  vertexEditMode: false, setVertexEditMode: (b) => set({ vertexEditMode: b }),
+  selectedVertexIndex: null, setSelectedVertexIndex: (i) => set({ selectedVertexIndex: i }),
+  vertexDirection: null, setVertexDirection: (d) => set({ vertexDirection: d }),
+  // Aynı köşe + yön için düzenleme varsa değiştirilir, yoksa eklenir.
+  addVertexModification: (sid, mod) => set((s) => ({
+    shapes: s.shapes.map(sh => {
+      if (sh.id !== sid) return sh;
+      const mods = sh.vertexModifications || [];
+      const i = mods.findIndex(m => m.vertexIndex === mod.vertexIndex && m.direction === mod.direction);
+      return { ...sh, vertexModifications: i >= 0 ? mods.map((m, k) => (k === i ? mod : m)) : [...mods, mod] };
+    }),
   })),
 
-  activeTool:Tool.SELECT,setActiveTool:(t)=>set({activeTool:t}),
-  lastTransformTool:Tool.SELECT,setLastTransformTool:(t)=>set({lastTransformTool:t}),
+  // ── Çıkarma ───────────────────────────────────────────────────────────────
+  subtractionViewMode: false, setSubtractionViewMode: (b) => set({ subtractionViewMode: b }),
+  selectedSubtractionIndex: null, setSelectedSubtractionIndex: (i) => set({ selectedSubtractionIndex: i }),
+  hoveredSubtractionIndex: null, setHoveredSubtractionIndex: (i) => set({ hoveredSubtractionIndex: i }),
 
-  cameraType:CameraType.PERSPECTIVE,setCameraType:(t)=>set({cameraType:t}),
-  viewMode:ViewMode.SOLID,setViewMode:(m)=>set({viewMode:m}),
-  cycleViewMode:()=>{
-    const s=get(),arr=[ViewMode.SOLID,ViewMode.WIREFRAME,ViewMode.XRAY],i=arr.indexOf(s.viewMode);
-    set({viewMode:arr[(i+1)%arr.length]});
-  },
+  /** İlk kesişen iki gövde çiftinde B, A'dan çıkarılır (B silinir, A'ya çıkarma kaydı eklenir). */
+  checkAndPerformBooleanOperations: async () => {
+    const shapes = get().shapes;
+    if (shapes.length < 2) return;
+    for (let i = 0; i < shapes.length; i++) {
+      for (let j = i + 1; j < shapes.length; j++) {
+        const a = shapes[i], b = shapes[j];
+        if (!a.geometry || !b.geometry || !a.replicadShape || !b.replicadShape) continue;
+        const BA = bboxOfGeometry(a.geometry).translate(new THREE.Vector3(...a.position));
+        const BB = bboxOfGeometry(b.geometry).translate(new THREE.Vector3(...b.position));
+        if (!BA.intersectsBox(BB)) continue;
+        try {
+          const { performBooleanCut, convertReplicadToThreeGeometry, createReplicadBox } = await import('./components/ReplicadService');
+          const { getReplicadVertices } = await import('./components/VertexEditorService');
+          const blA = bboxOfGeometry(a.geometry), blB = bboxOfGeometry(b.geometry);
+          const sA = new THREE.Vector3(), cA = new THREE.Vector3(); blA.getSize(sA); blA.getCenter(cA);
+          const sB = new THREE.Vector3(), cB = new THREE.Vector3(); blB.getSize(sB); blB.getCenter(cB);
+          // Merkezli (eski) geometri kök köşeye ötelenir.
+          const isCentered = (c: THREE.Vector3) => Math.abs(c.x) < 0.01 && Math.abs(c.y) < 0.01 && Math.abs(c.z) < 0.01;
+          const oA = isCentered(cA) ? [sA.x / 2, sA.y / 2, sA.z / 2] : [0, 0, 0];
+          const oB = isCentered(cB) ? [sB.x / 2, sB.y / 2, sB.z / 2] : [0, 0, 0];
+          const rel: Vec3 = [0, 1, 2].map(k => (b.position[k] - oB[k]) - (a.position[k] - oA[k])) as Vec3;
+          const rot: Vec3 = [0, 1, 2].map(k => b.rotation[k] - a.rotation[k]) as Vec3;
 
-  orthoMode:OrthoMode.OFF,toggleOrthoMode:()=>set((s)=>({orthoMode:s.orthoMode===OrthoMode.ON?OrthoMode.OFF:OrthoMode.ON})),
-
-  snapSettings:{endpoint:false,midpoint:false,center:false,perpendicular:false,intersection:false,nearest:false},
-  toggleSnapSetting:(t)=>set((s)=>({snapSettings:{...s.snapSettings,[t]:!s.snapSettings[t]}})),
-
-  modifyShape:(id,mod)=>console.log('Modify shape:',id,mod),
-  pointToPointMoveState:null,setPointToPointMoveState:(x)=>set({pointToPointMoveState:x}),
-  enableAutoSnap:(t)=>console.log('Enable auto snap:',t),
-
-  opencascadeInstance:null,opencascadeLoading:false,
-  setOpenCascadeInstance:(i)=>set({opencascadeInstance:i}),
-  setOpenCascadeLoading:(l)=>set({opencascadeLoading:l}),
-
-  vertexEditMode:false,setVertexEditMode:(b)=>set({vertexEditMode:b}),
-  selectedVertexIndex:null,setSelectedVertexIndex:(i)=>set({selectedVertexIndex:i}),
-  vertexDirection:null,setVertexDirection:(d)=>set({vertexDirection:d}),
-  addVertexModification:(sid,mod)=>set((s)=>({
-    shapes:s.shapes.map(sh=>{
-      if(sh.id!==sid)return sh;
-      const a=sh.vertexModifications||[];
-      const i=a.findIndex(m=>m.vertexIndex===mod.vertexIndex&&m.direction===mod.direction);
-      const arr=i>=0?(a[i]=mod,[...a]):[...a,mod];
-      return{...sh,vertexModifications:arr,geometry:sh.geometry};
-    })
-  })),
-
-  subtractionViewMode:false,setSubtractionViewMode:(b)=>set({subtractionViewMode:b}),
-  selectedSubtractionIndex:null,setSelectedSubtractionIndex:(i)=>set({selectedSubtractionIndex:i}),
-  hoveredSubtractionIndex:null,setHoveredSubtractionIndex:(i)=>set({hoveredSubtractionIndex:i}),
-
-  /** BOOLEAN OPERASYONU */
-  checkAndPerformBooleanOperations:async()=>{
-    const st=get(),sh=st.shapes;
-    if(sh.length<2)return;
-    for(let i=0;i<sh.length;i++)
-      for(let j=i+1;j<sh.length;j++){
-        const a=sh[i],b=sh[j];
-        if(!a.geometry||!b.geometry||!a.replicadShape||!b.replicadShape)continue;
-        const BA=new THREE.Box3().setFromBufferAttribute(a.geometry.getAttribute('position')).translate(new THREE.Vector3(...a.position));
-        const BB=new THREE.Box3().setFromBufferAttribute(b.geometry.getAttribute('position')).translate(new THREE.Vector3(...b.position));
-        if(!BA.intersectsBox(BB))continue;
-        try{
-          const{performBooleanCut,convertReplicadToThreeGeometry,createReplicadBox}=await import('./components/ReplicadService');
-          const{getReplicadVertices}=await import('./components/VertexEditorService');
-          const blA=new THREE.Box3().setFromBufferAttribute(a.geometry.getAttribute('position'));
-          const sA=new THREE.Vector3();blA.getSize(sA);
-          const cA=new THREE.Vector3();blA.getCenter(cA);
-          const blB=new THREE.Box3().setFromBufferAttribute(b.geometry.getAttribute('position'));
-          const sB=new THREE.Vector3();blB.getSize(sB);
-          const cB=new THREE.Vector3();blB.getCenter(cB);
-
-          const isAC=Math.abs(cA.x)<0.01&&Math.abs(cA.y)<0.01&&Math.abs(cA.z)<0.01;
-          const isBC=Math.abs(cB.x)<0.01&&Math.abs(cB.y)<0.01&&Math.abs(cB.z)<0.01;
-
-          const oA=[isAC?sA.x/2:0,isAC?sA.y/2:0,isAC?sA.z/2:0];
-          const oB=[isBC?sB.x/2:0,isBC?sB.y/2:0,isBC?sB.z/2:0];
-
-          const c1=[a.position[0]-oA[0],a.position[1]-oA[1],a.position[2]-oA[2]];
-          const c2=[b.position[0]-oB[0],b.position[1]-oB[1],b.position[2]-oB[2]];
-
-          const rel=[c2[0]-c1[0],c2[1]-c1[1],c2[2]-c1[2]];
-          const rot=[b.rotation[0]-a.rotation[0],b.rotation[1]-a.rotation[1],b.rotation[2]-a.rotation[2]];
-
-          const RA=await createReplicadBox({width:sA.x,height:sA.y,depth:sA.z});
-          const RB=await createReplicadBox({width:sB.x,height:sB.y,depth:sB.z});
-
-          let result=await performBooleanCut(RA,RB,undefined,rel,undefined,rot,undefined,b.scale);
-          let geo=convertReplicadToThreeGeometry(result);
-          let verts=await getReplicadVertices(result);
-
-          let fillets=a.fillets||[];
-          if(fillets.length){
-            const{updateFilletCentersForNewGeometry,applyFillets}=await import('./components/ShapeUpdaterService');
-            fillets=await updateFilletCentersForNewGeometry(fillets,geo,{width:sA.x,height:sA.y,depth:sA.z});
-            result=await applyFillets(result,fillets,{width:sA.x,height:sA.y,depth:sA.z});
-            geo=convertReplicadToThreeGeometry(result);
-            verts=await getReplicadVertices(result);
+          const RA = await createReplicadBox({ width: sA.x, height: sA.y, depth: sA.z });
+          const RB = await createReplicadBox({ width: sB.x, height: sB.y, depth: sB.z });
+          let result = await performBooleanCut(RA, RB, undefined, rel, undefined, rot, undefined, b.scale);
+          let geo = convertReplicadToThreeGeometry(result);
+          let verts = await getReplicadVertices(result);
+          let fillets = a.fillets || [];
+          if (fillets.length) {
+            const { updateFilletCentersForNewGeometry, applyFillets } = await import('./components/ShapeUpdaterService');
+            fillets = await updateFilletCentersForNewGeometry(fillets, geo, { width: sA.x, height: sA.y, depth: sA.z });
+            result = await applyFillets(result, fillets, { width: sA.x, height: sA.y, depth: sA.z });
+            geo = convertReplicadToThreeGeometry(result);
+            verts = await getReplicadVertices(result);
           }
-
-          const sub=b.geometry.clone();
-          set((S)=>({
-            shapes:S.shapes
-              .map(x=>x.id===a.id?{
-                ...x,
-                geometry:geo,
-                replicadShape:result,
-                fillets,
-                subtractionGeometries:[
-                  ...(x.subtractionGeometries||[]),
-                  {
-                    geometry:sub,relativeOffset:rel,relativeRotation:rot,scale:[1,1,1],
-                    parameters:{
-                      width:String(sB.x),height:String(sB.y),depth:String(sB.z),
-                      posX:String(rel[0]),posY:String(rel[1]),posZ:String(rel[2]),
-                      rotX:String(rot[0]*180/Math.PI),
-                      rotY:String(rot[1]*180/Math.PI),
-                      rotZ:String(rot[2]*180/Math.PI)
-                    }
-                  }
-                ],
-                parameters:{...x.parameters,scaledBaseVertices:verts.map(v=>[v.x,v.y,v.z])}
-              }
-              :x.id!==b.id?x:null)
-              .filter(Boolean)
+          const sub: SubtractedGeometry = {
+            geometry: b.geometry.clone(), relativeOffset: rel, relativeRotation: rot, scale: [1, 1, 1],
+            parameters: {
+              width: String(sB.x), height: String(sB.y), depth: String(sB.z),
+              posX: String(rel[0]), posY: String(rel[1]), posZ: String(rel[2]),
+              rotX: String(rot[0] * 180 / Math.PI), rotY: String(rot[1] * 180 / Math.PI), rotZ: String(rot[2] * 180 / Math.PI),
+            },
+          };
+          set((S) => ({
+            shapes: S.shapes
+              .filter(x => x.id !== b.id)
+              .map(x => x.id === a.id ? {
+                ...x, geometry: geo, replicadShape: result, fillets,
+                subtractionGeometries: [...(x.subtractionGeometries || []), sub],
+                parameters: { ...x.parameters, scaledBaseVertices: verts.map(v => [v.x, v.y, v.z]) },
+              } : x),
           }));
-
-          try{
-            const{rebuildPanelsForParent}=await import('./components/PanelRebuildService');
-            await rebuildPanelsForParent(a.id);
-          }catch(err){console.error('rebuild after subtractor add fail:',err);}
-
+          try { await rebuildParent(a.id); } catch (err) { console.error('rebuild after subtractor add fail:', err); }
           return;
-        }catch(e){console.error('boolean fail:',e);}
+        } catch (e) { console.error('boolean fail:', e); }
       }
+    }
   },
 
-  deleteSubtraction:async(shapeId,idx)=>{
-    const st=get(),sh=st.shapes.find(s=>s.id===shapeId);
-    if(!sh||!sh.subtractionGeometries)return;
-    const arr=[...sh.subtractionGeometries];arr[idx]=null;
-    try{
-      const{performBooleanCut,convertReplicadToThreeGeometry,createReplicadBox}=await import('./components/ReplicadService');
-      const{getReplicadVertices}=await import('./components/VertexEditorService');
-
-      const W=sh.parameters?.width||1,H=sh.parameters?.height||1,D=sh.parameters?.depth||1;
-      const pos=[...sh.position];
-      let base=await createReplicadBox({width:W,height:H,depth:D});
-
-      for(let i=0;i<arr.length;i++){
-        const sub=arr[i];if(!sub)continue;
-        let w,h,d;
-        if(sub.parameters){w=parseFloat(sub.parameters.width);h=parseFloat(sub.parameters.height);d=parseFloat(sub.parameters.depth);}
-        else{
-          const B=new THREE.Box3().setFromBufferAttribute(sub.geometry.getAttribute('position'));
-          const S=new THREE.Vector3();B.getSize(S);
-          w=S.x;h=S.y;d=S.z;
-        }
-        const SB=await createReplicadBox({width:w,height:h,depth:d});
-        base=await performBooleanCut(base,SB,undefined,sub.relativeOffset,undefined,sub.relativeRotation||[0,0,0],undefined,sub.scale||[1,1,1]);
+  /** Çıkarmayı siler: kalan çıkarmalar + filletlerle gövde baştan kurulur. */
+  deleteSubtraction: async (shapeId, idx) => {
+    const sh = get().shapes.find(s => s.id === shapeId);
+    if (!sh || !sh.subtractionGeometries) return;
+    const arr = [...sh.subtractionGeometries];
+    arr[idx] = null;
+    try {
+      const { performBooleanCut, convertReplicadToThreeGeometry, createReplicadBox } = await import('./components/ReplicadService');
+      const { getReplicadVertices } = await import('./components/VertexEditorService');
+      const W = sh.parameters?.width || 1, H = sh.parameters?.height || 1, D = sh.parameters?.depth || 1;
+      const pos = [...sh.position] as Vec3;
+      let base = await createReplicadBox({ width: W, height: H, depth: D });
+      for (const sub of arr) {
+        if (!sub) continue;
+        let w: number, h: number, d: number;
+        if (sub.parameters) { w = parseFloat(sub.parameters.width); h = parseFloat(sub.parameters.height); d = parseFloat(sub.parameters.depth); }
+        else { const S = new THREE.Vector3(); bboxOfGeometry(sub.geometry).getSize(S); w = S.x; h = S.y; d = S.z; }
+        const SB = await createReplicadBox({ width: w, height: h, depth: d });
+        base = await performBooleanCut(base, SB, undefined, sub.relativeOffset, undefined, sub.relativeRotation || [0, 0, 0], undefined, sub.scale || [1, 1, 1]);
       }
-
-      let geo=convertReplicadToThreeGeometry(base);
-      let verts=await getReplicadVertices(base);
-      let fillets=sh.fillets||[];
-
-      if(fillets.length){
-        const{updateFilletCentersForNewGeometry,applyFillets}=await import('./components/ShapeUpdaterService');
-        fillets=await updateFilletCentersForNewGeometry(fillets,geo,{width:W,height:H,depth:D});
-        base=await applyFillets(base,fillets,{width:W,height:H,depth:D});
-        geo=convertReplicadToThreeGeometry(base);
-        verts=await getReplicadVertices(base);
+      let geo = convertReplicadToThreeGeometry(base);
+      let verts = await getReplicadVertices(base);
+      let fillets = sh.fillets || [];
+      if (fillets.length) {
+        const { updateFilletCentersForNewGeometry, applyFillets } = await import('./components/ShapeUpdaterService');
+        fillets = await updateFilletCentersForNewGeometry(fillets, geo, { width: W, height: H, depth: D });
+        base = await applyFillets(base, fillets, { width: W, height: H, depth: D });
+        geo = convertReplicadToThreeGeometry(base);
+        verts = await getReplicadVertices(base);
       }
-
-      set((S)=>({
-        shapes:S.shapes.map(x=>x.id===shapeId?{
-          ...x,
-          geometry:geo,
-          replicadShape:base,
-          subtractionGeometries:arr,
-          fillets,
-          position:pos,
-          parameters:{...x.parameters,scaledBaseVertices:verts.map(v=>[v.x,v.y,v.z])}
-        }:x),
-        selectedSubtractionIndex:null
+      set((S) => ({
+        shapes: S.shapes.map(x => x.id === shapeId ? {
+          ...x, geometry: geo, replicadShape: base, subtractionGeometries: arr, fillets, position: pos,
+          parameters: { ...x.parameters, scaledBaseVertices: verts.map(v => [v.x, v.y, v.z]) },
+        } : x),
+        selectedSubtractionIndex: null,
       }));
+      try { await rebuildParent(shapeId); } catch (err) { console.error('rebuild after subtractor delete fail:', err); }
+    } catch (e) { console.error('deleteSubtraction fail:', e); }
+  },
 
-      try{
-        const{rebuildPanelsForParent}=await import('./components/PanelRebuildService');
-        await rebuildPanelsForParent(shapeId);
-      }catch(err){console.error('rebuild after subtractor delete fail:',err);}
+  // ── Paneller / editör ─────────────────────────────────────────────────────
+  showParametersPanel: false, setShowParametersPanel: (b) => set({ showParametersPanel: b }),
+  showOutlines: true, setShowOutlines: (b) => set({ showOutlines: b }),
+  selectedPanelRow: null, selectedPanelRowExtraId: null, selectedPanelRowParentId: null,
+  setSelectedPanelRow: (i, e, parentId) => set({ selectedPanelRow: i, selectedPanelRowExtraId: e || null, selectedPanelRowParentId: parentId || null }),
+  panelSelectMode: false,
+  setPanelSelectMode: (b) => set({ panelSelectMode: b, selectedPanelRow: null, selectedPanelRowExtraId: null, selectedPanelRowParentId: null }),
+  faceEditMode: false, setFaceEditMode: (b) => set({ faceEditMode: b }),
+  hoveredPanelVfId: null, setHoveredPanelVfId: (id) => set({ hoveredPanelVfId: id }),
 
-    }catch(e){console.error('deleteSubtraction fail:',e);}
-  }
+  // ── Fillet ────────────────────────────────────────────────────────────────
+  filletMode: false, setFilletMode: (e) => set({ filletMode: e, selectedFilletFaces: [], selectedFilletFaceData: [] }),
+  selectedFilletFaces: [], setSelectedFilletFaces: (f) => set({ selectedFilletFaces: f }),
+  addFilletFace: (i) => set((s) => (s.selectedFilletFaces.includes(i) ? {} : { selectedFilletFaces: [...s.selectedFilletFaces, i] })),
+  clearFilletFaces: () => set({ selectedFilletFaces: [], selectedFilletFaceData: [] }),
+  selectedFilletFaceData: [],
+  addFilletFaceData: (d) => set((s) => ({ selectedFilletFaceData: [...s.selectedFilletFaceData, d] })),
+  clearFilletFaceData: () => set({ selectedFilletFaceData: [] }),
+
+  raycastMode: false, setRaycastMode: (b) => set({ raycastMode: b }),
+
+  // ── Yüz extrude ───────────────────────────────────────────────────────────
+  faceExtrudeMode: false,
+  setFaceExtrudeMode: (b) => set({
+    faceExtrudeMode: b, faceExtrudeSelectedFace: null, faceExtrudeClickPoint: null,
+    ...(!b ? { faceExtrudeTargetPanelId: null, faceExtrudeRefCandidate: null } : {}),
+  }),
+  faceExtrudeTargetPanelId: null, setFaceExtrudeTargetPanelId: (id) => set({ faceExtrudeTargetPanelId: id }),
+  faceExtrudeSelectedFace: null, setFaceExtrudeSelectedFace: (i) => set({ faceExtrudeSelectedFace: i }),
+  faceExtrudeClickPoint: null, setFaceExtrudeClickPoint: (p) => set({ faceExtrudeClickPoint: p }),
+  faceExtrudeThickness: 18, setFaceExtrudeThickness: (v) => set({ faceExtrudeThickness: v }),
+  faceExtrudeFixedMode: true, setFaceExtrudeFixedMode: (b) => set({ faceExtrudeFixedMode: b }),
+  faceExtrudeValueMode: 'fixed', setFaceExtrudeValueMode: (m) => set({ faceExtrudeValueMode: m }),
+  faceExtrudeRefCandidate: null, setFaceExtrudeRefCandidate: (v) => set({ faceExtrudeRefCandidate: v }),
+
+  // ── Panel taşıma ──────────────────────────────────────────────────────────
+  panelMoveMode: false,
+  setPanelMoveMode: (b) => set({
+    panelMoveMode: b,
+    ...(!b ? {
+      panelMoveTargetPanelId: null, panelMoveAxis: null, panelMoveValue: 0, panelMoveValueMode: 'dyn' as const,
+      panelMoveRefSourceVertex: null, panelMoveRefTargetPanelId: null, panelMoveRefTargetVertex: null,
+    } : {}),
+  }),
+  panelMoveTargetPanelId: null, setPanelMoveTargetPanelId: (id) => set({ panelMoveTargetPanelId: id }),
+  panelMoveAxis: null, setPanelMoveAxis: (a) => set({ panelMoveAxis: a }),
+  panelMoveValue: 0, setPanelMoveValue: (v) => set({ panelMoveValue: v }),
+  panelMoveValueMode: 'dyn',
+  setPanelMoveValueMode: (m) => set({ panelMoveValueMode: m, panelMoveRefSourceVertex: null, panelMoveRefTargetPanelId: null, panelMoveRefTargetVertex: null }),
+  panelMoveRefSourceVertex: null, setPanelMoveRefSourceVertex: (v) => set({ panelMoveRefSourceVertex: v }),
+  panelMoveRefTargetPanelId: null, setPanelMoveRefTargetPanelId: (id) => set({ panelMoveRefTargetPanelId: id }),
+  panelMoveRefTargetVertex: null, setPanelMoveRefTargetVertex: (v) => set({ panelMoveRefTargetVertex: v }),
+
+  // ── Panel döndürme ────────────────────────────────────────────────────────
+  // Moda girişte/çıkışta alt durum sıfırlanır (her komut mod seçiminden başlar);
+  // hedef panel id'si girişte korunur (satır düğmesi onu hemen önce yazar).
+  panelRotateMode: false,
+  setPanelRotateMode: (b) => set({
+    panelRotateMode: b,
+    panelRotatePivot: null, panelRotatePivotType: null, panelRotateAxis: null, panelRotateValue: 0,
+    panelRotateValueMode: null, panelRotateRefArmVertex: null, panelRotateRefTargetPanelId: null, panelRotateRefFace: null,
+    ...(!b ? { panelRotateTargetPanelId: null } : {}),
+  }),
+  panelRotateTargetPanelId: null, setPanelRotateTargetPanelId: (id) => set({ panelRotateTargetPanelId: id }),
+  panelRotatePivot: null, setPanelRotatePivot: (p) => set({ panelRotatePivot: p }),
+  panelRotatePivotType: null, setPanelRotatePivotType: (t) => set({ panelRotatePivotType: t }),
+  panelRotateAxis: null, setPanelRotateAxis: (a) => set({ panelRotateAxis: a }),
+  panelRotateValue: 0, setPanelRotateValue: (v) => set({ panelRotateValue: v }),
+  // Mod seçimi/değişimi akışı BAŞA alır (yarım kalmış seçim taşınmaz).
+  panelRotateValueMode: null,
+  setPanelRotateValueMode: (m) => set({
+    panelRotateValueMode: m, panelRotatePivot: null, panelRotatePivotType: null, panelRotateAxis: null, panelRotateValue: 0,
+    panelRotateRefArmVertex: null, panelRotateRefTargetPanelId: null, panelRotateRefFace: null,
+  }),
+  panelRotateRefArmVertex: null, setPanelRotateRefArmVertex: (v) => set({ panelRotateRefArmVertex: v }),
+  panelRotateRefTargetPanelId: null, setPanelRotateRefTargetPanelId: (id) => set({ panelRotateRefTargetPanelId: id }),
+  // Yüz seçimi hedef paneli de belirler.
+  panelRotateRefFace: null, setPanelRotateRefFace: (f) => set({ panelRotateRefFace: f, panelRotateRefTargetPanelId: f ? f.panelId : null }),
+
+  // ── Sanal yüzler ──────────────────────────────────────────────────────────
+  showVirtualFaces: true, setShowVirtualFaces: (b) => set({ showVirtualFaces: b }),
+  virtualFaces: [],
+  addVirtualFace: (v) => set((s) => ({ virtualFaces: [...s.virtualFaces, v] })),
+  updateVirtualFace: (id, u) => set((s) => ({ virtualFaces: s.virtualFaces.map(f => (f.id === id ? { ...f, ...u } : f)) })),
+  deleteVirtualFace: (id) => set((s) => ({ virtualFaces: s.virtualFaces.filter(f => f.id !== id) })),
+  // Sürüklenen grup hedefin ÖNCESİNE (null = sona) taşınır; diğer şekillerin VF'leri yerinde kalır.
+  reorderVirtualFaceGroup: (shapeId, fromIds, toGroupFirstId) => {
+    set((s) => {
+      const shapeFaces = s.virtualFaces.filter(f => f.shapeId === shapeId);
+      const fromSet = new Set(fromIds);
+      const group = shapeFaces.filter(f => fromSet.has(f.id));
+      const rest = shapeFaces.filter(f => !fromSet.has(f.id));
+      const insertIdx = toGroupFirstId === null ? rest.length : rest.findIndex(f => f.id === toGroupFirstId);
+      if (insertIdx < 0) return {};
+      rest.splice(insertIdx, 0, ...group);
+      const queue = [...rest];
+      return { virtualFaces: s.virtualFaces.map(f => (f.shapeId === shapeId ? queue.shift()! : f)) };
+    });
+    rebuildParent(shapeId);
+  },
 }));
+
+/**
+ * Store'dan YALNIZ istenen alanlara abone olur (shallow karşılaştırma).
+ * `useAppStore()` tüm store'a abone olup her değişiklikte (hover, rebuild'in
+ * her panel yazımı…) bileşeni yeniden çizdiriyordu; bu kanca yalnız seçilen
+ * alanlar değişince çizdirir.
+ */
+export function useStoreFields<K extends keyof AppState>(...keys: K[]): Pick<AppState, K> {
+  return useAppStore(useShallow((s: AppState) => {
+    const o = {} as Pick<AppState, K>;
+    for (const k of keys) o[k] = s[k];
+    return o;
+  }));
+}

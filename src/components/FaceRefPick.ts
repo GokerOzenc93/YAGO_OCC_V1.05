@@ -1,6 +1,7 @@
 import * as THREE from 'three';
-import { extractFacesFromGeometry, groupCoplanarFaces, snapToFlatGroup } from './GeometryUtils';
+import { getFacesAndGroups, snapToFlatGroup } from './GeometryUtils';
 import { pointInTriangle3D } from './FaceRegion';
+import { getShapeMatrix } from './PanelMath';
 
 // ─── REFERANS YÜZ SEÇİMİ: IŞIN BOYUNCA DERİNLİK DÖNGÜSÜ ─────────────────────
 // Panel yerleştirirkenki (FaceRaycastOverlay) "aynı noktaya her tıklamada bir
@@ -37,29 +38,6 @@ export interface RefFaceCandidate {
   normalWorld: [number, number, number];
 }
 
-interface CachedGeom { uuid: string; faces: any[]; groups: any[]; }
-const geomCache = new Map<string, CachedGeom>();
-
-function getFacesGroups(geometry: THREE.BufferGeometry): { faces: any[]; groups: any[] } {
-  const uuid = geometry.uuid;
-  const hit = geomCache.get(uuid);
-  if (hit) return hit;
-  const faces = extractFacesFromGeometry(geometry);
-  const groups = groupCoplanarFaces(faces);
-  const entry = { uuid, faces, groups };
-  // Basit LRU sınırı: cache şişmesin.
-  if (geomCache.size > 64) geomCache.clear();
-  geomCache.set(uuid, entry);
-  return entry;
-}
-
-function shapeMatrix(s: any): THREE.Matrix4 {
-  return new THREE.Matrix4().compose(
-    new THREE.Vector3(s.position[0], s.position[1], s.position[2]),
-    new THREE.Quaternion().setFromEuler(new THREE.Euler(s.rotation[0], s.rotation[1], s.rotation[2], 'XYZ')),
-    new THREE.Vector3(s.scale[0], s.scale[1], s.scale[2])
-  );
-}
 
 // Işının deldiği tüm referans yüz gruplarını (parent küp + paneller, hedef
 // panel hariç) derinliğe göre sıralı döndürür. Her aday DÜZ (snap edilmiş) gruba
@@ -79,9 +57,9 @@ export function gatherRefFaceCandidates(
     if (!s?.geometry) continue;
     if (s.id === targetPanelId) continue;
 
-    const M = shapeMatrix(s);
+    const M = getShapeMatrix(s);
     const normalMatrix = new THREE.Matrix3().getNormalMatrix(M);
-    const { faces, groups } = getFacesGroups(s.geometry);
+    const { faces, groups } = getFacesAndGroups(s.geometry);
 
     for (let gi = 0; gi < groups.length; gi++) {
       const group = groups[gi];
@@ -139,60 +117,6 @@ let lastPick: { x: number; y: number; index: number; ctx: string } | null = null
 const SAME_SPOT_PX = 6;
 
 export function resetRefFacePick() { lastPick = null; }
-
-// ─── MOVE REF: PANEL DERİNLİK DÖNGÜSÜ (vertex değil, panel seçimi) ──────────
-// Kaynak vertex seçildikten sonra hedef panel seçimi: aynı noktaya her tıklamada
-// ışın boyunca bir arkadaki şekle geçer (face extrude ref gibi).
-let lastMovePanelPick: { x: number; y: number; index: number; ctx: string } | null = null;
-
-export function resetMoveRefPanelPick() { lastMovePanelPick = null; }
-
-export function cycleMoveRefPanelFromEvent(
-  e: any,
-  shapes: any[],
-  sourcePanelId: string | null,
-  setTargetPanelId: (id: string) => void
-): boolean {
-  const ray: THREE.Ray | undefined = e?.ray;
-  if (!ray) return false;
-  const dir = ray.direction.clone().normalize();
-  const origin = ray.origin.clone();
-
-  // Işının gerçekten deldiği tüm şekilleri (paneller) ray-triangle testi ile bul.
-  const raycaster = new THREE.Raycaster(origin, dir);
-  const cands: { id: string; depth: number }[] = [];
-  for (const s of shapes) {
-    if (!s?.geometry) continue;
-    if (s.id === sourcePanelId) continue;
-    // Sadece paneller hedef olabilir.
-    if (s.type !== 'panel') continue;
-    const M = shapeMatrix(s);
-    const tempMesh = new THREE.Mesh(s.geometry);
-    tempMesh.matrixWorld.copy(M);
-    tempMesh.matrixAutoUpdate = false;
-    const hits = raycaster.intersectObject(tempMesh, false);
-    if (hits.length > 0) {
-      cands.push({ id: s.id, depth: hits[0].distance });
-    }
-  }
-  cands.sort((a, b) => a.depth - b.depth);
-  // Tekille
-  const seen = new Set<string>();
-  const dedup = cands.filter(c => { if (seen.has(c.id)) return false; seen.add(c.id); return true; });
-  if (dedup.length === 0) return false;
-
-  const sx = e?.nativeEvent?.clientX ?? 0;
-  const sy = e?.nativeEvent?.clientY ?? 0;
-  const ctx = String(sourcePanelId ?? '');
-  const sameSpot = !!lastMovePanelPick && lastMovePanelPick.ctx === ctx &&
-    Math.hypot(sx - lastMovePanelPick.x, sy - lastMovePanelPick.y) < SAME_SPOT_PX;
-
-  const index = sameSpot ? (lastMovePanelPick!.index + 1) % dedup.length : 0;
-  lastMovePanelPick = { x: sx, y: sy, index, ctx };
-
-  setTargetPanelId(dedup[index].id);
-  return true;
-}
 
 // R3F tıklama olayından: ışın + ekran koordinatı ile adayları toplar, aynı
 // noktada arka arkaya tıklamada bir sonraki derinliğe geçer, seçilen adayı

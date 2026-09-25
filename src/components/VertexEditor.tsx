@@ -7,7 +7,6 @@ interface VertexEditorProps {
   isActive: boolean;
   onVertexSelect: (index: number | null) => void;
   onDirectionChange: (direction: 'x+' | 'x-' | 'y+' | 'y-' | 'z+' | 'z-') => void;
-  onOffsetConfirm: (vertexIndex: number, direction: 'x+' | 'x-' | 'y+' | 'y-' | 'z+' | 'z-', offset: number) => void;
 }
 
 const VertexPoint: React.FC<{
@@ -18,7 +17,7 @@ const VertexPoint: React.FC<{
   onClick: (e: any) => void;
   onPointerOver: () => void;
   onPointerOut: () => void;
-}> = ({ position, index, isHovered, isSelected, onClick, onPointerOver, onPointerOut }) => {
+}> = ({ position, isHovered, isSelected, onClick, onPointerOver, onPointerOut }) => {
   return (
     <mesh
       position={position}
@@ -80,9 +79,9 @@ const DirectionArrow: React.FC<{
 
   return (
     <group>
-      <line geometry={lineGeometry}>
+      <lineSegments geometry={lineGeometry}>
         <lineBasicMaterial color="#ef4444" linewidth={3} />
-      </line>
+      </lineSegments>
       <mesh position={endPosition} rotation={getRotation()}>
         <coneGeometry args={[4, 10, 8]} />
         <meshBasicMaterial color="#ef4444" />
@@ -145,9 +144,9 @@ const DirectionSelector: React.FC<{
 
         return (
           <group key={dir}>
-            <line geometry={lineGeometry}>
+            <lineSegments geometry={lineGeometry}>
               <lineBasicMaterial color={color} linewidth={3} transparent opacity={0.8} />
-            </line>
+            </lineSegments>
             <mesh
               position={endPosition}
               rotation={getRotation(dir)}
@@ -171,7 +170,6 @@ export const VertexEditor: React.FC<VertexEditorProps> = ({
   isActive,
   onVertexSelect,
   onDirectionChange,
-  onOffsetConfirm
 }) => {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
@@ -278,23 +276,6 @@ export const VertexEditor: React.FC<VertexEditorProps> = ({
     setShowDirectionSelector(false);
     onDirectionChange(direction);
     console.log(`✓ Direction ${direction} selected - Right-click to confirm`);
-  };
-
-  const handleVertexRightClick = (index: number, e: any) => {
-    e.stopPropagation();
-    if (selectedIndex === index && currentDirection) {
-      console.log(`✓ Confirmed - Waiting for terminal input for vertex ${index} (${currentDirection})`);
-      (window as any).pendingVertexEdit = true;
-    }
-  };
-
-  const handleVertexDoubleClick = (index: number, e: any) => {
-    e.stopPropagation();
-    if (selectedIndex === index && currentDirection) {
-      setShowDirectionSelector(true);
-      setCurrentDirection(null);
-      console.log(`🔄 Change direction for vertex ${index}`);
-    }
   };
 
   console.log('✨ VertexEditor rendering with:', {

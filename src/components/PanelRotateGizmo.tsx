@@ -1,9 +1,10 @@
 import { useState, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { Html } from '@react-three/drei';
-import { GizmoDot, computeRealCorners, panelWorldMatrix, resolveDotOverlap } from './GizmoDot';
+import { GizmoDot, computeRealCorners, resolveDotOverlap } from './GizmoDot';
+import { getShapeMatrix } from './PanelMath';
 import { useFrame } from '@react-three/fiber';
-import { useAppStore } from '../store';
+import { useStoreFields } from '../store';
 import type { Shape } from '../store';
 
 const RENDER_ORDER = 999;
@@ -175,7 +176,7 @@ function computeFaceCenters(panelShape: Shape): [number, number, number][] {
     return c.divideScalar(pts.length || 1);
   };
 
-  const mat = panelWorldMatrix(panelShape);
+  const mat = getShapeMatrix(panelShape);
   return [avg(g1), avg(g2)].map(p => {
     const w = p.clone().applyMatrix4(mat);
     return [w.x, w.y, w.z] as [number, number, number];
@@ -203,7 +204,7 @@ export function PanelRotateGizmo({ panelShape }: PanelRotateGizmoProps) {
     panelRotateValueMode,
     panelRotateRefArmVertex, setPanelRotateRefArmVertex,
     setPanelRotateRefFace,
-  } = useAppStore();
+  } = useStoreFields('panelRotatePivot', 'setPanelRotatePivot', 'setPanelRotatePivotType', 'panelRotateAxis', 'setPanelRotateAxis', 'panelRotateValueMode', 'panelRotateRefArmVertex', 'setPanelRotateRefArmVertex', 'setPanelRotateRefFace');
 
   // ── 1. ADIM: MOD SEÇİMİ — SAHNE BOŞ ─────────────────────────────────────
   // İSTEK (Goker): "önce hiç nokta çıkmadan mod seçimi olsun, ona göre adımları

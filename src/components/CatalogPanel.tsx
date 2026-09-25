@@ -1,8 +1,9 @@
 import React, { useEffect, useState, useRef, useMemo } from 'react';
 import { X, Plus, Trash2 } from 'lucide-react';
-import { Canvas, useFrame } from '@react-three/fiber';
+import { Canvas } from '@react-three/fiber';
 import { OrbitControls, PerspectiveCamera } from '@react-three/drei';
 import * as THREE from 'three';
+import type { CatalogItem } from './Database';
 
 const createGeometryFromType = (type: string, parameters: any = {}): THREE.BufferGeometry => {
   switch (type) {
@@ -30,20 +31,11 @@ const createGeometryFromType = (type: string, parameters: any = {}): THREE.Buffe
   }
 };
 
-interface CatalogItem {
-  id: string;
-  code: string;
-  description: string;
-  tags: string[];
-  geometry_data: any;
-  preview_image?: string;
-  created_at: string;
-}
 
 interface CatalogPanelProps {
   isOpen: boolean;
   onClose: () => void;
-  onLoad: (item: CatalogItem) => void;
+  onLoad: (item: CatalogItem) => void | Promise<void>;
   onDelete: (id: string) => void;
   items: CatalogItem[];
 }
@@ -78,9 +70,6 @@ const GeometryPreview: React.FC<{ geometryData: any }> = ({ geometryData }) => {
   }, [geometry]);
 
   const color = geometryData.color || '#2563eb';
-  const rotation = geometryData.rotation || [0, 0, 0];
-  const position = geometryData.position || [0, 0, 0];
-  const scale = geometryData.scale || [1, 1, 1];
 
   const cameraDistance = useMemo(() => {
     if (!bounds) return 300;

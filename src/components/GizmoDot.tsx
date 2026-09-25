@@ -2,6 +2,7 @@ import { useState, useRef } from 'react';
 import * as THREE from 'three';
 import { useFrame } from '@react-three/fiber';
 import type { Shape } from '../store';
+import { getShapeMatrix } from './PanelMath';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // GizmoDot — taşıma (referans köşe) ve döndürme (pivot) gizmolarının ORTAK
@@ -102,13 +103,6 @@ export function GizmoDot({ position, isSelected, accent = '#44403c', onClick, gr
   );
 }
 
-export function panelWorldMatrix(panelShape: Shape): THREE.Matrix4 {
-  return new THREE.Matrix4().compose(
-    new THREE.Vector3(...panelShape.position),
-    new THREE.Quaternion().setFromEuler(new THREE.Euler(...panelShape.rotation, 'XYZ')),
-    new THREE.Vector3(...panelShape.scale)
-  );
-}
 
 /** Gerçek köşeler (dünya): özellik kenarlarının yön değiştirdiği noktalar. */
 export function computeRealCorners(panelShape: Shape): [number, number, number][] {
@@ -131,7 +125,7 @@ export function computeRealCorners(panelShape: Shape): [number, number, number][
     pts.set(ka, a); pts.set(kb, b);
   }
   edges.dispose();
-  const mat = panelWorldMatrix(panelShape);
+  const mat = getShapeMatrix(panelShape);
   const result: [number, number, number][] = [];
   for (const [key, v] of pts) {
     const dirs = incident.get(key);

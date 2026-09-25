@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { SlidersHorizontal, PanelLeft, Pin, PinOff, ChevronRight } from 'lucide-react';
-import { useAppStore } from '../store';
+import { useAppStore, useStoreFields } from '../store';
 
 interface LeftSidebarProps {
   parametersContent: React.ReactNode;
@@ -136,7 +136,7 @@ const EmptyState: React.FC<{
    LeftSidebar  (default pinned + click-to-open + bone theme)
 ═══════════════════════════════════════════════════════════════════ */
 const LeftSidebar: React.FC<LeftSidebarProps> = ({ parametersContent, panelEditorContent }) => {
-  const { selectedShapeId } = useAppStore();
+  const { selectedShapeId } = useStoreFields('selectedShapeId');
   const [isOpen, setIsOpen] = useState(false);
   const [isPinned, setIsPinned] = useState(false);
   const [activeTab, setActiveTab] = useState<SidebarTab>('panel-editor');

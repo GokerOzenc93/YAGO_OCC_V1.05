@@ -2,10 +2,9 @@ import React, { useRef, useEffect, useLayoutEffect, useState, useCallback, useMe
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { OrbitControls, GizmoHelper, PerspectiveCamera, OrthographicCamera } from '@react-three/drei';
 import * as THREE from 'three';
-import { useAppStore, CameraType } from '../store';
+import { getShapeMatrix } from './PanelMath';
+import { useAppStore, useStoreFields, CameraType } from '../store';
 import { useShallow } from 'zustand/react/shallow';
-import SaveDialog from './SaveDialog';
-import { catalogService } from './Database';
 import { VertexEditor } from './VertexEditor';
 import { applyFilletToShape } from './Fillet';
 import { ShapeWithTransform } from './ShapeWithTransform';
@@ -488,7 +487,7 @@ function MoveRefPanelPicker({ shapes }: { shapes: any[] }) {
     panelMoveMode, panelMoveValueMode, panelMoveRefSourceVertex,
     panelMoveRefTargetVertex, panelMoveTargetPanelId,
     setPanelMoveRefTargetPanelId, setPanelMoveRefTargetVertex,
-  } = useAppStore();
+  } = useStoreFields('panelMoveMode', 'panelMoveValueMode', 'panelMoveRefSourceVertex', 'panelMoveRefTargetVertex', 'panelMoveTargetPanelId', 'setPanelMoveRefTargetPanelId', 'setPanelMoveRefTargetVertex');
 
   // Kaynak nokta seçildikten sonra, HEDEF NOKTA seçilene kadar aktif kalır —
   // böylece üst üste panellerde her sol tıkta bir arkadakine geçilir (tek tek
@@ -520,11 +519,7 @@ function MoveRefPanelPicker({ shapes }: { shapes: any[] }) {
       const idMap = new Map<THREE.Mesh, string>();
       for (const p of panels) {
         const m = new THREE.Mesh(p.geometry);
-        m.matrixWorld.compose(
-          new THREE.Vector3(...p.position),
-          new THREE.Quaternion().setFromEuler(new THREE.Euler(...p.rotation, 'XYZ')),
-          new THREE.Vector3(...p.scale),
-        );
+        m.matrixWorld.copy(getShapeMatrix(p));
         m.matrixAutoUpdate = false;
         tempMeshes.push(m);
         idMap.set(m, p.id);
@@ -568,7 +563,7 @@ function MoveRefConfirmOnRightClick() {
   const { gl } = useThree();
   const {
     panelMoveMode, panelMoveValueMode, panelMoveRefSourceVertex,
-  } = useAppStore();
+  } = useStoreFields('panelMoveMode', 'panelMoveValueMode', 'panelMoveRefSourceVertex');
 
   // Ref akışı aktifken (kaynak nokta seçildikten sonra) sağ tık:
   //  • hazırsa (üç seçim tam) → onayla ve uygula (akıcı: sahnede herhangi bir
@@ -592,15 +587,8 @@ function MoveRefConfirmOnRightClick() {
       if (!ps) return;
       busy = true;
       try {
-        const { executePanelMoveRef } = await import('./PanelMoveService');
-        await executePanelMoveRef({
-          panelShape: ps,
-          sourceVertex: st.panelMoveRefSourceVertex,
-          targetPanelId: st.panelMoveRefTargetPanelId,
-          targetVertex: st.panelMoveRefTargetVertex,
-          shapes: st.shapes,
-          updateShape: st.updateShape,
-        });
+        const { confirmPanelMoveRef } = await import('./PanelSteps');
+        await confirmPanelMoveRef();
         st.setPanelMoveMode(false);
         // Ref modundan çıkınca panel seçili KALMASIN (kırmızı tarama temizlensin)
         // ve derinlik döngüsü sıradan sıfırlansın.
@@ -627,7 +615,7 @@ function MoveRefConfirmOnRightClick() {
 /** Ref-dönüş akışında sağ tık: hazırsa onaylar, değilse yalnız menüyü engeller. */
 function RotateRefConfirmOnRightClick() {
   const { gl } = useThree();
-  const { panelRotateMode, panelRotateValueMode, panelRotatePivot } = useAppStore();
+  const { panelRotateMode, panelRotateValueMode, panelRotatePivot } = useStoreFields('panelRotateMode', 'panelRotateValueMode', 'panelRotatePivot');
   const active = panelRotateMode && panelRotateValueMode === 'ref' && !!panelRotatePivot;
 
   useEffect(() => {
@@ -647,21 +635,8 @@ function RotateRefConfirmOnRightClick() {
       if (!ps) return;
       busy = true;
       try {
-        const { executePanelRotateRef } = await import('./PanelRotateService');
-        await executePanelRotateRef({
-          panelShape: ps,
-          pivot: st.panelRotatePivot,
-          armVertex: st.panelRotateRefArmVertex,
-          axis: st.panelRotateAxis,
-          targetPanelId: st.panelRotateRefFace.panelId,
-          targetFace: {
-            faceGroupIndex: st.panelRotateRefFace.faceGroupIndex,
-            normalWorld: st.panelRotateRefFace.normalWorld,
-            pointWorld: st.panelRotateRefFace.pointWorld,
-          },
-          shapes: st.shapes,
-          updateShape: st.updateShape,
-        });
+        const { confirmPanelRotateRef } = await import('./PanelSteps');
+        await confirmPanelRotateRef();
         st.setPanelRotateMode(false);
         // Ref modundan çıkınca panel seçili KALMASIN (kırmızı tarama temizlensin).
         st.setSelectedPanelRow(null);
@@ -682,7 +657,7 @@ function RotateRefConfirmOnRightClick() {
    PANEL MOVE GIZMO WRAPPER
 ══════════════════════════════════════════════════════════ */
 function PanelMoveGizmoWrapper({ shapes }: { shapes: any[] }) {
-  const { panelMoveMode, panelMoveTargetPanelId } = useAppStore();
+  const { panelMoveMode, panelMoveTargetPanelId } = useStoreFields('panelMoveMode', 'panelMoveTargetPanelId');
   if (!panelMoveMode || !panelMoveTargetPanelId) return null;
   const panel = shapes.find((s: any) => s.id === panelMoveTargetPanelId);
   if (!panel || panel.type !== 'panel') return null;
@@ -690,7 +665,7 @@ function PanelMoveGizmoWrapper({ shapes }: { shapes: any[] }) {
 }
 
 function PanelRotateGizmoWrapper({ shapes }: { shapes: any[] }) {
-  const { panelRotateMode, panelRotateTargetPanelId } = useAppStore();
+  const { panelRotateMode, panelRotateTargetPanelId } = useStoreFields('panelRotateMode', 'panelRotateTargetPanelId');
   if (!panelRotateMode || !panelRotateTargetPanelId) return null;
   const panel = shapes.find((s: any) => s.id === panelRotateTargetPanelId);
   if (!panel || panel.type !== 'panel') return null;
@@ -705,29 +680,20 @@ const Scene: React.FC = () => {
 
   const {
     shapes, cameraType, selectedShapeId, secondarySelectedShapeId, selectShape,
-    deleteShape, copyShape, isolateShape, exitIsolation,
+    deleteShape, exitIsolation,
     vertexEditMode, setVertexEditMode, selectedVertexIndex, setSelectedVertexIndex,
-    vertexDirection, setVertexDirection, addVertexModification,
-    subtractionViewMode, faceEditMode, setFaceEditMode,
-    filletMode, selectedFilletFaces, clearFilletFaces, selectedFilletFaceData,
-    updateShape, panelSelectMode, panelSurfaceSelectMode, setSelectedPanelRow,
-  } = useAppStore(useShallow(state => ({
+    vertexDirection, setVertexDirection, setFaceEditMode,
+    filletMode, selectedFilletFaces, clearFilletFaces } = useAppStore(useShallow(state => ({
     shapes: state.shapes, cameraType: state.cameraType,
     selectedShapeId: state.selectedShapeId, secondarySelectedShapeId: state.secondarySelectedShapeId,
-    selectShape: state.selectShape, deleteShape: state.deleteShape, copyShape: state.copyShape,
-    isolateShape: state.isolateShape, exitIsolation: state.exitIsolation,
+    selectShape: state.selectShape, deleteShape: state.deleteShape, exitIsolation: state.exitIsolation,
     vertexEditMode: state.vertexEditMode, setVertexEditMode: state.setVertexEditMode,
     selectedVertexIndex: state.selectedVertexIndex, setSelectedVertexIndex: state.setSelectedVertexIndex,
     vertexDirection: state.vertexDirection, setVertexDirection: state.setVertexDirection,
-    addVertexModification: state.addVertexModification, subtractionViewMode: state.subtractionViewMode,
-    faceEditMode: state.faceEditMode, setFaceEditMode: state.setFaceEditMode,
+    setFaceEditMode: state.setFaceEditMode,
     filletMode: state.filletMode, selectedFilletFaces: state.selectedFilletFaces,
-    clearFilletFaces: state.clearFilletFaces, selectedFilletFaceData: state.selectedFilletFaceData,
-    updateShape: state.updateShape, panelSelectMode: state.panelSelectMode,
-    panelSurfaceSelectMode: state.panelSurfaceSelectMode, setSelectedPanelRow: state.setSelectedPanelRow,
-  })));
+    clearFilletFaces: state.clearFilletFaces })));
 
-  const [saveDialog,  setSaveDialog ] = useState<{ isOpen:boolean; shapeId:string|null }>({ isOpen:false, shapeId:null });
 
   useEffect(() => {
     const handle = (e: KeyboardEvent) => {
@@ -787,7 +753,7 @@ const Scene: React.FC = () => {
         const hasPanels = useAppStore.getState().shapes.some(s => s.type === 'panel' && s.parameters?.parentShapeId === sid);
         if (hasPanels) {
           try {
-            const { rebuildPanelsForParent } = await import('./PanelRebuildService');
+            const { rebuildPanelsForParent } = await import('./PanelEngine');
             await rebuildPanelsForParent(sid);
             console.log('[YAGO][VERTEX] düzenleme sonrası paneller yeniden üretildi:', sid);
           } catch (e) { console.error('[YAGO][VERTEX] rebuild hatası:', e); }
@@ -807,16 +773,16 @@ const Scene: React.FC = () => {
         const shape = cs.shapes.find(s => s.id === sid); if (!shape?.replicadShape) return;
         try {
           const oc = new THREE.Vector3();
-          if (shape.geometry) new THREE.Box3().setFromBufferAttribute(shape.geometry.getAttribute('position')).getCenter(oc);
+          if (shape.geometry) new THREE.Box3().setFromBufferAttribute(shape.geometry.getAttribute('position') as THREE.BufferAttribute).getCenter(oc);
           const result = await applyFilletToShape(shape, sff, sffd, radius);
           const nbv = await getReplicadVertices(result.replicadShape);
-          const nc = new THREE.Vector3(); new THREE.Box3().setFromBufferAttribute(result.geometry.getAttribute('position')).getCenter(nc);
+          const nc = new THREE.Vector3(); new THREE.Box3().setFromBufferAttribute(result.geometry.getAttribute('position') as THREE.BufferAttribute).getCenter(nc);
           const ro = new THREE.Vector3().subVectors(nc, oc);
           if (shape.rotation[0]||shape.rotation[1]||shape.rotation[2]) ro.applyMatrix4(new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(shape.rotation[0],shape.rotation[1],shape.rotation[2],'XYZ')));
           cs.updateShape(sid, { geometry: result.geometry, replicadShape: result.replicadShape, position: [shape.position[0]-ro.x,shape.position[1]-ro.y,shape.position[2]-ro.z], rotation: shape.rotation, scale: shape.scale, parameters: { ...shape.parameters, scaledBaseVertices: nbv.map(v=>[v.x,v.y,v.z]), width: shape.parameters.width||1, height: shape.parameters.height||1, depth: shape.parameters.depth||1 }, fillets: [...(shape.fillets||[]),result.filletData] });
           cs.clearFilletFaces();
           try {
-            const { rebuildPanelsForParent } = await import('./PanelRebuildService');
+            const { rebuildPanelsForParent } = await import('./PanelEngine');
             await rebuildPanelsForParent(sid);
           } catch (err) { console.error('rebuild after fillet failed:', err); }
         } catch (err) { console.error('fillet failed:', err); cs.clearFilletFaces(); alert(`Failed to apply fillet: ${(err as Error).message}`); }
@@ -827,18 +793,6 @@ const Scene: React.FC = () => {
     return () => { delete (window as any).handleFilletRadius; delete (window as any).pendingFilletOperation; };
   }, [filletMode, selectedFilletFaces.length]);
 
-
-  const captureSnapshot = () => { const c = document.querySelector('canvas'); return c ? c.toDataURL('image/png') : null; };
-
-  const handleSave = async (name: string, tags: string[], snapshot: string | null) => {
-    try {
-      const state = useAppStore.getState();
-      const shape = state.shapes.find(s => s.id === saveDialog.shapeId);
-      if (!shape?.geometry) return;
-      await catalogService.saveItem({ name, tags, geometry: shape.geometry, color: shape.color || '#ffffff', snapshot });
-      setSaveDialog({ isOpen:false, shapeId:null });
-    } catch (err) { console.error('save failed:', err); alert('Failed to save geometry. Please try again.'); }
-  };
 
   const handleCreated = useCallback(({ gl }: { gl: THREE.WebGLRenderer }) => {
     gl.toneMapping = THREE.ACESFilmicToneMapping;
@@ -929,9 +883,6 @@ const Scene: React.FC = () => {
 
         </Canvas>
       </ErrorBoundary>
-
-
-      <SaveDialog isOpen={saveDialog.isOpen} onClose={() => setSaveDialog({ isOpen:false, shapeId:null })} onSave={handleSave} shapeId={saveDialog.shapeId||''} captureSnapshot={captureSnapshot} />
     </>
   );
 };

@@ -10,21 +10,6 @@ export interface VertexModification {
   offset: [number, number, number];
 }
 
-export interface ShapeVertexData {
-  shapeId: string;
-  modifications: VertexModification[];
-}
-
-export type VertexEditMode = 'select' | 'direction' | 'input';
-
-export interface VertexState {
-  selectedVertexIndex: number | null;
-  hoveredVertexIndex: number | null;
-  currentDirection: 'x' | 'y' | 'z';
-  editMode: VertexEditMode;
-  pendingOffset: number;
-}
-
 export function getBoxVertices(width: number, height: number, depth: number): THREE.Vector3[] {
   const w2 = width / 2;
   const h2 = height / 2;
@@ -209,71 +194,4 @@ export function effectiveBodyGeometry(shape: any): THREE.BufferGeometry {
   const geo = applyVertexModsToGeometry(base, shape.vertexModifications);
   _effCache.set(base, { key, geo });
   return geo;
-}
-
-export function applyVertexModifications(
-  geometry: THREE.BufferGeometry,
-  modifications: VertexModification[]
-): THREE.BufferGeometry {
-  const positionAttribute = geometry.getAttribute('position');
-  const positions = positionAttribute.array as Float32Array;
-
-  const vertexMap = new Map<number, THREE.Vector3>();
-
-  modifications.forEach(mod => {
-    const idx = mod.vertexIndex;
-
-    if (!vertexMap.has(idx)) {
-      vertexMap.set(idx, new THREE.Vector3(
-        positions[idx * 3],
-        positions[idx * 3 + 1],
-        positions[idx * 3 + 2]
-      ));
-    }
-
-    const currentPos = vertexMap.get(idx)!;
-    currentPos.x += mod.offset[0];
-    currentPos.y += mod.offset[1];
-    currentPos.z += mod.offset[2];
-  });
-
-  vertexMap.forEach((pos, idx) => {
-    positions[idx * 3] = pos.x;
-    positions[idx * 3 + 1] = pos.y;
-    positions[idx * 3 + 2] = pos.z;
-  });
-
-  positionAttribute.needsUpdate = true;
-  geometry.computeVertexNormals();
-
-  return geometry;
-}
-
-export function getVertexWorldPosition(
-  vertex: THREE.Vector3,
-  objectMatrix: THREE.Matrix4
-): THREE.Vector3 {
-  return vertex.clone().applyMatrix4(objectMatrix);
-}
-
-export function getDirectionVector(direction: 'x' | 'y' | 'z'): THREE.Vector3 {
-  switch (direction) {
-    case 'x':
-      return new THREE.Vector3(1, 0, 0);
-    case 'y':
-      return new THREE.Vector3(0, 1, 0);
-    case 'z':
-      return new THREE.Vector3(0, 0, 1);
-  }
-}
-
-export function cycleDirection(current: 'x' | 'y' | 'z'): 'x' | 'y' | 'z' {
-  switch (current) {
-    case 'x':
-      return 'y';
-    case 'y':
-      return 'z';
-    case 'z':
-      return 'x';
-  }
 }

@@ -1,13 +1,11 @@
 import React, { useMemo } from 'react';
 import * as THREE from 'three';
 import {
-  extractFacesFromGeometry,
-  groupCoplanarFaces,
+  getFacesAndGroups,
   createGroupBoundaryEdges,
   createFaceDescriptor
-} from './FaceEditor';
+} from './GeometryUtils';
 import { convertReplicadToThreeGeometry } from './ReplicadService';
-import { getReplicadVertices } from './VertexEditorService';
 
 export interface FilletData {
   face1Descriptor: any;
@@ -54,8 +52,7 @@ export async function applyFilletToShape(
     ? selectedFilletFaceData[1].planeD
     : face2Normal.dot(face2Center);
 
-  const faces = extractFacesFromGeometry(shape.geometry);
-  const faceGroups = groupCoplanarFaces(faces);
+  const { faces, groups: faceGroups } = getFacesAndGroups(shape.geometry);
   const group1 = faceGroups[selectedFilletFaces[0]];
   const group2 = faceGroups[selectedFilletFaces[1]];
 
@@ -135,7 +132,6 @@ export async function applyFilletToShape(
   console.log('🔢 Edges selected for fillet:', foundEdgeCount);
 
   const newGeometry = convertReplicadToThreeGeometry(filletedShape);
-  const newBaseVertices = await getReplicadVertices(filletedShape);
 
   const filletData: FilletData = {
     face1Descriptor,
@@ -164,11 +160,10 @@ interface FilletEdgeLinesProps {
   isSelected: boolean;
 }
 
-export const FilletEdgeLines: React.FC<FilletEdgeLinesProps> = ({ shape, isSelected }) => {
+export const FilletEdgeLines: React.FC<FilletEdgeLinesProps> = ({ shape }) => {
   const boundaryEdgesGeometry = useMemo(() => {
     if (!shape.geometry) return null;
-    const faces = extractFacesFromGeometry(shape.geometry);
-    const groups = groupCoplanarFaces(faces);
+    const { faces, groups } = getFacesAndGroups(shape.geometry);
     return createGroupBoundaryEdges(faces, groups);
   }, [shape.geometry]);
 

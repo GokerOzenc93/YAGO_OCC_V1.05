@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Send, ChevronRight, Hash } from 'lucide-react';
-import { useAppStore } from '../store';
+import { useStoreFields } from '../store';
 
 /* ─── Toolbar token sistemiyle uyumlu ─── */
 const T = {
@@ -60,7 +60,7 @@ const Terminal: React.FC = () => {
   const [commandInput, setCommandInput] = useState('');
   const [inputFocus, setInputFocus] = useState(false);
   const [sendHover, setSendHover] = useState(false);
-  const { activeTool } = useAppStore();
+  const { activeTool } = useStoreFields('activeTool');
   const inputRef = useRef<HTMLInputElement>(null);
   const [polylineStatus, setPolylineStatus] = useState<{
     distance: number;

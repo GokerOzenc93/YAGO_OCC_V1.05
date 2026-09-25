@@ -1,5 +1,5 @@
 import React from 'react';
-import { useAppStore } from '../store';
+import { useStoreFields } from '../store';
 
 /* ─── Design tokens (toolbar ile birebir uyumlu) ─── */
 const T = {
@@ -43,7 +43,7 @@ const Sep = () => (
 );
 
 const StatusBar: React.FC = () => {
-  const { shapes, selectedShapeId, vertexEditMode, selectedVertexIndex } = useAppStore();
+  const { shapes, selectedShapeId, vertexEditMode, selectedVertexIndex } = useStoreFields('shapes', 'selectedShapeId', 'vertexEditMode', 'selectedVertexIndex');
   const selectedShape = shapes.find(s => s.id === selectedShapeId);
   const vertexModCount = selectedShape?.vertexModifications?.length || 0;
 

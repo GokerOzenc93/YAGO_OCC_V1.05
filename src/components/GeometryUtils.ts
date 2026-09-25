@@ -55,15 +55,6 @@ export function extractFacesFromGeometry(geometry: THREE.BufferGeometry): FaceDa
   return faces;
 }
 
-function areVerticesShared(face1: FaceData, face2: FaceData, tolerance: number = 0.001): boolean {
-  for (const v1 of face1.vertices) {
-    for (const v2 of face2.vertices) {
-      if (v1.distanceTo(v2) < tolerance) return true;
-    }
-  }
-  return false;
-}
-
 function isAxisAligned(normal: THREE.Vector3, tolerance: number = 0.98): boolean {
   const absX = Math.abs(normal.x);
   const absY = Math.abs(normal.y);
@@ -103,22 +94,35 @@ function calculateSurfaceType(
   return 'curved';
 }
 
-function buildAdjacencyMap(faces: FaceData[]): Map<number, Set<number>> {
+/**
+ * Köşe paylaşan üçgenlerin komşuluk haritası (paylaşım toleransı 0.001, `<`).
+ * Uzamsal ızgara (hücre = tolerans, 27 komşu hücre) ile O(F) — eski ikili
+ * O(F²) taramayla BİREBİR aynı sonuç; komşu kümeleri artan indeks sırasıyla
+ * doldurulur (gruplama gezinme sırası değişmez).
+ */
+function buildAdjacencyMap(faces: FaceData[], tolerance = 0.001): Map<number, Set<number>> {
+  const cellOf = (x: number) => Math.floor(x / tolerance);
+  const grid = new Map<string, Array<{ fi: number; p: THREE.Vector3 }>>();
+  faces.forEach((f, fi) => {
+    for (const p of f.vertices) {
+      const k = `${cellOf(p.x)},${cellOf(p.y)},${cellOf(p.z)}`;
+      const list = grid.get(k);
+      if (list) list.push({ fi, p }); else grid.set(k, [{ fi, p }]);
+    }
+  });
   const adjacencyMap = new Map<number, Set<number>>();
-
-  for (let i = 0; i < faces.length; i++) {
-    adjacencyMap.set(i, new Set<number>());
-  }
-
-  for (let i = 0; i < faces.length; i++) {
-    for (let j = i + 1; j < faces.length; j++) {
-      if (areVerticesShared(faces[i], faces[j])) {
-        adjacencyMap.get(i)!.add(j);
-        adjacencyMap.get(j)!.add(i);
+  faces.forEach((f, i) => {
+    const near = new Set<number>();
+    for (const p of f.vertices) {
+      const cx = cellOf(p.x), cy = cellOf(p.y), cz = cellOf(p.z);
+      for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+        const list = grid.get(`${cx + dx},${cy + dy},${cz + dz}`);
+        if (!list) continue;
+        for (const e of list) if (e.fi !== i && !near.has(e.fi) && p.distanceTo(e.p) < tolerance) near.add(e.fi);
       }
     }
-  }
-
+    adjacencyMap.set(i, new Set([...near].sort((a, b) => a - b)));
+  });
   return adjacencyMap;
 }
 
@@ -198,6 +202,26 @@ export function groupCoplanarFaces(
   }
 
   return groups;
+}
+
+/**
+ * Geometri başına ÖNBELLEKLİ yüz + düz grup çıkarımı (extract + group ile birebir
+ * aynı sonuç). Anahtar: BufferGeometry nesnesi + position tamponu (dizi kimliği +
+ * sürüm) — geometri yerinde değişirse (translate/scale → needsUpdate) yeniden
+ * hesaplanır. DÖNEN DİZİLER PAYLAŞIMLIDIR: çağıran yerinde değiştirmemeli.
+ */
+const _faceGroupCache = new WeakMap<THREE.BufferGeometry, { arr: unknown; ver: number; faces: FaceData[]; groups: CoplanarFaceGroup[] }>();
+export function getFacesAndGroups(geometry: THREE.BufferGeometry): { faces: FaceData[]; groups: CoplanarFaceGroup[] } {
+  const pos = geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
+  const idx = geometry.getIndex();
+  const ver = (pos?.version ?? 0) * 1e6 + (idx?.version ?? 0);
+  const hit = _faceGroupCache.get(geometry);
+  if (hit && hit.arr === pos?.array && hit.ver === ver) return hit;
+  const faces = extractFacesFromGeometry(geometry);
+  const groups = groupCoplanarFaces(faces);
+  const entry = { arr: pos?.array, ver, faces, groups };
+  _faceGroupCache.set(geometry, entry);
+  return entry;
 }
 
 // Threshold must match isAxisAligned() (0.999) so that any face
@@ -288,17 +312,6 @@ export function createGroupBoundaryEdges(
   return geometry;
 }
 
-export function findClosestFaceToRay(
-  raycaster: THREE.Raycaster,
-  mesh: THREE.Mesh,
-  _worldMatrix: THREE.Matrix4
-): number | null {
-  const intersects = raycaster.intersectObject(mesh, false);
-  if (intersects.length === 0) return null;
-  const closest = intersects[0];
-  return closest.faceIndex !== undefined ? closest.faceIndex : null;
-}
-
 export function createFaceHighlightGeometry(
   faces: FaceData[],
   faceIndices: number[]
@@ -320,21 +333,6 @@ export function createFaceHighlightGeometry(
   return geometry;
 }
 
-export function getFaceWorldPosition(
-  face: FaceData,
-  worldMatrix: THREE.Matrix4
-): THREE.Vector3 {
-  return face.center.clone().applyMatrix4(worldMatrix);
-}
-
-export function getFaceWorldNormal(
-  face: FaceData,
-  worldMatrix: THREE.Matrix4
-): THREE.Vector3 {
-  const normalMatrix = new THREE.Matrix3().getNormalMatrix(worldMatrix);
-  return face.normal.clone().applyMatrix3(normalMatrix).normalize();
-}
-
 function getAxisDirection(normal: THREE.Vector3): 'x+' | 'x-' | 'y+' | 'y-' | 'z+' | 'z-' | null {
   const tolerance = 0.95;
   if (normal.x > tolerance) return 'x+';
@@ -350,34 +348,24 @@ export function createFaceDescriptor(
   face: FaceData,
   geometry: THREE.BufferGeometry
 ): { normal: [number, number, number]; normalizedCenter: [number, number, number]; area: number; isCurved?: boolean; axisDirection?: 'x+' | 'x-' | 'y+' | 'y-' | 'z+' | 'z-' | null; axisPosition?: number } {
-  const boundingBox = new THREE.Box3().setFromBufferAttribute(
-    geometry.getAttribute('position')
-  );
-  const size = new THREE.Vector3();
-  const min = new THREE.Vector3();
-  boundingBox.getSize(size);
-  min.copy(boundingBox.min);
+  return describeFace(face, new THREE.Box3().setFromBufferAttribute(geometry.getAttribute('position') as THREE.BufferAttribute));
+}
 
+function describeFace(face: FaceData, boundingBox: THREE.Box3) {
+  const size = new THREE.Vector3();
+  boundingBox.getSize(size);
+  const min = boundingBox.min;
   const normalizedCenter: [number, number, number] = [
     size.x > 0 ? (face.center.x - min.x) / size.x : 0.5,
     size.y > 0 ? (face.center.y - min.y) / size.y : 0.5,
     size.z > 0 ? (face.center.z - min.z) / size.z : 0.5
   ];
-
   const axisDirection = getAxisDirection(face.normal);
   const isCurved = face.isCurved || axisDirection === null;
-
-  let axisPosition: number | undefined;
-  if (axisDirection === 'x+' || axisDirection === 'x-') {
-    axisPosition = face.center.x;
-  } else if (axisDirection === 'y+' || axisDirection === 'y-') {
-    axisPosition = face.center.y;
-  } else if (axisDirection === 'z+' || axisDirection === 'z-') {
-    axisPosition = face.center.z;
-  }
-
+  const axisPosition = axisDirection === null ? undefined
+    : axisDirection[0] === 'x' ? face.center.x : axisDirection[0] === 'y' ? face.center.y : face.center.z;
   return {
-    normal: [face.normal.x, face.normal.y, face.normal.z],
+    normal: [face.normal.x, face.normal.y, face.normal.z] as [number, number, number],
     normalizedCenter,
     area: face.area,
     isCurved,
@@ -398,8 +386,9 @@ export function findFaceByDescriptor(
   const targetAxisDir = descriptor.axisDirection || getAxisDirection(targetNormal);
   const isFlatSurface = targetAxisDir !== null && !descriptor.isCurved;
 
+  const bbox = new THREE.Box3().setFromBufferAttribute(geometry.getAttribute('position') as THREE.BufferAttribute);
   for (const face of faces) {
-    const faceDescriptor = createFaceDescriptor(face, geometry);
+    const faceDescriptor = describeFace(face, bbox);
     const faceAxisDir = faceDescriptor.axisDirection;
 
     if (isFlatSurface) {

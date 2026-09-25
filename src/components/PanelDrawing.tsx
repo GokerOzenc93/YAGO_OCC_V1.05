@@ -4,12 +4,10 @@ import { Line } from '@react-three/drei';
 import { useThree } from '@react-three/fiber';
 import { useAppStore, ViewMode } from '../store';
 import { useShallow } from 'zustand/react/shallow';
-import { extractFacesFromGeometry, groupCoplanarFaces, createFaceHighlightGeometry } from './FaceEditor';
-// snapToFlatGroup TEK KAYNAK: hover/seçim eşlemesi PanelDrawing ve
-// ShapeWithTransform'da birebir aynı davransın diye GeometryUtils'ten gelir.
-import { snapToFlatGroup } from './GeometryUtils';
+import { getFacesAndGroups, createFaceHighlightGeometry, snapToFlatGroup } from './GeometryUtils';
 import { cycleRefFacePickFromEvent, REF_COLORS } from './FaceRefPick';
-import { applyTransformSteps } from './PanelTransformService';
+import { applyTransformSteps } from './PanelSteps';
+import { getShapeMatrix } from './PanelMath';
 
 // ─── RENK YÖNETİMİ ───────────────────────────────────────────────────────
 // Seçim profesyonel CAD konvansiyonuyla: DOLGU asla değişmez, vurgu kenardan
@@ -100,13 +98,9 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     selectedPanelRowExtraId,
     setSelectedPanelRow,
     panelSelectMode,
-    panelSurfaceSelectMode,
-    waitingForSurfaceSelection,
-    triggerPanelCreationForFace,
     viewMode,
     faceExtrudeMode,
     faceExtrudeTargetPanelId,
-    setFaceExtrudeHoveredFace,
     faceExtrudeSelectedFace,
     setFaceExtrudeSelectedFace,
     setFaceExtrudeClickPoint,
@@ -136,13 +130,9 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     selectedPanelRowExtraId: state.selectedPanelRowExtraId,
     setSelectedPanelRow: state.setSelectedPanelRow,
     panelSelectMode: state.panelSelectMode,
-    panelSurfaceSelectMode: state.panelSurfaceSelectMode,
-    waitingForSurfaceSelection: state.waitingForSurfaceSelection,
-    triggerPanelCreationForFace: state.triggerPanelCreationForFace,
     viewMode: state.viewMode,
     faceExtrudeMode: state.faceExtrudeMode,
     faceExtrudeTargetPanelId: state.faceExtrudeTargetPanelId,
-    setFaceExtrudeHoveredFace: state.setFaceExtrudeHoveredFace,
     faceExtrudeSelectedFace: state.faceExtrudeSelectedFace,
     setFaceExtrudeSelectedFace: state.setFaceExtrudeSelectedFace,
     setFaceExtrudeClickPoint: state.setFaceExtrudeClickPoint,
@@ -175,8 +165,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
 
   useEffect(() => {
     if (!shape.geometry) return;
-    const f = extractFacesFromGeometry(shape.geometry);
-    const groups = groupCoplanarFaces(f);
+    const { faces: f, groups } = getFacesAndGroups(shape.geometry);
     setFaces(f);
     setFaceGroups(groups);
   }, [shape.geometry]);
@@ -337,34 +326,8 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   const handleRefRightClick = async (e: any) => {
     if (e.button !== 2) return;
     e.stopPropagation();
-    const cand = useAppStore.getState().faceExtrudeRefCandidate;
-    const selFace = useAppStore.getState().faceExtrudeSelectedFace;
-    const targetId = useAppStore.getState().faceExtrudeTargetPanelId;
-    if (!cand || cand.faceGroupIndex < 0 || selFace === null || !targetId) return;
-    const st = useAppStore.getState();
-    const ps = st.shapes.find((s: any) => s.id === targetId);
-    if (!ps) return;
-    const { executeFaceExtrudeToReference } = await import('./FaceExtrudeService');
-    const vfId = ps.parameters?.virtualFaceId as string | undefined;
-    const vf = vfId ? st.virtualFaces.find((f: any) => f.id === vfId) : undefined;
-    await executeFaceExtrudeToReference({
-      panelShape: ps,
-      faceGroupIndex: selFace,
-      refShapeId: cand.panelId,
-      refFaceGroupIndex: cand.faceGroupIndex,
-      refNormalWorld: cand.normalWorld,
-      refPointWorld: cand.pointWorld,
-      clickPoint: st.faceExtrudeClickPoint ?? undefined,
-      shapes: st.shapes,
-      updateShape: st.updateShape,
-      virtualFaceId: vfId,
-      vfNormal: vf?.normal as [number, number, number] | undefined,
-      vfVertex0: vf?.vertices?.[0] as [number, number, number] | undefined,
-      updateVirtualFace: st.updateVirtualFace,
-    });
-    st.setFaceExtrudeSelectedFace(null);
-    st.setFaceExtrudeMode(false);
-    st.setFaceExtrudeRefCandidate(null);
+    const { confirmRefFaceExtrude } = await import('./FaceExtrudeService');
+    await confirmRefFaceExtrude();
   };
 
   const handleClick = (e: any) => {
@@ -402,31 +365,11 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
       cycleRefFacePickFromEvent(e, allShapes, faceExtrudeTargetPanelId, setFaceExtrudeRefCandidate);
       return;
     }
-    if (panelSurfaceSelectMode && waitingForSurfaceSelection && e.faceIndex !== undefined) {
-      const clickedFaceIndex = e.faceIndex;
-      const groupIndex = faceGroups.findIndex(group => group.faceIndices.includes(clickedFaceIndex));
-      if (groupIndex !== -1) {
-        const faceGroup = faceGroups[groupIndex];
-        const surfaceConstraint = {
-          center: [faceGroup.center.x, faceGroup.center.y, faceGroup.center.z] as [number, number, number],
-          normal: [faceGroup.normal.x, faceGroup.normal.y, faceGroup.normal.z] as [number, number, number],
-          constraintPanelId: shape.id
-        };
-        if (selectedShapeId !== parentShapeId) selectShape(parentShapeId);
-        triggerPanelCreationForFace(groupIndex, shape.id, surfaceConstraint);
-        return;
-      }
-    }
     // ── BODY MODU: panel tıklansa bile KOMPLE BLOK seçilir ──────────────────
     // İSTEK (Goker): "body modunda panel tıklansa bile bloğu seçsin komple".
-    // ESKİ DAVRANIŞ: Body modunda (panelSelectMode=false, panelSurfaceSelectMode
-    // =false) targetId panelin KENDİSİ oluyordu → tıklanan panel seçili şekil
-    // hâline gelip turuncu vurguyla çiziliyordu.
-    // YENİ KURAL: ebeveyni olan her panel tıklaması HER ZAMAN ebeveyn bloğu
-    // seçer. Panel satırı (turuncu panel vurgusunun kaynağı) yalnız Panel /
-    // yüzey-seçim modlarında yazılır; Body modunda varsa TEMİZLENİR — böylece
-    // önceki modda kalmış bir satır seçimi de üstte takılı kalmaz.
-    const rowSelectModes = panelSurfaceSelectMode || panelSelectMode;
+    // Ebeveyni olan panel tıklaması HER ZAMAN ebeveyn bloğu seçer. Panel satırı
+    // yalnız Panel modunda yazılır; Body modunda varsa TEMİZLENİR.
+    const rowSelectModes = panelSelectMode;
     const targetId = parentShapeId ? parentShapeId : shape.id;
     if (selectedShapeId !== targetId) selectShape(targetId);
     if (rowSelectModes && parentShapeId) {
@@ -577,17 +520,10 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
                   const gi = snapToFlatGroup(raw, faceGroups);
                   setFaceExtrudeSelectedFace(gi);
                   setHoveredExtrudeGroup(gi);
-                  setFaceExtrudeHoveredFace(gi);
                   // Convert world-space click to local space so the extrude
                   // service can use it as a sample point for face matching.
                   if (e.point) {
-                    const pos = new THREE.Vector3(shape.position[0], shape.position[1], shape.position[2]);
-                    const quat = new THREE.Quaternion().setFromEuler(
-                      new THREE.Euler(shape.rotation[0], shape.rotation[1], shape.rotation[2], 'XYZ')
-                    );
-                    const scl = new THREE.Vector3(shape.scale[0], shape.scale[1], shape.scale[2]);
-                    const m = new THREE.Matrix4().compose(pos, quat, scl).invert();
-                    const local = e.point.clone().applyMatrix4(m);
+                    const local = e.point.clone().applyMatrix4(getShapeMatrix(shape).invert());
                     setFaceExtrudeClickPoint([local.x, local.y, local.z]);
                   }
                 }
@@ -601,14 +537,12 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
                 if (raw !== -1) {
                   const gi = snapToFlatGroup(raw, faceGroups);
                   setHoveredExtrudeGroup(gi);
-                  setFaceExtrudeHoveredFace(gi);
                 }
               }
             }}
             onPointerOut={(e: any) => {
               e.stopPropagation();
               setHoveredExtrudeGroup(null);
-              setFaceExtrudeHoveredFace(null);
             }}
           >
             <meshBasicMaterial transparent opacity={0.01} side={THREE.DoubleSide} depthTest={false} depthWrite={false} />

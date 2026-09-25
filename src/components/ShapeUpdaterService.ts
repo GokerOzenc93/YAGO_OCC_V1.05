@@ -20,7 +20,7 @@ export async function updateFilletCentersForNewGeometry(
 
   console.log('🔄 Updating fillet centers for new geometry using descriptors...');
 
-  const { extractFacesFromGeometry, findFaceByDescriptor } = await import('./FaceEditor');
+  const { extractFacesFromGeometry, findFaceByDescriptor } = await import('./GeometryUtils');
 
   const faces = extractFacesFromGeometry(newGeometry);
 
@@ -514,110 +514,4 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
       vertexModifications: []
     });
   }
-}
-
-interface ApplySubtractionChangesParams {
-  selectedShapeId: string | null;
-  selectedSubtractionIndex: number | null;
-  shapes: any[];
-  subWidth: number;
-  subHeight: number;
-  subDepth: number;
-  subPosX: number;
-  subPosY: number;
-  subPosZ: number;
-  subRotX: number;
-  subRotY: number;
-  subRotZ: number;
-  updateShape: (id: string, updates: any) => void;
-  shapeOverride?: any;
-}
-
-export async function applySubtractionChanges(params: ApplySubtractionChangesParams) {
-  const {
-    selectedShapeId,
-    selectedSubtractionIndex,
-    shapes,
-    subWidth,
-    subHeight,
-    subDepth,
-    subPosX,
-    subPosY,
-    subPosZ,
-    subRotX,
-    subRotY,
-    subRotZ,
-    updateShape,
-    shapeOverride
-  } = params;
-
-  const currentShape = shapeOverride || shapes.find(s => s.id === selectedShapeId);
-  if (!currentShape || selectedSubtractionIndex === null || !currentShape.subtractionGeometries) return;
-
-  console.log('🔧 Applying subtraction changes:', {
-    subIndex: selectedSubtractionIndex,
-    newSize: { w: subWidth, h: subHeight, d: subDepth },
-    newPos: { x: subPosX, y: subPosY, z: subPosZ }
-  });
-
-  const { getReplicadVertices } = await import('./VertexEditorService');
-  const { createReplicadBox, performBooleanCut, convertReplicadToThreeGeometry } = await import('./ReplicadService');
-
-  const subReplicadShape = await createReplicadBox({
-    width: subWidth,
-    height: subHeight,
-    depth: subDepth
-  });
-  const newSubGeometry = convertReplicadToThreeGeometry(subReplicadShape);
-  const currentSubtraction = currentShape.subtractionGeometries[selectedSubtractionIndex];
-
-  const updatedSubtraction = {
-    ...currentSubtraction,
-    geometry: newSubGeometry,
-    relativeOffset: [subPosX, subPosY, subPosZ] as [number, number, number],
-    relativeRotation: [
-      subRotX * (Math.PI / 180),
-      subRotY * (Math.PI / 180),
-      subRotZ * (Math.PI / 180)
-    ] as [number, number, number],
-    scale: currentSubtraction.scale || [1, 1, 1] as [number, number, number],
-    parameters: {
-      width: String(subWidth),
-      height: String(subHeight),
-      depth: String(subDepth),
-      posX: String(subPosX),
-      posY: String(subPosY),
-      posZ: String(subPosZ),
-      rotX: String(subRotX),
-      rotY: String(subRotY),
-      rotZ: String(subRotZ)
-    }
-  };
-
-  const allSubtractions = currentShape.subtractionGeometries.map((sub: any, idx: number) =>
-    idx === selectedSubtractionIndex ? updatedSubtraction : sub
-  );
-
-  const shapeSize = {
-    width: currentShape.parameters.width || 1,
-    height: currentShape.parameters.height || 1,
-    depth: currentShape.parameters.depth || 1
-  };
-
-  const baseShape = await createReplicadBox(shapeSize);
-  const resultShape = await applyAllSubtractions(baseShape, allSubtractions, createReplicadBox, performBooleanCut);
-  const preservedPosition = copyPosition(currentShape);
-  const final = await finalizeWithFillets(resultShape, currentShape.fillets || [], shapeSize, convertReplicadToThreeGeometry, getReplicadVertices);
-
-  updateShape(currentShape.id, {
-    geometry: final.geometry,
-    replicadShape: final.shape,
-    subtractionGeometries: allSubtractions,
-    fillets: final.fillets,
-    position: preservedPosition,
-    parameters: {
-      ...currentShape.parameters,
-      scaledBaseVertices: final.vertices.map(v => [v.x, v.y, v.z])
-    }
-  });
 }

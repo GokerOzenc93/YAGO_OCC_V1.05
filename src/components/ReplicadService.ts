@@ -1,7 +1,6 @@
 import { setOC } from 'replicad';
 import initOpenCascade from 'opencascade.js';
 import * as THREE from 'three';
-import type { SubtractedGeometry } from '../store';
 
 declare global {
   interface Window {
@@ -34,17 +33,8 @@ export interface ReplicadBoxParams {
   depth: number;
 }
 
-export interface ReplicadCylinderParams {
-  radius: number;
-  height: number;
-}
-
-export interface ReplicadSphereParams {
-  radius: number;
-}
-
 export const createReplicadBox = async (params: ReplicadBoxParams): Promise<any> => {
-  const oc = await initReplicad();
+  await initReplicad();
   const { width, height, depth } = params;
 
   const { draw } = await import('replicad');
@@ -59,32 +49,6 @@ export const createReplicadBox = async (params: ReplicadBoxParams): Promise<any>
     .extrude(depth);
 
   return boxSketch;
-};
-
-export const createReplicadCylinder = async (params: ReplicadCylinderParams): Promise<any> => {
-  const oc = await initReplicad();
-  const { radius, height } = params;
-
-  const { drawCircle } = await import('replicad');
-  const cylinder = drawCircle(radius)
-    .sketchOnPlane()
-    .extrude(height)
-    .translate(radius, radius, 0);
-
-  return cylinder;
-};
-
-export const createReplicadSphere = async (params: ReplicadSphereParams): Promise<any> => {
-  const oc = await initReplicad();
-  const { radius } = params;
-
-  const { drawCircle } = await import('replicad');
-  const sphere = drawCircle(radius)
-    .sketchOnPlane()
-    .revolve()
-    .translate(radius, radius, radius);
-
-  return sphere;
 };
 
 export const convertReplicadToThreeGeometry = (shape: any): THREE.BufferGeometry => {
@@ -111,41 +75,15 @@ export const convertReplicadToThreeGeometry = (shape: any): THREE.BufferGeometry
   }
 };
 
-export const createBoxGeometry = async (
-  width: number,
-  height: number,
-  depth: number
-): Promise<THREE.BufferGeometry> => {
-  const shape = await createReplicadBox({ width, height, depth });
-  return convertReplicadToThreeGeometry(shape);
-};
-
-export const createCylinderGeometry = async (
-  radius: number,
-  height: number
-): Promise<THREE.BufferGeometry> => {
-  const shape = await createReplicadCylinder({ radius, height });
-  return convertReplicadToThreeGeometry(shape);
-};
-
-export const createSphereGeometry = async (
-  radius: number
-): Promise<THREE.BufferGeometry> => {
-  const shape = await createReplicadSphere({ radius });
-  return convertReplicadToThreeGeometry(shape);
-};
-
 export const performBooleanCut = async (
   baseShape: any,
   cuttingShape: any,
-  basePosition?: [number, number, number],
+  _basePosition?: [number, number, number],
   cuttingPosition?: [number, number, number],
-  baseRotation?: [number, number, number],
+  _baseRotation?: [number, number, number],
   cuttingRotation?: [number, number, number],
-  baseScale?: [number, number, number],
+  _baseScale?: [number, number, number],
   cuttingScale?: [number, number, number],
-  baseSize?: [number, number, number],
-  cuttingSize?: [number, number, number]
 ): Promise<any> => {
   await initReplicad();
 
@@ -171,137 +109,6 @@ export const performBooleanCut = async (
     return result;
   } catch (error) {
     console.error('Boolean cut failed:', error);
-    throw error;
-  }
-};
-
-export const performBooleanUnion = async (
-  shape1: any,
-  shape2: any
-): Promise<any> => {
-  await initReplicad();
-  try {
-    return shape1.fuse(shape2);
-  } catch (error) {
-    console.error('Boolean union failed:', error);
-    throw error;
-  }
-};
-
-export const performBooleanIntersection = async (
-  shape1: any,
-  shape2: any
-): Promise<any> => {
-  await initReplicad();
-  try {
-    return shape1.intersect(shape2);
-  } catch (error) {
-    console.error('Boolean intersection failed:', error);
-    throw error;
-  }
-};
-
-/**
- * "Ana yüze eşitle" panelini parent katının GERÇEK yüz geometrisinden üretir.
- * VF düzlemindeki (aynı yönde normal, düzleme mesafe ~0) planar yüzlerden,
- * seedPoint'e en yakın yüzün KENAR/KÖŞE PAYLAŞAN BAĞLANTILI BİLEŞENİ alınır,
- * -normal yönünde kalınlık kadar extrude edilip birleştirilir.
- *
- * Slab ∩ parent yaklaşımının aksine, düzlemin ALTINDA kalan sığ cep/girinti
- * tabanları (derinlik < panel kalınlığı) dahil edilmez — cebin altında ince
- * dilim (sliver) kalmaz. Girintili/L-şekilli yüz şekli OCC'nin kendi yüz
- * topolojisinden birebir gelir; ışın veya kontur takibi gerekmez.
- *
- * BAĞLANTILI BİLEŞEN KURALI: Aynı düzlemde birden çok AYRIK yüz varsa (ör.
- * çentiğin böldüğü iki kanat, aynı yüzeyde yan yana iki panel bölgesi) bunlar
- * ASLA tek panelde birleştirilmez — yalnızca seedPoint'in bulunduğu fiziksel
- * olarak bitişik parça alınır. Aksi halde küp büyüyünce eş-düzleme gelen iki
- * panel birbirinin içine geçiyordu.
- *
- * Uygun yüz bulunamazsa null döner; çağıran intersection fallback'ine düşer.
- */
-// [MOTOR TEMİZLİĞİ] createPanelFromParentFaces kaldırıldı: yeni PanelEngine tam-yüz modeli
-// yerine K5 (bölge=vurgu) kullanır; bu yol ölü koddu.
-
-// [MOTOR TEMİZLİĞİ] keepSolidNearestPoint kaldırıldı: yeni PanelEngine tam-yüz modeli
-// yerine K5 (bölge=vurgu) kullanır; bu yol ölü koddu.
-
-export const createPanelFromFace = async (
-  replicadShape: any,
-  faceNormal: [number, number, number],
-  faceCenter: [number, number, number],
-  panelThickness: number,
-  constraintGeometry?: any
-): Promise<any> => {
-  await initReplicad();
-
-  try {
-    const faces = replicadShape.faces;
-    interface FaceCandidate { face: any; dot: number; center: [number, number, number] | null; }
-    const candidates: FaceCandidate[] = [];
-
-    for (let i = 0; i < faces.length; i++) {
-      const face = faces[i];
-      try {
-        const normalVec = face.normalAt(0.5, 0.5);
-        const normal = [normalVec.x, normalVec.y, normalVec.z];
-        const dot = normal[0] * faceNormal[0] + normal[1] * faceNormal[1] + normal[2] * faceNormal[2];
-        if (dot > 0.7) {
-          let center: [number, number, number] | null = null;
-          try {
-            const faceMesh = face.mesh({ tolerance: 0.5, angularTolerance: 30 });
-            if (faceMesh.vertices && faceMesh.vertices.length >= 3) {
-              let sx = 0, sy = 0, sz = 0;
-              const nv = faceMesh.vertices.length / 3;
-              for (let j = 0; j < faceMesh.vertices.length; j += 3) {
-                sx += faceMesh.vertices[j]; sy += faceMesh.vertices[j + 1]; sz += faceMesh.vertices[j + 2];
-              }
-              center = [sx / nv, sy / nv, sz / nv];
-            }
-          } catch { /* skip */ }
-          candidates.push({ face, dot, center });
-        }
-      } catch { /* skip face */ }
-    }
-
-    if (candidates.length === 0) return null;
-
-    let matchingFace = candidates[0].face;
-    if (candidates.length > 1) {
-      let bestDist = Infinity;
-      for (const candidate of candidates) {
-        if (candidate.center) {
-          const dist = Math.sqrt(
-            (candidate.center[0] - faceCenter[0]) ** 2 +
-            (candidate.center[1] - faceCenter[1]) ** 2 +
-            (candidate.center[2] - faceCenter[2]) ** 2
-          );
-          if (dist < bestDist) { bestDist = dist; matchingFace = candidate.face; }
-        }
-      }
-    }
-
-    const normalVec = matchingFace.normalAt(0.5, 0.5);
-    const extrusionDirection = [-normalVec.x, -normalVec.y, -normalVec.z];
-    const oc = await initReplicad();
-    const vec = new oc.gp_Vec_4(
-      extrusionDirection[0] * panelThickness,
-      extrusionDirection[1] * panelThickness,
-      extrusionDirection[2] * panelThickness
-    );
-    const prismBuilder = new oc.BRepPrimAPI_MakePrism_1(matchingFace.wrapped, vec, false, true);
-    prismBuilder.Build(new oc.Message_ProgressRange_1());
-    const solid = prismBuilder.Shape();
-    const { cast } = await import('replicad');
-    let panel = cast(solid);
-
-    if (constraintGeometry) {
-      try { panel = await performBooleanIntersection(panel, constraintGeometry); }
-      catch (error) { console.error('Constraint intersection failed:', error); }
-    }
-    return panel;
-  } catch (error) {
-    console.error('createPanelFromFace failed:', error);
     throw error;
   }
 };
@@ -416,43 +223,4 @@ export const createPanelFromVirtualFace = async (
   const panel = sketched.extrude(-panelThickness);
 
   return panel;
-};
-
-export const applyParentSubtractors = async (
-  panelShape: any,
-  subtractionGeometries: SubtractedGeometry[]
-): Promise<any> => {
-  if (!subtractionGeometries || subtractionGeometries.length === 0) return panelShape;
-
-  await initReplicad();
-
-  let result = panelShape;
-
-  for (const sub of subtractionGeometries) {
-    if (!sub.parameters) continue;
-
-    const w = parseFloat(sub.parameters.width);
-    const h = parseFloat(sub.parameters.height);
-    const d = parseFloat(sub.parameters.depth);
-    if (isNaN(w) || isNaN(h) || isNaN(d) || w <= 0 || h <= 0 || d <= 0) continue;
-
-    try {
-      const margin = 0.5;
-      const cuttingBox = await createReplicadBox({ width: w + margin, height: h + margin, depth: d + margin });
-      result = await performBooleanCut(
-        result,
-        cuttingBox,
-        undefined,
-        sub.relativeOffset,
-        undefined,
-        sub.relativeRotation,
-        undefined,
-        sub.scale
-      );
-    } catch (err) {
-      console.error('Failed to apply subtractor to panel:', err);
-    }
-  }
-
-  return result;
 };

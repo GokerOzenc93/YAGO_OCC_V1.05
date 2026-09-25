@@ -6,8 +6,8 @@ import { useAppStore, Tool, ViewMode } from '../store';
 import { useShallow } from 'zustand/react/shallow';
 import { SubtractionMesh } from './SubtractionMesh';
 import { FilletEdgeLines } from './Fillet';
-import { FaceEditor, extractFacesFromGeometry, groupCoplanarFaces, createFaceHighlightGeometry } from './FaceEditor';
-import { snapToFlatGroup } from './GeometryUtils';
+import { FaceEditor } from './FaceEditor';
+import { getFacesAndGroups, createFaceHighlightGeometry, snapToFlatGroup } from './GeometryUtils';
 import { effectiveBodyGeometry } from './VertexEditorService';
 import { cycleRefFacePickFromEvent, REF_COLORS } from './FaceRefPick';
 import { FaceRaycastOverlay, VirtualFaceOverlay } from './FaceRaycastOverlay';
@@ -33,7 +33,6 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     selectSecondaryShape,
     secondarySelectedShapeId,
     selectedShapeId,
-    updateShape,
     activeTool,
     viewMode,
     subtractionViewMode,
@@ -50,13 +49,8 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     panelSelectMode,
     faceEditMode,
     filletMode,
-    setSelectedVertexIndex,
-    setVertexDirection,
-    panelSurfaceSelectMode,
-    waitingForSurfaceSelection,
     raycastMode,
     shapes,
-    rebuildingShapeIds,
     faceExtrudeMode,
     faceExtrudeValueMode,
     faceExtrudeTargetPanelId,
@@ -74,7 +68,6 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     selectSecondaryShape: state.selectSecondaryShape,
     secondarySelectedShapeId: state.secondarySelectedShapeId,
     selectedShapeId: state.selectedShapeId,
-    updateShape: state.updateShape,
     activeTool: state.activeTool,
     viewMode: state.viewMode,
     subtractionViewMode: state.subtractionViewMode,
@@ -91,13 +84,8 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     panelSelectMode: state.panelSelectMode,
     faceEditMode: state.faceEditMode,
     filletMode: state.filletMode,
-    setSelectedVertexIndex: state.setSelectedVertexIndex,
-    setVertexDirection: state.setVertexDirection,
-    panelSurfaceSelectMode: state.panelSurfaceSelectMode,
-    waitingForSurfaceSelection: state.waitingForSurfaceSelection,
     raycastMode: state.raycastMode,
     shapes: state.shapes,
-    rebuildingShapeIds: state.rebuildingShapeIds,
     faceExtrudeMode: state.faceExtrudeMode,
     faceExtrudeValueMode: state.faceExtrudeValueMode,
     faceExtrudeTargetPanelId: state.faceExtrudeTargetPanelId,
@@ -144,9 +132,9 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
   // Referans yüz seçimi (extrude-ref / rotate-ref) düzenlenmiş gövde yüzlerini görür.
   useEffect(() => {
     if (!shape.geometry) { setRefFaces([]); setRefFaceGroups([]); return; }
-    const f = extractFacesFromGeometry(effectiveBodyGeometry(shape));
+    const { faces: f, groups } = getFacesAndGroups(effectiveBodyGeometry(shape));
     setRefFaces(f);
-    setRefFaceGroups(groupCoplanarFaces(f));
+    setRefFaceGroups(groups);
   }, [shape.geometry, vertexModsString]);
 
   const resolvedEdgeGeometry = useMemo(() => {
@@ -435,7 +423,6 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
   const shouldShowAsReference = isReferenceBox || isSecondarySelected;
   const isPanel              = shape.type === 'panel';
   const parentShapeId        = isPanel ? shape.parameters?.parentShapeId : null;
-  const isParentRebuilding   = parentShapeId ? rebuildingShapeIds.has(parentShapeId) : false;
 
   const hasPanels = shapes.some(s => s.type === 'panel' && s.parameters?.parentShapeId === shape.id);
   const hasFillets = shape.fillets && shape.fillets.length > 0;
@@ -482,7 +469,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
   // panellere/overlay yüzlerine ulaşması şart. Body modunda gövde tıklanabilir
   // ve blok komple seçilir. Ref modları eskisi gibi ayrıca muaf.
   const suppressBodyRaycast = !isPanel && hasPanels
-    && (panelSelectMode || panelSurfaceSelectMode || raycastMode)
+    && (panelSelectMode || raycastMode)
     && !isBodyRefMode && !isMoveRefPickActive;
 
   // ── REFERANS MODU (panel extrude → "ref") ──────────────────────────────────
@@ -526,34 +513,8 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
   const handleRefConfirm = useCallback(async (e: any) => {
     if (e.button !== 2) return;
     e.stopPropagation();
-    const st = useAppStore.getState();
-    const cand = st.faceExtrudeRefCandidate;
-    const selFace = st.faceExtrudeSelectedFace;
-    const targetId = st.faceExtrudeTargetPanelId;
-    if (!cand || cand.faceGroupIndex < 0 || selFace === null || !targetId) return;
-    const ps = st.shapes.find((s: any) => s.id === targetId);
-    if (!ps) return;
-    const { executeFaceExtrudeToReference } = await import('./FaceExtrudeService');
-    const vfId = ps.parameters?.virtualFaceId as string | undefined;
-    const vf = vfId ? st.virtualFaces.find((f: any) => f.id === vfId) : undefined;
-    await executeFaceExtrudeToReference({
-      panelShape: ps,
-      faceGroupIndex: selFace,
-      refShapeId: cand.panelId,
-      refFaceGroupIndex: cand.faceGroupIndex,
-      refNormalWorld: cand.normalWorld,
-      refPointWorld: cand.pointWorld,
-      clickPoint: st.faceExtrudeClickPoint ?? undefined,
-      shapes: st.shapes,
-      updateShape: st.updateShape,
-      virtualFaceId: vfId,
-      vfNormal: vf?.normal as [number, number, number] | undefined,
-      vfVertex0: vf?.vertices?.[0] as [number, number, number] | undefined,
-      updateVirtualFace: st.updateVirtualFace,
-    });
-    st.setFaceExtrudeSelectedFace(null);
-    st.setFaceExtrudeMode(false);
-    st.setFaceExtrudeRefCandidate(null);
+    const { confirmRefFaceExtrude } = await import('./FaceExtrudeService');
+    await confirmRefFaceExtrude();
   }, []);
 
   const refHoverHighlight = useMemo(() => {
@@ -593,7 +554,6 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
       shape.parameters?.height, shape.parameters?.depth, shape.parameters?.arrowRotated]);
 
   if (shape.isolated === false) return null;
-  if (isParentRebuilding)       return null;
   if (!localGeometry)           return null;
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -844,7 +804,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
           <FilletEdgeLines shape={shape} isSelected={isSelected} />
         )}
 
-        {isSelected && (faceEditMode || (panelSurfaceSelectMode && waitingForSurfaceSelection)) && (
+        {isSelected && faceEditMode && (
           <FaceEditor
             key={`face-editor-${shape.id}-${shape.geometry?.uuid || ''}-${(shape.fillets || []).length}`}
             shape={shape}

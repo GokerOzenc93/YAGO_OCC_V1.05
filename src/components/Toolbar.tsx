@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import * as THREE from 'three';
-import { Tool, useAppStore, ModificationType, CameraType, SnapType, ViewMode, OrthoMode } from '../store';
+import { Tool, useStoreFields, CameraType, SnapType, ViewMode, OrthoMode } from '../store';
 import { createReplicadBox, convertReplicadToThreeGeometry, performBooleanCut } from './ReplicadService';
 import {
   Icon, IconButton,
@@ -133,28 +133,27 @@ const Sep = () => (
 ═══════════════════════════════════════════ */
 const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
   const {
-    setActiveTool, activeTool, setLastTransformTool, addShape, selectedShapeId,
-    modifyShape, cameraType, setCameraType, snapSettings, toggleSnapSetting,
+    setActiveTool, activeTool, addShape, selectedShapeId,
+    cameraType, setCameraType, snapSettings, toggleSnapSetting,
     viewMode, setViewMode, cycleViewMode, orthoMode, toggleOrthoMode,
-    opencascadeInstance, extrudeShape, shapes, updateShape, deleteShape,
-    panelSelectMode, panelSurfaceSelectMode, setPanelSurfaceSelectMode,
-  } = useAppStore();
+    shapes, updateShape, deleteShape,
+    panelSelectMode, } = useStoreFields('setActiveTool', 'activeTool', 'addShape', 'selectedShapeId', 'cameraType', 'setCameraType', 'snapSettings', 'toggleSnapSetting', 'viewMode', 'setViewMode', 'cycleViewMode', 'orthoMode', 'toggleOrthoMode', 'shapes', 'updateShape', 'deleteShape', 'panelSelectMode');
 
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
   const [showPolylineMenu, setShowPolylineMenu] = useState(false);
-  const [polylineMenuPosition, setPolylineMenuPosition] = useState({ x:0, y:0 });
+  const [polylineMenuPosition] = useState({ x:0, y:0 });
 
   const hasIntersectingShapes = React.useMemo(() => {
     if (!selectedShapeId) return false;
     const sel = shapes.find(s => s.id === selectedShapeId);
     if (!sel?.geometry || sel.type === 'panel') return false;
     try {
-      const sb = new THREE.Box3().setFromBufferAttribute(sel.geometry.getAttribute('position'));
+      const sb = new THREE.Box3().setFromBufferAttribute(sel.geometry.getAttribute('position') as THREE.BufferAttribute);
       sb.set(sb.min.clone().add(new THREE.Vector3(...sel.position)), sb.max.clone().add(new THREE.Vector3(...sel.position)));
       return shapes.some(s => {
         if (s.id === selectedShapeId || !s.geometry || s.type === 'panel') return false;
         try {
-          const b = new THREE.Box3().setFromBufferAttribute(s.geometry.getAttribute('position'));
+          const b = new THREE.Box3().setFromBufferAttribute(s.geometry.getAttribute('position') as THREE.BufferAttribute);
           b.set(b.min.clone().add(new THREE.Vector3(...s.position)), b.max.clone().add(new THREE.Vector3(...s.position)));
           return sb.intersectsBox(b);
         } catch { return false; }
@@ -162,7 +161,7 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
     } catch { return false; }
   }, [selectedShapeId, shapes]);
 
-  const handleTransformToolSelect = (tool: Tool) => { setActiveTool(tool); setLastTransformTool(tool); };
+  const handleTransformToolSelect = (tool: Tool) => { setActiveTool(tool); };
   const handleCameraToggle = () => setCameraType(cameraType === CameraType.PERSPECTIVE ? CameraType.ORTHOGRAPHIC : CameraType.PERSPECTIVE);
 
   React.useEffect(() => {
@@ -191,11 +190,11 @@ const Toolbar: React.FC<ToolbarProps> = ({ onOpenCatalog }) => {
     try {
       const sel = shapes.find(s => s.id === selectedShapeId);
       if (!sel?.geometry || !sel.replicadShape) return;
-      const sb = new THREE.Box3().setFromBufferAttribute(sel.geometry.getAttribute('position'));
+      const sb = new THREE.Box3().setFromBufferAttribute(sel.geometry.getAttribute('position') as THREE.BufferAttribute);
       sb.set(sb.min.clone().add(new THREE.Vector3(...sel.position)), sb.max.clone().add(new THREE.Vector3(...sel.position)));
       const intersecting = shapes.filter(s => {
         if (s.id===selectedShapeId||!s.geometry) return false;
-        const b=new THREE.Box3().setFromBufferAttribute(s.geometry.getAttribute('position'));
+        const b=new THREE.Box3().setFromBufferAttribute(s.geometry.getAttribute('position') as THREE.BufferAttribute);
         b.set(b.min.clone().add(new THREE.Vector3(...s.position)),b.max.clone().add(new THREE.Vector3(...s.position)));
         return sb.intersectsBox(b);
       });

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import * as THREE from 'three';
 import Scene from './components/Scene';
 import Toolbar from './components/Toolbar';
@@ -8,12 +8,12 @@ import CatalogPanel from './components/CatalogPanel';
 import LeftSidebar from './components/LeftSidebar';
 import { ParametersPanel } from './components/ParametersPanel';
 import { PanelEditor } from './components/PanelEditor';
-import { useAppStore } from './store';
+import { useAppStore, useStoreFields } from './store';
 import { catalogService, CatalogItem } from './components/Database';
 import { initReplicad } from './components/ReplicadService';
 
 function App() {
-  const { opencascadeLoading, setOpenCascadeLoading, addShape } = useAppStore();
+  const { opencascadeLoading, setOpenCascadeLoading, addShape } = useStoreFields('opencascadeLoading', 'setOpenCascadeLoading', 'addShape');
   const [catalogOpen, setCatalogOpen] = useState(false);
   const [catalogItems, setCatalogItems] = useState<CatalogItem[]>([]);
 
@@ -51,7 +51,7 @@ function App() {
       prevPanelsByParent = nextMap;
 
       if (parentsNeedingRebuild.size === 0) return;
-      import('./components/PanelRebuildService').then(({ rebuildPanelsForParent }) => {
+      import('./components/PanelEngine').then(({ rebuildPanelsForParent }) => {
         for (const pid of parentsNeedingRebuild) {
           if (!state.shapes.find(s => s.id === pid)) continue;
           rebuildPanelsForParent(pid);

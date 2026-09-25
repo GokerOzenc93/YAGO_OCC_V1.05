@@ -2,28 +2,17 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { X, GripVertical, ArrowUp, RotateCw, Move, Trash2, MoveVertical, Check, Pencil, ChevronRight, Lock, SlidersHorizontal, Crosshair, Square, LayoutPanelTop, MousePointer2 } from 'lucide-react';
 import { ToolChip, ToolChipBar } from './ToolbarChips';
 import type { LucideIcon } from 'lucide-react';
-import { useAppStore } from '../store';
-import { extractFacesFromGeometry, groupCoplanarFaces, CoplanarFaceGroup } from './FaceEditor';
+import { useAppStore, useStoreFields, type Shape } from '../store';
+import { getFacesAndGroups } from './GeometryUtils';
 import { findExistingStepForFace } from './FaceExtrudeService';
-import type { FilletData } from './Fillet';
 import * as THREE from 'three';
 import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
-
-const AXIS_ORDER: Record<string, number> = { 'x+': 0, 'x-': 1, 'y+': 2, 'y-': 3, 'z+': 4, 'z-': 5 };
 const PANEL_THICKNESS = 18;
 const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
 const genId = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
 const r1 = (v: number) => Math.round(v * 10) / 10;
-
-function getAxisDir(n: THREE.Vector3): string | null {
-  const t = 0.95;
-  if (n.x > t) return 'x+'; if (n.x < -t) return 'x-';
-  if (n.y > t) return 'y+'; if (n.y < -t) return 'y-';
-  if (n.z > t) return 'z+'; if (n.z < -t) return 'z-';
-  return null;
-}
 
 function geoAxes(geo: THREE.BufferGeometry) {
   const pos = geo.getAttribute('position');
@@ -34,64 +23,11 @@ function geoAxes(geo: THREE.BufferGeometry) {
   return { axes, size, bbox };
 }
 
-function computeCuttingPlanes(mainBbox: THREE.Box3, subs: any[]) {
-  const planes: Array<{ normal: THREE.Vector3; constant: number; si: number }> = [];
-  subs.forEach((sub, si) => {
-    if (!sub?.geometry) return;
-    const sb = new THREE.Box3().setFromBufferAttribute(sub.geometry.getAttribute('position'));
-    const off = new THREE.Vector3(...sub.relativeOffset);
-    const rot = sub.relativeRotation;
-    const rm = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rot[0], rot[1], rot[2], 'XYZ'));
-    const corners = [
-      [sb.min.x,sb.min.y,sb.min.z],[sb.max.x,sb.min.y,sb.min.z],[sb.min.x,sb.max.y,sb.min.z],[sb.max.x,sb.max.y,sb.min.z],
-      [sb.min.x,sb.min.y,sb.max.z],[sb.max.x,sb.min.y,sb.max.z],[sb.min.x,sb.max.y,sb.max.z],[sb.max.x,sb.max.y,sb.max.z],
-    ].map(([x,y,z]) => new THREE.Vector3(x,y,z).applyMatrix4(rm).add(off));
-    const wb = new THREE.Box3().setFromPoints(corners);
-    const normals = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]].map(([x,y,z]) => new THREE.Vector3(x,y,z));
-    const consts = [-wb.max.x, wb.min.x, -wb.max.y, wb.min.y, -wb.max.z, wb.min.z];
-    const positions = [wb.max.x, wb.min.x, wb.max.y, wb.min.y, wb.max.z, wb.min.z];
-    for (let pi = 0; pi < 6; pi++) {
-      const ax = Math.floor(pi / 2);
-      const mn = ax === 0 ? mainBbox.min.x : ax === 1 ? mainBbox.min.y : mainBbox.min.z;
-      const mx = ax === 0 ? mainBbox.max.x : ax === 1 ? mainBbox.max.y : mainBbox.max.z;
-      if (positions[pi] > mn + 1.0 && positions[pi] < mx - 1.0)
-        planes.push({ normal: normals[pi], constant: consts[pi], si });
-    }
-  });
-  return planes;
-}
-
-function isFilletFace(group: CoplanarFaceGroup, fillet: FilletData): boolean {
-  const tol = Math.max(fillet.radius * 2.0, 10);
-  const n1 = new THREE.Vector3(...fillet.face1Data.normal), n2 = new THREE.Vector3(...fillet.face2Data.normal);
-  const d1 = fillet.face1Data.planeD ?? n1.dot(new THREE.Vector3(...fillet.face1Data.center));
-  const d2 = fillet.face2Data.planeD ?? n2.dot(new THREE.Vector3(...fillet.face2Data.center));
-  return Math.abs(n1.dot(group.center) - d1) < tol && Math.abs(n2.dot(group.center) - d2) < tol;
-}
-
-function classifyFaceGroups(groups: CoplanarFaceGroup[], fillets: FilletData[], planes: ReturnType<typeof computeCuttingPlanes>) {
-  const axis = new Map<string, number[]>(), subs = new Map<number, number[]>(), fills = new Map<number, number[]>();
-  groups.forEach((g, gi) => {
-    const dir = getAxisDir(g.normal);
-    if (!dir) {
-      for (let fi = 0; fi < fillets.length; fi++)
-        if (isFilletFace(g, fillets[fi])) { if (!fills.has(fi)) fills.set(fi, []); fills.get(fi)!.push(gi); return; }
-      return;
-    }
-    for (const p of planes)
-      if (Math.abs(g.normal.dot(p.normal)) >= 0.95 && Math.abs(g.center.dot(p.normal) + p.constant) < 1.0) {
-        if (!subs.has(p.si)) subs.set(p.si, []); subs.get(p.si)!.push(gi); return;
-      }
-    if (!axis.has(dir)) axis.set(dir, []); axis.get(dir)!.push(gi);
-  });
-  return { axis, subs, fills };
-}
-
 const findVPanel = (shapes: any[], pid: string, vfId: string) => shapes.find(s => s.type === 'panel' && s.parameters?.parentShapeId === pid && s.parameters?.virtualFaceId === vfId);
 
-function makePanelBase(shape: any, extra: Record<string, any>) {
+function makePanelBase(shape: any, extra: Record<string, any>): Shape {
   return { id: genId(extra.parameters?.virtualFaceId ? 'panel-vf' : 'panel'), type: 'panel' as const,
-    position: [...shape.position] as [number,number,number], rotation: shape.rotation, scale: [...shape.scale] as [number,number,number], color: '#ffffff', ...extra };
+    position: [...shape.position] as [number,number,number], rotation: shape.rotation, scale: [...shape.scale] as [number,number,number], color: '#ffffff', ...extra } as Shape;
 }
 
 /** BÖLGE KİMLİĞİ: tıklama noktasının (vf.center) yüz konturu bbox'ındaki
@@ -765,12 +701,11 @@ function PanelPreview2D({ shape, arrowRotated }: { dims: Dims; shape?: any; arro
 }
 
 export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorProps) {
-  const { selectedShapeId, shapes, updateShape, addShape, showOutlines, setShowOutlines,
+  const { selectedShapeId, shapes, updateShape, showOutlines, setShowOutlines,
     selectedPanelRow, setSelectedPanelRow, panelSelectMode, setPanelSelectMode, raycastMode, setRaycastMode,
-    showVirtualFaces, setShowVirtualFaces, virtualFaces, updateVirtualFace, deleteVirtualFace, reorderVirtualFaces, reorderVirtualFaceGroup, pendingPanelCreation, hoveredPanelVfId,
+    virtualFaces, updateVirtualFace, deleteVirtualFace, reorderVirtualFaceGroup, hoveredPanelVfId,
     faceExtrudeMode, setFaceExtrudeMode, faceExtrudeTargetPanelId,
-    setFaceExtrudeTargetPanelId, faceExtrudeSelectedFace, setFaceExtrudeSelectedFace, setFaceExtrudeHoveredFace,
-    faceExtrudeThickness, setFaceExtrudeThickness, faceExtrudeFixedMode, setFaceExtrudeFixedMode,
+    setFaceExtrudeTargetPanelId, faceExtrudeSelectedFace, setFaceExtrudeSelectedFace, faceExtrudeThickness, setFaceExtrudeThickness, faceExtrudeFixedMode, setFaceExtrudeFixedMode,
     faceExtrudeClickPoint, faceExtrudeValueMode, setFaceExtrudeValueMode,
     faceExtrudeRefCandidate, setFaceExtrudeRefCandidate,
     panelMoveMode, setPanelMoveMode, panelMoveTargetPanelId, setPanelMoveTargetPanelId,
@@ -783,7 +718,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     panelRotatePivot, setPanelRotatePivot, setPanelRotatePivotType,
     panelRotateAxis, setPanelRotateAxis, panelRotateValue, setPanelRotateValue,
     panelRotateValueMode, setPanelRotateValueMode,
-    panelRotateRefArmVertex, panelRotateRefFace } = useAppStore();
+    panelRotateRefArmVertex, panelRotateRefFace } = useStoreFields('selectedShapeId', 'shapes', 'updateShape', 'showOutlines', 'setShowOutlines', 'selectedPanelRow', 'setSelectedPanelRow', 'panelSelectMode', 'setPanelSelectMode', 'raycastMode', 'setRaycastMode', 'virtualFaces', 'updateVirtualFace', 'deleteVirtualFace', 'reorderVirtualFaceGroup', 'hoveredPanelVfId', 'faceExtrudeMode', 'setFaceExtrudeMode', 'faceExtrudeTargetPanelId', 'setFaceExtrudeTargetPanelId', 'faceExtrudeSelectedFace', 'setFaceExtrudeSelectedFace', 'faceExtrudeThickness', 'setFaceExtrudeThickness', 'faceExtrudeFixedMode', 'setFaceExtrudeFixedMode', 'faceExtrudeClickPoint', 'faceExtrudeValueMode', 'setFaceExtrudeValueMode', 'faceExtrudeRefCandidate', 'setFaceExtrudeRefCandidate', 'panelMoveMode', 'setPanelMoveMode', 'panelMoveTargetPanelId', 'setPanelMoveTargetPanelId', 'panelMoveAxis', 'setPanelMoveAxis', 'panelMoveValue', 'setPanelMoveValue', 'panelMoveValueMode', 'setPanelMoveValueMode', 'panelMoveRefSourceVertex', 'setPanelMoveRefSourceVertex', 'panelMoveRefTargetPanelId', 'setPanelMoveRefTargetPanelId', 'panelMoveRefTargetVertex', 'setPanelMoveRefTargetVertex', 'panelRotateMode', 'setPanelRotateMode', 'panelRotateTargetPanelId', 'setPanelRotateTargetPanelId', 'panelRotatePivot', 'setPanelRotatePivot', 'setPanelRotatePivotType', 'panelRotateAxis', 'setPanelRotateAxis', 'panelRotateValue', 'setPanelRotateValue', 'panelRotateValueMode', 'setPanelRotateValueMode', 'panelRotateRefArmVertex', 'panelRotateRefFace');
 
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
@@ -853,7 +788,6 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     ].sort((a: any, b: any) => (a.timestamp || 0) - (b.timestamp || 0));
   })();
 
-  const { selectedPanelRowParentId } = useAppStore();
   useEffect(() => {
     if (selectedShapeId !== useAppStore.getState().selectedPanelRowParentId)
       setSelectedPanelRow(null);
@@ -876,7 +810,6 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     if (!pending.length) return;
     (async () => {
       const { createPanelFromVirtualFace, convertReplicadToThreeGeometry } = await import('./ReplicadService');
-      const parentIdsToRebuild = new Set<string>();
       for (const vf of pending) {
         const parentShape = useAppStore.getState().shapes.find(s => s.id === vf.shapeId);
         if (!parentShape) continue;
@@ -894,27 +827,16 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
             parameters: { width: s[def], height: s[alt], depth: PANEL_THICKNESS, parentShapeId: parentShape.id, faceIndex: -(vi + 1), virtualFaceId: vf.id, arrowRotated: false, regionUV: computeRegionUV(vf) },
           }));
           updateVirtualFace(vf.id, { hasPanel: true });
-          parentIdsToRebuild.add(parentShape.id);
         } catch (e) { console.error('Auto panel creation failed:', e); }
       }
-      // İLK OLUŞTURMA REBUILD'E BAĞLANIR: yukarıdaki geometri yalnızca
-      // geçici VF prizmasıdır (tam yüz kaplar, kardeş kesimi yok). Aynı yüzde
-      // başka paneller varken bu hali bırakmak paneli yanlış bölgeye/üst üste
-      // koyar. Rebuild, yüz-extrusion + kardeş kesimleri + bölge seçimiyle
-      // paneli tıklanan bölgeye oturtur — atılan panel her zaman doğru yerde
-      // doğar.
-      for (const pid of parentIdsToRebuild) {
-        try {
-          const { rebuildPanelsForParent } = await import('./PanelRebuildService');
-          await rebuildPanelsForParent(pid);
-        } catch (e) { console.error('İlk oluşturma rebuild tetikleme hatası:', e); }
-      }
+      // Geometri geçici VF prizmasıdır; paneli bölgesine oturtan rebuild'i App'teki
+      // panel-kümesi izleyicisi (addShape) tetikler — burada ikinci kez çağrılmaz.
     })();
   }, [virtualFaces]);
 
   useEffect(() => {
     if (faceExtrudeMode && activePanelId && activePanelId !== faceExtrudeTargetPanelId)
-      { setFaceExtrudeTargetPanelId(activePanelId); setFaceExtrudeSelectedFace(null); setFaceExtrudeHoveredFace(null); }
+      { setFaceExtrudeTargetPanelId(activePanelId); setFaceExtrudeSelectedFace(null); }
   }, [faceExtrudeMode, activePanelId, faceExtrudeTargetPanelId]);
 
   useEffect(() => {
@@ -926,7 +848,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     if (faceExtrudeSelectedFace === null || !activePanelId) return;
     const ps = shapes.find(s => s.id === activePanelId); if (!ps?.geometry) return;
     const steps = ps.parameters?.extrudeSteps || []; if (!steps.length) return;
-    const groups = groupCoplanarFaces(extractFacesFromGeometry(ps.geometry));
+    const { groups } = getFacesAndGroups(ps.geometry);
     let g = groups[faceExtrudeSelectedFace]; if (!g) return;
     const gn = g.normal.clone().normalize();
     const isFlatGroup = Math.abs(gn.x) > 0.9 || Math.abs(gn.y) > 0.9 || Math.abs(gn.z) > 0.9;
@@ -997,23 +919,6 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
   }, [selectedPanelRow]);
 
   useEffect(() => {
-    if (!pendingPanelCreation || (!isOpen && !embedded)) return;
-    const cid = pendingPanelCreation.surfaceConstraint?.constraintPanelId; if (!cid) return;
-    const vf = virtualFaces.find(f => f.id === cid); if (!vf || vf.hasPanel) return;
-    const cs = useAppStore.getState().shapes.find(s => s.id === vf.shapeId); if (!cs) return;
-    const vi = virtualFaces.filter(f => f.shapeId === vf.shapeId).findIndex(f => f.id === vf.id); if (vi === -1) return;
-    (async () => {
-      try {
-        const { createPanelFromVirtualFace, convertReplicadToThreeGeometry } = await import('./ReplicadService');
-        const rp = await createPanelFromVirtualFace(vf.vertices, vf.normal, PANEL_THICKNESS); if (!rp) return;
-        addShape(makePanelBase(cs, { geometry: convertReplicadToThreeGeometry(rp), replicadShape: rp,
-          parameters: { width: 0, height: 0, depth: PANEL_THICKNESS, parentShapeId: cs.id, faceIndex: -(vi+1), virtualFaceId: vf.id, regionUV: computeRegionUV(vf) } }));
-        updateVirtualFace(vf.id, { hasPanel: true });
-      } catch (err) { console.error('Failed to create panel for virtual face via click:', err); }
-    })();
-  }, [pendingPanelCreation]);
-
-  useEffect(() => {
     if (raycastMode) { setShowOutlines(true); }
   }, [raycastMode]);
 
@@ -1046,7 +951,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     updateVirtualFace(vf.id, { fitFaceShape: next });
     console.log('[YAGO][YÜZ-ŞEKLİ]', vf.id, next ? 'AÇIK' : 'KAPALI', '→ tam rebuild');
     try {
-      const { rebuildPanelsForParent } = await import('./PanelRebuildService');
+      const { rebuildPanelsForParent } = await import('./PanelEngine');
       await rebuildPanelsForParent(vf.shapeId);
     } catch (e) { console.error('[YAGO][YÜZ-ŞEKLİ] rebuild hatası:', e); }
   };
@@ -1098,17 +1003,23 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       deleteVirtualFace(vfId);
       if (selectedPanelRow === `vf-${vfId}`) setSelectedPanelRow(null);
       console.log('[YAGO][SİL] panel + yüzey silindi', vfId, p?.id || '(panel yok)');
-      try {
-        const { rebuildPanelsForParent } = await import('./PanelRebuildService');
-        await rebuildPanelsForParent(sid);
-      } catch (e) { console.error('Silme sonrası rebuild hatası:', e); }
+      // Panel silindiyse rebuild'i App izleyicisi tetikler; yalnız paneli olmayan VF için burada.
+      if (!p) {
+        try {
+          const { rebuildPanelsForParent } = await import('./PanelEngine');
+          await rebuildPanelsForParent(sid);
+        } catch (e) { console.error('Silme sonrası rebuild hatası:', e); }
+      }
     };
 
     // Sürüklenen satır, hedefin ÖNCESİNE (targetId) yerleşir; null = en son.
+    // NOT: store.reorderVirtualFaceGroup zaten bir rebuild tetikler; buradaki
+    // ikinci rebuild bilinçli korunur — ref-dönüş açıları geçişler arasında
+    // yakınsadığından tek geçiş farklı sonuç verir (harness ile doğrulandı).
     const doReorder = async (draggedId: string, targetId: string | null) => {
       setDragIndex(null); setDropIndex(null);
       reorderVirtualFaceGroup(sid, [draggedId], targetId);
-      const { rebuildPanelsForParent } = await import('./PanelRebuildService');
+      const { rebuildPanelsForParent } = await import('./PanelEngine');
       await rebuildPanelsForParent(sid);
     };
     // KULLANICI KURALI: bırakma HER ZAMAN üzerine gelinen satırın ALTINA yerleşir
@@ -1307,34 +1218,16 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     const onApply = async () => {
       if (!hf || !activePanelId) return;
       const ps = shapes.find(s => s.id === activePanelId); if (!ps) return;
-      const vfId = ps.parameters?.virtualFaceId as string | undefined;
-      const vf = vfId ? virtualFaces.find(f => f.id === vfId) : undefined;
-
       if (isRefMode) {
         if (!hasRefFace) return;
-        const { executeFaceExtrudeToReference } = await import('./FaceExtrudeService');
-        await executeFaceExtrudeToReference({
-          panelShape: ps, faceGroupIndex: faceExtrudeSelectedFace!,
-          refShapeId: faceExtrudeRefCandidate!.panelId,
-          refFaceGroupIndex: faceExtrudeRefCandidate!.faceGroupIndex,
-          refNormalWorld: faceExtrudeRefCandidate!.normalWorld,
-          clickPoint: faceExtrudeClickPoint ?? undefined,
-          shapes, updateShape,
-          virtualFaceId: vfId,
-          vfNormal: vf?.normal as [number, number, number] | undefined,
-          vfVertex0: vf?.vertices?.[0] as [number, number, number] | undefined,
-          updateVirtualFace,
-        });
+        const { confirmRefFaceExtrude } = await import('./FaceExtrudeService');
+        await confirmRefFaceExtrude();
       } else {
         const { executeFaceExtrude } = await import('./FaceExtrudeService');
         await executeFaceExtrude({
           panelShape: ps, faceGroupIndex: faceExtrudeSelectedFace!,
           value: faceExtrudeThickness, isFixed: faceExtrudeFixedMode,
-          shapes, updateShape, clickPoint: faceExtrudeClickPoint ?? undefined,
-          virtualFaceId: vfId,
-          vfNormal: vf?.normal as [number, number, number] | undefined,
-          vfVertex0: vf?.vertices?.[0] as [number, number, number] | undefined,
-          updateVirtualFace,
+          updateShape, clickPoint: faceExtrudeClickPoint ?? undefined,
         });
       }
       setFaceExtrudeSelectedFace(null);
@@ -1418,24 +1311,18 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
 
       if (isRefMode) {
         if (!hasRefReady) return;
-        const { executePanelMoveRef } = await import('./PanelMoveService');
-        await executePanelMoveRef({
-          panelShape: ps,
-          sourceVertex: panelMoveRefSourceVertex!,
-          targetPanelId: panelMoveRefTargetPanelId!,
-          targetVertex: panelMoveRefTargetVertex!,
-          shapes, updateShape,
-        });
+        const { confirmPanelMoveRef } = await import('./PanelSteps');
+        await confirmPanelMoveRef();
         // Ref onaylandı → panel seçili kalmasın.
         setSelectedPanelRow(null);
       } else if (panelMoveValueMode === 'fixed') {
         if (!hasAxis) return;
-        const { executePanelMoveFixed } = await import('./PanelMoveService');
-        await executePanelMoveFixed({ panelShape: ps, axis: panelMoveAxis!, value: panelMoveValue, shapes, updateShape });
+        const { executePanelMoveFixed } = await import('./PanelSteps');
+        await executePanelMoveFixed({ panelShape: ps, axis: panelMoveAxis!, value: panelMoveValue, updateShape });
       } else {
         if (!hasAxis) return;
-        const { executePanelMove } = await import('./PanelMoveService');
-        await executePanelMove({ panelShape: ps, axis: panelMoveAxis!, value: panelMoveValue, shapes, updateShape });
+        const { executePanelMove } = await import('./PanelSteps');
+        await executePanelMove({ panelShape: ps, axis: panelMoveAxis!, value: panelMoveValue, updateShape });
       }
       setPanelMoveAxis(null);
       setPanelMoveValue(0);
@@ -1549,27 +1436,15 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       const ps = shapes.find(s => s.id === activePanelId); if (!ps) return;
       if (isRotRefMode) {
         if (!rotRefReady) return;
-        const { executePanelRotateRef } = await import('./PanelRotateService');
-        await executePanelRotateRef({
-          panelShape: ps,
-          pivot: panelRotatePivot!,
-          armVertex: panelRotateRefArmVertex!,
-          axis: panelRotateAxis!,
-          targetPanelId: panelRotateRefFace!.panelId,
-          targetFace: {
-            faceGroupIndex: panelRotateRefFace!.faceGroupIndex,
-            normalWorld: panelRotateRefFace!.normalWorld,
-            pointWorld: panelRotateRefFace!.pointWorld,
-          },
-          shapes, updateShape,
-        });
+        const { confirmPanelRotateRef } = await import('./PanelSteps');
+        await confirmPanelRotateRef();
         setPanelRotateMode(false);
         setSelectedPanelRow(null);
         return;
       }
       if (!hasAxis || !hasPivot) return;
-      const { executePanelRotate } = await import('./PanelRotateService');
-      await executePanelRotate({ panelShape: ps, axis: panelRotateAxis!, value: panelRotateValue, pivot: panelRotatePivot!, shapes, updateShape });
+      const { executePanelRotate } = await import('./PanelSteps');
+      await executePanelRotate({ panelShape: ps, axis: panelRotateAxis!, value: panelRotateValue, pivot: panelRotatePivot!, updateShape });
       setPanelRotateAxis(null);
       setPanelRotateValue(0);
       setRotateValueStr('0');
@@ -1693,8 +1568,8 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
 
     const saveTransformStep = async (pid: string | null, stepId: string, val: number) => {
       if (!pid) return; const ps = shapes.find(s => s.id === pid); if (!ps) return;
-      const { updateTransformStep } = await import('./PanelTransformService');
-      await updateTransformStep(ps, stepId, val, shapes, updateShape);
+      const { updateTransformStep } = await import('./PanelSteps');
+      await updateTransformStep(ps, stepId, val, updateShape);
       setEditingMoveStepId(null);
       setEditingRotateStepId(null);
     };
@@ -1792,8 +1667,8 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                           const { deleteExtrudeStep } = await import('./FaceExtrudeService');
                           await deleteExtrudeStep(ps, s.id, updateShape);
                         } else {
-                          const { deleteTransformStep } = await import('./PanelTransformService');
-                          await deleteTransformStep(ps, s.id, shapes, updateShape);
+                          const { deleteTransformStep } = await import('./PanelSteps');
+                          await deleteTransformStep(ps, s.id, updateShape);
                         }
                       }} style={iconBtn('#a8a29e')} className="opacity-0 group-hover/step:opacity-100 hover:!bg-red-50 hover:!text-red-500 transition-opacity"><Trash2 size={10.5} strokeWidth={1.9} /></button>
                     </>

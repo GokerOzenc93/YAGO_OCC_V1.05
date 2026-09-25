@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { Html } from '@react-three/drei';
 import { GizmoDot, computeRealCorners, resolveDotOverlap, worldPerPixel } from './GizmoDot';
 import { useFrame } from '@react-three/fiber';
-import { useAppStore } from '../store';
+import { useStoreFields } from '../store';
 import type { Shape } from '../store';
 
 const RENDER_ORDER = 999;
@@ -209,7 +209,7 @@ export function PanelMoveGizmo({ panelShape }: PanelMoveGizmoProps) {
     panelMoveRefSourceVertex, setPanelMoveRefSourceVertex,
     panelMoveRefTargetPanelId, setPanelMoveRefTargetPanelId,
     panelMoveRefTargetVertex, setPanelMoveRefTargetVertex,
-    shapes } = useAppStore();
+    shapes } = useStoreFields('panelMoveAxis', 'setPanelMoveAxis', 'panelMoveValueMode', 'panelMoveRefSourceVertex', 'setPanelMoveRefSourceVertex', 'panelMoveRefTargetPanelId', 'setPanelMoveRefTargetPanelId', 'panelMoveRefTargetVertex', 'setPanelMoveRefTargetVertex', 'shapes');
 
   const isRefMode = panelMoveValueMode === 'ref';
 
