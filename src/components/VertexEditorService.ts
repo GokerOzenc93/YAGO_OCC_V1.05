@@ -56,30 +56,21 @@ export async function getReplicadVertices(replicadShape: any): Promise<THREE.Vec
       return [];
     }
 
-    console.log(`Found ${vertices.length} vertices`);
-
-    const vertexPositions = vertices.map((v: any, idx: number) => {
-      console.log(`Vertex ${idx}:`, v);
-
+    const vertexPositions = vertices.map((v: any) => {
       if (v && typeof v.point === 'function') {
         const point = v.point();
-        console.log(`  Point from function:`, point);
         return new THREE.Vector3(point[0], point[1], point[2]);
       } else if (Array.isArray(v)) {
-        console.log(`  Point from array:`, v);
         return new THREE.Vector3(v[0], v[1], v[2]);
       } else if (v && typeof v.x === 'number') {
-        console.log(`  Point from x,y,z:`, v);
         return new THREE.Vector3(v.x, v.y, v.z);
       }
       return null;
     }).filter((v: THREE.Vector3 | null): v is THREE.Vector3 => v !== null);
 
-    console.log(`✅ Extracted ${vertexPositions.length} vertices from Replicad shape`);
     return vertexPositions;
   } catch (error) {
-    console.error('❌ Failed to get Replicad vertices:', error);
-    console.error('Error details:', error);
+    console.error('Failed to get Replicad vertices:', error);
     return [];
   }
 }

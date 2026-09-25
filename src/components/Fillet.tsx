@@ -34,12 +34,6 @@ export async function applyFilletToShape(
     throw new Error('Two faces must be selected for fillet operation');
   }
 
-  console.log(`🔵 Applying fillet with radius ${radius} to faces:`, selectedFilletFaces);
-  console.log('📍 Fillet - Current shape position:', shape.position);
-
-  console.log('📐 Face 1 - Normal:', selectedFilletFaceData[0].normal, 'Center:', selectedFilletFaceData[0].center);
-  console.log('📐 Face 2 - Normal:', selectedFilletFaceData[1].normal, 'Center:', selectedFilletFaceData[1].center);
-
   const face1Center = new THREE.Vector3(...selectedFilletFaceData[0].center);
   const face2Center = new THREE.Vector3(...selectedFilletFaceData[1].center);
   const face1Normal = new THREE.Vector3(...selectedFilletFaceData[0].normal);
@@ -66,22 +60,9 @@ export async function applyFilletToShape(
   const face1Descriptor = createFaceDescriptor(face1Data, shape.geometry);
   const face2Descriptor = createFaceDescriptor(face2Data, shape.geometry);
 
-  console.log('🆔 Face 1 Descriptor:', face1Descriptor);
-  console.log('🆔 Face 2 Descriptor:', face2Descriptor);
-
-  console.log('🔍 face1PlaneD:', face1PlaneD, '| face2PlaneD:', face2PlaneD);
-  console.log('🔍 face1Normal:', face1Normal.toArray().map((n:number) => n.toFixed(3)));
-  console.log('🔍 face2Normal:', face2Normal.toArray().map((n:number) => n.toFixed(3)));
-
-  const geomBox = new THREE.Box3().setFromBufferAttribute(shape.geometry.getAttribute('position') as THREE.BufferAttribute);
-  console.log('🔍 Geometry bbox min:', geomBox.min.toArray().map((n:number) => n.toFixed(3)), 'max:', geomBox.max.toArray().map((n:number) => n.toFixed(3)));
-
   let replicadShape = shape.replicadShape;
-  let edgeCount = 0;
-  let foundEdgeCount = 0;
 
   const filletedShape = replicadShape.fillet((edge: any) => {
-    edgeCount++;
     try {
       const start = edge.startPoint;
       const end = edge.endPoint;
@@ -109,15 +90,7 @@ export async function applyFilletToShape(
       const allPointsOnFace1 = startDistFace1 < tolerance && endDistFace1 < tolerance && centerDistFace1 < tolerance;
       const allPointsOnFace2 = startDistFace2 < tolerance && endDistFace2 < tolerance && centerDistFace2 < tolerance;
 
-      if (edgeCount <= 20) {
-        console.log(`Edge #${edgeCount}: start(${startVec.x.toFixed(2)},${startVec.y.toFixed(2)},${startVec.z.toFixed(2)}) end(${endVec.x.toFixed(2)},${endVec.y.toFixed(2)},${endVec.z.toFixed(2)}) | d1:[${startDistFace1.toFixed(2)},${endDistFace1.toFixed(2)},${centerDistFace1.toFixed(2)}] d2:[${startDistFace2.toFixed(2)},${endDistFace2.toFixed(2)},${centerDistFace2.toFixed(2)}] tol:${tolerance.toFixed(2)}`);
-      }
-
       if (allPointsOnFace1 && allPointsOnFace2) {
-        foundEdgeCount++;
-        console.log('Found shared edge #' + foundEdgeCount + ' - applying fillet radius:', radius);
-        console.log(`  Start: (${startVec.x.toFixed(2)}, ${startVec.y.toFixed(2)}, ${startVec.z.toFixed(2)})`);
-        console.log(`  End: (${endVec.x.toFixed(2)}, ${endVec.y.toFixed(2)}, ${endVec.z.toFixed(2)})`);
         return radius;
       }
 
@@ -127,9 +100,6 @@ export async function applyFilletToShape(
       return null;
     }
   });
-
-  console.log('🔢 Total edges checked:', edgeCount);
-  console.log('🔢 Edges selected for fillet:', foundEdgeCount);
 
   const newGeometry = convertReplicadToThreeGeometry(filletedShape);
 
@@ -145,8 +115,6 @@ export async function applyFilletToShape(
       depth: shape.parameters.depth || 1
     }
   };
-
-  console.log(`✅ Fillet with radius ${radius} applied successfully!`);
 
   return {
     geometry: newGeometry,

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { X, GripVertical, ArrowUp, RotateCw, Move, Trash2, MoveVertical, Check, Pencil, ChevronRight, Lock, SlidersHorizontal, Crosshair, Square, LayoutPanelTop, MousePointer2 } from 'lucide-react';
-import { ToolChip, ToolChipBar } from './ToolbarChips';
+import { ToolChip, ToolChipBar } from './UiPrimitives';
 import type { LucideIcon } from 'lucide-react';
 import { useAppStore, useStoreFields, type Shape } from '../store';
 import { getFacesAndGroups } from './GeometryUtils';

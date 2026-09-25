@@ -51,14 +51,7 @@ const StaticMesh: React.FC<{ geometry: THREE.BufferGeometry; color: string; rota
 const GeometryPreview: React.FC<{ geometryData: any }> = ({ geometryData }) => {
   const [bounds, setBounds] = useState<THREE.Box3 | null>(null);
 
-  const createGeometry = () => {
-    console.log('Preview creating geometry:', {
-      type: geometryData.type,
-      parameters: geometryData.parameters
-    });
-
-    return createGeometryFromType(geometryData.type, geometryData.parameters);
-  };
+  const createGeometry = () => createGeometryFromType(geometryData.type, geometryData.parameters);
 
   const geometry = useMemo(() => createGeometry(), [geometryData]);
 

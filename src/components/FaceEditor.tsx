@@ -75,8 +75,6 @@ export const FaceEditor: React.FC<FaceEditorProps> = ({ shape, isActive }) => {
         } else {
           planeD = nx * group.center.x + ny * group.center.y + nz * group.center.z;
         }
-        console.log(`🎯 Fillet face selected: groupIndex=${groupIndex}, normal=[${nx.toFixed(2)},${ny.toFixed(2)},${nz.toFixed(2)}], planeD=${planeD.toFixed(3)}, center=[${group.center.x.toFixed(2)},${group.center.y.toFixed(2)},${group.center.z.toFixed(2)}]`);
-        console.log(`🎯 flatFaces count: ${faces.filter(f => group.faceIndices.includes(f.faceIndex) && !f.isCurved).length}, total in group: ${group.faceIndices.length}`);
         addFilletFace(groupIndex);
         addFilletFaceData({
           normal: [nx, ny, nz],

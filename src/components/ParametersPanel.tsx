@@ -1,10 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { X, GripVertical, Plus, Check, Trash2, Spline, Layers, Radius } from 'lucide-react';
-import { ToolChip, ToolChipBar } from './ToolbarChips';
+import { ToolChip, ToolChipBar } from './UiPrimitives';
 import { useAppStore, useStoreFields } from '../store';
 import * as THREE from 'three';
-import { evaluateExpression } from './Expression';
-import { applyShapeChanges } from './ShapeUpdaterService';
+import { evaluateExpression, applyShapeChanges } from './ShapeUpdaterService';
 
 interface CustomParameter {
   id: string;

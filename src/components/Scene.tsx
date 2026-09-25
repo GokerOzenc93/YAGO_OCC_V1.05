@@ -13,7 +13,7 @@ import { PanelDrawing } from './PanelDrawing';
 import { PanelMoveGizmo } from './PanelMoveGizmo';
 import { PanelRotateGizmo } from './PanelRotateGizmo';
 import { resetRefFacePick } from './FaceRefPick';
-import { ErrorBoundary } from './ErrorBoundary';
+import { ErrorBoundary } from './UiPrimitives';
 
 /* ══════════════════════════════════════════════════════════
    VIEW-CUBE GIZMO

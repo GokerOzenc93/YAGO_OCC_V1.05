@@ -190,69 +190,36 @@ export const VertexEditor: React.FC<VertexEditorProps> = ({
 
   useEffect(() => {
     const loadVertices = async () => {
-      console.log('🔍 VertexEditor loadVertices called:', {
-        isActive,
-        hasShape: !!shape,
-        hasParameters: !!shape?.parameters,
-        shapeType: shape?.type,
-        hasReplicadShape: !!shape?.replicadShape,
-        dimensions: shape?.parameters ? {
-          w: shape.parameters.width,
-          h: shape.parameters.height,
-          d: shape.parameters.depth
-        } : null
-      });
-
-      if (!isActive || !shape.parameters) {
-        console.log('⚠️ VertexEditor: inactive or no parameters');
-        return;
-      }
+      if (!isActive || !shape.parameters) return;
 
       let baseVerts: THREE.Vector3[] = [];
 
       if (shape.parameters.scaledBaseVertices && shape.parameters.scaledBaseVertices.length > 0) {
-        console.log('📍 Using pre-computed scaled base vertices...');
         baseVerts = shape.parameters.scaledBaseVertices.map((v: number[]) =>
           new THREE.Vector3(v[0], v[1], v[2])
         );
-        console.log(`✅ Loaded ${baseVerts.length} scaled base vertices`);
       } else if (shape.replicadShape) {
-        console.log('📍 Loading vertices from Replicad shape...');
         baseVerts = await getReplicadVertices(shape.replicadShape);
-        console.log(`✅ Loaded ${baseVerts.length} base vertices from Replicad`);
       } else if (shape.type === 'box') {
-        console.log('📦 Loading vertices from box parameters...');
         baseVerts = getBoxVertices(
           shape.parameters.width,
           shape.parameters.height,
           shape.parameters.depth
         );
-        console.log(`✅ Loaded ${baseVerts.length} base vertices from box`);
       }
 
-      console.log('📍 Setting base vertices:', baseVerts);
       setVertices(baseVerts);
 
       // Mesh ile AYNI bileşim (eksen bazlı) — nokta, kübün köşesiyle birlikte hareket eder.
       const targets = composeVertexTargets(baseVerts, shape.vertexModifications);
       const modified = baseVerts.map((vertex, index) => (targets.get(index) || vertex).clone());
-
-      console.log(`✅ Computed ${modified.length} modified vertex positions`);
       setModifiedVertices(modified);
     };
 
     loadVertices();
   }, [isActive, shape, shape.parameters?.width, shape.parameters?.height, shape.parameters?.depth, shape.replicadShape, shape.vertexModifications]);
 
-  console.log('🎨 VertexEditor render:', {
-    isActive,
-    hasParameters: !!shape?.parameters,
-    verticesLength: vertices.length,
-    willRender: isActive && shape?.parameters && vertices.length > 0
-  });
-
   if (!isActive || !shape.parameters || vertices.length === 0) {
-    console.log('❌ VertexEditor not rendering - conditions not met');
     return null;
   }
 
@@ -261,13 +228,11 @@ export const VertexEditor: React.FC<VertexEditorProps> = ({
 
     if (selectedIndex === index && currentDirection) {
       setShowDirectionSelector(true);
-      console.log(`🔄 Change direction for vertex ${index}`);
     } else {
       setSelectedIndex(index);
       setCurrentDirection(null);
       setShowDirectionSelector(true);
       onVertexSelect(index);
-      console.log(`✓ Vertex ${index} selected - Choose direction`);
     }
   };
 
@@ -275,14 +240,7 @@ export const VertexEditor: React.FC<VertexEditorProps> = ({
     setCurrentDirection(direction);
     setShowDirectionSelector(false);
     onDirectionChange(direction);
-    console.log(`✓ Direction ${direction} selected - Right-click to confirm`);
   };
-
-  console.log('✨ VertexEditor rendering with:', {
-    modifiedVerticesCount: modifiedVertices.length,
-    shapePosition: shape.position,
-    firstVertex: modifiedVertices[0]
-  });
 
   return (
     <group
@@ -291,7 +249,6 @@ export const VertexEditor: React.FC<VertexEditorProps> = ({
       scale={[shape.scale[0], shape.scale[1], shape.scale[2]]}
     >
       {modifiedVertices.map((vertex, index) => {
-        console.log(`🔴 Rendering vertex ${index}:`, vertex);
         return (
           <VertexPoint
             key={index}

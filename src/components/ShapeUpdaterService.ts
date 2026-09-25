@@ -1,6 +1,24 @@
 import * as THREE from 'three';
-import { evaluateExpression } from './Expression';
 import type { FilletInfo } from '../store';
+
+/** Parametrik alanlarda ("W/2 + 10" gibi) kullanılan basit formül çözücü. */
+export function evaluateExpression(
+  expression: string,
+  context: Record<string, number>,
+  fallback: number = 0
+): number {
+  try {
+    let expr = expression.trim();
+    Object.entries(context).forEach(([key, value]) => {
+      expr = expr.replace(new RegExp(`\\b${key}\\b`, 'g'), value.toString());
+    });
+    const sanitized = expr.replace(/[^0-9+\-*/().\s]/g, '');
+    const result = Function(`"use strict"; return (${sanitized})`)();
+    return isNaN(result) ? fallback : result;
+  } catch {
+    return fallback;
+  }
+}
 
 export const getOriginalSize = (geometry: THREE.BufferGeometry) => {
   const box = new THREE.Box3().setFromBufferAttribute(
@@ -18,40 +36,23 @@ export async function updateFilletCentersForNewGeometry(
 ): Promise<FilletInfo[]> {
   if (!fillets || fillets.length === 0) return fillets;
 
-  console.log('🔄 Updating fillet centers for new geometry using descriptors...');
-
   const { extractFacesFromGeometry, findFaceByDescriptor } = await import('./GeometryUtils');
 
   const faces = extractFacesFromGeometry(newGeometry);
 
   const updatedFillets = fillets.map((fillet, idx) => {
-    console.log(`🔄 Updating fillet #${idx + 1} using descriptors...`);
-    console.log(`   Current radius: ${fillet.radius}`);
-
     if (!fillet.face1Descriptor || !fillet.face2Descriptor) {
-      console.warn(`⚠️ Fillet #${idx + 1} missing descriptors, skipping update`);
+      console.warn(`Fillet #${idx + 1} missing descriptors, skipping update`);
       return fillet;
     }
-
-    console.log(`   Face1 descriptor - Normal: [${fillet.face1Descriptor.normal.map(n => n.toFixed(2)).join(', ')}]`);
-    console.log(`   Face2 descriptor - Normal: [${fillet.face2Descriptor.normal.map(n => n.toFixed(2)).join(', ')}]`);
 
     const newFace1 = findFaceByDescriptor(fillet.face1Descriptor, faces, newGeometry);
     const newFace2 = findFaceByDescriptor(fillet.face2Descriptor, faces, newGeometry);
 
-    if (!newFace1) {
-      console.error(`❌ Could not find matching face1 for fillet #${idx + 1}`);
-      console.error(`   Target normal: [${fillet.face1Descriptor.normal.map(n => n.toFixed(2)).join(', ')}]`);
+    if (!newFace1 || !newFace2) {
+      console.error(`Could not find matching face${newFace1 ? '2' : '1'} for fillet #${idx + 1}`);
       return fillet;
     }
-
-    if (!newFace2) {
-      console.error(`❌ Could not find matching face2 for fillet #${idx + 1}`);
-      console.error(`   Target normal: [${fillet.face2Descriptor.normal.map(n => n.toFixed(2)).join(', ')}]`);
-      return fillet;
-    }
-
-    console.log(`✅ Fillet #${idx + 1} updated - Found matching faces by descriptor`);
 
     return {
       ...fillet,
@@ -67,20 +68,15 @@ export async function updateFilletCentersForNewGeometry(
     };
   });
 
-  console.log(`✅ Updated ${updatedFillets.length} fillet center(s) using descriptors`);
   return updatedFillets;
 }
 
 export async function applyFillets(replicadShape: any, fillets: FilletInfo[], shapeSize: { width: number; height: number; depth: number }) {
   if (!fillets || fillets.length === 0) return replicadShape;
 
-  console.log(`🔵 Applying ${fillets.length} fillet(s) to shape...`);
-
   let currentShape = replicadShape;
 
   for (const fillet of fillets) {
-    console.log(`🔵 Applying fillet with radius ${fillet.radius}...`);
-
     const scaleX = shapeSize.width / fillet.originalSize.width;
     const scaleY = shapeSize.height / fillet.originalSize.height;
     const scaleZ = shapeSize.depth / fillet.originalSize.depth;
@@ -105,10 +101,6 @@ export async function applyFillets(replicadShape: any, fillets: FilletInfo[], sh
           face2Normal.x !== 0 ? scaleX : face2Normal.y !== 0 ? scaleY : scaleZ
         )
       : face2Normal.dot(face2Center);
-
-    console.log(`📐 Scaled face centers for new dimensions (${shapeSize.width}x${shapeSize.height}x${shapeSize.depth})`);
-    console.log(`   Face1 center: (${face1Center.x.toFixed(2)}, ${face1Center.y.toFixed(2)}, ${face1Center.z.toFixed(2)})`);
-    console.log(`   Face2 center: (${face2Center.x.toFixed(2)}, ${face2Center.y.toFixed(2)}, ${face2Center.z.toFixed(2)})`);
 
     let edgeCount = 0;
     let foundEdgeCount = 0;
@@ -144,7 +136,6 @@ export async function applyFillets(replicadShape: any, fillets: FilletInfo[], sh
 
         if (allPointsOnFace1 && allPointsOnFace2) {
           foundEdgeCount++;
-          console.log(`Found shared edge #${foundEdgeCount} - applying fillet radius: ${fillet.radius}`);
           return fillet.radius;
         }
 
@@ -154,11 +145,8 @@ export async function applyFillets(replicadShape: any, fillets: FilletInfo[], sh
         return null;
       }
     });
-
-    console.log(`Total edges checked: ${edgeCount}, Edges filleted: ${foundEdgeCount}`);
   }
 
-  console.log('✅ All fillets applied successfully!');
   return currentShape;
 }
 
@@ -276,8 +264,6 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
 
   if (!selectedShape) return;
 
-  console.log('📐 Applying parameter changes:', { width, height, depth });
-
   try {
     const { getBoxVertices, getReplicadVertices } = await import('./VertexEditorService');
     const { createReplicadBox, performBooleanCut, convertReplicadToThreeGeometry } = await import('./ReplicadService');
@@ -347,29 +333,6 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
         expression: mod.expression
       };
     });
-
-    let scaledGeometry = selectedShape.geometry;
-    const hasFillets = selectedShape.fillets && selectedShape.fillets.length > 0;
-
-    if (dimensionsChanged && selectedShape.geometry) {
-      if (hasFillets) {
-        console.log('🔵 Dimensions changed with fillets - will recreate shape with fillets (not scale)');
-      } else {
-        console.log('📏 Scaling geometry by:', { scaleX, scaleY, scaleZ });
-        scaledGeometry = selectedShape.geometry.clone();
-        scaledGeometry.scale(scaleX, scaleY, scaleZ);
-        scaledGeometry.computeVertexNormals();
-        scaledGeometry.computeBoundingBox();
-        scaledGeometry.computeBoundingSphere();
-
-        const box = new THREE.Box3().setFromBufferAttribute(
-          scaledGeometry.getAttribute('position')
-        );
-        const center = new THREE.Vector3();
-        box.getCenter(center);
-        console.log('✓ Scaled geometry center:', { x: center.x.toFixed(2), y: center.y.toFixed(2), z: center.z.toFixed(2) });
-      }
-    }
 
     const hasSubtractionChanges = selectedSubtractionIndex !== null && selectedShape.subtractionGeometries?.length > 0;
 
@@ -505,10 +468,8 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
         });
       }
     }
-
-    console.log('✅ Parameters applied');
   } catch (error) {
-    console.error('❌ Failed to update parameters:', error);
+    console.error('Failed to update parameters:', error);
     updateShape(selectedShape.id, {
       parameters: { ...selectedShape.parameters, width, height, depth, customParameters },
       vertexModifications: []
