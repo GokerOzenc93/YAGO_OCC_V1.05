@@ -100,6 +100,8 @@ export interface PanelGroup {
   gaps: GapSpec[];
   thickness: number;
   memberVfIds: string[];
+  /** Kullanıcının verdiği grup adı (varsayılan 'Shelf' / 'Divider'); üye panellerin adı budur (salt-okunur). */
+  name?: string;
   createdAt: number;
 }
 
@@ -566,7 +568,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   // ── Sanal yüzler ──────────────────────────────────────────────────────────
   showVirtualFaces: true, setShowVirtualFaces: (b) => set({ showVirtualFaces: b }),
   virtualFaces: [],
-  addVirtualFace: (v) => set((s) => ({ virtualFaces: [...s.virtualFaces, v] })),
+  // PANEL ADI (Goker): gövdeye yerleşen her panel varsayılan olarak 'Panel' adını
+  // alır (description alanı = satırdaki ad, değiştirilebilir). İç (raf/dikme)
+  // üyelerin adı grup adından gelir.
+  addVirtualFace: (v) => set((s) => ({ virtualFaces: [...s.virtualFaces, (!v.interior && !v.description) ? { ...v, description: 'Panel' } : v] })),
   updateVirtualFace: (id, u) => set((s) => ({ virtualFaces: s.virtualFaces.map(f => (f.id === id ? { ...f, ...u } : f)) })),
   deleteVirtualFace: (id) => set((s) => ({ virtualFaces: s.virtualFaces.filter(f => f.id !== id) })),
   // Sürüklenen grup hedefin ÖNCESİNE (null = sona) taşınır; diğer şekillerin VF'leri yerinde kalır.

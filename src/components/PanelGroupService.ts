@@ -735,7 +735,7 @@ function makeMemberVf(group: PanelGroup, i: number, sol: GroupSolution): Virtual
   return {
     id: genId('vf-int'), shapeId: group.shapeId,
     normal: g.normal, center: g.center, vertices: g.vertices,
-    description: '', hasPanel: false,
+    description: groupName(group), hasPanel: false,
     parentFaceShape: false, interior: true, groupId: group.id, groupIndex: i,
     ...( { regionAnchor: g.center } as any ),
   };
@@ -767,7 +767,7 @@ export function createPanelGroupFromCavity(shapeId: string, kind: PanelGroup['ki
   const L = boxSpan(pick.bbox, axis);
   const frac = (v: number, a: number) => { const s = body.max[a] - body.min[a]; return s > 1e-6 ? (v - body.min[a]) / s : 0; };
   const group: PanelGroup = {
-    id: genId(kind === 'shelf' ? 'shelf' : 'divider'), shapeId, kind, axis, anchorFrac,
+    id: genId(kind === 'shelf' ? 'shelf' : 'divider'), shapeId, kind, axis, anchorFrac, name: groupKindLabel(kind),
     cavity: cloneBox(pick.bbox), region: pick.boxes.map(cloneBox), count, gaps: equalGaps(L, count, t), thickness: t, memberVfIds: [], createdAt: Date.now(),
     ...(pick.shape === 'box' ? { boxMode: true, boxFrac: { min: [0, 1, 2].map(a => frac(pick.bbox.min[a], a)) as Vec3, max: [0, 1, 2].map(a => frac(pick.bbox.max[a], a)) as Vec3 } } : {}),
   };
@@ -863,6 +863,23 @@ export async function equalizeGroupGaps(groupId: string): Promise<void> {
   writeGroupGaps(group, equalGaps(L, group.count, group.thickness));
   console.log('[YAGO][GRUP-BOŞLUK] eşitlendi', groupId);
   await rebuild(group.shapeId);
+}
+
+/** Grubun görünen adı (eski gruplarda tür etiketi). */
+export const groupName = (g: Pick<PanelGroup, 'name' | 'kind'>) => (g.name ?? groupKindLabel(g.kind));
+
+/**
+ * GRUP ADI: grup satırında düzenlenir; üye panellerin adı (VF description)
+ * aynı adla eşitlenir — üye satırlarında salt-okunur gösterilir. Geometri
+ * değişmez → rebuild yok.
+ */
+export function renamePanelGroup(groupId: string, name: string): void {
+  const st = useAppStore.getState();
+  const group = st.panelGroups.find(g => g.id === groupId);
+  if (!group) return;
+  st.updatePanelGroup(groupId, { name });
+  const ids = new Set(group.memberVfIds);
+  useAppStore.setState(s => ({ virtualFaces: s.virtualFaces.map(f => (ids.has(f.id) ? { ...f, description: name } : f)) }));
 }
 
 /** Grup + tüm üye paneller ve VF'ler silinir (rebuild'i panel silme izleyicisi tetikler). */

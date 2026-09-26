@@ -7,7 +7,7 @@ import { getFacesAndGroups } from './GeometryUtils';
 import { findExistingStepForFace } from './FaceExtrudeService';
 import {
   boxSpan, panelStarts, groupKindLabel, createPanelGroupFromCavity, setGroupCount, editGroupGap, toggleGroupGapLock,
-  equalizeGroupGaps, deletePanelGroupWithMembers, traceMaskLoops,
+  equalizeGroupGaps, deletePanelGroupWithMembers, traceMaskLoops, groupName, renamePanelGroup,
 } from './PanelGroupService';
 import * as THREE from 'three';
 import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
@@ -713,7 +713,8 @@ function PanelPreview2D({ shape, arrowRotated }: { dims: Dims; shape?: any; arro
    onaylar); pill'in kilit ucu → kilit aç/kapa. Kilitli pill turuncu çerçeve.
    Şema sabit bir ölçekte değil, karta sığacak şekilde çizilir; raf sayısı
    artınca yükseklik büyür ki pill'ler üst üste binmesin.                    */
-const SCHEMA_PAD = 26;
+const SCHEMA_PAD = 34;
+const SCHEMA_HEIGHT = 410;
 /** Bölge kutularının (h,v) eksenlerine izdüşüm maskesi: düzlemler + dolu hücre sorgusu. */
 function regionMask(boxes: CavityBox[], h: number, v: number) {
   const hsSet = new Set<number>(), vsSet = new Set<number>();
@@ -725,7 +726,6 @@ function regionMask(boxes: CavityBox[], h: number, v: number) {
   };
   return { hs, vs, filled };
 }
-const AXIS_LETTER = ['X', 'Y', 'Z'];
 function GroupSchematic({ group, onEditGap, onToggleLock }: {
   group: PanelGroup; onEditGap: (k: number, v: number) => void; onToggleLock: (k: number) => void;
 }) {
@@ -743,7 +743,10 @@ function GroupSchematic({ group, onEditGap, onToggleLock }: {
   const { cavity, gaps, thickness: t, axis } = group;
   const barsHorizontal = axis === 1;
   const gapN = gaps.length;
-  const height = barsHorizontal ? Math.min(440, Math.max(210, gapN * 30 + 70)) : 210;
+  // SABİT ALAN (Goker): şema, panel önizlemesiyle aynı yükseklikte (410) durur;
+  // hacim ya da adet büyüyünce alan büyümez/küçülmez, çizim alana sığdırılır.
+  const height = SCHEMA_HEIGHT;
+  void gapN;
   const starts = panelStarts(cavity.min[axis], gaps, t);
 
   // ŞEKİLLİ BÖLGE SİLUETİ: bölge kutularının izdüşümü (eski gruplarda hacim
@@ -757,13 +760,45 @@ function GroupSchematic({ group, onEditGap, onToggleLock }: {
     return cands[0].shaped || !cands[1].shaped ? cands[0] : cands[1];
   }, [region, barsHorizontal]);
   const { h: hAxis, v: vAxis, m: mask, loops } = view;
-  const W = Math.max(boxSpan(cavity, hAxis), 1), H = Math.max(boxSpan(cavity, vAxis), 1);
+  // TEMSİLİ KARE ÇİZİM (Goker): hacim ne olursa olsun (geniş/basık/dar/uzun)
+  // şema HER ZAMAN aynı ölçüde, eni boyu eşit bir kare alanda çizilir —
+  // ölçekli değil, TEMSİLİ. Çapraz eksen kareye doğrusal yayılır; dizilim
+  // ekseninde levhalar sabit piksel kalınlıkta, boşluklar kendi ORANLARIYLA
+  // bölüşülür (girilen ölçüler görsel olarak da orantılı okunur). Dünya →
+  // piksel dönüşümü parça-doğrusal olduğundan L/U siluet de aynı haritayla
+  // çizilir ve levhalarla tutarlı kalır.
   const innerW = width - 2 * SCHEMA_PAD, innerH = height - 2 * SCHEMA_PAD;
-  const scale = Math.max(1e-6, Math.min(innerW / W, innerH / H));
-  const x0 = SCHEMA_PAD + (innerW - W * scale) / 2, y0 = SCHEMA_PAD + (innerH - H * scale) / 2;
-  const sx = (wh: number) => x0 + (wh - cavity.min[hAxis]) * scale;
-  const sy = (wv: number) => y0 + (cavity.max[vAxis] - wv) * scale;   // dünya v yukarı → SVG y aşağı
-  const barPx = Math.max(2.5, t * scale);
+  const S = Math.max(40, Math.min(innerW, innerH));
+  const ox = SCHEMA_PAD + (innerW - S) / 2, oy = SCHEMA_PAD + (innerH - S) / 2;
+  const crossAxisW = barsHorizontal ? hAxis : vAxis;
+  const nBars = starts.length;
+  const barPx = Math.max(3, Math.min(7, S / Math.max(1, (nBars + 1) * 4)));
+  // Dizilim ekseni kırılma noktaları: dünya [min, min+g0, min+g0+t, …, max] ↔ piksel.
+  const stackMap = useMemo(() => {
+    const wb: number[] = [cavity.min[axis]], pb: number[] = [0];
+    const gSum = gaps.reduce((a, g) => a + Math.max(0, g.value), 0);
+    const avail = Math.max(0, S - nBars * barPx);
+    let w = cavity.min[axis], p = 0;
+    gaps.forEach((g, k) => {
+      w += Math.max(0, g.value); p += gSum > 1e-6 ? (Math.max(0, g.value) / gSum) * avail : avail / gaps.length;
+      wb.push(w); pb.push(p);
+      if (k < nBars) { w += t; p += barPx; wb.push(w); pb.push(p); }
+    });
+    return { wb, pb };
+  }, [cavity, axis, gaps, S, nBars, barPx, t]);
+  const mapStack = (w: number) => {
+    const { wb, pb } = stackMap;
+    if (w <= wb[0]) return pb[0];
+    for (let i = 1; i < wb.length; i++) {
+      if (w <= wb[i]) { const d = wb[i] - wb[i - 1]; return d > 1e-9 ? pb[i - 1] + ((w - wb[i - 1]) / d) * (pb[i] - pb[i - 1]) : pb[i]; }
+    }
+    // Hacim sonu (boşluk toplamı açıklığa tam eşit değilse) → karenin kenarı.
+    return Math.min(S, pb[pb.length - 1]);
+  };
+  const crossSpan = Math.max(boxSpan(cavity, crossAxisW), 1);
+  const mapCross = (w: number) => ((w - cavity.min[crossAxisW]) / crossSpan) * S;
+  const sx = (wh: number) => ox + (hAxis === axis ? mapStack(wh) : mapCross(wh));
+  const sy = (wv: number) => oy + S - (vAxis === axis ? mapStack(wv) : mapCross(wv));   // dünya v yukarı → SVG y aşağı
   const silhouettePath = loops.map(l => l.map((p, i) => `${i ? 'L' : 'M'}${sx(p.x).toFixed(1)},${sy(p.y).toFixed(1)}`).join(' ') + ' Z').join(' ');
   /** Dizilim eksenindeki [a0,a1] diliminde, çapraz eksende dolu aralıklar (dünya). */
   const runsAt = (a0: number, a1: number): Array<[number, number]> => {
@@ -783,11 +818,15 @@ function GroupSchematic({ group, onEditGap, onToggleLock }: {
   // Boşluk aralıkları (dizilim ekseni, dünya).
   const spans: Array<{ a: number; b: number }> = [];
   { let p = cavity.min[axis]; for (let k = 0; k < gapN; k++) { spans.push({ a: p, b: p + gaps[k].value }); p += gaps[k].value + t; } }
-  const fs = 11;
+  // ÖLÇÜ PİLLERİ — panel önizlemesiyle aynı dil (PanelPreview2D ground dims):
+  // ince uzatma çizgileri, oklu ölçü çizgisi, beyaz yuvarlak pill, tabular sayı.
+  const fs = Math.max(10, Math.min(13.5, width * 0.027));
+  const boxHalf = (txt: string) => ({ hw: Math.max(txt.length * fs * 0.62 + 12, 30) / 2, hh: (fs + 8) / 2 });
   const pills = spans.map((s, k) => {
     const mid = (s.a + s.b) / 2;
     const txt = String(Math.round(gaps[k].value * 10) / 10);
-    const pw = Math.max(txt.length * fs * 0.62 + 30, 44), ph = 18;
+    const { hw, hh } = boxHalf(txt);
+    const pw = hw * 2, ph = hh * 2;
     // Pill, boşluğun ortasındaki DOLU aralığın ortasına oturur (L bölgede boş kısma düşmesin).
     const runs = runsAt(mid - 0.5, mid + 0.5);
     const widest = runs.length ? runs.reduce((b, r) => (r[1] - r[0] > b[1] - b[0] ? r : b)) : null;
@@ -796,11 +835,12 @@ function GroupSchematic({ group, onEditGap, onToggleLock }: {
     let cx = barsHorizontal ? sx(crossMid) : sx(mid);
     let cy = barsHorizontal ? sy(mid) : sy(crossMid);
     // Dar boşlukta pill'ler çakışmasın: iki sıraya dağıt.
-    const gapPx = Math.abs(s.b - s.a) * scale;
-    if (!barsHorizontal && gapPx < pw + 4) cy += (k % 2 === 0 ? -1 : 1) * (ph * 0.7);
-    if (barsHorizontal && gapPx < ph + 4) cx += (k % 2 === 0 ? -1 : 1) * (pw * 0.55);
+    const gapPx = Math.abs(mapStack(s.b) - mapStack(s.a));
+    if (!barsHorizontal && gapPx < pw + 6) cy += (k % 2 === 0 ? -1 : 1) * (ph * 0.75);
+    if (barsHorizontal && gapPx < ph + 6) cx += (k % 2 === 0 ? -1 : 1) * (pw * 0.6);
     return { k, cx, cy, pw, ph, txt, a: s.a, b: s.b, crossMid };
   });
+  const asz = Math.max(4.5, Math.min(7.5, width * 0.016));
 
   const commit = () => {
     if (!editing) return;
@@ -811,43 +851,43 @@ function GroupSchematic({ group, onEditGap, onToggleLock }: {
 
   return (
     <div ref={wrapRef} className="relative rounded-[10px] ring-1 ring-[#e9e4dc] overflow-hidden" style={{ background: PREVIEW_BG, height }}>
+      <style>{`.yago-gap .lockbtn{opacity:0;transition:opacity .15s}.yago-gap:hover .lockbtn,.yago-gap.locked .lockbtn{opacity:1}`}</style>
       <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ display: 'block', fontFamily: DOCK_FONT }}>
         {/* şekilli bölge silueti */}
         <path d={silhouettePath} fill="#ffffff" stroke="#d6cfc4" strokeWidth={1} strokeLinejoin="round" fillRule="evenodd" />
-        <text x={x0 + W * scale} y={y0 - 8} textAnchor="end" fontSize={9.5} fontWeight={600} fill="#b5ada3" style={{ letterSpacing: '0.06em' }}>
-          {AXIS_LETTER[hAxis]} {Math.round(W)} × {AXIS_LETTER[vAxis]} {Math.round(H)}
-        </text>
         {/* levhalar: dilimdeki dolu aralıklara kırpılmış */}
         {starts.map((st, i) => runsAt(st, st + t).map((r, ri) => barsHorizontal
-          ? <rect key={`bar-${i}-${ri}`} x={sx(r[0])} y={sy(st + t)} width={(r[1] - r[0]) * scale} height={barPx} fill="#cfc5b5" stroke="#8a8278" strokeWidth={0.8} />
-          : <rect key={`bar-${i}-${ri}`} x={sx(st)} y={sy(r[1])} width={barPx} height={(r[1] - r[0]) * scale} fill="#cfc5b5" stroke="#8a8278" strokeWidth={0.8} />))}
-        {/* boşluk ölçü çizgileri + pill'ler */}
+          ? <rect key={`bar-${i}-${ri}`} x={sx(r[0])} y={sy(st + t)} width={sx(r[1]) - sx(r[0])} height={sy(st) - sy(st + t)} rx={1} fill="#e9e1d3" stroke="#8a8278" strokeWidth={0.9} />
+          : <rect key={`bar-${i}-${ri}`} x={sx(st)} y={sy(r[1])} width={sx(st + t) - sx(st)} height={sy(r[0]) - sy(r[1])} rx={1} fill="#e9e1d3" stroke="#8a8278" strokeWidth={0.9} />))}
+        {/* boşluk ölçüleri: oklu ölçü çizgisi + pill (+ hover'da / kilitliyken kilit) */}
         {pills.map(p => {
           const locked = gaps[p.k].locked;
           const isEd = editing?.k === p.k;
-          const lineX = sx(p.crossMid), lineY = sy(p.crossMid);
-          const line = barsHorizontal
-            ? <line x1={lineX} y1={sy(p.a)} x2={lineX} y2={sy(p.b)} stroke="#cfc6b9" strokeWidth={0.8} />
-            : <line x1={sx(p.a)} y1={lineY} x2={sx(p.b)} y2={lineY} stroke="#cfc6b9" strokeWidth={0.8} />;
-          const lockX = p.cx + p.pw / 2 - 14, lockY = p.cy - 5;
+          // Ölçü çizgisi uçları (levha yüzünden levha yüzüne), pill ortada.
+          const a = barsHorizontal ? { x: sx(p.crossMid), y: sy(p.a) } : { x: sx(p.a), y: sy(p.crossMid) };
+          const b = barsHorizontal ? { x: sx(p.crossMid), y: sy(p.b) } : { x: sx(p.b), y: sy(p.crossMid) };
+          const dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy) || 1;
+          const ux = dx / L, uy = dy / L, px = -uy, py = ux;
+          const lockCx = barsHorizontal ? p.cx + p.pw / 2 + 11 : p.cx + p.pw / 2 + 11, lockCy = p.cy;
           return (
-            <g key={`gap-${p.k}`}>
-              {line}
+            <g key={`gap-${p.k}`} className={`yago-gap${locked ? ' locked' : ''}`}>
+              <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={locked ? '#f59e0b' : '#a39a8f'} strokeWidth={1} />
+              <polygon points={`${a.x},${a.y} ${a.x + ux * asz + px * asz * 0.38},${a.y + uy * asz + py * asz * 0.38} ${a.x + ux * asz - px * asz * 0.38},${a.y + uy * asz - py * asz * 0.38}`} fill={locked ? '#f59e0b' : '#a39a8f'} />
+              <polygon points={`${b.x},${b.y} ${b.x - ux * asz + px * asz * 0.38},${b.y - uy * asz + py * asz * 0.38} ${b.x - ux * asz - px * asz * 0.38},${b.y - uy * asz - py * asz * 0.38}`} fill={locked ? '#f59e0b' : '#a39a8f'} />
               <rect x={p.cx - p.pw / 2} y={p.cy - p.ph / 2} width={p.pw} height={p.ph} rx={p.ph / 2}
-                fill={locked ? '#fff7ed' : '#ffffff'} stroke={locked ? '#f97316' : '#e6e0d6'} strokeWidth={locked ? 1.1 : 0.8} />
-              <rect x={p.cx - p.pw / 2} y={p.cy - p.ph / 2} width={p.pw - 20} height={p.ph} fill="transparent" style={{ cursor: 'text' }}
-                onClick={e => { e.stopPropagation(); setEditing({ k: p.k, v: p.txt }); }}>
+                fill={locked ? '#fff7ed' : '#ffffff'} stroke={locked ? '#f97316' : '#e6e0d6'} strokeWidth={locked ? 1 : 0.8}
+                style={{ cursor: 'text' }} onClick={e => { e.stopPropagation(); setEditing({ k: p.k, v: p.txt }); }}>
                 <title>Edit gap</title>
               </rect>
               {!isEd && (
-                <text x={p.cx - 8} y={p.cy + fs * 0.36} textAnchor="middle" fontSize={fs} fontWeight={600} fill={locked ? '#c2410c' : '#44403c'}
-                  style={{ fontVariantNumeric: 'tabular-nums', pointerEvents: 'none' }}>{p.txt}</text>
+                <text x={p.cx} y={p.cy + fs * 0.36} textAnchor="middle" fontSize={fs} fontWeight={600} fill={locked ? '#c2410c' : '#44403c'}
+                  fontFamily="'Inter','SF Pro Text',system-ui,sans-serif" style={{ fontVariantNumeric: 'tabular-nums', pointerEvents: 'none' }}>{p.txt}</text>
               )}
-              <g style={{ cursor: 'pointer' }} onClick={e => { e.stopPropagation(); onToggleLock(p.k); }}>
-                <rect x={p.cx + p.pw / 2 - 20} y={p.cy - p.ph / 2} width={20} height={p.ph} fill="transparent" />
+              <g className="lockbtn" style={{ cursor: 'pointer' }} onClick={e => { e.stopPropagation(); onToggleLock(p.k); }}>
+                <circle cx={lockCx} cy={lockCy} r={8} fill={locked ? '#fff7ed' : '#ffffff'} stroke={locked ? '#f97316' : '#e6e0d6'} strokeWidth={0.8} />
                 {locked
-                  ? <Lock x={lockX} y={lockY} size={10} strokeWidth={2.4} color="#ea580c" />
-                  : <Unlock x={lockX} y={lockY} size={10} strokeWidth={2} color="#b5ada3" />}
+                  ? <Lock x={lockCx - 4.5} y={lockCy - 4.5} size={9} strokeWidth={2.4} color="#ea580c" />
+                  : <Unlock x={lockCx - 4.5} y={lockCy - 4.5} size={9} strokeWidth={2} color="#a8a29e" />}
                 <title>{locked ? 'Unlock gap (follows resize)' : 'Lock gap (stays fixed on resize)'}</title>
               </g>
             </g>
@@ -863,15 +903,69 @@ function GroupSchematic({ group, onEditGap, onToggleLock }: {
             onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setEditing(null); }}
             onClick={stop}
             style={{
-              position: 'absolute', left: p.cx - p.pw / 2 - 2, top: p.cy - 11, width: p.pw - 16, height: 22, textAlign: 'center',
-              fontFamily: "'SF Mono',ui-monospace,Menlo,monospace", fontSize: 11.5, fontWeight: 600, color: '#1c1917',
-              background: '#fff', border: '1px solid #f97316', borderRadius: 11, outline: 'none', boxShadow: '0 0 0 2px rgba(249,115,22,0.12)',
+              position: 'absolute', left: p.cx - p.pw / 2 - 4, top: p.cy - p.ph / 2 - 2, width: p.pw + 8, height: p.ph + 4, textAlign: 'center',
+              fontFamily: "'Inter','SF Pro Text',system-ui,sans-serif", fontSize: fs, fontWeight: 600, color: '#1c1917', fontVariantNumeric: 'tabular-nums',
+              background: '#fff', border: '1px solid #f97316', borderRadius: 99, outline: 'none', boxShadow: '0 0 0 2px rgba(249,115,22,0.12)', padding: 0,
             }} />
         );
       })()}
     </div>
   );
 }
+
+/* ── SATIR YAPI TAŞLARI (hizalama sözleşmesi) ──────────────────────────────
+   Goker: "W H D satırları tipi ne olursa olsun aynı hizada olmalı." Her satır
+   türü (gövde paneli, raf/dikme grubu, grup üyesi) aynı sütunları kullanır:
+   [numara 30px] [tip işareti 20px] [ad — esnek] [ölçüler sabit genişlik]
+   [kontroller sabit genişlik]. Üye satırları kartın içinde 8px içeride
+   durduğu için sağ kontrol alanı 8px dar tutulur → ölçü sütunları hizalanır. */
+const ROW_NUM_W = 30;
+const ROW_TRAIL_W = 79;           // 3 × 20px düğme + 16px ok + 3px aralık
+const MEMBER_INSET = 8;           // grup kartı gövdesinin yatay dolgusu (px-2)
+type RowKind = 'body' | 'shelf' | 'divider';
+const ROW_KIND_ICON: Record<RowKind, LucideIcon> = { body: LayoutPanelTop, shelf: Rows3, divider: Columns3 };
+const ROW_KIND_TITLE: Record<RowKind, string> = { body: 'Body panel', shelf: 'Shelf', divider: 'Divider' };
+
+/** Panel tipi işareti — tüm satırlarda aynı boyut (20×20 kutu, 13px ikon).
+ *  Grup satırında adet, işaretin sağ üst köşesinde küçük rozet olarak durur
+ *  (ad alanını daraltmaz, sütunlar kaymaz). */
+function RowTypeBadge({ kind, active, count }: { kind: RowKind; active: boolean; count?: number }) {
+  const Icon = ROW_KIND_ICON[kind];
+  return (
+    <span title={count != null ? `${ROW_KIND_TITLE[kind]} · ${count} panel${count === 1 ? '' : 's'}` : ROW_KIND_TITLE[kind]}
+      className={`relative shrink-0 w-5 h-5 rounded-[6px] flex items-center justify-center transition-colors duration-150
+        ${active ? 'bg-orange-50 text-orange-500 ring-1 ring-orange-200/70' : 'bg-[#f5f2ec] text-stone-400 group-hover/row:text-stone-500'}`}>
+      <Icon size={13} strokeWidth={2} />
+      {count != null && (
+        <span className={`absolute -top-[5px] -right-[6px] min-w-[13px] h-[13px] px-[3px] rounded-full text-[8.5px] font-bold tabular-nums leading-[13px] text-center ring-2 ring-[#fdfcfa]
+          ${active ? 'bg-orange-500 text-white' : 'bg-stone-500 text-white'}`}>{count}</span>
+      )}
+    </span>
+  );
+}
+
+/** Ölçü sütunları — sabit genişlik; harf + değer her satırda aynı x'te. */
+function RowDims({ w, h, t, tLetter = 'T', title }: { w?: number | null; h?: number | null; t?: number | null; tLetter?: string; title?: string }) {
+  const cell = (letter: string, v: number | null | undefined, muted = false) => (
+    <span className="inline-flex items-baseline w-[54px]">
+      <span className="w-[11px] text-[11px] font-semibold text-stone-400">{letter}</span>
+      <span className={`ml-[5px] text-[12.5px] font-medium ${muted ? 'text-stone-500' : 'text-stone-700'}`}>{v == null ? '—' : v}</span>
+    </span>
+  );
+  const sep = <span className="w-px h-3 bg-[#e6e0d6] mx-[6px] self-center" />;
+  return (
+    <span onClick={stop} title={title} className="shrink-0 inline-flex items-baseline leading-none tabular-nums cursor-default">
+      {cell('W', w)}{sep}{cell('H', h)}{sep}{cell(tLetter, t, true)}
+    </span>
+  );
+}
+
+/** Liste animasyonları: akordeon açılışı + odaktan çıkışta gecikmeli çapraz yerleşme. */
+const LIST_CSS = `@keyframes yagoExpand{from{opacity:0;clip-path:inset(0 0 100% 0);transform:translateY(-4px)}to{opacity:1;clip-path:inset(0 0 0 0);transform:none}}.yago-expand{animation:yagoExpand 260ms cubic-bezier(.2,.7,.2,1) both}
+@keyframes yagoSettleA{0%{opacity:0;transform:translate(-14px,-10px) scale(.97);filter:blur(3px)}55%{opacity:1;filter:blur(0)}80%{transform:translate(2px,1px) scale(1.004)}100%{opacity:1;transform:none;filter:none}}
+@keyframes yagoSettleB{0%{opacity:0;transform:translate(14px,-10px) scale(.97);filter:blur(3px)}55%{opacity:1;filter:blur(0)}80%{transform:translate(-2px,1px) scale(1.004)}100%{opacity:1;transform:none;filter:none}}
+.yago-settle{animation-duration:520ms;animation-timing-function:cubic-bezier(.2,.75,.2,1);animation-fill-mode:both;will-change:transform,opacity}
+.yago-settle-a{animation-name:yagoSettleA}.yago-settle-b{animation-name:yagoSettleB}`;
 
 export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorProps) {
   const { selectedShapeId, shapes, updateShape, showOutlines, setShowOutlines,
@@ -903,6 +997,12 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
   const [armedRowKey, setArmedRowKey] = useState<string | null>(null);
   // Raf/dikme grup kartı: adet girişi taslağı (Enter/blur ile uygulanır).
   const [countDraft, setCountDraft] = useState<{ id: string; v: string } | null>(null);
+  // ODAK MODU (Goker): bir satır açıkken listede yalnız o satır + hemen üstündeki
+  // ve altındaki satır kalır. Kapanınca gizlenen satırlar, odak satırından
+  // uzaklığına göre gecikmeli, çapraz kayarak "yerleşir" (yagoSettle).
+  // settle.center = kapanan satırın anahtarı; komşuları önce, uzaklar sonra iner.
+  const [settle, setSettle] = useState<{ center: string; tick: number } | null>(null);
+  const prevFocusRef = useRef<{ row: string | null; member: string | null }>({ row: null, member: null });
 
   const [position, setPosition] = useState({ x: 100, y: 100 });
   const [isDraggingWindow, setIsDraggingWindow] = useState(false);
@@ -965,6 +1065,39 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       ...(activePanel?.parameters?.rotateSteps || []).map((s: any) => ({ ...s, type: 'rotate' })),
     ].sort((a: any, b: any) => (a.timestamp || 0) - (b.timestamp || 0));
   })();
+
+  // Odak anahtarları: açık gövde satırı (vf id) ya da açık grup kartı (grp-id);
+  // üye seçiliyse kart açık sayılır ve üye ayrıca üye-düzeyi odaktır.
+  const focusKeys = useMemo(() => {
+    if (selectedPanelGroupId) return { row: `grp-${selectedPanelGroupId}`, member: null as string | null };
+    if (typeof selectedPanelRow === 'string' && selectedPanelRow.startsWith('vf-')) {
+      const id = selectedPanelRow.slice(3);
+      const vf = virtualFaces.find(f => f.id === id);
+      if (vf?.groupId && panelGroups.some(g => g.id === vf.groupId)) return { row: `grp-${vf.groupId}`, member: id };
+      return { row: id, member: null as string | null };
+    }
+    return { row: null as string | null, member: null as string | null };
+  }, [selectedPanelRow, selectedPanelGroupId, virtualFaces, panelGroups]);
+  useEffect(() => {
+    const prev = prevFocusRef.current;
+    let center: string | null = null;
+    if (prev.member && !focusKeys.member) center = prev.member;   // üye odağı kapandı → üyeler yerleşir
+    if (prev.row && !focusKeys.row) center = prev.row;            // satır odağı kapandı → liste yerleşir
+    prevFocusRef.current = focusKeys;
+    if (!center) return;
+    const tick = Date.now();
+    setSettle({ center, tick });
+    const t = window.setTimeout(() => setSettle(cur => (cur && cur.tick === tick ? null : cur)), 900);
+    return () => window.clearTimeout(t);
+  }, [focusKeys]);
+  /** Yerleşme animasyonu sınıfı + gecikmesi (merkezden uzaklığa göre; çapraz yön parite ile). */
+  const settleProps = (keys: string[], idx: number): { className: string; style: React.CSSProperties } => {
+    if (!settle) return { className: '', style: {} };
+    const ci = keys.indexOf(settle.center);
+    const dist = ci >= 0 ? Math.abs(idx - ci) : idx + 1;
+    if (ci >= 0 && dist === 0) return { className: '', style: {} };
+    return { className: idx % 2 === 0 ? 'yago-settle yago-settle-a' : 'yago-settle yago-settle-b', style: { animationDelay: `${Math.min(dist, 12) * 55}ms` } };
+  };
 
   useEffect(() => {
     if (selectedShapeId !== useAppStore.getState().selectedPanelRowParentId)
@@ -1248,7 +1381,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     const elements: React.ReactNode[] = [];
 
     /* ── TEK VF SATIRI (gövde paneli ya da grup üyesi) ─────────────────── */
-    const vfRow = (vf: VirtualFace, rowIdx: number, label: string, opts: { member?: boolean }) => {
+    const vfRow = (vf: VirtualFace, rowIdx: number, label: string, opts: { member?: boolean; group?: PanelGroup }) => {
       const rowKey = vf.id;
       const isDraggingThisRow = !opts.member && dragIndex === rowIdx;
       const vp = findVPanel(shapes, sid, vf.id), ar = vp?.parameters?.arrowRotated || false, sel = selectedPanelRow === `vf-${vf.id}`;
@@ -1307,32 +1440,36 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
               onClick={e => { stop(e); if (sel) setSelectedPanelRow(null); else setSelectedPanelRow(`vf-${vf.id}`, null, sid); }}
               className="flex-1 min-w-0 relative flex items-center gap-1.5 pl-0.5 pr-1 py-[4px] cursor-pointer"
             >
-              {/* Sıra numarası: yuvarlaksız, sade ve bir tık büyük. */}
-              <span className={`shrink-0 ${opts.member ? 'min-w-[26px] text-[11.5px]' : 'w-[20px] text-[13px]'} text-center font-semibold tabular-nums leading-none transition-colors duration-150
+              {/* Sıra numarası: yuvarlaksız, sade; sabit sütun (hizalama). */}
+              <span style={{ width: ROW_NUM_W }} className={`shrink-0 ${opts.member ? 'text-[11.5px]' : 'text-[13px]'} text-center font-semibold tabular-nums leading-none transition-colors duration-150
                 ${sel ? 'text-orange-600' : 'text-stone-400 group-hover/row:text-stone-600'}`}>
                 {label}
               </span>
 
-              <input
-                type="text"
-                value={vf.description || ''}
-                onClick={stop}
-                onChange={e => updateVirtualFace(vf.id, { description: e.target.value })}
-                placeholder="note…"
-                className="yago-row-note flex-1 min-w-0 h-[22px] px-[5px] text-[11.5px] text-stone-600 bg-transparent border border-transparent rounded-[5px] outline-none placeholder:text-stone-300 hover:border-[#ebe5dc] focus:bg-white focus:border-orange-400/50 transition-colors"
-              />
+              <RowTypeBadge kind={opts.group ? opts.group.kind : 'body'} active={sel} />
 
-              {dims && (
-                <span onClick={stop} className="shrink-0 inline-flex items-baseline leading-none tabular-nums px-0.5 cursor-default">
-                  <span className="text-[11px] font-semibold text-stone-400">W</span><span className="text-[12.5px] font-medium text-stone-700 ml-1">{dims.primary}</span>
-                  <span className="w-px h-3 bg-[#e6e0d6] mx-2 self-center" />
-                  <span className="text-[11px] font-semibold text-stone-400">H</span><span className="text-[12.5px] font-medium text-stone-700 ml-1">{dims.secondary}</span>
-                  <span className="w-px h-3 bg-[#e6e0d6] mx-2 self-center" />
-                  <span className="text-[11px] font-semibold text-stone-400">T</span><span className="text-[12.5px] font-medium text-stone-500 ml-1">{dims.thickness}</span>
+              {opts.member && opts.group ? (
+                // ÜYE ADI: grup adından gelir, burada DEĞİŞTİRİLEMEZ (grup satırından düzenlenir).
+                <span title="Name comes from the group (edit it on the group row)"
+                  className="flex-1 min-w-0 h-[22px] px-[5px] flex items-center text-[11.5px] font-medium text-stone-500 truncate cursor-default select-none">
+                  {groupName(opts.group)}
                 </span>
+              ) : (
+                <input
+                  type="text"
+                  value={vf.description || ''}
+                  onClick={stop}
+                  onChange={e => updateVirtualFace(vf.id, { description: e.target.value })}
+                  placeholder="Panel"
+                  title="Panel name"
+                  className="yago-row-note flex-1 min-w-0 h-[22px] px-[5px] text-[11.5px] font-medium text-stone-700 bg-transparent border border-transparent rounded-[5px] outline-none placeholder:text-stone-300 hover:border-[#ebe5dc] focus:bg-white focus:border-orange-400/50 transition-colors"
+                />
               )}
 
-              <div className="flex items-center gap-px shrink-0 ml-0.5" onClick={stop}>
+              <RowDims w={dims?.primary} h={dims?.secondary} t={dims?.thickness} tLetter="T" />
+
+              {/* Kontrol alanı sabit genişlik (üyede kart dolgusu kadar dar) → ölçüler hizalı kalır. */}
+              <div className="flex items-center justify-end gap-px shrink-0 ml-0.5" style={{ width: opts.member ? ROW_TRAIL_W - MEMBER_INSET : ROW_TRAIL_W }} onClick={stop}>
                 {/* Yüzeyin şeklini al: iç panelde (raf/dikme) serbest bölge yok → gösterilmez. */}
                 {!opts.member && <FitShapeToggle checked={!!vf.fitFaceShape} disabled={!vf.hasPanel} onToggle={() => { void toggleFitShape(vf); }} />}
 
@@ -1341,12 +1478,12 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                   title="Toggle arrow direction"><ArrowUp size={13} strokeWidth={1.9} className={`transition-transform duration-200 ${ar ? '' : 'rotate-90'}`}/></button>
 
                 {/* Sil: sade görünüm için yalnız satır üzerine gelince / seçiliyken görünür. Üye paneller adet ile yönetilir. */}
-                {!opts.member && (
+                {!opts.member ? (
                   <button onClick={e => { stop(e); void deletePanelAndFace(vf.id); }}
                     className={`w-5 h-5 rounded-md flex items-center justify-center text-stone-400 hover:bg-red-50 hover:text-red-500 focus-visible:opacity-100 transition-[opacity,color,background-color] duration-150
                       ${sel ? 'opacity-100' : 'opacity-0 group-hover/row:opacity-100'}`}
                     title="Delete panel"><Trash2 size={12} strokeWidth={1.9}/></button>
-                )}
+                ) : <span className="w-5 h-5" />}
 
                 {/* Aç / kapa göstergesi */}
                 <span className={`w-4 h-5 flex items-center justify-center transition-[transform,color] duration-200 ${sel ? 'rotate-90 text-orange-500' : 'text-stone-300 group-hover/row:text-stone-400'}`}>
@@ -1369,8 +1506,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       const selAll = selectedPanelGroupId === g.id;
       const memberOpen = members.some(m => selectedPanelRow === `vf-${m.id}`);
       const open = selAll || memberOpen;
-      const Icon = g.kind === 'shelf' ? Rows3 : Columns3;
-      const L = boxSpan(g.cavity, g.axis);
+      const dimsWHD = [0, 1, 2].map(a => Math.round(boxSpan(g.cavity, a) * 10) / 10);
       const countVal = countDraft?.id === g.id ? countDraft.v : String(g.count);
       const commitCount = () => {
         const n = parseInt(countVal, 10);
@@ -1418,21 +1554,28 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
               className="flex-1 min-w-0 relative flex items-center gap-1.5 pl-0.5 pr-1 py-[4px] cursor-pointer"
               title={selAll ? 'Deselect all panels' : 'Select all panels in this group'}
             >
-              <span className={`shrink-0 w-[20px] text-center text-[13px] font-semibold tabular-nums leading-none transition-colors duration-150
+              <span style={{ width: ROW_NUM_W }} className={`shrink-0 text-center text-[13px] font-semibold tabular-nums leading-none transition-colors duration-150
                 ${selAll ? 'text-orange-600' : 'text-stone-400 group-hover/row:text-stone-600'}`}>{label}</span>
-              <Icon size={13} strokeWidth={2} className={`shrink-0 ${selAll ? 'text-orange-500' : 'text-stone-400'}`} />
-              <span className="text-[11.5px] font-semibold text-stone-700 whitespace-nowrap">{groupKindLabel(g.kind)}</span>
-              <span className={`shrink-0 min-w-[18px] h-[16px] px-1.5 rounded-full text-[10px] font-semibold tabular-nums leading-[16px] text-center ${selAll ? 'bg-orange-100 text-orange-700' : 'bg-[#efeae2] text-stone-500'}`}>{g.count}</span>
-              <span className="flex-1" />
-              <span className="shrink-0 inline-flex items-baseline leading-none tabular-nums px-0.5 cursor-default">
-                <span className="text-[11px] font-semibold text-stone-400">L</span><span className="text-[12.5px] font-medium text-stone-700 ml-1">{Math.round(L * 10) / 10}</span>
-              </span>
-              <div className="flex items-center gap-px shrink-0 ml-0.5" onClick={stop}>
+              <RowTypeBadge kind={g.kind} active={open} count={g.count} />
+              {/* GRUP ADI: değiştirilebilir; üye panellerin adı bu addır. */}
+              <input
+                type="text"
+                value={groupName(g)}
+                onClick={stop}
+                onChange={e => renamePanelGroup(g.id, e.target.value)}
+                placeholder={groupKindLabel(g.kind)}
+                title="Group name (applies to all its panels)"
+                className="yago-row-note flex-1 min-w-0 h-[22px] px-[5px] text-[11.5px] font-semibold text-stone-700 bg-transparent border border-transparent rounded-[5px] outline-none placeholder:text-stone-300 hover:border-[#ebe5dc] focus:bg-white focus:border-orange-400/50 transition-colors"
+              />
+              {/* Hacmin en · boy · derinliği — panel satırlarıyla aynı sütunlar. */}
+              <RowDims w={dimsWHD[0]} h={dimsWHD[1]} t={dimsWHD[2]} tLetter="D" title="Cavity width · height · depth" />
+              <div className="flex items-center justify-end gap-px shrink-0 ml-0.5" style={{ width: ROW_TRAIL_W }} onClick={stop}>
                 <button onClick={e => { stop(e); deletePanelGroupWithMembers(g.id); }}
                   className={`w-5 h-5 rounded-md flex items-center justify-center text-stone-400 hover:bg-red-50 hover:text-red-500 focus-visible:opacity-100 transition-[opacity,color,background-color] duration-150
                     ${open ? 'opacity-100' : 'opacity-0 group-hover/row:opacity-100'}`}
                   title="Delete group (all panels)"><Trash2 size={12} strokeWidth={1.9}/></button>
-                <span className={`w-4 h-5 flex items-center justify-center transition-[transform,color] duration-200 ${open ? 'rotate-90 text-orange-500' : 'text-stone-300 group-hover/row:text-stone-400'}`}>
+                <span onClick={e => { stop(e); setSelectedPanelGroupId(selAll ? null : g.id); }}
+                  className={`w-4 h-5 flex items-center justify-center cursor-pointer transition-[transform,color] duration-200 ${open ? 'rotate-90 text-orange-500' : 'text-stone-300 group-hover/row:text-stone-400'}`}>
                   <ChevronRight size={13} strokeWidth={2}/>
                 </span>
               </div>
@@ -1462,7 +1605,19 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
                 <div className="flex-1 h-px bg-[#efeae2]" />
               </div>
               <div className="flex flex-col gap-[2px]">
-                {members.map((m, mi) => vfRow(m, rowIdx, `${label}.${mi + 1}`, { member: true }))}
+                {(() => {
+                  const mKeys = members.map(m => m.id);
+                  const mFocus = focusKeys.member ? mKeys.indexOf(focusKeys.member) : -1;
+                  return members.map((m, mi) => {
+                    if (mFocus >= 0 && Math.abs(mi - mFocus) > 1) return null;
+                    const sp = settleProps(mKeys, mi);
+                    return (
+                      <div key={`mw-${m.id}`} className={sp.className} style={sp.style}>
+                        {vfRow(m, rowIdx, `${label}.${mi + 1}`, { member: true, group: g })}
+                      </div>
+                    );
+                  });
+                })()}
               </div>
             </div>
           )}
@@ -1470,15 +1625,21 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       );
     };
 
+    // ODAK MODU: açık satır varsa yalnız o + üst/alt komşusu çizilir (numaralar korunur).
+    const rowKeys = rows.map(rowKeyOf);
+    const focusIdx = focusKeys.row ? rowKeys.indexOf(focusKeys.row) : -1;
     rows.forEach((row, rowIdx) => {
       const isDraggingThisRow = dragIndex === rowIdx;
       const isDropTargetRow = dropIndex !== null && dropIndex === rowIdx;
       const label = String(++displayCounter);
+      if (focusIdx >= 0 && Math.abs(rowIdx - focusIdx) > 1) return;
       const inner = row.kind === 'vf' ? vfRow(row.vf, rowIdx, label, {}) : groupCard(row.group, row.members, rowIdx, label);
+      const sp = settleProps(rowKeys, rowIdx);
       elements.push(
         <div
           key={`wrap-${rowKeyOf(row)}`}
-          className={isDropTargetRow ? 'rounded-[10px] ring-1 ring-amber-300 bg-[#fffbf0]' : ''}
+          className={`${isDropTargetRow ? 'rounded-[10px] ring-1 ring-amber-300 bg-[#fffbf0] ' : ''}${sp.className}`}
+          style={sp.style}
           onDragOver={e => {
             if (dragIndex !== null && !isDraggingThisRow) {
               e.preventDefault();
@@ -2112,7 +2273,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
   // ── List pane ──────────────────────────────────────────────────────────
   const listPane = (
     <div className="flex flex-col h-full min-h-0">
-      <style>{`@keyframes yagoExpand{from{opacity:0;clip-path:inset(0 0 100% 0);transform:translateY(-4px)}to{opacity:1;clip-path:inset(0 0 0 0);transform:none}}.yago-expand{animation:yagoExpand 260ms cubic-bezier(.2,.7,.2,1) both}`}</style>
+      <style>{LIST_CSS}</style>
       <div className="px-3 py-2 border-b border-stone-100 flex items-center justify-between shrink-0">
         {panelToolbar}
       </div>
@@ -2145,6 +2306,7 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
       </div>
       {volumePickDock}
       <div style={{ maxHeight: 'calc(100vh - 200px)', overflowY: 'auto' }}>
+        <style>{LIST_CSS}</style>
         <div className="p-1.5 space-y-[2px]">{renderFaceList()}</div>
       </div>
     </div>
