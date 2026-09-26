@@ -107,7 +107,7 @@ export const VolumePickOverlay: React.FC<Props> = ({ shape, allShapes }) => {
     lastRef.current = { keys, index };
     setVolumePick(c, index);
     const s = c[index];
-    console.log('[YAGO][HACİM] aday', index + 1, '/', c.length, fmtBox(s.bbox),
+    console.log('[YAGO][HACİM] aday', index + 1, '/', c.length, s.shape === 'box' ? 'DÜZ' : 'ŞEKİLLİ', fmtBox(s.bbox),
       'boyut=', [0, 1, 2].map(a => boxSpan(s.bbox, a).toFixed(0)).join('x'), 'parçaN=', s.boxes.length, 'engelN=', obstacles.length);
   };
 

@@ -385,44 +385,127 @@ function rayBoxInterval(o: Vec3, d: Vec3, b: CavityBox): [number, number] | null
 }
 
 /** Bölgeden seçim adayı (kutu, kutular, yüzey, anahtar, tohum). */
-export function pickFromRegion(g: CavityGrid, cells: Set<number>, seed: Vec3): CavityPick {
-  return { key: regionKey(cells), bbox: regionBBox(g, cells), boxes: regionBoxes(g, cells), surface: regionSurface(g, cells), seed };
+export function pickFromRegion(g: CavityGrid, cells: Set<number>, seed: Vec3, shape: CavityPick['shape'] = 'shaped'): CavityPick {
+  return { key: `${shape}:${regionKey(cells)}`, bbox: regionBBox(g, cells), boxes: regionBoxes(g, cells), surface: regionSurface(g, cells), seed, shape };
+}
+
+/**
+ * MAKSİMAL KUTULAR: bölge hücreleri içinde, tohum hücresini içeren ve hiçbir
+ * yönde bir hücre daha büyütülemeyen eksen-hizalı kutular (indeks uzayında).
+ * 3B toplam tablosuyla O(1) doluluk testi; hacme göre büyükten küçüğe.
+ * Bunlar "düz" alternatiflerdir: en kapsayıcı kutu → içeri doğru daha küçükler.
+ */
+export function maximalBoxesContaining(g: CavityGrid, cells: Set<number>, seedCell: number): Array<{ cells: Set<number>; bbox: CavityBox; volume: number }> {
+  const { nx, ny, nz } = g;
+  const [si, sj, sk] = cellIJK(g, seedCell);
+  // Toplam tablo: S[i][j][k] = (0..i-1, 0..j-1, 0..k-1) içindeki bölge hücresi sayısı.
+  const X = nx + 1, Y = ny + 1, Z = nz + 1;
+  const S = new Int32Array(X * Y * Z);
+  const at = (i: number, j: number, k: number) => S[(i * Y + j) * Z + k];
+  for (let i = 1; i <= nx; i++) for (let j = 1; j <= ny; j++) for (let k = 1; k <= nz; k++) {
+    const v = cells.has(cellIndex(g, i - 1, j - 1, k - 1)) ? 1 : 0;
+    S[(i * Y + j) * Z + k] = v + at(i - 1, j, k) + at(i, j - 1, k) + at(i, j, k - 1)
+      - at(i - 1, j - 1, k) - at(i - 1, j, k - 1) - at(i, j - 1, k - 1) + at(i - 1, j - 1, k - 1);
+  }
+  const count = (i0: number, i1: number, j0: number, j1: number, k0: number, k1: number) =>
+    at(i1 + 1, j1 + 1, k1 + 1) - at(i0, j1 + 1, k1 + 1) - at(i1 + 1, j0, k1 + 1) - at(i1 + 1, j1 + 1, k0)
+    + at(i0, j0, k1 + 1) + at(i0, j1 + 1, k0) + at(i1 + 1, j0, k0) - at(i0, j0, k0);
+  const full = (i0: number, i1: number, j0: number, j1: number, k0: number, k1: number) =>
+    count(i0, i1, j0, j1, k0, k1) === (i1 - i0 + 1) * (j1 - j0 + 1) * (k1 - k0 + 1);
+  const out: Array<{ cells: Set<number>; bbox: CavityBox; volume: number }> = [];
+  const seen = new Set<string>();
+  let budget = 3_000_000;
+  for (let i0 = si; i0 >= 0; i0--) for (let i1 = si; i1 < nx; i1++) {
+    if (!full(i0, i1, sj, sj, sk, sk)) break;
+    for (let j0 = sj; j0 >= 0; j0--) for (let j1 = sj; j1 < ny; j1++) {
+      if (!full(i0, i1, j0, j1, sk, sk)) break;
+      for (let k0 = sk; k0 >= 0; k0--) for (let k1 = sk; k1 < nz; k1++) {
+        if (--budget < 0) break;
+        if (!full(i0, i1, j0, j1, k0, k1)) break;
+        // Maksimal mi? (6 yönde bir hücre büyütülemez)
+        if (i0 > 0 && full(i0 - 1, i1, j0, j1, k0, k1)) continue;
+        if (i1 < nx - 1 && full(i0, i1 + 1, j0, j1, k0, k1)) continue;
+        if (j0 > 0 && full(i0, i1, j0 - 1, j1, k0, k1)) continue;
+        if (j1 < ny - 1 && full(i0, i1, j0, j1 + 1, k0, k1)) continue;
+        if (k0 > 0 && full(i0, i1, j0, j1, k0 - 1, k1)) continue;
+        if (k1 < nz - 1 && full(i0, i1, j0, j1, k0, k1 + 1)) continue;
+        const key = `${i0},${i1},${j0},${j1},${k0},${k1}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const sub = new Set<number>();
+        for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) for (let k = k0; k <= k1; k++) sub.add(cellIndex(g, i, j, k));
+        const bbox: CavityBox = { min: [g.xs[i0], g.ys[j0], g.zs[k0]], max: [g.xs[i1 + 1], g.ys[j1 + 1], g.zs[k1 + 1]] };
+        out.push({ cells: sub, bbox, volume: boxSpan(bbox, 0) * boxSpan(bbox, 1) * boxSpan(bbox, 2) });
+      }
+    }
+  }
+  out.sort((a, b) => b.volume - a.volume);
+  return out;
+}
+
+/**
+ * ADAY AİLESİ (Goker: "önce en kapsayıcı, sonra içeriye doğru; hem şekilli
+ * hem düz"): 1) şekilli bölgenin tamamı, 2) ışının bu bölgede geçtiği
+ * hücrelerden HERHANGİ birini içeren maksimal kutular, hacme göre büyükten
+ * küçüğe (fare ucundaki düz alternatifler). Bölge zaten tek kutuysa yalnız o.
+ */
+export function candidateFamily(g: CavityGrid, cells: Set<number>, rayCells: number[], seed: Vec3, minSpan: number): CavityPick[] {
+  const okSpan = (b: CavityBox) => boxSpan(b, 0) >= minSpan && boxSpan(b, 1) >= minSpan && boxSpan(b, 2) >= minSpan;
+  const out: CavityPick[] = [];
+  const seen = new Set<string>();
+  const boxes: Array<{ cells: Set<number>; bbox: CavityBox; volume: number }> = [];
+  for (const rc of rayCells) {
+    for (const b of maximalBoxesContaining(g, cells, rc)) {
+      const k = fmtBox(b.bbox);
+      if (seen.has(k) || !okSpan(b.bbox)) continue;
+      seen.add(k); boxes.push(b);
+    }
+  }
+  boxes.sort((a, b) => b.volume - a.volume);
+  const regionIsBox = boxes.length === 1 && boxes[0].cells.size === cells.size;
+  const shaped = pickFromRegion(g, cells, seed, 'shaped');
+  if (!regionIsBox && okSpan(shaped.bbox)) out.push(shaped);
+  for (const b of boxes) out.push(pickFromRegion(g, b.cells, seed, 'box'));
+  return out;
 }
 
 /**
  * IŞIN BOYUNCA ŞEKİLLİ HACİMLER: ışının gövde kutusundaki parçası hücre hücre
- * yürünür (her hücre için t-aralığı); serbest hücreye ilk girişte o hücreden
- * taşılarak bölge bulunur; aynı bölge bir kez sayılır. Sol tık bu liste
- * üzerinde döner (ışın derinliği sırasıyla).
+ * yürünür; serbest hücreler bölgelerine göre (ilk giriş sırasıyla) gruplanır;
+ * her bölge için aday ailesi üretilir (şekilli → düz kutular). Sol tık bu
+ * liste üzerinde döner (ışın derinliği sırasıyla).
  */
 export function rayCavityCandidates(originLocal: Vec3, dirLocal: Vec3, g: CavityGrid, minSpan: number): CavityPick[] {
   const bodyIv = rayBoxInterval(originLocal, dirLocal, g.body);
   if (!bodyIv) return [];
   const t0 = Math.max(bodyIv[0], 0), t1 = bodyIv[1];
   if (t1 <= t0) return [];
-  const out: CavityPick[] = [];
-  const seen = new Set<string>();
-  // Kesişilen düzlem parametreleri → sıralı alt-aralıklar; her aralığın ortası bir hücre.
   const ts: number[] = [t0, t1];
   for (let a = 0; a < 3; a++) {
     if (Math.abs(dirLocal[a]) < 1e-9) continue;
     for (const p of axisPlanes(g, a)) { const t = (p - originLocal[a]) / dirLocal[a]; if (t > t0 && t < t1) ts.push(t); }
   }
   ts.sort((a, b) => a - b);
+  const regions: Array<{ key: string; cells: Set<number>; rayCells: number[]; seed: Vec3 }> = [];
+  const byKey = new Map<string, number>();
   for (let n = 0; n < ts.length - 1; n++) {
     if (ts[n + 1] - ts[n] < 1e-6) continue;
     const tm = (ts[n] + ts[n + 1]) / 2;
     const p: Vec3 = [originLocal[0] + dirLocal[0] * tm, originLocal[1] + dirLocal[1] * tm, originLocal[2] + dirLocal[2] * tm];
     const c = cellOfPoint(g, p);
     if (c < 0 || !g.free[c]) continue;
-    const cells = floodRegion(g, c);
-    const key = regionKey(cells);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    const bb = regionBBox(g, cells);
-    if (boxSpan(bb, 0) < minSpan || boxSpan(bb, 1) < minSpan || boxSpan(bb, 2) < minSpan) continue;
-    out.push(pickFromRegion(g, cells, p));
+    let ri = -1;
+    for (let r = 0; r < regions.length; r++) if (regions[r].cells.has(c)) { ri = r; break; }
+    if (ri < 0) {
+      const cells = floodRegion(g, c);
+      const key = regionKey(cells);
+      if (byKey.has(key)) ri = byKey.get(key)!;
+      else { byKey.set(key, regions.length); regions.push({ key, cells, rayCells: [], seed: p }); ri = regions.length - 1; }
+    }
+    if (!regions[ri].rayCells.includes(c)) regions[ri].rayCells.push(c);
   }
+  const out: CavityPick[] = [];
+  for (const r of regions) out.push(...candidateFamily(g, r.cells, r.rayCells, r.seed, minSpan));
   return out;
 }
 
@@ -573,7 +656,30 @@ export function solveGroup(group: PanelGroup, parent: Shape, panels: Shape[], gr
     c = nearestFreeCell(grid, seed);
     if (c >= 0) { const b = cellBox(grid, c); seed = [0, 1, 2].map(a => (b.min[a] + b.max[a]) / 2) as Vec3; console.log('[YAGO][GRUP] çıpa dolu hücrede, en yakın serbest hücreye alındı:', group.id, fmtBox(b)); }
   }
-  const cells = c >= 0 ? floodRegion(grid, c) : new Set<number>();
+  let cells = c >= 0 ? floodRegion(grid, c) : new Set<number>();
+  // DÜZ ALTERNATİF: bölge içinde çıpayı içeren maksimal kutulardan, kayıtlı
+  // kutuya (gövde oranıyla güncel kutuya taşınmış) en çok örtüşeni seçilir.
+  if (group.boxMode && cells.size && c >= 0) {
+    const want = group.boxFrac
+      ? { min: [0, 1, 2].map(a => grid.body.min[a] + group.boxFrac!.min[a] * (grid.body.max[a] - grid.body.min[a])) as Vec3,
+          max: [0, 1, 2].map(a => grid.body.min[a] + group.boxFrac!.max[a] * (grid.body.max[a] - grid.body.min[a])) as Vec3 }
+      : cloneBox(group.cavity);
+    const iou = (a: CavityBox, b: CavityBox) => {
+      let inter = 1, va = 1, vb = 1;
+      for (let x = 0; x < 3; x++) { inter *= Math.max(0, Math.min(a.max[x], b.max[x]) - Math.max(a.min[x], b.min[x])); va *= boxSpan(a, x); vb *= boxSpan(b, x); }
+      return inter / Math.max(va + vb - inter, 1e-6);
+    };
+    // Tohum: kayıtlı kutunun (oranla taşınmış) merkez hücresi — kutu çıpayı içermeyebilir
+    // (ör. arka yüksek kutu, ışının ön hücresinden seçilmiş); merkez bölge dışındaysa çıpa hücresi.
+    const wantCenter: Vec3 = [0, 1, 2].map(a => (want.min[a] + want.max[a]) / 2) as Vec3;
+    const wc = cellOfPoint(grid, wantCenter);
+    const boxes = maximalBoxesContaining(grid, cells, wc >= 0 && cells.has(wc) ? wc : c);
+    if (boxes.length) {
+      const best = boxes.reduce((b, x) => (iou(x.bbox, want) > iou(b.bbox, want) ? x : b));
+      console.log('[YAGO][GRUP] düz alternatif: maksimal kutu', fmtBox(best.bbox), 'örtüşme=', iou(best.bbox, want).toFixed(2), 'adayN=', boxes.length);
+      cells = best.cells;
+    }
+  }
   let cavity = cells.size ? regionBBox(grid, cells) : cloneBox(group.cavity);
   let region = cells.size ? regionBoxes(grid, cells) : (group.region || [cloneBox(group.cavity)]);
   const minOk = cells.size > 0 && [0, 1, 2].every(a => boxSpan(cavity, a) >= (a === group.axis ? group.count * t : t));
@@ -659,9 +765,11 @@ export function createPanelGroupFromCavity(shapeId: string, kind: PanelGroup['ki
   }) as Vec3;
   const count = 1;
   const L = boxSpan(pick.bbox, axis);
+  const frac = (v: number, a: number) => { const s = body.max[a] - body.min[a]; return s > 1e-6 ? (v - body.min[a]) / s : 0; };
   const group: PanelGroup = {
     id: genId(kind === 'shelf' ? 'shelf' : 'divider'), shapeId, kind, axis, anchorFrac,
     cavity: cloneBox(pick.bbox), region: pick.boxes.map(cloneBox), count, gaps: equalGaps(L, count, t), thickness: t, memberVfIds: [], createdAt: Date.now(),
+    ...(pick.shape === 'box' ? { boxMode: true, boxFrac: { min: [0, 1, 2].map(a => frac(pick.bbox.min[a], a)) as Vec3, max: [0, 1, 2].map(a => frac(pick.bbox.max[a], a)) as Vec3 } } : {}),
   };
   const sol = solveFromStore(group) || { cavity: group.cavity, region: group.region!, gaps: group.gaps, starts: panelStarts(group.cavity.min[axis], group.gaps, t), sections: [null], seed: pick.seed };
   const vfs = Array.from({ length: count }, (_, i) => makeMemberVf(group, i, sol));
@@ -669,7 +777,7 @@ export function createPanelGroupFromCavity(shapeId: string, kind: PanelGroup['ki
   st.addPanelGroup(group);
   st.insertVirtualFacesAfter(null, vfs);
   st.setSelectedPanelGroupId(group.id);
-  console.log('[YAGO][GRUP] oluşturuldu', group.id, kind, 'hacim=', fmtBox(pick.bbox), 'parçaN=', pick.boxes.length, 'L=', L.toFixed(1), 'çıpa=', anchorFrac.map(n => n.toFixed(2)).join(','));
+  console.log('[YAGO][GRUP] oluşturuldu', group.id, kind, pick.shape === 'box' ? 'DÜZ (kutu)' : 'ŞEKİLLİ', 'hacim=', fmtBox(pick.bbox), 'parçaN=', pick.boxes.length, 'L=', L.toFixed(1), 'çıpa=', anchorFrac.map(n => n.toFixed(2)).join(','));
   return group;
 }
 

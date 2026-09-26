@@ -2084,9 +2084,11 @@ export function PanelEditor({ isOpen, onClose, embedded = false }: PanelEditorPr
     if (!volumePickMode) return null;
     const n = volumePickCandidates.length;
     const ready = !!selectedShape && n > 0;
+    // Adaylar: en kapsayıcı (şekilli bölge) → içeri doğru düz kutular; etiket türü söyler.
+    const cur = volumePickCandidates[volumePickIndex];
     const label = !selectedShape ? 'Select a body first'
       : n === 0 ? 'Click inside a cavity in the 3D view'
-      : `Volume ${volumePickIndex + 1}/${n} — left-click: next · right-click: confirm`;
+      : `Volume ${volumePickIndex + 1}/${n} · ${cur?.shape === 'box' ? 'Box' : 'Shaped'} — left-click: next · right-click: confirm`;
     const confirm = () => {
       if (!ready || !selectedShape) return;
       createPanelGroupFromCavity(selectedShape.id, volumePickMode, volumePickCandidates[volumePickIndex]);

@@ -72,7 +72,11 @@ export interface CavityBox { min: [number, number, number]; max: [number, number
  * bbox = dizilim açıklığı; boxes = birleşik hücre kutuları (şema silueti);
  * surface = dış yüzey üçgenleri (önizleme); seed = bölgenin içinde bir nokta (çıpa).
  */
-export interface CavityPick { key: string; bbox: CavityBox; boxes: CavityBox[]; surface: number[]; seed: [number, number, number] }
+export interface CavityPick {
+  key: string; bbox: CavityBox; boxes: CavityBox[]; surface: number[]; seed: [number, number, number];
+  /** 'shaped' = bağlantılı serbest bölgenin tamamı (en kapsayıcı); 'box' = bölge içinde tohumu içeren maksimal kutu (düz alternatif). */
+  shape: 'shaped' | 'box';
+}
 /**
  * RAF / DİKME GRUBU: seçilen hacme (cavity) yerleşen n panel + n+1 boşluk.
  * Hacim her rebuild'de çıpa (anchorFrac) etrafından, gövde panellerinin
@@ -89,6 +93,9 @@ export interface PanelGroup {
   cavity: CavityBox;
   /** Şekilli bölge: birleşik hücre kutuları (şema silueti / eski gruplarda yok → kutu). */
   region?: CavityBox[];
+  /** DÜZ (kutu) alternatif seçildi: bölge içinde çıpayı içeren maksimal kutulardan, kayıtlı kutuya (gövde oranı) en çok örtüşen. */
+  boxMode?: boolean;
+  boxFrac?: CavityBox;
   count: number;
   gaps: GapSpec[];
   thickness: number;
