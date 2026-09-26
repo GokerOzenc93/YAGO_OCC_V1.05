@@ -2,12 +2,12 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { X, GripVertical, ArrowUp, RotateCw, Move, Trash2, MoveVertical, Check, Pencil, ChevronRight, Lock, Unlock, SlidersHorizontal, Crosshair, Square, LayoutPanelTop, MousePointer2, Rows3, Columns3, Plus, Minus, Equal } from 'lucide-react';
 import { ToolChip, ToolChipBar } from './UiPrimitives';
 import type { LucideIcon } from 'lucide-react';
-import { useAppStore, useStoreFields, type Shape, type PanelGroup, type VirtualFace } from '../store';
+import { useAppStore, useStoreFields, type Shape, type PanelGroup, type VirtualFace, type CavityBox } from '../store';
 import { getFacesAndGroups } from './GeometryUtils';
 import { findExistingStepForFace } from './FaceExtrudeService';
 import {
   boxSpan, panelStarts, groupKindLabel, createPanelGroupFromCavity, setGroupCount, editGroupGap, toggleGroupGapLock,
-  equalizeGroupGaps, deletePanelGroupWithMembers,
+  equalizeGroupGaps, deletePanelGroupWithMembers, traceMaskLoops,
 } from './PanelGroupService';
 import * as THREE from 'three';
 import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
@@ -714,6 +714,18 @@ function PanelPreview2D({ shape, arrowRotated }: { dims: Dims; shape?: any; arro
    Şema sabit bir ölçekte değil, karta sığacak şekilde çizilir; raf sayısı
    artınca yükseklik büyür ki pill'ler üst üste binmesin.                    */
 const SCHEMA_PAD = 26;
+/** Bölge kutularının (h,v) eksenlerine izdüşüm maskesi: düzlemler + dolu hücre sorgusu. */
+function regionMask(boxes: CavityBox[], h: number, v: number) {
+  const hsSet = new Set<number>(), vsSet = new Set<number>();
+  for (const b of boxes) { hsSet.add(b.min[h]); hsSet.add(b.max[h]); vsSet.add(b.min[v]); vsSet.add(b.max[v]); }
+  const hs = Array.from(hsSet).sort((a, b) => a - b), vs = Array.from(vsSet).sort((a, b) => a - b);
+  const filled = (i: number, j: number) => {
+    const ch = (hs[i] + hs[i + 1]) / 2, cv = (vs[j] + vs[j + 1]) / 2;
+    return boxes.some(b => ch > b.min[h] && ch < b.max[h] && cv > b.min[v] && cv < b.max[v]);
+  };
+  return { hs, vs, filled };
+}
+const AXIS_LETTER = ['X', 'Y', 'Z'];
 function GroupSchematic({ group, onEditGap, onToggleLock }: {
   group: PanelGroup; onEditGap: (k: number, v: number) => void; onToggleLock: (k: number) => void;
 }) {
@@ -730,33 +742,64 @@ function GroupSchematic({ group, onEditGap, onToggleLock }: {
 
   const { cavity, gaps, thickness: t, axis } = group;
   const barsHorizontal = axis === 1;
-  const W = Math.max(boxSpan(cavity, 0), 1), H = Math.max(boxSpan(cavity, 1), 1);
   const gapN = gaps.length;
   const height = barsHorizontal ? Math.min(440, Math.max(210, gapN * 30 + 70)) : 210;
+  const starts = panelStarts(cavity.min[axis], gaps, t);
+
+  // ŞEKİLLİ BÖLGE SİLUETİ: bölge kutularının izdüşümü (eski gruplarda hacim
+  // kutusu). Dizilim ekseni rafta düşey (Y), dikmede yatay (X) kalır; diğer
+  // eksen için iki görünüşten (ön / yan ya da ön / plan) ŞEKLİ GÖSTEREN seçilir
+  // — ikisi de dikdörtgense ön görünüş. Levhalar ve pill'ler maskeye kırpılır.
+  const region = group.region && group.region.length ? group.region : [cavity];
+  const view = useMemo(() => {
+    const views: Array<[number, number]> = barsHorizontal ? [[0, 1], [2, 1]] : [[0, 1], [0, 2]];
+    const cands = views.map(([h, v]) => { const m = regionMask(region, h, v); const loops = traceMaskLoops(m.hs, m.vs, m.filled); return { h, v, m, loops, shaped: loops.length > 1 || loops.some(l => l.length > 4) }; });
+    return cands[0].shaped || !cands[1].shaped ? cands[0] : cands[1];
+  }, [region, barsHorizontal]);
+  const { h: hAxis, v: vAxis, m: mask, loops } = view;
+  const W = Math.max(boxSpan(cavity, hAxis), 1), H = Math.max(boxSpan(cavity, vAxis), 1);
   const innerW = width - 2 * SCHEMA_PAD, innerH = height - 2 * SCHEMA_PAD;
   const scale = Math.max(1e-6, Math.min(innerW / W, innerH / H));
   const x0 = SCHEMA_PAD + (innerW - W * scale) / 2, y0 = SCHEMA_PAD + (innerH - H * scale) / 2;
-  const sx = (wx: number) => x0 + (wx - cavity.min[0]) * scale;
-  const sy = (wy: number) => y0 + (cavity.max[1] - wy) * scale;   // dünya Y yukarı → SVG y aşağı
-  const starts = panelStarts(cavity.min[axis], gaps, t);
+  const sx = (wh: number) => x0 + (wh - cavity.min[hAxis]) * scale;
+  const sy = (wv: number) => y0 + (cavity.max[vAxis] - wv) * scale;   // dünya v yukarı → SVG y aşağı
   const barPx = Math.max(2.5, t * scale);
+  const silhouettePath = loops.map(l => l.map((p, i) => `${i ? 'L' : 'M'}${sx(p.x).toFixed(1)},${sy(p.y).toFixed(1)}`).join(' ') + ' Z').join(' ');
+  /** Dizilim eksenindeki [a0,a1] diliminde, çapraz eksende dolu aralıklar (dünya). */
+  const runsAt = (a0: number, a1: number): Array<[number, number]> => {
+    const stackPl = barsHorizontal ? mask.vs : mask.hs, crossPl = barsHorizontal ? mask.hs : mask.vs;
+    const layers: number[] = [];
+    for (let j = 0; j < stackPl.length - 1; j++) if (stackPl[j] < a1 - 0.5 && stackPl[j + 1] > a0 + 0.5) layers.push(j);
+    const out: Array<[number, number]> = [];
+    let run: [number, number] | null = null;
+    for (let i = 0; i <= crossPl.length - 1; i++) {
+      const on = i < crossPl.length - 1 && layers.length > 0 && layers.every(j => (barsHorizontal ? mask.filled(i, j) : mask.filled(j, i)));
+      if (on) { if (!run) run = [crossPl[i], crossPl[i + 1]]; else run[1] = crossPl[i + 1]; }
+      else if (run) { out.push(run); run = null; }
+    }
+    return out;
+  };
 
   // Boşluk aralıkları (dizilim ekseni, dünya).
   const spans: Array<{ a: number; b: number }> = [];
   { let p = cavity.min[axis]; for (let k = 0; k < gapN; k++) { spans.push({ a: p, b: p + gaps[k].value }); p += gaps[k].value + t; } }
-  const cxMid = x0 + W * scale / 2, cyMid = y0 + H * scale / 2;
   const fs = 11;
   const pills = spans.map((s, k) => {
     const mid = (s.a + s.b) / 2;
     const txt = String(Math.round(gaps[k].value * 10) / 10);
     const pw = Math.max(txt.length * fs * 0.62 + 30, 44), ph = 18;
-    let cx = barsHorizontal ? cxMid : sx(mid);
-    let cy = barsHorizontal ? sy(mid) : cyMid;
-    // Dar boşlukta pill'ler çakışmasın: dikmelerde iki sıraya dağıt.
+    // Pill, boşluğun ortasındaki DOLU aralığın ortasına oturur (L bölgede boş kısma düşmesin).
+    const runs = runsAt(mid - 0.5, mid + 0.5);
+    const widest = runs.length ? runs.reduce((b, r) => (r[1] - r[0] > b[1] - b[0] ? r : b)) : null;
+    const crossAxis = barsHorizontal ? hAxis : vAxis;
+    const crossMid = widest ? (widest[0] + widest[1]) / 2 : (cavity.min[crossAxis] + cavity.max[crossAxis]) / 2;
+    let cx = barsHorizontal ? sx(crossMid) : sx(mid);
+    let cy = barsHorizontal ? sy(mid) : sy(crossMid);
+    // Dar boşlukta pill'ler çakışmasın: iki sıraya dağıt.
     const gapPx = Math.abs(s.b - s.a) * scale;
     if (!barsHorizontal && gapPx < pw + 4) cy += (k % 2 === 0 ? -1 : 1) * (ph * 0.7);
     if (barsHorizontal && gapPx < ph + 4) cx += (k % 2 === 0 ? -1 : 1) * (pw * 0.55);
-    return { k, cx, cy, pw, ph, txt, a: s.a, b: s.b };
+    return { k, cx, cy, pw, ph, txt, a: s.a, b: s.b, crossMid };
   });
 
   const commit = () => {
@@ -769,22 +812,23 @@ function GroupSchematic({ group, onEditGap, onToggleLock }: {
   return (
     <div ref={wrapRef} className="relative rounded-[10px] ring-1 ring-[#e9e4dc] overflow-hidden" style={{ background: PREVIEW_BG, height }}>
       <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ display: 'block', fontFamily: DOCK_FONT }}>
-        {/* hacim */}
-        <rect x={x0} y={y0} width={W * scale} height={H * scale} fill="#ffffff" stroke="#d6cfc4" strokeWidth={1} rx={1.5} />
+        {/* şekilli bölge silueti */}
+        <path d={silhouettePath} fill="#ffffff" stroke="#d6cfc4" strokeWidth={1} strokeLinejoin="round" fillRule="evenodd" />
         <text x={x0 + W * scale} y={y0 - 8} textAnchor="end" fontSize={9.5} fontWeight={600} fill="#b5ada3" style={{ letterSpacing: '0.06em' }}>
-          {Math.round(W)} × {Math.round(H)}
+          {AXIS_LETTER[hAxis]} {Math.round(W)} × {AXIS_LETTER[vAxis]} {Math.round(H)}
         </text>
-        {/* levhalar */}
-        {starts.map((st, i) => barsHorizontal
-          ? <rect key={`bar-${i}`} x={x0} y={sy(st + t)} width={W * scale} height={barPx} fill="#cfc5b5" stroke="#8a8278" strokeWidth={0.8} />
-          : <rect key={`bar-${i}`} x={sx(st)} y={y0} width={barPx} height={H * scale} fill="#cfc5b5" stroke="#8a8278" strokeWidth={0.8} />)}
+        {/* levhalar: dilimdeki dolu aralıklara kırpılmış */}
+        {starts.map((st, i) => runsAt(st, st + t).map((r, ri) => barsHorizontal
+          ? <rect key={`bar-${i}-${ri}`} x={sx(r[0])} y={sy(st + t)} width={(r[1] - r[0]) * scale} height={barPx} fill="#cfc5b5" stroke="#8a8278" strokeWidth={0.8} />
+          : <rect key={`bar-${i}-${ri}`} x={sx(st)} y={sy(r[1])} width={barPx} height={(r[1] - r[0]) * scale} fill="#cfc5b5" stroke="#8a8278" strokeWidth={0.8} />))}
         {/* boşluk ölçü çizgileri + pill'ler */}
         {pills.map(p => {
           const locked = gaps[p.k].locked;
           const isEd = editing?.k === p.k;
+          const lineX = sx(p.crossMid), lineY = sy(p.crossMid);
           const line = barsHorizontal
-            ? <line x1={cxMid} y1={sy(p.a)} x2={cxMid} y2={sy(p.b)} stroke="#cfc6b9" strokeWidth={0.8} />
-            : <line x1={sx(p.a)} y1={cyMid} x2={sx(p.b)} y2={cyMid} stroke="#cfc6b9" strokeWidth={0.8} />;
+            ? <line x1={lineX} y1={sy(p.a)} x2={lineX} y2={sy(p.b)} stroke="#cfc6b9" strokeWidth={0.8} />
+            : <line x1={sx(p.a)} y1={lineY} x2={sx(p.b)} y2={lineY} stroke="#cfc6b9" strokeWidth={0.8} />;
           const lockX = p.cx + p.pw / 2 - 14, lockY = p.cy - 5;
           return (
             <g key={`gap-${p.k}`}>

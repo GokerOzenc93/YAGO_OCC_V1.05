@@ -67,6 +67,13 @@ export interface VirtualFace {
 export interface GapSpec { value: number; locked: boolean; edited?: boolean }
 export interface CavityBox { min: [number, number, number]; max: [number, number, number] }
 /**
+ * HACİM ADAYI (3B seçim): şekilli serbest bölge — gövde katısından (çentik /
+ * çıkarma dahil) ve panellerden kalan, tohumdan taşarak bulunan hücre birliği.
+ * bbox = dizilim açıklığı; boxes = birleşik hücre kutuları (şema silueti);
+ * surface = dış yüzey üçgenleri (önizleme); seed = bölgenin içinde bir nokta (çıpa).
+ */
+export interface CavityPick { key: string; bbox: CavityBox; boxes: CavityBox[]; surface: number[]; seed: [number, number, number] }
+/**
  * RAF / DİKME GRUBU: seçilen hacme (cavity) yerleşen n panel + n+1 boşluk.
  * Hacim her rebuild'de çıpa (anchorFrac) etrafından, gövde panellerinin
  * kutularıyla yeniden büyütülür; boşluklar kilit kuralıyla yeniden dağıtılır.
@@ -78,8 +85,10 @@ export interface PanelGroup {
   axis: 0 | 1 | 2;
   /** Hacim çıpası: gövde yerel kutusundaki oran (resize'da aynı boşluğa düşer). */
   anchorFrac: [number, number, number];
-  /** Son çözülen hacim (gövde yerel). */
+  /** Son çözülen hacmin kutusu (gövde yerel) — dizilim açıklığı buradan. */
   cavity: CavityBox;
+  /** Şekilli bölge: birleşik hücre kutuları (şema silueti / eski gruplarda yok → kutu). */
+  region?: CavityBox[];
   count: number;
   gaps: GapSpec[];
   thickness: number;
@@ -178,8 +187,8 @@ export interface AppState {
   selectedPanelGroupId: string | null; setSelectedPanelGroupId: (id: string | null) => void;
   /** Hacim seçme modu (raf / dikme atma): tıklanan noktadan ışın boyunca serbest hacimler. */
   volumePickMode: 'shelf' | 'divider' | null; setVolumePickMode: (m: 'shelf' | 'divider' | null) => void;
-  volumePickCandidates: CavityBox[]; volumePickIndex: number;
-  setVolumePick: (c: CavityBox[], i: number) => void;
+  volumePickCandidates: CavityPick[]; volumePickIndex: number;
+  setVolumePick: (c: CavityPick[], i: number) => void;
   /** VF'leri verilen VF'nin hemen ARKASINA ekler (grup üyeleri bitişik kalsın). */
   insertVirtualFacesAfter: (afterId: string | null, vfs: VirtualFace[]) => void;
 
