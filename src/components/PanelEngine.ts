@@ -5,6 +5,7 @@ import { getFacesAndGroups } from './GeometryUtils';
 import { convexHull2D, panelHasRotation } from './FaceRegion';
 import { effectiveBodyGeometry, vertexModsKey } from './VertexEditorService';
 import { getUnifiedSteps, stepRefTargets, type TransformStep } from './PanelSteps';
+import { isInteriorPanel, syncPanelGroups } from './PanelGroupService';
 import {
   axisDirToVec, getFacePlaneAxes, resolveVfFracPoint, vfRawMinAlong, rotateAboutAxis, signedAngleAboutAxis,
   angleToTouchPlane, normDeg, worldBboxOf, pointFromFracBox, boundsOverlapBox, fmtBounds, fmtVec,
@@ -361,7 +362,8 @@ function cornerJoinedVertices(panel: Shape, vf: VirtualFace, vfs: VirtualFace[],
   if (hasAnySteps(panel)) return verts;
   const myOrder = orderOf(panel);
   for (const q of siblings) {
-    if (q.id === panel.id || orderOf(q) <= myOrder || hasAnySteps(q)) continue;
+    // İç panel (raf/dikme) köşe birleşimine girmez: gövde panelini uzatmaz, ucunu kapattırmaz.
+    if (q.id === panel.id || orderOf(q) <= myOrder || hasAnySteps(q) || isInteriorPanel(q) || isInteriorPanel(panel)) continue;
     const vfQ = vfs.find(f => f.id === (q.parameters as any)?.virtualFaceId);
     if (!vfQ) continue;
     const j = concaveCornerJoin(vf, vfQ, panelThickness(q));
@@ -415,6 +417,8 @@ async function cutByRotatedPressers(
   let out = rp;
   for (const r of siblings) {
     if (r.id === panel.id || orderOf(r) >= myOrder) continue;
+    // İÇ PANEL ASLA BASMAZ: dönmüş bir raf/dikme gövde panelini eğik düzlemiyle biçmez.
+    if (isInteriorPanel(r) && !isInteriorPanel(panel)) continue;
     if (!panelHasRotation(r) && !vfIsTilted(vfs.find(f => f.id === (r.parameters as any)?.virtualFaceId))) continue;
     if (stepRefTargets(r).rotate.has(panel.id)) {
       console.log('[YAGO][DÖNÜŞ-KESİM] MUAF', panel.id, '<-', r.id, '— r bu paneli REF DÖNÜŞ hedefi alıyor, düzlem kesimi yok');
@@ -701,6 +705,8 @@ async function fitRotatedPanel(
   const myRefTargets = stepRefTargets(panel).rotate;
   for (const b of siblings) {
     if (b.id === panel.id || orderOf(b) >= myOrder) continue;
+    // İç panel (raf/dikme) dönmüş bir gövde panelini kesmez (asla basmaz).
+    if (isInteriorPanel(b) && !isInteriorPanel(panel)) continue;
     const isRefTarget = myRefTargets.has(b.id);
     if (isRefTarget && refContacts.get(b.id) === 'rest') {
       console.log('[YAGO][DÖNÜŞ-SIĞDIR]', panel.id, 'referansa OTURUYOR, referansla kesilmedi <-', b.id, '(referans kenarı pahlanacak)');
@@ -821,7 +827,11 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       '→ referans bağımlıları var:', refDependents.map(c => c.id).join(','), '(referans köşe/düzlem güncel geometriden yeniden çözülecek)');
     if (notchesTargets) console.log('[YAGO][REBUILD] TEK-PANEL MODU İPTAL', changedChild.id,
       '→ referans panel(ler)in kenarını pahlıyor, referans sıfırdan üretilip yeniden pahlanacak');
-    singleMode = !pressed.length && !cornerPartner && !refDependents.length && !notchesTargets;
+    // RAF/DİKME GRUBU VARSA: gövde paneli değişince iç gruplar hacmi yeniden
+    // çözmeli (gövde panelleri iç grupları HER sırada sınırlar) → tam rebuild.
+    const boundsGroups = !isInteriorPanel(changedChild) && fresh.panelGroups.some(g => g.shapeId === parentShapeId);
+    if (boundsGroups) console.log('[YAGO][REBUILD] TEK-PANEL MODU İPTAL', changedChild.id, '→ gövdede raf/dikme grubu var, hacimler yeniden çözülecek');
+    singleMode = !pressed.length && !cornerPartner && !refDependents.length && !notchesTargets && !boundsGroups;
   }
 
   const parentPos = [...parentFresh.position] as Vec3;
@@ -859,6 +869,9 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       // Düz panel + eğik gövde yüzü: VF köşeleri uzatılır, sonra gövdeyle kesilir.
       let genVerts = buildVerts;
       let needsBodyClip = false;
+      // İÇ PANEL (raf/dikme): hacim eksen-hizalı kutudur; gövde vertex düzenlemeli
+      // (eğik yüzlü) ise levha gövde katısıyla kesilir ki eğik yüzden taşmasın.
+      if (!isRotated && isInteriorPanel(panel) && Array.isArray(parentFresh.vertexModifications) && parentFresh.vertexModifications.length > 0) needsBodyClip = true;
       if (!isRotated) {
         const planes = tiltedBodyPlanes(parentFresh);
         if (planes.length) {
@@ -976,7 +989,7 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
   const recalc = (vfs: VirtualFace[]) => {
     const st = useAppStore.getState();
     const parentNow = st.shapes.find(s => s.id === parentShapeId) || parentFresh;
-    return recalculateVirtualFacesForShape(parentNow, vfs, st.shapes);
+    return recalculateVirtualFacesForShape(parentNow, vfs, st.shapes, st.panelGroups);
   };
   let currentVfs = recalc(useAppStore.getState().virtualFaces);
   for (let pass = 0; pass < 2; pass++) {
@@ -996,6 +1009,8 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
     patches.set(f.id, p);
   }
   useAppStore.setState(st => ({ virtualFaces: st.virtualFaces.map(f => (patches.has(f.id) ? { ...f, ...patches.get(f.id) } : f)) }));
+  // Raf/dikme gruplarının store'daki hacim/boşluk değerleri son çözümle eşitlenir.
+  try { syncPanelGroups(parentShapeId); } catch (err) { console.warn('[YAGO][GRUP-SENKRON] hata:', (err as any)?.message || String(err)); }
 }
 
 /** VF yeniden hesabının sahip olduğu alanlar (geri kalanı kullanıcı verisidir). */

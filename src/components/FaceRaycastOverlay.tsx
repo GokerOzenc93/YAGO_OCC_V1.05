@@ -8,6 +8,7 @@ import {
 } from './FaceRegion';
 import { getFacePlaneAxes, getShapeMatrix } from './PanelMath';
 import { effectiveBodyGeometry } from './VertexEditorService';
+import { isInteriorPanel } from './PanelGroupService';
 
 interface FaceRaycastOverlayProps { shape: any; allShapes?: any[]; }
 
@@ -245,8 +246,9 @@ export const FaceRaycastOverlay: React.FC<FaceRaycastOverlayProps> = ({ shape, a
   useEffect(() => { if (!raycastMode) { setHoveredGroupIndex(null); setPending(null); lastClickRef.current = null; } }, [raycastMode]);
   // Use current (post-extrude) geometry so that shortened panels produce correct
   // obstacle edges — the void area left by a shortened panel must be visitable.
+  // İÇ PANELLER (raf/dikme) yüz bölgesine girmez: gövde paneli her zaman tam yüzüne yerleşir.
   const childPanels = useMemo(
-    () => allShapes.filter(s => s.type === 'panel' && s.parameters?.parentShapeId === shape.id),
+    () => allShapes.filter(s => s.type === 'panel' && s.parameters?.parentShapeId === shape.id && !isInteriorPanel(s)),
     [allShapes, shape.id]
   );
   // Aynı DÜZLEMDEKİ tüm VF'ler (merkez artık tıklama noktası olduğundan

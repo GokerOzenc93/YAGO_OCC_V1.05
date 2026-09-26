@@ -9,6 +9,8 @@ import { composeSteps, resolveRefTranslateDelta } from './PanelEngine';
 import { getUnifiedSteps, stepRefTargets } from './PanelSteps';
 import { axisDirToVec, getFacePlaneAxes, getShapeMatrix, panelThickness, type Vec3 } from './PanelMath';
 import { effectiveBodyGeometry } from './VertexEditorService';
+import { isInteriorPanel, isInteriorVf, recalculateInteriorVfs } from './PanelGroupService';
+import type { PanelGroup } from '../store';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // VirtualFaceUpdateService — VF (sanal yüz) BÖLGE YENİDEN HESABI.
@@ -311,9 +313,15 @@ type RotOp = { kind?: 'rotate' | 'translate'; pivot?: THREE.Vector3; axis?: THRE
  * Bir parent'ın tüm VF'lerini güncel gövde geometrisi + kardeş ayak izleriyle
  * yeniden hesaplar (saf: yeni VF dizisi döner, store'a yazmaz).
  */
-export function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace[], allShapes?: any[]): VirtualFace[] {
-  const shapeFaces = virtualFaces.filter(vf => vf.shapeId === shape.id);
-  if (shapeFaces.length === 0 || !shape.geometry) return virtualFaces;
+export function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace[], allShapes?: any[], panelGroups?: PanelGroup[]): VirtualFace[] {
+  const allShapeFaces = virtualFaces.filter(vf => vf.shapeId === shape.id);
+  if (allShapeFaces.length === 0 || !shape.geometry) return virtualFaces;
+  // İÇ VF'LER (raf/dikme): yüz eşlemesine girmez, grup çözücüsü yazar (aşağıda).
+  const shapeFaces = allShapeFaces.filter(vf => !isInteriorVf(vf));
+  const interiorMap = panelGroups
+    ? recalculateInteriorVfs(shape, allShapeFaces.filter(isInteriorVf), (allShapes || []) as Shape[], panelGroups)
+    : new Map<string, VirtualFace>();
+  if (shapeFaces.length === 0) return virtualFaces.map(vf => interiorMap.get(vf.id) || vf);
 
   // VERTEX DÜZENLEMELİ GÖVDE: VF'ler düzenlenmiş (etkin) yüzlere göre hesaplanır.
   const eff = effectiveBodyGeometry(shape);
@@ -324,7 +332,8 @@ export function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: Virt
   const { faces, groups: faceGroups } = getFacesAndGroups(shape.geometry);
   const localToWorld = getShapeMatrix(shape);
   const worldToLocal = localToWorld.clone().invert();
-  const childPanels = (allShapes || []).filter(s => s.type === 'panel' && s.parameters?.parentShapeId === shape.id);
+  // İÇ PANELLER (raf/dikme) gövde panellerini ASLA damgalamaz → kardeş listesine girmez.
+  const childPanels = (allShapes || []).filter(s => s.type === 'panel' && s.parameters?.parentShapeId === shape.id && !isInteriorPanel(s));
   const vfById = new Map(virtualFaces.map(f => [f.id, f] as const));
   const vfIndexOf = new Map<string, number>();
   virtualFaces.forEach((f, i) => vfIndexOf.set(f.id, i));
@@ -494,7 +503,7 @@ export function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: Virt
       updatedMap.set(vf.id, clipped || vf);
     }
   }
-  return virtualFaces.map(vf => updatedMap.get(vf.id) || vf);
+  return virtualFaces.map(vf => updatedMap.get(vf.id) || interiorMap.get(vf.id) || vf);
 }
 
 /**

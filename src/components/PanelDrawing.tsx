@@ -121,7 +121,9 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     panelRotateRefArmVertex,
     panelRotateAxis,
     panelRotateRefFace,
-    setPanelRotateRefFace
+    setPanelRotateRefFace,
+    selectedPanelGroupId,
+    volumePickMode
   } = useAppStore(useShallow(state => ({
     selectShape: state.selectShape,
     selectSecondaryShape: state.selectSecondaryShape,
@@ -153,7 +155,9 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
     panelRotateRefArmVertex: state.panelRotateRefArmVertex,
     panelRotateAxis: state.panelRotateAxis,
     panelRotateRefFace: state.panelRotateRefFace,
-    setPanelRotateRefFace: state.setPanelRotateRefFace
+    setPanelRotateRefFace: state.setPanelRotateRefFace,
+    selectedPanelGroupId: state.selectedPanelGroupId,
+    volumePickMode: state.volumePickMode
   })));
 
   const [faceGroups, setFaceGroups] = useState<any[]>([]);
@@ -177,8 +181,11 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
   const virtualFaceId = shape.parameters?.virtualFaceId;
   const faceRole = shape.parameters?.faceRole;
   const isParentSelected = parentShapeId === selectedShapeId;
+  // GRUP SEÇİMİ ("tümünü seç"): raf/dikme grubunun her üyesi seçili çizilir.
+  const panelGroupId = shape.parameters?.panelGroupId;
+  const isGroupSelected = isParentSelected && !!selectedPanelGroupId && panelGroupId === selectedPanelGroupId;
 
-  const isPanelRowSelected = isParentSelected &&
+  const isPanelRowSelected = isGroupSelected || (isParentSelected &&
     (
       (virtualFaceId && selectedPanelRow === `vf-${virtualFaceId}`) ||
       (faceIndex !== undefined &&
@@ -189,7 +196,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
               (!extraRowId && !selectedPanelRowExtraId)))
         )
       )
-    );
+    ));
 
   // Edge geometrisi — orijinal geometriden, hiç bozulma yok
   const edgeGeometry = useMemo(() => {
@@ -242,7 +249,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
 
   const isFaceExtrudeTarget = faceExtrudeMode && shape.id === faceExtrudeTargetPanelId;
   const isFaceExtrudeXray = faceExtrudeMode && shape.id !== faceExtrudeTargetPanelId;
-  const isRaycastOnParent = raycastMode && parentShapeId && parentShapeId === selectedShapeId;
+  const isRaycastOnParent = (raycastMode || volumePickMode !== null) && parentShapeId && parentShapeId === selectedShapeId;
   // Ref modu: hedef panel kendi yüz seçimini yapar (Normal akış). Referans için
   // hedef DIŞINDAKİ her panel, aday zaten seçili olsa bile raycast alır — çünkü
   // aynı noktaya tekrar tıklayınca ışın boyunca bir arkadaki yüze geçilir
@@ -332,6 +339,8 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
 
   const handleClick = (e: any) => {
     e.stopPropagation();
+    // HACİM SEÇME (raf/dikme): tıklama araca aittir, panel seçimi yok.
+    if (volumePickMode) return;
     // TAŞIMA MODU: normal panel seçimi YOK. Ref akışında referans panel derinlik
     // döngüsü canvas seviyesinde (MoveRefPanelPicker) yürütülür; tıklama burada
     // normal seçime DÜŞMEMELİ — aksi halde referans panel de seçili kalıyor ve
@@ -631,7 +640,7 @@ export const PanelDrawing: React.FC<PanelDrawingProps> = React.memo(({
       )}
 
       {/* ── PANEL YÖN OKU (seçili panel satırında) ──────────────────── */}
-      {isPanelRowSelected && (
+      {isPanelRowSelected && !isGroupSelected && (
         <DirectionArrow
           geometry={shape.geometry}
           faceRole={faceRole}

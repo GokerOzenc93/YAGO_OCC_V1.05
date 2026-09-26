@@ -56,6 +56,35 @@ export interface VirtualFace {
   sideRelations?: Record<string, number>;
   /** YÜZEYİN ŞEKLİNİ AL: açıkken panel serbest bölgenin tam (L/U/çentikli) şeklini alır. */
   fitFaceShape?: boolean;
+  /** İÇ PANEL (raf/dikme): gövde yüzüne değil bir raf/dikme grubunun çözülmüş
+   *  konumuna bağlıdır; regen'de yüz eşlemesine girmez, grup çözücüsü yazar. */
+  interior?: boolean;
+  groupId?: string;
+  groupIndex?: number;
+}
+
+/** Raf/dikme boşluğu: değer (mm) + kilit (küp boyutlanınca sabit kalır). */
+export interface GapSpec { value: number; locked: boolean; edited?: boolean }
+export interface CavityBox { min: [number, number, number]; max: [number, number, number] }
+/**
+ * RAF / DİKME GRUBU: seçilen hacme (cavity) yerleşen n panel + n+1 boşluk.
+ * Hacim her rebuild'de çıpa (anchorFrac) etrafından, gövde panellerinin
+ * kutularıyla yeniden büyütülür; boşluklar kilit kuralıyla yeniden dağıtılır.
+ */
+export interface PanelGroup {
+  id: string; shapeId: string;
+  kind: 'shelf' | 'divider';
+  /** Dizilim ekseni: raf = 1 (Y), dikme = 0 (X). */
+  axis: 0 | 1 | 2;
+  /** Hacim çıpası: gövde yerel kutusundaki oran (resize'da aynı boşluğa düşer). */
+  anchorFrac: [number, number, number];
+  /** Son çözülen hacim (gövde yerel). */
+  cavity: CavityBox;
+  count: number;
+  gaps: GapSpec[];
+  thickness: number;
+  memberVfIds: string[];
+  createdAt: number;
 }
 
 export interface Shape {
@@ -139,6 +168,20 @@ export interface AppState {
   panelSelectMode: boolean; setPanelSelectMode: (b: boolean) => void;
   faceEditMode: boolean; setFaceEditMode: (b: boolean) => void;
   hoveredPanelVfId: string | null; setHoveredPanelVfId: (id: string | null) => void;
+
+  // Raf / dikme grupları
+  panelGroups: PanelGroup[];
+  addPanelGroup: (g: PanelGroup) => void;
+  updatePanelGroup: (id: string, u: Partial<PanelGroup>) => void;
+  deletePanelGroup: (id: string) => void;
+  /** Grup seçimi = "tüm panelleri seç" (satır seçimiyle karşılıklı dışlayıcı). */
+  selectedPanelGroupId: string | null; setSelectedPanelGroupId: (id: string | null) => void;
+  /** Hacim seçme modu (raf / dikme atma): tıklanan noktadan ışın boyunca serbest hacimler. */
+  volumePickMode: 'shelf' | 'divider' | null; setVolumePickMode: (m: 'shelf' | 'divider' | null) => void;
+  volumePickCandidates: CavityBox[]; volumePickIndex: number;
+  setVolumePick: (c: CavityBox[], i: number) => void;
+  /** VF'leri verilen VF'nin hemen ARKASINA ekler (grup üyeleri bitişik kalsın). */
+  insertVirtualFacesAfter: (afterId: string | null, vfs: VirtualFace[]) => void;
 
   // Fillet
   filletMode: boolean; setFilletMode: (b: boolean) => void;
@@ -236,6 +279,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     const all = new Set([id, ...state.shapes.filter(s => s.type === 'panel' && s.parameters?.parentShapeId === id).map(s => s.id)]);
     return {
       shapes: state.shapes.filter(s => !all.has(s.id)),
+      // Gövdeyle birlikte raf/dikme grupları da gider (üye VF'leri gövdeye bağlıdır).
+      panelGroups: state.panelGroups.filter(g => g.shapeId !== id),
       selectedShapeId: all.has(state.selectedShapeId || '') ? null : state.selectedShapeId,
       secondarySelectedShapeId: all.has(state.secondarySelectedShapeId || '') ? null : state.secondarySelectedShapeId,
     };
@@ -397,11 +442,41 @@ export const useAppStore = create<AppState>((set, get) => ({
   showParametersPanel: false, setShowParametersPanel: (b) => set({ showParametersPanel: b }),
   showOutlines: true, setShowOutlines: (b) => set({ showOutlines: b }),
   selectedPanelRow: null, selectedPanelRowExtraId: null, selectedPanelRowParentId: null,
-  setSelectedPanelRow: (i, e, parentId) => set({ selectedPanelRow: i, selectedPanelRowExtraId: e || null, selectedPanelRowParentId: parentId || null }),
+  // Tek panel seçimi grup seçimini düşürür (ikisi aynı anda olmaz).
+  setSelectedPanelRow: (i, e, parentId) => set({
+    selectedPanelRow: i, selectedPanelRowExtraId: e || null, selectedPanelRowParentId: parentId || null,
+    ...(i !== null ? { selectedPanelGroupId: null } : {}),
+  }),
   panelSelectMode: false,
-  setPanelSelectMode: (b) => set({ panelSelectMode: b, selectedPanelRow: null, selectedPanelRowExtraId: null, selectedPanelRowParentId: null }),
+  setPanelSelectMode: (b) => set({ panelSelectMode: b, selectedPanelRow: null, selectedPanelRowExtraId: null, selectedPanelRowParentId: null, selectedPanelGroupId: null }),
   faceEditMode: false, setFaceEditMode: (b) => set({ faceEditMode: b }),
   hoveredPanelVfId: null, setHoveredPanelVfId: (id) => set({ hoveredPanelVfId: id }),
+
+  // ── Raf / dikme grupları ──────────────────────────────────────────────────
+  panelGroups: [],
+  addPanelGroup: (g) => set((s) => ({ panelGroups: [...s.panelGroups, g] })),
+  updatePanelGroup: (id, u) => set((s) => ({ panelGroups: s.panelGroups.map(g => (g.id === id ? { ...g, ...u } : g)) })),
+  deletePanelGroup: (id) => set((s) => ({
+    panelGroups: s.panelGroups.filter(g => g.id !== id),
+    selectedPanelGroupId: s.selectedPanelGroupId === id ? null : s.selectedPanelGroupId,
+  })),
+  selectedPanelGroupId: null,
+  // Grup seçimi ("tümünü seç") tek panel satırını düşürür.
+  setSelectedPanelGroupId: (id) => set({
+    selectedPanelGroupId: id,
+    ...(id ? { selectedPanelRow: null, selectedPanelRowExtraId: null } : {}),
+  }),
+  volumePickMode: null,
+  setVolumePickMode: (m) => set({ volumePickMode: m, volumePickCandidates: [], volumePickIndex: 0, ...(m ? { raycastMode: false } : {}) }),
+  volumePickCandidates: [], volumePickIndex: 0,
+  setVolumePick: (c, i) => set({ volumePickCandidates: c, volumePickIndex: i }),
+  insertVirtualFacesAfter: (afterId, vfs) => set((s) => {
+    const idx = afterId ? s.virtualFaces.findIndex(f => f.id === afterId) : -1;
+    if (idx < 0) return { virtualFaces: [...s.virtualFaces, ...vfs] };
+    const out = s.virtualFaces.slice();
+    out.splice(idx + 1, 0, ...vfs);
+    return { virtualFaces: out };
+  }),
 
   // ── Fillet ────────────────────────────────────────────────────────────────
   filletMode: false, setFilletMode: (e) => set({ filletMode: e, selectedFilletFaces: [], selectedFilletFaceData: [] }),

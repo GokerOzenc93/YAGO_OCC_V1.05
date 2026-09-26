@@ -10,6 +10,7 @@ import { getFacesAndGroups, createFaceHighlightGeometry, snapToFlatGroup } from 
 import { effectiveBodyGeometry } from './VertexEditorService';
 import { cycleRefFacePickFromEvent, REF_COLORS } from './FaceRefPick';
 import { FaceRaycastOverlay, VirtualFaceOverlay } from './FaceRaycastOverlay';
+import { VolumePickOverlay } from './VolumePickOverlay';
 
 // Kenar çizgileri panellerdekiyle aynı stil: ince, antialias'lı (Line2),
 // opak ve yumuşak gri. Belirginlik renk açıklığıyla ayarlanır.
@@ -136,7 +137,8 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     panelMoveTargetPanelId,
     panelMoveRefSourceVertex,
     panelMoveRefTargetPanelId,
-    panelRotateMode
+    panelRotateMode,
+    volumePickMode
   } = useAppStore(useShallow(state => ({
     selectShape: state.selectShape,
     selectSecondaryShape: state.selectSecondaryShape,
@@ -172,6 +174,7 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
     panelMoveRefSourceVertex: state.panelMoveRefSourceVertex,
     panelMoveRefTargetPanelId: state.panelMoveRefTargetPanelId,
     panelRotateMode: state.panelRotateMode,
+    volumePickMode: state.volumePickMode,
   })));
 
   const { scene } = useThree();
@@ -542,9 +545,12 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
   // bastırılır (panel seçimi, yüzey kısıtı seçimi, Add Face) — orada tıklamanın
   // panellere/overlay yüzlerine ulaşması şart. Body modunda gövde tıklanabilir
   // ve blok komple seçilir. Ref modları eskisi gibi ayrıca muaf.
-  const suppressBodyRaycast = !isPanel && hasPanels
+  // HACİM SEÇME (raf/dikme): gövde ışını her zaman bastırılır; olayları
+  // VolumePickOverlay'in görünmez kutusu alır (panel olmayan gövdede de).
+  const isVolumePickOnThis = !isPanel && volumePickMode !== null && isSelected;
+  const suppressBodyRaycast = (!isPanel && hasPanels
     && (panelSelectMode || raycastMode)
-    && !isBodyRefMode && !isMoveRefPickActive;
+    && !isBodyRefMode && !isMoveRefPickActive) || isVolumePickOnThis;
 
   // ── REFERANS MODU (panel extrude → "ref") ──────────────────────────────────
   // Gövde (parent, panel değil) hem referans NESNESİ olarak seçilebilir hem de
@@ -660,6 +666,8 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
           // aracın şeridini — kapatıyordu. stopPropagation YOK: arkadaki panelin
           // kendi (araç) tıklama işleyicisi olayı almaya devam eder.
           if (faceExtrudeMode || panelMoveMode || panelRotateMode) return;
+          // HACİM SEÇME: tıklama araca aittir (seçim/satır kapatma yok).
+          if (volumePickMode) { e.stopPropagation(); return; }
           if (panelSelectMode && hasPanels) return;
           e.stopPropagation();
           if (e.nativeEvent.ctrlKey || e.nativeEvent.metaKey) {
@@ -930,6 +938,10 @@ export const ShapeWithTransform: React.FC<ShapeWithTransformProps> = React.memo(
               </mesh>
             )}
           </>
+        )}
+
+        {isSelected && volumePickMode && !isPanel && (
+          <VolumePickOverlay shape={shape} allShapes={shapes} />
         )}
 
         {!isPanel && (
