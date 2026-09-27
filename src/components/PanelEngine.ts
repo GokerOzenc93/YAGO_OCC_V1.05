@@ -1,17 +1,20 @@
 import * as THREE from 'three';
-import { useAppStore, type Shape, type VirtualFace } from '../store';
-import { matchReferenceFace, resolveReferenceFacePlane, type ExtrudeStep } from './FaceExtrudeService';
-import { getFacesAndGroups } from './GeometryUtils';
-import { convexHull2D, panelHasRotation } from './FaceRegion';
-import { effectiveBodyGeometry, vertexModsKey } from './VertexEditorService';
-import { getUnifiedSteps, stepRefTargets, type TransformStep } from './PanelSteps';
-import { isInteriorPanel, syncPanelGroups } from './PanelGroupService';
+import { type PanelGroup, type Shape, type VirtualFace, childPanelsOf, panelOfVf, shapeById, useAppStore, vfOfPanel } from '../store';
+import { type ExtrudeStep, type TransformStep, applyExtrudeSteps, getUnifiedSteps, matchReferenceFace, resolveReferenceFacePlane, stepRefTargets } from './PanelOps';
+import { computeFaceComponentContour, computeFreeRegionLocal, convexHull2D, panelHasRotation, panelIsTiltedSlab } from './FaceRegion';
 import {
-  axisDirToVec, getFacePlaneAxes, resolveVfFracPoint, vfRawMinAlong, rotateAboutAxis, signedAngleAboutAxis,
-  angleToTouchPlane, normDeg, worldBboxOf, pointFromFracBox, boundsOverlapBox, fmtBounds, fmtVec,
-  uniqueMeshPoints, panelThickness, type Vec3,
-} from './PanelMath';
+  type CoplanarFaceGroup, type FaceData, type Vec3, angleToTouchPlane, axisDirToVec, axisIndexOf, boundsOverlapBox, convertReplicadToThreeGeometry,
+  createPanelFromVirtualFace, createReplicadBox, effectiveBodyGeometry, errMsg, findFaceByDescriptor, fmtBounds, fmtBox3, fmtVec, getFacePlaneAxes,
+  getFacesAndGroups, getShapeMatrix, isFlatNormal, localBboxOf, normDeg, panelThickness, pointFromFracBox, projRange, resolveVfFracPoint,
+  rotateAboutAxis, round1, uniqueMeshPoints, vertexModsKey, vfRawMinAlong, worldBboxOf,
+} from './Geometry';
+import { isInteriorPanel, isInteriorVf, recalculateInteriorVfs, syncPanelGroups } from './PanelGroupService';
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   PANEL MOTORU — (A) rebuildPanelsForParent: bir gövdenin panellerini VF sırası
+   (basan/basılan), adımlar, bölge ve kesimlerle yeniden üretir; (B) VF bölge
+   yeniden hesabı (gövde değişince sanal yüzlerin yeniden türetilmesi).
+   ═══════════════════════════════════════════════════════════════════════════ */
 // ═══════════════════════════════════════════════════════════════════════════
 // PANEL MOTORU — rebuild çekirdeği.
 //
@@ -34,7 +37,6 @@ type CreatePanelFn = (v: Vec3[], n: Vec3, t: number, e?: number) => Promise<any>
 type ToGeometryFn = (s: any) => THREE.BufferGeometry;
 export type RefContact = 'arm' | 'rest';
 
-const shapeById = (id: string | undefined) => useAppStore.getState().shapes.find(s => s.id === id);
 const vfNormal = (vf: VirtualFace) => new THREE.Vector3(...(vf.normal as Vec3)).normalize();
 
 /** Pivot: VF'ye oransal çıpadan (asıl) ya da mutlak pivottan (yedek). */
@@ -49,7 +51,7 @@ function resolveScaledMoveValue(step: any, vf: VirtualFace): number {
   if (step.isFixed) return original;
   const span0 = step.anchor?.faceSpanAlongAxis;
   if (!span0 || span0 < 1 || !vf?.vertices || vf.vertices.length < 3) return original;
-  const idx = step.axis[0] === 'x' ? 0 : step.axis[0] === 'y' ? 1 : 2;
+  const idx = axisIndexOf(step.axis);
   let min = Infinity, max = -Infinity;
   for (const v of vf.vertices) { if (v[idx] < min) min = v[idx]; if (v[idx] > max) max = v[idx]; }
   const currentSpan = Math.abs(max - min);
@@ -150,7 +152,6 @@ const round3 = (d: number) => Math.round(d * 1000) / 1000;
  *      İÇİNDEyse panel nişan yüze değene kadar döner ('arm');
  *  (b) değilse panelin referansa bakan büyük yüzeyi çokgenin ilk köşesine
  *      OTURUR ('rest') — referansın ölçüsü değişmez.
- * Eski (nokta tabanlı) bağ: hedef kutusundaki orana nişan alınır.
  * Çözülemezse adımın donmuş açısı (resolvedValue ?? value) döner.
  */
 function resolveRefRotateDeg(
@@ -161,10 +162,9 @@ function resolveRefRotateDeg(
     const armPoint = st.refArmVfFrac
       ? resolveVfFracPoint(st.refArmVfFrac as Vec3, vf)
       : (st.refArmVertex ? new THREE.Vector3(...(st.refArmVertex as Vec3)) : null);
-    if (!armPoint) return { deg: frozen };
     const target = shapeById(st.refTargetPanelId);
-
-    if (st.refTargetFaceNormal && target) {
+    if (!armPoint || !st.refTargetFaceNormal || !target) return { deg: frozen };
+    {
       const plane = resolveReferenceFacePlane(st.refTargetPanelId, st.refTargetFaceGroupIndex ?? -1,
         useAppStore.getState().shapes, st.refTargetFaceNormal, st.refTargetFacePoint);
       if (!plane) {
@@ -194,8 +194,7 @@ function resolveRefRotateDeg(
       const n1 = n0.clone().applyQuaternion(frame).normalize();
       const nOff = vf.vertices.length ? new THREE.Vector3(...vf.vertices[0]).dot(n0) : 0;
       const dP = n0.dot(pivot) - nOff;
-      const owner = useAppStore.getState().shapes.find(s => s.type === 'panel' && (s.parameters as any)?.virtualFaceId === vf.id);
-      const thick = panelThickness(owner);
+      const thick = panelThickness(panelOfVf(vf.id));
       const mOuterAtA = rotateAboutAxis(n1.clone().add(pivot), pivot, axisWorld, sol.deg).sub(pivot).normalize();
       const useInner = mOuterAtA.dot(poly.normal) > 0;
       const k = (useInner ? -thick : 0) - dP;
@@ -209,22 +208,8 @@ function resolveRefRotateDeg(
         'hedef=', st.refTargetPanelId, 'düzlemAçısı=', sol.deg.toFixed(2), 'nişanDüzlemde=', fmtVec(armAt), 'temasKöşesi=', fmtVec(rest.vertex));
       return { deg: round3(rest.deg), contact: 'rest' };
     }
-
-    // Eski nokta tabanlı bağ.
-    const tgtBox = target ? worldBboxOf(target, effectiveBodyGeometry(target)) : null;
-    const targetPoint = (tgtBox && st.refTargetFrac)
-      ? pointFromFracBox(tgtBox, st.refTargetFrac as Vec3)
-      : (st.refTargetVertex ? new THREE.Vector3(...(st.refTargetVertex as Vec3)) : null);
-    if (!targetPoint) {
-      console.warn('[YAGO][REF-DÖN] hedef geometri yok, donmuş açı kullanılıyor:', st.refTargetPanelId);
-      return { deg: frozen };
-    }
-    const deg = signedAngleAboutAxis(armPoint.clone().sub(pivot).applyQuaternion(frame), targetPoint.clone().sub(pivot), axisWorld);
-    if (deg === null) return { deg: frozen };
-    console.log('[YAGO][REF-DÖN] çözülen açı=', deg.toFixed(2), 'hedef=', st.refTargetPanelId, 'hedefNokta=', fmtVec(targetPoint), 'nişan=', fmtVec(armPoint));
-    return { deg: round3(deg) };
   } catch (err) {
-    console.warn('[YAGO][REF-DÖN] açı çözümü hatası, donmuş açı:', (err as any)?.message || String(err));
+    console.warn('[YAGO][REF-DÖN] açı çözümü hatası, donmuş açı:', errMsg(err));
     return { deg: frozen };
   }
 }
@@ -322,35 +307,27 @@ const CORNER_TOL = 1.0;
 
 function hasAnySteps(p: Shape): boolean {
   const q: any = p.parameters || {};
-  return (Array.isArray(q.transformSteps) && q.transformSteps.length > 0)
-    || (Array.isArray(q.rotateSteps) && q.rotateSteps.length > 0)
-    || (Array.isArray(q.extrudeSteps) && q.extrudeSteps.length > 0);
+  return (Array.isArray(q.transformSteps) && q.transformSteps.length > 0) || (Array.isArray(q.extrudeSteps) && q.extrudeSteps.length > 0);
 }
 
-function projRange(verts: Vec3[], dir: THREE.Vector3): { min: number; max: number } {
-  let min = Infinity, max = -Infinity;
-  for (const c of verts) {
-    const d = c[0] * dir.x + c[1] * dir.y + c[2] * dir.z;
-    if (d < min) min = d; if (d > max) max = d;
-  }
-  return { min, max };
-}
+/** Köşe dizisinin yön boyunca izdüşüm aralığı. */
+const vRange = (verts: Vec3[], dir: THREE.Vector3) => projRange(verts.map(c => new THREE.Vector3(c[0], c[1], c[2])), dir);
 
 /** P (önce) ile Q (sonra) konkav iç köşede buluşuyorsa P'nin uzama bilgisi; yoksa null. */
 function concaveCornerJoin(vfP: VirtualFace, vfQ: VirtualFace, tQ: number): { nQ: THREE.Vector3; dQ: number; tQ: number } | null {
   if (!vfP?.vertices || vfP.vertices.length < 3 || !vfQ?.vertices || vfQ.vertices.length < 3) return null;
   const nP = vfNormal(vfP), nQ = vfNormal(vfQ);
   if (Math.abs(nP.dot(nQ)) > 0.02) return null;                                   // dik değil
-  const pP = projRange(vfP.vertices, nP), pQ = projRange(vfQ.vertices, nQ);
+  const pP = vRange(vfP.vertices, nP), pQ = vRange(vfQ.vertices, nQ);
   if (pP.max - pP.min > CORNER_TOL || pQ.max - pQ.min > CORNER_TOL) return null;  // düzlemsel değil
   const dP = (pP.min + pP.max) / 2, dQ = (pQ.min + pQ.max) / 2;
-  if (Math.abs(projRange(vfP.vertices, nQ).min - dQ) > CORNER_TOL) return null;   // P, Q düzleminde başlamıyor
-  if (Math.abs(projRange(vfQ.vertices, nP).min - dP) > CORNER_TOL) return null;   // Q, P düzleminde başlamıyor
+  if (Math.abs(vRange(vfP.vertices, nQ).min - dQ) > CORNER_TOL) return null;   // P, Q düzleminde başlamıyor
+  if (Math.abs(vRange(vfQ.vertices, nP).min - dP) > CORNER_TOL) return null;   // Q, P düzleminde başlamıyor
   const e = new THREE.Vector3().crossVectors(nP, nQ).normalize();
   const pEdge = vfP.vertices.filter(c => Math.abs(c[0] * nQ.x + c[1] * nQ.y + c[2] * nQ.z - dQ) <= CORNER_TOL);
   const qEdge = vfQ.vertices.filter(c => Math.abs(c[0] * nP.x + c[1] * nP.y + c[2] * nP.z - dP) <= CORNER_TOL);
   if (pEdge.length < 2 || qEdge.length < 2) return null;
-  const pe = projRange(pEdge, e), qe = projRange(qEdge, e);
+  const pe = vRange(pEdge, e), qe = vRange(qEdge, e);
   if (pe.max - pe.min < 1) return null;
   if (qe.min > pe.min + 2 || qe.max < pe.max - 2) return null;
   return { nQ, dQ, tQ };
@@ -364,7 +341,7 @@ function cornerJoinedVertices(panel: Shape, vf: VirtualFace, vfs: VirtualFace[],
   for (const q of siblings) {
     // İç panel (raf/dikme) köşe birleşimine girmez: gövde panelini uzatmaz, ucunu kapattırmaz.
     if (q.id === panel.id || orderOf(q) <= myOrder || hasAnySteps(q) || isInteriorPanel(q) || isInteriorPanel(panel)) continue;
-    const vfQ = vfs.find(f => f.id === (q.parameters as any)?.virtualFaceId);
+    const vfQ = vfOfPanel(q, vfs);
     if (!vfQ) continue;
     const j = concaveCornerJoin(vf, vfQ, panelThickness(q));
     if (!j) continue;
@@ -389,8 +366,16 @@ function cornerJoinedVertices(panel: Shape, vf: VirtualFace, vfs: VirtualFace[],
 /** VF normali dünya eksenlerinden birine paralel değilse yüz eğiktir (vertex düzenlemesi). */
 function vfIsTilted(vf: VirtualFace | undefined | null): boolean {
   if (!vf?.normal) return false;
-  const n = vfNormal(vf);
-  return Math.max(Math.abs(n.x), Math.abs(n.y), Math.abs(n.z)) < 0.999;
+  return !isFlatNormal(vfNormal(vf));
+}
+
+/** Düzlem üzerinde ±H "sonsuz" dikdörtgen (yarım-uzay kesicisi tabanı). */
+function hugeRectOnPlane(center: THREE.Vector3, n: THREE.Vector3, H: number): Vec3[] {
+  const { u, v } = getFacePlaneAxes(n);
+  return [[-H, -H], [H, -H], [H, H], [-H, H]].map(([a, b]) => {
+    const w = center.clone().addScaledVector(u, a).addScaledVector(v, b);
+    return [w.x, w.y, w.z] as Vec3;
+  });
 }
 
 function rotatedNormalOf(panel: Shape, vf: VirtualFace): THREE.Vector3 | null {
@@ -419,20 +404,19 @@ async function cutByRotatedPressers(
     if (r.id === panel.id || orderOf(r) >= myOrder) continue;
     // İÇ PANEL ASLA BASMAZ: dönmüş bir raf/dikme gövde panelini eğik düzlemiyle biçmez.
     if (isInteriorPanel(r) && !isInteriorPanel(panel)) continue;
-    if (!panelHasRotation(r) && !vfIsTilted(vfs.find(f => f.id === (r.parameters as any)?.virtualFaceId))) continue;
+    if (!panelHasRotation(r) && !vfIsTilted(vfOfPanel(r, vfs))) continue;
     if (stepRefTargets(r).rotate.has(panel.id)) {
       console.log('[YAGO][DÖNÜŞ-KESİM] MUAF', panel.id, '<-', r.id, '— r bu paneli REF DÖNÜŞ hedefi alıyor, düzlem kesimi yok');
       continue;
     }
     const rGeo = shapeById(r.id)?.geometry;
-    const vfR = vfs.find(f => f.id === (r.parameters as any)?.virtualFaceId);
+    const vfR = vfOfPanel(r, vfs);
     if (!rGeo || !vfR) continue;
     const nR = rotatedNormalOf(r, vfR);
     if (!nR || Math.abs(nR.dot(nS)) > 0.98) continue; // paralel yüz: kesim anlamsız
     if (!rGeo.getAttribute('position')) continue;
     const pts = uniqueMeshPoints(rGeo);
-    let dMin = Infinity, dMax = -Infinity;
-    for (const v of pts) { const d = v.dot(nR); if (d < dMin) dMin = d; if (d > dMax) dMax = d; }
+    const { min: dMin, max: dMax } = projRange(pts, nR);
     if (!(dMax - dMin > 1)) continue;
     const refD = ref.dot(nR);
     const keepPlus = refD > (dMin + dMax) / 2;           // panel çapanın tarafında kalır
@@ -446,15 +430,10 @@ async function cutByRotatedPressers(
     if (!slabPts.some(c => (c[0] * nR.x + c[1] * nR.y + c[2] * nR.z - dNear) * (keepPlus ? 1 : -1) < -0.5)) continue;
     try {
       // 1) Yarım-uzay: yakın yüz düzleminde dev dikdörtgen, R gövdesine doğru.
-      const { u: ur, v: vr } = getFacePlaneAxes(nR);
       const cR = new THREE.Vector3(); for (const q of pts) cR.add(q); cR.divideScalar(pts.length);
       const onPlane = cR.clone().addScaledVector(nR, dNear - cR.dot(nR));
       const H = 100000;
-      const rect = [[-H, -H], [H, -H], [H, H], [-H, H]].map(([a, b]) => {
-        const w = onPlane.clone().addScaledVector(ur, a).addScaledVector(vr, b);
-        return [w.x, w.y, w.z] as Vec3;
-      });
-      const half = await createPanelFromVirtualFace(rect, [toward.x, toward.y, toward.z], H, 0);
+      const half = await createPanelFromVirtualFace(hugeRectOnPlane(onPlane, nR, H), [toward.x, toward.y, toward.z], H, 0);
       // 2) Siluet prizması: R'nin S yüzüne izdüşümü, S gövdesinin içinden geçirilir.
       const { u: us, v: vs } = getFacePlaneAxes(nS);
       const hull = convexHull2D(pts.map(q => ({ x: q.dot(us), y: q.dot(vs) })));
@@ -469,7 +448,7 @@ async function cutByRotatedPressers(
       console.log('[YAGO][DÖNÜŞ-KESİM]', panel.id, '<-', r.id, 'düzlemN=', fmtVec(nR, 2),
         'yakınYüz=', dNear.toFixed(1), 'çapa=', refD.toFixed(1), keepPlus ? '(+ taraf kalır)' : '(− taraf kalır)', 'siluetKöşeN=', hull.length);
     } catch (err) {
-      console.warn('[YAGO][DÖNÜŞ-KESİM] kesim hatası:', panel.id, '<-', r.id, (err as any)?.message || String(err));
+      console.warn('[YAGO][DÖNÜŞ-KESİM] kesim hatası:', panel.id, '<-', r.id, errMsg(err));
     }
   }
   return out;
@@ -500,11 +479,11 @@ async function shapeRefRotateTargets(
   const { u: ur, v: vr } = getFacePlaneAxes(nR);
   try {
     const pts = uniqueMeshPoints(convertReplicadToThreeGeometry(rp));
-    for (const p of pts) { const d = p.dot(nR); dOuter = Math.max(dOuter, d); dInner = Math.min(dInner, d); }
+    ({ max: dOuter, min: dInner } = projRange(pts, nR));
     outerHull = convexHull2D(pts.filter(p => p.dot(nR) > dOuter - 0.5).map(p => ({ x: p.dot(ur), y: p.dot(vr) })));
     innerHull = convexHull2D(pts.filter(p => p.dot(nR) < dInner + 0.5).map(p => ({ x: p.dot(ur), y: p.dot(vr) })));
   } catch (err) {
-    console.warn('[YAGO][REF-DÖN-PAH] yüz çokgeni çıkarılamadı:', panel.id, (err as any)?.message || String(err));
+    console.warn('[YAGO][REF-DÖN-PAH] yüz çokgeni çıkarılamadı:', panel.id, errMsg(err));
     return;
   }
   if (!Number.isFinite(dOuter) || !Number.isFinite(dInner)) return;
@@ -545,8 +524,7 @@ async function shapeRefRotateTargets(
       // Normal −nR: slab +nR yönünde uzar → seçilen yüzeyin ÖTESİ.
       const cutter = await createPanelFromVirtualFace(poly, [-nR.x, -nR.y, -nR.z], 100000, 0);
       if (!cutter) continue;
-      const tb = new THREE.Box3().setFromBufferAttribute(t.geometry.getAttribute('position') as THREE.BufferAttribute);
-      if (!boundsOverlapBox(cutter.boundingBox.bounds, tb)) {
+      if (!boundsOverlapBox(cutter.boundingBox.bounds, localBboxOf(t.geometry)!)) {
         console.log('[YAGO][REF-DÖN-PAH]', tid, '<-', panel.id, 'dış yüzey prizması referansa değmiyor, pah yok');
         continue;
       }
@@ -560,7 +538,7 @@ async function shapeRefRotateTargets(
           : tIsBasan ? 'referans BASAN: kenar dönen panelin DIŞ yüzeyine göre pahlandı' : 'referans BASILAN: dönen panelin İÇ (alt) yüzeyine göre kısaltıldı',
         'N=', fmtVec(nR, 2), 'D=', dPlane.toFixed(1), 'kutu', before, '→', after, '(ölçü/VF dokunulmadı)');
     } catch (err) {
-      console.warn('[YAGO][REF-DÖN-PAH] pah hatası:', tid, '<-', panel.id, (err as any)?.message || String(err));
+      console.warn('[YAGO][REF-DÖN-PAH] pah hatası:', tid, '<-', panel.id, errMsg(err));
     }
   }
 }
@@ -584,7 +562,6 @@ async function effectiveBodySolid(parent: Shape): Promise<any | null> {
   const key = vertexModsKey(mods);
   const cached = parent.geometry ? _bodySolidCache.get(parent.geometry) : undefined;
   if (cached && cached.key === key) return cached.solid.clone();
-  const { createPanelFromVirtualFace } = await import('./ReplicadService');
   const geo = effectiveBodyGeometry(parent);
   const { groups } = getFacesAndGroups(geo);
   geo.computeBoundingBox();
@@ -600,19 +577,14 @@ async function effectiveBodySolid(parent: Shape): Promise<any | null> {
   let cutN = 0;
   for (const g of groups) {
     const n = outwardNormal(g, center);
-    const { u, v } = getFacePlaneAxes(n);
     const H = M * 2;
-    const rect = [[-H, -H], [H, -H], [H, H], [-H, H]].map(([a, b]) => {
-      const w = g.center.clone().addScaledVector(u, a).addScaledVector(v, b);
-      return [w.x, w.y, w.z] as Vec3;
-    });
     // Dış yarım-uzay (createPanel −normal yönüne uzar → normal = −n).
-    const outside = await createPanelFromVirtualFace(rect, [-n.x, -n.y, -n.z], H, 0);
+    const outside = await createPanelFromVirtualFace(hugeRectOnPlane(g.center, n, H), [-n.x, -n.y, -n.z], H, 0);
     if (!outside) continue;
-    try { solid = solid.cut(outside); cutN++; } catch (e) { console.warn('[YAGO][GÖVDE-KATI] yarım-uzay kesimi hatası:', (e as any)?.message || e); }
+    try { solid = solid.cut(outside); cutN++; } catch (e) { console.warn('[YAGO][GÖVDE-KATI] yarım-uzay kesimi hatası:', errMsg(e)); }
   }
   console.log('[YAGO][GÖVDE-KATI]', parent.id, 'düzenlenmiş gövde katısı kuruldu: yüzN=', groups.length, 'kesimN=', cutN,
-    'kutu=', fmtBounds(solid), 'mesh=', [bb.min, bb.max].map(q => fmtVec(q, 0)).join('..'), '(içbükey gövdede dışbükey örtü)');
+    'kutu=', fmtBounds(solid), 'mesh=', fmtBox3(bb), '(içbükey gövdede dışbükey örtü)');
   if (parent.geometry) _bodySolidCache.set(parent.geometry, { key, solid });
   return solid.clone();
 }
@@ -627,8 +599,7 @@ function tiltedBodyPlanes(parent: Shape): Array<{ n: THREE.Vector3; d: number }>
   const center = new THREE.Vector3(); geo.boundingBox!.getCenter(center);
   const out: Array<{ n: THREE.Vector3; d: number }> = [];
   for (const g of groups) {
-    const n0 = g.normal.clone().normalize();
-    if (Math.max(Math.abs(n0.x), Math.abs(n0.y), Math.abs(n0.z)) >= 0.999) continue;
+    if (isFlatNormal(g.normal.clone().normalize(), 0.999 - Number.EPSILON)) continue;
     const n = outwardNormal(g, center);
     out.push({ n, d: g.center.dot(n) });
   }
@@ -661,17 +632,24 @@ function extendVertsOnTiltedPlanes(
   return { verts: out, moved };
 }
 
-/** Düz panel, düzenlenmiş gövde katısıyla kesiştirilir (eğik uç pahı); hata → olduğu gibi. */
-async function clipToBodyIfNeeded(rp: any, panel: Shape, parent: Shape): Promise<any> {
+/**
+ * Paneli gövde katısıyla kesiştirir; hata → olduğu gibi. Düz panelde (tag EĞİK-UÇ)
+ * yalnız düzenlenmiş gövde; dönmüş panelde (DÖNÜŞ-SIĞDIR) gövde yoksa parametre kutusu.
+ */
+async function intersectWithBody(rp: any, panel: Shape, parent: Shape, tag: string, fallbackBox: boolean): Promise<any> {
   try {
-    const body = await effectiveBodySolid(parent);
+    let body = await effectiveBodySolid(parent);
+    if (!body && fallbackBox) {
+      const pp: any = parent.parameters || {};
+      body = await createReplicadBox({ width: parseFloat(pp.width) || 1, height: parseFloat(pp.height) || 1, depth: parseFloat(pp.depth) || 1 });
+    }
     if (!body) return rp;
     const before = fmtBounds(rp);
     const out = rp.intersect(body);
-    console.log('[YAGO][EĞİK-UÇ]', panel.id, 'gövde kesişimi (eğik yüz pahı)', before, '→', fmtBounds(out));
+    console.log(`[YAGO][${tag}]`, panel.id, 'gövde kesişimi', before, '→', fmtBounds(out));
     return out;
   } catch (err) {
-    console.warn('[YAGO][EĞİK-UÇ] gövde kesişimi hatası:', panel.id, (err as any)?.message || String(err));
+    console.warn(`[YAGO][${tag}] gövde kesişimi hatası:`, panel.id, errMsg(err));
     return rp;
   }
 }
@@ -685,22 +663,7 @@ async function clipToBodyIfNeeded(rp: any, panel: Shape, parent: Shape): Promise
 async function fitRotatedPanel(
   rp: any, panel: Shape, parent: Shape, siblings: Shape[], orderOf: (s: Shape) => number, refContacts: Map<string, RefContact>,
 ): Promise<any> {
-  let out = rp;
-  try {
-    let body = await effectiveBodySolid(parent);
-    if (!body) {
-      const { createReplicadBox } = await import('./ReplicadService');
-      const pp: any = parent.parameters || {};
-      body = await createReplicadBox({ width: parseFloat(pp.width) || 1, height: parseFloat(pp.height) || 1, depth: parseFloat(pp.depth) || 1 });
-    }
-    if (body) {
-      const before = fmtBounds(out);
-      out = out.intersect(body);
-      console.log('[YAGO][DÖNÜŞ-SIĞDIR]', panel.id, 'gövde kesişimi', before, '→', fmtBounds(out));
-    }
-  } catch (err) {
-    console.warn('[YAGO][DÖNÜŞ-SIĞDIR] gövde kesişimi hatası:', panel.id, (err as any)?.message || String(err));
-  }
+  let out = await intersectWithBody(rp, panel, parent, 'DÖNÜŞ-SIĞDIR', true);
   const myOrder = orderOf(panel);
   const myRefTargets = stepRefTargets(panel).rotate;
   for (const b of siblings) {
@@ -715,12 +678,11 @@ async function fitRotatedPanel(
     const fresh = shapeById(b.id);
     if (!fresh?.replicadShape || !fresh.geometry) continue;
     try {
-      const bb = new THREE.Box3().setFromBufferAttribute(fresh.geometry.getAttribute('position') as THREE.BufferAttribute);
-      if (!boundsOverlapBox(out.boundingBox.bounds, bb)) continue;
+      if (!boundsOverlapBox(out.boundingBox.bounds, localBboxOf(fresh.geometry)!)) continue;
       out = out.cut(fresh.replicadShape.clone());
       console.log('[YAGO][DÖNÜŞ-SIĞDIR]', panel.id, isRefTarget ? 'REFERANS panelle kesildi <-' : 'basan kardeşle kesildi <-', b.id);
     } catch (err) {
-      console.warn('[YAGO][DÖNÜŞ-SIĞDIR] kardeş kesimi hatası:', panel.id, '<-', b.id, (err as any)?.message || String(err));
+      console.warn('[YAGO][DÖNÜŞ-SIĞDIR] kardeş kesimi hatası:', panel.id, '<-', b.id, errMsg(err));
     }
   }
   return out;
@@ -760,6 +722,19 @@ export async function rebuildPanelsForParent(parentShapeId: string, opts?: Rebui
   }
 }
 
+/** Çözülen değerleri adımlara `resolvedValue` olarak geri yazar; hiçbiri değişmediyse null. */
+function mergeResolved<T extends { id: string; resolvedValue?: number }>(steps: T[], resolved: Array<{ id: string; value: number }>): T[] | null {
+  if (!resolved.length) return null;
+  const byId = new Map(resolved.map(r => [r.id, r.value]));
+  let changed = false;
+  const merged = steps.map(s => {
+    const rv = byId.get(s.id);
+    if (rv != null && s.resolvedValue !== rv) { changed = true; return { ...s, resolvedValue: rv }; }
+    return s;
+  });
+  return changed ? merged : null;
+}
+
 /** Panel kimliğindeki zaman damgası (VF'siz panellerin sıra yedeği). */
 function panelTs(s: Shape): number {
   const m = /(\d{10,})/.exec(s.id);
@@ -767,14 +742,12 @@ function panelTs(s: Shape): number {
 }
 
 async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<void> {
-  const parent = useAppStore.getState().shapes.find(s => s.id === parentShapeId);
+  const parent = shapeById(parentShapeId);
   if (!parent) return;
-  const { recalculateVirtualFacesForShape } = await import('./VirtualFaceUpdateService');
-  const { createPanelFromVirtualFace, convertReplicadToThreeGeometry } = await import('./ReplicadService');
 
   // TAZE STATE: dinamik import'lar sırasında store güncellenmiş olabilir.
   const fresh = useAppStore.getState();
-  const parentFresh = fresh.shapes.find(s => s.id === parentShapeId) || parent;
+  const parentFresh = shapeById(parentShapeId, fresh.shapes) || parent;
   const updateShape = fresh.updateShape;
   const vfOrder = new Map<string, number>();
   fresh.virtualFaces.forEach((f, i) => vfOrder.set(f.id, i));
@@ -785,7 +758,7 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
 
   // SIRA: referans verilen panel ÖNCE üretilir (bağ güncel geometriden çözülsün);
   // aralarında bağ olmayan çiftlerde VF sırası (basan/basılan) geçerlidir.
-  const unsorted = fresh.shapes.filter(s => s.type === 'panel' && (s.parameters as any)?.parentShapeId === parentShapeId);
+  const unsorted = childPanelsOf(parentShapeId, fresh.shapes);
   const refIds = new Map<string, Set<string>>();
   for (const s of unsorted) {
     const r = stepRefTargets(s);
@@ -811,27 +784,25 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
   if (changedChild && !opts?.orderChanged) {
     const changedOrder = orderOf(changedChild);
     const pressed = children.filter(c => c.id !== changedChild.id && orderOf(c) > changedOrder);
-    const vfOf = (s: Shape) => fresh.virtualFaces.find(f => f.id === (s.parameters as any)?.virtualFaceId);
-    const vq = vfOf(changedChild);
+    const vq = vfOfPanel(changedChild, fresh.virtualFaces);
     const cornerPartner = !!vq && children.some(c => {
       if (c.id === changedChild.id || orderOf(c) >= changedOrder) return false;
-      const vp = vfOf(c);
+      const vp = vfOfPanel(c, fresh.virtualFaces);
       return !!vp && !!concaveCornerJoin(vp, vq, panelThickness(changedChild));
     });
     const refDependents = children.filter(c => c.id !== changedChild.id && refIds.get(c.id)!.has(changedChild.id));
-    const notchesTargets = stepRefTargets(changedChild).rotate.size > 0;
-    if (pressed.length) console.log('[YAGO][REBUILD] TEK-PANEL MODU İPTAL', changedChild.id, 'sıra=', changedOrder,
-      'basılanKardeşN=', pressed.length, '→ basan panel taşındı/değişti, basılan kardeşlerin VF bölgeleri yeniden çözülecek');
-    if (cornerPartner) console.log('[YAGO][REBUILD] TEK-PANEL MODU İPTAL', changedChild.id, '→ önceki panelle iç köşe ortağı, köşe uzaması yeniden çözülecek');
-    if (refDependents.length) console.log('[YAGO][REBUILD] TEK-PANEL MODU İPTAL', changedChild.id,
-      '→ referans bağımlıları var:', refDependents.map(c => c.id).join(','), '(referans köşe/düzlem güncel geometriden yeniden çözülecek)');
-    if (notchesTargets) console.log('[YAGO][REBUILD] TEK-PANEL MODU İPTAL', changedChild.id,
-      '→ referans panel(ler)in kenarını pahlıyor, referans sıfırdan üretilip yeniden pahlanacak');
     // RAF/DİKME GRUBU VARSA: gövde paneli değişince iç gruplar hacmi yeniden
     // çözmeli (gövde panelleri iç grupları HER sırada sınırlar) → tam rebuild.
     const boundsGroups = !isInteriorPanel(changedChild) && fresh.panelGroups.some(g => g.shapeId === parentShapeId);
-    if (boundsGroups) console.log('[YAGO][REBUILD] TEK-PANEL MODU İPTAL', changedChild.id, '→ gövdede raf/dikme grubu var, hacimler yeniden çözülecek');
-    singleMode = !pressed.length && !cornerPartner && !refDependents.length && !notchesTargets && !boundsGroups;
+    const cancel: Array<[boolean, string]> = [
+      [pressed.length > 0, `sıra= ${changedOrder} basılanKardeşN= ${pressed.length} → basan panel taşındı/değişti, basılan kardeşlerin VF bölgeleri yeniden çözülecek`],
+      [cornerPartner, '→ önceki panelle iç köşe ortağı, köşe uzaması yeniden çözülecek'],
+      [refDependents.length > 0, `→ referans bağımlıları var: ${refDependents.map(c => c.id).join(',')} (referans köşe/düzlem güncel geometriden yeniden çözülecek)`],
+      [stepRefTargets(changedChild).rotate.size > 0, '→ referans panel(ler)in kenarını pahlıyor, referans sıfırdan üretilip yeniden pahlanacak'],
+      [boundsGroups, '→ gövdede raf/dikme grubu var, hacimler yeniden çözülecek'],
+    ];
+    for (const [hit, why] of cancel) if (hit) console.log('[YAGO][REBUILD] TEK-PANEL MODU İPTAL', changedChild.id, why);
+    singleMode = !cancel.some(([hit]) => hit);
   }
 
   const parentPos = [...parentFresh.position] as Vec3;
@@ -840,8 +811,7 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
 
   const buildPanel = async (panel: Shape, vfsIn: VirtualFace[]): Promise<void> => {
     try {
-      const vfId = (panel.parameters as any)?.virtualFaceId;
-      const vf = vfId ? vfsIn.find(f => f.id === vfId) : undefined;
+      const vf = vfOfPanel(panel, vfsIn);
       if (!vf || !vf.vertices || vf.vertices.length < 3 || !(panel.parameters as any)?.parentShapeId) return;
       const thickness = panelThickness(panel);
       let steps = getUnifiedSteps(panel);
@@ -887,14 +857,8 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
 
       // Adımlar (move/rotate) sırayla; REF dönüş açıları adıma geri yazılır (değiştiyse).
       const { ops, resolvedRotations } = composeSteps(steps, vf);
-      if (resolvedRotations.length) {
-        const byId = new Map(resolvedRotations.map(r => [r.id, r.value]));
-        steps = steps.map((st: any) => {
-          const rv = byId.get(st.id);
-          if (rv != null && st.resolvedValue !== rv) { stepsChanged = true; return { ...st, resolvedValue: rv }; }
-          return st;
-        });
-      }
+      const mergedRot = mergeResolved(steps, resolvedRotations);
+      if (mergedRot) { steps = mergedRot as TransformStep[]; stepsChanged = true; }
       let refDeltaApplied: Vec3 | null = null;
       for (const op of ops) {
         if (op.kind === 'translate') {
@@ -902,13 +866,8 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
         } else if (op.kind === 'refTranslate') {
           // rp'nin o anki DÜNYA kutusu (mesh kutusu + parentPos) → hedef köşeye kilitli delta.
           let rpWorldBox: THREE.Box3;
-          try {
-            const g = convertReplicadToThreeGeometry(rp);
-            rpWorldBox = new THREE.Box3().setFromBufferAttribute(g.getAttribute('position') as THREE.BufferAttribute)
-              .translate(new THREE.Vector3(parentPos[0], parentPos[1], parentPos[2]));
-          } catch {
-            rpWorldBox = new THREE.Box3(new THREE.Vector3(), new THREE.Vector3());
-          }
+          try { rpWorldBox = localBboxOf(convertReplicadToThreeGeometry(rp))!.translate(new THREE.Vector3(...parentPos)); }
+          catch { rpWorldBox = new THREE.Box3(new THREE.Vector3(), new THREE.Vector3()); }
           const d = resolveRefTranslateDelta(op, rpWorldBox);
           // TEK KAYNAK: uygulanan delta panele yazılır; damgalama bunu okur (yeniden çözmez).
           refDeltaApplied = [d.x, d.y, d.z];
@@ -920,7 +879,7 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       const refContacts = new Map<string, RefContact>();
       for (const r of resolvedRotations) if (r.targetId && r.contact) refContacts.set(r.targetId, r.contact);
       if (isRotated) rp = await fitRotatedPanel(rp, panel, parentFresh, children, orderOf, refContacts);
-      else if (needsBodyClip) rp = await clipToBodyIfNeeded(rp, panel, parentFresh);
+      else if (needsBodyClip) rp = await intersectWithBody(rp, panel, parentFresh, 'EĞİK-UÇ', false);
 
       // YÜZ EXTRUDE: panel artık doğru çerçevede; saklı adımlar aynı çerçevede uygulanır.
       let meshed: { shape: any; geometry: THREE.BufferGeometry } | null = null;
@@ -929,28 +888,17 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       const extrudeSteps: ExtrudeStep[] | undefined = (panel.parameters as any)?.extrudeSteps;
       if (Array.isArray(extrudeSteps) && extrudeSteps.length > 0) {
         try {
-          const { applyExtrudeSteps } = await import('./FaceExtrudeService');
           const ext = await applyExtrudeSteps(rp, extrudeSteps, useAppStore.getState().shapes);
           if (ext) {
             rp = ext.shape;
             meshed = { shape: ext.shape, geometry: ext.geometry };
-            const es = new THREE.Vector3();
-            new THREE.Box3().setFromBufferAttribute(ext.geometry.getAttribute('position') as THREE.BufferAttribute).getSize(es);
+            const es = localBboxOf(ext.geometry)!.getSize(new THREE.Vector3());
             const dsz = [es.x, es.y, es.z].sort((a, b) => b - a);
-            dimsUpdate = { width: Math.round(dsz[0] * 10) / 10, height: Math.round(dsz[1] * 10) / 10, depth: Math.round(dsz[2] * 10) / 10 };
-            if (ext.resolved.length) {
-              const byId = new Map(ext.resolved.map(r => [r.id, r.value]));
-              let changed = false;
-              const merged = extrudeSteps.map(s => {
-                const rv = byId.get(s.id);
-                if (rv != null && s.resolvedValue !== rv) { changed = true; return { ...s, resolvedValue: rv }; }
-                return s;
-              });
-              if (changed) resolvedStepsUpdate = merged;
-            }
+            dimsUpdate = { width: round1(dsz[0]), height: round1(dsz[1]), depth: round1(dsz[2]) };
+            resolvedStepsUpdate = mergeResolved(extrudeSteps, ext.resolved) as ExtrudeStep[] | null;
           }
         } catch (err) {
-          console.error('[YAGO][MOTOR] extrude adımı hatası:', panel.id, (err as any)?.message || String(err));
+          console.error('[YAGO][MOTOR] extrude adımı hatası:', panel.id, errMsg(err));
         }
       }
 
@@ -973,7 +921,7 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
         ...(Object.keys(paramPatch).length ? { parameters: { ...panel.parameters, ...paramPatch } } : {}),
       } as any);
     } catch (err) {
-      console.error('[YAGO][MOTOR] panel üretim hatası:', panel.id, (err as any)?.message || String(err));
+      console.error('[YAGO][MOTOR] panel üretim hatası:', panel.id, errMsg(err));
     }
   };
 
@@ -988,7 +936,7 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
   // geometrisiyle çözülen bölgeleri düzeltir. Sonunda VF'ler store'a yazılır.
   const recalc = (vfs: VirtualFace[]) => {
     const st = useAppStore.getState();
-    const parentNow = st.shapes.find(s => s.id === parentShapeId) || parentFresh;
+    const parentNow = shapeById(parentShapeId, st.shapes) || parentFresh;
     return recalculateVirtualFacesForShape(parentNow, vfs, st.shapes, st.panelGroups);
   };
   let currentVfs = recalc(useAppStore.getState().virtualFaces);
@@ -1010,8 +958,505 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
   }
   useAppStore.setState(st => ({ virtualFaces: st.virtualFaces.map(f => (patches.has(f.id) ? { ...f, ...patches.get(f.id) } : f)) }));
   // Raf/dikme gruplarının store'daki hacim/boşluk değerleri son çözümle eşitlenir.
-  try { syncPanelGroups(parentShapeId); } catch (err) { console.warn('[YAGO][GRUP-SENKRON] hata:', (err as any)?.message || String(err)); }
+  try { syncPanelGroups(parentShapeId); } catch (err) { console.warn('[YAGO][GRUP-SENKRON] hata:', errMsg(err)); }
 }
 
 /** VF yeniden hesabının sahip olduğu alanlar (geri kalanı kullanıcı verisidir). */
-const VF_REGEN_FIELDS = ['normal', 'center', 'vertices', 'rawFaceBBox', 'sideRelations', 'regionAnchor', 'contactRelations'] as const;
+const VF_REGEN_FIELDS = ['normal', 'center', 'vertices', 'rawFaceBBox', 'sideRelations', 'regionAnchor'] as const;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// VirtualFaceUpdateService — VF (sanal yüz) BÖLGE YENİDEN HESABI.
+//
+// Her VF, eşleşen gövde yüzünün konturundan yeniden üretilir ve kardeş
+// panellerin AYAK İZLERİ (damga) ile kırpılır. Damga yetkisi TEK YÖNLÜ: bir
+// VF'yi yalnız VF sırasında kendinden ÖNCE gelen (basan) kardeşler damgalar;
+// istisna yalnız paneli fiziksel olarak bu yüze doğru İLERLETEN adımlardır
+// (farklı yüzdeki taşıma; işaretli miktarı yüze doğru olan extrude).
+// Datum'unu damgalayamazsın: ref-taşıma/ref-dönüş/extrude-ref hedefi olan
+// panelin bölgesi, onu referans alan panel tarafından kırpılmaz.
+// Her VF parentFaceShape modelindedir: VF = eşleşen yüz bileşeninin konturu ∩ serbest bölge.
+// Serbest bölgenin kendisi FaceRegion.computeFreeRegionLocal'dadır (yakalama
+// ile aynı fonksiyon → highlight = panel).
+// ═══════════════════════════════════════════════════════════════════════════
+
+type RawBBox = { xMin: number; xMax: number; yMin: number; yMax: number; xSpan: number; ySpan: number };
+
+/** Noktaların (u,v) kutusu; span'ler 1e-6 ile alttan sınırlı. */
+function uvBox(pts: Iterable<{ x: number; y: number }>): RawBBox {
+  let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
+  for (const q of pts) { if (q.x < xMin) xMin = q.x; if (q.x > xMax) xMax = q.x; if (q.y < yMin) yMin = q.y; if (q.y > yMax) yMax = q.y; }
+  return { xMin, xMax, yMin, yMax, xSpan: Math.max(xMax - xMin, 1e-6), ySpan: Math.max(yMax - yMin, 1e-6) };
+}
+/** Bir düzlem tabanı (n,u,v) için 3B↔2B dönüşümleri. */
+function planeFrame(n3: THREE.Vector3) {
+  const { u, v } = getFacePlaneAxes(n3);
+  const dU = (a: Vec3) => a[0] * u.x + a[1] * u.y + a[2] * u.z;
+  const dV = (a: Vec3) => a[0] * v.x + a[1] * v.y + a[2] * v.z;
+  const dN = (a: Vec3) => a[0] * n3.x + a[1] * n3.y + a[2] * n3.z;
+  const at = (pu: number, pv: number, pn: number): Vec3 => [u.x * pu + v.x * pv + n3.x * pn, u.y * pu + v.y * pv + n3.y * pn, u.z * pu + v.z * pv + n3.z * pn];
+  return { u, v, dU, dV, dN, at };
+}
+
+/** VF bölge çokgeninden (ön halka) + kalınlık kadar geri (arka halka) indeksli prizma. */
+function buildPrismFromVertices(vertices: Vec3[], normal: Vec3, thickness: number): THREE.BufferGeometry | null {
+  const N = vertices.length;
+  const n = new THREE.Vector3(normal[0], normal[1], normal[2]).normalize();
+  const front = vertices.map(([x, y, z]) => new THREE.Vector3(x, y, z));
+  const back = front.map(p => p.clone().addScaledVector(n, -thickness)); // extrude(-th) ile aynı yön
+  const arr = new Float32Array(N * 2 * 3);
+  [...front, ...back].forEach((p, i) => { arr[i * 3] = p.x; arr[i * 3 + 1] = p.y; arr[i * 3 + 2] = p.z; });
+  // Kapaklar fan (dış kenarlar tek kullanımlı kalır → kenar-halkası doğru), yanlar quad.
+  const idx: number[] = [];
+  for (let i = 1; i < N - 1; i++) idx.push(0, i, i + 1);            // ön kapak
+  for (let i = 1; i < N - 1; i++) idx.push(N, N + i + 1, N + i);    // arka kapak (ters sarım)
+  for (let i = 0; i < N; i++) {
+    const j = (i + 1) % N;
+    idx.push(i, j, N + j, i, N + j, N + i);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+  g.setIndex(idx);
+  return g;
+}
+
+/** Taze ham kontur köşelerinin (u/v) kutusu + düzlem ofseti. */
+function freshRawBox(freshRawVerts: Vec3[], f: ReturnType<typeof planeFrame>) {
+  return { ...uvBox(freshRawVerts.map(p => ({ x: f.dU(p), y: f.dV(p) }))), planeD: f.dN(freshRawVerts[0]) };
+}
+/** Eski ham kutudan yeni ham kutuya taşıma: boyut aynı (±1 mm) → yalnız öteleme, değişti → oransal. */
+function remapUV(pu: number, pv: number, oldRaw: RawBBox, nb: RawBBox): { x: number; y: number } {
+  if (Math.abs(oldRaw.xSpan - nb.xSpan) < 1 && Math.abs(oldRaw.ySpan - nb.ySpan) < 1) {
+    return { x: pu + (nb.xMin + nb.xMax) / 2 - (oldRaw.xMin + oldRaw.xMax) / 2, y: pv + (nb.yMin + nb.yMax) / 2 - (oldRaw.yMin + oldRaw.yMax) / 2 };
+  }
+  return { x: nb.xMin + ((pu - oldRaw.xMin) / oldRaw.xSpan) * nb.xSpan, y: nb.yMin + ((pv - oldRaw.yMin) / oldRaw.ySpan) * nb.ySpan };
+}
+
+/**
+ * DAMGA TABANI = panelin KENDİ VF bölgesi (ham yüz konturu değil). Kutu
+ * boyutu değiştiyse bölge kayıtlı rawFaceBBox'tan güncel ham kutuya taşınır:
+ * boyut aynı → yalnız öteleme, değişti → oransal. Kayıtlı taban yoksa bölge
+ * güncel düzleme izdüşürülür; ham yüzün dışına taşıyorsa ham kontura düşülür.
+ */
+function stampBaseVertsFromVf(vf: VirtualFace | undefined, freshRawVerts: Vec3[] | undefined): Vec3[] | undefined {
+  if (!vf) return freshRawVerts;
+  const region = vf.vertices as Vec3[] | undefined;
+  if (!region || region.length < 3) return freshRawVerts;
+  if (!freshRawVerts || freshRawVerts.length < 3) return region;
+  const f = planeFrame(new THREE.Vector3(...vf.normal).normalize());
+  const nb = freshRawBox(freshRawVerts, f);
+  const oldRaw = (vf as any).rawFaceBBox as RawBBox | undefined;
+  if (!oldRaw) {
+    for (const q of region) {
+      const pu = f.dU(q), pv = f.dV(q);
+      if (pu < nb.xMin - 1 || pu > nb.xMax + 1 || pv < nb.yMin - 1 || pv > nb.yMax + 1) return freshRawVerts;
+    }
+    return region.map(q => f.at(f.dU(q), f.dV(q), nb.planeD));
+  }
+  return region.map(q => { const m = remapUV(f.dU(q), f.dV(q), oldRaw, nb); return f.at(m.x, m.y, nb.planeD); });
+}
+
+/**
+ * Extrude'lu panelin DAMGASI: VF tabanı, adımların İŞARETLİ miktarı kadar
+ * budanır (gerçek extrude ile birebir: ref → resolvedValue, fixed → value −
+ * açıklık, dyn → value). Hedef yüze BAKAN adımın büyümesi yansıtılmaz
+ * (komşu gereksiz kısalmasın); yalnız kısalma yansır.
+ */
+function trimmedStampGeometryFromVf(vf: VirtualFace, thickness: number, extrudeSteps: any[], targetFaceNormal: THREE.Vector3): THREE.BufferGeometry | null {
+  if (!vf.vertices || vf.vertices.length < 3) return null;
+  const trimmed: Vec3[] = vf.vertices.map(v => [...v] as Vec3);
+  for (const step of extrudeSteps) {
+    if (!step.faceNormal) continue;
+    const eN = new THREE.Vector3(...step.faceNormal).normalize();
+    const alignT = eN.dot(targetFaceNormal);
+    if (alignT < -0.3) continue;   // hedef yüzden uzaklaşan extrude: yakın kenar yerinde
+    const projs = trimmed.map(p => p[0] * eN.x + p[1] * eN.y + p[2] * eN.z);
+    const resolved = step.resolvedValue !== undefined && step.resolvedValue !== null;
+    const amount = resolved ? step.resolvedValue
+      : step.isFixed ? (step.value ?? 0) - (Math.max(...projs) - Math.min(...projs))
+      : (step.value ?? 0);
+    console.log('[YAGO][DAMGA-TRIM]', 'eN=', fmtVec(eN, 0),
+      resolved ? 'ref-çözülü' : step.isFixed ? 'fixed' : 'ref-ÇÖZÜLMEMİŞ/dyn',
+      'value=', (step.value ?? 0).toFixed(1), 'amount=', amount.toFixed(1), Math.abs(amount) < 0.01 ? '→ TRIM YOK (tam boy)' : '→ trim');
+    if (Math.abs(amount) < 0.01) continue;
+    if (alignT > 0.7 && amount > 0) continue;
+    const threshold = amount < 0 ? Math.max(...projs) + amount : Math.min(...projs) + amount;
+    for (let i = 0; i < trimmed.length; i++) {
+      if (amount < 0 ? projs[i] > threshold : projs[i] < threshold) {
+        const delta = threshold - projs[i];
+        trimmed[i][0] += delta * eN.x; trimmed[i][1] += delta * eN.y; trimmed[i][2] += delta * eN.z;
+      }
+    }
+  }
+  return buildPrismFromVertices(trimmed, vf.normal, thickness);
+}
+
+/**
+ * ORANSAL DAMGA (düz panel, kutu boyutlanınca): panelin baked mesh'i henüz
+ * eski boyuttadır; eski VF bölgesi eski ham kutudan yeni ham kutuya taşınarak
+ * geçici damga üretilir. Boyut/konum değişmemişse null (baked mesh kullanılır).
+ */
+function scaledFlatPanelStamp(oldVf: VirtualFace, freshRawVerts: Vec3[], thickness: number): THREE.BufferGeometry | null {
+  if (!oldVf.vertices || oldVf.vertices.length < 3 || freshRawVerts.length < 3) return null;
+  const oldRaw = (oldVf as any).rawFaceBBox as RawBBox | undefined;
+  if (!oldRaw) return null;
+  const n3 = new THREE.Vector3(...oldVf.normal).normalize();
+  const f = planeFrame(n3);
+  const nb = freshRawBox(freshRawVerts, f);
+  const nrm: Vec3 = [n3.x, n3.y, n3.z];
+  if (Math.abs(oldRaw.xSpan - nb.xSpan) < 1 && Math.abs(oldRaw.ySpan - nb.ySpan) < 1) {
+    const dN = nb.planeD - f.dN(oldVf.vertices[0]);
+    const dU = (nb.xMin + nb.xMax) / 2 - (oldRaw.xMin + oldRaw.xMax) / 2;
+    const dV = (nb.yMin + nb.yMax) / 2 - (oldRaw.yMin + oldRaw.yMax) / 2;
+    if (Math.abs(dN) < 0.5 && Math.abs(dU) < 0.5 && Math.abs(dV) < 0.5) return null;
+    const d = f.at(dU, dV, dN);
+    return buildPrismFromVertices(oldVf.vertices.map(([x, y, z]) => [x + d[0], y + d[1], z + d[2]] as Vec3), nrm, thickness);
+  }
+  return buildPrismFromVertices(oldVf.vertices.map(q => { const m = remapUV(f.dU(q), f.dV(q), oldRaw, nb); return f.at(m.x, m.y, nb.planeD); }), nrm, thickness);
+}
+
+// ── YÜZ EŞLEME (VF → güncel gövde yüz grubu) ────────────────────────────────
+
+/**
+ * VF'nin güncel geometrideki yüz grubu. Öncelik: (1) descriptor (VF merkezini
+ * ±5 mm kapsıyorsa), (2) aynı düzlemdeki adaylardan VF merkezine en yakın grup,
+ * (3) merkez-kutusu, (4) en yakın merkez.
+ * Eğilmiş yüz (vertex düzenlemesi): normal süzgeci boşsa dot>0.5 olan en yakın grup.
+ */
+function findMatchingFaceGroup(vf: VirtualFace, faces: FaceData[], faceGroups: CoplanarFaceGroup[], geometry: THREE.BufferGeometry): CoplanarFaceGroup | null {
+  const vfN = new THREE.Vector3(vf.normal[0], vf.normal[1], vf.normal[2]).normalize();
+  const vfCenter = new THREE.Vector3(vf.center[0], vf.center[1], vf.center[2]);
+  const groupBox = (g: CoplanarFaceGroup) => {
+    const bb = new THREE.Box3();
+    g.faceIndices.forEach(fi => { const f = faces[fi]; if (f) f.vertices.forEach(vv => bb.expandByPoint(vv)); });
+    return bb;
+  };
+  const clampDistToGroup = (g: CoplanarFaceGroup) => { const bb = groupBox(g); return vfCenter.clone().clamp(bb.min, bb.max).distanceTo(vfCenter); };
+  const candidateGroups = faceGroups.filter(g => vfN.dot(g.normal.clone().normalize()) > 0.95);
+
+  if (candidateGroups.length === 0) {
+    let best: CoplanarFaceGroup | null = null, bestD = Infinity, bestDot = 0;
+    for (const g of faceGroups) {
+      const dot = vfN.dot(g.normal.clone().normalize());
+      if (dot <= 0.5) continue;
+      const d = clampDistToGroup(g);
+      if (d < bestD - 1e-6 || (Math.abs(d - bestD) <= 1e-6 && dot > bestDot)) { bestD = d; best = g; bestDot = dot; }
+    }
+    if (best) {
+      console.log('[YAGO][VF-EĞİM]', vf.id, 'eğik yüz eşlendi: dot=', bestDot.toFixed(2), 'mesafe=', bestD.toFixed(1),
+        'eskiN=', vf.normal.map(n => n.toFixed(2)).join(','), 'yeniN=', [best.normal.x, best.normal.y, best.normal.z].map(n => n.toFixed(2)).join(','));
+    }
+    return best;
+  }
+
+  if (vf.faceGroupDescriptor) {
+    const matchedFace = findFaceByDescriptor(vf.faceGroupDescriptor, faces, geometry);
+    const matchedGroup = matchedFace ? candidateGroups.find(g => g.faceIndices.includes(matchedFace.faceIndex)) : undefined;
+    if (matchedGroup && clampDistToGroup(matchedGroup) <= 5) return matchedGroup;
+  }
+  if (candidateGroups.length === 1) return candidateGroups[0];
+
+  // Aynı düzlemdeki kopuk yüzler: en iyi düzlem-ofsetine ±0.5 mm yakınlar içinden merkeze en yakın.
+  const vfPlaneOffset = vfCenter.dot(vfN);
+  const planeDiffOf = (g: CoplanarFaceGroup) => Math.abs(g.center.dot(g.normal.clone().normalize()) - vfPlaneOffset);
+  let minPlaneDiff = Infinity;
+  for (const g of candidateGroups) minPlaneDiff = Math.min(minPlaneDiff, planeDiffOf(g));
+  if (minPlaneDiff < 5) {
+    let best: CoplanarFaceGroup | null = null, bestD = Infinity;
+    for (const g of candidateGroups.filter(g => planeDiffOf(g) <= minPlaneDiff + 0.5)) {
+      const d = clampDistToGroup(g);
+      if (d < bestD) { bestD = d; best = g; }
+    }
+    if (best) return best;
+  }
+
+  let bestGroup: CoplanarFaceGroup | null = null, bestDist = Infinity;
+  for (const g of candidateGroups) {
+    if (!groupBox(g).expandByScalar(5).containsPoint(vfCenter)) continue;
+    const dist = vfCenter.distanceTo(g.center);
+    if (dist < bestDist) { bestDist = dist; bestGroup = g; }
+  }
+  if (bestGroup) return bestGroup;
+  bestDist = Infinity;
+  for (const g of candidateGroups) {
+    const dist = vfCenter.distanceTo(g.center);
+    if (dist < bestDist) { bestDist = dist; bestGroup = g; }
+  }
+  return bestGroup;
+}
+
+// ── ANA GİRİŞ ────────────────────────────────────────────────────────────────
+
+/** Panel dönmüş sayılır: rotate adımı (açıdan bağımsız) ya da VF-eğimli levha. */
+function isRotatedPanel(p: any): boolean {
+  const t = p?.parameters?.transformSteps;
+  if (Array.isArray(t) && t.some((st: any) => st?.type === 'rotate')) return true;
+  return panelIsTiltedSlab(p);
+}
+const hasExtrudeSteps = (p: any) => Array.isArray(p?.parameters?.extrudeSteps) && p.parameters.extrudeSteps.length > 0;
+const hasMoveSteps = (p: any) => Array.isArray(p?.parameters?.transformSteps) && p.parameters.transformSteps.some((st: any) => st?.type === 'move');
+const hasExtrudeTowardFace = (p: any, n: THREE.Vector3) =>
+  hasExtrudeSteps(p) && p.parameters.extrudeSteps.some((st: any) => st.faceNormal && new THREE.Vector3(...st.faceNormal).normalize().dot(n) > 0.7);
+
+/** Ayak izi hesabına giden damga işlemleri (FaceRegion.RotOp ile aynı biçim). */
+type RotOp = { kind: 'rotate' | 'translate'; pivot?: THREE.Vector3; axis?: THREE.Vector3; angleRad?: number; d?: THREE.Vector3 };
+
+/**
+ * Bir parent'ın tüm VF'lerini güncel gövde geometrisi + kardeş ayak izleriyle
+ * yeniden hesaplar (saf: yeni VF dizisi döner, store'a yazmaz).
+ */
+function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace[], allShapes?: any[], panelGroups?: PanelGroup[]): VirtualFace[] {
+  const allShapeFaces = virtualFaces.filter(vf => vf.shapeId === shape.id);
+  if (allShapeFaces.length === 0 || !shape.geometry) return virtualFaces;
+  // İÇ VF'LER (raf/dikme): yüz eşlemesine girmez, grup çözücüsü yazar (aşağıda).
+  const shapeFaces = allShapeFaces.filter(vf => !isInteriorVf(vf));
+  const interiorMap = panelGroups
+    ? recalculateInteriorVfs(shape, allShapeFaces.filter(isInteriorVf), (allShapes || []) as Shape[], panelGroups)
+    : new Map<string, VirtualFace>();
+  if (shapeFaces.length === 0) return virtualFaces.map(vf => interiorMap.get(vf.id) || vf);
+
+  // VERTEX DÜZENLEMELİ GÖVDE: VF'ler düzenlenmiş (etkin) yüzlere göre hesaplanır.
+  const eff = effectiveBodyGeometry(shape);
+  if (eff !== shape.geometry) {
+    console.log('[YAGO][VERTEX] VF regen düzenlenmiş gövde geometrisiyle:', shape.id, 'düzenlemeN=', shape.vertexModifications?.length ?? 0);
+    shape = { ...shape, geometry: eff };
+  }
+  const { faces, groups: faceGroups } = getFacesAndGroups(shape.geometry);
+  const worldToLocal = getShapeMatrix(shape).invert();
+  // İÇ PANELLER (raf/dikme) gövde panellerini ASLA damgalamaz → kardeş listesine girmez.
+  const childPanels = childPanelsOf(shape.id, (allShapes || []) as Shape[]).filter(s => !isInteriorPanel(s));
+  const vfById = new Map(virtualFaces.map(f => [f.id, f] as const));
+  const vfIndexOf = new Map<string, number>();
+  virtualFaces.forEach((f, i) => vfIndexOf.set(f.id, i));
+  const panelPriority = (p: any) => vfIndexOf.get(p?.parameters?.virtualFaceId) ?? Number.MAX_SAFE_INTEGER;
+  const refsCache = new Map<string, ReturnType<typeof stepRefTargets>>();
+  const refsOf = (p: any) => { let r = refsCache.get(p.id); if (!r) { r = stepRefTargets(p); refsCache.set(p.id, r); } return r; };
+
+  // ÖN-GEÇİŞ: her VF'nin eşleşen yüz grubu + konturu (regen de aynısını kullanır)
+  // ve güncel HAM kontur köşeleri (damga tabanları için).
+  const matchOf = new Map<string, { group: CoplanarFaceGroup; contour: ReturnType<typeof computeFaceComponentContour> } | null>();
+  const freshVfVertices = new Map<string, Vec3[]>();
+  for (const vf of shapeFaces) {
+    const group = findMatchingFaceGroup(vf, faces, faceGroups, shape.geometry);
+    const contour = group ? computeFaceComponentContour(faces, group.faceIndices,
+      new THREE.Vector3(vf.center[0], vf.center[1], vf.center[2]), group.normal.clone().normalize()) : null;
+    matchOf.set(vf.id, group ? { group, contour } : null);
+    if (contour && contour.corners.length >= 3) freshVfVertices.set(vf.id, contour.corners.map(c => [c.x, c.y, c.z] as Vec3));
+    else if (vf.vertices && vf.vertices.length >= 3) freshVfVertices.set(vf.id, vf.vertices);
+  }
+  // DAMGA TABANI: her VF için panelin KENDİ bölgesi (güncel ham kutuya taşınmış).
+  const stampBaseVertices = new Map<string, Vec3[]>();
+  for (const vf of shapeFaces) {
+    const base = stampBaseVertsFromVf(vf, freshVfVertices.get(vf.id));
+    if (base && base.length >= 3) stampBaseVertices.set(vf.id, base);
+  }
+
+  // İŞARETLİ EXTRUDE MİKTARI (damga-trim ile birebir): + uzuyor, − kısalıyor.
+  const signedExtrudeAmountOf = (p: any, step: any, eN: THREE.Vector3): number => {
+    if (step.resolvedValue !== undefined && step.resolvedValue !== null) return step.resolvedValue;
+    if (!step.isFixed) return step.value ?? 0;
+    const vfId = p?.parameters?.virtualFaceId;
+    const verts = (vfId ? stampBaseVertices.get(vfId) : undefined) || (vfId ? freshVfVertices.get(vfId) : undefined) || (vfId ? vfById.get(vfId)?.vertices : undefined);
+    if (!verts || verts.length < 3) return 0;
+    let mn = Infinity, mx = -Infinity;
+    for (const q of verts) { const pr = q[0] * eN.x + q[1] * eN.y + q[2] * eN.z; if (pr < mn) mn = pr; if (pr > mx) mx = pr; }
+    return (step.value ?? 0) - (mx - mn);
+  };
+  // YÖN TESTİ: extrude adımı paneli bu yüze DOĞRU ilerletiyor mu ((miktar × eN)·n > 0)?
+  const extrudeAdvancesTowardFace = (p: any, n: THREE.Vector3 | null): boolean => {
+    if (!n || !hasExtrudeSteps(p)) return false;
+    for (const step of p.parameters.extrudeSteps) {
+      if (!step.faceNormal) continue;
+      const eN = new THREE.Vector3(...step.faceNormal).normalize();
+      const align = eN.dot(n);
+      if (Math.abs(align) < 0.7) continue;
+      if (signedExtrudeAmountOf(p, step, eN) * align > 0.01) return true;
+    }
+    return false;
+  };
+
+  /** p, VF'yi damgalama yetkisine sahip mi? (sıra önceliği + fiziksel ilerleme istisnası) */
+  const stamps = (p: any, vfId: string, myPanel: any, myFaceNormal: THREE.Vector3 | null): boolean => {
+    if (p.parameters?.virtualFaceId === vfId) return false;
+    if (myPanel && refsOf(myPanel).extrude.has(p.id)) return false;
+    if (myPanel && refsOf(p).rotate.has(myPanel.id)) {
+      console.log('[YAGO][DAMGA-YETKI] RED', vfId, '<-', p.id, '— p bu paneli REF DÖNÜŞ HEDEFİ alıyor → bölge kırpılmaz, motor kenarı pahlar');
+      return false;
+    }
+    const pIsRefBoundToMe = !!myPanel && refsOf(p).move.has(myPanel.id);
+    if (myPanel && refsOf(p).extrude.has(myPanel.id) && extrudeAdvancesTowardFace(p, myFaceNormal)) return true;
+    // Farklı yüzdeki taşınmış / yüze doğru extrude'lu panel sırayı devirebilir (datum hariç).
+    const pVf = vfById.get(p.parameters?.virtualFaceId);
+    if (pVf && myFaceNormal) {
+      const sameFace = Math.abs(myFaceNormal.dot(new THREE.Vector3(...pVf.normal).normalize())) > 0.95;
+      if (!sameFace && pIsRefBoundToMe && hasMoveSteps(p) && !extrudeAdvancesTowardFace(p, myFaceNormal)) {
+        console.log('[YAGO][DAMGA-YETKI] RED', vfId, '<-', p.id, '— p bu paneli REF TAŞIMA HEDEFİ (datum) alıyor', '→ taşıma istisnası iptal, karar sıra önceliğine bırakıldı');
+      }
+      if (!sameFace && ((hasMoveSteps(p) && !pIsRefBoundToMe) || extrudeAdvancesTowardFace(p, myFaceNormal))) return true;
+    }
+    const myIdx = vfIndexOf.get(vfId);
+    const byOrder = myIdx != null && panelPriority(p) < myIdx;
+    if (!byOrder && myPanel && myFaceNormal && (refsOf(p).extrude.has(myPanel.id) || hasExtrudeTowardFace(p, myFaceNormal)) && !extrudeAdvancesTowardFace(p, myFaceNormal)) {
+      console.log('[YAGO][DAMGA-YETKI] RED', vfId, '<-', p.id, '— extrude bu yüze doğru İLERLEMİYOR (kısalıyor/ilgisiz eksen)', '→ sıra önceliği korundu, gereksiz kısaltma engellendi');
+    }
+    return byOrder;
+  };
+
+  /**
+   * p'nin DAMGA temsili (ayak izi hesabına giren nesne):
+   *  • extrude'lu: VF tabanı (yüze doğru ilerliyorsa) ya da budanmış taban + adım ops'u
+   *  • düz: kutu boyutlandıysa oransal damga (taşınmışsa ötelemesiyle), yoksa gerçek mesh
+   *  • dönmüş: motorun yazdığı NİHAİ geometri (ops'suz, kesit yolu)
+   * Extrude'suz panelde sonuç hedef yüzden bağımsızdır → panel başına bir kez.
+   */
+  const stampCache = new Map<string, any>();
+  const stampOf = (p: any, myFaceNormal: THREE.Vector3 | null): any => {
+    const key = hasExtrudeSteps(p) ? `${p.id}|${myFaceNormal ? `${myFaceNormal.x},${myFaceNormal.y},${myFaceNormal.z}` : '-'}` : p.id;
+    if (stampCache.has(key)) return stampCache.get(key);
+    const r = buildStamp(p, myFaceNormal);
+    stampCache.set(key, r);
+    return r;
+  };
+  const buildStamp = (p: any, myFaceNormal: THREE.Vector3 | null): any => {
+    const ownVfRaw = vfById.get(p.parameters?.virtualFaceId);
+    const ownVfFreshVerts = freshVfVertices.get(p.parameters?.virtualFaceId);
+    const ownVf = ownVfRaw && ownVfFreshVerts ? { ...ownVfRaw, vertices: ownVfFreshVerts } : ownVfRaw;
+    const ownVfStampVerts = ownVfRaw ? (stampBaseVertices.get(ownVfRaw.id) || ownVfFreshVerts) : undefined;
+    const ownVfStamp = ownVfRaw && ownVfStampVerts ? { ...ownVfRaw, vertices: ownVfStampVerts } : ownVfRaw;
+    // composeSteps (move/rotate) → ayak izine uygulanacak ops. REF taşıma deltası motorun
+    // bu rebuild'de GERÇEKTEN uyguladığı değerden (_refDeltaApplied) okunur — tek kaynak.
+    const composedFromSteps = (stampGeo?: THREE.BufferGeometry | null): RotOp[] | undefined => {
+      if (!ownVf) return undefined;
+      try {
+        // Taze ham kontur köşeleri; bayat rawFaceBBox fixed telafisine karışmasın.
+        const { ops } = composeSteps(getUnifiedSteps(p), { ...(ownVf as any), rawFaceBBox: undefined });
+        const rda = p.parameters?._refDeltaApplied;
+        const refDeltaApplied = Array.isArray(rda) && rda.length === 3 ? new THREE.Vector3(rda[0], rda[1], rda[2]) : null;
+        const rpBox = worldBboxOf(p, stampGeo || undefined);
+        return ops.map((o: any) =>
+          o.kind === 'rotate' ? { kind: 'rotate', pivot: o.pivot, axis: o.axis, angleRad: (o.deg * Math.PI) / 180 }
+            : o.kind === 'refTranslate' ? { kind: 'translate', d: refDeltaApplied || (rpBox ? resolveRefTranslateDelta(o, rpBox) : o.fallback) }
+              : { kind: 'translate', d: o.d });
+      } catch { return undefined; }
+    };
+
+    if (hasExtrudeSteps(p) && ownVfStamp) {
+      const th = panelThickness(p);
+      if (myFaceNormal && hasExtrudeTowardFace(p, myFaceNormal) && extrudeAdvancesTowardFace(p, myFaceNormal)) {
+        const baseGeo = ownVfStamp.vertices?.length >= 3 ? buildPrismFromVertices(ownVfStamp.vertices, ownVfStamp.normal, th) : null;
+        if (baseGeo) return { ...p, geometry: baseGeo, __isRotatedPanel: true, __composedOps: composedFromSteps(baseGeo) || [] };
+      } else if (myFaceNormal) {
+        const trimGeo = trimmedStampGeometryFromVf(ownVfStamp, th, p.parameters.extrudeSteps, myFaceNormal);
+        if (trimGeo) return { ...p, geometry: trimGeo, __isRotatedPanel: true, __composedOps: composedFromSteps(trimGeo) || [] };
+      }
+    }
+    if (!isRotatedPanel(p)) {
+      if (ownVfRaw && ownVfFreshVerts) {
+        const scaled = scaledFlatPanelStamp(ownVfRaw, ownVfFreshVerts, panelThickness(p));
+        if (scaled) {
+          // Taşınmış düz panel: damga panelin çözülmüş ÖTELEMESİ kadar kaydırılır (dönmüş yola sokulmaz).
+          if (hasMoveSteps(p)) {
+            const ops = composedFromSteps(scaled);
+            if (Array.isArray(ops) && ops.length > 0) {
+              const d = new THREE.Vector3();
+              for (const op of ops) if (op?.kind === 'translate' && op.d) d.add(op.d);
+              if (d.lengthSq() > 1e-12) scaled.translate(d.x, d.y, d.z);
+            }
+          }
+          return { ...p, geometry: scaled };
+        }
+      }
+      return p;
+    }
+    // Dönmüş panel: store'daki geometri ZATEN dönmüş/sığdırılmış → ops'suz gerçek geometri.
+    return { ...p, __isRotatedPanel: true, __rotatedRealGeom: true, __composedOps: [] };
+  };
+
+  const stampingPanelsFor = (vfId: string): any[] => {
+    const myPanel = childPanels.find(p => p.parameters?.virtualFaceId === vfId);
+    const myVf = vfById.get(vfId);
+    const myFaceNormal = myVf ? new THREE.Vector3(...myVf.normal).normalize() : null;
+    return childPanels.filter(p => stamps(p, vfId, myPanel, myFaceNormal)).map(p => stampOf(p, myFaceNormal));
+  };
+
+  // TAM YÜZ MODELİ: her gövde VF'si eşleşen yüz konturundan yeniden üretilir.
+  const updatedMap = new Map<string, VirtualFace>();
+  for (const vf of shapeFaces) {
+    const m = matchOf.get(vf.id);
+    const regen = m && m.contour ? regenerateParentFaceShapeVF(vf, shape.id, m.group, m.contour, worldToLocal, stampingPanelsFor(vf.id)) : null;
+    updatedMap.set(vf.id, regen || vf);
+  }
+  return virtualFaces.map(vf => updatedMap.get(vf.id) || interiorMap.get(vf.id) || vf);
+}
+
+/**
+ * VF = eşleşen yüz bileşeninin konturu ∩ serbest bölge (yakalama ile aynı
+ * computeFreeRegionLocal). Seed (tıklama noktası) MUTLAK kalır, yalnız güncel
+ * yüz düzlemine izdüşer ve yüz kutusuna kırpılır. Taraf sözleşmesi
+ * (sideRelations) STORED-WINS birleşir → panel ilk yerleştiği tarafta kalır.
+ */
+function regenerateParentFaceShapeVF(
+  vf: VirtualFace, shapeId: string, matchedGroup: CoplanarFaceGroup,
+  contour: NonNullable<ReturnType<typeof computeFaceComponentContour>>,
+  worldToLocal: THREE.Matrix4, siblingPanels: any[],
+): VirtualFace {
+  const localNormal = matchedGroup.normal.clone().normalize();
+  const seed = new THREE.Vector3(vf.center[0], vf.center[1], vf.center[2]);
+  const { u, v } = getFacePlaneAxes(localNormal);
+  const uvOf = (p3: THREE.Vector3) => ({ x: p3.dot(u), y: p3.dot(v) });
+  const to3D = (q: { x: number; y: number }) => new THREE.Vector3().addScaledVector(u, q.x).addScaledVector(v, q.y).addScaledVector(localNormal, planeN);
+  const newB = uvBox(contour.corners.map(uvOf));
+  const cUV = uvOf(seed);
+  const planeN = contour.corners[0].dot(localNormal);
+  const newCenter = to3D({ x: Math.max(newB.xMin, Math.min(newB.xMax, cUV.x)), y: Math.max(newB.yMin, Math.min(newB.yMax, cUV.y)) });
+
+  const anchorB = ((vf as any).rawFaceBBox as RawBBox | undefined) ?? newB;
+  if (anchorB !== newB && (Math.abs(anchorB.xSpan - newB.xSpan) > 1 || Math.abs(anchorB.ySpan - newB.ySpan) > 1)) {
+    console.log('[YAGO][BOYUT-DEĞİŞİM]', vf.id, 'eskiBBox=', `${anchorB.xSpan.toFixed(0)}x${anchorB.ySpan.toFixed(0)}`,
+      'yeniBBox=', `${newB.xSpan.toFixed(0)}x${newB.ySpan.toFixed(0)}`, '→ taraf sözleşmesi KORUNUYOR (kalıcı), seed mutlak');
+  }
+  const storedRel = (vf as any).sideRelations as Record<string, number> | undefined;
+  const prevRegion = vf.vertices && vf.vertices.length >= 3 ? vf.vertices.map(([x, y, z]) => new THREE.Vector3(x, y, z)) : undefined;
+  const region = computeFreeRegionLocal(contour.corners, localNormal, seed, siblingPanels, worldToLocal, shapeId, prevRegion, storedRel, !!vf.fitFaceShape);
+
+  // TEŞHİS: her kardeşin bu yüzdeki ayak izi (çok parçalıysa parça parça).
+  if (region) {
+    const pieceCount = new Map<string, number>();
+    for (const id of region.footprintIds) if (id) { const base = id.split('#')[0]; pieceCount.set(base, (pieceCount.get(base) || 0) + 1); }
+    region.footprints.forEach((fp, f) => {
+      const id = region.footprintIds[f];
+      if (!id) return;
+      const [base, k] = id.split('#');
+      const sp = siblingPanels.find(s => s.id === base);
+      const b = uvBox(fp);
+      const n = pieceCount.get(base) || 1;
+      console.log('[YAGO][AYAKİZİ]', vf.id, '<-', base, 'boyut=', `${(b.xMax - b.xMin).toFixed(0)}x${(b.yMax - b.yMin).toFixed(0)}`,
+        'u=', `${b.xMin.toFixed(0)}..${b.xMax.toFixed(0)}`, 'v=', `${b.yMin.toFixed(0)}..${b.yMax.toFixed(0)}`, 'köşeN=', fp.length,
+        isRotatedPanel(sp) ? 'DÖNMÜŞ' : 'düz', n > 1 ? `parça ${(k ? Number(k) : 0) + 1}/${n}` : '');
+    });
+  }
+
+  const cornersOut = region && region.polygon.length >= 3 ? region.polygon.map(to3D) : contour.corners;
+  const ob = uvBox(cornersOut.map(uvOf));
+  const outUSpan = ob.xMax - ob.xMin, outVSpan = ob.yMax - ob.yMin;
+  console.log('[YAGO][REGEN]', vf.id, 'yeniMerkez=', fmtVec(newCenter),
+    'hamKöşeN=', contour.corners.length, 'VFköşeN=', cornersOut.length,
+    'ayakİziN=', region ? region.footprints.length : -1, 'kardeşN=', siblingPanels.length,
+    'oranTabanı=', (vf as any).rawFaceBBox ? 'kayıtlıHam' : 'mutlak(ilk)',
+    'VFboyut=', `${outUSpan.toFixed(0)}x${outVSpan.toFixed(0)}`,
+    'küçülme=', `u%${((1 - outUSpan / Math.max(newB.xSpan, 1e-6)) * 100).toFixed(0)} v%${((1 - outVSpan / Math.max(newB.ySpan, 1e-6)) * 100).toFixed(0)}`,
+    outUSpan < 30 || outVSpan < 30 ? '⚠️KIYMIK(regen)' : 'dolu');
+
+  const out: any = {
+    ...vf,
+    normal: [localNormal.x, localNormal.y, localNormal.z],
+    vertices: cornersOut.map(c => [c.x, c.y, c.z] as Vec3),
+    center: [newCenter.x, newCenter.y, newCenter.z],
+  };
+  // HAM kontur kutusu → bir sonraki regen'in taşıma/oran tabanı.
+  out.rawFaceBBox = { ...newB };
+  // TARAF SÖZLEŞMESİ: kayıtlı işaretler kazanır; region yalnız YENİ kardeşleri ekler.
+  out.sideRelations = { ...(region?.sideRelations || {}), ...(storedRel || {}) };
+  if (region?.anchor) { const a = to3D(region.anchor); out.regionAnchor = [a.x, a.y, a.z]; }
+  if (region?.touchingSiblingIds?.length) console.log('[YAGO][TEMAS]', vf.id, 'temaslar=', region.touchingSiblingIds.join(', '));
+  return out;
+}
