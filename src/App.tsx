@@ -9,6 +9,8 @@ import { Sidebar, StatusBar, Terminal, Toolbar, ToolChip, ToolChipBar, UI_FONT }
 import { PanelEditor } from './components/PanelEditor';
 import { type Shape, childPanelsOf, requestRebuild, shapeById, useAppStore, useStoreFields } from './store';
 import { applyShapeChanges, axisIndexOf, evaluateExpression, initReplicad, rebuildBodySolid } from './components/Geometry';
+// Rebuild motoru sayfayla birlikte yüklenir ve store'a kaydolur (bkz. store.requestRebuild).
+import './components/PanelEngine';
 
 /* ═══════════════════════════════════════════════════════════════════════════
    UYGULAMA KÖKÜ — (A) Supabase geometri kataloğu (veri + panel); (B) App:

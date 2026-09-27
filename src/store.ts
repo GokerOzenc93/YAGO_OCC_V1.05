@@ -269,9 +269,31 @@ export const panelOfVf = (vfId: string | undefined, shapes: Shape[] = useAppStor
 /** Panelin VF'si. */
 export const vfOfPanel = (panel: Shape | undefined, vfs: VirtualFace[] = useAppStore.getState().virtualFaces): VirtualFace | undefined =>
   vfs.find(f => f.id === (panel?.parameters as any)?.virtualFaceId);
-/** Motoru tembel yükleyip gövdenin panellerini yeniden üretir (tek rebuild giriş noktası). */
-export const requestRebuild = (parentId: string, opts?: { changedPanelId?: string; orderChanged?: boolean }): Promise<void> =>
-  import('./components/PanelEngine').then(({ rebuildPanelsForParent }) => rebuildPanelsForParent(parentId, opts));
+// ── REBUILD MOTORU KAYDI ──────────────────────────────────────────────────
+// Motor (PanelEngine) yüklenince kendini buraya kaydeder; requestRebuild HER
+// çağrıda dinamik import YAPMAZ. Eski yol (her rebuild'de `import(...)`) Vite
+// HMR sonrası bayat modül URL'sinde ("Failed to fetch dynamically imported
+// module: PanelEngine.ts?t=…") sessizce çöküyordu: raf adedi/boşluğu
+// değiştirilince VF'ler güncelleniyor ama motor hiç çalışmadığından mevcut
+// raf eski yerinde kalıyor, yeni raf geçici prizmasıyla duruyordu — arayüz
+// eşit, sahne değil (Goker'in ekran görüntüsü). Dinamik import yalnız yedek.
+type RebuildOpts = { changedPanelId?: string; orderChanged?: boolean };
+type RebuildEngine = (parentId: string, opts?: RebuildOpts) => Promise<void>;
+let _rebuildEngine: RebuildEngine | null = null;
+export const registerRebuildEngine = (fn: RebuildEngine): void => { _rebuildEngine = fn; };
+/** Gövdenin panellerini yeniden üretir (tek rebuild giriş noktası). */
+export const requestRebuild = async (parentId: string, opts?: RebuildOpts): Promise<void> => {
+  if (!_rebuildEngine) {
+    try {
+      const mod = await import('./components/PanelEngine');
+      _rebuildEngine = mod.rebuildPanelsForParent;
+    } catch (err) {
+      console.error('[YAGO][REBUILD] MOTOR YÜKLENEMEDİ — paneller yeniden üretilmeyecek (sayfayı yenileyin):', parentId, (err as Error)?.message || err);
+      throw err;
+    }
+  }
+  return _rebuildEngine(parentId, opts);
+};
 
 export const useAppStore = create<AppState>((set, get) => ({
   // ── Şekiller ──────────────────────────────────────────────────────────────

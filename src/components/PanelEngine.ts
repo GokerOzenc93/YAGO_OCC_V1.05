@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { type PanelGroup, type Shape, type VirtualFace, childPanelsOf, panelOfVf, shapeById, useAppStore, vfOfPanel } from '../store';
+import { type PanelGroup, type Shape, type VirtualFace, childPanelsOf, panelOfVf, shapeById, useAppStore, vfOfPanel, registerRebuildEngine,
+} from '../store';
 import { type ExtrudeStep, type TransformStep, applyExtrudeSteps, getUnifiedSteps, matchReferenceFace, resolveReferenceFacePlane, stepRefTargets } from './PanelOps';
 import { computeFaceComponentContour, computeFreeRegionLocal, convexHull2D, panelHasRotation, panelIsTiltedSlab } from './FaceRegion';
 import {
@@ -1476,3 +1477,7 @@ function regenerateParentFaceShapeVF(
   if (region?.touchingSiblingIds?.length) console.log('[YAGO][TEMAS]', vf.id, 'temaslar=', region.touchingSiblingIds.join(', '));
   return out;
 }
+
+// Motor yüklenir yüklenmez store'a kaydolur (HMR'da modül yeniden çalışınca taze
+// fonksiyon kaydolur) → requestRebuild dinamik import'a hiç düşmez.
+registerRebuildEngine(rebuildPanelsForParent);
