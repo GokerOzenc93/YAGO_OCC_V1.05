@@ -74,6 +74,8 @@ export interface CavityGrid {
   nx: number; ny: number; nz: number;
   /** 1 = serbest (gövde içinde, panel dışında). */
   free: Uint8Array;
+  /** Izgarayı kuran engel (panel) kutuları — panel-derinliği alternatifleri için. */
+  obstacles?: CavityBox[];
 }
 const cellIndex = (g: CavityGrid, i: number, j: number, k: number) => (k * g.ny + j) * g.nx + i;
 const cellIJK = (g: CavityGrid, c: number): [number, number, number] => [c % g.nx, Math.floor(c / g.nx) % g.ny, Math.floor(c / (g.nx * g.ny))];
@@ -156,7 +158,7 @@ export function buildCavityGrid(parent: Shape, obstacles: CavityBox[]): CavityGr
   const ys = uniqSorted(py, body.min[1], body.max[1]);
   const zs = uniqSorted(pz, body.min[2], body.max[2]);
   const nx = xs.length - 1, ny = ys.length - 1, nz = zs.length - 1;
-  const grid: CavityGrid = { body, xs, ys, zs, nx, ny, nz, free: new Uint8Array(nx * ny * nz) };
+  const grid: CavityGrid = { body, xs, ys, zs, nx, ny, nz, free: new Uint8Array(nx * ny * nz), obstacles };
   // Düz kutu gövde (6 eksen yüzü, ek düzlem yok) → merkez testi gerekmez.
   const plainBox = groups.length === 6 && axisFaces === 6 && !(parent.vertexModifications?.length) && !(parent.subtractionGeometries?.some(Boolean)) && !(parent.fillets?.length);
   const inside = plainBox ? null : makeInsideMeshTest(geo);
@@ -443,26 +445,83 @@ export function maximalBoxesContaining(g: CavityGrid, cells: Set<number>, seedCe
   return out;
 }
 
+type BoxAlt = { cells: Set<number>; bbox: CavityBox; volume: number; derived?: boolean };
+
+/**
+ * PANEL-DERİNLİĞİ ALTERNATİFLERİ (Goker: "taralı panel kadar derinlikte bir
+ * hacim de seçenekler arasında olmalı"): maksimal kutu B'nin bir yüzüne
+ * DEĞEN panel O (ör. kısaltılmış dikme) B'yi o yüzde yalnız kendi uzunluğu
+ * kadar sınırlıyorsa, B diğer eksenlerde O'nun aralığına kırpılır → "panel
+ * kadar derin / yüksek" kutu. Tek eksen kırpımları ve ikisi birden üretilir;
+ * B ile aynı olanlar atılır. Kırpım sınırları engel düzlemleridir → hücrelerle
+ * birebir örtüşür (maksimal olmadıkları için maximalBoxesContaining vermez).
+ */
+function panelBoundedBoxes(g: CavityGrid, B: BoxAlt): BoxAlt[] {
+  const obs = g.obstacles || [];
+  const out: BoxAlt[] = [];
+  const seen = new Set<string>([fmtBox(B.bbox)]);
+  for (const O of obs) {
+    for (let a = 0; a < 3; a++) {
+      const touches = Math.abs(O.max[a] - B.bbox.min[a]) < TOL || Math.abs(O.min[a] - B.bbox.max[a]) < TOL;
+      if (!touches) continue;
+      const others = [0, 1, 2].filter(x => x !== a);
+      // O, B'nin yüzüyle diğer iki eksende gerçekten örtüşmeli.
+      if (!others.every(b => Math.min(O.max[b], B.bbox.max[b]) - Math.max(O.min[b], B.bbox.min[b]) > TOL)) continue;
+      const clipSets: number[][] = [[others[0]], [others[1]], others];
+      for (const axes of clipSets) {
+        const bb: CavityBox = { min: [...B.bbox.min] as Vec3, max: [...B.bbox.max] as Vec3 };
+        let changed = false;
+        for (const b of axes) {
+          const lo = Math.max(B.bbox.min[b], O.min[b]), hi = Math.min(B.bbox.max[b], O.max[b]);
+          if (lo > bb.min[b] + TOL || hi < bb.max[b] - TOL) changed = true;
+          bb.min[b] = lo; bb.max[b] = hi;
+        }
+        if (!changed) continue;
+        const k = fmtBox(bb);
+        if (seen.has(k)) continue;
+        seen.add(k);
+        const cells = new Set<number>();
+        for (const c of B.cells) {
+          const cb = cellBox(g, c);
+          if ([0, 1, 2].every(x => cb.min[x] >= bb.min[x] - TOL && cb.max[x] <= bb.max[x] + TOL)) cells.add(c);
+        }
+        if (!cells.size) continue;
+        out.push({ cells, bbox: regionBBox(g, cells), volume: boxSpan(bb, 0) * boxSpan(bb, 1) * boxSpan(bb, 2), derived: true });
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * DÜZ ALTERNATİFLER: verilen hücrelerden herhangi birini içeren maksimal
+ * kutular + bunların panel-derinliği kırpımları; tekil, büyükten küçüğe.
+ * Hem seçim ailesi hem düz-mod grup çözümü (resize) aynı listeyi kullanır.
+ */
+export function boxAlternatives(g: CavityGrid, cells: Set<number>, seedCells: number[], minSpan = 0): BoxAlt[] {
+  const okSpan = (b: CavityBox) => boxSpan(b, 0) >= minSpan && boxSpan(b, 1) >= minSpan && boxSpan(b, 2) >= minSpan;
+  const seen = new Set<string>();
+  const out: BoxAlt[] = [];
+  const push = (b: BoxAlt) => { const k = fmtBox(b.bbox); if (seen.has(k) || !okSpan(b.bbox)) return; seen.add(k); out.push(b); };
+  const maximal: BoxAlt[] = [];
+  for (const sc of seedCells) for (const b of maximalBoxesContaining(g, cells, sc)) { if (!seen.has(fmtBox(b.bbox)) && okSpan(b.bbox)) maximal.push(b); push(b); }
+  for (const b of maximal) for (const d of panelBoundedBoxes(g, b)) push(d);
+  out.sort((a, b) => b.volume - a.volume);
+  return out;
+}
+
 /**
  * ADAY AİLESİ (Goker: "önce en kapsayıcı, sonra içeriye doğru; hem şekilli
  * hem düz"): 1) şekilli bölgenin tamamı, 2) ışının bu bölgede geçtiği
- * hücrelerden HERHANGİ birini içeren maksimal kutular, hacme göre büyükten
- * küçüğe (fare ucundaki düz alternatifler). Bölge zaten tek kutuysa yalnız o.
+ * hücrelerden herhangi birini içeren maksimal kutular ve bitişik panellerin
+ * derinliğine/yüksekliğine kırpılmış halleri, hacme göre büyükten küçüğe.
+ * Bölge zaten tek kutuysa şekilli aday tekrar edilmez.
  */
 export function candidateFamily(g: CavityGrid, cells: Set<number>, rayCells: number[], seed: Vec3, minSpan: number): CavityPick[] {
   const okSpan = (b: CavityBox) => boxSpan(b, 0) >= minSpan && boxSpan(b, 1) >= minSpan && boxSpan(b, 2) >= minSpan;
   const out: CavityPick[] = [];
-  const seen = new Set<string>();
-  const boxes: Array<{ cells: Set<number>; bbox: CavityBox; volume: number }> = [];
-  for (const rc of rayCells) {
-    for (const b of maximalBoxesContaining(g, cells, rc)) {
-      const k = fmtBox(b.bbox);
-      if (seen.has(k) || !okSpan(b.bbox)) continue;
-      seen.add(k); boxes.push(b);
-    }
-  }
-  boxes.sort((a, b) => b.volume - a.volume);
-  const regionIsBox = boxes.length === 1 && boxes[0].cells.size === cells.size;
+  const boxes = boxAlternatives(g, cells, rayCells, minSpan);
+  const regionIsBox = boxes.some(b => !b.derived && b.cells.size === cells.size);
   const shaped = pickFromRegion(g, cells, seed, 'shaped');
   if (!regionIsBox && okSpan(shaped.bbox)) out.push(shaped);
   for (const b of boxes) out.push(pickFromRegion(g, b.cells, seed, 'box'));
@@ -673,7 +732,7 @@ export function solveGroup(group: PanelGroup, parent: Shape, panels: Shape[], gr
     // (ör. arka yüksek kutu, ışının ön hücresinden seçilmiş); merkez bölge dışındaysa çıpa hücresi.
     const wantCenter: Vec3 = [0, 1, 2].map(a => (want.min[a] + want.max[a]) / 2) as Vec3;
     const wc = cellOfPoint(grid, wantCenter);
-    const boxes = maximalBoxesContaining(grid, cells, wc >= 0 && cells.has(wc) ? wc : c);
+    const boxes = boxAlternatives(grid, cells, [wc >= 0 && cells.has(wc) ? wc : c]);
     if (boxes.length) {
       const best = boxes.reduce((b, x) => (iou(x.bbox, want) > iou(b.bbox, want) ? x : b));
       console.log('[YAGO][GRUP] düz alternatif: maksimal kutu', fmtBox(best.bbox), 'örtüşme=', iou(best.bbox, want).toFixed(2), 'adayN=', boxes.length);
