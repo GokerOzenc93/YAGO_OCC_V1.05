@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronRight, Hash, type LucideIcon, PanelLeft, Pin, PinOff, Send, SlidersHorizontal, Square, Box, RectangleHorizontal } from 'lucide-react';
+import { ChevronRight, Hash, type LucideIcon, PanelLeft, Pin, PinOff, Send, SlidersHorizontal, Square, Box, Layers } from 'lucide-react';
 import { CameraType, OrthoMode, type Shape, SnapType, Tool, ViewMode, shapeById, useAppStore, useStoreFields } from '../store';
 import {
   type Vec3, convertReplicadToThreeGeometry, createReplicadBox, getReplicadVertices,
@@ -705,10 +705,10 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; panelEditor
             </div>
             <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', height: '100%', flexShrink: 0 }}>
               <div style={VSEP} />
-              {/* SEÇİM MODU: tek ikon düğmesi — her tıklama Body ↔ Panel arasında geçer; ikon GÜNCEL modu gösterir (kutu = Body, dikdörtgen = Panel). */}
+              {/* SEÇİM MODU: tek ikon düğmesi — her tıklama Body ↔ Panel arasında geçer; ikon GÜNCEL modu gösterir (küp = Body, üst üste levhalar = Panel; Outline'ın karesinden ayrışsın). */}
               <HeaderToggle active={panelSelectMode} onClick={() => setPanelSelectMode(!panelSelectMode)}
                 title={panelSelectMode ? 'Selection: Panel (individual panels) — click to switch to Body' : 'Selection: Body (whole bodies) — click to switch to Panel'}
-                icon={panelSelectMode ? <RectangleHorizontal size={13} strokeWidth={2.1} /> : <Box size={13} strokeWidth={2.1} />} />
+                icon={panelSelectMode ? <Layers size={14} strokeWidth={2} /> : <Box size={14} strokeWidth={2} />} />
               <div style={VSEP} />
               <HeaderToggle active={showOutlines} onClick={() => setShowOutlines(!showOutlines)} title="Show panel outlines" icon={<Square size={13} strokeWidth={2.1} />} />
               <div style={VSEP} />
