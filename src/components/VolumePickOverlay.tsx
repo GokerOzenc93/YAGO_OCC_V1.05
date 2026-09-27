@@ -1,10 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { Line } from '@react-three/drei';
-import { useStoreFields, type CavityBox, type CavityPick } from '../store';
+import { useStoreFields, type CavityPick } from '../store';
 import { getShapeMatrix } from './PanelMath';
 import {
-  panelLocalBox, buildCavityGrid, rayCavityCandidates, createPanelGroupFromCavity,
+  collectObstacles, gridForObstacles, rayCavityCandidates, createPanelGroupFromCavity,
   GROUP_PANEL_THICKNESS, boxSpan, fmtBox,
 } from './PanelGroupService';
 
@@ -42,16 +42,9 @@ export const VolumePickOverlay: React.FC<Props> = ({ shape, allShapes }) => {
   const [hoverPick, setHoverPick] = useState<CavityPick | null>(null);
   const lastRef = useRef<{ keys: string; index: number } | null>(null);
 
-  const obstacles = useMemo(() => {
-    const out: CavityBox[] = [];
-    for (const s of allShapes) {
-      if (s.type !== 'panel' || s.parameters?.parentShapeId !== shape.id) continue;
-      const b = panelLocalBox(s, shape);
-      if (b) out.push(b);
-    }
-    return out;
-  }, [allShapes, shape]);
-  const grid = useMemo(() => (volumePickMode ? buildCavityGrid(shape, obstacles) : null), [shape, obstacles, volumePickMode]);
+  // Düz paneller kutu engeli; dönmüş/eğik paneller yarım-uzay (PanelGroupService.collectObstacles).
+  const oset = useMemo(() => collectObstacles(shape, allShapes), [allShapes, shape]);
+  const grid = useMemo(() => (volumePickMode ? gridForObstacles(shape, oset) : null), [shape, oset, volumePickMode]);
   const worldToLocal = useMemo(() => getShapeMatrix(shape).invert(),
     [shape.position[0], shape.position[1], shape.position[2], shape.rotation[0], shape.rotation[1], shape.rotation[2], shape.scale[0], shape.scale[1], shape.scale[2]]);
 
@@ -108,7 +101,7 @@ export const VolumePickOverlay: React.FC<Props> = ({ shape, allShapes }) => {
     setVolumePick(c, index);
     const s = c[index];
     console.log('[YAGO][HACİM] aday', index + 1, '/', c.length, s.shape === 'box' ? 'DÜZ' : 'ŞEKİLLİ', fmtBox(s.bbox),
-      'boyut=', [0, 1, 2].map(a => boxSpan(s.bbox, a).toFixed(0)).join('x'), 'parçaN=', s.boxes.length, 'engelN=', obstacles.length);
+      'boyut=', [0, 1, 2].map(a => boxSpan(s.bbox, a).toFixed(0)).join('x'), 'parçaN=', s.boxes.length, 'engelN=', oset.obstacles.length, 'eğikN=', oset.tiltFaces.length);
   };
 
   if (!volumePickMode || !pickGeo) return null;
