@@ -637,6 +637,16 @@ function fitTracedPolygonToSources(poly: Point2D[], sources: Point2D[][], tolDis
 // KANONİK ŞERİT ÇERÇEVESİ: ayak izi hull'unun merkezi + uzun kenarına dik,
 // işareti kanonikleştirilmiş birim eksen. Taraf işareti = sign(dot(P-c, p̂));
 // kanonikleştirme sayesinde şerit hafif eğilse de işaret regen'ler arası karşılaştırılabilir.
+/** Düz levhanın etkin kalınlığı: parametre ile geometri kutusunun en ince ekseninin büyüğü (extrude'la kalınlaşmış panel). */
+function effectiveSlabThickness(panel: any): number {
+  const base = panelThickness(panel);
+  const box = panel?.geometry ? localBboxOf(panel.geometry) : null;
+  if (!box) return base;
+  const sz = box.getSize(new THREE.Vector3());
+  const mn = Math.min(sz.x, sz.y, sz.z);
+  return Number.isFinite(mn) && mn > 0.5 ? Math.max(base, mn) : base;
+}
+
 function canonicalStripFrame(fp: Point2D[]): { c: Point2D; p: Point2D } {
   let cx = 0, cy = 0;
   for (const q of fp) { cx += q.x; cy += q.y; }
@@ -861,7 +871,10 @@ export function computeFreeRegionLocal(
     const pieces = panelFootprintsInParentLocal(panel, parentWorldToLocal, nrm, planeN, u, v);
     if (!pieces || pieces.length === 0) continue;
     const rotated = panelHasRotation(panel);
-    const th = panelThickness(panel);
+    // GERÇEK KALINLIK: kalınlığı extrude ile değişmiş panelde (18→100) parametre değil, geometrinin
+    // (damga prizması / motor mesh'i) en ince ekseni — yoksa 100 mm'lik raf izi "şerit" sayılmaz,
+    // basma-düzlemi kesimi düşer ve basılan panelin bölgesi rafın içinden geçerdi.
+    const th = effectiveSlabThickness(panel);
     if (pieces.length > 1) console.log('[YAGO][AYAKİZİ][ÇOK-PARÇA]', panel?.id, 'parçaN=', pieces.length, pieces.map(pc => fmtBox2(bbox2(pc))).join(' | '));
     pieces.forEach((fp, k) => {
       footprints.push(fp);

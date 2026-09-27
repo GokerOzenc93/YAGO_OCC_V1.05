@@ -792,11 +792,42 @@ export function rayCavityCandidates(originLocal: Vec3, dirLocal: Vec3, g: Cavity
 
 // ── BOŞLUK ÇÖZÜCÜ ───────────────────────────────────────────────────────────
 
+/**
+ * ÜYE KALINLIKLARI (Goker): her üyenin kendi kalınlığı vardır (şemadaki kutucuk);
+ * boşluklar Σkalınlık düşülerek dağıtılır — üstteki raf 18, alttaki 10 olsa da
+ * aralar eşit (ya da girilen değerde) kalır. Eksik/kısa dizi varsayılanla dolar.
+ */
+export function memberThicknessesOf(group: Pick<PanelGroup, 'count' | 'thickness' | 'memberThicknesses'>, count = group.count): number[] {
+  const src = Array.isArray(group.memberThicknesses) ? group.memberThicknesses : [];
+  return Array.from({ length: Math.max(0, count) }, (_, i) => (src[i] > 0 ? src[i] : group.thickness));
+}
+const sumT = (ts: number[]) => ts.reduce((s, t) => s + t, 0);
+
 /** Eşit dağılım: n panel, n+1 boşluk, kilitsiz. */
-function equalGaps(L: number, count: number, t: number): GapSpec[] {
+function equalGaps(L: number, count: number, ts: number[]): GapSpec[] {
   const n = Math.max(0, count);
-  const g = Math.max(MIN_GAP, (L - n * t) / (n + 1));
+  const g = Math.max(MIN_GAP, (L - sumT(ts)) / (n + 1));
   return Array.from({ length: n + 1 }, () => ({ value: r1(g), locked: false }));
+}
+
+/**
+ * KALINLIK DEĞİŞİNCE YENİDEN DAĞITIM: kilitli ve girilmiş boşluklar değerini korur;
+ * fark girilmemiş kilitsiz boşluklara EŞİT dağılır (varsayılan: hepsi eşit). Öyle
+ * boşluk yoksa kilitsizlere oransal; hepsi kilitliyse artık son boşluğa.
+ */
+function redistributeForThickness(gaps: GapSpec[], L: number, count: number, ts: number[]): GapSpec[] {
+  if (!Array.isArray(gaps) || gaps.length !== count + 1) return equalGaps(L, count, ts);
+  const out = gaps.map(g => ({ ...g }));
+  const avail = L - sumT(ts);
+  const fresh = out.filter(g => !g.locked && !g.edited);
+  if (fresh.length > 0) {
+    const fixedSum = out.filter(g => g.locked || g.edited).reduce((s, g) => s + g.value, 0);
+    let free = avail - fixedSum;
+    if (free < 0) { console.warn('[YAGO][GRUP-KALINLIK] kilitli/girilmiş boşluklar açıklığa sığmıyor, serbest boşluklar 0:', free.toFixed(1)); free = 0; }
+    for (const g of fresh) g.value = r1(Math.max(MIN_GAP, free / fresh.length));
+    return out;
+  }
+  return rescaleGaps(out, L, count, ts);
 }
 
 /**
@@ -805,9 +836,9 @@ function equalGaps(L: number, count: number, t: number): GapSpec[] {
  * eşit kalır). Kilitliler sığmıyorsa oransal küçültülür (uyarı). Hepsi
  * kilitliyse artık son boşluğa yazılır.
  */
-function rescaleGaps(gaps: GapSpec[], L: number, count: number, t: number): GapSpec[] {
-  if (!Array.isArray(gaps) || gaps.length !== count + 1) return equalGaps(L, count, t);
-  const avail = L - count * t;
+function rescaleGaps(gaps: GapSpec[], L: number, count: number, ts: number[]): GapSpec[] {
+  if (!Array.isArray(gaps) || gaps.length !== count + 1) return equalGaps(L, count, ts);
+  const avail = L - sumT(ts);
   const out = gaps.map(g => ({ ...g }));
   const lockedSum = out.filter(g => g.locked).reduce((s, g) => s + g.value, 0);
   let free = avail - lockedSum;
@@ -837,10 +868,10 @@ function rescaleGaps(gaps: GapSpec[], L: number, count: number, t: number): GapS
  * girilmemiş boşluklara EŞİT dağılır. Öyle boşluk kalmadıysa diğer kilitsiz
  * (girilmiş) boşluklara oransal; o da yoksa değer kalan açıklığa kırpılır.
  */
-function applyGapEdit(gaps: GapSpec[], k: number, value: number, L: number, count: number, t: number): GapSpec[] {
-  const out = (gaps.length === count + 1 ? gaps : equalGaps(L, count, t)).map(g => ({ ...g }));
+function applyGapEdit(gaps: GapSpec[], k: number, value: number, L: number, count: number, ts: number[]): GapSpec[] {
+  const out = (gaps.length === count + 1 ? gaps : equalGaps(L, count, ts)).map(g => ({ ...g }));
   if (k < 0 || k >= out.length) return out;
-  const avail = L - count * t;
+  const avail = L - sumT(ts);
   const v = Math.max(MIN_GAP, value);
   out[k] = { ...out[k], value: r1(v), edited: true };
   const others = out.filter((_, i) => i !== k);
@@ -866,14 +897,14 @@ function applyGapEdit(gaps: GapSpec[], k: number, value: number, L: number, coun
   return out;
 }
 
-/** Panel başlangıçları (dizilim ekseni, hacim min'inden): p_i = min + Σgap[0..i] + i·t. */
-export function panelStarts(cavityMin: number, gaps: GapSpec[], t: number): number[] {
+/** Panel başlangıçları (dizilim ekseni, hacim min'inden): p_i = min + Σgap[0..i] + Σt[0..i). */
+export function panelStarts(cavityMin: number, gaps: GapSpec[], ts: number[]): number[] {
   const starts: number[] = [];
   let p = cavityMin;
   for (let i = 0; i < gaps.length - 1; i++) {
     p += gaps[i].value;
     starts.push(p);
-    p += t;
+    p += ts[i] ?? ts[ts.length - 1] ?? 0;
   }
   return starts;
 }
@@ -965,7 +996,8 @@ function solveGroup(group: PanelGroup, parent: Shape, panels: Shape[], groups: P
   const oset = groupObstacles(group, parent, panels, groups);
   const grid = gridForObstacles(parent, oset);
   if (!grid) return null;
-  const t = group.thickness;
+  const ts = memberThicknessesOf(group);
+  const tMax = ts.length ? Math.max(...ts) : group.thickness;
   let seed = anchorPoint(group, grid.body);
   let c = cellOfPoint(grid, seed);
   if (c < 0 || !grid.free[c]) {
@@ -1004,17 +1036,18 @@ function solveGroup(group: PanelGroup, parent: Shape, panels: Shape[], groups: P
   }
   let cavity = cells.size ? clippedRegionBBox(grid, cells, planes) : cloneBox(group.cavity);
   let region = cells.size ? regionBoxes(grid, cells) : (group.region || [cloneBox(group.cavity)]);
-  const minOk = cells.size > 0 && [0, 1, 2].every(a => boxSpan(cavity, a) >= (a === group.axis ? group.count * t : t));
+  const minOk = cells.size > 0 && [0, 1, 2].every(a => boxSpan(cavity, a) >= (a === group.axis ? sumT(ts) : tMax));
   if (!minOk) {
     console.warn('[YAGO][GRUP] hacim bozuk/çok küçük, önceki hacim korunuyor:', group.id, fmtBox(cavity));
     cavity = cloneBox(group.cavity);
     region = group.region || [cloneBox(cavity)];
   }
   const L = boxSpan(cavity, group.axis);
-  const gaps = rescaleGaps(group.gaps, L, group.count, t);
-  const starts = panelStarts(cavity.min[group.axis], gaps, t);
-  const sections = starts.map(s => {
+  const gaps = rescaleGaps(group.gaps, L, group.count, ts);
+  const starts = panelStarts(cavity.min[group.axis], gaps, ts);
+  const sections = starts.map((s, i) => {
     if (!minOk) return null;
+    const t = ts[i];
     const poly = sectionPolygon(grid, cells, group.axis, s, s + t, seed);
     if (!poly || !planes.length) return poly;
     const clipped = clipSectionByPlanes(poly, group.axis, s, s + t, planes);
@@ -1027,7 +1060,7 @@ function solveGroup(group: PanelGroup, parent: Shape, panels: Shape[], groups: P
 function interiorVfPatch(vf: VirtualFace, group: PanelGroup, sol: GroupSolution): Partial<VirtualFace> | null {
   const i = vf.groupIndex ?? group.memberVfIds.indexOf(vf.id);
   if (i < 0 || i >= sol.starts.length) return null;
-  const g = memberVfGeometry(group.axis, sol.cavity, sol.starts[i], group.thickness, sol.sections[i]);
+  const g = memberVfGeometry(group.axis, sol.cavity, sol.starts[i], memberThicknessesOf(group)[i], sol.sections[i]);
   return { normal: g.normal, vertices: g.vertices, center: g.center, regionAnchor: g.center } as any;
 }
 
@@ -1060,7 +1093,7 @@ const groupById = (id: string) => useAppStore.getState().panelGroups.find(g => g
 /** Çözüm yoksa: kayıtlı hacim + verilen boşluklarla düz çözüm. */
 const fallbackSolution = (group: PanelGroup, gaps: GapSpec[], count: number, seed: Vec3): GroupSolution => ({
   cavity: group.cavity, region: group.region || [group.cavity], gaps,
-  starts: panelStarts(group.cavity.min[group.axis], gaps, group.thickness), sections: Array(count).fill(null), seed,
+  starts: panelStarts(group.cavity.min[group.axis], gaps, memberThicknessesOf(group, count)), sections: Array(count).fill(null), seed,
 });
 
 /** Üye VF'lerin panelini + VF'sini siler (seçili satırsa seçim düşer). */
@@ -1075,7 +1108,7 @@ function removeMembers(vfIds: string[]): void {
 }
 
 function makeMemberVf(group: PanelGroup, i: number, sol: GroupSolution): VirtualFace {
-  const g = memberVfGeometry(group.axis, sol.cavity, sol.starts[i], group.thickness, sol.sections[i]);
+  const g = memberVfGeometry(group.axis, sol.cavity, sol.starts[i], memberThicknessesOf(group)[i], sol.sections[i]);
   return {
     id: genId('vf-int'), shapeId: group.shapeId,
     normal: g.normal, center: g.center, vertices: g.vertices,
@@ -1107,7 +1140,7 @@ export function createPanelGroupFromCavity(shapeId: string, kind: PanelGroup['ki
   const group: PanelGroup = {
     // ÇIPA = tohum noktası (ışının bölgeye girdiği yer) — L bölgede kutu merkezi dışarıda kalabilir.
     id: genId(kind === 'shelf' ? 'shelf' : 'divider'), shapeId, kind, axis, anchorFrac: fracInCavity(body, pick.seed, true), name: groupKindLabel(kind),
-    cavity: cloneBox(pick.bbox), region: pick.boxes.map(cloneBox), count, gaps: equalGaps(L, count, t), thickness: t, memberVfIds: [], createdAt: Date.now(),
+    cavity: cloneBox(pick.bbox), region: pick.boxes.map(cloneBox), count, gaps: equalGaps(L, count, [t]), thickness: t, memberThicknesses: [t], memberVfIds: [], createdAt: Date.now(),
     ...(pick.shape === 'box' ? { boxMode: true, boxFrac: { min: fracInCavity(body, pick.bbox.min), max: fracInCavity(body, pick.bbox.max) } } : {}),
   };
   const sol = solveFromStore(group) || fallbackSolution(group, group.gaps, count, pick.seed);
@@ -1127,10 +1160,12 @@ export async function setGroupCount(groupId: string, count: number): Promise<voi
   if (!group) return;
   const n = Math.max(0, Math.min(40, Math.round(count)));
   if (n === group.count) return;
-  const gaps = equalGaps(boxSpan(group.cavity, group.axis), n, group.thickness);
+  // Üye kalınlıkları: mevcutlar korunur, yeni üyeler varsayılanla doğar; boşluklar Σkalınlığa göre eşitlenir.
+  const memberThicknesses = memberThicknessesOf(group, n);
+  const gaps = equalGaps(boxSpan(group.cavity, group.axis), n, memberThicknesses);
   let memberVfIds = group.memberVfIds.slice();
   if (n < group.count) { removeMembers(memberVfIds.slice(n)); memberVfIds = memberVfIds.slice(0, n); }
-  const next: PanelGroup = { ...group, count: n, gaps, memberVfIds };
+  const next: PanelGroup = { ...group, count: n, gaps, memberVfIds, memberThicknesses };
   const sol = solveFromStore(next) || fallbackSolution(group, gaps, n, anchorPoint(group, group.cavity));
   for (let i = 0; i < Math.min(n, group.count); i++) {
     const vf = useAppStore.getState().virtualFaces.find(f => f.id === memberVfIds[i]);
@@ -1143,29 +1178,53 @@ export async function setGroupCount(groupId: string, count: number): Promise<voi
     next.memberVfIds = [...memberVfIds, ...added.map(v => v.id)];
     st.insertVirtualFacesAfter(memberVfIds[memberVfIds.length - 1] || null, added);
   }
-  st.updatePanelGroup(groupId, { count: n, gaps: sol.gaps, memberVfIds: next.memberVfIds });
+  st.updatePanelGroup(groupId, { count: n, gaps: sol.gaps, memberVfIds: next.memberVfIds, memberThicknesses });
   console.log('[YAGO][GRUP] adet', group.count, '→', n, groupId, '(boşluklar eşitlendi)');
   // Panel ekleme (VF → otomatik panel) / silme rebuild'i App izleyicisi tetikler.
 }
 
-function writeGroupGaps(group: PanelGroup, gaps: GapSpec[]): void {
+function writeGroupGaps(group: PanelGroup, gaps: GapSpec[], extra: Partial<PanelGroup> = {}): void {
   const st = useAppStore.getState();
-  const next = { ...group, gaps };
-  const sol = solveFromStore(next) || fallbackSolution(group, gaps, group.count, anchorPoint(group, group.cavity));
+  const next = { ...group, ...extra, gaps };
+  const sol = solveFromStore(next) || fallbackSolution(next, gaps, group.count, anchorPoint(group, group.cavity));
   for (const vfId of group.memberVfIds) {
     const vf = st.virtualFaces.find(f => f.id === vfId);
     if (!vf) continue;
     const patch = interiorVfPatch(vf, next, sol);
     if (patch) st.updateVirtualFace(vf.id, patch);
   }
-  st.updatePanelGroup(group.id, { gaps: sol.gaps });
+  st.updatePanelGroup(group.id, { ...extra, gaps: sol.gaps });
+}
+
+/**
+ * ÜYE KALINLIĞI (şemadaki kutucuk): i. üyenin kalınlığı value olur; üye panelin
+ * `panelThickness` parametresi güncellenir (motor levhayı bu kalınlıkla üretir,
+ * damga/şerit sınıfı da bunu okur); boşluklar Σkalınlığa göre yeniden dağıtılır
+ * (kilitli/girilmiş korunur, diğerleri EŞİT); tam rebuild.
+ */
+export async function setGroupMemberThickness(groupId: string, i: number, value: number): Promise<void> {
+  const group = groupById(groupId);
+  if (!group || i < 0 || i >= group.count || !Number.isFinite(value)) return;
+  const L = boxSpan(group.cavity, group.axis);
+  const ts = memberThicknessesOf(group);
+  const others = sumT(ts) - ts[i];
+  const v = r1(Math.max(1, Math.min(value, Math.max(1, L - others - group.count - 1))));
+  if (Math.abs(v - ts[i]) < 0.05) return;
+  ts[i] = v;
+  const gaps = redistributeForThickness(group.gaps, L, group.count, ts);
+  writeGroupGaps(group, gaps, { memberThicknesses: ts });
+  const st = useAppStore.getState();
+  const panel = panelOfVf(group.memberVfIds[i], st.shapes);
+  if (panel) st.updateShape(panel.id, { parameters: { ...panel.parameters, panelThickness: v, depth: v } } as any);
+  console.log('[YAGO][GRUP-KALINLIK] girildi', groupId, 'üye=', i + 1, 'değer=', v, 'kalınlıklar=', ts.join('/'), '→ boşluklar', gaps.map(g => `${g.value}${g.locked ? '🔒' : g.edited ? '*' : ''}`).join('/'));
+  await requestRebuild(group.shapeId);
 }
 
 /** Boşluk girişi (şema pill'i): kural applyGapEdit; VF'ler güncellenir, tam rebuild. */
 export async function editGroupGap(groupId: string, k: number, value: number): Promise<void> {
   const group = groupById(groupId);
   if (!group || !Number.isFinite(value)) return;
-  const gaps = applyGapEdit(group.gaps, k, value, boxSpan(group.cavity, group.axis), group.count, group.thickness);
+  const gaps = applyGapEdit(group.gaps, k, value, boxSpan(group.cavity, group.axis), group.count, memberThicknessesOf(group));
   writeGroupGaps(group, gaps);
   console.log('[YAGO][GRUP-BOŞLUK] girildi', groupId, 'k=', k, 'değer=', value, '→', gaps.map(g => `${g.value}${g.locked ? '🔒' : g.edited ? '*' : ''}`).join('/'));
   await requestRebuild(group.shapeId);
@@ -1184,7 +1243,7 @@ export function toggleGroupGapLock(groupId: string, k: number): void {
 export async function equalizeGroupGaps(groupId: string): Promise<void> {
   const group = groupById(groupId);
   if (!group) return;
-  writeGroupGaps(group, equalGaps(boxSpan(group.cavity, group.axis), group.count, group.thickness));
+  writeGroupGaps(group, equalGaps(boxSpan(group.cavity, group.axis), group.count, memberThicknessesOf(group)));
   console.log('[YAGO][GRUP-BOŞLUK] eşitlendi', groupId);
   await requestRebuild(group.shapeId);
 }

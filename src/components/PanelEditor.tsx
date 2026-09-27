@@ -17,8 +17,8 @@ import {
   executePanelMoveFixed, executePanelRotate, findExistingStepForFace, updateExtrudeStep, updateTransformStep,
 } from './PanelOps';
 import {
-  boxSpan, createPanelGroupFromCavity, deletePanelGroupWithMembers, editGroupGap, equalizeGroupGaps, groupKindLabel, groupName, panelStarts,
-  renamePanelGroup, setGroupCount, toggleGroupGapLock, traceMaskLoops,
+  boxSpan, createPanelGroupFromCavity, deletePanelGroupWithMembers, editGroupGap, equalizeGroupGaps, groupKindLabel, groupName, memberThicknessesOf, panelStarts,
+  renamePanelGroup, setGroupCount, setGroupMemberThickness, toggleGroupGapLock, traceMaskLoops,
 } from './PanelGroupService';
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -600,7 +600,10 @@ function PanelPreview2D({ shape, arrowRotated }: { shape: Shape; arrowRotated?: 
    Seçilen hacmin görünüşü: levhalar taş renkli çubuk, her boşluk ortasında
    ölçü pill'i. Pill'e tıkla → değer girişi (Enter/blur onaylar); pill'in
    kilit ucu → kilit aç/kapa. Kilitli pill turuncu çerçeve. Şema, panel
-   önizlemesiyle aynı yükseklikte (410) sabit bir kare alana sığdırılır. */
+   önizlemesiyle aynı yükseklikte (410) sabit bir kare alana sığdırılır.
+   ÜYE KALINLIĞI (Goker): her levhanın ucunda kalınlık kutucuğu; tıkla → o
+   üye seçilir (altta panel önizlemesi açılır) + değer girişi. Kalınlık
+   değişince boşluklar Σkalınlığa göre yeniden eşitlenir (girilen korunur). */
 const SCHEMA_PAD = 34;
 /** Bölge kutularının (h,v) eksenlerine izdüşüm maskesi: düzlemler + dolu hücre sorgusu. */
 function regionMask(boxes: CavityBox[], h: number, v: number) {
@@ -613,10 +616,15 @@ function regionMask(boxes: CavityBox[], h: number, v: number) {
   };
   return { hs, vs, filled };
 }
-function GroupSchematic({ group, onEditGap, onToggleLock }: { group: PanelGroup; onEditGap: (k: number, v: number) => void; onToggleLock: (k: number) => void }) {
+type SchemaEdit = { kind: 'gap'; k: number; v: string } | { kind: 't'; i: number; v: string };
+function GroupSchematic({ group, selectedIndex, onEditGap, onToggleLock, onEditThickness, onSelectMember }: {
+  group: PanelGroup; selectedIndex: number;
+  onEditGap: (k: number, v: number) => void; onToggleLock: (k: number) => void;
+  onEditThickness: (i: number, v: number) => void; onSelectMember: (i: number) => void;
+}) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(300);
-  const [editing, setEditing] = useState<{ k: number; v: string } | null>(null);
+  const [editing, setEditing] = useState<SchemaEdit | null>(null);
   useEffect(() => {
     const el = wrapRef.current; if (!el) return;
     const ro = new ResizeObserver(es => { const w = es[0].contentRect.width; if (w > 0) setWidth(Math.round(w)); });
@@ -625,10 +633,11 @@ function GroupSchematic({ group, onEditGap, onToggleLock }: { group: PanelGroup;
   }, []);
   useEffect(() => { setEditing(null); }, [group.id, group.count]);
 
-  const { cavity, gaps, thickness: t, axis } = group;
+  const { cavity, gaps, axis } = group;
+  const ts = memberThicknessesOf(group);
   const barsHorizontal = axis === 1;
   const height = PREVIEW_HEIGHT;
-  const starts = panelStarts(cavity.min[axis], gaps, t);
+  const starts = panelStarts(cavity.min[axis], gaps, ts);
 
   // ŞEKİLLİ BÖLGE SİLUETİ: bölge kutularının izdüşümü (eski gruplarda hacim
   // kutusu). Dizilim ekseni rafta düşey (Y), dikmede yatay (X) kalır; diğer
@@ -652,19 +661,24 @@ function GroupSchematic({ group, onEditGap, onToggleLock }: { group: PanelGroup;
   const crossAxisW = barsHorizontal ? hAxis : vAxis;
   const nBars = starts.length;
   const barPx = Math.max(3, Math.min(7, S / Math.max(1, (nBars + 1) * 4)));
-  // Dizilim ekseni kırılma noktaları: dünya [min, min+g0, min+g0+t, …, max] ↔ piksel.
+  // Levha piksel kalınlığı TEMSİLİ: en incesi barPx, kalınlar oranla (en çok 3×) — 18'e karşı 100 görünsün.
+  const tMin = ts.length ? Math.max(1, Math.min(...ts)) : 1;
+  const barPxOf = (i: number) => Math.min(barPx * 3, barPx * ((ts[i] ?? tMin) / tMin));
+  const barPxSum = starts.reduce((a, _, i) => a + barPxOf(i), 0);
+  // Dizilim ekseni kırılma noktaları: dünya [min, min+g0, min+g0+t0, …, max] ↔ piksel.
   const stackMap = useMemo(() => {
     const wb: number[] = [cavity.min[axis]], pb: number[] = [0];
     const gSum = gaps.reduce((a, g) => a + Math.max(0, g.value), 0);
-    const avail = Math.max(0, S - nBars * barPx);
+    const avail = Math.max(0, S - barPxSum);
     let w = cavity.min[axis], p = 0;
     gaps.forEach((g, k) => {
       w += Math.max(0, g.value); p += gSum > 1e-6 ? (Math.max(0, g.value) / gSum) * avail : avail / gaps.length;
       wb.push(w); pb.push(p);
-      if (k < nBars) { w += t; p += barPx; wb.push(w); pb.push(p); }
+      if (k < nBars) { w += ts[k]; p += barPxOf(k); wb.push(w); pb.push(p); }
     });
     return { wb, pb };
-  }, [cavity, axis, gaps, S, nBars, barPx, t]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cavity, axis, gaps, S, nBars, barPx, barPxSum, ts.join('/')]);
   const mapStack = (w: number) => {
     const { wb, pb } = stackMap;
     if (w <= wb[0]) return pb[0];
@@ -698,7 +712,7 @@ function GroupSchematic({ group, onEditGap, onToggleLock }: { group: PanelGroup;
   const crossAxis = barsHorizontal ? hAxis : vAxis;
   let cursor = cavity.min[axis];
   const pills = gaps.map((g, k) => {
-    const a = cursor, b = cursor + g.value; cursor = b + t;
+    const a = cursor, b = cursor + g.value; cursor = b + (ts[k] ?? 0);
     const mid = (a + b) / 2;
     const txt = String(round1(g.value));
     const { pw, ph } = pillSize(txt, fs);
@@ -715,15 +729,31 @@ function GroupSchematic({ group, onEditGap, onToggleLock }: { group: PanelGroup;
     return { k, cx, cy, pw, ph, txt, a, b, crossMid };
   });
   const asz = Math.max(4.5, Math.min(7.5, width * 0.016));
+  // KALINLIK KUTUCUKLARI: levhanın ucunda, kare alanın dışındaki kenar boşluğunda (raf → sağ, dikme → üst).
+  const fsT = Math.max(9, fs * 0.86);
+  const tPills = starts.map((st, i) => {
+    const txt = String(round1(ts[i]));
+    const { pw, ph } = pillSize(txt, fsT);
+    const mid = st + ts[i] / 2;
+    // Kenar boşluğu dar kalırsa kutucuk şema alanının içinde (kırpılmadan) tutulur.
+    const cx = barsHorizontal ? Math.min(ox + S + 6 + pw / 2, width - pw / 2 - 2) : sx(mid);
+    const cy = barsHorizontal ? sy(mid) : Math.max(oy - 6 - ph / 2, ph / 2 + 2);
+    return { i, cx, cy, pw, ph, txt };
+  });
 
   const commit = () => {
     if (!editing) return;
     const v = parseFloat(editing.v);
     setEditing(null);
-    if (!isNaN(v) && v >= 0) onEditGap(editing.k, v);
+    if (isNaN(v)) return;
+    if (editing.kind === 'gap') { if (v >= 0) onEditGap(editing.k, v); }
+    else if (v > 0) onEditThickness(editing.i, v);
   };
-  const bar = (key: string, x0: number, y0: number, x1: number, y1: number) =>
-    <rect key={key} x={x0} y={y0} width={x1 - x0} height={y1 - y0} rx={1} fill="#e9e1d3" stroke="#8a8278" strokeWidth={0.9} />;
+  const bar = (key: string, i: number, x0: number, y0: number, x1: number, y1: number) => {
+    const on = i === selectedIndex;
+    return <rect key={key} x={x0} y={y0} width={x1 - x0} height={y1 - y0} rx={1} fill={on ? '#fde7d3' : '#e9e1d3'} stroke={on ? '#ea580c' : '#8a8278'} strokeWidth={on ? 1.1 : 0.9}
+      style={{ cursor: 'pointer' }} onClick={e => { stop(e); onSelectMember(i); }}><title>{`Panel ${i + 1} · ${round1(ts[i])} mm`}</title></rect>;
+  };
 
   return (
     <div ref={wrapRef} className="relative rounded-[10px] ring-1 ring-[#e9e4dc] overflow-hidden" style={{ background: PREVIEW_BG, height }}>
@@ -732,9 +762,18 @@ function GroupSchematic({ group, onEditGap, onToggleLock }: { group: PanelGroup;
         {/* şekilli bölge silueti */}
         <path d={silhouettePath} fill="#ffffff" stroke="#d6cfc4" strokeWidth={1} strokeLinejoin="round" fillRule="evenodd" />
         {/* levhalar: dilimdeki dolu aralıklara kırpılmış */}
-        {starts.map((st, i) => runsAt(st, st + t).map((r, ri) => barsHorizontal
-          ? bar(`bar-${i}-${ri}`, sx(r[0]), sy(st + t), sx(r[1]), sy(st))
-          : bar(`bar-${i}-${ri}`, sx(st), sy(r[1]), sx(st + t), sy(r[0]))))}
+        {starts.map((st, i) => runsAt(st, st + ts[i]).map((r, ri) => barsHorizontal
+          ? bar(`bar-${i}-${ri}`, i, sx(r[0]), sy(st + ts[i]), sx(r[1]), sy(st))
+          : bar(`bar-${i}-${ri}`, i, sx(st), sy(r[1]), sx(st + ts[i]), sy(r[0]))))}
+        {/* üye kalınlık kutucukları: tıkla → üye seçilir (önizleme açılır) + değer girişi */}
+        {tPills.map(p => {
+          const on = p.i === selectedIndex;
+          return (
+            <DimPill key={`t-${p.i}`} cx={p.cx} cy={p.cy} txt={p.txt} fs={fsT} fill={on ? '#fff7ed' : '#f7f4ee'} stroke={on ? '#f97316' : '#d6cfc4'} strokeWidth={on ? 1 : 0.8}
+              color={on ? '#c2410c' : '#57534e'} hideText={editing?.kind === 't' && editing.i === p.i} title={`Panel ${p.i + 1} thickness — click to select & edit`}
+              onClick={e => { stop(e); onSelectMember(p.i); setEditing({ kind: 't', i: p.i, v: p.txt }); }} />
+          );
+        })}
         {/* boşluk ölçüleri: oklu ölçü çizgisi + pill (+ hover'da / kilitliyken kilit) */}
         {pills.map(p => {
           const locked = gaps[p.k].locked;
@@ -745,7 +784,7 @@ function GroupSchematic({ group, onEditGap, onToggleLock }: { group: PanelGroup;
             <g key={`gap-${p.k}`} className={`yago-gap${locked ? ' locked' : ''}`}>
               <DimArrows a={a} b={b} asz={asz} color={locked ? '#f59e0b' : '#a39a8f'} />
               <DimPill cx={p.cx} cy={p.cy} txt={p.txt} fs={fs} fill={locked ? '#fff7ed' : '#ffffff'} stroke={locked ? '#f97316' : '#e6e0d6'} strokeWidth={locked ? 1 : 0.8}
-                color={locked ? '#c2410c' : '#44403c'} hideText={editing?.k === p.k} title="Edit gap" onClick={e => { stop(e); setEditing({ k: p.k, v: p.txt }); }} />
+                color={locked ? '#c2410c' : '#44403c'} hideText={editing?.kind === 'gap' && editing.k === p.k} title="Edit gap" onClick={e => { stop(e); setEditing({ kind: 'gap', k: p.k, v: p.txt }); }} />
               <g className="lockbtn" style={{ cursor: 'pointer' }} onClick={e => { stop(e); onToggleLock(p.k); }}>
                 <circle cx={lockCx} cy={lockCy} r={8} fill={locked ? '#fff7ed' : '#ffffff'} stroke={locked ? '#f97316' : '#e6e0d6'} strokeWidth={0.8} />
                 {locked
@@ -758,16 +797,17 @@ function GroupSchematic({ group, onEditGap, onToggleLock }: { group: PanelGroup;
         })}
       </svg>
       {editing && (() => {
-        const p = pills[editing.k]; if (!p) return null;
+        const p = editing.kind === 'gap' ? pills[editing.k] : tPills[editing.i]; if (!p) return null;
+        const fsE = editing.kind === 'gap' ? fs : fsT;
         return (
           <input autoFocus type="text" inputMode="decimal" value={editing.v}
-            onChange={e => setEditing({ k: editing.k, v: e.target.value })}
+            onChange={e => setEditing({ ...editing, v: e.target.value })}
             onBlur={commit}
             onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setEditing(null); }}
             onClick={stop}
             style={{
               position: 'absolute', left: p.cx - p.pw / 2 - 4, top: p.cy - p.ph / 2 - 2, width: p.pw + 8, height: p.ph + 4, textAlign: 'center',
-              fontFamily: UI_FONT, fontSize: fs, fontWeight: 600, color: '#1c1917', fontVariantNumeric: 'tabular-nums',
+              fontFamily: UI_FONT, fontSize: fsE, fontWeight: 600, color: '#1c1917', fontVariantNumeric: 'tabular-nums',
               background: '#fff', border: '1px solid #f97316', borderRadius: 99, outline: 'none', boxShadow: '0 0 0 2px rgba(249,115,22,0.12)', padding: 0,
             }} />
         );
@@ -996,7 +1036,10 @@ export function PanelEditor() {
         const parentShape = shapeById(vf.shapeId);
         if (!parentShape || !useAppStore.getState().virtualFaces.some(f => f.id === vf.id)) { _creatingPanelForVf.delete(vf.id); continue; }
         try {
-          const rp = await createPanelFromVirtualFace(vf.vertices, vf.normal, PANEL_THICKNESS);
+          // İÇ PANEL (raf/dikme): kalınlık grubun ÜYE kalınlığı (şemadaki kutucuk); gövde paneli varsayılan.
+          const grp = vf.groupId ? useAppStore.getState().panelGroups.find(pg => pg.id === vf.groupId) : undefined;
+          const th = grp ? memberThicknessesOf(grp)[vf.groupIndex ?? grp.memberVfIds.indexOf(vf.id)] || grp.thickness : PANEL_THICKNESS;
+          const rp = await createPanelFromVirtualFace(vf.vertices, vf.normal, th);
           if (!rp) continue;
           const g = convertReplicadToThreeGeometry(rp);
           const r = geoAxes(g); if (!r) continue;
@@ -1006,9 +1049,9 @@ export function PanelEditor() {
           useAppStore.getState().addShape({
             id: genId('panel-vf'), type: 'panel', position: [...parentShape.position], rotation: parentShape.rotation, scale: [...parentShape.scale], color: '#ffffff',
             geometry: g, replicadShape: rp,
-            parameters: { width: s[def], height: s[alt], depth: PANEL_THICKNESS, parentShapeId: parentShape.id, faceIndex: -(vi + 1), virtualFaceId: vf.id, arrowRotated: false,
-              // İÇ PANEL (raf/dikme): grup kimliği panele de yazılır — damgalama/bölge dışı tutulur, grup seçimi vurgular.
-              ...(vf.groupId ? { panelGroupId: vf.groupId } : {}) },
+            parameters: { width: s[def], height: s[alt], depth: th, parentShapeId: parentShape.id, faceIndex: -(vi + 1), virtualFaceId: vf.id, arrowRotated: false,
+              // İÇ PANEL (raf/dikme): grup kimliği + üye kalınlığı panele de yazılır — motor/damga/şerit sınıfı bunu okur.
+              ...(vf.groupId ? { panelGroupId: vf.groupId, panelThickness: th } : {}) },
           } as Shape);
           updateVirtualFace(vf.id, { hasPanel: true });
         } catch (e) { console.error('Auto panel creation failed:', e); }
@@ -1546,7 +1589,10 @@ export function PanelEditor() {
                 <span className="flex-1" />
                 <SmallBtn title="Equal gaps (unlock all)" onClick={() => { void equalizeGroupGaps(g.id); }}><Equal size={11} strokeWidth={2.2} /><span>Equalize</span></SmallBtn>
               </div>
-              <GroupSchematic group={g} onEditGap={(k, v) => { void editGroupGap(g.id, k, v); }} onToggleLock={k => toggleGroupGapLock(g.id, k)} />
+              <GroupSchematic group={g} selectedIndex={members.findIndex(m => selectedPanelRow === `vf-${m.id}`)}
+                onEditGap={(k, v) => { void editGroupGap(g.id, k, v); }} onToggleLock={k => toggleGroupGapLock(g.id, k)}
+                onEditThickness={(i, v) => { void setGroupMemberThickness(g.id, i, v); }}
+                onSelectMember={i => { const m = members[i]; if (m) setSelectedPanelRow(`vf-${m.id}`, sid); }} />
               <SectionHead label="Panels" count={members.length} />
               <div className="flex flex-col gap-[2px]">
                 {members.map((m, mi) => {

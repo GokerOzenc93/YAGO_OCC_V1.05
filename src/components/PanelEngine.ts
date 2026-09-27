@@ -1,6 +1,5 @@
 import * as THREE from 'three';
-import { type PanelGroup, type Shape, type VirtualFace, childPanelsOf, panelOfVf, shapeById, useAppStore, vfOfPanel, registerRebuildEngine,
-} from '../store';
+import { type PanelGroup, type Shape, type VirtualFace, childPanelsOf, panelOfVf, shapeById, useAppStore, vfOfPanel } from '../store';
 import { type ExtrudeStep, type TransformStep, applyExtrudeSteps, getUnifiedSteps, matchReferenceFace, resolveReferenceFacePlane, stepRefTargets } from './PanelOps';
 import { computeFaceComponentContour, computeFreeRegionLocal, convexHull2D, panelHasRotation, panelIsTiltedSlab } from './FaceRegion';
 import {
@@ -1059,13 +1058,35 @@ function stampBaseVertsFromVf(vf: VirtualFace | undefined, freshRawVerts: Vec3[]
  * budanır (gerçek extrude ile birebir: ref → resolvedValue, fixed → value −
  * açıklık, dyn → value). Hedef yüze BAKAN adımın büyümesi yansıtılmaz
  * (komşu gereksiz kısalmasın); yalnız kısalma yansır.
+ *
+ * KALINLIK EXTRUDE'U (adım normali ≈ VF normali): panelin BÜYÜK yüzü itilmiştir →
+ * damga ÖTELENMEZ, KALINLAŞIR/İNCELİR. Kalınlık aralığı VF düzlemine göre
+ * [tMin, tMax] tutulur (başlangıç [−th, 0]); dış yüz adımı tMax'ı, iç yüz adımı
+ * tMin'i oynatır; fixed açıklık = o anki kalınlık (applyOneExtrudeStep'teki
+ * faceDist ile birebir). Eskiden bölge adım miktarı kadar kaydırılıp 18 mm'lik
+ * prizma kuruluyordu: 100 mm'ye extrude edilmiş raf/üst panel basılan yan panele
+ * hâlâ 18 mm'lik (fixed'de üstelik 18 mm yanlış yerde) iz bırakıyordu.
  */
 function trimmedStampGeometryFromVf(vf: VirtualFace, thickness: number, extrudeSteps: any[], targetFaceNormal: THREE.Vector3): THREE.BufferGeometry | null {
   if (!vf.vertices || vf.vertices.length < 3) return null;
   const trimmed: Vec3[] = vf.vertices.map(v => [...v] as Vec3);
+  const vfN = new THREE.Vector3(...vf.normal).normalize();
+  let tMin = -thickness, tMax = 0;
   for (const step of extrudeSteps) {
     if (!step.faceNormal) continue;
     const eN = new THREE.Vector3(...step.faceNormal).normalize();
+    const alignN = eN.dot(vfN);
+    if (Math.abs(alignN) > 0.7) {
+      const cur = tMax - tMin;
+      const resolvedN = step.resolvedValue !== undefined && step.resolvedValue !== null;
+      const amountN = resolvedN ? step.resolvedValue : step.isFixed ? (step.value ?? 0) - cur : (step.value ?? 0);
+      console.log('[YAGO][DAMGA-KALINLIK]', 'eN=', fmtVec(eN, 0), resolvedN ? 'ref-çözülü' : step.isFixed ? 'fixed' : 'dyn',
+        'value=', (step.value ?? 0).toFixed(1), 'mevcut=', cur.toFixed(1), 'amount=', amountN.toFixed(1), alignN > 0 ? '(dış yüz)' : '(iç yüz)');
+      if (Math.abs(amountN) < 0.01) continue;
+      if (alignN > 0) tMax += amountN; else tMin -= amountN;
+      if (tMax - tMin < 0.5) tMin = tMax - 0.5;   // dejenere kalınlık koruması
+      continue;
+    }
     const alignT = eN.dot(targetFaceNormal);
     if (alignT < -0.3) continue;   // hedef yüzden uzaklaşan extrude: yakın kenar yerinde
     const projs = trimmed.map(p => p[0] * eN.x + p[1] * eN.y + p[2] * eN.z);
@@ -1086,7 +1107,10 @@ function trimmedStampGeometryFromVf(vf: VirtualFace, thickness: number, extrudeS
       }
     }
   }
-  return buildPrismFromVertices(trimmed, vf.normal, thickness);
+  // Ön halka = VF düzlemi + tMax (dış yüz itildiyse ileride), kalınlık = tMax − tMin.
+  const front: Vec3[] = Math.abs(tMax) < 1e-9 ? trimmed
+    : trimmed.map(([x, y, z]) => [x + vfN.x * tMax, y + vfN.y * tMax, z + vfN.z * tMax] as Vec3);
+  return buildPrismFromVertices(front, vf.normal, tMax - tMin);
 }
 
 /**
@@ -1260,7 +1284,10 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
     if (!verts || verts.length < 3) return 0;
     let mn = Infinity, mx = -Infinity;
     for (const q of verts) { const pr = q[0] * eN.x + q[1] * eN.y + q[2] * eN.z; if (pr < mn) mn = pr; if (pr > mx) mx = pr; }
-    return (step.value ?? 0) - (mx - mn);
+    // KALINLIK YÖNÜ: VF köşeleri normal boyunca 0 açıklık verir; gerçek açıklık kalınlıktır.
+    const pvf = vfId ? vfById.get(vfId) : undefined;
+    const alongNormal = !!pvf && Math.abs(eN.dot(new THREE.Vector3(...pvf.normal).normalize())) > 0.7;
+    return (step.value ?? 0) - (alongNormal ? panelThickness(p) : mx - mn);
   };
   // YÖN TESTİ: extrude adımı paneli bu yüze DOĞRU ilerletiyor mu ((miktar × eN)·n > 0)?
   const extrudeAdvancesTowardFace = (p: any, n: THREE.Vector3 | null): boolean => {
@@ -1331,7 +1358,13 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
     // store mesh'i bir rebuild geride kalabilir (hacim yeni çözüldü). Dönmüş üye gerçek geometri yolunda.
     if (isInteriorPanel(p) && !isRotatedPanel(p)) {
       const ivf = interiorMap.get(p.parameters?.virtualFaceId) || vfById.get(p.parameters?.virtualFaceId);
-      const geo = ivf?.vertices && ivf.vertices.length >= 3 ? buildPrismFromVertices(ivf.vertices, ivf.normal, panelThickness(p)) : null;
+      let geo: THREE.BufferGeometry | null = null;
+      if (ivf?.vertices && ivf.vertices.length >= 3) {
+        // EXTRUDE'LU ÜYE: damga GERÇEK kalınlık/uzunlukla kurulur (adımlar grup VF tabanına
+        // uygulanır) — 100 mm'ye extrude edilmiş raf basılan gövde panelinde 18 mm görünmesin.
+        if (hasExtrudeSteps(p) && myFaceNormal) geo = trimmedStampGeometryFromVf(ivf, panelThickness(p), p.parameters.extrudeSteps, myFaceNormal);
+        if (!geo) geo = buildPrismFromVertices(ivf.vertices, ivf.normal, panelThickness(p));
+      }
       return geo ? { ...p, geometry: geo } : p;
     }
     const ownVfRaw = vfById.get(p.parameters?.virtualFaceId);
@@ -1477,7 +1510,3 @@ function regenerateParentFaceShapeVF(
   if (region?.touchingSiblingIds?.length) console.log('[YAGO][TEMAS]', vf.id, 'temaslar=', region.touchingSiblingIds.join(', '));
   return out;
 }
-
-// Motor yüklenir yüklenmez store'a kaydolur (HMR'da modül yeniden çalışınca taze
-// fonksiyon kaydolur) → requestRebuild dinamik import'a hiç düşmez.
-registerRebuildEngine(rebuildPanelsForParent);
