@@ -401,9 +401,8 @@ async function cutByRotatedPressers(
   const thS = panelThickness(panel);
   let out = rp;
   for (const r of siblings) {
+    // Sıra tek yetkidir — dönmüş bir raf/dikme de sırada SONRA gelen gövde panelini biçer.
     if (r.id === panel.id || orderOf(r) >= myOrder) continue;
-    // İÇ PANEL ASLA BASMAZ: dönmüş bir raf/dikme gövde panelini eğik düzlemiyle biçmez.
-    if (isInteriorPanel(r) && !isInteriorPanel(panel)) continue;
     if (!panelHasRotation(r) && !vfIsTilted(vfOfPanel(r, vfs))) continue;
     if (stepRefTargets(r).rotate.has(panel.id)) {
       console.log('[YAGO][DÖNÜŞ-KESİM] MUAF', panel.id, '<-', r.id, '— r bu paneli REF DÖNÜŞ hedefi alıyor, düzlem kesimi yok');
@@ -667,9 +666,8 @@ async function fitRotatedPanel(
   const myOrder = orderOf(panel);
   const myRefTargets = stepRefTargets(panel).rotate;
   for (const b of siblings) {
+    // Sıra tek yetkidir — sırada ÖNCE gelen raf/dikme de dönmüş gövde panelini keser.
     if (b.id === panel.id || orderOf(b) >= myOrder) continue;
-    // İç panel (raf/dikme) dönmüş bir gövde panelini kesmez (asla basmaz).
-    if (isInteriorPanel(b) && !isInteriorPanel(panel)) continue;
     const isRefTarget = myRefTargets.has(b.id);
     if (isRefTarget && refContacts.get(b.id) === 'rest') {
       console.log('[YAGO][DÖNÜŞ-SIĞDIR]', panel.id, 'referansa OTURUYOR, referansla kesilmedi <-', b.id, '(referans kenarı pahlanacak)');
@@ -1222,8 +1220,10 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
   }
   const { faces, groups: faceGroups } = getFacesAndGroups(shape.geometry);
   const worldToLocal = getShapeMatrix(shape).invert();
-  // İÇ PANELLER (raf/dikme) gövde panellerini ASLA damgalamaz → kardeş listesine girmez.
-  const childPanels = childPanelsOf(shape.id, (allShapes || []) as Shape[]).filter(s => !isInteriorPanel(s));
+  // İÇ PANELLER (raf/dikme) de kardeş listesindedir: VF sırasında ÖNCE geldikleri gövde
+  // panelini damgalarlar (Goker: "6. sırada dikme, 7. sırada dikmeye değen gövde paneli →
+  // gövde paneli dikme ile rafın arasında kalmalı"); yetki yalnız sıradır (bkz. stamps).
+  const childPanels = childPanelsOf(shape.id, (allShapes || []) as Shape[]);
   const vfById = new Map(virtualFaces.map(f => [f.id, f] as const));
   const vfIndexOf = new Map<string, number>();
   virtualFaces.forEach((f, i) => vfIndexOf.set(f.id, i));
@@ -1277,6 +1277,15 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
   /** p, VF'yi damgalama yetkisine sahip mi? (sıra önceliği + fiziksel ilerleme istisnası) */
   const stamps = (p: any, vfId: string, myPanel: any, myFaceNormal: THREE.Vector3 | null): boolean => {
     if (p.parameters?.virtualFaceId === vfId) return false;
+    // RAF/DİKME: yalnız VF sırasıyla basar — taşıma/extrude istisnası yok. Sırada ÖNCE ise
+    // sonra gelen gövde panelinin bölgesini keser; SONRA ise gövde paneli onun hacmini sınırlar
+    // (PanelGroupService.groupObstacles aynı sırayı okur → tek yönlü sözleşme).
+    if (isInteriorPanel(p)) {
+      const myIdx = vfIndexOf.get(vfId);
+      const byOrder = myIdx != null && panelPriority(p) < myIdx;
+      if (byOrder) console.log('[YAGO][DAMGA-YETKI] İÇ PANEL BASAN', vfId, '<-', p.id, '(sıra', panelPriority(p), '<', myIdx, ')');
+      return byOrder;
+    }
     if (myPanel && refsOf(myPanel).extrude.has(p.id)) return false;
     if (myPanel && refsOf(p).rotate.has(myPanel.id)) {
       console.log('[YAGO][DAMGA-YETKI] RED', vfId, '<-', p.id, '— p bu paneli REF DÖNÜŞ HEDEFİ alıyor → bölge kırpılmaz, motor kenarı pahlar');
@@ -1317,6 +1326,13 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
     return r;
   };
   const buildStamp = (p: any, myFaceNormal: THREE.Vector3 | null): any => {
+    // İÇ PANEL (düz): damga bu geçişte ÇÖZÜLMÜŞ grup VF'sinden (interiorMap) üretilir —
+    // store mesh'i bir rebuild geride kalabilir (hacim yeni çözüldü). Dönmüş üye gerçek geometri yolunda.
+    if (isInteriorPanel(p) && !isRotatedPanel(p)) {
+      const ivf = interiorMap.get(p.parameters?.virtualFaceId) || vfById.get(p.parameters?.virtualFaceId);
+      const geo = ivf?.vertices && ivf.vertices.length >= 3 ? buildPrismFromVertices(ivf.vertices, ivf.normal, panelThickness(p)) : null;
+      return geo ? { ...p, geometry: geo } : p;
+    }
     const ownVfRaw = vfById.get(p.parameters?.virtualFaceId);
     const ownVfFreshVerts = freshVfVertices.get(p.parameters?.virtualFaceId);
     const ownVf = ownVfRaw && ownVfFreshVerts ? { ...ownVfRaw, vertices: ownVfFreshVerts } : ownVfRaw;

@@ -11,7 +11,7 @@ import {
 import { REF_COLORS, applyTransformSteps, confirmRefFaceExtrude, cycleRefFacePickFromEvent } from './PanelOps';
 import { type Point2D, computeFaceComponentContour, computeFreeRegionLocal, earClipTriangulate, findPanelCoveringPoint, pointInTriangle3D } from './FaceRegion';
 import {
-  GROUP_PANEL_THICKNESS, boxSpan, collectObstacles, createPanelGroupFromCavity, fmtBox, gridForObstacles, isInteriorPanel, rayCavityCandidates,
+  GROUP_PANEL_THICKNESS, boxSpan, collectObstacles, createPanelGroupFromCavity, fmtBox, gridForObstacles, rayCavityCandidates,
 } from './PanelGroupService';
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -468,8 +468,9 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
   const { localToWorld, worldToLocal } = useShapeMatrices(shape);
   const { faces, groups: faceGroups } = useFaceGroups(effGeometry, () => { setPending(null); lastClickRef.current = null; });
   useEffect(() => { if (!raycastMode) { setHoveredGroupIndex(null); setPending(null); lastClickRef.current = null; } }, [raycastMode]);
-  // Kısaltılmış panelin bıraktığı boşluk gezilebilsin diye GÜNCEL geometri; İÇ PANELLER (raf/dikme) yüz bölgesine girmez.
-  const childPanels = useMemo(() => childPanelsOf(shape.id, allShapes).filter(s => !isInteriorPanel(s)), [allShapes, shape.id]);
+  // Kısaltılmış panelin bıraktığı boşluk gezilebilsin diye GÜNCEL geometri. İÇ PANELLER (raf/dikme) de
+  // girer: yeni panel her zaman sırada SONRA → mevcut dikme/raf onu basar, bölge tıklanan bölmede kalır.
+  const childPanels = useMemo(() => childPanelsOf(shape.id, allShapes), [allShapes, shape.id]);
   // Aynı DÜZLEMDEKİ tüm VF'ler (bir yüzde birden çok panel olabilir).
   const groupHasVirtualFace = useCallback((gi: number): boolean => {
     if (gi < 0 || gi >= faceGroups.length || shapeVirtualFaces.length === 0) return false;

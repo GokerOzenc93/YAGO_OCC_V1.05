@@ -24,9 +24,10 @@ import { panelHasRotation } from './FaceRegion';
 //    henüz girilmemiş boşluklara eşit dağılır. Küp boyutlanınca KİLİTLİ boşluk
 //    sabit kalır; kilitsizler oranları korunarak yeni açıklığa ölçeklenir:
 //    Σgap + n·t = L (bölge kutusunun dizilim eksenindeki açıklığı).
-//  • İç paneller (raf/dikme) GÖVDE PANELLERİNİ ASLA BASMAZ; gövde panelleri
-//    her sırada iç grupları sınırlar; bir iç grup yalnız KENDİNDEN ÖNCE
-//    oluşturulmuş iç grupların panelleriyle sınırlanır (döngü yok).
+//  • Gövde paneli ↔ iç panel ilişkisi VF SIRASIDIR (basan/basılan): sırada
+//    üyelerden ÖNCE gelen gövde paneli hacmi sınırlar; SONRA gelen gövde
+//    panelini üyeler damgalar (bölgesi kırpılır, motor keser). Bir iç grup
+//    yalnız KENDİNDEN ÖNCE oluşturulmuş iç grupların panelleriyle sınırlanır.
 //  • Üye paneller sıradan VF-panelleridir: extrude / move / rotate adımları
 //    motorda aynı yoldan uygulanır; VF (çözülmüş kesit) her rebuild'de yazılır.
 // ═══════════════════════════════════════════════════════════════════════════
@@ -153,24 +154,52 @@ function orientTiltPlanes(faces: TiltFace[] | undefined, seed: Vec3): TiltPlane[
   return Array.from(best.values());
 }
 
-/** Kutu açıklığını tohum doğrusu boyunca eğik düzlemlerle kırpar (dizilim açıklığı L bunu okur). */
-function clipBoxAtSeed(bbox: CavityBox, planes: TiltPlane[], seed: Vec3): CavityBox {
-  const out = cloneBox(bbox);
-  for (const pl of planes) {
-    if (!inPlaneRange(pl, seed, 50)) continue;
-    for (let a = 0; a < 3; a++) {
-      if (Math.abs(pl.n[a]) < 1e-6) continue;
-      let rhs = pl.d;
-      for (let b = 0; b < 3; b++) if (b !== a) rhs -= pl.n[b] * seed[b];
-      const sVal = rhs / pl.n[a];
-      if (pl.n[a] > 0) out.min[a] = Math.max(out.min[a], Math.min(sVal, out.max[a] - 1));
-      else out.max[a] = Math.min(out.max[a], Math.max(sVal, out.min[a] + 1));
+type Pt3 = Vec3;
+/** Kutunun 6 yüz dörtgeni (3B). */
+const boxFaces = (b: CavityBox): Pt3[][] => {
+  const [x0, y0, z0] = b.min, [x1, y1, z1] = b.max;
+  return [
+    [[x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0]], [[x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1]],
+    [[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]], [[x0, y1, z0], [x0, y1, z1], [x1, y1, z1], [x1, y1, z0]],
+    [[x0, y0, z0], [x0, y1, z0], [x1, y1, z0], [x1, y0, z0]], [[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]],
+  ];
+};
+
+/**
+ * Bölgenin GERÇEK dış kutusu (hacmin en dış sınırları): eğik düzlemi kesen her
+ * hücre yarım-uzaylarla kırpılır (dışbükey çokyüzlü) ve köşelerinin kutusu
+ * alınır. Dizilim açıklığı L bunu okur. Eski yol (kutuyu tohum DOĞRUSU boyunca
+ * kırpmak) açıklığı tıklanan noktaya bağlıyordu: eğik panelin altındaki üçgen
+ * bölgede dikme, hacmin dış sınırlarına göre değil tıklanan yüksekliğe göre
+ * ortalanıyordu (Goker: "taralı dikme en dış hacmin sınırlarına göre ortalanmıyor").
+ */
+function clippedRegionBBox(g: CavityGrid, cells: Set<number>, planes: TiltPlane[]): CavityBox {
+  const raw = regionBBox(g, cells);
+  if (!planes.length || !cells.size) return raw;
+  const out: CavityBox = { min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] };
+  const take = (p: Pt3) => { for (let a = 0; a < 3; a++) { if (p[a] < out.min[a]) out.min[a] = p[a]; if (p[a] > out.max[a]) out.max[a] = p[a]; } };
+  for (const c of cells) {
+    const b = cellBox(g, c);
+    const active = planes.filter(pl => inPlaneRange(pl, boxCenter(b)));
+    if (!active.length) { take(b.min); take(b.max); continue; }
+    // Kırpılmış çokyüzlünün tüm köşeleri kırpılmış kutu yüzlerinde ya da düzlem kesitlerindedir.
+    for (const face of boxFaces(b)) {
+      let poly = face;
+      for (const pl of active) { poly = clipPoly3D(poly, pl.n, pl.d); if (poly.length < 3) break; }
+      if (poly.length >= 3) for (const p of poly) take(p);
+    }
+    for (const pl of active) {
+      let poly = planeBoxSection(pl.n, pl.d, b);
+      if (!poly) continue;
+      for (const other of active) { if (other === pl) continue; poly = clipPoly3D(poly, other.n, other.d); if (poly.length < 3) break; }
+      if (poly.length >= 3) for (const p of poly) take(p);
     }
   }
+  if (!Number.isFinite(out.min[0]) || !Number.isFinite(out.max[0])) return raw;
+  for (let a = 0; a < 3; a++) { out.min[a] = Math.max(out.min[a], raw.min[a]); out.max[a] = Math.min(out.max[a], raw.max[a]); if (out.max[a] - out.min[a] < 1) { out.min[a] = raw.min[a]; out.max[a] = raw.max[a]; } }
+  if (fmtBox(out) !== fmtBox(raw)) console.log('[YAGO][HACİM-KUTU] eğik kırpım: ham=', fmtBox(raw), '→ dış sınır=', fmtBox(out));
   return out;
 }
-
-type Pt3 = Vec3;
 /** Sutherland–Hodgman: 3B çokgeni n·p ≥ d yarım-uzayına kırpar. */
 function clipPoly3D(poly: Pt3[], n: Vec3, d: number): Pt3[] {
   const out: Pt3[] = [];
@@ -576,7 +605,7 @@ function rayBoxInterval(o: Vec3, d: Vec3, b: CavityBox): [number, number] | null
 
 /** Bölgeden seçim adayı (kutu, kutular, yüzey, anahtar, tohum). */
 function pickFromRegion(g: CavityGrid, cells: Set<number>, seed: Vec3, shape: CavityPick['shape'] = 'shaped', planes: TiltPlane[] = []): CavityPick {
-  const bbox = clipBoxAtSeed(regionBBox(g, cells), planes, seed);
+  const bbox = clippedRegionBBox(g, cells, planes);
   return { key: `${shape}:${regionKey(cells)}`, bbox, boxes: regionBoxes(g, cells), surface: clipSurfaceByPlanes(g, cells, regionSurface(g, cells), planes), seed, shape };
 }
 
@@ -889,16 +918,39 @@ export function collectObstacles(parent: Shape, panels: Shape[], include: (p: Sh
   return { obstacles, splitBoxes, tiltFaces: tiltedPanelFaces(parent, tilted) };
 }
 
-/** Grubun engelleri: tüm gövde panelleri + kendinden ÖNCE oluşturulmuş grupların panelleri. */
+/** Grubun VF sırası = en küçük üye indeksi (üye yoksa ∞: yeni grup, mevcut her panel önce). */
+const groupVfIndex = (group: PanelGroup, vfIdx: Map<string, number>): number => {
+  let best = Infinity;
+  for (const id of group.memberVfIds) { const i = vfIdx.get(id); if (i != null && i < best) best = i; }
+  return best;
+};
+
+/**
+ * Grubun engelleri: VF sırasında üyelerden ÖNCE gelen gövde panelleri (basan) +
+ * kendinden ÖNCE oluşturulmuş grupların panelleri. Sırada SONRA gelen gövde
+ * paneli hacmi SINIRLAMAZ — grup onu basar, bölgesi üye damgalarıyla kırpılır
+ * (PanelEngine.stamps). Goker: "6. sırada dikme, 7. sırada dikmeye değen gövde
+ * paneli → dikme ve raf kısalmamalı, gövde paneli aralarında kalmalı".
+ */
 function groupObstacles(group: PanelGroup, parent: Shape, panels: Shape[], groups: PanelGroup[]): ObstacleSet {
   const byId = new Map(groups.map(g => [g.id, g] as const));
-  return collectObstacles(parent, panels, p => {
+  const vfIdx = new Map(useAppStore.getState().virtualFaces.map((f, i) => [f.id, i] as const));
+  const myIdx = groupVfIndex(group, vfIdx);
+  const pressed: string[] = [];
+  const oset = collectObstacles(parent, panels, p => {
     const gid = (p.parameters as any)?.panelGroupId as string | undefined;
-    if (!gid) return true;
+    if (!gid) {
+      const pi = vfIdx.get((p.parameters as any)?.virtualFaceId);
+      const bounds = pi == null || pi < myIdx;   // VF'siz (eski) panel: güvenli taraf, sınırlar
+      if (!bounds) pressed.push(`${p.id}(sıra ${pi})`);
+      return bounds;
+    }
     if (gid === group.id) return false;
     const g = byId.get(gid);
     return !!g && g.createdAt < group.createdAt;
   });
+  if (pressed.length) console.log('[YAGO][GRUP-SIRA]', group.id, 'sıra=', myIdx, '→ SONRAKİ gövde panelleri hacmi sınırlamaz (grup basar):', pressed.join(', '));
+  return oset;
 }
 export const gridForObstacles = (parent: Shape, o: ObstacleSet) => buildCavityGrid(parent, o.obstacles, o.splitBoxes, o.tiltFaces);
 
@@ -950,7 +1002,7 @@ function solveGroup(group: PanelGroup, parent: Shape, panels: Shape[], groups: P
       cells = best.cells;
     }
   }
-  let cavity = cells.size ? clipBoxAtSeed(regionBBox(grid, cells), planes, seed) : cloneBox(group.cavity);
+  let cavity = cells.size ? clippedRegionBBox(grid, cells, planes) : cloneBox(group.cavity);
   let region = cells.size ? regionBoxes(grid, cells) : (group.region || [cloneBox(group.cavity)]);
   const minOk = cells.size > 0 && [0, 1, 2].every(a => boxSpan(cavity, a) >= (a === group.axis ? group.count * t : t));
   if (!minOk) {

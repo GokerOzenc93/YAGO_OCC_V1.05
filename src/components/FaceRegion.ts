@@ -486,6 +486,12 @@ function panelFootprintsInParentLocal(
   const bEdges = onPlaneBoundaryEdges(panel.geometry, d.map(dd => Math.abs(dd) < tol), i => uv(pts[i], u, v));
   if (bEdges.length >= 3) {
     const good = walkBoundaryLoops(bEdges, true).filter(l => l.length >= 3 && Math.abs(signedArea2(l)) / 2 > 1.0);
+    // YÖN NORMALİZASYONU: halka yönü mesh sarımından gelir (OCC mesh'i ile sentetik
+    // damga prizması ters sarılabilir). Kırpma (clipByFootprint: cross2<0 = çapa dışarıda,
+    // basma-düzlemi kenar seçimi) SAAT YÖNÜNÜN TERSİNİ (pozitif alan, convexHull2D ile
+    // aynı) varsayar; ters halkada "dış" kenar şeridin UZAK uzun kenarı seçiliyor ve
+    // bölge dikmenin içinden geçiyordu (u 291..600 yerine 309..600).
+    for (const l of good) if (signedArea2(l) < 0) l.reverse();
     if (good.length > 0) return good;
   }
   const hull = convexHull2D(out);
@@ -1074,13 +1080,36 @@ function solveFreeRegion(q: FreeRegionInput): FreeRegionResult {
 
   // ── GEOMETRİ: TAM ÇOKGEN FARKI (grid DEĞİL) ──────────────────────────────
   // Grid yalnız KARAR verir: (a) hangi ayak izi engelliyor, (b) sonuç görülenle uyuşuyor mu.
+  // ENGEL = çapanın ERİŞTİĞİ bölgeye (reach) BİTİŞİK ayak izi. Yüzün başka yerindeki
+  // bir iz (ör. dikmenin ÖBÜR tarafındaki raf) engel değildir: yarım-düzlem kırpımı
+  // sonsuz olduğu için o rafın çizgisi bu bölmeye taşınıyor, sol gövde paneli sağ
+  // raf varmış gibi kısa çıkıyordu (Goker: "dikmenin sol tarafında raf olmamasına
+  // rağmen o body panel de raf varmış gibi kısa çıktı"). Bitişiklik: reach 1 hücre
+  // genişletilir (8-komşuluk); izin içindeki hücreler serbest olmadığından reach'e
+  // girmez, sınır hücreleri genişletmeyle yakalanır.
+  const nearReach = new Uint8Array(nx * ny);
+  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+    if (!reach[j * nx + i]) continue;
+    for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+      const a = i + di, b = j + dj;
+      if (a >= 0 && b >= 0 && a < nx && b < ny) nearReach[b * nx + a] = 1;
+    }
+  }
   const blocking: Point2D[][] = [], blockingRotated: boolean[] = [], blockingStrip: boolean[] = [];
+  const farIds: string[] = [];
   for (let f = 0; f < footprints.length; f++) {
     const pip = fpPips[f];
-    let blocks = false;
-    for (let j = 0; j < ny && !blocks; j++) for (let i = 0; i < nx; i++) if (inRing[j * nx + i] && pip(PX[i], PY[j])) { blocks = true; break; }
+    let blocks = false, onFace = false;
+    for (let j = 0; j < ny && !blocks; j++) for (let i = 0; i < nx; i++) {
+      const k = j * nx + i;
+      if (!inRing[k] || !pip(PX[i], PY[j])) continue;
+      onFace = true;
+      if (nearReach[k]) { blocks = true; break; }
+    }
     if (blocks) { blocking.push(footprints[f]); blockingRotated.push(fpRotated[f]); blockingStrip.push(fpStrip[f]); }
+    else if (onFace) farIds.push(fpIds[f] || `#${f}`);
   }
+  if (farIds.length) console.log('[YAGO][BÖLGE] bölgeye bitişik olmayan izler engel sayılmadı (başka bölme):', farIds.join(', '));
 
   const anchorPt = cellPt(ci, cj);
   // Dönmüş engel şeridi içindeki hücreler (taşma sayılmaz) — bir kez.
