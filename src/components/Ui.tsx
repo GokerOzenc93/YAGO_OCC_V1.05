@@ -705,10 +705,10 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; panelEditor
             </div>
             <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', height: '100%', flexShrink: 0 }}>
               <div style={VSEP} />
-              {/* SEÇİM MODU: tek düğme — her tıklama Body ↔ Panel arasında geçer; etiket/ikon GÜNCEL modu gösterir. */}
+              {/* SEÇİM MODU: tek ikon düğmesi — her tıklama Body ↔ Panel arasında geçer; ikon GÜNCEL modu gösterir (kutu = Body, dikdörtgen = Panel). */}
               <HeaderToggle active={panelSelectMode} onClick={() => setPanelSelectMode(!panelSelectMode)}
                 title={panelSelectMode ? 'Selection: Panel (individual panels) — click to switch to Body' : 'Selection: Body (whole bodies) — click to switch to Panel'}
-                icon={panelSelectMode ? <RectangleHorizontal size={13} strokeWidth={2.1} /> : <Box size={13} strokeWidth={2.1} />} label={panelSelectMode ? 'Panel' : 'Body'} />
+                icon={panelSelectMode ? <RectangleHorizontal size={13} strokeWidth={2.1} /> : <Box size={13} strokeWidth={2.1} />} />
               <div style={VSEP} />
               <HeaderToggle active={showOutlines} onClick={() => setShowOutlines(!showOutlines)} title="Show panel outlines" icon={<Square size={13} strokeWidth={2.1} />} />
               <div style={VSEP} />
