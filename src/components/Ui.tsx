@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronRight, Hash, type LucideIcon, PanelLeft, Pin, PinOff, Send, SlidersHorizontal } from 'lucide-react';
+import { ChevronRight, Hash, type LucideIcon, PanelLeft, Pin, PinOff, Send, SlidersHorizontal, Square, Box, RectangleHorizontal } from 'lucide-react';
 import { CameraType, OrthoMode, type Shape, SnapType, Tool, ViewMode, shapeById, useAppStore, useStoreFields } from '../store';
 import {
   type Vec3, convertReplicadToThreeGeometry, createReplicadBox, getReplicadVertices,
@@ -489,7 +489,7 @@ const SB = {
   accentSoft:    '#fff7ed',
   accentGradient:'linear-gradient(90deg,transparent,#f97316 50%,transparent)',
 };
-const SIDEBAR_WIDTH = 475;
+const SIDEBAR_WIDTH = 560;
 const VSEP: React.CSSProperties = { width: '1px', height: '22px', background: 'linear-gradient(to bottom,transparent,rgba(60,50,40,0.14) 30%,rgba(60,50,40,0.14) 70%,transparent)', flexShrink: 0 };
 const ACCENT_UNDERLINE = (width: string): React.CSSProperties => ({ position: 'absolute', bottom: '-1px', left: '50%', transform: 'translateX(-50%)', width, height: '2px', background: SB.accentGradient, borderRadius: '99px' });
 
@@ -597,12 +597,33 @@ const SIDEBAR_CSS = `
 .bone-skin input:disabled { opacity: 0.55 !important; background: #f0ece4 !important; }
 `;
 
+/* ─── Başlık kontrolleri: sekmelerden BAĞIMSIZ, tüm menüleri kapsayan görünüm/seçim ayarları ───
+   (Goker: "outline ve panel/body seçim modu diğer düğmelerle aynı işlevde değil, tüm menüleri
+   kapsıyor" → Panel Editor araç çubuğundan sekme şeridine, Pin'in yanına taşındı.) */
+const HeaderToggle: React.FC<{ active: boolean; onClick: () => void; title: string; icon: React.ReactNode; label?: string }> = ({ active, onClick, title, icon, label }) => {
+  const [hov, setHov] = useState(false);
+  return (
+    <button type="button" onClick={onClick} onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)} title={title} aria-pressed={active}
+      style={{
+        ...(label ? { padding: '0 11px', gap: '6px' } : { width: '36px' }),
+        height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', outline: 'none', cursor: 'pointer', position: 'relative',
+        background: active ? SB.accentSoft : hov ? 'rgba(60,50,40,0.05)' : 'transparent',
+        color: active ? SB.accent : hov ? SB.textPrimary : SB.textTertiary, transition: 'background 0.12s,color 0.12s', flexShrink: 0,
+        fontFamily: UI_FONT, fontSize: '12px', fontWeight: active ? 600 : 500, letterSpacing: '0.01em',
+      }}>
+      {icon}
+      {label && <span>{label}</span>}
+      {active && <div style={ACCENT_UNDERLINE(label ? 'calc(100% - 16px)' : '60%')} />}
+    </button>
+  );
+};
 /* ═══════════════════════════════════════════════════════════════════════════
    Sidebar — varsayılan sabit + tıkla-aç + kemik teması
    ═══════════════════════════════════════════════════════════════════════════ */
 type SidebarTab = 'parameters' | 'panel-editor';
 export const Sidebar: React.FC<{ parametersContent: React.ReactNode; panelEditorContent: React.ReactNode }> = ({ parametersContent, panelEditorContent }) => {
-  const { selectedShapeId } = useStoreFields('selectedShapeId');
+  const { selectedShapeId, showOutlines, setShowOutlines, panelSelectMode, setPanelSelectMode } =
+    useStoreFields('selectedShapeId', 'showOutlines', 'setShowOutlines', 'panelSelectMode', 'setPanelSelectMode');
   const [isOpen, setIsOpen] = useState(false);
   const [isPinned, setIsPinned] = useState(false);
   const [activeTab, setActiveTab] = useState<SidebarTab>('panel-editor');
@@ -683,6 +704,13 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; panelEditor
               <TabBtn active={activeTab === 'panel-editor'} onClick={() => setActiveTab('panel-editor')} icon={<PanelLeft size={13.5} strokeWidth={2} />} label="Panel Editor" />
             </div>
             <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', height: '100%', flexShrink: 0 }}>
+              <div style={VSEP} />
+              {/* SEÇİM MODU: tek düğme — her tıklama Body ↔ Panel arasında geçer; etiket/ikon GÜNCEL modu gösterir. */}
+              <HeaderToggle active={panelSelectMode} onClick={() => setPanelSelectMode(!panelSelectMode)}
+                title={panelSelectMode ? 'Selection: Panel (individual panels) — click to switch to Body' : 'Selection: Body (whole bodies) — click to switch to Panel'}
+                icon={panelSelectMode ? <RectangleHorizontal size={13} strokeWidth={2.1} /> : <Box size={13} strokeWidth={2.1} />} label={panelSelectMode ? 'Panel' : 'Body'} />
+              <div style={VSEP} />
+              <HeaderToggle active={showOutlines} onClick={() => setShowOutlines(!showOutlines)} title="Show panel outlines" icon={<Square size={13} strokeWidth={2.1} />} />
               <div style={VSEP} />
               <button onClick={() => { if (isPinned) { setIsPinned(false); setIsOpen(false); } else setIsPinned(true); }}
                 onMouseEnter={() => setPinHover(true)} onMouseLeave={() => setPinHover(false)} title={isPinned ? 'Unpin panel' : 'Pin panel'}
