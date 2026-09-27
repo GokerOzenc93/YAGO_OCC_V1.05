@@ -904,7 +904,10 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
 
   const raycastProps = suppressBodyRaycast ? { raycast: noopRaycast } : {};
   const hoverProps = isMoveRefPickActive ? { onPointerOver: (e: any) => { e.stopPropagation(); setMoveRefHover(true); }, onPointerOut: () => { if (moveRefHover) setMoveRefHover(false); } } : {};
-  const outline = (color: string, width: number, depthWrite: boolean) => S.showOutlines && edgePoints && (
+  // OUTLINE GÖRÜNÜRLÜĞÜ = kullanıcı tercihi VEYA panel yerleştirme (Body Panel / Shelf / Divider
+  // seçimi) sürüyor: kapalıyken bile yerleştirme boyunca görünür, bitince tercihe döner.
+  const outlinesVisible = S.showOutlines || S.raycastMode || !!S.volumePickMode;
+  const outline = (color: string, width: number, depthWrite: boolean) => outlinesVisible && edgePoints && (
     <Line points={edgePoints} segments color={color} lineWidth={width} transparent={false} depthTest depthWrite={depthWrite} renderOrder={1} raycast={() => null} />
   );
 

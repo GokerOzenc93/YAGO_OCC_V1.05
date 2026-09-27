@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ArrowUp, Check, ChevronRight, Columns3, Crosshair, Equal, GripVertical, LayoutPanelTop, Lock, type LucideIcon, Minus, MousePointer2, Move,
-  MoveVertical, Pencil, Plus, RotateCw, Rows3, SlidersHorizontal, Square, Trash2, Unlock, X,
+  ArrowUp, Check, ChevronRight, Columns3, Crosshair, Equal, GripVertical, LayoutPanelTop, Lock, type LucideIcon, Minus, Move,
+  MoveVertical, Pencil, Plus, RotateCw, Rows3, SlidersHorizontal, Trash2, Unlock, X,
 } from 'lucide-react';
 import * as THREE from 'three';
 import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
@@ -257,7 +257,7 @@ const PREVIEW_BG = 'linear-gradient(180deg,#fcfbf9 0%,#f5f3ef 100%)';
 const PREVIEW_PANEL_COLOR = 0xe9e1d3;
 const PREVIEW_EDGE_COLOR = 0x8a8278;
 const PREVIEW_LIGHT = { hemi: 1.0, ambient: 0.3, key: 1.9, fill: 0.55 };
-const PREVIEW_HEIGHT = 410;
+const PREVIEW_HEIGHT = 500;   // kenar çubuğu 560px ile orantılı (önceki 475px / 410)
 // ŞERİT ARTIK ÖNİZLEMENİN ÜSTÜNE BİNMEZ (Goker: "mod düğmeleri panel
 // görünümünün içine geçiyordu"): önizlemenin hemen ALTINDA, akış içinde duran
 // ayrı bir karttır.
@@ -868,8 +868,8 @@ const LIST_CSS = `@keyframes yagoExpand{from{opacity:0;clip-path:inset(0 0 100% 
 type StepEdit = { id: string; v: string } | null;
 
 export function PanelEditor() {
-  const { selectedShapeId, shapes, updateShape, showOutlines, setShowOutlines,
-    selectedPanelRow, setSelectedPanelRow, panelSelectMode, setPanelSelectMode, raycastMode, setRaycastMode,
+  const { selectedShapeId, shapes, updateShape,
+    selectedPanelRow, setSelectedPanelRow, raycastMode, setRaycastMode,
     virtualFaces, updateVirtualFace, deleteVirtualFace, reorderVirtualFaceGroup,
     faceExtrudeMode, setFaceExtrudeMode, faceExtrudeTargetPanelId, setFaceExtrudeTargetPanelId,
     faceExtrudeSelectedFace, setFaceExtrudeSelectedFace, faceExtrudeThickness, setFaceExtrudeThickness,
@@ -883,8 +883,8 @@ export function PanelEditor() {
     panelRotateValueMode, setPanelRotateValueMode, panelRotateRefArmVertex, panelRotateRefFace,
     panelGroups, selectedPanelGroupId, setSelectedPanelGroupId,
     volumePickMode, setVolumePickMode, volumePickCandidates, volumePickIndex,
-  } = useStoreFields('selectedShapeId', 'shapes', 'updateShape', 'showOutlines', 'setShowOutlines',
-    'selectedPanelRow', 'setSelectedPanelRow', 'panelSelectMode', 'setPanelSelectMode', 'raycastMode', 'setRaycastMode',
+  } = useStoreFields('selectedShapeId', 'shapes', 'updateShape',
+    'selectedPanelRow', 'setSelectedPanelRow', 'raycastMode', 'setRaycastMode',
     'virtualFaces', 'updateVirtualFace', 'deleteVirtualFace', 'reorderVirtualFaceGroup',
     'faceExtrudeMode', 'setFaceExtrudeMode', 'faceExtrudeTargetPanelId', 'setFaceExtrudeTargetPanelId',
     'faceExtrudeSelectedFace', 'setFaceExtrudeSelectedFace', 'faceExtrudeThickness', 'setFaceExtrudeThickness',
@@ -1079,12 +1079,9 @@ export function PanelEditor() {
     return () => window.clearTimeout(t);
   }, [selectedPanelRow]);
 
-  useEffect(() => { if (raycastMode) setShowOutlines(true); }, [raycastMode]);
-  useEffect(() => {
-    if (!selectedShape) return;
-    if (!childPanelsOf(selectedShape.id, shapes).length) { setShowOutlines(true); return; }
-    if (!raycastMode) setShowOutlines(false);
-  }, [selectedShape?.id, shapes.length, raycastMode]);
+  // OUTLINE: showOutlines yalnız KULLANICI TERCİHİDİR (store'da kalıcı). Eskiden burada
+  // yerleştirmeye girince zorla açılıp panel yerleşince zorla kapatılıyordu → son seçim
+  // kayboluyordu. Yerleştirme sırasındaki geçici görünürlük çizimde (ShapeWithTransform).
 
   const withActivePanel = (fn: (ps: Shape) => Promise<unknown> | unknown) => { const ps = shapeById(activePanelId, shapes); if (ps) return fn(ps); };
   const toggleArrow = (p: Shape | undefined) => { if (p) updateShape(p.id, { parameters: { ...p.parameters, arrowRotated: !p.parameters?.arrowRotated } }); };
@@ -1097,15 +1094,13 @@ export function PanelEditor() {
     try { await requestRebuild(vf.shapeId); } catch (e) { console.error('[YAGO][YÜZ-ŞEKLİ] rebuild hatası:', e); }
   };
 
-  // ÜST ARAÇ ÇUBUĞU — Parameters paneliyle ORTAK bileşen (ToolChip).
+  // ÜST ARAÇ ÇUBUĞU — Parameters paneliyle ORTAK bileşen (ToolChip). Yalnız ekleme araçları;
+  // Outline ve Body/Panel seçim modu tüm menüleri kapsadığı için kenar çubuğu başlığında (Ui.Sidebar).
   const panelToolbar = (
     <ToolChipBar>
-      <ToolChip label="Outline" icon={Square} active={showOutlines} onClick={() => setShowOutlines(!showOutlines)} title="Show panel outlines" />
       <ToolChip label="Body Panel" icon={LayoutPanelTop} active={raycastMode} onClick={() => { if (!raycastMode && volumePickMode) setVolumePickMode(null); setRaycastMode(!raycastMode); }} title="Add a panel on a body face" />
       <ToolChip label="Shelf" icon={Rows3} active={volumePickMode === 'shelf'} onClick={() => setVolumePickMode(volumePickMode === 'shelf' ? null : 'shelf')} title="Add shelves: pick a cavity in the 3D view" />
       <ToolChip label="Divider" icon={Columns3} active={volumePickMode === 'divider'} onClick={() => setVolumePickMode(volumePickMode === 'divider' ? null : 'divider')} title="Add vertical dividers: pick a cavity in the 3D view" />
-      <ToolChip label={panelSelectMode ? 'Panel' : 'Body'} icon={MousePointer2} active={panelSelectMode} onClick={() => setPanelSelectMode(!panelSelectMode)}
-        title={panelSelectMode ? 'Selection: Panel — click to select whole bodies' : 'Selection: Body — click to select individual panels'} />
     </ToolChipBar>
   );
 

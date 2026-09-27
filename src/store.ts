@@ -253,6 +253,14 @@ export interface AppState {
 export const shapeById = (id: string | null | undefined, shapes: Shape[] = useAppStore.getState().shapes): Shape | undefined =>
   id ? shapes.find(s => s.id === id) : undefined;
 /** Bir gövdenin çocuk panelleri. */
+const OUTLINE_PREF_KEY = 'yago.showOutlines';
+function readOutlinePref(): boolean {
+  try { const v = localStorage.getItem(OUTLINE_PREF_KEY); return v === null ? true : v === '1'; } catch { return true; }
+}
+function writeOutlinePref(b: boolean): void {
+  try { localStorage.setItem(OUTLINE_PREF_KEY, b ? '1' : '0'); } catch { /* depolama yok: yalnız oturum içi */ }
+}
+
 export const childPanelsOf = (parentId: string, shapes: Shape[] = useAppStore.getState().shapes): Shape[] =>
   shapes.filter(s => s.type === 'panel' && s.parameters?.parentShapeId === parentId);
 /** VF'nin paneli. */
@@ -374,7 +382,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   // ── Paneller / editör ─────────────────────────────────────────────────────
-  showOutlines: true, setShowOutlines: (b) => set({ showOutlines: b }),
+  // OUTLINE TERCİHİ: son seçim hatırlanır (oturumlar arası localStorage; erişilemezse açık başlar).
+  showOutlines: readOutlinePref(), setShowOutlines: (b) => { writeOutlinePref(b); set({ showOutlines: b }); },
   selectedPanelRow: null, selectedPanelRowParentId: null,
   // Tek panel seçimi grup seçimini düşürür (ikisi aynı anda olmaz).
   setSelectedPanelRow: (i, parentId) => set({
