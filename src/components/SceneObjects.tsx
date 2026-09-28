@@ -11,7 +11,7 @@ import {
 import { REF_COLORS, applyTransformSteps, confirmRefFaceExtrude, cycleRefFacePickFromEvent } from './PanelOps';
 import { type Point2D, computeFaceComponentContour, computeFreeRegionLocal, earClipTriangulate, findPanelCoveringPoint, pointInTriangle3D } from './FaceRegion';
 import {
-  GROUP_PANEL_THICKNESS, boxSpan, collectObstacles, createPanelGroupFromCavity, fmtBox, gridForObstacles, rayCavityCandidates,
+  GROUP_PANEL_THICKNESS, boxSpan, collectObstacles, confirmRefCavityExtrude, createPanelGroupFromCavity, fmtBox, gridForObstacles, rayCavityCandidates,
 } from './PanelGroupService';
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -81,8 +81,12 @@ export function RefFaceOverlay({ geometry, faces, groups, hoveredGroup, candidat
   );
 }
 
-/** Sağ tık → bekleyen ref-extrude seçimini onaylar. */
-export const confirmRefOnRightClick = async (e: any) => { if (e.button !== 2) return; e.stopPropagation(); await confirmRefFaceExtrude(); };
+/** Sağ tık → bekleyen ref-extrude seçimini onaylar (panel yüzü ya da raf/dikme HACMİ). */
+export const confirmRefOnRightClick = async (e: any) => {
+  if (e.button !== 2) return;
+  e.stopPropagation();
+  if (useAppStore.getState().faceExtrudeCavityGroupId) await confirmRefCavityExtrude(); else await confirmRefFaceExtrude();
+};
 
 export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React.memo(({ shape, isSelected }) => {
   const meshRef = useRef<THREE.Mesh>(null);
@@ -745,6 +749,63 @@ export const VolumePickOverlay: React.FC<{ shape: any; allShapes: any[] }> = ({ 
   );
 };
 
+// ── 6. HACİM DÜZENLEME (raf/dikme hacmine yüz extrude) ──────────────────────
+// Grubun güncel hacmi mavi dolgu + kırmızı kenarla çizilir; kutunun yüzleri panel
+// extrude hedefi gibi seçilir (hover kırmızı, seçili koyu kırmızı). Seçilen yüzün
+// gövde-yerel normali store'a yazılır; fixed/dyn şeritten, ref sağ tıkla uygulanır.
+export const CavityEditOverlay: React.FC<{ shape: any }> = ({ shape }) => {
+  const { panelGroups, faceExtrudeCavityGroupId, faceExtrudeSelectedFace, setFaceExtrudeSelectedFace, setFaceExtrudeCavityFaceNormal, faceExtrudeValueMode } =
+    useStoreFields('panelGroups', 'faceExtrudeCavityGroupId', 'faceExtrudeSelectedFace', 'setFaceExtrudeSelectedFace', 'setFaceExtrudeCavityFaceNormal', 'faceExtrudeValueMode');
+  const group = panelGroups.find(g => g.id === faceExtrudeCavityGroupId);
+  const active = !!group && group.shapeId === shape.id;
+  const cav = group?.cavity;
+  const cavKey = cav ? [...cav.min, ...cav.max].map(n => n.toFixed(1)).join('|') : '';
+  const [hovered, setHovered] = useState<number | null>(null);
+  const boxGeo = useMemo(() => {
+    if (!cav) return null;
+    const g = new THREE.BoxGeometry(Math.max(boxSpan(cav, 0), 0.1), Math.max(boxSpan(cav, 1), 0.1), Math.max(boxSpan(cav, 2), 0.1));
+    g.translate((cav.min[0] + cav.max[0]) / 2, (cav.min[1] + cav.max[1]) / 2, (cav.min[2] + cav.max[2]) / 2);
+    return g;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cavKey]);
+  useEffect(() => () => { boxGeo?.dispose(); }, [boxGeo]);
+  const { faces, groups } = useMemo(() => (boxGeo ? getFacesAndGroups(boxGeo) : { faces: [], groups: [] }), [boxGeo]);
+  const edgePts = useMemo(() => (boxGeo ? edgePointsOf(boxGeo, 1) : []), [boxGeo]);
+  const hoverGeo = useMemo(() => (hovered !== null && hovered !== faceExtrudeSelectedFace && groups[hovered] ? createFaceHighlightGeometry(faces, groups[hovered].faceIndices) : null), [hovered, faceExtrudeSelectedFace, groups, faces]);
+  const selGeo = useMemo(() => (faceExtrudeSelectedFace !== null && groups[faceExtrudeSelectedFace] ? createFaceHighlightGeometry(faces, groups[faceExtrudeSelectedFace].faceIndices) : null), [faceExtrudeSelectedFace, groups, faces]);
+  useEffect(() => { if (!active) setHovered(null); }, [active]);
+  if (!active || !boxGeo) return null;
+  const isRefPhase = faceExtrudeValueMode === 'ref' && faceExtrudeSelectedFace !== null;
+  return (
+    <>
+      <mesh geometry={boxGeo} raycast={() => null} renderOrder={5}>
+        <meshBasicMaterial color={PICK_COLORS.selected} transparent opacity={0.16} side={THREE.DoubleSide} depthWrite={false} />
+      </mesh>
+      {edgePts.length >= 2 && <Line points={edgePts} segments color={PICK_COLORS.selectedEdge} lineWidth={2.2} transparent={false} depthTest={false} depthWrite={false} renderOrder={7} raycast={() => null} />}
+      <mesh geometry={boxGeo} renderOrder={10}
+        onPointerDown={(e: any) => {
+          if (e.button === 2) { if (isRefPhase) void confirmRefOnRightClick(e); return; }
+          if (e.button !== 0 || isRefPhase) return;   // ref aşamasında tıklama referans seçimine gider (gövde/panel)
+          e.stopPropagation();
+          const gi = flatGroupOfFace(groups, e.faceIndex);
+          if (gi === -1) return;
+          const n = groups[gi].normal.clone().normalize();
+          setFaceExtrudeSelectedFace(gi);
+          setFaceExtrudeCavityFaceNormal([n.x, n.y, n.z]);
+          setHovered(gi);
+          console.log('[YAGO][HACİM-ADIM] yüz seçildi', group!.id, 'normal=', [n.x, n.y, n.z].map(v => v.toFixed(0)).join(','));
+        }}
+        onPointerMove={(e: any) => { e.stopPropagation(); const gi = flatGroupOfFace(groups, e.faceIndex); if (gi !== -1) setHovered(gi); }}
+        onPointerOut={(e: any) => { e.stopPropagation(); setHovered(null); }}
+        onContextMenu={(e: any) => e.stopPropagation()}>
+        <HitMaterial />
+      </mesh>
+      {hoverGeo && <mesh geometry={hoverGeo} renderOrder={11} raycast={() => null}><OverlayMat color={0xff0000} opacity={0.5} /></mesh>}
+      {selGeo && <mesh geometry={selGeo} renderOrder={12} raycast={() => null}><OverlayMat color={0xff0000} opacity={0.8} /></mesh>}
+    </>
+  );
+};
+
 // ═══════════════════════════════════════════════════════════════════════════
 // ShapeWithTransform — GÖVDE (kutu) ÇİZİMİ + TransformControls + seçili gövdede
 // katmanlar (yüz yakalama, fillet yüz seçimi, hacim seçme, VF çizimi, ref-yüz).
@@ -791,7 +852,8 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
   const S = useStoreFields('selectShape', 'selectSecondaryShape', 'secondarySelectedShapeId', 'selectedShapeId', 'activeTool', 'viewMode', 'subtractionViewMode',
     'hoveredSubtractionIndex', 'setHoveredSubtractionIndex', 'selectedSubtractionIndex', 'setSelectedSubtractionIndex', 'showOutlines', 'setSelectedPanelRow', 'panelSelectMode',
     'faceEditMode', 'filletMode', 'raycastMode', 'shapes', 'faceExtrudeMode', 'faceExtrudeValueMode', 'faceExtrudeTargetPanelId', 'faceExtrudeSelectedFace', 'faceExtrudeRefCandidate',
-    'setFaceExtrudeRefCandidate', 'panelMoveMode', 'panelMoveValueMode', 'panelMoveRefSourceVertex', 'panelMoveRefTargetPanelId', 'panelRotateMode', 'volumePickMode');
+    'setFaceExtrudeRefCandidate', 'panelMoveMode', 'panelMoveValueMode', 'panelMoveRefSourceVertex', 'panelMoveRefTargetPanelId', 'panelRotateMode', 'volumePickMode',
+    'faceExtrudeCavityGroupId');
   const { scene } = useThree();
   const meshRef = useRef<THREE.Mesh>(null);
   const groupRef = useRef<THREE.Group>(null);
@@ -897,8 +959,11 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
   // Gövdenin bir yüz grubunu referans adayı olarak işaretle — ışın boyunca DERİNLİK DÖNGÜSÜ (tüm şekiller, hedef hariç).
   const handleRefClick = useCallback((e: any) => {
     if (!isRefMode || shape.id === S.faceExtrudeTargetPanelId) return;
-    cycleRefFacePickFromEvent(e, useAppStore.getState().shapes, S.faceExtrudeTargetPanelId, S.setFaceExtrudeRefCandidate);
-  }, [isRefMode, shape.id, S.faceExtrudeTargetPanelId, S.setFaceExtrudeRefCandidate]);
+    // HACİM DÜZENLEME: grubun kendi üyeleri referans olamaz (hacimle birlikte taşınırlar).
+    const cav = S.faceExtrudeCavityGroupId;
+    const shapes = useAppStore.getState().shapes.filter((x: any) => !cav || x.parameters?.panelGroupId !== cav);
+    cycleRefFacePickFromEvent(e, shapes, S.faceExtrudeTargetPanelId, S.setFaceExtrudeRefCandidate);
+  }, [isRefMode, shape.id, S.faceExtrudeTargetPanelId, S.faceExtrudeCavityGroupId, S.setFaceExtrudeRefCandidate]);
 
   if (shape.isolated === false || !localGeometry) return null;
 
@@ -980,6 +1045,7 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
             onHover={setHoveredRefGroup} onPointerDown={confirmRefOnRightClick} onClick={(e: any) => { e.stopPropagation(); handleRefClick(e); }} />
         )}
         {isSelected && S.volumePickMode && <VolumePickOverlay shape={shape} allShapes={S.shapes} />}
+        {S.faceExtrudeMode && S.faceExtrudeCavityGroupId && <CavityEditOverlay shape={shape} />}
         <VirtualFaceOverlay shape={shape} />
       </group>
 

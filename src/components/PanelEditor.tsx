@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ArrowUp, Check, ChevronRight, Columns3, Crosshair, Equal, GripVertical, LayoutPanelTop, Lock, type LucideIcon, Minus, Move,
+  ArrowUp, Box, Check, ChevronRight, Columns3, Crosshair, Equal, GripVertical, LayoutPanelTop, Lock, type LucideIcon, Minus, Move,
   MoveVertical, Pencil, Plus, RotateCw, Rows3, SlidersHorizontal, Trash2, Unlock, X,
 } from 'lucide-react';
 import * as THREE from 'three';
@@ -17,8 +17,9 @@ import {
   executePanelMoveFixed, executePanelRotate, findExistingStepForFace, updateExtrudeStep, updateTransformStep,
 } from './PanelOps';
 import {
-  boxSpan, createPanelGroupFromCavity, deletePanelGroupWithMembers, editGroupGap, equalizeGroupGaps, groupKindLabel, groupName, memberThicknessesOf, panelStarts,
-  renamePanelGroup, setGroupCount, setGroupMemberThickness, toggleGroupGapLock, traceMaskLoops,
+  boxSpan, confirmRefCavityExtrude, createPanelGroupFromCavity, deleteCavityStep, deletePanelGroupWithMembers, editGroupGap, equalizeGroupGaps, executeCavityExtrude,
+  groupKindLabel, groupName, memberThicknessesOf, panelStarts, renamePanelGroup, setGroupCount, setGroupMemberThickness, startCavityEdit, toggleGroupGapLock,
+  traceMaskLoops, updateCavityStep,
 } from './PanelGroupService';
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -601,8 +602,9 @@ function PanelPreview2D({ shape, arrowRotated }: { shape: Shape; arrowRotated?: 
    ölçü pill'i. Pill'e tıkla → değer girişi (Enter/blur onaylar); pill'in
    kilit ucu → kilit aç/kapa. Kilitli pill turuncu çerçeve. Şema, panel
    önizlemesiyle aynı yükseklikte (410) sabit bir kare alana sığdırılır.
-   ÜYE KALINLIĞI (Goker): her levhanın ucunda kalınlık kutucuğu; tıkla → o
-   üye seçilir (altta panel önizlemesi açılır) + değer girişi. Kalınlık
+   ÜYE KALINLIĞI (Goker): her levhanın ucunda kalınlık kutucuğu; tıkla → YALNIZ
+   değer girişi (seçim yok). Üye seçimi (altta panel önizlemesi) yalnız LEVHAYA
+   tıklayınca. Levhanın öbür ucunda liste numarası (6.1, 6.2 …). Kalınlık
    değişince boşluklar Σkalınlığa göre yeniden eşitlenir (girilen korunur). */
 const SCHEMA_PAD = 34;
 /** Bölge kutularının (h,v) eksenlerine izdüşüm maskesi: düzlemler + dolu hücre sorgusu. */
@@ -617,8 +619,10 @@ function regionMask(boxes: CavityBox[], h: number, v: number) {
   return { hs, vs, filled };
 }
 type SchemaEdit = { kind: 'gap'; k: number; v: string } | { kind: 't'; i: number; v: string };
-function GroupSchematic({ group, selectedIndex, onEditGap, onToggleLock, onEditThickness, onSelectMember }: {
+function GroupSchematic({ group, selectedIndex, memberLabels, onEditGap, onToggleLock, onEditThickness, onSelectMember }: {
   group: PanelGroup; selectedIndex: number;
+  /** Şema sırasındaki (geometrik) üye i'nin liste numarası — "6.1" gibi. */
+  memberLabels: string[];
   onEditGap: (k: number, v: number) => void; onToggleLock: (k: number) => void;
   onEditThickness: (i: number, v: number) => void; onSelectMember: (i: number) => void;
 }) {
@@ -740,6 +744,15 @@ function GroupSchematic({ group, selectedIndex, onEditGap, onToggleLock, onEditT
     const cy = barsHorizontal ? sy(mid) : Math.max(oy - 6 - ph / 2, ph / 2 + 2);
     return { i, cx, cy, pw, ph, txt };
   });
+  // NUMARA ETİKETLERİ: kalınlık kutucuğunun KARŞI ucunda (raf → sol, dikme → alt); salt-okunur.
+  const nLabels = starts.map((st, i) => {
+    const txt = memberLabels[i] ?? String(i + 1);
+    const { pw, ph } = pillSize(txt, fsT);
+    const mid = st + ts[i] / 2;
+    const cx = barsHorizontal ? Math.max(ox - 6 - pw / 2, pw / 2 + 2) : sx(mid);
+    const cy = barsHorizontal ? sy(mid) : Math.min(oy + S + 6 + ph / 2, height - ph / 2 - 2);
+    return { i, cx, cy, txt };
+  });
 
   const commit = () => {
     if (!editing) return;
@@ -749,10 +762,17 @@ function GroupSchematic({ group, selectedIndex, onEditGap, onToggleLock, onEditT
     if (editing.kind === 'gap') { if (v >= 0) onEditGap(editing.k, v); }
     else if (v > 0) onEditThickness(editing.i, v);
   };
+  // LEVHA = SEÇİM: ince levhayı yakalamak kolay olsun diye çevresinde görünmez ±5 px tıklama alanı.
+  const HIT = 5;
   const bar = (key: string, i: number, x0: number, y0: number, x1: number, y1: number) => {
     const on = i === selectedIndex;
-    return <rect key={key} x={x0} y={y0} width={x1 - x0} height={y1 - y0} rx={1} fill={on ? '#fde7d3' : '#e9e1d3'} stroke={on ? '#ea580c' : '#8a8278'} strokeWidth={on ? 1.1 : 0.9}
-      style={{ cursor: 'pointer' }} onClick={e => { stop(e); onSelectMember(i); }}><title>{`Panel ${i + 1} · ${round1(ts[i])} mm`}</title></rect>;
+    const tip = `Panel ${memberLabels[i] ?? i + 1} · ${round1(ts[i])} mm — click to select`;
+    return (
+      <g key={key} style={{ cursor: 'pointer' }} onClick={e => { stop(e); onSelectMember(i); }}>
+        <rect x={x0} y={y0} width={x1 - x0} height={y1 - y0} rx={1} fill={on ? '#fde7d3' : '#e9e1d3'} stroke={on ? '#ea580c' : '#8a8278'} strokeWidth={on ? 1.1 : 0.9} />
+        <rect x={x0 - HIT} y={y0 - HIT} width={x1 - x0 + 2 * HIT} height={y1 - y0 + 2 * HIT} fill="transparent"><title>{tip}</title></rect>
+      </g>
+    );
   };
 
   return (
@@ -765,13 +785,21 @@ function GroupSchematic({ group, selectedIndex, onEditGap, onToggleLock, onEditT
         {starts.map((st, i) => runsAt(st, st + ts[i]).map((r, ri) => barsHorizontal
           ? bar(`bar-${i}-${ri}`, i, sx(r[0]), sy(st + ts[i]), sx(r[1]), sy(st))
           : bar(`bar-${i}-${ri}`, i, sx(st), sy(r[1]), sx(st + ts[i]), sy(r[0]))))}
-        {/* üye kalınlık kutucukları: tıkla → üye seçilir (önizleme açılır) + değer girişi */}
+        {/* üye kalınlık kutucukları: tıkla → YALNIZ değer girişi (seçim levhadan) */}
         {tPills.map(p => {
           const on = p.i === selectedIndex;
           return (
             <DimPill key={`t-${p.i}`} cx={p.cx} cy={p.cy} txt={p.txt} fs={fsT} fill={on ? '#fff7ed' : '#f7f4ee'} stroke={on ? '#f97316' : '#d6cfc4'} strokeWidth={on ? 1 : 0.8}
-              color={on ? '#c2410c' : '#57534e'} hideText={editing?.kind === 't' && editing.i === p.i} title={`Panel ${p.i + 1} thickness — click to select & edit`}
-              onClick={e => { stop(e); onSelectMember(p.i); setEditing({ kind: 't', i: p.i, v: p.txt }); }} />
+              color={on ? '#c2410c' : '#57534e'} hideText={editing?.kind === 't' && editing.i === p.i} title={`Panel ${memberLabels[p.i] ?? p.i + 1} thickness — click to edit`}
+              onClick={e => { stop(e); setEditing({ kind: 't', i: p.i, v: p.txt }); }} />
+          );
+        })}
+        {/* üye numaraları (liste ile aynı: 6.1, 6.2 …) — salt-okunur */}
+        {nLabels.map(n => {
+          const on = n.i === selectedIndex;
+          return (
+            <text key={`n-${n.i}`} x={n.cx} y={n.cy + fsT * 0.36} textAnchor="middle" fontSize={fsT} fontWeight={on ? 700 : 600} fill={on ? '#ea580c' : '#a8a29e'}
+              fontFamily={UI_FONT} style={{ fontVariantNumeric: 'tabular-nums', pointerEvents: 'none', userSelect: 'none' }}>{n.txt}</text>
           );
         })}
         {/* boşluk ölçüleri: oklu ölçü çizgisi + pill (+ hover'da / kilitliyken kilit) */}
@@ -914,6 +942,7 @@ export function PanelEditor() {
     faceExtrudeMode, setFaceExtrudeMode, faceExtrudeTargetPanelId, setFaceExtrudeTargetPanelId,
     faceExtrudeSelectedFace, setFaceExtrudeSelectedFace, faceExtrudeThickness, setFaceExtrudeThickness,
     faceExtrudeClickPoint, faceExtrudeValueMode, setFaceExtrudeValueMode, faceExtrudeRefCandidate, setFaceExtrudeRefCandidate,
+    faceExtrudeCavityGroupId, faceExtrudeCavityFaceNormal,
     panelMoveMode, setPanelMoveMode, panelMoveTargetPanelId, setPanelMoveTargetPanelId,
     panelMoveAxis, setPanelMoveAxis, panelMoveValue, setPanelMoveValue, panelMoveValueMode, setPanelMoveValueMode,
     panelMoveRefSourceVertex, setPanelMoveRefSourceVertex, panelMoveRefTargetPanelId, setPanelMoveRefTargetPanelId,
@@ -929,6 +958,7 @@ export function PanelEditor() {
     'faceExtrudeMode', 'setFaceExtrudeMode', 'faceExtrudeTargetPanelId', 'setFaceExtrudeTargetPanelId',
     'faceExtrudeSelectedFace', 'setFaceExtrudeSelectedFace', 'faceExtrudeThickness', 'setFaceExtrudeThickness',
     'faceExtrudeClickPoint', 'faceExtrudeValueMode', 'setFaceExtrudeValueMode', 'faceExtrudeRefCandidate', 'setFaceExtrudeRefCandidate',
+    'faceExtrudeCavityGroupId', 'faceExtrudeCavityFaceNormal',
     'panelMoveMode', 'setPanelMoveMode', 'panelMoveTargetPanelId', 'setPanelMoveTargetPanelId',
     'panelMoveAxis', 'setPanelMoveAxis', 'panelMoveValue', 'setPanelMoveValue', 'panelMoveValueMode', 'setPanelMoveValueMode',
     'panelMoveRefSourceVertex', 'setPanelMoveRefSourceVertex', 'panelMoveRefTargetPanelId', 'setPanelMoveRefTargetPanelId',
@@ -1063,15 +1093,16 @@ export function PanelEditor() {
   }, [virtualFaces]);
 
   useEffect(() => {
-    if (faceExtrudeMode && activePanelId && activePanelId !== faceExtrudeTargetPanelId) { setFaceExtrudeTargetPanelId(activePanelId); setFaceExtrudeSelectedFace(null); }
-  }, [faceExtrudeMode, activePanelId, faceExtrudeTargetPanelId]);
+    // HACİM DÜZENLEME sürerken açık üye satırı hedefi ele geçirmez.
+    if (faceExtrudeMode && !faceExtrudeCavityGroupId && activePanelId && activePanelId !== faceExtrudeTargetPanelId) { setFaceExtrudeTargetPanelId(activePanelId); setFaceExtrudeSelectedFace(null); }
+  }, [faceExtrudeMode, faceExtrudeCavityGroupId, activePanelId, faceExtrudeTargetPanelId]);
   useEffect(() => {
     if (panelMoveMode && activePanelId && activePanelId !== panelMoveTargetPanelId) { setPanelMoveTargetPanelId(activePanelId); setPanelMoveAxis(null); setPanelMoveValue(0); }
   }, [panelMoveMode, activePanelId, panelMoveTargetPanelId]);
 
   // Seçilen yüzde zaten bir extrude adımı varsa değeri ve modu şeride yükle.
   useEffect(() => {
-    if (faceExtrudeSelectedFace === null || !activePanelId) return;
+    if (faceExtrudeSelectedFace === null || !activePanelId || faceExtrudeCavityGroupId) return;
     const ps = shapeById(activePanelId, shapes); if (!ps?.geometry) return;
     const steps = ps.parameters?.extrudeSteps || []; if (!steps.length) return;
     const { groups } = getFacesAndGroups(ps.geometry);
@@ -1100,7 +1131,16 @@ export function PanelEditor() {
   // çıkış ya satırın gerçekten kapanmasıyla ya da BAŞKA bir panelin satırına
   // geçilmesiyle belirlenir.
   const uiLeftPanel = (targetId: string | null) => selectedPanelRow === null || (!!activePanelId && targetId !== activePanelId);
+  // HACİM DÜZENLEME: geçerlilik koşulu grup kartının AÇIK olması (tümü seçili ya da bir üye satırı açık).
+  const groupCardOpen = (gid: string) => selectedPanelGroupId === gid || virtualFaces.some(f => f.groupId === gid && selectedPanelRow === `vf-${f.id}`);
   useEffect(() => {
+    if (faceExtrudeMode && faceExtrudeCavityGroupId) {
+      if (!panelGroups.some(g => g.id === faceExtrudeCavityGroupId && g.shapeId === selectedShapeId) || !groupCardOpen(faceExtrudeCavityGroupId)) {
+        console.log('[YAGO][KOMUT-ÇIKIŞ] hacim düzenleme kapatıldı — grup kartı arayüzde açık değil', 'grup=', faceExtrudeCavityGroupId);
+        setFaceExtrudeSelectedFace(null); setFaceExtrudeRefCandidate(null); setFaceExtrudeMode(false);
+      }
+      return;
+    }
     if (faceExtrudeMode && uiLeftPanel(faceExtrudeTargetPanelId)) {
       console.log('[YAGO][KOMUT-ÇIKIŞ] extrude modu kapatıldı — panel satırı arayüzde açık değil', 'hedef=', faceExtrudeTargetPanelId, 'açıkSatırPaneli=', activePanelId);
       setFaceExtrudeSelectedFace(null); setFaceExtrudeRefCandidate(null); setFaceExtrudeMode(false);
@@ -1113,7 +1153,20 @@ export function PanelEditor() {
       console.log('[YAGO][KOMUT-ÇIKIŞ] döndürme modu kapatıldı — panel satırı arayüzde açık değil', 'hedef=', panelRotateTargetPanelId, 'açıkSatırPaneli=', activePanelId);
       setPanelRotateAxis(null); setPanelRotateMode(false);
     }
-  }, [activePanelId, selectedPanelRow, selectedShapeId, faceExtrudeMode, faceExtrudeTargetPanelId, panelMoveMode, panelMoveTargetPanelId, panelRotateMode, panelRotateTargetPanelId]);
+  }, [activePanelId, selectedPanelRow, selectedShapeId, selectedPanelGroupId, panelGroups, faceExtrudeMode, faceExtrudeTargetPanelId, faceExtrudeCavityGroupId, panelMoveMode, panelMoveTargetPanelId, panelRotateMode, panelRotateTargetPanelId]);
+
+  // HACİM YÜZÜ seçilince o yüzde adım varsa değeri/modu şeride yükle (panel akışıyla aynı).
+  useEffect(() => {
+    if (!faceExtrudeCavityGroupId || !faceExtrudeCavityFaceNormal) return;
+    const g = panelGroups.find(x => x.id === faceExtrudeCavityGroupId); if (!g?.cavitySteps?.length) return;
+    const n = faceExtrudeCavityFaceNormal;
+    const ax = [Math.abs(n[0]), Math.abs(n[1]), Math.abs(n[2])].indexOf(Math.max(Math.abs(n[0]), Math.abs(n[1]), Math.abs(n[2])));
+    const existing = g.cavitySteps.find(st => { const m = st.faceNormal; const a2 = [Math.abs(m[0]), Math.abs(m[1]), Math.abs(m[2])].indexOf(Math.max(Math.abs(m[0]), Math.abs(m[1]), Math.abs(m[2]))); return a2 === ax && Math.sign(m[a2]) === Math.sign(n[ax]); });
+    if (!existing) return;
+    setFaceExtrudeThickness(existing.value); setExtrudeThicknessStr(String(existing.value));
+    if (faceExtrudeValueMode !== 'ref') setFaceExtrudeValueMode(existing.refShapeId ? 'ref' : existing.isFixed ? 'fixed' : 'dyn');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [faceExtrudeCavityGroupId, faceExtrudeCavityFaceNormal]);
 
   // AKORDEON: açılan satır (listeden ya da 3B'den seçilince) görünür alana kaydırılır.
   useEffect(() => {
@@ -1182,6 +1235,87 @@ export function PanelEditor() {
       </div>
     );
   })();
+
+  /* ── HACİM ŞERİDİ (raf/dikme grubu) — panel extrude şeridiyle birebir aynı bileşenler ── */
+  const cavityDock = (g: PanelGroup) => {
+    if (!faceExtrudeMode || faceExtrudeCavityGroupId !== g.id) return null;
+    const hf = faceExtrudeSelectedFace !== null && !!faceExtrudeCavityFaceNormal;
+    const isRefMode = faceExtrudeValueMode === 'ref';
+    const hasRefPanel = isRefMode && !!faceExtrudeRefCandidate?.panelId;
+    const hasRefFace = hasRefPanel && faceExtrudeRefCandidate!.faceGroupIndex !== undefined && faceExtrudeRefCandidate!.faceGroupIndex >= 0;
+    const exit = () => { setFaceExtrudeSelectedFace(null); setFaceExtrudeMode(false); setFaceExtrudeRefCandidate(null); };
+    const onApply = async () => {
+      if (!hf) return;
+      if (isRefMode) { if (!hasRefFace) return; await confirmRefCavityExtrude(); }
+      else { await executeCavityExtrude(g.id, faceExtrudeCavityFaceNormal!, faceExtrudeThickness, faceExtrudeValueMode === 'fixed'); exit(); }
+    };
+    return (
+      <div style={DOCK_SHELL}>
+        {hf && (
+          <DockModeBar
+            modes={dockModes(['fixed', 'dyn', 'ref'], { fixed: { sub: 'Constant', title: 'Fixed — cavity size along this axis' }, ref: { sub: 'To face', title: 'Ref — up to a reference face' } })}
+            active={faceExtrudeValueMode}
+            onPick={k => { setFaceExtrudeValueMode(k as 'fixed' | 'dyn' | 'ref'); if (k !== 'ref') setFaceExtrudeRefCandidate(null); }}
+          />
+        )}
+        <div style={DOCK_ROW}>
+          <span style={dockAxisTag('#44403c')}>VOL</span>
+          {!hf ? <DockStatus text="Pick a face of the volume in the 3D view" />
+            : isRefMode ? <DockStatus ready={hasRefFace} text={hasRefFace ? 'Reference face selected' : hasRefPanel ? 'Pick the reference face' : 'Pick the reference panel'} />
+            : <NumInput draft={extrudeThicknessStr} setDraft={setExtrudeThicknessStr} setValue={setFaceExtrudeThickness} fallback={faceExtrudeThickness} onEnter={onApply} onEscape={exit} />}
+          {hf && <ApplyBtn enabled={!(isRefMode && !hasRefFace)} onClick={onApply} />}
+          <ExitBtn onClick={exit} />
+        </div>
+      </div>
+    );
+  };
+
+  /* ── HACİM ADIMLARI LİSTESİ (grup kartında; panel adım listesiyle aynı satır dili) ── */
+  const cavityStepsPanel = (g: PanelGroup) => {
+    const steps = g.cavitySteps || [];
+    if (!steps.length) return null;
+    const tag = (txt: string) => <span className="shrink-0 text-[9.5px] font-semibold px-1.5 h-[18px] leading-[18px] rounded-[5px] bg-[#f3efe8] text-stone-500">{txt}</span>;
+    const save = (id: string) => { const v = parseFloat(stepEdit?.v ?? ''); if (isNaN(v)) return; void updateCavityStep(g.id, id, v); setStepEdit(null); };
+    return (
+      <div className="shrink-0 mt-2" style={{ fontFamily: UI_FONT }}>
+        <SectionHead label="Volume steps" count={steps.length} className="px-1 pb-1.5" />
+        <div className="overflow-y-auto" style={{ maxHeight: 160 }}>
+          <div className="flex flex-col gap-[2px] p-px">
+            {[...steps].sort((a, b) => a.timestamp - b.timestamp).map((st, idx) => {
+              const isRef = !!st.refShapeId;
+              const shown = isRef && st.resolvedValue != null ? st.resolvedValue : st.value;
+              const editing = stepEdit?.id === st.id;
+              const axisKey = st.axisLabel.toLowerCase();
+              return (
+                <div key={st.id} className="group/step flex items-center gap-1.5 pl-1.5 pr-1 h-[30px] rounded-[9px] bg-[#fdfcfa] ring-1 ring-[#ece7df] shadow-[0_1px_0_rgba(68,64,60,0.025)] hover:bg-white hover:ring-[#e2dbd0] transition-colors duration-150">
+                  <span className="shrink-0 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-[#f3efe8] text-[10px] font-semibold text-stone-500 tabular-nums leading-none">{idx + 1}</span>
+                  <span className="shrink-0 text-[10px] font-semibold px-1.5 h-[18px] leading-[18px] rounded-[5px]" style={{ background: 'rgba(14,116,144,0.09)', color: '#0e7490' }}>Vol</span>
+                  <span className="shrink-0 min-w-[24px] text-center text-[10.5px] font-bold px-1 h-[18px] leading-[18px] rounded-[5px] bg-[#f5f2ec]" style={{ color: AXIS_COLORS[axisKey] || AXIS_COLORS[axisKey[0]] || '#57534e' }}>{st.axisLabel.toUpperCase()}</span>
+                  {editing ? (
+                    <>
+                      <input type="text" inputMode="numeric" autoFocus value={stepEdit!.v}
+                        onChange={e => setStepEdit({ id: st.id, v: e.target.value })}
+                        onKeyDown={e => { if (e.key === 'Escape') setStepEdit(null); else if (e.key === 'Enter') save(st.id); }}
+                        className="flex-1 min-w-0 h-[22px] text-center font-mono text-[12px] font-medium tabular-nums text-stone-800 bg-white border border-[#e6e0d6] rounded-[6px] outline-none focus:border-orange-400/60 focus:shadow-[0_0_0_2px_rgba(249,115,22,0.10)]" />
+                      <button onClick={() => save(st.id)} style={iconBtn('#5b5346')}><Check size={11} /></button>
+                      <button onClick={() => setStepEdit(null)} style={iconBtn('#a8a29e')}><X size={11} /></button>
+                    </>
+                  ) : (
+                    <>
+                      <span className="flex-1 pl-1 font-mono text-[12px] font-medium text-stone-700 tabular-nums">{shown}</span>
+                      {tag(isRef ? 'R' : st.isFixed ? 'F' : 'D')}
+                      {!isRef && <button onClick={() => setStepEdit({ id: st.id, v: String(st.value) })} style={iconBtn('#a8a29e')} className="hover:!bg-[#f3efe8] hover:!text-stone-700"><Pencil size={10.5} strokeWidth={1.9} /></button>}
+                      <button onClick={() => { void deleteCavityStep(g.id, st.id); }} style={iconBtn('#a8a29e')} className="opacity-0 group-hover/step:opacity-100 hover:!bg-red-50 hover:!text-red-500 transition-opacity"><Trash2 size={10.5} strokeWidth={1.9} /></button>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   /* ── TAŞIMA ŞERİDİ — yalnız etkin komutun giriş satırı (adım listesi ayrı) ── */
   const moveDock = (() => {
@@ -1588,11 +1722,28 @@ export function PanelEditor() {
                 <SmallBtn title="More" onClick={() => applyCount(g.count + 1)}><Plus size={11} strokeWidth={2.2} /></SmallBtn>
                 <span className="flex-1" />
                 <SmallBtn title="Equal gaps (unlock all)" onClick={() => { void equalizeGroupGaps(g.id); }}><Equal size={11} strokeWidth={2.2} /><span>Equalize</span></SmallBtn>
+                {/* HACİM: grubun hacmine yüz extrude (fixed/dyn/ref) — tüm üyeler yeni hacme göre kısalır/uzar. */}
+                {(() => {
+                  const on = faceExtrudeMode && faceExtrudeCavityGroupId === g.id;
+                  return (
+                    <button type="button" title="Edit the cavity volume: pick a face in the 3D view, then extrude it (fixed / dyn / ref)"
+                      onClick={e => { stop(e); if (on) setFaceExtrudeMode(false); else startCavityEdit(g.id); }}
+                      className={`h-[24px] px-2 flex items-center gap-1 rounded-[7px] text-[11px] font-semibold tracking-[0.01em] transition-[background-color,color,box-shadow] duration-150
+                        ${on ? 'bg-[#44403c] text-white ring-1 ring-[#44403c] shadow-[0_1px_3px_rgba(40,30,20,0.22)]'
+                          : 'bg-white ring-1 ring-[#e6e0d6] text-stone-600 shadow-[0_1px_0_rgba(40,30,20,0.03)] hover:bg-[#faf7f2] hover:ring-[#dcd4c8] hover:text-stone-800'}`}>
+                      <Box size={12} strokeWidth={2} />Volume
+                    </button>
+                  );
+                })()}
               </div>
-              <GroupSchematic group={g} selectedIndex={members.findIndex(m => selectedPanelRow === `vf-${m.id}`)}
+              {/* Şema sırası = geometrik sıra (memberVfIds / groupIndex); numara = listedeki sıra (members). */}
+              <GroupSchematic group={g} selectedIndex={g.memberVfIds.findIndex(id => selectedPanelRow === `vf-${id}`)}
+                memberLabels={g.memberVfIds.map((id, i) => { const mi = members.findIndex(m => m.id === id); return `${label}.${(mi >= 0 ? mi : i) + 1}`; })}
                 onEditGap={(k, v) => { void editGroupGap(g.id, k, v); }} onToggleLock={k => toggleGroupGapLock(g.id, k)}
                 onEditThickness={(i, v) => { void setGroupMemberThickness(g.id, i, v); }}
-                onSelectMember={i => { const m = members[i]; if (m) setSelectedPanelRow(`vf-${m.id}`, sid); }} />
+                onSelectMember={i => { const id = g.memberVfIds[i]; if (id) setSelectedPanelRow(`vf-${id}`, sid); }} />
+              {cavityDock(g)}
+              {cavityStepsPanel(g)}
               <SectionHead label="Panels" count={members.length} />
               <div className="flex flex-col gap-[2px]">
                 {members.map((m, mi) => {

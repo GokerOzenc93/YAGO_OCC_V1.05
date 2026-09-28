@@ -1,9 +1,10 @@
 import * as THREE from 'three';
 import {
-  type CavityBox, type CavityPick, type GapSpec, type PanelGroup, type Shape, type VirtualFace, panelOfVf, requestRebuild, shapeById, useAppStore,
+  type CavityBox, type CavityPick, type CavityStep, type GapSpec, type PanelGroup, type RefFacePick, type Shape, type VirtualFace, panelOfVf, requestRebuild, shapeById, useAppStore,
 } from '../store';
-import { type Vec3, effectiveBodyGeometry, genId, getFacesAndGroups, isFlatNormal, localBboxOf, round1, vertexModsKey } from './Geometry';
+import { type Vec3, dominantAxisLabel, effectiveBodyGeometry, genId, getFacesAndGroups, getShapeMatrix, isFlatNormal, localBboxOf, round1, vertexModsKey } from './Geometry';
 import { panelHasRotation } from './FaceRegion';
+import { matchReferenceFace } from './PanelOps';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // RAF / DİKME GRUPLARI (PanelGroupService)
@@ -929,7 +930,91 @@ function memberVfGeometry(axis: number, cavity: CavityBox, start: number, t: num
   return { normal, vertices, center };
 }
 
-interface GroupSolution { cavity: CavityBox; region: CavityBox[]; gaps: GapSpec[]; starts: number[]; sections: Array<Pt2[] | null>; seed: Vec3 }
+interface GroupSolution {
+  cavity: CavityBox; region: CavityBox[]; gaps: GapSpec[]; starts: number[]; sections: Array<Pt2[] | null>; seed: Vec3;
+  /** Ref hacim adımlarının bu çözümde uygulanan işaretli miktarları. */
+  cavityResolved?: Array<{ id: string; value: number }>;
+}
+
+// ── HACİM ADIMLARI (yüz extrude, hacim üzerinde) ────────────────────────────
+
+/** Hacim adımının yüzü: eksen + yön (faceNormal eksen-hizalı, gövde-yerel). */
+const stepFace = (st: CavityStep): { axis: number; side: 1 | -1 } => {
+  const n = st.faceNormal;
+  const axis = [Math.abs(n[0]), Math.abs(n[1]), Math.abs(n[2])].indexOf(Math.max(Math.abs(n[0]), Math.abs(n[1]), Math.abs(n[2])));
+  return { axis, side: n[axis] >= 0 ? 1 : -1 };
+};
+
+/** Referans yüzün düzlemi GÖVDE-YEREL çerçevede (merkez + normal); çözülemezse null. */
+function refPlaneInParent(st: CavityStep, parent: Shape, shapes: Shape[]): { center: Vec3; normal: Vec3 } | null {
+  if (!st.refShapeId) return null;
+  const m = matchReferenceFace(shapeById(st.refShapeId, shapes), st.refFaceGroupIndex ?? -1, st.refNormalWorld, st.refPointWorld);
+  if (!m) return null;
+  const toParent = getShapeMatrix(parent).invert();
+  const c = m.group.center.clone().applyMatrix4(m.matrix).applyMatrix4(toParent);
+  const n = m.group.normal.clone().normalize().transformDirection(m.matrix).transformDirection(toParent).normalize();
+  return { center: [c.x, c.y, c.z], normal: [n.x, n.y, n.z] };
+}
+
+/**
+ * Hacim adımlarını HAM (engellerden çözülen) hacme sırayla uygular — panel yüz
+ * extrude'uyla birebir: fixed → eksen boyunca hedef ölçü (miktar = değer − mevcut
+ * açıklık), dyn → işaretli delta (+ dışa), ref → yüzü referans düzlemine taşıyan
+ * işaretli mesafe (paralel değilse atlanır). Büyüme ham hacimle sınırlıdır (panel/
+ * gövdeye girmesin); küçülme, dizilim ekseninde Σkalınlık + boşluk payını korur.
+ */
+function applyCavitySteps(group: PanelGroup, raw: CavityBox, parent: Shape, shapes: Shape[], ts: number[]): { cavity: CavityBox; resolved: Array<{ id: string; value: number }> } {
+  const steps = Array.isArray(group.cavitySteps) ? group.cavitySteps : [];
+  const cavity = cloneBox(raw);
+  const resolved: Array<{ id: string; value: number }> = [];
+  if (!steps.length) return { cavity, resolved };
+  for (const st of steps) {
+    const { axis, side } = stepFace(st);
+    const span = boxSpan(cavity, axis);
+    const faceCoord = side > 0 ? cavity.max[axis] : cavity.min[axis];
+    let amount: number;
+    let kind: string;
+    if (st.refShapeId) {
+      const pl = refPlaneInParent(st, parent, shapes);
+      if (!pl) { console.warn('[YAGO][HACİM-ADIM] referans düzlemi çözülemedi, adım atlandı:', st.id, st.refShapeId); continue; }
+      if (Math.abs(pl.normal[axis]) < 0.7) { console.warn('[YAGO][HACİM-ADIM] referans yüzü adım eksenine paralel değil, adım atlandı:', st.id); continue; }
+      amount = (pl.center[axis] - faceCoord) * side;   // + dışa
+      kind = 'ref';
+    } else if (st.isFixed) { amount = st.value - span; kind = 'fixed'; }
+    else { amount = st.value; kind = 'dyn'; }
+    // BÜYÜME SINIRI: ham hacmin dışına çıkılmaz (orası panel ya da gövde).
+    const rawLimit = side > 0 ? raw.max[axis] : raw.min[axis];
+    const maxOut = (rawLimit - faceCoord) * side;
+    if (amount > maxOut + 1e-6) { console.log('[YAGO][HACİM-ADIM] büyüme ham hacimle sınırlandı:', st.id, 'istenen=', amount.toFixed(1), 'izin=', maxOut.toFixed(1)); amount = maxOut; }
+    // KÜÇÜLME SINIRI: dizilim ekseninde Σkalınlık + (n+1) mm; çapraz eksende 1 mm.
+    const minSpan = axis === group.axis ? sumT(ts) + group.count + 1 : 1;
+    if (span + amount < minSpan) { console.warn('[YAGO][HACİM-ADIM] küçülme en küçük açıklıkla sınırlandı:', st.id, 'açıklık=', (span + amount).toFixed(1), '→', minSpan.toFixed(1)); amount = minSpan - span; }
+    if (side > 0) cavity.max[axis] = r1(cavity.max[axis] + amount); else cavity.min[axis] = r1(cavity.min[axis] - amount);
+    if (st.refShapeId) resolved.push({ id: st.id, value: r1(amount) });
+    console.log('[YAGO][HACİM-ADIM]', group.id, st.axisLabel, kind, 'değer=', st.value, 'miktar=', amount.toFixed(1), '→ hacim', fmtBox(cavity));
+  }
+  return { cavity, resolved };
+}
+
+/** Kutuyu kutuya kırpar; boşsa null. */
+function clipBoxToBox(b: CavityBox, c: CavityBox): CavityBox | null {
+  const out: CavityBox = { min: [0, 0, 0], max: [0, 0, 0] };
+  for (let a = 0; a < 3; a++) {
+    out.min[a] = Math.max(b.min[a], c.min[a]); out.max[a] = Math.min(b.max[a], c.max[a]);
+    if (out.max[a] - out.min[a] < TOL) return null;
+  }
+  return out;
+}
+
+/** Kesit çokgenini (b,c eksen düzlemi) hacmin çapraz dikdörtgenine kırpar. */
+function clipSectionToCavity(poly: Pt2[], axis: number, cav: CavityBox): Pt2[] {
+  const [b, c] = [0, 1, 2].filter(a => a !== axis);
+  let out = clipPoly2D(poly, 1, 0, cav.min[b]);
+  if (out.length >= 3) out = clipPoly2D(out, -1, 0, -cav.max[b]);
+  if (out.length >= 3) out = clipPoly2D(out, 0, 1, cav.min[c]);
+  if (out.length >= 3) out = clipPoly2D(out, 0, -1, -cav.max[c]);
+  return out;
+}
 
 interface ObstacleSet { obstacles: CavityBox[]; splitBoxes: CavityBox[]; tiltFaces: TiltFace[] }
 
@@ -1042,18 +1127,27 @@ function solveGroup(group: PanelGroup, parent: Shape, panels: Shape[], groups: P
     cavity = cloneBox(group.cavity);
     region = group.region || [cloneBox(cavity)];
   }
+  // HACİM ADIMLARI: ham hacim → adımlı hacim (yalnız taze çözümde; kayıtlı hacim zaten adımlı).
+  let cavityResolved: Array<{ id: string; value: number }> | undefined;
+  const stepped = minOk && group.cavitySteps?.length;
+  if (stepped) {
+    const r = applyCavitySteps(group, cavity, parent, panels, ts);
+    cavity = r.cavity; cavityResolved = r.resolved;
+    region = region.map(b => clipBoxToBox(b, cavity)).filter((b): b is CavityBox => !!b);
+    if (!region.length) region = [cloneBox(cavity)];
+  }
   const L = boxSpan(cavity, group.axis);
   const gaps = rescaleGaps(group.gaps, L, group.count, ts);
   const starts = panelStarts(cavity.min[group.axis], gaps, ts);
   const sections = starts.map((s, i) => {
     if (!minOk) return null;
     const t = ts[i];
-    const poly = sectionPolygon(grid, cells, group.axis, s, s + t, seed);
-    if (!poly || !planes.length) return poly;
-    const clipped = clipSectionByPlanes(poly, group.axis, s, s + t, planes);
-    return clipped.length >= 3 ? clipped : poly;
+    let poly = sectionPolygon(grid, cells, group.axis, s, s + t, seed);
+    if (poly && planes.length) { const clipped = clipSectionByPlanes(poly, group.axis, s, s + t, planes); if (clipped.length >= 3) poly = clipped; }
+    if (poly && stepped) { const clipped = clipSectionToCavity(poly, group.axis, cavity); poly = clipped.length >= 3 ? clipped : null; }
+    return poly;
   });
-  return { cavity, region, gaps, starts, sections, seed };
+  return { cavity, region, gaps, starts, sections, seed, cavityResolved };
 }
 
 /** Çözümden üye VF yaması (regen bu alanları yazar; kullanıcı alanları dokunulmaz). */
@@ -1230,6 +1324,85 @@ export async function editGroupGap(groupId: string, k: number, value: number): P
   await requestRebuild(group.shapeId);
 }
 
+// ── HACİM DÜZENLEME (Goker: "rafın yerleştiği hacme face extrude") ──────────
+// Akış panel yüz extrude'uyla BİREBİR: mod aç → 3B'de hacim kutusunun yüzünü seç →
+// fixed / dyn / ref → uygula (ya da ref'te sağ tık). Adım gruba yazılır, tam rebuild;
+// çözücü adımı ham hacme uygular, üyeler + boşluklar yeni hacme göre çözülür.
+
+/** Hacim düzenleme modunu açar: extrude modu, hedef panel yerine grup hacmi. */
+export function startCavityEdit(groupId: string): void {
+  const st = useAppStore.getState();
+  if (st.panelMoveMode) st.setPanelMoveMode(false);
+  if (st.panelRotateMode) st.setPanelRotateMode(false);
+  st.setFaceExtrudeMode(true);
+  st.setFaceExtrudeCavityGroupId(groupId);
+  console.log('[YAGO][HACİM-ADIM] düzenleme modu açıldı', groupId);
+}
+
+/** Aynı yüzdeki adımın yerine koyar (eksen + yön), yoksa ekler. */
+function upsertCavityStep(steps: CavityStep[], step: CavityStep): CavityStep[] {
+  const f = stepFace(step);
+  const idx = steps.findIndex(s => { const g = stepFace(s); return g.axis === f.axis && g.side === f.side; });
+  return idx >= 0 ? steps.map((s, i) => (i === idx ? step : s)) : [...steps, step];
+}
+
+async function commitCavitySteps(group: PanelGroup, steps: CavityStep[], why: string): Promise<void> {
+  useAppStore.getState().updatePanelGroup(group.id, { cavitySteps: steps });
+  console.log('[YAGO][HACİM-ADIM]', why, group.id, 'adımlar=', steps.map(s => `${s.axisLabel}:${s.refShapeId ? 'R' : s.isFixed ? 'F' : 'D'}${s.value}`).join(' '));
+  await requestRebuild(group.shapeId);
+}
+
+const axisNormal = (n: Vec3): Vec3 => { const a = [Math.abs(n[0]), Math.abs(n[1]), Math.abs(n[2])]; const i = a.indexOf(Math.max(...a)); const o: Vec3 = [0, 0, 0]; o[i] = n[i] >= 0 ? 1 : -1; return o; };
+
+/** Fixed / dyn hacim adımı. Dyn'de ~0 ve yeni adımsa işlem yok. */
+export async function executeCavityExtrude(groupId: string, faceNormal: Vec3, value: number, isFixed: boolean): Promise<boolean> {
+  const group = groupById(groupId);
+  if (!group || !Number.isFinite(value)) return false;
+  const n = axisNormal(faceNormal);
+  const step: CavityStep = { id: genId('cav'), faceNormal: n, axisLabel: dominantAxisLabel({ x: n[0], y: n[1], z: n[2] }), value, isFixed, timestamp: Date.now() };
+  const existing = group.cavitySteps || [];
+  const next = upsertCavityStep(existing, step);
+  if (!isFixed && Math.abs(value) < 0.01 && next.length === existing.length + 1) return false;
+  await commitCavitySteps(group, next, isFixed ? 'fixed' : 'dyn');
+  return true;
+}
+
+/** Ref hacim adımı: yüz, referans panel/gövde yüzünün düzlemine taşınır (her rebuild'de yeniden çözülür). */
+export async function executeCavityExtrudeToReference(groupId: string, faceNormal: Vec3, ref: RefFacePick): Promise<boolean> {
+  const group = groupById(groupId);
+  if (!group) return false;
+  const n = axisNormal(faceNormal);
+  const step: CavityStep = {
+    id: genId('cav'), faceNormal: n, axisLabel: dominantAxisLabel({ x: n[0], y: n[1], z: n[2] }), value: 0, isFixed: true, timestamp: Date.now(),
+    refShapeId: ref.panelId, refFaceGroupIndex: ref.faceGroupIndex, refNormalWorld: ref.normalWorld, refPointWorld: ref.pointWorld,
+  };
+  await commitCavitySteps(group, upsertCavityStep(group.cavitySteps || [], step), 'ref');
+  return true;
+}
+
+/** Store'daki bekleyen REF hacim seçimini onaylar ve modu kapatır (Uygula ✓ + sahnede sağ tık). */
+export async function confirmRefCavityExtrude(): Promise<void> {
+  const st = useAppStore.getState();
+  const gid = st.faceExtrudeCavityGroupId, cand = st.faceExtrudeRefCandidate, n = st.faceExtrudeCavityFaceNormal;
+  if (!gid || !cand || cand.faceGroupIndex < 0 || !n) return;
+  await executeCavityExtrudeToReference(gid, n, cand);
+  st.setFaceExtrudeSelectedFace(null);
+  st.setFaceExtrudeMode(false);
+  st.setFaceExtrudeRefCandidate(null);
+}
+
+export function updateCavityStep(groupId: string, stepId: string, value: number): Promise<void> {
+  const group = groupById(groupId);
+  if (!group || !Number.isFinite(value)) return Promise.resolve();
+  return commitCavitySteps(group, (group.cavitySteps || []).map(s => (s.id === stepId ? { ...s, value } : s)), 'adım güncellendi');
+}
+
+export function deleteCavityStep(groupId: string, stepId: string): Promise<void> {
+  const group = groupById(groupId);
+  if (!group) return Promise.resolve();
+  return commitCavitySteps(group, (group.cavitySteps || []).filter(s => s.id !== stepId), 'adım silindi');
+}
+
 /** Kilit: değer değişmez; küp boyutlanınca bu boşluk sabit kalır. */
 export function toggleGroupGapLock(groupId: string, k: number): void {
   const group = groupById(groupId);
@@ -1290,8 +1463,12 @@ export function syncPanelGroups(parentShapeId: string): void {
     const sameBox = boxKey(sol.cavity) === boxKey(g.cavity);
     const sameRegion = boxesKey(sol.region) === boxesKey(g.region || []);
     const sameGaps = sol.gaps.length === g.gaps.length && sol.gaps.every((x, i) => Math.abs(x.value - g.gaps[i].value) < 0.05 && x.locked === g.gaps[i].locked);
-    if (sameBox && sameRegion && sameGaps) continue;
-    st.updatePanelGroup(g.id, { cavity: sol.cavity, region: sol.region, gaps: sol.gaps });
+    // Ref hacim adımlarının çözülen miktarı adıma yazılır (UI gösterimi; motorun resolvedValue'su gibi).
+    const rv = sol.cavityResolved || [];
+    const stepsPatch = rv.length && g.cavitySteps ? g.cavitySteps.map(cs => { const r = rv.find(x => x.id === cs.id); return r && Math.abs((cs.resolvedValue ?? NaN) - r.value) > 0.05 ? { ...cs, resolvedValue: r.value } : cs; }) : null;
+    const stepsChanged = !!stepsPatch && stepsPatch.some((cs, i) => cs !== g.cavitySteps![i]);
+    if (sameBox && sameRegion && sameGaps && !stepsChanged) continue;
+    st.updatePanelGroup(g.id, { cavity: sol.cavity, region: sol.region, gaps: sol.gaps, ...(stepsChanged ? { cavitySteps: stepsPatch! } : {}) });
     console.log('[YAGO][GRUP-SENKRON]', g.id, 'hacim=', fmtBox(sol.cavity), 'parçaN=', sol.region.length, 'boşluklar=', sol.gaps.map(x => x.value).join('/'));
   }
 }

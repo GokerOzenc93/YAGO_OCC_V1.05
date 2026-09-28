@@ -65,6 +65,19 @@ export interface VirtualFace {
 export interface GapSpec { value: number; locked: boolean; edited?: boolean }
 export interface CavityBox { min: [number, number, number]; max: [number, number, number] }
 /**
+ * HACİM ADIMI (Goker: "rafın yerleştiği hacme face extrude"): grubun çözülen
+ * hacminin bir yüzü, panel yüz extrude'uyla aynı üç modda itilir — fixed = eksen
+ * boyunca hedef ölçü, dyn = işaretli delta (+ dışa), ref = referans yüz düzlemine.
+ * Her rebuild'de ham (engellerden çözülen) hacme sırayla uygulanır; üyeler/boşluklar
+ * yeni hacme göre yeniden çözülür. faceNormal gövde-yerel, eksen hizalı.
+ */
+export interface CavityStep {
+  id: string; faceNormal: Vec3; axisLabel: string; value: number; isFixed: boolean; timestamp: number;
+  refShapeId?: string; refFaceGroupIndex?: number; refNormalWorld?: Vec3; refPointWorld?: Vec3;
+  /** Ref adımının son çözümde uygulanan işaretli miktarı (UI). */
+  resolvedValue?: number;
+}
+/**
  * HACİM ADAYI (3B seçim): şekilli serbest bölge — gövde katısından (çentik /
  * çıkarma dahil) ve panellerden kalan, tohumdan taşarak bulunan hücre birliği.
  * bbox = dizilim açıklığı; boxes = birleşik hücre kutuları (şema silueti);
@@ -100,6 +113,8 @@ export interface PanelGroup {
   thickness: number;
   /** Üye başına kalınlık (şemadaki kutucuk); eksik/kısa ise `thickness`. Boşluklar bu değerlere göre dağıtılır. */
   memberThicknesses?: number[];
+  /** Hacim yüz-extrude adımları (sıralı); ham hacme her çözümde uygulanır. */
+  cavitySteps?: CavityStep[];
   memberVfIds: string[];
   /** Kullanıcının verdiği grup adı (varsayılan 'Shelf' / 'Divider'); üye panellerin adı budur (salt-okunur). */
   name?: string;
@@ -215,6 +230,10 @@ export interface AppState {
   /** 'fixed' = sabit ölçü, 'dyn' = delta, 'ref' = referans yüze bağlı. */
   faceExtrudeValueMode: 'fixed' | 'dyn' | 'ref'; setFaceExtrudeValueMode: (m: 'fixed' | 'dyn' | 'ref') => void;
   faceExtrudeRefCandidate: RefFacePick | null; setFaceExtrudeRefCandidate: (v: RefFacePick | null) => void;
+  /** HACİM DÜZENLEME: extrude modu bir panel yerine raf/dikme grubunun HACMİNİ hedefler (aynı akış: yüz seç → fixed/dyn/ref → uygula). */
+  faceExtrudeCavityGroupId: string | null; setFaceExtrudeCavityGroupId: (id: string | null) => void;
+  /** Hacim kutusunda seçilen yüzün gövde-yerel normali (faceExtrudeSelectedFace ile birlikte). */
+  faceExtrudeCavityFaceNormal: Vec3 | null; setFaceExtrudeCavityFaceNormal: (n: Vec3 | null) => void;
 
   // Panel taşıma
   panelMoveMode: boolean; setPanelMoveMode: (b: boolean) => void;
@@ -437,10 +456,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   // ── Yüz extrude ───────────────────────────────────────────────────────────
   faceExtrudeMode: false,
   setFaceExtrudeMode: (b) => set({
-    faceExtrudeMode: b, faceExtrudeSelectedFace: null, faceExtrudeClickPoint: null,
-    ...(!b ? { faceExtrudeTargetPanelId: null, faceExtrudeRefCandidate: null } : {}),
+    faceExtrudeMode: b, faceExtrudeSelectedFace: null, faceExtrudeClickPoint: null, faceExtrudeCavityFaceNormal: null,
+    ...(!b ? { faceExtrudeTargetPanelId: null, faceExtrudeRefCandidate: null, faceExtrudeCavityGroupId: null } : {}),
   }),
-  faceExtrudeTargetPanelId: null, setFaceExtrudeTargetPanelId: (id) => set({ faceExtrudeTargetPanelId: id }),
+  // Panel hedefi yazılınca hacim hedefi düşer (ikisi karşılıklı dışlayıcı).
+  faceExtrudeTargetPanelId: null, setFaceExtrudeTargetPanelId: (id) => set({ faceExtrudeTargetPanelId: id, ...(id ? { faceExtrudeCavityGroupId: null, faceExtrudeCavityFaceNormal: null } : {}) }),
+  faceExtrudeCavityGroupId: null, setFaceExtrudeCavityGroupId: (id) => set({ faceExtrudeCavityGroupId: id, ...(id ? { faceExtrudeTargetPanelId: null } : {}) }),
+  faceExtrudeCavityFaceNormal: null, setFaceExtrudeCavityFaceNormal: (n) => set({ faceExtrudeCavityFaceNormal: n }),
   faceExtrudeSelectedFace: null, setFaceExtrudeSelectedFace: (i) => set({ faceExtrudeSelectedFace: i }),
   faceExtrudeClickPoint: null, setFaceExtrudeClickPoint: (p) => set({ faceExtrudeClickPoint: p }),
   faceExtrudeThickness: 18, setFaceExtrudeThickness: (v) => set({ faceExtrudeThickness: v }),
