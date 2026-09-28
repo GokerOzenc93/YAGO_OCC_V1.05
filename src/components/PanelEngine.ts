@@ -635,6 +635,32 @@ function extendVertsOnTiltedPlanes(
  * Paneli gövde katısıyla kesiştirir; hata → olduğu gibi. Düz panelde (tag EĞİK-UÇ)
  * yalnız düzenlenmiş gövde; dönmüş panelde (DÖNÜŞ-SIĞDIR) gövde yoksa parametre kutusu.
  */
+/**
+ * DÖNMÜŞ RAF/DİKME ÜYESİ KENDİ HACMİNDE KALIR (Goker: "rotate edince dikme volümünün
+ * dışına çıktı, çıkmamalı"): büyütülüp sığdırılan üye, grubunun çözülmüş hacim KUTUSUYLA
+ * (eksen-hizalı düzlemler) kesişir → uçlar hacim sınırında açıya göre düz pahlanır;
+ * şekilli (L) hacmin şekli panelin kalınlığına geçmez (yalnız düzlem kesimi).
+ */
+async function clipToGroupCavity(rp: any, panel: Shape): Promise<any> {
+  const gid = (panel.parameters as any)?.panelGroupId as string | undefined;
+  if (!gid) return rp;
+  const group = useAppStore.getState().panelGroups.find(g => g.id === gid);
+  const c = group?.cavity;
+  if (!c) return rp;
+  const size = [0, 1, 2].map(a => c.max[a] - c.min[a]);
+  if (size.some(v => !(v > 0.5))) return rp;
+  try {
+    const box = (await createReplicadBox({ width: size[0], height: size[1], depth: size[2] })).translate(c.min[0], c.min[1], c.min[2]);
+    const before = fmtBounds(rp);
+    const out = rp.intersect(box);
+    console.log('[YAGO][DÖNÜŞ-HACİM]', panel.id, 'grup hacmine kırpıldı', gid, 'hacim=', c.min.map(n => n.toFixed(0)).join(',') + '..' + c.max.map(n => n.toFixed(0)).join(','), before, '→', fmtBounds(out));
+    return out;
+  } catch (err) {
+    console.warn('[YAGO][DÖNÜŞ-HACİM] hacim kesişimi hatası:', panel.id, errMsg(err));
+    return rp;
+  }
+}
+
 async function intersectWithBody(rp: any, panel: Shape, parent: Shape, tag: string, fallbackBox: boolean): Promise<any> {
   try {
     let body = await effectiveBodySolid(parent);
@@ -876,7 +902,10 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       }
       const refContacts = new Map<string, RefContact>();
       for (const r of resolvedRotations) if (r.targetId && r.contact) refContacts.set(r.targetId, r.contact);
-      if (isRotated) rp = await fitRotatedPanel(rp, panel, parentFresh, children, orderOf, refContacts);
+      if (isRotated) {
+        rp = await fitRotatedPanel(rp, panel, parentFresh, children, orderOf, refContacts);
+        if (isInteriorPanel(panel)) rp = await clipToGroupCavity(rp, panel);
+      }
       else if (needsBodyClip) rp = await intersectWithBody(rp, panel, parentFresh, 'EĞİK-UÇ', false);
 
       // YÜZ EXTRUDE: panel artık doğru çerçevede; saklı adımlar aynı çerçevede uygulanır.
