@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { type PanelGroup, type Shape, type VirtualFace, childPanelsOf, panelOfVf, shapeById, useAppStore, vfOfPanel } from '../store';
-import { type ExtrudeStep, type TransformStep, applyExtrudeSteps, getUnifiedSteps, matchReferenceFace, resolveReferenceFacePlane, stepRefTargets } from './PanelOps';
+import { type ExtrudeStep, type TransformStep, applyExtrudeSteps, applyTransformSteps, getUnifiedSteps, matchReferenceFace, resolveReferenceFacePlane, stepRefTargets } from './PanelOps';
 import { computeFaceComponentContour, computeFreeRegionLocal, convexHull2D, panelHasRotation, panelIsTiltedSlab } from './FaceRegion';
 import {
   type CoplanarFaceGroup, type FaceData, type Vec3, angleToTouchPlane, axisDirToVec, axisIndexOf, boundsOverlapBox, convertReplicadToThreeGeometry,
@@ -1302,6 +1302,21 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
     return false;
   };
 
+  // TAŞIMA YÖN TESTİ (extrude ile aynı kural): taşınmış panel sırayı ancak taşıması onu bu
+  // yüze DOĞRU itiyorsa devirebilir (Δ·n > 0). Yüze paralel taşıma (alt panelin altındaki ön
+  // şeridi arkaya kaydırmak) yetki vermez — eskiden her taşınmış panel farklı yüzdeki
+  // önceki paneli basıyor, alt panel alttan geçen şeritle kısalıyor, yeni panelin bölgesi
+  // de alt panelin izini kaybedip tam yüksekliğe çıkıyordu.
+  const moveRedLogged = new Set<string>();
+  const moveAdvancesTowardFace = (p: any, n: THREE.Vector3 | null): boolean => {
+    if (!n || !hasMoveSteps(p)) return false;
+    const rda = p.parameters?._refDeltaApplied;
+    let d: THREE.Vector3;
+    if (Array.isArray(rda) && rda.length === 3) d = new THREE.Vector3(rda[0], rda[1], rda[2]);
+    else { try { const r = applyTransformSteps([0, 0, 0], [0, 0, 0], getUnifiedSteps(p)); d = new THREE.Vector3(...r.position); } catch { return true; } }
+    return d.dot(n) > 0.01;
+  };
+
   /** p, VF'yi damgalama yetkisine sahip mi? (sıra önceliği + fiziksel ilerleme istisnası) */
   const stamps = (p: any, vfId: string, myPanel: any, myFaceNormal: THREE.Vector3 | null): boolean => {
     if (p.parameters?.virtualFaceId === vfId) return false;
@@ -1328,7 +1343,14 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
       if (!sameFace && pIsRefBoundToMe && hasMoveSteps(p) && !extrudeAdvancesTowardFace(p, myFaceNormal)) {
         console.log('[YAGO][DAMGA-YETKI] RED', vfId, '<-', p.id, '— p bu paneli REF TAŞIMA HEDEFİ (datum) alıyor', '→ taşıma istisnası iptal, karar sıra önceliğine bırakıldı');
       }
-      if (!sameFace && ((hasMoveSteps(p) && !pIsRefBoundToMe) || extrudeAdvancesTowardFace(p, myFaceNormal))) return true;
+      if (!sameFace && hasMoveSteps(p) && !pIsRefBoundToMe && !moveAdvancesTowardFace(p, myFaceNormal)) {
+        const myIdxT = vfIndexOf.get(vfId);
+        if (myIdxT != null && panelPriority(p) >= myIdxT && !moveRedLogged.has(`${vfId}|${p.id}`)) {
+          moveRedLogged.add(`${vfId}|${p.id}`);
+          console.log('[YAGO][DAMGA-YETKI] RED', vfId, '<-', p.id, '— taşıma bu yüze doğru İLERLEMİYOR (paralel/uzaklaşıyor)', '→ taşıma istisnası yok, sıra önceliği korundu');
+        }
+      }
+      if (!sameFace && ((hasMoveSteps(p) && !pIsRefBoundToMe && moveAdvancesTowardFace(p, myFaceNormal)) || extrudeAdvancesTowardFace(p, myFaceNormal))) return true;
     }
     const myIdx = vfIndexOf.get(vfId);
     const byOrder = myIdx != null && panelPriority(p) < myIdx;
