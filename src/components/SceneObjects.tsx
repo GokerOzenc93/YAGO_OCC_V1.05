@@ -11,7 +11,7 @@ import {
 import { REF_COLORS, applyTransformSteps, confirmRefFaceExtrude, cycleRefFacePickFromEvent } from './PanelOps';
 import { type Point2D, computeFaceComponentContour, computeFreeRegionLocal, earClipTriangulate, findPanelCoveringPoint, pointInTriangle3D } from './FaceRegion';
 import {
-  GROUP_PANEL_THICKNESS, boxSpan, collectObstacles, confirmRefCavityExtrude, createPanelGroupFromCavity, fmtBox, gridForObstacles, rayCavityCandidates,
+  GROUP_PANEL_THICKNESS, boxSpan, boxesSurface, collectObstacles, confirmRefCavityExtrude, createPanelGroupFromCavity, fmtBox, gridForObstacles, rayCavityCandidates,
 } from './PanelGroupService';
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -750,21 +750,26 @@ export const VolumePickOverlay: React.FC<{ shape: any; allShapes: any[] }> = ({ 
 };
 
 // ── 6. HACİM DÜZENLEME (raf/dikme hacmine yüz extrude) ──────────────────────
-// Grubun güncel hacmi mavi dolgu + kırmızı kenarla çizilir; kutunun yüzleri panel
-// extrude hedefi gibi seçilir (hover kırmızı, seçili koyu kırmızı). Seçilen yüzün
-// gövde-yerel normali store'a yazılır; fixed/dyn şeritten, ref sağ tıkla uygulanır.
+// Grubun güncel ŞEKİLLİ hacmi (bölge kutularının dış yüzeyi: L / çentik) mavi dolgu
+// + kırmızı kenarla çizilir; yüzleri panel extrude hedefi gibi seçilir (hover kırmızı,
+// seçili koyu kırmızı). Seçilen yüzün gövde-yerel normali + tıklama noktası store'a
+// yazılır (çıpa: hangi kolun/yüzün hareket edeceği); fixed/dyn şeritten, ref sağ tıkla.
 export const CavityEditOverlay: React.FC<{ shape: any }> = ({ shape }) => {
-  const { panelGroups, faceExtrudeCavityGroupId, faceExtrudeSelectedFace, setFaceExtrudeSelectedFace, setFaceExtrudeCavityFaceNormal, faceExtrudeValueMode } =
-    useStoreFields('panelGroups', 'faceExtrudeCavityGroupId', 'faceExtrudeSelectedFace', 'setFaceExtrudeSelectedFace', 'setFaceExtrudeCavityFaceNormal', 'faceExtrudeValueMode');
+  const { panelGroups, faceExtrudeCavityGroupId, faceExtrudeSelectedFace, setFaceExtrudeSelectedFace, setFaceExtrudeCavityFaceNormal, setFaceExtrudeClickPoint, faceExtrudeValueMode } =
+    useStoreFields('panelGroups', 'faceExtrudeCavityGroupId', 'faceExtrudeSelectedFace', 'setFaceExtrudeSelectedFace', 'setFaceExtrudeCavityFaceNormal', 'setFaceExtrudeClickPoint', 'faceExtrudeValueMode');
   const group = panelGroups.find(g => g.id === faceExtrudeCavityGroupId);
   const active = !!group && group.shapeId === shape.id;
   const cav = group?.cavity;
-  const cavKey = cav ? [...cav.min, ...cav.max].map(n => n.toFixed(1)).join('|') : '';
+  const boxes = group ? (group.region && group.region.length ? group.region : cav ? [cav] : []) : [];
+  const cavKey = boxes.map(b => [...b.min, ...b.max].map(n => n.toFixed(1)).join('|')).join(';');
   const [hovered, setHovered] = useState<number | null>(null);
   const boxGeo = useMemo(() => {
-    if (!cav) return null;
-    const g = new THREE.BoxGeometry(Math.max(boxSpan(cav, 0), 0.1), Math.max(boxSpan(cav, 1), 0.1), Math.max(boxSpan(cav, 2), 0.1));
-    g.translate((cav.min[0] + cav.max[0]) / 2, (cav.min[1] + cav.max[1]) / 2, (cav.min[2] + cav.max[2]) / 2);
+    if (!boxes.length) return null;
+    const surface = boxesSurface(boxes);
+    if (surface.length < 9) return null;
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(surface), 3));
+    g.computeVertexNormals();
     return g;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cavKey]);
@@ -792,8 +797,10 @@ export const CavityEditOverlay: React.FC<{ shape: any }> = ({ shape }) => {
           const n = groups[gi].normal.clone().normalize();
           setFaceExtrudeSelectedFace(gi);
           setFaceExtrudeCavityFaceNormal([n.x, n.y, n.z]);
+          // ÇIPA: tıklama noktası gövde-yerel (şekilli hacimde hangi bağlantılı yüz hareket edecek).
+          if (e.point) { const local = e.point.clone().applyMatrix4(getShapeMatrix(shape).invert()); setFaceExtrudeClickPoint([local.x, local.y, local.z]); }
           setHovered(gi);
-          console.log('[YAGO][HACİM-ADIM] yüz seçildi', group!.id, 'normal=', [n.x, n.y, n.z].map(v => v.toFixed(0)).join(','));
+          console.log('[YAGO][HACİM-ADIM] yüz seçildi', group!.id, 'normal=', [n.x, n.y, n.z].map(v => v.toFixed(0)).join(','), 'nokta=', e.point ? e.point.toArray().map((v: number) => v.toFixed(0)).join(',') : '-');
         }}
         onPointerMove={(e: any) => { e.stopPropagation(); const gi = flatGroupOfFace(groups, e.faceIndex); if (gi !== -1) setHovered(gi); }}
         onPointerOut={(e: any) => { e.stopPropagation(); setHovered(null); }}

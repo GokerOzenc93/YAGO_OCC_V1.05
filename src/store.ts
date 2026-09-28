@@ -73,6 +73,8 @@ export interface CavityBox { min: [number, number, number]; max: [number, number
  */
 export interface CavityStep {
   id: string; faceNormal: Vec3; axisLabel: string; value: number; isFixed: boolean; timestamp: number;
+  /** Yüzü seçen tıklama, GÖVDE kutusuna oransal — şekilli hacimde hangi bağlantılı yüzün (L kolu / çentik iç yüzü) hareket edeceğini seçer. */
+  anchorFrac?: Vec3;
   refShapeId?: string; refFaceGroupIndex?: number; refNormalWorld?: Vec3; refPointWorld?: Vec3;
   /** Ref adımının son çözümde uygulanan işaretli miktarı (UI). */
   resolvedValue?: number;

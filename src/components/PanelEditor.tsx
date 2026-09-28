@@ -1161,12 +1161,17 @@ export function PanelEditor() {
     const g = panelGroups.find(x => x.id === faceExtrudeCavityGroupId); if (!g?.cavitySteps?.length) return;
     const n = faceExtrudeCavityFaceNormal;
     const ax = [Math.abs(n[0]), Math.abs(n[1]), Math.abs(n[2])].indexOf(Math.max(Math.abs(n[0]), Math.abs(n[1]), Math.abs(n[2])));
-    const existing = g.cavitySteps.find(st => { const m = st.faceNormal; const a2 = [Math.abs(m[0]), Math.abs(m[1]), Math.abs(m[2])].indexOf(Math.max(Math.abs(m[0]), Math.abs(m[1]), Math.abs(m[2]))); return a2 === ax && Math.sign(m[a2]) === Math.sign(n[ax]); });
+    // Aynı eksen+yön; birden çoksa (L'nin iki kolu) çıpası tıklama noktasına en yakın adım.
+    const body = selectedShape ? localBboxOf(selectedShape.geometry) : null;
+    const cp = faceExtrudeClickPoint;
+    const fr = body && cp ? [0, 1, 2].map(a => { const sp = (body.max.getComponent(a) - body.min.getComponent(a)) || 1; return (cp[a] - body.min.getComponent(a)) / sp; }) : null;
+    const same = g.cavitySteps.filter(st => { const m = st.faceNormal; const a2 = [Math.abs(m[0]), Math.abs(m[1]), Math.abs(m[2])].indexOf(Math.max(Math.abs(m[0]), Math.abs(m[1]), Math.abs(m[2]))); return a2 === ax && Math.sign(m[a2]) === Math.sign(n[ax]); });
+    const existing = same.length <= 1 || !fr ? same[0] : same.reduce((b, st) => { const d = (q: any) => (q.anchorFrac ? Math.hypot(q.anchorFrac[0] - fr[0], q.anchorFrac[1] - fr[1], q.anchorFrac[2] - fr[2]) : 9); return d(st) < d(b) ? st : b; });
     if (!existing) return;
     setFaceExtrudeThickness(existing.value); setExtrudeThicknessStr(String(existing.value));
     if (faceExtrudeValueMode !== 'ref') setFaceExtrudeValueMode(existing.refShapeId ? 'ref' : existing.isFixed ? 'fixed' : 'dyn');
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [faceExtrudeCavityGroupId, faceExtrudeCavityFaceNormal]);
+  }, [faceExtrudeCavityGroupId, faceExtrudeCavityFaceNormal, faceExtrudeClickPoint]);
 
   // AKORDEON: açılan satır (listeden ya da 3B'den seçilince) görünür alana kaydırılır.
   useEffect(() => {
@@ -1247,7 +1252,7 @@ export function PanelEditor() {
     const onApply = async () => {
       if (!hf) return;
       if (isRefMode) { if (!hasRefFace) return; await confirmRefCavityExtrude(); }
-      else { await executeCavityExtrude(g.id, faceExtrudeCavityFaceNormal!, faceExtrudeThickness, faceExtrudeValueMode === 'fixed'); exit(); }
+      else { await executeCavityExtrude(g.id, faceExtrudeCavityFaceNormal!, faceExtrudeThickness, faceExtrudeValueMode === 'fixed', faceExtrudeClickPoint); exit(); }
     };
     return (
       <div style={DOCK_SHELL}>
