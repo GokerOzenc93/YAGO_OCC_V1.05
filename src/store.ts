@@ -89,6 +89,23 @@ export interface CavityPick {
   key: string; bbox: CavityBox; boxes: CavityBox[]; surface: number[]; seed: [number, number, number];
   /** 'shaped' = bağlantılı serbest bölgenin tamamı (en kapsayıcı); 'box' = bölge içinde tohumu içeren maksimal kutu (düz alternatif). */
   shape: 'shaped' | 'box';
+  /**
+   * OK + DİZİLİM (Goker, 30 Eyl 2026 — "kübün sağına tıklıyorsam ok sola bakacak";
+   * "tıklanan kübün yüzeyine göre dönsün"; "ok yönü soldaysa kübün sol yüzüne göre
+   * yerleşecek: derinlik 300 ise dikme boşlukları 300'e göre"):
+   *  • arrow = OK: tıklanan GÖVDE YÜZÜNDEN içeri (sağ yüz → X−, ön yüz → Z−, üst yüz → Y−),
+   *    kameradan bağımsız. Kamera kutunun içindeyse ışının baskın ekseni.
+   *  • axis = DİZİLİM ekseni (boşlukların dağıldığı eksen): raf daima Y; dikme OKA
+   *    PARALEL durur, yani dizilim ekseni okun yatay DİKİ — ok X ise dikmeler Z'de
+   *    (derinlik boyunca), ok Z ise X'te (genişlik boyunca). Üst/alt yüzden dikme
+   *    tıkında ışının baskın yatay bileşeninin diki.
+   *  • facing = dizilim ekseninde sayım tarafı (+1 = MİN'den, −1 = MAX'tan) ve üye VF
+   *    normali (facing·axis): ok dizilim eksenindeyse (raf, üstten tık) oktan; değilse
+   *    tıklanan nokta hacmin hangi yarısındaysa o taraftan (kameradan bağımsız).
+   *  • at = ışının bölgeye girdiği nokta (gövde-yerel).
+   */
+  axis: 0 | 1 | 2; facing: 1 | -1; at: [number, number, number];
+  arrow: { axis: 0 | 1 | 2; facing: 1 | -1 };
 }
 /**
  * RAF / DİKME GRUBU: seçilen hacme (cavity) yerleşen n panel + n+1 boşluk.
@@ -98,8 +115,16 @@ export interface CavityPick {
 export interface PanelGroup {
   id: string; shapeId: string;
   kind: 'shelf' | 'divider';
-  /** Dizilim ekseni: raf = 1 (Y), dikme = 0 (X). */
+  /** Dizilim ekseni (boşlukların dağıldığı eksen): raf = 1 (Y); dikme oka paralel → ok Z (önden tık) ise 0 (X), ok X (yandan tık) ise 2 (Z). */
   axis: 0 | 1 | 2;
+  /** OK: tıklanan gövde yüzünden içeri yön (3B ok ve grup seçiliyken hacim merkezindeki ok). Eski gruplarda yok → dizilim ekseni/yönü. */
+  arrow?: { axis: 0 | 1 | 2; facing: 1 | -1 };
+  /**
+   * YÖN (tık yönü): üye VF normali = facing·eksen; boşluklar ve üye numaraları
+   * (6.1, 6.2 …) hacmin facing<0 ise MAX, facing>0 ise MİN tarafından sayılır —
+   * yani tıklanan taraftan itibaren. Eski gruplarda yok → +1.
+   */
+  facing?: 1 | -1;
   /** Hacim çıpası: gövde yerel kutusundaki oran (resize'da aynı boşluğa düşer). */
   anchorFrac: [number, number, number];
   /** Son çözülen hacmin kutusu (gövde yerel) — dizilim açıklığı buradan. */

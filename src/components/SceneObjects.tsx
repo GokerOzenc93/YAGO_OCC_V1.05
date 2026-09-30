@@ -11,7 +11,7 @@ import {
 import { REF_COLORS, applyTransformSteps, confirmRefFaceExtrude, cycleRefFacePickFromEvent } from './PanelOps';
 import { type Point2D, computeFaceComponentContour, computeFreeRegionLocal, earClipTriangulate, findPanelCoveringPoint, pointInTriangle3D } from './FaceRegion';
 import {
-  GROUP_PANEL_THICKNESS, boxSpan, boxesSurface, collectObstacles, confirmRefCavityExtrude, createPanelGroupFromCavity, fmtBox, gridForObstacles, rayCavityCandidates,
+  GROUP_PANEL_THICKNESS, boxSpan, boxesSurface, collectObstacles, confirmRefCavityExtrude, createPanelGroupFromCavity, fmtBox, gridForObstacles, groupFacing, rayCavityCandidates,
 } from './PanelGroupService';
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -669,6 +669,54 @@ function surfaceMesh(surface: number[]): { geo: THREE.BufferGeometry; edgePts: [
   return { geo, edgePts: edgePointsOf(geo, 1) };
 }
 
+/**
+ * YÖN OKU (Goker: "tıklanan hacmin tam ortasına, hangi yüzeyden tıklandığını
+ * gösteren temsili bir ok; kübün sağına tıklıyorsam ok sola bakacak"; ok =
+ * tıklanan gövde yüzünden içeri, kameradan bağımsız; dikme oka PARALEL yerleşir):
+ * seçilen hacmin kutu MERKEZİNE oturan, okun yönüne bakan kalın kısa
+ * gövde + koni uç + taban diski. Her zaman üstte çizilir (derinlik testi yok),
+ * boyutu hacmin dizilim eksenindeki açıklığına göre; renk teal (kırmızı/turuncu
+ * değil). Yalnız sol tık sonrası (seçili aday) ve seçili grubun hacim merkezinde.
+ */
+const FACING_ARROW_COLOR = '#0f766e';
+const Y_UP = new THREE.Vector3(0, 1, 0);
+export const FacingArrow: React.FC<{ center: Vec3; axis: 0 | 1 | 2; facing: 1 | -1; span: number }> = ({ center, axis, facing, span }) => {
+  const L = Math.max(60, Math.min(260, span * 0.5));
+  const shaftR = L * 0.08, coneR = L * 0.19, coneL = L * 0.4, shaftL = L - coneL, discR = L * 0.22, discH = Math.max(1.5, L * 0.03);
+  const quat = useMemo(() => {
+    const dir = new THREE.Vector3(0, 0, 0); dir.setComponent(axis, facing);
+    return new THREE.Quaternion().setFromUnitVectors(Y_UP, dir);
+  }, [axis, facing]);
+  const mat = (opacity = 1) => <meshStandardMaterial color={FACING_ARROW_COLOR} emissive={FACING_ARROW_COLOR} emissiveIntensity={0.06} roughness={0.6} metalness={0} transparent opacity={opacity} depthTest={false} depthWrite={false} />;
+  return (
+    <group position={center} quaternion={quat} renderOrder={30}>
+      {/* taban diski (ok nereden başlıyor) */}
+      <mesh position={[0, -L / 2 + discH / 2, 0]} raycast={() => null} renderOrder={30}>
+        <cylinderGeometry args={[discR, discR, discH, 40]} />{mat(0.92)}
+      </mesh>
+      {/* gövde */}
+      <mesh position={[0, -L / 2 + shaftL / 2, 0]} raycast={() => null} renderOrder={31}>
+        <cylinderGeometry args={[shaftR, shaftR, shaftL, 28]} />{mat()}
+      </mesh>
+      {/* uç konisi */}
+      <mesh position={[0, L / 2 - coneL / 2, 0]} raycast={() => null} renderOrder={32}>
+        <coneGeometry args={[coneR, coneL, 36]} />{mat()}
+      </mesh>
+    </group>
+  );
+};
+
+const boxCenterOf = (b: { min: Vec3; max: Vec3 }): Vec3 => [(b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, (b.min[2] + b.max[2]) / 2];
+
+/** Seçili raf/dikme grubunun hacim MERKEZİNDE tek yön oku (üye başına değil). Gövde-yerel; grup bu gövdeye ait değilse hiçbir şey çizmez. */
+export const GroupFacingArrow: React.FC<{ shape: any }> = ({ shape }) => {
+  const { panelGroups, selectedPanelGroupId, volumePickMode } = useStoreFields('panelGroups', 'selectedPanelGroupId', 'volumePickMode');
+  const g = selectedPanelGroupId ? panelGroups.find(x => x.id === selectedPanelGroupId) : null;
+  if (!g || g.shapeId !== shape.id || volumePickMode || !g.cavity) return null;
+  const arrow = g.arrow ?? { axis: g.axis, facing: groupFacing(g) };
+  return <FacingArrow center={boxCenterOf(g.cavity)} axis={arrow.axis} facing={arrow.facing} span={boxSpan(g.cavity, arrow.axis)} />;
+};
+
 export const VolumePickOverlay: React.FC<{ shape: any; allShapes: any[] }> = ({ shape, allShapes }) => {
   const { volumePickMode, volumePickCandidates, volumePickIndex, setVolumePick, setVolumePickMode } =
     useStoreFields('volumePickMode', 'volumePickCandidates', 'volumePickIndex', 'setVolumePick', 'setVolumePickMode');
@@ -698,7 +746,7 @@ export const VolumePickOverlay: React.FC<{ shape: any; allShapes: any[] }> = ({ 
     if (!grid || !volumePickMode || !e?.ray) return [];
     const o = e.ray.origin.clone().applyMatrix4(worldToLocal);
     const d = e.ray.origin.clone().add(e.ray.direction).applyMatrix4(worldToLocal).sub(o).normalize();
-    return rayCavityCandidates([o.x, o.y, o.z], [d.x, d.y, d.z], grid, GROUP_PANEL_THICKNESS * 2);
+    return rayCavityCandidates([o.x, o.y, o.z], [d.x, d.y, d.z], grid, GROUP_PANEL_THICKNESS * 2, volumePickMode);
   };
   const onPointerMove = (e: any) => {
     if (!volumePickMode) return;
@@ -722,7 +770,8 @@ export const VolumePickOverlay: React.FC<{ shape: any; allShapes: any[] }> = ({ 
     setVolumePick(c, index);
     const s = c[index];
     console.log('[YAGO][HACİM] aday', index + 1, '/', c.length, s.shape === 'box' ? 'DÜZ' : 'ŞEKİLLİ', fmtBox(s.bbox),
-      'boyut=', [0, 1, 2].map(a => boxSpan(s.bbox, a).toFixed(0)).join('x'), 'parçaN=', s.boxes.length, 'engelN=', oset.obstacles.length, 'eğikN=', oset.tiltFaces.length);
+      'boyut=', [0, 1, 2].map(a => boxSpan(s.bbox, a).toFixed(0)).join('x'), 'parçaN=', s.boxes.length, 'engelN=', oset.obstacles.length, 'eğikN=', oset.tiltFaces.length,
+      'ok=', `${'XYZ'[s.arrow.axis]}${s.arrow.facing > 0 ? '+' : '−'}`, 'dizilim=', `${'XYZ'[s.axis]}${s.facing > 0 ? '+' : '−'}`, 'giriş=', s.at.map(v => v.toFixed(0)).join(','));
   };
 
   if (!volumePickMode || !pickGeo) return null;
@@ -743,6 +792,8 @@ export const VolumePickOverlay: React.FC<{ shape: any; allShapes: any[] }> = ({ 
           {selectedMesh.edgePts.length >= 2 && (
             <Line points={selectedMesh.edgePts} segments color={PICK_COLORS.selectedEdge} lineWidth={2.6} transparent={false} depthTest={false} depthWrite={false} renderOrder={7} raycast={() => null} />
           )}
+          {/* YÖN OKU: yalnız sol tıkla seçilen adayda (hover'da değil), hacim kutusunun tam merkezinde */}
+          {selected && <FacingArrow center={boxCenterOf(selected.bbox)} axis={selected.arrow.axis} facing={selected.arrow.facing} span={boxSpan(selected.bbox, selected.arrow.axis)} />}
         </>
       )}
     </>
@@ -1052,6 +1103,7 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
             onHover={setHoveredRefGroup} onPointerDown={confirmRefOnRightClick} onClick={(e: any) => { e.stopPropagation(); handleRefClick(e); }} />
         )}
         {isSelected && S.volumePickMode && <VolumePickOverlay shape={shape} allShapes={S.shapes} />}
+        {isSelected && <GroupFacingArrow shape={shape} />}
         {S.faceExtrudeMode && S.faceExtrudeCavityGroupId && <CavityEditOverlay shape={shape} />}
         <VirtualFaceOverlay shape={shape} />
       </group>

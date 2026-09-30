@@ -18,7 +18,7 @@ import {
 } from './PanelOps';
 import {
   boxSpan, confirmRefCavityExtrude, createPanelGroupFromCavity, deleteCavityStep, deletePanelGroupWithMembers, editGroupGap, equalizeGroupGaps, executeCavityExtrude,
-  groupKindLabel, groupName, memberThicknessesOf, panelStarts, renamePanelGroup, setGroupCount, setGroupMemberThickness, startCavityEdit, toggleGroupGapLock,
+  groupFacing, groupKindLabel, groupName, memberThicknessesOf, panelStarts, renamePanelGroup, setGroupCount, setGroupMemberThickness, startCavityEdit, toggleGroupGapLock,
   traceMaskLoops, updateCavityStep,
 } from './PanelGroupService';
 
@@ -641,15 +641,19 @@ function GroupSchematic({ group, selectedIndex, memberLabels, onEditGap, onToggl
   const ts = memberThicknessesOf(group);
   const barsHorizontal = axis === 1;
   const height = PREVIEW_HEIGHT;
-  const starts = panelStarts(cavity.min[axis], gaps, ts);
+  // YÖN (tık yönü): boşluk/üye sayımı facing>0 ise hacmin MİN, facing<0 ise MAX tarafından başlar.
+  const facing = groupFacing(group);
+  const stackOrigin = facing > 0 ? cavity.min[axis] : cavity.max[axis];
+  const starts = panelStarts(cavity, axis, facing, gaps, ts);
 
   // ŞEKİLLİ BÖLGE SİLUETİ: bölge kutularının izdüşümü (eski gruplarda hacim
-  // kutusu). Dizilim ekseni rafta düşey (Y), dikmede yatay (X) kalır; diğer
+  // kutusu). Dizilim ekseni rafta düşey (Y), dikmede yatay (okun ekseni: X ya da Z) kalır; diğer
   // eksen için iki görünüşten ŞEKLİ GÖSTEREN seçilir — ikisi de dikdörtgense
   // ön görünüş. Levhalar ve pill'ler maskeye kırpılır.
   const region = group.region && group.region.length ? group.region : [cavity];
   const view = useMemo(() => {
-    const views: Array<[number, number]> = barsHorizontal ? [[0, 1], [2, 1]] : [[0, 1], [0, 2]];
+    // Dikey levhalar: yatay eksen = dizilim ekseni (X dikmesi → ön görünüş / üst görünüş; Z dikmesi → yan görünüş / üst görünüş).
+    const views: Array<[number, number]> = barsHorizontal ? [[0, 1], [2, 1]] : [[axis, 1], [axis, axis === 0 ? 2 : 0]];
     const cands = views.map(([h, v]) => { const m = regionMask(region, h, v); const loops = traceMaskLoops(m.hs, m.vs, m.filled); return { h, v, m, loops, shaped: loops.length > 1 || loops.some(l => l.length > 4) }; });
     return cands[0].shaped || !cands[1].shaped ? cands[0] : cands[1];
   }, [region, barsHorizontal]);
@@ -669,20 +673,22 @@ function GroupSchematic({ group, selectedIndex, memberLabels, onEditGap, onToggl
   const tMin = ts.length ? Math.max(1, Math.min(...ts)) : 1;
   const barPxOf = (i: number) => Math.min(barPx * 3, barPx * ((ts[i] ?? tMin) / tMin));
   const barPxSum = starts.reduce((a, _, i) => a + barPxOf(i), 0);
-  // Dizilim ekseni kırılma noktaları: dünya [min, min+g0, min+g0+t0, …, max] ↔ piksel.
+  // Dizilim ekseni kırılma noktaları: dünya [başlangıç, +g0, +g0+t0, …, son] ↔ piksel.
+  // Sayım tıklanan taraftan (stackOrigin) yürür; facing<0 ise dizi dünya artan sıraya çevrilir.
   const stackMap = useMemo(() => {
-    const wb: number[] = [cavity.min[axis]], pb: number[] = [0];
+    const wb: number[] = [stackOrigin], pb: number[] = [0];
     const gSum = gaps.reduce((a, g) => a + Math.max(0, g.value), 0);
     const avail = Math.max(0, S - barPxSum);
-    let w = cavity.min[axis], p = 0;
+    let w = stackOrigin, p = 0;
     gaps.forEach((g, k) => {
-      w += Math.max(0, g.value); p += gSum > 1e-6 ? (Math.max(0, g.value) / gSum) * avail : avail / gaps.length;
+      w += facing * Math.max(0, g.value); p += gSum > 1e-6 ? (Math.max(0, g.value) / gSum) * avail : avail / gaps.length;
       wb.push(w); pb.push(p);
-      if (k < nBars) { w += ts[k]; p += barPxOf(k); wb.push(w); pb.push(p); }
+      if (k < nBars) { w += facing * ts[k]; p += barPxOf(k); wb.push(w); pb.push(p); }
     });
+    if (facing < 0) { const pEnd = pb[pb.length - 1]; wb.reverse(); pb.reverse(); for (let i = 0; i < pb.length; i++) pb[i] = pEnd - pb[i]; }
     return { wb, pb };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cavity, axis, gaps, S, nBars, barPx, barPxSum, ts.join('/')]);
+  }, [cavity, axis, facing, stackOrigin, gaps, S, nBars, barPx, barPxSum, ts.join('/')]);
   const mapStack = (w: number) => {
     const { wb, pb } = stackMap;
     if (w <= wb[0]) return pb[0];
@@ -714,9 +720,9 @@ function GroupSchematic({ group, selectedIndex, memberLabels, onEditGap, onToggl
   // Boşluk aralıkları (dizilim ekseni, dünya) → ölçü pill'leri.
   const fs = Math.max(10, Math.min(13.5, width * 0.027));
   const crossAxis = barsHorizontal ? hAxis : vAxis;
-  let cursor = cavity.min[axis];
+  let cursor = stackOrigin;
   const pills = gaps.map((g, k) => {
-    const a = cursor, b = cursor + g.value; cursor = b + (ts[k] ?? 0);
+    const a = cursor, b = cursor + facing * g.value; cursor = b + facing * (ts[k] ?? 0);
     const mid = (a + b) / 2;
     const txt = String(round1(g.value));
     const { pw, ph } = pillSize(txt, fs);
@@ -781,6 +787,25 @@ function GroupSchematic({ group, selectedIndex, memberLabels, onEditGap, onToggl
       <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ display: 'block', fontFamily: UI_FONT }}>
         {/* şekilli bölge silueti */}
         <path d={silhouettePath} fill="#ffffff" stroke="#d6cfc4" strokeWidth={1} strokeLinejoin="round" fillRule="evenodd" />
+        {/* SAYIM İMİ: boşluk 0 / üye 1'in sayıldığı taraftan içeri bakan küçük ok (dizilim ekseninde; 3B ok ise tıklanan yüzü gösterir) */}
+        {(() => {
+          const len = 18, m = 9;
+          const horiz = hAxis === axis;
+          const x0 = horiz ? (facing > 0 ? ox + m : ox + S - m) : ox + m;
+          const y0 = horiz ? oy + m : (facing > 0 ? oy + S - m : oy + m);
+          const x1 = horiz ? x0 + facing * len : x0;
+          const y1 = horiz ? y0 : y0 - facing * len;   // dünya + yukarı → SVG y aşağı
+          const ang = Math.atan2(y1 - y0, x1 - x0);
+          const hx = x1, hy = y1, hs = 5;
+          const tri = [[hx, hy], [hx - hs * Math.cos(ang) + hs * 0.6 * Math.sin(ang), hy - hs * Math.sin(ang) - hs * 0.6 * Math.cos(ang)], [hx - hs * Math.cos(ang) - hs * 0.6 * Math.sin(ang), hy - hs * Math.sin(ang) + hs * 0.6 * Math.cos(ang)]];
+          return (
+            <g style={{ pointerEvents: 'none' }} opacity={0.9}>
+              <line x1={x0} y1={y0} x2={x1 - 3 * Math.cos(ang)} y2={y1 - 3 * Math.sin(ang)} stroke="#0f766e" strokeWidth={2.2} strokeLinecap="round" />
+              <polygon points={tri.map(p => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ')} fill="#0f766e" />
+              <title>Gaps and members are counted from this side</title>
+            </g>
+          );
+        })()}
         {/* levhalar: dilimdeki dolu aralıklara kırpılmış */}
         {starts.map((st, i) => runsAt(st, st + ts[i]).map((r, ri) => barsHorizontal
           ? bar(`bar-${i}-${ri}`, i, sx(r[0]), sy(st + ts[i]), sx(r[1]), sy(st))

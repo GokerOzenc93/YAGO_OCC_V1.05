@@ -40,7 +40,45 @@ const MIN_GAP = 0;
 export const isInteriorPanel = (p: any): boolean => !!p?.parameters?.panelGroupId;
 export const isInteriorVf = (vf: any): boolean => !!vf?.interior;
 export const groupKindLabel = (k: PanelGroup['kind']) => (k === 'shelf' ? 'Shelf' : 'Divider');
-const groupAxisOf = (k: PanelGroup['kind']): 0 | 1 | 2 => (k === 'shelf' ? 1 : 0);
+type EntryFace = { axis: 0 | 1 | 2; facing: 1 | -1 };
+/**
+ * DİZİLİM EKSENİ (Goker, 30 Eyl 2026 — "ok yönü soldaysa kübün sol yüzüne göre
+ * yerleşecek; derinlik 300 ise dikme boşlukları 300'e göre"): raf daima Y; dikme
+ * DİKEY kalır ve OKA PARALEL durur → boşluklar okun yatay DİKİ boyunca dağılır:
+ * yandan tık (ok X) → dikmeler derinlik (Z) boyunca; önden/arkadan tık (ok Z) →
+ * genişlik (X) boyunca. Ok düşey (üst/alt yüzden tık) ise ışının baskın yatay
+ * bileşeninin diki; o da yoksa X.
+ */
+const groupAxisOf = (k: PanelGroup['kind'], arrow?: EntryFace | null, dir?: Vec3): 0 | 1 | 2 => {
+  if (k === 'shelf') return 1;
+  if (arrow && arrow.axis !== 1) return arrow.axis === 0 ? 2 : 0;
+  if (!dir) return 0;
+  const ax = Math.abs(dir[0]), az = Math.abs(dir[2]);
+  if (ax < 1e-3 && az < 1e-3) return 0;
+  return ax >= az ? 2 : 0;
+};
+
+/** Işının baskın ekseni + yönü (kamera kutunun içindeyken ok için). */
+function dominantDir(d: Vec3): EntryFace {
+  const a = [Math.abs(d[0]), Math.abs(d[1]), Math.abs(d[2])];
+  const axis = (a[0] >= a[1] && a[0] >= a[2] ? 0 : a[1] >= a[2] ? 1 : 2) as 0 | 1 | 2;
+  return { axis, facing: d[axis] >= 0 ? 1 : -1 };
+}
+
+/**
+ * Işının GÖVDE kutusuna girdiği yüz: eksen + yön (min yüzden giriş → +1, max
+ * yüzden giriş → −1 — yani tıklanan yüzden İÇERİ). Slab kesişiminde giriş
+ * zamanı en büyük olan eksen giriş yüzüdür. Kamera kutunun içindeyse null.
+ */
+function rayEntryFace(o: Vec3, d: Vec3, b: CavityBox): EntryFace | null {
+  let best = -Infinity, axis: 0 | 1 | 2 = 0, facing: 1 | -1 = 1;
+  for (const a of [0, 1, 2] as const) {
+    if (Math.abs(d[a]) < 1e-9) continue;
+    const t = d[a] > 0 ? (b.min[a] - o[a]) / d[a] : (b.max[a] - o[a]) / d[a];
+    if (t > best) { best = t; axis = a; facing = d[a] > 0 ? 1 : -1; }
+  }
+  return best > 0 ? { axis, facing } : null;
+}
 
 const r1 = round1;
 const cloneBox = (b: CavityBox): CavityBox => ({ min: [...b.min] as Vec3, max: [...b.max] as Vec3 });
@@ -609,10 +647,26 @@ function rayBoxInterval(o: Vec3, d: Vec3, b: CavityBox): [number, number] | null
   return [t0, t1];
 }
 
-/** Bölgeden seçim adayı (kutu, kutular, yüzey, anahtar, tohum). */
-function pickFromRegion(g: CavityGrid, cells: Set<number>, seed: Vec3, shape: CavityPick['shape'] = 'shaped', planes: TiltPlane[] = []): CavityPick {
+/**
+ * TIK YÖNÜ (Goker: "kübün sağına tıklıyorsam ok sola doğru bakacak"): ışının
+ * dizilim eksenindeki bileşeninin işareti. Işın eksene DİK ise (ör. ön görünüşte
+ * dikme) işaret yoktur → tıklanan nokta hacmin hangi yarısındaysa o taraftan
+ * içeri (min yarısı → +1, max yarısı → −1). Tık ekseni asla değiştirmez.
+ */
+function facingOf(axis: number, dirAxis: number, at: Vec3, bbox: CavityBox): 1 | -1 {
+  if (Math.abs(dirAxis) > 1e-3) return dirAxis > 0 ? 1 : -1;
+  return at[axis] <= (bbox.min[axis] + bbox.max[axis]) / 2 ? 1 : -1;
+}
+type RayCtx = { axis: 0 | 1 | 2; dirAxis: number; at: Vec3; arrow: EntryFace };
+
+/** Bölgeden seçim adayı (kutu, kutular, yüzey, anahtar, tohum, tık yönü). */
+function pickFromRegion(g: CavityGrid, cells: Set<number>, seed: Vec3, shape: CavityPick['shape'] = 'shaped', planes: TiltPlane[] = [], ray?: RayCtx): CavityPick {
   const bbox = clippedRegionBBox(g, cells, planes);
-  return { key: `${shape}:${regionKey(cells)}`, bbox, boxes: regionBoxes(g, cells), surface: clipSurfaceByPlanes(g, cells, regionSurface(g, cells), planes), seed, shape };
+  const axis = ray?.axis ?? 0;
+  const at: Vec3 = ray ? [...ray.at] as Vec3 : [...seed] as Vec3;
+  const facing = ray ? facingOf(axis, ray.dirAxis, at, bbox) : 1;
+  const arrow: EntryFace = ray ? { ...ray.arrow } : { axis, facing };
+  return { key: `${shape}:${regionKey(cells)}`, bbox, boxes: regionBoxes(g, cells), surface: clipSurfaceByPlanes(g, cells, regionSurface(g, cells), planes), seed, shape, axis, facing, at, arrow };
 }
 
 /**
@@ -741,14 +795,14 @@ function boxAlternatives(g: CavityGrid, cells: Set<number>, seedCells: number[],
  * derinliğine/yüksekliğine kırpılmış halleri, hacme göre büyükten küçüğe.
  * Bölge zaten tek kutuysa şekilli aday tekrar edilmez.
  */
-function candidateFamily(g: CavityGrid, cells: Set<number>, rayCells: number[], seed: Vec3, minSpan: number, planes: TiltPlane[] = []): CavityPick[] {
+function candidateFamily(g: CavityGrid, cells: Set<number>, rayCells: number[], seed: Vec3, minSpan: number, planes: TiltPlane[] = [], ray?: RayCtx): CavityPick[] {
   const okSpan = (b: CavityBox) => boxSpan(b, 0) >= minSpan && boxSpan(b, 1) >= minSpan && boxSpan(b, 2) >= minSpan;
   const out: CavityPick[] = [];
   const boxes = boxAlternatives(g, cells, rayCells, minSpan);
   const regionIsBox = boxes.some(b => !b.derived && b.cells.size === cells.size);
-  const shaped = pickFromRegion(g, cells, seed, 'shaped', planes);
+  const shaped = pickFromRegion(g, cells, seed, 'shaped', planes, ray);
   if (!regionIsBox && okSpan(shaped.bbox)) out.push(shaped);
-  for (const b of boxes) out.push(pickFromRegion(g, b.cells, seed, 'box', planes));
+  for (const b of boxes) out.push(pickFromRegion(g, b.cells, seed, 'box', planes, ray));
   return out;
 }
 
@@ -756,9 +810,16 @@ function candidateFamily(g: CavityGrid, cells: Set<number>, rayCells: number[], 
  * IŞIN BOYUNCA ŞEKİLLİ HACİMLER: ışının gövde kutusundaki parçası hücre hücre
  * yürünür; serbest hücreler bölgelerine göre (ilk giriş sırasıyla) gruplanır;
  * her bölge için aday ailesi üretilir (şekilli → düz kutular). Sol tık bu
- * liste üzerinde döner (ışın derinliği sırasıyla).
+ * liste üzerinde döner (ışın derinliği sırasıyla). `kind` verilirse her adaya
+ * dizilim ekseni + tık yönü (facing) yazılır; `at` = ışının bölgeye girdiği nokta.
  */
-export function rayCavityCandidates(originLocal: Vec3, dirLocal: Vec3, g: CavityGrid, minSpan: number): CavityPick[] {
+export function rayCavityCandidates(originLocal: Vec3, dirLocal: Vec3, g: CavityGrid, minSpan: number, kind: PanelGroup['kind'] = 'divider'): CavityPick[] {
+  // OK = TIKLANAN GÖVDE YÜZÜNDEN içeri (kameradan bağımsız; kamera içerideyse ışının baskın ekseni).
+  // DİZİLİM ekseni oka göre (raf Y; dikme oka paralel → okun yatay diki). SAYIM tarafı:
+  // ok dizilim eksenindeyse oktan, değilse tıklanan yarıdan (facingOf, dirAxis=0).
+  const arrow = rayEntryFace(originLocal, dirLocal, g.body) ?? dominantDir(dirLocal);
+  const axis = groupAxisOf(kind, arrow, dirLocal);
+  const dirAxis = arrow.axis === axis ? arrow.facing : 0;
   const bodyIv = rayBoxInterval(originLocal, dirLocal, g.body);
   if (!bodyIv) return [];
   const t0 = Math.max(bodyIv[0], 0), t1 = bodyIv[1];
@@ -792,7 +853,8 @@ export function rayCavityCandidates(originLocal: Vec3, dirLocal: Vec3, g: Cavity
     if (!regions[ri].rayCells.includes(c)) regions[ri].rayCells.push(c);
   }
   const out: CavityPick[] = [];
-  for (const r of regions) out.push(...candidateFamily(g, r.cells, r.rayCells, r.seed, minSpan, r.planes));
+  for (const r of regions) out.push(...candidateFamily(g, r.cells, r.rayCells, r.seed, minSpan, r.planes, { axis, dirAxis, at: r.seed, arrow }));
+  if (out.length) console.log('[YAGO][HACİM] ok=', `${'XYZ'[arrow.axis]}${arrow.facing > 0 ? '+' : '−'}`, 'dizilim=', 'XYZ'[axis], 'sayım=', out[0].facing > 0 ? 'MİN' : 'MAX', 'tarafından');
   return out;
 }
 
@@ -903,14 +965,31 @@ function applyGapEdit(gaps: GapSpec[], k: number, value: number, L: number, coun
   return out;
 }
 
-/** Panel başlangıçları (dizilim ekseni, hacim min'inden): p_i = min + Σgap[0..i] + Σt[0..i). */
-export function panelStarts(cavityMin: number, gaps: GapSpec[], ts: number[]): number[] {
+/** Grubun yönü (tık yönü); eski gruplarda +1. */
+export const groupFacing = (g: Pick<PanelGroup, 'facing'>): 1 | -1 => (g.facing === -1 ? -1 : 1);
+
+/**
+ * Panel başlangıçları (dizilim ekseni; her levha [start, start+t]). Sayım
+ * TIKLANAN TARAFTAN başlar (Goker: "o yönden itibaren bölümlendirme"):
+ * facing>0 → hacim MİN'inden: p_i = min + Σgap[0..i] + Σt[0..i);
+ * facing<0 → hacim MAX'ından: p_i = max − Σgap[0..i] − Σt[0..i].
+ * gap[0] ve üye 0 (6.1) her iki durumda da tıklanan tarafa en yakındır.
+ */
+export function panelStarts(cavity: CavityBox, axis: number, facing: 1 | -1, gaps: GapSpec[], ts: number[]): number[] {
   const starts: number[] = [];
-  let p = cavityMin;
-  for (let i = 0; i < gaps.length - 1; i++) {
-    p += gaps[i].value;
-    starts.push(p);
-    p += ts[i] ?? ts[ts.length - 1] ?? 0;
+  if (facing > 0) {
+    let p = cavity.min[axis];
+    for (let i = 0; i < gaps.length - 1; i++) {
+      p += gaps[i].value;
+      starts.push(p);
+      p += ts[i] ?? ts[ts.length - 1] ?? 0;
+    }
+  } else {
+    let p = cavity.max[axis];
+    for (let i = 0; i < gaps.length - 1; i++) {
+      p -= gaps[i].value + (ts[i] ?? ts[ts.length - 1] ?? 0);
+      starts.push(p);
+    }
   }
   return starts;
 }
@@ -918,18 +997,20 @@ export function panelStarts(cavityMin: number, gaps: GapSpec[], ts: number[]): n
 // ── ÜYE VF GEOMETRİSİ ───────────────────────────────────────────────────────
 
 /**
- * Üye VF: dizilim ekseninde start+t düzleminde (normal +eksen), o dilimin
- * KESİT çokgeni (şekilli). createPanelFromVirtualFace −normal yönünde t kadar
- * uzar → levha [start, start+t] aralığına oturur. Kesit yoksa kutu kesiti.
+ * Üye VF: dizilim ekseninde levhanın YÖN tarafındaki düzlemde (normal =
+ * facing·eksen), o dilimin KESİT çokgeni (şekilli). createPanelFromVirtualFace
+ * −normal yönünde t kadar uzar → levha her iki yönde de [start, start+t]
+ * aralığına oturur (facing>0: düzlem start+t; facing<0: düzlem start).
+ * Kesit yoksa kutu kesiti.
  */
-function memberVfGeometry(axis: number, cavity: CavityBox, start: number, t: number, section?: Pt2[] | null): { normal: Vec3; vertices: Vec3[]; center: Vec3 } {
+function memberVfGeometry(axis: number, cavity: CavityBox, start: number, t: number, section?: Pt2[] | null, facing: 1 | -1 = 1): { normal: Vec3; vertices: Vec3[]; center: Vec3 } {
   const [b, c] = [0, 1, 2].filter(a => a !== axis);
-  const plane = start + t;
+  const plane = facing > 0 ? start + t : start;
   const mk = (vb: number, vc: number): Vec3 => { const p: Vec3 = [0, 0, 0]; p[axis] = plane; p[b] = vb; p[c] = vc; return p; };
   const poly: Pt2[] = section && section.length >= 3 ? section
     : [{ x: cavity.min[b], y: cavity.min[c] }, { x: cavity.max[b], y: cavity.min[c] }, { x: cavity.max[b], y: cavity.max[c] }, { x: cavity.min[b], y: cavity.max[c] }];
   const vertices = poly.map(q => mk(q.x, q.y));
-  const normal: Vec3 = [0, 0, 0]; normal[axis] = 1;
+  const normal: Vec3 = [0, 0, 0]; normal[axis] = facing;
   let cb = 0, cc = 0; for (const q of poly) { cb += q.x; cc += q.y; }
   const center = mk(cb / poly.length, cc / poly.length);
   return { normal, vertices, center };
@@ -1220,7 +1301,7 @@ function solveGroup(group: PanelGroup, parent: Shape, panels: Shape[], groups: P
   }
   const L = boxSpan(cavity, group.axis);
   const gaps = rescaleGaps(group.gaps, L, group.count, ts);
-  const starts = panelStarts(cavity.min[group.axis], gaps, ts);
+  const starts = panelStarts(cavity, group.axis, groupFacing(group), gaps, ts);
   const sections = starts.map((s, i) => {
     if (!minOk) return null;
     const t = ts[i];
@@ -1236,7 +1317,7 @@ function solveGroup(group: PanelGroup, parent: Shape, panels: Shape[], groups: P
 function interiorVfPatch(vf: VirtualFace, group: PanelGroup, sol: GroupSolution): Partial<VirtualFace> | null {
   const i = vf.groupIndex ?? group.memberVfIds.indexOf(vf.id);
   if (i < 0 || i >= sol.starts.length) return null;
-  const g = memberVfGeometry(group.axis, sol.cavity, sol.starts[i], memberThicknessesOf(group)[i], sol.sections[i]);
+  const g = memberVfGeometry(group.axis, sol.cavity, sol.starts[i], memberThicknessesOf(group)[i], sol.sections[i], groupFacing(group));
   return { normal: g.normal, vertices: g.vertices, center: g.center, regionAnchor: g.center } as any;
 }
 
@@ -1269,7 +1350,7 @@ const groupById = (id: string) => useAppStore.getState().panelGroups.find(g => g
 /** Çözüm yoksa: kayıtlı hacim + verilen boşluklarla düz çözüm. */
 const fallbackSolution = (group: PanelGroup, gaps: GapSpec[], count: number, seed: Vec3): GroupSolution => ({
   cavity: group.cavity, region: group.region || [group.cavity], gaps,
-  starts: panelStarts(group.cavity.min[group.axis], gaps, memberThicknessesOf(group, count)), sections: Array(count).fill(null), seed,
+  starts: panelStarts(group.cavity, group.axis, groupFacing(group), gaps, memberThicknessesOf(group, count)), sections: Array(count).fill(null), seed,
 });
 
 /** Üye VF'lerin panelini + VF'sini siler (seçili satırsa seçim düşer). */
@@ -1284,7 +1365,7 @@ function removeMembers(vfIds: string[]): void {
 }
 
 function makeMemberVf(group: PanelGroup, i: number, sol: GroupSolution): VirtualFace {
-  const g = memberVfGeometry(group.axis, sol.cavity, sol.starts[i], memberThicknessesOf(group)[i], sol.sections[i]);
+  const g = memberVfGeometry(group.axis, sol.cavity, sol.starts[i], memberThicknessesOf(group)[i], sol.sections[i], groupFacing(group));
   return {
     id: genId('vf-int'), shapeId: group.shapeId,
     normal: g.normal, center: g.center, vertices: g.vertices,
@@ -1309,13 +1390,17 @@ export function createPanelGroupFromCavity(shapeId: string, kind: PanelGroup['ki
   if (!parent) return null;
   const body = bodyLocalBox(parent);
   if (!body) return null;
-  const axis = groupAxisOf(kind);
+  // DİZİLİM EKSENİ + SAYIM YÖNÜ + OK adaydan: raf yalnız Y; dikme X veya Z. Eski/eksik adayda varsayılan eksen, +1.
+  const axisOk = kind === 'shelf' ? pick.axis === 1 : (pick.axis === 0 || pick.axis === 2);
+  const axis: 0 | 1 | 2 = axisOk ? pick.axis : groupAxisOf(kind);
   const t = GROUP_PANEL_THICKNESS;
   const count = 1;
   const L = boxSpan(pick.bbox, axis);
+  const facing: 1 | -1 = axisOk && pick.facing === -1 ? -1 : 1;
+  const arrow = pick.arrow ? { ...pick.arrow } : { axis, facing };
   const group: PanelGroup = {
     // ÇIPA = tohum noktası (ışının bölgeye girdiği yer) — L bölgede kutu merkezi dışarıda kalabilir.
-    id: genId(kind === 'shelf' ? 'shelf' : 'divider'), shapeId, kind, axis, anchorFrac: fracInCavity(body, pick.seed, true), name: groupKindLabel(kind),
+    id: genId(kind === 'shelf' ? 'shelf' : 'divider'), shapeId, kind, axis, facing, arrow, anchorFrac: fracInCavity(body, pick.seed, true), name: groupKindLabel(kind),
     cavity: cloneBox(pick.bbox), region: pick.boxes.map(cloneBox), count, gaps: equalGaps(L, count, [t]), thickness: t, memberThicknesses: [t], memberVfIds: [], createdAt: Date.now(),
     ...(pick.shape === 'box' ? { boxMode: true, boxFrac: { min: fracInCavity(body, pick.bbox.min), max: fracInCavity(body, pick.bbox.max) } } : {}),
   };
@@ -1325,7 +1410,8 @@ export function createPanelGroupFromCavity(shapeId: string, kind: PanelGroup['ki
   st.addPanelGroup(group);
   st.insertVirtualFacesAfter(null, vfs);
   st.setSelectedPanelGroupId(group.id);
-  console.log('[YAGO][GRUP] oluşturuldu', group.id, kind, pick.shape === 'box' ? 'DÜZ (kutu)' : 'ŞEKİLLİ', 'hacim=', fmtBox(pick.bbox), 'parçaN=', pick.boxes.length, 'L=', L.toFixed(1), 'çıpa=', group.anchorFrac.map(n => n.toFixed(2)).join(','));
+  console.log('[YAGO][GRUP] oluşturuldu', group.id, kind, pick.shape === 'box' ? 'DÜZ (kutu)' : 'ŞEKİLLİ', 'hacim=', fmtBox(pick.bbox), 'parçaN=', pick.boxes.length, 'L=', L.toFixed(1),
+    'çıpa=', group.anchorFrac.map(n => n.toFixed(2)).join(','), 'ok=', `${'XYZ'[arrow.axis]}${arrow.facing > 0 ? '+' : '−'}`, 'dizilim=', 'XYZ'[axis], '(sayım', facing > 0 ? 'MİN' : 'MAX', 'tarafından)');
   return group;
 }
 
