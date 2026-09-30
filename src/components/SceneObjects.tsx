@@ -687,7 +687,7 @@ function surfaceMesh(surface: number[]): { geo: THREE.BufferGeometry; edgePts: [
  * gapFrac·boy kadar açıkta, gövdesi dışarı doğru uzanır, hacme doğru bakar.
  * Yalnız hacim seçilirken görünür; raf/dikme yerleştikten sonra çizilmez.
  */
-const FACING_ARROW = { color: '#dc2626', edge: '#7f1d1d', lengthMm: 240, minPx: 90, maxPx: 170, tiltRad: 0.5, gapFrac: 0.18 } as const;
+const FACING_ARROW = { color: '#dc2626', edge: '#7f1d1d', lengthMm: 120, minPx: 48, maxPx: 90, tiltRad: 0.5, gapFrac: 0.2 } as const;
 
 /** Birim boy (1) chevron ok, +X'e bakar, merkezli; kalınlık = kol genişliği. Köşe renkli (kapak açık, yanlar koyu). */
 const FACING_ARROW_GEO: THREE.BufferGeometry = (() => {
