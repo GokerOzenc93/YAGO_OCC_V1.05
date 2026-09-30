@@ -46,8 +46,8 @@ type EntryFace = { axis: 0 | 1 | 2; facing: 1 | -1 };
  * yerleşecek; derinlik 300 ise dikme boşlukları 300'e göre"): raf daima Y; dikme
  * DİKEY kalır ve OKA PARALEL durur → boşluklar okun yatay DİKİ boyunca dağılır:
  * yandan tık (ok X) → dikmeler derinlik (Z) boyunca; önden/arkadan tık (ok Z) →
- * genişlik (X) boyunca. Ok düşey (üst/alt yüzden tık) ise ışının baskın yatay
- * bileşeninin diki; o da yoksa X.
+ * genişlik (X) boyunca. Ok düşey gelmez (üst/alt yüzden tıkta rayCavityCandidates
+ * oku sabit önden arkaya — Z− — çevirir); burada yalnız güvenlik için X.
  */
 const groupAxisOf = (k: PanelGroup['kind'], arrow?: EntryFace | null, dir?: Vec3): 0 | 1 | 2 => {
   if (k === 'shelf') return 1;
@@ -817,7 +817,11 @@ export function rayCavityCandidates(originLocal: Vec3, dirLocal: Vec3, g: Cavity
   // OK = TIKLANAN GÖVDE YÜZÜNDEN içeri (kameradan bağımsız; kamera içerideyse ışının baskın ekseni).
   // DİZİLİM ekseni oka göre (raf Y; dikme oka paralel → okun yatay diki). SAYIM tarafı:
   // ok dizilim eksenindeyse oktan, değilse tıklanan yarıdan (facingOf, dirAxis=0).
-  const arrow = rayEntryFace(originLocal, dirLocal, g.body) ?? dominantDir(dirLocal);
+  let arrow = rayEntryFace(originLocal, dirLocal, g.body) ?? dominantDir(dirLocal);
+  // ÜST/ALT YÜZDEN TIK (Goker: "raf ve dikme üst yüzeylerden seçilebilsin ama okun yönü
+  // hep bir yönden olsun — önden arkaya"): ok düşey çıkarsa raf ve dikme için SABİT
+  // önden arkaya (gövde-yerel ön = +Z → ok Z−). Dikme oka paralel → genişlik (X) boyunca.
+  if (arrow.axis === 1) arrow = { axis: 2, facing: -1 };
   const axis = groupAxisOf(kind, arrow, dirLocal);
   const dirAxis = arrow.axis === axis ? arrow.facing : 0;
   const bodyIv = rayBoxInterval(originLocal, dirLocal, g.body);

@@ -787,7 +787,7 @@ function GroupSchematic({ group, selectedIndex, memberLabels, onEditGap, onToggl
       <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ display: 'block', fontFamily: UI_FONT }}>
         {/* şekilli bölge silueti */}
         <path d={silhouettePath} fill="#ffffff" stroke="#d6cfc4" strokeWidth={1} strokeLinejoin="round" fillRule="evenodd" />
-        {/* SAYIM İMİ: boşluk 0 / üye 1'in sayıldığı taraftan içeri bakan küçük ok (dizilim ekseninde; 3B ok ise tıklanan yüzü gösterir) */}
+        {/* SAYIM İMİ: boşluk 0 / üye 1'in sayıldığı taraftan içeri bakan küçük ok (dizilim ekseninde; 3B ok ise tıklanan yüzü gösterir) — kırmızı, 3B okla aynı */}
         {(() => {
           const len = 18, m = 9;
           const horiz = hAxis === axis;
@@ -795,13 +795,13 @@ function GroupSchematic({ group, selectedIndex, memberLabels, onEditGap, onToggl
           const y0 = horiz ? oy + m : (facing > 0 ? oy + S - m : oy + m);
           const x1 = horiz ? x0 + facing * len : x0;
           const y1 = horiz ? y0 : y0 - facing * len;   // dünya + yukarı → SVG y aşağı
-          const ang = Math.atan2(y1 - y0, x1 - x0);
-          const hx = x1, hy = y1, hs = 5;
-          const tri = [[hx, hy], [hx - hs * Math.cos(ang) + hs * 0.6 * Math.sin(ang), hy - hs * Math.sin(ang) - hs * 0.6 * Math.cos(ang)], [hx - hs * Math.cos(ang) - hs * 0.6 * Math.sin(ang), hy - hs * Math.sin(ang) + hs * 0.6 * Math.cos(ang)]];
+          // Chevron (3B okla aynı biçim): düz köklü gövde + ucu 45° iki kollu açık V.
+          const ang = Math.atan2(y1 - y0, x1 - x0), arm = 6.5;
+          const ax = (k: number) => x1 - arm * Math.cos(ang + k * Math.PI / 4), ay = (k: number) => y1 - arm * Math.sin(ang + k * Math.PI / 4);
+          const d = `M${x0.toFixed(1)},${y0.toFixed(1)} L${x1.toFixed(1)},${y1.toFixed(1)} M${ax(1).toFixed(1)},${ay(1).toFixed(1)} L${x1.toFixed(1)},${y1.toFixed(1)} L${ax(-1).toFixed(1)},${ay(-1).toFixed(1)}`;
           return (
-            <g style={{ pointerEvents: 'none' }} opacity={0.9}>
-              <line x1={x0} y1={y0} x2={x1 - 3 * Math.cos(ang)} y2={y1 - 3 * Math.sin(ang)} stroke="#0f766e" strokeWidth={2.2} strokeLinecap="round" />
-              <polygon points={tri.map(p => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ')} fill="#0f766e" />
+            <g style={{ pointerEvents: 'none' }} opacity={0.95}>
+              <path d={d} fill="none" stroke="#dc2626" strokeWidth={2.4} strokeLinecap="butt" strokeLinejoin="miter" />
               <title>Gaps and members are counted from this side</title>
             </g>
           );

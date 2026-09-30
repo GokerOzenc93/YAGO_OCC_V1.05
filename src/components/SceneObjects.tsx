@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { Line, TransformControls } from '@react-three/drei';
-import { useThree } from '@react-three/fiber';
+import { useFrame, useThree } from '@react-three/fiber';
 import { type CavityPick, type FilletInfo, Tool, ViewMode, type VirtualFace, childPanelsOf, useAppStore, useStoreFields } from '../store';
 import {
   type CoplanarFaceGroup, type FaceData, type Vec3, applyFillets, convertReplicadToThreeGeometry, createFaceDescriptor, createFaceHighlightGeometry,
@@ -11,7 +11,7 @@ import {
 import { REF_COLORS, applyTransformSteps, confirmRefFaceExtrude, cycleRefFacePickFromEvent } from './PanelOps';
 import { type Point2D, computeFaceComponentContour, computeFreeRegionLocal, earClipTriangulate, findPanelCoveringPoint, pointInTriangle3D } from './FaceRegion';
 import {
-  GROUP_PANEL_THICKNESS, boxSpan, boxesSurface, collectObstacles, confirmRefCavityExtrude, createPanelGroupFromCavity, fmtBox, gridForObstacles, groupFacing, rayCavityCandidates,
+  GROUP_PANEL_THICKNESS, boxSpan, boxesSurface, collectObstacles, confirmRefCavityExtrude, createPanelGroupFromCavity, fmtBox, gridForObstacles, rayCavityCandidates,
 } from './PanelGroupService';
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -237,7 +237,8 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
           onPointerDown={(e: any) => { if (isExtRefMode) confirmRefOnRightClick(e); }} />
       )}
 
-      {isPanelRowSelected && !isGroupSelected && <DirectionArrow geometry={shape.geometry} arrowRotated={shape.parameters?.arrowRotated || false} transformSteps={shape.parameters?.transformSteps} />}
+      {/* Hacim seçme modunda panel yön oku gizlenir (Goker: yön oku gösterilirken panel gizmo okları görünmesin); moddan çıkınca geri gelir. */}
+      {isPanelRowSelected && !isGroupSelected && !S.volumePickMode && <DirectionArrow geometry={shape.geometry} arrowRotated={shape.parameters?.arrowRotated || false} transformSteps={shape.parameters?.transformSteps} />}
     </group>
   );
 });
@@ -671,51 +672,110 @@ function surfaceMesh(surface: number[]): { geo: THREE.BufferGeometry; edgePts: [
 
 /**
  * YÖN OKU (Goker: "tıklanan hacmin tam ortasına, hangi yüzeyden tıklandığını
- * gösteren temsili bir ok; kübün sağına tıklıyorsam ok sola bakacak"; ok =
- * tıklanan gövde yüzünden içeri, kameradan bağımsız; dikme oka PARALEL yerleşir):
- * seçilen hacmin kutu MERKEZİNE oturan, okun yönüne bakan kalın kısa
- * gövde + koni uç + taban diski. Her zaman üstte çizilir (derinlik testi yok),
- * boyutu hacmin dizilim eksenindeki açıklığına göre; renk teal (kırmızı/turuncu
- * değil). Yalnız sol tık sonrası (seçili aday) ve seçili grubun hacim merkezinde.
+ * gösteren temsili bir ok"; ok = tıklanan gövde yüzünden içeri, kameradan
+ * bağımsız; dikme oka PARALEL yerleşir). BİÇİM (Goker'in örnek görseli): uzun
+ * kare kesitli gövde, ucu 45° iki koldan oluşan AÇIK V (chevron), kök DÜZ kesik,
+ * kırmızı; yüzler ışıktan bağımsız köşe renkleriyle gölgelenir + koyu kenar çizgisi.
+ * BOYUT: raf ve dikmede AYNI dünya boyu (FACING_ARROW.lengthMm); yakınlaşıp
+ * uzaklaşınca ekranda minPx..maxPx aralığına kıstırılır — o eşiklerden sonra
+ * ekranda sabit boyda kalır. Ok, ekseni etrafında kameraya döner (hafif eğimle,
+ * kalınlık görünsün). Derinlik tamponu okun hemen öncesinde temizlenir: her şeyin
+ * üstünde çizilir ama kendi yüzleri doğru örtüşür.
+ * KONUM (Goker: "hacmin içinde değil, okun geldiği dış yüzeyde, biraz boşluklu —
+ * içeride panel varsa ok panelin içine denk geliyor"): ok hacim kutusunun DIŞINDA,
+ * ışının girdiği yüzün (okun geldiği yüz) merkezinin önünde durur; ucu yüzden
+ * gapFrac·boy kadar açıkta, gövdesi dışarı doğru uzanır, hacme doğru bakar.
+ * Yalnız hacim seçilirken görünür; raf/dikme yerleştikten sonra çizilmez.
  */
-const FACING_ARROW_COLOR = '#0f766e';
-const Y_UP = new THREE.Vector3(0, 1, 0);
-export const FacingArrow: React.FC<{ center: Vec3; axis: 0 | 1 | 2; facing: 1 | -1; span: number }> = ({ center, axis, facing, span }) => {
-  const L = Math.max(60, Math.min(260, span * 0.5));
-  const shaftR = L * 0.08, coneR = L * 0.19, coneL = L * 0.4, shaftL = L - coneL, discR = L * 0.22, discH = Math.max(1.5, L * 0.03);
-  const quat = useMemo(() => {
-    const dir = new THREE.Vector3(0, 0, 0); dir.setComponent(axis, facing);
-    return new THREE.Quaternion().setFromUnitVectors(Y_UP, dir);
-  }, [axis, facing]);
-  const mat = (opacity = 1) => <meshStandardMaterial color={FACING_ARROW_COLOR} emissive={FACING_ARROW_COLOR} emissiveIntensity={0.06} roughness={0.6} metalness={0} transparent opacity={opacity} depthTest={false} depthWrite={false} />;
+const FACING_ARROW = { color: '#dc2626', edge: '#7f1d1d', lengthMm: 240, minPx: 90, maxPx: 170, tiltRad: 0.5, gapFrac: 0.18 } as const;
+
+/** Birim boy (1) chevron ok, +X'e bakar, merkezli; kalınlık = kol genişliği. Köşe renkli (kapak açık, yanlar koyu). */
+const FACING_ARROW_GEO: THREE.BufferGeometry = (() => {
+  const L = 1, w = 0.075, h = w / 2, A = 0.34, r2 = Math.SQRT2;
+  const up = (s: number, off: number): [number, number] => [(-s - off) / r2, (s - off) / r2];     // üst kol: dış kenardan off içeri
+  const dn = (s: number, off: number): [number, number] => [(-s - off) / r2, (-s + off) / r2];    // alt kol
+  const jx = -h - w * r2;                                                                          // gövde kenarı ↔ kol iç kenarı
+  const pts: Array<[number, number]> = [[0, 0], up(A, 0), up(A, w), [jx, h], [-L, h], [-L, -h], [jx, -h], dn(A, w), dn(A, 0)];
+  const shape = new THREE.Shape(pts.map(([x, y]) => new THREE.Vector2(x, y)));
+  let g: THREE.BufferGeometry = new THREE.ExtrudeGeometry(shape, { depth: w, bevelEnabled: false });
+  g = g.index ? g.toNonIndexed() : g;
+  g.computeBoundingBox();
+  const c = g.boundingBox!.getCenter(new THREE.Vector3());
+  g.translate(-c.x, -c.y, -c.z);
+  g.computeVertexNormals();
+  const pos = g.getAttribute('position'), cols = new Float32Array(pos.count * 3);
+  const cap = new THREE.Color('#e02424'), sideLo = new THREE.Color('#8f1818'), sideHi = new THREE.Color('#b91c1c'), tmp = new THREE.Color();
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), d = new THREE.Vector3(), n = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i += 3) {
+    a.fromBufferAttribute(pos, i); b.fromBufferAttribute(pos, i + 1); d.fromBufferAttribute(pos, i + 2);
+    n.subVectors(b, a).cross(d.sub(a)).normalize();
+    if (Math.abs(n.z) > 0.9) tmp.copy(cap); else tmp.copy(sideLo).lerp(sideHi, 0.5 + 0.5 * n.y);
+    for (let k = 0; k < 3; k++) tmp.toArray(cols, (i + k) * 3);
+  }
+  g.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+  return g;
+})();
+const FACING_ARROW_EDGES = new THREE.EdgesGeometry(FACING_ARROW_GEO, 25);
+
+export const FacingArrow: React.FC<{ box: { min: Vec3; max: Vec3 }; axis: 0 | 1 | 2; facing: 1 | -1 }> = ({ box, axis, facing }) => {
+  const ref = useRef<THREE.Group>(null);
+  // Okun geldiği yüzün merkezi (gövde-yerel): facing>0 → ok MİN yüzden içeri, facing<0 → MAX yüzden.
+  const faceCenter = useMemo<Vec3>(() => {
+    const c = boxCenterOf(box); c[axis] = facing > 0 ? box.min[axis] : box.max[axis]; return c;
+  }, [box, axis, facing]);
+  const t = useMemo(() => ({
+    pPos: new THREE.Vector3(), pQuat: new THREE.Quaternion(), pScale: new THREE.Vector3(), pQuatInv: new THREE.Quaternion(),
+    wp: new THREE.Vector3(), cam: new THREE.Vector3(), D: new THREE.Vector3(), V: new THREE.Vector3(), N: new THREE.Vector3(), Y: new THREE.Vector3(),
+    m: new THREE.Matrix4(), q: new THREE.Quaternion(),
+  }), []);
+  useFrame(({ camera, size }) => {
+    const g = ref.current;
+    if (!g || !g.parent) return;
+    g.parent.updateWorldMatrix(true, false);
+    g.parent.matrixWorld.decompose(t.pPos, t.pQuat, t.pScale);
+    t.wp.set(faceCenter[0], faceCenter[1], faceCenter[2]).applyMatrix4(g.parent.matrixWorld);
+    camera.getWorldPosition(t.cam);
+    // Ekran ölçeği: piksel başına dünya birimi (perspektif: mesafeye göre; ortografik: zoom).
+    let wpp: number;
+    if ((camera as THREE.OrthographicCamera).isOrthographicCamera) {
+      const c = camera as THREE.OrthographicCamera;
+      wpp = (c.top - c.bottom) / c.zoom / Math.max(1, size.height);
+    } else {
+      const c = camera as THREE.PerspectiveCamera;
+      wpp = (2 * t.cam.distanceTo(t.wp) * Math.tan(THREE.MathUtils.degToRad(c.fov) / 2)) / (c.zoom || 1) / Math.max(1, size.height);
+    }
+    const px = THREE.MathUtils.clamp(FACING_ARROW.lengthMm / wpp, FACING_ARROW.minPx, FACING_ARROW.maxPx);
+    const len = px * wpp;
+    g.scale.set(len / (t.pScale.x || 1), len / (t.pScale.y || 1), len / (t.pScale.z || 1));
+    // KONUM: yüz merkezinden okun TERSİNE (dışarı) boşluk + yarım boy → ucu yüzün önünde, hacmin dışında.
+    const back = (len * (FACING_ARROW.gapFrac + 0.5)) / (t.pScale.getComponent(axis) || 1);
+    g.position.set(faceCenter[0], faceCenter[1], faceCenter[2]);
+    g.position.setComponent(axis, faceCenter[axis] - facing * back);
+    // Yönelim: yerel X = ok yönü; düz yüz ok ekseni etrafında kameraya döner (+ eğim → kalınlık görünür).
+    t.D.set(0, 0, 0).setComponent(axis, facing).applyQuaternion(t.pQuat).normalize();
+    t.V.subVectors(t.cam, t.wp);
+    t.N.copy(t.V).addScaledVector(t.D, -t.V.dot(t.D));
+    if (t.N.lengthSq() < 1e-8) t.N.set(0, 1, 0).cross(t.D);
+    if (t.N.lengthSq() < 1e-8) t.N.set(1, 0, 0).cross(t.D);
+    t.N.normalize().applyAxisAngle(t.D, FACING_ARROW.tiltRad);
+    t.Y.crossVectors(t.N, t.D).normalize();
+    t.m.makeBasis(t.D, t.Y, t.N);
+    t.q.setFromRotationMatrix(t.m);
+    g.quaternion.copy(t.pQuatInv.copy(t.pQuat).invert().multiply(t.q));
+  });
   return (
-    <group position={center} quaternion={quat} renderOrder={30}>
-      {/* taban diski (ok nereden başlıyor) */}
-      <mesh position={[0, -L / 2 + discH / 2, 0]} raycast={() => null} renderOrder={30}>
-        <cylinderGeometry args={[discR, discR, discH, 40]} />{mat(0.92)}
+    <group ref={ref} position={faceCenter} scale={0.0001} renderOrder={30}>
+      <mesh geometry={FACING_ARROW_GEO} raycast={() => null} renderOrder={30} frustumCulled={false} onBeforeRender={(r: THREE.WebGLRenderer) => r.clearDepth()}>
+        <meshBasicMaterial vertexColors transparent opacity={1} depthTest depthWrite polygonOffset polygonOffsetFactor={1} polygonOffsetUnits={1} />
       </mesh>
-      {/* gövde */}
-      <mesh position={[0, -L / 2 + shaftL / 2, 0]} raycast={() => null} renderOrder={31}>
-        <cylinderGeometry args={[shaftR, shaftR, shaftL, 28]} />{mat()}
-      </mesh>
-      {/* uç konisi */}
-      <mesh position={[0, L / 2 - coneL / 2, 0]} raycast={() => null} renderOrder={32}>
-        <coneGeometry args={[coneR, coneL, 36]} />{mat()}
-      </mesh>
+      <lineSegments geometry={FACING_ARROW_EDGES} raycast={() => null} renderOrder={31} frustumCulled={false}>
+        <lineBasicMaterial color={FACING_ARROW.edge} transparent opacity={0.9} depthTest depthWrite={false} />
+      </lineSegments>
     </group>
   );
 };
 
 const boxCenterOf = (b: { min: Vec3; max: Vec3 }): Vec3 => [(b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, (b.min[2] + b.max[2]) / 2];
-
-/** Seçili raf/dikme grubunun hacim MERKEZİNDE tek yön oku (üye başına değil). Gövde-yerel; grup bu gövdeye ait değilse hiçbir şey çizmez. */
-export const GroupFacingArrow: React.FC<{ shape: any }> = ({ shape }) => {
-  const { panelGroups, selectedPanelGroupId, volumePickMode } = useStoreFields('panelGroups', 'selectedPanelGroupId', 'volumePickMode');
-  const g = selectedPanelGroupId ? panelGroups.find(x => x.id === selectedPanelGroupId) : null;
-  if (!g || g.shapeId !== shape.id || volumePickMode || !g.cavity) return null;
-  const arrow = g.arrow ?? { axis: g.axis, facing: groupFacing(g) };
-  return <FacingArrow center={boxCenterOf(g.cavity)} axis={arrow.axis} facing={arrow.facing} span={boxSpan(g.cavity, arrow.axis)} />;
-};
 
 export const VolumePickOverlay: React.FC<{ shape: any; allShapes: any[] }> = ({ shape, allShapes }) => {
   const { volumePickMode, volumePickCandidates, volumePickIndex, setVolumePick, setVolumePickMode } =
@@ -792,8 +852,8 @@ export const VolumePickOverlay: React.FC<{ shape: any; allShapes: any[] }> = ({ 
           {selectedMesh.edgePts.length >= 2 && (
             <Line points={selectedMesh.edgePts} segments color={PICK_COLORS.selectedEdge} lineWidth={2.6} transparent={false} depthTest={false} depthWrite={false} renderOrder={7} raycast={() => null} />
           )}
-          {/* YÖN OKU: yalnız sol tıkla seçilen adayda (hover'da değil), hacim kutusunun tam merkezinde */}
-          {selected && <FacingArrow center={boxCenterOf(selected.bbox)} axis={selected.arrow.axis} facing={selected.arrow.facing} span={boxSpan(selected.bbox, selected.arrow.axis)} />}
+          {/* YÖN OKU: yalnız sol tıkla seçilen adayda (hover'da değil), okun geldiği yüzün DIŞINDA, boşluklu; yerleştikten sonra çizilmez */}
+          {selected && <FacingArrow box={selected.bbox} axis={selected.arrow.axis} facing={selected.arrow.facing} />}
         </>
       )}
     </>
@@ -1103,7 +1163,6 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
             onHover={setHoveredRefGroup} onPointerDown={confirmRefOnRightClick} onClick={(e: any) => { e.stopPropagation(); handleRefClick(e); }} />
         )}
         {isSelected && S.volumePickMode && <VolumePickOverlay shape={shape} allShapes={S.shapes} />}
-        {isSelected && <GroupFacingArrow shape={shape} />}
         {S.faceExtrudeMode && S.faceExtrudeCavityGroupId && <CavityEditOverlay shape={shape} />}
         <VirtualFaceOverlay shape={shape} />
       </group>

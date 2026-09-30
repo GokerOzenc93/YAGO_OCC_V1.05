@@ -93,14 +93,14 @@ export interface CavityPick {
    * OK + DİZİLİM (Goker, 30 Eyl 2026 — "kübün sağına tıklıyorsam ok sola bakacak";
    * "tıklanan kübün yüzeyine göre dönsün"; "ok yönü soldaysa kübün sol yüzüne göre
    * yerleşecek: derinlik 300 ise dikme boşlukları 300'e göre"):
-   *  • arrow = OK: tıklanan GÖVDE YÜZÜNDEN içeri (sağ yüz → X−, ön yüz → Z−, üst yüz → Y−),
-   *    kameradan bağımsız. Kamera kutunun içindeyse ışının baskın ekseni.
+   *  • arrow = OK: tıklanan GÖVDE YÜZÜNDEN içeri (sağ yüz → X−, ön yüz → Z−), kameradan
+   *    bağımsız; ÜST/ALT yüzden tıkta raf ve dikme için SABİT önden arkaya (Z−).
+   *    Kamera kutunun içindeyse ışının baskın ekseni (düşeyse yine Z−).
    *  • axis = DİZİLİM ekseni (boşlukların dağıldığı eksen): raf daima Y; dikme OKA
    *    PARALEL durur, yani dizilim ekseni okun yatay DİKİ — ok X ise dikmeler Z'de
-   *    (derinlik boyunca), ok Z ise X'te (genişlik boyunca). Üst/alt yüzden dikme
-   *    tıkında ışının baskın yatay bileşeninin diki.
+   *    (derinlik boyunca), ok Z ise X'te (genişlik boyunca).
    *  • facing = dizilim ekseninde sayım tarafı (+1 = MİN'den, −1 = MAX'tan) ve üye VF
-   *    normali (facing·axis): ok dizilim eksenindeyse (raf, üstten tık) oktan; değilse
+   *    normali (facing·axis): ok dizilim eksenindeyse oktan; değilse
    *    tıklanan nokta hacmin hangi yarısındaysa o taraftan (kameradan bağımsız).
    *  • at = ışının bölgeye girdiği nokta (gövde-yerel).
    */
