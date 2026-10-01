@@ -11,7 +11,8 @@ import {
 import { REF_COLORS, applyTransformSteps, confirmRefFaceExtrude, cycleRefFacePickFromEvent } from './PanelOps';
 import { type Point2D, computeFaceComponentContour, computeFreeRegionLocal, earClipTriangulate, findPanelCoveringPoint, pointInTriangle3D } from './FaceRegion';
 import {
-  GROUP_PANEL_THICKNESS, boxSpan, boxesSurface, collectObstacles, confirmRefCavityExtrude, createPanelGroupFromCavity, fmtBox, gridForObstacles, rayCavityCandidates,
+  GROUP_PANEL_THICKNESS, boxSpan, boxesSurface, collectObstacles, confirmRefCavityExtrude, confirmVolumePick, fmtBox, gridForObstacles, groupBoundsPanelPredicate,
+  rayCavityCandidates, repickObstacles,
 } from './PanelGroupService';
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -140,7 +141,7 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
     'faceExtrudeMode', 'faceExtrudeTargetPanelId', 'faceExtrudeSelectedFace', 'setFaceExtrudeSelectedFace', 'setFaceExtrudeClickPoint', 'raycastMode', 'faceExtrudeValueMode', 'faceExtrudeRefCandidate',
     'panelMoveMode', 'panelMoveValueMode', 'panelMoveTargetPanelId', 'panelMoveRefSourceVertex', 'panelMoveRefTargetPanelId', 'panelMoveRefTargetVertex',
     'panelRotateMode', 'panelRotateValueMode', 'panelRotateTargetPanelId', 'panelRotatePivot', 'panelRotateRefArmVertex', 'panelRotateAxis', 'panelRotateRefFace', 'setPanelRotateRefFace',
-    'selectedPanelGroupId', 'volumePickMode');
+    'selectedPanelGroupId', 'volumePickMode', 'volumePickGroupId');
   const [hoveredExtrudeGroup, setHoveredExtrudeGroup] = useState<number | null>(null);
   // Ref-move: bu panel aday olarak fare altındayken tüm panel vurgulanır.
   const [moveRefHover, setMoveRefHover] = useState(false);
@@ -152,7 +153,7 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
   const isParentSelected = parentShapeId === S.selectedShapeId;
   // GRUP SEÇİMİ ("tümünü seç"): raf/dikme grubunun her üyesi seçili çizilir.
   const isGroupSelected = isParentSelected && !!S.selectedPanelGroupId && shape.parameters?.panelGroupId === S.selectedPanelGroupId;
-  const isPanelRowSelected = isGroupSelected || (isParentSelected && !!virtualFaceId && S.selectedPanelRow === `vf-${virtualFaceId}`);
+  const isRowSelectedRaw = isGroupSelected || (isParentSelected && !!virtualFaceId && S.selectedPanelRow === `vf-${virtualFaceId}`);
 
   const edgePoints = useMemo<Vec3[] | null>(() => { try { const p = edgePointsOf(shape.geometry, EDGE_ANGLE_THRESHOLD); return p.length ? p : null; } catch { return null; } }, [shape.geometry]);
 
@@ -166,6 +167,17 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
 
   const isFaceExtrudeTarget = S.faceExtrudeMode && shape.id === S.faceExtrudeTargetPanelId;
   const isFaceExtrudeXray = S.faceExtrudeMode && shape.id !== S.faceExtrudeTargetPanelId;
+  // YENİDEN HACİM SEÇİMİ X-RAY (Goker: "sıralamadan önceki panelleri göstermelisin"): taşınan gruptan
+  // SONRAKİ gövde panelleri ve grubun kendi üyeleri saydam çizilir — hacmi sınırlamazlar; öncekiler katı kalır.
+  const isRepickXray = (() => {
+    if (!S.volumePickMode || !S.volumePickGroupId || !isParentSelected) return false;
+    const st = useAppStore.getState();
+    const g = st.panelGroups.find(x => x.id === S.volumePickGroupId);
+    return !!g && !groupBoundsPanelPredicate(g, st.panelGroups, st.virtualFaces)(shape);
+  })();
+  const isGhost = isFaceExtrudeXray || isRepickXray;
+  // Yeniden seçimde grup kartı açık (üyeler "seçili") kalır ama saydam üyelerde seçim vurgusu/tarama çizilmez.
+  const isPanelRowSelected = isRowSelectedRaw && !isRepickXray;
   const isRaycastOnParent = (S.raycastMode || S.volumePickMode !== null) && parentShapeId && parentShapeId === S.selectedShapeId;
   // Ref modu: referans seçimi ancak EXTRUDE EDİLECEK hedef yüz seçildikten sonra aktifleşir;
   // hedef DIŞINDAKİ her panel raycast alır (derinlik döngüsü).
@@ -197,7 +209,7 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
   const isWireframe = S.viewMode === ViewMode.WIREFRAME;
   const isXray = S.viewMode === ViewMode.XRAY;
   const edgeColor = moveRefHighlight ? (isMoveRefTargetPanel ? '#15803d' : REF_COLORS.selectedCss) : isSelected ? PANEL_COLORS.selected.shapeEdge
-    : isFaceExtrudeXray ? EXTRUDE_XRAY_EDGE : PANEL_COLORS.edge.default;
+    : isGhost ? EXTRUDE_XRAY_EDGE : PANEL_COLORS.edge.default;
   const edgeWidth = moveRefHighlight ? EDGE_LINE_WIDTH + 0.9 : isSelected ? EDGE_LINE_WIDTH + 0.7 : EDGE_LINE_WIDTH;
   const showHatch = isPanelRowSelected && !isWireframe;   // tarama yalnız satır seçiliyken ve dolgu görünen modlarda
 
@@ -245,9 +257,9 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
       {!isWireframe && (
         <mesh ref={meshRef} geometry={shape.geometry} castShadow receiveShadow {...meshEvents}>
           <meshLambertMaterial color={shape.color || '#ffffff'} emissive={emissive} emissiveIntensity={emissiveIntensity} side={THREE.DoubleSide}
-            transparent={isXray || isFaceExtrudeXray || moveRefHighlight}
-            opacity={isXray ? (moveRefHighlight ? (isMoveRefTargetPanel ? 0.5 : 0.6) : XRAY_PANEL_OPACITY) : isFaceExtrudeXray ? XRAY_PANEL_OPACITY : isMoveRefTargetPanel ? 0.55 : isMoveRefHovered ? 0.9 : 1}
-            depthWrite={!isXray && !isFaceExtrudeXray && !isMoveRefTargetPanel}
+            transparent={isXray || isGhost || moveRefHighlight}
+            opacity={isXray ? (moveRefHighlight ? (isMoveRefTargetPanel ? 0.5 : 0.6) : XRAY_PANEL_OPACITY) : isGhost ? XRAY_PANEL_OPACITY : isMoveRefTargetPanel ? 0.55 : isMoveRefHovered ? 0.9 : 1}
+            depthWrite={!isXray && !isGhost && !isMoveRefTargetPanel}
             polygonOffset polygonOffsetFactor={MESH_OFFSET} polygonOffsetUnits={MESH_OFFSET} />
         </mesh>
       )}
@@ -712,7 +724,7 @@ export const FilletEdgeLines: React.FC<{ shape: any }> = ({ shape }) => {
 // çok soluk petrol; sol tık aynı ışındaki adaylar arasında döner — soluk petrol dolgu +
 // İNCE KIRMIZI dış çizgi (SEL_COLORS.volumeEdge); sağ tık (ya da şerit ✓) gruptan oluşturur.
 // Görünmez kutu mesh'i olayları alır — açık yüzlerde de çalışır.
-const PICK_COLORS = { hover: SEL_COLORS.hover, selected: SEL_COLORS.active, selectedEdge: SEL_COLORS.volumeEdge };
+const PICK_COLORS = { hover: SEL_COLORS.hover, selected: SEL_COLORS.active, selectedEdge: SEL_COLORS.volumeEdge, currentEdge: '#78716c' };
 
 /** Bölge dış yüzeyi → mesh geometrisi + siluet kenar noktaları (eş-düzlem dikişler elenir). */
 function surfaceMesh(surface: number[]): { geo: THREE.BufferGeometry; edgePts: [number, number, number][] } {
@@ -831,13 +843,18 @@ export const FacingArrow: React.FC<{ box: { min: Vec3; max: Vec3 }; axis: 0 | 1 
 const boxCenterOf = (b: { min: Vec3; max: Vec3 }): Vec3 => [(b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, (b.min[2] + b.max[2]) / 2];
 
 export const VolumePickOverlay: React.FC<{ shape: any; allShapes: any[] }> = ({ shape, allShapes }) => {
-  const { volumePickMode, volumePickCandidates, volumePickIndex, setVolumePick, setVolumePickMode } =
-    useStoreFields('volumePickMode', 'volumePickCandidates', 'volumePickIndex', 'setVolumePick', 'setVolumePickMode');
+  const { volumePickMode, volumePickGroupId, volumePickCandidates, volumePickIndex, setVolumePick, panelGroups } =
+    useStoreFields('volumePickMode', 'volumePickGroupId', 'volumePickCandidates', 'volumePickIndex', 'setVolumePick', 'panelGroups');
   const [hoverPick, setHoverPick] = useState<CavityPick | null>(null);
   const lastRef = useRef<{ keys: string; index: number } | null>(null);
+  // YENİDEN SEÇİM: taşınan grup — ızgara yalnız gruptan ÖNCEKİ panellerle kurulur (sonrakiler + üyeler engel değil).
+  const repickGroup = useMemo(() => (volumePickGroupId ? panelGroups.find(g => g.id === volumePickGroupId) || null : null), [panelGroups, volumePickGroupId]);
   // Düz paneller kutu engeli; dönmüş/eğik paneller yarım-uzay (PanelGroupService.collectObstacles).
-  const oset = useMemo(() => collectObstacles(shape, allShapes), [allShapes, shape]);
+  const oset = useMemo(() => (repickGroup ? repickObstacles(repickGroup, shape, allShapes) : collectObstacles(shape, allShapes)), [allShapes, shape, repickGroup]);
   const grid = useMemo(() => (volumePickMode ? gridForObstacles(shape, oset) : null), [shape, oset, volumePickMode]);
+  // Grubun ŞU ANKİ hacmi: soluk gri kenar çizgisi — "mevcut yerini yeniden tıklayarak seçebileyim" (Goker).
+  const currentMesh = useMemo(() => (repickGroup ? surfaceMesh(boxesSurface(repickGroup.region || [repickGroup.cavity])) : null), [repickGroup]);
+  useEffect(() => () => { currentMesh?.geo.dispose(); }, [currentMesh]);
   const { worldToLocal } = useShapeMatrices(shape);
   // Görünmez yakalama kutusu: gövde kutusundan bir tık büyük (açık yüzlerde de tıklanır).
   const pickGeo = useMemo(() => {
@@ -871,7 +888,7 @@ export const VolumePickOverlay: React.FC<{ shape: any; allShapes: any[] }> = ({ 
     if (!volumePickMode) return;
     e.stopPropagation();
     if (e.button === 2) {
-      if (selected) { createPanelGroupFromCavity(shape.id, volumePickMode, selected); setVolumePickMode(null); }
+      if (selected) confirmVolumePick(shape.id, volumePickMode, selected);   // yeni grup ya da (yeniden seçimde) grubu taşı; mod kapanır
       return;
     }
     if (e.button !== 0) return;
@@ -892,6 +909,10 @@ export const VolumePickOverlay: React.FC<{ shape: any; allShapes: any[] }> = ({ 
   return (
     <>
       <mesh geometry={pickGeo} visible={false} onPointerMove={onPointerMove} onPointerOut={() => setHoverPick(null)} onPointerDown={onPointerDown} onContextMenu={(e: any) => e.stopPropagation()} />
+      {/* YENİDEN SEÇİM: grubun şu anki hacmi (gri kesik görünümlü ince kenar) — aynı yeri yeniden tıklayınca aday olur */}
+      {currentMesh && currentMesh.edgePts.length >= 2 && (
+        <Line points={currentMesh.edgePts} segments color={PICK_COLORS.currentEdge} lineWidth={1.2} transparent opacity={0.8} depthTest={false} depthWrite={false} renderOrder={4} raycast={() => null} />
+      )}
       {hoverMesh && !hoverIsSelected && (
         <mesh geometry={hoverMesh.geo} raycast={() => null} renderOrder={5}>
           <meshBasicMaterial color={PICK_COLORS.hover} transparent opacity={SEL_COLORS.volumeHoverOpacity} side={THREE.DoubleSide} depthWrite={false} />

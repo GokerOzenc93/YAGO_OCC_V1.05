@@ -236,8 +236,14 @@ export interface AppState {
   deletePanelGroup: (id: string) => void;
   /** Grup seçimi = "tüm panelleri seç" (satır seçimiyle karşılıklı dışlayıcı). */
   selectedPanelGroupId: string | null; setSelectedPanelGroupId: (id: string | null) => void;
-  /** Hacim seçme modu (raf / dikme atma): tıklanan noktadan ışın boyunca serbest hacimler. */
-  volumePickMode: 'shelf' | 'divider' | null; setVolumePickMode: (m: 'shelf' | 'divider' | null) => void;
+  /**
+   * Hacim seçme modu (raf / dikme atma): tıklanan noktadan ışın boyunca serbest hacimler.
+   * groupId verilirse YENİDEN SEÇİM (Goker: "hacmin mevcut yerini bir düğmeyle yeniden seçtir"):
+   * mevcut grup yeni hacme TAŞINIR — hacmi yalnız VF sırasında gruptan ÖNCE gelen paneller
+   * sınırlar; sonrakiler ve grubun kendi üyeleri x-ray çizilir, engel sayılmaz.
+   */
+  volumePickMode: 'shelf' | 'divider' | null; setVolumePickMode: (m: 'shelf' | 'divider' | null, groupId?: string | null) => void;
+  volumePickGroupId: string | null;
   volumePickCandidates: CavityPick[]; volumePickIndex: number;
   setVolumePick: (c: CavityPick[], i: number) => void;
   /** VF'leri verilen VF'nin hemen ARKASINA ekler (grup üyeleri bitişik kalsın). */
@@ -465,7 +471,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     ...(id ? { selectedPanelRow: null } : {}),
   }),
   volumePickMode: null,
-  setVolumePickMode: (m) => set({ volumePickMode: m, volumePickCandidates: [], volumePickIndex: 0, ...(m ? { raycastMode: false } : {}) }),
+  setVolumePickMode: (m, groupId = null) => set({ volumePickMode: m, volumePickGroupId: m ? groupId : null, volumePickCandidates: [], volumePickIndex: 0, ...(m ? { raycastMode: false } : {}) }),
+  volumePickGroupId: null,
   volumePickCandidates: [], volumePickIndex: 0,
   setVolumePick: (c, i) => set({ volumePickCandidates: c, volumePickIndex: i }),
   insertVirtualFacesAfter: (afterId, vfs) => set((s) => {

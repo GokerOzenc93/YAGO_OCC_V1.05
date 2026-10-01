@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ArrowUp, Box, Check, ChevronRight, Columns3, Crosshair, Equal, GripVertical, LayoutPanelTop, Lock, type LucideIcon, Minus, Move,
+  ArrowUp, Box, Check, ChevronRight, Columns3, Crosshair, Equal, GripVertical, LayoutPanelTop, Lock, type LucideIcon, Minus, Move, Move3d,
   MoveVertical, Pencil, Plus, RotateCw, Rows3, SlidersHorizontal, Trash2, Unlock, X,
 } from 'lucide-react';
 import * as THREE from 'three';
@@ -17,8 +17,8 @@ import {
   executePanelMoveFixed, executePanelRotate, findExistingStepForFace, updateExtrudeStep, updateTransformStep,
 } from './PanelOps';
 import {
-  boxSpan, confirmRefCavityExtrude, createPanelGroupFromCavity, deleteCavityStep, deletePanelGroupWithMembers, editGroupGap, equalizeGroupGaps, executeCavityExtrude,
-  groupFacing, groupKindLabel, groupName, memberThicknessesOf, panelStarts, renamePanelGroup, setGroupCount, setGroupMemberThickness, setGroupTargetGap, startCavityEdit, toggleGroupGapLock,
+  boxSpan, confirmRefCavityExtrude, confirmVolumePick, deleteCavityStep, deletePanelGroupWithMembers, editGroupGap, equalizeGroupGaps, executeCavityExtrude,
+  groupFacing, groupKindLabel, groupName, memberThicknessesOf, panelStarts, renamePanelGroup, setGroupCount, setGroupMemberThickness, setGroupTargetGap, startCavityEdit, startGroupRepick, toggleGroupGapLock,
   traceMaskLoops, updateCavityStep,
 } from './PanelGroupService';
 
@@ -976,7 +976,7 @@ export function PanelEditor() {
     panelRotatePivot, setPanelRotatePivot, panelRotateAxis, setPanelRotateAxis, panelRotateValue, setPanelRotateValue,
     panelRotateValueMode, setPanelRotateValueMode, panelRotateRefArmVertex, panelRotateRefFace,
     panelGroups, selectedPanelGroupId, setSelectedPanelGroupId,
-    volumePickMode, setVolumePickMode, volumePickCandidates, volumePickIndex,
+    volumePickMode, setVolumePickMode, volumePickGroupId, volumePickCandidates, volumePickIndex,
   } = useStoreFields('selectedShapeId', 'shapes', 'updateShape',
     'selectedPanelRow', 'setSelectedPanelRow', 'raycastMode', 'setRaycastMode',
     'virtualFaces', 'updateVirtualFace', 'deleteVirtualFace', 'reorderVirtualFaceGroup',
@@ -992,7 +992,7 @@ export function PanelEditor() {
     'panelRotatePivot', 'setPanelRotatePivot', 'panelRotateAxis', 'setPanelRotateAxis', 'panelRotateValue', 'setPanelRotateValue',
     'panelRotateValueMode', 'setPanelRotateValueMode', 'panelRotateRefArmVertex', 'panelRotateRefFace',
     'panelGroups', 'selectedPanelGroupId', 'setSelectedPanelGroupId',
-    'volumePickMode', 'setVolumePickMode', 'volumePickCandidates', 'volumePickIndex');
+    'volumePickMode', 'setVolumePickMode', 'volumePickGroupId', 'volumePickCandidates', 'volumePickIndex');
 
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
@@ -1160,6 +1160,14 @@ export function PanelEditor() {
   const uiLeftPanel = (targetId: string | null) => selectedPanelRow === null || (!!activePanelId && targetId !== activePanelId);
   // HACİM DÜZENLEME: geçerlilik koşulu grup kartının AÇIK olması (tümü seçili ya da bir üye satırı açık).
   const groupCardOpen = (gid: string) => selectedPanelGroupId === gid || virtualFaces.some(f => f.groupId === gid && selectedPanelRow === `vf-${f.id}`);
+  // YENİDEN HACİM SEÇİMİ: grup kartı kapanır / grup silinir / başka gövde seçilirse mod düşer.
+  useEffect(() => {
+    if (!volumePickMode || !volumePickGroupId) return;
+    if (!panelGroups.some(g => g.id === volumePickGroupId && g.shapeId === selectedShapeId) || !groupCardOpen(volumePickGroupId)) {
+      console.log('[YAGO][KOMUT-ÇIKIŞ] yeniden hacim seçimi kapatıldı — grup kartı arayüzde açık değil', 'grup=', volumePickGroupId);
+      setVolumePickMode(null);
+    }
+  }, [volumePickMode, volumePickGroupId, panelGroups, selectedShapeId, selectedPanelGroupId, selectedPanelRow, virtualFaces]);
   useEffect(() => {
     if (faceExtrudeMode && faceExtrudeCavityGroupId) {
       if (!panelGroups.some(g => g.id === faceExtrudeCavityGroupId && g.shapeId === selectedShapeId) || !groupCardOpen(faceExtrudeCavityGroupId)) {
@@ -1227,8 +1235,9 @@ export function PanelEditor() {
   const panelToolbar = (
     <ToolChipBar>
       <ToolChip label="Body Panel" icon={LayoutPanelTop} active={raycastMode} onClick={() => { if (!raycastMode && volumePickMode) setVolumePickMode(null); setRaycastMode(!raycastMode); }} title="Add a panel on a body face" />
-      <ToolChip label="Shelf" icon={Rows3} active={volumePickMode === 'shelf'} onClick={() => setVolumePickMode(volumePickMode === 'shelf' ? null : 'shelf')} title="Add shelves: pick a cavity in the 3D view" />
-      <ToolChip label="Divider" icon={Columns3} active={volumePickMode === 'divider'} onClick={() => setVolumePickMode(volumePickMode === 'divider' ? null : 'divider')} title="Add vertical dividers: pick a cavity in the 3D view" />
+      {/* Yeniden seçim (Relocate) sürerken bu çipler pasif görünür; tıklanınca yeni grup seçimine geçer (groupId düşer). */}
+      <ToolChip label="Shelf" icon={Rows3} active={volumePickMode === 'shelf' && !volumePickGroupId} onClick={() => setVolumePickMode(volumePickMode === 'shelf' && !volumePickGroupId ? null : 'shelf')} title="Add shelves: pick a cavity in the 3D view" />
+      <ToolChip label="Divider" icon={Columns3} active={volumePickMode === 'divider' && !volumePickGroupId} onClick={() => setVolumePickMode(volumePickMode === 'divider' && !volumePickGroupId ? null : 'divider')} title="Add vertical dividers: pick a cavity in the 3D view" />
     </ToolChipBar>
   );
 
@@ -1774,15 +1783,24 @@ export function PanelEditor() {
                 <SmallBtn title="Equal gaps (unlock all)" onClick={() => { void equalizeGroupGaps(g.id); }}><Equal size={11} strokeWidth={2.2} /><span>Equalize</span></SmallBtn>
                 {/* HACİM: grubun hacmine yüz extrude (fixed/dyn/ref) — tüm üyeler yeni hacme göre kısalır/uzar. */}
                 {(() => {
-                  const on = faceExtrudeMode && faceExtrudeCavityGroupId === g.id;
-                  return (
-                    <button type="button" title="Edit the cavity volume: pick a face in the 3D view, then extrude it (fixed / dyn / ref)"
-                      onClick={e => { stop(e); if (on) setFaceExtrudeMode(false); else startCavityEdit(g.id); }}
-                      className={`h-[24px] px-2 flex items-center gap-1 rounded-[7px] text-[11px] font-semibold tracking-[0.01em] transition-[background-color,color,box-shadow] duration-150
+                  const btnCls = (on: boolean) => `h-[24px] px-2 flex items-center gap-1 rounded-[7px] text-[11px] font-semibold tracking-[0.01em] transition-[background-color,color,box-shadow] duration-150
                         ${on ? 'bg-[#44403c] text-white ring-1 ring-[#44403c] shadow-[0_1px_3px_rgba(40,30,20,0.22)]'
-                          : 'bg-white ring-1 ring-[#e6e0d6] text-stone-600 shadow-[0_1px_0_rgba(40,30,20,0.03)] hover:bg-[#faf7f2] hover:ring-[#dcd4c8] hover:text-stone-800'}`}>
-                      <Box size={12} strokeWidth={2} />Volume
-                    </button>
+                          : 'bg-white ring-1 ring-[#e6e0d6] text-stone-600 shadow-[0_1px_0_rgba(40,30,20,0.03)] hover:bg-[#faf7f2] hover:ring-[#dcd4c8] hover:text-stone-800'}`;
+                  const on = faceExtrudeMode && faceExtrudeCavityGroupId === g.id;
+                  // YENİDEN SEÇİM (Goker): grubun hacmini 3B'de yeniden seç — yalnız listede gruptan ÖNCE gelen paneller
+                  // hacmi sınırlar, sonrakiler ve grubun kendi panelleri saydam çizilir; adet/kalınlık/sıra korunur.
+                  const relocating = !!volumePickMode && volumePickGroupId === g.id;
+                  return (
+                    <>
+                      <button type="button" title="Edit the cavity volume: pick a face in the 3D view, then extrude it (fixed / dyn / ref)"
+                        onClick={e => { stop(e); if (on) setFaceExtrudeMode(false); else startCavityEdit(g.id); }} className={btnCls(on)}>
+                        <Box size={12} strokeWidth={2} />Volume
+                      </button>
+                      <button type="button" title="Relocate: pick a new volume for this group in the 3D view. Only panels placed before it in the list bound the volume; later panels and the group's own panels are shown translucent. Count, thicknesses and list order are kept."
+                        onClick={e => { stop(e); if (relocating) setVolumePickMode(null); else startGroupRepick(g.id); }} className={btnCls(relocating)}>
+                        <Move3d size={12} strokeWidth={2} />Relocate
+                      </button>
+                    </>
                   );
                 })()}
               </div>
@@ -1848,20 +1866,21 @@ export function PanelEditor() {
     const ready = !!selectedShape && n > 0;
     // Adaylar: en kapsayıcı (şekilli bölge) → içeri doğru düz kutular; etiket türü söyler.
     const cur = volumePickCandidates[volumePickIndex];
+    // YENİDEN SEÇİM: taşınan grup (kartındaki Relocate) — etiket ve onay buna göre.
+    const relocGroup = volumePickGroupId ? panelGroups.find(g => g.id === volumePickGroupId) : undefined;
     const label = !selectedShape ? 'Select a body first'
-      : n === 0 ? 'Click inside a cavity in the 3D view'
-      : `Volume ${volumePickIndex + 1}/${n} · ${cur?.shape === 'box' ? 'Box' : 'Shaped'} — left-click: next · right-click: confirm`;
+      : n === 0 ? (relocGroup ? 'Click the new volume (or the current one) — only panels before this group in the list bound it' : 'Click inside a cavity in the 3D view')
+      : `Volume ${volumePickIndex + 1}/${n} · ${cur?.shape === 'box' ? 'Box' : 'Shaped'} — left-click: next · right-click: ${relocGroup ? 'relocate' : 'confirm'}`;
     const confirm = () => {
       if (!ready || !selectedShape) return;
-      createPanelGroupFromCavity(selectedShape.id, volumePickMode, volumePickCandidates[volumePickIndex]);
-      setVolumePickMode(null);
+      confirmVolumePick(selectedShape.id, volumePickMode, volumePickCandidates[volumePickIndex]);
     };
     return (
       <div style={{ ...DOCK_SHELL, marginTop: 0, borderRadius: 0, border: 'none', borderBottom: '1px solid #ebe5dc', boxShadow: 'none' }}>
         <div style={DOCK_ROW}>
-          <span style={dockAxisTag('#44403c')}>{volumePickMode === 'shelf' ? 'SHELF' : 'DIVIDER'}</span>
+          <span style={dockAxisTag('#44403c')}>{relocGroup ? `RELOCATE · ${groupName(relocGroup).toUpperCase()}` : volumePickMode === 'shelf' ? 'SHELF' : 'DIVIDER'}</span>
           <DockStatus ready={ready} text={label} />
-          <ApplyBtn enabled={ready} onClick={confirm} title="Confirm volume" />
+          <ApplyBtn enabled={ready} onClick={confirm} title={relocGroup ? 'Relocate group to this volume' : 'Confirm volume'} />
           <ExitBtn onClick={() => setVolumePickMode(null)} />
         </div>
       </div>

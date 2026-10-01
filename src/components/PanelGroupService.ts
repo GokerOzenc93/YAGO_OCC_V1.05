@@ -1184,25 +1184,52 @@ const groupVfIndex = (group: PanelGroup, vfIdx: Map<string, number>): number => 
  * (PanelEngine.stamps). Goker: "6. sırada dikme, 7. sırada dikmeye değen gövde
  * paneli → dikme ve raf kısalmamalı, gövde paneli aralarında kalmalı".
  */
-function groupObstacles(group: PanelGroup, parent: Shape, panels: Shape[], groups: PanelGroup[]): ObstacleSet {
+/**
+ * Grubun hacmini SINIRLAYAN panel yüklemi (groupObstacles + yeniden seçim overlay'i
+ * + x-ray çizimi aynı kuralı buradan okur): VF sırasında üyelerden ÖNCE gelen gövde
+ * paneli → sınırlar; SONRA gelen → sınırlamaz (grup basar); grubun kendi üyeleri →
+ * hayır; başka grubun üyesi → yalnız o grup daha önce oluşturulmuşsa.
+ * VF'siz (eski) panel güvenli tarafta sınırlar.
+ */
+export function groupBoundsPanelPredicate(group: PanelGroup, groups: PanelGroup[], vfs: VirtualFace[] = useAppStore.getState().virtualFaces): (p: Shape) => boolean {
   const byId = new Map(groups.map(g => [g.id, g] as const));
-  const vfIdx = new Map(useAppStore.getState().virtualFaces.map((f, i) => [f.id, i] as const));
+  const vfIdx = new Map(vfs.map((f, i) => [f.id, i] as const));
   const myIdx = groupVfIndex(group, vfIdx);
-  const pressed: string[] = [];
-  const oset = collectObstacles(parent, panels, p => {
+  return (p: Shape) => {
     const gid = (p.parameters as any)?.panelGroupId as string | undefined;
     if (!gid) {
       const pi = vfIdx.get((p.parameters as any)?.virtualFaceId);
-      const bounds = pi == null || pi < myIdx;   // VF'siz (eski) panel: güvenli taraf, sınırlar
-      if (!bounds) pressed.push(`${p.id}(sıra ${pi})`);
-      return bounds;
+      return pi == null || pi < myIdx;
     }
     if (gid === group.id) return false;
     const g = byId.get(gid);
     return !!g && g.createdAt < group.createdAt;
+  };
+}
+
+function groupObstacles(group: PanelGroup, parent: Shape, panels: Shape[], groups: PanelGroup[]): ObstacleSet {
+  const vfs = useAppStore.getState().virtualFaces;
+  const vfIdx = new Map(vfs.map((f, i) => [f.id, i] as const));
+  const myIdx = groupVfIndex(group, vfIdx);
+  const bounds = groupBoundsPanelPredicate(group, groups, vfs);
+  const pressed: string[] = [];
+  const oset = collectObstacles(parent, panels, p => {
+    const ok = bounds(p);
+    if (!ok && !(p.parameters as any)?.panelGroupId) pressed.push(`${p.id}(sıra ${vfIdx.get((p.parameters as any)?.virtualFaceId)})`);
+    return ok;
   });
   if (pressed.length) console.log('[YAGO][GRUP-SIRA]', group.id, 'sıra=', myIdx, '→ SONRAKİ gövde panelleri hacmi sınırlamaz (grup basar):', pressed.join(', '));
   return oset;
+}
+
+/**
+ * YENİDEN SEÇİM engelleri (Goker: "sıralamadan önceki panellerin durumuna göre tıklatman
+ * gerek; mevcut sırasından sonraki panelleri seçmek mantıksız"): hacim seçme ızgarası
+ * grubun çözümüyle AYNI kümeyle kurulur — gruptan önceki paneller sınırlar, sonrakiler ve
+ * grubun kendi üyeleri yok sayılır. Böylece grubun şu anki yeri de bir aday olur.
+ */
+export function repickObstacles(group: PanelGroup, parent: Shape, panels: Shape[]): ObstacleSet {
+  return groupObstacles(group, parent, panels, useAppStore.getState().panelGroups);
 }
 export const gridForObstacles = (parent: Shape, o: ObstacleSet, extraPlanes: StepPlane[] = []) => buildCavityGrid(parent, o.obstacles, o.splitBoxes, o.tiltFaces, extraPlanes);
 
@@ -1417,6 +1444,75 @@ export function createPanelGroupFromCavity(shapeId: string, kind: PanelGroup['ki
   console.log('[YAGO][GRUP] oluşturuldu', group.id, kind, pick.shape === 'box' ? 'DÜZ (kutu)' : 'ŞEKİLLİ', 'hacim=', fmtBox(pick.bbox), 'parçaN=', pick.boxes.length, 'L=', L.toFixed(1),
     'çıpa=', group.anchorFrac.map(n => n.toFixed(2)).join(','), 'ok=', `${'XYZ'[arrow.axis]}${arrow.facing > 0 ? '+' : '−'}`, 'dizilim=', 'XYZ'[axis], '(sayım', facing > 0 ? 'MİN' : 'MAX', 'tarafından)');
   return group;
+}
+
+// ── YENİDEN HACİM SEÇİMİ (grubu taşı) ───────────────────────────────────────
+// Goker (Eki 2026): "hacim seçiminden sonra bir düğmeyle yeniden hacim seçimi yaptır;
+// mevcut yerini yeniden tıklayarak da seçebileyim; sıralamadan ÖNCEKİ panellerin
+// durumuna göre tıklatman gerek, sonrakileri seçmek mantıksız." Akış: grup kartındaki
+// Relocate → hacim seçme modu (grup kimliğiyle) → ızgara yalnız gruptan önceki
+// panellerle kurulur (repickObstacles), sonrakiler + üyeler x-ray → sağ tık / ✓ →
+// grup yeni hacme TAŞINIR: adet, üye kalınlıkları, ad ve VF SIRASI korunur; eksen/yön/ok
+// yeni adaydan; boşluklar aynı eksende kilit kuralıyla ölçeklenir, eksen değişince eşitlenir;
+// hacim adımları (Volume steps) eski hacme ait olduğu için düşer.
+
+/** Grup kartından: yeniden seçim modunu açar (diğer komut modları kapanır, grup kartı açık kalır). */
+export function startGroupRepick(groupId: string): void {
+  const st = useAppStore.getState();
+  const group = groupById(groupId);
+  if (!group) return;
+  if (st.faceExtrudeMode) { st.setFaceExtrudeSelectedFace(null); st.setFaceExtrudeRefCandidate(null); st.setFaceExtrudeMode(false); }
+  if (st.panelMoveMode) st.setPanelMoveMode(false);
+  if (st.panelRotateMode) st.setPanelRotateMode(false);
+  if (st.selectedShapeId !== group.shapeId) st.selectShape(group.shapeId);
+  st.setSelectedPanelGroupId(groupId);
+  st.setVolumePickMode(group.kind, groupId);
+  const vfIdx = new Map(st.virtualFaces.map((f, i) => [f.id, i] as const));
+  console.log('[YAGO][HACİM-TAŞI] yeniden seçim modu açıldı', groupId, group.kind, 'sıra=', groupVfIndex(group, vfIdx), 'hacim=', fmtBox(group.cavity));
+}
+
+/** Onaylanan adayla grubu taşır; üye VF'ler yeni çözümle yazılır, tam rebuild. */
+export async function relocatePanelGroup(groupId: string, pick: CavityPick): Promise<boolean> {
+  const st = useAppStore.getState();
+  const group = groupById(groupId);
+  const parent = group ? shapeById(group.shapeId, st.shapes) : null;
+  const body = parent ? bodyLocalBox(parent) : null;
+  if (!group || !parent || !body) return false;
+  const axisOk = group.kind === 'shelf' ? pick.axis === 1 : (pick.axis === 0 || pick.axis === 2);
+  const axis: 0 | 1 | 2 = axisOk ? pick.axis : group.axis;
+  const facing: 1 | -1 = axisOk ? pick.facing : groupFacing(group);
+  const arrow = pick.arrow ? { ...pick.arrow } : { axis, facing };
+  const ts = memberThicknessesOf(group);
+  const L = boxSpan(pick.bbox, axis);
+  const gaps = axis === group.axis ? rescaleGaps(group.gaps, L, group.count, ts) : equalGaps(L, group.count, ts);
+  const droppedSteps = group.cavitySteps?.length ?? 0;
+  const patch: Partial<PanelGroup> = {
+    axis, facing, arrow, anchorFrac: fracInCavity(body, pick.seed, true), cavity: cloneBox(pick.bbox), region: pick.boxes.map(cloneBox), gaps, cavitySteps: undefined,
+    boxMode: pick.shape === 'box', boxFrac: pick.shape === 'box' ? { min: fracInCavity(body, pick.bbox.min), max: fracInCavity(body, pick.bbox.max) } : undefined,
+  };
+  const next: PanelGroup = { ...group, ...patch };
+  const sol = solveFromStore(next) || fallbackSolution(next, gaps, group.count, pick.seed);
+  for (const vfId of group.memberVfIds) {
+    const vf = st.virtualFaces.find(f => f.id === vfId);
+    if (!vf) continue;
+    const p = interiorVfPatch(vf, next, sol);
+    if (p) st.updateVirtualFace(vf.id, p);
+  }
+  st.updatePanelGroup(groupId, { ...patch, gaps: sol.gaps });
+  console.log('[YAGO][HACİM-TAŞI] grup taşındı', groupId, group.kind, fmtBox(group.cavity), '→', fmtBox(sol.cavity), pick.shape === 'box' ? 'DÜZ (kutu)' : 'ŞEKİLLİ',
+    'eksen', 'XYZ'[group.axis], '→', 'XYZ'[axis], axis === group.axis ? '(boşluklar ölçeklendi, kilitliler korundu)' : '(eksen değişti, boşluklar eşitlendi)',
+    'ok=', `${'XYZ'[arrow.axis]}${arrow.facing > 0 ? '+' : '−'}`, 'n=', group.count, droppedSteps ? `hacim adımı düştü=${droppedSteps}` : '');
+  await requestRebuild(group.shapeId);
+  return true;
+}
+
+/** Hacim seçimi onayı (sağ tık / ✓): yeniden seçimse grubu taşır, değilse yeni grup; mod kapanır. */
+export function confirmVolumePick(shapeId: string, kind: PanelGroup['kind'], pick: CavityPick): void {
+  const st = useAppStore.getState();
+  const gid = st.volumePickGroupId;
+  if (gid) void relocatePanelGroup(gid, pick);
+  else createPanelGroupFromCavity(shapeId, kind, pick);
+  st.setVolumePickMode(null);
 }
 
 // ── HEDEF ARALIK → ADET ──────────────────────────────────────────────────────
