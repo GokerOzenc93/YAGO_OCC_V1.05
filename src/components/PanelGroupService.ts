@@ -1419,13 +1419,53 @@ export function createPanelGroupFromCavity(shapeId: string, kind: PanelGroup['ki
   return group;
 }
 
-/** Üye sayısı: artınca yeni VF'ler son üyenin arkasına eklenir, azalınca son üyeler (panel+VF) silinir. Boşluklar eşitlenir. */
-export async function setGroupCount(groupId: string, count: number): Promise<void> {
+// ── HEDEF ARALIK → ADET ──────────────────────────────────────────────────────
+// Goker: "raf ve dikmeye aralık da verebileyim; yaklaşık olarak o aralığı tutturacak
+// şekilde raf miktarını azaltıp çoğaltsın her zaman". Adet, eşit boşluk hedefe en
+// yakın olacak şekilde seçilir (üye kalınlıkları dahil); her rebuild sonrası
+// (syncPanelGroups) yeniden türetilir — gövde büyüyünce üye eklenir, küçülünce silinir.
+export const MAX_GROUP_COUNT = 40;
+
+/** Açıklık L'de eşit boşluğu `target`a en yakın yapan adet (1..MAX). Eşitlikte az üye tercih edilir. */
+export function countForTargetGap(group: Pick<PanelGroup, 'count' | 'thickness' | 'memberThicknesses'>, L: number, target: number): number {
+  let best = 1, bestErr = Infinity;
+  for (let n = 1; n <= MAX_GROUP_COUNT; n++) {
+    const ts = memberThicknessesOf(group, n);
+    const gap = (L - sumT(ts)) / (n + 1);
+    if (gap < MIN_GAP && n > 1) break;              // daha fazla üye sığmaz
+    const err = Math.abs(gap - target);
+    if (err < bestErr - 1e-9) { best = n; bestErr = err; }
+  }
+  return best;
+}
+
+/**
+ * Hedef aralığı yazar (null/0 = kapat). Açıkken adet hemen türetilir ve boşluklar
+ * eşitlenir; kapatınca mevcut adet/boşluklar olduğu gibi kalır (yalnız otomatik güncelleme durur).
+ */
+export async function setGroupTargetGap(groupId: string, target: number | null): Promise<void> {
+  const group = groupById(groupId);
+  if (!group) return;
+  const v = target != null && Number.isFinite(target) && target > 0 ? r1(target) : undefined;
+  useAppStore.getState().updatePanelGroup(groupId, { targetGap: v });
+  if (v == null) { console.log('[YAGO][GRUP-ARALIK] kapatıldı', groupId, 'adet=', group.count); return; }
+  const n = countForTargetGap(group, boxSpan(group.cavity, group.axis), v);
+  console.log('[YAGO][GRUP-ARALIK] hedef=', v, groupId, 'L=', boxSpan(group.cavity, group.axis).toFixed(1), 'adet', group.count, '→', n);
+  if (n !== group.count) await setGroupCount(groupId, n, { keepTargetGap: true });   // üye ekleme/silme rebuild'i App izleyicisi tetikler
+  else await equalizeGroupGaps(groupId, { keepTargetGap: true });
+}
+
+/**
+ * Üye sayısı: artınca yeni VF'ler son üyenin arkasına eklenir, azalınca son üyeler (panel+VF) silinir. Boşluklar eşitlenir.
+ * Elle adet girişi hedef aralığı KAPATIR (kullanıcı devraldı); otomatik çağrılar keepTargetGap ile korur.
+ */
+export async function setGroupCount(groupId: string, count: number, opts: { keepTargetGap?: boolean } = {}): Promise<void> {
   const st = useAppStore.getState();
   const group = groupById(groupId);
   if (!group) return;
   // ADET EN AZ 1 (Goker: "raf yerleştikten sonra miktarı sıfır yapılabiliyor" — grup üyesiz kalmasın).
-  const n = Math.max(1, Math.min(40, Math.round(count)));
+  const n = Math.max(1, Math.min(MAX_GROUP_COUNT, Math.round(count)));
+  if (!opts.keepTargetGap && group.targetGap != null) st.updatePanelGroup(groupId, { targetGap: undefined });
   if (n === group.count) return;
   // Üye kalınlıkları: mevcutlar korunur, yeni üyeler varsayılanla doğar; boşluklar Σkalınlığa göre eşitlenir.
   const memberThicknesses = memberThicknessesOf(group, n);
@@ -1487,12 +1527,12 @@ export async function setGroupMemberThickness(groupId: string, i: number, value:
   await requestRebuild(group.shapeId);
 }
 
-/** Boşluk girişi (şema pill'i): kural applyGapEdit; VF'ler güncellenir, tam rebuild. */
+/** Boşluk girişi (şema pill'i): kural applyGapEdit; VF'ler güncellenir, tam rebuild. Elle boşluk girişi hedef aralığı kapatır. */
 export async function editGroupGap(groupId: string, k: number, value: number): Promise<void> {
   const group = groupById(groupId);
   if (!group || !Number.isFinite(value)) return;
   const gaps = applyGapEdit(group.gaps, k, value, boxSpan(group.cavity, group.axis), group.count, memberThicknessesOf(group));
-  writeGroupGaps(group, gaps);
+  writeGroupGaps(group, gaps, group.targetGap != null ? { targetGap: undefined } : {});
   console.log('[YAGO][GRUP-BOŞLUK] girildi', groupId, 'k=', k, 'değer=', value, '→', gaps.map(g => `${g.value}${g.locked ? '🔒' : g.edited ? '*' : ''}`).join('/'));
   await requestRebuild(group.shapeId);
 }
@@ -1595,8 +1635,8 @@ export function toggleGroupGapLock(groupId: string, k: number): void {
   console.log('[YAGO][GRUP-BOŞLUK]', gaps[k].locked ? 'KİLİTLENDİ' : 'kilit açıldı', groupId, 'k=', k, 'değer=', gaps[k].value);
 }
 
-/** Tüm boşluklar eşit + kilitsiz. */
-export async function equalizeGroupGaps(groupId: string): Promise<void> {
+/** Tüm boşluklar eşit + kilitsiz. (Hedef aralık korunur: eşit boşluk zaten o modun kuralı.) */
+export async function equalizeGroupGaps(groupId: string, _opts: { keepTargetGap?: boolean } = {}): Promise<void> {
   const group = groupById(groupId);
   if (!group) return;
   writeGroupGaps(group, equalGaps(boxSpan(group.cavity, group.axis), group.count, memberThicknessesOf(group)));
@@ -1650,8 +1690,19 @@ export function syncPanelGroups(parentShapeId: string): void {
     const rv = sol.cavityResolved || [];
     const stepsPatch = rv.length && g.cavitySteps ? g.cavitySteps.map(cs => { const r = rv.find(x => x.id === cs.id); return r && Math.abs((cs.resolvedValue ?? NaN) - r.value) > 0.05 ? { ...cs, resolvedValue: r.value } : cs; }) : null;
     const stepsChanged = !!stepsPatch && stepsPatch.some((cs, i) => cs !== g.cavitySteps![i]);
-    if (sameBox && sameRegion && sameGaps && !stepsChanged) continue;
-    st.updatePanelGroup(g.id, { cavity: sol.cavity, region: sol.region, gaps: sol.gaps, ...(stepsChanged ? { cavitySteps: stepsPatch! } : {}) });
-    console.log('[YAGO][GRUP-SENKRON]', g.id, 'hacim=', fmtBox(sol.cavity), 'parçaN=', sol.region.length, 'boşluklar=', sol.gaps.map(x => x.value).join('/'));
+    if (!(sameBox && sameRegion && sameGaps && !stepsChanged)) {
+      st.updatePanelGroup(g.id, { cavity: sol.cavity, region: sol.region, gaps: sol.gaps, ...(stepsChanged ? { cavitySteps: stepsPatch! } : {}) });
+      console.log('[YAGO][GRUP-SENKRON]', g.id, 'hacim=', fmtBox(sol.cavity), 'parçaN=', sol.region.length, 'boşluklar=', sol.gaps.map(x => x.value).join('/'));
+    }
+    // HEDEF ARALIK: açıklık değiştiyse adet yeniden türetilir; fark varsa üye eklenir/silinir
+    // (App izleyicisi yeni rebuild tetikler; o rebuild aynı n'i verir → döngü durur).
+    if (g.targetGap != null && g.targetGap > 0) {
+      const L = boxSpan(sol.cavity, g.axis);
+      const n = countForTargetGap(g, L, g.targetGap);
+      if (n !== g.count) {
+        console.log('[YAGO][GRUP-ARALIK] hacim değişti: L=', L.toFixed(1), 'hedef=', g.targetGap, 'adet', g.count, '→', n, g.id);
+        void setGroupCount(g.id, n, { keepTargetGap: true });
+      }
+    }
   }
 }

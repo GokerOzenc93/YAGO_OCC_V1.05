@@ -66,9 +66,10 @@ const FaceOutline: React.FC<{ geometry: THREE.BufferGeometry; color: string; wid
   if (pts.length < 2) return null;
   return <Line points={pts} segments color={color} lineWidth={width} transparent={false} depthTest={false} depthWrite={false} renderOrder={13} raycast={() => null} />;
 };
-/** Yüz-extrude sırasında hedef DIŞI paneller: X-ray görünümüyle aynı opaklık + yumuşatılmış kenar (çizgi karmaşası azalır). */
+/** Yüz-extrude sırasında hedef DIŞI paneller: X-ray görünümüyle aynı opaklık; kenarlar normal panel grisinde
+ *  (Goker: açık gri "çok belirsiz" kaldı) ama 1 px'de ve derinlik testli — arkadakiler öndekini delmez, karmaşa azalır. */
 const XRAY_PANEL_OPACITY = 0.35;
-const EXTRUDE_XRAY_EDGE = '#a3a9b0';
+const EXTRUDE_XRAY_EDGE = '#6b7280';
 
 // SEÇİM TARAMASI (HATCH): 45° çapraz çizgiler, EKRAN UZAYINDA sabit aralıklı (gl_FragCoord);
 // panel ölçeğinden bağımsız gerçek CAD taraması. Çizgiler arası boşluk şeffaf (discard).

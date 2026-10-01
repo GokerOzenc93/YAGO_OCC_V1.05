@@ -18,7 +18,7 @@ import {
 } from './PanelOps';
 import {
   boxSpan, confirmRefCavityExtrude, createPanelGroupFromCavity, deleteCavityStep, deletePanelGroupWithMembers, editGroupGap, equalizeGroupGaps, executeCavityExtrude,
-  groupFacing, groupKindLabel, groupName, memberThicknessesOf, panelStarts, renamePanelGroup, setGroupCount, setGroupMemberThickness, startCavityEdit, toggleGroupGapLock,
+  groupFacing, groupKindLabel, groupName, memberThicknessesOf, panelStarts, renamePanelGroup, setGroupCount, setGroupMemberThickness, setGroupTargetGap, startCavityEdit, toggleGroupGapLock,
   traceMaskLoops, updateCavityStep,
 } from './PanelGroupService';
 
@@ -1000,6 +1000,8 @@ export function PanelEditor() {
   const [armedRowKey, setArmedRowKey] = useState<string | null>(null);
   // Raf/dikme grup kartı: adet girişi taslağı (Enter/blur ile uygulanır).
   const [countDraft, setCountDraft] = useState<{ id: string; v: string } | null>(null);
+  // HEDEF ARALIK taslağı (grup kartı "Spacing" girişi): boş = kapalı.
+  const [gapDraft, setGapDraft] = useState<{ id: string; v: string } | null>(null);
   // ODAK MODU (Goker): bir satır açıkken listede yalnız o satır + hemen üstündeki
   // ve altındaki satır kalır. Kapanınca gizlenen satırlar, odak satırından
   // uzaklığına göre gecikmeli, çapraz kayarak "yerleşir" (yagoSettle).
@@ -1715,6 +1717,16 @@ export function PanelEditor() {
       const dimsWHD = [0, 1, 2].map(a => round1(boxSpan(g.cavity, a)));
       const countVal = countDraft?.id === g.id ? countDraft.v : String(g.count);
       const applyCount = (n: number) => { setCountDraft(null); if (!isNaN(n) && n >= 1 && n !== g.count) void setGroupCount(g.id, n); };
+      // HEDEF ARALIK (Goker): değer girilince adet hacimden türetilir ve gövde boyutlandıkça kendini günceller; boş = kapalı.
+      const autoGap = g.targetGap != null && g.targetGap > 0;
+      const gapVal = gapDraft?.id === g.id ? gapDraft.v : (autoGap ? String(g.targetGap) : '');
+      const applyGap = (raw: string) => {
+        setGapDraft(null);
+        const v = parseFloat(raw.replace(',', '.'));
+        const next = Number.isFinite(v) && v > 0 ? round1(v) : null;
+        if (next === (autoGap ? g.targetGap : null)) return;
+        void setGroupTargetGap(g.id, next);
+      };
       const toggleAll = (e: React.MouseEvent) => { stop(e); setSelectedPanelGroupId(selAll ? null : g.id); };
       const mKeys = members.map(m => m.id);
       const mFocus = focusKeys.member ? mKeys.indexOf(focusKeys.member) : -1;
@@ -1750,6 +1762,14 @@ export function PanelEditor() {
                   onKeyDown={e => { if (e.key === 'Enter') applyCount(parseInt(countVal, 10)); if (e.key === 'Escape') setCountDraft(null); }}
                   onClick={stop} style={{ ...DOCK_INPUT, flex: 'none', width: 44, height: 24 }} />
                 <SmallBtn title="More" onClick={() => applyCount(g.count + 1)}><Plus size={11} strokeWidth={2.2} /></SmallBtn>
+                {/* HEDEF ARALIK: eşit boşluk ≈ bu değer olacak şekilde adet otomatik; elle adet/boşluk girişi kapatır. */}
+                <span style={{ ...SECTION_LABEL, marginLeft: 6 }}>Spacing</span>
+                <input type="text" inputMode="decimal" value={gapVal} placeholder="auto"
+                  title={autoGap ? `Target gap ${g.targetGap} mm — count follows the cavity size. Clear to stop.` : 'Target gap (mm): count is derived to match it and follows the cavity size'}
+                  onChange={e => setGapDraft({ id: g.id, v: e.target.value })}
+                  onBlur={() => applyGap(gapVal)}
+                  onKeyDown={e => { if (e.key === 'Enter') applyGap(gapVal); if (e.key === 'Escape') setGapDraft(null); }}
+                  onClick={stop} style={{ ...DOCK_INPUT, flex: 'none', width: 52, height: 24, ...(autoGap ? { boxShadow: 'inset 0 0 0 1px #ea580c', color: '#9a3412' } : {}) }} />
                 <span className="flex-1" />
                 <SmallBtn title="Equal gaps (unlock all)" onClick={() => { void equalizeGroupGaps(g.id); }}><Equal size={11} strokeWidth={2.2} /><span>Equalize</span></SmallBtn>
                 {/* HACİM: grubun hacmine yüz extrude (fixed/dyn/ref) — tüm üyeler yeni hacme göre kısalır/uzar. */}

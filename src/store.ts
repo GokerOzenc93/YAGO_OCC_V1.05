@@ -136,6 +136,13 @@ export interface PanelGroup {
   boxFrac?: CavityBox;
   count: number;
   gaps: GapSpec[];
+  /**
+   * HEDEF ARALIK (Goker: "raf ve dikmeye aralık da verebileyim; yaklaşık o aralığı tutturacak
+   * şekilde raf miktarını azaltıp çoğaltsın her zaman"): verildiğinde (>0) ADET her çözümde
+   * hacmin dizilim açıklığından türetilir — eşit boşluklar hedefe en yakın olacak n seçilir;
+   * gövde büyüyüp küçülünce üye eklenir/silinir. Adet ya da boşluk elle girilince kalkar.
+   */
+  targetGap?: number;
   /** Varsayılan üye kalınlığı (yeni üyeler bununla doğar). */
   thickness: number;
   /** Üye başına kalınlık (şemadaki kutucuk); eksik/kısa ise `thickness`. Boşluklar bu değerlere göre dağıtılır. */
