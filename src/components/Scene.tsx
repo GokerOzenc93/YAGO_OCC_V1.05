@@ -921,6 +921,21 @@ const CameraController: React.FC<{ controlsRef: React.RefObject<any>; cameraType
     return () => clearInterval(id);
   }, [controlsRef]);
 
+  /* DİNAMİK NEAR (Goker: "iki panelin tam değdiği yerde, kamera uzaklaştıkça arkadaki panellerin
+     kalınlık çizgileri öndeki panelin üstünde görünüyor"). KÖK NEDEN: perspektif near=1 sabitken
+     derinlik tamponu çözünürlüğü uzaklığın KARESİYLE kötüleşir (Δz ≈ d²/(near·2²⁴)); kenar/mesh
+     polygonOffset birimleri bu çözünürlükle ölçeklendiğinden ~10 m'de ofset panel kalınlığını
+     (18 mm) aşar ve değen panelin kenarı öndeki yüzü delip görünür. ÇÖZÜM: near'ı hedef
+     uzaklığıyla orantılı tut (uzaklık/100, alt sınır 1) — hassasiyet uzaklıktan bağımsızlaşır.
+     Başsız WebGL testinde (yan panel + raflar, 12–20 m) sızıntı tamamen kayboldu; yakında fark yok.
+     Ortografik kamera doğrusal derinlik kullanır, etkilenmez. */
+  useFrame(() => {
+    const cam = cameraRef.current, controls = controlsRef.current;
+    if (!(cam instanceof THREE.PerspectiveCamera) || !controls) return;
+    const near = Math.max(1, cam.position.distanceTo(controls.target) / 100);
+    if (Math.abs(near - cam.near) / cam.near > 0.05) { cam.near = near; cam.updateProjectionMatrix(); }
+  });
+
   /* Mount props recomputed ONLY when the camera type changes (a real
      remount). Otherwise the same stable refs are returned so R3F never
      re-applies them mid-interaction and OrbitControls owns the camera.

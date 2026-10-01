@@ -85,9 +85,16 @@ const HATCH_FRAG = /* glsl */`
     gl_FragColor = vec4(uColor, uOpacity * line);
   }`;
 
-// Z-FIGHTING: mesh hafif pozitif polygonOffset (kendi edge'inin altına), edge negatif offset.
+// Z-FIGHTING: mesh hafif pozitif polygonOffset (kendi edge'inin altına); edge ve tarama yalnız
+// küçük SABİT birim payı alır, EĞİM (factor) payı ALMAZ. Goker: "iki panelin değdiği yerde kamera
+// uzaklaştıkça arkadaki panellerin kalınlıkları öndeki panelin üstünde görünüyor". KÖK NEDEN: eğim
+// payı ekranda 1 pikselin derinlik değişimiyle ölçeklenir — uzaklaştıkça piksel başına düşen dünya
+// boyu büyür; tarama (-2) + kenar (-1) + mesh (+1) eğim payları toplamı 18 mm'yi aşınca değen
+// panelin TARAMASI (kesik çizgi görünümü) ve kenarları öndeki yüzü delip görünüyordu. Mesh'in +1
+// payı kendi kenarını/taramasını üstte tutmaya yeter. Başsız WebGL testi: 4–25 m'de sızıntı 0,
+// yakında kenar görünürlüğü değişmedi.
 // Kenarlar drei <Line> (Line2) ile: antialias'lı, gerçek piksel genişliğinde, OPAK.
-const MESH_OFFSET = 1.0, EDGE_OFFSET_FACTOR = -1.0, EDGE_OFFSET_UNITS = -2.0, EDGE_RENDER_ORDER = 1;
+const MESH_OFFSET = 1.0, EDGE_OFFSET_FACTOR = 0, EDGE_OFFSET_UNITS = -1.0, EDGE_RENDER_ORDER = 1;
 export const EDGE_LINE_WIDTH = 1.0;
 export const EDGE_ANGLE_THRESHOLD = 15;
 
@@ -152,7 +159,7 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
   const hatchMaterial = useMemo(() => new THREE.ShaderMaterial({
     uniforms: { uColor: { value: new THREE.Color(PANEL_COLORS.selected.hatch) }, uSpacing: { value: 7.0 }, uThickness: { value: 2.0 }, uOpacity: { value: 0.35 }, uPixelRatio: { value: 1.0 } },
     vertexShader: HATCH_VERT, fragmentShader: HATCH_FRAG, transparent: true, depthTest: true, depthWrite: false, side: THREE.DoubleSide,
-    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+    polygonOffset: true, polygonOffsetFactor: 0, polygonOffsetUnits: -1,   // eğim payı yok (bkz. Z-FIGHTING notu)
   }), []);
   useEffect(() => { hatchMaterial.uniforms.uPixelRatio.value = gl.getPixelRatio(); }, [gl, hatchMaterial]);
 
