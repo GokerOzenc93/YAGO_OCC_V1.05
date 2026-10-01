@@ -33,6 +33,43 @@ const PANEL_COLORS = {
   arrow: { fill: '#ff0000', outline: '#7f1d1d' },
 } as const;
 
+/**
+ * SEÇİM PALETİ — TEK KAYNAK (Goker: "tüm seçim, extrude, hacim seçimi, fillet dahil tutarlı;
+ * minimal, soft, profesyonel"; mercan beğenilmedi → "daha profesyonel, daha güzel bir dokunuş").
+ * Tek ton ailesi: PETROL MAVİSİ (bone/ivory zeminde sakin, turuncu panel aksanıyla tamamlayıcı
+ * kontrast; CAD seçim konvansiyonuna yakın). Roller:
+ *   hover  = fare altındaki aday (açık petrol, düşük opaklık)
+ *   active = seçili yüz/hacim (orta petrol)
+ *   edge   = seçili hacmin dış çizgisi (ince, koyu petrol)
+ *   muted  = "dolu" durum (ör. panel yerleştirmede zaten paneli olan yüz) — nötr taş grisi
+ *   extrude* = YALNIZ PANEL YÜZ-EXTRUDE (Goker: "seçim çok belli olmuyor, daha koyu"):
+ *              koyu petrol dolgu + seçili yüzün sınırında çizgi.
+ * Hacimler büyük alan kapladığından yüz opaklığından daha düşük opaklıkla doldurulur.
+ * REF_COLORS (referans = soft sarı) ve taşıma-ref yeşili AYRI rol olarak korunur.
+ */
+const SEL_COLORS = {
+  hover: 0xa9c6d8, active: 0x3a7ca5, muted: 0xb8b2aa, edge: '#24577a',
+  faceHoverOpacity: 0.4, faceActiveOpacity: 0.5,
+  volumeHoverOpacity: 0.12, volumeActiveOpacity: 0.16,
+  edgeWidth: 1.3,
+  // HACİM SINIRI (Goker: "mavi ton çok güzel ama sınırları kırmızı olsun — nereyi seçtiğini daha iyi gösterir"):
+  // petrol dolgu + ince KIRMIZI dış çizgi (yön okuyla aynı kırmızı). Hacim seçimi ve hacim düzenlemede.
+  volumeEdge: '#dc2626',
+  extrudeHover: 0x3a7ca5, extrudeHoverOpacity: 0.4,
+  extrudeActive: 0x1f5578, extrudeActiveOpacity: 0.72,
+  extrudeEdge: '#0f3550', extrudeEdgeWidth: 2.2,
+} as const;
+
+/** Seçili yüzün SINIR çizgisi (yüz-extrude): vurgu geometrisinin dış kenarları (eş-düzlem iç dikişler elenir), her şeyin üstünde. */
+const FaceOutline: React.FC<{ geometry: THREE.BufferGeometry; color: string; width: number }> = ({ geometry, color, width }) => {
+  const pts = useMemo(() => edgePointsOf(geometry, 1), [geometry]);
+  if (pts.length < 2) return null;
+  return <Line points={pts} segments color={color} lineWidth={width} transparent={false} depthTest={false} depthWrite={false} renderOrder={13} raycast={() => null} />;
+};
+/** Yüz-extrude sırasında hedef DIŞI paneller: X-ray görünümüyle aynı opaklık + yumuşatılmış kenar (çizgi karmaşası azalır). */
+const XRAY_PANEL_OPACITY = 0.35;
+const EXTRUDE_XRAY_EDGE = '#a3a9b0';
+
 // SEÇİM TARAMASI (HATCH): 45° çapraz çizgiler, EKRAN UZAYINDA sabit aralıklı (gl_FragCoord);
 // panel ölçeğinden bağımsız gerçek CAD taraması. Çizgiler arası boşluk şeffaf (discard).
 const HATCH_VERT = /* glsl */`void main() { gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`;
@@ -151,7 +188,8 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
 
   const isWireframe = S.viewMode === ViewMode.WIREFRAME;
   const isXray = S.viewMode === ViewMode.XRAY;
-  const edgeColor = moveRefHighlight ? (isMoveRefTargetPanel ? '#15803d' : REF_COLORS.selectedCss) : isSelected ? PANEL_COLORS.selected.shapeEdge : PANEL_COLORS.edge.default;
+  const edgeColor = moveRefHighlight ? (isMoveRefTargetPanel ? '#15803d' : REF_COLORS.selectedCss) : isSelected ? PANEL_COLORS.selected.shapeEdge
+    : isFaceExtrudeXray ? EXTRUDE_XRAY_EDGE : PANEL_COLORS.edge.default;
   const edgeWidth = moveRefHighlight ? EDGE_LINE_WIDTH + 0.9 : isSelected ? EDGE_LINE_WIDTH + 0.7 : EDGE_LINE_WIDTH;
   const showHatch = isPanelRowSelected && !isWireframe;   // tarama yalnız satır seçiliyken ve dolgu görünen modlarda
 
@@ -200,7 +238,7 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
         <mesh ref={meshRef} geometry={shape.geometry} castShadow receiveShadow {...meshEvents}>
           <meshLambertMaterial color={shape.color || '#ffffff'} emissive={emissive} emissiveIntensity={emissiveIntensity} side={THREE.DoubleSide}
             transparent={isXray || isFaceExtrudeXray || moveRefHighlight}
-            opacity={isXray ? (moveRefHighlight ? (isMoveRefTargetPanel ? 0.5 : 0.6) : 0.35) : isFaceExtrudeXray ? 0.12 : isMoveRefTargetPanel ? 0.55 : isMoveRefHovered ? 0.9 : 1}
+            opacity={isXray ? (moveRefHighlight ? (isMoveRefTargetPanel ? 0.5 : 0.6) : XRAY_PANEL_OPACITY) : isFaceExtrudeXray ? XRAY_PANEL_OPACITY : isMoveRefTargetPanel ? 0.55 : isMoveRefHovered ? 0.9 : 1}
             depthWrite={!isXray && !isFaceExtrudeXray && !isMoveRefTargetPanel}
             polygonOffset polygonOffsetFactor={MESH_OFFSET} polygonOffsetUnits={MESH_OFFSET} />
         </mesh>
@@ -225,8 +263,13 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
             onPointerOut={(e: any) => { e.stopPropagation(); setHoveredExtrudeGroup(null); }}>
             <HitMaterial />
           </mesh>
-          {extrudeHighlightGeometry && <mesh geometry={extrudeHighlightGeometry} renderOrder={11}><OverlayMat color={0xff0000} opacity={0.55} /></mesh>}
-          {extrudeSelectedGeometry && <mesh geometry={extrudeSelectedGeometry} renderOrder={12}><OverlayMat color={0xff0000} opacity={0.85} /></mesh>}
+          {extrudeHighlightGeometry && <mesh geometry={extrudeHighlightGeometry} renderOrder={11}><OverlayMat color={SEL_COLORS.extrudeHover} opacity={SEL_COLORS.extrudeHoverOpacity} /></mesh>}
+          {extrudeSelectedGeometry && (
+            <>
+              <mesh geometry={extrudeSelectedGeometry} renderOrder={12}><OverlayMat color={SEL_COLORS.extrudeActive} opacity={SEL_COLORS.extrudeActiveOpacity} /></mesh>
+              <FaceOutline geometry={extrudeSelectedGeometry} color={SEL_COLORS.extrudeEdge} width={SEL_COLORS.extrudeEdgeWidth} />
+            </>
+          )}
         </>
       )}
 
@@ -407,8 +450,8 @@ export function buildFacePreview(
   return { geo, edgeGeo, virtualFace };
 }
 
-// Nötr palet — sky/amber tonları
-const RAYCAST_COLORS = { previewFill: 0x38bdf8, previewEdge: 0x0ea5e9, hoverEmpty: 0xfcd34d, hoverHasVF: 0x7dd3fc, vfFill: 0x38bdf8, vfEdge: 0x0369a1 };
+// Panel yerleştirme: hover/önizleme ortak SEÇİM PALETİ'nden; paneli olan yüz nötr gri. VF çizimi (seçim değil) sky kalır.
+const RAYCAST_COLORS = { previewFill: SEL_COLORS.active, previewEdge: SEL_COLORS.edge, hoverEmpty: SEL_COLORS.hover, hoverHasVF: SEL_COLORS.muted, vfFill: 0x38bdf8, vfEdge: 0x0369a1 };
 
 function buildSurfaceMeshes(vf: VirtualFace): { geo: THREE.BufferGeometry; edgeGeo: THREE.BufferGeometry } | null {
   if (vf.vertices.length < 3) return null;
@@ -558,14 +601,14 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
       <mesh geometry={effGeometry} visible={false} onPointerMove={handlePointerMove} onPointerOut={(e) => { e.stopPropagation(); setHoveredGroupIndex(null); }} onPointerDown={handlePointerDown} />
       {hoverHighlightGeometry && (
         <mesh geometry={hoverHighlightGeometry} raycast={() => null}>
-          {highlightMat(hoveredGroupIndex !== null && groupHasVirtualFace(hoveredGroupIndex) ? RAYCAST_COLORS.hoverHasVF : RAYCAST_COLORS.hoverEmpty, 0.28, -1, true)}
+          {highlightMat(hoveredGroupIndex !== null && groupHasVirtualFace(hoveredGroupIndex) ? RAYCAST_COLORS.hoverHasVF : RAYCAST_COLORS.hoverEmpty, SEL_COLORS.faceHoverOpacity, -1, true)}
         </mesh>
       )}
       {pending && (
         <>
-          <mesh geometry={pending.geo} raycast={() => null}>{highlightMat(RAYCAST_COLORS.previewFill, 0.38)}</mesh>
+          <mesh geometry={pending.geo} raycast={() => null}>{highlightMat(RAYCAST_COLORS.previewFill, SEL_COLORS.faceActiveOpacity)}</mesh>
           <lineSegments geometry={pending.edgeGeo} raycast={() => null}>
-            <lineBasicMaterial color={RAYCAST_COLORS.previewEdge} linewidth={2} depthTest={false} transparent opacity={1.0} />
+            <lineBasicMaterial color={RAYCAST_COLORS.previewEdge} depthTest={false} transparent opacity={0.9} />
           </lineSegments>
         </>
       )}
@@ -614,8 +657,8 @@ export const FaceEditor: React.FC<{ shape: any }> = ({ shape }) => {
     <>
       <mesh geometry={shape.geometry} visible={false} onPointerMove={handlePointerMove} onPointerOut={(e) => { e.stopPropagation(); setHoveredGroupIndex(null); }}
         onPointerDown={(e) => { e.stopPropagation(); if (e.button === 2 && hoveredGroupIndex !== null) handleFaceSelection(hoveredGroupIndex); }} />
-      {selectedFilletGeometries.map((geom, idx) => <mesh key={`selected-${idx}`} geometry={geom}>{highlightMat(0x0ea5e9, 0.55)}</mesh>)}
-      {highlightGeometry && !selectedFilletFaces.includes(hoveredGroupIndex!) && <mesh geometry={highlightGeometry}>{highlightMat(0x38bdf8, 0.45)}</mesh>}
+      {selectedFilletGeometries.map((geom, idx) => <mesh key={`selected-${idx}`} geometry={geom}>{highlightMat(SEL_COLORS.active, SEL_COLORS.faceActiveOpacity)}</mesh>)}
+      {highlightGeometry && !selectedFilletFaces.includes(hoveredGroupIndex!) && <mesh geometry={highlightGeometry}>{highlightMat(SEL_COLORS.hover, SEL_COLORS.faceHoverOpacity)}</mesh>}
       {boundaryEdgesGeometry && (
         <lineSegments geometry={boundaryEdgesGeometry}>
           <lineBasicMaterial color={0xffffff} linewidth={2} depthTest={false} transparent opacity={0.9} />
@@ -658,10 +701,10 @@ export const FilletEdgeLines: React.FC<{ shape: any }> = ({ shape }) => {
 // ── 5. HACİM SEÇME (raf / dikme atma) ────────────────────────────────────────
 // Tıklanan noktadan geçen ışın gövde kutusunu hücre hücre yürür; serbest hücreden
 // taşılarak şekilli bölge bulunur (gövde katısı + paneller sınırlar). Fare: ilk aday
-// soluk kehribar; sol tık aynı ışındaki adaylar arasında döner — mavi dolgu, KIRMIZI
-// kalın dış çizgiler; sağ tık (ya da şerit ✓) gruptan oluşturur. Görünmez kutu mesh'i
-// olayları alır — açık yüzlerde de çalışır.
-const PICK_COLORS = { hover: 0xfcd34d, selected: 0x38bdf8, selectedEdge: '#dc2626' };
+// çok soluk petrol; sol tık aynı ışındaki adaylar arasında döner — soluk petrol dolgu +
+// İNCE KIRMIZI dış çizgi (SEL_COLORS.volumeEdge); sağ tık (ya da şerit ✓) gruptan oluşturur.
+// Görünmez kutu mesh'i olayları alır — açık yüzlerde de çalışır.
+const PICK_COLORS = { hover: SEL_COLORS.hover, selected: SEL_COLORS.active, selectedEdge: SEL_COLORS.volumeEdge };
 
 /** Bölge dış yüzeyi → mesh geometrisi + siluet kenar noktaları (eş-düzlem dikişler elenir). */
 function surfaceMesh(surface: number[]): { geo: THREE.BufferGeometry; edgePts: [number, number, number][] } {
@@ -687,11 +730,13 @@ function surfaceMesh(surface: number[]): { geo: THREE.BufferGeometry; edgePts: [
  * gapFrac·boy kadar açıkta, gövdesi dışarı doğru uzanır, hacme doğru bakar.
  * Yalnız hacim seçilirken görünür; raf/dikme yerleştikten sonra çizilmez.
  */
-const FACING_ARROW = { color: '#dc2626', edge: '#7f1d1d', lengthMm: 120, minPx: 48, maxPx: 90, tiltRad: 0.5, gapFrac: 0.2 } as const;
+// Goker: "kırmızı ok çok az daha küçük olsun, çubuğu da kısa olsun" → ölçek ~%10 küçük (lengthMm/minPx/maxPx),
+// gövde (çubuk) birim boyu 1 → shaftLen; uç (chevron) boyutu ölçekle birlikte aynı oranda kalır.
+const FACING_ARROW = { color: '#dc2626', edge: '#7f1d1d', lengthMm: 108, minPx: 43, maxPx: 80, tiltRad: 0.5, gapFrac: 0.2, shaftLen: 0.62 } as const;
 
-/** Birim boy (1) chevron ok, +X'e bakar, merkezli; kalınlık = kol genişliği. Köşe renkli (kapak açık, yanlar koyu). */
+/** Chevron ok (toplam boy = shaftLen, uç ölçüsü birim ölçeğe göre), +X'e bakar, merkezli; kalınlık = kol genişliği. Köşe renkli (kapak açık, yanlar koyu). */
 const FACING_ARROW_GEO: THREE.BufferGeometry = (() => {
-  const L = 1, w = 0.075, h = w / 2, A = 0.34, r2 = Math.SQRT2;
+  const L = FACING_ARROW.shaftLen, w = 0.075, h = w / 2, A = 0.34, r2 = Math.SQRT2;
   const up = (s: number, off: number): [number, number] => [(-s - off) / r2, (s - off) / r2];     // üst kol: dış kenardan off içeri
   const dn = (s: number, off: number): [number, number] => [(-s - off) / r2, (-s + off) / r2];    // alt kol
   const jx = -h - w * r2;                                                                          // gövde kenarı ↔ kol iç kenarı
@@ -747,8 +792,8 @@ export const FacingArrow: React.FC<{ box: { min: Vec3; max: Vec3 }; axis: 0 | 1 
     const px = THREE.MathUtils.clamp(FACING_ARROW.lengthMm / wpp, FACING_ARROW.minPx, FACING_ARROW.maxPx);
     const len = px * wpp;
     g.scale.set(len / (t.pScale.x || 1), len / (t.pScale.y || 1), len / (t.pScale.z || 1));
-    // KONUM: yüz merkezinden okun TERSİNE (dışarı) boşluk + yarım boy → ucu yüzün önünde, hacmin dışında.
-    const back = (len * (FACING_ARROW.gapFrac + 0.5)) / (t.pScale.getComponent(axis) || 1);
+    // KONUM: yüz merkezinden okun TERSİNE (dışarı) boşluk + yarım boy (toplam boy = shaftLen·len) → ucu yüzün önünde, hacmin dışında.
+    const back = (len * (FACING_ARROW.gapFrac + FACING_ARROW.shaftLen / 2)) / (t.pScale.getComponent(axis) || 1);
     g.position.set(faceCenter[0], faceCenter[1], faceCenter[2]);
     g.position.setComponent(axis, faceCenter[axis] - facing * back);
     // Yönelim: yerel X = ok yönü; düz yüz ok ekseni etrafında kameraya döner (+ eğim → kalınlık görünür).
@@ -841,16 +886,16 @@ export const VolumePickOverlay: React.FC<{ shape: any; allShapes: any[] }> = ({ 
       <mesh geometry={pickGeo} visible={false} onPointerMove={onPointerMove} onPointerOut={() => setHoverPick(null)} onPointerDown={onPointerDown} onContextMenu={(e: any) => e.stopPropagation()} />
       {hoverMesh && !hoverIsSelected && (
         <mesh geometry={hoverMesh.geo} raycast={() => null} renderOrder={5}>
-          <meshBasicMaterial color={PICK_COLORS.hover} transparent opacity={0.14} side={THREE.DoubleSide} depthWrite={false} />
+          <meshBasicMaterial color={PICK_COLORS.hover} transparent opacity={SEL_COLORS.volumeHoverOpacity} side={THREE.DoubleSide} depthWrite={false} />
         </mesh>
       )}
       {selectedMesh && (
         <>
           <mesh geometry={selectedMesh.geo} raycast={() => null} renderOrder={6}>
-            <meshBasicMaterial color={PICK_COLORS.selected} transparent opacity={0.28} side={THREE.DoubleSide} depthWrite={false} />
+            <meshBasicMaterial color={PICK_COLORS.selected} transparent opacity={SEL_COLORS.volumeActiveOpacity} side={THREE.DoubleSide} depthWrite={false} />
           </mesh>
           {selectedMesh.edgePts.length >= 2 && (
-            <Line points={selectedMesh.edgePts} segments color={PICK_COLORS.selectedEdge} lineWidth={2.6} transparent={false} depthTest={false} depthWrite={false} renderOrder={7} raycast={() => null} />
+            <Line points={selectedMesh.edgePts} segments color={PICK_COLORS.selectedEdge} lineWidth={SEL_COLORS.edgeWidth} transparent={false} depthTest={false} depthWrite={false} renderOrder={7} raycast={() => null} />
           )}
           {/* YÖN OKU: yalnız sol tıkla seçilen adayda (hover'da değil), okun geldiği yüzün DIŞINDA, boşluklu; yerleştikten sonra çizilmez */}
           {selected && <FacingArrow box={selected.bbox} axis={selected.arrow.axis} facing={selected.arrow.facing} />}
@@ -861,9 +906,9 @@ export const VolumePickOverlay: React.FC<{ shape: any; allShapes: any[] }> = ({ 
 };
 
 // ── 6. HACİM DÜZENLEME (raf/dikme hacmine yüz extrude) ──────────────────────
-// Grubun güncel ŞEKİLLİ hacmi (bölge kutularının dış yüzeyi: L / çentik) mavi dolgu
-// + kırmızı kenarla çizilir; yüzleri panel extrude hedefi gibi seçilir (hover kırmızı,
-// seçili koyu kırmızı). Seçilen yüzün gövde-yerel normali + tıklama noktası store'a
+// Grubun güncel ŞEKİLLİ hacmi (bölge kutularının dış yüzeyi: L / çentik) soluk petrol dolgu
+// + ince kırmızı kenarla çizilir; yüzleri panel extrude hedefi gibi seçilir (SEL_COLORS:
+// hover açık, seçili orta petrol + sınır çizgisi). Seçilen yüzün gövde-yerel normali + tıklama noktası store'a
 // yazılır (çıpa: hangi kolun/yüzün hareket edeceği); fixed/dyn şeritten, ref sağ tıkla.
 export const CavityEditOverlay: React.FC<{ shape: any }> = ({ shape }) => {
   const { panelGroups, faceExtrudeCavityGroupId, faceExtrudeSelectedFace, setFaceExtrudeSelectedFace, setFaceExtrudeCavityFaceNormal, setFaceExtrudeClickPoint, faceExtrudeValueMode } =
@@ -895,9 +940,9 @@ export const CavityEditOverlay: React.FC<{ shape: any }> = ({ shape }) => {
   return (
     <>
       <mesh geometry={boxGeo} raycast={() => null} renderOrder={5}>
-        <meshBasicMaterial color={PICK_COLORS.selected} transparent opacity={0.16} side={THREE.DoubleSide} depthWrite={false} />
+        <meshBasicMaterial color={PICK_COLORS.selected} transparent opacity={SEL_COLORS.volumeActiveOpacity} side={THREE.DoubleSide} depthWrite={false} />
       </mesh>
-      {edgePts.length >= 2 && <Line points={edgePts} segments color={PICK_COLORS.selectedEdge} lineWidth={2.2} transparent={false} depthTest={false} depthWrite={false} renderOrder={7} raycast={() => null} />}
+      {edgePts.length >= 2 && <Line points={edgePts} segments color={PICK_COLORS.selectedEdge} lineWidth={SEL_COLORS.edgeWidth} transparent={false} depthTest={false} depthWrite={false} renderOrder={7} raycast={() => null} />}
       <mesh geometry={boxGeo} renderOrder={10}
         onPointerDown={(e: any) => {
           if (e.button === 2) { if (isRefPhase) void confirmRefOnRightClick(e); return; }
@@ -918,8 +963,13 @@ export const CavityEditOverlay: React.FC<{ shape: any }> = ({ shape }) => {
         onContextMenu={(e: any) => e.stopPropagation()}>
         <HitMaterial />
       </mesh>
-      {hoverGeo && <mesh geometry={hoverGeo} renderOrder={11} raycast={() => null}><OverlayMat color={0xff0000} opacity={0.5} /></mesh>}
-      {selGeo && <mesh geometry={selGeo} renderOrder={12} raycast={() => null}><OverlayMat color={0xff0000} opacity={0.8} /></mesh>}
+      {hoverGeo && <mesh geometry={hoverGeo} renderOrder={11} raycast={() => null}><OverlayMat color={SEL_COLORS.hover} opacity={SEL_COLORS.faceHoverOpacity} /></mesh>}
+      {selGeo && (
+        <>
+          <mesh geometry={selGeo} renderOrder={12} raycast={() => null}><OverlayMat color={SEL_COLORS.active} opacity={SEL_COLORS.faceActiveOpacity} /></mesh>
+          <FaceOutline geometry={selGeo} color={SEL_COLORS.edge} width={SEL_COLORS.extrudeEdgeWidth} />
+        </>
+      )}
     </>
   );
 };
