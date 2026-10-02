@@ -59,6 +59,61 @@ export interface VirtualFace {
   interior?: boolean;
   groupId?: string;
   groupIndex?: number;
+  /** KAPAK SINIRI (Goker, Eki 2026): bu panel (gövde paneli, raf ya da dikme) kapak
+   *  yerleşiminde referans kenardır — kapak adayları bu panellerin kenarlarından kurulur. */
+  doorBound?: boolean;
+  /** KAPAK ÜYESİ: VF bir kapak grubuna aittir (interior=true; geometriyi DoorService yazar). */
+  doorGroupId?: string;
+  doorIndex?: number;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// KAPAK (DoorService) — Goker, Eki 2026: "kapak yerleştirmek istiyorum; dikme, raf ve
+// gövde panellerine kapak sınırı işareti koyayım; tıkladığım yerde büyükten küçüğe
+// kapak alternatifleri dönsün; dış/iç kapak; dikeyde/yatayda böl; kilit + ara ölçü;
+// iki kapak arasındaki boşluk."
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Kapak kenar referansı: bir sınır panelinin VF'si ya da gövde kutusunun kenarı. */
+export interface DoorBoundRef { vfId?: string; body?: boolean }
+export interface DoorBounds { uMin: DoorBoundRef; uMax: DoorBoundRef; vMin: DoorBoundRef; vMax: DoorBoundRef }
+/** Kapak düzlemindeki dikdörtgen (gövde-yerel u/v) + kapak ÖN yüzünün düzlem koordinatı (kapak ekseninde). */
+export interface DoorRect { u0: number; u1: number; v0: number; v1: number; front: number }
+/**
+ * KAPAK ADAYI (3B seçim): tıklanan gövde yüzünden (axis/side) bakılan düzlemde, kapak sınırı
+ * panellerinin kenarlarıyla kurulan dikdörtgen. Hem iç (panellerin arasına) hem dış
+ * (panel kalınlıklarının dışından) dikdörtgeni taşır; alan büyükten küçüğe sıralanır.
+ */
+export interface DoorPick {
+  key: string; axis: 0 | 1 | 2; side: 1 | -1; bounds: DoorBounds;
+  inner: DoorRect; outer: DoorRect; area: number;
+  /** Sınır panellerinin sayısı (gövde kenarı sayılmaz) — etikette "Body" / "2 panels". */
+  boundPanelCount: number;
+}
+/**
+ * KAPAK GRUBU: bir kapak düzlemine yerleşen cols×rows kapak. Dikdörtgen her rebuild'de
+ * sınır referanslarından yeniden çözülür (gövde boyutlanınca kapaklar izler).
+ */
+export interface DoorGroup {
+  id: string; shapeId: string;
+  /** Kapak düzleminin normal ekseni + yönü (ön yüzden tık → Z+). */
+  axis: 0 | 1 | 2; side: 1 | -1;
+  /** 'outer' = dış kapak (panel kalınlıklarının dışından, önde); 'inner' = iç kapak (panellerin arasına, önü panellerle hizalı). */
+  placement: 'outer' | 'inner';
+  bounds: DoorBounds;
+  /** Son çözülen dikdörtgen (gövde-yerel). */
+  rect: DoorRect;
+  /** Dikeyde böl = sütun sayısı (u ekseni); yatayda böl = satır sayısı (v ekseni). */
+  cols: number; rows: number;
+  /** Sütun genişlikleri / satır yükseklikleri: değer + kilit (raf boşluklarıyla aynı kural). */
+  colWidths: GapSpec[]; rowHeights: GapSpec[];
+  /** İki kapak arasındaki boşluk (mm). */
+  gap: number;
+  thickness: number;
+  /** Üye VF id'leri: satır-major (üst satırdan, soldan sağa): index = r*cols + c. */
+  memberVfIds: string[];
+  name?: string;
+  createdAt: number;
 }
 
 /** Raf/dikme boşluğu: değer (mm) + kilit (küp boyutlanınca sabit kalır). */
@@ -249,6 +304,20 @@ export interface AppState {
   /** VF'leri verilen VF'nin hemen ARKASINA ekler (grup üyeleri bitişik kalsın). */
   insertVirtualFacesAfter: (afterId: string | null, vfs: VirtualFace[]) => void;
 
+  // Kapak grupları
+  doorGroups: DoorGroup[];
+  addDoorGroup: (g: DoorGroup) => void;
+  updateDoorGroup: (id: string, u: Partial<DoorGroup>) => void;
+  deleteDoorGroup: (id: string) => void;
+  /** Kapak grubu seçimi = "tüm kapakları seç" (satır / raf grubu seçimiyle karşılıklı dışlayıcı). */
+  selectedDoorGroupId: string | null; setSelectedDoorGroupId: (id: string | null) => void;
+  /** Kapak yerleştirme modu: tıklanan gövde yüzünde kapak sınırı panellerinden adaylar (büyükten küçüğe döner). */
+  doorPickMode: boolean; setDoorPickMode: (b: boolean) => void;
+  doorPickCandidates: DoorPick[]; doorPickIndex: number;
+  setDoorPick: (c: DoorPick[], i: number) => void;
+  /** Seçim sırasında dış/iç kapak önizlemesi (grup bununla doğar). */
+  doorPickPlacement: 'outer' | 'inner'; setDoorPickPlacement: (p: 'outer' | 'inner') => void;
+
   // Fillet
   filletMode: boolean; setFilletMode: (b: boolean) => void;
   selectedFilletFaces: number[];
@@ -367,8 +436,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     const all = new Set([id, ...state.shapes.filter(s => s.type === 'panel' && s.parameters?.parentShapeId === id).map(s => s.id)]);
     return {
       shapes: state.shapes.filter(s => !all.has(s.id)),
-      // Gövdeyle birlikte raf/dikme grupları da gider (üye VF'leri gövdeye bağlıdır).
+      // Gövdeyle birlikte raf/dikme ve kapak grupları da gider (üye VF'leri gövdeye bağlıdır).
       panelGroups: state.panelGroups.filter(g => g.shapeId !== id),
+      doorGroups: state.doorGroups.filter(g => g.shapeId !== id),
       selectedShapeId: all.has(state.selectedShapeId || '') ? null : state.selectedShapeId,
       secondarySelectedShapeId: all.has(state.secondarySelectedShapeId || '') ? null : state.secondarySelectedShapeId,
     };
@@ -450,10 +520,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Tek panel seçimi grup seçimini düşürür (ikisi aynı anda olmaz).
   setSelectedPanelRow: (i, parentId) => set({
     selectedPanelRow: i, selectedPanelRowParentId: parentId || null,
-    ...(i !== null ? { selectedPanelGroupId: null } : {}),
+    ...(i !== null ? { selectedPanelGroupId: null, selectedDoorGroupId: null } : {}),
   }),
   panelSelectMode: false,
-  setPanelSelectMode: (b) => set({ panelSelectMode: b, selectedPanelRow: null, selectedPanelRowParentId: null, selectedPanelGroupId: null }),
+  setPanelSelectMode: (b) => set({ panelSelectMode: b, selectedPanelRow: null, selectedPanelRowParentId: null, selectedPanelGroupId: null, selectedDoorGroupId: null }),
   faceEditMode: false, setFaceEditMode: (b) => set({ faceEditMode: b }),
 
   // ── Raf / dikme grupları ──────────────────────────────────────────────────
@@ -468,10 +538,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Grup seçimi ("tümünü seç") tek panel satırını düşürür.
   setSelectedPanelGroupId: (id) => set({
     selectedPanelGroupId: id,
-    ...(id ? { selectedPanelRow: null } : {}),
+    ...(id ? { selectedPanelRow: null, selectedDoorGroupId: null } : {}),
   }),
   volumePickMode: null,
-  setVolumePickMode: (m, groupId = null) => set({ volumePickMode: m, volumePickGroupId: m ? groupId : null, volumePickCandidates: [], volumePickIndex: 0, ...(m ? { raycastMode: false } : {}) }),
+  setVolumePickMode: (m, groupId = null) => set({
+    volumePickMode: m, volumePickGroupId: m ? groupId : null, volumePickCandidates: [], volumePickIndex: 0,
+    ...(m ? { raycastMode: false, doorPickMode: false, doorPickCandidates: [], doorPickIndex: 0 } : {}),
+  }),
   volumePickGroupId: null,
   volumePickCandidates: [], volumePickIndex: 0,
   setVolumePick: (c, i) => set({ volumePickCandidates: c, volumePickIndex: i }),
@@ -482,6 +555,30 @@ export const useAppStore = create<AppState>((set, get) => ({
     out.splice(idx + 1, 0, ...vfs);
     return { virtualFaces: out };
   }),
+
+  // ── Kapak grupları ────────────────────────────────────────────────────────
+  doorGroups: [],
+  addDoorGroup: (g) => set((s) => ({ doorGroups: [...s.doorGroups, g] })),
+  updateDoorGroup: (id, u) => set((s) => ({ doorGroups: s.doorGroups.map(g => (g.id === id ? { ...g, ...u } : g)) })),
+  deleteDoorGroup: (id) => set((s) => ({
+    doorGroups: s.doorGroups.filter(g => g.id !== id),
+    selectedDoorGroupId: s.selectedDoorGroupId === id ? null : s.selectedDoorGroupId,
+  })),
+  selectedDoorGroupId: null,
+  // Kapak grubu seçimi ("tüm kapakları seç") tek satırı ve raf grubunu düşürür.
+  setSelectedDoorGroupId: (id) => set({
+    selectedDoorGroupId: id,
+    ...(id ? { selectedPanelRow: null, selectedPanelGroupId: null } : {}),
+  }),
+  // Kapak yerleştirme modu diğer yerleştirme modlarını (yüz yakalama, hacim seçme) kapatır.
+  doorPickMode: false,
+  setDoorPickMode: (b) => set({
+    doorPickMode: b, doorPickCandidates: [], doorPickIndex: 0,
+    ...(b ? { raycastMode: false, volumePickMode: null, volumePickGroupId: null, volumePickCandidates: [], volumePickIndex: 0 } : {}),
+  }),
+  doorPickCandidates: [], doorPickIndex: 0,
+  setDoorPick: (c, i) => set({ doorPickCandidates: c, doorPickIndex: i }),
+  doorPickPlacement: 'outer', setDoorPickPlacement: (p) => set({ doorPickPlacement: p }),
 
   // ── Fillet ────────────────────────────────────────────────────────────────
   filletMode: false, setFilletMode: (e) => set({ filletMode: e, selectedFilletFaces: [], selectedFilletFaceData: [] }),

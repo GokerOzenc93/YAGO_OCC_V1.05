@@ -1137,6 +1137,7 @@ const Scene: React.FC = () => {
         const st = useAppStore.getState();
         // HACİM SEÇME (raf/dikme): Escape yalnız modu kapatır.
         if (st.volumePickMode) { st.setVolumePickMode(null); console.log('[YAGO][ESC] hacim seçme modu kapatıldı'); return; }
+        if (st.doorPickMode) { st.setDoorPickMode(false); console.log('[YAGO][ESC] kapak seçme modu kapatıldı'); return; }
         if (st.faceExtrudeMode || st.panelMoveMode || st.panelRotateMode) {
           if (st.faceExtrudeMode) { st.setFaceExtrudeSelectedFace(null); st.setFaceExtrudeRefCandidate(null); st.setFaceExtrudeMode(false); }
           if (st.panelMoveMode) { st.setPanelMoveAxis(null); st.setPanelMoveMode(false); }

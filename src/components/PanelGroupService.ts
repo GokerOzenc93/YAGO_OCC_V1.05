@@ -100,13 +100,13 @@ type Pt2 = { x: number; y: number };
 const toCavityBox = (bb: THREE.Box3): CavityBox => ({ min: [bb.min.x, bb.min.y, bb.min.z], max: [bb.max.x, bb.max.y, bb.max.z] });
 
 /** Gövdenin (vertex düzenlemeli etkin) yerel sınır kutusu. */
-function bodyLocalBox(parent: Shape): CavityBox | null {
+export function bodyLocalBox(parent: Shape): CavityBox | null {
   const bb = localBboxOf(effectiveBodyGeometry(parent));
   return bb ? toCavityBox(bb) : null;
 }
 
 /** Panelin gövde-yerel kutusu (geometri gövde çerçevesindedir; konum farkı eklenir). */
-function panelLocalBox(p: Shape, parent: Shape): CavityBox | null {
+export function panelLocalBox(p: Shape, parent: Shape): CavityBox | null {
   const bb = localBboxOf(p.geometry);
   if (!bb || (p.geometry.getAttribute('position') as THREE.BufferAttribute).count === 0) return null;
   const d = [0, 1, 2].map(i => (p.position?.[i] ?? 0) - (parent.position?.[i] ?? 0));
@@ -876,7 +876,7 @@ export function memberThicknessesOf(group: Pick<PanelGroup, 'count' | 'thickness
 const sumT = (ts: number[]) => ts.reduce((s, t) => s + t, 0);
 
 /** Eşit dağılım: n panel, n+1 boşluk, kilitsiz. */
-function equalGaps(L: number, count: number, ts: number[]): GapSpec[] {
+export function equalGaps(L: number, count: number, ts: number[]): GapSpec[] {
   const n = Math.max(0, count);
   const g = Math.max(MIN_GAP, (L - sumT(ts)) / (n + 1));
   return Array.from({ length: n + 1 }, () => ({ value: r1(g), locked: false }));
@@ -908,7 +908,7 @@ function redistributeForThickness(gaps: GapSpec[], L: number, count: number, ts:
  * eşit kalır). Kilitliler sığmıyorsa oransal küçültülür (uyarı). Hepsi
  * kilitliyse artık son boşluğa yazılır.
  */
-function rescaleGaps(gaps: GapSpec[], L: number, count: number, ts: number[]): GapSpec[] {
+export function rescaleGaps(gaps: GapSpec[], L: number, count: number, ts: number[]): GapSpec[] {
   if (!Array.isArray(gaps) || gaps.length !== count + 1) return equalGaps(L, count, ts);
   const avail = L - sumT(ts);
   const out = gaps.map(g => ({ ...g }));
@@ -940,7 +940,7 @@ function rescaleGaps(gaps: GapSpec[], L: number, count: number, ts: number[]): G
  * girilmemiş boşluklara EŞİT dağılır. Öyle boşluk kalmadıysa diğer kilitsiz
  * (girilmiş) boşluklara oransal; o da yoksa değer kalan açıklığa kırpılır.
  */
-function applyGapEdit(gaps: GapSpec[], k: number, value: number, L: number, count: number, ts: number[]): GapSpec[] {
+export function applyGapEdit(gaps: GapSpec[], k: number, value: number, L: number, count: number, ts: number[]): GapSpec[] {
   const out = (gaps.length === count + 1 ? gaps : equalGaps(L, count, ts)).map(g => ({ ...g }));
   if (k < 0 || k >= out.length) return out;
   const avail = L - sumT(ts);
@@ -1163,6 +1163,8 @@ export function collectObstacles(parent: Shape, panels: Shape[], include: (p: Sh
   const tilted: Shape[] = [];
   for (const p of panels) {
     if (p.type !== 'panel' || (p.parameters as any)?.parentShapeId !== parent.id || !include(p)) continue;
+    // KAPAKLAR hacim engeli DEĞİLDİR (Goker: kapaklar referans hacmin dışında çalışır; iç kapak da raf/dikme hacmini daraltmaz).
+    if ((p.parameters as any)?.doorGroupId) continue;
     const b = panelLocalBox(p, parent);
     if (!b) continue;
     if (panelHasRotation(p)) { splitBoxes.push(b); tilted.push(p); } else obstacles.push(b);

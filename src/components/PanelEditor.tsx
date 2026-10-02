@@ -1,14 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ArrowUp, Box, Check, ChevronRight, Columns3, Crosshair, Equal, GripVertical, LayoutPanelTop, Lock, type LucideIcon, Minus, Move, Move3d,
-  MoveVertical, Pencil, Plus, RotateCw, Rows3, SlidersHorizontal, Trash2, Unlock, X,
+  ArrowUp, Box, Check, ChevronRight, Columns3, Crosshair, DoorClosed, Equal, GripVertical, LayoutPanelTop, Lock, type LucideIcon, Minus, Move, Move3d,
+  MoveVertical, PanelTop, Pencil, Plus, RotateCw, Rows3, SlidersHorizontal, SplitSquareHorizontal, SplitSquareVertical, SquareDashedBottom, Trash2, Unlock, X,
 } from 'lucide-react';
 import * as THREE from 'three';
 import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import {
-  type CavityBox, type PanelGroup, type Shape, type VirtualFace, childPanelsOf, panelOfVf, requestRebuild, shapeById, useAppStore, useStoreFields,
+  type CavityBox, type DoorGroup, type GapSpec, type PanelGroup, type Shape, type VirtualFace, childPanelsOf, panelOfVf, requestRebuild, shapeById, useAppStore, useStoreFields,
 } from '../store';
 import { ToolChip, ToolChipBar, UI_FONT } from './Ui';
 import { axisDirToVec, convertReplicadToThreeGeometry, createPanelFromVirtualFace, dominantAxisLabel, genId, getFacesAndGroups, isFlatNormal, localBboxOf, round1 } from './Geometry';
@@ -21,6 +21,10 @@ import {
   groupFacing, groupKindLabel, groupName, memberThicknessesOf, panelStarts, renamePanelGroup, setGroupCount, setGroupMemberThickness, setGroupTargetGap, startCavityEdit, startGroupRepick, toggleGroupGapLock,
   traceMaskLoops, updateCavityStep,
 } from './PanelGroupService';
+import {
+  confirmDoorPick, deleteDoorGroupWithMembers, doorGroupName, doorMemberRects, doorPlacementLabel, editDoorColWidth, editDoorRowHeight, equalizeDoorGroup,
+  isDoorVf, renameDoorGroup, setDoorGap, setDoorPlacement, setDoorSplit, setDoorThickness, setVfDoorBound, toggleDoorColLock, toggleDoorRowLock,
+} from './DoorService';
 
 /* ═══════════════════════════════════════════════════════════════════════════
    PANEL EDİTÖRÜ — sol kenar çubuğundaki panel listesi (akordeon satırlar),
@@ -972,6 +976,176 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, onEditGap, 
   );
 }
 
+
+/* ── KAPAK ŞEMASI (Goker, Eki 2026) ───────────────────────────────────────
+   Raf/dikme şemasıyla aynı dil: kapak düzleminin ÖN GÖRÜNÜŞÜ temsili bir karede.
+   Kapaklar taş renkli dikdörtgen (tıkla → üye seç), üstte sütun GENİŞLİĞİ pill'leri,
+   solda satır YÜKSEKLİĞİ pill'leri (tıkla → değer gir; kilit ucu → kilitle), altta /
+   sağda iki kapak arasındaki BOŞLUK pill'i (tıkla → değer gir). Üye seçiliyken şema
+   yalnız seçici olur (pill'ler gizlenir). Kapaklar arası boşluk sabit piksel, kapak
+   ölçüleri kendi oranlarıyla bölüşülür. */
+const DOOR_GAP_PX = 5;
+type DoorEdit = { kind: 'col'; k: number; v: string } | { kind: 'row'; k: number; v: string } | { kind: 'gap'; v: string };
+export function DoorSchematic({ group, selectedIndex, memberLabels, onEditCol, onEditRow, onToggleColLock, onToggleRowLock, onEditGap, onSelectMember }: {
+  group: DoorGroup; selectedIndex: number; memberLabels: string[];
+  onEditCol: (k: number, v: number) => void; onEditRow: (k: number, v: number) => void;
+  onToggleColLock: (k: number) => void; onToggleRowLock: (k: number) => void;
+  onEditGap: (v: number) => void; onSelectMember: (i: number) => void;
+}) {
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(300);
+  const [editing, setEditing] = useState<DoorEdit | null>(null);
+  useEffect(() => {
+    const el = wrapRef.current; if (!el) return;
+    const ro = new ResizeObserver(es => { const w = es[0].contentRect.width; if (w > 0) setWidth(Math.round(w)); });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  useEffect(() => { setEditing(null); }, [group.id, group.cols, group.rows, selectedIndex >= 0]);
+
+  const { rect, cols, rows, colWidths, rowHeights, gap, axis, side } = group;
+  const memberMode = selectedIndex >= 0;
+  const height = memberMode ? SCHEMA_MEMBER_HEIGHT : PREVIEW_HEIGHT;
+  const innerW = width - 2 * SCHEMA_PAD, innerH = height - 2 * SCHEMA_PAD;
+  const S = Math.max(40, Math.min(innerW, innerH));
+  const ox = SCHEMA_PAD + (innerW - S) / 2, oy = SCHEMA_PAD + (innerH - S) / 2;
+  // GÖRÜNÜŞ YÖNÜ: ön yüz (Z+) → X sağa; arka (Z−) ve sağ yan (X+) → aynalı; üst (Y+) → Z aşağı.
+  const mirrorU = (axis === 2 && side < 0) || (axis === 0 && side > 0);
+  const mirrorV = axis === 1 && side > 0;
+  const members = useMemo(() => doorMemberRects(rect, cols, rows, colWidths, rowHeights, gap), [rect, cols, rows, colWidths, rowHeights, gap]);
+  // Dizilim haritası: kapak ölçüleri oransal, aralar sabit piksel (temsili).
+  const axisMap = (origin: number, specs: GapSpec[], n: number, descending: boolean) => {
+    const sum = specs.reduce((a, g) => a + Math.max(0, g.value), 0);
+    const avail = Math.max(0, S - (n - 1) * DOOR_GAP_PX);
+    const wb: number[] = [origin], pb: number[] = [0];
+    let w = origin, p = 0;
+    const dir = descending ? -1 : 1;
+    specs.forEach((g, k) => {
+      const v = Math.max(0, g.value);
+      w += dir * v; p += sum > 1e-6 ? (v / sum) * avail : avail / n; wb.push(w); pb.push(p);
+      if (k < n - 1) { w += dir * gap; p += DOOR_GAP_PX; wb.push(w); pb.push(p); }
+    });
+    return (x: number) => {
+      if (descending) { if (x >= wb[0]) return pb[0]; for (let i = 1; i < wb.length; i++) if (x >= wb[i]) { const d = wb[i - 1] - wb[i]; return d > 1e-9 ? pb[i - 1] + ((wb[i - 1] - x) / d) * (pb[i] - pb[i - 1]) : pb[i]; } return S; }
+      if (x <= wb[0]) return pb[0];
+      for (let i = 1; i < wb.length; i++) if (x <= wb[i]) { const d = wb[i] - wb[i - 1]; return d > 1e-9 ? pb[i - 1] + ((x - wb[i - 1]) / d) * (pb[i] - pb[i - 1]) : pb[i]; }
+      return S;
+    };
+  };
+  const mapU = useMemo(() => axisMap(rect.u0, colWidths, cols, false), [rect.u0, colWidths, cols, gap, S]);
+  const mapV = useMemo(() => axisMap(rect.v1, rowHeights, rows, true), [rect.v1, rowHeights, rows, gap, S]);
+  const sx = (u: number) => (mirrorU ? ox + S - mapU(u) : ox + mapU(u));
+  const sy = (v: number) => (mirrorV ? oy + S - mapV(v) : oy + mapV(v));   // satırlar üstten: v1 → oy
+  const fs = Math.max(10, Math.min(13.5, width * 0.027));
+  const fsT = Math.max(9, fs * 0.86);
+  const asz = Math.max(4, Math.min(6.5, width * 0.014));
+
+  // Sütun / satır pill'leri (kare alanın dışındaki kenar boşluğunda).
+  let cu = rect.u0;
+  const colPills = colWidths.map((g, k) => {
+    const a = cu, b = cu + g.value; cu = b + gap;
+    const txt = String(round1(g.value)); const { pw, ph } = pillSize(txt, fs);
+    const x0 = sx(a), x1 = sx(b);
+    return { k, a, b, cx: (x0 + x1) / 2, cy: Math.max(oy - 13, ph / 2 + 2), pw, ph, txt, x0: Math.min(x0, x1), x1: Math.max(x0, x1) };
+  });
+  let cv = rect.v1;
+  const rowPills = rowHeights.map((g, k) => {
+    const a = cv, b = cv - g.value; cv = b - gap;
+    const txt = String(round1(g.value)); const { pw, ph } = pillSize(txt, fs);
+    const y0 = sy(a), y1 = sy(b);
+    return { k, a, b, cx: Math.max(ox - 13 - pw / 2 + 6, pw / 2 + 2), cy: (y0 + y1) / 2, pw, ph, txt, y0: Math.min(y0, y1), y1: Math.max(y0, y1) };
+  });
+  const gapTxt = String(round1(gap));
+  const gapPillCol = cols > 1 ? (() => { const a = rect.u0 + colWidths[0].value, b = a + gap; const { pw, ph } = pillSize(gapTxt, fsT); return { cx: (sx(a) + sx(b)) / 2, cy: Math.min(oy + S + 11, height - ph / 2 - 4), pw, ph }; })() : null;
+  const gapPillRow = rows > 1 ? (() => { const a = rect.v1 - rowHeights[0].value, b = a - gap; const { pw, ph } = pillSize(gapTxt, fsT); return { cx: Math.min(ox + S + 11, width - pw / 2 - 6), cy: (sy(a) + sy(b)) / 2, pw, ph }; })() : null;
+
+  const commit = () => {
+    if (!editing) return;
+    const v = parseFloat(editing.v.replace(',', '.'));
+    setEditing(null);
+    if (isNaN(v)) return;
+    if (editing.kind === 'col') { if (v > 0) onEditCol(editing.k, v); }
+    else if (editing.kind === 'row') { if (v > 0) onEditRow(editing.k, v); }
+    else if (v >= 0) onEditGap(v);
+  };
+  const lockBtn = (locked: boolean, cx: number, cy: number, onClick: () => void) => (
+    <g className="lockbtn" style={{ cursor: 'pointer' }} onClick={e => { stop(e); onClick(); }}>
+      <circle cx={cx} cy={cy} r={8} fill={locked ? '#fff7ed' : '#ffffff'} stroke={locked ? '#f97316' : '#e6e0d6'} strokeWidth={0.7} />
+      {locked ? <Lock x={cx - 4.5} y={cy - 4.5} size={9} strokeWidth={2.4} color="#ea580c" /> : <Unlock x={cx - 4.5} y={cy - 4.5} size={9} strokeWidth={2} color="#a8a29e" />}
+      <title>{locked ? 'Unlock (follows resize)' : 'Lock (stays fixed on resize)'}</title>
+    </g>
+  );
+  const editPos = editing?.kind === 'col' ? colPills[editing.k] : editing?.kind === 'row' ? rowPills[editing.k] : editing?.kind === 'gap' ? (gapPillCol || gapPillRow) : null;
+
+  return (
+    <div ref={wrapRef} className="relative rounded-[10px] ring-1 ring-[#e9e4dc] overflow-hidden" style={{ background: PREVIEW_BG, height }}>
+      <style>{`.yago-gap .lockbtn{opacity:0;transition:opacity .15s}.yago-gap:hover .lockbtn,.yago-gap.locked .lockbtn{opacity:1}`}</style>
+      <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ display: 'block', fontFamily: UI_FONT }}>
+        {/* kapak dikdörtgeninin dış hattı (sınır panellerinden çözülen alan) */}
+        <rect x={ox} y={oy} width={S} height={S} fill="#ffffff" stroke="#d6cfc4" strokeWidth={1} strokeDasharray="3 3" />
+        {/* kapaklar */}
+        {members.map((m, i) => {
+          const on = i === selectedIndex;
+          const x0 = Math.min(sx(m.u0), sx(m.u1)), x1 = Math.max(sx(m.u0), sx(m.u1)), y0 = Math.min(sy(m.v1), sy(m.v0)), y1 = Math.max(sy(m.v1), sy(m.v0));
+          const lbl = memberLabels[i] ?? String(i + 1);
+          return (
+            <g key={`door-${i}`} style={{ cursor: 'pointer' }} onClick={e => { stop(e); onSelectMember(i); }}>
+              <rect x={x0} y={y0} width={Math.max(1, x1 - x0)} height={Math.max(1, y1 - y0)} rx={1.5} fill={on ? '#fde7d3' : memberMode ? '#efe9df' : '#e9e1d3'} stroke={on ? '#ea580c' : memberMode ? '#b9b1a5' : '#8a8278'} strokeWidth={on ? 1.1 : 0.9}>
+                <title>{`Door ${lbl} · ${Math.round(m.u1 - m.u0)} × ${Math.round(m.v1 - m.v0)} mm — click to select`}</title>
+              </rect>
+              <text x={(x0 + x1) / 2} y={(y0 + y1) / 2 + fsT * 0.36} textAnchor="middle" fontSize={fsT} fontWeight={on ? 700 : 600} fill={on ? '#ea580c' : '#a8a29e'}
+                fontFamily={UI_FONT} style={{ fontVariantNumeric: 'tabular-nums', pointerEvents: 'none', userSelect: 'none' }}>{lbl}</text>
+            </g>
+          );
+        })}
+        {/* sütun genişlikleri (üstte) */}
+        {!memberMode && colPills.map(p => {
+          const locked = colWidths[p.k].locked;
+          return (
+            <g key={`col-${p.k}`} className={`yago-gap${locked ? ' locked' : ''}`}>
+              <DimArrows a={{ x: p.x0, y: p.cy }} b={{ x: p.x1, y: p.cy }} asz={asz} color={locked ? '#f59e0b' : DIM_LINE} />
+              <DimPill cx={p.cx} cy={p.cy} txt={p.txt} fs={fs} fill={locked ? '#fff7ed' : '#ffffff'} stroke={locked ? '#f97316' : 'none'} strokeWidth={locked ? 1 : 0.8}
+                color={locked ? '#c2410c' : '#44403c'} hideText={editing?.kind === 'col' && editing.k === p.k} title="Door width — click to edit" onClick={e => { stop(e); setEditing({ kind: 'col', k: p.k, v: p.txt }); }} />
+              {lockBtn(locked, p.cx + p.pw / 2 + 11, p.cy, () => onToggleColLock(p.k))}
+            </g>
+          );
+        })}
+        {/* satır yükseklikleri (solda) */}
+        {!memberMode && rowPills.map(p => {
+          const locked = rowHeights[p.k].locked;
+          return (
+            <g key={`row-${p.k}`} className={`yago-gap${locked ? ' locked' : ''}`}>
+              <DimArrows a={{ x: p.cx, y: p.y0 }} b={{ x: p.cx, y: p.y1 }} asz={asz} color={locked ? '#f59e0b' : DIM_LINE} />
+              <DimPill cx={p.cx} cy={p.cy} txt={p.txt} fs={fs} fill={locked ? '#fff7ed' : '#ffffff'} stroke={locked ? '#f97316' : 'none'} strokeWidth={locked ? 1 : 0.8}
+                color={locked ? '#c2410c' : '#44403c'} hideText={editing?.kind === 'row' && editing.k === p.k} title="Door height — click to edit" onClick={e => { stop(e); setEditing({ kind: 'row', k: p.k, v: p.txt }); }} />
+              {lockBtn(locked, p.cx, p.cy + p.ph / 2 + 11, () => onToggleRowLock(p.k))}
+            </g>
+          );
+        })}
+        {/* iki kapak arasındaki boşluk (altta / sağda) */}
+        {!memberMode && gapPillCol && (
+          <DimPill cx={gapPillCol.cx} cy={gapPillCol.cy} txt={gapTxt} fs={fsT} fill="#f3efe8" color="#57534e" hideText={editing?.kind === 'gap'} title="Gap between doors — click to edit" onClick={e => { stop(e); setEditing({ kind: 'gap', v: gapTxt }); }} />
+        )}
+        {!memberMode && gapPillRow && (
+          <DimPill cx={gapPillRow.cx} cy={gapPillRow.cy} txt={gapTxt} fs={fsT} fill="#f3efe8" color="#57534e" hideText={editing?.kind === 'gap' && !gapPillCol} title="Gap between doors — click to edit" onClick={e => { stop(e); setEditing({ kind: 'gap', v: gapTxt }); }} />
+        )}
+      </svg>
+      {editing && !memberMode && editPos && (
+        <input autoFocus type="text" inputMode="decimal" value={editing.v}
+          onChange={e => setEditing({ ...editing, v: e.target.value } as DoorEdit)}
+          onBlur={commit}
+          onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setEditing(null); }}
+          onClick={stop}
+          style={{
+            position: 'absolute', left: editPos.cx - editPos.pw / 2 - 4, top: editPos.cy - editPos.ph / 2 - 2, width: editPos.pw + 8, height: editPos.ph + 4, textAlign: 'center',
+            fontFamily: UI_FONT, fontSize: editing.kind === 'gap' ? fsT : fs, fontWeight: 600, color: '#1c1917', fontVariantNumeric: 'tabular-nums',
+            background: '#fff', border: '1px solid #f97316', borderRadius: 99, outline: 'none', boxShadow: '0 0 0 2px rgba(249,115,22,0.12)', padding: 0,
+          }} />
+      )}
+    </div>
+  );
+}
+
 /* ── SATIR YAPI TAŞLARI (hizalama sözleşmesi) ──────────────────────────────
    Goker: "W H D satırları tipi ne olursa olsun aynı hizada olmalı." Her satır
    türü (gövde paneli, raf/dikme grubu, grup üyesi) aynı sütunları kullanır:
@@ -981,9 +1155,9 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, onEditGap, 
 const ROW_NUM_W = 30;
 const ROW_TRAIL_W = 79;           // 3 × 20px düğme + 16px ok + 3px aralık
 const MEMBER_INSET = 8;           // grup kartı gövdesinin yatay dolgusu (px-2)
-type RowKind = 'body' | 'shelf' | 'divider';
-const ROW_KIND_ICON: Record<RowKind, LucideIcon> = { body: LayoutPanelTop, shelf: Rows3, divider: Columns3 };
-const ROW_KIND_TITLE: Record<RowKind, string> = { body: 'Body panel', shelf: 'Shelf', divider: 'Divider' };
+type RowKind = 'body' | 'shelf' | 'divider' | 'door';
+const ROW_KIND_ICON: Record<RowKind, LucideIcon> = { body: LayoutPanelTop, shelf: Rows3, divider: Columns3, door: DoorClosed };
+const ROW_KIND_TITLE: Record<RowKind, string> = { body: 'Body panel', shelf: 'Shelf', divider: 'Divider', door: 'Door' };
 /** SOFT SATIR + AKORDEON: satır sade kart; seçilince AYNI kart aşağı açılır. */
 const rowCardClass = (open: boolean, dragging: boolean, armed: boolean) =>
   `group/row relative flex flex-col rounded-[10px] overflow-hidden transition-[background-color,box-shadow,opacity,transform] duration-150 ease-out
@@ -997,13 +1171,15 @@ const DROP_BAND = 'pointer-events-none h-[7px] mx-1 rounded-full bg-gradient-to-
 
 /** Panel tipi işareti — tüm satırlarda aynı boyut (20×20 kutu, 13px ikon).
  *  Grup satırında adet, işaretin sağ üst köşesinde küçük rozet olarak durur. */
-function RowTypeBadge({ kind, active, count }: { kind: RowKind; active: boolean; count?: number }) {
+function RowTypeBadge({ kind, active, count, doorBound }: { kind: RowKind; active: boolean; count?: number; doorBound?: boolean }) {
   const Icon = ROW_KIND_ICON[kind];
   return (
-    <span title={count != null ? `${ROW_KIND_TITLE[kind]} · ${count} panel${count === 1 ? '' : 's'}` : ROW_KIND_TITLE[kind]}
+    <span title={(count != null ? `${ROW_KIND_TITLE[kind]} · ${count} panel${count === 1 ? '' : 's'}` : ROW_KIND_TITLE[kind]) + (doorBound ? ' · door reference' : '')}
       className={`relative shrink-0 w-5 h-5 rounded-[6px] flex items-center justify-center transition-colors duration-150
         ${active ? 'bg-orange-50 text-orange-500 ring-1 ring-orange-200/70' : 'bg-[#f5f2ec] text-stone-400 group-hover/row:text-stone-500'}`}>
       <Icon size={13} strokeWidth={2} />
+      {/* KAPAK SINIRI işareti: küçük kehribar nokta (3B'deki kehribar kenarla aynı dil). */}
+      {doorBound && count == null && <span className="absolute -bottom-[3px] -right-[3px] w-[7px] h-[7px] rounded-full bg-amber-500 ring-2 ring-[#fdfcfa]" />}
       {count != null && (
         <span className={`absolute -top-[5px] -right-[6px] min-w-[13px] h-[13px] px-[3px] rounded-full text-[8.5px] font-bold tabular-nums leading-[13px] text-center ring-2 ring-[#fdfcfa]
           ${active ? 'bg-orange-500 text-white' : 'bg-stone-500 text-white'}`}>{count}</span>
@@ -1080,6 +1256,7 @@ export function PanelEditor() {
     panelRotateValueMode, setPanelRotateValueMode, panelRotateRefArmVertex, panelRotateRefFace,
     panelGroups, selectedPanelGroupId, setSelectedPanelGroupId,
     volumePickMode, setVolumePickMode, volumePickGroupId, volumePickCandidates, volumePickIndex,
+    doorGroups, selectedDoorGroupId, setSelectedDoorGroupId, doorPickMode, setDoorPickMode, doorPickCandidates, doorPickIndex, doorPickPlacement, setDoorPickPlacement,
   } = useStoreFields('selectedShapeId', 'shapes', 'updateShape',
     'selectedPanelRow', 'setSelectedPanelRow', 'raycastMode', 'setRaycastMode',
     'virtualFaces', 'updateVirtualFace', 'deleteVirtualFace', 'reorderVirtualFaceGroup',
@@ -1095,7 +1272,10 @@ export function PanelEditor() {
     'panelRotatePivot', 'setPanelRotatePivot', 'panelRotateAxis', 'setPanelRotateAxis', 'panelRotateValue', 'setPanelRotateValue',
     'panelRotateValueMode', 'setPanelRotateValueMode', 'panelRotateRefArmVertex', 'panelRotateRefFace',
     'panelGroups', 'selectedPanelGroupId', 'setSelectedPanelGroupId',
-    'volumePickMode', 'setVolumePickMode', 'volumePickGroupId', 'volumePickCandidates', 'volumePickIndex');
+    'volumePickMode', 'setVolumePickMode', 'volumePickGroupId', 'volumePickCandidates', 'volumePickIndex',
+    'doorGroups', 'selectedDoorGroupId', 'setSelectedDoorGroupId', 'doorPickMode', 'setDoorPickMode', 'doorPickCandidates', 'doorPickIndex', 'doorPickPlacement', 'setDoorPickPlacement');
+  // Kapak grubu kartı: kalınlık / boşluk giriş taslakları.
+  const [doorDraft, setDoorDraft] = useState<{ id: string; field: 't' | 'gap'; v: string } | null>(null);
 
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
@@ -1144,14 +1324,16 @@ export function PanelEditor() {
   // üye seçiliyse kart açık sayılır ve üye ayrıca üye-düzeyi odaktır.
   const focusKeys = useMemo(() => {
     if (selectedPanelGroupId) return { row: `grp-${selectedPanelGroupId}`, member: null as string | null };
+    if (selectedDoorGroupId) return { row: `grp-${selectedDoorGroupId}`, member: null as string | null };
     if (typeof selectedPanelRow === 'string' && selectedPanelRow.startsWith('vf-')) {
       const id = selectedPanelRow.slice(3);
       const vf = virtualFaces.find(f => f.id === id);
       if (vf?.groupId && panelGroups.some(g => g.id === vf.groupId)) return { row: `grp-${vf.groupId}`, member: id };
+      if (vf?.doorGroupId && doorGroups.some(g => g.id === vf.doorGroupId)) return { row: `grp-${vf.doorGroupId}`, member: id };
       return { row: id, member: null as string | null };
     }
     return { row: null as string | null, member: null as string | null };
-  }, [selectedPanelRow, selectedPanelGroupId, virtualFaces, panelGroups]);
+  }, [selectedPanelRow, selectedPanelGroupId, selectedDoorGroupId, virtualFaces, panelGroups, doorGroups]);
   useEffect(() => {
     const prev = prevFocusRef.current;
     let center: string | null = null;
@@ -1178,8 +1360,14 @@ export function PanelEditor() {
     // Gövde değişince grup seçimi ve hacim seçme modu da düşer.
     const st = useAppStore.getState();
     if (st.selectedPanelGroupId && !st.panelGroups.some(g => g.id === st.selectedPanelGroupId && g.shapeId === selectedShapeId)) setSelectedPanelGroupId(null);
+    if (st.selectedDoorGroupId && !st.doorGroups.some(g => g.id === st.selectedDoorGroupId && g.shapeId === selectedShapeId)) setSelectedDoorGroupId(null);
     if (st.volumePickMode) setVolumePickMode(null);
+    if (st.doorPickMode) setDoorPickMode(false);
   }, [selectedShapeId]);
+  // Kapak grubu silinince seçimi düşür.
+  useEffect(() => {
+    if (selectedDoorGroupId && !doorGroups.some(g => g.id === selectedDoorGroupId)) setSelectedDoorGroupId(null);
+  }, [doorGroups, selectedDoorGroupId]);
 
   // OTOMATİK PANEL ÜRETİMİ: paneli olmayan her VF için panel yaratılır.
   useEffect(() => {
@@ -1198,7 +1386,9 @@ export function PanelEditor() {
         try {
           // İÇ PANEL (raf/dikme): kalınlık grubun ÜYE kalınlığı (şemadaki kutucuk); gövde paneli varsayılan.
           const grp = vf.groupId ? useAppStore.getState().panelGroups.find(pg => pg.id === vf.groupId) : undefined;
-          const th = grp ? memberThicknessesOf(grp)[vf.groupIndex ?? grp.memberVfIds.indexOf(vf.id)] || grp.thickness : PANEL_THICKNESS;
+          // KAPAK ÜYESİ: kalınlık kapak grubundan.
+          const dgrp = vf.doorGroupId ? useAppStore.getState().doorGroups.find(dg => dg.id === vf.doorGroupId) : undefined;
+          const th = grp ? memberThicknessesOf(grp)[vf.groupIndex ?? grp.memberVfIds.indexOf(vf.id)] || grp.thickness : dgrp ? dgrp.thickness : PANEL_THICKNESS;
           const rp = await createPanelFromVirtualFace(vf.vertices, vf.normal, th);
           if (!rp) continue;
           const g = convertReplicadToThreeGeometry(rp);
@@ -1211,7 +1401,9 @@ export function PanelEditor() {
             geometry: g, replicadShape: rp,
             parameters: { width: s[def], height: s[alt], depth: th, parentShapeId: parentShape.id, faceIndex: -(vi + 1), virtualFaceId: vf.id, arrowRotated: false,
               // İÇ PANEL (raf/dikme): grup kimliği + üye kalınlığı panele de yazılır — motor/damga/şerit sınıfı bunu okur.
-              ...(vf.groupId ? { panelGroupId: vf.groupId, panelThickness: th } : {}) },
+              ...(vf.groupId ? { panelGroupId: vf.groupId, panelThickness: th } : {}),
+              // KAPAK: grup kimliği + kalınlık panele yazılır (motor kapağı damga/engel/kesim dışında tutar).
+              ...(vf.doorGroupId ? { doorGroupId: vf.doorGroupId, panelThickness: th } : {}) },
           } as Shape);
           updateVirtualFace(vf.id, { hasPanel: true });
         } catch (e) { console.error('Auto panel creation failed:', e); }
@@ -1337,10 +1529,12 @@ export function PanelEditor() {
   // Outline ve Body/Panel seçim modu tüm menüleri kapsadığı için kenar çubuğu başlığında (Ui.Sidebar).
   const panelToolbar = (
     <ToolChipBar>
-      <ToolChip label="Body Panel" icon={LayoutPanelTop} active={raycastMode} onClick={() => { if (!raycastMode && volumePickMode) setVolumePickMode(null); setRaycastMode(!raycastMode); }} title="Add a panel on a body face" />
+      <ToolChip label="Body Panel" icon={LayoutPanelTop} active={raycastMode} onClick={() => { if (!raycastMode && volumePickMode) setVolumePickMode(null); if (!raycastMode && doorPickMode) setDoorPickMode(false); setRaycastMode(!raycastMode); }} title="Add a panel on a body face" />
       {/* Yeniden seçim (Relocate) sürerken bu çipler pasif görünür; tıklanınca yeni grup seçimine geçer (groupId düşer). */}
       <ToolChip label="Shelf" icon={Rows3} active={volumePickMode === 'shelf' && !volumePickGroupId} onClick={() => setVolumePickMode(volumePickMode === 'shelf' && !volumePickGroupId ? null : 'shelf')} title="Add shelves: pick a cavity in the 3D view" />
       <ToolChip label="Divider" icon={Columns3} active={volumePickMode === 'divider' && !volumePickGroupId} onClick={() => setVolumePickMode(volumePickMode === 'divider' && !volumePickGroupId ? null : 'divider')} title="Add vertical dividers: pick a cavity in the 3D view" />
+      {/* KAPAK (Goker): kapak sınırı işaretli panellerden adaylar — tıkla, döndür, sağ tık onayla. */}
+      <ToolChip label="Door" icon={DoorClosed} active={doorPickMode} onClick={() => setDoorPickMode(!doorPickMode)} title="Add doors: mark door references on panels (Door ref), then click a body face in the 3D view" />
     </ToolChipBar>
   );
 
@@ -1669,9 +1863,22 @@ export function PanelEditor() {
         <Icon size={12} strokeWidth={2} />{label}
       </button>
     );
+    // KAPAK SINIRI (Goker: "dikme, raf ve gövde panellerine kapak sınırı işareti koyayım"): kapak üyesi dışında her panelde.
+    const canDoorBound = !isDoorVf(vf);
+    const doorBoundOn = !!vf.doorBound;
     return (
       <div className="yago-expand px-2 pt-2 pb-2" style={{ borderTop: '1px solid #f3e6d6' }} onClick={stop}>
-        <div className="grid grid-cols-3 gap-1 mb-1.5">
+        <div className={`grid ${canDoorBound ? 'grid-cols-4' : 'grid-cols-3'} gap-1 mb-1.5`}>
+          {canDoorBound && (
+            <button type="button" disabled={!vf.hasPanel} title={doorBoundOn ? 'Door reference: ON — doors snap to this panel\'s edges' : 'Mark as door reference (door edges are built from this panel)'}
+              onClick={e => { stop(e); setVfDoorBound(vf.id, !doorBoundOn); }}
+              className={`h-[26px] min-w-0 flex items-center justify-center gap-1.5 rounded-[7px] text-[11px] font-semibold tracking-[0.01em] transition-[background-color,color,box-shadow] duration-150
+                ${!vf.hasPanel ? 'bg-white ring-1 ring-[#efeae2] text-stone-300 cursor-not-allowed'
+                  : doorBoundOn ? 'bg-amber-50 text-amber-800 ring-1 ring-amber-300 shadow-[0_1px_2px_rgba(217,119,6,0.18)]'
+                  : 'bg-white ring-1 ring-[#e6e0d6] text-stone-600 shadow-[0_1px_0_rgba(40,30,20,0.03)] hover:bg-[#faf7f2] hover:ring-[#dcd4c8] hover:text-stone-800'}`}>
+              <DoorClosed size={12} strokeWidth={2} />Door ref
+            </button>
+          )}
           {toolBtn('Extrude', MoveVertical, isExtrudingThis, () => {
             if (isExtrudingThis) setFaceExtrudeMode(false);
             else { setFaceExtrudeTargetPanelId(vp!.id); setFaceExtrudeMode(true); if (panelMoveMode) setPanelMoveMode(false); }
@@ -1716,12 +1923,15 @@ export function PanelEditor() {
     // TEK İSTİSNA — RAF/DİKME GRUBU: bir grubun üyeleri store'da bitişik durur
     // ve TEK kart olarak (ilk üyenin sırasında) gösterilir. Grup kartı = "tümünü
     // seç", üye satırı = tek panel seçimi. Grup sürüklenince tüm üyeler taşınır.
-    type Row = { kind: 'vf'; vf: VirtualFace } | { kind: 'group'; group: PanelGroup; members: VirtualFace[] };
+    // KAPAK GRUBU da aynı kuralla TEK kart (ilk üyenin sırasında).
+    type Row = { kind: 'vf'; vf: VirtualFace } | { kind: 'group'; group: PanelGroup; members: VirtualFace[] } | { kind: 'door'; group: DoorGroup; members: VirtualFace[] };
     const rows: Row[] = [];
     const seenGroups = new Set<string>();
     for (const vf of svf) {
       const g = vf.groupId ? panelGroups.find(x => x.id === vf.groupId) : undefined;
+      const dg = vf.doorGroupId ? doorGroups.find(x => x.id === vf.doorGroupId) : undefined;
       if (g) { if (!seenGroups.has(g.id)) { seenGroups.add(g.id); rows.push({ kind: 'group', group: g, members: svf.filter(m => m.groupId === g.id) }); } }
+      else if (dg) { if (!seenGroups.has(dg.id)) { seenGroups.add(dg.id); rows.push({ kind: 'door', group: dg, members: svf.filter(m => m.doorGroupId === dg.id) }); } }
       else rows.push({ kind: 'vf', vf });
     }
     const idsOf = (r: Row) => (r.kind === 'vf' ? [r.vf.id] : r.members.map(m => m.id));
@@ -1771,7 +1981,7 @@ export function PanelEditor() {
     );
 
     /* ── TEK VF SATIRI (gövde paneli ya da grup üyesi) ─────────────────── */
-    const vfRow = (vf: VirtualFace, rowIdx: number, label: string, opts: { member?: boolean; group?: PanelGroup }) => {
+    const vfRow = (vf: VirtualFace, rowIdx: number, label: string, opts: { member?: boolean; group?: PanelGroup; door?: DoorGroup }) => {
       const rowKey = vf.id;
       const dragging = !opts.member && dragIndex === rowIdx;
       const vp = panelOfVf(vf.id, shapes), ar = vp?.parameters?.arrowRotated || false, sel = selectedPanelRow === `vf-${vf.id}`;
@@ -1788,11 +1998,11 @@ export function PanelEditor() {
             <div onClick={e => { stop(e); if (sel) setSelectedPanelRow(null); else setSelectedPanelRow(`vf-${vf.id}`, sid); }}
               className="flex-1 min-w-0 relative flex items-center gap-1.5 pl-0.5 pr-1 py-[4px] cursor-pointer">
               <RowNum label={label} active={sel} small={opts.member} />
-              <RowTypeBadge kind={opts.group ? opts.group.kind : 'body'} active={sel} />
-              {opts.member && opts.group ? (
+              <RowTypeBadge kind={opts.group ? opts.group.kind : opts.door ? 'door' : 'body'} active={sel} doorBound={!!vf.doorBound} />
+              {opts.member && (opts.group || opts.door) ? (
                 // ÜYE ADI: grup adından gelir, burada DEĞİŞTİRİLEMEZ (grup satırından düzenlenir).
                 <span title="Name comes from the group (edit it on the group row)" className="flex-1 min-w-0 h-[22px] px-[5px] flex items-center text-[11.5px] font-medium text-stone-500 truncate cursor-default select-none">
-                  {groupName(opts.group)}
+                  {opts.group ? groupName(opts.group) : doorGroupName(opts.door!)}
                 </span>
               ) : (
                 <input type="text" value={vf.description || ''} onClick={stop} onChange={e => updateVirtualFace(vf.id, { description: e.target.value })}
@@ -1884,6 +2094,18 @@ export function PanelEditor() {
                   onClick={stop} style={{ ...DOCK_INPUT, flex: 'none', width: 52, height: 24, ...(autoGap ? { boxShadow: 'inset 0 0 0 1px #ea580c', color: '#9a3412' } : {}) }} />
                 <span className="flex-1" />
                 <SmallBtn title="Equal gaps (unlock all)" onClick={() => { void equalizeGroupGaps(g.id); }}><Equal size={11} strokeWidth={2.2} /><span>Equalize</span></SmallBtn>
+                {/* KAPAK SINIRI (tüm üyeler): raf/dikme grubunun her paneli kapak referansı olur / olmaz. */}
+                {(() => {
+                  const allOn = members.length > 0 && members.every(m => m.doorBound);
+                  return (
+                    <button type="button" title={allOn ? 'Door reference: ON for all panels in this group' : 'Mark all panels in this group as door references'}
+                      onClick={e => { stop(e); for (const m of members) setVfDoorBound(m.id, !allOn); }}
+                      className={`h-[24px] px-1.5 rounded-[6px] flex items-center justify-center gap-1 text-[10.5px] font-semibold transition-colors duration-150
+                        ${allOn ? 'bg-amber-50 ring-1 ring-amber-300 text-amber-800' : 'bg-white ring-1 ring-[#e6e0d6] text-stone-600 hover:bg-[#faf7f2] hover:ring-[#dcd4c8] hover:text-stone-800'}`}>
+                      <DoorClosed size={11} strokeWidth={2.2} /><span>Door ref</span>
+                    </button>
+                  );
+                })()}
                 {/* HACİM: grubun hacmine yüz extrude (fixed/dyn/ref) — tüm üyeler yeni hacme göre kısalır/uzar. */}
                 {(() => {
                   const btnCls = (on: boolean) => `h-[24px] px-2 flex items-center gap-1 rounded-[7px] text-[11px] font-semibold tracking-[0.01em] transition-[background-color,color,box-shadow] duration-150
@@ -1929,6 +2151,100 @@ export function PanelEditor() {
       );
     };
 
+
+    /* ── KAPAK GRUP KARTI (Goker, Eki 2026) — raf/dikme kartıyla aynı dil ─────
+       Üst satır: Dikeyde böl (sütun) · Yatayda böl (satır) · Eşitle; ikinci satır:
+       Dış/İç kapak · kalınlık · kapaklar arası boşluk; sonra kapak şeması ve üye satırları. */
+    const doorCard = (g: DoorGroup, members: VirtualFace[], rowIdx: number, label: string) => {
+      const rowKey = `grp-${g.id}`;
+      const selAll = selectedDoorGroupId === g.id;
+      const open = selAll || members.some(m => selectedPanelRow === `vf-${m.id}`);
+      const dimsW = round1(g.rect.u1 - g.rect.u0), dimsH = round1(g.rect.v1 - g.rect.v0);
+      const toggleAll = (e: React.MouseEvent) => { stop(e); setSelectedDoorGroupId(selAll ? null : g.id); };
+      const mKeys = members.map(m => m.id);
+      const mFocus = focusKeys.member ? mKeys.indexOf(focusKeys.member) : -1;
+      const draft = (field: 't' | 'gap', fallback: number) => (doorDraft?.id === g.id && doorDraft.field === field ? doorDraft.v : String(fallback));
+      const applyDraft = (field: 't' | 'gap') => {
+        const v = parseFloat(draft(field, field === 't' ? g.thickness : g.gap).replace(',', '.'));
+        setDoorDraft(null);
+        if (!Number.isFinite(v)) return;
+        if (field === 't') void setDoorThickness(g.id, v); else void setDoorGap(g.id, v);
+      };
+      const numInput = (field: 't' | 'gap', fallback: number, title: string) => (
+        <input type="text" inputMode="decimal" value={draft(field, fallback)} title={title}
+          onChange={e => setDoorDraft({ id: g.id, field, v: e.target.value })}
+          onBlur={() => applyDraft(field)}
+          onKeyDown={e => { if (e.key === 'Enter') applyDraft(field); if (e.key === 'Escape') setDoorDraft(null); }}
+          onClick={stop} style={{ ...DOCK_INPUT, flex: 'none', width: 44, height: 24 }} />
+      );
+      const splitCtl = (Icon: LucideIcon, lbl: string, title: string, n: number, set: (v: number) => void) => (
+        <>
+          <span style={SECTION_LABEL} title={title} className="inline-flex items-center gap-1"><Icon size={11} strokeWidth={2} />{lbl}</span>
+          <SmallBtn title="Fewer" disabled={n <= 1} onClick={() => set(n - 1)}><Minus size={11} strokeWidth={2.2} /></SmallBtn>
+          <span className="w-[22px] text-center text-[12px] font-semibold tabular-nums text-stone-700">{n}</span>
+          <SmallBtn title="More" onClick={() => set(n + 1)}><Plus size={11} strokeWidth={2.2} /></SmallBtn>
+        </>
+      );
+      const segBtn = (on: boolean, lbl: string, title: string, onClick: () => void) => (
+        <button type="button" title={title} onClick={e => { stop(e); onClick(); }}
+          className={`h-[24px] px-2 text-[10.5px] font-semibold transition-colors duration-150 ${on ? 'bg-[#44403c] text-white' : 'bg-white text-stone-600 hover:bg-[#faf7f2]'}`}>{lbl}</button>
+      );
+      return (
+        <div key={rowKey} className={rowCardClass(open, dragIndex === rowIdx, armedRowKey === rowKey)}>
+          <div className={`relative flex items-stretch ${selAll ? 'bg-[#fff8ef]' : ''}`}>
+            {selAll && <span className="pointer-events-none absolute left-0 top-[6px] bottom-[6px] w-[2px] rounded-r-full bg-orange-500/90" />}
+            {grip(rowKey, rowIdx, 'Drag to reorder (whole group)')}
+            <div onClick={toggleAll} className="flex-1 min-w-0 relative flex items-center gap-1.5 pl-0.5 pr-1 py-[4px] cursor-pointer" title={selAll ? 'Deselect all doors' : 'Select all doors in this group'}>
+              <RowNum label={label} active={selAll} />
+              <RowTypeBadge kind="door" active={open} count={g.cols * g.rows} />
+              <input type="text" value={doorGroupName(g)} onClick={stop} onChange={e => renameDoorGroup(g.id, e.target.value)} placeholder="Door"
+                title="Group name (applies to all its doors)" className={`${ROW_INPUT_CLASS} font-semibold`} />
+              <RowDims w={dimsW} h={dimsH} t={g.thickness} tLetter="T" title={`Door area width · height · thickness (${doorPlacementLabel(g.placement)} door)`} />
+              <div className="flex items-center justify-end gap-px shrink-0 ml-0.5" style={{ width: ROW_TRAIL_W }} onClick={stop}>
+                <button onClick={e => { stop(e); deleteDoorGroupWithMembers(g.id); }} title="Delete group (all doors)" className={`${ROW_DEL_CLASS} ${open ? 'opacity-100' : 'opacity-0 group-hover/row:opacity-100'}`}><Trash2 size={12} strokeWidth={1.9} /></button>
+                <RowChevron open={open} onClick={toggleAll} />
+              </div>
+            </div>
+          </div>
+          {open && (
+            <div className="yago-expand px-2 pt-2 pb-2" style={{ borderTop: '1px solid #f3e6d6', fontFamily: UI_FONT }} onClick={stop}>
+              <div className="flex items-center gap-1.5 mb-1.5">
+                {splitCtl(SplitSquareVertical, 'Split V', 'Vertical split — number of doors side by side (columns)', g.cols, n => { void setDoorSplit(g.id, n, g.rows); })}
+                <span className="w-px h-4 bg-[#efeae2] mx-0.5" />
+                {splitCtl(SplitSquareHorizontal, 'Split H', 'Horizontal split — number of doors stacked (rows)', g.rows, n => { void setDoorSplit(g.id, g.cols, n); })}
+                <span className="flex-1" />
+                <SmallBtn title="Equal sizes (unlock all)" onClick={() => { void equalizeDoorGroup(g.id); }}><Equal size={11} strokeWidth={2.2} /><span>Equalize</span></SmallBtn>
+              </div>
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <span className="inline-flex rounded-[6px] overflow-hidden ring-1 ring-[#e6e0d6]">
+                  {segBtn(g.placement === 'outer', 'Outer', 'Outer door — over the panel thicknesses, in front of the body', () => { void setDoorPlacement(g.id, 'outer'); })}
+                  {segBtn(g.placement === 'inner', 'Inner', 'Inner (inset) door — between the reference panels, flush with their front', () => { void setDoorPlacement(g.id, 'inner'); })}
+                </span>
+                <span style={{ ...SECTION_LABEL, marginLeft: 6 }}>T</span>
+                {numInput('t', g.thickness, 'Door thickness (mm)')}
+                <span style={{ ...SECTION_LABEL, marginLeft: 6 }}>Gap</span>
+                {numInput('gap', g.gap, 'Gap between doors (mm)')}
+              </div>
+              <DoorSchematic group={g} selectedIndex={g.memberVfIds.findIndex(id => selectedPanelRow === `vf-${id}`)}
+                memberLabels={g.memberVfIds.map((id, i) => { const mi = members.findIndex(m => m.id === id); return `${label}.${(mi >= 0 ? mi : i) + 1}`; })}
+                onEditCol={(k, v) => { void editDoorColWidth(g.id, k, v); }} onEditRow={(k, v) => { void editDoorRowHeight(g.id, k, v); }}
+                onToggleColLock={k => toggleDoorColLock(g.id, k)} onToggleRowLock={k => toggleDoorRowLock(g.id, k)}
+                onEditGap={v => { void setDoorGap(g.id, v); }}
+                onSelectMember={i => { const id = g.memberVfIds[i]; if (id) setSelectedPanelRow(`vf-${id}`, sid); }} />
+              <SectionHead label="Doors" count={members.length} />
+              <div className="flex flex-col gap-[2px]">
+                {members.map((m, mi) => {
+                  if (mFocus >= 0 && Math.abs(mi - mFocus) > 1) return null;
+                  const sp = settleProps(mKeys, mi);
+                  return <div key={`mw-${m.id}`} className={sp.className} style={sp.style}>{vfRow(m, rowIdx, `${label}.${mi + 1}`, { member: true, door: g })}</div>;
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    };
+
     // ODAK MODU: açık satır varsa yalnız o + üst/alt komşusu çizilir (numaralar korunur).
     const rowKeys = rows.map(rowKeyOf);
     const focusIdx = focusKeys.row ? rowKeys.indexOf(focusKeys.row) : -1;
@@ -1942,7 +2258,7 @@ export function PanelEditor() {
         <div key={`wrap-${rowKeyOf(row)}`} className={`${dropHere ? 'rounded-[10px] ring-1 ring-amber-300 bg-[#fffbf0] ' : ''}${sp.className}`} style={sp.style}
           onDragOver={e => { if (dragIndex !== null && !draggingThis) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (dropIndex !== rowIdx) setDropIndex(rowIdx); } }}
           onDrop={e => { e.preventDefault(); if (dragIndex !== null) void onRowDropBelow(dragIndex, rowIdx); }}>
-          {row.kind === 'vf' ? vfRow(row.vf, rowIdx, label, {}) : groupCard(row.group, row.members, rowIdx, label)}
+          {row.kind === 'vf' ? vfRow(row.vf, rowIdx, label, {}) : row.kind === 'door' ? doorCard(row.group, row.members, rowIdx, label) : groupCard(row.group, row.members, rowIdx, label)}
         </div>
       );
       // YERLEŞİM GÖSTERGESİ: sürüklenen öğe TAM BURAYA (bu satırın altına) yerleşecek.
@@ -1990,11 +2306,40 @@ export function PanelEditor() {
     );
   })();
 
+  /* ── KAPAK SEÇME ŞERİDİ: durum + dış/iç + onay (✓ = sağ tık) + çıkış ─────────── */
+  const doorPickDock = (() => {
+    if (!doorPickMode) return null;
+    const n = doorPickCandidates.length;
+    const ready = !!selectedShape && n > 0;
+    const cur = doorPickCandidates[doorPickIndex];
+    const boundN = selectedShape ? virtualFaces.filter(f => f.shapeId === selectedShape.id && f.doorBound && !isDoorVf(f)).length : 0;
+    const label = !selectedShape ? 'Select a body first'
+      : n === 0 ? (boundN ? `Click a body face in the 3D view · ${boundN} door ref${boundN === 1 ? '' : 's'}` : 'No door refs yet — body edges bound the door · click a body face')
+      : (() => { const r = doorPickPlacement === 'inner' ? cur.inner : cur.outer; return `Door ${doorPickIndex + 1}/${n} · ${Math.round(r.u1 - r.u0)}×${Math.round(r.v1 - r.v0)} · ${cur.boundPanelCount ? `${cur.boundPanelCount} ref${cur.boundPanelCount === 1 ? '' : 's'}` : 'body'} — left-click: next · right-click: confirm`; })();
+    const confirm = () => { if (ready && selectedShape) confirmDoorPick(selectedShape.id, doorPickCandidates[doorPickIndex]); };
+    const placementModes: DockMode[] = [
+      { key: 'outer', label: 'Outer', sub: 'Over panels', Icon: PanelTop, title: 'Outer door — covers the panel thicknesses, sits in front of the body' },
+      { key: 'inner', label: 'Inner', sub: 'Between panels', Icon: SquareDashedBottom, title: 'Inner (inset) door — fits between the reference panels, flush with their front' },
+    ];
+    return (
+      <div style={{ ...DOCK_SHELL, marginTop: 0, borderRadius: 0, border: 'none', borderBottom: '1px solid #ebe5dc', boxShadow: 'none' }}>
+        <DockModeBar modes={placementModes} active={doorPickPlacement} onPick={k => setDoorPickPlacement(k as 'outer' | 'inner')} />
+        <div style={DOCK_ROW}>
+          <span style={dockAxisTag('#44403c')}>DOOR</span>
+          <DockStatus ready={ready} text={label} />
+          <ApplyBtn enabled={ready} onClick={confirm} title="Confirm door" />
+          <ExitBtn onClick={() => setDoorPickMode(false)} />
+        </div>
+      </div>
+    );
+  })();
+
   return (
     <div className="flex flex-col h-full min-h-0">
       <style>{LIST_CSS}</style>
       <div className="px-3 py-2 border-b border-stone-100 flex items-center justify-between shrink-0">{panelToolbar}</div>
       {volumePickDock}
+      {doorPickDock}
       {selectedShape ? (
         <div className="flex-1 min-h-0 overflow-y-auto">
           <div className="px-1.5 pt-1.5 pb-2 space-y-[2px]">{renderFaceList()}</div>

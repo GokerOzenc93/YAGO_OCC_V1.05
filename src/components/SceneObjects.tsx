@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three';
 import { Line, TransformControls } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
-import { type CavityPick, type FilletInfo, Tool, ViewMode, type VirtualFace, childPanelsOf, useAppStore, useStoreFields } from '../store';
+import { type CavityPick, type DoorPick, type FilletInfo, Tool, ViewMode, type VirtualFace, childPanelsOf, useAppStore, useStoreFields } from '../store';
 import {
   type CoplanarFaceGroup, type FaceData, type Vec3, applyFillets, convertReplicadToThreeGeometry, createFaceDescriptor, createFaceHighlightGeometry,
   createGroupBoundaryEdges, edgePointsOf, effectiveBodyGeometry, flatGroupOfFace, genId, getFacePlaneAxes, getFacesAndGroups, getShapeMatrix,
@@ -14,6 +14,7 @@ import {
   GROUP_PANEL_THICKNESS, boxSpan, boxesSurface, collectObstacles, confirmRefCavityExtrude, confirmVolumePick, fmtBox, gridForObstacles, groupBoundsPanelPredicate,
   rayCavityCandidates, repickObstacles,
 } from './PanelGroupService';
+import { confirmDoorPick, doorCandidatesAt, doorSlabBox, fmtRect, isDoorPanel, rayDoorEntry } from './DoorService';
 
 /* ═══════════════════════════════════════════════════════════════════════════
    SAHNE NESNELERİ — canvas içinde şekil başına çizilen her şey:
@@ -60,6 +61,12 @@ const SEL_COLORS = {
   extrudeActive: 0x1f5578, extrudeActiveOpacity: 0.72,
   extrudeEdge: '#0f3550', extrudeEdgeWidth: 2.2,
 } as const;
+
+/**
+ * KAPAK RENKLERİ: sınır panelleri kehribar (referans dili — REF_COLORS ailesine yakın, seçim petrolünden ayrı);
+ * kapak adayı hacim seçimiyle aynı petrol dolgu + kırmızı dış çizgi (tek seçim dili).
+ */
+const DOOR_COLORS = { boundEdge: '#d97706', boundEmissive: '#6b4a10' } as const;
 
 /** Seçili yüzün SINIR çizgisi (yüz-extrude): vurgu geometrisinin dış kenarları (eş-düzlem iç dikişler elenir), her şeyin üstünde. */
 const FaceOutline: React.FC<{ geometry: THREE.BufferGeometry; color: string; width: number }> = ({ geometry, color, width }) => {
@@ -141,7 +148,7 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
     'faceExtrudeMode', 'faceExtrudeTargetPanelId', 'faceExtrudeSelectedFace', 'setFaceExtrudeSelectedFace', 'setFaceExtrudeClickPoint', 'raycastMode', 'faceExtrudeValueMode', 'faceExtrudeRefCandidate',
     'panelMoveMode', 'panelMoveValueMode', 'panelMoveTargetPanelId', 'panelMoveRefSourceVertex', 'panelMoveRefTargetPanelId', 'panelMoveRefTargetVertex',
     'panelRotateMode', 'panelRotateValueMode', 'panelRotateTargetPanelId', 'panelRotatePivot', 'panelRotateRefArmVertex', 'panelRotateAxis', 'panelRotateRefFace', 'setPanelRotateRefFace',
-    'selectedPanelGroupId', 'volumePickMode', 'volumePickGroupId');
+    'selectedPanelGroupId', 'volumePickMode', 'volumePickGroupId', 'selectedDoorGroupId', 'doorPickMode', 'virtualFaces');
   const [hoveredExtrudeGroup, setHoveredExtrudeGroup] = useState<number | null>(null);
   // Ref-move: bu panel aday olarak fare altındayken tüm panel vurgulanır.
   const [moveRefHover, setMoveRefHover] = useState(false);
@@ -152,8 +159,13 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
   const virtualFaceId = shape.parameters?.virtualFaceId;
   const isParentSelected = parentShapeId === S.selectedShapeId;
   // GRUP SEÇİMİ ("tümünü seç"): raf/dikme grubunun her üyesi seçili çizilir.
-  const isGroupSelected = isParentSelected && !!S.selectedPanelGroupId && shape.parameters?.panelGroupId === S.selectedPanelGroupId;
+  const isGroupSelected = isParentSelected && ((!!S.selectedPanelGroupId && shape.parameters?.panelGroupId === S.selectedPanelGroupId)
+    || (!!S.selectedDoorGroupId && shape.parameters?.doorGroupId === S.selectedDoorGroupId));
   const isRowSelectedRaw = isGroupSelected || (isParentSelected && !!virtualFaceId && S.selectedPanelRow === `vf-${virtualFaceId}`);
+  // KAPAK SINIRI (Goker): kapak yerleştirme modunda kapak sınırı işaretli paneller kehribar kenarla gösterilir;
+  // kapaklar (zaten yerleşmiş) saydam çizilir ki arkadaki sınır panelleri ve gövde görünsün.
+  const isDoorBoundPanel = isParentSelected && S.doorPickMode && !!virtualFaceId && !!S.virtualFaces.find(f => f.id === virtualFaceId)?.doorBound;
+  const isDoorPickGhost = isParentSelected && S.doorPickMode && isDoorPanel(shape);
 
   const edgePoints = useMemo<Vec3[] | null>(() => { try { const p = edgePointsOf(shape.geometry, EDGE_ANGLE_THRESHOLD); return p.length ? p : null; } catch { return null; } }, [shape.geometry]);
 
@@ -182,10 +194,10 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
   })();
   const isRepickXray = repickRole === 'member';
   const isRepickHidden = repickRole === 'later';
-  const isGhost = isFaceExtrudeXray || isRepickXray;
+  const isGhost = isFaceExtrudeXray || isRepickXray || isDoorPickGhost;
   // Yeniden seçimde grup kartı açık (üyeler "seçili") kalır ama saydam üyelerde seçim vurgusu/tarama çizilmez.
   const isPanelRowSelected = isRowSelectedRaw && !isRepickXray;
-  const isRaycastOnParent = (S.raycastMode || S.volumePickMode !== null) && parentShapeId && parentShapeId === S.selectedShapeId;
+  const isRaycastOnParent = (S.raycastMode || S.volumePickMode !== null || S.doorPickMode) && parentShapeId && parentShapeId === S.selectedShapeId;
   // Ref modu: referans seçimi ancak EXTRUDE EDİLECEK hedef yüz seçildikten sonra aktifleşir;
   // hedef DIŞINDAKİ her panel raycast alır (derinlik döngüsü).
   const isExtRefMode = S.faceExtrudeMode && S.faceExtrudeValueMode === 'ref' && S.faceExtrudeSelectedFace !== null;
@@ -217,14 +229,14 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
 
   const isWireframe = S.viewMode === ViewMode.WIREFRAME;
   const isXray = S.viewMode === ViewMode.XRAY;
-  const edgeColor = moveRefHighlight ? (isMoveRefTargetPanel ? '#15803d' : REF_COLORS.selectedCss) : isSelected ? PANEL_COLORS.selected.shapeEdge
+  const edgeColor = moveRefHighlight ? (isMoveRefTargetPanel ? '#15803d' : REF_COLORS.selectedCss) : isDoorBoundPanel ? DOOR_COLORS.boundEdge : isSelected ? PANEL_COLORS.selected.shapeEdge
     : isGhost ? EXTRUDE_XRAY_EDGE : PANEL_COLORS.edge.default;
-  const edgeWidth = moveRefHighlight ? EDGE_LINE_WIDTH + 0.9 : isSelected ? EDGE_LINE_WIDTH + 0.7 : EDGE_LINE_WIDTH;
+  const edgeWidth = moveRefHighlight ? EDGE_LINE_WIDTH + 0.9 : isDoorBoundPanel ? EDGE_LINE_WIDTH + 1.1 : isSelected ? EDGE_LINE_WIDTH + 0.7 : EDGE_LINE_WIDTH;
   const showHatch = isPanelRowSelected && !isWireframe;   // tarama yalnız satır seçiliyken ve dolgu görünen modlarda
 
   const handleClick = (e: any) => {
     e.stopPropagation();
-    if (S.volumePickMode) return;              // HACİM SEÇME: tıklama araca aittir
+    if (S.volumePickMode || S.doorPickMode) return;   // HACİM / KAPAK SEÇME: tıklama araca aittir
     // TAŞIMA MODU: normal panel seçimi YOK (referans döngüsü canvas seviyesinde, MoveRefPanelPicker).
     if (S.panelMoveMode) return;
     // DÖNDÜRME REF: referans YÜZ seçimi (pivot + nişan + eksen seçildi) — yalnız PANEL yüzleri aday.
@@ -251,8 +263,8 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
     onPointerDown: (e: any) => { if (isExtRefMode && isRefPickablePanel) confirmRefOnRightClick(e); },
     onContextMenu: (e: any) => { if (isRefPickablePanel || isMoveRefPickMode || isMoveRefTargetPanel) e.stopPropagation(); },
   };
-  const emissive = isPanelRowSelected ? PANEL_COLORS.selected.panelEmissive : moveRefHighlight ? (isMoveRefTargetPanel ? '#22c55e' : REF_COLORS.hoverCss) : '#2a2a2a';
-  const emissiveIntensity = isPanelRowSelected ? 1 : moveRefHighlight ? (isMoveRefTargetPanel ? 1.0 : 0.8) : 1;
+  const emissive = isPanelRowSelected ? PANEL_COLORS.selected.panelEmissive : moveRefHighlight ? (isMoveRefTargetPanel ? '#22c55e' : REF_COLORS.hoverCss) : isDoorBoundPanel ? DOOR_COLORS.boundEmissive : '#2a2a2a';
+  const emissiveIntensity = isPanelRowSelected ? 1 : moveRefHighlight ? (isMoveRefTargetPanel ? 1.0 : 0.8) : isDoorBoundPanel ? 0.55 : 1;
   const hatch = showHatch && <mesh geometry={shape.geometry} renderOrder={2} raycast={() => null}><primitive object={hatchMaterial} attach="material" /></mesh>;
   const edgeLine = (xray: boolean) => edgePoints && (
     <Line points={edgePoints} segments color={edgeColor} lineWidth={edgeWidth} transparent={false} depthTest={!xray} depthWrite={!xray}
@@ -310,7 +322,7 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
       )}
 
       {/* Hacim seçme modunda panel yön oku gizlenir (Goker: yön oku gösterilirken panel gizmo okları görünmesin); moddan çıkınca geri gelir. */}
-      {isPanelRowSelected && !isGroupSelected && !S.volumePickMode && <DirectionArrow geometry={shape.geometry} arrowRotated={shape.parameters?.arrowRotated || false} transformSteps={shape.parameters?.transformSteps} />}
+      {isPanelRowSelected && !isGroupSelected && !S.volumePickMode && !S.doorPickMode && <DirectionArrow geometry={shape.geometry} arrowRotated={shape.parameters?.arrowRotated || false} transformSteps={shape.parameters?.transformSteps} />}
     </group>
   );
 });
@@ -547,7 +559,8 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
   useEffect(() => { if (!raycastMode) { setHoveredGroupIndex(null); setPending(null); lastClickRef.current = null; } }, [raycastMode]);
   // Kısaltılmış panelin bıraktığı boşluk gezilebilsin diye GÜNCEL geometri. İÇ PANELLER (raf/dikme) de
   // girer: yeni panel her zaman sırada SONRA → mevcut dikme/raf onu basar, bölge tıklanan bölmede kalır.
-  const childPanels = useMemo(() => childPanelsOf(shape.id, allShapes), [allShapes, shape.id]);
+  // KAPAKLAR yüz yakalamada engel değildir (gövdenin önünde/arasında durur; ön yüze panel yerleştirmeyi kapatmaz).
+  const childPanels = useMemo(() => childPanelsOf(shape.id, allShapes).filter(p => !isDoorPanel(p)), [allShapes, shape.id]);
   // Aynı DÜZLEMDEKİ tüm VF'ler (bir yüzde birden çok panel olabilir).
   const groupHasVirtualFace = useCallback((gi: number): boolean => {
     if (gi < 0 || gi >= faceGroups.length || shapeVirtualFaces.length === 0) return false;
@@ -943,6 +956,96 @@ export const VolumePickOverlay: React.FC<{ shape: any; allShapes: any[] }> = ({ 
   );
 };
 
+// ── 5b. KAPAK SEÇME (Goker, Eki 2026) ─────────────────────────────────────────
+// Hacim seçimiyle aynı dil: tıklanan GÖVDE YÜZÜ kapak düzlemini verir (ön yüz → Z+); ışının
+// girdiği (u,v) noktasında kapak sınırı panellerinden kurulan dikdörtgenler büyükten küçüğe
+// (DoorService.doorCandidatesAt). Fare: ilk aday soluk; sol tık: döngü; sağ tık / ✓: grup.
+// Aday, bir PANEL GİBİ (dış/iç yerleşime göre kalınlıklı levha) petrol dolgu + kırmızı kenarla çizilir.
+const boxEdgePts = (b: { min: Vec3; max: Vec3 }): Vec3[] => {
+  const [x0, y0, z0] = b.min, [x1, y1, z1] = b.max;
+  const c: Vec3[] = [[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]];
+  const e = [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]];
+  return e.flatMap(([a, b2]) => [c[a], c[b2]]);
+};
+const DoorSlab: React.FC<{ box: { min: Vec3; max: Vec3 }; fill: number; opacity: number; edge?: string; order: number }> = ({ box, fill, opacity, edge, order }) => {
+  const geo = useMemo(() => {
+    const g = new THREE.BoxGeometry(Math.max(box.max[0] - box.min[0], 0.1), Math.max(box.max[1] - box.min[1], 0.1), Math.max(box.max[2] - box.min[2], 0.1));
+    g.translate((box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2);
+    return g;
+  }, [box.min[0], box.min[1], box.min[2], box.max[0], box.max[1], box.max[2]]);
+  useEffect(() => () => geo.dispose(), [geo]);
+  const pts = useMemo(() => boxEdgePts(box), [box.min[0], box.min[1], box.min[2], box.max[0], box.max[1], box.max[2]]);
+  return (
+    <>
+      <mesh geometry={geo} raycast={() => null} renderOrder={order}>
+        <meshBasicMaterial color={fill} transparent opacity={opacity} side={THREE.DoubleSide} depthWrite={false} />
+      </mesh>
+      {edge && <Line points={pts} segments color={edge} lineWidth={SEL_COLORS.edgeWidth} transparent={false} depthTest={false} depthWrite={false} renderOrder={order + 1} raycast={() => null} />}
+    </>
+  );
+};
+
+export const DoorPickOverlay: React.FC<{ shape: any }> = ({ shape }) => {
+  const { doorPickMode, doorPickCandidates, doorPickIndex, setDoorPick, doorPickPlacement, shapes, virtualFaces } =
+    useStoreFields('doorPickMode', 'doorPickCandidates', 'doorPickIndex', 'setDoorPick', 'doorPickPlacement', 'shapes', 'virtualFaces');
+  const [hoverPick, setHoverPick] = useState<DoorPick | null>(null);
+  const lastRef = useRef<{ keys: string; index: number } | null>(null);
+  const { worldToLocal } = useShapeMatrices(shape);
+  const body = useMemo(() => { const bb = localBboxOf(effectiveBodyGeometry(shape)); return bb ? { min: [bb.min.x, bb.min.y, bb.min.z] as Vec3, max: [bb.max.x, bb.max.y, bb.max.z] as Vec3 } : null; }, [shape.geometry, shape.vertexModifications]);
+  // Görünmez yakalama kutusu: gövde kutusundan bir tık büyük (yüzler tıklanır; kapak dışarıda da çizilebilir).
+  const pickGeo = useMemo(() => {
+    if (!body) return null;
+    const g = new THREE.BoxGeometry(body.max[0] - body.min[0] + 2, body.max[1] - body.min[1] + 2, body.max[2] - body.min[2] + 2);
+    g.translate((body.min[0] + body.max[0]) / 2, (body.min[1] + body.max[1]) / 2, (body.min[2] + body.max[2]) / 2);
+    return g;
+  }, [body]);
+  useEffect(() => () => { pickGeo?.dispose(); }, [pickGeo]);
+  useEffect(() => { if (!doorPickMode) { setHoverPick(null); lastRef.current = null; } }, [doorPickMode]);
+  const selected = doorPickCandidates[doorPickIndex] || null;
+  const slabOf = (c: DoorPick | null) => (c ? doorSlabBox({ axis: c.axis, side: c.side, placement: doorPickPlacement, thickness: 18 }, doorPickPlacement === 'inner' ? c.inner : c.outer) : null);
+  const selectedBox = useMemo(() => slabOf(selected), [selected, doorPickPlacement]);
+  const hoverBox = useMemo(() => slabOf(hoverPick), [hoverPick, doorPickPlacement]);
+
+  const candidatesFromEvent = (e: any): DoorPick[] => {
+    if (!body || !doorPickMode || !e?.ray) return [];
+    const o = e.ray.origin.clone().applyMatrix4(worldToLocal);
+    const d = e.ray.origin.clone().add(e.ray.direction).applyMatrix4(worldToLocal).sub(o).normalize();
+    const entry = rayDoorEntry([o.x, o.y, o.z], [d.x, d.y, d.z], { min: [body.min[0] - 1, body.min[1] - 1, body.min[2] - 1], max: [body.max[0] + 1, body.max[1] + 1, body.max[2] + 1] });
+    if (!entry) return [];
+    return doorCandidatesAt(shape, entry.axis, entry.side, entry.point, shapes, virtualFaces);
+  };
+  const onPointerMove = (e: any) => {
+    if (!doorPickMode) return;
+    e.stopPropagation();
+    const first = candidatesFromEvent(e)[0] || null;
+    setHoverPick(prev => (prev?.key === first?.key ? prev : first));
+  };
+  const onPointerDown = (e: any) => {
+    if (!doorPickMode) return;
+    e.stopPropagation();
+    if (e.button === 2) { if (selected) confirmDoorPick(shape.id, selected); return; }
+    if (e.button !== 0) return;
+    const c = candidatesFromEvent(e);
+    if (!c.length) { setDoorPick([], 0); lastRef.current = null; console.log('[YAGO][KAPAK] bu noktada kapak adayı yok (gövde yüzüne tıklayın)'); return; }
+    const keys = c.map(x => x.key).join(';');
+    const index = lastRef.current && lastRef.current.keys === keys ? (lastRef.current.index + 1) % c.length : 0;
+    lastRef.current = { keys, index };
+    setDoorPick(c, index);
+    const s = c[index];
+    console.log('[YAGO][KAPAK] aday', index + 1, '/', c.length, 'iç=', fmtRect(s.inner), 'dış=', fmtRect(s.outer), 'sınırPanelN=', s.boundPanelCount);
+  };
+
+  if (!doorPickMode || !pickGeo) return null;
+  const hoverIsSelected = !!hoverPick && !!selected && hoverPick.key === selected.key;
+  return (
+    <>
+      <mesh geometry={pickGeo} visible={false} onPointerMove={onPointerMove} onPointerOut={() => setHoverPick(null)} onPointerDown={onPointerDown} onContextMenu={(e: any) => e.stopPropagation()} />
+      {hoverBox && !hoverIsSelected && <DoorSlab box={hoverBox} fill={PICK_COLORS.hover} opacity={SEL_COLORS.faceHoverOpacity * 0.6} order={5} />}
+      {selectedBox && <DoorSlab box={selectedBox} fill={PICK_COLORS.selected} opacity={SEL_COLORS.faceActiveOpacity * 0.7} edge={PICK_COLORS.selectedEdge} order={6} />}
+    </>
+  );
+};
+
 // ── 6. HACİM DÜZENLEME (raf/dikme hacmine yüz extrude) ──────────────────────
 // Grubun güncel ŞEKİLLİ hacmi (bölge kutularının dış yüzeyi: L / çentik) soluk petrol dolgu
 // + ince kırmızı kenarla çizilir; yüzleri panel extrude hedefi gibi seçilir (SEL_COLORS:
@@ -1059,7 +1162,7 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
     'hoveredSubtractionIndex', 'setHoveredSubtractionIndex', 'selectedSubtractionIndex', 'setSelectedSubtractionIndex', 'showOutlines', 'setSelectedPanelRow', 'panelSelectMode',
     'faceEditMode', 'filletMode', 'raycastMode', 'shapes', 'faceExtrudeMode', 'faceExtrudeValueMode', 'faceExtrudeTargetPanelId', 'faceExtrudeSelectedFace', 'faceExtrudeRefCandidate',
     'setFaceExtrudeRefCandidate', 'panelMoveMode', 'panelMoveValueMode', 'panelMoveRefSourceVertex', 'panelMoveRefTargetPanelId', 'panelRotateMode', 'volumePickMode',
-    'faceExtrudeCavityGroupId');
+    'faceExtrudeCavityGroupId', 'doorPickMode');
   const { scene } = useThree();
   const meshRef = useRef<THREE.Mesh>(null);
   const groupRef = useRef<THREE.Group>(null);
@@ -1154,7 +1257,7 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
   // GÖVDE IŞINI (Goker: Body modunda blok TIKLAYARAK seçilebilmeli): görünmez gövde mesh'i yalnız
   // panel/yüz SEÇİMİ yapılan modlarda bastırılır; ref modları muaf. HACİM SEÇME: her zaman bastırılır
   // (olayları VolumePickOverlay'in görünmez kutusu alır).
-  const isVolumePickOnThis = S.volumePickMode !== null && isSelected;
+  const isVolumePickOnThis = (S.volumePickMode !== null || S.doorPickMode) && isSelected;
   const suppressBodyRaycast = (hasPanels && (S.panelSelectMode || S.raycastMode) && !isRefMode && !isMoveRefPickActive) || isVolumePickOnThis;
   const isMoveRefTargetPanel = S.panelMoveMode && S.panelMoveValueMode === 'ref' && !!S.panelMoveRefSourceVertex && S.panelMoveRefTargetPanelId === shape.id;
   // Gövde ref-move vurgusu: seçili referans gövde (yeşil) veya aday gövde (turuncu).
@@ -1177,7 +1280,7 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
   const hoverProps = isMoveRefPickActive ? { onPointerOver: (e: any) => { e.stopPropagation(); setMoveRefHover(true); }, onPointerOut: () => { if (moveRefHover) setMoveRefHover(false); } } : {};
   // OUTLINE GÖRÜNÜRLÜĞÜ = kullanıcı tercihi VEYA panel yerleştirme (Body Panel / Shelf / Divider
   // seçimi) sürüyor: kapalıyken bile yerleştirme boyunca görünür, bitince tercihe döner.
-  const outlinesVisible = S.showOutlines || S.raycastMode || !!S.volumePickMode;
+  const outlinesVisible = S.showOutlines || S.raycastMode || !!S.volumePickMode || S.doorPickMode;
   const outline = (color: string, width: number, depthWrite: boolean) => outlinesVisible && edgePoints && (
     <Line points={edgePoints} segments color={color} lineWidth={width} transparent={false} depthTest depthWrite={depthWrite} renderOrder={1} raycast={() => null} />
   );
@@ -1192,7 +1295,7 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
           if (S.panelMoveMode && S.panelMoveValueMode === 'ref' && !!S.panelMoveRefSourceVertex) { e.stopPropagation(); return; }
           // AKTİF PANEL ARACI: tıklama ARACA aittir; stopPropagation YOK (arkadaki panelin araç işleyicisi olayı alır).
           if (S.faceExtrudeMode || S.panelMoveMode || S.panelRotateMode) return;
-          if (S.volumePickMode) { e.stopPropagation(); return; }
+          if (S.volumePickMode || S.doorPickMode) { e.stopPropagation(); return; }
           if (S.panelSelectMode && hasPanels) return;
           e.stopPropagation();
           if (e.nativeEvent.ctrlKey || e.nativeEvent.metaKey) {
@@ -1251,6 +1354,7 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
             onHover={setHoveredRefGroup} onPointerDown={confirmRefOnRightClick} onClick={(e: any) => { e.stopPropagation(); handleRefClick(e); }} />
         )}
         {isSelected && S.volumePickMode && <VolumePickOverlay shape={shape} allShapes={S.shapes} />}
+        {isSelected && S.doorPickMode && <DoorPickOverlay shape={shape} />}
         {S.faceExtrudeMode && S.faceExtrudeCavityGroupId && <CavityEditOverlay shape={shape} />}
         <VirtualFaceOverlay shape={shape} />
       </group>
