@@ -167,14 +167,21 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
 
   const isFaceExtrudeTarget = S.faceExtrudeMode && shape.id === S.faceExtrudeTargetPanelId;
   const isFaceExtrudeXray = S.faceExtrudeMode && shape.id !== S.faceExtrudeTargetPanelId;
-  // YENİDEN HACİM SEÇİMİ X-RAY (Goker: "sıralamadan önceki panelleri göstermelisin"): taşınan gruptan
-  // SONRAKİ gövde panelleri ve grubun kendi üyeleri saydam çizilir — hacmi sınırlamazlar; öncekiler katı kalır.
-  const isRepickXray = (() => {
-    if (!S.volumePickMode || !S.volumePickGroupId || !isParentSelected) return false;
+  // YENİDEN HACİM SEÇİMİ (Goker, Eki 2026: "sıralamadan önceki panellerin durumuna göre; o raf/dikmeden
+  // SONRA yerleşen paneller hacim seçiminde görünmemeli — yalnız altındaki adımların panelleri görünmeli"):
+  // sahne, grubun adımından ÖNCEKİ duruma döner. Sırada SONRAKİ gövde panelleri ve daha sonra kurulmuş
+  // grupların üyeleri HİÇ ÇİZİLMEZ (hacmi de sınırlamazlar — repickObstacles aynı yüklemi okur); grubun
+  // kendi üyeleri mevcut yerini göstermek için saydam kalır; öncekiler katı kalır.
+  const repickRole: 'none' | 'bounds' | 'member' | 'later' = (() => {
+    if (!S.volumePickMode || !S.volumePickGroupId || !isParentSelected) return 'none';
     const st = useAppStore.getState();
     const g = st.panelGroups.find(x => x.id === S.volumePickGroupId);
-    return !!g && !groupBoundsPanelPredicate(g, st.panelGroups, st.virtualFaces)(shape);
+    if (!g) return 'none';
+    if (shape.parameters?.panelGroupId === g.id) return 'member';
+    return groupBoundsPanelPredicate(g, st.panelGroups, st.virtualFaces)(shape) ? 'bounds' : 'later';
   })();
+  const isRepickXray = repickRole === 'member';
+  const isRepickHidden = repickRole === 'later';
   const isGhost = isFaceExtrudeXray || isRepickXray;
   // Yeniden seçimde grup kartı açık (üyeler "seçili") kalır ama saydam üyelerde seçim vurgusu/tarama çizilmez.
   const isPanelRowSelected = isRowSelectedRaw && !isRepickXray;
@@ -205,6 +212,8 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
     ? null : createFaceHighlightGeometry(faces, faceGroups[S.faceExtrudeSelectedFace].faceIndices), [isFaceExtrudeTarget, S.faceExtrudeSelectedFace, faceGroups, faces]);
 
   if (!shape.geometry) return null;
+  // Yeniden seçimde gruptan SONRAKİ paneller sahneden tamamen kalkar (ne gövde, ne kenar, ne tarama).
+  if (isRepickHidden) return null;
 
   const isWireframe = S.viewMode === ViewMode.WIREFRAME;
   const isXray = S.viewMode === ViewMode.XRAY;

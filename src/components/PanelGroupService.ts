@@ -1451,7 +1451,9 @@ export function createPanelGroupFromCavity(shapeId: string, kind: PanelGroup['ki
 // mevcut yerini yeniden tıklayarak da seçebileyim; sıralamadan ÖNCEKİ panellerin
 // durumuna göre tıklatman gerek, sonrakileri seçmek mantıksız." Akış: grup kartındaki
 // Relocate → hacim seçme modu (grup kimliğiyle) → ızgara yalnız gruptan önceki
-// panellerle kurulur (repickObstacles), sonrakiler + üyeler x-ray → sağ tık / ✓ →
+// panellerle kurulur (repickObstacles); sahne de o adıma döner: sonraki paneller GİZLİ
+// (Goker, Eki 2026: "sonra yerleşen paneller görünmemeli, altındaki adımların panelleri
+// görünmeli"), üyeler x-ray (SceneObjects.PanelDrawing repickRole) → sağ tık / ✓ →
 // grup yeni hacme TAŞINIR: adet, üye kalınlıkları, ad ve VF SIRASI korunur; eksen/yön/ok
 // yeni adaydan; boşluklar aynı eksende kilit kuralıyla ölçeklenir, eksen değişince eşitlenir;
 // hacim adımları (Volume steps) eski hacme ait olduğu için düşer.
@@ -1468,7 +1470,14 @@ export function startGroupRepick(groupId: string): void {
   st.setSelectedPanelGroupId(groupId);
   st.setVolumePickMode(group.kind, groupId);
   const vfIdx = new Map(st.virtualFaces.map((f, i) => [f.id, i] as const));
-  console.log('[YAGO][HACİM-TAŞI] yeniden seçim modu açıldı', groupId, group.kind, 'sıra=', groupVfIndex(group, vfIdx), 'hacim=', fmtBox(group.cavity));
+  // Sahne gruptan ÖNCEKİ duruma döner: sınırlayan (önceki) paneller katı, sonrakiler GİZLİ, üyeler saydam.
+  const bounds = groupBoundsPanelPredicate(group, st.panelGroups, st.virtualFaces);
+  const panels = st.shapes.filter(p => p.type === 'panel' && (p.parameters as any)?.parentShapeId === group.shapeId);
+  const label = (p: Shape) => `${p.id}(sıra ${vfIdx.get((p.parameters as any)?.virtualFaceId) ?? '?'})`;
+  const shown = panels.filter(p => bounds(p)).map(label);
+  const hidden = panels.filter(p => !bounds(p) && (p.parameters as any)?.panelGroupId !== group.id).map(label);
+  console.log('[YAGO][HACİM-TAŞI] yeniden seçim modu açıldı', groupId, group.kind, 'sıra=', groupVfIndex(group, vfIdx), 'hacim=', fmtBox(group.cavity),
+    '| görünen (önceki):', shown.length ? shown.join(', ') : '—', '| GİZLENEN (sonraki):', hidden.length ? hidden.join(', ') : '—', '| üye (saydam):', group.memberVfIds.length);
 }
 
 /** Onaylanan adayla grubu taşır; üye VF'ler yeni çözümle yazılır, tam rebuild. */

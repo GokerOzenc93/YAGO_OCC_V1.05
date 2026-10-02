@@ -1796,7 +1796,7 @@ export function PanelEditor() {
                         onClick={e => { stop(e); if (on) setFaceExtrudeMode(false); else startCavityEdit(g.id); }} className={btnCls(on)}>
                         <Box size={12} strokeWidth={2} />Volume
                       </button>
-                      <button type="button" title="Relocate: pick a new volume for this group in the 3D view. Only panels placed before it in the list bound the volume; later panels and the group's own panels are shown translucent. Count, thicknesses and list order are kept."
+                      <button type="button" title="Relocate: pick a new volume for this group in the 3D view. Only panels placed before it in the list bound the volume and stay visible; later panels are hidden, the group's own panels are shown translucent. Count, thicknesses and list order are kept."
                         onClick={e => { stop(e); if (relocating) setVolumePickMode(null); else startGroupRepick(g.id); }} className={btnCls(relocating)}>
                         <Move3d size={12} strokeWidth={2} />Relocate
                       </button>
