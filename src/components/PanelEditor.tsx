@@ -11,7 +11,7 @@ import {
   type CavityBox, type PanelGroup, type Shape, type VirtualFace, childPanelsOf, panelOfVf, requestRebuild, shapeById, useAppStore, useStoreFields,
 } from '../store';
 import { ToolChip, ToolChipBar, UI_FONT } from './Ui';
-import { convertReplicadToThreeGeometry, createPanelFromVirtualFace, dominantAxisLabel, genId, getFacesAndGroups, isFlatNormal, localBboxOf, round1 } from './Geometry';
+import { axisDirToVec, convertReplicadToThreeGeometry, createPanelFromVirtualFace, dominantAxisLabel, genId, getFacesAndGroups, isFlatNormal, localBboxOf, round1 } from './Geometry';
 import {
   confirmPanelMoveRef, confirmPanelRotateRef, confirmRefFaceExtrude, deleteExtrudeStep, deleteTransformStep, executeFaceExtrude, executePanelMove,
   executePanelMoveFixed, executePanelRotate, findExistingStepForFace, updateExtrudeStep, updateTransformStep,
@@ -45,6 +45,71 @@ function geoAxes(geo: THREE.BufferGeometry) {
 /** Şu anda paneli üretilmekte olan VF id'leri (otomatik panel üretimi yarış koruması). */
 const _creatingPanelForVf = new Set<string>();
 
+/* ── PANEL ÇERÇEVESİ: dönüşten arındırılmış geometri ─────────────────────
+   KÖK NEDEN (Goker: "panel döndürüldüğünde preview görünümünü de döndürüyor…
+   gereksiz 2 kere ölçü okları"): önizleme ve satır ölçüleri panelin GÖVDE-YEREL
+   geometrisinden okunuyordu; dönmüş panelde eksen-hizalı kutu eğik olduğundan
+   görünüm dönüyor, kutu ölçüleri (683/542) gerçek ölçü yerine geçiyor ve dönmüş
+   üst yüzün kenarları "kesim" sanılıp aynı ölçü ikinci kez çiziliyordu. Burada
+   panel KENDİ çerçevesine geri alınır: dönüş adımlarının birleşik dönüşü
+   (PanelEngine.composeSteps ile aynı sıra — pivot gereksiz) tersine uygulanır;
+   adımsız eğik levhada (eğik gövde yüzü) en büyük yüzün normali en yakın eksene
+   çevrilir. Pahlı uçlar, çentikler kendi düzleminde olduğu gibi kalır. */
+const _frameCache = new WeakMap<THREE.BufferGeometry, { key: string; geo: THREE.BufferGeometry; inv: THREE.Quaternion }>();
+function stepsFrameQuat(steps: any[] | undefined): THREE.Quaternion {
+  const frame = new THREE.Quaternion();
+  for (const st of steps || []) {
+    if (st?.type !== 'rotate') continue;
+    const deg = typeof st.resolvedValue === 'number' ? st.resolvedValue : (st.value || 0);
+    if (Math.abs(deg) < 1e-9) continue;
+    const axis = Array.isArray(st.axisVec) ? new THREE.Vector3(st.axisVec[0], st.axisVec[1], st.axisVec[2]).normalize() : axisDirToVec(String(st.axis || 'y') + '+');
+    const worldAxis = axis.applyQuaternion(frame).normalize();
+    frame.premultiply(new THREE.Quaternion().setFromAxisAngle(worldAxis, (deg * Math.PI) / 180));
+  }
+  return frame;
+}
+/** En büyük toplam alanlı yüz normali (işaret: ilk sıfırdan farklı bileşen pozitif). */
+function largestFaceNormal(geo: THREE.BufferGeometry): THREE.Vector3 | null {
+  const pos = geo.getAttribute('position') as THREE.BufferAttribute | undefined; if (!pos) return null;
+  const idx = geo.getIndex(); const cnt = idx ? idx.count : pos.count; const at = (k: number) => (idx ? idx.getX(k) : k);
+  const bins = new Map<string, { n: THREE.Vector3; a: number }>();
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), n = new THREE.Vector3();
+  for (let t = 0; t + 2 < cnt; t += 3) {
+    a.fromBufferAttribute(pos, at(t)); b.fromBufferAttribute(pos, at(t + 1)); c.fromBufferAttribute(pos, at(t + 2));
+    n.crossVectors(b.sub(a), c.sub(a)); const area = n.length() / 2; if (area < 1e-6) continue;
+    n.divideScalar(area * 2);
+    if (n.x < -1e-6 || (Math.abs(n.x) <= 1e-6 && n.y < -1e-6) || (Math.abs(n.x) <= 1e-6 && Math.abs(n.y) <= 1e-6 && n.z < 0)) n.negate();
+    const key = `${n.x.toFixed(2)},${n.y.toFixed(2)},${n.z.toFixed(2)}`;
+    const e = bins.get(key); if (e) e.a += area; else bins.set(key, { n: n.clone(), a: area });
+  }
+  let best: { n: THREE.Vector3; a: number } | null = null;
+  bins.forEach(e => { if (!best || e.a > best.a) best = e; });
+  return best ? (best as { n: THREE.Vector3 }).n.clone() : null;
+}
+/** Panelin kendi çerçevesindeki geometrisi (dönüşsüz panelde geometrinin kendisi) + uygulanan ters dönüş. */
+export function panelFrameOf(shape: Shape | undefined | null): { geo: THREE.BufferGeometry; inv: THREE.Quaternion } | null {
+  const geo = shape?.geometry as THREE.BufferGeometry | undefined; if (!geo) return null;
+  const steps: any[] = shape?.parameters?.transformSteps || [];
+  const key = steps.filter(s => s?.type === 'rotate').map(s => `${s.axis}${Array.isArray(s.axisVec) ? s.axisVec.map((v: number) => v.toFixed(3)).join('/') : ''}:${typeof s.resolvedValue === 'number' ? s.resolvedValue : s.value}`).join('|');
+  const hit = _frameCache.get(geo); if (hit && hit.key === key) return { geo: hit.geo, inv: hit.inv };
+  const inv = stepsFrameQuat(steps).invert();
+  let out = geo;
+  if (Math.abs(inv.w) < 0.9999999) { out = geo.clone(); out.applyQuaternion(inv); }
+  // Adımsız eğim (eğik gövde yüzüne oturan levha): en büyük yüz normali en yakın eksene.
+  const n = largestFaceNormal(out);
+  if (n && !isFlatNormal(n, 0.9999)) {
+    const ax = [Math.abs(n.x), Math.abs(n.y), Math.abs(n.z)]; const i = ax.indexOf(Math.max(...ax));
+    const target = new THREE.Vector3().setComponent(i, Math.sign(n.getComponent(i)) || 1);
+    const q2 = new THREE.Quaternion().setFromUnitVectors(n.clone().normalize(), target);
+    if (out === geo) out = geo.clone();
+    out.applyQuaternion(q2); inv.premultiply(q2);
+  }
+  if (out !== geo) { out.computeBoundingBox(); out.computeBoundingSphere(); }
+  _frameCache.set(geo, { key, geo: out, inv });
+  return { geo: out, inv };
+}
+const panelFrameGeometry = (shape: Shape | undefined | null) => panelFrameOf(shape)?.geo ?? null;
+
 function getDimsFromGeo(geo: THREE.BufferGeometry, arrowRotated?: boolean, panelThickness?: number) {
   const r = geoAxes(geo); if (!r) return null;
   const pa = r.axes.slice(1).map(a => a.i).sort((a, b) => a - b);
@@ -56,8 +121,11 @@ function getDimsFromGeo(geo: THREE.BufferGeometry, arrowRotated?: boolean, panel
   const thickness = (panelThickness != null && panelThickness > 0) ? round1(panelThickness) : round1(s[r.axes[0].i]);
   return { primary: round1(s[target]), secondary: round1(s[secondary]), thickness };
 }
-const panelDims = (p: Shape | undefined | null) =>
-  p?.geometry ? getDimsFromGeo(p.geometry, p.parameters?.arrowRotated, parseFloat(p.parameters?.panelThickness) || 18) : null;
+/** Satır ölçüleri (W/H/T): panelin KENDİ çerçevesinden — dönmüş panelde de gerçek en/boy. */
+const panelDims = (p: Shape | undefined | null) => {
+  const geo = panelFrameGeometry(p);
+  return geo ? getDimsFromGeo(geo, p!.parameters?.arrowRotated, parseFloat(p!.parameters?.panelThickness) || 18) : null;
+};
 
 type Pt = { x: number; y: number };
 const project3D = (p: THREE.Vector3, camera: THREE.Camera, w: number, h: number): Pt => {
@@ -68,7 +136,15 @@ const project3D = (p: THREE.Vector3, camera: THREE.Camera, w: number, h: number)
 /* ── Kesim (çıkarma) ölçü geometrisi ─────────────────────────────────────
    Her kesim iki ölçü verir (en + boy). Her biri kesim kenarının hemen
    dışına, en yakın panel kenarına doğru itilir; iki çizgi hiç kesişmez. */
-interface GroundDimWorld { fa: THREE.Vector3; fb: THREE.Vector3; da: THREE.Vector3; db: THREE.Vector3; length: number; }
+interface GroundDimWorld { fa: THREE.Vector3; fb: THREE.Vector3; da: THREE.Vector3; db: THREE.Vector3; length: number; along?: number; }
+/* GEREKSİZ KESİM ÖLÇÜSÜ ELEME (Goker: "bazen çok gereksiz 2 kere ölçü okları
+   görüyorum"): panelin tam enini/boyunu kaplayan bir "kesim" (pahlı ucun üst
+   yüz kenarı, dönmüş yüz kenarı, tam boy kanal) dış ölçünün kopyasıdır → dış
+   ölçü zaten çizildiğinden atılır. Hem gömülü kesimler hem çıkarma araçları. */
+const CUT_FULL_SPAN = 0.9;
+function dropFullSpanCuts(dims: GroundDimWorld[], span0: number, span1: number, p0: number): GroundDimWorld[] {
+  return dims.filter(d => d.length < CUT_FULL_SPAN * (d.along === p0 ? span0 : span1));
+}
 const KEYS = ['x', 'y', 'z'] as const;
 /** Kalınlık ekseni dışındaki iki düzlem ekseni + anahtarları. */
 function planarAxes(thinAxis: number) {
@@ -85,21 +161,22 @@ function cutBoxToDims(
   if (w0 > 0.5) {
     const nearMin1 = (mn1 - pMin1) <= (pMax1 - mx1);
     const hEdge = nearMin1 ? mn1 : mx1, hOff = nearMin1 ? hEdge - gap : hEdge + gap;
-    dims.push({ fa: mk(mn0, hEdge), fb: mk(mx0, hEdge), da: mk(mn0, hOff), db: mk(mx0, hOff), length: Math.round(w0) });
+    dims.push({ fa: mk(mn0, hEdge), fb: mk(mx0, hEdge), da: mk(mn0, hOff), db: mk(mx0, hOff), length: Math.round(w0), along: p0 });
   }
   if (w1 > 0.5) {
     const nearMin0 = (mn0 - pMin0) <= (pMax0 - mx0);
     const wEdge = nearMin0 ? mn0 : mx0, wOff = nearMin0 ? wEdge - gap : wEdge + gap;
-    dims.push({ fa: mk(wEdge, mn1), fb: mk(wEdge, mx1), da: mk(wOff, mn1), db: mk(wOff, mx1), length: Math.round(w1) });
+    dims.push({ fa: mk(wEdge, mn1), fb: mk(wEdge, mx1), da: mk(wOff, mn1), db: mk(wOff, mx1), length: Math.round(w1), along: p1 });
   }
   return dims;
 }
 
 /** Çıkarma araçlarından kesim ölçüleri (panelin üst yüzüne yerleşir). */
-function cutDimsFromSubGeos(subGeos: any[], panelBbox: THREE.Box3, panelSize: THREE.Vector3, thinAxis: number, nDir: THREE.Vector3): GroundDimWorld[] {
+function cutDimsFromSubGeos(subGeos: any[], panelBbox: THREE.Box3, panelSize: THREE.Vector3, thinAxis: number, nDir: THREE.Vector3, frame?: THREE.Matrix4): GroundDimWorld[] {
   const { p0, p1, k0, k1, thinKey } = planarAxes(thinAxis);
   const topVal = nDir.getComponent(thinAxis) > 0 ? panelBbox.max[thinKey] : panelBbox.min[thinKey];
   const gap = Math.min(panelSize.getComponent(p0), panelSize.getComponent(p1)) * 0.045;
+  const span0 = panelSize.getComponent(p0), span1 = panelSize.getComponent(p1);
   const out: GroundDimWorld[] = [];
   const v = new THREE.Vector3();
   subGeos.forEach(sg => {
@@ -110,12 +187,13 @@ function cutDimsFromSubGeos(subGeos: any[], panelBbox: THREE.Box3, panelSize: TH
     let mn0 = Infinity, mx0 = -Infinity, mn1 = Infinity, mx1 = -Infinity;
     for (let i = 0; i < pos.count; i++) {
       v.set(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(rotM).add(off);
+      if (frame) v.applyMatrix4(frame);   // panel çerçevesine (dönmüş panelde araç da birlikte döner)
       const c0 = v.getComponent(p0), c1 = v.getComponent(p1);
       mn0 = Math.min(mn0, c0); mx0 = Math.max(mx0, c0); mn1 = Math.min(mn1, c1); mx1 = Math.max(mx1, c1);
     }
     mn0 = Math.max(mn0, panelBbox.min[k0]); mx0 = Math.min(mx0, panelBbox.max[k0]);
     mn1 = Math.max(mn1, panelBbox.min[k1]); mx1 = Math.min(mx1, panelBbox.max[k1]);
-    out.push(...cutBoxToDims(mn0, mx0, mn1, mx1, topVal, p0, p1, thinAxis, panelBbox.min[k0], panelBbox.max[k0], panelBbox.min[k1], panelBbox.max[k1], gap));
+    out.push(...dropFullSpanCuts(cutBoxToDims(mn0, mx0, mn1, mx1, topVal, p0, p1, thinAxis, panelBbox.min[k0], panelBbox.max[k0], panelBbox.min[k1], panelBbox.max[k1], gap), span0, span1, p0));
   });
   return out;
 }
@@ -172,7 +250,9 @@ function computeCutDimsWorld(geometry: THREE.BufferGeometry, thinAxis: number, n
     let mn0 = Infinity, mx0 = -Infinity, mn1 = Infinity, mx1 = -Infinity;
     arr.forEach(s => { mn0 = Math.min(mn0, s.a0, s.b0); mx0 = Math.max(mx0, s.a0, s.b0); mn1 = Math.min(mn1, s.a1, s.b1); mx1 = Math.max(mx1, s.a1, s.b1); });
     if ((mx0 - mn0) <= span0 * 0.02 && (mx1 - mn1) <= span1 * 0.02) return;
-    const dd = cutBoxToDims(mn0, mx0, mn1, mx1, topVal, p0, p1, thinAxis, bbox.min[k0], bbox.max[k0], bbox.min[k1], bbox.max[k1], gap);
+    // Yüzün tamamını kaplayan kenar kümesi (pah / eğik yüz dış hattı) kesim değildir.
+    if ((mx0 - mn0) >= span0 * CUT_FULL_SPAN && (mx1 - mn1) >= span1 * CUT_FULL_SPAN) return;
+    const dd = dropFullSpanCuts(cutBoxToDims(mn0, mx0, mn1, mx1, topVal, p0, p1, thinAxis, bbox.min[k0], bbox.max[k0], bbox.min[k1], bbox.max[k1], gap), span0, span1, p0);
     out.push(...dd); count += dd.length;
   });
   return out;
@@ -192,7 +272,7 @@ function computeGroundDimWorld(geometry: THREE.BufferGeometry, wIdx: number, hId
   const cMin = cen.clone().setComponent(thinAxis, bbox.min[thinKey]);
   const groundVal = cMin.dot(up) <= cMax.dot(up) ? bbox.min[thinKey] : bbox.max[thinKey];
   const wExt = size.getComponent(wIdx), hExt = size.getComponent(hIdx);
-  const gOff = Math.max(wExt, hExt) * 0.16;
+  const gOff = Math.max(wExt, hExt) * 0.12;
   const mk = (wv: number, hv: number) => new THREE.Vector3().setComponent(wIdx, wv).setComponent(hIdx, hv).setComponent(thinAxis, groundVal);
   const he = bbox.max[hKey], we = bbox.max[wKey];
   return [
@@ -206,19 +286,26 @@ interface GroundRender { fa: Pt; fb: Pt; da: Pt; db: Pt; cx: number; cy: number;
 /* ── ORTAK ÖLÇÜ ÇİZİMİ (SVG) — önizleme ve raf şeması aynı dili konuşur ──
    ince uzatma çizgileri (isteğe bağlı), oklu ölçü çizgisi, beyaz yuvarlak
    pill, tabular sayı. */
-const pillSize = (txt: string, fs: number) => ({ pw: Math.max(txt.length * fs * 0.62 + 12, 30), ph: fs + 8 });
+const pillSize = (txt: string, fs: number) => ({ pw: Math.max(txt.length * fs * 0.6 + 10, 26), ph: fs + 6 });
+/* ÖLÇÜ DİLİ (Goker: "daha şık ve minimal"): kıl-çizgi ölçü hattı, dolu üçgen
+   yerine ince AÇIK ok ucu (teknik resim), kenarsız beyaz etiket. Önizleme ve
+   raf/dikme şeması aynı bileşenleri kullanır → tek dil. */
+const DIM_LINE = '#b8b0a4';
+const DIM_EXT = '#ddd6ca';
 function DimArrows({ a, b, asz, color }: { a: Pt; b: Pt; asz: number; color: string }) {
   const dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy) || 1;
   const ux = dx / L, uy = dy / L, px = -uy, py = ux;
+  const k = 0.42;   // ok kolu açıklığı
+  const head = (x: number, y: number, sx: number, sy: number) =>
+    `M${(x + sx * asz + px * asz * k).toFixed(1)},${(y + sy * asz + py * asz * k).toFixed(1)} L${x.toFixed(1)},${y.toFixed(1)} L${(x + sx * asz - px * asz * k).toFixed(1)},${(y + sy * asz - py * asz * k).toFixed(1)}`;
   return (
     <>
-      <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={color} strokeWidth={1} />
-      <polygon points={`${a.x},${a.y} ${a.x + ux * asz + px * asz * 0.38},${a.y + uy * asz + py * asz * 0.38} ${a.x + ux * asz - px * asz * 0.38},${a.y + uy * asz - py * asz * 0.38}`} fill={color} />
-      <polygon points={`${b.x},${b.y} ${b.x - ux * asz + px * asz * 0.38},${b.y - uy * asz + py * asz * 0.38} ${b.x - ux * asz - px * asz * 0.38},${b.y - uy * asz - py * asz * 0.38}`} fill={color} />
+      <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={color} strokeWidth={0.8} />
+      <path d={`${head(a.x, a.y, ux, uy)} ${head(b.x, b.y, -ux, -uy)}`} fill="none" stroke={color} strokeWidth={0.9} strokeLinecap="round" strokeLinejoin="round" />
     </>
   );
 }
-function DimPill({ cx, cy, txt, fs, fill = '#ffffff', stroke = '#e6e0d6', strokeWidth = 0.8, color = '#44403c', hideText, onClick, title }: {
+function DimPill({ cx, cy, txt, fs, fill = '#ffffff', stroke = 'none', strokeWidth = 0.8, color = '#57534e', hideText, onClick, title }: {
   cx: number; cy: number; txt: string; fs: number; fill?: string; stroke?: string; strokeWidth?: number; color?: string;
   hideText?: boolean; onClick?: (e: React.MouseEvent) => void; title?: string;
 }) {
@@ -228,7 +315,7 @@ function DimPill({ cx, cy, txt, fs, fill = '#ffffff', stroke = '#e6e0d6', stroke
       <rect x={cx - pw / 2} y={cy - ph / 2} width={pw} height={ph} rx={ph / 2} fill={fill} stroke={stroke} strokeWidth={strokeWidth}
         style={onClick ? { cursor: 'text' } : undefined} onClick={onClick}>{title && <title>{title}</title>}</rect>
       {!hideText && (
-        <text x={cx} y={cy + fs * 0.36} textAnchor="middle" fontSize={fs} fontWeight={600} fill={color} fontFamily={UI_FONT}
+        <text x={cx} y={cy + fs * 0.36} textAnchor="middle" fontSize={fs} fontWeight={500} fill={color} fontFamily={UI_FONT}
           style={{ fontVariantNumeric: 'tabular-nums', pointerEvents: 'none' }}>{txt}</text>
       )}
     </>
@@ -422,7 +509,7 @@ const subXform = (sg: any) => {
 };
 
 /* ── Panel önizlemesi — sabit dimetrik görünüm, sağ/sol yörünge, zemin ölçüleri ── */
-function PanelPreview2D({ shape, arrowRotated }: { shape: Shape; arrowRotated?: boolean }) {
+export function PanelPreview2D({ shape, arrowRotated }: { shape: Shape; arrowRotated?: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [ground, setGround] = useState<GroundRender[]>([]);
@@ -452,6 +539,12 @@ function PanelPreview2D({ shape, arrowRotated }: { shape: Shape; arrowRotated?: 
     if (!canvas || !shape?.geometry || w <= 0 || h <= 0) return;
     const renderer = getSharedPreviewRenderer();
     if (!renderer) return;
+    // PANELİN KENDİ ÇERÇEVESİ: dönüş adımları / eğim geri alınır — görünüm ve ölçüler
+    // her zaman levhanın düz halidir (pah/çentik kendi düzleminde kalır).
+    const frame = panelFrameOf(shape)!;
+    const frameGeo = frame.geo;
+    const frameM = new THREE.Matrix4().makeRotationFromQuaternion(frame.inv);
+    const unrotated = Math.abs(frame.inv.w) > 0.9999999;
 
     const dpr = window.devicePixelRatio;
     canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
@@ -464,10 +557,10 @@ function PanelPreview2D({ shape, arrowRotated }: { shape: Shape; arrowRotated?: 
     // KLON: paylaşılan renderer, çizdiği geometrinin GPU tamponlarını kendi
     // bağlamında tutar. Klon çizimden sonra dispose edilir → önizleme
     // bağlamında kalıcı tampon kalmaz; ana sahnenin geometrisine dokunulmaz.
-    const previewGeo = shape.geometry.clone();
+    const previewGeo = frameGeo.clone();
     disposables.push(material, previewGeo);
     scene.add(new THREE.Mesh(previewGeo, material));
-    scene.add(fatLines(shape.geometry, PREVIEW_EDGE_COLOR, 1.0, w, h, disposables));
+    scene.add(fatLines(frameGeo, PREVIEW_EDGE_COLOR, 0.9, w, h, disposables));
 
     const bbox = new THREE.Box3().setFromObject(scene);
     const sz = new THREE.Vector3(), center = new THREE.Vector3();
@@ -513,9 +606,10 @@ function PanelPreview2D({ shape, arrowRotated }: { shape: Shape; arrowRotated?: 
 
     const subGeos: any[] = Array.isArray(shape.subtractionGeometries) ? shape.subtractionGeometries : [];
     const allDimsW = [
-      ...computeGroundDimWorld(shape.geometry, wIdx, hIdx, minIdx, upW),
-      ...(subGeos.length ? cutDimsFromSubGeos(subGeos, bbox, sz, minIdx, nDir) : computeCutDimsWorld(shape.geometry, minIdx, nDir)),
+      ...computeGroundDimWorld(frameGeo, wIdx, hIdx, minIdx, upW),
+      ...(subGeos.length ? cutDimsFromSubGeos(subGeos, bbox, sz, minIdx, nDir, unrotated ? undefined : frameM) : computeCutDimsWorld(frameGeo, minIdx, nDir)),
     ];
+    if (!unrotated) console.log('[YAGO][ÖNİZLEME] panel kendi çerçevesinde çizildi', shape.id, 'boyut=', [sz.x, sz.y, sz.z].map(v => v.toFixed(0)).join('x'), 'ölçüN=', allDimsW.length);
 
     // Kamera sığdırma: kutu köşeleri + tüm ölçü uçları görünür alana sığar.
     const allW: THREE.Vector3[] = [];
@@ -538,8 +632,9 @@ function PanelPreview2D({ shape, arrowRotated }: { shape: Shape; arrowRotated?: 
     subGeos.forEach((sg: any) => {
       if (!sg?.geometry) return;
       const { rotM, off } = subXform(sg);
-      const sgLines = fatLines(sg.geometry, 0xd97706, 1.4, w, h, disposables);
+      const sgLines = fatLines(sg.geometry, 0xd97706, 1.2, w, h, disposables);
       sgLines.matrix.copy(rotM); sgLines.matrix.setPosition(off);
+      if (!unrotated) sgLines.matrix.premultiply(frameM);   // araç da panel çerçevesine
       sgLines.matrixAutoUpdate = false;
       scene.add(sgLines);
     });
@@ -552,7 +647,7 @@ function PanelPreview2D({ shape, arrowRotated }: { shape: Shape; arrowRotated?: 
     renderer.renderLists.dispose();
 
     // ── Ölçüleri izdüşür (dış + kesim aynı stil) ve çakışmaları çöz ──
-    const fsG = Math.max(10, Math.min(13.5, w * 0.027));
+    const fsG = Math.max(10, Math.min(12.5, w * 0.025));
     const items = allDimsW.map(d => {
       const fa = project3D(d.fa, camera, w, h), fb = project3D(d.fb, camera, w, h), da = project3D(d.da, camera, w, h), db = project3D(d.db, camera, w, h);
       const ox = da.x - fa.x, oy = da.y - fa.y, l = Math.hypot(ox, oy) || 1;
@@ -568,7 +663,8 @@ function PanelPreview2D({ shape, arrowRotated }: { shape: Shape; arrowRotated?: 
       return { fa: it.fa, fb: it.fb, da: { x: it.da.x + it.out.x * push, y: it.da.y + it.out.y * push }, db: { x: it.db.x + it.out.x * push, y: it.db.y + it.out.y * push }, cx, cy, value: it.length };
     }));
     disposables.forEach(d => d.dispose());
-  }, [shape?.geometry?.uuid, arrowRotated, az, canvasSize.w, canvasSize.h]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shape?.geometry?.uuid, panelFrameOf(shape)?.geo, arrowRotated, az, canvasSize.w, canvasSize.h]);
 
   const onPointerDown = (e: React.PointerEvent) => {
     dragRef.current = { x: e.clientX, az: azRef.current };
@@ -576,19 +672,19 @@ function PanelPreview2D({ shape, arrowRotated }: { shape: Shape; arrowRotated?: 
   };
   const onPointerMove = (e: React.PointerEvent) => { const d = dragRef.current; if (d) setAz(Math.max(-55, Math.min(55, d.az + (e.clientX - d.x) * 0.35))); };
   const onPointerUp = () => { dragRef.current = null; };
-  const fsG = Math.max(10, Math.min(13.5, canvasSize.w * 0.027));
-  const asz = Math.max(5, Math.min(9, canvasSize.w * 0.017));
+  const fsG = Math.max(10, Math.min(12.5, canvasSize.w * 0.025));
+  const asz = Math.max(4, Math.min(6.5, canvasSize.w * 0.014));
 
   return (
     <div ref={wrapRef} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerLeave={onPointerUp}
       style={{ position: 'absolute', inset: 0, userSelect: 'none', cursor: 'ew-resize', touchAction: 'none' }}>
-      <canvas ref={canvasRef} style={{ display: 'block', position: 'absolute', inset: 0, width: '100%', height: '100%', filter: 'drop-shadow(0 18px 22px rgba(50,40,30,0.12)) drop-shadow(0 2px 3px rgba(50,40,30,0.08))' }} />
+      <canvas ref={canvasRef} style={{ display: 'block', position: 'absolute', inset: 0, width: '100%', height: '100%', filter: 'drop-shadow(0 10px 14px rgba(50,40,30,0.07))' }} />
       <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'visible' }} viewBox={`0 0 ${canvasSize.w} ${canvasSize.h}`}>
         {ground.map((d, i) => (
           <g key={`gd-${i}`}>
-            <line x1={d.fa.x} y1={d.fa.y} x2={d.da.x} y2={d.da.y} stroke="#cfc6b9" strokeWidth="0.8" />
-            <line x1={d.fb.x} y1={d.fb.y} x2={d.db.x} y2={d.db.y} stroke="#cfc6b9" strokeWidth="0.8" />
-            <DimArrows a={d.da} b={d.db} asz={asz} color="#a39a8f" />
+            <line x1={d.fa.x} y1={d.fa.y} x2={d.da.x} y2={d.da.y} stroke={DIM_EXT} strokeWidth="0.7" />
+            <line x1={d.fb.x} y1={d.fb.y} x2={d.db.x} y2={d.db.y} stroke={DIM_EXT} strokeWidth="0.7" />
+            <DimArrows a={d.da} b={d.db} asz={asz} color={DIM_LINE} />
             <DimPill cx={d.cx} cy={d.cy} txt={String(d.value)} fs={fsG} />
           </g>
         ))}
@@ -607,6 +703,7 @@ function PanelPreview2D({ shape, arrowRotated }: { shape: Shape; arrowRotated?: 
    tıklayınca. Levhanın öbür ucunda liste numarası (6.1, 6.2 …). Kalınlık
    değişince boşluklar Σkalınlığa göre yeniden eşitlenir (girilen korunur). */
 const SCHEMA_PAD = 34;
+const SCHEMA_MEMBER_HEIGHT = 230;
 /** Bölge kutularının (h,v) eksenlerine izdüşüm maskesi: düzlemler + dolu hücre sorgusu. */
 function regionMask(boxes: CavityBox[], h: number, v: number) {
   const hsSet = new Set<number>(), vsSet = new Set<number>();
@@ -619,7 +716,7 @@ function regionMask(boxes: CavityBox[], h: number, v: number) {
   return { hs, vs, filled };
 }
 type SchemaEdit = { kind: 'gap'; k: number; v: string } | { kind: 't'; i: number; v: string };
-function GroupSchematic({ group, selectedIndex, memberLabels, onEditGap, onToggleLock, onEditThickness, onSelectMember }: {
+export function GroupSchematic({ group, selectedIndex, memberLabels, onEditGap, onToggleLock, onEditThickness, onSelectMember }: {
   group: PanelGroup; selectedIndex: number;
   /** Şema sırasındaki (geometrik) üye i'nin liste numarası — "6.1" gibi. */
   memberLabels: string[];
@@ -635,12 +732,18 @@ function GroupSchematic({ group, selectedIndex, memberLabels, onEditGap, onToggl
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
-  useEffect(() => { setEditing(null); }, [group.id, group.count]);
+  useEffect(() => { setEditing(null); }, [group.id, group.count, selectedIndex >= 0]);
 
   const { cavity, gaps, axis } = group;
   const ts = memberThicknessesOf(group);
   const barsHorizontal = axis === 1;
-  const height = PREVIEW_HEIGHT;
+  // ÜYE MODU (Goker: "şema ile panel önizlemesi karışıyor; üye seçiliyken şema
+  // sadeleşsin"): bir üye seçiliyken şema yalnız bir SEÇİCİ olur — küçük kare,
+  // levhalar + numaralar + yön imi; boşluk ölçüleri, kilitler ve kalınlık
+  // kutucukları gizlenir (bunlar grup satırında, tümü seçiliyken düzenlenir).
+  // Böylece altta açılan panel önizlemesinin en/boy ölçüleri tek ölçü dili kalır.
+  const memberMode = selectedIndex >= 0;
+  const height = memberMode ? SCHEMA_MEMBER_HEIGHT : PREVIEW_HEIGHT;
   // YÖN (tık yönü): boşluk/üye sayımı facing>0 ise hacmin MİN, facing<0 ise MAX tarafından başlar.
   const facing = groupFacing(group);
   const stackOrigin = facing > 0 ? cavity.min[axis] : cavity.max[axis];
@@ -738,7 +841,7 @@ function GroupSchematic({ group, selectedIndex, memberLabels, onEditGap, onToggl
     if (barsHorizontal && gapPx < ph + 6) cx += (k % 2 === 0 ? -1 : 1) * (pw * 0.6);
     return { k, cx, cy, pw, ph, txt, a, b, crossMid };
   });
-  const asz = Math.max(4.5, Math.min(7.5, width * 0.016));
+  const asz = Math.max(4, Math.min(6.5, width * 0.014));
   // KALINLIK KUTUCUKLARI: levhanın ucunda, kare alanın dışındaki kenar boşluğunda (raf → sağ, dikme → üst).
   const fsT = Math.max(9, fs * 0.86);
   const tPills = starts.map((st, i) => {
@@ -775,7 +878,7 @@ function GroupSchematic({ group, selectedIndex, memberLabels, onEditGap, onToggl
     const tip = `Panel ${memberLabels[i] ?? i + 1} · ${round1(ts[i])} mm — click to select`;
     return (
       <g key={key} style={{ cursor: 'pointer' }} onClick={e => { stop(e); onSelectMember(i); }}>
-        <rect x={x0} y={y0} width={x1 - x0} height={y1 - y0} rx={1} fill={on ? '#fde7d3' : '#e9e1d3'} stroke={on ? '#ea580c' : '#8a8278'} strokeWidth={on ? 1.1 : 0.9} />
+        <rect x={x0} y={y0} width={x1 - x0} height={y1 - y0} rx={1} fill={on ? '#fde7d3' : memberMode ? '#efe9df' : '#e9e1d3'} stroke={on ? '#ea580c' : memberMode ? '#b9b1a5' : '#8a8278'} strokeWidth={on ? 1.1 : 0.9} />
         <rect x={x0 - HIT} y={y0 - HIT} width={x1 - x0 + 2 * HIT} height={y1 - y0 + 2 * HIT} fill="transparent"><title>{tip}</title></rect>
       </g>
     );
@@ -811,10 +914,10 @@ function GroupSchematic({ group, selectedIndex, memberLabels, onEditGap, onToggl
           ? bar(`bar-${i}-${ri}`, i, sx(r[0]), sy(st + ts[i]), sx(r[1]), sy(st))
           : bar(`bar-${i}-${ri}`, i, sx(st), sy(r[1]), sx(st + ts[i]), sy(r[0]))))}
         {/* üye kalınlık kutucukları: tıkla → YALNIZ değer girişi (seçim levhadan) */}
-        {tPills.map(p => {
+        {!memberMode && tPills.map(p => {
           const on = p.i === selectedIndex;
           return (
-            <DimPill key={`t-${p.i}`} cx={p.cx} cy={p.cy} txt={p.txt} fs={fsT} fill={on ? '#fff7ed' : '#f7f4ee'} stroke={on ? '#f97316' : '#d6cfc4'} strokeWidth={on ? 1 : 0.8}
+            <DimPill key={`t-${p.i}`} cx={p.cx} cy={p.cy} txt={p.txt} fs={fsT} fill={on ? '#fff7ed' : '#f3efe8'} stroke={on ? '#f97316' : 'none'} strokeWidth={on ? 1 : 0.8}
               color={on ? '#c2410c' : '#57534e'} hideText={editing?.kind === 't' && editing.i === p.i} title={`Panel ${memberLabels[p.i] ?? p.i + 1} thickness — click to edit`}
               onClick={e => { stop(e); setEditing({ kind: 't', i: p.i, v: p.txt }); }} />
           );
@@ -828,18 +931,18 @@ function GroupSchematic({ group, selectedIndex, memberLabels, onEditGap, onToggl
           );
         })}
         {/* boşluk ölçüleri: oklu ölçü çizgisi + pill (+ hover'da / kilitliyken kilit) */}
-        {pills.map(p => {
+        {!memberMode && pills.map(p => {
           const locked = gaps[p.k].locked;
           const a = barsHorizontal ? { x: sx(p.crossMid), y: sy(p.a) } : { x: sx(p.a), y: sy(p.crossMid) };
           const b = barsHorizontal ? { x: sx(p.crossMid), y: sy(p.b) } : { x: sx(p.b), y: sy(p.crossMid) };
           const lockCx = p.cx + p.pw / 2 + 11, lockCy = p.cy;
           return (
             <g key={`gap-${p.k}`} className={`yago-gap${locked ? ' locked' : ''}`}>
-              <DimArrows a={a} b={b} asz={asz} color={locked ? '#f59e0b' : '#a39a8f'} />
-              <DimPill cx={p.cx} cy={p.cy} txt={p.txt} fs={fs} fill={locked ? '#fff7ed' : '#ffffff'} stroke={locked ? '#f97316' : '#e6e0d6'} strokeWidth={locked ? 1 : 0.8}
+              <DimArrows a={a} b={b} asz={asz} color={locked ? '#f59e0b' : DIM_LINE} />
+              <DimPill cx={p.cx} cy={p.cy} txt={p.txt} fs={fs} fill={locked ? '#fff7ed' : '#ffffff'} stroke={locked ? '#f97316' : 'none'} strokeWidth={locked ? 1 : 0.8}
                 color={locked ? '#c2410c' : '#44403c'} hideText={editing?.kind === 'gap' && editing.k === p.k} title="Edit gap" onClick={e => { stop(e); setEditing({ kind: 'gap', k: p.k, v: p.txt }); }} />
               <g className="lockbtn" style={{ cursor: 'pointer' }} onClick={e => { stop(e); onToggleLock(p.k); }}>
-                <circle cx={lockCx} cy={lockCy} r={8} fill={locked ? '#fff7ed' : '#ffffff'} stroke={locked ? '#f97316' : '#e6e0d6'} strokeWidth={0.8} />
+                <circle cx={lockCx} cy={lockCy} r={8} fill={locked ? '#fff7ed' : '#ffffff'} stroke={locked ? '#f97316' : '#e6e0d6'} strokeWidth={0.7} />
                 {locked
                   ? <Lock x={lockCx - 4.5} y={lockCy - 4.5} size={9} strokeWidth={2.4} color="#ea580c" />
                   : <Unlock x={lockCx - 4.5} y={lockCy - 4.5} size={9} strokeWidth={2} color="#a8a29e" />}
@@ -849,7 +952,7 @@ function GroupSchematic({ group, selectedIndex, memberLabels, onEditGap, onToggl
           );
         })}
       </svg>
-      {editing && (() => {
+      {editing && !memberMode && (() => {
         const p = editing.kind === 'gap' ? pills[editing.k] : tPills[editing.i]; if (!p) return null;
         const fsE = editing.kind === 'gap' ? fs : fsT;
         return (
