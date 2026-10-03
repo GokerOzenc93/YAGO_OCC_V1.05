@@ -473,6 +473,19 @@ function FitShapeToggle({ checked, disabled, onToggle }: { checked: boolean; dis
   );
 }
 
+/* ── KAPAK SINIRI — satır düğmesi (Goker: "kapak sınırı işareti her satırda, panel yönü gibi") ─
+   Panel yönü okuyla aynı 20×20 kutu; AÇIK = kehribar (3B'deki kehribar kenar ve satır rozetiyle aynı dil). */
+function DoorRefToggle({ checked, disabled, onToggle }: { checked: boolean; disabled?: boolean; onToggle: () => void }) {
+  return (
+    <button type="button" role="checkbox" aria-checked={checked} disabled={disabled} onClick={e => { stop(e); if (!disabled) onToggle(); }}
+      title={checked ? 'Door reference: ON — doors are built from this panel\'s edges' : 'Mark as door reference'}
+      className={`w-5 h-5 rounded-md flex items-center justify-center transition-colors duration-150
+        ${disabled ? 'text-stone-200 cursor-not-allowed' : checked ? 'text-amber-700 bg-amber-50 ring-1 ring-amber-300/80' : 'text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700'}`}>
+      <DoorClosed size={13} strokeWidth={checked ? 2.2 : 1.9} />
+    </button>
+  );
+}
+
 /* ── PAYLAŞILAN ÖNİZLEME RENDERER'I — TEK WebGL BAĞLAMI ──────────────────
    KÖK NEDEN ("çok panel seçtim, referans küp ve paneller kayboldu"):
    PanelPreview2D her mount'ta yeni bir WebGL bağlamı açıyordu ve her panel
@@ -721,12 +734,15 @@ function regionMask(boxes: CavityBox[], h: number, v: number) {
   return { hs, vs, filled };
 }
 type SchemaEdit = { kind: 'gap'; k: number; v: string } | { kind: 't'; i: number; v: string };
-export function GroupSchematic({ group, selectedIndex, memberLabels, onEditGap, onToggleLock, onEditThickness, onSelectMember }: {
+export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, onEditGap, onToggleLock, onEditThickness, onSelectMember, onToggleDoorRef }: {
   group: PanelGroup; selectedIndex: number;
   /** Şema sırasındaki (geometrik) üye i'nin liste numarası — "6.1" gibi. */
   memberLabels: string[];
+  /** Şema sırasındaki üye i kapak sınırı mı (VF.doorBound) — kalınlık kutucuğunun yanındaki işaret. */
+  doorRefs: boolean[];
   onEditGap: (k: number, v: number) => void; onToggleLock: (k: number) => void;
   onEditThickness: (i: number, v: number) => void; onSelectMember: (i: number) => void;
+  onToggleDoorRef: (i: number) => void;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(300);
@@ -854,7 +870,7 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, onEditGap, 
     const { pw, ph } = pillSize(txt, fsT);
     const mid = st + ts[i] / 2;
     // Kenar boşluğu dar kalırsa kutucuk şema alanının içinde (kırpılmadan) tutulur.
-    const cx = barsHorizontal ? Math.min(ox + S + 6 + pw / 2, width - pw / 2 - 2) : sx(mid);
+    const cx = barsHorizontal ? Math.min(ox + S + 6 + pw / 2, width - pw / 2 - 22) : sx(mid);
     const cy = barsHorizontal ? sy(mid) : Math.max(oy - 6 - ph / 2, ph / 2 + 2);
     return { i, cx, cy, pw, ph, txt };
   });
@@ -925,6 +941,19 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, onEditGap, 
             <DimPill key={`t-${p.i}`} cx={p.cx} cy={p.cy} txt={p.txt} fs={fsT} fill={on ? '#fff7ed' : '#f3efe8'} stroke={on ? '#f97316' : 'none'} strokeWidth={on ? 1 : 0.8}
               color={on ? '#c2410c' : '#57534e'} hideText={editing?.kind === 't' && editing.i === p.i} title={`Panel ${memberLabels[p.i] ?? p.i + 1} thickness — click to edit`}
               onClick={e => { stop(e); setEditing({ kind: 't', i: p.i, v: p.txt }); }} />
+          );
+        })}
+        {/* KAPAK SINIRI İŞARETİ (Goker: "çoklu dikme ve raf arayüzünde panel kalınlığının yanında bir işaret"):
+            kalınlık kutucuğunun sağında küçük kapak simgesi; tıkla → o üye kapak sınırı olur / olmaz (satırdaki düğmeyle aynı). */}
+        {!memberMode && tPills.map(p => {
+          const on = !!doorRefs[p.i];
+          const cx = Math.min(p.cx + p.pw / 2 + 11, width - 10), cy = p.cy;
+          return (
+            <g key={`dr-${p.i}`} style={{ cursor: 'pointer' }} onClick={e => { stop(e); onToggleDoorRef(p.i); }}>
+              <circle cx={cx} cy={cy} r={8} fill={on ? '#fffbeb' : '#ffffff'} stroke={on ? '#f59e0b' : '#e6e0d6'} strokeWidth={on ? 1 : 0.7} />
+              <DoorClosed x={cx - 4.5} y={cy - 4.5} size={9} strokeWidth={on ? 2.4 : 2} color={on ? '#b45309' : '#a8a29e'} />
+              <title>{on ? `Panel ${memberLabels[p.i] ?? p.i + 1}: door reference ON — click to remove` : `Panel ${memberLabels[p.i] ?? p.i + 1}: mark as door reference`}</title>
+            </g>
           );
         })}
         {/* üye numaraları (liste ile aynı: 6.1, 6.2 …) — salt-okunur */}
@@ -1175,7 +1204,7 @@ export function DoorSchematic({ group, selectedIndex, memberLabels, onEditCol, o
    [kontroller sabit genişlik]. Üye satırları kartın içinde 8px içeride
    durduğu için sağ kontrol alanı 8px dar tutulur → ölçü sütunları hizalanır. */
 const ROW_NUM_W = 30;
-const ROW_TRAIL_W = 79;           // 3 × 20px düğme + 16px ok + 3px aralık
+const ROW_TRAIL_W = 99;           // 4 × 20px düğme + 16px ok + 3px aralık
 const MEMBER_INSET = 8;           // grup kartı gövdesinin yatay dolgusu (px-2)
 type RowKind = 'body' | 'shelf' | 'divider' | 'door';
 const ROW_KIND_ICON: Record<RowKind, LucideIcon> = { body: LayoutPanelTop, shelf: Rows3, divider: Columns3, door: DoorClosed };
@@ -1926,22 +1955,9 @@ export function PanelEditor() {
         <Icon size={12} strokeWidth={2} />{label}
       </button>
     );
-    // KAPAK SINIRI (Goker: "dikme, raf ve gövde panellerine kapak sınırı işareti koyayım"): kapak üyesi dışında her panelde.
-    const canDoorBound = !isDoorVf(vf);
-    const doorBoundOn = !!vf.doorBound;
     return (
       <div className="yago-expand px-2 pt-2 pb-2" style={{ borderTop: '1px solid #f3e6d6' }} onClick={stop}>
-        <div className={`grid ${canDoorBound ? 'grid-cols-4' : 'grid-cols-3'} gap-1 mb-1.5`}>
-          {canDoorBound && (
-            <button type="button" disabled={!vf.hasPanel} title={doorBoundOn ? 'Door reference: ON — doors snap to this panel\'s edges' : 'Mark as door reference (door edges are built from this panel)'}
-              onClick={e => { stop(e); setVfDoorBound(vf.id, !doorBoundOn); }}
-              className={`h-[26px] min-w-0 flex items-center justify-center gap-1.5 rounded-[7px] text-[11px] font-semibold tracking-[0.01em] transition-[background-color,color,box-shadow] duration-150
-                ${!vf.hasPanel ? 'bg-white ring-1 ring-[#efeae2] text-stone-300 cursor-not-allowed'
-                  : doorBoundOn ? 'bg-amber-50 text-amber-800 ring-1 ring-amber-300 shadow-[0_1px_2px_rgba(217,119,6,0.18)]'
-                  : 'bg-white ring-1 ring-[#e6e0d6] text-stone-600 shadow-[0_1px_0_rgba(40,30,20,0.03)] hover:bg-[#faf7f2] hover:ring-[#dcd4c8] hover:text-stone-800'}`}>
-              <DoorClosed size={12} strokeWidth={2} />Door ref
-            </button>
-          )}
+        <div className="grid grid-cols-3 gap-1 mb-1.5">
           {toolBtn('Extrude', MoveVertical, isExtrudingThis, () => {
             if (isExtrudingThis) setFaceExtrudeMode(false);
             else { setFaceExtrudeTargetPanelId(vp!.id); setFaceExtrudeMode(true); if (panelMoveMode) setPanelMoveMode(false); }
@@ -2076,6 +2092,8 @@ export function PanelEditor() {
               <div className="flex items-center justify-end gap-px shrink-0 ml-0.5" style={{ width: opts.member ? ROW_TRAIL_W - MEMBER_INSET : ROW_TRAIL_W }} onClick={stop}>
                 {/* Yüzeyin şeklini al: iç panelde (raf/dikme) serbest bölge yok → gösterilmez. */}
                 {!opts.member && <FitShapeToggle checked={!!vf.fitFaceShape} disabled={!vf.hasPanel} onToggle={() => { void toggleFitShape(vf); }} />}
+                {/* KAPAK SINIRI: her satırda (gövde paneli, raf/dikme üyesi) — kapak üyesinde yok. Şemadaki işaretle aynı bayrak (VF.doorBound). */}
+                {opts.door ? <span className="w-5 h-5" /> : <DoorRefToggle checked={!!vf.doorBound} disabled={!vf.hasPanel} onToggle={() => setVfDoorBound(vf.id, !vf.doorBound)} />}
                 <button disabled={!vf.hasPanel} onClick={e => { stop(e); toggleArrow(vp); }} title="Toggle arrow direction"
                   className={`w-5 h-5 rounded-md flex items-center justify-center transition-colors duration-150 ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-stone-700 bg-[#f1ece4]' : 'text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700'}`}>
                   <ArrowUp size={13} strokeWidth={1.9} className={`transition-transform duration-200 ${ar ? '' : 'rotate-90'}`} />
@@ -2183,8 +2201,10 @@ export function PanelEditor() {
               <GroupSchematic group={g} selectedIndex={g.memberVfIds.findIndex(id => selectedPanelRow === `vf-${id}`)}
                 memberLabels={g.memberVfIds.map((id, i) => { const mi = members.findIndex(m => m.id === id); return `${label}.${(mi >= 0 ? mi : i) + 1}`; })}
                 onEditGap={(k, v) => { void editGroupGap(g.id, k, v); }} onToggleLock={k => toggleGroupGapLock(g.id, k)}
+                doorRefs={g.memberVfIds.map(id => !!virtualFaces.find(f => f.id === id)?.doorBound)}
                 onEditThickness={(i, v) => { void setGroupMemberThickness(g.id, i, v); }}
-                onSelectMember={i => { const id = g.memberVfIds[i]; if (id) setSelectedPanelRow(`vf-${id}`, sid); }} />
+                onSelectMember={i => { const id = g.memberVfIds[i]; if (id) setSelectedPanelRow(`vf-${id}`, sid); }}
+                onToggleDoorRef={i => { const id = g.memberVfIds[i]; const f = virtualFaces.find(x => x.id === id); if (f) setVfDoorBound(id, !f.doorBound); }} />
               {cavityDock(g)}
               {cavityStepsPanel(g)}
               <SectionHead label="Panels" count={members.length} />
@@ -2390,7 +2410,7 @@ export function PanelEditor() {
     const boundN = selectedShape ? virtualFaces.filter(f => f.shapeId === selectedShape.id && f.doorBound && !isDoorVf(f)).length : 0;
     const status = !selectedShape ? 'Select a body first'
       : n === 0 ? (boundN ? `Click a body face · ${boundN} door ref${boundN === 1 ? '' : 's'}` : 'No door refs — body edges bound the door · click a body face')
-      : (() => { const r = doorPickPlacement === 'inner' ? cur.inner : cur.outer; return `Door ${doorPickIndex + 1}/${n} · ${Math.round(r.u1 - r.u0)}×${Math.round(r.v1 - r.v0)}${cur.depthCount > 1 ? ` · depth ${cur.depthIndex + 1}/${cur.depthCount}` : ''} — click: next · right-click: place`; })();
+      : (() => { const r = doorPickPlacement === 'inner' ? cur.inner : cur.outer; return `Door ${doorPickIndex + 1}/${n} · ${Math.round(r.u1 - r.u0)}×${Math.round(r.v1 - r.v0)} — click: next · right-click: place`; })();
     const placementModes: DockMode[] = [
       { key: 'outer', label: 'Outer', sub: 'Over panels', Icon: PanelTop, title: 'Outer door — covers the panel thicknesses, sits in front of the body' },
       { key: 'inner', label: 'Inner', sub: 'Between panels', Icon: SquareDashedBottom, title: 'Inner (inset) door — fits between the reference panels, flush with their front' },

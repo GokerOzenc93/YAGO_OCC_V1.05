@@ -129,24 +129,27 @@ function rectAtDepth(e: { l: EdgeInfo; r: EdgeInfo; b: EdgeInfo; t: EdgeInfo }, 
   };
   return { u0: pick(e.l), u1: pick(e.r), v0: pick(e.b), v1: pick(e.t), front: P };
 }
-/** Derinlik seçenekleri: kenar panellerinin farklı ön yüzleri, dıştan içe ("önce dışarıdakiler"); panel yoksa gövde yüzü. */
+/**
+ * DERİNLİK (Goker, Eki 2026: "kapak sınırındaki dikme geride olmasına rağmen öndeki seçeneği de sunuyor, buna
+ * gerek yok"): bir dikdörtgenin kapak düzlemi, kenar panellerinin EN GERİDEKİ ön yüzüdür — kapağı sınırlayan
+ * geride bir dikme/raf varsa kapak ona göre yerleşir (outer: öndeki yan panelin içinde, geridekini örter);
+ * öndeki paneller yalnız kendi aralarındaki (daha büyük) dikdörtgenin derinliğini verir. Panel yoksa gövde yüzü.
+ */
 function depthOptions(e: EdgeInfo[], side: 1 | -1, bodyFront: number): Array<{ ref: DoorBoundRef; front: number }> {
-  const out: Array<{ ref: DoorBoundRef; front: number }> = [];
+  let best: { ref: DoorBoundRef; front: number } | null = null;
   for (const x of e) {
-    if (x.front == null || out.some(o => Math.abs(o.front - x.front!) <= TOL)) continue;
-    out.push({ ref: x.ref, front: x.front });
+    if (x.front == null) continue;
+    if (!best || side * (x.front - best.front) < 0) best = { ref: x.ref, front: x.front };
   }
-  if (!out.length) out.push({ ref: { body: true }, front: bodyFront });
-  return out.sort((a, b) => side * (b.front - a.front));
+  return [best ?? { ref: { body: true }, front: bodyFront }];
 }
 
 /**
  * KAPAK ADAYLARI (Goker: "tıkladığım yerde kapak sınırı nerelerde varsa büyükten küçüğe alternatifleri göstersin;
- * içerdeki panel varsa önce dışarıdakiler, sonra içerdeki"; "birden fazla derinlikte kapak sınırı olan dikme veya
- * raf varsa alternatif yerleşecek kapağı her sol tıklamada göster").
+ * içerdeki panel varsa önce dışarıdakiler, sonra içerdeki"; kenar panelleri farklı
+ * derinlikteyse düzlem en geridekinin önü — bkz. depthOptions).
  * Dört yanda seçenek = tıklanan noktanın o tarafında kalan sınır panelleri (yoksa gövde kenarı). Her kombinasyon bir
- * dikdörtgen; seçilen panel dikdörtgenin çapraz açıklığıyla örtüşmeli. Her dikdörtgen, kenar panellerinin FARKLI
- * DERİNLİKLERİ kadar adaya açılır (dıştan içe). Sıra: alan büyükten küçüğe, aynı alanda derinlik dıştan içe.
+ * dikdörtgen; seçilen panel dikdörtgenin çapraz açıklığıyla örtüşmeli. Sıra: alan büyükten küçüğe.
  */
 export function doorCandidatesAt(parent: Shape, axis: 0 | 1 | 2, side: 1 | -1, click: Vec3, shapes?: Shape[], vfs?: VirtualFace[]): DoorPick[] {
   const body = bodyLocalBox(parent);
@@ -279,12 +282,10 @@ export function solveDoorGroup(group: DoorGroup, parent: Shape, shapes: Shape[])
   const ei = (ref: DoorBoundRef, ax: 0 | 1 | 2, minSide: boolean) => boundEdgeInfo(ref, parent, shapes, body, ax, minSide, group.axis, group.side);
   const edges = { l: ei(group.bounds.uMin, u, true), r: ei(group.bounds.uMax, u, false), b: ei(group.bounds.vMin, v, true), t: ei(group.bounds.vMax, v, false) };
   const bodyFront = group.side > 0 ? body.max[group.axis] : body.min[group.axis];
-  // DERİNLİK: kayıtlı referans panelin ön yüzü (taşınsa/boyutlansa izler); yoksa eski kural (outer en öndeki, inner en içerdeki).
+  // DERİNLİK: kayıtlı referans panelin ön yüzü (taşınsa/boyutlansa izler); yoksa en gerideki sınır panelinin önü.
   const fronts = [edges.l, edges.r, edges.b, edges.t].map(x => x.front).filter((x): x is number => x != null);
   const sgn = group.side;
-  let P = !fronts.length ? bodyFront
-    : group.placement === 'outer' ? (sgn > 0 ? Math.max(...fronts) : Math.min(...fronts))
-    : (sgn > 0 ? Math.min(...fronts) : Math.max(...fronts));
+  let P = !fronts.length ? bodyFront : (sgn > 0 ? Math.min(...fronts) : Math.max(...fronts));   // en gerideki sınır paneli
   if (group.depthRef?.body) P = bodyFront;
   else if (group.depthRef?.vfId) {
     const hit = [edges.l, edges.r, edges.b, edges.t].find(x => x.ref.vfId === group.depthRef!.vfId && x.front != null);
