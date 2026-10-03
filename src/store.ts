@@ -62,6 +62,8 @@ export interface VirtualFace {
   /** KAPAK SINIRI (Goker, Eki 2026): bu panel (gövde paneli, raf ya da dikme) kapak
    *  yerleşiminde referans kenardır — kapak adayları bu panellerin kenarlarından kurulur. */
   doorBound?: boolean;
+  /** ARKALIĞI BÖL işareti (Goker, Eki 2026): raf/dikme şemasında levha üstündeki rozet; davranışı sonra tanımlanacak — şimdilik yalnız bayrak. */
+  splitBack?: boolean;
   /** KAPAK ÜYESİ: VF bir kapak grubuna aittir (interior=true; geometriyi DoorService yazar). */
   doorGroupId?: string;
   doorIndex?: number;
