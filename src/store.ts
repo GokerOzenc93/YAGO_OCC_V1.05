@@ -107,8 +107,14 @@ export interface DoorGroup {
   cols: number; rows: number;
   /** Sütun genişlikleri / satır yükseklikleri: değer + kilit (raf boşluklarıyla aynı kural). */
   colWidths: GapSpec[]; rowHeights: GapSpec[];
-  /** İki kapak arasındaki boşluk (mm). */
+  /** Varsayılan kapak boşluğu (mm): yeni bölmede doğan aralar ve eski gruplar bununla. */
   gap: number;
+  /**
+   * HER BOŞLUK AYRI (Goker, Eki 2026: "kapağın kenar boşluğu, her boşluk farklı farklı girilebilmeli"):
+   * colGaps = [sol kenar, sütun araları…, sağ kenar] (cols+1); rowGaps = [üst kenar, satır araları…, alt kenar] (rows+1).
+   * Yoksa / boyu tutmuyorsa `gap` ile doldurulur.
+   */
+  colGaps?: number[]; rowGaps?: number[];
   thickness: number;
   /** Üye VF id'leri: satır-major (üst satırdan, soldan sağa): index = r*cols + c. */
   memberVfIds: string[];

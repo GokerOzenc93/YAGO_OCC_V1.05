@@ -23,7 +23,7 @@ import {
   traceMaskLoops, updateCavityStep,
 } from './PanelGroupService';
 import {
-  confirmDoorPick, deleteDoorGroupWithMembers, doorGroupName, doorMemberRects, doorPlacementLabel, editDoorColWidth, editDoorRowHeight, equalizeDoorGroup,
+  colGapsOf, confirmDoorPick, deleteDoorGroupWithMembers, doorGroupName, doorMemberRects, rowGapsOf, setDoorGapAt, doorPlacementLabel, editDoorColWidth, editDoorRowHeight, equalizeDoorGroup,
   isDoorVf, renameDoorGroup, setDoorGap, setDoorPlacement, setDoorSplit, setDoorThickness, setVfDoorBound, toggleDoorColLock, toggleDoorRowLock,
 } from './DoorService';
 
@@ -991,7 +991,7 @@ export function DoorSchematic({ group, selectedIndex, memberLabels, onEditCol, o
   group: DoorGroup; selectedIndex: number; memberLabels: string[];
   onEditCol: (k: number, v: number) => void; onEditRow: (k: number, v: number) => void;
   onToggleColLock: (k: number) => void; onToggleRowLock: (k: number) => void;
-  onEditGap: (v: number) => void; onSelectMember: (i: number) => void;
+  onEditGap: (axis: 'col' | 'row', k: number, v: number) => void; onSelectMember: (i: number) => void;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(300);
@@ -1004,7 +1004,10 @@ export function DoorSchematic({ group, selectedIndex, memberLabels, onEditCol, o
   }, []);
   useEffect(() => { setEditing(null); }, [group.id, group.cols, group.rows, selectedIndex >= 0]);
 
-  const { rect, cols, rows, colWidths, rowHeights, gap, axis, side } = group;
+  const { rect, cols, rows, colWidths, rowHeights, axis, side } = group;
+  // HER BOŞLUK AYRI: [başlangıç kenarı, aralar…, bitiş kenarı] (u: sol→sağ, v: üst→alt).
+  const cg = colGapsOf(group), rg = rowGapsOf(group);
+  const gapsKey = `${cg.join(',')}|${rg.join(',')}`;
   const memberMode = selectedIndex >= 0;
   const height = memberMode ? SCHEMA_MEMBER_HEIGHT : PREVIEW_HEIGHT;
   const innerW = width - 2 * SCHEMA_PAD, innerH = height - 2 * SCHEMA_PAD;
@@ -1013,20 +1016,21 @@ export function DoorSchematic({ group, selectedIndex, memberLabels, onEditCol, o
   // GÖRÜNÜŞ YÖNÜ: ön yüz (Z+) → X sağa; arka (Z−) ve sağ yan (X+) → aynalı; üst (Y+) → Z aşağı.
   const mirrorU = (axis === 2 && side < 0) || (axis === 0 && side > 0);
   const mirrorV = axis === 1 && side > 0;
-  const members = useMemo(() => doorMemberRects(rect, cols, rows, colWidths, rowHeights, gap), [rect, cols, rows, colWidths, rowHeights, gap]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const members = useMemo(() => doorMemberRects(rect, cols, rows, colWidths, rowHeights, cg, rg), [rect, cols, rows, colWidths, rowHeights, gapsKey]);
   // Dizilim haritası: kapak ölçüleri oransal, aralar sabit piksel (temsili).
-  const axisMap = (origin: number, specs: GapSpec[], n: number, descending: boolean) => {
+  const axisMap = (origin: number, specs: GapSpec[], n: number, gaps: number[], descending: boolean) => {
     const sum = specs.reduce((a, g) => a + Math.max(0, g.value), 0);
     // Kenar boşlukları da zincirde: [boşluk] kapak [boşluk] kapak … [boşluk] → n+1 sabit piksel aralık.
     const avail = Math.max(0, S - (n + 1) * DOOR_GAP_PX);
     const wb: number[] = [origin], pb: number[] = [0];
     const dir = descending ? -1 : 1;
-    let w = origin + dir * gap, p = DOOR_GAP_PX;
+    let w = origin + dir * (gaps[0] ?? 0), p = DOOR_GAP_PX;
     wb.push(w); pb.push(p);
-    specs.forEach(g => {
+    specs.forEach((g, k) => {
       const v = Math.max(0, g.value);
       w += dir * v; p += sum > 1e-6 ? (v / sum) * avail : avail / n; wb.push(w); pb.push(p);
-      w += dir * gap; p += DOOR_GAP_PX; wb.push(w); pb.push(p);
+      w += dir * (gaps[k + 1] ?? 0); p += DOOR_GAP_PX; wb.push(w); pb.push(p);
     });
     return (x: number) => {
       if (descending) { if (x >= wb[0]) return pb[0]; for (let i = 1; i < wb.length; i++) if (x >= wb[i]) { const d = wb[i - 1] - wb[i]; return d > 1e-9 ? pb[i - 1] + ((wb[i - 1] - x) / d) * (pb[i] - pb[i - 1]) : pb[i]; } return S; }
@@ -1035,8 +1039,10 @@ export function DoorSchematic({ group, selectedIndex, memberLabels, onEditCol, o
       return S;
     };
   };
-  const mapU = useMemo(() => axisMap(rect.u0, colWidths, cols, false), [rect.u0, colWidths, cols, gap, S]);
-  const mapV = useMemo(() => axisMap(rect.v1, rowHeights, rows, true), [rect.v1, rowHeights, rows, gap, S]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const mapU = useMemo(() => axisMap(rect.u0, colWidths, cols, cg, false), [rect.u0, colWidths, cols, gapsKey, S]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const mapV = useMemo(() => axisMap(rect.v1, rowHeights, rows, rg, true), [rect.v1, rowHeights, rows, gapsKey, S]);
   const sx = (u: number) => (mirrorU ? ox + S - mapU(u) : ox + mapU(u));
   const sy = (v: number) => (mirrorV ? oy + S - mapV(v) : oy + mapV(v));   // satırlar üstten: v1 → oy
   const fs = Math.max(10, Math.min(13.5, width * 0.027));
@@ -1044,32 +1050,32 @@ export function DoorSchematic({ group, selectedIndex, memberLabels, onEditCol, o
   const asz = Math.max(4, Math.min(6.5, width * 0.014));
 
   // Sütun / satır pill'leri (kare alanın dışındaki kenar boşluğunda).
-  let cu = rect.u0 + gap;
+  let cu = rect.u0 + cg[0];
   const colPills = colWidths.map((g, k) => {
-    const a = cu, b = cu + g.value; cu = b + gap;
+    const a = cu, b = cu + g.value; cu = b + (cg[k + 1] ?? 0);
     const txt = String(round1(g.value)); const { pw, ph } = pillSize(txt, fs);
     const x0 = sx(a), x1 = sx(b);
     return { k, a, b, cx: (x0 + x1) / 2, cy: Math.max(oy - 13, ph / 2 + 2), pw, ph, txt, x0: Math.min(x0, x1), x1: Math.max(x0, x1) };
   });
-  let cv = rect.v1 - gap;
+  let cv = rect.v1 - rg[0];
   const rowPills = rowHeights.map((g, k) => {
-    const a = cv, b = cv - g.value; cv = b - gap;
+    const a = cv, b = cv - g.value; cv = b - (rg[k + 1] ?? 0);
     const txt = String(round1(g.value)); const { pw, ph } = pillSize(txt, fs);
     const y0 = sy(a), y1 = sy(b);
     return { k, a, b, cx: Math.max(ox - 13 - pw / 2 + 6, pw / 2 + 2), cy: (y0 + y1) / 2, pw, ph, txt, y0: Math.min(y0, y1), y1: Math.max(y0, y1) };
   });
-  const gapTxt = String(round1(gap));
-  // KAPAK BOŞLUĞU (Goker: "gap kapak ölçülerinin orada, boşluklarda yazılmalı"; "üst, alt, sağ, sol kenarlarda da"):
-  // ölçü zincirinin İÇİNDE — üstte sol kenar · kapak araları · sağ kenar, solda üst kenar · araları · alt kenar.
-  // Tıkla → değer gir (tek değer: kenarlar + aralar).
-  const { pw: gpw, ph: gph } = pillSize(gapTxt, fsT);
-  const colGapPills = Array.from({ length: cols + 1 }, (_, k) => {
+  // KAPAK BOŞLUKLARI (Goker: "gap kapak ölçülerinin orada, boşluklarda yazılmalı"; "üst, alt, sağ, sol kenarlarda da";
+  // "her boşluk farklı farklı girilebilmeli"): ölçü zincirinin İÇİNDE — üstte sol kenar · kapak araları · sağ kenar,
+  // solda üst kenar · araları · alt kenar. Her pill KENDİ boşluğunu gösterir; tıkla → yalnız o boşluk değişir.
+  const colGapPills = cg.map((gv, k) => {
     const a = k === 0 ? rect.u0 : colPills[k - 1].b;
-    return { axis: 'col' as const, k, cx: (sx(a) + sx(a + gap)) / 2, cy: colPills[0]?.cy ?? oy - 13, pw: gpw, ph: gph };
+    const txt = String(round1(gv)); const { pw, ph } = pillSize(txt, fsT);
+    return { axis: 'col' as const, k, txt, cx: (sx(a) + sx(a + gv)) / 2, cy: colPills[0]?.cy ?? oy - 13, pw, ph };
   });
-  const rowGapPills = Array.from({ length: rows + 1 }, (_, k) => {
+  const rowGapPills = rg.map((gv, k) => {
     const a = k === 0 ? rect.v1 : rowPills[k - 1].b;
-    return { axis: 'row' as const, k, cx: rowPills[0]?.cx ?? ox - 13, cy: (sy(a) + sy(a - gap)) / 2, pw: gpw, ph: gph };
+    const txt = String(round1(gv)); const { pw, ph } = pillSize(txt, fsT);
+    return { axis: 'row' as const, k, txt, cx: rowPills[0]?.cx ?? ox - 13, cy: (sy(a) + sy(a - gv)) / 2, pw, ph };
   });
   const gapPills = [...colGapPills, ...rowGapPills];
 
@@ -1080,7 +1086,7 @@ export function DoorSchematic({ group, selectedIndex, memberLabels, onEditCol, o
     if (isNaN(v)) return;
     if (editing.kind === 'col') { if (v > 0) onEditCol(editing.k, v); }
     else if (editing.kind === 'row') { if (v > 0) onEditRow(editing.k, v); }
-    else if (v >= 0) onEditGap(v);
+    else if (v >= 0) onEditGap(editing.axis, editing.k, v);
   };
   const lockBtn = (locked: boolean, cx: number, cy: number, onClick: () => void) => (
     <g className="lockbtn" style={{ cursor: 'pointer' }} onClick={e => { stop(e); onClick(); }}>
@@ -1139,9 +1145,10 @@ export function DoorSchematic({ group, selectedIndex, memberLabels, onEditCol, o
         {/* iki kapak arasındaki boşluk (altta / sağda) */}
         {!memberMode && gapPills.map(g => (
           <g key={`gap-${g.axis}-${g.k}`}>
-            <DimPill cx={g.cx} cy={g.cy} txt={gapTxt} fs={fsT} fill="#f3efe8" stroke="#e6e0d6" color="#78716c"
-              hideText={editing?.kind === 'gap' && editing.axis === g.axis && editing.k === g.k} title="Door gap (edges and between doors) — click to edit"
-              onClick={e => { stop(e); setEditing({ kind: 'gap', axis: g.axis, k: g.k, v: gapTxt }); }} />
+            <DimPill cx={g.cx} cy={g.cy} txt={g.txt} fs={fsT} fill="#f3efe8" stroke="#e6e0d6" color="#78716c"
+              hideText={editing?.kind === 'gap' && editing.axis === g.axis && editing.k === g.k}
+              title={`${g.k === 0 ? (g.axis === 'col' ? 'Left edge' : 'Top edge') : g.k === (g.axis === 'col' ? cols : rows) ? (g.axis === 'col' ? 'Right edge' : 'Bottom edge') : 'Gap between doors'} — click to edit`}
+              onClick={e => { stop(e); setEditing({ kind: 'gap', axis: g.axis, k: g.k, v: g.txt }); }} />
           </g>
         ))}
       </svg>
@@ -2264,7 +2271,7 @@ export function PanelEditor() {
                 memberLabels={g.memberVfIds.map((id, i) => { const mi = members.findIndex(m => m.id === id); return `${label}.${(mi >= 0 ? mi : i) + 1}`; })}
                 onEditCol={(k, v) => { void editDoorColWidth(g.id, k, v); }} onEditRow={(k, v) => { void editDoorRowHeight(g.id, k, v); }}
                 onToggleColLock={k => toggleDoorColLock(g.id, k)} onToggleRowLock={k => toggleDoorRowLock(g.id, k)}
-                onEditGap={v => { void setDoorGap(g.id, v); }}
+                onEditGap={(ax, k, v) => { void setDoorGapAt(g.id, ax, k, v); }}
                 onSelectMember={i => { const id = g.memberVfIds[i]; if (id) setSelectedPanelRow(`vf-${id}`, sid); }} />
               <SectionHead label="Doors" count={members.length} />
               <div className="flex flex-col gap-[2px]">

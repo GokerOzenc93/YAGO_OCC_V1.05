@@ -32,7 +32,7 @@ import { applyGapEdit, bodyLocalBox, equalGaps, panelLocalBox, redistributeForTh
 //    panel min), önü panellerin ön yüzüyle hizalı (en içerdeki panel esas); dış kapak
 //    panellerin DIŞ yüzlerine kadar (kalınlıkların dışından) ve panellerin önüne (en
 //    öndeki panel esas) yerleşir — gövde kutusunun dışında kalabilir.
-//  • BOŞLUK: kapak boşluğu dört kenarda (sınır paneline) ve kapak aralarında aynıdır.
+//  • BOŞLUK: her kenar (sınır paneline) ve her kapak arası AYRI boşluktur (colGaps / rowGaps).
 //  • BÖLME: cols × rows kapak; sütun genişlikleri / satır yükseklikleri raf boşluğu
 //    kuralıyla (equalGaps / applyGapEdit / rescaleGaps — kilit + girilen korunur,
 //    gerisi eşit); kapaklar arası boşluk (gap) sabit "kalınlık" gibi düşülür.
@@ -172,42 +172,54 @@ export function doorCandidatesAt(parent: Shape, axis: 0 | 1 | 2, side: 1 | -1, c
 export interface DoorMemberRect { r: number; c: number; u0: number; u1: number; v0: number; v1: number }
 export interface DoorSolution { rect: DoorRect; colWidths: GapSpec[]; rowHeights: GapSpec[]; members: DoorMemberRect[] }
 
-const gapsArr = (n: number, gap: number) => Array.from({ length: Math.max(0, n - 1) }, () => gap);
 /**
- * KAPAK BOŞLUĞU DÖRT KENARDA DA (Goker, Eki 2026: "kapağın panelle olan mesafelerinde de kapak boşluğu
- * olmalı — üst, alt, sağ, sol"): kapak alanı = dikdörtgen − 2·boşluk (iki kenar); kapaklar arası boşluklar
- * da bu alandan düşülür. Kalan ölçü kapaklara dağıtılır.
+ * KAPAK BOŞLUKLARI — HER BİRİ AYRI (Goker, Eki 2026: "kenar boşluğu, her boşluk farklı farklı girilebilmeli";
+ * önce: "kapağın panelle olan mesafelerinde de kapak boşluğu olmalı — üst, alt, sağ, sol").
+ * Eksen başına n+1 boşluk: [başlangıç kenarı, n−1 ara, bitiş kenarı]. u: sol → sağ; v: ÜST → alt.
+ * Kayıtlı dizi yoksa / boyu tutmuyorsa varsayılan `gap` ile doldurulur; bölmede kenarlar korunur.
  */
-const doorSpan = (rect: DoorRect, axis: 'u' | 'v', gap: number) => (axis === 'u' ? rect.u1 - rect.u0 : rect.v1 - rect.v0) - 2 * gap;
+export function gapsOf(saved: number[] | undefined, n: number, gap: number): number[] {
+  if (Array.isArray(saved) && saved.length === n + 1 && saved.every(v => Number.isFinite(v) && v >= 0)) return saved.slice();
+  const out = Array.from({ length: n + 1 }, () => gap);
+  if (Array.isArray(saved) && saved.length >= 2) { out[0] = saved[0]; out[n] = saved[saved.length - 1]; }   // kenarlar korunur
+  return out;
+}
+export const colGapsOf = (g: Pick<DoorGroup, 'colGaps' | 'cols' | 'gap'>) => gapsOf(g.colGaps, g.cols, g.gap);
+export const rowGapsOf = (g: Pick<DoorGroup, 'rowGaps' | 'rows' | 'gap'>) => gapsOf(g.rowGaps, g.rows, g.gap);
+/** Eksendeki kapak alanı: dikdörtgen − iki kenar boşluğu (aralar ayrıca `inner` olarak düşülür). */
+const doorSpan = (rect: DoorRect, axis: 'u' | 'v', gaps: number[]) => (axis === 'u' ? rect.u1 - rect.u0 : rect.v1 - rect.v0) - gaps[0] - gaps[gaps.length - 1];
+const innerGaps = (gaps: number[]) => gaps.slice(1, -1);
 /**
  * DAĞITIM KURALI (Goker: "girilen boşluk kapağı kısaltmamalı; boşluktan kalan ölçüyü her zaman ilk
- * başta EŞİT dağıt"): kilitli ve elle girilmiş kapak ölçüleri korunur; kalan ölçü diğer kapaklara EŞİT
- * dağılır (boşluk değişse de, iç/dış değişse de, gövde boyutlansa da). Hepsi girilmişse oransal.
+ * başta EŞİT dağıt"): kilitli ve elle girilmiş kapak ölçüleri korunur; boşluklardan kalan ölçü diğer
+ * kapaklara EŞİT dağılır (boşluk değişse de, iç/dış değişse de, gövde boyutlansa da). Hepsi girilmişse oransal.
  */
-function distributeDoors(specs: GapSpec[], L: number, n: number, gap: number): GapSpec[] {
-  const out = redistributeForThickness(specs, L, n - 1, gapsArr(n, gap));
-  // 0,1 mm yuvarlama artığı son serbest kapağa yazılır → kenar boşluğu tam girilen değer kalır (5,1 değil 5).
-  const resid = round1(L - (n - 1) * gap - out.reduce((a, g) => a + g.value, 0));
+function distributeDoors(specs: GapSpec[], rect: DoorRect, axis: 'u' | 'v', gaps: number[]): GapSpec[] {
+  const n = gaps.length - 1;
+  const L = doorSpan(rect, axis, gaps), mids = innerGaps(gaps);
+  const out = redistributeForThickness(specs, L, n - 1, mids);
+  // 0,1 mm yuvarlama artığı son serbest kapağa yazılır → kenar boşluğu tam girilen değer kalır.
+  const resid = round1(L - mids.reduce((a, g) => a + g, 0) - out.reduce((a, g) => a + g.value, 0));
   if (Math.abs(resid) >= 0.05 && Math.abs(resid) < 1) {
     for (let i = out.length - 1; i >= 0; i--) if (!out[i].locked && !out[i].edited) { out[i] = { ...out[i], value: round1(out[i].value + resid) }; break; }
   }
   return out;
 }
+const equalDoors = (rect: DoorRect, axis: 'u' | 'v', gaps: number[]) => equalGaps(doorSpan(rect, axis, gaps), gaps.length - 2, innerGaps(gaps));
 
-/** Kapak dikdörtgeninden üye dikdörtgenleri: sütunlar soldan sağa (u↑), satırlar ÜSTTEN aşağı (v↓). */
-export function doorMemberRects(rect: DoorRect, cols: number, rows: number, colWidths: GapSpec[], rowHeights: GapSpec[], gap: number): DoorMemberRect[] {
+/** Kapak dikdörtgeninden üye dikdörtgenleri: sütunlar soldan sağa (u↑), satırlar ÜSTTEN aşağı (v↓); her boşluk kendi değeriyle. */
+export function doorMemberRects(rect: DoorRect, cols: number, rows: number, colWidths: GapSpec[], rowHeights: GapSpec[], colGaps: number[], rowGaps: number[]): DoorMemberRect[] {
   const out: DoorMemberRect[] = [];
-  // Dört kenarda da kapak boşluğu: ilk kapak sol/üst kenardan `gap` içeride başlar.
-  let top = rect.v1 - gap;
+  let top = rect.v1 - (rowGaps[0] ?? 0);
   for (let r = 0; r < rows; r++) {
     const h = rowHeights[r]?.value ?? 0;
-    let left = rect.u0 + gap;
+    let left = rect.u0 + (colGaps[0] ?? 0);
     for (let c = 0; c < cols; c++) {
       const w = colWidths[c]?.value ?? 0;
       out.push({ r, c, u0: left, u1: left + w, v0: top - h, v1: top });
-      left += w + gap;
+      left += w + (colGaps[c + 1] ?? 0);
     }
-    top -= h + gap;
+    top -= h + (rowGaps[r + 1] ?? 0);
   }
   return out;
 }
@@ -245,9 +257,10 @@ export function solveDoorGroup(group: DoorGroup, parent: Shape, shapes: Shape[])
     console.warn('[YAGO][KAPAK] dikdörtgen bozuk/çok küçük, önceki korunuyor:', group.id, fmtRect(rect));
     rect = { ...group.rect };
   }
-  const colWidths = distributeDoors(group.colWidths, doorSpan(rect, 'u', group.gap), group.cols, group.gap);
-  const rowHeights = distributeDoors(group.rowHeights, doorSpan(rect, 'v', group.gap), group.rows, group.gap);
-  return { rect, colWidths, rowHeights, members: doorMemberRects(rect, group.cols, group.rows, colWidths, rowHeights, group.gap) };
+  const cg = colGapsOf(group), rg = rowGapsOf(group);
+  const colWidths = distributeDoors(group.colWidths, rect, 'u', cg);
+  const rowHeights = distributeDoors(group.rowHeights, rect, 'v', rg);
+  return { rect, colWidths, rowHeights, members: doorMemberRects(rect, group.cols, group.rows, colWidths, rowHeights, cg, rg) };
 }
 
 /**
@@ -300,7 +313,7 @@ function solveFromStore(group: DoorGroup): DoorSolution | null {
 
 const fallbackSolution = (group: DoorGroup): DoorSolution => ({
   rect: group.rect, colWidths: group.colWidths, rowHeights: group.rowHeights,
-  members: doorMemberRects(group.rect, group.cols, group.rows, group.colWidths, group.rowHeights, group.gap),
+  members: doorMemberRects(group.rect, group.cols, group.rows, group.colWidths, group.rowHeights, colGapsOf(group), rowGapsOf(group)),
 });
 
 function makeMemberVf(group: DoorGroup, i: number, sol: DoorSolution): VirtualFace {
@@ -333,8 +346,8 @@ export function createDoorGroupFromPick(shapeId: string, pick: DoorPick, placeme
   const rect = placement === 'inner' ? { ...pick.inner } : { ...pick.outer };
   const group: DoorGroup = {
     id: genId('door'), shapeId, axis: pick.axis, side: pick.side, placement, bounds: pick.bounds, rect,
-    cols: 1, rows: 1, colWidths: equalGaps(doorSpan(rect, 'u', DOOR_GAP), 0, []), rowHeights: equalGaps(doorSpan(rect, 'v', DOOR_GAP), 0, []),
-    gap: DOOR_GAP, thickness: DOOR_THICKNESS, memberVfIds: [], name: name?.trim() || 'Door', createdAt: Date.now(),
+    cols: 1, rows: 1, colWidths: equalDoors(rect, 'u', [DOOR_GAP, DOOR_GAP]), rowHeights: equalDoors(rect, 'v', [DOOR_GAP, DOOR_GAP]),
+    colGaps: [DOOR_GAP, DOOR_GAP], rowGaps: [DOOR_GAP, DOOR_GAP], gap: DOOR_GAP, thickness: DOOR_THICKNESS, memberVfIds: [], name: name?.trim() || 'Door', createdAt: Date.now(),
   };
   const sol = solveFromStore(group) || fallbackSolution(group);
   const vfs = sol.members.map((_, i) => makeMemberVf(group, i, sol));
@@ -382,17 +395,21 @@ export async function setDoorSplit(groupId: string, cols: number, rows: number):
   const nc = Math.max(1, Math.min(MAX_DOOR_SPLIT, Math.round(cols)));
   const nr = Math.max(1, Math.min(MAX_DOOR_SPLIT, Math.round(rows)));
   if (nc === group.cols && nr === group.rows) return;
-  const U = doorSpan(group.rect, 'u', group.gap), V = doorSpan(group.rect, 'v', group.gap);
-  const colWidths = nc === group.cols ? group.colWidths : equalGaps(U, nc - 1, gapsArr(nc, group.gap));
-  const rowHeights = nr === group.rows ? group.rowHeights : equalGaps(V, nr - 1, gapsArr(nr, group.gap));
-  const next: DoorGroup = { ...group, cols: nc, rows: nr, colWidths, rowHeights, memberVfIds: [] };
+  // Kenar boşlukları korunur; yeni aralar mevcut ilk ARANIN değeriyle (yoksa varsayılan boşlukla) doğar;
+  // sayı değişmediyse aralar da aynen korunur.
+  const resplit = (old: number[], n: number) => (old.length === n + 1 ? old : gapsOf([old[0], old[old.length - 1]], n, old.length > 2 ? old[1] : group.gap));
+  const colGaps = resplit(colGapsOf(group), nc);
+  const rowGaps = resplit(rowGapsOf(group), nr);
+  const colWidths = nc === group.cols ? group.colWidths : equalDoors(group.rect, 'u', colGaps);
+  const rowHeights = nr === group.rows ? group.rowHeights : equalDoors(group.rect, 'v', rowGaps);
+  const next: DoorGroup = { ...group, cols: nc, rows: nr, colWidths, rowHeights, colGaps, rowGaps, memberVfIds: [] };
   const sol = solveFromStore(next) || fallbackSolution(next);
   const st = useAppStore.getState();
   // Üyeler yeniden kurulur: eski paneller + VF'ler silinir, yeni VF'ler eklenir (panelleri otomatik üretim yaratır).
   removeMembers(group.memberVfIds);
   const vfs = sol.members.map((_, i) => makeMemberVf(next, i, sol));
   next.memberVfIds = vfs.map(v => v.id);
-  st.updateDoorGroup(groupId, { cols: nc, rows: nr, colWidths: sol.colWidths, rowHeights: sol.rowHeights, rect: sol.rect, memberVfIds: next.memberVfIds });
+  st.updateDoorGroup(groupId, { cols: nc, rows: nr, colGaps, rowGaps, colWidths: sol.colWidths, rowHeights: sol.rowHeights, rect: sol.rect, memberVfIds: next.memberVfIds });
   st.insertVirtualFacesAfter(null, vfs);
   if (st.selectedDoorGroupId !== groupId && !st.selectedPanelRow) st.setSelectedDoorGroupId(groupId);
   console.log('[YAGO][KAPAK] bölme', groupId, `${group.cols}x${group.rows}`, '→', `${nc}x${nr}`, '(genişlik/yükseklikler eşitlendi)');
@@ -403,13 +420,15 @@ export async function setDoorSplit(groupId: string, cols: number, rows: number):
 export async function editDoorColWidth(groupId: string, k: number, value: number): Promise<void> {
   const group = groupById(groupId);
   if (!group || !Number.isFinite(value) || value <= 0) return;
-  const colWidths = applyGapEdit(group.colWidths, k, value, doorSpan(group.rect, 'u', group.gap), group.cols - 1, gapsArr(group.cols, group.gap));
+  const cg = colGapsOf(group);
+  const colWidths = applyGapEdit(group.colWidths, k, value, doorSpan(group.rect, 'u', cg), group.cols - 1, innerGaps(cg));
   await writeDoorGroup(group, { colWidths }, `sütun ${k + 1} = ${value}`);
 }
 export async function editDoorRowHeight(groupId: string, k: number, value: number): Promise<void> {
   const group = groupById(groupId);
   if (!group || !Number.isFinite(value) || value <= 0) return;
-  const rowHeights = applyGapEdit(group.rowHeights, k, value, doorSpan(group.rect, 'v', group.gap), group.rows - 1, gapsArr(group.rows, group.gap));
+  const rg = rowGapsOf(group);
+  const rowHeights = applyGapEdit(group.rowHeights, k, value, doorSpan(group.rect, 'v', rg), group.rows - 1, innerGaps(rg));
   await writeDoorGroup(group, { rowHeights }, `satır ${k + 1} = ${value}`);
 }
 /** Kilit: değer değişmez; gövde boyutlanınca bu sütun/satır sabit kalır. */
@@ -423,21 +442,35 @@ export function toggleDoorRowLock(groupId: string, k: number): void {
   if (!group || k < 0 || k >= group.rowHeights.length) return;
   useAppStore.getState().updateDoorGroup(groupId, { rowHeights: group.rowHeights.map((g, i) => (i === k ? { ...g, locked: !g.locked } : g)) });
 }
-/** Kapak boşluğu (kenarlar + kapak araları): kilitli/girilmiş ölçüler korunur, kalan diğer kapaklara EŞİT dağılır (distributeDoors). */
+/** Tüm boşluklar (kenarlar + aralar) tek değere: kilitli/girilmiş kapak ölçüleri korunur, kalan diğerlerine EŞİT (distributeDoors). */
 export async function setDoorGap(groupId: string, gap: number): Promise<void> {
   const group = groupById(groupId);
   if (!group || !Number.isFinite(gap) || gap < 0) return;
   const g = round1(gap);
-  if (Math.abs(g - group.gap) < 0.05) return;
-  await writeDoorGroup(group, { gap: g }, `boşluk = ${g}`);
+  await writeDoorGroup(group, { gap: g, colGaps: gapsOf(undefined, group.cols, g), rowGaps: gapsOf(undefined, group.rows, g) }, `tüm boşluklar = ${g}`);
+}
+/**
+ * TEK BOŞLUK (şemadaki boşluk pill'i): axis 'col' → k = 0 sol kenar … cols sağ kenar; 'row' → k = 0 üst kenar …
+ * rows alt kenar. Yalnız o boşluk değişir; fark kilitli/girilmemiş kapaklara EŞİT dağılır.
+ */
+export async function setDoorGapAt(groupId: string, axis: 'col' | 'row', k: number, value: number): Promise<void> {
+  const group = groupById(groupId);
+  if (!group || !Number.isFinite(value) || value < 0) return;
+  const v = round1(value);
+  const gaps = axis === 'col' ? colGapsOf(group) : rowGapsOf(group);
+  if (k < 0 || k >= gaps.length || Math.abs(gaps[k] - v) < 0.05) return;
+  gaps[k] = v;
+  const n = gaps.length - 1;
+  const where = k === 0 ? (axis === 'col' ? 'sol kenar' : 'üst kenar') : k === n ? (axis === 'col' ? 'sağ kenar' : 'alt kenar') : `${axis === 'col' ? 'sütun' : 'satır'} arası ${k}`;
+  await writeDoorGroup(group, axis === 'col' ? { colGaps: gaps } : { rowGaps: gaps }, `boşluk ${where} = ${v}`);
 }
 /** Tüm sütun/satırlar eşit + kilitsiz. */
 export async function equalizeDoorGroup(groupId: string): Promise<void> {
   const group = groupById(groupId);
   if (!group) return;
   await writeDoorGroup(group, {
-    colWidths: equalGaps(doorSpan(group.rect, 'u', group.gap), group.cols - 1, gapsArr(group.cols, group.gap)),
-    rowHeights: equalGaps(doorSpan(group.rect, 'v', group.gap), group.rows - 1, gapsArr(group.rows, group.gap)),
+    colWidths: equalDoors(group.rect, 'u', colGapsOf(group)),
+    rowHeights: equalDoors(group.rect, 'v', rowGapsOf(group)),
   }, 'eşitlendi');
 }
 /** Dış / iç kapak: dikdörtgen sınır panellerinin dış/iç yüzlerinden yeniden çözülür. */
