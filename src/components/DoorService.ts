@@ -109,12 +109,44 @@ export function setVfDoorBound(vfId: string, on: boolean): void {
 // ── ADAYLAR ─────────────────────────────────────────────────────────────────
 
 type SideOpt = { ref: DoorBoundRef; inner: number; outer: number; cross: [number, number]; front: number | null; name: string };
+type EdgeInfo = { ref: DoorBoundRef; inner: number; outer: number; front: number | null };
 
 /**
- * KAPAK ADAYLARI (Goker: "tıkladığım yerde kapak sınırı nerelerde varsa büyükten küçüğe
- * alternatifleri göstersin; içerdeki panel varsa önce dışarıdakiler, sonra içerdeki").
- * Dört yanda seçenek = tıklanan noktanın o tarafında kalan sınır panelleri + gövde kenarı.
- * Her kombinasyon bir dikdörtgen; seçilen panel dikdörtgenin çapraz açıklığıyla örtüşmeli.
+ * KENAR KURALI (Goker, Eki 2026): "inner dersem kapak referans panellerin her zaman İÇİNE yerleşsin; outer olduğunda
+ * referans panelin DIŞINA yerleşsin. İçerde derinliği kısalmış bir dikme varsa outer kapak yine panellerin içine
+ * geçebilir — referans aldığı sınır panelinin dışında olması kapağı outer yapıyor."
+ *  • Kapak düzlemi P = derinlik referansının ön yüzü. Outer: kapak [P, P+t] (önünde); inner: [P−t, P] (hizalı).
+ *  • INNER: her kenar sınır panelinin İÇ yüzünde (paneller arasına).
+ *  • OUTER: kenar paneli kapağın ARKASINDA kalıyorsa (ön yüzü P'nin gerisinde/hizasında) kapak onun kalınlığını
+ *    örter → DIŞ yüz; panel P'den öne taşıyorsa (daha derin gövde paneli, kapak içerde) kapak ona çarpamaz → İÇ yüz.
+ *  • Gövde kenarı (sınır paneli yok): iki yüz aynıdır.
+ */
+function rectAtDepth(e: { l: EdgeInfo; r: EdgeInfo; b: EdgeInfo; t: EdgeInfo }, side: 1 | -1, placement: DoorGroup['placement'], P: number): DoorRect {
+  const pick = (x: EdgeInfo) => {
+    if (x.front == null || placement === 'inner') return x.inner;
+    const behind = side > 0 ? x.front <= P + TOL : x.front >= P - TOL;
+    return behind ? x.outer : x.inner;
+  };
+  return { u0: pick(e.l), u1: pick(e.r), v0: pick(e.b), v1: pick(e.t), front: P };
+}
+/** Derinlik seçenekleri: kenar panellerinin farklı ön yüzleri, dıştan içe ("önce dışarıdakiler"); panel yoksa gövde yüzü. */
+function depthOptions(e: EdgeInfo[], side: 1 | -1, bodyFront: number): Array<{ ref: DoorBoundRef; front: number }> {
+  const out: Array<{ ref: DoorBoundRef; front: number }> = [];
+  for (const x of e) {
+    if (x.front == null || out.some(o => Math.abs(o.front - x.front!) <= TOL)) continue;
+    out.push({ ref: x.ref, front: x.front });
+  }
+  if (!out.length) out.push({ ref: { body: true }, front: bodyFront });
+  return out.sort((a, b) => side * (b.front - a.front));
+}
+
+/**
+ * KAPAK ADAYLARI (Goker: "tıkladığım yerde kapak sınırı nerelerde varsa büyükten küçüğe alternatifleri göstersin;
+ * içerdeki panel varsa önce dışarıdakiler, sonra içerdeki"; "birden fazla derinlikte kapak sınırı olan dikme veya
+ * raf varsa alternatif yerleşecek kapağı her sol tıklamada göster").
+ * Dört yanda seçenek = tıklanan noktanın o tarafında kalan sınır panelleri (yoksa gövde kenarı). Her kombinasyon bir
+ * dikdörtgen; seçilen panel dikdörtgenin çapraz açıklığıyla örtüşmeli. Her dikdörtgen, kenar panellerinin FARKLI
+ * DERİNLİKLERİ kadar adaya açılır (dıştan içe). Sıra: alan büyükten küçüğe, aynı alanda derinlik dıştan içe.
  */
 export function doorCandidatesAt(parent: Shape, axis: 0 | 1 | 2, side: 1 | -1, click: Vec3, shapes?: Shape[], vfs?: VirtualFace[]): DoorPick[] {
   const body = bodyLocalBox(parent);
@@ -123,15 +155,14 @@ export function doorCandidatesAt(parent: Shape, axis: 0 | 1 | 2, side: 1 | -1, c
   const bounds = collectDoorBoundPanels(parent, shapes, vfs);
   const cu = click[u], cv = click[v];
   const frontOf = (b: CavityBox) => (side > 0 ? b.max[axis] : b.min[axis]);
+  const bodyFront = side > 0 ? body.max[axis] : body.min[axis];
   const bodyOpt = (edge: number, cross: [number, number]): SideOpt => ({ ref: { body: true }, inner: edge, outer: edge, cross, front: null, name: 'Body' });
   // Bir yanda seçenekler = tıklanan noktanın o tarafında kalan sınır panelleri (dıştan içe birden çok olabilir:
   // yan panel + dikme → "önce dışarıdaki, sonra içerdeki"); o yanda hiç sınır paneli yoksa gövde kenarı.
-  // Gövde kenarı ile paneller karıştırılmaz (sol gövde / sağ dikme gibi karışık kombinasyonlar aday listesini şişiriyordu).
   const optsFor = (ax: 0 | 1 | 2, cx: 0 | 1 | 2, c: number, minSide: boolean): SideOpt[] => {
     const out: SideOpt[] = [];
     for (const bp of bounds) {
       const b = bp.box;
-      // Panel tıklanan noktanın bu tarafında mı (dizilim ekseninde)?
       const onSide = minSide ? b.max[ax] <= c + TOL : b.min[ax] >= c - TOL;
       if (!onSide) continue;
       out.push({ ref: { vfId: bp.vfId }, inner: minSide ? b.max[ax] : b.min[ax], outer: minSide ? b.min[ax] : b.max[ax], cross: [b.min[cx], b.max[cx]], front: frontOf(b), name: bp.name });
@@ -144,26 +175,30 @@ export function doorCandidatesAt(parent: Shape, axis: 0 | 1 | 2, side: 1 | -1, c
   const seen = new Set<string>();
   const out: DoorPick[] = [];
   for (const l of L) for (const r of R) for (const b of B) for (const t of T) {
-    const inner: DoorRect = { u0: l.inner, u1: r.inner, v0: b.inner, v1: t.inner, front: 0 };
-    if (inner.u1 - inner.u0 < MIN_DOOR_SPAN || inner.v1 - inner.v0 < MIN_DOOR_SPAN) continue;
+    const between: DoorRect = { u0: l.inner, u1: r.inner, v0: b.inner, v1: t.inner, front: 0 };
+    if (between.u1 - between.u0 < MIN_DOOR_SPAN || between.v1 - between.v0 < MIN_DOOR_SPAN) continue;
     // Seçilen panel, dikdörtgenin çapraz açıklığında olmalı (kısa dikme üstündeki kapağı sınırlamaz).
-    if (!overlaps(l.cross, inner.v0, inner.v1) || !overlaps(r.cross, inner.v0, inner.v1)) continue;
-    if (!overlaps(b.cross, inner.u0, inner.u1) || !overlaps(t.cross, inner.u0, inner.u1)) continue;
-    const key = rectKey(inner);
+    if (!overlaps(l.cross, between.v0, between.v1) || !overlaps(r.cross, between.v0, between.v1)) continue;
+    if (!overlaps(b.cross, between.u0, between.u1) || !overlaps(t.cross, between.u0, between.u1)) continue;
+    const key = rectKey(between);
     if (seen.has(key)) continue;
     seen.add(key);
-    // ÖN: dış kapak en ÖNDEKİ sınır panelinin önüne, iç kapak en İÇERDEKİ sınır panelinin önüyle hizalı; sınır paneli yoksa gövde yüzü.
-    const fronts = [l, r, b, t].map(o => o.front).filter((x): x is number => x != null);
-    const bodyFront = side > 0 ? body.max[axis] : body.min[axis];
-    const outerFront = fronts.length ? (side > 0 ? Math.max(...fronts) : Math.min(...fronts)) : bodyFront;
-    const innerFront = fronts.length ? (side > 0 ? Math.min(...fronts) : Math.max(...fronts)) : bodyFront;
-    inner.front = innerFront;
-    const outer: DoorRect = { u0: l.outer, u1: r.outer, v0: b.outer, v1: t.outer, front: outerFront };
+    const edges = { l, r, b, t };
+    const depths = depthOptions([l, r, b, t], side, bodyFront);
     const boundsRef: DoorBounds = { uMin: l.ref, uMax: r.ref, vMin: b.ref, vMax: t.ref };
-    out.push({ key: `${axis}${side > 0 ? '+' : '-'}:${key}`, axis, side, bounds: boundsRef, inner, outer, area: (inner.u1 - inner.u0) * (inner.v1 - inner.v0), boundPanelCount: fronts.length });
+    const panelN = [l, r, b, t].filter(o => o.front != null).length;
+    depths.forEach((d, di) => {
+      out.push({
+        key: `${axis}${side > 0 ? '+' : '-'}:${key}@${Math.round(d.front)}`, axis, side, bounds: boundsRef,
+        inner: rectAtDepth(edges, side, 'inner', d.front), outer: rectAtDepth(edges, side, 'outer', d.front),
+        area: (between.u1 - between.u0) * (between.v1 - between.v0), boundPanelCount: panelN,
+        depth: d.ref, depthIndex: di, depthCount: depths.length,
+      });
+    });
   }
-  out.sort((a, b) => b.area - a.area || a.boundPanelCount - b.boundPanelCount);
-  if (out.length) console.log('[YAGO][KAPAK] adaylar:', out.length, 'düzlem=', `${'XYZ'[axis]}${side > 0 ? '+' : '−'}`, 'sınırPanelN=', bounds.length, out.map(c => `${Math.round(c.inner.u1 - c.inner.u0)}x${Math.round(c.inner.v1 - c.inner.v0)}`).join(' > '));
+  out.sort((a, b) => b.area - a.area || a.boundPanelCount - b.boundPanelCount || side * (b.inner.front - a.inner.front));
+  if (out.length) console.log('[YAGO][KAPAK] adaylar:', out.length, 'düzlem=', `${'XYZ'[axis]}${side > 0 ? '+' : '−'}`, 'sınırPanelN=', bounds.length,
+    out.map(c => `${Math.round(c.inner.u1 - c.inner.u0)}x${Math.round(c.inner.v1 - c.inner.v0)}@${Math.round(c.inner.front)}`).join(' > '));
   return out;
 }
 
@@ -224,19 +259,16 @@ export function doorMemberRects(rect: DoorRect, cols: number, rows: number, colW
   return out;
 }
 
-/** Sınır referansının kenarı: panel kutusu (VF → panel) ya da gövde kenarı; panel yoksa gövde. */
-function boundEdge(ref: DoorBoundRef, parent: Shape, shapes: Shape[], body: CavityBox, ax: 0 | 1 | 2, minSide: boolean, placement: DoorGroup['placement']): { edge: number; box: CavityBox | null } {
+/** Sınır referansının kenar bilgisi: panel kutusu (VF → panel) ya da gövde kenarı; panel bulunamazsa gövde. */
+function boundEdgeInfo(ref: DoorBoundRef, parent: Shape, shapes: Shape[], body: CavityBox, ax: 0 | 1 | 2, minSide: boolean, axis: 0 | 1 | 2, side: 1 | -1): EdgeInfo {
   if (ref.vfId) {
     const p = panelOfVf(ref.vfId, shapes);
     const box = p && (p.parameters as any)?.parentShapeId === parent.id ? panelLocalBox(p, parent) : null;
-    if (box) {
-      const inner = minSide ? box.max[ax] : box.min[ax];
-      const outer = minSide ? box.min[ax] : box.max[ax];
-      return { edge: placement === 'inner' ? inner : outer, box };
-    }
+    if (box) return { ref, inner: minSide ? box.max[ax] : box.min[ax], outer: minSide ? box.min[ax] : box.max[ax], front: side > 0 ? box.max[axis] : box.min[axis] };
     console.warn('[YAGO][KAPAK] sınır paneli bulunamadı, gövde kenarı kullanıldı:', ref.vfId);
   }
-  return { edge: minSide ? body.min[ax] : body.max[ax], box: null };
+  const e = minSide ? body.min[ax] : body.max[ax];
+  return { ref: { body: true }, inner: e, outer: e, front: null };
 }
 
 /** Grubu güncel gövde + sınır panelleriyle çözer (saf). Dikdörtgen bozuksa önceki korunur. */
@@ -244,15 +276,22 @@ export function solveDoorGroup(group: DoorGroup, parent: Shape, shapes: Shape[])
   const body = bodyLocalBox(parent);
   if (!body) return null;
   const { u, v } = doorPlaneAxes(group.axis);
-  const pl = group.placement;
-  const l = boundEdge(group.bounds.uMin, parent, shapes, body, u, true, pl), r = boundEdge(group.bounds.uMax, parent, shapes, body, u, false, pl);
-  const b = boundEdge(group.bounds.vMin, parent, shapes, body, v, true, pl), t = boundEdge(group.bounds.vMax, parent, shapes, body, v, false, pl);
-  const fronts = [l, r, b, t].map(x => x.box).filter((x): x is CavityBox => !!x).map(x => (group.side > 0 ? x.max[group.axis] : x.min[group.axis]));
+  const ei = (ref: DoorBoundRef, ax: 0 | 1 | 2, minSide: boolean) => boundEdgeInfo(ref, parent, shapes, body, ax, minSide, group.axis, group.side);
+  const edges = { l: ei(group.bounds.uMin, u, true), r: ei(group.bounds.uMax, u, false), b: ei(group.bounds.vMin, v, true), t: ei(group.bounds.vMax, v, false) };
   const bodyFront = group.side > 0 ? body.max[group.axis] : body.min[group.axis];
-  const front = !fronts.length ? bodyFront
-    : pl === 'outer' ? (group.side > 0 ? Math.max(...fronts) : Math.min(...fronts))
-    : (group.side > 0 ? Math.min(...fronts) : Math.max(...fronts));
-  let rect: DoorRect = { u0: l.edge, u1: r.edge, v0: b.edge, v1: t.edge, front };
+  // DERİNLİK: kayıtlı referans panelin ön yüzü (taşınsa/boyutlansa izler); yoksa eski kural (outer en öndeki, inner en içerdeki).
+  const fronts = [edges.l, edges.r, edges.b, edges.t].map(x => x.front).filter((x): x is number => x != null);
+  const sgn = group.side;
+  let P = !fronts.length ? bodyFront
+    : group.placement === 'outer' ? (sgn > 0 ? Math.max(...fronts) : Math.min(...fronts))
+    : (sgn > 0 ? Math.min(...fronts) : Math.max(...fronts));
+  if (group.depthRef?.body) P = bodyFront;
+  else if (group.depthRef?.vfId) {
+    const hit = [edges.l, edges.r, edges.b, edges.t].find(x => x.ref.vfId === group.depthRef!.vfId && x.front != null);
+    if (hit) P = hit.front!;
+    else console.warn('[YAGO][KAPAK] derinlik referansı bulunamadı, varsayılan derinlik:', group.id, group.depthRef.vfId);
+  }
+  let rect: DoorRect = rectAtDepth(edges, group.side, group.placement, P);
   if (rect.u1 - rect.u0 < MIN_DOOR_SPAN || rect.v1 - rect.v0 < MIN_DOOR_SPAN) {
     console.warn('[YAGO][KAPAK] dikdörtgen bozuk/çok küçük, önceki korunuyor:', group.id, fmtRect(rect));
     rect = { ...group.rect };
@@ -345,7 +384,7 @@ export function createDoorGroupFromPick(shapeId: string, pick: DoorPick, placeme
   if (!parent) return null;
   const rect = placement === 'inner' ? { ...pick.inner } : { ...pick.outer };
   const group: DoorGroup = {
-    id: genId('door'), shapeId, axis: pick.axis, side: pick.side, placement, bounds: pick.bounds, rect,
+    id: genId('door'), shapeId, axis: pick.axis, side: pick.side, placement, bounds: pick.bounds, depthRef: pick.depth, rect,
     cols: 1, rows: 1, colWidths: equalDoors(rect, 'u', [DOOR_GAP, DOOR_GAP]), rowHeights: equalDoors(rect, 'v', [DOOR_GAP, DOOR_GAP]),
     colGaps: [DOOR_GAP, DOOR_GAP], rowGaps: [DOOR_GAP, DOOR_GAP], gap: DOOR_GAP, thickness: DOOR_THICKNESS, memberVfIds: [], name: name?.trim() || 'Door', createdAt: Date.now(),
   };

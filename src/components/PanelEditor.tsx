@@ -2390,7 +2390,7 @@ export function PanelEditor() {
     const boundN = selectedShape ? virtualFaces.filter(f => f.shapeId === selectedShape.id && f.doorBound && !isDoorVf(f)).length : 0;
     const status = !selectedShape ? 'Select a body first'
       : n === 0 ? (boundN ? `Click a body face · ${boundN} door ref${boundN === 1 ? '' : 's'}` : 'No door refs — body edges bound the door · click a body face')
-      : (() => { const r = doorPickPlacement === 'inner' ? cur.inner : cur.outer; return `Door ${doorPickIndex + 1}/${n} · ${Math.round(r.u1 - r.u0)}×${Math.round(r.v1 - r.v0)} — click: next · right-click: place`; })();
+      : (() => { const r = doorPickPlacement === 'inner' ? cur.inner : cur.outer; return `Door ${doorPickIndex + 1}/${n} · ${Math.round(r.u1 - r.u0)}×${Math.round(r.v1 - r.v0)}${cur.depthCount > 1 ? ` · depth ${cur.depthIndex + 1}/${cur.depthCount}` : ''} — click: next · right-click: place`; })();
     const placementModes: DockMode[] = [
       { key: 'outer', label: 'Outer', sub: 'Over panels', Icon: PanelTop, title: 'Outer door — covers the panel thicknesses, sits in front of the body' },
       { key: 'inner', label: 'Inner', sub: 'Between panels', Icon: SquareDashedBottom, title: 'Inner (inset) door — fits between the reference panels, flush with their front' },

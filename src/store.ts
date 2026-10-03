@@ -87,6 +87,8 @@ export interface DoorRect { u0: number; u1: number; v0: number; v1: number; fron
 export interface DoorPick {
   key: string; axis: 0 | 1 | 2; side: 1 | -1; bounds: DoorBounds;
   inner: DoorRect; outer: DoorRect; area: number;
+  /** Kapak düzleminin derinlik referansı (ön yüzü düzlemi veren sınır paneli ya da gövde) + aynı dikdörtgendeki sırası. */
+  depth: DoorBoundRef; depthIndex: number; depthCount: number;
   /** Sınır panellerinin sayısı (gövde kenarı sayılmaz) — etikette "Body" / "2 panels". */
   boundPanelCount: number;
 }
@@ -101,6 +103,12 @@ export interface DoorGroup {
   /** 'outer' = dış kapak (panel kalınlıklarının dışından, önde); 'inner' = iç kapak (panellerin arasına, önü panellerle hizalı). */
   placement: 'outer' | 'inner';
   bounds: DoorBounds;
+  /**
+   * DERİNLİK REFERANSI (Goker, Eki 2026: "birden fazla derinlikte kapak sınırı olan dikme/raf varsa alternatif
+   * derinlikleri göster"): kapak düzlemi bu sınır panelinin ÖN yüzündedir (outer: önünde, inner: önüyle hizalı).
+   * Yoksa (eski gruplar) outer = en öndeki, inner = en içerdeki sınır panelinin önü.
+   */
+  depthRef?: DoorBoundRef;
   /** Son çözülen dikdörtgen (gövde-yerel). */
   rect: DoorRect;
   /** Dikeyde böl = sütun sayısı (u ekseni); yatayda böl = satır sayısı (v ekseni). */
