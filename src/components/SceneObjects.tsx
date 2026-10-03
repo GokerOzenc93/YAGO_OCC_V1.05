@@ -14,7 +14,7 @@ import {
   GROUP_PANEL_THICKNESS, boxSpan, boxesSurface, collectObstacles, confirmRefCavityExtrude, confirmVolumePick, fmtBox, gridForObstacles, groupBoundsPanelPredicate,
   rayCavityCandidates, repickObstacles,
 } from './PanelGroupService';
-import { confirmDoorPick, doorCandidatesAt, doorSlabBox, fmtRect, isDoorPanel, rayDoorEntry } from './DoorService';
+import { DOOR_GAP, DOOR_THICKNESS, collectDoorCuts, confirmDoorPick, doorCandidatesAt, doorSlabPolygon, fmtRect, isDoorPanel, rayDoorEntry } from './DoorService';
 
 /* ═══════════════════════════════════════════════════════════════════════════
    SAHNE NESNELERİ — canvas içinde şekil başına çizilen her şey:
@@ -976,20 +976,26 @@ export const VolumePickOverlay: React.FC<{ shape: any; allShapes: any[] }> = ({ 
 // girdiği (u,v) noktasında kapak sınırı panellerinden kurulan dikdörtgenler büyükten küçüğe
 // (DoorService.doorCandidatesAt). Fare: ilk aday soluk; sol tık: döngü; sağ tık / ✓: grup.
 // Aday, bir PANEL GİBİ (dış/iç yerleşime göre kalınlıklı levha) petrol dolgu + kırmızı kenarla çizilir.
-const boxEdgePts = (b: { min: Vec3; max: Vec3 }): Vec3[] => {
-  const [x0, y0, z0] = b.min, [x1, y1, z1] = b.max;
-  const c: Vec3[] = [[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]];
-  const e = [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]];
-  return e.flatMap(([a, b2]) => [c[a], c[b2]]);
+// AÇILI REFERANS (DoorService): levha, dönmüş sınır panelleriyle kırpılmış KONVEKS çokgen prizmasıdır (dış yüz
+// çokgeni −normal yönünde kalınlık kadar); kesim yoksa dikdörtgen prizma = eski kutu.
+type DoorSlabPoly = { normal: Vec3; vertices: Vec3[] };
+const slabPrism = (poly: DoorSlabPoly, t: number): { geo: THREE.BufferGeometry; edges: Vec3[] } => {
+  const n = poly.normal, front = poly.vertices, back = front.map(v => [v[0] - n[0] * t, v[1] - n[1] * t, v[2] - n[2] * t] as Vec3);
+  const k = front.length, pos: number[] = [], idx: number[] = [];
+  for (const v of front) pos.push(...v); for (const v of back) pos.push(...v);
+  for (let i = 1; i + 1 < k; i++) { idx.push(0, i, i + 1); idx.push(k, k + i + 1, k + i); }   // ön yelpaze + arka (ters)
+  for (let i = 0; i < k; i++) { const j = (i + 1) % k; idx.push(i, k + i, k + j, i, k + j, j); }   // yan yüzler
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); geo.setIndex(idx); geo.computeVertexNormals();
+  const edges: Vec3[] = [];
+  for (let i = 0; i < k; i++) { const j = (i + 1) % k; edges.push(front[i], front[j], back[i], back[j], front[i], back[i]); }
+  return { geo, edges };
 };
-const DoorSlab: React.FC<{ box: { min: Vec3; max: Vec3 }; fill: number; opacity: number; edge?: string; order: number }> = ({ box, fill, opacity, edge, order }) => {
-  const geo = useMemo(() => {
-    const g = new THREE.BoxGeometry(Math.max(box.max[0] - box.min[0], 0.1), Math.max(box.max[1] - box.min[1], 0.1), Math.max(box.max[2] - box.min[2], 0.1));
-    g.translate((box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2);
-    return g;
-  }, [box.min[0], box.min[1], box.min[2], box.max[0], box.max[1], box.max[2]]);
+const polyKey = (p: DoorSlabPoly, t: number) => `${t}|${p.normal.join(',')}|${p.vertices.map(v => v.map(x => x.toFixed(1)).join(',')).join(';')}`;
+const DoorSlab: React.FC<{ poly: DoorSlabPoly; thickness: number; fill: number; opacity: number; edge?: string; order: number }> = ({ poly, thickness, fill, opacity, edge, order }) => {
+  const key = polyKey(poly, thickness);
+  const { geo, edges: pts } = useMemo(() => slabPrism(poly, thickness), [key]);
   useEffect(() => () => geo.dispose(), [geo]);
-  const pts = useMemo(() => boxEdgePts(box), [box.min[0], box.min[1], box.min[2], box.max[0], box.max[1], box.max[2]]);
   return (
     <>
       <mesh geometry={geo} raycast={() => null} renderOrder={order}>
@@ -1017,9 +1023,11 @@ export const DoorPickOverlay: React.FC<{ shape: any }> = ({ shape }) => {
   useEffect(() => () => { pickGeo?.dispose(); }, [pickGeo]);
   useEffect(() => { if (!doorPickMode) { setHoverPick(null); lastRef.current = null; } }, [doorPickMode]);
   const selected = doorPickCandidates[doorPickIndex] || null;
-  const slabOf = (c: DoorPick | null) => (c ? doorSlabBox({ axis: c.axis, side: c.side, placement: doorPickPlacement, thickness: 18 }, doorPickPlacement === 'inner' ? c.inner : c.outer) : null);
-  const selectedBox = useMemo(() => slabOf(selected), [selected, doorPickPlacement]);
-  const hoverBox = useMemo(() => slabOf(hoverPick), [hoverPick, doorPickPlacement]);
+  // Dönmüş sınır panelleri (kesici düzlemler): aday levhası onlarla kırpılarak çizilir — yerleşen kapakla bire bir.
+  const cuts = useMemo(() => (doorPickMode ? collectDoorCuts(shape, shapes, virtualFaces) : []), [doorPickMode, shape, shapes, virtualFaces]);
+  const slabOf = (c: DoorPick | null) => (c ? doorSlabPolygon({ axis: c.axis, side: c.side, placement: doorPickPlacement, thickness: DOOR_THICKNESS, gap: DOOR_GAP }, doorPickPlacement === 'inner' ? c.inner : c.outer, cuts) : null);
+  const selectedBox = useMemo(() => slabOf(selected), [selected, doorPickPlacement, cuts]);
+  const hoverBox = useMemo(() => slabOf(hoverPick), [hoverPick, doorPickPlacement, cuts]);
 
   const candidatesFromEvent = (e: any): DoorPick[] => {
     if (!body || !doorPickMode || !e?.ray) return [];
@@ -1055,8 +1063,8 @@ export const DoorPickOverlay: React.FC<{ shape: any }> = ({ shape }) => {
   return (
     <>
       <mesh geometry={pickGeo} visible={false} onPointerMove={onPointerMove} onPointerOut={() => setHoverPick(null)} onPointerDown={onPointerDown} onContextMenu={(e: any) => e.stopPropagation()} />
-      {hoverBox && !hoverIsSelected && <DoorSlab box={hoverBox} fill={PICK_COLORS.hover} opacity={SEL_COLORS.faceHoverOpacity * 0.6} order={5} />}
-      {selectedBox && <DoorSlab box={selectedBox} fill={PICK_COLORS.selected} opacity={SEL_COLORS.faceActiveOpacity * 0.7} edge={PICK_COLORS.selectedEdge} order={6} />}
+      {hoverBox && !hoverIsSelected && <DoorSlab poly={hoverBox} thickness={DOOR_THICKNESS} fill={PICK_COLORS.hover} opacity={SEL_COLORS.faceHoverOpacity * 0.6} order={5} />}
+      {selectedBox && <DoorSlab poly={selectedBox} thickness={DOOR_THICKNESS} fill={PICK_COLORS.selected} opacity={SEL_COLORS.faceActiveOpacity * 0.7} edge={PICK_COLORS.selectedEdge} order={6} />}
     </>
   );
 };

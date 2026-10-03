@@ -405,6 +405,8 @@ async function cutByRotatedPressers(
   for (const r of siblings) {
     // Sıra tek yetkidir — dönmüş bir raf/dikme de sırada SONRA gelen gövde panelini biçer.
     if (r.id === panel.id || orderOf(r) >= myOrder) continue;
+    // KAPAK hiçbir gövde panelini kesmez — açılı referansı izleyen (eğik VF'li) kapak dönmüş basan sayılmaz.
+    if (isDoorPanel(r)) continue;
     if (!panelHasRotation(r) && !vfIsTilted(vfOfPanel(r, vfs))) continue;
     if (stepRefTargets(r).rotate.has(panel.id)) {
       console.log('[YAGO][DÖNÜŞ-KESİM] MUAF', panel.id, '<-', r.id, '— r bu paneli REF DÖNÜŞ hedefi alıyor, düzlem kesimi yok');
@@ -696,6 +698,7 @@ async function fitRotatedPanel(
   for (const b of siblings) {
     // Sıra tek yetkidir — sırada ÖNCE gelen raf/dikme de dönmüş gövde panelini keser.
     if (b.id === panel.id || orderOf(b) >= myOrder) continue;
+    if (isDoorPanel(b)) continue;   // kapak gövde panelini kesmez (gövdenin önünde durur)
     const isRefTarget = myRefTargets.has(b.id);
     if (isRefTarget && refContacts.get(b.id) === 'rest') {
       console.log('[YAGO][DÖNÜŞ-SIĞDIR]', panel.id, 'referansa OTURUYOR, referansla kesilmedi <-', b.id, '(referans kenarı pahlanacak)');
@@ -858,8 +861,10 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       const buildVerts = cornerJoinedVertices(panel, vf, vfsIn, children, orderOf);
       // DÖNMÜŞ veya VF-EĞİK panel = BÜYÜT & SIĞDIR; düz panel gerçek boyutta.
       const vfTilted = vfIsTilted(vf);
-      const isRotated = panelHasRotation(panel) || vfTilted;
-      if (vfTilted && !panelHasRotation(panel)) {
+      // KAPAK: VF'si açılı referans paneli izleyebilir (DoorService AÇILI REFERANS) ya da kendisi döndürülmüş olabilir —
+      // gövdenin önünde durur; gövdeyle SIĞDIRILMAZ, kardeşlerle kesilmez (fitRotatedPanel yok). Adımlar yine uygulanır.
+      const isRotated = !isDoorPanel(panel) && (panelHasRotation(panel) || vfTilted);
+      if (vfTilted && !panelHasRotation(panel) && !isDoorPanel(panel)) {
         console.log('[YAGO][EĞİK-VF]', panel.id, 'VF eğik (vertex düzenlemesi) → dönmüş gibi sığdırılacak. n=', vf.normal.map(n => n.toFixed(2)).join(','));
       }
       // Düz panel + eğik gövde yüzü: VF köşeleri uzatılır, sonra gövdeyle kesilir.

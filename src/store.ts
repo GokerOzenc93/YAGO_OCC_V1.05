@@ -93,6 +93,12 @@ export interface DoorPick {
   depth: DoorBoundRef; depthIndex: number; depthCount: number;
   /** Sınır panellerinin sayısı (gövde kenarı sayılmaz) — etikette "Body" / "2 panels". */
   boundPanelCount: number;
+  /**
+   * AÇILI REFERANS (Goker, Eki 2026: "referans panel açılı yerleşmişse kapak da açılı"): derinlik referansı dönmüş
+   * bir panelse onun dönüşü (gövde-yerel Matrix4, 16 eleman); inner/outer dikdörtgenleri bu çerçevededir
+   * (DoorService.doorRotOfPanel). Düz referansta yok.
+   */
+  rot?: number[];
 }
 /**
  * KAPAK GRUBU: bir kapak düzlemine yerleşen cols×rows kapak. Dikdörtgen her rebuild'de

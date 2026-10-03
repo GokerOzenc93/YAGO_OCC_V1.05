@@ -772,6 +772,31 @@ function rectilinearFreeRegion(ring2D: Point2D[], blockers: Point2D[][], anchorP
  * yüz alanlı normal hiçbir dünya eksenine paralel değilse levha eğiktir.
  */
 const _tiltCache = new WeakMap<object, boolean>();
+/** En büyük toplam alanlı yüz normali (işaret: ilk sıfırdan farklı bileşen pozitif); geometri yoksa null. */
+export function largestFaceNormal(geo: any): THREE.Vector3 | null {
+  if (!geo || typeof geo.getAttribute !== 'function') return null;
+  const pos = geo.getAttribute('position') as THREE.BufferAttribute | undefined;
+  if (!pos) return null;
+  const idx = geo.getIndex();
+  const cnt = idx ? idx.count : pos.count;
+  const at = (k: number) => (idx ? idx.getX(k) : k);
+  const bins = new Map<string, { n: THREE.Vector3; a: number }>();
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), n = new THREE.Vector3();
+  for (let t = 0; t + 2 < cnt; t += 3) {
+    a.fromBufferAttribute(pos, at(t)); b.fromBufferAttribute(pos, at(t + 1)); c.fromBufferAttribute(pos, at(t + 2));
+    n.crossVectors(b.sub(a), c.sub(a));
+    const area = n.length() / 2;
+    if (area < 1e-6) continue;
+    n.divideScalar(area * 2);
+    if (n.x < 0 || (Math.abs(n.x) < 1e-6 && n.y < 0) || (Math.abs(n.x) < 1e-6 && Math.abs(n.y) < 1e-6 && n.z < 0)) n.negate();
+    const key = `${n.x.toFixed(2)},${n.y.toFixed(2)},${n.z.toFixed(2)}`;
+    const e = bins.get(key);
+    if (e) e.a += area; else bins.set(key, { n: n.clone(), a: area });
+  }
+  let best: { n: THREE.Vector3; a: number } | null = null;
+  bins.forEach(e => { if (!best || e.a > best.a) best = e; });
+  return best ? (best as { n: THREE.Vector3; a: number }).n.clone() : null;
+}
 export function panelIsTiltedSlab(panel: any): boolean {
   const geo = panel?.geometry;
   if (!geo || typeof geo.getAttribute !== 'function') return false;
@@ -779,26 +804,8 @@ export function panelIsTiltedSlab(panel: any): boolean {
   if (hit !== undefined) return hit;
   let tilted = false;
   try {
-    const pos = geo.getAttribute('position') as THREE.BufferAttribute;
-    const idx = geo.getIndex();
-    const cnt = idx ? idx.count : pos.count;
-    const at = (k: number) => (idx ? idx.getX(k) : k);
-    const bins = new Map<string, { n: THREE.Vector3; a: number }>();
-    const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), n = new THREE.Vector3();
-    for (let t = 0; t + 2 < cnt; t += 3) {
-      a.fromBufferAttribute(pos, at(t)); b.fromBufferAttribute(pos, at(t + 1)); c.fromBufferAttribute(pos, at(t + 2));
-      n.crossVectors(b.sub(a), c.sub(a));
-      const area = n.length() / 2;
-      if (area < 1e-6) continue;
-      n.divideScalar(area * 2);
-      if (n.x < 0 || (Math.abs(n.x) < 1e-6 && n.y < 0) || (Math.abs(n.x) < 1e-6 && Math.abs(n.y) < 1e-6 && n.z < 0)) n.negate();
-      const key = `${n.x.toFixed(2)},${n.y.toFixed(2)},${n.z.toFixed(2)}`;
-      const e = bins.get(key);
-      if (e) e.a += area; else bins.set(key, { n: n.clone(), a: area });
-    }
-    let best: { n: THREE.Vector3; a: number } | null = null;
-    bins.forEach(e => { if (!best || e.a > best.a) best = e; });
-    if (best) tilted = !isFlatNormal((best as { n: THREE.Vector3; a: number }).n, 0.999 - Number.EPSILON);
+    const best = largestFaceNormal(geo);
+    if (best) tilted = !isFlatNormal(best, 0.999 - Number.EPSILON);
   } catch { tilted = false; }
   _tiltCache.set(geo, tilted);
   return tilted;

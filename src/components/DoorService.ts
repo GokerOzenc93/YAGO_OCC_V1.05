@@ -2,8 +2,9 @@ import {
   type CavityBox, type DoorBoundRef, type DoorBounds, type DoorGroup, type DoorPick, type DoorRect, type GapSpec, type Shape, type VirtualFace,
   panelOfVf, requestRebuild, shapeById, useAppStore,
 } from '../store';
+import * as THREE from 'three';
 import { type Vec3, genId, round1 } from './Geometry';
-import { panelHasRotation } from './FaceRegion';
+import { largestFaceNormal, panelHasRotation } from './FaceRegion';
 import { applyGapEdit, bodyLocalBox, equalGaps, panelLocalBox, redistributeForThickness } from './PanelGroupService';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -40,12 +41,22 @@ import { applyGapEdit, bodyLocalBox, equalGaps, panelLocalBox, redistributeForTh
 //    move / rotate adımları motorda aynı yoldan uygulanır; VF her rebuild'de buradan
 //    yazılır (recalculateDoorVfs). Kapak panelleri gövde panellerini DAMGALAMAZ, hacim
 //    engeli DEĞİLDİR, gövdeyle kesilmez (PanelEngine / PanelGroupService isDoorPanel).
+//  • AÇILI REFERANS (Goker, Eki 2026: "referans panel açılı yerleşmişse kapak da açılı
+//    yerleşsin … aynı oraya panel atsaydım senaryosu gibi, bulunduğu yerin şeklini alarak
+//    ama kapak gibi"): kapak DÜZLEMİ değişmez (tıklanan gövde yüzü); DÖNMÜŞ bir kapak-sınırı
+//    paneli dikdörtgenin kenarı olmaz (eksen-hizalı kutusu şişkin), onun yerine gövde panelini
+//    kestiği gibi kapağı BÜYÜK-YÜZ DÜZLEMİYLE (sonsuz yarım düzlem, boşluk kadar geri) keser:
+//    üye çokgeni eğik kenarlı çıkar (yamuk/beşgen), kapak eğik panelin altında biter.
+//    İç kapak: panelin kapağa bakan yüzü; dış kapak + panel kapak düzleminin gerisinde: uzak
+//    yüzü (kalınlığını örter — düz kenar kuralıyla aynı). Kapağı katı olarak döndürmek
+//    (referansın dönüşünü kapağa uygulamak) REDDEDİLDİ ("saçmaladı, 4 kenar bir kapak").
 // ═══════════════════════════════════════════════════════════════════════════
 
 export const DOOR_THICKNESS = 18;
 export const DOOR_GAP = 3;
 const TOL = 0.5;
 const MIN_DOOR_SPAN = 40;
+const PREVIEW_ID = 'önizleme';
 const MAX_DOOR_SPLIT = 12;
 
 export const isDoorPanel = (p: any): boolean => !!p?.parameters?.doorGroupId;
@@ -95,6 +106,90 @@ export function collectDoorBoundPanels(parent: Shape, shapes: Shape[] = useAppSt
     out.push({ vfId: vf.id, panelId: p.id, box, name: vf.description || 'Panel' });
   }
   return out;
+}
+
+// ── AÇILI REFERANS KESİMLERİ ────────────────────────────────────────────────
+
+/** Dönmüş kapak-sınırı paneli: büyük-yüz normali (gövde-yerel) + levhanın o normaldeki aralığı + eksen-hizalı kutusu. */
+export interface DoorCut { vfId: string; name: string; n: Vec3; dMin: number; dMax: number; box: CavityBox }
+
+/** Gövdenin DÖNMÜŞ kapak-sınırı panelleri (kesici düzlemler). Düz paneller dikdörtgen kenarıdır, burada yok. */
+export function collectDoorCuts(parent: Shape, shapes: Shape[] = useAppStore.getState().shapes, vfs: VirtualFace[] = useAppStore.getState().virtualFaces): DoorCut[] {
+  const out: DoorCut[] = [];
+  for (const vf of vfs) {
+    if (vf.shapeId !== parent.id || !vf.doorBound || isDoorVf(vf)) continue;
+    const p = panelOfVf(vf.id, shapes);
+    if (!p || !panelHasRotation(p)) continue;
+    const box = panelLocalBox(p, parent);
+    const n = largestFaceNormal(p.geometry);
+    const pos = p.geometry?.getAttribute?.('position') as THREE.BufferAttribute | undefined;
+    if (!box || !n || !pos) continue;
+    const off = [0, 1, 2].map(k => (p.position?.[k] ?? 0) - (parent.position?.[k] ?? 0));
+    let dMin = Infinity, dMax = -Infinity;
+    for (let i = 0; i < pos.count; i++) {
+      const d = (pos.getX(i) + off[0]) * n.x + (pos.getY(i) + off[1]) * n.y + (pos.getZ(i) + off[2]) * n.z;
+      if (d < dMin) dMin = d; if (d > dMax) dMax = d;
+    }
+    if (!(dMax - dMin > 0.5)) continue;
+    out.push({ vfId: vf.id, name: vf.description || 'Panel', n: [n.x, n.y, n.z], dMin, dMax, box });
+  }
+  return out;
+}
+
+type Pt2 = { x: number; y: number };
+/** Konveks çokgeni A·x + B·y ≤ C yarım düzlemiyle kırpar (Sutherland–Hodgman, tek kenar). */
+function clipHalfPlane(poly: Pt2[], A: number, B: number, C: number): Pt2[] {
+  const out: Pt2[] = [];
+  const f = (p: Pt2) => A * p.x + B * p.y - C;
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i + 1) % poly.length];
+    const fa = f(a), fb = f(b);
+    if (fa <= 0) out.push(a);
+    if ((fa < 0 && fb > 0) || (fa > 0 && fb < 0)) { const t = fa / (fa - fb); out.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t }); }
+  }
+  return out;
+}
+const polyArea = (p: Pt2[]) => { let a = 0; for (let i = 0; i < p.length; i++) { const q = p[i], r = p[(i + 1) % p.length]; a += q.x * r.y - r.x * q.y; } return a / 2; };
+
+/**
+ * Üye dikdörtgenini dönmüş sınır panellerinin BÜYÜK-YÜZ düzlemleriyle kırpar → (u,v) çokgeni; kesim yoksa null.
+ * Tutulan taraf = üyenin merkezinin bulunduğu taraf. Kesim çizgisi kapağın İKİ yüzeyinde de (ön/arka) alınır,
+ * kısıtlayıcı olan tutulur: dik kenarlı kapak eğik panele girmez. Boşluk (gap) düzlemden geri çekilir.
+ * Panelin kutusu üyenin (u,v) açıklığıyla örtüşmüyorsa (başka bölme) o panel kesmez.
+ */
+function clipMemberByCuts(
+  m: { u0: number; u1: number; v0: number; v1: number }, cuts: DoorCut[], axis: 0 | 1 | 2, side: 1 | -1,
+  placement: DoorGroup['placement'], thickness: number, front: number, gap: number,
+): Pt2[] | null {
+  if (!cuts.length) return null;
+  const { u, v } = doorPlaneAxes(axis);
+  let poly: Pt2[] = [{ x: m.u0, y: m.v0 }, { x: m.u1, y: m.v0 }, { x: m.u1, y: m.v1 }, { x: m.u0, y: m.v1 }];
+  const planes = placement === 'outer' ? [front, front + side * thickness] : [front - side * thickness, front];   // kapak levhasının iki yüzeyi
+  const cu = (m.u0 + m.u1) / 2, cv = (m.v0 + m.v1) / 2;
+  let any = false;
+  for (const c of cuts) {
+    if (Math.min(c.box.max[u], m.u1) - Math.max(c.box.min[u], m.u0) < TOL || Math.min(c.box.max[v], m.v1) - Math.max(c.box.min[v], m.v0) < TOL) continue;
+    const A = c.n[u], B = c.n[v], Na = c.n[axis];
+    if (Math.abs(A) < 1e-6 && Math.abs(B) < 1e-6) continue;   // kapak düzlemine paralel: kesim anlamsız
+    // Panel kapak düzleminin GERİSİNDE mi (dış kapak kalınlığını örter) ?
+    const behind = side > 0 ? c.box.max[axis] <= front + TOL : c.box.min[axis] >= front - TOL;
+    const coverFar = placement === 'outer' && behind;
+    const dCenter = A * cu + B * cv + Na * front;
+    const keepBelow = dCenter < (c.dMin + c.dMax) / 2;          // merkez levhanın "min" tarafında
+    let before = poly;
+    if (keepBelow) {
+      const lim = (coverFar ? c.dMax : c.dMin) - gap;
+      const C = Math.min(...planes.map(pa => lim - Na * pa));   // A·u + B·v ≤ C (kısıtlayıcı yüzey)
+      poly = clipHalfPlane(poly, A, B, C);
+    } else {
+      const lim = (coverFar ? c.dMin : c.dMax) + gap;
+      const C = Math.max(...planes.map(pa => lim - Na * pa));   // A·u + B·v ≥ C  ⇔  −A·u − B·v ≤ −C
+      poly = clipHalfPlane(poly, -A, -B, -C);
+    }
+    if (poly.length < 3 || polyArea(poly) < MIN_DOOR_SPAN * MIN_DOOR_SPAN) { console.warn('[YAGO][KAPAK-AÇILI] kesim üyeyi yok ediyor, atlandı:', c.name); poly = before; continue; }
+    if (poly.length !== before.length || poly.some((q, i) => Math.abs(q.x - before[i].x) > 1e-6 || Math.abs(q.y - before[i].y) > 1e-6)) any = true;
+  }
+  return any ? poly : null;
 }
 
 /** VF'nin kapak sınırı işaretini yazar (geometri değişmez → rebuild yok; yalnız yeni seçimleri etkiler). */
@@ -207,7 +302,11 @@ export function doorCandidatesAt(parent: Shape, axis: 0 | 1 | 2, side: 1 | -1, c
 
 // ── ÇÖZÜM ───────────────────────────────────────────────────────────────────
 
-export interface DoorMemberRect { r: number; c: number; u0: number; u1: number; v0: number; v1: number }
+export interface DoorMemberRect {
+  r: number; c: number; u0: number; u1: number; v0: number; v1: number;
+  /** AÇILI REFERANS kesimi: dönmüş sınır panelleriyle kırpılmış (u,v) çokgeni (kesim yoksa yok — dikdörtgen). */
+  poly?: Array<{ x: number; y: number }>;
+}
 export interface DoorSolution { rect: DoorRect; colWidths: GapSpec[]; rowHeights: GapSpec[]; members: DoorMemberRect[] }
 
 /**
@@ -300,7 +399,21 @@ export function solveDoorGroup(group: DoorGroup, parent: Shape, shapes: Shape[])
   const cg = colGapsOf(group), rg = rowGapsOf(group);
   const colWidths = distributeDoors(group.colWidths, rect, 'u', cg);
   const rowHeights = distributeDoors(group.rowHeights, rect, 'v', rg);
-  return { rect, colWidths, rowHeights, members: doorMemberRects(rect, group.cols, group.rows, colWidths, rowHeights, cg, rg) };
+  const members = applyDoorCuts(group, rect, doorMemberRects(rect, group.cols, group.rows, colWidths, rowHeights, cg, rg), collectDoorCuts(parent, shapes));
+  return { rect, colWidths, rowHeights, members };
+}
+
+/** Üyeleri dönmüş sınır panelleriyle kırpar (AÇILI REFERANS); her rebuild'de güncel panellerden yeniden. */
+export function applyDoorCuts(group: Pick<DoorGroup, 'axis' | 'side' | 'placement' | 'thickness' | 'gap' | 'id'>, rect: DoorRect, members: DoorMemberRect[], cuts: DoorCut[]): DoorMemberRect[] {
+  if (!cuts.length) return members;
+  let n = 0;
+  const out = members.map(m => {
+    const poly = clipMemberByCuts(m, cuts, group.axis, group.side, group.placement, group.thickness, rect.front, group.gap);
+    if (poly) n++;
+    return poly ? { ...m, poly } : m;
+  });
+  if (n && group.id !== PREVIEW_ID) console.log('[YAGO][KAPAK-AÇILI]', group.id, 'dönmüş sınır paneli kesti:', cuts.map(c => c.name).join('/'), 'kesilen üye=', n, '/', members.length);
+  return out;
 }
 
 /**
@@ -313,8 +426,10 @@ function doorMemberVfGeometry(group: DoorGroup, m: DoorMemberRect, rect: DoorRec
   const plane = group.placement === 'outer' ? rect.front + group.side * group.thickness : rect.front;
   const mk = (uu: number, vv: number): Vec3 => { const p: Vec3 = [0, 0, 0]; p[group.axis] = plane; p[u] = uu; p[v] = vv; return p; };
   const normal: Vec3 = [0, 0, 0]; normal[group.axis] = group.side;
-  const vertices = [mk(m.u0, m.v0), mk(m.u1, m.v0), mk(m.u1, m.v1), mk(m.u0, m.v1)];
-  return { normal, vertices, center: mk((m.u0 + m.u1) / 2, (m.v0 + m.v1) / 2) };
+  // AÇILI REFERANS: kırpılmış çokgen varsa VF o çokgendir (motor çokgeni olduğu gibi levhaya çevirir).
+  const vertices = m.poly ? m.poly.map(q => mk(q.x, q.y)) : [mk(m.u0, m.v0), mk(m.u1, m.v0), mk(m.u1, m.v1), mk(m.u0, m.v1)];
+  const c = m.poly ? m.poly.reduce((a, q) => ({ x: a.x + q.x / m.poly!.length, y: a.y + q.y / m.poly!.length }), { x: 0, y: 0 }) : { x: (m.u0 + m.u1) / 2, y: (m.v0 + m.v1) / 2 };
+  return { normal, vertices, center: mk(c.x, c.y) };
 }
 
 function doorVfPatch(vf: VirtualFace, group: DoorGroup, sol: DoorSolution): Partial<VirtualFace> | null {
@@ -565,13 +680,15 @@ export function syncDoorGroups(parentShapeId: string): void {
   }
 }
 
-/** Kapak düzleminde (u,v) → gövde-yerel kutu köşeleri (önizleme levhası): dış kapak öne, iç kapak içeri. */
-export function doorSlabBox(group: Pick<DoorGroup, 'axis' | 'side' | 'placement' | 'thickness'>, rect: DoorRect): CavityBox {
-  const { u, v } = doorPlaneAxes(group.axis);
-  const min: Vec3 = [0, 0, 0], max: Vec3 = [0, 0, 0];
-  min[u] = rect.u0; max[u] = rect.u1; min[v] = rect.v0; max[v] = rect.v1;
-  const a0 = group.placement === 'outer' ? rect.front : rect.front - group.side * group.thickness;
-  const a1 = group.placement === 'outer' ? rect.front + group.side * group.thickness : rect.front;
-  min[group.axis] = Math.min(a0, a1); max[group.axis] = Math.max(a0, a1);
-  return { min, max };
+/**
+ * ÖNİZLEME ÇOKGENİ (aday): dikdörtgen + dönmüş sınır panellerinin kesimi → VF düzlemindeki gövde-yerel köşeler
+ * (kapağın DIŞ yüzü) + normal; levha −normal yönünde `thickness` kadar. Kesim yoksa dikdörtgenin dört köşesi.
+ */
+export function doorSlabPolygon(
+  group: Pick<DoorGroup, 'axis' | 'side' | 'placement' | 'thickness' | 'gap'>, rect: DoorRect, cuts: DoorCut[],
+): { normal: Vec3; vertices: Vec3[] } {
+  const m: DoorMemberRect = { r: 0, c: 0, u0: rect.u0, u1: rect.u1, v0: rect.v0, v1: rect.v1 };
+  const [mm] = applyDoorCuts({ ...group, id: PREVIEW_ID }, rect, [m], cuts);
+  const g = doorMemberVfGeometry({ ...group } as DoorGroup, mm, rect);
+  return { normal: g.normal, vertices: g.vertices };
 }

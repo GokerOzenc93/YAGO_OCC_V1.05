@@ -2444,7 +2444,7 @@ export function PanelEditor() {
     const boundN = selectedShape ? virtualFaces.filter(f => f.shapeId === selectedShape.id && f.doorBound && !isDoorVf(f)).length : 0;
     const status = !selectedShape ? 'Select a body first'
       : n === 0 ? (boundN ? `Click a body face · ${boundN} door ref${boundN === 1 ? '' : 's'}` : 'No door refs — body edges bound the door · click a body face')
-      : (() => { const r = doorPickPlacement === 'inner' ? cur.inner : cur.outer; return `Door ${doorPickIndex + 1}/${n} · ${Math.round(r.u1 - r.u0)}×${Math.round(r.v1 - r.v0)} — click: next · right-click: place`; })();
+      : (() => { const r = doorPickPlacement === 'inner' ? cur.inner : cur.outer; return `Door ${doorPickIndex + 1}/${n} · ${Math.round(r.u1 - r.u0)}×${Math.round(r.v1 - r.v0)}${cur.rot ? ' · angled (follows reference)' : ''} — click: next · right-click: place`; })();
     return placementDock({
       tag: 'DOOR', defaultName: 'Door', ready, status,
       // TEK SATIR (Goker: "kapak yerleştirmedeki düğmeler tek satır; inner/outer açılır liste"): DOOR · Outer▾ · ad · ✓ · ✕
