@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowUp, Box, Check, ChevronDown, ChevronRight, Columns3, Crosshair, DoorClosed, Equal, GripVertical, LayoutPanelTop, Lock, type LucideIcon, Minus, Move, Move3d,
-  MoveVertical, Pencil, Plus, RotateCw, Rows3, SlidersHorizontal, SplitSquareHorizontal, SplitSquareVertical, Trash2, Unlock, X,
+  MoveVertical, Pencil, Plus, RotateCw, Rows3, Shapes, SlidersHorizontal, SplitSquareHorizontal, SplitSquareVertical, Trash2, Unlock, X,
 } from 'lucide-react';
 import * as THREE from 'three';
 import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
@@ -352,31 +352,31 @@ const PREVIEW_PANEL_COLOR = 0xe9e1d3;
 const PREVIEW_EDGE_COLOR = 0x8a8278;
 const PREVIEW_LIGHT = { hemi: 1.0, ambient: 0.3, key: 1.9, fill: 0.55 };
 const PREVIEW_HEIGHT = 500;   // kenar çubuğu 560px ile orantılı (önceki 475px / 410)
-// ŞERİT ARTIK ÖNİZLEMENİN ÜSTÜNE BİNMEZ (Goker: "mod düğmeleri panel
-// görünümünün içine geçiyordu"): önizlemenin hemen ALTINDA, akış içinde duran
-// ayrı bir karttır.
+// ŞERİT ÖNİZLEMENİN ÜSTÜNE BİNMEZ (Goker: "mod düğmeleri panel görünümünün
+// içine geçiyordu"): akış içinde ayrı bir karttır — araç segmentinin hemen
+// altında, önizlemenin ÜSTÜNDE (Eki 2026: altındayken görünmüyordu).
 const DOCK_SHELL: React.CSSProperties = {
-  position: 'relative', marginTop: 6, borderRadius: 10, background: '#fdfcfa', border: '1px solid #ebe5dc',
+  position: 'relative', marginTop: 5, borderRadius: 10, background: '#fdfcfa', border: '1px solid #ebe5dc',
   boxShadow: '0 1px 2px rgba(40,30,20,0.04)', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: UI_FONT,
 };
-const DOCK_ROW: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 5, padding: '5px 6px 6px' };
+const DOCK_ROW: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 4, padding: '4px 5px 5px' };
 const DOCK_INPUT: React.CSSProperties = {
-  flex: 1, minWidth: 0, height: 26, textAlign: 'center',
-  fontFamily: "'SF Mono',ui-monospace,Menlo,monospace", fontSize: 12.5, fontWeight: 500, fontVariantNumeric: 'tabular-nums',
+  flex: 1, minWidth: 0, height: 24, textAlign: 'center',
+  fontFamily: "'SF Mono',ui-monospace,Menlo,monospace", fontSize: 12, fontWeight: 500, fontVariantNumeric: 'tabular-nums',
   color: '#1c1917', background: '#ffffff', border: '1px solid #e6e0d6', borderRadius: 7, outline: 'none', boxShadow: '0 1px 0 rgba(40,30,20,0.02)',
 };
 const dockAxisTag = (color: string): React.CSSProperties => ({
-  flexShrink: 0, fontSize: 10.5, fontWeight: 700, fontFamily: UI_FONT, color, height: 22, lineHeight: '22px', padding: '0 7px', borderRadius: 6, background: '#f5f2ec',
+  flexShrink: 0, fontSize: 10, fontWeight: 700, fontFamily: UI_FONT, color, height: 20, lineHeight: '20px', padding: '0 6px', borderRadius: 5, background: '#f5f2ec',
 });
 /** Durum kutusu: nokta + metin (+ sağda isteğe bağlı içerik). */
 function DockStatus({ ready = false, dot, text, title, trailing }: { ready?: boolean; dot?: string; text: string; title?: string; trailing?: React.ReactNode }) {
   return (
     <div title={title} style={{
-      flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 7, height: 26, padding: '0 9px', borderRadius: 7,
+      flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 6, height: 24, padding: '0 8px', borderRadius: 6,
       background: ready ? 'rgba(22,163,74,0.07)' : '#f5f2ec', border: ready ? '1px solid rgba(22,163,74,0.22)' : '1px solid transparent',
     }}>
       <span style={{ width: 5, height: 5, borderRadius: '50%', background: dot ?? (ready ? '#16a34a' : '#a8a29e'), flexShrink: 0 }} />
-      <span style={{ fontSize: 11, fontWeight: 500, color: ready ? '#15803d' : '#78716c', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{text}</span>
+      <span style={{ fontSize: 10.5, fontWeight: 500, color: ready ? '#15803d' : '#78716c', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{text}</span>
       {trailing}
     </div>
   );
@@ -384,16 +384,16 @@ function DockStatus({ ready = false, dot, text, title, trailing }: { ready?: boo
 function ApplyBtn({ enabled, onClick, title = 'Apply' }: { enabled: boolean; onClick: () => void; title?: string }) {
   return (
     <button onClick={e => { stop(e); onClick(); }} title={title} style={{
-      flexShrink: 0, width: 30, height: 26, borderRadius: 7, border: 'none', outline: 'none', cursor: enabled ? 'pointer' : 'not-allowed',
+      flexShrink: 0, width: 28, height: 24, borderRadius: 6, border: 'none', outline: 'none', cursor: enabled ? 'pointer' : 'not-allowed',
       display: 'flex', alignItems: 'center', justifyContent: 'center', background: enabled ? '#44403c' : '#ebe6de', color: enabled ? '#ffffff' : '#b5ada3',
       boxShadow: enabled ? '0 1px 2px rgba(40,30,20,0.22)' : 'none', transition: 'background 0.12s',
-    }}><Check size={14} strokeWidth={2.4} /></button>
+    }}><Check size={13} strokeWidth={2.4} /></button>
   );
 }
 function ExitBtn({ onClick }: { onClick: () => void }) {
   return (
     <button onClick={e => { stop(e); onClick(); }} title="Exit" className="hover:!bg-[#f3efe8] hover:!text-stone-600" style={{
-      flexShrink: 0, width: 26, height: 26, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 7, border: 'none',
+      flexShrink: 0, width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 6, border: 'none',
       cursor: 'pointer', outline: 'none', background: 'transparent', color: '#a8a29e', transition: 'color 0.12s,background 0.12s',
     }}><X size={13} strokeWidth={2} /></button>
   );
@@ -418,10 +418,34 @@ function NumInput({ draft, setDraft, setValue, fallback, onEnter, onEscape, auto
   );
 }
 
-/* ── MOD ÇUBUĞU (Fixed / Dyn / Ref) ─────────────────────────────────────
-   Goker: "ref / dyn / fixed düğmeleri daha anlaşılır, geniş, şık olsun."
-   Mod seçimi şeridin ÜST satırında tam genişlikte: her düğmede ikon + ad +
-   kısa açıklama. Aktif mod koyu taş dolgu (okunurluk kuralı). */
+/* ── SEGMENTLİ KONTROL (Goker, Eki 2026: "face extrude / rotate / move'a basınca dönüş tipi, ref modu gibi
+   modlar çok aşağıda kalıyor, görünmüyor; daha göz önünde, daha profesyonel, düğmeler daha küçük olsun") ──
+   Araçlar (Extrude / Move / Rotate) ve modlar (Fixed / Dyn / Ref) aynı dil: tek çerçeveli, eşit bölmeli,
+   24px yüksekliğinde segment çubuğu; aktif bölme koyu taş dolgu (okunurluk kuralı), açıklama title'da.
+   Şerit artık önizlemenin ÜSTÜNDE durur (renderExpandedBody) — mod seçimi hep göz önünde. */
+type SegItem = { key: string; label: string; Icon?: LucideIcon; title?: string; disabled?: boolean };
+function Segmented({ items, active, onPick, height = 24 }: { items: SegItem[]; active: string | null; onPick: (k: string) => void; height?: number }) {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: `repeat(${items.length}, minmax(0,1fr))`, gap: 2, padding: 2, borderRadius: 8, background: '#f3efe8', border: '1px solid #e9e4dc', fontFamily: UI_FONT }}>
+      {items.map(({ key, label, Icon, title, disabled }) => {
+        const on = active === key;
+        return (
+          <button key={key} type="button" title={title || label} disabled={disabled} onClick={e => { stop(e); if (!disabled) onPick(key); }}
+            className={on || disabled ? '' : 'hover:!bg-white hover:!text-stone-800'}
+            style={{
+              height, minWidth: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, padding: '0 6px', borderRadius: 6, border: 'none', outline: 'none',
+              cursor: disabled ? 'not-allowed' : 'pointer', background: on ? '#44403c' : 'transparent', color: disabled ? '#c9c2b7' : on ? '#ffffff' : '#57534e',
+              boxShadow: on ? '0 1px 2px rgba(40,30,20,0.25)' : 'none', fontSize: 10.5, fontWeight: 600, letterSpacing: '0.01em', transition: 'background 0.12s,color 0.12s',
+            }}>
+            {Icon && <Icon size={11} strokeWidth={2.1} style={{ flexShrink: 0 }} />}
+            <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+/* ── MOD ÇUBUĞU (Fixed / Dyn / Ref): segment çubuğu; alt açıklama (sub) title'a taşındı. */
 type DockMode = { key: string; label: string; sub: string; Icon: LucideIcon; title?: string };
 const DOCK_MODE_DEFS: Record<string, Omit<DockMode, 'key'>> = {
   fixed: { label: 'Fixed', sub: 'Constant', Icon: Lock },
@@ -432,44 +456,25 @@ const dockModes = (keys: string[], overrides: Record<string, Partial<DockMode>> 
   keys.map(k => ({ key: k, ...DOCK_MODE_DEFS[k], ...(overrides[k] || {}) } as DockMode));
 function DockModeBar({ modes, active, onPick, trailing }: { modes: DockMode[]; active: string | null; onPick: (k: string) => void; trailing?: React.ReactNode }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'stretch', gap: 5, padding: '6px 6px 0' }}>
-      <div style={{ flex: 1, minWidth: 0, display: 'grid', gridTemplateColumns: `repeat(${modes.length}, minmax(0,1fr))`, gap: 4 }}>
-        {modes.map(({ key, label, sub, Icon, title }) => {
-          const on = active === key;
-          return (
-            <button key={key} type="button" title={title || `${label} — ${sub}`} onClick={e => { stop(e); onPick(key); }}
-              className={on ? '' : 'hover:!bg-[#faf7f2] hover:!border-[#dcd4c8]'}
-              style={{
-                height: 28, minWidth: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '0 8px', borderRadius: 7, outline: 'none', cursor: 'pointer',
-                border: on ? '1px solid #44403c' : '1px solid #e6e0d6', background: on ? '#44403c' : '#ffffff', color: on ? '#ffffff' : '#57534e',
-                boxShadow: on ? '0 1px 3px rgba(40,30,20,0.22)' : '0 1px 0 rgba(40,30,20,0.03)', transition: 'background 0.14s,border-color 0.14s,color 0.14s', fontFamily: UI_FONT,
-              }}>
-              <Icon size={12} strokeWidth={2} style={{ flexShrink: 0 }} />
-              <span style={{ display: 'flex', alignItems: 'baseline', gap: 5, minWidth: 0, lineHeight: 1 }}>
-                <span style={{ fontSize: 11.5, fontWeight: 600, letterSpacing: '0.01em', flexShrink: 0 }}>{label}</span>
-                <span style={{ fontSize: 10, fontWeight: 500, opacity: on ? 0.7 : 0.58, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>{sub}</span>
-              </span>
-            </button>
-          );
-        })}
+    <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '5px 5px 0' }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <Segmented active={active} onPick={onPick} items={modes.map(m => ({ key: m.key, label: m.label, Icon: m.Icon, title: m.title || `${m.label} — ${m.sub}` }))} />
       </div>
       {trailing}
     </div>
   );
 }
 
-/* ── "Yüzeyin şeklini al" — panel satırı checkbox'ı (bone/ivory) ─────────
-   AÇIK: panel, yerleştiği serbest bölgenin tam şeklini alır (L/U/çentik).
-   KAPALI (varsayılan): kardeş kenarında düz kesilir. */
+/* ── "Yüzeyin şeklini al" — satır ikon düğmesi (Goker, Eki 2026: "aç/kapat var ama ne olduğu anlaşılmıyor,
+   bir ikona bağlansın"): kapak sınırı düğmesiyle aynı 20×20 kutu; AÇIK = petrol (teal) dolgu + çerçeve.
+   AÇIK: panel, yerleştiği serbest bölgenin tam şeklini alır (L/U/çentik). KAPALI (varsayılan): kardeş kenarında düz kesilir. */
 function FitShapeToggle({ checked, disabled, onToggle }: { checked: boolean; disabled?: boolean; onToggle: () => void }) {
   return (
     <button type="button" role="checkbox" aria-checked={checked} disabled={disabled} onClick={e => { stop(e); if (!disabled) onToggle(); }}
-      title={checked ? 'Fit face shape: ON' : 'Fit face shape'}
-      className={`shrink-0 w-5 h-5 rounded-md flex items-center justify-center transition-colors duration-150 ${disabled ? 'cursor-not-allowed opacity-40' : 'hover:bg-[#f3efe8]'}`}>
-      <span className={`w-[13px] h-[13px] rounded-[4px] flex items-center justify-center transition-all duration-150
-        ${checked ? 'bg-orange-500 ring-1 ring-orange-500/60 shadow-[0_1px_2px_rgba(234,88,12,0.28)]' : 'bg-white ring-1 ring-[#dcd5ca] shadow-[inset_0_1px_1px_rgba(68,64,60,0.05)]'}`}>
-        {checked && <Check size={9} strokeWidth={3.2} className="text-white" />}
-      </span>
+      title={checked ? 'Fit to face shape: ON — the panel takes the full shape of its free region (L / U / notch). Click to cut straight at siblings.' : 'Fit to face shape: OFF — the panel is cut straight at the sibling edge. Click to follow the free region\'s full shape.'}
+      className={`w-5 h-5 rounded-md flex items-center justify-center transition-colors duration-150
+        ${disabled ? 'text-stone-200 cursor-not-allowed' : checked ? 'text-teal-700 bg-teal-50 ring-1 ring-teal-300/80' : 'text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700'}`}>
+      <Shapes size={13} strokeWidth={checked ? 2.2 : 1.9} />
     </button>
   );
 }
@@ -722,7 +727,6 @@ export function PanelPreview2D({ shape, arrowRotated }: { shape: Shape; arrowRot
    tıklayınca. Levhanın öbür ucunda liste numarası (6.1, 6.2 …). Kalınlık
    değişince boşluklar Σkalınlığa göre yeniden eşitlenir (girilen korunur). */
 const SCHEMA_PAD = 34;
-const SCHEMA_MEMBER_HEIGHT = 230;
 /** Bölge kutularının (h,v) eksenlerine izdüşüm maskesi: düzlemler + dolu hücre sorgusu. */
 function regionMask(boxes: CavityBox[], h: number, v: number) {
   const hsSet = new Set<number>(), vsSet = new Set<number>();
@@ -759,13 +763,11 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
   const { cavity, gaps, axis } = group;
   const ts = memberThicknessesOf(group);
   const barsHorizontal = axis === 1;
-  // ÜYE MODU (Goker: "şema ile panel önizlemesi karışıyor; üye seçiliyken şema
-  // sadeleşsin"): bir üye seçiliyken şema yalnız bir SEÇİCİ olur — küçük kare,
-  // levhalar + numaralar + yön imi; boşluk ölçüleri, kilitler ve kalınlık
-  // kutucukları gizlenir (bunlar grup satırında, tümü seçiliyken düzenlenir).
-  // Böylece altta açılan panel önizlemesinin en/boy ölçüleri tek ölçü dili kalır.
-  const memberMode = selectedIndex >= 0;
-  const height = memberMode ? SCHEMA_MEMBER_HEIGHT : PREVIEW_HEIGHT;
+  // ÜYE MODU KALDIRILDI (Goker, Eki 2026: "bir panele tıklayınca arayüz başka bir hale geçiyor, iptal et"):
+  // eskiden üye seçiliyken şema 230px'lik bir seçiciye küçülüp pill'leri gizliyordu; artık üye seçiliyken de
+  // şema tam boy — boşluk ölçüleri, kilitler, kalınlık kutucukları ve rozetler yerinde kalır.
+  const memberMode = false;
+  const height = PREVIEW_HEIGHT;
   // YÖN (tık yönü): boşluk/üye sayımı facing>0 ise hacmin MİN, facing<0 ise MAX tarafından başlar.
   const facing = groupFacing(group);
   const stackOrigin = facing > 0 ? cavity.min[axis] : cavity.max[axis];
@@ -1068,8 +1070,9 @@ export function DoorSchematic({ group, selectedIndex, memberLabels, cuts, halfEd
   // HER BOŞLUK AYRI: [başlangıç kenarı, aralar…, bitiş kenarı] (u: sol→sağ, v: üst→alt).
   const cg = colGapsOf(group), rg = rowGapsOf(group);
   const gapsKey = `${cg.join(',')}|${rg.join(',')}`;
-  const memberMode = selectedIndex >= 0;
-  const height = memberMode ? SCHEMA_MEMBER_HEIGHT : PREVIEW_HEIGHT;
+  // ÜYE MODU KALDIRILDI (Goker, Eki 2026): üye seçiliyken de şema tam boy, pill'ler ve kutucuklar yerinde.
+  const memberMode = false;
+  const height = PREVIEW_HEIGHT;
   const innerW = width - 2 * SCHEMA_PAD, innerH = height - 2 * SCHEMA_PAD;
   const S = Math.max(40, Math.min(innerW, innerH));
   const ox = SCHEMA_PAD + (innerW - S) / 2, oy = SCHEMA_PAD + (innerH - S) / 2;
@@ -1296,7 +1299,8 @@ const rowCardClass = (open: boolean, dragging: boolean, armed: boolean) =>
    ${dragging ? 'opacity-40 scale-[0.99]' : ''}
    ${armed && !dragging ? '!ring-orange-300 !bg-white shadow-[0_6px_16px_-8px_rgba(234,88,12,0.35)] scale-[1.006]' : ''}`;
 const ROW_INPUT_CLASS = 'yago-row-note flex-1 min-w-0 h-[22px] px-[5px] text-[11.5px] text-stone-700 bg-transparent border border-transparent rounded-[5px] outline-none placeholder:text-stone-300 hover:border-[#ebe5dc] focus:bg-white focus:border-orange-400/50 transition-colors';
-const ROW_DEL_CLASS = 'w-5 h-5 rounded-md flex items-center justify-center text-stone-400 hover:bg-red-50 hover:text-red-500 focus-visible:opacity-100 transition-[opacity,color,background-color] duration-150';
+/* SİL düğmesi HER ZAMAN görünür (Goker, Eki 2026: "her satırda silme düğmesi fix olsun, fareyi üzerine götürünce değil"). */
+const ROW_DEL_CLASS = 'w-5 h-5 rounded-md flex items-center justify-center text-stone-400 hover:bg-red-50 hover:text-red-500 transition-[color,background-color] duration-150';
 const DROP_BAND = 'pointer-events-none h-[7px] mx-1 rounded-full bg-gradient-to-r from-amber-400 via-orange-400 to-amber-400 shadow-[0_0_10px_rgba(245,158,11,0.65),0_1px_2px_rgba(180,83,9,0.3)]';
 
 /** Panel tipi işareti — tüm satırlarda aynı boyut (20×20 kutu, 13px ikon).
@@ -1338,8 +1342,8 @@ const RowNum = ({ label, active, small }: { label: string; active: boolean; smal
     ${active ? 'text-orange-600' : 'text-stone-400 group-hover/row:text-stone-600'}`}>{label}</span>
 );
 /** Aç / kapa göstergesi (chevron). */
-const RowChevron = ({ open, onClick }: { open: boolean; onClick?: (e: React.MouseEvent) => void }) => (
-  <span onClick={onClick} className={`w-4 h-5 flex items-center justify-center ${onClick ? 'cursor-pointer' : ''} transition-[transform,color] duration-200 ${open ? 'rotate-90 text-orange-500' : 'text-stone-300 group-hover/row:text-stone-400'}`}>
+const RowChevron = ({ open, onClick, title }: { open: boolean; onClick?: (e: React.MouseEvent) => void; title?: string }) => (
+  <span onClick={onClick} title={title} className={`w-4 h-5 flex items-center justify-center ${onClick ? 'cursor-pointer hover:text-orange-500' : ''} transition-[transform,color] duration-200 ${open ? 'rotate-90 text-orange-500' : 'text-stone-300 group-hover/row:text-stone-400'}`}>
     <ChevronRight size={13} strokeWidth={2} />
   </span>
 );
@@ -1417,12 +1421,8 @@ const SectionHead = ({ label, count, rule = true, className = 'px-1 pt-2 pb-1' }
   </div>
 );
 
-/** Liste animasyonları: akordeon açılışı + odaktan çıkışta gecikmeli çapraz yerleşme. */
-const LIST_CSS = `@keyframes yagoExpand{from{opacity:0;clip-path:inset(0 0 100% 0);transform:translateY(-4px)}to{opacity:1;clip-path:inset(0 0 0 0);transform:none}}.yago-expand{animation:yagoExpand 260ms cubic-bezier(.2,.7,.2,1) both}
-@keyframes yagoSettleA{0%{opacity:0;transform:translate(-14px,-10px) scale(.97);filter:blur(3px)}55%{opacity:1;filter:blur(0)}80%{transform:translate(2px,1px) scale(1.004)}100%{opacity:1;transform:none;filter:none}}
-@keyframes yagoSettleB{0%{opacity:0;transform:translate(14px,-10px) scale(.97);filter:blur(3px)}55%{opacity:1;filter:blur(0)}80%{transform:translate(-2px,1px) scale(1.004)}100%{opacity:1;transform:none;filter:none}}
-.yago-settle{animation-duration:520ms;animation-timing-function:cubic-bezier(.2,.75,.2,1);animation-fill-mode:both;will-change:transform,opacity}
-.yago-settle-a{animation-name:yagoSettleA}.yago-settle-b{animation-name:yagoSettleB}`;
+/** Liste animasyonu: akordeon açılışı. (Odak modu ve "yerleşme" animasyonu kaldırıldı — bkz. ODAK MODU notu.) */
+const LIST_CSS = `@keyframes yagoExpand{from{opacity:0;clip-path:inset(0 0 100% 0);transform:translateY(-4px)}to{opacity:1;clip-path:inset(0 0 0 0);transform:none}}.yago-expand{animation:yagoExpand 260ms cubic-bezier(.2,.7,.2,1) both}`;
 
 type StepEdit = { id: string; v: string } | null;
 
@@ -1474,11 +1474,20 @@ export function PanelEditor() {
   const [countDraft, setCountDraft] = useState<{ id: string; v: string } | null>(null);
   // HEDEF ARALIK taslağı (grup kartı "Spacing" girişi): boş = kapalı.
   const [gapDraft, setGapDraft] = useState<{ id: string; v: string } | null>(null);
-  // ODAK MODU (Goker): bir satır açıkken listede yalnız o satır + hemen üstündeki
-  // ve altındaki satır kalır. Kapanınca gizlenen satırlar, odak satırından
-  // uzaklığına göre gecikmeli, çapraz kayarak "yerleşir" (yagoSettle).
-  const [settle, setSettle] = useState<{ center: string; tick: number } | null>(null);
-  const prevFocusRef = useRef<{ row: string | null; member: string | null }>({ row: null, member: null });
+  // ODAK MODU KALDIRILDI (Goker, Eki 2026: "bir panele tıklayınca dikme/raf/kapakta arayüz başka bir hale geçiyor,
+  // bunu iptal et"): liste hiçbir seçimde daralmaz, üye satırları gizlenmez, şema küçülmez.
+  // AÇIK KARTLAR (Goker: "altında açılan paneli kapatabileyim ama dikme görünümü kapanmasın; liste görünümüne
+  // dönen ayrı bir düğme olsun"): grup/kapak kartının açıklığı seçimden AYRI yerel durumdur. Üye seçilince kart
+  // açılır ve açık KALIR; üyenin editörü kapanınca kart durur. Kart yalnız başlıktaki ok (chevron) ile kapanır.
+  const [openCards, setOpenCards] = useState<Set<string>>(() => new Set());
+  const openCard = (id: string) => setOpenCards(prev => (prev.has(id) ? prev : new Set(prev).add(id)));
+  const closeCard = (id: string, memberIds: string[]) => {
+    setOpenCards(prev => { if (!prev.has(id)) return prev; const n = new Set(prev); n.delete(id); return n; });
+    const st = useAppStore.getState();
+    if (st.selectedPanelGroupId === id) setSelectedPanelGroupId(null);
+    if (st.selectedDoorGroupId === id) setSelectedDoorGroupId(null);
+    if (typeof st.selectedPanelRow === 'string' && memberIds.some(m => st.selectedPanelRow === `vf-${m}`)) setSelectedPanelRow(null);
+  };
   // Adım düzenleme: aynı anda tek adım düzenlenir (extrude / move / rotate ayrımı adım tipinden gelir).
   const [stepEdit, setStepEdit] = useState<StepEdit>(null);
   // Şerit girişlerinin yerel metin taslakları (başta -/+ yazılabilsin).
@@ -1509,40 +1518,16 @@ export function PanelEditor() {
   const activeSteps: any[] = activePanel?.parameters?.extrudeSteps || [];
   const activeTransformSteps: any[] = activePanel?.parameters?.transformSteps || [];
 
-  // Odak anahtarları: açık gövde satırı (vf id) ya da açık grup kartı (grp-id);
-  // üye seçiliyse kart açık sayılır ve üye ayrıca üye-düzeyi odaktır.
-  const focusKeys = useMemo(() => {
-    if (selectedPanelGroupId) return { row: `grp-${selectedPanelGroupId}`, member: null as string | null };
-    if (selectedDoorGroupId) return { row: `grp-${selectedDoorGroupId}`, member: null as string | null };
-    if (typeof selectedPanelRow === 'string' && selectedPanelRow.startsWith('vf-')) {
-      const id = selectedPanelRow.slice(3);
-      const vf = virtualFaces.find(f => f.id === id);
-      if (vf?.groupId && panelGroups.some(g => g.id === vf.groupId)) return { row: `grp-${vf.groupId}`, member: id };
-      if (vf?.doorGroupId && doorGroups.some(g => g.id === vf.doorGroupId)) return { row: `grp-${vf.doorGroupId}`, member: id };
-      return { row: id, member: null as string | null };
-    }
-    return { row: null as string | null, member: null as string | null };
-  }, [selectedPanelRow, selectedPanelGroupId, selectedDoorGroupId, virtualFaces, panelGroups, doorGroups]);
+  // Üye (raf/dikme/kapak) seçilince — listeden ya da 3B'den — kartı açık tut; grup "tümünü seç" de kartı açar.
   useEffect(() => {
-    const prev = prevFocusRef.current;
-    let center: string | null = null;
-    if (prev.member && !focusKeys.member) center = prev.member;   // üye odağı kapandı → üyeler yerleşir
-    if (prev.row && !focusKeys.row) center = prev.row;            // satır odağı kapandı → liste yerleşir
-    prevFocusRef.current = focusKeys;
-    if (!center) return;
-    const tick = Date.now();
-    setSettle({ center, tick });
-    const t = window.setTimeout(() => setSettle(cur => (cur && cur.tick === tick ? null : cur)), 900);
-    return () => window.clearTimeout(t);
-  }, [focusKeys]);
-  /** Yerleşme animasyonu sınıfı + gecikmesi (merkezden uzaklığa göre; çapraz yön parite ile). */
-  const settleProps = (keys: string[], idx: number): { className: string; style: React.CSSProperties } => {
-    if (!settle) return { className: '', style: {} };
-    const ci = keys.indexOf(settle.center);
-    const dist = ci >= 0 ? Math.abs(idx - ci) : idx + 1;
-    if (ci >= 0 && dist === 0) return { className: '', style: {} };
-    return { className: idx % 2 === 0 ? 'yago-settle yago-settle-a' : 'yago-settle yago-settle-b', style: { animationDelay: `${Math.min(dist, 12) * 55}ms` } };
-  };
+    if (typeof selectedPanelRow === 'string' && selectedPanelRow.startsWith('vf-')) {
+      const vf = virtualFaces.find(f => f.id === selectedPanelRow.slice(3));
+      const gid = vf?.groupId || vf?.doorGroupId;
+      if (gid) openCard(gid);
+    }
+    if (selectedPanelGroupId) openCard(selectedPanelGroupId);
+    if (selectedDoorGroupId) openCard(selectedDoorGroupId);
+  }, [selectedPanelRow, selectedPanelGroupId, selectedDoorGroupId, virtualFaces]);
 
   useEffect(() => {
     if (selectedShapeId !== useAppStore.getState().selectedPanelRowParentId) setSelectedPanelRow(null);
@@ -1552,6 +1537,7 @@ export function PanelEditor() {
     if (st.selectedDoorGroupId && !st.doorGroups.some(g => g.id === st.selectedDoorGroupId && g.shapeId === selectedShapeId)) setSelectedDoorGroupId(null);
     if (st.volumePickMode) setVolumePickMode(null);
     if (st.doorPickMode) setDoorPickMode(false);
+    setOpenCards(new Set());
   }, [selectedShapeId]);
   // Kapak grubu silinince seçimi düşür.
   useEffect(() => {
@@ -1832,7 +1818,7 @@ export function PanelEditor() {
                       <span className="flex-1 pl-1 font-mono text-[12px] font-medium text-stone-700 tabular-nums">{shown}</span>
                       {tag(isRef ? 'R' : st.isFixed ? 'F' : 'D')}
                       {!isRef && <button onClick={() => setStepEdit({ id: st.id, v: String(st.value) })} style={iconBtn('#a8a29e')} className="hover:!bg-[#f3efe8] hover:!text-stone-700"><Pencil size={10.5} strokeWidth={1.9} /></button>}
-                      <button onClick={() => { void deleteCavityStep(g.id, st.id); }} style={iconBtn('#a8a29e')} className="opacity-0 group-hover/step:opacity-100 hover:!bg-red-50 hover:!text-red-500 transition-opacity"><Trash2 size={10.5} strokeWidth={1.9} /></button>
+                      <button onClick={() => { void deleteCavityStep(g.id, st.id); }} style={iconBtn('#a8a29e')} className="hover:!bg-red-50 hover:!text-red-500"><Trash2 size={10.5} strokeWidth={1.9} /></button>
                     </>
                   )}
                 </div>
@@ -2024,7 +2010,7 @@ export function PanelEditor() {
                       {editable && (
                         <button onClick={() => setStepEdit({ id: s.id, v: String(s.value) })} style={iconBtn('#a8a29e')} className="hover:!bg-[#f3efe8] hover:!text-stone-700"><Pencil size={10.5} strokeWidth={1.9} /></button>
                       )}
-                      <button onClick={() => { void removeStep(s); }} style={iconBtn('#a8a29e')} className="opacity-0 group-hover/step:opacity-100 hover:!bg-red-50 hover:!text-red-500 transition-opacity"><Trash2 size={10.5} strokeWidth={1.9} /></button>
+                      <button onClick={() => { void removeStep(s); }} style={iconBtn('#a8a29e')} className="hover:!bg-red-50 hover:!text-red-500"><Trash2 size={10.5} strokeWidth={1.9} /></button>
                     </>
                   )}
                 </div>
@@ -2037,45 +2023,45 @@ export function PanelEditor() {
   })();
 
   /* ── AÇILAN SATIR GÖVDESİ ─────────────────────────────────────────────────
-     Satırın hemen altında, aynı kartın içinde: araç düğmeleri (Extrude / Taşı /
-     Döndür) → panel önizlemesi → aktif şerit → işlem adımları. */
+     Satırın hemen altında, aynı kartın içinde: araç segmenti (Extrude / Move /
+     Rotate) → aktif ŞERİT (mod segmenti + giriş/durum) → panel önizlemesi →
+     işlem adımları. (Goker, Eki 2026: şerit önizlemenin ALTINDAYKEN mod/ref
+     düğmeleri 500px'lik önizlemenin altında kalıp görünmüyordu — şerit artık
+     araçların hemen altında, önizlemenin ÜSTÜNDE; araç ve mod düğmeleri 24px.) */
   const renderExpandedBody = (vf: VirtualFace, vp: Shape | undefined) => {
     const isExtrudingThis = faceExtrudeMode && faceExtrudeTargetPanelId === vp?.id;
     const isMovingThis = panelMoveMode && panelMoveTargetPanelId === vp?.id;
     const isRotatingThis = panelRotateMode && panelRotateTargetPanelId === vp?.id;
-    const toolBtn = (label: string, Icon: LucideIcon, active: boolean, onClick: () => void, title: string) => (
-      <button type="button" disabled={!vf.hasPanel} title={title} onClick={e => { stop(e); if (vp) onClick(); }}
-        className={`h-[26px] min-w-0 flex items-center justify-center gap-1.5 rounded-[7px] text-[11px] font-semibold tracking-[0.01em] transition-[background-color,color,box-shadow] duration-150
-          ${!vf.hasPanel ? 'bg-white ring-1 ring-[#efeae2] text-stone-300 cursor-not-allowed'
-            : active ? 'bg-[#44403c] text-white ring-1 ring-[#44403c] shadow-[0_1px_3px_rgba(40,30,20,0.22)]'
-            : 'bg-white ring-1 ring-[#e6e0d6] text-stone-600 shadow-[0_1px_0_rgba(40,30,20,0.03)] hover:bg-[#faf7f2] hover:ring-[#dcd4c8] hover:text-stone-800'}`}>
-        <Icon size={12} strokeWidth={2} />{label}
-      </button>
-    );
+    const tool = isExtrudingThis ? 'extrude' : isMovingThis ? 'move' : isRotatingThis ? 'rotate' : null;
+    const pickTool = (k: string) => {
+      if (!vp) return;
+      if (k === tool) {   // aynı araca ikinci tık = kapat
+        if (k === 'extrude') setFaceExtrudeMode(false); else if (k === 'move') setPanelMoveMode(false); else setPanelRotateMode(false);
+        return;
+      }
+      if (faceExtrudeMode) setFaceExtrudeMode(false);
+      if (panelMoveMode) setPanelMoveMode(false);
+      if (panelRotateMode) setPanelRotateMode(false);
+      if (k === 'extrude') { setFaceExtrudeTargetPanelId(vp.id); setFaceExtrudeMode(true); }
+      else if (k === 'move') { setPanelMoveTargetPanelId(vp.id); setPanelMoveMode(true); }
+      else { setPanelRotateTargetPanelId(vp.id); setPanelRotateMode(true); }
+    };
+    const dis = !vf.hasPanel;
     return (
       <div className="yago-expand px-2 pt-2 pb-2" style={{ borderTop: '1px solid #f3e6d6' }} onClick={stop}>
-        <div className="grid grid-cols-3 gap-1 mb-1.5">
-          {toolBtn('Extrude', MoveVertical, isExtrudingThis, () => {
-            if (isExtrudingThis) setFaceExtrudeMode(false);
-            else { setFaceExtrudeTargetPanelId(vp!.id); setFaceExtrudeMode(true); if (panelMoveMode) setPanelMoveMode(false); }
-          }, 'Face extrude')}
-          {toolBtn('Move', Move, isMovingThis, () => {
-            if (isMovingThis) setPanelMoveMode(false);
-            else { setPanelMoveTargetPanelId(vp!.id); setPanelMoveMode(true); if (faceExtrudeMode) setFaceExtrudeMode(false); }
-          }, 'Move the panel')}
-          {toolBtn('Rotate', RotateCw, isRotatingThis, () => {
-            if (isRotatingThis) setPanelRotateMode(false);
-            else { setPanelRotateTargetPanelId(vp!.id); setPanelRotateMode(true); if (faceExtrudeMode) setFaceExtrudeMode(false); if (panelMoveMode) setPanelMoveMode(false); }
-          }, 'Rotate the panel')}
-        </div>
-        <div className="rounded-[10px] ring-1 ring-[#e9e4dc] overflow-hidden relative" style={{ height: PREVIEW_HEIGHT, background: PREVIEW_BG }}>
+        <Segmented active={tool} onPick={pickTool} items={[
+          { key: 'extrude', label: 'Extrude', Icon: MoveVertical, title: 'Face extrude — pick a face in the 3D view, then Fixed / Dyn / Ref', disabled: dis },
+          { key: 'move', label: 'Move', Icon: Move, title: 'Move the panel — Relative / Absolute / To point', disabled: dis },
+          { key: 'rotate', label: 'Rotate', Icon: RotateCw, title: 'Rotate the panel — Angle / Aim at face', disabled: dis },
+        ]} />
+        {extrudeDock}
+        {moveDock}
+        {rotateDock}
+        <div className="rounded-[10px] ring-1 ring-[#e9e4dc] overflow-hidden relative mt-1.5" style={{ height: PREVIEW_HEIGHT, background: PREVIEW_BG }}>
           {activeDims && activePanel
             ? <PanelPreview2D key={activePanel.id} shape={activePanel} arrowRotated={!!activePanel.parameters?.arrowRotated} />
             : <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs text-stone-400">No panel</span></div>}
         </div>
-        {extrudeDock}
-        {moveDock}
-        {rotateDock}
         {stepsPanel}
       </div>
     );
@@ -2195,9 +2181,9 @@ export function PanelEditor() {
                   className={`w-5 h-5 rounded-md flex items-center justify-center transition-colors duration-150 ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-stone-700 bg-[#f1ece4]' : 'text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700'}`}>
                   <ArrowUp size={13} strokeWidth={1.9} className={`transition-transform duration-200 ${ar ? '' : 'rotate-90'}`} />
                 </button>
-                {/* Sil: yalnız satır üzerine gelince / seçiliyken görünür. Üye paneller adet ile yönetilir. */}
+                {/* Sil: her zaman görünür. Üye paneller adet ile yönetilir. */}
                 {!opts.member
-                  ? <button onClick={e => { stop(e); void deletePanelAndFace(vf.id); }} title="Delete panel" className={`${ROW_DEL_CLASS} ${sel ? 'opacity-100' : 'opacity-0 group-hover/row:opacity-100'}`}><Trash2 size={12} strokeWidth={1.9} /></button>
+                  ? <button onClick={e => { stop(e); void deletePanelAndFace(vf.id); }} title="Delete panel" className={ROW_DEL_CLASS}><Trash2 size={12} strokeWidth={1.9} /></button>
                   : <span className="w-5 h-5" />}
                 <RowChevron open={sel} />
               </div>
@@ -2213,7 +2199,6 @@ export function PanelEditor() {
     const groupCard = (g: PanelGroup, members: VirtualFace[], rowIdx: number, label: string) => {
       const rowKey = `grp-${g.id}`;
       const selAll = selectedPanelGroupId === g.id;
-      const open = selAll || members.some(m => selectedPanelRow === `vf-${m.id}`);
       const dimsWHD = [0, 1, 2].map(a => round1(boxSpan(g.cavity, a)));
       const countVal = countDraft?.id === g.id ? countDraft.v : String(g.count);
       const applyCount = (n: number) => { setCountDraft(null); if (!isNaN(n) && n >= 1 && n !== g.count) void setGroupCount(g.id, n); };
@@ -2227,9 +2212,11 @@ export function PanelEditor() {
         if (next === (autoGap ? g.targetGap : null)) return;
         void setGroupTargetGap(g.id, next);
       };
-      const toggleAll = (e: React.MouseEvent) => { stop(e); setSelectedPanelGroupId(selAll ? null : g.id); };
-      const mKeys = members.map(m => m.id);
-      const mFocus = focusKeys.member ? mKeys.indexOf(focusKeys.member) : -1;
+      const open = openCards.has(g.id) || selAll || members.some(m => selectedPanelRow === `vf-${m.id}`);
+      const mIds = members.map(m => m.id);
+      // Başlık: tümünü seç / bırak (kart açık kalır). Ok: kartı kapat (seçimler düşer) / aç.
+      const toggleAll = (e: React.MouseEvent) => { stop(e); if (selAll) setSelectedPanelGroupId(null); else { setSelectedPanelGroupId(g.id); openCard(g.id); } };
+      const toggleOpen = (e: React.MouseEvent) => { stop(e); if (open) closeCard(g.id, mIds); else openCard(g.id); };
       return (
         <div key={rowKey} className={rowCardClass(open, dragIndex === rowIdx, armedRowKey === rowKey)}>
           {/* ── GRUP BAŞLIĞI: tıkla = tümünü seç ── */}
@@ -2245,8 +2232,8 @@ export function PanelEditor() {
               {/* Hacmin en · boy · derinliği — panel satırlarıyla aynı sütunlar. */}
               <RowDims w={dimsWHD[0]} h={dimsWHD[1]} t={dimsWHD[2]} tLetter="D" title="Cavity width · height · depth" />
               <div className="flex items-center justify-end gap-px shrink-0 ml-0.5" style={{ width: ROW_TRAIL_W }} onClick={stop}>
-                <button onClick={e => { stop(e); deletePanelGroupWithMembers(g.id); }} title="Delete group (all panels)" className={`${ROW_DEL_CLASS} ${open ? 'opacity-100' : 'opacity-0 group-hover/row:opacity-100'}`}><Trash2 size={12} strokeWidth={1.9} /></button>
-                <RowChevron open={open} onClick={toggleAll} />
+                <button onClick={e => { stop(e); deletePanelGroupWithMembers(g.id); }} title="Delete group (all panels)" className={ROW_DEL_CLASS}><Trash2 size={12} strokeWidth={1.9} /></button>
+                <RowChevron open={open} onClick={toggleOpen} title={open ? 'Collapse — back to the list' : 'Expand'} />
               </div>
             </div>
           </div>
@@ -2303,11 +2290,7 @@ export function PanelEditor() {
               {cavityStepsPanel(g)}
               <SectionHead label="Panels" count={members.length} />
               <div className="flex flex-col gap-[2px]">
-                {members.map((m, mi) => {
-                  if (mFocus >= 0 && Math.abs(mi - mFocus) > 1) return null;
-                  const sp = settleProps(mKeys, mi);
-                  return <div key={`mw-${m.id}`} className={sp.className} style={sp.style}>{vfRow(m, rowIdx, `${label}.${mi + 1}`, { member: true, group: g })}</div>;
-                })}
+                {members.map((m, mi) => vfRow(m, rowIdx, `${label}.${mi + 1}`, { member: true, group: g }))}
               </div>
             </div>
           )}
@@ -2322,13 +2305,13 @@ export function PanelEditor() {
     const doorCard = (g: DoorGroup, members: VirtualFace[], rowIdx: number, label: string) => {
       const rowKey = `grp-${g.id}`;
       const selAll = selectedDoorGroupId === g.id;
-      const open = selAll || members.some(m => selectedPanelRow === `vf-${m.id}`);
+      const open = openCards.has(g.id) || selAll || members.some(m => selectedPanelRow === `vf-${m.id}`);
       const dimsW = round1(g.rect.u1 - g.rect.u0), dimsH = round1(g.rect.v1 - g.rect.v0);
       const doorParent = open ? shapeById(g.shapeId, shapes) : undefined;   // şema yalnız açıkken çözülür (açılı kesimler + yarım binme uygunluğu)
       const doorCuts = doorParent ? collectDoorCuts(doorParent, shapes, virtualFaces) : [];
-      const toggleAll = (e: React.MouseEvent) => { stop(e); setSelectedDoorGroupId(selAll ? null : g.id); };
-      const mKeys = members.map(m => m.id);
-      const mFocus = focusKeys.member ? mKeys.indexOf(focusKeys.member) : -1;
+      const mIds = members.map(m => m.id);
+      const toggleAll = (e: React.MouseEvent) => { stop(e); if (selAll) setSelectedDoorGroupId(null); else { setSelectedDoorGroupId(g.id); openCard(g.id); } };
+      const toggleOpen = (e: React.MouseEvent) => { stop(e); if (open) closeCard(g.id, mIds); else openCard(g.id); };
       const draft = (field: 't' | 'gap', fallback: number) => (doorDraft?.id === g.id && doorDraft.field === field ? doorDraft.v : String(fallback));
       const applyDraft = (field: 't' | 'gap') => {
         const v = parseFloat(draft(field, field === 't' ? g.thickness : g.gap).replace(',', '.'));
@@ -2362,8 +2345,8 @@ export function PanelEditor() {
                 title="Group name (applies to all its doors)" className={`${ROW_INPUT_CLASS} font-semibold`} />
               <RowDims w={dimsW} h={dimsH} t={g.thickness} tLetter="T" title={`Door area width · height · thickness (${doorPlacementLabel(g.placement)} door)`} />
               <div className="flex items-center justify-end gap-px shrink-0 ml-0.5" style={{ width: ROW_TRAIL_W }} onClick={stop}>
-                <button onClick={e => { stop(e); deleteDoorGroupWithMembers(g.id); }} title="Delete group (all doors)" className={`${ROW_DEL_CLASS} ${open ? 'opacity-100' : 'opacity-0 group-hover/row:opacity-100'}`}><Trash2 size={12} strokeWidth={1.9} /></button>
-                <RowChevron open={open} onClick={toggleAll} />
+                <button onClick={e => { stop(e); deleteDoorGroupWithMembers(g.id); }} title="Delete group (all doors)" className={ROW_DEL_CLASS}><Trash2 size={12} strokeWidth={1.9} /></button>
+                <RowChevron open={open} onClick={toggleOpen} title={open ? 'Collapse — back to the list' : 'Expand'} />
               </div>
             </div>
           </div>
@@ -2389,11 +2372,7 @@ export function PanelEditor() {
                 onSelectMember={i => { const id = g.memberVfIds[i]; if (id) setSelectedPanelRow(`vf-${id}`, sid); }} />
               <SectionHead label="Doors" count={members.length} />
               <div className="flex flex-col gap-[2px]">
-                {members.map((m, mi) => {
-                  if (mFocus >= 0 && Math.abs(mi - mFocus) > 1) return null;
-                  const sp = settleProps(mKeys, mi);
-                  return <div key={`mw-${m.id}`} className={sp.className} style={sp.style}>{vfRow(m, rowIdx, `${label}.${mi + 1}`, { member: true, door: g })}</div>;
-                })}
+                {members.map((m, mi) => vfRow(m, rowIdx, `${label}.${mi + 1}`, { member: true, door: g }))}
               </div>
             </div>
           )}
@@ -2401,17 +2380,13 @@ export function PanelEditor() {
       );
     };
 
-    // ODAK MODU: açık satır varsa yalnız o + üst/alt komşusu çizilir (numaralar korunur).
-    const rowKeys = rows.map(rowKeyOf);
-    const focusIdx = focusKeys.row ? rowKeys.indexOf(focusKeys.row) : -1;
+    // Liste her zaman TAM çizilir (odak modu kaldırıldı).
     const elements: React.ReactNode[] = [];
     rows.forEach((row, rowIdx) => {
       const draggingThis = dragIndex === rowIdx, dropHere = dropIndex === rowIdx;
       const label = String(rowIdx + 1);
-      if (focusIdx >= 0 && Math.abs(rowIdx - focusIdx) > 1) return;
-      const sp = settleProps(rowKeys, rowIdx);
       elements.push(
-        <div key={`wrap-${rowKeyOf(row)}`} className={`${dropHere ? 'rounded-[10px] ring-1 ring-amber-300 bg-[#fffbf0] ' : ''}${sp.className}`} style={sp.style}
+        <div key={`wrap-${rowKeyOf(row)}`} className={dropHere ? 'rounded-[10px] ring-1 ring-amber-300 bg-[#fffbf0]' : ''}
           onDragOver={e => { if (dragIndex !== null && !draggingThis) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (dropIndex !== rowIdx) setDropIndex(rowIdx); } }}
           onDrop={e => { e.preventDefault(); if (dragIndex !== null) void onRowDropBelow(dragIndex, rowIdx); }}>
           {row.kind === 'vf' ? vfRow(row.vf, rowIdx, label, {}) : row.kind === 'door' ? doorCard(row.group, row.members, rowIdx, label) : groupCard(row.group, row.members, rowIdx, label)}
