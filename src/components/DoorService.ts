@@ -53,7 +53,9 @@ import { applyGapEdit, bodyLocalBox, equalGaps, panelLocalBox, redistributeForTh
 //    Kapak ŞEMASI (DoorSchematic) da üyeyi kırpılmış çokgeniyle çizer (Goker: "kapak previewinde de açılı görünsün").
 //  • YARIM BİNME (Goker, Eki 2026): grup şemasında kapak alanının dört DIŞ kenarında checkbox (yalnız kenarın
 //    sınır paneli varsa ve kapak onun kalınlığını örtüyorsa — dış kapak); işaretli kenar panel kalınlığının
-//    ORTASINA çekilir (DoorGroup.halfOverlay, rectAtDepth), kenar boşluğu üstüne; o eksen eşit bölünür.
+//    ORTASINA çekilir (DoorGroup.halfOverlay, rectAtDepth), kenar boşluğu üstüne; o eksen eşit bölünür. AÇILI sınır
+//    panelinde de aynı: kesici düzlem uzak yüz yerine levhanın ortasından geçer (clipMemberByCuts, cutEdgeOf).
+//    İÇ kapakta yoktur: kutucuklar gizlenir, inner'a geçince bayraklar silinir (setDoorPlacement).
 // ═══════════════════════════════════════════════════════════════════════════
 
 export const DOOR_THICKNESS = 18;
@@ -161,9 +163,27 @@ const polyArea = (p: Pt2[]) => { let a = 0; for (let i = 0; i < p.length; i++) {
  * kısıtlayıcı olan tutulur: dik kenarlı kapak eğik panele girmez. Boşluk (gap) düzlemden geri çekilir.
  * Panelin kutusu üyenin (u,v) açıklığıyla örtüşmüyorsa (başka bölme) o panel kesmez.
  */
+/**
+ * Dönmüş kesicinin hangi KENARI kestiği (yarım binme bayrağı için): kaldırılan yarım düzlemin yönü (kapak
+ * düzlemindeki normal bileşeni) hangi eksende baskınsa o kenar — eğik üst panel → vMax, eğik dikme → uMin/uMax.
+ * keepBelow = üyenin merkezi levhanın "min" tarafında (tutulan taraf).
+ */
+function cutEdgeOf(c: DoorCut, cu: number, cv: number, axis: 0 | 1 | 2, front: number): { edge: DoorEdgeKey; keepBelow: boolean } | null {
+  const { u, v } = doorPlaneAxes(axis);
+  const A = c.n[u], B = c.n[v], Na = c.n[axis];
+  if (Math.abs(A) < 1e-6 && Math.abs(B) < 1e-6) return null;   // kapak düzlemine paralel: kesim anlamsız
+  const keepBelow = A * cu + B * cv + Na * front < (c.dMin + c.dMax) / 2;
+  const ru = keepBelow ? A : -A, rv = keepBelow ? B : -B;       // kaldırılan yön
+  const edge: DoorEdgeKey = Math.abs(ru) >= Math.abs(rv) ? (ru > 0 ? 'uMax' : 'uMin') : (rv > 0 ? 'vMax' : 'vMin');
+  return { edge, keepBelow };
+}
+/** Kesici kapağın GERİSİNDE mi (dış kapak kalınlığını örter → uzak yüz; yarım binme burada anlamlı)? */
+const cutCoverFar = (c: DoorCut, axis: 0 | 1 | 2, side: 1 | -1, placement: DoorGroup['placement'], front: number) =>
+  placement === 'outer' && (side > 0 ? c.box.max[axis] <= front + TOL : c.box.min[axis] >= front - TOL);
+
 function clipMemberByCuts(
   m: { u0: number; u1: number; v0: number; v1: number }, cuts: DoorCut[], axis: 0 | 1 | 2, side: 1 | -1,
-  placement: DoorGroup['placement'], thickness: number, front: number, gap: number,
+  placement: DoorGroup['placement'], thickness: number, front: number, gap: number, half?: HalfOverlay,
 ): Pt2[] | null {
   if (!cuts.length) return null;
   const { u, v } = doorPlaneAxes(axis);
@@ -174,19 +194,22 @@ function clipMemberByCuts(
   for (const c of cuts) {
     if (Math.min(c.box.max[u], m.u1) - Math.max(c.box.min[u], m.u0) < TOL || Math.min(c.box.max[v], m.v1) - Math.max(c.box.min[v], m.v0) < TOL) continue;
     const A = c.n[u], B = c.n[v], Na = c.n[axis];
-    if (Math.abs(A) < 1e-6 && Math.abs(B) < 1e-6) continue;   // kapak düzlemine paralel: kesim anlamsız
+    const ce = cutEdgeOf(c, cu, cv, axis, front);
+    if (!ce) continue;
+    const { keepBelow } = ce;
     // Panel kapak düzleminin GERİSİNDE mi (dış kapak kalınlığını örter) ?
-    const behind = side > 0 ? c.box.max[axis] <= front + TOL : c.box.min[axis] >= front - TOL;
-    const coverFar = placement === 'outer' && behind;
-    const dCenter = A * cu + B * cv + Na * front;
-    const keepBelow = dCenter < (c.dMin + c.dMax) / 2;          // merkez levhanın "min" tarafında
+    const coverFar = cutCoverFar(c, axis, side, placement, front);
+    // YARIM BİNME (Goker: "açılı olan yerde kapak yarı binili olmuyor"): o kenarın bayrağı açıksa ve kapak paneli
+    // örtüyorsa uzak yüz yerine levhanın ORTASI (dMin+dMax)/2 sınırdır — düz kenardaki (iç+dış)/2 kuralının aynısı.
+    const halfHere = coverFar && !!half?.[ce.edge];
+    const mid = (c.dMin + c.dMax) / 2;
     let before = poly;
     if (keepBelow) {
-      const lim = (coverFar ? c.dMax : c.dMin) - gap;
+      const lim = (halfHere ? mid : coverFar ? c.dMax : c.dMin) - gap;
       const C = Math.min(...planes.map(pa => lim - Na * pa));   // A·u + B·v ≤ C (kısıtlayıcı yüzey)
       poly = clipHalfPlane(poly, A, B, C);
     } else {
-      const lim = (coverFar ? c.dMin : c.dMax) + gap;
+      const lim = (halfHere ? mid : coverFar ? c.dMin : c.dMax) + gap;
       const C = Math.max(...planes.map(pa => lim - Na * pa));   // A·u + B·v ≥ C  ⇔  −A·u − B·v ≤ −C
       poly = clipHalfPlane(poly, -A, -B, -C);
     }
@@ -411,11 +434,20 @@ export type DoorEdgeKey = keyof DoorBounds;
  * YARIM BİNME UYGUNLUĞU (şemadaki checkbox'lar): kenarın sınır paneli var ve kapak onun kalınlığını örtüyor
  * (dış kapak + panel kapağın gerisinde) → o kenarda yarım binme anlamlı. Gövde kenarı / iç kapak / öndeki panel: hayır.
  */
-export function doorHalfOverlayEdges(group: DoorGroup, parent: Shape, shapes: Shape[]): Record<DoorEdgeKey, boolean> {
+export function doorHalfOverlayEdges(group: DoorGroup, parent: Shape, shapes: Shape[], cuts: DoorCut[] = []): Record<DoorEdgeKey, boolean> {
   const s = solveDoorEdges(group, parent, shapes);
   if (!s) return { uMin: false, uMax: false, vMin: false, vMax: false };
   const c = (x: EdgeInfo) => edgeCovered(x, group.side, group.placement, s.P);
-  return { uMin: c(s.edges.l), uMax: c(s.edges.r), vMin: c(s.edges.b), vMax: c(s.edges.t) };
+  const out = { uMin: c(s.edges.l), uMax: c(s.edges.r), vMin: c(s.edges.b), vMax: c(s.edges.t) };
+  // AÇILI sınır paneli dikdörtgen kenarı değildir (gövde kenarı görünür) ama kapağı o kenardan keser: örtüyorsa uygun.
+  const rect = rectAtDepth(s.edges, group.side, group.placement, s.P, group.halfOverlay);
+  const { u, v } = doorPlaneAxes(group.axis);
+  for (const k of cuts) {
+    if (Math.min(k.box.max[u], rect.u1) - Math.max(k.box.min[u], rect.u0) < TOL || Math.min(k.box.max[v], rect.v1) - Math.max(k.box.min[v], rect.v0) < TOL) continue;
+    const ce = cutEdgeOf(k, (rect.u0 + rect.u1) / 2, (rect.v0 + rect.v1) / 2, group.axis, rect.front);
+    if (ce && cutCoverFar(k, group.axis, group.side, group.placement, rect.front)) out[ce.edge] = true;
+  }
+  return out;
 }
 
 /** Grubu güncel gövde + sınır panelleriyle çözer (saf). Dikdörtgen bozuksa önceki korunur. */
@@ -436,11 +468,11 @@ export function solveDoorGroup(group: DoorGroup, parent: Shape, shapes: Shape[])
 }
 
 /** Üyeleri dönmüş sınır panelleriyle kırpar (AÇILI REFERANS); her rebuild'de güncel panellerden yeniden. */
-export function applyDoorCuts(group: Pick<DoorGroup, 'axis' | 'side' | 'placement' | 'thickness' | 'gap' | 'id'>, rect: DoorRect, members: DoorMemberRect[], cuts: DoorCut[], silent = false): DoorMemberRect[] {
+export function applyDoorCuts(group: Pick<DoorGroup, 'axis' | 'side' | 'placement' | 'thickness' | 'gap' | 'id' | 'halfOverlay'>, rect: DoorRect, members: DoorMemberRect[], cuts: DoorCut[], silent = false): DoorMemberRect[] {
   if (!cuts.length) return members;
   let n = 0;
   const out = members.map(m => {
-    const poly = clipMemberByCuts(m, cuts, group.axis, group.side, group.placement, group.thickness, rect.front, group.gap);
+    const poly = clipMemberByCuts(m, cuts, group.axis, group.side, group.placement, group.thickness, rect.front, group.gap, group.halfOverlay);
     if (poly) n++;
     return poly ? { ...m, poly } : m;
   });
@@ -664,7 +696,9 @@ export async function equalizeDoorGroup(groupId: string): Promise<void> {
 export async function setDoorPlacement(groupId: string, placement: DoorGroup['placement']): Promise<void> {
   const group = groupById(groupId);
   if (!group || group.placement === placement) return;
-  await writeDoorGroup(group, { placement }, placement === 'inner' ? 'İÇ kapak' : 'DIŞ kapak');
+  // İÇ kapakta yarım binme yoktur (Goker: "inset olduğunda yarı bindirmeyi iptal et, gösterme"): bayraklar silinir.
+  const patch: Partial<DoorGroup> = placement === 'inner' && group.halfOverlay && Object.values(group.halfOverlay).some(Boolean) ? { placement, halfOverlay: {} } : { placement };
+  await writeDoorGroup(group, patch, placement === 'inner' ? 'İÇ kapak (yarım binme iptal)' : 'DIŞ kapak');
 }
 /**
  * YARIM BİNME (Goker, Eki 2026: "kapakların en dış kısmında bir dikmeye yarım binmesine yarayan checkbox; tıklayınca
