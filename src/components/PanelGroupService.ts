@@ -887,7 +887,7 @@ export function equalGaps(L: number, count: number, ts: number[]): GapSpec[] {
  * fark girilmemiş kilitsiz boşluklara EŞİT dağılır (varsayılan: hepsi eşit). Öyle
  * boşluk yoksa kilitsizlere oransal; hepsi kilitliyse artık son boşluğa.
  */
-function redistributeForThickness(gaps: GapSpec[], L: number, count: number, ts: number[]): GapSpec[] {
+export function redistributeForThickness(gaps: GapSpec[], L: number, count: number, ts: number[]): GapSpec[] {
   if (!Array.isArray(gaps) || gaps.length !== count + 1) return equalGaps(L, count, ts);
   const out = gaps.map(g => ({ ...g }));
   const avail = L - sumT(ts);
@@ -1417,7 +1417,7 @@ function solveFromStore(group: PanelGroup): GroupSolution | null {
 }
 
 /** Onaylanan hacimden grup + ilk üye VF (1 panel, eşit boşluk) oluşturur; grup seçilir. */
-export function createPanelGroupFromCavity(shapeId: string, kind: PanelGroup['kind'], pick: CavityPick): PanelGroup | null {
+export function createPanelGroupFromCavity(shapeId: string, kind: PanelGroup['kind'], pick: CavityPick, name?: string): PanelGroup | null {
   const st = useAppStore.getState();
   const parent = shapeById(shapeId, st.shapes);
   if (!parent) return null;
@@ -1433,7 +1433,7 @@ export function createPanelGroupFromCavity(shapeId: string, kind: PanelGroup['ki
   const arrow = pick.arrow ? { ...pick.arrow } : { axis, facing };
   const group: PanelGroup = {
     // ÇIPA = tohum noktası (ışının bölgeye girdiği yer) — L bölgede kutu merkezi dışarıda kalabilir.
-    id: genId(kind === 'shelf' ? 'shelf' : 'divider'), shapeId, kind, axis, facing, arrow, anchorFrac: fracInCavity(body, pick.seed, true), name: groupKindLabel(kind),
+    id: genId(kind === 'shelf' ? 'shelf' : 'divider'), shapeId, kind, axis, facing, arrow, anchorFrac: fracInCavity(body, pick.seed, true), name: name?.trim() || groupKindLabel(kind),
     cavity: cloneBox(pick.bbox), region: pick.boxes.map(cloneBox), count, gaps: equalGaps(L, count, [t]), thickness: t, memberThicknesses: [t], memberVfIds: [], createdAt: Date.now(),
     ...(pick.shape === 'box' ? { boxMode: true, boxFrac: { min: fracInCavity(body, pick.bbox.min), max: fracInCavity(body, pick.bbox.max) } } : {}),
   };
@@ -1522,7 +1522,7 @@ export function confirmVolumePick(shapeId: string, kind: PanelGroup['kind'], pic
   const st = useAppStore.getState();
   const gid = st.volumePickGroupId;
   if (gid) void relocatePanelGroup(gid, pick);
-  else createPanelGroupFromCavity(shapeId, kind, pick);
+  else createPanelGroupFromCavity(shapeId, kind, pick, st.placementName);   // şeritte yazılan ad (boşsa Shelf / Divider)
   st.setVolumePickMode(null);
 }
 

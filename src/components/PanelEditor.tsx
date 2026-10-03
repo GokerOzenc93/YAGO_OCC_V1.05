@@ -11,6 +11,7 @@ import {
   type CavityBox, type DoorGroup, type GapSpec, type PanelGroup, type Shape, type VirtualFace, childPanelsOf, panelOfVf, requestRebuild, shapeById, useAppStore, useStoreFields,
 } from '../store';
 import { ToolChip, ToolChipBar, UI_FONT } from './Ui';
+import { confirmBodyPanelPlacement } from './SceneObjects';
 import { axisDirToVec, convertReplicadToThreeGeometry, createPanelFromVirtualFace, dominantAxisLabel, genId, getFacesAndGroups, isFlatNormal, localBboxOf, round1 } from './Geometry';
 import {
   confirmPanelMoveRef, confirmPanelRotateRef, confirmRefFaceExtrude, deleteExtrudeStep, deleteTransformStep, executeFaceExtrude, executePanelMove,
@@ -984,8 +985,8 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, onEditGap, 
    sağda iki kapak arasındaki BOŞLUK pill'i (tıkla → değer gir). Üye seçiliyken şema
    yalnız seçici olur (pill'ler gizlenir). Kapaklar arası boşluk sabit piksel, kapak
    ölçüleri kendi oranlarıyla bölüşülür. */
-const DOOR_GAP_PX = 5;
-type DoorEdit = { kind: 'col'; k: number; v: string } | { kind: 'row'; k: number; v: string } | { kind: 'gap'; v: string };
+const DOOR_GAP_PX = 7;
+type DoorEdit = { kind: 'col'; k: number; v: string } | { kind: 'row'; k: number; v: string } | { kind: 'gap'; axis: 'col' | 'row'; k: number; v: string };
 export function DoorSchematic({ group, selectedIndex, memberLabels, onEditCol, onEditRow, onToggleColLock, onToggleRowLock, onEditGap, onSelectMember }: {
   group: DoorGroup; selectedIndex: number; memberLabels: string[];
   onEditCol: (k: number, v: number) => void; onEditRow: (k: number, v: number) => void;
@@ -1016,14 +1017,16 @@ export function DoorSchematic({ group, selectedIndex, memberLabels, onEditCol, o
   // Dizilim haritası: kapak ölçüleri oransal, aralar sabit piksel (temsili).
   const axisMap = (origin: number, specs: GapSpec[], n: number, descending: boolean) => {
     const sum = specs.reduce((a, g) => a + Math.max(0, g.value), 0);
-    const avail = Math.max(0, S - (n - 1) * DOOR_GAP_PX);
+    // Kenar boşlukları da zincirde: [boşluk] kapak [boşluk] kapak … [boşluk] → n+1 sabit piksel aralık.
+    const avail = Math.max(0, S - (n + 1) * DOOR_GAP_PX);
     const wb: number[] = [origin], pb: number[] = [0];
-    let w = origin, p = 0;
     const dir = descending ? -1 : 1;
-    specs.forEach((g, k) => {
+    let w = origin + dir * gap, p = DOOR_GAP_PX;
+    wb.push(w); pb.push(p);
+    specs.forEach(g => {
       const v = Math.max(0, g.value);
       w += dir * v; p += sum > 1e-6 ? (v / sum) * avail : avail / n; wb.push(w); pb.push(p);
-      if (k < n - 1) { w += dir * gap; p += DOOR_GAP_PX; wb.push(w); pb.push(p); }
+      w += dir * gap; p += DOOR_GAP_PX; wb.push(w); pb.push(p);
     });
     return (x: number) => {
       if (descending) { if (x >= wb[0]) return pb[0]; for (let i = 1; i < wb.length; i++) if (x >= wb[i]) { const d = wb[i - 1] - wb[i]; return d > 1e-9 ? pb[i - 1] + ((wb[i - 1] - x) / d) * (pb[i] - pb[i - 1]) : pb[i]; } return S; }
@@ -1041,14 +1044,14 @@ export function DoorSchematic({ group, selectedIndex, memberLabels, onEditCol, o
   const asz = Math.max(4, Math.min(6.5, width * 0.014));
 
   // Sütun / satır pill'leri (kare alanın dışındaki kenar boşluğunda).
-  let cu = rect.u0;
+  let cu = rect.u0 + gap;
   const colPills = colWidths.map((g, k) => {
     const a = cu, b = cu + g.value; cu = b + gap;
     const txt = String(round1(g.value)); const { pw, ph } = pillSize(txt, fs);
     const x0 = sx(a), x1 = sx(b);
     return { k, a, b, cx: (x0 + x1) / 2, cy: Math.max(oy - 13, ph / 2 + 2), pw, ph, txt, x0: Math.min(x0, x1), x1: Math.max(x0, x1) };
   });
-  let cv = rect.v1;
+  let cv = rect.v1 - gap;
   const rowPills = rowHeights.map((g, k) => {
     const a = cv, b = cv - g.value; cv = b - gap;
     const txt = String(round1(g.value)); const { pw, ph } = pillSize(txt, fs);
@@ -1056,8 +1059,19 @@ export function DoorSchematic({ group, selectedIndex, memberLabels, onEditCol, o
     return { k, a, b, cx: Math.max(ox - 13 - pw / 2 + 6, pw / 2 + 2), cy: (y0 + y1) / 2, pw, ph, txt, y0: Math.min(y0, y1), y1: Math.max(y0, y1) };
   });
   const gapTxt = String(round1(gap));
-  const gapPillCol = cols > 1 ? (() => { const a = rect.u0 + colWidths[0].value, b = a + gap; const { pw, ph } = pillSize(gapTxt, fsT); return { cx: (sx(a) + sx(b)) / 2, cy: Math.min(oy + S + 11, height - ph / 2 - 4), pw, ph }; })() : null;
-  const gapPillRow = rows > 1 ? (() => { const a = rect.v1 - rowHeights[0].value, b = a - gap; const { pw, ph } = pillSize(gapTxt, fsT); return { cx: Math.min(ox + S + 11, width - pw / 2 - 6), cy: (sy(a) + sy(b)) / 2, pw, ph }; })() : null;
+  // KAPAK BOŞLUĞU (Goker: "gap kapak ölçülerinin orada, boşluklarda yazılmalı"; "üst, alt, sağ, sol kenarlarda da"):
+  // ölçü zincirinin İÇİNDE — üstte sol kenar · kapak araları · sağ kenar, solda üst kenar · araları · alt kenar.
+  // Tıkla → değer gir (tek değer: kenarlar + aralar).
+  const { pw: gpw, ph: gph } = pillSize(gapTxt, fsT);
+  const colGapPills = Array.from({ length: cols + 1 }, (_, k) => {
+    const a = k === 0 ? rect.u0 : colPills[k - 1].b;
+    return { axis: 'col' as const, k, cx: (sx(a) + sx(a + gap)) / 2, cy: colPills[0]?.cy ?? oy - 13, pw: gpw, ph: gph };
+  });
+  const rowGapPills = Array.from({ length: rows + 1 }, (_, k) => {
+    const a = k === 0 ? rect.v1 : rowPills[k - 1].b;
+    return { axis: 'row' as const, k, cx: rowPills[0]?.cx ?? ox - 13, cy: (sy(a) + sy(a - gap)) / 2, pw: gpw, ph: gph };
+  });
+  const gapPills = [...colGapPills, ...rowGapPills];
 
   const commit = () => {
     if (!editing) return;
@@ -1075,7 +1089,7 @@ export function DoorSchematic({ group, selectedIndex, memberLabels, onEditCol, o
       <title>{locked ? 'Unlock (follows resize)' : 'Lock (stays fixed on resize)'}</title>
     </g>
   );
-  const editPos = editing?.kind === 'col' ? colPills[editing.k] : editing?.kind === 'row' ? rowPills[editing.k] : editing?.kind === 'gap' ? (gapPillCol || gapPillRow) : null;
+  const editPos = editing?.kind === 'col' ? colPills[editing.k] : editing?.kind === 'row' ? rowPills[editing.k] : editing?.kind === 'gap' ? gapPills.find(g => g.axis === editing.axis && g.k === editing.k) : null;
 
   return (
     <div ref={wrapRef} className="relative rounded-[10px] ring-1 ring-[#e9e4dc] overflow-hidden" style={{ background: PREVIEW_BG, height }}>
@@ -1123,12 +1137,13 @@ export function DoorSchematic({ group, selectedIndex, memberLabels, onEditCol, o
           );
         })}
         {/* iki kapak arasındaki boşluk (altta / sağda) */}
-        {!memberMode && gapPillCol && (
-          <DimPill cx={gapPillCol.cx} cy={gapPillCol.cy} txt={gapTxt} fs={fsT} fill="#f3efe8" color="#57534e" hideText={editing?.kind === 'gap'} title="Gap between doors — click to edit" onClick={e => { stop(e); setEditing({ kind: 'gap', v: gapTxt }); }} />
-        )}
-        {!memberMode && gapPillRow && (
-          <DimPill cx={gapPillRow.cx} cy={gapPillRow.cy} txt={gapTxt} fs={fsT} fill="#f3efe8" color="#57534e" hideText={editing?.kind === 'gap' && !gapPillCol} title="Gap between doors — click to edit" onClick={e => { stop(e); setEditing({ kind: 'gap', v: gapTxt }); }} />
-        )}
+        {!memberMode && gapPills.map(g => (
+          <g key={`gap-${g.axis}-${g.k}`}>
+            <DimPill cx={g.cx} cy={g.cy} txt={gapTxt} fs={fsT} fill="#f3efe8" stroke="#e6e0d6" color="#78716c"
+              hideText={editing?.kind === 'gap' && editing.axis === g.axis && editing.k === g.k} title="Door gap (edges and between doors) — click to edit"
+              onClick={e => { stop(e); setEditing({ kind: 'gap', axis: g.axis, k: g.k, v: gapTxt }); }} />
+          </g>
+        ))}
       </svg>
       {editing && !memberMode && editPos && (
         <input autoFocus type="text" inputMode="decimal" value={editing.v}
@@ -1213,14 +1228,53 @@ const RowChevron = ({ open, onClick }: { open: boolean; onClick?: (e: React.Mous
     <ChevronRight size={13} strokeWidth={2} />
   </span>
 );
-/** Grup kartı içindeki küçük düğme (adet ±, eşitle). */
-const SmallBtn = ({ title, onClick, disabled, children }: { title: string; onClick: () => void; disabled?: boolean; children: React.ReactNode }) => (
+/* ── GRUP KARTI DÜZENİ (Goker, Eki 2026: "raf/dikme arayüzü çok iç içe; ifadeleri kısalt, rahatlat;
+   adet ve spacing sırası çok karışık") ───────────────────────────────────────────────────────────
+   Kart iki sakin satıra ayrıldı: (1) EYLEMLER — eşit genişlikte düğme ızgarası (panel satırındaki
+   Extrude/Move/Rotate ile aynı dil); (2) DEĞERLER — her değer kendi kutusunda: solda kısa etiket,
+   sağda kontrol (adet stepper'ı / mm girişi); en sağda tek ikonlu "eşitle". */
+const cardActionCls = (on: boolean, tone: 'stone' | 'amber' = 'stone') =>
+  `h-[26px] min-w-0 flex items-center justify-center gap-1.5 rounded-[7px] text-[11px] font-semibold tracking-[0.01em] transition-[background-color,color,box-shadow] duration-150
+   ${on ? (tone === 'amber' ? 'bg-amber-50 text-amber-800 ring-1 ring-amber-300 shadow-[0_1px_2px_rgba(217,119,6,0.18)]' : 'bg-[#44403c] text-white ring-1 ring-[#44403c] shadow-[0_1px_3px_rgba(40,30,20,0.22)]')
+     : 'bg-white ring-1 ring-[#e6e0d6] text-stone-600 shadow-[0_1px_0_rgba(40,30,20,0.03)] hover:bg-[#faf7f2] hover:ring-[#dcd4c8] hover:text-stone-800'}`;
+function CardAction({ icon: Icon, label, active = false, tone, title, onClick }: { icon: LucideIcon; label: string; active?: boolean; tone?: 'stone' | 'amber'; title: string; onClick: () => void }) {
+  return (
+    <button type="button" title={title} onClick={e => { stop(e); onClick(); }} className={cardActionCls(active, tone)}>
+      <Icon size={12} strokeWidth={2} className="shrink-0" /><span className="truncate">{label}</span>
+    </button>
+  );
+}
+/** Değer kutusu: solda kısa etiket, sağda kontrol. accent = otomatik/etkin değer (turuncu ince çerçeve). */
+function FieldBox({ label, title, accent, children }: { label: string; title?: string; accent?: boolean; children: React.ReactNode }) {
+  return (
+    <div title={title} onClick={stop}
+      className={`flex-1 min-w-0 h-[28px] pl-2 pr-1 flex items-center gap-1 rounded-[7px] bg-white transition-shadow duration-150
+        ${accent ? 'ring-1 ring-orange-400/70 shadow-[0_0_0_2px_rgba(249,115,22,0.08)]' : 'ring-1 ring-[#e6e0d6] shadow-[0_1px_0_rgba(40,30,20,0.03)]'}`}>
+      <span className="shrink-0 text-[9.5px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]">{label}</span>
+      <div className="flex-1 min-w-0 flex items-center justify-end gap-0.5">{children}</div>
+    </div>
+  );
+}
+/** Kutu içi çıplak giriş (çerçevesiz; kutunun kendisi çerçeve). */
+const FIELD_INPUT: React.CSSProperties = {
+  width: 40, minWidth: 0, height: 22, textAlign: 'center', border: 'none', outline: 'none', background: 'transparent', padding: 0,
+  fontFamily: "'SF Mono',ui-monospace,Menlo,monospace", fontSize: 12.5, fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: '#1c1917',
+};
+/** Kutu içi −/+ düğmesi. */
+const StepBtn = ({ title, disabled, onClick, children }: { title: string; disabled?: boolean; onClick: () => void; children: React.ReactNode }) => (
   <button type="button" title={title} disabled={disabled} onClick={e => { stop(e); if (!disabled) onClick(); }}
-    className={`h-[24px] min-w-[24px] px-1.5 rounded-[6px] flex items-center justify-center gap-1 text-[10.5px] font-semibold transition-colors duration-150
-      ${disabled ? 'bg-white ring-1 ring-[#efeae2] text-stone-300 cursor-not-allowed' : 'bg-white ring-1 ring-[#e6e0d6] text-stone-600 hover:bg-[#faf7f2] hover:ring-[#dcd4c8] hover:text-stone-800'}`}>
-    {children}
+    className={`w-[20px] h-[20px] shrink-0 rounded-[5px] flex items-center justify-center transition-colors duration-150
+      ${disabled ? 'text-stone-300 cursor-not-allowed' : 'text-stone-500 hover:bg-[#f3efe8] hover:text-stone-800'}`}>{children}</button>
+);
+/** Yalnız ikonlu kare düğme (eşitle). */
+const IconSquareBtn = ({ icon: Icon, title, onClick }: { icon: LucideIcon; title: string; onClick: () => void }) => (
+  <button type="button" title={title} onClick={e => { stop(e); onClick(); }}
+    className="shrink-0 w-[28px] h-[28px] rounded-[7px] flex items-center justify-center bg-white ring-1 ring-[#e6e0d6] text-stone-500 shadow-[0_1px_0_rgba(40,30,20,0.03)] hover:bg-[#faf7f2] hover:ring-[#dcd4c8] hover:text-stone-800 transition-colors duration-150">
+    <Icon size={12.5} strokeWidth={2.2} />
   </button>
 );
+const unitTxt = (u: string) => <span className="shrink-0 pr-1 text-[10px] font-medium text-stone-400">{u}</span>;
+
 /** Bölüm başlığı: "COUNT", "PANELS 3 ———", "STEPS 2 ———". */
 const SectionHead = ({ label, count, rule = true, className = 'px-1 pt-2 pb-1' }: { label: string; count?: number; rule?: boolean; className?: string }) => (
   <div className={`${className} flex items-center gap-2`}>
@@ -1257,6 +1311,7 @@ export function PanelEditor() {
     panelGroups, selectedPanelGroupId, setSelectedPanelGroupId,
     volumePickMode, setVolumePickMode, volumePickGroupId, volumePickCandidates, volumePickIndex,
     doorGroups, selectedDoorGroupId, setSelectedDoorGroupId, doorPickMode, setDoorPickMode, doorPickCandidates, doorPickIndex, doorPickPlacement, setDoorPickPlacement,
+    raycastPendingVf, placementName, setPlacementName,
   } = useStoreFields('selectedShapeId', 'shapes', 'updateShape',
     'selectedPanelRow', 'setSelectedPanelRow', 'raycastMode', 'setRaycastMode',
     'virtualFaces', 'updateVirtualFace', 'deleteVirtualFace', 'reorderVirtualFaceGroup',
@@ -1273,7 +1328,8 @@ export function PanelEditor() {
     'panelRotateValueMode', 'setPanelRotateValueMode', 'panelRotateRefArmVertex', 'panelRotateRefFace',
     'panelGroups', 'selectedPanelGroupId', 'setSelectedPanelGroupId',
     'volumePickMode', 'setVolumePickMode', 'volumePickGroupId', 'volumePickCandidates', 'volumePickIndex',
-    'doorGroups', 'selectedDoorGroupId', 'setSelectedDoorGroupId', 'doorPickMode', 'setDoorPickMode', 'doorPickCandidates', 'doorPickIndex', 'doorPickPlacement', 'setDoorPickPlacement');
+    'doorGroups', 'selectedDoorGroupId', 'setSelectedDoorGroupId', 'doorPickMode', 'setDoorPickMode', 'doorPickCandidates', 'doorPickIndex', 'doorPickPlacement', 'setDoorPickPlacement',
+    'raycastPendingVf', 'placementName', 'setPlacementName');
   // Kapak grubu kartı: kalınlık / boşluk giriş taslakları.
   const [doorDraft, setDoorDraft] = useState<{ id: string; field: 't' | 'gap'; v: string } | null>(null);
 
@@ -1529,7 +1585,7 @@ export function PanelEditor() {
   // Outline ve Body/Panel seçim modu tüm menüleri kapsadığı için kenar çubuğu başlığında (Ui.Sidebar).
   const panelToolbar = (
     <ToolChipBar>
-      <ToolChip label="Body Panel" icon={LayoutPanelTop} active={raycastMode} onClick={() => { if (!raycastMode && volumePickMode) setVolumePickMode(null); if (!raycastMode && doorPickMode) setDoorPickMode(false); setRaycastMode(!raycastMode); }} title="Add a panel on a body face" />
+      <ToolChip label="Body Panel" icon={LayoutPanelTop} active={raycastMode} onClick={() => setRaycastMode(!raycastMode)} title="Add a panel on a body face" />
       {/* Yeniden seçim (Relocate) sürerken bu çipler pasif görünür; tıklanınca yeni grup seçimine geçer (groupId düşer). */}
       <ToolChip label="Shelf" icon={Rows3} active={volumePickMode === 'shelf' && !volumePickGroupId} onClick={() => setVolumePickMode(volumePickMode === 'shelf' && !volumePickGroupId ? null : 'shelf')} title="Add shelves: pick a cavity in the 3D view" />
       <ToolChip label="Divider" icon={Columns3} active={volumePickMode === 'divider' && !volumePickGroupId} onClick={() => setVolumePickMode(volumePickMode === 'divider' && !volumePickGroupId ? null : 'divider')} title="Add vertical dividers: pick a cavity in the 3D view" />
@@ -2075,59 +2131,46 @@ export function PanelEditor() {
           {/* ── AÇILAN GÖVDE: adet + şema + üye satırları ── */}
           {open && (
             <div className="yago-expand px-2 pt-2 pb-2" style={{ borderTop: '1px solid #f3e6d6', fontFamily: UI_FONT }} onClick={stop}>
-              <div className="flex items-center gap-1.5 mb-1.5">
-                <span style={SECTION_LABEL}>Count</span>
-                <SmallBtn title="Fewer" disabled={g.count <= 1} onClick={() => applyCount(g.count - 1)}><Minus size={11} strokeWidth={2.2} /></SmallBtn>
-                <input type="text" inputMode="numeric" value={countVal}
-                  onChange={e => setCountDraft({ id: g.id, v: e.target.value })}
-                  onBlur={() => applyCount(parseInt(countVal, 10))}
-                  onKeyDown={e => { if (e.key === 'Enter') applyCount(parseInt(countVal, 10)); if (e.key === 'Escape') setCountDraft(null); }}
-                  onClick={stop} style={{ ...DOCK_INPUT, flex: 'none', width: 44, height: 24 }} />
-                <SmallBtn title="More" onClick={() => applyCount(g.count + 1)}><Plus size={11} strokeWidth={2.2} /></SmallBtn>
-                {/* HEDEF ARALIK: eşit boşluk ≈ bu değer olacak şekilde adet otomatik; elle adet/boşluk girişi kapatır. */}
-                <span style={{ ...SECTION_LABEL, marginLeft: 6 }}>Spacing</span>
-                <input type="text" inputMode="decimal" value={gapVal} placeholder="auto"
-                  title={autoGap ? `Target gap ${g.targetGap} mm — count follows the cavity size. Clear to stop.` : 'Target gap (mm): count is derived to match it and follows the cavity size'}
-                  onChange={e => setGapDraft({ id: g.id, v: e.target.value })}
-                  onBlur={() => applyGap(gapVal)}
-                  onKeyDown={e => { if (e.key === 'Enter') applyGap(gapVal); if (e.key === 'Escape') setGapDraft(null); }}
-                  onClick={stop} style={{ ...DOCK_INPUT, flex: 'none', width: 52, height: 24, ...(autoGap ? { boxShadow: 'inset 0 0 0 1px #ea580c', color: '#9a3412' } : {}) }} />
-                <span className="flex-1" />
-                <SmallBtn title="Equal gaps (unlock all)" onClick={() => { void equalizeGroupGaps(g.id); }}><Equal size={11} strokeWidth={2.2} /><span>Equalize</span></SmallBtn>
-                {/* KAPAK SINIRI (tüm üyeler): raf/dikme grubunun her paneli kapak referansı olur / olmaz. */}
-                {(() => {
-                  const allOn = members.length > 0 && members.every(m => m.doorBound);
-                  return (
-                    <button type="button" title={allOn ? 'Door reference: ON for all panels in this group' : 'Mark all panels in this group as door references'}
-                      onClick={e => { stop(e); for (const m of members) setVfDoorBound(m.id, !allOn); }}
-                      className={`h-[24px] px-1.5 rounded-[6px] flex items-center justify-center gap-1 text-[10.5px] font-semibold transition-colors duration-150
-                        ${allOn ? 'bg-amber-50 ring-1 ring-amber-300 text-amber-800' : 'bg-white ring-1 ring-[#e6e0d6] text-stone-600 hover:bg-[#faf7f2] hover:ring-[#dcd4c8] hover:text-stone-800'}`}>
-                      <DoorClosed size={11} strokeWidth={2.2} /><span>Door ref</span>
-                    </button>
-                  );
-                })()}
-                {/* HACİM: grubun hacmine yüz extrude (fixed/dyn/ref) — tüm üyeler yeni hacme göre kısalır/uzar. */}
-                {(() => {
-                  const btnCls = (on: boolean) => `h-[24px] px-2 flex items-center gap-1 rounded-[7px] text-[11px] font-semibold tracking-[0.01em] transition-[background-color,color,box-shadow] duration-150
-                        ${on ? 'bg-[#44403c] text-white ring-1 ring-[#44403c] shadow-[0_1px_3px_rgba(40,30,20,0.22)]'
-                          : 'bg-white ring-1 ring-[#e6e0d6] text-stone-600 shadow-[0_1px_0_rgba(40,30,20,0.03)] hover:bg-[#faf7f2] hover:ring-[#dcd4c8] hover:text-stone-800'}`;
-                  const on = faceExtrudeMode && faceExtrudeCavityGroupId === g.id;
-                  // YENİDEN SEÇİM (Goker): grubun hacmini 3B'de yeniden seç — yalnız listede gruptan ÖNCE gelen paneller
-                  // hacmi sınırlar, sonrakiler ve grubun kendi panelleri saydam çizilir; adet/kalınlık/sıra korunur.
-                  const relocating = !!volumePickMode && volumePickGroupId === g.id;
-                  return (
-                    <>
-                      <button type="button" title="Edit the cavity volume: pick a face in the 3D view, then extrude it (fixed / dyn / ref)"
-                        onClick={e => { stop(e); if (on) setFaceExtrudeMode(false); else startCavityEdit(g.id); }} className={btnCls(on)}>
-                        <Box size={12} strokeWidth={2} />Volume
-                      </button>
-                      <button type="button" title="Relocate: pick a new volume for this group in the 3D view. Only panels placed before it in the list bound the volume and stay visible; later panels are hidden, the group's own panels are shown translucent. Count, thicknesses and list order are kept."
-                        onClick={e => { stop(e); if (relocating) setVolumePickMode(null); else startGroupRepick(g.id); }} className={btnCls(relocating)}>
-                        <Move3d size={12} strokeWidth={2} />Relocate
-                      </button>
-                    </>
-                  );
-                })()}
+              {/* 1) EYLEMLER: hacim düzenle · yeniden seç · kapak sınırı (tüm üyeler). */}
+              {(() => {
+                const editingVol = faceExtrudeMode && faceExtrudeCavityGroupId === g.id;
+                const relocating = !!volumePickMode && volumePickGroupId === g.id;
+                const allRef = members.length > 0 && members.every(m => m.doorBound);
+                return (
+                  <div className="grid grid-cols-3 gap-1 mb-1.5">
+                    <CardAction icon={Box} label="Volume" active={editingVol}
+                      title="Edit the volume: pick a face in the 3D view, then extrude it (fixed / dyn / ref)"
+                      onClick={() => { if (editingVol) setFaceExtrudeMode(false); else startCavityEdit(g.id); }} />
+                    <CardAction icon={Move3d} label="Relocate" active={relocating}
+                      title="Pick a new volume for this group in the 3D view (count, thicknesses and list order are kept)"
+                      onClick={() => { if (relocating) setVolumePickMode(null); else startGroupRepick(g.id); }} />
+                    <CardAction icon={DoorClosed} label="Door ref" active={allRef} tone="amber"
+                      title={allRef ? 'Door reference: ON for all panels in this group' : 'Use all panels in this group as door references'}
+                      onClick={() => { for (const m of members) setVfDoorBound(m.id, !allRef); }} />
+                  </div>
+                );
+              })()}
+              {/* 2) DEĞERLER: adet · hedef aralık (doluysa adet otomatik) · eşitle. */}
+              <div className="flex items-center gap-1 mb-1.5">
+                <FieldBox label="Qty" title="Number of panels">
+                  <StepBtn title="Fewer" disabled={g.count <= 1} onClick={() => applyCount(g.count - 1)}><Minus size={11} strokeWidth={2.2} /></StepBtn>
+                  <input type="text" inputMode="numeric" value={countVal}
+                    onChange={e => setCountDraft({ id: g.id, v: e.target.value })}
+                    onBlur={() => applyCount(parseInt(countVal, 10))}
+                    onKeyDown={e => { if (e.key === 'Enter') applyCount(parseInt(countVal, 10)); if (e.key === 'Escape') setCountDraft(null); }}
+                    onClick={stop} className="yago-field" style={{ ...FIELD_INPUT, width: 30 }} />
+                  <StepBtn title="More" onClick={() => applyCount(g.count + 1)}><Plus size={11} strokeWidth={2.2} /></StepBtn>
+                </FieldBox>
+                <FieldBox label="Spacing" accent={autoGap}
+                  title={autoGap ? `Target spacing ${g.targetGap} mm — the count follows the volume size. Clear to stop.` : 'Target spacing (mm): the count is set to match it and follows the volume size'}>
+                  <input type="text" inputMode="decimal" value={gapVal} placeholder="auto"
+                    onChange={e => setGapDraft({ id: g.id, v: e.target.value })}
+                    onBlur={() => applyGap(gapVal)}
+                    onKeyDown={e => { if (e.key === 'Enter') applyGap(gapVal); if (e.key === 'Escape') setGapDraft(null); }}
+                    onClick={stop} className="yago-field" style={{ ...FIELD_INPUT, width: 48, textAlign: 'right', ...(autoGap ? { color: '#9a3412' } : {}) }} />
+                  {unitTxt('mm')}
+                </FieldBox>
+                <IconSquareBtn icon={Equal} title="Equalize gaps (unlock all)" onClick={() => { void equalizeGroupGaps(g.id); }} />
               </div>
               {/* Şema sırası = geometrik sıra (memberVfIds / groupIndex); numara = listedeki sıra (members). */}
               <GroupSchematic group={g} selectedIndex={g.memberVfIds.findIndex(id => selectedPanelRow === `vf-${id}`)}
@@ -2170,24 +2213,19 @@ export function PanelEditor() {
         if (!Number.isFinite(v)) return;
         if (field === 't') void setDoorThickness(g.id, v); else void setDoorGap(g.id, v);
       };
-      const numInput = (field: 't' | 'gap', fallback: number, title: string) => (
-        <input type="text" inputMode="decimal" value={draft(field, fallback)} title={title}
+      const numInput = (field: 't' | 'gap', fallback: number) => (
+        <input type="text" inputMode="decimal" value={draft(field, fallback)}
           onChange={e => setDoorDraft({ id: g.id, field, v: e.target.value })}
           onBlur={() => applyDraft(field)}
           onKeyDown={e => { if (e.key === 'Enter') applyDraft(field); if (e.key === 'Escape') setDoorDraft(null); }}
-          onClick={stop} style={{ ...DOCK_INPUT, flex: 'none', width: 44, height: 24 }} />
+          onClick={stop} className="yago-field" style={{ ...FIELD_INPUT, width: 34, textAlign: 'right' }} />
       );
-      const splitCtl = (Icon: LucideIcon, lbl: string, title: string, n: number, set: (v: number) => void) => (
-        <>
-          <span style={SECTION_LABEL} title={title} className="inline-flex items-center gap-1"><Icon size={11} strokeWidth={2} />{lbl}</span>
-          <SmallBtn title="Fewer" disabled={n <= 1} onClick={() => set(n - 1)}><Minus size={11} strokeWidth={2.2} /></SmallBtn>
-          <span className="w-[22px] text-center text-[12px] font-semibold tabular-nums text-stone-700">{n}</span>
-          <SmallBtn title="More" onClick={() => set(n + 1)}><Plus size={11} strokeWidth={2.2} /></SmallBtn>
-        </>
-      );
-      const segBtn = (on: boolean, lbl: string, title: string, onClick: () => void) => (
-        <button type="button" title={title} onClick={e => { stop(e); onClick(); }}
-          className={`h-[24px] px-2 text-[10.5px] font-semibold transition-colors duration-150 ${on ? 'bg-[#44403c] text-white' : 'bg-white text-stone-600 hover:bg-[#faf7f2]'}`}>{lbl}</button>
+      const splitBox = (_Icon: LucideIcon, lbl: string, title: string, n: number, set: (v: number) => void) => (
+        <FieldBox label={lbl} title={title}>
+          <StepBtn title="Fewer" disabled={n <= 1} onClick={() => set(n - 1)}><Minus size={11} strokeWidth={2.2} /></StepBtn>
+          <span className="w-[24px] text-center text-[12.5px] font-semibold tabular-nums text-stone-800" style={{ fontFamily: FIELD_INPUT.fontFamily }}>{n}</span>
+          <StepBtn title="More" onClick={() => set(n + 1)}><Plus size={11} strokeWidth={2.2} /></StepBtn>
+        </FieldBox>
       );
       return (
         <div key={rowKey} className={rowCardClass(open, dragIndex === rowIdx, armedRowKey === rowKey)}>
@@ -2208,22 +2246,19 @@ export function PanelEditor() {
           </div>
           {open && (
             <div className="yago-expand px-2 pt-2 pb-2" style={{ borderTop: '1px solid #f3e6d6', fontFamily: UI_FONT }} onClick={stop}>
-              <div className="flex items-center gap-1.5 mb-1.5">
-                {splitCtl(SplitSquareVertical, 'Split V', 'Vertical split — number of doors side by side (columns)', g.cols, n => { void setDoorSplit(g.id, n, g.rows); })}
-                <span className="w-px h-4 bg-[#efeae2] mx-0.5" />
-                {splitCtl(SplitSquareHorizontal, 'Split H', 'Horizontal split — number of doors stacked (rows)', g.rows, n => { void setDoorSplit(g.id, g.cols, n); })}
-                <span className="flex-1" />
-                <SmallBtn title="Equal sizes (unlock all)" onClick={() => { void equalizeDoorGroup(g.id); }}><Equal size={11} strokeWidth={2.2} /><span>Equalize</span></SmallBtn>
+              {/* 1) DEĞERLER: dikeyde böl (sütun) · yatayda böl (satır) · eşitle. */}
+              <div className="flex items-center gap-1 mb-1.5">
+                {splitBox(SplitSquareVertical, 'Split V', 'Vertical split — doors side by side (columns)', g.cols, n => { void setDoorSplit(g.id, n, g.rows); })}
+                {splitBox(SplitSquareHorizontal, 'Split H', 'Horizontal split — doors stacked (rows)', g.rows, n => { void setDoorSplit(g.id, g.cols, n); })}
+                <IconSquareBtn icon={Equal} title="Equalize sizes (unlock all)" onClick={() => { void equalizeDoorGroup(g.id); }} />
               </div>
-              <div className="flex items-center gap-1.5 mb-1.5">
-                <span className="inline-flex rounded-[6px] overflow-hidden ring-1 ring-[#e6e0d6]">
-                  {segBtn(g.placement === 'outer', 'Outer', 'Outer door — over the panel thicknesses, in front of the body', () => { void setDoorPlacement(g.id, 'outer'); })}
-                  {segBtn(g.placement === 'inner', 'Inner', 'Inner (inset) door — between the reference panels, flush with their front', () => { void setDoorPlacement(g.id, 'inner'); })}
-                </span>
-                <span style={{ ...SECTION_LABEL, marginLeft: 6 }}>T</span>
-                {numInput('t', g.thickness, 'Door thickness (mm)')}
-                <span style={{ ...SECTION_LABEL, marginLeft: 6 }}>Gap</span>
-                {numInput('gap', g.gap, 'Gap between doors (mm)')}
+              {/* 2) Dış / iç · kalınlık (kapak boşluğu — kenarlar + aralar — şemada, ölçülerin arasında). */}
+              <div className="flex items-center gap-1 mb-1.5">
+                <div className="flex-1 min-w-0 grid grid-cols-2 gap-1">
+                  <CardAction icon={PanelTop} label="Outer" active={g.placement === 'outer'} title="Outer door — over the panel thicknesses, in front of the body" onClick={() => { void setDoorPlacement(g.id, 'outer'); }} />
+                  <CardAction icon={SquareDashedBottom} label="Inner" active={g.placement === 'inner'} title="Inner (inset) door — between the reference panels, flush with their front" onClick={() => { void setDoorPlacement(g.id, 'inner'); }} />
+                </div>
+                <FieldBox label="T" title="Door thickness (mm)">{numInput('t', g.thickness)}{unitTxt('mm')}</FieldBox>
               </div>
               <DoorSchematic group={g} selectedIndex={g.memberVfIds.findIndex(id => selectedPanelRow === `vf-${id}`)}
                 memberLabels={g.memberVfIds.map((id, i) => { const mi = members.findIndex(m => m.id === id); return `${label}.${(mi >= 0 ? mi : i) + 1}`; })}
@@ -2278,7 +2313,48 @@ export function PanelEditor() {
     return elements;
   };
 
-  /* ── HACİM SEÇME ŞERİDİ (raf / dikme): araç çubuğunun altında — durum + onay (✓ = sağ tık) + çıkış ── */
+  /* ── YERLEŞTİRME ŞERİDİ (ortak): Body Panel / Shelf / Divider / Door ─────────────────
+     Goker (Eki 2026): "paneli yüzey seçerken isim yazabileyim; kapakta inner/outer panel atmadan
+     önce seçilsin — divider yerleştirirken de aynısını yapıyordum". Şerit, yerleştirme ÖNCESİ
+     kararları toplar: (üstte) seçenekler — kapakta Outer/Inner; (1. satır) tür etiketi + AD girişi
+     + ✓ / ✕; (2. satır) durum. Ad boşsa varsayılan ad (Panel / Shelf / Divider / Door). Ad girişinde
+     Enter = onay (sahnede sağ tıkla aynı), Esc = moddan çık. Yeniden seçimde (Relocate) ad yok. */
+  const placementDock = ({ tag, defaultName, showName = true, ready, status, onConfirm, onExit, confirmTitle, top }: {
+    tag: string; defaultName: string; showName?: boolean; ready: boolean; status: string;
+    onConfirm: () => void; onExit: () => void; confirmTitle: string; top?: React.ReactNode;
+  }) => (
+    <div style={{ ...DOCK_SHELL, marginTop: 0, borderRadius: 0, border: 'none', borderBottom: '1px solid #ebe5dc', boxShadow: 'none' }}>
+      {top}
+      <div style={DOCK_ROW}>
+        <span style={dockAxisTag('#44403c')}>{tag}</span>
+        {showName ? (
+          <FieldBox label="Name" title={`Name of the new ${defaultName.toLowerCase()} (empty = ${defaultName})`}>
+            <input type="text" autoFocus value={placementName} placeholder={defaultName} spellCheck={false}
+              onChange={e => setPlacementName(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && ready) onConfirm(); if (e.key === 'Escape') onExit(); }}
+              onClick={stop} className="yago-field yago-field-text" style={{ ...FIELD_INPUT, flex: 1, width: 'auto', textAlign: 'left', fontFamily: UI_FONT }} />
+          </FieldBox>
+        ) : <DockStatus ready={ready} text={status} />}
+        <ApplyBtn enabled={ready} onClick={onConfirm} title={confirmTitle} />
+        <ExitBtn onClick={onExit} />
+      </div>
+      {showName && <div style={{ ...DOCK_ROW, paddingTop: 0 }}><DockStatus ready={ready} text={status} /></div>}
+    </div>
+  );
+
+  /* Body Panel: yüz yakalama — önizlenen VF şeritte ✓ ile de onaylanır. */
+  const raycastDock = (() => {
+    if (!raycastMode) return null;
+    const ready = !!selectedShape && !!raycastPendingVf;
+    return placementDock({
+      tag: 'PANEL', defaultName: 'Panel', ready,
+      status: !selectedShape ? 'Select a body first' : ready ? 'Face selected — click again for the next region · right-click: place' : 'Click a body face in the 3D view',
+      onConfirm: () => confirmBodyPanelPlacement(useAppStore.getState().raycastPendingVf),
+      onExit: () => setRaycastMode(false), confirmTitle: 'Place panel',
+    });
+  })();
+
+  /* Raf / dikme: hacim seçimi (Relocate'te ad girişi yok). */
   const volumePickDock = (() => {
     if (!volumePickMode) return null;
     const n = volumePickCandidates.length;
@@ -2287,57 +2363,44 @@ export function PanelEditor() {
     const cur = volumePickCandidates[volumePickIndex];
     // YENİDEN SEÇİM: taşınan grup (kartındaki Relocate) — etiket ve onay buna göre.
     const relocGroup = volumePickGroupId ? panelGroups.find(g => g.id === volumePickGroupId) : undefined;
-    const label = !selectedShape ? 'Select a body first'
-      : n === 0 ? (relocGroup ? 'Click the new volume (or the current one) — only panels before this group in the list bound it' : 'Click inside a cavity in the 3D view')
-      : `Volume ${volumePickIndex + 1}/${n} · ${cur?.shape === 'box' ? 'Box' : 'Shaped'} — left-click: next · right-click: ${relocGroup ? 'relocate' : 'confirm'}`;
-    const confirm = () => {
-      if (!ready || !selectedShape) return;
-      confirmVolumePick(selectedShape.id, volumePickMode, volumePickCandidates[volumePickIndex]);
-    };
-    return (
-      <div style={{ ...DOCK_SHELL, marginTop: 0, borderRadius: 0, border: 'none', borderBottom: '1px solid #ebe5dc', boxShadow: 'none' }}>
-        <div style={DOCK_ROW}>
-          <span style={dockAxisTag('#44403c')}>{relocGroup ? `RELOCATE · ${groupName(relocGroup).toUpperCase()}` : volumePickMode === 'shelf' ? 'SHELF' : 'DIVIDER'}</span>
-          <DockStatus ready={ready} text={label} />
-          <ApplyBtn enabled={ready} onClick={confirm} title={relocGroup ? 'Relocate group to this volume' : 'Confirm volume'} />
-          <ExitBtn onClick={() => setVolumePickMode(null)} />
-        </div>
-      </div>
-    );
+    const kindLabel = volumePickMode === 'shelf' ? 'Shelf' : 'Divider';
+    const status = !selectedShape ? 'Select a body first'
+      : n === 0 ? (relocGroup ? 'Click the new volume (only panels before this group bound it)' : 'Click inside a volume in the 3D view')
+      : `Volume ${volumePickIndex + 1}/${n} · ${cur?.shape === 'box' ? 'Box' : 'Shaped'} — click: next · right-click: ${relocGroup ? 'relocate' : 'place'}`;
+    return placementDock({
+      tag: relocGroup ? `RELOCATE · ${groupName(relocGroup).toUpperCase()}` : kindLabel.toUpperCase(), defaultName: kindLabel, showName: !relocGroup, ready, status,
+      onConfirm: () => { if (ready && selectedShape) confirmVolumePick(selectedShape.id, volumePickMode, volumePickCandidates[volumePickIndex]); },
+      onExit: () => setVolumePickMode(null), confirmTitle: relocGroup ? 'Relocate group to this volume' : `Place ${kindLabel.toLowerCase()}`,
+    });
   })();
 
-  /* ── KAPAK SEÇME ŞERİDİ: durum + dış/iç + onay (✓ = sağ tık) + çıkış ─────────── */
+  /* Kapak: dış / iç seçimi YERLEŞTİRMEDEN ÖNCE (üstte) + ad. */
   const doorPickDock = (() => {
     if (!doorPickMode) return null;
     const n = doorPickCandidates.length;
     const ready = !!selectedShape && n > 0;
     const cur = doorPickCandidates[doorPickIndex];
     const boundN = selectedShape ? virtualFaces.filter(f => f.shapeId === selectedShape.id && f.doorBound && !isDoorVf(f)).length : 0;
-    const label = !selectedShape ? 'Select a body first'
-      : n === 0 ? (boundN ? `Click a body face in the 3D view · ${boundN} door ref${boundN === 1 ? '' : 's'}` : 'No door refs yet — body edges bound the door · click a body face')
-      : (() => { const r = doorPickPlacement === 'inner' ? cur.inner : cur.outer; return `Door ${doorPickIndex + 1}/${n} · ${Math.round(r.u1 - r.u0)}×${Math.round(r.v1 - r.v0)} · ${cur.boundPanelCount ? `${cur.boundPanelCount} ref${cur.boundPanelCount === 1 ? '' : 's'}` : 'body'} — left-click: next · right-click: confirm`; })();
-    const confirm = () => { if (ready && selectedShape) confirmDoorPick(selectedShape.id, doorPickCandidates[doorPickIndex]); };
+    const status = !selectedShape ? 'Select a body first'
+      : n === 0 ? (boundN ? `Click a body face · ${boundN} door ref${boundN === 1 ? '' : 's'}` : 'No door refs — body edges bound the door · click a body face')
+      : (() => { const r = doorPickPlacement === 'inner' ? cur.inner : cur.outer; return `Door ${doorPickIndex + 1}/${n} · ${Math.round(r.u1 - r.u0)}×${Math.round(r.v1 - r.v0)} — click: next · right-click: place`; })();
     const placementModes: DockMode[] = [
       { key: 'outer', label: 'Outer', sub: 'Over panels', Icon: PanelTop, title: 'Outer door — covers the panel thicknesses, sits in front of the body' },
       { key: 'inner', label: 'Inner', sub: 'Between panels', Icon: SquareDashedBottom, title: 'Inner (inset) door — fits between the reference panels, flush with their front' },
     ];
-    return (
-      <div style={{ ...DOCK_SHELL, marginTop: 0, borderRadius: 0, border: 'none', borderBottom: '1px solid #ebe5dc', boxShadow: 'none' }}>
-        <DockModeBar modes={placementModes} active={doorPickPlacement} onPick={k => setDoorPickPlacement(k as 'outer' | 'inner')} />
-        <div style={DOCK_ROW}>
-          <span style={dockAxisTag('#44403c')}>DOOR</span>
-          <DockStatus ready={ready} text={label} />
-          <ApplyBtn enabled={ready} onClick={confirm} title="Confirm door" />
-          <ExitBtn onClick={() => setDoorPickMode(false)} />
-        </div>
-      </div>
-    );
+    return placementDock({
+      tag: 'DOOR', defaultName: 'Door', ready, status,
+      top: <DockModeBar modes={placementModes} active={doorPickPlacement} onPick={k => setDoorPickPlacement(k as 'outer' | 'inner')} />,
+      onConfirm: () => { if (ready && selectedShape) confirmDoorPick(selectedShape.id, doorPickCandidates[doorPickIndex]); },
+      onExit: () => setDoorPickMode(false), confirmTitle: 'Place door',
+    });
   })();
 
   return (
     <div className="flex flex-col h-full min-h-0">
       <style>{LIST_CSS}</style>
       <div className="px-3 py-2 border-b border-stone-100 flex items-center justify-between shrink-0">{panelToolbar}</div>
+      {raycastDock}
       {volumePickDock}
       {doorPickDock}
       {selectedShape ? (

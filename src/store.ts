@@ -328,6 +328,13 @@ export interface AppState {
 
   // Panel yerleştirme (yüz yakalama)
   raycastMode: boolean; setRaycastMode: (b: boolean) => void;
+  /** Yüz yakalamada önizlenen (henüz yerleşmemiş) VF — şeritteki ✓ bununla onaylar. */
+  raycastPendingVf: VirtualFace | null; setRaycastPendingVf: (v: VirtualFace | null) => void;
+  /**
+   * YERLEŞTİRME ADI (Goker, Eki 2026: "paneli yüzey seçerken isim yazabileyim"): Body Panel /
+   * Shelf / Divider / Door yerleştirme şeridindeki ad; boşsa varsayılan ad. Her mod açılışında sıfırlanır.
+   */
+  placementName: string; setPlacementName: (s: string) => void;
 
   // Yüz extrude
   faceExtrudeMode: boolean; setFaceExtrudeMode: (b: boolean) => void;
@@ -543,7 +550,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   volumePickMode: null,
   setVolumePickMode: (m, groupId = null) => set({
     volumePickMode: m, volumePickGroupId: m ? groupId : null, volumePickCandidates: [], volumePickIndex: 0,
-    ...(m ? { raycastMode: false, doorPickMode: false, doorPickCandidates: [], doorPickIndex: 0 } : {}),
+    ...(m ? { raycastMode: false, raycastPendingVf: null, doorPickMode: false, doorPickCandidates: [], doorPickIndex: 0, placementName: '' } : {}),
   }),
   volumePickGroupId: null,
   volumePickCandidates: [], volumePickIndex: 0,
@@ -574,7 +581,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   doorPickMode: false,
   setDoorPickMode: (b) => set({
     doorPickMode: b, doorPickCandidates: [], doorPickIndex: 0,
-    ...(b ? { raycastMode: false, volumePickMode: null, volumePickGroupId: null, volumePickCandidates: [], volumePickIndex: 0 } : {}),
+    ...(b ? { raycastMode: false, raycastPendingVf: null, volumePickMode: null, volumePickGroupId: null, volumePickCandidates: [], volumePickIndex: 0, placementName: '' } : {}),
   }),
   doorPickCandidates: [], doorPickIndex: 0,
   setDoorPick: (c, i) => set({ doorPickCandidates: c, doorPickIndex: i }),
@@ -589,7 +596,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   addFilletFaceData: (d) => set((s) => ({ selectedFilletFaceData: [...s.selectedFilletFaceData, d] })),
   clearFilletFaceData: () => set({ selectedFilletFaceData: [] }),
 
-  raycastMode: false, setRaycastMode: (b) => set({ raycastMode: b }),
+  raycastMode: false,
+  // Yüz yakalama diğer yerleştirme modlarını kapatır; açılışta ad sıfırlanır.
+  setRaycastMode: (b) => set({
+    raycastMode: b, raycastPendingVf: null,
+    ...(b ? { placementName: '', volumePickMode: null, volumePickGroupId: null, volumePickCandidates: [], volumePickIndex: 0, doorPickMode: false, doorPickCandidates: [], doorPickIndex: 0 } : {}),
+  }),
+  raycastPendingVf: null, setRaycastPendingVf: (v) => set({ raycastPendingVf: v }),
+  placementName: '', setPlacementName: (s) => set({ placementName: s }),
 
   // ── Yüz extrude ───────────────────────────────────────────────────────────
   faceExtrudeMode: false,

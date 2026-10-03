@@ -422,6 +422,19 @@ const highlightMat = (color: number, opacity: number, offset = -2, depthTest = f
 
 // ── 1. PANEL YERLEŞTİRME (yüz yakalama) ──────────────────────────────────────
 
+/**
+ * Body Panel onayı (sahnede sağ tık / şeritte ✓ / ad girişinde Enter): önizlenen VF, şeritte
+ * yazılan adla (boşsa 'Panel') eklenir; mod kapanır.
+ */
+export function confirmBodyPanelPlacement(vf: VirtualFace | null | undefined): void {
+  const st = useAppStore.getState();
+  if (!vf) return;
+  const name = st.placementName.trim();
+  st.addVirtualFace(name ? { ...vf, description: name } : vf);
+  console.log('[YAGO][YERLEŞTİR] body panel', vf.id, 'ad=', name || 'Panel');
+  st.setRaycastMode(false);
+}
+
 interface PendingPreview { geo: THREE.BufferGeometry; edgeGeo: THREE.BufferGeometry; virtualFace: VirtualFace }
 
 /**
@@ -546,7 +559,7 @@ export const VirtualFaceOverlay: React.FC<{ shape: any }> = ({ shape }) => {
 };
 
 export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = ({ shape, allShapes = [] }) => {
-  const { raycastMode, setRaycastMode, addVirtualFace, virtualFaces, setSelectedPanelRow } = useStoreFields('raycastMode', 'setRaycastMode', 'addVirtualFace', 'virtualFaces', 'setSelectedPanelRow');
+  const { raycastMode, virtualFaces, setSelectedPanelRow, setRaycastPendingVf } = useStoreFields('raycastMode', 'virtualFaces', 'setSelectedPanelRow', 'setRaycastPendingVf');
   const [hoveredGroupIndex, setHoveredGroupIndex] = useState<number | null>(null);
   const [pending, setPending] = useState<PendingPreview | null>(null);
   const lastClickRef = useRef<{ point: THREE.Vector3; groupIndex: number; cycleIndex: number } | null>(null);
@@ -557,6 +570,8 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
   const { localToWorld, worldToLocal } = useShapeMatrices(shape);
   const { faces, groups: faceGroups } = useFaceGroups(effGeometry, () => { setPending(null); lastClickRef.current = null; });
   useEffect(() => { if (!raycastMode) { setHoveredGroupIndex(null); setPending(null); lastClickRef.current = null; } }, [raycastMode]);
+  // Şeritteki ✓ (ve ad girişi Enter) önizlenen VF'yi onaylayabilsin diye store'a yansıtılır.
+  useEffect(() => { setRaycastPendingVf(pending ? pending.virtualFace : null); }, [pending]);
   // Kısaltılmış panelin bıraktığı boşluk gezilebilsin diye GÜNCEL geometri. İÇ PANELLER (raf/dikme) de
   // girer: yeni panel her zaman sırada SONRA → mevcut dikme/raf onu basar, bölge tıklanan bölmede kalır.
   // KAPAKLAR yüz yakalamada engel değildir (gövdenin önünde/arasında durur; ön yüze panel yerleştirmeyi kapatmaz).
@@ -580,7 +595,7 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
     if (!raycastMode) return;
     if (e.button === 2) {
       e.stopPropagation();
-      if (pending) { addVirtualFace(pending.virtualFace); setPending(null); lastClickRef.current = null; setRaycastMode(false); }
+      if (pending) { confirmBodyPanelPlacement(pending.virtualFace); setPending(null); lastClickRef.current = null; }
       return;
     }
     if (e.button !== 0) return;

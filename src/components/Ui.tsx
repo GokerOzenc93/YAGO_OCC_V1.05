@@ -560,6 +560,13 @@ const SIDEBAR_CSS = `
 .bone-skin input[type="text"].yago-row-note::placeholder { color: #c9c2b8 !important; font-weight: 400 !important; }
 .bone-skin input[type="text"].yago-row-note:hover { border-color: #ebe5dc !important; background: rgba(255,255,255,0.6) !important; }
 .bone-skin input[type="text"].yago-row-note:focus { background: #ffffff !important; border-color: rgba(249,115,22,0.45) !important; box-shadow: 0 0 0 2px rgba(249,115,22,0.10) !important; color: #1c1917 !important; }
+/* Grup kartı değer kutusu içi giriş — çerçeve kutunun kendisinde; giriş çıplak, odakta yalnız hafif zemin. */
+.bone-skin input[type="text"].yago-field { background: transparent !important; border: 1px solid transparent !important; border-radius: 5px !important; box-shadow: none !important; height: 22px !important; padding: 0 4px !important; font-family: 'SF Mono',ui-monospace,Menlo,monospace !important; font-size: 12.5px !important; font-weight: 600 !important; letter-spacing: 0 !important; color: #1c1917 !important; }
+.bone-skin input[type="text"].yago-field::placeholder { color: #c9c2b8 !important; font-weight: 500 !important; }
+.bone-skin input[type="text"].yago-field:hover { background: #faf8f4 !important; }
+.bone-skin input[type="text"].yago-field:focus { background: #fff7ed !important; border-color: rgba(249,115,22,0.35) !important; }
+/* Ad girişi (yerleştirme şeridi): metin alanı — sayı fontu değil arayüz fontu. */
+.bone-skin input[type="text"].yago-field.yago-field-text { font-family: 'Inter',system-ui,sans-serif !important; font-size: 12px !important; font-weight: 500 !important; text-align: left !important; }
 /* Parametre değeri — aynı sessiz alan, sayısal yazı. */
 .bone-skin input[type="text"].yago-param-input { background: transparent !important; border: 1px solid transparent !important; border-radius: 6px !important; box-shadow: none !important; height: 22px !important; padding: 0 6px !important; font-family: 'SF Mono',ui-monospace,Menlo,monospace !important; font-size: 12px !important; font-weight: 500 !important; letter-spacing: 0 !important; color: #292524 !important; font-variant-numeric: tabular-nums; }
 .bone-skin input[type="text"].yago-param-input::placeholder { color: #c9c2b8 !important; }
