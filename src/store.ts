@@ -131,6 +131,13 @@ export interface DoorGroup {
    * Yoksa / boyu tutmuyorsa `gap` ile doldurulur.
    */
   colGaps?: number[]; rowGaps?: number[];
+  /**
+   * YARIM BİNME (Goker, Eki 2026: "kapakların en dış kenarında bir dikmeye yarım binmesine yarayan checkbox"):
+   * işaretli kenarda kapak, sınır panelinin DIŞ yüzüne değil kalınlığının ORTASINA kadar gider (kalınlığın yarısı
+   * kadar kısalır; kenar boşluğu bunun üstüne düşülür), kalan ölçü yeniden EŞİT bölünür. Yalnız dış kapakta ve
+   * kenar paneli kapağın gerisindeyken (kapak onun kalınlığını örtüyorken) etkilidir.
+   */
+  halfOverlay?: { uMin?: boolean; uMax?: boolean; vMin?: boolean; vMax?: boolean };
   thickness: number;
   /** Üye VF id'leri: satır-major (üst satırdan, soldan sağa): index = r*cols + c. */
   memberVfIds: string[];

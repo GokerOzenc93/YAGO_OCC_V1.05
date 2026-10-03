@@ -50,6 +50,10 @@ import { applyGapEdit, bodyLocalBox, equalGaps, panelLocalBox, redistributeForTh
 //    İç kapak: panelin kapağa bakan yüzü; dış kapak + panel kapak düzleminin gerisinde: uzak
 //    yüzü (kalınlığını örter — düz kenar kuralıyla aynı). Kapağı katı olarak döndürmek
 //    (referansın dönüşünü kapağa uygulamak) REDDEDİLDİ ("saçmaladı, 4 kenar bir kapak").
+//    Kapak ŞEMASI (DoorSchematic) da üyeyi kırpılmış çokgeniyle çizer (Goker: "kapak previewinde de açılı görünsün").
+//  • YARIM BİNME (Goker, Eki 2026): grup şemasında kapak alanının dört DIŞ kenarında checkbox (yalnız kenarın
+//    sınır paneli varsa ve kapak onun kalınlığını örtüyorsa — dış kapak); işaretli kenar panel kalınlığının
+//    ORTASINA çekilir (DoorGroup.halfOverlay, rectAtDepth), kenar boşluğu üstüne; o eksen eşit bölünür.
 // ═══════════════════════════════════════════════════════════════════════════
 
 export const DOOR_THICKNESS = 18;
@@ -215,14 +219,22 @@ type EdgeInfo = { ref: DoorBoundRef; inner: number; outer: number; front: number
  *  • OUTER: kenar paneli kapağın ARKASINDA kalıyorsa (ön yüzü P'nin gerisinde/hizasında) kapak onun kalınlığını
  *    örter → DIŞ yüz; panel P'den öne taşıyorsa (daha derin gövde paneli, kapak içerde) kapak ona çarpamaz → İÇ yüz.
  *  • Gövde kenarı (sınır paneli yok): iki yüz aynıdır.
+ *  • YARIM BİNME (Goker, Eki 2026: "checkboxa tıkladığımda yerleştiği panel kalınlığının yarısı kadar kapağı o
+ *    kenardan kısaltsın, artı kenar boşluğu kadar kısaltsın, sonra eşit bölümlendirsin"): kapak o kenarda panelin
+ *    DIŞ yüzüne değil kalınlığının ORTASINA kadar gider ((iç+dış)/2) — yalnız dış yüzün kullanıldığı kenarlarda
+ *    (dış kapak + panel kapağın gerisinde); kenar boşluğu dağıtımda zaten bu kenardan düşülür.
  */
-function rectAtDepth(e: { l: EdgeInfo; r: EdgeInfo; b: EdgeInfo; t: EdgeInfo }, side: 1 | -1, placement: DoorGroup['placement'], P: number): DoorRect {
-  const pick = (x: EdgeInfo) => {
-    if (x.front == null || placement === 'inner') return x.inner;
-    const behind = side > 0 ? x.front <= P + TOL : x.front >= P - TOL;
-    return behind ? x.outer : x.inner;
+type DoorEdges = { l: EdgeInfo; r: EdgeInfo; b: EdgeInfo; t: EdgeInfo };
+type HalfOverlay = DoorGroup['halfOverlay'];
+/** Kenar panelinin kalınlığı kapak tarafından örtülüyor mu (dış kapak + panel kapak düzleminin gerisinde)? */
+const edgeCovered = (x: EdgeInfo, side: 1 | -1, placement: DoorGroup['placement'], P: number) =>
+  x.front != null && placement === 'outer' && (side > 0 ? x.front <= P + TOL : x.front >= P - TOL);
+function rectAtDepth(e: DoorEdges, side: 1 | -1, placement: DoorGroup['placement'], P: number, half?: HalfOverlay): DoorRect {
+  const pick = (x: EdgeInfo, h: boolean | undefined) => {
+    if (!edgeCovered(x, side, placement, P)) return x.inner;
+    return h ? (x.inner + x.outer) / 2 : x.outer;
   };
-  return { u0: pick(e.l), u1: pick(e.r), v0: pick(e.b), v1: pick(e.t), front: P };
+  return { u0: pick(e.l, half?.uMin), u1: pick(e.r, half?.uMax), v0: pick(e.b, half?.vMin), v1: pick(e.t, half?.vMax), front: P };
 }
 /**
  * DERİNLİK (Goker, Eki 2026: "kapak sınırındaki dikme geride olmasına rağmen öndeki seçeneği de sunuyor, buna
@@ -373,13 +385,13 @@ function boundEdgeInfo(ref: DoorBoundRef, parent: Shape, shapes: Shape[], body: 
   return { ref: { body: true }, inner: e, outer: e, front: null };
 }
 
-/** Grubu güncel gövde + sınır panelleriyle çözer (saf). Dikdörtgen bozuksa önceki korunur. */
-export function solveDoorGroup(group: DoorGroup, parent: Shape, shapes: Shape[]): DoorSolution | null {
+/** Grubun dört kenarı (sınır panelleri / gövde) + kapak düzlemi P — solveDoorGroup ve yarım-binme uygunluğu buradan. */
+function solveDoorEdges(group: DoorGroup, parent: Shape, shapes: Shape[]): { edges: DoorEdges; P: number } | null {
   const body = bodyLocalBox(parent);
   if (!body) return null;
   const { u, v } = doorPlaneAxes(group.axis);
   const ei = (ref: DoorBoundRef, ax: 0 | 1 | 2, minSide: boolean) => boundEdgeInfo(ref, parent, shapes, body, ax, minSide, group.axis, group.side);
-  const edges = { l: ei(group.bounds.uMin, u, true), r: ei(group.bounds.uMax, u, false), b: ei(group.bounds.vMin, v, true), t: ei(group.bounds.vMax, v, false) };
+  const edges: DoorEdges = { l: ei(group.bounds.uMin, u, true), r: ei(group.bounds.uMax, u, false), b: ei(group.bounds.vMin, v, true), t: ei(group.bounds.vMax, v, false) };
   const bodyFront = group.side > 0 ? body.max[group.axis] : body.min[group.axis];
   // DERİNLİK: kayıtlı referans panelin ön yüzü (taşınsa/boyutlansa izler); yoksa en gerideki sınır panelinin önü.
   const fronts = [edges.l, edges.r, edges.b, edges.t].map(x => x.front).filter((x): x is number => x != null);
@@ -391,7 +403,27 @@ export function solveDoorGroup(group: DoorGroup, parent: Shape, shapes: Shape[])
     if (hit) P = hit.front!;
     else console.warn('[YAGO][KAPAK] derinlik referansı bulunamadı, varsayılan derinlik:', group.id, group.depthRef.vfId);
   }
-  let rect: DoorRect = rectAtDepth(edges, group.side, group.placement, P);
+  return { edges, P };
+}
+
+export type DoorEdgeKey = keyof DoorBounds;
+/**
+ * YARIM BİNME UYGUNLUĞU (şemadaki checkbox'lar): kenarın sınır paneli var ve kapak onun kalınlığını örtüyor
+ * (dış kapak + panel kapağın gerisinde) → o kenarda yarım binme anlamlı. Gövde kenarı / iç kapak / öndeki panel: hayır.
+ */
+export function doorHalfOverlayEdges(group: DoorGroup, parent: Shape, shapes: Shape[]): Record<DoorEdgeKey, boolean> {
+  const s = solveDoorEdges(group, parent, shapes);
+  if (!s) return { uMin: false, uMax: false, vMin: false, vMax: false };
+  const c = (x: EdgeInfo) => edgeCovered(x, group.side, group.placement, s.P);
+  return { uMin: c(s.edges.l), uMax: c(s.edges.r), vMin: c(s.edges.b), vMax: c(s.edges.t) };
+}
+
+/** Grubu güncel gövde + sınır panelleriyle çözer (saf). Dikdörtgen bozuksa önceki korunur. */
+export function solveDoorGroup(group: DoorGroup, parent: Shape, shapes: Shape[]): DoorSolution | null {
+  const s = solveDoorEdges(group, parent, shapes);
+  if (!s) return null;
+  const { edges, P } = s;
+  let rect: DoorRect = rectAtDepth(edges, group.side, group.placement, P, group.halfOverlay);
   if (rect.u1 - rect.u0 < MIN_DOOR_SPAN || rect.v1 - rect.v0 < MIN_DOOR_SPAN) {
     console.warn('[YAGO][KAPAK] dikdörtgen bozuk/çok küçük, önceki korunuyor:', group.id, fmtRect(rect));
     rect = { ...group.rect };
@@ -404,7 +436,7 @@ export function solveDoorGroup(group: DoorGroup, parent: Shape, shapes: Shape[])
 }
 
 /** Üyeleri dönmüş sınır panelleriyle kırpar (AÇILI REFERANS); her rebuild'de güncel panellerden yeniden. */
-export function applyDoorCuts(group: Pick<DoorGroup, 'axis' | 'side' | 'placement' | 'thickness' | 'gap' | 'id'>, rect: DoorRect, members: DoorMemberRect[], cuts: DoorCut[]): DoorMemberRect[] {
+export function applyDoorCuts(group: Pick<DoorGroup, 'axis' | 'side' | 'placement' | 'thickness' | 'gap' | 'id'>, rect: DoorRect, members: DoorMemberRect[], cuts: DoorCut[], silent = false): DoorMemberRect[] {
   if (!cuts.length) return members;
   let n = 0;
   const out = members.map(m => {
@@ -412,7 +444,7 @@ export function applyDoorCuts(group: Pick<DoorGroup, 'axis' | 'side' | 'placemen
     if (poly) n++;
     return poly ? { ...m, poly } : m;
   });
-  if (n && group.id !== PREVIEW_ID) console.log('[YAGO][KAPAK-AÇILI]', group.id, 'dönmüş sınır paneli kesti:', cuts.map(c => c.name).join('/'), 'kesilen üye=', n, '/', members.length);
+  if (n && !silent && group.id !== PREVIEW_ID) console.log('[YAGO][KAPAK-AÇILI]', group.id, 'dönmüş sınır paneli kesti:', cuts.map(c => c.name).join('/'), 'kesilen üye=', n, '/', members.length);
   return out;
 }
 
@@ -633,6 +665,22 @@ export async function setDoorPlacement(groupId: string, placement: DoorGroup['pl
   const group = groupById(groupId);
   if (!group || group.placement === placement) return;
   await writeDoorGroup(group, { placement }, placement === 'inner' ? 'İÇ kapak' : 'DIŞ kapak');
+}
+/**
+ * YARIM BİNME (Goker, Eki 2026: "kapakların en dış kısmında bir dikmeye yarım binmesine yarayan checkbox; tıklayınca
+ * yerleştiği panel kalınlığının yarısı kadar o kenardan kısaltıp artı kenar boşluğu kadar kısaltsın, sonra eşit
+ * bölümlendirsin"): kenar bayrağı yazılır, dikdörtgen yeniden çözülür (kenar = panel kalınlığının ortası − kenar
+ * boşluğu) ve o eksendeki kapak ölçüleri yeniden EŞİT bölünür (kilit / girilen sıfırlanır); diğer eksen dokunulmaz.
+ */
+export async function setDoorHalfOverlay(groupId: string, edge: DoorEdgeKey, on: boolean): Promise<void> {
+  const group = groupById(groupId);
+  if (!group || !!group.halfOverlay?.[edge] === on) return;
+  const halfOverlay = { ...(group.halfOverlay ?? {}), [edge]: on };
+  const isU = edge === 'uMin' || edge === 'uMax';
+  const patch: Partial<DoorGroup> = isU
+    ? { halfOverlay, colWidths: equalDoors(group.rect, 'u', colGapsOf(group)) }
+    : { halfOverlay, rowHeights: equalDoors(group.rect, 'v', rowGapsOf(group)) };
+  await writeDoorGroup(group, patch, `yarım binme ${edge} ${on ? 'AÇIK' : 'kapalı'} (${isU ? 'sütunlar' : 'satırlar'} eşitlendi)`);
 }
 /** Kapak kalınlığı: üye panellerin panelThickness parametresi güncellenir (motor levhayı bununla üretir). */
 export async function setDoorThickness(groupId: string, t: number): Promise<void> {

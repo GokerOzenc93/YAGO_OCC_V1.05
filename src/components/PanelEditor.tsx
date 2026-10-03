@@ -23,8 +23,9 @@ import {
   traceMaskLoops, updateCavityStep,
 } from './PanelGroupService';
 import {
+  type DoorCut, type DoorEdgeKey, applyDoorCuts, collectDoorCuts, doorHalfOverlayEdges,
   colGapsOf, confirmDoorPick, deleteDoorGroupWithMembers, doorGroupName, doorMemberRects, rowGapsOf, setDoorGapAt, doorPlacementLabel, editDoorColWidth, editDoorRowHeight, equalizeDoorGroup,
-  isDoorVf, renameDoorGroup, setDoorGap, setDoorPlacement, setDoorSplit, setDoorThickness, setVfDoorBound, toggleDoorColLock, toggleDoorRowLock,
+  isDoorVf, renameDoorGroup, setDoorGap, setDoorHalfOverlay, setDoorPlacement, setDoorSplit, setDoorThickness, setVfDoorBound, toggleDoorColLock, toggleDoorRowLock,
 } from './DoorService';
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -1039,12 +1040,18 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
    yalnız seçici olur (pill'ler gizlenir). Kapaklar arası boşluk sabit piksel, kapak
    ölçüleri kendi oranlarıyla bölüşülür. */
 const DOOR_GAP_PX = 7;
+const HALF_BOX = 13;              // yarım binme kutucuğu (px)
 type DoorEdit = { kind: 'col'; k: number; v: string } | { kind: 'row'; k: number; v: string } | { kind: 'gap'; axis: 'col' | 'row'; k: number; v: string };
-export function DoorSchematic({ group, selectedIndex, memberLabels, onEditCol, onEditRow, onToggleColLock, onToggleRowLock, onEditGap, onSelectMember }: {
+export function DoorSchematic({ group, selectedIndex, memberLabels, cuts, halfEdges, onEditCol, onEditRow, onToggleColLock, onToggleRowLock, onEditGap, onSelectMember, onToggleHalfOverlay }: {
   group: DoorGroup; selectedIndex: number; memberLabels: string[];
+  /** AÇILI REFERANS: dönmüş sınır panelleri — üyeler bunlarla kırpılmış çokgen olarak çizilir (3B ile aynı şekil). */
+  cuts: DoorCut[];
+  /** YARIM BİNME uygunluğu: kenarın sınır paneli var ve kapak kalınlığını örtüyor → o kenarda checkbox çizilir. */
+  halfEdges: Record<DoorEdgeKey, boolean>;
   onEditCol: (k: number, v: number) => void; onEditRow: (k: number, v: number) => void;
   onToggleColLock: (k: number) => void; onToggleRowLock: (k: number) => void;
   onEditGap: (axis: 'col' | 'row', k: number, v: number) => void; onSelectMember: (i: number) => void;
+  onToggleHalfOverlay: (edge: DoorEdgeKey, on: boolean) => void;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(300);
@@ -1069,8 +1076,13 @@ export function DoorSchematic({ group, selectedIndex, memberLabels, onEditCol, o
   // GÖRÜNÜŞ YÖNÜ: ön yüz (Z+) → X sağa; arka (Z−) ve sağ yan (X+) → aynalı; üst (Y+) → Z aşağı.
   const mirrorU = (axis === 2 && side < 0) || (axis === 0 && side > 0);
   const mirrorV = axis === 1 && side > 0;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const members = useMemo(() => doorMemberRects(rect, cols, rows, colWidths, rowHeights, cg, rg), [rect, cols, rows, colWidths, rowHeights, gapsKey]);
+  // AÇILI REFERANS: şema üyeleri 3B ile aynı kırpılmış çokgendir (Goker: "kapak previewinde de kapak açılı görünsün").
+  const cutsKey = cuts.map(c => `${c.vfId}:${c.n.map(x => x.toFixed(3)).join(',')}:${c.dMin.toFixed(1)}:${c.dMax.toFixed(1)}`).join('|');
+  const members = useMemo(
+    () => applyDoorCuts(group, rect, doorMemberRects(rect, cols, rows, colWidths, rowHeights, cg, rg), cuts, true),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [rect, cols, rows, colWidths, rowHeights, gapsKey, cutsKey, group.placement, group.thickness, group.gap],
+  );
   // Dizilim haritası: kapak ölçüleri oransal, aralar sabit piksel (temsili).
   const axisMap = (origin: number, specs: GapSpec[], n: number, gaps: number[], descending: boolean) => {
     const sum = specs.reduce((a, g) => a + Math.max(0, g.value), 0);
@@ -1131,6 +1143,18 @@ export function DoorSchematic({ group, selectedIndex, memberLabels, onEditCol, o
     return { axis: 'row' as const, k, txt, cx: rowPills[0]?.cx ?? ox - 13, cy: (sy(a) + sy(a - gv)) / 2, pw, ph };
   });
   const gapPills = [...colGapPills, ...rowGapPills];
+  // YARIM BİNME kutucukları (Goker, ekran görüntüsü: dört kenarın ORTASINDA, kapağın dış kenar çizgisinin üstünde;
+  // "kapak 2-3 kapak olsa bile hem dikeyde hem yatayda tüm kenarı bölen TEK düğme"): grup dikdörtgeninin kenarı
+  // başına bir kutucuk — bölme sayısından bağımsız, o kenardaki bütün kapaklara uygulanır. Dört kenar HER ZAMAN çizilir;
+  // kenarda sınır paneli yoksa / kapak onun kalınlığını örtmüyorsa işaret saklanır ama etkisizdir (tooltip söyler).
+  // Görünüş aynalıysa (mirrorU/V) uMin sağda, vMax altta çizilir — kutucuk hep kendi kenarını izler.
+  const HI = DOOR_GAP_PX;   // kapağın dış kenarı = dış hattan kenar boşluğu (sabit px) kadar içeride
+  const halfBoxes = [
+    { edge: 'uMin' as const, label: mirrorU ? 'Right' : 'Left', cx: mirrorU ? ox + S - HI : ox + HI, cy: oy + S / 2 },
+    { edge: 'uMax' as const, label: mirrorU ? 'Left' : 'Right', cx: mirrorU ? ox + HI : ox + S - HI, cy: oy + S / 2 },
+    { edge: 'vMax' as const, label: mirrorV ? 'Bottom' : 'Top', cx: ox + S / 2, cy: mirrorV ? oy + S - HI : oy + HI },
+    { edge: 'vMin' as const, label: mirrorV ? 'Top' : 'Bottom', cx: ox + S / 2, cy: mirrorV ? oy + HI : oy + S - HI },
+  ];
 
   const commit = () => {
     if (!editing) return;
@@ -1161,13 +1185,43 @@ export function DoorSchematic({ group, selectedIndex, memberLabels, onEditCol, o
           const on = i === selectedIndex;
           const x0 = Math.min(sx(m.u0), sx(m.u1)), x1 = Math.max(sx(m.u0), sx(m.u1)), y0 = Math.min(sy(m.v1), sy(m.v0)), y1 = Math.max(sy(m.v1), sy(m.v0));
           const lbl = memberLabels[i] ?? String(i + 1);
+          const fill = on ? '#fde7d3' : memberMode ? '#efe9df' : '#e9e1d3', stroke = on ? '#ea580c' : memberMode ? '#b9b1a5' : '#8a8278';
+          const tip = `Door ${lbl} · ${Math.round(m.u1 - m.u0)} × ${Math.round(m.v1 - m.v0)} mm${m.poly ? ' · angled (cut by rotated reference)' : ''} — click to select`;
+          // AÇILI: kırpılmış çokgen; her köşe aynı kapak hücresinde kaldığından eğik kenar şemada da düz çizgidir.
+          const pts = m.poly ? m.poly.map(q => ({ x: sx(q.x), y: sy(q.y) })) : null;
+          const cx = pts ? pts.reduce((a, q) => a + q.x, 0) / pts.length : (x0 + x1) / 2;
+          const cy = pts ? pts.reduce((a, q) => a + q.y, 0) / pts.length : (y0 + y1) / 2;
           return (
             <g key={`door-${i}`} style={{ cursor: 'pointer' }} onClick={e => { stop(e); onSelectMember(i); }}>
-              <rect x={x0} y={y0} width={Math.max(1, x1 - x0)} height={Math.max(1, y1 - y0)} rx={1.5} fill={on ? '#fde7d3' : memberMode ? '#efe9df' : '#e9e1d3'} stroke={on ? '#ea580c' : memberMode ? '#b9b1a5' : '#8a8278'} strokeWidth={on ? 1.1 : 0.9}>
-                <title>{`Door ${lbl} · ${Math.round(m.u1 - m.u0)} × ${Math.round(m.v1 - m.v0)} mm — click to select`}</title>
-              </rect>
-              <text x={(x0 + x1) / 2} y={(y0 + y1) / 2 + fsT * 0.36} textAnchor="middle" fontSize={fsT} fontWeight={on ? 700 : 600} fill={on ? '#ea580c' : '#a8a29e'}
+              {pts ? (
+                <polygon points={pts.map(q => `${q.x},${q.y}`).join(' ')} fill={fill} stroke={stroke} strokeWidth={on ? 1.1 : 0.9} strokeLinejoin="round">
+                  <title>{tip}</title>
+                </polygon>
+              ) : (
+                <rect x={x0} y={y0} width={Math.max(1, x1 - x0)} height={Math.max(1, y1 - y0)} rx={1.5} fill={fill} stroke={stroke} strokeWidth={on ? 1.1 : 0.9}>
+                  <title>{tip}</title>
+                </rect>
+              )}
+              <text x={cx} y={cy + fsT * 0.36} textAnchor="middle" fontSize={fsT} fontWeight={on ? 700 : 600} fill={on ? '#ea580c' : '#a8a29e'}
                 fontFamily={UI_FONT} style={{ fontVariantNumeric: 'tabular-nums', pointerEvents: 'none', userSelect: 'none' }}>{lbl}</text>
+            </g>
+          );
+        })}
+        {/* YARIM BİNME checkbox'ları (Goker: "kapakların en dış kısmında bir dikmeye yarım binmesine yarayan checkbox"):
+            kapak alanının dört DIŞ kenarının ortasında, kenarın hemen içinde; yalnız kenarın sınır paneli varsa ve
+            kapak onun kalınlığını örtüyorsa (dış kapak). İşaretli = kapak o kenarda panel kalınlığının ortasına çekilir. */}
+        {!memberMode && halfBoxes.map(hb => {
+          const on = !!group.halfOverlay?.[hb.edge];
+          const applicable = halfEdges[hb.edge];
+          const tip = `${hb.label} edge — half overlay (one switch for the whole edge, all ${cols * rows > 1 ? 'doors' : 'door'} on it): `
+            + (on ? 'ON — doors end at the middle of the reference panel\'s thickness (+ edge gap). Click to cover it fully.' : 'OFF — doors cover the reference panel\'s full thickness. Click to end at the middle (+ edge gap).')
+            + (applicable ? '' : ' · No effect here: no reference panel on this edge, inner door, or the panel stands in front of the door.');
+          return (
+            <g key={`half-${hb.edge}`} style={{ cursor: 'pointer' }} onClick={e => { stop(e); onToggleHalfOverlay(hb.edge, !on); }}>
+              <rect x={hb.cx - HALF_BOX / 2} y={hb.cy - HALF_BOX / 2} width={HALF_BOX} height={HALF_BOX} rx={2.5}
+                fill={on ? (applicable ? '#ea580c' : '#f5d0b5') : '#ffffff'} stroke={on ? (applicable ? '#c2410c' : '#e9b797') : applicable ? '#8a8278' : '#c9c2b7'} strokeWidth={0.9} />
+              {on && <Check x={hb.cx - 4.5} y={hb.cy - 4.5} size={9} strokeWidth={3} color="#ffffff" />}
+              <title>{tip}</title>
             </g>
           );
         })}
@@ -2269,6 +2323,7 @@ export function PanelEditor() {
       const selAll = selectedDoorGroupId === g.id;
       const open = selAll || members.some(m => selectedPanelRow === `vf-${m.id}`);
       const dimsW = round1(g.rect.u1 - g.rect.u0), dimsH = round1(g.rect.v1 - g.rect.v0);
+      const doorParent = open ? shapeById(g.shapeId, shapes) : undefined;   // şema yalnız açıkken çözülür (açılı kesimler + yarım binme uygunluğu)
       const toggleAll = (e: React.MouseEvent) => { stop(e); setSelectedDoorGroupId(selAll ? null : g.id); };
       const mKeys = members.map(m => m.id);
       const mFocus = focusKeys.member ? mKeys.indexOf(focusKeys.member) : -1;
@@ -2323,9 +2378,12 @@ export function PanelEditor() {
               </div>
               <DoorSchematic group={g} selectedIndex={g.memberVfIds.findIndex(id => selectedPanelRow === `vf-${id}`)}
                 memberLabels={g.memberVfIds.map((id, i) => { const mi = members.findIndex(m => m.id === id); return `${label}.${(mi >= 0 ? mi : i) + 1}`; })}
+                cuts={doorParent ? collectDoorCuts(doorParent, shapes, virtualFaces) : []}
+                halfEdges={doorParent ? doorHalfOverlayEdges(g, doorParent, shapes) : { uMin: false, uMax: false, vMin: false, vMax: false }}
                 onEditCol={(k, v) => { void editDoorColWidth(g.id, k, v); }} onEditRow={(k, v) => { void editDoorRowHeight(g.id, k, v); }}
                 onToggleColLock={k => toggleDoorColLock(g.id, k)} onToggleRowLock={k => toggleDoorRowLock(g.id, k)}
                 onEditGap={(ax, k, v) => { void setDoorGapAt(g.id, ax, k, v); }}
+                onToggleHalfOverlay={(edge, on) => { void setDoorHalfOverlay(g.id, edge, on); }}
                 onSelectMember={i => { const id = g.memberVfIds[i]; if (id) setSelectedPanelRow(`vf-${id}`, sid); }} />
               <SectionHead label="Doors" count={members.length} />
               <div className="flex flex-col gap-[2px]">
