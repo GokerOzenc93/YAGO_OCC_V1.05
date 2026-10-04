@@ -8,7 +8,7 @@ import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import {
-  type CavityBox, type DoorGroup, type GapSpec, type PanelGroup, type Shape, type VirtualFace, childPanelsOf, panelOfVf, requestRebuild, shapeById, useAppStore, useStoreFields,
+  type CavityBox, type DoorGroup, type DoorType, type GapSpec, type PanelGroup, type Shape, type VirtualFace, childPanelsOf, panelOfVf, requestRebuild, shapeById, useAppStore, useStoreFields,
 } from '../store';
 import { ToolChip, ToolChipBar, UI_FONT } from './Ui';
 import { confirmBodyPanelPlacement } from './SceneObjects';
@@ -23,9 +23,9 @@ import {
   traceMaskLoops, updateCavityStep,
 } from './PanelGroupService';
 import {
-  type DoorCut, type DoorEdgeKey, applyDoorCuts, collectDoorCuts, doorHalfOverlayEdges,
-  colGapsOf, confirmDoorPick, deleteDoorGroupWithMembers, doorGroupName, doorMemberRects, rowGapsOf, setDoorGapAt, doorPlacementLabel, editDoorColWidth, editDoorRowHeight, equalizeDoorGroup,
-  isDoorVf, renameDoorGroup, setDoorGap, setDoorHalfOverlay, setDoorPlacement, setDoorSplit, setDoorThickness, setVfDoorBound, toggleDoorColLock, toggleDoorRowLock,
+  type DoorCut, type DoorEdgeKey, DOOR_TYPES, DOOR_TYPE_LABEL, DOOR_TYPE_TITLE, applyDoorCuts, collectDoorCuts, doorCellTypes, doorHalfOverlayEdges, doorLeafAxis, doorMemberCount,
+  colGapsOf, confirmDoorPick, deleteDoorGroupWithMembers, doorGroupName, doorMemberRects, rowGapsOf, setDoorGapAt, doorPlacementLabel, editDoorColWidth, editDoorLeafSize, editDoorRowHeight, equalizeDoorGroup,
+  isDoorVf, renameDoorGroup, resolveLeafSplits, setDoorCellTypes, setDoorGap, setDoorHalfOverlay, setDoorLeafGap, setDoorPlacement, setDoorSplit, setDoorThickness, setVfDoorBound, toggleDoorColLock, toggleDoorRowLock,
 } from './DoorService';
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -1043,16 +1043,91 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
    ölçüleri kendi oranlarıyla bölüşülür. */
 const DOOR_GAP_PX = 7;
 const HALF_BOX = 13;              // yarım binme kutucuğu (px)
-type DoorEdit = { kind: 'col'; k: number; v: string } | { kind: 'row'; k: number; v: string } | { kind: 'gap'; axis: 'col' | 'row'; k: number; v: string };
-export function DoorSchematic({ group, selectedIndex, memberLabels, cuts, halfEdges, onEditCol, onEditRow, onToggleColLock, onToggleRowLock, onEditGap, onSelectMember, onToggleHalfOverlay }: {
+const LEAF_MIN_PX = 3;            // iki kanat arasındaki görsel en az aralık (px) — 3 mm şemada 1 px'e düşerdi
+
+/* ── KAPAK AÇILIŞ İŞARETİ (Goker, Eki 2026: "her kapak tipine mobilya sektörüne uygun kapak açılış simgesi") ──
+   Mobilya/mutfak görünüş çizimi standardı: kapağın karşı (kulp) kenarının iki köşesinden menteşe kenarının ORTASINA
+   kesikli çizgiler — üçgenin SİVRİ UCU menteşe tarafını gösterir (DIN / AWI görünüş sözleşmesi). Kalkar kapakta uç
+   üstte, düşer kapakta altta; iki kanatlıda sol kanat sol, sağ kanat sağ menteşe; katlanır kalkarda her iki kanadın
+   ucu üstte (alt kanat üst kanada katlanır). Şemadaki kapaklar ve tip çubuğundaki ikonlar aynı çizimi kullanır. */
+type Hinge = 'L' | 'R' | 'T' | 'B';
+const swingPath = (x0: number, y0: number, x1: number, y1: number, h: Hinge) => {
+  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, f = (n: number) => n.toFixed(1);
+  if (h === 'L') return `M${f(x1)},${f(y0)} L${f(x0)},${f(cy)} L${f(x1)},${f(y1)}`;
+  if (h === 'R') return `M${f(x0)},${f(y0)} L${f(x1)},${f(cy)} L${f(x0)},${f(y1)}`;
+  if (h === 'T') return `M${f(x0)},${f(y1)} L${f(cx)},${f(y0)} L${f(x1)},${f(y1)}`;
+  return `M${f(x0)},${f(y0)} L${f(cx)},${f(y1)} L${f(x1)},${f(y0)}`;
+};
+/** Tipin kanat menteşeleri — kanat sırası: double sol→sağ (bakan kişiye göre), fold üst→alt. */
+const leafHinges = (t: DoorType): Hinge[] => (t === 'left' ? ['L'] : t === 'right' ? ['R'] : t === 'up' ? ['T'] : t === 'down' ? ['B'] : t === 'double' ? ['L', 'R'] : ['T', 'T']);
+/** Tip ikonu: kapak dış hattı + açılış işareti (20×16 kutu, size = yükseklik). */
+function DoorTypeIcon({ type, size = 14, strokeWidth = 1.25 }: { type: DoorType; size?: number; strokeWidth?: number }) {
+  const W = 20, H = 16, p = 1, g = 1.2;
+  const hinges = leafHinges(type);
+  const leaves: Array<[number, number, number, number]> =
+    type === 'double' ? [[p, p, W / 2 - g / 2, H - p], [W / 2 + g / 2, p, W - p, H - p]]
+      : type === 'fold' ? [[p, p, W - p, H / 2 - g / 2], [p, H / 2 + g / 2, W - p, H - p]]
+        : [[p, p, W - p, H - p]];
+  return (
+    <svg width={size * W / H} height={size} viewBox={`0 0 ${W} ${H}`} fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinejoin="round" strokeLinecap="round" style={{ flexShrink: 0, display: 'block' }} aria-hidden>
+      {leaves.map(([x0, y0, x1, y1], i) => (
+        <g key={i}>
+          <rect x={x0} y={y0} width={x1 - x0} height={y1 - y0} rx={0.6} />
+          <path d={swingPath(x0 + 1.6, y0 + 1.6, x1 - 1.6, y1 - 1.6, hinges[i])} strokeDasharray="1.8 1.3" strokeWidth={strokeWidth * 0.85} />
+        </g>
+      ))}
+    </svg>
+  );
+}
+/**
+ * KAPAK TİPİ ÇUBUĞU (Goker: "kapak tiplerini birden fazla kapağı seçip bir kapak tipi verebileyim"): altı tip,
+ * segment çubuğu diliyle (Segmented ile aynı ölçüler); etkin = hedef kapakların ortak tipi (karışıksa hiçbiri).
+ * Sağda hedef açıklaması (hangi kapaklara uygulanacağı).
+ */
+function DoorTypeBar({ value, hint, onPick }: { value: DoorType | null; hint: string; onPick: (t: DoorType) => void }) {
+  return (
+    <div className="flex items-center gap-1.5 mb-1.5" title="Door type — applies to the selected doors (click a door in the schematic; Shift/Ctrl+click adds more; none selected = all doors)">
+      <div className="flex-1 min-w-0" style={{ display: 'grid', gridTemplateColumns: `repeat(${DOOR_TYPES.length}, minmax(0,1fr))`, gap: 2, padding: 2, borderRadius: 8, background: '#f3efe8', border: '1px solid #e9e4dc', fontFamily: UI_FONT }}>
+        {DOOR_TYPES.map(t => {
+          const on = value === t;
+          return (
+            <button key={t} type="button" title={DOOR_TYPE_TITLE[t]} onClick={e => { stop(e); onPick(t); }}
+              className={on ? '' : 'hover:!bg-white hover:!text-stone-800'}
+              style={{
+                height: 24, minWidth: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, padding: '0 4px', borderRadius: 6, border: 'none', outline: 'none',
+                cursor: 'pointer', background: on ? '#44403c' : 'transparent', color: on ? '#ffffff' : '#57534e',
+                boxShadow: on ? '0 1px 2px rgba(40,30,20,0.25)' : 'none', fontSize: 10.5, fontWeight: 600, letterSpacing: '0.01em', transition: 'background 0.12s,color 0.12s',
+              }}>
+              <DoorTypeIcon type={t} size={13} />
+              <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{DOOR_TYPE_LABEL[t]}</span>
+            </button>
+          );
+        })}
+      </div>
+      <span className="shrink-0 text-[10px] font-medium text-stone-400 tabular-nums" style={{ minWidth: 58, textAlign: 'right' }}>{hint}</span>
+    </div>
+  );
+}
+
+type DoorEdit =
+  | { kind: 'col'; k: number; v: string } | { kind: 'row'; k: number; v: string } | { kind: 'gap'; axis: 'col' | 'row'; k: number; v: string }
+  | { kind: 'leaf'; cell: number; k: number; v: string } | { kind: 'leafgap'; cell: number; v: string };
+export function DoorSchematic({ group, selectedIndex, selectedCells, memberLabels, cuts, halfEdges, onEditCol, onEditRow, onToggleColLock, onToggleRowLock, onEditGap, onEditLeaf, onEditLeafGap, onSelectMember, onCellClick, onToggleHalfOverlay }: {
   group: DoorGroup; selectedIndex: number; memberLabels: string[];
+  /** TİP SEÇİMİ: tip çubuğunun hedef hücreleri (çoklu seçim) — kesikli turuncu çerçeveyle gösterilir. */
+  selectedCells: number[];
   /** AÇILI REFERANS: dönmüş sınır panelleri — üyeler bunlarla kırpılmış çokgen olarak çizilir (3B ile aynı şekil). */
   cuts: DoorCut[];
   /** YARIM BİNME uygunluğu: kenarın sınır paneli var ve kapak kalınlığını örtüyor → o kenarda checkbox çizilir. */
   halfEdges: Record<DoorEdgeKey, boolean>;
   onEditCol: (k: number, v: number) => void; onEditRow: (k: number, v: number) => void;
   onToggleColLock: (k: number) => void; onToggleRowLock: (k: number) => void;
-  onEditGap: (axis: 'col' | 'row', k: number, v: number) => void; onSelectMember: (i: number) => void;
+  onEditGap: (axis: 'col' | 'row', k: number, v: number) => void;
+  /** KANATLAR: iki kanatlı hücrede kanat ölçüsü / kanat arası boşluk girişi. */
+  onEditLeaf: (cell: number, k: number, v: number) => void; onEditLeafGap: (cell: number, v: number) => void;
+  onSelectMember: (i: number) => void;
+  /** Hücre tıklandı: additive (Shift/Ctrl/⌘) → seçime ekle/çıkar; değilse yalnız o hücre. */
+  onCellClick: (cell: number, additive: boolean) => void;
   onToggleHalfOverlay: (edge: DoorEdgeKey, on: boolean) => void;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -1081,10 +1156,15 @@ export function DoorSchematic({ group, selectedIndex, memberLabels, cuts, halfEd
   const mirrorV = axis === 1 && side > 0;
   // AÇILI REFERANS: şema üyeleri 3B ile aynı kırpılmış çokgendir (Goker: "kapak previewinde de kapak açılı görünsün").
   const cutsKey = cuts.map(c => `${c.vfId}:${c.n.map(x => x.toFixed(3)).join(',')}:${c.dMin.toFixed(1)}:${c.dMax.toFixed(1)}`).join('|');
+  // KAPAK TİPLERİ + KANATLAR: hücre tipleri ve kanat ölçüleri gruptan (double/fold hücreleri iki üye verir).
+  const typesKey = doorCellTypes(group).join(',');
+  const leafSplits = useMemo(() => resolveLeafSplits(group), // eslint-disable-next-line react-hooks/exhaustive-deps
+    [typesKey, colWidths, rowHeights, group.gap, group.leafSplits]);
+  const leafKey = Object.entries(leafSplits).map(([c, s]) => `${c}:${s.leaves.map(l => l.value).join('+')}:${s.gap}`).join('|');
   const members = useMemo(
-    () => applyDoorCuts(group, rect, doorMemberRects(rect, cols, rows, colWidths, rowHeights, cg, rg), cuts, true),
+    () => applyDoorCuts(group, rect, doorMemberRects(group, leafSplits), cuts, true),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [rect, cols, rows, colWidths, rowHeights, gapsKey, cutsKey, group.placement, group.thickness, group.gap],
+    [rect, cols, rows, colWidths, rowHeights, gapsKey, cutsKey, typesKey, leafKey, group.placement, group.thickness, group.gap],
   );
   // Dizilim haritası: kapak ölçüleri oransal, aralar sabit piksel (temsili).
   const axisMap = (origin: number, specs: GapSpec[], n: number, gaps: number[], descending: boolean) => {
@@ -1160,6 +1240,76 @@ export function DoorSchematic({ group, selectedIndex, memberLabels, cuts, halfEd
     { edge: 'vMin' as const, label: mirrorV ? 'Top' : 'Bottom', cx: ox + S / 2, cy: mirrorV ? oy + HI : oy + S - HI },
   ];
 
+  // ÜYE EKRAN DİKDÖRTGENLERİ: iki kanat arasındaki boşluk şemada en az LEAF_MIN_PX olsun (3 mm ≈ 1 px okunmuyor);
+  // fark iki kanattan eşit alınır. Tek kanatlı üyeler olduğu gibi.
+  const screenRects = useMemo(() => members.map((m, i) => {
+    let x0 = Math.min(sx(m.u0), sx(m.u1)), x1 = Math.max(sx(m.u0), sx(m.u1)), y0 = Math.min(sy(m.v1), sy(m.v0)), y1 = Math.max(sy(m.v1), sy(m.v0));
+    if (m.leafCount === 2) {
+      const sib = members[m.leaf === 0 ? i + 1 : i - 1];
+      if (sib && sib.cell === m.cell) {
+        const ax = doorLeafAxis(m.type);
+        if (ax === 'u') {
+          const sx0 = Math.min(sx(sib.u0), sx(sib.u1)), sx1 = Math.max(sx(sib.u0), sx(sib.u1));
+          const d = Math.max(sx0 - x1, x0 - sx1), pad = Math.max(0, (LEAF_MIN_PX - d) / 2);
+          if (sx0 >= x1) x1 -= pad; else x0 += pad;   // komşu sağda → sağ kenarı çek, solda → sol kenarı
+        } else {
+          const sy0 = Math.min(sy(sib.v1), sy(sib.v0)), sy1 = Math.max(sy(sib.v1), sy(sib.v0));
+          const d = Math.max(sy0 - y1, y0 - sy1), pad = Math.max(0, (LEAF_MIN_PX - d) / 2);
+          if (sy0 >= y1) y1 -= pad; else y0 += pad;
+        }
+      }
+    }
+    return { x0, x1, y0, y1 };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [members, mapU, mapV, mirrorU, mirrorV, ox, oy, S]);
+  // Hücre kutuları (kanatların birleşimi): tip seçimi çerçevesi + kanat ölçü zinciri buradan.
+  const cellBoxes = useMemo(() => {
+    const out = new Map<number, { x0: number; x1: number; y0: number; y1: number; idx: number[] }>();
+    members.forEach((m, i) => {
+      const r = screenRects[i];
+      const b = out.get(m.cell);
+      if (!b) out.set(m.cell, { ...r, idx: [i] });
+      else { b.x0 = Math.min(b.x0, r.x0); b.x1 = Math.max(b.x1, r.x1); b.y0 = Math.min(b.y0, r.y0); b.y1 = Math.max(b.y1, r.y1); b.idx.push(i); }
+    });
+    return out;
+  }, [members, screenRects]);
+  // KANAT ÖLÇÜLERİ (Goker: "bölünmüş yeri ayrıca ölçülendirebileyim"): iki kanatlı hücrenin İÇİNDE ikinci bir ölçü
+  // zinciri — double: hücrenin alt kenarına yakın yatay (kanat · ara · kanat), fold: sağ kenara yakın düşey.
+  type LeafPill = { k: number; txt: string; cx: number; cy: number; a: number; b: number; pw: number; ph: number };
+  type LeafDim = { cell: number; horiz: boolean; leaves: LeafPill[]; gap: { txt: string; cx: number; cy: number; pw: number; ph: number } };
+  const leafDims: LeafDim[] = members.flatMap((m, i): LeafDim[] => {
+    if (m.leafCount !== 2 || m.leaf !== 1) return [];
+    const a = screenRects[i - 1], b = screenRects[i], split = leafSplits[m.cell];
+    const prev = members[i - 1];
+    if (!split || !prev || prev.cell !== m.cell) return [];
+    const horiz = doorLeafAxis(m.type) === 'u';
+    const [l0, l1] = split.leaves.map(l => String(round1(l.value)));
+    const gt = String(round1(split.gap));
+    const p0 = pillSize(l0, fsT), p1 = pillSize(l1, fsT), pg = pillSize(gt, fsT);
+    const box = cellBoxes.get(m.cell)!;
+    if (horiz) {
+      const y = box.y1 - 13;
+      // ekranda hangi kanat solda? (aynalı görünüşte kanat 1 solda olabilir)
+      const [L, R] = a.x0 <= b.x0 ? [a, b] : [b, a];
+      const [kL, kR] = a.x0 <= b.x0 ? [0, 1] : [1, 0];
+      const [tL, tR, pL, pR] = a.x0 <= b.x0 ? [l0, l1, p0, p1] : [l1, l0, p1, p0];
+      return [{
+        cell: m.cell, horiz,
+        leaves: [{ k: kL, txt: tL, cx: (L.x0 + L.x1) / 2, cy: y, a: L.x0, b: L.x1, ...pL }, { k: kR, txt: tR, cx: (R.x0 + R.x1) / 2, cy: y, a: R.x0, b: R.x1, ...pR }],
+        gap: { txt: gt, cx: (L.x1 + R.x0) / 2, cy: y, ...pg },
+      }];
+    }
+    const x = box.x1 - 13;
+    const [T, B] = a.y0 <= b.y0 ? [a, b] : [b, a];
+    const [kT, kB] = a.y0 <= b.y0 ? [0, 1] : [1, 0];
+    const [tT, tB, pT, pB] = a.y0 <= b.y0 ? [l0, l1, p0, p1] : [l1, l0, p1, p0];
+    return [{
+      cell: m.cell, horiz,
+      leaves: [{ k: kT, txt: tT, cx: x, cy: (T.y0 + T.y1) / 2, a: T.y0, b: T.y1, ...pT }, { k: kB, txt: tB, cx: x, cy: (B.y0 + B.y1) / 2, a: B.y0, b: B.y1, ...pB }],
+      gap: { txt: gt, cx: x, cy: (T.y1 + B.y0) / 2, ...pg },
+    }];
+  });
+
   const commit = () => {
     if (!editing) return;
     const v = parseFloat(editing.v.replace(',', '.'));
@@ -1167,6 +1317,8 @@ export function DoorSchematic({ group, selectedIndex, memberLabels, cuts, halfEd
     if (isNaN(v)) return;
     if (editing.kind === 'col') { if (v > 0) onEditCol(editing.k, v); }
     else if (editing.kind === 'row') { if (v > 0) onEditRow(editing.k, v); }
+    else if (editing.kind === 'leaf') { if (v > 0) onEditLeaf(editing.cell, editing.k, v); }
+    else if (editing.kind === 'leafgap') { if (v >= 0) onEditLeafGap(editing.cell, v); }
     else if (v >= 0) onEditGap(editing.axis, editing.k, v);
   };
   const lockBtn = (locked: boolean, cx: number, cy: number, onClick: () => void) => (
@@ -1176,7 +1328,10 @@ export function DoorSchematic({ group, selectedIndex, memberLabels, cuts, halfEd
       <title>{locked ? 'Unlock (follows resize)' : 'Lock (stays fixed on resize)'}</title>
     </g>
   );
-  const editPos = editing?.kind === 'col' ? colPills[editing.k] : editing?.kind === 'row' ? rowPills[editing.k] : editing?.kind === 'gap' ? gapPills.find(g => g.axis === editing.axis && g.k === editing.k) : null;
+  const editPos = editing?.kind === 'col' ? colPills[editing.k] : editing?.kind === 'row' ? rowPills[editing.k] : editing?.kind === 'gap' ? gapPills.find(g => g.axis === editing.axis && g.k === editing.k)
+    : editing?.kind === 'leaf' ? leafDims.find(d => d.cell === editing.cell)?.leaves.find(l => l.k === editing.k)
+      : editing?.kind === 'leafgap' ? leafDims.find(d => d.cell === editing.cell)?.gap : null;
+  const selCellSet = new Set(selectedCells);
 
   return (
     <div ref={wrapRef} className="relative rounded-[10px] ring-1 ring-[#e9e4dc] overflow-hidden" style={{ background: PREVIEW_BG, height }}>
@@ -1184,19 +1339,29 @@ export function DoorSchematic({ group, selectedIndex, memberLabels, cuts, halfEd
       <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ display: 'block', fontFamily: UI_FONT }}>
         {/* kapak dikdörtgeninin dış hattı (sınır panellerinden çözülen alan) */}
         <rect x={ox} y={oy} width={S} height={S} fill="#ffffff" stroke="#d6cfc4" strokeWidth={1} strokeDasharray="3 3" />
-        {/* kapaklar */}
+        {/* kapaklar (kanatlar) + açılış işaretleri */}
         {members.map((m, i) => {
           const on = i === selectedIndex;
-          const x0 = Math.min(sx(m.u0), sx(m.u1)), x1 = Math.max(sx(m.u0), sx(m.u1)), y0 = Math.min(sy(m.v1), sy(m.v0)), y1 = Math.max(sy(m.v1), sy(m.v0));
+          const inSel = selCellSet.has(m.cell);
+          const { x0, x1, y0, y1 } = screenRects[i];
           const lbl = memberLabels[i] ?? String(i + 1);
-          const fill = on ? '#fde7d3' : memberMode ? '#efe9df' : '#e9e1d3', stroke = on ? '#ea580c' : memberMode ? '#b9b1a5' : '#8a8278';
-          const tip = `Door ${lbl} · ${Math.round(m.u1 - m.u0)} × ${Math.round(m.v1 - m.v0)} mm${m.poly ? ' · angled (cut by rotated reference)' : ''} — click to select`;
+          const fill = on ? '#fde7d3' : inSel ? '#f6ebdd' : memberMode ? '#efe9df' : '#e9e1d3', stroke = on ? '#ea580c' : inSel ? '#d97706' : memberMode ? '#b9b1a5' : '#8a8278';
+          // MENTEŞE (ekrana göre): tek kanat tipten; double'da ekranda solda duran kanat sol menteşe (aynalı görünüşte de doğru).
+          const hinges = leafHinges(m.type);
+          let hinge: Hinge = hinges[0];
+          if (m.leafCount === 2 && doorLeafAxis(m.type) === 'u') { const sib = screenRects[m.leaf === 0 ? i + 1 : i - 1]; hinge = sib && sib.x0 < x0 ? 'R' : 'L'; }
+          else if (m.leafCount === 2) hinge = 'T';
+          const typeTxt = DOOR_TYPE_LABEL[m.type] + (m.leafCount === 2 ? ` · leaf ${m.leaf + 1}/2` : '');
+          const tip = `Door ${lbl} · ${typeTxt} · ${Math.round(m.u1 - m.u0)} × ${Math.round(m.v1 - m.v0)} mm${m.poly ? ' · angled (cut by rotated reference)' : ''} — click to select · Shift/Ctrl+click: add to type selection`;
           // AÇILI: kırpılmış çokgen; her köşe aynı kapak hücresinde kaldığından eğik kenar şemada da düz çizgidir.
           const pts = m.poly ? m.poly.map(q => ({ x: sx(q.x), y: sy(q.y) })) : null;
           const cx = pts ? pts.reduce((a, q) => a + q.x, 0) / pts.length : (x0 + x1) / 2;
           const cy = pts ? pts.reduce((a, q) => a + q.y, 0) / pts.length : (y0 + y1) / 2;
+          // Açılış işareti: kapağın içinde, kenardan 3 px içeride; çokgende (açılı) sınırlayıcı kutu.
+          const ins = 3, sw = Math.max(x1 - x0, 1) > 2 * ins + 4 && Math.max(y1 - y0, 1) > 2 * ins + 4;
+          const label = { x: cx, y: cy + fsT * 0.36 };   // işaretin çizgileri merkezden geçmez (çeyrek noktalardan) → etiket ortada kalır
           return (
-            <g key={`door-${i}`} style={{ cursor: 'pointer' }} onClick={e => { stop(e); onSelectMember(i); }}>
+            <g key={`door-${i}`} style={{ cursor: 'pointer' }} onClick={e => { stop(e); const add = e.shiftKey || e.ctrlKey || e.metaKey; if (add) onCellClick(m.cell, true); else { onSelectMember(i); onCellClick(m.cell, false); } }}>
               {pts ? (
                 <polygon points={pts.map(q => `${q.x},${q.y}`).join(' ')} fill={fill} stroke={stroke} strokeWidth={on ? 1.1 : 0.9} strokeLinejoin="round">
                   <title>{tip}</title>
@@ -1206,11 +1371,32 @@ export function DoorSchematic({ group, selectedIndex, memberLabels, cuts, halfEd
                   <title>{tip}</title>
                 </rect>
               )}
-              <text x={cx} y={cy + fsT * 0.36} textAnchor="middle" fontSize={fsT} fontWeight={on ? 700 : 600} fill={on ? '#ea580c' : '#a8a29e'}
+              {sw && <path d={swingPath(x0 + ins, y0 + ins, x1 - ins, y1 - ins, hinge)} fill="none" stroke={on ? '#f0a070' : '#b3aa9d'} strokeWidth={0.85} strokeDasharray="4 2.5" strokeLinejoin="round" strokeLinecap="round" style={{ pointerEvents: 'none' }} />}
+              <text x={label.x} y={label.y} textAnchor="middle" fontSize={fsT} fontWeight={on ? 700 : 600} fill={on ? '#ea580c' : '#a8a29e'}
                 fontFamily={UI_FONT} style={{ fontVariantNumeric: 'tabular-nums', pointerEvents: 'none', userSelect: 'none' }}>{lbl}</text>
             </g>
           );
         })}
+        {/* TİP SEÇİMİ çerçevesi: seçili hücreler (tip çubuğunun hedefi) — kanat birleşiminin dışına kesikli çerçeve */}
+        {[...cellBoxes.entries()].filter(([cell, b]) => selCellSet.has(cell) && (selCellSet.size > 1 || b.idx.length > 1)).map(([cell, b]) => (
+          <rect key={`cellsel-${cell}`} x={b.x0 - 2.5} y={b.y0 - 2.5} width={b.x1 - b.x0 + 5} height={b.y1 - b.y0 + 5} rx={3} fill="none" stroke="#ea580c" strokeWidth={1} strokeDasharray="3 2" style={{ pointerEvents: 'none' }} />
+        ))}
+        {/* KANAT ÖLÇÜLERİ: iki kanatlı hücrenin içinde kanat · ara · kanat zinciri (tıkla → değer gir) */}
+        {!memberMode && leafDims.map(d => (
+          <g key={`leaf-${d.cell}`}>
+            {d.leaves.map(l => (
+              <g key={`leaf-${d.cell}-${l.k}`}>
+                {d.horiz ? <DimArrows a={{ x: l.a, y: l.cy }} b={{ x: l.b, y: l.cy }} asz={asz * 0.85} color={DIM_LINE} /> : <DimArrows a={{ x: l.cx, y: l.a }} b={{ x: l.cx, y: l.b }} asz={asz * 0.85} color={DIM_LINE} />}
+                <DimPill cx={l.cx} cy={l.cy} txt={l.txt} fs={fsT} fill="#ffffff" stroke="#e6e0d6" strokeWidth={0.7} color="#44403c"
+                  hideText={editing?.kind === 'leaf' && editing.cell === d.cell && editing.k === l.k}
+                  title="Leaf size — click to edit (the other leaf takes the rest of the door)" onClick={e => { stop(e); setEditing({ kind: 'leaf', cell: d.cell, k: l.k, v: l.txt }); }} />
+              </g>
+            ))}
+            <DimPill cx={d.gap.cx} cy={d.gap.cy} txt={d.gap.txt} fs={fsT} fill="#f3efe8" stroke="#e6e0d6" color="#78716c"
+              hideText={editing?.kind === 'leafgap' && editing.cell === d.cell}
+              title="Gap between the two leaves — click to edit" onClick={e => { stop(e); setEditing({ kind: 'leafgap', cell: d.cell, v: d.gap.txt }); }} />
+          </g>
+        ))}
         {/* YARIM BİNME checkbox'ları (Goker: "kapakların en dış kısmında bir dikmeye yarım binmesine yarayan checkbox"):
             kapak alanının dört DIŞ kenarının ortasında, kenarın hemen içinde; yalnız kenarın sınır paneli varsa ve
             kapak onun kalınlığını örtüyorsa (dış kapak). İşaretli = kapak o kenarda panel kalınlığının ortasına çekilir. */}
@@ -1271,7 +1457,7 @@ export function DoorSchematic({ group, selectedIndex, memberLabels, cuts, halfEd
           onClick={stop}
           style={{
             position: 'absolute', left: editPos.cx - editPos.pw / 2 - 4, top: editPos.cy - editPos.ph / 2 - 2, width: editPos.pw + 8, height: editPos.ph + 4, textAlign: 'center',
-            fontFamily: UI_FONT, fontSize: editing.kind === 'gap' ? fsT : fs, fontWeight: 600, color: '#1c1917', fontVariantNumeric: 'tabular-nums',
+            fontFamily: UI_FONT, fontSize: editing.kind === 'col' || editing.kind === 'row' ? fs : fsT, fontWeight: 600, color: '#1c1917', fontVariantNumeric: 'tabular-nums',
             background: '#fff', border: '1px solid #f97316', borderRadius: 99, outline: 'none', boxShadow: '0 0 0 2px rgba(249,115,22,0.12)', padding: 0,
           }} />
       )}
@@ -1465,6 +1651,9 @@ export function PanelEditor() {
     'raycastPendingVf', 'placementName', 'setPlacementName');
   // Kapak grubu kartı: kalınlık / boşluk giriş taslakları.
   const [doorDraft, setDoorDraft] = useState<{ id: string; field: 't' | 'gap'; v: string } | null>(null);
+  // KAPAK TİPİ HEDEFİ (Goker: "birden fazla kapağı seçip bir kapak tipi verebileyim"): şemada tıklanan hücreler
+  // (Shift/Ctrl ile çoklu). Boşsa hedef = seçili üyenin hücresi, o da yoksa grubun tüm kapakları.
+  const [doorCellSel, setDoorCellSel] = useState<{ id: string; cells: number[] } | null>(null);
 
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
@@ -1543,6 +1732,18 @@ export function PanelEditor() {
   useEffect(() => {
     if (selectedDoorGroupId && !doorGroups.some(g => g.id === selectedDoorGroupId)) setSelectedDoorGroupId(null);
   }, [doorGroups, selectedDoorGroupId]);
+  // Üye seçimi (liste / 3B / şema) değişince tip hedefi o üyenin hücresine çekilir; başka gruba geçilince sıfırlanır.
+  useEffect(() => {
+    const vfId = typeof selectedPanelRow === 'string' && selectedPanelRow.startsWith('vf-') ? selectedPanelRow.slice(3) : null;
+    if (!vfId) return;
+    const g = doorGroups.find(x => x.memberVfIds.includes(vfId));
+    if (!g) { if (doorCellSel) setDoorCellSel(null); return; }
+    const i = g.memberVfIds.indexOf(vfId);
+    const cell = doorMemberRects(g)[i]?.cell;
+    if (cell == null) return;
+    if (!doorCellSel || doorCellSel.id !== g.id || !doorCellSel.cells.includes(cell)) setDoorCellSel({ id: g.id, cells: [cell] });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPanelRow]);
 
   // OTOMATİK PANEL ÜRETİMİ: paneli olmayan her VF için panel yaratılır.
   useEffect(() => {
@@ -2148,6 +2349,8 @@ export function PanelEditor() {
       const dragging = !opts.member && dragIndex === rowIdx;
       const vp = panelOfVf(vf.id, shapes), ar = vp?.parameters?.arrowRotated || false, sel = selectedPanelRow === `vf-${vf.id}`;
       const dims = panelDims(vp);
+      // KAPAK ÜYESİ: tipi ve kanat bilgisi (satırda ikon + kanat numarası).
+      const doorMemberType = opts.door ? doorMemberRects(opts.door)[opts.door.memberVfIds.indexOf(vf.id)] : undefined;
       return (
         <div key={rowKey} ref={el => { const k = `vf-${vf.id}`; if (el) rowRefs.current.set(k, el); else rowRefs.current.delete(k); }}
           className={rowCardClass(sel, dragging, armedRowKey === rowKey)}>
@@ -2163,8 +2366,12 @@ export function PanelEditor() {
               <RowTypeBadge kind={opts.group ? opts.group.kind : opts.door ? 'door' : 'body'} active={sel} doorBound={!!vf.doorBound} />
               {opts.member && (opts.group || opts.door) ? (
                 // ÜYE ADI: grup adından gelir, burada DEĞİŞTİRİLEMEZ (grup satırından düzenlenir).
-                <span title="Name comes from the group (edit it on the group row)" className="flex-1 min-w-0 h-[22px] px-[5px] flex items-center text-[11.5px] font-medium text-stone-500 truncate cursor-default select-none">
-                  {opts.group ? groupName(opts.group) : doorGroupName(opts.door!)}
+                <span title={opts.door && doorMemberType ? `${DOOR_TYPE_TITLE[doorMemberType.type]}${doorMemberType.leafCount === 2 ? ` · leaf ${doorMemberType.leaf + 1}/2` : ''} — name comes from the group (edit it on the group row)` : 'Name comes from the group (edit it on the group row)'}
+                  className="flex-1 min-w-0 h-[22px] px-[5px] flex items-center gap-1.5 text-[11.5px] font-medium text-stone-500 truncate cursor-default select-none">
+                  {/* KAPAK ÜYESİ: tip ikonu (açılış işareti) + kanat numarası — tip çubuğuyla aynı çizim. */}
+                  {opts.door && doorMemberType && <span className="shrink-0 text-stone-400"><DoorTypeIcon type={doorMemberType.type} size={11} strokeWidth={1.4} /></span>}
+                  <span className="truncate">{opts.group ? groupName(opts.group) : doorGroupName(opts.door!)}</span>
+                  {opts.door && doorMemberType?.leafCount === 2 && <span className="shrink-0 text-[9.5px] font-semibold text-stone-400 tabular-nums">{doorMemberType.leaf + 1}/2</span>}
                 </span>
               ) : (
                 <input type="text" value={vf.description || ''} onClick={stop} onChange={e => updateVirtualFace(vf.id, { description: e.target.value })}
@@ -2326,6 +2533,21 @@ export function PanelEditor() {
           onKeyDown={e => { if (e.key === 'Enter') applyDraft(field); if (e.key === 'Escape') setDoorDraft(null); }}
           onClick={stop} className="yago-field" style={{ ...FIELD_INPUT, width: 34, textAlign: 'right' }} />
       );
+      // KAPAK TİPİ hedefi: şemadaki çoklu seçim → yoksa seçili üyenin hücresi → yoksa (ya da "tümünü seç") tüm hücreler.
+      const cellTypes = doorCellTypes(g);
+      const allCells = cellTypes.map((_, i) => i);
+      const selMemberIdx = g.memberVfIds.findIndex(id => selectedPanelRow === `vf-${id}`);
+      const selMemberCell = selMemberIdx >= 0 ? doorMemberRects(g)[selMemberIdx]?.cell : undefined;
+      const pickedCells = doorCellSel?.id === g.id ? doorCellSel.cells.filter(c => c < allCells.length) : [];
+      const targetCells = selAll || (!pickedCells.length && selMemberCell == null) ? allCells : pickedCells.length ? pickedCells : [selMemberCell!];
+      const commonType = targetCells.every(c => cellTypes[c] === cellTypes[targetCells[0]]) ? cellTypes[targetCells[0]] : null;
+      const typeHint = targetCells.length === allCells.length ? (allCells.length === 1 ? '1 door' : `All · ${allCells.length}`) : `${targetCells.length} / ${allCells.length}`;
+      const onCellClick = (cell: number, additive: boolean) => {
+        if (!additive) { setDoorCellSel({ id: g.id, cells: [cell] }); return; }
+        const base = doorCellSel?.id === g.id ? doorCellSel.cells : selMemberCell != null ? [selMemberCell] : [];
+        const cells = base.includes(cell) ? base.filter(c => c !== cell) : [...base, cell];
+        setDoorCellSel({ id: g.id, cells });
+      };
       const splitBox = (_Icon: LucideIcon, lbl: string, title: string, n: number, set: (v: number) => void) => (
         <FieldBox fixed label={lbl} title={title}>
           <StepBtn title="Fewer" disabled={n <= 1} onClick={() => set(n - 1)}><Minus size={11} strokeWidth={2.2} /></StepBtn>
@@ -2340,7 +2562,7 @@ export function PanelEditor() {
             {grip(rowKey, rowIdx, 'Drag to reorder (whole group)')}
             <div onClick={toggleAll} className="flex-1 min-w-0 relative flex items-center gap-1.5 pl-0.5 pr-1 py-[4px] cursor-pointer" title={selAll ? 'Deselect all doors' : 'Select all doors in this group'}>
               <RowNum label={label} active={selAll} />
-              <RowTypeBadge kind="door" active={open} count={g.cols * g.rows} />
+              <RowTypeBadge kind="door" active={open} count={doorMemberCount(g)} />
               <input type="text" value={doorGroupName(g)} onClick={stop} onChange={e => renameDoorGroup(g.id, e.target.value)} placeholder="Door"
                 title="Group name (applies to all its doors)" className={`${ROW_INPUT_CLASS} font-semibold`} />
               <RowDims w={dimsW} h={dimsH} t={g.thickness} tLetter="T" title={`Door area width · height · thickness (${doorPlacementLabel(g.placement)} door)`} />
@@ -2361,14 +2583,18 @@ export function PanelEditor() {
                 {splitBox(SplitSquareHorizontal, 'Split H', 'Horizontal split — doors stacked (rows)', g.rows, n => { void setDoorSplit(g.id, g.cols, n); })}
                 <IconSquareBtn icon={Equal} title="Equalize sizes (unlock all)" onClick={() => { void equalizeDoorGroup(g.id); }} />
               </div>
-              <DoorSchematic group={g} selectedIndex={g.memberVfIds.findIndex(id => selectedPanelRow === `vf-${id}`)}
+              {/* KAPAK TİPİ (Goker, Eki 2026): Left · Right · Up · Down · Double · Fold — hedef: şemada seçilen kapaklar. */}
+              <DoorTypeBar value={commonType} hint={typeHint} onPick={t => { void setDoorCellTypes(g.id, targetCells, t); }} />
+              <DoorSchematic group={g} selectedIndex={selMemberIdx} selectedCells={targetCells.length === allCells.length && !pickedCells.length ? [] : targetCells}
                 memberLabels={g.memberVfIds.map((id, i) => { const mi = members.findIndex(m => m.id === id); return `${label}.${(mi >= 0 ? mi : i) + 1}`; })}
                 cuts={doorCuts}
                 halfEdges={doorParent ? doorHalfOverlayEdges(g, doorParent, shapes, doorCuts) : { uMin: false, uMax: false, vMin: false, vMax: false }}
                 onEditCol={(k, v) => { void editDoorColWidth(g.id, k, v); }} onEditRow={(k, v) => { void editDoorRowHeight(g.id, k, v); }}
                 onToggleColLock={k => toggleDoorColLock(g.id, k)} onToggleRowLock={k => toggleDoorRowLock(g.id, k)}
                 onEditGap={(ax, k, v) => { void setDoorGapAt(g.id, ax, k, v); }}
+                onEditLeaf={(cell, k, v) => { void editDoorLeafSize(g.id, cell, k, v); }} onEditLeafGap={(cell, v) => { void setDoorLeafGap(g.id, cell, v); }}
                 onToggleHalfOverlay={(edge, on) => { void setDoorHalfOverlay(g.id, edge, on); }}
+                onCellClick={onCellClick}
                 onSelectMember={i => { const id = g.memberVfIds[i]; if (id) setSelectedPanelRow(`vf-${id}`, sid); }} />
               <SectionHead label="Doors" count={members.length} />
               <div className="flex flex-col gap-[2px]">

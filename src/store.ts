@@ -139,11 +139,31 @@ export interface DoorGroup {
    */
   halfOverlay?: { uMin?: boolean; uMax?: boolean; vMin?: boolean; vMax?: boolean };
   thickness: number;
-  /** Üye VF id'leri: satır-major (üst satırdan, soldan sağa): index = r*cols + c. */
+  /**
+   * KAPAK TİPLERİ (Goker, Eki 2026: "kapağın tipleri olmalı: sağa/sola/yukarı/aşağı açılır, sağa-sola açılır,
+   * katlanarak açılır"): hücre başına (satır-major r*cols+c) tip; yoksa 'left'. 'double' hücreyi u'da, 'fold' v'de
+   * iki KANADA böler — hücre ölçüsü (colWidths/rowHeights) toplamdır, kanatlar kendi içinde ölçülenir (leafSplits).
+   */
+  cellTypes?: DoorType[];
+  /** İki kanatlı hücrelerin kanat ölçüleri + kanat arası boşluk; anahtar = hücre indeksi. */
+  leafSplits?: Record<number, DoorLeafSplit>;
+  /**
+   * Üye VF id'leri: hücreler satır-major (üst satırdan, soldan sağa), iki kanatlı hücrede kanatlar ardışık
+   * (double: sol→sağ, fold: üst→alt). Üye i ↔ VF.doorIndex = i (DoorService.doorMemberRects sırası).
+   */
   memberVfIds: string[];
   name?: string;
   createdAt: number;
 }
+
+/**
+ * KAPAK TİPİ: menteşe / açılış yönü (bakan kişiye göre). left/right = yan menteşeli (sol menteşe sağa açılır);
+ * up = kalkar kapak (üst menteşe); down = düşer kapak (alt menteşe); double = iki kanatlı (sol kanat sol, sağ kanat
+ * sağ menteşe — hücre yatayda ikiye bölünür); fold = katlanır kalkar (iki kanat üst üste — hücre dikeyde ikiye bölünür).
+ */
+export type DoorType = 'left' | 'right' | 'up' | 'down' | 'double' | 'fold';
+/** İki kanatlı hücre: kanat ölçüleri (toplam = hücre ölçüsü − kanat arası boşluk) + kanat arası boşluk (mm). */
+export interface DoorLeafSplit { leaves: GapSpec[]; gap: number }
 
 /** Raf/dikme boşluğu: değer (mm) + kilit (küp boyutlanınca sabit kalır). */
 export interface GapSpec { value: number; locked: boolean; edited?: boolean }
