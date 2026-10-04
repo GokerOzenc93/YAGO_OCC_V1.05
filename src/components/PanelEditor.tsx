@@ -1086,7 +1086,7 @@ function DoorTypeIcon({ type, size = 14, strokeWidth = 1.25 }: { type: DoorType;
  */
 function DoorTypeBar({ value, hint, onPick }: { value: DoorType | null; hint: string; onPick: (t: DoorType) => void }) {
   return (
-    <div className="flex items-center gap-1.5 mb-1.5" title="Door type — applies to the selected doors (click a door in the schematic; Shift/Ctrl+click adds more; none selected = all doors)">
+    <div className="flex items-center gap-1.5 mb-1.5" title="Door type — applies to the doors selected in the schematic (click a door; Shift/Ctrl+click adds more; none selected = all doors). The selection clears once a type is applied.">
       <div className="flex-1 min-w-0" style={{ display: 'grid', gridTemplateColumns: `repeat(${DOOR_TYPES.length}, minmax(0,1fr))`, gap: 2, padding: 2, borderRadius: 8, background: '#f3efe8', border: '1px solid #e9e4dc', fontFamily: UI_FONT }}>
         {DOOR_TYPES.map(t => {
           const on = value === t;
@@ -1112,7 +1112,7 @@ function DoorTypeBar({ value, hint, onPick }: { value: DoorType | null; hint: st
 type DoorEdit =
   | { kind: 'col'; k: number; v: string } | { kind: 'row'; k: number; v: string } | { kind: 'gap'; axis: 'col' | 'row'; k: number; v: string }
   | { kind: 'leaf'; cell: number; k: number; v: string } | { kind: 'leafgap'; cell: number; v: string };
-export function DoorSchematic({ group, selectedIndex, selectedCells, memberLabels, cuts, halfEdges, onEditCol, onEditRow, onToggleColLock, onToggleRowLock, onEditGap, onEditLeaf, onEditLeafGap, onSelectMember, onCellClick, onToggleHalfOverlay }: {
+export function DoorSchematic({ group, selectedIndex, selectedCells, memberLabels, cuts, halfEdges, onEditCol, onEditRow, onToggleColLock, onToggleRowLock, onEditGap, onEditLeaf, onEditLeafGap, onCellClick, onToggleHalfOverlay }: {
   group: DoorGroup; selectedIndex: number; memberLabels: string[];
   /** TİP SEÇİMİ: tip çubuğunun hedef hücreleri (çoklu seçim) — kesikli turuncu çerçeveyle gösterilir. */
   selectedCells: number[];
@@ -1125,8 +1125,7 @@ export function DoorSchematic({ group, selectedIndex, selectedCells, memberLabel
   onEditGap: (axis: 'col' | 'row', k: number, v: number) => void;
   /** KANATLAR: iki kanatlı hücrede kanat ölçüsü / kanat arası boşluk girişi. */
   onEditLeaf: (cell: number, k: number, v: number) => void; onEditLeafGap: (cell: number, v: number) => void;
-  onSelectMember: (i: number) => void;
-  /** Hücre tıklandı: additive (Shift/Ctrl/⌘) → seçime ekle/çıkar; değilse yalnız o hücre. */
+  /** Hücre tıklandı (yalnız tip seçimi — üye seçilmez): additive (Shift/Ctrl/⌘) → ekle/çıkar; değilse yalnız o hücre (seçiliyse kaldır). */
   onCellClick: (cell: number, additive: boolean) => void;
   onToggleHalfOverlay: (edge: DoorEdgeKey, on: boolean) => void;
 }) {
@@ -1352,7 +1351,7 @@ export function DoorSchematic({ group, selectedIndex, selectedCells, memberLabel
           if (m.leafCount === 2 && doorLeafAxis(m.type) === 'u') { const sib = screenRects[m.leaf === 0 ? i + 1 : i - 1]; hinge = sib && sib.x0 < x0 ? 'R' : 'L'; }
           else if (m.leafCount === 2) hinge = 'T';
           const typeTxt = DOOR_TYPE_LABEL[m.type] + (m.leafCount === 2 ? ` · leaf ${m.leaf + 1}/2` : '');
-          const tip = `Door ${lbl} · ${typeTxt} · ${Math.round(m.u1 - m.u0)} × ${Math.round(m.v1 - m.v0)} mm${m.poly ? ' · angled (cut by rotated reference)' : ''} — click to select · Shift/Ctrl+click: add to type selection`;
+          const tip = `Door ${lbl} · ${typeTxt} · ${Math.round(m.u1 - m.u0)} × ${Math.round(m.v1 - m.v0)} mm${m.poly ? ' · angled (cut by rotated reference)' : ''} — click: select for door type · Shift/Ctrl+click: add more · open the door's row below to edit it`;
           // AÇILI: kırpılmış çokgen; her köşe aynı kapak hücresinde kaldığından eğik kenar şemada da düz çizgidir.
           const pts = m.poly ? m.poly.map(q => ({ x: sx(q.x), y: sy(q.y) })) : null;
           const cx = pts ? pts.reduce((a, q) => a + q.x, 0) / pts.length : (x0 + x1) / 2;
@@ -1360,8 +1359,10 @@ export function DoorSchematic({ group, selectedIndex, selectedCells, memberLabel
           // Açılış işareti: kapağın içinde, kenardan 3 px içeride; çokgende (açılı) sınırlayıcı kutu.
           const ins = 3, sw = Math.max(x1 - x0, 1) > 2 * ins + 4 && Math.max(y1 - y0, 1) > 2 * ins + 4;
           const label = { x: cx, y: cy + fsT * 0.36 };   // işaretin çizgileri merkezden geçmez (çeyrek noktalardan) → etiket ortada kalır
+          // ŞEMA TIKI = yalnız TİP SEÇİMİ (Goker: "kapağın üzerine tıklandığında altındaki paneli otomatik açmasın"):
+          // üye seçilmez, editör açılmaz. Düz tık: yalnız bu hücre (seçiliyse kaldır); Shift/Ctrl: ekle/çıkar.
           return (
-            <g key={`door-${i}`} style={{ cursor: 'pointer' }} onClick={e => { stop(e); const add = e.shiftKey || e.ctrlKey || e.metaKey; if (add) onCellClick(m.cell, true); else { onSelectMember(i); onCellClick(m.cell, false); } }}>
+            <g key={`door-${i}`} style={{ cursor: 'pointer' }} onClick={e => { stop(e); onCellClick(m.cell, e.shiftKey || e.ctrlKey || e.metaKey); }}>
               {pts ? (
                 <polygon points={pts.map(q => `${q.x},${q.y}`).join(' ')} fill={fill} stroke={stroke} strokeWidth={on ? 1.1 : 0.9} strokeLinejoin="round">
                   <title>{tip}</title>
@@ -1378,7 +1379,7 @@ export function DoorSchematic({ group, selectedIndex, selectedCells, memberLabel
           );
         })}
         {/* TİP SEÇİMİ çerçevesi: seçili hücreler (tip çubuğunun hedefi) — kanat birleşiminin dışına kesikli çerçeve */}
-        {[...cellBoxes.entries()].filter(([cell, b]) => selCellSet.has(cell) && (selCellSet.size > 1 || b.idx.length > 1)).map(([cell, b]) => (
+        {[...cellBoxes.entries()].filter(([cell]) => selCellSet.has(cell)).map(([cell, b]) => (
           <rect key={`cellsel-${cell}`} x={b.x0 - 2.5} y={b.y0 - 2.5} width={b.x1 - b.x0 + 5} height={b.y1 - b.y0 + 5} rx={3} fill="none" stroke="#ea580c" strokeWidth={1} strokeDasharray="3 2" style={{ pointerEvents: 'none' }} />
         ))}
         {/* KANAT ÖLÇÜLERİ: iki kanatlı hücrenin içinde kanat · ara · kanat zinciri (tıkla → değer gir) */}
@@ -1651,8 +1652,9 @@ export function PanelEditor() {
     'raycastPendingVf', 'placementName', 'setPlacementName');
   // Kapak grubu kartı: kalınlık / boşluk giriş taslakları.
   const [doorDraft, setDoorDraft] = useState<{ id: string; field: 't' | 'gap'; v: string } | null>(null);
-  // KAPAK TİPİ HEDEFİ (Goker: "birden fazla kapağı seçip bir kapak tipi verebileyim"): şemada tıklanan hücreler
-  // (Shift/Ctrl ile çoklu). Boşsa hedef = seçili üyenin hücresi, o da yoksa grubun tüm kapakları.
+  // KAPAK TİPİ HEDEFİ (Goker: "birden fazla kapağı seçip bir kapak tipi verebileyim"): yalnız şemada tıklanan hücreler
+  // (Shift/Ctrl ile çoklu); üye/3B seçimiyle bağı YOK. Boşsa hedef = grubun tüm kapakları. Tip uygulanınca seçim kalkar
+  // (Goker: "tip girdikten sonra kapak seçimlerini kaldır").
   const [doorCellSel, setDoorCellSel] = useState<{ id: string; cells: number[] } | null>(null);
 
   const [dragIndex, setDragIndex] = useState<number | null>(null);
@@ -1676,6 +1678,7 @@ export function PanelEditor() {
     if (st.selectedPanelGroupId === id) setSelectedPanelGroupId(null);
     if (st.selectedDoorGroupId === id) setSelectedDoorGroupId(null);
     if (typeof st.selectedPanelRow === 'string' && memberIds.some(m => st.selectedPanelRow === `vf-${m}`)) setSelectedPanelRow(null);
+    setDoorCellSel(prev => (prev?.id === id ? null : prev));   // kapak kartı kapanınca şemadaki tip seçimi de kalkar
   };
   // Adım düzenleme: aynı anda tek adım düzenlenir (extrude / move / rotate ayrımı adım tipinden gelir).
   const [stepEdit, setStepEdit] = useState<StepEdit>(null);
@@ -1732,18 +1735,6 @@ export function PanelEditor() {
   useEffect(() => {
     if (selectedDoorGroupId && !doorGroups.some(g => g.id === selectedDoorGroupId)) setSelectedDoorGroupId(null);
   }, [doorGroups, selectedDoorGroupId]);
-  // Üye seçimi (liste / 3B / şema) değişince tip hedefi o üyenin hücresine çekilir; başka gruba geçilince sıfırlanır.
-  useEffect(() => {
-    const vfId = typeof selectedPanelRow === 'string' && selectedPanelRow.startsWith('vf-') ? selectedPanelRow.slice(3) : null;
-    if (!vfId) return;
-    const g = doorGroups.find(x => x.memberVfIds.includes(vfId));
-    if (!g) { if (doorCellSel) setDoorCellSel(null); return; }
-    const i = g.memberVfIds.indexOf(vfId);
-    const cell = doorMemberRects(g)[i]?.cell;
-    if (cell == null) return;
-    if (!doorCellSel || doorCellSel.id !== g.id || !doorCellSel.cells.includes(cell)) setDoorCellSel({ id: g.id, cells: [cell] });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedPanelRow]);
 
   // OTOMATİK PANEL ÜRETİMİ: paneli olmayan her VF için panel yaratılır.
   useEffect(() => {
@@ -2537,17 +2528,18 @@ export function PanelEditor() {
       const cellTypes = doorCellTypes(g);
       const allCells = cellTypes.map((_, i) => i);
       const selMemberIdx = g.memberVfIds.findIndex(id => selectedPanelRow === `vf-${id}`);
-      const selMemberCell = selMemberIdx >= 0 ? doorMemberRects(g)[selMemberIdx]?.cell : undefined;
       const pickedCells = doorCellSel?.id === g.id ? doorCellSel.cells.filter(c => c < allCells.length) : [];
-      const targetCells = selAll || (!pickedCells.length && selMemberCell == null) ? allCells : pickedCells.length ? pickedCells : [selMemberCell!];
+      const targetCells = pickedCells.length ? pickedCells : allCells;
       const commonType = targetCells.every(c => cellTypes[c] === cellTypes[targetCells[0]]) ? cellTypes[targetCells[0]] : null;
-      const typeHint = targetCells.length === allCells.length ? (allCells.length === 1 ? '1 door' : `All · ${allCells.length}`) : `${targetCells.length} / ${allCells.length}`;
+      const typeHint = !pickedCells.length ? (allCells.length === 1 ? '1 door' : `All · ${allCells.length}`) : `${targetCells.length} / ${allCells.length}`;
       const onCellClick = (cell: number, additive: boolean) => {
-        if (!additive) { setDoorCellSel({ id: g.id, cells: [cell] }); return; }
-        const base = doorCellSel?.id === g.id ? doorCellSel.cells : selMemberCell != null ? [selMemberCell] : [];
+        const base = pickedCells;
+        if (!additive) { setDoorCellSel(base.length === 1 && base[0] === cell ? null : { id: g.id, cells: [cell] }); return; }
         const cells = base.includes(cell) ? base.filter(c => c !== cell) : [...base, cell];
-        setDoorCellSel({ id: g.id, cells });
+        setDoorCellSel(cells.length ? { id: g.id, cells } : null);
       };
+      // Tip uygulandı → şemadaki kapak seçimi kalkar (hedef yeniden "tüm kapaklar").
+      const applyType = (t: DoorType) => { void setDoorCellTypes(g.id, targetCells, t); setDoorCellSel(null); };
       const splitBox = (_Icon: LucideIcon, lbl: string, title: string, n: number, set: (v: number) => void) => (
         <FieldBox fixed label={lbl} title={title}>
           <StepBtn title="Fewer" disabled={n <= 1} onClick={() => set(n - 1)}><Minus size={11} strokeWidth={2.2} /></StepBtn>
@@ -2584,8 +2576,8 @@ export function PanelEditor() {
                 <IconSquareBtn icon={Equal} title="Equalize sizes (unlock all)" onClick={() => { void equalizeDoorGroup(g.id); }} />
               </div>
               {/* KAPAK TİPİ (Goker, Eki 2026): Left · Right · Up · Down · Double · Fold — hedef: şemada seçilen kapaklar. */}
-              <DoorTypeBar value={commonType} hint={typeHint} onPick={t => { void setDoorCellTypes(g.id, targetCells, t); }} />
-              <DoorSchematic group={g} selectedIndex={selMemberIdx} selectedCells={targetCells.length === allCells.length && !pickedCells.length ? [] : targetCells}
+              <DoorTypeBar value={commonType} hint={typeHint} onPick={applyType} />
+              <DoorSchematic group={g} selectedIndex={selMemberIdx} selectedCells={pickedCells}
                 memberLabels={g.memberVfIds.map((id, i) => { const mi = members.findIndex(m => m.id === id); return `${label}.${(mi >= 0 ? mi : i) + 1}`; })}
                 cuts={doorCuts}
                 halfEdges={doorParent ? doorHalfOverlayEdges(g, doorParent, shapes, doorCuts) : { uMin: false, uMax: false, vMin: false, vMax: false }}
@@ -2594,8 +2586,7 @@ export function PanelEditor() {
                 onEditGap={(ax, k, v) => { void setDoorGapAt(g.id, ax, k, v); }}
                 onEditLeaf={(cell, k, v) => { void editDoorLeafSize(g.id, cell, k, v); }} onEditLeafGap={(cell, v) => { void setDoorLeafGap(g.id, cell, v); }}
                 onToggleHalfOverlay={(edge, on) => { void setDoorHalfOverlay(g.id, edge, on); }}
-                onCellClick={onCellClick}
-                onSelectMember={i => { const id = g.memberVfIds[i]; if (id) setSelectedPanelRow(`vf-${id}`, sid); }} />
+                onCellClick={onCellClick} />
               <SectionHead label="Doors" count={members.length} />
               <div className="flex flex-col gap-[2px]">
                 {members.map((m, mi) => vfRow(m, rowIdx, `${label}.${mi + 1}`, { member: true, door: g }))}
