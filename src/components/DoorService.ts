@@ -1,11 +1,11 @@
 import {
-  type CavityBox, type DoorBoundRef, type DoorBounds, type DoorGroup, type DoorLeafSplit, type DoorPick, type DoorRect, type DoorType, type GapSpec, type Shape, type VirtualFace,
+  type CavityBox, type DoorBoundRef, type DoorBounds, type DoorEdgeGaps, type DoorGroup, type DoorLeafSplit, type DoorNode, type DoorPick, type DoorRect, type DoorType, type GapSpec, type Shape, type VirtualFace,
   panelOfVf, requestRebuild, shapeById, useAppStore,
 } from '../store';
 import * as THREE from 'three';
 import { type Vec3, genId, round1 } from './Geometry';
 import { largestFaceNormal, panelHasRotation } from './FaceRegion';
-import { applyGapEdit, bodyLocalBox, equalGaps, panelLocalBox, redistributeForThickness } from './PanelGroupService';
+import { applyGapEdit, bodyLocalBox, panelLocalBox, redistributeForThickness } from './PanelGroupService';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // KAPAKLAR (DoorService) — Goker, Eki 2026
@@ -34,9 +34,12 @@ import { applyGapEdit, bodyLocalBox, equalGaps, panelLocalBox, redistributeForTh
 //    panellerin DIŞ yüzlerine kadar (kalınlıkların dışından) ve panellerin önüne (en
 //    öndeki panel esas) yerleşir — gövde kutusunun dışında kalabilir.
 //  • BOŞLUK: her kenar (sınır paneline) ve her kapak arası AYRI boşluktur (colGaps / rowGaps).
-//  • BÖLME: cols × rows kapak; sütun genişlikleri / satır yükseklikleri raf boşluğu
-//    kuralıyla (equalGaps / applyGapEdit / rescaleGaps — kilit + girilen korunur,
-//    gerisi eşit); kapaklar arası boşluk (gap) sabit "kalınlık" gibi düşülür.
+//  • BÖLME = AĞAÇ (Goker, Eki 2026: "seçili olan kapağı bölmeliyiz; ilk tek kapak yerleşir, o bölünür, bölünen kapağı
+//    tıklayıp tekrar dikey/yatay bölünebilmeli — daha esnek bir bölme"): DoorGroup.tree; yaprak = kapak, split = bir
+//    eksende çocuklara bölünmüş alan (u = Split V yan yana, v = Split H üst üste). Her split kendi alanını çocuklarına
+//    raf kuralıyla dağıtır (redistributeForThickness / applyGapEdit — kilit + girilen korunur, gerisi eşit); çocuklar
+//    arası boşluklar split'te (gaps), dış kenar boşlukları grupta (edgeGaps). Bir kapağı bölmek üst bölmenin ölçüsünü
+//    DEĞİŞTİRMEZ (toplam = ilk bölünen). Önceki cols×rows ızgarası kaldırıldı.
 //  • Üye kapaklar sıradan VF-panelleridir (interior=true, doorGroupId): extrude /
 //    move / rotate adımları motorda aynı yoldan uygulanır; VF her rebuild'de buradan
 //    yazılır (recalculateDoorVfs). Kapak panelleri gövde panellerini DAMGALAMAZ, hacim
@@ -59,12 +62,12 @@ import { applyGapEdit, bodyLocalBox, equalGaps, panelLocalBox, redistributeForTh
 //  • KAPAK TİPLERİ (Goker, Eki 2026: "kapağın tipleri olmalı: sağa/sola/yukarı/aşağı açılır, sağa-sola açılır,
 //    katlanarak açılır; sağa-sola açılırda ölçülenmiş yeri tekrar bölsün, iki kapak arası ayrıca ölçülensin, sağ ve
 //    sol kapağın ölçüsü ayrı ayrı değişsin ama toplam ilk bölünen ölçü olsun; katlanırda dikeyde kendi içinde böl;
-//    birden fazla kapağı seçip tek tip verebileyim"): tip HÜCRE başına (DoorGroup.cellTypes, satır-major). left /
-//    right / up / down tek kanat (yalnız menteşe yönü, geometri aynı). double = hücre u'da iki KANADA, fold = v'de iki
-//    kanada bölünür: hücre ölçüsü (colWidths / rowHeights — ilk bölme) TOPLAMDIR, kanatlar hücrenin içinde ayrıca
-//    ölçülenir (DoorGroup.leafSplits[cell] = kanat ölçüleri + kanat arası boşluk; raf kuralı: girilen korunur, kalan
-//    diğer kanada). Her kanat ayrı bir üye VF/paneldir (doorMemberRects sırası: hücreler satır-major, kanatlar ardışık).
-//    Tip değişince yalnız kanat YAPISI değişen hücrelerin üyeleri yeniden kurulur (setDoorCellTypes), diğerleri korunur.
+//    birden fazla kapağı seçip tek tip verebileyim"): tip YAPRAK başına (DoorNode.type). left / right / up / down tek
+//    kanat (yalnız menteşe yönü, geometri aynı). double = yaprak u'da iki KANADA, fold = v'de iki kanada bölünür:
+//    yaprağın alanı TOPLAMDIR, kanatlar içinde ayrıca ölçülenir (DoorNode.leafSplit = kanat ölçüleri + kanat arası
+//    boşluk; raf kuralı: girilen korunur, kalan diğer kanada). Her kanat ayrı bir üye VF/paneldir (doorMemberRects:
+//    DFS yaprak sırası, kanatlar ardışık). Yapı değişince (bölme, birleştirme, tek↔double/fold) yalnız etkilenen
+//    yaprakların üyeleri yeniden kurulur (rebuildMembers — yaprak id + kanat sırası eşleşen VF'ler korunur).
 // ═══════════════════════════════════════════════════════════════════════════
 
 export const DOOR_THICKNESS = 18;
@@ -94,21 +97,8 @@ export const DOOR_TYPE_TITLE: Record<DoorType, string> = {
 };
 /** Kanat ekseni: double → u (yan yana), fold → v (üst üste); tek kanatlı tiplerde null. */
 export const doorLeafAxis = (t: DoorType | undefined): 'u' | 'v' | null => (t === 'double' ? 'u' : t === 'fold' ? 'v' : null);
-export const doorCellCount = (g: Pick<DoorGroup, 'cols' | 'rows'>) => g.cols * g.rows;
-/** Varsayılan tip: tek sütun → left; çok sütunda sol yarı left, sağ yarı right (bir çift kapağın doğal menteşeleri). */
-export const defaultDoorType = (c: number, cols: number): DoorType => (cols >= 2 && c >= cols / 2 ? 'right' : 'left');
-/** Hücre tipleri (cols×rows, satır-major); kayıtlı dizi eksikse varsayılanla tamamlanır. */
-export function doorCellTypes(g: Pick<DoorGroup, 'cols' | 'rows' | 'cellTypes'>): DoorType[] {
-  const out: DoorType[] = [];
-  for (let r = 0; r < g.rows; r++) for (let c = 0; c < g.cols; c++) {
-    const t = g.cellTypes?.[r * g.cols + c];
-    out.push(t && DOOR_TYPES.includes(t) ? t : defaultDoorType(c, g.cols));
-  }
-  return out;
-}
-export const doorTypeOf = (g: Pick<DoorGroup, 'cols' | 'rows' | 'cellTypes'>, cell: number): DoorType => doorCellTypes(g)[cell] ?? 'left';
-/** Toplam üye (kanat) sayısı: tek kanatlı hücre 1, double/fold 2. */
-export const doorMemberCount = (g: Pick<DoorGroup, 'cols' | 'rows' | 'cellTypes'>) => doorCellTypes(g).reduce((a, t) => a + (doorLeafAxis(t) ? 2 : 1), 0);
+/** Varsayılan tip (yan yana bölmede c. çocuk): tek → left; çok parçada sol yarı left, sağ yarı right (bir çift kapağın doğal menteşeleri). */
+export const defaultDoorType = (c: number, count: number): DoorType => (count >= 2 && c >= count / 2 ? 'right' : 'left');
 
 /** Kapak düzleminin eksenleri: u = yatay (sütun dizilimi), v = düşey (satır dizilimi). */
 export function doorPlaneAxes(axis: 0 | 1 | 2): { u: 0 | 1 | 2; v: 0 | 1 | 2 } {
@@ -375,113 +365,130 @@ export function doorCandidatesAt(parent: Shape, axis: 0 | 1 | 2, side: 1 | -1, c
   return out;
 }
 
-// ── ÇÖZÜM ───────────────────────────────────────────────────────────────────
+// ── ÇÖZÜM (BÖLME AĞACI) ─────────────────────────────────────────────────────
 
 export interface DoorMemberRect {
-  r: number; c: number; u0: number; u1: number; v0: number; v1: number;
-  /** Hücre indeksi (satır-major) + hücrenin tipi; kanat sırası (0 | 1) ve hücredeki kanat sayısı (1 | 2). */
-  cell: number; type: DoorType; leaf: number; leafCount: number;
+  u0: number; u1: number; v0: number; v1: number;
+  /** Yaprak düğümün id'si + tipi; kanat sırası (0 | 1) ve yapraktaki kanat sayısı (1 | 2). */
+  leafId: string; type: DoorType; leaf: number; leafCount: number;
   /** AÇILI REFERANS kesimi: dönmüş sınır panelleriyle kırpılmış (u,v) çokgeni (kesim yoksa yok — dikdörtgen). */
   poly?: Array<{ x: number; y: number }>;
 }
-export interface DoorSolution { rect: DoorRect; colWidths: GapSpec[]; rowHeights: GapSpec[]; leafSplits: Record<number, DoorLeafSplit>; members: DoorMemberRect[] }
-/** Üye dikdörtgenlerini veren düzen: grup ya da çözümle güncellenmiş kopyası. */
-export type DoorLayout = Pick<DoorGroup, 'rect' | 'cols' | 'rows' | 'colWidths' | 'rowHeights' | 'gap' | 'colGaps' | 'rowGaps' | 'cellTypes' | 'leafSplits'>;
+/** Çözülmüş ağaç: her düğüm kendi alanını (u0..u1, v0..v1) taşır; split düğümünün sizes'ı dağıtılmış, yaprağın kanatları çözülmüş. */
+export type DoorNodeSolved =
+  | { id: string; kind: 'leaf'; type: DoorType; leafSplit?: DoorLeafSplit; u0: number; u1: number; v0: number; v1: number; depth: number }
+  | { id: string; kind: 'split'; axis: 'u' | 'v'; sizes: GapSpec[]; gaps: number[]; children: DoorNodeSolved[]; u0: number; u1: number; v0: number; v1: number; depth: number };
+export interface DoorSolution { rect: DoorRect; tree: DoorNode; solved: DoorNodeSolved; members: DoorMemberRect[] }
+/** Ağacı çözmek için gereken grup alanları (grup ya da çözümle güncellenmiş kopyası). */
+export type DoorLayout = Pick<DoorGroup, 'rect' | 'tree' | 'edgeGaps' | 'gap'>;
+
+export const isLeafNode = (n: DoorNode | DoorNodeSolved): n is Extract<typeof n, { kind: 'leaf' }> => n.kind === 'leaf';
+export const makeDoorLeaf = (type: DoorType, leafSplit?: DoorLeafSplit): DoorNode => ({ id: genId('dl'), kind: 'leaf', type, ...(leafSplit ? { leafSplit } : {}) });
+/** Kenar boşlukları: eksik/bozuksa varsayılan boşlukla tamamlanır. */
+export function edgeGapsOf(g: Pick<DoorGroup, 'edgeGaps' | 'gap'>): DoorEdgeGaps {
+  const ok = (x: unknown): x is number => Number.isFinite(x) && (x as number) >= 0;
+  const e = g.edgeGaps;
+  return { uMin: ok(e?.uMin) ? e.uMin : g.gap, uMax: ok(e?.uMax) ? e.uMax : g.gap, vMin: ok(e?.vMin) ? e.vMin : g.gap, vMax: ok(e?.vMax) ? e.vMax : g.gap };
+}
+/** DFS yaprakları (sıra = üye sırası, double/fold hariç). */
+export function doorLeaves(n: DoorNode): Array<Extract<DoorNode, { kind: 'leaf' }>> { return n.kind === 'leaf' ? [n] : n.children.flatMap(doorLeaves); }
+export function doorLeafCount(g: Pick<DoorGroup, 'tree'>): number { return doorLeaves(g.tree).length; }
+/** Toplam üye (kanat) sayısı: tek kanatlı yaprak 1, double/fold 2. */
+export const doorMemberCount = (g: Pick<DoorGroup, 'tree'>) => doorLeaves(g.tree).reduce((a, l) => a + (doorLeafAxis(l.type) ? 2 : 1), 0);
+export function findDoorNode(n: DoorNode, id: string): DoorNode | null { if (n.id === id) return n; if (n.kind === 'split') for (const c of n.children) { const h = findDoorNode(c, id); if (h) return h; } return null; }
+export function findDoorParent(n: DoorNode, id: string): Extract<DoorNode, { kind: 'split' }> | null {
+  if (n.kind !== 'split') return null;
+  if (n.children.some(c => c.id === id)) return n;
+  for (const c of n.children) { const h = findDoorParent(c, id); if (h) return h; }
+  return null;
+}
+/** Ağaçta bir düğümü değiştirir (saf — yeni ağaç döner). */
+export function replaceDoorNode(n: DoorNode, id: string, repl: (old: DoorNode) => DoorNode): DoorNode {
+  if (n.id === id) return repl(n);
+  if (n.kind === 'leaf') return n;
+  return { ...n, children: n.children.map(c => replaceDoorNode(c, id, repl)) };
+}
+export function findSolvedNode(n: DoorNodeSolved, id: string): DoorNodeSolved | null { if (n.id === id) return n; if (n.kind === 'split') for (const c of n.children) { const h = findSolvedNode(c, id); if (h) return h; } return null; }
 
 /**
- * KAPAK BOŞLUKLARI — HER BİRİ AYRI (Goker, Eki 2026: "kenar boşluğu, her boşluk farklı farklı girilebilmeli";
- * önce: "kapağın panelle olan mesafelerinde de kapak boşluğu olmalı — üst, alt, sağ, sol").
- * Eksen başına n+1 boşluk: [başlangıç kenarı, n−1 ara, bitiş kenarı]. u: sol → sağ; v: ÜST → alt.
- * Kayıtlı dizi yoksa / boyu tutmuyorsa varsayılan `gap` ile doldurulur; bölmede kenarlar korunur.
+ * DAĞITIM KURALI (Goker: "girilen boşluk kapağı kısaltmamalı; boşluktan kalan ölçüyü her zaman ilk başta EŞİT dağıt"):
+ * kilitli ve elle girilmiş ölçüler korunur; aralardan kalan ölçü diğerlerine EŞİT dağılır (boşluk değişse de, iç/dış
+ * değişse de, gövde boyutlansa da). Hepsi girilmişse oransal. 0,1 mm yuvarlama artığı son serbest ölçüye yazılır.
  */
-export function gapsOf(saved: number[] | undefined, n: number, gap: number): number[] {
-  if (Array.isArray(saved) && saved.length === n + 1 && saved.every(v => Number.isFinite(v) && v >= 0)) return saved.slice();
-  const out = Array.from({ length: n + 1 }, () => gap);
-  if (Array.isArray(saved) && saved.length >= 2) { out[0] = saved[0]; out[n] = saved[saved.length - 1]; }   // kenarlar korunur
-  return out;
-}
-export const colGapsOf = (g: Pick<DoorGroup, 'colGaps' | 'cols' | 'gap'>) => gapsOf(g.colGaps, g.cols, g.gap);
-export const rowGapsOf = (g: Pick<DoorGroup, 'rowGaps' | 'rows' | 'gap'>) => gapsOf(g.rowGaps, g.rows, g.gap);
-/** Eksendeki kapak alanı: dikdörtgen − iki kenar boşluğu (aralar ayrıca `inner` olarak düşülür). */
-const doorSpan = (rect: DoorRect, axis: 'u' | 'v', gaps: number[]) => (axis === 'u' ? rect.u1 - rect.u0 : rect.v1 - rect.v0) - gaps[0] - gaps[gaps.length - 1];
-const innerGaps = (gaps: number[]) => gaps.slice(1, -1);
-/**
- * DAĞITIM KURALI (Goker: "girilen boşluk kapağı kısaltmamalı; boşluktan kalan ölçüyü her zaman ilk
- * başta EŞİT dağıt"): kilitli ve elle girilmiş kapak ölçüleri korunur; boşluklardan kalan ölçü diğer
- * kapaklara EŞİT dağılır (boşluk değişse de, iç/dış değişse de, gövde boyutlansa da). Hepsi girilmişse oransal.
- */
-function distributeDoors(specs: GapSpec[], rect: DoorRect, axis: 'u' | 'v', gaps: number[]): GapSpec[] {
-  const n = gaps.length - 1;
-  const L = doorSpan(rect, axis, gaps), mids = innerGaps(gaps);
-  const out = redistributeForThickness(specs, L, n - 1, mids);
-  // 0,1 mm yuvarlama artığı son serbest kapağa yazılır → kenar boşluğu tam girilen değer kalır.
-  const resid = round1(L - mids.reduce((a, g) => a + g, 0) - out.reduce((a, g) => a + g.value, 0));
+function distributeSizes(specs: GapSpec[], L: number, gaps: number[]): GapSpec[] {
+  const out = redistributeForThickness(specs, L, gaps.length, gaps);
+  const resid = round1(L - gaps.reduce((a, g) => a + g, 0) - out.reduce((a, g) => a + g.value, 0));
   if (Math.abs(resid) >= 0.05 && Math.abs(resid) < 1) {
     for (let i = out.length - 1; i >= 0; i--) if (!out[i].locked && !out[i].edited) { out[i] = { ...out[i], value: round1(out[i].value + resid) }; break; }
   }
   return out;
 }
-const equalDoors = (rect: DoorRect, axis: 'u' | 'v', gaps: number[]) => equalGaps(doorSpan(rect, axis, gaps), gaps.length - 2, innerGaps(gaps));
-
-/** Hücrenin kanat eksenindeki ölçüsü (double → sütun genişliği, fold → satır yüksekliği). */
-export function doorCellSize(g: Pick<DoorGroup, 'cols' | 'colWidths' | 'rowHeights'>, cell: number, axis: 'u' | 'v'): number {
-  const r = Math.floor(cell / g.cols), c = cell % g.cols;
-  return axis === 'u' ? (g.colWidths[c]?.value ?? 0) : (g.rowHeights[r]?.value ?? 0);
-}
-/**
- * KANAT ÖLÇÜLERİ (Goker: "sağ ve sol kapağın ölçüsü ayrı ayrı değişebilir ama toplam ilk bölünen ölçü olsun"):
- * iki kanatlı her hücre için kanatlar hücre ölçüsünden (− kanat arası boşluk) raf kuralıyla dağıtılır — girilen /
- * kilitli kanat korunur, kalan diğerine; hiçbiri girilmemişse eşit. Hücre ölçüsü değişince (gövde boyutlandı, sütun
- * girildi) kanatlar burada yeniden çözülür. Kanat arası boşluk yoksa grubun varsayılan boşluğu.
- */
-export function resolveLeafSplits(g: DoorLayout): Record<number, DoorLeafSplit> {
-  const out: Record<number, DoorLeafSplit> = {};
-  doorCellTypes(g).forEach((t, cell) => {
-    const ax = doorLeafAxis(t);
-    if (!ax) return;
-    const saved = g.leafSplits?.[cell];
-    const gap = Number.isFinite(saved?.gap) && saved!.gap >= 0 ? saved!.gap : g.gap;
-    out[cell] = { gap, leaves: redistributeForThickness(saved?.leaves ?? [], doorCellSize(g, cell, ax), 1, [gap]) };
-  });
-  return out;
-}
+/** Split düğümünün n−1 arası: kayıtlı dizi boyu tutmuyorsa varsayılan boşlukla (ilk ara değeri korunarak). */
+const splitGapsOf = (n: Extract<DoorNode, { kind: 'split' }>, gap: number) => {
+  const m = n.children.length - 1;
+  if (n.gaps.length === m && n.gaps.every(x => Number.isFinite(x) && x >= 0)) return n.gaps.slice();
+  return Array.from({ length: m }, (_, i) => (Number.isFinite(n.gaps[i]) && n.gaps[i] >= 0 ? n.gaps[i] : n.gaps.length ? n.gaps[0] : gap));
+};
 
 /**
- * Kapak dikdörtgeninden üye dikdörtgenleri: hücreler satır-major (sütunlar soldan sağa u↑, satırlar ÜSTTEN aşağı v↓),
- * her boşluk kendi değeriyle; iki kanatlı hücre kanatlarına bölünür (double: sol→sağ, fold: üst→alt). Sıra = üye
- * indeksi = VF.doorIndex.
+ * AĞAÇ ÇÖZÜMÜ: kök alanı = dikdörtgen − kenar boşlukları; her split kendi alanını çocuklarına raf kuralıyla dağıtır
+ * (u: soldan sağa, v: ÜSTTEN aşağı); double/fold yaprak kanatlarını kendi alanında çözer. Toplam her zaman üst alan.
  */
-export function doorMemberRects(g: DoorLayout, leafSplits: Record<number, DoorLeafSplit> = resolveLeafSplits(g)): DoorMemberRect[] {
-  const { rect, cols, rows, colWidths, rowHeights } = g;
-  const colGaps = colGapsOf(g), rowGaps = rowGapsOf(g);
-  const types = doorCellTypes(g);
-  const out: DoorMemberRect[] = [];
-  let top = rect.v1 - (rowGaps[0] ?? 0);
-  for (let r = 0; r < rows; r++) {
-    const h = rowHeights[r]?.value ?? 0;
-    let left = rect.u0 + (colGaps[0] ?? 0);
-    for (let c = 0; c < cols; c++) {
-      const w = colWidths[c]?.value ?? 0;
-      const cell = r * cols + c, type = types[cell];
-      const ax = doorLeafAxis(type), split = ax ? leafSplits[cell] : undefined;
-      if (ax && split && split.leaves.length === 2) {
-        const [a, b] = split.leaves.map(l => Math.max(0, l.value));
-        if (ax === 'u') {
-          out.push({ r, c, cell, type, leaf: 0, leafCount: 2, u0: left, u1: left + a, v0: top - h, v1: top });
-          out.push({ r, c, cell, type, leaf: 1, leafCount: 2, u0: left + a + split.gap, u1: left + a + split.gap + b, v0: top - h, v1: top });
-        } else {
-          out.push({ r, c, cell, type, leaf: 0, leafCount: 2, u0: left, u1: left + w, v0: top - a, v1: top });
-          out.push({ r, c, cell, type, leaf: 1, leafCount: 2, u0: left, u1: left + w, v0: top - a - split.gap - b, v1: top - a - split.gap });
-        }
-      } else {
-        out.push({ r, c, cell, type, leaf: 0, leafCount: 1, u0: left, u1: left + w, v0: top - h, v1: top });
-      }
-      left += w + (colGaps[c + 1] ?? 0);
-    }
-    top -= h + (rowGaps[r + 1] ?? 0);
+function solveNode(n: DoorNode, u0: number, u1: number, v0: number, v1: number, gap: number, depth: number): DoorNodeSolved {
+  if (n.kind === 'leaf') {
+    const ax = doorLeafAxis(n.type);
+    if (!ax) return { ...n, leafSplit: undefined, u0, u1, v0, v1, depth };
+    const lg = Number.isFinite(n.leafSplit?.gap) && n.leafSplit!.gap >= 0 ? n.leafSplit!.gap : gap;
+    const leaves = redistributeForThickness(n.leafSplit?.leaves ?? [], ax === 'u' ? u1 - u0 : v1 - v0, 1, [lg]);
+    return { ...n, leafSplit: { gap: lg, leaves }, u0, u1, v0, v1, depth };
   }
+  const gaps = splitGapsOf(n, gap);
+  const L = n.axis === 'u' ? u1 - u0 : v1 - v0;
+  const sizes = distributeSizes(n.sizes, L, gaps);
+  const children: DoorNodeSolved[] = [];
+  let pos = n.axis === 'u' ? u0 : v1;
+  n.children.forEach((c, i) => {
+    const w = Math.max(0, sizes[i]?.value ?? 0);
+    if (n.axis === 'u') { children.push(solveNode(c, pos, pos + w, v0, v1, gap, depth + 1)); pos += w + (gaps[i] ?? 0); }
+    else { children.push(solveNode(c, u0, u1, pos - w, pos, gap, depth + 1)); pos -= w + (gaps[i] ?? 0); }
+  });
+  return { ...n, sizes, gaps, children, u0, u1, v0, v1, depth };
+}
+export function solveDoorTree(g: DoorLayout, rect: DoorRect = g.rect): DoorNodeSolved {
+  const e = edgeGapsOf(g);
+  return solveNode(g.tree, rect.u0 + e.uMin, rect.u1 - e.uMax, rect.v0 + e.vMin, rect.v1 - e.vMax, g.gap, 0);
+}
+/** Çözülmüş ağacı kayıt biçimine indirger (sizes/gaps/leafSplit güncel, alanlar atılır). */
+export function solvedToTree(n: DoorNodeSolved): DoorNode {
+  if (n.kind === 'leaf') return { id: n.id, kind: 'leaf', type: n.type, ...(n.leafSplit ? { leafSplit: n.leafSplit } : {}) };
+  return { id: n.id, kind: 'split', axis: n.axis, sizes: n.sizes, gaps: n.gaps, children: n.children.map(solvedToTree) };
+}
+/**
+ * Üye dikdörtgenleri: ağacın DFS yaprak sırası; double/fold yaprak iki kanada bölünür (double: sol→sağ, fold: üst→alt).
+ * Sıra = üye indeksi = VF.doorIndex.
+ */
+export function doorMemberRects(solved: DoorNodeSolved): DoorMemberRect[] {
+  const out: DoorMemberRect[] = [];
+  const walk = (n: DoorNodeSolved) => {
+    if (n.kind === 'split') { n.children.forEach(walk); return; }
+    const ax = doorLeafAxis(n.type), split = n.leafSplit;
+    const base = { leafId: n.id, type: n.type };
+    if (ax && split && split.leaves.length === 2) {
+      const [a, b] = split.leaves.map(l => Math.max(0, l.value));
+      if (ax === 'u') {
+        out.push({ ...base, leaf: 0, leafCount: 2, u0: n.u0, u1: n.u0 + a, v0: n.v0, v1: n.v1 });
+        out.push({ ...base, leaf: 1, leafCount: 2, u0: n.u0 + a + split.gap, u1: n.u0 + a + split.gap + b, v0: n.v0, v1: n.v1 });
+      } else {
+        out.push({ ...base, leaf: 0, leafCount: 2, u0: n.u0, u1: n.u1, v0: n.v1 - a, v1: n.v1 });
+        out.push({ ...base, leaf: 1, leafCount: 2, u0: n.u0, u1: n.u1, v0: n.v1 - a - split.gap - b, v1: n.v1 - a - split.gap });
+      }
+    } else out.push({ ...base, leaf: 0, leafCount: 1, u0: n.u0, u1: n.u1, v0: n.v0, v1: n.v1 });
+  };
+  walk(solved);
   return out;
 }
+/** Gruptan (kayıtlı dikdörtgenle) üyeler — şema ve satır ikonları için. */
+export const doorMembersOf = (g: DoorLayout) => doorMemberRects(solveDoorTree(g));
 
 /** Sınır referansının kenar bilgisi: panel kutusu (VF → panel) ya da gövde kenarı; panel bulunamazsa gövde. */
 function boundEdgeInfo(ref: DoorBoundRef, parent: Shape, shapes: Shape[], body: CavityBox, ax: 0 | 1 | 2, minSide: boolean, axis: 0 | 1 | 2, side: 1 | -1): EdgeInfo {
@@ -547,14 +554,10 @@ export function solveDoorGroup(group: DoorGroup, parent: Shape, shapes: Shape[])
     console.warn('[YAGO][KAPAK] dikdörtgen bozuk/çok küçük, önceki korunuyor:', group.id, fmtRect(rect));
     rect = { ...group.rect };
   }
-  const cg = colGapsOf(group), rg = rowGapsOf(group);
-  const colWidths = distributeDoors(group.colWidths, rect, 'u', cg);
-  const rowHeights = distributeDoors(group.rowHeights, rect, 'v', rg);
-  // KANATLAR: hücre ölçüleri çözüldükten sonra, hücrenin içinde (toplam = hücre ölçüsü).
-  const layout: DoorLayout = { ...group, rect, colWidths, rowHeights };
-  const leafSplits = resolveLeafSplits(layout);
-  const members = applyDoorCuts(group, rect, doorMemberRects(layout, leafSplits), collectDoorCuts(parent, shapes));
-  return { rect, colWidths, rowHeights, leafSplits, members };
+  // AĞAÇ: kök alanı dikdörtgen − kenar boşlukları; her bölme kendi alanını dağıtır (toplam = üst alan).
+  const solved = solveDoorTree(group, rect);
+  const members = applyDoorCuts(group, rect, doorMemberRects(solved), collectDoorCuts(parent, shapes));
+  return { rect, tree: solvedToTree(solved), solved, members };
 }
 
 /** Üyeleri dönmüş sınır panelleriyle kırpar (AÇILI REFERANS); her rebuild'de güncel panellerden yeniden. */
@@ -621,8 +624,8 @@ function solveFromStore(group: DoorGroup): DoorSolution | null {
 }
 
 const fallbackSolution = (group: DoorGroup): DoorSolution => {
-  const leafSplits = resolveLeafSplits(group);
-  return { rect: group.rect, colWidths: group.colWidths, rowHeights: group.rowHeights, leafSplits, members: doorMemberRects(group, leafSplits) };
+  const solved = solveDoorTree(group);
+  return { rect: group.rect, tree: solvedToTree(solved), solved, members: doorMemberRects(solved) };
 };
 
 function makeMemberVf(group: DoorGroup, i: number, sol: DoorSolution): VirtualFace {
@@ -647,7 +650,7 @@ function removeMembers(vfIds: string[]): void {
   }
 }
 
-/** Onaylanan adaydan grup + ilk kapak (1×1) oluşturur; grup seçilir. */
+/** Onaylanan adaydan grup + ilk (tek) kapak oluşturur; grup seçilir. Bölme sonra seçili kapak üzerinden (splitDoorLeaves). */
 export function createDoorGroupFromPick(shapeId: string, pick: DoorPick, placement: DoorGroup['placement'], name?: string): DoorGroup | null {
   const st = useAppStore.getState();
   const parent = shapeById(shapeId, st.shapes);
@@ -655,8 +658,7 @@ export function createDoorGroupFromPick(shapeId: string, pick: DoorPick, placeme
   const rect = placement === 'inner' ? { ...pick.inner } : { ...pick.outer };
   const group: DoorGroup = {
     id: genId('door'), shapeId, axis: pick.axis, side: pick.side, placement, bounds: pick.bounds, depthRef: pick.depth, rect,
-    cols: 1, rows: 1, colWidths: equalDoors(rect, 'u', [DOOR_GAP, DOOR_GAP]), rowHeights: equalDoors(rect, 'v', [DOOR_GAP, DOOR_GAP]),
-    colGaps: [DOOR_GAP, DOOR_GAP], rowGaps: [DOOR_GAP, DOOR_GAP], gap: DOOR_GAP, thickness: DOOR_THICKNESS, cellTypes: ['left'], leafSplits: {},
+    tree: makeDoorLeaf('left'), edgeGaps: { uMin: DOOR_GAP, uMax: DOOR_GAP, vMin: DOOR_GAP, vMax: DOOR_GAP }, gap: DOOR_GAP, thickness: DOOR_THICKNESS,
     memberVfIds: [], name: name?.trim() || 'Door', createdAt: Date.now(),
   };
   const sol = solveFromStore(group) || fallbackSolution(group);
@@ -690,200 +692,217 @@ async function writeDoorGroup(group: DoorGroup, patch: Partial<DoorGroup>, why: 
     const p = doorVfPatch(vf, next, sol);
     if (p) st.updateVirtualFace(vf.id, p);
   }
-  st.updateDoorGroup(group.id, { ...patch, rect: sol.rect, colWidths: sol.colWidths, rowHeights: sol.rowHeights, leafSplits: sol.leafSplits });
-  console.log('[YAGO][KAPAK]', why, group.id, fmtRect(sol.rect), 'sütun=', sol.colWidths.map(g => `${g.value}${g.locked ? '🔒' : ''}`).join('/'), 'satır=', sol.rowHeights.map(g => `${g.value}${g.locked ? '🔒' : ''}`).join('/'),
-    ...(Object.keys(sol.leafSplits).length ? ['kanat=', Object.entries(sol.leafSplits).map(([c, s]) => `h${c}:${s.leaves.map(l => l.value).join('+')}(${s.gap})`).join(' ')] : []));
+  st.updateDoorGroup(group.id, { ...patch, rect: sol.rect, tree: sol.tree });
+  console.log('[YAGO][KAPAK]', why, group.id, fmtRect(sol.rect), 'ağaç=', fmtTree(sol.solved));
   await requestRebuild(group.shapeId);
 }
 
-/** Kanat yapısını (eksen) karşılaştırmak için: tek kanat 'single', double 'u', fold 'v'. */
-const leafKey = (t: DoorType) => doorLeafAxis(t) ?? 'single';
-/** Hücre dizilerini (tip / kanat ölçüleri) yeni cols×rows'a (r,c) üzerinden taşır; yeni hücreler varsayılan alır. */
-function remapCells(group: DoorGroup, nc: number, nr: number): { cellTypes: DoorType[]; leafSplits: Record<number, DoorLeafSplit> } {
-  const old = doorCellTypes(group);
-  const cellTypes: DoorType[] = [], leafSplits: Record<number, DoorLeafSplit> = {};
-  for (let r = 0; r < nr; r++) for (let c = 0; c < nc; c++) {
-    const inOld = r < group.rows && c < group.cols;
-    const oi = r * group.cols + c, ni = r * nc + c;
-    cellTypes.push(inOld ? old[oi] : defaultDoorType(c, nc));
-    if (inOld && group.leafSplits?.[oi]) leafSplits[ni] = group.leafSplits[oi];
-  }
-  return { cellTypes, leafSplits };
+/** Ağacın kısa dökümü (log): leaf tip, split eksen[ölçü/ölçü]. */
+export function fmtTree(n: DoorNodeSolved): string {
+  if (n.kind === 'leaf') return n.leafSplit ? `${n.type}(${n.leafSplit.leaves.map(l => l.value).join('+')})` : n.type;
+  return `${n.axis}[${n.children.map((c, i) => `${n.sizes[i]?.value}${n.sizes[i]?.locked ? '🔒' : ''}:${fmtTree(c)}`).join(' | ')}]`;
 }
 
 /**
- * BÖLME (dikeyde böl = sütun, yatayda böl = satır): üye sayısı değişince tüm üyeler
- * yeniden kurulur (satır-major sıra); genişlik/yükseklikler eşitlenir.
+ * ÜYELERİ YENİDEN KUR (yapı değişti): yeni ağaca göre üyeler çıkarılır; yaprak id'si + kanat sırası aynı kalan üyelerin
+ * VF/panelleri (adımlarıyla) KORUNUR, yalnız doorIndex'leri yeni sıraya yazılır; diğerleri silinir, eksikler yeni VF
+ * olarak eklenir (paneli otomatik üretim yaratır → rebuild'i panel ekleme/silme izleyicisi tetikler).
+ * `restructured` = yapısı değişen yaprak id'leri (bunların eski üyeleri her durumda yenilenir).
  */
-export async function setDoorSplit(groupId: string, cols: number, rows: number): Promise<void> {
-  const group = groupById(groupId);
-  if (!group) return;
-  const nc = Math.max(1, Math.min(MAX_DOOR_SPLIT, Math.round(cols)));
-  const nr = Math.max(1, Math.min(MAX_DOOR_SPLIT, Math.round(rows)));
-  if (nc === group.cols && nr === group.rows) return;
-  // Kenar boşlukları korunur; yeni aralar mevcut ilk ARANIN değeriyle (yoksa varsayılan boşlukla) doğar;
-  // sayı değişmediyse aralar da aynen korunur.
-  const resplit = (old: number[], n: number) => (old.length === n + 1 ? old : gapsOf([old[0], old[old.length - 1]], n, old.length > 2 ? old[1] : group.gap));
-  const colGaps = resplit(colGapsOf(group), nc);
-  const rowGaps = resplit(rowGapsOf(group), nr);
-  const colWidths = nc === group.cols ? group.colWidths : equalDoors(group.rect, 'u', colGaps);
-  const rowHeights = nr === group.rows ? group.rowHeights : equalDoors(group.rect, 'v', rowGaps);
-  // Hücre tipleri / kanatlar (r,c) üzerinden taşınır; yeni hücreler varsayılan tipte (sol yarı left, sağ yarı right).
-  const { cellTypes, leafSplits } = remapCells(group, nc, nr);
-  const next: DoorGroup = { ...group, cols: nc, rows: nr, colWidths, rowHeights, colGaps, rowGaps, cellTypes, leafSplits, memberVfIds: [] };
-  const sol = solveFromStore(next) || fallbackSolution(next);
+function rebuildMembers(group: DoorGroup, nextGroup: DoorGroup, restructured: Set<string>, why: string): void {
   const st = useAppStore.getState();
-  // Üyeler yeniden kurulur: eski paneller + VF'ler silinir, yeni VF'ler eklenir (panelleri otomatik üretim yaratır).
-  removeMembers(group.memberVfIds);
-  const vfs = sol.members.map((_, i) => makeMemberVf(next, i, sol));
-  next.memberVfIds = vfs.map(v => v.id);
-  st.updateDoorGroup(groupId, { cols: nc, rows: nr, colGaps, rowGaps, cellTypes, leafSplits: sol.leafSplits, colWidths: sol.colWidths, rowHeights: sol.rowHeights, rect: sol.rect, memberVfIds: next.memberVfIds });
-  st.insertVirtualFacesAfter(null, vfs);
-  if (st.selectedDoorGroupId !== groupId && !st.selectedPanelRow) st.setSelectedDoorGroupId(groupId);
-  console.log('[YAGO][KAPAK] bölme', groupId, `${group.cols}x${group.rows}`, '→', `${nc}x${nr}`, '(genişlik/yükseklikler eşitlendi) tipler=', cellTypes.join('/'));
-  // Rebuild'i panel silme/ekleme izleyicisi (App) tetikler.
-}
-
-/**
- * KAPAK TİPİ ATAMA (Goker: "birden fazla kapağı seçip bir kapak tipi verebileyim"): seçilen HÜCRELERE tek tip.
- * Yalnız menteşe yönü değişiyorsa (left↔right↔up↔down, ya da double↔double) geometri aynıdır → tip yazılır, rebuild
- * yok. Kanat YAPISI değişen hücreler (tek↔double↔fold) yeniden kurulur: o hücrenin eski VF/panelleri silinir, yeni
- * kanat VF'leri eklenir (paneli otomatik üretim yaratır → rebuild). Diğer hücrelerin üyeleri (adımlarıyla) korunur;
- * yalnız doorIndex'leri yeni sıraya göre yazılır.
- */
-export async function setDoorCellTypes(groupId: string, cells: number[], type: DoorType): Promise<void> {
-  const group = groupById(groupId);
-  if (!group || !DOOR_TYPES.includes(type)) return;
-  const n = doorCellCount(group);
-  const old = doorCellTypes(group);
-  const next = old.slice();
-  let changed = false;
-  for (const c of cells) if (c >= 0 && c < n && next[c] !== type) { next[c] = type; changed = true; }
-  if (!changed) return;
-  const st = useAppStore.getState();
-  const leafSplits: Record<number, DoorLeafSplit> = { ...(group.leafSplits ?? {}) };
-  const restructured = new Set<number>();
-  for (let i = 0; i < n; i++) {
-    if (leafKey(old[i]) === leafKey(next[i])) continue;
-    restructured.add(i);
-    if (doorLeafAxis(next[i])) leafSplits[i] = { leaves: [], gap: leafSplits[i]?.gap ?? group.gap };   // kanatlar eşit doğar
-    else delete leafSplits[i];
-  }
-  if (!restructured.size) {
-    st.updateDoorGroup(groupId, { cellTypes: next });
-    console.log('[YAGO][KAPAK-TİP]', groupId, 'hücre', cells.join(','), '→', type, '(yalnız menteşe yönü, geometri aynı)');
-    return;
-  }
-  const nextGroup: DoorGroup = { ...group, cellTypes: next, leafSplits };
   const sol = solveFromStore(nextGroup) || fallbackSolution(nextGroup);
-  // Eski üyeler hücreye göre (doorIndex sırası = fallbackSolution(group).members sırası).
   const oldMembers = fallbackSolution(group).members;
-  const oldByCell = new Map<number, string[]>();
-  const consistent = oldMembers.length === group.memberVfIds.length;
-  if (consistent) oldMembers.forEach((m, i) => { const id = group.memberVfIds[i]; if (id) oldByCell.set(m.cell, [...(oldByCell.get(m.cell) ?? []), id]); });
-  else console.warn('[YAGO][KAPAK-TİP] üye sayısı tutmuyor, tüm üyeler yeniden kuruluyor:', oldMembers.length, 'vs', group.memberVfIds.length);
+  const oldIds = new Map<string, string>();   // `${leafId}/${leaf}` → vfId
+  if (oldMembers.length === group.memberVfIds.length) oldMembers.forEach((m, i) => { if (group.memberVfIds[i]) oldIds.set(`${m.leafId}/${m.leaf}`, group.memberVfIds[i]); });
+  else console.warn('[YAGO][KAPAK] üye sayısı tutmuyor, tüm üyeler yeniden kuruluyor:', oldMembers.length, 'vs', group.memberVfIds.length);
   const ids: string[] = [], kept: string[] = [], fresh: VirtualFace[] = [];
   sol.members.forEach((m, i) => {
-    const prev = consistent && !restructured.has(m.cell) ? oldByCell.get(m.cell)?.[m.leaf] : undefined;
+    const prev = restructured.has(m.leafId) ? undefined : oldIds.get(`${m.leafId}/${m.leaf}`);
     if (prev) { ids.push(prev); kept.push(prev); }
     else { const vf = makeMemberVf(nextGroup, i, sol); ids.push(vf.id); fresh.push(vf); }
   });
   removeMembers(group.memberVfIds.filter(id => !kept.includes(id)));
   for (const id of kept) st.updateVirtualFace(id, { doorIndex: ids.indexOf(id) });
-  st.updateDoorGroup(groupId, { cellTypes: next, leafSplits: sol.leafSplits, memberVfIds: ids, rect: sol.rect, colWidths: sol.colWidths, rowHeights: sol.rowHeights });
-  // Yeni kanatlar listede korunan son üyeden sonra (yoksa sona) — grup bir arada kalır.
+  st.updateDoorGroup(group.id, { ...nextGroup, rect: sol.rect, tree: sol.tree, memberVfIds: ids });
+  // Yeni kapaklar listede korunan son üyeden sonra (yoksa sona) — grup bir arada kalır.
   const order = useAppStore.getState().virtualFaces.map(f => f.id);
   const lastKept = kept.slice().sort((a, b) => order.indexOf(a) - order.indexOf(b)).pop() ?? null;
   st.insertVirtualFacesAfter(lastKept, fresh);
-  if (st.selectedDoorGroupId !== groupId && !useAppStore.getState().selectedPanelRow) st.setSelectedDoorGroupId(groupId);
-  console.log('[YAGO][KAPAK-TİP]', groupId, 'hücre', cells.join(','), '→', type, 'yeniden kurulan hücre=', [...restructured].join(','), 'korunan=', kept.length, 'yeni=', fresh.length);
-  // Rebuild'i panel silme/ekleme izleyicisi (App) tetikler.
+  if (useAppStore.getState().selectedDoorGroupId !== group.id && !useAppStore.getState().selectedPanelRow) st.setSelectedDoorGroupId(group.id);
+  console.log('[YAGO][KAPAK]', why, group.id, 'ağaç=', fmtTree(sol.solved), 'korunan=', kept.length, 'yeni=', fresh.length, 'silinen=', group.memberVfIds.length - kept.length);
 }
 
 /**
- * KANAT ÖLÇÜSÜ (Goker: "o bölünmüş yeri ayrıca ölçülendirebileyim ama total ölçü ilk bölünen üzerinden"): iki
- * kanatlı hücrede kanat k'ya değer girilir; diğer kanat hücre ölçüsünden (− kanat arası boşluk) kalanı alır. Hücre
- * ölçüsü (sütun / satır) değişmez.
+ * SEÇİLİ KAPAĞI BÖL (Goker, Eki 2026: "seçili olan kapağı bölmeliyiz; ilk tek kapak yerleşir, o bölünür; bölünen
+ * kapağı tıklayıp tekrar dikey/yatay bölünebilmeli"): her seçili yaprak, kendi alanında `axis` ekseninde `count`
+ * çocuğa bölünen bir split düğümü olur (u = Split V yan yana, v = Split H üst üste). Çocuklar eşit doğar; aralar grubun
+ * varsayılan boşluğu. Çocuk tipleri: u → sol yarı left / sağ yarı right; v → bölünen kapağın tipi (kanatsız).
+ * Üst bölmelerin ölçüleri değişmez — bölünen kapağın toplamı korunur.
  */
-export async function editDoorLeafSize(groupId: string, cell: number, k: number, value: number): Promise<void> {
+export async function splitDoorLeaves(groupId: string, leafIds: string[], axis: 'u' | 'v', count = 2): Promise<void> {
   const group = groupById(groupId);
-  if (!group || !Number.isFinite(value) || value <= 0) return;
-  const ax = doorLeafAxis(doorTypeOf(group, cell));
-  if (!ax) return;
-  const cur = resolveLeafSplits(group)[cell];
-  if (!cur) return;
-  const leaves = applyGapEdit(cur.leaves, k, value, doorCellSize(group, cell, ax), 1, [cur.gap]);
-  await writeDoorGroup(group, { leafSplits: { ...(group.leafSplits ?? {}), [cell]: { leaves, gap: cur.gap } } }, `hücre ${cell} kanat ${k + 1} = ${value}`);
+  if (!group) return;
+  const n = Math.max(2, Math.min(MAX_DOOR_SPLIT, Math.round(count)));
+  let tree = group.tree;
+  const restructured = new Set<string>();
+  for (const id of leafIds) {
+    const node = findDoorNode(tree, id);
+    if (!node || node.kind !== 'leaf') continue;
+    const baseType: DoorType = doorLeafAxis(node.type) ? 'left' : node.type;
+    tree = replaceDoorNode(tree, id, () => ({
+      id: genId('ds'), kind: 'split', axis, sizes: [], gaps: Array.from({ length: n - 1 }, () => group.gap),
+      children: Array.from({ length: n }, (_, c) => makeDoorLeaf(axis === 'u' ? defaultDoorType(c, n) : baseType)),
+    }));
+    restructured.add(id);
+  }
+  if (!restructured.size) return;
+  rebuildMembers(group, { ...group, tree }, restructured, `bölme ${axis === 'u' ? 'V' : 'H'} ×${n}`);
 }
-/** KANAT ARASI BOŞLUK (Goker: "2 kapak arası ölçülendirilebilsin"): yalnız o hücrenin iki kanadı arasındaki boşluk. */
-export async function setDoorLeafGap(groupId: string, cell: number, gap: number): Promise<void> {
+/**
+ * BİRLEŞTİR: seçili kapağın üst bölmesi tek kapağa iner (kardeşleri de gider); tip = seçili kapağın tipi. Kökteki tek
+ * kapak için anlamsız (bir üst bölme yok).
+ */
+export async function mergeDoorLeaf(groupId: string, leafId: string): Promise<void> {
   const group = groupById(groupId);
-  if (!group || !Number.isFinite(gap) || gap < 0) return;
-  const cur = resolveLeafSplits(group)[cell];
-  if (!cur || Math.abs(cur.gap - gap) < 0.05) return;
-  await writeDoorGroup(group, { leafSplits: { ...(group.leafSplits ?? {}), [cell]: { leaves: cur.leaves, gap: round1(gap) } } }, `hücre ${cell} kanat arası = ${round1(gap)}`);
+  if (!group) return;
+  const parent = findDoorParent(group.tree, leafId);
+  const node = findDoorNode(group.tree, leafId);
+  if (!parent || !node || node.kind !== 'leaf') return;
+  const gone = new Set(doorLeaves(parent).map(l => l.id));
+  const tree = replaceDoorNode(group.tree, parent.id, () => makeDoorLeaf(doorLeafAxis(node.type) ? 'left' : node.type));
+  rebuildMembers(group, { ...group, tree }, gone, 'birleştirme');
+}
+/** Bir split düğümünün çocuk sayısı: artır → sona eşit kapak eklenir; azalt → sondaki kapak(lar) gider (≥2). */
+export async function setDoorSplitCount(groupId: string, splitId: string, count: number): Promise<void> {
+  const group = groupById(groupId);
+  const node = group ? findDoorNode(group.tree, splitId) : null;
+  if (!group || !node || node.kind !== 'split') return;
+  const n = Math.max(2, Math.min(MAX_DOOR_SPLIT, Math.round(count)));
+  if (n === node.children.length) return;
+  const restructured = new Set<string>();
+  let children = node.children.slice();
+  if (n > children.length) for (let c = children.length; c < n; c++) children.push(makeDoorLeaf(node.axis === 'u' ? defaultDoorType(c, n) : 'left'));
+  else { for (const c of children.slice(n)) for (const l of doorLeaves(c)) restructured.add(l.id); children = children.slice(0, n); }
+  const gaps = Array.from({ length: n - 1 }, (_, i) => node.gaps[i] ?? node.gaps[0] ?? group.gap);
+  const tree = replaceDoorNode(group.tree, splitId, () => ({ ...node, children, gaps, sizes: [] }));   // ölçüler eşitlenir
+  rebuildMembers(group, { ...group, tree }, restructured, `bölme sayısı ${node.children.length} → ${n}`);
 }
 
-/** Sütun genişliği girişi (şema pill'i): applyGapEdit kuralı — girilen korunur, fark kilitsiz/girilmemişlere eşit. */
-export async function editDoorColWidth(groupId: string, k: number, value: number): Promise<void> {
+/**
+ * KAPAK TİPİ ATAMA (Goker: "birden fazla kapağı seçip bir kapak tipi verebileyim"): seçilen YAPRAKLARA tek tip.
+ * Yalnız menteşe yönü değişiyorsa (left↔right↔up↔down, ya da double↔double) geometri aynıdır → tip yazılır, rebuild
+ * yok. Kanat YAPISI değişen yapraklar (tek↔double↔fold) yeniden kurulur; diğer kapaklar (adımlarıyla) korunur.
+ */
+export async function setDoorLeafTypes(groupId: string, leafIds: string[], type: DoorType): Promise<void> {
+  const group = groupById(groupId);
+  if (!group || !DOOR_TYPES.includes(type)) return;
+  let tree = group.tree;
+  const restructured = new Set<string>();
+  let changed = false;
+  for (const id of leafIds) {
+    const node = findDoorNode(tree, id);
+    if (!node || node.kind !== 'leaf' || node.type === type) continue;
+    changed = true;
+    const structural = (doorLeafAxis(node.type) ?? 'single') !== (doorLeafAxis(type) ?? 'single');
+    if (structural) restructured.add(id);
+    tree = replaceDoorNode(tree, id, old => ({
+      ...old, type,
+      // kanatlı → kanatlı aynı eksen: kanat ölçüleri korunur; aksi halde kanatlar eşit doğar (ara korunur) / silinir
+      ...(doorLeafAxis(type) ? (structural ? { leafSplit: { leaves: [], gap: (old as any).leafSplit?.gap ?? group.gap } } : {}) : { leafSplit: undefined }),
+    } as DoorNode));
+  }
+  if (!changed) return;
+  if (!restructured.size) {
+    useAppStore.getState().updateDoorGroup(groupId, { tree });
+    console.log('[YAGO][KAPAK-TİP]', groupId, leafIds.length, 'kapak →', type, '(yalnız menteşe yönü, geometri aynı)');
+    return;
+  }
+  rebuildMembers(group, { ...group, tree }, restructured, `tip → ${type} (${leafIds.length} kapak)`);
+}
+
+/**
+ * KANAT ÖLÇÜSÜ (Goker: "o bölünmüş yeri ayrıca ölçülendirebileyim ama total ölçü ilk bölünen üzerinden"): double/fold
+ * yaprakta kanat k'ya değer girilir; diğer kanat yaprağın alanından (− kanat arası) kalanı alır. Yaprağın alanı değişmez.
+ */
+export async function editDoorLeafSize(groupId: string, leafId: string, k: number, value: number): Promise<void> {
   const group = groupById(groupId);
   if (!group || !Number.isFinite(value) || value <= 0) return;
-  const cg = colGapsOf(group);
-  const colWidths = applyGapEdit(group.colWidths, k, value, doorSpan(group.rect, 'u', cg), group.cols - 1, innerGaps(cg));
-  await writeDoorGroup(group, { colWidths }, `sütun ${k + 1} = ${value}`);
+  const sn = findSolvedNode(solveDoorTree(group), leafId);
+  if (!sn || sn.kind !== 'leaf' || !sn.leafSplit) return;
+  const ax = doorLeafAxis(sn.type)!;
+  const leaves = applyGapEdit(sn.leafSplit.leaves, k, value, ax === 'u' ? sn.u1 - sn.u0 : sn.v1 - sn.v0, 1, [sn.leafSplit.gap]);
+  const tree = replaceDoorNode(group.tree, leafId, old => ({ ...old, leafSplit: { leaves, gap: sn.leafSplit!.gap } } as DoorNode));
+  await writeDoorGroup(group, { tree }, `kanat ${k + 1} = ${value}`);
 }
-export async function editDoorRowHeight(groupId: string, k: number, value: number): Promise<void> {
+/** KANAT ARASI BOŞLUK (Goker: "2 kapak arası ölçülendirilebilsin"): yalnız o yaprağın iki kanadı arasındaki boşluk. */
+export async function setDoorLeafGap(groupId: string, leafId: string, gap: number): Promise<void> {
+  const group = groupById(groupId);
+  if (!group || !Number.isFinite(gap) || gap < 0) return;
+  const sn = findSolvedNode(solveDoorTree(group), leafId);
+  if (!sn || sn.kind !== 'leaf' || !sn.leafSplit || Math.abs(sn.leafSplit.gap - gap) < 0.05) return;
+  const tree = replaceDoorNode(group.tree, leafId, old => ({ ...old, leafSplit: { leaves: sn.leafSplit!.leaves, gap: round1(gap) } } as DoorNode));
+  await writeDoorGroup(group, { tree }, `kanat arası = ${round1(gap)}`);
+}
+
+/** BÖLME ÖLÇÜSÜ (şema pill'i): split düğümünün k. çocuğuna değer; fark kilitsiz/girilmemiş kardeşlere EŞİT (applyGapEdit). */
+export async function editDoorSize(groupId: string, splitId: string, k: number, value: number): Promise<void> {
   const group = groupById(groupId);
   if (!group || !Number.isFinite(value) || value <= 0) return;
-  const rg = rowGapsOf(group);
-  const rowHeights = applyGapEdit(group.rowHeights, k, value, doorSpan(group.rect, 'v', rg), group.rows - 1, innerGaps(rg));
-  await writeDoorGroup(group, { rowHeights }, `satır ${k + 1} = ${value}`);
+  const sn = findSolvedNode(solveDoorTree(group), splitId);
+  if (!sn || sn.kind !== 'split') return;
+  const L = sn.axis === 'u' ? sn.u1 - sn.u0 : sn.v1 - sn.v0;
+  const sizes = applyGapEdit(sn.sizes, k, value, L, sn.gaps.length, sn.gaps);
+  const tree = replaceDoorNode(group.tree, splitId, old => ({ ...(old as any), sizes }));
+  await writeDoorGroup(group, { tree }, `ölçü ${k + 1} = ${value}`);
 }
-/** Kilit: değer değişmez; gövde boyutlanınca bu sütun/satır sabit kalır. */
-export function toggleDoorColLock(groupId: string, k: number): void {
+/** Kilit: değer değişmez; gövde boyutlanınca bu kapak sabit kalır (kardeşler dağıtır). Geometri değişmez → rebuild yok. */
+export function toggleDoorSizeLock(groupId: string, splitId: string, k: number): void {
   const group = groupById(groupId);
-  if (!group || k < 0 || k >= group.colWidths.length) return;
-  useAppStore.getState().updateDoorGroup(groupId, { colWidths: group.colWidths.map((g, i) => (i === k ? { ...g, locked: !g.locked } : g)) });
+  const sn = group ? findSolvedNode(solveDoorTree(group), splitId) : null;
+  if (!group || !sn || sn.kind !== 'split' || k < 0 || k >= sn.sizes.length) return;
+  const sizes = sn.sizes.map((g, i) => (i === k ? { ...g, locked: !g.locked } : g));
+  useAppStore.getState().updateDoorGroup(groupId, { tree: replaceDoorNode(group.tree, splitId, old => ({ ...(old as any), sizes })) });
 }
-export function toggleDoorRowLock(groupId: string, k: number): void {
+/** Split düğümündeki TEK ara boşluk (k. çocuk ile k+1. arası): yalnız o değişir; fark serbest kapaklara eşit. */
+export async function setDoorSplitGap(groupId: string, splitId: string, k: number, value: number): Promise<void> {
   const group = groupById(groupId);
-  if (!group || k < 0 || k >= group.rowHeights.length) return;
-  useAppStore.getState().updateDoorGroup(groupId, { rowHeights: group.rowHeights.map((g, i) => (i === k ? { ...g, locked: !g.locked } : g)) });
+  if (!group || !Number.isFinite(value) || value < 0) return;
+  const sn = findSolvedNode(solveDoorTree(group), splitId);
+  if (!sn || sn.kind !== 'split' || k < 0 || k >= sn.gaps.length || Math.abs(sn.gaps[k] - value) < 0.05) return;
+  const gaps = sn.gaps.slice(); gaps[k] = round1(value);
+  const tree = replaceDoorNode(group.tree, splitId, old => ({ ...(old as any), gaps }));
+  await writeDoorGroup(group, { tree }, `ara boşluk ${k + 1} = ${round1(value)}`);
 }
-/** Tüm boşluklar (kenarlar + aralar) tek değere: kilitli/girilmiş kapak ölçüleri korunur, kalan diğerlerine EŞİT (distributeDoors). */
+/** KENAR BOŞLUĞU (sol/sağ/alt/üst): yalnız o kenar değişir. */
+export async function setDoorEdgeGap(groupId: string, edge: DoorEdgeKey, value: number): Promise<void> {
+  const group = groupById(groupId);
+  if (!group || !Number.isFinite(value) || value < 0) return;
+  const e = edgeGapsOf(group);
+  if (Math.abs(e[edge] - value) < 0.05) return;
+  await writeDoorGroup(group, { edgeGaps: { ...e, [edge]: round1(value) } }, `kenar boşluğu ${edge} = ${round1(value)}`);
+}
+/** Ağaçtaki tüm aralar / kanat araları / kenarlar tek değere (ölçü kilit ve girilenleri korunur). */
+function mapTreeGaps(n: DoorNode, g: number): DoorNode {
+  if (n.kind === 'leaf') return n.leafSplit ? { ...n, leafSplit: { ...n.leafSplit, gap: g } } : n;
+  return { ...n, gaps: n.gaps.map(() => g), children: n.children.map(c => mapTreeGaps(c, g)) };
+}
+/** Tüm boşluklar (kenarlar + aralar + kanat araları) tek değere: kilitli/girilmiş kapak ölçüleri korunur, kalan EŞİT. */
 export async function setDoorGap(groupId: string, gap: number): Promise<void> {
   const group = groupById(groupId);
   if (!group || !Number.isFinite(gap) || gap < 0) return;
   const g = round1(gap);
-  await writeDoorGroup(group, { gap: g, colGaps: gapsOf(undefined, group.cols, g), rowGaps: gapsOf(undefined, group.rows, g) }, `tüm boşluklar = ${g}`);
+  await writeDoorGroup(group, { gap: g, edgeGaps: { uMin: g, uMax: g, vMin: g, vMax: g }, tree: mapTreeGaps(group.tree, g) }, `tüm boşluklar = ${g}`);
 }
-/**
- * TEK BOŞLUK (şemadaki boşluk pill'i): axis 'col' → k = 0 sol kenar … cols sağ kenar; 'row' → k = 0 üst kenar …
- * rows alt kenar. Yalnız o boşluk değişir; fark kilitli/girilmemiş kapaklara EŞİT dağılır.
- */
-export async function setDoorGapAt(groupId: string, axis: 'col' | 'row', k: number, value: number): Promise<void> {
-  const group = groupById(groupId);
-  if (!group || !Number.isFinite(value) || value < 0) return;
-  const v = round1(value);
-  const gaps = axis === 'col' ? colGapsOf(group) : rowGapsOf(group);
-  if (k < 0 || k >= gaps.length || Math.abs(gaps[k] - v) < 0.05) return;
-  gaps[k] = v;
-  const n = gaps.length - 1;
-  const where = k === 0 ? (axis === 'col' ? 'sol kenar' : 'üst kenar') : k === n ? (axis === 'col' ? 'sağ kenar' : 'alt kenar') : `${axis === 'col' ? 'sütun' : 'satır'} arası ${k}`;
-  await writeDoorGroup(group, axis === 'col' ? { colGaps: gaps } : { rowGaps: gaps }, `boşluk ${where} = ${v}`);
+/** Tüm ölçüler eşit + kilitsiz (kanatlar dahil); boşluklar korunur. */
+function equalizeTree(n: DoorNode): DoorNode {
+  if (n.kind === 'leaf') return n.leafSplit ? { ...n, leafSplit: { ...n.leafSplit, leaves: [] } } : n;
+  return { ...n, sizes: [], children: n.children.map(equalizeTree) };
 }
-/** Tüm sütun/satırlar eşit + kilitsiz. */
 export async function equalizeDoorGroup(groupId: string): Promise<void> {
   const group = groupById(groupId);
   if (!group) return;
-  // Kanatlar da eşitlenir (kanat arası boşluk korunur).
-  const leafSplits: Record<number, DoorLeafSplit> = {};
-  for (const [c, s] of Object.entries(resolveLeafSplits(group))) leafSplits[Number(c)] = { leaves: [], gap: s.gap };
-  await writeDoorGroup(group, {
-    colWidths: equalDoors(group.rect, 'u', colGapsOf(group)),
-    rowHeights: equalDoors(group.rect, 'v', rowGapsOf(group)),
-    leafSplits,
-  }, 'eşitlendi');
+  await writeDoorGroup(group, { tree: equalizeTree(group.tree) }, 'eşitlendi');
 }
 /** Dış / iç kapak: dikdörtgen sınır panellerinin dış/iç yüzlerinden yeniden çözülür. */
 export async function setDoorPlacement(groupId: string, placement: DoorGroup['placement']): Promise<void> {
@@ -904,10 +923,10 @@ export async function setDoorHalfOverlay(groupId: string, edge: DoorEdgeKey, on:
   if (!group || !!group.halfOverlay?.[edge] === on) return;
   const halfOverlay = { ...(group.halfOverlay ?? {}), [edge]: on };
   const isU = edge === 'uMin' || edge === 'uMax';
-  const patch: Partial<DoorGroup> = isU
-    ? { halfOverlay, colWidths: equalDoors(group.rect, 'u', colGapsOf(group)) }
-    : { halfOverlay, rowHeights: equalDoors(group.rect, 'v', rowGapsOf(group)) };
-  await writeDoorGroup(group, patch, `yarım binme ${edge} ${on ? 'AÇIK' : 'kapalı'} (${isU ? 'sütunlar' : 'satırlar'} eşitlendi)`);
+  // O eksendeki KÖK bölmenin ölçüleri yeniden eşit bölünür (kilit / girilen sıfırlanır); alt bölmeler kendi alanlarında izler.
+  const root = group.tree;
+  const tree: DoorNode = root.kind === 'split' && root.axis === (isU ? 'u' : 'v') ? { ...root, sizes: [] } : root;
+  await writeDoorGroup(group, { halfOverlay, tree }, `yarım binme ${edge} ${on ? 'AÇIK' : 'kapalı'} (${isU ? 'sütunlar' : 'satırlar'} eşitlendi)`);
 }
 /** Kapak kalınlığı: üye panellerin panelThickness parametresi güncellenir (motor levhayı bununla üretir). */
 export async function setDoorThickness(groupId: string, t: number): Promise<void> {
@@ -948,11 +967,19 @@ export function syncDoorGroups(parentShapeId: string): void {
     if (g.shapeId !== parentShapeId) continue;
     const sol = solveDoorGroup(g, parent, st.shapes);
     if (!sol) continue;
-    const same = (a: GapSpec[], b: GapSpec[]) => a.length === b.length && a.every((x, i) => Math.abs(x.value - b[i].value) < 0.05 && x.locked === b[i].locked);
-    const leafSame = Object.keys(sol.leafSplits).every(k => { const a = sol.leafSplits[Number(k)], b = g.leafSplits?.[Number(k)]; return !!b && Math.abs(a.gap - b.gap) < 0.05 && same(a.leaves, b.leaves); });
-    if (rectKey(sol.rect) === rectKey(g.rect) && Math.abs(sol.rect.front - g.rect.front) < 0.05 && same(sol.colWidths, g.colWidths) && same(sol.rowHeights, g.rowHeights) && leafSame) continue;
-    st.updateDoorGroup(g.id, { rect: sol.rect, colWidths: sol.colWidths, rowHeights: sol.rowHeights, leafSplits: sol.leafSplits });
-    console.log('[YAGO][KAPAK-SENKRON]', g.id, fmtRect(sol.rect), 'sütun=', sol.colWidths.map(x => x.value).join('/'), 'satır=', sol.rowHeights.map(x => x.value).join('/'));
+    const sameTree = (a: DoorNode, b: DoorNode): boolean => {
+      if (a.kind !== b.kind || a.id !== b.id) return false;
+      if (a.kind === 'leaf' || b.kind === 'leaf') {
+        const la = (a as any).leafSplit as DoorLeafSplit | undefined, lb = (b as any).leafSplit as DoorLeafSplit | undefined;
+        if (!la && !lb) return true;
+        return !!la && !!lb && Math.abs(la.gap - lb.gap) < 0.05 && la.leaves.length === lb.leaves.length && la.leaves.every((x, i) => Math.abs(x.value - lb.leaves[i].value) < 0.05);
+      }
+      return a.children.length === b.children.length && a.sizes.length === b.sizes.length && a.sizes.every((x, i) => Math.abs(x.value - b.sizes[i].value) < 0.05 && x.locked === b.sizes[i].locked)
+        && a.gaps.length === b.gaps.length && a.gaps.every((x, i) => Math.abs(x - b.gaps[i]) < 0.05) && a.children.every((c, i) => sameTree(c, b.children[i]));
+    };
+    if (rectKey(sol.rect) === rectKey(g.rect) && Math.abs(sol.rect.front - g.rect.front) < 0.05 && sameTree(sol.tree, g.tree)) continue;
+    st.updateDoorGroup(g.id, { rect: sol.rect, tree: sol.tree });
+    console.log('[YAGO][KAPAK-SENKRON]', g.id, fmtRect(sol.rect), 'ağaç=', fmtTree(sol.solved));
   }
 }
 
@@ -963,7 +990,7 @@ export function syncDoorGroups(parentShapeId: string): void {
 export function doorSlabPolygon(
   group: Pick<DoorGroup, 'axis' | 'side' | 'placement' | 'thickness' | 'gap'>, rect: DoorRect, cuts: DoorCut[],
 ): { normal: Vec3; vertices: Vec3[] } {
-  const m: DoorMemberRect = { r: 0, c: 0, cell: 0, type: 'left', leaf: 0, leafCount: 1, u0: rect.u0, u1: rect.u1, v0: rect.v0, v1: rect.v1 };
+  const m: DoorMemberRect = { leafId: PREVIEW_ID, type: 'left', leaf: 0, leafCount: 1, u0: rect.u0, u1: rect.u1, v0: rect.v0, v1: rect.v1 };
   const [mm] = applyDoorCuts({ ...group, id: PREVIEW_ID }, rect, [m], cuts);
   const g = doorMemberVfGeometry({ ...group } as DoorGroup, mm, rect);
   return { normal: g.normal, vertices: g.vertices };
