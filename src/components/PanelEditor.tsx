@@ -8,7 +8,7 @@ import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import {
-  type CavityBox, type DoorGroup, type DoorType, type PanelGroup, type Shape, type VirtualFace, childPanelsOf, panelOfVf, requestRebuild, shapeById, useAppStore, useStoreFields,
+  type CavityBox, type DoorAlign, type DoorGroup, type DoorType, type PanelGroup, type Shape, type VirtualFace, childPanelsOf, panelOfVf, requestRebuild, shapeById, useAppStore, useStoreFields,
 } from '../store';
 import { ToolChip, ToolChipBar, UI_FONT } from './Ui';
 import { confirmBodyPanelPlacement } from './SceneObjects';
@@ -23,9 +23,9 @@ import {
   traceMaskLoops, updateCavityStep,
 } from './PanelGroupService';
 import {
-  type DoorCut, type DoorEdgeKey, type DoorNodeSolved, DOOR_TYPES, DOOR_TYPE_LABEL, DOOR_TYPE_TITLE, applyDoorCuts, collectDoorCuts, doorHalfOverlayEdges, doorLeafAxis, doorLeaves, doorMemberCount,
+  type DoorCut, type DoorEdgeKey, type DoorNearPanel, type DoorNodeSolved, DOOR_TYPES, DOOR_TYPE_LABEL, DOOR_TYPE_TITLE, applyDoorCuts, collectDoorCuts, doorLeafAxis, doorLeaves, doorMemberCount, doorNearPanels,
   confirmDoorPick, deleteDoorGroupWithMembers, doorGroupName, doorMemberRects, doorMembersOf, doorPlacementLabel, edgeGapsOf, editDoorLeafSize, editDoorSize, equalizeDoorGroup, findDoorNode, findSolvedNode,
-  isDoorVf, renameDoorGroup, setDoorEdgeGap, setDoorGap, setDoorHalfOverlay, setDoorLeafGap, setDoorLeafTypes, setDoorNodeSplit, setDoorPlacement, setDoorSplitGap, setDoorThickness, setVfDoorBound,
+  isDoorVf, renameDoorGroup, setDoorEdgeGap, setDoorGap, setDoorHalfOverlay, setDoorLeafGap, setDoorLeafTypes, setDoorNodeSplit, setDoorPanelAlign, setDoorPlacement, setDoorSplitGap, setDoorThickness, setVfDoorBound,
   solveDoorTree, toggleDoorSizeLock,
 } from './DoorService';
 
@@ -1040,14 +1040,15 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
    arada); iç içe bölmeler kendi alanlarının İÇİNDE (yan yana → alt kenara yakın yatay, üst üste → sağ kenara yakın
    düşey; derinleştikçe 16 px içeri). Double/fold yaprağın kanat zinciri de aynı kuralla yaprağın içinde. Her pill
    tıkla → değer gir; ölçü pill'inin ucundaki kilit → kilitle. ÖLÇÜ OKU YOK (Goker: "ölçü okları kapak boşluklarının
-   içine giriyor") — yalnız pill'ler. Kapaklar 1,5 px içeri çizilir ki 3 mm boşluklar görünür kalsın. */
+   içine giriyor") — yalnız pill'ler. Kapaklar 1,5 px içeri çizilir ki 3 mm boşluklar görünür kalsın. Sınır levhaları
+   (yan / üst / alt / dikme / raf) yalnız DIŞ kapakta ve kapağa boşluk + 3 mm içinde değiyorsa, GERÇEK konum ve kalınlıkla
+   (en az 6 px) çizilir — iç kapakta ya da sınır paneli yoksa hiç çizilmez (Goker). */
 const DOOR_INSET_PX = 1.5;        // kapak çiziminin kenarlardan içeri payı (boşluklar görünsün)
 const CHAIN_OFF_H = 27;           // iç YATAY ölçü zincirinin alt kenardan uzaklığı (px) — alt bant ve ortadaki rozetle çakışmasın
 const CHAIN_OFF_V = 38;           // iç DÜŞEY ölçü zincirinin sağ kenardan uzaklığı (px) — pill'ler yatay geniş, sağ bant rozetini aşsın
 const CHAIN_STEP = 16;            // iç içe zincirler arası (px)
 const DOOR_PAD = 54;              // kapak şemasının kenar payı (dış ölçü zinciri + panel bandı sığsın)
-const BAND = 16;                  // sınır paneli (dikme / yan / üst / alt) bandının TEMSİLİ kalınlığı (px) — ölçekten bağımsız
-const OUTER_CHAIN = 33;           // dış ölçü zincirinin kapak alanından uzaklığı (px) — bandın dışında
+const OUTER_CHAIN = 33;           // dış ölçü zincirinin kapak alanından uzaklığı (px) — kenar levhasının (gerçek ölçek, ≥ 6 px) dışında
 
 /* ── KAPAK AÇILIŞ İŞARETİ (Goker, Eki 2026: "her kapak tipine mobilya sektörüne uygun kapak açılış simgesi") ──
    Mobilya/mutfak görünüş çizimi standardı: kapağın karşı (kulp) kenarının iki köşesinden menteşe kenarının ORTASINA
@@ -1125,20 +1126,22 @@ type DoorEdit = { key: string; v: string };
 /** Ölçü zinciri öğesi: ölçü (ok + pill + kilit) ya da boşluk (yalnız pill). a..b = eksen boyunca mm. */
 type ChainItem = { key: string; kind: 'size' | 'gap'; a: number; b: number; txt: string; title: string; locked?: boolean; onLock?: () => void; commit: (v: number) => void; min: number };
 type Chain = { horiz: boolean; pos: number; items: ChainItem[]; small?: boolean };
-export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts, halfEdges, onEditSize, onToggleLock, onEditSplitGap, onEditEdgeGap, onEditLeaf, onEditLeafGap, onPathClick, onToggleHalfOverlay }: {
+export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts, nearPanels, onEditSize, onToggleLock, onEditSplitGap, onEditEdgeGap, onEditLeaf, onEditLeafGap, onPathClick, onToggleHalfOverlay, onAlignPanel }: {
   group: DoorGroup; selectedIndex: number; memberLabels: string[];
   /** BÖLGE SEÇİMİ: seçili düğümler (kök alan / bölme / kapak) — turuncu çerçeve + seviye etiketi (ör. "L1 · V ×2"). */
   selectedNodes: string[];
   /** AÇILI REFERANS: dönmüş sınır panelleri — üyeler bunlarla kırpılmış çokgen olarak çizilir (3B ile aynı şekil). */
   cuts: DoorCut[];
-  /** YARIM BİNME uygunluğu: kenarın sınır paneli var ve kapak kalınlığını örtüyor → o kenarda checkbox çizilir. */
-  halfEdges: Record<DoorEdgeKey, boolean>;
+  /** ŞEMADAKİ SINIR LEVHALARI (dış kapak; iç kapakta boş): gerçek konum/kalınlık; kenar levhasında yarım binme, iç levhada derz hizalaması. */
+  nearPanels: DoorNearPanel[];
   onEditSize: (splitId: string, k: number, v: number) => void; onToggleLock: (splitId: string, k: number) => void;
   onEditSplitGap: (splitId: string, k: number, v: number) => void; onEditEdgeGap: (edge: DoorEdgeKey, v: number) => void;
   onEditLeaf: (leafId: string, k: number, v: number) => void; onEditLeafGap: (leafId: string, v: number) => void;
   /** Kapak tıklandı: tıklanan noktanın kök → yaprak düğüm yolu (yalnız seçim — üye seçilmez); additive = Shift/Ctrl/⌘. */
   onPathClick: (path: string[], additive: boolean) => void;
   onToggleHalfOverlay: (edge: DoorEdgeKey, on: boolean) => void;
+  /** İç levha derze hizalanır (null = serbest). */
+  onAlignPanel: (vfId: string, align: DoorAlign | null) => void;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(300);
@@ -1266,45 +1269,60 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
   }));
   const pillByKey = new Map(pills.map(p => [p.key, p]));
 
-  // ── SINIR PANELLERİ + YARIM BİNME (Goker, Eki 2026: "kapak paylaşım paneli çok belli değil; kapak dikmenin üstüne
-  // binsin, dikmeye tıklandığında yarım bindiğini göster") ──
-  // Kapak alanını saran dört bant, kenarın sınır panelini (dikme / yan / üst / alt) TEMSİLİ kalınlıkta (BAND px) çizer
-  // ve kapağa göre GERÇEK konumunda durur — kapak kenarı (çizilen kapağın kenarı) referans:
-  //   • full (dış kapak, kapak paneli tam örter): bant kapağın ARKASINDA (yalnız kıl payı görünür)
-  //   • half (yarım binme AÇIK): bandın ortası kapak kenarında — yarısı görünür, yarısı kapağın arkasında
-  //   • out  (iç kapak / panel yok / panel kapağın önünde): bant kapağın yanında, tamamen görünür
-  // Kapak arkasında kalan kısım, görünüş çizimi kuralıyla KESİKLİ (gizli çizgi) çizilir. Dış kapakta banda tıklamak o
-  // kenarın yarım binmesini açar/kapar; AÇIK kenarda turuncu "½" rozeti. Yan paneller tam boy, üst/alt aralarında.
-  type BandState = 'full' | 'half' | 'out';
+  // ── SINIR LEVHALARI (Goker, Eki 2026: "iç kapakta ya da sınır panel yoksa kalınlığı hiç gösterme; dikme/rafa 2-3 mm
+  // yaklaşan kapakta göster; dikmeyi kapağın sağına/soluna/ortalı, rafı yukarı/aşağı/ortada yerleştireyim") ──
+  // nearPanels (DoorService.doorNearPanels) gerçek (u,v) konum + kalınlıkla gelir; burada yalnız ekrana çevrilir. Çok ince
+  // levha en az BAND_MIN px çizilir (merkez sabit). Kapak arkasında kalan kısım kesikli (gizli çizgi). Kenar levhası →
+  // Full/Half rozeti (yarım binme); derze yakın iç raf/dikme üyesi → Left/Center/Right (Up/Center/Down) rozeti, tık döngüler,
+  // Shift/Ctrl+tık serbest bırakır.
   const I = DOOR_INSET_PX;
-  const xs = [sx(rect.u0 + eg.uMin), sx(rect.u1 - eg.uMax)], ys = [sy(rect.v1 - eg.vMax), sy(rect.v0 + eg.vMin)];
-  const doorL = Math.min(...xs) + I, doorR = Math.max(...xs) - I, doorT = Math.min(...ys) + I, doorB = Math.max(...ys) - I;
-  const sideEdge = { left: (mirrorU ? 'uMax' : 'uMin') as DoorEdgeKey, right: (mirrorU ? 'uMin' : 'uMax') as DoorEdgeKey, top: (mirrorV ? 'vMin' : 'vMax') as DoorEdgeKey, bottom: (mirrorV ? 'vMax' : 'vMin') as DoorEdgeKey };
+  const BAND_MIN = 6;
+  const VIEW_PAD = 44;   // şemada levha çizim sınırı (kapak alanı dışına taşan kısım bu kadar görünür)
+  const clampX = (x: number) => Math.max(ox - VIEW_PAD, Math.min(ox + S + VIEW_PAD, x));
+  const clampY = (y: number) => Math.max(oy - VIEW_PAD, Math.min(oy + S + VIEW_PAD, y));
   const isOuter = group.placement === 'outer';
-  const stateOf = (edge: DoorEdgeKey): BandState => (!isOuter || !halfEdges[edge] ? 'out' : group.halfOverlay?.[edge] ? 'half' : 'full');
-  // kapak kenarından içeri giren kısım (px): full → BAND−1 (1 px kıl payı görünür), half → BAND/2, out → −1.5 (kapak yanında)
-  const inside = (st: BandState) => (st === 'full' ? BAND - 1 : st === 'half' ? BAND / 2 : -1.5);
-  const st = { left: stateOf(sideEdge.left), right: stateOf(sideEdge.right), top: stateOf(sideEdge.top), bottom: stateOf(sideEdge.bottom) };
-  const Li = doorL + inside(st.left), Lo = Li - BAND, Ri = doorR - inside(st.right);
-  const Ti = doorT + inside(st.top), To = Ti - BAND, Bi = doorB - inside(st.bottom), Bo = Bi + BAND;
-  const bands: Array<{ side: 'left' | 'right' | 'top' | 'bottom'; edge: DoorEdgeKey; label: string; st: BandState; x: number; y: number; w: number; h: number; vertical: boolean }> = [
-    { side: 'left', edge: sideEdge.left, label: 'Left', st: st.left, x: Lo, y: To, w: BAND, h: Bo - To, vertical: true },
-    { side: 'right', edge: sideEdge.right, label: 'Right', st: st.right, x: Ri, y: To, w: BAND, h: Bo - To, vertical: true },
-    { side: 'top', edge: sideEdge.top, label: 'Top', st: st.top, x: Li, y: To, w: Math.max(0, Ri - Li), h: BAND, vertical: false },
-    { side: 'bottom', edge: sideEdge.bottom, label: 'Bottom', st: st.bottom, x: Li, y: Bi, w: Math.max(0, Ri - Li), h: BAND, vertical: false },
-  ];
-  // Bandın kapak arkasında kalan kısmı (gizli çizgi): bant ∩ kapak alanı.
-  const hiddenPart = (b: { x: number; y: number; w: number; h: number }) => {
-    const x0 = Math.max(b.x, doorL), x1 = Math.min(b.x + b.w, doorR), y0 = Math.max(b.y, doorT), y1 = Math.min(b.y + b.h, doorB);
-    return x1 - x0 > 0.5 && y1 - y0 > 0.5 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : null;
+  type Band = { np: DoorNearPanel; x: number; y: number; w: number; h: number; vertical: boolean; half: boolean; aligned: boolean };
+  const bands: Band[] = nearPanels.map(np => {
+    const vertical = np.kind === 'u';
+    let a0 = vertical ? Math.min(sx(np.a0), sx(np.a1)) : Math.min(sy(np.a0), sy(np.a1)), a1 = vertical ? Math.max(sx(np.a0), sx(np.a1)) : Math.max(sy(np.a0), sy(np.a1));
+    if (a1 - a0 < BAND_MIN) { const c = (a0 + a1) / 2; a0 = c - BAND_MIN / 2; a1 = c + BAND_MIN / 2; }
+    const c0 = vertical ? clampY(Math.min(sy(np.c0), sy(np.c1))) : clampX(Math.min(sx(np.c0), sx(np.c1)));
+    const c1 = vertical ? clampY(Math.max(sy(np.c0), sy(np.c1))) : clampX(Math.max(sx(np.c0), sx(np.c1)));
+    const half = !!np.edge && np.behind && !!group.halfOverlay?.[np.edge];
+    return { np, vertical, half, aligned: !!np.align && !!np.joint, x: vertical ? a0 : c0, y: vertical ? c0 : a0, w: vertical ? a1 - a0 : c1 - c0, h: vertical ? c1 - c0 : a1 - a0 };
+  });
+  // Kapak arkasında kalan kısımlar (gizli çizgi): levha ∩ her kapak dikdörtgeni.
+  const hiddenParts = (b: Band) => members.flatMap(m => {
+    const dx0 = Math.min(sx(m.u0), sx(m.u1)) + I, dx1 = Math.max(sx(m.u0), sx(m.u1)) - I, dy0 = Math.min(sy(m.v1), sy(m.v0)) + I, dy1 = Math.max(sy(m.v1), sy(m.v0)) - I;
+    const x0 = Math.max(b.x, dx0), x1 = Math.min(b.x + b.w, dx1), y0 = Math.max(b.y, dy0), y1 = Math.min(b.y + b.h, dy1);
+    return x1 - x0 > 0.5 && y1 - y0 > 0.5 ? [{ x: x0, y: y0, w: x1 - x0, h: y1 - y0 }] : [];
+  });
+  // Hizalama etiketleri EKRANA göre (aynalı görünüşte min/max yer değiştirir).
+  const alignLabel = (b: Band, a: DoorAlign) => (a === 'center' ? 'Center' : b.vertical ? ((a === 'min') !== mirrorU ? 'Left' : 'Right') : ((a === 'max') !== mirrorV ? 'Up' : 'Down'));
+  const alignCycle = (b: Band): DoorAlign[] => (b.vertical ? (mirrorU ? ['max', 'center', 'min'] : ['min', 'center', 'max']) : (mirrorV ? ['min', 'center', 'max'] : ['max', 'center', 'min']));
+  const edgeName = (b: Band) => (b.vertical ? ((b.np.edge === 'uMin') !== mirrorU ? 'Left' : 'Right') : ((b.np.edge === 'vMax') !== mirrorV ? 'Top' : 'Bottom'));
+  const bandTip = (b: Band) => {
+    const np = b.np;
+    if (np.edge) {
+      if (!np.behind) return `${edgeName(b)} — ${np.name}: stands in front of the door plane; the door ends beside it (no overlay possible).`;
+      const on = !!group.halfOverlay?.[np.edge];
+      return `${edgeName(b)} — ${np.name}: ${on ? 'HALF overlay — the door covers half of this panel\'s thickness (the other half is left for the neighbouring door). Click for full overlay.' : 'FULL overlay — the door covers this panel\'s whole thickness. Click for half overlay (share the panel with the neighbouring door).'}`;
+    }
+    const what = b.vertical ? 'divider' : 'shelf';
+    const opts = alignCycle(b).map(a => alignLabel(b, a)).join(' / ');
+    if (!np.joint) return `${np.name} (${what}) — behind the door, no door joint nearby to align to.`;
+    if (!np.groupId) return `${np.name} (${what}) — body panel at a door joint; it cannot be moved from here (only shelf / divider members can).`;
+    const cur = np.align ? alignLabel(b, np.align) : 'Free';
+    return `${np.name} (${what}) at the door joint — ${cur}. Click: ${opts} (the ${what} moves and its group gaps are revised) · Shift/Ctrl+click: free.`;
   };
-  const bandTip = (bd: typeof bands[number]) => {
-    if (!isOuter) return `${bd.label} — reference panel / body edge. Inset door: sits between the panels (no overlay).`;
-    const on = !!group.halfOverlay?.[bd.edge];
-    if (bd.st === 'out') return `${bd.label} — no overlay here (no reference panel on this edge, or the panel stands in front of the door).${on ? ' Half overlay is stored but has no effect.' : ''} Click to ${on ? 'clear' : 'set'} half overlay.`;
-    return bd.st === 'half'
-      ? `${bd.label} — HALF overlay: the door covers half of this panel's thickness (the other half is left for the neighbouring door). Click for full overlay.`
-      : `${bd.label} — FULL overlay: the door covers this panel's whole thickness. Click for half overlay (share the panel with the neighbouring door).`;
+  const onBandClick = (b: Band, additive: boolean) => {
+    const np = b.np;
+    if (np.edge) { if (np.behind) onToggleHalfOverlay(np.edge, !group.halfOverlay?.[np.edge]); return; }
+    if (!np.joint || !np.groupId) return;
+    if (additive) { onAlignPanel(np.vfId, null); return; }
+    const cyc = alignCycle(b);
+    const i = np.align ? cyc.indexOf(np.align) : -1;
+    onAlignPanel(np.vfId, cyc[(i + 1) % cyc.length]);
   };
 
   const commit = () => {
@@ -1348,16 +1366,14 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
           <pattern id={`${gid}-hatch`} width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="4" stroke="#bfb5a6" strokeWidth="0.7" /></pattern>
           <pattern id={`${gid}-hatch-on`} width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="4" stroke="#e8925a" strokeWidth="0.9" /></pattern>
         </defs>
-        {/* AÇIKLIK: sınır panellerinin arası (kapak aralarındaki boşluklarda görünür — derinlik hissi) */}
-        <rect x={Li} y={Ti} width={Math.max(0, Ri - Li)} height={Math.max(0, Bi - Ti)} fill="#e9e3d9" />
-        {/* SINIR PANELLERİ (bant): görünen kısım dolu + taralı; yarım binmede turuncu tonlu */}
-        {bands.map(bd => {
-          const half = bd.st === 'half';
+        {/* SINIR LEVHALARI (görünen kısım): dolu + taralı; yarım binmede / derze hizalıyken turuncu tonlu */}
+        {bands.map(b => {
+          const warm = b.half || b.aligned;
           return (
-            <g key={`band-${bd.side}`} style={{ pointerEvents: 'none' }}>
-              <rect x={bd.x} y={bd.y} width={bd.w} height={bd.h} fill={half ? '#f9dcc4' : '#ddd4c6'} />
-              <rect x={bd.x} y={bd.y} width={bd.w} height={bd.h} fill={half ? `url(#${gid}-hatch-on)` : `url(#${gid}-hatch)`} />
-              <rect x={bd.x} y={bd.y} width={bd.w} height={bd.h} fill="none" stroke={half ? '#e07b3c' : '#a39a8d'} strokeWidth={1} />
+            <g key={`band-${b.np.vfId}`} style={{ pointerEvents: 'none' }}>
+              <rect x={b.x} y={b.y} width={b.w} height={b.h} fill={warm ? '#f9dcc4' : '#ddd4c6'} />
+              <rect x={b.x} y={b.y} width={b.w} height={b.h} fill={warm ? `url(#${gid}-hatch-on)` : `url(#${gid}-hatch)`} />
+              <rect x={b.x} y={b.y} width={b.w} height={b.h} fill="none" stroke={warm ? '#e07b3c' : '#a39a8d'} strokeWidth={1} />
             </g>
           );
         })}
@@ -1416,41 +1432,35 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
             </g>
           );
         })}
-        {/* KAPAK ARKASINDAKİ PANEL KISMI: gizli çizgi (kesikli) + soluk tarama — yarım / tam binme burada okunur */}
-        {bands.map(bd => {
-          const hp = hiddenPart(bd);
-          if (!hp) return null;
-          const half = bd.st === 'half';
-          return (
-            <g key={`hid-${bd.side}`} style={{ pointerEvents: 'none' }}>
-              <rect x={hp.x} y={hp.y} width={hp.w} height={hp.h} fill={half ? `url(#${gid}-hatch-on)` : `url(#${gid}-hatch)`} opacity={0.35} />
-              <rect x={hp.x} y={hp.y} width={hp.w} height={hp.h} fill="none" stroke={half ? '#e8925a' : '#9a9185'} strokeWidth={0.8} strokeDasharray="3 2" opacity={0.85} />
-            </g>
-          );
-        })}
-        {/* BANT TIKLAMA ALANI (dış kapak) + DURUM ROZETİ: kapak paneli örtüyorsa rozet HEP görünür — "Full" (taş) / "Half"
-            (turuncu); örtmüyorsa yalnız fareyle üstündeyken ("No overlap"). Rozet bandın ortasında, yan bantlarda dikey. */}
-        {bands.map(bd => {
-          const on = isOuter && !!group.halfOverlay?.[bd.edge];
-          const half = bd.st === 'half';
-          // Rozet bandın TAM ORTASINDA; sol / sağ bantta DİKEY yazı (Goker: "full ve half tam ortada olsun; sol ve sağdakiler dikey").
-          const bx = bd.x + bd.w / 2, by = bd.y + bd.h / 2;
-          const chipTxt = half ? 'Half' : bd.st === 'full' ? 'Full' : 'No overlap';
+        {/* KAPAK ARKASINDAKİ LEVHA KISMI: gizli çizgi (kesikli) + soluk tarama — tam / yarım binme ve derz hizası burada okunur */}
+        {bands.flatMap(b => hiddenParts(b).map((hp, k) => (
+          <g key={`hid-${b.np.vfId}-${k}`} style={{ pointerEvents: 'none' }}>
+            <rect x={hp.x} y={hp.y} width={hp.w} height={hp.h} fill={b.half || b.aligned ? `url(#${gid}-hatch-on)` : `url(#${gid}-hatch)`} opacity={0.4} />
+            <rect x={hp.x} y={hp.y} width={hp.w} height={hp.h} fill="none" stroke={b.half || b.aligned ? '#e8925a' : '#9a9185'} strokeWidth={0.8} strokeDasharray="3 2" opacity={0.9} />
+          </g>
+        )))}
+        {/* LEVHA TIKLAMA ALANI + ROZET (bandın ortasında, düşey levhada dikey yazı): kenar levhası → Full / Half; derzdeki
+            raf/dikme üyesi → Free / Left / Center / Right (Up / Center / Down). Tık döngüler; Shift/Ctrl serbest bırakır. */}
+        {bands.map(b => {
+          const np = b.np;
+          const interactive = isOuter && ((!!np.edge && np.behind) || (!np.edge && !!np.joint && !!np.groupId));
+          const chipTxt = np.edge ? (np.behind ? (b.half ? 'Half' : 'Full') : null) : np.joint && np.groupId ? (np.align ? alignLabel(b, np.align) : 'Free') : null;
+          const on = b.half || b.aligned;
+          const bx = b.x + b.w / 2, by = b.y + b.h / 2;
           const cfs = fsT * 0.8;
-          const { pw: cw, ph: chh } = pillSize(chipTxt, cfs);
-          const always = bd.st !== 'out';
+          const { pw: cw, ph: chh } = chipTxt ? pillSize(chipTxt, cfs) : { pw: 0, ph: 0 };
           return (
-            <g key={`hit-${bd.side}`} className={`yago-band${always ? ' on' : ''}`} style={{ cursor: isOuter ? 'pointer' : 'default' }}
-              onClick={isOuter ? e => { stop(e); onToggleHalfOverlay(bd.edge, !on); } : undefined}>
-              <rect x={bd.x - 1} y={bd.y - 1} width={bd.w + 2} height={bd.h + 2} fill="transparent" className="hit" />
-              {isOuter && (
-                <g className="chip" transform={bd.vertical ? `rotate(-90 ${bx} ${by})` : undefined}>
-                  <rect x={bx - cw / 2} y={by - chh / 2} width={cw} height={chh} rx={chh / 2} fill={half ? '#ea580c' : '#ffffff'} stroke={half ? '#c2410c' : '#cfc6b9'} strokeWidth={0.8}
+            <g key={`hit-${np.vfId}`} className={`yago-band${chipTxt ? ' on' : ''}`} style={{ cursor: interactive ? 'pointer' : 'default' }}
+              onClick={interactive ? e => { stop(e); onBandClick(b, e.shiftKey || e.ctrlKey || e.metaKey); } : undefined}>
+              <rect x={b.x - 2} y={b.y - 2} width={b.w + 4} height={b.h + 4} fill="transparent" className="hit" />
+              {chipTxt && (
+                <g className="chip" transform={b.vertical ? `rotate(-90 ${bx} ${by})` : undefined}>
+                  <rect x={bx - cw / 2} y={by - chh / 2} width={cw} height={chh} rx={chh / 2} fill={on ? '#ea580c' : '#ffffff'} stroke={on ? '#c2410c' : '#cfc6b9'} strokeWidth={0.8}
                     style={{ filter: 'drop-shadow(0 1px 1px rgba(40,30,20,0.12))' }} />
-                  <text x={bx} y={by + cfs * 0.36} textAnchor="middle" fontSize={cfs} fontWeight={700} letterSpacing="0.02em" fill={half ? '#ffffff' : '#78716c'} fontFamily={UI_FONT}>{chipTxt}</text>
+                  <text x={bx} y={by + cfs * 0.36} textAnchor="middle" fontSize={cfs} fontWeight={700} letterSpacing="0.02em" fill={on ? '#ffffff' : '#78716c'} fontFamily={UI_FONT}>{chipTxt}</text>
                 </g>
               )}
-              <title>{bandTip(bd)}</title>
+              <title>{bandTip(b)}</title>
             </g>
           );
         })}
@@ -2669,11 +2679,12 @@ export function PanelEditor() {
               <DoorSchematic group={g} selectedIndex={selMemberIdx} selectedNodes={picked}
                 memberLabels={g.memberVfIds.map((id, i) => { const mi = members.findIndex(m => m.id === id); return `${label}.${(mi >= 0 ? mi : i) + 1}`; })}
                 cuts={doorCuts}
-                halfEdges={doorParent ? doorHalfOverlayEdges(g, doorParent, shapes, doorCuts) : { uMin: false, uMax: false, vMin: false, vMax: false }}
+                nearPanels={doorParent ? doorNearPanels(g, doorParent, shapes, virtualFaces, panelGroups) : []}
                 onEditSize={(sid, k, v) => { void editDoorSize(g.id, sid, k, v); }} onToggleLock={(sid, k) => toggleDoorSizeLock(g.id, sid, k)}
                 onEditSplitGap={(sid, k, v) => { void setDoorSplitGap(g.id, sid, k, v); }} onEditEdgeGap={(edge, v) => { void setDoorEdgeGap(g.id, edge, v); }}
                 onEditLeaf={(lid, k, v) => { void editDoorLeafSize(g.id, lid, k, v); }} onEditLeafGap={(lid, v) => { void setDoorLeafGap(g.id, lid, v); }}
                 onToggleHalfOverlay={(edge, on) => { void setDoorHalfOverlay(g.id, edge, on); }}
+                onAlignPanel={(vfId, a) => setDoorPanelAlign(g.id, vfId, a)}
                 onPathClick={onPathClick} />
               <SectionHead label="Doors" count={members.length} />
               <div className="flex flex-col gap-[2px]">

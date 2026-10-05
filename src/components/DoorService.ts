@@ -1,11 +1,11 @@
 import {
-  type CavityBox, type DoorBoundRef, type DoorBounds, type DoorEdgeGaps, type DoorGroup, type DoorLeafSplit, type DoorNode, type DoorPick, type DoorRect, type DoorType, type GapSpec, type Shape, type VirtualFace,
+  type CavityBox, type DoorAlign, type DoorBoundRef, type DoorBounds, type DoorEdgeGaps, type DoorGroup, type DoorLeafSplit, type DoorNode, type DoorPick, type DoorRect, type DoorType, type GapSpec, type PanelGroup, type Shape, type VirtualFace,
   panelOfVf, requestRebuild, shapeById, useAppStore,
 } from '../store';
 import * as THREE from 'three';
 import { type Vec3, genId, round1 } from './Geometry';
 import { largestFaceNormal, panelHasRotation } from './FaceRegion';
-import { applyGapEdit, bodyLocalBox, panelLocalBox, redistributeForThickness } from './PanelGroupService';
+import { applyGapEdit, bodyLocalBox, boxSpan, editGroupGap, groupFacing, memberThicknessesOf, panelLocalBox, redistributeForThickness } from './PanelGroupService';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // KAPAKLAR (DoorService) — Goker, Eki 2026
@@ -68,6 +68,14 @@ import { applyGapEdit, bodyLocalBox, panelLocalBox, redistributeForThickness } f
 //    boşluk; raf kuralı: girilen korunur, kalan diğer kanada). Her kanat ayrı bir üye VF/paneldir (doorMemberRects:
 //    DFS yaprak sırası, kanatlar ardışık). Yapı değişince (bölme, birleştirme, tek↔double/fold) yalnız etkilenen
 //    yaprakların üyeleri yeniden kurulur (rebuildMembers — yaprak id + kanat sırası eşleşen VF'ler korunur).
+//  • ŞEMADAKİ SINIR PANELLERİ + DERZ HİZALAMASI (Goker, Eki 2026: "iç kapakta ya da kapak sınırı panel yoksa kalınlığı
+//    hiç gösterme; dikme/rafa 2-3 mm yaklaşan kapakta göster; dikmeyi kapağın sağına/soluna/ortalı, rafı yukarı/aşağı/
+//    ortada yerleştireyim, dikme ve raf buna göre hareket etsin, aralıklar revize edilsin"): doorNearPanels — dış kapakta,
+//    kapak alanına (boşluk + 3 mm) değen / yaklaşan kapak-sınırı levhaları GERÇEK konum ve kalınlığıyla (iç kapak → hiç).
+//    Kapak alanının İÇİNDE bir derze (aynı eksendeki iki kapak arası) yakın duran raf/dikme ÜYESİ derze hizalanabilir
+//    (DoorGroup.panelAlign: min / center / max): levha kendi grubunun o boşluğuyla taşınır (editGroupGap; applyGapEdit
+//    kuralı → diğer boşluklar yeniden dağılır) ve her rebuild sonrası (syncDoorGroups) yeniden uygulanır. Dış kenardaki
+//    sınır paneli (grup bounds) için hizalama YOK — orada kapak paneli izler (yarım binme). Kapak düzlemi değişmez.
 // ═══════════════════════════════════════════════════════════════════════════
 
 export const DOOR_THICKNESS = 18;
@@ -617,6 +625,147 @@ export function recalculateDoorVfs(parent: Shape, vfs: VirtualFace[], shapes: Sh
   return out;
 }
 
+// ── ŞEMADAKİ SINIR PANELLERİ + DERZ HİZALAMASI ───────────────────────────────
+
+const NEAR_EXTRA = 3;        // kapak kenarı ile levha arasındaki "yaklaşma" payı (mm) — boşluğun üstüne
+const THIN_PANEL = 60;       // şemada levha sayılacak en büyük kalınlık (mm); daha kalını (arkalık vb.) çizilmez
+const JOINT_NEAR = 30;       // levha merkezi ile derz merkezi arasındaki en büyük uzaklık (mm; + yarım kalınlık + yarım derz)
+
+/** Kapak ağacındaki DERZ: aynı eksendeki iki kapak arası boşluk [p0, p1], çapraz eksende [c0, c1]. */
+export interface DoorJoint { splitId: string; k: number; axis: 'u' | 'v'; p0: number; p1: number; c0: number; c1: number }
+export function doorJoints(solved: DoorNodeSolved): DoorJoint[] {
+  const out: DoorJoint[] = [];
+  const walk = (n: DoorNodeSolved) => {
+    if (n.kind !== 'split') return;
+    let p = n.axis === 'u' ? n.u0 : n.v1;
+    n.children.forEach((c, i) => {
+      const w = Math.max(0, n.sizes[i]?.value ?? 0), g = n.gaps[i] ?? 0;
+      if (n.axis === 'u') { p += w; if (i < n.children.length - 1) { out.push({ splitId: n.id, k: i, axis: 'u', p0: p, p1: p + g, c0: n.v0, c1: n.v1 }); p += g; } }
+      else { p -= w; if (i < n.children.length - 1) { out.push({ splitId: n.id, k: i, axis: 'v', p0: p - g, p1: p, c0: n.u0, c1: n.u1 }); p -= g; } }
+      walk(c);
+    });
+  };
+  walk(solved);
+  return out;
+}
+
+/** Şemada çizilecek sınır levhası (kapak düzlemi koordinatlarında). */
+export interface DoorNearPanel {
+  vfId: string; panelId: string; name: string;
+  /** 'u' = düşey levha (dikme / yan panel: u'da ince), 'v' = yatay levha (raf / üst / alt: v'de ince). */
+  kind: 'u' | 'v';
+  /** Kalınlık aralığı (kind ekseni) ve çapraz eksendeki uzunluk aralığı. */
+  a0: number; a1: number; c0: number; c1: number;
+  /** Kapak düzleminin GERİSİNDE mi (dış kapak örtebilir)? Değilse levha kapağın önünde durur, kapak yanında biter. */
+  behind: boolean;
+  /** Grup kenarı mı (bounds) — hangi kenar; kenar levhasında yarım binme geçerli, hizalama yok. */
+  edge?: DoorEdgeKey;
+  /** Raf/dikme üyesiyse: grubu + üye sırası (taşınabilir). */
+  groupId?: string; memberIndex?: number;
+  /** Yakınındaki derz (aynı eksen, çapraz örtüşen) — hizalama bununla. */
+  joint?: DoorJoint;
+  /** Kayıtlı hizalama (grubun panelAlign'ı). */
+  align?: DoorAlign;
+}
+
+/**
+ * DIŞ kapakta şemada gösterilecek sınır levhaları (Goker: "iç kapakta ya da sınır panel yoksa kalınlığı gösterme; 2-3 mm
+ * yaklaşıyorsa göster"): kapak-sınırı işaretli, dönmemiş, ince (≤ THIN_PANEL) levhalardan kapak dikdörtgenlerinden
+ * birine boşluk + 3 mm içinde değen / örtüşenler; gerçek konum ve kalınlıkla. İç kapak → boş.
+ */
+export function doorNearPanels(group: DoorGroup, parent: Shape, shapes: Shape[], vfs: VirtualFace[], panelGroups: PanelGroup[], members?: DoorMemberRect[]): DoorNearPanel[] {
+  if (group.placement !== 'outer') return [];
+  const { u, v } = doorPlaneAxes(group.axis);
+  const solved = solveDoorTree(group);
+  const ms = members ?? doorMemberRects(solved);
+  const joints = doorJoints(solved);
+  const near = Math.max(group.gap, 0) + NEAR_EXTRA;
+  const front = group.rect.front;
+  const edgeOf = (vfId: string): DoorEdgeKey | undefined => (['uMin', 'uMax', 'vMin', 'vMax'] as DoorEdgeKey[]).find(k => group.bounds[k]?.vfId === vfId);
+  const out: DoorNearPanel[] = [];
+  for (const bp of collectDoorBoundPanels(parent, shapes, vfs)) {
+    const b = bp.box;
+    const tu = b.max[u] - b.min[u], tv = b.max[v] - b.min[v];
+    let kind: 'u' | 'v';
+    if (tu <= THIN_PANEL && tu <= tv) kind = 'u'; else if (tv <= THIN_PANEL) kind = 'v'; else continue;
+    const a0 = kind === 'u' ? b.min[u] : b.min[v], a1 = kind === 'u' ? b.max[u] : b.max[v];
+    const c0 = kind === 'u' ? b.min[v] : b.min[u], c1 = kind === 'u' ? b.max[v] : b.max[u];
+    // Yakınlık: bir kapak dikdörtgeninin çapraz aralığı örtüşmeli ve kalınlık ekseninde uzaklık ≤ boşluk + 3 mm (örtüşme dahil).
+    const touching = ms.some(m => {
+      const mc0 = kind === 'u' ? m.v0 : m.u0, mc1 = kind === 'u' ? m.v1 : m.u1;
+      const ma0 = kind === 'u' ? m.u0 : m.v0, ma1 = kind === 'u' ? m.u1 : m.v1;
+      if (Math.min(mc1, c1) - Math.max(mc0, c0) < TOL) return false;
+      return Math.max(ma0, a0) - Math.min(ma1, a1) <= near;   // negatif = örtüşme
+    });
+    if (!touching) continue;
+    const behind = group.side > 0 ? b.max[group.axis] <= front + TOL : b.min[group.axis] >= front - TOL;
+    const vf = vfs.find(f => f.id === bp.vfId);
+    const pg = vf?.groupId ? panelGroups.find(g => g.id === vf.groupId) : undefined;
+    const memberIndex = pg ? (vf!.groupIndex ?? pg.memberVfIds.indexOf(vf!.id)) : undefined;
+    const edge = edgeOf(bp.vfId);
+    // Derz: aynı eksen, çapraz örtüşen, merkezleri yakın (en yakını). Kenar levhasında aranmaz.
+    let joint: DoorJoint | undefined;
+    if (!edge) {
+      const pc = (a0 + a1) / 2, t = a1 - a0;
+      let best = Infinity;
+      for (const j of joints) {
+        if (j.axis !== kind || Math.min(j.c1, c1) - Math.max(j.c0, c0) < TOL) continue;
+        const d = Math.abs((j.p0 + j.p1) / 2 - pc);
+        if (d <= t / 2 + (j.p1 - j.p0) / 2 + JOINT_NEAR && d < best) { best = d; joint = j; }
+      }
+    }
+    out.push({ vfId: bp.vfId, panelId: bp.panelId, name: bp.name, kind, a0, a1, c0, c1, behind, edge, groupId: pg?.id, memberIndex, joint, align: group.panelAlign?.[bp.vfId] });
+  }
+  return out;
+}
+
+/** Hizalamanın istediği levha min koordinatı (kind ekseni). */
+export function alignedPanelMin(np: Pick<DoorNearPanel, 'a0' | 'a1' | 'joint'>, align: DoorAlign): number | null {
+  if (!np.joint) return null;
+  const t = np.a1 - np.a0, { p0, p1 } = np.joint;
+  return align === 'min' ? p0 - t : align === 'max' ? p1 : (p0 + p1) / 2 - t / 2;
+}
+
+/** Son deneme (döngü kilidi): aynı hedef konum için levha hiç kımıldamadıysa yeniden denenmez (çözücü boşluğu onurlandıramıyor). */
+const _alignAttempt = new Map<string, { want: number; a0: number }>();
+/**
+ * DERZ HİZALAMASINI UYGULA: kayıtlı hizalaması olan her iç levha için üyenin grubundaki boşluk, levha istenen yere gelecek
+ * şekilde yazılır (facing'e göre işaret; applyGapEdit → diğer boşluklar yeniden dağılır → "aralıkları revize et").
+ * Yalnız fark ≥ 0,05 mm ve boşluk tam yazılabiliyorsa (kilitli komşular kırpmıyorsa, ≥ 0) çağrılır; aynı hedef için levha
+ * son denemeden beri hiç kımıldamadıysa (çözücü onurlandıramadı) döngüye girmemek için atlanır. Döner: tetiklenen taşıma sayısı.
+ */
+export function applyDoorPanelAligns(group: DoorGroup, parent: Shape, shapes: Shape[], vfs: VirtualFace[], panelGroups: PanelGroup[], members?: DoorMemberRect[]): number {
+  if (!group.panelAlign || !Object.keys(group.panelAlign).length) return 0;
+  let n = 0;
+  for (const np of doorNearPanels(group, parent, shapes, vfs, panelGroups, members)) {
+    const align = group.panelAlign[np.vfId];
+    if (!align || !np.joint || !np.groupId || np.memberIndex == null || np.memberIndex < 0) continue;
+    const pg = panelGroups.find(g => g.id === np.groupId);
+    if (!pg) continue;
+    const { u, v } = doorPlaneAxes(group.axis);
+    const want = alignedPanelMin(np, align);
+    if (want == null) continue;
+    const delta = want - np.a0;
+    const key = `${group.id}:${np.vfId}`;
+    if (Math.abs(delta) < 0.05) { _alignAttempt.delete(key); continue; }
+    if (pg.axis !== (np.kind === 'u' ? u : v)) { console.warn('[YAGO][KAPAK-HİZA] grubun dizilim ekseni levhanın kalınlık ekseni değil, taşınamaz:', np.name, pg.id); continue; }
+    const k = np.memberIndex;
+    const cur = pg.gaps[k]?.value;
+    if (cur == null) continue;
+    const next = round1(cur + groupFacing(pg) * delta);
+    if (next < 0) { console.warn('[YAGO][KAPAK-HİZA] istenen boşluk negatif, atlandı:', np.name, next); continue; }
+    const sim = applyGapEdit(pg.gaps, k, next, boxSpan(pg.cavity, pg.axis), pg.count, memberThicknessesOf(pg));
+    if (Math.abs((sim[k]?.value ?? NaN) - next) > 0.05) { console.warn('[YAGO][KAPAK-HİZA] boşluk yazılamıyor (kilitli komşular), atlandı:', np.name, next); continue; }
+    const last = _alignAttempt.get(key);
+    if (last && Math.abs(last.want - want) < 0.05 && Math.abs(last.a0 - np.a0) < 0.05) { console.warn('[YAGO][KAPAK-HİZA] aynı hedef için levha kımıldamadı — döngü kilidi, yeniden denenmiyor:', np.name, want.toFixed(1)); continue; }
+    _alignAttempt.set(key, { want, a0: np.a0 });
+    console.log('[YAGO][KAPAK-HİZA]', group.id, np.name, '→', align, 'derz', `${np.joint.p0.toFixed(1)}..${np.joint.p1.toFixed(1)}`, 'Δ=', delta.toFixed(1), 'boşluk', k, cur, '→', next);
+    void editGroupGap(pg.id, k, next);
+    n++;
+  }
+  return n;
+}
+
 // ── STORE İŞLEMLERİ ─────────────────────────────────────────────────────────
 
 const groupById = (id: string) => useAppStore.getState().doorGroups.find(g => g.id === id);
@@ -937,6 +1086,22 @@ export async function setDoorHalfOverlay(groupId: string, edge: DoorEdgeKey, on:
   const tree: DoorNode = root.kind === 'split' && root.axis === (isU ? 'u' : 'v') ? { ...root, sizes: [] } : root;
   await writeDoorGroup(group, { halfOverlay, tree }, `yarım binme ${edge} ${on ? 'AÇIK' : 'kapalı'} (${isU ? 'sütunlar' : 'satırlar'} eşitlendi)`);
 }
+/**
+ * DERZ HİZALAMASI (Goker: "dikmeyi kapağın sağına / soluna / ortalı, rafı yukarı / aşağı / ortada yerleştireyim"): iç
+ * levhanın hizalaması yazılır ve hemen uygulanır (levhanın grubu taşınır → rebuild). null = serbest (levha olduğu yerde).
+ */
+export function setDoorPanelAlign(groupId: string, vfId: string, align: DoorAlign | null): void {
+  const group = groupById(groupId);
+  if (!group) return;
+  const panelAlign = { ...(group.panelAlign ?? {}) };
+  if (align) panelAlign[vfId] = align; else delete panelAlign[vfId];
+  const st = useAppStore.getState();
+  st.updateDoorGroup(groupId, { panelAlign });
+  _alignAttempt.delete(`${groupId}:${vfId}`);
+  console.log('[YAGO][KAPAK-HİZA]', groupId, vfId, '→', align ?? 'serbest');
+  const parent = shapeById(group.shapeId, st.shapes);
+  if (parent && align) applyDoorPanelAligns({ ...group, panelAlign }, parent, st.shapes, st.virtualFaces, st.panelGroups);
+}
 /** Kapak kalınlığı: üye panellerin panelThickness parametresi güncellenir (motor levhayı bununla üretir). */
 export async function setDoorThickness(groupId: string, t: number): Promise<void> {
   const group = groupById(groupId);
@@ -986,6 +1151,9 @@ export function syncDoorGroups(parentShapeId: string): void {
       return a.children.length === b.children.length && a.sizes.length === b.sizes.length && a.sizes.every((x, i) => Math.abs(x.value - b.sizes[i].value) < 0.05 && x.locked === b.sizes[i].locked)
         && a.gaps.length === b.gaps.length && a.gaps.every((x, i) => Math.abs(x - b.gaps[i]) < 0.05) && a.children.every((c, i) => sameTree(c, b.children[i]));
     };
+    // DERZ HİZALAMASI (bağ): gövde boyutlandı / kapak ölçüsü değişti → hizalı levhalar derzi izler (fark yoksa hiçbir şey olmaz).
+    try { applyDoorPanelAligns({ ...g, rect: sol.rect, tree: sol.tree }, parent, st.shapes, st.virtualFaces, st.panelGroups, sol.members); }
+    catch (err) { console.warn('[YAGO][KAPAK-HİZA] hata:', err instanceof Error ? err.message : String(err)); }
     if (rectKey(sol.rect) === rectKey(g.rect) && Math.abs(sol.rect.front - g.rect.front) < 0.05 && sameTree(sol.tree, g.tree)) continue;
     st.updateDoorGroup(g.id, { rect: sol.rect, tree: sol.tree });
     console.log('[YAGO][KAPAK-SENKRON]', g.id, fmtRect(sol.rect), 'ağaç=', fmtTree(sol.solved));

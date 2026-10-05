@@ -147,6 +147,15 @@ export interface DoorGroup {
    * kenar paneli kapağın gerisindeyken (kapak onun kalınlığını örtüyorken) etkilidir.
    */
   halfOverlay?: { uMin?: boolean; uMax?: boolean; vMin?: boolean; vMax?: boolean };
+  /**
+   * DERZ HİZALAMASI (Goker, Eki 2026: "dikmeyi kapağın sağına / soluna / ortalı, rafı yukarı / aşağı / ortada yerleştireyim;
+   * dikme ve raf buna göre hareket etsin, aralıkları revize edilsin"): kapak alanının İÇİNDE bir kapak derzine (iki kapak
+   * arası) yakın duran kapak-sınırı raf/dikme ÜYESİ (anahtar = VF id) derze göre konumlanır — 'min' = levha derzin
+   * min tarafındaki kapağın arkasında (dikme: sol, raf: alt), 'center' = derz levhanın ortasında (iki kapak yarımşar
+   * örter), 'max' = max tarafındaki kapağın arkasında. Üye kendi grubunun boşluğuyla taşınır (editGroupGap); her
+   * rebuild sonrası yeniden uygulanır (bağ). Kayıt yoksa serbest (levha olduğu yerde kalır).
+   */
+  panelAlign?: Record<string, DoorAlign>;
   thickness: number;
   /** Üye VF id'leri: ağacın DFS yaprak sırası, double/fold yaprakta kanatlar ardışık. Üye i ↔ VF.doorIndex = i. */
   memberVfIds: string[];
@@ -161,6 +170,8 @@ export interface DoorGroup {
  * drawer = çekmece ön paneli; fixed = menteşesiz (sabit / sahte) ön panel (Goker, Eki 2026: "çekmece ve menteşesiz kapak da olsun").
  */
 export type DoorType = 'left' | 'right' | 'up' | 'down' | 'double' | 'fold' | 'drawer' | 'fixed';
+/** Derz hizalaması: levha derzin min tarafındaki kapağın arkasında / derz levhanın ortasında / max tarafındaki kapağın arkasında. */
+export type DoorAlign = 'min' | 'center' | 'max';
 /** İki kanatlı hücre: kanat ölçüleri (toplam = hücre ölçüsü − kanat arası boşluk) + kanat arası boşluk (mm). */
 export interface DoorLeafSplit { leaves: GapSpec[]; gap: number }
 
