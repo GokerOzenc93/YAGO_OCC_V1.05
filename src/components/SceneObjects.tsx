@@ -14,7 +14,7 @@ import {
   GROUP_PANEL_THICKNESS, boxSpan, boxesSurface, collectObstacles, confirmRefCavityExtrude, confirmVolumePick, fmtBox, gridForObstacles, groupBoundsPanelPredicate,
   rayCavityCandidates, repickObstacles,
 } from './PanelGroupService';
-import { DOOR_GAP, DOOR_THICKNESS, collectDoorCuts, confirmDoorPick, doorCandidatesAt, doorSlabPolygon, fmtRect, isDoorPanel, rayDoorEntry } from './DoorService';
+import { DOOR_GAP, DOOR_THICKNESS, collectDoorCuts, confirmDoorPick, doorCandidatesAt, doorSlabPolygon, fmtRect, isDoorPanel, rayDoorEntry, splitDoorAtPanel } from './DoorService';
 
 /* ═══════════════════════════════════════════════════════════════════════════
    SAHNE NESNELERİ — canvas içinde şekil başına çizilen her şey:
@@ -148,7 +148,7 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
     'faceExtrudeMode', 'faceExtrudeTargetPanelId', 'faceExtrudeSelectedFace', 'setFaceExtrudeSelectedFace', 'setFaceExtrudeClickPoint', 'raycastMode', 'faceExtrudeValueMode', 'faceExtrudeRefCandidate',
     'panelMoveMode', 'panelMoveValueMode', 'panelMoveTargetPanelId', 'panelMoveRefSourceVertex', 'panelMoveRefTargetPanelId', 'panelMoveRefTargetVertex',
     'panelRotateMode', 'panelRotateValueMode', 'panelRotateTargetPanelId', 'panelRotatePivot', 'panelRotateRefArmVertex', 'panelRotateAxis', 'panelRotateRefFace', 'setPanelRotateRefFace',
-    'selectedPanelGroupId', 'volumePickMode', 'volumePickGroupId', 'selectedDoorGroupId', 'doorPickMode', 'virtualFaces');
+    'selectedPanelGroupId', 'volumePickMode', 'volumePickGroupId', 'selectedDoorGroupId', 'doorPickMode', 'doorRefPickGroupId', 'setDoorRefPickGroupId', 'virtualFaces');
   const [hoveredExtrudeGroup, setHoveredExtrudeGroup] = useState<number | null>(null);
   // Ref-move: bu panel aday olarak fare altındayken tüm panel vurgulanır.
   const [moveRefHover, setMoveRefHover] = useState(false);
@@ -164,7 +164,8 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
   const isRowSelectedRaw = isGroupSelected || (isParentSelected && !!virtualFaceId && S.selectedPanelRow === `vf-${virtualFaceId}`);
   // KAPAK SINIRI (Goker): kapak yerleştirme modunda kapak sınırı işaretli paneller kehribar kenarla gösterilir;
   // kapaklar (zaten yerleşmiş) saydam çizilir ki arkadaki sınır panelleri ve gövde görünsün.
-  const isDoorBoundPanel = isParentSelected && S.doorPickMode && !!virtualFaceId && !!S.virtualFaces.find(f => f.id === virtualFaceId)?.doorBound;
+  // Kapak yerleştirme ve PANEL REF modlarında kapak-sınırı paneller kehribar parlar (ref modunda tıklanacak adaylar).
+  const isDoorBoundPanel = isParentSelected && (S.doorPickMode || !!S.doorRefPickGroupId) && !!virtualFaceId && !!S.virtualFaces.find(f => f.id === virtualFaceId)?.doorBound;
   const isDoorPickGhost = isParentSelected && S.doorPickMode && isDoorPanel(shape);
 
   const edgePoints = useMemo<Vec3[] | null>(() => { try { const p = edgePointsOf(shape.geometry, EDGE_ANGLE_THRESHOLD); return p.length ? p : null; } catch { return null; } }, [shape.geometry]);
@@ -237,6 +238,12 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
   const handleClick = (e: any) => {
     e.stopPropagation();
     if (S.volumePickMode || S.doorPickMode) return;   // HACİM / KAPAK SEÇME: tıklama araca aittir
+    // PANEL REF (Goker, Eki 2026: "o düğmeye basınca sadece dikme veya raf seçmem yeterli olsun"): tıklanan kapak-sınırı
+    // dikme/rafın ortasından kapak bölünür; başarılıysa mod kapanır. Normal seçim yok.
+    if (S.doorRefPickGroupId) {
+      if (virtualFaceId) { const ids = splitDoorAtPanel(S.doorRefPickGroupId, virtualFaceId); if (ids.length) S.setDoorRefPickGroupId(null); }
+      return;
+    }
     // TAŞIMA MODU: normal panel seçimi YOK (referans döngüsü canvas seviyesinde, MoveRefPanelPicker).
     if (S.panelMoveMode) return;
     // DÖNDÜRME REF: referans YÜZ seçimi (pivot + nişan + eksen seçildi) — yalnız PANEL yüzleri aday.

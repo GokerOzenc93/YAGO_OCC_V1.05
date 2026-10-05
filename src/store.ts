@@ -112,7 +112,21 @@ export interface DoorPick {
  */
 export type DoorNode =
   | { id: string; kind: 'leaf'; type: DoorType; leafSplit?: DoorLeafSplit }
-  | { id: string; kind: 'split'; axis: 'u' | 'v'; sizes: GapSpec[]; gaps: number[]; children: DoorNode[] };
+  | {
+    id: string; kind: 'split'; axis: 'u' | 'v'; sizes: GapSpec[]; gaps: number[]; children: DoorNode[];
+    /**
+     * PANEL REF (Goker, Eki 2026: "panel ref modunda kapak sınırındaki dikmenin ta ortasından kapağı bölsün; sonra dikmeyse
+     * sola/sağa/ortaya, rafsa yukarı/aşağı/ortaya alabileyim"): derz k (çocuk k ile k+1 arası) bir kapak-sınırı levhasına
+     * BAĞLI — kapak levhayı izler: 'center' derz levhanın ortasında, 'min' levha derzin min tarafındaki kapağın arkasında
+     * (derzin min kenarı = levhanın max yüzü), 'max' tersi. Ölçüler her çözümde levhanın GERÇEK konumundan türetilir.
+     */
+    refs?: Record<number, { vfId: string; align: DoorAlign }>;
+    /**
+     * SPACING (Goker: "spacing modu da olsun"): hedef parça ölçüsü (mm) — parça sayısı her çözümde alanın uzunluğundan
+     * türetilir (eşit parçalar hedefe en yakın n); gövde boyutlanınca parça eklenir/silinir. Sayı elle girilince kalkar.
+     */
+    targetSize?: number;
+  };
 /** Kapak alanının dört kenar boşluğu (sınır paneline / gövde kenarına): mm. */
 export interface DoorEdgeGaps { uMin: number; uMax: number; vMin: number; vMax: number }
 /**
@@ -372,6 +386,8 @@ export interface AppState {
   selectedDoorGroupId: string | null; setSelectedDoorGroupId: (id: string | null) => void;
   /** Kapak yerleştirme modu: tıklanan gövde yüzünde kapak sınırı panellerinden adaylar (büyükten küçüğe döner). */
   doorPickMode: boolean; setDoorPickMode: (b: boolean) => void;
+  /** PANEL REF modu: bu kapak grubu için 3B'de / şemada tıklanan kapak-sınırı dikme/rafın ortasından kapak bölünür. */
+  doorRefPickGroupId: string | null; setDoorRefPickGroupId: (id: string | null) => void;
   doorPickCandidates: DoorPick[]; doorPickIndex: number;
   setDoorPick: (c: DoorPick[], i: number) => void;
   /** Seçim sırasında dış/iç kapak önizlemesi (grup bununla doğar). */
@@ -637,6 +653,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     ...(id ? { selectedPanelRow: null, selectedPanelGroupId: null } : {}),
   }),
   // Kapak yerleştirme modu diğer yerleştirme modlarını (yüz yakalama, hacim seçme) kapatır.
+  doorRefPickGroupId: null,
+  setDoorRefPickGroupId: (id) => set({ doorRefPickGroupId: id }),
   doorPickMode: false,
   setDoorPickMode: (b) => set({
     doorPickMode: b, doorPickCandidates: [], doorPickIndex: 0,
