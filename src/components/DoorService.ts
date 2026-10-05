@@ -734,60 +734,65 @@ function rebuildMembers(group: DoorGroup, nextGroup: DoorGroup, restructured: Se
 }
 
 /**
- * SEÇİLİ KAPAĞI BÖL (Goker, Eki 2026: "seçili olan kapağı bölmeliyiz; ilk tek kapak yerleşir, o bölünür; bölünen
- * kapağı tıklayıp tekrar dikey/yatay bölünebilmeli"): her seçili yaprak, kendi alanında `axis` ekseninde `count`
- * çocuğa bölünen bir split düğümü olur (u = Split V yan yana, v = Split H üst üste). Çocuklar eşit doğar; aralar grubun
- * varsayılan boşluğu. Çocuk tipleri: u → sol yarı left / sağ yarı right; v → bölünen kapağın tipi (kanatsız).
- * Üst bölmelerin ölçüleri değişmez — bölünen kapağın toplamı korunur.
+ * BÖLGE BÖLME (Goker, Eki 2026: "kapağa tıklayınca dikey veya yatay bölüm gireyim ama kaça bölüneceğini seçmeliyim;
+ * seçilen yeri tekrar dikeyde veya yatayda miktar girerek böleyim; kaça bölünmüşse göster, sonradan değiştireyim"):
+ * seçili DÜĞÜM (kapak ya da bölünmüş alan) için `axis` eksenindeki parça sayısı `count` yapılır.
+ *  • Yaprak + count ≥ 2 → yaprak, o eksende count çocuklu bir split olur (çocuklar eşit; aralar grubun boşluğu;
+ *    tipler: u → sol yarı left / sağ yarı right, v → bölünen kapağın tipi).
+ *  • Aynı eksenli split → çocuk sayısı değişir: artınca sona eşit kapaklar eklenir, azalınca sondakiler gider
+ *    (ölçüler eşitlenir); count = 1 → split tek kapağa iner (BİRLEŞTİRME; tip = ilk kapağın tipi).
+ *  • Diğer eksenli split + count ≥ 2 → alan SARILIR: yeni split'in ilk parçası mevcut bölme, gerisi yeni kapaklar
+ *    (içerik kaybolmaz; 1'e indirince eski bölme geri gelir).
+ * Üst bölmelerin ölçüleri değişmez. Dönüş: sonuç düğümün id'si (arayüz seçimi orada tutar) — işlem yoksa null.
  */
-export async function splitDoorLeaves(groupId: string, leafIds: string[], axis: 'u' | 'v', count = 2): Promise<void> {
+export function setDoorNodeSplit(groupId: string, nodeId: string, axis: 'u' | 'v', count: number): string | null {
   const group = groupById(groupId);
-  if (!group) return;
-  const n = Math.max(2, Math.min(MAX_DOOR_SPLIT, Math.round(count)));
-  let tree = group.tree;
-  const restructured = new Set<string>();
-  for (const id of leafIds) {
-    const node = findDoorNode(tree, id);
-    if (!node || node.kind !== 'leaf') continue;
+  const node = group ? findDoorNode(group.tree, nodeId) : null;
+  if (!group || !node || !Number.isFinite(count)) return null;
+  const n = Math.max(1, Math.min(MAX_DOOR_SPLIT, Math.round(count)));
+  const newLeaves = (k: number, from: number, total: number, baseType: DoorType) =>
+    Array.from({ length: k }, (_, i) => makeDoorLeaf(axis === 'u' ? defaultDoorType(from + i, total) : baseType));
+  const gapsFor = (m: number, old: number[] = []) => Array.from({ length: m }, (_, i) => old[i] ?? old[0] ?? group.gap);
+  if (node.kind === 'leaf') {
+    if (n <= 1) return node.id;
     const baseType: DoorType = doorLeafAxis(node.type) ? 'left' : node.type;
-    tree = replaceDoorNode(tree, id, () => ({
-      id: genId('ds'), kind: 'split', axis, sizes: [], gaps: Array.from({ length: n - 1 }, () => group.gap),
-      children: Array.from({ length: n }, (_, c) => makeDoorLeaf(axis === 'u' ? defaultDoorType(c, n) : baseType)),
-    }));
-    restructured.add(id);
+    const split: DoorNode = { id: genId('ds'), kind: 'split', axis, sizes: [], gaps: gapsFor(n - 1), children: newLeaves(n, 0, n, baseType) };
+    rebuildMembers(group, { ...group, tree: replaceDoorNode(group.tree, node.id, () => split) }, new Set([node.id]), `bölme ${axis === 'u' ? 'V' : 'H'} ×${n}`);
+    return split.id;
   }
-  if (!restructured.size) return;
-  rebuildMembers(group, { ...group, tree }, restructured, `bölme ${axis === 'u' ? 'V' : 'H'} ×${n}`);
+  if (node.axis === axis) {
+    if (n === node.children.length) return node.id;
+    if (n <= 1) {
+      const first = doorLeaves(node)[0];
+      const leaf = makeDoorLeaf(first && !doorLeafAxis(first.type) ? first.type : 'left');
+      rebuildMembers(group, { ...group, tree: replaceDoorNode(group.tree, node.id, () => leaf) }, new Set(doorLeaves(node).map(l => l.id)), 'birleştirme (×1)');
+      return leaf.id;
+    }
+    const restructured = new Set<string>();
+    let children = node.children.slice();
+    if (n > children.length) children = [...children, ...newLeaves(n - children.length, children.length, n, 'left')];
+    else { for (const c of children.slice(n)) for (const l of doorLeaves(c)) restructured.add(l.id); children = children.slice(0, n); }
+    const next: DoorNode = { ...node, children, gaps: gapsFor(n - 1, node.gaps), sizes: [] };   // ölçüler eşitlenir
+    rebuildMembers(group, { ...group, tree: replaceDoorNode(group.tree, node.id, () => next) }, restructured, `bölme sayısı ${node.children.length} → ${n}`);
+    return node.id;
+  }
+  if (n <= 1) return node.id;
+  const wrap: DoorNode = { id: genId('ds'), kind: 'split', axis, sizes: [], gaps: gapsFor(n - 1), children: [node, ...newLeaves(n - 1, 1, n, 'left')] };
+  rebuildMembers(group, { ...group, tree: replaceDoorNode(group.tree, node.id, () => wrap) }, new Set(), `sarma ${axis === 'u' ? 'V' : 'H'} ×${n}`);
+  return wrap.id;
 }
-/**
- * BİRLEŞTİR: seçili kapağın üst bölmesi tek kapağa iner (kardeşleri de gider); tip = seçili kapağın tipi. Kökteki tek
- * kapak için anlamsız (bir üst bölme yok).
- */
-export async function mergeDoorLeaf(groupId: string, leafId: string): Promise<void> {
+/** Eski adlar — tek giriş setDoorNodeSplit. */
+export const splitDoorLeaves = (groupId: string, leafIds: string[], axis: 'u' | 'v', count = 2) => leafIds.forEach(id => setDoorNodeSplit(groupId, id, axis, count));
+export function mergeDoorLeaf(groupId: string, leafId: string): void {
   const group = groupById(groupId);
-  if (!group) return;
-  const parent = findDoorParent(group.tree, leafId);
-  const node = findDoorNode(group.tree, leafId);
-  if (!parent || !node || node.kind !== 'leaf') return;
-  const gone = new Set(doorLeaves(parent).map(l => l.id));
-  const tree = replaceDoorNode(group.tree, parent.id, () => makeDoorLeaf(doorLeafAxis(node.type) ? 'left' : node.type));
-  rebuildMembers(group, { ...group, tree }, gone, 'birleştirme');
+  const parent = group ? findDoorParent(group.tree, leafId) : null;
+  if (parent) setDoorNodeSplit(groupId, parent.id, parent.axis, 1);
 }
-/** Bir split düğümünün çocuk sayısı: artır → sona eşit kapak eklenir; azalt → sondaki kapak(lar) gider (≥2). */
-export async function setDoorSplitCount(groupId: string, splitId: string, count: number): Promise<void> {
+export const setDoorSplitCount = (groupId: string, splitId: string, count: number) => {
   const group = groupById(groupId);
   const node = group ? findDoorNode(group.tree, splitId) : null;
-  if (!group || !node || node.kind !== 'split') return;
-  const n = Math.max(2, Math.min(MAX_DOOR_SPLIT, Math.round(count)));
-  if (n === node.children.length) return;
-  const restructured = new Set<string>();
-  let children = node.children.slice();
-  if (n > children.length) for (let c = children.length; c < n; c++) children.push(makeDoorLeaf(node.axis === 'u' ? defaultDoorType(c, n) : 'left'));
-  else { for (const c of children.slice(n)) for (const l of doorLeaves(c)) restructured.add(l.id); children = children.slice(0, n); }
-  const gaps = Array.from({ length: n - 1 }, (_, i) => node.gaps[i] ?? node.gaps[0] ?? group.gap);
-  const tree = replaceDoorNode(group.tree, splitId, () => ({ ...node, children, gaps, sizes: [] }));   // ölçüler eşitlenir
-  rebuildMembers(group, { ...group, tree }, restructured, `bölme sayısı ${node.children.length} → ${n}`);
-}
+  if (node?.kind === 'split') setDoorNodeSplit(groupId, splitId, node.axis, count);
+};
 
 /**
  * KAPAK TİPİ ATAMA (Goker: "birden fazla kapağı seçip bir kapak tipi verebileyim"): seçilen YAPRAKLARA tek tip.
