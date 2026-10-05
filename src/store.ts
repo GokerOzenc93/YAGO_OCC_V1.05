@@ -115,13 +115,6 @@ export type DoorNode =
   | {
     id: string; kind: 'split'; axis: 'u' | 'v'; sizes: GapSpec[]; gaps: number[]; children: DoorNode[];
     /**
-     * PANEL REF (Goker, Eki 2026: "panel ref modunda kapak sınırındaki dikmenin ta ortasından kapağı bölsün; sonra dikmeyse
-     * sola/sağa/ortaya, rafsa yukarı/aşağı/ortaya alabileyim"): derz k (çocuk k ile k+1 arası) bir kapak-sınırı levhasına
-     * BAĞLI — kapak levhayı izler: 'center' derz levhanın ortasında, 'min' levha derzin min tarafındaki kapağın arkasında
-     * (derzin min kenarı = levhanın max yüzü), 'max' tersi. Ölçüler her çözümde levhanın GERÇEK konumundan türetilir.
-     */
-    refs?: Record<number, { vfId: string; align: DoorAlign }>;
-    /**
      * SPACING (Goker: "spacing modu da olsun"): hedef parça ölçüsü (mm) — parça sayısı her çözümde alanın uzunluğundan
      * türetilir (eşit parçalar hedefe en yakın n); gövde boyutlanınca parça eklenir/silinir. Sayı elle girilince kalkar.
      */
@@ -163,11 +156,12 @@ export interface DoorGroup {
   halfOverlay?: { uMin?: boolean; uMax?: boolean; vMin?: boolean; vMax?: boolean };
   /**
    * DERZ HİZALAMASI (Goker, Eki 2026: "dikmeyi kapağın sağına / soluna / ortalı, rafı yukarı / aşağı / ortada yerleştireyim;
-   * dikme ve raf buna göre hareket etsin, aralıkları revize edilsin"): kapak alanının İÇİNDE bir kapak derzine (iki kapak
-   * arası) yakın duran kapak-sınırı raf/dikme ÜYESİ (anahtar = VF id) derze göre konumlanır — 'min' = levha derzin
-   * min tarafındaki kapağın arkasında (dikme: sol, raf: alt), 'center' = derz levhanın ortasında (iki kapak yarımşar
-   * örter), 'max' = max tarafındaki kapağın arkasında. Üye kendi grubunun boşluğuyla taşınır (editGroupGap); her
-   * rebuild sonrası yeniden uygulanır (bağ). Kayıt yoksa serbest (levha olduğu yerde kalır).
+   * dikme ve raf buna göre hareket etsin, aralıkları revize edilsin; kapak ölçülerine dokunma — raf ve dikme hareket etsin,
+   * kapak değil"): kapak alanının İÇİNDE bir kapak derzine (iki kapak arası) yakın duran kapak-sınırı raf/dikme ÜYESİ
+   * (anahtar = VF id) derze göre konumlanır — 'min' = levha derzin min tarafındaki kapağın arkasında (dikme: sol, raf: alt),
+   * 'center' = derz levhanın ortasında (iki kapak yarımşar örter), 'max' = max tarafındaki kapağın arkasında. Üye kendi
+   * grubunun boşluğuyla taşınır (editGroupGap); her rebuild sonrası yeniden uygulanır (bağ). Kapak ölçüleri DEĞİŞMEZ.
+   * Panel ref bölmesi (splitDoorAtPanel) derzi levhanın ortasına koyar ve bu bağı 'center' olarak kurar.
    */
   panelAlign?: Record<string, DoorAlign>;
   thickness: number;

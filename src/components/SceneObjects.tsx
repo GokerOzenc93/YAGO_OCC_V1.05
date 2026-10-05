@@ -166,7 +166,8 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
   // kapaklar (zaten yerleşmiş) saydam çizilir ki arkadaki sınır panelleri ve gövde görünsün.
   // Kapak yerleştirme ve PANEL REF modlarında kapak-sınırı paneller kehribar parlar (ref modunda tıklanacak adaylar).
   const isDoorBoundPanel = isParentSelected && (S.doorPickMode || !!S.doorRefPickGroupId) && !!virtualFaceId && !!S.virtualFaces.find(f => f.id === virtualFaceId)?.doorBound;
-  const isDoorPickGhost = isParentSelected && S.doorPickMode && isDoorPanel(shape);
+  // PANEL REF modunda da kapaklar saydam ve tıklanmaz: arkasındaki dikme/raf seçilebilsin (dış kapak levhayı örter).
+  const isDoorPickGhost = isParentSelected && (S.doorPickMode || !!S.doorRefPickGroupId) && isDoorPanel(shape);
 
   const edgePoints = useMemo<Vec3[] | null>(() => { try { const p = edgePointsOf(shape.geometry, EDGE_ANGLE_THRESHOLD); return p.length ? p : null; } catch { return null; } }, [shape.geometry]);
 
@@ -214,7 +215,7 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
   const isMoveRefPickMode = S.panelMoveMode && S.panelMoveValueMode === 'ref' && !!S.panelMoveRefSourceVertex && !S.panelMoveRefTargetVertex && shape.id !== S.panelMoveTargetPanelId && S.panelMoveRefTargetPanelId !== shape.id;
   const isMoveRefHovered = isMoveRefPickMode && moveRefHover;
   const moveRefHighlight = isMoveRefTargetPanel || isMoveRefHovered;
-  const disableRaycast = (isFaceExtrudeTarget || (isFaceExtrudeXray && !isRefPickablePanel) || isRaycastOnParent) && !isMoveRefPickMode;
+  const disableRaycast = (isFaceExtrudeTarget || (isFaceExtrudeXray && !isRefPickablePanel) || isRaycastOnParent || (!!S.doorRefPickGroupId && isDoorPanel(shape))) && !isMoveRefPickMode;
 
   useEffect(() => { const mesh = meshRef.current; if (mesh) mesh.raycast = disableRaycast ? () => {} : THREE.Mesh.prototype.raycast; }, [disableRaycast]);
   useEffect(() => { if (!isMoveRefPickMode && moveRefHover) setMoveRefHover(false); }, [isMoveRefPickMode, moveRefHover]);
