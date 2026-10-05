@@ -467,28 +467,26 @@ function DockModeBar({ modes, active, onPick, trailing }: { modes: DockMode[]; a
 }
 
 /* ── "Yüzeyin şeklini al" — satır ikon düğmesi (Goker, Eki 2026: "aç/kapat var ama ne olduğu anlaşılmıyor,
-   bir ikona bağlansın"): kapak sınırı düğmesiyle aynı 20×20 kutu; AÇIK = petrol (teal) dolgu + çerçeve.
+   bir ikona bağlansın"): kapak sınırı düğmesiyle aynı ROW_BTN kutu; AÇIK = petrol (teal) dolgu + çerçeve.
    AÇIK: panel, yerleştiği serbest bölgenin tam şeklini alır (L/U/çentik). KAPALI (varsayılan): kardeş kenarında düz kesilir. */
 function FitShapeToggle({ checked, disabled, onToggle }: { checked: boolean; disabled?: boolean; onToggle: () => void }) {
   return (
     <button type="button" role="checkbox" aria-checked={checked} disabled={disabled} onClick={e => { stop(e); if (!disabled) onToggle(); }}
       title={checked ? 'Fit to face shape: ON — the panel takes the full shape of its free region (L / U / notch). Click to cut straight at siblings.' : 'Fit to face shape: OFF — the panel is cut straight at the sibling edge. Click to follow the free region\'s full shape.'}
-      className={`w-5 h-5 rounded-md flex items-center justify-center transition-colors duration-150
-        ${disabled ? 'text-stone-200 cursor-not-allowed' : checked ? 'text-teal-700 bg-teal-50 ring-1 ring-teal-300/80' : 'text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700'}`}>
-      <Shapes size={13} strokeWidth={checked ? 2.2 : 1.9} />
+      className={`${ROW_BTN} ${disabled ? 'text-stone-200 cursor-not-allowed' : checked ? 'text-teal-700 bg-teal-50 ring-1 ring-teal-300/80' : 'text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700'}`}>
+      <Shapes size={ROW_ICON} strokeWidth={checked ? 2.1 : 1.8} />
     </button>
   );
 }
 
 /* ── KAPAK SINIRI — satır düğmesi (Goker: "kapak sınırı işareti her satırda, panel yönü gibi") ─
-   Panel yönü okuyla aynı 20×20 kutu; AÇIK = kehribar (3B'deki kehribar kenar ve satır rozetiyle aynı dil). */
+   Panel yönü okuyla aynı ROW_BTN kutu; AÇIK = kehribar (3B'deki kehribar kenar ve satır rozetiyle aynı dil). */
 function DoorRefToggle({ checked, disabled, onToggle }: { checked: boolean; disabled?: boolean; onToggle: () => void }) {
   return (
     <button type="button" role="checkbox" aria-checked={checked} disabled={disabled} onClick={e => { stop(e); if (!disabled) onToggle(); }}
       title={checked ? 'Door reference: ON — doors are built from this panel\'s edges' : 'Mark as door reference'}
-      className={`w-5 h-5 rounded-md flex items-center justify-center transition-colors duration-150
-        ${disabled ? 'text-stone-200 cursor-not-allowed' : checked ? 'text-amber-700 bg-amber-50 ring-1 ring-amber-300/80' : 'text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700'}`}>
-      <DoorClosed size={13} strokeWidth={checked ? 2.2 : 1.9} />
+      className={`${ROW_BTN} ${disabled ? 'text-stone-200 cursor-not-allowed' : checked ? 'text-amber-700 bg-amber-50 ring-1 ring-amber-300/80' : 'text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700'}`}>
+      <DoorClosed size={ROW_ICON} strokeWidth={checked ? 2.1 : 1.8} />
     </button>
   );
 }
@@ -1397,7 +1395,11 @@ export function DoorSchematic({ group, selectedIndex, selectedLeaves, memberLabe
    [kontroller sabit genişlik]. Üye satırları kartın içinde 8px içeride
    durduğu için sağ kontrol alanı 8px dar tutulur → ölçü sütunları hizalanır. */
 const ROW_NUM_W = 30;
-const ROW_TRAIL_W = 99;           // 4 × 20px düğme + 16px ok + 3px aralık
+/* SATIR DÜĞMELERİ (Goker, Eki 2026: "yüzeyin şeklini al · kapak sınırı · yön · sil düğmelerini biraz büyüt, araları eşit
+   kalsın"): dördü de 24×24 kutu, 14px ikon, aralarında 3px; ok 16px. Genişlik = 4×24 + 3×3 + 3 + 16 = 124. */
+const ROW_BTN = 'w-6 h-6 shrink-0 rounded-md flex items-center justify-center transition-colors duration-150';
+const ROW_ICON = 14;
+const ROW_TRAIL_W = 124;          // 4 × 24px düğme + 3 × 3px aralık + 3px + 16px ok
 const MEMBER_INSET = 8;           // grup kartı gövdesinin yatay dolgusu (px-2)
 type RowKind = 'body' | 'shelf' | 'divider' | 'door';
 const ROW_KIND_ICON: Record<RowKind, LucideIcon> = { body: LayoutPanelTop, shelf: Rows3, divider: Columns3, door: DoorClosed };
@@ -1411,7 +1413,7 @@ const rowCardClass = (open: boolean, dragging: boolean, armed: boolean) =>
    ${armed && !dragging ? '!ring-orange-300 !bg-white shadow-[0_6px_16px_-8px_rgba(234,88,12,0.35)] scale-[1.006]' : ''}`;
 const ROW_INPUT_CLASS = 'yago-row-note flex-1 min-w-0 h-[22px] px-[5px] text-[11.5px] text-stone-700 bg-transparent border border-transparent rounded-[5px] outline-none placeholder:text-stone-300 hover:border-[#ebe5dc] focus:bg-white focus:border-orange-400/50 transition-colors';
 /* SİL düğmesi HER ZAMAN görünür (Goker, Eki 2026: "her satırda silme düğmesi fix olsun, fareyi üzerine götürünce değil"). */
-const ROW_DEL_CLASS = 'w-5 h-5 rounded-md flex items-center justify-center text-stone-400 hover:bg-red-50 hover:text-red-500 transition-[color,background-color] duration-150';
+const ROW_DEL_CLASS = `${ROW_BTN} text-stone-400 hover:bg-red-50 hover:text-red-500`;
 const DROP_BAND = 'pointer-events-none h-[7px] mx-1 rounded-full bg-gradient-to-r from-amber-400 via-orange-400 to-amber-400 shadow-[0_0_10px_rgba(245,158,11,0.65),0_1px_2px_rgba(180,83,9,0.3)]';
 
 /** Panel tipi işareti — tüm satırlarda aynı boyut (20×20 kutu, 13px ikon).
@@ -1480,7 +1482,7 @@ function FieldBox({ label, title, accent, fixed, children }: { label: string; ti
     <div title={title} onClick={stop}
       className={`${fixed ? 'shrink-0' : 'flex-1 min-w-0'} h-[28px] pl-2 pr-1 flex items-center gap-1 rounded-[7px] bg-white transition-shadow duration-150
         ${accent ? 'ring-1 ring-orange-400/70 shadow-[0_0_0_2px_rgba(249,115,22,0.08)]' : 'ring-1 ring-[#e6e0d6] shadow-[0_1px_0_rgba(40,30,20,0.03)]'}`}>
-      <span className="shrink-0 text-[9.5px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]">{label}</span>
+      {label && <span className="shrink-0 text-[9.5px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]">{label}</span>}
       <div className="flex-1 min-w-0 flex items-center justify-end gap-0.5">{children}</div>
     </div>
   );
@@ -2295,19 +2297,19 @@ export function PanelEditor() {
               )}
               <RowDims w={dims?.primary} h={dims?.secondary} t={dims?.thickness} tLetter="T" />
               {/* Kontrol alanı sabit genişlik (üyede kart dolgusu kadar dar) → ölçüler hizalı kalır. */}
-              <div className="flex items-center justify-end gap-px shrink-0 ml-0.5" style={{ width: opts.member ? ROW_TRAIL_W - MEMBER_INSET : ROW_TRAIL_W }} onClick={stop}>
+              <div className="flex items-center justify-end gap-[3px] shrink-0 ml-0.5" style={{ width: opts.member ? ROW_TRAIL_W - MEMBER_INSET : ROW_TRAIL_W }} onClick={stop}>
                 {/* Yüzeyin şeklini al: iç panelde (raf/dikme) serbest bölge yok → gösterilmez. */}
                 {!opts.member && <FitShapeToggle checked={!!vf.fitFaceShape} disabled={!vf.hasPanel} onToggle={() => { void toggleFitShape(vf); }} />}
                 {/* KAPAK SINIRI: her satırda (gövde paneli, raf/dikme üyesi) — kapak üyesinde yok. Şemadaki işaretle aynı bayrak (VF.doorBound). */}
-                {opts.door ? <span className="w-5 h-5" /> : <DoorRefToggle checked={!!vf.doorBound} disabled={!vf.hasPanel} onToggle={() => setVfDoorBound(vf.id, !vf.doorBound)} />}
+                {opts.door ? <span className="w-6 h-6 shrink-0" /> : <DoorRefToggle checked={!!vf.doorBound} disabled={!vf.hasPanel} onToggle={() => setVfDoorBound(vf.id, !vf.doorBound)} />}
                 <button disabled={!vf.hasPanel} onClick={e => { stop(e); toggleArrow(vp); }} title="Toggle arrow direction"
-                  className={`w-5 h-5 rounded-md flex items-center justify-center transition-colors duration-150 ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-stone-700 bg-[#f1ece4]' : 'text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700'}`}>
-                  <ArrowUp size={13} strokeWidth={1.9} className={`transition-transform duration-200 ${ar ? '' : 'rotate-90'}`} />
+                  className={`${ROW_BTN} ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-stone-700 bg-[#f1ece4]' : 'text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700'}`}>
+                  <ArrowUp size={ROW_ICON} strokeWidth={1.9} className={`transition-transform duration-200 ${ar ? '' : 'rotate-90'}`} />
                 </button>
                 {/* Sil: her zaman görünür. Üye paneller adet ile yönetilir. */}
                 {!opts.member
-                  ? <button onClick={e => { stop(e); void deletePanelAndFace(vf.id); }} title="Delete panel" className={ROW_DEL_CLASS}><Trash2 size={12} strokeWidth={1.9} /></button>
-                  : <span className="w-5 h-5" />}
+                  ? <button onClick={e => { stop(e); void deletePanelAndFace(vf.id); }} title="Delete panel" className={ROW_DEL_CLASS}><Trash2 size={ROW_ICON - 1} strokeWidth={1.9} /></button>
+                  : <span className="w-6 h-6 shrink-0" />}
                 <RowChevron open={sel} />
               </div>
             </div>
@@ -2354,8 +2356,8 @@ export function PanelEditor() {
                 title="Group name (applies to all its panels)" className={`${ROW_INPUT_CLASS} font-semibold`} />
               {/* Hacmin en · boy · derinliği — panel satırlarıyla aynı sütunlar. */}
               <RowDims w={dimsWHD[0]} h={dimsWHD[1]} t={dimsWHD[2]} tLetter="D" title="Cavity width · height · depth" />
-              <div className="flex items-center justify-end gap-px shrink-0 ml-0.5" style={{ width: ROW_TRAIL_W }} onClick={stop}>
-                <button onClick={e => { stop(e); deletePanelGroupWithMembers(g.id); }} title="Delete group (all panels)" className={ROW_DEL_CLASS}><Trash2 size={12} strokeWidth={1.9} /></button>
+              <div className="flex items-center justify-end gap-[3px] shrink-0 ml-0.5" style={{ width: ROW_TRAIL_W }} onClick={stop}>
+                <button onClick={e => { stop(e); deletePanelGroupWithMembers(g.id); }} title="Delete group (all panels)" className={ROW_DEL_CLASS}><Trash2 size={ROW_ICON - 1} strokeWidth={1.9} /></button>
                 <RowChevron open={open} onClick={toggleOpen} title={open ? 'Collapse — back to the list' : 'Expand'} />
               </div>
             </div>
@@ -2483,8 +2485,8 @@ export function PanelEditor() {
               <input type="text" value={doorGroupName(g)} onClick={stop} onChange={e => renameDoorGroup(g.id, e.target.value)} placeholder="Door"
                 title="Group name (applies to all its doors)" className={`${ROW_INPUT_CLASS} font-semibold`} />
               <RowDims w={dimsW} h={dimsH} t={g.thickness} tLetter="T" title={`Door area width · height · thickness (${doorPlacementLabel(g.placement)} door)`} />
-              <div className="flex items-center justify-end gap-px shrink-0 ml-0.5" style={{ width: ROW_TRAIL_W }} onClick={stop}>
-                <button onClick={e => { stop(e); deleteDoorGroupWithMembers(g.id); }} title="Delete group (all doors)" className={ROW_DEL_CLASS}><Trash2 size={12} strokeWidth={1.9} /></button>
+              <div className="flex items-center justify-end gap-[3px] shrink-0 ml-0.5" style={{ width: ROW_TRAIL_W }} onClick={stop}>
+                <button onClick={e => { stop(e); deleteDoorGroupWithMembers(g.id); }} title="Delete group (all doors)" className={ROW_DEL_CLASS}><Trash2 size={ROW_ICON - 1} strokeWidth={1.9} /></button>
                 <RowChevron open={open} onClick={toggleOpen} title={open ? 'Collapse — back to the list' : 'Expand'} />
               </div>
             </div>
@@ -2566,8 +2568,9 @@ export function PanelEditor() {
       <div style={DOCK_ROW}>
         <span style={dockAxisTag('#44403c')}>{tag}</span>
         {lead}
+        {/* Ad kutusu etiketsiz (Goker: "name yazmasın, isim girme alanı olduğu zaten belli"); varsayılan ad placeholder'da. */}
         {showName ? (
-          <FieldBox label="Name" title={`Name of the new ${defaultName.toLowerCase()} (empty = ${defaultName})`}>
+          <FieldBox label="" title={`Name of the new ${defaultName.toLowerCase()} (empty = ${defaultName})`}>
             <input type="text" autoFocus value={placementName} placeholder={defaultName} spellCheck={false}
               onChange={e => setPlacementName(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' && ready) onConfirm(); if (e.key === 'Escape') onExit(); }}
