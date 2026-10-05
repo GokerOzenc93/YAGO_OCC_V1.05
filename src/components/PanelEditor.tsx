@@ -1039,10 +1039,11 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
    KÖK bölmenin ölçü zinciri karenin DIŞINDA (yan yana → üstte, üst üste → solda; kenar boşlukları iki uçta, aralar
    arada); iç içe bölmeler kendi alanlarının İÇİNDE (yan yana → alt kenara yakın yatay, üst üste → sağ kenara yakın
    düşey; derinleştikçe 16 px içeri). Double/fold yaprağın kanat zinciri de aynı kuralla yaprağın içinde. Her pill
-   tıkla → değer gir; ölçü pill'inin ucundaki kilit → kilitle. Kapaklar 1,5 px içeri çizilir ki 3 mm boşluklar
-   görünür kalsın. */
+   tıkla → değer gir; ölçü pill'inin ucundaki kilit → kilitle. ÖLÇÜ OKU YOK (Goker: "ölçü okları kapak boşluklarının
+   içine giriyor") — yalnız pill'ler. Kapaklar 1,5 px içeri çizilir ki 3 mm boşluklar görünür kalsın. */
 const DOOR_INSET_PX = 1.5;        // kapak çiziminin kenarlardan içeri payı (boşluklar görünsün)
-const CHAIN_OFF = 21;             // iç ölçü zincirinin kenardan uzaklığı (px) — kenardaki panel bandının (gizli kısım) içinde kalmasın
+const CHAIN_OFF_H = 27;           // iç YATAY ölçü zincirinin alt kenardan uzaklığı (px) — alt bant ve ortadaki rozetle çakışmasın
+const CHAIN_OFF_V = 38;           // iç DÜŞEY ölçü zincirinin sağ kenardan uzaklığı (px) — pill'ler yatay geniş, sağ bant rozetini aşsın
 const CHAIN_STEP = 16;            // iç içe zincirler arası (px)
 const DOOR_PAD = 54;              // kapak şemasının kenar payı (dış ölçü zinciri + panel bandı sığsın)
 const BAND = 16;                  // sınır paneli (dikme / yan / üst / alt) bandının TEMSİLİ kalınlığı (px) — ölçekten bağımsız
@@ -1173,7 +1174,6 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
   const sy = (v: number) => (mirrorV ? oy + ((v - rect.v0) / dv) * S : oy + ((rect.v1 - v) / dv) * S);
   const fs = Math.max(10, Math.min(13.5, width * 0.027));
   const fsT = Math.max(9, fs * 0.86);
-  const asz = Math.max(4, Math.min(6.5, width * 0.014));
   const gid = `ds-${group.id.replace(/[^a-zA-Z0-9_-]/g, '')}`;
 
   // ── ÖLÇÜ ZİNCİRLERİ ──
@@ -1218,7 +1218,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
       if (n.depth > 0) {
         const horiz = n.axis === 'u';
         const bx1 = Math.max(sx(n.u0), sx(n.u1)), by1 = Math.max(sy(n.v1), sy(n.v0));
-        const pos = horiz ? by1 - CHAIN_OFF - CHAIN_STEP * insideU : bx1 - CHAIN_OFF - CHAIN_STEP * insideV;
+        const pos = horiz ? by1 - CHAIN_OFF_H - CHAIN_STEP * insideU : bx1 - CHAIN_OFF_V - CHAIN_STEP * insideV;
         const items: ChainItem[] = [];
         const dir = horiz ? 1 : -1;
         let p = horiz ? n.u0 : n.v1;
@@ -1243,7 +1243,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     if (!ax || !n.leafSplit || n.leafSplit.leaves.length !== 2) return;
     const horiz = ax === 'u';
     const bx1 = Math.max(sx(n.u0), sx(n.u1)), by1 = Math.max(sy(n.v1), sy(n.v0));
-    const pos = horiz ? by1 - CHAIN_OFF - CHAIN_STEP * insideU : bx1 - CHAIN_OFF - CHAIN_STEP * insideV;
+    const pos = horiz ? by1 - CHAIN_OFF_H - CHAIN_STEP * insideU : bx1 - CHAIN_OFF_V - CHAIN_STEP * insideV;
     const [a, b] = n.leafSplit.leaves.map(l => Math.max(0, l.value)), g = n.leafSplit.gap;
     const dir = horiz ? 1 : -1;
     const p0 = horiz ? n.u0 : n.v1;
@@ -1429,12 +1429,12 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
           );
         })}
         {/* BANT TIKLAMA ALANI (dış kapak) + DURUM ROZETİ: kapak paneli örtüyorsa rozet HEP görünür — "Full" (taş) / "Half"
-            (turuncu); örtmüyorsa yalnız fareyle üstündeyken ("No overlap"). Rozet bandın ucunda (%92) — ölçü pill'leriyle çakışmaz. */}
+            (turuncu); örtmüyorsa yalnız fareyle üstündeyken ("No overlap"). Rozet bandın ortasında, yan bantlarda dikey. */}
         {bands.map(bd => {
           const on = isOuter && !!group.halfOverlay?.[bd.edge];
           const half = bd.st === 'half';
-          const along = 0.92;
-          const bx = bd.vertical ? bd.x + bd.w / 2 : bd.x + bd.w * along, by = bd.vertical ? bd.y + bd.h * along : bd.y + bd.h / 2;
+          // Rozet bandın TAM ORTASINDA; sol / sağ bantta DİKEY yazı (Goker: "full ve half tam ortada olsun; sol ve sağdakiler dikey").
+          const bx = bd.x + bd.w / 2, by = bd.y + bd.h / 2;
           const chipTxt = half ? 'Half' : bd.st === 'full' ? 'Full' : 'No overlap';
           const cfs = fsT * 0.8;
           const { pw: cw, ph: chh } = pillSize(chipTxt, cfs);
@@ -1444,7 +1444,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
               onClick={isOuter ? e => { stop(e); onToggleHalfOverlay(bd.edge, !on); } : undefined}>
               <rect x={bd.x - 1} y={bd.y - 1} width={bd.w + 2} height={bd.h + 2} fill="transparent" className="hit" />
               {isOuter && (
-                <g className="chip">
+                <g className="chip" transform={bd.vertical ? `rotate(-90 ${bx} ${by})` : undefined}>
                   <rect x={bx - cw / 2} y={by - chh / 2} width={cw} height={chh} rx={chh / 2} fill={half ? '#ea580c' : '#ffffff'} stroke={half ? '#c2410c' : '#cfc6b9'} strokeWidth={0.8}
                     style={{ filter: 'drop-shadow(0 1px 1px rgba(40,30,20,0.12))' }} />
                   <text x={bx} y={by + cfs * 0.36} textAnchor="middle" fontSize={cfs} fontWeight={700} letterSpacing="0.02em" fill={half ? '#ffffff' : '#78716c'} fontFamily={UI_FONT}>{chipTxt}</text>
@@ -1480,8 +1480,6 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
           const locked = !!it.locked, editable = !!it.onLock || it.key.startsWith('leaf-');
           return (
             <g key={p.key} className={`yago-gap${locked ? ' locked' : ''}`}>
-              {ch.horiz ? <DimArrows a={{ x: p.x0, y: p.cy }} b={{ x: p.x1, y: p.cy }} asz={ch.small ? asz * 0.85 : asz} color={locked ? '#f59e0b' : DIM_LINE} />
-                : <DimArrows a={{ x: p.cx, y: p.x0 }} b={{ x: p.cx, y: p.x1 }} asz={ch.small ? asz * 0.85 : asz} color={locked ? '#f59e0b' : DIM_LINE} />}
               <DimPill cx={p.cx} cy={p.cy} txt={it.txt} fs={f} fill={locked ? '#fff7ed' : '#ffffff'} stroke={locked ? '#f97316' : ch.small ? '#e6e0d6' : 'none'} strokeWidth={locked ? 1 : 0.7}
                 color={locked ? '#c2410c' : '#44403c'} hideText={hide} title={it.title}
                 onClick={editable ? e => { stop(e); setEditing({ key: p.key, v: it.txt }); } : undefined} />
