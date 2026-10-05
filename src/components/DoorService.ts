@@ -84,9 +84,9 @@ export const doorPlacementLabel = (p: DoorGroup['placement']) => (p === 'inner' 
 
 // ── KAPAK TİPLERİ ───────────────────────────────────────────────────────────
 
-export const DOOR_TYPES: DoorType[] = ['left', 'right', 'up', 'down', 'double', 'fold'];
+export const DOOR_TYPES: DoorType[] = ['left', 'right', 'up', 'down', 'double', 'fold', 'drawer', 'fixed'];
 /** Kısa İngilizce etiketler (Goker: "kapak tipleri kısa bir şekilde İngilizce olsun"). */
-export const DOOR_TYPE_LABEL: Record<DoorType, string> = { left: 'Left', right: 'Right', up: 'Up', down: 'Down', double: 'Double', fold: 'Fold' };
+export const DOOR_TYPE_LABEL: Record<DoorType, string> = { left: 'Left', right: 'Right', up: 'Up', down: 'Down', double: 'Double', fold: 'Fold', drawer: 'Drawer', fixed: 'Fixed' };
 export const DOOR_TYPE_TITLE: Record<DoorType, string> = {
   left: 'Left — hinged on the left, opens to the right (as seen from the front)',
   right: 'Right — hinged on the right, opens to the left',
@@ -94,7 +94,11 @@ export const DOOR_TYPE_TITLE: Record<DoorType, string> = {
   down: 'Down — drop-down flap, hinged at the bottom',
   double: 'Double — two leaves side by side (left + right hinged); the door is split in two, each leaf sized within the door',
   fold: 'Fold — bi-fold lift-up, two leaves stacked; the door is split in two vertically, each leaf sized within the door',
+  drawer: 'Drawer — drawer front (no hinges, pulls out)',
+  fixed: 'Fixed — no hinges; fixed / false front panel',
 };
+/** Menteşesi olmayan tipler (açılış işareti çizilmez). */
+export const isHingelessDoorType = (t: DoorType) => t === 'drawer' || t === 'fixed';
 /** Kanat ekseni: double → u (yan yana), fold → v (üst üste); tek kanatlı tiplerde null. */
 export const doorLeafAxis = (t: DoorType | undefined): 'u' | 'v' | null => (t === 'double' ? 'u' : t === 'fold' ? 'v' : null);
 /** Varsayılan tip (yan yana bölmede c. çocuk): tek → left; çok parçada sol yarı left, sağ yarı right (bir çift kapağın doğal menteşeleri). */

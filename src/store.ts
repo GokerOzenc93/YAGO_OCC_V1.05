@@ -157,9 +157,10 @@ export interface DoorGroup {
 /**
  * KAPAK TİPİ: menteşe / açılış yönü (bakan kişiye göre). left/right = yan menteşeli (sol menteşe sağa açılır);
  * up = kalkar kapak (üst menteşe); down = düşer kapak (alt menteşe); double = iki kanatlı (sol kanat sol, sağ kanat
- * sağ menteşe — hücre yatayda ikiye bölünür); fold = katlanır kalkar (iki kanat üst üste — hücre dikeyde ikiye bölünür).
+ * sağ menteşe — hücre yatayda ikiye bölünür); fold = katlanır kalkar (iki kanat üst üste — hücre dikeyde ikiye bölünür);
+ * drawer = çekmece ön paneli; fixed = menteşesiz (sabit / sahte) ön panel (Goker, Eki 2026: "çekmece ve menteşesiz kapak da olsun").
  */
-export type DoorType = 'left' | 'right' | 'up' | 'down' | 'double' | 'fold';
+export type DoorType = 'left' | 'right' | 'up' | 'down' | 'double' | 'fold' | 'drawer' | 'fixed';
 /** İki kanatlı hücre: kanat ölçüleri (toplam = hücre ölçüsü − kanat arası boşluk) + kanat arası boşluk (mm). */
 export interface DoorLeafSplit { leaves: GapSpec[]; gap: number }
 

@@ -937,7 +937,7 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
 
   return (
     <div ref={wrapRef} className="relative rounded-[10px] ring-1 ring-[#e9e4dc] overflow-hidden" style={{ background: PREVIEW_BG, height }}>
-      <style>{`.yago-gap .lockbtn{opacity:0;transition:opacity .15s}.yago-gap:hover .lockbtn,.yago-gap.locked .lockbtn{opacity:1}.yago-band rect{transition:fill .12s}.yago-band:hover rect:first-child{fill:#fde9d8}`}</style>
+      <style>{`.yago-gap .lockbtn{opacity:0;transition:opacity .15s}.yago-gap:hover .lockbtn,.yago-gap.locked .lockbtn{opacity:1}.yago-band .chip{opacity:0;transition:opacity .15s}.yago-band.on .chip,.yago-band:hover .chip{opacity:1}.yago-band .hit{transition:fill .12s}.yago-band:hover .hit{fill:rgba(234,88,12,0.10)}`}</style>
       <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ display: 'block', fontFamily: UI_FONT }}>
         {/* şekilli bölge silueti */}
         <path d={silhouettePath} fill="#ffffff" stroke="#d6cfc4" strokeWidth={1} strokeLinejoin="round" fillRule="evenodd" />
@@ -1042,10 +1042,11 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
    tıkla → değer gir; ölçü pill'inin ucundaki kilit → kilitle. Kapaklar 1,5 px içeri çizilir ki 3 mm boşluklar
    görünür kalsın. */
 const DOOR_INSET_PX = 1.5;        // kapak çiziminin kenarlardan içeri payı (boşluklar görünsün)
-const CHAIN_OFF = 13;             // iç ölçü zincirinin kenardan uzaklığı (px)
+const CHAIN_OFF = 21;             // iç ölçü zincirinin kenardan uzaklığı (px) — kenardaki panel bandının (gizli kısım) içinde kalmasın
 const CHAIN_STEP = 16;            // iç içe zincirler arası (px)
-const CARCASS = 7;                // çevredeki gövde/referans paneli bandı (px) — kapak alanının dışında; yarım binme anahtarı bu bant
-const OUTER_CHAIN = 19;           // dış ölçü zincirinin kapak alanından uzaklığı (px)
+const DOOR_PAD = 54;              // kapak şemasının kenar payı (dış ölçü zinciri + panel bandı sığsın)
+const BAND = 16;                  // sınır paneli (dikme / yan / üst / alt) bandının TEMSİLİ kalınlığı (px) — ölçekten bağımsız
+const OUTER_CHAIN = 33;           // dış ölçü zincirinin kapak alanından uzaklığı (px) — bandın dışında
 
 /* ── KAPAK AÇILIŞ İŞARETİ (Goker, Eki 2026: "her kapak tipine mobilya sektörüne uygun kapak açılış simgesi") ──
    Mobilya/mutfak görünüş çizimi standardı: kapağın karşı (kulp) kenarının iki köşesinden menteşe kenarının ORTASINA
@@ -1061,8 +1062,11 @@ const swingPath = (x0: number, y0: number, x1: number, y1: number, h: Hinge) => 
   return `M${f(x0)},${f(y0)} L${f(cx)},${f(y1)} L${f(x1)},${f(y0)}`;
 };
 /** Tipin kanat menteşeleri — kanat sırası: double sol→sağ (bakan kişiye göre), fold üst→alt. */
-const leafHinges = (t: DoorType): Hinge[] => (t === 'left' ? ['L'] : t === 'right' ? ['R'] : t === 'up' ? ['T'] : t === 'down' ? ['B'] : t === 'double' ? ['L', 'R'] : ['T', 'T']);
-/** Tip ikonu: kapak dış hattı + açılış işareti (20×16 kutu, size = yükseklik). */
+const leafHinges = (t: DoorType): Hinge[] => (t === 'left' ? ['L'] : t === 'right' ? ['R'] : t === 'up' ? ['T'] : t === 'down' ? ['B'] : t === 'double' ? ['L', 'R'] : t === 'fold' ? ['T', 'T'] : []);
+/**
+ * Tip ikonu (20×16 kutu, size = yükseklik): kapak dış hattı + açılış işareti. Menteşesizlerde işaret yok:
+ * Drawer = üstte ince çekmece kutusu çizgisi + ortada kısa tutamak; Fixed = dört köşede vida noktası (sabit panel).
+ */
 function DoorTypeIcon({ type, size = 14, strokeWidth = 1.25 }: { type: DoorType; size?: number; strokeWidth?: number }) {
   const W = 20, H = 16, p = 1, g = 1.2;
   const hinges = leafHinges(type);
@@ -1075,38 +1079,43 @@ function DoorTypeIcon({ type, size = 14, strokeWidth = 1.25 }: { type: DoorType;
       {leaves.map(([x0, y0, x1, y1], i) => (
         <g key={i}>
           <rect x={x0} y={y0} width={x1 - x0} height={y1 - y0} rx={0.6} />
-          <path d={swingPath(x0 + 1.6, y0 + 1.6, x1 - 1.6, y1 - 1.6, hinges[i])} strokeDasharray="1.8 1.3" strokeWidth={strokeWidth * 0.85} />
+          {hinges[i] && <path d={swingPath(x0 + 1.6, y0 + 1.6, x1 - 1.6, y1 - 1.6, hinges[i])} strokeDasharray="1.8 1.3" strokeWidth={strokeWidth * 0.85} />}
         </g>
       ))}
+      {type === 'drawer' && <line x1={W / 2 - 3.5} y1={H / 2 - 1.5} x2={W / 2 + 3.5} y2={H / 2 - 1.5} strokeWidth={strokeWidth * 1.5} />}
+      {type === 'fixed' && [[4, 4], [W - 4, 4], [4, H - 4], [W - 4, H - 4]].map(([x, y], i) => <circle key={i} cx={x} cy={y} r={0.9} fill="currentColor" stroke="none" />)}
     </svg>
   );
 }
 /**
- * KAPAK TİPİ ÇUBUĞU (Goker: "kapak tiplerini birden fazla kapağı seçip bir kapak tipi verebileyim"): altı tip,
- * segment çubuğu diliyle (Segmented ile aynı ölçüler); etkin = hedef kapakların ortak tipi (karışıksa hiçbiri).
- * Sağda hedef açıklaması (hangi kapaklara uygulanacağı).
+ * KAPAK TİPİ ÇUBUĞU (Goker: "kapak tiplerini birden fazla kapağı seçip bir kapak tipi verebileyim"; "çekmece ve
+ * menteşesiz de olsun, bir sıraya sığsın"): sekiz tip TEK sırada — ikon üstte, kısa etiket altta (dar sütuna sığar).
+ * Etkin = hedef kapakların ortak tipi (karışıksa hiçbiri). Sağda hedef açıklaması.
  */
 function DoorTypeBar({ value, hint, onPick }: { value: DoorType | null; hint: string; onPick: (t: DoorType) => void }) {
   return (
-    <div className="flex items-center gap-1.5 mb-1.5" title="Door type — applies to the doors selected in the schematic (click a door; Shift/Ctrl+click adds more; none selected = all doors). The selection clears once a type is applied.">
-      <div className="flex-1 min-w-0" style={{ display: 'grid', gridTemplateColumns: `repeat(${DOOR_TYPES.length}, minmax(0,1fr))`, gap: 2, padding: 2, borderRadius: 8, background: '#f3efe8', border: '1px solid #e9e4dc', fontFamily: UI_FONT }}>
+    <div className="flex items-stretch gap-1.5 mb-1.5" title="Door type — applies to the doors selected in the schematic (click a door; Shift/Ctrl+click adds more; none selected = all doors). The selection clears once a type is applied.">
+      <div className="flex-1 min-w-0" style={{ display: 'grid', gridTemplateColumns: `repeat(${DOOR_TYPES.length}, minmax(0,1fr))`, gap: 2, padding: 2, borderRadius: 9, background: '#f3efe8', border: '1px solid #e9e4dc', fontFamily: UI_FONT }}>
         {DOOR_TYPES.map(t => {
           const on = value === t;
           return (
             <button key={t} type="button" title={DOOR_TYPE_TITLE[t]} onClick={e => { stop(e); onPick(t); }}
               className={on ? '' : 'hover:!bg-white hover:!text-stone-800'}
               style={{
-                height: 24, minWidth: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, padding: '0 4px', borderRadius: 6, border: 'none', outline: 'none',
+                height: 38, minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 3, padding: '0 2px', borderRadius: 7, border: 'none', outline: 'none',
                 cursor: 'pointer', background: on ? '#44403c' : 'transparent', color: on ? '#ffffff' : '#57534e',
-                boxShadow: on ? '0 1px 2px rgba(40,30,20,0.25)' : 'none', fontSize: 10.5, fontWeight: 600, letterSpacing: '0.01em', transition: 'background 0.12s,color 0.12s',
+                boxShadow: on ? '0 1px 2px rgba(40,30,20,0.25)' : 'none', fontSize: 9.5, fontWeight: 600, letterSpacing: '0.01em', lineHeight: 1, transition: 'background 0.12s,color 0.12s',
               }}>
-              <DoorTypeIcon type={t} size={13} />
-              <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{DOOR_TYPE_LABEL[t]}</span>
+              <DoorTypeIcon type={t} size={14} />
+              <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }}>{DOOR_TYPE_LABEL[t]}</span>
             </button>
           );
         })}
       </div>
-      <span className="shrink-0 text-[10px] font-medium text-stone-400 tabular-nums" style={{ minWidth: 58, textAlign: 'right' }}>{hint}</span>
+      <div className="shrink-0 flex flex-col items-end justify-center" style={{ minWidth: 46 }}>
+        <span className="text-[8.5px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]">Type</span>
+        <span className="text-[10px] font-medium text-stone-500 tabular-nums">{hint}</span>
+      </div>
     </div>
   );
 }
@@ -1144,9 +1153,9 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
 
   const { rect, axis, side } = group;
   const height = PREVIEW_HEIGHT;
-  const innerW = width - 2 * SCHEMA_PAD, innerH = height - 2 * SCHEMA_PAD;
+  const innerW = width - 2 * DOOR_PAD, innerH = height - 2 * DOOR_PAD;
   const S = Math.max(40, Math.min(innerW, innerH));
-  const ox = SCHEMA_PAD + (innerW - S) / 2, oy = SCHEMA_PAD + (innerH - S) / 2;
+  const ox = DOOR_PAD + (innerW - S) / 2, oy = DOOR_PAD + (innerH - S) / 2;
   // GÖRÜNÜŞ YÖNÜ: ön yüz (Z+) → X sağa; arka (Z−) ve sağ yan (X+) → aynalı; üst (Y+) → Z aşağı.
   const mirrorU = (axis === 2 && side < 0) || (axis === 0 && side > 0);
   const mirrorV = axis === 1 && side > 0;
@@ -1252,22 +1261,51 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     const { pw, ph } = pillSize(it.txt, f);
     const m0 = ch.horiz ? sx(it.a) : sy(it.a), m1 = ch.horiz ? sx(it.b) : sy(it.b);
     const mid = (m0 + m1) / 2;
-    return { key: it.key, cx: ch.horiz ? mid : ch.pos, cy: ch.horiz ? ch.pos : mid, pw, ph, item: it, chain: ch, x0: Math.min(m0, m1), x1: Math.max(m0, m1) };
+    const cx = ch.horiz ? mid : ch.small ? ch.pos : Math.max(ch.pos, pw / 2 + 3);   // dış düşey zincir: pill şemadan taşmasın
+    return { key: it.key, cx, cy: ch.horiz ? ch.pos : mid, pw, ph, item: it, chain: ch, x0: Math.min(m0, m1), x1: Math.max(m0, m1) };
   }));
   const pillByKey = new Map(pills.map(p => [p.key, p]));
 
-  // YARIM BİNME = ÇEVRE BANDI (Goker, Eki 2026 — "yarım binme checkbox'ı" → şimdi bant anahtarı): kapak alanını saran
-  // dört bant parçası sınır panellerini temsil eder; dış kapakta parçaya tıklamak o kenarın yarım binmesini açar/kapar
-  // (AÇIK = turuncu tarama). Kenarın sınır paneli yoksa / kapak kalınlığını örtmüyorsa parça soluktur, tık yine
-  // kaydedilir ama etkisizdir (tooltip söyler). İç (inset) kapakta bant düz, tıklanmaz. Dört kenar HER ZAMAN çizilir,
-  // bölme sayısından bağımsız tek anahtar ("kapak 2-3 kapak olsa bile tüm kenarı bölen TEK düğme").
-  const C = CARCASS;
-  const bands: Array<{ edge: DoorEdgeKey; label: string; x: number; y: number; w: number; h: number }> = [
-    { edge: mirrorU ? 'uMax' : 'uMin', label: 'Left', x: ox - C, y: oy - C, w: C, h: S + 2 * C },
-    { edge: mirrorU ? 'uMin' : 'uMax', label: 'Right', x: ox + S, y: oy - C, w: C, h: S + 2 * C },
-    { edge: mirrorV ? 'vMin' : 'vMax', label: 'Top', x: ox, y: oy - C, w: S, h: C },
-    { edge: mirrorV ? 'vMax' : 'vMin', label: 'Bottom', x: ox, y: oy + S, w: S, h: C },
+  // ── SINIR PANELLERİ + YARIM BİNME (Goker, Eki 2026: "kapak paylaşım paneli çok belli değil; kapak dikmenin üstüne
+  // binsin, dikmeye tıklandığında yarım bindiğini göster") ──
+  // Kapak alanını saran dört bant, kenarın sınır panelini (dikme / yan / üst / alt) TEMSİLİ kalınlıkta (BAND px) çizer
+  // ve kapağa göre GERÇEK konumunda durur — kapak kenarı (çizilen kapağın kenarı) referans:
+  //   • full (dış kapak, kapak paneli tam örter): bant kapağın ARKASINDA (yalnız kıl payı görünür)
+  //   • half (yarım binme AÇIK): bandın ortası kapak kenarında — yarısı görünür, yarısı kapağın arkasında
+  //   • out  (iç kapak / panel yok / panel kapağın önünde): bant kapağın yanında, tamamen görünür
+  // Kapak arkasında kalan kısım, görünüş çizimi kuralıyla KESİKLİ (gizli çizgi) çizilir. Dış kapakta banda tıklamak o
+  // kenarın yarım binmesini açar/kapar; AÇIK kenarda turuncu "½" rozeti. Yan paneller tam boy, üst/alt aralarında.
+  type BandState = 'full' | 'half' | 'out';
+  const I = DOOR_INSET_PX;
+  const xs = [sx(rect.u0 + eg.uMin), sx(rect.u1 - eg.uMax)], ys = [sy(rect.v1 - eg.vMax), sy(rect.v0 + eg.vMin)];
+  const doorL = Math.min(...xs) + I, doorR = Math.max(...xs) - I, doorT = Math.min(...ys) + I, doorB = Math.max(...ys) - I;
+  const sideEdge = { left: (mirrorU ? 'uMax' : 'uMin') as DoorEdgeKey, right: (mirrorU ? 'uMin' : 'uMax') as DoorEdgeKey, top: (mirrorV ? 'vMin' : 'vMax') as DoorEdgeKey, bottom: (mirrorV ? 'vMax' : 'vMin') as DoorEdgeKey };
+  const isOuter = group.placement === 'outer';
+  const stateOf = (edge: DoorEdgeKey): BandState => (!isOuter || !halfEdges[edge] ? 'out' : group.halfOverlay?.[edge] ? 'half' : 'full');
+  // kapak kenarından içeri giren kısım (px): full → BAND−1 (1 px kıl payı görünür), half → BAND/2, out → −1.5 (kapak yanında)
+  const inside = (st: BandState) => (st === 'full' ? BAND - 1 : st === 'half' ? BAND / 2 : -1.5);
+  const st = { left: stateOf(sideEdge.left), right: stateOf(sideEdge.right), top: stateOf(sideEdge.top), bottom: stateOf(sideEdge.bottom) };
+  const Li = doorL + inside(st.left), Lo = Li - BAND, Ri = doorR - inside(st.right);
+  const Ti = doorT + inside(st.top), To = Ti - BAND, Bi = doorB - inside(st.bottom), Bo = Bi + BAND;
+  const bands: Array<{ side: 'left' | 'right' | 'top' | 'bottom'; edge: DoorEdgeKey; label: string; st: BandState; x: number; y: number; w: number; h: number; vertical: boolean }> = [
+    { side: 'left', edge: sideEdge.left, label: 'Left', st: st.left, x: Lo, y: To, w: BAND, h: Bo - To, vertical: true },
+    { side: 'right', edge: sideEdge.right, label: 'Right', st: st.right, x: Ri, y: To, w: BAND, h: Bo - To, vertical: true },
+    { side: 'top', edge: sideEdge.top, label: 'Top', st: st.top, x: Li, y: To, w: Math.max(0, Ri - Li), h: BAND, vertical: false },
+    { side: 'bottom', edge: sideEdge.bottom, label: 'Bottom', st: st.bottom, x: Li, y: Bi, w: Math.max(0, Ri - Li), h: BAND, vertical: false },
   ];
+  // Bandın kapak arkasında kalan kısmı (gizli çizgi): bant ∩ kapak alanı.
+  const hiddenPart = (b: { x: number; y: number; w: number; h: number }) => {
+    const x0 = Math.max(b.x, doorL), x1 = Math.min(b.x + b.w, doorR), y0 = Math.max(b.y, doorT), y1 = Math.min(b.y + b.h, doorB);
+    return x1 - x0 > 0.5 && y1 - y0 > 0.5 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : null;
+  };
+  const bandTip = (bd: typeof bands[number]) => {
+    if (!isOuter) return `${bd.label} — reference panel / body edge. Inset door: sits between the panels (no overlay).`;
+    const on = !!group.halfOverlay?.[bd.edge];
+    if (bd.st === 'out') return `${bd.label} — no overlay here (no reference panel on this edge, or the panel stands in front of the door).${on ? ' Half overlay is stored but has no effect.' : ''} Click to ${on ? 'clear' : 'set'} half overlay.`;
+    return bd.st === 'half'
+      ? `${bd.label} — HALF overlay: the door covers half of this panel's thickness (the other half is left for the neighbouring door). Click for full overlay.`
+      : `${bd.label} — FULL overlay: the door covers this panel's whole thickness. Click for half overlay (share the panel with the neighbouring door).`;
+  };
 
   const commit = () => {
     if (!editing) return;
@@ -1300,79 +1338,61 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
 
   return (
     <div ref={wrapRef} className="relative rounded-[10px] ring-1 ring-[#e9e4dc] overflow-hidden" style={{ background: PREVIEW_BG, height }}>
-      <style>{`.yago-gap .lockbtn{opacity:0;transition:opacity .15s}.yago-gap:hover .lockbtn,.yago-gap.locked .lockbtn{opacity:1}.yago-band rect{transition:fill .12s}.yago-band:hover rect:first-child{fill:#fde9d8}`}</style>
+      <style>{`.yago-gap .lockbtn{opacity:0;transition:opacity .15s}.yago-gap:hover .lockbtn,.yago-gap.locked .lockbtn{opacity:1}.yago-band .chip{opacity:0;transition:opacity .15s}.yago-band.on .chip,.yago-band:hover .chip{opacity:1}.yago-band .hit{transition:fill .12s}.yago-band:hover .hit{fill:rgba(234,88,12,0.10)}`}</style>
       <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ display: 'block', fontFamily: UI_FONT }}>
         <defs>
           {/* kapak yüzeyi: sıcak kemik gradyanı (hafif ışık üstten); seçili üye turuncuya kayar */}
           <linearGradient id={`${gid}-door`} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#f1ebe1" /><stop offset="1" stopColor="#e4dccd" /></linearGradient>
           <linearGradient id={`${gid}-door-on`} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#fdebdb" /><stop offset="1" stopColor="#f9d9bf" /></linearGradient>
           <linearGradient id={`${gid}-door-sel`} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#f7eee2" /><stop offset="1" stopColor="#efe2cf" /></linearGradient>
-          <pattern id={`${gid}-hatch`} width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="4" stroke="#cfc6b9" strokeWidth="0.7" /></pattern>
-          <pattern id={`${gid}-hatch-on`} width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="4" stroke="#ea580c" strokeWidth="0.9" /></pattern>
+          <pattern id={`${gid}-hatch`} width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="4" stroke="#bfb5a6" strokeWidth="0.7" /></pattern>
+          <pattern id={`${gid}-hatch-on`} width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="4" stroke="#e8925a" strokeWidth="0.9" /></pattern>
         </defs>
-        {/* ÇEVRE BANDI = sınır panelleri; dış kapakta her parça o kenarın YARIM BİNME anahtarı (AÇIK = turuncu tarama) */}
+        {/* AÇIKLIK: sınır panellerinin arası (kapak aralarındaki boşluklarda görünür — derinlik hissi) */}
+        <rect x={Li} y={Ti} width={Math.max(0, Ri - Li)} height={Math.max(0, Bi - Ti)} fill="#e9e3d9" />
+        {/* SINIR PANELLERİ (bant): görünen kısım dolu + taralı; yarım binmede turuncu tonlu */}
         {bands.map(bd => {
-          const interactive = group.placement === 'outer';
-          const on = interactive && !!group.halfOverlay?.[bd.edge];
-          const applicable = halfEdges[bd.edge];
-          const tip = !interactive ? `${bd.label} edge — reference panel / body edge (inset door: no half overlay)`
-            : `${bd.label} edge — half overlay (one switch for the whole edge, all doors on it): `
-              + (on ? 'ON — doors end at the middle of the reference panel\'s thickness (+ edge gap). Click to cover it fully.' : 'OFF — doors cover the reference panel\'s full thickness. Click to end at the middle (+ edge gap).')
-              + (applicable ? '' : ' · No effect here: no reference panel on this edge or the panel stands in front of the door.');
+          const half = bd.st === 'half';
           return (
-            <g key={`band-${bd.edge}`} className={interactive ? 'yago-band' : undefined} style={{ cursor: interactive ? 'pointer' : 'default' }}
-              onClick={interactive ? e => { stop(e); onToggleHalfOverlay(bd.edge, !on); } : undefined}>
-              <rect x={bd.x} y={bd.y} width={bd.w} height={bd.h} fill={on ? (applicable ? '#fff1e6' : '#fbe9dc') : '#f3efe8'} stroke="none" />
-              <rect x={bd.x} y={bd.y} width={bd.w} height={bd.h} fill={on ? `url(#${gid}-hatch-on)` : `url(#${gid}-hatch)`} opacity={on && !applicable ? 0.5 : 1} stroke="none" />
-              <rect x={bd.x} y={bd.y} width={bd.w} height={bd.h} fill="none" stroke={on ? (applicable ? '#f0a070' : '#f3c9ad') : '#d2cabd'} strokeWidth={0.8} />
-              <title>{tip}</title>
+            <g key={`band-${bd.side}`} style={{ pointerEvents: 'none' }}>
+              <rect x={bd.x} y={bd.y} width={bd.w} height={bd.h} fill={half ? '#f9dcc4' : '#ddd4c6'} />
+              <rect x={bd.x} y={bd.y} width={bd.w} height={bd.h} fill={half ? `url(#${gid}-hatch-on)` : `url(#${gid}-hatch)`} />
+              <rect x={bd.x} y={bd.y} width={bd.w} height={bd.h} fill="none" stroke={half ? '#e07b3c' : '#a39a8d'} strokeWidth={1} />
             </g>
           );
         })}
-        {/* kapak alanı (sınır panellerinden çözülen dikdörtgen) */}
-        <rect x={ox} y={oy} width={S} height={S} fill="#fbfaf7" stroke="#d6cfc4" strokeWidth={0.8} />
-        {/* kapaklar (kanatlar): yüzey + menteşe işaretleri + kulp + açılış işareti + numara */}
+        {/* kapaklar (kanatlar): yüzey + YUMUŞAK açılış işareti + numara + ölçü (Goker: "açılış çizgisi daha soft olsun, ölçüleri
+            göster; menteşe ve kulp yerlerini şimdilik kaldır") */}
         {members.map((m, i) => {
           const on = i === selectedIndex;
           const inSel = selLeafIds.has(m.leafId);
-          const I = DOOR_INSET_PX;
           const x0 = Math.min(sx(m.u0), sx(m.u1)) + I, x1 = Math.max(sx(m.u0), sx(m.u1)) - I, y0 = Math.min(sy(m.v1), sy(m.v0)) + I, y1 = Math.max(sy(m.v1), sy(m.v0)) - I;
           const lbl = memberLabels[i] ?? String(i + 1);
           const fill = on ? `url(#${gid}-door-on)` : inSel ? `url(#${gid}-door-sel)` : `url(#${gid}-door)`;
           const stroke = on ? '#ea580c' : inSel ? '#d9a06b' : '#9a9185';
-          const ink = on ? '#c2410c' : '#8a8278';
           // MENTEŞE (ekrana göre): tek kanat tipten; double'da ekranda solda duran kanat sol menteşe (aynalı görünüşte de doğru).
-          let hinge: Hinge = leafHinges(m.type)[0];
+          let hinge: Hinge | undefined = leafHinges(m.type)[0];
           if (m.leafCount === 2 && doorLeafAxis(m.type) === 'u') { const sib = members[m.leaf === 0 ? i + 1 : i - 1]; hinge = sib && Math.min(sx(sib.u0), sx(sib.u1)) < x0 ? 'R' : 'L'; }
           else if (m.leafCount === 2) hinge = 'T';
           const typeTxt = DOOR_TYPE_LABEL[m.type] + (m.leafCount === 2 ? ` · leaf ${m.leaf + 1}/2` : '');
           const path = pathToLeaf(m.leafId);
-          const tip = `Door ${lbl} · ${typeTxt} · ${Math.round(m.u1 - m.u0)} × ${Math.round(m.v1 - m.v0)} mm${m.poly ? ' · angled (cut by rotated reference)' : ''}`
+          const wMm = Math.round(m.u1 - m.u0), hMm = Math.round(m.v1 - m.v0);
+          const tip = `Door ${lbl} · ${typeTxt} · ${wMm} × ${hMm} mm${m.poly ? ' · angled (cut by rotated reference)' : ''}`
             + ` — click: select the area, click again to go one level deeper (${path.length} level${path.length === 1 ? '' : 's'}) · Shift/Ctrl+click: add another region · open the door's row below to edit it`;
           // AÇILI: kırpılmış çokgen; her köşe aynı kapak hücresinde kaldığından eğik kenar şemada da düz çizgidir.
           const pts = m.poly ? m.poly.map(q => ({ x: sx(q.x), y: sy(q.y) })) : null;
           const cx = pts ? pts.reduce((a, q) => a + q.x, 0) / pts.length : (x0 + x1) / 2;
           const cy = pts ? pts.reduce((a, q) => a + q.y, 0) / pts.length : (y0 + y1) / 2;
           const w = x1 - x0, h = y1 - y0;
-          const ins = 4, sw = w > 2 * ins + 6 && h > 2 * ins + 6;
-          // Menteşe işaretleri (menteşe kenarında iki kısa çubuk) + kulp (karşı kenarın ortasında kısa çizgi) — görünüş çizimi dili.
-          const hingeMarks: Array<{ x: number; y: number; w: number; h: number }> = [];
-          let handle: { x1: number; y1: number; x2: number; y2: number } | null = null;
-          if (sw && !pts) {
-            const hl = Math.min(9, h * 0.18), hw = 2.2, hh = Math.min(9, w * 0.18);
-            const hLen = Math.min(14, (hinge === 'L' || hinge === 'R' ? h : w) * 0.28);
-            if (hinge === 'L' || hinge === 'R') {
-              const hx = hinge === 'L' ? x0 + 1.5 : x1 - 1.5 - hw;
-              hingeMarks.push({ x: hx, y: y0 + h * 0.18 - hl / 2, w: hw, h: hl }, { x: hx, y: y1 - h * 0.18 - hl / 2, w: hw, h: hl });
-              const kx = hinge === 'L' ? x1 - 4.5 : x0 + 4.5;
-              handle = { x1: kx, y1: cy - hLen / 2, x2: kx, y2: cy + hLen / 2 };
-            } else {
-              const hy = hinge === 'T' ? y0 + 1.5 : y1 - 1.5 - hw;
-              hingeMarks.push({ x: x0 + w * 0.18 - hh / 2, y: hy, w: hh, h: hw }, { x: x1 - w * 0.18 - hh / 2, y: hy, w: hh, h: hw });
-              const ky = hinge === 'T' ? y1 - 4.5 : y0 + 4.5;
-              handle = { x1: cx - hLen / 2, y1: ky, x2: cx + hLen / 2, y2: ky };
-            }
-          }
+          const ins = 5, sw = !!hinge && w > 2 * ins + 6 && h > 2 * ins + 6;
+          // Numara + ölçü (W × H) + menteşesizlerde tip adı; kapak küçükse yalnız numara.
+          const fsz = fsT * 0.86;
+          const showSize = w > 58 && h > 34;
+          const caption = m.type === 'drawer' || m.type === 'fixed' ? DOOR_TYPE_LABEL[m.type] : null;
+          const showCap = !!caption && showSize && h > 50;
+          const lines = 1 + (showSize ? 1 : 0) + (showCap ? 1 : 0);
+          const lh = fsT * 1.18;
+          const ty0 = cy - ((lines - 1) * lh) / 2;
           // ŞEMA TIKI = yalnız SEÇİM (Goker: "kapağın üzerine tıklandığında altındaki paneli otomatik açmasın"); yol üstten alta.
           return (
             <g key={`door-${i}`} style={{ cursor: 'pointer' }} onClick={e => { stop(e); onPathClick(path, e.shiftKey || e.ctrlKey || e.metaKey); }}>
@@ -1382,11 +1402,55 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
                 <rect x={x0} y={y0} width={Math.max(1, w)} height={Math.max(1, h)} rx={2} fill={fill} stroke={stroke} strokeWidth={on ? 1.2 : 0.9}><title>{tip}</title></rect>
               )}
               {!pts && w > 6 && h > 6 && <rect x={x0 + 1} y={y0 + 1} width={Math.max(0, w - 2)} height={Math.max(0, h - 2)} rx={1.5} fill="none" stroke="#ffffff" strokeOpacity={0.55} strokeWidth={0.8} style={{ pointerEvents: 'none' }} />}
-              {sw && <path d={swingPath(x0 + ins, y0 + ins, x1 - ins, y1 - ins, hinge)} fill="none" stroke={on ? '#f0a070' : '#b8afa2'} strokeWidth={0.85} strokeDasharray="4 2.5" strokeLinejoin="round" strokeLinecap="round" style={{ pointerEvents: 'none' }} />}
-              {hingeMarks.map((r, k) => <rect key={k} x={r.x} y={r.y} width={r.w} height={r.h} rx={0.8} fill={ink} fillOpacity={0.75} style={{ pointerEvents: 'none' }} />)}
-              {handle && <line x1={handle.x1} y1={handle.y1} x2={handle.x2} y2={handle.y2} stroke={ink} strokeWidth={1.8} strokeLinecap="round" style={{ pointerEvents: 'none' }} />}
-              <text x={cx} y={cy + fsT * 0.36} textAnchor="middle" fontSize={fsT} fontWeight={on ? 700 : 600} fill={on ? '#ea580c' : '#a8a29e'}
+              {sw && <path d={swingPath(x0 + ins, y0 + ins, x1 - ins, y1 - ins, hinge!)} fill="none" stroke={on ? '#f3b98e' : '#d6cfc4'} strokeWidth={0.7} strokeDasharray="3 3" strokeLinejoin="round" strokeLinecap="round" style={{ pointerEvents: 'none' }} />}
+              <text x={cx} y={ty0 + fsT * 0.36} textAnchor="middle" fontSize={fsT} fontWeight={on ? 700 : 650} fill={on ? '#ea580c' : '#8f877c'}
                 fontFamily={UI_FONT} style={{ fontVariantNumeric: 'tabular-nums', pointerEvents: 'none', userSelect: 'none' }}>{lbl}</text>
+              {showSize && (
+                <text x={cx} y={ty0 + lh + fsz * 0.36} textAnchor="middle" fontSize={fsz} fontWeight={500} fill={on ? '#c2410c' : '#a39b90'}
+                  fontFamily={UI_FONT} style={{ fontVariantNumeric: 'tabular-nums', pointerEvents: 'none', userSelect: 'none' }}>{wMm} × {hMm}</text>
+              )}
+              {showCap && (
+                <text x={cx} y={ty0 + 2 * lh + fsz * 0.36} textAnchor="middle" fontSize={fsz * 0.92} fontWeight={600} fill="#b5ada3" letterSpacing="0.06em"
+                  fontFamily={UI_FONT} style={{ textTransform: 'uppercase', pointerEvents: 'none', userSelect: 'none' }}>{caption!.toUpperCase()}</text>
+              )}
+            </g>
+          );
+        })}
+        {/* KAPAK ARKASINDAKİ PANEL KISMI: gizli çizgi (kesikli) + soluk tarama — yarım / tam binme burada okunur */}
+        {bands.map(bd => {
+          const hp = hiddenPart(bd);
+          if (!hp) return null;
+          const half = bd.st === 'half';
+          return (
+            <g key={`hid-${bd.side}`} style={{ pointerEvents: 'none' }}>
+              <rect x={hp.x} y={hp.y} width={hp.w} height={hp.h} fill={half ? `url(#${gid}-hatch-on)` : `url(#${gid}-hatch)`} opacity={0.35} />
+              <rect x={hp.x} y={hp.y} width={hp.w} height={hp.h} fill="none" stroke={half ? '#e8925a' : '#9a9185'} strokeWidth={0.8} strokeDasharray="3 2" opacity={0.85} />
+            </g>
+          );
+        })}
+        {/* BANT TIKLAMA ALANI (dış kapak) + DURUM ROZETİ: kapak paneli örtüyorsa rozet HEP görünür — "Full" (taş) / "Half"
+            (turuncu); örtmüyorsa yalnız fareyle üstündeyken ("No overlap"). Rozet bandın ucunda (%92) — ölçü pill'leriyle çakışmaz. */}
+        {bands.map(bd => {
+          const on = isOuter && !!group.halfOverlay?.[bd.edge];
+          const half = bd.st === 'half';
+          const along = 0.92;
+          const bx = bd.vertical ? bd.x + bd.w / 2 : bd.x + bd.w * along, by = bd.vertical ? bd.y + bd.h * along : bd.y + bd.h / 2;
+          const chipTxt = half ? 'Half' : bd.st === 'full' ? 'Full' : 'No overlap';
+          const cfs = fsT * 0.8;
+          const { pw: cw, ph: chh } = pillSize(chipTxt, cfs);
+          const always = bd.st !== 'out';
+          return (
+            <g key={`hit-${bd.side}`} className={`yago-band${always ? ' on' : ''}`} style={{ cursor: isOuter ? 'pointer' : 'default' }}
+              onClick={isOuter ? e => { stop(e); onToggleHalfOverlay(bd.edge, !on); } : undefined}>
+              <rect x={bd.x - 1} y={bd.y - 1} width={bd.w + 2} height={bd.h + 2} fill="transparent" className="hit" />
+              {isOuter && (
+                <g className="chip">
+                  <rect x={bx - cw / 2} y={by - chh / 2} width={cw} height={chh} rx={chh / 2} fill={half ? '#ea580c' : '#ffffff'} stroke={half ? '#c2410c' : '#cfc6b9'} strokeWidth={0.8}
+                    style={{ filter: 'drop-shadow(0 1px 1px rgba(40,30,20,0.12))' }} />
+                  <text x={bx} y={by + cfs * 0.36} textAnchor="middle" fontSize={cfs} fontWeight={700} letterSpacing="0.02em" fill={half ? '#ffffff' : '#78716c'} fontFamily={UI_FONT}>{chipTxt}</text>
+                </g>
+              )}
+              <title>{bandTip(bd)}</title>
             </g>
           );
         })}
@@ -1395,7 +1459,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
           const b = nodeBox(n);
           const tag = regionTag(n); const { pw, ph } = pillSize(tag, fsT);
           const pad = n.kind === 'split' ? 2.5 : 0.5;
-          const tx = Math.min(b.x0 + 2 + pw / 2, ox + S - pw / 2), ty = Math.max(b.y0 - ph / 2 - 1, oy - CARCASS + ph / 2);
+          const tx = b.x0 + 4 + pw / 2, ty = b.y0 + 4 + ph / 2;   // bölgenin sol üst köşesinde, içeride
           return (
             <g key={`sel-${n.id}`} style={{ pointerEvents: 'none' }}>
               <rect x={b.x0 - pad} y={b.y0 - pad} width={b.x1 - b.x0 + 2 * pad} height={b.y1 - b.y0 + 2 * pad} rx={3} fill="#ea580c" fillOpacity={n.kind === 'split' ? 0.05 : 0.0} stroke="#ea580c" strokeWidth={1.2} strokeDasharray={n.kind === 'split' ? '5 3' : undefined} />
