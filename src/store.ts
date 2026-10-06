@@ -119,7 +119,19 @@ export type DoorNode =
      * türetilir (eşit parçalar hedefe en yakın n); gövde boyutlanınca parça eklenir/silinir. Sayı elle girilince kalkar.
      */
     targetSize?: number;
+    /**
+     * DERZ BAĞI (Goker, Eki 2026: "panel ref gösterildikten sonra dikmenin arası değişince kapak kendini ona göre
+     * güncellesin — bağlı olduğu dikmeye göre"): k. derz (k. ile k+1. çocuk arası) bir kapak-sınırı dikme/rafa (VF id)
+     * bağlıdır; derz her çözümde LEVHANIN GÜNCEL konumundan türetilir — 'center' = derz levhanın ortasında, 'min' = levha
+     * derzin min tarafındaki kapağın arkasında (derz levhanın max yüzünden başlar), 'max' = levha max tarafındaki kapağın
+     * arkasında. Levha taşınınca (grup boşluğu, gövde boyutu) kapak derzi onu izler; bağlı bölmenin ölçüleri çözümden
+     * yazılır (girilen ölçü derzi değiştiremez). Panel ref bölmesi bağı 'center' kurar; rozet (Left/Center/Right) hizayı
+     * değiştirirken LEVHAYI bir kez taşır (kapak yerinde kalır); Shift+tık bağı çözer (ölçüler girilmiş sayılır, donar).
+     */
+    refs?: Record<number, DoorJointRef>;
   };
+/** Derz bağı: bağlı levhanın VF id'si + derzin levhaya göre konumu. */
+export interface DoorJointRef { vfId: string; align: DoorAlign }
 /** Kapak alanının dört kenar boşluğu (sınır paneline / gövde kenarına): mm. */
 export interface DoorEdgeGaps { uMin: number; uMax: number; vMin: number; vMax: number }
 /**
@@ -156,12 +168,8 @@ export interface DoorGroup {
   halfOverlay?: { uMin?: boolean; uMax?: boolean; vMin?: boolean; vMax?: boolean };
   /**
    * DERZ HİZALAMASI (Goker, Eki 2026: "dikmeyi kapağın sağına / soluna / ortalı, rafı yukarı / aşağı / ortada yerleştireyim;
-   * dikme ve raf buna göre hareket etsin, aralıkları revize edilsin; kapak ölçülerine dokunma — raf ve dikme hareket etsin,
-   * kapak değil"): kapak alanının İÇİNDE bir kapak derzine (iki kapak arası) yakın duran kapak-sınırı raf/dikme ÜYESİ
-   * (anahtar = VF id) derze göre konumlanır — 'min' = levha derzin min tarafındaki kapağın arkasında (dikme: sol, raf: alt),
-   * 'center' = derz levhanın ortasında (iki kapak yarımşar örter), 'max' = max tarafındaki kapağın arkasında. Üye kendi
-   * grubunun boşluğuyla taşınır (editGroupGap); her rebuild sonrası yeniden uygulanır (bağ). Kapak ölçüleri DEĞİŞMEZ.
-   * Panel ref bölmesi (splitDoorAtPanel) derzi levhanın ortasına koyar ve bu bağı 'center' olarak kurar.
+   * dikme ve raf buna göre hareket etsin … sonra dikmenin arası değişince kapak kendini ona göre güncellesin"): bağ artık
+   * bölme düğümünün DERZİNDE tutulur (DoorNode.refs) — eski `panelAlign` kaydı okunmaz (geçiş: syncDoorGroups siler).
    */
   panelAlign?: Record<string, DoorAlign>;
   thickness: number;

@@ -25,7 +25,7 @@ import {
 import {
   type DoorCut, type DoorEdgeKey, type DoorNearPanel, type DoorNodeSolved, DOOR_TYPES, DOOR_TYPE_LABEL, DOOR_TYPE_TITLE, applyDoorCuts, collectDoorCuts, doorLeafAxis, doorLeaves, doorMemberCount, doorNearPanels,
   confirmDoorPick, deleteDoorGroupWithMembers, doorGroupName, doorMemberRects, doorMembersOf, doorPlacementLabel, edgeGapsOf, editDoorLeafSize, editDoorSize, equalizeDoorGroup, findDoorNode, findSolvedNode,
-  isDoorVf, renameDoorGroup, setDoorEdgeGap, setDoorGap, setDoorHalfOverlay, setDoorLeafGap, setDoorLeafTypes, setDoorNodeSpacing, setDoorNodeSplit, setDoorPanelAlign, setDoorPlacement, setDoorSplitGap, splitDoorAtPanel, setDoorThickness, setVfDoorBound,
+  isDoorVf, renameDoorGroup, setDoorEdgeGap, setDoorGap, setDoorHalfOverlay, setDoorLeafGap, setDoorLeafTypes, setDoorNodeSpacing, setDoorJointRef, setDoorNodeSplit, setDoorPlacement, setDoorSplitGap, splitDoorAtPanel, setDoorThickness, setVfDoorBound,
   solveDoorTree, toggleDoorSizeLock,
 } from './DoorService';
 
@@ -312,7 +312,7 @@ function DimArrows({ a, b, asz, color }: { a: Pt; b: Pt; asz: number; color: str
     </>
   );
 }
-function DimPill({ cx, cy, txt, fs, fill = '#ffffff', stroke = 'none', strokeWidth = 0.8, color = '#57534e', hideText, onClick, title }: {
+function DimPill({ cx, cy, txt, fs, fill = '#ffffff', stroke = SOFT.pillStroke, strokeWidth = 0.7, color = '#57534e', hideText, onClick, title }: {
   cx: number; cy: number; txt: string; fs: number; fill?: string; stroke?: string; strokeWidth?: number; color?: string;
   hideText?: boolean; onClick?: (e: React.MouseEvent) => void; title?: string;
 }) {
@@ -320,7 +320,7 @@ function DimPill({ cx, cy, txt, fs, fill = '#ffffff', stroke = 'none', strokeWid
   return (
     <>
       <rect x={cx - pw / 2} y={cy - ph / 2} width={pw} height={ph} rx={ph / 2} fill={fill} stroke={stroke} strokeWidth={strokeWidth}
-        style={onClick ? { cursor: 'text' } : undefined} onClick={onClick}>{title && <title>{title}</title>}</rect>
+        style={{ filter: SOFT.pillShadow, ...(onClick ? { cursor: 'text' } : {}) }} onClick={onClick}>{title && <title>{title}</title>}</rect>
       {!hideText && (
         <text x={cx} y={cy + fs * 0.36} textAnchor="middle" fontSize={fs} fontWeight={500} fill={color} fontFamily={UI_FONT}
           style={{ fontVariantNumeric: 'tabular-nums', pointerEvents: 'none' }}>{txt}</text>
@@ -348,17 +348,39 @@ const GRIP_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(
    Panel: açık huş/beyaz laminat tonu. three r155+ fiziksel ışık ölçeğinde eski
    düşük şiddetler paneli kirli griye çekiyordu; şiddetler yüzü açık, kalınlık
    kenarını bir ton koyu verecek şekilde yeniden ayarlandı. */
-const PREVIEW_BG = 'linear-gradient(180deg,#fcfbf9 0%,#f5f3ef 100%)';
-const PREVIEW_PANEL_COLOR = 0xe9e1d3;
-const PREVIEW_EDGE_COLOR = 0x8a8278;
+/* ── ÖNİZLEME YUMUŞAK DİLİ (Goker, Eki 2026: "kapak preview'a daha soft bir dokunuş; aynısını panel editörüne, dikme/raf
+   atmaya ve panel yerleştirmeye de uygula") — panel önizlemesi, raf/dikme şeması ve kapak şeması TEK dil: üstten hafif ışık
+   alan kemik zemin, kıl-çizgi çerçeve + iç parlama, parçalar yumuşak gradyan + kısık kenar + çok hafif gölge, pill'ler kıl
+   çerçeveli. Tek kaynak: PREVIEW_BG / PREVIEW_FRAME / SOFT. */
+const PREVIEW_BG = 'radial-gradient(130% 95% at 50% 0%, #fefdfb 0%, #f8f5f0 62%, #f3efe8 100%)';
+const PREVIEW_FRAME = 'relative rounded-[12px] ring-1 ring-[#ebe5dc] overflow-hidden shadow-[inset_0_1px_0_rgba(255,255,255,0.8),0_1px_2px_rgba(60,40,20,0.04)]';
+const SOFT = {
+  area: '#fdfcfa', areaStroke: '#e4ded4',
+  part0: '#f5f0e8', part1: '#eae3d7', partStroke: '#b8afa2',
+  sel0: '#f8f0e6', sel1: '#f0e3d1', selStroke: '#dcae84',
+  on0: '#fdeee1', on1: '#f9dcc4', onStroke: '#ea580c',
+  label: '#a39b90', shadow: 'drop-shadow(0 1px 1.5px rgba(70,50,30,0.09))',
+  pillStroke: '#ece6dc', pillShadow: 'drop-shadow(0 1px 1px rgba(60,40,20,0.06))',
+};
+/** Parça (panel / levha / kapak) gradyanları — her SVG kendi kimliğiyle bir kez tanımlar. */
+function SoftDefs({ id }: { id: string }) {
+  return (
+    <defs>
+      <linearGradient id={`${id}-part`} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor={SOFT.part0} /><stop offset="1" stopColor={SOFT.part1} /></linearGradient>
+      <linearGradient id={`${id}-on`} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor={SOFT.on0} /><stop offset="1" stopColor={SOFT.on1} /></linearGradient>
+    </defs>
+  );
+}
+const PREVIEW_PANEL_COLOR = 0xeee7dc;
+const PREVIEW_EDGE_COLOR = 0xa1988b;
 const PREVIEW_LIGHT = { hemi: 1.0, ambient: 0.3, key: 1.9, fill: 0.55 };
 const PREVIEW_HEIGHT = 500;   // kenar çubuğu 560px ile orantılı (önceki 475px / 410)
 // ŞERİT ÖNİZLEMENİN ÜSTÜNE BİNMEZ (Goker: "mod düğmeleri panel görünümünün
 // içine geçiyordu"): akış içinde ayrı bir karttır — araç segmentinin hemen
 // altında, önizlemenin ÜSTÜNDE (Eki 2026: altındayken görünmüyordu).
 const DOCK_SHELL: React.CSSProperties = {
-  position: 'relative', marginTop: 5, borderRadius: 10, background: '#fdfcfa', border: '1px solid #ebe5dc',
-  boxShadow: '0 1px 2px rgba(40,30,20,0.04)', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: UI_FONT,
+  position: 'relative', marginTop: 5, borderRadius: 12, background: 'linear-gradient(180deg,#fefdfb 0%,#faf8f4 100%)', border: '1px solid #ebe5dc',
+  boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.8), 0 1px 2px rgba(60,40,20,0.04)', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: UI_FONT,
 };
 const DOCK_ROW: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 4, padding: '4px 5px 5px' };
 const DOCK_INPUT: React.CSSProperties = {
@@ -701,7 +723,7 @@ export function PanelPreview2D({ shape, arrowRotated }: { shape: Shape; arrowRot
   return (
     <div ref={wrapRef} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerLeave={onPointerUp}
       style={{ position: 'absolute', inset: 0, userSelect: 'none', cursor: 'ew-resize', touchAction: 'none' }}>
-      <canvas ref={canvasRef} style={{ display: 'block', position: 'absolute', inset: 0, width: '100%', height: '100%', filter: 'drop-shadow(0 10px 14px rgba(50,40,30,0.07))' }} />
+      <canvas ref={canvasRef} style={{ display: 'block', position: 'absolute', inset: 0, width: '100%', height: '100%', filter: 'drop-shadow(0 8px 14px rgba(60,40,20,0.06))' }} />
       <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'visible' }} viewBox={`0 0 ${canvasSize.w} ${canvasSize.h}`}>
         {ground.map((d, i) => (
           <g key={`gd-${i}`}>
@@ -760,6 +782,7 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
   useEffect(() => { setEditing(null); }, [group.id, group.count, selectedIndex >= 0]);
 
   const { cavity, gaps, axis } = group;
+  const gsid = `gs-${group.id.replace(/[^a-zA-Z0-9_-]/g, '')}`;
   const ts = memberThicknessesOf(group);
   const barsHorizontal = axis === 1;
   // ÜYE MODU KALDIRILDI (Goker, Eki 2026: "bir panele tıklayınca arayüz başka bir hale geçiyor, iptal et"):
@@ -901,7 +924,7 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
     const tip = `Panel ${memberLabels[i] ?? i + 1} · ${round1(ts[i])} mm — click to select`;
     return (
       <g key={key} style={{ cursor: 'pointer' }} onClick={e => { stop(e); onSelectMember(i); }}>
-        <rect x={x0} y={y0} width={x1 - x0} height={y1 - y0} rx={1} fill={on ? '#fde7d3' : memberMode ? '#efe9df' : '#e9e1d3'} stroke={on ? '#ea580c' : memberMode ? '#b9b1a5' : '#8a8278'} strokeWidth={on ? 1.1 : 0.9} />
+        <rect x={x0} y={y0} width={x1 - x0} height={y1 - y0} rx={1.5} fill={on ? `url(#${gsid}-on)` : `url(#${gsid}-part)`} stroke={on ? SOFT.onStroke : SOFT.partStroke} strokeWidth={on ? 1.1 : 0.8} style={{ filter: SOFT.shadow }} />
         <rect x={x0 - HIT} y={y0 - HIT} width={x1 - x0 + 2 * HIT} height={y1 - y0 + 2 * HIT} fill="transparent"><title>{tip}</title></rect>
       </g>
     );
@@ -936,11 +959,12 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
   };
 
   return (
-    <div ref={wrapRef} className="relative rounded-[10px] ring-1 ring-[#e9e4dc] overflow-hidden" style={{ background: PREVIEW_BG, height }}>
+    <div ref={wrapRef} className={PREVIEW_FRAME} style={{ background: PREVIEW_BG, height }}>
       <style>{`.yago-gap .lockbtn{opacity:0;transition:opacity .15s}.yago-gap:hover .lockbtn,.yago-gap.locked .lockbtn{opacity:1}.yago-band .chip{opacity:0;transition:opacity .15s}.yago-band.on .chip,.yago-band:hover .chip{opacity:1}.yago-band .hit{transition:fill .12s}.yago-band:hover .hit{fill:rgba(234,88,12,0.10)}`}</style>
       <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ display: 'block', fontFamily: UI_FONT }}>
+        <SoftDefs id={gsid} />
         {/* şekilli bölge silueti */}
-        <path d={silhouettePath} fill="#ffffff" stroke="#d6cfc4" strokeWidth={1} strokeLinejoin="round" fillRule="evenodd" />
+        <path d={silhouettePath} fill={SOFT.area} stroke={SOFT.areaStroke} strokeWidth={1} strokeLinejoin="round" fillRule="evenodd" />
         {/* SAYIM İMİ: boşluk 0 / üye 1'in sayıldığı taraftan içeri bakan küçük ok (dizilim ekseninde; 3B ok ise tıklanan yüzü gösterir) — kırmızı, 3B okla aynı */}
         {(() => {
           const len = 18, m = 9;
@@ -977,7 +1001,7 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
         {!memberMode && tPills.map(p => {
           const on = p.i === selectedIndex;
           return (
-            <DimPill key={`t-${p.i}`} cx={p.cx} cy={p.cy} txt={p.txt} fs={fsT} fill={on ? '#fff7ed' : '#f3efe8'} stroke={on ? '#f97316' : 'none'} strokeWidth={on ? 1 : 0.8}
+            <DimPill key={`t-${p.i}`} cx={p.cx} cy={p.cy} txt={p.txt} fs={fsT} fill={on ? '#fff7ed' : '#f5f2ec'} stroke={on ? '#f97316' : SOFT.pillStroke} strokeWidth={on ? 1 : 0.7}
               color={on ? '#c2410c' : '#57534e'} hideText={editing?.kind === 't' && editing.i === p.i} title={`Panel ${memberLabels[p.i] ?? p.i + 1} thickness — click to edit`}
               onClick={e => { stop(e); setEditing({ kind: 't', i: p.i, v: p.txt }); }} />
           );
@@ -986,7 +1010,7 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
         {nLabels.map(n => {
           const on = n.i === selectedIndex;
           return (
-            <text key={`n-${n.i}`} x={n.cx} y={n.cy + fsT * 0.36} textAnchor="middle" fontSize={fsT} fontWeight={on ? 700 : 600} fill={on ? '#ea580c' : '#a8a29e'}
+            <text key={`n-${n.i}`} x={n.cx} y={n.cy + fsT * 0.36} textAnchor="middle" fontSize={fsT} fontWeight={on ? 700 : 600} fill={on ? '#ea580c' : SOFT.label}
               fontFamily={UI_FONT} style={{ fontVariantNumeric: 'tabular-nums', pointerEvents: 'none', userSelect: 'none' }}>{n.txt}</text>
           );
         })}
@@ -999,7 +1023,7 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
           return (
             <g key={`gap-${p.k}`} className={`yago-gap${locked ? ' locked' : ''}`}>
               <DimArrows a={a} b={b} asz={asz} color={locked ? '#f59e0b' : DIM_LINE} />
-              <DimPill cx={p.cx} cy={p.cy} txt={p.txt} fs={fs} fill={locked ? '#fff7ed' : '#ffffff'} stroke={locked ? '#f97316' : 'none'} strokeWidth={locked ? 1 : 0.8}
+              <DimPill cx={p.cx} cy={p.cy} txt={p.txt} fs={fs} fill={locked ? '#fff7ed' : '#ffffff'} stroke={locked ? '#f97316' : SOFT.pillStroke} strokeWidth={locked ? 1 : 0.7}
                 color={locked ? '#c2410c' : '#44403c'} hideText={editing?.kind === 'gap' && editing.k === p.k} title="Edit gap" onClick={e => { stop(e); setEditing({ kind: 'gap', k: p.k, v: p.txt }); }} />
               <g className="lockbtn" style={{ cursor: 'pointer' }} onClick={e => { stop(e); onToggleLock(p.k); }}>
                 <circle cx={lockCx} cy={lockCy} r={8} fill={locked ? '#fff7ed' : '#ffffff'} stroke={locked ? '#f97316' : '#e6e0d6'} strokeWidth={0.7} />
@@ -1042,13 +1066,19 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
    tıkla → değer gir; ölçü pill'inin ucundaki kilit → kilitle. ÖLÇÜ OKU YOK (Goker: "ölçü okları kapak boşluklarının
    içine giriyor") — yalnız pill'ler. Kapaklar 1,5 px içeri çizilir ki 3 mm boşluklar görünür kalsın. Sınır levhaları
    (yan / üst / alt / dikme / raf) yalnız DIŞ kapakta ve kapağa boşluk + 3 mm içinde değiyorsa, GERÇEK konum ve kalınlıkla
-   (en az 6 px) çizilir — iç kapakta ya da sınır paneli yoksa hiç çizilmez (Goker). */
+   (en az 6 px) çizilir — iç kapakta ya da sınır paneli yoksa hiç çizilmez (Goker). Kutu alanı doldurur (DOOR_PAD_*),
+   çakışan pill'ler ikinci şeride kayar (PILL_LANE_GAP). */
 const DOOR_INSET_PX = 1.5;        // kapak çiziminin kenarlardan içeri payı (boşluklar görünsün)
 const CHAIN_OFF_H = 27;           // iç YATAY ölçü zincirinin alt kenardan uzaklığı (px) — alt bant ve ortadaki rozetle çakışmasın
 const CHAIN_OFF_V = 38;           // iç DÜŞEY ölçü zincirinin sağ kenardan uzaklığı (px) — pill'ler yatay geniş, sağ bant rozetini aşsın
 const CHAIN_STEP = 16;            // iç içe zincirler arası (px)
-const DOOR_PAD = 54;              // kapak şemasının kenar payı (dış ölçü zinciri + panel bandı sığsın)
-const OUTER_CHAIN = 33;           // dış ölçü zincirinin kapak alanından uzaklığı (px) — kenar levhasının (gerçek ölçek, ≥ 6 px) dışında
+// ŞEMA PAYLARI (Goker, Eki 2026: "kenarlardan minimum boşluk kalacak şekilde alanı maksimum oranda kullan"): dış ölçü zinciri
+// yalnız SOLDA (düşey) ve ÜSTTE (yatay) durur → sol/üst pay geniş, sağ/alt pay dar. Kapak alanı kutuyu DOLDURUR (eksenler ayrı
+// ölçeklenir); kutunun yüksekliği kapağın gerçek oranına yaklaşır (geniş-alçak kapakta kart kısalır), en çok PREVIEW_HEIGHT.
+const DOOR_PAD_L = 54, DOOR_PAD_T = 44, DOOR_PAD_R = 12, DOOR_PAD_B = 12;
+const DOOR_MIN_ASPECT = 0.6;      // kutu yüksekliği / genişliği en az bu oran (çok geniş kapakta ölçüler sıkışmasın)
+const OUTER_CHAIN = 31;           // dış ölçü zincirinin kapak alanından uzaklığı (px) — kenar levhasının (gerçek ölçek, ≥ 6 px) dışında
+const PILL_LANE_GAP = 3;          // iç içe geçen ölçü pill'leri ikinci şeride kayarken aradaki pay (px)
 
 /* ── KAPAK AÇILIŞ İŞARETİ (Goker, Eki 2026: "her kapak tipine mobilya sektörüne uygun kapak açılış simgesi") ──
    Mobilya/mutfak görünüş çizimi standardı: kapağın karşı (kulp) kenarının iki köşesinden menteşe kenarının ORTASINA
@@ -1096,7 +1126,7 @@ function DoorTypeIcon({ type, size = 14, strokeWidth = 1.25 }: { type: DoorType;
  */
 function DoorTypeBar({ value, hint, onPick }: { value: DoorType | null; hint: string; onPick: (t: DoorType) => void }) {
   return (
-    <div className="flex items-stretch gap-1.5 mb-1.5" title="Door type — applies to the doors selected in the schematic (click a door; Shift/Ctrl+click adds more; none selected = all doors). The selection clears once a type is applied.">
+    <div className="flex items-stretch gap-1.5 mb-1" title="Door type — applies to the doors selected in the schematic (click a door; Shift/Ctrl+click adds more; none selected = all doors). The selection clears once a type is applied.">
       <div className="flex-1 min-w-0" style={{ display: 'grid', gridTemplateColumns: `repeat(${DOOR_TYPES.length}, minmax(0,1fr))`, gap: 2, padding: 2, borderRadius: 9, background: '#f3efe8', border: '1px solid #e9e4dc', fontFamily: UI_FONT }}>
         {DOOR_TYPES.map(t => {
           const on = value === t;
@@ -1104,11 +1134,11 @@ function DoorTypeBar({ value, hint, onPick }: { value: DoorType | null; hint: st
             <button key={t} type="button" title={DOOR_TYPE_TITLE[t]} onClick={e => { stop(e); onPick(t); }}
               className={on ? '' : 'hover:!bg-white hover:!text-stone-800'}
               style={{
-                height: 38, minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 3, padding: '0 2px', borderRadius: 7, border: 'none', outline: 'none',
+                height: 34, minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 2, padding: '0 2px', borderRadius: 7, border: 'none', outline: 'none',
                 cursor: 'pointer', background: on ? '#44403c' : 'transparent', color: on ? '#ffffff' : '#57534e',
                 boxShadow: on ? '0 1px 2px rgba(40,30,20,0.25)' : 'none', fontSize: 9.5, fontWeight: 600, letterSpacing: '0.01em', lineHeight: 1, transition: 'background 0.12s,color 0.12s',
               }}>
-              <DoorTypeIcon type={t} size={14} />
+              <DoorTypeIcon type={t} size={13} />
               <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }}>{DOOR_TYPE_LABEL[t]}</span>
             </button>
           );
@@ -1126,7 +1156,7 @@ type DoorEdit = { key: string; v: string };
 /** Ölçü zinciri öğesi: ölçü (ok + pill + kilit) ya da boşluk (yalnız pill). a..b = eksen boyunca mm. */
 type ChainItem = { key: string; kind: 'size' | 'gap'; a: number; b: number; txt: string; title: string; locked?: boolean; onLock?: () => void; commit: (v: number) => void; min: number };
 type Chain = { horiz: boolean; pos: number; items: ChainItem[]; small?: boolean };
-export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts, nearPanels, refPick, onEditSize, onToggleLock, onEditSplitGap, onEditEdgeGap, onEditLeaf, onEditLeafGap, onPathClick, onToggleHalfOverlay, onAlignPanel, onRefPick }: {
+export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts, nearPanels, refPick, onEditSize, onToggleLock, onEditSplitGap, onEditEdgeGap, onEditLeaf, onEditLeafGap, onPathClick, onToggleHalfOverlay, onAlignJoint, onRefPick }: {
   group: DoorGroup; selectedIndex: number; memberLabels: string[];
   /** BÖLGE SEÇİMİ: seçili düğümler (kök alan / bölme / kapak) — turuncu çerçeve + seviye etiketi (ör. "L1 · V ×2"). */
   selectedNodes: string[];
@@ -1140,9 +1170,12 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
   /** Kapak tıklandı: tıklanan noktanın kök → yaprak düğüm yolu (yalnız seçim — üye seçilmez); additive = Shift/Ctrl/⌘. */
   onPathClick: (path: string[], additive: boolean) => void;
   onToggleHalfOverlay: (edge: DoorEdgeKey, on: boolean) => void;
-  /** İç levha derze hizalanır (null = serbest) — LEVHA taşınır, kapak ölçüleri değişmez. */
-  onAlignPanel: (vfId: string, align: DoorAlign | null) => void;
-  /** PANEL REF modu: iç levhaya tık → kapak o levhanın ortasından bölünür, levha derze bağlanır. */
+  /**
+   * DERZ BAĞI: iç levha (vfId) `splitId` bölmesinin k. derzine `align` ile bağlanır — LEVHA bir kez taşınır (kapak yerinde),
+   * sonrasında kapak derzi levhayı izler. null = bağ çözülür (kapak ölçüleri donar).
+   */
+  onAlignJoint: (splitId: string, k: number, vfId: string, align: DoorAlign | null) => void;
+  /** PANEL REF modu: iç levhaya tık → kapak o levhanın ortasından bölünür, derz levhaya bağlanır. */
   refPick?: boolean;
   onRefPick?: (vfId: string) => void;
 }) {
@@ -1159,10 +1192,12 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
   useEffect(() => { setEditing(null); }, [group.id, treeKey, selectedIndex >= 0]);
 
   const { rect, axis, side } = group;
-  const height = PREVIEW_HEIGHT;
-  const innerW = width - 2 * DOOR_PAD, innerH = height - 2 * DOOR_PAD;
-  const S = Math.max(40, Math.min(innerW, innerH));
-  const ox = DOOR_PAD + (innerW - S) / 2, oy = DOOR_PAD + (innerH - S) / 2;
+  // KUTU: genişlik tamamen kullanılır; yükseklik kapağın gerçek oranından (en az DOOR_MIN_ASPECT·genişlik, en çok PREVIEW_HEIGHT'a sığan).
+  const SW = Math.max(40, width - DOOR_PAD_L - DOOR_PAD_R);
+  const duR = Math.max(1e-6, rect.u1 - rect.u0), dvR = Math.max(1e-6, rect.v1 - rect.v0);
+  const SH = Math.round(Math.max(DOOR_MIN_ASPECT * SW, Math.min(PREVIEW_HEIGHT - DOOR_PAD_T - DOOR_PAD_B, SW * dvR / duR)));
+  const height = SH + DOOR_PAD_T + DOOR_PAD_B;
+  const ox = DOOR_PAD_L, oy = DOOR_PAD_T;
   // GÖRÜNÜŞ YÖNÜ: ön yüz (Z+) → X sağa; arka (Z−) ve sağ yan (X+) → aynalı; üst (Y+) → Z aşağı.
   const mirrorU = (axis === 2 && side < 0) || (axis === 0 && side > 0);
   const mirrorV = axis === 1 && side > 0;
@@ -1175,9 +1210,8 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [solved, cutsKey, group.placement, group.thickness, group.gap]);
   // mm → px: doğrusal; u soldan sağa (aynalıysa ters), v ÜSTTEN aşağı (v1 → oy).
-  const du = Math.max(1e-6, rect.u1 - rect.u0), dv = Math.max(1e-6, rect.v1 - rect.v0);
-  const sx = (u: number) => (mirrorU ? ox + S - ((u - rect.u0) / du) * S : ox + ((u - rect.u0) / du) * S);
-  const sy = (v: number) => (mirrorV ? oy + ((v - rect.v0) / dv) * S : oy + ((rect.v1 - v) / dv) * S);
+  const sx = (u: number) => (mirrorU ? ox + SW - ((u - rect.u0) / duR) * SW : ox + ((u - rect.u0) / duR) * SW);
+  const sy = (v: number) => (mirrorV ? oy + ((v - rect.v0) / dvR) * SH : oy + ((rect.v1 - v) / dvR) * SH);
   const fs = Math.max(10, Math.min(13.5, width * 0.027));
   const fsT = Math.max(9, fs * 0.86);
   const gid = `ds-${group.id.replace(/[^a-zA-Z0-9_-]/g, '')}`;
@@ -1261,28 +1295,58 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
   };
   walk(root, 0, 0);
   // Pill konumları (giriş kutusu için): ekran koordinatı + boyut.
-  type Pill = { key: string; cx: number; cy: number; pw: number; ph: number; item: ChainItem; chain: Chain; x0: number; x1: number };
-  const pills: Pill[] = chains.flatMap(ch => ch.items.map(it => {
-    const f = ch.small || it.kind === 'gap' ? fsT : fs;
-    const { pw, ph } = pillSize(it.txt, f);
-    const m0 = ch.horiz ? sx(it.a) : sy(it.a), m1 = ch.horiz ? sx(it.b) : sy(it.b);
-    const mid = (m0 + m1) / 2;
-    const cx = ch.horiz ? mid : ch.small ? ch.pos : Math.max(ch.pos, pw / 2 + 3);   // dış düşey zincir: pill şemadan taşmasın
-    return { key: it.key, cx, cy: ch.horiz ? ch.pos : mid, pw, ph, item: it, chain: ch, x0: Math.min(m0, m1), x1: Math.max(m0, m1) };
-  }));
+  type Pill = { key: string; cx: number; cy: number; pw: number; ph: number; item: ChainItem; chain: Chain; x0: number; x1: number; hidden: boolean; lane: number };
+  // İÇ İÇE GEÇME ÖNLEMİ (Goker: "kapak miktarı arttığında ölçüler iç içe geçiyor"): zincir başına ŞERİTLER (teknik çizimdeki
+  // kademeli ölçü). Önce ÖLÇÜ pill'leri yerleşir: bir öncekine çarpan ölçü ikinci şeride kayar (dönüşümlü). Sonra BOŞLUK pill'leri
+  // boş bulduğu ilk şeride (0 → 1 → 2) girer; hiçbirine sığmazsa gizlenir (değer tooltip'te kalır). Şerit yönü: dış zincirlerde
+  // kapağa doğru (üst zincir aşağı, sol zincir sağa — pay içinde kalır), iç zincirlerde bölgenin içine doğru (yukarı / sola).
+  type Placed = { start: number; end: number };
+  const pills: Pill[] = chains.flatMap(ch => {
+    const base = ch.items.map(it => {
+      const f = ch.small || it.kind === 'gap' ? fsT : fs;
+      const { pw, ph } = pillSize(it.txt, f);
+      const m0 = ch.horiz ? sx(it.a) : sy(it.a), m1 = ch.horiz ? sx(it.b) : sy(it.b);
+      const mid = (m0 + m1) / 2;
+      const cx = ch.horiz ? mid : ch.small ? ch.pos : Math.max(ch.pos, pw / 2 + 3);   // dış düşey zincir: pill şemadan taşmasın
+      return { key: it.key, cx, cy: ch.horiz ? ch.pos : mid, pw, ph, item: it, chain: ch, x0: Math.min(m0, m1), x1: Math.max(m0, m1), hidden: false, lane: 0 };
+    }).sort((a, b) => (ch.horiz ? a.cx - b.cx : a.cy - b.cy));
+    const maxLanes = ch.small ? 3 : 2;
+    const lanes: Placed[][] = Array.from({ length: maxLanes }, () => []);
+    const extOf = (p: typeof base[number]) => (ch.horiz ? p.pw : p.ph) + 2;
+    const posOf = (p: typeof base[number]) => (ch.horiz ? p.cx : p.cy);
+    const fits = (lane: number, start: number, end: number) => lanes[lane].every(q => end <= q.start || start >= q.end);
+    const laneStep = Math.max(...base.map(p => (ch.horiz ? p.ph : p.pw)), 0) + PILL_LANE_GAP;
+    const dir = ch.small ? -1 : 1;
+    const place = (p: typeof base[number], lane: number) => {
+      p.lane = lane; lanes[lane].push({ start: posOf(p) - extOf(p) / 2, end: posOf(p) + extOf(p) / 2 });
+      if (lane > 0) { if (ch.horiz) p.cy += dir * lane * laneStep; else p.cx += dir * lane * laneStep; }
+    };
+    for (const p of base.filter(x => x.item.kind === 'size')) {
+      const st0 = posOf(p) - extOf(p) / 2, en0 = posOf(p) + extOf(p) / 2;
+      place(p, fits(0, st0, en0) ? 0 : fits(1, st0, en0) ? 1 : 0);   // ikisine de sığmazsa 0. şerit (ölçü hep çizilir)
+    }
+    for (const p of base.filter(x => x.item.kind === 'gap')) {
+      const st0 = posOf(p) - extOf(p) / 2, en0 = posOf(p) + extOf(p) / 2;
+      let lane = -1;
+      for (let l = 0; l < maxLanes; l++) if (fits(l, st0, en0)) { lane = l; break; }
+      if (lane < 0) { p.hidden = true; continue; }
+      place(p, lane);
+    }
+    return base.filter(p => !p.hidden);
+  });
   const pillByKey = new Map(pills.map(p => [p.key, p]));
 
   // ── SINIR LEVHALARI (Goker, Eki 2026: "iç kapakta ya da sınır panel yoksa kalınlığı hiç gösterme; dikme/rafa 2-3 mm
   // yaklaşan kapakta göster; dikmeyi kapağın sağına/soluna/ortalı, rafı yukarı/aşağı/ortada yerleştireyim") ──
   // nearPanels (DoorService.doorNearPanels) gerçek (u,v) konum + kalınlıkla gelir; burada yalnız ekrana çevrilir. Çok ince
   // levha en az BAND_MIN px çizilir (merkez sabit). Kapak arkasında kalan kısım kesikli (gizli çizgi). Kenar levhası →
-  // Full/Half rozeti (yarım binme); derze yakın iç raf/dikme üyesi → Left/Center/Right (Up/Center/Down) rozeti, tık döngüler,
-  // Shift/Ctrl+tık serbest bırakır.
+  // Full/Half rozeti (yarım binme); derze yakın iç raf/dikme üyesi → Free / Left/Center/Right (Up/Center/Down) rozeti: tık
+  // derzi levhaya BAĞLAR ve levhayı o hizaya taşır (kapak yerinde; sonra kapak derzi levhayı izler), Shift/Ctrl+tık bağı çözer.
   const I = DOOR_INSET_PX;
   const BAND_MIN = 6;
-  const VIEW_PAD = 44;   // şemada levha çizim sınırı (kapak alanı dışına taşan kısım bu kadar görünür)
-  const clampX = (x: number) => Math.max(ox - VIEW_PAD, Math.min(ox + S + VIEW_PAD, x));
-  const clampY = (y: number) => Math.max(oy - VIEW_PAD, Math.min(oy + S + VIEW_PAD, y));
+  // Şemada levha çizim sınırı: kapak alanı dışına taşan kısım kenar payına kadar görünür.
+  const clampX = (x: number) => Math.max(ox - DOOR_PAD_L + 2, Math.min(ox + SW + DOOR_PAD_R - 2, x));
+  const clampY = (y: number) => Math.max(oy - DOOR_PAD_T + 2, Math.min(oy + SH + DOOR_PAD_B - 2, y));
   const isOuter = group.placement === 'outer';
   type Band = { np: DoorNearPanel; x: number; y: number; w: number; h: number; vertical: boolean; half: boolean; aligned: boolean };
   const bands: Band[] = nearPanels.map(np => {
@@ -1292,7 +1356,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     const c0 = vertical ? clampY(Math.min(sy(np.c0), sy(np.c1))) : clampX(Math.min(sx(np.c0), sx(np.c1)));
     const c1 = vertical ? clampY(Math.max(sy(np.c0), sy(np.c1))) : clampX(Math.max(sx(np.c0), sx(np.c1)));
     const half = !!np.edge && np.behind && !!group.halfOverlay?.[np.edge];
-    return { np, vertical, half, aligned: !!np.align && !!np.joint, x: vertical ? a0 : c0, y: vertical ? c0 : a0, w: vertical ? a1 - a0 : c1 - c0, h: vertical ? c1 - c0 : a1 - a0 };
+    return { np, vertical, half, aligned: !!np.ref && !!np.joint, x: vertical ? a0 : c0, y: vertical ? c0 : a0, w: vertical ? a1 - a0 : c1 - c0, h: vertical ? c1 - c0 : a1 - a0 };
   });
   // Kapak arkasında kalan kısımlar (gizli çizgi): levha ∩ her kapak dikdörtgeni.
   const hiddenParts = (b: Band) => members.flatMap(m => {
@@ -1313,21 +1377,23 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     }
     const what = b.vertical ? 'divider' : 'shelf';
     const opts = alignCycle(b).map(a => alignLabel(b, a)).join(' / ');
-    if (refPick) return `${np.name} (${what}) — PANEL REF: click to split the door through this ${what}'s middle (door sizes are then fixed; the ${what} can be moved Left / Center / Right afterwards).`;
-    if (!np.joint) return `${np.name} (${what}) — behind the door, no door joint nearby to align to. Use Panel ref mode to split the door at it.`;
-    if (!np.groupId) return `${np.name} (${what}) — body panel at a door joint; it cannot be moved from here (only shelf / divider members can).`;
-    const cur = np.align ? alignLabel(b, np.align) : 'Free';
-    return `${np.name} (${what}) at the door joint — ${cur}. Click: ${opts} (the ${what} moves and its group gaps are revised) · Shift/Ctrl+click: free.`;
+    if (refPick) return `${np.name} (${what}) — PANEL REF: click to split the door through this ${what}'s middle. The joint is then bound to the ${what}: when it moves, the doors follow; Left / Center / Right moves the ${what} under the joint.`;
+    if (!np.joint) return `${np.name} (${what}) — behind the door, no door joint nearby to bind to. Use Panel ref mode to split the door at it.`;
+    if (!np.groupId && !np.ref) return `${np.name} (${what}) — body panel at a door joint; it cannot be moved from here (only shelf / divider members can).`;
+    const cur = np.ref ? alignLabel(b, np.ref.align) : 'Free';
+    if (np.ref) return `${np.name} (${what}) — BOUND to this door joint (${cur}): when the ${what} moves (gap edit, body resize) the doors follow it. Click: ${opts} (moves the ${what}, doors stay) · Shift/Ctrl+click: unbind (door sizes freeze).`;
+    return `${np.name} (${what}) at the door joint — Free. Click: ${opts} (binds the joint to the ${what} and moves the ${what}; doors stay, then follow it) · Shift/Ctrl+click: unbind.`;
   };
   const onBandClick = (b: Band, additive: boolean) => {
     const np = b.np;
     if (refPick) { if (!np.edge && onRefPick) onRefPick(np.vfId); return; }
     if (np.edge) { if (np.behind) onToggleHalfOverlay(np.edge, !group.halfOverlay?.[np.edge]); return; }
     const cyc = alignCycle(b);
-    if (!np.joint || !np.groupId) return;
-    if (additive) { onAlignPanel(np.vfId, null); return; }
-    const i = np.align ? cyc.indexOf(np.align) : -1;
-    onAlignPanel(np.vfId, cyc[(i + 1) % cyc.length]);
+    const j = np.joint;
+    if (!j || !(np.groupId || np.ref)) return;
+    if (additive) { if (np.ref) onAlignJoint(j.splitId, j.k, np.vfId, null); return; }
+    const i = np.ref ? cyc.indexOf(np.ref.align) : -1;
+    onAlignJoint(j.splitId, j.k, np.vfId, cyc[(i + 1) % cyc.length]);
   };
 
   const commit = () => {
@@ -1360,17 +1426,19 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
   const regionTag = (n: DoorNodeSolved) => `L${n.depth} · ${n.kind === 'split' ? `${n.axis === 'u' ? 'V' : 'H'} ×${n.children.length}` : 'Door'}`;
 
   return (
-    <div ref={wrapRef} className="relative rounded-[10px] ring-1 ring-[#e9e4dc] overflow-hidden" style={{ background: PREVIEW_BG, height }}>
+    <div ref={wrapRef} className={PREVIEW_FRAME} style={{ background: PREVIEW_BG, height }}>
       <style>{`.yago-gap .lockbtn{opacity:0;transition:opacity .15s}.yago-gap:hover .lockbtn,.yago-gap.locked .lockbtn{opacity:1}.yago-band .chip{opacity:0;transition:opacity .15s}.yago-band.on .chip,.yago-band:hover .chip{opacity:1}.yago-band .hit{transition:fill .12s}.yago-band:hover .hit{fill:rgba(234,88,12,0.10)}`}</style>
       <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ display: 'block', fontFamily: UI_FONT }}>
         <defs>
           {/* kapak yüzeyi: sıcak kemik gradyanı (hafif ışık üstten); seçili üye turuncuya kayar */}
-          <linearGradient id={`${gid}-door`} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#f1ebe1" /><stop offset="1" stopColor="#e4dccd" /></linearGradient>
-          <linearGradient id={`${gid}-door-on`} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#fdebdb" /><stop offset="1" stopColor="#f9d9bf" /></linearGradient>
-          <linearGradient id={`${gid}-door-sel`} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#f7eee2" /><stop offset="1" stopColor="#efe2cf" /></linearGradient>
+          <linearGradient id={`${gid}-door`} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor={SOFT.part0} /><stop offset="1" stopColor={SOFT.part1} /></linearGradient>
+          <linearGradient id={`${gid}-door-on`} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor={SOFT.on0} /><stop offset="1" stopColor={SOFT.on1} /></linearGradient>
+          <linearGradient id={`${gid}-door-sel`} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor={SOFT.sel0} /><stop offset="1" stopColor={SOFT.sel1} /></linearGradient>
           <pattern id={`${gid}-hatch`} width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="4" stroke="#bfb5a6" strokeWidth="0.7" /></pattern>
           <pattern id={`${gid}-hatch-on`} width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="4" stroke="#e8925a" strokeWidth="0.9" /></pattern>
         </defs>
+        {/* kapak alanı (yumuşak zemin; aralarda görünür) */}
+        <rect x={ox} y={oy} width={SW} height={SH} rx={3} fill={SOFT.area} stroke={SOFT.areaStroke} strokeWidth={0.8} />
         {/* SINIR LEVHALARI (görünen kısım): dolu + taralı; yarım binmede / derze hizalıyken turuncu tonlu */}
         {bands.map(b => {
           const warm = b.half || b.aligned;
@@ -1390,7 +1458,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
           const x0 = Math.min(sx(m.u0), sx(m.u1)) + I, x1 = Math.max(sx(m.u0), sx(m.u1)) - I, y0 = Math.min(sy(m.v1), sy(m.v0)) + I, y1 = Math.max(sy(m.v1), sy(m.v0)) - I;
           const lbl = memberLabels[i] ?? String(i + 1);
           const fill = on ? `url(#${gid}-door-on)` : inSel ? `url(#${gid}-door-sel)` : `url(#${gid}-door)`;
-          const stroke = on ? '#ea580c' : inSel ? '#d9a06b' : '#9a9185';
+          const stroke = on ? SOFT.onStroke : inSel ? SOFT.selStroke : SOFT.partStroke;
           // MENTEŞE (ekrana göre): tek kanat tipten; double'da ekranda solda duran kanat sol menteşe (aynalı görünüşte de doğru).
           let hinge: Hinge | undefined = leafHinges(m.type)[0];
           if (m.leafCount === 2 && doorLeafAxis(m.type) === 'u') { const sib = members[m.leaf === 0 ? i + 1 : i - 1]; hinge = sib && Math.min(sx(sib.u0), sx(sib.u1)) < x0 ? 'R' : 'L'; }
@@ -1420,7 +1488,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
               {pts ? (
                 <polygon points={pts.map(q => `${q.x},${q.y}`).join(' ')} fill={fill} stroke={stroke} strokeWidth={on ? 1.2 : 0.9} strokeLinejoin="round"><title>{tip}</title></polygon>
               ) : (
-                <rect x={x0} y={y0} width={Math.max(1, w)} height={Math.max(1, h)} rx={2} fill={fill} stroke={stroke} strokeWidth={on ? 1.2 : 0.9}><title>{tip}</title></rect>
+                <rect x={x0} y={y0} width={Math.max(1, w)} height={Math.max(1, h)} rx={2.5} fill={fill} stroke={stroke} strokeWidth={on ? 1.2 : 0.8} style={{ filter: SOFT.shadow }}><title>{tip}</title></rect>
               )}
               {!pts && w > 6 && h > 6 && <rect x={x0 + 1} y={y0 + 1} width={Math.max(0, w - 2)} height={Math.max(0, h - 2)} rx={1.5} fill="none" stroke="#ffffff" strokeOpacity={0.55} strokeWidth={0.8} style={{ pointerEvents: 'none' }} />}
               {sw && <path d={swingPath(x0 + ins, y0 + ins, x1 - ins, y1 - ins, hinge!)} fill="none" stroke={on ? '#f3b98e' : '#d6cfc4'} strokeWidth={0.7} strokeDasharray="3 3" strokeLinejoin="round" strokeLinecap="round" style={{ pointerEvents: 'none' }} />}
@@ -1445,12 +1513,14 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
           </g>
         )))}
         {/* LEVHA TIKLAMA ALANI + ROZET (bandın ortasında, düşey levhada dikey yazı): kenar levhası → Full / Half; derzdeki
-            raf/dikme üyesi → Free / Left / Center / Right (Up / Center / Down). Tık döngüler; Shift/Ctrl serbest bırakır. */}
+            raf/dikme üyesi → Free / Left / Center / Right (Up / Center / Down): tık derzi levhaya bağlar + levhayı taşır (döngü);
+            Shift/Ctrl bağı çözer. Bağlı levha turuncu rozet. */}
         {bands.map(b => {
           const np = b.np;
           const pickable = !!refPick && !np.edge;
-          const interactive = isOuter && (pickable || (!!np.edge && np.behind) || (!np.edge && !!np.joint && !!np.groupId));
-          const chipTxt = pickable ? 'Split here' : np.edge ? (np.behind ? (b.half ? 'Half' : 'Full') : null) : np.joint && np.groupId ? (np.align ? alignLabel(b, np.align) : 'Free') : null;
+          const bindable = !np.edge && !!np.joint && (!!np.groupId || !!np.ref);
+          const interactive = isOuter && (pickable || (!!np.edge && np.behind) || bindable);
+          const chipTxt = pickable ? 'Split here' : np.edge ? (np.behind ? (b.half ? 'Half' : 'Full') : null) : bindable ? (np.ref ? alignLabel(b, np.ref.align) : 'Free') : null;
           const on = b.half || b.aligned;
           const bx = b.x + b.w / 2, by = b.y + b.h / 2;
           const cfs = fsT * 0.8;
@@ -1496,7 +1566,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
           const locked = !!it.locked, editable = !!it.onLock || it.key.startsWith('leaf-');
           return (
             <g key={p.key} className={`yago-gap${locked ? ' locked' : ''}`}>
-              <DimPill cx={p.cx} cy={p.cy} txt={it.txt} fs={f} fill={locked ? '#fff7ed' : '#ffffff'} stroke={locked ? '#f97316' : ch.small ? '#e6e0d6' : 'none'} strokeWidth={locked ? 1 : 0.7}
+              <DimPill cx={p.cx} cy={p.cy} txt={it.txt} fs={f} fill={locked ? '#fff7ed' : '#ffffff'} stroke={locked ? '#f97316' : SOFT.pillStroke} strokeWidth={locked ? 1 : 0.7}
                 color={locked ? '#c2410c' : '#44403c'} hideText={hide} title={it.title}
                 onClick={editable ? e => { stop(e); setEditing({ key: p.key, v: it.txt }); } : undefined} />
               {it.onLock && (ch.horiz ? lockBtn(locked, p.cx + p.pw / 2 + 11, p.cy, it.onLock) : lockBtn(locked, p.cx, p.cy + p.ph / 2 + 11, it.onLock))}
@@ -1528,10 +1598,10 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
    durduğu için sağ kontrol alanı 8px dar tutulur → ölçü sütunları hizalanır. */
 const ROW_NUM_W = 30;
 /* SATIR DÜĞMELERİ (Goker, Eki 2026: "yüzeyin şeklini al · kapak sınırı · yön · sil düğmelerini biraz büyüt, araları eşit
-   kalsın"): dördü de 24×24 kutu, 14px ikon, aralarında 3px; ok 16px. Genişlik = 4×24 + 3×3 + 3 + 16 = 124. */
+   kalsın"): dördü de 24×24 kutu, 14px ikon, aralarında 3px; aç/kapa oku da aynı 24×24 düğme. Genişlik = 5×24 + 4×3 = 132. */
 const ROW_BTN = 'w-6 h-6 shrink-0 rounded-md flex items-center justify-center transition-colors duration-150';
 const ROW_ICON = 14;
-const ROW_TRAIL_W = 124;          // 4 × 24px düğme + 3 × 3px aralık + 3px + 16px ok
+const ROW_TRAIL_W = 132;          // 5 × 24px düğme (4 araç + aç/kapa oku) + 4 × 3px aralık
 const MEMBER_INSET = 8;           // grup kartı gövdesinin yatay dolgusu (px-2)
 type RowKind = 'body' | 'shelf' | 'divider' | 'door';
 const ROW_KIND_ICON: Record<RowKind, LucideIcon> = { body: LayoutPanelTop, shelf: Rows3, divider: Columns3, door: DoorClosed };
@@ -1587,10 +1657,15 @@ const RowNum = ({ label, active, small }: { label: string; active: boolean; smal
     ${active ? 'text-orange-600' : 'text-stone-400 group-hover/row:text-stone-600'}`}>{label}</span>
 );
 /** Aç / kapa göstergesi (chevron). */
+/* SATIR AÇ / KAPA — TEK MANTIK (Goker, Eki 2026: "panelin, dikmenin ve kapağın satır kapanışı tek mantıkta olsun"): her
+   satırda (gövde paneli, raf/dikme üyesi, raf/dikme grubu, kapak grubu) BAŞLIĞA ya da sağdaki OK düğmesine tıklamak aynı işi
+   yapar — kapalıysa açar (panel: seçer; grup: tümünü seçer), açıksa kapatır (seçimler düşer). Ok her satırda aynı yerde,
+   aynı boyda (24 px) ve her zaman tıklanabilir. */
 const RowChevron = ({ open, onClick, title }: { open: boolean; onClick?: (e: React.MouseEvent) => void; title?: string }) => (
-  <span onClick={onClick} title={title} className={`w-4 h-5 flex items-center justify-center ${onClick ? 'cursor-pointer hover:text-orange-500' : ''} transition-[transform,color] duration-200 ${open ? 'rotate-90 text-orange-500' : 'text-stone-300 group-hover/row:text-stone-400'}`}>
-    <ChevronRight size={13} strokeWidth={2} />
-  </span>
+  <button type="button" onClick={onClick} title={title ?? (open ? 'Collapse' : 'Expand')}
+    className={`${ROW_BTN} ${open ? 'text-orange-500 bg-orange-50/70 hover:bg-orange-100/70' : 'text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700'}`}>
+    <ChevronRight size={ROW_ICON} strokeWidth={2.1} className={`transition-transform duration-200 ${open ? 'rotate-90' : ''}`} />
+  </button>
 );
 /* ── GRUP KARTI DÜZENİ (Goker, Eki 2026: "raf/dikme arayüzü çok iç içe; ifadeleri kısalt, rahatlat;
    adet ve spacing sırası çok karışık") ───────────────────────────────────────────────────────────
@@ -1651,14 +1726,14 @@ function CountBox({ icon: Icon, label, value, title, onChange, max = 12 }: { ico
     setDraft(null);
     if (Number.isFinite(n) && n >= 1 && n <= max && n !== value) onChange(n);
   };
-  // KISA (Goker: "split v ve h düğmelerini biraz daha kısalt"): ikon + tek harf, dar sayı, küçük −/+.
+  // −/+ GERİ (Goker: "v ve h modunda + − düğmelerini geri koy, alanı biraz genişlet"): ikon + harf · − · sayı (yazılır, ↑↓) · +.
   return (
-    <FieldBox fixed label="" title={title}>
-      <span className="flex items-center gap-[3px] pr-0.5 text-[9.5px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]"><Icon size={11} strokeWidth={2} />{label}</span>
+    <FieldBox label="" title={title}>
+      <span className="flex items-center gap-[3px] pr-0.5 mr-auto text-[9.5px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]"><Icon size={11} strokeWidth={2} />{label}</span>
       <StepBtn title="Fewer pieces" disabled={value <= 1} onClick={() => onChange(value - 1)}><Minus size={10} strokeWidth={2.2} /></StepBtn>
       <input type="text" inputMode="numeric" value={draft ?? String(value)} onChange={e => setDraft(e.target.value.replace(/[^0-9]/g, ''))}
-        onBlur={commit} onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setDraft(null); }} onClick={stop}
-        className="yago-field" style={{ ...FIELD_INPUT, width: 18 }} aria-label={`${label} pieces`} />
+        onBlur={commit} onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setDraft(null); if (e.key === 'ArrowUp') { e.preventDefault(); if (value < max) onChange(value + 1); } if (e.key === 'ArrowDown') { e.preventDefault(); if (value > 1) onChange(value - 1); } }} onClick={stop}
+        className="yago-field" style={{ ...FIELD_INPUT, width: 24 }} aria-label={`${label} pieces`} />
       <StepBtn title="More pieces" disabled={value >= max} onClick={() => onChange(value + 1)}><Plus size={10} strokeWidth={2.2} /></StepBtn>
     </FieldBox>
   );
@@ -1676,13 +1751,34 @@ function SizeBox({ icon: Icon, label, value, title, onChange }: { icon: LucideIc
     if (Number.isFinite(v) && v > 0 && v !== value) onChange(v);
   };
   return (
-    <FieldBox fixed label="" title={title}>
-      <span className="flex items-center gap-[3px] pr-0.5 text-[9.5px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]"><Icon size={11} strokeWidth={2} />{label}</span>
-      <input type="text" inputMode="decimal" value={draft ?? (value != null ? String(value) : '')} placeholder="size" onChange={e => setDraft(e.target.value)}
+    <FieldBox label="" title={title}>
+      <span className="flex items-center gap-[3px] pr-0.5 mr-auto text-[9.5px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]"><Icon size={11} strokeWidth={2} />{label}</span>
+      <input type="text" inputMode="decimal" value={draft ?? (value != null ? String(value) : '')} placeholder="mm" onChange={e => setDraft(e.target.value)}
         onBlur={commit} onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setDraft(null); }} onClick={stop}
-        className="yago-field" style={{ ...FIELD_INPUT, width: 40, textAlign: 'right' }} aria-label={`${label} target size`} />
-      {unitTxt('mm')}
+        className="yago-field" style={{ ...FIELD_INPUT, width: 44, textAlign: 'right' }} aria-label={`${label} target size`} />
     </FieldBox>
+  );
+}
+/**
+ * BÖLME MODU açılır listesi (Goker: "count, spacing ve ref modunu combobox yap, alan kazanalım"): PlacementSelect ile aynı dil.
+ */
+function SplitModeSelect({ value, onChange }: { value: 'count' | 'ref' | 'spacing'; onChange: (v: 'count' | 'ref' | 'spacing') => void }) {
+  const titles = {
+    count: 'Count — split the selected region by number of pieces (V side by side · H stacked)',
+    ref: 'Panel ref — click a door-reference divider / shelf (3D view or schematic): the door splits through its middle; door sizes stay, afterwards Left / Center / Right moves the panel',
+    spacing: 'Spacing — split by target piece size (mm); the number of pieces follows the region length and body resizes',
+  };
+  return (
+    <div className="relative shrink-0" onClick={stop} title={titles[value]}>
+      <select value={value} onChange={e => onChange(e.target.value as 'count' | 'ref' | 'spacing')}
+        className="h-[28px] pl-2.5 pr-7 rounded-[7px] bg-white ring-1 ring-[#e6e0d6] shadow-[0_1px_0_rgba(40,30,20,0.03)] text-[11.5px] font-semibold text-stone-700 appearance-none outline-none cursor-pointer hover:ring-[#dcd4c8] focus:ring-orange-400/60 transition-shadow duration-150"
+        style={{ fontFamily: UI_FONT }}>
+        <option value="count">Count</option>
+        <option value="ref">Panel ref</option>
+        <option value="spacing">Spacing</option>
+      </select>
+      <ChevronDown size={12} strokeWidth={2.2} className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-stone-400" />
+    </div>
   );
 }
 /**
@@ -2370,7 +2466,7 @@ export function PanelEditor() {
         {extrudeDock}
         {moveDock}
         {rotateDock}
-        <div className="rounded-[10px] ring-1 ring-[#e9e4dc] overflow-hidden relative mt-1.5" style={{ height: PREVIEW_HEIGHT, background: PREVIEW_BG }}>
+        <div className={`${PREVIEW_FRAME} mt-1.5`} style={{ height: PREVIEW_HEIGHT, background: PREVIEW_BG }}>
           {activeDims && activePanel
             ? <PanelPreview2D key={activePanel.id} shape={activePanel} arrowRotated={!!activePanel.parameters?.arrowRotated} />
             : <div className="absolute inset-0 flex items-center justify-center"><span className="text-xs text-stone-400">No panel</span></div>}
@@ -2504,7 +2600,7 @@ export function PanelEditor() {
                 {!opts.member
                   ? <button onClick={e => { stop(e); void deletePanelAndFace(vf.id); }} title="Delete panel" className={ROW_DEL_CLASS}><Trash2 size={ROW_ICON - 1} strokeWidth={1.9} /></button>
                   : <span className="w-6 h-6 shrink-0" />}
-                <RowChevron open={sel} />
+                <RowChevron open={sel} onClick={e => { stop(e); if (sel) setSelectedPanelRow(null); else setSelectedPanelRow(`vf-${vf.id}`, sid); }} />
               </div>
             </div>
           </div>
@@ -2533,16 +2629,15 @@ export function PanelEditor() {
       };
       const open = openCards.has(g.id) || selAll || members.some(m => selectedPanelRow === `vf-${m.id}`);
       const mIds = members.map(m => m.id);
-      // Başlık: tümünü seç / bırak (kart açık kalır). Ok: kartı kapat (seçimler düşer) / aç.
-      const toggleAll = (e: React.MouseEvent) => { stop(e); if (selAll) setSelectedPanelGroupId(null); else { setSelectedPanelGroupId(g.id); openCard(g.id); } };
-      const toggleOpen = (e: React.MouseEvent) => { stop(e); if (open) closeCard(g.id, mIds); else openCard(g.id); };
+      // TEK MANTIK: başlık ya da ok — kapalıysa aç + tümünü seç; açıksa kapat (grup / üye seçimi düşer).
+      const toggleRow = (e: React.MouseEvent) => { stop(e); if (open) closeCard(g.id, mIds); else { setSelectedPanelGroupId(g.id); openCard(g.id); } };
       return (
         <div key={rowKey} className={rowCardClass(open, dragIndex === rowIdx, armedRowKey === rowKey)}>
-          {/* ── GRUP BAŞLIĞI: tıkla = tümünü seç ── */}
+          {/* ── GRUP BAŞLIĞI: tıkla = aç (tümünü seç) / kapat ── */}
           <div className={`relative flex items-stretch ${selAll ? 'bg-[#fff8ef]' : ''}`}>
             {selAll && <span className="pointer-events-none absolute left-0 top-[6px] bottom-[6px] w-[2px] rounded-r-full bg-orange-500/90" />}
             {grip(rowKey, rowIdx, 'Drag to reorder (whole group)')}
-            <div onClick={toggleAll} className="flex-1 min-w-0 relative flex items-center gap-1.5 pl-0.5 pr-1 py-[4px] cursor-pointer" title={selAll ? 'Deselect all panels' : 'Select all panels in this group'}>
+            <div onClick={toggleRow} className="flex-1 min-w-0 relative flex items-center gap-1.5 pl-0.5 pr-1 py-[4px] cursor-pointer" title={open ? 'Collapse' : 'Expand — selects all panels in this group'}>
               <RowNum label={label} active={selAll} />
               <RowTypeBadge kind={g.kind} active={open} count={g.count} />
               {/* GRUP ADI: değiştirilebilir; üye panellerin adı bu addır. */}
@@ -2552,7 +2647,7 @@ export function PanelEditor() {
               <RowDims w={dimsWHD[0]} h={dimsWHD[1]} t={dimsWHD[2]} tLetter="D" title="Cavity width · height · depth" />
               <div className="flex items-center justify-end gap-[3px] shrink-0 ml-0.5" style={{ width: ROW_TRAIL_W }} onClick={stop}>
                 <button onClick={e => { stop(e); deletePanelGroupWithMembers(g.id); }} title="Delete group (all panels)" className={ROW_DEL_CLASS}><Trash2 size={ROW_ICON - 1} strokeWidth={1.9} /></button>
-                <RowChevron open={open} onClick={toggleOpen} title={open ? 'Collapse — back to the list' : 'Expand'} />
+                <RowChevron open={open} onClick={toggleRow} />
               </div>
             </div>
           </div>
@@ -2629,8 +2724,8 @@ export function PanelEditor() {
       const doorParent = open ? shapeById(g.shapeId, shapes) : undefined;   // şema yalnız açıkken çözülür (açılı kesimler + yarım binme uygunluğu)
       const doorCuts = doorParent ? collectDoorCuts(doorParent, shapes, virtualFaces) : [];
       const mIds = members.map(m => m.id);
-      const toggleAll = (e: React.MouseEvent) => { stop(e); if (selAll) setSelectedDoorGroupId(null); else { setSelectedDoorGroupId(g.id); openCard(g.id); } };
-      const toggleOpen = (e: React.MouseEvent) => { stop(e); if (open) closeCard(g.id, mIds); else openCard(g.id); };
+      // TEK MANTIK: başlık ya da ok — kapalıysa aç + tümünü seç; açıksa kapat (grup / üye seçimi, şema seçimi, panel ref modu düşer).
+      const toggleRow = (e: React.MouseEvent) => { stop(e); if (open) closeCard(g.id, mIds); else { setSelectedDoorGroupId(g.id); openCard(g.id); } };
       const draft = (field: 't' | 'gap', fallback: number) => (doorDraft?.id === g.id && doorDraft.field === field ? doorDraft.v : String(fallback));
       const applyDraft = (field: 't' | 'gap') => {
         const v = parseFloat(draft(field, field === 't' ? g.thickness : g.gap).replace(',', '.'));
@@ -2687,10 +2782,10 @@ export function PanelEditor() {
       // BÖLME MODU: Count · Panel ref (store bayrağı) · Spacing.
       const refMode = doorRefPickGroupId === g.id;
       const splitMode: 'count' | 'ref' | 'spacing' = refMode ? 'ref' : doorSplitMode?.id === g.id ? doorSplitMode.mode : 'count';
-      const pickSplitMode = (m: string) => {
+      const pickSplitMode = (m: 'count' | 'ref' | 'spacing') => {
         if (m === 'ref') { setDoorRefPickGroupId(g.id); return; }
         if (refMode) setDoorRefPickGroupId(null);
-        setDoorSplitMode({ id: g.id, mode: m as 'count' | 'spacing' });
+        setDoorSplitMode({ id: g.id, mode: m });
       };
       const sizeOf = (ax: 'u' | 'v') => (splitNode.kind === 'split' && splitNode.axis === ax && splitNode.targetSize ? splitNode.targetSize : null);
       const setSize = (ax: 'u' | 'v', mm: number | null) => {
@@ -2709,7 +2804,7 @@ export function PanelEditor() {
           <div className={`relative flex items-stretch ${selAll ? 'bg-[#fff8ef]' : ''}`}>
             {selAll && <span className="pointer-events-none absolute left-0 top-[6px] bottom-[6px] w-[2px] rounded-r-full bg-orange-500/90" />}
             {grip(rowKey, rowIdx, 'Drag to reorder (whole group)')}
-            <div onClick={toggleAll} className="flex-1 min-w-0 relative flex items-center gap-1.5 pl-0.5 pr-1 py-[4px] cursor-pointer" title={selAll ? 'Deselect all doors' : 'Select all doors in this group'}>
+            <div onClick={toggleRow} className="flex-1 min-w-0 relative flex items-center gap-1.5 pl-0.5 pr-1 py-[4px] cursor-pointer" title={open ? 'Collapse' : 'Expand — selects all doors in this group'}>
               <RowNum label={label} active={selAll} />
               <RowTypeBadge kind="door" active={open} count={doorMemberCount(g)} />
               <input type="text" value={doorGroupName(g)} onClick={stop} onChange={e => renameDoorGroup(g.id, e.target.value)} placeholder="Door"
@@ -2717,32 +2812,21 @@ export function PanelEditor() {
               <RowDims w={dimsW} h={dimsH} t={g.thickness} tLetter="T" title={`Door area width · height · thickness (${doorPlacementLabel(g.placement)} door)`} />
               <div className="flex items-center justify-end gap-[3px] shrink-0 ml-0.5" style={{ width: ROW_TRAIL_W }} onClick={stop}>
                 <button onClick={e => { stop(e); deleteDoorGroupWithMembers(g.id); }} title="Delete group (all doors)" className={ROW_DEL_CLASS}><Trash2 size={ROW_ICON - 1} strokeWidth={1.9} /></button>
-                <RowChevron open={open} onClick={toggleOpen} title={open ? 'Collapse — back to the list' : 'Expand'} />
+                <RowChevron open={open} onClick={toggleRow} />
               </div>
             </div>
           </div>
           {open && (
             <div className="yago-expand px-2 pt-2 pb-2" style={{ borderTop: '1px solid #f3e6d6', fontFamily: UI_FONT }} onClick={stop}>
-              {/* SATIR 1: dış/iç (açılır liste) · kalınlık · eşitle. */}
+              {/* TEK SATIR (Goker, Eki 2026: "gereksiz yükseklikten alan kaybedilmiş, alanı iyi kullanalım"): dış/iç · kalınlık ·
+                  BÖLME MODU (açılır liste: Count / Panel ref / Spacing) · seçili bölgenin V / H alanı · eşitle.
+                  Count: parça sayısı (yazılır; ↑↓ ile adım). Panel ref: 3B'de ya da şemada bir kapak-sınırı dikme/rafa tıkla → kapak
+                  onun ortasından bölünür, DERZ LEVHAYA BAĞLANIR (levha taşınınca kapak izler — Goker: "dikmenin arası değişince kapak
+                  kendini ona göre güncellesin"; rozetle Left/Center/Right LEVHAYI taşır, kapak yerinde). Spacing: hedef parça ölçüsü (mm). */}
               <div className="flex items-center gap-1 mb-1.5">
                 <PlacementSelect value={g.placement} onChange={v => { void setDoorPlacement(g.id, v); }} />
                 <FieldBox fixed label="T" title="Door thickness (mm)">{numInput('t', g.thickness)}{unitTxt('mm')}</FieldBox>
-                <span className="flex-1 min-w-0" />
-                <IconSquareBtn icon={Equal} title="Equalize sizes (unlock all)" onClick={() => { void equalizeDoorGroup(g.id); }} />
-              </div>
-              {/* SATIR 2 — BÖLME (Goker, Eki 2026): mod çubuğu Count · Panel ref · Spacing + seçili bölgenin V / H alanı.
-                  Count: parça sayısı. Panel ref: 3B'de ya da şemada bir kapak-sınırı dikme/rafa tıkla → kapak onun ortasından
-                  bölünür, kapak ölçüleri sabitlenir, levha derze bağlanır (rozetle Left/Center/Right LEVHAYI taşır — Goker:
-                  "raf ve dikme hareket etsin, kapak değil"). Spacing: hedef parça ölçüsü. */}
-              <div className="flex items-center gap-1 mb-1.5">
-                <div className="shrink-0" style={{ width: 196 }}>
-                  <Segmented height={26} active={splitMode} onPick={pickSplitMode} items={[
-                    { key: 'count', label: 'Count', title: 'Split by number of pieces (V side by side · H stacked) in the selected region' },
-                    { key: 'ref', label: 'Panel ref', title: 'Split at a door-reference divider / shelf: click the panel in the 3D view or its band in the schematic — the door splits through the panel\'s middle (door sizes then stay fixed); afterwards Left / Center / Right moves the panel, not the door' },
-                    { key: 'spacing', label: 'Spacing', title: 'Split by target piece size (mm) — the number of pieces is derived from the region and follows body resizes' },
-                  ]} />
-                </div>
-                <span className="flex-1 min-w-0" />
+                <SplitModeSelect value={splitMode} onChange={pickSplitMode} />
                 {splitMode === 'count' && <>
                   <CountBox icon={SplitSquareVertical} label="V" value={countOf('u')} title={countTitle('u')} onChange={n => setCount('u', n)} />
                   <CountBox icon={SplitSquareHorizontal} label="H" value={countOf('v')} title={countTitle('v')} onChange={n => setCount('v', n)} />
@@ -2752,8 +2836,9 @@ export function PanelEditor() {
                   <SizeBox icon={SplitSquareHorizontal} label="H" value={sizeOf('v')} title={sizeTitle('v')} onChange={mm => setSize('v', mm)} />
                 </>}
                 {splitMode === 'ref' && (
-                  <DockStatus ready text="Click a divider or shelf (3D view or schematic)" title="Door-reference dividers and shelves glow amber in the 3D view; the door splits through the panel's middle and the panel is bound to the joint (Left / Center / Right moves the panel). Esc / another mode cancels." />
+                  <div className="flex-1 min-w-0"><DockStatus ready text="Pick a divider / shelf" title="Door-reference dividers and shelves glow amber in the 3D view (doors go transparent); click one in the 3D view or its band in the schematic. The door splits through the panel's middle and the joint is bound to the panel: when the panel moves, the doors follow (Left / Center / Right moves the panel under the joint). Esc / another mode cancels." /></div>
                 )}
+                <IconSquareBtn icon={Equal} title="Equalize sizes (unlock all)" onClick={() => { void equalizeDoorGroup(g.id); }} />
               </div>
               {/* KAPAK TİPİ (Goker, Eki 2026): Left · Right · Up · Down · Double · Fold — hedef: şemada seçilen kapaklar. */}
               <DoorTypeBar value={commonType} hint={typeHint} onPick={applyType} />
@@ -2766,7 +2851,7 @@ export function PanelEditor() {
                 onEditSplitGap={(sid, k, v) => { void setDoorSplitGap(g.id, sid, k, v); }} onEditEdgeGap={(edge, v) => { void setDoorEdgeGap(g.id, edge, v); }}
                 onEditLeaf={(lid, k, v) => { void editDoorLeafSize(g.id, lid, k, v); }} onEditLeafGap={(lid, v) => { void setDoorLeafGap(g.id, lid, v); }}
                 onToggleHalfOverlay={(edge, on) => { void setDoorHalfOverlay(g.id, edge, on); }}
-                onAlignPanel={(vfId, a) => setDoorPanelAlign(g.id, vfId, a)}
+                onAlignJoint={(sid, k, vfId, a) => { void setDoorJointRef(g.id, sid, k, vfId, a); }}
                 onPathClick={onPathClick} />
               <SectionHead label="Doors" count={members.length} />
               <div className="flex flex-col gap-[2px]">
@@ -2817,7 +2902,7 @@ export function PanelEditor() {
     tag: string; defaultName: string; showName?: boolean; ready: boolean; status: string;
     onConfirm: () => void; onExit: () => void; confirmTitle: string; lead?: React.ReactNode;
   }) => (
-    <div style={{ ...DOCK_SHELL, marginTop: 0, borderRadius: 0, border: 'none', borderBottom: '1px solid #ebe5dc', boxShadow: 'none' }}>
+    <div style={{ ...DOCK_SHELL, marginTop: 0, borderRadius: 0, border: 'none', borderBottom: '1px solid #ebe5dc', boxShadow: 'none', background: 'linear-gradient(180deg,#fefdfb 0%,#faf8f4 100%)' }}>
       <div style={DOCK_ROW}>
         <span style={dockAxisTag('#44403c')}>{tag}</span>
         {lead}
