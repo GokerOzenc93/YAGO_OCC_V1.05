@@ -6,7 +6,7 @@ import * as THREE from 'three';
 import { type Vec3, genId, round1 } from './Geometry';
 import { largestFaceNormal, panelHasRotation } from './FaceRegion';
 import {
-  GROUP_PANEL_THICKNESS, applyGapEdit, bodyLocalBox, boxSpan, collectObstacles, createPanelGroupFromCavity, editGroupGap, gridForObstacles, groupFacing, memberThicknessesOf, panelLocalBox,
+  GROUP_PANEL_THICKNESS, applyGapEdit, bodyLocalBox, boxSpan, collectObstacles, createPanelGroupFromCavity, editGroupGap, fmtBox, gridForObstacles, groupFacing, memberThicknessesOf, panelLocalBox,
   rayCavityCandidates, redistributeForThickness,
 } from './PanelGroupService';
 
@@ -91,11 +91,19 @@ import {
 //    yerleştirilebilir olsun; raf ekle / dikme ekle düğmeleri; basınca 2 kapak arası belirginleşsin; genel listeye door
 //    satırından sonra eklensin; eklenen raf ve dikme her zaman o kapak aralarının arasında çalışsın"): kapak kartındaki
 //    Divider / Shelf düğmesi → şemada o eksendeki derzler (dikme = V derzleri, raf = H derzleri) vurgulanır → derze tık →
-//    addPanelAtDoorJoint: derz merkezinden gövdeye hacim ışını (hacim seçimiyle aynı ızgara; kapaklar engel değil) → yeni
-//    raf/dikme grubu (1 üye, listede sona = kapak satırından sonra) ve PanelGroup.doorBond: üye her çözümde derze göre
-//    konumlanır (PanelGroupService.solveGroup → doorJointForBond) — LEVHA KAPAĞI İZLER; bu derz panel-ref ile bağlanamaz
-//    (iki yönlü bağ yasak). Rozet aynı dili konuşur (Left / Center / Right → hiza; Shift → bağ çözülür, levha kalır); grup
-//    kartındaki boşluk girişi KAPAK derzini taşır (moveDoorJointTo). Kapak / derz silinirse bağ düşer (syncPanelGroups).
+//    addPanelAtDoorJoint: derzin tıklanan YERİNDEN gövdeye hacim ışını (hacim seçimiyle aynı ızgara; kapaklar engel değil)
+//    → yeni raf/dikme grubu (1 üye, listede sona = kapak satırından sonra) ve PanelGroup.doorBond: üye her çözümde derze
+//    göre konumlanır (PanelGroupService.solveGroup → doorJointForBond) — LEVHA KAPAĞI İZLER; bu derz panel-ref ile
+//    bağlanamaz (iki yönlü bağ yasak). Rozet aynı dili konuşur (Left / Center / Right → hiza; Shift → bağ çözülür, levha
+//    kalır); grup kartındaki boşluk girişi KAPAK derzini taşır (moveDoorJointTo). Kapak / derz silinirse bağ düşer
+//    (syncPanelGroups).
+//    DERZ PARÇALARI (Goker, Eki 2026: "dikme yerleştirdim ama dikmenin sağına ve soluna raf yerleştiremedim, arayüz
+//    tıklatmıyor; her dikme ve raf yeni bir satır olsun"): bir derz, onu kesen çapraz levhalarla (yatay derzi dikmeler,
+//    dikey derzi raflar — kapak sınırı olsun olmasın, doorNearPanels allPanels) PARÇALARA bölünür; her parça ayrı tıklanır
+//    ve `at` (derz boyunca çapraz koordinat) ışının yerini verir → her parçaya AYRI grup = listede ayrı satır. Eski
+//    sürüm ışını hep derzin ORTASINDAN atıyordu: orta bir dikmenin içine düşünce serbest hücre yok → null → arayüz tepki
+//    vermiyordu; ayrıca "bu derzde zaten bağlı levha var" denetimi aynı derzin öbür parçasını da engelliyordu. Şimdi
+//    yinelenme denetimi PARÇA bazlıdır (mevcut bağlı grubun hacmi `at`ı kapsıyorsa).
 // ═══════════════════════════════════════════════════════════════════════════
 
 export const DOOR_THICKNESS = 18;
@@ -165,11 +173,14 @@ export function rayDoorEntry(o: Vec3, d: Vec3, b: CavityBox): { axis: 0 | 1 | 2;
 
 export interface DoorBoundPanel { vfId: string; panelId: string; box: CavityBox; name: string }
 
-/** Gövdenin KAPAK SINIRI işaretli panelleri (gövde-yerel kutularıyla); kapaklar ve dönmüş paneller hariç. */
-export function collectDoorBoundPanels(parent: Shape, shapes: Shape[] = useAppStore.getState().shapes, vfs: VirtualFace[] = useAppStore.getState().virtualFaces): DoorBoundPanel[] {
+/**
+ * Gövdenin KAPAK SINIRI işaretli panelleri (gövde-yerel kutularıyla); kapaklar ve dönmüş paneller hariç.
+ * `onlyBound=false` → işaretsizler de (derz parçalama: kapak sınırı olmayan bir dikme de derzi keser).
+ */
+export function collectDoorBoundPanels(parent: Shape, shapes: Shape[] = useAppStore.getState().shapes, vfs: VirtualFace[] = useAppStore.getState().virtualFaces, onlyBound = true): DoorBoundPanel[] {
   const out: DoorBoundPanel[] = [];
   for (const vf of vfs) {
-    if (vf.shapeId !== parent.id || !vf.doorBound || isDoorVf(vf)) continue;
+    if (vf.shapeId !== parent.id || (onlyBound && !vf.doorBound) || isDoorVf(vf)) continue;
     const p = panelOfVf(vf.id, shapes);
     if (!p || panelHasRotation(p)) continue;
     const box = panelLocalBox(p, parent);
@@ -779,8 +790,10 @@ export interface DoorNearPanel {
  * DIŞ kapakta şemada gösterilecek sınır levhaları (Goker: "iç kapakta ya da sınır panel yoksa kalınlığı gösterme; 2-3 mm
  * yaklaşıyorsa göster"): kapak-sınırı işaretli, dönmemiş, ince (≤ THIN_PANEL) levhalardan kapak dikdörtgenlerinden
  * birine boşluk + 3 mm içinde değen / örtüşenler; gerçek konum ve kalınlıkla. İç kapak → boş.
+ * `allPanels=true` → kapak sınırı İŞARETSİZ ince düz levhalar da listelenir (yalnız "araya raf/dikme" modunun derz
+ * parçalaması için: işaretsiz bir dikme de derzi keser, rafın ışını onun içine düşmemeli). Şema bantları işaretlilerle çizilir.
  */
-export function doorNearPanels(group: DoorGroup, parent: Shape, shapes: Shape[], vfs: VirtualFace[], panelGroups: PanelGroup[], members?: DoorMemberRect[]): DoorNearPanel[] {
+export function doorNearPanels(group: DoorGroup, parent: Shape, shapes: Shape[], vfs: VirtualFace[], panelGroups: PanelGroup[], members?: DoorMemberRect[], allPanels = false): DoorNearPanel[] {
   if (group.placement !== 'outer') return [];
   const { u, v } = doorPlaneAxes(group.axis);
   const solved = solveDoorTree(group);
@@ -791,7 +804,7 @@ export function doorNearPanels(group: DoorGroup, parent: Shape, shapes: Shape[],
   const edgeOf = (vfId: string): DoorEdgeKey | undefined => (['uMin', 'uMax', 'vMin', 'vMax'] as DoorEdgeKey[]).find(k => group.bounds[k]?.vfId === vfId);
   const refs = doorJointRefs(group.tree);
   const out: DoorNearPanel[] = [];
-  for (const bp of collectDoorBoundPanels(parent, shapes, vfs)) {
+  for (const bp of collectDoorBoundPanels(parent, shapes, vfs, !allPanels)) {
     const b = bp.box;
     const tu = b.max[u] - b.min[u], tv = b.max[v] - b.min[v];
     let kind: 'u' | 'v';
@@ -831,6 +844,26 @@ export function doorNearPanels(group: DoorGroup, parent: Shape, shapes: Shape[],
     out.push({ vfId: bp.vfId, panelId: bp.panelId, name: bp.name, kind, a0, a1, c0, c1, behind, edge, groupId: pg?.id, memberIndex, joint, ref });
   }
   return out;
+}
+
+/**
+ * DERZ PARÇALARI (araya raf/dikme — Goker, Eki 2026: "dikmenin sağına ve soluna da raf"): `axis` eksenindeki her derz, onu kesen
+ * ÇAPRAZ levhalarla (yatay derzi dikmeler, dikey derzi raflar; `obstacles` = doorNearPanels allPanels) parçalara bölünür; en az
+ * `minSeg` mm'lik parçalar kalır. `free` = derze değen AYNI türde levhası olmayan parçalar (orada eklenebilir); `all` = tüm parçalar.
+ * Şemadaki "+ Shelf / + Divider" rozetleri ve kapak kartının durum metni tek kaynaktan okur.
+ */
+export function doorJointParts(joints: DoorJoint[], obstacles: DoorNearPanel[], axis: 'u' | 'v', minSeg = 40): Array<{ joint: DoorJoint; all: Array<[number, number]>; free: Array<[number, number]> }> {
+  return joints.filter(j => j.axis === axis).map(j => {
+    const cutters = obstacles
+      .filter(np => np.kind !== j.axis && Math.min(np.c1, j.p1) - Math.max(np.c0, j.p0) > -TOL && np.a1 > j.c0 + TOL && np.a0 < j.c1 - TOL)
+      .map(np => [np.a0, np.a1] as [number, number]).sort((a, b) => a[0] - b[0]);
+    const all: Array<[number, number]> = [];
+    let s0 = j.c0;
+    for (const [a0, a1] of cutters) { if (a0 - s0 >= minSeg) all.push([s0, a0]); s0 = Math.max(s0, a1); }
+    if (j.c1 - s0 >= minSeg) all.push([s0, j.c1]);
+    const free = all.filter(([c0, c1]) => { const mid = (c0 + c1) / 2; return !obstacles.some(np => np.kind === j.axis && Math.min(np.a1, j.p1) - Math.max(np.a0, j.p0) > -TOL && np.c0 - TOL <= mid && mid <= np.c1 + TOL); });
+    return { joint: j, all, free };
+  });
 }
 
 /** Hizalamanın istediği levha min koordinatı (kind ekseni): derz sabitken levhanın gideceği yer. */
@@ -1424,13 +1457,20 @@ export async function moveDoorJointTo(groupId: string, splitId: string, k: numbe
 /**
  * KAPAKLARIN ARASINA RAF / DİKME (Goker, Eki 2026: "kapakların arasına tıklayarak raf ve dikme atamak istiyorum; eklenen raf
  * ve dikme her zaman o kapak aralarının arasında çalışsın"): `splitId` bölmesinin k. derzinin merkezinden gövdeye hacim ışını
- * atılır (hacim seçimiyle AYNI ızgara — mevcut raf/dikme/gövde panelleri sınırlar, kapaklar engel değildir); derz merkezini
- * içeren serbest bölge yeni grubun hacmidir (dikme = V derzi → derzin ekseninde ince; raf = H derzi; grup türü eksenden:
+ * atılır (hacim seçimiyle AYNI ızgara — mevcut raf/dikme/gövde panelleri sınırlar, kapaklar engel değildir); ışının girdiği
+ * serbest bölge yeni grubun hacmidir (dikme = V derzi → derzin ekseninde ince; raf = H derzi; grup türü eksenden:
  * Y → shelf, diğer → divider). Grup 1 üyeyle listenin SONUNA eklenir (kapak satırından sonra) ve doorBond ile derze
- * 'center' bağlanır: üye her çözümde derzin ortasında (levha kapağı izler). Derz zaten bağlıysa (panel-ref ya da başka
- * levha) eklenmez. Döner: yeni grup ya da null.
+ * 'center' bağlanır: üye her çözümde derzin ortasında (levha kapağı izler). Derz panel-ref ile bağlıysa eklenmez.
+ *
+ * `at` = DERZ BOYUNCA YER (çapraz eksen koordinatı, gövde-yerel; Goker, Eki 2026: "dikmenin sağına ve soluna raf"): şema derzi
+ * onu kesen levhalarla parçalara böler ve tıklanan parçanın ortasını gönderir; ışın o yerden atılır → her parça (dikmenin solu /
+ * sağı) kendi serbest bölgesini (kendi bölmesini) bulur. Verilmezse derzin ortası (tek parçalı derz). KÖK NEDEN (eski): ışın
+ * hep derzin ortasından atılıyordu; ortada bir dikme varsa ışın dikmenin içinden geçiyor, serbest hücre bulunmuyor → null →
+ * arayüz tepkisiz; "bu derzde zaten bağlı levha var" denetimi de aynı derzin öbür parçasını engelliyordu. Yinelenme denetimi
+ * artık PARÇA bazlı: aynı derze bağlı mevcut bir grubun hacmi `at`ı kapsıyorsa (aynı bölme) eklenmez, öbür parça serbesttir.
+ * Döner: yeni grup ya da null.
  */
-export function addPanelAtDoorJoint(groupId: string, splitId: string, k: number): PanelGroup | null {
+export function addPanelAtDoorJoint(groupId: string, splitId: string, k: number, at?: number): PanelGroup | null {
   const group = groupById(groupId);
   if (!group) return null;
   const st = useAppStore.getState();
@@ -1441,29 +1481,35 @@ export function addPanelAtDoorJoint(groupId: string, splitId: string, k: number)
   if (!sol || !j) { console.warn('[YAGO][KAPAK-ARA] derz bulunamadı:', splitId, k); return null; }
   const node = findDoorNode(group.tree, splitId);
   if (node?.kind === 'split' && node.refs?.[k]) { console.warn('[YAGO][KAPAK-ARA] derz panel-ref ile bir levhaya bağlı, araya levha eklenmez:', splitId, k); return null; }
-  if (st.panelGroups.some(pg => pg.doorBond && pg.doorBond.doorGroupId === groupId && pg.doorBond.splitId === splitId && pg.doorBond.k === k)) { console.warn('[YAGO][KAPAK-ARA] bu derzde zaten bağlı bir levha var:', splitId, k); return null; }
   const { u, v } = doorPlaneAxes(group.axis);
   const axis: 0 | 1 | 2 = j.axis === 'u' ? u : v, cross: 0 | 1 | 2 = j.axis === 'u' ? v : u;
   const kind: PanelGroup['kind'] = axis === 1 ? 'shelf' : 'divider';
-  // Işın: derz merkezi × çapraz orta, kapak düzleminin önünden gövdeye doğru (hacim seçiminde tıklanan yüzden içeri).
+  // Derz üzerindeki yer: tıklanan parçanın ortası (derz aralığına kırpılır); verilmemişse derzin ortası.
+  const atC = typeof at === 'number' && Number.isFinite(at) ? Math.min(Math.max(at, j.c0), j.c1) : (j.c0 + j.c1) / 2;
+  // Aynı derzin AYNI PARÇASINDA zaten bağlı bir levha varsa eklenmez; başka parça (dikmenin öbür yanı) serbesttir.
+  const dup = st.panelGroups.find(pg => pg.doorBond && pg.doorBond.doorGroupId === groupId && pg.doorBond.splitId === splitId && pg.doorBond.k === k
+    && pg.cavity.min[cross] - TOL <= atC && atC <= pg.cavity.max[cross] + TOL);
+  if (dup) { console.warn('[YAGO][KAPAK-ARA] bu derzin bu parçasında zaten bağlı bir levha var:', splitId, k, dup.id, 'yer=', atC.toFixed(1), fmtBox(dup.cavity)); return null; }
+  // Işın: derz merkezi × derz üzerindeki yer, kapak düzleminin önünden gövdeye doğru (hacim seçiminde tıklanan yüzden içeri).
   const body = bodyLocalBox(parent);
   if (!body) return null;
   const origin: Vec3 = [0, 0, 0], dir: Vec3 = [0, 0, 0];
-  origin[axis] = (j.p0 + j.p1) / 2; origin[cross] = (j.c0 + j.c1) / 2;
+  origin[axis] = (j.p0 + j.p1) / 2; origin[cross] = atC;
   origin[group.axis] = group.side > 0 ? Math.max(sol.rect.front, body.max[group.axis]) + 50 : Math.min(sol.rect.front, body.min[group.axis]) - 50;
   dir[group.axis] = -group.side;
   const grid = gridForObstacles(parent, collectObstacles(parent, st.shapes));
   if (!grid) { console.warn('[YAGO][KAPAK-ARA] hacim ızgarası kurulamadı'); return null; }
   const cands = rayCavityCandidates(origin, dir, grid, GROUP_PANEL_THICKNESS * 2, kind);
   const pick = cands.find(c => c.shape === 'shaped') ?? cands[0];
-  if (!pick) { console.warn('[YAGO][KAPAK-ARA] derzin arkasında serbest hacim yok:', splitId, k); return null; }
+  if (!pick) { console.warn('[YAGO][KAPAK-ARA] derzin arkasında serbest hacim yok:', splitId, k, 'yer=', `${'XYZ'[cross]}=${atC.toFixed(1)}`, 'derz=', `${j.c0.toFixed(0)}..${j.c1.toFixed(0)}`); return null; }
   // Dizilim ekseni = derzin kalınlık ekseni (ışın yönünden bağımsız); sayım MİN'den; hacim ışının bulduğu bölge.
   const bond: DoorBond = { doorGroupId: groupId, splitId, k, align: 'center', member: 0 };
   const pg = createPanelGroupFromCavity(group.shapeId, kind, { ...pick, axis, facing: 1 }, undefined, { doorBond: bond });
   if (!pg) return null;
   // İki kapağın arasındaki levha doğal olarak KAPAK SINIRIDIR: şemada bandı/rozeti görünür, kapak adaylarına sınır olur.
   for (const vfId of pg.memberVfIds) setVfDoorBound(vfId, true);
-  console.log('[YAGO][KAPAK-ARA]', kind, 'eklendi', pg.id, '↔', groupId, splitId, 'derz', k, `@ ${((j.p0 + j.p1) / 2).toFixed(1)}`, 'hacim', `${'XYZ'[axis]}`, 'adayN=', cands.length);
+  console.log('[YAGO][KAPAK-ARA]', kind, 'eklendi', pg.id, '↔', groupId, splitId, 'derz', k, `@ ${((j.p0 + j.p1) / 2).toFixed(1)}`, 'yer=', `${'XYZ'[cross]}=${atC.toFixed(1)}`,
+    'hacim', `${'XYZ'[axis]}`, fmtBox(pg.cavity), 'adayN=', cands.length);
   return pg;
 }
 

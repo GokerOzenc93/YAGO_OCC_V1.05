@@ -1,4 +1,4 @@
-          import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowUp, Box, Check, ChevronDown, ChevronRight, Columns3, Crosshair, DoorClosed, Equal, GripVertical, LayoutPanelTop, Lock, type LucideIcon, Minus, Move, Move3d,
   MoveVertical, Pencil, Plus, RotateCw, Rows3, Shapes, SlidersHorizontal, SplitSquareHorizontal, SplitSquareVertical, Trash2, Unlink, Unlock, X,
@@ -23,7 +23,7 @@ import {
   traceMaskLoops, updateCavityStep,
 } from './PanelGroupService';
 import {
-  type DoorCut, type DoorEdgeKey, type DoorNearPanel, type DoorNodeSolved, DOOR_TYPES, DOOR_TYPE_LABEL, DOOR_TYPE_TITLE, addPanelAtDoorJoint, applyDoorCuts, clearDoorSpacing, collectDoorCuts, doorJoints, doorLeafAxis, doorPlaneAxes, doorSpacingTargetsInScope, doorLeaves, doorMemberCount, doorNearPanels,
+  type DoorCut, type DoorEdgeKey, type DoorNearPanel, type DoorNodeSolved, DOOR_TYPES, DOOR_TYPE_LABEL, DOOR_TYPE_TITLE, addPanelAtDoorJoint, applyDoorCuts, clearDoorSpacing, collectDoorCuts, doorJointParts, doorJoints, doorLeafAxis, doorPlaneAxes, doorSpacingTargetsInScope, doorLeaves, doorMemberCount, doorNearPanels,
   confirmDoorPick, deleteDoorGroupWithMembers, doorGroupName, doorMemberRects, doorMembersOf, doorPlacementLabel, edgeGapsOf, editDoorLeafSize, editDoorSize, equalizeDoorGroup, findDoorNode, findSolvedNode,
   isDoorVf, renameDoorGroup, setDoorEdgeGap, setDoorGap, setDoorHalfOverlay, setDoorLeafGap, setDoorLeafTypes, setDoorNodeSpacing, setDoorJointRef, setDoorNodeSplit, setDoorPlacement, setDoorSplitGap, splitDoorAtPanel, setDoorThickness, setVfDoorBound,
   solveDoorTree, toggleDoorSizeLock,
@@ -1157,7 +1157,7 @@ type DoorEdit = { key: string; v: string };
 /** Ölçü zinciri öğesi: ölçü (ok + pill + kilit) ya da boşluk (yalnız pill). a..b = eksen boyunca mm. */
 type ChainItem = { key: string; kind: 'size' | 'gap'; a: number; b: number; txt: string; title: string; locked?: boolean; onLock?: () => void; commit: (v: number) => void; min: number };
 type Chain = { horiz: boolean; pos: number; items: ChainItem[]; small?: boolean };
-export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts, nearPanels, refPick, onEditSize, onToggleLock, onEditSplitGap, onEditEdgeGap, onEditLeaf, onEditLeafGap, onPathClick, onToggleHalfOverlay, onAlignJoint, onRefPick, addPick, onAddPick, onRemovePick }: {
+export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts, nearPanels, refPick, onEditSize, onToggleLock, onEditSplitGap, onEditEdgeGap, onEditLeaf, onEditLeafGap, onPathClick, onToggleHalfOverlay, onAlignJoint, onRefPick, addPick, onAddPick, onRemovePick, addObstacles }: {
   group: DoorGroup; selectedIndex: number; memberLabels: string[];
   /** BÖLGE SEÇİMİ: seçili düğümler (kök alan / bölme / kapak) — turuncu çerçeve + seviye etiketi (ör. "L1 · V ×2"). */
   selectedNodes: string[];
@@ -1188,6 +1188,11 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
   onAddPick?: (splitId: string, k: number, ats: number[]) => void;
   /** Aynı modda, kapak arayüzünden eklenmiş (derzi izleyen) levhanın bandı "✕ Remove" olur → grup silinir (Goker: "sonradan silebileyim"). */
   onRemovePick?: (groupId: string) => void;
+  /**
+   * DERZ PARÇALAMA kaynağı (araya raf/dikme modu): derzi kesen / derze değen levhalar — kapak sınırı İŞARETSİZ ince düz
+   * levhalar dahil (doorNearPanels allPanels), çünkü işaretsiz bir dikme de ışının yolunu keser. Verilmezse `nearPanels`.
+   */
+  addObstacles?: DoorNearPanel[];
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(300);
@@ -1613,20 +1618,12 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
         ))}
         {/* ARAYA RAF / DİKME (Goker, Eki 2026: "2 kapak arasına raf veya dikme … düğmeye basınca 2 kapak arası belirginleşsin;
             dikmenin sağına ve soluna da raf yerleştirebileyim"): seçilen eksendeki her derz, onu kesen çapraz levhalarla (yatay derzi
-            dikmeler, dikey derzi raflar) PARÇALARA bölünür; aynı türde levhası olmayan her parça kehribar bant + "+ Divider" /
-            "+ Shelf" rozeti; tık → o parçanın ortasından hacim ışını (addPanelAtDoorJoint at). */}
-        {addPick && isOuter && doorJoints(solved).filter(j => j.axis === addPick).flatMap(j => {
+            dikmeler, dikey derzi raflar; kaynak addObstacles — kapak sınırı işaretsiz levhalar dahil) PARÇALARA bölünür; aynı türde
+            levhası olmayan her parça kehribar bant + "+ Divider" / "+ Shelf" rozeti; tık → o parçanın ortasından hacim ışını
+            (addPanelAtDoorJoint at) → her parça AYRI grup = listede ayrı satır. */}
+        {addPick && isOuter && doorJointParts(doorJoints(solved), addObstacles ?? nearPanels, addPick).flatMap(({ joint: j, all: segs, free }) => {
           const vertical = j.axis === 'u';
-          const MIN_SEG = 40;
-          const cutters = nearPanels
-            .filter(np => np.kind !== j.axis && Math.min(np.c1, j.p1) - Math.max(np.c0, j.p0) > -0.5 && np.a1 > j.c0 + 0.5 && np.a0 < j.c1 - 0.5)
-            .map(np => [np.a0, np.a1] as [number, number]).sort((a, b) => a[0] - b[0]);
-          const segs: Array<[number, number]> = [];
-          let s0 = j.c0;
-          for (const [a0, a1] of cutters) { if (a0 - s0 >= MIN_SEG) segs.push([s0, a0]); s0 = Math.max(s0, a1); }
-          if (j.c1 - s0 >= MIN_SEG) segs.push([s0, j.c1]);
-          // Bu parçada derze değen aynı türde levha varsa (bağlı ya da değil) ekleme yok — bandı ✕ Remove / rozet gösterir.
-          const free = segs.filter(([c0, c1]) => { const mid = (c0 + c1) / 2; return !nearPanels.some(np => np.kind === j.axis && Math.min(np.a1, j.p1) - Math.max(np.a0, j.p0) > -0.5 && np.c0 - 0.5 <= mid && mid <= np.c1 + 0.5); });
+          // Dolu parçada (derze değen aynı türde levha — bağlı ya da değil, işaretli ya da değil) rozet yok; işaretliyse bandı ✕ Remove / hiza rozeti gösterir.
           const allMids = free.map(([c0, c1]) => (c0 + c1) / 2);
           return free.map(([c0, c1]) => {
             const mid = (c0 + c1) / 2;
@@ -2215,6 +2212,13 @@ export function PanelEditor() {
     const t = window.setTimeout(() => rowRefs.current.get(selectedPanelRow)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 60);
     return () => window.clearTimeout(t);
   }, [selectedPanelRow]);
+  // GRUP KARTI da aynı kural: grup seçilince ("tümünü seç" — listeden, 3B'den ya da kapak kartından yeni eklenen raf/dikme) kartı
+  // görünür alana kaydır (Goker: "her dikme ve raf yeni bir satır olsun, otomatik olarak o satırı açsın").
+  useEffect(() => {
+    if (!selectedPanelGroupId) return;
+    const t = window.setTimeout(() => rowRefs.current.get(`grp-${selectedPanelGroupId}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 60);
+    return () => window.clearTimeout(t);
+  }, [selectedPanelGroupId]);
 
   // OUTLINE: showOutlines yalnız KULLANICI TERCİHİDİR (store'da kalıcı). Eskiden burada
   // yerleştirmeye girince zorla açılıp panel yerleşince zorla kapatılıyordu → son seçim
@@ -2754,7 +2758,8 @@ export function PanelEditor() {
       // TEK MANTIK: başlık ya da ok — kapalıysa aç + tümünü seç; açıksa kapat (grup / üye seçimi düşer).
       const toggleRow = (e: React.MouseEvent) => { stop(e); if (open) closeCard(g.id, mIds); else { setSelectedPanelGroupId(g.id); openCard(g.id); } };
       return (
-        <div key={rowKey} className={rowCardClass(open, dragIndex === rowIdx, armedRowKey === rowKey)}>
+        <div key={rowKey} ref={el => { if (el) rowRefs.current.set(rowKey, el); else rowRefs.current.delete(rowKey); }}
+          className={rowCardClass(open, dragIndex === rowIdx, armedRowKey === rowKey)}>
           {/* ── GRUP BAŞLIĞI: tıkla = aç (tümünü seç) / kapat ── */}
           <div className={`relative flex items-stretch ${selAll ? 'bg-[#fff8ef]' : ''}`}>
             {selAll && <span className="pointer-events-none absolute left-0 top-[6px] bottom-[6px] w-[2px] rounded-r-full bg-orange-500/90" />}
@@ -2926,14 +2931,26 @@ export function PanelEditor() {
       const addPick = doorAddPick?.id === g.id ? doorAddPick.axis : null;
       const toggleAddPick = (axis: 'u' | 'v') => { if (addPick === axis) setDoorAddPick(null); else { if (refMode) setDoorRefPickGroupId(null); setDoorAddPick({ id: g.id, axis }); } };
       // Tık → tıklanan parça; Shift/Ctrl+tık → derzin boş parçalarının hepsine (Goker: "2 dikme arasındaki 3 bölüme de ayrı ayrı raf").
+      // YENİ SATIR (Goker, Eki 2026: "her dikme ve raf bir yeni satır olsun, otomatik olarak o satırı açsın"): her parça kendi grubu
+      // (= listede kendi kartı); yeni kartlar AÇILIR ve sonuncusu seçilir (tümünü seç → kaydırılır). Kapak kartı açık kalır
+      // (openCards yerel durum), mod kapanır. Eskiden kapak grubu yeniden seçiliyordu → yeni grubun seçimi düşüyor, satırı açılmıyordu.
       const onAddPick = (splitId: string, k: number, ats: number[]) => {
-        const made = ats.map(at => addPanelAtDoorJoint(g.id, splitId, k, at)).filter(Boolean);
-        if (made.length) { setDoorAddPick(null); setSelectedDoorGroupId(g.id); openCard(g.id); }
+        const made = ats.map(at => addPanelAtDoorJoint(g.id, splitId, k, at)).filter((pg): pg is PanelGroup => !!pg);
+        if (!made.length) return;
+        setDoorAddPick(null);
+        openCard(g.id);
+        for (const pg of made) openCard(pg.id);
+        setSelectedPanelGroupId(made[made.length - 1].id);
+        console.log('[YAGO][KAPAK-ARA] yeni satır(lar) açıldı:', made.map(pg => `${pg.kind}:${pg.id}`).join(', '), '→ seçili', made[made.length - 1].id);
       };
       // SİL (Goker: "tıklayıp dikme veya raf atarsam sonradan silebileyim"): aynı modda mevcut levhanın bandı ✕ Remove → grup + panel silinir.
       const onRemovePick = (pgId: string) => { deletePanelGroupWithMembers(pgId); console.log('[YAGO][KAPAK-ARA] levha kaldırıldı (kapak kartı):', pgId); };
       const addedCount = (axis: 'u' | 'v') => panelGroups.filter(pg => pg.doorBond?.doorGroupId === g.id && pg.axis === (axis === 'u' ? doorPlaneAxes(g.axis).u : doorPlaneAxes(g.axis).v)).length;
       const addJointCount = (axis: 'u' | 'v') => doorJoints(solvedTree).filter(j => j.axis === axis).length;
+      // Şema levhaları (kapak sınırı işaretli) ve — yalnız araya ekleme modunda — derz parçalama engelleri (işaretsiz dikme/raflar da derzi keser).
+      const nearPanels = doorParent ? doorNearPanels(g, doorParent, shapes, virtualFaces, panelGroups) : [];
+      const addObstacles = doorParent && addPick ? doorNearPanels(g, doorParent, shapes, virtualFaces, panelGroups, undefined, true) : undefined;
+      const freePartCount = addPick ? doorJointParts(doorJoints(solvedTree), addObstacles ?? nearPanels, addPick).reduce((a, p) => a + p.free.length, 0) : 0;
       // SPACING değeri: seçili bölgenin hedefi; yoksa kapsamdaki (seçili bölgeler / kök) ilk hedef — seçim değişse de değer görünür ve
       // iptal edilebilir (Goker: "yazılan değeri iptal edemiyorum"). İptal (null) kapsamdaki o eksenli TÜM hedefleri kaldırır.
       const scopeIds = picked.length ? picked : [g.tree.id];
@@ -3005,9 +3022,12 @@ export function PanelEditor() {
                   title={g.placement !== 'outer' ? 'Add a shelf between two doors — outer doors only (inner doors sit between the panels).' : addJointCount('v') ? `Add a shelf between two stacked doors: pick a horizontal joint in the schematic (${addJointCount('v')}). The shelf is created behind that joint, listed after this door row, and follows the joint when the doors change.` : 'No horizontal door joint yet — split the door with Split H first.'}
                   onClick={() => toggleAddPick('v')} />
                 {addPick && (
-                  <DockStatus ready={g.placement === 'outer' && addJointCount(addPick) > 0}
-                    text={g.placement !== 'outer' ? 'Outer doors only' : addJointCount(addPick) ? `Click a ${addPick === 'u' ? 'vertical' : 'horizontal'} joint to add (Shift: all parts)${addedCount(addPick) ? ' · ✕ Remove to delete' : ''}` : `No ${addPick === 'u' ? 'vertical' : 'horizontal'} joint — split the door first`}
-                    title="The highlighted gaps between doors are the joints you can place the panel at; a panel already added between doors shows ✕ Remove. Esc cancels." />
+                  <DockStatus ready={g.placement === 'outer' && freePartCount > 0}
+                    text={g.placement !== 'outer' ? 'Outer doors only'
+                      : !addJointCount(addPick) ? `No ${addPick === 'u' ? 'vertical' : 'horizontal'} joint — split the door first`
+                      : freePartCount ? `Click a ${addPick === 'u' ? 'vertical' : 'horizontal'} joint to add (Shift: all parts)${addedCount(addPick) ? ' · ✕ Remove to delete' : ''}`
+                      : `Every part of the ${addPick === 'u' ? 'vertical' : 'horizontal'} joint${addJointCount(addPick) > 1 ? 's' : ''} already has a ${addPick === 'u' ? 'divider' : 'shelf'}${addedCount(addPick) ? ' · ✕ Remove to delete' : ''}`}
+                    title="The highlighted gaps between doors are the joints you can place the panel at — a joint crossed by a divider / shelf is split into parts, each part takes its own panel (its own row in the list). A panel already added between doors shows ✕ Remove. Esc cancels." />
                 )}
               </div>
               {/* KAPAK TİPİ (Goker, Eki 2026): Left · Right · Up · Down · Double · Fold — hedef: şemada seçilen kapaklar. */}
@@ -3015,7 +3035,7 @@ export function PanelEditor() {
               <DoorSchematic group={g} selectedIndex={selMemberIdx} selectedNodes={picked}
                 memberLabels={g.memberVfIds.map((id, i) => { const mi = members.findIndex(m => m.id === id); return `${label}.${(mi >= 0 ? mi : i) + 1}`; })}
                 cuts={doorCuts}
-                nearPanels={doorParent ? doorNearPanels(g, doorParent, shapes, virtualFaces, panelGroups) : []}
+                nearPanels={nearPanels} addObstacles={addObstacles}
                 refPick={refMode} onRefPick={onRefPick}
                 addPick={addPick} onAddPick={onAddPick} onRemovePick={onRemovePick}
                 onEditSize={(sid, k, v) => { void editDoorSize(g.id, sid, k, v); }} onToggleLock={(sid, k) => toggleDoorSizeLock(g.id, sid, k)}
