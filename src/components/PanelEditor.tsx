@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowUp, Box, Check, ChevronDown, ChevronRight, Columns3, Crosshair, DoorClosed, Equal, GripVertical, LayoutPanelTop, Lock, type LucideIcon, Minus, Move, Move3d,
-  MoveVertical, Pencil, Plus, RotateCw, Rows3, Shapes, SlidersHorizontal, SplitSquareHorizontal, SplitSquareVertical, Trash2, Unlock, X,
+  MoveVertical, Pencil, Plus, RotateCw, Rows3, Shapes, SlidersHorizontal, SplitSquareHorizontal, SplitSquareVertical, Trash2, Unlink, Unlock, X,
 } from 'lucide-react';
 import * as THREE from 'three';
 import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
@@ -23,7 +23,7 @@ import {
   traceMaskLoops, updateCavityStep,
 } from './PanelGroupService';
 import {
-  type DoorCut, type DoorEdgeKey, type DoorNearPanel, type DoorNodeSolved, DOOR_TYPES, DOOR_TYPE_LABEL, DOOR_TYPE_TITLE, addPanelAtDoorJoint, applyDoorCuts, collectDoorCuts, doorJoints, doorLeafAxis, doorLeaves, doorMemberCount, doorNearPanels,
+  type DoorCut, type DoorEdgeKey, type DoorNearPanel, type DoorNodeSolved, DOOR_TYPES, DOOR_TYPE_LABEL, DOOR_TYPE_TITLE, addPanelAtDoorJoint, applyDoorCuts, clearDoorSpacing, collectDoorCuts, doorJoints, doorLeafAxis, doorPlaneAxes, doorSpacingTargetsInScope, doorLeaves, doorMemberCount, doorNearPanels,
   confirmDoorPick, deleteDoorGroupWithMembers, doorGroupName, doorMemberRects, doorMembersOf, doorPlacementLabel, edgeGapsOf, editDoorLeafSize, editDoorSize, equalizeDoorGroup, findDoorNode, findSolvedNode,
   isDoorVf, renameDoorGroup, setDoorEdgeGap, setDoorGap, setDoorHalfOverlay, setDoorLeafGap, setDoorLeafTypes, setDoorNodeSpacing, setDoorJointRef, setDoorNodeSplit, setDoorPlacement, setDoorSplitGap, splitDoorAtPanel, setDoorThickness, setVfDoorBound,
   solveDoorTree, toggleDoorSizeLock,
@@ -1156,7 +1156,7 @@ type DoorEdit = { key: string; v: string };
 /** Ölçü zinciri öğesi: ölçü (ok + pill + kilit) ya da boşluk (yalnız pill). a..b = eksen boyunca mm. */
 type ChainItem = { key: string; kind: 'size' | 'gap'; a: number; b: number; txt: string; title: string; locked?: boolean; onLock?: () => void; commit: (v: number) => void; min: number };
 type Chain = { horiz: boolean; pos: number; items: ChainItem[]; small?: boolean };
-export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts, nearPanels, refPick, onEditSize, onToggleLock, onEditSplitGap, onEditEdgeGap, onEditLeaf, onEditLeafGap, onPathClick, onToggleHalfOverlay, onAlignJoint, onRefPick, addPick, onAddPick }: {
+export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts, nearPanels, refPick, onEditSize, onToggleLock, onEditSplitGap, onEditEdgeGap, onEditLeaf, onEditLeafGap, onPathClick, onToggleHalfOverlay, onAlignJoint, onRefPick, addPick, onAddPick, onRemovePick }: {
   group: DoorGroup; selectedIndex: number; memberLabels: string[];
   /** BÖLGE SEÇİMİ: seçili düğümler (kök alan / bölme / kapak) — turuncu çerçeve + seviye etiketi (ör. "L1 · V ×2"). */
   selectedNodes: string[];
@@ -1184,6 +1184,8 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
    */
   addPick?: 'u' | 'v' | null;
   onAddPick?: (splitId: string, k: number) => void;
+  /** Aynı modda, kapak arayüzünden eklenmiş (derzi izleyen) levhanın bandı "✕ Remove" olur → grup silinir (Goker: "sonradan silebileyim"). */
+  onRemovePick?: (groupId: string) => void;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(300);
@@ -1383,6 +1385,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     }
     const what = b.vertical ? 'divider' : 'shelf';
     const opts = alignCycle(b).map(a => alignLabel(b, a)).join(' / ');
+    if (removable(np)) return `${np.name} (${what}) — added between the doors. Click ✕ Remove to delete it (its row and panel are removed; the doors stay).`;
     if (refPick) return `${np.name} (${what}) — PANEL REF: click to split the door through this ${what}'s middle. The joint is then bound to the ${what}: when it moves, the doors follow; Left / Center / Right moves the ${what} under the joint.`;
     if (!np.joint) return `${np.name} (${what}) — behind the door, no door joint nearby to bind to. Use Panel ref mode to split the door at it.`;
     if (!np.groupId && !np.ref) return `${np.name} (${what}) — body panel at a door joint; it cannot be moved from here (only shelf / divider members can).`;
@@ -1391,8 +1394,10 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     if (np.ref) return `${np.name} (${what}) — BOUND to this door joint (${cur}): when the ${what} moves (gap edit, body resize) the doors follow it. Click: ${opts} (moves the ${what}, doors stay) · Shift/Ctrl+click: unbind (door sizes freeze).`;
     return `${np.name} (${what}) at the door joint — Free. Click: ${opts} (binds the joint to the ${what} and moves the ${what}; doors stay, then follow it) · Shift/Ctrl+click: unbind.`;
   };
+  const removable = (np: DoorNearPanel) => !!addPick && !np.edge && np.kind === addPick && np.ref?.master === 'door' && !!np.groupId;
   const onBandClick = (b: Band, additive: boolean) => {
     const np = b.np;
+    if (removable(np)) { onRemovePick?.(np.groupId!); return; }
     if (refPick) { if (!np.edge && onRefPick) onRefPick(np.vfId); return; }
     if (np.edge) { if (np.behind) onToggleHalfOverlay(np.edge, !group.halfOverlay?.[np.edge]); return; }
     const cyc = alignCycle(b);
@@ -1430,7 +1435,8 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
   const selRegions = selectedNodes.map(id => findSolvedNode(solved, id)).filter((n): n is DoorNodeSolved => !!n);
   const leafIdsUnder = (n: DoorNodeSolved): string[] => (n.kind === 'leaf' ? [n.id] : n.children.flatMap(leafIdsUnder));
   const selLeafIds = new Set(selRegions.flatMap(leafIdsUnder));
-  const regionTag = (n: DoorNodeSolved) => `L${n.depth} · ${n.kind === 'split' ? `${n.axis === 'u' ? 'V' : 'H'} ×${n.children.length}` : 'Door'}`;
+  // Spacing hedefi olan bölme etiketinde görünür (Goker: hedef nerede, iptal edebilsin): "L1 · V ×3 · 200 mm".
+  const regionTag = (n: DoorNodeSolved) => `L${n.depth} · ${n.kind === 'split' ? `${n.axis === 'u' ? 'V' : 'H'} ×${n.children.length}${n.targetSize ? ` · ${n.targetSize} mm` : ''}` : 'Door'}`;
 
   return (
     <div ref={wrapRef} className={PREVIEW_FRAME} style={{ background: PREVIEW_BG, height }}>
@@ -1525,9 +1531,10 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
         {bands.map(b => {
           const np = b.np;
           const pickable = !!refPick && !np.edge;
+          const rem = removable(np);
           const bindable = !np.edge && !!np.joint && (!!np.groupId || !!np.ref);
-          const interactive = isOuter && (pickable || (!!np.edge && np.behind) || bindable);
-          const chipTxt = pickable ? 'Split here' : np.edge ? (np.behind ? (b.half ? 'Half' : 'Full') : null) : bindable ? (np.ref ? alignLabel(b, np.ref.align) : 'Free') : null;
+          const interactive = isOuter && (rem || pickable || (!!np.edge && np.behind) || bindable);
+          const chipTxt = rem ? '✕ Remove' : pickable ? 'Split here' : np.edge ? (np.behind ? (b.half ? 'Half' : 'Full') : null) : bindable ? (np.ref ? alignLabel(b, np.ref.align) : 'Free') : null;
           const on = b.half || b.aligned;
           const bx = b.x + b.w / 2, by = b.y + b.h / 2;
           const cfs = fsT * 0.8;
@@ -1538,9 +1545,9 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
               <rect x={b.x - 2} y={b.y - 2} width={b.w + 4} height={b.h + 4} fill="transparent" className="hit" />
               {chipTxt && (
                 <g className="chip" transform={b.vertical ? `rotate(-90 ${bx} ${by})` : undefined}>
-                  <rect x={bx - cw / 2} y={by - chh / 2} width={cw} height={chh} rx={chh / 2} fill={pickable ? '#fff7ed' : on ? '#ea580c' : '#ffffff'} stroke={pickable ? '#f97316' : on ? '#c2410c' : '#cfc6b9'} strokeWidth={0.8}
+                  <rect x={bx - cw / 2} y={by - chh / 2} width={cw} height={chh} rx={chh / 2} fill={rem ? '#fef2f2' : pickable ? '#fff7ed' : on ? '#ea580c' : '#ffffff'} stroke={rem ? '#ef4444' : pickable ? '#f97316' : on ? '#c2410c' : '#cfc6b9'} strokeWidth={0.8}
                     style={{ filter: 'drop-shadow(0 1px 1px rgba(40,30,20,0.12))' }} />
-                  <text x={bx} y={by + cfs * 0.36} textAnchor="middle" fontSize={cfs} fontWeight={700} letterSpacing="0.02em" fill={on ? '#ffffff' : pickable ? '#c2410c' : '#78716c'} fontFamily={UI_FONT}>{chipTxt}</text>
+                  <text x={bx} y={by + cfs * 0.36} textAnchor="middle" fontSize={cfs} fontWeight={700} letterSpacing="0.02em" fill={rem ? '#b91c1c' : on ? '#ffffff' : pickable ? '#c2410c' : '#78716c'} fontFamily={UI_FONT}>{chipTxt}</text>
                 </g>
               )}
               <title>{bandTip(b)}</title>
@@ -1781,12 +1788,19 @@ function SizeBox({ icon: Icon, label, value, title, onChange }: { icon: LucideIc
     const v = parseFloat(t.replace(',', '.'));
     if (Number.isFinite(v) && v > 0 && v !== value) onChange(v);
   };
+  // İPTAL (Goker: "spacing değeri girdiğimde yazılan değeri iptal edemiyorum"): değer varken × düğmesi hedefi kaldırır (kutuyu
+  // boşaltıp Enter / odak kaybı da aynı); parçalar olduğu gibi durur.
   return (
-    <FieldBox label="" title={title}>
+    <FieldBox label="" title={title} accent={value != null}>
       <span className="flex items-center gap-[3px] pr-0.5 mr-auto text-[9.5px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]"><Icon size={11} strokeWidth={2} />{label}</span>
       <input type="text" inputMode="decimal" value={draft ?? (value != null ? String(value) : '')} placeholder="mm" onChange={e => setDraft(e.target.value)}
         onBlur={commit} onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setDraft(null); }} onClick={stop}
-        className="yago-field" style={{ ...FIELD_INPUT, width: 44, textAlign: 'right' }} aria-label={`${label} target size`} />
+        className="yago-field" style={{ ...FIELD_INPUT, width: 44, textAlign: 'right', ...(value != null ? { color: '#9a3412' } : {}) }} aria-label={`${label} target size`} />
+      {value != null && (
+        <button type="button" title="Clear the spacing target (the current pieces stay; change them with Count)" aria-label={`Clear ${label} target size`}
+          onClick={e => { stop(e); setDraft(null); onChange(null); }}
+          className="shrink-0 w-[18px] h-[18px] rounded-md flex items-center justify-center text-stone-400 hover:bg-[#f5f2ec] hover:text-stone-700 transition-colors"><X size={11} strokeWidth={2.4} /></button>
+      )}
     </FieldBox>
   );
 }
@@ -2707,8 +2721,8 @@ export function PanelEditor() {
                       <span className="shrink-0 h-[28px] pl-2 pr-1 inline-flex items-center gap-1 rounded-[7px] bg-orange-50 ring-1 ring-orange-200/70 text-[10.5px] font-semibold text-orange-700"
                         title={`Bound to a door joint (${g.doorBond.align === 'center' ? 'centered on the joint' : g.doorBond.align === 'min' ? 'behind the lower / left door' : 'behind the upper / right door'}): this ${g.kind} follows the doors — when the door sizes change it moves with the joint. Editing its gap here moves the door joint instead. Unbind to free it (it stays where it is).`}>
                         <DoorClosed size={12} strokeWidth={2} /><span>Door joint</span>
-                        <button type="button" title="Unbind from the door joint (the panel stays where it is)" onClick={e => { stop(e); useAppStore.getState().updatePanelGroup(g.id, { doorBond: undefined }); console.log('[YAGO][GRUP-KAPAK-BAĞ] bağ çözüldü (grup kartı):', g.id); }}
-                          className="w-[18px] h-[18px] rounded-md flex items-center justify-center text-orange-500 hover:bg-orange-100 hover:text-orange-800 transition-colors"><X size={11} strokeWidth={2.4} /></button>
+                        <button type="button" title="Unbind from the door joint — the panel stays where it is (to delete the panel use the trash button in the row header, or Remove in the door card)" onClick={e => { stop(e); useAppStore.getState().updatePanelGroup(g.id, { doorBond: undefined }); console.log('[YAGO][GRUP-KAPAK-BAĞ] bağ çözüldü (grup kartı):', g.id); }}
+                          className="w-[18px] h-[18px] rounded-md flex items-center justify-center text-orange-500 hover:bg-orange-100 hover:text-orange-800 transition-colors"><Unlink size={11} strokeWidth={2.2} /></button>
                       </span>
                     )}
                     <span className="flex-1 min-w-0" />
@@ -2728,7 +2742,11 @@ export function PanelEditor() {
                         onBlur={() => applyGap(gapVal)}
                         onKeyDown={e => { if (e.key === 'Enter') applyGap(gapVal); if (e.key === 'Escape') setGapDraft(null); }}
                         onClick={stop} className="yago-field" style={{ ...FIELD_INPUT, width: 44, textAlign: 'right', ...(autoGap ? { color: '#9a3412' } : {}) }} />
-                      {unitTxt('mm')}
+                      {autoGap ? (
+                        <button type="button" title="Clear the target spacing (the current count stays)" aria-label="Clear target spacing"
+                          onClick={e => { stop(e); setGapDraft(null); void setGroupTargetGap(g.id, null); }}
+                          className="shrink-0 w-[18px] h-[18px] rounded-md flex items-center justify-center text-stone-400 hover:bg-[#f5f2ec] hover:text-stone-700 transition-colors"><X size={11} strokeWidth={2.4} /></button>
+                      ) : unitTxt('mm')}
                     </FieldBox>
                     <IconSquareBtn icon={Equal} title="Equalize gaps (unlock all)" onClick={() => { void equalizeGroupGaps(g.id); }} />
                   </div>
@@ -2835,16 +2853,25 @@ export function PanelEditor() {
       const addPick = doorAddPick?.id === g.id ? doorAddPick.axis : null;
       const toggleAddPick = (axis: 'u' | 'v') => { if (addPick === axis) setDoorAddPick(null); else { if (refMode) setDoorRefPickGroupId(null); setDoorAddPick({ id: g.id, axis }); } };
       const onAddPick = (splitId: string, k: number) => { const pg = addPanelAtDoorJoint(g.id, splitId, k); if (pg) { setDoorAddPick(null); setSelectedDoorGroupId(g.id); openCard(g.id); } };
+      // SİL (Goker: "tıklayıp dikme veya raf atarsam sonradan silebileyim"): aynı modda mevcut levhanın bandı ✕ Remove → grup + panel silinir.
+      const onRemovePick = (pgId: string) => { deletePanelGroupWithMembers(pgId); console.log('[YAGO][KAPAK-ARA] levha kaldırıldı (kapak kartı):', pgId); };
+      const addedCount = (axis: 'u' | 'v') => panelGroups.filter(pg => pg.doorBond?.doorGroupId === g.id && pg.axis === (axis === 'u' ? doorPlaneAxes(g.axis).u : doorPlaneAxes(g.axis).v)).length;
       const addJointCount = (axis: 'u' | 'v') => doorJoints(solvedTree).filter(j => j.axis === axis).length;
-      const sizeOf = (ax: 'u' | 'v') => (splitNode.kind === 'split' && splitNode.axis === ax && splitNode.targetSize ? splitNode.targetSize : null);
+      // SPACING değeri: seçili bölgenin hedefi; yoksa kapsamdaki (seçili bölgeler / kök) ilk hedef — seçim değişse de değer görünür ve
+      // iptal edilebilir (Goker: "yazılan değeri iptal edemiyorum"). İptal (null) kapsamdaki o eksenli TÜM hedefleri kaldırır.
+      const scopeIds = picked.length ? picked : [g.tree.id];
+      const sizeOf = (ax: 'u' | 'v') => {
+        if (splitNode.kind === 'split' && splitNode.axis === ax && splitNode.targetSize) return splitNode.targetSize;
+        return doorSpacingTargetsInScope(g.tree, scopeIds, ax)[0]?.targetSize ?? null;
+      };
       const setSize = (ax: 'u' | 'v', mm: number | null) => {
-        const targets = picked.length ? picked : [g.tree.id];
-        const ids = targets.map(id => setDoorNodeSpacing(g.id, id, ax, mm)).filter((x): x is string => !!x);
+        if (mm == null) { clearDoorSpacing(g.id, scopeIds, ax); return; }
+        const ids = scopeIds.map(id => setDoorNodeSpacing(g.id, id, ax, mm)).filter((x): x is string => !!x);
         setDoorNodeSel(ids.length ? { id: g.id, nodes: ids } : null);
       };
       const onRefPick = (vfId: string) => { const ids = splitDoorAtPanel(g.id, vfId); if (ids.length) { setDoorRefPickGroupId(null); setDoorNodeSel({ id: g.id, nodes: ids }); } };
       const regionName = !primary ? 'whole door area' : primary.kind === 'leaf' ? 'the selected door' : `the selected region (${primary.axis === 'u' ? 'V' : 'H'} ×${primary.children.length})`;
-      const sizeTitle = (ax: 'u' | 'v') => `Spacing ${ax === 'u' ? 'V — target door width' : 'H — target door height'} (mm) for ${regionName}: the number of pieces is derived from the region length (nearest fit, equal pieces) and re-derived when the body resizes. Empty = no target.`;
+      const sizeTitle = (ax: 'u' | 'v') => `Spacing ${ax === 'u' ? 'V — target door width' : 'H — target door height'} (mm) for ${regionName}: the number of pieces is derived from the region length (nearest fit, equal pieces) and re-derived when the body resizes. Clear it (× or empty + Enter) to cancel the target — the current pieces stay.`;
       const countTitle = (ax: 'u' | 'v') => `${ax === 'u' ? 'Split V — pieces side by side' : 'Split H — pieces stacked'} in ${regionName}. ` +
         `Type or step the number of pieces (1 = not split on this axis). ${splitNode.kind === 'split' && splitNode.axis !== ax ? 'This region is already split the other way: a new split here wraps it as the first piece.' : ''}` +
         (picked.length > 1 ? ` Applies to ${picked.length} selected regions.` : '');
@@ -2902,8 +2929,8 @@ export function PanelEditor() {
                   onClick={() => toggleAddPick('v')} />
                 {addPick && (
                   <DockStatus ready={g.placement === 'outer' && addJointCount(addPick) > 0}
-                    text={g.placement !== 'outer' ? 'Outer doors only' : addJointCount(addPick) ? `Click a ${addPick === 'u' ? 'vertical' : 'horizontal'} joint between two doors` : `No ${addPick === 'u' ? 'vertical' : 'horizontal'} joint — split the door first`}
-                    title="The highlighted gaps between doors are the joints you can place the panel at. Esc cancels." />
+                    text={g.placement !== 'outer' ? 'Outer doors only' : addJointCount(addPick) ? `Click a ${addPick === 'u' ? 'vertical' : 'horizontal'} joint to add${addedCount(addPick) ? ' · ✕ Remove to delete' : ''}` : `No ${addPick === 'u' ? 'vertical' : 'horizontal'} joint — split the door first`}
+                    title="The highlighted gaps between doors are the joints you can place the panel at; a panel already added between doors shows ✕ Remove. Esc cancels." />
                 )}
               </div>
               {/* KAPAK TİPİ (Goker, Eki 2026): Left · Right · Up · Down · Double · Fold — hedef: şemada seçilen kapaklar. */}
@@ -2913,7 +2940,7 @@ export function PanelEditor() {
                 cuts={doorCuts}
                 nearPanels={doorParent ? doorNearPanels(g, doorParent, shapes, virtualFaces, panelGroups) : []}
                 refPick={refMode} onRefPick={onRefPick}
-                addPick={addPick} onAddPick={onAddPick}
+                addPick={addPick} onAddPick={onAddPick} onRemovePick={onRemovePick}
                 onEditSize={(sid, k, v) => { void editDoorSize(g.id, sid, k, v); }} onToggleLock={(sid, k) => toggleDoorSizeLock(g.id, sid, k)}
                 onEditSplitGap={(sid, k, v) => { void setDoorSplitGap(g.id, sid, k, v); }} onEditEdgeGap={(edge, v) => { void setDoorEdgeGap(g.id, edge, v); }}
                 onEditLeaf={(lid, k, v) => { void editDoorLeafSize(g.id, lid, k, v); }} onEditLeafGap={(lid, v) => { void setDoorLeafGap(g.id, lid, v); }}

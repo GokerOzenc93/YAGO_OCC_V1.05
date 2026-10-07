@@ -1152,6 +1152,43 @@ export function setDoorNodeSpacing(groupId: string, nodeId: string, axis: 'u' | 
   return id;
 }
 
+/** Düğümün altındaki (kendisi dahil) `axis` eksenli, hedef ölçüsü olan bölmeler (DFS). */
+export function doorSpacingNodes(n: DoorNode, axis: 'u' | 'v'): Array<Extract<DoorNode, { kind: 'split' }>> {
+  if (n.kind !== 'split') return [];
+  const own = n.axis === axis && n.targetSize ? [n] : [];
+  return [...own, ...n.children.flatMap(c => doorSpacingNodes(c, axis))];
+}
+/**
+ * KAPSAMDAKİ SPACING HEDEFLERİ: seçili bölgelerin (boşsa kök) alt ağacındaki `axis` eksenli hedefler; alt ağaçta yoksa
+ * seçili bölgeyi ÜRETEN en yakın üst bölmenin hedefi (bir kapağa tıklayıp "bu kapakları üreten spacing'i iptal et").
+ */
+export function doorSpacingTargetsInScope(tree: DoorNode, scopeIds: string[], axis: 'u' | 'v'): Array<Extract<DoorNode, { kind: 'split' }>> {
+  const roots = (scopeIds.length ? scopeIds : [tree.id]).map(id => findDoorNode(tree, id)).filter((n): n is DoorNode => !!n);
+  const out = new Map<string, Extract<DoorNode, { kind: 'split' }>>();
+  for (const r of roots) {
+    const under = doorSpacingNodes(r, axis);
+    if (under.length) { for (const n of under) out.set(n.id, n); continue; }
+    for (let par = findDoorParent(tree, r.id); par; par = findDoorParent(tree, par.id)) { if (par.axis === axis && par.targetSize) { out.set(par.id, par); break; } }
+  }
+  return [...out.values()];
+}
+/**
+ * SPACING İPTALİ (Goker: "spacing değeri girdiğimde yazılan değeri iptal edemiyorum"): kapsamdaki (doorSpacingTargetsInScope)
+ * `axis` eksenli hedefler kaldırılır — mevcut parçalar durur, gövde boyutlanınca artık yeniden sayılmaz. Seçim değişmiş olsa
+ * da hedef bulunur. Döner: kaldırılan hedef sayısı.
+ */
+export function clearDoorSpacing(groupId: string, scopeIds: string[], axis: 'u' | 'v'): number {
+  const group = groupById(groupId);
+  if (!group) return 0;
+  const ids = new Set(doorSpacingTargetsInScope(group.tree, scopeIds, axis).map(n => n.id));
+  if (!ids.size) return 0;
+  let tree = group.tree;
+  for (const id of ids) tree = replaceDoorNode(tree, id, old => ({ ...(old as any), targetSize: undefined }));
+  useAppStore.getState().updateDoorGroup(groupId, { tree });
+  console.log('[YAGO][KAPAK-SPACING] hedef kaldırıldı', groupId, axis === 'u' ? 'V' : 'H', [...ids].join(','), '(parçalar durur)');
+  return ids.size;
+}
+
 /**
  * KAPAK TİPİ ATAMA (Goker: "birden fazla kapağı seçip bir kapak tipi verebileyim"): seçilen YAPRAKLARA tek tip.
  * Yalnız menteşe yönü değişiyorsa (left↔right↔up↔down, ya da double↔double) geometri aynıdır → tip yazılır, rebuild
