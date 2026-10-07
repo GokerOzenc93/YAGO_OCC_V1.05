@@ -1059,25 +1059,26 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
 
 /* ── KAPAK ŞEMASI (Goker, Eki 2026) ───────────────────────────────────────
    Kapak düzleminin ÖN GÖRÜNÜŞÜ temsili bir karede (mm → px doğrusal, eksenler kareye ayrı ölçeklenir). Kapaklar taş
-   renkli dikdörtgen; tık = yalnız TİP/BÖLME hedefi seçimi (üye editörü AÇILMAZ — Goker). Ölçüler bölme ağacından:
-   KÖK bölmenin ölçü zinciri karenin DIŞINDA (yan yana → üstte, üst üste → solda; kenar boşlukları iki uçta, aralar
-   arada); iç içe bölmeler kendi alanlarının İÇİNDE (yan yana → alt kenara yakın yatay, üst üste → sağ kenara yakın
-   düşey; derinleştikçe 16 px içeri). Double/fold yaprağın kanat zinciri de aynı kuralla yaprağın içinde. Her pill
-   tıkla → değer gir; ölçü pill'inin ucundaki kilit → kilitle. ÖLÇÜ OKU YOK (Goker: "ölçü okları kapak boşluklarının
-   içine giriyor") — yalnız pill'ler. Kapaklar 1,5 px içeri çizilir ki 3 mm boşluklar görünür kalsın. Sınır levhaları
-   (yan / üst / alt / dikme / raf) yalnız DIŞ kapakta ve kapağa boşluk + 3 mm içinde değiyorsa, GERÇEK konum ve kalınlıkla
-   (en az 6 px) çizilir — iç kapakta ya da sınır paneli yoksa hiç çizilmez (Goker). Kutu alanı doldurur (DOOR_PAD_*),
-   çakışan pill'ler ikinci şeride kayar (PILL_LANE_GAP). */
+   renkli dikdörtgen; tık = yalnız TİP/BÖLME hedefi seçimi (üye editörü AÇILMAZ — Goker). ÖLÇÜLER YALNIZ TIKLANAN YERDE
+   (Goker, Eki 2026: "en dışında ölçü yazmasın, o alanı kazanmak istiyorum; kapağa tıkladığımda kapağın üzerinde ölçüler
+   belirsin"): dış ölçü zinciri yok, kutu kapak alanını doldurur. Seçili bölgenin ölçü zinciri bölgenin ÜZERİNDE çizilir —
+   bölmenin kendi ekseni (çocuk ölçüleri + aralar, uçlarda kenar boşlukları) alt kenara yakın yatay / sağ kenara yakın düşey,
+   çapraz ölçüsü (üst bölmedeki yeri: önceki ara · ölçü · sonraki ara) öbür yönde; seçili kapakta genişlik ve yükseklik
+   zincirleri, double/fold'da kanat zinciri. Aynı yöndeki ikinci zincir 16 px içeri. Her pill tıkla → değer gir; ölçü
+   pill'inin ucundaki kilit → kilitle. Boşluklar kapak alanında turuncu şeritle de işaretlenir. ÖLÇÜ OKU YOK (Goker: "ölçü
+   okları kapak boşluklarının içine giriyor") — yalnız pill'ler. Kapaklar 1,5 px içeri çizilir ki 3 mm boşluklar görünür
+   kalsın. Sınır levhaları (yan / üst / alt / dikme / raf) yalnız DIŞ kapakta ve kapağa boşluk + 3 mm içinde değiyorsa,
+   GERÇEK konum ve kalınlıkla (en az 6 px) çizilir — iç kapakta ya da sınır paneli yoksa hiç çizilmez (Goker). Çakışan
+   pill'ler ikinci şeride kayar (PILL_LANE_GAP). */
 const DOOR_INSET_PX = 1.5;        // kapak çiziminin kenarlardan içeri payı (boşluklar görünsün)
-const CHAIN_OFF_H = 27;           // iç YATAY ölçü zincirinin alt kenardan uzaklığı (px) — alt bant ve ortadaki rozetle çakışmasın
-const CHAIN_OFF_V = 38;           // iç DÜŞEY ölçü zincirinin sağ kenardan uzaklığı (px) — pill'ler yatay geniş, sağ bant rozetini aşsın
-const CHAIN_STEP = 16;            // iç içe zincirler arası (px)
-// ŞEMA PAYLARI (Goker, Eki 2026: "kenarlardan minimum boşluk kalacak şekilde alanı maksimum oranda kullan"): dış ölçü zinciri
-// yalnız SOLDA (düşey) ve ÜSTTE (yatay) durur → sol/üst pay geniş, sağ/alt pay dar. Kapak alanı kutuyu DOLDURUR (eksenler ayrı
-// ölçeklenir); kutunun yüksekliği kapağın gerçek oranına yaklaşır (geniş-alçak kapakta kart kısalır), en çok PREVIEW_HEIGHT.
-const DOOR_PAD_L = 54, DOOR_PAD_T = 44, DOOR_PAD_R = 12, DOOR_PAD_B = 12;
+const CHAIN_OFF_H = 27;           // YATAY ölçü zincirinin bölgenin alt kenarından uzaklığı (px) — alt bant ve ortadaki rozetle çakışmasın
+const CHAIN_OFF_V = 38;           // DÜŞEY ölçü zincirinin bölgenin sağ kenarından uzaklığı (px) — pill'ler yatay geniş, sağ bant rozetini aşsın
+const CHAIN_STEP = 16;            // aynı yöndeki zincirler arası (px)
+// ŞEMA PAYLARI (Goker, Eki 2026: "kenarlardan minimum boşluk kalacak şekilde alanı maksimum oranda kullan; en dışında ölçü
+// yazmasın"): dört kenar da dar pay (kenar levhası / rozet taşması için). Kapak alanı kutuyu DOLDURUR (eksenler ayrı ölçeklenir);
+// kutunun yüksekliği kapağın gerçek oranına yaklaşır (geniş-alçak kapakta kart kısalır), en çok PREVIEW_HEIGHT.
+const DOOR_PAD_L = 12, DOOR_PAD_T = 12, DOOR_PAD_R = 12, DOOR_PAD_B = 12;
 const DOOR_MIN_ASPECT = 0.6;      // kutu yüksekliği / genişliği en az bu oran (çok geniş kapakta ölçüler sıkışmasın)
-const OUTER_CHAIN = 31;           // dış ölçü zincirinin kapak alanından uzaklığı (px) — kenar levhasının (gerçek ölçek, ≥ 6 px) dışında
 const PILL_LANE_GAP = 3;          // iç içe geçen ölçü pill'leri ikinci şeride kayarken aradaki pay (px)
 
 /* ── KAPAK AÇILIŞ İŞARETİ (Goker, Eki 2026: "her kapak tipine mobilya sektörüne uygun kapak açılış simgesi") ──
@@ -1183,7 +1184,8 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
    * (raf) vurgulanır ve tıklanır → onAddPick(splitId, k). Zaten bağlı derzler gösterilmez.
    */
   addPick?: 'u' | 'v' | null;
-  onAddPick?: (splitId: string, k: number) => void;
+  /** at = derz boyunca seçilen yer (çapraz koordinat, mm): aynı derzde dikmenin sağına / soluna ayrı raf. */
+  onAddPick?: (splitId: string, k: number, at: number) => void;
   /** Aynı modda, kapak arayüzünden eklenmiş (derzi izleyen) levhanın bandı "✕ Remove" olur → grup silinir (Goker: "sonradan silebileyim"). */
   onRemovePick?: (groupId: string) => void;
 }) {
@@ -1197,7 +1199,8 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     return () => ro.disconnect();
   }, []);
   const treeKey = JSON.stringify(group.tree);
-  useEffect(() => { setEditing(null); }, [group.id, treeKey, selectedIndex >= 0]);
+  const selKey = selectedNodes.join('|');
+  useEffect(() => { setEditing(null); }, [group.id, treeKey, selectedIndex >= 0, selKey]);
 
   const { rect, axis, side } = group;
   // KUTU: genişlik tamamen kullanılır; yükseklik kapağın gerçek oranından (en az DOOR_MIN_ASPECT·genişlik, en çok PREVIEW_HEIGHT'a sığan).
@@ -1224,125 +1227,6 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
   const fsT = Math.max(9, fs * 0.86);
   const gid = `ds-${group.id.replace(/[^a-zA-Z0-9_-]/g, '')}`;
 
-  // ── ÖLÇÜ ZİNCİRLERİ ──
-  const chains: Chain[] = [];
-  const fmt = (v: number) => String(round1(v));
-  const root = solved;
-  // Dış zincirler: üstte u (kenar · [kök u-bölmesi ölçüleri ve araları | tek tam genişlik] · kenar), solda v.
-  const outer = (ax: 'u' | 'v'): Chain => {
-    const items: ChainItem[] = [];
-    const lo = ax === 'u' ? rect.u0 : rect.v1, hi = ax === 'u' ? rect.u1 : rect.v0;   // eksen boyunca başlangıç → bitiş (v: üstten)
-    const dir = ax === 'u' ? 1 : -1;
-    const e0 = ax === 'u' ? eg.uMin : eg.vMax, e1 = ax === 'u' ? eg.uMax : eg.vMin;
-    const k0: DoorEdgeKey = ax === 'u' ? 'uMin' : 'vMax', k1: DoorEdgeKey = ax === 'u' ? 'uMax' : 'vMin';
-    const name0 = ax === 'u' ? (mirrorU ? 'Right' : 'Left') : (mirrorV ? 'Bottom' : 'Top'), name1 = ax === 'u' ? (mirrorU ? 'Left' : 'Right') : (mirrorV ? 'Top' : 'Bottom');
-    items.push({ key: `edge-${k0}`, kind: 'gap', a: lo, b: lo + dir * e0, txt: fmt(e0), title: `${name0} edge gap — click to edit`, commit: v => onEditEdgeGap(k0, v), min: 0 });
-    let pos = lo + dir * e0;
-    if (root.kind === 'split' && root.axis === ax) {
-      root.children.forEach((_c, i) => {
-        const w = root.sizes[i]?.value ?? 0;
-        items.push({ key: `size-${root.id}-${i}`, kind: 'size', a: pos, b: pos + dir * w, txt: fmt(w), title: ax === 'u' ? 'Door width — click to edit' : 'Door height — click to edit',
-          locked: !!root.sizes[i]?.locked, onLock: () => onToggleLock(root.id, i), commit: v => onEditSize(root.id, i, v), min: 1 });
-        pos += dir * w;
-        if (i < root.children.length - 1) {
-          const g = root.gaps[i] ?? 0;
-          items.push({ key: `sgap-${root.id}-${i}`, kind: 'gap', a: pos, b: pos + dir * g, txt: fmt(g), title: 'Gap between doors — click to edit', commit: v => onEditSplitGap(root.id, i, v), min: 0 });
-          pos += dir * g;
-        }
-      });
-    } else {
-      const span = Math.abs(hi - lo) - e0 - e1;
-      items.push({ key: `full-${ax}`, kind: 'size', a: pos, b: pos + dir * span, txt: fmt(span), title: ax === 'u' ? 'Door width (whole area)' : 'Door height (whole area)', commit: () => {}, min: 1 });
-      pos += dir * span;
-    }
-    items.push({ key: `edge-${k1}`, kind: 'gap', a: pos, b: pos + dir * e1, txt: fmt(e1), title: `${name1} edge gap — click to edit`, commit: v => onEditEdgeGap(k1, v), min: 0 });
-    return { horiz: ax === 'u', pos: ax === 'u' ? oy - OUTER_CHAIN : ox - OUTER_CHAIN, items };
-  };
-  chains.push(outer('u'), outer('v'));
-  // İç zincirler: kök dışındaki her split kendi alanının içinde; double/fold yaprağın kanat zinciri de.
-  const walk = (n: DoorNodeSolved, insideU: number, insideV: number) => {
-    if (n.kind === 'split') {
-      let iu = insideU, iv = insideV;
-      if (n.depth > 0) {
-        const horiz = n.axis === 'u';
-        const bx1 = Math.max(sx(n.u0), sx(n.u1)), by1 = Math.max(sy(n.v1), sy(n.v0));
-        const pos = horiz ? by1 - CHAIN_OFF_H - CHAIN_STEP * insideU : bx1 - CHAIN_OFF_V - CHAIN_STEP * insideV;
-        const items: ChainItem[] = [];
-        const dir = horiz ? 1 : -1;
-        let p = horiz ? n.u0 : n.v1;
-        n.children.forEach((_c, i) => {
-          const w = n.sizes[i]?.value ?? 0;
-          items.push({ key: `size-${n.id}-${i}`, kind: 'size', a: p, b: p + dir * w, txt: fmt(w), title: horiz ? 'Door width — click to edit (siblings take the rest)' : 'Door height — click to edit (siblings take the rest)',
-            locked: !!n.sizes[i]?.locked, onLock: () => onToggleLock(n.id, i), commit: v => onEditSize(n.id, i, v), min: 1 });
-          p += dir * w;
-          if (i < n.children.length - 1) {
-            const g = n.gaps[i] ?? 0;
-            items.push({ key: `sgap-${n.id}-${i}`, kind: 'gap', a: p, b: p + dir * g, txt: fmt(g), title: 'Gap between doors — click to edit', commit: v => onEditSplitGap(n.id, i, v), min: 0 });
-            p += dir * g;
-          }
-        });
-        chains.push({ horiz, pos, items, small: true });
-        if (horiz) iu = insideU + 1; else iv = insideV + 1;
-      }
-      n.children.forEach(c => walk(c, iu, iv));
-      return;
-    }
-    const ax = doorLeafAxis(n.type);
-    if (!ax || !n.leafSplit || n.leafSplit.leaves.length !== 2) return;
-    const horiz = ax === 'u';
-    const bx1 = Math.max(sx(n.u0), sx(n.u1)), by1 = Math.max(sy(n.v1), sy(n.v0));
-    const pos = horiz ? by1 - CHAIN_OFF_H - CHAIN_STEP * insideU : bx1 - CHAIN_OFF_V - CHAIN_STEP * insideV;
-    const [a, b] = n.leafSplit.leaves.map(l => Math.max(0, l.value)), g = n.leafSplit.gap;
-    const dir = horiz ? 1 : -1;
-    const p0 = horiz ? n.u0 : n.v1;
-    chains.push({ horiz, pos, small: true, items: [
-      { key: `leaf-${n.id}-0`, kind: 'size', a: p0, b: p0 + dir * a, txt: fmt(a), title: 'Leaf size — click to edit (the other leaf takes the rest)', commit: v => onEditLeaf(n.id, 0, v), min: 1 },
-      { key: `lgap-${n.id}`, kind: 'gap', a: p0 + dir * a, b: p0 + dir * (a + g), txt: fmt(g), title: 'Gap between the two leaves — click to edit', commit: v => onEditLeafGap(n.id, v), min: 0 },
-      { key: `leaf-${n.id}-1`, kind: 'size', a: p0 + dir * (a + g), b: p0 + dir * (a + g + b), txt: fmt(b), title: 'Leaf size — click to edit (the other leaf takes the rest)', commit: v => onEditLeaf(n.id, 1, v), min: 1 },
-    ] });
-  };
-  walk(root, 0, 0);
-  // Pill konumları (giriş kutusu için): ekran koordinatı + boyut.
-  type Pill = { key: string; cx: number; cy: number; pw: number; ph: number; item: ChainItem; chain: Chain; x0: number; x1: number; hidden: boolean; lane: number };
-  // İÇ İÇE GEÇME ÖNLEMİ (Goker: "kapak miktarı arttığında ölçüler iç içe geçiyor"): zincir başına ŞERİTLER (teknik çizimdeki
-  // kademeli ölçü). Önce ÖLÇÜ pill'leri yerleşir: bir öncekine çarpan ölçü ikinci şeride kayar (dönüşümlü). Sonra BOŞLUK pill'leri
-  // boş bulduğu ilk şeride (0 → 1 → 2) girer; hiçbirine sığmazsa gizlenir (değer tooltip'te kalır). Şerit yönü: dış zincirlerde
-  // kapağa doğru (üst zincir aşağı, sol zincir sağa — pay içinde kalır), iç zincirlerde bölgenin içine doğru (yukarı / sola).
-  type Placed = { start: number; end: number };
-  const pills: Pill[] = chains.flatMap(ch => {
-    const base = ch.items.map(it => {
-      const f = ch.small || it.kind === 'gap' ? fsT : fs;
-      const { pw, ph } = pillSize(it.txt, f);
-      const m0 = ch.horiz ? sx(it.a) : sy(it.a), m1 = ch.horiz ? sx(it.b) : sy(it.b);
-      const mid = (m0 + m1) / 2;
-      const cx = ch.horiz ? mid : ch.small ? ch.pos : Math.max(ch.pos, pw / 2 + 3);   // dış düşey zincir: pill şemadan taşmasın
-      return { key: it.key, cx, cy: ch.horiz ? ch.pos : mid, pw, ph, item: it, chain: ch, x0: Math.min(m0, m1), x1: Math.max(m0, m1), hidden: false, lane: 0 };
-    }).sort((a, b) => (ch.horiz ? a.cx - b.cx : a.cy - b.cy));
-    const maxLanes = ch.small ? 3 : 2;
-    const lanes: Placed[][] = Array.from({ length: maxLanes }, () => []);
-    const extOf = (p: typeof base[number]) => (ch.horiz ? p.pw : p.ph) + 2;
-    const posOf = (p: typeof base[number]) => (ch.horiz ? p.cx : p.cy);
-    const fits = (lane: number, start: number, end: number) => lanes[lane].every(q => end <= q.start || start >= q.end);
-    const laneStep = Math.max(...base.map(p => (ch.horiz ? p.ph : p.pw)), 0) + PILL_LANE_GAP;
-    const dir = ch.small ? -1 : 1;
-    const place = (p: typeof base[number], lane: number) => {
-      p.lane = lane; lanes[lane].push({ start: posOf(p) - extOf(p) / 2, end: posOf(p) + extOf(p) / 2 });
-      if (lane > 0) { if (ch.horiz) p.cy += dir * lane * laneStep; else p.cx += dir * lane * laneStep; }
-    };
-    for (const p of base.filter(x => x.item.kind === 'size')) {
-      const st0 = posOf(p) - extOf(p) / 2, en0 = posOf(p) + extOf(p) / 2;
-      place(p, fits(0, st0, en0) ? 0 : fits(1, st0, en0) ? 1 : 0);   // ikisine de sığmazsa 0. şerit (ölçü hep çizilir)
-    }
-    for (const p of base.filter(x => x.item.kind === 'gap')) {
-      const st0 = posOf(p) - extOf(p) / 2, en0 = posOf(p) + extOf(p) / 2;
-      let lane = -1;
-      for (let l = 0; l < maxLanes; l++) if (fits(l, st0, en0)) { lane = l; break; }
-      if (lane < 0) { p.hidden = true; continue; }
-      place(p, lane);
-    }
-    return base.filter(p => !p.hidden);
-  });
-  const pillByKey = new Map(pills.map(p => [p.key, p]));
 
   // ── SINIR LEVHALARI (Goker, Eki 2026: "iç kapakta ya da sınır panel yoksa kalınlığı hiç gösterme; dikme/rafa 2-3 mm
   // yaklaşan kapakta göster; dikmeyi kapağın sağına/soluna/ortalı, rafı yukarı/aşağı/ortada yerleştireyim") ──
@@ -1423,7 +1307,6 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
       <title>{locked ? 'Unlock (follows resize)' : 'Lock (stays fixed on resize)'}</title>
     </g>
   );
-  const editPos = editing ? pillByKey.get(editing.key) : undefined;
   // Düğüm yolu (kök → yaprak) ve seçili düğümlerin ekran kutuları (çözülmüş alanlarından).
   const pathToLeaf = (leafId: string): string[] => {
     const out: string[] = [];
@@ -1435,8 +1318,173 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
   const selRegions = selectedNodes.map(id => findSolvedNode(solved, id)).filter((n): n is DoorNodeSolved => !!n);
   const leafIdsUnder = (n: DoorNodeSolved): string[] => (n.kind === 'leaf' ? [n.id] : n.children.flatMap(leafIdsUnder));
   const selLeafIds = new Set(selRegions.flatMap(leafIdsUnder));
-  // Spacing hedefi olan bölme etiketinde görünür (Goker: hedef nerede, iptal edebilsin): "L1 · V ×3 · 200 mm".
-  const regionTag = (n: DoorNodeSolved) => `L${n.depth} · ${n.kind === 'split' ? `${n.axis === 'u' ? 'V' : 'H'} ×${n.children.length}${n.targetSize ? ` · ${n.targetSize} mm` : ''}` : 'Door'}`;
+  // ── ODAK ÖLÇÜ ZİNCİRLERİ + BOŞLUK ŞERİTLERİ (Goker, Eki 2026: "en dışında ölçü yazmasın; kapağa tıkladığımda kapağın
+  // üzerinde ölçüler belirsin; oradaki kapak boşluklarını daha net anlaşılır yap") ──
+  // Ölçüler YALNIZ seçili bölgeler için, bölgenin üzerinde: bölme → kendi zinciri (çocuk ölçüleri + aralar, uçlarda kenar
+  // boşlukları) + çapraz ölçüsü (üst bölmedeki yeri); kapak → genişlik ve yükseklik zincirleri (önceki ara · ölçü · sonraki ara;
+  // uçta kenar boşluğu); double/fold → kanat zinciri. Boşluklar kapak alanında turuncu şerit.
+  const solvedParent = (id: string): Extract<DoorNodeSolved, { kind: 'split' }> | null => {
+    const walkP = (n: DoorNodeSolved): Extract<DoorNodeSolved, { kind: 'split' }> | null => {
+      if (n.kind !== 'split') return null;
+      if (n.children.some(c => c.id === id)) return n;
+      for (const c of n.children) { const h = walkP(c); if (h) return h; }
+      return null;
+    };
+    return walkP(solved);
+  };
+  const chains: Chain[] = [];
+  const fmt = (v: number) => String(round1(v));
+  const focusStrips: Array<{ x: number; y: number; w: number; h: number }> = [];
+  const strip = (axis: 'u' | 'v', a: number, b: number, c0: number, c1: number) => {
+    // axis = boşluğun İNCE olduğu eksen: u → düşey şerit [a,b]×[c0,c1](v); v → yatay şerit [c0,c1](u)×[a,b](v). En az 3 px.
+    const MINW = 3;
+    let x0 = axis === 'u' ? Math.min(sx(a), sx(b)) : Math.min(sx(c0), sx(c1)), x1 = axis === 'u' ? Math.max(sx(a), sx(b)) : Math.max(sx(c0), sx(c1));
+    let y0 = axis === 'u' ? Math.min(sy(c0), sy(c1)) : Math.min(sy(a), sy(b)), y1 = axis === 'u' ? Math.max(sy(c0), sy(c1)) : Math.max(sy(a), sy(b));
+    if (axis === 'u' && x1 - x0 < MINW) { const c = (x0 + x1) / 2; x0 = c - MINW / 2; x1 = c + MINW / 2; }
+    if (axis === 'v' && y1 - y0 < MINW) { const c = (y0 + y1) / 2; y0 = c - MINW / 2; y1 = c + MINW / 2; }
+    focusStrips.push({ x: x0, y: y0, w: x1 - x0, h: y1 - y0 });
+  };
+  const T0 = 0.05;
+  // Bölgenin kapak alanı kenarına dayanan yanları (o kenar boşluğu zincirin ucunda + şerit).
+  const touch = { u0: (n: DoorNodeSolved) => Math.abs(n.u0 - (rect.u0 + eg.uMin)) < T0, u1: (n: DoorNodeSolved) => Math.abs(n.u1 - (rect.u1 - eg.uMax)) < T0,
+    v1: (n: DoorNodeSolved) => Math.abs(n.v1 - (rect.v1 - eg.vMax)) < T0, v0: (n: DoorNodeSolved) => Math.abs(n.v0 - (rect.v0 + eg.vMin)) < T0 };
+  const edgeKeyName = (k: DoorEdgeKey) => (k === 'uMin' ? (mirrorU ? 'Right' : 'Left') : k === 'uMax' ? (mirrorU ? 'Left' : 'Right') : k === 'vMax' ? (mirrorV ? 'Bottom' : 'Top') : (mirrorV ? 'Top' : 'Bottom'));
+  const edgeItem = (k: DoorEdgeKey, a: number, b: number): ChainItem => ({ key: `edge-${k}`, kind: 'gap', a, b, txt: fmt(eg[k]), title: `${edgeKeyName(k)} edge gap — click to edit`, commit: v => onEditEdgeGap(k, v), min: 0 });
+  const edgeStrip = (n: DoorNodeSolved, k: DoorEdgeKey) => {
+    if (k === 'uMin') strip('u', rect.u0, n.u0, n.v0, n.v1); else if (k === 'uMax') strip('u', n.u1, rect.u1, n.v0, n.v1);
+    else if (k === 'vMax') strip('v', n.v1, rect.v1, n.u0, n.u1); else strip('v', rect.v0, n.v0, n.u0, n.u1);
+  };
+  const slots = new Map<string, { h: number; v: number }>();   // bölge başına aynı yöndeki zincir sayısı (kademe)
+  const pushChain = (on: DoorNodeSolved, horiz: boolean, items: ChainItem[]) => {
+    if (!items.length) return;
+    const sl = slots.get(on.id) ?? { h: 0, v: 0 }; slots.set(on.id, sl);
+    const bx1 = Math.max(sx(on.u0), sx(on.u1)), by1 = Math.max(sy(on.v1), sy(on.v0));
+    const pos = horiz ? by1 - CHAIN_OFF_H - CHAIN_STEP * sl.h : bx1 - CHAIN_OFF_V - CHAIN_STEP * sl.v;
+    if (horiz) sl.h++; else sl.v++;
+    chains.push({ horiz, pos, items, small: true });
+  };
+  type SplitS = Extract<DoorNodeSolved, { kind: 'split' }>;
+  // Bölmenin kendi zinciri: [kenar] ölçü · ara · ölçü … [kenar]; araları şeritle.
+  const splitItems = (n: SplitS, withStrips: boolean): ChainItem[] => {
+    const horiz = n.axis === 'u', dir = horiz ? 1 : -1;
+    const items: ChainItem[] = [];
+    let p = horiz ? n.u0 : n.v1;
+    if (horiz ? touch.u0(n) : touch.v1(n)) { const k: DoorEdgeKey = horiz ? 'uMin' : 'vMax'; items.push(edgeItem(k, p - dir * eg[k], p)); if (withStrips) edgeStrip(n, k); }
+    n.children.forEach((_c, i) => {
+      const w = n.sizes[i]?.value ?? 0;
+      items.push({ key: `size-${n.id}-${i}`, kind: 'size', a: p, b: p + dir * w, txt: fmt(w), title: horiz ? 'Door width — click to edit (siblings take the rest)' : 'Door height — click to edit (siblings take the rest)',
+        locked: !!n.sizes[i]?.locked, onLock: () => onToggleLock(n.id, i), commit: v => onEditSize(n.id, i, v), min: 1 });
+      p += dir * w;
+      if (i < n.children.length - 1) {
+        const g = n.gaps[i] ?? 0;
+        items.push({ key: `sgap-${n.id}-${i}`, kind: 'gap', a: p, b: p + dir * g, txt: fmt(g), title: 'Gap between doors — click to edit', commit: v => onEditSplitGap(n.id, i, v), min: 0 });
+        if (withStrips) strip(n.axis, p, p + dir * g, horiz ? n.v0 : n.u0, horiz ? n.v1 : n.u1);
+        p += dir * g;
+      }
+    });
+    if (horiz ? touch.u1(n) : touch.v0(n)) { const k: DoorEdgeKey = horiz ? 'uMax' : 'vMin'; items.push(edgeItem(k, p, p + dir * eg[k])); if (withStrips) edgeStrip(n, k); }
+    return items;
+  };
+  // Düğümün üst bölmedeki yeri: [önceki ara / kenar] ölçü [sonraki ara / kenar] (P.axis boyunca); şeritler `on` bölgesinin çapraz aralığında.
+  const placeItems = (n: DoorNodeSolved, P: SplitS, on: DoorNodeSolved): ChainItem[] => {
+    const horiz = P.axis === 'u', dir = horiz ? 1 : -1;
+    const idx = P.children.findIndex(c => c.id === n.id);
+    if (idx < 0) return [];
+    const items: ChainItem[] = [];
+    const start = horiz ? n.u0 : n.v1;
+    const c0 = horiz ? on.v0 : on.u0, c1 = horiz ? on.v1 : on.u1;
+    if (idx > 0) { const g = P.gaps[idx - 1] ?? 0; items.push({ key: `sgap-${P.id}-${idx - 1}`, kind: 'gap', a: start - dir * g, b: start, txt: fmt(g), title: 'Gap between doors — click to edit', commit: v => onEditSplitGap(P.id, idx - 1, v), min: 0 }); strip(P.axis, start - dir * g, start, c0, c1); }
+    else if (horiz ? touch.u0(n) : touch.v1(n)) { const k: DoorEdgeKey = horiz ? 'uMin' : 'vMax'; items.push(edgeItem(k, start - dir * eg[k], start)); edgeStrip(on, k); }
+    const w = P.sizes[idx]?.value ?? 0;
+    items.push({ key: `size-${P.id}-${idx}`, kind: 'size', a: start, b: start + dir * w, txt: fmt(w), title: horiz ? 'Door width — click to edit (siblings take the rest)' : 'Door height — click to edit (siblings take the rest)',
+      locked: !!P.sizes[idx]?.locked, onLock: () => onToggleLock(P.id, idx), commit: v => onEditSize(P.id, idx, v), min: 1 });
+    const end = start + dir * w;
+    if (idx < P.children.length - 1) { const g = P.gaps[idx] ?? 0; items.push({ key: `sgap-${P.id}-${idx}`, kind: 'gap', a: end, b: end + dir * g, txt: fmt(g), title: 'Gap between doors — click to edit', commit: v => onEditSplitGap(P.id, idx, v), min: 0 }); strip(P.axis, end, end + dir * g, c0, c1); }
+    else if (horiz ? touch.u1(n) : touch.v0(n)) { const k: DoorEdgeKey = horiz ? 'uMax' : 'vMin'; items.push(edgeItem(k, end, end + dir * eg[k])); edgeStrip(on, k); }
+    return items;
+  };
+  // Kök boyutu (bir eksende): [kenar] tam ölçü [kenar] — düzenlenemez (kapak alanı sınırlardan gelir).
+  const fullItems = (ax: 'u' | 'v', on: DoorNodeSolved): ChainItem[] => {
+    const horiz = ax === 'u', dir = horiz ? 1 : -1;
+    const lo = horiz ? rect.u0 : rect.v1, k0: DoorEdgeKey = horiz ? 'uMin' : 'vMax', k1: DoorEdgeKey = horiz ? 'uMax' : 'vMin';
+    const span = (horiz ? rect.u1 - rect.u0 : rect.v1 - rect.v0) - eg[k0] - eg[k1];
+    edgeStrip(on, k0); edgeStrip(on, k1);
+    return [edgeItem(k0, lo, lo + dir * eg[k0]),
+      { key: `full-${ax}`, kind: 'size', a: lo + dir * eg[k0], b: lo + dir * (eg[k0] + span), txt: fmt(span), title: horiz ? 'Door width (whole area)' : 'Door height (whole area)', commit: () => {}, min: 1 },
+      edgeItem(k1, lo + dir * (eg[k0] + span), lo + dir * (eg[k0] + span + eg[k1]))];
+  };
+  // Çapraz ölçü: `n`in, kendisiyle AYNI eksenli olmayan en yakın üst bölmedeki yeri; yoksa kök boyutu.
+  const crossChain = (n: DoorNodeSolved, axis: 'u' | 'v', on: DoorNodeSolved) => {
+    let A: DoorNodeSolved = n, B = solvedParent(A.id);
+    while (B && B.axis === axis) { A = B; B = solvedParent(B.id); }
+    if (B) pushChain(on, B.axis === 'u', placeItems(A, B, on));
+    else pushChain(on, axis !== 'u', fullItems(axis === 'u' ? 'v' : 'u', on));
+  };
+  for (const n of selRegions) {
+    if (n.kind === 'split') {
+      pushChain(n, n.axis === 'u', splitItems(n, true));
+      crossChain(n, n.axis, n);
+      continue;
+    }
+    const P = solvedParent(n.id);
+    if (P) { pushChain(n, P.axis === 'u', placeItems(n, P, n)); crossChain(P, P.axis, n); }
+    else { pushChain(n, true, fullItems('u', n)); pushChain(n, false, fullItems('v', n)); }
+    // double / fold: kanat zinciri (kanat ölçüleri + kanat arası) — yaprağın ekseninde, bir kademe içeride
+    const lax = doorLeafAxis(n.type);
+    if (lax && n.leafSplit?.leaves.length === 2) {
+      const horiz = lax === 'u', dir = horiz ? 1 : -1;
+      const [a, b] = n.leafSplit.leaves.map(l => Math.max(0, l.value)), g = n.leafSplit.gap;
+      const p0 = horiz ? n.u0 : n.v1;
+      strip(lax, p0 + dir * a, p0 + dir * (a + g), horiz ? n.v0 : n.u0, horiz ? n.v1 : n.u1);
+      pushChain(n, horiz, [
+        { key: `leaf-${n.id}-0`, kind: 'size', a: p0, b: p0 + dir * a, txt: fmt(a), title: 'Leaf size — click to edit (the other leaf takes the rest)', commit: v => onEditLeaf(n.id, 0, v), min: 1 },
+        { key: `lgap-${n.id}`, kind: 'gap', a: p0 + dir * a, b: p0 + dir * (a + g), txt: fmt(g), title: 'Gap between the two leaves — click to edit', commit: v => onEditLeafGap(n.id, v), min: 0 },
+        { key: `leaf-${n.id}-1`, kind: 'size', a: p0 + dir * (a + g), b: p0 + dir * (a + g + b), txt: fmt(b), title: 'Leaf size — click to edit (the other leaf takes the rest)', commit: v => onEditLeaf(n.id, 1, v), min: 1 },
+      ]);
+    }
+  }
+  // Bölge etiketi: seviye · bölme · alan ölçüsü (W×H) · spacing hedefi — "L1 · V ×3 · 1594×397 · 200 mm" (Goker: tıkladığım yerin ölçüsü).
+  const regionTag = (n: DoorNodeSolved) => `L${n.depth} · ${n.kind === 'split' ? `${n.axis === 'u' ? 'V' : 'H'} ×${n.children.length} · ${round1(n.u1 - n.u0)}×${round1(n.v1 - n.v0)}${n.targetSize ? ` · ${n.targetSize} mm` : ''}` : 'Door'}`;
+
+  // Pill konumları (giriş kutusu için): ekran koordinatı + boyut. Tüm pill'ler büyük yazı (fs) — yalnız seçili bölgede görünürler.
+  type Pill = { key: string; cx: number; cy: number; pw: number; ph: number; f: number; item: ChainItem; chain: Chain; x0: number; x1: number; hidden: boolean; lane: number };
+  // İÇ İÇE GEÇME ÖNLEMİ (Goker: "kapak miktarı arttığında ölçüler iç içe geçiyor"): zincir başına ŞERİTLER (teknik çizimdeki
+  // kademeli ölçü). Önce ÖLÇÜ pill'leri yerleşir: bir öncekine çarpan ölçü ikinci şeride kayar (dönüşümlü). Sonra BOŞLUK pill'leri
+  // boş bulduğu ilk şeride (0 → 1 → 2) girer; hiçbirine sığmazsa son şeride (odakta hiçbir boşluk gizlenmez). Şerit yönü bölgenin
+  // içine doğru (yatay zincir yukarı, düşey zincir sola).
+  type Placed = { start: number; end: number };
+  const pills: Pill[] = chains.flatMap(ch => {
+    const base = ch.items.map(it => {
+      const f = fs;
+      const { pw, ph } = pillSize(it.txt, f);
+      const m0 = ch.horiz ? sx(it.a) : sy(it.a), m1 = ch.horiz ? sx(it.b) : sy(it.b);
+      const mid = (m0 + m1) / 2;
+      return { key: it.key, cx: ch.horiz ? mid : ch.pos, cy: ch.horiz ? ch.pos : mid, pw, ph, f, item: it, chain: ch, x0: Math.min(m0, m1), x1: Math.max(m0, m1), hidden: false, lane: 0 };
+    }).sort((a, b) => (ch.horiz ? a.cx - b.cx : a.cy - b.cy));
+    const maxLanes = 3;
+    const lanes: Placed[][] = Array.from({ length: maxLanes }, () => []);
+    const extOf = (p: typeof base[number]) => (ch.horiz ? p.pw : p.ph) + 2;
+    const posOf = (p: typeof base[number]) => (ch.horiz ? p.cx : p.cy);
+    const fits = (lane: number, start: number, end: number) => lanes[lane].every(q => end <= q.start || start >= q.end);
+    const laneStep = Math.max(...base.map(p => (ch.horiz ? p.ph : p.pw)), 0) + PILL_LANE_GAP;
+    const place = (p: typeof base[number], lane: number) => {
+      p.lane = lane; lanes[lane].push({ start: posOf(p) - extOf(p) / 2, end: posOf(p) + extOf(p) / 2 });
+      if (lane > 0) { if (ch.horiz) p.cy -= lane * laneStep; else p.cx -= lane * laneStep; }
+    };
+    for (const p of base.filter(x => x.item.kind === 'size')) {
+      const st0 = posOf(p) - extOf(p) / 2, en0 = posOf(p) + extOf(p) / 2;
+      place(p, fits(0, st0, en0) ? 0 : fits(1, st0, en0) ? 1 : 0);   // ikisine de sığmazsa 0. şerit (ölçü hep çizilir)
+    }
+    for (const p of base.filter(x => x.item.kind === 'gap')) {
+      const st0 = posOf(p) - extOf(p) / 2, en0 = posOf(p) + extOf(p) / 2;
+      let lane = maxLanes - 1;
+      for (let l = 0; l < maxLanes; l++) if (fits(l, st0, en0)) { lane = l; break; }
+      place(p, lane);
+    }
+    return base;
+  });
+  const pillByKey = new Map(pills.map(p => [p.key, p]));
+  const editPos = editing ? pillByKey.get(editing.key) : undefined;
 
   return (
     <div ref={wrapRef} className={PREVIEW_FRAME} style={{ background: PREVIEW_BG, height }}>
@@ -1479,6 +1527,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
           const typeTxt = DOOR_TYPE_LABEL[m.type] + (m.leafCount === 2 ? ` · leaf ${m.leaf + 1}/2` : '');
           const path = pathToLeaf(m.leafId);
           const wMm = Math.round(m.u1 - m.u0), hMm = Math.round(m.v1 - m.v0);
+          const lhGuard = fsT * 1.18;   // numara + ölçü satırları merkez çevresinde ±1 satır
           const tip = `Door ${lbl} · ${typeTxt} · ${wMm} × ${hMm} mm${m.poly ? ' · angled (cut by rotated reference)' : ''}`
             + ` — click: select the area, click again to go one level deeper (${path.length} level${path.length === 1 ? '' : 's'}) · Shift/Ctrl+click: add another region · open the door's row below to edit it`;
           // AÇILI: kırpılmış çokgen; her köşe aynı kapak hücresinde kaldığından eğik kenar şemada da düz çizgidir.
@@ -1489,12 +1538,15 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
           const ins = 5, sw = !!hinge && w > 2 * ins + 6 && h > 2 * ins + 6;
           // Numara + ölçü (W × H) + menteşesizlerde tip adı; kapak küçükse yalnız numara.
           const fsz = fsT * 0.86;
-          const showSize = w > 58 && h > 34;
+          // Ölçü zinciri pill'i kapağın yazı alanına biniyorsa (seçili bölgenin çapraz ölçüsü vb.) W×H alt yazısı gizlenir — zincir zaten söyler.
+          const capW = `${wMm} × ${hMm}`.length * fsz * 0.6 + 6, capH = fsz * 1.2;
+          const capHit = pills.some(pp => Math.abs(pp.cx - cx) < (pp.pw + capW) / 2 && Math.abs(pp.cy - cy) < (pp.ph + capH) / 2 + lhGuard);
+          const showSize = w > 58 && h > 34 && !capHit;
           const caption = m.type === 'drawer' || m.type === 'fixed' ? DOOR_TYPE_LABEL[m.type] : null;
           const showCap = !!caption && showSize && h > 50;
           const lines = 1 + (showSize ? 1 : 0) + (showCap ? 1 : 0);
           const lh = fsT * 1.18;
-          const ty0 = cy - ((lines - 1) * lh) / 2;
+          const ty0 = capHit ? cy - lhGuard : cy - ((lines - 1) * lh) / 2;   // pill merkeze bindiyse numara bir satır yukarı
           // ŞEMA TIKI = yalnız SEÇİM (Goker: "kapağın üzerine tıklandığında altındaki paneli otomatik açmasın"); yol üstten alta.
           return (
             <g key={`door-${i}`} style={{ cursor: 'pointer' }} onClick={e => { stop(e); onPathClick(path, e.shiftKey || e.ctrlKey || e.metaKey); }}>
@@ -1554,29 +1606,49 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
             </g>
           );
         })}
-        {/* ARAYA RAF / DİKME (Goker, Eki 2026: "2 kapak arasına raf veya dikme … düğmeye basınca 2 kapak arası belirginleşsin"):
-            seçilen eksendeki derzler kehribar bant + "+ Divider" / "+ Shelf" rozeti; tık → o derze bağlı yeni grup. */}
-        {addPick && isOuter && doorJoints(solved).filter(j => j.axis === addPick && !nearPanels.some(np => np.ref && np.ref.splitId === j.splitId && np.ref.k === j.k)).map(j => {
+        {/* ODAK BOŞLUKLARI (Goker: "tıkladığım yerdeki kapak boşluklarını daha net anlaşılır yap"): seçili bölmenin araları / seçili
+            kapağın çevresindeki boşluklar kapak alanında turuncu şerit. */}
+        {focusStrips.map((r, i) => (
+          <rect key={`fs-${i}`} x={r.x} y={r.y} width={r.w} height={r.h} fill="#f97316" fillOpacity={0.28} stroke="#ea580c" strokeOpacity={0.55} strokeWidth={0.6} style={{ pointerEvents: 'none' }} />
+        ))}
+        {/* ARAYA RAF / DİKME (Goker, Eki 2026: "2 kapak arasına raf veya dikme … düğmeye basınca 2 kapak arası belirginleşsin;
+            dikmenin sağına ve soluna da raf yerleştirebileyim"): seçilen eksendeki her derz, onu kesen çapraz levhalarla (yatay derzi
+            dikmeler, dikey derzi raflar) PARÇALARA bölünür; aynı türde levhası olmayan her parça kehribar bant + "+ Divider" /
+            "+ Shelf" rozeti; tık → o parçanın ortasından hacim ışını (addPanelAtDoorJoint at). */}
+        {addPick && isOuter && doorJoints(solved).filter(j => j.axis === addPick).flatMap(j => {
           const vertical = j.axis === 'u';
-          const MINW = 14;
-          let a0 = vertical ? Math.min(sx(j.p0), sx(j.p1)) : Math.min(sy(j.p0), sy(j.p1)), a1 = vertical ? Math.max(sx(j.p0), sx(j.p1)) : Math.max(sy(j.p0), sy(j.p1));
-          if (a1 - a0 < MINW) { const c = (a0 + a1) / 2; a0 = c - MINW / 2; a1 = c + MINW / 2; }
-          const c0 = vertical ? Math.min(sy(j.c0), sy(j.c1)) : Math.min(sx(j.c0), sx(j.c1)), c1 = vertical ? Math.max(sy(j.c0), sy(j.c1)) : Math.max(sx(j.c0), sx(j.c1));
-          const x = vertical ? a0 : c0, y = vertical ? c0 : a0, w = vertical ? a1 - a0 : c1 - c0, h = vertical ? c1 - c0 : a1 - a0;
-          const txt = vertical ? '+ Divider' : '+ Shelf';
-          const cfs = fsT * 0.8, { pw: cw, ph: chh } = pillSize(txt, cfs);
-          const bx = x + w / 2, by = y + h / 2;
-          const what = vertical ? 'divider' : 'shelf';
-          return (
-            <g key={`add-${j.splitId}-${j.k}`} className="yago-band on" style={{ cursor: 'pointer' }} onClick={e => { stop(e); onAddPick?.(j.splitId, j.k); }}>
-              <rect x={x} y={y} width={w} height={h} rx={3} fill="#fb923c" fillOpacity={0.16} stroke="#f97316" strokeWidth={1} strokeDasharray="4 2.5" className="hit" />
-              <g className="chip" transform={vertical ? `rotate(-90 ${bx} ${by})` : undefined}>
-                <rect x={bx - cw / 2} y={by - chh / 2} width={cw} height={chh} rx={chh / 2} fill="#fff7ed" stroke="#f97316" strokeWidth={0.8} style={{ filter: 'drop-shadow(0 1px 1px rgba(40,30,20,0.12))' }} />
-                <text x={bx} y={by + cfs * 0.36} textAnchor="middle" fontSize={cfs} fontWeight={700} letterSpacing="0.02em" fill="#c2410c" fontFamily={UI_FONT}>{txt}</text>
+          const MIN_SEG = 40;
+          const cutters = nearPanels
+            .filter(np => np.kind !== j.axis && Math.min(np.c1, j.p1) - Math.max(np.c0, j.p0) > -0.5 && np.a1 > j.c0 + 0.5 && np.a0 < j.c1 - 0.5)
+            .map(np => [np.a0, np.a1] as [number, number]).sort((a, b) => a[0] - b[0]);
+          const segs: Array<[number, number]> = [];
+          let s0 = j.c0;
+          for (const [a0, a1] of cutters) { if (a0 - s0 >= MIN_SEG) segs.push([s0, a0]); s0 = Math.max(s0, a1); }
+          if (j.c1 - s0 >= MIN_SEG) segs.push([s0, j.c1]);
+          return segs.map(([c0, c1]) => {
+            const mid = (c0 + c1) / 2;
+            // Bu parçada derze değen aynı türde levha varsa (bağlı ya da değil) ekleme yok — bandı ✕ Remove / rozet gösterir.
+            if (nearPanels.some(np => np.kind === j.axis && Math.min(np.a1, j.p1) - Math.max(np.a0, j.p0) > -0.5 && np.c0 - 0.5 <= mid && mid <= np.c1 + 0.5)) return null;
+            const MINW = 14;
+            let a0 = vertical ? Math.min(sx(j.p0), sx(j.p1)) : Math.min(sy(j.p0), sy(j.p1)), a1 = vertical ? Math.max(sx(j.p0), sx(j.p1)) : Math.max(sy(j.p0), sy(j.p1));
+            if (a1 - a0 < MINW) { const c = (a0 + a1) / 2; a0 = c - MINW / 2; a1 = c + MINW / 2; }
+            const q0 = vertical ? Math.min(sy(c0), sy(c1)) : Math.min(sx(c0), sx(c1)), q1 = vertical ? Math.max(sy(c0), sy(c1)) : Math.max(sx(c0), sx(c1));
+            const x = vertical ? a0 : q0, y = vertical ? q0 : a0, w = vertical ? a1 - a0 : q1 - q0, h = vertical ? q1 - q0 : a1 - a0;
+            const txt = vertical ? '+ Divider' : '+ Shelf';
+            const cfs = fsT * 0.8, { pw: cw, ph: chh } = pillSize(txt, cfs);
+            const bx = x + w / 2, by = y + h / 2;
+            const what = vertical ? 'divider' : 'shelf';
+            return (
+              <g key={`add-${j.splitId}-${j.k}-${Math.round(c0)}`} className="yago-band on" style={{ cursor: 'pointer' }} onClick={e => { stop(e); onAddPick?.(j.splitId, j.k, mid); }}>
+                <rect x={x} y={y} width={w} height={h} rx={3} fill="#fb923c" fillOpacity={0.16} stroke="#f97316" strokeWidth={1} strokeDasharray="4 2.5" className="hit" />
+                <g className="chip" transform={vertical ? `rotate(-90 ${bx} ${by})` : undefined}>
+                  <rect x={bx - cw / 2} y={by - chh / 2} width={cw} height={chh} rx={chh / 2} fill="#fff7ed" stroke="#f97316" strokeWidth={0.8} style={{ filter: 'drop-shadow(0 1px 1px rgba(40,30,20,0.12))' }} />
+                  <text x={bx} y={by + cfs * 0.36} textAnchor="middle" fontSize={cfs} fontWeight={700} letterSpacing="0.02em" fill="#c2410c" fontFamily={UI_FONT}>{txt}</text>
+                </g>
+                <title>{`Add a ${what} between these two doors${segs.length > 1 ? ` (this part of the joint, ${round1(c1 - c0)} mm)` : ''}: it is created in the free volume behind this spot (listed after the door row) and stays bound to the joint — when the doors change, the ${what} follows. Its Left / Center / Right badge sets the alignment; Shift+click unbinds.`}</title>
               </g>
-              <title>{`Add a ${what} between these two doors: it is created in the free volume behind this joint (listed after the door row) and stays bound to the joint — when the doors change, the ${what} follows. Its Left / Center / Right badge sets the alignment; Shift+click unbinds.`}</title>
-            </g>
-          );
+            );
+          });
         })}
         {/* SEÇİLİ BÖLGELER (Goker: "tıkladığım yerde kaça bölünmüşse göster"): çerçeve + köşede seviye · bölme etiketi */}
         {selRegions.map(n => {
@@ -1593,19 +1665,19 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
           );
         })}
         {/* ÖLÇÜ ZİNCİRLERİ: dış (kök) + iç (iç içe bölmeler, kanatlar) */}
+        {/* ÖLÇÜ ZİNCİRLERİ: yalnız seçili bölgelerin, bölgenin üzerinde (boşluk pill'i turuncu zeminli, ölçü pill'i turuncu çerçeveli) */}
         {pills.map(p => {
-          const { item: it, chain: ch } = p;
-          const f = ch.small || it.kind === 'gap' ? fsT : fs;
+          const { item: it, chain: ch, f } = p;
           const hide = editing?.key === p.key;
           if (it.kind === 'gap') {
-            return <DimPill key={p.key} cx={p.cx} cy={p.cy} txt={it.txt} fs={f} fill="#f3efe8" stroke="#e6e0d6" color="#78716c" hideText={hide} title={it.title}
+            return <DimPill key={p.key} cx={p.cx} cy={p.cy} txt={it.txt} fs={f} fill="#fff7ed" stroke="#f97316" strokeWidth={1} color="#c2410c" hideText={hide} title={it.title}
               onClick={e => { stop(e); setEditing({ key: p.key, v: it.txt }); }} />;
           }
           const locked = !!it.locked, editable = !!it.onLock || it.key.startsWith('leaf-');
           return (
             <g key={p.key} className={`yago-gap${locked ? ' locked' : ''}`}>
-              <DimPill cx={p.cx} cy={p.cy} txt={it.txt} fs={f} fill={locked ? '#fff7ed' : '#ffffff'} stroke={locked ? '#f97316' : SOFT.pillStroke} strokeWidth={locked ? 1 : 0.7}
-                color={locked ? '#c2410c' : '#44403c'} hideText={hide} title={it.title}
+              <DimPill cx={p.cx} cy={p.cy} txt={it.txt} fs={f} fill={locked ? '#fff7ed' : '#ffffff'} stroke="#f97316" strokeWidth={locked ? 1.2 : 1}
+                color={locked ? '#c2410c' : '#1c1917'} hideText={hide} title={editable ? it.title : `${it.title} — set by the door bounds`}
                 onClick={editable ? e => { stop(e); setEditing({ key: p.key, v: it.txt }); } : undefined} />
               {it.onLock && (ch.horiz ? lockBtn(locked, p.cx + p.pw / 2 + 11, p.cy, it.onLock) : lockBtn(locked, p.cx, p.cy + p.ph / 2 + 11, it.onLock))}
             </g>
@@ -1620,7 +1692,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
           onClick={stop}
           style={{
             position: 'absolute', left: editPos.cx - editPos.pw / 2 - 4, top: editPos.cy - editPos.ph / 2 - 2, width: editPos.pw + 8, height: editPos.ph + 4, textAlign: 'center',
-            fontFamily: UI_FONT, fontSize: editPos.chain.small || editPos.item.kind === 'gap' ? fsT : fs, fontWeight: 600, color: '#1c1917', fontVariantNumeric: 'tabular-nums',
+            fontFamily: UI_FONT, fontSize: editPos.f, fontWeight: 600, color: '#1c1917', fontVariantNumeric: 'tabular-nums',
             background: '#fff', border: '1px solid #f97316', borderRadius: 99, outline: 'none', boxShadow: '0 0 0 2px rgba(249,115,22,0.12)', padding: 0,
           }} />
       )}
@@ -2852,7 +2924,7 @@ export function PanelEditor() {
       // ARAYA RAF / DİKME: düğme modu açar (panel ref kapanır); derze tık → grup oluşur (listede kapaktan sonra), mod kapanır.
       const addPick = doorAddPick?.id === g.id ? doorAddPick.axis : null;
       const toggleAddPick = (axis: 'u' | 'v') => { if (addPick === axis) setDoorAddPick(null); else { if (refMode) setDoorRefPickGroupId(null); setDoorAddPick({ id: g.id, axis }); } };
-      const onAddPick = (splitId: string, k: number) => { const pg = addPanelAtDoorJoint(g.id, splitId, k); if (pg) { setDoorAddPick(null); setSelectedDoorGroupId(g.id); openCard(g.id); } };
+      const onAddPick = (splitId: string, k: number, at: number) => { const pg = addPanelAtDoorJoint(g.id, splitId, k, at); if (pg) { setDoorAddPick(null); setSelectedDoorGroupId(g.id); openCard(g.id); } };
       // SİL (Goker: "tıklayıp dikme veya raf atarsam sonradan silebileyim"): aynı modda mevcut levhanın bandı ✕ Remove → grup + panel silinir.
       const onRemovePick = (pgId: string) => { deletePanelGroupWithMembers(pgId); console.log('[YAGO][KAPAK-ARA] levha kaldırıldı (kapak kartı):', pgId); };
       const addedCount = (axis: 'u' | 'v') => panelGroups.filter(pg => pg.doorBond?.doorGroupId === g.id && pg.axis === (axis === 'u' ? doorPlaneAxes(g.axis).u : doorPlaneAxes(g.axis).v)).length;
