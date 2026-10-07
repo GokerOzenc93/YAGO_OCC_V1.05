@@ -130,8 +130,10 @@ export type DoorNode =
      */
     refs?: Record<number, DoorJointRef>;
   };
-/** Derz bağı: bağlı levhanın VF id'si + derzin levhaya göre konumu. */
+/** Derz bağı (KAPAK levhayı izler): bağlı levhanın VF id'si + derzin levhaya göre konumu. */
 export interface DoorJointRef { vfId: string; align: DoorAlign }
+/** Kapak derzine bağ (LEVHA kapağı izler — PanelGroup.doorBond): kapak grubu + bölme + derz sırası + hiza (+ üye). */
+export interface DoorBond { doorGroupId: string; splitId: string; k: number; align: DoorAlign; member?: number }
 /** Kapak alanının dört kenar boşluğu (sınır paneline / gövde kenarına): mm. */
 export interface DoorEdgeGaps { uMin: number; uMax: number; vMin: number; vMax: number }
 /**
@@ -279,6 +281,15 @@ export interface PanelGroup {
   memberThicknesses?: number[];
   /** Hacim yüz-extrude adımları (sıralı); ham hacme her çözümde uygulanır. */
   cavitySteps?: CavityStep[];
+  /**
+   * KAPAK DERZİNE BAĞ (Goker, Eki 2026: "kapak arayüzünden kapakların arasına tıklayarak raf ve dikme atamak istiyorum;
+   * eklenen raf ve dikme her zaman o kapak aralarının arasında çalışsın — önce kapakları yerleştirip kapaklara göre dikme"):
+   * bu grup kapak arayüzünden iki kapağın ARASINA eklendi; `member` (vars. 0) üyesi her çözümde o derze göre konumlanır
+   * (align: 'center' derzin ortasında, 'min'/'max' derzin o tarafındaki kapağın arkasında) — LEVHA KAPAĞI İZLER (kapak
+   * ölçüsü değişince levha gider; tersi DoorNode.refs). Grubun o boşluğu çözümden yazılır; boşluk girişi KAPAK derzini
+   * taşır. Rozetle hiza değişir, Shift+tık bağı çözer (levha olduğu yerde kalır). Kapak/derz silinirse bağ düşer.
+   */
+  doorBond?: DoorBond;
   memberVfIds: string[];
   /** Kullanıcının verdiği grup adı (varsayılan 'Shelf' / 'Divider'); üye panellerin adı budur (salt-okunur). */
   name?: string;

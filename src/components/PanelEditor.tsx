@@ -23,7 +23,7 @@ import {
   traceMaskLoops, updateCavityStep,
 } from './PanelGroupService';
 import {
-  type DoorCut, type DoorEdgeKey, type DoorNearPanel, type DoorNodeSolved, DOOR_TYPES, DOOR_TYPE_LABEL, DOOR_TYPE_TITLE, applyDoorCuts, collectDoorCuts, doorLeafAxis, doorLeaves, doorMemberCount, doorNearPanels,
+  type DoorCut, type DoorEdgeKey, type DoorNearPanel, type DoorNodeSolved, DOOR_TYPES, DOOR_TYPE_LABEL, DOOR_TYPE_TITLE, addPanelAtDoorJoint, applyDoorCuts, collectDoorCuts, doorJoints, doorLeafAxis, doorLeaves, doorMemberCount, doorNearPanels,
   confirmDoorPick, deleteDoorGroupWithMembers, doorGroupName, doorMemberRects, doorMembersOf, doorPlacementLabel, edgeGapsOf, editDoorLeafSize, editDoorSize, equalizeDoorGroup, findDoorNode, findSolvedNode,
   isDoorVf, renameDoorGroup, setDoorEdgeGap, setDoorGap, setDoorHalfOverlay, setDoorLeafGap, setDoorLeafTypes, setDoorNodeSpacing, setDoorJointRef, setDoorNodeSplit, setDoorPlacement, setDoorSplitGap, splitDoorAtPanel, setDoorThickness, setVfDoorBound,
   solveDoorTree, toggleDoorSizeLock,
@@ -1156,7 +1156,7 @@ type DoorEdit = { key: string; v: string };
 /** Ölçü zinciri öğesi: ölçü (ok + pill + kilit) ya da boşluk (yalnız pill). a..b = eksen boyunca mm. */
 type ChainItem = { key: string; kind: 'size' | 'gap'; a: number; b: number; txt: string; title: string; locked?: boolean; onLock?: () => void; commit: (v: number) => void; min: number };
 type Chain = { horiz: boolean; pos: number; items: ChainItem[]; small?: boolean };
-export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts, nearPanels, refPick, onEditSize, onToggleLock, onEditSplitGap, onEditEdgeGap, onEditLeaf, onEditLeafGap, onPathClick, onToggleHalfOverlay, onAlignJoint, onRefPick }: {
+export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts, nearPanels, refPick, onEditSize, onToggleLock, onEditSplitGap, onEditEdgeGap, onEditLeaf, onEditLeafGap, onPathClick, onToggleHalfOverlay, onAlignJoint, onRefPick, addPick, onAddPick }: {
   group: DoorGroup; selectedIndex: number; memberLabels: string[];
   /** BÖLGE SEÇİMİ: seçili düğümler (kök alan / bölme / kapak) — turuncu çerçeve + seviye etiketi (ör. "L1 · V ×2"). */
   selectedNodes: string[];
@@ -1178,6 +1178,12 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
   /** PANEL REF modu: iç levhaya tık → kapak o levhanın ortasından bölünür, derz levhaya bağlanır. */
   refPick?: boolean;
   onRefPick?: (vfId: string) => void;
+  /**
+   * ARAYA RAF / DİKME modu (Goker: "düğmeye basınca 2 kapak arası belirginleşsin"): 'u' = V derzleri (dikme), 'v' = H derzleri
+   * (raf) vurgulanır ve tıklanır → onAddPick(splitId, k). Zaten bağlı derzler gösterilmez.
+   */
+  addPick?: 'u' | 'v' | null;
+  onAddPick?: (splitId: string, k: number) => void;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(300);
@@ -1381,6 +1387,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     if (!np.joint) return `${np.name} (${what}) — behind the door, no door joint nearby to bind to. Use Panel ref mode to split the door at it.`;
     if (!np.groupId && !np.ref) return `${np.name} (${what}) — body panel at a door joint; it cannot be moved from here (only shelf / divider members can).`;
     const cur = np.ref ? alignLabel(b, np.ref.align) : 'Free';
+    if (np.ref?.master === 'door') return `${np.name} (${what}) — added between the doors, FOLLOWS the door joint (${cur}): when the doors change, the ${what} moves with the joint. Click: ${opts} (moves the ${what}, doors stay) · Shift/Ctrl+click: unbind (the ${what} stays where it is).`;
     if (np.ref) return `${np.name} (${what}) — BOUND to this door joint (${cur}): when the ${what} moves (gap edit, body resize) the doors follow it. Click: ${opts} (moves the ${what}, doors stay) · Shift/Ctrl+click: unbind (door sizes freeze).`;
     return `${np.name} (${what}) at the door joint — Free. Click: ${opts} (binds the joint to the ${what} and moves the ${what}; doors stay, then follow it) · Shift/Ctrl+click: unbind.`;
   };
@@ -1537,6 +1544,30 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
                 </g>
               )}
               <title>{bandTip(b)}</title>
+            </g>
+          );
+        })}
+        {/* ARAYA RAF / DİKME (Goker, Eki 2026: "2 kapak arasına raf veya dikme … düğmeye basınca 2 kapak arası belirginleşsin"):
+            seçilen eksendeki derzler kehribar bant + "+ Divider" / "+ Shelf" rozeti; tık → o derze bağlı yeni grup. */}
+        {addPick && isOuter && doorJoints(solved).filter(j => j.axis === addPick && !nearPanels.some(np => np.ref && np.ref.splitId === j.splitId && np.ref.k === j.k)).map(j => {
+          const vertical = j.axis === 'u';
+          const MINW = 14;
+          let a0 = vertical ? Math.min(sx(j.p0), sx(j.p1)) : Math.min(sy(j.p0), sy(j.p1)), a1 = vertical ? Math.max(sx(j.p0), sx(j.p1)) : Math.max(sy(j.p0), sy(j.p1));
+          if (a1 - a0 < MINW) { const c = (a0 + a1) / 2; a0 = c - MINW / 2; a1 = c + MINW / 2; }
+          const c0 = vertical ? Math.min(sy(j.c0), sy(j.c1)) : Math.min(sx(j.c0), sx(j.c1)), c1 = vertical ? Math.max(sy(j.c0), sy(j.c1)) : Math.max(sx(j.c0), sx(j.c1));
+          const x = vertical ? a0 : c0, y = vertical ? c0 : a0, w = vertical ? a1 - a0 : c1 - c0, h = vertical ? c1 - c0 : a1 - a0;
+          const txt = vertical ? '+ Divider' : '+ Shelf';
+          const cfs = fsT * 0.8, { pw: cw, ph: chh } = pillSize(txt, cfs);
+          const bx = x + w / 2, by = y + h / 2;
+          const what = vertical ? 'divider' : 'shelf';
+          return (
+            <g key={`add-${j.splitId}-${j.k}`} className="yago-band on" style={{ cursor: 'pointer' }} onClick={e => { stop(e); onAddPick?.(j.splitId, j.k); }}>
+              <rect x={x} y={y} width={w} height={h} rx={3} fill="#fb923c" fillOpacity={0.16} stroke="#f97316" strokeWidth={1} strokeDasharray="4 2.5" className="hit" />
+              <g className="chip" transform={vertical ? `rotate(-90 ${bx} ${by})` : undefined}>
+                <rect x={bx - cw / 2} y={by - chh / 2} width={cw} height={chh} rx={chh / 2} fill="#fff7ed" stroke="#f97316" strokeWidth={0.8} style={{ filter: 'drop-shadow(0 1px 1px rgba(40,30,20,0.12))' }} />
+                <text x={bx} y={by + cfs * 0.36} textAnchor="middle" fontSize={cfs} fontWeight={700} letterSpacing="0.02em" fill="#c2410c" fontFamily={UI_FONT}>{txt}</text>
+              </g>
+              <title>{`Add a ${what} between these two doors: it is created in the free volume behind this joint (listed after the door row) and stays bound to the joint — when the doors change, the ${what} follows. Its Left / Center / Right badge sets the alignment; Shift+click unbinds.`}</title>
             </g>
           );
         })}
@@ -1864,6 +1895,9 @@ export function PanelEditor() {
   // BÖLME MODU (Goker, Eki 2026): Count (parça sayısı) · Panel ref (store bayrağı doorRefPickGroupId — dikme/rafın ortasından
   // böl) · Spacing (hedef parça ölçüsü). Count/Spacing yerel; Panel ref kart kapanınca ya da seçim yapılınca kapanır.
   const [doorSplitMode, setDoorSplitMode] = useState<{ id: string; mode: 'count' | 'spacing' } | null>(null);
+  // ARAYA RAF / DİKME modu (Goker, Eki 2026: "kapak arayüzünden kapakların arasına tıklayarak raf ve dikme atamak"): kapak
+  // kartındaki Divider / Shelf düğmesi → şemada o eksendeki derzler vurgulanır; derze tık → addPanelAtDoorJoint; mod kapanır.
+  const [doorAddPick, setDoorAddPick] = useState<{ id: string; axis: 'u' | 'v' } | null>(null);
 
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
@@ -1888,6 +1922,7 @@ export function PanelEditor() {
     if (typeof st.selectedPanelRow === 'string' && memberIds.some(m => st.selectedPanelRow === `vf-${m}`)) setSelectedPanelRow(null);
     setDoorNodeSel(prev => (prev?.id === id ? null : prev));   // kapak kartı kapanınca şemadaki bölge seçimi de kalkar
     if (useAppStore.getState().doorRefPickGroupId === id) setDoorRefPickGroupId(null);   // panel ref modu da kapanır
+    setDoorAddPick(prev => (prev?.id === id ? null : prev));   // araya raf/dikme modu da kapanır
   };
   // Adım düzenleme: aynı anda tek adım düzenlenir (extrude / move / rotate ayrımı adım tipinden gelir).
   const [stepEdit, setStepEdit] = useState<StepEdit>(null);
@@ -1945,13 +1980,13 @@ export function PanelEditor() {
     if (selectedDoorGroupId && !doorGroups.some(g => g.id === selectedDoorGroupId)) setSelectedDoorGroupId(null);
     if (doorRefPickGroupId && !doorGroups.some(g => g.id === doorRefPickGroupId)) setDoorRefPickGroupId(null);
   }, [doorGroups, selectedDoorGroupId, doorRefPickGroupId]);
-  // PANEL REF modu: Esc iptal eder.
+  // PANEL REF / ARAYA RAF-DİKME modu: Esc iptal eder.
   useEffect(() => {
-    if (!doorRefPickGroupId) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setDoorRefPickGroupId(null); };
+    if (!doorRefPickGroupId && !doorAddPick) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { setDoorRefPickGroupId(null); setDoorAddPick(null); } };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [doorRefPickGroupId]);
+  }, [doorRefPickGroupId, doorAddPick]);
 
   // OTOMATİK PANEL ÜRETİMİ: paneli olmayan her VF için panel yaratılır.
   useEffect(() => {
@@ -2667,6 +2702,15 @@ export function PanelEditor() {
                     <CardAction compact icon={Move3d} label="Relocate" active={relocating}
                       title="Pick a new volume for this group in the 3D view (count, thicknesses and list order are kept)"
                       onClick={() => { if (relocating) setVolumePickMode(null); else startGroupRepick(g.id); }} />
+                    {/* KAPAK DERZİNE BAĞ (Goker: kapak arayüzünden eklenen raf/dikme "hep o kapak aralarının arasında çalışsın"): rozet + çöz. */}
+                    {g.doorBond && (
+                      <span className="shrink-0 h-[28px] pl-2 pr-1 inline-flex items-center gap-1 rounded-[7px] bg-orange-50 ring-1 ring-orange-200/70 text-[10.5px] font-semibold text-orange-700"
+                        title={`Bound to a door joint (${g.doorBond.align === 'center' ? 'centered on the joint' : g.doorBond.align === 'min' ? 'behind the lower / left door' : 'behind the upper / right door'}): this ${g.kind} follows the doors — when the door sizes change it moves with the joint. Editing its gap here moves the door joint instead. Unbind to free it (it stays where it is).`}>
+                        <DoorClosed size={12} strokeWidth={2} /><span>Door joint</span>
+                        <button type="button" title="Unbind from the door joint (the panel stays where it is)" onClick={e => { stop(e); useAppStore.getState().updatePanelGroup(g.id, { doorBond: undefined }); console.log('[YAGO][GRUP-KAPAK-BAĞ] bağ çözüldü (grup kartı):', g.id); }}
+                          className="w-[18px] h-[18px] rounded-md flex items-center justify-center text-orange-500 hover:bg-orange-100 hover:text-orange-800 transition-colors"><X size={11} strokeWidth={2.4} /></button>
+                      </span>
+                    )}
                     <span className="flex-1 min-w-0" />
                     <FieldBox fixed label="Qty" title="Number of panels">
                       <StepBtn title="Fewer" disabled={g.count <= 1} onClick={() => applyCount(g.count - 1)}><Minus size={11} strokeWidth={2.2} /></StepBtn>
@@ -2783,10 +2827,15 @@ export function PanelEditor() {
       const refMode = doorRefPickGroupId === g.id;
       const splitMode: 'count' | 'ref' | 'spacing' = refMode ? 'ref' : doorSplitMode?.id === g.id ? doorSplitMode.mode : 'count';
       const pickSplitMode = (m: 'count' | 'ref' | 'spacing') => {
-        if (m === 'ref') { setDoorRefPickGroupId(g.id); return; }
+        if (m === 'ref') { setDoorAddPick(null); setDoorRefPickGroupId(g.id); return; }
         if (refMode) setDoorRefPickGroupId(null);
         setDoorSplitMode({ id: g.id, mode: m });
       };
+      // ARAYA RAF / DİKME: düğme modu açar (panel ref kapanır); derze tık → grup oluşur (listede kapaktan sonra), mod kapanır.
+      const addPick = doorAddPick?.id === g.id ? doorAddPick.axis : null;
+      const toggleAddPick = (axis: 'u' | 'v') => { if (addPick === axis) setDoorAddPick(null); else { if (refMode) setDoorRefPickGroupId(null); setDoorAddPick({ id: g.id, axis }); } };
+      const onAddPick = (splitId: string, k: number) => { const pg = addPanelAtDoorJoint(g.id, splitId, k); if (pg) { setDoorAddPick(null); setSelectedDoorGroupId(g.id); openCard(g.id); } };
+      const addJointCount = (axis: 'u' | 'v') => doorJoints(solvedTree).filter(j => j.axis === axis).length;
       const sizeOf = (ax: 'u' | 'v') => (splitNode.kind === 'split' && splitNode.axis === ax && splitNode.targetSize ? splitNode.targetSize : null);
       const setSize = (ax: 'u' | 'v', mm: number | null) => {
         const targets = picked.length ? picked : [g.tree.id];
@@ -2840,6 +2889,23 @@ export function PanelEditor() {
                 )}
                 <IconSquareBtn icon={Equal} title="Equalize sizes (unlock all)" onClick={() => { void equalizeDoorGroup(g.id); }} />
               </div>
+              {/* KAPAKLARIN ARASINA RAF / DİKME (Goker, Eki 2026: "2 düğme daha koy: raf ekle ve dikme ekle; basınca 2 kapak arası
+                  belirginleşsin; genel listeye door satırından sonra eklensin; eklenen raf ve dikme hep o kapak aralarının arasında
+                  çalışsın"): Divider = V derzleri, Shelf = H derzleri; şemadaki derze tık → derze bağlı yeni grup (levha kapağı izler). */}
+              <div className="flex items-center gap-1 mb-1.5">
+                <span className="shrink-0 pl-0.5 pr-1 text-[9.5px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]">Between doors</span>
+                <CardAction compact icon={Columns3} label="Divider" active={addPick === 'u'} tone="amber"
+                  title={g.placement !== 'outer' ? 'Add a divider between two doors — outer doors only (inner doors sit between the panels).' : addJointCount('u') ? `Add a divider between two side-by-side doors: pick a vertical joint in the schematic (${addJointCount('u')}). The divider is created behind that joint, listed after this door row, and follows the joint when the doors change.` : 'No vertical door joint yet — split the door with Split V first.'}
+                  onClick={() => toggleAddPick('u')} />
+                <CardAction compact icon={Rows3} label="Shelf" active={addPick === 'v'} tone="amber"
+                  title={g.placement !== 'outer' ? 'Add a shelf between two doors — outer doors only (inner doors sit between the panels).' : addJointCount('v') ? `Add a shelf between two stacked doors: pick a horizontal joint in the schematic (${addJointCount('v')}). The shelf is created behind that joint, listed after this door row, and follows the joint when the doors change.` : 'No horizontal door joint yet — split the door with Split H first.'}
+                  onClick={() => toggleAddPick('v')} />
+                {addPick && (
+                  <DockStatus ready={g.placement === 'outer' && addJointCount(addPick) > 0}
+                    text={g.placement !== 'outer' ? 'Outer doors only' : addJointCount(addPick) ? `Click a ${addPick === 'u' ? 'vertical' : 'horizontal'} joint between two doors` : `No ${addPick === 'u' ? 'vertical' : 'horizontal'} joint — split the door first`}
+                    title="The highlighted gaps between doors are the joints you can place the panel at. Esc cancels." />
+                )}
+              </div>
               {/* KAPAK TİPİ (Goker, Eki 2026): Left · Right · Up · Down · Double · Fold — hedef: şemada seçilen kapaklar. */}
               <DoorTypeBar value={commonType} hint={typeHint} onPick={applyType} />
               <DoorSchematic group={g} selectedIndex={selMemberIdx} selectedNodes={picked}
@@ -2847,6 +2913,7 @@ export function PanelEditor() {
                 cuts={doorCuts}
                 nearPanels={doorParent ? doorNearPanels(g, doorParent, shapes, virtualFaces, panelGroups) : []}
                 refPick={refMode} onRefPick={onRefPick}
+                addPick={addPick} onAddPick={onAddPick}
                 onEditSize={(sid, k, v) => { void editDoorSize(g.id, sid, k, v); }} onToggleLock={(sid, k) => toggleDoorSizeLock(g.id, sid, k)}
                 onEditSplitGap={(sid, k, v) => { void setDoorSplitGap(g.id, sid, k, v); }} onEditEdgeGap={(edge, v) => { void setDoorEdgeGap(g.id, edge, v); }}
                 onEditLeaf={(lid, k, v) => { void editDoorLeafSize(g.id, lid, k, v); }} onEditLeafGap={(lid, v) => { void setDoorLeafGap(g.id, lid, v); }}

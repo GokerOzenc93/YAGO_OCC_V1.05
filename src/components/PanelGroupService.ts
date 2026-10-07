@@ -5,6 +5,8 @@ import {
 import { type Vec3, dominantAxisLabel, effectiveBodyGeometry, genId, getFacesAndGroups, getShapeMatrix, isFlatNormal, localBboxOf, round1, vertexModsKey } from './Geometry';
 import { panelHasRotation } from './FaceRegion';
 import { matchReferenceFace } from './PanelOps';
+// Döngüsel içe aktarma (DoorService ↔ PanelGroupService): yalnız işlev gövdelerinde kullanılır (modül yüklenirken değil) — ESM canlı bağlarıyla güvenli.
+import { doorJointForBond, moveDoorJointTo } from './DoorService';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // RAF / DİKME GRUPLARI (PanelGroupService)
@@ -1333,7 +1335,21 @@ function solveGroup(group: PanelGroup, parent: Shape, panels: Shape[], groups: P
     region = group.region || [cloneBox(cavity)];
   }
   const L = boxSpan(cavity, group.axis);
-  const gaps = rescaleGaps(group.gaps, L, group.count, ts);
+  let gaps = rescaleGaps(group.gaps, L, group.count, ts);
+  // KAPAK DERZİNE BAĞ (Goker: "eklenen raf ve dikme her zaman o kapak aralarının arasında çalışsın"): bağlı üye, kapak
+  // derzine göre (hiza) konumlanır — o boşluk derzden yazılır, kalan boşluklar applyGapEdit kuralıyla dağılır. Derz yoksa /
+  // eksen uyuşmuyorsa bağ bu çözümde yok sayılır (syncPanelGroups bayat bağı düşürür).
+  if (group.doorBond) {
+    const bj = doorJointForBond(group.doorBond, parent, panels);
+    const m = Math.min(Math.max(0, group.doorBond.member ?? 0), group.count - 1);
+    if (bj && bj.axis === group.axis && m >= 0) {
+      const want = bj.panelMin(ts[m]);
+      const prefix = gaps.slice(0, m).reduce((a, g, i) => a + g.value + ts[i], 0);
+      const gm = groupFacing(group) > 0 ? want - cavity.min[group.axis] - prefix : cavity.max[group.axis] - want - ts[m] - prefix;
+      if (gm >= -0.05) gaps = applyGapEdit(gaps, m, Math.max(0, gm), L, group.count, ts);
+      else console.warn('[YAGO][GRUP-KAPAK-BAĞ] derz hacmin dışında, bağ bu çözümde uygulanmadı:', group.id, 'istenen min=', want.toFixed(1), fmtBox(cavity));
+    } else if (bj) console.warn('[YAGO][GRUP-KAPAK-BAĞ] derz ekseni grubun dizilim ekseni değil, bağ uygulanmadı:', group.id, 'XYZ'[bj.axis], 'vs', 'XYZ'[group.axis]);
+  }
   const starts = panelStarts(cavity, group.axis, groupFacing(group), gaps, ts);
   const sections = starts.map((s, i) => {
     if (!minOk) return null;
@@ -1416,8 +1432,8 @@ function solveFromStore(group: PanelGroup): GroupSolution | null {
   return solveGroup(group, parent, st.shapes, st.panelGroups.some(g => g.id === group.id) ? st.panelGroups : [...st.panelGroups, group]);
 }
 
-/** Onaylanan hacimden grup + ilk üye VF (1 panel, eşit boşluk) oluşturur; grup seçilir. */
-export function createPanelGroupFromCavity(shapeId: string, kind: PanelGroup['kind'], pick: CavityPick, name?: string): PanelGroup | null {
+/** Onaylanan hacimden grup + ilk üye VF (1 panel, eşit boşluk) oluşturur; grup seçilir. `extra` = ek alanlar (ör. doorBond — çözüm bağı görür). */
+export function createPanelGroupFromCavity(shapeId: string, kind: PanelGroup['kind'], pick: CavityPick, name?: string, extra: Partial<PanelGroup> = {}): PanelGroup | null {
   const st = useAppStore.getState();
   const parent = shapeById(shapeId, st.shapes);
   if (!parent) return null;
@@ -1436,8 +1452,10 @@ export function createPanelGroupFromCavity(shapeId: string, kind: PanelGroup['ki
     id: genId(kind === 'shelf' ? 'shelf' : 'divider'), shapeId, kind, axis, facing, arrow, anchorFrac: fracInCavity(body, pick.seed, true), name: name?.trim() || groupKindLabel(kind),
     cavity: cloneBox(pick.bbox), region: pick.boxes.map(cloneBox), count, gaps: equalGaps(L, count, [t]), thickness: t, memberThicknesses: [t], memberVfIds: [], createdAt: Date.now(),
     ...(pick.shape === 'box' ? { boxMode: true, boxFrac: { min: fracInCavity(body, pick.bbox.min), max: fracInCavity(body, pick.bbox.max) } } : {}),
+    ...extra,
   };
   const sol = solveFromStore(group) || fallbackSolution(group, group.gaps, count, pick.seed);
+  group.gaps = sol.gaps;   // bağlı grupta (doorBond) boşluk derzden gelir
   const vfs = Array.from({ length: count }, (_, i) => makeMemberVf(group, i, sol));
   group.memberVfIds = vfs.map(v => v.id);
   st.addPanelGroup(group);
@@ -1500,7 +1518,9 @@ export async function relocatePanelGroup(groupId: string, pick: CavityPick): Pro
   const patch: Partial<PanelGroup> = {
     axis, facing, arrow, anchorFrac: fracInCavity(body, pick.seed, true), cavity: cloneBox(pick.bbox), region: pick.boxes.map(cloneBox), gaps, cavitySteps: undefined,
     boxMode: pick.shape === 'box', boxFrac: pick.shape === 'box' ? { min: fracInCavity(body, pick.bbox.min), max: fracInCavity(body, pick.bbox.max) } : undefined,
+    doorBond: undefined,   // yeni hacim seçildi → kapak derzine bağ düşer (levha artık kendi yerinde)
   };
+  if (group.doorBond) console.log('[YAGO][HACİM-TAŞI] kapak derzine bağ çözüldü (grup taşındı):', groupId);
   const next: PanelGroup = { ...group, ...patch };
   const sol = solveFromStore(next) || fallbackSolution(next, gaps, group.count, pick.seed);
   for (const vfId of group.memberVfIds) {
@@ -1639,6 +1659,25 @@ export async function editGroupGap(groupId: string, k: number, value: number): P
   const group = groupById(groupId);
   if (!group || !Number.isFinite(value)) return;
   const gaps = applyGapEdit(group.gaps, k, value, boxSpan(group.cavity, group.axis), group.count, memberThicknessesOf(group));
+  // KAPAK DERZİNE BAĞLI ÜYE (Goker: levha kapak aralarının arasında çalışır): bağlı üyenin önündeki / arkasındaki boşluk
+  // girilince LEVHA değil KAPAK DERZİ taşınır (moveDoorJointTo → rebuild → levha derzi izler). Diğer boşluklar normal.
+  if (group.doorBond) {
+    const m = Math.min(Math.max(0, group.doorBond.member ?? 0), group.count - 1);
+    if (k === m || k === m + 1) {
+      const st = useAppStore.getState();
+      const parent = shapeById(group.shapeId, st.shapes);
+      const bj = parent ? doorJointForBond(group.doorBond, parent, st.shapes) : null;
+      if (bj && bj.axis === group.axis) {
+        const ts = memberThicknessesOf(group);
+        const s = panelStarts(group.cavity, group.axis, groupFacing(group), gaps, ts)[m];
+        const a0 = s, a1 = s + ts[m], g = bj.p1 - bj.p0;
+        const center = group.doorBond.align === 'center' ? (a0 + a1) / 2 : group.doorBond.align === 'min' ? a1 + g / 2 : a0 - g / 2;
+        console.log('[YAGO][GRUP-KAPAK-BAĞ] boşluk girişi → kapak derzi taşınır', groupId, 'k=', k, 'değer=', value, '→ derz merkezi', center.toFixed(1));
+        if (await moveDoorJointTo(group.doorBond.doorGroupId, group.doorBond.splitId, group.doorBond.k, center)) return;
+        console.warn('[YAGO][GRUP-KAPAK-BAĞ] kapak derzi taşınamadı; boşluk girişi bağ yüzünden etkisiz kalacak');
+      }
+    }
+  }
   writeGroupGaps(group, gaps, group.targetGap != null ? { targetGap: undefined } : {});
   console.log('[YAGO][GRUP-BOŞLUK] girildi', groupId, 'k=', k, 'değer=', value, '→', gaps.map(g => `${g.value}${g.locked ? '🔒' : g.edited ? '*' : ''}`).join('/'));
   await requestRebuild(group.shapeId);
@@ -1788,6 +1827,8 @@ export function syncPanelGroups(parentShapeId: string): void {
   if (!parent) return;
   const mine = st.panelGroups.filter(g => g.shapeId === parentShapeId);
   for (const g of mine) {
+    // Bayat kapak bağı (kapak grubu / bölme / derz silinmiş) düşer; levha olduğu yerde kalır.
+    if (g.doorBond && !doorJointForBond(g.doorBond, parent, st.shapes)) { st.updatePanelGroup(g.id, { doorBond: undefined }); console.warn('[YAGO][GRUP-KAPAK-BAĞ] kapak derzi yok, bağ düştü:', g.id, g.doorBond); }
     const sol = solveGroup(g, parent, st.shapes, st.panelGroups);
     if (!sol) continue;
     const sameBox = boxKey(sol.cavity) === boxKey(g.cavity);
