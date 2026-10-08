@@ -18,12 +18,12 @@ import {
   executePanelMoveFixed, executePanelRotate, findExistingStepForFace, updateExtrudeStep, updateTransformStep,
 } from './PanelOps';
 import {
-  boxSpan, confirmRefCavityExtrude, confirmVolumePick, deleteCavityStep, deletePanelGroupWithMembers, editGroupGap, equalizeGroupGaps, executeCavityExtrude,
-  groupFacing, groupKindLabel, groupName, memberThicknessesOf, panelStarts, renamePanelGroup, setGroupCount, setGroupMemberThickness, setGroupTargetGap, startCavityEdit, startGroupRepick, toggleGroupGapLock,
-  traceMaskLoops, updateCavityStep,
+  type GroupLayoutSnap, boxSpan, confirmRefCavityExtrude, confirmVolumePick, deleteCavityStep, deletePanelGroupWithMembers, editGroupGap, equalizeGroupGaps, executeCavityExtrude,
+  groupFacing, groupKindLabel, groupLayoutSnapshot, groupName, memberThicknessesOf, panelStarts, previewGroupGap, previewGroupMemberThickness, renamePanelGroup, restoreGroupLayout, setGroupCount, setGroupMemberThickness, setGroupTargetGap,
+  startCavityEdit, startGroupRepick, toggleGroupGapLock, traceMaskLoops, updateCavityStep,
 } from './PanelGroupService';
 import {
-  type DoorCut, type DoorEdgeKey, type DoorNearPanel, type DoorNodeSolved, DOOR_TYPES, DOOR_TYPE_LABEL, DOOR_TYPE_TITLE, addPanelAtDoorJoint, applyDoorCuts, clearDoorSpacing, collectDoorCuts, doorJointParts, doorJoints, doorLeafAxis, doorPlaneAxes, doorSpacingTargetsInScope, doorLeaves, doorMemberCount, doorNearPanels,
+  type DoorCut, type DoorEdgeKey, type DoorLayoutSnap, type DoorNearPanel, type DoorNodeSolved, DOOR_TYPES, DOOR_TYPE_LABEL, DOOR_TYPE_TITLE, addPanelAtDoorJoint, applyDoorCuts, clearDoorSpacing, collectDoorCuts, doorJointParts, doorJoints, doorLayoutSnapshot, doorLeafAxis, doorPlaneAxes, doorSpacingTargetsInScope, doorLeaves, doorMemberCount, doorNearPanels, restoreDoorLayout,
   confirmDoorPick, deleteDoorGroupWithMembers, doorGroupName, doorMemberRects, doorMembersOf, doorPlacementLabel, edgeGapsOf, editDoorLeafSize, editDoorSize, equalizeDoorGroup, findDoorNode, findSolvedNode,
   isDoorVf, renameDoorGroup, setDoorEdgeGap, setDoorGap, setDoorHalfOverlay, setDoorLeafGap, setDoorLeafTypes, setDoorNodeSpacing, setDoorJointRef, setDoorNodeSplit, setDoorPlacement, setDoorSplitGap, splitDoorAtPanel, setDoorThickness, setVfDoorBound,
   solveDoorTree, toggleDoorSizeLock,
@@ -782,19 +782,33 @@ function regionMask(boxes: CavityBox[], h: number, v: number) {
   return { hs, vs, filled };
 }
 type SchemaEdit = { kind: 'gap'; k: number; v: string } | { kind: 't'; i: number; v: string };
-export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, splitBacks, onEditGap, onToggleLock, onEditThickness, onSelectMember, onToggleDoorRef, onToggleSplitBack }: {
+export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, splitBacks, onEditGap, onToggleLock, onEditThickness, onSelectMember, onToggleDoorRef, onToggleSplitBack, onEditBegin, onEditCancel }: {
   group: PanelGroup; selectedIndex: number;
   /** Şema sırasındaki (geometrik) üye i'nin liste numarası — "6.1" gibi. */
   memberLabels: string[];
   /** Şema sırasındaki üye i kapak sınırı mı (VF.doorBound) / arkalığı böl mü (VF.splitBack) — levhanın üstündeki rozetler. */
   doorRefs: boolean[]; splitBacks: boolean[];
-  onEditGap: (k: number, v: number) => void; onToggleLock: (k: number) => void;
-  onEditThickness: (i: number, v: number) => void; onSelectMember: (i: number) => void;
+  /** preview=true → CANLI ÖNİZLEME (her tuş basışı: yalnız store dağılımı, rebuild yok); preview yok → onay (gerçek yazım + rebuild). */
+  onEditGap: (k: number, v: number, preview?: boolean) => void; onToggleLock: (k: number) => void;
+  onEditThickness: (i: number, v: number, preview?: boolean) => void; onSelectMember: (i: number) => void;
   onToggleDoorRef: (i: number) => void; onToggleSplitBack: (i: number) => void;
+  /** Düzenleme başında kayıt (Esc ile geri yükleme için) / Esc → kayıt geri yüklenir. */
+  onEditBegin?: () => unknown; onEditCancel?: (snap: unknown) => void;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(300);
   const [editing, setEditing] = useState<SchemaEdit | null>(null);
+  // CANLI ÖNİZLEME (Goker, Eki 2026: "kutucuğa değeri yazar yazmaz kalan ölçüyü diğer taraflara dağıt"): düzenleme başında
+  // kayıt alınır; her tuşta geçerli değer önizleme olarak yazılır; Esc kaydı geri yükler ve onayı (blur) iptal eder.
+  const snapRef = useRef<unknown>(undefined);
+  const cancelledRef = useRef(false);
+  const beginEdit = (e: SchemaEdit) => { snapRef.current = onEditBegin?.(); cancelledRef.current = false; setEditing(e); };
+  const previewEdit = (e: SchemaEdit, raw: string) => {
+    const v = parseFloat(raw.replace(',', '.'));
+    if (isNaN(v)) return;
+    if (e.kind === 'gap') { if (v >= 0) onEditGap(e.k, v, true); } else if (v > 0) onEditThickness(e.i, v, true);
+  };
+  const cancelEdit = () => { cancelledRef.current = true; onEditCancel?.(snapRef.current); setEditing(null); };
   useEffect(() => {
     const el = wrapRef.current; if (!el) return;
     const ro = new ResizeObserver(es => { const w = es[0].contentRect.width; if (w > 0) setWidth(Math.round(w)); });
@@ -933,11 +947,12 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
 
   const commit = () => {
     if (!editing) return;
-    const v = parseFloat(editing.v);
+    if (cancelledRef.current) { cancelledRef.current = false; return; }   // Esc sonrası blur: onay yok
+    const v = parseFloat(editing.v.replace(',', '.'));
     setEditing(null);
-    if (isNaN(v)) return;
-    if (editing.kind === 'gap') { if (v >= 0) onEditGap(editing.k, v); }
-    else if (v > 0) onEditThickness(editing.i, v);
+    if (isNaN(v)) { onEditCancel?.(snapRef.current); return; }
+    if (editing.kind === 'gap') { if (v >= 0) onEditGap(editing.k, v); else onEditCancel?.(snapRef.current); }
+    else if (v > 0) onEditThickness(editing.i, v); else onEditCancel?.(snapRef.current);
   };
   // LEVHA = SEÇİM: ince levhayı yakalamak kolay olsun diye çevresinde görünmez ±5 px tıklama alanı.
   const HIT = 5;
@@ -1025,7 +1040,7 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
           return (
             <DimPill key={`t-${p.i}`} cx={p.cx} cy={p.cy} txt={p.txt} fs={fsT} fill={on ? '#fff7ed' : '#f5f2ec'} stroke={on ? '#f97316' : SOFT.pillStroke} strokeWidth={on ? 1 : 0.7}
               color={on ? '#c2410c' : '#57534e'} hideText={editing?.kind === 't' && editing.i === p.i} title={`Panel ${memberLabels[p.i] ?? p.i + 1} thickness — click to edit`}
-              onClick={e => { stop(e); setEditing({ kind: 't', i: p.i, v: p.txt }); }} />
+              onClick={e => { stop(e); beginEdit({ kind: 't', i: p.i, v: p.txt }); }} />
           );
         })}
         {/* üye numaraları (liste ile aynı: 6.1, 6.2 …) — salt-okunur */}
@@ -1046,7 +1061,7 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
             <g key={`gap-${p.k}`} className={`yago-gap${locked ? ' locked' : ''}`}>
               <DimArrows a={a} b={b} asz={asz} color={locked ? '#f59e0b' : DIM_LINE} />
               <DimPill cx={p.cx} cy={p.cy} txt={p.txt} fs={fs} fill={locked || edited ? '#fff7ed' : '#ffffff'} stroke={locked ? '#f97316' : edited ? '#fbbf24' : SOFT.pillStroke} strokeWidth={locked || edited ? 1 : 0.7}
-                color={locked ? '#c2410c' : edited ? '#9a3412' : '#44403c'} hideText={editing?.kind === 'gap' && editing.k === p.k} title={edited ? 'Entered gap — click to edit' : 'Edit gap'} onClick={e => { stop(e); setEditing({ kind: 'gap', k: p.k, v: p.txt }); }} />
+                color={locked ? '#c2410c' : edited ? '#9a3412' : '#44403c'} hideText={editing?.kind === 'gap' && editing.k === p.k} title={edited ? 'Entered gap — click to edit' : 'Edit gap'} onClick={e => { stop(e); beginEdit({ kind: 'gap', k: p.k, v: p.txt }); }} />
               <LockBadge cx={lockCx} cy={lockCy} locked={locked} edited={edited} onClick={() => onToggleLock(p.k)}
                 title={locked ? 'Locked gap — stays fixed on resize. Click to unlock' : edited ? 'Entered gap — click to lock it (stays fixed on resize)' : 'Lock gap (stays fixed on resize)'} />
             </g>
@@ -1058,9 +1073,9 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
         const fsE = editing.kind === 'gap' ? fs : fsT;
         return (
           <input autoFocus type="text" inputMode="decimal" value={editing.v}
-            onChange={e => setEditing({ ...editing, v: e.target.value })}
+            onChange={e => { const next = { ...editing, v: e.target.value } as SchemaEdit; setEditing(next); previewEdit(next, e.target.value); }}
             onBlur={commit}
-            onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setEditing(null); }}
+            onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') cancelEdit(); }}
             onClick={stop}
             style={{
               position: 'absolute', left: p.cx - p.pw / 2 - 4, top: p.cy - p.ph / 2 - 2, width: p.pw + 8, height: p.ph + 4, textAlign: 'center',
@@ -1172,9 +1187,9 @@ function DoorTypeBar({ value, hint, onPick }: { value: DoorType | null; hint: st
 
 type DoorEdit = { key: string; v: string };
 /** Ölçü zinciri öğesi: ölçü (ok + pill + kilit) ya da boşluk (yalnız pill). a..b = eksen boyunca mm. */
-type ChainItem = { key: string; kind: 'size' | 'gap'; a: number; b: number; txt: string; title: string; locked?: boolean; edited?: boolean; onLock?: () => void; commit: (v: number) => void; min: number };
+type ChainItem = { key: string; kind: 'size' | 'gap'; a: number; b: number; txt: string; title: string; locked?: boolean; edited?: boolean; onLock?: () => void; commit: (v: number) => void; preview?: (v: number) => void; min: number };
 type Chain = { horiz: boolean; pos: number; items: ChainItem[]; small?: boolean };
-export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts, nearPanels, refPick, onEditSize, onToggleLock, onEditSplitGap, onEditEdgeGap, onEditLeaf, onEditLeafGap, onPathClick, onToggleHalfOverlay, onAlignJoint, onRefPick, addPick, onAddPick, onRemovePick, addObstacles }: {
+export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts, nearPanels, refPick, onEditSize, onToggleLock, onEditSplitGap, onEditEdgeGap, onEditLeaf, onEditLeafGap, onPathClick, onToggleHalfOverlay, onAlignJoint, onRefPick, addPick, onAddPick, onRemovePick, addObstacles, onEditBegin, onEditCancel }: {
   group: DoorGroup; selectedIndex: number; memberLabels: string[];
   /** BÖLGE SEÇİMİ: seçili düğümler (kök alan / bölme / kapak) — turuncu çerçeve + seviye etiketi (ör. "L1 · V ×2"). */
   selectedNodes: string[];
@@ -1182,9 +1197,12 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
   cuts: DoorCut[];
   /** ŞEMADAKİ SINIR LEVHALARI (dış kapak; iç kapakta boş): gerçek konum/kalınlık; kenar levhasında yarım binme, iç levhada derz hizalaması. */
   nearPanels: DoorNearPanel[];
-  onEditSize: (splitId: string, k: number, v: number) => void; onToggleLock: (splitId: string, k: number) => void;
-  onEditSplitGap: (splitId: string, k: number, v: number) => void; onEditEdgeGap: (edge: DoorEdgeKey, v: number) => void;
-  onEditLeaf: (leafId: string, k: number, v: number) => void; onEditLeafGap: (leafId: string, v: number) => void;
+  /** preview=true → CANLI ÖNİZLEME (her tuş basışı: yalnız ağaç/boşluk dağılımı store'a, rebuild yok); yoksa onay (gerçek yazım + rebuild). */
+  onEditSize: (splitId: string, k: number, v: number, preview?: boolean) => void; onToggleLock: (splitId: string, k: number) => void;
+  onEditSplitGap: (splitId: string, k: number, v: number, preview?: boolean) => void; onEditEdgeGap: (edge: DoorEdgeKey, v: number, preview?: boolean) => void;
+  onEditLeaf: (leafId: string, k: number, v: number, preview?: boolean) => void; onEditLeafGap: (leafId: string, v: number, preview?: boolean) => void;
+  /** Düzenleme başında kayıt (Esc ile geri yükleme için) / Esc → kayıt geri yüklenir. */
+  onEditBegin?: () => unknown; onEditCancel?: (snap: unknown) => void;
   /** Kapak tıklandı: tıklanan noktanın kök → yaprak düğüm yolu (yalnız seçim — üye seçilmez); additive = Shift/Ctrl/⌘. */
   onPathClick: (path: string[], additive: boolean) => void;
   onToggleHalfOverlay: (edge: DoorEdgeKey, on: boolean) => void;
@@ -1220,9 +1238,16 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+  // Giriş kutusu ağaç değişince KAPANMAZ (canlı önizleme ağacı her tuşta yazar); yalnız grup / seçim değişince kapanır.
   const treeKey = JSON.stringify(group.tree);
   const selKey = selectedNodes.join('|');
-  useEffect(() => { setEditing(null); }, [group.id, treeKey, selectedIndex >= 0, selKey]);
+  useEffect(() => { setEditing(null); }, [group.id, selectedIndex >= 0, selKey]);
+  // CANLI ÖNİZLEME (Goker, Eki 2026: "kutucuğa değeri yazar yazmaz kalan ölçüyü diğer taraflara dağıt"): düzenleme başında kayıt
+  // alınır; her tuşta geçerli değer önizleme olarak yazılır (dağılım şemada anında); Esc kaydı geri yükler ve onayı iptal eder.
+  const snapRef = useRef<unknown>(undefined);
+  const cancelledRef = useRef(false);
+  const beginEdit = (e: DoorEdit) => { snapRef.current = onEditBegin?.(); cancelledRef.current = false; setEditing(e); };
+  const cancelEdit = () => { cancelledRef.current = true; onEditCancel?.(snapRef.current); setEditing(null); };
 
   const { rect, axis, side } = group;
   // KUTU: genişlik tamamen kullanılır; yükseklik kapağın gerçek oranından (en az DOOR_MIN_ASPECT·genişlik, en çok PREVIEW_HEIGHT'a sığan).
@@ -1316,11 +1341,18 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
 
   const commit = () => {
     if (!editing) return;
+    if (cancelledRef.current) { cancelledRef.current = false; return; }   // Esc sonrası blur: onay yok
     const v = parseFloat(editing.v.replace(',', '.'));
     const p = pillByKey.get(editing.key);
     setEditing(null);
-    if (isNaN(v) || !p || v < p.item.min) return;
+    if (isNaN(v) || !p || v < p.item.min) { onEditCancel?.(snapRef.current); return; }   // geçersiz → önizleme geri alınır
     p.item.commit(v);
+  };
+  const previewEdit = (key: string, raw: string) => {
+    const v = parseFloat(raw.replace(',', '.'));
+    const p = pillByKey.get(key);
+    if (isNaN(v) || !p || v < p.item.min) return;
+    p.item.preview?.(v);
   };
   // Düğüm yolu (kök → yaprak) ve seçili düğümlerin ekran kutuları (çözülmüş alanlarından).
   const pathToLeaf = (leafId: string): string[] => {
@@ -1364,7 +1396,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
   const touch = { u0: (n: DoorNodeSolved) => Math.abs(n.u0 - (rect.u0 + eg.uMin)) < T0, u1: (n: DoorNodeSolved) => Math.abs(n.u1 - (rect.u1 - eg.uMax)) < T0,
     v1: (n: DoorNodeSolved) => Math.abs(n.v1 - (rect.v1 - eg.vMax)) < T0, v0: (n: DoorNodeSolved) => Math.abs(n.v0 - (rect.v0 + eg.vMin)) < T0 };
   const edgeKeyName = (k: DoorEdgeKey) => (k === 'uMin' ? (mirrorU ? 'Right' : 'Left') : k === 'uMax' ? (mirrorU ? 'Left' : 'Right') : k === 'vMax' ? (mirrorV ? 'Bottom' : 'Top') : (mirrorV ? 'Top' : 'Bottom'));
-  const edgeItem = (k: DoorEdgeKey, a: number, b: number): ChainItem => ({ key: `edge-${k}`, kind: 'gap', a, b, txt: fmt(eg[k]), title: `${edgeKeyName(k)} edge gap — click to edit`, commit: v => onEditEdgeGap(k, v), min: 0 });
+  const edgeItem = (k: DoorEdgeKey, a: number, b: number): ChainItem => ({ key: `edge-${k}`, kind: 'gap', a, b, txt: fmt(eg[k]), title: `${edgeKeyName(k)} edge gap — click to edit`, commit: v => onEditEdgeGap(k, v), preview: v => onEditEdgeGap(k, v, true), min: 0 });
   const edgeStrip = (n: DoorNodeSolved, k: DoorEdgeKey) => {
     if (k === 'uMin') strip('u', rect.u0, n.u0, n.v0, n.v1); else if (k === 'uMax') strip('u', n.u1, rect.u1, n.v0, n.v1);
     else if (k === 'vMax') strip('v', n.v1, rect.v1, n.u0, n.u1); else strip('v', rect.v0, n.v0, n.u0, n.u1);
@@ -1388,11 +1420,11 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     n.children.forEach((_c, i) => {
       const w = n.sizes[i]?.value ?? 0;
       items.push({ key: `size-${n.id}-${i}`, kind: 'size', a: p, b: p + dir * w, txt: fmt(w), title: horiz ? 'Door width — click to edit (siblings take the rest)' : 'Door height — click to edit (siblings take the rest)',
-        locked: !!n.sizes[i]?.locked, edited: !!n.sizes[i]?.edited, onLock: () => onToggleLock(n.id, i), commit: v => onEditSize(n.id, i, v), min: 1 });
+        locked: !!n.sizes[i]?.locked, edited: !!n.sizes[i]?.edited, onLock: () => onToggleLock(n.id, i), commit: v => onEditSize(n.id, i, v), preview: v => onEditSize(n.id, i, v, true), min: 1 });
       p += dir * w;
       if (i < n.children.length - 1) {
         const g = n.gaps[i] ?? 0;
-        items.push({ key: `sgap-${n.id}-${i}`, kind: 'gap', a: p, b: p + dir * g, txt: fmt(g), title: 'Gap between doors — click to edit', commit: v => onEditSplitGap(n.id, i, v), min: 0 });
+        items.push({ key: `sgap-${n.id}-${i}`, kind: 'gap', a: p, b: p + dir * g, txt: fmt(g), title: 'Gap between doors — click to edit', commit: v => onEditSplitGap(n.id, i, v), preview: v => onEditSplitGap(n.id, i, v, true), min: 0 });
         if (withStrips) strip(n.axis, p, p + dir * g, horiz ? n.v0 : n.u0, horiz ? n.v1 : n.u1);
         p += dir * g;
       }
@@ -1408,13 +1440,13 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     const items: ChainItem[] = [];
     const start = horiz ? n.u0 : n.v1;
     const c0 = horiz ? on.v0 : on.u0, c1 = horiz ? on.v1 : on.u1;
-    if (idx > 0) { const g = P.gaps[idx - 1] ?? 0; items.push({ key: `sgap-${P.id}-${idx - 1}`, kind: 'gap', a: start - dir * g, b: start, txt: fmt(g), title: 'Gap between doors — click to edit', commit: v => onEditSplitGap(P.id, idx - 1, v), min: 0 }); strip(P.axis, start - dir * g, start, c0, c1); }
+    if (idx > 0) { const g = P.gaps[idx - 1] ?? 0; items.push({ key: `sgap-${P.id}-${idx - 1}`, kind: 'gap', a: start - dir * g, b: start, txt: fmt(g), title: 'Gap between doors — click to edit', commit: v => onEditSplitGap(P.id, idx - 1, v), preview: v => onEditSplitGap(P.id, idx - 1, v, true), min: 0 }); strip(P.axis, start - dir * g, start, c0, c1); }
     else if (horiz ? touch.u0(n) : touch.v1(n)) { const k: DoorEdgeKey = horiz ? 'uMin' : 'vMax'; items.push(edgeItem(k, start - dir * eg[k], start)); edgeStrip(on, k); }
     const w = P.sizes[idx]?.value ?? 0;
     items.push({ key: `size-${P.id}-${idx}`, kind: 'size', a: start, b: start + dir * w, txt: fmt(w), title: horiz ? 'Door width — click to edit (siblings take the rest)' : 'Door height — click to edit (siblings take the rest)',
-      locked: !!P.sizes[idx]?.locked, edited: !!P.sizes[idx]?.edited, onLock: () => onToggleLock(P.id, idx), commit: v => onEditSize(P.id, idx, v), min: 1 });
+      locked: !!P.sizes[idx]?.locked, edited: !!P.sizes[idx]?.edited, onLock: () => onToggleLock(P.id, idx), commit: v => onEditSize(P.id, idx, v), preview: v => onEditSize(P.id, idx, v, true), min: 1 });
     const end = start + dir * w;
-    if (idx < P.children.length - 1) { const g = P.gaps[idx] ?? 0; items.push({ key: `sgap-${P.id}-${idx}`, kind: 'gap', a: end, b: end + dir * g, txt: fmt(g), title: 'Gap between doors — click to edit', commit: v => onEditSplitGap(P.id, idx, v), min: 0 }); strip(P.axis, end, end + dir * g, c0, c1); }
+    if (idx < P.children.length - 1) { const g = P.gaps[idx] ?? 0; items.push({ key: `sgap-${P.id}-${idx}`, kind: 'gap', a: end, b: end + dir * g, txt: fmt(g), title: 'Gap between doors — click to edit', commit: v => onEditSplitGap(P.id, idx, v), preview: v => onEditSplitGap(P.id, idx, v, true), min: 0 }); strip(P.axis, end, end + dir * g, c0, c1); }
     else if (horiz ? touch.u1(n) : touch.v0(n)) { const k: DoorEdgeKey = horiz ? 'uMax' : 'vMin'; items.push(edgeItem(k, end, end + dir * eg[k])); edgeStrip(on, k); }
     return items;
   };
@@ -1452,9 +1484,9 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
       const p0 = horiz ? n.u0 : n.v1;
       strip(lax, p0 + dir * a, p0 + dir * (a + g), horiz ? n.v0 : n.u0, horiz ? n.v1 : n.u1);
       pushChain(n, horiz, [
-        { key: `leaf-${n.id}-0`, kind: 'size', a: p0, b: p0 + dir * a, txt: fmt(a), title: 'Leaf size — click to edit (the other leaf takes the rest)', commit: v => onEditLeaf(n.id, 0, v), min: 1 },
-        { key: `lgap-${n.id}`, kind: 'gap', a: p0 + dir * a, b: p0 + dir * (a + g), txt: fmt(g), title: 'Gap between the two leaves — click to edit', commit: v => onEditLeafGap(n.id, v), min: 0 },
-        { key: `leaf-${n.id}-1`, kind: 'size', a: p0 + dir * (a + g), b: p0 + dir * (a + g + b), txt: fmt(b), title: 'Leaf size — click to edit (the other leaf takes the rest)', commit: v => onEditLeaf(n.id, 1, v), min: 1 },
+        { key: `leaf-${n.id}-0`, kind: 'size', a: p0, b: p0 + dir * a, txt: fmt(a), title: 'Leaf size — click to edit (the other leaf takes the rest)', commit: v => onEditLeaf(n.id, 0, v), preview: v => onEditLeaf(n.id, 0, v, true), min: 1 },
+        { key: `lgap-${n.id}`, kind: 'gap', a: p0 + dir * a, b: p0 + dir * (a + g), txt: fmt(g), title: 'Gap between the two leaves — click to edit', commit: v => onEditLeafGap(n.id, v), preview: v => onEditLeafGap(n.id, v, true), min: 0 },
+        { key: `leaf-${n.id}-1`, kind: 'size', a: p0 + dir * (a + g), b: p0 + dir * (a + g + b), txt: fmt(b), title: 'Leaf size — click to edit (the other leaf takes the rest)', commit: v => onEditLeaf(n.id, 1, v), preview: v => onEditLeaf(n.id, 1, v, true), min: 1 },
       ]);
     }
   }
@@ -1679,7 +1711,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
           const hide = editing?.key === p.key;
           if (it.kind === 'gap') {
             return <DimPill key={p.key} cx={p.cx} cy={p.cy} txt={it.txt} fs={f} fill="#fff7ed" stroke="#f97316" strokeWidth={1} color="#c2410c" hideText={hide} title={it.title}
-              onClick={e => { stop(e); setEditing({ key: p.key, v: it.txt }); }} />;
+              onClick={e => { stop(e); beginEdit({ key: p.key, v: it.txt }); }} />;
           }
           const locked = !!it.locked, edited = !locked && !!it.edited, editable = !!it.onLock || it.key.startsWith('leaf-');
           // Kilit rozeti pill'in ucunda HER ZAMAN (yatay zincirde sağında, düşeyde altında); girilmiş ölçü kehribar, kilitli turuncu.
@@ -1687,7 +1719,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
             <g key={p.key} className={`yago-gap${locked ? ' locked' : ''}`}>
               <DimPill cx={p.cx} cy={p.cy} txt={it.txt} fs={f} fill={locked || edited ? '#fff7ed' : '#ffffff'} stroke={edited ? '#fbbf24' : '#f97316'} strokeWidth={locked ? 1.2 : 1}
                 color={locked ? '#c2410c' : edited ? '#9a3412' : '#1c1917'} hideText={hide} title={editable ? (edited ? `${it.title} (entered value)` : it.title) : `${it.title} — set by the door bounds`}
-                onClick={editable ? e => { stop(e); setEditing({ key: p.key, v: it.txt }); } : undefined} />
+                onClick={editable ? e => { stop(e); beginEdit({ key: p.key, v: it.txt }); } : undefined} />
               {it.onLock && (ch.horiz
                 ? <LockBadge cx={p.cx + p.pw / 2 + 12 + LOCK_R} cy={p.cy} locked={locked} edited={edited} onClick={it.onLock} />
                 : <LockBadge cx={p.cx} cy={p.cy + p.ph / 2 + 12 + LOCK_R} locked={locked} edited={edited} onClick={it.onLock} />)}
@@ -1697,9 +1729,9 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
       </svg>
       {editing && editPos && (
         <input autoFocus type="text" inputMode="decimal" value={editing.v}
-          onChange={e => setEditing({ ...editing, v: e.target.value })}
+          onChange={e => { setEditing({ ...editing, v: e.target.value }); previewEdit(editing.key, e.target.value); }}
           onBlur={commit}
-          onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setEditing(null); }}
+          onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') cancelEdit(); }}
           onClick={stop}
           style={{
             position: 'absolute', left: editPos.cx - editPos.pw / 2 - 4, top: editPos.cy - editPos.ph / 2 - 2, width: editPos.pw + 8, height: editPos.ph + 4, textAlign: 'center',
@@ -2846,11 +2878,12 @@ export function PanelEditor() {
               {/* Şema sırası = geometrik sıra (memberVfIds / groupIndex); numara = listedeki sıra (members). */}
               <GroupSchematic group={g} selectedIndex={g.memberVfIds.findIndex(id => selectedPanelRow === `vf-${id}`)}
                 memberLabels={g.memberVfIds.map((id, i) => { const mi = members.findIndex(m => m.id === id); return `${label}.${(mi >= 0 ? mi : i) + 1}`; })}
-                onEditGap={(k, v) => { void editGroupGap(g.id, k, v); }} onToggleLock={k => toggleGroupGapLock(g.id, k)}
+                onEditGap={(k, v, pv) => { if (pv) previewGroupGap(g.id, k, v); else void editGroupGap(g.id, k, v); }} onToggleLock={k => toggleGroupGapLock(g.id, k)}
+                onEditBegin={() => groupLayoutSnapshot(g.id)} onEditCancel={snap => restoreGroupLayout(g.id, snap as GroupLayoutSnap | null)}
                 doorRefs={g.memberVfIds.map(id => !!virtualFaces.find(f => f.id === id)?.doorBound)}
                 splitBacks={g.memberVfIds.map(id => !!virtualFaces.find(f => f.id === id)?.splitBack)}
                 onToggleSplitBack={i => { const id = g.memberVfIds[i]; const f = virtualFaces.find(x => x.id === id); if (f) { updateVirtualFace(id, { splitBack: !f.splitBack }); console.log('[YAGO][ARKALIK-BÖL]', id, !f.splitBack ? 'İŞARETLENDİ' : 'kaldırıldı', '(davranış henüz tanımlı değil)'); } }}
-                onEditThickness={(i, v) => { void setGroupMemberThickness(g.id, i, v); }}
+                onEditThickness={(i, v, pv) => { if (pv) previewGroupMemberThickness(g.id, i, v); else void setGroupMemberThickness(g.id, i, v); }}
                 onSelectMember={i => { const id = g.memberVfIds[i]; if (id) setSelectedPanelRow(`vf-${id}`, sid); }}
                 onToggleDoorRef={i => { const id = g.memberVfIds[i]; const f = virtualFaces.find(x => x.id === id); if (f) setVfDoorBound(id, !f.doorBound); }} />
               {cavityDock(g)}
@@ -2944,17 +2977,16 @@ export function PanelEditor() {
       const addPick = doorAddPick?.id === g.id ? doorAddPick.axis : null;
       const toggleAddPick = (axis: 'u' | 'v') => { if (addPick === axis) setDoorAddPick(null); else { if (refMode) setDoorRefPickGroupId(null); setDoorAddPick({ id: g.id, axis }); } };
       // Tık → tıklanan parça; Shift/Ctrl+tık → derzin boş parçalarının hepsine (Goker: "2 dikme arasındaki 3 bölüme de ayrı ayrı raf").
-      // YENİ SATIR (Goker, Eki 2026: "her dikme ve raf bir yeni satır olsun, otomatik olarak o satırı açsın"): her parça kendi grubu
-      // (= listede kendi kartı); yeni kartlar AÇILIR ve sonuncusu seçilir (tümünü seç → kaydırılır). Kapak kartı açık kalır
-      // (openCards yerel durum), mod kapanır. Eskiden kapak grubu yeniden seçiliyordu → yeni grubun seçimi düşüyor, satırı açılmıyordu.
+      // YENİ SATIR: her parça kendi grubu (= listede kendi kartı, KAPALI). Kart otomatik AÇILMAZ, grup seçilmez (Goker, Eki 2026:
+      // "dikme ve raf atınca otomatik onun panelini açıyor; düzenlemek istediğimde kendim açayım, otomatik açmasın") — önceki
+      // "yeni satırı aç ve seç" davranışı geri alındı. Kapak kartı seçili ve açık kalır, mod kapanır.
       const onAddPick = (splitId: string, k: number, ats: number[]) => {
         const made = ats.map(at => addPanelAtDoorJoint(g.id, splitId, k, at)).filter((pg): pg is PanelGroup => !!pg);
         if (!made.length) return;
         setDoorAddPick(null);
+        setSelectedDoorGroupId(g.id);
         openCard(g.id);
-        for (const pg of made) openCard(pg.id);
-        setSelectedPanelGroupId(made[made.length - 1].id);
-        console.log('[YAGO][KAPAK-ARA] yeni satır(lar) açıldı:', made.map(pg => `${pg.kind}:${pg.id}`).join(', '), '→ seçili', made[made.length - 1].id);
+        console.log('[YAGO][KAPAK-ARA] yeni satır(lar) eklendi (kapalı):', made.map(pg => `${pg.kind}:${pg.id}`).join(', '));
       };
       // SİL (Goker: "tıklayıp dikme veya raf atarsam sonradan silebileyim"): aynı modda mevcut levhanın bandı ✕ Remove → grup + panel silinir.
       const onRemovePick = (pgId: string) => { deletePanelGroupWithMembers(pgId); console.log('[YAGO][KAPAK-ARA] levha kaldırıldı (kapak kartı):', pgId); };
@@ -3051,9 +3083,10 @@ export function PanelEditor() {
                 nearPanels={nearPanels} addObstacles={addObstacles}
                 refPick={refMode} onRefPick={onRefPick}
                 addPick={addPick} onAddPick={onAddPick} onRemovePick={onRemovePick}
-                onEditSize={(sid, k, v) => { void editDoorSize(g.id, sid, k, v); }} onToggleLock={(sid, k) => toggleDoorSizeLock(g.id, sid, k)}
-                onEditSplitGap={(sid, k, v) => { void setDoorSplitGap(g.id, sid, k, v); }} onEditEdgeGap={(edge, v) => { void setDoorEdgeGap(g.id, edge, v); }}
-                onEditLeaf={(lid, k, v) => { void editDoorLeafSize(g.id, lid, k, v); }} onEditLeafGap={(lid, v) => { void setDoorLeafGap(g.id, lid, v); }}
+                onEditSize={(sid, k, v, pv) => { void editDoorSize(g.id, sid, k, v, { preview: pv }); }} onToggleLock={(sid, k) => toggleDoorSizeLock(g.id, sid, k)}
+                onEditSplitGap={(sid, k, v, pv) => { void setDoorSplitGap(g.id, sid, k, v, { preview: pv }); }} onEditEdgeGap={(edge, v, pv) => { void setDoorEdgeGap(g.id, edge, v, { preview: pv }); }}
+                onEditLeaf={(lid, k, v, pv) => { void editDoorLeafSize(g.id, lid, k, v, { preview: pv }); }} onEditLeafGap={(lid, v, pv) => { void setDoorLeafGap(g.id, lid, v, { preview: pv }); }}
+                onEditBegin={() => doorLayoutSnapshot(g.id)} onEditCancel={snap => restoreDoorLayout(g.id, snap as DoorLayoutSnap | null)}
                 onToggleHalfOverlay={(edge, on) => { void setDoorHalfOverlay(g.id, edge, on); }}
                 onAlignJoint={(sid, k, vfId, a) => { void setDoorJointRef(g.id, sid, k, vfId, a); }}
                 onPathClick={onPathClick} />

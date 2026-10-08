@@ -1432,7 +1432,11 @@ function solveFromStore(group: PanelGroup): GroupSolution | null {
   return solveGroup(group, parent, st.shapes, st.panelGroups.some(g => g.id === group.id) ? st.panelGroups : [...st.panelGroups, group]);
 }
 
-/** Onaylanan hacimden grup + ilk üye VF (1 panel, eşit boşluk) oluşturur; grup seçilir. `extra` = ek alanlar (ör. doorBond — çözüm bağı görür). */
+/**
+ * Onaylanan hacimden grup + ilk üye VF (1 panel, eşit boşluk) oluşturur. GRUP SEÇİLMEZ / KARTI AÇILMAZ (Goker, Eki 2026: "dikme ve
+ * raf atınca otomatik onun panelini açıyor; düzenlemek istediğimde kendim açayım") — satır listede kapalı belirir, kullanıcı açar.
+ * `extra` = ek alanlar (ör. doorBond — çözüm bağı görür).
+ */
 export function createPanelGroupFromCavity(shapeId: string, kind: PanelGroup['kind'], pick: CavityPick, name?: string, extra: Partial<PanelGroup> = {}): PanelGroup | null {
   const st = useAppStore.getState();
   const parent = shapeById(shapeId, st.shapes);
@@ -1460,7 +1464,6 @@ export function createPanelGroupFromCavity(shapeId: string, kind: PanelGroup['ki
   group.memberVfIds = vfs.map(v => v.id);
   st.addPanelGroup(group);
   st.insertVirtualFacesAfter(null, vfs);
-  st.setSelectedPanelGroupId(group.id);
   console.log('[YAGO][GRUP] oluşturuldu', group.id, kind, pick.shape === 'box' ? 'DÜZ (kutu)' : 'ŞEKİLLİ', 'hacim=', fmtBox(pick.bbox), 'parçaN=', pick.boxes.length, 'L=', L.toFixed(1),
     'çıpa=', group.anchorFrac.map(n => n.toFixed(2)).join(','), 'ok=', `${'XYZ'[arrow.axis]}${arrow.facing > 0 ? '+' : '−'}`, 'dizilim=', 'XYZ'[axis], '(sayım', facing > 0 ? 'MİN' : 'MAX', 'tarafından)');
   return group;
@@ -1654,6 +1657,37 @@ export async function setGroupMemberThickness(groupId: string, i: number, value:
   await requestRebuild(group.shapeId);
 }
 
+/**
+ * CANLI ÖNİZLEME (Goker, Eki 2026: "kutucuğa değeri yazar yazmaz, olması gerektiği gibi kalan ölçüyü diğer taraflara dağıt"):
+ * şema kutucuğuna her tuş basışında boşluk (applyGapEdit kuralı) ya da kalınlık (redistributeForThickness) STORE'A yazılır —
+ * VF / rebuild yok, yalnız şema ve kart anında yeni dağılımı gösterir. Onay (Enter / odak kaybı) editGroupGap /
+ * setGroupMemberThickness ile gerçek yazım + rebuild; Esc → groupLayoutSnapshot ile alınan kayıt geri yüklenir.
+ */
+export interface GroupLayoutSnap { gaps: GapSpec[]; memberThicknesses?: number[]; targetGap?: number }
+export function groupLayoutSnapshot(groupId: string): GroupLayoutSnap | null {
+  const g = groupById(groupId);
+  return g ? { gaps: g.gaps.map(x => ({ ...x })), memberThicknesses: g.memberThicknesses?.slice(), targetGap: g.targetGap } : null;
+}
+export function restoreGroupLayout(groupId: string, snap: GroupLayoutSnap | null | undefined): void {
+  if (!snap || !groupById(groupId)) return;
+  useAppStore.getState().updatePanelGroup(groupId, { gaps: snap.gaps.map(x => ({ ...x })), memberThicknesses: snap.memberThicknesses?.slice(), targetGap: snap.targetGap });
+}
+export function previewGroupGap(groupId: string, k: number, value: number): void {
+  const group = groupById(groupId);
+  if (!group || !Number.isFinite(value) || value < 0) return;
+  const gaps = applyGapEdit(group.gaps, k, value, boxSpan(group.cavity, group.axis), group.count, memberThicknessesOf(group));
+  useAppStore.getState().updatePanelGroup(groupId, { gaps });
+}
+export function previewGroupMemberThickness(groupId: string, i: number, value: number): void {
+  const group = groupById(groupId);
+  if (!group || i < 0 || i >= group.count || !Number.isFinite(value) || value <= 0) return;
+  const L = boxSpan(group.cavity, group.axis);
+  const ts = memberThicknessesOf(group);
+  const others = sumT(ts) - ts[i];
+  ts[i] = r1(Math.max(1, Math.min(value, Math.max(1, L - others - group.count - 1))));
+  useAppStore.getState().updatePanelGroup(groupId, { memberThicknesses: ts, gaps: redistributeForThickness(group.gaps, L, group.count, ts) });
+}
+
 /** Boşluk girişi (şema pill'i): kural applyGapEdit; VF'ler güncellenir, tam rebuild. Elle boşluk girişi hedef aralığı kapatır. */
 export async function editGroupGap(groupId: string, k: number, value: number): Promise<void> {
   const group = groupById(groupId);
@@ -1661,6 +1695,9 @@ export async function editGroupGap(groupId: string, k: number, value: number): P
   const gaps = applyGapEdit(group.gaps, k, value, boxSpan(group.cavity, group.axis), group.count, memberThicknessesOf(group));
   // KAPAK DERZİNE BAĞLI ÜYE (Goker: levha kapak aralarının arasında çalışır): bağlı üyenin önündeki / arkasındaki boşluk
   // girilince LEVHA değil KAPAK DERZİ taşınır (moveDoorJointTo → rebuild → levha derzi izler). Diğer boşluklar normal.
+  // Derz taşınamıyorsa (kilitli kapak ölçüsü / panel-ref'li derz) GİRİLEN DEĞER KAZANIR: bağ çözülür, levha girilen yere gider
+  // (Goker, Eki 2026: "değer girdiğimde kalan ölçüyü dağıt" — eskiden girilen değer sessizce derzden geri yazılıyordu).
+  let extra: Partial<PanelGroup> = group.targetGap != null ? { targetGap: undefined } : {};
   if (group.doorBond) {
     const m = Math.min(Math.max(0, group.doorBond.member ?? 0), group.count - 1);
     if (k === m || k === m + 1) {
@@ -1674,11 +1711,12 @@ export async function editGroupGap(groupId: string, k: number, value: number): P
         const center = group.doorBond.align === 'center' ? (a0 + a1) / 2 : group.doorBond.align === 'min' ? a1 + g / 2 : a0 - g / 2;
         console.log('[YAGO][GRUP-KAPAK-BAĞ] boşluk girişi → kapak derzi taşınır', groupId, 'k=', k, 'değer=', value, '→ derz merkezi', center.toFixed(1));
         if (await moveDoorJointTo(group.doorBond.doorGroupId, group.doorBond.splitId, group.doorBond.k, center)) return;
-        console.warn('[YAGO][GRUP-KAPAK-BAĞ] kapak derzi taşınamadı; boşluk girişi bağ yüzünden etkisiz kalacak');
+        console.warn('[YAGO][GRUP-KAPAK-BAĞ] kapak derzi taşınamadı → bağ çözüldü, girilen boşluk uygulanıyor (levha kapağı artık izlemez):', groupId);
+        extra = { ...extra, doorBond: undefined };
       }
     }
   }
-  writeGroupGaps(group, gaps, group.targetGap != null ? { targetGap: undefined } : {});
+  writeGroupGaps(group, gaps, extra);
   console.log('[YAGO][GRUP-BOŞLUK] girildi', groupId, 'k=', k, 'değer=', value, '→', gaps.map(g => `${g.value}${g.locked ? '🔒' : g.edited ? '*' : ''}`).join('/'));
   await requestRebuild(group.shapeId);
 }

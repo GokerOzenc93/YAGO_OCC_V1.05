@@ -997,11 +997,16 @@ export function confirmDoorPick(shapeId: string, pick: DoorPick | undefined): vo
   st.setDoorPickMode(false);
 }
 
-/** Çözümü üye VF'lere yazar ve grubu günceller; tam rebuild. */
-async function writeDoorGroup(group: DoorGroup, patch: Partial<DoorGroup>, why: string): Promise<void> {
+/**
+ * Çözümü üye VF'lere yazar ve grubu günceller; tam rebuild. `preview` (CANLI ÖNİZLEME — Goker, Eki 2026: "kutucuğa değeri yazar
+ * yazmaz kalan ölçüyü diğer taraflara dağıt"): yalnız grup (ağaç / boşluklar) store'a yazılır — VF ve rebuild yok; şema ve
+ * kapak içi ölçüler anında yeni dağılımı gösterir, onayda (Enter / odak kaybı) gerçek yazım gelir.
+ */
+async function writeDoorGroup(group: DoorGroup, patch: Partial<DoorGroup>, why: string, preview = false): Promise<void> {
   const st = useAppStore.getState();
   const next: DoorGroup = { ...group, ...patch };
   const sol = solveFromStore(next) || fallbackSolution(next);
+  if (preview) { st.updateDoorGroup(group.id, { ...patch, rect: sol.rect, tree: sol.tree }); return; }
   for (const vfId of next.memberVfIds) {
     const vf = useAppStore.getState().virtualFaces.find(f => f.id === vfId);
     if (!vf) continue;
@@ -1280,7 +1285,8 @@ export async function setDoorLeafTypes(groupId: string, leafIds: string[], type:
  * KANAT ÖLÇÜSÜ (Goker: "o bölünmüş yeri ayrıca ölçülendirebileyim ama total ölçü ilk bölünen üzerinden"): double/fold
  * yaprakta kanat k'ya değer girilir; diğer kanat yaprağın alanından (− kanat arası) kalanı alır. Yaprağın alanı değişmez.
  */
-export async function editDoorLeafSize(groupId: string, leafId: string, k: number, value: number): Promise<void> {
+export type DoorEditOpts = { preview?: boolean };
+export async function editDoorLeafSize(groupId: string, leafId: string, k: number, value: number, opts: DoorEditOpts = {}): Promise<void> {
   const group = groupById(groupId);
   if (!group || !Number.isFinite(value) || value <= 0) return;
   const sn = findSolvedNode(solveDoorTree(group), leafId);
@@ -1288,16 +1294,16 @@ export async function editDoorLeafSize(groupId: string, leafId: string, k: numbe
   const ax = doorLeafAxis(sn.type)!;
   const leaves = applyGapEdit(sn.leafSplit.leaves, k, value, ax === 'u' ? sn.u1 - sn.u0 : sn.v1 - sn.v0, 1, [sn.leafSplit.gap]);
   const tree = replaceDoorNode(group.tree, leafId, old => ({ ...old, leafSplit: { leaves, gap: sn.leafSplit!.gap } } as DoorNode));
-  await writeDoorGroup(group, { tree }, `kanat ${k + 1} = ${value}`);
+  await writeDoorGroup(group, { tree }, `kanat ${k + 1} = ${value}`, !!opts.preview);
 }
 /** KANAT ARASI BOŞLUK (Goker: "2 kapak arası ölçülendirilebilsin"): yalnız o yaprağın iki kanadı arasındaki boşluk. */
-export async function setDoorLeafGap(groupId: string, leafId: string, gap: number): Promise<void> {
+export async function setDoorLeafGap(groupId: string, leafId: string, gap: number, opts: DoorEditOpts = {}): Promise<void> {
   const group = groupById(groupId);
   if (!group || !Number.isFinite(gap) || gap < 0) return;
   const sn = findSolvedNode(solveDoorTree(group), leafId);
   if (!sn || sn.kind !== 'leaf' || !sn.leafSplit || Math.abs(sn.leafSplit.gap - gap) < 0.05) return;
   const tree = replaceDoorNode(group.tree, leafId, old => ({ ...old, leafSplit: { leaves: sn.leafSplit!.leaves, gap: round1(gap) } } as DoorNode));
-  await writeDoorGroup(group, { tree }, `kanat arası = ${round1(gap)}`);
+  await writeDoorGroup(group, { tree }, `kanat arası = ${round1(gap)}`, !!opts.preview);
 }
 
 /**
@@ -1307,14 +1313,15 @@ export async function setDoorLeafGap(groupId: string, leafId: string, gap: numbe
  * izler). Önce k. derz (kapağın sonu), yoksa k−1. derz (başı). Levha taşınamıyorsa (üye değil, kilitli komşular) ölçü
  * yazılır ama bağlı derz çözümde yine levhadan gelir (uyarı).
  */
-export async function editDoorSize(groupId: string, splitId: string, k: number, value: number): Promise<void> {
+export async function editDoorSize(groupId: string, splitId: string, k: number, value: number, opts: DoorEditOpts = {}): Promise<void> {
   const group = groupById(groupId);
   if (!group || !Number.isFinite(value) || value <= 0) return;
   const sn = findSolvedNode(solveDoorTree(group), splitId);
   if (!sn || sn.kind !== 'split' || k < 0 || k >= sn.children.length) return;
   const refs = sn.refs ?? {};
   const j = refs[k] ? k : refs[k - 1] ? k - 1 : -1;
-  if (j >= 0) {
+  // Önizlemede levha taşınmaz; yalnız ağaç (dağılım) gösterilir — onayda bağlı derz levhayı taşır, çözüm levhadan gelir.
+  if (j >= 0 && !opts.preview) {
     const st = useAppStore.getState();
     const parent = shapeById(group.shapeId, st.shapes);
     const ref = refs[j], g = sn.gaps[j] ?? group.gap, c = sn.children[k];
@@ -1331,7 +1338,7 @@ export async function editDoorSize(groupId: string, splitId: string, k: number, 
   const L = sn.axis === 'u' ? sn.u1 - sn.u0 : sn.v1 - sn.v0;
   const sizes = applyGapEdit(sn.sizes, k, value, L, sn.gaps.length, sn.gaps);
   const tree = replaceDoorNode(group.tree, splitId, old => ({ ...(old as any), sizes }));
-  await writeDoorGroup(group, { tree }, `ölçü ${k + 1} = ${value}`);
+  await writeDoorGroup(group, { tree }, `ölçü ${k + 1} = ${value}`, !!opts.preview);
 }
 /** Kilit: değer değişmez; gövde boyutlanınca bu kapak sabit kalır (kardeşler dağıtır). Geometri değişmez → rebuild yok. */
 export function toggleDoorSizeLock(groupId: string, splitId: string, k: number): void {
@@ -1342,22 +1349,32 @@ export function toggleDoorSizeLock(groupId: string, splitId: string, k: number):
   useAppStore.getState().updateDoorGroup(groupId, { tree: replaceDoorNode(group.tree, splitId, old => ({ ...(old as any), sizes })) });
 }
 /** Split düğümündeki TEK ara boşluk (k. çocuk ile k+1. arası): yalnız o değişir; fark serbest kapaklara eşit. */
-export async function setDoorSplitGap(groupId: string, splitId: string, k: number, value: number): Promise<void> {
+export async function setDoorSplitGap(groupId: string, splitId: string, k: number, value: number, opts: DoorEditOpts = {}): Promise<void> {
   const group = groupById(groupId);
   if (!group || !Number.isFinite(value) || value < 0) return;
   const sn = findSolvedNode(solveDoorTree(group), splitId);
   if (!sn || sn.kind !== 'split' || k < 0 || k >= sn.gaps.length || Math.abs(sn.gaps[k] - value) < 0.05) return;
   const gaps = sn.gaps.slice(); gaps[k] = round1(value);
   const tree = replaceDoorNode(group.tree, splitId, old => ({ ...(old as any), gaps }));
-  await writeDoorGroup(group, { tree }, `ara boşluk ${k + 1} = ${round1(value)}`);
+  await writeDoorGroup(group, { tree }, `ara boşluk ${k + 1} = ${round1(value)}`, !!opts.preview);
 }
 /** KENAR BOŞLUĞU (sol/sağ/alt/üst): yalnız o kenar değişir. */
-export async function setDoorEdgeGap(groupId: string, edge: DoorEdgeKey, value: number): Promise<void> {
+export async function setDoorEdgeGap(groupId: string, edge: DoorEdgeKey, value: number, opts: DoorEditOpts = {}): Promise<void> {
   const group = groupById(groupId);
   if (!group || !Number.isFinite(value) || value < 0) return;
   const e = edgeGapsOf(group);
   if (Math.abs(e[edge] - value) < 0.05) return;
-  await writeDoorGroup(group, { edgeGaps: { ...e, [edge]: round1(value) } }, `kenar boşluğu ${edge} = ${round1(value)}`);
+  await writeDoorGroup(group, { edgeGaps: { ...e, [edge]: round1(value) } }, `kenar boşluğu ${edge} = ${round1(value)}`, !!opts.preview);
+}
+/** CANLI ÖNİZLEME kaydı: düzenleme başında alınır, Esc ile geri yüklenir (yalnız grup alanları; VF/rebuild yok). */
+export interface DoorLayoutSnap { tree: DoorNode; edgeGaps?: DoorEdgeGaps; gap: number; rect: DoorRect }
+export function doorLayoutSnapshot(groupId: string): DoorLayoutSnap | null {
+  const g = groupById(groupId);
+  return g ? { tree: g.tree, edgeGaps: g.edgeGaps ? { ...g.edgeGaps } : undefined, gap: g.gap, rect: { ...g.rect } } : null;
+}
+export function restoreDoorLayout(groupId: string, snap: DoorLayoutSnap | null | undefined): void {
+  if (!snap || !groupById(groupId)) return;
+  useAppStore.getState().updateDoorGroup(groupId, { tree: snap.tree, edgeGaps: snap.edgeGaps, gap: snap.gap, rect: snap.rect });
 }
 /** Ağaçtaki tüm aralar / kanat araları / kenarlar tek değere (ölçü kilit ve girilenleri korunur). */
 function mapTreeGaps(n: DoorNode, g: number): DoorNode {
