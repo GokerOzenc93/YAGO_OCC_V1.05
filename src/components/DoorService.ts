@@ -218,7 +218,7 @@ export function collectDoorCuts(parent: Shape, shapes: Shape[] = useAppStore.get
   return out;
 }
 
-type Pt2 = { x: number; y: number };
+export type Pt2 = { x: number; y: number };
 /** Konveks çokgeni A·x + B·y ≤ C yarım düzlemiyle kırpar (Sutherland–Hodgman, tek kenar). */
 function clipHalfPlane(poly: Pt2[], A: number, B: number, C: number): Pt2[] {
   const out: Pt2[] = [];
@@ -718,6 +718,33 @@ export function applyDoorCuts(group: Pick<DoorGroup, 'axis' | 'side' | 'placemen
     return poly ? { ...m, poly } : m;
   });
   if (n && !silent && group.id !== PREVIEW_ID) console.log('[YAGO][KAPAK-AÇILI]', group.id, 'dönmüş sınır paneli kesti:', cuts.map(c => c.name).join('/'), 'kesilen üye=', n, '/', members.length);
+  return out;
+}
+
+/**
+ * ŞEMADA AÇILI SINIR LEVHASI (Goker, Eki 2026: "kapak sınırı olan paneli preview'da açılı görmeliyim; Full/Half seçenekleri panel
+ * açılı olsa bile çıkmalı"): dönmüş sınır panelinin kapak düzlemindeki (ön yüz `front`) kesiti bir ŞERİTTİR — dMin ≤ A·u + B·v +
+ * Na·front ≤ dMax. Şerit, verilen çizim alanı (mm çokgeni) ile kırpılır (en az `minT` mm kalın görünür). `edge` = kesicinin
+ * kestiği kenar (cutEdgeOf, çıpaya göre), `covered` = dış kapak + panel düzlemin gerisinde → Full/Half rozeti anlamlı
+ * (yarım binme bayrağı o kenarın bayrağıdır — clipMemberByCuts aynı bayrağı okur).
+ */
+export interface DoorCutBand { cut: DoorCut; poly: Pt2[]; edge: DoorEdgeKey | null; covered: boolean; dir: Pt2 }
+export function doorCutBands(group: Pick<DoorGroup, 'axis' | 'side' | 'placement' | 'anchor'>, rect: DoorRect, cuts: DoorCut[], area: Pt2[], minT: number): DoorCutBand[] {
+  const { u, v } = doorPlaneAxes(group.axis);
+  const out: DoorCutBand[] = [];
+  for (const c of cuts) {
+    const A = c.n[u], B = c.n[v], Na = c.n[group.axis];
+    const len = Math.hypot(A, B);
+    if (len < 1e-6) continue;   // kapak düzlemine paralel: kesit yok
+    let lo = c.dMin - Na * rect.front, hi = c.dMax - Na * rect.front;
+    if (hi - lo < minT * len) { const m = (lo + hi) / 2; lo = m - minT * len / 2; hi = m + minT * len / 2; }
+    let poly = clipHalfPlane(area, A, B, hi);
+    if (poly.length >= 3) poly = clipHalfPlane(poly, -A, -B, -lo);
+    if (poly.length < 3 || Math.abs(polyArea(poly)) < 1) continue;
+    const cu = group.anchor ? group.anchor[0] : (rect.u0 + rect.u1) / 2, cv = group.anchor ? group.anchor[1] : (rect.v0 + rect.v1) / 2;
+    const ce = cutEdgeOf(c, cu, cv, group.axis, rect.front);
+    out.push({ cut: c, poly, edge: ce?.edge ?? null, covered: cutCoverFar(c, group.axis, group.side, group.placement, rect.front), dir: { x: -B / len, y: A / len } });
+  }
   return out;
 }
 

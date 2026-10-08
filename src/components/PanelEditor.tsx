@@ -23,7 +23,7 @@ import {
   startCavityEdit, startGroupRepick, toggleGroupGapLock, traceMaskLoops, updateCavityStep,
 } from './PanelGroupService';
 import {
-  type DoorCut, type DoorEdgeKey, type DoorLayoutSnap, type DoorNearPanel, type DoorNodeSolved, DOOR_TYPES, DOOR_TYPE_LABEL, DOOR_TYPE_TITLE, addPanelAtDoorJoint, applyDoorCuts, clearDoorSpacing, collectDoorCuts, doorJointParts, doorJoints, doorLayoutSnapshot, doorLeafAxis, doorPlaneAxes, doorSpacingTargetsInScope, doorLeaves, doorMemberCount, doorNearPanels, restoreDoorLayout,
+  type DoorCut, type DoorEdgeKey, type DoorLayoutSnap, type DoorNearPanel, type DoorNodeSolved, DOOR_TYPES, DOOR_TYPE_LABEL, DOOR_TYPE_TITLE, addPanelAtDoorJoint, applyDoorCuts, clearDoorSpacing, collectDoorCuts, doorCutBands, doorJointParts, doorJoints, doorLayoutSnapshot, doorLeafAxis, doorPlaneAxes, doorSpacingTargetsInScope, doorLeaves, doorMemberCount, doorNearPanels, restoreDoorLayout,
   confirmDoorPick, deleteDoorGroupWithMembers, doorGroupName, doorMemberRects, doorMembersOf, doorPlacementLabel, edgeGapsOf, editDoorLeafSize, editDoorSize, equalizeDoorGroup, findDoorNode, findSolvedNode,
   isDoorVf, renameDoorGroup, setDoorEdgeGap, setDoorGap, setDoorHalfOverlay, setDoorLeafGap, setDoorLeafTypes, setDoorNodeSpacing, setDoorJointRef, setDoorNodeSplit, setDoorPlacement, setDoorSplitGap, splitDoorAtPanel, setDoorThickness, setVfDoorBound,
   solveDoorTree, toggleDoorSizeLock,
@@ -1297,6 +1297,21 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     const half = !!np.edge && np.behind && !!group.halfOverlay?.[np.edge];
     return { np, vertical, half, aligned: !!np.ref && !!np.joint, x: vertical ? a0 : c0, y: vertical ? c0 : a0, w: vertical ? a1 - a0 : c1 - c0, h: vertical ? c1 - c0 : a1 - a0 };
   });
+  // AÇILI SINIR LEVHALARI (Goker, Eki 2026: "kapak sınırı olan paneli preview'da açılı görmeliyim; Full/Half açılı panelde de
+  // çıkmalı"): kesicilerin kapak düzlemindeki şeridi çizim alanıyla (pay dahil) kırpılıp çokgen olarak çizilir; rozet şeridin
+  // ortasında, şerit yönünde döndürülmüş. mm ↔ px: sx/sy'nin tersiyle çizim alanı mm'ye taşınır.
+  const invX = (x: number) => rect.u0 + (mirrorU ? (ox + SW - x) : (x - ox)) * duR / SW;
+  const invY = (y: number) => (mirrorV ? rect.v0 + (y - oy) * dvR / SH : rect.v1 - (y - oy) * dvR / SH);
+  const areaPx = [[ox - DOOR_PAD_L + 2, oy - DOOR_PAD_T + 2], [ox + SW + DOOR_PAD_R - 2, oy - DOOR_PAD_T + 2], [ox + SW + DOOR_PAD_R - 2, oy + SH + DOOR_PAD_B - 2], [ox - DOOR_PAD_L + 2, oy + SH + DOOR_PAD_B - 2]];
+  const areaMm = areaPx.map(([x, y]) => ({ x: invX(x), y: invY(y) }));
+  const cutBands = doorCutBands(group, rect, cuts, areaMm, BAND_MIN * dvR / SH).map(cb => {
+    const pts = cb.poly.map(q => ({ x: sx(q.x), y: sy(q.y) }));
+    const cx = pts.reduce((a, q) => a + q.x, 0) / pts.length, cy = pts.reduce((a, q) => a + q.y, 0) / pts.length;
+    const dx = (mirrorU ? -1 : 1) * cb.dir.x, dy = (mirrorV ? 1 : -1) * cb.dir.y;   // mm yönü → ekran (v yukarı → y aşağı; aynalı görünüşte ters)
+    const deg = Math.atan2(dy, dx) * 180 / Math.PI;
+    const half = !!cb.edge && cb.covered && !!group.halfOverlay?.[cb.edge];
+    return { ...cb, pts, cx, cy, deg: ((deg + 90) % 180) - 90, half };
+  });
   // Kapak arkasında kalan kısımlar (gizli çizgi): levha ∩ her kapak dikdörtgeni.
   const hiddenParts = (b: Band) => members.flatMap(m => {
     const dx0 = Math.min(sx(m.u0), sx(m.u1)) + I, dx1 = Math.max(sx(m.u0), sx(m.u1)) - I, dy0 = Math.min(sy(m.v1), sy(m.v0)) + I, dy1 = Math.max(sy(m.v1), sy(m.v0)) - I;
@@ -1562,6 +1577,17 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
             </g>
           );
         })}
+        {/* AÇILI SINIR LEVHALARI: kesit şeridi (çokgen), bantlarla aynı dil; yarım binmede turuncu tonlu */}
+        {cutBands.map(cb => {
+          const d = cb.pts.map((q, i) => `${i ? 'L' : 'M'}${q.x.toFixed(1)},${q.y.toFixed(1)}`).join(' ') + ' Z';
+          return (
+            <g key={`cut-${cb.cut.vfId}`} style={{ pointerEvents: 'none' }}>
+              <path d={d} fill={cb.half ? '#f9dcc4' : '#ddd4c6'} />
+              <path d={d} fill={cb.half ? `url(#${gid}-hatch-on)` : `url(#${gid}-hatch)`} />
+              <path d={d} fill="none" stroke={cb.half ? '#e07b3c' : '#a39a8d'} strokeWidth={1} strokeLinejoin="round" />
+            </g>
+          );
+        })}
         {/* kapaklar (kanatlar): yüzey + YUMUŞAK açılış işareti + numara + ölçü (Goker: "açılış çizgisi daha soft olsun, ölçüleri
             göster; menteşe ve kulp yerlerini şimdilik kaldır") */}
         {members.map((m, i) => {
@@ -1654,6 +1680,30 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
                 </g>
               )}
               <title>{bandTip(b)}</title>
+            </g>
+          );
+        })}
+        {/* AÇILI LEVHA ROZETİ: Full / Half (dış kapak + levha düzlemin gerisinde); bayrak kesilen kenarın yarım-binme bayrağıdır */}
+        {cutBands.map(cb => {
+          const interactive = isOuter && cb.covered && !!cb.edge;
+          const chipTxt = interactive ? (cb.half ? 'Half' : 'Full') : null;
+          const cfs = fsT * 0.8;
+          const { pw: cw, ph: chh } = chipTxt ? pillSize(chipTxt, cfs) : { pw: 0, ph: 0 };
+          const d = cb.pts.map((q, i) => `${i ? 'L' : 'M'}${q.x.toFixed(1)},${q.y.toFixed(1)}`).join(' ') + ' Z';
+          const tip = `${cb.cut.name} — angled door reference panel: the door is cut along it (it keeps the side you clicked when placing the door).` +
+            (interactive ? ` ${cb.half ? 'HALF overlay — the door reaches the middle of this panel\'s thickness. Click for full overlay.' : 'FULL overlay — the door covers this panel\'s whole thickness. Click for half overlay.'}` : cb.covered ? '' : ' It stands in front of the door plane, so there is no overlay to set.');
+          return (
+            <g key={`cuthit-${cb.cut.vfId}`} className={`yago-band${chipTxt ? ' on' : ''}`} style={{ cursor: interactive ? 'pointer' : 'default' }}
+              onClick={interactive ? e => { stop(e); onToggleHalfOverlay(cb.edge!, !cb.half); } : undefined}>
+              <path d={d} fill="transparent" className="hit" />
+              {chipTxt && (
+                <g className="chip" transform={`rotate(${cb.deg.toFixed(1)} ${cb.cx} ${cb.cy})`}>
+                  <rect x={cb.cx - cw / 2} y={cb.cy - chh / 2} width={cw} height={chh} rx={chh / 2} fill={cb.half ? '#ea580c' : '#ffffff'} stroke={cb.half ? '#c2410c' : '#cfc6b9'} strokeWidth={0.8}
+                    style={{ filter: 'drop-shadow(0 1px 1px rgba(40,30,20,0.12))' }} />
+                  <text x={cb.cx} y={cb.cy + cfs * 0.36} textAnchor="middle" fontSize={cfs} fontWeight={700} letterSpacing="0.02em" fill={cb.half ? '#ffffff' : '#78716c'} fontFamily={UI_FONT}>{chipTxt}</text>
+                </g>
+              )}
+              <title>{tip}</title>
             </g>
           );
         })}
