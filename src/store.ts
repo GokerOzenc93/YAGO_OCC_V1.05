@@ -99,6 +99,8 @@ export interface DoorPick {
    * (DoorService.doorRotOfPanel). Düz referansta yok.
    */
   rot?: number[];
+  /** Tıklanan nokta (kapak düzlemi u,v): AÇILI sınır panelinde kapağın hangi tarafta kalacağını belirler (DoorGroup.anchor). */
+  at?: [number, number];
 }
 /**
  * KAPAK AĞACI (Goker, Eki 2026: "seçili olan kapağı bölmeliyiz; ilk tek kapak yerleşir, o bölünür, bölünen kapağı
@@ -168,6 +170,13 @@ export interface DoorGroup {
    * kenar paneli kapağın gerisindeyken (kapak onun kalınlığını örtüyorken) etkilidir.
    */
   halfOverlay?: { uMin?: boolean; uMax?: boolean; vMin?: boolean; vMax?: boolean };
+  /**
+   * ÇIPA (Goker, Eki 2026: "açılı panel kapak sınırıyken seçimde yalnız panelin altı görünüyor"): yerleştirmede tıklanan nokta
+   * (u,v). Dönmüş sınır paneli dikdörtgenin kenarı değildir (açılı kesim) — kapak alanının paneli̇n HANGİ tarafında kalacağını
+   * eskiden dikdörtgenin MERKEZİ belirliyordu (orta çizgiden geçen eğik panelde hep alt taraf); artık çıpa belirler: alan
+   * çıpanın tarafına kırpılır (rectByCuts), üyeler de o tarafa göre kesilir. Eski kayıtlarda yok → merkez.
+   */
+  anchor?: [number, number];
   /**
    * DERZ HİZALAMASI (Goker, Eki 2026: "dikmeyi kapağın sağına / soluna / ortalı, rafı yukarı / aşağı / ortada yerleştireyim;
    * dikme ve raf buna göre hareket etsin … sonra dikmenin arası değişince kapak kendini ona göre güncellesin"): bağ artık

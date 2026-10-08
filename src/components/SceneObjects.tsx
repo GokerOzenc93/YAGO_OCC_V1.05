@@ -1033,7 +1033,7 @@ export const DoorPickOverlay: React.FC<{ shape: any }> = ({ shape }) => {
   const selected = doorPickCandidates[doorPickIndex] || null;
   // Dönmüş sınır panelleri (kesici düzlemler): aday levhası onlarla kırpılarak çizilir — yerleşen kapakla bire bir.
   const cuts = useMemo(() => (doorPickMode ? collectDoorCuts(shape, shapes, virtualFaces) : []), [doorPickMode, shape, shapes, virtualFaces]);
-  const slabOf = (c: DoorPick | null) => (c ? doorSlabPolygon({ axis: c.axis, side: c.side, placement: doorPickPlacement, thickness: DOOR_THICKNESS, gap: DOOR_GAP }, doorPickPlacement === 'inner' ? c.inner : c.outer, cuts) : null);
+  const slabOf = (c: DoorPick | null) => (c ? doorSlabPolygon({ axis: c.axis, side: c.side, placement: doorPickPlacement, thickness: DOOR_THICKNESS, gap: DOOR_GAP, anchor: c.at }, doorPickPlacement === 'inner' ? c.inner : c.outer, cuts) : null);
   const selectedBox = useMemo(() => slabOf(selected), [selected, doorPickPlacement, cuts]);
   const hoverBox = useMemo(() => slabOf(hoverPick), [hoverPick, doorPickPlacement, cuts]);
 

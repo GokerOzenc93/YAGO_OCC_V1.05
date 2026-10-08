@@ -259,13 +259,14 @@ const cutCoverFar = (c: DoorCut, axis: 0 | 1 | 2, side: 1 | -1, placement: DoorG
 
 function clipMemberByCuts(
   m: { u0: number; u1: number; v0: number; v1: number }, cuts: DoorCut[], axis: 0 | 1 | 2, side: 1 | -1,
-  placement: DoorGroup['placement'], thickness: number, front: number, gap: number, half?: HalfOverlay,
+  placement: DoorGroup['placement'], thickness: number, front: number, gap: number, half?: HalfOverlay, ref?: [number, number],
 ): Pt2[] | null {
   if (!cuts.length) return null;
   const { u, v } = doorPlaneAxes(axis);
   let poly: Pt2[] = [{ x: m.u0, y: m.v0 }, { x: m.u1, y: m.v0 }, { x: m.u1, y: m.v1 }, { x: m.u0, y: m.v1 }];
   const planes = placement === 'outer' ? [front, front + side * thickness] : [front - side * thickness, front];   // kapak levhasının iki yüzeyi
-  const cu = (m.u0 + m.u1) / 2, cv = (m.v0 + m.v1) / 2;
+  // TUTULAN TARAF: çıpa (tıklanan nokta / grubun anchor'ı) verilmişse o; yoksa üyenin merkezi (eski davranış).
+  const cu = ref ? ref[0] : (m.u0 + m.u1) / 2, cv = ref ? ref[1] : (m.v0 + m.v1) / 2;
   let any = false;
   for (const c of cuts) {
     if (Math.min(c.box.max[u], m.u1) - Math.max(c.box.min[u], m.u0) < TOL || Math.min(c.box.max[v], m.v1) - Math.max(c.box.min[v], m.v0) < TOL) continue;
@@ -384,6 +385,10 @@ export function doorCandidatesAt(parent: Shape, axis: 0 | 1 | 2, side: 1 | -1, c
   };
   const L = optsFor(u, v, cu, true), R = optsFor(u, v, cu, false), B = optsFor(v, u, cv, true), T = optsFor(v, u, cv, false);
   const overlaps = (cross: [number, number], a0: number, a1: number) => Math.min(cross[1], a1) - Math.max(cross[0], a0) > TOL;
+  // AÇILI sınır panelleri: aday alanı tıklanan noktanın tarafına kırpılır (rectByCuts) — panelin üstüne de altına da kapak atılabilir.
+  const cuts = collectDoorCuts(parent, shapes, vfs);
+  const at: [number, number] = [cu, cv];
+  const shrink = (placement: DoorGroup['placement'], r: DoorRect) => rectByCuts({ axis, side, placement, thickness: DOOR_THICKNESS, gap: DOOR_GAP }, r, cuts, at);
   const seen = new Set<string>();
   const out: DoorPick[] = [];
   for (const l of L) for (const r of R) for (const b of B) for (const t of T) {
@@ -400,10 +405,11 @@ export function doorCandidatesAt(parent: Shape, axis: 0 | 1 | 2, side: 1 | -1, c
     const boundsRef: DoorBounds = { uMin: l.ref, uMax: r.ref, vMin: b.ref, vMax: t.ref };
     const panelN = [l, r, b, t].filter(o => o.front != null).length;
     depths.forEach((d, di) => {
+      const inner = shrink('inner', rectAtDepth(edges, side, 'inner', d.front)), outer = shrink('outer', rectAtDepth(edges, side, 'outer', d.front));
       out.push({
         key: `${axis}${side > 0 ? '+' : '-'}:${key}@${Math.round(d.front)}`, axis, side, bounds: boundsRef,
-        inner: rectAtDepth(edges, side, 'inner', d.front), outer: rectAtDepth(edges, side, 'outer', d.front),
-        area: (between.u1 - between.u0) * (between.v1 - between.v0), boundPanelCount: panelN,
+        inner, outer, at,
+        area: (inner.u1 - inner.u0) * (inner.v1 - inner.v0), boundPanelCount: panelN,
         depth: d.ref, depthIndex: di, depthCount: depths.length,
       });
     });
@@ -689,7 +695,8 @@ export function solveDoorGroup(group: DoorGroup, parent: Shape, shapes: Shape[])
   const s = solveDoorEdges(group, parent, shapes);
   if (!s) return null;
   const { edges, P } = s;
-  let rect: DoorRect = rectAtDepth(edges, group.side, group.placement, P, group.halfOverlay);
+  const cutsAll = collectDoorCuts(parent, shapes);
+  let rect: DoorRect = rectByCuts(group, rectAtDepth(edges, group.side, group.placement, P, group.halfOverlay), cutsAll, group.anchor);
   if (rect.u1 - rect.u0 < MIN_DOOR_SPAN || rect.v1 - rect.v0 < MIN_DOOR_SPAN) {
     console.warn('[YAGO][KAPAK] dikdörtgen bozuk/çok küçük, önceki korunuyor:', group.id, fmtRect(rect));
     rect = { ...group.rect };
@@ -697,20 +704,37 @@ export function solveDoorGroup(group: DoorGroup, parent: Shape, shapes: Shape[])
   // AĞAÇ: kök alanı dikdörtgen − kenar boşlukları; her bölme kendi alanını dağıtır (toplam = üst alan). Bağlı derzler
   // levhaların GÜNCEL kutularından (kapak dikmeyi izler).
   const solved = solveDoorTree(group, rect, doorJointTargets(group, parent, shapes));
-  const members = applyDoorCuts(group, rect, doorMemberRects(solved), collectDoorCuts(parent, shapes));
+  const members = applyDoorCuts(group, rect, doorMemberRects(solved), cutsAll);
   return { rect, tree: solvedToTree(solved), solved, members };
 }
 
 /** Üyeleri dönmüş sınır panelleriyle kırpar (AÇILI REFERANS); her rebuild'de güncel panellerden yeniden. */
-export function applyDoorCuts(group: Pick<DoorGroup, 'axis' | 'side' | 'placement' | 'thickness' | 'gap' | 'id' | 'halfOverlay'>, rect: DoorRect, members: DoorMemberRect[], cuts: DoorCut[], silent = false): DoorMemberRect[] {
+export function applyDoorCuts(group: Pick<DoorGroup, 'axis' | 'side' | 'placement' | 'thickness' | 'gap' | 'id' | 'halfOverlay' | 'anchor'>, rect: DoorRect, members: DoorMemberRect[], cuts: DoorCut[], silent = false): DoorMemberRect[] {
   if (!cuts.length) return members;
   let n = 0;
   const out = members.map(m => {
-    const poly = clipMemberByCuts(m, cuts, group.axis, group.side, group.placement, group.thickness, rect.front, group.gap, group.halfOverlay);
+    const poly = clipMemberByCuts(m, cuts, group.axis, group.side, group.placement, group.thickness, rect.front, group.gap, group.halfOverlay, group.anchor);
     if (poly) n++;
     return poly ? { ...m, poly } : m;
   });
   if (n && !silent && group.id !== PREVIEW_ID) console.log('[YAGO][KAPAK-AÇILI]', group.id, 'dönmüş sınır paneli kesti:', cuts.map(c => c.name).join('/'), 'kesilen üye=', n, '/', members.length);
+  return out;
+}
+
+/**
+ * AÇILI SINIR PANELİNDE KAPAK ALANI (Goker, Eki 2026: "görseldeki panel kapak sınırı ama kapak yerleştirmek için seçimde yalnız
+ * açılı panelin altı görünüyor"): dönmüş sınır paneli dikdörtgenin kenarı değildir; kapak alanı, tıklanan nokta (çıpa) hangi
+ * taraftaysa O TARAFA kırpılır ve dikdörtgen kırpılmış çokgenin kutusuna daraltılır (bölme/boşluklar bu alanda çalışır; eğik
+ * kenar applyDoorCuts ile çokgen olarak kalır). Eskiden tutulan taraf dikdörtgenin merkeziyle seçiliyordu → ortadan geçen eğik
+ * panelde hep aynı taraf (alt) çıkıyordu, panelin üstüne kapak atılamıyordu. Çıpa yoksa (eski kayıt) dikdörtgen değişmez.
+ */
+export function rectByCuts(group: Pick<DoorGroup, 'axis' | 'side' | 'placement' | 'thickness' | 'gap' | 'halfOverlay'>, rect: DoorRect, cuts: DoorCut[], anchor?: [number, number]): DoorRect {
+  if (!anchor || !cuts.length) return rect;
+  const poly = clipMemberByCuts(rect, cuts, group.axis, group.side, group.placement, group.thickness, rect.front, group.gap, group.halfOverlay, anchor);
+  if (!poly || poly.length < 3) return rect;
+  const xs = poly.map(q => q.x), ys = poly.map(q => q.y);
+  const out: DoorRect = { u0: Math.min(...xs), u1: Math.max(...xs), v0: Math.min(...ys), v1: Math.max(...ys), front: rect.front };
+  if (out.u1 - out.u0 < MIN_DOOR_SPAN || out.v1 - out.v0 < MIN_DOOR_SPAN) return rect;
   return out;
 }
 
@@ -973,7 +997,7 @@ export function createDoorGroupFromPick(shapeId: string, pick: DoorPick, placeme
   if (!parent) return null;
   const rect = placement === 'inner' ? { ...pick.inner } : { ...pick.outer };
   const group: DoorGroup = {
-    id: genId('door'), shapeId, axis: pick.axis, side: pick.side, placement, bounds: pick.bounds, depthRef: pick.depth, rect,
+    id: genId('door'), shapeId, axis: pick.axis, side: pick.side, placement, bounds: pick.bounds, depthRef: pick.depth, rect, anchor: pick.at,
     tree: makeDoorLeaf('left'), edgeGaps: { uMin: DOOR_GAP, uMax: DOOR_GAP, vMin: DOOR_GAP, vMax: DOOR_GAP }, gap: DOOR_GAP, thickness: DOOR_THICKNESS,
     memberVfIds: [], name: name?.trim() || 'Door', createdAt: Date.now(),
   };
@@ -1658,7 +1682,7 @@ export function syncDoorGroups(parentShapeId: string): void {
  * (kapağın DIŞ yüzü) + normal; levha −normal yönünde `thickness` kadar. Kesim yoksa dikdörtgenin dört köşesi.
  */
 export function doorSlabPolygon(
-  group: Pick<DoorGroup, 'axis' | 'side' | 'placement' | 'thickness' | 'gap'>, rect: DoorRect, cuts: DoorCut[],
+  group: Pick<DoorGroup, 'axis' | 'side' | 'placement' | 'thickness' | 'gap' | 'anchor'>, rect: DoorRect, cuts: DoorCut[],
 ): { normal: Vec3; vertices: Vec3[] } {
   const m: DoorMemberRect = { leafId: PREVIEW_ID, type: 'left', leaf: 0, leafCount: 1, u0: rect.u0, u1: rect.u1, v0: rect.v0, v1: rect.v1 };
   const [mm] = applyDoorCuts({ ...group, id: PREVIEW_ID }, rect, [m], cuts);
