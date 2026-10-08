@@ -328,6 +328,25 @@ function DimPill({ cx, cy, txt, fs, fill = '#ffffff', stroke = SOFT.pillStroke, 
     </>
   );
 }
+/* KİLİT ROZETİ (Goker, Eki 2026: "değer girdikten sonra kilitleme düğmesi daha net olmalı; kilit her zaman çıkmıyor, sanki gizli
+   gibi"): ölçü / boşluk pill'inin ucundaki kilit HER ZAMAN görünür (eskiden yalnız hover'da ya da kilitliyken — hover olmayınca
+   yok sanılıyordu). Üç durum: serbest (gri, açık kilit) · GİRİLMİŞ değer (kehribar çerçeve, koyu açık kilit — "kilitle?") ·
+   KİLİTLİ (turuncu dolgu, kapalı kilit). Yarıçap LOCK_R; yerleşim payı LOCK_EXT (pill'in ucundan rozetin dışına). */
+const LOCK_R = 9;
+const LOCK_EXT = 12 + LOCK_R + 2;
+function LockBadge({ cx, cy, locked, edited, onClick, title }: { cx: number; cy: number; locked: boolean; edited?: boolean; onClick: () => void; title?: string }) {
+  const fill = locked ? '#ea580c' : edited ? '#fff7ed' : '#ffffff';
+  const stroke = locked ? '#c2410c' : edited ? '#f59e0b' : '#d6cfc3';
+  const ico = locked ? '#ffffff' : edited ? '#9a3412' : '#8c8378';
+  const sz = 10;
+  return (
+    <g className="lockbtn" style={{ cursor: 'pointer' }} onClick={e => { e.stopPropagation(); onClick(); }}>
+      <circle cx={cx} cy={cy} r={LOCK_R} fill={fill} stroke={stroke} strokeWidth={locked ? 1 : 0.9} style={{ filter: SOFT.pillShadow }} />
+      {locked ? <Lock x={cx - sz / 2} y={cy - sz / 2} size={sz} strokeWidth={2.4} color={ico} /> : <Unlock x={cx - sz / 2} y={cy - sz / 2} size={sz} strokeWidth={2.1} color={ico} />}
+      <title>{title ?? (locked ? 'Locked — stays fixed on resize. Click to unlock (follows resize)' : edited ? 'Entered value — click to lock it (stays fixed on resize)' : 'Click to lock (stays fixed on resize)')}</title>
+    </g>
+  );
+}
 
 /* ── DOCK / İÇ PANEL TASARIM DİLİ (soft, minimal — liste satırlarıyla aynı) ──
    Taşı / Döndür / Extrude şeritleri ve işlem adımları bu ortak tokenları
@@ -354,6 +373,9 @@ const GRIP_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(
    çerçeveli. Tek kaynak: PREVIEW_BG / PREVIEW_FRAME / SOFT. */
 const PREVIEW_BG = 'radial-gradient(130% 95% at 50% 0%, #fefdfb 0%, #f8f5f0 62%, #f3efe8 100%)';
 const PREVIEW_FRAME = 'relative rounded-[12px] ring-1 ring-[#ebe5dc] overflow-hidden shadow-[inset_0_1px_0_rgba(255,255,255,0.8),0_1px_2px_rgba(60,40,20,0.04)]';
+/* ŞEMA CSS (raf/dikme + kapak şeması ortak): kilit rozeti HER ZAMAN görünür (Goker: "kilit her zaman çıkmıyor, sanki gizli");
+   yalnız hover'da hafifçe büyür. Bant rozetleri (chip) eskisi gibi hover'da / açıkken. */
+const SCHEMATIC_CSS = `.yago-gap .lockbtn{transition:transform .12s;transform-box:fill-box;transform-origin:center}.yago-gap .lockbtn:hover{transform:scale(1.12)}.yago-band .chip{opacity:0;transition:opacity .15s}.yago-band.on .chip,.yago-band:hover .chip{opacity:1}.yago-band .hit{transition:fill .12s}.yago-band:hover .hit{fill:rgba(234,88,12,0.10)}`;
 const SOFT = {
   area: '#fdfcfa', areaStroke: '#e4ded4',
   part0: '#f5f0e8', part1: '#eae3d7', partStroke: '#b8afa2',
@@ -960,7 +982,7 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
 
   return (
     <div ref={wrapRef} className={PREVIEW_FRAME} style={{ background: PREVIEW_BG, height }}>
-      <style>{`.yago-gap .lockbtn{opacity:0;transition:opacity .15s}.yago-gap:hover .lockbtn,.yago-gap.locked .lockbtn{opacity:1}.yago-band .chip{opacity:0;transition:opacity .15s}.yago-band.on .chip,.yago-band:hover .chip{opacity:1}.yago-band .hit{transition:fill .12s}.yago-band:hover .hit{fill:rgba(234,88,12,0.10)}`}</style>
+      <style>{SCHEMATIC_CSS}</style>
       <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ display: 'block', fontFamily: UI_FONT }}>
         <SoftDefs id={gsid} />
         {/* şekilli bölge silueti */}
@@ -1014,24 +1036,19 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
               fontFamily={UI_FONT} style={{ fontVariantNumeric: 'tabular-nums', pointerEvents: 'none', userSelect: 'none' }}>{n.txt}</text>
           );
         })}
-        {/* boşluk ölçüleri: oklu ölçü çizgisi + pill (+ hover'da / kilitliyken kilit) */}
+        {/* boşluk ölçüleri: oklu ölçü çizgisi + pill + kilit (her zaman görünür; girilmiş değer kehribar, kilitli turuncu) */}
         {!memberMode && pills.map(p => {
-          const locked = gaps[p.k].locked;
+          const locked = gaps[p.k].locked, edited = !locked && !!gaps[p.k].edited;
           const a = barsHorizontal ? { x: sx(p.crossMid), y: sy(p.a) } : { x: sx(p.a), y: sy(p.crossMid) };
           const b = barsHorizontal ? { x: sx(p.crossMid), y: sy(p.b) } : { x: sx(p.b), y: sy(p.crossMid) };
-          const lockCx = p.cx + p.pw / 2 + 11, lockCy = p.cy;
+          const lockCx = p.cx + p.pw / 2 + 12 + LOCK_R, lockCy = p.cy;
           return (
             <g key={`gap-${p.k}`} className={`yago-gap${locked ? ' locked' : ''}`}>
               <DimArrows a={a} b={b} asz={asz} color={locked ? '#f59e0b' : DIM_LINE} />
-              <DimPill cx={p.cx} cy={p.cy} txt={p.txt} fs={fs} fill={locked ? '#fff7ed' : '#ffffff'} stroke={locked ? '#f97316' : SOFT.pillStroke} strokeWidth={locked ? 1 : 0.7}
-                color={locked ? '#c2410c' : '#44403c'} hideText={editing?.kind === 'gap' && editing.k === p.k} title="Edit gap" onClick={e => { stop(e); setEditing({ kind: 'gap', k: p.k, v: p.txt }); }} />
-              <g className="lockbtn" style={{ cursor: 'pointer' }} onClick={e => { stop(e); onToggleLock(p.k); }}>
-                <circle cx={lockCx} cy={lockCy} r={8} fill={locked ? '#fff7ed' : '#ffffff'} stroke={locked ? '#f97316' : '#e6e0d6'} strokeWidth={0.7} />
-                {locked
-                  ? <Lock x={lockCx - 4.5} y={lockCy - 4.5} size={9} strokeWidth={2.4} color="#ea580c" />
-                  : <Unlock x={lockCx - 4.5} y={lockCy - 4.5} size={9} strokeWidth={2} color="#a8a29e" />}
-                <title>{locked ? 'Unlock gap (follows resize)' : 'Lock gap (stays fixed on resize)'}</title>
-              </g>
+              <DimPill cx={p.cx} cy={p.cy} txt={p.txt} fs={fs} fill={locked || edited ? '#fff7ed' : '#ffffff'} stroke={locked ? '#f97316' : edited ? '#fbbf24' : SOFT.pillStroke} strokeWidth={locked || edited ? 1 : 0.7}
+                color={locked ? '#c2410c' : edited ? '#9a3412' : '#44403c'} hideText={editing?.kind === 'gap' && editing.k === p.k} title={edited ? 'Entered gap — click to edit' : 'Edit gap'} onClick={e => { stop(e); setEditing({ kind: 'gap', k: p.k, v: p.txt }); }} />
+              <LockBadge cx={lockCx} cy={lockCy} locked={locked} edited={edited} onClick={() => onToggleLock(p.k)}
+                title={locked ? 'Locked gap — stays fixed on resize. Click to unlock' : edited ? 'Entered gap — click to lock it (stays fixed on resize)' : 'Lock gap (stays fixed on resize)'} />
             </g>
           );
         })}
@@ -1155,7 +1172,7 @@ function DoorTypeBar({ value, hint, onPick }: { value: DoorType | null; hint: st
 
 type DoorEdit = { key: string; v: string };
 /** Ölçü zinciri öğesi: ölçü (ok + pill + kilit) ya da boşluk (yalnız pill). a..b = eksen boyunca mm. */
-type ChainItem = { key: string; kind: 'size' | 'gap'; a: number; b: number; txt: string; title: string; locked?: boolean; onLock?: () => void; commit: (v: number) => void; min: number };
+type ChainItem = { key: string; kind: 'size' | 'gap'; a: number; b: number; txt: string; title: string; locked?: boolean; edited?: boolean; onLock?: () => void; commit: (v: number) => void; min: number };
 type Chain = { horiz: boolean; pos: number; items: ChainItem[]; small?: boolean };
 export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts, nearPanels, refPick, onEditSize, onToggleLock, onEditSplitGap, onEditEdgeGap, onEditLeaf, onEditLeafGap, onPathClick, onToggleHalfOverlay, onAlignJoint, onRefPick, addPick, onAddPick, onRemovePick, addObstacles }: {
   group: DoorGroup; selectedIndex: number; memberLabels: string[];
@@ -1305,13 +1322,6 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     if (isNaN(v) || !p || v < p.item.min) return;
     p.item.commit(v);
   };
-  const lockBtn = (locked: boolean, cx: number, cy: number, onClick: () => void) => (
-    <g className="lockbtn" style={{ cursor: 'pointer' }} onClick={e => { stop(e); onClick(); }}>
-      <circle cx={cx} cy={cy} r={8} fill={locked ? '#fff7ed' : '#ffffff'} stroke={locked ? '#f97316' : '#e6e0d6'} strokeWidth={0.7} />
-      {locked ? <Lock x={cx - 4.5} y={cy - 4.5} size={9} strokeWidth={2.4} color="#ea580c" /> : <Unlock x={cx - 4.5} y={cy - 4.5} size={9} strokeWidth={2} color="#a8a29e" />}
-      <title>{locked ? 'Unlock (follows resize)' : 'Lock (stays fixed on resize)'}</title>
-    </g>
-  );
   // Düğüm yolu (kök → yaprak) ve seçili düğümlerin ekran kutuları (çözülmüş alanlarından).
   const pathToLeaf = (leafId: string): string[] => {
     const out: string[] = [];
@@ -1378,7 +1388,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     n.children.forEach((_c, i) => {
       const w = n.sizes[i]?.value ?? 0;
       items.push({ key: `size-${n.id}-${i}`, kind: 'size', a: p, b: p + dir * w, txt: fmt(w), title: horiz ? 'Door width — click to edit (siblings take the rest)' : 'Door height — click to edit (siblings take the rest)',
-        locked: !!n.sizes[i]?.locked, onLock: () => onToggleLock(n.id, i), commit: v => onEditSize(n.id, i, v), min: 1 });
+        locked: !!n.sizes[i]?.locked, edited: !!n.sizes[i]?.edited, onLock: () => onToggleLock(n.id, i), commit: v => onEditSize(n.id, i, v), min: 1 });
       p += dir * w;
       if (i < n.children.length - 1) {
         const g = n.gaps[i] ?? 0;
@@ -1402,7 +1412,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     else if (horiz ? touch.u0(n) : touch.v1(n)) { const k: DoorEdgeKey = horiz ? 'uMin' : 'vMax'; items.push(edgeItem(k, start - dir * eg[k], start)); edgeStrip(on, k); }
     const w = P.sizes[idx]?.value ?? 0;
     items.push({ key: `size-${P.id}-${idx}`, kind: 'size', a: start, b: start + dir * w, txt: fmt(w), title: horiz ? 'Door width — click to edit (siblings take the rest)' : 'Door height — click to edit (siblings take the rest)',
-      locked: !!P.sizes[idx]?.locked, onLock: () => onToggleLock(P.id, idx), commit: v => onEditSize(P.id, idx, v), min: 1 });
+      locked: !!P.sizes[idx]?.locked, edited: !!P.sizes[idx]?.edited, onLock: () => onToggleLock(P.id, idx), commit: v => onEditSize(P.id, idx, v), min: 1 });
     const end = start + dir * w;
     if (idx < P.children.length - 1) { const g = P.gaps[idx] ?? 0; items.push({ key: `sgap-${P.id}-${idx}`, kind: 'gap', a: end, b: end + dir * g, txt: fmt(g), title: 'Gap between doors — click to edit', commit: v => onEditSplitGap(P.id, idx, v), min: 0 }); strip(P.axis, end, end + dir * g, c0, c1); }
     else if (horiz ? touch.u1(n) : touch.v0(n)) { const k: DoorEdgeKey = horiz ? 'uMax' : 'vMin'; items.push(edgeItem(k, end, end + dir * eg[k])); edgeStrip(on, k); }
@@ -1448,8 +1458,8 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
       ]);
     }
   }
-  // Bölge etiketi: seviye · bölme · alan ölçüsü (W×H) · spacing hedefi — "L1 · V ×3 · 1594×397 · 200 mm" (Goker: tıkladığım yerin ölçüsü).
-  const regionTag = (n: DoorNodeSolved) => `L${n.depth} · ${n.kind === 'split' ? `${n.axis === 'u' ? 'V' : 'H'} ×${n.children.length} · ${round1(n.u1 - n.u0)}×${round1(n.v1 - n.v0)}${n.targetSize ? ` · ${n.targetSize} mm` : ''}` : 'Door'}`;
+  // BÖLGE ETİKETİ KALDIRILDI (Goker, Eki 2026: "L0 L1 L2 gibi şeylere gerek yok, gözü karıştırıyor; kapağın içinde ölçüsü zaten
+  // yazıyor"): seçili bölge yalnız çerçeveyle gösterilir; bölme sayısı V/H kutularında, spacing hedefi Spacing kutusunda okunur.
 
   // Pill konumları (giriş kutusu için): ekran koordinatı + boyut. Tüm pill'ler büyük yazı (fs) — yalnız seçili bölgede görünürler.
   type Pill = { key: string; cx: number; cy: number; pw: number; ph: number; f: number; item: ChainItem; chain: Chain; x0: number; x1: number; hidden: boolean; lane: number };
@@ -1468,20 +1478,24 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     }).sort((a, b) => (ch.horiz ? a.cx - b.cx : a.cy - b.cy));
     const maxLanes = 3;
     const lanes: Placed[][] = Array.from({ length: maxLanes }, () => []);
-    const extOf = (p: typeof base[number]) => (ch.horiz ? p.pw : p.ph) + 2;
     const posOf = (p: typeof base[number]) => (ch.horiz ? p.cx : p.cy);
+    // Pill'in şerit üzerindeki kapladığı aralık: pill + (kilitli ölçüde) ucundaki kilit rozeti (yatay zincirde sağında, düşeyde altında).
+    const spanOf = (p: typeof base[number]): Placed => {
+      const half = (ch.horiz ? p.pw : p.ph) / 2 + 1;
+      return { start: posOf(p) - half, end: posOf(p) + half + (p.item.onLock ? LOCK_EXT : 0) };
+    };
     const fits = (lane: number, start: number, end: number) => lanes[lane].every(q => end <= q.start || start >= q.end);
     const laneStep = Math.max(...base.map(p => (ch.horiz ? p.ph : p.pw)), 0) + PILL_LANE_GAP;
     const place = (p: typeof base[number], lane: number) => {
-      p.lane = lane; lanes[lane].push({ start: posOf(p) - extOf(p) / 2, end: posOf(p) + extOf(p) / 2 });
+      p.lane = lane; lanes[lane].push(spanOf(p));
       if (lane > 0) { if (ch.horiz) p.cy -= lane * laneStep; else p.cx -= lane * laneStep; }
     };
     for (const p of base.filter(x => x.item.kind === 'size')) {
-      const st0 = posOf(p) - extOf(p) / 2, en0 = posOf(p) + extOf(p) / 2;
+      const { start: st0, end: en0 } = spanOf(p);
       place(p, fits(0, st0, en0) ? 0 : fits(1, st0, en0) ? 1 : 0);   // ikisine de sığmazsa 0. şerit (ölçü hep çizilir)
     }
     for (const p of base.filter(x => x.item.kind === 'gap')) {
-      const st0 = posOf(p) - extOf(p) / 2, en0 = posOf(p) + extOf(p) / 2;
+      const { start: st0, end: en0 } = spanOf(p);
       let lane = maxLanes - 1;
       for (let l = 0; l < maxLanes; l++) if (fits(l, st0, en0)) { lane = l; break; }
       place(p, lane);
@@ -1493,7 +1507,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
 
   return (
     <div ref={wrapRef} className={PREVIEW_FRAME} style={{ background: PREVIEW_BG, height }}>
-      <style>{`.yago-gap .lockbtn{opacity:0;transition:opacity .15s}.yago-gap:hover .lockbtn,.yago-gap.locked .lockbtn{opacity:1}.yago-band .chip{opacity:0;transition:opacity .15s}.yago-band.on .chip,.yago-band:hover .chip{opacity:1}.yago-band .hit{transition:fill .12s}.yago-band:hover .hit{fill:rgba(234,88,12,0.10)}`}</style>
+      <style>{SCHEMATIC_CSS}</style>
       <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ display: 'block', fontFamily: UI_FONT }}>
         <defs>
           {/* kapak yüzeyi: sıcak kemik gradyanı (hafif ışık üstten); seçili üye turuncuya kayar */}
@@ -1648,17 +1662,13 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
             );
           });
         })}
-        {/* SEÇİLİ BÖLGELER (Goker: "tıkladığım yerde kaça bölünmüşse göster"): çerçeve + köşede seviye · bölme etiketi */}
+        {/* SEÇİLİ BÖLGELER: yalnız çerçeve (bölme kesikli, kapak düz) — köşe etiketi kaldırıldı (Goker: "L0 L1 L2 gereksiz"). */}
         {selRegions.map(n => {
           const b = nodeBox(n);
-          const tag = regionTag(n); const { pw, ph } = pillSize(tag, fsT);
           const pad = n.kind === 'split' ? 2.5 : 0.5;
-          const tx = b.x0 + 4 + pw / 2, ty = b.y0 + 4 + ph / 2;   // bölgenin sol üst köşesinde, içeride
           return (
             <g key={`sel-${n.id}`} style={{ pointerEvents: 'none' }}>
               <rect x={b.x0 - pad} y={b.y0 - pad} width={b.x1 - b.x0 + 2 * pad} height={b.y1 - b.y0 + 2 * pad} rx={3} fill="#ea580c" fillOpacity={n.kind === 'split' ? 0.05 : 0.0} stroke="#ea580c" strokeWidth={1.2} strokeDasharray={n.kind === 'split' ? '5 3' : undefined} />
-              <rect x={tx - pw / 2} y={ty - ph / 2} width={pw} height={ph} rx={ph / 2} fill="#ea580c" />
-              <text x={tx} y={ty + fsT * 0.36} textAnchor="middle" fontSize={fsT} fontWeight={700} fill="#ffffff" fontFamily={UI_FONT} style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '0.02em' }}>{tag}</text>
             </g>
           );
         })}
@@ -1671,13 +1681,16 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
             return <DimPill key={p.key} cx={p.cx} cy={p.cy} txt={it.txt} fs={f} fill="#fff7ed" stroke="#f97316" strokeWidth={1} color="#c2410c" hideText={hide} title={it.title}
               onClick={e => { stop(e); setEditing({ key: p.key, v: it.txt }); }} />;
           }
-          const locked = !!it.locked, editable = !!it.onLock || it.key.startsWith('leaf-');
+          const locked = !!it.locked, edited = !locked && !!it.edited, editable = !!it.onLock || it.key.startsWith('leaf-');
+          // Kilit rozeti pill'in ucunda HER ZAMAN (yatay zincirde sağında, düşeyde altında); girilmiş ölçü kehribar, kilitli turuncu.
           return (
             <g key={p.key} className={`yago-gap${locked ? ' locked' : ''}`}>
-              <DimPill cx={p.cx} cy={p.cy} txt={it.txt} fs={f} fill={locked ? '#fff7ed' : '#ffffff'} stroke="#f97316" strokeWidth={locked ? 1.2 : 1}
-                color={locked ? '#c2410c' : '#1c1917'} hideText={hide} title={editable ? it.title : `${it.title} — set by the door bounds`}
+              <DimPill cx={p.cx} cy={p.cy} txt={it.txt} fs={f} fill={locked || edited ? '#fff7ed' : '#ffffff'} stroke={edited ? '#fbbf24' : '#f97316'} strokeWidth={locked ? 1.2 : 1}
+                color={locked ? '#c2410c' : edited ? '#9a3412' : '#1c1917'} hideText={hide} title={editable ? (edited ? `${it.title} (entered value)` : it.title) : `${it.title} — set by the door bounds`}
                 onClick={editable ? e => { stop(e); setEditing({ key: p.key, v: it.txt }); } : undefined} />
-              {it.onLock && (ch.horiz ? lockBtn(locked, p.cx + p.pw / 2 + 11, p.cy, it.onLock) : lockBtn(locked, p.cx, p.cy + p.ph / 2 + 11, it.onLock))}
+              {it.onLock && (ch.horiz
+                ? <LockBadge cx={p.cx + p.pw / 2 + 12 + LOCK_R} cy={p.cy} locked={locked} edited={edited} onClick={it.onLock} />
+                : <LockBadge cx={p.cx} cy={p.cy + p.ph / 2 + 12 + LOCK_R} locked={locked} edited={edited} onClick={it.onLock} />)}
             </g>
           );
         })}
@@ -2967,7 +2980,7 @@ export function PanelEditor() {
       const regionName = !primary ? 'whole door area' : primary.kind === 'leaf' ? 'the selected door' : `the selected region (${primary.axis === 'u' ? 'V' : 'H'} ×${primary.children.length})`;
       const sizeTitle = (ax: 'u' | 'v') => `Spacing ${ax === 'u' ? 'V — target door width' : 'H — target door height'} (mm) for ${regionName}: the number of pieces is derived from the region length (nearest fit, equal pieces) and re-derived when the body resizes. Clear it (× or empty + Enter) to cancel the target — the current pieces stay.`;
       const countTitle = (ax: 'u' | 'v') => `${ax === 'u' ? 'Split V — pieces side by side' : 'Split H — pieces stacked'} in ${regionName}. ` +
-        `Type or step the number of pieces (1 = not split on this axis). ${splitNode.kind === 'split' && splitNode.axis !== ax ? 'This region is already split the other way: a new split here wraps it as the first piece.' : ''}` +
+        `Type or step the number of pieces (1 = not split on this axis). ${splitNode.kind === 'split' && splitNode.axis !== ax ? 'This region is already split the other way: splitting here keeps that split in every new piece (e.g. V ×2 then H ×2 = 2 rows × 2 columns).' : ''}` +
         (picked.length > 1 ? ` Applies to ${picked.length} selected regions.` : '');
       return (
         <div key={rowKey} className={rowCardClass(open, dragIndex === rowIdx, armedRowKey === rowKey)}>

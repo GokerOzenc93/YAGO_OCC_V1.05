@@ -460,6 +460,16 @@ export function replaceDoorNode(n: DoorNode, id: string, repl: (old: DoorNode) =
   if (n.kind === 'leaf') return n;
   return { ...n, children: n.children.map(c => replaceDoorNode(c, id, repl)) };
 }
+/**
+ * Alt ağacın YENİ KİMLİKLİ kopyası (diğer eksende sarma: her yeni parça mevcut bölmenin aynısını alır). Ölçüler, kilitler,
+ * aralar, tipler, kanat bölmeleri ve spacing hedefi kopyalanır (aynı eksen uzunluğu — hepsi geçerli kalır); derz bağları
+ * (refs: derz bir levhayı izler) de kopyalanır — levha her iki parçayı da kesiyorsa iki derz de onu izler, kesmiyorsa
+ * doorJointTargets o bağı etkisiz bırakır.
+ */
+export function cloneDoorNode(n: DoorNode): DoorNode {
+  if (n.kind === 'leaf') return { ...n, id: genId('dl'), ...(n.leafSplit ? { leafSplit: { gap: n.leafSplit.gap, leaves: n.leafSplit.leaves.map(l => ({ ...l })) } } : {}) };
+  return { ...n, id: genId('ds'), sizes: n.sizes.map(s => ({ ...s })), gaps: [...n.gaps], children: n.children.map(cloneDoorNode), ...(n.refs ? { refs: { ...n.refs } } : {}) };
+}
 export function findSolvedNode(n: DoorNodeSolved, id: string): DoorNodeSolved | null { if (n.id === id) return n; if (n.kind === 'split') for (const c of n.children) { const h = findSolvedNode(c, id); if (h) return h; } return null; }
 
 /**
@@ -1045,10 +1055,15 @@ function rebuildMembers(group: DoorGroup, nextGroup: DoorGroup, restructured: Se
  * seçili DÜĞÜM (kapak ya da bölünmüş alan) için `axis` eksenindeki parça sayısı `count` yapılır.
  *  • Yaprak + count ≥ 2 → yaprak, o eksende count çocuklu bir split olur (çocuklar eşit; aralar grubun boşluğu;
  *    tipler: u → sol yarı left / sağ yarı right, v → bölünen kapağın tipi).
- *  • Aynı eksenli split → çocuk sayısı değişir: artınca sona eşit kapaklar eklenir, azalınca sondakiler gider
- *    (ölçüler eşitlenir); count = 1 → split tek kapağa iner (BİRLEŞTİRME; tip = ilk kapağın tipi).
- *  • Diğer eksenli split + count ≥ 2 → alan SARILIR: yeni split'in ilk parçası mevcut bölme, gerisi yeni kapaklar
- *    (içerik kaybolmaz; 1'e indirince eski bölme geri gelir).
+ *  • Aynı eksenli split → çocuk sayısı değişir: artınca sona yeni parçalar eklenir (son parça bir bölmeyse onun
+ *    kopyaları — 2 satır × V×2 → 3 satır × V×2; tek kapaksa eşit yeni kapaklar), azalınca sondakiler gider (ölçüler
+ *    eşitlenir); count = 1 → bölme kalkar, İLK PARÇA olduğu gibi kalır (tek kapaksa o kapak — tipi ve adımlarıyla;
+ *    sarılmış bir bölmeyse eski bölme geri gelir).
+ *  • Diğer eksenli split + count ≥ 2 → alan SARILIR ve MEVCUT BÖLME HER PARÇADA KORUNUR (Goker, Eki 2026: "bir kapağı
+ *    2'ye böldüysem, tekrar tüm bloğu seçip yatayda bölüyorsam dikeyde bölünmemiş gibi bölüyor; tüm bloğa tıklıyorsam
+ *    daha önce bölünmüş halini koruyarak bölsün"): yeni split'in ilk parçası mevcut bölme (üyeleri korunur), diğer
+ *    parçalar mevcut bölmenin yeni kimlikli KOPYALARI (cloneDoorNode: aynı ölçüler/kilitler/tipler) → V×2 sonra H×2 =
+ *    2 satır × 2 sütun. Eski davranış (ilk parça mevcut bölme, gerisi tek kapak) kaldırıldı.
  * Üst bölmelerin ölçüleri değişmez. Dönüş: sonuç düğümün id'si (arayüz seçimi orada tutar) — işlem yoksa null.
  */
 export function setDoorNodeSplit(groupId: string, nodeId: string, axis: 'u' | 'v', count: number, opts: { keepTargetSize?: boolean } = {}): string | null {
@@ -1069,15 +1084,20 @@ export function setDoorNodeSplit(groupId: string, nodeId: string, axis: 'u' | 'v
   if (node.axis === axis) {
     if (n === node.children.length) return node.id;
     if (n <= 1) {
-      const first = doorLeaves(node)[0];
-      const leaf = makeDoorLeaf(first && !doorLeafAxis(first.type) ? first.type : 'left');
-      rebuildMembers(group, { ...group, tree: replaceDoorNode(group.tree, node.id, () => leaf) }, new Set(doorLeaves(node).map(l => l.id)), 'birleştirme (×1)');
-      return leaf.id;
+      // BİRLEŞTİRME: bölme kalkar, ilk parça olduğu gibi kalır (kapaksa kendi tipi/adımlarıyla; sarılmış bölmeyse geri gelir).
+      const first = node.children[0];
+      const gone = new Set(node.children.slice(1).flatMap(c => doorLeaves(c).map(l => l.id)));
+      rebuildMembers(group, { ...group, tree: replaceDoorNode(group.tree, node.id, () => first) }, gone, 'birleştirme (×1)');
+      return first.id;
     }
     const restructured = new Set<string>();
     let children = node.children.slice();
-    if (n > children.length) children = [...children, ...newLeaves(n - children.length, children.length, n, 'left')];
-    else { for (const c of children.slice(n)) for (const l of doorLeaves(c)) restructured.add(l.id); children = children.slice(0, n); }
+    if (n > children.length) {
+      // ARTIŞ: son parça bir bölmeyse yeni parçalar onun kopyası (2 satır × V×2 → 3 satır × V×2; Goker: bölünmüş hal korunsun);
+      // son parça tek kapaksa eskisi gibi eşit yeni kapaklar.
+      const last = children[children.length - 1];
+      children = [...children, ...(last.kind === 'split' ? Array.from({ length: n - children.length }, () => cloneDoorNode(last)) : newLeaves(n - children.length, children.length, n, 'left'))];
+    } else { for (const c of children.slice(n)) for (const l of doorLeaves(c)) restructured.add(l.id); children = children.slice(0, n); }
     // Ölçüler eşitlenir; elle sayı girildiyse spacing hedefi kalkar. Derz bağları kalan derzlerde (k < n−1) korunur.
     const refs = Object.fromEntries(Object.entries(node.refs ?? {}).filter(([k]) => +k < n - 1)) as Record<number, DoorJointRef>;
     const next: DoorNode = { ...node, children, gaps: gapsFor(n - 1, node.gaps), sizes: [], targetSize: opts.keepTargetSize ? node.targetSize : undefined, refs: Object.keys(refs).length ? refs : undefined };
@@ -1085,8 +1105,10 @@ export function setDoorNodeSplit(groupId: string, nodeId: string, axis: 'u' | 'v
     return node.id;
   }
   if (n <= 1) return node.id;
-  const wrap: DoorNode = { id: genId('ds'), kind: 'split', axis, sizes: [], gaps: gapsFor(n - 1), children: [node, ...newLeaves(n - 1, 1, n, 'left')] };
-  rebuildMembers(group, { ...group, tree: replaceDoorNode(group.tree, node.id, () => wrap) }, new Set(), `sarma ${axis === 'u' ? 'V' : 'H'} ×${n}`);
+  // SARMA — mevcut bölme her parçada korunur: ilk parça mevcut düğüm (üyeleri korunur), diğerleri yeni kimlikli kopyaları.
+  const wrap: DoorNode = { id: genId('ds'), kind: 'split', axis, sizes: [], gaps: gapsFor(n - 1), children: [node, ...Array.from({ length: n - 1 }, () => cloneDoorNode(node))] };
+  rebuildMembers(group, { ...group, tree: replaceDoorNode(group.tree, node.id, () => wrap) }, new Set(), `sarma ${axis === 'u' ? 'V' : 'H'} ×${n} (mevcut bölme her parçada)`);
+  console.log('[YAGO][KAPAK-BÖLME] sarma: mevcut', node.axis === 'u' ? 'V' : 'H', `×${node.children.length}`, 'bölme', n, 'parçanın her birinde korundu →', doorLeaves(wrap).length, 'kapak');
   return wrap.id;
 }
 /** Eski adlar — tek giriş setDoorNodeSplit. */
