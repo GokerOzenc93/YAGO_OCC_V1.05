@@ -23,7 +23,7 @@ import {
   startCavityEdit, startGroupRepick, toggleGroupGapLock, traceMaskLoops, updateCavityStep,
 } from './PanelGroupService';
 import {
-  type DoorCut, type DoorEdgeKey, type DoorLayoutSnap, type DoorNearPanel, type DoorNodeSolved, DOOR_TYPES, DOOR_TYPE_LABEL, DOOR_TYPE_TITLE, addPanelAtDoorJoint, applyDoorCuts, clearDoorSpacing, collectDoorCuts, doorCutBands, doorJointParts, doorJoints, doorLayoutSnapshot, doorLeafAxis, doorPlaneAxes, doorSpacingTargetsInScope, doorLeaves, doorMemberCount, doorNearPanels, restoreDoorLayout,
+  type DoorCut, type DoorEdgeKey, type DoorLayoutSnap, type DoorNearPanel, type DoorNodeSolved, DOOR_TYPES, DOOR_TYPE_LABEL, DOOR_TYPE_TITLE, addPanelAtDoorJoint, applyDoorCuts, clearDoorSpacing, collectDoorCuts, clipPolyToConvex, doorCutBands, doorJointParts, doorJoints, doorLayoutSnapshot, polyArea, doorLeafAxis, doorPlaneAxes, doorSpacingTargetsInScope, doorLeaves, doorMemberCount, doorNearPanels, restoreDoorLayout,
   confirmDoorPick, deleteDoorGroupWithMembers, doorGroupName, doorMemberRects, doorMembersOf, doorPlacementLabel, edgeGapsOf, editDoorLeafSize, editDoorSize, equalizeDoorGroup, findDoorNode, findSolvedNode,
   isDoorVf, renameDoorGroup, setDoorEdgeGap, setDoorGap, setDoorHalfOverlay, setDoorLeafGap, setDoorLeafTypes, setDoorNodeSpacing, setDoorJointRef, setDoorNodeSplit, setDoorPlacement, setDoorSplitGap, splitDoorAtPanel, setDoorThickness, setVfDoorBound,
   solveDoorTree, toggleDoorSizeLock,
@@ -1287,7 +1287,16 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
   const clampX = (x: number) => Math.max(ox - DOOR_PAD_L + 2, Math.min(ox + SW + DOOR_PAD_R - 2, x));
   const clampY = (y: number) => Math.max(oy - DOOR_PAD_T + 2, Math.min(oy + SH + DOOR_PAD_B - 2, y));
   const isOuter = group.placement === 'outer';
-  type Band = { np: DoorNearPanel; x: number; y: number; w: number; h: number; vertical: boolean; half: boolean; aligned: boolean };
+  // Çizim alanı (kapak alanı + kenar payları) mm'de: ekran → mm ters eşleme (aynalı görünüşler dahil).
+  const invX = (x: number) => rect.u0 + (mirrorU ? (ox + SW - x) : (x - ox)) * duR / SW;
+  const invY = (y: number) => (mirrorV ? rect.v0 + (y - oy) * dvR / SH : rect.v1 - (y - oy) * dvR / SH);
+  const areaPx = [[ox - DOOR_PAD_L + 2, oy - DOOR_PAD_T + 2], [ox + SW + DOOR_PAD_R - 2, oy - DOOR_PAD_T + 2], [ox + SW + DOOR_PAD_R - 2, oy + SH + DOOR_PAD_B - 2], [ox - DOOR_PAD_L + 2, oy + SH + DOOR_PAD_B - 2]];
+  const areaMm = areaPx.map(([x, y]) => ({ x: invX(x), y: invY(y) }));
+  type Pt = { x: number; y: number };
+  const ptsPath = (pts: Pt[]) => pts.map((q, i) => `${i ? 'L' : 'M'}${q.x.toFixed(1)},${q.y.toFixed(1)}`).join(' ') + ' Z';
+  // Levha çizimi `pts` (ekran çokgeni): dikdörtgen levhada kutu; ön görünüşü dikdörtgen olmayan levhada (eğik panel altında pahlanmış
+  // yan — Goker: "eğimli panelde dikme / yan ile iç içe geçmiş görünüyor") gerçek izdüşüm zarfı. x/y/w/h = zarfın kutusu (rozet/tık).
+  type Band = { np: DoorNearPanel; x: number; y: number; w: number; h: number; vertical: boolean; half: boolean; aligned: boolean; pts: Pt[] };
   const bands: Band[] = nearPanels.map(np => {
     const vertical = np.kind === 'u';
     let a0 = vertical ? Math.min(sx(np.a0), sx(np.a1)) : Math.min(sy(np.a0), sy(np.a1)), a1 = vertical ? Math.max(sx(np.a0), sx(np.a1)) : Math.max(sy(np.a0), sy(np.a1));
@@ -1295,28 +1304,35 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     const c0 = vertical ? clampY(Math.min(sy(np.c0), sy(np.c1))) : clampX(Math.min(sx(np.c0), sx(np.c1)));
     const c1 = vertical ? clampY(Math.max(sy(np.c0), sy(np.c1))) : clampX(Math.max(sx(np.c0), sx(np.c1)));
     const half = !!np.edge && np.behind && !!group.halfOverlay?.[np.edge];
-    return { np, vertical, half, aligned: !!np.ref && !!np.joint, x: vertical ? a0 : c0, y: vertical ? c0 : a0, w: vertical ? a1 - a0 : c1 - c0, h: vertical ? c1 - c0 : a1 - a0 };
+    let x = vertical ? a0 : c0, y = vertical ? c0 : a0, w = vertical ? a1 - a0 : c1 - c0, h = vertical ? c1 - c0 : a1 - a0;
+    let pts: Pt[] = [{ x, y }, { x: x + w, y }, { x: x + w, y: y + h }, { x, y: y + h }];
+    const hull = np.poly ? clipPolyToConvex(np.poly, areaMm) : [];
+    if (hull.length >= 3) {
+      pts = hull.map(q => ({ x: sx(q.x), y: sy(q.y) }));
+      const xs = pts.map(q => q.x), ys = pts.map(q => q.y);
+      x = Math.min(...xs); y = Math.min(...ys); w = Math.max(...xs) - x; h = Math.max(...ys) - y;
+    }
+    return { np, vertical, half, aligned: !!np.ref && !!np.joint, x, y, w, h, pts };
   });
   // AÇILI SINIR LEVHALARI (Goker, Eki 2026: "kapak sınırı olan paneli preview'da açılı görmeliyim; Full/Half açılı panelde de
   // çıkmalı"): kesicilerin kapak düzlemindeki şeridi çizim alanıyla (pay dahil) kırpılıp çokgen olarak çizilir; rozet şeridin
   // ortasında, şerit yönünde döndürülmüş. mm ↔ px: sx/sy'nin tersiyle çizim alanı mm'ye taşınır.
-  const invX = (x: number) => rect.u0 + (mirrorU ? (ox + SW - x) : (x - ox)) * duR / SW;
-  const invY = (y: number) => (mirrorV ? rect.v0 + (y - oy) * dvR / SH : rect.v1 - (y - oy) * dvR / SH);
-  const areaPx = [[ox - DOOR_PAD_L + 2, oy - DOOR_PAD_T + 2], [ox + SW + DOOR_PAD_R - 2, oy - DOOR_PAD_T + 2], [ox + SW + DOOR_PAD_R - 2, oy + SH + DOOR_PAD_B - 2], [ox - DOOR_PAD_L + 2, oy + SH + DOOR_PAD_B - 2]];
-  const areaMm = areaPx.map(([x, y]) => ({ x: invX(x), y: invY(y) }));
   const cutBands = doorCutBands(group, rect, cuts, areaMm, BAND_MIN * dvR / SH).map(cb => {
     const pts = cb.poly.map(q => ({ x: sx(q.x), y: sy(q.y) }));
     const cx = pts.reduce((a, q) => a + q.x, 0) / pts.length, cy = pts.reduce((a, q) => a + q.y, 0) / pts.length;
     const dx = (mirrorU ? -1 : 1) * cb.dir.x, dy = (mirrorV ? 1 : -1) * cb.dir.y;   // mm yönü → ekran (v yukarı → y aşağı; aynalı görünüşte ters)
     const deg = Math.atan2(dy, dx) * 180 / Math.PI;
     const half = !!cb.edge && cb.covered && !!group.halfOverlay?.[cb.edge];
-    return { ...cb, pts, cx, cy, deg: ((deg + 90) % 180) - 90, half };
+    // Yazı hep okunur yönde (−90°..90°); JS % negatifte işaret korur — eskiden −160° gibi açılarda rozet ters yazılıyordu.
+    let rd = deg; while (rd > 90) rd -= 180; while (rd < -90) rd += 180;
+    return { ...cb, pts, cx, cy, deg: rd, half };
   });
   // Kapak arkasında kalan kısımlar (gizli çizgi): levha ∩ her kapak dikdörtgeni.
   const hiddenParts = (b: Band) => members.flatMap(m => {
     const dx0 = Math.min(sx(m.u0), sx(m.u1)) + I, dx1 = Math.max(sx(m.u0), sx(m.u1)) - I, dy0 = Math.min(sy(m.v1), sy(m.v0)) + I, dy1 = Math.max(sy(m.v1), sy(m.v0)) - I;
-    const x0 = Math.max(b.x, dx0), x1 = Math.min(b.x + b.w, dx1), y0 = Math.max(b.y, dy0), y1 = Math.min(b.y + b.h, dy1);
-    return x1 - x0 > 0.5 && y1 - y0 > 0.5 ? [{ x: x0, y: y0, w: x1 - x0, h: y1 - y0 }] : [];
+    if (dx1 - dx0 < 0.5 || dy1 - dy0 < 0.5) return [];
+    const part = clipPolyToConvex(b.pts, [{ x: dx0, y: dy0 }, { x: dx1, y: dy0 }, { x: dx1, y: dy1 }, { x: dx0, y: dy1 }]);
+    return part.length >= 3 && Math.abs(polyArea(part)) > 0.5 ? [part] : [];
   });
   // Hizalama etiketleri EKRANA göre (aynalı görünüşte min/max yer değiştirir).
   const alignLabel = (b: Band, a: DoorAlign) => (a === 'center' ? 'Center' : b.vertical ? ((a === 'min') !== mirrorU ? 'Left' : 'Right') : ((a === 'max') !== mirrorV ? 'Up' : 'Down'));
@@ -1571,15 +1587,15 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
           const warm = b.half || b.aligned;
           return (
             <g key={`band-${b.np.vfId}`} style={{ pointerEvents: 'none' }}>
-              <rect x={b.x} y={b.y} width={b.w} height={b.h} fill={warm ? '#f9dcc4' : '#ddd4c6'} />
-              <rect x={b.x} y={b.y} width={b.w} height={b.h} fill={warm ? `url(#${gid}-hatch-on)` : `url(#${gid}-hatch)`} />
-              <rect x={b.x} y={b.y} width={b.w} height={b.h} fill="none" stroke={warm ? '#e07b3c' : '#a39a8d'} strokeWidth={1} />
+              <path d={ptsPath(b.pts)} fill={warm ? '#f9dcc4' : '#ddd4c6'} />
+              <path d={ptsPath(b.pts)} fill={warm ? `url(#${gid}-hatch-on)` : `url(#${gid}-hatch)`} />
+              <path d={ptsPath(b.pts)} fill="none" stroke={warm ? '#e07b3c' : '#a39a8d'} strokeWidth={1} strokeLinejoin="round" />
             </g>
           );
         })}
         {/* AÇILI SINIR LEVHALARI: kesit şeridi (çokgen), bantlarla aynı dil; yarım binmede turuncu tonlu */}
         {cutBands.map(cb => {
-          const d = cb.pts.map((q, i) => `${i ? 'L' : 'M'}${q.x.toFixed(1)},${q.y.toFixed(1)}`).join(' ') + ' Z';
+          const d = ptsPath(cb.pts);
           return (
             <g key={`cut-${cb.cut.vfId}`} style={{ pointerEvents: 'none' }}>
               <path d={d} fill={cb.half ? '#f9dcc4' : '#ddd4c6'} />
@@ -1647,11 +1663,24 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
             </g>
           );
         })}
+        {/* AÇILI LEVHANIN KAPAK ARKASINDAKİ KISMI: düz levhalarla aynı gizli çizgi dili (tam binmede eğik panel kapağın altında kalır) */}
+        {cutBands.flatMap(cb => members.flatMap((m, mi) => {
+          const dx0 = Math.min(sx(m.u0), sx(m.u1)) + I, dx1 = Math.max(sx(m.u0), sx(m.u1)) - I, dy0 = Math.min(sy(m.v1), sy(m.v0)) + I, dy1 = Math.max(sy(m.v1), sy(m.v0)) - I;
+          if (dx1 - dx0 < 0.5 || dy1 - dy0 < 0.5) return [];
+          const part = clipPolyToConvex(cb.pts, [{ x: dx0, y: dy0 }, { x: dx1, y: dy0 }, { x: dx1, y: dy1 }, { x: dx0, y: dy1 }]);
+          if (part.length < 3 || Math.abs(polyArea(part)) < 0.5) return [];
+          return [(
+            <g key={`cuthid-${cb.cut.vfId}-${mi}`} style={{ pointerEvents: 'none' }}>
+              <path d={ptsPath(part)} fill={cb.half ? `url(#${gid}-hatch-on)` : `url(#${gid}-hatch)`} opacity={0.4} />
+              <path d={ptsPath(part)} fill="none" stroke={cb.half ? '#e8925a' : '#9a9185'} strokeWidth={0.8} strokeDasharray="3 2" opacity={0.9} strokeLinejoin="round" />
+            </g>
+          )];
+        }))}
         {/* KAPAK ARKASINDAKİ LEVHA KISMI: gizli çizgi (kesikli) + soluk tarama — tam / yarım binme ve derz hizası burada okunur */}
         {bands.flatMap(b => hiddenParts(b).map((hp, k) => (
           <g key={`hid-${b.np.vfId}-${k}`} style={{ pointerEvents: 'none' }}>
-            <rect x={hp.x} y={hp.y} width={hp.w} height={hp.h} fill={b.half || b.aligned ? `url(#${gid}-hatch-on)` : `url(#${gid}-hatch)`} opacity={0.4} />
-            <rect x={hp.x} y={hp.y} width={hp.w} height={hp.h} fill="none" stroke={b.half || b.aligned ? '#e8925a' : '#9a9185'} strokeWidth={0.8} strokeDasharray="3 2" opacity={0.9} />
+            <path d={ptsPath(hp)} fill={b.half || b.aligned ? `url(#${gid}-hatch-on)` : `url(#${gid}-hatch)`} opacity={0.4} />
+            <path d={ptsPath(hp)} fill="none" stroke={b.half || b.aligned ? '#e8925a' : '#9a9185'} strokeWidth={0.8} strokeDasharray="3 2" opacity={0.9} strokeLinejoin="round" />
           </g>
         )))}
         {/* LEVHA TIKLAMA ALANI + ROZET (bandın ortasında, düşey levhada dikey yazı): kenar levhası → Full / Half; derzdeki
@@ -1671,7 +1700,9 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
           return (
             <g key={`hit-${np.vfId}`} className={`yago-band${chipTxt ? ' on' : ''}`} style={{ cursor: interactive ? 'pointer' : 'default' }}
               onClick={interactive ? e => { stop(e); onBandClick(b, e.shiftKey || e.ctrlKey || e.metaKey); } : undefined}>
-              <rect x={b.x - 2} y={b.y - 2} width={b.w + 4} height={b.h + 4} fill="transparent" className="hit" />
+              {b.np.poly
+                ? <path d={ptsPath(b.pts)} fill="transparent" stroke="transparent" strokeWidth={4} strokeLinejoin="round" className="hit" />
+                : <rect x={b.x - 2} y={b.y - 2} width={b.w + 4} height={b.h + 4} fill="transparent" className="hit" />}
               {chipTxt && (
                 <g className="chip" transform={b.vertical ? `rotate(-90 ${bx} ${by})` : undefined}>
                   <rect x={bx - cw / 2} y={by - chh / 2} width={cw} height={chh} rx={chh / 2} fill={rem ? '#fef2f2' : pickable ? '#fff7ed' : on ? '#ea580c' : '#ffffff'} stroke={rem ? '#ef4444' : pickable ? '#f97316' : on ? '#c2410c' : '#cfc6b9'} strokeWidth={0.8}
@@ -1689,7 +1720,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
           const chipTxt = interactive ? (cb.half ? 'Half' : 'Full') : null;
           const cfs = fsT * 0.8;
           const { pw: cw, ph: chh } = chipTxt ? pillSize(chipTxt, cfs) : { pw: 0, ph: 0 };
-          const d = cb.pts.map((q, i) => `${i ? 'L' : 'M'}${q.x.toFixed(1)},${q.y.toFixed(1)}`).join(' ') + ' Z';
+          const d = ptsPath(cb.pts);
           const tip = `${cb.cut.name} — angled door reference panel: the door is cut along it (it keeps the side you clicked when placing the door).` +
             (interactive ? ` ${cb.half ? 'HALF overlay — the door reaches the middle of this panel\'s thickness. Click for full overlay.' : 'FULL overlay — the door covers this panel\'s whole thickness. Click for half overlay.'}` : cb.covered ? '' : ' It stands in front of the door plane, so there is no overlay to set.');
           return (

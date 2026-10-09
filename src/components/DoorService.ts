@@ -4,7 +4,7 @@ import {
 } from '../store';
 import * as THREE from 'three';
 import { type Vec3, genId, round1 } from './Geometry';
-import { largestFaceNormal, panelHasRotation } from './FaceRegion';
+import { convexHull2D, largestFaceNormal, panelHasRotation } from './FaceRegion';
 import {
   GROUP_PANEL_THICKNESS, applyGapEdit, bodyLocalBox, boxSpan, collectObstacles, createPanelGroupFromCavity, editGroupGap, fmtBox, gridForObstacles, groupFacing, memberThicknessesOf, panelLocalBox,
   rayCavityCandidates, redistributeForThickness,
@@ -193,7 +193,11 @@ export function collectDoorBoundPanels(parent: Shape, shapes: Shape[] = useAppSt
 // ── AÇILI REFERANS KESİMLERİ ────────────────────────────────────────────────
 
 /** Dönmüş kapak-sınırı paneli: büyük-yüz normali (gövde-yerel) + levhanın o normaldeki aralığı + eksen-hizalı kutusu. */
-export interface DoorCut { vfId: string; name: string; n: Vec3; dMin: number; dMax: number; box: CavityBox }
+/**
+ * Dönmüş kapak-sınırı paneli: büyük-yüz normali (gövde-yerel) + levhanın o normaldeki aralığı + eksen-hizalı kutusu +
+ * `pts` = panelin tekil köşeleri (gövde-yerel) — şemada gerçek ön görünüşü (izdüşüm zarfı) çizmek için.
+ */
+export interface DoorCut { vfId: string; name: string; n: Vec3; dMin: number; dMax: number; box: CavityBox; pts?: Vec3[] }
 
 /** Gövdenin DÖNMÜŞ kapak-sınırı panelleri (kesici düzlemler). Düz paneller dikdörtgen kenarıdır, burada yok. */
 export function collectDoorCuts(parent: Shape, shapes: Shape[] = useAppStore.getState().shapes, vfs: VirtualFace[] = useAppStore.getState().virtualFaces): DoorCut[] {
@@ -208,12 +212,16 @@ export function collectDoorCuts(parent: Shape, shapes: Shape[] = useAppStore.get
     if (!box || !n || !pos) continue;
     const off = [0, 1, 2].map(k => (p.position?.[k] ?? 0) - (parent.position?.[k] ?? 0));
     let dMin = Infinity, dMax = -Infinity;
+    const pts: Vec3[] = [], seen = new Set<string>();
     for (let i = 0; i < pos.count; i++) {
-      const d = (pos.getX(i) + off[0]) * n.x + (pos.getY(i) + off[1]) * n.y + (pos.getZ(i) + off[2]) * n.z;
+      const x = pos.getX(i) + off[0], y = pos.getY(i) + off[1], z = pos.getZ(i) + off[2];
+      const d = x * n.x + y * n.y + z * n.z;
       if (d < dMin) dMin = d; if (d > dMax) dMax = d;
+      const k = `${Math.round(x * 10)},${Math.round(y * 10)},${Math.round(z * 10)}`;
+      if (!seen.has(k)) { seen.add(k); pts.push([x, y, z]); }
     }
     if (!(dMax - dMin > 0.5)) continue;
-    out.push({ vfId: vf.id, name: vf.description || 'Panel', n: [n.x, n.y, n.z], dMin, dMax, box });
+    out.push({ vfId: vf.id, name: vf.description || 'Panel', n: [n.x, n.y, n.z], dMin, dMax, box, pts });
   }
   return out;
 }
@@ -231,7 +239,44 @@ function clipHalfPlane(poly: Pt2[], A: number, B: number, C: number): Pt2[] {
   }
   return out;
 }
-const polyArea = (p: Pt2[]) => { let a = 0; for (let i = 0; i < p.length; i++) { const q = p[i], r = p[(i + 1) % p.length]; a += q.x * r.y - r.x * q.y; } return a / 2; };
+export const polyArea = (p: Pt2[]) => { let a = 0; for (let i = 0; i < p.length; i++) { const q = p[i], r = p[(i + 1) % p.length]; a += q.x * r.y - r.x * q.y; } return a / 2; };
+/** Çokgeni DIŞBÜKEY bir çokgenle kırpar (her kenarı bir yarım düzlem; yönelim CW / CCW fark etmez). Şema (px) ve mm'de ortak. */
+export function clipPolyToConvex(poly: Pt2[], convex: Pt2[]): Pt2[] {
+  if (convex.length < 3) return poly;
+  const ccw = polyArea(convex) > 0;
+  let out = poly;
+  for (let i = 0; i < convex.length && out.length >= 3; i++) {
+    const a = convex[i], b = convex[(i + 1) % convex.length];
+    let A = b.y - a.y, B = -(b.x - a.x);   // CCW'de iç taraf kenarın solu: A·x + B·y ≤ A·ax + B·ay
+    if (!ccw) { A = -A; B = -B; }
+    out = clipHalfPlane(out, A, B, A * a.x + B * a.y);
+  }
+  return out;
+}
+/** Köşe kümesinin (gövde-yerel) kapak düzlemine (u,v) izdüşümünün dışbükey zarfı. */
+function frontHullOf(pts: Iterable<Vec3>, u: 0 | 1 | 2, v: 0 | 1 | 2): Pt2[] {
+  const out: Pt2[] = [], seen = new Set<string>();
+  for (const q of pts) { const k = `${Math.round(q[u] * 10)},${Math.round(q[v] * 10)}`; if (seen.has(k)) continue; seen.add(k); out.push({ x: q[u], y: q[v] }); }
+  return convexHull2D(out);
+}
+/**
+ * Panelin ÖN GÖRÜNÜŞÜ (Goker, Eki 2026: "eğimli panelde full door preview'da dikme yan ile iç içe geçmiş görünüyor"): geometrisinin
+ * kapak düzlemine izdüşümünün dışbükey zarfı (u,v), geometri + konum + eksen başına önbellekli. Eğim altında pahlanmış yan panelin
+ * ön görünüşü yamuktur — eksen-hizalı kutusu (dikdörtgen) eğik paneli örter, şemada iç içe görünür.
+ */
+const _frontHullCache = new WeakMap<object, { key: string; hull: Pt2[] }>();
+export function panelFrontHull(p: Shape, parent: Shape, u: 0 | 1 | 2, v: 0 | 1 | 2): Pt2[] | null {
+  const pos = p.geometry?.getAttribute?.('position') as THREE.BufferAttribute | undefined;
+  if (!pos || pos.count < 3) return null;
+  const off = [0, 1, 2].map(k => (p.position?.[k] ?? 0) - (parent.position?.[k] ?? 0));
+  const key = `${u}${v}:${off.map(x => x.toFixed(2)).join(',')}:${pos.count}:${pos.version}`;
+  const hit = _frontHullCache.get(p.geometry);
+  if (hit && hit.key === key) return hit.hull;
+  const pts = function* () { for (let i = 0; i < pos.count; i++) yield [pos.getX(i) + off[0], pos.getY(i) + off[1], pos.getZ(i) + off[2]] as Vec3; };
+  const hull = frontHullOf(pts(), u, v);
+  _frontHullCache.set(p.geometry, { key, hull });
+  return hull;
+}
 
 /**
  * Üye dikdörtgenini dönmüş sınır panellerinin BÜYÜK-YÜZ düzlemleriyle kırpar → (u,v) çokgeni; kesim yoksa null.
@@ -740,6 +785,9 @@ export function doorCutBands(group: Pick<DoorGroup, 'axis' | 'side' | 'placement
     if (hi - lo < minT * len) { const m = (lo + hi) / 2; lo = m - minT * len / 2; hi = m + minT * len / 2; }
     let poly = clipHalfPlane(area, A, B, hi);
     if (poly.length >= 3) poly = clipHalfPlane(poly, -A, -B, -lo);
+    // Şerit sonsuzdur: panelin GERÇEK ön görünüşüyle (köşelerinin izdüşüm zarfı) kırpılır → uçları panelin bittiği yerde
+    // (Goker: "eğimli panel dikme / yan ile iç içe geçmiş görünüyor" — şerit yan panelin üstünden çizim alanının kenarına taşıyordu).
+    if (poly.length >= 3 && c.pts && c.pts.length >= 3) { const hull = frontHullOf(c.pts, u, v); if (hull.length >= 3) poly = clipPolyToConvex(poly, hull); }
     if (poly.length < 3 || Math.abs(polyArea(poly)) < 1) continue;
     const cu = group.anchor ? group.anchor[0] : (rect.u0 + rect.u1) / 2, cv = group.anchor ? group.anchor[1] : (rect.v0 + rect.v1) / 2;
     const ce = cutEdgeOf(c, cu, cv, group.axis, rect.front);
@@ -845,6 +893,11 @@ export interface DoorNearPanel {
    * (LEVHA kapak derzini izler — kapak arayüzünden eklenen raf/dikme). Yoksa levha serbest.
    */
   ref?: { splitId: string; k: number; align: DoorAlign; master: 'panel' | 'door' };
+  /**
+   * ÖN GÖRÜNÜŞ (u,v): panelin kapak düzlemine izdüşüm zarfı — yalnız dikdörtgen DEĞİLSE (ör. eğik panel altında pahlanmış yan:
+   * yamuk). Şema bunu çizer; yoksa a0..a1 × c0..c1 dikdörtgeni.
+   */
+  poly?: Pt2[];
 }
 
 /**
@@ -902,7 +955,12 @@ export function doorNearPanels(group: DoorGroup, parent: Shape, shapes: Shape[],
         }
       }
     }
-    out.push({ vfId: bp.vfId, panelId: bp.panelId, name: bp.name, kind, a0, a1, c0, c1, behind, edge, groupId: pg?.id, memberIndex, joint, ref });
+    // Ön görünüş dikdörtgen değilse (pahlanmış uç — küçük bir üçgen bile kutunun köşesini boşaltır) gerçek zarf.
+    const ps = shapeById(bp.panelId, shapes);
+    const hull = ps ? panelFrontHull(ps, parent, u, v) : null;
+    const boxArea = (b.max[u] - b.min[u]) * (b.max[v] - b.min[v]);
+    const poly = hull && hull.length >= 3 && boxArea - Math.abs(polyArea(hull)) > Math.max(1, boxArea * 1e-3) ? hull : undefined;
+    out.push({ vfId: bp.vfId, panelId: bp.panelId, name: bp.name, kind, a0, a1, c0, c1, behind, edge, groupId: pg?.id, memberIndex, joint, ref, poly });
   }
   return out;
 }
