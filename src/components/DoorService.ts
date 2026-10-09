@@ -302,9 +302,14 @@ function cutEdgeOf(c: DoorCut, cu: number, cv: number, axis: 0 | 1 | 2, front: n
 const cutCoverFar = (c: DoorCut, axis: 0 | 1 | 2, side: 1 | -1, placement: DoorGroup['placement'], front: number) =>
   placement === 'outer' && (side > 0 ? c.box.max[axis] <= front + TOL : c.box.min[axis] >= front - TOL);
 
+/**
+ * `gap`: sayı → her kesimde aynı boşluk; kenar boşlukları → kesicinin KESTİĞİ KENARIN boşluğu (cutEdgeOf; Goker, Eki 2026: "kapak
+ * boşluğu arayüzden girildiğinde kapak paneline etki etmiyor" — eğik kenar eskiden grubun genel boşluğunu kullanıyordu, şemadan girilen
+ * kenar boşluğu eğik kenara hiç yansımıyordu).
+ */
 function clipMemberByCuts(
   m: { u0: number; u1: number; v0: number; v1: number }, cuts: DoorCut[], axis: 0 | 1 | 2, side: 1 | -1,
-  placement: DoorGroup['placement'], thickness: number, front: number, gap: number, half?: HalfOverlay, ref?: [number, number],
+  placement: DoorGroup['placement'], thickness: number, front: number, gapIn: number | DoorEdgeGaps, half?: HalfOverlay, ref?: [number, number],
 ): Pt2[] | null {
   if (!cuts.length) return null;
   const { u, v } = doorPlaneAxes(axis);
@@ -319,6 +324,7 @@ function clipMemberByCuts(
     const ce = cutEdgeOf(c, cu, cv, axis, front);
     if (!ce) continue;
     const { keepBelow } = ce;
+    const gap = typeof gapIn === 'number' ? gapIn : gapIn[ce.edge];
     // Panel kapak düzleminin GERİSİNDE mi (dış kapak kalınlığını örter) ?
     const coverFar = cutCoverFar(c, axis, side, placement, front);
     // YARIM BİNME (Goker: "açılı olan yerde kapak yarı binili olmuyor"): o kenarın bayrağı açıksa ve kapak paneli
@@ -488,7 +494,7 @@ export type DoorLayout = Pick<DoorGroup, 'rect' | 'tree' | 'edgeGaps' | 'gap'>;
 export const isLeafNode = (n: DoorNode | DoorNodeSolved): n is Extract<typeof n, { kind: 'leaf' }> => n.kind === 'leaf';
 export const makeDoorLeaf = (type: DoorType, leafSplit?: DoorLeafSplit): DoorNode => ({ id: genId('dl'), kind: 'leaf', type, ...(leafSplit ? { leafSplit } : {}) });
 /** Kenar boşlukları: eksik/bozuksa varsayılan boşlukla tamamlanır. */
-export function edgeGapsOf(g: Pick<DoorGroup, 'edgeGaps' | 'gap'>): DoorEdgeGaps {
+export function edgeGapsOf(g: Pick<DoorGroup, 'gap'> & { edgeGaps?: DoorEdgeGaps }): DoorEdgeGaps {
   const ok = (x: unknown): x is number => Number.isFinite(x) && (x as number) >= 0;
   const e = g.edgeGaps;
   return { uMin: ok(e?.uMin) ? e.uMin : g.gap, uMax: ok(e?.uMax) ? e.uMax : g.gap, vMin: ok(e?.vMin) ? e.vMin : g.gap, vMax: ok(e?.vMax) ? e.vMax : g.gap };
@@ -754,11 +760,12 @@ export function solveDoorGroup(group: DoorGroup, parent: Shape, shapes: Shape[])
 }
 
 /** Üyeleri dönmüş sınır panelleriyle kırpar (AÇILI REFERANS); her rebuild'de güncel panellerden yeniden. */
-export function applyDoorCuts(group: Pick<DoorGroup, 'axis' | 'side' | 'placement' | 'thickness' | 'gap' | 'id' | 'halfOverlay' | 'anchor'>, rect: DoorRect, members: DoorMemberRect[], cuts: DoorCut[], silent = false): DoorMemberRect[] {
+export function applyDoorCuts(group: Pick<DoorGroup, 'axis' | 'side' | 'placement' | 'thickness' | 'gap' | 'id' | 'halfOverlay' | 'anchor'> & { edgeGaps?: DoorEdgeGaps }, rect: DoorRect, members: DoorMemberRect[], cuts: DoorCut[], silent = false): DoorMemberRect[] {
   if (!cuts.length) return members;
   let n = 0;
+  const eg = edgeGapsOf(group);   // eğik kenarın boşluğu = kestiği kenarın boşluğu (şemadaki eğik kenar kutucuğu bunu yazar)
   const out = members.map(m => {
-    const poly = clipMemberByCuts(m, cuts, group.axis, group.side, group.placement, group.thickness, rect.front, group.gap, group.halfOverlay, group.anchor);
+    const poly = clipMemberByCuts(m, cuts, group.axis, group.side, group.placement, group.thickness, rect.front, eg, group.halfOverlay, group.anchor);
     if (poly) n++;
     return poly ? { ...m, poly } : m;
   });
@@ -805,12 +812,28 @@ export function doorCutBands(group: Pick<DoorGroup, 'axis' | 'side' | 'placement
  */
 export function rectByCuts(group: Pick<DoorGroup, 'axis' | 'side' | 'placement' | 'thickness' | 'gap' | 'halfOverlay'>, rect: DoorRect, cuts: DoorCut[], anchor?: [number, number]): DoorRect {
   if (!anchor || !cuts.length) return rect;
-  const poly = clipMemberByCuts(rect, cuts, group.axis, group.side, group.placement, group.thickness, rect.front, group.gap, group.halfOverlay, anchor);
+  // Boşluksuz kırpılır: kenar boşluğu sonra kökten (solveDoorTree) düşülür ve üye kesimi aynı kenar boşluğunu kullanır → eğik kenarın
+  // en yüksek köşesinde boşluk iki kez düşülmez (eskiden köşede birkaç mm'lik düz basamak oluşuyordu).
+  const poly = clipMemberByCuts(rect, cuts, group.axis, group.side, group.placement, group.thickness, rect.front, 0, group.halfOverlay, anchor);
   if (!poly || poly.length < 3) return rect;
   const xs = poly.map(q => q.x), ys = poly.map(q => q.y);
   const out: DoorRect = { u0: Math.min(...xs), u1: Math.max(...xs), v0: Math.min(...ys), v1: Math.max(...ys), front: rect.front };
   if (out.u1 - out.u0 < MIN_DOOR_SPAN || out.v1 - out.v0 < MIN_DOOR_SPAN) return rect;
   return out;
+}
+
+/**
+ * KAPAK BÖLGESİNİN ŞEKLİ (Goker, Eki 2026: "kapağı seçince kapağın şekline göre turuncu alanı göster"): `r` dikdörtgeni (bir bölge /
+ * bölme / tüm alan) açılı sınır panelleriyle üyeler gibi kırpılır → (u,v) çokgeni (kesim yoksa dikdörtgen). `withGap=false` → kesici
+ * yüzünde (boşluksuz) — şemadaki kenar boşluğu şeritlerini eğik panelin ötesine taşırmamak için kırpma alanı.
+ */
+export function doorCutOutline(
+  group: Pick<DoorGroup, 'axis' | 'side' | 'placement' | 'thickness' | 'gap' | 'halfOverlay' | 'anchor'> & { edgeGaps?: DoorEdgeGaps },
+  rect: DoorRect, r: { u0: number; u1: number; v0: number; v1: number }, cuts: DoorCut[], withGap = true,
+): Pt2[] {
+  const base: Pt2[] = [{ x: r.u0, y: r.v0 }, { x: r.u1, y: r.v0 }, { x: r.u1, y: r.v1 }, { x: r.u0, y: r.v1 }];
+  if (!cuts.length) return base;
+  return clipMemberByCuts(r, cuts, group.axis, group.side, group.placement, group.thickness, rect.front, withGap ? edgeGapsOf(group) : 0, group.halfOverlay, group.anchor) ?? base;
 }
 
 /**
@@ -1410,7 +1433,9 @@ export async function setDoorLeafGap(groupId: string, leafId: string, gap: numbe
   const group = groupById(groupId);
   if (!group || !Number.isFinite(gap) || gap < 0) return;
   const sn = findSolvedNode(solveDoorTree(group), leafId);
-  if (!sn || sn.kind !== 'leaf' || !sn.leafSplit || Math.abs(sn.leafSplit.gap - gap) < 0.05) return;
+  // Onayda (preview değil) değer aynı olsa da yazılır: canlı önizleme değeri zaten store'a yazdı — eskiden onay "değişiklik yok"
+  // sayılıp VF / rebuild atlanıyordu, kapak paneli girilen boşluğu hiç görmüyordu (Goker: "kapak boşluğu kapak paneline etki etmiyor").
+  if (!sn || sn.kind !== 'leaf' || !sn.leafSplit || (opts.preview && Math.abs(sn.leafSplit.gap - gap) < 0.05)) return;
   const tree = replaceDoorNode(group.tree, leafId, old => ({ ...old, leafSplit: { leaves: sn.leafSplit!.leaves, gap: round1(gap) } } as DoorNode));
   await writeDoorGroup(group, { tree }, `kanat arası = ${round1(gap)}`, !!opts.preview);
 }
@@ -1462,7 +1487,7 @@ export async function setDoorSplitGap(groupId: string, splitId: string, k: numbe
   const group = groupById(groupId);
   if (!group || !Number.isFinite(value) || value < 0) return;
   const sn = findSolvedNode(solveDoorTree(group), splitId);
-  if (!sn || sn.kind !== 'split' || k < 0 || k >= sn.gaps.length || Math.abs(sn.gaps[k] - value) < 0.05) return;
+  if (!sn || sn.kind !== 'split' || k < 0 || k >= sn.gaps.length || (opts.preview && Math.abs(sn.gaps[k] - value) < 0.05)) return;   // onay hep yazar (bkz. setDoorLeafGap)
   const gaps = sn.gaps.slice(); gaps[k] = round1(value);
   const tree = replaceDoorNode(group.tree, splitId, old => ({ ...(old as any), gaps }));
   await writeDoorGroup(group, { tree }, `ara boşluk ${k + 1} = ${round1(value)}`, !!opts.preview);
@@ -1472,7 +1497,7 @@ export async function setDoorEdgeGap(groupId: string, edge: DoorEdgeKey, value: 
   const group = groupById(groupId);
   if (!group || !Number.isFinite(value) || value < 0) return;
   const e = edgeGapsOf(group);
-  if (Math.abs(e[edge] - value) < 0.05) return;
+  if (opts.preview && Math.abs(e[edge] - value) < 0.05) return;   // onay hep yazar (bkz. setDoorLeafGap)
   await writeDoorGroup(group, { edgeGaps: { ...e, [edge]: round1(value) } }, `kenar boşluğu ${edge} = ${round1(value)}`, !!opts.preview);
 }
 /** CANLI ÖNİZLEME kaydı: düzenleme başında alınır, Esc ile geri yüklenir (yalnız grup alanları; VF/rebuild yok). */

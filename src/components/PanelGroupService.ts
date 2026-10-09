@@ -1646,7 +1646,10 @@ export async function setGroupMemberThickness(groupId: string, i: number, value:
   const ts = memberThicknessesOf(group);
   const others = sumT(ts) - ts[i];
   const v = r1(Math.max(1, Math.min(value, Math.max(1, L - others - group.count - 1))));
-  if (Math.abs(v - ts[i]) < 0.05) return;
+  // Canlı önizleme kalınlığı zaten gruba yazdı: onay yalnız panel parametresi de aynıysa atlanır (eskiden önizlemeden sonra onay
+  // "değişiklik yok" sayılıp panelin panelThickness'ı ve rebuild hiç gelmiyordu).
+  const panelNow = panelOfVf(group.memberVfIds[i], useAppStore.getState().shapes);
+  if (Math.abs(v - ts[i]) < 0.05 && Math.abs((parseFloat(panelNow?.parameters?.panelThickness) || ts[i]) - v) < 0.05) return;
   ts[i] = v;
   const gaps = redistributeForThickness(group.gaps, L, group.count, ts);
   writeGroupGaps(group, gaps, { memberThicknesses: ts });
