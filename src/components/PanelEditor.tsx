@@ -375,7 +375,10 @@ const PREVIEW_BG = 'radial-gradient(130% 95% at 50% 0%, #fefdfb 0%, #f8f5f0 62%,
 const PREVIEW_FRAME = 'relative rounded-[12px] ring-1 ring-[#ebe5dc] overflow-hidden shadow-[inset_0_1px_0_rgba(255,255,255,0.8),0_1px_2px_rgba(60,40,20,0.04)]';
 /* ŞEMA CSS (raf/dikme + kapak şeması ortak): kilit rozeti HER ZAMAN görünür (Goker: "kilit her zaman çıkmıyor, sanki gizli");
    yalnız hover'da hafifçe büyür. Bant rozetleri (chip) eskisi gibi hover'da / açıkken. */
-const SCHEMATIC_CSS = `.yago-gap .lockbtn{transition:transform .12s;transform-box:fill-box;transform-origin:center}.yago-gap .lockbtn:hover{transform:scale(1.12)}.yago-band .chip{opacity:0;transition:opacity .15s}.yago-band.on .chip,.yago-band:hover .chip{opacity:1}.yago-band .hit{transition:fill .12s}.yago-band:hover .hit{fill:rgba(234,88,12,0.10)}`;
+// Levha bandı üzerine gelince (Goker, Eki 2026: "kesik çizgili panele fareyi götürünce orada panel olduğu daha net, belirgin bir tonla
+// ortaya çıksın; Full yazısı da fare paneldeyken belli olsun"): .hov katmanı (dolgu + tarama + koyu kenar) görünür, Full/Half rozeti
+// yalnız fareyle (diğer rozetler — hiza, Remove, Split here, + Shelf — 'on' ile hep görünür).
+const SCHEMATIC_CSS = `.yago-gap .lockbtn{transition:transform .12s;transform-box:fill-box;transform-origin:center}.yago-gap .lockbtn:hover{transform:scale(1.12)}.yago-band .chip{opacity:0;transition:opacity .15s}.yago-band.on .chip,.yago-band:hover .chip{opacity:1}.yago-band .hit{transition:fill .12s}.yago-band:hover .hit{fill:rgba(234,88,12,0.10)}.yago-band.pnl:hover .hit{fill:transparent}.yago-band .hov{opacity:0;transition:opacity .12s;pointer-events:none}.yago-band:hover .hov{opacity:1}`;
 const SOFT = {
   area: '#fdfcfa', areaStroke: '#e4ded4',
   part0: '#f5f0e8', part1: '#eae3d7', partStroke: '#b8afa2',
@@ -1218,7 +1221,9 @@ function DoorTypeBar({ value, hint, onPick }: { value: DoorType | null; hint: st
 
 type DoorEdit = { key: string; v: string };
 /** Ölçü zinciri öğesi: ölçü (ok + pill + kilit) ya da boşluk (yalnız pill). a..b = eksen boyunca mm. */
-type ChainItem = { key: string; kind: 'size' | 'gap'; a: number; b: number; txt: string; title: string; locked?: boolean; edited?: boolean; onLock?: () => void; commit: (v: number) => void; preview?: (v: number) => void; min: number };
+/** `span` (yalnız boşluk): ilgili kenarın / derzin çapraz eksendeki GERÇEK uzunluğu (mm) — kutucuk bu uzunluğun TAM ORTASINA, boşluğun
+ *  üzerine yerleşir (Goker, Eki 2026: "kapak boşlukları her zaman ilgili kenarın uzunluğunun tam merkezinde olsun"). */
+type ChainItem = { key: string; kind: 'size' | 'gap'; a: number; b: number; txt: string; title: string; locked?: boolean; edited?: boolean; onLock?: () => void; commit: (v: number) => void; preview?: (v: number) => void; min: number; span?: [number, number] };
 type Chain = { horiz: boolean; pos: number; items: ChainItem[]; small?: boolean };
 export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts, nearPanels, refPick, onEditSize, onToggleLock, onEditSplitGap, onEditEdgeGap, onEditLeaf, onEditLeafGap, onPathClick, onToggleHalfOverlay, onAlignJoint, onRefPick, addPick, onAddPick, onRemovePick, addObstacles, onEditBegin, onEditCancel }: {
   group: DoorGroup; selectedIndex: number; memberLabels: string[];
@@ -1480,7 +1485,45 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
   const touch = { u0: (n: DoorNodeSolved) => !slopeEdges.has('uMin') && Math.abs(n.u0 - (rect.u0 + eg.uMin)) < T0, u1: (n: DoorNodeSolved) => !slopeEdges.has('uMax') && Math.abs(n.u1 - (rect.u1 - eg.uMax)) < T0,
     v1: (n: DoorNodeSolved) => !slopeEdges.has('vMax') && Math.abs(n.v1 - (rect.v1 - eg.vMax)) < T0, v0: (n: DoorNodeSolved) => !slopeEdges.has('vMin') && Math.abs(n.v0 - (rect.v0 + eg.vMin)) < T0 };
   const edgeKeyName = (k: DoorEdgeKey) => (k === 'uMin' ? (mirrorU ? 'Right' : 'Left') : k === 'uMax' ? (mirrorU ? 'Left' : 'Right') : k === 'vMax' ? (mirrorV ? 'Bottom' : 'Top') : (mirrorV ? 'Top' : 'Bottom'));
-  const edgeItem = (k: DoorEdgeKey, a: number, b: number): ChainItem => ({ key: `edge-${k}`, kind: 'gap', a, b, txt: fmt(eg[k]), title: `${edgeKeyName(k)} edge gap — click to edit`, commit: v => onEditEdgeGap(k, v), preview: v => onEditEdgeGap(k, v, true), min: 0 });
+  // KENAR / DERZ UZUNLUĞU: bölgenin (açılı kesimde kesilmiş) dış hattının bir doğruyla kesişimi → kutucuk o uzunluğun ortasında.
+  type Box4 = { u0: number; u1: number; v0: number; v1: number };
+  const outlineMemo = new Map<string, Pt[]>();
+  const outlineOf = (r: Box4): Pt[] => {
+    const key = `${r.u0.toFixed(2)},${r.u1.toFixed(2)},${r.v0.toFixed(2)},${r.v1.toFixed(2)}`;
+    let o = outlineMemo.get(key);
+    if (!o) { o = cuts.length ? doorCutOutline(group, rect, r, cuts) : [{ x: r.u0, y: r.v0 }, { x: r.u1, y: r.v0 }, { x: r.u1, y: r.v1 }, { x: r.u0, y: r.v1 }]; outlineMemo.set(key, o); }
+    return o;
+  };
+  /** Çokgenin `ax` = 'u' → u = val düşey doğrusu ('v' → v = val yatay) ile kesişim aralığı (diğer eksende). */
+  const lineSpan = (poly: Pt[], ax: 'u' | 'v', val: number): [number, number] | null => {
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i], b = poly[(i + 1) % poly.length];
+      const pa = ax === 'u' ? a.x : a.y, pb = ax === 'u' ? b.x : b.y;
+      if ((pa - val) * (pb - val) > 0 || Math.abs(pb - pa) < 1e-9) continue;
+      const t = (val - pa) / (pb - pa), q = ax === 'u' ? a.y + t * (b.y - a.y) : a.x + t * (b.x - a.x);
+      lo = Math.min(lo, q); hi = Math.max(hi, q);
+    }
+    return hi - lo > 0.5 ? [lo, hi] : null;
+  };
+  const crossOf = (r: Box4, ax: 'u' | 'v'): [number, number] => (ax === 'u' ? [r.v0, r.v1] : [r.u0, r.u1]);
+  const clampSpan = (sp: [number, number], c: [number, number]): [number, number] => {
+    const lo = Math.max(sp[0], Math.min(c[0], c[1])), hi = Math.min(sp[1], Math.max(c[0], c[1]));
+    return hi - lo > 1 ? [lo, hi] : sp;
+  };
+  /** `R` bölgesinin `k` kenarının gerçek uzunluğu (kenarın hemen içinden geçen doğru), `on` verilirse onun aralığına kırpılır. */
+  const edgeSpanOf = (R: Box4, k: DoorEdgeKey, on?: Box4): [number, number] => {
+    const ax: 'u' | 'v' = k === 'uMin' || k === 'uMax' ? 'u' : 'v';
+    const val = k === 'uMin' ? R.u0 + 0.5 : k === 'uMax' ? R.u1 - 0.5 : k === 'vMin' ? R.v0 + 0.5 : R.v1 - 0.5;
+    const sp = lineSpan(outlineOf(R), ax, val) ?? crossOf(R, ax);
+    return on ? clampSpan(sp, crossOf(on, ax)) : sp;
+  };
+  /** Bölme / kanat arası boşluğun (derz) gerçek uzunluğu: üst bölgenin dış hattının derz ortasından geçen doğruyla kesişimi. */
+  const jointSpanOf = (R: Box4, ax: 'u' | 'v', a: number, b: number, on?: Box4): [number, number] => {
+    const sp = lineSpan(outlineOf(R), ax, (a + b) / 2) ?? crossOf(R, ax);
+    return on ? clampSpan(sp, crossOf(on, ax)) : sp;
+  };
+  const edgeItem = (k: DoorEdgeKey, a: number, b: number, R: Box4, on?: Box4): ChainItem => ({ key: `edge-${k}`, kind: 'gap', a, b, txt: fmt(eg[k]), title: `${edgeKeyName(k)} edge gap — click to edit`, commit: v => onEditEdgeGap(k, v), preview: v => onEditEdgeGap(k, v, true), min: 0, span: edgeSpanOf(R, k, on) });
   const edgeStrip = (n: DoorNodeSolved, k: DoorEdgeKey) => {
     if (k === 'uMin') strip('u', rect.u0, n.u0, n.v0, n.v1); else if (k === 'uMax') strip('u', n.u1, rect.u1, n.v0, n.v1);
     else if (k === 'vMax') strip('v', n.v1, rect.v1, n.u0, n.u1); else strip('v', rect.v0, n.v0, n.u0, n.u1);
@@ -1500,7 +1543,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     const horiz = n.axis === 'u', dir = horiz ? 1 : -1;
     const items: ChainItem[] = [];
     let p = horiz ? n.u0 : n.v1;
-    if (horiz ? touch.u0(n) : touch.v1(n)) { const k: DoorEdgeKey = horiz ? 'uMin' : 'vMax'; items.push(edgeItem(k, p - dir * eg[k], p)); if (withStrips) edgeStrip(n, k); }
+    if (horiz ? touch.u0(n) : touch.v1(n)) { const k: DoorEdgeKey = horiz ? 'uMin' : 'vMax'; items.push(edgeItem(k, p - dir * eg[k], p, n)); if (withStrips) edgeStrip(n, k); }
     n.children.forEach((_c, i) => {
       const w = n.sizes[i]?.value ?? 0;
       items.push({ key: `size-${n.id}-${i}`, kind: 'size', a: p, b: p + dir * w, txt: fmt(w), title: horiz ? 'Door width — click to edit (siblings take the rest)' : 'Door height — click to edit (siblings take the rest)',
@@ -1508,12 +1551,12 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
       p += dir * w;
       if (i < n.children.length - 1) {
         const g = n.gaps[i] ?? 0;
-        items.push({ key: `sgap-${n.id}-${i}`, kind: 'gap', a: p, b: p + dir * g, txt: fmt(g), title: 'Gap between doors — click to edit', commit: v => onEditSplitGap(n.id, i, v), preview: v => onEditSplitGap(n.id, i, v, true), min: 0 });
+        items.push({ key: `sgap-${n.id}-${i}`, kind: 'gap', a: p, b: p + dir * g, txt: fmt(g), title: 'Gap between doors — click to edit', commit: v => onEditSplitGap(n.id, i, v), preview: v => onEditSplitGap(n.id, i, v, true), min: 0, span: jointSpanOf(n, n.axis, p, p + dir * g) });
         if (withStrips) strip(n.axis, p, p + dir * g, horiz ? n.v0 : n.u0, horiz ? n.v1 : n.u1);
         p += dir * g;
       }
     });
-    if (horiz ? touch.u1(n) : touch.v0(n)) { const k: DoorEdgeKey = horiz ? 'uMax' : 'vMin'; items.push(edgeItem(k, p, p + dir * eg[k])); if (withStrips) edgeStrip(n, k); }
+    if (horiz ? touch.u1(n) : touch.v0(n)) { const k: DoorEdgeKey = horiz ? 'uMax' : 'vMin'; items.push(edgeItem(k, p, p + dir * eg[k], n)); if (withStrips) edgeStrip(n, k); }
     return items;
   };
   // Düğümün üst bölmedeki yeri: [önceki ara / kenar] ölçü [sonraki ara / kenar] (P.axis boyunca); şeritler `on` bölgesinin çapraz aralığında.
@@ -1524,14 +1567,14 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     const items: ChainItem[] = [];
     const start = horiz ? n.u0 : n.v1;
     const c0 = horiz ? on.v0 : on.u0, c1 = horiz ? on.v1 : on.u1;
-    if (idx > 0) { const g = P.gaps[idx - 1] ?? 0; items.push({ key: `sgap-${P.id}-${idx - 1}`, kind: 'gap', a: start - dir * g, b: start, txt: fmt(g), title: 'Gap between doors — click to edit', commit: v => onEditSplitGap(P.id, idx - 1, v), preview: v => onEditSplitGap(P.id, idx - 1, v, true), min: 0 }); strip(P.axis, start - dir * g, start, c0, c1); }
-    else if (horiz ? touch.u0(n) : touch.v1(n)) { const k: DoorEdgeKey = horiz ? 'uMin' : 'vMax'; items.push(edgeItem(k, start - dir * eg[k], start)); edgeStrip(on, k); }
+    if (idx > 0) { const g = P.gaps[idx - 1] ?? 0; items.push({ key: `sgap-${P.id}-${idx - 1}`, kind: 'gap', a: start - dir * g, b: start, txt: fmt(g), title: 'Gap between doors — click to edit', commit: v => onEditSplitGap(P.id, idx - 1, v), preview: v => onEditSplitGap(P.id, idx - 1, v, true), min: 0, span: jointSpanOf(P, P.axis, start - dir * g, start, on) }); strip(P.axis, start - dir * g, start, c0, c1); }
+    else if (horiz ? touch.u0(n) : touch.v1(n)) { const k: DoorEdgeKey = horiz ? 'uMin' : 'vMax'; items.push(edgeItem(k, start - dir * eg[k], start, n, on)); edgeStrip(on, k); }
     const w = P.sizes[idx]?.value ?? 0;
     items.push({ key: `size-${P.id}-${idx}`, kind: 'size', a: start, b: start + dir * w, txt: fmt(w), title: horiz ? 'Door width — click to edit (siblings take the rest)' : 'Door height — click to edit (siblings take the rest)',
       locked: !!P.sizes[idx]?.locked, edited: !!P.sizes[idx]?.edited, onLock: () => onToggleLock(P.id, idx), commit: v => onEditSize(P.id, idx, v), preview: v => onEditSize(P.id, idx, v, true), min: 1 });
     const end = start + dir * w;
-    if (idx < P.children.length - 1) { const g = P.gaps[idx] ?? 0; items.push({ key: `sgap-${P.id}-${idx}`, kind: 'gap', a: end, b: end + dir * g, txt: fmt(g), title: 'Gap between doors — click to edit', commit: v => onEditSplitGap(P.id, idx, v), preview: v => onEditSplitGap(P.id, idx, v, true), min: 0 }); strip(P.axis, end, end + dir * g, c0, c1); }
-    else if (horiz ? touch.u1(n) : touch.v0(n)) { const k: DoorEdgeKey = horiz ? 'uMax' : 'vMin'; items.push(edgeItem(k, end, end + dir * eg[k])); edgeStrip(on, k); }
+    if (idx < P.children.length - 1) { const g = P.gaps[idx] ?? 0; items.push({ key: `sgap-${P.id}-${idx}`, kind: 'gap', a: end, b: end + dir * g, txt: fmt(g), title: 'Gap between doors — click to edit', commit: v => onEditSplitGap(P.id, idx, v), preview: v => onEditSplitGap(P.id, idx, v, true), min: 0, span: jointSpanOf(P, P.axis, end, end + dir * g, on) }); strip(P.axis, end, end + dir * g, c0, c1); }
+    else if (horiz ? touch.u1(n) : touch.v0(n)) { const k: DoorEdgeKey = horiz ? 'uMax' : 'vMin'; items.push(edgeItem(k, end, end + dir * eg[k], n, on)); edgeStrip(on, k); }
     return items;
   };
   // Kök boyutu (bir eksende): [kenar] tam ölçü [kenar] — düzenlenemez (kapak alanı sınırlardan gelir).
@@ -1541,9 +1584,9 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     const span = (horiz ? rect.u1 - rect.u0 : rect.v1 - rect.v0) - eg[k0] - eg[k1];
     if (!slopeEdges.has(k0)) edgeStrip(on, k0);
     if (!slopeEdges.has(k1)) edgeStrip(on, k1);
-    return [...(slopeEdges.has(k0) ? [] : [edgeItem(k0, lo, lo + dir * eg[k0])]),
+    return [...(slopeEdges.has(k0) ? [] : [edgeItem(k0, lo, lo + dir * eg[k0], rect, on)]),
       { key: `full-${ax}`, kind: 'size', a: lo + dir * eg[k0], b: lo + dir * (eg[k0] + span), txt: fmt(span), title: horiz ? 'Door width (whole area)' : 'Door height (whole area)', commit: () => {}, min: 1 },
-      ...(slopeEdges.has(k1) ? [] : [edgeItem(k1, lo + dir * (eg[k0] + span), lo + dir * (eg[k0] + span + eg[k1]))])];
+      ...(slopeEdges.has(k1) ? [] : [edgeItem(k1, lo + dir * (eg[k0] + span), lo + dir * (eg[k0] + span + eg[k1]), rect, on)])];
   };
   // Çapraz ölçü: `n`in, kendisiyle AYNI eksenli olmayan en yakın üst bölmedeki yeri; yoksa kök boyutu.
   const crossChain = (n: DoorNodeSolved, axis: 'u' | 'v', on: DoorNodeSolved) => {
@@ -1570,7 +1613,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
       strip(lax, p0 + dir * a, p0 + dir * (a + g), horiz ? n.v0 : n.u0, horiz ? n.v1 : n.u1);
       pushChain(n, horiz, [
         { key: `leaf-${n.id}-0`, kind: 'size', a: p0, b: p0 + dir * a, txt: fmt(a), title: 'Leaf size — click to edit (the other leaf takes the rest)', commit: v => onEditLeaf(n.id, 0, v), preview: v => onEditLeaf(n.id, 0, v, true), min: 1 },
-        { key: `lgap-${n.id}`, kind: 'gap', a: p0 + dir * a, b: p0 + dir * (a + g), txt: fmt(g), title: 'Gap between the two leaves — click to edit', commit: v => onEditLeafGap(n.id, v), preview: v => onEditLeafGap(n.id, v, true), min: 0 },
+        { key: `lgap-${n.id}`, kind: 'gap', a: p0 + dir * a, b: p0 + dir * (a + g), txt: fmt(g), title: 'Gap between the two leaves — click to edit', commit: v => onEditLeafGap(n.id, v), preview: v => onEditLeafGap(n.id, v, true), min: 0, span: jointSpanOf(n, lax, p0 + dir * a, p0 + dir * (a + g)) },
         { key: `leaf-${n.id}-1`, kind: 'size', a: p0 + dir * (a + g), b: p0 + dir * (a + g + b), txt: fmt(b), title: 'Leaf size — click to edit (the other leaf takes the rest)', commit: v => onEditLeaf(n.id, 1, v), preview: v => onEditLeaf(n.id, 1, v, true), min: 1 },
       ]);
     }
@@ -1579,50 +1622,15 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
   // yazıyor"): seçili bölge yalnız çerçeveyle gösterilir; bölme sayısı V/H kutularında, spacing hedefi Spacing kutusunda okunur.
 
   // Pill konumları (giriş kutusu için): ekran koordinatı + boyut. Tüm pill'ler büyük yazı (fs) — yalnız seçili bölgede görünürler.
-  type Pill = { key: string; cx: number; cy: number; pw: number; ph: number; f: number; item: ChainItem; chain: Chain; x0: number; x1: number; hidden: boolean; lane: number; deg?: number };
+  type Pill = { key: string; cx: number; cy: number; pw: number; ph: number; f: number; item: ChainItem; chain: Chain; x0: number; x1: number; hidden: boolean; lane: number; deg?: number; lock?: { x: number; y: number } };
   // İÇ İÇE GEÇME ÖNLEMİ (Goker: "kapak miktarı arttığında ölçüler iç içe geçiyor"): zincir başına ŞERİTLER (teknik çizimdeki
   // kademeli ölçü). Önce ÖLÇÜ pill'leri yerleşir: bir öncekine çarpan ölçü ikinci şeride kayar (dönüşümlü). Sonra BOŞLUK pill'leri
   // boş bulduğu ilk şeride (0 → 1 → 2) girer; hiçbirine sığmazsa son şeride (odakta hiçbir boşluk gizlenmez). Şerit yönü bölgenin
   // içine doğru (yatay zincir yukarı, düşey zincir sola).
   type Placed = { start: number; end: number };
-  const pills: Pill[] = chains.flatMap(ch => {
-    const base = ch.items.map(it => {
-      const f = fs;
-      const { pw, ph } = pillSize(it.txt, f);
-      const m0 = ch.horiz ? sx(it.a) : sy(it.a), m1 = ch.horiz ? sx(it.b) : sy(it.b);
-      const mid = (m0 + m1) / 2;
-      return { key: it.key, cx: ch.horiz ? mid : ch.pos, cy: ch.horiz ? ch.pos : mid, pw, ph, f, item: it, chain: ch, x0: Math.min(m0, m1), x1: Math.max(m0, m1), hidden: false, lane: 0 };
-    }).sort((a, b) => (ch.horiz ? a.cx - b.cx : a.cy - b.cy));
-    const maxLanes = 3;
-    const lanes: Placed[][] = Array.from({ length: maxLanes }, () => []);
-    const posOf = (p: typeof base[number]) => (ch.horiz ? p.cx : p.cy);
-    // Pill'in şerit üzerindeki kapladığı aralık: pill + (kilitli ölçüde) ucundaki kilit rozeti (yatay zincirde sağında, düşeyde altında).
-    const spanOf = (p: typeof base[number]): Placed => {
-      const half = (ch.horiz ? p.pw : p.ph) / 2 + 1;
-      return { start: posOf(p) - half, end: posOf(p) + half + (p.item.onLock ? LOCK_EXT : 0) };
-    };
-    const fits = (lane: number, start: number, end: number) => lanes[lane].every(q => end <= q.start || start >= q.end);
-    const laneStep = Math.max(...base.map(p => (ch.horiz ? p.ph : p.pw)), 0) + PILL_LANE_GAP;
-    const place = (p: typeof base[number], lane: number) => {
-      p.lane = lane; lanes[lane].push(spanOf(p));
-      if (lane > 0) { if (ch.horiz) p.cy -= lane * laneStep; else p.cx -= lane * laneStep; }
-    };
-    for (const p of base.filter(x => x.item.kind === 'size')) {
-      const { start: st0, end: en0 } = spanOf(p);
-      place(p, fits(0, st0, en0) ? 0 : fits(1, st0, en0) ? 1 : 0);   // ikisine de sığmazsa 0. şerit (ölçü hep çizilir)
-    }
-    for (const p of base.filter(x => x.item.kind === 'gap')) {
-      const { start: st0, end: en0 } = spanOf(p);
-      let lane = maxLanes - 1;
-      for (let l = 0; l < maxLanes; l++) if (fits(l, st0, en0)) { lane = l; break; }
-      place(p, lane);
-    }
-    return base;
-  });
-  // EĞİK KENAR BOŞLUK KUTUCUĞU: seçili açılı kapakta, eğik kenarın ortasında, kenarın hemen içinde (kesicinin Full/Half rozeti
-  // levhanın üstünde kalır), kenar yönünde döndürülmüş. Değer = kesilen kenarın boşluğu; giriş canlı önizlemeli (diğer kutucuklar gibi).
-  // Yalnız SEÇİLİ bölgede (diğer ölçü kutucukları gibi — Goker: "kapak boşluğu kapağa tıklanmasa da geliyor"): seçili kapakların
-  // eğik kenarlarından en uzunu.
+  // EĞİK KENAR BOŞLUK KUTUCUĞU: seçili açılı kapakta, eğik kenarın TAM ORTASINDA, boşluğun üzerinde, kenar yönünde döndürülmüş.
+  // Değer = kesilen kenarın boşluğu; giriş canlı önizlemeli (diğer kutucuklar gibi). Yalnız SEÇİLİ bölgede (Goker: "kapak boşluğu
+  // kapağa tıklanmasa da geliyor"): seçili kapakların eğik kenarlarından en uzunu. Full/Half rozeti yalnız fareyle gelir ve bundan kaçar.
   const selSlopeSegs = slopeSegs.flatMap(sg0 => {
     let best: typeof sg0 | null = null;
     for (const m of members) {
@@ -1636,7 +1644,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     }
     return best ? [best] : [];
   });
-  for (const sg of selSlopeSegs) {
+  const slopePills: Pill[] = selSlopeSegs.map(sg => {
     const a = { x: sx(sg.a.x), y: sy(sg.a.y) }, b = { x: sx(sg.b.x), y: sy(sg.b.y) };
     const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
     const L = Math.hypot(b.x - a.x, b.y - a.y) || 1, tx = (b.x - a.x) / L, ty = (b.y - a.y) / L;
@@ -1645,15 +1653,103 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     if (nx * (cxm - mid.x) + ny * (cym - mid.y) < 0) { nx = -nx; ny = -ny; }
     const txt = fmt(eg[sg.edge]);
     const { pw, ph } = pillSize(txt, fs);
-    const off = ph / 2 + 5;
+    const off = -(eg[sg.edge] * SH / dvR) / 2;   // kenar çizgisinden dışa yarım boşluk = boşluğun ortası
     let deg = Math.atan2(ty, tx) * 180 / Math.PI; while (deg > 90) deg -= 180; while (deg < -90) deg += 180;
     const item: ChainItem = { key: `slope-${sg.cb.cut.vfId}`, kind: 'gap', a: 0, b: 0, txt,
       title: `Gap to the angled panel ${sg.cb.cut.name} — click to edit (the door keeps this distance along the slope)`,
       commit: v => onEditEdgeGap(sg.edge, v), preview: v => onEditEdgeGap(sg.edge, v, true), min: 0 };
-    pills.push({ key: item.key, cx: mid.x + nx * off, cy: mid.y + ny * off, pw, ph, f: fs, item, chain: { horiz: true, pos: 0, items: [item] }, x0: mid.x, x1: mid.x, hidden: false, lane: 0, deg });
+    return { key: item.key, cx: mid.x + nx * off, cy: mid.y + ny * off, pw, ph, f: fs, item, chain: { horiz: true, pos: 0, items: [item] }, x0: mid.x, x1: mid.x, hidden: false, lane: 0, deg };
+  });
+  // Boşluk kutucukları (kenar / derz ortasında, sabit) önce; ölçüler şeritlere yerleşirken bunlara 2B'de çarpmayan şeridi seçer.
+  const chainPills = chains.map(ch => ({ ch, all: ch.items.map(it => {
+    const f = fs;
+    const { pw, ph } = pillSize(it.txt, f);
+    const m0 = ch.horiz ? sx(it.a) : sy(it.a), m1 = ch.horiz ? sx(it.b) : sy(it.b);
+    const mid = (m0 + m1) / 2;
+    // Boşluk: kenarın / derzin gerçek uzunluğunun ORTASINDA, boşluğun üzerinde (şerit dışı, sabit konum).
+    const sc = it.kind === 'gap' && it.span ? (ch.horiz ? sy((it.span[0] + it.span[1]) / 2) : sx((it.span[0] + it.span[1]) / 2)) : null;
+    return { key: it.key, cx: ch.horiz ? mid : (sc ?? ch.pos), cy: ch.horiz ? (sc ?? ch.pos) : mid, pw, ph, f, item: it, chain: ch, x0: Math.min(m0, m1), x1: Math.max(m0, m1), hidden: false, lane: 0, fixed: sc != null } as Pill & { fixed: boolean };
+  }) }));
+  const fixedAll: Pill[] = [...chainPills.flatMap(c => c.all.filter(p => p.fixed)), ...slopePills];
+  const boxHit = (x: number, y: number, w: number, h: number, q: Pill) => Math.abs(x - q.cx) < (w + q.pw) / 2 + 2 && Math.abs(y - q.cy) < (h + q.ph) / 2 + 2;
+  const pills: Pill[] = chainPills.flatMap(({ ch, all }) => {
+    const fixedPills = all.filter(p => p.fixed);
+    const base = all.filter(p => !p.fixed).sort((a, b) => (ch.horiz ? a.cx - b.cx : a.cy - b.cy));
+    const maxLanes = 3, sizeLanes = [0, 1, 2, 3, 4];   // dar kapakta ölçü, boşluk kutucuklarından kaçmak için 5 şeride kadar çıkar
+    const lanes: Placed[][] = Array.from({ length: sizeLanes.length }, () => []);
+    const posOf = (p: typeof base[number]) => (ch.horiz ? p.cx : p.cy);
+    // Pill'in şerit üzerindeki kapladığı aralık: pill + (kilitli ölçüde) ucundaki kilit rozeti (yatay zincirde sağında, düşeyde altında).
+    const spanOf = (p: typeof base[number]): Placed => {
+      const half = (ch.horiz ? p.pw : p.ph) / 2 + 1;
+      return { start: posOf(p) - half, end: posOf(p) + half + (p.item.onLock ? LOCK_EXT : 0) };
+    };
+    const fits = (lane: number, start: number, end: number) => lanes[lane].every(q => end <= q.start || start >= q.end);
+    const laneStep = Math.max(...base.map(p => (ch.horiz ? p.ph : p.pw)), 0) + PILL_LANE_GAP;
+    // `lane` şeridinde pill (ve kilidi) sabit boşluk kutucuklarından birine çarpmıyor mu (2B)?
+    const clear2D = (p: typeof base[number], lane: number) => {
+      const x = ch.horiz ? p.cx : p.cx - lane * laneStep, y = ch.horiz ? p.cy - lane * laneStep : p.cy;
+      if (fixedAll.some(q => boxHit(x, y, p.pw, p.ph, q))) return false;
+      if (!p.item.onLock) return true;
+      const lx = ch.horiz ? x + p.pw / 2 + 12 + LOCK_R : x, ly = ch.horiz ? y : y + p.ph / 2 + 12 + LOCK_R;
+      return !fixedAll.some(q => boxHit(lx, ly, 2 * LOCK_R, 2 * LOCK_R, q));
+    };
+    const place = (p: typeof base[number], lane: number) => {
+      p.lane = lane; lanes[lane].push(spanOf(p));
+      if (lane > 0) { if (ch.horiz) p.cy -= lane * laneStep; else p.cx -= lane * laneStep; }
+    };
+    for (const p of base.filter(x => x.item.kind === 'size')) {
+      const { start: st0, end: en0 } = spanOf(p);
+      // önce hem şeride sığan hem boşluk kutucuklarına çarpmayan; yoksa şeride sığan (0/1); yoksa 0. şerit (ölçü hep çizilir)
+      const lane = sizeLanes.find(l => fits(l, st0, en0) && clear2D(p, l)) ?? (fits(0, st0, en0) ? 0 : fits(1, st0, en0) ? 1 : 0);
+      place(p, lane);
+    }
+    for (const p of base.filter(x => x.item.kind === 'gap')) {
+      const { start: st0, end: en0 } = spanOf(p);
+      let lane = maxLanes - 1;
+      for (let l = 0; l < maxLanes; l++) if (fits(l, st0, en0)) { lane = l; break; }
+      place(p, lane);
+    }
+    return [...base, ...fixedPills];
+  });
+  pills.push(...slopePills);
+  // KİLİT YERİ: ölçünün ucunda (yatay zincirde sağında, düşeyde altında); başka bir kutucuğa ya da kilide çarpıyorsa karşı uçta
+  // (solunda / üstünde), o da doluysa pill'in altında / üstünde — kilitler kutucuklara ve birbirine binmesin.
+  {
+    const placedLocks: Array<{ x: number; y: number }> = [];
+    const clearOf = (x: number, y: number, self: Pill) =>
+      x >= LOCK_R + 1 && x <= width - LOCK_R - 1 && y >= LOCK_R + 1 && y <= height - LOCK_R - 1 &&   // görünür alanda
+      pills.every(q => q === self || Math.abs(x - q.cx) >= q.pw / 2 + LOCK_R + 2 || Math.abs(y - q.cy) >= q.ph / 2 + LOCK_R + 2) &&
+      placedLocks.every(l => Math.hypot(l.x - x, l.y - y) >= 2 * LOCK_R + 3);
+    for (const p of pills) {
+      if (!p.item.onLock) continue;
+      const d = (p.chain.horiz ? p.pw : p.ph) / 2 + 12 + LOCK_R;
+      const e = (p.chain.horiz ? p.ph : p.pw) / 2 + 4 + LOCK_R;   // dar yerde: pill'in altına / üstüne (yatay) ya da sağına / soluna (düşey)
+      const cand = p.chain.horiz ? [{ x: p.cx + d, y: p.cy }, { x: p.cx - d, y: p.cy }, { x: p.cx, y: p.cy + e }, { x: p.cx, y: p.cy - e }]
+        : [{ x: p.cx, y: p.cy + d }, { x: p.cx, y: p.cy - d }, { x: p.cx + e, y: p.cy }, { x: p.cx - e, y: p.cy }];
+      p.lock = cand.find(c => clearOf(c.x, c.y, p)) ?? cand[0];
+      placedLocks.push(p.lock);
+    }
   }
   const pillByKey = new Map(pills.map(p => [p.key, p]));
   const editPos = editing ? pillByKey.get(editing.key) : undefined;
+  // ROZET YERİ (Goker: "boşluk kutucukları Full yazısıyla iç içe geçmesin"): rozet bandın ortasında; bir ölçü / boşluk kutucuğuna ya da
+  // kilidine çarpıyorsa bant boyunca (iki yöne dönüşümlü) kaydırılır, bandın içinde kalır.
+  const obstacles = pills.flatMap(p => {
+    const o = [{ x: p.cx, y: p.cy, r: Math.max(p.pw, p.ph) / 2 }];
+    if (p.lock) o.push({ ...p.lock, r: LOCK_R });
+    return o;
+  });
+  const chipSpot = (cx: number, cy: number, ux: number, uy: number, half: number, cw: number) => {
+    const r = cw / 2 + 2, step = cw / 2 + 6;
+    const free = (x: number, y: number) => obstacles.every(o => Math.hypot(o.x - x, o.y - y) >= o.r + r);
+    for (let k = 0; k <= 12; k++) {
+      const d = (k % 2 ? 1 : -1) * Math.ceil(k / 2) * step;
+      if (Math.abs(d) > Math.max(0, half - cw / 2)) continue;
+      const x = cx + ux * d, y = cy + uy * d;
+      if (free(x, y)) return { x, y };
+    }
+    return { x: cx, y: cy };
+  };
 
   return (
     <div ref={wrapRef} className={PREVIEW_FRAME} style={{ background: PREVIEW_BG, height }}>
@@ -1770,61 +1866,6 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
             <path d={ptsPath(hp)} fill="none" stroke={b.half || b.aligned ? '#e8925a' : '#9a9185'} strokeWidth={0.8} strokeDasharray="3 2" opacity={0.9} strokeLinejoin="round" />
           </g>
         )))}
-        {/* LEVHA TIKLAMA ALANI + ROZET (bandın ortasında, düşey levhada dikey yazı): kenar levhası → Full / Half; derzdeki
-            raf/dikme üyesi → Free / Left / Center / Right (Up / Center / Down): tık derzi levhaya bağlar + levhayı taşır (döngü);
-            Shift/Ctrl bağı çözer. Bağlı levha turuncu rozet. */}
-        {bands.map(b => {
-          const np = b.np;
-          const pickable = !!refPick && !np.edge;
-          const rem = removable(np);
-          const bindable = !np.edge && !!np.joint && (!!np.groupId || !!np.ref);
-          const interactive = isOuter && (rem || pickable || (!!np.edge && np.behind) || bindable);
-          const chipTxt = rem ? '✕ Remove' : pickable ? 'Split here' : np.edge ? (np.behind ? (b.half ? 'Half' : 'Full') : null) : bindable ? (np.ref ? alignLabel(b, np.ref.align) : 'Free') : null;
-          const on = b.half || b.aligned;
-          const bx = b.x + b.w / 2, by = b.y + b.h / 2;
-          const cfs = fsT * 0.8;
-          const { pw: cw, ph: chh } = chipTxt ? pillSize(chipTxt, cfs) : { pw: 0, ph: 0 };
-          return (
-            <g key={`hit-${np.vfId}`} className={`yago-band${chipTxt ? ' on' : ''}`} style={{ cursor: interactive ? 'pointer' : 'default' }}
-              onClick={interactive ? e => { stop(e); onBandClick(b, e.shiftKey || e.ctrlKey || e.metaKey); } : undefined}>
-              {b.np.poly
-                ? <path d={ptsPath(b.pts)} fill="transparent" stroke="transparent" strokeWidth={4} strokeLinejoin="round" className="hit" />
-                : <rect x={b.x - 2} y={b.y - 2} width={b.w + 4} height={b.h + 4} fill="transparent" className="hit" />}
-              {chipTxt && (
-                <g className="chip" transform={b.vertical ? `rotate(-90 ${bx} ${by})` : undefined}>
-                  <rect x={bx - cw / 2} y={by - chh / 2} width={cw} height={chh} rx={chh / 2} fill={rem ? '#fef2f2' : pickable ? '#fff7ed' : on ? '#ea580c' : '#ffffff'} stroke={rem ? '#ef4444' : pickable ? '#f97316' : on ? '#c2410c' : '#cfc6b9'} strokeWidth={0.8}
-                    style={{ filter: 'drop-shadow(0 1px 1px rgba(40,30,20,0.12))' }} />
-                  <text x={bx} y={by + cfs * 0.36} textAnchor="middle" fontSize={cfs} fontWeight={700} letterSpacing="0.02em" fill={rem ? '#b91c1c' : on ? '#ffffff' : pickable ? '#c2410c' : '#78716c'} fontFamily={UI_FONT}>{chipTxt}</text>
-                </g>
-              )}
-              <title>{bandTip(b)}</title>
-            </g>
-          );
-        })}
-        {/* AÇILI LEVHA ROZETİ: Full / Half (dış kapak + levha düzlemin gerisinde); bayrak kesilen kenarın yarım-binme bayrağıdır */}
-        {cutBands.map(cb => {
-          const interactive = isOuter && cb.covered && !!cb.edge;
-          const chipTxt = interactive ? (cb.half ? 'Half' : 'Full') : null;
-          const cfs = fsT * 0.8;
-          const { pw: cw, ph: chh } = chipTxt ? pillSize(chipTxt, cfs) : { pw: 0, ph: 0 };
-          const d = ptsPath(cb.pts);
-          const tip = `${cb.cut.name} — angled door reference panel: the door is cut along it (it keeps the side you clicked when placing the door).` +
-            (interactive ? ` ${cb.half ? 'HALF overlay — the door reaches the middle of this panel\'s thickness. Click for full overlay.' : 'FULL overlay — the door covers this panel\'s whole thickness. Click for half overlay.'}` : cb.covered ? '' : ' It stands in front of the door plane, so there is no overlay to set.');
-          return (
-            <g key={`cuthit-${cb.cut.vfId}`} className={`yago-band${chipTxt ? ' on' : ''}`} style={{ cursor: interactive ? 'pointer' : 'default' }}
-              onClick={interactive ? e => { stop(e); onToggleHalfOverlay(cb.edge!, !cb.half); } : undefined}>
-              <path d={d} fill="transparent" className="hit" />
-              {chipTxt && (
-                <g className="chip" transform={`rotate(${cb.deg.toFixed(1)} ${cb.cx} ${cb.cy})`}>
-                  <rect x={cb.cx - cw / 2} y={cb.cy - chh / 2} width={cw} height={chh} rx={chh / 2} fill={cb.half ? '#ea580c' : '#ffffff'} stroke={cb.half ? '#c2410c' : '#cfc6b9'} strokeWidth={0.8}
-                    style={{ filter: 'drop-shadow(0 1px 1px rgba(40,30,20,0.12))' }} />
-                  <text x={cb.cx} y={cb.cy + cfs * 0.36} textAnchor="middle" fontSize={cfs} fontWeight={700} letterSpacing="0.02em" fill={cb.half ? '#ffffff' : '#78716c'} fontFamily={UI_FONT}>{chipTxt}</text>
-                </g>
-              )}
-              <title>{tip}</title>
-            </g>
-          );
-        })}
         {/* ODAK BOŞLUKLARI (Goker: "tıkladığım yerdeki kapak boşluklarını daha net anlaşılır yap"): seçili bölmenin araları / seçili
             kapağın çevresindeki boşluklar kapak alanında turuncu şerit. */}
         {focusStrips.map((r, i) => {
@@ -1884,10 +1925,85 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
             </g>
           );
         })}
+        {/* LEVHA BANTLARI seçim çerçevesinin / derz şeritlerinin ÜSTÜNDE, kutucukların ALTINDA (Goker, Eki 2026: "Full yazısı fare
+            paneldeyken belli olsun"): fareyle gelen ton ve rozet çizgilerin altında kalmaz; rozet kutucuklardan kaçar (chipSpot). */}
+        {/* LEVHA TIKLAMA ALANI + ROZET (bandın ortasında, düşey levhada dikey yazı): kenar levhası → Full / Half; derzdeki
+            raf/dikme üyesi → Free / Left / Center / Right (Up / Center / Down): tık derzi levhaya bağlar + levhayı taşır (döngü);
+            Shift/Ctrl bağı çözer. Bağlı levha turuncu rozet. */}
+        {bands.map(b => {
+          const np = b.np;
+          const pickable = !!refPick && !np.edge;
+          const rem = removable(np);
+          const bindable = !np.edge && !!np.joint && (!!np.groupId || !!np.ref);
+          const interactive = isOuter && (rem || pickable || (!!np.edge && np.behind) || bindable);
+          const chipTxt = rem ? '✕ Remove' : pickable ? 'Split here' : np.edge ? (np.behind ? (b.half ? 'Half' : 'Full') : null) : bindable ? (np.ref ? alignLabel(b, np.ref.align) : 'Free') : null;
+          const on = b.half || b.aligned;
+          const cfs = fsT * 0.8;
+          const { pw: cw, ph: chh } = chipTxt ? pillSize(chipTxt, cfs) : { pw: 0, ph: 0 };
+          // Full / Half yalnız fareyle görünür (kalıcı değil); rozet kutucuklardan kaçacak şekilde bant boyunca yerleşir.
+          const overlayChip = !!np.edge && !rem && !pickable;
+          const spot = chipTxt ? chipSpot(b.x + b.w / 2, b.y + b.h / 2, b.vertical ? 0 : 1, b.vertical ? 1 : 0, (b.vertical ? b.h : b.w) / 2, cw) : null;
+          const bx = spot?.x ?? b.x + b.w / 2, by = spot?.y ?? b.y + b.h / 2;
+          const warm = b.half || b.aligned;
+          return (
+            <g key={`hit-${np.vfId}`} className={`yago-band pnl${chipTxt && !overlayChip ? ' on' : ''}`} style={{ cursor: interactive ? 'pointer' : 'default' }}
+              onClick={interactive ? e => { stop(e); onBandClick(b, e.shiftKey || e.ctrlKey || e.metaKey); } : undefined}>
+              {b.np.poly
+                ? <path d={ptsPath(b.pts)} fill="transparent" stroke="transparent" strokeWidth={4} strokeLinejoin="round" className="hit" />
+                : <rect x={b.x - 2} y={b.y - 2} width={b.w + 4} height={b.h + 4} fill="transparent" className="hit" />}
+              {/* ÜZERİNE GELİNCE: levha belirgin tonla (kapağın üstünde) */}
+              <g className="hov">
+                <path d={ptsPath(b.pts)} fill={warm ? '#f6c39c' : '#cbbca6'} fillOpacity={0.92} />
+                <path d={ptsPath(b.pts)} fill={warm ? `url(#${gid}-hatch-on)` : `url(#${gid}-hatch)`} />
+                <path d={ptsPath(b.pts)} fill="none" stroke={warm ? '#c2410c' : '#6f6457'} strokeWidth={1.3} strokeLinejoin="round" />
+              </g>
+              {chipTxt && (
+                <g className="chip" transform={b.vertical ? `rotate(-90 ${bx} ${by})` : undefined}>
+                  <rect x={bx - cw / 2} y={by - chh / 2} width={cw} height={chh} rx={chh / 2} fill={rem ? '#fef2f2' : pickable ? '#fff7ed' : on ? '#ea580c' : '#ffffff'} stroke={rem ? '#ef4444' : pickable ? '#f97316' : on ? '#c2410c' : '#cfc6b9'} strokeWidth={0.8}
+                    style={{ filter: 'drop-shadow(0 1px 1px rgba(40,30,20,0.12))' }} />
+                  <text x={bx} y={by + cfs * 0.36} textAnchor="middle" fontSize={cfs} fontWeight={700} letterSpacing="0.02em" fill={rem ? '#b91c1c' : on ? '#ffffff' : pickable ? '#c2410c' : '#78716c'} fontFamily={UI_FONT}>{chipTxt}</text>
+                </g>
+              )}
+              <title>{bandTip(b)}</title>
+            </g>
+          );
+        })}
+        {/* AÇILI LEVHA ROZETİ: Full / Half (dış kapak + levha düzlemin gerisinde); bayrak kesilen kenarın yarım-binme bayrağıdır */}
+        {cutBands.map(cb => {
+          const interactive = isOuter && cb.covered && !!cb.edge;
+          const chipTxt = interactive ? (cb.half ? 'Half' : 'Full') : null;
+          const cfs = fsT * 0.8;
+          const { pw: cw, ph: chh } = chipTxt ? pillSize(chipTxt, cfs) : { pw: 0, ph: 0 };
+          const d = ptsPath(cb.pts);
+          const rad = cb.deg * Math.PI / 180;
+          const ext = Math.max(...cb.pts.map(q => Math.abs((q.x - cb.cx) * Math.cos(rad) + (q.y - cb.cy) * Math.sin(rad))));
+          const spot = chipTxt ? chipSpot(cb.cx, cb.cy, Math.cos(rad), Math.sin(rad), ext, cw) : { x: cb.cx, y: cb.cy };
+          const tip = `${cb.cut.name} — angled door reference panel: the door is cut along it (it keeps the side you clicked when placing the door).` +
+            (interactive ? ` ${cb.half ? 'HALF overlay — the door reaches the middle of this panel\'s thickness. Click for full overlay.' : 'FULL overlay — the door covers this panel\'s whole thickness. Click for half overlay.'}` : cb.covered ? '' : ' It stands in front of the door plane, so there is no overlay to set.');
+          return (
+            <g key={`cuthit-${cb.cut.vfId}`} className="yago-band pnl" style={{ cursor: interactive ? 'pointer' : 'default' }}
+              onClick={interactive ? e => { stop(e); onToggleHalfOverlay(cb.edge!, !cb.half); } : undefined}>
+              <path d={d} fill="transparent" stroke="transparent" strokeWidth={4} strokeLinejoin="round" className="hit" />
+              <g className="hov">
+                <path d={d} fill={cb.half ? '#f6c39c' : '#cbbca6'} fillOpacity={0.92} />
+                <path d={d} fill={cb.half ? `url(#${gid}-hatch-on)` : `url(#${gid}-hatch)`} />
+                <path d={d} fill="none" stroke={cb.half ? '#c2410c' : '#6f6457'} strokeWidth={1.3} strokeLinejoin="round" />
+              </g>
+              {chipTxt && (
+                <g className="chip" transform={`rotate(${cb.deg.toFixed(1)} ${spot.x} ${spot.y})`}>
+                  <rect x={spot.x - cw / 2} y={spot.y - chh / 2} width={cw} height={chh} rx={chh / 2} fill={cb.half ? '#ea580c' : '#ffffff'} stroke={cb.half ? '#c2410c' : '#cfc6b9'} strokeWidth={0.8}
+                    style={{ filter: 'drop-shadow(0 1px 1px rgba(40,30,20,0.12))' }} />
+                  <text x={spot.x} y={spot.y + cfs * 0.36} textAnchor="middle" fontSize={cfs} fontWeight={700} letterSpacing="0.02em" fill={cb.half ? '#ffffff' : '#78716c'} fontFamily={UI_FONT}>{chipTxt}</text>
+                </g>
+              )}
+              <title>{tip}</title>
+            </g>
+          );
+        })}
         {/* ÖLÇÜ ZİNCİRLERİ: dış (kök) + iç (iç içe bölmeler, kanatlar) */}
         {/* ÖLÇÜ ZİNCİRLERİ: yalnız seçili bölgelerin, bölgenin üzerinde (boşluk pill'i turuncu zeminli, ölçü pill'i turuncu çerçeveli) */}
         {pills.map(p => {
-          const { item: it, chain: ch, f } = p;
+          const { item: it, f } = p;
           const hide = editing?.key === p.key;
           if (it.kind === 'gap') {
             const gp = <DimPill cx={p.cx} cy={p.cy} txt={it.txt} fs={f} fill="#fff7ed" stroke="#f97316" strokeWidth={1} color="#c2410c" hideText={hide} title={it.title}
@@ -1901,9 +2017,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
               <DimPill cx={p.cx} cy={p.cy} txt={it.txt} fs={f} fill={locked || edited ? '#fff7ed' : '#ffffff'} stroke={edited ? '#fbbf24' : '#f97316'} strokeWidth={locked ? 1.2 : 1}
                 color={locked ? '#c2410c' : edited ? '#9a3412' : '#1c1917'} hideText={hide} title={editable ? (edited ? `${it.title} (entered value)` : it.title) : `${it.title} — set by the door bounds`}
                 onClick={editable ? e => { stop(e); beginEdit({ key: p.key, v: it.txt }); } : undefined} />
-              {it.onLock && (ch.horiz
-                ? <LockBadge cx={p.cx + p.pw / 2 + 12 + LOCK_R} cy={p.cy} locked={locked} edited={edited} onClick={it.onLock} />
-                : <LockBadge cx={p.cx} cy={p.cy + p.ph / 2 + 12 + LOCK_R} locked={locked} edited={edited} onClick={it.onLock} />)}
+              {it.onLock && p.lock && <LockBadge cx={p.lock.x} cy={p.lock.y} locked={locked} edited={edited} onClick={it.onLock} />}
             </g>
           );
         })}
