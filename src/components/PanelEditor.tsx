@@ -333,7 +333,10 @@ function DimPill({ cx, cy, txt, fs, fill = '#ffffff', stroke = SOFT.pillStroke, 
    yok sanılıyordu). Üç durum: serbest (gri, açık kilit) · GİRİLMİŞ değer (kehribar çerçeve, koyu açık kilit — "kilitle?") ·
    KİLİTLİ (turuncu dolgu, kapalı kilit). Yarıçap LOCK_R; yerleşim payı LOCK_EXT (pill'in ucundan rozetin dışına). */
 const LOCK_R = 9;
-const LOCK_EXT = 12 + LOCK_R + 2;
+/* KİLİT PİLL'E YAPIŞIK (Goker, Eki 2026: "kilit düğmesi kutucuğun çok dışında, hangi ölçüye ait belli olmuyor"): rozet merkezi
+   pill'in ucundan LOCK_OFF dışarıda — daire pill'in ucuna 2px biner, ikisi tek parça okunur (eskiden 12px boşluk vardı). */
+const LOCK_OFF = LOCK_R - 2;
+const LOCK_EXT = LOCK_OFF + LOCK_R + 2;
 function LockBadge({ cx, cy, locked, edited, onClick, title }: { cx: number; cy: number; locked: boolean; edited?: boolean; onClick: () => void; title?: string }) {
   const fill = locked ? '#ea580c' : edited ? '#fff7ed' : '#ffffff';
   const stroke = locked ? '#c2410c' : edited ? '#f59e0b' : '#d6cfc3';
@@ -1059,7 +1062,7 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
           const locked = gaps[p.k].locked, edited = !locked && !!gaps[p.k].edited;
           const a = barsHorizontal ? { x: sx(p.crossMid), y: sy(p.a) } : { x: sx(p.a), y: sy(p.crossMid) };
           const b = barsHorizontal ? { x: sx(p.crossMid), y: sy(p.b) } : { x: sx(p.b), y: sy(p.crossMid) };
-          const lockCx = p.cx + p.pw / 2 + 12 + LOCK_R, lockCy = p.cy;
+          const lockCx = p.cx + p.pw / 2 + LOCK_OFF, lockCy = p.cy;
           return (
             <g key={`gap-${p.k}`} className={`yago-gap${locked ? ' locked' : ''}`}>
               <DimArrows a={a} b={b} asz={asz} color={locked ? '#f59e0b' : DIM_LINE} />
@@ -1690,7 +1693,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
       const x = ch.horiz ? p.cx : p.cx - lane * laneStep, y = ch.horiz ? p.cy - lane * laneStep : p.cy;
       if (fixedAll.some(q => boxHit(x, y, p.pw, p.ph, q))) return false;
       if (!p.item.onLock) return true;
-      const lx = ch.horiz ? x + p.pw / 2 + 12 + LOCK_R : x, ly = ch.horiz ? y : y + p.ph / 2 + 12 + LOCK_R;
+      const lx = ch.horiz ? x + p.pw / 2 + LOCK_OFF : x, ly = ch.horiz ? y : y + p.ph / 2 + LOCK_OFF;
       return !fixedAll.some(q => boxHit(lx, ly, 2 * LOCK_R, 2 * LOCK_R, q));
     };
     const place = (p: typeof base[number], lane: number) => {
@@ -1722,8 +1725,8 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
       placedLocks.every(l => Math.hypot(l.x - x, l.y - y) >= 2 * LOCK_R + 3);
     for (const p of pills) {
       if (!p.item.onLock) continue;
-      const d = (p.chain.horiz ? p.pw : p.ph) / 2 + 12 + LOCK_R;
-      const e = (p.chain.horiz ? p.ph : p.pw) / 2 + 4 + LOCK_R;   // dar yerde: pill'in altına / üstüne (yatay) ya da sağına / soluna (düşey)
+      const d = (p.chain.horiz ? p.pw : p.ph) / 2 + LOCK_OFF;
+      const e = (p.chain.horiz ? p.ph : p.pw) / 2 + LOCK_OFF;   // dar yerde: pill'in altına / üstüne (yatay) ya da sağına / soluna (düşey)
       const cand = p.chain.horiz ? [{ x: p.cx + d, y: p.cy }, { x: p.cx - d, y: p.cy }, { x: p.cx, y: p.cy + e }, { x: p.cx, y: p.cy - e }]
         : [{ x: p.cx, y: p.cy + d }, { x: p.cx, y: p.cy - d }, { x: p.cx + e, y: p.cy }, { x: p.cx - e, y: p.cy }];
       p.lock = cand.find(c => clearOf(c.x, c.y, p)) ?? cand[0];
