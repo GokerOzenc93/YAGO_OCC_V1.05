@@ -555,11 +555,14 @@ function distributeSizes(specs: GapSpec[], L: number, gaps: number[]): GapSpec[]
  * uygulama PanelGroupService'te (gapMode, passiveGapIndex, cycleGapMode, applyGapEditProportional); burada kapak adlarıyla.
  */
 export type DoorSizeMode = GapMode;
-export const doorSizeMode = gapMode;
+// DİKKAT (Goker, Eki 2026: "Cannot access 'gapMode' before initialization"): DoorService ↔ PanelGroupService döngüsel
+// içe aktarım — PanelGroupService önce yüklenirse (PanelEngine sırası) bu modül onun gövdesinden ÖNCE değerlendirilir. Modül
+// üst düzeyinde PanelGroupService bağlarını OKUMA (takma ad `= gapMode` TDZ'ye düşer); yalnız fonksiyon gövdesinde çağır.
+export const doorSizeMode = (g: GapSpec | undefined): DoorSizeMode => gapMode(g);
 /** Kapak ölçüsünün alt sınırı (mm) — şema kutucuğunun `min`'i ile aynı. */
 const MIN_DOOR_SIZE = 1;
 /** PASİF KUTUCUK: bölmede tek AÇIK ölçü kaldıysa onun indeksi (pin + kilit ≤ n−1) — bkz. passiveGapIndex. */
-export const passiveSizeIndex = passiveGapIndex;
+export const passiveSizeIndex = (sizes: ReadonlyArray<GapSpec | undefined>, count = sizes.length): number => passiveGapIndex(sizes, count);
 
 /** Split düğümünün n−1 arası: kayıtlı dizi boyu tutmuyorsa varsayılan boşlukla (ilk ara değeri korunarak). */
 const splitGapsOf = (n: Extract<DoorNode, { kind: 'split' }>, gap: number) => {
