@@ -552,8 +552,9 @@ function distributeSizes(specs: GapSpec[], L: number, gaps: number[]): GapSpec[]
 /**
  * ÖLÇÜ MODU (Goker, Eki 2026: "kilidin 3. modu olsun: kilitli, açık ve katsayıdan etkilenme modu"):
  *  • 'open'   — açık: gövde boyutlanınca oranla büyür/küçülür; kardeş girilince farkı (oranla) o alır.
- *  • 'hold'   — tut (girilmiş, `edited`): kardeş girilince farkı ALMAZ (girilen değer korunur), ama gövde boyutlanınca
- *               açıklarla birlikte oranla büyür/küçülür. Değer yazmak ölçüyü bu moda alır.
+ *  • 'hold'   — pin / tut (girilmiş, `edited`): kardeş girilince farkı ALMAZ (girilen değer korunur), ama gövde
+ *               boyutlanınca açıklarla birlikte oranla büyür/küçülür. Değer yazmak ölçüyü bu moda alır. Pin ve kilit
+ *               aynı kotadan: n bölmede en fazla n−1 pinli+kilitli (passiveSizeIndex).
  *  • 'locked' — kilitli: gövde boyutlansa da kardeş girilse de sabit.
  * Kilit rozeti açık → tut → kilitli → açık döner (toggleDoorSizeLock).
  */
@@ -563,18 +564,27 @@ export const doorSizeMode = (g: GapSpec | undefined): DoorSizeMode => (g?.locked
 const MIN_DOOR_SIZE = 1;
 /**
  * PASİF KUTUCUK (Goker, Eki 2026: "her yeri kilitledikten sonra son kilitli olmayan kutucukta tüm kalan ölçüler toplanmalı
- * ve kutucuk pasif olmalı"): bölmede (≥2 çocuk) TEK kilitsiz ölçü kaldıysa onun indeksi, yoksa −1. Pasif ölçü kalanı
- * toplar (distributeSizes); girilemez ve kilitlenemez (hepsi kilitli bölme alanı izleyemez).
+ * ve kutucuk pasif olmalı" + "pin de kilit gibi düşünülmeli — 3 bölümde en fazla 2 tanesi pinli olabilir"): pin ve kilit
+ * AYNI kotadan sayılır — bölmede (≥2 çocuk) en az bir AÇIK ölçü kalmalı. TEK açık ölçü kaldıysa onun indeksi döner: o
+ * ölçü girişlerin farkını toplar; girilemez, pinlenemez, kilitlenemez. Açık hiç yoksa (eski kayıt: hepsi girilmiş/pinli)
+ * eski kural — tek kilitsiz ölçü pasif. Yoksa −1.
  */
 export function passiveSizeIndex(sizes: ReadonlyArray<GapSpec | undefined>, count = sizes.length): number {
   if (count < 2) return -1;
-  let idx = -1;
-  for (let i = 0; i < count; i++) {
-    if (sizes[i]?.locked) continue;
-    if (idx >= 0) return -1;
-    idx = i;
-  }
-  return idx;
+  const sole = (pred: (g: GapSpec | undefined) => boolean): number => {
+    let idx = -1;
+    for (let i = 0; i < count; i++) {
+      if (!pred(sizes[i])) continue;
+      if (idx >= 0) return -2;   // birden fazla
+      idx = i;
+    }
+    return idx;
+  };
+  const open = sole(g => doorSizeMode(g) === 'open');
+  if (open >= 0) return open;
+  if (open === -2) return -1;
+  const unlocked = sole(g => !g?.locked);
+  return unlocked >= 0 ? unlocked : -1;
 }
 /**
  * ÖLÇÜ GİRİŞİ — KATSAYI: k. ölçü = değer ve 'tut' moduna geçer (kilitliyse kilitli kalır); kilitliler ve TUTULANLAR sabit;
@@ -1532,7 +1542,7 @@ export async function editDoorSize(groupId: string, splitId: string, k: number, 
   if (!group || !Number.isFinite(value) || value <= 0) return;
   const sn = findSolvedNode(solveDoorTree(group), splitId);
   if (!sn || sn.kind !== 'split' || k < 0 || k >= sn.children.length) return;
-  if (passiveSizeIndex(sn.sizes, sn.children.length) === k) { console.warn('[YAGO][KAPAK-KATSAYI] ölçü', k + 1, 'pasif (diğerleri kilitli, kalanı toplar) — giriş yok sayıldı', splitId); return; }
+  if (passiveSizeIndex(sn.sizes, sn.children.length) === k) { console.warn('[YAGO][KAPAK-KATSAYI] ölçü', k + 1, 'pasif (diğerleri pinli/kilitli, kalanı toplar) — giriş yok sayıldı', splitId); return; }
   const refs = sn.refs ?? {};
   const j = refs[k] ? k : refs[k - 1] ? k - 1 : -1;
   // Önizlemede levha taşınmaz; yalnız ağaç (dağılım) gösterilir — onayda bağlı derz levhayı taşır, çözüm levhadan gelir.
@@ -1563,8 +1573,8 @@ export async function editDoorSize(groupId: string, splitId: string, k: number, 
   await writeDoorGroup(group, { tree }, `ölçü ${k + 1} = ${value}`, !!opts.preview);
 }
 /**
- * KİLİT ROZETİ — 3 MOD (bkz. DoorSizeMode): açık → tut → kilitli → açık. Değer değişmez, geometri değişmez → rebuild yok.
- * Pasif ölçü (son kilitsiz) kilitlenemez — bölme alanı izleyemez olurdu; o durumda kilitli atlanır (açığa döner).
+ * KİLİT ROZETİ — 3 MOD (bkz. DoorSizeMode): açık → pin (tut) → kilitli → açık. Değer değişmez, geometri değişmez → rebuild yok.
+ * Pin ve kilit aynı kotadan: pasif ölçü (son açık) pinlenemez / kilitlenemez — bölmede en az bir açık ölçü kalır.
  */
 export function toggleDoorSizeLock(groupId: string, splitId: string, k: number): void {
   const group = groupById(groupId);
@@ -1572,8 +1582,9 @@ export function toggleDoorSizeLock(groupId: string, splitId: string, k: number):
   if (!group || !sn || sn.kind !== 'split' || k < 0 || k >= sn.sizes.length) return;
   const cur = doorSizeMode(sn.sizes[k]);
   let next: DoorSizeMode = cur === 'open' ? 'hold' : cur === 'hold' ? 'locked' : 'open';
-  if (next === 'locked' && passiveSizeIndex(sn.sizes, sn.children.length) === k) {
-    console.warn('[YAGO][KAPAK-KATSAYI] son kilitsiz ölçü kilitlenemez (pasif, kalanı toplar) → açık:', splitId, 'ölçü', k + 1);
+  if (next !== 'open' && passiveSizeIndex(sn.sizes, sn.children.length) === k) {
+    if (cur === 'open') { console.warn('[YAGO][KAPAK-KATSAYI] son açık ölçü pinlenemez/kilitlenemez (pasif, kalanı toplar):', splitId, 'ölçü', k + 1); return; }
+    console.warn('[YAGO][KAPAK-KATSAYI] pasif ölçü kilitlenemez → açık:', splitId, 'ölçü', k + 1);
     next = 'open';
   }
   const sizes = sn.sizes.map((g, i) => (i === k ? { ...g, locked: next === 'locked', edited: next === 'hold' } : g));

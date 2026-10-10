@@ -1544,12 +1544,12 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     chains.push({ horiz, pos, items, small: true });
   };
   type SplitS = Extract<DoorNodeSolved, { kind: 'split' }>;
-  // Bölme ölçüsü kutucuğu. PASİF (Goker: "her yeri kilitledikten sonra son kilitli olmayan kutucuk kalanı toplar ve pasif"):
-  // bölmede tek kilitsiz ölçü kaldıysa o kutucuk girilemez ve kilitlenemez (kilit rozeti yok) — değeri alandan gelir.
+  // Bölme ölçüsü kutucuğu. PASİF (Goker: "son kilitli olmayan kutucuk kalanı toplar ve pasif"; pin de kilit gibi sayılır):
+  // bölmede tek AÇIK ölçü kaldıysa o kutucuk girilemez, pinlenemez, kilitlenemez (rozet yok) — değeri kalandan gelir.
   const sizeItem = (P: SplitS, i: number, a: number, b: number, horiz: boolean): ChainItem => {
     const w = P.sizes[i]?.value ?? 0;
     if (passiveSizeIndex(P.sizes, P.children.length) === i) {
-      return { key: `size-${P.id}-${i}`, kind: 'size', a, b, txt: fmt(w), passive: true, title: `${horiz ? 'Door width' : 'Door height'} — remainder (all other doors locked); unlock one to edit`,
+      return { key: `size-${P.id}-${i}`, kind: 'size', a, b, txt: fmt(w), passive: true, title: `${horiz ? 'Door width' : 'Door height'} — remainder (all other doors pinned or locked); open one to edit`,
         commit: () => {}, min: 1 };
     }
     // 3 MOD (açık → tut → kilitli): rozet sıradaki modu söyler. Değer yazmak ölçüyü 'tut'a alır.
