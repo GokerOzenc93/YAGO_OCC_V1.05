@@ -23,7 +23,7 @@ import {
   passiveGapIndex, startCavityEdit, startGroupRepick, toggleGroupGapLock, traceMaskLoops, updateCavityStep,
 } from './PanelGroupService';
 import {
-  type DoorCut, type DoorEdgeKey, type DoorLayoutSnap, type DoorNearPanel, type DoorNodeSolved, DOOR_TYPES, DOOR_TYPE_LABEL, DOOR_TYPE_TITLE, addPanelAtDoorJoint, applyDoorCuts, clearDoorSpacing, collectDoorCuts, clipPolyToConvex, doorCutBands, doorCutOutline, doorJointParts, doorJoints, doorLayoutSnapshot, polyArea, doorLeafAxis, doorPlaneAxes, doorSpacingTargetsInScope, doorLeaves, doorMemberCount, doorNearPanels, restoreDoorLayout,
+  type DoorCut, type DoorEdgeKey, type DoorJoint, type DoorLayoutSnap, type DoorNearPanel, type DoorNodeSolved, DOOR_TYPES, JOINT_NEAR, jointOverlayState, setDoorJointOverlay, DOOR_TYPE_LABEL, DOOR_TYPE_TITLE, addPanelAtDoorJoint, applyDoorCuts, clearDoorSpacing, collectDoorCuts, clipPolyToConvex, doorCutBands, doorCutOutline, doorJointParts, doorJoints, doorLayoutSnapshot, polyArea, doorLeafAxis, doorPlaneAxes, doorSpacingTargetsInScope, doorLeaves, doorMemberCount, doorNearPanels, restoreDoorLayout,
   confirmDoorPick, deleteDoorGroupWithMembers, doorGroupName, doorMemberRects, doorMembersOf, doorPlacementLabel, edgeGapsOf, editDoorLeafSize, editDoorSize, equalizeDoorGroup, findDoorNode, findSolvedNode,
   isDoorVf, renameDoorGroup, setDoorEdgeGap, setDoorGap, setDoorHalfOverlay, setDoorLeafGap, setDoorLeafTypes, setDoorNodeSpacing, setDoorJointRef, setDoorNodeSplit, setDoorPlacement, setDoorSplitGap, splitDoorAtPanel, setDoorThickness, setVfDoorBound,
   doorSizeMode, passiveSizeIndex, solveDoorTree, toggleDoorSizeLock,
@@ -1064,7 +1064,7 @@ type DoorEdit = { key: string; v: string };
  *  pill bu uzunluğun ortasına yerleşir (açılı kesimde kenar kısalır). */
 type ChainItem = { key: string; kind: 'size' | 'gap'; a: number; b: number; txt: string; title: string; locked?: boolean; edited?: boolean; passive?: boolean; onLock?: () => void; lockTitle?: string; commit: (v: number) => void; preview?: (v: number) => void; min: number; span?: [number, number] };
 type Chain = { horiz: boolean; pos: number; items: ChainItem[]; small?: boolean };
-export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts, nearPanels, refPick, onEditSize, onToggleLock, onEditSplitGap, onEditEdgeGap, onEditLeaf, onEditLeafGap, onPathClick, onToggleHalfOverlay, onAlignJoint, onRefPick, addPick, onAddPick, onRemovePick, addObstacles, onEditBegin, onEditCancel }: {
+export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts, nearPanels, refPick, onEditSize, onToggleLock, onEditSplitGap, onEditEdgeGap, onEditLeaf, onEditLeafGap, onPathClick, onToggleHalfOverlay, onAlignJoint, onJointOverlay, onRefPick, addPick, onAddPick, onRemovePick, addObstacles, onEditBegin, onEditCancel }: {
   group: DoorGroup; selectedIndex: number; memberLabels: string[];
   selectedNodes: string[];
   /** Açılı referans: üyeler bu kesicilerle kırpılmış çokgen olarak çizilir (3B ile aynı şekil). */
@@ -1078,8 +1078,10 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
   /** Tıklanan noktanın kök → yaprak düğüm yolu (yalnız seçim, üye seçilmez); additive = Shift/Ctrl/⌘. */
   onPathClick: (path: string[], additive: boolean) => void;
   onToggleHalfOverlay: (edge: DoorEdgeKey, on: boolean) => void;
-  /** Derz bağı: LEVHA bir kez hizaya taşınır (kapak yerinde), sonra kapak derzi levhayı izler. null = bağ çözülür. */
+  /** Yalnız bağ çözme (null): Shift/Ctrl+tık. */
   onAlignJoint: (splitId: string, k: number, vfId: string, align: DoorAlign | null) => void;
+  /** Derz binisi (seçili kapağa göre Full/Half): levha yerinde, kapaklar uzar/kısalır. */
+  onJointOverlay: (splitId: string, k: number, vfId: string, align: DoorAlign) => void;
   refPick?: boolean;
   onRefPick?: (vfId: string) => void;
   /** Araya raf/dikme modu: 'u' = V derzleri (dikme), 'v' = H derzleri (raf). Zaten bağlı derzler gösterilmez. */
@@ -1193,8 +1195,35 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     const part = clipPolyToConvex(b.pts, [{ x: dx0, y: dy0 }, { x: dx1, y: dy0 }, { x: dx1, y: dy1 }, { x: dx0, y: dy1 }]);
     return part.length >= 3 && Math.abs(polyArea(part)) > 0.5 ? [part] : [];
   });
-  const alignLabel = (b: Band, a: DoorAlign) => (a === 'center' ? 'Center' : b.vertical ? ((a === 'min') !== mirrorU ? 'Left' : 'Right') : ((a === 'max') !== mirrorV ? 'Up' : 'Down'));
-  const alignCycle = (b: Band): DoorAlign[] => (b.vertical ? (mirrorU ? ['max', 'center', 'min'] : ['min', 'center', 'max']) : (mirrorV ? ['min', 'center', 'max'] : ['max', 'center', 'min']));
+  // DERZ BİNİSİ: 'min'/'max' = o taraftaki (düşük/yüksek u·v) kapak levhayı tamamen örter (Full), 'center' = ikisi yarı (Half).
+  const sideName = (b: Band, a: DoorAlign) => (b.vertical ? ((a === 'min') !== mirrorU ? 'Left' : 'Right') : ((a === 'max') !== mirrorV ? 'Top' : 'Bottom'));
+  const allJoints = doorJoints(solved);
+  // Seçili bölge levhaya bitişikse: o bölgenin derzi + levhanın hangi tarafında olduğu (np.joint öncelikli).
+  const overlayCtx = (np: DoorNearPanel): { j: DoorJoint; side: DoorAlign } | null => {
+    if (np.edge || !np.joint || !selRegions.length) return null;
+    const pc = (np.a0 + np.a1) / 2, t = np.a1 - np.a0;
+    const cands = allJoints.filter(j => j.axis === np.kind && Math.min(j.c1, np.c1) - Math.max(j.c0, np.c0) >= 0.5
+      && Math.abs((j.p0 + j.p1) / 2 - pc) <= t / 2 + (j.p1 - j.p0) / 2 + JOINT_NEAR)
+      .sort((a, b) => Number(!(a.splitId === np.joint!.splitId && a.k === np.joint!.k)) - Number(!(b.splitId === np.joint!.splitId && b.k === np.joint!.k)));
+    for (const j of cands) for (const n of selRegions) {
+      const nc0 = np.kind === 'u' ? n.v0 : n.u0, nc1 = np.kind === 'u' ? n.v1 : n.u1;
+      if (Math.min(nc1, j.c1, np.c1) - Math.max(nc0, j.c0, np.c0) < 0.5) continue;
+      const na0 = np.kind === 'u' ? n.u0 : n.v0, na1 = np.kind === 'u' ? n.u1 : n.v1;
+      if (Math.abs(na1 - j.p0) < 0.6) return { j, side: 'min' };
+      if (Math.abs(na0 - j.p1) < 0.6) return { j, side: 'max' };
+    }
+    return null;
+  };
+  const overlayState = (np: DoorNearPanel, j: DoorJoint): DoorAlign | null =>
+    (np.ref && np.ref.splitId === j.splitId && np.ref.k === j.k ? np.ref.align : jointOverlayState(j, np.a0, np.a1));
+  const jointChip = (b: Band): string | null => {
+    const np = b.np;
+    if (np.edge || !np.joint) return null;
+    const ctx = overlayCtx(np);
+    if (ctx) { const s = overlayState(np, ctx.j); return s === 'center' ? 'Half' : s === ctx.side ? 'Full' : s ? 'None' : 'Free'; }
+    const s = overlayState(np, np.joint);
+    return s === 'center' ? 'Half' : s ? `${sideName(b, s)} full` : 'Free';
+  };
   const edgeName = (b: Band) => (b.vertical ? ((b.np.edge === 'uMin') !== mirrorU ? 'Left' : 'Right') : ((b.np.edge === 'vMax') !== mirrorV ? 'Top' : 'Bottom'));
   const bandTip = (b: Band) => {
     const np = b.np;
@@ -1204,15 +1233,17 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
       return `${edgeName(b)} — ${np.name}: ${on ? 'HALF overlay — the door covers half of this panel\'s thickness (the other half is left for the neighbouring door). Click for full overlay.' : 'FULL overlay — the door covers this panel\'s whole thickness. Click for half overlay (share the panel with the neighbouring door).'}`;
     }
     const what = b.vertical ? 'divider' : 'shelf';
-    const opts = alignCycle(b).map(a => alignLabel(b, a)).join(' / ');
     if (removable(np)) return `${np.name} (${what}) — added between the doors. Click ✕ Remove to delete it (its row and panel are removed; the doors stay).`;
-    if (refPick) return `${np.name} (${what}) — PANEL REF: click to split the door through this ${what}'s middle. The joint is then bound to the ${what}: when it moves, the doors follow; Left / Center / Right moves the ${what} under the joint.`;
-    if (!np.joint) return `${np.name} (${what}) — behind the door, no door joint nearby to bind to. Use Panel ref mode to split the door at it.`;
-    if (!np.groupId && !np.ref) return `${np.name} (${what}) — body panel at a door joint; it cannot be moved from here (only shelf / divider members can).`;
-    const cur = np.ref ? alignLabel(b, np.ref.align) : 'Free';
-    if (np.ref?.master === 'door') return `${np.name} (${what}) — added between the doors, FOLLOWS the door joint (${cur}): when the doors change, the ${what} moves with the joint. Click: ${opts} (moves the ${what}, doors stay) · Shift/Ctrl+click: unbind (the ${what} stays where it is).`;
-    if (np.ref) return `${np.name} (${what}) — BOUND to this door joint (${cur}): when the ${what} moves (gap edit, body resize) the doors follow it. Click: ${opts} (moves the ${what}, doors stay) · Shift/Ctrl+click: unbind (door sizes freeze).`;
-    return `${np.name} (${what}) at the door joint — Free. Click: ${opts} (binds the joint to the ${what} and moves the ${what}; doors stay, then follow it) · Shift/Ctrl+click: unbind.`;
+    if (refPick) return `${np.name} (${what}) — PANEL REF: click to split the door through this ${what}'s middle (Half overlay: both doors reach its middle).`;
+    if (!np.joint) return `${np.name} (${what}) — behind the door, no door joint nearby. Use Panel ref mode to split the door at it.`;
+    const unbind = np.ref ? ' · Shift/Ctrl+click: unbind' : '';
+    const ctx = overlayCtx(np);
+    if (ctx) {
+      const s = overlayState(np, ctx.j);
+      const next = s === 'center' ? 'Full — the selected door covers the whole ' + what + ', the other door ends at its edge' : 'Half — both doors reach the middle of the ' + what;
+      return `${np.name} (${what}) — overlay of the selected door (${sideName(b, ctx.side).toLowerCase()} of it): ${jointChip(b)}. Click: ${next}. The ${what} stays; the doors next to it lengthen / shorten.${unbind}`;
+    }
+    return `${np.name} (${what}) at the door joint — ${jointChip(b)}. Select a door next to it to set its overlay: Full (that door covers the whole ${what}, the other ends at its edge) or Half (both doors reach its middle). The ${what} stays; the doors change.${unbind}`;
   };
   const removable = (np: DoorNearPanel) => !!addPick && !np.edge && np.kind === addPick && np.ref?.master === 'door' && !!np.groupId;
   const onBandClick = (b: Band, additive: boolean) => {
@@ -1220,12 +1251,12 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     if (removable(np)) { onRemovePick?.(np.groupId!); return; }
     if (refPick) { if (!np.edge && onRefPick) onRefPick(np.vfId); return; }
     if (np.edge) { if (np.behind) onToggleHalfOverlay(np.edge, !group.halfOverlay?.[np.edge]); return; }
-    const cyc = alignCycle(b);
     const j = np.joint;
-    if (!j || !(np.groupId || np.ref)) return;
-    if (additive) { if (np.ref) onAlignJoint(j.splitId, j.k, np.vfId, null); return; }
-    const i = np.ref ? cyc.indexOf(np.ref.align) : -1;
-    onAlignJoint(j.splitId, j.k, np.vfId, cyc[(i + 1) % cyc.length]);
+    if (!j) return;
+    if (additive) { if (np.ref) onAlignJoint(np.ref.splitId, np.ref.k, np.vfId, null); return; }
+    const ctx = overlayCtx(np);
+    if (!ctx) return;
+    onJointOverlay(ctx.j.splitId, ctx.j.k, np.vfId, overlayState(np, ctx.j) === 'center' ? ctx.side : 'center');
   };
 
   const commit = () => {
@@ -1671,7 +1702,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
                   <rect x={bx - cw / 2} y={by - chh / 2} width={cw} height={chh} rx={chh / 2} fill="#fff7ed" stroke="#f97316" strokeWidth={0.8} style={{ filter: 'drop-shadow(0 1px 1px rgba(40,30,20,0.12))' }} />
                   <text x={bx} y={by + cfs * 0.36} textAnchor="middle" fontSize={cfs} fontWeight={700} letterSpacing="0.02em" fill="#c2410c" fontFamily={UI_FONT}>{txt}</text>
                 </g>
-                <title>{`Add a ${what} between these two doors${segs.length > 1 ? ` (this part of the joint, ${round1(c1 - c0)} mm)` : ''}: it is created in the free volume behind this spot (listed after the door row) and stays bound to the joint — when the doors change, the ${what} follows.${allMids.length > 1 ? ` Shift+click: a ${what} in every free part of this joint (${allMids.length}).` : ''} Its Left / Center / Right badge then sets the alignment; Shift+click on the badge unbinds.`}</title>
+                <title>{`Add a ${what} between these two doors${segs.length > 1 ? ` (this part of the joint, ${round1(c1 - c0)} mm)` : ''}: it is created in the free volume behind this spot (listed after the door row) and stays bound to the joint — when the doors change, the ${what} follows.${allMids.length > 1 ? ` Shift+click: a ${what} in every free part of this joint (${allMids.length}).` : ''} It starts at Half overlay (both doors reach its middle); select a door next to it to switch that door to Full.`}</title>
               </g>
             );
           });
@@ -1698,10 +1729,11 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
           const np = b.np;
           const pickable = !!refPick && !np.edge;
           const rem = removable(np);
-          const bindable = !np.edge && !!np.joint && (!!np.groupId || !!np.ref);
-          const interactive = isOuter && (rem || pickable || (!!np.edge && np.behind) || bindable);
-          const chipTxt = rem ? '✕ Remove' : pickable ? 'Split here' : np.edge ? (np.behind ? (b.half ? 'Half' : 'Full') : null) : bindable ? (np.ref ? alignLabel(b, np.ref.align) : 'Free') : null;
-          const on = b.half || b.aligned;
+          const jChip = !np.edge ? jointChip(b) : null;
+          const ctxOn = !np.edge && !!overlayCtx(np);
+          const interactive = isOuter && (rem || pickable || (!!np.edge && np.behind) || ctxOn || (!!np.joint && !!np.ref));
+          const chipTxt = rem ? '✕ Remove' : pickable ? 'Split here' : np.edge ? (np.behind ? (b.half ? 'Half' : 'Full') : null) : jChip;
+          const on = np.edge ? b.half : jChip === 'Half';
           const cfs = fsT * 0.8;
           const { pw: cw, ph: chh } = chipTxt ? pillSize(chipTxt, cfs) : { pw: 0, ph: 0 };
           const overlayChip = !!np.edge && !rem && !pickable;
@@ -1721,9 +1753,9 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
               </g>
               {chipTxt && (
                 <g className="chip" transform={b.vertical ? `rotate(-90 ${bx} ${by})` : undefined}>
-                  <rect x={bx - cw / 2} y={by - chh / 2} width={cw} height={chh} rx={chh / 2} fill={rem ? '#fef2f2' : pickable ? '#fff7ed' : on ? '#ea580c' : '#ffffff'} stroke={rem ? '#ef4444' : pickable ? '#f97316' : on ? '#c2410c' : '#cfc6b9'} strokeWidth={0.8}
+                  <rect x={bx - cw / 2} y={by - chh / 2} width={cw} height={chh} rx={chh / 2} fill={rem ? '#fef2f2' : pickable ? '#fff7ed' : on ? '#ea580c' : '#ffffff'} stroke={rem ? '#ef4444' : pickable ? '#f97316' : on ? '#c2410c' : ctxOn ? '#f97316' : '#cfc6b9'} strokeWidth={ctxOn ? 1.1 : 0.8}
                     style={{ filter: 'drop-shadow(0 1px 1px rgba(40,30,20,0.12))' }} />
-                  <text x={bx} y={by + cfs * 0.36} textAnchor="middle" fontSize={cfs} fontWeight={700} letterSpacing="0.02em" fill={rem ? '#b91c1c' : on ? '#ffffff' : pickable ? '#c2410c' : '#78716c'} fontFamily={UI_FONT}>{chipTxt}</text>
+                  <text x={bx} y={by + cfs * 0.36} textAnchor="middle" fontSize={cfs} fontWeight={700} letterSpacing="0.02em" fill={rem ? '#b91c1c' : on ? '#ffffff' : pickable || ctxOn ? '#c2410c' : '#78716c'} fontFamily={UI_FONT}>{chipTxt}</text>
                 </g>
               )}
               <title>{bandTip(b)}</title>
@@ -2749,7 +2781,7 @@ export function PanelEditor() {
                       onClick={() => { if (relocating) setVolumePickMode(null); else startGroupRepick(g.id); }} />
                     {g.doorBond && (
                       <span className="shrink-0 h-[28px] pl-2 pr-1 inline-flex items-center gap-1 rounded-[7px] bg-orange-50 ring-1 ring-orange-200/70 text-[10.5px] font-semibold text-orange-700"
-                        title={`Bound to a door joint (${g.doorBond.align === 'center' ? 'centered on the joint' : g.doorBond.align === 'min' ? 'behind the lower / left door' : 'behind the upper / right door'}): this ${g.kind} follows the doors — when the door sizes change it moves with the joint. Editing its gap here moves the door joint instead. Unbind to free it (it stays where it is).`}>
+                        title={`Bound to a door joint (${g.doorBond.align === 'center' ? 'Half overlay — centered on the joint' : g.doorBond.align === 'min' ? 'Full overlay of the lower / left door' : 'Full overlay of the upper / right door'}): this ${g.kind} follows the doors — when the door sizes change it moves with the joint. Editing its gap here moves the door joint instead. Unbind to free it (it stays where it is).`}>
                         <DoorClosed size={12} strokeWidth={2} /><span>Door joint</span>
                         <button type="button" title="Unbind from the door joint — the panel stays where it is (to delete the panel use the trash button in the row header, or Remove in the door card)" onClick={e => { stop(e); useAppStore.getState().updatePanelGroup(g.id, { doorBond: undefined }); }}
                           className="w-[18px] h-[18px] rounded-md flex items-center justify-center text-orange-500 hover:bg-orange-100 hover:text-orange-800 transition-colors"><Unlink size={11} strokeWidth={2.2} /></button>
@@ -2970,6 +3002,7 @@ export function PanelEditor() {
                 onEditBegin={() => doorLayoutSnapshot(g.id)} onEditCancel={snap => restoreDoorLayout(g.id, snap as DoorLayoutSnap | null)}
                 onToggleHalfOverlay={(edge, on) => { void setDoorHalfOverlay(g.id, edge, on); }}
                 onAlignJoint={(sid, k, vfId, a) => { void setDoorJointRef(g.id, sid, k, vfId, a); }}
+                onJointOverlay={(sid, k, vfId, a) => { void setDoorJointOverlay(g.id, sid, k, vfId, a); }}
                 onPathClick={onPathClick} />
               <SectionHead label="Doors" count={members.length} />
               <div className="flex flex-col gap-[2px]">

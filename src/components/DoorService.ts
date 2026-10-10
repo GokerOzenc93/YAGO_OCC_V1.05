@@ -26,7 +26,7 @@ const PREVIEW_ID = 'önizleme';
 const MAX_DOOR_SPLIT = 12;
 const NEAR_EXTRA = 3;        // kapak kenarı ile levha arasındaki "yaklaşma" payı (mm), boşluğun üstüne
 const THIN_PANEL = 60;       // levha sayılacak en büyük kalınlık (mm); daha kalını (arkalık vb.) sayılmaz
-const JOINT_NEAR = 30;       // levha merkezi ile derz merkezi arası en büyük uzaklık (mm; + yarım kalınlık + yarım derz)
+export const JOINT_NEAR = 30;   // levha merkezi ile derz merkezi arası en büyük uzaklık (mm; + yarım kalınlık + yarım derz)
 
 export const isDoorPanel = (p: any): boolean => !!p?.parameters?.doorGroupId;
 export const isDoorVf = (vf: any): boolean => !!vf?.doorGroupId;
@@ -1206,6 +1206,56 @@ export async function setDoorJointRef(groupId: string, splitId: string, k: numbe
   st.updateDoorGroup(groupId, { tree });
   const moved = movePanelToAlign(group, { ...np, joint }, align, st.panelGroups);
   if (!moved) await writeDoorGroup({ ...group, tree }, {});
+}
+/** Derz binisi: levha kutusundan derz merkezi. 'center' = Half (iki kapak levha ortasına), 'min'/'max' = o taraftaki kapak Full. */
+export const overlayJointCenter = (a0: number, a1: number, g: number, align: DoorAlign) =>
+  (align === 'center' ? (a0 + a1) / 2 : align === 'min' ? a1 + g / 2 : a0 - g / 2);
+/** Derzin levhaya göre durumu (geometriden): hizalardan biri değilse null (serbest). */
+export function jointOverlayState(j: Pick<DoorJoint, 'p0' | 'p1'>, a0: number, a1: number, tol = 0.6): DoorAlign | null {
+  const c = (j.p0 + j.p1) / 2, g = j.p1 - j.p0;
+  return (['center', 'min', 'max'] as DoorAlign[]).find(a => Math.abs(overlayJointCenter(a0, a1, g, a) - c) <= tol) ?? null;
+}
+// Derzi `center`a kaydırır: yalnız iki komşu parça değişir (k büyür/küçülür, k+1 tersi). v ekseninde çocuklar ÜSTTEN dizilir.
+function shiftJointSizes(sn: Extract<DoorNodeSolved, { kind: 'split' }>, k: number, center: number): GapSpec[] | null {
+  const j = doorJoints(sn).find(x => x.splitId === sn.id && x.k === k);
+  if (!j || k + 1 >= sn.sizes.length) return null;
+  const d = center - (j.p0 + j.p1) / 2;
+  const dk = sn.axis === 'u' ? d : -d;
+  const total = sn.sizes[k].value + sn.sizes[k + 1].value;
+  const a = round1(sn.sizes[k].value + dk), b = round1(total - a);
+  if (a < MIN_DOOR_SPAN || b < MIN_DOOR_SPAN) return null;
+  const sizes = sn.sizes.map(s => ({ ...s }));
+  sizes[k] = { ...sizes[k], value: a, edited: true };
+  sizes[k + 1] = { ...sizes[k + 1], value: b, edited: true };
+  return sizes;
+}
+// DERZ BİNİSİ (Full/Half): LEVHA yerinde kalır, KAPAKLAR uzar/kısalır. Levha derzi izliyorsa (doorBond) bağın hizası değişir ve
+// derz bir kez kaydırılır (levhanın istenen yeri aynı kalır); değilse derz levhaya bağlanır (refs) → kapaklar her çözümde levhayı izler.
+export async function setDoorJointOverlay(groupId: string, splitId: string, k: number, vfId: string, align: DoorAlign): Promise<void> {
+  const group = groupById(groupId);
+  const node = group ? findDoorNode(group.tree, splitId) : null;
+  if (!group || !node || node.kind !== 'split' || k < 0 || k >= node.children.length - 1) return;
+  const st = useAppStore.getState();
+  const parent = shapeById(group.shapeId, st.shapes);
+  const sn = findSolvedNode(solveDoorTree(group), splitId);
+  if (!parent || !sn || sn.kind !== 'split') return;
+  const joint = doorJoints(sn).find(j => j.splitId === splitId && j.k === k);
+  const np = doorNearPanels(group, parent, st.shapes, st.virtualFaces, st.panelGroups).find(p => p.vfId === vfId);
+  if (!np || !joint || joint.axis !== np.kind || np.edge) { console.warn('[YAGO][KAPAK-BİNİ] levha bu derzin binisi olamaz (yakın değil / eksen uyuşmaz / kenar):', vfId, splitId, k); return; }
+  const center = overlayJointCenter(np.a0, np.a1, joint.p1 - joint.p0, align);
+  // Yalnız iki komşu kapak değişir; bağlı derzde de kaydırılmış ölçüler yazılır (Σ alanı tutar → çözücü diğerlerine dokunmaz).
+  const sizes = shiftJointSizes(sn, k, center);
+  if (!sizes) { console.warn('[YAGO][KAPAK-BİNİ] kapak bu biniye sığmıyor (en az', MIN_DOOR_SPAN, 'mm):', splitId, k, align); return; }
+  const bondPg = st.panelGroups.find(pg => pg.doorBond && pg.memberVfIds.includes(vfId));
+  if (bondPg) {
+    const bond = bondPg.doorBond!;
+    if (bond.doorGroupId === groupId && bond.splitId === splitId && bond.k === k) st.updatePanelGroup(bondPg.id, { doorBond: { ...bond, align } });
+    else console.warn('[YAGO][KAPAK-BİNİ] levha başka bir derze bağlı / bağlanamaz — derz bir kez kaydırıldı (bağsız):', vfId, splitId, k);
+    await writeDoorGroup(group, { tree: replaceDoorNode(group.tree, splitId, old => ({ ...(old as any), sizes })) });
+    return;
+  }
+  const refs: Record<number, DoorJointRef> = { ...(node.refs ?? {}), [k]: { vfId, align } };
+  await writeDoorGroup(group, { tree: replaceDoorNode(group.tree, splitId, old => ({ ...(old as any), sizes, refs })) });
 }
 /** Derzi `center`a taşır (doorBond'lu grubun boşluk girişi); derz panel-ref ile bağlıysa levha kazanır → false. */
 export async function moveDoorJointTo(groupId: string, splitId: string, k: number, center: number): Promise<boolean> {
