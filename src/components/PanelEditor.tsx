@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowUp, Box, Check, ChevronDown, ChevronRight, Columns3, Crosshair, DoorClosed, Equal, GripVertical, LayoutPanelTop, Lock, type LucideIcon, Minus, Move, Move3d,
-  MoveVertical, Pencil, Plus, RotateCw, Rows3, Shapes, SlidersHorizontal, SplitSquareHorizontal, SplitSquareVertical, Trash2, Unlink, Unlock, X,
+  MoveVertical, Pencil, Pin, Plus, RotateCw, Rows3, Shapes, SlidersHorizontal, SplitSquareHorizontal, SplitSquareVertical, Trash2, Unlink, Unlock, X,
 } from 'lucide-react';
 import * as THREE from 'three';
 import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
@@ -26,7 +26,7 @@ import {
   type DoorCut, type DoorEdgeKey, type DoorLayoutSnap, type DoorNearPanel, type DoorNodeSolved, DOOR_TYPES, DOOR_TYPE_LABEL, DOOR_TYPE_TITLE, addPanelAtDoorJoint, applyDoorCuts, clearDoorSpacing, collectDoorCuts, clipPolyToConvex, doorCutBands, doorCutOutline, doorJointParts, doorJoints, doorLayoutSnapshot, polyArea, doorLeafAxis, doorPlaneAxes, doorSpacingTargetsInScope, doorLeaves, doorMemberCount, doorNearPanels, restoreDoorLayout,
   confirmDoorPick, deleteDoorGroupWithMembers, doorGroupName, doorMemberRects, doorMembersOf, doorPlacementLabel, edgeGapsOf, editDoorLeafSize, editDoorSize, equalizeDoorGroup, findDoorNode, findSolvedNode,
   isDoorVf, renameDoorGroup, setDoorEdgeGap, setDoorGap, setDoorHalfOverlay, setDoorLeafGap, setDoorLeafTypes, setDoorNodeSpacing, setDoorJointRef, setDoorNodeSplit, setDoorPlacement, setDoorSplitGap, splitDoorAtPanel, setDoorThickness, setVfDoorBound,
-  solveDoorTree, toggleDoorSizeLock,
+  doorSizeMode, passiveSizeIndex, solveDoorTree, toggleDoorSizeLock,
 } from './DoorService';
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -337,7 +337,8 @@ const LOCK_R = 9;
    pill'in ucundan LOCK_OFF dışarıda — daire pill'in ucuna 2px biner, ikisi tek parça okunur (eskiden 12px boşluk vardı). */
 const LOCK_OFF = LOCK_R - 2;
 const LOCK_EXT = LOCK_OFF + LOCK_R + 2;
-function LockBadge({ cx, cy, locked, edited, onClick, title }: { cx: number; cy: number; locked: boolean; edited?: boolean; onClick: () => void; title?: string }) {
+/** `holdIcon`: kapak ölçüsünün 3. modu ('tut') — girilmiş/tutulan ölçü raptiye ikonuyla (raflarda girilmiş = açık kilit kalır). */
+function LockBadge({ cx, cy, locked, edited, onClick, title, holdIcon }: { cx: number; cy: number; locked: boolean; edited?: boolean; onClick: () => void; title?: string; holdIcon?: boolean }) {
   const fill = locked ? '#ea580c' : edited ? '#fff7ed' : '#ffffff';
   const stroke = locked ? '#c2410c' : edited ? '#f59e0b' : '#d6cfc3';
   const ico = locked ? '#ffffff' : edited ? '#9a3412' : '#8c8378';
@@ -345,7 +346,9 @@ function LockBadge({ cx, cy, locked, edited, onClick, title }: { cx: number; cy:
   return (
     <g className="lockbtn" style={{ cursor: 'pointer' }} onClick={e => { e.stopPropagation(); onClick(); }}>
       <circle cx={cx} cy={cy} r={LOCK_R} fill={fill} stroke={stroke} strokeWidth={locked ? 1 : 0.9} style={{ filter: SOFT.pillShadow }} />
-      {locked ? <Lock x={cx - sz / 2} y={cy - sz / 2} size={sz} strokeWidth={2.4} color={ico} /> : <Unlock x={cx - sz / 2} y={cy - sz / 2} size={sz} strokeWidth={2.1} color={ico} />}
+      {locked ? <Lock x={cx - sz / 2} y={cy - sz / 2} size={sz} strokeWidth={2.4} color={ico} />
+        : edited && holdIcon ? <Pin x={cx - sz / 2} y={cy - sz / 2} size={sz} strokeWidth={2.3} color={ico} />
+        : <Unlock x={cx - sz / 2} y={cy - sz / 2} size={sz} strokeWidth={2.1} color={ico} />}
       <title>{title ?? (locked ? 'Locked — stays fixed on resize. Click to unlock (follows resize)' : edited ? 'Entered value — click to lock it (stays fixed on resize)' : 'Click to lock (stays fixed on resize)')}</title>
     </g>
   );
@@ -1226,7 +1229,7 @@ type DoorEdit = { key: string; v: string };
 /** Ölçü zinciri öğesi: ölçü (ok + pill + kilit) ya da boşluk (yalnız pill). a..b = eksen boyunca mm. */
 /** `span` (yalnız boşluk): ilgili kenarın / derzin çapraz eksendeki GERÇEK uzunluğu (mm) — kutucuk bu uzunluğun TAM ORTASINA, boşluğun
  *  üzerine yerleşir (Goker, Eki 2026: "kapak boşlukları her zaman ilgili kenarın uzunluğunun tam merkezinde olsun"). */
-type ChainItem = { key: string; kind: 'size' | 'gap'; a: number; b: number; txt: string; title: string; locked?: boolean; edited?: boolean; onLock?: () => void; commit: (v: number) => void; preview?: (v: number) => void; min: number; span?: [number, number] };
+type ChainItem = { key: string; kind: 'size' | 'gap'; a: number; b: number; txt: string; title: string; locked?: boolean; edited?: boolean; passive?: boolean; onLock?: () => void; lockTitle?: string; commit: (v: number) => void; preview?: (v: number) => void; min: number; span?: [number, number] };
 type Chain = { horiz: boolean; pos: number; items: ChainItem[]; small?: boolean };
 export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts, nearPanels, refPick, onEditSize, onToggleLock, onEditSplitGap, onEditEdgeGap, onEditLeaf, onEditLeafGap, onPathClick, onToggleHalfOverlay, onAlignJoint, onRefPick, addPick, onAddPick, onRemovePick, addObstacles, onEditBegin, onEditCancel }: {
   group: DoorGroup; selectedIndex: number; memberLabels: string[];
@@ -1541,6 +1544,22 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     chains.push({ horiz, pos, items, small: true });
   };
   type SplitS = Extract<DoorNodeSolved, { kind: 'split' }>;
+  // Bölme ölçüsü kutucuğu. PASİF (Goker: "her yeri kilitledikten sonra son kilitli olmayan kutucuk kalanı toplar ve pasif"):
+  // bölmede tek kilitsiz ölçü kaldıysa o kutucuk girilemez ve kilitlenemez (kilit rozeti yok) — değeri alandan gelir.
+  const sizeItem = (P: SplitS, i: number, a: number, b: number, horiz: boolean): ChainItem => {
+    const w = P.sizes[i]?.value ?? 0;
+    if (passiveSizeIndex(P.sizes, P.children.length) === i) {
+      return { key: `size-${P.id}-${i}`, kind: 'size', a, b, txt: fmt(w), passive: true, title: `${horiz ? 'Door width' : 'Door height'} — remainder (all other doors locked); unlock one to edit`,
+        commit: () => {}, min: 1 };
+    }
+    // 3 MOD (açık → tut → kilitli): rozet sıradaki modu söyler. Değer yazmak ölçüyü 'tut'a alır.
+    const mode = doorSizeMode(P.sizes[i]);
+    const lockTitle = mode === 'locked' ? 'Locked — fixed on resize and when other doors are edited. Click: open'
+      : mode === 'hold' ? 'Hold — keeps its value when other doors are edited, still scales with the door on resize. Click: lock'
+      : 'Open — takes up changes from other doors and scales with the door on resize. Click: hold';
+    return { key: `size-${P.id}-${i}`, kind: 'size', a, b, txt: fmt(w), title: `${horiz ? 'Door width' : 'Door height'} — click to edit (open doors take up the difference)`,
+      locked: mode === 'locked', edited: mode === 'hold', lockTitle, onLock: () => onToggleLock(P.id, i), commit: v => onEditSize(P.id, i, v), preview: v => onEditSize(P.id, i, v, true), min: 1 };
+  };
   // Bölmenin kendi zinciri: [kenar] ölçü · ara · ölçü … [kenar]; araları şeritle.
   const splitItems = (n: SplitS, withStrips: boolean): ChainItem[] => {
     const horiz = n.axis === 'u', dir = horiz ? 1 : -1;
@@ -1549,8 +1568,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     if (horiz ? touch.u0(n) : touch.v1(n)) { const k: DoorEdgeKey = horiz ? 'uMin' : 'vMax'; items.push(edgeItem(k, p - dir * eg[k], p, n)); if (withStrips) edgeStrip(n, k); }
     n.children.forEach((_c, i) => {
       const w = n.sizes[i]?.value ?? 0;
-      items.push({ key: `size-${n.id}-${i}`, kind: 'size', a: p, b: p + dir * w, txt: fmt(w), title: horiz ? 'Door width — click to edit (siblings take the rest)' : 'Door height — click to edit (siblings take the rest)',
-        locked: !!n.sizes[i]?.locked, edited: !!n.sizes[i]?.edited, onLock: () => onToggleLock(n.id, i), commit: v => onEditSize(n.id, i, v), preview: v => onEditSize(n.id, i, v, true), min: 1 });
+      items.push(sizeItem(n, i, p, p + dir * w, horiz));
       p += dir * w;
       if (i < n.children.length - 1) {
         const g = n.gaps[i] ?? 0;
@@ -1573,8 +1591,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     if (idx > 0) { const g = P.gaps[idx - 1] ?? 0; items.push({ key: `sgap-${P.id}-${idx - 1}`, kind: 'gap', a: start - dir * g, b: start, txt: fmt(g), title: 'Gap between doors — click to edit', commit: v => onEditSplitGap(P.id, idx - 1, v), preview: v => onEditSplitGap(P.id, idx - 1, v, true), min: 0, span: jointSpanOf(P, P.axis, start - dir * g, start, on) }); strip(P.axis, start - dir * g, start, c0, c1); }
     else if (horiz ? touch.u0(n) : touch.v1(n)) { const k: DoorEdgeKey = horiz ? 'uMin' : 'vMax'; items.push(edgeItem(k, start - dir * eg[k], start, n, on)); edgeStrip(on, k); }
     const w = P.sizes[idx]?.value ?? 0;
-    items.push({ key: `size-${P.id}-${idx}`, kind: 'size', a: start, b: start + dir * w, txt: fmt(w), title: horiz ? 'Door width — click to edit (siblings take the rest)' : 'Door height — click to edit (siblings take the rest)',
-      locked: !!P.sizes[idx]?.locked, edited: !!P.sizes[idx]?.edited, onLock: () => onToggleLock(P.id, idx), commit: v => onEditSize(P.id, idx, v), preview: v => onEditSize(P.id, idx, v, true), min: 1 });
+    items.push(sizeItem(P, idx, start, start + dir * w, horiz));
     const end = start + dir * w;
     if (idx < P.children.length - 1) { const g = P.gaps[idx] ?? 0; items.push({ key: `sgap-${P.id}-${idx}`, kind: 'gap', a: end, b: end + dir * g, txt: fmt(g), title: 'Gap between doors — click to edit', commit: v => onEditSplitGap(P.id, idx, v), preview: v => onEditSplitGap(P.id, idx, v, true), min: 0, span: jointSpanOf(P, P.axis, end, end + dir * g, on) }); strip(P.axis, end, end + dir * g, c0, c1); }
     else if (horiz ? touch.u1(n) : touch.v0(n)) { const k: DoorEdgeKey = horiz ? 'uMax' : 'vMin'; items.push(edgeItem(k, end, end + dir * eg[k], n, on)); edgeStrip(on, k); }
@@ -2013,14 +2030,22 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
               onClick={e => { stop(e); beginEdit({ key: p.key, v: it.txt }); }} />;
             return p.deg ? <g key={p.key} transform={`rotate(${p.deg.toFixed(1)} ${p.cx} ${p.cy})`}>{gp}</g> : <g key={p.key}>{gp}</g>;
           }
+          if (it.passive) {
+            // PASİF kutucuk: soluk zemin + soluk yazı, tıklanamaz, kilit rozeti yok (kalan ölçüyü toplar).
+            return (
+              <g key={p.key} className="yago-gap passive" style={{ cursor: 'not-allowed' }}>
+                <DimPill cx={p.cx} cy={p.cy} txt={it.txt} fs={f} fill="#f5f3ef" stroke="#d6cfc3" strokeWidth={0.9} color="#a8a29e" hideText={false} title={it.title} />
+              </g>
+            );
+          }
           const locked = !!it.locked, edited = !locked && !!it.edited, editable = !!it.onLock || it.key.startsWith('leaf-');
           // Kilit rozeti pill'in ucunda HER ZAMAN (yatay zincirde sağında, düşeyde altında); girilmiş ölçü kehribar, kilitli turuncu.
           return (
             <g key={p.key} className={`yago-gap${locked ? ' locked' : ''}`}>
               <DimPill cx={p.cx} cy={p.cy} txt={it.txt} fs={f} fill={locked || edited ? '#fff7ed' : '#ffffff'} stroke={edited ? '#fbbf24' : '#f97316'} strokeWidth={locked ? 1.2 : 1}
-                color={locked ? '#c2410c' : edited ? '#9a3412' : '#1c1917'} hideText={hide} title={editable ? (edited ? `${it.title} (entered value)` : it.title) : `${it.title} — set by the door bounds`}
+                color={locked ? '#c2410c' : edited ? '#9a3412' : '#1c1917'} hideText={hide} title={editable ? (edited ? `${it.title} (${it.lockTitle ? "held" : "entered"} value)` : it.title) : `${it.title} — set by the door bounds`}
                 onClick={editable ? e => { stop(e); beginEdit({ key: p.key, v: it.txt }); } : undefined} />
-              {it.onLock && p.lock && <LockBadge cx={p.lock.x} cy={p.lock.y} locked={locked} edited={edited} onClick={it.onLock} />}
+              {it.onLock && p.lock && <LockBadge cx={p.lock.x} cy={p.lock.y} locked={locked} edited={edited} onClick={it.onLock} title={it.lockTitle} holdIcon={!!it.lockTitle} />}
             </g>
           );
         })}

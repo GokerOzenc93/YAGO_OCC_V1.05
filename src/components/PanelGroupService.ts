@@ -884,91 +884,107 @@ export function equalGaps(L: number, count: number, ts: number[]): GapSpec[] {
   return Array.from({ length: n + 1 }, () => ({ value: r1(g), locked: false }));
 }
 
-/**
- * KALINLIK DEĞİŞİNCE YENİDEN DAĞITIM: kilitli ve girilmiş boşluklar değerini korur;
- * fark girilmemiş kilitsiz boşluklara EŞİT dağılır (varsayılan: hepsi eşit). Öyle
- * boşluk yoksa kilitsizlere oransal; hepsi kilitliyse artık son boşluğa.
- */
-export function redistributeForThickness(gaps: GapSpec[], L: number, count: number, ts: number[]): GapSpec[] {
-  if (!Array.isArray(gaps) || gaps.length !== count + 1) return equalGaps(L, count, ts);
-  const out = gaps.map(g => ({ ...g }));
-  const avail = L - sumT(ts);
-  const fresh = out.filter(g => !g.locked && !g.edited);
-  if (fresh.length > 0) {
-    const fixedSum = out.filter(g => g.locked || g.edited).reduce((s, g) => s + g.value, 0);
-    let free = avail - fixedSum;
-    if (free < 0) { console.warn('[YAGO][GRUP-KALINLIK] kilitli/girilmiş boşluklar açıklığa sığmıyor, serbest boşluklar 0:', free.toFixed(1)); free = 0; }
-    for (const g of fresh) g.value = r1(Math.max(MIN_GAP, free / fresh.length));
-    return out;
-  }
-  return rescaleGaps(out, L, count, ts);
-}
+/* ═══════════════════════════════════════════════════════════════════════════
+   ÖLÇÜ DAĞITIMI — TEK KURAL (Goker, Eki 2026: "600'lük kapakta sol 150, sağ 150 girince orta 300 kalıyor; sağı kilitleyip
+   ölçülerle oynayınca kalan ölçü yanlış dağılıyor, bazen 0 oluyor — derinlemesine incele, raf/dikme boşlukları da aynı
+   mantıkta olsun"). Raf/dikme boşlukları, kapak bölme ölçüleri ve kanat ölçüleri HEP bu iki işlevle çözülür:
 
-/**
- * YENİDEN DAĞITIM (küp boyutlandı / hacim değişti): kilitli boşluklar aynen
- * kalır; kalan açıklık kilitsizlere ORANLARI korunarak dağılır (hepsi eşitse
- * eşit kalır). Kilitliler sığmıyorsa oransal küçültülür (uyarı). Hepsi
- * kilitliyse artık son boşluğa yazılır.
- */
-export function rescaleGaps(gaps: GapSpec[], L: number, count: number, ts: number[]): GapSpec[] {
-  if (!Array.isArray(gaps) || gaps.length !== count + 1) return equalGaps(L, count, ts);
-  const avail = L - sumT(ts);
-  const out = gaps.map(g => ({ ...g }));
-  const lockedSum = out.filter(g => g.locked).reduce((s, g) => s + g.value, 0);
-  let free = avail - lockedSum;
-  if (free < -1e-6) {
-    const k = lockedSum > 0 ? Math.max(0, avail) / lockedSum : 0;
-    console.warn('[YAGO][GRUP-BOŞLUK] kilitli boşluklar açıklığa sığmıyor: kilitliΣ=', lockedSum.toFixed(1), 'açıklık=', avail.toFixed(1), '→ kilitliler oransal küçültüldü');
-    for (const g of out) if (g.locked) g.value = r1(g.value * k);
-    free = 0;
+   Her parça üç durumdan birindedir:
+     🔒 KİLİTLİ   — değeri hiçbir zaman değişmez (yalnız kilitliler açıklığa sığmazsa, uyarıyla, oransal küçülür).
+     *  GİRİLMİŞ  — kullanıcı yazdı ama kilitlemedi: kardeş düzenlemelerinde ve boyutlanmada KALANI alabilir (yumuşak).
+        SERBEST   — hiç girilmedi: kalanı İLK bunlar alır (eşit paylaşır).
+
+   enterSize(k, v): k. parça v olur (girilmiş). Kalan = açıklık − kilitliler − v, DİĞER kilitsizlere:
+     • serbest parça varsa: girilmişler değerini korur, serbestler kalanı eşit paylaşır; kalan serbestlere en az `min`
+       bırakmıyorsa girilmişler oransal küçülür (serbestler `min`);
+     • serbest yoksa: kilitsizler kalanı ORANLARINI koruyarak paylaşır (tek kilitsiz → hepsini alır);
+     • girilen v, diğer kilitsizlere `min` ve kilitlilere kendi değerlerini bırakacak kadar kırpılır (0 çıkmaz, taşmaz).
+   fitSizes(açıklık): açıklık / kalınlık / ara boşluk değişince (parametrik büyüme) FARK, kilitli olmayan TÜM parçalara
+     (girilmiş + serbest) oranları korunarak dağıtılır; kilitli sabittir. Σ zaten açıklıksa HİÇBİR ŞEY değişmez; böylece
+     girilen değerler ekran yenilenince / rebuild'de kaymaz (eski hata: Σ sapınca girilmişler her çözümde yeniden ölçekleniyordu).
+   Yuvarlama 0,1 mm; artık son değişen parçaya yazılır. ═════════════════════════════════════════════════════════════════ */
+const sumV = (xs: GapSpec[]) => xs.reduce((s, g) => s + g.value, 0);
+/** `xs` parçalarına toplam `R` verilir: oransal (Σ>0) ya da eşit; her parça ≥ `min`. Artık son parçaya. */
+function shareOut(xs: GapSpec[], R: number, min: number, equal: boolean): void {
+  if (!xs.length) return;
+  const total = Math.max(R, xs.length * min);
+  const w = equal || sumV(xs) <= 1e-6 ? xs.map(() => 1) : xs.map(g => g.value);
+  // önce ağırlıkla dağıt, `min` altına düşenleri `min`e sabitleyip kalanı diğerlerine yeniden ver (en çok n tur)
+  const fixed = new Set<number>(); let left = total;
+  for (let round = 0; round < xs.length; round++) {
+    const ws = w.reduce((a, x, i) => a + (fixed.has(i) ? 0 : x), 0);
+    let changed = false;
+    xs.forEach((g, i) => { if (fixed.has(i)) return; const v = ws > 0 ? left * w[i] / ws : left / (xs.length - fixed.size); if (v < min) { g.value = min; fixed.add(i); left -= min; changed = true; } });
+    if (!changed) { xs.forEach((g, i) => { if (!fixed.has(i)) g.value = ws > 0 ? left * w[i] / ws : left / (xs.length - fixed.size); }); break; }
   }
-  const unlocked = out.filter(g => !g.locked);
-  if (unlocked.length === 0) {
-    const last = out[out.length - 1];
-    if (Math.abs(free) > 0.05) { last.value = r1(last.value + free); console.warn('[YAGO][GRUP-BOŞLUK] tüm boşluklar kilitli, artık son boşluğa yazıldı:', free.toFixed(1)); }
+  for (const g of xs) g.value = r1(g.value);
+  const last = xs[xs.length - 1];
+  last.value = r1(last.value + (total - sumV(xs)));
+}
+/**
+ * SIĞDIR (parametrik büyüme / küçülme, kalınlık ve ara değişimi): Σ parça = açıklık olana kadar fark dağıtılır. Σ zaten
+ * açıklıksa değerler aynen kalır. Goker (Eki 2026): "kutucuğa ölçü yazmam hep o ölçüde kalsın diye değil; parametrik
+ * büyüyünce kilitli olmayan yerler o ORANDA büyüsün diye" → yalnız KİLİTLİ sabittir; girilmiş ya da serbest, tüm kilitsizler
+ * farkı oranlarını koruyarak paylaşır (girilmiş 150, serbest 300 → gövde %20 büyüyünce 180 / 360). Kilitsiz yoksa (hepsi
+ * kilitli) kilitliler uyarıyla oransal. Dizi boyu tutmuyorsa eşit dağılım. `min`: alt sınır (raf boşluğu 0, kapak ölçüsü 1).
+ */
+export function fitSizes(specs: GapSpec[], avail: number, count: number, min = MIN_GAP): GapSpec[] {
+  const n = count + 1;
+  if (!Array.isArray(specs) || specs.length !== n) return Array.from({ length: n }, () => ({ value: r1(Math.max(min, avail / n)), locked: false }));
+  const out = specs.map(g => ({ ...g, value: Number.isFinite(g.value) ? g.value : 0 }));
+  const resid = avail - sumV(out);
+  if (Math.abs(resid) < 0.05) { for (const g of out) g.value = r1(g.value); return out; }
+  const unlocked = out.filter(g => !g.locked), locked = out.filter(g => g.locked);
+  if (unlocked.length) {
+    const target = sumV(unlocked) + resid;
+    if (target >= unlocked.length * min - 1e-6) { shareOut(unlocked, target, min, false); return out; }
+    // kilitsizler min'e indi, gerisi kilitlilerden (uyarı)
+    shareOut(unlocked, unlocked.length * min, min, true);
+    const need = sumV(out) - avail;
+    if (locked.length && need > 0.05) { console.warn('[YAGO][DAĞITIM] kilitli parçalar açıklığa sığmıyor, kilitliler oransal küçültüldü:', need.toFixed(1)); shareOut(locked, sumV(locked) - need, min, false); }
     return out;
   }
-  const uSum = unlocked.reduce((s, g) => s + g.value, 0);
-  if (uSum > 1e-6) for (const g of unlocked) g.value = r1(g.value * free / uSum);
-  else for (const g of unlocked) g.value = r1(free / unlocked.length);
-  const total = out.reduce((s, g) => s + g.value, 0);
-  const resid = avail - total;
-  if (Math.abs(resid) > 0.05) unlocked[unlocked.length - 1].value = r1(unlocked[unlocked.length - 1].value + resid);
+  console.warn('[YAGO][DAĞITIM] tüm parçalar kilitli, fark kilitlilere oransal dağıtıldı:', resid.toFixed(1));
+  shareOut(locked, avail, min, false);
   return out;
 }
-
 /**
- * BOŞLUK GİRİŞİ: k. boşluk value olur ve "girildi" sayılır; fark, kilitsiz ve
- * girilmemiş boşluklara EŞİT dağılır. Öyle boşluk kalmadıysa diğer kilitsiz
- * (girilmiş) boşluklara oransal; o da yoksa değer kalan açıklığa kırpılır.
+ * GİRİŞ: k. parça `value` olur ve girilmiş sayılır; kalan, diğer kilitsizlere (serbestler önce, eşit; sonra girilmişler, oransal).
+ * Girilen değer diğer kilitsizlere `min`, kilitlilere kendi değerlerini bırakacak kadar kırpılır. Sonuç Σ = açıklık.
  */
-export function applyGapEdit(gaps: GapSpec[], k: number, value: number, L: number, count: number, ts: number[]): GapSpec[] {
-  const out = (gaps.length === count + 1 ? gaps : equalGaps(L, count, ts)).map(g => ({ ...g }));
-  if (k < 0 || k >= out.length) return out;
-  const avail = L - sumT(ts);
-  const v = Math.max(MIN_GAP, value);
-  out[k] = { ...out[k], value: r1(v), edited: true };
+export function enterSize(specs: GapSpec[], k: number, value: number, avail: number, count: number, min = MIN_GAP): GapSpec[] {
+  const n = count + 1;
+  const out = (Array.isArray(specs) && specs.length === n ? specs : fitSizes([], avail, count, min)).map(g => ({ ...g }));
+  if (k < 0 || k >= n) return out;
   const others = out.filter((_, i) => i !== k);
-  const fixedSum = others.filter(g => g.locked || g.edited).reduce((s, g) => s + g.value, 0);
-  let free = avail - out[k].value - fixedSum;
-  const fresh = others.filter(g => !g.locked && !g.edited);
-  if (fresh.length > 0) {
-    if (free < 0) { console.warn('[YAGO][GRUP-BOŞLUK] girilen değer açıklığı aşıyor, serbest boşluklar 0:', free.toFixed(1)); free = 0; }
-    for (const g of fresh) g.value = r1(free / fresh.length);
-    return out;
-  }
-  const soft = others.filter(g => !g.locked);
-  if (soft.length > 0) {
-    if (free < 0) free = 0;
-    const sSum = soft.reduce((s, g) => s + g.value, 0);
-    if (sSum > 1e-6) for (const g of soft) g.value = r1(g.value * free / sSum);
-    else for (const g of soft) g.value = r1(free / soft.length);
-    return out;
-  }
-  const lockedSum = others.reduce((s, g) => s + g.value, 0);
-  out[k].value = r1(Math.max(MIN_GAP, avail - lockedSum));
-  console.warn('[YAGO][GRUP-BOŞLUK] diğer boşluklar kilitli, değer kırpıldı →', out[k].value);
+  const locked = others.filter(g => g.locked), soft = others.filter(g => !g.locked);
+  const maxV = avail - sumV(locked) - soft.length * min;
+  let v = Math.max(min, Math.min(value, maxV));
+  if (v < value - 0.05) console.warn('[YAGO][DAĞITIM] girilen değer sığmıyor, kırpıldı:', value, '→', r1(v), '(kilitli Σ=', r1(sumV(locked)), 'açıklık=', r1(avail), ')');
+  if (maxV < min) { v = Math.max(min, avail - sumV(locked)); }
+  out[k] = { ...out[k], value: r1(v), edited: true };
+  const R = avail - sumV(locked) - out[k].value;
+  const free = soft.filter(g => !g.edited), held = soft.filter(g => !!g.edited);
+  if (free.length) {
+    const forHeld = Math.min(sumV(held), Math.max(0, R - free.length * min));
+    if (held.length && forHeld < sumV(held) - 0.05) shareOut(held, forHeld, min, false);
+    shareOut(free, R - sumV(held), min, true);
+  } else if (held.length) shareOut(held, R, min, false);
+  else if (Math.abs(R) > 0.05) { console.warn('[YAGO][DAĞITIM] diğer parçalar kilitli; girilen değer kalan açıklığa yazıldı →', r1(out[k].value + R)); out[k].value = r1(Math.max(min, out[k].value + R)); }
   return out;
+}
+
+/** Kalınlık / açıklık değişince: kilitli korunur, fark kilitsizlere oransal (fitSizes). */
+export function redistributeForThickness(gaps: GapSpec[], L: number, count: number, ts: number[]): GapSpec[] {
+  return fitSizes(gaps, L - sumT(ts), count);
+}
+/** Hacim boyutlandı / taşındı: aynı kural (fitSizes) — Σ zaten açıklıksa değerler aynen kalır. */
+export function rescaleGaps(gaps: GapSpec[], L: number, count: number, ts: number[]): GapSpec[] {
+  return fitSizes(gaps, L - sumT(ts), count);
+}
+/** Boşluk girişi (şema kutucuğu): enterSize kuralı. */
+export function applyGapEdit(gaps: GapSpec[], k: number, value: number, L: number, count: number, ts: number[], min = MIN_GAP): GapSpec[] {
+  return enterSize(gaps, k, value, L - sumT(ts), count, min);
 }
 
 /** Grubun yönü (tık yönü); eski gruplarda +1. */
