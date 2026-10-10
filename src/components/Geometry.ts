@@ -3,42 +3,22 @@ import type { FaceDescriptor, FilletInfo, SubtractedGeometry, VirtualFace } from
 import { setOC } from 'replicad';
 import initOpenCascade from 'opencascade.js';
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   GEOMETRİ ÇEKİRDEĞİ — (A) saf three.js matematiği, mesh yüz çıkarımı, VF/kutu
-   yardımcıları; (B) replicad/OpenCascade katı model servisi: kutu, boolean,
-   VF'den panel, vertex düzenlemeleri, fillet, gövde yeniden kurma, Apply.
-   ═══════════════════════════════════════════════════════════════════════════ */
-// ═══════════════════════════════════════════════════════════════════════════
-// Geometry — SAF GEOMETRİ ÇEKİRDEĞİ (store'suz, React'siz).
-//  1. Küçük ortak yardımcılar: eksen harfi ↔ vektör/indeks, şekil matrisi,
-//     kutu/oran, kimlik/yuvarlama/log biçimleri (eski PanelMath + kopyaları).
-//  2. VF düzlem tabanı + oransal çıpalar, dönüş açısı çözücüleri.
-//  3. Mesh yüz çıkarımı + eş-düzlem gruplama + yüz tanımlayıcı (eski GeometryUtils).
-// ═══════════════════════════════════════════════════════════════════════════
+// Geometri çekirdeği: (A) saf three.js — eksen/matris/kutu yardımcıları, VF düzlem tabanı + oransal çıpalar,
+// dönüş açısı çözücüleri, mesh yüz çıkarımı + eş-düzlem gruplama + yüz tanımlayıcı;
+// (B) replicad/OCC katı servisi — kutu, boolean, VF'den panel, vertex düzenleme, fillet, gövde rebuild, Apply.
 
 export type Vec3 = [number, number, number];
 export type AxisDir = 'x+' | 'x-' | 'y+' | 'y-' | 'z+' | 'z-';
 export type AxisLetter = 'x' | 'y' | 'z';
 
-// ── 1. ORTAK KÜÇÜK YARDIMCILAR ───────────────────────────────────────────────
-
-/** Benzersiz kimlik: `${prefix}-${zaman}-${rastgele}`. */
 export const genId = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-/** 0.1 mm'e yuvarla. */
 export const round1 = (v: number) => Math.round(v * 10) / 10;
-/** Hata nesnesi → mesaj (log). */
 export const errMsg = (e: unknown) => (e as any)?.message || String(e);
-/** Vektör → "x,y,z" (log). */
-export const fmtVec = (v: { x: number; y: number; z: number }, digits = 1) => [v.x, v.y, v.z].map(n => n.toFixed(digits)).join(',');
-/** replicad bounds → "x,y,z..x,y,z" (log). */
 export const fmtBounds = (shape: any) => shape.boundingBox.bounds.map((v: number[]) => v.map(n => n.toFixed(0)).join(',')).join('..');
-/** THREE kutusu → "x,y,z..x,y,z" (log). */
-export const fmtBox3 = (b: THREE.Box3) => `${fmtVec(b.min, 0)}..${fmtVec(b.max, 0)}`;
 
-/** 'x' | 'x+' | 'x-' … → 0/1/2. */
 export const axisIndexOf = (axis: string): 0 | 1 | 2 => (axis[0] === 'x' ? 0 : axis[0] === 'y' ? 1 : 2);
 
-/** 'x+' | 'y-' … → birim vektör (tanımsız harf → sıfır vektör). */
+/** Tanımsız harf → sıfır vektör. */
 export function axisDirToVec(a: string): THREE.Vector3 {
   const v = new THREE.Vector3();
   const i = 'xyz'.indexOf(a[0] || '');
@@ -46,7 +26,6 @@ export function axisDirToVec(a: string): THREE.Vector3 {
   return v;
 }
 
-/** Dünya ekseni harfi ('x' | 'y' | 'z') → birim vektör. */
 export function axisLetterVec(axis: string): THREE.Vector3 {
   return new THREE.Vector3(axis === 'x' ? 1 : 0, axis === 'y' ? 1 : 0, axis === 'z' ? 1 : 0);
 }
@@ -58,12 +37,10 @@ export function dominantAxisLabel(v: { x: number; y: number; z: number }): strin
   return i === 0 ? (v.x > 0 ? 'X+' : 'X-') : i === 1 ? (v.y > 0 ? 'Y+' : 'Y-') : (v.z > 0 ? 'Z+' : 'Z-');
 }
 
-/** Normal bir dünya eksenine paralel mi (0.999 eşiği)? */
 export const FLAT_NORMAL_THRESHOLD = 0.999;
 export const isFlatNormal = (n: { x: number; y: number; z: number }, tol = FLAT_NORMAL_THRESHOLD) =>
   Math.abs(n.x) > tol || Math.abs(n.y) > tol || Math.abs(n.z) > tol;
 
-/** Şeklin yerel → dünya matrisi (position · Euler XYZ · scale). */
 export function getShapeMatrix(shape: any): THREE.Matrix4 {
   const s = shape.scale ?? [1, 1, 1];
   return new THREE.Matrix4().compose(
@@ -73,25 +50,22 @@ export function getShapeMatrix(shape: any): THREE.Matrix4 {
   );
 }
 
-/** Geometrinin yerel sınır kutusu (position tamponu yoksa null). */
 export function localBboxOf(geometry: THREE.BufferGeometry | undefined | null): THREE.Box3 | null {
   const pos = geometry?.getAttribute('position') as THREE.BufferAttribute | undefined;
   return pos ? new THREE.Box3().setFromBufferAttribute(pos) : null;
 }
 
-/** Geometrinin, şeklin dünya matrisiyle taşınmış sınır kutusu. */
 export function worldBboxOf(shape: any, geometry: THREE.BufferGeometry | undefined): THREE.Box3 | null {
   const bb = localBboxOf(geometry);
   return bb ? bb.applyMatrix4(getShapeMatrix(shape)) : null;
 }
 
-/** Yerel kutu, yalnız konumla ötelenmiş (dönüşsüz şekiller için hızlı yol). */
 export function translatedBboxOf(shape: any): THREE.Box3 | null {
   const bb = localBboxOf(shape?.geometry);
   return bb ? bb.translate(new THREE.Vector3(...(shape.position as Vec3))) : null;
 }
 
-/** Yüz düzlemi 2B tabanı (bölge/ayak izi hesaplarının tek u/v kuralı). */
+/** Bölge/ayak izi hesaplarının tek u/v kuralı. */
 export function getFacePlaneAxes(normal: THREE.Vector3): { u: THREE.Vector3; v: THREE.Vector3 } {
   const n = normal.clone().normalize();
   const absX = Math.abs(n.x), absY = Math.abs(n.y), absZ = Math.abs(n.z);
@@ -101,19 +75,16 @@ export function getFacePlaneAxes(normal: THREE.Vector3): { u: THREE.Vector3; v: 
   return { u, v };
 }
 
-/** Panel kalınlığı (parametre; yoksa 18). */
 export function panelThickness(shape: any): number {
   return parseFloat(shape?.parameters?.panelThickness) || 18;
 }
 
-/** Noktaların bir yön boyunca izdüşüm aralığı. */
 export function projRange(pts: Iterable<THREE.Vector3>, dir: THREE.Vector3): { min: number; max: number } {
   let min = Infinity, max = -Infinity;
   for (const p of pts) { const d = p.dot(dir); if (d < min) min = d; if (d > max) max = d; }
   return { min, max };
 }
 
-/** Noktanın kutudaki oranı, [0,1]'e kırpılmış. */
 export function fracInBox(box: THREE.Box3, p: Vec3): Vec3 {
   const fr = (a: number, b: number, x: number) => (Math.abs(b - a) < 1e-9 ? 0 : (x - a) / (b - a));
   const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
@@ -128,14 +99,12 @@ export function pointFromFracBox(box: THREE.Box3, f: Vec3): THREE.Vector3 {
   );
 }
 
-/** replicad kutusu (bounds) ile THREE kutusu 0.5 mm paydan fazla örtüşüyor mu? */
 export function boundsOverlapBox(rb: number[][], bb: THREE.Box3): boolean {
   return rb[0][0] < bb.max.x - 0.5 && rb[1][0] > bb.min.x + 0.5
     && rb[0][1] < bb.max.y - 0.5 && rb[1][1] > bb.min.y + 0.5
     && rb[0][2] < bb.max.z - 0.5 && rb[1][2] > bb.min.z + 0.5;
 }
 
-/** Mesh köşeleri, 1/scale mm'de tekilleştirilmiş (tampon sırası korunur; varsayılan 0.1 mm). */
 export function uniqueMeshPoints(geometry: THREE.BufferGeometry, scale = 10): THREE.Vector3[] {
   const pos = geometry.getAttribute('position') as THREE.BufferAttribute;
   const pts: THREE.Vector3[] = [];
@@ -150,7 +119,6 @@ export function uniqueMeshPoints(geometry: THREE.BufferGeometry, scale = 10): TH
   return pts;
 }
 
-/** EdgesGeometry → [x,y,z][] çizgi uçları (drei Line beslemesi). */
 export function edgePointsOf(geometry: THREE.BufferGeometry, thresholdDeg = 15): [number, number, number][] {
   const eg = new THREE.EdgesGeometry(geometry, thresholdDeg);
   const pos = eg.getAttribute('position') as THREE.BufferAttribute;
@@ -160,13 +128,9 @@ export function edgePointsOf(geometry: THREE.BufferGeometry, thresholdDeg = 15):
   return pts;
 }
 
-// ── 2. VF DÜZLEM TABANI + ORANSAL ÇIPALAR ────────────────────────────────────
-// Pivot ve nişan noktası VF dikdörtgenine ORANSAL (u/v ∈ [0,1] + normal ofseti)
-// saklanır: yüz büyüyüp küçüldükçe nokta yüzle kayar; yakalama ve rebuild aynı
-// tabanı (vfPlaneBasis) kullanır. NOT: bu taban getFacePlaneAxes'tan farklıdır
-// ve kayıtlı pivotVfFrac/refArmVfFrac değerleri bu tabana bağlıdır — birleştirilemez.
+// Pivot/nişan VF dikdörtgenine ORANSAL saklanır (u/v ∈ [0,1] + normal ofseti) → yüzle birlikte kayar.
+// NOT: vfPlaneBasis getFacePlaneAxes'tan farklıdır; kayıtlı pivotVfFrac/refArmVfFrac buna bağlı — birleştirilemez.
 
-/** Deterministik VF düzlem tabanı — yakalama ve rebuild aynı kuralı kullanır. */
 function vfPlaneBasis(normal: Vec3 | number[]): { n: THREE.Vector3; u: THREE.Vector3; v: THREE.Vector3 } {
   const n = new THREE.Vector3(normal[0], normal[1], normal[2]).normalize();
   const up = Math.abs(n.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
@@ -177,7 +141,6 @@ function vfPlaneBasis(normal: Vec3 | number[]): { n: THREE.Vector3; u: THREE.Vec
 
 type VfLike = { normal: Vec3 | number[]; vertices: Array<Vec3 | number[]> };
 
-/** VF köşelerinin vfPlaneBasis tabanındaki kutusu (nOff = düzlem ofseti). */
 function vfUvBox(vf: VfLike) {
   const { n, u, v } = vfPlaneBasis(vf.normal);
   let uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity, nOff = 0;
@@ -190,7 +153,6 @@ function vfUvBox(vf: VfLike) {
   return { n, u, v, uMin, uMax, vMin, vMax, nOff };
 }
 
-/** Dünya noktasının VF dikdörtgenindeki oranı (u/v ∈ [0,1]) + normal ofseti. */
 export function vfFracOfPoint(vf: VfLike | undefined | null, point: Vec3): Vec3 | undefined {
   if (!vf?.normal || !Array.isArray(vf.vertices) || vf.vertices.length < 3) return undefined;
   const b = vfUvBox(vf);
@@ -203,7 +165,6 @@ export function vfFracOfPoint(vf: VfLike | undefined | null, point: Vec3): Vec3 
   ];
 }
 
-/** vfFracOfPoint'in tersi: oransal çıpayı GÜNCEL VF'den dünya noktasına çözer. */
 export function resolveVfFracPoint(frac: Vec3, vf: VfLike): THREE.Vector3 {
   const b = vfUvBox(vf);
   const [fu, fv, dn] = frac;
@@ -213,7 +174,6 @@ export function resolveVfFracPoint(frac: Vec3, vf: VfLike): THREE.Vector3 {
     .addScaledVector(b.n, b.nOff + dn);
 }
 
-/** Kullanıcının dünya ekseni harfini panelin VF tabanındaki en yakın yerel eksene eşler. */
 export function mapAxisToVfLocal(vf: { normal: Vec3 | number[] } | undefined | null, axis: AxisLetter): Vec3 | undefined {
   if (!vf?.normal) return undefined;
   const { n, u, v } = vfPlaneBasis(vf.normal);
@@ -223,11 +183,7 @@ export function mapAxisToVfLocal(vf: { normal: Vec3 | number[] } | undefined | n
   return [chosen.x, chosen.y, chosen.z];
 }
 
-/**
- * FIXED taşıma referansı: VF'nin HAM yüz konumunun taşıma ekseni boyunca min
- * değeri (rawFaceBBox varsa ondan, yoksa VF köşelerinden). Fixed adımda yüz ne
- * kadar kaydıysa o kadar ters öteleme eklenir → panel mutlak konumda kalır.
- */
+/** FIXED taşıma çıpası: VF HAM yüzünün eksen boyunca min konumu (yüz kaydıkça ters öteleme → panel mutlak konumda kalır). */
 export function vfRawMinAlong(vf: VirtualFace, axisLetter: string): number | null {
   if (!vf?.vertices || vf.vertices.length < 3) return null;
   const a = axisDirToVec(axisLetter);
@@ -250,19 +206,13 @@ export function vfRawMinAlong(vf: VirtualFace, axisLetter: string): number | nul
   return Number.isFinite(min) ? min : null;
 }
 
-// ── DÖNÜŞ AÇISI ÇÖZÜCÜLERİ ───────────────────────────────────────────────────
-
-/** Noktayı pivot etrafında eksen boyunca deg derece döndürür. */
 export function rotateAboutAxis(pt: THREE.Vector3, pivot: THREE.Vector3, axis: THREE.Vector3, deg: number): THREE.Vector3 {
   const q = new THREE.Quaternion().setFromAxisAngle(axis.clone().normalize(), (deg * Math.PI) / 180);
   return pt.clone().sub(pivot).applyQuaternion(q).add(pivot);
 }
 
-/**
- * ÇEMBER ∩ DÜZLEM: pivot etrafında dönen nişan noktası düzleme hangi açıda
- * değer? A cosθ + B sinθ = c'nin iki kökünden `prefer`e en yakını. Ulaşılamıyorsa
- * en yakın yaklaşma açısı (touched=false); nişan eksen üstündeyse null.
- */
+/** Pivot etrafında dönen nişan noktası düzleme hangi açıda değer: A cosθ + B sinθ = c'nin `prefer`e yakın kökü.
+ * Ulaşılamıyorsa en yakın yaklaşma açısı (touched=false); nişan eksen üstündeyse null. */
 export function angleToTouchPlane(
   pivot: THREE.Vector3, arm: THREE.Vector3, axis: THREE.Vector3,
   planeNormal: THREE.Vector3, planePoint: THREE.Vector3, prefer = 0
@@ -286,15 +236,12 @@ export function angleToTouchPlane(
   return { deg: roots.reduce((best, d) => (off(d) < off(best) ? d : best)), touched: true };
 }
 
-/** Radyan → (−180, 180] derece. */
 export function normDeg(rad: number): number {
   let d = (rad * 180) / Math.PI;
   while (d > 180) d -= 360;
   while (d <= -180) d += 360;
   return d;
 }
-
-// ── 3. MESH YÜZLERİ + EŞ-DÜZLEM GRUPLAR ──────────────────────────────────────
 
 export interface FaceData {
   faceIndex: number;
@@ -346,12 +293,8 @@ function calculateSurfaceType(face: FaceData, faces: FaceData[], adjacencyMap: M
   return 'curved';
 }
 
-/**
- * Köşe paylaşan üçgenlerin komşuluk haritası (paylaşım toleransı 0.001, `<`).
- * Uzamsal ızgara (hücre = tolerans, 27 komşu hücre) ile O(F) — eski ikili
- * O(F²) taramayla BİREBİR aynı sonuç; komşu kümeleri artan indeks sırasıyla
- * doldurulur (gruplama gezinme sırası değişmez).
- */
+/** Köşe paylaşan üçgen komşuluğu (tolerans 0.001, `<`). Uzamsal ızgarayla O(F); ikili O(F²) taramayla BİREBİR
+ * aynı sonuç, kümeler artan indeks sırasıyla dolar (gruplama gezinme sırası değişmez). */
 function buildAdjacencyMap(faces: FaceData[], tolerance = 0.001): Map<number, Set<number>> {
   const cellOf = (x: number) => Math.floor(x / tolerance);
   const grid = new Map<string, Array<{ fi: number; p: THREE.Vector3 }>>();
@@ -418,11 +361,7 @@ function groupCoplanarFaces(faces: FaceData[], thresholdAngleDegrees = 10): Copl
   return groups;
 }
 
-/**
- * Geometri başına ÖNBELLEKLİ yüz + düz grup çıkarımı. Anahtar: BufferGeometry
- * nesnesi + position tamponu (dizi kimliği + sürüm) — geometri yerinde değişirse
- * yeniden hesaplanır. DÖNEN DİZİLER PAYLAŞIMLIDIR: çağıran yerinde değiştirmemeli.
- */
+/** DÖNEN DİZİLER PAYLAŞIMLIDIR: çağıran yerinde değiştirmemeli. Önbellek anahtarı: position dizi kimliği + sürüm. */
 const _faceGroupCache = new WeakMap<THREE.BufferGeometry, { arr: unknown; ver: number; faces: FaceData[]; groups: CoplanarFaceGroup[] }>();
 export function getFacesAndGroups(geometry: THREE.BufferGeometry): { faces: FaceData[]; groups: CoplanarFaceGroup[] } {
   const pos = geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
@@ -437,17 +376,12 @@ export function getFacesAndGroups(geometry: THREE.BufferGeometry): { faces: Face
   return entry;
 }
 
-/** Mesh yüz indeksi → grup indeksi (yoksa -1). */
 export function groupIndexOfFace(groups: CoplanarFaceGroup[], faceIndex: number | undefined): number {
   if (faceIndex === undefined) return -1;
   return groups.findIndex(g => g.faceIndices.includes(faceIndex));
 }
 
-/**
- * Bir yüz grubunu hover/seçim için en uygun DÜZ (eksen hizalı) gruba eşler. Grup
- * zaten düzse ya da düz-olmayan ama coplanar (isCurved=false) ise olduğu gibi
- * döner; yalnız gerçekten eğri gruplar en yakın aynı-eksenli düz gruba çekilir.
- */
+/** Yalnız gerçekten eğri (isCurved) gruplar en yakın aynı-eksenli düz gruba çekilir; coplanar eğik gruplar olduğu gibi kalır. */
 export function snapToFlatGroup(gi: number, groups: CoplanarFaceGroup[]): number {
   if (gi < 0 || gi >= groups.length) return gi;
   const group = groups[gi];
@@ -465,7 +399,6 @@ export function snapToFlatGroup(gi: number, groups: CoplanarFaceGroup[]): number
   return bestIdx;
 }
 
-/** Yüz indeksi → düz gruba çekilmiş grup indeksi (tıklama/hover yolu). */
 export const flatGroupOfFace = (groups: CoplanarFaceGroup[], faceIndex: number | undefined) =>
   snapToFlatGroup(groupIndexOfFace(groups, faceIndex), groups);
 
@@ -502,8 +435,6 @@ export function createFaceHighlightGeometry(faces: FaceData[], faceIndices: numb
   geometry.computeVertexNormals();
   return geometry;
 }
-
-// ── YÜZ TANIMLAYICI (ölçek-bağımsız yüz kimliği) ─────────────────────────────
 
 function getAxisDirection(normal: THREE.Vector3): AxisDir | null {
   const tol = 0.95;
@@ -568,21 +499,11 @@ export function findFaceByDescriptor(descriptor: FaceDescriptor, faces: FaceData
   return bestMatch;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// ShapeService — GÖVDE KATISI (OCC) + VERTEX DÜZENLEME + PARAMETRE UYGULAMA.
-//  1. replicad/OCC: başlatma, kutu, boolean çıkarma, VF'den panel katısı, mesh dönüşümü.
-//  2. Vertex düzenleme: taban köşe listesi, hedef birleştirme, etkin gövde geometrisi.
-//  3. Gövde yeniden kurulumu: kutu + çıkarmalar + filletler (TEK yol: store,
-//     ParametersPanel ve katalog yükleme buradan geçer).
-//  4. applyShapeChanges: ParametersPanel'in "uygula" komutu; evaluateExpression.
-// (Eski ReplicadService + VertexEditorService + ShapeUpdaterService.)
-// ═══════════════════════════════════════════════════════════════════════════
+// Gövde katısı (OCC). rebuildBodySolid TEK yoldur: store, ParametersPanel ve katalog yükleme buradan geçer.
 
 declare global {
   interface Window { __ocInstance?: any; __ocInitPromise?: Promise<any> }
 }
-
-// ── 1. OCC / replicad ────────────────────────────────────────────────────────
 
 export const initReplicad = async () => {
   if (window.__ocInstance) return window.__ocInstance;
@@ -653,10 +574,8 @@ export const createPanelFromVirtualFace = async (
   const { draw, Plane } = await import('replicad');
   const n = new THREE.Vector3(...normal).normalize();
 
-  // up: normale EN DİK dünya ekseni (en küçük |bileşen|). Eski "dominant
-  // bileşen" seçimi 45° gibi iki bileşenin eşit olduğu normallerde dejenere
-  // cross üretip u/v tabanını bozuyordu (dönmüş panel kesimi -45° civarı hiç
-  // çalışmıyordu — kök buydu). En dik eksen her yönelimde sağlam taban verir.
+  // up: normale EN DİK dünya ekseni (en küçük |bileşen|). Baskın bileşen seçimi 45° gibi eşit bileşenli
+  // normallerde dejenere cross üretip u/v tabanını bozar.
   const anx = Math.abs(n.x), any_ = Math.abs(n.y), anz = Math.abs(n.z);
   const up = anx <= any_ && anx <= anz ? new THREE.Vector3(1, 0, 0) : any_ <= anx && any_ <= anz ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(0, 0, 1);
   const uAxis = new THREE.Vector3().crossVectors(n, up).normalize();
@@ -671,10 +590,8 @@ export const createPanelFromVirtualFace = async (
     return [d.dot(uAxis), d.dot(vAxis)];
   });
 
-  // Düzlem-içi büyütme: döndürülmüş panelde slab'ı kübü aşacak kadar genişletir;
-  // sonrasında parent-küp kesişimi paneli açıya göre tam duvara kadar kırpar.
-  // Köşeleri tek tek itmek çentikli/konkav VF'de çokgeni kendine katlar → yalnız
-  // SINIR DİKDÖRTGENİ büyütülür (her zaman konveks). Çentikler kesimle yeniden oluşur.
+  // Döndürülmüş panelde slab kübü aşacak kadar büyütülür, parent-küp kesişimi duvara kadar kırpar. Köşeleri tek
+  // tek itmek konkav VF'yi kendine katlar → yalnız SINIR DİKDÖRTGENİ büyütülür; çentikler kesimle yeniden oluşur.
   if (planeExpand > 0) {
     let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
     for (const [pu, pv] of projected) { minU = Math.min(minU, pu); maxU = Math.max(maxU, pu); minV = Math.min(minV, pv); maxV = Math.max(maxV, pv); }
@@ -682,11 +599,8 @@ export const createPanelFromVirtualFace = async (
     projected = [[minU, minV], [maxU, minV], [maxU, maxV], [minU, maxV]];
   }
 
-  // ÇİFT KÖŞE TEMİZLİĞİ: Sutherland-Hodgman kırpması eğik ayak izi kenarı yüz
-  // köşesinin tam üstünden geçince kesişim noktasını mevcut köşeyle BİREBİR
-  // AYNI üretir; draw().lineTo(aynı nokta) OCC'de numerik WASM exception
-  // ("Auto panel creation failed: 19365648") → panel hiç üretilmez. Ardışık
-  // çiftler (wrap-around dahil) ayıklanır; yalnız BİREBİR çift tetikler.
+  // Sutherland-Hodgman kırpması mevcut köşeyle BİREBİR aynı nokta üretebilir; draw().lineTo(aynı nokta) OCC'de
+  // WASM exception atar → panel üretilmez. Ardışık çiftler (wrap-around dahil) ayıklanır.
   const DUP_TOL = 1e-4;
   const cleaned: [number, number][] = [];
   for (const p of projected) {
@@ -721,8 +635,6 @@ export const createPanelFromVirtualFace = async (
   const plane = new Plane([center.x, center.y, center.z], [uAxis.x, uAxis.y, uAxis.z], [n.x, n.y, n.z]);
   return sketch.close().sketchOnPlane(plane).extrude(-panelThickness);
 };
-
-// ── 2. VERTEX DÜZENLEME ──────────────────────────────────────────────────────
 
 export interface VertexModification {
   vertexIndex: number;
@@ -774,11 +686,8 @@ export async function getReplicadVertices(replicadShape: any): Promise<THREE.Vec
   }
 }
 
-/**
- * VERTEX DÜZENLEME — TEK KAYNAK TABAN LİSTESİ. Editördeki noktalar, terminal
- * işleyicisi ve sahnedeki mesh AYNI listeyi kullanır: vertexIndex bu listenin
- * indeksidir. Öncelik: scaledBaseVertices → replicad köşeleri → kutu parametreleri.
- */
+/** TEK KAYNAK taban köşe listesi: editör, terminal ve mesh aynı listeyi kullanır (vertexIndex = bu listenin indeksi).
+ * Öncelik: scaledBaseVertices → replicad köşeleri → kutu parametreleri. */
 export async function resolveBaseVertices(shape: any): Promise<THREE.Vector3[]> {
   const p = shape?.parameters;
   if (!p) return [];
@@ -788,10 +697,7 @@ export async function resolveBaseVertices(shape: any): Promise<THREE.Vector3[]> 
   return [];
 }
 
-/**
- * Her köşenin NİHAİ konumu: taban köşeden başlanır, o köşeye ait her düzenleme
- * yalnız KENDİ ekseninde newPosition değerini yazar (aynı eksende sonraki kazanır).
- */
+/** Her düzenleme yalnız KENDİ ekseninde newPosition yazar (aynı eksende sonraki kazanır). */
 export function composeVertexTargets(base: THREE.Vector3[], mods: any[] | undefined): Map<number, THREE.Vector3> {
   const out = new Map<number, THREE.Vector3>();
   for (const mod of mods || []) {
@@ -805,12 +711,8 @@ export function composeVertexTargets(base: THREE.Vector3[], mods: any[] | undefi
   return out;
 }
 
-/**
- * VERTEX DÜZENLEMELERİNİ GEOMETRİYE UYGULA (koordinat eşlemeli, sırasız). Her
- * düzenleme kendi `originalPosition`'ını taşır; mesh'te o koordinattaki TÜM
- * kopyalar bulunur ve yalnız düzenlemenin EKSENİ hedef değere çekilir.
- * Düzenleme yoksa girdinin KENDİSİ döner (klon yok).
- */
+/** Koordinat eşlemeli: düzenlemenin originalPosition'ındaki TÜM mesh kopyaları yalnız düzenleme EKSENİNDE
+ * hedefe çekilir. Düzenleme yoksa girdinin KENDİSİ döner (klon yok). */
 function applyVertexModsToGeometry(base: THREE.BufferGeometry, mods: any[] | undefined): THREE.BufferGeometry {
   if (!base || !Array.isArray(mods) || mods.length === 0 || !base.getAttribute('position')) return base;
   const geom = base.clone();
@@ -840,18 +742,13 @@ function applyVertexModsToGeometry(base: THREE.BufferGeometry, mods: any[] | und
   return geom;
 }
 
-/** Düzenleme listesinin kimliği (önbellek anahtarı). */
 export function vertexModsKey(mods: any[] | undefined): string {
   if (!Array.isArray(mods) || mods.length === 0) return '';
   return JSON.stringify(mods.map(m => [m?.vertexIndex, m?.direction, m?.originalPosition, m?.newPosition]));
 }
 
-/**
- * ETKİN GÖVDE GEOMETRİSİ — vertex düzenlemeleri uygulanmış gövde. SÖZLEŞME:
- * store'daki `shape.geometry` her zaman TABAN'dır; düzenlemeler çizimde, yüz
- * yakalamada, VF yeniden hesabında ve motorun gövde kutusunda BU fonksiyonla
- * uygulanır. Düzenleme yoksa `shape.geometry`'nin kendisi döner.
- */
+/** SÖZLEŞME: store'daki `shape.geometry` hep TABAN'dır; vertex düzenlemeleri çizim, yüz yakalama, VF hesabı ve
+ * motorun gövde kutusunda BU fonksiyonla uygulanır. Düzenleme yoksa `shape.geometry`'nin kendisi döner. */
 const _effCache = new WeakMap<THREE.BufferGeometry, { key: string; geo: THREE.BufferGeometry }>();
 export function effectiveBodyGeometry(shape: any): THREE.BufferGeometry {
   const base: THREE.BufferGeometry | undefined = shape?.geometry;
@@ -865,9 +762,6 @@ export function effectiveBodyGeometry(shape: any): THREE.BufferGeometry {
   return geo;
 }
 
-// ── 3. GÖVDE YENİDEN KURULUMU: kutu + çıkarmalar + filletler ─────────────────
-
-/** Parametrik alanlarda ("W/2 + 10" gibi) kullanılan basit formül çözücü. */
 export function evaluateExpression(expression: string, context: Record<string, number>, fallback = 0): number {
   try {
     let expr = expression.trim();
@@ -918,7 +812,6 @@ export async function applyFillets(replicadShape: any, fillets: FilletInfo[], sh
   return currentShape;
 }
 
-/** Çıkarma kutusunun ölçüsü: sayısal parametre → geometri kutusu → geometrySize → 100. */
 function subtractionSize(sub: any): BoxSize {
   const num = (s: any) => { const v = parseFloat(s); return Number.isFinite(v) && v > 0 ? v : undefined; };
   const p = sub.parameters;
@@ -934,10 +827,7 @@ function subtractionSize(sub: any): BoxSize {
 
 export interface RebuiltBody { replicadShape: any; geometry: THREE.BufferGeometry; scaledBaseVertices: number[][]; fillets: FilletInfo[] }
 
-/**
- * Gövdeyi baştan kurar: parametre kutusu − çıkarmalar (+ filletler). Fillet
- * merkezleri yeni geometriye göre tazelenir (refreshFillets=false → olduğu gibi).
- */
+/** Kutu − çıkarmalar (+ filletler); fillet merkezleri yeni geometriye göre tazelenir (refreshFillets=false → olduğu gibi). */
 export async function rebuildBodySolid(
   body: { parameters?: any; fillets?: FilletInfo[] }, subtractions: Array<SubtractedGeometry | any | null> | undefined,
   size?: BoxSize, refreshFillets = true
@@ -957,8 +847,6 @@ export async function rebuildBodySolid(
   const verts = await getReplicadVertices(shape);
   return { replicadShape: shape, geometry: convertReplicadToThreeGeometry(shape), scaledBaseVertices: verts.map(v => [v.x, v.y, v.z]), fillets };
 }
-
-// ── 4. PARAMETRE UYGULAMA (ParametersPanel "Apply") ──────────────────────────
 
 type ExprResult = { expression: string; result: number };
 export interface ApplyShapeChangesParams {
@@ -996,7 +884,6 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
       newBaseVertices = dimensionsChanged ? curBase.map(v => v.clone().multiply(scale)) : curBase;
     } else if (selectedShape.type === 'box') newBaseVertices = getBoxVertices(width, height, depth);
 
-    // Düzenlemeler: formül yeni boyutla çözülür; her eksen kendi değerini yazar.
     const evalContext = { W: width, H: height, D: depth, ...customParameters.reduce((acc, p) => ({ ...acc, [p.name]: p.result }), {}) };
     const originOf = (mod: any): Vec3 => newBaseVertices[mod.vertexIndex] ? vec3(newBaseVertices[mod.vertexIndex]) : mod.originalPosition;
     const finalPos = new Map<number, Vec3>();

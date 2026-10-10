@@ -1,42 +1,20 @@
 import * as THREE from 'three';
 import { getFacePlaneAxes, getShapeMatrix, axisDirToVec, localBboxOf, isFlatNormal, panelThickness, type FaceData } from './Geometry';
 
-// ═══════════════════════════════════════════════════════════════════════════
-// FaceRegion — PANEL ATMA ZİNCİRİNİN SAF GEOMETRİ ÇEKİRDEĞİ.
-// Burada React/UI YOK, yalnız 2B poligon işlemleri, ayak izleri, yüz konturu
-// ve serbest bölge hesabı var. Hem YAKALAMA (tıklama önizlemesi) hem REGEN (VF
-// güncelleme) AYNI fonksiyonları kullanır — iki yol yapısal olarak ayrışamaz.
-//
-// Damıtılmış kurallar:
-//  • SALT-KESİT KENAR-TEMASI KAPISI (panelFootprintsInParentLocal): yüzü yalnız
-//    delen dönmüş kardeşin ince kesiti engel sayılmaz.
-//  • TAM SİLUET YALNIZ SENTETİK DAMGAYA AİTTİR: __isRotatedPanel yolu (tüm
-//    köşelerin konveks gövdesi) yalnız ops UYGULANACAK sentetik damga
-//    geometrileri içindir. Motorun yazdığı GERÇEK dönmüş geometri
-//    (__rotatedRealGeom) yakalamadaki gibi KESİT/YATIK-YÜZ yolundan geçer.
-//  • ÖNCELİK ZİNCİRİ (computeFreeRegionLocal): kayıtlı bağ-ilişkisi >
-//    örtüşme sürekliliği > seed. Taraf, sözleşmeyle deterministiktir.
-//  • UZAK-TEĞET KIRPMA: dönmüş kardeş şeridinde bölge şeridin içinden geçer;
-//    gerçek gönyeyi rebuild'deki boolean tanımlar.
-//  • Kesin-poligon + grid doğrulaması: köşegen kenarlar tırtıksız, sonuç
-//    kullanıcının gördüğü bölgeyle uyuşmak zorunda.
-//  • ÇOK PARÇALI AYAK İZİ: çentikli (C/L/U) kardeş bir yüze birden fazla AYRIK
-//    şeritle değer; her şerit ayrı engeldir.
-// ═══════════════════════════════════════════════════════════════════════════
+// FaceRegion — panel atma zincirinin saf geometri çekirdeği (UI yok). YAKALAMA ve REGEN aynı fonksiyonları
+// kullanır; iki yol yapısal olarak ayrışamaz.
+//  • Öncelik zinciri (computeFreeRegionLocal): kayıtlı bağ-ilişkisi > örtüşme sürekliliği > seed.
+//  • Tam siluet yalnız sentetik damgaya aittir; gerçek dönmüş geometri (__rotatedRealGeom) kesit yolundan geçer.
+//  • Çentikli (C/L/U) kardeş yüze birden fazla ayrık şeritle değebilir; her şerit ayrı engeldir.
 
 export type Point2D = { x: number; y: number };
 type BBox2 = { x0: number; x1: number; y0: number; y1: number };
 
-// ── 2B TEMEL YARDIMCILAR ─────────────────────────────────────────────────────
-
-/** Noktaların sınır kutusu. */
 function bbox2(pts: Point2D[]): BBox2 {
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
   for (const q of pts) { if (q.x < x0) x0 = q.x; if (q.x > x1) x1 = q.x; if (q.y < y0) y0 = q.y; if (q.y > y1) y1 = q.y; }
   return { x0, x1, y0, y1 };
 }
-const fmtBox2 = (b: BBox2) => `u=${b.x0.toFixed(0)}..${b.x1.toFixed(0)} v=${b.y0.toFixed(0)}..${b.y1.toFixed(0)}`;
-/** İşaretli çokgen alanı ×2 (ayakkabı bağı). */
 function signedArea2(pts: Point2D[]): number {
   let s = 0;
   for (let k = 0; k < pts.length; k++) { const a = pts[k], b = pts[(k + 1) % pts.length]; s += a.x * b.y - b.x * a.y; }
@@ -72,7 +50,6 @@ function isPointInsidePolygon(p: Point2D, poly: Point2D[]): boolean {
   return inside;
 }
 
-/** Nokta-çokgen testi, sınır kutusu ön elemeli (isPointInsidePolygon ile birebir). */
 function makePip(poly: Point2D[]): (x: number, y: number) => boolean {
   const b = bbox2(poly);
   const EPS = 1e-6;
@@ -83,7 +60,6 @@ function makePip(poly: Point2D[]): (x: number, y: number) => boolean {
   };
 }
 
-/** Tüm çaprazlar aynı işaretliyse konveks. */
 function isConvexPolygon2D(poly: Point2D[]): boolean {
   if (poly.length < 3) return false;
   let sign = 0;
@@ -150,17 +126,10 @@ export function pointInTriangle3D(p: THREE.Vector3, a: THREE.Vector3, b: THREE.V
   return u >= -0.01 && v >= -0.01 && (u + v) <= 1.02;
 }
 
-// ── MESH SINIR HALKALARI ─────────────────────────────────────────────────────
-
 type Edge2 = { a: Point2D; b: Point2D };
 
-/**
- * Kenar-halkası grafiğinden halkaları yürür. `all=false`: yalnız İLK kenardan
- * başlayan tek halka (dejenere olsa bile o kenar seçilir; <3 köşe → boş).
- * `all=true`: TÜM bağlantısız halkalar — çentikli (C/L/U) bir yan panel arka
- * yüze İKİ AYRI şeritle değer; tek halka yalnız ilk şeridi buluyordu ve
- * görünmeyen şerit panelin kardeşin içine girmesine yol açıyordu.
- */
+/** Kenar-halkası grafiğinden halkaları yürür. all=false: yalnız ilk kenardan başlayan halka; all=true: tüm
+ *  bağlantısız halkalar (çentikli kardeş yüze ayrı şeritlerle değer; tek halka görünmeyen şeridi kaçırır). */
 function walkBoundaryLoops(edges2: Edge2[], all: boolean): Point2D[][] {
   if (edges2.length < 3) return [];
   const keyOf = (p: Point2D) => `${p.x.toFixed(2)},${p.y.toFixed(2)}`;
@@ -200,7 +169,6 @@ function walkBoundaryLoops(edges2: Edge2[], all: boolean): Point2D[][] {
   return loops;
 }
 
-/** Üçgen mesh'te, düzlem-üstü (onPlane) üçgenlerin tek kullanımlı (sınır) kenarları. */
 function onPlaneBoundaryEdges(geometry: THREE.BufferGeometry, onPlane: boolean[], pt2: (i: number) => Point2D): Edge2[] {
   const idx = geometry.getIndex();
   const cnt = idx ? idx.count : (geometry.getAttribute('position') as THREE.BufferAttribute).count;
@@ -221,10 +189,7 @@ function onPlaneBoundaryEdges(geometry: THREE.BufferGeometry, onPlane: boolean[]
   return out;
 }
 
-/**
- * Mesh geometrisinin düzlem-üstü üçgenlerinden gerçek sınır çokgenini çıkarır.
- * İçbükey (U) şekiller korunur. Zincir başarısız olursa convexHull'a düşer.
- */
+/** Düzlem-üstü üçgenlerden gerçek (içbükey korunur) sınır çokgeni; zincir başarısızsa convexHull. */
 function meshOnPlaneBoundary2D(
   geometry: THREE.BufferGeometry, panelMatrix: THREE.Matrix4,
   facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, u: THREE.Vector3, v: THREE.Vector3, planeTolerance: number
@@ -244,10 +209,7 @@ function meshOnPlaneBoundary2D(
   return flat.length >= 3 ? convexHull2D(flat) : null;
 }
 
-// ── PANEL AYAK İZLERİ ────────────────────────────────────────────────────────
-
-/** Panelin, verilen yüz DÜZLEMİNE değen 2D ayak izi (u/v hull). Panel düzleme
- *  değmiyorsa (on-plane köşe < 3) null döner — o yüzeyde engel değildir. */
+/** Panelin yüz düzlemine değen 2B ayak izi; değmiyorsa null (o yüzeyde engel değil). */
 function panelFootprintOnPlane(panel: any, facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, u: THREE.Vector3, v: THREE.Vector3, planeTolerance = 5.0): Point2D[] | null {
   if (!panel.geometry) return null;
   const panelMatrix = getShapeMatrix(panel);
@@ -275,9 +237,6 @@ function panelFootprintOnPlane(panel: any, facePlaneNormal: THREE.Vector3, faceP
   return hull.length >= 3 ? hull : null;
 }
 
-/** Tıklanan düzlem noktası, bu yüzeye değen HERHANGİ bir panelin ayak izi
- *  içinde mi? İçindeyse o paneli döndürür (taşınmış paneller dahil — panelin
- *  GÜNCEL geometrisiyle test edilir). */
 export function findPanelCoveringPoint(worldPt: THREE.Vector3, childPanels: any[], facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3): any | null {
   const { u, v } = getFacePlaneAxes(facePlaneNormal);
   const p2 = uv(new THREE.Vector3().subVectors(worldPt, facePlaneOrigin), u, v);
@@ -288,13 +247,8 @@ export function findPanelCoveringPoint(worldPt: THREE.Vector3, childPanels: any[
   return null;
 }
 
-/**
- * Bir yüz grubundan, seed noktasına en yakın/onu içeren üçgenin kenar-köşe
- * paylaşan BAĞLANTILI BİLEŞENİNİ toplar; bileşenin sınır konturunu (sıralı
- * köşeler), sınır kenarlarını, üçgen indekslerini ve alan-ağırlıklı merkezini
- * döndürür. Hem yakalama önizlemesi hem resize regen'i aynı mantığı kullanır —
- * VF her zaman tıklanan bileşenin GERÇEK konturudur; ayrık eş-düzlem parçalar asla birleşmez.
- */
+/** Seed'i içeren/ona en yakın üçgenin bağlantılı bileşeninin konturu, sınır kenarları ve alan-ağırlıklı merkezi.
+ *  VF her zaman tıklanan bileşenin GERÇEK konturudur; ayrık eş-düzlem parçalar asla birleşmez. */
 export function computeFaceComponentContour(
   faces: FaceData[], faceIndices: number[], seedLocal: THREE.Vector3, groupNormal: THREE.Vector3
 ): { comp: number[]; seedFi: number; corners: THREE.Vector3[]; center: THREE.Vector3; boundary: Array<{ a: THREE.Vector3; b: THREE.Vector3 }> } | null {
@@ -378,11 +332,7 @@ export function computeFaceComponentContour(
 
 interface RotOp { kind?: 'rotate' | 'translate'; pivot?: THREE.Vector3; axis?: THREE.Vector3; angleRad?: number; d?: THREE.Vector3 }
 
-/**
- * Panel parametrelerinden dönüş işlemlerini çıkarır. composeSteps ile önceden
- * çözülmüş (doğru pivot + zincirlenmiş eksen) ops varsa onu kullanır — gerçek
- * panel dönüşüyle bire bir eşleşir. Pivot ve axis DÜNYA koordinatlarında.
- */
+/** Dönüş ops'u; varsa composeSteps'in çözdüğü __composedOps (gerçek dönüşle birebir). Pivot/axis DÜNYA koordinatında. */
 function buildRotationOpsFromPanel(panel: any): RotOp[] {
   if (Array.isArray(panel?.__composedOps)) return panel.__composedOps;
   const steps: any[] = Array.isArray(panel?.parameters?.transformSteps) ? panel.parameters.transformSteps.filter((s: any) => s?.type === 'rotate') : [];
@@ -399,10 +349,7 @@ function buildRotationOpsFromPanel(panel: any): RotOp[] {
   return ops;
 }
 
-/**
- * Bir kardeş panelin bu yüz düzlemindeki ayak izi — TÜM BAĞLANTISIZ PARÇALAR
- * (çentikli kardeş yüze birden fazla ayrık şeritle değebilir). Yüze hiç değmiyorsa null.
- */
+/** Kardeş panelin bu yüz düzlemindeki ayak izi — tüm bağlantısız parçalar; yüze değmiyorsa null. */
 function panelFootprintsInParentLocal(
   panel: any, parentWorldToLocal: THREE.Matrix4, nrm: THREE.Vector3, planeN: number, u: THREE.Vector3, v: THREE.Vector3, tol = 3.0
 ): Point2D[][] | null {
@@ -410,12 +357,8 @@ function panelFootprintsInParentLocal(
   const pos = panel.geometry.getAttribute('position');
   if (!pos) return null;
   const M = new THREE.Matrix4().multiplyMatrices(parentWorldToLocal, getShapeMatrix(panel));
-  // TAM SİLUET vs GERÇEK KESİT: __isRotatedPanel yolu tüm köşelerin konveks
-  // gövdesini alır (sentetik damga için doğru). Motorun yazdığı GERÇEK dönmüş
-  // geometride (__rotatedRealGeom) siluet, yüze yalnız KENARIYLA değen panelde
-  // yüzün yarısını "dolu" gösteriyordu (yakalama 600x21 şerit, regen 600x411
-  // siluet → bölge öbür tarafa savruldu). Bölge hesabında engel, panelin yüze
-  // DEĞEN alanıdır, gölgesi değil.
+  // Konveks gövde (tam siluet) yalnız sentetik damga içindir; GERÇEK dönmüş geometride siluet, yüze kenarıyla
+  // değen panelde yüzün yarısını dolu gösterir. Engel, panelin yüze DEĞEN alanıdır, gölgesi değil.
   const isRotated = panel.__isRotatedPanel === true && panel.__rotatedRealGeom !== true;
   const pts: THREE.Vector3[] = []; const d: number[] = [];
   let dMin = Infinity, dMax = -Infinity;
@@ -426,21 +369,18 @@ function panelFootprintsInParentLocal(
     if (dd < dMin) dMin = dd; if (dd > dMax) dMax = dd;
   }
   if (pts.length < 3) return null;
-  // DÜZLEME-DEĞME KONTROLÜ: tüm köşeler düzlemin AYNI tarafında ve tolerans
-  // dışındaysa ayak izi YOK (paralel/uzak kardeş; extrude'lu üst panel kendine
-  // paralel alt panelin yüzünü siluetiyle kaplamasın).
+  // Tüm köşeler düzlemin aynı tarafında ve tolerans dışındaysa iz yok (paralel/uzak kardeş).
   if (dMin > tol || dMax < -tol) return null;
   const out: Point2D[] = [];
   let flatVertCount = 0;
   for (let i = 0; i < pts.length; i++) if (Math.abs(d[i]) < tol) { out.push(uv(pts[i], u, v)); flatVertCount++; }
-  // DÖNMÜŞ (sentetik) DAMGA: composeSteps'ten çözülmüş ops köşelere uygulanır, tüm köşeler izdüşürülür (tam siluet).
   if (isRotated) {
     const localOps = buildRotationOpsFromPanel(panel).map(op => ({
       kind: op.kind || 'rotate',
       pivot: op.pivot ? op.pivot.clone().applyMatrix4(parentWorldToLocal) : undefined,
       axis: op.axis ? op.axis.clone().transformDirection(parentWorldToLocal).normalize() : undefined,
       angleRad: op.angleRad || 0,
-      // ÖTELEME VEKTÖRÜ NORMALİZE EDİLMEZ (transformDirection birim döndürür → −122mm taşıma 1mm'ye iniyordu).
+      // Öteleme normalize EDİLMEZ (transformDirection birim vektör döndürür).
       d: op.d ? op.d.clone().applyMatrix3(new THREE.Matrix3().setFromMatrix4(parentWorldToLocal)) : undefined,
     }));
     const moved = pts.map(p => {
@@ -451,7 +391,7 @@ function panelFootprintsInParentLocal(
       }
       return v3;
     });
-    // TAŞINMIŞ DAMGA DÜZLEME DEĞMİYORSA İZ YOK: değme kapısı adımlar SONRASI yeniden sınanır (hayalet iz olmasın).
+    // Taşınmış damga: değme kapısı adımlardan SONRA yeniden sınanır (hayalet iz olmasın).
     if (localOps.some(op => op.kind === 'translate' && op.d && op.d.lengthSq() > 1e-6)) {
       let mn = Infinity, mx = -Infinity;
       for (const q of moved) { const dd = q.dot(nrm) - planeN; if (dd < mn) mn = dd; if (dd > mx) mx = dd; }
@@ -461,7 +401,6 @@ function panelFootprintsInParentLocal(
     const hull = convexHull2D(moved.map(v3 => uv(v3, u, v)));
     return hull.length >= 3 ? [hull] : null;
   }
-  // EĞİK PANEL: düzlemi kesiyorsa gerçek KESİT (siluet değil)
   const pierces = dMin < -tol && dMax > tol;
   if (pierces) {
     const idx = panel.geometry.getIndex();
@@ -481,30 +420,23 @@ function panelFootprintsInParentLocal(
     }
   }
   if (out.length < 3) return null;
-  // İçbükey sınır çıkarımı: düzlem-üstü üçgenlerin kenar-halkası — ÇOK PARÇALI
-  // TEMAS: çentikli kardeş ayrık şeritlerle değiyorsa hepsi döner; dejenere halkalar elenir.
+  // İçbükey sınır: düzlem-üstü üçgenlerin kenar halkaları (çok parçalı temasta hepsi; dejenere halkalar elenir).
   const bEdges = onPlaneBoundaryEdges(panel.geometry, d.map(dd => Math.abs(dd) < tol), i => uv(pts[i], u, v));
   if (bEdges.length >= 3) {
     const good = walkBoundaryLoops(bEdges, true).filter(l => l.length >= 3 && Math.abs(signedArea2(l)) / 2 > 1.0);
-    // YÖN NORMALİZASYONU: halka yönü mesh sarımından gelir (OCC mesh'i ile sentetik
-    // damga prizması ters sarılabilir). Kırpma (clipByFootprint: cross2<0 = çapa dışarıda,
-    // basma-düzlemi kenar seçimi) SAAT YÖNÜNÜN TERSİNİ (pozitif alan, convexHull2D ile
-    // aynı) varsayar; ters halkada "dış" kenar şeridin UZAK uzun kenarı seçiliyor ve
-    // bölge dikmenin içinden geçiyordu (u 291..600 yerine 309..600).
+    // Halka yönü mesh sarımından gelir (OCC ve sentetik prizma ters sarılabilir); kırpma (clipByFootprint) CCW
+    // (pozitif alan) varsayar — ters halkada şeridin UZAK kenarı seçilir ve bölge dikmenin içinden geçer.
     for (const l of good) if (signedArea2(l) < 0) l.reverse();
     if (good.length > 0) return good;
   }
   const hull = convexHull2D(out);
   if (hull.length < 3) return null;
-  // SALT-KESİT KENAR-TEMASI KAPISI: dönmüş panel bu yüzü SADECE deliyorsa (yatık
-  // yüzü yok: flatVertCount==0) ve kesit İNCE bir şeritse, bu engel değil
-  // KENAR-TEMASIdır — yüzü ortadan bölen "duvar" gibi davranıp bölgenin yarısını
-  // silmez; rebuild'de yarım-uzay/gövde kesimiyle doğru biçilir. Düz komşu 18mm
-  // kenarıyla ama YATIK yüzeyle yaslanır (flatVertCount>0) → gerçek engel.
+  // SALT-KESİT KENAR-TEMASI: yüzü yalnız delen (yatık yüzü yok) ince kesit engel değildir — yüzü bölüp bölgenin
+  // yarısını silmesin; rebuild'de boolean ile biçilir. Yatık yüzle yaslanan (flatVertCount>0) gerçek engeldir.
   if (pierces && flatVertCount === 0 && !isRotated) {
     const hb = bbox2(hull);
     const minSpan = Math.min(hb.x1 - hb.x0, hb.y1 - hb.y0);
-    // İnce eşiği: panel geometrisinin en ince ekseni (kalınlık) + pay; bulunamazsa 40mm.
+    // İnce eşiği: geometrinin en ince ekseni (kalınlık, en az 18) + 12 mm pay.
     const sz = localBboxOf(panel.geometry)!.getSize(new THREE.Vector3());
     const thinThreshold = Math.max(Math.min(sz.x, sz.y, sz.z), 18) + 12;
     if (minSpan <= thinThreshold) return null;
@@ -512,9 +444,6 @@ function panelFootprintsInParentLocal(
   return [hull];
 }
 
-// ── IZGARA YARDIMCILARI ──────────────────────────────────────────────────────
-
-/** 4-komşuluk taşkın dolumu: `free` içinde start'tan erişilen hücreler; label verilirse bileşen etiketi yazar. */
 function flood4(free: Uint8Array, nx: number, ny: number, start: number, mark: Uint8Array | Int32Array, value = 1): void {
   const stack = [start];
   mark[start] = value;
@@ -529,7 +458,6 @@ function flood4(free: Uint8Array, nx: number, ny: number, start: number, mark: U
   }
 }
 
-/** reach hücrelerinin sınırını sıralı 2B halkaya çevirir (kenar bazlı yürüyüş; en uzun halka). */
 function traceReachBoundary(reach: Uint8Array, nx: number, ny: number, uMin: number, vMin: number, cw: number, ch: number): Point2D[] {
   const segs: Array<[Point2D, Point2D]> = [];
   for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
@@ -541,8 +469,7 @@ function traceReachBoundary(reach: Uint8Array, nx: number, ny: number, uMin: num
     if (j === ny - 1 || !reach[(j + 1) * nx + i]) segs.push([{ x: x0, y: y1 }, { x: x1, y: y1 }]);
   }
   if (segs.length < 3) return [];
-  // KENAR bazlı yürüyüş: dört hücrenin çapraz birleştiği köşeden halka İKİ kez geçer;
-  // köşeyi "ziyaret edildi" saymak zinciri erken kesip ince şerit üretiyordu.
+  // KENAR bazlı yürüyüş: çapraz birleşen köşeden halka iki kez geçer; köşe-ziyaret işareti zinciri erken keserdi.
   const K = (p: Point2D) => `${Math.round(p.x * 100)},${Math.round(p.y * 100)}`;
   const adj = new Map<string, Array<{ to: Point2D; si: number }>>();
   segs.forEach(([a, b], si) => {
@@ -574,12 +501,8 @@ function traceReachBoundary(reach: Uint8Array, nx: number, ny: number, uMin: num
   return out.length >= 3 ? out : bestRing;
 }
 
-/**
- * Grid'den izlenen halkayı KAYNAK KENARLARA (yüz konturu + ayak izleri) KÖŞE
- * bazlı oturtur: her köşe toleranstaki en yakın kaynak doğrusuna izdüşürülür;
- * iki farklı yönlü doğru varsa kesişimlerine taşınır. Yinelenen/eşdoğrusal
- * köşeler atılınca merdiven basamakları tek düz köşegene çöker.
- */
+/** Grid halkasını kaynak kenarlara (yüz konturu + ayak izleri) oturtur: köşe en yakın doğruya / iki doğrunun
+ *  kesişimine taşınır; eşdoğrusal köşeler atılınca merdiven basamakları tek köşegene çöker. */
 function fitTracedPolygonToSources(poly: Point2D[], sources: Point2D[][], tolDist: number): Point2D[] {
   if (poly.length < 3) return poly;
   type Seg = { a: Point2D; d: Point2D; len: number };
@@ -590,7 +513,6 @@ function fitTracedPolygonToSources(poly: Point2D[], sources: Point2D[][], tolDis
     if (L > 1e-6) segs.push({ a, d: { x: dx / L, y: dy / L }, len: L });
   }
   const segT = (q: Point2D, s: Seg) => (q.x - s.a.x) * s.d.x + (q.y - s.a.y) * s.d.y;
-  // Uçları tol kadar uzatılmış segmente uzaklık; aralık dışı → Infinity.
   const segDist = (q: Point2D, s: Seg): number => {
     const t = segT(q, s);
     if (t < -tolDist || t > s.len + tolDist) return Infinity;
@@ -616,7 +538,6 @@ function fitTracedPolygonToSources(poly: Point2D[], sources: Point2D[][], tolDis
     if (!prev || Math.hypot(p.x - prev.x, p.y - prev.y) > 0.5) dedup.push(p);
   }
   while (dedup.length > 1 && Math.hypot(dedup[0].x - dedup[dedup.length - 1].x, dedup[0].y - dedup[dedup.length - 1].y) <= 0.5) dedup.pop();
-  // Eşdoğrusal köşeleri at (yineleyerek — basamak zinciri tek kenara çöker)
   let out = dedup;
   for (let pass = 0; pass < 4 && out.length > 3; pass++) {
     const next: Point2D[] = [];
@@ -634,10 +555,7 @@ function fitTracedPolygonToSources(poly: Point2D[], sources: Point2D[][], tolDis
   return out.length >= 3 ? out : poly;
 }
 
-// KANONİK ŞERİT ÇERÇEVESİ: ayak izi hull'unun merkezi + uzun kenarına dik,
-// işareti kanonikleştirilmiş birim eksen. Taraf işareti = sign(dot(P-c, p̂));
-// kanonikleştirme sayesinde şerit hafif eğilse de işaret regen'ler arası karşılaştırılabilir.
-/** Düz levhanın etkin kalınlığı: parametre ile geometri kutusunun en ince ekseninin büyüğü (extrude'la kalınlaşmış panel). */
+/** Etkin levha kalınlığı: parametre ile geometrinin en ince ekseninin büyüğü (extrude'la kalınlaşmış panel). */
 function effectiveSlabThickness(panel: any): number {
   const base = panelThickness(panel);
   const box = panel?.geometry ? localBboxOf(panel.geometry) : null;
@@ -647,6 +565,8 @@ function effectiveSlabThickness(panel: any): number {
   return Number.isFinite(mn) && mn > 0.5 ? Math.max(base, mn) : base;
 }
 
+/** Kanonik şerit çerçevesi: hull merkezi + uzun kenara dik, işareti kanonik birim eksen — taraf işareti
+ *  (sign(dot(P−c, p̂))) şerit hafif eğilse de regen'ler arası karşılaştırılabilir. */
 function canonicalStripFrame(fp: Point2D[]): { c: Point2D; p: Point2D } {
   let cx = 0, cy = 0;
   for (const q of fp) { cx += q.x; cy += q.y; }
@@ -665,20 +585,14 @@ function canonicalStripFrame(fp: Point2D[]): { c: Point2D; p: Point2D } {
 }
 const stripSide = (pt: Point2D, fr: { c: Point2D; p: Point2D }) => (pt.x - fr.c.x) * fr.p.x + (pt.y - fr.c.y) * fr.p.y;
 
-/**
- * DİKDÖRTGENSEL (RECTILINEAR) KESİN SERBEST BÖLGE: yarım-düzlem kırpması her
- * ayak izi için TEK sonsuz doğruyla keser ve İÇBÜKEY (L/U) bölgenin bir kolunu
- * siler. Yüz halkası ve engeller eksen-hizalıysa bölge koordinat-sıkıştırılmış
- * ızgarada KESİN çözülür (çapadan taşkın dolum → köşe cebi budama → tek dış
- * halka). Uygun değilse (eğik kenar, delik, çoklu halka) null.
- * `nib` = köşe cebi budama eşiği (mm); 0 → hiçbir cep budanmaz (yüzeyin şeklini al).
- */
+/** Dikdörtgensel KESİN serbest bölge: yarım-düzlem kırpması içbükey (L/U) bölgenin bir kolunu siler; eksen-hizalı
+ *  geometride koordinat-sıkıştırılmış ızgarada çözülür, uygun değilse null. `nib` = köşe cebi budama eşiği (0 → yok). */
 function rectilinearFreeRegion(ring2D: Point2D[], blockers: Point2D[][], anchorPt: Point2D, nib = 25): Point2D[] | null {
   const AX = 0.05;
   if (ring2D.length < 4) return null;
   for (let k = 0; k < ring2D.length; k++) {
     const a = ring2D[k], b = ring2D[(k + 1) % ring2D.length];
-    if (Math.abs(a.x - b.x) > AX && Math.abs(a.y - b.y) > AX) return null;   // halka kenarları eksen-hizalı olmalı
+    if (Math.abs(a.x - b.x) > AX && Math.abs(a.y - b.y) > AX) return null;
   }
   const rects: BBox2[] = [];
   for (const fp of blockers) {
@@ -713,8 +627,7 @@ function rectilinearFreeRegion(ring2D: Point2D[], blockers: Point2D[][], anchorP
   if (ai < 0 || aj < 0 || !free[aj * NX + ai]) return null;
   const reached = new Uint8Array(NX * NY);
   flood4(free, NX, NY, aj * NX + ai, reached);
-  // KÖŞE CEBİ BUDAMA: ≤NIB×≤NIB boşluk hücreleri her iki eksende de yalnız TEK
-  // taraftan komşuluysa bölgeye katılmaz (18x18 tırnak/çentik olmasın); iç hücreler asla budanmaz.
+  // KÖŞE CEBİ BUDAMA: ≤nib×≤nib hücre iki eksende de tek taraftan komşuluysa atılır (tırnak/çentik olmasın).
   const R = (i: number, j: number) => i >= 0 && j >= 0 && i < NX && j < NY && reached[j * NX + i] === 1;
   for (let changed = nib > 0; changed;) {
     changed = false;
@@ -725,7 +638,7 @@ function rectilinearFreeRegion(ring2D: Point2D[], blockers: Point2D[][], anchorP
       reached[j * NX + i] = 0; changed = true;
     }
   }
-  // Sınır kenarları (içerisi solda, CCW) — ızgara indeksleriyle; sıkışma köşesi / delik → vazgeç
+  // Sınır kenarları (CCW); sıkışma köşesi / delik → vazgeç
   const edges = new Map<string, Array<[number, number]>>();
   let edgeCount = 0;
   const addE = (x0: number, y0: number, x1: number, y1: number) => {
@@ -759,18 +672,10 @@ function rectilinearFreeRegion(ring2D: Point2D[], blockers: Point2D[][], anchorP
   });
   if (simp.length < 4) return null;
   const poly: Point2D[] = simp.map(([i, j]) => ({ x: xs[i], y: ys[j] }));
-  if (Math.sign(signedArea2(poly)) !== Math.sign(signedArea2(ring2D))) poly.reverse(); // halkayla aynı dönüş yönü
+  if (Math.sign(signedArea2(poly)) !== Math.sign(signedArea2(ring2D))) poly.reverse();
   return poly;
 }
 
-// ── DÖNMÜŞ / EĞİK PANEL TESPİTİ ──────────────────────────────────────────────
-
-/**
- * VF-EĞİMLİ LEVHA: vertex düzenlemesiyle eğilmiş gövde yüzüne yerleşen panel.
- * Dönüş adımı yoktur ama levhası eksen-hizalı değildir; bölge hesabında ve
- * dönüş-kesiminde DÖNMÜŞ kardeş gibi ele alınır. Tespit geometriden: en büyük
- * yüz alanlı normal hiçbir dünya eksenine paralel değilse levha eğiktir.
- */
 const _tiltCache = new WeakMap<object, boolean>();
 /** En büyük toplam alanlı yüz normali (işaret: ilk sıfırdan farklı bileşen pozitif); geometri yoksa null. */
 export function largestFaceNormal(geo: any): THREE.Vector3 | null {
@@ -797,6 +702,7 @@ export function largestFaceNormal(geo: any): THREE.Vector3 | null {
   bins.forEach(e => { if (!best || e.a > best.a) best = e; });
   return best ? (best as { n: THREE.Vector3; a: number }).n.clone() : null;
 }
+/** VF-eğimli levha (eğilmiş gövde yüzünde): dönüş adımı yok ama DÖNMÜŞ kardeş gibi ele alınır. */
 export function panelIsTiltedSlab(panel: any): boolean {
   const geo = panel?.geometry;
   if (!geo || typeof geo.getAttribute !== 'function') return false;
@@ -811,8 +717,7 @@ export function panelIsTiltedSlab(panel: any): boolean {
   return tilted;
 }
 
-/** Panelin açısı sıfır olmayan bir DÖNÜŞ adımı var mı? VF-eğimli levhalar da dönmüş sayılır.
- *  REF DÖNÜŞ: gerçek açı resolvedValue'dadır (value donmuş yedek). */
+/** Sıfır olmayan dönüş adımı var mı (VF-eğimli levha da sayılır)? Ref dönüşte gerçek açı resolvedValue'dadır. */
 export function panelHasRotation(panel: any): boolean {
   if (panelIsTiltedSlab(panel)) return true;
   const ops = panel?.__composedOps;
@@ -822,38 +727,24 @@ export function panelHasRotation(panel: any): boolean {
   return Array.isArray(ts) && ts.some((st: any) => st?.type === 'rotate' && (Math.abs(degOf(st)) > 1e-6 || Math.abs(st?.value || 0) > 1e-6));
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// SERBEST BÖLGE — TEK KAYNAK, TEK UZAY, DOĞRULAMALI
-//  1) Ayak izi TEK açık zincirle: panel yerel → dünya → PARENT YEREL.
-//  2) Bölge, kullanıcının GÖRDÜĞÜ reach grid'inden türetilir.
-//  3) Geometri tam çokgen farkından gelir (köşegen kenar tırtıksız); grid yalnız
-//     KARAR verir (hangi ayak izi engelliyor, sonuç görülenle uyuşuyor mu).
-//  4) Hem yakalama hem regen bu fonksiyonu çağırır → ayrışmaları imkânsız.
-// ═══════════════════════════════════════════════════════════════════════════
+// SERBEST BÖLGE: ayak izleri tek zincirle parent-yerel uzaya taşınır; geometri tam çokgen farkından gelir
+// (köşegen tırtıksız), grid yalnız KARAR verir (hangi iz engelliyor, sonuç görülen reach ile uyuşuyor mu).
 
 export interface FreeRegionResult {
   u: THREE.Vector3; v: THREE.Vector3; planeN: number;
   ring2D: Point2D[]; footprints: Point2D[][]; touchingSiblingIds: string[];
   uMin: number; vMin: number; cw: number; ch: number; nx: number; ny: number;
   reach: Uint8Array; anchor: Point2D;
-  /** Serbest bölgenin kaynak kenarlara oturtulmuş konturu (yerel u/v). */
   polygon: Point2D[];
   /** Her ayak izinin sahibi: panel id (ilk parça) ya da `${id}#k` (ek parçalar). */
   footprintIds: (string | null)[];
-  /** KALICI BAĞ İLİŞKİSİ: seçilen bölgenin her kardeş ayak izinin kanonik dik
-   *  eksenine göre tarafı (kardeşPanelId → ±1). VF'de saklanır, regen'e geri geçer. */
+  /** Kardeş ayak izine göre taraf (id → ±1); VF'de saklanır, regen'e geri geçer. */
   sideRelations: Record<string, number>;
 }
 
-/**
- * @param prevRegionCorners BÖLGE SÜREKLİLİĞİ (yalnız regen): önceki VF çokgeni —
- *   dönmüş kardeş şeridi sabit seed'in üstünden süpürülünce bölge taraf değiştirmesin;
- *   önceki bölgeyle EN ÇOK örtüşen bileşen seçilir.
- * @param storedSideRelations KALICI BAĞ İLİŞKİSİ (öncelik: ilişki > süreklilik > seed):
- *   panel hep ilk temas ettiği tarafa bağlı kalır; o taraf yok olursa yeniden çözülür.
- * @param fitFaceShape YÜZEYİN ŞEKLİNİ AL: sonuç, çapadan taşkın dolan serbest bölgenin
- *   TAM şekli; false = mevcut davranış birebir (yakalama yolu bunları geçmez).
- */
+/** @param prevRegionCorners (regen) önceki VF çokgeni: dönmüş şerit seed üstünden süpürülünce bölge taraf değiştirmesin.
+ *  @param storedSideRelations panel ilk temas ettiği tarafa bağlı kalır (öncelik: ilişki > süreklilik > seed).
+ *  @param fitFaceShape true → çapadan dolan serbest bölgenin TAM şekli. */
 export function computeFreeRegionLocal(
   contourCorners: THREE.Vector3[], normalLocal: THREE.Vector3, seedLocal: THREE.Vector3,
   siblingPanels: any[], parentWorldToLocal: THREE.Matrix4, parentShapeId?: string,
@@ -868,30 +759,23 @@ export function computeFreeRegionLocal(
   const footprints: Point2D[][] = [];
   const fpRotated: boolean[] = [];
   const fpIds: (string | null)[] = [];
-  // KALINLIK ŞERİDİ: bu yüzü DİK kesen düz kardeşin ayak izi (kısa kenar ≈ kalınlık).
-  // Basan panelin "basma düzlemi" şeridin UZUN kenarıdır; kısa kenar panelin UCUDUR.
+  // Kalınlık şeridi: yüzü dik kesen düz kardeşin izi; basma düzlemi şeridin UZUN kenarıdır, kısa kenar panelin ucu.
   const fpStrip: boolean[] = [];
   const touchingSiblingIds: string[] = [];
   for (const panel of siblingPanels) {
     if (parentShapeId && panel?.parameters?.parentShapeId && panel.parameters.parentShapeId !== parentShapeId) continue;
-    // ÇOK PARÇALI AYAK İZİ: her parça ayrı engel; tek parçalı kardeşte liste tek elemanlı.
     const pieces = panelFootprintsInParentLocal(panel, parentWorldToLocal, nrm, planeN, u, v);
     if (!pieces || pieces.length === 0) continue;
     const rotated = panelHasRotation(panel);
-    // GERÇEK KALINLIK: kalınlığı extrude ile değişmiş panelde (18→100) parametre değil, geometrinin
-    // (damga prizması / motor mesh'i) en ince ekseni — yoksa 100 mm'lik raf izi "şerit" sayılmaz,
-    // basma-düzlemi kesimi düşer ve basılan panelin bölgesi rafın içinden geçerdi.
+    // Geometrinin en ince ekseni: yoksa extrude'la kalınlaşmış rafın izi şerit sayılmaz, basma-düzlemi kesimi düşer.
     const th = effectiveSlabThickness(panel);
-    if (pieces.length > 1) console.log('[YAGO][AYAKİZİ][ÇOK-PARÇA]', panel?.id, 'parçaN=', pieces.length, pieces.map(pc => fmtBox2(bbox2(pc))).join(' | '));
     pieces.forEach((fp, k) => {
       footprints.push(fp);
       const b = bbox2(fp);
       const mn = Math.min(b.x1 - b.x0, b.y1 - b.y0), mx = Math.max(b.x1 - b.x0, b.y1 - b.y0);
       fpStrip.push(mn <= th * 1.5 + 0.5 && mx >= 2 * mn);
-      // GERÇEKTEN DÖNMÜŞ kardeş: uzak-teğet kırpması AÇIK — bölge şeridin içinden geçer,
-      // PanelEngine'deki DÖNÜŞ-KESİMİ kalınlık kenarını gerçek eğik düzleme biçer.
+      // Dönmüş kardeş: uzak-teğet kırpması; gerçek eğik kesimi PanelEngine'deki dönüş-kesimi yapar.
       fpRotated.push(rotated);
-      // BAĞ-İLİŞKİSİ ANAHTARI: ilk parça eski anahtarı (panel id) korur; ek parçalar `${id}#k`.
       const pid = panel?.id ?? null;
       fpIds.push(pid ? (k === 0 ? pid : `${pid}#${k}`) : null);
     });
@@ -913,8 +797,7 @@ interface FreeRegionInput {
   storedSideRelations?: Record<string, number>; fitFaceShape: boolean;
 }
 
-// SERBEST BÖLGE ÇÖZÜM ÖNBELLEĞİ: çözüm girdilerin SAF fonksiyonudur; rebuild her
-// panelden sonra tüm VF'leri yeniden hesapladığından aynı girdi defalarca çözülüyordu.
+// Çözüm girdilerin saf fonksiyonudur; rebuild her panelden sonra tüm VF'leri yeniden hesapladığı için önbelleklenir.
 const _regionMemo = new Map<string, FreeRegionResult>();
 const REGION_MEMO_MAX = 400;
 function regionKey(q: FreeRegionInput): string {
@@ -939,12 +822,8 @@ function solveFreeRegionMemo(q: FreeRegionInput): FreeRegionResult {
     sideRelations: { ...r.sideRelations }, reach: r.reach.slice(), anchor: { ...r.anchor }, ring2D: [...r.ring2D] };
 }
 
-/**
- * UZAK-TEĞET KIRPMA ÇİZGİSİ: (a→b) kenarını, çapadan uzağa bakan normal boyunca
- * hull'un en uzak noktasına kadar öteler — 1mm İÇİ (eskiden +0.5mm dışına
- * kırpılıyordu ve dönüş-kesimi dışarıda kalan şeridi temizlemediğinden eğime
- * paralel kıymık kalıyordu). Bölge şeridin İÇİNDE biter; alt yüzey kesimi temizler.
- */
+/** UZAK-TEĞET KIRPMA: kenar, çapadan uzağa hull'un en uzak noktasının 1mm İÇİNE ötelenir — bölge şeridin içinde
+ *  biter, dönüş-kesimi temizler (dışarıda kırpılırsa eğime paralel kıymık kalır). */
 function farTangentEdge(fp: Point2D[], a: Point2D, b: Point2D, anchorPt: Point2D): [Point2D, Point2D] {
   const dx = b.x - a.x, dy = b.y - a.y;
   const len = Math.hypot(dx, dy) || 1e-9;
@@ -970,7 +849,6 @@ function solveFreeRegion(q: FreeRegionInput): FreeRegionResult {
   const cellOf = (x: number, y: number): [number, number] => [
     Math.max(0, Math.min(nx - 1, Math.floor((x - uMin) / cw))), Math.max(0, Math.min(ny - 1, Math.floor((y - vMin) / ch)))];
 
-  // Hücre merkezleri + yüz-içi maskesi bir kez hesaplanır (tüm geçişler paylaşır).
   const PX = new Float64Array(nx), PY = new Float64Array(ny);
   for (let i = 0; i < nx; i++) PX[i] = uMin + (i + 0.5) * cw;
   for (let j = 0; j < ny; j++) PY[j] = vMin + (j + 0.5) * ch;
@@ -978,7 +856,6 @@ function solveFreeRegion(q: FreeRegionInput): FreeRegionResult {
   const inRing = new Uint8Array(nx * ny);
   for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) if (pipRing(PX[i], PY[j])) inRing[j * nx + i] = 1;
   const fpPips = footprints.map(makePip);
-  /** Yüz içi ve verilen engellerin hiçbirine girmeyen hücreler. */
   const freeMask = (pips: Array<(x: number, y: number) => boolean>) => {
     const m = new Uint8Array(nx * ny);
     for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
@@ -987,7 +864,6 @@ function solveFreeRegion(q: FreeRegionInput): FreeRegionResult {
     return m;
   };
   const free = freeMask(fpPips);
-  /** pred'i sağlayan serbest hücreler içinde (ti,tj)'ye en yakını; yoksa [-1,-1]. */
   const nearestFree = (ti: number, tj: number, pred?: (i: number, j: number) => boolean): [number, number, number] => {
     let bd = Infinity, bi = -1, bj = -1, count = 0;
     for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
@@ -1005,10 +881,8 @@ function solveFreeRegion(q: FreeRegionInput): FreeRegionResult {
   let continuityConnected = false; // tek-bileşenli süreklilik (doğrulama gevşetilir)
   let relationChosen = false;      // kayıtlı bağ ilişkisi uygulandı (doğrulama gevşetilir)
 
-  // ── ÖNCELİK 1: YARI-DÜZLEM KISITLARI ──────────────────────────────────────
-  // Kayıtlı taraf işaretleri varsa onlar, YOKSA seed konumundan türetilen taraf
-  // işaretleri kullanılır: engel regen'ler arası ne kadar sıçrarsa sıçrasın panel
-  // hep kısıt tarafında kalır. Kısıt kümesi boşsa sezgisel katmanlara düşülür.
+  // ÖNCELİK 1 — yarı-düzlem kısıtları: kayıtlı taraf işaretleri, yoksa seed'den türetilen; engel regen'ler arası
+  // sıçrasa da panel kısıt tarafında kalır. Kısıt yoksa sonraki katmanlara düşülür.
   {
     const seedPt = cellPt(ci, cj);
     const constraints: Array<{ fr: { c: Point2D; p: Point2D }; sign: number }> = [];
@@ -1026,30 +900,22 @@ function solveFreeRegion(q: FreeRegionInput): FreeRegionResult {
       const satisfies = (i: number, j: number) => { const pt = cellPt(i, j); return constraints.every(k => stripSide(pt, k.fr) * k.sign >= 0); };
       const [bi, bj] = nearestFree(ci, cj, satisfies);
       if (bi >= 0) {
-        if (bi !== ci || bj !== cj) {
-          console.log('[YAGO][BÖLGE] bağ-ilişkisi: çapa kayıtlı tarafa zorlandı. kısıtN=', constraints.length,
-            'kayıtlıTaraf=', constraints.map(k => k.sign).join(','), 'çapa(', bi, ',', bj, ') seed(', ci, ',', cj, ')');
-        }
         ci = bi; cj = bj;
         relationChosen = true;
       } else {
-        // Kayıtlı tarafta seed'e yakın serbest hücre yok; taraf sözleşmesi MUTLAKTIR:
-        // kayıtlı tarafı sağlayan serbest hücrelerin merkezine en yakın hücreye gidilir.
+        // Taraf sözleşmesi MUTLAK: kısıtı sağlayan serbest hücrelerin merkezine en yakın hücreye gidilir.
         let sumI = 0, sumJ = 0, cnt = 0;
         for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) if (free[j * nx + i] && satisfies(i, j)) { sumI += i; sumJ += j; cnt++; }
-        const [fbi, fbj, fbCount] = cnt > 0 ? nearestFree(sumI / cnt, sumJ / cnt, satisfies) : [-1, -1, 0];
+        const [fbi, fbj] = cnt > 0 ? nearestFree(sumI / cnt, sumJ / cnt, satisfies) : [-1, -1, 0];
         if (fbi >= 0) {
-          console.log('[YAGO][BÖLGE] bağ-ilişkisi: seed kayıtlı tarafta değil ama sözleşme korunuyor → kayıtlı taraf merkezine gidildi. serbestN=', fbCount);
           ci = fbi; cj = fbj;
           relationChosen = true;
-        } else {
-          console.log('[YAGO][BÖLGE] bağ-ilişkisi: kayıtlı taraf TAMAMEN doldu (yüz yok oldu) → yeniden çözülüyor. kısıtN=', constraints.length);
         }
       }
     }
   }
 
-  // ── ÖNCELİK 2: BÖLGE SÜREKLİLİĞİ (önceki VF ile örtüşme) ──────────────────
+  // ÖNCELİK 2 — bölge sürekliliği (önceki VF ile en çok örtüşen bileşen).
   if (!relationChosen && q.prev2D) {
     const prev2D: Point2D[] = q.prev2D;
     const label = new Int32Array(nx * ny).fill(-1);
@@ -1072,19 +938,14 @@ function solveFreeRegion(q: FreeRegionInput): FreeRegionResult {
       if (bl >= 0 && bestCell[bl] >= 0) {
         ci = bestCell[bl] % nx; cj = (bestCell[bl] / nx) | 0;
         continuityChosen = true;
-        const [si, sj] = cellOf(cu, cv);
-        if (label[sj * nx + si] !== bl) console.log('[YAGO][BÖLGE] süreklilik: seed karşı bileşende kaldı, önceki bölgeyle örtüşen bileşen seçildi. örtüşme=', bo);
       }
     } else if (nComp === 1 && footprints.length > 0) {
-      // TEK BAĞLANTILI SÜREKLİLİK: şerit yüz kenarına ulaşmayıp boşluk bıraktığında
-      // bölge tek bileşen kalır; kırpma tarafını ÇAPA belirler → çapa ÖNCEKİ
-      // BÖLGENİN AĞIRLIK MERKEZİNE en yakın serbest hücreye taşınır.
+      // Tek bileşen (şerit kenara ulaşmıyor): kırpma tarafını çapa belirler → çapa önceki bölgenin merkezine taşınır.
       let pcx = 0, pcy = 0;
       for (const p of prev2D) { pcx += p.x; pcy += p.y; }
       const [pi, pj] = cellOf(pcx / prev2D.length, pcy / prev2D.length);
       const [bi, bj] = nearestFree(pi, pj, (i, j) => isPointInsidePolygon(cellPt(i, j), prev2D));
       if (bi >= 0) {
-        if (bi !== ci || bj !== cj) console.log('[YAGO][BÖLGE] süreklilik(bağlantılı): çapa önceki bölge merkezine taşındı.');
         ci = bi; cj = bj;
         continuityChosen = true;
         continuityConnected = true;
@@ -1098,15 +959,8 @@ function solveFreeRegion(q: FreeRegionInput): FreeRegionResult {
   const reach = new Uint8Array(nx * ny);
   if (free[cj * nx + ci]) flood4(free, nx, ny, cj * nx + ci, reach);
 
-  // ── GEOMETRİ: TAM ÇOKGEN FARKI (grid DEĞİL) ──────────────────────────────
-  // Grid yalnız KARAR verir: (a) hangi ayak izi engelliyor, (b) sonuç görülenle uyuşuyor mu.
-  // ENGEL = çapanın ERİŞTİĞİ bölgeye (reach) BİTİŞİK ayak izi. Yüzün başka yerindeki
-  // bir iz (ör. dikmenin ÖBÜR tarafındaki raf) engel değildir: yarım-düzlem kırpımı
-  // sonsuz olduğu için o rafın çizgisi bu bölmeye taşınıyor, sol gövde paneli sağ
-  // raf varmış gibi kısa çıkıyordu (Goker: "dikmenin sol tarafında raf olmamasına
-  // rağmen o body panel de raf varmış gibi kısa çıktı"). Bitişiklik: reach 1 hücre
-  // genişletilir (8-komşuluk); izin içindeki hücreler serbest olmadığından reach'e
-  // girmez, sınır hücreleri genişletmeyle yakalanır.
+  // ENGEL = yalnız çapanın eriştiği bölgeye (reach, 1 hücre genişletilmiş) BİTİŞİK iz; yarım-düzlem kırpması sonsuz
+  // olduğundan uzak bir iz (dikmenin öbür tarafındaki raf) bu bölmeyi de keserdi.
   const nearReach = new Uint8Array(nx * ny);
   for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
     if (!reach[j * nx + i]) continue;
@@ -1129,16 +983,13 @@ function solveFreeRegion(q: FreeRegionInput): FreeRegionResult {
     if (blocks) { blocking.push(footprints[f]); blockingRotated.push(fpRotated[f]); blockingStrip.push(fpStrip[f]); }
     else if (onFace) farIds.push(fpIds[f] || `#${f}`);
   }
-  if (farIds.length) console.log('[YAGO][BÖLGE] bölgeye bitişik olmayan izler engel sayılmadı (başka bölme):', farIds.join(', '));
 
   const anchorPt = cellPt(ci, cj);
-  // Dönmüş engel şeridi içindeki hücreler (taşma sayılmaz) — bir kez.
   const rotPips = blocking.map((fp, f) => (blockingRotated[f] ? makePip(fp) : null)).filter(Boolean) as Array<(x: number, y: number) => boolean>;
   const inRot = new Uint8Array(nx * ny);
   if (rotPips.length) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
     for (const pip of rotPips) if (pip(PX[i], PY[j])) { inRot[j * nx + i] = 1; break; }
   }
-  // Aday çokgenin reach ızgarasına göre sayımı (keep/bad).
   const gridCount = (poly: Point2D[]) => {
     const pip = makePip(poly);
     let total = 0, inside = 0, stray = 0;
@@ -1162,7 +1013,6 @@ function solveFreeRegion(q: FreeRegionInput): FreeRegionResult {
       let a = fp[k], b = fp[(k + 1) % fp.length];
       if (cross2(a, b, anchorPt) >= -1e-9) continue;          // çapa bu kenara göre dışarıda değil
       if (allowEdge && !allowEdge(k)) continue;
-      // DÖNMÜŞ KARDEŞ: kırpma çizgisi şeridin UZAK teğetine ötelenir (bölge şeridin içinden geçer).
       if (rotated) [a, b] = farTangentEdge(fp, a, b, anchorPt);
       const cand = clipByHalfPlane(poly, a, b);
       const sc = scoreOf(cand);
@@ -1171,11 +1021,8 @@ function solveFreeRegion(q: FreeRegionInput): FreeRegionResult {
     return best && best.length >= 3 ? best : null;
   };
 
-  // ── BASMA DÜZLEMİ TERCİHİ (mod-kapalı sözleşmesi) ─────────────────────────
-  // KURAL: basan panel, basılanı BÜYÜK YÜZÜNÜN düzlemiyle (şeridin uzun kenarı)
-  // keser — ucuyla değil (kısaltılmış+taşınmış üst panelin yan yüzdeki 100×18
-  // şeridi "en çok alan koruyan" uç kenarla kesilince yan panel üstün ÜSTÜNDEN de
-  // devam ediyordu — o davranış yalnız "yüzeyin şeklini al" AÇIKKEN istenir).
+  // BASMA DÜZLEMİ: basan panel basılanı büyük yüzünün düzlemiyle (şeridin uzun kenarı) keser, ucuyla değil;
+  // uç kenarla kesim (basanın üstünden devam) yalnız "yüzeyin şeklini al" açıkken istenir.
   let pressedCutApplied = false;
   let exact: Point2D[] = ring2D;
   for (let f = 0; f < blocking.length; f++) {
@@ -1197,19 +1044,14 @@ function solveFreeRegion(q: FreeRegionInput): FreeRegionResult {
       exact = best;
       if (pressEdges) {
         pressedCutApplied = true;
-        console.log('[YAGO][BÖLGE][BASMA-DÜZLEMİ]', 'şerit ayak izi uzun kenarıyla (büyük yüz düzlemi) kesildi; uç kenarı yok sayıldı. köşeN=', exact.length);
       }
     }
   }
 
-  // ── DOĞRULAMA: sonuç, kullanıcının GÖRDÜĞÜ reach hücreleriyle uyuşmalı ──
   let polygon = ring2D;
-  // İÇBÜKEY BÖLGE KURTARMA: yarım-düzlem sonucu reach'in belirgin kısmını kaybettiyse
-  // (L/U: bir kol silindi) ve geometri eksen-hizalıysa KESİN dikdörtgensel bölge denenir.
-  // BASMA DÜZLEMİ + DİKDÖRTGEN YÜZ: kurtarma bilerek atlanır (basanın altındaki hücreler
-  // bilerek kaybedilmiştir; kurtarma paneli basanın etrafına sardırırdı).
+  // İçbükey kurtarma: yarım-düzlem sonucu reach'in belirgin kısmını kaybettiyse (L/U kolu) kesin dikdörtgensel bölge.
+  // Basma düzlemi + konveks yüzde atlanır: basanın altı bilerek kaybedilmiştir, kurtarma paneli onun etrafına sarar.
   const skipConcaveRecovery = pressedCutApplied && isConvexPolygon2D(ring2D);
-  if (skipConcaveRecovery) console.log('[YAGO][BÖLGE] içbükey kurtarma atlandı: basma düzlemi kesimi + dikdörtgen yüz (mod kapalı)');
   if (exact.length >= 3 && blocking.length > 0 && !blockingRotated.some(Boolean) && !skipConcaveRecovery) {
     const hp = scorePoly(exact);
     if (hp.cover < 0.95) {
@@ -1217,8 +1059,6 @@ function solveFreeRegion(q: FreeRegionInput): FreeRegionResult {
       if (rl) {
         const rs = scorePoly(rl);
         const accepted = rs.cover >= 0.9 && rs.leak <= 0.1 && rs.cover > hp.cover;
-        console.log('[YAGO][BÖLGE] içbükey bölge: yarım-düzlem kapsama=', hp.cover.toFixed(2), '→ dikdörtgensel köşeN=', rl.length,
-          'kapsama=', rs.cover.toFixed(2), 'taşma=', rs.leak.toFixed(2), accepted ? 'KABUL' : 'RED');
         if (accepted) exact = rl;
       }
     }
@@ -1228,24 +1068,21 @@ function solveFreeRegion(q: FreeRegionInput): FreeRegionResult {
     let total = 0;
     for (let k = 0; k < nx * ny; k++) if (reach[k]) total++;
     const { cover, leak } = scorePoly(exact);
-    // Tek-bileşenli süreklilikte reach HER İKİ tarafı da kapsar; basma düzlemi kesimi de
-    // reach'in bir kısmını BİLEREK bırakır → kapsama eşiği gevşetilir, taşma sınırı kalır.
+    // Tek-bileşen süreklilik / ilişki / basma kesimi reach'in bir kısmını bilerek bırakır → kapsama eşiği gevşer.
     const coverMin = (continuityConnected || relationChosen || pressedCutApplied) ? 0.25 : 0.9;
     if (total > 0 && cover >= coverMin && leak <= 0.1) polygon = exact;
     else {
-      // GÜVENLİ YEDEK: tam kontur DEĞİL (kardeş izlerini yok sayıp panelin yan panellerin
-      // içine girmesini garanti ediyordu); çapayı içeren, engelleyen ayak izlerine hiç
-      // girmeyen eksen-hizalı en geniş dikdörtgen.
+      // GÜVENLİ YEDEK (tam kontur yan panellerin içine girer): çapayı içeren, engellere girmeyen en geniş dikdörtgen.
       let rx0 = rb.x0, rx1 = rb.x1, ry0 = rb.y0, ry1 = rb.y1;
       const EPS = 1e-6;
       for (let f = 0; f < blocking.length; f++) {
         if (blockingRotated[f]) continue;            // dönmüş şerit: açılı, dikdörtgen kırpmaya uygun değil
         const fb = bbox2(blocking[f]);
-        if (anchorPt.y > fb.y0 - EPS && anchorPt.y < fb.y1 + EPS) {       // çapanın SATIRINI kesiyor
+        if (anchorPt.y > fb.y0 - EPS && anchorPt.y < fb.y1 + EPS) {
           if (fb.x1 <= anchorPt.x + EPS && fb.x1 > rx0) rx0 = fb.x1;
           if (fb.x0 >= anchorPt.x - EPS && fb.x0 < rx1) rx1 = fb.x0;
         }
-        if (anchorPt.x > fb.x0 - EPS && anchorPt.x < fb.x1 + EPS) {       // çapanın SÜTUNUNU kesiyor
+        if (anchorPt.x > fb.x0 - EPS && anchorPt.x < fb.x1 + EPS) {
           if (fb.y1 <= anchorPt.y + EPS && fb.y1 > ry0) ry0 = fb.y1;
           if (fb.y0 >= anchorPt.y - EPS && fb.y0 < ry1) ry1 = fb.y0;
         }
@@ -1253,8 +1090,7 @@ function solveFreeRegion(q: FreeRegionInput): FreeRegionResult {
       if (rx1 - rx0 > 0.5 && ry1 - ry0 > 0.5) {
         const rect: Point2D[] = [{ x: rx0, y: ry0 }, { x: rx1, y: ry0 }, { x: rx1, y: ry1 }, { x: rx0, y: ry1 }];
         const rs = scorePoly(rect);
-        // ADAY SEÇİMİ: taşmayan adaylar arasında kapsaması en yüksek olan; kırpılmış
-        // poligon taşmıyorsa dar dikdörtgen tercih edilmez (alakasız paneller kısalmasın).
+        // Taşmayan kırpılmış poligon, kapsaması düşük değilse dar dikdörtgene tercih edilir (alakasız paneller kısalmasın).
         const exactSafe = leak <= 0.1 && exact.length >= 3;
         if (exactSafe && (!(rs.leak <= 0.1) || cover >= rs.cover)) {
           polygon = exact;
@@ -1270,38 +1106,30 @@ function solveFreeRegion(q: FreeRegionInput): FreeRegionResult {
     }
   }
 
-  // ── YÜZEYİN ŞEKLİNİ AL (fitFaceShape) ────────────────────────────────────
-  // Mod AÇIKKEN panel, çapadan taşarak dolan serbest bölgenin TAMAMINI alır (L/U/
-  // çentikli şekli izler, kısa kardeşin etrafını sarar). Düz engeller: eksen-hizalıysa
-  // KESİN çözüm (cep budama KAPALI), değilse grid taşkın dolumu izlenip kaynak
-  // kenarlara oturtulur. Dönmüş engeller: uzak-teğet sözleşmesi aynen. Sonuç reach
-  // ile doğrulanır; geçmezse mod-kapalı sonuç kalır.
+  // YÜZEYİN ŞEKLİNİ AL: çapadan dolan serbest bölgenin tamamı. Düz engeller eksen-hizalıysa kesin çözüm (cep budama
+  // kapalı), değilse grid izlenip kaynak kenarlara oturtulur; dönmüşlerde uzak-teğet aynen. Doğrulanmazsa mod-kapalı sonuç kalır.
   if (fitFaceShape) {
     const straight: Point2D[][] = [], rotatedFps: Point2D[][] = [];
     for (let f = 0; f < blocking.length; f++) (blockingRotated[f] ? rotatedFps : straight).push(blocking[f]);
     let shapePoly: Point2D[] | null = straight.length === 0 ? ring2D.map(p => ({ ...p })) : rectilinearFreeRegion(ring2D, straight, anchorPt, 0);
-    let shapeSrc = straight.length === 0 ? 'tam-kontur' : 'dikdörtgensel-kesin';
     if (!shapePoly) {
-      // GENEL YOL: eğik yüz konturu / eksen-hizasız düz engel. Dönmüş şeritler engel SAYILMAZ.
+      // Genel yol (eğik kontur / eksen-hizasız engel); dönmüş şeritler burada engel sayılmaz.
       const free2 = freeMask(straight.map(makePip));
       const reach2 = new Uint8Array(nx * ny);
       if (free2[cj * nx + ci]) flood4(free2, nx, ny, cj * nx + ci, reach2);
       const traced = traceReachBoundary(reach2, nx, ny, uMin, vMin, cw, ch);
-      if (traced.length >= 3) { shapePoly = fitTracedPolygonToSources(traced, [ring2D, ...straight], Math.max(cw, ch) * 1.6); shapeSrc = 'grid-izleme'; }
+      if (traced.length >= 3) { shapePoly = fitTracedPolygonToSources(traced, [ring2D, ...straight], Math.max(cw, ch) * 1.6); }
     }
     if (shapePoly && shapePoly.length >= 3) {
       for (const fp of rotatedFps) { const best = clipByFootprint(shapePoly, fp, true); if (best) shapePoly = best; }
       const ss = scorePoly(shapePoly);
       const okShape = ss.leak <= 0.1 && ss.cover >= 0.9;
-      console.log('[YAGO][BÖLGE][YÜZ-ŞEKLİ]', okShape ? 'KABUL' : 'RED', 'kaynak=', shapeSrc, 'köşeN=', shapePoly.length,
-        'düzEngelN=', straight.length, 'dönmüşEngelN=', rotatedFps.length, 'kapsama=', ss.cover.toFixed(2), 'taşma=', ss.leak.toFixed(2), okShape ? '' : '→ mod-kapalı sonuç korundu');
       if (okShape) polygon = shapePoly;
     } else {
       console.warn('[YAGO][BÖLGE][YÜZ-ŞEKLİ] şekil poligonu üretilemedi → mod-kapalı sonuç korundu');
     }
   }
 
-  // KALICI BAĞ İLİŞKİSİ ÇIKIŞI: nihai çapanın her kardeş ayak izine göre taraf işareti.
   const finalAnchor = cellPt(ci, cj);
   const sideRelations: Record<string, number> = {};
   for (let f = 0; f < footprints.length; f++) {

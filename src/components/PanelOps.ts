@@ -2,32 +2,17 @@ import * as THREE from 'three';
 import { type RefFacePick, type Shape, requestRebuild, shapeById, useAppStore, vfOfPanel } from '../store';
 import {
   type AxisDir, type AxisLetter, type CoplanarFaceGroup, type FaceData, type Vec3, angleToTouchPlane, axisDirToVec, axisIndexOf, axisLetterVec,
-  convertReplicadToThreeGeometry, dominantAxisLabel, fmtVec, fracInBox, genId, getFacesAndGroups, getShapeMatrix, initReplicad, isFlatNormal,
+  convertReplicadToThreeGeometry, dominantAxisLabel, fracInBox, genId, getFacesAndGroups, getShapeMatrix, initReplicad, isFlatNormal,
   localBboxOf, mapAxisToVfLocal, snapToFlatGroup, vfFracOfPoint, vfRawMinAlong, worldBboxOf,
 } from './Geometry';
 import { pointInTriangle3D } from './FaceRegion';
 
-// ═══════════════════════════════════════════════════════════════════════════
-// PanelOps — PANEL İŞLEM ADIMLARI (taşı / döndür / yüz extrude) + REFERANS YÜZ SEÇİMİ.
-// (Eski PanelSteps + FaceExtrudeService + FaceRefPick tek dosyada.)
-//
-// SÖZLEŞME
-//  • Tek gerçek kaynak: panel.parameters.transformSteps (sıralı move|rotate) ve
-//    panel.parameters.extrudeSteps. Geometriyi motor (PanelEngine) her rebuild'de
-//    sıfırdan üretir; burada yalnız adım yazılır + rebuild tetiklenir.
-//  • Adımlar birbirini dinler: dönüşten SONRAKİ taşıma dönmüş eksende ilerler.
-//  • Eksen PANEL-YEREL: kullanıcının dünya ekseni panelin VF tabanındaki en
-//    yakın eksene eşlenir → dönüş her yüzde "yerinde eğer".
-//  • Pivot/nişan çıpaları VF'ye ORANSAL (pivotVfFrac, refArmVfFrac); mutlak pivot yedektir.
-//  • REF bağları parametriktir: hedef nokta/yüz her rebuild'de GÜNCEL
-//    geometriden yeniden çözülür (value yalnız çözüm başarısızsa yedek).
-//  • Extrude: fixed → hedef ölçü (value − mevcut açıklık); dyn → işaretli delta;
-//    ref → yüzü referans panelin seçilen DÜZLEMİNE taşıyan işaretli mesafe.
-// ═══════════════════════════════════════════════════════════════════════════
+// Panel işlem adımları (taşı / döndür / yüz extrude) + referans yüz seçimi.
+// Tek gerçek kaynak: parameters.transformSteps (sıralı move|rotate) + extrudeSteps; geometriyi PanelEngine
+// her rebuild'de sıfırdan üretir — burada yalnız adım yazılır + rebuild tetiklenir. Eksen PANEL-YEREL (VF tabanı),
+// pivot/nişan VF'ye ORANSAL; REF bağları her rebuild'de GÜNCEL geometriden çözülür (value yalnız yedek).
 
 type UpdateShape = (id: string, updates: Partial<Shape>) => void;
-
-// ── ADIM TİPLERİ ─────────────────────────────────────────────────────────────
 
 export interface MoveTransformStep {
   id: string;
@@ -38,9 +23,7 @@ export interface MoveTransformStep {
   /** DYN taşımada oluşturma anındaki VF açıklığı → değer açıklık oranıyla ölçeklenir. */
   anchor?: { faceSpanAlongAxis: number; [k: string]: unknown };
   isFixed?: boolean;
-  /** FIXED: oluşturma anında VF ham yüzünün eksen boyunca min konumu (mutlak konum çıpası). */
   fixedRef?: number;
-  // REF TAŞIMA: kaynak/hedef köşe, ait oldukları şeklin DÜNYA kutusunda oransal.
   refTargetPanelId?: string;
   refSourceFrac?: Vec3;
   refTargetFrac?: Vec3;
@@ -52,14 +35,12 @@ export interface RotateTransformStep {
   id: string;
   type: 'rotate';
   axis: AxisLetter;
-  /** Panel-yerel eksen (VF tabanına eşlenmiş). */
   axisVec?: Vec3;
   /** Derece. REF adımında yalnız yedek; gerçek açı resolvedValue. */
   value: number;
   pivot: Vec3;
   pivotVfFrac?: Vec3;
   timestamp: number;
-  // REF DÖNÜŞ: nişan noktası (VF'ye oransal) referans YÜZE değene / oturana kadar döner.
   refTargetPanelId?: string;
   refTargetFaceGroupIndex?: number;
   refTargetFaceNormal?: Vec3;
@@ -79,9 +60,7 @@ export interface ExtrudeStep {
   value: number;
   isFixed: boolean;
   timestamp: number;
-  /** Tıklanan yüzde yerel nokta — doğru replicad yüzünü tekil seçer. */
   samplePoint?: Vec3;
-  /** Ref modu: referans panel + yüz grubu + dünya normali/noktası. */
   refShapeId?: string;
   refFaceGroupIndex?: number;
   refNormalWorld?: Vec3;
@@ -89,16 +68,12 @@ export interface ExtrudeStep {
   /** Yalnız rebuild anında (kalıcı değil): referansın çözülen düzlemi. */
   refPlaneCenterLocal?: Vec3;
   refPlaneNormalLocal?: Vec3;
-  /** Ref adımının son rebuild'de çözülen işaretli miktarı (UI gösterimi). */
   resolvedValue?: number;
 }
-
-// ── ORTAK ────────────────────────────────────────────────────────────────────
 
 /** Panelin güncel store kopyası (komut, bayat prop yerine bunu kullanır). */
 const freshShape = (panel: Shape): Shape => shapeById(panel.id) || panel;
 
-/** Parametre yamasını yazar ve panelin parent'ını (işlem gören panel bilgisiyle) yeniden üretir. */
 async function commitAndRebuild(panel: Shape, patch: Record<string, unknown>, updateShape: UpdateShape): Promise<boolean> {
   updateShape(panel.id, { parameters: { ...panel.parameters, ...patch } } as any);
   const parentId = (panel.parameters as any)?.parentShapeId as string | undefined;
@@ -106,7 +81,6 @@ async function commitAndRebuild(panel: Shape, patch: Record<string, unknown>, up
   return true;
 }
 
-/** Birleşik dönüşüm adımı listesi (zaman damgası sıralı). */
 export function getUnifiedSteps(panel: Shape): TransformStep[] {
   const t: TransformStep[] = Array.isArray(panel.parameters?.transformSteps) ? [...panel.parameters.transformSteps] : [];
   return t.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
@@ -115,7 +89,6 @@ export function getUnifiedSteps(panel: Shape): TransformStep[] {
 const commitSteps = (panel: Shape, steps: TransformStep[], updateShape: UpdateShape) =>
   commitAndRebuild(panel, { transformSteps: steps }, updateShape);
 
-/** Panelin referans bağları: kimleri datum/ref alıyor (extrude + taşıma + dönüş). */
 export function stepRefTargets(panel: any): { extrude: Set<string>; move: Set<string>; rotate: Set<string> } {
   const extrude = new Set<string>(), move = new Set<string>(), rotate = new Set<string>();
   const p = panel?.parameters;
@@ -128,10 +101,7 @@ export function stepRefTargets(panel: any): { extrude: Set<string>; move: Set<st
   return { extrude, move, rotate };
 }
 
-/**
- * Adımları position/rotation üzerine sırayla uygular (gizmo/ok gösterimi).
- * Motorla AYNI kural: move o anki dönüş çerçevesinin ekseninde ilerler.
- */
+// Motorla AYNI kural: move o anki dönüş çerçevesinin ekseninde ilerler.
 export function applyTransformSteps(basePosition: Vec3, baseRotation: Vec3, steps: TransformStep[]): { position: Vec3; rotation: Vec3 } {
   let pos = new THREE.Vector3(...basePosition);
   const quat = new THREE.Quaternion().setFromEuler(new THREE.Euler(...baseRotation, 'XYZ'));
@@ -153,13 +123,10 @@ export function applyTransformSteps(basePosition: Vec3, baseRotation: Vec3, step
   return { position: [pos.x, pos.y, pos.z], rotation: [e.x, e.y, e.z] };
 }
 
-// ── TAŞIMA ───────────────────────────────────────────────────────────────────
-
 export interface PanelMoveParams { panelShape: Shape; axis: AxisDir; value: number; updateShape: UpdateShape }
 
-/** DYN taşıma: yüze göre ofset (yüz büyüyünce açıklık oranında ölçeklenir). */
+/** DYN: yüze göre ofset, yüz büyüyünce açıklık oranında ölçeklenir. FIXED: parent çerçevesinde MUTLAK konum. */
 export const executePanelMove = (p: PanelMoveParams) => addMoveStep(p, false);
-/** FIXED taşıma: panel parent çerçevesinde MUTLAK konumda kalır. */
 export const executePanelMoveFixed = (p: PanelMoveParams) => addMoveStep(p, true);
 
 async function addMoveStep({ panelShape, axis, value, updateShape }: PanelMoveParams, isFixed: boolean): Promise<boolean> {
@@ -168,7 +135,6 @@ async function addMoveStep({ panelShape, axis, value, updateShape }: PanelMovePa
   const steps = getUnifiedSteps(fresh);
   const vf = vfOfPanel(fresh);
   const now = Date.now();
-  // DYN ölçek çıpası: VF'nin taşıma ekseni boyunca açıklığı.
   let anchor: MoveTransformStep['anchor'];
   if (vf && vf.vertices.length >= 3) {
     const i = axisIndexOf(axis);
@@ -177,14 +143,12 @@ async function addMoveStep({ panelShape, axis, value, updateShape }: PanelMovePa
     const span = Math.abs(max - min);
     if (span >= 1) anchor = { faceSpanAlongAxis: span };
   }
-  // FIXED: yüzün o anki ham konumu (dönüş adımı öncesindeyse).
+  // FIXED çıpası yalnız henüz dönüş adımı yoksa (ham konum dönmemiş çerçevede geçerli).
   let fixedRef: number | undefined;
   if (isFixed && vf && !steps.some(s => s.type === 'rotate')) {
     const r = vfRawMinAlong(vf, axis);
     if (r !== null) fixedRef = r;
   }
-  console.log('[YAGO][TAŞI]', fresh.id, isFixed ? 'FIXED' : 'DYN', 'eksen=', axis, 'değer=', value,
-    'yüzSpan=', anchor ? anchor.faceSpanAlongAxis.toFixed(1) : '-', 'fixedRef=', fixedRef ?? '-');
   const step: MoveTransformStep = {
     id: `step-${now}`, type: 'move', axis, value, timestamp: now,
     ...(isFixed ? { isFixed: true } : {}), ...(fixedRef !== undefined ? { fixedRef } : {}), ...(anchor ? { anchor } : {}),
@@ -192,11 +156,7 @@ async function addMoveStep({ panelShape, axis, value, updateShape }: PanelMovePa
   return commitSteps(fresh, [...steps, step], updateShape);
 }
 
-/**
- * REF taşıma: panelin seçilen köşesi hedef şeklin köşesine kilitlenir. Köşeler
- * kendi şekillerinin dünya kutusunda ORANSAL saklanır → hedef büyüyüp
- * küçüldükçe bağ geometrik olarak yeniden çözülür.
- */
+/** REF taşıma: köşeler şekillerinin dünya kutusunda ORANSAL saklanır → hedef boyutlanınca bağ yeniden çözülür. */
 async function executePanelMoveRef(panelShape: Shape, sourceVertex: Vec3, targetPanelId: string, targetVertex: Vec3, updateShape: UpdateShape): Promise<boolean> {
   const d = new THREE.Vector3(...targetVertex).sub(new THREE.Vector3(...sourceVertex));
   const dist = d.length();
@@ -208,7 +168,6 @@ async function executePanelMoveRef(panelShape: Shape, sourceVertex: Vec3, target
   const tgtBox = target ? worldBboxOf(target, target.geometry) : null;
   const refSourceFrac = srcBox ? fracInBox(srcBox, sourceVertex) : undefined;
   const refTargetFrac = tgtBox ? fracInBox(tgtBox, targetVertex) : undefined;
-  console.log('[YAGO][REF-BAĞ] kaynakFrac=', refSourceFrac, 'hedefFrac=', refTargetFrac, 'hedef=', targetPanelId, 'donmuşDelta=', fmtVec(d));
   const now = Date.now();
   const step: MoveTransformStep = {
     id: `step-${now}`, type: 'move', axis, value: dist, timestamp: now, refTargetPanelId: targetPanelId,
@@ -218,11 +177,8 @@ async function executePanelMoveRef(panelShape: Shape, sourceVertex: Vec3, target
   return commitSteps(fresh, [...getUnifiedSteps(fresh), step], updateShape);
 }
 
-// ── DÖNDÜRME ─────────────────────────────────────────────────────────────────
-
 export interface PanelRotateParams { panelShape: Shape; axis: AxisLetter; value: number; pivot: Vec3; updateShape: UpdateShape }
 
-/** Sabit açılı dönüş (panel-yerel eksen, VF'ye oransal pivot). */
 export async function executePanelRotate({ panelShape, axis, value, pivot, updateShape }: PanelRotateParams): Promise<boolean> {
   if (Math.abs(value) < 0.001) return false;
   const fresh = freshShape(panelShape);
@@ -235,11 +191,8 @@ export async function executePanelRotate({ panelShape, axis, value, pivot, updat
   return commitSteps(fresh, [...getUnifiedSteps(fresh), step], updateShape);
 }
 
-/**
- * REF dönüş (Goker akışı): pivot → nişan noktası → eksen → referans YÜZ → sağ tık.
- * Nişan noktası referans yüzün düzlemine değene kadar döner; açı her rebuild'de
- * GÜNCEL geometriden yeniden çözülür (PanelEngine.resolveRefRotateDeg).
- */
+/** REF dönüş: nişan noktası referans yüzün düzlemine değene kadar döner; açı her rebuild'de
+ * yeniden çözülür (PanelEngine.resolveRefRotateDeg). */
 async function executePanelRotateRef(panelShape: Shape, pivot: Vec3, armVertex: Vec3, axis: AxisLetter, face: RefFacePick, updateShape: UpdateShape): Promise<boolean> {
   const fresh = freshShape(panelShape);
   const vf = vfOfPanel(fresh);
@@ -253,8 +206,6 @@ async function executePanelRotateRef(panelShape: Shape, pivot: Vec3, armVertex: 
   const deg0 = Math.round(sol.deg * 1000) / 1000;
   const pivotVfFrac = vf ? vfFracOfPoint(vf, pivot) : undefined;
   const refArmVfFrac = vf ? vfFracOfPoint(vf, armVertex) : undefined;
-  console.log('[YAGO][REF-DÖN] bağ kuruldu — pivotVfFrac=', pivotVfFrac, 'nişanVfFrac=', refArmVfFrac, 'hedef=', face.panelId,
-    'yüzGrubu=', face.faceGroupIndex, 'yüzN=', face.normalWorld.map(n => n.toFixed(2)).join(','), 'eksen=', axis, 'açı0=', deg0.toFixed(2));
   const now = Date.now();
   const step: RotateTransformStep = {
     id: `step-${now}`, type: 'rotate', axis, axisVec, value: deg0, resolvedValue: deg0, pivot, pivotVfFrac, timestamp: now,
@@ -263,8 +214,6 @@ async function executePanelRotateRef(panelShape: Shape, pivot: Vec3, armVertex: 
   };
   return commitSteps(fresh, [...getUnifiedSteps(fresh), step], updateShape);
 }
-
-// ── ADIM DÜZENLE / SİL ───────────────────────────────────────────────────────
 
 export function updateTransformStep(panelShape: Shape, stepId: string, newValue: number, updateShape: UpdateShape): Promise<boolean> {
   const fresh = freshShape(panelShape);
@@ -286,9 +235,6 @@ export function deleteExtrudeStep(panelShape: Shape, stepId: string, updateShape
   return commitAndRebuild(panelShape, { extrudeSteps: steps.filter(s => s.id !== stepId) }, updateShape);
 }
 
-// ── STORE'DAKİ BEKLEYEN REF SEÇİMİNİ ONAYLA (editör "Uygula" + sahnede sağ tık) ──
-
-/** Taşıma-ref: kaynak köşe + hedef panel köşesi seçiliyse bağı kurar. */
 export async function confirmPanelMoveRef(): Promise<boolean> {
   const st = useAppStore.getState();
   const ps = shapeById(st.panelMoveTargetPanelId, st.shapes);
@@ -296,7 +242,6 @@ export async function confirmPanelMoveRef(): Promise<boolean> {
   return executePanelMoveRef(ps, st.panelMoveRefSourceVertex, st.panelMoveRefTargetPanelId, st.panelMoveRefTargetVertex, st.updateShape);
 }
 
-/** Dönüş-ref: pivot + nişan + eksen + referans yüz seçiliyse bağı kurar. */
 export async function confirmPanelRotateRef(): Promise<boolean> {
   const st = useAppStore.getState();
   const ps = shapeById(st.panelRotateTargetPanelId, st.shapes);
@@ -305,10 +250,7 @@ export async function confirmPanelRotateRef(): Promise<boolean> {
   return executePanelRotateRef(ps, st.panelRotatePivot, st.panelRotateRefArmVertex, st.panelRotateAxis, face, st.updateShape);
 }
 
-/**
- * Store'daki bekleyen REF extrude seçimini onaylar ve modu kapatır. Editörün
- * "Uygula" düğmesi, panel ve gövde üzerindeki sağ tık — üçü de bunu çağırır.
- */
+/** Editörün "Uygula" düğmesi ve panel/gövde sağ tıkı — üçü de bunu çağırır. */
 export async function confirmRefFaceExtrude(): Promise<void> {
   const st = useAppStore.getState();
   const cand = st.faceExtrudeRefCandidate;
@@ -321,20 +263,10 @@ export async function confirmRefFaceExtrude(): Promise<void> {
   st.setFaceExtrudeRefCandidate(null);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// YÜZ EXTRUDE
-// ═══════════════════════════════════════════════════════════════════════════
-
-/** Baskın eksen ('x' | 'y' | 'z'), dominantAxisLabel ile aynı eşitlik kuralı. */
 const dominantAxis = (n: THREE.Vector3): AxisLetter => dominantAxisLabel(n)[0].toLowerCase() as AxisLetter;
 
-// ── REFERANS YÜZ EŞLEME (extrude-ref + ref-dönüş ortak) ─────────────────────
-
-/**
- * Referans panelin GÜNCEL geometrisinde tıklanan yüz grubunu bulur: normal
- * (>0.8) + tıklama noktasına en yakın merkez; nokta/normal yoksa saklı indeks.
- * Referans taşınmış/boyutlanmış olsa da her rebuild'de doğru grup bulunur.
- */
+/** Referans yüz grubunu GÜNCEL geometride bulur: normal (>0.8) + tıklama noktasına en yakın merkez;
+ * nokta/normal yoksa saklı indeks. Referans taşınmış/boyutlanmış olsa da doğru grup bulunur. */
 export function matchReferenceFace(
   ref: Shape | undefined, refFaceGroupIndex: number, refNormalWorld?: Vec3, refPointWorld?: Vec3
 ): { group: CoplanarFaceGroup; faces: FaceData[]; matrix: THREE.Matrix4 } | null {
@@ -354,7 +286,6 @@ export function matchReferenceFace(
   return group ? { group, faces, matrix } : null;
 }
 
-/** Referans yüzünün güncel DÜZLEMİ (merkez + normal), referansın yerel çerçevesinde. */
 export function resolveReferenceFacePlane(
   refShapeId: string, refFaceGroupIndex: number, shapes: Shape[], refNormalWorld?: Vec3, refPointWorld?: Vec3
 ): { center: THREE.Vector3; normal: THREE.Vector3 } | null {
@@ -362,7 +293,6 @@ export function resolveReferenceFacePlane(
   return m ? { center: m.group.center.clone(), normal: m.group.normal.clone().normalize() } : null;
 }
 
-/** Aynı eksendeki adımlardan yüz merkezine en yakını (editör ön-doldurma). */
 export function findExistingStepForFace(steps: ExtrudeStep[], faceNormal: THREE.Vector3, faceCenter?: THREE.Vector3): ExtrudeStep | null {
   const candidates = steps.filter(s => s.axisLabel === dominantAxisLabel(faceNormal));
   if (candidates.length === 0) return null;
@@ -375,9 +305,6 @@ export function findExistingStepForFace(steps: ExtrudeStep[], faceNormal: THREE.
   return best;
 }
 
-// ── GEOMETRİ ─────────────────────────────────────────────────────────────────
-
-/** Adımın yüzüne karşılık gelen replicad yüzü (eksen etiketi + tıklama noktası/merkez). */
 function findMatchingReplicadFace(replicadShape: any, targetNormal: THREE.Vector3, targetCenter: THREE.Vector3, samplePoint?: THREE.Vector3): any | null {
   const faces = replicadShape.faces;
   if (!faces || faces.length === 0) return null;
@@ -451,16 +378,13 @@ async function applyOneExtrudeStep(currentShape: any, step: ExtrudeStep, geometr
 
   let extrudeAmount: number;
   if (step.refPlaneCenterLocal) {
-    // REF: yüzü SEÇİLEN referans düzlemine taşıyan işaretli mesafe (+ uzar, − kısalır).
     const refC = new THREE.Vector3(...step.refPlaneCenterLocal);
     if (step.refPlaneNormalLocal) {
       const par = Math.abs(new THREE.Vector3(...step.refPlaneNormalLocal).normalize().dot(faceNormal));
       if (par < 0.7) { console.warn(`[applyOneExtrudeStep] Ref yüzü extrude eksenine paralel değil (|dot|=${par.toFixed(2)}) — adım atlandı`); return null; }
     }
     extrudeAmount = refC.clone().sub(faceCenter).dot(faceNormal);
-    console.log(`[YAGO][EXTRUDE-REF] hedefDüzlem= ${fmtVec(refC)} yüzMerkez= ${fmtVec(faceCenter)} normal= ${fmtVec(faceNormal, 0)} miktar= ${extrudeAmount.toFixed(1)}`);
   } else if (step.isFixed) {
-    // FIXED: hedef ölçü − seçili yüzden karşı kutu sınırına mevcut açıklık.
     const k = dominantAxis(faceNormal);
     const faceDist = faceNormal[k] > 0 ? faceCenter[k] - box.min[k] : box.max[k] - faceCenter[k];
     extrudeAmount = step.value - faceDist;
@@ -481,11 +405,7 @@ async function applyOneExtrudeStep(currentShape: any, step: ExtrudeStep, geometr
   return { replicadShape: finalShape, geometry: convertReplicadToThreeGeometry(finalShape), amount: extrudeAmount };
 }
 
-/**
- * Extrude adımlarını, çağıranın DOĞRU ÇERÇEVEDE verdiği katıya sırayla uygular
- * (panel VF'den üretilmiş + dönüşümler işlenmiş). Ref adımlarının çözülen
- * miktarları `resolved` ile döner (motor UI için adıma yazar).
- */
+/** Katı, çağıran tarafından DOĞRU ÇERÇEVEDE verilmeli (VF'den üretilmiş + dönüşümler işlenmiş). */
 export async function applyExtrudeSteps(
   shape: any, steps: ExtrudeStep[], shapes?: Shape[]
 ): Promise<{ shape: any; geometry: THREE.BufferGeometry; resolved: Array<{ id: string; value: number }> } | null> {
@@ -516,8 +436,6 @@ export async function applyExtrudeSteps(
   return anyApplied ? { shape: currentReplicad, geometry: currentGeometry, resolved } : null;
 }
 
-// ── KOMUTLAR: SPEC'i (extrudeSteps) günceller + rebuild ──────────────────────
-
 /** Tıklanan yüz grubu (parent-yerel); eğri (fillet) grup en yakın aynı eksenli düz yüze yaslanır. */
 function resolveClickedFace(panel: Shape, faceGroupIndex: number): { faceNormal: THREE.Vector3; faceCenter: THREE.Vector3 } | null {
   if (!panel.geometry) return null;
@@ -536,7 +454,7 @@ function resolveClickedFace(panel: Shape, faceGroupIndex: number): { faceNormal:
   return { faceNormal, faceCenter };
 }
 
-/** Yeni adımı ekler ya da aynı yüzdeki (aynı eksen + merkez < 1 mm) adımın yerine koyar. */
+/** Aynı yüz = aynı eksen + merkez < 1 mm → mevcut adımın yerine konur. */
 function upsertExtrudeStep(steps: ExtrudeStep[], step: ExtrudeStep): { steps: ExtrudeStep[]; existed: boolean } {
   const idx = steps.findIndex(s => s.axisLabel === step.axisLabel && new THREE.Vector3(...s.faceCenter).distanceTo(new THREE.Vector3(...step.faceCenter)) < 1.0);
   return { steps: idx >= 0 ? steps.map((s, i) => (i === idx ? step : s)) : [...steps, step], existed: idx >= 0 };
@@ -544,7 +462,6 @@ function upsertExtrudeStep(steps: ExtrudeStep[], step: ExtrudeStep): { steps: Ex
 
 export interface FaceExtrudeParams {
   panelShape: Shape; faceGroupIndex: number; value: number; isFixed: boolean; updateShape: UpdateShape;
-  /** Tıklama noktası (yerel) — replicad yüzünü tekil seçer. */
   clickPoint?: Vec3;
 }
 
@@ -556,7 +473,7 @@ export async function executeFaceExtrude({ panelShape: panel, faceGroupIndex, va
     id: genId('ext'), faceNormal: [face.faceNormal.x, face.faceNormal.y, face.faceNormal.z], faceCenter: [face.faceCenter.x, face.faceCenter.y, face.faceCenter.z],
     axisLabel: dominantAxisLabel(face.faceNormal), value, isFixed, timestamp: Date.now(), samplePoint: clickPoint,
   });
-  // Dinamik modda değer=delta; ~0 ve yeni adımsa işlem yok.
+  // Dinamik modda değer = delta.
   if (!isFixed && Math.abs(value) < 0.01 && !up.existed) return false;
   return commitAndRebuild(panel, { extrudeSteps: up.steps }, updateShape);
 }
@@ -574,27 +491,16 @@ async function executeFaceExtrudeToReference(panel: Shape, faceGroupIndex: numbe
   return commitAndRebuild(panel, { extrudeSteps: up.steps }, updateShape);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// REFERANS YÜZ SEÇİMİ: IŞIN BOYUNCA DERİNLİK DÖNGÜSÜ
-// Panel yerleştirirkenki "aynı noktaya her tıklamada bir arkadaki yüze geç"
-// davranışının panel-extrude / dönüş REFERANS seçimine taşınmış hâli; adaylar
-// imlecin altındaki ışının deldiği TÜM şekillere (parent küp + paneller) yayılır.
-// TEK KAYNAK: PanelDrawing ve ShapeWithTransform aynı fonksiyonu çağırır;
-// döngü durumu modül düzeyinde tutulur (aynı anda tek referans seçimi olur).
-// ═══════════════════════════════════════════════════════════════════════════
+// Referans yüz seçimi: aynı noktaya her tıklamada ışın boyunca bir arkadaki yüze geçilir (tüm şekiller).
+// PanelDrawing ve ShapeWithTransform aynı fonksiyonu çağırır; döngü durumu modül düzeyinde (tek seçim).
 
-// REFERANS MODU RENK PALETİ (Goker): tüm seçim vurguları soft sarı; hover = aday, selected = onaylı.
 export const REF_COLORS = {
   hover: 0xf2d57e, selected: 0xdfae4c, hoverCss: '#f2d57e', selectedCss: '#dfae4c', hoverOpacity: 0.42, selectedOpacity: 0.68,
 } as const;
 
 interface RefFaceCandidate { shapeId: string; faceGroupIndex: number; depth: number; pointWorld: Vec3; normalWorld: Vec3 }
 
-/**
- * Işının deldiği tüm yüz gruplarını (hedef panel hariç) derinliğe göre sıralı
- * döndürür. Her aday DÜZ (snap edilmiş) gruba indirgenir; aynı şekilde aynı düz
- * gruba düşen kopyalar (en yakın derinlik tutularak) elenir.
- */
+/** Işının deldiği yüz grupları (hedef hariç), derinlik sıralı; düz gruba indirgenir, kopyalar elenir. */
 function gatherRefFaceCandidates(rayOrigin: THREE.Vector3, rayDir: THREE.Vector3, shapes: any[], targetPanelId: string | null): RefFaceCandidate[] {
   const dir = rayDir.clone().normalize();
   const out: RefFaceCandidate[] = [];
@@ -612,7 +518,6 @@ function gatherRefFaceCandidates(rayOrigin: THREE.Vector3, rayDir: THREE.Vector3
       const t = planePt.clone().sub(rayOrigin).dot(nWorld) / denom;
       if (t < 0) continue;
       const hit = rayOrigin.clone().addScaledVector(dir, t);
-      // Bu grubun üçgenlerinden biri, çarpma noktasını gerçekten içeriyor mu?
       const inside = group.faceIndices.some(fi => {
         const f = faces[fi];
         return !!f && pointInTriangle3D(hit, f.vertices[0].clone().applyMatrix4(M), f.vertices[1].clone().applyMatrix4(M), f.vertices[2].clone().applyMatrix4(M));
@@ -628,17 +533,11 @@ function gatherRefFaceCandidates(rayOrigin: THREE.Vector3, rayDir: THREE.Vector3
   return out.filter(c => { const k = `${c.shapeId}#${c.faceGroupIndex}`; if (seen.has(k)) return false; seen.add(k); return true; });
 }
 
-// Döngü durumu: son ekran noktası + sıra indeksi + bağlam anahtarı.
 let lastPick: { x: number; y: number; index: number; ctx: string } | null = null;
 const SAME_SPOT_PX = 6;
 
 export function resetRefFacePick() { lastPick = null; }
 
-/**
- * R3F tıklama olayından: ışın + ekran koordinatı ile adayları toplar, aynı
- * noktada arka arkaya tıklamada bir sonraki derinliğe geçer, seçilen adayı
- * setCandidate'e yazar. Aday bulunduysa true döner.
- */
 export function cycleRefFacePickFromEvent(e: any, shapes: any[], targetPanelId: string | null, setCandidate: (v: RefFacePick) => void): boolean {
   const ray: THREE.Ray | undefined = e?.ray;
   if (!ray) return false;

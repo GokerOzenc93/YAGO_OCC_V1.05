@@ -9,16 +9,11 @@ import { Sidebar, StatusBar, Terminal, Toolbar, ToolChip, ToolChipBar, UI_FONT }
 import { PanelEditor } from './components/PanelEditor';
 import { type Shape, childPanelsOf, requestRebuild, shapeById, useAppStore, useStoreFields } from './store';
 import { applyShapeChanges, axisIndexOf, evaluateExpression, initReplicad, rebuildBodySolid } from './components/Geometry';
-// Rebuild motoru sayfayla birlikte yüklenir ve store'a kaydolur (bkz. store.requestRebuild).
+// Yan etki: rebuild motoru store'a kaydolur (bkz. store.requestRebuild).
 import './components/PanelEngine';
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   UYGULAMA KÖKÜ — (A) Supabase geometri kataloğu (veri + panel); (B) App:
-   yerleşim, OpenCascade ön-yükleme, global hata yakalama, panel-kümesi izleyicisi;
-   (C) Parametre paneli (ölçü/dönüş/fillet/özel parametre/çıkarma/vertex, Apply).
-   ═══════════════════════════════════════════════════════════════════════════ */
+/* Uygulama kökü: Supabase katalog, OCC yükleme, global hata yakalama, panel-kümesi izleyicisi, parametre paneli. */
 
-// ── Veritabanı ──────────────────────────────────────────────────────────────
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 export const supabase = supabaseUrl && supabaseAnonKey ? createClient(supabaseUrl, supabaseAnonKey) : null;
@@ -43,7 +38,6 @@ export const catalogService = {
   },
 };
 
-// ── Katalog kartı önizlemesi (basit üç.js sahnesi) ──────────────────────────
 const createGeometryFromType = (type: string, p: any = {}): THREE.BufferGeometry => {
   switch (type) {
     case 'cylinder': return new THREE.CylinderGeometry(p.radius || 50, p.radius || 50, p.height || 100, p.segments || 32);
@@ -72,7 +66,6 @@ const GeometryPreview: React.FC<{ geometryData: any }> = ({ geometryData }) => {
   );
 };
 
-// ── Katalog paneli (sürüklenebilir pencere) ─────────────────────────────────
 const CatalogPanel: React.FC<{ isOpen: boolean; onClose: () => void; onLoad: (item: CatalogItem) => void | Promise<void>; onDelete: (id: string) => void; items: CatalogItem[] }> =
   ({ isOpen, onClose, onLoad, onDelete, items }) => {
     const [selectedTag, setSelectedTag] = useState<string | null>(null);
@@ -146,8 +139,6 @@ const CatalogPanel: React.FC<{ isOpen: boolean; onClose: () => void; onLoad: (it
     );
   };
 
-// ── Uygulama ────────────────────────────────────────────────────────────────
-/** Gövde başına çocuk panel id kümesi (panel-kümesi izleyicisi). */
 const panelSetsByParent = (shapes: Shape[]) => {
   const m = new Map<string, Set<string>>();
   for (const s of shapes) {
@@ -162,8 +153,7 @@ function App() {
   const [catalogOpen, setCatalogOpen] = useState(false);
   const [catalogItems, setCatalogItems] = useState<CatalogItem[]>([]);
 
-  // PANEL-KÜMESİ İZLEYİCİSİ: bir gövdenin çocuk panel kümesi değişince (ekleme /
-  // silme) o gövdenin panelleri yeniden üretilir — tek rebuild giriş noktası.
+  // Çocuk panel kümesi değişince (ekle/sil) gövdenin panelleri yeniden üretilir — tek rebuild giriş noktası.
   useEffect(() => {
     let prev = panelSetsByParent(useAppStore.getState().shapes);
     return useAppStore.subscribe((state, prevState) => {
@@ -189,7 +179,7 @@ function App() {
   }, []);
 
   const loadCatalogItems = async () => {
-    try { const items = await catalogService.getAll(); setCatalogItems(items); console.log('Loaded catalog items:', items.length); }
+    try { const items = await catalogService.getAll(); setCatalogItems(items); }
     catch (error) { console.error('Failed to load catalog items:', error); }
   };
   useEffect(() => { void loadCatalogItems(); }, []);
@@ -200,9 +190,8 @@ function App() {
 
   const handleOpenCatalog = async () => { await loadCatalogItems(); setCatalogOpen(true); };
 
-  // KATALOGDAN YÜKLE: kutu − çıkarmalar (+ kayıtlı filletler, merkezler olduğu gibi).
+  // Katalogdan yükle: kutu − çıkarmalar (+ kayıtlı filletler).
   const handleLoadFromCatalog = async (item: CatalogItem) => {
-    console.log('Loading item from catalog:', item.code);
     try {
       const geometryData = item.geometry_data, shapeParams = item.shape_parameters || {};
       const subtractions = (item.subtraction_geometries || []).filter((s: any) => s !== null);
@@ -229,7 +218,6 @@ function App() {
         vertexModifications: shapeParams.vertexModifications || geometryData.vertexModifications || [],
         subtractionGeometries: restoredSubtractionGeometries, fillets: r.fillets,
       });
-      console.log('Shape loaded from catalog:', { code: item.code, dimensions: size, subtractions: restoredSubtractionGeometries.length, fillets: fillets.length });
       setCatalogOpen(false);
     } catch (error) {
       console.error('Failed to load shape from catalog:', error);
@@ -237,7 +225,7 @@ function App() {
     }
   };
   const handleDeleteFromCatalog = async (id: string) => {
-    try { await catalogService.delete(id); await loadCatalogItems(); console.log('Item deleted from catalog:', id); }
+    try { await catalogService.delete(id); await loadCatalogItems(); }
     catch (error) { console.error('Failed to delete from catalog:', error); }
   };
 
@@ -268,10 +256,6 @@ function App() {
 
 export default App;
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   PARAMETRE PANELİ — tasarım dili Panel Editör ile birebir: satırlar aynı soft
-   kart, bölüm başlıkları aynı "eyebrow", değer alanı kutusuz (yago-param-input).
-   ═══════════════════════════════════════════════════════════════════════════ */
 interface CustomParameter { id: string; name: string; expression: string; result: number; description: string }
 type ExprResult = { expression: string; result: number };
 type SubKey = 'width' | 'height' | 'depth' | 'posX' | 'posY' | 'posZ' | 'rotX' | 'rotY' | 'rotZ';
@@ -307,7 +291,6 @@ const DelBtn = ({ title, onClick, className = P_DEL_BTN }: { title: string; onCl
   <button onClick={onClick} title={title} className={className}><Trash2 size={11.5} strokeWidth={1.9} /></button>
 );
 
-/** Sayısal parametre satırı: yerel metin taslağı, geçerli sayı yazıldıkça onChange; blur'da normalize. */
 const ParameterRow: React.FC<{ label: string; value: number; onChange: (v: number) => void; unit: string; description: string; trailing?: React.ReactNode }> =
   ({ label, value, onChange, unit, description, trailing }) => {
     const [inputValue, setInputValue] = useState(value.toString());
@@ -333,7 +316,6 @@ const ParameterRow: React.FC<{ label: string; value: number; onChange: (v: numbe
       </div>
     );
   };
-/** İfade satırı (çıkarma / vertex): ifade + çözülen sonuç + açıklama ya da not. */
 const ExprRow = ({ label, labelColor, expression, onExpr, result, children }: { label: string; labelColor: string; expression: string; onExpr: (v: string) => void; result: number; children: React.ReactNode }) => (
   <div className={P_ROW}>
     <span className={P_LABEL} style={{ color: labelColor }}>{label}</span>
@@ -379,7 +361,6 @@ export function ParametersPanel() {
     }
   }, [selectedShape, selectedShapeId, shapes]);
 
-  // Seçili çıkarmanın ifadeleri: kayıtlı parametre varsa o, yoksa geometriden okunan değer.
   useEffect(() => {
     if (!selectedShape || selectedSubtractionIndex === null) return;
     const sub = selectedShape.subtractionGeometries?.[selectedSubtractionIndex];
@@ -417,8 +398,7 @@ export function ParametersPanel() {
       if (idx !== index) return mod;
       const u = { ...mod, [field]: value };
       if (field === 'expression') {
-        // SÖZLEŞME (terminal girişi ve Uygula ile AYNI): ifade, seçilen eksendeki
-        // MUTLAK koordinattır (yönlü ofset değil).
+        // İfade, seçilen eksendeki MUTLAK koordinattır (terminal girişi ve Uygula ile aynı sözleşme).
         const result = evaluateExpression(value, getEvalContext());
         const ai = axisIndexOf(mod.direction);
         const np = [...mod.originalPosition] as [number, number, number]; np[ai] = result;
@@ -427,19 +407,15 @@ export function ParametersPanel() {
       }
       return u;
     }));
-  // VERTEX DÜZENLEMESİ SİL (Goker: "eklenen vertex satırı silinemiyor"): hem
-  // panel durumundan hem şekilden kaldırılır → mesh aynı anda eski hâline döner
-  // (gövde geometrisi hep TABAN'dır; düzenlemeler çizimde üstüne uygulanır).
+  // Gövde geometrisi hep TABAN'dır, düzenlemeler çizimde üstüne uygulanır → silinince mesh anında geri döner.
   const deleteVertexModification = (index: number) => {
     const updated = vertexModifications.filter((_, i) => i !== index);
     setVertexModifications(updated);
     if (selectedShape) {
       updateShape(selectedShape.id, { vertexModifications: updated });
-      // Paneller gövdenin geri dönen şekline göre yeniden üretilir.
       const sid = selectedShape.id;
       if (childPanelsOf(sid).length) requestRebuild(sid).catch(e => console.error('[YAGO][VERTEX] rebuild hatası:', e));
     }
-    console.log('[YAGO][VERTEX] düzenleme silindi, kalanN=', updated.length);
   };
 
   const handleApplyChanges = async () => {
@@ -458,7 +434,6 @@ export function ParametersPanel() {
     if (selectedShapeId) await requestRebuild(selectedShapeId);
   };
 
-  // FİLLET SİL: gövde çıkarmalarıyla baştan kurulur, kalan filletler tazelenip uygulanır.
   const handleDeleteFillet = async (filletIndex: number) => {
     const currentShape = shapeById(selectedShapeId);
     if (!currentShape) return;
@@ -475,7 +450,6 @@ export function ParametersPanel() {
   };
 
   const subtractionCount = selectedShape?.subtractionGeometries?.filter(s => s !== null).length ?? 0;
-  // ÜST ARAÇ ÇUBUĞU — Panel Editor ile ORTAK bileşen (ToolChip).
   const paramToolbar = (
     <ToolChipBar>
       <ToolChip label="Vertex" icon={Spline} active={vertexEditMode} title="Edit vertices"
@@ -492,7 +466,6 @@ export function ParametersPanel() {
 
   const paramContent = selectedShape ? (
     <div>
-      {/* ÖLÇÜLER — alt alta (Goker): Genişlik / Yükseklik / Derinlik */}
       <ParamSection title="Dimensions">
         <ParameterRow label="W" value={width} onChange={setWidth} unit="mm" description="Width" />
         <ParameterRow label="H" value={height} onChange={setHeight} unit="mm" description="Height" />
@@ -541,7 +514,7 @@ export function ParametersPanel() {
           ))}
         </ParamSection>
       )}
-      {/* Düzenlemeler Vertex modu kapalıyken de görünür → her zaman silinebilir. */}
+      {/* Vertex modu kapalıyken de görünür → her zaman silinebilir. */}
       {vertexModifications.length > 0 && (
         <ParamSection title="Vertex edits" count={vertexModifications.length}>
           {vertexModifications.map((mod, idx) => (
@@ -553,7 +526,6 @@ export function ParametersPanel() {
           ))}
         </ParamSection>
       )}
-      {/* Uygula — Panel Editör'ün onay düğmesiyle aynı koyu taş dil. */}
       <button onClick={handleApplyChanges}
         className="w-full mt-3 h-[30px] rounded-[8px] bg-[#44403c] text-white text-[11.5px] font-semibold tracking-[0.01em] shadow-[0_1px_3px_rgba(40,30,20,0.22)] hover:bg-[#57534e] active:bg-[#292524] transition-colors duration-150 flex items-center justify-center gap-1.5">
         <Check size={13} strokeWidth={2.4} /> Apply

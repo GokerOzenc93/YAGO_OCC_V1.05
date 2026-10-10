@@ -6,21 +6,11 @@ import {
   performBooleanCut, translatedBboxOf,
 } from './Geometry';
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   UYGULAMA KABUĞU (chrome) — (A) tasarım tokenları, ilkel bileşenler, ikonlar,
-   ErrorBoundary, durum çubuğu, terminal; (B) üst araç çubuğu (menüler, araçlar,
-   kamera/görünüm, boolean çıkarma); (C) sol kenar çubuğu kabuğu + kemik teması.
-   ═══════════════════════════════════════════════════════════════════════════ */
-// ═══════════════════════════════════════════════════════════════════════════
-// Ui — ORTAK ARAYÜZ PARÇALARI: tasarım jetonları, ErrorBoundary, ToolChip,
-// ikon kaydı + düğmeleri, StatusBar, Terminal (komut satırı).
-// (Eski UiPrimitives + icons + StatusBar + Terminal.)
-// ═══════════════════════════════════════════════════════════════════════════
+/* Uygulama kabuğu: tasarım jetonları, ErrorBoundary, ToolChip, ikonlar, durum çubuğu, terminal,
+   üst araç çubuğu (boolean çıkarma) ve sol kenar çubuğu + kemik teması. */
 
-// ── TASARIM JETONLARI (kemik/fildişi palet) ──────────────────────────────────
 export const UI_FONT = "'Inter','SF Pro Text',system-ui,sans-serif";
 export const MONO_FONT = "'SF Mono','Fira Code','Cascadia Code',monospace";
-/** Dikey/yatay ince ayırıcı (saydamdan koyuya gradyan). */
 export const hairline = (opacity = 0.14, dir: 'bottom' | 'right' = 'bottom') =>
   `linear-gradient(to ${dir},transparent,rgba(60,50,40,${opacity}) 30%,rgba(60,50,40,${opacity}) 70%,transparent)`;
 export const TOKENS = {
@@ -34,7 +24,6 @@ export const TOKENS = {
   modClr: '#7c3aed',
 } as const;
 
-/** Etiket · değer çifti (durum çubuğu). */
 export const LabelValue: React.FC<{ label: string; value: React.ReactNode; valueColor?: string; mono?: boolean; small?: boolean }> = ({ label, value, valueColor = TOKENS.valueClr, mono = false, small = false }) => (
   <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexShrink: 0 }}>
     <span style={{ color: TOKENS.labelClr, fontSize: small ? '10.5px' : '11px', fontWeight: 420, letterSpacing: small ? '0.05em' : '0.04em', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{label}</span>
@@ -43,7 +32,6 @@ export const LabelValue: React.FC<{ label: string; value: React.ReactNode; value
 );
 export const VSep: React.FC<{ opacity?: number }> = ({ opacity = 0.14 }) => <div style={{ width: '1px', height: '14px', flexShrink: 0, background: hairline(opacity) }} />;
 
-// ── ErrorBoundary — render hatalarını yakalayıp arayüzü çökertmez ────────────
 interface ErrorBoundaryState { hasError: boolean; error: Error | null }
 export class ErrorBoundary extends React.Component<{ children: React.ReactNode; fallback?: React.ReactNode }, ErrorBoundaryState> {
   state: ErrorBoundaryState = { hasError: false, error: null };
@@ -64,9 +52,6 @@ export class ErrorBoundary extends React.Component<{ children: React.ReactNode; 
   }
 }
 
-// ── ToolChip / ToolChipBar — Panel Editor + Parameters üst araç çubuğu ───────
-// Zeminsiz "hayalet" düğmeler: pasifte soluk metin/gri ikon, aktifte koyu metin +
-// turuncu ikon + ince turuncu alt çizgi. Her düğme bağımsız aç/kapa.
 export const ToolChip: React.FC<{ label: string; icon: LucideIcon; active?: boolean; onClick: () => void; title?: string; badge?: string | number }> =
   ({ label, icon: Icon, active = false, onClick, title, badge }) => (
     <button type="button" onClick={onClick} title={title || label} aria-pressed={active}
@@ -82,7 +67,7 @@ export const ToolChip: React.FC<{ label: string; icon: LucideIcon; active?: bool
   );
 export const ToolChipBar: React.FC<{ children: React.ReactNode }> = ({ children }) => <div className="flex items-center gap-1 flex-wrap -ml-1">{children}</div>;
 
-// ── İKON KAYDI — /public/icons/*.svg (stroke="currentColor" → düğme rengini alır) ──
+// /public/icons/*.svg — stroke="currentColor" sayesinde düğme rengini alır.
 const ICONS = {
   'add-box': '/icons/add-box.svg', 'subtract-box': '/icons/subtract-box.svg', 'camera-perspective': '/icons/camera-perspective.svg', 'camera-orthographic': '/icons/camera-orthographic.svg',
   'view-solid': '/icons/view-solid.svg', 'view-wireframe': '/icons/view-wireframe.svg', 'view-xray': '/icons/view-xray.svg', 'linear-mode-on': '/icons/linear-mode-on.svg', 'linear-mode-off': '/icons/linear-mode-off.svg',
@@ -99,10 +84,9 @@ const ICONS = {
   'dimension': '/icons/dimension.svg',
 } as const;
 export type IconName = keyof typeof ICONS;
-const svgCache: Record<string, string> = {};   // her SVG oturumda bir kez indirilir
+const svgCache: Record<string, string> = {};
 interface IconProps { name: IconName; size?: number; className?: string; style?: React.CSSProperties }
 
-/** Satır içi SVG ikon — currentColor'ı miras alır. */
 export const Icon: React.FC<IconProps> = ({ name, size = 16, className = '', style }) => {
   const src = ICONS[name];
   const [markup, setMarkup] = useState<string>(() => svgCache[src] ?? '');
@@ -141,7 +125,6 @@ export const ViewXRayButton = preset('view-xray', 'X-Ray View');
 export const LinearModeOnButton = preset('linear-mode-on', 'Linear Mode: On');
 export const LinearModeOffButton = preset('linear-mode-off', 'Linear Mode: Off');
 
-// ── DURUM ÇUBUĞU ─────────────────────────────────────────────────────────────
 export const StatusBar: React.FC = () => {
   const { shapes, selectedShapeId, vertexEditMode, selectedVertexIndex } = useStoreFields('shapes', 'selectedShapeId', 'vertexEditMode', 'selectedVertexIndex');
   const selectedShape = shapes.find(s => s.id === selectedShapeId);
@@ -169,9 +152,7 @@ export const StatusBar: React.FC = () => {
   );
 };
 
-// ── TERMİNAL / KOMUT SATIRI ──────────────────────────────────────────────────
-// Bekleyen bir fillet / vertex düzenleme işlemi varsa girilen sayı ona gider
-// (Scene'in window köprüsü); klavyede yazılan karakterler otomatik odaklanır.
+// Bekleyen fillet / vertex işlemi varsa girilen sayı ona gider (Scene'in window köprüsü).
 const TT = {
   bg: 'linear-gradient(180deg,#ebe8e2 0%,#e2ddd5 100%)', borderTop: '#d6d1c8', shineTop: 'inset 0 1px 0 rgba(255,255,255,0.55)',
   inputBg: 'linear-gradient(180deg,#ffffff 0%,#fbfaf7 100%)', inputBorder: 'rgba(60,50,40,0.14)', inputShadow: 'inset 0 1px 2px rgba(40,30,20,0.06),0 0 0 0.5px rgba(60,50,40,0.04)', inputText: '#1c1917',
@@ -242,11 +223,6 @@ export const Terminal: React.FC = () => {
   );
 };
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Toolbar — üst başlık (logo, breadcrumb, arama, görünüm düğmeleri), menü çubuğu
-// ve ana araç çubuğu. Kemik/fildişi "işlenmiş kemik" yüzeyler, turuncu aksan.
-// ═══════════════════════════════════════════════════════════════════════════
-
 const TS = { ui: '12.5px', uiSep: '11.5px', ls: '0.012em', lsTight: '-0.005em' };
 const T = {
   headerBg: '#fdfcfa', menuBg: 'linear-gradient(180deg,#f7f5f0 0%,#efece5 100%)', rowBg: 'linear-gradient(180deg,#f4f2ee 0%,#ebe8e2 100%)',
@@ -257,7 +233,6 @@ const T = {
   textStrong: '#292524', textBody: '#44403c', textMute: '#706b65', textFaint: '#9c9590', textWhisper: '#c9c4be',
 };
 
-/** Araç düğmesi: hover'da hafif büyür, altında ipucu balonu. */
 const TBtn: React.FC<{ icon: IconName; label: string; active?: boolean; disabled?: boolean; onClick?: () => void }> = ({ icon, label, active = false, disabled = false, onClick }) => {
   const [hov, setHov] = useState(false);
   const color = disabled ? '#c4bfbb' : active ? T.iconActive : hov ? T.iconHover : T.iconIdle;
@@ -366,7 +341,6 @@ export const Toolbar: React.FC<{ onOpenCatalog: () => void }> = ({ onOpenCatalog
         .tb-mi:hover{background:#fff7ed!important;color:#ea580c!important;}
       `}</style>
       <div className="flex flex-col select-none" style={{ fontFamily: UI_FONT }}>
-        {/* ROW 1 · Header */}
         <div style={{ position: 'relative', display: 'flex', alignItems: 'center', height: '46px', padding: '0 18px', background: T.headerBg, borderBottom: `1px solid ${T.hdrBorder}`, boxShadow: '0 1px 0 rgba(255,255,255,0.5)', gap: '12px' }}>
           <img src="/yago_logo.png" alt="YAGO" style={{ height: '26px', width: 'auto', objectFit: 'contain', flexShrink: 0 }} />
           <VLine h={20} m="0" o={0.18} />
@@ -398,7 +372,6 @@ export const Toolbar: React.FC<{ onOpenCatalog: () => void }> = ({ onOpenCatalog
           </div>
         </div>
 
-        {/* ROW 2 · Menu bar — işlenmiş kemik yüzey */}
         <div style={{ position: 'relative', display: 'flex', alignItems: 'center', height: '34px', padding: '0 14px', background: T.menuBg, borderBottom: `1px solid ${T.menuBorder}`,
           boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.85),inset 0 -1px 0 rgba(140,120,100,0.08),inset 1px 0 0 rgba(255,255,255,0.4),inset -1px 0 0 rgba(140,120,100,0.04),0 1px 0 rgba(255,255,255,0.45),0 2px 4px -1px rgba(60,50,40,0.06)' }}>
           <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', backgroundImage: 'repeating-linear-gradient(0deg,rgba(255,255,255,0) 0px,rgba(255,255,255,0) 2px,rgba(140,120,100,0.012) 2px,rgba(140,120,100,0.012) 3px)', opacity: 0.6 }} />
@@ -434,7 +407,6 @@ export const Toolbar: React.FC<{ onOpenCatalog: () => void }> = ({ onOpenCatalog
           })}
         </div>
 
-        {/* ROW 3 · Main toolbar */}
         <div style={{ position: 'relative', display: 'flex', alignItems: 'center', height: '42px', padding: '0 14px', background: T.rowBg, borderBottom: `1px solid ${T.rowBorder}`, boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.85),inset 0 -1px 0 rgba(140,120,100,0.06),0 1px 4px rgba(60,50,40,0.04)' }}>
           <BtnGroup><TBtn icon="file-plus" label="New (Ctrl+N)" /><TBtn icon="save" label="Save (Ctrl+S)" /><TBtn icon="file-down" label="Save As" /></BtnGroup>
           <VLine />
@@ -470,8 +442,6 @@ export const Toolbar: React.FC<{ onOpenCatalog: () => void }> = ({ onOpenCatalog
   );
 };
 
-/* ═══ SOL KENAR ÇUBUĞU — sekmeli (Parameters / Panel Editor), varsayılan sabit, tıkla-aç tutamacı, kemik teması ═══ */
-/* ─── Tasarım tokenları — Toolbar'ın kemik/fildişi paletiyle hizalı ─── */
 const SB = {
   bg:            'linear-gradient(180deg,#f4f2ee 0%,#ebe8e2 100%)',
   contentBg:     'linear-gradient(180deg,#fdfcfa 0%,#f6f3ed 100%)',
@@ -493,7 +463,6 @@ const SIDEBAR_WIDTH = 560;
 const VSEP: React.CSSProperties = { width: '1px', height: '22px', background: 'linear-gradient(to bottom,transparent,rgba(60,50,40,0.14) 30%,rgba(60,50,40,0.14) 70%,transparent)', flexShrink: 0 };
 const ACCENT_UNDERLINE = (width: string): React.CSSProperties => ({ position: 'absolute', bottom: '-1px', left: '50%', transform: 'translateX(-50%)', width, height: '2px', background: SB.accentGradient, borderRadius: '99px' });
 
-/* ─── Sekme düğmesi ─── */
 const TabBtn: React.FC<{ active: boolean; onClick: () => void; icon: React.ReactNode; label: string }> = ({ active, onClick, icon, label }) => {
   const [hov, setHov] = useState(false);
   return (
@@ -512,7 +481,6 @@ const TabBtn: React.FC<{ active: boolean; onClick: () => void; icon: React.React
   );
 };
 
-/* ─── Boş durum ─── */
 const EmptyState: React.FC<{ icon: React.ReactNode; title: string; description: string; hint: string }> = ({ icon, title, description, hint }) => (
   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '320px', padding: '24px 32px', textAlign: 'center', animation: 'ls-empty-in 0.3s ease-out forwards' }}>
     <div style={{
@@ -532,10 +500,6 @@ const EmptyState: React.FC<{ icon: React.ReactNode; title: string; description: 
   </div>
 );
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   KEMİK TEMASI — ParametersPanel + PanelEditor'ü kaynağına dokunmadan yeniden
-   giydirir (Toolbar paletiyle uyumlu). Yalnız bugün kullanılan seçiciler.
-   ═══════════════════════════════════════════════════════════════════════════ */
 const SIDEBAR_CSS = `
 @keyframes ls-glow-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes ls-empty-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
@@ -604,9 +568,7 @@ const SIDEBAR_CSS = `
 .bone-skin input:disabled { opacity: 0.55 !important; background: #f0ece4 !important; }
 `;
 
-/* ─── Başlık kontrolleri: sekmelerden BAĞIMSIZ, tüm menüleri kapsayan görünüm/seçim ayarları ───
-   (Goker: "outline ve panel/body seçim modu diğer düğmelerle aynı işlevde değil, tüm menüleri
-   kapsıyor" → Panel Editor araç çubuğundan sekme şeridine, Pin'in yanına taşındı.) */
+/* Sekmelerden BAĞIMSIZ, tüm menüleri kapsayan görünüm/seçim ayarları. */
 const HeaderToggle: React.FC<{ active: boolean; onClick: () => void; title: string; icon: React.ReactNode; label?: string }> = ({ active, onClick, title, icon, label }) => {
   const [hov, setHov] = useState(false);
   return (
@@ -624,9 +586,6 @@ const HeaderToggle: React.FC<{ active: boolean; onClick: () => void; title: stri
     </button>
   );
 };
-/* ═══════════════════════════════════════════════════════════════════════════
-   Sidebar — varsayılan sabit + tıkla-aç + kemik teması
-   ═══════════════════════════════════════════════════════════════════════════ */
 type SidebarTab = 'parameters' | 'panel-editor';
 export const Sidebar: React.FC<{ parametersContent: React.ReactNode; panelEditorContent: React.ReactNode }> = ({ parametersContent, panelEditorContent }) => {
   const { selectedShapeId, showOutlines, setShowOutlines, panelSelectMode, setPanelSelectMode } =
@@ -638,14 +597,12 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; panelEditor
   const [handleHover, setHandleHover] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
   const handleRef = useRef<HTMLDivElement>(null);
-  // Açma okuna tıklamak kenar çubuğunu hem açar hem sabitler.
   const openSidebar = useCallback(() => { setIsOpen(true); setIsPinned(true); }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || !(isOpen || isPinned)) return;
-      // Escape, şerit girdisinde / aktif araçta "iptal" tuşudur. Yazı alanındayken
-      // ya da bir panel aracı (Extrude / Taşı / Döndür) açıkken kenar çubuğu KAPANMAZ.
+      // Escape şerit girdisinde / aktif panel aracında "iptal"dir — o durumlarda kenar çubuğu KAPANMAZ.
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
       const st = useAppStore.getState();
@@ -674,7 +631,6 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; panelEditor
 
   return (
     <>
-      {/* ═══ KAPALI DURUM — tıkla-aç tutamacı ═══ */}
       {!isVisible && (
         <div ref={handleRef} className="fixed left-0 z-40" style={{ top: '120px', bottom: '64px', width: '24px', pointerEvents: 'none' }}>
           <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: '1px', background: 'linear-gradient(to bottom,transparent,rgba(60,50,40,0.10) 20%,rgba(60,50,40,0.10) 80%,transparent)', pointerEvents: 'none' }} />
@@ -699,11 +655,9 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; panelEditor
         </div>
       )}
 
-      {/* ═══ KENAR ÇUBUĞU ═══ */}
       <div ref={sidebarRef} className="fixed z-40 flex transition-transform duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]"
         style={{ top: '120px', bottom: '64px', left: 0, width: `${SIDEBAR_WIDTH}px`, transform: isVisible ? 'translateX(0)' : `translateX(-${SIDEBAR_WIDTH}px)` }}>
         <div style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%', background: SB.bg, borderRight: `1px solid ${SB.border}`, boxShadow: SB.panelShadow, fontFamily: UI_FONT }}>
-          {/* ── Sekme şeridi ── */}
           <div style={{ position: 'relative', display: 'flex', alignItems: 'center', height: '40px', background: SB.tabStripBg, borderBottom: `1px solid ${SB.borderSoft}`, boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.7),0 1px 0 rgba(255,255,255,0.4)', flexShrink: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', height: '100%', flexShrink: 0 }}>
               <TabBtn active={activeTab === 'parameters'} onClick={() => setActiveTab('parameters')} icon={<SlidersHorizontal size={13.5} strokeWidth={2} />} label="Parameters" />
@@ -712,7 +666,7 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; panelEditor
             </div>
             <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', height: '100%', flexShrink: 0 }}>
               <div style={VSEP} />
-              {/* SEÇİM MODU: tek ikon düğmesi — her tıklama Body ↔ Panel arasında geçer; ikon GÜNCEL modu gösterir (küp = Body, üst üste levhalar = Panel; Outline'ın karesinden ayrışsın). */}
+              {/* Tek düğme Body ↔ Panel arasında geçer; ikon GÜNCEL modu gösterir (Outline'ın karesinden ayrışsın). */}
               <HeaderToggle active={panelSelectMode} onClick={() => setPanelSelectMode(!panelSelectMode)}
                 title={panelSelectMode ? 'Selection: Panel (individual panels) — click to switch to Body' : 'Selection: Body (whole bodies) — click to switch to Panel'}
                 icon={panelSelectMode ? <Layers size={14} strokeWidth={2} /> : <Box size={14} strokeWidth={2} />} />
@@ -732,7 +686,6 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; panelEditor
               </button>
             </div>
           </div>
-          {/* ── İçerik — `bone-skin` tema sarmalayıcısı ── */}
           <div className="custom-scrollbar bone-skin" style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', background: SB.contentBg, boxShadow: 'inset 0 2px 4px rgba(40,30,20,0.05),inset 0 -1px 0 rgba(140,120,100,0.04)' }}>
             {tabPane('parameters', parametersContent, <EmptyState icon={<SlidersHorizontal size={18} strokeWidth={1.6} />} title="No shape selected" description="Select an object from the 3D view to edit its parameters" hint="Tip: Click an object or drag a selection box" />)}
             {tabPane('panel-editor', panelEditorContent, <EmptyState icon={<PanelLeft size={18} strokeWidth={1.6} />} title="No panel selected" description="Select a panel or surface to edit its properties" hint="Tip: Click a surface in face select mode" />)}

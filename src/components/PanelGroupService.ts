@@ -5,35 +5,14 @@ import {
 import { type Vec3, dominantAxisLabel, effectiveBodyGeometry, genId, getFacesAndGroups, getShapeMatrix, isFlatNormal, localBboxOf, round1, vertexModsKey } from './Geometry';
 import { panelHasRotation } from './FaceRegion';
 import { matchReferenceFace } from './PanelOps';
-// Döngüsel içe aktarma (DoorService ↔ PanelGroupService): yalnız işlev gövdelerinde kullanılır (modül yüklenirken değil) — ESM canlı bağlarıyla güvenli.
+// Döngüsel içe aktarma (DoorService ↔ PanelGroupService): yalnız işlev gövdelerinde kullanılır — ESM canlı bağlarıyla güvenli.
 import { doorJointForBond, moveDoorJointTo } from './DoorService';
 
-// ═══════════════════════════════════════════════════════════════════════════
-// RAF / DİKME GRUPLARI (PanelGroupService)
-//
-// SÖZLEŞME
-//  • Grup = seçilen ŞEKİLLİ HACİM (serbest bölge) + n panel + n+1 boşluk.
-//    Hacim bir kutu DEĞİLDİR: gövde kutusu, gövde katısının eksen-hizalı yüz
-//    düzlemleri ve kardeş panel kutularının düzlemleriyle hücrelere bölünür
-//    (CavityGrid); bir hücre gövde katısının İÇİNDE ve hiçbir panelin içinde
-//    değilse serbesttir. Tohumdan (çıpa) yüz-komşu serbest hücrelere taşılarak
-//    bağlantılı bölge bulunur (floodRegion). Çentikli/çıkarmalı gövdede bölge
-//    L/U/çentikli olur; her raf KENDİ yüksekliğindeki kesitin (dilim boyunca
-//    tüm katmanlarda serbest hücrelerin) sınır çokgenini alır (sectionPolygon).
-//  • Çıpa (anchorFrac) tohum noktasıdır (kutu merkezi değil — L bölgede merkez
-//    dışarıda kalabilir); küp boyutlanınca oransal kayar, hücre serbest değilse
-//    en yakın serbest hücreye düşer.
-//  • Boşluk kuralı: ilk dağılım EŞİT. Bir boşluk girilince fark, kilitsiz ve
-//    henüz girilmemiş boşluklara eşit dağılır. Küp boyutlanınca KİLİTLİ boşluk
-//    sabit kalır; kilitsizler oranları korunarak yeni açıklığa ölçeklenir:
-//    Σgap + n·t = L (bölge kutusunun dizilim eksenindeki açıklığı).
-//  • Gövde paneli ↔ iç panel ilişkisi VF SIRASIDIR (basan/basılan): sırada
-//    üyelerden ÖNCE gelen gövde paneli hacmi sınırlar; SONRA gelen gövde
-//    panelini üyeler damgalar (bölgesi kırpılır, motor keser). Bir iç grup
-//    yalnız KENDİNDEN ÖNCE oluşturulmuş iç grupların panelleriyle sınırlanır.
-//  • Üye paneller sıradan VF-panelleridir: extrude / move / rotate adımları
-//    motorda aynı yoldan uygulanır; VF (çözülmüş kesit) her rebuild'de yazılır.
-// ═══════════════════════════════════════════════════════════════════════════
+// RAF / DİKME GRUPLARI: grup = şekilli serbest hacim (CavityGrid hücre bölgesi, tohumdan floodRegion) + n panel + n+1 boşluk.
+//  • Her raf kendi dilimindeki kesitin sınır çokgenini alır (sectionPolygon); çıpa (anchorFrac) tohumdur, kutu merkezi değil.
+//  • Boşluk: Σgap + n·t = L; kilitli boşluk sabit, kilitsizler oranla ölçeklenir.
+//  • VF SIRASI (basan/basılan): üyelerden ÖNCE gelen gövde paneli hacmi sınırlar, SONRA geleni üyeler damgalar.
+//    İç grup yalnız kendinden önceki iç grupların panelleriyle sınırlanır.
 
 export const GROUP_PANEL_THICKNESS = 18;
 const TOL = 0.5;
@@ -43,14 +22,7 @@ export const isInteriorPanel = (p: any): boolean => !!p?.parameters?.panelGroupI
 export const isInteriorVf = (vf: any): boolean => !!vf?.interior;
 export const groupKindLabel = (k: PanelGroup['kind']) => (k === 'shelf' ? 'Shelf' : 'Divider');
 type EntryFace = { axis: 0 | 1 | 2; facing: 1 | -1 };
-/**
- * DİZİLİM EKSENİ (Goker, 30 Eyl 2026 — "ok yönü soldaysa kübün sol yüzüne göre
- * yerleşecek; derinlik 300 ise dikme boşlukları 300'e göre"): raf daima Y; dikme
- * DİKEY kalır ve OKA PARALEL durur → boşluklar okun yatay DİKİ boyunca dağılır:
- * yandan tık (ok X) → dikmeler derinlik (Z) boyunca; önden/arkadan tık (ok Z) →
- * genişlik (X) boyunca. Ok düşey gelmez (üst/alt yüzden tıkta rayCavityCandidates
- * oku sabit önden arkaya — Z− — çevirir); burada yalnız güvenlik için X.
- */
+/** Dizilim ekseni: raf daima Y; dikme oka paralel durur → boşluklar okun yatay diki boyunca (ok X → Z, ok Z → X). */
 const groupAxisOf = (k: PanelGroup['kind'], arrow?: EntryFace | null, dir?: Vec3): 0 | 1 | 2 => {
   if (k === 'shelf') return 1;
   if (arrow && arrow.axis !== 1) return arrow.axis === 0 ? 2 : 0;
@@ -60,18 +32,13 @@ const groupAxisOf = (k: PanelGroup['kind'], arrow?: EntryFace | null, dir?: Vec3
   return ax >= az ? 2 : 0;
 };
 
-/** Işının baskın ekseni + yönü (kamera kutunun içindeyken ok için). */
 function dominantDir(d: Vec3): EntryFace {
   const a = [Math.abs(d[0]), Math.abs(d[1]), Math.abs(d[2])];
   const axis = (a[0] >= a[1] && a[0] >= a[2] ? 0 : a[1] >= a[2] ? 1 : 2) as 0 | 1 | 2;
   return { axis, facing: d[axis] >= 0 ? 1 : -1 };
 }
 
-/**
- * Işının GÖVDE kutusuna girdiği yüz: eksen + yön (min yüzden giriş → +1, max
- * yüzden giriş → −1 — yani tıklanan yüzden İÇERİ). Slab kesişiminde giriş
- * zamanı en büyük olan eksen giriş yüzüdür. Kamera kutunun içindeyse null.
- */
+/** Işının gövde kutusuna girdiği yüz; facing tıklanan yüzden İÇERİ (min → +1). Kamera içerideyse null. */
 function rayEntryFace(o: Vec3, d: Vec3, b: CavityBox): EntryFace | null {
   let best = -Infinity, axis: 0 | 1 | 2 = 0, facing: 1 | -1 = 1;
   for (const a of [0, 1, 2] as const) {
@@ -87,7 +54,6 @@ const cloneBox = (b: CavityBox): CavityBox => ({ min: [...b.min] as Vec3, max: [
 export const boxSpan = (b: CavityBox, a: number) => b.max[a] - b.min[a];
 export const fmtBox = (b: CavityBox) => `${b.min.map(n => n.toFixed(0)).join(',')}..${b.max.map(n => n.toFixed(0)).join(',')}`;
 const boxCenter = (b: CavityBox): Vec3 => [(b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, (b.min[2] + b.max[2]) / 2];
-/** Gövde kutusundaki oran ↔ nokta. */
 const fracInCavity = (body: CavityBox, p: Vec3, clamp = false): Vec3 => [0, 1, 2].map(a => {
   const s = body.max[a] - body.min[a];
   if (s <= 1e-6) return clamp ? 0.5 : 0;
@@ -97,17 +63,14 @@ const fracInCavity = (body: CavityBox, p: Vec3, clamp = false): Vec3 => [0, 1, 2
 const pointFromFrac = (body: CavityBox, f: Vec3): Vec3 => [0, 1, 2].map(a => body.min[a] + f[a] * (body.max[a] - body.min[a])) as Vec3;
 type Pt2 = { x: number; y: number };
 
-// ── KUTULAR ─────────────────────────────────────────────────────────────────
-
 const toCavityBox = (bb: THREE.Box3): CavityBox => ({ min: [bb.min.x, bb.min.y, bb.min.z], max: [bb.max.x, bb.max.y, bb.max.z] });
 
-/** Gövdenin (vertex düzenlemeli etkin) yerel sınır kutusu. */
 export function bodyLocalBox(parent: Shape): CavityBox | null {
   const bb = localBboxOf(effectiveBodyGeometry(parent));
   return bb ? toCavityBox(bb) : null;
 }
 
-/** Panelin gövde-yerel kutusu (geometri gövde çerçevesindedir; konum farkı eklenir). */
+/** Panel geometrisi gövde çerçevesindedir; yalnız konum farkı eklenir. */
 export function panelLocalBox(p: Shape, parent: Shape): CavityBox | null {
   const bb = localBboxOf(p.geometry);
   if (!bb || (p.geometry.getAttribute('position') as THREE.BufferAttribute).count === 0) return null;
@@ -115,47 +78,34 @@ export function panelLocalBox(p: Shape, parent: Shape): CavityBox | null {
   return toCavityBox(bb.translate(new THREE.Vector3(d[0], d[1], d[2])));
 }
 
-// ── HÜCRE IZGARASI (CavityGrid) ─────────────────────────────────────────────
-
 export interface CavityGrid {
   body: CavityBox;
   xs: number[]; ys: number[]; zs: number[];
   nx: number; ny: number; nz: number;
   /** 1 = serbest (gövde içinde, panel dışında). */
   free: Uint8Array;
-  /** Izgarayı kuran engel (panel) kutuları — panel-derinliği alternatifleri için. */
   obstacles?: CavityBox[];
-  /** Dönmüş/eğik panellerin büyük yüzleri: kutu değil YARIM-UZAY olarak sınırlar (tohum tarafına göre yönlenir). */
+  /** Eğik panel yüzleri: kutu değil YARIM-UZAY olarak sınırlar. */
   tiltFaces?: TiltFace[];
 }
 
-// ── EĞİK PANELLER = YARIM-UZAY ──────────────────────────────────────────────
-// Dönmüş / eğik bir panel (Goker: "sağ panel açılı yerleşmiş olmasına rağmen
-// kırmızı yer düz görünüyor") kutusuyla engel sayılırsa bölge eğik yüzeye kadar
-// gitmez, kama boşluğu kaybolur. Bu paneller ızgarada engel DEĞİLDİR; yalnız
-// kutularının düzlemleri hücre bölmesine girer. Bölge, kesitler, önizleme ve
-// kutu açıklığı, panelin tohuma bakan büyük yüzünün yarım-uzayıyla kırpılır.
-// Üye VF'ler, panel VF sırasında ÖNCE ise (basan) uzak dilim yüzüne kadar
-// uzatılır ki motor (cutByRotatedPressers) ucu eğime göre pahlasın; panel
-// sonra ise yakın yüze kadar (asla iç içe geçmez).
+// EĞİK PANELLER: kutu engeli kama boşluğunu kaybettirir → ızgarada engel değil, tohuma bakan yüzün yarım-uzayıyla kırpılır.
+// VF sırasında ÖNCE ise (basan) üye uzak yüze uzatılır (motor cutByRotatedPressers pahlar); sonra ise yakın yüze (iç içe geçmez).
 interface TiltFace { id: string; vfId?: string; n: Vec3; d: number; bbox: CavityBox }
 interface TiltPlane extends TiltFace { bevel?: boolean }
 const dot3 = (a: Vec3, b: Vec3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-/** Düzlemin "kapsama" eksenleri: normale en az hizalı iki eksen (panelin yayıldığı yönler). */
 const planeSpanAxes = (pl: TiltFace): [number, number] => {
   const a = [0, 1, 2].sort((x, y) => Math.abs(pl.n[x]) - Math.abs(pl.n[y]));
   return [a[0], a[1]];
 };
-/** Nokta panelin yayıldığı alanın (kutu, yayılma eksenlerinde) içinde mi? */
 const inPlaneRange = (pl: TiltFace, p: Vec3, tol = 2): boolean => {
   const [a, b] = planeSpanAxes(pl);
   return p[a] >= pl.bbox.min[a] - tol && p[a] <= pl.bbox.max[a] + tol && p[b] >= pl.bbox.min[b] - tol && p[b] <= pl.bbox.max[b] + tol;
 };
-/** Nokta tüm eğik yarım-uzayların içinde mi (kapsama dışındaki düzlem uygulanmaz)? */
+/** Kapsama dışındaki düzlem uygulanmaz. */
 const insideTiltPlanes = (planes: TiltPlane[], p: Vec3): boolean =>
   planes.every(pl => !inPlaneRange(pl, p) || dot3(pl.n, p) >= pl.d - TOL);
-/** Hücre (kutu) yarım-uzayla KESİŞİYOR mu — herhangi bir köşesi içerideyse hücre bölgeye alınır;
- *  düzlemi kesen hücrenin arka parçası kesit/önizlemede kırpılır (merkez testi kamayı kaybediyordu). */
+/** Herhangi bir köşesi içerideyse hücre bölgeye alınır (merkez testi kamayı kaybeder); fazlası kesit/önizlemede kırpılır. */
 const cellInsideTiltPlanes = (planes: TiltPlane[], b: CavityBox): boolean => planes.every(pl => {
   if (!inPlaneRange(pl, boxCenter(b))) return true;
   let best = -Infinity;
@@ -163,7 +113,6 @@ const cellInsideTiltPlanes = (planes: TiltPlane[], b: CavityBox): boolean => pla
   return best >= TOL;
 });
 
-/** Dönmüş/eğik panellerin iki büyük yüzü (gövde-yerel düzlemler). */
 function tiltedPanelFaces(parent: Shape, panels: Shape[]): TiltFace[] {
   const out: TiltFace[] = [];
   for (const p of panels) {
@@ -182,7 +131,7 @@ function tiltedPanelFaces(parent: Shape, panels: Shape[]): TiltFace[] {
   return out;
 }
 
-/** Tohumun bulunduğu tarafa bakan yüz seçilir → panel başına en fazla bir yarım-uzay (n·p ≥ d). */
+/** Tohuma bakan yüz → panel başına en fazla bir yarım-uzay (n·p ≥ d). */
 function orientTiltPlanes(faces: TiltFace[] | undefined, seed: Vec3): TiltPlane[] {
   if (!faces?.length) return [];
   const best = new Map<string, TiltPlane>();
@@ -196,7 +145,6 @@ function orientTiltPlanes(faces: TiltFace[] | undefined, seed: Vec3): TiltPlane[
 }
 
 type Pt3 = Vec3;
-/** Kutunun 6 yüz dörtgeni (3B). */
 const boxFaces = (b: CavityBox): Pt3[][] => {
   const [x0, y0, z0] = b.min, [x1, y1, z1] = b.max;
   return [
@@ -206,14 +154,7 @@ const boxFaces = (b: CavityBox): Pt3[][] => {
   ];
 };
 
-/**
- * Bölgenin GERÇEK dış kutusu (hacmin en dış sınırları): eğik düzlemi kesen her
- * hücre yarım-uzaylarla kırpılır (dışbükey çokyüzlü) ve köşelerinin kutusu
- * alınır. Dizilim açıklığı L bunu okur. Eski yol (kutuyu tohum DOĞRUSU boyunca
- * kırpmak) açıklığı tıklanan noktaya bağlıyordu: eğik panelin altındaki üçgen
- * bölgede dikme, hacmin dış sınırlarına göre değil tıklanan yüksekliğe göre
- * ortalanıyordu (Goker: "taralı dikme en dış hacmin sınırlarına göre ortalanmıyor").
- */
+/** Bölgenin eğik düzlemlerle kırpılmış gerçek dış kutusu; dizilim açıklığı L bunu okur (tık noktasından bağımsız olmalı). */
 function clippedRegionBBox(g: CavityGrid, cells: Set<number>, planes: TiltPlane[]): CavityBox {
   const raw = regionBBox(g, cells);
   if (!planes.length || !cells.size) return raw;
@@ -223,7 +164,6 @@ function clippedRegionBBox(g: CavityGrid, cells: Set<number>, planes: TiltPlane[
     const b = cellBox(g, c);
     const active = planes.filter(pl => inPlaneRange(pl, boxCenter(b)));
     if (!active.length) { take(b.min); take(b.max); continue; }
-    // Kırpılmış çokyüzlünün tüm köşeleri kırpılmış kutu yüzlerinde ya da düzlem kesitlerindedir.
     for (const face of boxFaces(b)) {
       let poly = face;
       for (const pl of active) { poly = clipPoly3D(poly, pl.n, pl.d); if (poly.length < 3) break; }
@@ -238,10 +178,8 @@ function clippedRegionBBox(g: CavityGrid, cells: Set<number>, planes: TiltPlane[
   }
   if (!Number.isFinite(out.min[0]) || !Number.isFinite(out.max[0])) return raw;
   for (let a = 0; a < 3; a++) { out.min[a] = Math.max(out.min[a], raw.min[a]); out.max[a] = Math.min(out.max[a], raw.max[a]); if (out.max[a] - out.min[a] < 1) { out.min[a] = raw.min[a]; out.max[a] = raw.max[a]; } }
-  if (fmtBox(out) !== fmtBox(raw)) console.log('[YAGO][HACİM-KUTU] eğik kırpım: ham=', fmtBox(raw), '→ dış sınır=', fmtBox(out));
   return out;
 }
-/** Sutherland–Hodgman: 3B çokgeni n·p ≥ d yarım-uzayına kırpar. */
 function clipPoly3D(poly: Pt3[], n: Vec3, d: number): Pt3[] {
   const out: Pt3[] = [];
   for (let i = 0; i < poly.length; i++) {
@@ -252,7 +190,6 @@ function clipPoly3D(poly: Pt3[], n: Vec3, d: number): Pt3[] {
   }
   return out;
 }
-/** Sutherland–Hodgman (2B): a·u + b·v ≥ c. */
 function clipPoly2D(poly: Pt2[], a: number, b: number, c: number): Pt2[] {
   const out: Pt2[] = [];
   for (let i = 0; i < poly.length; i++) {
@@ -263,12 +200,11 @@ function clipPoly2D(poly: Pt2[], a: number, b: number, c: number): Pt2[] {
   }
   return out;
 }
-/** Düzlem ∩ kutu kesit çokgeni (dışbükey, sıralı). */
 function planeBoxSection(n: Vec3, d: number, b: CavityBox): Pt3[] | null {
   const M = Math.max(boxSpan(b, 0), boxSpan(b, 1), boxSpan(b, 2)) * 4 + 10;
   const c = boxCenter(b);
   const k = dot3(n, c) - d;
-  const o: Vec3 = [c[0] - n[0] * k, c[1] - n[1] * k, c[2] - n[2] * k];   // düzlem üzerinde merkez izdüşümü
+  const o: Vec3 = [c[0] - n[0] * k, c[1] - n[1] * k, c[2] - n[2] * k];
   const ax = Math.abs(n[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
   const u: Vec3 = [n[1] * ax[2] - n[2] * ax[1], n[2] * ax[0] - n[0] * ax[2], n[0] * ax[1] - n[1] * ax[0]];
   const lu = Math.hypot(u[0], u[1], u[2]) || 1; u[0] /= lu; u[1] /= lu; u[2] /= lu;
@@ -284,7 +220,6 @@ function planeBoxSection(n: Vec3, d: number, b: CavityBox): Pt3[] | null {
 }
 const polyCentroid = (poly: Pt3[]): Vec3 => { const c: Vec3 = [0, 0, 0]; for (const p of poly) { c[0] += p[0]; c[1] += p[1]; c[2] += p[2]; } return [c[0] / poly.length, c[1] / poly.length, c[2] / poly.length]; };
 
-/** Bölge dış yüzeyi eğik yarım-uzaylarla kırpılır + kesim yüzeyleri (kapaklar) eklenir. */
 function clipSurfaceByPlanes(g: CavityGrid, cells: Set<number>, surface: number[], planes: TiltPlane[]): number[] {
   if (!planes.length) return surface;
   const out: number[] = [];
@@ -315,16 +250,11 @@ function clipSurfaceByPlanes(g: CavityGrid, cells: Set<number>, surface: number[
   return out;
 }
 
-/**
- * Kesit çokgenini dilim [a0,a1] için eğik düzlemlerle kırpar. Düzlem, dilim
- * boyunca değişen bir doğru verir: 'near' = en kısıtlayıcı (asla iç içe
- * geçmez), 'far' = en uzak (motor pahlar → uç eğime oturur).
- */
+/** Dilim [a0,a1] boyunca: bevel yoksa en kısıtlayıcı doğru (iç içe geçmez), bevel ise en uzak (motor pahlar). */
 function clipSectionByPlanes(poly: Pt2[], axis: number, a0: number, a1: number, planes: TiltPlane[]): Pt2[] {
   const [ua, va] = [0, 1, 2].filter(a => a !== axis);
   let out = poly;
   for (const pl of planes) {
-    // Dilim, panelin dizilim eksenindeki aralığında değilse uygulanmaz.
     if (a1 < pl.bbox.min[axis] - TOL || a0 > pl.bbox.max[axis] + TOL) continue;
     const nu = pl.n[ua], nv = pl.n[va], ns = pl.n[axis];
     if (Math.abs(nu) < 1e-9 && Math.abs(nv) < 1e-9) continue;
@@ -352,7 +282,7 @@ function uniqSorted(vals: number[], lo: number, hi: number): number[] {
   return out;
 }
 
-/** Nokta kapalı mesh'in içinde mi (ışın pariteси, eğik ışın dejenere durumları önler). */
+/** Kapalı mesh içinde mi: ışın paritesi; eğik ışın kenar/köşe dejenerasyonlarını önler. */
 function makeInsideMeshTest(geo: THREE.BufferGeometry): (p: Vec3) => boolean {
   const pos = geo.getAttribute('position') as THREE.BufferAttribute;
   const idx = geo.getIndex();
@@ -362,7 +292,7 @@ function makeInsideMeshTest(geo: THREE.BufferGeometry): (p: Vec3) => boolean {
     const vi = idx ? idx.getX(t) : t;
     tri[t * 3] = pos.getX(vi); tri[t * 3 + 1] = pos.getY(vi); tri[t * 3 + 2] = pos.getZ(vi);
   }
-  const d = [0.8931, 0.3117, 0.3243]; // birim-yakın, eksenlere eğik
+  const d = [0.8931, 0.3117, 0.3243];
   return (p: Vec3) => {
     let hits = 0;
     for (let t = 0; t < n; t += 3) {
@@ -389,13 +319,7 @@ function makeInsideMeshTest(geo: THREE.BufferGeometry): (p: Vec3) => boolean {
 const _gridCache = new Map<string, CavityGrid>();
 const boxesKey = (bs: CavityBox[]) => bs.map(b => [...b.min, ...b.max].map(n => Math.round(n * 10)).join(',')).sort().join(';');
 
-/**
- * IZGARA: gövde kutusu + gövde katısının eksen-hizalı yüz düzlemleri + engel
- * (panel) kutularının düzlemleri → hücreler. Hücre merkezi gövde katısının
- * içinde (kutu-dışı gövdede mesh parite testi) ve hiçbir engelin içinde
- * değilse serbesttir. Geometri × engeller başına önbellek.
- */
-/** Izgaraya eklenen düzlem (hacim adımlarının hedef düzlemleri: kesim tam hücre sınırına düşsün). */
+/** Hacim adımlarının hedef düzlemleri ızgaraya eklenir ki kesim tam hücre sınırına düşsün. */
 export interface StepPlane { axis: number; coord: number }
 const hasPlane = (g: CavityGrid, pl: StepPlane) => axisPlanes(g, pl.axis).some(v => Math.abs(v - pl.coord) <= TOL);
 
@@ -422,7 +346,6 @@ function buildCavityGrid(parent: Shape, obstacles: CavityBox[], splitBoxes: Cavi
   const zs = uniqSorted(pz, body.min[2], body.max[2]);
   const nx = xs.length - 1, ny = ys.length - 1, nz = zs.length - 1;
   const grid: CavityGrid = { body, xs, ys, zs, nx, ny, nz, free: new Uint8Array(nx * ny * nz), obstacles, tiltFaces };
-  // Düz kutu gövde (6 eksen yüzü, ek düzlem yok) → merkez testi gerekmez.
   const plainBox = groups.length === 6 && axisFaces === 6 && !(parent.vertexModifications?.length) && !(parent.subtractionGeometries?.some(Boolean)) && !(parent.fillets?.length);
   const inside = plainBox ? null : makeInsideMeshTest(geo);
   const inObstacle = (c: Vec3) => obstacles.some(o =>
@@ -434,7 +357,6 @@ function buildCavityGrid(parent: Shape, obstacles: CavityBox[], splitBoxes: Cavi
     if (inside && !inside(c)) continue;
     grid.free[cellIndex(grid, i, j, k)] = 1; freeN++;
   }
-  console.log('[YAGO][HACİM-IZGARA]', parent.id, `hücre=${nx}x${ny}x${nz}`, 'serbest=', freeN, plainBox ? '(düz kutu)' : '(gövde katısı mesh testi)', 'engelN=', obstacles.length, 'eğikYüzN=', tiltFaces.length);
   if (_gridCache.size > 12) _gridCache.delete(_gridCache.keys().next().value as string);
   _gridCache.set(key, grid);
   return grid;
@@ -447,14 +369,12 @@ function planeIndex(planes: number[], v: number): number {
   return lo;
 }
 
-/** Noktanın hücresi (-1 = gövde dışı). */
 function cellOfPoint(g: CavityGrid, p: Vec3): number {
   const i = planeIndex(g.xs, p[0]), j = planeIndex(g.ys, p[1]), k = planeIndex(g.zs, p[2]);
   if (i < 0 || j < 0 || k < 0) return -1;
   return cellIndex(g, i, j, k);
 }
 
-/** Noktaya en yakın SERBEST hücre (çıpa dolu hücreye düşerse). */
 function nearestFreeCell(g: CavityGrid, p: Vec3): number {
   let best = -1, bestD = Infinity;
   for (let c = 0; c < g.free.length; c++) {
@@ -467,7 +387,6 @@ function nearestFreeCell(g: CavityGrid, p: Vec3): number {
   return best;
 }
 
-/** Tohum hücreden yüz-komşu serbest hücrelere taşma → bağlantılı bölge. */
 function floodRegion(g: CavityGrid, seed: number, allow?: (c: number) => boolean): Set<number> {
   const out = new Set<number>();
   if (seed < 0 || !g.free[seed] || (allow && !allow(seed))) return out;
@@ -495,7 +414,6 @@ function regionBBox(g: CavityGrid, cells: Set<number>): CavityBox {
   return b;
 }
 
-/** Bölge hücreleri X boyunca birleştirilmiş kutular (şema silueti / kayıt). */
 function regionBoxes(g: CavityGrid, cells: Set<number>): CavityBox[] {
   const out: CavityBox[] = [];
   for (let k = 0; k < g.nz; k++) for (let j = 0; j < g.ny; j++) {
@@ -513,7 +431,6 @@ function regionBoxes(g: CavityGrid, cells: Set<number>): CavityBox[] {
 
 const regionKey = (cells: Set<number>) => Array.from(cells).sort((a, b) => a - b).join(',');
 
-/** Bölgenin DIŞ yüzeyi (komşusu bölgede olmayan hücre yüzleri) — üçgen konumları. */
 function regionSurface(g: CavityGrid, cells: Set<number>): number[] {
   const pos: number[] = [];
   const quad = (a: Vec3, b: Vec3, c: Vec3, d: Vec3) => { pos.push(...a, ...b, ...c, ...a, ...c, ...d); };
@@ -532,17 +449,10 @@ function regionSurface(g: CavityGrid, cells: Set<number>): number[] {
   return pos;
 }
 
-// ── 2B MASKE SINIR İZLEME (dikdörtgensel çokgen) ────────────────────────────
-
-/**
- * Düzensiz ızgara maskesinin sınır döngüleri (dolu bölge SOLDA kalacak
- * şekilde yönlü). Sıkışma noktalarında sağa dönen aday seçilir (döngüler
- * kesişmez); ardışık doğrusal kenarlar birleştirilir.
- */
+/** Maske sınır döngüleri (dolu bölge SOLDA); sıkışma noktalarında sağa dönülür → döngüler kesişmez. */
 export function traceMaskLoops(us: number[], vs: number[], filled: (i: number, k: number) => boolean): Pt2[][] {
   const nu = us.length - 1, nv = vs.length - 1;
   const f = (i: number, k: number) => i >= 0 && k >= 0 && i < nu && k < nv && filled(i, k);
-  // Yönlü kenarlar: anahtar = başlangıç köşesi "i,k"
   type E = { a: [number, number]; b: [number, number]; used: boolean };
   const edges: E[] = [];
   const byStart = new Map<string, E[]>();
@@ -552,10 +462,10 @@ export function traceMaskLoops(us: number[], vs: number[], filled: (i: number, k
   };
   for (let i = 0; i < nu; i++) for (let k = 0; k < nv; k++) {
     if (!f(i, k)) continue;
-    if (!f(i, k - 1)) add([i, k], [i + 1, k]);          // alt kenar → +u
-    if (!f(i + 1, k)) add([i + 1, k], [i + 1, k + 1]);  // sağ kenar → +v
-    if (!f(i, k + 1)) add([i + 1, k + 1], [i, k + 1]);  // üst kenar → −u
-    if (!f(i - 1, k)) add([i, k + 1], [i, k]);          // sol kenar → −v
+    if (!f(i, k - 1)) add([i, k], [i + 1, k]);
+    if (!f(i + 1, k)) add([i + 1, k], [i + 1, k + 1]);
+    if (!f(i, k + 1)) add([i + 1, k + 1], [i, k + 1]);
+    if (!f(i - 1, k)) add([i, k + 1], [i, k]);
   }
   const loops: Pt2[][] = [];
   for (const start of edges) {
@@ -570,7 +480,6 @@ export function traceMaskLoops(us: number[], vs: number[], filled: (i: number, k
       if (!cands.length) break;
       let next = cands[0];
       if (cands.length > 1) {
-        // Sağa dönüş önceliği (gelen yön × giden yön çapraz çarpımı en küçük).
         const din = [cur.b[0] - cur.a[0], cur.b[1] - cur.a[1]];
         let best = Infinity;
         for (const e of cands) {
@@ -582,7 +491,6 @@ export function traceMaskLoops(us: number[], vs: number[], filled: (i: number, k
       cur = next;
     }
     if (loop.length < 4) continue;
-    // Doğrusal ara köşeleri at.
     const pts: Pt2[] = [];
     for (let n = 0; n < loop.length; n++) {
       const p = loop[(n - 1 + loop.length) % loop.length], q = loop[n], r = loop[(n + 1) % loop.length];
@@ -605,11 +513,7 @@ const pointInPoly = (pt: Pt2, poly: Pt2[]) => {
   return inside;
 };
 
-/**
- * KESİT ÇOKGENİ: dizilim ekseni boyunca [a0,a1] dilimini kesen TÜM katmanlarda
- * bölgede olan (u,v) hücreleri → dış sınır (pozitif alanlı, delik yok).
- * Birden çok parça varsa tohum sütununu içeren, yoksa en büyük seçilir.
- */
+/** Dilimi kesen TÜM katmanlarda bölgede olan (u,v) hücrelerinin dış sınırı; çok parçada tohumu içeren, yoksa en büyük. */
 function sectionPolygon(g: CavityGrid, cells: Set<number>, axis: number, a0: number, a1: number, seed?: Vec3): Pt2[] | null {
   const [ua, va] = [0, 1, 2].filter(a => a !== axis);
   const planes = axisPlanes(g, axis);
@@ -632,8 +536,6 @@ function sectionPolygon(g: CavityGrid, cells: Set<number>, axis: number, a0: num
   return loops.reduce((b, l) => (polyArea(l) > polyArea(b) ? l : b));
 }
 
-// ── IŞIN BOYUNCA ADAYLAR ────────────────────────────────────────────────────
-
 function rayBoxInterval(o: Vec3, d: Vec3, b: CavityBox): [number, number] | null {
   let t0 = -Infinity, t1 = Infinity;
   for (let a = 0; a < 3; a++) {
@@ -649,19 +551,13 @@ function rayBoxInterval(o: Vec3, d: Vec3, b: CavityBox): [number, number] | null
   return [t0, t1];
 }
 
-/**
- * TIK YÖNÜ (Goker: "kübün sağına tıklıyorsam ok sola doğru bakacak"): ışının
- * dizilim eksenindeki bileşeninin işareti. Işın eksene DİK ise (ör. ön görünüşte
- * dikme) işaret yoktur → tıklanan nokta hacmin hangi yarısındaysa o taraftan
- * içeri (min yarısı → +1, max yarısı → −1). Tık ekseni asla değiştirmez.
- */
+/** Tık yönü: ışının dizilim bileşeninin işareti; ışın eksene dikse tıklanan yarıdan içeri. Ekseni asla değiştirmez. */
 function facingOf(axis: number, dirAxis: number, at: Vec3, bbox: CavityBox): 1 | -1 {
   if (Math.abs(dirAxis) > 1e-3) return dirAxis > 0 ? 1 : -1;
   return at[axis] <= (bbox.min[axis] + bbox.max[axis]) / 2 ? 1 : -1;
 }
 type RayCtx = { axis: 0 | 1 | 2; dirAxis: number; at: Vec3; arrow: EntryFace };
 
-/** Bölgeden seçim adayı (kutu, kutular, yüzey, anahtar, tohum, tık yönü). */
 function pickFromRegion(g: CavityGrid, cells: Set<number>, seed: Vec3, shape: CavityPick['shape'] = 'shaped', planes: TiltPlane[] = [], ray?: RayCtx): CavityPick {
   const bbox = clippedRegionBBox(g, cells, planes);
   const axis = ray?.axis ?? 0;
@@ -671,16 +567,10 @@ function pickFromRegion(g: CavityGrid, cells: Set<number>, seed: Vec3, shape: Ca
   return { key: `${shape}:${regionKey(cells)}`, bbox, boxes: regionBoxes(g, cells), surface: clipSurfaceByPlanes(g, cells, regionSurface(g, cells), planes), seed, shape, axis, facing, at, arrow };
 }
 
-/**
- * MAKSİMAL KUTULAR: bölge hücreleri içinde, tohum hücresini içeren ve hiçbir
- * yönde bir hücre daha büyütülemeyen eksen-hizalı kutular (indeks uzayında).
- * 3B toplam tablosuyla O(1) doluluk testi; hacme göre büyükten küçüğe.
- * Bunlar "düz" alternatiflerdir: en kapsayıcı kutu → içeri doğru daha küçükler.
- */
+/** Tohum hücresini içeren, hiçbir yönde büyütülemeyen kutular (3B toplam tablosuyla O(1) doluluk); hacme göre azalan. */
 function maximalBoxesContaining(g: CavityGrid, cells: Set<number>, seedCell: number): Array<{ cells: Set<number>; bbox: CavityBox; volume: number }> {
   const { nx, ny, nz } = g;
   const [si, sj, sk] = cellIJK(g, seedCell);
-  // Toplam tablo: S[i][j][k] = (0..i-1, 0..j-1, 0..k-1) içindeki bölge hücresi sayısı.
   const X = nx + 1, Y = ny + 1, Z = nz + 1;
   const S = new Int32Array(X * Y * Z);
   const at = (i: number, j: number, k: number) => S[(i * Y + j) * Z + k];
@@ -704,7 +594,6 @@ function maximalBoxesContaining(g: CavityGrid, cells: Set<number>, seedCell: num
       for (let k0 = sk; k0 >= 0; k0--) for (let k1 = sk; k1 < nz; k1++) {
         if (--budget < 0) break;
         if (!full(i0, i1, j0, j1, k0, k1)) break;
-        // Maksimal mi? (6 yönde bir hücre büyütülemez)
         if (i0 > 0 && full(i0 - 1, i1, j0, j1, k0, k1)) continue;
         if (i1 < nx - 1 && full(i0, i1 + 1, j0, j1, k0, k1)) continue;
         if (j0 > 0 && full(i0, i1, j0 - 1, j1, k0, k1)) continue;
@@ -727,15 +616,7 @@ function maximalBoxesContaining(g: CavityGrid, cells: Set<number>, seedCell: num
 
 type BoxAlt = { cells: Set<number>; bbox: CavityBox; volume: number; derived?: boolean };
 
-/**
- * PANEL-DERİNLİĞİ ALTERNATİFLERİ (Goker: "taralı panel kadar derinlikte bir
- * hacim de seçenekler arasında olmalı"): maksimal kutu B'nin bir yüzüne
- * DEĞEN panel O (ör. kısaltılmış dikme) B'yi o yüzde yalnız kendi uzunluğu
- * kadar sınırlıyorsa, B diğer eksenlerde O'nun aralığına kırpılır → "panel
- * kadar derin / yüksek" kutu. Tek eksen kırpımları ve ikisi birden üretilir;
- * B ile aynı olanlar atılır. Kırpım sınırları engel düzlemleridir → hücrelerle
- * birebir örtüşür (maksimal olmadıkları için maximalBoxesContaining vermez).
- */
+/** Panel-derinliği alternatifleri: maksimal olmadıkları için maximalBoxesContaining vermez; sınırlar engel düzlemi → hücrelerle örtüşür. */
 function panelBoundedBoxes(g: CavityGrid, B: BoxAlt): BoxAlt[] {
   const obs = g.obstacles || [];
   const out: BoxAlt[] = [];
@@ -745,7 +626,6 @@ function panelBoundedBoxes(g: CavityGrid, B: BoxAlt): BoxAlt[] {
       const touches = Math.abs(O.max[a] - B.bbox.min[a]) < TOL || Math.abs(O.min[a] - B.bbox.max[a]) < TOL;
       if (!touches) continue;
       const others = [0, 1, 2].filter(x => x !== a);
-      // O, B'nin yüzüyle diğer iki eksende gerçekten örtüşmeli.
       if (!others.every(b => Math.min(O.max[b], B.bbox.max[b]) - Math.max(O.min[b], B.bbox.min[b]) > TOL)) continue;
       const clipSets: number[][] = [[others[0]], [others[1]], others];
       for (const axes of clipSets) {
@@ -773,11 +653,7 @@ function panelBoundedBoxes(g: CavityGrid, B: BoxAlt): BoxAlt[] {
   return out;
 }
 
-/**
- * DÜZ ALTERNATİFLER: verilen hücrelerden herhangi birini içeren maksimal
- * kutular + bunların panel-derinliği kırpımları; tekil, büyükten küçüğe.
- * Hem seçim ailesi hem düz-mod grup çözümü (resize) aynı listeyi kullanır.
- */
+/** Düz alternatifler; seçim ailesi ve düz-mod resize çözümü AYNI listeyi kullanmalı. */
 function boxAlternatives(g: CavityGrid, cells: Set<number>, seedCells: number[], minSpan = 0): BoxAlt[] {
   const okSpan = (b: CavityBox) => boxSpan(b, 0) >= minSpan && boxSpan(b, 1) >= minSpan && boxSpan(b, 2) >= minSpan;
   const seen = new Set<string>();
@@ -790,13 +666,7 @@ function boxAlternatives(g: CavityGrid, cells: Set<number>, seedCells: number[],
   return out;
 }
 
-/**
- * ADAY AİLESİ (Goker: "önce en kapsayıcı, sonra içeriye doğru; hem şekilli
- * hem düz"): 1) şekilli bölgenin tamamı, 2) ışının bu bölgede geçtiği
- * hücrelerden herhangi birini içeren maksimal kutular ve bitişik panellerin
- * derinliğine/yüksekliğine kırpılmış halleri, hacme göre büyükten küçüğe.
- * Bölge zaten tek kutuysa şekilli aday tekrar edilmez.
- */
+/** Aday ailesi: şekilli bölge (tek kutu değilse) → düz kutular, büyükten küçüğe. */
 function candidateFamily(g: CavityGrid, cells: Set<number>, rayCells: number[], seed: Vec3, minSpan: number, planes: TiltPlane[] = [], ray?: RayCtx): CavityPick[] {
   const okSpan = (b: CavityBox) => boxSpan(b, 0) >= minSpan && boxSpan(b, 1) >= minSpan && boxSpan(b, 2) >= minSpan;
   const out: CavityPick[] = [];
@@ -808,21 +678,11 @@ function candidateFamily(g: CavityGrid, cells: Set<number>, rayCells: number[], 
   return out;
 }
 
-/**
- * IŞIN BOYUNCA ŞEKİLLİ HACİMLER: ışının gövde kutusundaki parçası hücre hücre
- * yürünür; serbest hücreler bölgelerine göre (ilk giriş sırasıyla) gruplanır;
- * her bölge için aday ailesi üretilir (şekilli → düz kutular). Sol tık bu
- * liste üzerinde döner (ışın derinliği sırasıyla). `kind` verilirse her adaya
- * dizilim ekseni + tık yönü (facing) yazılır; `at` = ışının bölgeye girdiği nokta.
- */
+/** Işın boyunca bölgeler (derinlik sırasıyla) × aday ailesi; sol tık bu listede döner. */
 export function rayCavityCandidates(originLocal: Vec3, dirLocal: Vec3, g: CavityGrid, minSpan: number, kind: PanelGroup['kind'] = 'divider'): CavityPick[] {
-  // OK = TIKLANAN GÖVDE YÜZÜNDEN içeri (kameradan bağımsız; kamera içerideyse ışının baskın ekseni).
-  // DİZİLİM ekseni oka göre (raf Y; dikme oka paralel → okun yatay diki). SAYIM tarafı:
-  // ok dizilim eksenindeyse oktan, değilse tıklanan yarıdan (facingOf, dirAxis=0).
+  // Ok = tıklanan gövde yüzünden içeri (kameradan bağımsız). Sayım tarafı: ok dizilim eksenindeyse oktan, değilse tıklanan yarıdan.
   let arrow = rayEntryFace(originLocal, dirLocal, g.body) ?? dominantDir(dirLocal);
-  // ÜST/ALT YÜZDEN TIK (Goker: "raf ve dikme üst yüzeylerden seçilebilsin ama okun yönü
-  // hep bir yönden olsun — önden arkaya"): ok düşey çıkarsa raf ve dikme için SABİT
-  // önden arkaya (gövde-yerel ön = +Z → ok Z−). Dikme oka paralel → genişlik (X) boyunca.
+  // Üst/alt yüzden tık: ok sabit önden arkaya (gövde-yerel ön = +Z → Z−).
   if (arrow.axis === 1) arrow = { axis: 2, facing: -1 };
   const axis = groupAxisOf(kind, arrow, dirLocal);
   const dirAxis = arrow.axis === axis ? arrow.facing : 0;
@@ -844,7 +704,6 @@ export function rayCavityCandidates(originLocal: Vec3, dirLocal: Vec3, g: Cavity
     const p: Vec3 = [originLocal[0] + dirLocal[0] * tm, originLocal[1] + dirLocal[1] * tm, originLocal[2] + dirLocal[2] * tm];
     const c = cellOfPoint(g, p);
     if (c < 0 || !g.free[c]) continue;
-    // EĞİK PANELLER: örnek nokta hangi taraftaysa o yarım-uzaylar; nokta bir eğik levhanın içindeyse atlanır.
     const planes = orientTiltPlanes(g.tiltFaces, p);
     if (!insideTiltPlanes(planes, p)) continue;
     let ri = -1;
@@ -860,35 +719,23 @@ export function rayCavityCandidates(originLocal: Vec3, dirLocal: Vec3, g: Cavity
   }
   const out: CavityPick[] = [];
   for (const r of regions) out.push(...candidateFamily(g, r.cells, r.rayCells, r.seed, minSpan, r.planes, { axis, dirAxis, at: r.seed, arrow }));
-  if (out.length) console.log('[YAGO][HACİM] ok=', `${'XYZ'[arrow.axis]}${arrow.facing > 0 ? '+' : '−'}`, 'dizilim=', 'XYZ'[axis], 'sayım=', out[0].facing > 0 ? 'MİN' : 'MAX', 'tarafından');
   return out;
 }
 
-// ── BOŞLUK ÇÖZÜCÜ ───────────────────────────────────────────────────────────
-
-/**
- * ÜYE KALINLIKLARI (Goker): her üyenin kendi kalınlığı vardır (şemadaki kutucuk);
- * boşluklar Σkalınlık düşülerek dağıtılır — üstteki raf 18, alttaki 10 olsa da
- * aralar eşit (ya da girilen değerde) kalır. Eksik/kısa dizi varsayılanla dolar.
- */
+/** Üye başına kalınlık (eksik/kısa dizi grup kalınlığıyla dolar); boşluklar Σkalınlık düşülerek dağıtılır. */
 export function memberThicknessesOf(group: Pick<PanelGroup, 'count' | 'thickness' | 'memberThicknesses'>, count = group.count): number[] {
   const src = Array.isArray(group.memberThicknesses) ? group.memberThicknesses : [];
   return Array.from({ length: Math.max(0, count) }, (_, i) => (src[i] > 0 ? src[i] : group.thickness));
 }
 const sumT = (ts: number[]) => ts.reduce((s, t) => s + t, 0);
 
-/** Eşit dağılım: n panel, n+1 boşluk, kilitsiz. */
 export function equalGaps(L: number, count: number, ts: number[]): GapSpec[] {
   const n = Math.max(0, count);
   const g = Math.max(MIN_GAP, (L - sumT(ts)) / (n + 1));
   return Array.from({ length: n + 1 }, () => ({ value: r1(g), locked: false }));
 }
 
-/**
- * KALINLIK DEĞİŞİNCE YENİDEN DAĞITIM: kilitli ve girilmiş boşluklar değerini korur;
- * fark girilmemiş kilitsiz boşluklara EŞİT dağılır (varsayılan: hepsi eşit). Öyle
- * boşluk yoksa kilitsizlere oransal; hepsi kilitliyse artık son boşluğa.
- */
+/** Kalınlık değişince: kilitli/girilmiş sabit, fark girilmemişlere EŞİT; yoksa rescaleGaps. */
 export function redistributeForThickness(gaps: GapSpec[], L: number, count: number, ts: number[]): GapSpec[] {
   if (!Array.isArray(gaps) || gaps.length !== count + 1) return equalGaps(L, count, ts);
   const out = gaps.map(g => ({ ...g }));
@@ -904,12 +751,7 @@ export function redistributeForThickness(gaps: GapSpec[], L: number, count: numb
   return rescaleGaps(out, L, count, ts);
 }
 
-/**
- * YENİDEN DAĞITIM (küp boyutlandı / hacim değişti): kilitli boşluklar aynen
- * kalır; kalan açıklık kilitsizlere ORANLARI korunarak dağılır (hepsi eşitse
- * eşit kalır). Kilitliler sığmıyorsa oransal küçültülür (uyarı). Hepsi
- * kilitliyse artık son boşluğa yazılır.
- */
+/** Hacim değişince: kilitliler sabit (sığmazsa oransal küçülür), kalan kilitsizlere oranla; hepsi kilitliyse artık son boşluğa. */
 export function rescaleGaps(gaps: GapSpec[], L: number, count: number, ts: number[]): GapSpec[] {
   if (!Array.isArray(gaps) || gaps.length !== count + 1) return equalGaps(L, count, ts);
   const avail = L - sumT(ts);
@@ -934,38 +776,26 @@ export function rescaleGaps(gaps: GapSpec[], L: number, count: number, ts: numbe
   const total = out.reduce((s, g) => s + g.value, 0);
   const resid = avail - total;
   if (Math.abs(resid) > 0.05) {
-    // Artık önce son AÇIK ölçüye (pinli değer kıpırdamasın), yoksa son kilitsize.
+    // Artık son AÇIK ölçüye (pinli değer kıpırdamasın), yoksa son kilitsize.
     const tgt = [...unlocked].reverse().find(g => !g.edited) ?? unlocked[unlocked.length - 1];
     tgt.value = r1(tgt.value + resid);
   }
   return out;
 }
 
-/**
- * ÖLÇÜ MODU — 3 MOD (Goker, Eki 2026: kapakta kuruldu, "aynısını dikme ve raflara da uygulayalım"). Kapak ölçüleri
- * (DoorService) ve raf/dikme boşlukları AYNI kuralı paylaşır:
- *  • 'open'   — açık: alan (gövde / hacim / kalınlık) değişince oranla büyür/küçülür; bir kardeş girilince farkı oranla alır.
- *  • 'hold'   — pin (girilmiş, `edited`): kardeş girilince farkı ALMAZ, ama alan değişince açıklarla birlikte oranla
- *               büyür/küçülür. Değer yazmak ölçüyü bu moda alır.
- *  • 'locked' — kilitli: her durumda sabit.
- * Pin ve kilit AYNI kotadan: n ölçüde en fazla n−1 pinli+kilitli — en az bir açık ölçü kalır (passiveGapIndex).
- */
+/** Ölçü modu (DoorService ile ortak): 'open' alan ve kardeşle oranla; 'hold' (edited) kardeş farkını almaz ama alanla ölçeklenir;
+ *  'locked' sabit. n ölçüde en fazla n−1 pinli+kilitli (passiveGapIndex). */
 export type GapMode = 'open' | 'hold' | 'locked';
 export const gapMode = (g: GapSpec | undefined): GapMode => (g?.locked ? 'locked' : g?.edited ? 'hold' : 'open');
-/** Rozet döngüsü: açık → pin → kilitli → açık. */
 export const nextGapMode = (m: GapMode): GapMode => (m === 'open' ? 'hold' : m === 'hold' ? 'locked' : 'open');
-/**
- * PASİF ÖLÇÜ (Goker: "son kilitli olmayan kutucuk kalan ölçüleri toplar ve pasif olur"; pin de kilit gibi sayılır): ≥2 ölçüde
- * TEK açık ölçü kaldıysa onun indeksi — girişlerin farkını toplar; girilemez, pinlenemez, kilitlenemez. Açık hiç yoksa (eski
- * kayıt: hepsi girilmiş) tek kilitsiz ölçü pasif. Yoksa −1.
- */
+/** Pasif ölçü: ≥2 ölçüde tek açık kalan (yoksa tek kilitsiz) farkı toplar; girilemez/pinlenemez/kilitlenemez. Yoksa −1. */
 export function passiveGapIndex(gaps: ReadonlyArray<GapSpec | undefined>, count = gaps.length): number {
   if (count < 2) return -1;
   const sole = (pred: (g: GapSpec | undefined) => boolean): number => {
     let idx = -1;
     for (let i = 0; i < count; i++) {
       if (!pred(gaps[i])) continue;
-      if (idx >= 0) return -2;   // birden fazla
+      if (idx >= 0) return -2;
       idx = i;
     }
     return idx;
@@ -976,7 +806,7 @@ export function passiveGapIndex(gaps: ReadonlyArray<GapSpec | undefined>, count 
   const unlocked = sole(g => !g?.locked);
   return unlocked >= 0 ? unlocked : -1;
 }
-/** Rozet tıklaması: sıradaki mod; pasif ölçü pinlenemez / kilitlenemez (null = değişiklik yok, pasif kilitliyse → açık). */
+/** Pasif ölçü pinlenemez/kilitlenemez (null = değişiklik yok; pasif kilitliyse → açık). */
 export function cycleGapMode(gaps: GapSpec[], k: number, count = gaps.length): GapSpec[] | null {
   if (k < 0 || k >= gaps.length) return null;
   const cur = gapMode(gaps[k]);
@@ -987,14 +817,8 @@ export function cycleGapMode(gaps: GapSpec[], k: number, count = gaps.length): G
   }
   return gaps.map((g, i) => (i === k ? { ...g, locked: next === 'locked', edited: next === 'hold' } : g));
 }
-/**
- * ÖLÇÜ GİRİŞİ — KATSAYI (kapak + raf/dikme ortak): k. ölçü = değer ve PİN'e geçer (kilitliyse kilitli kalır); kilitli ve
- * pinliler sabit; fark diğer AÇIK ölçülere ORANLARIYLA dağılır. `base` (düzenleme başındaki dizi, canlı önizleme): oranlar
- * oradan alınır — her tuşta oran kaymaz, MIN kırpması geri alınabilir; alana yeniden oranlanır, mod bayrakları güncelden.
- * Açık kardeş yoksa fark pinlilere oranla (uyarı). Hedeflere en az `min` kalacak şekilde değer kırpılır; oranla `min` altına
- * düşen ölçü `min`de tutulur, kalan diğerlerine oranla (su doldurma). k pasifse dizi değişmez — `force` (kapak derzi bağı
- * gibi değerin dışarıdan dayatıldığı çözüm) pasifliği yok sayar.
- */
+/** Ölçü girişi (kapak + raf/dikme ortak): fark AÇIK ölçülere oranla (yoksa pinlilere), MIN su doldurma. `base` = düzenleme
+ *  başındaki dizi (oranlar her tuşta kaymasın). `force` (kapak derzi bağı) pasifliği yok sayar. */
 export function applyGapEditProportional(gaps: GapSpec[], k: number, value: number, L: number, count: number, ts: number[],
   opts: { base?: GapSpec[]; min?: number; force?: boolean; tag?: string } = {}): GapSpec[] {
   const n = count + 1, MIN = opts.min ?? MIN_GAP, tag = opts.tag ?? '[YAGO][GRUP-KATSAYI]';
@@ -1016,13 +840,12 @@ export function applyGapEditProportional(gaps: GapSpec[], k: number, value: numb
   }
   const open = unlocked.filter(i => gapMode(out[i]) === 'open');
   if (!open.length) console.warn(tag, 'açık kardeş yok — ölçü', k + 1, 'farkı pinli kardeşlere oranla dağıtıldı');
-  const soft = open.length ? open : unlocked;   // farkı alacak ölçüler
-  const fixedSum = others.filter(i => !soft.includes(i)).reduce((a, i) => a + out[i].value, 0);   // kilitli + pinli
+  const soft = open.length ? open : unlocked;
+  const fixedSum = others.filter(i => !soft.includes(i)).reduce((a, i) => a + out[i].value, 0);
   const maxV = avail - fixedSum - soft.length * MIN;
   const v = r1(Math.max(MIN, Math.min(value, maxV)));
   if (Math.abs(v - value) >= 0.05) console.warn(tag, 'ölçü', k + 1, '=', value, 'sığmıyor → kırpıldı', v, '(sabitΣ=', r1(fixedSum), 'alan=', r1(avail), ')');
   out[k] = { ...out[k], value: v, edited: true };
-  // Oransal dağıtım (MIN tabanlı su doldurma): MIN altına düşen MIN'de sabitlenir, bütçe kalanlara yeniden oranlanır.
   let pool = soft.slice(), budget = Math.max(0, avail - fixedSum - v);
   const w = new Map(soft.map(i => [i, Math.max(0, out[i].value)] as [number, number]));
   for (let guard = 0; guard <= soft.length && pool.length; guard++) {
@@ -1038,11 +861,7 @@ export function applyGapEditProportional(gaps: GapSpec[], k: number, value: numb
   return out;
 }
 
-/**
- * BOŞLUK GİRİŞİ: k. boşluk value olur ve "girildi" sayılır; fark, kilitsiz ve
- * girilmemiş boşluklara EŞİT dağılır. Öyle boşluk kalmadıysa diğer kilitsiz
- * (girilmiş) boşluklara oransal; o da yoksa değer kalan açıklığa kırpılır.
- */
+/** Boşluk girişi: fark girilmemiş kilitsizlere EŞİT, yoksa girilmiş kilitsizlere oransal, yoksa değer kırpılır. */
 export function applyGapEdit(gaps: GapSpec[], k: number, value: number, L: number, count: number, ts: number[]): GapSpec[] {
   const out = (gaps.length === count + 1 ? gaps : equalGaps(L, count, ts)).map(g => ({ ...g }));
   if (k < 0 || k >= out.length) return out;
@@ -1072,16 +891,9 @@ export function applyGapEdit(gaps: GapSpec[], k: number, value: number, L: numbe
   return out;
 }
 
-/** Grubun yönü (tık yönü); eski gruplarda +1. */
 export const groupFacing = (g: Pick<PanelGroup, 'facing'>): 1 | -1 => (g.facing === -1 ? -1 : 1);
 
-/**
- * Panel başlangıçları (dizilim ekseni; her levha [start, start+t]). Sayım
- * TIKLANAN TARAFTAN başlar (Goker: "o yönden itibaren bölümlendirme"):
- * facing>0 → hacim MİN'inden: p_i = min + Σgap[0..i] + Σt[0..i);
- * facing<0 → hacim MAX'ından: p_i = max − Σgap[0..i] − Σt[0..i].
- * gap[0] ve üye 0 (6.1) her iki durumda da tıklanan tarafa en yakındır.
- */
+/** Levha başlangıçları ([start, start+t]); sayım tıklanan taraftan: gap[0] ve üye 0 daima tıklanan tarafa en yakın. */
 export function panelStarts(cavity: CavityBox, axis: number, facing: 1 | -1, gaps: GapSpec[], ts: number[]): number[] {
   const starts: number[] = [];
   if (facing > 0) {
@@ -1101,15 +913,7 @@ export function panelStarts(cavity: CavityBox, axis: number, facing: 1 | -1, gap
   return starts;
 }
 
-// ── ÜYE VF GEOMETRİSİ ───────────────────────────────────────────────────────
-
-/**
- * Üye VF: dizilim ekseninde levhanın YÖN tarafındaki düzlemde (normal =
- * facing·eksen), o dilimin KESİT çokgeni (şekilli). createPanelFromVirtualFace
- * −normal yönünde t kadar uzar → levha her iki yönde de [start, start+t]
- * aralığına oturur (facing>0: düzlem start+t; facing<0: düzlem start).
- * Kesit yoksa kutu kesiti.
- */
+/** Düzlem facing>0 ? start+t : start; createPanelFromVirtualFace −normal yönünde t uzar → levha daima [start, start+t]. */
 function memberVfGeometry(axis: number, cavity: CavityBox, start: number, t: number, section?: Pt2[] | null, facing: 1 | -1 = 1): { normal: Vec3; vertices: Vec3[]; center: Vec3 } {
   const [b, c] = [0, 1, 2].filter(a => a !== axis);
   const plane = facing > 0 ? start + t : start;
@@ -1125,20 +929,15 @@ function memberVfGeometry(axis: number, cavity: CavityBox, start: number, t: num
 
 interface GroupSolution {
   cavity: CavityBox; region: CavityBox[]; gaps: GapSpec[]; starts: number[]; sections: Array<Pt2[] | null>; seed: Vec3;
-  /** Ref hacim adımlarının bu çözümde uygulanan işaretli miktarları. */
   cavityResolved?: Array<{ id: string; value: number }>;
 }
 
-// ── HACİM ADIMLARI (yüz extrude, hacim üzerinde) ────────────────────────────
-
-/** Hacim adımının yüzü: eksen + yön (faceNormal eksen-hizalı, gövde-yerel). */
 const stepFace = (st: CavityStep): { axis: number; side: 1 | -1 } => {
   const n = st.faceNormal;
   const axis = [Math.abs(n[0]), Math.abs(n[1]), Math.abs(n[2])].indexOf(Math.max(Math.abs(n[0]), Math.abs(n[1]), Math.abs(n[2])));
   return { axis, side: n[axis] >= 0 ? 1 : -1 };
 };
 
-/** Referans yüzün düzlemi GÖVDE-YEREL çerçevede (merkez + normal); çözülemezse null. */
 function refPlaneInParent(st: CavityStep, parent: Shape, shapes: Shape[]): { center: Vec3; normal: Vec3 } | null {
   if (!st.refShapeId) return null;
   const m = matchReferenceFace(shapeById(st.refShapeId, shapes), st.refFaceGroupIndex ?? -1, st.refNormalWorld, st.refPointWorld);
@@ -1149,16 +948,8 @@ function refPlaneInParent(st: CavityStep, parent: Shape, shapes: Shape[]): { cen
   return { center: [c.x, c.y, c.z], normal: [n.x, n.y, n.z] };
 }
 
-/**
- * HACİM ADIMLARI — ŞEKİLLİ (Goker: "L şeklinde yerleşen volümün taş şekline göre
- * kısaltma"): adım, HÜCRE düzeyinde uygulanır. Adımın çıpası (yüzü seçen tıklama,
- * gövde kutusuna oransal) bölgenin (eksen, yön) sınır yüzlerinden hangisine
- * düşüyorsa yalnız O bağlantılı yüz (L'nin bir kolu, çentiğin iç yüzü) hareket
- * eder; hedef düzlem ızgaraya eklenir (ikinci geçiş) ki kesim tam düzleme düşsün.
- * Miktar panel yüz extrude'uyla aynı: fixed → o sütundaki mevcut derinlik hedef
- * ölçüye, dyn → işaretli delta, ref → referans düzlemine. Büyüme ham hacmin
- * dışına çıkamaz (adımı düzenleyerek geri alınır); küçülme 1 mm derinlik bırakır.
- */
+/** Hacim adımları hücre düzeyinde: yalnız çıpanın düştüğü BAĞLANTILI sınır yüzü hareket eder (L'nin bir kolu).
+ *  Büyüme ham hacmi aşamaz; küçülme 1 mm derinlik bırakır. */
 interface StepFace { coord: number; cols: Set<string>; anchorCell: number }
 function findStepFace(g: CavityGrid, cells: Set<number>, axis: number, side: 1 | -1, anchor: Vec3): StepFace | null {
   const [ua, va] = [0, 1, 2].filter(a => a !== axis);
@@ -1179,7 +970,6 @@ function findStepFace(g: CavityGrid, cells: Set<number>, axis: number, side: 1 |
     return Math.hypot(du, dv) * 4 + Math.abs(f.coord - anchor[axis]);
   };
   const best = bfs.reduce((b, f) => (dist(f) < dist(b) ? f : b));
-  // Aynı düzlemdeki BAĞLANTILI sınır yüzleri (4-komşuluk, çapraz indekslerde).
   const onPlane = new Map<string, BF>();
   for (const f of bfs) if (Math.abs(f.coord - best.coord) <= TOL) onPlane.set(`${f.iu},${f.iv}`, f);
   const cols = new Set<string>();
@@ -1194,7 +984,6 @@ function findStepFace(g: CavityGrid, cells: Set<number>, axis: number, side: 1 |
   return { coord: best.coord, cols, anchorCell: best.c };
 }
 
-/** Çıpa sütununda yüzün ARKASINDAKİ bölge derinliği (hücreler bitene kadar). */
 function depthBehind(g: CavityGrid, cells: Set<number>, axis: number, side: 1 | -1, startCell: number): number {
   const pa = axisPlanes(g, axis);
   let depth = 0;
@@ -1225,21 +1014,21 @@ function applyCavityStepsToCells(
     const face = findStepFace(g, cells, axis, side, anchor);
     if (!face) { console.warn('[YAGO][HACİM-ADIM] yüz bulunamadı, adım atlandı:', st.id, st.axisLabel); continue; }
     const depth = depthBehind(g, cells, axis, side, face.anchorCell);
-    let amount: number, kind: string;
+    let amount: number;
     if (st.refShapeId) {
       const pl = refPlaneInParent(st, parent, shapes);
       if (!pl) { console.warn('[YAGO][HACİM-ADIM] referans düzlemi çözülemedi, adım atlandı:', st.id, st.refShapeId); continue; }
       if (Math.abs(pl.normal[axis]) < 0.7) { console.warn('[YAGO][HACİM-ADIM] referans yüzü adım eksenine paralel değil, adım atlandı:', st.id); continue; }
-      amount = (pl.center[axis] - face.coord) * side; kind = 'ref';
-    } else if (st.isFixed) { amount = st.value - depth; kind = 'fixed'; }
-    else { amount = st.value; kind = 'dyn'; }
-    if (amount > 1e-6) { console.log('[YAGO][HACİM-ADIM] büyüme ham hacmin dışına çıkamaz, 0 alındı:', st.id, 'istenen=', amount.toFixed(1)); amount = 0; }
+      amount = (pl.center[axis] - face.coord) * side;
+    } else if (st.isFixed) amount = st.value - depth;
+    else amount = st.value;
+    if (amount > 1e-6) { amount = 0; }
     if (depth + amount < 1) { console.warn('[YAGO][HACİM-ADIM] küçülme derinlikle sınırlandı:', st.id, 'derinlik=', depth.toFixed(1), 'istenen=', amount.toFixed(1)); amount = 1 - depth; }
     if (st.refShapeId) resolved.push({ id: st.id, value: r1(amount) });
-    if (Math.abs(amount) < 0.01) { console.log('[YAGO][HACİM-ADIM]', group.id, st.axisLabel, kind, 'miktar 0 → değişiklik yok'); continue; }
+    if (Math.abs(amount) < 0.01) { continue; }
     const target = r1(face.coord + side * amount);
     planes.push({ axis, coord: target });
-    // Sütunlardaki, [hedef, yüz] dilimine tam düşen hücreler çıkar (dilimi kesen hücre 2. geçişte tam bölünür).
+    // Dilimi kesen hücre 2. geçişte tam bölünür; burada yalnız tam düşenler çıkar.
     const lo = Math.min(target, face.coord), hi = Math.max(target, face.coord);
     const [ua, va] = [0, 1, 2].filter(a => a !== axis);
     let removed = 0;
@@ -1249,24 +1038,19 @@ function applyCavityStepsToCells(
       const cb = cellBox(g, c);
       if (cb.min[axis] >= lo - TOL && cb.max[axis] <= hi + TOL) { cells.delete(c); removed++; }
     }
-    console.log('[YAGO][HACİM-ADIM]', group.id, st.axisLabel, kind, 'değer=', st.value, 'derinlik=', depth.toFixed(1), 'miktar=', amount.toFixed(1),
-      'yüz=', face.coord.toFixed(1), '→', target.toFixed(1), 'sütunN=', face.cols.size, 'çıkanHücreN=', removed, hasPlane(g, { axis, coord: target }) ? '' : '(düzlem ızgarada yok → 2. geçiş)');
   }
   return { cells, planes, resolved };
 }
 
 interface ObstacleSet { obstacles: CavityBox[]; splitBoxes: CavityBox[]; tiltFaces: TiltFace[] }
 
-/**
- * Engel kümesi: düz paneller kutu engeli; dönmüş/eğik paneller yalnız bölme
- * düzlemi (splitBoxes) + eğik yüz yarım-uzayı (tiltFaces). Izgara bu üçüyle kurulur.
- */
+/** Düz paneller kutu engeli; eğik paneller yalnız bölme düzlemi (splitBoxes) + yarım-uzay (tiltFaces). */
 export function collectObstacles(parent: Shape, panels: Shape[], include: (p: Shape) => boolean = () => true): ObstacleSet {
   const obstacles: CavityBox[] = [], splitBoxes: CavityBox[] = [];
   const tilted: Shape[] = [];
   for (const p of panels) {
     if (p.type !== 'panel' || (p.parameters as any)?.parentShapeId !== parent.id || !include(p)) continue;
-    // KAPAKLAR hacim engeli DEĞİLDİR (Goker: kapaklar referans hacmin dışında çalışır; iç kapak da raf/dikme hacmini daraltmaz).
+    // Kapaklar hacim engeli değildir (iç kapak da raf/dikme hacmini daraltmaz).
     if ((p.parameters as any)?.doorGroupId) continue;
     const b = panelLocalBox(p, parent);
     if (!b) continue;
@@ -1275,27 +1059,15 @@ export function collectObstacles(parent: Shape, panels: Shape[], include: (p: Sh
   return { obstacles, splitBoxes, tiltFaces: tiltedPanelFaces(parent, tilted) };
 }
 
-/** Grubun VF sırası = en küçük üye indeksi (üye yoksa ∞: yeni grup, mevcut her panel önce). */
+/** Grubun VF sırası = en küçük üye indeksi (üye yoksa ∞: mevcut her panel önce). */
 const groupVfIndex = (group: PanelGroup, vfIdx: Map<string, number>): number => {
   let best = Infinity;
   for (const id of group.memberVfIds) { const i = vfIdx.get(id); if (i != null && i < best) best = i; }
   return best;
 };
 
-/**
- * Grubun engelleri: VF sırasında üyelerden ÖNCE gelen gövde panelleri (basan) +
- * kendinden ÖNCE oluşturulmuş grupların panelleri. Sırada SONRA gelen gövde
- * paneli hacmi SINIRLAMAZ — grup onu basar, bölgesi üye damgalarıyla kırpılır
- * (PanelEngine.stamps). Goker: "6. sırada dikme, 7. sırada dikmeye değen gövde
- * paneli → dikme ve raf kısalmamalı, gövde paneli aralarında kalmalı".
- */
-/**
- * Grubun hacmini SINIRLAYAN panel yüklemi (groupObstacles + yeniden seçim overlay'i
- * + x-ray çizimi aynı kuralı buradan okur): VF sırasında üyelerden ÖNCE gelen gövde
- * paneli → sınırlar; SONRA gelen → sınırlamaz (grup basar); grubun kendi üyeleri →
- * hayır; başka grubun üyesi → yalnız o grup daha önce oluşturulmuşsa.
- * VF'siz (eski) panel güvenli tarafta sınırlar.
- */
+/** Hacmi SINIRLAYAN panel yüklemi (çözüm, yeniden seçim ve x-ray aynı kuralı okur): VF sırasında üyelerden ÖNCE gelen gövde
+ *  paneli sınırlar, SONRA gelen sınırlamaz (grup basar); başka grup yalnız daha önce oluşturulmuşsa. VF'siz panel sınırlar. */
 export function groupBoundsPanelPredicate(group: PanelGroup, groups: PanelGroup[], vfs: VirtualFace[] = useAppStore.getState().virtualFaces): (p: Shape) => boolean {
   const byId = new Map(groups.map(g => [g.id, g] as const));
   const vfIdx = new Map(vfs.map((f, i) => [f.id, i] as const));
@@ -1313,32 +1085,16 @@ export function groupBoundsPanelPredicate(group: PanelGroup, groups: PanelGroup[
 }
 
 function groupObstacles(group: PanelGroup, parent: Shape, panels: Shape[], groups: PanelGroup[]): ObstacleSet {
-  const vfs = useAppStore.getState().virtualFaces;
-  const vfIdx = new Map(vfs.map((f, i) => [f.id, i] as const));
-  const myIdx = groupVfIndex(group, vfIdx);
-  const bounds = groupBoundsPanelPredicate(group, groups, vfs);
-  const pressed: string[] = [];
-  const oset = collectObstacles(parent, panels, p => {
-    const ok = bounds(p);
-    if (!ok && !(p.parameters as any)?.panelGroupId) pressed.push(`${p.id}(sıra ${vfIdx.get((p.parameters as any)?.virtualFaceId)})`);
-    return ok;
-  });
-  if (pressed.length) console.log('[YAGO][GRUP-SIRA]', group.id, 'sıra=', myIdx, '→ SONRAKİ gövde panelleri hacmi sınırlamaz (grup basar):', pressed.join(', '));
-  return oset;
+  const bounds = groupBoundsPanelPredicate(group, groups, useAppStore.getState().virtualFaces);
+  return collectObstacles(parent, panels, p => bounds(p));
 }
 
-/**
- * YENİDEN SEÇİM engelleri (Goker: "sıralamadan önceki panellerin durumuna göre tıklatman
- * gerek; mevcut sırasından sonraki panelleri seçmek mantıksız"): hacim seçme ızgarası
- * grubun çözümüyle AYNI kümeyle kurulur — gruptan önceki paneller sınırlar, sonrakiler ve
- * grubun kendi üyeleri yok sayılır. Böylece grubun şu anki yeri de bir aday olur.
- */
+/** Yeniden seçim ızgarası çözümle AYNI engel kümesiyle kurulur → grubun şu anki yeri de aday olur. */
 export function repickObstacles(group: PanelGroup, parent: Shape, panels: Shape[]): ObstacleSet {
   return groupObstacles(group, parent, panels, useAppStore.getState().panelGroups);
 }
 export const gridForObstacles = (parent: Shape, o: ObstacleSet, extraPlanes: StepPlane[] = []) => buildCavityGrid(parent, o.obstacles, o.splitBoxes, o.tiltFaces, extraPlanes);
 
-/** Kutu birliğinin (bölge kutuları) dış yüzeyi — mini ızgara üzerinden (üst üste binen dikişler elenir). */
 export function boxesSurface(boxes: CavityBox[]): number[] {
   if (!boxes.length) return [];
   const px: number[] = [], py: number[] = [], pz: number[] = [];
@@ -1356,20 +1112,14 @@ export function boxesSurface(boxes: CavityBox[]): number[] {
   return regionSurface(g, cells);
 }
 
-/** Çıpa noktası (gövde kutusu oranından). */
 const anchorPoint = (group: PanelGroup, body: CavityBox): Vec3 => pointFromFrac(body, group.anchorFrac);
 
-/**
- * Grubu güncel gövde + panellerle çözer (saf): ızgara → çıpadan bölge → kutu →
- * boşluklar → her üyenin kesit çokgeni. Bölge bozuksa önceki hacimle devam eder.
- */
 function solveGroup(group: PanelGroup, parent: Shape, panels: Shape[], groups: PanelGroup[]): GroupSolution | null {
   const oset = groupObstacles(group, parent, panels, groups);
   const ts = memberThicknessesOf(group);
   const tMax = ts.length ? Math.max(...ts) : group.thickness;
   const hasSteps = !!group.cavitySteps?.length;
 
-  // HAM BÖLGE: ızgara (isteğe bağlı ek düzlemlerle) → çıpa → taşma → düz alternatif.
   const solveCells = (extra: StepPlane[]) => {
     const grid = gridForObstacles(parent, oset, extra);
     if (!grid) return null;
@@ -1377,21 +1127,17 @@ function solveGroup(group: PanelGroup, parent: Shape, panels: Shape[], groups: P
     let c = cellOfPoint(grid, seed);
     if (c < 0 || !grid.free[c]) {
       c = nearestFreeCell(grid, seed);
-      if (c >= 0) { const b = cellBox(grid, c); seed = boxCenter(b); console.log('[YAGO][GRUP] çıpa dolu hücrede, en yakın serbest hücreye alındı:', group.id, fmtBox(b)); }
+      if (c >= 0) { const b = cellBox(grid, c); seed = boxCenter(b); }
     }
-    // EĞİK PANELLER: çıpa tarafına bakan yarım-uzaylar; panel VF sırasında üyelerden
-    // ÖNCE ise (basan) uç uzak yüze uzatılır (motor pahlar), sonra ise yakın yüze.
+    // Eğik panel VF sırasında üyelerden ÖNCE ise (basan) uç uzak yüze uzatılır (motor pahlar), sonra ise yakın yüze.
     const planes = orientTiltPlanes(grid.tiltFaces, seed);
     if (planes.length) {
       const vfIdx = new Map(useAppStore.getState().virtualFaces.map((f, i) => [f.id, i] as const));
       const memberIdx = group.memberVfIds.length ? (vfIdx.get(group.memberVfIds[0]) ?? Infinity) : Infinity;
       for (const pl of planes) { const pi = pl.vfId ? vfIdx.get(pl.vfId) : undefined; pl.bevel = pi != null && pi < memberIdx; }
-      console.log('[YAGO][GRUP] eğik sınır düzlemleri:', group.id, planes.map(pl => `${pl.id}(${pl.bevel ? 'pah' : 'yakın'})`).join(','));
     }
     const allow = planes.length ? (cc: number) => cellInsideTiltPlanes(planes, cellBox(grid, cc)) : undefined;
     let cells = c >= 0 ? floodRegion(grid, c, allow) : new Set<number>();
-    // DÜZ ALTERNATİF: bölge içinde çıpayı içeren maksimal kutulardan, kayıtlı
-    // kutuya (gövde oranıyla güncel kutuya taşınmış) en çok örtüşeni seçilir.
     if (group.boxMode && cells.size && c >= 0) {
       const want = group.boxFrac ? { min: pointFromFrac(grid.body, group.boxFrac.min), max: pointFromFrac(grid.body, group.boxFrac.max) } : cloneBox(group.cavity);
       const iou = (a: CavityBox, b: CavityBox) => {
@@ -1399,13 +1145,11 @@ function solveGroup(group: PanelGroup, parent: Shape, panels: Shape[], groups: P
         for (let x = 0; x < 3; x++) { inter *= Math.max(0, Math.min(a.max[x], b.max[x]) - Math.max(a.min[x], b.min[x])); va *= boxSpan(a, x); vb *= boxSpan(b, x); }
         return inter / Math.max(va + vb - inter, 1e-6);
       };
-      // Tohum: kayıtlı kutunun (oranla taşınmış) merkez hücresi — kutu çıpayı içermeyebilir
-      // (ör. arka yüksek kutu, ışının ön hücresinden seçilmiş); merkez bölge dışındaysa çıpa hücresi.
+      // Kayıtlı kutu çıpayı içermeyebilir → tohum onun merkez hücresi (bölge dışındaysa çıpa hücresi).
       const wc = cellOfPoint(grid, boxCenter(want));
       const boxes = boxAlternatives(grid, cells, [wc >= 0 && cells.has(wc) ? wc : c]);
       if (boxes.length) {
         const best = boxes.reduce((b, x) => (iou(x.bbox, want) > iou(b.bbox, want) ? x : b));
-        console.log('[YAGO][GRUP] düz alternatif: maksimal kutu', fmtBox(best.bbox), 'örtüşme=', iou(best.bbox, want).toFixed(2), 'adayN=', boxes.length);
         cells = best.cells;
       }
     }
@@ -1413,8 +1157,6 @@ function solveGroup(group: PanelGroup, parent: Shape, panels: Shape[], groups: P
   };
   let R = solveCells([]);
   if (!R) return null;
-  // HACİM ADIMLARI (şekilli, hücre düzeyinde): hedef düzlemler ızgarada yoksa
-  // ızgara o düzlemlerle yeniden kurulur ve adımlar tam hücre sınırında uygulanır.
   let cavityResolved: Array<{ id: string; value: number }> | undefined;
   if (hasSteps && R.cells.size) {
     let st = applyCavityStepsToCells(R.grid, R.cells, group, parent, panels, R.grid.body);
@@ -1437,9 +1179,8 @@ function solveGroup(group: PanelGroup, parent: Shape, panels: Shape[], groups: P
   }
   const L = boxSpan(cavity, group.axis);
   let gaps = rescaleGaps(group.gaps, L, group.count, ts);
-  // KAPAK DERZİNE BAĞ (Goker: "eklenen raf ve dikme her zaman o kapak aralarının arasında çalışsın"): bağlı üye, kapak
-  // derzine göre (hiza) konumlanır — o boşluk derzden yazılır, kalan boşluklar katsayı kuralıyla (açıklara oranla) dağılır. Derz yoksa /
-  // eksen uyuşmuyorsa bağ bu çözümde yok sayılır (syncPanelGroups bayat bağı düşürür).
+  // Kapak derzine bağ: bağlı üyenin boşluğu derzden yazılır, kalanlar katsayı kuralıyla. Derz yoksa / eksen uyuşmuyorsa
+  // bağ bu çözümde yok sayılır (bayat bağı syncPanelGroups düşürür).
   if (group.doorBond) {
     const bj = doorJointForBond(group.doorBond, parent, panels);
     const m = Math.min(Math.max(0, group.doorBond.member ?? 0), group.count - 1);
@@ -1463,7 +1204,7 @@ function solveGroup(group: PanelGroup, parent: Shape, panels: Shape[], groups: P
   return { cavity, region, gaps, starts, sections, seed, cavityResolved };
 }
 
-/** Çözümden üye VF yaması (regen bu alanları yazar; kullanıcı alanları dokunulmaz). */
+/** Yalnız geometri alanları yazılır; kullanıcı alanlarına dokunulmaz. */
 function interiorVfPatch(vf: VirtualFace, group: PanelGroup, sol: GroupSolution): Partial<VirtualFace> | null {
   const i = vf.groupIndex ?? group.memberVfIds.indexOf(vf.id);
   if (i < 0 || i >= sol.starts.length) return null;
@@ -1471,19 +1212,13 @@ function interiorVfPatch(vf: VirtualFace, group: PanelGroup, sol: GroupSolution)
   return { normal: g.normal, vertices: g.vertices, center: g.center, regionAnchor: g.center } as any;
 }
 
-/**
- * REGEN KANCASI (VirtualFaceUpdateService): bir gövdenin tüm iç VF'lerini grup
- * çözümüyle yeniden yazar. Yüz eşlemesi yapılmaz. Grup yoksa VF olduğu gibi kalır.
- */
+/** Regen kancası (VirtualFaceUpdateService): iç VF'ler yüz eşlemesi olmadan grup çözümüyle yeniden yazılır. */
 export function recalculateInteriorVfs(parent: Shape, vfs: VirtualFace[], panels: Shape[], groups: PanelGroup[]): Map<string, VirtualFace> {
   const out = new Map<string, VirtualFace>();
   const mine = groups.filter(g => g.shapeId === parent.id);
   for (const g of mine) {
     const sol = solveGroup(g, parent, panels, groups);
     if (!sol) continue;
-    console.log('[YAGO][GRUP-REGEN]', g.id, g.kind, 'n=', g.count, 'hacim=', fmtBox(sol.cavity), 'parçaN=', sol.region.length,
-      'L=', boxSpan(sol.cavity, g.axis).toFixed(1), 'boşluklar=', sol.gaps.map(x => `${x.value}${x.locked ? '🔒' : ''}`).join('/'),
-      'kesitKöşeN=', sol.sections.map(s => (s ? s.length : '-')).join('/'));
     for (const vf of vfs) {
       if (vf.shapeId !== parent.id || vf.groupId !== g.id) continue;
       const patch = interiorVfPatch(vf, g, sol);
@@ -1493,17 +1228,13 @@ export function recalculateInteriorVfs(parent: Shape, vfs: VirtualFace[], panels
   return out;
 }
 
-// ── STORE İŞLEMLERİ ─────────────────────────────────────────────────────────
-
 const groupById = (id: string) => useAppStore.getState().panelGroups.find(g => g.id === id);
 
-/** Çözüm yoksa: kayıtlı hacim + verilen boşluklarla düz çözüm. */
 const fallbackSolution = (group: PanelGroup, gaps: GapSpec[], count: number, seed: Vec3): GroupSolution => ({
   cavity: group.cavity, region: group.region || [group.cavity], gaps,
   starts: panelStarts(group.cavity, group.axis, groupFacing(group), gaps, memberThicknessesOf(group, count)), sections: Array(count).fill(null), seed,
 });
 
-/** Üye VF'lerin panelini + VF'sini siler (seçili satırsa seçim düşer). */
 function removeMembers(vfIds: string[]): void {
   const st = useAppStore.getState();
   for (const vfId of vfIds) {
@@ -1525,7 +1256,6 @@ function makeMemberVf(group: PanelGroup, i: number, sol: GroupSolution): Virtual
   };
 }
 
-/** Grubun güncel çözümü (store durumundan); yoksa null. */
 function solveFromStore(group: PanelGroup): GroupSolution | null {
   const st = useAppStore.getState();
   const parent = shapeById(group.shapeId, st.shapes);
@@ -1533,18 +1263,13 @@ function solveFromStore(group: PanelGroup): GroupSolution | null {
   return solveGroup(group, parent, st.shapes, st.panelGroups.some(g => g.id === group.id) ? st.panelGroups : [...st.panelGroups, group]);
 }
 
-/**
- * Onaylanan hacimden grup + ilk üye VF (1 panel, eşit boşluk) oluşturur. GRUP SEÇİLMEZ / KARTI AÇILMAZ (Goker, Eki 2026: "dikme ve
- * raf atınca otomatik onun panelini açıyor; düzenlemek istediğimde kendim açayım") — satır listede kapalı belirir, kullanıcı açar.
- * `extra` = ek alanlar (ör. doorBond — çözüm bağı görür).
- */
+/** Grup + ilk üye VF; grup bilerek SEÇİLMEZ / kartı açılmaz. `extra` (ör. doorBond) çözümden önce eklenir. */
 export function createPanelGroupFromCavity(shapeId: string, kind: PanelGroup['kind'], pick: CavityPick, name?: string, extra: Partial<PanelGroup> = {}): PanelGroup | null {
   const st = useAppStore.getState();
   const parent = shapeById(shapeId, st.shapes);
   if (!parent) return null;
   const body = bodyLocalBox(parent);
   if (!body) return null;
-  // DİZİLİM EKSENİ + SAYIM YÖNÜ + OK adaydan: raf yalnız Y; dikme X veya Z. Eski/eksik adayda varsayılan eksen, +1.
   const axisOk = kind === 'shelf' ? pick.axis === 1 : (pick.axis === 0 || pick.axis === 2);
   const axis: 0 | 1 | 2 = axisOk ? pick.axis : groupAxisOf(kind);
   const t = GROUP_PANEL_THICKNESS;
@@ -1553,36 +1278,23 @@ export function createPanelGroupFromCavity(shapeId: string, kind: PanelGroup['ki
   const facing: 1 | -1 = axisOk && pick.facing === -1 ? -1 : 1;
   const arrow = pick.arrow ? { ...pick.arrow } : { axis, facing };
   const group: PanelGroup = {
-    // ÇIPA = tohum noktası (ışının bölgeye girdiği yer) — L bölgede kutu merkezi dışarıda kalabilir.
     id: genId(kind === 'shelf' ? 'shelf' : 'divider'), shapeId, kind, axis, facing, arrow, anchorFrac: fracInCavity(body, pick.seed, true), name: name?.trim() || groupKindLabel(kind),
     cavity: cloneBox(pick.bbox), region: pick.boxes.map(cloneBox), count, gaps: equalGaps(L, count, [t]), thickness: t, memberThicknesses: [t], memberVfIds: [], createdAt: Date.now(),
     ...(pick.shape === 'box' ? { boxMode: true, boxFrac: { min: fracInCavity(body, pick.bbox.min), max: fracInCavity(body, pick.bbox.max) } } : {}),
     ...extra,
   };
   const sol = solveFromStore(group) || fallbackSolution(group, group.gaps, count, pick.seed);
-  group.gaps = sol.gaps;   // bağlı grupta (doorBond) boşluk derzden gelir
+  group.gaps = sol.gaps;
   const vfs = Array.from({ length: count }, (_, i) => makeMemberVf(group, i, sol));
   group.memberVfIds = vfs.map(v => v.id);
   st.addPanelGroup(group);
   st.insertVirtualFacesAfter(null, vfs);
-  console.log('[YAGO][GRUP] oluşturuldu', group.id, kind, pick.shape === 'box' ? 'DÜZ (kutu)' : 'ŞEKİLLİ', 'hacim=', fmtBox(pick.bbox), 'parçaN=', pick.boxes.length, 'L=', L.toFixed(1),
-    'çıpa=', group.anchorFrac.map(n => n.toFixed(2)).join(','), 'ok=', `${'XYZ'[arrow.axis]}${arrow.facing > 0 ? '+' : '−'}`, 'dizilim=', 'XYZ'[axis], '(sayım', facing > 0 ? 'MİN' : 'MAX', 'tarafından)');
   return group;
 }
 
-// ── YENİDEN HACİM SEÇİMİ (grubu taşı) ───────────────────────────────────────
-// Goker (Eki 2026): "hacim seçiminden sonra bir düğmeyle yeniden hacim seçimi yaptır;
-// mevcut yerini yeniden tıklayarak da seçebileyim; sıralamadan ÖNCEKİ panellerin
-// durumuna göre tıklatman gerek, sonrakileri seçmek mantıksız." Akış: grup kartındaki
-// Relocate → hacim seçme modu (grup kimliğiyle) → ızgara yalnız gruptan önceki
-// panellerle kurulur (repickObstacles); sahne de o adıma döner: sonraki paneller GİZLİ
-// (Goker, Eki 2026: "sonra yerleşen paneller görünmemeli, altındaki adımların panelleri
-// görünmeli"), üyeler x-ray (SceneObjects.PanelDrawing repickRole) → sağ tık / ✓ →
-// grup yeni hacme TAŞINIR: adet, üye kalınlıkları, ad ve VF SIRASI korunur; eksen/yön/ok
-// yeni adaydan; boşluklar aynı eksende kilit kuralıyla ölçeklenir, eksen değişince eşitlenir;
-// hacim adımları (Volume steps) eski hacme ait olduğu için düşer.
+// YENİDEN HACİM SEÇİMİ: ızgara yalnız gruptan önceki panellerle (repickObstacles). Taşımada adet, kalınlıklar, ad ve
+// VF SIRASI korunur; boşluklar aynı eksende ölçeklenir, eksen değişince eşitlenir; hacim adımları eski hacme ait → düşer.
 
-/** Grup kartından: yeniden seçim modunu açar (diğer komut modları kapanır, grup kartı açık kalır). */
 export function startGroupRepick(groupId: string): void {
   const st = useAppStore.getState();
   const group = groupById(groupId);
@@ -1593,18 +1305,8 @@ export function startGroupRepick(groupId: string): void {
   if (st.selectedShapeId !== group.shapeId) st.selectShape(group.shapeId);
   st.setSelectedPanelGroupId(groupId);
   st.setVolumePickMode(group.kind, groupId);
-  const vfIdx = new Map(st.virtualFaces.map((f, i) => [f.id, i] as const));
-  // Sahne gruptan ÖNCEKİ duruma döner: sınırlayan (önceki) paneller katı, sonrakiler GİZLİ, üyeler saydam.
-  const bounds = groupBoundsPanelPredicate(group, st.panelGroups, st.virtualFaces);
-  const panels = st.shapes.filter(p => p.type === 'panel' && (p.parameters as any)?.parentShapeId === group.shapeId);
-  const label = (p: Shape) => `${p.id}(sıra ${vfIdx.get((p.parameters as any)?.virtualFaceId) ?? '?'})`;
-  const shown = panels.filter(p => bounds(p)).map(label);
-  const hidden = panels.filter(p => !bounds(p) && (p.parameters as any)?.panelGroupId !== group.id).map(label);
-  console.log('[YAGO][HACİM-TAŞI] yeniden seçim modu açıldı', groupId, group.kind, 'sıra=', groupVfIndex(group, vfIdx), 'hacim=', fmtBox(group.cavity),
-    '| görünen (önceki):', shown.length ? shown.join(', ') : '—', '| GİZLENEN (sonraki):', hidden.length ? hidden.join(', ') : '—', '| üye (saydam):', group.memberVfIds.length);
 }
 
-/** Onaylanan adayla grubu taşır; üye VF'ler yeni çözümle yazılır, tam rebuild. */
 export async function relocatePanelGroup(groupId: string, pick: CavityPick): Promise<boolean> {
   const st = useAppStore.getState();
   const group = groupById(groupId);
@@ -1618,13 +1320,11 @@ export async function relocatePanelGroup(groupId: string, pick: CavityPick): Pro
   const ts = memberThicknessesOf(group);
   const L = boxSpan(pick.bbox, axis);
   const gaps = axis === group.axis ? rescaleGaps(group.gaps, L, group.count, ts) : equalGaps(L, group.count, ts);
-  const droppedSteps = group.cavitySteps?.length ?? 0;
   const patch: Partial<PanelGroup> = {
     axis, facing, arrow, anchorFrac: fracInCavity(body, pick.seed, true), cavity: cloneBox(pick.bbox), region: pick.boxes.map(cloneBox), gaps, cavitySteps: undefined,
     boxMode: pick.shape === 'box', boxFrac: pick.shape === 'box' ? { min: fracInCavity(body, pick.bbox.min), max: fracInCavity(body, pick.bbox.max) } : undefined,
-    doorBond: undefined,   // yeni hacim seçildi → kapak derzine bağ düşer (levha artık kendi yerinde)
+    doorBond: undefined,
   };
-  if (group.doorBond) console.log('[YAGO][HACİM-TAŞI] kapak derzine bağ çözüldü (grup taşındı):', groupId);
   const next: PanelGroup = { ...group, ...patch };
   const sol = solveFromStore(next) || fallbackSolution(next, gaps, group.count, pick.seed);
   for (const vfId of group.memberVfIds) {
@@ -1634,71 +1334,55 @@ export async function relocatePanelGroup(groupId: string, pick: CavityPick): Pro
     if (p) st.updateVirtualFace(vf.id, p);
   }
   st.updatePanelGroup(groupId, { ...patch, gaps: sol.gaps });
-  console.log('[YAGO][HACİM-TAŞI] grup taşındı', groupId, group.kind, fmtBox(group.cavity), '→', fmtBox(sol.cavity), pick.shape === 'box' ? 'DÜZ (kutu)' : 'ŞEKİLLİ',
-    'eksen', 'XYZ'[group.axis], '→', 'XYZ'[axis], axis === group.axis ? '(boşluklar ölçeklendi, kilitliler korundu)' : '(eksen değişti, boşluklar eşitlendi)',
-    'ok=', `${'XYZ'[arrow.axis]}${arrow.facing > 0 ? '+' : '−'}`, 'n=', group.count, droppedSteps ? `hacim adımı düştü=${droppedSteps}` : '');
   await requestRebuild(group.shapeId);
   return true;
 }
 
-/** Hacim seçimi onayı (sağ tık / ✓): yeniden seçimse grubu taşır, değilse yeni grup; mod kapanır. */
 export function confirmVolumePick(shapeId: string, kind: PanelGroup['kind'], pick: CavityPick): void {
   const st = useAppStore.getState();
   const gid = st.volumePickGroupId;
   if (gid) void relocatePanelGroup(gid, pick);
-  else createPanelGroupFromCavity(shapeId, kind, pick, st.placementName);   // şeritte yazılan ad (boşsa Shelf / Divider)
+  else createPanelGroupFromCavity(shapeId, kind, pick, st.placementName);
   st.setVolumePickMode(null);
 }
 
-// ── HEDEF ARALIK → ADET ──────────────────────────────────────────────────────
-// Goker: "raf ve dikmeye aralık da verebileyim; yaklaşık olarak o aralığı tutturacak
-// şekilde raf miktarını azaltıp çoğaltsın her zaman". Adet, eşit boşluk hedefe en
-// yakın olacak şekilde seçilir (üye kalınlıkları dahil); her rebuild sonrası
-// (syncPanelGroups) yeniden türetilir — gövde büyüyünce üye eklenir, küçülünce silinir.
+// HEDEF ARALIK → ADET: her rebuild sonrası (syncPanelGroups) yeniden türetilir; gövde büyüyünce üye eklenir, küçülünce silinir.
 export const MAX_GROUP_COUNT = 40;
 
-/** Açıklık L'de eşit boşluğu `target`a en yakın yapan adet (1..MAX). Eşitlikte az üye tercih edilir. */
+/** Eşit boşluğu `target`a en yakın yapan adet; eşitlikte az üye tercih edilir. */
 export function countForTargetGap(group: Pick<PanelGroup, 'count' | 'thickness' | 'memberThicknesses'>, L: number, target: number): number {
   let best = 1, bestErr = Infinity;
   for (let n = 1; n <= MAX_GROUP_COUNT; n++) {
     const ts = memberThicknessesOf(group, n);
     const gap = (L - sumT(ts)) / (n + 1);
-    if (gap < MIN_GAP && n > 1) break;              // daha fazla üye sığmaz
+    if (gap < MIN_GAP && n > 1) break;
     const err = Math.abs(gap - target);
     if (err < bestErr - 1e-9) { best = n; bestErr = err; }
   }
   return best;
 }
 
-/**
- * Hedef aralığı yazar (null/0 = kapat). Açıkken adet hemen türetilir ve boşluklar
- * eşitlenir; kapatınca mevcut adet/boşluklar olduğu gibi kalır (yalnız otomatik güncelleme durur).
- */
+/** null/0 = kapat; kapatınca mevcut adet/boşluklar kalır, yalnız otomatik güncelleme durur. */
 export async function setGroupTargetGap(groupId: string, target: number | null): Promise<void> {
   const group = groupById(groupId);
   if (!group) return;
   const v = target != null && Number.isFinite(target) && target > 0 ? r1(target) : undefined;
   useAppStore.getState().updatePanelGroup(groupId, { targetGap: v });
-  if (v == null) { console.log('[YAGO][GRUP-ARALIK] kapatıldı', groupId, 'adet=', group.count); return; }
+  if (v == null) { return; }
   const n = countForTargetGap(group, boxSpan(group.cavity, group.axis), v);
-  console.log('[YAGO][GRUP-ARALIK] hedef=', v, groupId, 'L=', boxSpan(group.cavity, group.axis).toFixed(1), 'adet', group.count, '→', n);
-  if (n !== group.count) await setGroupCount(groupId, n, { keepTargetGap: true });   // üye ekleme/silme rebuild'i App izleyicisi tetikler
+  if (n !== group.count) await setGroupCount(groupId, n, { keepTargetGap: true });
   else await equalizeGroupGaps(groupId, { keepTargetGap: true });
 }
 
-/**
- * Üye sayısı: artınca yeni VF'ler son üyenin arkasına eklenir, azalınca son üyeler (panel+VF) silinir. Boşluklar eşitlenir.
- * Elle adet girişi hedef aralığı KAPATIR (kullanıcı devraldı); otomatik çağrılar keepTargetGap ile korur.
- */
+/** Elle adet girişi hedef aralığı KAPATIR; otomatik çağrılar keepTargetGap ile korur. Rebuild'i App izleyicisi tetikler. */
 export async function setGroupCount(groupId: string, count: number, opts: { keepTargetGap?: boolean } = {}): Promise<void> {
   const st = useAppStore.getState();
   const group = groupById(groupId);
   if (!group) return;
-  // ADET EN AZ 1 (Goker: "raf yerleştikten sonra miktarı sıfır yapılabiliyor" — grup üyesiz kalmasın).
+  // En az 1: grup üyesiz kalmamalı.
   const n = Math.max(1, Math.min(MAX_GROUP_COUNT, Math.round(count)));
   if (!opts.keepTargetGap && group.targetGap != null) st.updatePanelGroup(groupId, { targetGap: undefined });
   if (n === group.count) return;
-  // Üye kalınlıkları: mevcutlar korunur, yeni üyeler varsayılanla doğar; boşluklar Σkalınlığa göre eşitlenir.
   const memberThicknesses = memberThicknessesOf(group, n);
   const gaps = equalGaps(boxSpan(group.cavity, group.axis), n, memberThicknesses);
   let memberVfIds = group.memberVfIds.slice();
@@ -1717,12 +1401,10 @@ export async function setGroupCount(groupId: string, count: number, opts: { keep
     st.insertVirtualFacesAfter(memberVfIds[memberVfIds.length - 1] || null, added);
   }
   st.updatePanelGroup(groupId, { count: n, gaps: sol.gaps, memberVfIds: next.memberVfIds, memberThicknesses });
-  console.log('[YAGO][GRUP] adet', group.count, '→', n, groupId, '(boşluklar eşitlendi)');
-  // Panel ekleme (VF → otomatik panel) / silme rebuild'i App izleyicisi tetikler.
 }
 
 function writeGroupGaps(group: PanelGroup, gaps: GapSpec[], extra: Partial<PanelGroup> = {}): void {
-  groupEditBase = null;   // onaylı yazım: düzenleme oturumu bitti (oran tabanı düşer)
+  groupEditBase = null;   // onaylı yazım: oran tabanı düşer
   const st = useAppStore.getState();
   const next = { ...group, ...extra, gaps };
   const sol = solveFromStore(next) || fallbackSolution(next, gaps, group.count, anchorPoint(group, group.cavity));
@@ -1735,12 +1417,7 @@ function writeGroupGaps(group: PanelGroup, gaps: GapSpec[], extra: Partial<Panel
   st.updatePanelGroup(group.id, { ...extra, gaps: sol.gaps });
 }
 
-/**
- * ÜYE KALINLIĞI (şemadaki kutucuk): i. üyenin kalınlığı value olur; üye panelin
- * `panelThickness` parametresi güncellenir (motor levhayı bu kalınlıkla üretir,
- * damga/şerit sınıfı da bunu okur); boşluklar Σkalınlığa göre yeniden dağıtılır
- * (katsayı: kilitliler sabit, açık + pinli oranla — rescaleGaps); tam rebuild.
- */
+/** Üye kalınlığı; panelin `panelThickness`ı da yazılmalı (motor ve damga/şerit sınıfı onu okur). */
 export async function setGroupMemberThickness(groupId: string, i: number, value: number): Promise<void> {
   const group = groupById(groupId);
   if (!group || i < 0 || i >= group.count || !Number.isFinite(value)) return;
@@ -1748,28 +1425,21 @@ export async function setGroupMemberThickness(groupId: string, i: number, value:
   const ts = memberThicknessesOf(group);
   const others = sumT(ts) - ts[i];
   const v = r1(Math.max(1, Math.min(value, Math.max(1, L - others - group.count - 1))));
-  // Canlı önizleme kalınlığı zaten gruba yazdı: onay yalnız panel parametresi de aynıysa atlanır (eskiden önizlemeden sonra onay
-  // "değişiklik yok" sayılıp panelin panelThickness'ı ve rebuild hiç gelmiyordu).
+  // Önizleme kalınlığı gruba zaten yazdı: onay yalnız panel parametresi de aynıysa atlanır.
   const panelNow = panelOfVf(group.memberVfIds[i], useAppStore.getState().shapes);
   if (Math.abs(v - ts[i]) < 0.05 && Math.abs((parseFloat(panelNow?.parameters?.panelThickness) || ts[i]) - v) < 0.05) { groupEditBase = null; return; }
   ts[i] = v;
-  const gaps = rescaleGaps(group.gaps, L, group.count, ts);   // alan değişti: kilitliler sabit, açık + pinli oranla
+  const gaps = rescaleGaps(group.gaps, L, group.count, ts);
   writeGroupGaps(group, gaps, { memberThicknesses: ts });
   const st = useAppStore.getState();
   const panel = panelOfVf(group.memberVfIds[i], st.shapes);
   if (panel) st.updateShape(panel.id, { parameters: { ...panel.parameters, panelThickness: v, depth: v } } as any);
-  console.log('[YAGO][GRUP-KALINLIK] girildi', groupId, 'üye=', i + 1, 'değer=', v, 'kalınlıklar=', ts.join('/'), '→ boşluklar', gaps.map(g => `${g.value}${g.locked ? '🔒' : g.edited ? '📌' : ''}`).join('/'));
   await requestRebuild(group.shapeId);
 }
 
-/**
- * CANLI ÖNİZLEME (Goker, Eki 2026: "kutucuğa değeri yazar yazmaz, olması gerektiği gibi kalan ölçüyü diğer taraflara dağıt"):
- * şema kutucuğuna her tuş basışında boşluk (applyGapEdit kuralı) ya da kalınlık (redistributeForThickness) STORE'A yazılır —
- * VF / rebuild yok, yalnız şema ve kart anında yeni dağılımı gösterir. Onay (Enter / odak kaybı) editGroupGap /
- * setGroupMemberThickness ile gerçek yazım + rebuild; Esc → groupLayoutSnapshot ile alınan kayıt geri yüklenir.
- */
+/** Canlı önizleme: her tuşta yalnız STORE'a yazılır (VF / rebuild yok); Esc → groupLayoutSnapshot kaydı geri yüklenir. */
 export interface GroupLayoutSnap { gaps: GapSpec[]; memberThicknesses?: number[]; targetGap?: number }
-/** ORAN TABANI (canlı önizleme): düzenleme başındaki boşluklar — previewGroupGap / editGroupGap oranları buradan alır. */
+/** Oran tabanı: düzenleme başındaki boşluklar (önizleme oranları kaymasın). */
 let groupEditBase: { groupId: string; count: number; gaps: GapSpec[] } | null = null;
 const editBaseOf = (group: PanelGroup) => (groupEditBase?.groupId === group.id && groupEditBase.count === group.count ? groupEditBase.gaps : undefined);
 export function groupLayoutSnapshot(groupId: string): GroupLayoutSnap | null {
@@ -1799,19 +1469,14 @@ export function previewGroupMemberThickness(groupId: string, i: number, value: n
   useAppStore.getState().updatePanelGroup(groupId, { memberThicknesses: ts, gaps: rescaleGaps(group.gaps, L, group.count, ts) });
 }
 
-/**
- * Boşluk girişi (şema pill'i): KATSAYI kuralı (applyGapEditProportional — girilen pinlenir, fark açıklara oranla); VF'ler
- * güncellenir, tam rebuild. Elle boşluk girişi hedef aralığı kapatır. Pasif boşluk (tek açık) girilemez.
- */
+/** Elle boşluk girişi hedef aralığı kapatır; pasif boşluk girilemez. */
 export async function editGroupGap(groupId: string, k: number, value: number): Promise<void> {
   const group = groupById(groupId);
   if (!group || !Number.isFinite(value)) return;
   if (passiveGapIndex(group.gaps, group.count + 1) === k) { console.warn('[YAGO][GRUP-KATSAYI] boşluk', k + 1, 'pasif (diğerleri pinli/kilitli, kalanı toplar) — giriş yok sayıldı', groupId); groupEditBase = null; return; }
   const gaps = applyGapEditProportional(group.gaps, k, value, boxSpan(group.cavity, group.axis), group.count, memberThicknessesOf(group), { base: editBaseOf(group) });
-  // KAPAK DERZİNE BAĞLI ÜYE (Goker: levha kapak aralarının arasında çalışır): bağlı üyenin önündeki / arkasındaki boşluk
-  // girilince LEVHA değil KAPAK DERZİ taşınır (moveDoorJointTo → rebuild → levha derzi izler). Diğer boşluklar normal.
-  // Derz taşınamıyorsa (kilitli kapak ölçüsü / panel-ref'li derz) GİRİLEN DEĞER KAZANIR: bağ çözülür, levha girilen yere gider
-  // (Goker, Eki 2026: "değer girdiğimde kalan ölçüyü dağıt" — eskiden girilen değer sessizce derzden geri yazılıyordu).
+  // Derze bağlı üyenin yan boşluğu girilince LEVHA değil KAPAK DERZİ taşınır (levha rebuild'de derzi izler).
+  // Derz taşınamıyorsa girilen değer kazanır: bağ çözülür.
   let extra: Partial<PanelGroup> = group.targetGap != null ? { targetGap: undefined } : {};
   if (group.doorBond) {
     const m = Math.min(Math.max(0, group.doorBond.member ?? 0), group.count - 1);
@@ -1824,7 +1489,6 @@ export async function editGroupGap(groupId: string, k: number, value: number): P
         const s = panelStarts(group.cavity, group.axis, groupFacing(group), gaps, ts)[m];
         const a0 = s, a1 = s + ts[m], g = bj.p1 - bj.p0;
         const center = group.doorBond.align === 'center' ? (a0 + a1) / 2 : group.doorBond.align === 'min' ? a1 + g / 2 : a0 - g / 2;
-        console.log('[YAGO][GRUP-KAPAK-BAĞ] boşluk girişi → kapak derzi taşınır', groupId, 'k=', k, 'değer=', value, '→ derz merkezi', center.toFixed(1));
         if (await moveDoorJointTo(group.doorBond.doorGroupId, group.doorBond.splitId, group.doorBond.k, center)) return;
         console.warn('[YAGO][GRUP-KAPAK-BAĞ] kapak derzi taşınamadı → bağ çözüldü, girilen boşluk uygulanıyor (levha kapağı artık izlemez):', groupId);
         extra = { ...extra, doorBond: undefined };
@@ -1832,35 +1496,26 @@ export async function editGroupGap(groupId: string, k: number, value: number): P
     }
   }
   writeGroupGaps(group, gaps, extra);
-  console.log('[YAGO][GRUP-BOŞLUK] girildi', groupId, 'k=', k, 'değer=', value, '→', gaps.map(g => `${g.value}${g.locked ? '🔒' : g.edited ? '📌' : ''}`).join('/'));
   await requestRebuild(group.shapeId);
 }
 
-// ── HACİM DÜZENLEME (Goker: "rafın yerleştiği hacme face extrude") ──────────
-// Akış panel yüz extrude'uyla BİREBİR: mod aç → 3B'de hacim kutusunun yüzünü seç →
-// fixed / dyn / ref → uygula (ya da ref'te sağ tık). Adım gruba yazılır, tam rebuild;
-// çözücü adımı ham hacme uygular, üyeler + boşluklar yeni hacme göre çözülür.
+// HACİM DÜZENLEME: panel yüz extrude akışıyla birebir; adım gruba yazılır, çözücü ham hacme uygular.
 
-/** Hacim düzenleme modunu açar: extrude modu, hedef panel yerine grup hacmi. */
 export function startCavityEdit(groupId: string): void {
   const st = useAppStore.getState();
   if (st.panelMoveMode) st.setPanelMoveMode(false);
   if (st.panelRotateMode) st.setPanelRotateMode(false);
   st.setFaceExtrudeMode(true);
   st.setFaceExtrudeCavityGroupId(groupId);
-  console.log('[YAGO][HACİM-ADIM] düzenleme modu açıldı', groupId);
 }
 
-
-async function commitCavitySteps(group: PanelGroup, steps: CavityStep[], why: string): Promise<void> {
+async function commitCavitySteps(group: PanelGroup, steps: CavityStep[]): Promise<void> {
   useAppStore.getState().updatePanelGroup(group.id, { cavitySteps: steps });
-  console.log('[YAGO][HACİM-ADIM]', why, group.id, 'adımlar=', steps.map(s => `${s.axisLabel}:${s.refShapeId ? 'R' : s.isFixed ? 'F' : 'D'}${s.value}`).join(' '));
   await requestRebuild(group.shapeId);
 }
 
 const axisNormal = (n: Vec3): Vec3 => { const a = [Math.abs(n[0]), Math.abs(n[1]), Math.abs(n[2])]; const i = a.indexOf(Math.max(...a)); const o: Vec3 = [0, 0, 0]; o[i] = n[i] >= 0 ? 1 : -1; return o; };
 
-/** Tıklama noktası (gövde-yerel) → gövde kutusuna oransal çıpa. */
 function stepAnchorFrac(group: PanelGroup, anchor?: Vec3 | null): Vec3 | undefined {
   if (!anchor) return undefined;
   const parent = shapeById(group.shapeId);
@@ -1868,7 +1523,6 @@ function stepAnchorFrac(group: PanelGroup, anchor?: Vec3 | null): Vec3 | undefin
   return body ? fracInCavity(body, anchor, true) : undefined;
 }
 
-/** Aynı yüzdeki adımın yerine koyar (eksen + yön + aynı bağlantılı yüz ≈ çıpa yakın), yoksa ekler. */
 function upsertCavityStepAt(steps: CavityStep[], step: CavityStep): CavityStep[] {
   const f = stepFace(step);
   const near = (a?: Vec3, b?: Vec3) => !a || !b || Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) < 0.15;
@@ -1876,7 +1530,6 @@ function upsertCavityStepAt(steps: CavityStep[], step: CavityStep): CavityStep[]
   return idx >= 0 ? steps.map((s, i) => (i === idx ? step : s)) : [...steps, step];
 }
 
-/** Fixed / dyn hacim adımı. Dyn'de ~0 ve yeni adımsa işlem yok. */
 export async function executeCavityExtrude(groupId: string, faceNormal: Vec3, value: number, isFixed: boolean, anchor?: Vec3 | null): Promise<boolean> {
   const group = groupById(groupId);
   if (!group || !Number.isFinite(value)) return false;
@@ -1885,11 +1538,10 @@ export async function executeCavityExtrude(groupId: string, faceNormal: Vec3, va
   const existing = group.cavitySteps || [];
   const next = upsertCavityStepAt(existing, step);
   if (!isFixed && Math.abs(value) < 0.01 && next.length === existing.length + 1) return false;
-  await commitCavitySteps(group, next, isFixed ? 'fixed' : 'dyn');
+  await commitCavitySteps(group, next);
   return true;
 }
 
-/** Ref hacim adımı: yüz, referans panel/gövde yüzünün düzlemine taşınır (her rebuild'de yeniden çözülür). */
 export async function executeCavityExtrudeToReference(groupId: string, faceNormal: Vec3, ref: RefFacePick, anchor?: Vec3 | null): Promise<boolean> {
   const group = groupById(groupId);
   if (!group) return false;
@@ -1898,11 +1550,10 @@ export async function executeCavityExtrudeToReference(groupId: string, faceNorma
     id: genId('cav'), faceNormal: n, axisLabel: dominantAxisLabel({ x: n[0], y: n[1], z: n[2] }), value: 0, isFixed: true, timestamp: Date.now(),
     refShapeId: ref.panelId, refFaceGroupIndex: ref.faceGroupIndex, refNormalWorld: ref.normalWorld, refPointWorld: ref.pointWorld, anchorFrac: stepAnchorFrac(group, anchor),
   };
-  await commitCavitySteps(group, upsertCavityStepAt(group.cavitySteps || [], step), 'ref');
+  await commitCavitySteps(group, upsertCavityStepAt(group.cavitySteps || [], step));
   return true;
 }
 
-/** Store'daki bekleyen REF hacim seçimini onaylar ve modu kapatır (Uygula ✓ + sahnede sağ tık). */
 export async function confirmRefCavityExtrude(): Promise<void> {
   const st = useAppStore.getState();
   const gid = st.faceExtrudeCavityGroupId, cand = st.faceExtrudeRefCandidate, n = st.faceExtrudeCavityFaceNormal;
@@ -1916,45 +1567,33 @@ export async function confirmRefCavityExtrude(): Promise<void> {
 export function updateCavityStep(groupId: string, stepId: string, value: number): Promise<void> {
   const group = groupById(groupId);
   if (!group || !Number.isFinite(value)) return Promise.resolve();
-  return commitCavitySteps(group, (group.cavitySteps || []).map(s => (s.id === stepId ? { ...s, value } : s)), 'adım güncellendi');
+  return commitCavitySteps(group, (group.cavitySteps || []).map(s => (s.id === stepId ? { ...s, value } : s)));
 }
 
 export function deleteCavityStep(groupId: string, stepId: string): Promise<void> {
   const group = groupById(groupId);
   if (!group) return Promise.resolve();
-  return commitCavitySteps(group, (group.cavitySteps || []).filter(s => s.id !== stepId), 'adım silindi');
+  return commitCavitySteps(group, (group.cavitySteps || []).filter(s => s.id !== stepId));
 }
 
-/**
- * KİLİT ROZETİ — 3 MOD (bkz. GapMode): açık → pin → kilitli → açık. Değer değişmez → rebuild yok. Pasif boşluk (son açık)
- * pinlenemez / kilitlenemez — en az bir açık boşluk kalır (pin + kilit ≤ n−1).
- */
+/** Rozet: açık → pin → kilitli (GapMode); değer değişmez → rebuild yok. */
 export function toggleGroupGapLock(groupId: string, k: number): void {
   const group = groupById(groupId);
   if (!group || k < 0 || k >= group.gaps.length) return;
   const gaps = cycleGapMode(group.gaps, k, group.count + 1);
   if (!gaps) { console.warn('[YAGO][GRUP-KATSAYI] son açık boşluk pinlenemez/kilitlenemez (pasif, kalanı toplar):', groupId, 'k=', k); return; }
   useAppStore.getState().updatePanelGroup(groupId, { gaps });
-  console.log('[YAGO][GRUP-KATSAYI] boşluk', k + 1, 'modu', gapMode(group.gaps[k]), '→', gapMode(gaps[k]), groupId, 'değer=', gaps[k].value);
 }
 
-/** Tüm boşluklar eşit + kilitsiz. (Hedef aralık korunur: eşit boşluk zaten o modun kuralı.) */
 export async function equalizeGroupGaps(groupId: string, _opts: { keepTargetGap?: boolean } = {}): Promise<void> {
   const group = groupById(groupId);
   if (!group) return;
   writeGroupGaps(group, equalGaps(boxSpan(group.cavity, group.axis), group.count, memberThicknessesOf(group)));
-  console.log('[YAGO][GRUP-BOŞLUK] eşitlendi', groupId);
   await requestRebuild(group.shapeId);
 }
 
-/** Grubun görünen adı (eski gruplarda tür etiketi). */
 export const groupName = (g: Pick<PanelGroup, 'name' | 'kind'>) => (g.name ?? groupKindLabel(g.kind));
 
-/**
- * GRUP ADI: grup satırında düzenlenir; üye panellerin adı (VF description)
- * aynı adla eşitlenir — üye satırlarında salt-okunur gösterilir. Geometri
- * değişmez → rebuild yok.
- */
 export function renamePanelGroup(groupId: string, name: string): void {
   const group = groupById(groupId);
   if (!group) return;
@@ -1963,49 +1602,38 @@ export function renamePanelGroup(groupId: string, name: string): void {
   useAppStore.setState(s => ({ virtualFaces: s.virtualFaces.map(f => (ids.has(f.id) ? { ...f, description: name } : f)) }));
 }
 
-/** Grup + tüm üye paneller ve VF'ler silinir (rebuild'i panel silme izleyicisi tetikler). */
 export function deletePanelGroupWithMembers(groupId: string): void {
   const group = groupById(groupId);
   if (!group) return;
   removeMembers(group.memberVfIds);
   useAppStore.getState().deletePanelGroup(groupId);
-  console.log('[YAGO][GRUP] silindi', groupId, 'üyeN=', group.memberVfIds.length);
 }
 
 const boxKey = (b: CavityBox) => [...b.min, ...b.max].map(n => Math.round(n)).join('|');
 
-/**
- * REBUILD SONRASI SENKRON (PanelEngine): grubun store'daki hacmi/bölgesi/
- * boşlukları güncel çözümle eşitlenir (şema ve kilit değerleri doğru okunsun).
- */
 export function syncPanelGroups(parentShapeId: string): void {
   const st = useAppStore.getState();
   const parent = shapeById(parentShapeId, st.shapes);
   if (!parent) return;
   const mine = st.panelGroups.filter(g => g.shapeId === parentShapeId);
   for (const g of mine) {
-    // Bayat kapak bağı (kapak grubu / bölme / derz silinmiş) düşer; levha olduğu yerde kalır.
     if (g.doorBond && !doorJointForBond(g.doorBond, parent, st.shapes)) { st.updatePanelGroup(g.id, { doorBond: undefined }); console.warn('[YAGO][GRUP-KAPAK-BAĞ] kapak derzi yok, bağ düştü:', g.id, g.doorBond); }
     const sol = solveGroup(g, parent, st.shapes, st.panelGroups);
     if (!sol) continue;
     const sameBox = boxKey(sol.cavity) === boxKey(g.cavity);
     const sameRegion = boxesKey(sol.region) === boxesKey(g.region || []);
     const sameGaps = sol.gaps.length === g.gaps.length && sol.gaps.every((x, i) => Math.abs(x.value - g.gaps[i].value) < 0.05 && x.locked === g.gaps[i].locked);
-    // Ref hacim adımlarının çözülen miktarı adıma yazılır (UI gösterimi; motorun resolvedValue'su gibi).
     const rv = sol.cavityResolved || [];
     const stepsPatch = rv.length && g.cavitySteps ? g.cavitySteps.map(cs => { const r = rv.find(x => x.id === cs.id); return r && Math.abs((cs.resolvedValue ?? NaN) - r.value) > 0.05 ? { ...cs, resolvedValue: r.value } : cs; }) : null;
     const stepsChanged = !!stepsPatch && stepsPatch.some((cs, i) => cs !== g.cavitySteps![i]);
     if (!(sameBox && sameRegion && sameGaps && !stepsChanged)) {
       st.updatePanelGroup(g.id, { cavity: sol.cavity, region: sol.region, gaps: sol.gaps, ...(stepsChanged ? { cavitySteps: stepsPatch! } : {}) });
-      console.log('[YAGO][GRUP-SENKRON]', g.id, 'hacim=', fmtBox(sol.cavity), 'parçaN=', sol.region.length, 'boşluklar=', sol.gaps.map(x => x.value).join('/'));
     }
-    // HEDEF ARALIK: açıklık değiştiyse adet yeniden türetilir; fark varsa üye eklenir/silinir
-    // (App izleyicisi yeni rebuild tetikler; o rebuild aynı n'i verir → döngü durur).
+    // Adet farkı yeni rebuild tetikler; o rebuild aynı n'i verir → döngü durur.
     if (g.targetGap != null && g.targetGap > 0) {
       const L = boxSpan(sol.cavity, g.axis);
       const n = countForTargetGap(g, L, g.targetGap);
       if (n !== g.count) {
-        console.log('[YAGO][GRUP-ARALIK] hacim değişti: L=', L.toFixed(1), 'hedef=', g.targetGap, 'adet', g.count, '→', n, g.id);
         void setGroupCount(g.id, n, { keepTargetGap: true });
       }
     }

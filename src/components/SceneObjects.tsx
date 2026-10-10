@@ -9,78 +9,48 @@ import {
   groupIndexOfFace, localBboxOf,
 } from './Geometry';
 import { REF_COLORS, applyTransformSteps, confirmRefFaceExtrude, cycleRefFacePickFromEvent } from './PanelOps';
-import { type Point2D, computeFaceComponentContour, computeFreeRegionLocal, earClipTriangulate, findPanelCoveringPoint, pointInTriangle3D } from './FaceRegion';
+import { computeFaceComponentContour, computeFreeRegionLocal, earClipTriangulate, findPanelCoveringPoint, pointInTriangle3D } from './FaceRegion';
 import {
-  GROUP_PANEL_THICKNESS, boxSpan, boxesSurface, collectObstacles, confirmRefCavityExtrude, confirmVolumePick, fmtBox, gridForObstacles, groupBoundsPanelPredicate,
+  GROUP_PANEL_THICKNESS, boxSpan, boxesSurface, collectObstacles, confirmRefCavityExtrude, confirmVolumePick, gridForObstacles, groupBoundsPanelPredicate,
   rayCavityCandidates, repickObstacles,
 } from './PanelGroupService';
-import { DOOR_GAP, DOOR_THICKNESS, collectDoorCuts, confirmDoorPick, doorCandidatesAt, doorSlabPolygon, fmtRect, isDoorPanel, rayDoorEntry, splitDoorAtPanel } from './DoorService';
+import { DOOR_GAP, DOOR_THICKNESS, collectDoorCuts, confirmDoorPick, doorCandidatesAt, doorSlabPolygon, isDoorPanel, rayDoorEntry, splitDoorAtPanel } from './DoorService';
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   SAHNE NESNELERİ — canvas içinde şekil başına çizilen her şey:
-   (A) PanelDrawing: panel mesh'i, kenarlar, referans yüz seçimi;
-   (B) FaceOverlays: yüz yakalama, VF vurguları, yüz editörü, fillet, hacim seçimi;
-   (C) ShapeWithTransform: gövde mesh'i + TransformControls + overlay yerleşimi.
-   ═══════════════════════════════════════════════════════════════════════════ */
-// ═══════════════════════════════════════════════════════════════════════════
-// PanelDrawing — PANEL ÇİZİMİ (solid / wireframe / x-ray), seçim taraması,
-// yüz-extrude ve referans-yüz overlay'leri, panel yön oku.
-// RENK YÖNETİMİ: seçimde DOLGU asla değişmez; vurgu kenardan (doygun aksan +
-// kalın stroke) ve seçili panelde çapraz TARAMA ile gelir (CAD konvansiyonu).
-// ═══════════════════════════════════════════════════════════════════════════
+/* Sahne nesneleri — canvas içinde şekil başına çizilen her şey: PanelDrawing (panel mesh/kenar/tarama, ref-yüz),
+   FaceOverlays (yüz yakalama, VF, fillet, hacim/kapak seçimi), ShapeWithTransform (gövde + TransformControls).
+   RENK: seçimde panel DOLGUSU değişmez; vurgu kenar + çapraz taramayla gelir. */
 
 const PANEL_COLORS = {
   selected: { shapeEdge: '#e8590c', hatch: '#8a9097', panelEmissive: '#2a2a2a' },
-  edge: { default: '#5b6470' },   // yumuşak gri — birleşim yerlerinde ağır görünmez
+  edge: { default: '#5b6470' },
   arrow: { fill: '#ff0000', outline: '#7f1d1d' },
 } as const;
 
-/**
- * SEÇİM PALETİ — TEK KAYNAK (Goker: "tüm seçim, extrude, hacim seçimi, fillet dahil tutarlı;
- * minimal, soft, profesyonel"; mercan beğenilmedi → "daha profesyonel, daha güzel bir dokunuş").
- * Tek ton ailesi: PETROL MAVİSİ (bone/ivory zeminde sakin, turuncu panel aksanıyla tamamlayıcı
- * kontrast; CAD seçim konvansiyonuna yakın). Roller:
- *   hover  = fare altındaki aday (açık petrol, düşük opaklık)
- *   active = seçili yüz/hacim (orta petrol)
- *   edge   = seçili hacmin dış çizgisi (ince, koyu petrol)
- *   muted  = "dolu" durum (ör. panel yerleştirmede zaten paneli olan yüz) — nötr taş grisi
- *   extrude* = YALNIZ PANEL YÜZ-EXTRUDE (Goker: "seçim çok belli olmuyor, daha koyu"):
- *              koyu petrol dolgu + seçili yüzün sınırında çizgi.
- * Hacimler büyük alan kapladığından yüz opaklığından daha düşük opaklıkla doldurulur.
- * REF_COLORS (referans = soft sarı) ve taşıma-ref yeşili AYRI rol olarak korunur.
- */
+/** Tek seçim paleti (petrol mavisi): hover/active/edge/muted; extrude* yalnız panel yüz-extrude için (daha koyu).
+ *  Hacimler büyük alan kapladığından daha düşük opaklıkla doldurulur. REF_COLORS (sarı) ayrı roldür. */
 const SEL_COLORS = {
   hover: 0xa9c6d8, active: 0x3a7ca5, muted: 0xb8b2aa, edge: '#24577a',
   faceHoverOpacity: 0.4, faceActiveOpacity: 0.5,
   volumeHoverOpacity: 0.12, volumeActiveOpacity: 0.16,
   edgeWidth: 1.3,
-  // HACİM SINIRI (Goker: "mavi ton çok güzel ama sınırları kırmızı olsun — nereyi seçtiğini daha iyi gösterir"):
-  // petrol dolgu + ince KIRMIZI dış çizgi (yön okuyla aynı kırmızı). Hacim seçimi ve hacim düzenlemede.
   volumeEdge: '#dc2626',
   extrudeHover: 0x3a7ca5, extrudeHoverOpacity: 0.4,
   extrudeActive: 0x1f5578, extrudeActiveOpacity: 0.72,
   extrudeEdge: '#0f3550', extrudeEdgeWidth: 2.2,
 } as const;
 
-/**
- * KAPAK RENKLERİ: sınır panelleri kehribar (referans dili — REF_COLORS ailesine yakın, seçim petrolünden ayrı);
- * kapak adayı hacim seçimiyle aynı petrol dolgu + kırmızı dış çizgi (tek seçim dili).
- */
 const DOOR_COLORS = { boundEdge: '#d97706', boundEmissive: '#6b4a10' } as const;
 
-/** Seçili yüzün SINIR çizgisi (yüz-extrude): vurgu geometrisinin dış kenarları (eş-düzlem iç dikişler elenir), her şeyin üstünde. */
 const FaceOutline: React.FC<{ geometry: THREE.BufferGeometry; color: string; width: number }> = ({ geometry, color, width }) => {
   const pts = useMemo(() => edgePointsOf(geometry, 1), [geometry]);
   if (pts.length < 2) return null;
   return <Line points={pts} segments color={color} lineWidth={width} transparent={false} depthTest={false} depthWrite={false} renderOrder={13} raycast={() => null} />;
 };
-/** Yüz-extrude sırasında hedef DIŞI paneller: X-ray görünümüyle aynı opaklık; kenarlar normal panel grisinde
- *  (Goker: açık gri "çok belirsiz" kaldı) ama 1 px'de ve derinlik testli — arkadakiler öndekini delmez, karmaşa azalır. */
+/** Yüz-extrude'da hedef dışı paneller: X-ray opaklığı; kenarlar derinlik testli — arkadakiler öndekini delmez. */
 const XRAY_PANEL_OPACITY = 0.35;
 const EXTRUDE_XRAY_EDGE = '#6b7280';
 
-// SEÇİM TARAMASI (HATCH): 45° çapraz çizgiler, EKRAN UZAYINDA sabit aralıklı (gl_FragCoord);
-// panel ölçeğinden bağımsız gerçek CAD taraması. Çizgiler arası boşluk şeffaf (discard).
+// Seçim taraması: 45° çizgiler EKRAN uzayında sabit aralıklı (gl_FragCoord) — panel ölçeğinden bağımsız.
 const HATCH_VERT = /* glsl */`void main() { gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`;
 const HATCH_FRAG = /* glsl */`
   precision mediump float;
@@ -94,28 +64,15 @@ const HATCH_FRAG = /* glsl */`
     gl_FragColor = vec4(uColor, uOpacity * line);
   }`;
 
-// Z-FIGHTING: mesh hafif pozitif polygonOffset (kendi edge'inin altına); edge ve tarama yalnız
-// küçük SABİT birim payı alır, EĞİM (factor) payı ALMAZ. Goker: "iki panelin değdiği yerde kamera
-// uzaklaştıkça arkadaki panellerin kalınlıkları öndeki panelin üstünde görünüyor". KÖK NEDEN: eğim
-// payı ekranda 1 pikselin derinlik değişimiyle ölçeklenir — uzaklaştıkça piksel başına düşen dünya
-// boyu büyür; tarama (-2) + kenar (-1) + mesh (+1) eğim payları toplamı 18 mm'yi aşınca değen
-// panelin TARAMASI (kesik çizgi görünümü) ve kenarları öndeki yüzü delip görünüyordu. Mesh'in +1
-// payı kendi kenarını/taramasını üstte tutmaya yeter. Başsız WebGL testi: 4–25 m'de sızıntı 0,
-// yakında kenar görünürlüğü değişmedi.
-// Kenarlar drei <Line> (Line2) ile: antialias'lı, gerçek piksel genişliğinde, OPAK.
+// Z-FIGHTING: mesh küçük pozitif polygonOffset alır; kenar/tarama yalnız SABİT birim payı alır, EĞİM (factor) payı ALMAZ —
+// eğim payı uzaklaştıkça büyür ve değen arka panellerin kenar/taraması öndeki yüzü delip görünür.
 const MESH_OFFSET = 1.0, EDGE_OFFSET_FACTOR = 0, EDGE_OFFSET_UNITS = -1.0, EDGE_RENDER_ORDER = 1;
 export const EDGE_LINE_WIDTH = 1.0;
 export const EDGE_ANGLE_THRESHOLD = 15;
 
-/** Görünmez yakalama yüzeyi (overlay olayları için). */
 export const HitMaterial = () => <meshBasicMaterial transparent opacity={0.01} side={THREE.DoubleSide} depthTest={false} depthWrite={false} />;
-/** Yüz vurgusu (overlay). */
 const OverlayMat = ({ color, opacity }: { color: number; opacity: number }) => <meshBasicMaterial color={color} transparent opacity={opacity} side={THREE.DoubleSide} depthTest={false} depthWrite={false} />;
 
-/**
- * REFERANS YÜZ OVERLAY'İ (PanelDrawing + ShapeWithTransform ortak): hover'da yüz soft
- * sarı, derinlik döngüsüyle seçilen referans yüz doygun sarı (REF_COLORS).
- */
 export function RefFaceOverlay({ geometry, faces, groups, hoveredGroup, candidateGroup, onHover, onPointerDown, onClick }:
   { geometry: THREE.BufferGeometry; faces: any[]; groups: any[]; hoveredGroup: number | null; candidateGroup: number | null; onHover: (gi: number | null) => void; onPointerDown?: (e: any) => void; onClick?: (e: any) => void }) {
   const hoverGeo = useMemo(() => (hoveredGroup !== null && groups[hoveredGroup] ? createFaceHighlightGeometry(faces, groups[hoveredGroup].faceIndices) : null), [hoveredGroup, groups, faces]);
@@ -134,7 +91,6 @@ export function RefFaceOverlay({ geometry, faces, groups, hoveredGroup, candidat
   );
 }
 
-/** Sağ tık → bekleyen ref-extrude seçimini onaylar (panel yüzü ya da raf/dikme HACMİ). */
 export const confirmRefOnRightClick = async (e: any) => {
   if (e.button !== 2) return;
   e.stopPropagation();
@@ -150,28 +106,22 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
     'panelRotateMode', 'panelRotateValueMode', 'panelRotateTargetPanelId', 'panelRotatePivot', 'panelRotateRefArmVertex', 'panelRotateAxis', 'panelRotateRefFace', 'setPanelRotateRefFace',
     'selectedPanelGroupId', 'volumePickMode', 'volumePickGroupId', 'selectedDoorGroupId', 'doorPickMode', 'doorRefPickGroupId', 'setDoorRefPickGroupId', 'virtualFaces');
   const [hoveredExtrudeGroup, setHoveredExtrudeGroup] = useState<number | null>(null);
-  // Ref-move: bu panel aday olarak fare altındayken tüm panel vurgulanır.
   const [moveRefHover, setMoveRefHover] = useState(false);
   const { faces, groups: faceGroups } = useMemo(() => (shape.geometry ? getFacesAndGroups(shape.geometry) : { faces: [], groups: [] }), [shape.geometry]);
 
-  // ── Seçim mantığı ──────────────────────────────────────────────────────────
   const parentShapeId = shape.parameters?.parentShapeId;
   const virtualFaceId = shape.parameters?.virtualFaceId;
   const isParentSelected = parentShapeId === S.selectedShapeId;
-  // GRUP SEÇİMİ ("tümünü seç"): raf/dikme grubunun her üyesi seçili çizilir.
   const isGroupSelected = isParentSelected && ((!!S.selectedPanelGroupId && shape.parameters?.panelGroupId === S.selectedPanelGroupId)
     || (!!S.selectedDoorGroupId && shape.parameters?.doorGroupId === S.selectedDoorGroupId));
   const isRowSelectedRaw = isGroupSelected || (isParentSelected && !!virtualFaceId && S.selectedPanelRow === `vf-${virtualFaceId}`);
-  // KAPAK SINIRI (Goker): kapak yerleştirme modunda kapak sınırı işaretli paneller kehribar kenarla gösterilir;
-  // kapaklar (zaten yerleşmiş) saydam çizilir ki arkadaki sınır panelleri ve gövde görünsün.
-  // Kapak yerleştirme ve PANEL REF modlarında kapak-sınırı paneller kehribar parlar (ref modunda tıklanacak adaylar).
   const isDoorBoundPanel = isParentSelected && (S.doorPickMode || !!S.doorRefPickGroupId) && !!virtualFaceId && !!S.virtualFaces.find(f => f.id === virtualFaceId)?.doorBound;
-  // PANEL REF modunda da kapaklar saydam ve tıklanmaz: arkasındaki dikme/raf seçilebilsin (dış kapak levhayı örter).
+  // Bu modlarda kapaklar saydam ve tıklanmaz: arkasındaki dikme/raf seçilebilsin.
   const isDoorPickGhost = isParentSelected && (S.doorPickMode || !!S.doorRefPickGroupId) && isDoorPanel(shape);
 
   const edgePoints = useMemo<Vec3[] | null>(() => { try { const p = edgePointsOf(shape.geometry, EDGE_ANGLE_THRESHOLD); return p.length ? p : null; } catch { return null; } }, [shape.geometry]);
 
-  // Seçim taraması materyali — tek instance (hook sırası için erken return'den önce).
+  // Tek instance; hook sırası için erken return'den önce.
   const hatchMaterial = useMemo(() => new THREE.ShaderMaterial({
     uniforms: { uColor: { value: new THREE.Color(PANEL_COLORS.selected.hatch) }, uSpacing: { value: 7.0 }, uThickness: { value: 2.0 }, uOpacity: { value: 0.35 }, uPixelRatio: { value: 1.0 } },
     vertexShader: HATCH_VERT, fragmentShader: HATCH_FRAG, transparent: true, depthTest: true, depthWrite: false, side: THREE.DoubleSide,
@@ -181,11 +131,8 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
 
   const isFaceExtrudeTarget = S.faceExtrudeMode && shape.id === S.faceExtrudeTargetPanelId;
   const isFaceExtrudeXray = S.faceExtrudeMode && shape.id !== S.faceExtrudeTargetPanelId;
-  // YENİDEN HACİM SEÇİMİ (Goker, Eki 2026: "sıralamadan önceki panellerin durumuna göre; o raf/dikmeden
-  // SONRA yerleşen paneller hacim seçiminde görünmemeli — yalnız altındaki adımların panelleri görünmeli"):
-  // sahne, grubun adımından ÖNCEKİ duruma döner. Sırada SONRAKİ gövde panelleri ve daha sonra kurulmuş
-  // grupların üyeleri HİÇ ÇİZİLMEZ (hacmi de sınırlamazlar — repickObstacles aynı yüklemi okur); grubun
-  // kendi üyeleri mevcut yerini göstermek için saydam kalır; öncekiler katı kalır.
+  // Yeniden hacim seçimi: sahne grubun adımından ÖNCEKİ duruma döner — sonraki paneller hiç çizilmez
+  // (repickObstacles aynı yüklemi okur), grubun kendi üyeleri saydam, öncekiler katı.
   const repickRole: 'none' | 'bounds' | 'member' | 'later' = (() => {
     if (!S.volumePickMode || !S.volumePickGroupId || !isParentSelected) return 'none';
     const st = useAppStore.getState();
@@ -197,20 +144,16 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
   const isRepickXray = repickRole === 'member';
   const isRepickHidden = repickRole === 'later';
   const isGhost = isFaceExtrudeXray || isRepickXray || isDoorPickGhost;
-  // Yeniden seçimde grup kartı açık (üyeler "seçili") kalır ama saydam üyelerde seçim vurgusu/tarama çizilmez.
   const isPanelRowSelected = isRowSelectedRaw && !isRepickXray;
   const isRaycastOnParent = (S.raycastMode || S.volumePickMode !== null || S.doorPickMode) && parentShapeId && parentShapeId === S.selectedShapeId;
-  // Ref modu: referans seçimi ancak EXTRUDE EDİLECEK hedef yüz seçildikten sonra aktifleşir;
-  // hedef DIŞINDAKİ her panel raycast alır (derinlik döngüsü).
+  // Ref seçimi ancak hedef yüz seçildikten sonra aktif; hedef dışındaki her panel raycast alır.
   const isExtRefMode = S.faceExtrudeMode && S.faceExtrudeValueMode === 'ref' && S.faceExtrudeSelectedFace !== null;
-  // DÖNDÜRME REF: pivot + nişan + eksen seçildikten sonra başka panelin YÜZÜ referans alınır (extrude-ref ile aynı akış).
   const isRotRefMode = S.panelRotateMode && S.panelRotateValueMode === 'ref' && !!S.panelRotatePivot && !!S.panelRotateRefArmVertex && S.panelRotateAxis !== null;
   const isRefMode = isExtRefMode || isRotRefMode;
   const refOwnerId = isExtRefMode ? S.faceExtrudeTargetPanelId : S.panelRotateTargetPanelId;
   const refCandidate = isExtRefMode ? S.faceExtrudeRefCandidate : S.panelRotateRefFace;
   const isRefPickablePanel = isRefMode && shape.id !== refOwnerId;
   const isRefCandidatePanel = isRefMode && refCandidate?.panelId === shape.id;
-  // TAŞIMA REF VURGUSU: onaylanan referans panel yeşil; hedef seçim aşamasında fare altındaki ADAY soft sarı.
   const isMoveRefTargetPanel = S.panelMoveMode && S.panelMoveValueMode === 'ref' && !!S.panelMoveRefSourceVertex && S.panelMoveRefTargetPanelId === shape.id;
   const isMoveRefPickMode = S.panelMoveMode && S.panelMoveValueMode === 'ref' && !!S.panelMoveRefSourceVertex && !S.panelMoveRefTargetVertex && shape.id !== S.panelMoveTargetPanelId && S.panelMoveRefTargetPanelId !== shape.id;
   const isMoveRefHovered = isMoveRefPickMode && moveRefHover;
@@ -226,7 +169,6 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
     ? null : createFaceHighlightGeometry(faces, faceGroups[S.faceExtrudeSelectedFace].faceIndices), [isFaceExtrudeTarget, S.faceExtrudeSelectedFace, faceGroups, faces]);
 
   if (!shape.geometry) return null;
-  // Yeniden seçimde gruptan SONRAKİ paneller sahneden tamamen kalkar (ne gövde, ne kenar, ne tarama).
   if (isRepickHidden) return null;
 
   const isWireframe = S.viewMode === ViewMode.WIREFRAME;
@@ -234,29 +176,26 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
   const edgeColor = moveRefHighlight ? (isMoveRefTargetPanel ? '#15803d' : REF_COLORS.selectedCss) : isDoorBoundPanel ? DOOR_COLORS.boundEdge : isSelected ? PANEL_COLORS.selected.shapeEdge
     : isGhost ? EXTRUDE_XRAY_EDGE : PANEL_COLORS.edge.default;
   const edgeWidth = moveRefHighlight ? EDGE_LINE_WIDTH + 0.9 : isDoorBoundPanel ? EDGE_LINE_WIDTH + 1.1 : isSelected ? EDGE_LINE_WIDTH + 0.7 : EDGE_LINE_WIDTH;
-  const showHatch = isPanelRowSelected && !isWireframe;   // tarama yalnız satır seçiliyken ve dolgu görünen modlarda
+  const showHatch = isPanelRowSelected && !isWireframe;
 
   const handleClick = (e: any) => {
     e.stopPropagation();
     if (S.volumePickMode || S.doorPickMode) return;   // HACİM / KAPAK SEÇME: tıklama araca aittir
-    // PANEL REF (Goker, Eki 2026: "o düğmeye basınca sadece dikme veya raf seçmem yeterli olsun"): tıklanan kapak-sınırı
-    // dikme/rafın ortasından kapak bölünür; başarılıysa mod kapanır. Normal seçim yok.
     if (S.doorRefPickGroupId) {
       if (virtualFaceId) { const ids = splitDoorAtPanel(S.doorRefPickGroupId, virtualFaceId); if (ids.length) S.setDoorRefPickGroupId(null); }
       return;
     }
-    // TAŞIMA MODU: normal panel seçimi YOK (referans döngüsü canvas seviyesinde, MoveRefPanelPicker).
+    // Taşıma modu: referans döngüsü canvas seviyesinde (MoveRefPanelPicker).
     if (S.panelMoveMode) return;
-    // DÖNDÜRME REF: referans YÜZ seçimi (pivot + nişan + eksen seçildi) — yalnız PANEL yüzleri aday.
     if (S.panelRotateMode && S.panelRotateValueMode === 'ref') {
       if (isRotRefMode && shape.id !== S.panelRotateTargetPanelId) {
         cycleRefFacePickFromEvent(e, useAppStore.getState().shapes.filter((x: any) => x.type === 'panel'), S.panelRotateTargetPanelId, S.setPanelRotateRefFace);
       }
       return;
     }
-    if (S.panelRotateMode) return;             // DÖNDÜRME (Dyn): pivot/eksen gizmo ile; normal seçime düşmez
-    if (S.faceExtrudeMode) return;             // extrude modunda hedef/hedef-dışı panelde normal seçim yok
-    // BODY MODU (Goker): panel tıklansa bile KOMPLE BLOK seçilir; panel satırı yalnız Panel modunda yazılır.
+    if (S.panelRotateMode) return;
+    if (S.faceExtrudeMode) return;
+    // Body modunda panel tıklansa da tüm blok seçilir; panel satırı yalnız Panel modunda yazılır.
     const targetId = parentShapeId ? parentShapeId : shape.id;
     if (S.selectedShapeId !== targetId) S.selectShape(targetId);
     if (S.panelSelectMode && parentShapeId) S.setSelectedPanelRow(virtualFaceId ? `vf-${virtualFaceId}` : null, parentShapeId);
@@ -282,7 +221,6 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
 
   return (
     <group name={`shape-${shape.id}`} position={shape.position} rotation={shape.rotation} scale={shape.scale}>
-      {/* SOLID / X-RAY: aynı mesh, farklı saydamlık */}
       {!isWireframe && (
         <mesh ref={meshRef} geometry={shape.geometry} castShadow receiveShadow {...meshEvents}>
           <meshLambertMaterial color={shape.color || '#ffffff'} emissive={emissive} emissiveIntensity={emissiveIntensity} side={THREE.DoubleSide}
@@ -295,7 +233,6 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
       {!isWireframe && hatch}
       {edgeLine(isXray)}
 
-      {/* FACE EXTRUDE OVERLAY: hedef panelde yüz seçimi (tıklama noktası yerel olarak saklanır). */}
       {isFaceExtrudeTarget && (
         <>
           <mesh geometry={shape.geometry} renderOrder={10}
@@ -322,29 +259,23 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
         </>
       )}
 
-      {/* REF PICKABLE PANEL: hover + seçili referans yüz vurgusu */}
       {isRefPickablePanel && (
         <RefFaceOverlay geometry={shape.geometry} faces={faces} groups={faceGroups} hoveredGroup={hoveredExtrudeGroup}
           candidateGroup={isRefCandidatePanel ? (refCandidate?.faceGroupIndex ?? null) : null} onHover={setHoveredExtrudeGroup}
           onPointerDown={(e: any) => { if (isExtRefMode) confirmRefOnRightClick(e); }} />
       )}
 
-      {/* Hacim seçme modunda panel yön oku gizlenir (Goker: yön oku gösterilirken panel gizmo okları görünmesin); moddan çıkınca geri gelir. */}
       {isPanelRowSelected && !isGroupSelected && !S.volumePickMode && !S.doorPickMode && <DirectionArrow geometry={shape.geometry} arrowRotated={shape.parameters?.arrowRotated || false} transformSteps={shape.parameters?.transformSteps} />}
     </group>
   );
 });
 
-// ─── DirectionArrow (Yön Oku — düz/2B) ────────────────────────────────────────
-// Panelin yüzeyine yatık, ışıktan etkilenmeyen kırmızı ok (ShapeGeometry silüet + koyu
-// kenar). depthTest=false ile her zaman panelin üstünde. Yön arrowRotated ile değişir.
+// Yön oku: panel yüzeyine yatık, ışıksız kırmızı ok; depthTest=false ile hep panelin üstünde.
 const DirectionArrow: React.FC<{ geometry: THREE.BufferGeometry; arrowRotated?: boolean; transformSteps?: any[] }> = React.memo(({ geometry, arrowRotated = false, transformSteps }) => {
   const arrowConfig = useMemo(() => {
     const posAttr = geometry?.getAttribute('position') as THREE.BufferAttribute | undefined;
     if (!posAttr) return null;
-    // PANEL ÇERÇEVESİ (Goker: "panel dönse taşınsa ok her zaman panelin üzerinde gelsin"):
-    // ölçüler panelin kendi dönüşüyle TERS döndürülmüş çerçevede alınır (orada panel
-    // eksen-hizalı slab, ince eksen gerçek kalınlık), ok aynı dönüşle geri getirilir.
+    // Ölçüler panel dönüşüyle TERS döndürülmüş çerçevede (panel orada eksen-hizalı slab); ok aynı dönüşle geri getirilir.
     const { rotation: rot } = applyTransformSteps([0, 0, 0], [0, 0, 0], (Array.isArray(transformSteps) ? transformSteps : []) as any);
     const Q = new THREE.Quaternion().setFromEuler(new THREE.Euler(rot[0], rot[1], rot[2], 'XYZ'));
     const Qinv = Q.clone().invert();
@@ -358,14 +289,11 @@ const DirectionArrow: React.FC<{ geometry: THREE.BufferGeometry; arrowRotated?: 
     let targetAxis = planeAxes[0];
     if (arrowRotated) targetAxis = planeAxes.find(a => a !== targetAxis) ?? planeAxes[1];
     const otherAxis = planeAxes.find(a => a !== targetAxis) ?? planeAxes[1];
-    // Yüzey düzlemi tabanı: dirVec=ok yönü, perpVec=düzlemde dik, zAxis=normal; panel dönüşüyle dünyaya.
     const dirVec = new THREE.Vector3().setComponent(targetAxis, 1), perpVec = new THREE.Vector3().setComponent(otherAxis, 1);
     const quat = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(dirVec, perpVec, new THREE.Vector3().crossVectors(dirVec, perpVec).normalize())).premultiply(Q);
-    // İnce eksen boyunca dışa ofset; eğik panelde ok YUKARI bakan büyük yüze konur.
     const normalUnit = new THREE.Vector3().setComponent(thinAxisIndex, 1);
     if (normalUnit.clone().applyQuaternion(Q).y < -1e-6) normalUnit.negate();
     const position = center.clone().addScaledVector(normalUnit, thinHalf + 3).applyQuaternion(Q);
-    // Düz ok silüeti (+X yönünde), panele oranlı boyut
     const planeSpan = Math.min(size.getComponent(planeAxes[0]), size.getComponent(planeAxes[1]));
     const L = THREE.MathUtils.clamp(planeSpan * 0.5, 90, 260), sw = L * 0.20, hw = L * 0.46, hl = L * 0.34;
     const sx = -L / 2, ex = L / 2, neck = ex - hl;
@@ -392,17 +320,6 @@ const DirectionArrow: React.FC<{ geometry: THREE.BufferGeometry; arrowRotated?: 
 PanelDrawing.displayName = 'PanelDrawing';
 DirectionArrow.displayName = 'DirectionArrow';
 
-// ═══════════════════════════════════════════════════════════════════════════
-// FaceOverlays — SEÇİLİ GÖVDE ÜZERİNDE ÇALIŞAN 3B KATMANLAR.
-//  1. FaceRaycastOverlay: panel yerleştirme (yüz yakalama + serbest bölge önizlemesi)
-//  2. VirtualFaceOverlay: paneli olmayan VF'lerin çizimi
-//  3. FaceEditor: fillet için yüz seçimi (sağ tık) + grup sınır çizgileri
-//  4. Fillet: applyFilletToShape + FilletEdgeLines
-//  5. VolumePickOverlay: raf/dikme için 3B hacim seçimi
-// (Eski FaceRaycastOverlay + FaceEditor + Fillet + VolumePickOverlay.)
-// ═══════════════════════════════════════════════════════════════════════════
-
-/** Geometrinin yüzleri + eş-düzlem grupları (geometri değişince tazelenir). */
 function useFaceGroups(geometry: THREE.BufferGeometry | undefined, onChange?: () => void) {
   const [faces, setFaces] = useState<FaceData[]>([]);
   const [groups, setGroups] = useState<CoplanarFaceGroup[]>([]);
@@ -416,7 +333,6 @@ function useFaceGroups(geometry: THREE.BufferGeometry | undefined, onChange?: ()
   return { faces, groups };
 }
 
-/** Şeklin yerel→dünya ve dünya→yerel matrisleri (konum/dönüş/ölçek değişince). */
 function useShapeMatrices(shape: any) {
   const localToWorld = useMemo(() => getShapeMatrix(shape),
     [shape.position[0], shape.position[1], shape.position[2], shape.rotation[0], shape.rotation[1], shape.rotation[2], shape.scale[0], shape.scale[1], shape.scale[2]]);
@@ -428,29 +344,18 @@ const highlightMat = (color: number, opacity: number, offset = -2, depthTest = f
   <meshBasicMaterial color={color} transparent opacity={opacity} side={THREE.DoubleSide} polygonOffset polygonOffsetFactor={offset} polygonOffsetUnits={offset} depthTest={depthTest} />
 );
 
-// ── 1. PANEL YERLEŞTİRME (yüz yakalama) ──────────────────────────────────────
-
-/**
- * Body Panel onayı (sahnede sağ tık / şeritte ✓ / ad girişinde Enter): önizlenen VF, şeritte
- * yazılan adla (boşsa 'Panel') eklenir; mod kapanır.
- */
 export function confirmBodyPanelPlacement(vf: VirtualFace | null | undefined): void {
   const st = useAppStore.getState();
   if (!vf) return;
   const name = st.placementName.trim();
   st.addVirtualFace(name ? { ...vf, description: name } : vf);
-  console.log('[YAGO][YERLEŞTİR] body panel', vf.id, 'ad=', name || 'Panel');
   st.setRaycastMode(false);
 }
 
 interface PendingPreview { geo: THREE.BufferGeometry; edgeGeo: THREE.BufferGeometry; virtualFace: VirtualFace }
 
-/**
- * Tıklanan yüz bileşeninin serbest bölgesini (highlight) ve ondan doğan VF'yi üretir.
- * HIGHLIGHT = PANEL: bölge, ayak izleri ve grid tek fonksiyondan (computeFreeRegionLocal)
- * gelir; sanal yüzey gördüğünüz mavi alanın ta kendisidir. Kontur/düzlem YEREL
- * uzaydadır; panel ayak izleri dünya→yerel ters dönüşümle aynı düzleme getirilir.
- */
+/** Tıklanan yüz bileşeninin serbest bölgesi (highlight) ve VF'si. HIGHLIGHT = PANEL: bölge tek kaynaktan (computeFreeRegionLocal);
+ *  kontur YEREL uzayda, panel ayak izleri dünya→yerel dönüşümle getirilir. */
 export function buildFacePreview(
   clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces: FaceData[], worldToLocal: THREE.Matrix4,
   shapeId: string, geometry?: THREE.BufferGeometry, childPanels: any[] = []
@@ -460,7 +365,7 @@ export function buildFacePreview(
   if (!contour) return null;
   const region = computeFreeRegionLocal(contour.corners, group.normal, clickLocal, childPanels, worldToLocal, shapeId);
   if (!region) return null;
-  const { u, v, planeN, uMin, vMin, cw, ch, nx, ny, reach, footprints, touchingSiblingIds } = region;
+  const { u, v, planeN, uMin, vMin, cw, ch, nx, ny, reach, touchingSiblingIds } = region;
   const nrm = group.normal.clone().normalize();
   const to3D = (px: number, py: number) => new THREE.Vector3().addScaledVector(u, px).addScaledVector(v, py).addScaledVector(nrm, planeN);
   const pos: number[] = [], epos: number[] = [];
@@ -469,7 +374,6 @@ export function buildFacePreview(
     const x0 = uMin + i * cw, x1 = x0 + cw, y0 = vMin + j * ch, y1 = y0 + ch;
     const p00 = to3D(x0, y0), p10 = to3D(x1, y0), p11 = to3D(x1, y1), p01 = to3D(x0, y1);
     pos.push(p00.x, p00.y, p00.z, p10.x, p10.y, p10.z, p11.x, p11.y, p11.z, p00.x, p00.y, p00.z, p11.x, p11.y, p11.z, p01.x, p01.y, p01.z);
-    // Sınır kenarı: komşusu erişilemezse çiz
     const bnd: Array<[THREE.Vector3, THREE.Vector3]> = [];
     if (i === 0 || !reach[j * nx + i - 1]) bnd.push([p00, p01]);
     if (i === nx - 1 || !reach[j * nx + i + 1]) bnd.push([p10, p11]);
@@ -477,7 +381,6 @@ export function buildFacePreview(
     if (j === ny - 1 || !reach[(j + 1) * nx + i]) bnd.push([p01, p11]);
     for (const [a, b] of bnd) epos.push(a.x, a.y, a.z, b.x, b.y, b.z);
   }
-  // YER YOKSA HIGHLIGHT YOK: yüzey tamamen kardeşlerle kaplıysa panel yaratılmaz.
   if (pos.length === 0) return null;
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3));
@@ -485,15 +388,8 @@ export function buildFacePreview(
   const edgeGeo = new THREE.BufferGeometry();
   edgeGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(epos), 3));
 
-  const bb2 = (pts: Point2D[]) => { let a = Infinity, b = -Infinity, c = Infinity, d = -Infinity;
-    for (const q of pts) { a = Math.min(a, q.x); b = Math.max(b, q.x); c = Math.min(c, q.y); d = Math.max(d, q.y); }
-    return `u[${a.toFixed(0)}..${b.toFixed(0)}] v[${c.toFixed(0)}..${d.toFixed(0)}]`; };
-  console.log('[YAGO][TIK] BÖLGE yüz=', bb2(region.ring2D), 'VF=', bb2(region.polygon), 'köşeN=', region.polygon.length, 'ayakİziN=', footprints.length,
-    'ayakİzleri=', footprints.map(f => bb2(f)).join(' | ') || 'YOK');
-  console.log('[YAGO][TIK]', 'clickLocal=', `${clickLocal.x.toFixed(1)},${clickLocal.y.toFixed(1)},${clickLocal.z.toFixed(1)}`, 'konturKöşeN=', contour.corners.length);
   const localNormal = group.normal.clone().normalize();
-  // BÖLGE KİMLİĞİ: merkez = kullanıcının TIKLADIĞI nokta (bileşen merkezi değil): aynı
-  // yüzdeki iki panelin VF'leri farklı merkez taşır; kardeş kesimi doğru tarafı tutar.
+  // Merkez = TIKLANAN nokta (bileşen merkezi değil): aynı yüzdeki iki VF ayrışır, kardeş kesimi doğru tarafı tutar.
   const anchor = to3D(region.anchor.x, region.anchor.y);
   const virtualFace: VirtualFace = {
     id: genId('vf'), shapeId,
@@ -501,18 +397,14 @@ export function buildFacePreview(
     center: [clickLocal.x, clickLocal.y, clickLocal.z],
     vertices: region.polygon.map(p2 => { const c = to3D(p2.x, p2.y); return [c.x, c.y, c.z] as [number, number, number]; }),
     description: '', hasPanel: false, parentFaceShape: true, touchingSiblingIds,
-    // DEĞİŞMEZ TARAF SÖZLEŞMESİ — DOĞUŞTAN KİLİT: tıklama anındaki taraf işaretleri VF'ye
-    // hemen yazılır; regen STORED-WINS birleştirdiğinden bir daha değişmez.
+    // Taraf sözleşmesi doğuştan kilitli: regen STORED-WINS birleştirir, bir daha değişmez.
     sideRelations: region.sideRelations,
-    // ÖLÇEK-BAĞIMSIZ YÜZ KİMLİĞİ: resize'da regen yüzü bu descriptor ile bulur.
     faceGroupDescriptor: geometry ? createFaceDescriptor(faces[contour.seedFi], geometry) : undefined,
-    // BÖLGE ÇAPASI (3B, parent-yerel): bölgenin içinde serbest bir hücre — dönüş-kesiminde taraf tayini.
     ...({ regionAnchor: [anchor.x, anchor.y, anchor.z] } as any),
   };
   return { geo, edgeGeo, virtualFace };
 }
 
-// Panel yerleştirme: hover/önizleme ortak SEÇİM PALETİ'nden; paneli olan yüz nötr gri. VF çizimi (seçim değil) sky kalır.
 const RAYCAST_COLORS = { previewFill: SEL_COLORS.active, previewEdge: SEL_COLORS.edge, hoverEmpty: SEL_COLORS.hover, hoverHasVF: SEL_COLORS.muted, vfFill: 0x38bdf8, vfEdge: 0x0369a1 };
 
 function buildSurfaceMeshes(vf: VirtualFace): { geo: THREE.BufferGeometry; edgeGeo: THREE.BufferGeometry } | null {
@@ -537,8 +429,6 @@ function buildSurfaceMeshes(vf: VirtualFace): { geo: THREE.BufferGeometry; edgeG
   edgeGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(edgeVerts), 3));
   return { geo, edgeGeo };
 }
-
-// ── 2. VF ÇİZİMİ (paneli olmayan VF'ler) ─────────────────────────────────────
 
 export const VirtualFaceOverlay: React.FC<{ shape: any }> = ({ shape }) => {
   const { virtualFaces, setSelectedPanelRow, panelSelectMode } = useStoreFields('virtualFaces', 'setSelectedPanelRow', 'panelSelectMode');
@@ -572,19 +462,14 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
   const [pending, setPending] = useState<PendingPreview | null>(null);
   const lastClickRef = useRef<{ point: THREE.Vector3; groupIndex: number; cycleIndex: number } | null>(null);
   const shapeVirtualFaces = useMemo(() => virtualFaces.filter(vf => vf.shapeId === shape.id), [virtualFaces, shape.id]);
-  // Panel yerleştirme düzenlenmiş gövdeyi görür — tıklanan yüz ve VF kübün yeni şekline aittir.
   const vertexModsKeyStr = JSON.stringify(shape.vertexModifications || []);
   const effGeometry = useMemo(() => effectiveBodyGeometry(shape), [shape.geometry, shape.geometry?.uuid, vertexModsKeyStr]);
   const { localToWorld, worldToLocal } = useShapeMatrices(shape);
   const { faces, groups: faceGroups } = useFaceGroups(effGeometry, () => { setPending(null); lastClickRef.current = null; });
   useEffect(() => { if (!raycastMode) { setHoveredGroupIndex(null); setPending(null); lastClickRef.current = null; } }, [raycastMode]);
-  // Şeritteki ✓ (ve ad girişi Enter) önizlenen VF'yi onaylayabilsin diye store'a yansıtılır.
   useEffect(() => { setRaycastPendingVf(pending ? pending.virtualFace : null); }, [pending]);
-  // Kısaltılmış panelin bıraktığı boşluk gezilebilsin diye GÜNCEL geometri. İÇ PANELLER (raf/dikme) de
-  // girer: yeni panel her zaman sırada SONRA → mevcut dikme/raf onu basar, bölge tıklanan bölmede kalır.
-  // KAPAKLAR yüz yakalamada engel değildir (gövdenin önünde/arasında durur; ön yüze panel yerleştirmeyi kapatmaz).
+  // İç paneller de girer (yeni panel sırada SONRA → mevcutlar onu basar); kapaklar engel değildir.
   const childPanels = useMemo(() => childPanelsOf(shape.id, allShapes).filter(p => !isDoorPanel(p)), [allShapes, shape.id]);
-  // Aynı DÜZLEMDEKİ tüm VF'ler (bir yüzde birden çok panel olabilir).
   const groupHasVirtualFace = useCallback((gi: number): boolean => {
     if (gi < 0 || gi >= faceGroups.length || shapeVirtualFaces.length === 0) return false;
     const gn = faceGroups[gi].normal.clone().normalize(), gc = faceGroups[gi].center;
@@ -614,8 +499,7 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
     const isSameSpot = lastClickRef.current && lastClickRef.current.point.distanceTo(clickLocal) < 5;
     const normalMatrix = new THREE.Matrix3().getNormalMatrix(localToWorld);
     const worldNormalOf = (gi: number) => faceGroups[gi].normal.clone().normalize().applyMatrix3(normalMatrix).normalize();
-    // PANEL-İÇİ TIKLAMA: tıklanan nokta bu yüzeye DEĞEN bir panelin GÜNCEL ayak izi
-    // içindeyse yüz o noktada "tanımlıdır" (taşınmış olsa bile); aradaki boşluk serbesttir.
+    // Nokta değen bir panelin GÜNCEL ayak izi içindeyse yüz orada "tanımlı"dır; aradaki boşluk serbesttir.
     const coveringPanel = findPanelCoveringPoint(clickPoint, childPanels, worldNormalOf(hoveredGroupIndex), clickPoint);
     const hoveredIsDefined = coveringPanel !== null;
 
@@ -624,7 +508,7 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
     let cycleCandidates: Array<{ index: number; depth: number; hitPoint: THREE.Vector3 }> | null = null;
     const cameraPos = e.camera?.position?.clone();
     if (cameraPos && (isSameSpot || hoveredIsDefined)) {
-      // DERİNLİK DÖNGÜSÜ: ışının deldiği yüz grupları (panel izi altındakiler atlanır; boşluklar geçerli hedeftir).
+      // Derinlik döngüsü: panel izi altındaki gruplar atlanır; boşluklar geçerli hedeftir.
       const rayDir = clickPoint.clone().sub(cameraPos).normalize();
       const candidateGroups: Array<{ index: number; depth: number; hitPoint: THREE.Vector3 }> = [];
       for (let gi = 0; gi < faceGroups.length; gi++) {
@@ -657,7 +541,6 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
       lastClickRef.current = { point: clickLocal, groupIndex: targetGroupIndex, cycleIndex: 0 };
     }
     setHoveredGroupIndex(targetGroupIndex);
-    // TAM YÜZ SEÇİMİ: tıklanan yüzün bağlantılı bileşeni komple seçilir.
     setPending(buildFacePreview(previewClickPoint, faceGroups[targetGroupIndex], faces, worldToLocal, shape.id, effGeometry, childPanels));
   };
   if (!raycastMode) return null;
@@ -681,14 +564,12 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
   );
 };
 
-// ── 3. FILLET YÜZ SEÇİMİ ─────────────────────────────────────────────────────
-
 export const FaceEditor: React.FC<{ shape: any }> = ({ shape }) => {
   const { filletMode, selectedFilletFaces, addFilletFace, addFilletFaceData } = useStoreFields('filletMode', 'selectedFilletFaces', 'addFilletFace', 'addFilletFaceData');
   const { faces, groups: faceGroups } = useFaceGroups(shape.geometry);
   const [hoveredGroupIndex, setHoveredGroupIndex] = useState<number | null>(null);
 
-  /** Sağ tık: yüz grubunu seçer; düzlem sabiti eksen-hizalı yüzde düz üçgenlerin UÇ değerinden (fillet doğruluğu). */
+  /** Düzlem sabiti eksen-hizalı yüzde düz üçgenlerin UÇ değerinden alınır (fillet doğruluğu). */
   const handleFaceSelection = (groupIndex: number) => {
     if (!filletMode || selectedFilletFaces.length >= 2) return;
     const group = faceGroups[groupIndex];
@@ -733,9 +614,6 @@ export const FaceEditor: React.FC<{ shape: any }> = ({ shape }) => {
   );
 };
 
-// ── 4. FILLET UYGULAMA + KENAR ÇİZGİLERİ ─────────────────────────────────────
-
-/** Seçili iki yüz grubunun ortak kenarlarına fillet uygular; FilletInfo (yeniden kurulumda kullanılır) döner. */
 export async function applyFilletToShape(shape: any, selectedFilletFaces: number[], selectedFilletFaceData: any[], radius: number)
   : Promise<{ geometry: THREE.BufferGeometry; replicadShape: any; filletData: FilletInfo }> {
   if (!shape || !shape.replicadShape) throw new Error('Shape or replicadShape not found');
@@ -763,47 +641,24 @@ export const FilletEdgeLines: React.FC<{ shape: any }> = ({ shape }) => {
   );
 };
 
-// ── 5. HACİM SEÇME (raf / dikme atma) ────────────────────────────────────────
-// Tıklanan noktadan geçen ışın gövde kutusunu hücre hücre yürür; serbest hücreden
-// taşılarak şekilli bölge bulunur (gövde katısı + paneller sınırlar). Fare: ilk aday
-// çok soluk petrol; sol tık aynı ışındaki adaylar arasında döner — soluk petrol dolgu +
-// İNCE KIRMIZI dış çizgi (SEL_COLORS.volumeEdge); sağ tık (ya da şerit ✓) gruptan oluşturur.
-// Görünmez kutu mesh'i olayları alır — açık yüzlerde de çalışır.
+// Hacim seçme: ışın gövde kutusunu hücre hücre yürür, serbest hücreden taşılarak şekilli bölge bulunur.
+// Sol tık aynı ışındaki adaylar arasında döner; sağ tık / ✓ oluşturur. Görünmez kutu olayları alır (açık yüzlerde de).
 const PICK_COLORS = { hover: SEL_COLORS.hover, selected: SEL_COLORS.active, selectedEdge: SEL_COLORS.volumeEdge, currentEdge: '#78716c' };
 
-/** Bölge dış yüzeyi → mesh geometrisi + siluet kenar noktaları (eş-düzlem dikişler elenir). */
 function surfaceMesh(surface: number[]): { geo: THREE.BufferGeometry; edgePts: [number, number, number][] } {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(surface), 3));
   return { geo, edgePts: edgePointsOf(geo, 1) };
 }
 
-/**
- * YÖN OKU (Goker: "tıklanan hacmin tam ortasına, hangi yüzeyden tıklandığını
- * gösteren temsili bir ok"; ok = tıklanan gövde yüzünden içeri, kameradan
- * bağımsız; dikme oka PARALEL yerleşir). BİÇİM (Goker'in örnek görseli): uzun
- * kare kesitli gövde, ucu 45° iki koldan oluşan AÇIK V (chevron), kök DÜZ kesik,
- * kırmızı; yüzler ışıktan bağımsız köşe renkleriyle gölgelenir + koyu kenar çizgisi.
- * BOYUT: raf ve dikmede AYNI dünya boyu (FACING_ARROW.lengthMm); yakınlaşıp
- * uzaklaşınca ekranda minPx..maxPx aralığına kıstırılır — o eşiklerden sonra
- * ekranda sabit boyda kalır. Ok, ekseni etrafında kameraya döner (hafif eğimle,
- * kalınlık görünsün). Derinlik tamponu okun hemen öncesinde temizlenir: her şeyin
- * üstünde çizilir ama kendi yüzleri doğru örtüşür.
- * KONUM (Goker: "hacmin içinde değil, okun geldiği dış yüzeyde, biraz boşluklu —
- * içeride panel varsa ok panelin içine denk geliyor"): ok hacim kutusunun DIŞINDA,
- * ışının girdiği yüzün (okun geldiği yüz) merkezinin önünde durur; ucu yüzden
- * gapFrac·boy kadar açıkta, gövdesi dışarı doğru uzanır, hacme doğru bakar.
- * Yalnız hacim seçilirken görünür; raf/dikme yerleştikten sonra çizilmez.
- */
-// Goker: "kırmızı ok çok az daha küçük olsun, çubuğu da kısa olsun" → ölçek ~%10 küçük (lengthMm/minPx/maxPx),
-// gövde (çubuk) birim boyu 1 → shaftLen; uç (chevron) boyutu ölçekle birlikte aynı oranda kalır.
+/** Yön oku: hacmin girildiği dış yüzün önünde (hacmin DIŞINDA), hacme bakar; ekranda minPx..maxPx'e kıstırılır.
+ *  Derinlik tamponu okun hemen öncesinde temizlenir: her şeyin üstünde çizilir ama kendi yüzleri doğru örtüşür. */
 const FACING_ARROW = { color: '#dc2626', edge: '#7f1d1d', lengthMm: 108, minPx: 43, maxPx: 80, tiltRad: 0.5, gapFrac: 0.2, shaftLen: 0.62 } as const;
 
-/** Chevron ok (toplam boy = shaftLen, uç ölçüsü birim ölçeğe göre), +X'e bakar, merkezli; kalınlık = kol genişliği. Köşe renkli (kapak açık, yanlar koyu). */
 const FACING_ARROW_GEO: THREE.BufferGeometry = (() => {
   const L = FACING_ARROW.shaftLen, w = 0.075, h = w / 2, A = 0.34, r2 = Math.SQRT2;
-  const up = (s: number, off: number): [number, number] => [(-s - off) / r2, (s - off) / r2];     // üst kol: dış kenardan off içeri
-  const dn = (s: number, off: number): [number, number] => [(-s - off) / r2, (-s + off) / r2];    // alt kol
+  const up = (s: number, off: number): [number, number] => [(-s - off) / r2, (s - off) / r2];
+  const dn = (s: number, off: number): [number, number] => [(-s - off) / r2, (-s + off) / r2];
   const jx = -h - w * r2;                                                                          // gövde kenarı ↔ kol iç kenarı
   const pts: Array<[number, number]> = [[0, 0], up(A, 0), up(A, w), [jx, h], [-L, h], [-L, -h], [jx, -h], dn(A, w), dn(A, 0)];
   const shape = new THREE.Shape(pts.map(([x, y]) => new THREE.Vector2(x, y)));
@@ -829,7 +684,6 @@ const FACING_ARROW_EDGES = new THREE.EdgesGeometry(FACING_ARROW_GEO, 25);
 
 export const FacingArrow: React.FC<{ box: { min: Vec3; max: Vec3 }; axis: 0 | 1 | 2; facing: 1 | -1 }> = ({ box, axis, facing }) => {
   const ref = useRef<THREE.Group>(null);
-  // Okun geldiği yüzün merkezi (gövde-yerel): facing>0 → ok MİN yüzden içeri, facing<0 → MAX yüzden.
   const faceCenter = useMemo<Vec3>(() => {
     const c = boxCenterOf(box); c[axis] = facing > 0 ? box.min[axis] : box.max[axis]; return c;
   }, [box, axis, facing]);
@@ -845,7 +699,6 @@ export const FacingArrow: React.FC<{ box: { min: Vec3; max: Vec3 }; axis: 0 | 1 
     g.parent.matrixWorld.decompose(t.pPos, t.pQuat, t.pScale);
     t.wp.set(faceCenter[0], faceCenter[1], faceCenter[2]).applyMatrix4(g.parent.matrixWorld);
     camera.getWorldPosition(t.cam);
-    // Ekran ölçeği: piksel başına dünya birimi (perspektif: mesafeye göre; ortografik: zoom).
     let wpp: number;
     if ((camera as THREE.OrthographicCamera).isOrthographicCamera) {
       const c = camera as THREE.OrthographicCamera;
@@ -857,11 +710,9 @@ export const FacingArrow: React.FC<{ box: { min: Vec3; max: Vec3 }; axis: 0 | 1 
     const px = THREE.MathUtils.clamp(FACING_ARROW.lengthMm / wpp, FACING_ARROW.minPx, FACING_ARROW.maxPx);
     const len = px * wpp;
     g.scale.set(len / (t.pScale.x || 1), len / (t.pScale.y || 1), len / (t.pScale.z || 1));
-    // KONUM: yüz merkezinden okun TERSİNE (dışarı) boşluk + yarım boy (toplam boy = shaftLen·len) → ucu yüzün önünde, hacmin dışında.
     const back = (len * (FACING_ARROW.gapFrac + FACING_ARROW.shaftLen / 2)) / (t.pScale.getComponent(axis) || 1);
     g.position.set(faceCenter[0], faceCenter[1], faceCenter[2]);
     g.position.setComponent(axis, faceCenter[axis] - facing * back);
-    // Yönelim: yerel X = ok yönü; düz yüz ok ekseni etrafında kameraya döner (+ eğim → kalınlık görünür).
     t.D.set(0, 0, 0).setComponent(axis, facing).applyQuaternion(t.pQuat).normalize();
     t.V.subVectors(t.cam, t.wp);
     t.N.copy(t.V).addScaledVector(t.D, -t.V.dot(t.D));
@@ -892,16 +743,14 @@ export const VolumePickOverlay: React.FC<{ shape: any; allShapes: any[] }> = ({ 
     useStoreFields('volumePickMode', 'volumePickGroupId', 'volumePickCandidates', 'volumePickIndex', 'setVolumePick', 'panelGroups');
   const [hoverPick, setHoverPick] = useState<CavityPick | null>(null);
   const lastRef = useRef<{ keys: string; index: number } | null>(null);
-  // YENİDEN SEÇİM: taşınan grup — ızgara yalnız gruptan ÖNCEKİ panellerle kurulur (sonrakiler + üyeler engel değil).
+  // Yeniden seçim: ızgara yalnız gruptan ÖNCEKİ panellerle kurulur (sonrakiler + üyeler engel değil).
   const repickGroup = useMemo(() => (volumePickGroupId ? panelGroups.find(g => g.id === volumePickGroupId) || null : null), [panelGroups, volumePickGroupId]);
-  // Düz paneller kutu engeli; dönmüş/eğik paneller yarım-uzay (PanelGroupService.collectObstacles).
+  // Düz paneller kutu engeli; dönmüş/eğik paneller yarım-uzay.
   const oset = useMemo(() => (repickGroup ? repickObstacles(repickGroup, shape, allShapes) : collectObstacles(shape, allShapes)), [allShapes, shape, repickGroup]);
   const grid = useMemo(() => (volumePickMode ? gridForObstacles(shape, oset) : null), [shape, oset, volumePickMode]);
-  // Grubun ŞU ANKİ hacmi: soluk gri kenar çizgisi — "mevcut yerini yeniden tıklayarak seçebileyim" (Goker).
   const currentMesh = useMemo(() => (repickGroup ? surfaceMesh(boxesSurface(repickGroup.region || [repickGroup.cavity])) : null), [repickGroup]);
   useEffect(() => () => { currentMesh?.geo.dispose(); }, [currentMesh]);
   const { worldToLocal } = useShapeMatrices(shape);
-  // Görünmez yakalama kutusu: gövde kutusundan bir tık büyük (açık yüzlerde de tıklanır).
   const pickGeo = useMemo(() => {
     if (!grid) return null;
     const b = grid.body;
@@ -933,20 +782,16 @@ export const VolumePickOverlay: React.FC<{ shape: any; allShapes: any[] }> = ({ 
     if (!volumePickMode) return;
     e.stopPropagation();
     if (e.button === 2) {
-      if (selected) confirmVolumePick(shape.id, volumePickMode, selected);   // yeni grup ya da (yeniden seçimde) grubu taşı; mod kapanır
+      if (selected) confirmVolumePick(shape.id, volumePickMode, selected);
       return;
     }
     if (e.button !== 0) return;
     const c = candidatesFromEvent(e);
-    if (!c.length) { setVolumePick([], 0); lastRef.current = null; console.log('[YAGO][HACİM] ışın boyunca serbest hacim yok'); return; }
+    if (!c.length) { setVolumePick([], 0); lastRef.current = null; return; }
     const keys = c.map(b => b.key).join(';');
     const index = lastRef.current && lastRef.current.keys === keys ? (lastRef.current.index + 1) % c.length : 0;
     lastRef.current = { keys, index };
     setVolumePick(c, index);
-    const s = c[index];
-    console.log('[YAGO][HACİM] aday', index + 1, '/', c.length, s.shape === 'box' ? 'DÜZ' : 'ŞEKİLLİ', fmtBox(s.bbox),
-      'boyut=', [0, 1, 2].map(a => boxSpan(s.bbox, a).toFixed(0)).join('x'), 'parçaN=', s.boxes.length, 'engelN=', oset.obstacles.length, 'eğikN=', oset.tiltFaces.length,
-      'ok=', `${'XYZ'[s.arrow.axis]}${s.arrow.facing > 0 ? '+' : '−'}`, 'dizilim=', `${'XYZ'[s.axis]}${s.facing > 0 ? '+' : '−'}`, 'giriş=', s.at.map(v => v.toFixed(0)).join(','));
   };
 
   if (!volumePickMode || !pickGeo) return null;
@@ -954,7 +799,6 @@ export const VolumePickOverlay: React.FC<{ shape: any; allShapes: any[] }> = ({ 
   return (
     <>
       <mesh geometry={pickGeo} visible={false} onPointerMove={onPointerMove} onPointerOut={() => setHoverPick(null)} onPointerDown={onPointerDown} onContextMenu={(e: any) => e.stopPropagation()} />
-      {/* YENİDEN SEÇİM: grubun şu anki hacmi (gri kesik görünümlü ince kenar) — aynı yeri yeniden tıklayınca aday olur */}
       {currentMesh && currentMesh.edgePts.length >= 2 && (
         <Line points={currentMesh.edgePts} segments color={PICK_COLORS.currentEdge} lineWidth={1.2} transparent opacity={0.8} depthTest={false} depthWrite={false} renderOrder={4} raycast={() => null} />
       )}
@@ -971,7 +815,6 @@ export const VolumePickOverlay: React.FC<{ shape: any; allShapes: any[] }> = ({ 
           {selectedMesh.edgePts.length >= 2 && (
             <Line points={selectedMesh.edgePts} segments color={PICK_COLORS.selectedEdge} lineWidth={SEL_COLORS.edgeWidth} transparent={false} depthTest={false} depthWrite={false} renderOrder={7} raycast={() => null} />
           )}
-          {/* YÖN OKU: yalnız sol tıkla seçilen adayda (hover'da değil), okun geldiği yüzün DIŞINDA, boşluklu; yerleştikten sonra çizilmez */}
           {selected && <FacingArrow box={selected.bbox} axis={selected.arrow.axis} facing={selected.arrow.facing} />}
         </>
       )}
@@ -979,13 +822,8 @@ export const VolumePickOverlay: React.FC<{ shape: any; allShapes: any[] }> = ({ 
   );
 };
 
-// ── 5b. KAPAK SEÇME (Goker, Eki 2026) ─────────────────────────────────────────
-// Hacim seçimiyle aynı dil: tıklanan GÖVDE YÜZÜ kapak düzlemini verir (ön yüz → Z+); ışının
-// girdiği (u,v) noktasında kapak sınırı panellerinden kurulan dikdörtgenler büyükten küçüğe
-// (DoorService.doorCandidatesAt). Fare: ilk aday soluk; sol tık: döngü; sağ tık / ✓: grup.
-// Aday, bir PANEL GİBİ (dış/iç yerleşime göre kalınlıklı levha) petrol dolgu + kırmızı kenarla çizilir.
-// AÇILI REFERANS (DoorService): levha, dönmüş sınır panelleriyle kırpılmış KONVEKS çokgen prizmasıdır (dış yüz
-// çokgeni −normal yönünde kalınlık kadar); kesim yoksa dikdörtgen prizma = eski kutu.
+// Kapak seçme: tıklanan gövde yüzü kapak düzlemini verir; adaylar sınır panellerinden büyükten küçüğe (doorCandidatesAt).
+// Aday levha, dönmüş sınır panelleriyle kırpılmış KONVEKS çokgen prizmasıdır (dış yüz −normal yönünde kalınlık kadar).
 type DoorSlabPoly = { normal: Vec3; vertices: Vec3[] };
 const slabPrism = (poly: DoorSlabPoly, t: number): { geo: THREE.BufferGeometry; edges: Vec3[] } => {
   const n = poly.normal, front = poly.vertices, back = front.map(v => [v[0] - n[0] * t, v[1] - n[1] * t, v[2] - n[2] * t] as Vec3);
@@ -1021,7 +859,6 @@ export const DoorPickOverlay: React.FC<{ shape: any }> = ({ shape }) => {
   const lastRef = useRef<{ keys: string; index: number } | null>(null);
   const { worldToLocal } = useShapeMatrices(shape);
   const body = useMemo(() => { const bb = localBboxOf(effectiveBodyGeometry(shape)); return bb ? { min: [bb.min.x, bb.min.y, bb.min.z] as Vec3, max: [bb.max.x, bb.max.y, bb.max.z] as Vec3 } : null; }, [shape.geometry, shape.vertexModifications]);
-  // Görünmez yakalama kutusu: gövde kutusundan bir tık büyük (yüzler tıklanır; kapak dışarıda da çizilebilir).
   const pickGeo = useMemo(() => {
     if (!body) return null;
     const g = new THREE.BoxGeometry(body.max[0] - body.min[0] + 2, body.max[1] - body.min[1] + 2, body.max[2] - body.min[2] + 2);
@@ -1031,7 +868,6 @@ export const DoorPickOverlay: React.FC<{ shape: any }> = ({ shape }) => {
   useEffect(() => () => { pickGeo?.dispose(); }, [pickGeo]);
   useEffect(() => { if (!doorPickMode) { setHoverPick(null); lastRef.current = null; } }, [doorPickMode]);
   const selected = doorPickCandidates[doorPickIndex] || null;
-  // Dönmüş sınır panelleri (kesici düzlemler): aday levhası onlarla kırpılarak çizilir — yerleşen kapakla bire bir.
   const cuts = useMemo(() => (doorPickMode ? collectDoorCuts(shape, shapes, virtualFaces) : []), [doorPickMode, shape, shapes, virtualFaces]);
   const slabOf = (c: DoorPick | null) => (c ? doorSlabPolygon({ axis: c.axis, side: c.side, placement: doorPickPlacement, thickness: DOOR_THICKNESS, gap: DOOR_GAP, anchor: c.at }, doorPickPlacement === 'inner' ? c.inner : c.outer, cuts) : null);
   const selectedBox = useMemo(() => slabOf(selected), [selected, doorPickPlacement, cuts]);
@@ -1057,13 +893,11 @@ export const DoorPickOverlay: React.FC<{ shape: any }> = ({ shape }) => {
     if (e.button === 2) { if (selected) confirmDoorPick(shape.id, selected); return; }
     if (e.button !== 0) return;
     const c = candidatesFromEvent(e);
-    if (!c.length) { setDoorPick([], 0); lastRef.current = null; console.log('[YAGO][KAPAK] bu noktada kapak adayı yok (gövde yüzüne tıklayın)'); return; }
+    if (!c.length) { setDoorPick([], 0); lastRef.current = null; return; }
     const keys = c.map(x => x.key).join(';');
     const index = lastRef.current && lastRef.current.keys === keys ? (lastRef.current.index + 1) % c.length : 0;
     lastRef.current = { keys, index };
     setDoorPick(c, index);
-    const s = c[index];
-    console.log('[YAGO][KAPAK] aday', index + 1, '/', c.length, 'iç=', fmtRect(s.inner), 'dış=', fmtRect(s.outer), 'sınırPanelN=', s.boundPanelCount);
   };
 
   if (!doorPickMode || !pickGeo) return null;
@@ -1077,11 +911,7 @@ export const DoorPickOverlay: React.FC<{ shape: any }> = ({ shape }) => {
   );
 };
 
-// ── 6. HACİM DÜZENLEME (raf/dikme hacmine yüz extrude) ──────────────────────
-// Grubun güncel ŞEKİLLİ hacmi (bölge kutularının dış yüzeyi: L / çentik) soluk petrol dolgu
-// + ince kırmızı kenarla çizilir; yüzleri panel extrude hedefi gibi seçilir (SEL_COLORS:
-// hover açık, seçili orta petrol + sınır çizgisi). Seçilen yüzün gövde-yerel normali + tıklama noktası store'a
-// yazılır (çıpa: hangi kolun/yüzün hareket edeceği); fixed/dyn şeritten, ref sağ tıkla.
+// Hacim düzenleme: grubun şekilli hacmi çizilir; seçilen yüzün normali + tıklama noktası (çıpa) store'a yazılır.
 export const CavityEditOverlay: React.FC<{ shape: any }> = ({ shape }) => {
   const { panelGroups, faceExtrudeCavityGroupId, faceExtrudeSelectedFace, setFaceExtrudeSelectedFace, setFaceExtrudeCavityFaceNormal, setFaceExtrudeClickPoint, faceExtrudeValueMode } =
     useStoreFields('panelGroups', 'faceExtrudeCavityGroupId', 'faceExtrudeSelectedFace', 'setFaceExtrudeSelectedFace', 'setFaceExtrudeCavityFaceNormal', 'setFaceExtrudeClickPoint', 'faceExtrudeValueMode');
@@ -1125,10 +955,8 @@ export const CavityEditOverlay: React.FC<{ shape: any }> = ({ shape }) => {
           const n = groups[gi].normal.clone().normalize();
           setFaceExtrudeSelectedFace(gi);
           setFaceExtrudeCavityFaceNormal([n.x, n.y, n.z]);
-          // ÇIPA: tıklama noktası gövde-yerel (şekilli hacimde hangi bağlantılı yüz hareket edecek).
           if (e.point) { const local = e.point.clone().applyMatrix4(getShapeMatrix(shape).invert()); setFaceExtrudeClickPoint([local.x, local.y, local.z]); }
           setHovered(gi);
-          console.log('[YAGO][HACİM-ADIM] yüz seçildi', group!.id, 'normal=', [n.x, n.y, n.z].map(v => v.toFixed(0)).join(','), 'nokta=', e.point ? e.point.toArray().map((v: number) => v.toFixed(0)).join(',') : '-');
         }}
         onPointerMove={(e: any) => { e.stopPropagation(); const gi = flatGroupOfFace(groups, e.faceIndex); if (gi !== -1) setHovered(gi); }}
         onPointerOut={(e: any) => { e.stopPropagation(); setHovered(null); }}
@@ -1146,16 +974,9 @@ export const CavityEditOverlay: React.FC<{ shape: any }> = ({ shape }) => {
   );
 };
 
-// ═══════════════════════════════════════════════════════════════════════════
-// ShapeWithTransform — GÖVDE (kutu) ÇİZİMİ + TransformControls + seçili gövdede
-// katmanlar (yüz yakalama, fillet yüz seçimi, hacim seçme, VF çizimi, ref-yüz).
-// Paneller PanelDrawing ile çizilir (Scene panelleri oraya yollar).
-// ═══════════════════════════════════════════════════════════════════════════
-
-const EDGE_COLOR = '#5b6470';   // panellerdekiyle aynı: ince, antialias'lı, opak, yumuşak gri
+const EDGE_COLOR = '#5b6470';
 type Xform = { position: Vec3; rotation: Vec3; scale: Vec3 };
 const readXform = (o: THREE.Object3D): Xform => ({ position: o.position.toArray() as Vec3, rotation: o.rotation.toArray().slice(0, 3) as Vec3, scale: o.scale.toArray() as Vec3 });
-/** İlk duruma göre (fark) dönüşüm: konum/dönüş toplanır, ölçek çarpılır. */
 function deltaOf(from: Xform, to: Xform) {
   return { pd: [0, 1, 2].map(i => to.position[i] - from.position[i]), rd: [0, 1, 2].map(i => to.rotation[i] - from.rotation[i]), sd: [0, 1, 2].map(i => to.scale[i] / from.scale[i]) };
 }
@@ -1165,10 +986,9 @@ const applyDelta = (base: Xform, d: ReturnType<typeof deltaOf>): Xform => ({
   scale: [base.scale[0] * d.sd[0], base.scale[1] * d.sd[1], base.scale[2] * d.sd[2]],
 });
 
-/** Bir çıkarma (subtraction) kutusunun sahnedeki önizleme mesh'i. */
 const SubtractionMesh: React.FC<{ subtraction: any; index: number; isHovered: boolean; isSubtractionSelected: boolean; isSelected: boolean; setHovered: (i: number | null) => void; setSelected: (i: number | null) => void }> =
   React.memo(({ subtraction, index, isHovered, isSubtractionSelected, isSelected, setHovered, setSelected }) => {
-    // Merkezli (eski) geometri kök köşeye ötelenir.
+    // Merkezli geometri (eski kayıtlar) kök köşeye ötelenir.
     const meshOffset = useMemo<Vec3>(() => {
       const box = localBboxOf(subtraction.geometry)!;
       const size = box.getSize(new THREE.Vector3()), center = box.getCenter(new THREE.Vector3());
@@ -1203,25 +1023,21 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
   const [localGeometry, setLocalGeometry] = useState(shape.geometry);
   const [geometryKey, setGeometryKey] = useState(0);
   const [hoveredRefGroup, setHoveredRefGroup] = useState<number | null>(null);
-  // Ref-move: gövde (parent) hedef seçim aşamasında fare altındayken vurgulanır.
   const [moveRefHover, setMoveRefHover] = useState(false);
   const vertexModsString = useMemo(() => JSON.stringify(shape.vertexModifications || []), [shape.vertexModifications]);
-  // Referans yüz seçimi (extrude-ref / rotate-ref) düzenlenmiş gövde yüzlerini görür.
   const { faces: refFaces, groups: refFaceGroups } = useMemo(() => (shape.geometry ? getFacesAndGroups(effectiveBodyGeometry(shape)) : { faces: [], groups: [] }), [shape.geometry, vertexModsString]);
   const edgePoints = useMemo<Vec3[] | null>(() => { try { const p = localGeometry ? edgePointsOf(localGeometry, 5) : []; return p.length ? p : null; } catch { return null; } }, [localGeometry]);
 
-  // TEK KAYNAK: çizilen gövde = effectiveBodyGeometry (panel yerleştirme, VF regen ve motor da aynı geometriyi kullanır).
+  // Çizilen gövde = effectiveBodyGeometry (yerleştirme, VF regen ve motorla aynı kaynak).
   useEffect(() => {
     const hasVertexMods = shape.vertexModifications && shape.vertexModifications.length > 0;
     if (!shape.geometry || !((shape.geometry !== localGeometry) || hasVertexMods)) return;
-    if (hasVertexMods) console.log('[YAGO][VERTEX] gövde çizimi düzenlenmiş geometriyle güncellendi: düzenlemeN=', shape.vertexModifications.length);
     setLocalGeometry(hasVertexMods ? effectiveBodyGeometry(shape).clone() : shape.geometry.clone());
     setGeometryKey(prev => prev + 1);
   }, [shape.parameters?.width, shape.parameters?.height, shape.parameters?.depth, vertexModsString, shape.parameters?.modified, shape.geometry, shape.id]);
 
   useEffect(() => { isUpdatingRef.current = false; initialRef.current = null; }, [S.panelSelectMode]);
 
-  // Pozisyon / rotasyon / ölçek senkronizasyonu
   useEffect(() => {
     if (!groupRef.current || (isUpdatingRef.current && shape.id === useAppStore.getState().selectedShapeId)) return;
     groupRef.current.position.set(...(shape.position as Vec3));
@@ -1230,7 +1046,7 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
   }, [shape.position, shape.rotation, shape.scale, shape.id]);
   useEffect(() => () => { cleanupListenersRef.current?.(); cleanupListenersRef.current = null; }, []);
 
-  // TransformControls: sürükleme boyunca çocuk paneller canlı taşınır; bırakınca store'a yazılır (grup üyeleri dahil).
+  // Sürüklerken çocuk paneller canlı taşınır; bırakınca store'a yazılır (grup üyeleri dahil).
   const transformRefCallback = useCallback((controls: any) => {
     cleanupListenersRef.current?.(); cleanupListenersRef.current = null;
     if (!controls || !groupRef.current) return;
@@ -1276,30 +1092,25 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
     cleanupListenersRef.current = () => { controls.removeEventListener('dragging-changed', onDraggingChanged); controls.removeEventListener('change', onChange); };
   }, [shape.id, orbitControlsRef, scene]);
 
-  // ── Görünüm / seçim durumu ─────────────────────────────────────────────────
   const isWireframe = S.viewMode === ViewMode.WIREFRAME;
   const isXray = S.viewMode === ViewMode.XRAY;
   const shouldShowAsReference = shape.isReferenceBox || shape.id === S.secondarySelectedShapeId;
   const hasPanels = S.shapes.some(s => s.type === 'panel' && s.parameters?.parentShapeId === shape.id);
   const noopRaycast = useCallback(() => {}, []);
-  // Move ref modunda (kaynak köşe seçilip hedef panel beklenirken) gövde de tıklanabilir olmalı.
   const isMoveRefPickActive = S.panelMoveMode && S.panelMoveValueMode === 'ref' && !!S.panelMoveRefSourceVertex && !S.panelMoveRefTargetPanelId;
   const isRefMode = S.faceExtrudeMode && S.faceExtrudeValueMode === 'ref' && S.faceExtrudeSelectedFace !== null;
-  // GÖVDE IŞINI (Goker: Body modunda blok TIKLAYARAK seçilebilmeli): görünmez gövde mesh'i yalnız
-  // panel/yüz SEÇİMİ yapılan modlarda bastırılır; ref modları muaf. HACİM SEÇME: her zaman bastırılır
-  // (olayları VolumePickOverlay'in görünmez kutusu alır).
+  // Görünmez gövde mesh'i yalnız panel/yüz seçim modlarında bastırılır (ref modları muaf);
+  // hacim/kapak seçmede her zaman (olayları overlay'in görünmez kutusu alır).
   const isVolumePickOnThis = (S.volumePickMode !== null || S.doorPickMode) && isSelected;
   const suppressBodyRaycast = (hasPanels && (S.panelSelectMode || S.raycastMode) && !isRefMode && !isMoveRefPickActive) || isVolumePickOnThis;
   const isMoveRefTargetPanel = S.panelMoveMode && S.panelMoveValueMode === 'ref' && !!S.panelMoveRefSourceVertex && S.panelMoveRefTargetPanelId === shape.id;
-  // Gövde ref-move vurgusu: seçili referans gövde (yeşil) veya aday gövde (turuncu).
   const moveRefBodyHighlight = isMoveRefTargetPanel || (isMoveRefPickActive && moveRefHover);
   useEffect(() => { if (!isMoveRefPickActive && moveRefHover) setMoveRefHover(false); }, [isMoveRefPickActive, moveRefHover]);
   const isRefCandidateShape = isRefMode && S.faceExtrudeRefCandidate?.panelId === shape.id;
 
-  // Gövdenin bir yüz grubunu referans adayı olarak işaretle — ışın boyunca DERİNLİK DÖNGÜSÜ (tüm şekiller, hedef hariç).
   const handleRefClick = useCallback((e: any) => {
     if (!isRefMode || shape.id === S.faceExtrudeTargetPanelId) return;
-    // HACİM DÜZENLEME: grubun kendi üyeleri referans olamaz (hacimle birlikte taşınırlar).
+    // Hacim düzenlemede grubun kendi üyeleri referans olamaz (hacimle birlikte taşınırlar).
     const cav = S.faceExtrudeCavityGroupId;
     const shapes = useAppStore.getState().shapes.filter((x: any) => !cav || x.parameters?.panelGroupId !== cav);
     cycleRefFacePickFromEvent(e, shapes, S.faceExtrudeTargetPanelId, S.setFaceExtrudeRefCandidate);
@@ -1309,8 +1120,6 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
 
   const raycastProps = suppressBodyRaycast ? { raycast: noopRaycast } : {};
   const hoverProps = isMoveRefPickActive ? { onPointerOver: (e: any) => { e.stopPropagation(); setMoveRefHover(true); }, onPointerOut: () => { if (moveRefHover) setMoveRefHover(false); } } : {};
-  // OUTLINE GÖRÜNÜRLÜĞÜ = kullanıcı tercihi VEYA panel yerleştirme (Body Panel / Shelf / Divider
-  // seçimi) sürüyor: kapalıyken bile yerleştirme boyunca görünür, bitince tercihe döner.
   const outlinesVisible = S.showOutlines || S.raycastMode || !!S.volumePickMode || S.doorPickMode;
   const outline = (color: string, width: number, depthWrite: boolean) => outlinesVisible && edgePoints && (
     <Line points={edgePoints} segments color={color} lineWidth={width} transparent={false} depthTest depthWrite={depthWrite} renderOrder={1} raycast={() => null} />
@@ -1320,11 +1129,9 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
     <>
       <group ref={groupRef} name={`shape-${shape.id}`}
         onClick={(e) => {
-          // Referans modu tüm normal seçim mantığından ÖNCE: gövde yüzünü referans yap.
           if (isRefMode) { e.stopPropagation(); handleRefClick(e); return; }
-          // Ref taşıma akışı: gövde seçimi YOK (referans döngüsü canvas seviyesinde, MoveRefPanelPicker).
           if (S.panelMoveMode && S.panelMoveValueMode === 'ref' && !!S.panelMoveRefSourceVertex) { e.stopPropagation(); return; }
-          // AKTİF PANEL ARACI: tıklama ARACA aittir; stopPropagation YOK (arkadaki panelin araç işleyicisi olayı alır).
+          // Aktif panel aracı: stopPropagation YOK — arkadaki panelin araç işleyicisi olayı alsın.
           if (S.faceExtrudeMode || S.panelMoveMode || S.panelRotateMode) return;
           if (S.volumePickMode || S.doorPickMode) { e.stopPropagation(); return; }
           if (S.panelSelectMode && hasPanels) return;
@@ -1332,7 +1139,6 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
           if (e.nativeEvent.ctrlKey || e.nativeEvent.metaKey) {
             S.selectSecondaryShape(shape.id === S.secondarySelectedShapeId ? null : shape.id);
           } else {
-            // BODY MODUNDA GÖVDE TIKLAMASI: blok komple seçilir, panel satırı temizlenir.
             S.selectShape(shape.id);
             S.selectSecondaryShape(null);
             if (S.panelSelectMode || hasPanels) S.setSelectedPanelRow(null);
@@ -1345,7 +1151,6 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
             isSubtractionSelected={S.selectedSubtractionIndex === index && isSelected} isSelected={isSelected} setHovered={S.setHoveredSubtractionIndex} setSelected={S.setSelectedSubtractionIndex} />
         ))}
 
-        {/* SOLID */}
         {!isWireframe && !isXray && !shouldShowAsReference && (
           <>
             <mesh ref={meshRef} geometry={localGeometry} castShadow receiveShadow {...raycastProps} {...hoverProps}>
@@ -1356,14 +1161,12 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
             {outline(EDGE_COLOR, isSelected ? EDGE_LINE_WIDTH + 0.5 : EDGE_LINE_WIDTH, false)}
           </>
         )}
-        {/* WIREFRAME */}
         {isWireframe && (
           <>
             <mesh ref={meshRef} geometry={localGeometry} visible={false} {...raycastProps} />
             {outline(isSelected ? '#60a5fa' : shouldShowAsReference ? '#ef4444' : EDGE_COLOR, isSelected || shouldShowAsReference ? EDGE_LINE_WIDTH + 0.75 : EDGE_LINE_WIDTH + 0.25, true)}
           </>
         )}
-        {/* X-RAY / REFERENCE */}
         {(isXray || shouldShowAsReference) && (
           <>
             <mesh ref={meshRef} geometry={localGeometry} castShadow receiveShadow {...raycastProps}>
@@ -1374,11 +1177,9 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
           </>
         )}
 
-        {/* EK KATMANLAR */}
         {shape.fillets?.length > 0 && S.filletMode && <FilletEdgeLines shape={shape} />}
         {isSelected && S.faceEditMode && <FaceEditor key={`face-editor-${shape.id}-${shape.geometry?.uuid || ''}-${(shape.fillets || []).length}`} shape={shape} />}
         {isSelected && S.raycastMode && <FaceRaycastOverlay key={`raycast-${shape.id}-${shape.geometry?.uuid || ''}`} shape={shape} allShapes={S.shapes} />}
-        {/* REFERANS ADAYI GÖVDE: hover + seçili yüz vurgusu; sağ tık onaylar (Uygula ✓ ile eşdeğer). */}
         {isRefMode && (
           <RefFaceOverlay geometry={localGeometry} faces={refFaces} groups={refFaceGroups} hoveredGroup={hoveredRefGroup}
             candidateGroup={isRefCandidateShape ? (S.faceExtrudeRefCandidate?.faceGroupIndex ?? null) : null}

@@ -11,20 +11,8 @@ import { PanelDrawing, ShapeWithTransform, applyFilletToShape } from './SceneObj
 import { confirmPanelMoveRef, confirmPanelRotateRef, resetRefFacePick } from './PanelOps';
 import { ErrorBoundary } from './Ui';
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   SAHNE — (A) Gizmolar: taşıma/döndürme referans noktaları, halkalar, vertex
-   editörü; (B) Scene: Canvas, kamera, kontroller, seçim, klavye, gövde/panel
-   listesi ve komut onay bileşenleri.
-   ═══════════════════════════════════════════════════════════════════════════ */
-// ═══════════════════════════════════════════════════════════════════════════
-// Gizmos — 3B SAHNE ARAÇLARI (React Three Fiber).
-//  1. GizmoDot: taşıma (referans köşe) ve döndürme (pivot) gizmolarının ORTAK
-//     köşe noktası — ekranda sabit boyutlu, kameraya dönük disk; depthTest kapalı.
-//  2. PanelMoveGizmo: eksen okları (ekran-ölçeği kilitli) + ref modunda köşe noktaları.
-//  3. PanelRotateGizmo: pivot/nişan noktaları + X/Y/Z halkaları (Goker akışı: mod → pivot → nişan → eksen).
-//  4. VertexEditor: gövde köşe düzenleme noktaları + yön seçici oklar.
-// (Eski GizmoDot + PanelMoveGizmo + PanelRotateGizmo + VertexEditor.)
-// ═══════════════════════════════════════════════════════════════════════════
+/* Sahne — gizmolar (taşıma/döndürme referans noktaları, halkalar, vertex editörü), ViewCube, kamera denetimi,
+   ref-akış onayları ve ana Canvas (gövde/panel listesi, klavye kısayolları). */
 
 const RENDER_ORDER = 999;
 export const DOT_RENDER_ORDER = 1009;
@@ -38,7 +26,6 @@ const vertEq = (a: Vec3 | null, b: Vec3, tol = 0.5) => !!a && Math.abs(a[0] - b[
 const eq = (a: Vec3 | null, b: Vec3) => !!a && a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
 const hoverCursor = (on: boolean) => { document.body.style.cursor = on ? 'pointer' : 'default'; };
 
-/** Dünya biriminde "1 CSS pikselin karşılığı" — perspektif ve ortografik için. */
 export function worldPerPixel(camera: THREE.Camera, viewportHeight: number, worldPos: THREE.Vector3): number {
   const persp = camera as THREE.PerspectiveCamera;
   if (persp.isPerspectiveCamera) {
@@ -49,12 +36,9 @@ export function worldPerPixel(camera: THREE.Camera, viewportHeight: number, worl
   return (ortho.top - ortho.bottom) / (ortho.zoom || 1) / Math.max(viewportHeight, 1);
 }
 
-// ── 1. GİZMO NOKTASI ─────────────────────────────────────────────────────────
-
 interface GizmoDotProps {
   position: Vec3;
   isSelected: boolean;
-  /** Aksan rengi: kaynak/pivot koyu taş, hedef turuncu. */
   accent?: string;
   onClick: (pos: Vec3) => void;
   groupRef?: (g: THREE.Group | null) => void;
@@ -128,11 +112,7 @@ export function computeRealCorners(panelShape: Shape): Vec3[] {
   return result;
 }
 
-/**
- * Ekranda TAM üst üste binen (≤ overlapPx) noktalardan yalnız kameraya en yakın
- * olanı görünür bırakır; `preferred` (seçili) noktalar her zaman görünür.
- * Nokta konumu asla ötelenmez. Her karede çağrılır.
- */
+/** Ekranda üst üste binen noktalardan yalnız kameraya en yakını (ya da `preferred`) görünür; konum asla ötelenmez. */
 function resolveDotOverlap(
   camera: THREE.Camera, size: { width: number; height: number },
   marks: Array<{ pos: Vec3; group: number }>, preferred: (i: number) => boolean,
@@ -158,7 +138,6 @@ function resolveDotOverlap(
   for (let i = 0; i < n; i++) { const el = groups[i]; if (el && el.visible !== visible[i]) el.visible = visible[i]; }
 }
 
-/** Nokta kümesinin ekran çakışmasını her karede çözer (GizmoDot groupRef'leri ile). */
 function useDotOverlap(marks: Array<{ pos: Vec3; group: number }>, preferred: (i: number) => boolean) {
   const markRefs = useRef<(THREE.Group | null)[]>([]);
   const tmpVec = useRef(new THREE.Vector3());
@@ -166,7 +145,6 @@ function useDotOverlap(marks: Array<{ pos: Vec3; group: number }>, preferred: (i
   return (i: number) => (el: THREE.Group | null) => { markRefs.current[i] = el; };
 }
 
-/** R3F Html etiketi (eksen adı): tıklanabilir hap. */
 function AxisLabel({ position, text, style, onClick, onHover }: { position: Vec3; text: string; style: React.CSSProperties; onClick: () => void; onHover: (h: boolean) => void }) {
   return (
     <Html position={position} center zIndexRange={[999, 1000]} style={{ pointerEvents: 'none' }}>
@@ -178,13 +156,9 @@ function AxisLabel({ position, text, style, onClick, onHover }: { position: Vec3
   );
 }
 
-// ── 2. TAŞIMA GİZMOSU ────────────────────────────────────────────────────────
-// EKRAN-ÖLÇEĞİ KİLİDİ (Goker: "okları belli bir uzaklıktan sonra bir ölçüde tut;
-// yaklaşınca da çok büyük olmasın"): iki kilit arasında EKRANDA SABİT boy (~TARGET_PX);
-// kilitlerin dışında dünya ölçüsü DONAR (yakında MIN_SCALE, uzakta MAX_SCALE).
+// Ekran-ölçeği kilidi: iki kilit arasında ekranda sabit boy (~TARGET_PX); dışında dünya ölçüsü donar (MIN/MAX_SCALE).
 const TARGET_PX = 56, MIN_SCALE = 0.45, MAX_SCALE = 2.20, GAP_RATIO = 0.08;
 
-/** Verilen grubu, taban uzunluğuna göre ekran-ölçeğine kilitler. */
 function useScreenLockedScale(ref: React.RefObject<THREE.Group | THREE.Mesh>, baseLength: number) {
   const wp = useRef(new THREE.Vector3());
   useFrame(({ camera, size }) => {
@@ -196,7 +170,6 @@ function useScreenLockedScale(ref: React.RefObject<THREE.Group | THREE.Mesh>, ba
 }
 
 const AXIS_DISPLAY: Record<string, string> = { 'x+': '+X', 'x-': '−X', 'y+': '+Y', 'y-': '−Y', 'z+': '+Z', 'z-': '−Z' };
-// Eksen kimliği (X kırmızı / Y yeşil / Z mavi); tonlar kemik-fildişi zeminle uyumlu mat palet.
 const MOVE_AXES: Array<{ axis: AxisDir; color: string; hover: string }> = [
   { axis: 'x+', color: '#c6635d', hover: '#dd8a84' }, { axis: 'x-', color: '#c6635d', hover: '#dd8a84' },
   { axis: 'y+', color: '#6f9e6c', hover: '#93bd8f' }, { axis: 'y-', color: '#6f9e6c', hover: '#93bd8f' },
@@ -209,7 +182,6 @@ function MoveArrow({ axisLabel, color, hoverColor, origin, length, onSelect, sel
   const groupRef = useRef<THREE.Group>(null);
   // Ölçek kilidi grubun KENDİSİNE uygulanır; grup okun tabanına oturduğu için ok her ölçekte panele yapışık kalır.
   useScreenLockedScale(groupRef, length);
-  // İNCE / KESKİN ORAN: CAD gizmolarının okuması kolay ince gövde + uzun, dar uç.
   const shaftRadius = length * 0.026, coneRadius = length * 0.078, coneHeight = length * 0.24, shaftLength = length - coneHeight;
   const dir = axisDirToVec(axisLabel);
   const rotation = useMemo(() => {
@@ -217,7 +189,6 @@ function MoveArrow({ axisLabel, color, hoverColor, origin, length, onSelect, sel
     return [e.x, e.y, e.z] as Vec3;
   }, [axisLabel]);
   const along = (d: number): Vec3 => [dir.x * d, dir.y * d, dir.z * d];
-  // SOFT YÜZEY: mat, hafif dağınık; seçilide rengin açık tonu (beyaz, açık zeminde silüeti yiyordu).
   const matProps = {
     color: isSelected || hovered ? hoverColor : color, transparent: true, opacity: isSelected || hovered ? 1 : 0.88, depthTest: false,
     emissive: new THREE.Color(isSelected || hovered ? color : 0x000000), emissiveIntensity: isSelected ? 0.55 : hovered ? 0.35 : 0.06, roughness: 0.62, metalness: 0.04,
@@ -234,7 +205,6 @@ function MoveArrow({ axisLabel, color, hoverColor, origin, length, onSelect, sel
       </mesh>
       <AxisLabel position={along(length * 1.2)} text={AXIS_DISPLAY[axisLabel]} onClick={() => onSelect(axisLabel)} onHover={setHovered}
         style={{
-          // SOFT ETİKET: hafif buzlu hap; seçilide rengin kendisi dolgu.
           background: isSelected ? color : 'rgba(252,251,249,0.82)', color: isSelected ? '#fff' : '#57534e', fontSize: '11px', fontWeight: 650, letterSpacing: '0.04em',
           borderRadius: '5px', border: `1px solid ${isSelected ? 'transparent' : 'rgba(60,50,40,0.10)'}`,
           boxShadow: isSelected ? '0 1px 3px rgba(40,30,20,0.22)' : '0 1px 2px rgba(40,30,20,0.08)', backdropFilter: 'blur(3px)', WebkitBackdropFilter: 'blur(3px)',
@@ -260,7 +230,6 @@ export function PanelMoveGizmo({ panelShape }: { panelShape: Shape }) {
     panelMoveRefTargetPanelId, setPanelMoveRefTargetPanelId, panelMoveRefTargetVertex, setPanelMoveRefTargetVertex, shapes } =
     useStoreFields('panelMoveAxis', 'setPanelMoveAxis', 'panelMoveValueMode', 'panelMoveRefSourceVertex', 'setPanelMoveRefSourceVertex', 'panelMoveRefTargetPanelId', 'setPanelMoveRefTargetPanelId', 'panelMoveRefTargetVertex', 'setPanelMoveRefTargetVertex', 'shapes');
   const isRefMode = panelMoveValueMode === 'ref';
-  // Güncel geometri store'dan — prop bayat olabilir (extrude sonrası).
   const freshPanel = useMemo(() => shapeById(panelShape.id, shapes) || panelShape, [shapes, panelShape.id, panelShape]);
   const { centerOrigin, axisOrigins, arrowLength } = useMemo(() => {
     const bbox = localBboxOf(freshPanel.geometry);
@@ -285,7 +254,6 @@ export function PanelMoveGizmo({ panelShape }: { panelShape: Shape }) {
   const sourceVertices = useMemo(() => (isRefMode && freshPanel.geometry ? computeRealCorners(freshPanel) : []), [isRefMode, freshPanel]);
   const targetPanel = useMemo(() => (isRefMode && panelMoveRefTargetPanelId ? shapeById(panelMoveRefTargetPanelId, shapes) || null : null), [isRefMode, panelMoveRefTargetPanelId, shapes]);
   const targetVertices = useMemo(() => (targetPanel?.geometry ? computeRealCorners(targetPanel) : []), [targetPanel]);
-  // Çakışan köşeler: yalnız TAM üst üste binenler gizlenir; seçili nokta her zaman görünür.
   const allMarks = useMemo(() => [...sourceVertices.map(v => ({ pos: v, group: 0 })), ...targetVertices.map(v => ({ pos: v, group: 1 }))], [sourceVertices, targetVertices]);
   const refAt = useDotOverlap(allMarks, i => (allMarks[i].group ? vertEq(panelMoveRefTargetVertex, allMarks[i].pos) : vertEq(panelMoveRefSourceVertex, allMarks[i].pos)));
   const needsTargetPanel = !!panelMoveRefSourceVertex && !panelMoveRefTargetPanelId;
@@ -311,8 +279,6 @@ export function PanelMoveGizmo({ panelShape }: { panelShape: Shape }) {
   );
 }
 
-// ── 3. DÖNDÜRME GİZMOSU ──────────────────────────────────────────────────────
-
 function RotationRing({ center, axis, radius, onSelect, selectedAxis }: { center: Vec3; axis: AxisLetter; radius: number; onSelect: (axis: AxisLetter) => void; selectedAxis: AxisLetter | null }) {
   const [hovered, setHovered] = useState(false);
   const isSelected = selectedAxis === axis;
@@ -321,12 +287,10 @@ function RotationRing({ center, axis, radius, onSelect, selectedAxis }: { center
   const { geometry, eulerRotation, labelPos } = useMemo(() => {
     const points: THREE.Vector3[] = [];
     for (let i = 0; i <= 64; i++) { const a = (i / 64) * Math.PI * 2; points.push(new THREE.Vector3(Math.cos(a) * radius, Math.sin(a) * radius, 0)); }
-    // Çember XY düzleminde çizilir (normal Z): X halkası → Y etrafında 90°, Y halkası → X etrafında 90°.
     const euler = axis === 'x' ? new THREE.Euler(0, Math.PI / 2, 0) : axis === 'y' ? new THREE.Euler(Math.PI / 2, 0, 0) : new THREE.Euler(0, 0, 0);
     const lPos: Vec3 = axis === 'x' ? [center[0], center[1], center[2] + radius + 10] : axis === 'y' ? [center[0] + radius + 10, center[1], center[2]] : [center[0], center[1] + radius + 10, center[2]];
     return { geometry: new THREE.BufferGeometry().setFromPoints(points), eulerRotation: euler, labelPos: lPos };
   }, [center, axis, radius]);
-  // Seçili: tam opak; hover: belirgin; başka eksen seçiliyken soluk.
   const lineColor = hovered && !isSelected ? colors.hover : colors.main;
   const lineOpacity = isSelected ? 1 : hovered ? 0.95 : anySelected ? 0.16 : 0.62;
   const lineObj = useMemo(() => {
@@ -339,7 +303,7 @@ function RotationRing({ center, axis, radius, onSelect, selectedAxis }: { center
   const labelDimmed = anySelected && !isSelected && !hovered;
   return (
     <group>
-      {isSelected && (   /* Seçili dönme düzlemini dolduran yarı saydam disk */
+      {isSelected && (
         <mesh position={center} rotation={[eulerRotation.x, eulerRotation.y, eulerRotation.z]} renderOrder={RENDER_ORDER - 1}>
           <circleGeometry args={[radius, 64]} />
           <meshBasicMaterial color={colors.main} transparent opacity={0.15} depthTest={false} side={THREE.DoubleSide} />
@@ -356,7 +320,6 @@ function RotationRing({ center, axis, radius, onSelect, selectedAxis }: { center
   );
 }
 
-/** Orta noktalar — gerçek köşelerden kalınlık yönünü bulup iki geniş yüzün merkezini hesaplar. */
 function computeFaceCenters(panelShape: Shape): Vec3[] {
   if (!panelShape.geometry) return [];
   const corners = uniqueMeshPoints(panelShape.geometry, 100);
@@ -381,11 +344,9 @@ type PivotKind = 'vertex' | 'center';
 export function PanelRotateGizmo({ panelShape }: { panelShape: Shape }) {
   const { panelRotatePivot, setPanelRotatePivot, panelRotateAxis, setPanelRotateAxis, panelRotateValueMode, panelRotateRefArmVertex, setPanelRotateRefArmVertex, setPanelRotateRefFace } =
     useStoreFields('panelRotatePivot', 'setPanelRotatePivot', 'panelRotateAxis', 'setPanelRotateAxis', 'panelRotateValueMode', 'panelRotateRefArmVertex', 'setPanelRotateRefArmVertex', 'setPanelRotateRefFace');
-  // 1. ADIM: MOD SEÇİMİ — mod seçilmeden (null) hiçbir pivot noktası/halka çizilmez (Goker).
   const modeChosen = panelRotateValueMode !== null;
   const isRefMode = panelRotateValueMode === 'ref';
   const hasPivot = panelRotatePivot !== null;
-  // Halkalar: dyn modunda pivot seçilince, REF modunda NİŞAN noktası da seçilince çıkar.
   const showRings = modeChosen && hasPivot && (!isRefMode || panelRotateRefArmVertex !== null);
   const pivots = useMemo<Array<{ pos: Vec3; kind: PivotKind }>>(() => [
     ...computeRealCorners(panelShape).map(p => ({ pos: p, kind: 'vertex' as const })),
@@ -410,7 +371,7 @@ export function PanelRotateGizmo({ panelShape }: { panelShape: Shape }) {
   if (!modeChosen) return null;
   return (
     <group>
-      {pivots.map((pv, i) => {   /* Köşe (8) + iki yüz merkezi; ref modunda pivot koyu taş, NİŞAN mavi-yeşil. */
+      {pivots.map((pv, i) => {
         const isArm = isRefMode && vertEq(panelRotateRefArmVertex, pv.pos);
         return <GizmoDot key={`pivot-${i}`} position={pv.pos} groupRef={refAt(i)} onClick={() => handleOwnDotClick(pv.pos)}
           isSelected={eq(panelRotatePivot, pv.pos) || isArm} accent={isArm ? '#0d9488' : pv.kind === 'center' ? '#ea580c' : '#44403c'} />;
@@ -422,13 +383,10 @@ export function PanelRotateGizmo({ panelShape }: { panelShape: Shape }) {
   );
 }
 
-// ── 4. VERTEX DÜZENLEYİCİ ────────────────────────────────────────────────────
-
 const ALL_DIRS: AxisDir[] = ['x+', 'x-', 'y+', 'y-', 'z+', 'z-'];
 const CONE_ROT: Record<AxisDir, Vec3> = { 'x+': [0, 0, -Math.PI / 2], 'x-': [0, 0, Math.PI / 2], 'y+': [0, 0, 0], 'y-': [Math.PI, 0, 0], 'z+': [Math.PI / 2, 0, 0], 'z-': [-Math.PI / 2, 0, 0] };
 const dirColor = (d: AxisDir) => AXIS_RGB[d[0] as AxisLetter].main;
 
-/** Köşeden yön boyunca ok: çizgi + koni (koni tıklanabilir). */
 function DirArrow({ position, direction, length, cone, color, opacity, onClick }: { position: THREE.Vector3; direction: AxisDir; length: number; cone: [number, number]; color: string; opacity?: number; onClick?: () => void }) {
   const end = useMemo(() => position.clone().add(axisDirToVec(direction).multiplyScalar(length)), [position.x, position.y, position.z, direction, length]);
   const lineGeometry = useMemo(() => {
@@ -487,13 +445,6 @@ export const VertexEditor: React.FC<{ shape: any; onVertexSelect: (index: number
   );
 };
 
-/* ══════════════════════════════════════════════════════════
-   VIEW-CUBE GIZMO
-   • Single bold letter on each face (F B R L T U)
-   • Compass ring clearly outside the cube
-   • Large N/S/E/W labels
-══════════════════════════════════════════════════════════ */
-
 const C_FACE_BG  = 'rgba(240,238,234,0.96)';
 const C_FACE_HOV = 'rgba(232,98,42,0.93)';
 const C_EDGE_BG  = 'rgba(210,207,202,0.90)';
@@ -502,7 +453,6 @@ const C_BODY     = '#dbd8d2';
 const C_OUTLINE  = 'rgba(140,135,128,0.65)';
 const C_ACCENT   = '#e8622a';
 
-/* Face texture — single large letter, fills the tile */
 function makeFaceTex(letter: string, hovered: boolean): THREE.CanvasTexture {
   const S = 256;
   const cv = document.createElement('canvas');
@@ -550,14 +500,12 @@ function norm(x: number, y: number, z: number): [number, number, number] {
   return [x / l, y / l, z / l];
 }
 
-/** Gizmo yüzeyleri için ortak hover/tık işleyicileri. */
 const hoverHandlers = (setHov: (h: boolean) => void, onSnap: () => void) => ({
   onPointerEnter: (e: any) => { e.stopPropagation(); setHov(true); document.body.style.cursor = 'pointer'; },
   onPointerLeave: (e: any) => { e.stopPropagation(); setHov(false); document.body.style.cursor = 'default'; },
   onClick: (e: any) => { e.stopPropagation(); onSnap(); },
 });
 
-/* Hoverable face plane */
 const FacePlane: React.FC<{
   geo: THREE.BufferGeometry;
   pos: [number,number,number];
@@ -579,7 +527,6 @@ const FacePlane: React.FC<{
   );
 };
 
-/* Corner hit zone — shows orange on hover, invisible otherwise */
 const CornerZone: React.FC<{ pos: [number,number,number]; onSnap: () => void }> = ({ pos, onSnap }) => {
   const [hov, setHov] = useState(false);
   const geo = useMemo(() => new THREE.BoxGeometry(0.20, 0.20, 0.20), []);
@@ -590,11 +537,6 @@ const CornerZone: React.FC<{ pos: [number,number,number]; onSnap: () => void }> 
   );
 };
 
-/* ══════════════════════════════════════════════════════════
-   COMPASS RING
-   Positioned well below the cube. Labels are large.
-   Ring rotates only around Y to track camera azimuth.
-══════════════════════════════════════════════════════════ */
 const CompassRing: React.FC = () => {
   const ringRef = useRef<THREE.Group>(null);
   const { camera } = useThree();
@@ -606,13 +548,11 @@ const CompassRing: React.FC = () => {
     ringRef.current.rotation.set(-Math.PI / 2, 0, azimuth);
   });
 
-  /* Ring sits well outside cube (cube half = 0.5, ring inner = 0.90) */
   const ringGeo = useMemo(() => new THREE.RingGeometry(0.90, 1.02, 72), []);
   const ringMat = useMemo(() => new THREE.MeshBasicMaterial({
     color: '#a09890', side: THREE.DoubleSide, transparent: true, opacity: 0.75, depthTest: false,
   }), []);
 
-  /* Cardinal ticks — long and thick (drawn as fat triangles) */
   const tickGeos = useMemo(() => {
     return [0, Math.PI / 2, Math.PI, -Math.PI / 2].map(angle => {
       const inner = 1.02, outer = 1.22;
@@ -635,7 +575,6 @@ const CompassRing: React.FC = () => {
     color: C_ACCENT, side: THREE.DoubleSide, transparent: true, opacity: 0.95, depthTest: false,
   }), []);
 
-  /* N/E/S/W label textures — very large */
   const makeCardTex = (letter: string, isNorth: boolean): THREE.CanvasTexture => {
     const S = 128;
     const cv = document.createElement('canvas');
@@ -685,12 +624,8 @@ const CompassRing: React.FC = () => {
   );
 };
 
-/* ══════════════════════════════════════════════════════════
-   MAIN VIEW CUBE
-   Snap is delegated to CameraController via window.__snapView so the
-   real up-vector is applied to the MAIN camera (drei's tweenCamera
-   ignores the up argument, which caused crooked top/front views).
-══════════════════════════════════════════════════════════ */
+// ViewCube: snap window.__snapView ile CameraController'a devredilir — gerçek up vektörü ANA kameraya uygulanır
+// (drei tweenCamera up argümanını yok sayar; üst/ön görünüşler eğri kalıyordu).
 const ViewCube: React.FC = () => {
   const { camera } = useThree();
   const cubeRef    = useRef<THREE.Group>(null);
@@ -717,7 +652,6 @@ const ViewCube: React.FC = () => {
   const P = H + D, EC = (FW + EW) / 2;
   type V3 = [number,number,number];
 
-  /* Single letter per face — no flipH needed with FrontSide rendering */
   const FACES: { letter: string; pos: V3; rot: V3; dir: V3; up: V3 }[] = [
     { letter: 'F', pos: [0,0,P],   rot: [0,0,0],            dir: [0,0,1],  up: [0,1,0]  },
     { letter: 'B', pos: [0,0,-P],  rot: [0,Math.PI,0],      dir: [0,0,-1], up: [0,1,0]  },
@@ -728,39 +662,33 @@ const ViewCube: React.FC = () => {
   ];
 
   const EDGES: { pos: V3; rot: V3; geo: 'h'|'v'; dir: V3; up: V3 }[] = [
-    // FRONT
     { pos:[0,EC,P],   rot:[0,0,0],           geo:'h', dir:norm(0,1,1),   up:[0,1,0]  },
     { pos:[0,-EC,P],  rot:[0,0,0],           geo:'h', dir:norm(0,-1,1),  up:[0,1,0]  },
     { pos:[-EC,0,P],  rot:[0,0,0],           geo:'v', dir:norm(-1,0,1),  up:[0,1,0]  },
     { pos:[EC,0,P],   rot:[0,0,0],           geo:'v', dir:norm(1,0,1),   up:[0,1,0]  },
-    // BACK
     { pos:[0,EC,-P],  rot:[0,Math.PI,0],     geo:'h', dir:norm(0,1,-1),  up:[0,1,0]  },
     { pos:[0,-EC,-P], rot:[0,Math.PI,0],     geo:'h', dir:norm(0,-1,-1), up:[0,1,0]  },
     { pos:[EC,0,-P],  rot:[0,Math.PI,0],     geo:'v', dir:norm(1,0,-1),  up:[0,1,0]  },
     { pos:[-EC,0,-P], rot:[0,Math.PI,0],     geo:'v', dir:norm(-1,0,-1), up:[0,1,0]  },
-    // RIGHT
     { pos:[P,EC,0],   rot:[0,-Math.PI/2,0],  geo:'h', dir:norm(1,1,0),   up:[0,1,0]  },
     { pos:[P,-EC,0],  rot:[0,-Math.PI/2,0],  geo:'h', dir:norm(1,-1,0),  up:[0,1,0]  },
     { pos:[P,0,EC],   rot:[0,-Math.PI/2,0],  geo:'v', dir:norm(1,0,1),   up:[0,1,0]  },
     { pos:[P,0,-EC],  rot:[0,-Math.PI/2,0],  geo:'v', dir:norm(1,0,-1),  up:[0,1,0]  },
-    // LEFT
     { pos:[-P,EC,0],  rot:[0,Math.PI/2,0],   geo:'h', dir:norm(-1,1,0),  up:[0,1,0]  },
     { pos:[-P,-EC,0], rot:[0,Math.PI/2,0],   geo:'h', dir:norm(-1,-1,0), up:[0,1,0]  },
     { pos:[-P,0,-EC], rot:[0,Math.PI/2,0],   geo:'v', dir:norm(-1,0,-1), up:[0,1,0]  },
     { pos:[-P,0,EC],  rot:[0,Math.PI/2,0],   geo:'v', dir:norm(-1,0,1),  up:[0,1,0]  },
-    // TOP (diagonal edges → world-up so the ground stays level)
     { pos:[0,P,EC],   rot:[-Math.PI/2,0,0],  geo:'h', dir:norm(0,1,1),   up:[0,1,0]  },
     { pos:[0,P,-EC],  rot:[-Math.PI/2,0,0],  geo:'h', dir:norm(0,1,-1),  up:[0,1,0]  },
     { pos:[-EC,P,0],  rot:[-Math.PI/2,0,0],  geo:'v', dir:norm(-1,1,0),  up:[0,1,0]  },
     { pos:[EC,P,0],   rot:[-Math.PI/2,0,0],  geo:'v', dir:norm(1,1,0),   up:[0,1,0]  },
-    // BOTTOM (diagonal edges → world-up so the ground stays level)
     { pos:[0,-P,EC],  rot:[Math.PI/2,0,0],   geo:'h', dir:norm(0,-1,1),  up:[0,1,0]  },
     { pos:[0,-P,-EC], rot:[Math.PI/2,0,0],   geo:'h', dir:norm(0,-1,-1), up:[0,1,0]  },
     { pos:[-EC,-P,0], rot:[Math.PI/2,0,0],   geo:'v', dir:norm(-1,-1,0), up:[0,1,0]  },
     { pos:[EC,-P,0],  rot:[Math.PI/2,0,0],   geo:'v', dir:norm(1,-1,0),  up:[0,1,0]  },
   ];
 
-  /* Corners are isometric/diagonal → world-up keeps the ground horizontal */
+  // Köşeler ve üst/alt kenarlar: up = dünya-Y, zemin yatay kalır.
   const CORNERS: { pos: V3; dir: V3; up: V3 }[] = [
     { pos:[ H, H, H], dir:norm(1,1,1),    up:[0,1,0] },
     { pos:[-H, H, H], dir:norm(-1,1,1),   up:[0,1,0] },
@@ -796,12 +724,6 @@ const ViewCube: React.FC = () => {
   );
 };
 
-/* ══════════════════════════════════════════════════════════
-   CAMERA CONTROLLER
-══════════════════════════════════════════════════════════ */
-/* Perspective uses a fixed field of view (standard CAD "lens" — it never
-   drifts). The ortho<->perspective toggle keeps this constant and matches
-   the on-screen scale via ortho zoom one way and camera distance the other. */
 const PERSP_FOV = 45;
 
 const CameraController: React.FC<{ controlsRef: React.RefObject<any>; cameraType: CameraType }> = ({ controlsRef, cameraType }) => {
@@ -810,11 +732,7 @@ const CameraController: React.FC<{ controlsRef: React.RefObject<any>; cameraType
   const prevType  = useRef<CameraType>(cameraType);
   const { size }  = useThree();  // actual canvas size in CSS px (not window)
 
-  /* Custom snap — pure orbit around the target at constant radius.
-     The camera direction is spherically interpolated (slerp) instead of
-     linearly interpolating position, so the view never dollies toward the
-     target mid-transition; it just rotates in place. Damping is disabled
-     during the tween so the view lands exactly on the first click. */
+  // Snap: hedef etrafında sabit yarıçapla yörünge (yön slerp, konum lerp değil); tween boyunca damping kapalı ki ilk tıkta tam otursun.
   const snapToView = useCallback((dir: THREE.Vector3, up: THREE.Vector3) => {
     const cam = cameraRef.current;
     const controls = controlsRef.current;
@@ -829,8 +747,6 @@ const CameraController: React.FC<{ controlsRef: React.RefObject<any>; cameraType
     const startUp  = cam.up.clone();
     const endUp    = up.clone().normalize();
 
-    /* Rotation that carries startDir onto endDir — we apply a fraction of
-       it each frame, keeping |position - target| === dist throughout. */
     const fullRot = new THREE.Quaternion().setFromUnitVectors(startDir, endDir);
     const identity = new THREE.Quaternion();
     const frameRot = new THREE.Quaternion();
@@ -870,13 +786,7 @@ const CameraController: React.FC<{ controlsRef: React.RefObject<any>; cameraType
     return () => { delete (window as any).__snapView; };
   }, [snapToView]);
 
-  /* Ortho <-> Perspective toggle — standard CAD behavior, fixed eye.
-     The camera never moves and the FOV is fixed. Gaze, target and up are
-     untouched. Only the projection type changes:
-       perspective -> ortho :  set ortho zoom to match the current scale
-       ortho -> perspective :  just restore the perspective (same eye + fov)
-     Because nothing depends on the target sitting on the object, this is
-     immune to panning and to moving objects — the view can't fly off. */
+  // Orto ↔ perspektif: kamera kıpırdamaz, FOV sabit; yalnız projeksiyon değişir — pan/taşıma sonrası görünüm uçmaz.
   useLayoutEffect(() => {
     if (prevType.current === cameraType) return;
     const saved = savedRef.current;
@@ -921,14 +831,8 @@ const CameraController: React.FC<{ controlsRef: React.RefObject<any>; cameraType
     return () => clearInterval(id);
   }, [controlsRef]);
 
-  /* DİNAMİK NEAR (Goker: "iki panelin tam değdiği yerde, kamera uzaklaştıkça arkadaki panellerin
-     kalınlık çizgileri öndeki panelin üstünde görünüyor"). KÖK NEDEN: perspektif near=1 sabitken
-     derinlik tamponu çözünürlüğü uzaklığın KARESİYLE kötüleşir (Δz ≈ d²/(near·2²⁴)); kenar/mesh
-     polygonOffset birimleri bu çözünürlükle ölçeklendiğinden ~10 m'de ofset panel kalınlığını
-     (18 mm) aşar ve değen panelin kenarı öndeki yüzü delip görünür. ÇÖZÜM: near'ı hedef
-     uzaklığıyla orantılı tut (uzaklık/100, alt sınır 1) — hassasiyet uzaklıktan bağımsızlaşır.
-     Başsız WebGL testinde (yan panel + raflar, 12–20 m) sızıntı tamamen kayboldu; yakında fark yok.
-     Ortografik kamera doğrusal derinlik kullanır, etkilenmez. */
+  // DİNAMİK NEAR: sabit near'da derinlik çözünürlüğü uzaklığın karesiyle kötüleşir (Δz ≈ d²/(near·2²⁴)); ~10 m'de polygonOffset
+  // panel kalınlığını aşar, değen panelin kenarı öndeki yüzü deler. near = uzaklık/100 (≥1). Ortografik etkilenmez.
   useFrame(() => {
     const cam = cameraRef.current, controls = controlsRef.current;
     if (!(cam instanceof THREE.PerspectiveCamera) || !controls) return;
@@ -936,11 +840,8 @@ const CameraController: React.FC<{ controlsRef: React.RefObject<any>; cameraType
     if (Math.abs(near - cam.near) / cam.near > 0.05) { cam.near = near; cam.updateProjectionMatrix(); }
   });
 
-  /* Mount props recomputed ONLY when the camera type changes (a real
-     remount). Otherwise the same stable refs are returned so R3F never
-     re-applies them mid-interaction and OrbitControls owns the camera.
-     The camera position is always the saved one (never moved); only the
-     ortho zoom is derived, with the SAME formula the toggle effect uses. */
+  // Mount prop'ları YALNIZ kamera tipi değişince (gerçek remount) hesaplanır; aksi halde R3F etkileşim ortasında yeniden
+  // uygular ve kamera OrbitControls'tan kopar. Orto zoom, geçiş efektiyle AYNI formül.
   const mount = useMemo(() => {
     const s = savedRef.current;
     if (!s) return { position: [2000, 2000, 2000] as [number, number, number], zoom: 0.25 };
@@ -959,13 +860,7 @@ const CameraController: React.FC<{ controlsRef: React.RefObject<any>; cameraType
     : <OrthographicCamera ref={cameraRef as React.RefObject<THREE.OrthographicCamera>} makeDefault position={mount.position} zoom={mount.zoom} near={-50000} far={50000} />;
 };
 
-/* ══════════════════════════════════════════════════════════
-   MOVE REF — SCENE-LEVEL PANEL PICKER
-   Kaynak vertex seçildikten sonra hedef panel seçimi: canvas'a her
-   tıklamada THREE.Raycaster ile tüm panel mesh'lerini tarar, aynı
-   noktaya arka arkaya tıklamada derinlik döngüsü yapar. R3F'nin
-   per-component raycast sistemini tamamen atlar → güvenilir çalışır.
-══════════════════════════════════════════════════════════ */
+// Taşıma-ref hedef panel seçici: R3F raycast'ini bilerek atlar; canvas tıklamasında tüm panelleri tarar, aynı noktada derinlik döngüsü.
 const SAME_SPOT_PX = 8;
 let _movePickState: { x: number; y: number; idx: number } | null = null;
 
@@ -977,10 +872,7 @@ function MoveRefPanelPicker({ shapes }: { shapes: any[] }) {
     setPanelMoveRefTargetPanelId, setPanelMoveRefTargetVertex,
   } = useStoreFields('panelMoveMode', 'panelMoveValueMode', 'panelMoveRefSourceVertex', 'panelMoveRefTargetVertex', 'panelMoveTargetPanelId', 'setPanelMoveRefTargetPanelId', 'setPanelMoveRefTargetVertex');
 
-  // Kaynak nokta seçildikten sonra, HEDEF NOKTA seçilene kadar aktif kalır —
-  // böylece üst üste panellerde her sol tıkta bir arkadakine geçilir (tek tek
-  // derinlik döngüsü). Hedef nokta seçilince durur (çarpı işaretleri Html
-  // olduğundan onlara tıklama canvas'ı tetiklemez → döngüyü bozmaz).
+  // Kaynak seçildikten sonra hedef NOKTA seçilene kadar aktif: üst üste panellerde her sol tıkta bir arkadakine geçilir.
   const active = panelMoveMode && panelMoveValueMode === 'ref'
     && !!panelMoveRefSourceVertex && !panelMoveRefTargetVertex;
 
@@ -998,7 +890,6 @@ function MoveRefPanelPicker({ shapes }: { shapes: any[] }) {
       const raycaster = new THREE.Raycaster();
       raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), camera);
 
-      // Sadece panelleri (kaynak panel hariç) raycast et.
       const panels = shapes.filter(
         s => s.type === 'panel' && s.geometry && s.id !== panelMoveTargetPanelId
       );
@@ -1016,7 +907,6 @@ function MoveRefPanelPicker({ shapes }: { shapes: any[] }) {
       const hits = raycaster.intersectObjects(tempMeshes, false);
       if (hits.length === 0) return;
 
-      // Benzersiz panel id'leri (derinlik sırasında)
       const seen = new Set<string>();
       const ordered: string[] = [];
       for (const h of hits) {
@@ -1025,7 +915,6 @@ function MoveRefPanelPicker({ shapes }: { shapes: any[] }) {
       }
       if (ordered.length === 0) return;
 
-      // Aynı noktaya tıklama → döngüde ilerle
       const sameSpot = !!_movePickState &&
         Math.hypot(ev.clientX - _movePickState.x, ev.clientY - _movePickState.y) < SAME_SPOT_PX;
       const idx = sameSpot ? (_movePickState!.idx + 1) % ordered.length : 0;
@@ -1038,7 +927,6 @@ function MoveRefPanelPicker({ shapes }: { shapes: any[] }) {
     canvas.addEventListener('click', handler, true);
     return () => {
       canvas.removeEventListener('click', handler, true);
-      // Döngü sayacı sıfırlansın: bir sonraki ref seçimi baştan başlar.
       _movePickState = null;
     };
   }, [active, shapes, camera, gl, panelMoveTargetPanelId,
@@ -1047,12 +935,7 @@ function MoveRefPanelPicker({ shapes }: { shapes: any[] }) {
   return null;
 }
 
-/**
- * REF AKIŞI SAĞ TIK ONAYI (taşıma + döndürme): akış aktifken sağ tık hazırsa
- * (tüm seçimler tam) onaylar ve uygular — sahnede herhangi bir yere sağ tık
- * yeterli; hazır değilse yalnız tarayıcı menüsünü engeller. capture=true →
- * orbit/başka contextmenu dinleyicilerinden önce yakalar.
- */
+/** Ref akışı sağ tık onayı: hazır değilse yalnız menüyü engeller. capture=true → orbit/diğer contextmenu dinleyicilerinden önce. */
 function RefConfirmOnRightClick({ active, ready, confirm }: { active: boolean; ready: () => boolean; confirm: () => Promise<unknown> }) {
   const { gl } = useThree();
   useEffect(() => {
@@ -1080,7 +963,6 @@ function MoveRefConfirmOnRightClick() {
       await confirmPanelMoveRef();
       const st = useAppStore.getState();
       st.setPanelMoveMode(false);
-      // Ref modundan çıkınca panel seçili KALMASIN (kırmızı tarama temizlensin); derinlik döngüsü sıfırlansın.
       st.setSelectedPanelRow(null);
       _movePickState = null;
     }} />;
@@ -1100,9 +982,6 @@ function RotateRefConfirmOnRightClick() {
     }} />;
 }
 
-/* ══════════════════════════════════════════════════════════
-   PANEL MOVE GIZMO WRAPPER
-══════════════════════════════════════════════════════════ */
 function PanelGizmos({ shapes }: { shapes: any[] }) {
   const { panelMoveMode, panelMoveTargetPanelId, panelRotateMode, panelRotateTargetPanelId } = useStoreFields('panelMoveMode', 'panelMoveTargetPanelId', 'panelRotateMode', 'panelRotateTargetPanelId');
   const panelOf = (on: boolean, id: string | null) => { const p = on && id ? shapeById(id, shapes) : undefined; return p && p.type === 'panel' ? p : null; };
@@ -1110,9 +989,6 @@ function PanelGizmos({ shapes }: { shapes: any[] }) {
   return <>{mv && <PanelMoveGizmo panelShape={mv} />}{rt && <PanelRotateGizmo panelShape={rt} />}</>;
 }
 
-/* ══════════════════════════════════════════════════════════
-   SCENE
-══════════════════════════════════════════════════════════ */
 const Scene: React.FC = () => {
   const controlsRef = useRef<any>(null);
 
@@ -1123,26 +999,19 @@ const Scene: React.FC = () => {
 
   useEffect(() => {
     const handle = (e: KeyboardEvent) => {
-      // YAZI ALANI KORUMASI: kısayollar input/textarea içindeyken ÇALIŞMAZ.
-      // Eskiden panel notu ya da şerit değeri yazarken basılan Delete seçili
-      // GÖVDEYİ siliyor, Escape tüm seçimi bırakıp açık panel satırını
-      // kapatıyordu ("panel edit kendi kendine kapanıyor").
+      // Kısayollar input/textarea içindeyken ÇALIŞMAZ (Delete gövdeyi silmesin, Escape panel satırını kapatmasın).
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
       if (e.key === 'Delete' && selectedShapeId) deleteShape(selectedShapeId);
       else if (e.key === 'Escape') {
-        // AKTİF PANEL ARACI varsa Escape yalnız ARACI kapatır (şeridin ✕
-        // düğmesiyle aynı); seçim ve açık panel satırı korunur. Araç yoksa eski
-        // davranış: tüm seçim bırakılır.
+        // Aktif araç/mod varsa Escape yalnız onu kapatır (şeridin ✕'i gibi); seçim korunur.
         const st = useAppStore.getState();
-        // HACİM SEÇME (raf/dikme): Escape yalnız modu kapatır.
-        if (st.volumePickMode) { st.setVolumePickMode(null); console.log('[YAGO][ESC] hacim seçme modu kapatıldı'); return; }
-        if (st.doorPickMode) { st.setDoorPickMode(false); console.log('[YAGO][ESC] kapak seçme modu kapatıldı'); return; }
+        if (st.volumePickMode) { st.setVolumePickMode(null); return; }
+        if (st.doorPickMode) { st.setDoorPickMode(false); return; }
         if (st.faceExtrudeMode || st.panelMoveMode || st.panelRotateMode) {
           if (st.faceExtrudeMode) { st.setFaceExtrudeSelectedFace(null); st.setFaceExtrudeRefCandidate(null); st.setFaceExtrudeMode(false); }
           if (st.panelMoveMode) { st.setPanelMoveAxis(null); st.setPanelMoveMode(false); }
           if (st.panelRotateMode) { st.setPanelRotateAxis(null); st.setPanelRotatePivot(null); st.setPanelRotateMode(false); }
-          console.log('[YAGO][ESC] aktif panel aracı kapatıldı, seçim korundu');
           return;
         }
         selectShape(null); exitIsolation(); setVertexEditMode(false); setFaceEditMode(false); clearFilletFaces();
@@ -1166,7 +1035,7 @@ const Scene: React.FC = () => {
       if (sid && vi !== null && vd) {
         const shape = shapeById(sid, cs.shapes);
         if (!shape?.parameters) return;
-        // vi, EDİTÖRÜN köşe listesinin indeksidir (mesh tamponu DEĞİL). Tek kaynak: resolveBaseVertices (editör + mesh ile aynı).
+        // vi editörün köşe listesinin indeksidir (mesh tamponu değil); tek kaynak resolveBaseVertices.
         const bv = await resolveBaseVertices(shape);
         if (vi >= bv.length) return;
         const op: Vec3 = [bv[vi].x, bv[vi].y, bv[vi].z];
@@ -1174,9 +1043,8 @@ const Scene: React.FC = () => {
         const np: Vec3 = [...op] as Vec3; np[ai] = newValue;
         const off: Vec3 = [0, 0, 0]; off[ai] = newValue - op[ai];
         cs.addVertexModification(sid, { vertexIndex: vi, originalPosition: op, newPosition: np, direction: vd, expression: String(newValue), description: `Vertex ${vi} ${vd[0].toUpperCase()}${vd[1]==='+'?'+':'-'}`, offset: off });
-        // PANELLER YENİ ŞEKLE: gövdenin panelleri varsa VF'ler düzenlenmiş geometriyle yeniden çözülür.
         if (childPanelsOf(sid).length) {
-          try { await requestRebuild(sid); console.log('[YAGO][VERTEX] düzenleme sonrası paneller yeniden üretildi:', sid); }
+          try { await requestRebuild(sid); }
           catch (e) { console.error('[YAGO][VERTEX] rebuild hatası:', e); }
         }
       }
@@ -1210,7 +1078,6 @@ const Scene: React.FC = () => {
     return () => { delete (window as any).handleFilletRadius; delete (window as any).pendingFilletOperation; };
   }, [filletMode, selectedFilletFaces.length]);
 
-
   const handleCreated = useCallback(({ gl }: { gl: THREE.WebGLRenderer }) => {
     gl.toneMapping = THREE.ACESFilmicToneMapping;
     gl.toneMappingExposure = 1.0;
@@ -1235,15 +1102,8 @@ const Scene: React.FC = () => {
           <directionalLight position={[0,2000,-2000]} intensity={0.3} />
           <directionalLight position={[500,500,3000]} intensity={0.5} />
 
-          {/* dampingFactor'ı yükselttim (0.05 → 0.2): bırakınca daha çabuk durur.
-              Hiç kaymasın istersen enableDamping yerine enableDamping={false} yap. */}
-          {/* TURNTABLE GARANTİSİ: OrbitControls yörünge eksenini her update'te
-              güncel camera.up'tan hesaplar. Üst/alt görünüş camera.up'ı (0,0,∓1)
-              yaptığından, oradan döndürünce yörünge Z ekseni etrafında olur → zemin
-              (XZ) döner/kesilir ve NavCube alt yüzü takla atar. Kullanıcı döndürmeye
-              başlar başlamaz up'ı dünya-Y'sine geri alıyoruz: zemin HER ZAMAN yatay
-              kalır. Görünüm tam üst/altta kutupta olduğundan (phi≈1e-6) sıçrama
-              görünmez; ekran-üstü yönü korunur. Yan görünüşlerde up zaten Y → etkisiz. */}
+          {/* Turntable: OrbitControls yörünge eksenini camera.up'tan alır; üst/alt görünüş up'ı (0,0,∓1) yaptığından
+              döndürme başlarken up dünya-Y'ye alınır — zemin hep yatay (kutupta olunduğundan sıçrama görünmez). */}
           <OrbitControls
             ref={controlsRef}
             makeDefault
@@ -1285,11 +1145,6 @@ const Scene: React.FC = () => {
             <shadowMaterial opacity={0.12} />
           </mesh>
 
-          {/*
-            scale=42  → cube size unchanged
-            margin right=125, margin bottom=155
-            Extra bottom margin gives room for the now-larger compass ring + labels
-          */}
           <GizmoHelper alignment="bottom-right" margin={[125, 155]}>
             <group scale={42}>
               <ViewCube />

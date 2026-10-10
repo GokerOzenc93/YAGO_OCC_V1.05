@@ -29,19 +29,15 @@ import {
   doorSizeMode, passiveSizeIndex, solveDoorTree, toggleDoorSizeLock,
 } from './DoorService';
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   PANEL EDİTÖRÜ — sol kenar çubuğundaki panel listesi (akordeon satırlar),
-   panel önizlemesi, Taşı / Döndür / Extrude şeritleri, işlem adımları ve
-   raf/dikme grup kartları. Tüm mantık motora (PanelOps / PanelEngine /
-   PanelGroupService) delege edilir; burada yalnız arayüz durumu tutulur.
-   ═══════════════════════════════════════════════════════════════════════════ */
+/* PANEL EDİTÖRÜ — sol çubuktaki panel listesi, önizleme, Taşı/Döndür/Extrude şeritleri,
+   işlem adımları ve raf/dikme/kapak grup kartları. Mantık motora (PanelOps / PanelGroupService /
+   DoorService) delege edilir; burada yalnız arayüz durumu tutulur. */
 
 const PANEL_THICKNESS = 18;
 const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
 const AXIS_COLORS: Record<string, string> = { 'x+': '#dc2626', 'x-': '#b91c1c', 'y+': '#16a34a', 'y-': '#15803d', 'z+': '#2563eb', 'z-': '#1d4ed8', x: '#dc2626', y: '#16a34a', z: '#2563eb' };
 const SECTION_LABEL: React.CSSProperties = { fontSize: 9.5, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#b5ada3' };
 
-/** Geometrinin eksen-hizalı kutusu: küçükten büyüğe sıralı eksenler + boyut. */
 function geoAxes(geo: THREE.BufferGeometry) {
   const bbox = localBboxOf(geo); if (!bbox) return null;
   const size = new THREE.Vector3(); bbox.getSize(size);
@@ -49,19 +45,12 @@ function geoAxes(geo: THREE.BufferGeometry) {
   return { axes, size, bbox };
 }
 
-/** Şu anda paneli üretilmekte olan VF id'leri (otomatik panel üretimi yarış koruması). */
+/** Paneli üretilmekte olan VF id'leri (yarış koruması, bkz. otomatik panel efekti). */
 const _creatingPanelForVf = new Set<string>();
 
-/* ── PANEL ÇERÇEVESİ: dönüşten arındırılmış geometri ─────────────────────
-   KÖK NEDEN (Goker: "panel döndürüldüğünde preview görünümünü de döndürüyor…
-   gereksiz 2 kere ölçü okları"): önizleme ve satır ölçüleri panelin GÖVDE-YEREL
-   geometrisinden okunuyordu; dönmüş panelde eksen-hizalı kutu eğik olduğundan
-   görünüm dönüyor, kutu ölçüleri (683/542) gerçek ölçü yerine geçiyor ve dönmüş
-   üst yüzün kenarları "kesim" sanılıp aynı ölçü ikinci kez çiziliyordu. Burada
-   panel KENDİ çerçevesine geri alınır: dönüş adımlarının birleşik dönüşü
-   (PanelEngine.composeSteps ile aynı sıra — pivot gereksiz) tersine uygulanır;
-   adımsız eğik levhada (eğik gövde yüzü) en büyük yüzün normali en yakın eksene
-   çevrilir. Pahlı uçlar, çentikler kendi düzleminde olduğu gibi kalır. */
+/* PANEL ÇERÇEVESİ: önizleme ve ölçüler gövde-yerel geometriden okunursa dönmüş panelde eğik bbox
+   yanlış ölçü ve sahte "kesim" verir. Dönüş adımlarının birleşik dönüşü (PanelEngine.composeSteps ile
+   AYNI sıra) tersine uygulanır; adımsız eğik levhada en büyük yüz normali en yakın eksene çevrilir. */
 const _frameCache = new WeakMap<THREE.BufferGeometry, { key: string; geo: THREE.BufferGeometry; inv: THREE.Quaternion }>();
 function stepsFrameQuat(steps: any[] | undefined): THREE.Quaternion {
   const frame = new THREE.Quaternion();
@@ -75,7 +64,6 @@ function stepsFrameQuat(steps: any[] | undefined): THREE.Quaternion {
   }
   return frame;
 }
-/** En büyük toplam alanlı yüz normali (işaret: ilk sıfırdan farklı bileşen pozitif). */
 function largestFaceNormal(geo: THREE.BufferGeometry): THREE.Vector3 | null {
   const pos = geo.getAttribute('position') as THREE.BufferAttribute | undefined; if (!pos) return null;
   const idx = geo.getIndex(); const cnt = idx ? idx.count : pos.count; const at = (k: number) => (idx ? idx.getX(k) : k);
@@ -102,7 +90,6 @@ export function panelFrameOf(shape: Shape | undefined | null): { geo: THREE.Buff
   const inv = stepsFrameQuat(steps).invert();
   let out = geo;
   if (Math.abs(inv.w) < 0.9999999) { out = geo.clone(); out.applyQuaternion(inv); }
-  // Adımsız eğim (eğik gövde yüzüne oturan levha): en büyük yüz normali en yakın eksene.
   const n = largestFaceNormal(out);
   if (n && !isFlatNormal(n, 0.9999)) {
     const ax = [Math.abs(n.x), Math.abs(n.y), Math.abs(n.z)]; const i = ax.indexOf(Math.max(...ax));
@@ -121,14 +108,10 @@ function getDimsFromGeo(geo: THREE.BufferGeometry, arrowRotated?: boolean, panel
   const r = geoAxes(geo); if (!r) return null;
   const pa = r.axes.slice(1).map(a => a.i).sort((a, b) => a - b);
   const target = arrowRotated ? pa[1] : pa[0], secondary = pa.find(a => a !== target) ?? pa[0], s = [r.size.x, r.size.y, r.size.z];
-  // KALINLIK: panelThickness parametresinden alınır — geometrinin eksen-hizalı
-  // bbox'ından DEĞİL. Dönmüş panelde bbox eğik olduğundan en küçük boyut bile
-  // gerçek kalınlıktan (18) çok büyük çıkıyordu (ör. 145.9). Parametre her zaman
-  // doğru kalınlığı tutar; yoksa (eski panel) bbox'a düşülür.
+  // Kalınlık parametreden: dönmüş panelde bbox'ın en küçük boyutu gerçek kalınlık değildir.
   const thickness = (panelThickness != null && panelThickness > 0) ? round1(panelThickness) : round1(s[r.axes[0].i]);
   return { primary: round1(s[target]), secondary: round1(s[secondary]), thickness };
 }
-/** Satır ölçüleri (W/H/T): panelin KENDİ çerçevesinden — dönmüş panelde de gerçek en/boy. */
 const panelDims = (p: Shape | undefined | null) => {
   const geo = panelFrameGeometry(p);
   return geo ? getDimsFromGeo(geo, p!.parameters?.arrowRotated, parseFloat(p!.parameters?.panelThickness) || 18) : null;
@@ -140,20 +123,13 @@ const project3D = (p: THREE.Vector3, camera: THREE.Camera, w: number, h: number)
   return { x: (ndc.x + 1) / 2 * w, y: (1 - ndc.y) / 2 * h };
 };
 
-/* ── Kesim (çıkarma) ölçü geometrisi ─────────────────────────────────────
-   Her kesim iki ölçü verir (en + boy). Her biri kesim kenarının hemen
-   dışına, en yakın panel kenarına doğru itilir; iki çizgi hiç kesişmez. */
 interface GroundDimWorld { fa: THREE.Vector3; fb: THREE.Vector3; da: THREE.Vector3; db: THREE.Vector3; length: number; along?: number; }
-/* GEREKSİZ KESİM ÖLÇÜSÜ ELEME (Goker: "bazen çok gereksiz 2 kere ölçü okları
-   görüyorum"): panelin tam enini/boyunu kaplayan bir "kesim" (pahlı ucun üst
-   yüz kenarı, dönmüş yüz kenarı, tam boy kanal) dış ölçünün kopyasıdır → dış
-   ölçü zaten çizildiğinden atılır. Hem gömülü kesimler hem çıkarma araçları. */
+/* Panelin tam enini/boyunu kaplayan "kesim" (pah kenarı, tam boy kanal) dış ölçünün kopyasıdır → atılır. */
 const CUT_FULL_SPAN = 0.9;
 function dropFullSpanCuts(dims: GroundDimWorld[], span0: number, span1: number, p0: number): GroundDimWorld[] {
   return dims.filter(d => d.length < CUT_FULL_SPAN * (d.along === p0 ? span0 : span1));
 }
 const KEYS = ['x', 'y', 'z'] as const;
-/** Kalınlık ekseni dışındaki iki düzlem ekseni + anahtarları. */
 function planarAxes(thinAxis: number) {
   const planar = [0, 1, 2].filter(i => i !== thinAxis);
   return { p0: planar[0], p1: planar[1], k0: KEYS[planar[0]], k1: KEYS[planar[1]], thinKey: KEYS[thinAxis] };
@@ -178,7 +154,6 @@ function cutBoxToDims(
   return dims;
 }
 
-/** Çıkarma araçlarından kesim ölçüleri (panelin üst yüzüne yerleşir). */
 function cutDimsFromSubGeos(subGeos: any[], panelBbox: THREE.Box3, panelSize: THREE.Vector3, thinAxis: number, nDir: THREE.Vector3, frame?: THREE.Matrix4): GroundDimWorld[] {
   const { p0, p1, k0, k1, thinKey } = planarAxes(thinAxis);
   const topVal = nDir.getComponent(thinAxis) > 0 ? panelBbox.max[thinKey] : panelBbox.min[thinKey];
@@ -194,7 +169,7 @@ function cutDimsFromSubGeos(subGeos: any[], panelBbox: THREE.Box3, panelSize: TH
     let mn0 = Infinity, mx0 = -Infinity, mn1 = Infinity, mx1 = -Infinity;
     for (let i = 0; i < pos.count; i++) {
       v.set(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(rotM).add(off);
-      if (frame) v.applyMatrix4(frame);   // panel çerçevesine (dönmüş panelde araç da birlikte döner)
+      if (frame) v.applyMatrix4(frame);
       const c0 = v.getComponent(p0), c1 = v.getComponent(p1);
       mn0 = Math.min(mn0, c0); mx0 = Math.max(mx0, c0); mn1 = Math.min(mn1, c1); mx1 = Math.max(mx1, c1);
     }
@@ -205,7 +180,6 @@ function cutDimsFromSubGeos(subGeos: any[], panelBbox: THREE.Box3, panelSize: TH
   return out;
 }
 
-/** Mesh'e gömülü kesimler: üst yüzdeki iç kenarlardan kesim kutuları. */
 function computeCutDimsWorld(geometry: THREE.BufferGeometry, thinAxis: number, nDir: THREE.Vector3): GroundDimWorld[] {
   const eg = new THREE.EdgesGeometry(geometry, 15);
   const pos = eg.getAttribute('position');
@@ -235,7 +209,6 @@ function computeCutDimsWorld(geometry: THREE.BufferGeometry, thinAxis: number, n
   eg.dispose();
   if (!segs.length) return [];
 
-  // Uç noktaları paylaşan kenarlar birleşik-bul ile kümelenir; her küme bir kesim.
   const qstep = Math.max(tolE * 2, 0.8);
   const q = (val: number) => Math.round(val / qstep);
   const parent = segs.map((_, i) => i);
@@ -265,11 +238,6 @@ function computeCutDimsWorld(geometry: THREE.BufferGeometry, thinAxis: number, n
   return out;
 }
 
-/* ── Zemin ölçü çizgileri ──────────────────────────────────────────────────
-   En (en ekseni boyunca) +yükseklik zemin kenarına (arka); derinlik
-   (yükseklik ekseni boyunca) +en zemin kenarına (sağ) oturur. İkisi de panelin
-   kendi çerçevesine bağlıdır → kamera dönerken titremez. Kalınlık ölçü değil,
-   bilgi çipi olarak gösterilir. */
 function computeGroundDimWorld(geometry: THREE.BufferGeometry, wIdx: number, hIdx: number, thinAxis: number, up: THREE.Vector3): GroundDimWorld[] {
   const bbox = localBboxOf(geometry); if (!bbox) return [];
   const size = new THREE.Vector3(); bbox.getSize(size);
@@ -290,19 +258,13 @@ function computeGroundDimWorld(geometry: THREE.BufferGeometry, wIdx: number, hId
 
 interface GroundRender { fa: Pt; fb: Pt; da: Pt; db: Pt; cx: number; cy: number; value: number; }
 
-/* ── ORTAK ÖLÇÜ ÇİZİMİ (SVG) — önizleme ve raf şeması aynı dili konuşur ──
-   ince uzatma çizgileri (isteğe bağlı), oklu ölçü çizgisi, beyaz yuvarlak
-   pill, tabular sayı. */
 const pillSize = (txt: string, fs: number) => ({ pw: Math.max(txt.length * fs * 0.6 + 10, 26), ph: fs + 6 });
-/* ÖLÇÜ DİLİ (Goker: "daha şık ve minimal"): kıl-çizgi ölçü hattı, dolu üçgen
-   yerine ince AÇIK ok ucu (teknik resim), kenarsız beyaz etiket. Önizleme ve
-   raf/dikme şeması aynı bileşenleri kullanır → tek dil. */
 const DIM_LINE = '#b8b0a4';
 const DIM_EXT = '#ddd6ca';
 function DimArrows({ a, b, asz, color }: { a: Pt; b: Pt; asz: number; color: string }) {
   const dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy) || 1;
   const ux = dx / L, uy = dy / L, px = -uy, py = ux;
-  const k = 0.42;   // ok kolu açıklığı
+  const k = 0.42;
   const head = (x: number, y: number, sx: number, sy: number) =>
     `M${(x + sx * asz + px * asz * k).toFixed(1)},${(y + sy * asz + py * asz * k).toFixed(1)} L${x.toFixed(1)},${y.toFixed(1)} L${(x + sx * asz - px * asz * k).toFixed(1)},${(y + sy * asz - py * asz * k).toFixed(1)}`;
   return (
@@ -328,16 +290,11 @@ function DimPill({ cx, cy, txt, fs, fill = '#ffffff', stroke = SOFT.pillStroke, 
     </>
   );
 }
-/* KİLİT ROZETİ (Goker, Eki 2026: "değer girdikten sonra kilitleme düğmesi daha net olmalı; kilit her zaman çıkmıyor, sanki gizli
-   gibi"): ölçü / boşluk pill'inin ucundaki kilit HER ZAMAN görünür (eskiden yalnız hover'da ya da kilitliyken — hover olmayınca
-   yok sanılıyordu). Üç durum: serbest (gri, açık kilit) · GİRİLMİŞ değer (kehribar çerçeve, koyu açık kilit — "kilitle?") ·
-   KİLİTLİ (turuncu dolgu, kapalı kilit). Yarıçap LOCK_R; yerleşim payı LOCK_EXT (pill'in ucundan rozetin dışına). */
 const LOCK_R = 9;
-/* KİLİT PİLL'E YAPIŞIK (Goker, Eki 2026: "kilit düğmesi kutucuğun çok dışında, hangi ölçüye ait belli olmuyor"): rozet merkezi
-   pill'in ucundan LOCK_OFF dışarıda — daire pill'in ucuna 2px biner, ikisi tek parça okunur (eskiden 12px boşluk vardı). */
+/* Kilit rozeti pill'in ucuna 2px biner → hangi ölçüye ait olduğu belli olur. */
 const LOCK_OFF = LOCK_R - 2;
 const LOCK_EXT = LOCK_OFF + LOCK_R + 2;
-/** `holdIcon`: kapak ölçüsünün 3. modu ('tut') — girilmiş/tutulan ölçü raptiye ikonuyla (raflarda girilmiş = açık kilit kalır). */
+/** `holdIcon`: kapak ölçüsünün 'tut' modu — girilmiş değer raptiye ikonuyla gösterilir. */
 function LockBadge({ cx, cy, locked, edited, onClick, title, holdIcon }: { cx: number; cy: number; locked: boolean; edited?: boolean; onClick: () => void; title?: string; holdIcon?: boolean }) {
   const fill = locked ? '#ea580c' : edited ? '#fff7ed' : '#ffffff';
   const stroke = locked ? '#c2410c' : edited ? '#f59e0b' : '#d6cfc3';
@@ -354,36 +311,14 @@ function LockBadge({ cx, cy, locked, edited, onClick, title, holdIcon }: { cx: n
   );
 }
 
-/* ── DOCK / İÇ PANEL TASARIM DİLİ (soft, minimal — liste satırlarıyla aynı) ──
-   Taşı / Döndür / Extrude şeritleri ve işlem adımları bu ortak tokenları
-   kullanır: sıcak kemik zemin, kıl-çizgi kenar, düz yüzeyler, gradyan yok.
-   Etkin segment KOYU TAŞ dolgudur (fildişi-üstüne-fildişi okunmuyordu —
-   aktif mod net seçilsin kuralı korunur). */
-/* SIRALAMA TUTAMACI İMLECİ (Goker: "sıra düğmesine tıklayınca fare beyaz
-   oluyor, belli olmuyor"): tarayıcının grab/grabbing eli BEYAZ dolgulu ince
-   çerçevelidir; kemik-beyaz satır zemininde kayboluyordu. Koyu taş dolgulu,
-   beyaz dış hatlı 4 yönlü taşıma imleci her zeminde okunur. Yedek: 'move'. */
+/* Sıralama tutamacı imleci: tarayıcının beyaz grab eli kemik zeminde kayboluyor → koyu dolgulu özel imleç. */
 const GRIP_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(
   "<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'>" +
   "<path d='M12 1.8 L15.8 5.6 H13.3 V10.7 H18.4 V8.2 L22.2 12 L18.4 15.8 V13.3 H13.3 V18.4 H15.8 L12 22.2 L8.2 18.4 H10.7 V13.3 H5.6 V15.8 L1.8 12 L5.6 8.2 V10.7 H10.7 V5.6 H8.2 Z' " +
   "fill='#292524' stroke='#ffffff' stroke-width='1.4' stroke-linejoin='round'/></svg>"
 )}") 12 12, move`;
-/* ── ÖNİZLEME GÖRÜNÜMÜ (sade, profesyonel) ─────────────────────────────────
-   Zemin: neredeyse beyaz, çok hafif sıcak dikey geçiş (desen/vinyet yok).
-   Panel: açık huş/beyaz laminat tonu. three r155+ fiziksel ışık ölçeğinde eski
-   düşük şiddetler paneli kirli griye çekiyordu; şiddetler yüzü açık, kalınlık
-   kenarını bir ton koyu verecek şekilde yeniden ayarlandı. */
-/* ── ÖNİZLEME YUMUŞAK DİLİ (Goker, Eki 2026: "kapak preview'a daha soft bir dokunuş; aynısını panel editörüne, dikme/raf
-   atmaya ve panel yerleştirmeye de uygula") — panel önizlemesi, raf/dikme şeması ve kapak şeması TEK dil: üstten hafif ışık
-   alan kemik zemin, kıl-çizgi çerçeve + iç parlama, parçalar yumuşak gradyan + kısık kenar + çok hafif gölge, pill'ler kıl
-   çerçeveli. Tek kaynak: PREVIEW_BG / PREVIEW_FRAME / SOFT. */
 const PREVIEW_BG = 'radial-gradient(130% 95% at 50% 0%, #fefdfb 0%, #f8f5f0 62%, #f3efe8 100%)';
 const PREVIEW_FRAME = 'relative rounded-[12px] ring-1 ring-[#ebe5dc] overflow-hidden shadow-[inset_0_1px_0_rgba(255,255,255,0.8),0_1px_2px_rgba(60,40,20,0.04)]';
-/* ŞEMA CSS (raf/dikme + kapak şeması ortak): kilit rozeti HER ZAMAN görünür (Goker: "kilit her zaman çıkmıyor, sanki gizli");
-   yalnız hover'da hafifçe büyür. Bant rozetleri (chip) eskisi gibi hover'da / açıkken. */
-// Levha bandı üzerine gelince (Goker, Eki 2026: "kesik çizgili panele fareyi götürünce orada panel olduğu daha net, belirgin bir tonla
-// ortaya çıksın; Full yazısı da fare paneldeyken belli olsun"): .hov katmanı (dolgu + tarama + koyu kenar) görünür, Full/Half rozeti
-// yalnız fareyle (diğer rozetler — hiza, Remove, Split here, + Shelf — 'on' ile hep görünür).
 const SCHEMATIC_CSS = `.yago-gap .lockbtn{transition:transform .12s;transform-box:fill-box;transform-origin:center}.yago-gap .lockbtn:hover{transform:scale(1.12)}.yago-band .chip{opacity:0;transition:opacity .15s}.yago-band.on .chip,.yago-band:hover .chip{opacity:1}.yago-band .hit{transition:fill .12s}.yago-band:hover .hit{fill:rgba(234,88,12,0.10)}.yago-band.pnl:hover .hit{fill:transparent}.yago-band .hov{opacity:0;transition:opacity .12s;pointer-events:none}.yago-band:hover .hov{opacity:1}`;
 const SOFT = {
   area: '#fdfcfa', areaStroke: '#e4ded4',
@@ -393,7 +328,7 @@ const SOFT = {
   label: '#a39b90', shadow: 'drop-shadow(0 1px 1.5px rgba(70,50,30,0.09))',
   pillStroke: '#ece6dc', pillShadow: 'drop-shadow(0 1px 1px rgba(60,40,20,0.06))',
 };
-/** Parça (panel / levha / kapak) gradyanları — her SVG kendi kimliğiyle bir kez tanımlar. */
+/** Parça gradyanları — her SVG kendi id'siyle bir kez tanımlar (aynı sayfada id çakışmasın). */
 function SoftDefs({ id }: { id: string }) {
   return (
     <defs>
@@ -405,10 +340,7 @@ function SoftDefs({ id }: { id: string }) {
 const PREVIEW_PANEL_COLOR = 0xeee7dc;
 const PREVIEW_EDGE_COLOR = 0xa1988b;
 const PREVIEW_LIGHT = { hemi: 1.0, ambient: 0.3, key: 1.9, fill: 0.55 };
-const PREVIEW_HEIGHT = 500;   // kenar çubuğu 560px ile orantılı (önceki 475px / 410)
-// ŞERİT ÖNİZLEMENİN ÜSTÜNE BİNMEZ (Goker: "mod düğmeleri panel görünümünün
-// içine geçiyordu"): akış içinde ayrı bir karttır — araç segmentinin hemen
-// altında, önizlemenin ÜSTÜNDE (Eki 2026: altındayken görünmüyordu).
+const PREVIEW_HEIGHT = 500;
 const DOCK_SHELL: React.CSSProperties = {
   position: 'relative', marginTop: 5, borderRadius: 12, background: 'linear-gradient(180deg,#fefdfb 0%,#faf8f4 100%)', border: '1px solid #ebe5dc',
   boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.8), 0 1px 2px rgba(60,40,20,0.04)', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: UI_FONT,
@@ -422,7 +354,6 @@ const DOCK_INPUT: React.CSSProperties = {
 const dockAxisTag = (color: string): React.CSSProperties => ({
   flexShrink: 0, fontSize: 10, fontWeight: 700, fontFamily: UI_FONT, color, height: 20, lineHeight: '20px', padding: '0 6px', borderRadius: 5, background: '#f5f2ec',
 });
-/** Durum kutusu: nokta + metin (+ sağda isteğe bağlı içerik). */
 function DockStatus({ ready = false, dot, text, title, trailing }: { ready?: boolean; dot?: string; text: string; title?: string; trailing?: React.ReactNode }) {
   return (
     <div title={title} style={{
@@ -452,13 +383,11 @@ function ExitBtn({ onClick }: { onClick: () => void }) {
     }}><X size={13} strokeWidth={2} /></button>
   );
 }
-/** Adım listesi / kesme düğmesi: küçük şeffaf ikon düğmesi. */
 const iconBtn = (color: string): React.CSSProperties => ({
   width: 20, height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 5, border: 'none',
   background: 'transparent', cursor: 'pointer', color, outline: 'none', padding: 0, transition: 'background 0.12s',
 });
-/** Sayısal giriş: yerel metin taslağı (başta -/+ yazılabilsin) + store değeri.
- *  Geçerli sayı yazıldıkça store güncellenir; blur'da normalize edilir. */
+/** Sayısal giriş: yerel metin taslağı (başta -/+ yazılabilsin); geçerli sayı yazıldıkça store güncellenir. */
 function NumInput({ draft, setDraft, setValue, fallback, onEnter, onEscape, autoFocus, style }: {
   draft: string; setDraft: (s: string) => void; setValue: (v: number) => void; fallback: number;
   onEnter?: () => void; onEscape?: () => void; autoFocus?: boolean; style?: React.CSSProperties;
@@ -472,11 +401,6 @@ function NumInput({ draft, setDraft, setValue, fallback, onEnter, onEscape, auto
   );
 }
 
-/* ── SEGMENTLİ KONTROL (Goker, Eki 2026: "face extrude / rotate / move'a basınca dönüş tipi, ref modu gibi
-   modlar çok aşağıda kalıyor, görünmüyor; daha göz önünde, daha profesyonel, düğmeler daha küçük olsun") ──
-   Araçlar (Extrude / Move / Rotate) ve modlar (Fixed / Dyn / Ref) aynı dil: tek çerçeveli, eşit bölmeli,
-   24px yüksekliğinde segment çubuğu; aktif bölme koyu taş dolgu (okunurluk kuralı), açıklama title'da.
-   Şerit artık önizlemenin ÜSTÜNDE durur (renderExpandedBody) — mod seçimi hep göz önünde. */
 type SegItem = { key: string; label: string; Icon?: LucideIcon; title?: string; disabled?: boolean };
 function Segmented({ items, active, onPick, height = 24 }: { items: SegItem[]; active: string | null; onPick: (k: string) => void; height?: number }) {
   return (
@@ -499,7 +423,6 @@ function Segmented({ items, active, onPick, height = 24 }: { items: SegItem[]; a
     </div>
   );
 }
-/* ── MOD ÇUBUĞU (Fixed / Dyn / Ref): segment çubuğu; alt açıklama (sub) title'a taşındı. */
 type DockMode = { key: string; label: string; sub: string; Icon: LucideIcon; title?: string };
 const DOCK_MODE_DEFS: Record<string, Omit<DockMode, 'key'>> = {
   fixed: { label: 'Fixed', sub: 'Constant', Icon: Lock },
@@ -519,9 +442,7 @@ function DockModeBar({ modes, active, onPick, trailing }: { modes: DockMode[]; a
   );
 }
 
-/* ── "Yüzeyin şeklini al" — satır ikon düğmesi (Goker, Eki 2026: "aç/kapat var ama ne olduğu anlaşılmıyor,
-   bir ikona bağlansın"): kapak sınırı düğmesiyle aynı ROW_BTN kutu; AÇIK = petrol (teal) dolgu + çerçeve.
-   AÇIK: panel, yerleştiği serbest bölgenin tam şeklini alır (L/U/çentik). KAPALI (varsayılan): kardeş kenarında düz kesilir. */
+/* "Yüzeyin şeklini al": AÇIK → panel serbest bölgenin tam şeklini alır (L/U/çentik); KAPALI → kardeş kenarında düz kesilir. */
 function FitShapeToggle({ checked, disabled, onToggle }: { checked: boolean; disabled?: boolean; onToggle: () => void }) {
   return (
     <button type="button" role="checkbox" aria-checked={checked} disabled={disabled} onClick={e => { stop(e); if (!disabled) onToggle(); }}
@@ -532,8 +453,6 @@ function FitShapeToggle({ checked, disabled, onToggle }: { checked: boolean; dis
   );
 }
 
-/* ── KAPAK SINIRI — satır düğmesi (Goker: "kapak sınırı işareti her satırda, panel yönü gibi") ─
-   Panel yönü okuyla aynı ROW_BTN kutu; AÇIK = kehribar (3B'deki kehribar kenar ve satır rozetiyle aynı dil). */
 function DoorRefToggle({ checked, disabled, onToggle }: { checked: boolean; disabled?: boolean; onToggle: () => void }) {
   return (
     <button type="button" role="checkbox" aria-checked={checked} disabled={disabled} onClick={e => { stop(e); if (!disabled) onToggle(); }}
@@ -544,13 +463,8 @@ function DoorRefToggle({ checked, disabled, onToggle }: { checked: boolean; disa
   );
 }
 
-/* ── PAYLAŞILAN ÖNİZLEME RENDERER'I — TEK WebGL BAĞLAMI ──────────────────
-   KÖK NEDEN ("çok panel seçtim, referans küp ve paneller kayboldu"):
-   PanelPreview2D her mount'ta yeni bir WebGL bağlamı açıyordu ve her panel
-   seçiminde yeniden mount oluyordu. Tarayıcı ~16 aktif WebGL bağlamına izin
-   verir; sınır aşılınca EN ESKİ bağlamı (ana sahnenin Canvas'ı) öldürür.
-   ÇÖZÜM: tüm önizlemeler TEK, modül düzeyinde, ekran-dışı bir renderer'ı
-   paylaşır; görüntü görünür canvas'a 2D `drawImage` ile kopyalanır. */
+/* TEK WebGL BAĞLAMI: tarayıcı ~16 bağlamı aşınca EN ESKİSİNİ (ana sahne Canvas'ı) öldürür. Tüm önizlemeler
+   tek ekran-dışı renderer'ı paylaşır; görüntü görünür canvas'a 2D drawImage ile kopyalanır. */
 let _sharedPreviewRenderer: THREE.WebGLRenderer | null = null;
 function getSharedPreviewRenderer(): THREE.WebGLRenderer | null {
   const cur = _sharedPreviewRenderer;
@@ -560,14 +474,12 @@ function getSharedPreviewRenderer(): THREE.WebGLRenderer | null {
     const r = new THREE.WebGLRenderer({ canvas: document.createElement('canvas'), antialias: true, alpha: true, preserveDrawingBuffer: true });
     r.setClearColor(0x000000, 0);
     _sharedPreviewRenderer = r;
-    console.log('[YAGO][ÖNİZLEME] paylaşılan önizleme renderer oluşturuldu (tek WebGL bağlamı)');
     return r;
   } catch (e) {
     console.error('[YAGO][ÖNİZLEME] önizleme renderer oluşturulamadı:', e);
     return null;
   }
 }
-/** Kalın çizgi seti (LineSegments2) — panel kenarları ve kesim dış hatları. */
 function fatLines(geometry: THREE.BufferGeometry, color: number, linewidth: number, w: number, h: number, disposables: Array<{ dispose: () => void }>) {
   const edgesGeo = new THREE.EdgesGeometry(geometry, 18);
   const lineGeo = new LineSegmentsGeometry().fromEdgesGeometry(edgesGeo);
@@ -578,13 +490,11 @@ function fatLines(geometry: THREE.BufferGeometry, color: number, linewidth: numb
   lines.computeLineDistances();
   return lines;
 }
-/** Çıkarma aracının gövdeye göre yerleşimi (dönme + kayma). */
 const subXform = (sg: any) => {
   const rot = sg.relativeRotation || [0, 0, 0];
   return { rotM: new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(rot[0], rot[1], rot[2], 'XYZ')), off: new THREE.Vector3(...((sg.relativeOffset || [0, 0, 0]) as number[])) };
 };
 
-/* ── Panel önizlemesi — sabit dimetrik görünüm, sağ/sol yörünge, zemin ölçüleri ── */
 export function PanelPreview2D({ shape, arrowRotated }: { shape: Shape; arrowRotated?: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -598,7 +508,6 @@ export function PanelPreview2D({ shape, arrowRotated }: { shape: Shape; arrowRot
 
   useEffect(() => {
     const wrap = wrapRef.current; if (!wrap) return;
-    // Bu bileşen KENDİ WebGL bağlamını AÇMAZ (bkz. getSharedPreviewRenderer).
     let raf = 0, tries = 0;
     const apply = (w: number, h: number) => { if (w > 0 && h > 0) { setCanvasSize({ w: Math.round(w), h: Math.round(h) }); return true; } return false; };
     const measure = () => { if (!apply(wrap.clientWidth, wrap.clientHeight) && ++tries < 20) raf = requestAnimationFrame(measure); };
@@ -615,8 +524,6 @@ export function PanelPreview2D({ shape, arrowRotated }: { shape: Shape; arrowRot
     if (!canvas || !shape?.geometry || w <= 0 || h <= 0) return;
     const renderer = getSharedPreviewRenderer();
     if (!renderer) return;
-    // PANELİN KENDİ ÇERÇEVESİ: dönüş adımları / eğim geri alınır — görünüm ve ölçüler
-    // her zaman levhanın düz halidir (pah/çentik kendi düzleminde kalır).
     const frame = panelFrameOf(shape)!;
     const frameGeo = frame.geo;
     const frameM = new THREE.Matrix4().makeRotationFromQuaternion(frame.inv);
@@ -630,9 +537,7 @@ export function PanelPreview2D({ shape, arrowRotated }: { shape: Shape; arrowRot
     const disposables: Array<{ dispose: () => void }> = [];
     const scene = new THREE.Scene();
     const material = new THREE.MeshStandardMaterial({ color: PREVIEW_PANEL_COLOR, roughness: 0.9, metalness: 0.0, side: THREE.DoubleSide });
-    // KLON: paylaşılan renderer, çizdiği geometrinin GPU tamponlarını kendi
-    // bağlamında tutar. Klon çizimden sonra dispose edilir → önizleme
-    // bağlamında kalıcı tampon kalmaz; ana sahnenin geometrisine dokunulmaz.
+    // Klon: paylaşılan renderer GPU tamponlarını tutar; klon çizimden sonra dispose edilir, sahne geometrisine dokunulmaz.
     const previewGeo = frameGeo.clone();
     disposables.push(material, previewGeo);
     scene.add(new THREE.Mesh(previewGeo, material));
@@ -642,11 +547,9 @@ export function PanelPreview2D({ shape, arrowRotated }: { shape: Shape; arrowRot
     const sz = new THREE.Vector3(), center = new THREE.Vector3();
     bbox.getSize(sz); bbox.getCenter(center);
     const dims3 = [sz.x, sz.y, sz.z];
-    const minIdx = dims3.indexOf(Math.min(...dims3)); // kalınlık ekseni
+    const minIdx = dims3.indexOf(Math.min(...dims3));
 
-    // Sabit çerçeve: en/yükseklik düzlem EKSENLERİNE bağlıdır (küçük indeks =
-    // en), getDimsFromGeo ile aynı — extrude hangi kenarı büyütürse büyütsün
-    // önizleme kendiliğinden dönmez. Yön yalnız ok düğmesiyle değişir.
+    // En/yükseklik düzlem EKSENLERİNE bağlı (getDimsFromGeo ile aynı) → extrude sonrası önizleme kendiliğinden dönmez.
     const planar = [0, 1, 2].filter(i => i !== minIdx).sort((a, b) => a - b);
     let wIdx = planar[0], hIdx = planar[1];
     if (arrowRotated) { const t = wIdx; wIdx = hIdx; hIdx = t; }
@@ -660,7 +563,7 @@ export function PanelPreview2D({ shape, arrowRotated }: { shape: Shape; arrowRot
       .addScaledVector(wDir, Math.cos(elev) * Math.sin(azim))
       .addScaledVector(hDir, Math.sin(elev)).normalize();
 
-    // Fiziksel ışık ölçeği (r155+): yüz açık laminat, kalınlık kenarı bir ton koyu.
+    // three r155+ fiziksel ışık ölçeği: düşük şiddetler paneli kirli griye çeker.
     scene.add(new THREE.HemisphereLight(0xffffff, 0xd9d1c4, PREVIEW_LIGHT.hemi));
     scene.add(new THREE.AmbientLight(0xffffff, PREVIEW_LIGHT.ambient));
     const key = new THREE.DirectionalLight(0xffffff, PREVIEW_LIGHT.key);
@@ -685,16 +588,13 @@ export function PanelPreview2D({ shape, arrowRotated }: { shape: Shape; arrowRot
       ...computeGroundDimWorld(frameGeo, wIdx, hIdx, minIdx, upW),
       ...(subGeos.length ? cutDimsFromSubGeos(subGeos, bbox, sz, minIdx, nDir, unrotated ? undefined : frameM) : computeCutDimsWorld(frameGeo, minIdx, nDir)),
     ];
-    if (!unrotated) console.log('[YAGO][ÖNİZLEME] panel kendi çerçevesinde çizildi', shape.id, 'boyut=', [sz.x, sz.y, sz.z].map(v => v.toFixed(0)).join('x'), 'ölçüN=', allDimsW.length);
 
-    // Kamera sığdırma: kutu köşeleri + tüm ölçü uçları görünür alana sığar.
     const allW: THREE.Vector3[] = [];
     for (const X of [bbox.min.x, bbox.max.x]) for (const Y of [bbox.min.y, bbox.max.y]) for (const Z of [bbox.min.z, bbox.max.z]) allW.push(new THREE.Vector3(X, Y, Z));
     allDimsW.forEach(d => allW.push(d.fa, d.fb, d.da, d.db));
     let maxU = 0, maxV = 0;
     allW.forEach(p => { const d = p.clone().sub(center); maxU = Math.max(maxU, Math.abs(d.dot(right))); maxV = Math.max(maxV, Math.abs(d.dot(upW))); });
     const halfV = maxV * 1.06;
-    // Şerit önizlemenin altında (üstüne binmez) → alt pay yalnız ölçü etiketleri için.
     const ratioTop = halfV, ratioBot = halfV + halfV * 0.06;
     let vSpan = ratioTop + ratioBot, halfH = (vSpan / 2) * aspect;
     const needH = maxU * 1.06;
@@ -704,25 +604,22 @@ export function PanelPreview2D({ shape, arrowRotated }: { shape: Shape; arrowRot
     camera.updateProjectionMatrix();
     camera.updateMatrixWorld();
 
-    // Kesim dış hatları (amber) — açık çıkarma araçlarından.
     subGeos.forEach((sg: any) => {
       if (!sg?.geometry) return;
       const { rotM, off } = subXform(sg);
       const sgLines = fatLines(sg.geometry, 0xd97706, 1.2, w, h, disposables);
       sgLines.matrix.copy(rotM); sgLines.matrix.setPosition(off);
-      if (!unrotated) sgLines.matrix.premultiply(frameM);   // araç da panel çerçevesine
+      if (!unrotated) sgLines.matrix.premultiply(frameM);
       sgLines.matrixAutoUpdate = false;
       scene.add(sgLines);
     });
 
     renderer.render(scene, camera);
-    // Ekran-dışı paylaşılan renderer'ın görüntüsünü görünür canvas'a kopyala
-    // (2D bağlam — WebGL bağlam sınırına sayılmaz).
+    // 2D bağlam WebGL bağlam sınırına sayılmaz.
     const ctx2d = canvas.getContext('2d');
     if (ctx2d) { ctx2d.clearRect(0, 0, canvas.width, canvas.height); ctx2d.drawImage(renderer.domElement, 0, 0, canvas.width, canvas.height); }
     renderer.renderLists.dispose();
 
-    // ── Ölçüleri izdüşür (dış + kesim aynı stil) ve çakışmaları çöz ──
     const fsG = Math.max(10, Math.min(12.5, w * 0.025));
     const items = allDimsW.map(d => {
       const fa = project3D(d.fa, camera, w, h), fb = project3D(d.fb, camera, w, h), da = project3D(d.da, camera, w, h), db = project3D(d.db, camera, w, h);
@@ -769,17 +666,8 @@ export function PanelPreview2D({ shape, arrowRotated }: { shape: Shape; arrowRot
   );
 }
 
-/* ── RAF / DİKME ŞEMASI (temsili görünüm) ─────────────────────────────────
-   Seçilen hacmin görünüşü: levhalar taş renkli çubuk, her boşluk ortasında
-   ölçü pill'i. Pill'e tıkla → değer girişi (Enter/blur onaylar); pill'in
-   kilit ucu → kilit aç/kapa. Kilitli pill turuncu çerçeve. Şema, panel
-   önizlemesiyle aynı yükseklikte (410) sabit bir kare alana sığdırılır.
-   ÜYE KALINLIĞI (Goker): her levhanın ucunda kalınlık kutucuğu; tıkla → YALNIZ
-   değer girişi (seçim yok). Üye seçimi (altta panel önizlemesi) yalnız LEVHAYA
-   tıklayınca. Levhanın öbür ucunda liste numarası (6.1, 6.2 …). Kalınlık
-   değişince boşluklar Σkalınlığa göre yeniden eşitlenir (girilen korunur). */
+/* RAF / DİKME ŞEMASI: kalınlık kutucuğu yalnız değer girişi açar; üye seçimi yalnız LEVHAYA tıklayınca. */
 const SCHEMA_PAD = 34;
-/** Bölge kutularının (h,v) eksenlerine izdüşüm maskesi: düzlemler + dolu hücre sorgusu. */
 function regionMask(boxes: CavityBox[], h: number, v: number) {
   const hsSet = new Set<number>(), vsSet = new Set<number>();
   for (const b of boxes) { hsSet.add(b.min[h]); hsSet.add(b.max[h]); vsSet.add(b.min[v]); vsSet.add(b.max[v]); }
@@ -793,22 +681,19 @@ function regionMask(boxes: CavityBox[], h: number, v: number) {
 type SchemaEdit = { kind: 'gap'; k: number; v: string } | { kind: 't'; i: number; v: string };
 export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, splitBacks, onEditGap, onToggleLock, onEditThickness, onSelectMember, onToggleDoorRef, onToggleSplitBack, onEditBegin, onEditCancel }: {
   group: PanelGroup; selectedIndex: number;
-  /** Şema sırasındaki (geometrik) üye i'nin liste numarası — "6.1" gibi. */
   memberLabels: string[];
-  /** Şema sırasındaki üye i kapak sınırı mı (VF.doorBound) / arkalığı böl mü (VF.splitBack) — levhanın üstündeki rozetler. */
   doorRefs: boolean[]; splitBacks: boolean[];
-  /** preview=true → CANLI ÖNİZLEME (her tuş basışı: yalnız store dağılımı, rebuild yok); preview yok → onay (gerçek yazım + rebuild). */
+  /** preview=true → canlı önizleme (yalnız store dağılımı, rebuild yok); yoksa onay (yazım + rebuild). */
   onEditGap: (k: number, v: number, preview?: boolean) => void; onToggleLock: (k: number) => void;
   onEditThickness: (i: number, v: number, preview?: boolean) => void; onSelectMember: (i: number) => void;
   onToggleDoorRef: (i: number) => void; onToggleSplitBack: (i: number) => void;
-  /** Düzenleme başında kayıt (Esc ile geri yükleme için) / Esc → kayıt geri yüklenir. */
+  /** Düzenleme başında kayıt alınır; Esc → kayıt geri yüklenir. */
   onEditBegin?: () => unknown; onEditCancel?: (snap: unknown) => void;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(300);
   const [editing, setEditing] = useState<SchemaEdit | null>(null);
-  // CANLI ÖNİZLEME (Goker, Eki 2026: "kutucuğa değeri yazar yazmaz kalan ölçüyü diğer taraflara dağıt"): düzenleme başında
-  // kayıt alınır; her tuşta geçerli değer önizleme olarak yazılır; Esc kaydı geri yükler ve onayı (blur) iptal eder.
+  // Canlı önizleme: her tuşta önizleme yazılır; Esc kaydı geri yükler ve blur onayını iptal eder (cancelledRef).
   const snapRef = useRef<unknown>(undefined);
   const cancelledRef = useRef(false);
   const beginEdit = (e: SchemaEdit) => { snapRef.current = onEditBegin?.(); cancelledRef.current = false; setEditing(e); };
@@ -831,45 +716,32 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
   const gsid = `gs-${group.id.replace(/[^a-zA-Z0-9_-]/g, '')}`;
   const ts = memberThicknessesOf(group);
   const barsHorizontal = axis === 1;
-  // ÜYE MODU KALDIRILDI (Goker, Eki 2026: "bir panele tıklayınca arayüz başka bir hale geçiyor, iptal et"):
-  // eskiden üye seçiliyken şema 230px'lik bir seçiciye küçülüp pill'leri gizliyordu; artık üye seçiliyken de
-  // şema tam boy — boşluk ölçüleri, kilitler, kalınlık kutucukları ve rozetler yerinde kalır.
   const memberMode = false;
   const height = PREVIEW_HEIGHT;
-  // YÖN (tık yönü): boşluk/üye sayımı facing>0 ise hacmin MİN, facing<0 ise MAX tarafından başlar.
+  // Sayım yönü: facing>0 → hacmin MİN tarafından, facing<0 → MAX tarafından.
   const facing = groupFacing(group);
   const stackOrigin = facing > 0 ? cavity.min[axis] : cavity.max[axis];
   const starts = panelStarts(cavity, axis, facing, gaps, ts);
 
-  // ŞEKİLLİ BÖLGE SİLUETİ: bölge kutularının izdüşümü (eski gruplarda hacim
-  // kutusu). Dizilim ekseni rafta düşey (Y), dikmede yatay (okun ekseni: X ya da Z) kalır; diğer
-  // eksen için iki görünüşten ŞEKLİ GÖSTEREN seçilir — ikisi de dikdörtgense
-  // ön görünüş. Levhalar ve pill'ler maskeye kırpılır.
+  // Bölge silueti: iki aday görünüşten ŞEKLİ gösteren seçilir (ikisi de dikdörtgense ön görünüş); levha/pill maskeye kırpılır.
   const region = group.region && group.region.length ? group.region : [cavity];
   const view = useMemo(() => {
-    // Dikey levhalar: yatay eksen = dizilim ekseni (X dikmesi → ön görünüş / üst görünüş; Z dikmesi → yan görünüş / üst görünüş).
     const views: Array<[number, number]> = barsHorizontal ? [[0, 1], [2, 1]] : [[axis, 1], [axis, axis === 0 ? 2 : 0]];
     const cands = views.map(([h, v]) => { const m = regionMask(region, h, v); const loops = traceMaskLoops(m.hs, m.vs, m.filled); return { h, v, m, loops, shaped: loops.length > 1 || loops.some(l => l.length > 4) }; });
     return cands[0].shaped || !cands[1].shaped ? cands[0] : cands[1];
   }, [region, barsHorizontal]);
   const { h: hAxis, v: vAxis, m: mask, loops } = view;
-  // TEMSİLİ KARE ÇİZİM (Goker): hacim ne olursa olsun şema HER ZAMAN aynı
-  // ölçüde, eni boyu eşit bir kare alanda çizilir — ölçekli değil, TEMSİLİ.
-  // Çapraz eksen kareye doğrusal yayılır; dizilim ekseninde levhalar sabit
-  // piksel kalınlıkta, boşluklar kendi ORANLARIYLA bölüşülür. Dünya → piksel
-  // dönüşümü parça-doğrusal olduğundan L/U siluet de aynı haritayla çizilir.
+  // Temsili kare çizim: dizilim ekseninde dünya → px parça-doğrusal, böylece L/U siluet de aynı haritayla çizilir.
   const innerW = width - 2 * SCHEMA_PAD, innerH = height - 2 * SCHEMA_PAD;
   const S = Math.max(40, Math.min(innerW, innerH));
   const ox = SCHEMA_PAD + (innerW - S) / 2, oy = SCHEMA_PAD + (innerH - S) / 2;
   const crossAxisW = barsHorizontal ? hAxis : vAxis;
   const nBars = starts.length;
   const barPx = Math.max(3, Math.min(7, S / Math.max(1, (nBars + 1) * 4)));
-  // Levha piksel kalınlığı TEMSİLİ: en incesi barPx, kalınlar oranla (en çok 3×) — 18'e karşı 100 görünsün.
   const tMin = ts.length ? Math.max(1, Math.min(...ts)) : 1;
   const barPxOf = (i: number) => Math.min(barPx * 3, barPx * ((ts[i] ?? tMin) / tMin));
   const barPxSum = starts.reduce((a, _, i) => a + barPxOf(i), 0);
-  // Dizilim ekseni kırılma noktaları: dünya [başlangıç, +g0, +g0+t0, …, son] ↔ piksel.
-  // Sayım tıklanan taraftan (stackOrigin) yürür; facing<0 ise dizi dünya artan sıraya çevrilir.
+  // Kırılma noktaları stackOrigin'den yürür; facing<0 ise mapStack için dünya-artan sıraya çevrilir.
   const stackMap = useMemo(() => {
     const wb: number[] = [stackOrigin], pb: number[] = [0];
     const gSum = gaps.reduce((a, g) => a + Math.max(0, g.value), 0);
@@ -890,14 +762,13 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
     for (let i = 1; i < wb.length; i++) {
       if (w <= wb[i]) { const d = wb[i] - wb[i - 1]; return d > 1e-9 ? pb[i - 1] + ((w - wb[i - 1]) / d) * (pb[i] - pb[i - 1]) : pb[i]; }
     }
-    return Math.min(S, pb[pb.length - 1]); // hacim sonu → karenin kenarı
+    return Math.min(S, pb[pb.length - 1]);
   };
   const crossSpan = Math.max(boxSpan(cavity, crossAxisW), 1);
   const mapCross = (w: number) => ((w - cavity.min[crossAxisW]) / crossSpan) * S;
   const sx = (wh: number) => ox + (hAxis === axis ? mapStack(wh) : mapCross(wh));
-  const sy = (wv: number) => oy + S - (vAxis === axis ? mapStack(wv) : mapCross(wv));   // dünya v yukarı → SVG y aşağı
+  const sy = (wv: number) => oy + S - (vAxis === axis ? mapStack(wv) : mapCross(wv));
   const silhouettePath = loops.map(l => l.map((p, i) => `${i ? 'L' : 'M'}${sx(p.x).toFixed(1)},${sy(p.y).toFixed(1)}`).join(' ') + ' Z').join(' ');
-  /** Dizilim eksenindeki [a0,a1] diliminde, çapraz eksende dolu aralıklar (dünya). */
   const runsAt = (a0: number, a1: number): Array<[number, number]> => {
     const stackPl = barsHorizontal ? mask.vs : mask.hs, crossPl = barsHorizontal ? mask.hs : mask.vs;
     const layers: number[] = [];
@@ -912,7 +783,6 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
     return out;
   };
 
-  // Boşluk aralıkları (dizilim ekseni, dünya) → ölçü pill'leri.
   const fs = Math.max(10, Math.min(13.5, width * 0.027));
   const crossAxis = barsHorizontal ? hAxis : vAxis;
   let cursor = stackOrigin;
@@ -921,31 +791,27 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
     const mid = (a + b) / 2;
     const txt = String(round1(g.value));
     const { pw, ph } = pillSize(txt, fs);
-    // Pill, boşluğun ortasındaki DOLU aralığın ortasına oturur (L bölgede boş kısma düşmesin).
+    // L bölgede pill boş kısma düşmesin: en geniş DOLU aralığın ortası.
     const runs = runsAt(mid - 0.5, mid + 0.5);
     const widest = runs.length ? runs.reduce((bst, r) => (r[1] - r[0] > bst[1] - bst[0] ? r : bst)) : null;
     const crossMid = widest ? (widest[0] + widest[1]) / 2 : (cavity.min[crossAxis] + cavity.max[crossAxis]) / 2;
     let cx = barsHorizontal ? sx(crossMid) : sx(mid);
     let cy = barsHorizontal ? sy(mid) : sy(crossMid);
-    // Dar boşlukta pill'ler çakışmasın: iki sıraya dağıt.
     const gapPx = Math.abs(mapStack(b) - mapStack(a));
     if (!barsHorizontal && gapPx < pw + 6) cy += (k % 2 === 0 ? -1 : 1) * (ph * 0.75);
     if (barsHorizontal && gapPx < ph + 6) cx += (k % 2 === 0 ? -1 : 1) * (pw * 0.6);
     return { k, cx, cy, pw, ph, txt, a, b, crossMid };
   });
   const asz = Math.max(4, Math.min(6.5, width * 0.014));
-  // KALINLIK KUTUCUKLARI: levhanın ucunda, kare alanın dışındaki kenar boşluğunda (raf → sağ, dikme → üst).
   const fsT = Math.max(9, fs * 0.86);
   const tPills = starts.map((st, i) => {
     const txt = String(round1(ts[i]));
     const { pw, ph } = pillSize(txt, fsT);
     const mid = st + ts[i] / 2;
-    // Kenar boşluğu dar kalırsa kutucuk şema alanının içinde (kırpılmadan) tutulur.
     const cx = barsHorizontal ? Math.min(ox + S + 6 + pw / 2, width - pw / 2 - 2) : sx(mid);
     const cy = barsHorizontal ? sy(mid) : Math.max(oy - 6 - ph / 2, ph / 2 + 2);
     return { i, cx, cy, pw, ph, txt };
   });
-  // NUMARA ETİKETLERİ: kalınlık kutucuğunun KARŞI ucunda (raf → sol, dikme → alt); salt-okunur.
   const nLabels = starts.map((st, i) => {
     const txt = memberLabels[i] ?? String(i + 1);
     const { pw, ph } = pillSize(txt, fsT);
@@ -964,7 +830,6 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
     if (editing.kind === 'gap') { if (v >= 0) onEditGap(editing.k, v); else onEditCancel?.(snapRef.current); }
     else if (v > 0) onEditThickness(editing.i, v); else onEditCancel?.(snapRef.current);
   };
-  // LEVHA = SEÇİM: ince levhayı yakalamak kolay olsun diye çevresinde görünmez ±5 px tıklama alanı.
   const HIT = 5;
   const bar = (key: string, i: number, x0: number, y0: number, x1: number, y1: number) => {
     const on = i === selectedIndex;
@@ -976,10 +841,7 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
       </g>
     );
   };
-  /* ── LEVHA ROZETLERİ (Goker, Eki 2026: "dikme/raf şemasında işaret panel kalınlığının ÜSTÜNDE olsun —
-     kalınlık kutucuğunun yanında adet artınca görünmez oluyor; başka seçenekler de gelecek: arkalığı böl"):
-     her levhanın bir ucunda, levhanın üstüne oturan küçük yuvarlak rozetler — kapak sınırı (kehribar) ve
-     arkalığı böl (petrol). Rozetler levhanın UZUNLUĞU boyunca dizildiğinden üye sayısı artsa da birbirine girmez. */
+  /* Levha rozetleri (kapak sınırı · arkalığı böl) levhanın UZUNLUĞU boyunca dizilir → üye sayısı artsa da çakışmaz. */
   const BADGE_R = 8, BADGE_STEP = 20;
   const badge = (key: string, cx: number, cy: number, on: boolean, Icon: LucideIcon, onColor: string, onFill: string, tip: string, onClick: () => void) => (
     <g key={key} style={{ cursor: 'pointer' }} onClick={e => { stop(e); onClick(); }}>
@@ -990,7 +852,6 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
   );
   const barBadges = (i: number, x0: number, y0: number, x1: number, y1: number) => {
     const lbl = memberLabels[i] ?? String(i + 1);
-    // Raf: sağ uçtan içeri doğru; dikme: üst uçtan aşağı doğru (levha ekseni boyunca dizilim).
     const at = (k: number): [number, number] => barsHorizontal
       ? [x1 - BADGE_R - 4 - k * BADGE_STEP, (y0 + y1) / 2]
       : [(x0 + x1) / 2, y0 + BADGE_R + 4 + k * BADGE_STEP];
@@ -1010,17 +871,14 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
       <style>{SCHEMATIC_CSS}</style>
       <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ display: 'block', fontFamily: UI_FONT }}>
         <SoftDefs id={gsid} />
-        {/* şekilli bölge silueti */}
         <path d={silhouettePath} fill={SOFT.area} stroke={SOFT.areaStroke} strokeWidth={1} strokeLinejoin="round" fillRule="evenodd" />
-        {/* SAYIM İMİ: boşluk 0 / üye 1'in sayıldığı taraftan içeri bakan küçük ok (dizilim ekseninde; 3B ok ise tıklanan yüzü gösterir) — kırmızı, 3B okla aynı */}
         {(() => {
           const len = 18, m = 9;
           const horiz = hAxis === axis;
           const x0 = horiz ? (facing > 0 ? ox + m : ox + S - m) : ox + m;
           const y0 = horiz ? oy + m : (facing > 0 ? oy + S - m : oy + m);
           const x1 = horiz ? x0 + facing * len : x0;
-          const y1 = horiz ? y0 : y0 - facing * len;   // dünya + yukarı → SVG y aşağı
-          // Chevron (3B okla aynı biçim): düz köklü gövde + ucu 45° iki kollu açık V.
+          const y1 = horiz ? y0 : y0 - facing * len;
           const ang = Math.atan2(y1 - y0, x1 - x0), arm = 6.5;
           const ax = (k: number) => x1 - arm * Math.cos(ang + k * Math.PI / 4), ay = (k: number) => y1 - arm * Math.sin(ang + k * Math.PI / 4);
           const d = `M${x0.toFixed(1)},${y0.toFixed(1)} L${x1.toFixed(1)},${y1.toFixed(1)} M${ax(1).toFixed(1)},${ay(1).toFixed(1)} L${x1.toFixed(1)},${y1.toFixed(1)} L${ax(-1).toFixed(1)},${ay(-1).toFixed(1)}`;
@@ -1031,11 +889,9 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
             </g>
           );
         })()}
-        {/* levhalar: dilimdeki dolu aralıklara kırpılmış */}
         {starts.map((st, i) => runsAt(st, st + ts[i]).map((r, ri) => barsHorizontal
           ? bar(`bar-${i}-${ri}`, i, sx(r[0]), sy(st + ts[i]), sx(r[1]), sy(st))
           : bar(`bar-${i}-${ri}`, i, sx(st), sy(r[1]), sx(st + ts[i]), sy(r[0]))))}
-        {/* levha rozetleri: kapak sınırı · arkalığı böl — levhanın en uzun parçasının ucunda, levhanın üstünde */}
         {!memberMode && starts.map((st, i) => {
           const runs = runsAt(st, st + ts[i]);
           if (!runs.length) return null;
@@ -1044,7 +900,6 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
             ? barBadges(i, sx(r[0]), sy(st + ts[i]), sx(r[1]), sy(st))
             : barBadges(i, sx(st), sy(r[1]), sx(st + ts[i]), sy(r[0]));
         })}
-        {/* üye kalınlık kutucukları: tıkla → YALNIZ değer girişi (seçim levhadan) */}
         {!memberMode && tPills.map(p => {
           const on = p.i === selectedIndex;
           return (
@@ -1053,7 +908,6 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
               onClick={e => { stop(e); beginEdit({ kind: 't', i: p.i, v: p.txt }); }} />
           );
         })}
-        {/* üye numaraları (liste ile aynı: 6.1, 6.2 …) — salt-okunur */}
         {nLabels.map(n => {
           const on = n.i === selectedIndex;
           return (
@@ -1061,8 +915,6 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
               fontFamily={UI_FONT} style={{ fontVariantNumeric: 'tabular-nums', pointerEvents: 'none', userSelect: 'none' }}>{n.txt}</text>
           );
         })}
-        {/* boşluk ölçüleri: oklu ölçü çizgisi + pill + 3 modlu rozet (açık → pin → kilitli; kapaklarla aynı kural). Tek açık boşluk
-            kaldıysa PASİF: kalanı toplar, soluk, tıklanamaz, rozetsiz (Goker: "kapak kilitleme mantığını dikme ve raflara da uygula"). */}
         {!memberMode && pills.map(p => {
           const mode = gapMode(gaps[p.k]);
           const passive = passiveIdx === p.k;
@@ -1110,36 +962,18 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
   );
 }
 
-
-/* ── KAPAK ŞEMASI (Goker, Eki 2026) ───────────────────────────────────────
-   Kapak düzleminin ÖN GÖRÜNÜŞÜ temsili bir karede (mm → px doğrusal, eksenler kareye ayrı ölçeklenir). Kapaklar taş
-   renkli dikdörtgen; tık = yalnız TİP/BÖLME hedefi seçimi (üye editörü AÇILMAZ — Goker). ÖLÇÜLER YALNIZ TIKLANAN YERDE
-   (Goker, Eki 2026: "en dışında ölçü yazmasın, o alanı kazanmak istiyorum; kapağa tıkladığımda kapağın üzerinde ölçüler
-   belirsin"): dış ölçü zinciri yok, kutu kapak alanını doldurur. Seçili bölgenin ölçü zinciri bölgenin ÜZERİNDE çizilir —
-   bölmenin kendi ekseni (çocuk ölçüleri + aralar, uçlarda kenar boşlukları) alt kenara yakın yatay / sağ kenara yakın düşey,
-   çapraz ölçüsü (üst bölmedeki yeri: önceki ara · ölçü · sonraki ara) öbür yönde; seçili kapakta genişlik ve yükseklik
-   zincirleri, double/fold'da kanat zinciri. Aynı yöndeki ikinci zincir 16 px içeri. Her pill tıkla → değer gir; ölçü
-   pill'inin ucundaki kilit → kilitle. Boşluklar kapak alanında turuncu şeritle de işaretlenir. ÖLÇÜ OKU YOK (Goker: "ölçü
-   okları kapak boşluklarının içine giriyor") — yalnız pill'ler. Kapaklar 1,5 px içeri çizilir ki 3 mm boşluklar görünür
-   kalsın. Sınır levhaları (yan / üst / alt / dikme / raf) yalnız DIŞ kapakta ve kapağa boşluk + 3 mm içinde değiyorsa,
-   GERÇEK konum ve kalınlıkla (en az 6 px) çizilir — iç kapakta ya da sınır paneli yoksa hiç çizilmez (Goker). Çakışan
-   pill'ler ikinci şeride kayar (PILL_LANE_GAP). */
-const DOOR_INSET_PX = 1.5;        // kapak çiziminin kenarlardan içeri payı (boşluklar görünsün)
-const CHAIN_OFF_H = 27;           // YATAY ölçü zincirinin bölgenin alt kenarından uzaklığı (px) — alt bant ve ortadaki rozetle çakışmasın
-const CHAIN_OFF_V = 38;           // DÜŞEY ölçü zincirinin bölgenin sağ kenarından uzaklığı (px) — pill'ler yatay geniş, sağ bant rozetini aşsın
-const CHAIN_STEP = 16;            // aynı yöndeki zincirler arası (px)
-// ŞEMA PAYLARI (Goker, Eki 2026: "kenarlardan minimum boşluk kalacak şekilde alanı maksimum oranda kullan; en dışında ölçü
-// yazmasın"): dört kenar da dar pay (kenar levhası / rozet taşması için). Kapak alanı kutuyu DOLDURUR (eksenler ayrı ölçeklenir);
-// kutunun yüksekliği kapağın gerçek oranına yaklaşır (geniş-alçak kapakta kart kısalır), en çok PREVIEW_HEIGHT.
+/* KAPAK ŞEMASI: temsili ön görünüş (eksenler ayrı ölçeklenir). Ölçü zinciri yalnız seçili bölgenin üzerinde ve
+   oksuz (oklar 3 mm boşluklara giriyordu). Sınır levhaları yalnız DIŞ kapakta çizilir. */
+const DOOR_INSET_PX = 1.5;        // kapaklar içeri çizilir ki 3 mm boşluklar görünsün
+const CHAIN_OFF_H = 27;           // alt bant ve ortadaki rozetle çakışmasın
+const CHAIN_OFF_V = 38;           // pill'ler yatay geniş, sağ bant rozetini aşsın
+const CHAIN_STEP = 16;
 const DOOR_PAD_L = 12, DOOR_PAD_T = 12, DOOR_PAD_R = 12, DOOR_PAD_B = 12;
-const DOOR_MIN_ASPECT = 0.6;      // kutu yüksekliği / genişliği en az bu oran (çok geniş kapakta ölçüler sıkışmasın)
-const PILL_LANE_GAP = 3;          // iç içe geçen ölçü pill'leri ikinci şeride kayarken aradaki pay (px)
+const DOOR_MIN_ASPECT = 0.6;      // çok geniş kapakta ölçüler sıkışmasın
+const PILL_LANE_GAP = 3;
 
-/* ── KAPAK AÇILIŞ İŞARETİ (Goker, Eki 2026: "her kapak tipine mobilya sektörüne uygun kapak açılış simgesi") ──
-   Mobilya/mutfak görünüş çizimi standardı: kapağın karşı (kulp) kenarının iki köşesinden menteşe kenarının ORTASINA
-   kesikli çizgiler — üçgenin SİVRİ UCU menteşe tarafını gösterir (DIN / AWI görünüş sözleşmesi). Kalkar kapakta uç
-   üstte, düşer kapakta altta; iki kanatlıda sol kanat sol, sağ kanat sağ menteşe; katlanır kalkarda her iki kanadın
-   ucu üstte (alt kanat üst kanada katlanır). Şemadaki kapaklar ve tip çubuğundaki ikonlar aynı çizimi kullanır. */
+/* AÇILIŞ İŞARETİ (DIN/AWI görünüş sözleşmesi): kulp kenarının iki köşesinden menteşe kenarının ORTASINA kesikli çizgi —
+   sivri uç menteşe tarafıdır. Fold'da iki kanadın ucu da üstte. Şema ve tip ikonları aynı çizimi kullanır. */
 type Hinge = 'L' | 'R' | 'T' | 'B';
 const swingPath = (x0: number, y0: number, x1: number, y1: number, h: Hinge) => {
   const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, f = (n: number) => n.toFixed(1);
@@ -1148,11 +982,7 @@ const swingPath = (x0: number, y0: number, x1: number, y1: number, h: Hinge) => 
   if (h === 'T') return `M${f(x0)},${f(y1)} L${f(cx)},${f(y0)} L${f(x1)},${f(y1)}`;
   return `M${f(x0)},${f(y0)} L${f(cx)},${f(y1)} L${f(x1)},${f(y0)}`;
 };
-/**
- * AÇILI KAPAKTA AÇILIŞ İŞARETİ (Goker, Eki 2026: "kapak açılış yönleri de o açılı şekle göre gelsin"): kapak çokgeninde menteşe
- * kenarı = dış normali menteşe yönüne en çok bakan kenar (eğik üst kapakta 'T' → eğik kenar), kulp kenarı = karşı yöndeki kenar;
- * çizgiler kulp kenarının iki ucundan menteşe kenarının ORTASINA (dikdörtgendeki kuralın aynısı). `ins` px içeri çekilir.
- */
+/** Çokgen kapakta açılış işareti: menteşe kenarı = dış normali menteşe yönüne en çok bakan kenar; kulp kenarı = karşısı. */
 const swingPathPoly = (pts: Array<{ x: number; y: number }>, h: Hinge, ins: number): string | null => {
   if (pts.length < 3) return null;
   const c = { x: pts.reduce((a, q) => a + q.x, 0) / pts.length, y: pts.reduce((a, q) => a + q.y, 0) / pts.length };
@@ -1179,12 +1009,8 @@ const swingPathPoly = (pts: Array<{ x: number; y: number }>, h: Hinge, ins: numb
   const p0 = inward(pe.a), p1 = inward(pe.b), f = (n: number) => n.toFixed(1);
   return `M${f(p0.x)},${f(p0.y)} L${f(apex.x)},${f(apex.y)} L${f(p1.x)},${f(p1.y)}`;
 };
-/** Tipin kanat menteşeleri — kanat sırası: double sol→sağ (bakan kişiye göre), fold üst→alt. */
+/** Kanat sırası: double sol→sağ (bakan kişiye göre), fold üst→alt. */
 const leafHinges = (t: DoorType): Hinge[] => (t === 'left' ? ['L'] : t === 'right' ? ['R'] : t === 'up' ? ['T'] : t === 'down' ? ['B'] : t === 'double' ? ['L', 'R'] : t === 'fold' ? ['T', 'T'] : []);
-/**
- * Tip ikonu (20×16 kutu, size = yükseklik): kapak dış hattı + açılış işareti. Menteşesizlerde işaret yok:
- * Drawer = üstte ince çekmece kutusu çizgisi + ortada kısa tutamak; Fixed = dört köşede vida noktası (sabit panel).
- */
 function DoorTypeIcon({ type, size = 14, strokeWidth = 1.25 }: { type: DoorType; size?: number; strokeWidth?: number }) {
   const W = 20, H = 16, p = 1, g = 1.2;
   const hinges = leafHinges(type);
@@ -1205,11 +1031,6 @@ function DoorTypeIcon({ type, size = 14, strokeWidth = 1.25 }: { type: DoorType;
     </svg>
   );
 }
-/**
- * KAPAK TİPİ ÇUBUĞU (Goker: "kapak tiplerini birden fazla kapağı seçip bir kapak tipi verebileyim"; "çekmece ve
- * menteşesiz de olsun, bir sıraya sığsın"): sekiz tip TEK sırada — ikon üstte, kısa etiket altta (dar sütuna sığar).
- * Etkin = hedef kapakların ortak tipi (karışıksa hiçbiri). Sağda hedef açıklaması.
- */
 function DoorTypeBar({ value, hint, onPick }: { value: DoorType | null; hint: string; onPick: (t: DoorType) => void }) {
   return (
     <div className="flex items-stretch gap-1.5 mb-1" title="Door type — applies to the doors selected in the schematic (click a door; Shift/Ctrl+click adds more; none selected = all doors). The selection clears once a type is applied.">
@@ -1239,49 +1060,34 @@ function DoorTypeBar({ value, hint, onPick }: { value: DoorType | null; hint: st
 }
 
 type DoorEdit = { key: string; v: string };
-/** Ölçü zinciri öğesi: ölçü (ok + pill + kilit) ya da boşluk (yalnız pill). a..b = eksen boyunca mm. */
-/** `span` (yalnız boşluk): ilgili kenarın / derzin çapraz eksendeki GERÇEK uzunluğu (mm) — kutucuk bu uzunluğun TAM ORTASINA, boşluğun
- *  üzerine yerleşir (Goker, Eki 2026: "kapak boşlukları her zaman ilgili kenarın uzunluğunun tam merkezinde olsun"). */
+/** Ölçü zinciri öğesi; a..b = eksen boyunca mm. `span` (yalnız boşluk): kenarın/derzin çapraz eksendeki GERÇEK uzunluğu —
+ *  pill bu uzunluğun ortasına yerleşir (açılı kesimde kenar kısalır). */
 type ChainItem = { key: string; kind: 'size' | 'gap'; a: number; b: number; txt: string; title: string; locked?: boolean; edited?: boolean; passive?: boolean; onLock?: () => void; lockTitle?: string; commit: (v: number) => void; preview?: (v: number) => void; min: number; span?: [number, number] };
 type Chain = { horiz: boolean; pos: number; items: ChainItem[]; small?: boolean };
 export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts, nearPanels, refPick, onEditSize, onToggleLock, onEditSplitGap, onEditEdgeGap, onEditLeaf, onEditLeafGap, onPathClick, onToggleHalfOverlay, onAlignJoint, onRefPick, addPick, onAddPick, onRemovePick, addObstacles, onEditBegin, onEditCancel }: {
   group: DoorGroup; selectedIndex: number; memberLabels: string[];
-  /** BÖLGE SEÇİMİ: seçili düğümler (kök alan / bölme / kapak) — turuncu çerçeve + seviye etiketi (ör. "L1 · V ×2"). */
   selectedNodes: string[];
-  /** AÇILI REFERANS: dönmüş sınır panelleri — üyeler bunlarla kırpılmış çokgen olarak çizilir (3B ile aynı şekil). */
+  /** Açılı referans: üyeler bu kesicilerle kırpılmış çokgen olarak çizilir (3B ile aynı şekil). */
   cuts: DoorCut[];
-  /** ŞEMADAKİ SINIR LEVHALARI (dış kapak; iç kapakta boş): gerçek konum/kalınlık; kenar levhasında yarım binme, iç levhada derz hizalaması. */
   nearPanels: DoorNearPanel[];
-  /** preview=true → CANLI ÖNİZLEME (her tuş basışı: yalnız ağaç/boşluk dağılımı store'a, rebuild yok); yoksa onay (gerçek yazım + rebuild). */
+  /** preview=true → canlı önizleme (yalnız store dağılımı, rebuild yok); yoksa onay (yazım + rebuild). */
   onEditSize: (splitId: string, k: number, v: number, preview?: boolean) => void; onToggleLock: (splitId: string, k: number) => void;
   onEditSplitGap: (splitId: string, k: number, v: number, preview?: boolean) => void; onEditEdgeGap: (edge: DoorEdgeKey, v: number, preview?: boolean) => void;
   onEditLeaf: (leafId: string, k: number, v: number, preview?: boolean) => void; onEditLeafGap: (leafId: string, v: number, preview?: boolean) => void;
-  /** Düzenleme başında kayıt (Esc ile geri yükleme için) / Esc → kayıt geri yüklenir. */
   onEditBegin?: () => unknown; onEditCancel?: (snap: unknown) => void;
-  /** Kapak tıklandı: tıklanan noktanın kök → yaprak düğüm yolu (yalnız seçim — üye seçilmez); additive = Shift/Ctrl/⌘. */
+  /** Tıklanan noktanın kök → yaprak düğüm yolu (yalnız seçim, üye seçilmez); additive = Shift/Ctrl/⌘. */
   onPathClick: (path: string[], additive: boolean) => void;
   onToggleHalfOverlay: (edge: DoorEdgeKey, on: boolean) => void;
-  /**
-   * DERZ BAĞI: iç levha (vfId) `splitId` bölmesinin k. derzine `align` ile bağlanır — LEVHA bir kez taşınır (kapak yerinde),
-   * sonrasında kapak derzi levhayı izler. null = bağ çözülür (kapak ölçüleri donar).
-   */
+  /** Derz bağı: LEVHA bir kez hizaya taşınır (kapak yerinde), sonra kapak derzi levhayı izler. null = bağ çözülür. */
   onAlignJoint: (splitId: string, k: number, vfId: string, align: DoorAlign | null) => void;
-  /** PANEL REF modu: iç levhaya tık → kapak o levhanın ortasından bölünür, derz levhaya bağlanır. */
   refPick?: boolean;
   onRefPick?: (vfId: string) => void;
-  /**
-   * ARAYA RAF / DİKME modu (Goker: "düğmeye basınca 2 kapak arası belirginleşsin"): 'u' = V derzleri (dikme), 'v' = H derzleri
-   * (raf) vurgulanır ve tıklanır → onAddPick(splitId, k). Zaten bağlı derzler gösterilmez.
-   */
+  /** Araya raf/dikme modu: 'u' = V derzleri (dikme), 'v' = H derzleri (raf). Zaten bağlı derzler gösterilmez. */
   addPick?: 'u' | 'v' | null;
-  /** ats = derz boyunca seçilen yer(ler) (çapraz koordinat, mm): tık → tıklanan parça; Shift/Ctrl+tık → derzin BOŞ parçalarının hepsi (her bölmeye ayrı raf). */
+  /** ats = derz boyunca seçilen yer(ler) (mm); Shift/Ctrl+tık → derzin tüm BOŞ parçaları. */
   onAddPick?: (splitId: string, k: number, ats: number[]) => void;
-  /** Aynı modda, kapak arayüzünden eklenmiş (derzi izleyen) levhanın bandı "✕ Remove" olur → grup silinir (Goker: "sonradan silebileyim"). */
   onRemovePick?: (groupId: string) => void;
-  /**
-   * DERZ PARÇALAMA kaynağı (araya raf/dikme modu): derzi kesen / derze değen levhalar — kapak sınırı İŞARETSİZ ince düz
-   * levhalar dahil (doorNearPanels allPanels), çünkü işaretsiz bir dikme de ışının yolunu keser. Verilmezse `nearPanels`.
-   */
+  /** Derz parçalama engelleri: kapak sınırı İŞARETSİZ levhalar dahil (işaretsiz dikme de derzi keser). Yoksa `nearPanels`. */
   addObstacles?: DoorNearPanel[];
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -1293,64 +1099,50 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
-  // Giriş kutusu ağaç değişince KAPANMAZ (canlı önizleme ağacı her tuşta yazar); yalnız grup / seçim değişince kapanır.
+  // Giriş kutusu ağaç değişince KAPANMAMALI (canlı önizleme ağacı her tuşta yazar) — treeKey deps'e girmez.
   const treeKey = JSON.stringify(group.tree);
   const selKey = selectedNodes.join('|');
   useEffect(() => { setEditing(null); }, [group.id, selectedIndex >= 0, selKey]);
-  // CANLI ÖNİZLEME (Goker, Eki 2026: "kutucuğa değeri yazar yazmaz kalan ölçüyü diğer taraflara dağıt"): düzenleme başında kayıt
-  // alınır; her tuşta geçerli değer önizleme olarak yazılır (dağılım şemada anında); Esc kaydı geri yükler ve onayı iptal eder.
   const snapRef = useRef<unknown>(undefined);
   const cancelledRef = useRef(false);
   const beginEdit = (e: DoorEdit) => { snapRef.current = onEditBegin?.(); cancelledRef.current = false; setEditing(e); };
   const cancelEdit = () => { cancelledRef.current = true; onEditCancel?.(snapRef.current); setEditing(null); };
 
   const { rect, axis, side } = group;
-  // KUTU: genişlik tamamen kullanılır; yükseklik kapağın gerçek oranından (en az DOOR_MIN_ASPECT·genişlik, en çok PREVIEW_HEIGHT'a sığan).
   const SW = Math.max(40, width - DOOR_PAD_L - DOOR_PAD_R);
   const duR = Math.max(1e-6, rect.u1 - rect.u0), dvR = Math.max(1e-6, rect.v1 - rect.v0);
   const SH = Math.round(Math.max(DOOR_MIN_ASPECT * SW, Math.min(PREVIEW_HEIGHT - DOOR_PAD_T - DOOR_PAD_B, SW * dvR / duR)));
   const height = SH + DOOR_PAD_T + DOOR_PAD_B;
   const ox = DOOR_PAD_L, oy = DOOR_PAD_T;
-  // GÖRÜNÜŞ YÖNÜ: ön yüz (Z+) → X sağa; arka (Z−) ve sağ yan (X+) → aynalı; üst (Y+) → Z aşağı.
+  // Görünüş: arka (Z−) ve sağ yan (X+) aynalı; üst (Y+) → Z aşağı.
   const mirrorU = (axis === 2 && side < 0) || (axis === 0 && side > 0);
   const mirrorV = axis === 1 && side > 0;
   const eg = edgeGapsOf(group);
-  // AĞAÇ ÇÖZÜMÜ (kayıtlı dikdörtgenle) + AÇILI REFERANS kesimi (3B ile aynı çokgen).
   const cutsKey = cuts.map(c => `${c.vfId}:${c.n.map(x => x.toFixed(3)).join(',')}:${c.dMin.toFixed(1)}:${c.dMax.toFixed(1)}`).join('|');
   const solved = useMemo(() => solveDoorTree(group), // eslint-disable-next-line react-hooks/exhaustive-deps
     [rect, treeKey, group.gap, eg.uMin, eg.uMax, eg.vMin, eg.vMax]);
-  const members = useMemo(() => applyDoorCuts(group, rect, doorMemberRects(solved), cuts, true),
+  const members = useMemo(() => applyDoorCuts(group, rect, doorMemberRects(solved), cuts),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [solved, cutsKey, group.placement, group.thickness, group.gap]);
-  // mm → px: doğrusal; u soldan sağa (aynalıysa ters), v ÜSTTEN aşağı (v1 → oy).
   const sx = (u: number) => (mirrorU ? ox + SW - ((u - rect.u0) / duR) * SW : ox + ((u - rect.u0) / duR) * SW);
   const sy = (v: number) => (mirrorV ? oy + ((v - rect.v0) / dvR) * SH : oy + ((rect.v1 - v) / dvR) * SH);
   const fs = Math.max(10, Math.min(13.5, width * 0.027));
   const fsT = Math.max(9, fs * 0.86);
   const gid = `ds-${group.id.replace(/[^a-zA-Z0-9_-]/g, '')}`;
 
-
-  // ── SINIR LEVHALARI (Goker, Eki 2026: "iç kapakta ya da sınır panel yoksa kalınlığı hiç gösterme; dikme/rafa 2-3 mm
-  // yaklaşan kapakta göster; dikmeyi kapağın sağına/soluna/ortalı, rafı yukarı/aşağı/ortada yerleştireyim") ──
-  // nearPanels (DoorService.doorNearPanels) gerçek (u,v) konum + kalınlıkla gelir; burada yalnız ekrana çevrilir. Çok ince
-  // levha en az BAND_MIN px çizilir (merkez sabit). Kapak arkasında kalan kısım kesikli (gizli çizgi). Kenar levhası →
-  // Full/Half rozeti (yarım binme); derze yakın iç raf/dikme üyesi → Free / Left/Center/Right (Up/Center/Down) rozeti: tık
-  // derzi levhaya BAĞLAR ve levhayı o hizaya taşır (kapak yerinde; sonra kapak derzi levhayı izler), Shift/Ctrl+tık bağı çözer.
+  // Hiza rozeti tıkı derzi levhaya BAĞLAR ve levhayı taşır (kapak yerinde kalır); Shift/Ctrl+tık bağı çözer.
   const I = DOOR_INSET_PX;
   const BAND_MIN = 6;
-  // Şemada levha çizim sınırı: kapak alanı dışına taşan kısım kenar payına kadar görünür.
   const clampX = (x: number) => Math.max(ox - DOOR_PAD_L + 2, Math.min(ox + SW + DOOR_PAD_R - 2, x));
   const clampY = (y: number) => Math.max(oy - DOOR_PAD_T + 2, Math.min(oy + SH + DOOR_PAD_B - 2, y));
   const isOuter = group.placement === 'outer';
-  // Çizim alanı (kapak alanı + kenar payları) mm'de: ekran → mm ters eşleme (aynalı görünüşler dahil).
   const invX = (x: number) => rect.u0 + (mirrorU ? (ox + SW - x) : (x - ox)) * duR / SW;
   const invY = (y: number) => (mirrorV ? rect.v0 + (y - oy) * dvR / SH : rect.v1 - (y - oy) * dvR / SH);
   const areaPx = [[ox - DOOR_PAD_L + 2, oy - DOOR_PAD_T + 2], [ox + SW + DOOR_PAD_R - 2, oy - DOOR_PAD_T + 2], [ox + SW + DOOR_PAD_R - 2, oy + SH + DOOR_PAD_B - 2], [ox - DOOR_PAD_L + 2, oy + SH + DOOR_PAD_B - 2]];
   const areaMm = areaPx.map(([x, y]) => ({ x: invX(x), y: invY(y) }));
   type Pt = { x: number; y: number };
   const ptsPath = (pts: Pt[]) => pts.map((q, i) => `${i ? 'L' : 'M'}${q.x.toFixed(1)},${q.y.toFixed(1)}`).join(' ') + ' Z';
-  // Levha çizimi `pts` (ekran çokgeni): dikdörtgen levhada kutu; ön görünüşü dikdörtgen olmayan levhada (eğik panel altında pahlanmış
-  // yan — Goker: "eğimli panelde dikme / yan ile iç içe geçmiş görünüyor") gerçek izdüşüm zarfı. x/y/w/h = zarfın kutusu (rozet/tık).
+  // `pts`: ön görünüşü dikdörtgen olmayan levhada (eğik panel altında pahlı yan) gerçek izdüşüm zarfı; x/y/w/h = zarfın kutusu.
   type Band = { np: DoorNearPanel; x: number; y: number; w: number; h: number; vertical: boolean; half: boolean; aligned: boolean; pts: Pt[] };
   const bands: Band[] = nearPanels.map(np => {
     const vertical = np.kind === 'u';
@@ -1369,23 +1161,17 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     }
     return { np, vertical, half, aligned: !!np.ref && !!np.joint, x, y, w, h, pts };
   });
-  // AÇILI SINIR LEVHALARI (Goker, Eki 2026: "kapak sınırı olan paneli preview'da açılı görmeliyim; Full/Half açılı panelde de
-  // çıkmalı"): kesicilerin kapak düzlemindeki şeridi çizim alanıyla (pay dahil) kırpılıp çokgen olarak çizilir; rozet şeridin
-  // ortasında, şerit yönünde döndürülmüş. mm ↔ px: sx/sy'nin tersiyle çizim alanı mm'ye taşınır.
   const cutBands = doorCutBands(group, rect, cuts, areaMm, BAND_MIN * dvR / SH).map(cb => {
     const pts = cb.poly.map(q => ({ x: sx(q.x), y: sy(q.y) }));
     const cx = pts.reduce((a, q) => a + q.x, 0) / pts.length, cy = pts.reduce((a, q) => a + q.y, 0) / pts.length;
-    const dx = (mirrorU ? -1 : 1) * cb.dir.x, dy = (mirrorV ? 1 : -1) * cb.dir.y;   // mm yönü → ekran (v yukarı → y aşağı; aynalı görünüşte ters)
+    const dx = (mirrorU ? -1 : 1) * cb.dir.x, dy = (mirrorV ? 1 : -1) * cb.dir.y;
     const deg = Math.atan2(dy, dx) * 180 / Math.PI;
     const half = !!cb.edge && cb.covered && !!group.halfOverlay?.[cb.edge];
-    // Yazı hep okunur yönde (−90°..90°); JS % negatifte işaret korur — eskiden −160° gibi açılarda rozet ters yazılıyordu.
+    // Yazı hep okunur yönde (−90°..90°); % yerine döngü: JS % negatifte işaret korur.
     let rd = deg; while (rd > 90) rd -= 180; while (rd < -90) rd += 180;
     return { ...cb, pts, cx, cy, deg: rd, half };
   });
-  // EĞİK KENAR BOŞLUĞU (Goker, Eki 2026: "açılı kapak atandığında kapak boşluğu açılı kapak panelinin üzerinde dursun"): her kesicinin
-  // kapaklarda bıraktığı eğik kenar (üye çokgenlerinin kesici yönüne paralel kenarları); en uzunu kutucuğun yeri. Bu kenarın boşluğu =
-  // kesilen kenarın boşluğu (edgeGaps[edge]) — düz kenar zincirlerinde o kenarın kutucuğu GÖSTERİLMEZ (çerçeve köşesindeki değer eğik
-  // kenara ait olduğu için yanıltıcıydı), kutucuk eğik kenarın üzerinde durur.
+  // Eğik kenarın boşluk pill'i eğik kenarın üzerinde durur; düz kenar zincirlerinde o kenar GÖSTERİLMEZ (yanıltıcı olur).
   const slopeSegs = cutBands.flatMap(cb => {
     if (!cb.edge) return [];
     let best: { a: Pt; b: Pt; len: number; m: typeof members[number] } | null = null;
@@ -1401,14 +1187,12 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     return best ? [{ cb, edge: cb.edge, ...best }] : [];
   });
   const slopeEdges = new Set<DoorEdgeKey>(slopeSegs.map(sg => sg.edge));
-  // Kapak arkasında kalan kısımlar (gizli çizgi): levha ∩ her kapak dikdörtgeni.
   const hiddenParts = (b: Band) => members.flatMap(m => {
     const dx0 = Math.min(sx(m.u0), sx(m.u1)) + I, dx1 = Math.max(sx(m.u0), sx(m.u1)) - I, dy0 = Math.min(sy(m.v1), sy(m.v0)) + I, dy1 = Math.max(sy(m.v1), sy(m.v0)) - I;
     if (dx1 - dx0 < 0.5 || dy1 - dy0 < 0.5) return [];
     const part = clipPolyToConvex(b.pts, [{ x: dx0, y: dy0 }, { x: dx1, y: dy0 }, { x: dx1, y: dy1 }, { x: dx0, y: dy1 }]);
     return part.length >= 3 && Math.abs(polyArea(part)) > 0.5 ? [part] : [];
   });
-  // Hizalama etiketleri EKRANA göre (aynalı görünüşte min/max yer değiştirir).
   const alignLabel = (b: Band, a: DoorAlign) => (a === 'center' ? 'Center' : b.vertical ? ((a === 'min') !== mirrorU ? 'Left' : 'Right') : ((a === 'max') !== mirrorV ? 'Up' : 'Down'));
   const alignCycle = (b: Band): DoorAlign[] => (b.vertical ? (mirrorU ? ['max', 'center', 'min'] : ['min', 'center', 'max']) : (mirrorV ? ['min', 'center', 'max'] : ['max', 'center', 'min']));
   const edgeName = (b: Band) => (b.vertical ? ((b.np.edge === 'uMin') !== mirrorU ? 'Left' : 'Right') : ((b.np.edge === 'vMax') !== mirrorV ? 'Top' : 'Bottom'));
@@ -1459,7 +1243,6 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     if (isNaN(v) || !p || v < p.item.min) return;
     p.item.preview?.(v);
   };
-  // Düğüm yolu (kök → yaprak) ve seçili düğümlerin ekran kutuları (çözülmüş alanlarından).
   const pathToLeaf = (leafId: string): string[] => {
     const out: string[] = [];
     const dfs = (n: DoorNodeSolved): boolean => { out.push(n.id); if (n.id === leafId) return true; if (n.kind === 'split') for (const c of n.children) if (dfs(c)) return true; out.pop(); return false; };
@@ -1470,11 +1253,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
   const selRegions = selectedNodes.map(id => findSolvedNode(solved, id)).filter((n): n is DoorNodeSolved => !!n);
   const leafIdsUnder = (n: DoorNodeSolved): string[] => (n.kind === 'leaf' ? [n.id] : n.children.flatMap(leafIdsUnder));
   const selLeafIds = new Set(selRegions.flatMap(leafIdsUnder));
-  // ── ODAK ÖLÇÜ ZİNCİRLERİ + BOŞLUK ŞERİTLERİ (Goker, Eki 2026: "en dışında ölçü yazmasın; kapağa tıkladığımda kapağın
-  // üzerinde ölçüler belirsin; oradaki kapak boşluklarını daha net anlaşılır yap") ──
-  // Ölçüler YALNIZ seçili bölgeler için, bölgenin üzerinde: bölme → kendi zinciri (çocuk ölçüleri + aralar, uçlarda kenar
-  // boşlukları) + çapraz ölçüsü (üst bölmedeki yeri); kapak → genişlik ve yükseklik zincirleri (önceki ara · ölçü · sonraki ara;
-  // uçta kenar boşluğu); double/fold → kanat zinciri. Boşluklar kapak alanında turuncu şerit.
+  // Ölçü zincirleri YALNIZ seçili bölgeler için; boşluklar turuncu şeritle işaretlenir.
   const solvedParent = (id: string): Extract<DoorNodeSolved, { kind: 'split' }> | null => {
     const walkP = (n: DoorNodeSolved): Extract<DoorNodeSolved, { kind: 'split' }> | null => {
       if (n.kind !== 'split') return null;
@@ -1487,10 +1266,8 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
   const chains: Chain[] = [];
   const fmt = (v: number) => String(round1(v));
   const focusStrips: Array<{ x: number; y: number; w: number; h: number }> = [];
-  // Şerit kırpma alanı: kapak alanı açılı panellerin YÜZÜNE kadar (boşluksuz) — ekranda.
   const stripClip = cuts.length ? doorCutOutline(group, rect, rect, cuts, false).map(q => ({ x: sx(q.x), y: sy(q.y) })) : null;
   const strip = (axis: 'u' | 'v', a: number, b: number, c0: number, c1: number) => {
-    // axis = boşluğun İNCE olduğu eksen: u → düşey şerit [a,b]×[c0,c1](v); v → yatay şerit [c0,c1](u)×[a,b](v). En az 3 px.
     const MINW = 3;
     let x0 = axis === 'u' ? Math.min(sx(a), sx(b)) : Math.min(sx(c0), sx(c1)), x1 = axis === 'u' ? Math.max(sx(a), sx(b)) : Math.max(sx(c0), sx(c1));
     let y0 = axis === 'u' ? Math.min(sy(c0), sy(c1)) : Math.min(sy(a), sy(b)), y1 = axis === 'u' ? Math.max(sy(c0), sy(c1)) : Math.max(sy(a), sy(b));
@@ -1499,12 +1276,10 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     focusStrips.push({ x: x0, y: y0, w: x1 - x0, h: y1 - y0 });
   };
   const T0 = 0.05;
-  // Bölgenin kapak alanı kenarına dayanan yanları (o kenar boşluğu zincirin ucunda + şerit).
-  // Eğik kenar (slopeEdges) dokunuş sayılmaz: onun boşluk kutucuğu eğik kenarın üzerinde (aşağıda slopePills).
+  // Eğik kenar (slopeEdges) dokunuş sayılmaz: onun pill'i eğik kenarın üzerinde (slopePills).
   const touch = { u0: (n: DoorNodeSolved) => !slopeEdges.has('uMin') && Math.abs(n.u0 - (rect.u0 + eg.uMin)) < T0, u1: (n: DoorNodeSolved) => !slopeEdges.has('uMax') && Math.abs(n.u1 - (rect.u1 - eg.uMax)) < T0,
     v1: (n: DoorNodeSolved) => !slopeEdges.has('vMax') && Math.abs(n.v1 - (rect.v1 - eg.vMax)) < T0, v0: (n: DoorNodeSolved) => !slopeEdges.has('vMin') && Math.abs(n.v0 - (rect.v0 + eg.vMin)) < T0 };
   const edgeKeyName = (k: DoorEdgeKey) => (k === 'uMin' ? (mirrorU ? 'Right' : 'Left') : k === 'uMax' ? (mirrorU ? 'Left' : 'Right') : k === 'vMax' ? (mirrorV ? 'Bottom' : 'Top') : (mirrorV ? 'Top' : 'Bottom'));
-  // KENAR / DERZ UZUNLUĞU: bölgenin (açılı kesimde kesilmiş) dış hattının bir doğruyla kesişimi → kutucuk o uzunluğun ortasında.
   type Box4 = { u0: number; u1: number; v0: number; v1: number };
   const outlineMemo = new Map<string, Pt[]>();
   const outlineOf = (r: Box4): Pt[] => {
@@ -1513,7 +1288,6 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     if (!o) { o = cuts.length ? doorCutOutline(group, rect, r, cuts) : [{ x: r.u0, y: r.v0 }, { x: r.u1, y: r.v0 }, { x: r.u1, y: r.v1 }, { x: r.u0, y: r.v1 }]; outlineMemo.set(key, o); }
     return o;
   };
-  /** Çokgenin `ax` = 'u' → u = val düşey doğrusu ('v' → v = val yatay) ile kesişim aralığı (diğer eksende). */
   const lineSpan = (poly: Pt[], ax: 'u' | 'v', val: number): [number, number] | null => {
     let lo = Infinity, hi = -Infinity;
     for (let i = 0; i < poly.length; i++) {
@@ -1530,14 +1304,13 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     const lo = Math.max(sp[0], Math.min(c[0], c[1])), hi = Math.min(sp[1], Math.max(c[0], c[1]));
     return hi - lo > 1 ? [lo, hi] : sp;
   };
-  /** `R` bölgesinin `k` kenarının gerçek uzunluğu (kenarın hemen içinden geçen doğru), `on` verilirse onun aralığına kırpılır. */
+  /** Doğru kenarın 0.5 mm içinden geçer (tam kenarda kesişim belirsiz). */
   const edgeSpanOf = (R: Box4, k: DoorEdgeKey, on?: Box4): [number, number] => {
     const ax: 'u' | 'v' = k === 'uMin' || k === 'uMax' ? 'u' : 'v';
     const val = k === 'uMin' ? R.u0 + 0.5 : k === 'uMax' ? R.u1 - 0.5 : k === 'vMin' ? R.v0 + 0.5 : R.v1 - 0.5;
     const sp = lineSpan(outlineOf(R), ax, val) ?? crossOf(R, ax);
     return on ? clampSpan(sp, crossOf(on, ax)) : sp;
   };
-  /** Bölme / kanat arası boşluğun (derz) gerçek uzunluğu: üst bölgenin dış hattının derz ortasından geçen doğruyla kesişimi. */
   const jointSpanOf = (R: Box4, ax: 'u' | 'v', a: number, b: number, on?: Box4): [number, number] => {
     const sp = lineSpan(outlineOf(R), ax, (a + b) / 2) ?? crossOf(R, ax);
     return on ? clampSpan(sp, crossOf(on, ax)) : sp;
@@ -1557,15 +1330,14 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     chains.push({ horiz, pos, items, small: true });
   };
   type SplitS = Extract<DoorNodeSolved, { kind: 'split' }>;
-  // Bölme ölçüsü kutucuğu. PASİF (Goker: "son kilitli olmayan kutucuk kalanı toplar ve pasif"; pin de kilit gibi sayılır):
-  // bölmede tek AÇIK ölçü kaldıysa o kutucuk girilemez, pinlenemez, kilitlenemez (rozet yok) — değeri kalandan gelir.
+  // Bölmede tek AÇIK ölçü kaldıysa PASİF (pin de kilit sayılır): girilemez, rozetsiz — değeri kalandan gelir.
   const sizeItem = (P: SplitS, i: number, a: number, b: number, horiz: boolean): ChainItem => {
     const w = P.sizes[i]?.value ?? 0;
     if (passiveSizeIndex(P.sizes, P.children.length) === i) {
       return { key: `size-${P.id}-${i}`, kind: 'size', a, b, txt: fmt(w), passive: true, title: `${horiz ? 'Door width' : 'Door height'} — remainder (all other doors pinned or locked); open one to edit`,
         commit: () => {}, min: 1 };
     }
-    // 3 MOD (açık → tut → kilitli): rozet sıradaki modu söyler. Değer yazmak ölçüyü 'tut'a alır.
+    // 3 mod (açık → tut → kilitli); değer yazmak ölçüyü 'tut'a alır.
     const mode = doorSizeMode(P.sizes[i]);
     const lockTitle = mode === 'locked' ? 'Locked — fixed on resize and when other doors are edited. Click: open'
       : mode === 'hold' ? 'Hold — keeps its value when other doors are edited, still scales with the door on resize. Click: lock'
@@ -1573,7 +1345,6 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     return { key: `size-${P.id}-${i}`, kind: 'size', a, b, txt: fmt(w), title: `${horiz ? 'Door width' : 'Door height'} — click to edit (open doors take up the difference)`,
       locked: mode === 'locked', edited: mode === 'hold', lockTitle, onLock: () => onToggleLock(P.id, i), commit: v => onEditSize(P.id, i, v), preview: v => onEditSize(P.id, i, v, true), min: 1 };
   };
-  // Bölmenin kendi zinciri: [kenar] ölçü · ara · ölçü … [kenar]; araları şeritle.
   const splitItems = (n: SplitS, withStrips: boolean): ChainItem[] => {
     const horiz = n.axis === 'u', dir = horiz ? 1 : -1;
     const items: ChainItem[] = [];
@@ -1593,7 +1364,6 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     if (horiz ? touch.u1(n) : touch.v0(n)) { const k: DoorEdgeKey = horiz ? 'uMax' : 'vMin'; items.push(edgeItem(k, p, p + dir * eg[k], n)); if (withStrips) edgeStrip(n, k); }
     return items;
   };
-  // Düğümün üst bölmedeki yeri: [önceki ara / kenar] ölçü [sonraki ara / kenar] (P.axis boyunca); şeritler `on` bölgesinin çapraz aralığında.
   const placeItems = (n: DoorNodeSolved, P: SplitS, on: DoorNodeSolved): ChainItem[] => {
     const horiz = P.axis === 'u', dir = horiz ? 1 : -1;
     const idx = P.children.findIndex(c => c.id === n.id);
@@ -1610,7 +1380,6 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     else if (horiz ? touch.u1(n) : touch.v0(n)) { const k: DoorEdgeKey = horiz ? 'uMax' : 'vMin'; items.push(edgeItem(k, end, end + dir * eg[k], n, on)); edgeStrip(on, k); }
     return items;
   };
-  // Kök boyutu (bir eksende): [kenar] tam ölçü [kenar] — düzenlenemez (kapak alanı sınırlardan gelir).
   const fullItems = (ax: 'u' | 'v', on: DoorNodeSolved): ChainItem[] => {
     const horiz = ax === 'u', dir = horiz ? 1 : -1;
     const lo = horiz ? rect.u0 : rect.v1, k0: DoorEdgeKey = horiz ? 'uMin' : 'vMax', k1: DoorEdgeKey = horiz ? 'uMax' : 'vMin';
@@ -1621,7 +1390,6 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
       { key: `full-${ax}`, kind: 'size', a: lo + dir * eg[k0], b: lo + dir * (eg[k0] + span), txt: fmt(span), title: horiz ? 'Door width (whole area)' : 'Door height (whole area)', commit: () => {}, min: 1 },
       ...(slopeEdges.has(k1) ? [] : [edgeItem(k1, lo + dir * (eg[k0] + span), lo + dir * (eg[k0] + span + eg[k1]), rect, on)])];
   };
-  // Çapraz ölçü: `n`in, kendisiyle AYNI eksenli olmayan en yakın üst bölmedeki yeri; yoksa kök boyutu.
   const crossChain = (n: DoorNodeSolved, axis: 'u' | 'v', on: DoorNodeSolved) => {
     let A: DoorNodeSolved = n, B = solvedParent(A.id);
     while (B && B.axis === axis) { A = B; B = solvedParent(B.id); }
@@ -1637,7 +1405,6 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     const P = solvedParent(n.id);
     if (P) { pushChain(n, P.axis === 'u', placeItems(n, P, n)); crossChain(P, P.axis, n); }
     else { pushChain(n, true, fullItems('u', n)); pushChain(n, false, fullItems('v', n)); }
-    // double / fold: kanat zinciri (kanat ölçüleri + kanat arası) — yaprağın ekseninde, bir kademe içeride
     const lax = doorLeafAxis(n.type);
     if (lax && n.leafSplit?.leaves.length === 2) {
       const horiz = lax === 'u', dir = horiz ? 1 : -1;
@@ -1651,19 +1418,12 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
       ]);
     }
   }
-  // BÖLGE ETİKETİ KALDIRILDI (Goker, Eki 2026: "L0 L1 L2 gibi şeylere gerek yok, gözü karıştırıyor; kapağın içinde ölçüsü zaten
-  // yazıyor"): seçili bölge yalnız çerçeveyle gösterilir; bölme sayısı V/H kutularında, spacing hedefi Spacing kutusunda okunur.
 
-  // Pill konumları (giriş kutusu için): ekran koordinatı + boyut. Tüm pill'ler büyük yazı (fs) — yalnız seçili bölgede görünürler.
   type Pill = { key: string; cx: number; cy: number; pw: number; ph: number; f: number; item: ChainItem; chain: Chain; x0: number; x1: number; hidden: boolean; lane: number; deg?: number; lock?: { x: number; y: number } };
-  // İÇ İÇE GEÇME ÖNLEMİ (Goker: "kapak miktarı arttığında ölçüler iç içe geçiyor"): zincir başına ŞERİTLER (teknik çizimdeki
-  // kademeli ölçü). Önce ÖLÇÜ pill'leri yerleşir: bir öncekine çarpan ölçü ikinci şeride kayar (dönüşümlü). Sonra BOŞLUK pill'leri
-  // boş bulduğu ilk şeride (0 → 1 → 2) girer; hiçbirine sığmazsa son şeride (odakta hiçbir boşluk gizlenmez). Şerit yönü bölgenin
-  // içine doğru (yatay zincir yukarı, düşey zincir sola).
+  // Çakışma önlemi: zincir başına şeritler (kademeli ölçü). Önce ÖLÇÜ pill'leri, sonra serbest BOŞLUK pill'leri ilk boş şeride
+  // girer (sığmazsa son şerit — hiçbir boşluk gizlenmez). Şeritler bölgenin içine doğru (yatay → yukarı, düşey → sola).
   type Placed = { start: number; end: number };
-  // EĞİK KENAR BOŞLUK KUTUCUĞU: seçili açılı kapakta, eğik kenarın TAM ORTASINDA, boşluğun üzerinde, kenar yönünde döndürülmüş.
-  // Değer = kesilen kenarın boşluğu; giriş canlı önizlemeli (diğer kutucuklar gibi). Yalnız SEÇİLİ bölgede (Goker: "kapak boşluğu
-  // kapağa tıklanmasa da geliyor"): seçili kapakların eğik kenarlarından en uzunu. Full/Half rozeti yalnız fareyle gelir ve bundan kaçar.
+  // Eğik kenar boşluk pill'i: yalnız SEÇİLİ kapakların en uzun eğik kenarının ortasında, kenar yönünde döndürülmüş.
   const selSlopeSegs = slopeSegs.flatMap(sg0 => {
     let best: typeof sg0 | null = null;
     for (const m of members) {
@@ -1693,13 +1453,12 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
       commit: v => onEditEdgeGap(sg.edge, v), preview: v => onEditEdgeGap(sg.edge, v, true), min: 0 };
     return { key: item.key, cx: mid.x + nx * off, cy: mid.y + ny * off, pw, ph, f: fs, item, chain: { horiz: true, pos: 0, items: [item] }, x0: mid.x, x1: mid.x, hidden: false, lane: 0, deg };
   });
-  // Boşluk kutucukları (kenar / derz ortasında, sabit) önce; ölçüler şeritlere yerleşirken bunlara 2B'de çarpmayan şeridi seçer.
+  // Sabit boşluk pill'leri (kenar/derz ortasında) önce; ölçüler bunlara 2B'de çarpmayan şeridi seçer.
   const chainPills = chains.map(ch => ({ ch, all: ch.items.map(it => {
     const f = fs;
     const { pw, ph } = pillSize(it.txt, f);
     const m0 = ch.horiz ? sx(it.a) : sy(it.a), m1 = ch.horiz ? sx(it.b) : sy(it.b);
     const mid = (m0 + m1) / 2;
-    // Boşluk: kenarın / derzin gerçek uzunluğunun ORTASINDA, boşluğun üzerinde (şerit dışı, sabit konum).
     const sc = it.kind === 'gap' && it.span ? (ch.horiz ? sy((it.span[0] + it.span[1]) / 2) : sx((it.span[0] + it.span[1]) / 2)) : null;
     return { key: it.key, cx: ch.horiz ? mid : (sc ?? ch.pos), cy: ch.horiz ? (sc ?? ch.pos) : mid, pw, ph, f, item: it, chain: ch, x0: Math.min(m0, m1), x1: Math.max(m0, m1), hidden: false, lane: 0, fixed: sc != null } as Pill & { fixed: boolean };
   }) }));
@@ -1711,14 +1470,12 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     const maxLanes = 3, sizeLanes = [0, 1, 2, 3, 4];   // dar kapakta ölçü, boşluk kutucuklarından kaçmak için 5 şeride kadar çıkar
     const lanes: Placed[][] = Array.from({ length: sizeLanes.length }, () => []);
     const posOf = (p: typeof base[number]) => (ch.horiz ? p.cx : p.cy);
-    // Pill'in şerit üzerindeki kapladığı aralık: pill + (kilitli ölçüde) ucundaki kilit rozeti (yatay zincirde sağında, düşeyde altında).
     const spanOf = (p: typeof base[number]): Placed => {
       const half = (ch.horiz ? p.pw : p.ph) / 2 + 1;
       return { start: posOf(p) - half, end: posOf(p) + half + (p.item.onLock ? LOCK_EXT : 0) };
     };
     const fits = (lane: number, start: number, end: number) => lanes[lane].every(q => end <= q.start || start >= q.end);
     const laneStep = Math.max(...base.map(p => (ch.horiz ? p.ph : p.pw)), 0) + PILL_LANE_GAP;
-    // `lane` şeridinde pill (ve kilidi) sabit boşluk kutucuklarından birine çarpmıyor mu (2B)?
     const clear2D = (p: typeof base[number], lane: number) => {
       const x = ch.horiz ? p.cx : p.cx - lane * laneStep, y = ch.horiz ? p.cy - lane * laneStep : p.cy;
       if (fixedAll.some(q => boxHit(x, y, p.pw, p.ph, q))) return false;
@@ -1732,7 +1489,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     };
     for (const p of base.filter(x => x.item.kind === 'size')) {
       const { start: st0, end: en0 } = spanOf(p);
-      // önce hem şeride sığan hem boşluk kutucuklarına çarpmayan; yoksa şeride sığan (0/1); yoksa 0. şerit (ölçü hep çizilir)
+      // Hiçbir şerit uymazsa 0. şerit: ölçü hep çizilir.
       const lane = sizeLanes.find(l => fits(l, st0, en0) && clear2D(p, l)) ?? (fits(0, st0, en0) ? 0 : fits(1, st0, en0) ? 1 : 0);
       place(p, lane);
     }
@@ -1745,18 +1502,17 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     return [...base, ...fixedPills];
   });
   pills.push(...slopePills);
-  // KİLİT YERİ: ölçünün ucunda (yatay zincirde sağında, düşeyde altında); başka bir kutucuğa ya da kilide çarpıyorsa karşı uçta
-  // (solunda / üstünde), o da doluysa pill'in altında / üstünde — kilitler kutucuklara ve birbirine binmesin.
+  // Kilit yeri: ölçünün ucu; çarpıyorsa karşı uç, sonra pill'in yanları — kilitler pill'lere ve birbirine binmesin.
   {
     const placedLocks: Array<{ x: number; y: number }> = [];
     const clearOf = (x: number, y: number, self: Pill) =>
-      x >= LOCK_R + 1 && x <= width - LOCK_R - 1 && y >= LOCK_R + 1 && y <= height - LOCK_R - 1 &&   // görünür alanda
+      x >= LOCK_R + 1 && x <= width - LOCK_R - 1 && y >= LOCK_R + 1 && y <= height - LOCK_R - 1 &&
       pills.every(q => q === self || Math.abs(x - q.cx) >= q.pw / 2 + LOCK_R + 2 || Math.abs(y - q.cy) >= q.ph / 2 + LOCK_R + 2) &&
       placedLocks.every(l => Math.hypot(l.x - x, l.y - y) >= 2 * LOCK_R + 3);
     for (const p of pills) {
       if (!p.item.onLock) continue;
       const d = (p.chain.horiz ? p.pw : p.ph) / 2 + LOCK_OFF;
-      const e = (p.chain.horiz ? p.ph : p.pw) / 2 + LOCK_OFF;   // dar yerde: pill'in altına / üstüne (yatay) ya da sağına / soluna (düşey)
+      const e = (p.chain.horiz ? p.ph : p.pw) / 2 + LOCK_OFF;
       const cand = p.chain.horiz ? [{ x: p.cx + d, y: p.cy }, { x: p.cx - d, y: p.cy }, { x: p.cx, y: p.cy + e }, { x: p.cx, y: p.cy - e }]
         : [{ x: p.cx, y: p.cy + d }, { x: p.cx, y: p.cy - d }, { x: p.cx + e, y: p.cy }, { x: p.cx - e, y: p.cy }];
       p.lock = cand.find(c => clearOf(c.x, c.y, p)) ?? cand[0];
@@ -1765,8 +1521,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
   }
   const pillByKey = new Map(pills.map(p => [p.key, p]));
   const editPos = editing ? pillByKey.get(editing.key) : undefined;
-  // ROZET YERİ (Goker: "boşluk kutucukları Full yazısıyla iç içe geçmesin"): rozet bandın ortasında; bir ölçü / boşluk kutucuğuna ya da
-  // kilidine çarpıyorsa bant boyunca (iki yöne dönüşümlü) kaydırılır, bandın içinde kalır.
+  // Bant rozeti pill/kilide çarpıyorsa bant boyunca (dönüşümlü) kaydırılır, bandın içinde kalır.
   const obstacles = pills.flatMap(p => {
     const o = [{ x: p.cx, y: p.cy, r: Math.max(p.pw, p.ph) / 2 }];
     if (p.lock) o.push({ ...p.lock, r: LOCK_R });
@@ -1789,16 +1544,13 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
       <style>{SCHEMATIC_CSS}</style>
       <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ display: 'block', fontFamily: UI_FONT }}>
         <defs>
-          {/* kapak yüzeyi: sıcak kemik gradyanı (hafif ışık üstten); seçili üye turuncuya kayar */}
           <linearGradient id={`${gid}-door`} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor={SOFT.part0} /><stop offset="1" stopColor={SOFT.part1} /></linearGradient>
           <linearGradient id={`${gid}-door-on`} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor={SOFT.on0} /><stop offset="1" stopColor={SOFT.on1} /></linearGradient>
           <linearGradient id={`${gid}-door-sel`} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor={SOFT.sel0} /><stop offset="1" stopColor={SOFT.sel1} /></linearGradient>
           <pattern id={`${gid}-hatch`} width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="4" stroke="#bfb5a6" strokeWidth="0.7" /></pattern>
           <pattern id={`${gid}-hatch-on`} width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="4" stroke="#e8925a" strokeWidth="0.9" /></pattern>
         </defs>
-        {/* kapak alanı (yumuşak zemin; aralarda görünür) */}
         <rect x={ox} y={oy} width={SW} height={SH} rx={3} fill={SOFT.area} stroke={SOFT.areaStroke} strokeWidth={0.8} />
-        {/* SINIR LEVHALARI (görünen kısım): dolu + taralı; yarım binmede / derze hizalıyken turuncu tonlu */}
         {bands.map(b => {
           const warm = b.half || b.aligned;
           return (
@@ -1809,7 +1561,6 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
             </g>
           );
         })}
-        {/* AÇILI SINIR LEVHALARI: kesit şeridi (çokgen), bantlarla aynı dil; yarım binmede turuncu tonlu */}
         {cutBands.map(cb => {
           const d = ptsPath(cb.pts);
           return (
@@ -1820,8 +1571,6 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
             </g>
           );
         })}
-        {/* kapaklar (kanatlar): yüzey + YUMUŞAK açılış işareti + numara + ölçü (Goker: "açılış çizgisi daha soft olsun, ölçüleri
-            göster; menteşe ve kulp yerlerini şimdilik kaldır") */}
         {members.map((m, i) => {
           const on = i === selectedIndex;
           const inSel = selLeafIds.has(m.leafId);
@@ -1829,25 +1578,24 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
           const lbl = memberLabels[i] ?? String(i + 1);
           const fill = on ? `url(#${gid}-door-on)` : inSel ? `url(#${gid}-door-sel)` : `url(#${gid}-door)`;
           const stroke = on ? SOFT.onStroke : inSel ? SOFT.selStroke : SOFT.partStroke;
-          // MENTEŞE (ekrana göre): tek kanat tipten; double'da ekranda solda duran kanat sol menteşe (aynalı görünüşte de doğru).
+          // Double'da menteşe EKRANA göre: solda duran kanat sol menteşe (aynalı görünüşte de doğru).
           let hinge: Hinge | undefined = leafHinges(m.type)[0];
           if (m.leafCount === 2 && doorLeafAxis(m.type) === 'u') { const sib = members[m.leaf === 0 ? i + 1 : i - 1]; hinge = sib && Math.min(sx(sib.u0), sx(sib.u1)) < x0 ? 'R' : 'L'; }
           else if (m.leafCount === 2) hinge = 'T';
           const typeTxt = DOOR_TYPE_LABEL[m.type] + (m.leafCount === 2 ? ` · leaf ${m.leaf + 1}/2` : '');
           const path = pathToLeaf(m.leafId);
           const wMm = Math.round(m.u1 - m.u0), hMm = Math.round(m.v1 - m.v0);
-          const lhGuard = fsT * 1.18;   // numara + ölçü satırları merkez çevresinde ±1 satır
+          const lhGuard = fsT * 1.18;
           const tip = `Door ${lbl} · ${typeTxt} · ${wMm} × ${hMm} mm${m.poly ? ' · angled (cut by rotated reference)' : ''}`
             + ` — click: select the area, click again to go one level deeper (${path.length} level${path.length === 1 ? '' : 's'}) · Shift/Ctrl+click: add another region · open the door's row below to edit it`;
-          // AÇILI: kırpılmış çokgen; her köşe aynı kapak hücresinde kaldığından eğik kenar şemada da düz çizgidir.
+          // Her köşe aynı kapak hücresinde kaldığından eğik kenar parça-doğrusal haritada da düz çizgidir.
           const pts = m.poly ? m.poly.map(q => ({ x: sx(q.x), y: sy(q.y) })) : null;
           const cx = pts ? pts.reduce((a, q) => a + q.x, 0) / pts.length : (x0 + x1) / 2;
           const cy = pts ? pts.reduce((a, q) => a + q.y, 0) / pts.length : (y0 + y1) / 2;
           const w = x1 - x0, h = y1 - y0;
           const ins = 5, sw = !!hinge && w > 2 * ins + 6 && h > 2 * ins + 6;
-          // Numara + ölçü (W × H) + menteşesizlerde tip adı; kapak küçükse yalnız numara.
           const fsz = fsT * 0.86;
-          // Ölçü zinciri pill'i kapağın yazı alanına biniyorsa (seçili bölgenin çapraz ölçüsü vb.) W×H alt yazısı gizlenir — zincir zaten söyler.
+          // Zincir pill'i yazı alanına biniyorsa W×H gizlenir (zincir zaten söyler).
           const capW = `${wMm} × ${hMm}`.length * fsz * 0.6 + 6, capH = fsz * 1.2;
           const capHit = pills.some(pp => Math.abs(pp.cx - cx) < (pp.pw + capW) / 2 && Math.abs(pp.cy - cy) < (pp.ph + capH) / 2 + lhGuard);
           const showSize = w > 58 && h > 34 && !capHit;
@@ -1855,8 +1603,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
           const showCap = !!caption && showSize && h > 50;
           const lines = 1 + (showSize ? 1 : 0) + (showCap ? 1 : 0);
           const lh = fsT * 1.18;
-          const ty0 = capHit ? cy - lhGuard : cy - ((lines - 1) * lh) / 2;   // pill merkeze bindiyse numara bir satır yukarı
-          // ŞEMA TIKI = yalnız SEÇİM (Goker: "kapağın üzerine tıklandığında altındaki paneli otomatik açmasın"); yol üstten alta.
+          const ty0 = capHit ? cy - lhGuard : cy - ((lines - 1) * lh) / 2;
           return (
             <g key={`door-${i}`} style={{ cursor: 'pointer' }} onClick={e => { stop(e); onPathClick(path, e.shiftKey || e.ctrlKey || e.metaKey); }}>
               {pts ? (
@@ -1879,7 +1626,6 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
             </g>
           );
         })}
-        {/* AÇILI LEVHANIN KAPAK ARKASINDAKİ KISMI: düz levhalarla aynı gizli çizgi dili (tam binmede eğik panel kapağın altında kalır) */}
         {cutBands.flatMap(cb => members.flatMap((m, mi) => {
           const dx0 = Math.min(sx(m.u0), sx(m.u1)) + I, dx1 = Math.max(sx(m.u0), sx(m.u1)) - I, dy0 = Math.min(sy(m.v1), sy(m.v0)) + I, dy1 = Math.max(sy(m.v1), sy(m.v0)) - I;
           if (dx1 - dx0 < 0.5 || dy1 - dy0 < 0.5) return [];
@@ -1892,29 +1638,20 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
             </g>
           )];
         }))}
-        {/* KAPAK ARKASINDAKİ LEVHA KISMI: gizli çizgi (kesikli) + soluk tarama — tam / yarım binme ve derz hizası burada okunur */}
         {bands.flatMap(b => hiddenParts(b).map((hp, k) => (
           <g key={`hid-${b.np.vfId}-${k}`} style={{ pointerEvents: 'none' }}>
             <path d={ptsPath(hp)} fill={b.half || b.aligned ? `url(#${gid}-hatch-on)` : `url(#${gid}-hatch)`} opacity={0.4} />
             <path d={ptsPath(hp)} fill="none" stroke={b.half || b.aligned ? '#e8925a' : '#9a9185'} strokeWidth={0.8} strokeDasharray="3 2" opacity={0.9} strokeLinejoin="round" />
           </g>
         )))}
-        {/* ODAK BOŞLUKLARI (Goker: "tıkladığım yerdeki kapak boşluklarını daha net anlaşılır yap"): seçili bölmenin araları / seçili
-            kapağın çevresindeki boşluklar kapak alanında turuncu şerit. */}
         {focusStrips.map((r, i) => {
-          // Açılı panelin ötesine (eğimin üstündeki boş üçgene) taşan şerit kısmı kırpılır.
           const sp = [{ x: r.x, y: r.y }, { x: r.x + r.w, y: r.y }, { x: r.x + r.w, y: r.y + r.h }, { x: r.x, y: r.y + r.h }];
           const cl = stripClip ? clipPolyToConvex(sp, stripClip) : sp;
           return cl.length >= 3 ? <path key={`fs-${i}`} d={ptsPath(cl)} fill="#f97316" fillOpacity={0.28} stroke="#ea580c" strokeOpacity={0.55} strokeWidth={0.6} style={{ pointerEvents: 'none' }} /> : null;
         })}
-        {/* ARAYA RAF / DİKME (Goker, Eki 2026: "2 kapak arasına raf veya dikme … düğmeye basınca 2 kapak arası belirginleşsin;
-            dikmenin sağına ve soluna da raf yerleştirebileyim"): seçilen eksendeki her derz, onu kesen çapraz levhalarla (yatay derzi
-            dikmeler, dikey derzi raflar; kaynak addObstacles — kapak sınırı işaretsiz levhalar dahil) PARÇALARA bölünür; aynı türde
-            levhası olmayan her parça kehribar bant + "+ Divider" / "+ Shelf" rozeti; tık → o parçanın ortasından hacim ışını
-            (addPanelAtDoorJoint at) → her parça AYRI grup = listede ayrı satır. */}
         {addPick && isOuter && doorJointParts(doorJoints(solved), addObstacles ?? nearPanels, addPick).flatMap(({ joint: j, all: segs, free }) => {
           const vertical = j.axis === 'u';
-          // Dolu parçada (derze değen aynı türde levha — bağlı ya da değil, işaretli ya da değil) rozet yok; işaretliyse bandı ✕ Remove / hiza rozeti gösterir.
+          // Araya raf/dikme: derz, onu kesen levhalarla parçalara bölünür; yalnız BOŞ parçalar rozet alır, her parça ayrı grup olur.
           const allMids = free.map(([c0, c1]) => (c0 + c1) / 2);
           return free.map(([c0, c1]) => {
             const mid = (c0 + c1) / 2;
@@ -1939,13 +1676,11 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
             );
           });
         })}
-        {/* SEÇİLİ BÖLGELER: yalnız çerçeve (bölme kesikli, kapak düz) — köşe etiketi kaldırıldı (Goker: "L0 L1 L2 gereksiz"). */}
         {selRegions.map(n => {
           const b = nodeBox(n);
           const pad = n.kind === 'split' ? 2.5 : 0.5;
-          // AÇILI KAPAK (Goker: "kapağı seçince kapağın şekline göre turuncu alanı göster"): çerçeve bölgenin kesilmiş şekli.
           const shape = cuts.length ? doorCutOutline(group, rect, n, cuts) : null;
-          if (shape && Math.abs(polyArea(shape)) < (n.u1 - n.u0) * (n.v1 - n.v0) - 1) {   // kesim bölgeyi gerçekten değiştirdiyse
+          if (shape && Math.abs(polyArea(shape)) < (n.u1 - n.u0) * (n.v1 - n.v0) - 1) {
             return (
               <g key={`sel-${n.id}`} style={{ pointerEvents: 'none' }}>
                 <path d={ptsPath(shape.map(q => ({ x: sx(q.x), y: sy(q.y) })))} fill="#ea580c" fillOpacity={n.kind === 'split' ? 0.05 : 0.0} stroke="#ea580c" strokeWidth={1.2} strokeLinejoin="round" strokeDasharray={n.kind === 'split' ? '5 3' : undefined} />
@@ -1958,11 +1693,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
             </g>
           );
         })}
-        {/* LEVHA BANTLARI seçim çerçevesinin / derz şeritlerinin ÜSTÜNDE, kutucukların ALTINDA (Goker, Eki 2026: "Full yazısı fare
-            paneldeyken belli olsun"): fareyle gelen ton ve rozet çizgilerin altında kalmaz; rozet kutucuklardan kaçar (chipSpot). */}
-        {/* LEVHA TIKLAMA ALANI + ROZET (bandın ortasında, düşey levhada dikey yazı): kenar levhası → Full / Half; derzdeki
-            raf/dikme üyesi → Free / Left / Center / Right (Up / Center / Down): tık derzi levhaya bağlar + levhayı taşır (döngü);
-            Shift/Ctrl bağı çözer. Bağlı levha turuncu rozet. */}
+        {/* Bant tık alanları bilinçli olarak seçim çerçevesi/şeritlerin ÜSTÜNDE, pill'lerin ALTINDA çizilir. */}
         {bands.map(b => {
           const np = b.np;
           const pickable = !!refPick && !np.edge;
@@ -1973,7 +1704,6 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
           const on = b.half || b.aligned;
           const cfs = fsT * 0.8;
           const { pw: cw, ph: chh } = chipTxt ? pillSize(chipTxt, cfs) : { pw: 0, ph: 0 };
-          // Full / Half yalnız fareyle görünür (kalıcı değil); rozet kutucuklardan kaçacak şekilde bant boyunca yerleşir.
           const overlayChip = !!np.edge && !rem && !pickable;
           const spot = chipTxt ? chipSpot(b.x + b.w / 2, b.y + b.h / 2, b.vertical ? 0 : 1, b.vertical ? 1 : 0, (b.vertical ? b.h : b.w) / 2, cw) : null;
           const bx = spot?.x ?? b.x + b.w / 2, by = spot?.y ?? b.y + b.h / 2;
@@ -1984,7 +1714,6 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
               {b.np.poly
                 ? <path d={ptsPath(b.pts)} fill="transparent" stroke="transparent" strokeWidth={4} strokeLinejoin="round" className="hit" />
                 : <rect x={b.x - 2} y={b.y - 2} width={b.w + 4} height={b.h + 4} fill="transparent" className="hit" />}
-              {/* ÜZERİNE GELİNCE: levha belirgin tonla (kapağın üstünde) */}
               <g className="hov">
                 <path d={ptsPath(b.pts)} fill={warm ? '#f6c39c' : '#cbbca6'} fillOpacity={0.92} />
                 <path d={ptsPath(b.pts)} fill={warm ? `url(#${gid}-hatch-on)` : `url(#${gid}-hatch)`} />
@@ -2001,7 +1730,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
             </g>
           );
         })}
-        {/* AÇILI LEVHA ROZETİ: Full / Half (dış kapak + levha düzlemin gerisinde); bayrak kesilen kenarın yarım-binme bayrağıdır */}
+        {/* Açılı levhanın Full/Half bayrağı, kesilen kenarın halfOverlay bayrağıdır. */}
         {cutBands.map(cb => {
           const interactive = isOuter && cb.covered && !!cb.edge;
           const chipTxt = interactive ? (cb.half ? 'Half' : 'Full') : null;
@@ -2033,8 +1762,6 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
             </g>
           );
         })}
-        {/* ÖLÇÜ ZİNCİRLERİ: dış (kök) + iç (iç içe bölmeler, kanatlar) */}
-        {/* ÖLÇÜ ZİNCİRLERİ: yalnız seçili bölgelerin, bölgenin üzerinde (boşluk pill'i turuncu zeminli, ölçü pill'i turuncu çerçeveli) */}
         {pills.map(p => {
           const { item: it, f } = p;
           const hide = editing?.key === p.key;
@@ -2044,7 +1771,6 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
             return p.deg ? <g key={p.key} transform={`rotate(${p.deg.toFixed(1)} ${p.cx} ${p.cy})`}>{gp}</g> : <g key={p.key}>{gp}</g>;
           }
           if (it.passive) {
-            // PASİF kutucuk: soluk zemin + soluk yazı, tıklanamaz, kilit rozeti yok (kalan ölçüyü toplar).
             return (
               <g key={p.key} className="yago-gap passive" style={{ cursor: 'not-allowed' }}>
                 <DimPill cx={p.cx} cy={p.cy} txt={it.txt} fs={f} fill="#f5f3ef" stroke="#d6cfc3" strokeWidth={0.9} color="#a8a29e" hideText={false} title={it.title} />
@@ -2052,7 +1778,6 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
             );
           }
           const locked = !!it.locked, edited = !locked && !!it.edited, editable = !!it.onLock || it.key.startsWith('leaf-');
-          // Kilit rozeti pill'in ucunda HER ZAMAN (yatay zincirde sağında, düşeyde altında); girilmiş ölçü kehribar, kilitli turuncu.
           return (
             <g key={p.key} className={`yago-gap${locked ? ' locked' : ''}`}>
               <DimPill cx={p.cx} cy={p.cy} txt={it.txt} fs={f} fill={locked || edited ? '#fff7ed' : '#ffffff'} stroke={edited ? '#fbbf24' : '#f97316'} strokeWidth={locked ? 1.2 : 1}
@@ -2079,15 +1804,8 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
   );
 }
 
-/* ── SATIR YAPI TAŞLARI (hizalama sözleşmesi) ──────────────────────────────
-   Goker: "W H D satırları tipi ne olursa olsun aynı hizada olmalı." Her satır
-   türü (gövde paneli, raf/dikme grubu, grup üyesi) aynı sütunları kullanır:
-   [numara 30px] [tip işareti 20px] [ad — esnek] [ölçüler sabit genişlik]
-   [kontroller sabit genişlik]. Üye satırları kartın içinde 8px içeride
-   durduğu için sağ kontrol alanı 8px dar tutulur → ölçü sütunları hizalanır. */
+/* Satır hizalama: tüm satır türleri aynı sabit sütunları kullanır; üye satırı kartta 8px içeride → sağ alan 8px dar. */
 const ROW_NUM_W = 30;
-/* SATIR DÜĞMELERİ (Goker, Eki 2026: "yüzeyin şeklini al · kapak sınırı · yön · sil düğmelerini biraz büyüt, araları eşit
-   kalsın"): dördü de 24×24 kutu, 14px ikon, aralarında 3px; aç/kapa oku da aynı 24×24 düğme. Genişlik = 5×24 + 4×3 = 132. */
 const ROW_BTN = 'w-6 h-6 shrink-0 rounded-md flex items-center justify-center transition-colors duration-150';
 const ROW_ICON = 14;
 const ROW_TRAIL_W = 132;          // 5 × 24px düğme (4 araç + aç/kapa oku) + 4 × 3px aralık
@@ -2095,7 +1813,6 @@ const MEMBER_INSET = 8;           // grup kartı gövdesinin yatay dolgusu (px-2
 type RowKind = 'body' | 'shelf' | 'divider' | 'door';
 const ROW_KIND_ICON: Record<RowKind, LucideIcon> = { body: LayoutPanelTop, shelf: Rows3, divider: Columns3, door: DoorClosed };
 const ROW_KIND_TITLE: Record<RowKind, string> = { body: 'Body panel', shelf: 'Shelf', divider: 'Divider', door: 'Door' };
-/** SOFT SATIR + AKORDEON: satır sade kart; seçilince AYNI kart aşağı açılır. */
 const rowCardClass = (open: boolean, dragging: boolean, armed: boolean) =>
   `group/row relative flex flex-col rounded-[10px] overflow-hidden transition-[background-color,box-shadow,opacity,transform] duration-150 ease-out
    ${open ? 'bg-[#fffdf9] ring-1 ring-[#efd9c0] shadow-[0_1px_2px_rgba(234,88,12,0.05),0_8px_20px_-14px_rgba(120,70,20,0.35)] my-1'
@@ -2103,12 +1820,9 @@ const rowCardClass = (open: boolean, dragging: boolean, armed: boolean) =>
    ${dragging ? 'opacity-40 scale-[0.99]' : ''}
    ${armed && !dragging ? '!ring-orange-300 !bg-white shadow-[0_6px_16px_-8px_rgba(234,88,12,0.35)] scale-[1.006]' : ''}`;
 const ROW_INPUT_CLASS = 'yago-row-note flex-1 min-w-0 h-[22px] px-[5px] text-[11.5px] text-stone-700 bg-transparent border border-transparent rounded-[5px] outline-none placeholder:text-stone-300 hover:border-[#ebe5dc] focus:bg-white focus:border-orange-400/50 transition-colors';
-/* SİL düğmesi HER ZAMAN görünür (Goker, Eki 2026: "her satırda silme düğmesi fix olsun, fareyi üzerine götürünce değil"). */
 const ROW_DEL_CLASS = `${ROW_BTN} text-stone-400 hover:bg-red-50 hover:text-red-500`;
 const DROP_BAND = 'pointer-events-none h-[7px] mx-1 rounded-full bg-gradient-to-r from-amber-400 via-orange-400 to-amber-400 shadow-[0_0_10px_rgba(245,158,11,0.65),0_1px_2px_rgba(180,83,9,0.3)]';
 
-/** Panel tipi işareti — tüm satırlarda aynı boyut (20×20 kutu, 13px ikon).
- *  Grup satırında adet, işaretin sağ üst köşesinde küçük rozet olarak durur. */
 function RowTypeBadge({ kind, active, count, doorBound }: { kind: RowKind; active: boolean; count?: number; doorBound?: boolean }) {
   const Icon = ROW_KIND_ICON[kind];
   return (
@@ -2116,7 +1830,6 @@ function RowTypeBadge({ kind, active, count, doorBound }: { kind: RowKind; activ
       className={`relative shrink-0 w-5 h-5 rounded-[6px] flex items-center justify-center transition-colors duration-150
         ${active ? 'bg-orange-50 text-orange-500 ring-1 ring-orange-200/70' : 'bg-[#f5f2ec] text-stone-400 group-hover/row:text-stone-500'}`}>
       <Icon size={13} strokeWidth={2} />
-      {/* KAPAK SINIRI işareti: küçük kehribar nokta (3B'deki kehribar kenarla aynı dil). */}
       {doorBound && count == null && <span className="absolute -bottom-[3px] -right-[3px] w-[7px] h-[7px] rounded-full bg-amber-500 ring-2 ring-[#fdfcfa]" />}
       {count != null && (
         <span className={`absolute -top-[5px] -right-[6px] min-w-[13px] h-[13px] px-[3px] rounded-full text-[8.5px] font-bold tabular-nums leading-[13px] text-center ring-2 ring-[#fdfcfa]
@@ -2125,7 +1838,6 @@ function RowTypeBadge({ kind, active, count, doorBound }: { kind: RowKind; activ
     </span>
   );
 }
-/** Ölçü sütunları — sabit genişlik; harf + değer her satırda aynı x'te. */
 function RowDims({ w, h, t, tLetter = 'T', title }: { w?: number | null; h?: number | null; t?: number | null; tLetter?: string; title?: string }) {
   const cell = (letter: string, v: number | null | undefined, muted = false) => (
     <span className="inline-flex items-baseline w-[54px]">
@@ -2140,27 +1852,17 @@ function RowDims({ w, h, t, tLetter = 'T', title }: { w?: number | null; h?: num
     </span>
   );
 }
-/** Satır numarası (sabit sütun) — seçiliyken turuncu. */
 const RowNum = ({ label, active, small }: { label: string; active: boolean; small?: boolean }) => (
   <span style={{ width: ROW_NUM_W }} className={`shrink-0 ${small ? 'text-[11.5px]' : 'text-[13px]'} text-center font-semibold tabular-nums leading-none transition-colors duration-150
     ${active ? 'text-orange-600' : 'text-stone-400 group-hover/row:text-stone-600'}`}>{label}</span>
 );
-/** Aç / kapa göstergesi (chevron). */
-/* SATIR AÇ / KAPA — TEK MANTIK (Goker, Eki 2026: "panelin, dikmenin ve kapağın satır kapanışı tek mantıkta olsun"): her
-   satırda (gövde paneli, raf/dikme üyesi, raf/dikme grubu, kapak grubu) BAŞLIĞA ya da sağdaki OK düğmesine tıklamak aynı işi
-   yapar — kapalıysa açar (panel: seçer; grup: tümünü seçer), açıksa kapatır (seçimler düşer). Ok her satırda aynı yerde,
-   aynı boyda (24 px) ve her zaman tıklanabilir. */
+/* Satır aç/kapa TEK mantık: tüm satır türlerinde başlık ya da ok tıkı aynı işi yapar (kapalı → aç + seç; açık → kapat + seçim düşer). */
 const RowChevron = ({ open, onClick, title }: { open: boolean; onClick?: (e: React.MouseEvent) => void; title?: string }) => (
   <button type="button" onClick={onClick} title={title ?? (open ? 'Collapse' : 'Expand')}
     className={`${ROW_BTN} ${open ? 'text-orange-500 bg-orange-50/70 hover:bg-orange-100/70' : 'text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700'}`}>
     <ChevronRight size={ROW_ICON} strokeWidth={2.1} className={`transition-transform duration-200 ${open ? 'rotate-90' : ''}`} />
   </button>
 );
-/* ── GRUP KARTI DÜZENİ (Goker, Eki 2026: "raf/dikme arayüzü çok iç içe; ifadeleri kısalt, rahatlat;
-   adet ve spacing sırası çok karışık") ───────────────────────────────────────────────────────────
-   Kart iki sakin satıra ayrıldı: (1) EYLEMLER — eşit genişlikte düğme ızgarası (panel satırındaki
-   Extrude/Move/Rotate ile aynı dil); (2) DEĞERLER — her değer kendi kutusunda: solda kısa etiket,
-   sağda kontrol (adet stepper'ı / mm girişi); en sağda tek ikonlu "eşitle". */
 const cardActionCls = (on: boolean, tone: 'stone' | 'amber' = 'stone') =>
   `h-[26px] min-w-0 flex items-center justify-center gap-1.5 rounded-[7px] text-[11px] font-semibold tracking-[0.01em] transition-[background-color,color,box-shadow] duration-150
    ${on ? (tone === 'amber' ? 'bg-amber-50 text-amber-800 ring-1 ring-amber-300 shadow-[0_1px_2px_rgba(217,119,6,0.18)]' : 'bg-[#44403c] text-white ring-1 ring-[#44403c] shadow-[0_1px_3px_rgba(40,30,20,0.22)]')
@@ -2172,7 +1874,6 @@ function CardAction({ icon: Icon, label, active = false, tone, title, onClick, c
     </button>
   );
 }
-/** Değer kutusu: solda kısa etiket, sağda kontrol. accent = otomatik/etkin değer (turuncu ince çerçeve). */
 function FieldBox({ label, title, accent, fixed, children }: { label: string; title?: string; accent?: boolean; fixed?: boolean; children: React.ReactNode }) {
   return (
     <div title={title} onClick={stop}
@@ -2183,18 +1884,15 @@ function FieldBox({ label, title, accent, fixed, children }: { label: string; ti
     </div>
   );
 }
-/** Kutu içi çıplak giriş (çerçevesiz; kutunun kendisi çerçeve). */
 const FIELD_INPUT: React.CSSProperties = {
   width: 40, minWidth: 0, height: 22, textAlign: 'center', border: 'none', outline: 'none', background: 'transparent', padding: 0,
   fontFamily: "'SF Mono',ui-monospace,Menlo,monospace", fontSize: 12.5, fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: '#1c1917',
 };
-/** Kutu içi −/+ düğmesi. */
 const StepBtn = ({ title, disabled, onClick, children }: { title: string; disabled?: boolean; onClick: () => void; children: React.ReactNode }) => (
   <button type="button" title={title} disabled={disabled} onClick={e => { stop(e); if (!disabled) onClick(); }}
     className={`w-[20px] h-[20px] shrink-0 rounded-[5px] flex items-center justify-center transition-colors duration-150
       ${disabled ? 'text-stone-300 cursor-not-allowed' : 'text-stone-500 hover:bg-[#f3efe8] hover:text-stone-800'}`}>{children}</button>
 );
-/** Yalnız ikonlu kare düğme (eşitle). */
 const IconSquareBtn = ({ icon: Icon, title, onClick }: { icon: LucideIcon; title: string; onClick: () => void }) => (
   <button type="button" title={title} onClick={e => { stop(e); onClick(); }}
     className="shrink-0 w-[28px] h-[28px] rounded-[7px] flex items-center justify-center bg-white ring-1 ring-[#e6e0d6] text-stone-500 shadow-[0_1px_0_rgba(40,30,20,0.03)] hover:bg-[#faf7f2] hover:ring-[#dcd4c8] hover:text-stone-800 transition-colors duration-150">
@@ -2202,10 +1900,6 @@ const IconSquareBtn = ({ icon: Icon, title, onClick }: { icon: LucideIcon; title
   </button>
 );
 const unitTxt = (u: string) => <span className="shrink-0 pr-1 text-[10px] font-medium text-stone-400">{u}</span>;
-/**
- * PARÇA SAYISI KUTUSU (Goker, Eki 2026: "kaça bölüneceğini seçmeliyim … miktar girerek"): ikon + etiket, −/+ ve
- * doğrudan yazılabilen sayı (Enter / odak kaybı uygular). 1 = bu eksende bölünmemiş.
- */
 function CountBox({ icon: Icon, label, value, title, onChange, max = 12 }: { icon: LucideIcon; label: string; value: number; title: string; onChange: (n: number) => void; max?: number }) {
   const [draft, setDraft] = useState<string | null>(null);
   useEffect(() => { setDraft(null); }, [value]);
@@ -2215,7 +1909,6 @@ function CountBox({ icon: Icon, label, value, title, onChange, max = 12 }: { ico
     setDraft(null);
     if (Number.isFinite(n) && n >= 1 && n <= max && n !== value) onChange(n);
   };
-  // −/+ GERİ (Goker: "v ve h modunda + − düğmelerini geri koy, alanı biraz genişlet"): ikon + harf · − · sayı (yazılır, ↑↓) · +.
   return (
     <FieldBox label="" title={title}>
       <span className="flex items-center gap-[3px] pr-0.5 mr-auto text-[9.5px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]"><Icon size={11} strokeWidth={2} />{label}</span>
@@ -2227,7 +1920,7 @@ function CountBox({ icon: Icon, label, value, title, onChange, max = 12 }: { ico
     </FieldBox>
   );
 }
-/** SPACING kutusu: hedef parça ölçüsü (mm); boş = hedef yok. Enter / odak kaybı uygular; boş girilirse hedef kalkar. */
+/** Spacing kutusu: hedef parça ölçüsü (mm); boş girilirse hedef kalkar (parçalar olduğu gibi kalır). */
 function SizeBox({ icon: Icon, label, value, title, onChange }: { icon: LucideIcon; label: string; value: number | null; title: string; onChange: (mm: number | null) => void }) {
   const [draft, setDraft] = useState<string | null>(null);
   useEffect(() => { setDraft(null); }, [value]);
@@ -2239,8 +1932,6 @@ function SizeBox({ icon: Icon, label, value, title, onChange }: { icon: LucideIc
     const v = parseFloat(t.replace(',', '.'));
     if (Number.isFinite(v) && v > 0 && v !== value) onChange(v);
   };
-  // İPTAL (Goker: "spacing değeri girdiğimde yazılan değeri iptal edemiyorum"): değer varken × düğmesi hedefi kaldırır (kutuyu
-  // boşaltıp Enter / odak kaybı da aynı); parçalar olduğu gibi durur.
   return (
     <FieldBox label="" title={title} accent={value != null}>
       <span className="flex items-center gap-[3px] pr-0.5 mr-auto text-[9.5px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]"><Icon size={11} strokeWidth={2} />{label}</span>
@@ -2255,9 +1946,6 @@ function SizeBox({ icon: Icon, label, value, title, onChange }: { icon: LucideIc
     </FieldBox>
   );
 }
-/**
- * BÖLME MODU açılır listesi (Goker: "count, spacing ve ref modunu combobox yap, alan kazanalım"): PlacementSelect ile aynı dil.
- */
 function SplitModeSelect({ value, onChange }: { value: 'count' | 'ref' | 'spacing'; onChange: (v: 'count' | 'ref' | 'spacing') => void }) {
   const titles = {
     count: 'Count — split the selected region by number of pieces (V side by side · H stacked)',
@@ -2277,10 +1965,6 @@ function SplitModeSelect({ value, onChange }: { value: 'count' | 'ref' | 'spacin
     </div>
   );
 }
-/**
- * DIŞ / İÇ KAPAK açılır listesi (Goker, Eki 2026: "inner ve outer seçeneklerini combobox yap, açılır listeden
- * değiştireyim"): yerleştirme şeridinde ve kapak kartında aynı bileşen. Yerel <select> — klavye/erişilebilirlik hazır.
- */
 function PlacementSelect({ value, onChange }: { value: 'outer' | 'inner'; onChange: (v: 'outer' | 'inner') => void }) {
   return (
     <div className="relative shrink-0" onClick={stop}
@@ -2296,7 +1980,6 @@ function PlacementSelect({ value, onChange }: { value: 'outer' | 'inner'; onChan
   );
 }
 
-/** Bölüm başlığı: "COUNT", "PANELS 3 ———", "STEPS 2 ———". */
 const SectionHead = ({ label, count, rule = true, className = 'px-1 pt-2 pb-1' }: { label: string; count?: number; rule?: boolean; className?: string }) => (
   <div className={`${className} flex items-center gap-2`}>
     <span style={SECTION_LABEL}>{label}</span>
@@ -2305,7 +1988,6 @@ const SectionHead = ({ label, count, rule = true, className = 'px-1 pt-2 pb-1' }
   </div>
 );
 
-/** Liste animasyonu: akordeon açılışı. (Odak modu ve "yerleşme" animasyonu kaldırıldı — bkz. ODAK MODU notu.) */
 const LIST_CSS = `@keyframes yagoExpand{from{opacity:0;clip-path:inset(0 0 100% 0);transform:translateY(-4px)}to{opacity:1;clip-path:inset(0 0 0 0);transform:none}}.yago-expand{animation:yagoExpand 260ms cubic-bezier(.2,.7,.2,1) both}`;
 
 type StepEdit = { id: string; v: string } | null;
@@ -2349,34 +2031,18 @@ export function PanelEditor() {
     'doorGroups', 'selectedDoorGroupId', 'setSelectedDoorGroupId', 'doorPickMode', 'setDoorPickMode', 'doorPickCandidates', 'doorPickIndex', 'doorPickPlacement', 'setDoorPickPlacement',
     'doorRefPickGroupId', 'setDoorRefPickGroupId',
     'raycastPendingVf', 'placementName', 'setPlacementName');
-  // Kapak grubu kartı: kalınlık / boşluk giriş taslakları.
   const [doorDraft, setDoorDraft] = useState<{ id: string; field: 't' | 'gap'; v: string } | null>(null);
-  // BÖLGE SEÇİMİ (Goker, Eki 2026: "tıkladığım yerde önce büyük alanı, 2. tıklamada tek seçilen yeri; üst seviyeden alt
-  // seviyeye doğru"): şemada tıklanan noktanın kök → yaprak yolu üzerinde her tık bir seviye iner (kök alan → bölme →
-  // kapak → seçim kalkar); Shift/Ctrl aynı seviyeden başka bölge ekler. Düğüm id'si tutulur (yaprak ya da split); üye/3B
-  // seçimiyle bağı YOK. Tip: seçili bölgelerin altındaki kapaklar (boşsa hepsi), uygulanınca seçim kalkar. Bölme
-  // sayıları: seçili bölge (boşsa kök alan) — sayı değişince bölge seçili kalır ki ardışık ayar yapılabilsin.
+  // Şema bölge seçimi (düğüm id'leri): her tık bir seviye iner; üye/3B seçimiyle bağı YOK.
   const [doorNodeSel, setDoorNodeSel] = useState<{ id: string; nodes: string[] } | null>(null);
-  // BÖLME MODU (Goker, Eki 2026): Count (parça sayısı) · Panel ref (store bayrağı doorRefPickGroupId — dikme/rafın ortasından
-  // böl) · Spacing (hedef parça ölçüsü). Count/Spacing yerel; Panel ref kart kapanınca ya da seçim yapılınca kapanır.
   const [doorSplitMode, setDoorSplitMode] = useState<{ id: string; mode: 'count' | 'spacing' } | null>(null);
-  // ARAYA RAF / DİKME modu (Goker, Eki 2026: "kapak arayüzünden kapakların arasına tıklayarak raf ve dikme atamak"): kapak
-  // kartındaki Divider / Shelf düğmesi → şemada o eksendeki derzler vurgulanır; derze tık → addPanelAtDoorJoint; mod kapanır.
   const [doorAddPick, setDoorAddPick] = useState<{ id: string; axis: 'u' | 'v' } | null>(null);
 
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
-  // Tutamaç KAVRAMA geri bildirimi: mousedown anında satır "kalkmış" görünür.
   const [armedRowKey, setArmedRowKey] = useState<string | null>(null);
-  // Raf/dikme grup kartı: adet girişi taslağı (Enter/blur ile uygulanır).
   const [countDraft, setCountDraft] = useState<{ id: string; v: string } | null>(null);
-  // HEDEF ARALIK taslağı (grup kartı "Spacing" girişi): boş = kapalı.
   const [gapDraft, setGapDraft] = useState<{ id: string; v: string } | null>(null);
-  // ODAK MODU KALDIRILDI (Goker, Eki 2026: "bir panele tıklayınca dikme/raf/kapakta arayüz başka bir hale geçiyor,
-  // bunu iptal et"): liste hiçbir seçimde daralmaz, üye satırları gizlenmez, şema küçülmez.
-  // AÇIK KARTLAR (Goker: "altında açılan paneli kapatabileyim ama dikme görünümü kapanmasın; liste görünümüne
-  // dönen ayrı bir düğme olsun"): grup/kapak kartının açıklığı seçimden AYRI yerel durumdur. Üye seçilince kart
-  // açılır ve açık KALIR; üyenin editörü kapanınca kart durur. Kart yalnız başlıktaki ok (chevron) ile kapanır.
+  // Kart açıklığı seçimden AYRI yerel durum: üye seçilince açılır ve üye editörü kapanınca da açık KALIR; yalnız chevron kapatır.
   const [openCards, setOpenCards] = useState<Set<string>>(() => new Set());
   const openCard = (id: string) => setOpenCards(prev => (prev.has(id) ? prev : new Set(prev).add(id)));
   const closeCard = (id: string, memberIds: string[]) => {
@@ -2385,13 +2051,11 @@ export function PanelEditor() {
     if (st.selectedPanelGroupId === id) setSelectedPanelGroupId(null);
     if (st.selectedDoorGroupId === id) setSelectedDoorGroupId(null);
     if (typeof st.selectedPanelRow === 'string' && memberIds.some(m => st.selectedPanelRow === `vf-${m}`)) setSelectedPanelRow(null);
-    setDoorNodeSel(prev => (prev?.id === id ? null : prev));   // kapak kartı kapanınca şemadaki bölge seçimi de kalkar
-    if (useAppStore.getState().doorRefPickGroupId === id) setDoorRefPickGroupId(null);   // panel ref modu da kapanır
-    setDoorAddPick(prev => (prev?.id === id ? null : prev));   // araya raf/dikme modu da kapanır
+    setDoorNodeSel(prev => (prev?.id === id ? null : prev));
+    if (useAppStore.getState().doorRefPickGroupId === id) setDoorRefPickGroupId(null);
+    setDoorAddPick(prev => (prev?.id === id ? null : prev));
   };
-  // Adım düzenleme: aynı anda tek adım düzenlenir (extrude / move / rotate ayrımı adım tipinden gelir).
   const [stepEdit, setStepEdit] = useState<StepEdit>(null);
-  // Şerit girişlerinin yerel metin taslakları (başta -/+ yazılabilsin).
   const [extrudeThicknessStr, setExtrudeThicknessStr] = useState(String(faceExtrudeThickness));
   const [moveValueStr, setMoveValueStr] = useState('0');
   const [rotateValueStr, setRotateValueStr] = useState('0');
@@ -2399,7 +2063,6 @@ export function PanelEditor() {
   const prevRotateAxisRef = useRef(panelRotateAxis);
   const rowRefs = useRef<Map<number | string, HTMLDivElement>>(new Map());
 
-  // Eksen seçimi değişince giriş sıfırlanır (yeni giriş oturumu).
   useEffect(() => {
     if (prevMoveAxisRef.current !== panelMoveAxis) { prevMoveAxisRef.current = panelMoveAxis; setMoveValueStr('0'); setPanelMoveValue(0); }
   }, [panelMoveAxis]);
@@ -2419,7 +2082,6 @@ export function PanelEditor() {
   const activeSteps: any[] = activePanel?.parameters?.extrudeSteps || [];
   const activeTransformSteps: any[] = activePanel?.parameters?.transformSteps || [];
 
-  // Üye (raf/dikme/kapak) seçilince — listeden ya da 3B'den — kartı açık tut; grup "tümünü seç" de kartı açar.
   useEffect(() => {
     if (typeof selectedPanelRow === 'string' && selectedPanelRow.startsWith('vf-')) {
       const vf = virtualFaces.find(f => f.id === selectedPanelRow.slice(3));
@@ -2432,7 +2094,6 @@ export function PanelEditor() {
 
   useEffect(() => {
     if (selectedShapeId !== useAppStore.getState().selectedPanelRowParentId) setSelectedPanelRow(null);
-    // Gövde değişince grup seçimi ve hacim seçme modu da düşer.
     const st = useAppStore.getState();
     if (st.selectedPanelGroupId && !st.panelGroups.some(g => g.id === st.selectedPanelGroupId && g.shapeId === selectedShapeId)) setSelectedPanelGroupId(null);
     if (st.selectedDoorGroupId && !st.doorGroups.some(g => g.id === st.selectedDoorGroupId && g.shapeId === selectedShapeId)) setSelectedDoorGroupId(null);
@@ -2440,12 +2101,10 @@ export function PanelEditor() {
     if (st.doorPickMode) setDoorPickMode(false);
     setOpenCards(new Set());
   }, [selectedShapeId]);
-  // Kapak grubu silinince seçimi düşür.
   useEffect(() => {
     if (selectedDoorGroupId && !doorGroups.some(g => g.id === selectedDoorGroupId)) setSelectedDoorGroupId(null);
     if (doorRefPickGroupId && !doorGroups.some(g => g.id === doorRefPickGroupId)) setDoorRefPickGroupId(null);
   }, [doorGroups, selectedDoorGroupId, doorRefPickGroupId]);
-  // PANEL REF / ARAYA RAF-DİKME modu: Esc iptal eder.
   useEffect(() => {
     if (!doorRefPickGroupId && !doorAddPick) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { setDoorRefPickGroupId(null); setDoorAddPick(null); } };
@@ -2453,13 +2112,10 @@ export function PanelEditor() {
     return () => window.removeEventListener('keydown', onKey);
   }, [doorRefPickGroupId, doorAddPick]);
 
-  // OTOMATİK PANEL ÜRETİMİ: paneli olmayan her VF için panel yaratılır.
   useEffect(() => {
     const currentShapes = useAppStore.getState().shapes;
-    // YARIŞ KORUMASI: birden çok VF aynı anda beklerken (raf/dikme adedi
-    // artınca) ilk VF'nin hasPanel=true yazımı bu efekti yeniden tetikler;
-    // ikinci çalışma hâlâ üretilmekte olan VF için İKİNCİ bir panel yaratıyordu
-    // (üst üste iki raf). Üretimi süren VF'ler modül düzeyinde işaretlenir.
+    // YARIŞ KORUMASI: ilk VF'nin hasPanel yazımı efekti yeniden tetikler; üretimi süren VF'ler modül düzeyinde
+    // işaretlenmezse aynı VF için İKİNCİ panel yaratılır (üst üste iki raf).
     const pending = virtualFaces.filter(vf => !vf.hasPanel && !_creatingPanelForVf.has(vf.id) && !panelOfVf(vf.id, currentShapes));
     if (!pending.length) return;
     for (const vf of pending) _creatingPanelForVf.add(vf.id);
@@ -2468,9 +2124,7 @@ export function PanelEditor() {
         const parentShape = shapeById(vf.shapeId);
         if (!parentShape || !useAppStore.getState().virtualFaces.some(f => f.id === vf.id)) { _creatingPanelForVf.delete(vf.id); continue; }
         try {
-          // İÇ PANEL (raf/dikme): kalınlık grubun ÜYE kalınlığı (şemadaki kutucuk); gövde paneli varsayılan.
           const grp = vf.groupId ? useAppStore.getState().panelGroups.find(pg => pg.id === vf.groupId) : undefined;
-          // KAPAK ÜYESİ: kalınlık kapak grubundan.
           const dgrp = vf.doorGroupId ? useAppStore.getState().doorGroups.find(dg => dg.id === vf.doorGroupId) : undefined;
           const th = grp ? memberThicknessesOf(grp)[vf.groupIndex ?? grp.memberVfIds.indexOf(vf.id)] || grp.thickness : dgrp ? dgrp.thickness : PANEL_THICKNESS;
           const rp = await createPanelFromVirtualFace(vf.vertices, vf.normal, th);
@@ -2484,29 +2138,25 @@ export function PanelEditor() {
             id: genId('panel-vf'), type: 'panel', position: [...parentShape.position], rotation: parentShape.rotation, scale: [...parentShape.scale], color: '#ffffff',
             geometry: g, replicadShape: rp,
             parameters: { width: s[def], height: s[alt], depth: th, parentShapeId: parentShape.id, faceIndex: -(vi + 1), virtualFaceId: vf.id, arrowRotated: false,
-              // İÇ PANEL (raf/dikme): grup kimliği + üye kalınlığı panele de yazılır — motor/damga/şerit sınıfı bunu okur.
+              // Grup kimliği + kalınlık panele de yazılır: motor (damga/engel/kesim sınıfı) bunu okur.
               ...(vf.groupId ? { panelGroupId: vf.groupId, panelThickness: th } : {}),
-              // KAPAK: grup kimliği + kalınlık panele yazılır (motor kapağı damga/engel/kesim dışında tutar).
               ...(vf.doorGroupId ? { doorGroupId: vf.doorGroupId, panelThickness: th } : {}) },
           } as Shape);
           updateVirtualFace(vf.id, { hasPanel: true });
         } catch (e) { console.error('Auto panel creation failed:', e); }
         finally { _creatingPanelForVf.delete(vf.id); }
       }
-      // Geometri geçici VF prizmasıdır; paneli bölgesine oturtan rebuild'i App'teki
-      // panel-kümesi izleyicisi (addShape) tetikler — burada ikinci kez çağrılmaz.
+      // Rebuild'i App'teki panel-kümesi izleyicisi (addShape) tetikler — burada ikinci kez çağrılmaz.
     })();
   }, [virtualFaces]);
 
   useEffect(() => {
-    // HACİM DÜZENLEME sürerken açık üye satırı hedefi ele geçirmez.
     if (faceExtrudeMode && !faceExtrudeCavityGroupId && activePanelId && activePanelId !== faceExtrudeTargetPanelId) { setFaceExtrudeTargetPanelId(activePanelId); setFaceExtrudeSelectedFace(null); }
   }, [faceExtrudeMode, faceExtrudeCavityGroupId, activePanelId, faceExtrudeTargetPanelId]);
   useEffect(() => {
     if (panelMoveMode && activePanelId && activePanelId !== panelMoveTargetPanelId) { setPanelMoveTargetPanelId(activePanelId); setPanelMoveAxis(null); setPanelMoveValue(0); }
   }, [panelMoveMode, activePanelId, panelMoveTargetPanelId]);
 
-  // Seçilen yüzde zaten bir extrude adımı varsa değeri ve modu şeride yükle.
   useEffect(() => {
     if (faceExtrudeSelectedFace === null || !activePanelId || faceExtrudeCavityGroupId) return;
     const ps = shapeById(activePanelId, shapes); if (!ps?.geometry) return;
@@ -2515,67 +2165,50 @@ export function PanelEditor() {
     let g = groups[faceExtrudeSelectedFace]; if (!g) return;
     const gn = g.normal.clone().normalize();
     if (!isFlatNormal(gn, 0.9)) {
-      // Eğik yüz: aynı baskın yöndeki en yakın DÜZ yüz grubu esas alınır.
       const flat = groups.filter(f => { const fn = f.normal.clone().normalize(); return isFlatNormal(fn, 0.9) && dominantAxisLabel(fn) === dominantAxisLabel(gn); })
         .sort((a, b) => a.center.distanceTo(g!.center) - b.center.distanceTo(g!.center))[0];
       if (flat) g = flat;
     }
     const existing = findExistingStepForFace(steps, g.normal.clone().normalize(), g.center.clone());
-    // Mevcut adımın sabit/dinamik modu şeride yansır (ref akışı bozulmaz).
+    // Ref akışı bozulmasın: ref modunda mod yazılmaz.
     if (existing) { setFaceExtrudeThickness(existing.value); if (faceExtrudeValueMode !== 'ref') setFaceExtrudeValueMode(existing.isFixed ? 'fixed' : 'dyn'); }
   }, [faceExtrudeSelectedFace, activePanelId, shapes]);
 
-  // ── KOMUT–ARAYÜZ SENKRONU: GARANTİ ÇIKIŞ ─────────────────────────────────
-  // İSTEK (Goker): "extrude/taşıma modu arayüzden geriye doğru çıkıldığı HER
-  // durumda komuttan da çıksın, her zaman." Taşı / Döndür / Extrude düğmeleri
-  // SEÇİLİ PANEL SATIRI şeridinin içinde yaşar; komutun tek geçerlilik koşulu:
-  // açık satırın paneli === komutun hedef paneli. Bu tek kural geriye çıkışın
-  // BÜTÜN yollarını kapsar (satır kapatıldı, başka satıra geçildi, blok seçimi
-  // değişti, panel silindi, editör kapandı).
-  // GEÇİCİ BOŞLUK KORUMASI: yeniden üretim dalgalarında satır AÇIK kalırken
-  // activePanelId bir an null'a düşebilir. O anı "geriye çıkış" saymayız —
-  // çıkış ya satırın gerçekten kapanmasıyla ya da BAŞKA bir panelin satırına
-  // geçilmesiyle belirlenir.
+  // GARANTİ ÇIKIŞ: komut yalnız "açık satırın paneli === hedef panel" iken geçerli. Rebuild sırasında activePanelId
+  // bir an null olabilir — bu çıkış SAYILMAZ (yalnız satır kapanınca ya da başka panele geçilince).
   const uiLeftPanel = (targetId: string | null) => selectedPanelRow === null || (!!activePanelId && targetId !== activePanelId);
-  // HACİM DÜZENLEME: geçerlilik koşulu grup kartının AÇIK olması (tümü seçili ya da bir üye satırı açık).
+  // Hacim düzenlemenin geçerlilik koşulu: grup kartı AÇIK (tümü seçili ya da bir üye satırı açık).
   const groupCardOpen = (gid: string) => selectedPanelGroupId === gid || virtualFaces.some(f => f.groupId === gid && selectedPanelRow === `vf-${f.id}`);
-  // YENİDEN HACİM SEÇİMİ: grup kartı kapanır / grup silinir / başka gövde seçilirse mod düşer.
   useEffect(() => {
     if (!volumePickMode || !volumePickGroupId) return;
     if (!panelGroups.some(g => g.id === volumePickGroupId && g.shapeId === selectedShapeId) || !groupCardOpen(volumePickGroupId)) {
-      console.log('[YAGO][KOMUT-ÇIKIŞ] yeniden hacim seçimi kapatıldı — grup kartı arayüzde açık değil', 'grup=', volumePickGroupId);
       setVolumePickMode(null);
     }
   }, [volumePickMode, volumePickGroupId, panelGroups, selectedShapeId, selectedPanelGroupId, selectedPanelRow, virtualFaces]);
   useEffect(() => {
     if (faceExtrudeMode && faceExtrudeCavityGroupId) {
       if (!panelGroups.some(g => g.id === faceExtrudeCavityGroupId && g.shapeId === selectedShapeId) || !groupCardOpen(faceExtrudeCavityGroupId)) {
-        console.log('[YAGO][KOMUT-ÇIKIŞ] hacim düzenleme kapatıldı — grup kartı arayüzde açık değil', 'grup=', faceExtrudeCavityGroupId);
         setFaceExtrudeSelectedFace(null); setFaceExtrudeRefCandidate(null); setFaceExtrudeMode(false);
       }
       return;
     }
     if (faceExtrudeMode && uiLeftPanel(faceExtrudeTargetPanelId)) {
-      console.log('[YAGO][KOMUT-ÇIKIŞ] extrude modu kapatıldı — panel satırı arayüzde açık değil', 'hedef=', faceExtrudeTargetPanelId, 'açıkSatırPaneli=', activePanelId);
       setFaceExtrudeSelectedFace(null); setFaceExtrudeRefCandidate(null); setFaceExtrudeMode(false);
     }
     if (panelMoveMode && uiLeftPanel(panelMoveTargetPanelId)) {
-      console.log('[YAGO][KOMUT-ÇIKIŞ] taşıma modu kapatıldı — panel satırı arayüzde açık değil', 'hedef=', panelMoveTargetPanelId, 'açıkSatırPaneli=', activePanelId);
       setPanelMoveAxis(null); setPanelMoveMode(false);
     }
     if (panelRotateMode && uiLeftPanel(panelRotateTargetPanelId)) {
-      console.log('[YAGO][KOMUT-ÇIKIŞ] döndürme modu kapatıldı — panel satırı arayüzde açık değil', 'hedef=', panelRotateTargetPanelId, 'açıkSatırPaneli=', activePanelId);
       setPanelRotateAxis(null); setPanelRotateMode(false);
     }
   }, [activePanelId, selectedPanelRow, selectedShapeId, selectedPanelGroupId, panelGroups, faceExtrudeMode, faceExtrudeTargetPanelId, faceExtrudeCavityGroupId, panelMoveMode, panelMoveTargetPanelId, panelRotateMode, panelRotateTargetPanelId]);
 
-  // HACİM YÜZÜ seçilince o yüzde adım varsa değeri/modu şeride yükle (panel akışıyla aynı).
   useEffect(() => {
     if (!faceExtrudeCavityGroupId || !faceExtrudeCavityFaceNormal) return;
     const g = panelGroups.find(x => x.id === faceExtrudeCavityGroupId); if (!g?.cavitySteps?.length) return;
     const n = faceExtrudeCavityFaceNormal;
     const ax = [Math.abs(n[0]), Math.abs(n[1]), Math.abs(n[2])].indexOf(Math.max(Math.abs(n[0]), Math.abs(n[1]), Math.abs(n[2])));
-    // Aynı eksen+yön; birden çoksa (L'nin iki kolu) çıpası tıklama noktasına en yakın adım.
+    // Aynı eksen+yönde birden çok adım (L'nin iki kolu) → çıpası tıklama noktasına en yakın olan.
     const body = selectedShape ? localBboxOf(selectedShape.geometry) : null;
     const cp = faceExtrudeClickPoint;
     const fr = body && cp ? [0, 1, 2].map(a => { const sp = (body.max.getComponent(a) - body.min.getComponent(a)) || 1; return (cp[a] - body.min.getComponent(a)) / sp; }) : null;
@@ -2587,49 +2220,37 @@ export function PanelEditor() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [faceExtrudeCavityGroupId, faceExtrudeCavityFaceNormal, faceExtrudeClickPoint]);
 
-  // AKORDEON: açılan satır (listeden ya da 3B'den seçilince) görünür alana kaydırılır.
   useEffect(() => {
     if (selectedPanelRow === null) return;
     const t = window.setTimeout(() => rowRefs.current.get(selectedPanelRow)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 60);
     return () => window.clearTimeout(t);
   }, [selectedPanelRow]);
-  // GRUP KARTI da aynı kural: grup seçilince ("tümünü seç" — listeden, 3B'den ya da kapak kartından yeni eklenen raf/dikme) kartı
-  // görünür alana kaydır (Goker: "her dikme ve raf yeni bir satır olsun, otomatik olarak o satırı açsın").
   useEffect(() => {
     if (!selectedPanelGroupId) return;
     const t = window.setTimeout(() => rowRefs.current.get(`grp-${selectedPanelGroupId}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 60);
     return () => window.clearTimeout(t);
   }, [selectedPanelGroupId]);
 
-  // OUTLINE: showOutlines yalnız KULLANICI TERCİHİDİR (store'da kalıcı). Eskiden burada
-  // yerleştirmeye girince zorla açılıp panel yerleşince zorla kapatılıyordu → son seçim
-  // kayboluyordu. Yerleştirme sırasındaki geçici görünürlük çizimde (ShapeWithTransform).
+  // showOutlines yalnız KULLANICI TERCİHİDİR — burada yazılmaz; yerleştirmedeki geçici görünürlük ShapeWithTransform'da.
 
   const withActivePanel = (fn: (ps: Shape) => Promise<unknown> | unknown) => { const ps = shapeById(activePanelId, shapes); if (ps) return fn(ps); };
   const toggleArrow = (p: Shape | undefined) => { if (p) updateShape(p.id, { parameters: { ...p.parameters, arrowRotated: !p.parameters?.arrowRotated } }); };
-  // YÜZEYİN ŞEKLİNİ AL: bayrak VF'de saklanır; bölge hesabı (computeFreeRegionLocal)
-  // yalnız regen'de okur → tam rebuild ile panel yeni bölgesine göre üretilir.
+  // fitFaceShape'i computeFreeRegionLocal yalnız regen'de okur → tam rebuild gerekir.
   const toggleFitShape = async (vf: VirtualFace) => {
     const next = !vf.fitFaceShape;
     updateVirtualFace(vf.id, { fitFaceShape: next });
-    console.log('[YAGO][YÜZ-ŞEKLİ]', vf.id, next ? 'AÇIK' : 'KAPALI', '→ tam rebuild');
     try { await requestRebuild(vf.shapeId); } catch (e) { console.error('[YAGO][YÜZ-ŞEKLİ] rebuild hatası:', e); }
   };
 
-  // ÜST ARAÇ ÇUBUĞU — Parameters paneliyle ORTAK bileşen (ToolChip). Yalnız ekleme araçları;
-  // Outline ve Body/Panel seçim modu tüm menüleri kapsadığı için kenar çubuğu başlığında (Ui.Sidebar).
   const panelToolbar = (
     <ToolChipBar>
       <ToolChip label="Body Panel" icon={LayoutPanelTop} active={raycastMode} onClick={() => setRaycastMode(!raycastMode)} title="Add a panel on a body face" />
-      {/* Yeniden seçim (Relocate) sürerken bu çipler pasif görünür; tıklanınca yeni grup seçimine geçer (groupId düşer). */}
       <ToolChip label="Shelf" icon={Rows3} active={volumePickMode === 'shelf' && !volumePickGroupId} onClick={() => setVolumePickMode(volumePickMode === 'shelf' && !volumePickGroupId ? null : 'shelf')} title="Add shelves: pick a cavity in the 3D view" />
       <ToolChip label="Divider" icon={Columns3} active={volumePickMode === 'divider' && !volumePickGroupId} onClick={() => setVolumePickMode(volumePickMode === 'divider' && !volumePickGroupId ? null : 'divider')} title="Add vertical dividers: pick a cavity in the 3D view" />
-      {/* KAPAK (Goker): kapak sınırı işaretli panellerden adaylar — tıkla, döndür, sağ tık onayla. */}
       <ToolChip label="Door" icon={DoorClosed} active={doorPickMode} onClick={() => setDoorPickMode(!doorPickMode)} title="Add doors: mark door references on panels (Door ref), then click a body face in the 3D view" />
     </ToolChipBar>
   );
 
-  /* ── EXTRUDE ŞERİDİ ───────────────────────────────────────────────────── */
   const extrudeDock = (() => {
     if (!activePanelId || !activePanel || !faceExtrudeMode) return null;
     const hf = faceExtrudeSelectedFace !== null;
@@ -2665,7 +2286,6 @@ export function PanelEditor() {
     );
   })();
 
-  /* ── HACİM ŞERİDİ (raf/dikme grubu) — panel extrude şeridiyle birebir aynı bileşenler ── */
   const cavityDock = (g: PanelGroup) => {
     if (!faceExtrudeMode || faceExtrudeCavityGroupId !== g.id) return null;
     const hf = faceExtrudeSelectedFace !== null && !!faceExtrudeCavityFaceNormal;
@@ -2699,7 +2319,6 @@ export function PanelEditor() {
     );
   };
 
-  /* ── HACİM ADIMLARI LİSTESİ (grup kartında; panel adım listesiyle aynı satır dili) ── */
   const cavityStepsPanel = (g: PanelGroup) => {
     const steps = g.cavitySteps || [];
     if (!steps.length) return null;
@@ -2746,7 +2365,6 @@ export function PanelEditor() {
     );
   };
 
-  /* ── TAŞIMA ŞERİDİ — yalnız etkin komutun giriş satırı (adım listesi ayrı) ── */
   const moveDock = (() => {
     if (!activePanelId || !panelMoveMode) return null;
     const isRefMode = panelMoveValueMode === 'ref';
@@ -2757,7 +2375,7 @@ export function PanelEditor() {
       if (isRefMode) {
         if (!hasRefReady) return;
         await confirmPanelMoveRef();
-        setSelectedPanelRow(null); // Ref onaylandı → panel seçili kalmasın.
+        setSelectedPanelRow(null);
       } else {
         if (!hasAxis) return;
         await (panelMoveValueMode === 'fixed' ? executePanelMoveFixed : executePanelMove)({ panelShape: ps, axis: panelMoveAxis!, value: panelMoveValue, updateShape });
@@ -2790,11 +2408,7 @@ export function PanelEditor() {
     );
   })();
 
-  /* ── DÖNDÜRME ŞERİDİ — pivot + eksen seçimi, sonra değer girişi ──────────
-     REF MODU AKIŞI (Goker): 1) pivot  2) nişan noktası (panelin kendi noktası)
-     3) mod  4) eksen (X/Y/Z halkası)  5) referans panel + referans nokta
-     6) sağ tık onay. Onaydan sonra bağ KALICIDIR: referans nokta taşındıkça
-     panel o noktaya nişan alacak şekilde yeniden döner. */
+  /* Döndürme ref modu: onaydan sonra bağ KALICIDIR — referans taşındıkça panel nişan noktasıyla yeniden döner. */
   const rotateDock = (() => {
     if (!activePanelId || !panelRotateMode) return null;
     const isRotRefMode = panelRotateValueMode === 'ref';
@@ -2803,7 +2417,7 @@ export function PanelEditor() {
     const modeBar = (trailing?: React.ReactNode) => (
       <DockModeBar trailing={trailing} active={panelRotateValueMode}
         modes={dockModes(['dyn', 'ref'], { dyn: { sub: 'Angle', title: 'Enter an angle: pivot → axis → degrees' }, ref: { sub: 'Aim at face', title: 'Rotate to a reference: pivot → aim point → axis → reference face → right-click' } })}
-        onPick={k => { console.log('[YAGO][DÖN-MOD] mod seçildi:', k); setPanelRotateValueMode(k as 'dyn' | 'ref'); setRotateValueStr('0'); }} />
+        onPick={k => { setPanelRotateValueMode(k as 'dyn' | 'ref'); setRotateValueStr('0'); }} />
     );
     const exit = () => { setPanelRotateAxis(null); setPanelRotatePivot(null); setPanelRotateMode(false); if (isRotRefMode) setSelectedPanelRow(null); };
     const onApply = () => withActivePanel(async ps => {
@@ -2818,16 +2432,13 @@ export function PanelEditor() {
       setPanelRotateAxis(null); setPanelRotateValue(0); setRotateValueStr('0');
     });
 
-    // 1. ADIM: MOD SEÇİMİ — sahnede henüz hiçbir nokta/halka yok (gizmo mod
-    // seçilene kadar null döner). (Goker: "önce hiç nokta çıkmadan mod seçimi olsun.")
+    // Mod seçilene kadar gizmo null döner (sahnede nokta/halka yok).
     if (panelRotateValueMode === null) return (
       <div style={DOCK_SHELL}>
         {modeBar(<div style={{ display: 'flex', alignItems: 'center' }}><ExitBtn onClick={exit} /></div>)}
         <div style={{ padding: '5px 10px 7px', fontSize: 10.5, fontWeight: 500, color: '#a8a29e', fontFamily: UI_FONT }}>Choose a rotation mode</div>
       </div>
     );
-    // REF MODU: tek satır, adım sayaçlı durum etiketi + onay. Şerit dar: etiket
-    // kısa tutulur, tam açıklama title'da (hover) verilir.
     if (isRotRefMode) {
       const step = !hasPivot ? 1 : !hasArm ? 2 : !hasAxis ? 3 : !panelRotateRefFace ? 4 : 5;
       const label = ['1/4 · Pivot point', '2/4 · Aim point', '3/4 · Axis ring', '4/4 · Reference face', 'Ready — right-click to confirm'][step - 1];
@@ -2870,7 +2481,6 @@ export function PanelEditor() {
     );
   })();
 
-  /* ── BİRLEŞİK ADIM LİSTESİ (önizlemenin altında, kaydırılabilir) ─────── */
   const stepsPanel = (() => {
     if (!activePanelId || !activePanel || (!activeSteps.length && !activeTransformSteps.length)) return null;
     const typeBadge: Record<string, { label: string; bg: string; color: string }> = {
@@ -2878,9 +2488,7 @@ export function PanelEditor() {
       rotate: { label: 'Rotate', bg: 'rgba(37,99,235,0.08)', color: '#1d4ed8' },
       extrude: { label: 'Ext', bg: 'rgba(217,119,6,0.09)', color: '#b45309' },
     };
-    // Birleşik sıralı liste: extrude + dönüşüm adımları zaman damgasına göre.
-    // Ref adımlarında UI çözülen gerçek miktarı gösterir (donmuş value değil) —
-    // referans nokta taşındıkça buradaki değer de güncellenir.
+    // Ref adımlarında donmuş value değil, çözülen gerçek miktar (resolvedValue) gösterilir.
     const allSteps = [
       ...activeSteps.map(s => ({ id: s.id as string, stepType: 'extrude', axis: s.axisLabel as string, value: s.resolvedValue != null ? s.resolvedValue : s.value, timestamp: s.timestamp as number, isFixed: s.isFixed as boolean | undefined, isRef: !!s.refShapeId })),
       ...activeTransformSteps.map(s => ({ id: s.id as string, stepType: s.type as string, axis: s.axis as string, value: (s.type === 'rotate' && typeof s.resolvedValue === 'number') ? s.resolvedValue : s.value, timestamp: s.timestamp as number, isFixed: undefined as boolean | undefined, isRef: !!s.refTargetPanelId })),
@@ -2902,7 +2510,6 @@ export function PanelEditor() {
             {allSteps.map((s, idx) => {
               const badge = typeBadge[s.stepType] || typeBadge.move;
               const editing = stepEdit?.id === s.id;
-              // Referans bağlı adım — açı/mesafe referanstan çözülür, elle düzenlenemez (R).
               const editable = !(s.stepType === 'extrude' && s.isRef) && !(s.stepType === 'rotate' && s.isRef);
               return (
                 <div key={s.id} className="group/step flex items-center gap-1.5 pl-1.5 pr-1 h-[30px] rounded-[9px] bg-[#fdfcfa] ring-1 ring-[#ece7df] shadow-[0_1px_0_rgba(68,64,60,0.025)] hover:bg-white hover:ring-[#e2dbd0] transition-colors duration-150">
@@ -2938,12 +2545,7 @@ export function PanelEditor() {
     );
   })();
 
-  /* ── AÇILAN SATIR GÖVDESİ ─────────────────────────────────────────────────
-     Satırın hemen altında, aynı kartın içinde: araç segmenti (Extrude / Move /
-     Rotate) → aktif ŞERİT (mod segmenti + giriş/durum) → panel önizlemesi →
-     işlem adımları. (Goker, Eki 2026: şerit önizlemenin ALTINDAYKEN mod/ref
-     düğmeleri 500px'lik önizlemenin altında kalıp görünmüyordu — şerit artık
-     araçların hemen altında, önizlemenin ÜSTÜNDE; araç ve mod düğmeleri 24px.) */
+  /* Şerit önizlemenin ÜSTÜNDE olmalı (altındayken 500px önizlemenin altında kalıp görünmüyordu). */
   const renderExpandedBody = (vf: VirtualFace, vp: Shape | undefined) => {
     const isExtrudingThis = faceExtrudeMode && faceExtrudeTargetPanelId === vp?.id;
     const isMovingThis = panelMoveMode && panelMoveTargetPanelId === vp?.id;
@@ -2951,7 +2553,7 @@ export function PanelEditor() {
     const tool = isExtrudingThis ? 'extrude' : isMovingThis ? 'move' : isRotatingThis ? 'rotate' : null;
     const pickTool = (k: string) => {
       if (!vp) return;
-      if (k === tool) {   // aynı araca ikinci tık = kapat
+      if (k === tool) {
         if (k === 'extrude') setFaceExtrudeMode(false); else if (k === 'move') setPanelMoveMode(false); else setPanelRotateMode(false);
         return;
       }
@@ -2983,7 +2585,6 @@ export function PanelEditor() {
     );
   };
 
-  /* ── YÜZ LİSTESİ (akordeon satırlar + grup kartları) ────────────────────── */
   const renderFaceList = () => {
     if (!selectedShape?.geometry) return null;
     const sid = selectedShape.id;
@@ -2996,12 +2597,8 @@ export function PanelEditor() {
       </div>
     );
 
-    // DÜZ LİSTE — SATIR BİRLEŞTİRME YOK (Goker): her VF, store sırasıyla kendi
-    // satırıdır; listedeki numara = VF sırası = basan/basılan önceliği.
-    // TEK İSTİSNA — RAF/DİKME GRUBU: bir grubun üyeleri store'da bitişik durur
-    // ve TEK kart olarak (ilk üyenin sırasında) gösterilir. Grup kartı = "tümünü
-    // seç", üye satırı = tek panel seçimi. Grup sürüklenince tüm üyeler taşınır.
-    // KAPAK GRUBU da aynı kuralla TEK kart (ilk üyenin sırasında).
+    // Düz liste: her VF store sırasıyla kendi satırıdır; listedeki numara = VF sırası = basan/basılan önceliği.
+    // İstisna: raf/dikme ve kapak grubunun üyeleri store'da bitişik durur ve TEK kart olarak (ilk üyenin sırasında) gösterilir.
     type Row = { kind: 'vf'; vf: VirtualFace } | { kind: 'group'; group: PanelGroup; members: VirtualFace[] } | { kind: 'door'; group: DoorGroup; members: VirtualFace[] };
     const rows: Row[] = [];
     const seenGroups = new Set<string>();
@@ -3016,35 +2613,28 @@ export function PanelEditor() {
     const rowKeyOf = (r: Row) => (r.kind === 'vf' ? r.vf.id : `grp-${r.group.id}`);
     const clearDrag = () => { setDragIndex(null); setDropIndex(null); };
 
-    // PANEL SİL: panel + yüzeyi (VF) birlikte kalıcı olarak silinir. Kalanlar
-    // yeni duruma göre yeniden üretilir (boşalan alanı doldursunlar).
     const deletePanelAndFace = async (vfId: string) => {
       const p = panelOfVf(vfId, shapes);
       if (p) useAppStore.getState().deleteShape(p.id);
       deleteVirtualFace(vfId);
       if (selectedPanelRow === `vf-${vfId}`) setSelectedPanelRow(null);
-      console.log('[YAGO][SİL] panel + yüzey silindi', vfId, p?.id || '(panel yok)');
       // Panel silindiyse rebuild'i App izleyicisi tetikler; yalnız paneli olmayan VF için burada.
       if (!p) { try { await requestRebuild(sid); } catch (e) { console.error('Silme sonrası rebuild hatası:', e); } }
     };
-    // Sürüklenen satır (VF ya da grup üyeleri), hedefin ÖNCESİNE (targetId) yerleşir; null = en son.
-    // NOT: store.reorderVirtualFaceGroup zaten bir rebuild tetikler; buradaki
-    // ikinci rebuild bilinçli korunur — ref-dönüş açıları geçişler arasında
-    // yakınsadığından tek geçiş farklı sonuç verir (harness ile doğrulandı).
+    // reorderVirtualFaceGroup zaten rebuild tetikler; ikinci rebuild BİLİNÇLİ: ref-dönüş açıları geçişler arasında
+    // yakınsar, tek geçiş farklı sonuç verir (harness ile doğrulandı).
     const doReorder = async (draggedIds: string[], targetId: string | null) => {
       clearDrag();
       reorderVirtualFaceGroup(sid, draggedIds, targetId);
       await requestRebuild(sid);
     };
-    // KULLANICI KURALI: bırakma HER ZAMAN üzerine gelinen satırın ALTINA yerleşir.
-    // Store insert-BEFORE çalıştığı için hedef = bir sonraki satırın ilk VF id'si.
+    // Bırakma HER ZAMAN üzerine gelinen satırın ALTINA; store insert-BEFORE çalıştığı için hedef = sonraki satırın ilk VF'si.
     const onRowDropBelow = async (draggedRowIdx: number, hoveredRowIdx: number) => {
       if (draggedRowIdx === hoveredRowIdx) return clearDrag();
       const next = rows[hoveredRowIdx + 1];
-      if (next && rowKeyOf(next) === rowKeyOf(rows[draggedRowIdx])) return clearDrag(); // zaten hemen altında
+      if (next && rowKeyOf(next) === rowKeyOf(rows[draggedRowIdx])) return clearDrag();
       await doReorder(idsOf(rows[draggedRowIdx]), next ? idsOf(next)[0] : null);
     };
-    /** Sıralama tutamacı (gövde satırı / grup kartı). */
     const grip = (rowKey: string, rowIdx: number, title: string) => (
       <span draggable
         onMouseDown={() => setArmedRowKey(rowKey)} onMouseUp={() => setArmedRowKey(null)}
@@ -3058,32 +2648,27 @@ export function PanelEditor() {
       </span>
     );
 
-    /* ── TEK VF SATIRI (gövde paneli ya da grup üyesi) ─────────────────── */
     const vfRow = (vf: VirtualFace, rowIdx: number, label: string, opts: { member?: boolean; group?: PanelGroup; door?: DoorGroup }) => {
       const rowKey = vf.id;
       const dragging = !opts.member && dragIndex === rowIdx;
       const vp = panelOfVf(vf.id, shapes), ar = vp?.parameters?.arrowRotated || false, sel = selectedPanelRow === `vf-${vf.id}`;
       const dims = panelDims(vp);
-      // KAPAK ÜYESİ: tipi ve kanat bilgisi (satırda ikon + kanat numarası).
       const doorMemberType = opts.door ? doorMembersOf(opts.door)[opts.door.memberVfIds.indexOf(vf.id)] : undefined;
       return (
         <div key={rowKey} ref={el => { const k = `vf-${vf.id}`; if (el) rowRefs.current.set(k, el); else rowRefs.current.delete(k); }}
           className={rowCardClass(sel, dragging, armedRowKey === rowKey)}>
-          {/* ── SATIR BAŞLIĞI ── */}
           <div className={`relative flex items-stretch ${sel ? 'bg-[#fff8ef]' : ''}`}>
             {sel && <span className="pointer-events-none absolute left-0 top-[6px] bottom-[6px] w-[2px] rounded-r-full bg-orange-500/90" />}
             {opts.member
-              ? <span className="shrink-0 w-[10px] ml-[3px] self-stretch" /> // Üye satırı: sürükleme yok (grup birlikte taşınır).
+              ? <span className="shrink-0 w-[10px] ml-[3px] self-stretch" />
               : grip(rowKey, rowIdx, 'Drag to reorder')}
             <div onClick={e => { stop(e); if (sel) setSelectedPanelRow(null); else setSelectedPanelRow(`vf-${vf.id}`, sid); }}
               className="flex-1 min-w-0 relative flex items-center gap-1.5 pl-0.5 pr-1 py-[4px] cursor-pointer">
               <RowNum label={label} active={sel} small={opts.member} />
               <RowTypeBadge kind={opts.group ? opts.group.kind : opts.door ? 'door' : 'body'} active={sel} doorBound={!!vf.doorBound} />
               {opts.member && (opts.group || opts.door) ? (
-                // ÜYE ADI: grup adından gelir, burada DEĞİŞTİRİLEMEZ (grup satırından düzenlenir).
                 <span title={opts.door && doorMemberType ? `${DOOR_TYPE_TITLE[doorMemberType.type]}${doorMemberType.leafCount === 2 ? ` · leaf ${doorMemberType.leaf + 1}/2` : ''} — name comes from the group (edit it on the group row)` : 'Name comes from the group (edit it on the group row)'}
                   className="flex-1 min-w-0 h-[22px] px-[5px] flex items-center gap-1.5 text-[11.5px] font-medium text-stone-500 truncate cursor-default select-none">
-                  {/* KAPAK ÜYESİ: tip ikonu (açılış işareti) + kanat numarası — tip çubuğuyla aynı çizim. */}
                   {opts.door && doorMemberType && <span className="shrink-0 text-stone-400"><DoorTypeIcon type={doorMemberType.type} size={11} strokeWidth={1.4} /></span>}
                   <span className="truncate">{opts.group ? groupName(opts.group) : doorGroupName(opts.door!)}</span>
                   {opts.door && doorMemberType?.leafCount === 2 && <span className="shrink-0 text-[9.5px] font-semibold text-stone-400 tabular-nums">{doorMemberType.leaf + 1}/2</span>}
@@ -3093,17 +2678,14 @@ export function PanelEditor() {
                   placeholder="Panel" title="Panel name" className={`${ROW_INPUT_CLASS} font-medium`} />
               )}
               <RowDims w={dims?.primary} h={dims?.secondary} t={dims?.thickness} tLetter="T" />
-              {/* Kontrol alanı sabit genişlik (üyede kart dolgusu kadar dar) → ölçüler hizalı kalır. */}
               <div className="flex items-center justify-end gap-[3px] shrink-0 ml-0.5" style={{ width: opts.member ? ROW_TRAIL_W - MEMBER_INSET : ROW_TRAIL_W }} onClick={stop}>
-                {/* Yüzeyin şeklini al: iç panelde (raf/dikme) serbest bölge yok → gösterilmez. */}
+                {/* İç panelde (raf/dikme) serbest bölge yok → fit-shape gösterilmez. */}
                 {!opts.member && <FitShapeToggle checked={!!vf.fitFaceShape} disabled={!vf.hasPanel} onToggle={() => { void toggleFitShape(vf); }} />}
-                {/* KAPAK SINIRI: her satırda (gövde paneli, raf/dikme üyesi) — kapak üyesinde yok. Şemadaki işaretle aynı bayrak (VF.doorBound). */}
                 {opts.door ? <span className="w-6 h-6 shrink-0" /> : <DoorRefToggle checked={!!vf.doorBound} disabled={!vf.hasPanel} onToggle={() => setVfDoorBound(vf.id, !vf.doorBound)} />}
                 <button disabled={!vf.hasPanel} onClick={e => { stop(e); toggleArrow(vp); }} title="Toggle arrow direction"
                   className={`${ROW_BTN} ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-stone-700 bg-[#f1ece4]' : 'text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700'}`}>
                   <ArrowUp size={ROW_ICON} strokeWidth={1.9} className={`transition-transform duration-200 ${ar ? '' : 'rotate-90'}`} />
                 </button>
-                {/* Sil: her zaman görünür. Üye paneller adet ile yönetilir. */}
                 {!opts.member
                   ? <button onClick={e => { stop(e); void deletePanelAndFace(vf.id); }} title="Delete panel" className={ROW_DEL_CLASS}><Trash2 size={ROW_ICON - 1} strokeWidth={1.9} /></button>
                   : <span className="w-6 h-6 shrink-0" />}
@@ -3111,20 +2693,17 @@ export function PanelEditor() {
               </div>
             </div>
           </div>
-          {/* ── AÇILAN GÖVDE (akordeon) ── */}
           {sel && renderExpandedBody(vf, vp)}
         </div>
       );
     };
 
-    /* ── RAF / DİKME GRUP KARTI ────────────────────────────────────────── */
     const groupCard = (g: PanelGroup, members: VirtualFace[], rowIdx: number, label: string) => {
       const rowKey = `grp-${g.id}`;
       const selAll = selectedPanelGroupId === g.id;
       const dimsWHD = [0, 1, 2].map(a => round1(boxSpan(g.cavity, a)));
       const countVal = countDraft?.id === g.id ? countDraft.v : String(g.count);
       const applyCount = (n: number) => { setCountDraft(null); if (!isNaN(n) && n >= 1 && n !== g.count) void setGroupCount(g.id, n); };
-      // HEDEF ARALIK (Goker): değer girilince adet hacimden türetilir ve gövde boyutlandıkça kendini günceller; boş = kapalı.
       const autoGap = g.targetGap != null && g.targetGap > 0;
       const gapVal = gapDraft?.id === g.id ? gapDraft.v : (autoGap ? String(g.targetGap) : '');
       const applyGap = (raw: string) => {
@@ -3136,22 +2715,18 @@ export function PanelEditor() {
       };
       const open = openCards.has(g.id) || selAll || members.some(m => selectedPanelRow === `vf-${m.id}`);
       const mIds = members.map(m => m.id);
-      // TEK MANTIK: başlık ya da ok — kapalıysa aç + tümünü seç; açıksa kapat (grup / üye seçimi düşer).
       const toggleRow = (e: React.MouseEvent) => { stop(e); if (open) closeCard(g.id, mIds); else { setSelectedPanelGroupId(g.id); openCard(g.id); } };
       return (
         <div key={rowKey} ref={el => { if (el) rowRefs.current.set(rowKey, el); else rowRefs.current.delete(rowKey); }}
           className={rowCardClass(open, dragIndex === rowIdx, armedRowKey === rowKey)}>
-          {/* ── GRUP BAŞLIĞI: tıkla = aç (tümünü seç) / kapat ── */}
           <div className={`relative flex items-stretch ${selAll ? 'bg-[#fff8ef]' : ''}`}>
             {selAll && <span className="pointer-events-none absolute left-0 top-[6px] bottom-[6px] w-[2px] rounded-r-full bg-orange-500/90" />}
             {grip(rowKey, rowIdx, 'Drag to reorder (whole group)')}
             <div onClick={toggleRow} className="flex-1 min-w-0 relative flex items-center gap-1.5 pl-0.5 pr-1 py-[4px] cursor-pointer" title={open ? 'Collapse' : 'Expand — selects all panels in this group'}>
               <RowNum label={label} active={selAll} />
               <RowTypeBadge kind={g.kind} active={open} count={g.count} />
-              {/* GRUP ADI: değiştirilebilir; üye panellerin adı bu addır. */}
               <input type="text" value={groupName(g)} onClick={stop} onChange={e => renamePanelGroup(g.id, e.target.value)} placeholder={groupKindLabel(g.kind)}
                 title="Group name (applies to all its panels)" className={`${ROW_INPUT_CLASS} font-semibold`} />
-              {/* Hacmin en · boy · derinliği — panel satırlarıyla aynı sütunlar. */}
               <RowDims w={dimsWHD[0]} h={dimsWHD[1]} t={dimsWHD[2]} tLetter="D" title="Cavity width · height · depth" />
               <div className="flex items-center justify-end gap-[3px] shrink-0 ml-0.5" style={{ width: ROW_TRAIL_W }} onClick={stop}>
                 <button onClick={e => { stop(e); deletePanelGroupWithMembers(g.id); }} title="Delete group (all panels)" className={ROW_DEL_CLASS}><Trash2 size={ROW_ICON - 1} strokeWidth={1.9} /></button>
@@ -3159,11 +2734,8 @@ export function PanelEditor() {
               </div>
             </div>
           </div>
-          {/* ── AÇILAN GÖVDE: adet + şema + üye satırları ── */}
           {open && (
             <div className="yago-expand px-2 pt-2 pb-2" style={{ borderTop: '1px solid #f3e6d6', fontFamily: UI_FONT }} onClick={stop}>
-              {/* TEK SATIR (Goker, Eki 2026: "işaretlenen alan tek sırada olsun; volume/relocate kısa, qty/spacing gereksiz uzun"):
-                  solda kısa eylem düğmeleri, sağda dar değer kutuları + eşitle. */}
               {(() => {
                 const editingVol = faceExtrudeMode && faceExtrudeCavityGroupId === g.id;
                 const relocating = !!volumePickMode && volumePickGroupId === g.id;
@@ -3175,12 +2747,11 @@ export function PanelEditor() {
                     <CardAction compact icon={Move3d} label="Relocate" active={relocating}
                       title="Pick a new volume for this group in the 3D view (count, thicknesses and list order are kept)"
                       onClick={() => { if (relocating) setVolumePickMode(null); else startGroupRepick(g.id); }} />
-                    {/* KAPAK DERZİNE BAĞ (Goker: kapak arayüzünden eklenen raf/dikme "hep o kapak aralarının arasında çalışsın"): rozet + çöz. */}
                     {g.doorBond && (
                       <span className="shrink-0 h-[28px] pl-2 pr-1 inline-flex items-center gap-1 rounded-[7px] bg-orange-50 ring-1 ring-orange-200/70 text-[10.5px] font-semibold text-orange-700"
                         title={`Bound to a door joint (${g.doorBond.align === 'center' ? 'centered on the joint' : g.doorBond.align === 'min' ? 'behind the lower / left door' : 'behind the upper / right door'}): this ${g.kind} follows the doors — when the door sizes change it moves with the joint. Editing its gap here moves the door joint instead. Unbind to free it (it stays where it is).`}>
                         <DoorClosed size={12} strokeWidth={2} /><span>Door joint</span>
-                        <button type="button" title="Unbind from the door joint — the panel stays where it is (to delete the panel use the trash button in the row header, or Remove in the door card)" onClick={e => { stop(e); useAppStore.getState().updatePanelGroup(g.id, { doorBond: undefined }); console.log('[YAGO][GRUP-KAPAK-BAĞ] bağ çözüldü (grup kartı):', g.id); }}
+                        <button type="button" title="Unbind from the door joint — the panel stays where it is (to delete the panel use the trash button in the row header, or Remove in the door card)" onClick={e => { stop(e); useAppStore.getState().updatePanelGroup(g.id, { doorBond: undefined }); }}
                           className="w-[18px] h-[18px] rounded-md flex items-center justify-center text-orange-500 hover:bg-orange-100 hover:text-orange-800 transition-colors"><Unlink size={11} strokeWidth={2.2} /></button>
                       </span>
                     )}
@@ -3211,14 +2782,14 @@ export function PanelEditor() {
                   </div>
                 );
               })()}
-              {/* Şema sırası = geometrik sıra (memberVfIds / groupIndex); numara = listedeki sıra (members). */}
+              {/* Şema sırası = geometrik sıra (memberVfIds); numara = listedeki sıra (members) — ikisi farklı olabilir. */}
               <GroupSchematic group={g} selectedIndex={g.memberVfIds.findIndex(id => selectedPanelRow === `vf-${id}`)}
                 memberLabels={g.memberVfIds.map((id, i) => { const mi = members.findIndex(m => m.id === id); return `${label}.${(mi >= 0 ? mi : i) + 1}`; })}
                 onEditGap={(k, v, pv) => { if (pv) previewGroupGap(g.id, k, v); else void editGroupGap(g.id, k, v); }} onToggleLock={k => toggleGroupGapLock(g.id, k)}
                 onEditBegin={() => groupLayoutSnapshot(g.id)} onEditCancel={snap => restoreGroupLayout(g.id, snap as GroupLayoutSnap | null)}
                 doorRefs={g.memberVfIds.map(id => !!virtualFaces.find(f => f.id === id)?.doorBound)}
                 splitBacks={g.memberVfIds.map(id => !!virtualFaces.find(f => f.id === id)?.splitBack)}
-                onToggleSplitBack={i => { const id = g.memberVfIds[i]; const f = virtualFaces.find(x => x.id === id); if (f) { updateVirtualFace(id, { splitBack: !f.splitBack }); console.log('[YAGO][ARKALIK-BÖL]', id, !f.splitBack ? 'İŞARETLENDİ' : 'kaldırıldı', '(davranış henüz tanımlı değil)'); } }}
+                onToggleSplitBack={i => { const id = g.memberVfIds[i]; const f = virtualFaces.find(x => x.id === id); if (f) { updateVirtualFace(id, { splitBack: !f.splitBack }); } }}
                 onEditThickness={(i, v, pv) => { if (pv) previewGroupMemberThickness(g.id, i, v); else void setGroupMemberThickness(g.id, i, v); }}
                 onSelectMember={i => { const id = g.memberVfIds[i]; if (id) setSelectedPanelRow(`vf-${id}`, sid); }}
                 onToggleDoorRef={i => { const id = g.memberVfIds[i]; const f = virtualFaces.find(x => x.id === id); if (f) setVfDoorBound(id, !f.doorBound); }} />
@@ -3234,19 +2805,14 @@ export function PanelEditor() {
       );
     };
 
-
-    /* ── KAPAK GRUP KARTI (Goker, Eki 2026) — raf/dikme kartıyla aynı dil ─────
-       Üst satır: Dikeyde böl (sütun) · Yatayda böl (satır) · Eşitle; ikinci satır:
-       Dış/İç kapak · kalınlık · kapaklar arası boşluk; sonra kapak şeması ve üye satırları. */
     const doorCard = (g: DoorGroup, members: VirtualFace[], rowIdx: number, label: string) => {
       const rowKey = `grp-${g.id}`;
       const selAll = selectedDoorGroupId === g.id;
       const open = openCards.has(g.id) || selAll || members.some(m => selectedPanelRow === `vf-${m.id}`);
       const dimsW = round1(g.rect.u1 - g.rect.u0), dimsH = round1(g.rect.v1 - g.rect.v0);
-      const doorParent = open ? shapeById(g.shapeId, shapes) : undefined;   // şema yalnız açıkken çözülür (açılı kesimler + yarım binme uygunluğu)
+      const doorParent = open ? shapeById(g.shapeId, shapes) : undefined;   // pahalı: kesimler yalnız kart açıkken çözülür
       const doorCuts = doorParent ? collectDoorCuts(doorParent, shapes, virtualFaces) : [];
       const mIds = members.map(m => m.id);
-      // TEK MANTIK: başlık ya da ok — kapalıysa aç + tümünü seç; açıksa kapat (grup / üye seçimi, şema seçimi, panel ref modu düşer).
       const toggleRow = (e: React.MouseEvent) => { stop(e); if (open) closeCard(g.id, mIds); else { setSelectedDoorGroupId(g.id); openCard(g.id); } };
       const draft = (field: 't' | 'gap', fallback: number) => (doorDraft?.id === g.id && doorDraft.field === field ? doorDraft.v : String(fallback));
       const applyDraft = (field: 't' | 'gap') => {
@@ -3262,7 +2828,6 @@ export function PanelEditor() {
           onKeyDown={e => { if (e.key === 'Enter') applyDraft(field); if (e.key === 'Escape') setDoorDraft(null); }}
           onClick={stop} className="yago-field" style={{ ...FIELD_INPUT, width: 34, textAlign: 'right' }} />
       );
-      // HEDEF BÖLGELER: şemadaki seçim (düğüm id'leri; kök → yaprak tık döngüsü). Tip: altındaki kapaklar, boşsa hepsi.
       const solvedTree = solveDoorTree(g);
       const leaves = doorLeaves(g.tree);
       const allLeafIds = leaves.map(l => l.id);
@@ -3275,7 +2840,7 @@ export function PanelEditor() {
       const typeOf = (id: string) => leaves.find(l => l.id === id)?.type ?? 'left';
       const commonType = typeTargets.length && typeTargets.every(id => typeOf(id) === typeOf(typeTargets[0])) ? typeOf(typeTargets[0]) : null;
       const typeHint = !picked.length ? (allLeafIds.length === 1 ? '1 door' : `All · ${allLeafIds.length}`) : `${typeTargets.length} / ${allLeafIds.length}`;
-      // Tık yolu (kök → yaprak): seçili düğüm yoldaysa bir seviye iner; yaprak tekrar tıklanırsa seçim kalkar; değilse kök.
+      // Seçili düğüm yoldaysa bir seviye iner; yaprak tekrar tıklanırsa seçim kalkar; yolda değilse kök.
       const onPathClick = (path: string[], additive: boolean) => {
         if (!path.length) return;
         if (!additive) {
@@ -3285,15 +2850,12 @@ export function PanelEditor() {
           else setDoorNodeSel({ id: g.id, nodes: [path[i + 1]] });
           return;
         }
-        // Shift/Ctrl: seçili düğümle AYNI seviyedeki bölge eklenir / çıkarılır (seçim yoksa kapak).
         const depth = primaryId ? (findSolvedNode(solvedTree, primaryId)?.depth ?? path.length - 1) : path.length - 1;
         const node = path[Math.min(depth, path.length - 1)];
         const next = picked.includes(node) ? picked.filter(x => x !== node) : [...picked, node];
         setDoorNodeSel(next.length ? { id: g.id, nodes: next } : null);
       };
-      // Tip uygulandı → seçim kalkar (Goker: "tip girdikten sonra kapak seçimlerini kaldır").
       const applyType = (t: DoorType) => { void setDoorLeafTypes(g.id, typeTargets, t); setDoorNodeSel(null); };
-      // BÖLME SAYILARI: seçili bölge (boşsa kök alan); eksen başına parça sayısı — 1 = o eksende bölünmemiş.
       const splitNode = primary ?? g.tree;
       const countOf = (ax: 'u' | 'v') => (splitNode.kind === 'split' && splitNode.axis === ax ? splitNode.children.length : 1);
       const setCount = (ax: 'u' | 'v', n: number) => {
@@ -3301,7 +2863,6 @@ export function PanelEditor() {
         const ids = targets.map(id => setDoorNodeSplit(g.id, id, ax, n)).filter((x): x is string => !!x);
         setDoorNodeSel(ids.length ? { id: g.id, nodes: ids } : null);   // sonuç bölge seçili kalır (ardışık ayar)
       };
-      // BÖLME MODU: Count · Panel ref (store bayrağı) · Spacing.
       const refMode = doorRefPickGroupId === g.id;
       const splitMode: 'count' | 'ref' | 'spacing' = refMode ? 'ref' : doorSplitMode?.id === g.id ? doorSplitMode.mode : 'count';
       const pickSplitMode = (m: 'count' | 'ref' | 'spacing') => {
@@ -3309,31 +2870,24 @@ export function PanelEditor() {
         if (refMode) setDoorRefPickGroupId(null);
         setDoorSplitMode({ id: g.id, mode: m });
       };
-      // ARAYA RAF / DİKME: düğme modu açar (panel ref kapanır); derze tık → grup oluşur (listede kapaktan sonra), mod kapanır.
       const addPick = doorAddPick?.id === g.id ? doorAddPick.axis : null;
       const toggleAddPick = (axis: 'u' | 'v') => { if (addPick === axis) setDoorAddPick(null); else { if (refMode) setDoorRefPickGroupId(null); setDoorAddPick({ id: g.id, axis }); } };
-      // Tık → tıklanan parça; Shift/Ctrl+tık → derzin boş parçalarının hepsine (Goker: "2 dikme arasındaki 3 bölüme de ayrı ayrı raf").
-      // YENİ SATIR: her parça kendi grubu (= listede kendi kartı, KAPALI). Kart otomatik AÇILMAZ, grup seçilmez (Goker, Eki 2026:
-      // "dikme ve raf atınca otomatik onun panelini açıyor; düzenlemek istediğimde kendim açayım, otomatik açmasın") — önceki
-      // "yeni satırı aç ve seç" davranışı geri alındı. Kapak kartı seçili ve açık kalır, mod kapanır.
+      // Her parça kendi grubu (listede kendi kartı); yeni kart bilinçli olarak otomatik AÇILMAZ/seçilmez — kapak kartı açık kalır.
       const onAddPick = (splitId: string, k: number, ats: number[]) => {
         const made = ats.map(at => addPanelAtDoorJoint(g.id, splitId, k, at)).filter((pg): pg is PanelGroup => !!pg);
         if (!made.length) return;
         setDoorAddPick(null);
         setSelectedDoorGroupId(g.id);
         openCard(g.id);
-        console.log('[YAGO][KAPAK-ARA] yeni satır(lar) eklendi (kapalı):', made.map(pg => `${pg.kind}:${pg.id}`).join(', '));
       };
-      // SİL (Goker: "tıklayıp dikme veya raf atarsam sonradan silebileyim"): aynı modda mevcut levhanın bandı ✕ Remove → grup + panel silinir.
-      const onRemovePick = (pgId: string) => { deletePanelGroupWithMembers(pgId); console.log('[YAGO][KAPAK-ARA] levha kaldırıldı (kapak kartı):', pgId); };
+      const onRemovePick = (pgId: string) => { deletePanelGroupWithMembers(pgId); };
       const addedCount = (axis: 'u' | 'v') => panelGroups.filter(pg => pg.doorBond?.doorGroupId === g.id && pg.axis === (axis === 'u' ? doorPlaneAxes(g.axis).u : doorPlaneAxes(g.axis).v)).length;
       const addJointCount = (axis: 'u' | 'v') => doorJoints(solvedTree).filter(j => j.axis === axis).length;
-      // Şema levhaları (kapak sınırı işaretli) ve — yalnız araya ekleme modunda — derz parçalama engelleri (işaretsiz dikme/raflar da derzi keser).
+      // addObstacles yalnız araya ekleme modunda: işaretsiz dikme/raflar da derzi keser.
       const nearPanels = doorParent ? doorNearPanels(g, doorParent, shapes, virtualFaces, panelGroups) : [];
       const addObstacles = doorParent && addPick ? doorNearPanels(g, doorParent, shapes, virtualFaces, panelGroups, undefined, true) : undefined;
       const freePartCount = addPick ? doorJointParts(doorJoints(solvedTree), addObstacles ?? nearPanels, addPick).reduce((a, p) => a + p.free.length, 0) : 0;
-      // SPACING değeri: seçili bölgenin hedefi; yoksa kapsamdaki (seçili bölgeler / kök) ilk hedef — seçim değişse de değer görünür ve
-      // iptal edilebilir (Goker: "yazılan değeri iptal edemiyorum"). İptal (null) kapsamdaki o eksenli TÜM hedefleri kaldırır.
+      // Spacing: yoksa kapsamdaki ilk hedef gösterilir (iptal edilebilsin); iptal kapsamdaki o eksenli TÜM hedefleri kaldırır.
       const scopeIds = picked.length ? picked : [g.tree.id];
       const sizeOf = (ax: 'u' | 'v') => {
         if (splitNode.kind === 'split' && splitNode.axis === ax && splitNode.targetSize) return splitNode.targetSize;
@@ -3369,11 +2923,6 @@ export function PanelEditor() {
           </div>
           {open && (
             <div className="yago-expand px-2 pt-2 pb-2" style={{ borderTop: '1px solid #f3e6d6', fontFamily: UI_FONT }} onClick={stop}>
-              {/* TEK SATIR (Goker, Eki 2026: "gereksiz yükseklikten alan kaybedilmiş, alanı iyi kullanalım"): dış/iç · kalınlık ·
-                  BÖLME MODU (açılır liste: Count / Panel ref / Spacing) · seçili bölgenin V / H alanı · eşitle.
-                  Count: parça sayısı (yazılır; ↑↓ ile adım). Panel ref: 3B'de ya da şemada bir kapak-sınırı dikme/rafa tıkla → kapak
-                  onun ortasından bölünür, DERZ LEVHAYA BAĞLANIR (levha taşınınca kapak izler — Goker: "dikmenin arası değişince kapak
-                  kendini ona göre güncellesin"; rozetle Left/Center/Right LEVHAYI taşır, kapak yerinde). Spacing: hedef parça ölçüsü (mm). */}
               <div className="flex items-center gap-1 mb-1.5">
                 <PlacementSelect value={g.placement} onChange={v => { void setDoorPlacement(g.id, v); }} />
                 <FieldBox fixed label="T" title="Door thickness (mm)">{numInput('t', g.thickness)}{unitTxt('mm')}</FieldBox>
@@ -3391,9 +2940,6 @@ export function PanelEditor() {
                 )}
                 <IconSquareBtn icon={Equal} title="Equalize sizes (unlock all)" onClick={() => { void equalizeDoorGroup(g.id); }} />
               </div>
-              {/* KAPAKLARIN ARASINA RAF / DİKME (Goker, Eki 2026: "2 düğme daha koy: raf ekle ve dikme ekle; basınca 2 kapak arası
-                  belirginleşsin; genel listeye door satırından sonra eklensin; eklenen raf ve dikme hep o kapak aralarının arasında
-                  çalışsın"): Divider = V derzleri, Shelf = H derzleri; şemadaki derze tık → derze bağlı yeni grup (levha kapağı izler). */}
               <div className="flex items-center gap-1 mb-1.5">
                 <span className="shrink-0 pl-0.5 pr-1 text-[9.5px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]">Between doors</span>
                 <CardAction compact icon={Columns3} label="Divider" active={addPick === 'u'} tone="amber"
@@ -3411,7 +2957,6 @@ export function PanelEditor() {
                     title="The highlighted gaps between doors are the joints you can place the panel at — a joint crossed by a divider / shelf is split into parts, each part takes its own panel (its own row in the list). A panel already added between doors shows ✕ Remove. Esc cancels." />
                 )}
               </div>
-              {/* KAPAK TİPİ (Goker, Eki 2026): Left · Right · Up · Down · Double · Fold — hedef: şemada seçilen kapaklar. */}
               <DoorTypeBar value={commonType} hint={typeHint} onPick={applyType} />
               <DoorSchematic group={g} selectedIndex={selMemberIdx} selectedNodes={picked}
                 memberLabels={g.memberVfIds.map((id, i) => { const mi = members.findIndex(m => m.id === id); return `${label}.${(mi >= 0 ? mi : i) + 1}`; })}
@@ -3436,7 +2981,6 @@ export function PanelEditor() {
       );
     };
 
-    // Liste her zaman TAM çizilir (odak modu kaldırıldı).
     const elements: React.ReactNode[] = [];
     rows.forEach((row, rowIdx) => {
       const draggingThis = dragIndex === rowIdx, dropHere = dropIndex === rowIdx;
@@ -3448,11 +2992,9 @@ export function PanelEditor() {
           {row.kind === 'vf' ? vfRow(row.vf, rowIdx, label, {}) : row.kind === 'door' ? doorCard(row.group, row.members, rowIdx, label) : groupCard(row.group, row.members, rowIdx, label)}
         </div>
       );
-      // YERLEŞİM GÖSTERGESİ: sürüklenen öğe TAM BURAYA (bu satırın altına) yerleşecek.
       if (dropHere && !draggingThis) elements.push(<div key={`${rowKeyOf(row)}-drop-ind`} className={`${DROP_BAND} -my-0.5`} />);
     });
-    // En ÜSTE taşıma: listenin başında, sürükleme sırasında aktifleşen ince bir
-    // tutma alanı; üzerine gelinince diğerleriyle aynı stilde turuncu bant görünür.
+    // Bırakma hep satırın ALTINA olduğundan en üste taşıma için ayrı bırakma alanı gerekir.
     if (dragIndex !== null && dragIndex !== 0 && rows.length > 0) {
       elements.unshift(
         <div key="drop-top" className="h-4 -mb-1 flex items-center"
@@ -3465,12 +3007,7 @@ export function PanelEditor() {
     return elements;
   };
 
-  /* ── YERLEŞTİRME ŞERİDİ (ortak): Body Panel / Shelf / Divider / Door ─────────────────
-     Goker (Eki 2026): "paneli yüzey seçerken isim yazabileyim; kapakta inner/outer panel atmadan
-     önce seçilsin — divider yerleştirirken de aynısını yapıyordum". Şerit, yerleştirme ÖNCESİ
-     kararları toplar: (üstte) seçenekler — kapakta Outer/Inner; (1. satır) tür etiketi + AD girişi
-     + ✓ / ✕; (2. satır) durum. Ad boşsa varsayılan ad (Panel / Shelf / Divider / Door). Ad girişinde
-     Enter = onay (sahnede sağ tıkla aynı), Esc = moddan çık. Yeniden seçimde (Relocate) ad yok. */
+  /* Ortak yerleştirme şeridi: ad ve (kapakta) outer/inner yerleştirme ÖNCESİ seçilir; Enter = sahnede sağ tık. */
   const placementDock = ({ tag, defaultName, showName = true, ready, status, onConfirm, onExit, confirmTitle, lead }: {
     tag: string; defaultName: string; showName?: boolean; ready: boolean; status: string;
     onConfirm: () => void; onExit: () => void; confirmTitle: string; lead?: React.ReactNode;
@@ -3479,7 +3016,6 @@ export function PanelEditor() {
       <div style={DOCK_ROW}>
         <span style={dockAxisTag('#44403c')}>{tag}</span>
         {lead}
-        {/* Ad kutusu etiketsiz (Goker: "name yazmasın, isim girme alanı olduğu zaten belli"); varsayılan ad placeholder'da. */}
         {showName ? (
           <FieldBox label="" title={`Name of the new ${defaultName.toLowerCase()} (empty = ${defaultName})`}>
             <input type="text" autoFocus value={placementName} placeholder={defaultName} spellCheck={false}
@@ -3495,7 +3031,6 @@ export function PanelEditor() {
     </div>
   );
 
-  /* Body Panel: yüz yakalama — önizlenen VF şeritte ✓ ile de onaylanır. */
   const raycastDock = (() => {
     if (!raycastMode) return null;
     const ready = !!selectedShape && !!raycastPendingVf;
@@ -3507,14 +3042,11 @@ export function PanelEditor() {
     });
   })();
 
-  /* Raf / dikme: hacim seçimi (Relocate'te ad girişi yok). */
   const volumePickDock = (() => {
     if (!volumePickMode) return null;
     const n = volumePickCandidates.length;
     const ready = !!selectedShape && n > 0;
-    // Adaylar: en kapsayıcı (şekilli bölge) → içeri doğru düz kutular; etiket türü söyler.
     const cur = volumePickCandidates[volumePickIndex];
-    // YENİDEN SEÇİM: taşınan grup (kartındaki Relocate) — etiket ve onay buna göre.
     const relocGroup = volumePickGroupId ? panelGroups.find(g => g.id === volumePickGroupId) : undefined;
     const kindLabel = volumePickMode === 'shelf' ? 'Shelf' : 'Divider';
     const status = !selectedShape ? 'Select a body first'
@@ -3527,7 +3059,6 @@ export function PanelEditor() {
     });
   })();
 
-  /* Kapak: dış / iç seçimi YERLEŞTİRMEDEN ÖNCE (aynı satırda açılır liste) + ad. */
   const doorPickDock = (() => {
     if (!doorPickMode) return null;
     const n = doorPickCandidates.length;
@@ -3539,7 +3070,6 @@ export function PanelEditor() {
       : (() => { const r = doorPickPlacement === 'inner' ? cur.inner : cur.outer; return `Door ${doorPickIndex + 1}/${n} · ${Math.round(r.u1 - r.u0)}×${Math.round(r.v1 - r.v0)}${cur.rot ? ' · angled (follows reference)' : ''} — click: next · right-click: place`; })();
     return placementDock({
       tag: 'DOOR', defaultName: 'Door', ready, status,
-      // TEK SATIR (Goker: "kapak yerleştirmedeki düğmeler tek satır; inner/outer açılır liste"): DOOR · Outer▾ · ad · ✓ · ✕
       lead: <PlacementSelect value={doorPickPlacement} onChange={setDoorPickPlacement} />,
       onConfirm: () => { if (ready && selectedShape) confirmDoorPick(selectedShape.id, doorPickCandidates[doorPickIndex]); },
       onExit: () => setDoorPickMode(false), confirmTitle: 'Place door',

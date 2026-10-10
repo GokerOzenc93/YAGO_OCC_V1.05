@@ -3,10 +3,6 @@ import { useShallow } from 'zustand/react/shallow';
 import * as THREE from 'three';
 import { type AxisDir, type Vec3, type VertexModification, rebuildBodySolid } from './components/Geometry';
 
-// ═══════════════════════════════════════════════════════════════════════════
-// VERİ YAPILARI
-// ═══════════════════════════════════════════════════════════════════════════
-
 export interface SubtractionParameters {
   width: string; height: string; depth: string;
   posX: string; posY: string; posZ: string;
@@ -45,143 +41,84 @@ export interface VirtualFace {
   center: [number, number, number];
   vertices: [number, number, number][];
   description: string; hasPanel: boolean;
-  /** TAM YÜZ MODELİ: VF = tıklanan yüz bileşeninin konturu; resize'da yüz eşlemesiyle güncellenir. */
+  /** VF = tıklanan yüz bileşeninin konturu; resize'da yüz eşlemesiyle güncellenir. */
   parentFaceShape?: boolean;
   faceGroupDescriptor?: FaceDescriptor;
-  /** Yakalama anında bu yüzeye DEĞEN kardeş panellerin id'leri (kimlik; geometri canlı okunur). */
+  /** Yakalama anında bu yüzeye değen kardeş panel id'leri (geometri canlı okunur). */
   touchingSiblingIds?: string[];
-  /** DEĞİŞMEZ TARAF SÖZLEŞMESİ: kardeş ayak izine göre taraf (±1); stored-wins birleşir. */
+  /** Kardeş ayak izine göre değişmez taraf (±1); stored-wins birleşir. */
   sideRelations?: Record<string, number>;
-  /** YÜZEYİN ŞEKLİNİ AL: açıkken panel serbest bölgenin tam (L/U/çentikli) şeklini alır. */
+  /** Açıkken panel serbest bölgenin tam (L/U/çentikli) şeklini alır. */
   fitFaceShape?: boolean;
-  /** İÇ PANEL (raf/dikme): gövde yüzüne değil bir raf/dikme grubunun çözülmüş
-   *  konumuna bağlıdır; regen'de yüz eşlemesine girmez, grup çözücüsü yazar. */
+  /** İç panel (raf/dikme/kapak): konumu grup çözücüsü yazar; regen'de yüz eşlemesine girmez. */
   interior?: boolean;
   groupId?: string;
   groupIndex?: number;
-  /** KAPAK SINIRI (Goker, Eki 2026): bu panel (gövde paneli, raf ya da dikme) kapak
-   *  yerleşiminde referans kenardır — kapak adayları bu panellerin kenarlarından kurulur. */
+  /** Kapak sınırı: kapak adayları bu panelin kenarlarından kurulur. */
   doorBound?: boolean;
-  /** ARKALIĞI BÖL işareti (Goker, Eki 2026): raf/dikme şemasında levha üstündeki rozet; davranışı sonra tanımlanacak — şimdilik yalnız bayrak. */
+  /** Arkalığı böl işareti (şimdilik yalnız bayrak). */
   splitBack?: boolean;
-  /** KAPAK ÜYESİ: VF bir kapak grubuna aittir (interior=true; geometriyi DoorService yazar). */
+  /** Kapak üyesi (interior=true; geometriyi DoorService yazar). */
   doorGroupId?: string;
   doorIndex?: number;
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// KAPAK (DoorService) — Goker, Eki 2026: "kapak yerleştirmek istiyorum; dikme, raf ve
-// gövde panellerine kapak sınırı işareti koyayım; tıkladığım yerde büyükten küçüğe
-// kapak alternatifleri dönsün; dış/iç kapak; dikeyde/yatayda böl; kilit + ara ölçü;
-// iki kapak arasındaki boşluk."
-// ═══════════════════════════════════════════════════════════════════════════
 
 /** Kapak kenar referansı: bir sınır panelinin VF'si ya da gövde kutusunun kenarı. */
 export interface DoorBoundRef { vfId?: string; body?: boolean }
 export interface DoorBounds { uMin: DoorBoundRef; uMax: DoorBoundRef; vMin: DoorBoundRef; vMax: DoorBoundRef }
 /** Kapak düzlemindeki dikdörtgen (gövde-yerel u/v) + kapak ÖN yüzünün düzlem koordinatı (kapak ekseninde). */
 export interface DoorRect { u0: number; u1: number; v0: number; v1: number; front: number }
-/**
- * KAPAK ADAYI (3B seçim): tıklanan gövde yüzünden (axis/side) bakılan düzlemde, kapak sınırı
- * panellerinin kenarlarıyla kurulan dikdörtgen. Hem iç (panellerin arasına) hem dış
- * (panel kalınlıklarının dışından) dikdörtgeni taşır; alan büyükten küçüğe sıralanır.
- */
+/** Kapak adayı: tıklanan gövde yüzü düzleminde sınır paneli kenarlarından kurulan iç/dış dikdörtgen; alan büyükten küçüğe. */
 export interface DoorPick {
   key: string; axis: 0 | 1 | 2; side: 1 | -1; bounds: DoorBounds;
   inner: DoorRect; outer: DoorRect; area: number;
-  /** Kapak düzleminin derinlik referansı (ön yüzü düzlemi veren sınır paneli ya da gövde) + aynı dikdörtgendeki sırası. */
+  /** Kapak düzleminin derinlik referansı + aynı dikdörtgendeki sırası. */
   depth: DoorBoundRef; depthIndex: number; depthCount: number;
-  /** Sınır panellerinin sayısı (gövde kenarı sayılmaz) — etikette "Body" / "2 panels". */
   boundPanelCount: number;
-  /**
-   * AÇILI REFERANS (Goker, Eki 2026: "referans panel açılı yerleşmişse kapak da açılı"): derinlik referansı dönmüş
-   * bir panelse onun dönüşü (gövde-yerel Matrix4, 16 eleman); inner/outer dikdörtgenleri bu çerçevededir
-   * (DoorService.doorRotOfPanel). Düz referansta yok.
-   */
+  /** Açılı derinlik referansında panelin dönüşü (gövde-yerel Matrix4); inner/outer bu çerçevededir. Düz referansta yok. */
   rot?: number[];
-  /** Tıklanan nokta (kapak düzlemi u,v): AÇILI sınır panelinde kapağın hangi tarafta kalacağını belirler (DoorGroup.anchor). */
+  /** Tıklanan nokta (u,v): açılı sınır panelinde kapağın hangi tarafta kalacağını belirler. */
   at?: [number, number];
 }
-/**
- * KAPAK AĞACI (Goker, Eki 2026: "seçili olan kapağı bölmeliyiz; ilk tek kapak yerleşir, o bölünür, bölünen kapağı
- * tıklayıp tekrar dikey/yatay bölünebilmeli — daha esnek bir bölme"): kapak alanı ikili/çoklu bölme ağacıdır.
- *  • leaf  = bir kapak (tip + double/fold ise kanat bölmesi).
- *  • split = bir eksende (u yatay = Split V yan yana, v düşey = Split H üst üste) çocuklara bölünmüş alan:
- *    sizes = çocuk ölçüleri (raf kuralı: girilen/kilitli korunur, kalan EŞİT), gaps = çocuklar arası boşluklar (n−1).
- *    Çocuk ölçülerinin toplamı (+ aralar) HER ZAMAN düğümün kendi alanıdır → bir kapağı bölmek üst bölmenin ölçüsünü
- *    değiştirmez ("total ölçü ilk bölünen üzerinden").
- * Üye sırası = ağacın derinlik-öncelikli (DFS) yaprak sırası; double/fold yaprak iki üye verir.
- */
+/** KAPAK AĞACI: leaf = kapak; split = u (yan yana) / v (üst üste) eksende çocuklar (sizes + n−1 gaps).
+ *  Çocuk ölçüleri (+ aralar) toplamı HER ZAMAN düğümün alanıdır → bölmek üst bölmenin ölçüsünü değiştirmez.
+ *  Üye sırası = DFS yaprak sırası; double/fold yaprak iki üye verir. */
 export type DoorNode =
   | { id: string; kind: 'leaf'; type: DoorType; leafSplit?: DoorLeafSplit }
   | {
     id: string; kind: 'split'; axis: 'u' | 'v'; sizes: GapSpec[]; gaps: number[]; children: DoorNode[];
-    /**
-     * SPACING (Goker: "spacing modu da olsun"): hedef parça ölçüsü (mm) — parça sayısı her çözümde alanın uzunluğundan
-     * türetilir (eşit parçalar hedefe en yakın n); gövde boyutlanınca parça eklenir/silinir. Sayı elle girilince kalkar.
-     */
+    /** SPACING: hedef parça ölçüsü (mm); parça sayısı her çözümde alandan türetilir. Sayı elle girilince kalkar. */
     targetSize?: number;
-    /**
-     * DERZ BAĞI (Goker, Eki 2026: "panel ref gösterildikten sonra dikmenin arası değişince kapak kendini ona göre
-     * güncellesin — bağlı olduğu dikmeye göre"): k. derz (k. ile k+1. çocuk arası) bir kapak-sınırı dikme/rafa (VF id)
-     * bağlıdır; derz her çözümde LEVHANIN GÜNCEL konumundan türetilir — 'center' = derz levhanın ortasında, 'min' = levha
-     * derzin min tarafındaki kapağın arkasında (derz levhanın max yüzünden başlar), 'max' = levha max tarafındaki kapağın
-     * arkasında. Levha taşınınca (grup boşluğu, gövde boyutu) kapak derzi onu izler; bağlı bölmenin ölçüleri çözümden
-     * yazılır (girilen ölçü derzi değiştiremez). Panel ref bölmesi bağı 'center' kurar; rozet (Left/Center/Right) hizayı
-     * değiştirirken LEVHAYI bir kez taşır (kapak yerinde kalır); Shift+tık bağı çözer (ölçüler girilmiş sayılır, donar).
-     */
+    /** DERZ BAĞI (kapak levhayı izler): k. derz her çözümde bağlı dikme/rafın güncel konumundan türetilir
+     *  ('center' = levha ortası, 'min'/'max' = levha o taraftaki kapağın arkasında); bağlı ölçüler çözümden yazılır. */
     refs?: Record<number, DoorJointRef>;
   };
 /** Derz bağı (KAPAK levhayı izler): bağlı levhanın VF id'si + derzin levhaya göre konumu. */
 export interface DoorJointRef { vfId: string; align: DoorAlign }
 /** Kapak derzine bağ (LEVHA kapağı izler — PanelGroup.doorBond): kapak grubu + bölme + derz sırası + hiza (+ üye). */
 export interface DoorBond { doorGroupId: string; splitId: string; k: number; align: DoorAlign; member?: number }
-/** Kapak alanının dört kenar boşluğu (sınır paneline / gövde kenarına): mm. */
 export interface DoorEdgeGaps { uMin: number; uMax: number; vMin: number; vMax: number }
-/**
- * KAPAK GRUBU: bir kapak düzlemine yerleşen kapak ağacı. Dikdörtgen her rebuild'de sınır referanslarından yeniden
- * çözülür (gövde boyutlanınca kapaklar izler); ağaçtaki ölçüler de o dikdörtgene göre yeniden dağıtılır.
- */
+/** KAPAK GRUBU: dikdörtgen her rebuild'de sınır referanslarından yeniden çözülür; ağaç ölçüleri ona göre dağıtılır. */
 export interface DoorGroup {
   id: string; shapeId: string;
-  /** Kapak düzleminin normal ekseni + yönü (ön yüzden tık → Z+). */
   axis: 0 | 1 | 2; side: 1 | -1;
   /** 'outer' = dış kapak (panel kalınlıklarının dışından, önde); 'inner' = iç kapak (panellerin arasına, önü panellerle hizalı). */
   placement: 'outer' | 'inner';
   bounds: DoorBounds;
-  /**
-   * DERİNLİK REFERANSI (Goker, Eki 2026: "birden fazla derinlikte kapak sınırı olan dikme/raf varsa alternatif
-   * derinlikleri göster"): kapak düzlemi bu sınır panelinin ÖN yüzündedir (outer: önünde, inner: önüyle hizalı).
-   * Yoksa (eski gruplar) outer = en öndeki, inner = en içerdeki sınır panelinin önü.
-   */
+  /** Kapak düzlemi bu sınır panelinin ön yüzündedir. Yoksa outer = en öndeki, inner = en içerdeki sınır panelinin önü. */
   depthRef?: DoorBoundRef;
-  /** Son çözülen dikdörtgen (gövde-yerel). */
   rect: DoorRect;
   /** Bölme ağacı (kök = tüm kapak alanı − kenar boşlukları). */
   tree: DoorNode;
-  /** Kenar boşlukları (sol/sağ/alt/üst) — her biri ayrı girilebilir. */
   edgeGaps: DoorEdgeGaps;
   /** Varsayılan kapak boşluğu (mm): yeni bölmede doğan aralar ve kanat araları bununla. */
   gap: number;
-  /**
-   * YARIM BİNME (Goker, Eki 2026: "kapakların en dış kenarında bir dikmeye yarım binmesine yarayan checkbox"):
-   * işaretli kenarda kapak, sınır panelinin DIŞ yüzüne değil kalınlığının ORTASINA kadar gider (kalınlığın yarısı
-   * kadar kısalır; kenar boşluğu bunun üstüne düşülür), kalan ölçü yeniden EŞİT bölünür. Yalnız dış kapakta ve
-   * kenar paneli kapağın gerisindeyken (kapak onun kalınlığını örtüyorken) etkilidir.
-   */
+  /** YARIM BİNME: işaretli kenarda kapak sınır panelinin kalınlık ORTASINA kadar gider, kalan yeniden EŞİT bölünür.
+   *  Yalnız dış kapakta ve kenar paneli kapağın gerisindeyken etkilidir. */
   halfOverlay?: { uMin?: boolean; uMax?: boolean; vMin?: boolean; vMax?: boolean };
-  /**
-   * ÇIPA (Goker, Eki 2026: "açılı panel kapak sınırıyken seçimde yalnız panelin altı görünüyor"): yerleştirmede tıklanan nokta
-   * (u,v). Dönmüş sınır paneli dikdörtgenin kenarı değildir (açılı kesim) — kapak alanının paneli̇n HANGİ tarafında kalacağını
-   * eskiden dikdörtgenin MERKEZİ belirliyordu (orta çizgiden geçen eğik panelde hep alt taraf); artık çıpa belirler: alan
-   * çıpanın tarafına kırpılır (rectByCuts), üyeler de o tarafa göre kesilir. Eski kayıtlarda yok → merkez.
-   */
+  /** ÇIPA (u,v): dönmüş sınır panelinde kapak alanı çıpanın tarafına kırpılır (rectByCuts). Yoksa merkez. */
   anchor?: [number, number];
-  /**
-   * DERZ HİZALAMASI (Goker, Eki 2026: "dikmeyi kapağın sağına / soluna / ortalı, rafı yukarı / aşağı / ortada yerleştireyim;
-   * dikme ve raf buna göre hareket etsin … sonra dikmenin arası değişince kapak kendini ona göre güncellesin"): bağ artık
-   * bölme düğümünün DERZİNDE tutulur (DoorNode.refs) — eski `panelAlign` kaydı okunmaz (geçiş: syncDoorGroups siler).
-   */
+  /** Eski kayıt: okunmaz, syncDoorGroups siler (derz bağı DoorNode.refs'te). */
   panelAlign?: Record<string, DoorAlign>;
   thickness: number;
   /** Üye VF id'leri: ağacın DFS yaprak sırası, double/fold yaprakta kanatlar ardışık. Üye i ↔ VF.doorIndex = i. */
@@ -190,14 +127,10 @@ export interface DoorGroup {
   createdAt: number;
 }
 
-/**
- * KAPAK TİPİ: menteşe / açılış yönü (bakan kişiye göre). left/right = yan menteşeli (sol menteşe sağa açılır);
- * up = kalkar kapak (üst menteşe); down = düşer kapak (alt menteşe); double = iki kanatlı (sol kanat sol, sağ kanat
- * sağ menteşe — hücre yatayda ikiye bölünür); fold = katlanır kalkar (iki kanat üst üste — hücre dikeyde ikiye bölünür);
- * drawer = çekmece ön paneli; fixed = menteşesiz (sabit / sahte) ön panel (Goker, Eki 2026: "çekmece ve menteşesiz kapak da olsun").
- */
+/** KAPAK TİPİ (bakana göre): left/right = yan menteşe; up = kalkar; down = düşer; double = iki kanat (yatayda bölünür);
+ *  fold = katlanır kalkar (dikeyde bölünür); drawer = çekmece ön paneli; fixed = menteşesiz ön panel. */
 export type DoorType = 'left' | 'right' | 'up' | 'down' | 'double' | 'fold' | 'drawer' | 'fixed';
-/** Derz hizalaması: levha derzin min tarafındaki kapağın arkasında / derz levhanın ortasında / max tarafındaki kapağın arkasında. */
+/** Derz hizası: 'min'/'max' = levha o taraftaki kapağın arkasında; 'center' = derz levhanın ortasında. */
 export type DoorAlign = 'min' | 'center' | 'max';
 /** İki kanatlı hücre: kanat ölçüleri (toplam = hücre ölçüsü − kanat arası boşluk) + kanat arası boşluk (mm). */
 export interface DoorLeafSplit { leaves: GapSpec[]; gap: number }
@@ -205,102 +138,56 @@ export interface DoorLeafSplit { leaves: GapSpec[]; gap: number }
 /** Raf/dikme boşluğu: değer (mm) + kilit (küp boyutlanınca sabit kalır). */
 export interface GapSpec { value: number; locked: boolean; edited?: boolean }
 export interface CavityBox { min: [number, number, number]; max: [number, number, number] }
-/**
- * HACİM ADIMI (Goker: "rafın yerleştiği hacme face extrude"): grubun çözülen
- * hacminin bir yüzü, panel yüz extrude'uyla aynı üç modda itilir — fixed = eksen
- * boyunca hedef ölçü, dyn = işaretli delta (+ dışa), ref = referans yüz düzlemine.
- * Her rebuild'de ham (engellerden çözülen) hacme sırayla uygulanır; üyeler/boşluklar
- * yeni hacme göre yeniden çözülür. faceNormal gövde-yerel, eksen hizalı.
- */
+/** HACİM ADIMI: grup hacminin bir yüzü panel yüz extrude'uyla aynı modlarla (fixed/dyn/ref) itilir.
+ *  Her rebuild'de ham hacme sırayla uygulanır; faceNormal gövde-yerel, eksen hizalı. */
 export interface CavityStep {
   id: string; faceNormal: Vec3; axisLabel: string; value: number; isFixed: boolean; timestamp: number;
-  /** Yüzü seçen tıklama, GÖVDE kutusuna oransal — şekilli hacimde hangi bağlantılı yüzün (L kolu / çentik iç yüzü) hareket edeceğini seçer. */
+  /** Tıklama, gövde kutusuna oransal — şekilli hacimde hangi bağlantılı yüzün hareket edeceğini seçer. */
   anchorFrac?: Vec3;
   refShapeId?: string; refFaceGroupIndex?: number; refNormalWorld?: Vec3; refPointWorld?: Vec3;
-  /** Ref adımının son çözümde uygulanan işaretli miktarı (UI). */
   resolvedValue?: number;
 }
-/**
- * HACİM ADAYI (3B seçim): şekilli serbest bölge — gövde katısından (çentik /
- * çıkarma dahil) ve panellerden kalan, tohumdan taşarak bulunan hücre birliği.
- * bbox = dizilim açıklığı; boxes = birleşik hücre kutuları (şema silueti);
- * surface = dış yüzey üçgenleri (önizleme); seed = bölgenin içinde bir nokta (çıpa).
- */
+/** HACİM ADAYI: gövde katısından ve panellerden kalan, tohumdan taşarak bulunan serbest bölge.
+ *  bbox = dizilim açıklığı; boxes = hücre kutuları; surface = önizleme üçgenleri; seed = çıpa. */
 export interface CavityPick {
   key: string; bbox: CavityBox; boxes: CavityBox[]; surface: number[]; seed: [number, number, number];
-  /** 'shaped' = bağlantılı serbest bölgenin tamamı (en kapsayıcı); 'box' = bölge içinde tohumu içeren maksimal kutu (düz alternatif). */
+  /** 'shaped' = bağlantılı serbest bölgenin tamamı; 'box' = tohumu içeren maksimal kutu. */
   shape: 'shaped' | 'box';
-  /**
-   * OK + DİZİLİM (Goker, 30 Eyl 2026 — "kübün sağına tıklıyorsam ok sola bakacak";
-   * "tıklanan kübün yüzeyine göre dönsün"; "ok yönü soldaysa kübün sol yüzüne göre
-   * yerleşecek: derinlik 300 ise dikme boşlukları 300'e göre"):
-   *  • arrow = OK: tıklanan GÖVDE YÜZÜNDEN içeri (sağ yüz → X−, ön yüz → Z−), kameradan
-   *    bağımsız; ÜST/ALT yüzden tıkta raf ve dikme için SABİT önden arkaya (Z−).
-   *    Kamera kutunun içindeyse ışının baskın ekseni (düşeyse yine Z−).
-   *  • axis = DİZİLİM ekseni (boşlukların dağıldığı eksen): raf daima Y; dikme OKA
-   *    PARALEL durur, yani dizilim ekseni okun yatay DİKİ — ok X ise dikmeler Z'de
-   *    (derinlik boyunca), ok Z ise X'te (genişlik boyunca).
-   *  • facing = dizilim ekseninde sayım tarafı (+1 = MİN'den, −1 = MAX'tan) ve üye VF
-   *    normali (facing·axis): ok dizilim eksenindeyse oktan; değilse
-   *    tıklanan nokta hacmin hangi yarısındaysa o taraftan (kameradan bağımsız).
-   *  • at = ışının bölgeye girdiği nokta (gövde-yerel).
-   */
+  /** arrow = tıklanan gövde yüzünden içeri (kameradan bağımsız; üst/alt yüzden tıkta Z−).
+   *  axis = dizilim ekseni: raf daima Y; dikme oka paralel → okun yatay diki.
+   *  facing = sayım tarafı (+1 = MİN'den) ve üye VF normali (facing·axis). at = ışının bölgeye girdiği nokta. */
   axis: 0 | 1 | 2; facing: 1 | -1; at: [number, number, number];
   arrow: { axis: 0 | 1 | 2; facing: 1 | -1 };
 }
-/**
- * RAF / DİKME GRUBU: seçilen hacme (cavity) yerleşen n panel + n+1 boşluk.
- * Hacim her rebuild'de çıpa (anchorFrac) etrafından, gövde panellerinin
- * kutularıyla yeniden büyütülür; boşluklar kilit kuralıyla yeniden dağıtılır.
- */
+/** RAF / DİKME GRUBU: n panel + n+1 boşluk; hacim her rebuild'de çıpa etrafında yeniden büyütülür, boşluklar kilit kuralıyla dağıtılır. */
 export interface PanelGroup {
   id: string; shapeId: string;
   kind: 'shelf' | 'divider';
-  /** Dizilim ekseni (boşlukların dağıldığı eksen): raf = 1 (Y); dikme oka paralel → ok Z (önden tık) ise 0 (X), ok X (yandan tık) ise 2 (Z). */
+  /** Dizilim ekseni: raf = 1 (Y); dikme oka paralel (ok Z → 0, ok X → 2). */
   axis: 0 | 1 | 2;
-  /** OK: tıklanan gövde yüzünden içeri yön (3B ok ve grup seçiliyken hacim merkezindeki ok). Eski gruplarda yok → dizilim ekseni/yönü. */
   arrow?: { axis: 0 | 1 | 2; facing: 1 | -1 };
-  /**
-   * YÖN (tık yönü): üye VF normali = facing·eksen; boşluklar ve üye numaraları
-   * (6.1, 6.2 …) hacmin facing<0 ise MAX, facing>0 ise MİN tarafından sayılır —
-   * yani tıklanan taraftan itibaren. Eski gruplarda yok → +1.
-   */
+  /** Üye VF normali = facing·eksen; boşluk/üye sayımı tıklanan taraftan (facing<0 → MAX). Yoksa +1. */
   facing?: 1 | -1;
   /** Hacim çıpası: gövde yerel kutusundaki oran (resize'da aynı boşluğa düşer). */
   anchorFrac: [number, number, number];
-  /** Son çözülen hacmin kutusu (gövde yerel) — dizilim açıklığı buradan. */
   cavity: CavityBox;
-  /** Şekilli bölge: birleşik hücre kutuları (şema silueti / eski gruplarda yok → kutu). */
   region?: CavityBox[];
-  /** DÜZ (kutu) alternatif seçildi: bölge içinde çıpayı içeren maksimal kutulardan, kayıtlı kutuya (gövde oranı) en çok örtüşen. */
+  /** Düz kutu alternatifi: kayıtlı kutuya (gövde oranı) en çok örtüşen maksimal kutu. */
   boxMode?: boolean;
   boxFrac?: CavityBox;
   count: number;
   gaps: GapSpec[];
-  /**
-   * HEDEF ARALIK (Goker: "raf ve dikmeye aralık da verebileyim; yaklaşık o aralığı tutturacak
-   * şekilde raf miktarını azaltıp çoğaltsın her zaman"): verildiğinde (>0) ADET her çözümde
-   * hacmin dizilim açıklığından türetilir — eşit boşluklar hedefe en yakın olacak n seçilir;
-   * gövde büyüyüp küçülünce üye eklenir/silinir. Adet ya da boşluk elle girilince kalkar.
-   */
+  /** HEDEF ARALIK (>0): adet her çözümde açıklıktan türetilir (eşit boşluk hedefe en yakın). Adet/boşluk elle girilince kalkar. */
   targetGap?: number;
-  /** Varsayılan üye kalınlığı (yeni üyeler bununla doğar). */
   thickness: number;
-  /** Üye başına kalınlık (şemadaki kutucuk); eksik/kısa ise `thickness`. Boşluklar bu değerlere göre dağıtılır. */
+  /** Üye başına kalınlık; eksik/kısa ise `thickness`. */
   memberThicknesses?: number[];
-  /** Hacim yüz-extrude adımları (sıralı); ham hacme her çözümde uygulanır. */
   cavitySteps?: CavityStep[];
-  /**
-   * KAPAK DERZİNE BAĞ (Goker, Eki 2026: "kapak arayüzünden kapakların arasına tıklayarak raf ve dikme atamak istiyorum;
-   * eklenen raf ve dikme her zaman o kapak aralarının arasında çalışsın — önce kapakları yerleştirip kapaklara göre dikme"):
-   * bu grup kapak arayüzünden iki kapağın ARASINA eklendi; `member` (vars. 0) üyesi her çözümde o derze göre konumlanır
-   * (align: 'center' derzin ortasında, 'min'/'max' derzin o tarafındaki kapağın arkasında) — LEVHA KAPAĞI İZLER (kapak
-   * ölçüsü değişince levha gider; tersi DoorNode.refs). Grubun o boşluğu çözümden yazılır; boşluk girişi KAPAK derzini
-   * taşır. Rozetle hiza değişir, Shift+tık bağı çözer (levha olduğu yerde kalır). Kapak/derz silinirse bağ düşer.
-   */
+  /** KAPAK DERZİNE BAĞ (levha kapağı izler; tersi DoorNode.refs): `member` (vars. 0) her çözümde derze göre
+   *  konumlanır, o boşluk çözümden yazılır. Kapak/derz silinirse bağ düşer. */
   doorBond?: DoorBond;
   memberVfIds: string[];
-  /** Kullanıcının verdiği grup adı (varsayılan 'Shelf' / 'Divider'); üye panellerin adı budur (salt-okunur). */
+  /** Grup adı (vars. 'Shelf' / 'Divider'); üye panellerin adı budur. */
   name?: string;
   createdAt: number;
 }
@@ -336,12 +223,7 @@ export enum OrthoMode { ON = 'on', OFF = 'off' }
 export type RefFacePick = { panelId: string; faceGroupIndex: number; normalWorld: Vec3; pointWorld: Vec3 };
 type FilletFaceData = { normal: Vec3; center: Vec3; planeD?: number };
 
-// ═══════════════════════════════════════════════════════════════════════════
-// STATE
-// ═══════════════════════════════════════════════════════════════════════════
-
 export interface AppState {
-  // Şekiller
   shapes: Shape[];
   addShape: (shape: Shape) => void;
   updateShape: (id: string, updates: Partial<Shape>) => void;
@@ -351,7 +233,6 @@ export interface AppState {
   secondarySelectedShapeId: string | null; selectSecondaryShape: (id: string | null) => void;
   createGroup: (primaryId: string, secondaryId: string) => void;
 
-  // Görünüm / araçlar
   activeTool: Tool; setActiveTool: (t: Tool) => void;
   cameraType: CameraType; setCameraType: (t: CameraType) => void;
   viewMode: ViewMode; setViewMode: (m: ViewMode) => void; cycleViewMode: () => void;
@@ -359,19 +240,16 @@ export interface AppState {
   snapSettings: Record<SnapType, boolean>; toggleSnapSetting: (t: SnapType) => void;
   opencascadeLoading: boolean; setOpenCascadeLoading: (l: boolean) => void;
 
-  // Vertex düzenleme
   vertexEditMode: boolean; setVertexEditMode: (b: boolean) => void;
   selectedVertexIndex: number | null; setSelectedVertexIndex: (i: number | null) => void;
   vertexDirection: AxisDir | null; setVertexDirection: (d: AxisDir) => void;
   addVertexModification: (shapeId: string, mod: VertexModification) => void;
 
-  // Çıkarma (subtraction)
   subtractionViewMode: boolean; setSubtractionViewMode: (b: boolean) => void;
   selectedSubtractionIndex: number | null; setSelectedSubtractionIndex: (i: number | null) => void;
   hoveredSubtractionIndex: number | null; setHoveredSubtractionIndex: (i: number | null) => void;
   deleteSubtraction: (shapeId: string, idx: number) => Promise<void>;
 
-  // Paneller / editör
   showOutlines: boolean; setShowOutlines: (b: boolean) => void;
   selectedPanelRow: number | string | null;
   selectedPanelRowParentId: string | null;
@@ -379,19 +257,14 @@ export interface AppState {
   panelSelectMode: boolean; setPanelSelectMode: (b: boolean) => void;
   faceEditMode: boolean; setFaceEditMode: (b: boolean) => void;
 
-  // Raf / dikme grupları
   panelGroups: PanelGroup[];
   addPanelGroup: (g: PanelGroup) => void;
   updatePanelGroup: (id: string, u: Partial<PanelGroup>) => void;
   deletePanelGroup: (id: string) => void;
   /** Grup seçimi = "tüm panelleri seç" (satır seçimiyle karşılıklı dışlayıcı). */
   selectedPanelGroupId: string | null; setSelectedPanelGroupId: (id: string | null) => void;
-  /**
-   * Hacim seçme modu (raf / dikme atma): tıklanan noktadan ışın boyunca serbest hacimler.
-   * groupId verilirse YENİDEN SEÇİM (Goker: "hacmin mevcut yerini bir düğmeyle yeniden seçtir"):
-   * mevcut grup yeni hacme TAŞINIR — hacmi yalnız VF sırasında gruptan ÖNCE gelen paneller
-   * sınırlar; sonrakiler ve grubun kendi üyeleri x-ray çizilir, engel sayılmaz.
-   */
+  /** Hacim seçme modu. groupId verilirse YENİDEN SEÇİM: grup yeni hacme taşınır — hacmi yalnız VF sırasında
+   *  gruptan ÖNCE gelen paneller sınırlar; sonrakiler ve grubun kendi üyeleri engel sayılmaz. */
   volumePickMode: 'shelf' | 'divider' | null; setVolumePickMode: (m: 'shelf' | 'divider' | null, groupId?: string | null) => void;
   volumePickGroupId: string | null;
   volumePickCandidates: CavityPick[]; volumePickIndex: number;
@@ -399,23 +272,18 @@ export interface AppState {
   /** VF'leri verilen VF'nin hemen ARKASINA ekler (grup üyeleri bitişik kalsın). */
   insertVirtualFacesAfter: (afterId: string | null, vfs: VirtualFace[]) => void;
 
-  // Kapak grupları
   doorGroups: DoorGroup[];
   addDoorGroup: (g: DoorGroup) => void;
   updateDoorGroup: (id: string, u: Partial<DoorGroup>) => void;
   deleteDoorGroup: (id: string) => void;
-  /** Kapak grubu seçimi = "tüm kapakları seç" (satır / raf grubu seçimiyle karşılıklı dışlayıcı). */
   selectedDoorGroupId: string | null; setSelectedDoorGroupId: (id: string | null) => void;
-  /** Kapak yerleştirme modu: tıklanan gövde yüzünde kapak sınırı panellerinden adaylar (büyükten küçüğe döner). */
   doorPickMode: boolean; setDoorPickMode: (b: boolean) => void;
-  /** PANEL REF modu: bu kapak grubu için 3B'de / şemada tıklanan kapak-sınırı dikme/rafın ortasından kapak bölünür. */
+  /** PANEL REF modu: tıklanan kapak-sınırı dikme/rafın ortasından kapak bölünür. */
   doorRefPickGroupId: string | null; setDoorRefPickGroupId: (id: string | null) => void;
   doorPickCandidates: DoorPick[]; doorPickIndex: number;
   setDoorPick: (c: DoorPick[], i: number) => void;
-  /** Seçim sırasında dış/iç kapak önizlemesi (grup bununla doğar). */
   doorPickPlacement: 'outer' | 'inner'; setDoorPickPlacement: (p: 'outer' | 'inner') => void;
 
-  // Fillet
   filletMode: boolean; setFilletMode: (b: boolean) => void;
   selectedFilletFaces: number[];
   addFilletFace: (i: number) => void; clearFilletFaces: () => void;
@@ -423,32 +291,24 @@ export interface AppState {
   addFilletFaceData: (d: FilletFaceData) => void;
   clearFilletFaceData: () => void;
 
-  // Panel yerleştirme (yüz yakalama)
   raycastMode: boolean; setRaycastMode: (b: boolean) => void;
   /** Yüz yakalamada önizlenen (henüz yerleşmemiş) VF — şeritteki ✓ bununla onaylar. */
   raycastPendingVf: VirtualFace | null; setRaycastPendingVf: (v: VirtualFace | null) => void;
-  /**
-   * YERLEŞTİRME ADI (Goker, Eki 2026: "paneli yüzey seçerken isim yazabileyim"): Body Panel /
-   * Shelf / Divider / Door yerleştirme şeridindeki ad; boşsa varsayılan ad. Her mod açılışında sıfırlanır.
-   */
+  /** Yerleştirme şeridindeki ad (boşsa varsayılan); her mod açılışında sıfırlanır. */
   placementName: string; setPlacementName: (s: string) => void;
 
-  // Yüz extrude
   faceExtrudeMode: boolean; setFaceExtrudeMode: (b: boolean) => void;
   faceExtrudeTargetPanelId: string | null; setFaceExtrudeTargetPanelId: (id: string | null) => void;
   faceExtrudeSelectedFace: number | null; setFaceExtrudeSelectedFace: (i: number | null) => void;
-  /** Yüzü seçen tıklamanın yerel noktası. */
   faceExtrudeClickPoint: Vec3 | null; setFaceExtrudeClickPoint: (p: Vec3 | null) => void;
   faceExtrudeThickness: number; setFaceExtrudeThickness: (v: number) => void;
   /** 'fixed' = sabit ölçü, 'dyn' = delta, 'ref' = referans yüze bağlı. */
   faceExtrudeValueMode: 'fixed' | 'dyn' | 'ref'; setFaceExtrudeValueMode: (m: 'fixed' | 'dyn' | 'ref') => void;
   faceExtrudeRefCandidate: RefFacePick | null; setFaceExtrudeRefCandidate: (v: RefFacePick | null) => void;
-  /** HACİM DÜZENLEME: extrude modu bir panel yerine raf/dikme grubunun HACMİNİ hedefler (aynı akış: yüz seç → fixed/dyn/ref → uygula). */
+  /** Extrude modu panel yerine raf/dikme grubunun HACMİNİ hedefler. */
   faceExtrudeCavityGroupId: string | null; setFaceExtrudeCavityGroupId: (id: string | null) => void;
-  /** Hacim kutusunda seçilen yüzün gövde-yerel normali (faceExtrudeSelectedFace ile birlikte). */
   faceExtrudeCavityFaceNormal: Vec3 | null; setFaceExtrudeCavityFaceNormal: (n: Vec3 | null) => void;
 
-  // Panel taşıma
   panelMoveMode: boolean; setPanelMoveMode: (b: boolean) => void;
   panelMoveTargetPanelId: string | null; setPanelMoveTargetPanelId: (id: string | null) => void;
   panelMoveAxis: AxisDir | null; setPanelMoveAxis: (a: AxisDir | null) => void;
@@ -458,7 +318,6 @@ export interface AppState {
   panelMoveRefTargetPanelId: string | null; setPanelMoveRefTargetPanelId: (id: string | null) => void;
   panelMoveRefTargetVertex: Vec3 | null; setPanelMoveRefTargetVertex: (v: Vec3 | null) => void;
 
-  // Panel döndürme
   panelRotateMode: boolean; setPanelRotateMode: (b: boolean) => void;
   panelRotateTargetPanelId: string | null; setPanelRotateTargetPanelId: (id: string | null) => void;
   panelRotatePivot: Vec3 | null; setPanelRotatePivot: (p: Vec3 | null) => void;
@@ -471,7 +330,6 @@ export interface AppState {
   /** Referans YÜZ (nokta değil): nişan bu yüzün düzlemine değene kadar döner. */
   panelRotateRefFace: RefFacePick | null; setPanelRotateRefFace: (f: RefFacePick | null) => void;
 
-  // Sanal yüzler (VF)
   virtualFaces: VirtualFace[];
   addVirtualFace: (v: VirtualFace) => void;
   updateVirtualFace: (id: string, u: Partial<VirtualFace>) => void;
@@ -480,14 +338,8 @@ export interface AppState {
   reorderVirtualFaceGroup: (shapeId: string, fromIds: string[], toGroupFirstId: string | null) => void;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// ORTAK ARAMALAR — store'a bağlı küçük yardımcılar (eskiden her dosyada kopyaydı).
-// ═══════════════════════════════════════════════════════════════════════════
-
-/** Kimliğe göre şekil (güncel store). */
 export const shapeById = (id: string | null | undefined, shapes: Shape[] = useAppStore.getState().shapes): Shape | undefined =>
   id ? shapes.find(s => s.id === id) : undefined;
-/** Bir gövdenin çocuk panelleri. */
 const OUTLINE_PREF_KEY = 'yago.showOutlines';
 function readOutlinePref(): boolean {
   try { const v = localStorage.getItem(OUTLINE_PREF_KEY); return v === null ? true : v === '1'; } catch { return true; }
@@ -498,10 +350,8 @@ function writeOutlinePref(b: boolean): void {
 
 export const childPanelsOf = (parentId: string, shapes: Shape[] = useAppStore.getState().shapes): Shape[] =>
   shapes.filter(s => s.type === 'panel' && s.parameters?.parentShapeId === parentId);
-/** VF'nin paneli. */
 export const panelOfVf = (vfId: string | undefined, shapes: Shape[] = useAppStore.getState().shapes): Shape | undefined =>
   vfId ? shapes.find(s => s.type === 'panel' && s.parameters?.virtualFaceId === vfId) : undefined;
-/** Panelin VF'si. */
 export const vfOfPanel = (panel: Shape | undefined, vfs: VirtualFace[] = useAppStore.getState().virtualFaces): VirtualFace | undefined =>
   vfs.find(f => f.id === (panel?.parameters as any)?.virtualFaceId);
 /** Motoru tembel yükleyip gövdenin panellerini yeniden üretir (tek rebuild giriş noktası). */
@@ -509,7 +359,6 @@ export const requestRebuild = (parentId: string, opts?: { changedPanelId?: strin
   import('./components/PanelEngine').then(({ rebuildPanelsForParent }) => rebuildPanelsForParent(parentId, opts));
 
 export const useAppStore = create<AppState>((set, get) => ({
-  // ── Şekiller ──────────────────────────────────────────────────────────────
   shapes: [],
   addShape: (shape) => set((s) => ({ shapes: [...s.shapes, shape] })),
 
@@ -535,7 +384,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     return { shapes };
   }),
 
-  // Şekil silinince çocuk panelleri de silinir.
   deleteShape: (id) => set((state) => {
     const all = new Set([id, ...state.shapes.filter(s => s.type === 'panel' && s.parameters?.parentShapeId === id).map(s => s.id)]);
     return {
@@ -565,7 +413,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     }));
   },
 
-  // ── Görünüm / araçlar ─────────────────────────────────────────────────────
   activeTool: Tool.SELECT, setActiveTool: (t) => set({ activeTool: t }),
   cameraType: CameraType.PERSPECTIVE, setCameraType: (t) => set({ cameraType: t }),
   viewMode: ViewMode.SOLID, setViewMode: (m) => set({ viewMode: m }),
@@ -579,11 +426,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   toggleSnapSetting: (t) => set((s) => ({ snapSettings: { ...s.snapSettings, [t]: !s.snapSettings[t] } })),
   opencascadeLoading: false, setOpenCascadeLoading: (l) => set({ opencascadeLoading: l }),
 
-  // ── Vertex düzenleme ──────────────────────────────────────────────────────
   vertexEditMode: false, setVertexEditMode: (b) => set({ vertexEditMode: b }),
   selectedVertexIndex: null, setSelectedVertexIndex: (i) => set({ selectedVertexIndex: i }),
   vertexDirection: null, setVertexDirection: (d) => set({ vertexDirection: d }),
-  // Aynı köşe + yön için düzenleme varsa değiştirilir, yoksa eklenir.
   addVertexModification: (sid, mod) => set((s) => ({
     shapes: s.shapes.map(sh => {
       if (sh.id !== sid) return sh;
@@ -593,7 +438,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     }),
   })),
 
-  // ── Çıkarma ───────────────────────────────────────────────────────────────
   subtractionViewMode: false, setSubtractionViewMode: (b) => set({ subtractionViewMode: b }),
   selectedSubtractionIndex: null, setSelectedSubtractionIndex: (i) => set({ selectedSubtractionIndex: i }),
   hoveredSubtractionIndex: null, setHoveredSubtractionIndex: (i) => set({ hoveredSubtractionIndex: i }),
@@ -617,8 +461,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (e) { console.error('deleteSubtraction fail:', e); }
   },
 
-  // ── Paneller / editör ─────────────────────────────────────────────────────
-  // OUTLINE TERCİHİ: son seçim hatırlanır (oturumlar arası localStorage; erişilemezse açık başlar).
   showOutlines: readOutlinePref(), setShowOutlines: (b) => { writeOutlinePref(b); set({ showOutlines: b }); },
   selectedPanelRow: null, selectedPanelRowParentId: null,
   // Tek panel seçimi grup seçimini düşürür (ikisi aynı anda olmaz).
@@ -630,7 +472,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   setPanelSelectMode: (b) => set({ panelSelectMode: b, selectedPanelRow: null, selectedPanelRowParentId: null, selectedPanelGroupId: null, selectedDoorGroupId: null }),
   faceEditMode: false, setFaceEditMode: (b) => set({ faceEditMode: b }),
 
-  // ── Raf / dikme grupları ──────────────────────────────────────────────────
   panelGroups: [],
   addPanelGroup: (g) => set((s) => ({ panelGroups: [...s.panelGroups, g] })),
   updatePanelGroup: (id, u) => set((s) => ({ panelGroups: s.panelGroups.map(g => (g.id === id ? { ...g, ...u } : g)) })),
@@ -639,7 +480,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     selectedPanelGroupId: s.selectedPanelGroupId === id ? null : s.selectedPanelGroupId,
   })),
   selectedPanelGroupId: null,
-  // Grup seçimi ("tümünü seç") tek panel satırını düşürür.
   setSelectedPanelGroupId: (id) => set({
     selectedPanelGroupId: id,
     ...(id ? { selectedPanelRow: null, selectedDoorGroupId: null } : {}),
@@ -660,7 +500,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     return { virtualFaces: out };
   }),
 
-  // ── Kapak grupları ────────────────────────────────────────────────────────
   doorGroups: [],
   addDoorGroup: (g) => set((s) => ({ doorGroups: [...s.doorGroups, g] })),
   updateDoorGroup: (id, u) => set((s) => ({ doorGroups: s.doorGroups.map(g => (g.id === id ? { ...g, ...u } : g)) })),
@@ -669,12 +508,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     selectedDoorGroupId: s.selectedDoorGroupId === id ? null : s.selectedDoorGroupId,
   })),
   selectedDoorGroupId: null,
-  // Kapak grubu seçimi ("tüm kapakları seç") tek satırı ve raf grubunu düşürür.
   setSelectedDoorGroupId: (id) => set({
     selectedDoorGroupId: id,
     ...(id ? { selectedPanelRow: null, selectedPanelGroupId: null } : {}),
   }),
-  // Kapak yerleştirme modu diğer yerleştirme modlarını (yüz yakalama, hacim seçme) kapatır.
   doorRefPickGroupId: null,
   setDoorRefPickGroupId: (id) => set({ doorRefPickGroupId: id }),
   doorPickMode: false,
@@ -686,7 +523,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   setDoorPick: (c, i) => set({ doorPickCandidates: c, doorPickIndex: i }),
   doorPickPlacement: 'outer', setDoorPickPlacement: (p) => set({ doorPickPlacement: p }),
 
-  // ── Fillet ────────────────────────────────────────────────────────────────
   filletMode: false, setFilletMode: (e) => set({ filletMode: e, selectedFilletFaces: [], selectedFilletFaceData: [] }),
   selectedFilletFaces: [],
   addFilletFace: (i) => set((s) => (s.selectedFilletFaces.includes(i) ? {} : { selectedFilletFaces: [...s.selectedFilletFaces, i] })),
@@ -696,7 +532,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   clearFilletFaceData: () => set({ selectedFilletFaceData: [] }),
 
   raycastMode: false,
-  // Yüz yakalama diğer yerleştirme modlarını kapatır; açılışta ad sıfırlanır.
   setRaycastMode: (b) => set({
     raycastMode: b, raycastPendingVf: null,
     ...(b ? { placementName: '', volumePickMode: null, volumePickGroupId: null, volumePickCandidates: [], volumePickIndex: 0, doorPickMode: false, doorPickCandidates: [], doorPickIndex: 0 } : {}),
@@ -704,13 +539,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   raycastPendingVf: null, setRaycastPendingVf: (v) => set({ raycastPendingVf: v }),
   placementName: '', setPlacementName: (s) => set({ placementName: s }),
 
-  // ── Yüz extrude ───────────────────────────────────────────────────────────
   faceExtrudeMode: false,
   setFaceExtrudeMode: (b) => set({
     faceExtrudeMode: b, faceExtrudeSelectedFace: null, faceExtrudeClickPoint: null, faceExtrudeCavityFaceNormal: null,
     ...(!b ? { faceExtrudeTargetPanelId: null, faceExtrudeRefCandidate: null, faceExtrudeCavityGroupId: null } : {}),
   }),
-  // Panel hedefi yazılınca hacim hedefi düşer (ikisi karşılıklı dışlayıcı).
   faceExtrudeTargetPanelId: null, setFaceExtrudeTargetPanelId: (id) => set({ faceExtrudeTargetPanelId: id, ...(id ? { faceExtrudeCavityGroupId: null, faceExtrudeCavityFaceNormal: null } : {}) }),
   faceExtrudeCavityGroupId: null, setFaceExtrudeCavityGroupId: (id) => set({ faceExtrudeCavityGroupId: id, ...(id ? { faceExtrudeTargetPanelId: null } : {}) }),
   faceExtrudeCavityFaceNormal: null, setFaceExtrudeCavityFaceNormal: (n) => set({ faceExtrudeCavityFaceNormal: n }),
@@ -720,7 +553,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   faceExtrudeValueMode: 'fixed', setFaceExtrudeValueMode: (m) => set({ faceExtrudeValueMode: m }),
   faceExtrudeRefCandidate: null, setFaceExtrudeRefCandidate: (v) => set({ faceExtrudeRefCandidate: v }),
 
-  // ── Panel taşıma ──────────────────────────────────────────────────────────
   panelMoveMode: false,
   setPanelMoveMode: (b) => set({
     panelMoveMode: b,
@@ -738,9 +570,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   panelMoveRefTargetPanelId: null, setPanelMoveRefTargetPanelId: (id) => set({ panelMoveRefTargetPanelId: id }),
   panelMoveRefTargetVertex: null, setPanelMoveRefTargetVertex: (v) => set({ panelMoveRefTargetVertex: v }),
 
-  // ── Panel döndürme ────────────────────────────────────────────────────────
-  // Moda girişte/çıkışta alt durum sıfırlanır (her komut mod seçiminden başlar);
-  // hedef panel id'si girişte korunur (satır düğmesi onu hemen önce yazar).
+  // Giriş/çıkışta alt durum sıfırlanır; hedef panel id girişte korunur (satır düğmesi onu hemen önce yazar).
   panelRotateMode: false,
   setPanelRotateMode: (b) => set({
     panelRotateMode: b,
@@ -762,11 +592,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Yüz seçimi hedef paneli de belirler.
   panelRotateRefFace: null, setPanelRotateRefFace: (f) => set({ panelRotateRefFace: f }),
 
-  // ── Sanal yüzler ──────────────────────────────────────────────────────────
   virtualFaces: [],
-  // PANEL ADI (Goker): gövdeye yerleşen her panel varsayılan olarak 'Panel' adını
-  // alır (description alanı = satırdaki ad, değiştirilebilir). İç (raf/dikme)
-  // üyelerin adı grup adından gelir.
+  // Gövde paneli varsayılan 'Panel' adını alır (description = satır adı); iç üyelerin adı grup adından gelir.
   addVirtualFace: (v) => set((s) => ({ virtualFaces: [...s.virtualFaces, (!v.interior && !v.description) ? { ...v, description: 'Panel' } : v] })),
   updateVirtualFace: (id, u) => set((s) => ({ virtualFaces: s.virtualFaces.map(f => (f.id === id ? { ...f, ...u } : f)) })),
   deleteVirtualFace: (id) => set((s) => ({ virtualFaces: s.virtualFaces.filter(f => f.id !== id) })),
@@ -787,12 +614,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 }));
 
-/**
- * Store'dan YALNIZ istenen alanlara abone olur (shallow karşılaştırma).
- * `useAppStore()` tüm store'a abone olup her değişiklikte (hover, rebuild'in
- * her panel yazımı…) bileşeni yeniden çizdiriyordu; bu kanca yalnız seçilen
- * alanlar değişince çizdirir.
- */
+/** Yalnız istenen alanlara abone olur (shallow); tüm store'a abonelik her değişiklikte yeniden çizdirir. */
 export function useStoreFields<K extends keyof AppState>(...keys: K[]): Pick<AppState, K> {
   return useAppStore(useShallow((s: AppState) => {
     const o = {} as Pick<AppState, K>;
