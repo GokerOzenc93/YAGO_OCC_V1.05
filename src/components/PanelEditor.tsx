@@ -19,8 +19,8 @@ import {
 } from './PanelOps';
 import {
   type GroupLayoutSnap, boxSpan, confirmRefCavityExtrude, confirmVolumePick, deleteCavityStep, deletePanelGroupWithMembers, editGroupGap, equalizeGroupGaps, executeCavityExtrude,
-  groupFacing, groupKindLabel, groupLayoutSnapshot, groupName, memberThicknessesOf, panelStarts, previewGroupGap, previewGroupMemberThickness, renamePanelGroup, restoreGroupLayout, setGroupCount, setGroupMemberThickness, setGroupTargetGap,
-  startCavityEdit, startGroupRepick, toggleGroupGapLock, traceMaskLoops, updateCavityStep,
+  gapMode, groupFacing, groupKindLabel, groupLayoutSnapshot, groupName, memberThicknessesOf, panelStarts, previewGroupGap, previewGroupMemberThickness, renamePanelGroup, restoreGroupLayout, setGroupCount, setGroupMemberThickness, setGroupTargetGap,
+  passiveGapIndex, startCavityEdit, startGroupRepick, toggleGroupGapLock, traceMaskLoops, updateCavityStep,
 } from './PanelGroupService';
 import {
   type DoorCut, type DoorEdgeKey, type DoorLayoutSnap, type DoorNearPanel, type DoorNodeSolved, DOOR_TYPES, DOOR_TYPE_LABEL, DOOR_TYPE_TITLE, addPanelAtDoorJoint, applyDoorCuts, clearDoorSpacing, collectDoorCuts, clipPolyToConvex, doorCutBands, doorCutOutline, doorJointParts, doorJoints, doorLayoutSnapshot, polyArea, doorLeafAxis, doorPlaneAxes, doorSpacingTargetsInScope, doorLeaves, doorMemberCount, doorNearPanels, restoreDoorLayout,
@@ -827,6 +827,7 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
   useEffect(() => { setEditing(null); }, [group.id, group.count, selectedIndex >= 0]);
 
   const { cavity, gaps, axis } = group;
+  const passiveIdx = passiveGapIndex(gaps, gaps.length);   // tek açık boşluk → pasif (kalanı toplar)
   const gsid = `gs-${group.id.replace(/[^a-zA-Z0-9_-]/g, '')}`;
   const ts = memberThicknessesOf(group);
   const barsHorizontal = axis === 1;
@@ -1060,19 +1061,31 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
               fontFamily={UI_FONT} style={{ fontVariantNumeric: 'tabular-nums', pointerEvents: 'none', userSelect: 'none' }}>{n.txt}</text>
           );
         })}
-        {/* boşluk ölçüleri: oklu ölçü çizgisi + pill + kilit (her zaman görünür; girilmiş değer kehribar, kilitli turuncu) */}
+        {/* boşluk ölçüleri: oklu ölçü çizgisi + pill + 3 modlu rozet (açık → pin → kilitli; kapaklarla aynı kural). Tek açık boşluk
+            kaldıysa PASİF: kalanı toplar, soluk, tıklanamaz, rozetsiz (Goker: "kapak kilitleme mantığını dikme ve raflara da uygula"). */}
         {!memberMode && pills.map(p => {
-          const locked = gaps[p.k].locked, edited = !locked && !!gaps[p.k].edited;
+          const mode = gapMode(gaps[p.k]);
+          const passive = passiveIdx === p.k;
+          const locked = mode === 'locked', edited = mode === 'hold';
           const a = barsHorizontal ? { x: sx(p.crossMid), y: sy(p.a) } : { x: sx(p.a), y: sy(p.crossMid) };
           const b = barsHorizontal ? { x: sx(p.crossMid), y: sy(p.b) } : { x: sx(p.b), y: sy(p.crossMid) };
           const lockCx = p.cx + p.pw / 2 + LOCK_OFF, lockCy = p.cy;
+          if (passive) return (
+            <g key={`gap-${p.k}`} className="yago-gap passive" style={{ cursor: 'not-allowed' }}>
+              <DimArrows a={a} b={b} asz={asz} color={DIM_LINE} />
+              <DimPill cx={p.cx} cy={p.cy} txt={p.txt} fs={fs} fill="#f5f3ef" stroke="#d6cfc3" strokeWidth={0.9} color="#a8a29e" hideText={false}
+                title="Gap — remainder (all other gaps pinned or locked); open one to edit" />
+            </g>
+          );
+          const lockTitle = locked ? 'Locked — fixed on resize and when other gaps are edited. Click: open'
+            : edited ? 'Pinned — keeps its value when other gaps are edited, still scales with the volume on resize. Click: lock'
+            : 'Open — takes up changes from other gaps and scales with the volume on resize. Click: pin';
           return (
             <g key={`gap-${p.k}`} className={`yago-gap${locked ? ' locked' : ''}`}>
               <DimArrows a={a} b={b} asz={asz} color={locked ? '#f59e0b' : DIM_LINE} />
               <DimPill cx={p.cx} cy={p.cy} txt={p.txt} fs={fs} fill={locked || edited ? '#fff7ed' : '#ffffff'} stroke={locked ? '#f97316' : edited ? '#fbbf24' : SOFT.pillStroke} strokeWidth={locked || edited ? 1 : 0.7}
-                color={locked ? '#c2410c' : edited ? '#9a3412' : '#44403c'} hideText={editing?.kind === 'gap' && editing.k === p.k} title={edited ? 'Entered gap — click to edit' : 'Edit gap'} onClick={e => { stop(e); beginEdit({ kind: 'gap', k: p.k, v: p.txt }); }} />
-              <LockBadge cx={lockCx} cy={lockCy} locked={locked} edited={edited} onClick={() => onToggleLock(p.k)}
-                title={locked ? 'Locked gap — stays fixed on resize. Click to unlock' : edited ? 'Entered gap — click to lock it (stays fixed on resize)' : 'Lock gap (stays fixed on resize)'} />
+                color={locked ? '#c2410c' : edited ? '#9a3412' : '#44403c'} hideText={editing?.kind === 'gap' && editing.k === p.k} title={edited ? 'Pinned gap — click to edit (open gaps take up the difference)' : 'Edit gap (open gaps take up the difference)'} onClick={e => { stop(e); beginEdit({ kind: 'gap', k: p.k, v: p.txt }); }} />
+              <LockBadge cx={lockCx} cy={lockCy} locked={locked} edited={edited} onClick={() => onToggleLock(p.k)} title={lockTitle} holdIcon />
             </g>
           );
         })}

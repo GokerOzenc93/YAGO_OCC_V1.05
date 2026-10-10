@@ -884,107 +884,192 @@ export function equalGaps(L: number, count: number, ts: number[]): GapSpec[] {
   return Array.from({ length: n + 1 }, () => ({ value: r1(g), locked: false }));
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   ÖLÇÜ DAĞITIMI — TEK KURAL (Goker, Eki 2026: "600'lük kapakta sol 150, sağ 150 girince orta 300 kalıyor; sağı kilitleyip
-   ölçülerle oynayınca kalan ölçü yanlış dağılıyor, bazen 0 oluyor — derinlemesine incele, raf/dikme boşlukları da aynı
-   mantıkta olsun"). Raf/dikme boşlukları, kapak bölme ölçüleri ve kanat ölçüleri HEP bu iki işlevle çözülür:
-
-   Her parça üç durumdan birindedir:
-     🔒 KİLİTLİ   — değeri hiçbir zaman değişmez (yalnız kilitliler açıklığa sığmazsa, uyarıyla, oransal küçülür).
-     *  GİRİLMİŞ  — kullanıcı yazdı ama kilitlemedi: kardeş düzenlemelerinde ve boyutlanmada KALANI alabilir (yumuşak).
-        SERBEST   — hiç girilmedi: kalanı İLK bunlar alır (eşit paylaşır).
-
-   enterSize(k, v): k. parça v olur (girilmiş). Kalan = açıklık − kilitliler − v, DİĞER kilitsizlere:
-     • serbest parça varsa: girilmişler değerini korur, serbestler kalanı eşit paylaşır; kalan serbestlere en az `min`
-       bırakmıyorsa girilmişler oransal küçülür (serbestler `min`);
-     • serbest yoksa: kilitsizler kalanı ORANLARINI koruyarak paylaşır (tek kilitsiz → hepsini alır);
-     • girilen v, diğer kilitsizlere `min` ve kilitlilere kendi değerlerini bırakacak kadar kırpılır (0 çıkmaz, taşmaz).
-   fitSizes(açıklık): açıklık / kalınlık / ara boşluk değişince (parametrik büyüme) FARK, kilitli olmayan TÜM parçalara
-     (girilmiş + serbest) oranları korunarak dağıtılır; kilitli sabittir. Σ zaten açıklıksa HİÇBİR ŞEY değişmez; böylece
-     girilen değerler ekran yenilenince / rebuild'de kaymaz (eski hata: Σ sapınca girilmişler her çözümde yeniden ölçekleniyordu).
-   Yuvarlama 0,1 mm; artık son değişen parçaya yazılır. ═════════════════════════════════════════════════════════════════ */
-const sumV = (xs: GapSpec[]) => xs.reduce((s, g) => s + g.value, 0);
-/** `xs` parçalarına toplam `R` verilir: oransal (Σ>0) ya da eşit; her parça ≥ `min`. Artık son parçaya. */
-function shareOut(xs: GapSpec[], R: number, min: number, equal: boolean): void {
-  if (!xs.length) return;
-  const total = Math.max(R, xs.length * min);
-  const w = equal || sumV(xs) <= 1e-6 ? xs.map(() => 1) : xs.map(g => g.value);
-  // önce ağırlıkla dağıt, `min` altına düşenleri `min`e sabitleyip kalanı diğerlerine yeniden ver (en çok n tur)
-  const fixed = new Set<number>(); let left = total;
-  for (let round = 0; round < xs.length; round++) {
-    const ws = w.reduce((a, x, i) => a + (fixed.has(i) ? 0 : x), 0);
-    let changed = false;
-    xs.forEach((g, i) => { if (fixed.has(i)) return; const v = ws > 0 ? left * w[i] / ws : left / (xs.length - fixed.size); if (v < min) { g.value = min; fixed.add(i); left -= min; changed = true; } });
-    if (!changed) { xs.forEach((g, i) => { if (!fixed.has(i)) g.value = ws > 0 ? left * w[i] / ws : left / (xs.length - fixed.size); }); break; }
-  }
-  for (const g of xs) g.value = r1(g.value);
-  const last = xs[xs.length - 1];
-  last.value = r1(last.value + (total - sumV(xs)));
-}
 /**
- * SIĞDIR (parametrik büyüme / küçülme, kalınlık ve ara değişimi): Σ parça = açıklık olana kadar fark dağıtılır. Σ zaten
- * açıklıksa değerler aynen kalır. Goker (Eki 2026): "kutucuğa ölçü yazmam hep o ölçüde kalsın diye değil; parametrik
- * büyüyünce kilitli olmayan yerler o ORANDA büyüsün diye" → yalnız KİLİTLİ sabittir; girilmiş ya da serbest, tüm kilitsizler
- * farkı oranlarını koruyarak paylaşır (girilmiş 150, serbest 300 → gövde %20 büyüyünce 180 / 360). Kilitsiz yoksa (hepsi
- * kilitli) kilitliler uyarıyla oransal. Dizi boyu tutmuyorsa eşit dağılım. `min`: alt sınır (raf boşluğu 0, kapak ölçüsü 1).
+ * KALINLIK DEĞİŞİNCE YENİDEN DAĞITIM: kilitli ve girilmiş boşluklar değerini korur;
+ * fark girilmemiş kilitsiz boşluklara EŞİT dağılır (varsayılan: hepsi eşit). Öyle
+ * boşluk yoksa kilitsizlere oransal; hepsi kilitliyse artık son boşluğa.
  */
-export function fitSizes(specs: GapSpec[], avail: number, count: number, min = MIN_GAP): GapSpec[] {
-  const n = count + 1;
-  if (!Array.isArray(specs) || specs.length !== n) return Array.from({ length: n }, () => ({ value: r1(Math.max(min, avail / n)), locked: false }));
-  const out = specs.map(g => ({ ...g, value: Number.isFinite(g.value) ? g.value : 0 }));
-  const resid = avail - sumV(out);
-  if (Math.abs(resid) < 0.05) { for (const g of out) g.value = r1(g.value); return out; }
-  const unlocked = out.filter(g => !g.locked), locked = out.filter(g => g.locked);
-  if (unlocked.length) {
-    const target = sumV(unlocked) + resid;
-    if (target >= unlocked.length * min - 1e-6) { shareOut(unlocked, target, min, false); return out; }
-    // kilitsizler min'e indi, gerisi kilitlilerden (uyarı)
-    shareOut(unlocked, unlocked.length * min, min, true);
-    const need = sumV(out) - avail;
-    if (locked.length && need > 0.05) { console.warn('[YAGO][DAĞITIM] kilitli parçalar açıklığa sığmıyor, kilitliler oransal küçültüldü:', need.toFixed(1)); shareOut(locked, sumV(locked) - need, min, false); }
+export function redistributeForThickness(gaps: GapSpec[], L: number, count: number, ts: number[]): GapSpec[] {
+  if (!Array.isArray(gaps) || gaps.length !== count + 1) return equalGaps(L, count, ts);
+  const out = gaps.map(g => ({ ...g }));
+  const avail = L - sumT(ts);
+  const fresh = out.filter(g => !g.locked && !g.edited);
+  if (fresh.length > 0) {
+    const fixedSum = out.filter(g => g.locked || g.edited).reduce((s, g) => s + g.value, 0);
+    let free = avail - fixedSum;
+    if (free < 0) { console.warn('[YAGO][GRUP-KALINLIK] kilitli/girilmiş boşluklar açıklığa sığmıyor, serbest boşluklar 0:', free.toFixed(1)); free = 0; }
+    for (const g of fresh) g.value = r1(Math.max(MIN_GAP, free / fresh.length));
     return out;
   }
-  console.warn('[YAGO][DAĞITIM] tüm parçalar kilitli, fark kilitlilere oransal dağıtıldı:', resid.toFixed(1));
-  shareOut(locked, avail, min, false);
-  return out;
+  return rescaleGaps(out, L, count, ts);
 }
+
 /**
- * GİRİŞ: k. parça `value` olur ve girilmiş sayılır; kalan, diğer kilitsizlere (serbestler önce, eşit; sonra girilmişler, oransal).
- * Girilen değer diğer kilitsizlere `min`, kilitlilere kendi değerlerini bırakacak kadar kırpılır. Sonuç Σ = açıklık.
+ * YENİDEN DAĞITIM (küp boyutlandı / hacim değişti): kilitli boşluklar aynen
+ * kalır; kalan açıklık kilitsizlere ORANLARI korunarak dağılır (hepsi eşitse
+ * eşit kalır). Kilitliler sığmıyorsa oransal küçültülür (uyarı). Hepsi
+ * kilitliyse artık son boşluğa yazılır.
  */
-export function enterSize(specs: GapSpec[], k: number, value: number, avail: number, count: number, min = MIN_GAP): GapSpec[] {
-  const n = count + 1;
-  const out = (Array.isArray(specs) && specs.length === n ? specs : fitSizes([], avail, count, min)).map(g => ({ ...g }));
-  if (k < 0 || k >= n) return out;
-  const others = out.filter((_, i) => i !== k);
-  const locked = others.filter(g => g.locked), soft = others.filter(g => !g.locked);
-  const maxV = avail - sumV(locked) - soft.length * min;
-  let v = Math.max(min, Math.min(value, maxV));
-  if (v < value - 0.05) console.warn('[YAGO][DAĞITIM] girilen değer sığmıyor, kırpıldı:', value, '→', r1(v), '(kilitli Σ=', r1(sumV(locked)), 'açıklık=', r1(avail), ')');
-  if (maxV < min) { v = Math.max(min, avail - sumV(locked)); }
-  out[k] = { ...out[k], value: r1(v), edited: true };
-  const R = avail - sumV(locked) - out[k].value;
-  const free = soft.filter(g => !g.edited), held = soft.filter(g => !!g.edited);
-  if (free.length) {
-    const forHeld = Math.min(sumV(held), Math.max(0, R - free.length * min));
-    if (held.length && forHeld < sumV(held) - 0.05) shareOut(held, forHeld, min, false);
-    shareOut(free, R - sumV(held), min, true);
-  } else if (held.length) shareOut(held, R, min, false);
-  else if (Math.abs(R) > 0.05) { console.warn('[YAGO][DAĞITIM] diğer parçalar kilitli; girilen değer kalan açıklığa yazıldı →', r1(out[k].value + R)); out[k].value = r1(Math.max(min, out[k].value + R)); }
+export function rescaleGaps(gaps: GapSpec[], L: number, count: number, ts: number[]): GapSpec[] {
+  if (!Array.isArray(gaps) || gaps.length !== count + 1) return equalGaps(L, count, ts);
+  const avail = L - sumT(ts);
+  const out = gaps.map(g => ({ ...g }));
+  const lockedSum = out.filter(g => g.locked).reduce((s, g) => s + g.value, 0);
+  let free = avail - lockedSum;
+  if (free < -1e-6) {
+    const k = lockedSum > 0 ? Math.max(0, avail) / lockedSum : 0;
+    console.warn('[YAGO][GRUP-BOŞLUK] kilitli boşluklar açıklığa sığmıyor: kilitliΣ=', lockedSum.toFixed(1), 'açıklık=', avail.toFixed(1), '→ kilitliler oransal küçültüldü');
+    for (const g of out) if (g.locked) g.value = r1(g.value * k);
+    free = 0;
+  }
+  const unlocked = out.filter(g => !g.locked);
+  if (unlocked.length === 0) {
+    const last = out[out.length - 1];
+    if (Math.abs(free) > 0.05) { last.value = r1(last.value + free); console.warn('[YAGO][GRUP-BOŞLUK] tüm boşluklar kilitli, artık son boşluğa yazıldı:', free.toFixed(1)); }
+    return out;
+  }
+  const uSum = unlocked.reduce((s, g) => s + g.value, 0);
+  if (uSum > 1e-6) for (const g of unlocked) g.value = r1(g.value * free / uSum);
+  else for (const g of unlocked) g.value = r1(free / unlocked.length);
+  const total = out.reduce((s, g) => s + g.value, 0);
+  const resid = avail - total;
+  if (Math.abs(resid) > 0.05) {
+    // Artık önce son AÇIK ölçüye (pinli değer kıpırdamasın), yoksa son kilitsize.
+    const tgt = [...unlocked].reverse().find(g => !g.edited) ?? unlocked[unlocked.length - 1];
+    tgt.value = r1(tgt.value + resid);
+  }
   return out;
 }
 
-/** Kalınlık / açıklık değişince: kilitli korunur, fark kilitsizlere oransal (fitSizes). */
-export function redistributeForThickness(gaps: GapSpec[], L: number, count: number, ts: number[]): GapSpec[] {
-  return fitSizes(gaps, L - sumT(ts), count);
+/**
+ * ÖLÇÜ MODU — 3 MOD (Goker, Eki 2026: kapakta kuruldu, "aynısını dikme ve raflara da uygulayalım"). Kapak ölçüleri
+ * (DoorService) ve raf/dikme boşlukları AYNI kuralı paylaşır:
+ *  • 'open'   — açık: alan (gövde / hacim / kalınlık) değişince oranla büyür/küçülür; bir kardeş girilince farkı oranla alır.
+ *  • 'hold'   — pin (girilmiş, `edited`): kardeş girilince farkı ALMAZ, ama alan değişince açıklarla birlikte oranla
+ *               büyür/küçülür. Değer yazmak ölçüyü bu moda alır.
+ *  • 'locked' — kilitli: her durumda sabit.
+ * Pin ve kilit AYNI kotadan: n ölçüde en fazla n−1 pinli+kilitli — en az bir açık ölçü kalır (passiveGapIndex).
+ */
+export type GapMode = 'open' | 'hold' | 'locked';
+export const gapMode = (g: GapSpec | undefined): GapMode => (g?.locked ? 'locked' : g?.edited ? 'hold' : 'open');
+/** Rozet döngüsü: açık → pin → kilitli → açık. */
+export const nextGapMode = (m: GapMode): GapMode => (m === 'open' ? 'hold' : m === 'hold' ? 'locked' : 'open');
+/**
+ * PASİF ÖLÇÜ (Goker: "son kilitli olmayan kutucuk kalan ölçüleri toplar ve pasif olur"; pin de kilit gibi sayılır): ≥2 ölçüde
+ * TEK açık ölçü kaldıysa onun indeksi — girişlerin farkını toplar; girilemez, pinlenemez, kilitlenemez. Açık hiç yoksa (eski
+ * kayıt: hepsi girilmiş) tek kilitsiz ölçü pasif. Yoksa −1.
+ */
+export function passiveGapIndex(gaps: ReadonlyArray<GapSpec | undefined>, count = gaps.length): number {
+  if (count < 2) return -1;
+  const sole = (pred: (g: GapSpec | undefined) => boolean): number => {
+    let idx = -1;
+    for (let i = 0; i < count; i++) {
+      if (!pred(gaps[i])) continue;
+      if (idx >= 0) return -2;   // birden fazla
+      idx = i;
+    }
+    return idx;
+  };
+  const open = sole(g => gapMode(g) === 'open');
+  if (open >= 0) return open;
+  if (open === -2) return -1;
+  const unlocked = sole(g => !g?.locked);
+  return unlocked >= 0 ? unlocked : -1;
 }
-/** Hacim boyutlandı / taşındı: aynı kural (fitSizes) — Σ zaten açıklıksa değerler aynen kalır. */
-export function rescaleGaps(gaps: GapSpec[], L: number, count: number, ts: number[]): GapSpec[] {
-  return fitSizes(gaps, L - sumT(ts), count);
+/** Rozet tıklaması: sıradaki mod; pasif ölçü pinlenemez / kilitlenemez (null = değişiklik yok, pasif kilitliyse → açık). */
+export function cycleGapMode(gaps: GapSpec[], k: number, count = gaps.length): GapSpec[] | null {
+  if (k < 0 || k >= gaps.length) return null;
+  const cur = gapMode(gaps[k]);
+  let next = nextGapMode(cur);
+  if (next !== 'open' && passiveGapIndex(gaps, count) === k) {
+    if (cur === 'open') return null;
+    next = 'open';
+  }
+  return gaps.map((g, i) => (i === k ? { ...g, locked: next === 'locked', edited: next === 'hold' } : g));
 }
-/** Boşluk girişi (şema kutucuğu): enterSize kuralı. */
-export function applyGapEdit(gaps: GapSpec[], k: number, value: number, L: number, count: number, ts: number[], min = MIN_GAP): GapSpec[] {
-  return enterSize(gaps, k, value, L - sumT(ts), count, min);
+/**
+ * ÖLÇÜ GİRİŞİ — KATSAYI (kapak + raf/dikme ortak): k. ölçü = değer ve PİN'e geçer (kilitliyse kilitli kalır); kilitli ve
+ * pinliler sabit; fark diğer AÇIK ölçülere ORANLARIYLA dağılır. `base` (düzenleme başındaki dizi, canlı önizleme): oranlar
+ * oradan alınır — her tuşta oran kaymaz, MIN kırpması geri alınabilir; alana yeniden oranlanır, mod bayrakları güncelden.
+ * Açık kardeş yoksa fark pinlilere oranla (uyarı). Hedeflere en az `min` kalacak şekilde değer kırpılır; oranla `min` altına
+ * düşen ölçü `min`de tutulur, kalan diğerlerine oranla (su doldurma). k pasifse dizi değişmez — `force` (kapak derzi bağı
+ * gibi değerin dışarıdan dayatıldığı çözüm) pasifliği yok sayar.
+ */
+export function applyGapEditProportional(gaps: GapSpec[], k: number, value: number, L: number, count: number, ts: number[],
+  opts: { base?: GapSpec[]; min?: number; force?: boolean; tag?: string } = {}): GapSpec[] {
+  const n = count + 1, MIN = opts.min ?? MIN_GAP, tag = opts.tag ?? '[YAGO][GRUP-KATSAYI]';
+  const cur = gaps.length === n ? gaps : equalGaps(L, count, ts);
+  const out = (opts.base && opts.base.length === n
+    ? rescaleGaps(opts.base.map((b, i) => ({ ...b, locked: !!cur[i].locked, edited: !!cur[i].edited })), L, count, ts)
+    : cur).map(g => ({ ...g }));
+  if (k < 0 || k >= n) return out;
+  if (!opts.force && passiveGapIndex(out, n) === k) { console.warn(tag, 'ölçü', k + 1, 'pasif (diğerleri pinli/kilitli, kalanı toplar) — giriş yok sayıldı'); return out; }
+  const avail = L - sumT(ts);
+  const others = out.map((_, i) => i).filter(i => i !== k);
+  const unlocked = others.filter(i => !out[i].locked);
+  if (!unlocked.length) {
+    if (!opts.force) { console.warn(tag, 'diğer ölçüler kilitli — ölçü', k + 1, 'girilemez'); return out; }
+    const lockedSum = others.reduce((a, i) => a + out[i].value, 0);
+    out[k] = { ...out[k], value: r1(Math.max(MIN, avail - lockedSum)), edited: true };
+    console.warn(tag, 'diğer ölçüler kilitli, dayatılan değer kırpıldı →', out[k].value);
+    return out;
+  }
+  const open = unlocked.filter(i => gapMode(out[i]) === 'open');
+  if (!open.length) console.warn(tag, 'açık kardeş yok — ölçü', k + 1, 'farkı pinli kardeşlere oranla dağıtıldı');
+  const soft = open.length ? open : unlocked;   // farkı alacak ölçüler
+  const fixedSum = others.filter(i => !soft.includes(i)).reduce((a, i) => a + out[i].value, 0);   // kilitli + pinli
+  const maxV = avail - fixedSum - soft.length * MIN;
+  const v = r1(Math.max(MIN, Math.min(value, maxV)));
+  if (Math.abs(v - value) >= 0.05) console.warn(tag, 'ölçü', k + 1, '=', value, 'sığmıyor → kırpıldı', v, '(sabitΣ=', r1(fixedSum), 'alan=', r1(avail), ')');
+  out[k] = { ...out[k], value: v, edited: true };
+  // Oransal dağıtım (MIN tabanlı su doldurma): MIN altına düşen MIN'de sabitlenir, bütçe kalanlara yeniden oranlanır.
+  let pool = soft.slice(), budget = Math.max(0, avail - fixedSum - v);
+  const w = new Map(soft.map(i => [i, Math.max(0, out[i].value)] as [number, number]));
+  for (let guard = 0; guard <= soft.length && pool.length; guard++) {
+    const wSum = pool.reduce((a, i) => a + w.get(i)!, 0);
+    const share = (i: number) => (wSum > 1e-6 ? (w.get(i)! * budget) / wSum : budget / pool.length);
+    const low = pool.filter(i => share(i) < MIN);
+    if (!low.length) { for (const i of pool) out[i] = { ...out[i], value: r1(share(i)) }; pool = []; break; }
+    for (const i of low) { out[i] = { ...out[i], value: MIN }; budget -= MIN; }
+    pool = pool.filter(i => !low.includes(i));
+  }
+  const resid = r1(avail - out.reduce((a, g) => a + g.value, 0));
+  if (Math.abs(resid) >= 0.05) { const j = soft[soft.length - 1]; out[j] = { ...out[j], value: r1(out[j].value + resid) }; }
+  return out;
+}
+
+/**
+ * BOŞLUK GİRİŞİ: k. boşluk value olur ve "girildi" sayılır; fark, kilitsiz ve
+ * girilmemiş boşluklara EŞİT dağılır. Öyle boşluk kalmadıysa diğer kilitsiz
+ * (girilmiş) boşluklara oransal; o da yoksa değer kalan açıklığa kırpılır.
+ */
+export function applyGapEdit(gaps: GapSpec[], k: number, value: number, L: number, count: number, ts: number[]): GapSpec[] {
+  const out = (gaps.length === count + 1 ? gaps : equalGaps(L, count, ts)).map(g => ({ ...g }));
+  if (k < 0 || k >= out.length) return out;
+  const avail = L - sumT(ts);
+  const v = Math.max(MIN_GAP, value);
+  out[k] = { ...out[k], value: r1(v), edited: true };
+  const others = out.filter((_, i) => i !== k);
+  const fixedSum = others.filter(g => g.locked || g.edited).reduce((s, g) => s + g.value, 0);
+  let free = avail - out[k].value - fixedSum;
+  const fresh = others.filter(g => !g.locked && !g.edited);
+  if (fresh.length > 0) {
+    if (free < 0) { console.warn('[YAGO][GRUP-BOŞLUK] girilen değer açıklığı aşıyor, serbest boşluklar 0:', free.toFixed(1)); free = 0; }
+    for (const g of fresh) g.value = r1(free / fresh.length);
+    return out;
+  }
+  const soft = others.filter(g => !g.locked);
+  if (soft.length > 0) {
+    if (free < 0) free = 0;
+    const sSum = soft.reduce((s, g) => s + g.value, 0);
+    if (sSum > 1e-6) for (const g of soft) g.value = r1(g.value * free / sSum);
+    else for (const g of soft) g.value = r1(free / soft.length);
+    return out;
+  }
+  const lockedSum = others.reduce((s, g) => s + g.value, 0);
+  out[k].value = r1(Math.max(MIN_GAP, avail - lockedSum));
+  console.warn('[YAGO][GRUP-BOŞLUK] diğer boşluklar kilitli, değer kırpıldı →', out[k].value);
+  return out;
 }
 
 /** Grubun yönü (tık yönü); eski gruplarda +1. */
@@ -1353,7 +1438,7 @@ function solveGroup(group: PanelGroup, parent: Shape, panels: Shape[], groups: P
   const L = boxSpan(cavity, group.axis);
   let gaps = rescaleGaps(group.gaps, L, group.count, ts);
   // KAPAK DERZİNE BAĞ (Goker: "eklenen raf ve dikme her zaman o kapak aralarının arasında çalışsın"): bağlı üye, kapak
-  // derzine göre (hiza) konumlanır — o boşluk derzden yazılır, kalan boşluklar applyGapEdit kuralıyla dağılır. Derz yoksa /
+  // derzine göre (hiza) konumlanır — o boşluk derzden yazılır, kalan boşluklar katsayı kuralıyla (açıklara oranla) dağılır. Derz yoksa /
   // eksen uyuşmuyorsa bağ bu çözümde yok sayılır (syncPanelGroups bayat bağı düşürür).
   if (group.doorBond) {
     const bj = doorJointForBond(group.doorBond, parent, panels);
@@ -1362,7 +1447,7 @@ function solveGroup(group: PanelGroup, parent: Shape, panels: Shape[], groups: P
       const want = bj.panelMin(ts[m]);
       const prefix = gaps.slice(0, m).reduce((a, g, i) => a + g.value + ts[i], 0);
       const gm = groupFacing(group) > 0 ? want - cavity.min[group.axis] - prefix : cavity.max[group.axis] - want - ts[m] - prefix;
-      if (gm >= -0.05) gaps = applyGapEdit(gaps, m, Math.max(0, gm), L, group.count, ts);
+      if (gm >= -0.05) gaps = applyGapEditProportional(gaps, m, Math.max(0, gm), L, group.count, ts, { force: true });
       else console.warn('[YAGO][GRUP-KAPAK-BAĞ] derz hacmin dışında, bağ bu çözümde uygulanmadı:', group.id, 'istenen min=', want.toFixed(1), fmtBox(cavity));
     } else if (bj) console.warn('[YAGO][GRUP-KAPAK-BAĞ] derz ekseni grubun dizilim ekseni değil, bağ uygulanmadı:', group.id, 'XYZ'[bj.axis], 'vs', 'XYZ'[group.axis]);
   }
@@ -1637,6 +1722,7 @@ export async function setGroupCount(groupId: string, count: number, opts: { keep
 }
 
 function writeGroupGaps(group: PanelGroup, gaps: GapSpec[], extra: Partial<PanelGroup> = {}): void {
+  groupEditBase = null;   // onaylı yazım: düzenleme oturumu bitti (oran tabanı düşer)
   const st = useAppStore.getState();
   const next = { ...group, ...extra, gaps };
   const sol = solveFromStore(next) || fallbackSolution(next, gaps, group.count, anchorPoint(group, group.cavity));
@@ -1653,7 +1739,7 @@ function writeGroupGaps(group: PanelGroup, gaps: GapSpec[], extra: Partial<Panel
  * ÜYE KALINLIĞI (şemadaki kutucuk): i. üyenin kalınlığı value olur; üye panelin
  * `panelThickness` parametresi güncellenir (motor levhayı bu kalınlıkla üretir,
  * damga/şerit sınıfı da bunu okur); boşluklar Σkalınlığa göre yeniden dağıtılır
- * (kilitli/girilmiş korunur, diğerleri EŞİT); tam rebuild.
+ * (katsayı: kilitliler sabit, açık + pinli oranla — rescaleGaps); tam rebuild.
  */
 export async function setGroupMemberThickness(groupId: string, i: number, value: number): Promise<void> {
   const group = groupById(groupId);
@@ -1665,14 +1751,14 @@ export async function setGroupMemberThickness(groupId: string, i: number, value:
   // Canlı önizleme kalınlığı zaten gruba yazdı: onay yalnız panel parametresi de aynıysa atlanır (eskiden önizlemeden sonra onay
   // "değişiklik yok" sayılıp panelin panelThickness'ı ve rebuild hiç gelmiyordu).
   const panelNow = panelOfVf(group.memberVfIds[i], useAppStore.getState().shapes);
-  if (Math.abs(v - ts[i]) < 0.05 && Math.abs((parseFloat(panelNow?.parameters?.panelThickness) || ts[i]) - v) < 0.05) return;
+  if (Math.abs(v - ts[i]) < 0.05 && Math.abs((parseFloat(panelNow?.parameters?.panelThickness) || ts[i]) - v) < 0.05) { groupEditBase = null; return; }
   ts[i] = v;
-  const gaps = redistributeForThickness(group.gaps, L, group.count, ts);
+  const gaps = rescaleGaps(group.gaps, L, group.count, ts);   // alan değişti: kilitliler sabit, açık + pinli oranla
   writeGroupGaps(group, gaps, { memberThicknesses: ts });
   const st = useAppStore.getState();
   const panel = panelOfVf(group.memberVfIds[i], st.shapes);
   if (panel) st.updateShape(panel.id, { parameters: { ...panel.parameters, panelThickness: v, depth: v } } as any);
-  console.log('[YAGO][GRUP-KALINLIK] girildi', groupId, 'üye=', i + 1, 'değer=', v, 'kalınlıklar=', ts.join('/'), '→ boşluklar', gaps.map(g => `${g.value}${g.locked ? '🔒' : g.edited ? '*' : ''}`).join('/'));
+  console.log('[YAGO][GRUP-KALINLIK] girildi', groupId, 'üye=', i + 1, 'değer=', v, 'kalınlıklar=', ts.join('/'), '→ boşluklar', gaps.map(g => `${g.value}${g.locked ? '🔒' : g.edited ? '📌' : ''}`).join('/'));
   await requestRebuild(group.shapeId);
 }
 
@@ -1683,18 +1769,24 @@ export async function setGroupMemberThickness(groupId: string, i: number, value:
  * setGroupMemberThickness ile gerçek yazım + rebuild; Esc → groupLayoutSnapshot ile alınan kayıt geri yüklenir.
  */
 export interface GroupLayoutSnap { gaps: GapSpec[]; memberThicknesses?: number[]; targetGap?: number }
+/** ORAN TABANI (canlı önizleme): düzenleme başındaki boşluklar — previewGroupGap / editGroupGap oranları buradan alır. */
+let groupEditBase: { groupId: string; count: number; gaps: GapSpec[] } | null = null;
+const editBaseOf = (group: PanelGroup) => (groupEditBase?.groupId === group.id && groupEditBase.count === group.count ? groupEditBase.gaps : undefined);
 export function groupLayoutSnapshot(groupId: string): GroupLayoutSnap | null {
   const g = groupById(groupId);
+  groupEditBase = g ? { groupId, count: g.count, gaps: g.gaps.map(x => ({ ...x })) } : null;
   return g ? { gaps: g.gaps.map(x => ({ ...x })), memberThicknesses: g.memberThicknesses?.slice(), targetGap: g.targetGap } : null;
 }
 export function restoreGroupLayout(groupId: string, snap: GroupLayoutSnap | null | undefined): void {
+  groupEditBase = null;
   if (!snap || !groupById(groupId)) return;
   useAppStore.getState().updatePanelGroup(groupId, { gaps: snap.gaps.map(x => ({ ...x })), memberThicknesses: snap.memberThicknesses?.slice(), targetGap: snap.targetGap });
 }
 export function previewGroupGap(groupId: string, k: number, value: number): void {
   const group = groupById(groupId);
   if (!group || !Number.isFinite(value) || value < 0) return;
-  const gaps = applyGapEdit(group.gaps, k, value, boxSpan(group.cavity, group.axis), group.count, memberThicknessesOf(group));
+  if (passiveGapIndex(group.gaps, group.count + 1) === k) return;
+  const gaps = applyGapEditProportional(group.gaps, k, value, boxSpan(group.cavity, group.axis), group.count, memberThicknessesOf(group), { base: editBaseOf(group) });
   useAppStore.getState().updatePanelGroup(groupId, { gaps });
 }
 export function previewGroupMemberThickness(groupId: string, i: number, value: number): void {
@@ -1704,14 +1796,18 @@ export function previewGroupMemberThickness(groupId: string, i: number, value: n
   const ts = memberThicknessesOf(group);
   const others = sumT(ts) - ts[i];
   ts[i] = r1(Math.max(1, Math.min(value, Math.max(1, L - others - group.count - 1))));
-  useAppStore.getState().updatePanelGroup(groupId, { memberThicknesses: ts, gaps: redistributeForThickness(group.gaps, L, group.count, ts) });
+  useAppStore.getState().updatePanelGroup(groupId, { memberThicknesses: ts, gaps: rescaleGaps(group.gaps, L, group.count, ts) });
 }
 
-/** Boşluk girişi (şema pill'i): kural applyGapEdit; VF'ler güncellenir, tam rebuild. Elle boşluk girişi hedef aralığı kapatır. */
+/**
+ * Boşluk girişi (şema pill'i): KATSAYI kuralı (applyGapEditProportional — girilen pinlenir, fark açıklara oranla); VF'ler
+ * güncellenir, tam rebuild. Elle boşluk girişi hedef aralığı kapatır. Pasif boşluk (tek açık) girilemez.
+ */
 export async function editGroupGap(groupId: string, k: number, value: number): Promise<void> {
   const group = groupById(groupId);
   if (!group || !Number.isFinite(value)) return;
-  const gaps = applyGapEdit(group.gaps, k, value, boxSpan(group.cavity, group.axis), group.count, memberThicknessesOf(group));
+  if (passiveGapIndex(group.gaps, group.count + 1) === k) { console.warn('[YAGO][GRUP-KATSAYI] boşluk', k + 1, 'pasif (diğerleri pinli/kilitli, kalanı toplar) — giriş yok sayıldı', groupId); groupEditBase = null; return; }
+  const gaps = applyGapEditProportional(group.gaps, k, value, boxSpan(group.cavity, group.axis), group.count, memberThicknessesOf(group), { base: editBaseOf(group) });
   // KAPAK DERZİNE BAĞLI ÜYE (Goker: levha kapak aralarının arasında çalışır): bağlı üyenin önündeki / arkasındaki boşluk
   // girilince LEVHA değil KAPAK DERZİ taşınır (moveDoorJointTo → rebuild → levha derzi izler). Diğer boşluklar normal.
   // Derz taşınamıyorsa (kilitli kapak ölçüsü / panel-ref'li derz) GİRİLEN DEĞER KAZANIR: bağ çözülür, levha girilen yere gider
@@ -1736,7 +1832,7 @@ export async function editGroupGap(groupId: string, k: number, value: number): P
     }
   }
   writeGroupGaps(group, gaps, extra);
-  console.log('[YAGO][GRUP-BOŞLUK] girildi', groupId, 'k=', k, 'değer=', value, '→', gaps.map(g => `${g.value}${g.locked ? '🔒' : g.edited ? '*' : ''}`).join('/'));
+  console.log('[YAGO][GRUP-BOŞLUK] girildi', groupId, 'k=', k, 'değer=', value, '→', gaps.map(g => `${g.value}${g.locked ? '🔒' : g.edited ? '📌' : ''}`).join('/'));
   await requestRebuild(group.shapeId);
 }
 
@@ -1829,13 +1925,17 @@ export function deleteCavityStep(groupId: string, stepId: string): Promise<void>
   return commitCavitySteps(group, (group.cavitySteps || []).filter(s => s.id !== stepId), 'adım silindi');
 }
 
-/** Kilit: değer değişmez; küp boyutlanınca bu boşluk sabit kalır. */
+/**
+ * KİLİT ROZETİ — 3 MOD (bkz. GapMode): açık → pin → kilitli → açık. Değer değişmez → rebuild yok. Pasif boşluk (son açık)
+ * pinlenemez / kilitlenemez — en az bir açık boşluk kalır (pin + kilit ≤ n−1).
+ */
 export function toggleGroupGapLock(groupId: string, k: number): void {
   const group = groupById(groupId);
   if (!group || k < 0 || k >= group.gaps.length) return;
-  const gaps = group.gaps.map((g, i) => (i === k ? { ...g, locked: !g.locked } : g));
+  const gaps = cycleGapMode(group.gaps, k, group.count + 1);
+  if (!gaps) { console.warn('[YAGO][GRUP-KATSAYI] son açık boşluk pinlenemez/kilitlenemez (pasif, kalanı toplar):', groupId, 'k=', k); return; }
   useAppStore.getState().updatePanelGroup(groupId, { gaps });
-  console.log('[YAGO][GRUP-BOŞLUK]', gaps[k].locked ? 'KİLİTLENDİ' : 'kilit açıldı', groupId, 'k=', k, 'değer=', gaps[k].value);
+  console.log('[YAGO][GRUP-KATSAYI] boşluk', k + 1, 'modu', gapMode(group.gaps[k]), '→', gapMode(gaps[k]), groupId, 'değer=', gaps[k].value);
 }
 
 /** Tüm boşluklar eşit + kilitsiz. (Hedef aralık korunur: eşit boşluk zaten o modun kuralı.) */

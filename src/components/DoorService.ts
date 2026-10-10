@@ -6,8 +6,8 @@ import * as THREE from 'three';
 import { type Vec3, genId, round1 } from './Geometry';
 import { convexHull2D, largestFaceNormal, panelHasRotation } from './FaceRegion';
 import {
-  GROUP_PANEL_THICKNESS, applyGapEdit, bodyLocalBox, boxSpan, collectObstacles, createPanelGroupFromCavity, editGroupGap, equalGaps, fmtBox, gridForObstacles, groupFacing, memberThicknessesOf, panelLocalBox,
-  rayCavityCandidates, redistributeForThickness, rescaleGaps,
+  GROUP_PANEL_THICKNESS, type GapMode, applyGapEdit, applyGapEditProportional, bodyLocalBox, boxSpan, collectObstacles, createPanelGroupFromCavity, cycleGapMode, editGroupGap, fmtBox, gapMode,
+  gridForObstacles, groupFacing, memberThicknessesOf, panelLocalBox, passiveGapIndex, rayCavityCandidates, redistributeForThickness, rescaleGaps,
 } from './PanelGroupService';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -40,7 +40,7 @@ import {
 //  • BÖLME = AĞAÇ (Goker, Eki 2026: "seçili olan kapağı bölmeliyiz; ilk tek kapak yerleşir, o bölünür, bölünen kapağı
 //    tıklayıp tekrar dikey/yatay bölünebilmeli — daha esnek bir bölme"): DoorGroup.tree; yaprak = kapak, split = bir
 //    eksende çocuklara bölünmüş alan (u = Split V yan yana, v = Split H üst üste). Her split kendi alanını çocuklarına
-//    KATSAYI kuralıyla dağıtır (rescaleGaps / applySizeEditProportional — kilitli sabit, kilitsizler oranlarını korur); çocuklar
+//    KATSAYI kuralıyla dağıtır (rescaleGaps / applyGapEditProportional — kilitli sabit, kilitsizler oranlarını korur); çocuklar
 //    arası boşluklar split'te (gaps), dış kenar boşlukları grupta (edgeGaps). Bir kapağı bölmek üst bölmenin ölçüsünü
 //    DEĞİŞTİRMEZ (toplam = ilk bölünen). Önceki cols×rows ızgarası kaldırıldı.
 //  • Üye kapaklar sıradan VF-panelleridir (interior=true, doorGroupId): extrude /
@@ -543,87 +543,24 @@ function distributeSizes(specs: GapSpec[], L: number, gaps: number[]): GapSpec[]
   if (Math.abs(resid) >= 0.05 && Math.abs(resid) < 1) {
     // Artık önce son AÇIK ölçüye (tutulan değer kıpırdamasın), yoksa son kilitsize.
     let j = -1;
-    for (let i = out.length - 1; i >= 0 && j < 0; i--) if (doorSizeMode(out[i]) === 'open') j = i;
+    for (let i = out.length - 1; i >= 0 && j < 0; i--) if (gapMode(out[i]) === 'open') j = i;
     for (let i = out.length - 1; i >= 0 && j < 0; i--) if (!out[i].locked) j = i;
     if (j >= 0) out[j] = { ...out[j], value: round1(out[j].value + resid) };
   }
   return out;
 }
 /**
- * ÖLÇÜ MODU (Goker, Eki 2026: "kilidin 3. modu olsun: kilitli, açık ve katsayıdan etkilenme modu"):
- *  • 'open'   — açık: gövde boyutlanınca oranla büyür/küçülür; kardeş girilince farkı (oranla) o alır.
- *  • 'hold'   — pin / tut (girilmiş, `edited`): kardeş girilince farkı ALMAZ (girilen değer korunur), ama gövde
- *               boyutlanınca açıklarla birlikte oranla büyür/küçülür. Değer yazmak ölçüyü bu moda alır. Pin ve kilit
- *               aynı kotadan: n bölmede en fazla n−1 pinli+kilitli (passiveSizeIndex).
- *  • 'locked' — kilitli: gövde boyutlansa da kardeş girilse de sabit.
- * Kilit rozeti açık → tut → kilitli → açık döner (toggleDoorSizeLock).
+ * ÖLÇÜ MODU — 3 MOD (Goker, Eki 2026: "kilidin 3. modu olsun: kilitli, açık ve katsayıdan etkilenme modu"; "pin de kilit
+ * gibi — 3 bölümde en fazla 2 tanesi pinli"): açık / pin / kilitli. Kural raf/dikme boşluklarıyla ORTAK — tanım ve
+ * uygulama PanelGroupService'te (gapMode, passiveGapIndex, cycleGapMode, applyGapEditProportional); burada kapak adlarıyla.
  */
-export type DoorSizeMode = 'open' | 'hold' | 'locked';
-export const doorSizeMode = (g: GapSpec | undefined): DoorSizeMode => (g?.locked ? 'locked' : g?.edited ? 'hold' : 'open');
+export type DoorSizeMode = GapMode;
+export const doorSizeMode = gapMode;
 /** Kapak ölçüsünün alt sınırı (mm) — şema kutucuğunun `min`'i ile aynı. */
 const MIN_DOOR_SIZE = 1;
-/**
- * PASİF KUTUCUK (Goker, Eki 2026: "her yeri kilitledikten sonra son kilitli olmayan kutucukta tüm kalan ölçüler toplanmalı
- * ve kutucuk pasif olmalı" + "pin de kilit gibi düşünülmeli — 3 bölümde en fazla 2 tanesi pinli olabilir"): pin ve kilit
- * AYNI kotadan sayılır — bölmede (≥2 çocuk) en az bir AÇIK ölçü kalmalı. TEK açık ölçü kaldıysa onun indeksi döner: o
- * ölçü girişlerin farkını toplar; girilemez, pinlenemez, kilitlenemez. Açık hiç yoksa (eski kayıt: hepsi girilmiş/pinli)
- * eski kural — tek kilitsiz ölçü pasif. Yoksa −1.
- */
-export function passiveSizeIndex(sizes: ReadonlyArray<GapSpec | undefined>, count = sizes.length): number {
-  if (count < 2) return -1;
-  const sole = (pred: (g: GapSpec | undefined) => boolean): number => {
-    let idx = -1;
-    for (let i = 0; i < count; i++) {
-      if (!pred(sizes[i])) continue;
-      if (idx >= 0) return -2;   // birden fazla
-      idx = i;
-    }
-    return idx;
-  };
-  const open = sole(g => doorSizeMode(g) === 'open');
-  if (open >= 0) return open;
-  if (open === -2) return -1;
-  const unlocked = sole(g => !g?.locked);
-  return unlocked >= 0 ? unlocked : -1;
-}
-/**
- * ÖLÇÜ GİRİŞİ — KATSAYI: k. ölçü = değer ve 'tut' moduna geçer (kilitliyse kilitli kalır); kilitliler ve TUTULANLAR sabit;
- * fark diğer AÇIK ölçülere `base` (düzenleme başındaki ölçüler) ORANLARIYLA dağılır — yazarken her tuşta oran kaymaz.
- * Açık kardeş yoksa fark tutulan kardeşlere oranla gider (uyarı) — giriş başka türlü yapılamaz. Hedeflere en az
- * MIN_DOOR_SIZE kalacak şekilde değer kırpılır; oranla MIN altına düşen ölçü MIN'de tutulur, kalan diğerlerine oranla.
- * Diğer kilitsiz yoksa (k pasif) dizi değişmez.
- */
-function applySizeEditProportional(base: GapSpec[], k: number, value: number, L: number, gaps: number[]): GapSpec[] {
-  const n = gaps.length + 1;
-  const out = (base.length === n ? base : equalGaps(L, gaps.length, gaps)).map(g => ({ ...g }));
-  if (k < 0 || k >= n) return out;
-  const avail = L - gaps.reduce((a, g) => a + g, 0);
-  const others = out.map((_, i) => i).filter(i => i !== k);
-  const unlocked = others.filter(i => !out[i].locked);
-  if (!unlocked.length) { console.warn('[YAGO][KAPAK-KATSAYI] diğer ölçüler kilitli — ölçü', k + 1, 'pasif (kalanı toplar), giriş yok sayıldı'); return out; }
-  const open = unlocked.filter(i => doorSizeMode(out[i]) === 'open');
-  if (!open.length) console.warn('[YAGO][KAPAK-KATSAYI] açık kardeş yok — ölçü', k + 1, 'farkı tutulan (hold) kardeşlere oranla dağıtıldı');
-  const soft = open.length ? open : unlocked;   // farkı alacak ölçüler
-  const lockedSum = others.filter(i => !soft.includes(i)).reduce((a, i) => a + out[i].value, 0);   // kilitli + tutulan (sabit)
-  const maxV = avail - lockedSum - soft.length * MIN_DOOR_SIZE;
-  const v = round1(Math.max(MIN_DOOR_SIZE, Math.min(value, maxV)));
-  if (Math.abs(v - value) >= 0.05) console.warn('[YAGO][KAPAK-KATSAYI] ölçü', k + 1, '=', value, 'sığmıyor → kırpıldı', v, '(sabitΣ=', round1(lockedSum), 'alan=', round1(avail), ')');
-  out[k] = { ...out[k], value: v, edited: true };
-  // Oransal dağıtım (MIN tabanlı su doldurma): MIN altına düşen MIN'de sabitlenir, bütçe kalanlara yeniden oranlanır.
-  let pool = soft.slice(), budget = Math.max(0, avail - lockedSum - v);
-  const w = new Map(soft.map(i => [i, Math.max(0, out[i].value)] as [number, number]));
-  for (let guard = 0; guard <= soft.length && pool.length; guard++) {
-    const wSum = pool.reduce((a, i) => a + w.get(i)!, 0);
-    const share = (i: number) => (wSum > 1e-6 ? (w.get(i)! * budget) / wSum : budget / pool.length);
-    const low = pool.filter(i => share(i) < MIN_DOOR_SIZE);
-    if (!low.length) { for (const i of pool) out[i] = { ...out[i], value: round1(share(i)) }; pool = []; break; }
-    for (const i of low) { out[i] = { ...out[i], value: MIN_DOOR_SIZE }; budget -= MIN_DOOR_SIZE; }
-    pool = pool.filter(i => !low.includes(i));
-  }
-  const resid = round1(avail - out.reduce((a, g) => a + g.value, 0));
-  if (Math.abs(resid) >= 0.05) { const j = soft[soft.length - 1]; out[j] = { ...out[j], value: round1(out[j].value + resid) }; }
-  return out;
-}
+/** PASİF KUTUCUK: bölmede tek AÇIK ölçü kaldıysa onun indeksi (pin + kilit ≤ n−1) — bkz. passiveGapIndex. */
+export const passiveSizeIndex = passiveGapIndex;
+
 /** Split düğümünün n−1 arası: kayıtlı dizi boyu tutmuyorsa varsayılan boşlukla (ilk ara değeri korunarak). */
 const splitGapsOf = (n: Extract<DoorNode, { kind: 'split' }>, gap: number) => {
   const m = n.children.length - 1;
@@ -1136,7 +1073,7 @@ function movePanelToAlign(group: Pick<DoorGroup, 'id' | 'axis'>, np: DoorNearPan
   if (cur == null) return false;
   const next = round1(cur + groupFacing(pg) * delta);
   if (next < 0) { console.warn('[YAGO][KAPAK-HİZA] istenen boşluk negatif, levha taşınamaz:', np.name, next); return false; }
-  const sim = applyGapEdit(pg.gaps, k, next, boxSpan(pg.cavity, pg.axis), pg.count, memberThicknessesOf(pg));
+  const sim = applyGapEditProportional(pg.gaps, k, next, boxSpan(pg.cavity, pg.axis), pg.count, memberThicknessesOf(pg));   // editGroupGap ile aynı kural
   if (Math.abs((sim[k]?.value ?? NaN) - next) > 0.05) { console.warn('[YAGO][KAPAK-HİZA] boşluk yazılamıyor (kilitli komşular), levha taşınamaz:', np.name, next); return false; }
   console.log('[YAGO][KAPAK-HİZA]', group.id, np.name, '→', align, 'derz', `${np.joint!.p0.toFixed(1)}..${np.joint!.p1.toFixed(1)}`, 'Δ=', delta.toFixed(1), 'boşluk', k, cur, '→', next);
   void editGroupGap(pg.id, k, next);
@@ -1531,7 +1468,7 @@ export async function setDoorLeafGap(groupId: string, leafId: string, gap: numbe
 
 /**
  * BÖLME ÖLÇÜSÜ (şema pill'i): split düğümünün k. çocuğuna değer; fark diğer KİLİTSİZ kardeşlere ORANLARIYLA (katsayı —
- * applySizeEditProportional; kilitliler sabit). Pasif ölçü (tek kilitsiz) girilemez.
+ * applyGapEditProportional; kilitli + pinli sabit). Pasif ölçü (tek açık) girilemez.
  * BAĞLI DERZ (Goker: kapak ↔ dikme bağı iki yönlü okunur): kapağın bitişiğindeki derz bir levhaya bağlıysa ölçü LEVHAYI
  * taşıyarak girilir — derz `k. kapak = değer` olacak yere, levha hizasına göre onun altına (editGroupGap → rebuild → kapak
  * izler). Önce k. derz (kapağın sonu), yoksa k−1. derz (başı). Levha taşınamıyorsa (üye değil, kilitli komşular) ölçü
@@ -1561,14 +1498,12 @@ export async function editDoorSize(groupId: string, splitId: string, k: number, 
     console.warn('[YAGO][KAPAK-BAĞ] bölmede levhaya bağlı derz var ama levha taşınamadı — ölçü girişi bağlı derzi değiştiremez (Shift+tık ile bağı çözün):', splitId, 'derz', j);
   }
   const L = sn.axis === 'u' ? sn.u1 - sn.u0 : sn.v1 - sn.v0;
-  // Oran tabanı: düzenleme başındaki ölçüler (kilit bayrakları güncel çözümden — oturum içinde değişmez).
+  // Oran tabanı: düzenleme başındaki ölçüler (alana yeniden oranlanır, mod bayrakları güncelden — applyGapEditProportional).
   const bn = sizeEditBase?.groupId === groupId ? findDoorNode(sizeEditBase.tree, splitId) : null;
-  // Taban alana yeniden oranlanır (distributeSizes) — kayıtlı ağaç çözülmemiş olsa da oranlar korunur.
-  const base = bn?.kind === 'split' && bn.sizes.length === sn.sizes.length
-    ? distributeSizes(bn.sizes.map((g, i) => ({ ...g, locked: sn.sizes[i].locked, edited: sn.sizes[i].edited })), L, sn.gaps) : sn.sizes;
-  const sizes = applySizeEditProportional(base, k, value, L, sn.gaps);
+  const base = bn?.kind === 'split' && bn.sizes.length === sn.sizes.length ? bn.sizes : undefined;
+  const sizes = applyGapEditProportional(sn.sizes, k, value, L, sn.gaps.length, sn.gaps, { base, min: MIN_DOOR_SIZE, tag: '[YAGO][KAPAK-KATSAYI]' });
   const tag = (g: GapSpec) => `${g.value}${g.locked ? '🔒' : g.edited ? '📌' : ''}`;
-  console.log('[YAGO][KAPAK-KATSAYI]', opts.preview ? 'önizleme' : 'onay', 'ölçü', k + 1, '=', value, 'taban=', base.map(tag).join('/'), '→', sizes.map(tag).join('/'));
+  console.log('[YAGO][KAPAK-KATSAYI]', opts.preview ? 'önizleme' : 'onay', 'ölçü', k + 1, '=', value, 'taban=', (base ?? sn.sizes).map(tag).join('/'), '→', sizes.map(tag).join('/'));
   const tree = replaceDoorNode(group.tree, splitId, old => ({ ...(old as any), sizes }));
   await writeDoorGroup(group, { tree }, `ölçü ${k + 1} = ${value}`, !!opts.preview);
 }
@@ -1580,15 +1515,9 @@ export function toggleDoorSizeLock(groupId: string, splitId: string, k: number):
   const group = groupById(groupId);
   const sn = group ? findSolvedNode(solveDoorTree(group), splitId) : null;
   if (!group || !sn || sn.kind !== 'split' || k < 0 || k >= sn.sizes.length) return;
-  const cur = doorSizeMode(sn.sizes[k]);
-  let next: DoorSizeMode = cur === 'open' ? 'hold' : cur === 'hold' ? 'locked' : 'open';
-  if (next !== 'open' && passiveSizeIndex(sn.sizes, sn.children.length) === k) {
-    if (cur === 'open') { console.warn('[YAGO][KAPAK-KATSAYI] son açık ölçü pinlenemez/kilitlenemez (pasif, kalanı toplar):', splitId, 'ölçü', k + 1); return; }
-    console.warn('[YAGO][KAPAK-KATSAYI] pasif ölçü kilitlenemez → açık:', splitId, 'ölçü', k + 1);
-    next = 'open';
-  }
-  const sizes = sn.sizes.map((g, i) => (i === k ? { ...g, locked: next === 'locked', edited: next === 'hold' } : g));
-  console.log('[YAGO][KAPAK-KATSAYI] ölçü', k + 1, 'modu', cur, '→', next, splitId);
+  const sizes = cycleGapMode(sn.sizes, k, sn.children.length);
+  if (!sizes) { console.warn('[YAGO][KAPAK-KATSAYI] son açık ölçü pinlenemez/kilitlenemez (pasif, kalanı toplar):', splitId, 'ölçü', k + 1); return; }
+  console.log('[YAGO][KAPAK-KATSAYI] ölçü', k + 1, 'modu', doorSizeMode(sn.sizes[k]), '→', doorSizeMode(sizes[k]), splitId);
   useAppStore.getState().updateDoorGroup(groupId, { tree: replaceDoorNode(group.tree, splitId, old => ({ ...(old as any), sizes })) });
 }
 /** Split düğümündeki TEK ara boşluk (k. çocuk ile k+1. arası): yalnız o değişir; fark serbest kapaklara eşit. */
