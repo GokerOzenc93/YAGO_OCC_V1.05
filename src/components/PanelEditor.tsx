@@ -1306,7 +1306,8 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
       const next = s === 'center' ? 'Full — the selected door covers the whole ' + what + ', the other door ends at its edge' : 'Half — both doors reach the middle of the ' + what;
       return `${np.name} (${what}) — overlay of the selected door (${sideName(b, ctx.side).toLowerCase()} of it): ${jointChip(b)}. Click: ${next}. The ${what} stays; the doors next to it lengthen / shorten.${unbind}`;
     }
-    return `${np.name} (${what}) at the door joint — ${jointChip(b)}. Select a door next to it to set its overlay: Full (that door covers the whole ${what}, the other ends at its edge) or Half (both doors reach its middle). The ${what} stays; the doors change.${unbind}`;
+    const d = noun.toLowerCase();
+    return `${np.name} (${what}) at the ${d} joint — ${jointChip(b)}. Click: the ${what} MOVES under the joint (Half → ${b.vertical ? 'left' : 'top'} full → ${b.vertical ? 'right' : 'bottom'} full); the ${d}s stay. To change the ${d}s instead, select a ${d} next to it first: then Full / Half lengthens / shortens that ${d} and the ${what} stays.${unbind}`;
   };
   const removable = (np: DoorNearPanel) => !!addPick && !np.edge && np.kind === addPick && np.ref?.master === 'door' && !!np.groupId;
   const onBandClick = (b: Band, additive: boolean) => {
@@ -1323,8 +1324,13 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     if (!j) return;
     if (additive) { if (np.ref) onAlignJoint(np.ref.splitId, np.ref.k, np.vfId, null); return; }
     const ctx = overlayCtx(np);
-    if (!ctx) return;
-    onJointOverlay(ctx.j.splitId, ctx.j.k, np.vfId, overlayState(np, ctx.j) === 'center' ? ctx.side : 'center');
+    // İKİ BİNİ MODU: kapak seçiliyken → KAPAK uzar/kısalır, levha yerinde (setDoorJointOverlay); kapak seçili değilken →
+    // LEVHA derzin altına taşınır, kapaklar yerinde (setDoorJointRef). Sıra ekrana göre: Half → sol/üst full → sağ/alt full.
+    if (ctx) { onJointOverlay(ctx.j.splitId, ctx.j.k, np.vfId, overlayState(np, ctx.j) === 'center' ? ctx.side : 'center'); return; }
+    const s0 = overlayState(np, j);
+    const first: DoorAlign = b.vertical ? (mirrorU ? 'max' : 'min') : (mirrorV ? 'min' : 'max');
+    const second: DoorAlign = first === 'min' ? 'max' : 'min';
+    onAlignJoint(j.splitId, j.k, np.vfId, s0 === 'center' ? first : s0 === first ? second : 'center');
   };
 
   const commit = () => {
@@ -1802,7 +1808,10 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
           const rem = removable(np);
           const jChip = !np.edge ? jointChip(b) : null;
           const ctxOn = !np.edge && !!overlayCtx(np);
-          const interactive = (isOuter || isBack) && (rem || pickable || (!!np.edge && (np.behind || insetEdge(np.edge))) || ctxOn || (!!np.joint && !!np.ref));
+          const interactive = (isOuter || isBack) && (rem || pickable || (!!np.edge && (np.behind || insetEdge(np.edge))) || ctxOn || !!np.joint);
+          // Levha-taşıma modu (kapak seçili değil): rozet petrol tonunda — turuncu = kapak değişir, petrol = levha kayar.
+          const moveMode = !np.edge && !!np.joint && !ctxOn && !rem && !pickable;
+          const moveOn = moveMode && jChip === 'Half';
           const chipTxt = rem ? '✕ Remove' : pickable ? 'Split here' : np.edge ? (np.behind ? (b.half ? 'Half' : 'Full') : insetEdge(np.edge) ? `In ${fmt(insetOf(np.edge))}` : null) : jChip;
           const on = np.edge ? b.half : jChip === 'Half';
           const cfs = fsT * 0.8;
@@ -1824,9 +1833,12 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
               </g>
               {chipTxt && (
                 <g className="chip" transform={b.vertical ? `rotate(-90 ${bx} ${by})` : undefined}>
-                  <rect x={bx - cw / 2} y={by - chh / 2} width={cw} height={chh} rx={chh / 2} fill={rem ? '#fef2f2' : pickable ? '#fff7ed' : on ? '#ea580c' : '#ffffff'} stroke={rem ? '#ef4444' : pickable ? '#f97316' : on ? '#c2410c' : ctxOn ? '#f97316' : '#cfc6b9'} strokeWidth={ctxOn ? 1.1 : 0.8}
+                  <rect x={bx - cw / 2} y={by - chh / 2} width={cw} height={chh} rx={chh / 2}
+                    fill={rem ? '#fef2f2' : pickable ? '#fff7ed' : moveOn ? '#2f5d7c' : on ? '#ea580c' : '#ffffff'}
+                    stroke={rem ? '#ef4444' : pickable ? '#f97316' : moveOn ? '#24506e' : moveMode ? '#7c9cb4' : on ? '#c2410c' : ctxOn ? '#f97316' : '#cfc6b9'} strokeWidth={ctxOn || moveMode ? 1.1 : 0.8}
                     style={{ filter: 'drop-shadow(0 1px 1px rgba(40,30,20,0.12))' }} />
-                  <text x={bx} y={by + cfs * 0.36} textAnchor="middle" fontSize={cfs} fontWeight={700} letterSpacing="0.02em" fill={rem ? '#b91c1c' : on ? '#ffffff' : pickable || ctxOn ? '#c2410c' : '#78716c'} fontFamily={UI_FONT}>{chipTxt}</text>
+                  <text x={bx} y={by + cfs * 0.36} textAnchor="middle" fontSize={cfs} fontWeight={700} letterSpacing="0.02em"
+                    fill={rem ? '#b91c1c' : moveOn || on ? '#ffffff' : moveMode ? '#2f5d7c' : pickable || ctxOn ? '#c2410c' : '#78716c'} fontFamily={UI_FONT}>{chipTxt}</text>
                 </g>
               )}
               <title>{bandTip(b)}</title>
