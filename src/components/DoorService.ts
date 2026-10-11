@@ -20,6 +20,7 @@ import {
 //  • ARKALIK (role 'back') aynı modeldir: sınır = VF.backBound; yapraklar 'fixed' (menteşesiz). 'outer' = arkadan çakma —
 //    sınır panellerinin arka yüzüne, hacmin DIŞINA (dış kapak kuralı: panel kalınlığını örter, Full/Half). 'inner' = kanallı —
 //    paneller arasına, kenar boşlukları NEGATİF (= kanala giriş, mm) ve arka yüzden `setback` kadar içerde.
+//    Seçimde tıklama hangi yüzden gelirse gelsin ARKA yüze taşınır (rayBackEntry); adaylar alan büyükten küçüğe, tık döngüsü.
 
 export const DOOR_THICKNESS = 18;
 export const DOOR_GAP = 3;
@@ -87,6 +88,19 @@ export function rayDoorEntry(o: Vec3, d: Vec3, b: CavityBox): { axis: 0 | 1 | 2;
   }
   if (!(best > 0)) return null;
   const point: Vec3 = [o[0] + d[0] * best, o[1] + d[1] * best, o[2] + d[2] * best];
+  return { axis, side, point };
+}
+
+/** ARKALIK girişi: ışın hangi yüzden girerse girsin (önden, açıdan) tıklama gövdenin ARKA yüzüne (−Z) taşınır — ışının arka
+ *  düzlemle kesişimi, yüzün içine kırpılır. Adaylar böylece hep arka yüzde kurulur (alan büyükten küçüğe). Işın düzleme paralel
+ *  ya da arkaya bakmıyorsa null. */
+export function rayBackEntry(o: Vec3, d: Vec3, b: CavityBox): { axis: 0 | 1 | 2; side: 1 | -1; point: Vec3 } | null {
+  const axis = 2 as const, side = -1 as const;
+  if (Math.abs(d[axis]) < 1e-9) return null;
+  const t = (b.min[axis] - o[axis]) / d[axis];
+  if (!(t > 0)) return null;
+  const point: Vec3 = [o[0] + d[0] * t, o[1] + d[1] * t, b.min[axis]];
+  for (const a of [0, 1] as const) point[a] = Math.min(b.max[a], Math.max(b.min[a], point[a]));
   return { axis, side, point };
 }
 

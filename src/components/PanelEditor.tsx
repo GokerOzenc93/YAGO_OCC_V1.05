@@ -2409,7 +2409,7 @@ export function PanelEditor() {
       <ToolChip label="Shelf" icon={Rows3} active={volumePickMode === 'shelf' && !volumePickGroupId} onClick={() => setVolumePickMode(volumePickMode === 'shelf' && !volumePickGroupId ? null : 'shelf')} title="Add shelves: pick a cavity in the 3D view" />
       <ToolChip label="Divider" icon={Columns3} active={volumePickMode === 'divider' && !volumePickGroupId} onClick={() => setVolumePickMode(volumePickMode === 'divider' && !volumePickGroupId ? null : 'divider')} title="Add vertical dividers: pick a cavity in the 3D view" />
       <ToolChip label="Door" icon={DoorClosed} active={doorPickMode && doorPickRole === 'door'} onClick={() => setDoorPickMode(!(doorPickMode && doorPickRole === 'door'), 'door')} title="Add doors: mark door references on panels (Door ref), then click a body face in the 3D view" />
-      <ToolChip label="Back" icon={SendToBack} active={doorPickMode && doorPickRole === 'back'} onClick={() => setDoorPickMode(!(doorPickMode && doorPickRole === 'back'), 'back')} title="Add a back panel: mark back references on panels (Back ref), then click the body's back face in the 3D view — Nailed (behind the panels, outside) or Grooved (between the panels, in a groove)" />
+      <ToolChip label="Back" icon={SendToBack} active={doorPickMode && doorPickRole === 'back'} onClick={() => setDoorPickMode(!(doorPickMode && doorPickRole === 'back'), 'back')} title="Add a back panel: mark back references on panels (Back ref), then click the body in the 3D view — the click is taken on the body's back face, even from the front; each click cycles the candidates there, largest first — Nailed (behind the panels, outside) or Grooved (between the panels, in a groove)" />
     </ToolChipBar>
   );
 
@@ -3256,8 +3256,9 @@ export function PanelEditor() {
     const ready = !!selectedShape && n > 0;
     const cur = doorPickCandidates[doorPickIndex];
     const boundN = selectedShape ? virtualFaces.filter(f => f.shapeId === selectedShape.id && vfBoundFor(f, doorPickRole) && !isDoorVf(f)).length : 0;
+    const where = back ? 'click the body (taken on its back face)' : 'click a body face';   // arkalık: tık hangi yüzden gelse arka yüze taşınır
     const status = !selectedShape ? 'Select a body first'
-      : n === 0 ? (boundN ? `Click a body face · ${boundN} ${refW}${boundN === 1 ? '' : 's'}` : `No ${refW}s — body edges bound the ${Noun.toLowerCase()} · click a body face`)
+      : n === 0 ? (boundN ? `${where[0].toUpperCase()}${where.slice(1)} · ${boundN} ${refW}${boundN === 1 ? '' : 's'}` : `No ${refW}s — body edges bound the ${Noun.toLowerCase()} · ${where}`)
       : (() => { const r = pl === 'inner' ? cur.inner : cur.outer; return `${Noun} ${doorPickIndex + 1}/${n} · ${Math.round(r.u1 - r.u0)}×${Math.round(r.v1 - r.v0)}${cur.rot ? ' · angled (follows reference)' : ''} — click: next · right-click: place`; })();
     return placementDock({
       tag: Noun.toUpperCase(), defaultName: Noun, ready, status,

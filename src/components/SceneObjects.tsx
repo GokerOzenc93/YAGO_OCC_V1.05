@@ -16,7 +16,7 @@ import {
 } from './PanelGroupService';
 import {
   type DoorMemberRect, collectDoorCuts, confirmDoorPick, doorCandidatesAt, doorMembersOf, doorPlaneAxes, doorRoleDefaults, doorSlabPolygon, isDoorPanel, pickRectFor,
-  rayDoorEntry, roleOf, splitDoorAtPanel, vfBoundFor,
+  rayBackEntry, rayDoorEntry, roleOf, splitDoorAtPanel, vfBoundFor,
 } from './DoorService';
 
 /* Sahne nesneleri — canvas içinde şekil başına çizilen her şey: PanelDrawing (panel mesh/kenar/seçim tonu, ref-yüz),
@@ -966,7 +966,10 @@ export const DoorPickOverlay: React.FC<{ shape: any }> = ({ shape }) => {
     if (!body || !doorPickMode || !e?.ray) return [];
     const o = e.ray.origin.clone().applyMatrix4(worldToLocal);
     const d = e.ray.origin.clone().add(e.ray.direction).applyMatrix4(worldToLocal).sub(o).normalize();
-    const entry = rayDoorEntry([o.x, o.y, o.z], [d.x, d.y, d.z], { min: [body.min[0] - 1, body.min[1] - 1, body.min[2] - 1], max: [body.max[0] + 1, body.max[1] + 1, body.max[2] + 1] });
+    // Arkalık: ışın hangi yüzden girerse girsin tıklama gövdenin ARKA yüzüne taşınır (önden bakarken de); kapak: ışının girdiği yüz.
+    const entry = doorPickRole === 'back'
+      ? rayBackEntry([o.x, o.y, o.z], [d.x, d.y, d.z], body)
+      : rayDoorEntry([o.x, o.y, o.z], [d.x, d.y, d.z], { min: [body.min[0] - 1, body.min[1] - 1, body.min[2] - 1], max: [body.max[0] + 1, body.max[1] + 1, body.max[2] + 1] });
     if (!entry) return [];
     return doorCandidatesAt(shape, entry.axis, entry.side, entry.point, shapes, virtualFaces, doorPickRole);
   };
