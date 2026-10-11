@@ -124,6 +124,8 @@ export interface DoorGroup {
   /** YARIM BİNME: işaretli kenarda kapak sınır panelinin kalınlık ORTASINA kadar gider, kalan yeniden EŞİT bölünür.
    *  Yalnız dış kapakta ve kenar paneli kapağın gerisindeyken etkilidir. */
   halfOverlay?: { uMin?: boolean; uMax?: boolean; vMin?: boolean; vMax?: boolean };
+  /** HİÇ BİNMEME: işaretli kenarda kapak sınır panelinin İÇ yüzünde biter (panel kalınlığını örtmez). halfOverlay ile birlikte işaretlenmez. */
+  noOverlay?: { uMin?: boolean; uMax?: boolean; vMin?: boolean; vMax?: boolean };
   /** ÇIPA (u,v): dönmüş sınır panelinde kapak alanı çıpanın tarafına kırpılır (rectByCuts). Yoksa merkez. */
   anchor?: [number, number];
   /** Eski kayıt: okunmaz, syncDoorGroups siler (derz bağı DoorNode.refs'te). */

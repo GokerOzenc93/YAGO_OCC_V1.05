@@ -239,6 +239,18 @@ export function setVfDoorBound(vfId: string, on: boolean): void {
   const vf = st.virtualFaces.find(f => f.id === vfId);
   if (!vf || !!vf.doorBound === on) return;
   st.updateVirtualFace(vfId, { doorBound: on });
+  if (on) adoptBoundsAfterMark(vf.shapeId, 'door');
+}
+/** Sınır işaretinden sonra: gövde kenarına bağlı kenarı bu levhayı devralan gruplar hemen yeniden yazılır (rebuild). */
+function adoptBoundsAfterMark(shapeId: string, role: DoorRole): void {
+  const st = useAppStore.getState();
+  const parent = shapeById(shapeId, st.shapes);
+  if (!parent) return;
+  for (const g of st.doorGroups) {
+    if (g.shapeId !== shapeId || roleOf(g) !== role) continue;
+    const rb = resolveDoorBounds(g, parent, st.shapes, st.virtualFaces);
+    if (!sameBounds(rb, g.bounds)) void writeDoorGroup(g, { bounds: rb });
+  }
 }
 /** Arkalık sınırı; eski splitBack bayrağı birlikte temizlenir (tek kaynak backBound). */
 export function setVfBackBound(vfId: string, on: boolean): void {
@@ -246,6 +258,7 @@ export function setVfBackBound(vfId: string, on: boolean): void {
   const vf = st.virtualFaces.find(f => f.id === vfId);
   if (!vf || vfBackBound(vf) === on) return;
   st.updateVirtualFace(vfId, { backBound: on, ...(vf.splitBack !== undefined ? { splitBack: undefined } : {}) } as Partial<VirtualFace>);
+  if (on) adoptBoundsAfterMark(vf.shapeId, 'back');
 }
 
 type SideOpt = { ref: DoorBoundRef; inner: number; outer: number; cross: [number, number]; front: number | null; name: string };
@@ -257,12 +270,12 @@ type DoorEdges = { l: EdgeInfo; r: EdgeInfo; b: EdgeInfo; t: EdgeInfo };
 type HalfOverlay = DoorGroup['halfOverlay'];
 const edgeCovered = (x: EdgeInfo, side: 1 | -1, placement: DoorGroup['placement'], P: number) =>
   x.front != null && placement === 'outer' && (side > 0 ? x.front <= P + TOL : x.front >= P - TOL);
-function rectAtDepth(e: DoorEdges, side: 1 | -1, placement: DoorGroup['placement'], P: number, half?: HalfOverlay): DoorRect {
-  const pick = (x: EdgeInfo, h: boolean | undefined) => {
-    if (!edgeCovered(x, side, placement, P)) return x.inner;
+function rectAtDepth(e: DoorEdges, side: 1 | -1, placement: DoorGroup['placement'], P: number, half?: HalfOverlay, none?: HalfOverlay): DoorRect {
+  const pick = (x: EdgeInfo, h: boolean | undefined, n: boolean | undefined) => {
+    if (!edgeCovered(x, side, placement, P) || n) return x.inner;   // None: örtülebilir kenarda da iç yüzde biter
     return h ? (x.inner + x.outer) / 2 : x.outer;
   };
-  return { u0: pick(e.l, half?.uMin), u1: pick(e.r, half?.uMax), v0: pick(e.b, half?.vMin), v1: pick(e.t, half?.vMax), front: P };
+  return { u0: pick(e.l, half?.uMin, none?.uMin), u1: pick(e.r, half?.uMax, none?.uMax), v0: pick(e.b, half?.vMin, none?.vMin), v1: pick(e.t, half?.vMax, none?.vMax), front: P };
 }
 /** Dikdörtgenin kapak düzlemi = kenar panellerinin EN GERİDEKİ ön yüzü (tek seçenek); panel yoksa gövde yüzü. */
 function depthOptions(e: EdgeInfo[], side: 1 | -1, bodyFront: number): Array<{ ref: DoorBoundRef; front: number }> {
@@ -341,7 +354,7 @@ export interface DoorMemberRect {
 export type DoorNodeSolved =
   | { id: string; kind: 'leaf'; type: DoorType; leafSplit?: DoorLeafSplit; u0: number; u1: number; v0: number; v1: number; depth: number }
   | { id: string; kind: 'split'; axis: 'u' | 'v'; sizes: GapSpec[]; gaps: number[]; children: DoorNodeSolved[]; targetSize?: number; refs?: Record<number, DoorJointRef>; u0: number; u1: number; v0: number; v1: number; depth: number };
-export interface DoorSolution { rect: DoorRect; tree: DoorNode; solved: DoorNodeSolved; members: DoorMemberRect[] }
+export interface DoorSolution { rect: DoorRect; tree: DoorNode; solved: DoorNodeSolved; members: DoorMemberRect[]; bounds?: DoorBounds }
 /** `${splitId}:${k}` → bağlı derzin merkezi (bölmenin ekseninde). */
 export type DoorJointTargets = Map<string, number>;
 const jointKey = (splitId: string, k: number) => `${splitId}:${k}`;
@@ -530,12 +543,45 @@ function boundEdgeInfo(ref: DoorBoundRef, parent: Shape, shapes: Shape[], body: 
   return { ref: { body: true }, inner: e, outer: e, front: null };
 }
 
-function solveDoorEdges(group: DoorGroup, parent: Shape, shapes: Shape[]): { edges: DoorEdges; P: number } | null {
+const EDGE_ADOPT_TOL = 1;   // gövde kenarı ile levhanın dış yüzü arası en büyük fark (mm)
+// SONRADAN KONAN SINIR LEVHASI: kapak gövde kenarına bağlıyken o kenara sonradan konup sınır işaretlenen levha (yan/üst/alt panel)
+// kapak kenarı olur → Full / Half / None o levhaya göre çalışır. Panel kenarları korunur; yalnız gövde kenarları devralınır.
+export function resolveDoorBounds(group: DoorGroup, parent: Shape, shapes: Shape[] = useAppStore.getState().shapes, vfs: VirtualFace[] = useAppStore.getState().virtualFaces): DoorBounds {
+  const keys: DoorEdgeKey[] = ['uMin', 'uMax', 'vMin', 'vMax'];
+  if (keys.every(k => group.bounds[k]?.vfId)) return group.bounds;
+  const body = bodyLocalBox(parent);
+  if (!body) return group.bounds;
+  const bps = collectDoorBoundPanels(parent, shapes, vfs, true, roleOf(group));
+  if (!bps.length) return group.bounds;
+  const { u, v } = doorPlaneAxes(group.axis);
+  let out = group.bounds;
+  for (const k of keys) {
+    if (group.bounds[k]?.vfId) continue;
+    const isU = k === 'uMin' || k === 'uMax', minSide = k === 'uMin' || k === 'vMin';
+    const ax = isU ? u : v, cx = isU ? v : u;
+    const edge = minSide ? body.min[ax] : body.max[ax];
+    const c0 = isU ? group.rect.v0 : group.rect.u0, c1 = isU ? group.rect.v1 : group.rect.u1;
+    let best: DoorBoundPanel | null = null, bestOv = MIN_DOOR_SPAN;
+    for (const bp of bps) {
+      const b = bp.box, t = b.max[ax] - b.min[ax];
+      if (t > THIN_PANEL || t > b.max[cx] - b.min[cx]) continue;
+      if (Math.abs((minSide ? b.min[ax] : b.max[ax]) - edge) > EDGE_ADOPT_TOL) continue;
+      const ov = Math.min(b.max[cx], c1) - Math.max(b.min[cx], c0);
+      if (ov > bestOv) { bestOv = ov; best = bp; }
+    }
+    if (best) { if (out === group.bounds) out = { ...group.bounds }; out[k] = { vfId: best.vfId }; }
+  }
+  return out;
+}
+const sameBounds = (a: DoorBounds, b: DoorBounds) => (['uMin', 'uMax', 'vMin', 'vMax'] as DoorEdgeKey[]).every(k => (a[k]?.vfId ?? '') === (b[k]?.vfId ?? '') && !!a[k]?.body === !!b[k]?.body);
+
+function solveDoorEdges(group: DoorGroup, parent: Shape, shapes: Shape[]): { edges: DoorEdges; P: number; bounds: DoorBounds } | null {
   const body = bodyLocalBox(parent);
   if (!body) return null;
   const { u, v } = doorPlaneAxes(group.axis);
+  const bounds = resolveDoorBounds(group, parent, shapes);
   const ei = (ref: DoorBoundRef, ax: 0 | 1 | 2, minSide: boolean) => boundEdgeInfo(ref, parent, shapes, body, ax, minSide, group.axis, group.side);
-  const edges: DoorEdges = { l: ei(group.bounds.uMin, u, true), r: ei(group.bounds.uMax, u, false), b: ei(group.bounds.vMin, v, true), t: ei(group.bounds.vMax, v, false) };
+  const edges: DoorEdges = { l: ei(bounds.uMin, u, true), r: ei(bounds.uMax, u, false), b: ei(bounds.vMin, v, true), t: ei(bounds.vMax, v, false) };
   const bodyFront = group.side > 0 ? body.max[group.axis] : body.min[group.axis];
   // Derinlik: kayıtlı referans panelin ön yüzü (panel taşınınca izler); yoksa en gerideki sınır panelinin önü.
   const fronts = [edges.l, edges.r, edges.b, edges.t].map(x => x.front).filter((x): x is number => x != null);
@@ -549,7 +595,7 @@ function solveDoorEdges(group: DoorGroup, parent: Shape, shapes: Shape[]): { edg
   }
   // Kanallı arkalık: düzlem panellerin arka yüzünden `setback` kadar içerde (iç kapak kuralı oradan uygulanır).
   if (isBackGroup(group) && group.placement === 'inner') P -= group.side * backSetbackOf(group);
-  return { edges, P };
+  return { edges, P, bounds };
 }
 export const backSetbackOf = (g: Pick<DoorGroup, 'setback'>) => (Number.isFinite(g.setback) && (g.setback as number) >= 0 ? (g.setback as number) : BACK_SETBACK);
 /** Seçme önizlemesi: adayın dikdörtgeni yeni grubun çözüleceği yere taşınır — kanallıda panel kenarları inset kadar genişler, düzlem setback kadar içerde. */
@@ -570,16 +616,16 @@ export type DoorEdgeKey = keyof DoorBounds;
 export function solveDoorGroup(group: DoorGroup, parent: Shape, shapes: Shape[]): DoorSolution | null {
   const s = solveDoorEdges(group, parent, shapes);
   if (!s) return null;
-  const { edges, P } = s;
+  const { edges, P, bounds } = s;
   const cutsAll = collectDoorCuts(parent, shapes, undefined, roleOf(group));
-  let rect: DoorRect = rectByCuts(group, rectAtDepth(edges, group.side, group.placement, P, group.halfOverlay), cutsAll, group.anchor);
+  let rect: DoorRect = rectByCuts(group, rectAtDepth(edges, group.side, group.placement, P, group.halfOverlay, group.noOverlay), cutsAll, group.anchor);
   if (rect.u1 - rect.u0 < MIN_DOOR_SPAN || rect.v1 - rect.v0 < MIN_DOOR_SPAN) {
     console.warn('[YAGO][KAPAK] dikdörtgen bozuk/çok küçük, önceki korunuyor:', group.id, fmtRect(rect));
     rect = { ...group.rect };
   }
   const solved = solveDoorTree(group, rect, doorJointTargets(group, parent, shapes));
   const members = applyDoorCuts(group, rect, doorMemberRects(solved), cutsAll);
-  return { rect, tree: solvedToTree(solved), solved, members };
+  return { rect, tree: solvedToTree(solved), solved, members, bounds };
 }
 
 export function applyDoorCuts(group: Pick<DoorGroup, 'axis' | 'side' | 'placement' | 'thickness' | 'gap' | 'id' | 'halfOverlay' | 'anchor'> & { edgeGaps?: DoorEdgeGaps }, rect: DoorRect, members: DoorMemberRect[], cuts: DoorCut[]): DoorMemberRect[] {
@@ -716,7 +762,8 @@ export function doorNearPanels(group: DoorGroup, parent: Shape, shapes: Shape[],
   const joints = doorJoints(solved);
   const near = Math.max(group.gap, 0) + NEAR_EXTRA;
   const front = group.rect.front;
-  const edgeOf = (vfId: string): DoorEdgeKey | undefined => (['uMin', 'uMax', 'vMin', 'vMax'] as DoorEdgeKey[]).find(k => group.bounds[k]?.vfId === vfId);
+  const rb = resolveDoorBounds(group, parent, shapes, vfs);
+  const edgeOf = (vfId: string): DoorEdgeKey | undefined => (['uMin', 'uMax', 'vMin', 'vMax'] as DoorEdgeKey[]).find(k => rb[k]?.vfId === vfId);
   const refs = doorJointRefs(group.tree);
   const out: DoorNearPanel[] = [];
   for (const bp of collectDoorBoundPanels(parent, shapes, vfs, !allPanels, roleOf(group))) {
@@ -1205,7 +1252,8 @@ export async function equalizeDoorGroup(groupId: string): Promise<void> {
 export async function setDoorPlacement(groupId: string, placement: DoorGroup['placement']): Promise<void> {
   const group = groupById(groupId);
   if (!group || group.placement === placement) return;
-  const patch: Partial<DoorGroup> = placement === 'inner' && group.halfOverlay && Object.values(group.halfOverlay).some(Boolean) ? { placement, halfOverlay: {} } : { placement };
+  const patch: Partial<DoorGroup> = placement === 'inner' && ((group.halfOverlay && Object.values(group.halfOverlay).some(Boolean)) || (group.noOverlay && Object.values(group.noOverlay).some(Boolean)))
+    ? { placement, halfOverlay: {}, noOverlay: {} } : { placement };
   // Arkalık tipi değişince kenar boşlukları tipin varsayılanına döner (çakma 0 · kanallı −giriş).
   if (isBackGroup(group)) patch.edgeGaps = backEdgeGapsDefault({ bounds: group.bounds, placement });
   await writeDoorGroup(group, patch);
@@ -1226,15 +1274,44 @@ export async function setBackSetback(groupId: string, mm: number): Promise<void>
   if (Math.abs(v - backSetbackOf(group)) < 0.05) return;
   await writeDoorGroup(group, { setback: v });
 }
+export type EdgeOverlayMode = 'full' | 'half' | 'none';
+export const edgeOverlayMode = (g: Pick<DoorGroup, 'halfOverlay' | 'noOverlay'>, edge: DoorEdgeKey): EdgeOverlayMode => (g.noOverlay?.[edge] ? 'none' : g.halfOverlay?.[edge] ? 'half' : 'full');
+/** Kenar binisi: full = panel kalınlığını örter, half = ortasına, none = iç yüzünde biter. O eksendeki KÖK bölme yeniden eşit bölünür. */
+export async function setDoorEdgeOverlay(groupId: string, edge: DoorEdgeKey, mode: EdgeOverlayMode): Promise<void> {
+  const group = groupById(groupId);
+  if (!group || edgeOverlayMode(group, edge) === mode) return;
+  const halfOverlay = { ...(group.halfOverlay ?? {}), [edge]: mode === 'half' };
+  const noOverlay = { ...(group.noOverlay ?? {}), [edge]: mode === 'none' };
+  const isU = edge === 'uMin' || edge === 'uMax';
+  const root = group.tree;
+  const tree: DoorNode = root.kind === 'split' && root.axis === (isU ? 'u' : 'v') ? { ...root, sizes: [] } : root;
+  await writeDoorGroup(group, { halfOverlay, noOverlay, tree });
+}
+/** Panel ref ile bölünebilir mi: levhanın ortası bir kapağın içinden, iki yanda en az MIN_DOOR_SPAN kalarak geçmeli (splitDoorAtPanel kuralı). */
+export function canSplitDoorAtPanel(group: DoorGroup, np: Pick<DoorNearPanel, 'kind' | 'a0' | 'a1' | 'c0' | 'c1' | 'edge'>): boolean {
+  if (np.edge) return false;
+  const pc = (np.a0 + np.a1) / 2, g = group.gap, axis = np.kind;
+  let ok = false;
+  const walk = (n: DoorNodeSolved) => {
+    if (ok) return;
+    if (n.kind === 'split') { n.children.forEach(walk); return; }
+    const a0 = axis === 'u' ? n.u0 : n.v0, a1 = axis === 'u' ? n.u1 : n.v1, c0 = axis === 'u' ? n.v0 : n.u0, c1 = axis === 'u' ? n.v1 : n.u1;
+    if (Math.min(c1, np.c1) - Math.max(c0, np.c0) < TOL) return;
+    if (pc - g / 2 - a0 >= MIN_DOOR_SPAN && a1 - (pc + g / 2) >= MIN_DOOR_SPAN) ok = true;
+  };
+  walk(solveDoorTree(group));
+  return ok;
+}
 /** Yarım binme: kenar panel kalınlığının ortasına çekilir; o eksendeki KÖK bölme yeniden eşit bölünür. */
 export async function setDoorHalfOverlay(groupId: string, edge: DoorEdgeKey, on: boolean): Promise<void> {
   const group = groupById(groupId);
   if (!group || !!group.halfOverlay?.[edge] === on) return;
   const halfOverlay = { ...(group.halfOverlay ?? {}), [edge]: on };
+  const noOverlay = on && group.noOverlay?.[edge] ? { ...group.noOverlay, [edge]: false } : group.noOverlay;
   const isU = edge === 'uMin' || edge === 'uMax';
   const root = group.tree;
   const tree: DoorNode = root.kind === 'split' && root.axis === (isU ? 'u' : 'v') ? { ...root, sizes: [] } : root;
-  await writeDoorGroup(group, { halfOverlay, tree });
+  await writeDoorGroup(group, { halfOverlay, noOverlay, tree });
 }
 // Derz levhaya bağlanır ve LEVHA bir kez taşınır (kapak yerinde); taşınamazsa derz levhaya gider. null → bağ çözülür, kapaklar donar.
 export async function setDoorJointRef(groupId: string, splitId: string, k: number, vfId: string, align: DoorAlign | null): Promise<void> {
@@ -1436,7 +1513,9 @@ export function syncDoorGroups(parentShapeId: string): void {
     if (!sol) continue;
     if (g.panelAlign) { st.updateDoorGroup(g.id, { panelAlign: undefined }); }
     const pruned = pruneDoorRefs(g.tree, sol.solved, st.virtualFaces);
-    if (pruned) { st.updateDoorGroup(g.id, { rect: sol.rect, tree: pruned }); continue; }
+    if (pruned) { st.updateDoorGroup(g.id, { rect: sol.rect, tree: pruned, ...(sol.bounds && !sameBounds(sol.bounds, g.bounds) ? { bounds: sol.bounds } : {}) }); continue; }
+    // Devralınan kenar (sonradan konan sınır levhası) kalıcı yazılır: şema ve sonraki çözümler aynı kenarı görsün.
+    if (sol.bounds && !sameBounds(sol.bounds, g.bounds)) { st.updateDoorGroup(g.id, { bounds: sol.bounds, rect: sol.rect, tree: sol.tree }); continue; }
     const sameRefs = (a?: Record<number, DoorJointRef>, b?: Record<number, DoorJointRef>) => {
       const ka = Object.keys(a ?? {}), kb = Object.keys(b ?? {});
       return ka.length === kb.length && ka.every(k => b?.[+k]?.vfId === a?.[+k]?.vfId && b?.[+k]?.align === a?.[+k]?.align);
