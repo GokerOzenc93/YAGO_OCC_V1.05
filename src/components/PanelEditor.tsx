@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowUp, Box, Check, ChevronDown, ChevronRight, Columns3, Crosshair, DoorClosed, Equal, GripVertical, LayoutPanelTop, Lock, type LucideIcon, Minus, Move, Move3d,
-  MoveVertical, Pencil, Pin, Plus, RotateCw, Rows3, Shapes, SlidersHorizontal, SplitSquareHorizontal, SplitSquareVertical, Trash2, Unlink, Unlock, X,
+  MoveVertical, Pencil, Pin, Plus, RotateCw, Rows3, SendToBack, Shapes, SlidersHorizontal, SplitSquareHorizontal, SplitSquareVertical, Trash2, Unlink, Unlock, X,
 } from 'lucide-react';
 import * as THREE from 'three';
 import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
@@ -27,6 +27,7 @@ import {
   confirmDoorPick, deleteDoorGroupWithMembers, doorGroupName, doorMemberRects, doorMembersOf, doorPlacementLabel, edgeGapsOf, editDoorLeafSize, editDoorSize, equalizeDoorGroup, findDoorNode, findSolvedNode,
   isDoorVf, renameDoorGroup, setDoorEdgeGap, setDoorGap, setDoorHalfOverlay, setDoorLeafGap, setDoorLeafTypes, setDoorNodeSpacing, setDoorJointRef, setDoorNodeSplit, setDoorPlacement, setDoorSplitGap, splitDoorAtPanel, setDoorThickness, setVfDoorBound,
   doorSizeMode, passiveSizeIndex, solveDoorTree, toggleDoorSizeLock,
+  BACK_TYPE_LABEL, BACK_TYPE_TITLE, backSetbackOf, doorRoleNoun, isBackGroup, roleOf, setBackEdgeInset, setBackSetback, setVfBackBound, vfBackBound, vfBoundFor,
 } from './DoorService';
 
 /* PANEL EDİTÖRÜ — sol çubuktaki panel listesi, önizleme, Taşı/Döndür/Extrude şeritleri,
@@ -462,6 +463,16 @@ function DoorRefToggle({ checked, disabled, onToggle }: { checked: boolean; disa
     </button>
   );
 }
+/* Arkalık sınırı: kapak sınırının eşi — arkalık adayları bu panelin kenarlarından kurulur, arkalık bu panelde (Panel ref) bölünür. */
+function BackRefToggle({ checked, disabled, onToggle }: { checked: boolean; disabled?: boolean; onToggle: () => void }) {
+  return (
+    <button type="button" role="checkbox" aria-checked={checked} disabled={disabled} onClick={e => { stop(e); if (!disabled) onToggle(); }}
+      title={checked ? 'Back panel reference: ON — the back panel is built from this panel\'s edges and can be split at it' : 'Mark as back panel reference'}
+      className={`${ROW_BTN} ${disabled ? 'text-stone-200 cursor-not-allowed' : checked ? 'text-sky-800 bg-sky-50 ring-1 ring-sky-300/80' : 'text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700'}`}>
+      <SendToBack size={ROW_ICON} strokeWidth={checked ? 2.1 : 1.8} />
+    </button>
+  );
+}
 
 /* TEK WebGL BAĞLAMI: tarayıcı ~16 bağlamı aşınca EN ESKİSİNİ (ana sahne Canvas'ı) öldürür. Tüm önizlemeler
    tek ekran-dışı renderer'ı paylaşır; görüntü görünür canvas'a 2D drawImage ile kopyalanır. */
@@ -679,14 +690,14 @@ function regionMask(boxes: CavityBox[], h: number, v: number) {
   return { hs, vs, filled };
 }
 type SchemaEdit = { kind: 'gap'; k: number; v: string } | { kind: 't'; i: number; v: string };
-export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, splitBacks, onEditGap, onToggleLock, onEditThickness, onSelectMember, onToggleDoorRef, onToggleSplitBack, onEditBegin, onEditCancel }: {
+export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, backRefs, onEditGap, onToggleLock, onEditThickness, onSelectMember, onToggleDoorRef, onToggleBackRef, onEditBegin, onEditCancel }: {
   group: PanelGroup; selectedIndex: number;
   memberLabels: string[];
-  doorRefs: boolean[]; splitBacks: boolean[];
+  doorRefs: boolean[]; backRefs: boolean[];
   /** preview=true → canlı önizleme (yalnız store dağılımı, rebuild yok); yoksa onay (yazım + rebuild). */
   onEditGap: (k: number, v: number, preview?: boolean) => void; onToggleLock: (k: number) => void;
   onEditThickness: (i: number, v: number, preview?: boolean) => void; onSelectMember: (i: number) => void;
-  onToggleDoorRef: (i: number) => void; onToggleSplitBack: (i: number) => void;
+  onToggleDoorRef: (i: number) => void; onToggleBackRef: (i: number) => void;
   /** Düzenleme başında kayıt alınır; Esc → kayıt geri yüklenir. */
   onEditBegin?: () => unknown; onEditCancel?: (snap: unknown) => void;
 }) {
@@ -841,7 +852,7 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
       </g>
     );
   };
-  /* Levha rozetleri (kapak sınırı · arkalığı böl) levhanın UZUNLUĞU boyunca dizilir → üye sayısı artsa da çakışmaz. */
+  /* Levha rozetleri (kapak sınırı · arkalık sınırı) levhanın UZUNLUĞU boyunca dizilir → üye sayısı artsa da çakışmaz. */
   const BADGE_R = 8, BADGE_STEP = 20;
   const badge = (key: string, cx: number, cy: number, on: boolean, Icon: LucideIcon, onColor: string, onFill: string, tip: string, onClick: () => void) => (
     <g key={key} style={{ cursor: 'pointer' }} onClick={e => { stop(e); onClick(); }}>
@@ -860,8 +871,8 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, s
       <g key={`badges-${i}`}>
         {badge(`door-${i}`, dx, dy, !!doorRefs[i], DoorClosed, '#b45309', '#fffbeb',
           doorRefs[i] ? `Panel ${lbl}: door reference ON — click to remove` : `Panel ${lbl}: mark as door reference`, () => onToggleDoorRef(i))}
-        {badge(`back-${i}`, bx, by, !!splitBacks[i], SplitSquareHorizontal, '#0e7490', '#ecfeff',
-          splitBacks[i] ? `Panel ${lbl}: split back ON — click to remove` : `Panel ${lbl}: split the back panel here`, () => onToggleSplitBack(i))}
+        {badge(`back-${i}`, bx, by, !!backRefs[i], SendToBack, '#075985', '#f0f9ff',
+          backRefs[i] ? `Panel ${lbl}: back panel reference ON — click to remove` : `Panel ${lbl}: mark as back panel reference (the back panel ends at / splits at this panel)`, () => onToggleBackRef(i))}
       </g>
     );
   };
@@ -1059,6 +1070,50 @@ function DoorTypeBar({ value, hint, onPick }: { value: DoorType | null; hint: st
   );
 }
 
+/* ARKALIK TİPİ İKONU — plan kesiti: iki yan panel (düşey çubuklar) + arkalık. Çakma: panellerin arkasında, dışta;
+   kanallı: panellerin arasında, iki yana da kanal kadar girer. Tip barı ve üye satırı aynı çizimi kullanır. */
+function BackTypeIcon({ type, size = 14, strokeWidth = 1.25 }: { type: DoorGroup['placement']; size?: number; strokeWidth?: number }) {
+  const W = 20, H = 16;
+  return (
+    <svg width={size * W / H} height={size} viewBox={`0 0 ${W} ${H}`} fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinejoin="round" strokeLinecap="round" style={{ flexShrink: 0, display: 'block' }} aria-hidden>
+      <rect x={2.5} y={1.5} width={3} height={type === 'outer' ? 9.5 : 13} rx={0.6} />
+      <rect x={14.5} y={1.5} width={3} height={type === 'outer' ? 9.5 : 13} rx={0.6} />
+      {type === 'outer'
+        ? <rect x={2.5} y={12} width={15} height={2.5} rx={0.6} fill="currentColor" fillOpacity={0.18} />
+        : <rect x={4} y={9.5} width={12} height={2.5} rx={0.6} fill="currentColor" fillOpacity={0.18} />}
+    </svg>
+  );
+}
+const BACK_TYPES: Array<DoorGroup['placement']> = ['outer', 'inner'];
+/** Kapak tip barının eşi: arkalık tipi (grup düzeyinde) — aynı ölçü, yazı ve seçili tonu. */
+function BackTypeBar({ value, onPick }: { value: DoorGroup['placement']; onPick: (t: DoorGroup['placement']) => void }) {
+  return (
+    <div className="flex items-stretch gap-1.5 mb-1" title="Back panel type — Nailed: behind the reference panels, outside the body (covers their thickness · Full / Half per edge). Grooved: between the reference panels, entering each by the groove inset, set back from their rear face.">
+      <div className="flex-1 min-w-0" style={{ display: 'grid', gridTemplateColumns: `repeat(${BACK_TYPES.length}, minmax(0,1fr))`, gap: 2, padding: 2, borderRadius: 9, background: '#f3efe8', border: '1px solid #e9e4dc', fontFamily: UI_FONT }}>
+        {BACK_TYPES.map(t => {
+          const on = value === t;
+          return (
+            <button key={t} type="button" title={BACK_TYPE_TITLE[t]} onClick={e => { stop(e); onPick(t); }}
+              className={on ? '' : 'hover:!bg-white hover:!text-stone-800'}
+              style={{
+                height: 34, minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 2, padding: '0 2px', borderRadius: 7, border: 'none', outline: 'none',
+                cursor: 'pointer', background: on ? '#44403c' : 'transparent', color: on ? '#ffffff' : '#57534e',
+                boxShadow: on ? '0 1px 2px rgba(40,30,20,0.25)' : 'none', fontSize: 9.5, fontWeight: 600, letterSpacing: '0.01em', lineHeight: 1, transition: 'background 0.12s,color 0.12s',
+              }}>
+              <BackTypeIcon type={t} size={13} />
+              <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }}>{BACK_TYPE_LABEL[t]}</span>
+            </button>
+          );
+        })}
+      </div>
+      <div className="shrink-0 flex flex-col items-end justify-center" style={{ minWidth: 46 }}>
+        <span className="text-[8.5px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]">Type</span>
+        <span className="text-[10px] font-medium text-stone-500 tabular-nums">{BACK_TYPE_LABEL[value]}</span>
+      </div>
+    </div>
+  );
+}
+
 type DoorEdit = { key: string; v: string };
 /** Ölçü zinciri öğesi; a..b = eksen boyunca mm. `span` (yalnız boşluk): kenarın/derzin çapraz eksendeki GERÇEK uzunluğu —
  *  pill bu uzunluğun ortasına yerleşir (açılı kesimde kenar kısalır). */
@@ -1138,6 +1193,12 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
   const clampX = (x: number) => Math.max(ox - DOOR_PAD_L + 2, Math.min(ox + SW + DOOR_PAD_R - 2, x));
   const clampY = (y: number) => Math.max(oy - DOOR_PAD_T + 2, Math.min(oy + SH + DOOR_PAD_B - 2, y));
   const isOuter = group.placement === 'outer';
+  // ARKALIK: aynı şema; kanallıda kenar şeritleri KANAL GİRİŞİNİ taşır (boşluk negatif saklanır, pozitif gösterilir), çakmada kapak gibi Full/Half.
+  const isBack = isBackGroup(group);
+  const grooved = isBack && !isOuter;
+  const noun = isBack ? 'Back' : 'Door';
+  const insetOf = (k: DoorEdgeKey) => Math.max(0, -eg[k]);
+  const insetEdge = (k: DoorEdgeKey) => grooved && !!group.bounds[k]?.vfId;
   const invX = (x: number) => rect.u0 + (mirrorU ? (ox + SW - x) : (x - ox)) * duR / SW;
   const invY = (y: number) => (mirrorV ? rect.v0 + (y - oy) * dvR / SH : rect.v1 - (y - oy) * dvR / SH);
   const areaPx = [[ox - DOOR_PAD_L + 2, oy - DOOR_PAD_T + 2], [ox + SW + DOOR_PAD_R - 2, oy - DOOR_PAD_T + 2], [ox + SW + DOOR_PAD_R - 2, oy + SH + DOOR_PAD_B - 2], [ox - DOOR_PAD_L + 2, oy + SH + DOOR_PAD_B - 2]];
@@ -1228,9 +1289,11 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
   const bandTip = (b: Band) => {
     const np = b.np;
     if (np.edge) {
-      if (!np.behind) return `${edgeName(b)} — ${np.name}: stands in front of the door plane; the door ends beside it (no overlay possible).`;
+      if (insetEdge(np.edge)) return `${edgeName(b)} — ${np.name}: GROOVE INSET ${fmt(insetOf(np.edge))} mm — the back panel enters this panel by this much. Click to edit (0 = ends at the panel's inner face).`;
+      if (!np.behind) return `${edgeName(b)} — ${np.name}: stands in front of the ${noun.toLowerCase()} plane; the ${noun.toLowerCase()} ends beside it (no overlay possible).`;
       const on = !!group.halfOverlay?.[np.edge];
-      return `${edgeName(b)} — ${np.name}: ${on ? 'HALF overlay — the door covers half of this panel\'s thickness (the other half is left for the neighbouring door). Click for full overlay.' : 'FULL overlay — the door covers this panel\'s whole thickness. Click for half overlay (share the panel with the neighbouring door).'}`;
+      const d = noun.toLowerCase();
+      return `${edgeName(b)} — ${np.name}: ${on ? `HALF overlay — the ${d} covers half of this panel's thickness (the other half is left for the neighbouring ${d}). Click for full overlay.` : `FULL overlay — the ${d} covers this panel's whole thickness. Click for half overlay (share the panel with the neighbouring ${d}).`}`;
     }
     const what = b.vertical ? 'divider' : 'shelf';
     if (removable(np)) return `${np.name} (${what}) — added between the doors. Click ✕ Remove to delete it (its row and panel are removed; the doors stay).`;
@@ -1250,7 +1313,12 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     const np = b.np;
     if (removable(np)) { onRemovePick?.(np.groupId!); return; }
     if (refPick) { if (!np.edge && onRefPick) onRefPick(np.vfId); return; }
-    if (np.edge) { if (np.behind) onToggleHalfOverlay(np.edge, !group.halfOverlay?.[np.edge]); return; }
+    if (np.edge) {
+      if (np.behind) onToggleHalfOverlay(np.edge, !group.halfOverlay?.[np.edge]);
+      // Kanal girişi: kenar pill'i varsa doğrudan düzenlenir; yoksa önce tüm alan seçilir (pill'ler o zaman görünür).
+      else if (insetEdge(np.edge)) { const key = `edge-${np.edge}`; const p = pillByKey.get(key); if (p) beginEdit({ key, v: p.item.txt }); else onPathClick([solved.id], false); }
+      return;
+    }
     const j = np.joint;
     if (!j) return;
     if (additive) { if (np.ref) onAlignJoint(np.ref.splitId, np.ref.k, np.vfId, null); return; }
@@ -1346,7 +1414,10 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     const sp = lineSpan(outlineOf(R), ax, (a + b) / 2) ?? crossOf(R, ax);
     return on ? clampSpan(sp, crossOf(on, ax)) : sp;
   };
-  const edgeItem = (k: DoorEdgeKey, a: number, b: number, R: Box4, on?: Box4): ChainItem => ({ key: `edge-${k}`, kind: 'gap', a, b, txt: fmt(eg[k]), title: `${edgeKeyName(k)} edge gap — click to edit`, commit: v => onEditEdgeGap(k, v), preview: v => onEditEdgeGap(k, v, true), min: 0, span: edgeSpanOf(R, k, on) });
+  // Kanallı arkalıkta panel kenarı: pill KANAL GİRİŞİ (pozitif) gösterir, negatif boşluk olarak yazılır.
+  const edgeItem = (k: DoorEdgeKey, a: number, b: number, R: Box4, on?: Box4): ChainItem => (insetEdge(k)
+    ? { key: `edge-${k}`, kind: 'gap', a, b, txt: fmt(insetOf(k)), title: `${edgeKeyName(k)} groove inset — how far the back panel enters the panel; click to edit`, commit: v => onEditEdgeGap(k, -v), preview: v => onEditEdgeGap(k, -v, true), min: 0, span: edgeSpanOf(R, k, on) }
+    : { key: `edge-${k}`, kind: 'gap', a, b, txt: fmt(eg[k]), title: `${edgeKeyName(k)} edge gap — click to edit`, commit: v => onEditEdgeGap(k, v), preview: v => onEditEdgeGap(k, v, true), min: 0, span: edgeSpanOf(R, k, on) });
   const edgeStrip = (n: DoorNodeSolved, k: DoorEdgeKey) => {
     if (k === 'uMin') strip('u', rect.u0, n.u0, n.v0, n.v1); else if (k === 'uMax') strip('u', n.u1, rect.u1, n.v0, n.v1);
     else if (k === 'vMax') strip('v', n.v1, rect.v1, n.u0, n.u1); else strip('v', rect.v0, n.v0, n.u0, n.u1);
@@ -1613,12 +1684,12 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
           let hinge: Hinge | undefined = leafHinges(m.type)[0];
           if (m.leafCount === 2 && doorLeafAxis(m.type) === 'u') { const sib = members[m.leaf === 0 ? i + 1 : i - 1]; hinge = sib && Math.min(sx(sib.u0), sx(sib.u1)) < x0 ? 'R' : 'L'; }
           else if (m.leafCount === 2) hinge = 'T';
-          const typeTxt = DOOR_TYPE_LABEL[m.type] + (m.leafCount === 2 ? ` · leaf ${m.leaf + 1}/2` : '');
+          const typeTxt = isBack ? BACK_TYPE_LABEL[group.placement] : DOOR_TYPE_LABEL[m.type] + (m.leafCount === 2 ? ` · leaf ${m.leaf + 1}/2` : '');
           const path = pathToLeaf(m.leafId);
           const wMm = Math.round(m.u1 - m.u0), hMm = Math.round(m.v1 - m.v0);
           const lhGuard = fsT * 1.18;
-          const tip = `Door ${lbl} · ${typeTxt} · ${wMm} × ${hMm} mm${m.poly ? ' · angled (cut by rotated reference)' : ''}`
-            + ` — click: select the area, click again to go one level deeper (${path.length} level${path.length === 1 ? '' : 's'}) · Shift/Ctrl+click: add another region · open the door's row below to edit it`;
+          const tip = `${noun} ${lbl} · ${typeTxt} · ${wMm} × ${hMm} mm${m.poly ? ' · angled (cut by rotated reference)' : ''}`
+            + ` — click: select the area, click again to go one level deeper (${path.length} level${path.length === 1 ? '' : 's'}) · Shift/Ctrl+click: add another region · open the ${noun.toLowerCase()}'s row below to edit it`;
           // Her köşe aynı kapak hücresinde kaldığından eğik kenar parça-doğrusal haritada da düz çizgidir.
           const pts = m.poly ? m.poly.map(q => ({ x: sx(q.x), y: sy(q.y) })) : null;
           const cx = pts ? pts.reduce((a, q) => a + q.x, 0) / pts.length : (x0 + x1) / 2;
@@ -1630,7 +1701,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
           const capW = `${wMm} × ${hMm}`.length * fsz * 0.6 + 6, capH = fsz * 1.2;
           const capHit = pills.some(pp => Math.abs(pp.cx - cx) < (pp.pw + capW) / 2 && Math.abs(pp.cy - cy) < (pp.ph + capH) / 2 + lhGuard);
           const showSize = w > 58 && h > 34 && !capHit;
-          const caption = m.type === 'drawer' || m.type === 'fixed' ? DOOR_TYPE_LABEL[m.type] : null;
+          const caption = isBack ? BACK_TYPE_LABEL[group.placement] : m.type === 'drawer' || m.type === 'fixed' ? DOOR_TYPE_LABEL[m.type] : null;
           const showCap = !!caption && showSize && h > 50;
           const lines = 1 + (showSize ? 1 : 0) + (showCap ? 1 : 0);
           const lh = fsT * 1.18;
@@ -1731,8 +1802,8 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
           const rem = removable(np);
           const jChip = !np.edge ? jointChip(b) : null;
           const ctxOn = !np.edge && !!overlayCtx(np);
-          const interactive = isOuter && (rem || pickable || (!!np.edge && np.behind) || ctxOn || (!!np.joint && !!np.ref));
-          const chipTxt = rem ? '✕ Remove' : pickable ? 'Split here' : np.edge ? (np.behind ? (b.half ? 'Half' : 'Full') : null) : jChip;
+          const interactive = (isOuter || isBack) && (rem || pickable || (!!np.edge && (np.behind || insetEdge(np.edge))) || ctxOn || (!!np.joint && !!np.ref));
+          const chipTxt = rem ? '✕ Remove' : pickable ? 'Split here' : np.edge ? (np.behind ? (b.half ? 'Half' : 'Full') : insetEdge(np.edge) ? `In ${fmt(insetOf(np.edge))}` : null) : jChip;
           const on = np.edge ? b.half : jChip === 'Half';
           const cfs = fsT * 0.8;
           const { pw: cw, ph: chh } = chipTxt ? pillSize(chipTxt, cfs) : { pw: 0, ph: 0 };
@@ -1840,11 +1911,11 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
 const ROW_NUM_W = 30;
 const ROW_BTN = 'w-6 h-6 shrink-0 rounded-md flex items-center justify-center transition-colors duration-150';
 const ROW_ICON = 14;
-const ROW_TRAIL_W = 132;          // 5 × 24px düğme (4 araç + aç/kapa oku) + 4 × 3px aralık
+const ROW_TRAIL_W = 159;          // 6 × 24px düğme (5 araç: şekil · kapak sınırı · arkalık sınırı · ok · sil + aç/kapa oku) + 5 × 3px aralık
 const MEMBER_INSET = 8;           // grup kartı gövdesinin yatay dolgusu (px-2)
-type RowKind = 'body' | 'shelf' | 'divider' | 'door';
-const ROW_KIND_ICON: Record<RowKind, LucideIcon> = { body: LayoutPanelTop, shelf: Rows3, divider: Columns3, door: DoorClosed };
-const ROW_KIND_TITLE: Record<RowKind, string> = { body: 'Body panel', shelf: 'Shelf', divider: 'Divider', door: 'Door' };
+type RowKind = 'body' | 'shelf' | 'divider' | 'door' | 'back';
+const ROW_KIND_ICON: Record<RowKind, LucideIcon> = { body: LayoutPanelTop, shelf: Rows3, divider: Columns3, door: DoorClosed, back: SendToBack };
+const ROW_KIND_TITLE: Record<RowKind, string> = { body: 'Body panel', shelf: 'Shelf', divider: 'Divider', door: 'Door', back: 'Back panel' };
 const rowCardClass = (open: boolean, dragging: boolean, armed: boolean) =>
   `group/row relative flex flex-col rounded-[10px] overflow-hidden transition-[background-color,box-shadow,opacity,transform] duration-150 ease-out
    ${open ? 'bg-[#fffdf9] ring-1 ring-[#efd9c0] shadow-[0_1px_2px_rgba(234,88,12,0.05),0_8px_20px_-14px_rgba(120,70,20,0.35)] my-1'
@@ -1855,14 +1926,15 @@ const ROW_INPUT_CLASS = 'yago-row-note flex-1 min-w-0 h-[22px] px-[5px] text-[11
 const ROW_DEL_CLASS = `${ROW_BTN} text-stone-400 hover:bg-red-50 hover:text-red-500`;
 const DROP_BAND = 'pointer-events-none h-[7px] mx-1 rounded-full bg-gradient-to-r from-amber-400 via-orange-400 to-amber-400 shadow-[0_0_10px_rgba(245,158,11,0.65),0_1px_2px_rgba(180,83,9,0.3)]';
 
-function RowTypeBadge({ kind, active, count, doorBound }: { kind: RowKind; active: boolean; count?: number; doorBound?: boolean }) {
+function RowTypeBadge({ kind, active, count, doorBound, backBound }: { kind: RowKind; active: boolean; count?: number; doorBound?: boolean; backBound?: boolean }) {
   const Icon = ROW_KIND_ICON[kind];
   return (
-    <span title={(count != null ? `${ROW_KIND_TITLE[kind]} · ${count} panel${count === 1 ? '' : 's'}` : ROW_KIND_TITLE[kind]) + (doorBound ? ' · door reference' : '')}
+    <span title={(count != null ? `${ROW_KIND_TITLE[kind]} · ${count} panel${count === 1 ? '' : 's'}` : ROW_KIND_TITLE[kind]) + (doorBound ? ' · door reference' : '') + (backBound ? ' · back panel reference' : '')}
       className={`relative shrink-0 w-5 h-5 rounded-[6px] flex items-center justify-center transition-colors duration-150
         ${active ? 'bg-orange-50 text-orange-500 ring-1 ring-orange-200/70' : 'bg-[#f5f2ec] text-stone-400 group-hover/row:text-stone-500'}`}>
       <Icon size={13} strokeWidth={2} />
       {doorBound && count == null && <span className="absolute -bottom-[3px] -right-[3px] w-[7px] h-[7px] rounded-full bg-amber-500 ring-2 ring-[#fdfcfa]" />}
+      {backBound && count == null && <span className="absolute -bottom-[3px] -left-[3px] w-[7px] h-[7px] rounded-full bg-sky-700 ring-2 ring-[#fdfcfa]" />}
       {count != null && (
         <span className={`absolute -top-[5px] -right-[6px] min-w-[13px] h-[13px] px-[3px] rounded-full text-[8.5px] font-bold tabular-nums leading-[13px] text-center ring-2 ring-[#fdfcfa]
           ${active ? 'bg-orange-500 text-white' : 'bg-stone-500 text-white'}`}>{count}</span>
@@ -1997,6 +2069,20 @@ function SplitModeSelect({ value, onChange }: { value: 'count' | 'ref' | 'spacin
     </div>
   );
 }
+/** Arkalık seçme şeridinde tip (kapaktaki Outer/Inner seçicisinin eşi). */
+function BackTypeSelect({ value, onChange }: { value: 'outer' | 'inner'; onChange: (v: 'outer' | 'inner') => void }) {
+  return (
+    <div className="relative shrink-0" onClick={stop} title={BACK_TYPE_TITLE[value]}>
+      <select value={value} onChange={e => onChange(e.target.value as 'outer' | 'inner')}
+        className="h-[28px] pl-2.5 pr-7 rounded-[7px] bg-white ring-1 ring-[#e6e0d6] shadow-[0_1px_0_rgba(40,30,20,0.03)] text-[11.5px] font-semibold text-stone-700 appearance-none outline-none cursor-pointer hover:ring-[#dcd4c8] focus:ring-orange-400/60 transition-shadow duration-150"
+        style={{ fontFamily: UI_FONT }}>
+        <option value="outer">{BACK_TYPE_LABEL.outer}</option>
+        <option value="inner">{BACK_TYPE_LABEL.inner}</option>
+      </select>
+      <ChevronDown size={12} strokeWidth={2.2} className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-stone-400" />
+    </div>
+  );
+}
 function PlacementSelect({ value, onChange }: { value: 'outer' | 'inner'; onChange: (v: 'outer' | 'inner') => void }) {
   return (
     <div className="relative shrink-0" onClick={stop}
@@ -2042,6 +2128,7 @@ export function PanelEditor() {
     panelGroups, selectedPanelGroupId, setSelectedPanelGroupId,
     volumePickMode, setVolumePickMode, volumePickGroupId, volumePickCandidates, volumePickIndex,
     doorGroups, selectedDoorGroupId, setSelectedDoorGroupId, doorPickMode, setDoorPickMode, doorPickCandidates, doorPickIndex, doorPickPlacement, setDoorPickPlacement,
+    doorPickRole, backPickPlacement, setBackPickPlacement,
     doorRefPickGroupId, setDoorRefPickGroupId,
     raycastPendingVf, placementName, setPlacementName,
   } = useStoreFields('selectedShapeId', 'shapes', 'updateShape',
@@ -2061,9 +2148,10 @@ export function PanelEditor() {
     'panelGroups', 'selectedPanelGroupId', 'setSelectedPanelGroupId',
     'volumePickMode', 'setVolumePickMode', 'volumePickGroupId', 'volumePickCandidates', 'volumePickIndex',
     'doorGroups', 'selectedDoorGroupId', 'setSelectedDoorGroupId', 'doorPickMode', 'setDoorPickMode', 'doorPickCandidates', 'doorPickIndex', 'doorPickPlacement', 'setDoorPickPlacement',
+    'doorPickRole', 'backPickPlacement', 'setBackPickPlacement',
     'doorRefPickGroupId', 'setDoorRefPickGroupId',
     'raycastPendingVf', 'placementName', 'setPlacementName');
-  const [doorDraft, setDoorDraft] = useState<{ id: string; field: 't' | 'gap'; v: string } | null>(null);
+  const [doorDraft, setDoorDraft] = useState<{ id: string; field: 't' | 'gap' | 'setback'; v: string } | null>(null);
   // Şema bölge seçimi (düğüm id'leri): her tık bir seviye iner; üye/3B seçimiyle bağı YOK.
   const [doorNodeSel, setDoorNodeSel] = useState<{ id: string; nodes: string[] } | null>(null);
   const [doorSplitMode, setDoorSplitMode] = useState<{ id: string; mode: 'count' | 'spacing' } | null>(null);
@@ -2279,7 +2367,8 @@ export function PanelEditor() {
       <ToolChip label="Body Panel" icon={LayoutPanelTop} active={raycastMode} onClick={() => setRaycastMode(!raycastMode)} title="Add a panel on a body face" />
       <ToolChip label="Shelf" icon={Rows3} active={volumePickMode === 'shelf' && !volumePickGroupId} onClick={() => setVolumePickMode(volumePickMode === 'shelf' && !volumePickGroupId ? null : 'shelf')} title="Add shelves: pick a cavity in the 3D view" />
       <ToolChip label="Divider" icon={Columns3} active={volumePickMode === 'divider' && !volumePickGroupId} onClick={() => setVolumePickMode(volumePickMode === 'divider' && !volumePickGroupId ? null : 'divider')} title="Add vertical dividers: pick a cavity in the 3D view" />
-      <ToolChip label="Door" icon={DoorClosed} active={doorPickMode} onClick={() => setDoorPickMode(!doorPickMode)} title="Add doors: mark door references on panels (Door ref), then click a body face in the 3D view" />
+      <ToolChip label="Door" icon={DoorClosed} active={doorPickMode && doorPickRole === 'door'} onClick={() => setDoorPickMode(!(doorPickMode && doorPickRole === 'door'), 'door')} title="Add doors: mark door references on panels (Door ref), then click a body face in the 3D view" />
+      <ToolChip label="Back" icon={SendToBack} active={doorPickMode && doorPickRole === 'back'} onClick={() => setDoorPickMode(!(doorPickMode && doorPickRole === 'back'), 'back')} title="Add a back panel: mark back references on panels (Back ref), then click the body's back face in the 3D view — Nailed (behind the panels, outside) or Grooved (between the panels, in a groove)" />
     </ToolChipBar>
   );
 
@@ -2697,11 +2786,13 @@ export function PanelEditor() {
             <div onClick={e => { stop(e); if (sel) setSelectedPanelRow(null); else setSelectedPanelRow(`vf-${vf.id}`, sid); }}
               className="flex-1 min-w-0 relative flex items-center gap-1.5 pl-0.5 pr-1 py-[4px] cursor-pointer">
               <RowNum label={label} active={sel} small={opts.member} />
-              <RowTypeBadge kind={opts.group ? opts.group.kind : opts.door ? 'door' : 'body'} active={sel} doorBound={!!vf.doorBound} />
+              <RowTypeBadge kind={opts.group ? opts.group.kind : opts.door ? (isBackGroup(opts.door) ? 'back' : 'door') : 'body'} active={sel} doorBound={!!vf.doorBound} backBound={vfBackBound(vf)} />
               {opts.member && (opts.group || opts.door) ? (
-                <span title={opts.door && doorMemberType ? `${DOOR_TYPE_TITLE[doorMemberType.type]}${doorMemberType.leafCount === 2 ? ` · leaf ${doorMemberType.leaf + 1}/2` : ''} — name comes from the group (edit it on the group row)` : 'Name comes from the group (edit it on the group row)'}
+                <span title={opts.door && isBackGroup(opts.door) ? `${BACK_TYPE_TITLE[opts.door.placement]} — name comes from the group (edit it on the group row)` : opts.door && doorMemberType ? `${DOOR_TYPE_TITLE[doorMemberType.type]}${doorMemberType.leafCount === 2 ? ` · leaf ${doorMemberType.leaf + 1}/2` : ''} — name comes from the group (edit it on the group row)` : 'Name comes from the group (edit it on the group row)'}
                   className="flex-1 min-w-0 h-[22px] px-[5px] flex items-center gap-1.5 text-[11.5px] font-medium text-stone-500 truncate cursor-default select-none">
-                  {opts.door && doorMemberType && <span className="shrink-0 text-stone-400"><DoorTypeIcon type={doorMemberType.type} size={11} strokeWidth={1.4} /></span>}
+                  {opts.door && (isBackGroup(opts.door)
+                    ? <span className="shrink-0 text-stone-400"><BackTypeIcon type={opts.door.placement} size={11} strokeWidth={1.4} /></span>
+                    : doorMemberType && <span className="shrink-0 text-stone-400"><DoorTypeIcon type={doorMemberType.type} size={11} strokeWidth={1.4} /></span>)}
                   <span className="truncate">{opts.group ? groupName(opts.group) : doorGroupName(opts.door!)}</span>
                   {opts.door && doorMemberType?.leafCount === 2 && <span className="shrink-0 text-[9.5px] font-semibold text-stone-400 tabular-nums">{doorMemberType.leaf + 1}/2</span>}
                 </span>
@@ -2714,6 +2805,7 @@ export function PanelEditor() {
                 {/* İç panelde (raf/dikme) serbest bölge yok → fit-shape gösterilmez. */}
                 {!opts.member && <FitShapeToggle checked={!!vf.fitFaceShape} disabled={!vf.hasPanel} onToggle={() => { void toggleFitShape(vf); }} />}
                 {opts.door ? <span className="w-6 h-6 shrink-0" /> : <DoorRefToggle checked={!!vf.doorBound} disabled={!vf.hasPanel} onToggle={() => setVfDoorBound(vf.id, !vf.doorBound)} />}
+                {opts.door ? <span className="w-6 h-6 shrink-0" /> : <BackRefToggle checked={vfBackBound(vf)} disabled={!vf.hasPanel} onToggle={() => setVfBackBound(vf.id, !vfBackBound(vf))} />}
                 <button disabled={!vf.hasPanel} onClick={e => { stop(e); toggleArrow(vp); }} title="Toggle arrow direction"
                   className={`${ROW_BTN} ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-stone-700 bg-[#f1ece4]' : 'text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700'}`}>
                   <ArrowUp size={ROW_ICON} strokeWidth={1.9} className={`transition-transform duration-200 ${ar ? '' : 'rotate-90'}`} />
@@ -2820,8 +2912,8 @@ export function PanelEditor() {
                 onEditGap={(k, v, pv) => { if (pv) previewGroupGap(g.id, k, v); else void editGroupGap(g.id, k, v); }} onToggleLock={k => toggleGroupGapLock(g.id, k)}
                 onEditBegin={() => groupLayoutSnapshot(g.id)} onEditCancel={snap => restoreGroupLayout(g.id, snap as GroupLayoutSnap | null)}
                 doorRefs={g.memberVfIds.map(id => !!virtualFaces.find(f => f.id === id)?.doorBound)}
-                splitBacks={g.memberVfIds.map(id => !!virtualFaces.find(f => f.id === id)?.splitBack)}
-                onToggleSplitBack={i => { const id = g.memberVfIds[i]; const f = virtualFaces.find(x => x.id === id); if (f) { updateVirtualFace(id, { splitBack: !f.splitBack }); } }}
+                backRefs={g.memberVfIds.map(id => vfBackBound(virtualFaces.find(f => f.id === id)))}
+                onToggleBackRef={i => { const id = g.memberVfIds[i]; const f = virtualFaces.find(x => x.id === id); if (f) setVfBackBound(id, !vfBackBound(f)); }}
                 onEditThickness={(i, v, pv) => { if (pv) previewGroupMemberThickness(g.id, i, v); else void setGroupMemberThickness(g.id, i, v); }}
                 onSelectMember={i => { const id = g.memberVfIds[i]; if (id) setSelectedPanelRow(`vf-${id}`, sid); }}
                 onToggleDoorRef={i => { const id = g.memberVfIds[i]; const f = virtualFaces.find(x => x.id === id); if (f) setVfDoorBound(id, !f.doorBound); }} />
@@ -2843,17 +2935,21 @@ export function PanelEditor() {
       const open = openCards.has(g.id) || selAll || members.some(m => selectedPanelRow === `vf-${m.id}`);
       const dimsW = round1(g.rect.u1 - g.rect.u0), dimsH = round1(g.rect.v1 - g.rect.v0);
       const doorParent = open ? shapeById(g.shapeId, shapes) : undefined;   // pahalı: kesimler yalnız kart açıkken çözülür
-      const doorCuts = doorParent ? collectDoorCuts(doorParent, shapes, virtualFaces) : [];
+      const doorCuts = doorParent ? collectDoorCuts(doorParent, shapes, virtualFaces, roleOf(g)) : [];
       const mIds = members.map(m => m.id);
       const toggleRow = (e: React.MouseEvent) => { stop(e); if (open) closeCard(g.id, mIds); else { setSelectedDoorGroupId(g.id); openCard(g.id); } };
-      const draft = (field: 't' | 'gap', fallback: number) => (doorDraft?.id === g.id && doorDraft.field === field ? doorDraft.v : String(fallback));
-      const applyDraft = (field: 't' | 'gap') => {
-        const v = parseFloat(draft(field, field === 't' ? g.thickness : g.gap).replace(',', '.'));
+      // ARKALIK kartı: aynı kart; Outer/Inner yerine tip barı (çakma/kanallı), kapak tipi barı ve "Between doors" yok, kanallıda Setback alanı.
+      const isBack = isBackGroup(g);
+      const noun = doorRoleNoun(g), Noun = isBack ? 'Back' : 'Door';
+      type DraftField = 't' | 'gap' | 'setback';
+      const draft = (field: DraftField, fallback: number) => (doorDraft?.id === g.id && doorDraft.field === field ? doorDraft.v : String(fallback));
+      const applyDraft = (field: DraftField) => {
+        const v = parseFloat(draft(field, field === 't' ? g.thickness : field === 'setback' ? backSetbackOf(g) : g.gap).replace(',', '.'));
         setDoorDraft(null);
         if (!Number.isFinite(v)) return;
-        if (field === 't') void setDoorThickness(g.id, v); else void setDoorGap(g.id, v);
+        if (field === 't') void setDoorThickness(g.id, v); else if (field === 'setback') void setBackSetback(g.id, v); else void setDoorGap(g.id, v);
       };
-      const numInput = (field: 't' | 'gap', fallback: number) => (
+      const numInput = (field: DraftField, fallback: number) => (
         <input type="text" inputMode="decimal" value={draft(field, fallback)}
           onChange={e => setDoorDraft({ id: g.id, field, v: e.target.value })}
           onBlur={() => applyDraft(field)}
@@ -2941,14 +3037,14 @@ export function PanelEditor() {
           <div className={`relative flex items-stretch ${selAll ? 'bg-[#fff8ef]' : ''}`}>
             {selAll && <span className="pointer-events-none absolute left-0 top-[6px] bottom-[6px] w-[2px] rounded-r-full bg-orange-500/90" />}
             {grip(rowKey, rowIdx, 'Drag to reorder (whole group)')}
-            <div onClick={toggleRow} className="flex-1 min-w-0 relative flex items-center gap-1.5 pl-0.5 pr-1 py-[4px] cursor-pointer" title={open ? 'Collapse' : 'Expand — selects all doors in this group'}>
+            <div onClick={toggleRow} className="flex-1 min-w-0 relative flex items-center gap-1.5 pl-0.5 pr-1 py-[4px] cursor-pointer" title={open ? 'Collapse' : `Expand — selects all ${noun}s in this group`}>
               <RowNum label={label} active={selAll} />
-              <RowTypeBadge kind="door" active={open} count={doorMemberCount(g)} />
-              <input type="text" value={doorGroupName(g)} onClick={stop} onChange={e => renameDoorGroup(g.id, e.target.value)} placeholder="Door"
-                title="Group name (applies to all its doors)" className={`${ROW_INPUT_CLASS} font-semibold`} />
-              <RowDims w={dimsW} h={dimsH} t={g.thickness} tLetter="T" title={`Door area width · height · thickness (${doorPlacementLabel(g.placement)} door)`} />
+              <RowTypeBadge kind={isBack ? 'back' : 'door'} active={open} count={doorMemberCount(g)} />
+              <input type="text" value={doorGroupName(g)} onClick={stop} onChange={e => renameDoorGroup(g.id, e.target.value)} placeholder={Noun}
+                title={`Group name (applies to all its ${noun}s)`} className={`${ROW_INPUT_CLASS} font-semibold`} />
+              <RowDims w={dimsW} h={dimsH} t={g.thickness} tLetter="T" title={`${Noun} area width · height · thickness (${isBack ? BACK_TYPE_LABEL[g.placement].toLowerCase() : doorPlacementLabel(g.placement).toLowerCase()} ${noun})`} />
               <div className="flex items-center justify-end gap-[3px] shrink-0 ml-0.5" style={{ width: ROW_TRAIL_W }} onClick={stop}>
-                <button onClick={e => { stop(e); deleteDoorGroupWithMembers(g.id); }} title="Delete group (all doors)" className={ROW_DEL_CLASS}><Trash2 size={ROW_ICON - 1} strokeWidth={1.9} /></button>
+                <button onClick={e => { stop(e); deleteDoorGroupWithMembers(g.id); }} title={`Delete group (all ${noun}s)`} className={ROW_DEL_CLASS}><Trash2 size={ROW_ICON - 1} strokeWidth={1.9} /></button>
                 <RowChevron open={open} onClick={toggleRow} />
               </div>
             </div>
@@ -2956,8 +3052,13 @@ export function PanelEditor() {
           {open && (
             <div className="yago-expand px-2 pt-2 pb-2" style={{ borderTop: '1px solid #f3e6d6', fontFamily: UI_FONT }} onClick={stop}>
               <div className="flex items-center gap-1 mb-1.5">
-                <PlacementSelect value={g.placement} onChange={v => { void setDoorPlacement(g.id, v); }} />
-                <FieldBox fixed label="T" title="Door thickness (mm)">{numInput('t', g.thickness)}{unitTxt('mm')}</FieldBox>
+                {!isBack && <PlacementSelect value={g.placement} onChange={v => { void setDoorPlacement(g.id, v); }} />}
+                <FieldBox fixed label="T" title={`${Noun} thickness (mm)`}>{numInput('t', g.thickness)}{unitTxt('mm')}</FieldBox>
+                {isBack && g.placement === 'inner' && (
+                  <FieldBox fixed label="Setback" title="Groove setback (mm): from the reference panels' rear face to the back panel's rear face — the groove sits this far in from the back edge">
+                    {numInput('setback', backSetbackOf(g))}{unitTxt('mm')}
+                  </FieldBox>
+                )}
                 <SplitModeSelect value={splitMode} onChange={pickSplitMode} />
                 {splitMode === 'count' && <>
                   <CountBox icon={SplitSquareVertical} label="V" value={countOf('u')} title={countTitle('u')} onChange={n => setCount('u', n)} />
@@ -2968,11 +3069,11 @@ export function PanelEditor() {
                   <SizeBox icon={SplitSquareHorizontal} label="H" value={sizeOf('v')} title={sizeTitle('v')} onChange={mm => setSize('v', mm)} />
                 </>}
                 {splitMode === 'ref' && (
-                  <div className="flex-1 min-w-0"><DockStatus ready text="Pick a divider / shelf" title="Door-reference dividers and shelves glow amber in the 3D view (doors go transparent); click one in the 3D view or its band in the schematic. The door splits through the panel's middle and the joint is bound to the panel: when the panel moves, the doors follow (Left / Center / Right moves the panel under the joint). Esc / another mode cancels." /></div>
+                  <div className="flex-1 min-w-0"><DockStatus ready text="Pick a divider / shelf" title={`${Noun}-reference dividers and shelves glow amber in the 3D view (${noun}s go transparent); click one in the 3D view or its band in the schematic. The ${noun} splits through the panel's middle and the joint is bound to the panel: when the panel moves, the ${noun}s follow. Esc / another mode cancels.`} /></div>
                 )}
                 <IconSquareBtn icon={Equal} title="Equalize sizes (unlock all)" onClick={() => { void equalizeDoorGroup(g.id); }} />
               </div>
-              <div className="flex items-center gap-1 mb-1.5">
+              {!isBack && <div className="flex items-center gap-1 mb-1.5">
                 <span className="shrink-0 pl-0.5 pr-1 text-[9.5px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]">Between doors</span>
                 <CardAction compact icon={Columns3} label="Divider" active={addPick === 'u'} tone="amber"
                   title={g.placement !== 'outer' ? 'Add a divider between two doors — outer doors only (inner doors sit between the panels).' : addJointCount('u') ? `Add a divider between two side-by-side doors: pick a vertical joint in the schematic (${addJointCount('u')}). The divider is created behind that joint, listed after this door row, and follows the joint when the doors change.` : 'No vertical door joint yet — split the door with Split V first.'}
@@ -2988,8 +3089,8 @@ export function PanelEditor() {
                       : `Every part of the ${addPick === 'u' ? 'vertical' : 'horizontal'} joint${addJointCount(addPick) > 1 ? 's' : ''} already has a ${addPick === 'u' ? 'divider' : 'shelf'}${addedCount(addPick) ? ' · ✕ Remove to delete' : ''}`}
                     title="The highlighted gaps between doors are the joints you can place the panel at — a joint crossed by a divider / shelf is split into parts, each part takes its own panel (its own row in the list). A panel already added between doors shows ✕ Remove. Esc cancels." />
                 )}
-              </div>
-              <DoorTypeBar value={commonType} hint={typeHint} onPick={applyType} />
+              </div>}
+              {isBack ? <BackTypeBar value={g.placement} onPick={t => { void setDoorPlacement(g.id, t); }} /> : <DoorTypeBar value={commonType} hint={typeHint} onPick={applyType} />}
               <DoorSchematic group={g} selectedIndex={selMemberIdx} selectedNodes={picked}
                 memberLabels={g.memberVfIds.map((id, i) => { const mi = members.findIndex(m => m.id === id); return `${label}.${(mi >= 0 ? mi : i) + 1}`; })}
                 cuts={doorCuts}
@@ -2997,14 +3098,15 @@ export function PanelEditor() {
                 refPick={refMode} onRefPick={onRefPick}
                 addPick={addPick} onAddPick={onAddPick} onRemovePick={onRemovePick}
                 onEditSize={(sid, k, v, pv) => { void editDoorSize(g.id, sid, k, v, { preview: pv }); }} onToggleLock={(sid, k) => toggleDoorSizeLock(g.id, sid, k)}
-                onEditSplitGap={(sid, k, v, pv) => { void setDoorSplitGap(g.id, sid, k, v, { preview: pv }); }} onEditEdgeGap={(edge, v, pv) => { void setDoorEdgeGap(g.id, edge, v, { preview: pv }); }}
+                onEditSplitGap={(sid, k, v, pv) => { void setDoorSplitGap(g.id, sid, k, v, { preview: pv }); }}
+                onEditEdgeGap={(edge, v, pv) => { if (v < 0) void setBackEdgeInset(g.id, edge, -v, { preview: pv }); else void setDoorEdgeGap(g.id, edge, v, { preview: pv }); }}   // negatif = kanal girişi (kanallı arkalık)
                 onEditLeaf={(lid, k, v, pv) => { void editDoorLeafSize(g.id, lid, k, v, { preview: pv }); }} onEditLeafGap={(lid, v, pv) => { void setDoorLeafGap(g.id, lid, v, { preview: pv }); }}
                 onEditBegin={() => doorLayoutSnapshot(g.id)} onEditCancel={snap => restoreDoorLayout(g.id, snap as DoorLayoutSnap | null)}
                 onToggleHalfOverlay={(edge, on) => { void setDoorHalfOverlay(g.id, edge, on); }}
                 onAlignJoint={(sid, k, vfId, a) => { void setDoorJointRef(g.id, sid, k, vfId, a); }}
                 onJointOverlay={(sid, k, vfId, a) => { void setDoorJointOverlay(g.id, sid, k, vfId, a); }}
                 onPathClick={onPathClick} />
-              <SectionHead label="Doors" count={members.length} />
+              <SectionHead label={isBack ? 'Back panels' : 'Doors'} count={members.length} />
               <div className="flex flex-col gap-[2px]">
                 {members.map((m, mi) => vfRow(m, rowIdx, `${label}.${mi + 1}`, { member: true, door: g }))}
               </div>
@@ -3092,20 +3194,24 @@ export function PanelEditor() {
     });
   })();
 
+  // Kapak ve arkalık aynı şerit: rol adayların sınır bayrağını ve tip seçicisini (Outer/Inner · Nailed/Grooved) belirler.
   const doorPickDock = (() => {
     if (!doorPickMode) return null;
+    const back = doorPickRole === 'back';
+    const Noun = back ? 'Back' : 'Door', refW = back ? 'back ref' : 'door ref';
+    const pl = back ? backPickPlacement : doorPickPlacement;
     const n = doorPickCandidates.length;
     const ready = !!selectedShape && n > 0;
     const cur = doorPickCandidates[doorPickIndex];
-    const boundN = selectedShape ? virtualFaces.filter(f => f.shapeId === selectedShape.id && f.doorBound && !isDoorVf(f)).length : 0;
+    const boundN = selectedShape ? virtualFaces.filter(f => f.shapeId === selectedShape.id && vfBoundFor(f, doorPickRole) && !isDoorVf(f)).length : 0;
     const status = !selectedShape ? 'Select a body first'
-      : n === 0 ? (boundN ? `Click a body face · ${boundN} door ref${boundN === 1 ? '' : 's'}` : 'No door refs — body edges bound the door · click a body face')
-      : (() => { const r = doorPickPlacement === 'inner' ? cur.inner : cur.outer; return `Door ${doorPickIndex + 1}/${n} · ${Math.round(r.u1 - r.u0)}×${Math.round(r.v1 - r.v0)}${cur.rot ? ' · angled (follows reference)' : ''} — click: next · right-click: place`; })();
+      : n === 0 ? (boundN ? `Click a body face · ${boundN} ${refW}${boundN === 1 ? '' : 's'}` : `No ${refW}s — body edges bound the ${Noun.toLowerCase()} · click a body face`)
+      : (() => { const r = pl === 'inner' ? cur.inner : cur.outer; return `${Noun} ${doorPickIndex + 1}/${n} · ${Math.round(r.u1 - r.u0)}×${Math.round(r.v1 - r.v0)}${cur.rot ? ' · angled (follows reference)' : ''} — click: next · right-click: place`; })();
     return placementDock({
-      tag: 'DOOR', defaultName: 'Door', ready, status,
-      lead: <PlacementSelect value={doorPickPlacement} onChange={setDoorPickPlacement} />,
+      tag: Noun.toUpperCase(), defaultName: Noun, ready, status,
+      lead: back ? <BackTypeSelect value={backPickPlacement} onChange={setBackPickPlacement} /> : <PlacementSelect value={doorPickPlacement} onChange={setDoorPickPlacement} />,
       onConfirm: () => { if (ready && selectedShape) confirmDoorPick(selectedShape.id, doorPickCandidates[doorPickIndex]); },
-      onExit: () => setDoorPickMode(false), confirmTitle: 'Place door',
+      onExit: () => setDoorPickMode(false), confirmTitle: `Place ${Noun.toLowerCase()}`,
     });
   })();
 

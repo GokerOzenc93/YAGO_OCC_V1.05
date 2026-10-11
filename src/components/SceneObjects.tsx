@@ -15,8 +15,8 @@ import {
   rayCavityCandidates, repickObstacles,
 } from './PanelGroupService';
 import {
-  DOOR_GAP, DOOR_THICKNESS, type DoorMemberRect, collectDoorCuts, confirmDoorPick, doorCandidatesAt, doorMembersOf, doorPlaneAxes, doorSlabPolygon, isDoorPanel,
-  rayDoorEntry, splitDoorAtPanel,
+  type DoorMemberRect, collectDoorCuts, confirmDoorPick, doorCandidatesAt, doorMembersOf, doorPlaneAxes, doorRoleDefaults, doorSlabPolygon, isDoorPanel, pickRectFor,
+  rayDoorEntry, roleOf, splitDoorAtPanel, vfBoundFor,
 } from './DoorService';
 
 /* Sahne nesneleri — canvas içinde şekil başına çizilen her şey: PanelDrawing (panel mesh/kenar/seçim tonu, ref-yüz),
@@ -193,7 +193,7 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
     'faceExtrudeMode', 'faceExtrudeTargetPanelId', 'faceExtrudeSelectedFace', 'setFaceExtrudeSelectedFace', 'setFaceExtrudeClickPoint', 'raycastMode', 'faceExtrudeValueMode', 'faceExtrudeRefCandidate',
     'panelMoveMode', 'panelMoveValueMode', 'panelMoveTargetPanelId', 'panelMoveRefSourceVertex', 'panelMoveRefTargetPanelId', 'panelMoveRefTargetVertex',
     'panelRotateMode', 'panelRotateValueMode', 'panelRotateTargetPanelId', 'panelRotatePivot', 'panelRotateRefArmVertex', 'panelRotateAxis', 'panelRotateRefFace', 'setPanelRotateRefFace',
-    'selectedPanelGroupId', 'volumePickMode', 'volumePickGroupId', 'selectedDoorGroupId', 'doorPickMode', 'doorRefPickGroupId', 'setDoorRefPickGroupId', 'virtualFaces');
+    'selectedPanelGroupId', 'volumePickMode', 'volumePickGroupId', 'selectedDoorGroupId', 'doorPickMode', 'doorPickRole', 'doorRefPickGroupId', 'setDoorRefPickGroupId', 'virtualFaces');
   const [hoveredExtrudeGroup, setHoveredExtrudeGroup] = useState<number | null>(null);
   const [moveRefHover, setMoveRefHover] = useState(false);
   const { faces, groups: faceGroups } = useMemo(() => (shape.geometry ? getFacesAndGroups(shape.geometry) : { faces: [], groups: [] }), [shape.geometry]);
@@ -204,7 +204,9 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
   const isGroupSelected = isParentSelected && ((!!S.selectedPanelGroupId && shape.parameters?.panelGroupId === S.selectedPanelGroupId)
     || (!!S.selectedDoorGroupId && shape.parameters?.doorGroupId === S.selectedDoorGroupId));
   const isRowSelectedRaw = isGroupSelected || (isParentSelected && !!virtualFaceId && S.selectedPanelRow === `vf-${virtualFaceId}`);
-  const isDoorBoundPanel = isParentSelected && (S.doorPickMode || !!S.doorRefPickGroupId) && !!virtualFaceId && !!S.virtualFaces.find(f => f.id === virtualFaceId)?.doorBound;
+  // Sınır vurgusu rolün bayrağını okur: kapak seçme/ref → doorBound, arkalık seçme/ref → backBound (ref grubunun rolü store'dan, abonesiz).
+  const boundRole = S.doorPickMode ? S.doorPickRole : S.doorRefPickGroupId ? roleOf(useAppStore.getState().doorGroups.find(g => g.id === S.doorRefPickGroupId)) : null;
+  const isDoorBoundPanel = isParentSelected && !!boundRole && !!virtualFaceId && vfBoundFor(S.virtualFaces.find(f => f.id === virtualFaceId), boundRole);
   // Bu modlarda kapaklar saydam ve tıklanmaz: arkasındaki dikme/raf seçilebilsin.
   const isDoorPickGhost = isParentSelected && (S.doorPickMode || !!S.doorRefPickGroupId) && isDoorPanel(shape);
 
@@ -937,8 +939,11 @@ const DoorSlab: React.FC<{ poly: DoorSlabPoly; thickness: number; fill: number; 
 };
 
 export const DoorPickOverlay: React.FC<{ shape: any }> = ({ shape }) => {
-  const { doorPickMode, doorPickCandidates, doorPickIndex, setDoorPick, doorPickPlacement, shapes, virtualFaces } =
-    useStoreFields('doorPickMode', 'doorPickCandidates', 'doorPickIndex', 'setDoorPick', 'doorPickPlacement', 'shapes', 'virtualFaces');
+  const { doorPickMode, doorPickRole, doorPickCandidates, doorPickIndex, setDoorPick, doorPickPlacement: doorPl, backPickPlacement, shapes, virtualFaces } =
+    useStoreFields('doorPickMode', 'doorPickRole', 'doorPickCandidates', 'doorPickIndex', 'setDoorPick', 'doorPickPlacement', 'backPickPlacement', 'shapes', 'virtualFaces');
+  // Arkalık seçmede tip (çakma/kanallı) ve kalınlık rolün varsayılanı; adaylar o rolün sınır panellerinden kurulur.
+  const doorPickPlacement = doorPickRole === 'back' ? backPickPlacement : doorPl;
+  const defs = doorRoleDefaults(doorPickRole);
   const [hoverPick, setHoverPick] = useState<DoorPick | null>(null);
   const lastRef = useRef<{ keys: string; index: number } | null>(null);
   const { worldToLocal } = useShapeMatrices(shape);
@@ -952,10 +957,10 @@ export const DoorPickOverlay: React.FC<{ shape: any }> = ({ shape }) => {
   useEffect(() => () => { pickGeo?.dispose(); }, [pickGeo]);
   useEffect(() => { if (!doorPickMode) { setHoverPick(null); lastRef.current = null; } }, [doorPickMode]);
   const selected = doorPickCandidates[doorPickIndex] || null;
-  const cuts = useMemo(() => (doorPickMode ? collectDoorCuts(shape, shapes, virtualFaces) : []), [doorPickMode, shape, shapes, virtualFaces]);
-  const slabOf = (c: DoorPick | null) => (c ? doorSlabPolygon({ axis: c.axis, side: c.side, placement: doorPickPlacement, thickness: DOOR_THICKNESS, gap: DOOR_GAP, anchor: c.at }, doorPickPlacement === 'inner' ? c.inner : c.outer, cuts) : null);
-  const selectedBox = useMemo(() => slabOf(selected), [selected, doorPickPlacement, cuts]);
-  const hoverBox = useMemo(() => slabOf(hoverPick), [hoverPick, doorPickPlacement, cuts]);
+  const cuts = useMemo(() => (doorPickMode ? collectDoorCuts(shape, shapes, virtualFaces, doorPickRole) : []), [doorPickMode, doorPickRole, shape, shapes, virtualFaces]);
+  const slabOf = (c: DoorPick | null) => (c ? doorSlabPolygon({ axis: c.axis, side: c.side, placement: doorPickPlacement, thickness: defs.thickness, gap: defs.gap, anchor: c.at }, pickRectFor(c, doorPickPlacement, doorPickRole), cuts) : null);
+  const selectedBox = useMemo(() => slabOf(selected), [selected, doorPickPlacement, doorPickRole, cuts]);
+  const hoverBox = useMemo(() => slabOf(hoverPick), [hoverPick, doorPickPlacement, doorPickRole, cuts]);
 
   const candidatesFromEvent = (e: any): DoorPick[] => {
     if (!body || !doorPickMode || !e?.ray) return [];
@@ -963,7 +968,7 @@ export const DoorPickOverlay: React.FC<{ shape: any }> = ({ shape }) => {
     const d = e.ray.origin.clone().add(e.ray.direction).applyMatrix4(worldToLocal).sub(o).normalize();
     const entry = rayDoorEntry([o.x, o.y, o.z], [d.x, d.y, d.z], { min: [body.min[0] - 1, body.min[1] - 1, body.min[2] - 1], max: [body.max[0] + 1, body.max[1] + 1, body.max[2] + 1] });
     if (!entry) return [];
-    return doorCandidatesAt(shape, entry.axis, entry.side, entry.point, shapes, virtualFaces);
+    return doorCandidatesAt(shape, entry.axis, entry.side, entry.point, shapes, virtualFaces, doorPickRole);
   };
   const onPointerMove = (e: any) => {
     if (!doorPickMode) return;
@@ -989,8 +994,8 @@ export const DoorPickOverlay: React.FC<{ shape: any }> = ({ shape }) => {
   return (
     <>
       <mesh geometry={pickGeo} visible={false} onPointerMove={onPointerMove} onPointerOut={() => setHoverPick(null)} onPointerDown={onPointerDown} onContextMenu={(e: any) => e.stopPropagation()} />
-      {hoverBox && !hoverIsSelected && <DoorSlab poly={hoverBox} thickness={DOOR_THICKNESS} fill={PICK_COLORS.hover} opacity={SEL_COLORS.faceHoverOpacity * 0.6} order={5} />}
-      {selectedBox && <DoorSlab poly={selectedBox} thickness={DOOR_THICKNESS} fill={PICK_COLORS.selected} opacity={SEL_COLORS.faceActiveOpacity * 0.7} edge={PICK_COLORS.selectedEdge} order={6} />}
+      {hoverBox && !hoverIsSelected && <DoorSlab poly={hoverBox} thickness={defs.thickness} fill={PICK_COLORS.hover} opacity={SEL_COLORS.faceHoverOpacity * 0.6} order={5} />}
+      {selectedBox && <DoorSlab poly={selectedBox} thickness={defs.thickness} fill={PICK_COLORS.selected} opacity={SEL_COLORS.faceActiveOpacity * 0.7} edge={PICK_COLORS.selectedEdge} order={6} />}
     </>
   );
 };

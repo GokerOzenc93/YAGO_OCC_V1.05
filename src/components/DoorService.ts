@@ -1,5 +1,5 @@
 import {
-  type CavityBox, type DoorAlign, type DoorBond, type DoorBoundRef, type DoorBounds, type DoorEdgeGaps, type DoorGroup, type DoorJointRef, type DoorLeafSplit, type DoorNode, type DoorPick, type DoorRect, type DoorType, type GapSpec, type PanelGroup, type Shape, type VirtualFace,
+  type CavityBox, type DoorAlign, type DoorBond, type DoorBoundRef, type DoorBounds, type DoorEdgeGaps, type DoorGroup, type DoorJointRef, type DoorLeafSplit, type DoorNode, type DoorPick, type DoorRect, type DoorRole, type DoorType, type GapSpec, type PanelGroup, type Shape, type VirtualFace,
   panelOfVf, requestRebuild, shapeById, useAppStore,
 } from '../store';
 import * as THREE from 'three';
@@ -17,9 +17,27 @@ import {
 //  • Kapak VF'leri her rebuild'de buradan yazılır; kapak panelleri DAMGALAMAZ, hacim engeli değildir, gövdeyle kesilmez.
 //  • Dönmüş sınır paneli kenar olmaz; kapağı büyük-yüz düzlemiyle keser (kapak düzlemi değişmez).
 //  • Bağ yönü tek: ya derz levhayı izler (DoorNode.refs) ya levha derzi (PanelGroup.doorBond) — ikisi birden yasak.
+//  • ARKALIK (role 'back') aynı modeldir: sınır = VF.backBound; yapraklar 'fixed' (menteşesiz). 'outer' = arkadan çakma —
+//    sınır panellerinin arka yüzüne, hacmin DIŞINA (dış kapak kuralı: panel kalınlığını örter, Full/Half). 'inner' = kanallı —
+//    paneller arasına, kenar boşlukları NEGATİF (= kanala giriş, mm) ve arka yüzden `setback` kadar içerde.
 
 export const DOOR_THICKNESS = 18;
 export const DOOR_GAP = 3;
+export const BACK_THICKNESS = 8;
+export const BACK_INSET = 10;      // kanallı: sınır panelinin içine giriş (mm)
+export const BACK_SETBACK = 10;    // kanallı: panellerin arka yüzünden arkalığın arka yüzüne (mm)
+export const roleOf = (g: Pick<DoorGroup, 'role'> | undefined | null): DoorRole => g?.role ?? 'door';
+export const isBackGroup = (g: Pick<DoorGroup, 'role'> | undefined | null): boolean => roleOf(g) === 'back';
+/** Rolün varsayılanları: aday levha ve yeni grup bu kalınlık/boşlukla kurulur. */
+export const doorRoleDefaults = (role: DoorRole) => (role === 'back' ? { thickness: BACK_THICKNESS, gap: 0 } : { thickness: DOOR_THICKNESS, gap: DOOR_GAP });
+/** Rolün sınır bayrağı; eski `splitBack` bayrağı arkalık sınırı sayılır. */
+export const vfBackBound = (vf: Pick<VirtualFace, 'backBound' | 'splitBack'> | undefined | null): boolean => !!(vf?.backBound ?? vf?.splitBack);
+export const vfBoundFor = (vf: VirtualFace | undefined | null, role: DoorRole): boolean => (role === 'back' ? vfBackBound(vf) : !!vf?.doorBound);
+export const BACK_TYPE_LABEL: Record<DoorGroup['placement'], string> = { outer: 'Nailed', inner: 'Grooved' };
+export const BACK_TYPE_TITLE: Record<DoorGroup['placement'], string> = {
+  outer: 'Nailed-on back — sits behind the reference panels, outside the body; covers their thickness (Full / Half per edge)',
+  inner: 'Grooved back — sits between the reference panels and enters each one by the groove inset; set back from their rear face',
+};
 const TOL = 0.5;
 const MIN_DOOR_SPAN = 40;
 const PREVIEW_ID = 'önizleme';
@@ -30,7 +48,8 @@ export const JOINT_NEAR = 30;   // levha merkezi ile derz merkezi arası en büy
 
 export const isDoorPanel = (p: any): boolean => !!p?.parameters?.doorGroupId;
 export const isDoorVf = (vf: any): boolean => !!vf?.doorGroupId;
-export const doorGroupName = (g: Pick<DoorGroup, 'name'>) => g.name ?? 'Door';
+export const doorGroupName = (g: Pick<DoorGroup, 'name' | 'role'>) => g.name ?? (isBackGroup(g) ? 'Back' : 'Door');
+export const doorRoleNoun = (g: Pick<DoorGroup, 'role'> | DoorRole | undefined) => ((typeof g === 'string' ? g : roleOf(g)) === 'back' ? 'back panel' : 'door');
 export const doorPlacementLabel = (p: DoorGroup['placement']) => (p === 'inner' ? 'Inner' : 'Outer');
 
 export const DOOR_TYPES: DoorType[] = ['left', 'right', 'up', 'down', 'double', 'fold', 'drawer', 'fixed'];
@@ -73,11 +92,11 @@ export function rayDoorEntry(o: Vec3, d: Vec3, b: CavityBox): { axis: 0 | 1 | 2;
 
 export interface DoorBoundPanel { vfId: string; panelId: string; box: CavityBox; name: string }
 
-/** Kapak sınırı panelleri (gövde-yerel kutu); kapaklar ve dönmüş paneller hariç. onlyBound=false: işaretsizler de (derz parçalama). */
-export function collectDoorBoundPanels(parent: Shape, shapes: Shape[] = useAppStore.getState().shapes, vfs: VirtualFace[] = useAppStore.getState().virtualFaces, onlyBound = true): DoorBoundPanel[] {
+/** Kapak/arkalık sınırı panelleri (gövde-yerel kutu); kapaklar/arkalıklar ve dönmüş paneller hariç. onlyBound=false: işaretsizler de (derz parçalama). */
+export function collectDoorBoundPanels(parent: Shape, shapes: Shape[] = useAppStore.getState().shapes, vfs: VirtualFace[] = useAppStore.getState().virtualFaces, onlyBound = true, role: DoorRole = 'door'): DoorBoundPanel[] {
   const out: DoorBoundPanel[] = [];
   for (const vf of vfs) {
-    if (vf.shapeId !== parent.id || (onlyBound && !vf.doorBound) || isDoorVf(vf)) continue;
+    if (vf.shapeId !== parent.id || (onlyBound && !vfBoundFor(vf, role)) || isDoorVf(vf)) continue;
     const p = panelOfVf(vf.id, shapes);
     if (!p || panelHasRotation(p)) continue;
     const box = panelLocalBox(p, parent);
@@ -90,10 +109,10 @@ export function collectDoorBoundPanels(parent: Shape, shapes: Shape[] = useAppSt
 /** Dönmüş sınır paneli: büyük-yüz normali + o normaldeki [dMin,dMax] + kutu; pts = tekil köşeler (şema ön görünüşü). */
 export interface DoorCut { vfId: string; name: string; n: Vec3; dMin: number; dMax: number; box: CavityBox; pts?: Vec3[] }
 
-export function collectDoorCuts(parent: Shape, shapes: Shape[] = useAppStore.getState().shapes, vfs: VirtualFace[] = useAppStore.getState().virtualFaces): DoorCut[] {
+export function collectDoorCuts(parent: Shape, shapes: Shape[] = useAppStore.getState().shapes, vfs: VirtualFace[] = useAppStore.getState().virtualFaces, role: DoorRole = 'door'): DoorCut[] {
   const out: DoorCut[] = [];
   for (const vf of vfs) {
-    if (vf.shapeId !== parent.id || !vf.doorBound || isDoorVf(vf)) continue;
+    if (vf.shapeId !== parent.id || !vfBoundFor(vf, role) || isDoorVf(vf)) continue;
     const p = panelOfVf(vf.id, shapes);
     if (!p || !panelHasRotation(p)) continue;
     const box = panelLocalBox(p, parent);
@@ -221,6 +240,13 @@ export function setVfDoorBound(vfId: string, on: boolean): void {
   if (!vf || !!vf.doorBound === on) return;
   st.updateVirtualFace(vfId, { doorBound: on });
 }
+/** Arkalık sınırı; eski splitBack bayrağı birlikte temizlenir (tek kaynak backBound). */
+export function setVfBackBound(vfId: string, on: boolean): void {
+  const st = useAppStore.getState();
+  const vf = st.virtualFaces.find(f => f.id === vfId);
+  if (!vf || vfBackBound(vf) === on) return;
+  st.updateVirtualFace(vfId, { backBound: on, ...(vf.splitBack !== undefined ? { splitBack: undefined } : {}) } as Partial<VirtualFace>);
+}
 
 type SideOpt = { ref: DoorBoundRef; inner: number; outer: number; cross: [number, number]; front: number | null; name: string };
 type EdgeInfo = { ref: DoorBoundRef; inner: number; outer: number; front: number | null };
@@ -250,11 +276,12 @@ function depthOptions(e: EdgeInfo[], side: 1 | -1, bodyFront: number): Array<{ r
 
 // Kapak adayları: dört yandaki sınır seçeneklerinin her kombinasyonu bir dikdörtgen; seçilen panel çapraz açıklıkla örtüşmeli
 // (kısa dikme yalnız kendi boyunu sınırlar). Sıra: alan büyükten küçüğe (önce dıştakiler).
-export function doorCandidatesAt(parent: Shape, axis: 0 | 1 | 2, side: 1 | -1, click: Vec3, shapes?: Shape[], vfs?: VirtualFace[]): DoorPick[] {
+export function doorCandidatesAt(parent: Shape, axis: 0 | 1 | 2, side: 1 | -1, click: Vec3, shapes?: Shape[], vfs?: VirtualFace[], role: DoorRole = 'door'): DoorPick[] {
   const body = bodyLocalBox(parent);
   if (!body) return [];
   const { u, v } = doorPlaneAxes(axis);
-  const bounds = collectDoorBoundPanels(parent, shapes, vfs);
+  const bounds = collectDoorBoundPanels(parent, shapes, vfs, true, role);
+  const defs = doorRoleDefaults(role);
   const cu = click[u], cv = click[v];
   const frontOf = (b: CavityBox) => (side > 0 ? b.max[axis] : b.min[axis]);
   const bodyFront = side > 0 ? body.max[axis] : body.min[axis];
@@ -275,9 +302,9 @@ export function doorCandidatesAt(parent: Shape, axis: 0 | 1 | 2, side: 1 | -1, c
   const L = optsFor(u, v, cu, true), R = optsFor(u, v, cu, false), B = optsFor(v, u, cv, true), T = optsFor(v, u, cv, false);
   const overlaps = (cross: [number, number], a0: number, a1: number) => Math.min(cross[1], a1) - Math.max(cross[0], a0) > TOL;
   // Açılı sınır panelleri: aday alanı tıklanan noktanın tarafına kırpılır (panelin iki yanına da kapak atılabilir).
-  const cuts = collectDoorCuts(parent, shapes, vfs);
+  const cuts = collectDoorCuts(parent, shapes, vfs, role);
   const at: [number, number] = [cu, cv];
-  const shrink = (placement: DoorGroup['placement'], r: DoorRect) => rectByCuts({ axis, side, placement, thickness: DOOR_THICKNESS, gap: DOOR_GAP }, r, cuts, at);
+  const shrink = (placement: DoorGroup['placement'], r: DoorRect) => rectByCuts({ axis, side, placement, thickness: defs.thickness, gap: defs.gap }, r, cuts, at);
   const seen = new Set<string>();
   const out: DoorPick[] = [];
   for (const l of L) for (const r of R) for (const b of B) for (const t of T) {
@@ -321,8 +348,9 @@ const jointKey = (splitId: string, k: number) => `${splitId}:${k}`;
 export type DoorLayout = Pick<DoorGroup, 'rect' | 'tree' | 'edgeGaps' | 'gap'>;
 
 export const makeDoorLeaf = (type: DoorType, leafSplit?: DoorLeafSplit): DoorNode => ({ id: genId('dl'), kind: 'leaf', type, ...(leafSplit ? { leafSplit } : {}) });
+/** Kenar boşlukları; NEGATİF değer = kenar panelinin içine giriş (kanallı arkalık). Kapak girişleri ≥ 0 tutulur (setDoorEdgeGap). */
 export function edgeGapsOf(g: Pick<DoorGroup, 'gap'> & { edgeGaps?: DoorEdgeGaps }): DoorEdgeGaps {
-  const ok = (x: unknown): x is number => Number.isFinite(x) && (x as number) >= 0;
+  const ok = (x: unknown): x is number => Number.isFinite(x);
   const e = g.edgeGaps;
   return { uMin: ok(e?.uMin) ? e.uMin : g.gap, uMax: ok(e?.uMax) ? e.uMax : g.gap, vMin: ok(e?.vMin) ? e.vMin : g.gap, vMax: ok(e?.vMax) ? e.vMax : g.gap };
 }
@@ -519,7 +547,22 @@ function solveDoorEdges(group: DoorGroup, parent: Shape, shapes: Shape[]): { edg
     if (hit) P = hit.front!;
     else console.warn('[YAGO][KAPAK] derinlik referansı bulunamadı, varsayılan derinlik:', group.id, group.depthRef.vfId);
   }
+  // Kanallı arkalık: düzlem panellerin arka yüzünden `setback` kadar içerde (iç kapak kuralı oradan uygulanır).
+  if (isBackGroup(group) && group.placement === 'inner') P -= group.side * backSetbackOf(group);
   return { edges, P };
+}
+export const backSetbackOf = (g: Pick<DoorGroup, 'setback'>) => (Number.isFinite(g.setback) && (g.setback as number) >= 0 ? (g.setback as number) : BACK_SETBACK);
+/** Seçme önizlemesi: adayın dikdörtgeni yeni grubun çözüleceği yere taşınır — kanallıda panel kenarları inset kadar genişler, düzlem setback kadar içerde. */
+export function pickRectFor(pick: DoorPick, placement: DoorGroup['placement'], role: DoorRole): DoorRect {
+  const r = placement === 'inner' ? { ...pick.inner } : { ...pick.outer };
+  if (role !== 'back' || placement !== 'inner') return r;
+  const eg = backEdgeGapsDefault({ bounds: pick.bounds, placement });
+  return { u0: r.u0 + eg.uMin, u1: r.u1 - eg.uMax, v0: r.v0 + eg.vMin, v1: r.v1 - eg.vMax, front: r.front - pick.side * BACK_SETBACK };
+}
+/** Arkalığın varsayılan kenar boşlukları: kanallıda panel kenarı −inset (kanala giriş), gövde kenarı 0; çakmada hep 0. */
+export function backEdgeGapsDefault(g: Pick<DoorGroup, 'bounds' | 'placement'>, inset = BACK_INSET): DoorEdgeGaps {
+  const e = (k: DoorEdgeKey) => (g.placement === 'inner' && g.bounds[k]?.vfId ? -inset : 0);
+  return { uMin: e('uMin'), uMax: e('uMax'), vMin: e('vMin'), vMax: e('vMax') };
 }
 
 export type DoorEdgeKey = keyof DoorBounds;
@@ -528,7 +571,7 @@ export function solveDoorGroup(group: DoorGroup, parent: Shape, shapes: Shape[])
   const s = solveDoorEdges(group, parent, shapes);
   if (!s) return null;
   const { edges, P } = s;
-  const cutsAll = collectDoorCuts(parent, shapes);
+  const cutsAll = collectDoorCuts(parent, shapes, undefined, roleOf(group));
   let rect: DoorRect = rectByCuts(group, rectAtDepth(edges, group.side, group.placement, P, group.halfOverlay), cutsAll, group.anchor);
   if (rect.u1 - rect.u0 < MIN_DOOR_SPAN || rect.v1 - rect.v0 < MIN_DOOR_SPAN) {
     console.warn('[YAGO][KAPAK] dikdörtgen bozuk/çok küçük, önceki korunuyor:', group.id, fmtRect(rect));
@@ -666,7 +709,7 @@ export interface DoorNearPanel {
 
 // Dış kapakta şemada gösterilecek sınır levhaları (iç kapak → boş). allPanels=true → işaretsizler de (işaretsiz dikme de derzi keser).
 export function doorNearPanels(group: DoorGroup, parent: Shape, shapes: Shape[], vfs: VirtualFace[], panelGroups: PanelGroup[], members?: DoorMemberRect[], allPanels = false): DoorNearPanel[] {
-  if (group.placement !== 'outer') return [];
+  if (group.placement !== 'outer' && !isBackGroup(group)) return [];   // iç kapakta şerit yok; kanallı arkalıkta kenar şeritleri kanal girişini taşır
   const { u, v } = doorPlaneAxes(group.axis);
   const solved = solveDoorTree(group);
   const ms = members ?? doorMemberRects(solved);
@@ -676,7 +719,7 @@ export function doorNearPanels(group: DoorGroup, parent: Shape, shapes: Shape[],
   const edgeOf = (vfId: string): DoorEdgeKey | undefined => (['uMin', 'uMax', 'vMin', 'vMax'] as DoorEdgeKey[]).find(k => group.bounds[k]?.vfId === vfId);
   const refs = doorJointRefs(group.tree);
   const out: DoorNearPanel[] = [];
-  for (const bp of collectDoorBoundPanels(parent, shapes, vfs, !allPanels)) {
+  for (const bp of collectDoorBoundPanels(parent, shapes, vfs, !allPanels, roleOf(group))) {
     const b = bp.box;
     const tu = b.max[u] - b.min[u], tv = b.max[v] - b.min[v];
     let kind: 'u' | 'v';
@@ -815,15 +858,19 @@ function removeMembers(vfIds: string[]): void {
   }
 }
 
-export function createDoorGroupFromPick(shapeId: string, pick: DoorPick, placement: DoorGroup['placement'], name?: string): DoorGroup | null {
+export function createDoorGroupFromPick(shapeId: string, pick: DoorPick, placement: DoorGroup['placement'], name?: string, role: DoorRole = 'door'): DoorGroup | null {
   const st = useAppStore.getState();
   const parent = shapeById(shapeId, st.shapes);
   if (!parent) return null;
   const rect = placement === 'inner' ? { ...pick.inner } : { ...pick.outer };
+  const back = role === 'back';
+  const defs = doorRoleDefaults(role);
   const group: DoorGroup = {
-    id: genId('door'), shapeId, axis: pick.axis, side: pick.side, placement, bounds: pick.bounds, depthRef: pick.depth, rect, anchor: pick.at,
-    tree: makeDoorLeaf('left'), edgeGaps: { uMin: DOOR_GAP, uMax: DOOR_GAP, vMin: DOOR_GAP, vMax: DOOR_GAP }, gap: DOOR_GAP, thickness: DOOR_THICKNESS,
-    memberVfIds: [], name: name?.trim() || 'Door', createdAt: Date.now(),
+    id: genId(back ? 'back' : 'door'), shapeId, ...(back ? { role: 'back' as const, setback: BACK_SETBACK } : {}), axis: pick.axis, side: pick.side, placement, bounds: pick.bounds, depthRef: pick.depth, rect, anchor: pick.at,
+    tree: makeDoorLeaf(back ? 'fixed' : 'left'),
+    edgeGaps: back ? backEdgeGapsDefault({ bounds: pick.bounds, placement }) : { uMin: DOOR_GAP, uMax: DOOR_GAP, vMin: DOOR_GAP, vMax: DOOR_GAP },
+    gap: defs.gap, thickness: defs.thickness,
+    memberVfIds: [], name: name?.trim() || (back ? 'Back' : 'Door'), createdAt: Date.now(),
   };
   const sol = solveFromStore(group) || fallbackSolution(group);
   const vfs = sol.members.map((_, i) => makeMemberVf(group, i, sol));
@@ -838,7 +885,8 @@ export function createDoorGroupFromPick(shapeId: string, pick: DoorPick, placeme
 export function confirmDoorPick(shapeId: string, pick: DoorPick | undefined): void {
   const st = useAppStore.getState();
   if (!pick) return;
-  createDoorGroupFromPick(shapeId, pick, st.doorPickPlacement, st.placementName);
+  const role = st.doorPickRole;
+  createDoorGroupFromPick(shapeId, pick, role === 'back' ? st.backPickPlacement : st.doorPickPlacement, st.placementName, role);
   st.setDoorPickMode(false);
 }
 
@@ -891,8 +939,9 @@ export function setDoorNodeSplit(groupId: string, nodeId: string, axis: 'u' | 'v
   const node = group ? findDoorNode(group.tree, nodeId) : null;
   if (!group || !node || !Number.isFinite(count)) return null;
   const n = Math.max(1, Math.min(MAX_DOOR_SPLIT, Math.round(count)));
+  const back = isBackGroup(group);
   const newLeaves = (k: number, from: number, total: number, baseType: DoorType) =>
-    Array.from({ length: k }, (_, i) => makeDoorLeaf(axis === 'u' ? defaultDoorType(from + i, total) : baseType));
+    Array.from({ length: k }, (_, i) => makeDoorLeaf(back ? 'fixed' : axis === 'u' ? defaultDoorType(from + i, total) : baseType));
   const gapsFor = (m: number, old: number[] = []) => Array.from({ length: m }, (_, i) => old[i] ?? old[0] ?? group.gap);
   if (node.kind === 'leaf') {
     if (n <= 1) return node.id;
@@ -914,7 +963,7 @@ export function setDoorNodeSplit(groupId: string, nodeId: string, axis: 'u' | 'v
     if (n > children.length) {
       // Artış: son parça bir bölmeyse yeni parçalar onun kopyası (bölünmüş hal korunur), değilse eşit yeni kapaklar.
       const last = children[children.length - 1];
-      children = [...children, ...(last.kind === 'split' ? Array.from({ length: n - children.length }, () => cloneDoorNode(last)) : newLeaves(n - children.length, children.length, n, 'left'))];
+      children = [...children, ...(last.kind === 'split' ? Array.from({ length: n - children.length }, () => cloneDoorNode(last)) : newLeaves(n - children.length, children.length, n, back ? 'fixed' : 'left'))];
     } else { for (const c of children.slice(n)) for (const l of doorLeaves(c)) restructured.add(l.id); children = children.slice(0, n); }
     // Elle sayı girildiyse spacing hedefi kalkar; derz bağları kalan derzlerde (k < n−1) korunur.
     const refs = Object.fromEntries(Object.entries(node.refs ?? {}).filter(([k]) => +k < n - 1)) as Record<number, DoorJointRef>;
@@ -952,12 +1001,13 @@ export function splitDoorAtPanel(groupId: string, vfId: string): string[] {
   if (!hits.length) { console.warn('[YAGO][KAPAK-REF] levhanın merkezinden geçen bölünebilir kapak yok:', np.name); return []; }
   let tree = group.tree;
   const ids: string[] = [], restructured = new Set<string>();
+  const back = isBackGroup(group);
   for (const leaf of hits) {
     const lt: DoorType = leaf.kind === 'leaf' ? leaf.type : 'left';
-    const baseType: DoorType = doorLeafAxis(lt) ? 'left' : lt;
+    const baseType: DoorType = back ? 'fixed' : doorLeafAxis(lt) ? 'left' : lt;
     const split: DoorNode = {
       id: genId('ds'), kind: 'split', axis, sizes: [], gaps: [g], refs: { 0: { vfId, align: 'center' } },
-      children: axis === 'u' ? [makeDoorLeaf('left'), makeDoorLeaf('right')] : [makeDoorLeaf(baseType), makeDoorLeaf(baseType)],
+      children: axis === 'u' && !back ? [makeDoorLeaf('left'), makeDoorLeaf('right')] : [makeDoorLeaf(baseType), makeDoorLeaf(baseType)],
     };
     tree = replaceDoorNode(tree, leaf.id, () => split);
     ids.push(split.id); restructured.add(leaf.id);
@@ -1156,7 +1206,25 @@ export async function setDoorPlacement(groupId: string, placement: DoorGroup['pl
   const group = groupById(groupId);
   if (!group || group.placement === placement) return;
   const patch: Partial<DoorGroup> = placement === 'inner' && group.halfOverlay && Object.values(group.halfOverlay).some(Boolean) ? { placement, halfOverlay: {} } : { placement };
+  // Arkalık tipi değişince kenar boşlukları tipin varsayılanına döner (çakma 0 · kanallı −giriş).
+  if (isBackGroup(group)) patch.edgeGaps = backEdgeGapsDefault({ bounds: group.bounds, placement });
   await writeDoorGroup(group, patch);
+}
+/** Kanallı arkalık: kenar panelinin içine giriş (mm, ≥ 0) — kenar boşluğu olarak NEGATİF yazılır. */
+export async function setBackEdgeInset(groupId: string, edge: DoorEdgeKey, inset: number, opts: DoorEditOpts = {}): Promise<void> {
+  const group = groupById(groupId);
+  if (!group || !isBackGroup(group) || !Number.isFinite(inset) || inset < 0) return;
+  const e = edgeGapsOf(group), v = -round1(inset);
+  if (opts.preview && Math.abs(e[edge] - v) < 0.05) return;   // onay hep yazar (bkz. setDoorLeafGap)
+  await writeDoorGroup(group, { edgeGaps: { ...e, [edge]: v } }, !!opts.preview);
+}
+/** Kanallı arkalık: panellerin arka yüzünden arkalığın arka yüzüne mesafe (mm). */
+export async function setBackSetback(groupId: string, mm: number): Promise<void> {
+  const group = groupById(groupId);
+  if (!group || !isBackGroup(group) || !Number.isFinite(mm) || mm < 0) return;
+  const v = round1(mm);
+  if (Math.abs(v - backSetbackOf(group)) < 0.05) return;
+  await writeDoorGroup(group, { setback: v });
 }
 /** Yarım binme: kenar panel kalınlığının ortasına çekilir; o eksendeki KÖK bölme yeniden eşit bölünür. */
 export async function setDoorHalfOverlay(groupId: string, edge: DoorEdgeKey, on: boolean): Promise<void> {
@@ -1309,8 +1377,8 @@ export function addPanelAtDoorJoint(groupId: string, splitId: string, k: number,
   const bond: DoorBond = { doorGroupId: groupId, splitId, k, align: 'center', member: 0 };
   const pg = createPanelGroupFromCavity(group.shapeId, kind, { ...pick, axis, facing: 1 }, undefined, { doorBond: bond });
   if (!pg) return null;
-  // Kapaklar arasındaki levha kapak sınırıdır (şema bandı + aday sınırı).
-  for (const vfId of pg.memberVfIds) setVfDoorBound(vfId, true);
+  // Kapaklar arasındaki levha kapak (arkalıkta arkalık) sınırıdır (şema bandı + aday sınırı).
+  for (const vfId of pg.memberVfIds) { if (isBackGroup(group)) setVfBackBound(vfId, true); else setVfDoorBound(vfId, true); }
   return pg;
 }
 
