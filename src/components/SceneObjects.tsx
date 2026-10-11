@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three';
 import { Line, TransformControls } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
-import { type CavityPick, type DoorPick, type FilletInfo, Tool, ViewMode, type VirtualFace, childPanelsOf, useAppStore, useStoreFields } from '../store';
+import { type CavityPick, type DoorGroup, type DoorPick, type FilletInfo, Tool, ViewMode, type VirtualFace, childPanelsOf, useAppStore, useStoreFields } from '../store';
 import {
   type CoplanarFaceGroup, type FaceData, type Vec3, applyFillets, convertReplicadToThreeGeometry, createFaceDescriptor, createFaceHighlightGeometry,
   createGroupBoundaryEdges, edgePointsOf, effectiveBodyGeometry, flatGroupOfFace, genId, getFacePlaneAxes, getFacesAndGroups, getShapeMatrix,
@@ -14,17 +14,35 @@ import {
   GROUP_PANEL_THICKNESS, boxSpan, boxesSurface, collectObstacles, confirmRefCavityExtrude, confirmVolumePick, gridForObstacles, groupBoundsPanelPredicate,
   rayCavityCandidates, repickObstacles,
 } from './PanelGroupService';
-import { DOOR_GAP, DOOR_THICKNESS, collectDoorCuts, confirmDoorPick, doorCandidatesAt, doorSlabPolygon, isDoorPanel, rayDoorEntry, splitDoorAtPanel } from './DoorService';
+import {
+  DOOR_GAP, DOOR_THICKNESS, type DoorMemberRect, collectDoorCuts, confirmDoorPick, doorCandidatesAt, doorMembersOf, doorPlaneAxes, doorSlabPolygon, isDoorPanel,
+  rayDoorEntry, splitDoorAtPanel,
+} from './DoorService';
 
-/* Sahne nesneleri — canvas içinde şekil başına çizilen her şey: PanelDrawing (panel mesh/kenar/tarama, ref-yüz),
+/* Sahne nesneleri — canvas içinde şekil başına çizilen her şey: PanelDrawing (panel mesh/kenar/seçim tonu, ref-yüz),
    FaceOverlays (yüz yakalama, VF, fillet, hacim/kapak seçimi), ShapeWithTransform (gövde + TransformControls).
-   RENK: seçimde panel DOLGUSU değişmez; vurgu kenar + çapraz taramayla gelir. */
+   RENK: seçili panel TARANMAZ — dolgu yumuşak çelik-mavi tona karışır (ışık gölgelemesi korunur), kenar koyu petrole döner.
+   Her KAPAĞIN ön yüzünde şemadaki açılış işareti (ince kesikli V) durur; kapak seçiliyken petrol tonuna döner. */
 
 const PANEL_COLORS = {
-  selected: { shapeEdge: '#e8590c', hatch: '#8a9097', panelEmissive: '#2a2a2a' },
+  selected: { shapeEdge: '#e8590c' },
   edge: { default: '#5b6470' },
   arrow: { fill: '#ff0000', outline: '#7f1d1d' },
 } as const;
+
+/** Panel/kapak seçim tonu: çelik mavisi — panel rengiyle `mix` oranında harmanlanır (beyaz panelde ≈ #9fb3cb); seçili panelin emissive'i
+ *  koyulaşır ki ton beyaza yıkanmasın. Kenar aynı ailenin koyu petrol tonu; ışıklı gölgeleme korunduğu için hacim okunur kalır.
+ *  Açılış işareti HER kapakta ince ve nötr (sıcak gri); kapak seçiliyken petrol tonuna döner. */
+const PANEL_SELECT = {
+  tint: '#4a7fae', mix: 0.7, emissive: '#141c24',
+  edge: '#24506e', edgeExtra: 0.8,
+} as const;
+const DOOR_SWING = {
+  idle: '#9a9389', idleWidth: 0.75,
+  active: '#24506e', activeWidth: 1.0,
+} as const;
+const SELECT_TINT = new THREE.Color(PANEL_SELECT.tint);
+const tintedPanelColor = (base: string | undefined) => `#${new THREE.Color(base || '#ffffff').lerp(SELECT_TINT, PANEL_SELECT.mix).getHexString()}`;
 
 /** Tek seçim paleti (petrol mavisi): hover/active/edge/muted; extrude* yalnız panel yüz-extrude için (daha koyu).
  *  Hacimler büyük alan kapladığından daha düşük opaklıkla doldurulur. REF_COLORS (sarı) ayrı roldür. */
@@ -50,22 +68,94 @@ const FaceOutline: React.FC<{ geometry: THREE.BufferGeometry; color: string; wid
 const XRAY_PANEL_OPACITY = 0.35;
 const EXTRUDE_XRAY_EDGE = '#6b7280';
 
-// Seçim taraması: 45° çizgiler EKRAN uzayında sabit aralıklı (gl_FragCoord) — panel ölçeğinden bağımsız.
-const HATCH_VERT = /* glsl */`void main() { gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`;
-const HATCH_FRAG = /* glsl */`
-  precision mediump float;
-  uniform vec3 uColor; uniform float uSpacing; uniform float uThickness; uniform float uOpacity; uniform float uPixelRatio;
-  void main() {
-    float pr = max(uPixelRatio, 1.0);
-    float m = mod(gl_FragCoord.x + gl_FragCoord.y, uSpacing * pr);
-    float t = uThickness * pr;
-    float line = 1.0 - smoothstep(t, t + pr, m);
-    if (line < 0.02) discard;
-    gl_FragColor = vec4(uColor, uOpacity * line);
-  }`;
+/* KAPAK AÇILIŞ İŞARETİ (3B) — PanelEditor şemasındaki DIN/AWI sözleşmesinin aynısı: kulp kenarının iki köşesinden menteşe
+   kenarının ORTASINA kesikli çizgi, sivri uç menteşe tarafı. Görünüş aynalaması ve double/fold kanat menteşeleri şemayla birebir
+   (şemada 'L' = ekranın solu; arka/sağ yan görünüşte u, üst görünüşte v aynalı). */
+type Pt2 = { x: number; y: number };
+const SWING_LIFT = 0.8;   // ön yüzden dışa pay (mm): z-fighting olmasın, kenar çizgisinin altında kalsın
 
-// Z-FIGHTING: mesh küçük pozitif polygonOffset alır; kenar/tarama yalnız SABİT birim payı alır, EĞİM (factor) payı ALMAZ —
-// eğim payı uzaklaştıkça büyür ve değen arka panellerin kenar/taraması öndeki yüzü delip görünür.
+/** Üyenin menteşe yönü kapak düzleminin (u,v) uzayında birim vektör; menteşesiz tiplerde (drawer/fixed) null. */
+function doorHingeUV(group: Pick<DoorGroup, 'axis' | 'side'>, m: Pick<DoorMemberRect, 'type' | 'leaf'>): Pt2 | null {
+  const mirrorU = (group.axis === 2 && group.side < 0) || (group.axis === 0 && group.side > 0);
+  const mirrorV = group.axis === 1 && group.side > 0;
+  const L: Pt2 = { x: mirrorU ? 1 : -1, y: 0 }, R: Pt2 = { x: -L.x, y: 0 };
+  const T: Pt2 = { x: 0, y: mirrorV ? -1 : 1 }, B: Pt2 = { x: 0, y: -T.y };
+  switch (m.type) {
+    case 'left': return L;
+    case 'right': return R;
+    case 'up': return T;
+    case 'down': return B;
+    case 'double': return { x: m.leaf === 0 ? -1 : 1, y: 0 };   // kanatlar DIŞ kenarlarından menteşeli (aynalı görünüşte de)
+    case 'fold': return T;
+    default: return null;
+  }
+}
+
+/** Çokgen kapakta işaret noktaları [kulp köşesi, tepe, kulp köşesi]: menteşe kenarı = dış normali menteşe yönüne en çok bakan
+ *  (eşitlikte en uzun) kenar; kulp kenarı = karşısı. Şemadaki swingPathPoly ile aynı kural. */
+function swingTriangle(pts: Pt2[], hinge: Pt2, ins: number): Pt2[] | null {
+  if (pts.length < 3) return null;
+  const c = { x: pts.reduce((a, q) => a + q.x, 0) / pts.length, y: pts.reduce((a, q) => a + q.y, 0) / pts.length };
+  const edges = pts.map((a, i) => {
+    const b = pts[(i + 1) % pts.length];
+    const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    let nx = (b.y - a.y) / len, ny = -(b.x - a.x) / len;
+    if (nx * ((a.x + b.x) / 2 - c.x) + ny * ((a.y + b.y) / 2 - c.y) < 0) { nx = -nx; ny = -ny; }
+    return { a, b, len, nx, ny };
+  }).filter(e => e.len > 1e-3);
+  const pick = (d: Pt2) => {
+    const sc = edges.map(e => ({ e, dot: e.nx * d.x + e.ny * d.y })).filter(x => x.dot > 0.5);
+    if (!sc.length) return null;
+    const top = Math.max(...sc.map(x => x.dot));
+    return sc.filter(x => x.dot > top - 0.15).sort((p, q) => q.e.len - p.e.len)[0].e;
+  };
+  const he = pick(hinge), pe = pick({ x: -hinge.x, y: -hinge.y });
+  if (!he || !pe) return null;
+  const apex = { x: (he.a.x + he.b.x) / 2 - he.nx * ins, y: (he.a.y + he.b.y) / 2 - he.ny * ins };
+  const inward = (q: Pt2) => { const dx = c.x - q.x, dy = c.y - q.y, l = Math.hypot(dx, dy) || 1; return { x: q.x + dx / l * ins * 1.4, y: q.y + dy / l * ins * 1.4 }; };
+  return [inward(pe.a), apex, inward(pe.b)];
+}
+
+/** Kapağın ön yüzüne açılış işareti (her kapakta; seçiliyken vurgulu). Çerçeve: VF poligonu (kesimli kapakta eğik kenar dahil) panel geometrisinin
+ *  ön yüzüne oturtulur — kapakta taşıma adımı olsa da işaret mesh'le birlikte kalır. */
+const DoorSwingMark: React.FC<{ geometry: THREE.BufferGeometry; vfId: string; active: boolean }> = React.memo(({ geometry, vfId, active }) => {
+  const vf = useAppStore(s => s.virtualFaces.find(f => f.id === vfId));
+  const group = useAppStore(s => (vf?.doorGroupId ? s.doorGroups.find(g => g.id === vf.doorGroupId) : undefined));
+  const mark = useMemo(() => {
+    if (!vf?.vertices || vf.vertices.length < 3 || !group) return null;
+    const idx = vf.doorIndex ?? group.memberVfIds.indexOf(vf.id);
+    let m: DoorMemberRect | undefined;
+    try { m = doorMembersOf(group)[idx]; } catch { return null; }
+    const hinge = m ? doorHingeUV(group, m) : null;
+    if (!hinge) return null;
+    const bb = localBboxOf(geometry);
+    if (!bb) return null;
+    const { u, v } = doorPlaneAxes(group.axis);
+    const poly = vf.vertices.map(p => ({ x: p[u], y: p[v] }));
+    const xs = poly.map(q => q.x), ys = poly.map(q => q.y);
+    const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+    const du = (bb.min.getComponent(u) + bb.max.getComponent(u)) / 2 - (minX + maxX) / 2;
+    const dv = (bb.min.getComponent(v) + bb.max.getComponent(v)) / 2 - (minY + maxY) / 2;
+    const span = Math.min(maxX - minX, maxY - minY);
+    if (span < 30) return null;
+    const ins = THREE.MathUtils.clamp(span * 0.07, 12, 45);
+    const tri = swingTriangle(poly, hinge, ins);
+    if (!tri) return null;
+    const plane = (group.side > 0 ? bb.max.getComponent(group.axis) : bb.min.getComponent(group.axis)) + group.side * SWING_LIFT;
+    const to3 = (q: Pt2) => { const p = new THREE.Vector3(); p.setComponent(group.axis, plane); p.setComponent(u, q.x + du); p.setComponent(v, q.y + dv); return p; };
+    const dash = THREE.MathUtils.clamp(span * 0.025, 6, 18);
+    return { pts: tri.map(to3), dash };
+  }, [geometry, vf, group]);
+  if (!mark) return null;
+  return (
+    <Line points={mark.pts} color={active ? DOOR_SWING.active : DOOR_SWING.idle} lineWidth={active ? DOOR_SWING.activeWidth : DOOR_SWING.idleWidth}
+      dashed dashSize={mark.dash} gapSize={mark.dash * 0.8}
+      transparent={false} depthTest depthWrite={false} renderOrder={3} raycast={() => null} />
+  );
+});
+
+// Z-FIGHTING: mesh küçük pozitif polygonOffset alır; kenar çizgisi yalnız SABİT birim payı alır, EĞİM (factor) payı ALMAZ —
+// eğim payı uzaklaştıkça büyür ve değen arka panellerin kenarı öndeki yüzü delip görünür.
 const MESH_OFFSET = 1.0, EDGE_OFFSET_FACTOR = 0, EDGE_OFFSET_UNITS = -1.0, EDGE_RENDER_ORDER = 1;
 export const EDGE_LINE_WIDTH = 1.0;
 export const EDGE_ANGLE_THRESHOLD = 15;
@@ -99,7 +189,6 @@ export const confirmRefOnRightClick = async (e: any) => {
 
 export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React.memo(({ shape, isSelected }) => {
   const meshRef = useRef<THREE.Mesh>(null);
-  const { gl } = useThree();
   const S = useStoreFields('selectShape', 'selectSecondaryShape', 'selectedShapeId', 'selectedPanelRow', 'setSelectedPanelRow', 'panelSelectMode', 'viewMode',
     'faceExtrudeMode', 'faceExtrudeTargetPanelId', 'faceExtrudeSelectedFace', 'setFaceExtrudeSelectedFace', 'setFaceExtrudeClickPoint', 'raycastMode', 'faceExtrudeValueMode', 'faceExtrudeRefCandidate',
     'panelMoveMode', 'panelMoveValueMode', 'panelMoveTargetPanelId', 'panelMoveRefSourceVertex', 'panelMoveRefTargetPanelId', 'panelMoveRefTargetVertex',
@@ -120,14 +209,6 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
   const isDoorPickGhost = isParentSelected && (S.doorPickMode || !!S.doorRefPickGroupId) && isDoorPanel(shape);
 
   const edgePoints = useMemo<Vec3[] | null>(() => { try { const p = edgePointsOf(shape.geometry, EDGE_ANGLE_THRESHOLD); return p.length ? p : null; } catch { return null; } }, [shape.geometry]);
-
-  // Tek instance; hook sırası için erken return'den önce.
-  const hatchMaterial = useMemo(() => new THREE.ShaderMaterial({
-    uniforms: { uColor: { value: new THREE.Color(PANEL_COLORS.selected.hatch) }, uSpacing: { value: 7.0 }, uThickness: { value: 2.0 }, uOpacity: { value: 0.35 }, uPixelRatio: { value: 1.0 } },
-    vertexShader: HATCH_VERT, fragmentShader: HATCH_FRAG, transparent: true, depthTest: true, depthWrite: false, side: THREE.DoubleSide,
-    polygonOffset: true, polygonOffsetFactor: 0, polygonOffsetUnits: -1,   // eğim payı yok (bkz. Z-FIGHTING notu)
-  }), []);
-  useEffect(() => { hatchMaterial.uniforms.uPixelRatio.value = gl.getPixelRatio(); }, [gl, hatchMaterial]);
 
   const isFaceExtrudeTarget = S.faceExtrudeMode && shape.id === S.faceExtrudeTargetPanelId;
   const isFaceExtrudeXray = S.faceExtrudeMode && shape.id !== S.faceExtrudeTargetPanelId;
@@ -174,9 +255,13 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
   const isWireframe = S.viewMode === ViewMode.WIREFRAME;
   const isXray = S.viewMode === ViewMode.XRAY;
   const edgeColor = moveRefHighlight ? (isMoveRefTargetPanel ? '#15803d' : REF_COLORS.selectedCss) : isDoorBoundPanel ? DOOR_COLORS.boundEdge : isSelected ? PANEL_COLORS.selected.shapeEdge
-    : isGhost ? EXTRUDE_XRAY_EDGE : PANEL_COLORS.edge.default;
-  const edgeWidth = moveRefHighlight ? EDGE_LINE_WIDTH + 0.9 : isDoorBoundPanel ? EDGE_LINE_WIDTH + 1.1 : isSelected ? EDGE_LINE_WIDTH + 0.7 : EDGE_LINE_WIDTH;
-  const showHatch = isPanelRowSelected && !isWireframe;
+    : isPanelRowSelected ? PANEL_SELECT.edge : isGhost ? EXTRUDE_XRAY_EDGE : PANEL_COLORS.edge.default;
+  const edgeWidth = moveRefHighlight ? EDGE_LINE_WIDTH + 0.9 : isDoorBoundPanel ? EDGE_LINE_WIDTH + 1.1 : isSelected ? EDGE_LINE_WIDTH + 0.7
+    : isPanelRowSelected ? EDGE_LINE_WIDTH + PANEL_SELECT.edgeExtra : EDGE_LINE_WIDTH;
+  // Seçim tonu: tarama yok — dolgu harmanlanır; ref/taşıma vurgusu varken o rol önceliklidir.
+  const panelColor = isPanelRowSelected && !moveRefHighlight ? tintedPanelColor(shape.color) : (shape.color || '#ffffff');
+  // Açılış işareti her kapakta görünür; kapaklar saydamlaştığı modlarda (kapak seçme/ref, X-ray hedef dışı) gizlenir.
+  const showSwing = !!virtualFaceId && isDoorPanel(shape) && !isGhost;
 
   const handleClick = (e: any) => {
     e.stopPropagation();
@@ -210,9 +295,8 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
     onPointerDown: (e: any) => { if (isExtRefMode && isRefPickablePanel) confirmRefOnRightClick(e); },
     onContextMenu: (e: any) => { if (isRefPickablePanel || isMoveRefPickMode || isMoveRefTargetPanel) e.stopPropagation(); },
   };
-  const emissive = isPanelRowSelected ? PANEL_COLORS.selected.panelEmissive : moveRefHighlight ? (isMoveRefTargetPanel ? '#22c55e' : REF_COLORS.hoverCss) : isDoorBoundPanel ? DOOR_COLORS.boundEmissive : '#2a2a2a';
+  const emissive = isPanelRowSelected ? PANEL_SELECT.emissive : moveRefHighlight ? (isMoveRefTargetPanel ? '#22c55e' : REF_COLORS.hoverCss) : isDoorBoundPanel ? DOOR_COLORS.boundEmissive : '#2a2a2a';
   const emissiveIntensity = isPanelRowSelected ? 1 : moveRefHighlight ? (isMoveRefTargetPanel ? 1.0 : 0.8) : isDoorBoundPanel ? 0.55 : 1;
-  const hatch = showHatch && <mesh geometry={shape.geometry} renderOrder={2} raycast={() => null}><primitive object={hatchMaterial} attach="material" /></mesh>;
   const edgeLine = (xray: boolean) => edgePoints && (
     <Line points={edgePoints} segments color={edgeColor} lineWidth={edgeWidth} transparent={false} depthTest={!xray} depthWrite={!xray}
       {...(!xray && !isWireframe ? { polygonOffset: true, polygonOffsetFactor: EDGE_OFFSET_FACTOR, polygonOffsetUnits: EDGE_OFFSET_UNITS } : {})}
@@ -223,15 +307,15 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
     <group name={`shape-${shape.id}`} position={shape.position} rotation={shape.rotation} scale={shape.scale}>
       {!isWireframe && (
         <mesh ref={meshRef} geometry={shape.geometry} castShadow receiveShadow {...meshEvents}>
-          <meshLambertMaterial color={shape.color || '#ffffff'} emissive={emissive} emissiveIntensity={emissiveIntensity} side={THREE.DoubleSide}
+          <meshLambertMaterial color={panelColor} emissive={emissive} emissiveIntensity={emissiveIntensity} side={THREE.DoubleSide}
             transparent={isXray || isGhost || moveRefHighlight}
             opacity={isXray ? (moveRefHighlight ? (isMoveRefTargetPanel ? 0.5 : 0.6) : XRAY_PANEL_OPACITY) : isGhost ? XRAY_PANEL_OPACITY : isMoveRefTargetPanel ? 0.55 : isMoveRefHovered ? 0.9 : 1}
             depthWrite={!isXray && !isGhost && !isMoveRefTargetPanel}
             polygonOffset polygonOffsetFactor={MESH_OFFSET} polygonOffsetUnits={MESH_OFFSET} />
         </mesh>
       )}
-      {!isWireframe && hatch}
       {edgeLine(isXray)}
+      {showSwing && <DoorSwingMark geometry={shape.geometry} vfId={virtualFaceId} active={isPanelRowSelected} />}
 
       {isFaceExtrudeTarget && (
         <>
