@@ -1008,6 +1008,7 @@ const Scene: React.FC = () => {
         const st = useAppStore.getState();
         if (st.volumePickMode) { st.setVolumePickMode(null); return; }
         if (st.doorPickMode) { st.setDoorPickMode(false); return; }
+        if (st.backPickMode) { st.setBackPickMode(false); return; }
         if (st.faceExtrudeMode || st.panelMoveMode || st.panelRotateMode) {
           if (st.faceExtrudeMode) { st.setFaceExtrudeSelectedFace(null); st.setFaceExtrudeRefCandidate(null); st.setFaceExtrudeMode(false); }
           if (st.panelMoveMode) { st.setPanelMoveAxis(null); st.setPanelMoveMode(false); }

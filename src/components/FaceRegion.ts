@@ -41,6 +41,54 @@ export function convexHull2D(points: Point2D[]): Point2D[] {
   return lower.concat(upper);
 }
 
+// 2B ÇOKGEN YARDIMCILARI (kapak/arkalık şema ve kesimleri ortak kullanır): yarım düzlem kırpma, imzalı alan, dışbükeyle kırpma.
+/** A·x + B·y ≤ C tarafı kalır (Sutherland–Hodgman tek kenar). */
+export function clipHalfPlane(poly: Point2D[], A: number, B: number, C: number): Point2D[] {
+  const out: Point2D[] = [];
+  const f = (p: Point2D) => A * p.x + B * p.y - C;
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i + 1) % poly.length];
+    const fa = f(a), fb = f(b);
+    if (fa <= 0) out.push(a);
+    if ((fa < 0 && fb > 0) || (fa > 0 && fb < 0)) { const t = fa / (fa - fb); out.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t }); }
+  }
+  return out;
+}
+export const polyArea = (p: Point2D[]) => { let a = 0; for (let i = 0; i < p.length; i++) { const q = p[i], r = p[(i + 1) % p.length]; a += q.x * r.y - r.x * q.y; } return a / 2; };
+/** Çokgeni DIŞBÜKEY çokgenle kırpar (yönelim CW / CCW fark etmez). */
+export function clipPolyToConvex(poly: Point2D[], convex: Point2D[]): Point2D[] {
+  if (convex.length < 3) return poly;
+  const ccw = polyArea(convex) > 0;
+  let out = poly;
+  for (let i = 0; i < convex.length && out.length >= 3; i++) {
+    const a = convex[i], b = convex[(i + 1) % convex.length];
+    let A = b.y - a.y, B = -(b.x - a.x);   // CCW'de iç taraf kenarın solu: A·x + B·y ≤ A·ax + B·ay
+    if (!ccw) { A = -A; B = -B; }
+    out = clipHalfPlane(out, A, B, A * a.x + B * a.y);
+  }
+  return out;
+}
+/** Noktaların (u,v) izdüşümünün dışbükey zarfı (tekilleştirilmiş). */
+export function frontHullOf(pts: Iterable<[number, number, number]>, u: 0 | 1 | 2, v: 0 | 1 | 2): Point2D[] {
+  const out: Point2D[] = [], seen = new Set<string>();
+  for (const q of pts) { const k = `${Math.round(q[u] * 10)},${Math.round(q[v] * 10)}`; if (seen.has(k)) continue; seen.add(k); out.push({ x: q[u], y: q[v] }); }
+  return convexHull2D(out);
+}
+/** Panelin ön görünüşü (gövde çerçevesinde u,v izdüşüm zarfı, önbellekli): pahlı yan panel yamuktur, eksen-hizalı kutu eğik paneli örterdi. */
+const _frontHullCache = new WeakMap<object, { key: string; hull: Point2D[] }>();
+export function panelFrontHull(p: { geometry?: any; position?: number[] }, parent: { position?: number[] }, u: 0 | 1 | 2, v: 0 | 1 | 2): Point2D[] | null {
+  const pos = p.geometry?.getAttribute?.('position') as THREE.BufferAttribute | undefined;
+  if (!pos || pos.count < 3) return null;
+  const off = [0, 1, 2].map(k => (p.position?.[k] ?? 0) - (parent.position?.[k] ?? 0));
+  const key = `${u}${v}:${off.map(x => x.toFixed(2)).join(',')}:${pos.count}:${pos.version}`;
+  const hit = _frontHullCache.get(p.geometry);
+  if (hit && hit.key === key) return hit.hull;
+  const pts = function* () { for (let i = 0; i < pos.count; i++) yield [pos.getX(i) + off[0], pos.getY(i) + off[1], pos.getZ(i) + off[2]] as [number, number, number]; };
+  const hull = frontHullOf(pts(), u, v);
+  _frontHullCache.set(p.geometry, { key, hull });
+  return hull;
+}
+
 function isPointInsidePolygon(p: Point2D, poly: Point2D[]): boolean {
   let inside = false;
   for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {

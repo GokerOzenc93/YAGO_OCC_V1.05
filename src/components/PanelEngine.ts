@@ -10,6 +10,11 @@ import {
 } from './Geometry';
 import { isInteriorPanel, isInteriorVf, recalculateInteriorVfs, syncPanelGroups } from './PanelGroupService';
 import { isDoorPanel, isDoorVf, recalculateDoorVfs, syncDoorGroups } from './DoorService';
+import { isBackPanel, isBackVf, recalculateBackVfs, syncBackGroups } from './BackService';
+
+// Kapak ve arkalık panelleri (LEVHA): damgalamaz, köşe birleşimine girmez, gövdeyle sığdırılmaz/kesilmez, hiçbir paneli kesmez.
+const isSheetPanel = (p: any): boolean => isDoorPanel(p) || isBackPanel(p);
+const isSheetVf = (vf: any): boolean => isDoorVf(vf) || isBackVf(vf);
 
 // PANEL MOTORU: (A) rebuildPanelsForParent — panelleri SPEC'ten (VF bağı + transform/extrude adımları) her rebuild'de
 // sıfırdan üretir; (B) VF bölge yeniden hesabı. BASAN/BASILAN = store'daki virtualFaces sırası (önce gelen basar).
@@ -277,7 +282,7 @@ function cornerJoinedVertices(panel: Shape, vf: VirtualFace, vfs: VirtualFace[],
   const myOrder = orderOf(panel);
   for (const q of siblings) {
     // İç panel (raf/dikme) ve kapak köşe birleşimine girmez.
-    if (q.id === panel.id || orderOf(q) <= myOrder || hasAnySteps(q) || isInteriorPanel(q) || isInteriorPanel(panel) || isDoorPanel(q) || isDoorPanel(panel)) continue;
+    if (q.id === panel.id || orderOf(q) <= myOrder || hasAnySteps(q) || isInteriorPanel(q) || isInteriorPanel(panel) || isSheetPanel(q) || isSheetPanel(panel)) continue;
     const vfQ = vfOfPanel(q, vfs);
     if (!vfQ) continue;
     const j = concaveCornerJoin(vf, vfQ, panelThickness(q));
@@ -332,8 +337,8 @@ async function cutByRotatedPressers(
   for (const r of siblings) {
     // Sıra tek yetkidir — dönmüş raf/dikme de sırada sonraki gövde panelini biçer.
     if (r.id === panel.id || orderOf(r) >= myOrder) continue;
-    // Kapak hiçbir gövde panelini kesmez; eğik VF'li kapak dönmüş basan sayılmaz.
-    if (isDoorPanel(r)) continue;
+    // Kapak/arkalık hiçbir gövde panelini kesmez; eğik VF'li levha dönmüş basan sayılmaz.
+    if (isSheetPanel(r)) continue;
     if (!panelHasRotation(r) && !vfIsTilted(vfOfPanel(r, vfs))) continue;
     if (stepRefTargets(r).rotate.has(panel.id)) {
       continue;
@@ -579,7 +584,7 @@ async function fitRotatedPanel(
   const myRefTargets = stepRefTargets(panel).rotate;
   for (const b of siblings) {
     if (b.id === panel.id || orderOf(b) >= myOrder) continue;
-    if (isDoorPanel(b)) continue;   // kapak gövde panelini kesmez
+    if (isSheetPanel(b)) continue;   // kapak/arkalık gövde panelini kesmez
     const isRefTarget = myRefTargets.has(b.id);
     if (isRefTarget && refContacts.get(b.id) === 'rest') {
       continue;
@@ -686,7 +691,7 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       return !!vp && !!concaveCornerJoin(vp, vq, panelThickness(changedChild));
     });
     const refDependents = children.filter(c => c.id !== changedChild.id && refIds.get(c.id)!.has(changedChild.id));
-    const boundsGroups = !isInteriorPanel(changedChild) && !isDoorPanel(changedChild) && (fresh.panelGroups.some(g => g.shapeId === parentShapeId) || fresh.doorGroups.some(g => g.shapeId === parentShapeId));
+    const boundsGroups = !isInteriorPanel(changedChild) && !isSheetPanel(changedChild) && (fresh.panelGroups.some(g => g.shapeId === parentShapeId) || fresh.doorGroups.some(g => g.shapeId === parentShapeId) || fresh.backGroups.some(g => g.shapeId === parentShapeId));
     const cancel: Array<[boolean, string]> = [
       [pressed.length > 0, `sıra= ${changedOrder} basılanKardeşN= ${pressed.length} → basan panel taşındı/değişti, basılan kardeşlerin VF bölgeleri yeniden çözülecek`],
       [cornerPartner, '→ önceki panelle iç köşe ortağı, köşe uzaması yeniden çözülecek'],
@@ -722,14 +727,14 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       }
       const buildVerts = cornerJoinedVertices(panel, vf, vfsIn, children, orderOf);
       const vfTilted = vfIsTilted(vf);
-      // Kapak gövdeyle sığdırılmaz/kesilmez (gövdenin önünde durur); adımları yine uygulanır.
-      const isRotated = !isDoorPanel(panel) && (panelHasRotation(panel) || vfTilted);
+      // Kapak/arkalık gövdeyle sığdırılmaz/kesilmez (gövdenin önünde/arkasında durur); adımları yine uygulanır.
+      const isRotated = !isSheetPanel(panel) && (panelHasRotation(panel) || vfTilted);
       let genVerts = buildVerts;
       let needsBodyClip = false;
       // İç panel + vertex düzenlemeli gövde: levha eğik yüzden taşmasın diye gövde katısıyla kesilir.
       if (!isRotated && isInteriorPanel(panel) && Array.isArray(parentFresh.vertexModifications) && parentFresh.vertexModifications.length > 0) needsBodyClip = true;
-      // Düz panel + eğik gövde yüzü: VF köşeleri uzatılıp gövdeyle kesilir (kapak hariç).
-      if (!isRotated && !isDoorPanel(panel)) {
+      // Düz panel + eğik gövde yüzü: VF köşeleri uzatılıp gövdeyle kesilir (kapak/arkalık hariç).
+      if (!isRotated && !isSheetPanel(panel)) {
         const planes = tiltedBodyPlanes(parentFresh);
         if (planes.length) {
           const ext = extendVertsOnTiltedPlanes(buildVerts, vf.normal, planes, thickness * 3 + 2);
@@ -788,7 +793,7 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
         }
       }
 
-      if (!panelHasRotation(panel) && !isDoorPanel(panel)) {
+      if (!panelHasRotation(panel) && !isSheetPanel(panel)) {
         rp = await cutByRotatedPressers(rp, panel, vf, children, vfsIn, orderOf, createPanelFromVirtualFace);
       }
       await shapeRefRotateTargets(rp, panel, vf, children, orderOf, refContacts, updateShape, convertReplicadToThreeGeometry, createPanelFromVirtualFace);
@@ -840,6 +845,7 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
   useAppStore.setState(st => ({ virtualFaces: st.virtualFaces.map(f => (patches.has(f.id) ? { ...f, ...patches.get(f.id) } : f)) }));
   try { syncPanelGroups(parentShapeId); } catch (err) { console.warn('[YAGO][GRUP-SENKRON] hata:', errMsg(err)); }
   try { syncDoorGroups(parentShapeId); } catch (err) { console.warn('[YAGO][KAPAK-SENKRON] hata:', errMsg(err)); }
+  try { syncBackGroups(parentShapeId); } catch (err) { console.warn('[YAGO][ARKALIK-SENKRON] hata:', errMsg(err)); }
 }
 
 /** VF yeniden hesabının sahip olduğu alanlar (geri kalanı kullanıcı verisidir). */
@@ -1055,9 +1061,10 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
   // İÇ VF'LER (raf/dikme): yüz eşlemesine girmez, grup çözücüsü yazar (aşağıda).
   const shapeFaces = allShapeFaces.filter(vf => !isInteriorVf(vf));
   const interiorMap = panelGroups
-    ? recalculateInteriorVfs(shape, allShapeFaces.filter(vf => isInteriorVf(vf) && !isDoorVf(vf)), (allShapes || []) as Shape[], panelGroups)
+    ? recalculateInteriorVfs(shape, allShapeFaces.filter(vf => isInteriorVf(vf) && !isSheetVf(vf)), (allShapes || []) as Shape[], panelGroups)
     : new Map<string, VirtualFace>();
   for (const [id, vf] of recalculateDoorVfs(shape, allShapeFaces.filter(isDoorVf), (allShapes || []) as Shape[], useAppStore.getState().doorGroups)) interiorMap.set(id, vf);
+  for (const [id, vf] of recalculateBackVfs(shape, allShapeFaces.filter(isBackVf), (allShapes || []) as Shape[], useAppStore.getState().backGroups)) interiorMap.set(id, vf);
   if (shapeFaces.length === 0) return virtualFaces.map(vf => interiorMap.get(vf.id) || vf);
 
   const eff = effectiveBodyGeometry(shape);
@@ -1129,7 +1136,7 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
 
   const stamps = (p: any, vfId: string, myPanel: any, myFaceNormal: THREE.Vector3 | null): boolean => {
     if (p.parameters?.virtualFaceId === vfId) return false;
-    if (isDoorPanel(p)) return false;
+    if (isSheetPanel(p)) return false;
     // Raf/dikme yalnız VF sırasıyla basar (istisna yok) — PanelGroupService.groupObstacles da aynı sırayı okur.
     if (isInteriorPanel(p)) {
       const myIdx = vfIndexOf.get(vfId);

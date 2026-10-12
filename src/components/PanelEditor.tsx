@@ -8,11 +8,12 @@ import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import {
-  type CavityBox, type DoorAlign, type DoorGroup, type DoorType, type PanelGroup, type Shape, type VirtualFace, childPanelsOf, panelOfVf, requestRebuild, shapeById, useAppStore, useStoreFields,
+  type BackAlign, type BackGroup, type BackPlacement, type CavityBox, type DoorAlign, type DoorGroup, type DoorType, type PanelGroup, type Shape, type VirtualFace, childPanelsOf, panelOfVf, requestRebuild, shapeById, useAppStore, useStoreFields,
 } from '../store';
 import { ToolChip, ToolChipBar, UI_FONT } from './Ui';
 import { confirmBodyPanelPlacement } from './SceneObjects';
 import { axisDirToVec, convertReplicadToThreeGeometry, createPanelFromVirtualFace, dominantAxisLabel, genId, getFacesAndGroups, isFlatNormal, localBboxOf, round1 } from './Geometry';
+import { clipPolyToConvex, polyArea } from './FaceRegion';
 import {
   confirmPanelMoveRef, confirmPanelRotateRef, confirmRefFaceExtrude, deleteExtrudeStep, deleteTransformStep, executeFaceExtrude, executePanelMove,
   executePanelMoveFixed, executePanelRotate, findExistingStepForFace, updateExtrudeStep, updateTransformStep,
@@ -23,17 +24,25 @@ import {
   passiveGapIndex, startCavityEdit, startGroupRepick, toggleGroupGapLock, traceMaskLoops, updateCavityStep,
 } from './PanelGroupService';
 import {
-  type DoorCut, type DoorEdgeKey, type DoorJoint, type DoorLayoutSnap, type DoorNearPanel, type DoorNodeSolved, DOOR_TYPES, JOINT_NEAR, jointOverlayState, setDoorJointOverlay, DOOR_TYPE_LABEL, DOOR_TYPE_TITLE, addPanelAtDoorJoint, applyDoorCuts, clearDoorSpacing, collectDoorCuts, clipPolyToConvex, doorCutBands, doorCutOutline, doorJointParts, doorJoints, doorLayoutSnapshot, polyArea, doorLeafAxis, doorPlaneAxes, doorSpacingTargetsInScope, doorLeaves, doorMemberCount, doorNearPanels, restoreDoorLayout,
+  type DoorCut, type DoorEdgeKey, type DoorJoint, type DoorLayoutSnap, type DoorNearPanel, type DoorNodeSolved, DOOR_TYPES, JOINT_NEAR, jointOverlayState, setDoorJointOverlay, DOOR_TYPE_LABEL, DOOR_TYPE_TITLE, addPanelAtDoorJoint, applyDoorCuts, clearDoorSpacing, collectDoorCuts, doorCutBands, doorCutOutline, doorJointParts, doorJoints, doorLayoutSnapshot, doorLeafAxis, doorPlaneAxes, doorSpacingTargetsInScope, doorLeaves, doorMemberCount, doorNearPanels, restoreDoorLayout,
   confirmDoorPick, deleteDoorGroupWithMembers, doorGroupName, doorMemberRects, doorMembersOf, doorPlacementLabel, edgeGapsOf, editDoorLeafSize, editDoorSize, equalizeDoorGroup, findDoorNode, findSolvedNode,
   isDoorVf, renameDoorGroup, setDoorEdgeGap, setDoorGap, setDoorHalfOverlay, setDoorLeafGap, setDoorLeafTypes, setDoorNodeSpacing, setDoorJointRef, setDoorNodeSplit, setDoorPlacement, setDoorSplitGap, splitDoorAtPanel, setDoorThickness, setVfDoorBound,
   doorSizeMode, passiveSizeIndex, solveDoorTree, toggleDoorSizeLock,
-  BACK_TYPE_LABEL, BACK_TYPE_TITLE, backSetbackOf, doorRoleNoun, isBackGroup, roleOf, setBackEdgeInset, setBackSetback, setVfBackBound, vfBackBound, vfBoundFor,
   type EdgeOverlayMode, canSplitDoorAtPanel, setDoorEdgeOverlay,
 } from './DoorService';
+import {
+  type BackCut, type BackEdgeKey, type BackEdgeOverlayMode, type BackJoint, type BackLayoutSnap, type BackNearPanel, type BackNodeSolved,
+  BACK_JOINT_NEAR, BACK_TYPE_LABEL, BACK_TYPE_TITLE, applyBackCuts, backCutBands, backCutOutline, backEdgeGapsOf, backGroupName, backJointOverlayState, backJoints, backLayoutSnapshot,
+  backMemberCount, backMemberRects, backNearPanels, backSetbackOf, backSizeMode, backSpacingTargetsInScope, canSplitBackAtPanel, clearBackSpacing, collectBackCuts, confirmBackPick,
+  deleteBackGroupWithMembers, editBackSize, equalizeBackGroup, findBackNode, findSolvedBackNode, isBackVf, passiveBackSizeIndex, renameBackGroup, restoreBackLayout, setBackEdgeGap,
+  setBackEdgeInset, setBackEdgeOverlay, setBackHalfOverlay, setBackJointOverlay, setBackJointRef, setBackNodeSpacing, setBackNodeSplit, setBackPlacement, setBackSetback,
+  setBackSplitGap, setBackThickness, setVfBackBound, solveBackTree, splitBackAtPanel, toggleBackSizeLock, vfBackBound,
+} from './BackService';
 
 /* PANEL EDİTÖRÜ — sol çubuktaki panel listesi, önizleme, Taşı/Döndür/Extrude şeritleri,
    işlem adımları ve raf/dikme/kapak grup kartları. Mantık motora (PanelOps / PanelGroupService /
-   DoorService) delege edilir; burada yalnız arayüz durumu tutulur. */
+   DoorService / BackService) delege edilir; burada yalnız arayüz durumu tutulur. Arkalık kartı ve şeması kapaktan
+   ayrı bileşenlerdir (BackSchematic, backCard) ama aynı görünüm dilini kullanır. */
 
 const PANEL_THICKNESS = 18;
 const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
@@ -464,7 +473,7 @@ function DoorRefToggle({ checked, disabled, onToggle }: { checked: boolean; disa
     </button>
   );
 }
-/* Arkalık sınırı: kapak sınırının eşi — arkalık adayları bu panelin kenarlarından kurulur, arkalık bu panelde (Panel ref) bölünür. */
+/* Arkalık sınırı: arkalık adayları bu panelin kenarlarından kurulur, arkalık bu panelde (Panel ref) bölünür. */
 function BackRefToggle({ checked, disabled, onToggle }: { checked: boolean; disabled?: boolean; onToggle: () => void }) {
   return (
     <button type="button" role="checkbox" aria-checked={checked} disabled={disabled} onClick={e => { stop(e); if (!disabled) onToggle(); }}
@@ -474,7 +483,6 @@ function BackRefToggle({ checked, disabled, onToggle }: { checked: boolean; disa
     </button>
   );
 }
-
 /* TEK WebGL BAĞLAMI: tarayıcı ~16 bağlamı aşınca EN ESKİSİNİ (ana sahne Canvas'ı) öldürür. Tüm önizlemeler
    tek ekran-dışı renderer'ı paylaşır; görüntü görünür canvas'a 2D drawImage ile kopyalanır. */
 let _sharedPreviewRenderer: THREE.WebGLRenderer | null = null;
@@ -1072,8 +1080,8 @@ function DoorTypeBar({ value, hint, onPick }: { value: DoorType | null; hint: st
 }
 
 /* ARKALIK TİPİ İKONU — plan kesiti: iki yan panel (düşey çubuklar) + arkalık. Çakma: panellerin arkasında, dışta;
-   kanallı: panellerin arasında, iki yana da kanal kadar girer. Tip barı ve üye satırı aynı çizimi kullanır. */
-function BackTypeIcon({ type, size = 14, strokeWidth = 1.25 }: { type: DoorGroup['placement']; size?: number; strokeWidth?: number }) {
+   kanallı: panellerin arasında, iki yana da kanal kadar girer. */
+function BackTypeIcon({ type, size = 14, strokeWidth = 1.25 }: { type: BackPlacement; size?: number; strokeWidth?: number }) {
   const W = 20, H = 16;
   return (
     <svg width={size * W / H} height={size} viewBox={`0 0 ${W} ${H}`} fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinejoin="round" strokeLinecap="round" style={{ flexShrink: 0, display: 'block' }} aria-hidden>
@@ -1085,9 +1093,9 @@ function BackTypeIcon({ type, size = 14, strokeWidth = 1.25 }: { type: DoorGroup
     </svg>
   );
 }
-const BACK_TYPES: Array<DoorGroup['placement']> = ['outer', 'inner'];
-/** Kapak tip barının eşi: arkalık tipi (grup düzeyinde) — aynı ölçü, yazı ve seçili tonu. */
-function BackTypeBar({ value, onPick }: { value: DoorGroup['placement']; onPick: (t: DoorGroup['placement']) => void }) {
+const BACK_TYPES: BackPlacement[] = ['outer', 'inner'];
+/** Arkalık tipi barı (grup düzeyinde): Nailed / Grooved. */
+function BackTypeBar({ value, onPick }: { value: BackPlacement; onPick: (t: BackPlacement) => void }) {
   return (
     <div className="flex items-stretch gap-1.5 mb-1" title="Back panel type — Nailed: behind the reference panels, outside the body (covers their thickness · Full / Half per edge). Grooved: between the reference panels, entering each by the groove inset, set back from their rear face.">
       <div className="flex-1 min-w-0" style={{ display: 'grid', gridTemplateColumns: `repeat(${BACK_TYPES.length}, minmax(0,1fr))`, gap: 2, padding: 2, borderRadius: 9, background: '#f3efe8', border: '1px solid #e9e4dc', fontFamily: UI_FONT }}>
@@ -1114,7 +1122,6 @@ function BackTypeBar({ value, onPick }: { value: DoorGroup['placement']; onPick:
     </div>
   );
 }
-
 type DoorEdit = { key: string; v: string };
 /** Ölçü zinciri öğesi; a..b = eksen boyunca mm. `span` (yalnız boşluk): kenarın/derzin çapraz eksendeki GERÇEK uzunluğu —
  *  pill bu uzunluğun ortasına yerleşir (açılı kesimde kenar kısalır). */
@@ -1198,12 +1205,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
   const clampX = (x: number) => Math.max(ox - DOOR_PAD_L + 2, Math.min(ox + SW + DOOR_PAD_R - 2, x));
   const clampY = (y: number) => Math.max(oy - DOOR_PAD_T + 2, Math.min(oy + SH + DOOR_PAD_B - 2, y));
   const isOuter = group.placement === 'outer';
-  // ARKALIK: aynı şema; kanallıda kenar şeritleri KANAL GİRİŞİNİ taşır (boşluk negatif saklanır, pozitif gösterilir), çakmada kapak gibi Full/Half.
-  const isBack = isBackGroup(group);
-  const grooved = isBack && !isOuter;
-  const noun = isBack ? 'Back' : 'Door';
-  const insetOf = (k: DoorEdgeKey) => Math.max(0, -eg[k]);
-  const insetEdge = (k: DoorEdgeKey) => grooved && !!group.bounds[k]?.vfId;
+  const noun = 'Door';
   const invX = (x: number) => rect.u0 + (mirrorU ? (ox + SW - x) : (x - ox)) * duR / SW;
   const invY = (y: number) => (mirrorV ? rect.v0 + (y - oy) * dvR / SH : rect.v1 - (y - oy) * dvR / SH);
   const areaPx = [[ox - DOOR_PAD_L + 2, oy - DOOR_PAD_T + 2], [ox + SW + DOOR_PAD_R - 2, oy - DOOR_PAD_T + 2], [ox + SW + DOOR_PAD_R - 2, oy + SH + DOOR_PAD_B - 2], [ox - DOOR_PAD_L + 2, oy + SH + DOOR_PAD_B - 2]];
@@ -1301,7 +1303,6 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
   const bandTip = (b: Band) => {
     const np = b.np;
     if (np.edge) {
-      if (insetEdge(np.edge)) return `${edgeName(b)} — ${np.name}: GROOVE INSET ${fmt(insetOf(np.edge))} mm — the back panel enters this panel by this much. Click to edit (0 = ends at the panel's inner face).`;
       if (!np.behind) return `${edgeName(b)} — ${np.name}: stands in front of the ${noun.toLowerCase()} plane; the ${noun.toLowerCase()} ends beside it (no overlay possible).`;
       const d = noun.toLowerCase();
       const now = b.none ? `NONE — the ${d} ends at this panel's inner face (does not cover it)` : b.half ? `HALF overlay — the ${d} covers half of this panel's thickness (the other half is left for the neighbouring ${d})` : `FULL overlay — the ${d} covers this panel's whole thickness`;
@@ -1334,8 +1335,6 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
         const next: EdgeOverlayMode = b.none ? 'full' : b.half ? 'none' : 'half';
         if (onEdgeOverlay) onEdgeOverlay(np.edge, next); else onToggleHalfOverlay(np.edge, !b.half);
       }
-      // Kanal girişi: kenar pill'i varsa doğrudan düzenlenir; yoksa önce tüm alan seçilir (pill'ler o zaman görünür).
-      else if (insetEdge(np.edge)) { const key = `edge-${np.edge}`; const p = pillByKey.get(key); if (p) beginEdit({ key, v: p.item.txt }); else onPathClick([solved.id], false); }
       return;
     }
     const j = np.joint;
@@ -1446,10 +1445,8 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     const sp = lineSpan(outlineOf(R), ax, (a + b) / 2) ?? crossOf(R, ax);
     return on ? clampSpan(sp, crossOf(on, ax)) : sp;
   };
-  // Kanallı arkalıkta panel kenarı: pill KANAL GİRİŞİ (pozitif) gösterir, negatif boşluk olarak yazılır.
-  const edgeItem = (k: DoorEdgeKey, a: number, b: number, R: Box4, on?: Box4): ChainItem => (insetEdge(k)
-    ? { key: `edge-${k}`, kind: 'gap', a, b, txt: fmt(insetOf(k)), title: `${edgeKeyName(k)} groove inset — how far the back panel enters the panel; click to edit`, commit: v => onEditEdgeGap(k, -v), preview: v => onEditEdgeGap(k, -v, true), min: 0, span: edgeSpanOf(R, k, on) }
-    : { key: `edge-${k}`, kind: 'gap', a, b, txt: fmt(eg[k]), title: `${edgeKeyName(k)} edge gap — click to edit`, commit: v => onEditEdgeGap(k, v), preview: v => onEditEdgeGap(k, v, true), min: 0, span: edgeSpanOf(R, k, on) });
+  const edgeItem = (k: DoorEdgeKey, a: number, b: number, R: Box4, on?: Box4): ChainItem =>
+    ({ key: `edge-${k}`, kind: 'gap', a, b, txt: fmt(eg[k]), title: `${edgeKeyName(k)} edge gap — click to edit`, commit: v => onEditEdgeGap(k, v), preview: v => onEditEdgeGap(k, v, true), min: 0, span: edgeSpanOf(R, k, on) });
   const edgeStrip = (n: DoorNodeSolved, k: DoorEdgeKey) => {
     if (k === 'uMin') strip('u', rect.u0, n.u0, n.v0, n.v1); else if (k === 'uMax') strip('u', n.u1, rect.u1, n.v0, n.v1);
     else if (k === 'vMax') strip('v', n.v1, rect.v1, n.u0, n.u1); else strip('v', rect.v0, n.v0, n.u0, n.u1);
@@ -1716,7 +1713,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
           let hinge: Hinge | undefined = leafHinges(m.type)[0];
           if (m.leafCount === 2 && doorLeafAxis(m.type) === 'u') { const sib = members[m.leaf === 0 ? i + 1 : i - 1]; hinge = sib && Math.min(sx(sib.u0), sx(sib.u1)) < x0 ? 'R' : 'L'; }
           else if (m.leafCount === 2) hinge = 'T';
-          const typeTxt = isBack ? BACK_TYPE_LABEL[group.placement] : DOOR_TYPE_LABEL[m.type] + (m.leafCount === 2 ? ` · leaf ${m.leaf + 1}/2` : '');
+          const typeTxt = DOOR_TYPE_LABEL[m.type] + (m.leafCount === 2 ? ` · leaf ${m.leaf + 1}/2` : '');
           const path = pathToLeaf(m.leafId);
           const wMm = Math.round(m.u1 - m.u0), hMm = Math.round(m.v1 - m.v0);
           const lhGuard = fsT * 1.18;
@@ -1733,7 +1730,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
           const capW = `${wMm} × ${hMm}`.length * fsz * 0.6 + 6, capH = fsz * 1.2;
           const capHit = pills.some(pp => Math.abs(pp.cx - cx) < (pp.pw + capW) / 2 && Math.abs(pp.cy - cy) < (pp.ph + capH) / 2 + lhGuard);
           const showSize = w > 58 && h > 34 && !capHit;
-          const caption = isBack ? BACK_TYPE_LABEL[group.placement] : m.type === 'drawer' || m.type === 'fixed' ? DOOR_TYPE_LABEL[m.type] : null;
+          const caption = m.type === 'drawer' || m.type === 'fixed' ? DOOR_TYPE_LABEL[m.type] : null;
           const showCap = !!caption && showSize && h > 50;
           const lines = 1 + (showSize ? 1 : 0) + (showCap ? 1 : 0);
           const lh = fsT * 1.18;
@@ -1836,11 +1833,11 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
           const ctx = !np.edge ? overlayCtx(np) : null;
           const splitOn = splitChipOn(np);
           const ctxOn = !!ctx || splitOn;   // bölünmemiş levha da kapak binisi rozetidir (turuncu)
-          const interactive = (isOuter || isBack) && (rem || pickable || (!!np.edge && (np.behind || insetEdge(np.edge))) || ctxOn || !!np.joint);
+          const interactive = isOuter && (rem || pickable || (!!np.edge && np.behind) || ctxOn || !!np.joint);
           // Levha-taşıma modu (kapak seçili değil): rozet petrol tonunda — turuncu = kapak değişir, petrol = levha kayar.
           const moveMode = !np.edge && !!np.joint && !ctxOn && !rem && !pickable;
           const moveOn = moveMode && jChip === 'Half';
-          const chipTxt = rem ? '✕ Remove' : pickable ? 'Split here' : np.edge ? (np.behind ? (b.none ? 'None' : b.half ? 'Half' : 'Full') : insetEdge(np.edge) ? `In ${fmt(insetOf(np.edge))}` : null) : splitOn ? 'Full' : jChip;
+          const chipTxt = rem ? '✕ Remove' : pickable ? 'Split here' : np.edge ? (np.behind ? (b.none ? 'None' : b.half ? 'Half' : 'Full') : null) : splitOn ? 'Full' : jChip;
           const on = np.edge ? b.half : jChip === 'Half';
           const cfs = fsT * 0.8;
           // Kapak seçiliyken (ctx) tek rozet: tık Full → Half → None arasında döner (onBandClick).
@@ -1926,6 +1923,749 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
             <g key={p.key} className={`yago-gap${locked ? ' locked' : ''}`}>
               <DimPill cx={p.cx} cy={p.cy} txt={it.txt} fs={f} fill={locked || edited ? '#fff7ed' : '#ffffff'} stroke={edited ? '#fbbf24' : '#f97316'} strokeWidth={locked ? 1.2 : 1}
                 color={locked ? '#c2410c' : edited ? '#9a3412' : '#1c1917'} hideText={hide} title={editable ? (edited ? `${it.title} (${it.lockTitle ? "held" : "entered"} value)` : it.title) : `${it.title} — set by the door bounds`}
+                onClick={editable ? e => { stop(e); beginEdit({ key: p.key, v: it.txt }); } : undefined} />
+              {it.onLock && p.lock && <LockBadge cx={p.lock.x} cy={p.lock.y} locked={locked} edited={edited} onClick={it.onLock} title={it.lockTitle} holdIcon={!!it.lockTitle} />}
+            </g>
+          );
+        })}
+      </svg>
+      {editing && editPos && (
+        <input autoFocus type="text" inputMode="decimal" value={editing.v}
+          onChange={e => { setEditing({ ...editing, v: e.target.value }); previewEdit(editing.key, e.target.value); }}
+          onBlur={commit}
+          onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') cancelEdit(); }}
+          onClick={stop}
+          style={{
+            position: 'absolute', left: editPos.cx - editPos.pw / 2 - 4, top: editPos.cy - editPos.ph / 2 - 2, width: editPos.pw + 8, height: editPos.ph + 4, textAlign: 'center',
+            fontFamily: UI_FONT, fontSize: editPos.f, fontWeight: 600, color: '#1c1917', fontVariantNumeric: 'tabular-nums',
+            background: '#fff', border: '1px solid #f97316', borderRadius: 99, outline: 'none', boxShadow: '0 0 0 2px rgba(249,115,22,0.12)', padding: 0,
+          }} />
+      )}
+    </div>
+  );
+}
+
+/** ARKALIK ŞEMASI: ön görünüş (arkadan bakış aynalı), parçalar + sınır levhası bantları (çakmada bini, kanallıda kanal girişi),
+ *  açılı levha şeritleri, derz rozetleri ve seçili bölgenin ölçü zincirleri. */
+function BackSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts, nearPanels, refPick, onEditSize, onToggleLock, onEditSplitGap, onEditEdgeGap, onPathClick, onToggleHalfOverlay, onAlignJoint, onJointOverlay, onRefPick, onSplitAtPanel, onEdgeOverlay, onEditBegin, onEditCancel }: {
+  group: BackGroup; selectedIndex: number; memberLabels: string[];
+  selectedNodes: string[];
+  cuts: BackCut[];
+  nearPanels: BackNearPanel[];
+  /** preview=true → canlı önizleme (yalnız store dağılımı, rebuild yok); yoksa onay (yazım + rebuild). */
+  onEditSize: (splitId: string, k: number, v: number, preview?: boolean) => void; onToggleLock: (splitId: string, k: number) => void;
+  onEditSplitGap: (splitId: string, k: number, v: number, preview?: boolean) => void; onEditEdgeGap: (edge: BackEdgeKey, v: number, preview?: boolean) => void;
+  onEditBegin?: () => unknown; onEditCancel?: (snap: unknown) => void;
+  /** Tıklanan noktanın kök → yaprak düğüm yolu (yalnız seçim); additive = Shift/Ctrl/⌘. */
+  onPathClick: (path: string[], additive: boolean) => void;
+  onToggleHalfOverlay: (edge: BackEdgeKey, on: boolean) => void;
+  /** Yalnız bağ çözme (null): Shift/Ctrl+tık. */
+  onAlignJoint: (splitId: string, k: number, vfId: string, align: BackAlign | null) => void;
+  /** Derz binisi (seçili parçaya göre Full/Half): levha yerinde, parçalar uzar/kısalır. */
+  onJointOverlay: (splitId: string, k: number, vfId: string, align: BackAlign) => void;
+  refPick?: boolean;
+  onRefPick?: (vfId: string) => void;
+  /** Bölünmemişken arkasındaki sınır levhası: tık arkalığı levhanın ortasından böler (Half) ve bir yanı seçer. */
+  onSplitAtPanel?: (vfId: string) => void;
+  /** Kenar levhası binisi: Full → Half → None (tek rozet, tıkladıkça döner). */
+  onEdgeOverlay?: (edge: BackEdgeKey, mode: BackEdgeOverlayMode) => void;
+}) {
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(300);
+  const [editing, setEditing] = useState<DoorEdit | null>(null);
+  useEffect(() => {
+    const el = wrapRef.current; if (!el) return;
+    const ro = new ResizeObserver(es => { const w = es[0].contentRect.width; if (w > 0) setWidth(Math.round(w)); });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  // Giriş kutusu ağaç değişince KAPANMAMALI (canlı önizleme ağacı her tuşta yazar) — treeKey deps'e girmez.
+  const treeKey = JSON.stringify(group.tree);
+  const selKey = selectedNodes.join('|');
+  useEffect(() => { setEditing(null); }, [group.id, selectedIndex >= 0, selKey]);
+  const snapRef = useRef<unknown>(undefined);
+  const cancelledRef = useRef(false);
+  const beginEdit = (e: DoorEdit) => { snapRef.current = onEditBegin?.(); cancelledRef.current = false; setEditing(e); };
+  const cancelEdit = () => { cancelledRef.current = true; onEditCancel?.(snapRef.current); setEditing(null); };
+
+  const { rect, axis, side } = group;
+  const SW = Math.max(40, width - DOOR_PAD_L - DOOR_PAD_R);
+  const duR = Math.max(1e-6, rect.u1 - rect.u0), dvR = Math.max(1e-6, rect.v1 - rect.v0);
+  const SH = Math.round(Math.max(DOOR_MIN_ASPECT * SW, Math.min(PREVIEW_HEIGHT - DOOR_PAD_T - DOOR_PAD_B, SW * dvR / duR)));
+  const height = SH + DOOR_PAD_T + DOOR_PAD_B;
+  const ox = DOOR_PAD_L, oy = DOOR_PAD_T;
+  // Görünüş: arka (Z−) ve sağ yan (X+) aynalı; üst (Y+) → Z aşağı.
+  const mirrorU = (axis === 2 && side < 0) || (axis === 0 && side > 0);
+  const mirrorV = axis === 1 && side > 0;
+  const eg = backEdgeGapsOf(group);
+  const cutsKey = cuts.map(c => `${c.vfId}:${c.n.map(x => x.toFixed(3)).join(',')}:${c.dMin.toFixed(1)}:${c.dMax.toFixed(1)}`).join('|');
+  const solved = useMemo(() => solveBackTree(group), // eslint-disable-next-line react-hooks/exhaustive-deps
+    [rect, treeKey, group.gap, eg.uMin, eg.uMax, eg.vMin, eg.vMax]);
+  const members = useMemo(() => applyBackCuts(group, rect, backMemberRects(solved), cuts),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [solved, cutsKey, group.placement, group.thickness, group.gap]);
+  const sx = (u: number) => (mirrorU ? ox + SW - ((u - rect.u0) / duR) * SW : ox + ((u - rect.u0) / duR) * SW);
+  const sy = (v: number) => (mirrorV ? oy + ((v - rect.v0) / dvR) * SH : oy + ((rect.v1 - v) / dvR) * SH);
+  const fs = Math.max(10, Math.min(13.5, width * 0.027));
+  const fsT = Math.max(9, fs * 0.86);
+  const gid = `bs-${group.id.replace(/[^a-zA-Z0-9_-]/g, '')}`;
+
+  const I = DOOR_INSET_PX;
+  const BAND_MIN = 6;
+  const clampX = (x: number) => Math.max(ox - DOOR_PAD_L + 2, Math.min(ox + SW + DOOR_PAD_R - 2, x));
+  const clampY = (y: number) => Math.max(oy - DOOR_PAD_T + 2, Math.min(oy + SH + DOOR_PAD_B - 2, y));
+  // Kanallıda kenar şeritleri KANAL GİRİŞİNİ taşır (boşluk negatif saklanır, pozitif gösterilir); çakmada bini Full/Half/None.
+  const grooved = group.placement === 'inner';
+  const insetOf = (k: BackEdgeKey) => Math.max(0, -eg[k]);
+  const insetEdge = (k: BackEdgeKey) => grooved && !!group.bounds[k]?.vfId;
+  const invX = (x: number) => rect.u0 + (mirrorU ? (ox + SW - x) : (x - ox)) * duR / SW;
+  const invY = (y: number) => (mirrorV ? rect.v0 + (y - oy) * dvR / SH : rect.v1 - (y - oy) * dvR / SH);
+  const areaPx = [[ox - DOOR_PAD_L + 2, oy - DOOR_PAD_T + 2], [ox + SW + DOOR_PAD_R - 2, oy - DOOR_PAD_T + 2], [ox + SW + DOOR_PAD_R - 2, oy + SH + DOOR_PAD_B - 2], [ox - DOOR_PAD_L + 2, oy + SH + DOOR_PAD_B - 2]];
+  const areaMm = areaPx.map(([x, y]) => ({ x: invX(x), y: invY(y) }));
+  const ptsPath = (pts: Pt[]) => pts.map((q, i) => `${i ? 'L' : 'M'}${q.x.toFixed(1)},${q.y.toFixed(1)}`).join(' ') + ' Z';
+  type Band = { np: BackNearPanel; x: number; y: number; w: number; h: number; vertical: boolean; half: boolean; none: boolean; aligned: boolean; pts: Pt[] };
+  const bands: Band[] = nearPanels.map(np => {
+    const vertical = np.kind === 'u';
+    let a0 = vertical ? Math.min(sx(np.a0), sx(np.a1)) : Math.min(sy(np.a0), sy(np.a1)), a1 = vertical ? Math.max(sx(np.a0), sx(np.a1)) : Math.max(sy(np.a0), sy(np.a1));
+    if (a1 - a0 < BAND_MIN) { const c = (a0 + a1) / 2; a0 = c - BAND_MIN / 2; a1 = c + BAND_MIN / 2; }
+    const c0 = vertical ? clampY(Math.min(sy(np.c0), sy(np.c1))) : clampX(Math.min(sx(np.c0), sx(np.c1)));
+    const c1 = vertical ? clampY(Math.max(sy(np.c0), sy(np.c1))) : clampX(Math.max(sx(np.c0), sx(np.c1)));
+    const none = !!np.edge && np.behind && !!group.noOverlay?.[np.edge];
+    const half = !none && !!np.edge && np.behind && !!group.halfOverlay?.[np.edge];
+    let x = vertical ? a0 : c0, y = vertical ? c0 : a0, w = vertical ? a1 - a0 : c1 - c0, h = vertical ? c1 - c0 : a1 - a0;
+    let pts: Pt[] = [{ x, y }, { x: x + w, y }, { x: x + w, y: y + h }, { x, y: y + h }];
+    const hull = np.poly ? clipPolyToConvex(np.poly, areaMm) : [];
+    if (hull.length >= 3) {
+      pts = hull.map(q => ({ x: sx(q.x), y: sy(q.y) }));
+      const xs = pts.map(q => q.x), ys = pts.map(q => q.y);
+      x = Math.min(...xs); y = Math.min(...ys); w = Math.max(...xs) - x; h = Math.max(...ys) - y;
+    }
+    return { np, vertical, half, none, aligned: !!np.ref && !!np.joint, x, y, w, h, pts };
+  });
+  const cutBands = backCutBands(group, rect, cuts, areaMm, BAND_MIN * dvR / SH).map(cb => {
+    const pts = cb.poly.map(q => ({ x: sx(q.x), y: sy(q.y) }));
+    const cx = pts.reduce((a, q) => a + q.x, 0) / pts.length, cy = pts.reduce((a, q) => a + q.y, 0) / pts.length;
+    const dx = (mirrorU ? -1 : 1) * cb.dir.x, dy = (mirrorV ? 1 : -1) * cb.dir.y;
+    const deg = Math.atan2(dy, dx) * 180 / Math.PI;
+    const half = !!cb.edge && cb.covered && !!group.halfOverlay?.[cb.edge];
+    let rd = deg; while (rd > 90) rd -= 180; while (rd < -90) rd += 180;
+    return { ...cb, pts, cx, cy, deg: rd, half };
+  });
+  // Eğik kenarın boşluk pill'i eğik kenarın üzerinde durur; düz kenar zincirlerinde o kenar GÖSTERİLMEZ.
+  const slopeSegs = cutBands.flatMap(cb => {
+    if (!cb.edge) return [];
+    let best: { a: Pt; b: Pt; len: number; m: typeof members[number] } | null = null;
+    for (const m of members) {
+      if (!m.poly) continue;
+      for (let i = 0; i < m.poly.length; i++) {
+        const a = m.poly[i], b = m.poly[(i + 1) % m.poly.length];
+        const len = Math.hypot(b.x - a.x, b.y - a.y);
+        if (len < 1 || Math.abs((b.x - a.x) * cb.dir.y - (b.y - a.y) * cb.dir.x) / len > 0.01) continue;
+        if (!best || len > best.len) best = { a, b, len, m };
+      }
+    }
+    return best ? [{ cb, edge: cb.edge, ...best }] : [];
+  });
+  const slopeEdges = new Set<BackEdgeKey>(slopeSegs.map(sg => sg.edge));
+  const hiddenParts = (b: Band) => members.flatMap(m => {
+    const dx0 = Math.min(sx(m.u0), sx(m.u1)) + I, dx1 = Math.max(sx(m.u0), sx(m.u1)) - I, dy0 = Math.min(sy(m.v1), sy(m.v0)) + I, dy1 = Math.max(sy(m.v1), sy(m.v0)) - I;
+    if (dx1 - dx0 < 0.5 || dy1 - dy0 < 0.5) return [];
+    const part = clipPolyToConvex(b.pts, [{ x: dx0, y: dy0 }, { x: dx1, y: dy0 }, { x: dx1, y: dy1 }, { x: dx0, y: dy1 }]);
+    return part.length >= 3 && Math.abs(polyArea(part)) > 0.5 ? [part] : [];
+  });
+  // DERZ BİNİSİ: 'min'/'max' = o taraftaki (düşük/yüksek u·v) parça levhayı tamamen örter (Full), 'center' = ikisi yarı (Half).
+  const sideName = (b: Band, a: BackAlign) => (b.vertical ? ((a === 'min') !== mirrorU ? 'Left' : 'Right') : ((a === 'max') !== mirrorV ? 'Top' : 'Bottom'));
+  const allJoints = backJoints(solved);
+  const overlayCtx = (np: BackNearPanel): { j: BackJoint; side: BackAlign } | null => {
+    if (np.edge || !np.joint || !overlayRegions.length) return null;
+    const pc = (np.a0 + np.a1) / 2, t = np.a1 - np.a0;
+    const cands = allJoints.filter(j => j.axis === np.kind && Math.min(j.c1, np.c1) - Math.max(j.c0, np.c0) >= 0.5
+      && Math.abs((j.p0 + j.p1) / 2 - pc) <= t / 2 + (j.p1 - j.p0) / 2 + BACK_JOINT_NEAR)
+      .sort((a, b) => Number(!(a.splitId === np.joint!.splitId && a.k === np.joint!.k)) - Number(!(b.splitId === np.joint!.splitId && b.k === np.joint!.k)));
+    for (const j of cands) for (const n of overlayRegions) {
+      const nc0 = np.kind === 'u' ? n.v0 : n.u0, nc1 = np.kind === 'u' ? n.v1 : n.u1;
+      if (Math.min(nc1, j.c1, np.c1) - Math.max(nc0, j.c0, np.c0) < 0.5) continue;
+      const na0 = np.kind === 'u' ? n.u0 : n.v0, na1 = np.kind === 'u' ? n.u1 : n.v1;
+      if (Math.abs(na1 - j.p0) < 0.6) return { j, side: 'min' };
+      if (Math.abs(na0 - j.p1) < 0.6) return { j, side: 'max' };
+    }
+    return null;
+  };
+  const overlayState = (np: BackNearPanel, j: BackJoint): BackAlign | null =>
+    (np.ref && np.ref.splitId === j.splitId && np.ref.k === j.k ? np.ref.align : backJointOverlayState(j, np.a0, np.a1));
+  type OverlayOpt = 'Full' | 'Half' | 'None';
+  const oppAlign = (a: BackAlign): BackAlign => (a === 'min' ? 'max' : 'min');
+  const alignForOpt = (sd: BackAlign, o: OverlayOpt): BackAlign => (o === 'Full' ? sd : o === 'Half' ? 'center' : oppAlign(sd));
+  const optOf = (sd: BackAlign, st: BackAlign | null): OverlayOpt | null => (st === 'center' ? 'Half' : st === sd ? 'Full' : st ? 'None' : null);
+  const jointChip = (b: Band): string | null => {
+    const np = b.np;
+    if (np.edge || !np.joint) return null;
+    const ctx = overlayCtx(np);
+    if (ctx) { const s = overlayState(np, ctx.j); return s === 'center' ? 'Half' : s === ctx.side ? 'Full' : s ? 'None' : 'Free'; }
+    const s = overlayState(np, np.joint);
+    return s === 'center' ? 'Half' : s ? `${sideName(b, s)} full` : 'Free';
+  };
+  const edgeName = (b: Band) => (b.vertical ? ((b.np.edge === 'uMin') !== mirrorU ? 'Left' : 'Right') : ((b.np.edge === 'vMax') !== mirrorV ? 'Top' : 'Bottom'));
+  const bandTip = (b: Band) => {
+    const np = b.np;
+    if (np.edge) {
+      if (insetEdge(np.edge)) return `${edgeName(b)} — ${np.name}: GROOVE INSET ${fmt(insetOf(np.edge))} mm — the back panel enters this panel by this much. Click to edit (0 = ends at the panel's inner face).`;
+      if (!np.behind) return `${edgeName(b)} — ${np.name}: stands outside the back panel plane; the back panel ends beside it (no overlay possible).`;
+      const now = b.none ? 'NONE — the back panel ends at this panel\'s inner face (does not cover it)' : b.half ? 'HALF overlay — the back panel covers half of this panel\'s thickness' : 'FULL overlay — the back panel covers this panel\'s whole thickness';
+      return `${edgeName(b)} — ${np.name}: ${now}. Click to step Full → Half → None.`;
+    }
+    const what = b.vertical ? 'divider' : 'shelf';
+    if (refPick) return `${np.name} (${what}) — PANEL REF: click to split the back panel through this ${what}'s middle (Half overlay: both pieces reach its middle).`;
+    if (!np.joint) return splitChipOn(np)
+      ? `${np.name} (${what}) — behind the back panel; the back panel passes over it (Full). Click: Half — the back panel splits through its middle (both pieces reach it); click again for None, then Full. The ${what} stays.`
+      : `${np.name} (${what}) — behind the back panel, no joint nearby. Use Panel ref mode to split the back panel at it.`;
+    const unbind = np.ref ? ' · Shift/Ctrl+click: unbind' : '';
+    const ctx = overlayCtx(np);
+    if (ctx) return `${np.name} (${what}) — overlay of the selected piece (${sideName(b, ctx.side).toLowerCase()} of it): ${jointChip(b)}. Click to step Full (covers the whole ${what}) → Half (to its middle) → None (ends at its edge, the other piece covers it). The ${what} stays; the pieces next to it lengthen / shorten.${unbind}`;
+    return `${np.name} (${what}) at the joint — ${jointChip(b)}. Click: the ${what} MOVES under the joint (Half → ${b.vertical ? 'left' : 'top'} full → ${b.vertical ? 'right' : 'bottom'} full); the pieces stay. To change the pieces instead, select a piece next to it first: then Full / Half lengthens / shortens that piece and the ${what} stays.${unbind}`;
+  };
+  // Arkalık sonradan konan levhada henüz bölünmemiş: levha arkada, yakınında derz yok → ilk tık böler (Half).
+  const splitChipOn = (np: BackNearPanel) => !!onSplitAtPanel && !np.edge && !np.joint && np.behind && !refPick && canSplitBackAtPanel(group, np);
+  const onBandClick = (b: Band, additive: boolean) => {
+    const np = b.np;
+    if (refPick) { if (!np.edge && onRefPick) onRefPick(np.vfId); return; }
+    if (np.edge) {
+      if (np.behind) {
+        const next: BackEdgeOverlayMode = b.none ? 'full' : b.half ? 'none' : 'half';
+        if (onEdgeOverlay) onEdgeOverlay(np.edge, next); else onToggleHalfOverlay(np.edge, !b.half);
+      }
+      // Kanal girişi: kenar pill'i varsa doğrudan düzenlenir; yoksa önce tüm alan seçilir (pill'ler o zaman görünür).
+      else if (insetEdge(np.edge)) { const key = `edge-${np.edge}`; const p = pillByKey.get(key); if (p) beginEdit({ key, v: p.item.txt }); else onPathClick([solved.id], false); }
+      return;
+    }
+    const j = np.joint;
+    if (!j) { if (splitChipOn(np)) onSplitAtPanel!(np.vfId); return; }
+    if (additive) { if (np.ref) onAlignJoint(np.ref.splitId, np.ref.k, np.vfId, null); return; }
+    const ctx = overlayCtx(np);
+    // İKİ BİNİ MODU: parça seçiliyken → PARÇA uzar/kısalır, levha yerinde; parça seçili değilken → LEVHA derzin altına taşınır.
+    if (ctx) {
+      const cur = optOf(ctx.side, overlayState(np, ctx.j));
+      const next: OverlayOpt = cur === 'Full' ? 'Half' : cur === 'Half' ? 'None' : 'Full';
+      onJointOverlay(ctx.j.splitId, ctx.j.k, np.vfId, alignForOpt(ctx.side, next));
+      return;
+    }
+    const s0 = overlayState(np, j);
+    const first: BackAlign = b.vertical ? (mirrorU ? 'max' : 'min') : (mirrorV ? 'min' : 'max');
+    const second: BackAlign = first === 'min' ? 'max' : 'min';
+    onAlignJoint(j.splitId, j.k, np.vfId, s0 === 'center' ? first : s0 === first ? second : 'center');
+  };
+
+  const commit = () => {
+    if (!editing) return;
+    if (cancelledRef.current) { cancelledRef.current = false; return; }   // Esc sonrası blur: onay yok
+    const v = parseFloat(editing.v.replace(',', '.'));
+    const p = pillByKey.get(editing.key);
+    setEditing(null);
+    if (isNaN(v) || !p || v < p.item.min) { onEditCancel?.(snapRef.current); return; }   // geçersiz → önizleme geri alınır
+    p.item.commit(v);
+  };
+  const previewEdit = (key: string, raw: string) => {
+    const v = parseFloat(raw.replace(',', '.'));
+    const p = pillByKey.get(key);
+    if (isNaN(v) || !p || v < p.item.min) return;
+    p.item.preview?.(v);
+  };
+  const pathToLeaf = (leafId: string): string[] => {
+    const out: string[] = [];
+    const dfs = (n: BackNodeSolved): boolean => { out.push(n.id); if (n.id === leafId) return true; if (n.kind === 'split') for (const c of n.children) if (dfs(c)) return true; out.pop(); return false; };
+    dfs(solved);
+    return out;
+  };
+  const nodeBox = (n: BackNodeSolved) => ({ x0: Math.min(sx(n.u0), sx(n.u1)), x1: Math.max(sx(n.u0), sx(n.u1)), y0: Math.min(sy(n.v1), sy(n.v0)), y1: Math.max(sy(n.v1), sy(n.v0)) });
+  const selRegions = selectedNodes.map(id => findSolvedBackNode(solved, id)).filter((n): n is BackNodeSolved => !!n);
+  // Bini bağlamı: şemada bölge seçili değilse listede / 3B'de seçili parçanın yaprağı.
+  const selMemberLeaf = selectedIndex >= 0 && members[selectedIndex] ? findSolvedBackNode(solved, members[selectedIndex].leafId) : null;
+  const overlayRegions: BackNodeSolved[] = [...(selMemberLeaf ? [selMemberLeaf] : []), ...selRegions];
+  const leafIdsUnder = (n: BackNodeSolved): string[] => (n.kind === 'leaf' ? [n.id] : n.children.flatMap(leafIdsUnder));
+  const selLeafIds = new Set(selRegions.flatMap(leafIdsUnder));
+  const solvedParent = (id: string): Extract<BackNodeSolved, { kind: 'split' }> | null => {
+    const walkP = (n: BackNodeSolved): Extract<BackNodeSolved, { kind: 'split' }> | null => {
+      if (n.kind !== 'split') return null;
+      if (n.children.some(c => c.id === id)) return n;
+      for (const c of n.children) { const h = walkP(c); if (h) return h; }
+      return null;
+    };
+    return walkP(solved);
+  };
+  const chains: Chain[] = [];
+  const fmt = (v: number) => String(round1(v));
+  const focusStrips: Array<{ x: number; y: number; w: number; h: number }> = [];
+  const stripClip = cuts.length ? backCutOutline(group, rect, rect, cuts, false).map(q => ({ x: sx(q.x), y: sy(q.y) })) : null;
+  const strip = (ax: 'u' | 'v', a: number, b: number, c0: number, c1: number) => {
+    const MINW = 3;
+    let x0 = ax === 'u' ? Math.min(sx(a), sx(b)) : Math.min(sx(c0), sx(c1)), x1 = ax === 'u' ? Math.max(sx(a), sx(b)) : Math.max(sx(c0), sx(c1));
+    let y0 = ax === 'u' ? Math.min(sy(c0), sy(c1)) : Math.min(sy(a), sy(b)), y1 = ax === 'u' ? Math.max(sy(c0), sy(c1)) : Math.max(sy(a), sy(b));
+    if (ax === 'u' && x1 - x0 < MINW) { const c = (x0 + x1) / 2; x0 = c - MINW / 2; x1 = c + MINW / 2; }
+    if (ax === 'v' && y1 - y0 < MINW) { const c = (y0 + y1) / 2; y0 = c - MINW / 2; y1 = c + MINW / 2; }
+    focusStrips.push({ x: x0, y: y0, w: x1 - x0, h: y1 - y0 });
+  };
+  const T0 = 0.05;
+  const touch = { u0: (n: BackNodeSolved) => !slopeEdges.has('uMin') && Math.abs(n.u0 - (rect.u0 + eg.uMin)) < T0, u1: (n: BackNodeSolved) => !slopeEdges.has('uMax') && Math.abs(n.u1 - (rect.u1 - eg.uMax)) < T0,
+    v1: (n: BackNodeSolved) => !slopeEdges.has('vMax') && Math.abs(n.v1 - (rect.v1 - eg.vMax)) < T0, v0: (n: BackNodeSolved) => !slopeEdges.has('vMin') && Math.abs(n.v0 - (rect.v0 + eg.vMin)) < T0 };
+  const edgeKeyName = (k: BackEdgeKey) => (k === 'uMin' ? (mirrorU ? 'Right' : 'Left') : k === 'uMax' ? (mirrorU ? 'Left' : 'Right') : k === 'vMax' ? (mirrorV ? 'Bottom' : 'Top') : (mirrorV ? 'Top' : 'Bottom'));
+  type Box4 = { u0: number; u1: number; v0: number; v1: number };
+  const outlineMemo = new Map<string, Pt[]>();
+  const outlineOf = (r: Box4): Pt[] => {
+    const key = `${r.u0.toFixed(2)},${r.u1.toFixed(2)},${r.v0.toFixed(2)},${r.v1.toFixed(2)}`;
+    let o = outlineMemo.get(key);
+    if (!o) { o = cuts.length ? backCutOutline(group, rect, r, cuts) : [{ x: r.u0, y: r.v0 }, { x: r.u1, y: r.v0 }, { x: r.u1, y: r.v1 }, { x: r.u0, y: r.v1 }]; outlineMemo.set(key, o); }
+    return o;
+  };
+  const lineSpan = (poly: Pt[], ax: 'u' | 'v', val: number): [number, number] | null => {
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i], b = poly[(i + 1) % poly.length];
+      const pa = ax === 'u' ? a.x : a.y, pb = ax === 'u' ? b.x : b.y;
+      if ((pa - val) * (pb - val) > 0 || Math.abs(pb - pa) < 1e-9) continue;
+      const t = (val - pa) / (pb - pa), q = ax === 'u' ? a.y + t * (b.y - a.y) : a.x + t * (b.x - a.x);
+      lo = Math.min(lo, q); hi = Math.max(hi, q);
+    }
+    return hi - lo > 0.5 ? [lo, hi] : null;
+  };
+  const crossOf = (r: Box4, ax: 'u' | 'v'): [number, number] => (ax === 'u' ? [r.v0, r.v1] : [r.u0, r.u1]);
+  const clampSpan = (sp: [number, number], c: [number, number]): [number, number] => {
+    const lo = Math.max(sp[0], Math.min(c[0], c[1])), hi = Math.min(sp[1], Math.max(c[0], c[1]));
+    return hi - lo > 1 ? [lo, hi] : sp;
+  };
+  const edgeSpanOf = (R: Box4, k: BackEdgeKey, on?: Box4): [number, number] => {
+    const ax: 'u' | 'v' = k === 'uMin' || k === 'uMax' ? 'u' : 'v';
+    const val = k === 'uMin' ? R.u0 + 0.5 : k === 'uMax' ? R.u1 - 0.5 : k === 'vMin' ? R.v0 + 0.5 : R.v1 - 0.5;
+    const sp = lineSpan(outlineOf(R), ax, val) ?? crossOf(R, ax);
+    return on ? clampSpan(sp, crossOf(on, ax)) : sp;
+  };
+  const jointSpanOf = (R: Box4, ax: 'u' | 'v', a: number, b: number, on?: Box4): [number, number] => {
+    const sp = lineSpan(outlineOf(R), ax, (a + b) / 2) ?? crossOf(R, ax);
+    return on ? clampSpan(sp, crossOf(on, ax)) : sp;
+  };
+  // Kanallıda panel kenarı: pill KANAL GİRİŞİ (pozitif) gösterir, negatif boşluk olarak yazılır.
+  const edgeItem = (k: BackEdgeKey, a: number, b: number, R: Box4, on?: Box4): ChainItem => (insetEdge(k)
+    ? { key: `edge-${k}`, kind: 'gap', a, b, txt: fmt(insetOf(k)), title: `${edgeKeyName(k)} groove inset — how far the back panel enters the panel; click to edit`, commit: v => onEditEdgeGap(k, -v), preview: v => onEditEdgeGap(k, -v, true), min: 0, span: edgeSpanOf(R, k, on) }
+    : { key: `edge-${k}`, kind: 'gap', a, b, txt: fmt(eg[k]), title: `${edgeKeyName(k)} edge gap — click to edit`, commit: v => onEditEdgeGap(k, v), preview: v => onEditEdgeGap(k, v, true), min: 0, span: edgeSpanOf(R, k, on) });
+  const edgeStrip = (n: BackNodeSolved, k: BackEdgeKey) => {
+    if (k === 'uMin') strip('u', rect.u0, n.u0, n.v0, n.v1); else if (k === 'uMax') strip('u', n.u1, rect.u1, n.v0, n.v1);
+    else if (k === 'vMax') strip('v', n.v1, rect.v1, n.u0, n.u1); else strip('v', rect.v0, n.v0, n.u0, n.u1);
+  };
+  const slots = new Map<string, { h: number; v: number }>();
+  const pushChain = (on: BackNodeSolved, horiz: boolean, items: ChainItem[]) => {
+    if (!items.length) return;
+    const sl = slots.get(on.id) ?? { h: 0, v: 0 }; slots.set(on.id, sl);
+    const bx1 = Math.max(sx(on.u0), sx(on.u1)), by1 = Math.max(sy(on.v1), sy(on.v0));
+    const pos = horiz ? by1 - CHAIN_OFF_H - CHAIN_STEP * sl.h : bx1 - CHAIN_OFF_V - CHAIN_STEP * sl.v;
+    if (horiz) sl.h++; else sl.v++;
+    chains.push({ horiz, pos, items, small: true });
+  };
+  type SplitS = Extract<BackNodeSolved, { kind: 'split' }>;
+  // Bölmede tek AÇIK ölçü kaldıysa PASİF (pin de kilit sayılır): girilemez, rozetsiz — değeri kalandan gelir.
+  const sizeItem = (P: SplitS, i: number, a: number, b: number, horiz: boolean): ChainItem => {
+    const w = P.sizes[i]?.value ?? 0;
+    if (passiveBackSizeIndex(P.sizes, P.children.length) === i) {
+      return { key: `size-${P.id}-${i}`, kind: 'size', a, b, txt: fmt(w), passive: true, title: `${horiz ? 'Piece width' : 'Piece height'} — remainder (all other pieces pinned or locked); open one to edit`,
+        commit: () => {}, min: 1 };
+    }
+    const mode = backSizeMode(P.sizes[i]);
+    const lockTitle = mode === 'locked' ? 'Locked — fixed on resize and when other pieces are edited. Click: open'
+      : mode === 'hold' ? 'Hold — keeps its value when other pieces are edited, still scales with the back panel on resize. Click: lock'
+      : 'Open — takes up changes from other pieces and scales with the back panel on resize. Click: hold';
+    return { key: `size-${P.id}-${i}`, kind: 'size', a, b, txt: fmt(w), title: `${horiz ? 'Piece width' : 'Piece height'} — click to edit (open pieces take up the difference)`,
+      locked: mode === 'locked', edited: mode === 'hold', lockTitle, onLock: () => onToggleLock(P.id, i), commit: v => onEditSize(P.id, i, v), preview: v => onEditSize(P.id, i, v, true), min: 1 };
+  };
+  const splitItems = (n: SplitS, withStrips: boolean): ChainItem[] => {
+    const horiz = n.axis === 'u', dir = horiz ? 1 : -1;
+    const items: ChainItem[] = [];
+    let p = horiz ? n.u0 : n.v1;
+    if (horiz ? touch.u0(n) : touch.v1(n)) { const k: BackEdgeKey = horiz ? 'uMin' : 'vMax'; items.push(edgeItem(k, p - dir * eg[k], p, n)); if (withStrips) edgeStrip(n, k); }
+    n.children.forEach((_c, i) => {
+      const w = n.sizes[i]?.value ?? 0;
+      items.push(sizeItem(n, i, p, p + dir * w, horiz));
+      p += dir * w;
+      if (i < n.children.length - 1) {
+        const g = n.gaps[i] ?? 0;
+        items.push({ key: `sgap-${n.id}-${i}`, kind: 'gap', a: p, b: p + dir * g, txt: fmt(g), title: 'Gap between pieces — click to edit', commit: v => onEditSplitGap(n.id, i, v), preview: v => onEditSplitGap(n.id, i, v, true), min: 0, span: jointSpanOf(n, n.axis, p, p + dir * g) });
+        if (withStrips) strip(n.axis, p, p + dir * g, horiz ? n.v0 : n.u0, horiz ? n.v1 : n.u1);
+        p += dir * g;
+      }
+    });
+    if (horiz ? touch.u1(n) : touch.v0(n)) { const k: BackEdgeKey = horiz ? 'uMax' : 'vMin'; items.push(edgeItem(k, p, p + dir * eg[k], n)); if (withStrips) edgeStrip(n, k); }
+    return items;
+  };
+  const placeItems = (n: BackNodeSolved, P: SplitS, on: BackNodeSolved): ChainItem[] => {
+    const horiz = P.axis === 'u', dir = horiz ? 1 : -1;
+    const idx = P.children.findIndex(c => c.id === n.id);
+    if (idx < 0) return [];
+    const items: ChainItem[] = [];
+    const start = horiz ? n.u0 : n.v1;
+    const c0 = horiz ? on.v0 : on.u0, c1 = horiz ? on.v1 : on.u1;
+    if (idx > 0) { const g = P.gaps[idx - 1] ?? 0; items.push({ key: `sgap-${P.id}-${idx - 1}`, kind: 'gap', a: start - dir * g, b: start, txt: fmt(g), title: 'Gap between pieces — click to edit', commit: v => onEditSplitGap(P.id, idx - 1, v), preview: v => onEditSplitGap(P.id, idx - 1, v, true), min: 0, span: jointSpanOf(P, P.axis, start - dir * g, start, on) }); strip(P.axis, start - dir * g, start, c0, c1); }
+    else if (horiz ? touch.u0(n) : touch.v1(n)) { const k: BackEdgeKey = horiz ? 'uMin' : 'vMax'; items.push(edgeItem(k, start - dir * eg[k], start, n, on)); edgeStrip(on, k); }
+    const w = P.sizes[idx]?.value ?? 0;
+    items.push(sizeItem(P, idx, start, start + dir * w, horiz));
+    const end = start + dir * w;
+    if (idx < P.children.length - 1) { const g = P.gaps[idx] ?? 0; items.push({ key: `sgap-${P.id}-${idx}`, kind: 'gap', a: end, b: end + dir * g, txt: fmt(g), title: 'Gap between pieces — click to edit', commit: v => onEditSplitGap(P.id, idx, v), preview: v => onEditSplitGap(P.id, idx, v, true), min: 0, span: jointSpanOf(P, P.axis, end, end + dir * g, on) }); strip(P.axis, end, end + dir * g, c0, c1); }
+    else if (horiz ? touch.u1(n) : touch.v0(n)) { const k: BackEdgeKey = horiz ? 'uMax' : 'vMin'; items.push(edgeItem(k, end, end + dir * eg[k], n, on)); edgeStrip(on, k); }
+    return items;
+  };
+  const fullItems = (ax: 'u' | 'v', on: BackNodeSolved): ChainItem[] => {
+    const horiz = ax === 'u', dir = horiz ? 1 : -1;
+    const lo = horiz ? rect.u0 : rect.v1, k0: BackEdgeKey = horiz ? 'uMin' : 'vMax', k1: BackEdgeKey = horiz ? 'uMax' : 'vMin';
+    const span = (horiz ? rect.u1 - rect.u0 : rect.v1 - rect.v0) - eg[k0] - eg[k1];
+    if (!slopeEdges.has(k0)) edgeStrip(on, k0);
+    if (!slopeEdges.has(k1)) edgeStrip(on, k1);
+    return [...(slopeEdges.has(k0) ? [] : [edgeItem(k0, lo, lo + dir * eg[k0], rect, on)]),
+      { key: `full-${ax}`, kind: 'size', a: lo + dir * eg[k0], b: lo + dir * (eg[k0] + span), txt: fmt(span), title: horiz ? 'Back panel width (whole area)' : 'Back panel height (whole area)', commit: () => {}, min: 1 },
+      ...(slopeEdges.has(k1) ? [] : [edgeItem(k1, lo + dir * (eg[k0] + span), lo + dir * (eg[k0] + span + eg[k1]), rect, on)])];
+  };
+  const crossChain = (n: BackNodeSolved, ax: 'u' | 'v', on: BackNodeSolved) => {
+    let A: BackNodeSolved = n, B = solvedParent(A.id);
+    while (B && B.axis === ax) { A = B; B = solvedParent(B.id); }
+    if (B) pushChain(on, B.axis === 'u', placeItems(A, B, on));
+    else pushChain(on, ax !== 'u', fullItems(ax === 'u' ? 'v' : 'u', on));
+  };
+  for (const n of selRegions) {
+    if (n.kind === 'split') {
+      pushChain(n, n.axis === 'u', splitItems(n, true));
+      crossChain(n, n.axis, n);
+      continue;
+    }
+    const P = solvedParent(n.id);
+    if (P) { pushChain(n, P.axis === 'u', placeItems(n, P, n)); crossChain(P, P.axis, n); }
+    else { pushChain(n, true, fullItems('u', n)); pushChain(n, false, fullItems('v', n)); }
+  }
+
+  type Pill = { key: string; cx: number; cy: number; pw: number; ph: number; f: number; item: ChainItem; chain: Chain; x0: number; x1: number; hidden: boolean; lane: number; deg?: number; lock?: { x: number; y: number } };
+  type Placed = { start: number; end: number };
+  // Eğik kenar boşluk pill'i: yalnız SEÇİLİ parçaların en uzun eğik kenarının ortasında, kenar yönünde döndürülmüş.
+  const selSlopeSegs = slopeSegs.flatMap(sg0 => {
+    let best: typeof sg0 | null = null;
+    for (const m of members) {
+      if (!m.poly || !selLeafIds.has(m.leafId)) continue;
+      for (let i = 0; i < m.poly.length; i++) {
+        const a = m.poly[i], b = m.poly[(i + 1) % m.poly.length];
+        const len = Math.hypot(b.x - a.x, b.y - a.y);
+        if (len < 1 || Math.abs((b.x - a.x) * sg0.cb.dir.y - (b.y - a.y) * sg0.cb.dir.x) / len > 0.01) continue;
+        if (!best || len > best.len) best = { ...sg0, a, b, len, m };
+      }
+    }
+    return best ? [best] : [];
+  });
+  const slopePills: Pill[] = selSlopeSegs.map(sg => {
+    const a = { x: sx(sg.a.x), y: sy(sg.a.y) }, b = { x: sx(sg.b.x), y: sy(sg.b.y) };
+    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    const L = Math.hypot(b.x - a.x, b.y - a.y) || 1, tx = (b.x - a.x) / L, ty = (b.y - a.y) / L;
+    const poly = sg.m.poly!, cxm = poly.reduce((s0, q) => s0 + sx(q.x), 0) / poly.length, cym = poly.reduce((s0, q) => s0 + sy(q.y), 0) / poly.length;
+    let nx = -ty, ny = tx;
+    if (nx * (cxm - mid.x) + ny * (cym - mid.y) < 0) { nx = -nx; ny = -ny; }
+    const txt = fmt(eg[sg.edge]);
+    const { pw, ph } = pillSize(txt, fs);
+    const off = -(eg[sg.edge] * SH / dvR) / 2;
+    let deg = Math.atan2(ty, tx) * 180 / Math.PI; while (deg > 90) deg -= 180; while (deg < -90) deg += 180;
+    const item: ChainItem = { key: `slope-${sg.cb.cut.vfId}`, kind: 'gap', a: 0, b: 0, txt,
+      title: `Gap to the angled panel ${sg.cb.cut.name} — click to edit (the back panel keeps this distance along the slope)`,
+      commit: v => onEditEdgeGap(sg.edge, v), preview: v => onEditEdgeGap(sg.edge, v, true), min: 0 };
+    return { key: item.key, cx: mid.x + nx * off, cy: mid.y + ny * off, pw, ph, f: fs, item, chain: { horiz: true, pos: 0, items: [item] }, x0: mid.x, x1: mid.x, hidden: false, lane: 0, deg };
+  });
+  // Sabit boşluk pill'leri (kenar/derz ortasında) önce; ölçüler bunlara 2B'de çarpmayan şeridi seçer.
+  const chainPills = chains.map(ch => ({ ch, all: ch.items.map(it => {
+    const f = fs;
+    const { pw, ph } = pillSize(it.txt, f);
+    const m0 = ch.horiz ? sx(it.a) : sy(it.a), m1 = ch.horiz ? sx(it.b) : sy(it.b);
+    const mid = (m0 + m1) / 2;
+    const sc = it.kind === 'gap' && it.span ? (ch.horiz ? sy((it.span[0] + it.span[1]) / 2) : sx((it.span[0] + it.span[1]) / 2)) : null;
+    return { key: it.key, cx: ch.horiz ? mid : (sc ?? ch.pos), cy: ch.horiz ? (sc ?? ch.pos) : mid, pw, ph, f, item: it, chain: ch, x0: Math.min(m0, m1), x1: Math.max(m0, m1), hidden: false, lane: 0, fixed: sc != null } as Pill & { fixed: boolean };
+  }) }));
+  const fixedAll: Pill[] = [...chainPills.flatMap(c => c.all.filter(p => p.fixed)), ...slopePills];
+  const boxHit = (x: number, y: number, w: number, h: number, q: Pill) => Math.abs(x - q.cx) < (w + q.pw) / 2 + 2 && Math.abs(y - q.cy) < (h + q.ph) / 2 + 2;
+  const pills: Pill[] = chainPills.flatMap(({ ch, all }) => {
+    const fixedPills = all.filter(p => p.fixed);
+    const base = all.filter(p => !p.fixed).sort((a, b) => (ch.horiz ? a.cx - b.cx : a.cy - b.cy));
+    const maxLanes = 3, sizeLanes = [0, 1, 2, 3, 4];
+    const lanes: Placed[][] = Array.from({ length: sizeLanes.length }, () => []);
+    const posOf = (p: typeof base[number]) => (ch.horiz ? p.cx : p.cy);
+    const spanOf = (p: typeof base[number]): Placed => {
+      const half = (ch.horiz ? p.pw : p.ph) / 2 + 1;
+      return { start: posOf(p) - half, end: posOf(p) + half + (p.item.onLock ? LOCK_EXT : 0) };
+    };
+    const fits = (lane: number, start: number, end: number) => lanes[lane].every(q => end <= q.start || start >= q.end);
+    const laneStep = Math.max(...base.map(p => (ch.horiz ? p.ph : p.pw)), 0) + PILL_LANE_GAP;
+    const clear2D = (p: typeof base[number], lane: number) => {
+      const x = ch.horiz ? p.cx : p.cx - lane * laneStep, y = ch.horiz ? p.cy - lane * laneStep : p.cy;
+      if (fixedAll.some(q => boxHit(x, y, p.pw, p.ph, q))) return false;
+      if (!p.item.onLock) return true;
+      const lx = ch.horiz ? x + p.pw / 2 + LOCK_OFF : x, ly = ch.horiz ? y : y + p.ph / 2 + LOCK_OFF;
+      return !fixedAll.some(q => boxHit(lx, ly, 2 * LOCK_R, 2 * LOCK_R, q));
+    };
+    const place = (p: typeof base[number], lane: number) => {
+      p.lane = lane; lanes[lane].push(spanOf(p));
+      if (lane > 0) { if (ch.horiz) p.cy -= lane * laneStep; else p.cx -= lane * laneStep; }
+    };
+    for (const p of base.filter(x => x.item.kind === 'size')) {
+      const { start: st0, end: en0 } = spanOf(p);
+      const lane = sizeLanes.find(l => fits(l, st0, en0) && clear2D(p, l)) ?? (fits(0, st0, en0) ? 0 : fits(1, st0, en0) ? 1 : 0);
+      place(p, lane);
+    }
+    for (const p of base.filter(x => x.item.kind === 'gap')) {
+      const { start: st0, end: en0 } = spanOf(p);
+      let lane = maxLanes - 1;
+      for (let l = 0; l < maxLanes; l++) if (fits(l, st0, en0)) { lane = l; break; }
+      place(p, lane);
+    }
+    return [...base, ...fixedPills];
+  });
+  pills.push(...slopePills);
+  // Kilit yeri: ölçünün ucu; çarpıyorsa karşı uç, sonra pill'in yanları.
+  {
+    const placedLocks: Array<{ x: number; y: number }> = [];
+    const clearOf = (x: number, y: number, self: Pill) =>
+      x >= LOCK_R + 1 && x <= width - LOCK_R - 1 && y >= LOCK_R + 1 && y <= height - LOCK_R - 1 &&
+      pills.every(q => q === self || Math.abs(x - q.cx) >= q.pw / 2 + LOCK_R + 2 || Math.abs(y - q.cy) >= q.ph / 2 + LOCK_R + 2) &&
+      placedLocks.every(l => Math.hypot(l.x - x, l.y - y) >= 2 * LOCK_R + 3);
+    for (const p of pills) {
+      if (!p.item.onLock) continue;
+      const d = (p.chain.horiz ? p.pw : p.ph) / 2 + LOCK_OFF;
+      const e = (p.chain.horiz ? p.ph : p.pw) / 2 + LOCK_OFF;
+      const cand = p.chain.horiz ? [{ x: p.cx + d, y: p.cy }, { x: p.cx - d, y: p.cy }, { x: p.cx, y: p.cy + e }, { x: p.cx, y: p.cy - e }]
+        : [{ x: p.cx, y: p.cy + d }, { x: p.cx, y: p.cy - d }, { x: p.cx + e, y: p.cy }, { x: p.cx - e, y: p.cy }];
+      p.lock = cand.find(c => clearOf(c.x, c.y, p)) ?? cand[0];
+      placedLocks.push(p.lock);
+    }
+  }
+  const pillByKey = new Map(pills.map(p => [p.key, p]));
+  const editPos = editing ? pillByKey.get(editing.key) : undefined;
+  const obstacles = pills.flatMap(p => {
+    const o = [{ x: p.cx, y: p.cy, r: Math.max(p.pw, p.ph) / 2 }];
+    if (p.lock) o.push({ ...p.lock, r: LOCK_R });
+    return o;
+  });
+  const chipSpot = (cx: number, cy: number, ux: number, uy: number, half: number, cw: number) => {
+    const r = cw / 2 + 2, step = cw / 2 + 6;
+    const free = (x: number, y: number) => obstacles.every(o => Math.hypot(o.x - x, o.y - y) >= o.r + r);
+    for (let k = 0; k <= 12; k++) {
+      const d = (k % 2 ? 1 : -1) * Math.ceil(k / 2) * step;
+      if (Math.abs(d) > Math.max(0, half - cw / 2)) continue;
+      const x = cx + ux * d, y = cy + uy * d;
+      if (free(x, y)) return { x, y };
+    }
+    return { x: cx, y: cy };
+  };
+  const caption = BACK_TYPE_LABEL[group.placement];
+
+  return (
+    <div ref={wrapRef} className={PREVIEW_FRAME} style={{ background: PREVIEW_BG, height }}>
+      <style>{SCHEMATIC_CSS}</style>
+      <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ display: 'block', fontFamily: UI_FONT }}>
+        <defs>
+          <linearGradient id={`${gid}-part`} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor={SOFT.part0} /><stop offset="1" stopColor={SOFT.part1} /></linearGradient>
+          <linearGradient id={`${gid}-part-on`} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor={SOFT.on0} /><stop offset="1" stopColor={SOFT.on1} /></linearGradient>
+          <linearGradient id={`${gid}-part-sel`} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor={SOFT.sel0} /><stop offset="1" stopColor={SOFT.sel1} /></linearGradient>
+          <pattern id={`${gid}-hatch`} width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="4" stroke="#bfb5a6" strokeWidth="0.7" /></pattern>
+          <pattern id={`${gid}-hatch-on`} width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="4" stroke="#e8925a" strokeWidth="0.9" /></pattern>
+        </defs>
+        <rect x={ox} y={oy} width={SW} height={SH} rx={3} fill={SOFT.area} stroke={SOFT.areaStroke} strokeWidth={0.8} />
+        {bands.map(b => {
+          const warm = b.half || b.aligned;
+          return (
+            <g key={`band-${b.np.vfId}`} style={{ pointerEvents: 'none' }}>
+              <path d={ptsPath(b.pts)} fill={warm ? '#f9dcc4' : '#ddd4c6'} />
+              <path d={ptsPath(b.pts)} fill={warm ? `url(#${gid}-hatch-on)` : `url(#${gid}-hatch)`} />
+              <path d={ptsPath(b.pts)} fill="none" stroke={warm ? '#e07b3c' : '#a39a8d'} strokeWidth={1} strokeLinejoin="round" />
+            </g>
+          );
+        })}
+        {cutBands.map(cb => {
+          const d = ptsPath(cb.pts);
+          return (
+            <g key={`cut-${cb.cut.vfId}`} style={{ pointerEvents: 'none' }}>
+              <path d={d} fill={cb.half ? '#f9dcc4' : '#ddd4c6'} />
+              <path d={d} fill={cb.half ? `url(#${gid}-hatch-on)` : `url(#${gid}-hatch)`} />
+              <path d={d} fill="none" stroke={cb.half ? '#e07b3c' : '#a39a8d'} strokeWidth={1} strokeLinejoin="round" />
+            </g>
+          );
+        })}
+        {members.map((m, i) => {
+          const on = i === selectedIndex;
+          const inSel = selLeafIds.has(m.leafId);
+          const x0 = Math.min(sx(m.u0), sx(m.u1)) + I, x1 = Math.max(sx(m.u0), sx(m.u1)) - I, y0 = Math.min(sy(m.v1), sy(m.v0)) + I, y1 = Math.max(sy(m.v1), sy(m.v0)) - I;
+          const lbl = memberLabels[i] ?? String(i + 1);
+          const fill = on ? `url(#${gid}-part-on)` : inSel ? `url(#${gid}-part-sel)` : `url(#${gid}-part)`;
+          const stroke = on ? SOFT.onStroke : inSel ? SOFT.selStroke : SOFT.partStroke;
+          const path = pathToLeaf(m.leafId);
+          const wMm = Math.round(m.u1 - m.u0), hMm = Math.round(m.v1 - m.v0);
+          const lhGuard = fsT * 1.18;
+          const tip = `Back ${lbl} · ${caption} · ${wMm} × ${hMm} mm${m.poly ? ' · angled (cut by rotated reference)' : ''}`
+            + ` — click: select the area, click again to go one level deeper (${path.length} level${path.length === 1 ? '' : 's'}) · Shift/Ctrl+click: add another region · open the piece's row below to edit it`;
+          const pts = m.poly ? m.poly.map(q => ({ x: sx(q.x), y: sy(q.y) })) : null;
+          const cx = pts ? pts.reduce((a, q) => a + q.x, 0) / pts.length : (x0 + x1) / 2;
+          const cy = pts ? pts.reduce((a, q) => a + q.y, 0) / pts.length : (y0 + y1) / 2;
+          const w = x1 - x0, h = y1 - y0;
+          const fsz = fsT * 0.86;
+          const capW = `${wMm} × ${hMm}`.length * fsz * 0.6 + 6, capH = fsz * 1.2;
+          const capHit = pills.some(pp => Math.abs(pp.cx - cx) < (pp.pw + capW) / 2 && Math.abs(pp.cy - cy) < (pp.ph + capH) / 2 + lhGuard);
+          const showSize = w > 58 && h > 34 && !capHit;
+          const showCap = showSize && h > 50;
+          const lines = 1 + (showSize ? 1 : 0) + (showCap ? 1 : 0);
+          const lh = fsT * 1.18;
+          const ty0 = capHit ? cy - lhGuard : cy - ((lines - 1) * lh) / 2;
+          return (
+            <g key={`part-${i}`} style={{ cursor: 'pointer' }} onClick={e => { stop(e); onPathClick(path, e.shiftKey || e.ctrlKey || e.metaKey); }}>
+              {pts ? (
+                <polygon points={pts.map(q => `${q.x},${q.y}`).join(' ')} fill={fill} stroke={stroke} strokeWidth={on ? 1.2 : 0.9} strokeLinejoin="round"><title>{tip}</title></polygon>
+              ) : (
+                <rect x={x0} y={y0} width={Math.max(1, w)} height={Math.max(1, h)} rx={2.5} fill={fill} stroke={stroke} strokeWidth={on ? 1.2 : 0.8} style={{ filter: SOFT.shadow }}><title>{tip}</title></rect>
+              )}
+              {!pts && w > 6 && h > 6 && <rect x={x0 + 1} y={y0 + 1} width={Math.max(0, w - 2)} height={Math.max(0, h - 2)} rx={1.5} fill="none" stroke="#ffffff" strokeOpacity={0.55} strokeWidth={0.8} style={{ pointerEvents: 'none' }} />}
+              <text x={cx} y={ty0 + fsT * 0.36} textAnchor="middle" fontSize={fsT} fontWeight={on ? 700 : 650} fill={on ? '#ea580c' : '#8f877c'}
+                fontFamily={UI_FONT} style={{ fontVariantNumeric: 'tabular-nums', pointerEvents: 'none', userSelect: 'none' }}>{lbl}</text>
+              {showSize && (
+                <text x={cx} y={ty0 + lh + fsz * 0.36} textAnchor="middle" fontSize={fsz} fontWeight={500} fill={on ? '#c2410c' : '#a39b90'}
+                  fontFamily={UI_FONT} style={{ fontVariantNumeric: 'tabular-nums', pointerEvents: 'none', userSelect: 'none' }}>{wMm} × {hMm}</text>
+              )}
+              {showCap && (
+                <text x={cx} y={ty0 + 2 * lh + fsz * 0.36} textAnchor="middle" fontSize={fsz * 0.92} fontWeight={600} fill="#b5ada3" letterSpacing="0.06em"
+                  fontFamily={UI_FONT} style={{ textTransform: 'uppercase', pointerEvents: 'none', userSelect: 'none' }}>{caption.toUpperCase()}</text>
+              )}
+            </g>
+          );
+        })}
+        {cutBands.flatMap(cb => members.flatMap((m, mi) => {
+          const dx0 = Math.min(sx(m.u0), sx(m.u1)) + I, dx1 = Math.max(sx(m.u0), sx(m.u1)) - I, dy0 = Math.min(sy(m.v1), sy(m.v0)) + I, dy1 = Math.max(sy(m.v1), sy(m.v0)) - I;
+          if (dx1 - dx0 < 0.5 || dy1 - dy0 < 0.5) return [];
+          const part = clipPolyToConvex(cb.pts, [{ x: dx0, y: dy0 }, { x: dx1, y: dy0 }, { x: dx1, y: dy1 }, { x: dx0, y: dy1 }]);
+          if (part.length < 3 || Math.abs(polyArea(part)) < 0.5) return [];
+          return [(
+            <g key={`cuthid-${cb.cut.vfId}-${mi}`} style={{ pointerEvents: 'none' }}>
+              <path d={ptsPath(part)} fill={cb.half ? `url(#${gid}-hatch-on)` : `url(#${gid}-hatch)`} opacity={0.4} />
+              <path d={ptsPath(part)} fill="none" stroke={cb.half ? '#e8925a' : '#9a9185'} strokeWidth={0.8} strokeDasharray="3 2" opacity={0.9} strokeLinejoin="round" />
+            </g>
+          )];
+        }))}
+        {bands.flatMap(b => hiddenParts(b).map((hp, k) => (
+          <g key={`hid-${b.np.vfId}-${k}`} style={{ pointerEvents: 'none' }}>
+            <path d={ptsPath(hp)} fill={b.half || b.aligned ? `url(#${gid}-hatch-on)` : `url(#${gid}-hatch)`} opacity={0.4} />
+            <path d={ptsPath(hp)} fill="none" stroke={b.half || b.aligned ? '#e8925a' : '#9a9185'} strokeWidth={0.8} strokeDasharray="3 2" opacity={0.9} strokeLinejoin="round" />
+          </g>
+        )))}
+        {focusStrips.map((r, i) => {
+          const sp = [{ x: r.x, y: r.y }, { x: r.x + r.w, y: r.y }, { x: r.x + r.w, y: r.y + r.h }, { x: r.x, y: r.y + r.h }];
+          const cl = stripClip ? clipPolyToConvex(sp, stripClip) : sp;
+          return cl.length >= 3 ? <path key={`fs-${i}`} d={ptsPath(cl)} fill="#f97316" fillOpacity={0.28} stroke="#ea580c" strokeOpacity={0.55} strokeWidth={0.6} style={{ pointerEvents: 'none' }} /> : null;
+        })}
+        {selRegions.map(n => {
+          const b = nodeBox(n);
+          const pad = n.kind === 'split' ? 2.5 : 0.5;
+          const shape = cuts.length ? backCutOutline(group, rect, n, cuts) : null;
+          if (shape && Math.abs(polyArea(shape)) < (n.u1 - n.u0) * (n.v1 - n.v0) - 1) {
+            return (
+              <g key={`sel-${n.id}`} style={{ pointerEvents: 'none' }}>
+                <path d={ptsPath(shape.map(q => ({ x: sx(q.x), y: sy(q.y) })))} fill="#ea580c" fillOpacity={n.kind === 'split' ? 0.05 : 0.0} stroke="#ea580c" strokeWidth={1.2} strokeLinejoin="round" strokeDasharray={n.kind === 'split' ? '5 3' : undefined} />
+              </g>
+            );
+          }
+          return (
+            <g key={`sel-${n.id}`} style={{ pointerEvents: 'none' }}>
+              <rect x={b.x0 - pad} y={b.y0 - pad} width={b.x1 - b.x0 + 2 * pad} height={b.y1 - b.y0 + 2 * pad} rx={3} fill="#ea580c" fillOpacity={n.kind === 'split' ? 0.05 : 0.0} stroke="#ea580c" strokeWidth={1.2} strokeDasharray={n.kind === 'split' ? '5 3' : undefined} />
+            </g>
+          );
+        })}
+        {/* Bant tık alanları bilinçli olarak seçim çerçevesi/şeritlerin ÜSTÜNDE, pill'lerin ALTINDA çizilir. */}
+        {bands.map(b => {
+          const np = b.np;
+          const pickable = !!refPick && !np.edge;
+          const jChip = !np.edge ? jointChip(b) : null;
+          const ctx = !np.edge ? overlayCtx(np) : null;
+          const splitOn = splitChipOn(np);
+          const ctxOn = !!ctx || splitOn;
+          const interactive = pickable || (!!np.edge && (np.behind || insetEdge(np.edge))) || ctxOn || !!np.joint;
+          const moveMode = !np.edge && !!np.joint && !ctxOn && !pickable;
+          const moveOn = moveMode && jChip === 'Half';
+          const chipTxt = pickable ? 'Split here' : np.edge ? (np.behind ? (b.none ? 'None' : b.half ? 'Half' : 'Full') : insetEdge(np.edge) ? `In ${fmt(insetOf(np.edge))}` : null) : splitOn ? 'Full' : jChip;
+          const on = np.edge ? b.half : jChip === 'Half';
+          const cfs = fsT * 0.8;
+          const { pw: cw, ph: chh } = chipTxt ? pillSize(chipTxt, cfs) : { pw: 0, ph: 0 };
+          const overlayChip = !!np.edge && !pickable;
+          const spot = chipTxt ? chipSpot(b.x + b.w / 2, b.y + b.h / 2, b.vertical ? 0 : 1, b.vertical ? 1 : 0, (b.vertical ? b.h : b.w) / 2, cw) : null;
+          const bx = spot?.x ?? b.x + b.w / 2, by = spot?.y ?? b.y + b.h / 2;
+          const warm = b.half || b.aligned;
+          return (
+            <g key={`hit-${np.vfId}`} className={`yago-band pnl${chipTxt && !overlayChip ? ' on' : ''}`} style={{ cursor: interactive ? 'pointer' : 'default' }}
+              onClick={interactive ? e => { stop(e); onBandClick(b, e.shiftKey || e.ctrlKey || e.metaKey); } : undefined}>
+              {b.np.poly
+                ? <path d={ptsPath(b.pts)} fill="transparent" stroke="transparent" strokeWidth={4} strokeLinejoin="round" className="hit" />
+                : <rect x={b.x - 2} y={b.y - 2} width={b.w + 4} height={b.h + 4} fill="transparent" className="hit" />}
+              <g className="hov">
+                <path d={ptsPath(b.pts)} fill={warm ? '#f6c39c' : '#cbbca6'} fillOpacity={0.92} />
+                <path d={ptsPath(b.pts)} fill={warm ? `url(#${gid}-hatch-on)` : `url(#${gid}-hatch)`} />
+                <path d={ptsPath(b.pts)} fill="none" stroke={warm ? '#c2410c' : '#6f6457'} strokeWidth={1.3} strokeLinejoin="round" />
+              </g>
+              {chipTxt && (
+                <g className="chip" transform={b.vertical ? `rotate(-90 ${bx} ${by})` : undefined}>
+                  <rect x={bx - cw / 2} y={by - chh / 2} width={cw} height={chh} rx={chh / 2}
+                    fill={pickable ? '#fff7ed' : moveOn ? '#2f5d7c' : on ? '#ea580c' : '#ffffff'}
+                    stroke={pickable ? '#f97316' : moveOn ? '#24506e' : moveMode ? '#7c9cb4' : on ? '#c2410c' : ctxOn ? '#f97316' : '#cfc6b9'} strokeWidth={ctxOn || moveMode ? 1.1 : 0.8}
+                    style={{ filter: 'drop-shadow(0 1px 1px rgba(40,30,20,0.12))' }} />
+                  <text x={bx} y={by + cfs * 0.36} textAnchor="middle" fontSize={cfs} fontWeight={700} letterSpacing="0.02em"
+                    fill={moveOn || on ? '#ffffff' : moveMode ? '#2f5d7c' : pickable || ctxOn ? '#c2410c' : '#78716c'} fontFamily={UI_FONT}>{chipTxt}</text>
+                </g>
+              )}
+              <title>{bandTip(b)}</title>
+            </g>
+          );
+        })}
+        {/* Açılı levhanın Full/Half bayrağı, kesilen kenarın halfOverlay bayrağıdır (yalnız çakmada). */}
+        {cutBands.map(cb => {
+          const interactive = !grooved && cb.covered && !!cb.edge;
+          const chipTxt = interactive ? (cb.half ? 'Half' : 'Full') : null;
+          const cfs = fsT * 0.8;
+          const { pw: cw, ph: chh } = chipTxt ? pillSize(chipTxt, cfs) : { pw: 0, ph: 0 };
+          const d = ptsPath(cb.pts);
+          const rad = cb.deg * Math.PI / 180;
+          const ext = Math.max(...cb.pts.map(q => Math.abs((q.x - cb.cx) * Math.cos(rad) + (q.y - cb.cy) * Math.sin(rad))));
+          const spot = chipTxt ? chipSpot(cb.cx, cb.cy, Math.cos(rad), Math.sin(rad), ext, cw) : { x: cb.cx, y: cb.cy };
+          const tip = `${cb.cut.name} — angled back-reference panel: the back panel is cut along it (it keeps the side you clicked when placing).` +
+            (interactive ? ` ${cb.half ? 'HALF overlay — the back panel reaches the middle of this panel\'s thickness. Click for full overlay.' : 'FULL overlay — the back panel covers this panel\'s whole thickness. Click for half overlay.'}` : cb.covered ? '' : ' It stands outside the back panel plane, so there is no overlay to set.');
+          return (
+            <g key={`cuthit-${cb.cut.vfId}`} className="yago-band pnl" style={{ cursor: interactive ? 'pointer' : 'default' }}
+              onClick={interactive ? e => { stop(e); onToggleHalfOverlay(cb.edge!, !cb.half); } : undefined}>
+              <path d={d} fill="transparent" stroke="transparent" strokeWidth={4} strokeLinejoin="round" className="hit" />
+              <g className="hov">
+                <path d={d} fill={cb.half ? '#f6c39c' : '#cbbca6'} fillOpacity={0.92} />
+                <path d={d} fill={cb.half ? `url(#${gid}-hatch-on)` : `url(#${gid}-hatch)`} />
+                <path d={d} fill="none" stroke={cb.half ? '#c2410c' : '#6f6457'} strokeWidth={1.3} strokeLinejoin="round" />
+              </g>
+              {chipTxt && (
+                <g className="chip" transform={`rotate(${cb.deg.toFixed(1)} ${spot.x} ${spot.y})`}>
+                  <rect x={spot.x - cw / 2} y={spot.y - chh / 2} width={cw} height={chh} rx={chh / 2} fill={cb.half ? '#ea580c' : '#ffffff'} stroke={cb.half ? '#c2410c' : '#cfc6b9'} strokeWidth={0.8}
+                    style={{ filter: 'drop-shadow(0 1px 1px rgba(40,30,20,0.12))' }} />
+                  <text x={spot.x} y={spot.y + cfs * 0.36} textAnchor="middle" fontSize={cfs} fontWeight={700} letterSpacing="0.02em" fill={cb.half ? '#ffffff' : '#78716c'} fontFamily={UI_FONT}>{chipTxt}</text>
+                </g>
+              )}
+              <title>{tip}</title>
+            </g>
+          );
+        })}
+        {pills.map(p => {
+          const { item: it, f } = p;
+          const hide = editing?.key === p.key;
+          if (it.kind === 'gap') {
+            const gp = <DimPill cx={p.cx} cy={p.cy} txt={it.txt} fs={f} fill="#fff7ed" stroke="#f97316" strokeWidth={1} color="#c2410c" hideText={hide} title={it.title}
+              onClick={e => { stop(e); beginEdit({ key: p.key, v: it.txt }); }} />;
+            return p.deg ? <g key={p.key} transform={`rotate(${p.deg.toFixed(1)} ${p.cx} ${p.cy})`}>{gp}</g> : <g key={p.key}>{gp}</g>;
+          }
+          if (it.passive) {
+            return (
+              <g key={p.key} className="yago-gap passive" style={{ cursor: 'not-allowed' }}>
+                <DimPill cx={p.cx} cy={p.cy} txt={it.txt} fs={f} fill="#f5f3ef" stroke="#d6cfc3" strokeWidth={0.9} color="#a8a29e" hideText={false} title={it.title} />
+              </g>
+            );
+          }
+          const locked = !!it.locked, edited = !locked && !!it.edited, editable = !!it.onLock;
+          return (
+            <g key={p.key} className={`yago-gap${locked ? ' locked' : ''}`}>
+              <DimPill cx={p.cx} cy={p.cy} txt={it.txt} fs={f} fill={locked || edited ? '#fff7ed' : '#ffffff'} stroke={edited ? '#fbbf24' : '#f97316'} strokeWidth={locked ? 1.2 : 1}
+                color={locked ? '#c2410c' : edited ? '#9a3412' : '#1c1917'} hideText={hide} title={editable ? (edited ? `${it.title} (${it.lockTitle ? 'held' : 'entered'} value)` : it.title) : `${it.title} — set by the back panel bounds`}
                 onClick={editable ? e => { stop(e); beginEdit({ key: p.key, v: it.txt }); } : undefined} />
               {it.onLock && p.lock && <LockBadge cx={p.lock.x} cy={p.lock.y} locked={locked} edited={edited} onClick={it.onLock} title={it.lockTitle} holdIcon={!!it.lockTitle} />}
             </g>
@@ -2110,11 +2850,31 @@ function SplitModeSelect({ value, onChange }: { value: 'count' | 'ref' | 'spacin
     </div>
   );
 }
-/** Arkalık seçme şeridinde tip (kapaktaki Outer/Inner seçicisinin eşi). */
-function BackTypeSelect({ value, onChange }: { value: 'outer' | 'inner'; onChange: (v: 'outer' | 'inner') => void }) {
+function BackSplitModeSelect({ value, onChange }: { value: 'count' | 'ref' | 'spacing'; onChange: (v: 'count' | 'ref' | 'spacing') => void }) {
+  const titles: Record<'count' | 'ref' | 'spacing', string> = {
+    count: 'Count — split the selected region by number of pieces (V side by side · H stacked)',
+    ref: 'Panel ref — click a back-reference divider / shelf (3D view or schematic): the back panel splits through its middle; sizes stay, afterwards Left / Center / Right moves the panel',
+    spacing: 'Spacing — split by target piece size (mm); the number of pieces follows the region length and body resizes',
+  };
+  return (
+    <div className="relative shrink-0" onClick={stop} title={titles[value]}>
+      <select value={value} onChange={e => onChange(e.target.value as 'count' | 'ref' | 'spacing')}
+        className="h-[28px] pl-2.5 pr-7 rounded-[7px] bg-white ring-1 ring-[#e6e0d6] shadow-[0_1px_0_rgba(40,30,20,0.03)] text-[11.5px] font-semibold text-stone-700 appearance-none outline-none cursor-pointer hover:ring-[#dcd4c8] focus:ring-orange-400/60 transition-shadow duration-150"
+        style={{ fontFamily: UI_FONT }}>
+        <option value="count">Count</option>
+        <option value="ref">Panel ref</option>
+        <option value="spacing">Spacing</option>
+      </select>
+      <ChevronDown size={12} strokeWidth={2.2} className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-stone-400" />
+    </div>
+  );
+}
+
+/** Arkalık seçme şeridinde tip. */
+function BackTypeSelect({ value, onChange }: { value: BackPlacement; onChange: (v: BackPlacement) => void }) {
   return (
     <div className="relative shrink-0" onClick={stop} title={BACK_TYPE_TITLE[value]}>
-      <select value={value} onChange={e => onChange(e.target.value as 'outer' | 'inner')}
+      <select value={value} onChange={e => onChange(e.target.value as BackPlacement)}
         className="h-[28px] pl-2.5 pr-7 rounded-[7px] bg-white ring-1 ring-[#e6e0d6] shadow-[0_1px_0_rgba(40,30,20,0.03)] text-[11.5px] font-semibold text-stone-700 appearance-none outline-none cursor-pointer hover:ring-[#dcd4c8] focus:ring-orange-400/60 transition-shadow duration-150"
         style={{ fontFamily: UI_FONT }}>
         <option value="outer">{BACK_TYPE_LABEL.outer}</option>
@@ -2169,8 +2929,9 @@ export function PanelEditor() {
     panelGroups, selectedPanelGroupId, setSelectedPanelGroupId,
     volumePickMode, setVolumePickMode, volumePickGroupId, volumePickCandidates, volumePickIndex,
     doorGroups, selectedDoorGroupId, setSelectedDoorGroupId, doorPickMode, setDoorPickMode, doorPickCandidates, doorPickIndex, doorPickPlacement, setDoorPickPlacement,
-    doorPickRole, backPickPlacement, setBackPickPlacement,
     doorRefPickGroupId, setDoorRefPickGroupId,
+    backGroups, selectedBackGroupId, setSelectedBackGroupId, backPickMode, setBackPickMode, backPickCandidates, backPickIndex, backPickPlacement, setBackPickPlacement,
+    backRefPickGroupId, setBackRefPickGroupId,
     raycastPendingVf, placementName, setPlacementName,
   } = useStoreFields('selectedShapeId', 'shapes', 'updateShape',
     'selectedPanelRow', 'setSelectedPanelRow', 'raycastMode', 'setRaycastMode',
@@ -2189,14 +2950,19 @@ export function PanelEditor() {
     'panelGroups', 'selectedPanelGroupId', 'setSelectedPanelGroupId',
     'volumePickMode', 'setVolumePickMode', 'volumePickGroupId', 'volumePickCandidates', 'volumePickIndex',
     'doorGroups', 'selectedDoorGroupId', 'setSelectedDoorGroupId', 'doorPickMode', 'setDoorPickMode', 'doorPickCandidates', 'doorPickIndex', 'doorPickPlacement', 'setDoorPickPlacement',
-    'doorPickRole', 'backPickPlacement', 'setBackPickPlacement',
     'doorRefPickGroupId', 'setDoorRefPickGroupId',
+    'backGroups', 'selectedBackGroupId', 'setSelectedBackGroupId', 'backPickMode', 'setBackPickMode', 'backPickCandidates', 'backPickIndex', 'backPickPlacement', 'setBackPickPlacement',
+    'backRefPickGroupId', 'setBackRefPickGroupId',
     'raycastPendingVf', 'placementName', 'setPlacementName');
-  const [doorDraft, setDoorDraft] = useState<{ id: string; field: 't' | 'gap' | 'setback'; v: string } | null>(null);
+  const [doorDraft, setDoorDraft] = useState<{ id: string; field: 't' | 'gap'; v: string } | null>(null);
   // Şema bölge seçimi (düğüm id'leri): her tık bir seviye iner; üye/3B seçimiyle bağı YOK.
   const [doorNodeSel, setDoorNodeSel] = useState<{ id: string; nodes: string[] } | null>(null);
   const [doorSplitMode, setDoorSplitMode] = useState<{ id: string; mode: 'count' | 'spacing' } | null>(null);
   const [doorAddPick, setDoorAddPick] = useState<{ id: string; axis: 'u' | 'v' } | null>(null);
+  // Arkalık kartı: kalınlık/setback taslağı, şema bölge seçimi ve bölme modu (Panel ref store'da: backRefPickGroupId).
+  const [backDraft, setBackDraft] = useState<{ id: string; field: 't' | 'setback'; v: string } | null>(null);
+  const [backNodeSel, setBackNodeSel] = useState<{ id: string; nodes: string[] } | null>(null);
+  const [backSplitMode, setBackSplitMode] = useState<{ id: string; mode: 'count' | 'spacing' } | null>(null);
 
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
@@ -2211,10 +2977,13 @@ export function PanelEditor() {
     const st = useAppStore.getState();
     if (st.selectedPanelGroupId === id) setSelectedPanelGroupId(null);
     if (st.selectedDoorGroupId === id) setSelectedDoorGroupId(null);
+    if (st.selectedBackGroupId === id) setSelectedBackGroupId(null);
     if (typeof st.selectedPanelRow === 'string' && memberIds.some(m => st.selectedPanelRow === `vf-${m}`)) setSelectedPanelRow(null);
     setDoorNodeSel(prev => (prev?.id === id ? null : prev));
     if (useAppStore.getState().doorRefPickGroupId === id) setDoorRefPickGroupId(null);
+    if (useAppStore.getState().backRefPickGroupId === id) setBackRefPickGroupId(null);
     setDoorAddPick(prev => (prev?.id === id ? null : prev));
+    setBackNodeSel(prev => (prev?.id === id ? null : prev));
   };
   const [stepEdit, setStepEdit] = useState<StepEdit>(null);
   const [extrudeThicknessStr, setExtrudeThicknessStr] = useState(String(faceExtrudeThickness));
@@ -2246,20 +3015,23 @@ export function PanelEditor() {
   useEffect(() => {
     if (typeof selectedPanelRow === 'string' && selectedPanelRow.startsWith('vf-')) {
       const vf = virtualFaces.find(f => f.id === selectedPanelRow.slice(3));
-      const gid = vf?.groupId || vf?.doorGroupId;
+      const gid = vf?.groupId || vf?.doorGroupId || vf?.backGroupId;
       if (gid) openCard(gid);
     }
     if (selectedPanelGroupId) openCard(selectedPanelGroupId);
     if (selectedDoorGroupId) openCard(selectedDoorGroupId);
-  }, [selectedPanelRow, selectedPanelGroupId, selectedDoorGroupId, virtualFaces]);
+    if (selectedBackGroupId) openCard(selectedBackGroupId);
+  }, [selectedPanelRow, selectedPanelGroupId, selectedDoorGroupId, selectedBackGroupId, virtualFaces]);
 
   useEffect(() => {
     if (selectedShapeId !== useAppStore.getState().selectedPanelRowParentId) setSelectedPanelRow(null);
     const st = useAppStore.getState();
     if (st.selectedPanelGroupId && !st.panelGroups.some(g => g.id === st.selectedPanelGroupId && g.shapeId === selectedShapeId)) setSelectedPanelGroupId(null);
     if (st.selectedDoorGroupId && !st.doorGroups.some(g => g.id === st.selectedDoorGroupId && g.shapeId === selectedShapeId)) setSelectedDoorGroupId(null);
+    if (st.selectedBackGroupId && !st.backGroups.some(g => g.id === st.selectedBackGroupId && g.shapeId === selectedShapeId)) setSelectedBackGroupId(null);
     if (st.volumePickMode) setVolumePickMode(null);
     if (st.doorPickMode) setDoorPickMode(false);
+    if (st.backPickMode) setBackPickMode(false);
     setOpenCards(new Set());
   }, [selectedShapeId]);
   useEffect(() => {
@@ -2267,11 +3039,15 @@ export function PanelEditor() {
     if (doorRefPickGroupId && !doorGroups.some(g => g.id === doorRefPickGroupId)) setDoorRefPickGroupId(null);
   }, [doorGroups, selectedDoorGroupId, doorRefPickGroupId]);
   useEffect(() => {
-    if (!doorRefPickGroupId && !doorAddPick) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { setDoorRefPickGroupId(null); setDoorAddPick(null); } };
+    if (selectedBackGroupId && !backGroups.some(g => g.id === selectedBackGroupId)) setSelectedBackGroupId(null);
+    if (backRefPickGroupId && !backGroups.some(g => g.id === backRefPickGroupId)) setBackRefPickGroupId(null);
+  }, [backGroups, selectedBackGroupId, backRefPickGroupId]);
+  useEffect(() => {
+    if (!doorRefPickGroupId && !doorAddPick && !backRefPickGroupId) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { setDoorRefPickGroupId(null); setDoorAddPick(null); setBackRefPickGroupId(null); } };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [doorRefPickGroupId, doorAddPick]);
+  }, [doorRefPickGroupId, doorAddPick, backRefPickGroupId]);
 
   useEffect(() => {
     const currentShapes = useAppStore.getState().shapes;
@@ -2287,7 +3063,8 @@ export function PanelEditor() {
         try {
           const grp = vf.groupId ? useAppStore.getState().panelGroups.find(pg => pg.id === vf.groupId) : undefined;
           const dgrp = vf.doorGroupId ? useAppStore.getState().doorGroups.find(dg => dg.id === vf.doorGroupId) : undefined;
-          const th = grp ? memberThicknessesOf(grp)[vf.groupIndex ?? grp.memberVfIds.indexOf(vf.id)] || grp.thickness : dgrp ? dgrp.thickness : PANEL_THICKNESS;
+          const bgrp = vf.backGroupId ? useAppStore.getState().backGroups.find(bg => bg.id === vf.backGroupId) : undefined;
+          const th = grp ? memberThicknessesOf(grp)[vf.groupIndex ?? grp.memberVfIds.indexOf(vf.id)] || grp.thickness : dgrp ? dgrp.thickness : bgrp ? bgrp.thickness : PANEL_THICKNESS;
           const rp = await createPanelFromVirtualFace(vf.vertices, vf.normal, th);
           if (!rp) continue;
           const g = convertReplicadToThreeGeometry(rp);
@@ -2301,7 +3078,8 @@ export function PanelEditor() {
             parameters: { width: s[def], height: s[alt], depth: th, parentShapeId: parentShape.id, faceIndex: -(vi + 1), virtualFaceId: vf.id, arrowRotated: false,
               // Grup kimliği + kalınlık panele de yazılır: motor (damga/engel/kesim sınıfı) bunu okur.
               ...(vf.groupId ? { panelGroupId: vf.groupId, panelThickness: th } : {}),
-              ...(vf.doorGroupId ? { doorGroupId: vf.doorGroupId, panelThickness: th } : {}) },
+              ...(vf.doorGroupId ? { doorGroupId: vf.doorGroupId, panelThickness: th } : {}),
+              ...(vf.backGroupId ? { backGroupId: vf.backGroupId, panelThickness: th } : {}) },
           } as Shape);
           updateVirtualFace(vf.id, { hasPanel: true });
         } catch (e) { console.error('Auto panel creation failed:', e); }
@@ -2408,8 +3186,8 @@ export function PanelEditor() {
       <ToolChip label="Body Panel" icon={LayoutPanelTop} active={raycastMode} onClick={() => setRaycastMode(!raycastMode)} title="Add a panel on a body face" />
       <ToolChip label="Shelf" icon={Rows3} active={volumePickMode === 'shelf' && !volumePickGroupId} onClick={() => setVolumePickMode(volumePickMode === 'shelf' && !volumePickGroupId ? null : 'shelf')} title="Add shelves: pick a cavity in the 3D view" />
       <ToolChip label="Divider" icon={Columns3} active={volumePickMode === 'divider' && !volumePickGroupId} onClick={() => setVolumePickMode(volumePickMode === 'divider' && !volumePickGroupId ? null : 'divider')} title="Add vertical dividers: pick a cavity in the 3D view" />
-      <ToolChip label="Door" icon={DoorClosed} active={doorPickMode && doorPickRole === 'door'} onClick={() => setDoorPickMode(!(doorPickMode && doorPickRole === 'door'), 'door')} title="Add doors: mark door references on panels (Door ref), then click a body face in the 3D view" />
-      <ToolChip label="Back" icon={SendToBack} active={doorPickMode && doorPickRole === 'back'} onClick={() => setDoorPickMode(!(doorPickMode && doorPickRole === 'back'), 'back')} title="Add a back panel: mark back references on panels (Back ref), then click the body in the 3D view — the click is taken on the body's back face, even from the front; each click cycles the candidates there, largest first — Nailed (behind the panels, outside) or Grooved (between the panels, in a groove)" />
+      <ToolChip label="Door" icon={DoorClosed} active={doorPickMode} onClick={() => setDoorPickMode(!doorPickMode)} title="Add doors: mark door references on panels (Door ref), then click a body face in the 3D view" />
+      <ToolChip label="Back" icon={SendToBack} active={backPickMode} onClick={() => setBackPickMode(!backPickMode)} title="Add a back panel: mark back references on panels (Back ref), then click the body in the 3D view — the click is taken on the body's back face, even from the front; each click cycles the candidates there, largest first — Nailed (behind the panels, outside) or Grooved (between the panels, in a groove)" />
     </ToolChipBar>
   );
 
@@ -2760,15 +3538,17 @@ export function PanelEditor() {
     );
 
     // Düz liste: her VF store sırasıyla kendi satırıdır; listedeki numara = VF sırası = basan/basılan önceliği.
-    // İstisna: raf/dikme ve kapak grubunun üyeleri store'da bitişik durur ve TEK kart olarak (ilk üyenin sırasında) gösterilir.
-    type Row = { kind: 'vf'; vf: VirtualFace } | { kind: 'group'; group: PanelGroup; members: VirtualFace[] } | { kind: 'door'; group: DoorGroup; members: VirtualFace[] };
+    // İstisna: raf/dikme, kapak ve arkalık grubunun üyeleri store'da bitişik durur ve TEK kart olarak (ilk üyenin sırasında) gösterilir.
+    type Row = { kind: 'vf'; vf: VirtualFace } | { kind: 'group'; group: PanelGroup; members: VirtualFace[] } | { kind: 'door'; group: DoorGroup; members: VirtualFace[] } | { kind: 'back'; group: BackGroup; members: VirtualFace[] };
     const rows: Row[] = [];
     const seenGroups = new Set<string>();
     for (const vf of svf) {
       const g = vf.groupId ? panelGroups.find(x => x.id === vf.groupId) : undefined;
       const dg = vf.doorGroupId ? doorGroups.find(x => x.id === vf.doorGroupId) : undefined;
+      const bg = vf.backGroupId ? backGroups.find(x => x.id === vf.backGroupId) : undefined;
       if (g) { if (!seenGroups.has(g.id)) { seenGroups.add(g.id); rows.push({ kind: 'group', group: g, members: svf.filter(m => m.groupId === g.id) }); } }
       else if (dg) { if (!seenGroups.has(dg.id)) { seenGroups.add(dg.id); rows.push({ kind: 'door', group: dg, members: svf.filter(m => m.doorGroupId === dg.id) }); } }
+      else if (bg) { if (!seenGroups.has(bg.id)) { seenGroups.add(bg.id); rows.push({ kind: 'back', group: bg, members: svf.filter(m => m.backGroupId === bg.id) }); } }
       else rows.push({ kind: 'vf', vf });
     }
     const idsOf = (r: Row) => (r.kind === 'vf' ? [r.vf.id] : r.members.map(m => m.id));
@@ -2810,7 +3590,7 @@ export function PanelEditor() {
       </span>
     );
 
-    const vfRow = (vf: VirtualFace, rowIdx: number, label: string, opts: { member?: boolean; group?: PanelGroup; door?: DoorGroup }) => {
+    const vfRow = (vf: VirtualFace, rowIdx: number, label: string, opts: { member?: boolean; group?: PanelGroup; door?: DoorGroup; back?: BackGroup }) => {
       const rowKey = vf.id;
       const dragging = !opts.member && dragIndex === rowIdx;
       const vp = panelOfVf(vf.id, shapes), ar = vp?.parameters?.arrowRotated || false, sel = selectedPanelRow === `vf-${vf.id}`;
@@ -2827,14 +3607,13 @@ export function PanelEditor() {
             <div onClick={e => { stop(e); if (sel) setSelectedPanelRow(null); else setSelectedPanelRow(`vf-${vf.id}`, sid); }}
               className="flex-1 min-w-0 relative flex items-center gap-1.5 pl-0.5 pr-1 py-[4px] cursor-pointer">
               <RowNum label={label} active={sel} small={opts.member} />
-              <RowTypeBadge kind={opts.group ? opts.group.kind : opts.door ? (isBackGroup(opts.door) ? 'back' : 'door') : 'body'} active={sel} doorBound={!!vf.doorBound} backBound={vfBackBound(vf)} />
-              {opts.member && (opts.group || opts.door) ? (
-                <span title={opts.door && isBackGroup(opts.door) ? `${BACK_TYPE_TITLE[opts.door.placement]} — name comes from the group (edit it on the group row)` : opts.door && doorMemberType ? `${DOOR_TYPE_TITLE[doorMemberType.type]}${doorMemberType.leafCount === 2 ? ` · leaf ${doorMemberType.leaf + 1}/2` : ''} — name comes from the group (edit it on the group row)` : 'Name comes from the group (edit it on the group row)'}
+              <RowTypeBadge kind={opts.group ? opts.group.kind : opts.door ? 'door' : opts.back ? 'back' : 'body'} active={sel} doorBound={!!vf.doorBound} backBound={vfBackBound(vf)} />
+              {opts.member && (opts.group || opts.door || opts.back) ? (
+                <span title={opts.back ? `${BACK_TYPE_TITLE[opts.back.placement]} — name comes from the group (edit it on the group row)` : opts.door && doorMemberType ? `${DOOR_TYPE_TITLE[doorMemberType.type]}${doorMemberType.leafCount === 2 ? ` · leaf ${doorMemberType.leaf + 1}/2` : ''} — name comes from the group (edit it on the group row)` : 'Name comes from the group (edit it on the group row)'}
                   className="flex-1 min-w-0 h-[22px] px-[5px] flex items-center gap-1.5 text-[11.5px] font-medium text-stone-500 truncate cursor-default select-none">
-                  {opts.door && (isBackGroup(opts.door)
-                    ? <span className="shrink-0 text-stone-400"><BackTypeIcon type={opts.door.placement} size={11} strokeWidth={1.4} /></span>
-                    : doorMemberType && <span className="shrink-0 text-stone-400"><DoorTypeIcon type={doorMemberType.type} size={11} strokeWidth={1.4} /></span>)}
-                  <span className="truncate">{opts.group ? groupName(opts.group) : doorGroupName(opts.door!)}</span>
+                  {opts.back && <span className="shrink-0 text-stone-400"><BackTypeIcon type={opts.back.placement} size={11} strokeWidth={1.4} /></span>}
+                  {opts.door && doorMemberType && <span className="shrink-0 text-stone-400"><DoorTypeIcon type={doorMemberType.type} size={11} strokeWidth={1.4} /></span>}
+                  <span className="truncate">{opts.group ? groupName(opts.group) : opts.door ? doorGroupName(opts.door) : backGroupName(opts.back!)}</span>
                   {opts.door && doorMemberType?.leafCount === 2 && <span className="shrink-0 text-[9.5px] font-semibold text-stone-400 tabular-nums">{doorMemberType.leaf + 1}/2</span>}
                 </span>
               ) : (
@@ -2845,8 +3624,8 @@ export function PanelEditor() {
               <div className="flex items-center justify-end gap-[3px] shrink-0 ml-0.5" style={{ width: opts.member ? ROW_TRAIL_W - MEMBER_INSET : ROW_TRAIL_W }} onClick={stop}>
                 {/* İç panelde (raf/dikme) serbest bölge yok → fit-shape gösterilmez. */}
                 {!opts.member && <FitShapeToggle checked={!!vf.fitFaceShape} disabled={!vf.hasPanel} onToggle={() => { void toggleFitShape(vf); }} />}
-                {opts.door ? <span className="w-6 h-6 shrink-0" /> : <DoorRefToggle checked={!!vf.doorBound} disabled={!vf.hasPanel} onToggle={() => setVfDoorBound(vf.id, !vf.doorBound)} />}
-                {opts.door ? <span className="w-6 h-6 shrink-0" /> : <BackRefToggle checked={vfBackBound(vf)} disabled={!vf.hasPanel} onToggle={() => setVfBackBound(vf.id, !vfBackBound(vf))} />}
+                {opts.door || opts.back ? <span className="w-6 h-6 shrink-0" /> : <DoorRefToggle checked={!!vf.doorBound} disabled={!vf.hasPanel} onToggle={() => setVfDoorBound(vf.id, !vf.doorBound)} />}
+                {opts.door || opts.back ? <span className="w-6 h-6 shrink-0" /> : <BackRefToggle checked={vfBackBound(vf)} disabled={!vf.hasPanel} onToggle={() => setVfBackBound(vf.id, !vfBackBound(vf))} />}
                 <button disabled={!vf.hasPanel} onClick={e => { stop(e); toggleArrow(vp); }} title="Toggle arrow direction"
                   className={`${ROW_BTN} ${!vf.hasPanel ? 'text-stone-200 cursor-not-allowed' : ar ? 'text-stone-700 bg-[#f1ece4]' : 'text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700'}`}>
                   <ArrowUp size={ROW_ICON} strokeWidth={1.9} className={`transition-transform duration-200 ${ar ? '' : 'rotate-90'}`} />
@@ -2976,19 +3755,17 @@ export function PanelEditor() {
       const open = openCards.has(g.id) || selAll || members.some(m => selectedPanelRow === `vf-${m.id}`);
       const dimsW = round1(g.rect.u1 - g.rect.u0), dimsH = round1(g.rect.v1 - g.rect.v0);
       const doorParent = open ? shapeById(g.shapeId, shapes) : undefined;   // pahalı: kesimler yalnız kart açıkken çözülür
-      const doorCuts = doorParent ? collectDoorCuts(doorParent, shapes, virtualFaces, roleOf(g)) : [];
+      const doorCuts = doorParent ? collectDoorCuts(doorParent, shapes, virtualFaces) : [];
       const mIds = members.map(m => m.id);
       const toggleRow = (e: React.MouseEvent) => { stop(e); if (open) closeCard(g.id, mIds); else { setSelectedDoorGroupId(g.id); openCard(g.id); } };
-      // ARKALIK kartı: aynı kart; Outer/Inner yerine tip barı (çakma/kanallı), kapak tipi barı ve "Between doors" yok, kanallıda Setback alanı.
-      const isBack = isBackGroup(g);
-      const noun = doorRoleNoun(g), Noun = isBack ? 'Back' : 'Door';
-      type DraftField = 't' | 'gap' | 'setback';
+      const noun = 'door', Noun = 'Door';
+      type DraftField = 't' | 'gap';
       const draft = (field: DraftField, fallback: number) => (doorDraft?.id === g.id && doorDraft.field === field ? doorDraft.v : String(fallback));
       const applyDraft = (field: DraftField) => {
-        const v = parseFloat(draft(field, field === 't' ? g.thickness : field === 'setback' ? backSetbackOf(g) : g.gap).replace(',', '.'));
+        const v = parseFloat(draft(field, field === 't' ? g.thickness : g.gap).replace(',', '.'));
         setDoorDraft(null);
         if (!Number.isFinite(v)) return;
-        if (field === 't') void setDoorThickness(g.id, v); else if (field === 'setback') void setBackSetback(g.id, v); else void setDoorGap(g.id, v);
+        if (field === 't') void setDoorThickness(g.id, v); else void setDoorGap(g.id, v);
       };
       const numInput = (field: DraftField, fallback: number) => (
         <input type="text" inputMode="decimal" value={draft(field, fallback)}
@@ -3090,10 +3867,10 @@ export function PanelEditor() {
             {grip(rowKey, rowIdx, 'Drag to reorder (whole group)')}
             <div onClick={toggleRow} className="flex-1 min-w-0 relative flex items-center gap-1.5 pl-0.5 pr-1 py-[4px] cursor-pointer" title={open ? 'Collapse' : `Expand — selects all ${noun}s in this group`}>
               <RowNum label={label} active={selAll} />
-              <RowTypeBadge kind={isBack ? 'back' : 'door'} active={open} count={doorMemberCount(g)} />
+              <RowTypeBadge kind="door" active={open} count={doorMemberCount(g)} />
               <input type="text" value={doorGroupName(g)} onClick={stop} onChange={e => renameDoorGroup(g.id, e.target.value)} placeholder={Noun}
                 title={`Group name (applies to all its ${noun}s)`} className={`${ROW_INPUT_CLASS} font-semibold`} />
-              <RowDims w={dimsW} h={dimsH} t={g.thickness} tLetter="T" title={`${Noun} area width · height · thickness (${isBack ? BACK_TYPE_LABEL[g.placement].toLowerCase() : doorPlacementLabel(g.placement).toLowerCase()} ${noun})`} />
+              <RowDims w={dimsW} h={dimsH} t={g.thickness} tLetter="T" title={`${Noun} area width · height · thickness (${doorPlacementLabel(g.placement).toLowerCase()} ${noun})`} />
               <div className="flex items-center justify-end gap-[3px] shrink-0 ml-0.5" style={{ width: ROW_TRAIL_W }} onClick={stop}>
                 <button onClick={e => { stop(e); deleteDoorGroupWithMembers(g.id); }} title={`Delete group (all ${noun}s)`} className={ROW_DEL_CLASS}><Trash2 size={ROW_ICON - 1} strokeWidth={1.9} /></button>
                 <RowChevron open={open} onClick={toggleRow} />
@@ -3103,13 +3880,8 @@ export function PanelEditor() {
           {open && (
             <div className="yago-expand px-2 pt-2 pb-2" style={{ borderTop: '1px solid #f3e6d6', fontFamily: UI_FONT }} onClick={stop}>
               <div className="flex items-center gap-1 mb-1.5">
-                {!isBack && <PlacementSelect value={g.placement} onChange={v => { void setDoorPlacement(g.id, v); }} />}
+                <PlacementSelect value={g.placement} onChange={v => { void setDoorPlacement(g.id, v); }} />
                 <FieldBox fixed label="T" title={`${Noun} thickness (mm)`}>{numInput('t', g.thickness)}{unitTxt('mm')}</FieldBox>
-                {isBack && g.placement === 'inner' && (
-                  <FieldBox fixed label="Setback" title="Groove setback (mm): from the reference panels' rear face to the back panel's rear face — the groove sits this far in from the back edge">
-                    {numInput('setback', backSetbackOf(g))}{unitTxt('mm')}
-                  </FieldBox>
-                )}
                 <SplitModeSelect value={splitMode} onChange={pickSplitMode} />
                 {splitMode === 'count' && <>
                   <CountBox icon={SplitSquareVertical} label="V" value={countOf('u')} title={countTitle('u')} onChange={n => setCount('u', n)} />
@@ -3124,7 +3896,7 @@ export function PanelEditor() {
                 )}
                 <IconSquareBtn icon={Equal} title="Equalize sizes (unlock all)" onClick={() => { void equalizeDoorGroup(g.id); }} />
               </div>
-              {!isBack && <div className="flex items-center gap-1 mb-1.5">
+              <div className="flex items-center gap-1 mb-1.5">
                 <span className="shrink-0 pl-0.5 pr-1 text-[9.5px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]">Between doors</span>
                 <CardAction compact icon={Columns3} label="Divider" active={addPick === 'u'} tone="amber"
                   title={g.placement !== 'outer' ? 'Add a divider between two doors — outer doors only (inner doors sit between the panels).' : addJointCount('u') ? `Add a divider between two side-by-side doors: pick a vertical joint in the schematic (${addJointCount('u')}). The divider is created behind that joint, listed after this door row, and follows the joint when the doors change.` : 'No vertical door joint yet — split the door with Split V first.'}
@@ -3140,8 +3912,8 @@ export function PanelEditor() {
                       : `Every part of the ${addPick === 'u' ? 'vertical' : 'horizontal'} joint${addJointCount(addPick) > 1 ? 's' : ''} already has a ${addPick === 'u' ? 'divider' : 'shelf'}${addedCount(addPick) ? ' · ✕ Remove to delete' : ''}`}
                     title="The highlighted gaps between doors are the joints you can place the panel at — a joint crossed by a divider / shelf is split into parts, each part takes its own panel (its own row in the list). A panel already added between doors shows ✕ Remove. Esc cancels." />
                 )}
-              </div>}
-              {isBack ? <BackTypeBar value={g.placement} onPick={t => { void setDoorPlacement(g.id, t); }} /> : <DoorTypeBar value={commonType} hint={typeHint} onPick={applyType} />}
+              </div>
+              <DoorTypeBar value={commonType} hint={typeHint} onPick={applyType} />
               <DoorSchematic group={g} selectedIndex={selMemberIdx} selectedNodes={picked}
                 memberLabels={g.memberVfIds.map((id, i) => { const mi = members.findIndex(m => m.id === id); return `${label}.${(mi >= 0 ? mi : i) + 1}`; })}
                 cuts={doorCuts}
@@ -3150,7 +3922,7 @@ export function PanelEditor() {
                 addPick={addPick} onAddPick={onAddPick} onRemovePick={onRemovePick}
                 onEditSize={(sid, k, v, pv) => { void editDoorSize(g.id, sid, k, v, { preview: pv }); }} onToggleLock={(sid, k) => toggleDoorSizeLock(g.id, sid, k)}
                 onEditSplitGap={(sid, k, v, pv) => { void setDoorSplitGap(g.id, sid, k, v, { preview: pv }); }}
-                onEditEdgeGap={(edge, v, pv) => { if (v < 0) void setBackEdgeInset(g.id, edge, -v, { preview: pv }); else void setDoorEdgeGap(g.id, edge, v, { preview: pv }); }}   // negatif = kanal girişi (kanallı arkalık)
+                onEditEdgeGap={(edge, v, pv) => { void setDoorEdgeGap(g.id, edge, v, { preview: pv }); }}
                 onEditLeaf={(lid, k, v, pv) => { void editDoorLeafSize(g.id, lid, k, v, { preview: pv }); }} onEditLeafGap={(lid, v, pv) => { void setDoorLeafGap(g.id, lid, v, { preview: pv }); }}
                 onEditBegin={() => doorLayoutSnapshot(g.id)} onEditCancel={snap => restoreDoorLayout(g.id, snap as DoorLayoutSnap | null)}
                 onToggleHalfOverlay={(edge, on) => { void setDoorHalfOverlay(g.id, edge, on); }}
@@ -3158,9 +3930,160 @@ export function PanelEditor() {
                 onAlignJoint={(sid, k, vfId, a) => { void setDoorJointRef(g.id, sid, k, vfId, a); }}
                 onJointOverlay={(sid, k, vfId, a) => { void setDoorJointOverlay(g.id, sid, k, vfId, a); }}
                 onPathClick={onPathClick} />
-              <SectionHead label={isBack ? 'Back panels' : 'Doors'} count={members.length} />
+              <SectionHead label="Doors" count={members.length} />
               <div className="flex flex-col gap-[2px]">
                 {members.map((m, mi) => vfRow(m, rowIdx, `${label}.${mi + 1}`, { member: true, door: g }))}
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    // ARKALIK kartı (BackService): kapak kartından AYRI — kontrol satırı (T · Setback · bölme modu · V/H · eşitle), tip barı,
+    // şema ve üyeler. Bölge seçimi/bölme modu bu kartın durumudur; Panel ref modu store'da (3B'de levha tıkı).
+    const backCard = (g: BackGroup, members: VirtualFace[], rowIdx: number, label: string) => {
+      const rowKey = `grp-${g.id}`;
+      const selAll = selectedBackGroupId === g.id;
+      const open = openCards.has(g.id) || selAll || members.some(m => selectedPanelRow === `vf-${m.id}`);
+      const mIds = members.map(m => m.id);
+      const toggleRow = (e: React.MouseEvent) => { stop(e); if (open) closeCard(g.id, mIds); else { setSelectedBackGroupId(g.id); openCard(g.id); } };
+      const dimsW = round1(g.rect.u1 - g.rect.u0), dimsH = round1(g.rect.v1 - g.rect.v0);
+      const backParent = open ? shapeById(g.shapeId, shapes) : undefined;   // pahalı: kesimler yalnız kart açıkken çözülür
+      const backCuts = backParent ? collectBackCuts(backParent, shapes, virtualFaces) : [];
+      type DraftField = 't' | 'setback';
+      const draft = (field: DraftField, fallback: number) => (backDraft?.id === g.id && backDraft.field === field ? backDraft.v : String(fallback));
+      const applyDraft = (field: DraftField) => {
+        const v = parseFloat(draft(field, field === 't' ? g.thickness : backSetbackOf(g)).replace(',', '.'));
+        setBackDraft(null);
+        if (!Number.isFinite(v)) return;
+        if (field === 't') void setBackThickness(g.id, v); else void setBackSetback(g.id, v);
+      };
+      const numInput = (field: DraftField, fallback: number) => (
+        <input type="text" inputMode="decimal" value={draft(field, fallback)}
+          onChange={e => setBackDraft({ id: g.id, field, v: e.target.value })}
+          onBlur={() => applyDraft(field)}
+          onKeyDown={e => { if (e.key === 'Enter') applyDraft(field); if (e.key === 'Escape') setBackDraft(null); }}
+          onClick={stop} className="yago-field" style={{ ...FIELD_INPUT, width: 34, textAlign: 'right' }} />
+      );
+      const solvedTree = solveBackTree(g);
+      const selMemberIdx = g.memberVfIds.findIndex(id => selectedPanelRow === `vf-${id}`);
+      const picked = backNodeSel?.id === g.id ? backNodeSel.nodes.filter(id => !!findBackNode(g.tree, id)) : [];
+      const primaryId = picked[picked.length - 1] as string | undefined;
+      const primary = primaryId ? findBackNode(g.tree, primaryId) : null;
+      // Seçili düğüm yoldaysa bir seviye iner; yaprak tekrar tıklanırsa seçim kalkar; yolda değilse kök.
+      const onPathClick = (path: string[], additive: boolean) => {
+        if (!path.length) return;
+        if (!additive) {
+          const i = primaryId ? path.indexOf(primaryId) : -1;
+          if (i < 0) setBackNodeSel({ id: g.id, nodes: [path[0]] });
+          else if (i >= path.length - 1) setBackNodeSel(null);
+          else setBackNodeSel({ id: g.id, nodes: [path[i + 1]] });
+          return;
+        }
+        const depth = primaryId ? (findSolvedBackNode(solvedTree, primaryId)?.depth ?? path.length - 1) : path.length - 1;
+        const node = path[Math.min(depth, path.length - 1)];
+        const next = picked.includes(node) ? picked.filter(x => x !== node) : [...picked, node];
+        setBackNodeSel(next.length ? { id: g.id, nodes: next } : null);
+      };
+      const splitNode = primary ?? g.tree;
+      const countOf = (ax: 'u' | 'v') => (splitNode.kind === 'split' && splitNode.axis === ax ? splitNode.children.length : 1);
+      const setCount = (ax: 'u' | 'v', n: number) => {
+        const targets = picked.length ? picked : [g.tree.id];
+        const ids = targets.map(id => setBackNodeSplit(g.id, id, ax, n)).filter((x): x is string => !!x);
+        setBackNodeSel(ids.length ? { id: g.id, nodes: ids } : null);   // sonuç bölge seçili kalır (ardışık ayar)
+      };
+      const refMode = backRefPickGroupId === g.id;
+      const splitMode: 'count' | 'ref' | 'spacing' = refMode ? 'ref' : backSplitMode?.id === g.id ? backSplitMode.mode : 'count';
+      const pickSplitMode = (m: 'count' | 'ref' | 'spacing') => {
+        if (m === 'ref') { setBackRefPickGroupId(g.id); return; }
+        if (refMode) setBackRefPickGroupId(null);
+        setBackSplitMode({ id: g.id, mode: m });
+      };
+      const scopeIds = picked.length ? picked : [g.tree.id];
+      const sizeOf = (ax: 'u' | 'v') => {
+        if (splitNode.kind === 'split' && splitNode.axis === ax && splitNode.targetSize) return splitNode.targetSize;
+        return backSpacingTargetsInScope(g.tree, scopeIds, ax)[0]?.targetSize ?? null;
+      };
+      const setSize = (ax: 'u' | 'v', mm: number | null) => {
+        if (mm == null) { clearBackSpacing(g.id, scopeIds, ax); return; }
+        const ids = scopeIds.map(id => setBackNodeSpacing(g.id, id, ax, mm)).filter((x): x is string => !!x);
+        setBackNodeSel(ids.length ? { id: g.id, nodes: ids } : null);
+      };
+      const nearPanels = backParent ? backNearPanels(g, backParent, shapes, virtualFaces, panelGroups) : [];
+      const onRefPick = (vfId: string) => { const ids = splitBackAtPanel(g.id, vfId); if (ids.length) { setBackRefPickGroupId(null); setBackNodeSel({ id: g.id, nodes: ids }); } };
+      // Sonradan konan sınır levhası: arkalık levhanın ortasından bölünür (Half) ve sol/üst parça seçilir → aynı rozet Full/Half/None döner.
+      const onSplitAtPanel = (vfId: string) => {
+        const ids = splitBackAtPanel(g.id, vfId);
+        if (!ids.length) return;
+        const tree = useAppStore.getState().backGroups.find(x => x.id === g.id)?.tree;
+        const sp = tree ? findBackNode(tree, ids[0]) : null;
+        const leafId = sp && sp.kind === 'split' ? sp.children[0]?.id : undefined;
+        setSelectedPanelRow(null);
+        setBackNodeSel({ id: g.id, nodes: leafId ? [leafId] : ids });
+      };
+      const regionName = !primary ? 'whole back area' : primary.kind === 'leaf' ? 'the selected piece' : `the selected region (${primary.axis === 'u' ? 'V' : 'H'} ×${primary.children.length})`;
+      const sizeTitle = (ax: 'u' | 'v') => `Spacing ${ax === 'u' ? 'V — target piece width' : 'H — target piece height'} (mm) for ${regionName}: the number of pieces is derived from the region length (nearest fit, equal pieces) and re-derived when the body resizes. Clear it (× or empty + Enter) to cancel the target — the current pieces stay.`;
+      const countTitle = (ax: 'u' | 'v') => `${ax === 'u' ? 'Split V — pieces side by side' : 'Split H — pieces stacked'} in ${regionName}. ` +
+        `Type or step the number of pieces (1 = not split on this axis). ${splitNode.kind === 'split' && splitNode.axis !== ax ? 'This region is already split the other way: splitting here keeps that split in every new piece (e.g. V ×2 then H ×2 = 2 rows × 2 columns).' : ''}` +
+        (picked.length > 1 ? ` Applies to ${picked.length} selected regions.` : '');
+      return (
+        <div key={rowKey} className={rowCardClass(open, dragIndex === rowIdx, armedRowKey === rowKey)}>
+          <div className={`relative flex items-stretch ${selAll ? 'bg-[#fff8ef]' : ''}`}>
+            {selAll && <span className="pointer-events-none absolute left-0 top-[6px] bottom-[6px] w-[2px] rounded-r-full bg-orange-500/90" />}
+            {grip(rowKey, rowIdx, 'Drag to reorder (whole group)')}
+            <div onClick={toggleRow} className="flex-1 min-w-0 relative flex items-center gap-1.5 pl-0.5 pr-1 py-[4px] cursor-pointer" title={open ? 'Collapse' : 'Expand — selects all back panels in this group'}>
+              <RowNum label={label} active={selAll} />
+              <RowTypeBadge kind="back" active={open} count={backMemberCount(g)} />
+              <input type="text" value={backGroupName(g)} onClick={stop} onChange={e => renameBackGroup(g.id, e.target.value)} placeholder="Back"
+                title="Group name (applies to all its back panels)" className={`${ROW_INPUT_CLASS} font-semibold`} />
+              <RowDims w={dimsW} h={dimsH} t={g.thickness} tLetter="T" title={`Back area width · height · thickness (${BACK_TYPE_LABEL[g.placement].toLowerCase()} back panel)`} />
+              <div className="flex items-center justify-end gap-[3px] shrink-0 ml-0.5" style={{ width: ROW_TRAIL_W }} onClick={stop}>
+                <button onClick={e => { stop(e); deleteBackGroupWithMembers(g.id); }} title="Delete group (all back panels)" className={ROW_DEL_CLASS}><Trash2 size={ROW_ICON - 1} strokeWidth={1.9} /></button>
+                <RowChevron open={open} onClick={toggleRow} />
+              </div>
+            </div>
+          </div>
+          {open && (
+            <div className="yago-expand px-2 pt-2 pb-2" style={{ borderTop: '1px solid #f3e6d6', fontFamily: UI_FONT }} onClick={stop}>
+              <div className="flex items-center gap-1 mb-1.5">
+                <FieldBox fixed label="T" title="Back panel thickness (mm)">{numInput('t', g.thickness)}{unitTxt('mm')}</FieldBox>
+                {g.placement === 'inner' && (
+                  <FieldBox fixed label="Setback" title="Groove setback (mm): from the reference panels' rear face to the back panel's rear face — the groove sits this far in from the back edge">
+                    {numInput('setback', backSetbackOf(g))}{unitTxt('mm')}
+                  </FieldBox>
+                )}
+                <BackSplitModeSelect value={splitMode} onChange={pickSplitMode} />
+                {splitMode === 'count' && <>
+                  <CountBox icon={SplitSquareVertical} label="V" value={countOf('u')} title={countTitle('u')} onChange={n => setCount('u', n)} />
+                  <CountBox icon={SplitSquareHorizontal} label="H" value={countOf('v')} title={countTitle('v')} onChange={n => setCount('v', n)} />
+                </>}
+                {splitMode === 'spacing' && <>
+                  <SizeBox icon={SplitSquareVertical} label="V" value={sizeOf('u')} title={sizeTitle('u')} onChange={mm => setSize('u', mm)} />
+                  <SizeBox icon={SplitSquareHorizontal} label="H" value={sizeOf('v')} title={sizeTitle('v')} onChange={mm => setSize('v', mm)} />
+                </>}
+                {splitMode === 'ref' && (
+                  <div className="flex-1 min-w-0"><DockStatus ready text="Pick a divider / shelf" title="Back-reference dividers and shelves glow amber in the 3D view (back panels go transparent); click one in the 3D view or its band in the schematic. The back panel splits through the panel's middle and the joint is bound to the panel: when the panel moves, the pieces follow. Esc / another mode cancels." /></div>
+                )}
+                <IconSquareBtn icon={Equal} title="Equalize sizes (unlock all)" onClick={() => { void equalizeBackGroup(g.id); }} />
+              </div>
+              <BackTypeBar value={g.placement} onPick={t => { void setBackPlacement(g.id, t); }} />
+              <BackSchematic group={g} selectedIndex={selMemberIdx} selectedNodes={picked}
+                memberLabels={g.memberVfIds.map((id, i) => { const mi = members.findIndex(m => m.id === id); return `${label}.${(mi >= 0 ? mi : i) + 1}`; })}
+                cuts={backCuts} nearPanels={nearPanels}
+                refPick={refMode} onRefPick={onRefPick} onSplitAtPanel={onSplitAtPanel}
+                onEditSize={(sid, k, v, pv) => { void editBackSize(g.id, sid, k, v, { preview: pv }); }} onToggleLock={(sid, k) => toggleBackSizeLock(g.id, sid, k)}
+                onEditSplitGap={(sid, k, v, pv) => { void setBackSplitGap(g.id, sid, k, v, { preview: pv }); }}
+                onEditEdgeGap={(edge, v, pv) => { if (v < 0) void setBackEdgeInset(g.id, edge, -v, { preview: pv }); else void setBackEdgeGap(g.id, edge, v, { preview: pv }); }}   // negatif = kanal girişi (kanallı)
+                onEditBegin={() => backLayoutSnapshot(g.id)} onEditCancel={snap => restoreBackLayout(g.id, snap as BackLayoutSnap | null)}
+                onToggleHalfOverlay={(edge, on) => { void setBackHalfOverlay(g.id, edge, on); }}
+                onEdgeOverlay={(edge, m) => { void setBackEdgeOverlay(g.id, edge, m); }}
+                onAlignJoint={(sid, k, vfId, a) => { void setBackJointRef(g.id, sid, k, vfId, a); }}
+                onJointOverlay={(sid, k, vfId, a) => { void setBackJointOverlay(g.id, sid, k, vfId, a); }}
+                onPathClick={onPathClick} />
+              <SectionHead label="Back panels" count={members.length} />
+              <div className="flex flex-col gap-[2px]">
+                {members.map((m, mi) => vfRow(m, rowIdx, `${label}.${mi + 1}`, { member: true, back: g }))}
               </div>
             </div>
           )}
@@ -3176,7 +4099,7 @@ export function PanelEditor() {
         <div key={`wrap-${rowKeyOf(row)}`} className={dropHere ? 'rounded-[10px] ring-1 ring-amber-300 bg-[#fffbf0]' : ''}
           onDragOver={e => { if (dragIndex !== null && !draggingThis) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (dropIndex !== rowIdx) setDropIndex(rowIdx); } }}
           onDrop={e => { e.preventDefault(); if (dragIndex !== null) void onRowDropBelow(dragIndex, rowIdx); }}>
-          {row.kind === 'vf' ? vfRow(row.vf, rowIdx, label, {}) : row.kind === 'door' ? doorCard(row.group, row.members, rowIdx, label) : groupCard(row.group, row.members, rowIdx, label)}
+          {row.kind === 'vf' ? vfRow(row.vf, rowIdx, label, {}) : row.kind === 'door' ? doorCard(row.group, row.members, rowIdx, label) : row.kind === 'back' ? backCard(row.group, row.members, rowIdx, label) : groupCard(row.group, row.members, rowIdx, label)}
         </div>
       );
       if (dropHere && !draggingThis) elements.push(<div key={`${rowKeyOf(row)}-drop-ind`} className={`${DROP_BAND} -my-0.5`} />);
@@ -3246,25 +4169,38 @@ export function PanelEditor() {
     });
   })();
 
-  // Kapak ve arkalık aynı şerit: rol adayların sınır bayrağını ve tip seçicisini (Outer/Inner · Nailed/Grooved) belirler.
   const doorPickDock = (() => {
     if (!doorPickMode) return null;
-    const back = doorPickRole === 'back';
-    const Noun = back ? 'Back' : 'Door', refW = back ? 'back ref' : 'door ref';
-    const pl = back ? backPickPlacement : doorPickPlacement;
     const n = doorPickCandidates.length;
     const ready = !!selectedShape && n > 0;
     const cur = doorPickCandidates[doorPickIndex];
-    const boundN = selectedShape ? virtualFaces.filter(f => f.shapeId === selectedShape.id && vfBoundFor(f, doorPickRole) && !isDoorVf(f)).length : 0;
-    const where = back ? 'click the body (taken on its back face)' : 'click a body face';   // arkalık: tık hangi yüzden gelse arka yüze taşınır
+    const boundN = selectedShape ? virtualFaces.filter(f => f.shapeId === selectedShape.id && f.doorBound && !isDoorVf(f)).length : 0;
     const status = !selectedShape ? 'Select a body first'
-      : n === 0 ? (boundN ? `${where[0].toUpperCase()}${where.slice(1)} · ${boundN} ${refW}${boundN === 1 ? '' : 's'}` : `No ${refW}s — body edges bound the ${Noun.toLowerCase()} · ${where}`)
-      : (() => { const r = pl === 'inner' ? cur.inner : cur.outer; return `${Noun} ${doorPickIndex + 1}/${n} · ${Math.round(r.u1 - r.u0)}×${Math.round(r.v1 - r.v0)}${cur.rot ? ' · angled (follows reference)' : ''} — click: next · right-click: place`; })();
+      : n === 0 ? (boundN ? `Click a body face · ${boundN} door ref${boundN === 1 ? '' : 's'}` : 'No door refs — body edges bound the door · click a body face')
+      : (() => { const r = doorPickPlacement === 'inner' ? cur.inner : cur.outer; return `Door ${doorPickIndex + 1}/${n} · ${Math.round(r.u1 - r.u0)}×${Math.round(r.v1 - r.v0)}${cur.rot ? ' · angled (follows reference)' : ''} — click: next · right-click: place`; })();
     return placementDock({
-      tag: Noun.toUpperCase(), defaultName: Noun, ready, status,
-      lead: back ? <BackTypeSelect value={backPickPlacement} onChange={setBackPickPlacement} /> : <PlacementSelect value={doorPickPlacement} onChange={setDoorPickPlacement} />,
+      tag: 'DOOR', defaultName: 'Door', ready, status,
+      lead: <PlacementSelect value={doorPickPlacement} onChange={setDoorPickPlacement} />,
       onConfirm: () => { if (ready && selectedShape) confirmDoorPick(selectedShape.id, doorPickCandidates[doorPickIndex]); },
-      onExit: () => setDoorPickMode(false), confirmTitle: `Place ${Noun.toLowerCase()}`,
+      onExit: () => setDoorPickMode(false), confirmTitle: 'Place door',
+    });
+  })();
+
+  // ARKALIK şeridi (BackService): tıklama hangi yüzden gelse arka yüze taşınır; tip = Nailed / Grooved.
+  const backPickDock = (() => {
+    if (!backPickMode) return null;
+    const n = backPickCandidates.length;
+    const ready = !!selectedShape && n > 0;
+    const cur = backPickCandidates[backPickIndex];
+    const boundN = selectedShape ? virtualFaces.filter(f => f.shapeId === selectedShape.id && vfBackBound(f) && !isBackVf(f)).length : 0;
+    const status = !selectedShape ? 'Select a body first'
+      : n === 0 ? (boundN ? `Click the body (taken on its back face) · ${boundN} back ref${boundN === 1 ? '' : 's'}` : 'No back refs — body edges bound the back · click the body (taken on its back face)')
+      : (() => { const r = backPickPlacement === 'inner' ? cur.inner : cur.outer; return `Back ${backPickIndex + 1}/${n} · ${Math.round(r.u1 - r.u0)}×${Math.round(r.v1 - r.v0)} — click: next · right-click: place`; })();
+    return placementDock({
+      tag: 'BACK', defaultName: 'Back', ready, status,
+      lead: <BackTypeSelect value={backPickPlacement} onChange={setBackPickPlacement} />,
+      onConfirm: () => { if (ready && selectedShape) confirmBackPick(selectedShape.id, backPickCandidates[backPickIndex]); },
+      onExit: () => setBackPickMode(false), confirmTitle: 'Place back panel',
     });
   })();
 
@@ -3275,6 +4211,7 @@ export function PanelEditor() {
       {raycastDock}
       {volumePickDock}
       {doorPickDock}
+      {backPickDock}
       {selectedShape ? (
         <div className="flex-1 min-h-0 overflow-y-auto">
           <div className="px-1.5 pt-1.5 pb-2 space-y-[2px]">{renderFaceList()}</div>

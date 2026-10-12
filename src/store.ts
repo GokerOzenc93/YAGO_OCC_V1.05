@@ -58,11 +58,14 @@ export interface VirtualFace {
   doorBound?: boolean;
   /** Arkalık sınırı: arkalık adayları bu panelin kenarlarından kurulur; arkalık bu panelde (ref ile) bölünür. */
   backBound?: boolean;
-  /** @deprecated Eski "arkalığı böl" bayrağı — okunursa backBound sayılır (bkz. DoorService.vfBackBound). */
+  /** @deprecated Eski "arkalığı böl" bayrağı — okunursa backBound sayılır (bkz. BackService.vfBackBound). */
   splitBack?: boolean;
-  /** Kapak / arkalık üyesi (interior=true; geometriyi DoorService yazar). Rol grubun `role` alanından okunur. */
+  /** Kapak üyesi (interior=true; geometriyi DoorService yazar). */
   doorGroupId?: string;
   doorIndex?: number;
+  /** Arkalık üyesi (interior=true; geometriyi BackService yazar). */
+  backGroupId?: string;
+  backIndex?: number;
 }
 
 /** Kapak kenar referansı: bir sınır panelinin VF'si ya da gövde kutusunun kenarı. */
@@ -100,18 +103,12 @@ export interface DoorJointRef { vfId: string; align: DoorAlign }
 /** Kapak derzine bağ (LEVHA kapağı izler — PanelGroup.doorBond): kapak grubu + bölme + derz sırası + hiza (+ üye). */
 export interface DoorBond { doorGroupId: string; splitId: string; k: number; align: DoorAlign; member?: number }
 export interface DoorEdgeGaps { uMin: number; uMax: number; vMin: number; vMax: number }
-/** KAPAK / ARKALIK GRUBU: dikdörtgen her rebuild'de sınır referanslarından yeniden çözülür; ağaç ölçüleri ona göre dağıtılır.
- *  role 'back' = ARKALIK: aynı çözücü; sınır = VF.backBound; yapraklar 'fixed'. placement 'outer' = arkadan çakma (panellerin
- *  arka yüzüne, hacmin DIŞINA), 'inner' = kanallı (panellerin arasına, kenar boşlukları NEGATİF = kanala giriş; `setback` kadar içerde). */
+/** KAPAK GRUBU: dikdörtgen her rebuild'de sınır referanslarından yeniden çözülür; ağaç ölçüleri ona göre dağıtılır. */
 export interface DoorGroup {
   id: string; shapeId: string;
-  /** Yoksa 'door'. */
-  role?: DoorRole;
   axis: 0 | 1 | 2; side: 1 | -1;
   /** 'outer' = dış kapak (panel kalınlıklarının dışından, önde); 'inner' = iç kapak (panellerin arasına, önü panellerle hizalı). */
   placement: 'outer' | 'inner';
-  /** Yalnız kanallı arkalık: sınır panellerinin arka yüzünden arkalığın arka yüzüne mesafe (mm). */
-  setback?: number;
   bounds: DoorBounds;
   /** Kapak düzlemi bu sınır panelinin ön yüzündedir. Yoksa outer = en öndeki, inner = en içerdeki sınır panelinin önü. */
   depthRef?: DoorBoundRef;
@@ -140,12 +137,72 @@ export interface DoorGroup {
 /** KAPAK TİPİ (bakana göre): left/right = yan menteşe; up = kalkar; down = düşer; double = iki kanat (yatayda bölünür);
  *  fold = katlanır kalkar (dikeyde bölünür); drawer = çekmece ön paneli; fixed = menteşesiz ön panel. */
 export type DoorType = 'left' | 'right' | 'up' | 'down' | 'double' | 'fold' | 'drawer' | 'fixed';
-/** Grup rolü: kapak ya da arkalık (aynı veri modeli ve çözücü). */
-export type DoorRole = 'door' | 'back';
 /** Derz hizası: 'min'/'max' = levha o taraftaki kapağın arkasında; 'center' = derz levhanın ortasında. */
 export type DoorAlign = 'min' | 'center' | 'max';
 /** İki kanatlı hücre: kanat ölçüleri (toplam = hücre ölçüsü − kanat arası boşluk) + kanat arası boşluk (mm). */
 export interface DoorLeafSplit { leaves: GapSpec[]; gap: number }
+
+// ARKALIK (BackService) — kapaktan bağımsız veri modeli. Sınır = VF.backBound; üye = VF.backGroupId.
+//  placement 'outer' = arkadan ÇAKMA: sınır panellerinin arka yüzüne, hacmin DIŞINA (panel kalınlığını örter, Full/Half/None);
+//  'inner' = KANALLI: panellerin arasına, kenar boşlukları NEGATİF (= kanala giriş, mm), arka yüzden `setback` kadar içerde.
+export type BackPlacement = 'outer' | 'inner';
+/** Arkalık kenar referansı: bir sınır panelinin VF'si ya da gövde kutusunun kenarı. */
+export interface BackBoundRef { vfId?: string; body?: boolean }
+export interface BackBounds { uMin: BackBoundRef; uMax: BackBoundRef; vMin: BackBoundRef; vMax: BackBoundRef }
+/** Arkalık düzlemindeki dikdörtgen (gövde-yerel u/v) + arkalığın ÖN (hacme bakan) yüzünün düzlem koordinatı. */
+export interface BackRect { u0: number; u1: number; v0: number; v1: number; front: number }
+export interface BackEdgeGaps { uMin: number; uMax: number; vMin: number; vMax: number }
+/** Derz hizası: 'min'/'max' = levha o taraftaki parçanın arkasında; 'center' = derz levhanın ortasında. */
+export type BackAlign = 'min' | 'center' | 'max';
+/** Derz bağı (parça levhayı izler): bağlı levhanın VF id'si + derzin levhaya göre konumu. */
+export interface BackJointRef { vfId: string; align: BackAlign }
+/** ARKALIK AĞACI: leaf = parça; split = u (yan yana) / v (üst üste) eksende çocuklar (sizes + n−1 gaps).
+ *  Çocuk ölçüleri (+ aralar) toplamı HER ZAMAN düğümün alanıdır → bölmek üst bölmenin ölçüsünü değiştirmez. */
+export type BackNode =
+  | { id: string; kind: 'leaf' }
+  | {
+    id: string; kind: 'split'; axis: 'u' | 'v'; sizes: GapSpec[]; gaps: number[]; children: BackNode[];
+    /** SPACING: hedef parça ölçüsü (mm); parça sayısı her çözümde alandan türetilir. Sayı elle girilince kalkar. */
+    targetSize?: number;
+    /** DERZ BAĞI: k. derz her çözümde bağlı dikme/rafın güncel konumundan türetilir; bağlı ölçüler çözümden yazılır. */
+    refs?: Record<number, BackJointRef>;
+  };
+/** Arkalık adayı: gövdenin ARKA yüzü düzleminde sınır paneli kenarlarından kurulan iç/dış dikdörtgen; alan büyükten küçüğe. */
+export interface BackPick {
+  key: string; axis: 0 | 1 | 2; side: 1 | -1; bounds: BackBounds;
+  inner: BackRect; outer: BackRect; area: number;
+  depth: BackBoundRef; depthIndex: number; depthCount: number;
+  boundPanelCount: number;
+  /** Tıklanan nokta (u,v): açılı sınır panelinde arkalığın hangi tarafta kalacağını belirler. */
+  at?: [number, number];
+}
+export interface BackGroup {
+  id: string; shapeId: string;
+  axis: 0 | 1 | 2; side: 1 | -1;
+  placement: BackPlacement;
+  /** Yalnız kanallı: sınır panellerinin arka yüzünden arkalığın arka yüzüne mesafe (mm). */
+  setback?: number;
+  bounds: BackBounds;
+  /** Arkalık düzlemi bu sınır panelinin arka yüzündedir. Yoksa en gerideki sınır panelinin yüzü. */
+  depthRef?: BackBoundRef;
+  rect: BackRect;
+  /** Bölme ağacı (kök = tüm arkalık alanı − kenar boşlukları). */
+  tree: BackNode;
+  edgeGaps: BackEdgeGaps;
+  /** Parçalar arası varsayılan boşluk (mm). */
+  gap: number;
+  /** YARIM BİNME (çakma): işaretli kenarda arkalık sınır panelinin kalınlık ORTASINA kadar gider. */
+  halfOverlay?: { uMin?: boolean; uMax?: boolean; vMin?: boolean; vMax?: boolean };
+  /** HİÇ BİNMEME (çakma): işaretli kenarda arkalık sınır panelinin İÇ yüzünde biter. halfOverlay ile birlikte işaretlenmez. */
+  noOverlay?: { uMin?: boolean; uMax?: boolean; vMin?: boolean; vMax?: boolean };
+  /** ÇIPA (u,v): dönmüş sınır panelinde alan çıpanın tarafına kırpılır. Yoksa merkez. */
+  anchor?: [number, number];
+  thickness: number;
+  /** Üye VF id'leri: ağacın DFS yaprak sırası. Üye i ↔ VF.backIndex = i. */
+  memberVfIds: string[];
+  name?: string;
+  createdAt: number;
+}
 
 /** Raf/dikme boşluğu: değer (mm) + kilit (küp boyutlanınca sabit kalır). */
 export interface GapSpec { value: number; locked: boolean; edited?: boolean }
@@ -289,16 +346,28 @@ export interface AppState {
   updateDoorGroup: (id: string, u: Partial<DoorGroup>) => void;
   deleteDoorGroup: (id: string) => void;
   selectedDoorGroupId: string | null; setSelectedDoorGroupId: (id: string | null) => void;
-  /** Kapak / arkalık seçme modu; role = hangisi (adaylar o rolün sınır panellerinden kurulur). */
-  doorPickMode: boolean; setDoorPickMode: (b: boolean, role?: DoorRole) => void;
-  doorPickRole: DoorRole;
+  /** Kapak seçme modu (adaylar kapak-sınırı panellerden kurulur). */
+  doorPickMode: boolean; setDoorPickMode: (b: boolean) => void;
   /** PANEL REF modu: tıklanan kapak-sınırı dikme/rafın ortasından kapak bölünür. */
   doorRefPickGroupId: string | null; setDoorRefPickGroupId: (id: string | null) => void;
   doorPickCandidates: DoorPick[]; doorPickIndex: number;
   setDoorPick: (c: DoorPick[], i: number) => void;
   doorPickPlacement: 'outer' | 'inner'; setDoorPickPlacement: (p: 'outer' | 'inner') => void;
+
+  // ARKALIK (BackService) — kapaktan bağımsız dilim.
+  backGroups: BackGroup[];
+  addBackGroup: (g: BackGroup) => void;
+  updateBackGroup: (id: string, u: Partial<BackGroup>) => void;
+  deleteBackGroup: (id: string) => void;
+  selectedBackGroupId: string | null; setSelectedBackGroupId: (id: string | null) => void;
+  /** Arkalık seçme modu: tıklama gövdenin ARKA yüzüne taşınır, adaylar arkalık-sınırı panellerden kurulur. */
+  backPickMode: boolean; setBackPickMode: (b: boolean) => void;
+  /** PANEL REF modu: tıklanan arkalık-sınırı dikme/rafın ortasından arkalık bölünür. */
+  backRefPickGroupId: string | null; setBackRefPickGroupId: (id: string | null) => void;
+  backPickCandidates: BackPick[]; backPickIndex: number;
+  setBackPick: (c: BackPick[], i: number) => void;
   /** Arkalık seçmede tip: 'outer' = arkadan çakma, 'inner' = kanallı. */
-  backPickPlacement: 'outer' | 'inner'; setBackPickPlacement: (p: 'outer' | 'inner') => void;
+  backPickPlacement: BackPlacement; setBackPickPlacement: (p: BackPlacement) => void;
 
   filletMode: boolean; setFilletMode: (b: boolean) => void;
   selectedFilletFaces: number[];
@@ -404,9 +473,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     const all = new Set([id, ...state.shapes.filter(s => s.type === 'panel' && s.parameters?.parentShapeId === id).map(s => s.id)]);
     return {
       shapes: state.shapes.filter(s => !all.has(s.id)),
-      // Gövdeyle birlikte raf/dikme ve kapak grupları da gider (üye VF'leri gövdeye bağlıdır).
+      // Gövdeyle birlikte raf/dikme, kapak ve arkalık grupları da gider (üye VF'leri gövdeye bağlıdır).
       panelGroups: state.panelGroups.filter(g => g.shapeId !== id),
       doorGroups: state.doorGroups.filter(g => g.shapeId !== id),
+      backGroups: state.backGroups.filter(g => g.shapeId !== id),
       selectedShapeId: all.has(state.selectedShapeId || '') ? null : state.selectedShapeId,
       secondarySelectedShapeId: all.has(state.secondarySelectedShapeId || '') ? null : state.secondarySelectedShapeId,
     };
@@ -482,10 +552,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Tek panel seçimi grup seçimini düşürür (ikisi aynı anda olmaz).
   setSelectedPanelRow: (i, parentId) => set({
     selectedPanelRow: i, selectedPanelRowParentId: parentId || null,
-    ...(i !== null ? { selectedPanelGroupId: null, selectedDoorGroupId: null } : {}),
+    ...(i !== null ? { selectedPanelGroupId: null, selectedDoorGroupId: null, selectedBackGroupId: null } : {}),
   }),
   panelSelectMode: false,
-  setPanelSelectMode: (b) => set({ panelSelectMode: b, selectedPanelRow: null, selectedPanelRowParentId: null, selectedPanelGroupId: null, selectedDoorGroupId: null }),
+  setPanelSelectMode: (b) => set({ panelSelectMode: b, selectedPanelRow: null, selectedPanelRowParentId: null, selectedPanelGroupId: null, selectedDoorGroupId: null, selectedBackGroupId: null }),
   faceEditMode: false, setFaceEditMode: (b) => set({ faceEditMode: b }),
 
   panelGroups: [],
@@ -498,12 +568,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectedPanelGroupId: null,
   setSelectedPanelGroupId: (id) => set({
     selectedPanelGroupId: id,
-    ...(id ? { selectedPanelRow: null, selectedDoorGroupId: null } : {}),
+    ...(id ? { selectedPanelRow: null, selectedDoorGroupId: null, selectedBackGroupId: null } : {}),
   }),
   volumePickMode: null,
   setVolumePickMode: (m, groupId = null) => set({
     volumePickMode: m, volumePickGroupId: m ? groupId : null, volumePickCandidates: [], volumePickIndex: 0,
-    ...(m ? { raycastMode: false, raycastPendingVf: null, doorPickMode: false, doorPickCandidates: [], doorPickIndex: 0, placementName: '' } : {}),
+    ...(m ? { raycastMode: false, raycastPendingVf: null, doorPickMode: false, doorPickCandidates: [], doorPickIndex: 0, backPickMode: false, backPickCandidates: [], backPickIndex: 0, placementName: '' } : {}),
   }),
   volumePickGroupId: null,
   volumePickCandidates: [], volumePickIndex: 0,
@@ -526,19 +596,40 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectedDoorGroupId: null,
   setSelectedDoorGroupId: (id) => set({
     selectedDoorGroupId: id,
-    ...(id ? { selectedPanelRow: null, selectedPanelGroupId: null } : {}),
+    ...(id ? { selectedPanelRow: null, selectedPanelGroupId: null, selectedBackGroupId: null } : {}),
   }),
   doorRefPickGroupId: null,
   setDoorRefPickGroupId: (id) => set({ doorRefPickGroupId: id }),
   doorPickMode: false,
-  setDoorPickMode: (b, role) => set((s) => ({
-    doorPickMode: b, doorPickCandidates: [], doorPickIndex: 0, doorPickRole: b ? (role ?? s.doorPickRole) : s.doorPickRole,
-    ...(b ? { raycastMode: false, raycastPendingVf: null, volumePickMode: null, volumePickGroupId: null, volumePickCandidates: [], volumePickIndex: 0, placementName: '' } : {}),
-  })),
-  doorPickRole: 'door',
+  setDoorPickMode: (b) => set({
+    doorPickMode: b, doorPickCandidates: [], doorPickIndex: 0,
+    ...(b ? { raycastMode: false, raycastPendingVf: null, volumePickMode: null, volumePickGroupId: null, volumePickCandidates: [], volumePickIndex: 0, backPickMode: false, backPickCandidates: [], backPickIndex: 0, placementName: '' } : {}),
+  }),
   doorPickCandidates: [], doorPickIndex: 0,
   setDoorPick: (c, i) => set({ doorPickCandidates: c, doorPickIndex: i }),
   doorPickPlacement: 'outer', setDoorPickPlacement: (p) => set({ doorPickPlacement: p }),
+
+  backGroups: [],
+  addBackGroup: (g) => set((s) => ({ backGroups: [...s.backGroups, g] })),
+  updateBackGroup: (id, u) => set((s) => ({ backGroups: s.backGroups.map(g => (g.id === id ? { ...g, ...u } : g)) })),
+  deleteBackGroup: (id) => set((s) => ({
+    backGroups: s.backGroups.filter(g => g.id !== id),
+    selectedBackGroupId: s.selectedBackGroupId === id ? null : s.selectedBackGroupId,
+  })),
+  selectedBackGroupId: null,
+  setSelectedBackGroupId: (id) => set({
+    selectedBackGroupId: id,
+    ...(id ? { selectedPanelRow: null, selectedPanelGroupId: null, selectedDoorGroupId: null } : {}),
+  }),
+  backRefPickGroupId: null,
+  setBackRefPickGroupId: (id) => set({ backRefPickGroupId: id }),
+  backPickMode: false,
+  setBackPickMode: (b) => set({
+    backPickMode: b, backPickCandidates: [], backPickIndex: 0,
+    ...(b ? { raycastMode: false, raycastPendingVf: null, volumePickMode: null, volumePickGroupId: null, volumePickCandidates: [], volumePickIndex: 0, doorPickMode: false, doorPickCandidates: [], doorPickIndex: 0, placementName: '' } : {}),
+  }),
+  backPickCandidates: [], backPickIndex: 0,
+  setBackPick: (c, i) => set({ backPickCandidates: c, backPickIndex: i }),
   backPickPlacement: 'outer', setBackPickPlacement: (p) => set({ backPickPlacement: p }),
 
   filletMode: false, setFilletMode: (e) => set({ filletMode: e, selectedFilletFaces: [], selectedFilletFaceData: [] }),
@@ -552,7 +643,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   raycastMode: false,
   setRaycastMode: (b) => set({
     raycastMode: b, raycastPendingVf: null,
-    ...(b ? { placementName: '', volumePickMode: null, volumePickGroupId: null, volumePickCandidates: [], volumePickIndex: 0, doorPickMode: false, doorPickCandidates: [], doorPickIndex: 0 } : {}),
+    ...(b ? { placementName: '', volumePickMode: null, volumePickGroupId: null, volumePickCandidates: [], volumePickIndex: 0, doorPickMode: false, doorPickCandidates: [], doorPickIndex: 0, backPickMode: false, backPickCandidates: [], backPickIndex: 0 } : {}),
   }),
   raycastPendingVf: null, setRaycastPendingVf: (v) => set({ raycastPendingVf: v }),
   placementName: '', setPlacementName: (s) => set({ placementName: s }),

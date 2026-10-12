@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three';
 import { Line, TransformControls } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
-import { type CavityPick, type DoorGroup, type DoorPick, type FilletInfo, Tool, ViewMode, type VirtualFace, childPanelsOf, useAppStore, useStoreFields } from '../store';
+import { type BackPick, type CavityPick, type DoorGroup, type DoorPick, type FilletInfo, Tool, ViewMode, type VirtualFace, childPanelsOf, useAppStore, useStoreFields } from '../store';
 import {
   type CoplanarFaceGroup, type FaceData, type Vec3, applyFillets, convertReplicadToThreeGeometry, createFaceDescriptor, createFaceHighlightGeometry,
   createGroupBoundaryEdges, edgePointsOf, effectiveBodyGeometry, flatGroupOfFace, genId, getFacePlaneAxes, getFacesAndGroups, getShapeMatrix,
@@ -15,9 +15,10 @@ import {
   rayCavityCandidates, repickObstacles,
 } from './PanelGroupService';
 import {
-  type DoorMemberRect, collectDoorCuts, confirmDoorPick, doorCandidatesAt, doorMembersOf, doorPlaneAxes, doorRoleDefaults, doorSlabPolygon, isDoorPanel, pickRectFor,
-  rayBackEntry, rayDoorEntry, roleOf, splitDoorAtPanel, vfBoundFor,
+  type DoorMemberRect, DOOR_GAP, DOOR_THICKNESS, collectDoorCuts, confirmDoorPick, doorCandidatesAt, doorMembersOf, doorPlaneAxes, doorSlabPolygon, isDoorPanel, pickRectFor,
+  rayDoorEntry, splitDoorAtPanel,
 } from './DoorService';
+import { BACK_GAP, BACK_THICKNESS, backCandidatesAt, backPickRect, backSlabPolygon, collectBackCuts, confirmBackPick, isBackPanel, rayBackEntry, splitBackAtPanel, vfBackBound } from './BackService';
 
 /* Sahne nesneleri — canvas içinde şekil başına çizilen her şey: PanelDrawing (panel mesh/kenar/seçim tonu, ref-yüz),
    FaceOverlays (yüz yakalama, VF, fillet, hacim/kapak seçimi), ShapeWithTransform (gövde + TransformControls).
@@ -193,7 +194,8 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
     'faceExtrudeMode', 'faceExtrudeTargetPanelId', 'faceExtrudeSelectedFace', 'setFaceExtrudeSelectedFace', 'setFaceExtrudeClickPoint', 'raycastMode', 'faceExtrudeValueMode', 'faceExtrudeRefCandidate',
     'panelMoveMode', 'panelMoveValueMode', 'panelMoveTargetPanelId', 'panelMoveRefSourceVertex', 'panelMoveRefTargetPanelId', 'panelMoveRefTargetVertex',
     'panelRotateMode', 'panelRotateValueMode', 'panelRotateTargetPanelId', 'panelRotatePivot', 'panelRotateRefArmVertex', 'panelRotateAxis', 'panelRotateRefFace', 'setPanelRotateRefFace',
-    'selectedPanelGroupId', 'volumePickMode', 'volumePickGroupId', 'selectedDoorGroupId', 'doorPickMode', 'doorPickRole', 'doorRefPickGroupId', 'setDoorRefPickGroupId', 'virtualFaces');
+    'selectedPanelGroupId', 'volumePickMode', 'volumePickGroupId', 'selectedDoorGroupId', 'doorPickMode', 'doorRefPickGroupId', 'setDoorRefPickGroupId',
+    'selectedBackGroupId', 'backPickMode', 'backRefPickGroupId', 'setBackRefPickGroupId', 'virtualFaces');
   const [hoveredExtrudeGroup, setHoveredExtrudeGroup] = useState<number | null>(null);
   const [moveRefHover, setMoveRefHover] = useState(false);
   const { faces, groups: faceGroups } = useMemo(() => (shape.geometry ? getFacesAndGroups(shape.geometry) : { faces: [], groups: [] }), [shape.geometry]);
@@ -202,13 +204,15 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
   const virtualFaceId = shape.parameters?.virtualFaceId;
   const isParentSelected = parentShapeId === S.selectedShapeId;
   const isGroupSelected = isParentSelected && ((!!S.selectedPanelGroupId && shape.parameters?.panelGroupId === S.selectedPanelGroupId)
-    || (!!S.selectedDoorGroupId && shape.parameters?.doorGroupId === S.selectedDoorGroupId));
+    || (!!S.selectedDoorGroupId && shape.parameters?.doorGroupId === S.selectedDoorGroupId)
+    || (!!S.selectedBackGroupId && shape.parameters?.backGroupId === S.selectedBackGroupId));
   const isRowSelectedRaw = isGroupSelected || (isParentSelected && !!virtualFaceId && S.selectedPanelRow === `vf-${virtualFaceId}`);
-  // Sınır vurgusu rolün bayrağını okur: kapak seçme/ref → doorBound, arkalık seçme/ref → backBound (ref grubunun rolü store'dan, abonesiz).
-  const boundRole = S.doorPickMode ? S.doorPickRole : S.doorRefPickGroupId ? roleOf(useAppStore.getState().doorGroups.find(g => g.id === S.doorRefPickGroupId)) : null;
-  const isDoorBoundPanel = isParentSelected && !!boundRole && !!virtualFaceId && vfBoundFor(S.virtualFaces.find(f => f.id === virtualFaceId), boundRole);
-  // Bu modlarda kapaklar saydam ve tıklanmaz: arkasındaki dikme/raf seçilebilsin.
-  const isDoorPickGhost = isParentSelected && (S.doorPickMode || !!S.doorRefPickGroupId) && isDoorPanel(shape);
+  // Sınır vurgusu: kapak seçme/ref → doorBound, arkalık seçme/ref → backBound.
+  const ownVf = virtualFaceId ? S.virtualFaces.find(f => f.id === virtualFaceId) : undefined;
+  const doorPicking = S.doorPickMode || !!S.doorRefPickGroupId, backPicking = S.backPickMode || !!S.backRefPickGroupId;
+  const isDoorBoundPanel = isParentSelected && !!ownVf && ((doorPicking && !!ownVf.doorBound) || (backPicking && vfBackBound(ownVf)));
+  // Bu modlarda kapaklar/arkalıklar saydam ve tıklanmaz: arkasındaki dikme/raf seçilebilsin.
+  const isDoorPickGhost = isParentSelected && ((doorPicking && isDoorPanel(shape)) || (backPicking && isBackPanel(shape)));
 
   const edgePoints = useMemo<Vec3[] | null>(() => { try { const p = edgePointsOf(shape.geometry, EDGE_ANGLE_THRESHOLD); return p.length ? p : null; } catch { return null; } }, [shape.geometry]);
 
@@ -228,7 +232,7 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
   const isRepickHidden = repickRole === 'later';
   const isGhost = isFaceExtrudeXray || isRepickXray || isDoorPickGhost;
   const isPanelRowSelected = isRowSelectedRaw && !isRepickXray;
-  const isRaycastOnParent = (S.raycastMode || S.volumePickMode !== null || S.doorPickMode) && parentShapeId && parentShapeId === S.selectedShapeId;
+  const isRaycastOnParent = (S.raycastMode || S.volumePickMode !== null || S.doorPickMode || S.backPickMode) && parentShapeId && parentShapeId === S.selectedShapeId;
   // Ref seçimi ancak hedef yüz seçildikten sonra aktif; hedef dışındaki her panel raycast alır.
   const isExtRefMode = S.faceExtrudeMode && S.faceExtrudeValueMode === 'ref' && S.faceExtrudeSelectedFace !== null;
   const isRotRefMode = S.panelRotateMode && S.panelRotateValueMode === 'ref' && !!S.panelRotatePivot && !!S.panelRotateRefArmVertex && S.panelRotateAxis !== null;
@@ -241,7 +245,7 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
   const isMoveRefPickMode = S.panelMoveMode && S.panelMoveValueMode === 'ref' && !!S.panelMoveRefSourceVertex && !S.panelMoveRefTargetVertex && shape.id !== S.panelMoveTargetPanelId && S.panelMoveRefTargetPanelId !== shape.id;
   const isMoveRefHovered = isMoveRefPickMode && moveRefHover;
   const moveRefHighlight = isMoveRefTargetPanel || isMoveRefHovered;
-  const disableRaycast = (isFaceExtrudeTarget || (isFaceExtrudeXray && !isRefPickablePanel) || isRaycastOnParent || (!!S.doorRefPickGroupId && isDoorPanel(shape))) && !isMoveRefPickMode;
+  const disableRaycast = (isFaceExtrudeTarget || (isFaceExtrudeXray && !isRefPickablePanel) || isRaycastOnParent || (!!S.doorRefPickGroupId && isDoorPanel(shape)) || (!!S.backRefPickGroupId && isBackPanel(shape))) && !isMoveRefPickMode;
 
   useEffect(() => { const mesh = meshRef.current; if (mesh) mesh.raycast = disableRaycast ? () => {} : THREE.Mesh.prototype.raycast; }, [disableRaycast]);
   useEffect(() => { if (!isMoveRefPickMode && moveRefHover) setMoveRefHover(false); }, [isMoveRefPickMode, moveRefHover]);
@@ -267,9 +271,13 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
 
   const handleClick = (e: any) => {
     e.stopPropagation();
-    if (S.volumePickMode || S.doorPickMode) return;   // HACİM / KAPAK SEÇME: tıklama araca aittir
+    if (S.volumePickMode || S.doorPickMode || S.backPickMode) return;   // HACİM / KAPAK / ARKALIK SEÇME: tıklama araca aittir
     if (S.doorRefPickGroupId) {
       if (virtualFaceId) { const ids = splitDoorAtPanel(S.doorRefPickGroupId, virtualFaceId); if (ids.length) S.setDoorRefPickGroupId(null); }
+      return;
+    }
+    if (S.backRefPickGroupId) {
+      if (virtualFaceId) { const ids = splitBackAtPanel(S.backRefPickGroupId, virtualFaceId); if (ids.length) S.setBackRefPickGroupId(null); }
       return;
     }
     // Taşıma modu: referans döngüsü canvas seviyesinde (MoveRefPanelPicker).
@@ -351,7 +359,7 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
           onPointerDown={(e: any) => { if (isExtRefMode) confirmRefOnRightClick(e); }} />
       )}
 
-      {isPanelRowSelected && !isGroupSelected && !S.volumePickMode && !S.doorPickMode && <DirectionArrow geometry={shape.geometry} arrowRotated={shape.parameters?.arrowRotated || false} transformSteps={shape.parameters?.transformSteps} />}
+      {isPanelRowSelected && !isGroupSelected && !S.volumePickMode && !S.doorPickMode && !S.backPickMode && <DirectionArrow geometry={shape.geometry} arrowRotated={shape.parameters?.arrowRotated || false} transformSteps={shape.parameters?.transformSteps} />}
     </group>
   );
 });
@@ -554,8 +562,8 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
   const { faces, groups: faceGroups } = useFaceGroups(effGeometry, () => { setPending(null); lastClickRef.current = null; });
   useEffect(() => { if (!raycastMode) { setHoveredGroupIndex(null); setPending(null); lastClickRef.current = null; } }, [raycastMode]);
   useEffect(() => { setRaycastPendingVf(pending ? pending.virtualFace : null); }, [pending]);
-  // İç paneller de girer (yeni panel sırada SONRA → mevcutlar onu basar); kapaklar engel değildir.
-  const childPanels = useMemo(() => childPanelsOf(shape.id, allShapes).filter(p => !isDoorPanel(p)), [allShapes, shape.id]);
+  // İç paneller de girer (yeni panel sırada SONRA → mevcutlar onu basar); kapaklar/arkalıklar engel değildir.
+  const childPanels = useMemo(() => childPanelsOf(shape.id, allShapes).filter(p => !isDoorPanel(p) && !isBackPanel(p)), [allShapes, shape.id]);
   const groupHasVirtualFace = useCallback((gi: number): boolean => {
     if (gi < 0 || gi >= faceGroups.length || shapeVirtualFaces.length === 0) return false;
     const gn = faceGroups[gi].normal.clone().normalize(), gc = faceGroups[gi].center;
@@ -939,11 +947,8 @@ const DoorSlab: React.FC<{ poly: DoorSlabPoly; thickness: number; fill: number; 
 };
 
 export const DoorPickOverlay: React.FC<{ shape: any }> = ({ shape }) => {
-  const { doorPickMode, doorPickRole, doorPickCandidates, doorPickIndex, setDoorPick, doorPickPlacement: doorPl, backPickPlacement, shapes, virtualFaces } =
-    useStoreFields('doorPickMode', 'doorPickRole', 'doorPickCandidates', 'doorPickIndex', 'setDoorPick', 'doorPickPlacement', 'backPickPlacement', 'shapes', 'virtualFaces');
-  // Arkalık seçmede tip (çakma/kanallı) ve kalınlık rolün varsayılanı; adaylar o rolün sınır panellerinden kurulur.
-  const doorPickPlacement = doorPickRole === 'back' ? backPickPlacement : doorPl;
-  const defs = doorRoleDefaults(doorPickRole);
+  const { doorPickMode, doorPickCandidates, doorPickIndex, setDoorPick, doorPickPlacement, shapes, virtualFaces } =
+    useStoreFields('doorPickMode', 'doorPickCandidates', 'doorPickIndex', 'setDoorPick', 'doorPickPlacement', 'shapes', 'virtualFaces');
   const [hoverPick, setHoverPick] = useState<DoorPick | null>(null);
   const lastRef = useRef<{ keys: string; index: number } | null>(null);
   const { worldToLocal } = useShapeMatrices(shape);
@@ -957,21 +962,18 @@ export const DoorPickOverlay: React.FC<{ shape: any }> = ({ shape }) => {
   useEffect(() => () => { pickGeo?.dispose(); }, [pickGeo]);
   useEffect(() => { if (!doorPickMode) { setHoverPick(null); lastRef.current = null; } }, [doorPickMode]);
   const selected = doorPickCandidates[doorPickIndex] || null;
-  const cuts = useMemo(() => (doorPickMode ? collectDoorCuts(shape, shapes, virtualFaces, doorPickRole) : []), [doorPickMode, doorPickRole, shape, shapes, virtualFaces]);
-  const slabOf = (c: DoorPick | null) => (c ? doorSlabPolygon({ axis: c.axis, side: c.side, placement: doorPickPlacement, thickness: defs.thickness, gap: defs.gap, anchor: c.at }, pickRectFor(c, doorPickPlacement, doorPickRole), cuts) : null);
-  const selectedBox = useMemo(() => slabOf(selected), [selected, doorPickPlacement, doorPickRole, cuts]);
-  const hoverBox = useMemo(() => slabOf(hoverPick), [hoverPick, doorPickPlacement, doorPickRole, cuts]);
+  const cuts = useMemo(() => (doorPickMode ? collectDoorCuts(shape, shapes, virtualFaces) : []), [doorPickMode, shape, shapes, virtualFaces]);
+  const slabOf = (c: DoorPick | null) => (c ? doorSlabPolygon({ axis: c.axis, side: c.side, placement: doorPickPlacement, thickness: DOOR_THICKNESS, gap: DOOR_GAP, anchor: c.at }, pickRectFor(c, doorPickPlacement), cuts) : null);
+  const selectedBox = useMemo(() => slabOf(selected), [selected, doorPickPlacement, cuts]);
+  const hoverBox = useMemo(() => slabOf(hoverPick), [hoverPick, doorPickPlacement, cuts]);
 
   const candidatesFromEvent = (e: any): DoorPick[] => {
     if (!body || !doorPickMode || !e?.ray) return [];
     const o = e.ray.origin.clone().applyMatrix4(worldToLocal);
     const d = e.ray.origin.clone().add(e.ray.direction).applyMatrix4(worldToLocal).sub(o).normalize();
-    // Arkalık: ışın hangi yüzden girerse girsin tıklama gövdenin ARKA yüzüne taşınır (önden bakarken de); kapak: ışının girdiği yüz.
-    const entry = doorPickRole === 'back'
-      ? rayBackEntry([o.x, o.y, o.z], [d.x, d.y, d.z], body)
-      : rayDoorEntry([o.x, o.y, o.z], [d.x, d.y, d.z], { min: [body.min[0] - 1, body.min[1] - 1, body.min[2] - 1], max: [body.max[0] + 1, body.max[1] + 1, body.max[2] + 1] });
+    const entry = rayDoorEntry([o.x, o.y, o.z], [d.x, d.y, d.z], { min: [body.min[0] - 1, body.min[1] - 1, body.min[2] - 1], max: [body.max[0] + 1, body.max[1] + 1, body.max[2] + 1] });
     if (!entry) return [];
-    return doorCandidatesAt(shape, entry.axis, entry.side, entry.point, shapes, virtualFaces, doorPickRole);
+    return doorCandidatesAt(shape, entry.axis, entry.side, entry.point, shapes, virtualFaces);
   };
   const onPointerMove = (e: any) => {
     if (!doorPickMode) return;
@@ -997,8 +999,69 @@ export const DoorPickOverlay: React.FC<{ shape: any }> = ({ shape }) => {
   return (
     <>
       <mesh geometry={pickGeo} visible={false} onPointerMove={onPointerMove} onPointerOut={() => setHoverPick(null)} onPointerDown={onPointerDown} onContextMenu={(e: any) => e.stopPropagation()} />
-      {hoverBox && !hoverIsSelected && <DoorSlab poly={hoverBox} thickness={defs.thickness} fill={PICK_COLORS.hover} opacity={SEL_COLORS.faceHoverOpacity * 0.6} order={5} />}
-      {selectedBox && <DoorSlab poly={selectedBox} thickness={defs.thickness} fill={PICK_COLORS.selected} opacity={SEL_COLORS.faceActiveOpacity * 0.7} edge={PICK_COLORS.selectedEdge} order={6} />}
+      {hoverBox && !hoverIsSelected && <DoorSlab poly={hoverBox} thickness={DOOR_THICKNESS} fill={PICK_COLORS.hover} opacity={SEL_COLORS.faceHoverOpacity * 0.6} order={5} />}
+      {selectedBox && <DoorSlab poly={selectedBox} thickness={DOOR_THICKNESS} fill={PICK_COLORS.selected} opacity={SEL_COLORS.faceActiveOpacity * 0.7} edge={PICK_COLORS.selectedEdge} order={6} />}
+    </>
+  );
+};
+
+// ARKALIK SEÇME (BackService): kapak akışıyla aynı görünüm — görünmez kutu olayları alır, tıklama ARKA yüze taşınır (rayBackEntry),
+// adaylar alan büyükten küçüğe, her sol tık bir sonrakine geçer, sağ tık yerleştirir.
+export const BackPickOverlay: React.FC<{ shape: any }> = ({ shape }) => {
+  const { backPickMode, backPickCandidates, backPickIndex, setBackPick, backPickPlacement, shapes, virtualFaces } =
+    useStoreFields('backPickMode', 'backPickCandidates', 'backPickIndex', 'setBackPick', 'backPickPlacement', 'shapes', 'virtualFaces');
+  const [hoverPick, setHoverPick] = useState<BackPick | null>(null);
+  const lastRef = useRef<{ keys: string; index: number } | null>(null);
+  const { worldToLocal } = useShapeMatrices(shape);
+  const body = useMemo(() => { const bb = localBboxOf(effectiveBodyGeometry(shape)); return bb ? { min: [bb.min.x, bb.min.y, bb.min.z] as Vec3, max: [bb.max.x, bb.max.y, bb.max.z] as Vec3 } : null; }, [shape.geometry, shape.vertexModifications]);
+  const pickGeo = useMemo(() => {
+    if (!body) return null;
+    const g = new THREE.BoxGeometry(body.max[0] - body.min[0] + 2, body.max[1] - body.min[1] + 2, body.max[2] - body.min[2] + 2);
+    g.translate((body.min[0] + body.max[0]) / 2, (body.min[1] + body.max[1]) / 2, (body.min[2] + body.max[2]) / 2);
+    return g;
+  }, [body]);
+  useEffect(() => () => { pickGeo?.dispose(); }, [pickGeo]);
+  useEffect(() => { if (!backPickMode) { setHoverPick(null); lastRef.current = null; } }, [backPickMode]);
+  const selected = backPickCandidates[backPickIndex] || null;
+  const cuts = useMemo(() => (backPickMode ? collectBackCuts(shape, shapes, virtualFaces) : []), [backPickMode, shape, shapes, virtualFaces]);
+  const slabOf = (c: BackPick | null) => (c ? backSlabPolygon({ axis: c.axis, side: c.side, placement: backPickPlacement, thickness: BACK_THICKNESS, gap: BACK_GAP, anchor: c.at }, backPickRect(c, backPickPlacement), cuts) : null);
+  const selectedBox = useMemo(() => slabOf(selected), [selected, backPickPlacement, cuts]);
+  const hoverBox = useMemo(() => slabOf(hoverPick), [hoverPick, backPickPlacement, cuts]);
+
+  const candidatesFromEvent = (e: any): BackPick[] => {
+    if (!body || !backPickMode || !e?.ray) return [];
+    const o = e.ray.origin.clone().applyMatrix4(worldToLocal);
+    const d = e.ray.origin.clone().add(e.ray.direction).applyMatrix4(worldToLocal).sub(o).normalize();
+    const entry = rayBackEntry([o.x, o.y, o.z], [d.x, d.y, d.z], body);
+    if (!entry) return [];
+    return backCandidatesAt(shape, entry.axis, entry.side, entry.point, shapes, virtualFaces);
+  };
+  const onPointerMove = (e: any) => {
+    if (!backPickMode) return;
+    e.stopPropagation();
+    const first = candidatesFromEvent(e)[0] || null;
+    setHoverPick(prev => (prev?.key === first?.key ? prev : first));
+  };
+  const onPointerDown = (e: any) => {
+    if (!backPickMode) return;
+    e.stopPropagation();
+    if (e.button === 2) { if (selected) confirmBackPick(shape.id, selected); return; }
+    if (e.button !== 0) return;
+    const c = candidatesFromEvent(e);
+    if (!c.length) { setBackPick([], 0); lastRef.current = null; return; }
+    const keys = c.map(x => x.key).join(';');
+    const index = lastRef.current && lastRef.current.keys === keys ? (lastRef.current.index + 1) % c.length : 0;
+    lastRef.current = { keys, index };
+    setBackPick(c, index);
+  };
+
+  if (!backPickMode || !pickGeo) return null;
+  const hoverIsSelected = !!hoverPick && !!selected && hoverPick.key === selected.key;
+  return (
+    <>
+      <mesh geometry={pickGeo} visible={false} onPointerMove={onPointerMove} onPointerOut={() => setHoverPick(null)} onPointerDown={onPointerDown} onContextMenu={(e: any) => e.stopPropagation()} />
+      {hoverBox && !hoverIsSelected && <DoorSlab poly={hoverBox} thickness={BACK_THICKNESS} fill={PICK_COLORS.hover} opacity={SEL_COLORS.faceHoverOpacity * 0.6} order={5} />}
+      {selectedBox && <DoorSlab poly={selectedBox} thickness={BACK_THICKNESS} fill={PICK_COLORS.selected} opacity={SEL_COLORS.faceActiveOpacity * 0.7} edge={PICK_COLORS.selectedEdge} order={6} />}
     </>
   );
 };
@@ -1105,7 +1168,7 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
     'hoveredSubtractionIndex', 'setHoveredSubtractionIndex', 'selectedSubtractionIndex', 'setSelectedSubtractionIndex', 'showOutlines', 'setSelectedPanelRow', 'panelSelectMode',
     'faceEditMode', 'filletMode', 'raycastMode', 'shapes', 'faceExtrudeMode', 'faceExtrudeValueMode', 'faceExtrudeTargetPanelId', 'faceExtrudeSelectedFace', 'faceExtrudeRefCandidate',
     'setFaceExtrudeRefCandidate', 'panelMoveMode', 'panelMoveValueMode', 'panelMoveRefSourceVertex', 'panelMoveRefTargetPanelId', 'panelRotateMode', 'volumePickMode',
-    'faceExtrudeCavityGroupId', 'doorPickMode');
+    'faceExtrudeCavityGroupId', 'doorPickMode', 'backPickMode');
   const { scene } = useThree();
   const meshRef = useRef<THREE.Mesh>(null);
   const groupRef = useRef<THREE.Group>(null);
@@ -1192,8 +1255,8 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
   const isMoveRefPickActive = S.panelMoveMode && S.panelMoveValueMode === 'ref' && !!S.panelMoveRefSourceVertex && !S.panelMoveRefTargetPanelId;
   const isRefMode = S.faceExtrudeMode && S.faceExtrudeValueMode === 'ref' && S.faceExtrudeSelectedFace !== null;
   // Görünmez gövde mesh'i yalnız panel/yüz seçim modlarında bastırılır (ref modları muaf);
-  // hacim/kapak seçmede her zaman (olayları overlay'in görünmez kutusu alır).
-  const isVolumePickOnThis = (S.volumePickMode !== null || S.doorPickMode) && isSelected;
+  // hacim/kapak/arkalık seçmede her zaman (olayları overlay'in görünmez kutusu alır).
+  const isVolumePickOnThis = (S.volumePickMode !== null || S.doorPickMode || S.backPickMode) && isSelected;
   const suppressBodyRaycast = (hasPanels && (S.panelSelectMode || S.raycastMode) && !isRefMode && !isMoveRefPickActive) || isVolumePickOnThis;
   const isMoveRefTargetPanel = S.panelMoveMode && S.panelMoveValueMode === 'ref' && !!S.panelMoveRefSourceVertex && S.panelMoveRefTargetPanelId === shape.id;
   const moveRefBodyHighlight = isMoveRefTargetPanel || (isMoveRefPickActive && moveRefHover);
@@ -1212,7 +1275,7 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
 
   const raycastProps = suppressBodyRaycast ? { raycast: noopRaycast } : {};
   const hoverProps = isMoveRefPickActive ? { onPointerOver: (e: any) => { e.stopPropagation(); setMoveRefHover(true); }, onPointerOut: () => { if (moveRefHover) setMoveRefHover(false); } } : {};
-  const outlinesVisible = S.showOutlines || S.raycastMode || !!S.volumePickMode || S.doorPickMode;
+  const outlinesVisible = S.showOutlines || S.raycastMode || !!S.volumePickMode || S.doorPickMode || S.backPickMode;
   const outline = (color: string, width: number, depthWrite: boolean) => outlinesVisible && edgePoints && (
     <Line points={edgePoints} segments color={color} lineWidth={width} transparent={false} depthTest depthWrite={depthWrite} renderOrder={1} raycast={() => null} />
   );
@@ -1225,7 +1288,7 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
           if (S.panelMoveMode && S.panelMoveValueMode === 'ref' && !!S.panelMoveRefSourceVertex) { e.stopPropagation(); return; }
           // Aktif panel aracı: stopPropagation YOK — arkadaki panelin araç işleyicisi olayı alsın.
           if (S.faceExtrudeMode || S.panelMoveMode || S.panelRotateMode) return;
-          if (S.volumePickMode || S.doorPickMode) { e.stopPropagation(); return; }
+          if (S.volumePickMode || S.doorPickMode || S.backPickMode) { e.stopPropagation(); return; }
           if (S.panelSelectMode && hasPanels) return;
           e.stopPropagation();
           if (e.nativeEvent.ctrlKey || e.nativeEvent.metaKey) {
@@ -1279,6 +1342,7 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
         )}
         {isSelected && S.volumePickMode && <VolumePickOverlay shape={shape} allShapes={S.shapes} />}
         {isSelected && S.doorPickMode && <DoorPickOverlay shape={shape} />}
+        {isSelected && S.backPickMode && <BackPickOverlay shape={shape} />}
         {S.faceExtrudeMode && S.faceExtrudeCavityGroupId && <CavityEditOverlay shape={shape} />}
         <VirtualFaceOverlay shape={shape} />
       </group>

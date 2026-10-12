@@ -1050,8 +1050,8 @@ export function collectObstacles(parent: Shape, panels: Shape[], include: (p: Sh
   const tilted: Shape[] = [];
   for (const p of panels) {
     if (p.type !== 'panel' || (p.parameters as any)?.parentShapeId !== parent.id || !include(p)) continue;
-    // Kapaklar hacim engeli değildir (iç kapak da raf/dikme hacmini daraltmaz).
-    if ((p.parameters as any)?.doorGroupId) continue;
+    // Kapaklar ve arkalıklar hacim engeli değildir (iç kapak da raf/dikme hacmini daraltmaz).
+    if ((p.parameters as any)?.doorGroupId || (p.parameters as any)?.backGroupId) continue;
     const b = panelLocalBox(p, parent);
     if (!b) continue;
     if (panelHasRotation(p)) { splitBoxes.push(b); tilted.push(p); } else obstacles.push(b);
