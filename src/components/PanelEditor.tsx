@@ -8,7 +8,7 @@ import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import {
-  type BackGroup, type BackPlacement, type CavityBox, type DoorAlign, type DoorGroup, type DoorType, type PanelGroup, type Shape, type VirtualFace, childPanelsOf, panelOfVf, requestRebuild, shapeById, useAppStore, useStoreFields,
+  type BackGroup, type BackOverlay, type BackPlacement, type CavityBox, type DoorAlign, type DoorGroup, type DoorType, type PanelGroup, type Shape, type VirtualFace, childPanelsOf, panelOfVf, requestRebuild, shapeById, useAppStore, useStoreFields,
 } from '../store';
 import { ToolChip, ToolChipBar, UI_FONT } from './Ui';
 import { confirmBodyPanelPlacement } from './SceneObjects';
@@ -31,12 +31,12 @@ import {
   type EdgeOverlayMode, canSplitDoorAtPanel, setDoorEdgeOverlay,
 } from './DoorService';
 import {
-  type BackCut, type BackEdgeKey, type BackEdgeOverlayMode, type BackLayoutSnap, type BackNearPanel, type BackNodeSolved,
-  BACK_TYPE_LABEL, BACK_TYPE_TITLE, applyBackCuts, backCutBands, backCutOutline, backEdgeGapsOf, backGroupName, backLayoutSnapshot,
-  backMemberCount, backMemberRects, backNearPanels, backSetbackOf, backSizeMode, backSpacingTargetsInScope, canSplitBackAtPanel, clearBackSpacing, collectBackCuts, confirmBackPick,
-  deleteBackGroupWithMembers, editBackSize, equalizeBackGroup, findBackNode, findSolvedBackNode, isBackVf, passiveBackSizeIndex, renameBackGroup, restoreBackLayout, setBackEdgeGap,
-  setBackEdgeInset, setBackEdgeOverlay, setBackHalfOverlay, setBackNodeSpacing, setBackNodeSplit, setBackPlacement, setBackSetback,
-  setBackSplitGap, backSizeBoundByJoint, setBackThickness, setVfBackBound, solveBackTree, splitBackAtPanel, toggleBackSizeLock, vfBackBound,
+  type BackCut, type BackEdgeKey, type BackLayoutSnap, type BackNearPanel, type BackNodeSolved, type BackSolution,
+  BACK_TYPE_LABEL, BACK_TYPE_TITLE, backCutBands, backCutOutline, backFallbackSolution, backGroupName, backLayoutSnapshot, backLeafOfMember, backLeaves,
+  backMemberCount, backNearPanels, backPieceOf, backSetbackOf, backSizeMode, backSpacingTargetsInScope, canSplitBackAtPanel, clearBackSpacing, collectBackCuts, confirmBackPick,
+  deleteBackGroupWithMembers, editBackSize, equalizeBackGroup, findBackNode, findSolvedBackNode, isBackVf, passiveBackSizeIndex, renameBackGroup, restoreBackLayout,
+  setBackEdgeInset, setBackEdgeOverlay, setBackNodeSpacing, setBackNodeSplit, setBackPlacement, setBackSetback,
+  setBackSplitGap, backSizeBoundByJoint, setBackThickness, setVfBackBound, solveBackGroup, splitBackAtPanel, toggleBackSizeLock, vfBackBound,
 } from './BackService';
 
 /* PANEL EDİTÖRÜ — sol çubuktaki panel listesi, önizleme, Taşı/Döndür/Extrude şeritleri,
@@ -1094,10 +1094,10 @@ function BackTypeIcon({ type, size = 14, strokeWidth = 1.25 }: { type: BackPlace
   );
 }
 const BACK_TYPES: BackPlacement[] = ['outer', 'inner'];
-/** Arkalık tipi barı (grup düzeyinde): Nailed / Grooved. */
-function BackTypeBar({ value, onPick }: { value: BackPlacement; onPick: (t: BackPlacement) => void }) {
+/** Arkalık tipi barı: Nailed / Grooved — seçili PARÇA(lar) için (hiçbiri seçili değilse tüm parçalar). value=null → karışık. */
+function BackTypeBar({ value, hint, onPick }: { value: BackPlacement | null; hint: string; onPick: (t: BackPlacement) => void }) {
   return (
-    <div className="flex items-stretch gap-1.5 mb-1" title="Back panel type — Nailed: behind the reference panels, outside the body (covers their thickness · Full / Half per edge). Grooved: between the reference panels, entering each by the groove inset, set back from their rear face.">
+    <div className="flex items-stretch gap-1.5 mb-1" title={`Back panel type for ${hint.toLowerCase()} — Nailed: behind the reference panels, outside the body (covers their thickness · Full / Half / None per edge). Grooved: between the reference panels, entering each by its groove inset, set back from their rear face. Each piece keeps its own type, setback and insets; select a piece (schematic or its row) to change only that piece.`}>
       <div className="flex-1 min-w-0" style={{ display: 'grid', gridTemplateColumns: `repeat(${BACK_TYPES.length}, minmax(0,1fr))`, gap: 2, padding: 2, borderRadius: 9, background: '#f3efe8', border: '1px solid #e9e4dc', fontFamily: UI_FONT }}>
         {BACK_TYPES.map(t => {
           const on = value === t;
@@ -1117,7 +1117,7 @@ function BackTypeBar({ value, onPick }: { value: BackPlacement; onPick: (t: Back
       </div>
       <div className="shrink-0 flex flex-col items-end justify-center" style={{ minWidth: 46 }}>
         <span className="text-[8.5px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]">Type</span>
-        <span className="text-[10px] font-medium text-stone-500 tabular-nums">{BACK_TYPE_LABEL[value]}</span>
+        <span className="text-[10px] font-medium text-stone-500 tabular-nums whitespace-nowrap">{value ? BACK_TYPE_LABEL[value] : 'Mixed'} · {hint}</span>
       </div>
     </div>
   );
@@ -1945,26 +1945,30 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
   );
 }
 
-/** ARKALIK ŞEMASI: ön görünüş (arkadan bakış aynalı), parçalar + sınır levhası bantları (çakmada bini, kanallıda kanal girişi),
- *  açılı levha şeritleri, derz rozetleri ve seçili bölgenin ölçü zincirleri. */
-function BackSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts, nearPanels, refPick, onEditSize, onToggleLock, onEditSplitGap, onEditEdgeGap, onPathClick, onToggleHalfOverlay, onRefPick, onSplitAtPanel, onEdgeOverlay, onEditBegin, onEditCancel }: {
+/** ARKALIK ŞEMASI: ön görünüş (arkadan bakış aynalı), parçalar + sınır levhası bantları (çakma parçada bini, kanallı parçada kanal girişi),
+ *  açılı levha şeritleri, derz rozetleri ve seçili bölgenin ölçü zincirleri. Değerler PARÇA BAŞINA: kenar rozeti / pill'i seçili
+ *  parçalara (seçim yoksa o kenara değen tüm parçalara) yazar; karışık değer "…" / "Mixed" gösterir. */
+function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLabels, cuts, nearPanels, refPick, onEditSize, onToggleLock, onEditSplitGap, onEditInset, onPathClick, onRefPick, onSplitAtPanel, onEdgeOverlay, onEditBegin, onEditCancel }: {
   group: BackGroup; selectedIndex: number; memberLabels: string[];
+  /** Çözüm (solveBackGroup / backFallbackSolution): iç dikdörtgen, hücreler, parça dikdörtgenleri (kendi tip/inset/bini uzantılarıyla). */
+  solution: BackSolution;
   selectedNodes: string[];
   cuts: BackCut[];
   nearPanels: BackNearPanel[];
   /** preview=true → canlı önizleme (yalnız store dağılımı, rebuild yok); yoksa onay (yazım + rebuild). */
   onEditSize: (splitId: string, k: number, v: number, preview?: boolean) => void; onToggleLock: (splitId: string, k: number) => void;
-  onEditSplitGap: (splitId: string, k: number, v: number, preview?: boolean) => void; onEditEdgeGap: (edge: BackEdgeKey, v: number, preview?: boolean) => void;
+  onEditSplitGap: (splitId: string, k: number, v: number, preview?: boolean) => void;
+  /** Kanallı parça(lar)ın kenar girişi (mm ≥ 0), leafIds = yazılacak parçalar. */
+  onEditInset: (edge: BackEdgeKey, mm: number, leafIds: string[], preview?: boolean) => void;
   onEditBegin?: () => unknown; onEditCancel?: (snap: unknown) => void;
   /** Tıklanan noktanın kök → yaprak düğüm yolu (yalnız seçim); additive = Shift/Ctrl/⌘. */
   onPathClick: (path: string[], additive: boolean) => void;
-  onToggleHalfOverlay: (edge: BackEdgeKey, on: boolean) => void;
   refPick?: boolean;
   onRefPick?: (vfId: string) => void;
   /** Arkalık-sınırı dikme/raf bandı: tık arkalığı levhanın ortasından böler (Panel ref modunda da aynı). */
   onSplitAtPanel?: (vfId: string) => void;
-  /** Kenar levhası binisi: Full → Half → None (tek rozet, tıkladıkça döner). */
-  onEdgeOverlay?: (edge: BackEdgeKey, mode: BackEdgeOverlayMode) => void;
+  /** Çakma parça(lar)ın kenar binisi: Full → Half → None (tek rozet, tıkladıkça döner), leafIds = yazılacak parçalar. */
+  onEdgeOverlay: (edge: BackEdgeKey, mode: BackOverlay, leafIds: string[]) => void;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(300);
@@ -1975,8 +1979,7 @@ function BackSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
-  // Giriş kutusu ağaç değişince KAPANMAMALI (canlı önizleme ağacı her tuşta yazar) — treeKey deps'e girmez.
-  const treeKey = JSON.stringify(group.tree);
+  // Giriş kutusu ağaç değişince KAPANMAMALI (canlı önizleme ağacı her tuşta yazar) — yalnız grup/seçim değişince kapanır.
   const selKey = selectedNodes.join('|');
   useEffect(() => { setEditing(null); }, [group.id, selectedIndex >= 0, selKey]);
   const snapRef = useRef<unknown>(undefined);
@@ -1984,7 +1987,8 @@ function BackSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts
   const beginEdit = (e: DoorEdit) => { snapRef.current = onEditBegin?.(); cancelledRef.current = false; setEditing(e); };
   const cancelEdit = () => { cancelledRef.current = true; onEditCancel?.(snapRef.current); setEditing(null); };
 
-  const { rect, axis, side } = group;
+  const { axis, side } = group;
+  const { rect, solved, members } = solution;   // rect = İÇ dikdörtgen (sınır panellerinin iç yüzleri); parçalar kendi uzantılarıyla dışına taşar
   const SW = Math.max(40, width - DOOR_PAD_L - DOOR_PAD_R);
   const duR = Math.max(1e-6, rect.u1 - rect.u0), dvR = Math.max(1e-6, rect.v1 - rect.v0);
   const SH = Math.round(Math.max(DOOR_MIN_ASPECT * SW, Math.min(PREVIEW_HEIGHT - DOOR_PAD_T - DOOR_PAD_B, SW * dvR / duR)));
@@ -1993,13 +1997,28 @@ function BackSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts
   // Görünüş: arka (Z−) ve sağ yan (X+) aynalı; üst (Y+) → Z aşağı.
   const mirrorU = (axis === 2 && side < 0) || (axis === 0 && side > 0);
   const mirrorV = axis === 1 && side > 0;
-  const eg = backEdgeGapsOf(group);
-  const cutsKey = cuts.map(c => `${c.vfId}:${c.n.map(x => x.toFixed(3)).join(',')}:${c.dMin.toFixed(1)}:${c.dMax.toFixed(1)}`).join('|');
-  const solved = useMemo(() => solveBackTree(group), // eslint-disable-next-line react-hooks/exhaustive-deps
-    [rect, treeKey, group.gap, eg.uMin, eg.uMax, eg.vMin, eg.vMax]);
-  const members = useMemo(() => applyBackCuts(group, rect, backMemberRects(solved), cuts),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [solved, cutsKey, group.placement, group.thickness, group.gap]);
+  // PARÇA BAŞINA değerler: üye dikdörtgeni kendi `piece`'ini taşır (tip / setback / inset / bini).
+  const T0 = 0.05;
+  const allLeafIds = members.map(m => m.leafId);
+  const pieceOfLeaf = (id: string) => { const m = members.find(x => x.leafId === id); if (m) return m.piece; const n = findBackNode(group.tree, id); return backPieceOf(group, n && n.kind === 'leaf' ? n : null); };
+  const groovedOf = (ids: string[]) => ids.filter(id => pieceOfLeaf(id).placement === 'inner');
+  const nailedOf = (ids: string[]) => ids.filter(id => pieceOfLeaf(id).placement === 'outer');
+  const anyGrooved = groovedOf(allLeafIds).length > 0;
+  const leafCells = (n: BackNodeSolved): BackNodeSolved[] => (n.kind === 'leaf' ? [n] : n.children.flatMap(leafCells));
+  const cellTouches = (n: BackNodeSolved, k: BackEdgeKey) => (k === 'uMin' ? Math.abs(n.u0 - rect.u0) < T0 : k === 'uMax' ? Math.abs(n.u1 - rect.u1) < T0 : k === 'vMin' ? Math.abs(n.v0 - rect.v0) < T0 : Math.abs(n.v1 - rect.v1) < T0);
+  /** Kenara değen yapraklar (hücresi iç dikdörtgenin o kenarında), isteğe bağlı bir alt küme içinde. */
+  const touchingLeaves = (k: BackEdgeKey, within: string[] = allLeafIds) => leafCells(solved).filter(n => within.includes(n.id) && cellTouches(n, k)).map(n => n.id);
+  const commonInset = (k: BackEdgeKey, ids: string[]): number | null => { const vs = ids.map(id => pieceOfLeaf(id).inset[k]); return vs.length && vs.every(v => Math.abs(v - vs[0]) < T0) ? vs[0] : null; };
+  const commonOverlay = (k: BackEdgeKey, ids: string[]): BackOverlay | 'mixed' | null => { const vs = ids.map(id => pieceOfLeaf(id).overlay[k]); return !vs.length ? null : vs.every(v => v === vs[0]) ? vs[0] : 'mixed'; };
+  const selRegions = selectedNodes.map(id => findSolvedBackNode(solved, id)).filter((n): n is BackNodeSolved => !!n);
+  const leafIdsUnder = (n: BackNodeSolved): string[] => (n.kind === 'leaf' ? [n.id] : n.children.flatMap(leafIdsUnder));
+  const selLeafIds = new Set(selRegions.flatMap(leafIdsUnder));
+  /** Kenar rozetinin / pill'inin yazacağı parçalar: seçili bölgelerin (ya da seçili üye satırının) o kenara değen yaprakları; seçim yoksa kenara değen tüm yapraklar. */
+  const scopeLeaves = (k: BackEdgeKey): string[] => {
+    const sel = selLeafIds.size ? [...selLeafIds] : selectedIndex >= 0 && members[selectedIndex] ? [members[selectedIndex].leafId] : allLeafIds;
+    const t = touchingLeaves(k, sel);
+    return t.length ? t : touchingLeaves(k);
+  };
   const sx = (u: number) => (mirrorU ? ox + SW - ((u - rect.u0) / duR) * SW : ox + ((u - rect.u0) / duR) * SW);
   const sy = (v: number) => (mirrorV ? oy + ((v - rect.v0) / dvR) * SH : oy + ((rect.v1 - v) / dvR) * SH);
   const fs = Math.max(10, Math.min(13.5, width * 0.027));
@@ -2010,24 +2029,27 @@ function BackSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts
   const BAND_MIN = 6;
   const clampX = (x: number) => Math.max(ox - DOOR_PAD_L + 2, Math.min(ox + SW + DOOR_PAD_R - 2, x));
   const clampY = (y: number) => Math.max(oy - DOOR_PAD_T + 2, Math.min(oy + SH + DOOR_PAD_B - 2, y));
-  // Kanallıda kenar şeritleri KANAL GİRİŞİNİ taşır (boşluk negatif saklanır, pozitif gösterilir); çakmada bini Full/Half/None.
-  const grooved = group.placement === 'inner';
-  const insetOf = (k: BackEdgeKey) => Math.max(0, -eg[k]);
-  const insetEdge = (k: BackEdgeKey) => grooved && !!group.bounds[k]?.vfId;
+  // Kenar şeritleri: kanallı parçada KANAL GİRİŞİ (pill), çakma parçada bini Full/Half/None (rozet) — ikisi de parça başına.
+  const insetEdge = (k: BackEdgeKey) => !!group.bounds[k]?.vfId;
   const invX = (x: number) => rect.u0 + (mirrorU ? (ox + SW - x) : (x - ox)) * duR / SW;
   const invY = (y: number) => (mirrorV ? rect.v0 + (y - oy) * dvR / SH : rect.v1 - (y - oy) * dvR / SH);
   const areaPx = [[ox - DOOR_PAD_L + 2, oy - DOOR_PAD_T + 2], [ox + SW + DOOR_PAD_R - 2, oy - DOOR_PAD_T + 2], [ox + SW + DOOR_PAD_R - 2, oy + SH + DOOR_PAD_B - 2], [ox - DOOR_PAD_L + 2, oy + SH + DOOR_PAD_B - 2]];
   const areaMm = areaPx.map(([x, y]) => ({ x: invX(x), y: invY(y) }));
   const ptsPath = (pts: Pt[]) => pts.map((q, i) => `${i ? 'L' : 'M'}${q.x.toFixed(1)},${q.y.toFixed(1)}`).join(' ') + ' Z';
-  type Band = { np: BackNearPanel; x: number; y: number; w: number; h: number; vertical: boolean; half: boolean; none: boolean; aligned: boolean; pts: Pt[] };
+  /** Kenar bandı: `na` = kapsamdaki çakma parçalar (bini rozeti), `gr` = kanallı parçalar (giriş pill'i); ov/ins ortak değer ya da karışık. */
+  type Band = { np: BackNearPanel; x: number; y: number; w: number; h: number; vertical: boolean; half: boolean; none: boolean; aligned: boolean; pts: Pt[];
+    na: string[]; gr: string[]; ov: BackOverlay | 'mixed' | null; ins: number | null };
   const bands: Band[] = nearPanels.map(np => {
     const vertical = np.kind === 'u';
     let a0 = vertical ? Math.min(sx(np.a0), sx(np.a1)) : Math.min(sy(np.a0), sy(np.a1)), a1 = vertical ? Math.max(sx(np.a0), sx(np.a1)) : Math.max(sy(np.a0), sy(np.a1));
     if (a1 - a0 < BAND_MIN) { const c = (a0 + a1) / 2; a0 = c - BAND_MIN / 2; a1 = c + BAND_MIN / 2; }
     const c0 = vertical ? clampY(Math.min(sy(np.c0), sy(np.c1))) : clampX(Math.min(sx(np.c0), sx(np.c1)));
     const c1 = vertical ? clampY(Math.max(sy(np.c0), sy(np.c1))) : clampX(Math.max(sx(np.c0), sx(np.c1)));
-    const none = !!np.edge && np.behind && !!group.noOverlay?.[np.edge];
-    const half = !none && !!np.edge && np.behind && !!group.halfOverlay?.[np.edge];
+    const scope = np.edge ? scopeLeaves(np.edge) : [];
+    const na = np.edge && np.behind ? nailedOf(scope) : [], gr = np.edge ? groovedOf(scope) : [];
+    const ov = np.edge && na.length ? commonOverlay(np.edge, na) : null;
+    const ins = np.edge && gr.length ? commonInset(np.edge, gr) : null;
+    const none = ov === 'none', half = ov === 'half';
     let x = vertical ? a0 : c0, y = vertical ? c0 : a0, w = vertical ? a1 - a0 : c1 - c0, h = vertical ? c1 - c0 : a1 - a0;
     let pts: Pt[] = [{ x, y }, { x: x + w, y }, { x: x + w, y: y + h }, { x, y: y + h }];
     const hull = np.poly ? clipPolyToConvex(np.poly, areaMm) : [];
@@ -2036,16 +2058,17 @@ function BackSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts
       const xs = pts.map(q => q.x), ys = pts.map(q => q.y);
       x = Math.min(...xs); y = Math.min(...ys); w = Math.max(...xs) - x; h = Math.max(...ys) - y;
     }
-    return { np, vertical, half, none, aligned: !!np.ref && !!np.joint, x, y, w, h, pts };
+    return { np, vertical, half, none, aligned: !!np.ref && !!np.joint, x, y, w, h, pts, na, gr, ov, ins };
   });
   const cutBands = backCutBands(group, rect, cuts, areaMm, BAND_MIN * dvR / SH).map(cb => {
     const pts = cb.poly.map(q => ({ x: sx(q.x), y: sy(q.y) }));
     const cx = pts.reduce((a, q) => a + q.x, 0) / pts.length, cy = pts.reduce((a, q) => a + q.y, 0) / pts.length;
     const dx = (mirrorU ? -1 : 1) * cb.dir.x, dy = (mirrorV ? 1 : -1) * cb.dir.y;
     const deg = Math.atan2(dy, dx) * 180 / Math.PI;
-    const half = !!cb.edge && cb.covered && !!group.halfOverlay?.[cb.edge];
+    const na = cb.edge && cb.covered ? nailedOf(scopeLeaves(cb.edge)) : [];
+    const half = na.length > 0 && commonOverlay(cb.edge!, na) === 'half';
     let rd = deg; while (rd > 90) rd -= 180; while (rd < -90) rd += 180;
-    return { ...cb, pts, cx, cy, deg: rd, half };
+    return { ...cb, pts, cx, cy, deg: rd, half, na };
   });
   // Eğik kenarın boşluk pill'i eğik kenarın üzerinde durur; düz kenar zincirlerinde o kenar GÖSTERİLMEZ.
   const slopeSegs = cutBands.flatMap(cb => {
@@ -2073,31 +2096,33 @@ function BackSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts
   // İÇ LEVHA (arkalık-sınırı dikme/raf) tek eylemlidir: BÖL. Bini / Left-Right rozeti yok (Goker, Eki 2026): bütün kanallı arkalık
   // levhayı kısaltır; bölününce parçalar levhanın ortasına kadar girer (iki yandan kanallı) ve derz levhayı izler.
   const splittable = (np: BackNearPanel) => !!onSplitAtPanel && !np.edge && !np.joint && canSplitBackAtPanel(group, np);
+  const scopeTxt = (ids: string[]) => (ids.length === 1 ? `piece ${memberLabels[allLeafIds.indexOf(ids[0])] ?? ''}`.trim() : `${ids.length} pieces`);
   const bandTip = (b: Band) => {
     const np = b.np;
     if (np.edge) {
-      if (insetEdge(np.edge)) return `${edgeName(b)} — ${np.name}: GROOVE INSET ${fmt(insetOf(np.edge))} mm — the back panel enters this panel by this much. Click to edit (0 = ends at the panel's inner face).`;
-      if (!np.behind) return `${edgeName(b)} — ${np.name}: stands outside the back panel plane; the back panel ends beside it (no overlay possible).`;
-      const now = b.none ? 'NONE — the back panel ends at this panel\'s inner face (does not cover it)' : b.half ? 'HALF overlay — the back panel covers half of this panel\'s thickness' : 'FULL overlay — the back panel covers this panel\'s whole thickness';
-      return `${edgeName(b)} — ${np.name}: ${now}. Click to step Full → Half → None.`;
+      const parts: string[] = [];
+      if (b.gr.length) parts.push(`GROOVE INSET ${b.ins == null ? 'mixed' : `${fmt(b.ins)} mm`} (${scopeTxt(b.gr)}) — the grooved piece enters this panel by this much; click to edit (0 = ends at the panel's inner face).`);
+      if (b.na.length) {
+        const now = b.ov === 'none' ? 'NONE — the nailed piece ends at this panel\'s inner face (does not cover it)' : b.ov === 'half' ? 'HALF overlay — the nailed piece covers half of this panel\'s thickness' : b.ov === 'mixed' ? 'MIXED overlay (pieces differ)' : 'FULL overlay — the nailed piece covers this panel\'s whole thickness';
+        parts.push(`${now} (${scopeTxt(b.na)}). Click to step Full → Half → None.`);
+      }
+      if (!parts.length) parts.push(np.behind ? 'no piece touches this edge.' : 'stands outside the back panel plane; nailed pieces end beside it (no overlay possible).');
+      return `${edgeName(b)} — ${np.name}: ${parts.join(' ')} Select a piece to change only that piece.`;
     }
     const what = b.vertical ? 'divider' : 'shelf';
-    const whole = grooved ? `While the back panel is whole, this ${what} is shortened to the back panel's front face.` : `While the back panel is whole, it passes behind this ${what}.`;
-    if (np.ref) return `${np.name} (${what}) — the back panel is split at this ${what}: both pieces reach its middle${grooved ? ' (grooved on both sides)' : ''} and follow it when it moves. Sizes next to this joint come from the ${what}.`;
+    const whole = anyGrooved ? `While the back panel is whole and grooved, this ${what} is shortened to the back panel's front face.` : `While the back panel is whole, it passes behind this ${what}.`;
+    if (np.ref) return `${np.name} (${what}) — the back panel is split at this ${what}: both pieces reach its middle${anyGrooved ? ' (grooved pieces on both sides)' : ''} and follow it when it moves. Sizes next to this joint come from the ${what}.`;
     if (np.joint) return `${np.name} (${what}) — a joint of the back panel already lies at this ${what} (from a count split); it is not bound to it, so the pieces stay when the ${what} moves.`;
-    if (refPick || splittable(np)) return `${np.name} (${what}) — back reference: click to split the back panel through its middle (both pieces reach the middle${grooved ? ', grooved on both sides' : ''}; the ${what} keeps its full depth). ${whole}`;
+    if (refPick || splittable(np)) return `${np.name} (${what}) — back reference: click to split the back panel through its middle (both pieces reach the middle${anyGrooved ? ', grooved pieces on both sides' : ''}; the ${what} keeps its full depth). ${whole}`;
     return `${np.name} (${what}) — back reference, cannot be split here (no room for two pieces). ${whole}`;
   };
   const onBandClick = (b: Band) => {
     const np = b.np;
     if (refPick) { if (!np.edge && onRefPick) onRefPick(np.vfId); return; }
     if (np.edge) {
-      if (np.behind) {
-        const next: BackEdgeOverlayMode = b.none ? 'full' : b.half ? 'none' : 'half';
-        if (onEdgeOverlay) onEdgeOverlay(np.edge, next); else onToggleHalfOverlay(np.edge, !b.half);
-      }
-      // Kanal girişi: kenar pill'i varsa doğrudan düzenlenir; yoksa önce tüm alan seçilir (pill'ler o zaman görünür).
-      else if (insetEdge(np.edge)) { const key = `edge-${np.edge}`; const p = pillByKey.get(key); if (p) beginEdit({ key, v: p.item.txt }); else onPathClick([solved.id], false); }
+      // Çakma parçalar: bini döner (Full → Half → None). Kanallı parçalar: kenar pill'i varsa doğrudan düzenlenir; yoksa önce tüm alan seçilir.
+      if (b.na.length) { const next: BackOverlay = b.ov === 'full' ? 'half' : b.ov === 'half' ? 'none' : 'full'; onEdgeOverlay(np.edge, next, b.na); return; }
+      if (b.gr.length) { const p = [...pillByKey.values()].find(q => q.key.startsWith(`edge-${np.edge}-`)); if (p) beginEdit({ key: p.key, v: p.item.txt }); else onPathClick([solved.id], false); }
       return;
     }
     if (splittable(np)) onSplitAtPanel!(np.vfId);
@@ -2125,9 +2150,6 @@ function BackSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts
     return out;
   };
   const nodeBox = (n: BackNodeSolved) => ({ x0: Math.min(sx(n.u0), sx(n.u1)), x1: Math.max(sx(n.u0), sx(n.u1)), y0: Math.min(sy(n.v1), sy(n.v0)), y1: Math.max(sy(n.v1), sy(n.v0)) });
-  const selRegions = selectedNodes.map(id => findSolvedBackNode(solved, id)).filter((n): n is BackNodeSolved => !!n);
-  const leafIdsUnder = (n: BackNodeSolved): string[] => (n.kind === 'leaf' ? [n.id] : n.children.flatMap(leafIdsUnder));
-  const selLeafIds = new Set(selRegions.flatMap(leafIdsUnder));
   const solvedParent = (id: string): Extract<BackNodeSolved, { kind: 'split' }> | null => {
     const walkP = (n: BackNodeSolved): Extract<BackNodeSolved, { kind: 'split' }> | null => {
       if (n.kind !== 'split') return null;
@@ -2140,7 +2162,7 @@ function BackSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts
   const chains: Chain[] = [];
   const fmt = (v: number) => String(round1(v));
   const focusStrips: Array<{ x: number; y: number; w: number; h: number }> = [];
-  const stripClip = cuts.length ? backCutOutline(group, rect, rect, cuts, false).map(q => ({ x: sx(q.x), y: sy(q.y) })) : null;
+  const stripClip = cuts.length ? backCutOutline(group, rect, rect, cuts).map(q => ({ x: sx(q.x), y: sy(q.y) })) : null;
   const strip = (ax: 'u' | 'v', a: number, b: number, c0: number, c1: number) => {
     const MINW = 3;
     let x0 = ax === 'u' ? Math.min(sx(a), sx(b)) : Math.min(sx(c0), sx(c1)), x1 = ax === 'u' ? Math.max(sx(a), sx(b)) : Math.max(sx(c0), sx(c1));
@@ -2149,9 +2171,6 @@ function BackSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts
     if (ax === 'v' && y1 - y0 < MINW) { const c = (y0 + y1) / 2; y0 = c - MINW / 2; y1 = c + MINW / 2; }
     focusStrips.push({ x: x0, y: y0, w: x1 - x0, h: y1 - y0 });
   };
-  const T0 = 0.05;
-  const touch = { u0: (n: BackNodeSolved) => !slopeEdges.has('uMin') && Math.abs(n.u0 - (rect.u0 + eg.uMin)) < T0, u1: (n: BackNodeSolved) => !slopeEdges.has('uMax') && Math.abs(n.u1 - (rect.u1 - eg.uMax)) < T0,
-    v1: (n: BackNodeSolved) => !slopeEdges.has('vMax') && Math.abs(n.v1 - (rect.v1 - eg.vMax)) < T0, v0: (n: BackNodeSolved) => !slopeEdges.has('vMin') && Math.abs(n.v0 - (rect.v0 + eg.vMin)) < T0 };
   const edgeKeyName = (k: BackEdgeKey) => (k === 'uMin' ? (mirrorU ? 'Right' : 'Left') : k === 'uMax' ? (mirrorU ? 'Left' : 'Right') : k === 'vMax' ? (mirrorV ? 'Bottom' : 'Top') : (mirrorV ? 'Top' : 'Bottom'));
   type Box4 = { u0: number; u1: number; v0: number; v1: number };
   const outlineMemo = new Map<string, Pt[]>();
@@ -2187,13 +2206,19 @@ function BackSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts
     const sp = lineSpan(outlineOf(R), ax, (a + b) / 2) ?? crossOf(R, ax);
     return on ? clampSpan(sp, crossOf(on, ax)) : sp;
   };
-  // Kanallıda panel kenarı: pill KANAL GİRİŞİ (pozitif) gösterir, negatif boşluk olarak yazılır.
-  const edgeItem = (k: BackEdgeKey, a: number, b: number, R: Box4, on?: Box4): ChainItem => (insetEdge(k)
-    ? { key: `edge-${k}`, kind: 'gap', a, b, txt: fmt(insetOf(k)), title: `${edgeKeyName(k)} groove inset — how far the back panel enters the panel; click to edit`, commit: v => onEditEdgeGap(k, -v), preview: v => onEditEdgeGap(k, -v, true), min: 0, span: edgeSpanOf(R, k, on) }
-    : { key: `edge-${k}`, kind: 'gap', a, b, txt: fmt(eg[k]), title: `${edgeKeyName(k)} edge gap — click to edit`, commit: v => onEditEdgeGap(k, v), preview: v => onEditEdgeGap(k, v, true), min: 0, span: edgeSpanOf(R, k, on) });
-  const edgeStrip = (n: BackNodeSolved, k: BackEdgeKey) => {
-    if (k === 'uMin') strip('u', rect.u0, n.u0, n.v0, n.v1); else if (k === 'uMax') strip('u', n.u1, rect.u1, n.v0, n.v1);
-    else if (k === 'vMax') strip('v', n.v1, rect.v1, n.u0, n.u1); else strip('v', rect.v0, n.v0, n.u0, n.u1);
+  // Panel kenarı pill'i = KANAL GİRİŞİ, yalnız o kenara değen KANALLI parçalar için (bölgenin yaprakları içinde); çakma parçada kenar pill'i yok (bini rozeti var).
+  // Pill o parçalara yazar; değerler farklıysa "…" gösterir ve girilen değer hepsine yazılır.
+  const edgeIds = (k: BackEdgeKey, node: BackNodeSolved): string[] => (slopeEdges.has(k) || !insetEdge(k) ? [] : groovedOf(touchingLeaves(k, leafIdsUnder(node))));
+  const insOf = (k: BackEdgeKey, ids: string[]) => commonInset(k, ids) ?? Math.max(0, ...ids.map(id => pieceOfLeaf(id).inset[k]));
+  const edgeItem = (k: BackEdgeKey, ids: string[], a: number, b: number, R: Box4, on: Box4 | undefined, node: BackNodeSolved): ChainItem => {
+    const c = commonInset(k, ids);
+    return { key: `edge-${k}-${node.id}`, kind: 'gap', a, b, txt: c == null ? '…' : fmt(c),
+      title: `${edgeKeyName(k)} groove inset (${scopeTxt(ids)}) — how far the grooved piece enters the panel; click to edit${c == null ? ' (pieces differ — the value you enter applies to all of them)' : ''}`,
+      commit: v => onEditInset(k, v, ids), preview: v => onEditInset(k, v, ids, true), min: 0, span: edgeSpanOf(R, k, on) };
+  };
+  const edgeStrip = (n: BackNodeSolved, k: BackEdgeKey, ins: number) => {
+    if (k === 'uMin') strip('u', rect.u0 - ins, rect.u0, n.v0, n.v1); else if (k === 'uMax') strip('u', rect.u1, rect.u1 + ins, n.v0, n.v1);
+    else if (k === 'vMax') strip('v', rect.v1, rect.v1 + ins, n.u0, n.u1); else strip('v', rect.v0 - ins, rect.v0, n.u0, n.u1);
   };
   const slots = new Map<string, { h: number; v: number }>();
   const pushChain = (on: BackNodeSolved, horiz: boolean, items: ChainItem[]) => {
@@ -2228,7 +2253,7 @@ function BackSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts
     const horiz = n.axis === 'u', dir = horiz ? 1 : -1;
     const items: ChainItem[] = [];
     let p = horiz ? n.u0 : n.v1;
-    if (horiz ? touch.u0(n) : touch.v1(n)) { const k: BackEdgeKey = horiz ? 'uMin' : 'vMax'; items.push(edgeItem(k, p - dir * eg[k], p, n)); if (withStrips) edgeStrip(n, k); }
+    { const k: BackEdgeKey = horiz ? 'uMin' : 'vMax'; const ids = edgeIds(k, n); if (ids.length) { const ins = insOf(k, ids); items.push(edgeItem(k, ids, p - dir * ins, p, n, undefined, n)); if (withStrips) edgeStrip(n, k, ins); } }
     n.children.forEach((_c, i) => {
       const w = n.sizes[i]?.value ?? 0;
       items.push(sizeItem(n, i, p, p + dir * w, horiz));
@@ -2240,7 +2265,7 @@ function BackSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts
         p += dir * g;
       }
     });
-    if (horiz ? touch.u1(n) : touch.v0(n)) { const k: BackEdgeKey = horiz ? 'uMax' : 'vMin'; items.push(edgeItem(k, p, p + dir * eg[k], n)); if (withStrips) edgeStrip(n, k); }
+    { const k: BackEdgeKey = horiz ? 'uMax' : 'vMin'; const ids = edgeIds(k, n); if (ids.length) { const ins = insOf(k, ids); items.push(edgeItem(k, ids, p, p + dir * ins, n, undefined, n)); if (withStrips) edgeStrip(n, k, ins); } }
     return items;
   };
   const placeItems = (n: BackNodeSolved, P: SplitS, on: BackNodeSolved): ChainItem[] => {
@@ -2251,23 +2276,23 @@ function BackSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts
     const start = horiz ? n.u0 : n.v1;
     const c0 = horiz ? on.v0 : on.u0, c1 = horiz ? on.v1 : on.u1;
     if (idx > 0) { const g = P.gaps[idx - 1] ?? 0; items.push({ key: `sgap-${P.id}-${idx - 1}`, kind: 'gap', a: start - dir * g, b: start, txt: fmt(g), title: 'Gap between pieces — click to edit', commit: v => onEditSplitGap(P.id, idx - 1, v), preview: v => onEditSplitGap(P.id, idx - 1, v, true), min: 0, span: jointSpanOf(P, P.axis, start - dir * g, start, on) }); strip(P.axis, start - dir * g, start, c0, c1); }
-    else if (horiz ? touch.u0(n) : touch.v1(n)) { const k: BackEdgeKey = horiz ? 'uMin' : 'vMax'; items.push(edgeItem(k, start - dir * eg[k], start, n, on)); edgeStrip(on, k); }
+    else { const k: BackEdgeKey = horiz ? 'uMin' : 'vMax'; const ids = edgeIds(k, n); if (ids.length) { const ins = insOf(k, ids); items.push(edgeItem(k, ids, start - dir * ins, start, n, on, n)); edgeStrip(on, k, ins); } }
     const w = P.sizes[idx]?.value ?? 0;
     items.push(sizeItem(P, idx, start, start + dir * w, horiz));
     const end = start + dir * w;
     if (idx < P.children.length - 1) { const g = P.gaps[idx] ?? 0; items.push({ key: `sgap-${P.id}-${idx}`, kind: 'gap', a: end, b: end + dir * g, txt: fmt(g), title: 'Gap between pieces — click to edit', commit: v => onEditSplitGap(P.id, idx, v), preview: v => onEditSplitGap(P.id, idx, v, true), min: 0, span: jointSpanOf(P, P.axis, end, end + dir * g, on) }); strip(P.axis, end, end + dir * g, c0, c1); }
-    else if (horiz ? touch.u1(n) : touch.v0(n)) { const k: BackEdgeKey = horiz ? 'uMax' : 'vMin'; items.push(edgeItem(k, end, end + dir * eg[k], n, on)); edgeStrip(on, k); }
+    else { const k: BackEdgeKey = horiz ? 'uMax' : 'vMin'; const ids = edgeIds(k, n); if (ids.length) { const ins = insOf(k, ids); items.push(edgeItem(k, ids, end, end + dir * ins, n, on, n)); edgeStrip(on, k, ins); } }
     return items;
   };
   const fullItems = (ax: 'u' | 'v', on: BackNodeSolved): ChainItem[] => {
     const horiz = ax === 'u', dir = horiz ? 1 : -1;
     const lo = horiz ? rect.u0 : rect.v1, k0: BackEdgeKey = horiz ? 'uMin' : 'vMax', k1: BackEdgeKey = horiz ? 'uMax' : 'vMin';
-    const span = (horiz ? rect.u1 - rect.u0 : rect.v1 - rect.v0) - eg[k0] - eg[k1];
-    if (!slopeEdges.has(k0)) edgeStrip(on, k0);
-    if (!slopeEdges.has(k1)) edgeStrip(on, k1);
-    return [...(slopeEdges.has(k0) ? [] : [edgeItem(k0, lo, lo + dir * eg[k0], rect, on)]),
-      { key: `full-${ax}`, kind: 'size', a: lo + dir * eg[k0], b: lo + dir * (eg[k0] + span), txt: fmt(span), title: horiz ? 'Back panel width (whole area)' : 'Back panel height (whole area)', commit: () => {}, min: 1 },
-      ...(slopeEdges.has(k1) ? [] : [edgeItem(k1, lo + dir * (eg[k0] + span), lo + dir * (eg[k0] + span + eg[k1]), rect, on)])];
+    const span = horiz ? rect.u1 - rect.u0 : rect.v1 - rect.v0;
+    const items: ChainItem[] = [];
+    { const ids = edgeIds(k0, on); if (ids.length) { const ins = insOf(k0, ids); items.push(edgeItem(k0, ids, lo - dir * ins, lo, rect, on, on)); edgeStrip(on, k0, ins); } }
+    items.push({ key: `full-${ax}`, kind: 'size', a: lo, b: lo + dir * span, txt: fmt(span), title: horiz ? 'Back area width (between the reference panels\' inner faces)' : 'Back area height (between the reference panels\' inner faces)', commit: () => {}, min: 1 });
+    { const ids = edgeIds(k1, on); if (ids.length) { const ins = insOf(k1, ids); items.push(edgeItem(k1, ids, lo + dir * span, lo + dir * (span + ins), rect, on, on)); edgeStrip(on, k1, ins); } }
+    return items;
   };
   const crossChain = (n: BackNodeSolved, ax: 'u' | 'v', on: BackNodeSolved) => {
     let A: BackNodeSolved = n, B = solvedParent(A.id);
@@ -2288,11 +2313,11 @@ function BackSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts
 
   type Pill = { key: string; cx: number; cy: number; pw: number; ph: number; f: number; item: ChainItem; chain: Chain; x0: number; x1: number; hidden: boolean; lane: number; deg?: number; lock?: { x: number; y: number } };
   type Placed = { start: number; end: number };
-  // Eğik kenar boşluk pill'i: yalnız SEÇİLİ parçaların en uzun eğik kenarının ortasında, kenar yönünde döndürülmüş.
+  // Eğik kenar giriş pill'i: yalnız SEÇİLİ KANALLI parçaların en uzun eğik kenarının ortasında, kenar yönünde döndürülmüş (çakmada rozet var).
   const selSlopeSegs = slopeSegs.flatMap(sg0 => {
     let best: typeof sg0 | null = null;
     for (const m of members) {
-      if (!m.poly || !selLeafIds.has(m.leafId)) continue;
+      if (!m.poly || !selLeafIds.has(m.leafId) || m.piece.placement !== 'inner') continue;
       for (let i = 0; i < m.poly.length; i++) {
         const a = m.poly[i], b = m.poly[(i + 1) % m.poly.length];
         const len = Math.hypot(b.x - a.x, b.y - a.y);
@@ -2309,13 +2334,14 @@ function BackSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts
     const poly = sg.m.poly!, cxm = poly.reduce((s0, q) => s0 + sx(q.x), 0) / poly.length, cym = poly.reduce((s0, q) => s0 + sy(q.y), 0) / poly.length;
     let nx = -ty, ny = tx;
     if (nx * (cxm - mid.x) + ny * (cym - mid.y) < 0) { nx = -nx; ny = -ny; }
-    const txt = fmt(eg[sg.edge]);
+    const ins = sg.m.piece.inset[sg.edge];
+    const txt = fmt(ins);
     const { pw, ph } = pillSize(txt, fs);
-    const off = -(eg[sg.edge] * SH / dvR) / 2;
+    const off = (ins * SH / dvR) / 2;
     let deg = Math.atan2(ty, tx) * 180 / Math.PI; while (deg > 90) deg -= 180; while (deg < -90) deg += 180;
-    const item: ChainItem = { key: `slope-${sg.cb.cut.vfId}`, kind: 'gap', a: 0, b: 0, txt,
-      title: `Gap to the angled panel ${sg.cb.cut.name} — click to edit (the back panel keeps this distance along the slope)`,
-      commit: v => onEditEdgeGap(sg.edge, v), preview: v => onEditEdgeGap(sg.edge, v, true), min: 0 };
+    const item: ChainItem = { key: `slope-${sg.cb.cut.vfId}-${sg.m.leafId}`, kind: 'gap', a: 0, b: 0, txt,
+      title: `Groove inset into the angled panel ${sg.cb.cut.name} (${scopeTxt([sg.m.leafId])}) — click to edit (the piece enters the panel by this much along the slope)`,
+      commit: v => onEditInset(sg.edge, v, [sg.m.leafId]), preview: v => onEditInset(sg.edge, v, [sg.m.leafId], true), min: 0 };
     return { key: item.key, cx: mid.x + nx * off, cy: mid.y + ny * off, pw, ph, f: fs, item, chain: { horiz: true, pos: 0, items: [item] }, x0: mid.x, x1: mid.x, hidden: false, lane: 0, deg };
   });
   // Sabit boşluk pill'leri (kenar/derz ortasında) önce; ölçüler bunlara 2B'de çarpmayan şeridi seçer.
@@ -2401,7 +2427,7 @@ function BackSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts
     }
     return { x: cx, y: cy };
   };
-  const caption = BACK_TYPE_LABEL[group.placement];
+  const captionOf = (m: typeof members[number]) => BACK_TYPE_LABEL[m.piece.placement];
 
   return (
     <div ref={wrapRef} className={PREVIEW_FRAME} style={{ background: PREVIEW_BG, height }}>
@@ -2445,8 +2471,9 @@ function BackSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts
           const path = pathToLeaf(m.leafId);
           const wMm = Math.round(m.u1 - m.u0), hMm = Math.round(m.v1 - m.v0);
           const lhGuard = fsT * 1.18;
-          const tip = `Back ${lbl} · ${caption} · ${wMm} × ${hMm} mm${m.poly ? ' · angled (cut by rotated reference)' : ''}`
-            + ` — click: select the area, click again to go one level deeper (${path.length} level${path.length === 1 ? '' : 's'}) · Shift/Ctrl+click: add another region · open the piece's row below to edit it`;
+          const caption = captionOf(m);
+          const tip = `Back ${lbl} · ${caption}${m.piece.placement === 'inner' ? ` · setback ${fmt(m.piece.setback)}` : ''} · ${wMm} × ${hMm} mm${m.poly ? ' · angled (cut by rotated reference)' : ''}`
+            + ` — click: select the area, click again to go one level deeper (${path.length} level${path.length === 1 ? '' : 's'}) · Shift/Ctrl+click: add another region · with a piece selected, Type / Setback / edge values apply to that piece only`;
           const pts = m.poly ? m.poly.map(q => ({ x: sx(q.x), y: sy(q.y) })) : null;
           const cx = pts ? pts.reduce((a, q) => a + q.x, 0) / pts.length : (x0 + x1) / 2;
           const cy = pts ? pts.reduce((a, q) => a + q.y, 0) / pts.length : (y0 + y1) / 2;
@@ -2525,8 +2552,12 @@ function BackSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts
           const np = b.np;
           const pickable = !!refPick && !np.edge;
           const splitOn = !pickable && splittable(np);
-          const interactive = pickable || splitOn || (!!np.edge && (np.behind || insetEdge(np.edge)));
-          const chipTxt = pickable || splitOn ? 'Split here' : np.edge ? (np.behind ? (b.none ? 'None' : b.half ? 'Half' : 'Full') : insetEdge(np.edge) ? `In ${fmt(insetOf(np.edge))}` : null) : null;
+          const interactive = pickable || splitOn || (!!np.edge && (b.na.length > 0 || b.gr.length > 0));
+          // Rozet: çakma parça(lar) → bini (Full/Half/None/Mixed); yalnız kanallı → giriş ("In 10", karışıksa "In …").
+          const chipTxt = pickable || splitOn ? 'Split here'
+            : !np.edge ? null
+            : b.na.length ? (b.ov === 'none' ? 'None' : b.ov === 'half' ? 'Half' : b.ov === 'mixed' ? 'Mixed' : 'Full')
+            : b.gr.length ? `In ${b.ins == null ? '…' : fmt(b.ins)}` : null;
           const on = !!np.edge && b.half;
           const cfs = fsT * 0.8;
           const { pw: cw, ph: chh } = chipTxt ? pillSize(chipTxt, cfs) : { pw: 0, ph: 0 };
@@ -2559,9 +2590,9 @@ function BackSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts
             </g>
           );
         })}
-        {/* Açılı levhanın Full/Half bayrağı, kesilen kenarın halfOverlay bayrağıdır (yalnız çakmada). */}
+        {/* Açılı levhanın Full/Half rozeti: kesilen kenara değen ÇAKMA parçaların binisi (kanallı parçada eğik kenar pill'i var). */}
         {cutBands.map(cb => {
-          const interactive = !grooved && cb.covered && !!cb.edge;
+          const interactive = cb.na.length > 0 && !!cb.edge;
           const chipTxt = interactive ? (cb.half ? 'Half' : 'Full') : null;
           const cfs = fsT * 0.8;
           const { pw: cw, ph: chh } = chipTxt ? pillSize(chipTxt, cfs) : { pw: 0, ph: 0 };
@@ -2570,10 +2601,10 @@ function BackSchematic({ group, selectedIndex, selectedNodes, memberLabels, cuts
           const ext = Math.max(...cb.pts.map(q => Math.abs((q.x - cb.cx) * Math.cos(rad) + (q.y - cb.cy) * Math.sin(rad))));
           const spot = chipTxt ? chipSpot(cb.cx, cb.cy, Math.cos(rad), Math.sin(rad), ext, cw) : { x: cb.cx, y: cb.cy };
           const tip = `${cb.cut.name} — angled back-reference panel: the back panel is cut along it (it keeps the side you clicked when placing).` +
-            (interactive ? ` ${cb.half ? 'HALF overlay — the back panel reaches the middle of this panel\'s thickness. Click for full overlay.' : 'FULL overlay — the back panel covers this panel\'s whole thickness. Click for half overlay.'}` : cb.covered ? '' : ' It stands outside the back panel plane, so there is no overlay to set.');
+            (interactive ? ` ${cb.half ? 'HALF overlay — the nailed piece reaches the middle of this panel\'s thickness. Click for full overlay.' : 'FULL overlay — the nailed piece covers this panel\'s whole thickness. Click for half overlay.'} (${scopeTxt(cb.na)})` : cb.covered ? ' Grooved pieces: edit the inset pill on the slanted edge of a selected piece.' : ' It stands outside the back panel plane, so there is no overlay to set.');
           return (
             <g key={`cuthit-${cb.cut.vfId}`} className="yago-band pnl" style={{ cursor: interactive ? 'pointer' : 'default' }}
-              onClick={interactive ? e => { stop(e); onToggleHalfOverlay(cb.edge!, !cb.half); } : undefined}>
+              onClick={interactive ? e => { stop(e); onEdgeOverlay(cb.edge!, cb.half ? 'full' : 'half', cb.na); } : undefined}>
               <path d={d} fill="transparent" stroke="transparent" strokeWidth={4} strokeLinejoin="round" className="hit" />
               <g className="hov">
                 <path d={d} fill={cb.half ? '#f6c39c' : '#cbbca6'} fillOpacity={0.92} />
@@ -3541,6 +3572,7 @@ export function PanelEditor() {
       const vp = panelOfVf(vf.id, shapes), ar = vp?.parameters?.arrowRotated || false, sel = selectedPanelRow === `vf-${vf.id}`;
       const dims = panelDims(vp);
       const doorMemberType = opts.door ? doorMembersOf(opts.door)[opts.door.memberVfIds.indexOf(vf.id)] : undefined;
+      const backPiece = opts.back ? backPieceOf(opts.back, backLeafOfMember(opts.back, opts.back.memberVfIds.indexOf(vf.id))) : undefined;   // parça başına tip
       return (
         <div key={rowKey} ref={el => { const k = `vf-${vf.id}`; if (el) rowRefs.current.set(k, el); else rowRefs.current.delete(k); }}
           className={rowCardClass(sel, dragging, armedRowKey === rowKey)}>
@@ -3554,9 +3586,9 @@ export function PanelEditor() {
               <RowNum label={label} active={sel} small={opts.member} />
               <RowTypeBadge kind={opts.group ? opts.group.kind : opts.door ? 'door' : opts.back ? 'back' : 'body'} active={sel} doorBound={!!vf.doorBound} backBound={vfBackBound(vf)} />
               {opts.member && (opts.group || opts.door || opts.back) ? (
-                <span title={opts.back ? `${BACK_TYPE_TITLE[opts.back.placement]} — name comes from the group (edit it on the group row)` : opts.door && doorMemberType ? `${DOOR_TYPE_TITLE[doorMemberType.type]}${doorMemberType.leafCount === 2 ? ` · leaf ${doorMemberType.leaf + 1}/2` : ''} — name comes from the group (edit it on the group row)` : 'Name comes from the group (edit it on the group row)'}
+                <span title={backPiece ? `${BACK_TYPE_TITLE[backPiece.placement]}${backPiece.placement === 'inner' ? ` · setback ${backPiece.setback} mm` : ''} — name comes from the group (edit it on the group row); select this row to change only this piece's type / setback` : opts.door && doorMemberType ? `${DOOR_TYPE_TITLE[doorMemberType.type]}${doorMemberType.leafCount === 2 ? ` · leaf ${doorMemberType.leaf + 1}/2` : ''} — name comes from the group (edit it on the group row)` : 'Name comes from the group (edit it on the group row)'}
                   className="flex-1 min-w-0 h-[22px] px-[5px] flex items-center gap-1.5 text-[11.5px] font-medium text-stone-500 truncate cursor-default select-none">
-                  {opts.back && <span className="shrink-0 text-stone-400"><BackTypeIcon type={opts.back.placement} size={11} strokeWidth={1.4} /></span>}
+                  {backPiece && <span className="shrink-0 text-stone-400"><BackTypeIcon type={backPiece.placement} size={11} strokeWidth={1.4} /></span>}
                   {opts.door && doorMemberType && <span className="shrink-0 text-stone-400"><DoorTypeIcon type={doorMemberType.type} size={11} strokeWidth={1.4} /></span>}
                   <span className="truncate">{opts.group ? groupName(opts.group) : opts.door ? doorGroupName(opts.door) : backGroupName(opts.back!)}</span>
                   {opts.door && doorMemberType?.leafCount === 2 && <span className="shrink-0 text-[9.5px] font-semibold text-stone-400 tabular-nums">{doorMemberType.leaf + 1}/2</span>}
@@ -3894,28 +3926,44 @@ export function PanelEditor() {
       const mIds = members.map(m => m.id);
       const toggleRow = (e: React.MouseEvent) => { stop(e); if (open) closeCard(g.id, mIds); else { setSelectedBackGroupId(g.id); openCard(g.id); } };
       const dimsW = round1(g.rect.u1 - g.rect.u0), dimsH = round1(g.rect.v1 - g.rect.v0);
-      const backParent = open ? shapeById(g.shapeId, shapes) : undefined;   // pahalı: kesimler yalnız kart açıkken çözülür
+      const backParent = open ? shapeById(g.shapeId, shapes) : undefined;   // pahalı: kesimler/çözüm yalnız kart açıkken
       const backCuts = backParent ? collectBackCuts(backParent, shapes, virtualFaces) : [];
-      type DraftField = 't' | 'setback';
-      const draft = (field: DraftField, fallback: number) => (backDraft?.id === g.id && backDraft.field === field ? backDraft.v : String(fallback));
-      const applyDraft = (field: DraftField) => {
-        const v = parseFloat(draft(field, field === 't' ? g.thickness : backSetbackOf(g)).replace(',', '.'));
-        setBackDraft(null);
-        if (!Number.isFinite(v)) return;
-        if (field === 't') void setBackThickness(g.id, v); else void setBackSetback(g.id, v);
-      };
-      const numInput = (field: DraftField, fallback: number) => (
-        <input type="text" inputMode="decimal" value={draft(field, fallback)}
-          onChange={e => setBackDraft({ id: g.id, field, v: e.target.value })}
-          onBlur={() => applyDraft(field)}
-          onKeyDown={e => { if (e.key === 'Enter') applyDraft(field); if (e.key === 'Escape') setBackDraft(null); }}
-          onClick={stop} className="yago-field" style={{ ...FIELD_INPUT, width: 34, textAlign: 'right' }} />
-      );
-      const solvedTree = solveBackTree(g);
+      // Çözüm: iç dikdörtgen + parça dikdörtgenleri (her parça kendi tip / setback / inset / bini değerleriyle). Gövde yoksa kenar bilgisiz.
+      const sol = (backParent && solveBackGroup(g, backParent, shapes)) || backFallbackSolution(g);
+      const solvedTree = sol.solved;
       const selMemberIdx = g.memberVfIds.findIndex(id => selectedPanelRow === `vf-${id}`);
       const picked = backNodeSel?.id === g.id ? backNodeSel.nodes.filter(id => !!findBackNode(g.tree, id)) : [];
       const primaryId = picked[picked.length - 1] as string | undefined;
       const primary = primaryId ? findBackNode(g.tree, primaryId) : null;
+      // HEDEF PARÇALAR (tip / setback): seçili bölgelerin yaprakları, yoksa seçili üye satırının parçası, yoksa tüm parçalar (grup varsayılanı yazılır).
+      const leafOf = (id: string) => { const n = findBackNode(g.tree, id); return n && n.kind === 'leaf' ? n : null; };
+      const memberLeaf = selMemberIdx >= 0 ? backLeafOfMember(g, selMemberIdx) : undefined;
+      const scoped = picked.length > 0 || !!memberLeaf;
+      const targetLeafIds = picked.length ? picked.flatMap(id => { const n = findBackNode(g.tree, id); return n ? backLeaves(n).map(l => l.id) : []; }) : memberLeaf ? [memberLeaf.id] : backLeaves(g.tree).map(l => l.id);
+      const targetPieces = targetLeafIds.map(id => backPieceOf(g, leafOf(id)));
+      const commonPlacement: BackPlacement | null = targetPieces.length && targetPieces.every(p => p.placement === targetPieces[0].placement) ? targetPieces[0].placement : null;
+      const groovedTargets = targetPieces.filter(p => p.placement === 'inner');
+      const setbackVal = groovedTargets.length ? groovedTargets[0].setback : backSetbackOf(g);
+      const setbackMixed = groovedTargets.some(p => Math.abs(p.setback - setbackVal) > 0.05);
+      const memberLabelOf = (leafId: string) => { const li = backLeaves(g.tree).findIndex(l => l.id === leafId); const vfId = g.memberVfIds[li]; const mi = members.findIndex(m => m.id === vfId); return `${label}.${(mi >= 0 ? mi : li) + 1}`; };
+      const typeHint = !scoped ? 'All pieces' : targetLeafIds.length === 1 ? `Piece ${memberLabelOf(targetLeafIds[0])}` : `${targetLeafIds.length} pieces`;
+      const allKinds = new Set(backLeaves(g.tree).map(l => backPieceOf(g, l).placement));
+      const typeTxt = allKinds.size > 1 ? 'mixed nailed / grooved pieces' : `${BACK_TYPE_LABEL[[...allKinds][0] ?? g.placement].toLowerCase()} back panel`;
+      type DraftField = 't' | 'setback';
+      const draft = (field: DraftField, fallback: number) => (backDraft?.id === g.id && backDraft.field === field ? backDraft.v : String(fallback));
+      const applyDraft = (field: DraftField) => {
+        const v = parseFloat(draft(field, field === 't' ? g.thickness : setbackVal).replace(',', '.'));
+        setBackDraft(null);
+        if (!Number.isFinite(v)) return;
+        if (field === 't') void setBackThickness(g.id, v); else void setBackSetback(g.id, v, scoped ? targetLeafIds : []);
+      };
+      const numInput = (field: DraftField, fallback: number, mixed = false) => (
+        <input type="text" inputMode="decimal" value={draft(field, fallback)} placeholder={mixed ? '…' : undefined}
+          onChange={e => setBackDraft({ id: g.id, field, v: e.target.value })}
+          onBlur={() => applyDraft(field)}
+          onKeyDown={e => { if (e.key === 'Enter') applyDraft(field); if (e.key === 'Escape') setBackDraft(null); }}
+          onClick={stop} className="yago-field" style={{ ...FIELD_INPUT, width: 34, textAlign: 'right', ...(mixed ? { color: '#9a3412' } : {}) }} />
+      );
       // Seçili düğüm yoldaysa bir seviye iner; yaprak tekrar tıklanırsa seçim kalkar; yolda değilse kök.
       const onPathClick = (path: string[], additive: boolean) => {
         if (!path.length) return;
@@ -3982,7 +4030,7 @@ export function PanelEditor() {
               <RowTypeBadge kind="back" active={open} count={backMemberCount(g)} />
               <input type="text" value={backGroupName(g)} onClick={stop} onChange={e => renameBackGroup(g.id, e.target.value)} placeholder="Back"
                 title="Group name (applies to all its back panels)" className={`${ROW_INPUT_CLASS} font-semibold`} />
-              <RowDims w={dimsW} h={dimsH} t={g.thickness} tLetter="T" title={`Back area width · height · thickness (${BACK_TYPE_LABEL[g.placement].toLowerCase()} back panel)`} />
+              <RowDims w={dimsW} h={dimsH} t={g.thickness} tLetter="T" title={`Back area width · height (between the reference panels' inner faces) · thickness (${typeTxt})`} />
               <div className="flex items-center justify-end gap-[3px] shrink-0 ml-0.5" style={{ width: ROW_TRAIL_W }} onClick={stop}>
                 <button onClick={e => { stop(e); deleteBackGroupWithMembers(g.id); }} title="Delete group (all back panels)" className={ROW_DEL_CLASS}><Trash2 size={ROW_ICON - 1} strokeWidth={1.9} /></button>
                 <RowChevron open={open} onClick={toggleRow} />
@@ -3993,9 +4041,9 @@ export function PanelEditor() {
             <div className="yago-expand px-2 pt-2 pb-2" style={{ borderTop: '1px solid #f3e6d6', fontFamily: UI_FONT }} onClick={stop}>
               <div className="flex items-center gap-1 mb-1.5">
                 <FieldBox fixed label="T" title="Back panel thickness (mm)">{numInput('t', g.thickness)}{unitTxt('mm')}</FieldBox>
-                {g.placement === 'inner' && (
-                  <FieldBox fixed label="Setback" title="Groove setback (mm): from the reference panels' rear face to the back panel's rear face — the groove sits this far in from the back edge">
-                    {numInput('setback', backSetbackOf(g))}{unitTxt('mm')}
+                {groovedTargets.length > 0 && (
+                  <FieldBox fixed label="Setback" accent={scoped} title={`Groove setback (mm) for ${typeHint.toLowerCase()}${scoped ? '' : ' (group default; pieces with their own value are reset)'}: from the reference panels' rear face to the grooved piece's rear face — the groove sits this far in from the back edge.${setbackMixed ? ' Pieces differ — the value you enter applies to all of them.' : ''}`}>
+                    {numInput('setback', setbackVal, setbackMixed)}{unitTxt('mm')}
                   </FieldBox>
                 )}
                 <BackSplitModeSelect value={splitMode} onChange={pickSplitMode} />
@@ -4012,17 +4060,16 @@ export function PanelEditor() {
                 )}
                 <IconSquareBtn icon={Equal} title="Equalize sizes (unlock all)" onClick={() => { void equalizeBackGroup(g.id); }} />
               </div>
-              <BackTypeBar value={g.placement} onPick={t => { void setBackPlacement(g.id, t); }} />
-              <BackSchematic group={g} selectedIndex={selMemberIdx} selectedNodes={picked}
+              <BackTypeBar value={commonPlacement} hint={typeHint} onPick={t => { void setBackPlacement(g.id, t, scoped ? targetLeafIds : []); }} />
+              <BackSchematic group={g} solution={sol} selectedIndex={selMemberIdx} selectedNodes={picked}
                 memberLabels={g.memberVfIds.map((id, i) => { const mi = members.findIndex(m => m.id === id); return `${label}.${(mi >= 0 ? mi : i) + 1}`; })}
                 cuts={backCuts} nearPanels={nearPanels}
                 refPick={refMode} onRefPick={onRefPick} onSplitAtPanel={onSplitAtPanel}
                 onEditSize={(sid, k, v, pv) => { void editBackSize(g.id, sid, k, v, { preview: pv }); }} onToggleLock={(sid, k) => toggleBackSizeLock(g.id, sid, k)}
                 onEditSplitGap={(sid, k, v, pv) => { void setBackSplitGap(g.id, sid, k, v, { preview: pv }); }}
-                onEditEdgeGap={(edge, v, pv) => { if (v < 0) void setBackEdgeInset(g.id, edge, -v, { preview: pv }); else void setBackEdgeGap(g.id, edge, v, { preview: pv }); }}   // negatif = kanal girişi (kanallı)
+                onEditInset={(edge, mm, ids, pv) => { void setBackEdgeInset(g.id, edge, mm, ids, { preview: pv }); }}
                 onEditBegin={() => backLayoutSnapshot(g.id)} onEditCancel={snap => restoreBackLayout(g.id, snap as BackLayoutSnap | null)}
-                onToggleHalfOverlay={(edge, on) => { void setBackHalfOverlay(g.id, edge, on); }}
-                onEdgeOverlay={(edge, m) => { void setBackEdgeOverlay(g.id, edge, m); }}
+                onEdgeOverlay={(edge, m, ids) => { void setBackEdgeOverlay(g.id, edge, m, ids); }}
                 onPathClick={onPathClick} />
               <SectionHead label="Back panels" count={members.length} />
               <div className="flex flex-col gap-[2px]">

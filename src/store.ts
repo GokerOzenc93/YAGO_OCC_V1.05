@@ -144,8 +144,11 @@ export interface DoorLeafSplit { leaves: GapSpec[]; gap: number }
 
 // ARKALIK (BackService) — kapaktan bağımsız veri modeli. Sınır = VF.backBound; üye = VF.backGroupId.
 //  placement 'outer' = arkadan ÇAKMA: sınır panellerinin arka yüzüne, hacmin DIŞINA (panel kalınlığını örter, Full/Half/None);
-//  'inner' = KANALLI: panellerin arasına, kenar boşlukları NEGATİF (= kanala giriş, mm), arka yüzden `setback` kadar içerde.
+//  'inner' = KANALLI: panellerin arasına, kenardan `inset` kadar panele (kanala) girer, arka yüzden `setback` kadar içerde.
+//  Tip / setback / inset / bini PARÇA BAŞINA (BackNode leaf); grup değerleri yalnız varsayılandır.
 export type BackPlacement = 'outer' | 'inner';
+/** Çakma kenar binisi: full = sınır panelinin kalınlığını örter, half = ortasına, none = iç yüzünde biter. */
+export type BackOverlay = 'full' | 'half' | 'none';
 /** Arkalık kenar referansı: bir sınır panelinin VF'si ya da gövde kutusunun kenarı. */
 export interface BackBoundRef { vfId?: string; body?: boolean }
 export interface BackBounds { uMin: BackBoundRef; uMax: BackBoundRef; vMin: BackBoundRef; vMax: BackBoundRef }
@@ -157,9 +160,18 @@ export type BackAlign = 'min' | 'center' | 'max';
 /** Derz bağı (parça levhayı izler): bağlı levhanın VF id'si + derzin levhaya göre konumu. */
 export interface BackJointRef { vfId: string; align: BackAlign }
 /** ARKALIK AĞACI: leaf = parça; split = u (yan yana) / v (üst üste) eksende çocuklar (sizes + n−1 gaps).
- *  Çocuk ölçüleri (+ aralar) toplamı HER ZAMAN düğümün alanıdır → bölmek üst bölmenin ölçüsünü değiştirmez. */
+ *  Çocuk ölçüleri (+ aralar) toplamı HER ZAMAN düğümün alanıdır → bölmek üst bölmenin ölçüsünü değiştirmez.
+ *  Alan = İÇ dikdörtgen (sınır panellerinin iç yüzleri); her PARÇA kendi tipini, setback'ini ve kenar giriş/binisini taşır
+ *  (yoksa grup varsayılanı) — kanallı parça kenardan `inset` kadar panele girer, çakma parça bini kadar paneli örter. */
 export type BackNode =
-  | { id: string; kind: 'leaf' }
+  | {
+    id: string; kind: 'leaf';
+    placement?: BackPlacement; setback?: number;
+    /** Kanallı: kenar başına kanala giriş (mm ≥ 0). Yalnız grup dikdörtgeninin o kenarına değen parçada anlamlı. */
+    inset?: Partial<BackEdgeGaps>;
+    /** Çakma: kenar başına bini. */
+    overlay?: Partial<Record<keyof BackBounds, BackOverlay>>;
+  }
   | {
     id: string; kind: 'split'; axis: 'u' | 'v'; sizes: GapSpec[]; gaps: number[]; children: BackNode[];
     /** SPACING: hedef parça ölçüsü (mm); parça sayısı her çözümde alandan türetilir. Sayı elle girilince kalkar. */
@@ -179,22 +191,19 @@ export interface BackPick {
 export interface BackGroup {
   id: string; shapeId: string;
   axis: 0 | 1 | 2; side: 1 | -1;
+  /** Parça varsayılanları (parça kendi değerini taşıyabilir): tip, kanallı setback (mm), kanala giriş (mm). */
   placement: BackPlacement;
-  /** Yalnız kanallı: sınır panellerinin arka yüzünden arkalığın arka yüzüne mesafe (mm). */
   setback?: number;
+  inset: number;
   bounds: BackBounds;
-  /** Arkalık düzlemi bu sınır panelinin arka yüzündedir. Yoksa en gerideki sınır panelinin yüzü. */
+  /** Derinlik referansı: sınır panelinin arka yüzü. Yoksa en gerideki sınır panelinin yüzü. */
   depthRef?: BackBoundRef;
+  /** İÇ dikdörtgen (sınır panellerinin iç yüzleri / gövde kenarları); front = sınır panellerinin ARKA yüzü (P). */
   rect: BackRect;
-  /** Bölme ağacı (kök = tüm arkalık alanı − kenar boşlukları). */
+  /** Bölme ağacı (kök = iç dikdörtgen). */
   tree: BackNode;
-  edgeGaps: BackEdgeGaps;
   /** Parçalar arası varsayılan boşluk (mm). */
   gap: number;
-  /** YARIM BİNME (çakma): işaretli kenarda arkalık sınır panelinin kalınlık ORTASINA kadar gider. */
-  halfOverlay?: { uMin?: boolean; uMax?: boolean; vMin?: boolean; vMax?: boolean };
-  /** HİÇ BİNMEME (çakma): işaretli kenarda arkalık sınır panelinin İÇ yüzünde biter. halfOverlay ile birlikte işaretlenmez. */
-  noOverlay?: { uMin?: boolean; uMax?: boolean; vMin?: boolean; vMax?: boolean };
   /** ÇIPA (u,v): dönmüş sınır panelinde alan çıpanın tarafına kırpılır. Yoksa merkez. */
   anchor?: [number, number];
   thickness: number;
