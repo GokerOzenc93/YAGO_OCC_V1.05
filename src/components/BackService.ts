@@ -5,9 +5,9 @@ import {
 import * as THREE from 'three';
 import { type Vec3, genId, round1 } from './Geometry';
 import { type Point2D, clipHalfPlane, clipPolyToConvex, frontHullOf, largestFaceNormal, panelFrontHull, panelHasRotation, polyArea } from './FaceRegion';
-import {
-  type GapMode, applyGapEditProportional, bodyLocalBox, boxSpan, cycleGapMode, editGroupGap, gapMode, groupFacing, memberThicknessesOf, panelLocalBox, passiveGapIndex, rescaleGaps,
-} from './PanelGroupService';
+import { type GapMode, applyGapEditProportional, bodyLocalBox, cycleGapMode, gapMode, panelLocalBox, passiveGapIndex, rescaleGaps } from './PanelGroupService';
+// DİKKAT: BackService ↔ PanelGroupService döngüsel içe aktarım (groupObstacles → backShortensGroup). Modül üst düzeyinde
+// PanelGroupService bağlarını OKUMA; yalnız fonksiyon gövdesinde çağır.
 
 // ARKALIK (BackService) — kapaktan (DoorService) BAĞIMSIZ servis: kendi tipleri, store dilimi, çözücüsü ve VF yazımı.
 //  • Sınır = VF.backBound işaretli paneller; yoksa gövde kenarı. Düzlem = gövdenin ARKA yüzü (gövde-yerel ön = +Z → arka = Z−);
@@ -17,7 +17,9 @@ import {
 //  • Bölme = AĞAÇ (BackGroup.tree); split alanını çocuklarına KATSAYI kuralıyla dağıtır, bölmek üst ölçüsünü değiştirmez.
 //  • Arkalık VF'leri her rebuild'de buradan yazılır; arkalık panelleri DAMGALAMAZ, hacim engeli değildir, gövdeyle kesilmez.
 //  • Dönmüş sınır paneli kenar olmaz; arkalığı büyük-yüz düzlemiyle keser (arkalık düzlemi değişmez).
-//  • Derz bağı (BackNode.refs): derz levhayı izler; Left/Center/Right rozeti LEVHAYI taşır (arkalık yerinde kalır).
+//  • Arkalık-sınırı raf/dikme (Goker, Eki 2026): BÜTÜN kanallı arkalık levhayı KISALTIR (levha arkalığın ön yüzünde biter —
+//    `backShortensGroup`, hacim engeli); Panel ref ile levhada BÖLÜNÜNCE parçalar levhanın ortasına kadar girer (iki yandan kanallı),
+//    levha tam boy kalır ve derz levhayı izler (BackNode.refs, hep 'center'). Full / Half / Left / Right binisi YOK.
 
 export const BACK_THICKNESS = 8;
 export const BACK_GAP = 0;
@@ -691,33 +693,6 @@ export function backNearPanels(group: BackGroup, parent: Shape, shapes: Shape[],
   return out;
 }
 
-export function alignedBackPanelMin(np: Pick<BackNearPanel, 'a0' | 'a1' | 'joint'>, align: BackAlign): number | null {
-  if (!np.joint) return null;
-  const t = np.a1 - np.a0, { p0, p1 } = np.joint;
-  return align === 'min' ? p0 - t : align === 'max' ? p1 : (p0 + p1) / 2 - t / 2;
-}
-
-// Levhayı derze göre bir kez taşır (arkalık yerinde kalır), kendi grup boşluğunu yazarak. false → çağıran derzi levhaya götürür.
-function movePanelToAlign(group: Pick<BackGroup, 'id' | 'axis'>, np: BackNearPanel, align: BackAlign, panelGroups: PanelGroup[]): boolean {
-  const want = alignedBackPanelMin(np, align);
-  if (want == null) return false;
-  const delta = want - np.a0;
-  if (Math.abs(delta) < 0.05) return true;
-  const pg = np.groupId ? panelGroups.find(g => g.id === np.groupId) : undefined;
-  if (!pg || np.memberIndex == null || np.memberIndex < 0) { console.warn('[YAGO][ARKALIK-HİZA] levha raf/dikme üyesi değil, taşınamaz — derz levhaya gidecek:', np.name); return false; }
-  const { u, v } = backPlaneAxes(group.axis);
-  if (pg.axis !== (np.kind === 'u' ? u : v)) { console.warn('[YAGO][ARKALIK-HİZA] grubun dizilim ekseni levhanın kalınlık ekseni değil, taşınamaz:', np.name, pg.id); return false; }
-  const k = np.memberIndex;
-  const cur = pg.gaps[k]?.value;
-  if (cur == null) return false;
-  const next = round1(cur + groupFacing(pg) * delta);
-  if (next < 0) { console.warn('[YAGO][ARKALIK-HİZA] istenen boşluk negatif, levha taşınamaz:', np.name, next); return false; }
-  const sim = applyGapEditProportional(pg.gaps, k, next, boxSpan(pg.cavity, pg.axis), pg.count, memberThicknessesOf(pg));   // editGroupGap ile aynı kural
-  if (Math.abs((sim[k]?.value ?? NaN) - next) > 0.05) { console.warn('[YAGO][ARKALIK-HİZA] boşluk yazılamıyor (kilitli komşular), levha taşınamaz:', np.name, next); return false; }
-  void editGroupGap(pg.id, k, next);
-  return true;
-}
-
 const groupById = (id: string) => useAppStore.getState().backGroups.find(g => g.id === id);
 
 function solveFromStore(group: BackGroup): BackSolution | null {
@@ -956,6 +931,8 @@ export function clearBackSpacing(groupId: string, scopeIds: string[], axis: 'u' 
 }
 
 export type BackEditOpts = { preview?: boolean };
+/** k. ölçünün bitişik derzi (k ya da k−1) levhaya bağlı mı → ölçü levhadan türetilir, girilemez. */
+export const backSizeBoundByJoint = (sn: Pick<Extract<BackNodeSolved, { kind: 'split' }>, 'refs'>, k: number): boolean => !!(sn.refs?.[k] || sn.refs?.[k - 1]);
 // Bitişik derz levhaya bağlıysa ölçü LEVHAYI taşıyarak girilir (önce k., yoksa k−1. derz); taşınamazsa bağlı derz yine levhadan gelir.
 export async function editBackSize(groupId: string, splitId: string, k: number, value: number, opts: BackEditOpts = {}): Promise<void> {
   const group = groupById(groupId);
@@ -963,18 +940,8 @@ export async function editBackSize(groupId: string, splitId: string, k: number, 
   const sn = findSolvedBackNode(solveBackTree(group), splitId);
   if (!sn || sn.kind !== 'split' || k < 0 || k >= sn.children.length) return;
   if (passiveBackSizeIndex(sn.sizes, sn.children.length) === k) { console.warn('[YAGO][ARKALIK-KATSAYI] ölçü', k + 1, 'pasif (diğerleri pinli/kilitli, kalanı toplar) — giriş yok sayıldı', splitId); return; }
-  const refs = sn.refs ?? {};
-  const j = refs[k] ? k : refs[k - 1] ? k - 1 : -1;
-  if (j >= 0 && !opts.preview) {
-    const st = useAppStore.getState();
-    const parent = shapeById(group.shapeId, st.shapes);
-    const ref = refs[j], g = sn.gaps[j] ?? group.gap, c = sn.children[k];
-    const center = sn.axis === 'u' ? (j === k ? c.u0 + value + g / 2 : c.u1 - value - g / 2) : (j === k ? c.v1 - value - g / 2 : c.v0 + value + g / 2);
-    const np = parent ? backNearPanels(group, parent, st.shapes, st.virtualFaces, st.panelGroups).find(p => p.vfId === ref.vfId) : undefined;
-    const joint: BackJoint = { splitId, k: j, axis: sn.axis, p0: center - g / 2, p1: center + g / 2, c0: 0, c1: 0 };
-    if (np && movePanelToAlign(group, { ...np, joint }, ref.align, st.panelGroups)) return;
-    console.warn('[YAGO][ARKALIK-BAĞ] bölmede levhaya bağlı derz var ama levha taşınamadı — ölçü girişi bağlı derzi değiştiremez (Shift+tık ile bağı çözün):', splitId, 'derz', j);
-  }
+  // Bitişik derz levhaya bağlıysa ölçü levhadan gelir: giriş yok sayılır (levha taşınmaz, arkalık levhayı izler).
+  if (backSizeBoundByJoint(sn, k)) { console.warn('[YAGO][ARKALIK-BAĞ] ölçü', k + 1, 'levhaya bağlı derze bitişik — değeri levhanın konumu belirler, giriş yok sayıldı', splitId); return; }
   const L = sn.axis === 'u' ? sn.u1 - sn.u0 : sn.v1 - sn.v0;
   const bn = sizeEditBase?.groupId === groupId ? findBackNode(sizeEditBase.tree, splitId) : null;
   const base = bn?.kind === 'split' && bn.sizes.length === sn.sizes.length ? bn.sizes : undefined;
@@ -1091,75 +1058,6 @@ export function canSplitBackAtPanel(group: BackGroup, np: Pick<BackNearPanel, 'k
   walk(solveBackTree(group));
   return ok;
 }
-// Derz levhaya bağlanır ve LEVHA bir kez taşınır (arkalık yerinde); taşınamazsa derz levhaya gider. null → bağ çözülür, parçalar donar.
-export async function setBackJointRef(groupId: string, splitId: string, k: number, vfId: string, align: BackAlign | null): Promise<void> {
-  const group = groupById(groupId);
-  const node = group ? findBackNode(group.tree, splitId) : null;
-  if (!group || !node || node.kind !== 'split' || k < 0 || k >= node.children.length - 1) return;
-  const st = useAppStore.getState();
-  const sn = findSolvedBackNode(solveBackTree(group), splitId);
-  if (!sn || sn.kind !== 'split') return;
-  if (!align) {
-    if (!node.refs?.[k]) return;
-    const refs = { ...node.refs }; delete refs[k];
-    const sizes = sn.sizes.map(s => ({ ...s, edited: true }));
-    st.updateBackGroup(groupId, { tree: replaceBackNode(group.tree, splitId, old => ({ ...(old as any), sizes, refs: Object.keys(refs).length ? refs : undefined })) });
-    return;
-  }
-  const parent = shapeById(group.shapeId, st.shapes);
-  if (!parent) return;
-  const np = backNearPanels(group, parent, st.shapes, st.virtualFaces, st.panelGroups).find(p => p.vfId === vfId);
-  const joint = backJoints(solveBackTree(group)).find(j => j.splitId === splitId && j.k === k);
-  if (!np || !joint || joint.axis !== np.kind) { console.warn('[YAGO][ARKALIK-BAĞ] levha bu derzle bağlanamaz (yakın değil / eksen uyuşmaz):', vfId, splitId, k); return; }
-  if (np.edge) { console.warn('[YAGO][ARKALIK-BAĞ] kenar levhası (grup sınırı) derze bağlanmaz:', np.name); return; }
-  const refs: Record<number, BackJointRef> = { ...(node.refs ?? {}), [k]: { vfId, align } };
-  const tree = replaceBackNode(group.tree, splitId, old => ({ ...(old as any), refs }));
-  // Sıra önemli: önce bağ yazılır (rebuild içindeki çözüm bağı görsün), sonra levha taşınır.
-  st.updateBackGroup(groupId, { tree });
-  const moved = movePanelToAlign(group, { ...np, joint }, align, st.panelGroups);
-  if (!moved) await writeBackGroup({ ...group, tree }, {});
-}
-/** Derz binisi: levha kutusundan derz merkezi. 'center' = Half (iki parça levha ortasına), 'min'/'max' = o taraftaki parça Full. */
-export const backOverlayJointCenter = (a0: number, a1: number, g: number, align: BackAlign) =>
-  (align === 'center' ? (a0 + a1) / 2 : align === 'min' ? a1 + g / 2 : a0 - g / 2);
-/** Derzin levhaya göre durumu (geometriden): hizalardan biri değilse null (serbest). */
-export function backJointOverlayState(j: Pick<BackJoint, 'p0' | 'p1'>, a0: number, a1: number, tol = 0.6): BackAlign | null {
-  const c = (j.p0 + j.p1) / 2, g = j.p1 - j.p0;
-  return (['center', 'min', 'max'] as BackAlign[]).find(a => Math.abs(backOverlayJointCenter(a0, a1, g, a) - c) <= tol) ?? null;
-}
-// Derzi `center`a kaydırır: yalnız iki komşu parça değişir (k büyür/küçülür, k+1 tersi). v ekseninde çocuklar ÜSTTEN dizilir.
-function shiftJointSizes(sn: Extract<BackNodeSolved, { kind: 'split' }>, k: number, center: number): GapSpec[] | null {
-  const j = backJoints(sn).find(x => x.splitId === sn.id && x.k === k);
-  if (!j || k + 1 >= sn.sizes.length) return null;
-  const d = center - (j.p0 + j.p1) / 2;
-  const dk = sn.axis === 'u' ? d : -d;
-  const total = sn.sizes[k].value + sn.sizes[k + 1].value;
-  const a = round1(sn.sizes[k].value + dk), b = round1(total - a);
-  if (a < MIN_BACK_SPAN || b < MIN_BACK_SPAN) return null;
-  const sizes = sn.sizes.map(s => ({ ...s }));
-  sizes[k] = { ...sizes[k], value: a, edited: true };
-  sizes[k + 1] = { ...sizes[k + 1], value: b, edited: true };
-  return sizes;
-}
-// DERZ BİNİSİ (Full/Half): LEVHA yerinde kalır, PARÇALAR uzar/kısalır; derz levhaya bağlanır (refs) → parçalar her çözümde levhayı izler.
-export async function setBackJointOverlay(groupId: string, splitId: string, k: number, vfId: string, align: BackAlign): Promise<void> {
-  const group = groupById(groupId);
-  const node = group ? findBackNode(group.tree, splitId) : null;
-  if (!group || !node || node.kind !== 'split' || k < 0 || k >= node.children.length - 1) return;
-  const st = useAppStore.getState();
-  const parent = shapeById(group.shapeId, st.shapes);
-  const sn = findSolvedBackNode(solveBackTree(group), splitId);
-  if (!parent || !sn || sn.kind !== 'split') return;
-  const joint = backJoints(sn).find(j => j.splitId === splitId && j.k === k);
-  const np = backNearPanels(group, parent, st.shapes, st.virtualFaces, st.panelGroups).find(p => p.vfId === vfId);
-  if (!np || !joint || joint.axis !== np.kind || np.edge) { console.warn('[YAGO][ARKALIK-BİNİ] levha bu derzin binisi olamaz (yakın değil / eksen uyuşmaz / kenar):', vfId, splitId, k); return; }
-  const center = backOverlayJointCenter(np.a0, np.a1, joint.p1 - joint.p0, align);
-  const sizes = shiftJointSizes(sn, k, center);
-  if (!sizes) { console.warn('[YAGO][ARKALIK-BİNİ] parça bu biniye sığmıyor (en az', MIN_BACK_SPAN, 'mm):', splitId, k, align); return; }
-  const refs: Record<number, BackJointRef> = { ...(node.refs ?? {}), [k]: { vfId, align } };
-  await writeBackGroup(group, { tree: replaceBackNode(group.tree, splitId, old => ({ ...(old as any), sizes, refs })) });
-}
-
 export async function setBackThickness(groupId: string, t: number): Promise<void> {
   const group = groupById(groupId);
   if (!group || !Number.isFinite(t) || t < 1) return;
@@ -1201,6 +1099,17 @@ function pruneBackRefs(tree: BackNode, solved: BackNodeSolved, vfs: VirtualFace[
     console.warn('[YAGO][ARKALIK-BAĞ] bağlı levha silinmiş, bağ düştü (ölçüler donduruldu):', splitId, 'derz', k, ref.vfId);
   }
   return changed ? out : null;
+}
+
+/** KISALTMA KURALI (PanelGroupService.groupObstacles): kanallı BÜTÜN arkalık, üyesi arkalık-sınırı olan raf/dikme grubunun hacim
+ *  engelidir → levha arkalığın ön yüzünde biter. Arkalık grubun bir üyesinde BÖLÜNMÜŞSE (derz bağı) engel değildir: parçalar
+ *  levhanın ortasına kadar girer (iki yandan kanallı), levha tam boy kalır. Çakma arkalık gövdenin dışındadır, kısaltmaz. */
+export function backShortensGroup(group: PanelGroup, backPanel: Shape, backGroups: BackGroup[] = useAppStore.getState().backGroups, vfs: VirtualFace[] = useAppStore.getState().virtualFaces): boolean {
+  const bg = backGroups.find(g => g.id === (backPanel.parameters as any)?.backGroupId);
+  if (!bg || bg.placement !== 'inner' || bg.shapeId !== group.shapeId) return false;
+  if (!group.memberVfIds.some(id => vfBackBound(vfs.find(f => f.id === id)))) return false;
+  const bound = new Set(backJointRefs(bg.tree).map(r => r.ref.vfId));
+  return !group.memberVfIds.some(id => bound.has(id));
 }
 
 /** Rebuild sonrası (PanelEngine): store'daki dikdörtgen/ağaç güncel çözümle eşitlenir (bağlı derzlerin izlediği levha dahil). */
