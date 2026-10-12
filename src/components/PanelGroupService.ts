@@ -7,7 +7,7 @@ import { panelHasRotation } from './FaceRegion';
 import { matchReferenceFace } from './PanelOps';
 // Döngüsel içe aktarma (DoorService / BackService ↔ PanelGroupService): yalnız işlev gövdelerinde kullanılır — ESM canlı bağlarıyla güvenli.
 import { doorJointForBond, moveDoorJointTo } from './DoorService';
-import { backShortensGroup } from './BackService';
+import { backObstacleFor } from './BackService';
 
 // RAF / DİKME GRUPLARI: grup = şekilli serbest hacim (CavityGrid hücre bölgesi, tohumdan floodRegion) + n panel + n+1 boşluk.
 //  • Her raf kendi dilimindeki kesitin sınır çokgenini alır (sectionPolygon); çıpa (anchorFrac) tohumdur, kutu merkezi değil.
@@ -1046,15 +1046,15 @@ function applyCavityStepsToCells(
 interface ObstacleSet { obstacles: CavityBox[]; splitBoxes: CavityBox[]; tiltFaces: TiltFace[] }
 
 /** Düz paneller kutu engeli; eğik paneller yalnız bölme düzlemi (splitBoxes) + yarım-uzay (tiltFaces).
- *  Kapak hiç engel değildir; arkalık yalnız `backInclude` onaylarsa (bütün kanallı arkalık, arkalık-sınırı grubu kısaltır). */
-export function collectObstacles(parent: Shape, panels: Shape[], include: (p: Shape) => boolean = () => true, backInclude: (p: Shape) => boolean = () => false): ObstacleSet {
+ *  Kapak hiç engel değildir; arkalık yalnız `backBox` bir kutu verirse (çakma kenarındaki / geçtiği levhayı kısaltır — BackService). */
+export function collectObstacles(parent: Shape, panels: Shape[], include: (p: Shape) => boolean = () => true, backBox: (p: Shape) => CavityBox | null = () => null): ObstacleSet {
   const obstacles: CavityBox[] = [], splitBoxes: CavityBox[] = [];
   const tilted: Shape[] = [];
   for (const p of panels) {
     if (p.type !== 'panel' || (p.parameters as any)?.parentShapeId !== parent.id) continue;
     if ((p.parameters as any)?.doorGroupId) continue;
-    if ((p.parameters as any)?.backGroupId) { if (!backInclude(p)) continue; }
-    else if (!include(p)) continue;
+    if ((p.parameters as any)?.backGroupId) { const bb = backBox(p); if (bb) obstacles.push(bb); continue; }
+    if (!include(p)) continue;
     const b = panelLocalBox(p, parent);
     if (!b) continue;
     if (panelHasRotation(p)) { splitBoxes.push(b); tilted.push(p); } else obstacles.push(b);
@@ -1089,8 +1089,8 @@ export function groupBoundsPanelPredicate(group: PanelGroup, groups: PanelGroup[
 
 function groupObstacles(group: PanelGroup, parent: Shape, panels: Shape[], groups: PanelGroup[]): ObstacleSet {
   const bounds = groupBoundsPanelPredicate(group, groups, useAppStore.getState().virtualFaces);
-  // Arkalık VF sırasından bağımsız kısaltır: kural anlamsaldır (bütün kanallı arkalık + arkalık-sınırı üye), bkz. BackService.
-  return collectObstacles(parent, panels, p => bounds(p), p => backShortensGroup(group, p));
+  // Arkalık VF sırasından bağımsız kısaltır: kural anlamsaldır (çakma kenar / geçilen arkalık-sınırı üye), bkz. BackService.
+  return collectObstacles(parent, panels, p => bounds(p), p => backObstacleFor(group, p));
 }
 
 /** Yeniden seçim ızgarası çözümle AYNI engel kümesiyle kurulur → grubun şu anki yeri de aday olur. */

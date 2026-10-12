@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { type PanelGroup, type Shape, type VirtualFace, childPanelsOf, panelOfVf, shapeById, useAppStore, vfOfPanel } from '../store';
+import { type CavityBox, type PanelGroup, type Shape, type VirtualFace, childPanelsOf, panelOfVf, shapeById, useAppStore, vfOfPanel } from '../store';
 import { type ExtrudeStep, type TransformStep, applyExtrudeSteps, applyTransformSteps, getUnifiedSteps, matchReferenceFace, resolveReferenceFacePlane, stepRefTargets } from './PanelOps';
 import { computeFaceComponentContour, computeFreeRegionLocal, convexHull2D, panelHasRotation, panelIsTiltedSlab } from './FaceRegion';
 import {
@@ -10,9 +10,10 @@ import {
 } from './Geometry';
 import { isInteriorPanel, isInteriorVf, recalculateInteriorVfs, syncPanelGroups } from './PanelGroupService';
 import { isDoorPanel, isDoorVf, recalculateDoorVfs, syncDoorGroups } from './DoorService';
-import { isBackPanel, isBackVf, recalculateBackVfs, syncBackGroups } from './BackService';
+import { backNailStampFor, isBackPanel, isBackVf, recalculateBackVfs, syncBackGroups } from './BackService';
 
-// Kapak ve arkalık panelleri (LEVHA): damgalamaz, köşe birleşimine girmez, gövdeyle sığdırılmaz/kesilmez, hiçbir paneli kesmez.
+// Kapak ve arkalık panelleri (LEVHA): köşe birleşimine girmez, gövdeyle sığdırılmaz/kesilmez, hiçbir paneli kesmez; damgalamaz —
+// tek istisna arkalığın ÇAKMA kenarı (iç parça, kenar ilişkisi 'nail'): o kenarın gövde panelini basar (BackService.backNailStampFor).
 const isSheetPanel = (p: any): boolean => isDoorPanel(p) || isBackPanel(p);
 const isSheetVf = (vf: any): boolean => isDoorVf(vf) || isBackVf(vf);
 
@@ -1134,8 +1135,17 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
     return d.dot(n) > 0.01;
   };
 
+  // ARKALIK ÇAKMA KENARI: iç arkalık parçası, çakma ilişkili kenarındaki gövde panelini sırası ne olursa olsun basar (panel
+  // arkalığın ön yüzünde biter — BackService.backNailStampFor); başka hiçbir durumda kapak/arkalık damgalamaz.
+  const backNailBox = new Map<string, CavityBox | null>();
+  const backNailFor = (p: any, vfId: string): CavityBox | null => {
+    const key = `${p.id}|${vfId}`;
+    if (!backNailBox.has(key)) backNailBox.set(key, backNailStampFor(p, vfId));
+    return backNailBox.get(key) ?? null;
+  };
   const stamps = (p: any, vfId: string, myPanel: any, myFaceNormal: THREE.Vector3 | null): boolean => {
     if (p.parameters?.virtualFaceId === vfId) return false;
+    if (isBackPanel(p)) return !!backNailFor(p, vfId);
     if (isSheetPanel(p)) return false;
     // Raf/dikme yalnız VF sırasıyla basar (istisna yok) — PanelGroupService.groupObstacles da aynı sırayı okur.
     if (isInteriorPanel(p)) {
@@ -1163,7 +1173,19 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
   // DAMGA: extrude'lu → VF tabanı ya da budanmış taban + adım ops'u; düz → oransal damga ya da gerçek mesh;
   // dönmüş → motorun NİHAİ geometrisi (ops'suz). Extrude'suz panelde hedef yüzden bağımsız → panel başına önbellek.
   const stampCache = new Map<string, any>();
-  const stampOf = (p: any, myFaceNormal: THREE.Vector3 | null): any => {
+  const stampOf = (p: any, myFaceNormal: THREE.Vector3 | null, vfId?: string): any => {
+    // Arkalık damgası = baskı kutusu (parça levhası, çakma kenarda panelin dış yüzünün ötesine uzatılmış), hedef VF'ye göre.
+    if (isBackPanel(p) && vfId) {
+      const box = backNailFor(p, vfId);
+      if (!box) return p;
+      const key = `${p.id}|back|${vfId}`;
+      if (!stampCache.has(key)) {
+        const sz = [0, 1, 2].map(a => Math.max(0.01, box.max[a] - box.min[a]));
+        const geo = new THREE.BoxGeometry(sz[0], sz[1], sz[2]).translate((box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2);
+        stampCache.set(key, { ...p, geometry: geo });
+      }
+      return stampCache.get(key);
+    }
     const key = hasExtrudeSteps(p) ? `${p.id}|${myFaceNormal ? `${myFaceNormal.x},${myFaceNormal.y},${myFaceNormal.z}` : '-'}` : p.id;
     if (stampCache.has(key)) return stampCache.get(key);
     const r = buildStamp(p, myFaceNormal);
@@ -1239,7 +1261,7 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
     const myPanel = childPanels.find(p => p.parameters?.virtualFaceId === vfId);
     const myVf = vfById.get(vfId);
     const myFaceNormal = myVf ? new THREE.Vector3(...myVf.normal).normalize() : null;
-    return childPanels.filter(p => stamps(p, vfId, myPanel, myFaceNormal)).map(p => stampOf(p, myFaceNormal));
+    return childPanels.filter(p => stamps(p, vfId, myPanel, myFaceNormal)).map(p => stampOf(p, myFaceNormal, vfId));
   };
 
   const updatedMap = new Map<string, VirtualFace>();

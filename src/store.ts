@@ -143,10 +143,13 @@ export type DoorAlign = 'min' | 'center' | 'max';
 export interface DoorLeafSplit { leaves: GapSpec[]; gap: number }
 
 // ARKALIK (BackService) — kapaktan bağımsız veri modeli. Sınır = VF.backBound; üye = VF.backGroupId.
-//  placement 'outer' = arkadan ÇAKMA: sınır panellerinin arka yüzüne, hacmin DIŞINA (panel kalınlığını örter, Full/Half/None);
-//  'inner' = KANALLI: panellerin arasına, kenardan `inset` kadar panele (kanala) girer, arka yüzden `setback` kadar içerde.
-//  Tip / setback / inset / bini PARÇA BAŞINA (BackNode leaf); grup değerleri yalnız varsayılandır.
+//  placement 'outer' = arkadan ÇAKMA: sınır panellerinin arka yüzüne, hacmin DIŞINA (panel kalınlığını örter, bini kadar);
+//  'inner' = KANALLI: panellerin arasına, arka yüzden `setback` kadar içerde; her KENARIN ilişkisi ayrı (BackEdgeRel):
+//  'groove' → panel tam boy, parça `inset` kadar kanala girer; 'nail' → panel arkalığın ÖN yüzüne kadar kısalır, parça ucunu `cover` kadar örter.
+//  Tip / setback / inset / bini PARÇA BAŞINA (BackNode leaf); kenar ilişkisi GRUP BAŞINA (kenar = o sınır paneliyle derz).
 export type BackPlacement = 'outer' | 'inner';
+/** Kenar ilişkisi (yalnız kanallı/iç parçada anlamlı): kanallı (panel tam boy) ya da çakma (panel arkalığın ön yüzünde biter). */
+export type BackEdgeRel = 'groove' | 'nail';
 /** Arkalık kenar referansı: bir sınır panelinin VF'si ya da gövde kutusunun kenarı. */
 export interface BackBoundRef { vfId?: string; body?: boolean }
 export interface BackBounds { uMin: BackBoundRef; uMax: BackBoundRef; vMin: BackBoundRef; vMax: BackBoundRef }
@@ -156,7 +159,9 @@ export interface BackEdgeGaps { uMin: number; uMax: number; vMin: number; vMax: 
 /** Derz hizası: 'min'/'max' = levha o taraftaki parçanın arkasında; 'center' = derz levhanın ortasında. */
 export type BackAlign = 'min' | 'center' | 'max';
 /** Derz bağı (parça levhayı izler): bağlı levhanın VF id'si + derzin levhaya göre konumu. */
-export interface BackJointRef { vfId: string; align: BackAlign }
+/** rel: levhayla İLİŞKİ (yoksa 'groove'): groove → iki yandan kanal, levha tam boy; nail → levha arkalığın ön yüzüne kadar kısalır,
+ *  parçalar ucunu `jointIn` kadar örter. */
+export interface BackJointRef { vfId: string; align: BackAlign; rel?: BackEdgeRel }
 /** ARKALIK AĞACI: leaf = parça; split = u (yan yana) / v (üst üste) eksende çocuklar (sizes + n−1 gaps).
  *  Çocuk ölçüleri (+ aralar) toplamı HER ZAMAN düğümün alanıdır → bölmek üst bölmenin ölçüsünü değiştirmez.
  *  Alan = İÇ dikdörtgen (sınır panellerinin iç yüzleri); her PARÇA kendi tipini, setback'ini ve kenar giriş/binisini taşır
@@ -197,7 +202,9 @@ export interface BackGroup {
   setback?: number;
   inset: number;
   bounds: BackBounds;
-  /** Derinlik referansı: sınır panelinin arka yüzü. Yoksa en gerideki sınır panelinin yüzü. */
+  /** KENAR İLİŞKİSİ (sınır paneliyle derz; iç parçalarda): yoksa 'groove'. 'nail' kenarın paneli arkalığın ön yüzüne kadar kısaltılır. */
+  edgeRel?: Partial<Record<keyof BackBounds, BackEdgeRel>>;
+  /** Derinlik referansı: sınır panelinin arka yüzü. Yoksa en gerideki sınır panelinin yüzü. Çakma (kısaltılan) kenar derinlik vermez. */
   depthRef?: BackBoundRef;
   /** İÇ dikdörtgen (sınır panellerinin iç yüzleri / gövde kenarları); front = sınır panellerinin ARKA yüzü (P). */
   rect: BackRect;
