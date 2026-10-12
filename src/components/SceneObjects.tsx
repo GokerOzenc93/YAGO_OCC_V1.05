@@ -195,7 +195,7 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
     'panelMoveMode', 'panelMoveValueMode', 'panelMoveTargetPanelId', 'panelMoveRefSourceVertex', 'panelMoveRefTargetPanelId', 'panelMoveRefTargetVertex',
     'panelRotateMode', 'panelRotateValueMode', 'panelRotateTargetPanelId', 'panelRotatePivot', 'panelRotateRefArmVertex', 'panelRotateAxis', 'panelRotateRefFace', 'setPanelRotateRefFace',
     'selectedPanelGroupId', 'volumePickMode', 'volumePickGroupId', 'selectedDoorGroupId', 'doorPickMode', 'doorRefPickGroupId', 'setDoorRefPickGroupId',
-    'selectedBackGroupId', 'backPickMode', 'backRefPickGroupId', 'setBackRefPickGroupId', 'virtualFaces');
+    'selectedBackGroupId', 'backFocusVfIds', 'backPickMode', 'backRefPickGroupId', 'setBackRefPickGroupId', 'virtualFaces');
   const [hoveredExtrudeGroup, setHoveredExtrudeGroup] = useState<number | null>(null);
   const [moveRefHover, setMoveRefHover] = useState(false);
   const { faces, groups: faceGroups } = useMemo(() => (shape.geometry ? getFacesAndGroups(shape.geometry) : { faces: [], groups: [] }), [shape.geometry]);
@@ -205,7 +205,8 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
   const isParentSelected = parentShapeId === S.selectedShapeId;
   const isGroupSelected = isParentSelected && ((!!S.selectedPanelGroupId && shape.parameters?.panelGroupId === S.selectedPanelGroupId)
     || (!!S.selectedDoorGroupId && shape.parameters?.doorGroupId === S.selectedDoorGroupId)
-    || (!!S.selectedBackGroupId && shape.parameters?.backGroupId === S.selectedBackGroupId));
+    // Arkalık: şemada parça seçiliyse yalnız o parçalar (backFocusVfIds), değilse grubun tüm üyeleri.
+    || (!!S.selectedBackGroupId && shape.parameters?.backGroupId === S.selectedBackGroupId && (!S.backFocusVfIds.length || S.backFocusVfIds.includes(virtualFaceId))));
   const isRowSelectedRaw = isGroupSelected || (isParentSelected && !!virtualFaceId && S.selectedPanelRow === `vf-${virtualFaceId}`);
   // Sınır vurgusu: kapak seçme/ref → doorBound, arkalık seçme/ref → backBound.
   const ownVf = virtualFaceId ? S.virtualFaces.find(f => f.id === virtualFaceId) : undefined;

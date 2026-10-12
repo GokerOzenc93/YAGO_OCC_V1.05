@@ -147,8 +147,6 @@ export interface DoorLeafSplit { leaves: GapSpec[]; gap: number }
 //  'inner' = KANALLI: panellerin arasına, kenardan `inset` kadar panele (kanala) girer, arka yüzden `setback` kadar içerde.
 //  Tip / setback / inset / bini PARÇA BAŞINA (BackNode leaf); grup değerleri yalnız varsayılandır.
 export type BackPlacement = 'outer' | 'inner';
-/** Çakma kenar binisi: full = sınır panelinin kalınlığını örter, half = ortasına, none = iç yüzünde biter. */
-export type BackOverlay = 'full' | 'half' | 'none';
 /** Arkalık kenar referansı: bir sınır panelinin VF'si ya da gövde kutusunun kenarı. */
 export interface BackBoundRef { vfId?: string; body?: boolean }
 export interface BackBounds { uMin: BackBoundRef; uMax: BackBoundRef; vMin: BackBoundRef; vMax: BackBoundRef }
@@ -169,8 +167,11 @@ export type BackNode =
     placement?: BackPlacement; setback?: number;
     /** Kanallı: kenar başına kanala giriş (mm ≥ 0). Yalnız grup dikdörtgeninin o kenarına değen parçada anlamlı. */
     inset?: Partial<BackEdgeGaps>;
-    /** Çakma: kenar başına bini. */
-    overlay?: Partial<Record<keyof BackBounds, BackOverlay>>;
+    /** Çakma: kenar başına sınır panelinin ÜZERİNE BİNME (mm, 0 = iç yüzünde biter … panel kalınlığı = tamamen örter; yoksa tamamen örter). */
+    cover?: Partial<BackEdgeGaps>;
+    /** İÇ LEVHAYA BİNME (dikme/raf, levhaya bağlı derzde): parçanın o kenarda levhanın üzerine ne kadar bindiği (mm, 0..levha kalınlığı).
+     *  Çakma ve kanallı parçada aynı anlam; yoksa levhanın ortası (kalınlık / 2). İki yandaki parçalar ayrı değer taşır. */
+    jointIn?: Partial<BackEdgeGaps>;
   }
   | {
     id: string; kind: 'split'; axis: 'u' | 'v'; sizes: GapSpec[]; gaps: number[]; children: BackNode[];
@@ -369,6 +370,8 @@ export interface AppState {
   updateBackGroup: (id: string, u: Partial<BackGroup>) => void;
   deleteBackGroup: (id: string) => void;
   selectedBackGroupId: string | null; setSelectedBackGroupId: (id: string | null) => void;
+  /** Şemada seçili arkalık parçalarının VF'leri: 3B'de yalnız bunlar vurgulanır (boş → grup seçiliyse tüm üyeler). */
+  backFocusVfIds: string[]; setBackFocusVfIds: (ids: string[]) => void;
   /** Arkalık seçme modu: tıklama gövdenin ARKA yüzüne taşınır, adaylar arkalık-sınırı panellerden kurulur. */
   backPickMode: boolean; setBackPickMode: (b: boolean) => void;
   /** PANEL REF modu: tıklanan arkalık-sınırı dikme/rafın ortasından arkalık bölünür. */
@@ -626,6 +629,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     selectedBackGroupId: s.selectedBackGroupId === id ? null : s.selectedBackGroupId,
   })),
   selectedBackGroupId: null,
+  backFocusVfIds: [],
+  setBackFocusVfIds: (ids) => set((s) => (s.backFocusVfIds.length === ids.length && s.backFocusVfIds.every((x, i) => x === ids[i]) ? {} : { backFocusVfIds: ids })),
   setSelectedBackGroupId: (id) => set({
     selectedBackGroupId: id,
     ...(id ? { selectedPanelRow: null, selectedPanelGroupId: null, selectedDoorGroupId: null } : {}),

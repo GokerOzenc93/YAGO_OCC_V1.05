@@ -1,5 +1,5 @@
 import {
-  type BackBoundRef, type BackBounds, type BackEdgeGaps, type BackGroup, type BackJointRef, type BackNode, type BackOverlay, type BackPick, type BackPlacement, type BackRect, type CavityBox, type GapSpec, type PanelGroup, type Shape, type VirtualFace,
+  type BackAlign, type BackBoundRef, type BackBounds, type BackEdgeGaps, type BackGroup, type BackJointRef, type BackNode, type BackPick, type BackPlacement, type BackRect, type CavityBox, type GapSpec, type PanelGroup, type Shape, type VirtualFace,
   panelOfVf, requestRebuild, shapeById, useAppStore,
 } from '../store';
 import * as THREE from 'three';
@@ -129,12 +129,11 @@ function cutEdgeOf(c: BackCut, cu: number, cv: number, axis: 0 | 1 | 2, front: n
 const cutCoverFar = (c: BackCut, axis: 0 | 1 | 2, side: 1 | -1, placement: BackPlacement, front: number) =>
   placement === 'outer' && (side > 0 ? c.box.max[axis] <= front + TOL : c.box.min[axis] >= front - TOL);
 
-type HalfOverlay = Partial<Record<BackEdgeKey, boolean>> | undefined;
 // Üyeyi dönmüş panellerin büyük-yüz düzlemleriyle kırpar; kesim arkalığın İKİ yüzeyinde alınır, kısıtlayıcı olan tutulur
 // (arkalık eğik panele girmez). Kenar boşluğu = kesicinin kestiği kenarın boşluğu.
 function clipMemberByCuts(
   m: { u0: number; u1: number; v0: number; v1: number }, cuts: BackCut[], axis: 0 | 1 | 2, side: 1 | -1,
-  placement: BackPlacement, thickness: number, front: number, gapIn: number | BackEdgeGaps, half?: HalfOverlay, ref?: [number, number],
+  placement: BackPlacement, thickness: number, front: number, gapIn: number | BackEdgeGaps, cover?: Partial<BackEdgeGaps>, ref?: [number, number],
 ): Pt2[] | null {
   if (!cuts.length) return null;
   const { u, v } = backPlaneAxes(axis);
@@ -150,15 +149,16 @@ function clipMemberByCuts(
     const { keepBelow } = ce;
     const gap = typeof gapIn === 'number' ? gapIn : gapIn[ce.edge];
     const coverFar = cutCoverFar(c, axis, side, placement, front);
-    const halfHere = coverFar && !!half?.[ce.edge];
-    const mid = (c.dMin + c.dMax) / 2;
+    // Çakma binme (mm, levha normali boyunca): girilmemişse levhanın tamamı.
+    const cm = cover?.[ce.edge];
+    const cov = coverFar ? (Number.isFinite(cm) ? Math.max(0, Math.min(c.dMax - c.dMin, cm as number)) : c.dMax - c.dMin) : 0;
     const before = poly;
     if (keepBelow) {
-      const lim = (halfHere ? mid : coverFar ? c.dMax : c.dMin) - gap;
+      const lim = c.dMin + cov - gap;
       const C = Math.min(...planes.map(pa => lim - Na * pa));
       poly = clipHalfPlane(poly, A, B, C);
     } else {
-      const lim = (halfHere ? mid : coverFar ? c.dMin : c.dMax) + gap;
+      const lim = c.dMax - cov + gap;
       const C = Math.max(...planes.map(pa => lim - Na * pa));
       poly = clipHalfPlane(poly, -A, -B, -C);
     }
@@ -285,18 +285,22 @@ export function backPickRect(pick: BackPick, placement: BackPlacement): BackRect
 }
 
 /** PARÇA (yaprak) etkin değerleri: yaprak değeri, yoksa grup varsayılanı. inset yalnız panel kenarında (gövde kenarı 0). */
-export interface BackPiece { placement: BackPlacement; setback: number; inset: BackEdgeGaps; overlay: Record<BackEdgeKey, BackOverlay> }
+export interface BackPiece { placement: BackPlacement; setback: number; inset: BackEdgeGaps;
+  /** Çakma: sınır paneline binme — yalnız GİRİLMİŞ değerler (mm); girilmeyen kenar paneli tamamen örter. */
+  cover: Partial<BackEdgeGaps>;
+  /** İç levhaya (dikme/raf) binme — yalnız GİRİLMİŞ değerler; girilmeyen kenar levhanın ortasına kadar (bkz. backJointSides). */
+  jointIn: Partial<BackEdgeGaps> }
 export type BackLeaf = Extract<BackNode, { kind: 'leaf' }>;
 export function backPieceOf(g: Pick<BackGroup, 'placement' | 'setback' | 'inset' | 'bounds'>, leaf: BackLeaf | null | undefined): BackPiece {
   const placement = leaf?.placement ?? g.placement;
   const setback = Number.isFinite(leaf?.setback) && (leaf!.setback as number) >= 0 ? (leaf!.setback as number) : backSetbackOf(g);
   const gi = Number.isFinite(g.inset) && g.inset >= 0 ? g.inset : BACK_INSET;
   const ins = (k: BackEdgeKey) => (g.bounds[k]?.vfId ? (Number.isFinite(leaf?.inset?.[k]) ? Math.max(0, leaf!.inset![k] as number) : gi) : 0);
-  const ov = (k: BackEdgeKey): BackOverlay => leaf?.overlay?.[k] ?? 'full';
   return {
     placement, setback,
     inset: { uMin: ins('uMin'), uMax: ins('uMax'), vMin: ins('vMin'), vMax: ins('vMax') },
-    overlay: { uMin: ov('uMin'), uMax: ov('uMax'), vMin: ov('vMin'), vMax: ov('vMax') },
+    cover: { ...(leaf?.cover ?? {}) },
+    jointIn: { ...(leaf?.jointIn ?? {}) },
   };
 }
 /** i. üyenin yaprağı (üye sırası = DFS yaprak sırası). */
@@ -310,7 +314,7 @@ export interface BackMemberRect { u0: number; u1: number; v0: number; v1: number
 export type BackNodeSolved =
   | (BackLeaf & { u0: number; u1: number; v0: number; v1: number; depth: number })
   | { id: string; kind: 'split'; axis: 'u' | 'v'; sizes: GapSpec[]; gaps: number[]; children: BackNodeSolved[]; targetSize?: number; refs?: Record<number, BackJointRef>; u0: number; u1: number; v0: number; v1: number; depth: number };
-export interface BackSolution { rect: BackRect; tree: BackNode; solved: BackNodeSolved; members: BackMemberRect[]; bounds?: BackBounds; ext: BackEdgeExt }
+export interface BackSolution { rect: BackRect; tree: BackNode; solved: BackNodeSolved; members: BackMemberRect[]; bounds?: BackBounds; ext: BackEdgeExt; sides: BackJointSides }
 /** `${splitId}:${k}` → bağlı derzin merkezi (bölmenin ekseninde). */
 export type BackJointTargets = Map<string, number>;
 const jointKey = (splitId: string, k: number) => `${splitId}:${k}`;
@@ -427,9 +431,10 @@ export function backJointRefs(n: BackNode): Array<{ splitId: string; k: number; 
   const own = Object.entries(n.refs ?? {}).map(([k, ref]) => ({ splitId: n.id, k: +k, ref }));
   return [...own, ...n.children.flatMap(backJointRefs)];
 }
-// Bağlı derz merkezi levhanın GÜNCEL kutusundan: 'center' → levha ortası, 'min' → max yüz + yarım derz, 'max' → min yüz − yarım derz.
-export function backJointTargets(group: BackLayout & Pick<BackGroup, 'axis'>, parent: Shape, shapes: Shape[]): BackJointTargets {
-  const out: BackJointTargets = new Map();
+/** Bağlı derzin levhası: bölme ekseninde levhanın iki yüzü (a0 < a1, iç dikdörtgen koordinatı) + adı. */
+export interface BackJointFace { a0: number; a1: number; vfId: string; align: BackAlign }
+export function backJointFaces(group: Pick<BackGroup, 'tree' | 'axis'>, parent: Shape, shapes: Shape[]): Map<string, BackJointFace> {
+  const out = new Map<string, BackJointFace>();
   const refs = backJointRefs(group.tree);
   if (!refs.length) return out;
   const { u, v } = backPlaneAxes(group.axis);
@@ -443,9 +448,58 @@ export function backJointTargets(group: BackLayout & Pick<BackGroup, 'axis'>, pa
     const ax = node.axis === 'u' ? u : v;
     const a0 = box.min[ax], a1 = box.max[ax];
     if (!(a1 - a0 > 0) || a1 - a0 > THIN_PANEL) continue;
-    const g = splitGapsOf(node, group.gap)[k] ?? group.gap;
-    out.set(jointKey(splitId, k), ref.align === 'center' ? (a0 + a1) / 2 : ref.align === 'min' ? a1 + g / 2 : a0 - g / 2);
+    out.set(jointKey(splitId, k), { a0, a1, vfId: ref.vfId, align: ref.align });
   }
+  return out;
+}
+// Bağlı derz merkezi levhanın GÜNCEL kutusundan: 'center' → levha ortası, 'min' → max yüz + yarım derz, 'max' → min yüz − yarım derz.
+export function backJointTargets(group: BackLayout & Pick<BackGroup, 'axis'>, parent: Shape, shapes: Shape[], faces = backJointFaces(group, parent, shapes)): BackJointTargets {
+  const out: BackJointTargets = new Map();
+  for (const [key, f] of faces) {
+    const [splitId, ks] = [key.slice(0, key.lastIndexOf(':')), key.slice(key.lastIndexOf(':') + 1)];
+    const node = findBackNode(group.tree, splitId);
+    if (!node || node.kind !== 'split') continue;
+    const g = splitGapsOf(node, group.gap)[+ks] ?? group.gap;
+    out.set(key, f.align === 'center' ? (f.a0 + f.a1) / 2 : f.align === 'min' ? f.a1 + g / 2 : f.a0 - g / 2);
+  }
+  return out;
+}
+/** Parçanın bağlı derzdeki kenarı: levhanın yüzleri, kalınlığı ve etkin binme (girilmemişse kalınlık/2 = levhanın ortası). */
+export interface BackJointSide { splitId: string; k: number; vfId: string; a0: number; a1: number; t: number; in: number; entered: boolean }
+export type BackJointSides = Record<string, Partial<Record<BackEdgeKey, BackJointSide>>>;
+/** Yaprak → bağlı derze değen kenarları. u bölmesinde k. çocuğun uMax'ı / (k+1). çocuğun uMin'i; v bölmesi ÜSTTEN dizilir:
+ *  k. çocuğun vMin'i / (k+1). çocuğun vMax'ı. Dış kenar bilgisi alt düğümlere aktarılır (çocuğun o kenarı da derze değer). */
+export function backJointSides(solved: BackNodeSolved, faces: Map<string, BackJointFace>, tree: BackNode): BackJointSides {
+  const out: BackJointSides = {};
+  if (!faces.size) return out;
+  type Raw = Omit<BackJointSide, 'in' | 'entered'>;
+  const walk = (n: BackNodeSolved, inh: Partial<Record<BackEdgeKey, Raw>>) => {
+    if (n.kind === 'leaf') {
+      const leaf = findBackNode(tree, n.id);
+      const ji = leaf && leaf.kind === 'leaf' ? leaf.jointIn : undefined;
+      const rec: Partial<Record<BackEdgeKey, BackJointSide>> = {};
+      for (const [key, r] of Object.entries(inh) as Array<[BackEdgeKey, Raw]>) {
+        const v = ji?.[key];
+        const entered = Number.isFinite(v);
+        rec[key] = { ...r, in: entered ? Math.max(0, Math.min(r.t, v as number)) : r.t / 2, entered };
+      }
+      if (Object.keys(rec).length) out[n.id] = rec;
+      return;
+    }
+    const lo: BackEdgeKey = n.axis === 'u' ? 'uMax' : 'vMin', hi: BackEdgeKey = n.axis === 'u' ? 'uMin' : 'vMax';
+    n.children.forEach((c, i) => {
+      const own: Partial<Record<BackEdgeKey, Raw>> = { ...inh };
+      // Bölme ekseni boyunca dış kenarlar yalnız uçtaki çocuğa geçer.
+      if (i > 0) delete own[hi];
+      if (i < n.children.length - 1) delete own[lo];
+      const before = i > 0 ? faces.get(jointKey(n.id, i - 1)) : undefined;
+      const after = i < n.children.length - 1 ? faces.get(jointKey(n.id, i)) : undefined;
+      if (before) own[hi] = { splitId: n.id, k: i - 1, vfId: before.vfId, a0: before.a0, a1: before.a1, t: before.a1 - before.a0 };
+      if (after) own[lo] = { splitId: n.id, k: i, vfId: after.vfId, a0: after.a0, a1: after.a1, t: after.a1 - after.a0 };
+      walk(c, own);
+    });
+  };
+  walk(solved, {});
   return out;
 }
 /** Yaprak HÜCRELERİ (DFS yaprak sırası = VF.backIndex), iç dikdörtgen çerçevesinde. */
@@ -460,8 +514,9 @@ export function backCells(solved: BackNodeSolved): BackCell[] {
   return out;
 }
 /** Hücre → parça: grup dikdörtgeninin kenarına değen kenar parçanın tipine göre uzar — kanallı: panele `inset` kadar girer;
- *  çakma: örtülen paneli bini kadar örter (full = kalınlık, half = yarısı, none = 0). Derzde (iç kenar) uzama yok. */
-export function placeBackPieces(g: Pick<BackGroup, 'placement' | 'setback' | 'inset' | 'bounds' | 'tree' | 'side' | 'thickness'>, cells: BackCell[], rect: BackRect, ext: BackEdgeExt): BackMemberRect[] {
+ *  çakma: örtülen panelin üzerine `cover` mm biner (girilmemişse kalınlığın tamamı). Sayı bölmesi derzinde uzama yok.
+ *  LEVHAYA BAĞLI derzde kenar levhanın yüzünden ölçülür: parça levhanın üzerine kendi `jointIn` değeri kadar biner (iki tip için aynı). */
+export function placeBackPieces(g: Pick<BackGroup, 'placement' | 'setback' | 'inset' | 'bounds' | 'tree' | 'side' | 'thickness'>, cells: BackCell[], rect: BackRect, ext: BackEdgeExt, sides: BackJointSides = {}): BackMemberRect[] {
   const T0 = 0.05;
   return cells.map(c => {
     const leaf = findBackNode(g.tree, c.leafId);
@@ -470,13 +525,19 @@ export function placeBackPieces(g: Pick<BackGroup, 'placement' | 'setback' | 'in
       if (piece.placement === 'inner') return piece.inset[k];
       const e = ext[k];
       if (!e.covered || e.t <= 0) return 0;
-      const ov = piece.overlay[k];
-      return ov === 'full' ? e.t : ov === 'half' ? e.t / 2 : 0;
+      const c = piece.cover[k];
+      return Number.isFinite(c) ? Math.max(0, Math.min(e.t, c as number)) : e.t;
     };
-    const u0 = Math.abs(c.u0 - rect.u0) < T0 ? c.u0 - extend('uMin') : c.u0;
-    const u1 = Math.abs(c.u1 - rect.u1) < T0 ? c.u1 + extend('uMax') : c.u1;
-    const v0 = Math.abs(c.v0 - rect.v0) < T0 ? c.v0 - extend('vMin') : c.v0;
-    const v1 = Math.abs(c.v1 - rect.v1) < T0 ? c.v1 + extend('vMax') : c.v1;
+    let u0 = Math.abs(c.u0 - rect.u0) < T0 ? c.u0 - extend('uMin') : c.u0;
+    let u1 = Math.abs(c.u1 - rect.u1) < T0 ? c.u1 + extend('uMax') : c.u1;
+    let v0 = Math.abs(c.v0 - rect.v0) < T0 ? c.v0 - extend('vMin') : c.v0;
+    let v1 = Math.abs(c.v1 - rect.v1) < T0 ? c.v1 + extend('vMax') : c.v1;
+    // Bağlı derz kenarı: min kenar = levhanın üst yüzü − binme, max kenar = levhanın alt yüzü + binme.
+    const js = sides[c.leafId];
+    if (js?.uMin) u0 = js.uMin.a1 - js.uMin.in;
+    if (js?.uMax) u1 = js.uMax.a0 + js.uMax.in;
+    if (js?.vMin) v0 = js.vMin.a1 - js.vMin.in;
+    if (js?.vMax) v1 = js.vMax.a0 + js.vMax.in;
     const front = pieceFront(rect.front, g.side, piece.placement, piece.setback);
     return { leafId: c.leafId, u0, u1, v0, v1, piece, front, plane: piecePlane(front, g.side, piece.placement, g.thickness) };
   });
@@ -557,9 +618,11 @@ export function solveBackGroup(group: BackGroup, parent: Shape, shapes: Shape[])
     rect = { ...group.rect };
   }
   const ext = edgeExtOf(edges, group.side, P);
-  const solved = solveBackTree(group, rect, backJointTargets(group, parent, shapes));
-  const members = applyBackCuts(group, placeBackPieces(group, backCells(solved), rect, ext), cutsAll);
-  return { rect, tree: solvedToBackTree(solved), solved, members, bounds, ext };
+  const faces = backJointFaces(group, parent, shapes);
+  const solved = solveBackTree(group, rect, backJointTargets(group, parent, shapes, faces));
+  const sides = backJointSides(solved, faces, group.tree);
+  const members = applyBackCuts(group, placeBackPieces(group, backCells(solved), rect, ext, sides), cutsAll);
+  return { rect, tree: solvedToBackTree(solved), solved, members, bounds, ext, sides };
 }
 
 type CutGroup = Pick<BackGroup, 'axis' | 'side' | 'thickness' | 'anchor'>;
@@ -567,10 +630,9 @@ type CutGroup = Pick<BackGroup, 'axis' | 'side' | 'thickness' | 'anchor'>;
 export function applyBackCuts(group: CutGroup, members: BackMemberRect[], cuts: BackCut[]): BackMemberRect[] {
   if (!cuts.length) return members;
   return members.map(m => {
-    const { placement, inset, overlay } = m.piece;
+    const { placement, inset, cover } = m.piece;
     const gaps: BackEdgeGaps = placement === 'inner' ? { uMin: -inset.uMin, uMax: -inset.uMax, vMin: -inset.vMin, vMax: -inset.vMax } : { uMin: 0, uMax: 0, vMin: 0, vMax: 0 };
-    const half: HalfOverlay = placement === 'outer' ? { uMin: overlay.uMin === 'half', uMax: overlay.uMax === 'half', vMin: overlay.vMin === 'half', vMax: overlay.vMax === 'half' } : undefined;
-    const poly = clipMemberByCuts(m, cuts, group.axis, group.side, placement, group.thickness, m.front, gaps, half, group.anchor);
+    const poly = clipMemberByCuts(m, cuts, group.axis, group.side, placement, group.thickness, m.front, gaps, placement === 'outer' ? cover : undefined, group.anchor);
     return poly ? { ...m, poly } : m;
   });
 }
@@ -752,7 +814,7 @@ let sizeEditBase: { groupId: string; tree: BackNode } | null = null;
 /** Gövde yokken (ya da şema için parent'sız): hücreler kenar bilgisi olmadan yerleştirilir (giriş/bini yok). */
 export const backFallbackSolution = (group: BackGroup): BackSolution => {
   const solved = solveBackTree(group);
-  return { rect: group.rect, tree: solvedToBackTree(solved), solved, members: placeBackPieces(group, backCells(solved), group.rect, NO_EXT), ext: NO_EXT };
+  return { rect: group.rect, tree: solvedToBackTree(solved), solved, members: placeBackPieces(group, backCells(solved), group.rect, NO_EXT), ext: NO_EXT, sides: {} };
 };
 const fallbackSolution = backFallbackSolution;
 
@@ -914,7 +976,8 @@ export function splitBackAtPanel(groupId: string, vfId: string): string[] {
   let tree = group.tree;
   const ids: string[] = [], restructured = new Set<string>();
   for (const leaf of hits) {
-    const split: BackNode = { id: genId('bs'), kind: 'split', axis, sizes: [], gaps: [g], refs: { 0: { vfId, align: 'center' } }, children: [makeBackLeaf(), makeBackLeaf()] };
+    // Bağlı derzde boşluk YOK: hücreler levhanın ortasında buluşur, parça kenarları levha yüzünden binme (jointIn) ile ölçülür.
+    const split: BackNode = { id: genId('bs'), kind: 'split', axis, sizes: [], gaps: [0], refs: { 0: { vfId, align: 'center' } }, children: [makeBackLeaf(), makeBackLeaf()] };
     tree = replaceBackNode(tree, leaf.id, () => split);
     ids.push(split.id); restructured.add(leaf.id);
   }
@@ -1009,6 +1072,7 @@ export async function setBackSplitGap(groupId: string, splitId: string, k: numbe
   if (!group || !Number.isFinite(value) || value < 0) return;
   const sn = findSolvedBackNode(solveBackTree(group), splitId);
   if (!sn || sn.kind !== 'split' || k < 0 || k >= sn.gaps.length || (opts.preview && Math.abs(sn.gaps[k] - value) < 0.05)) return;   // onay hep yazar
+  if (sn.refs?.[k]) { console.warn('[YAGO][ARKALIK-BAĞ] levhaya bağlı derzde boşluk girilmez — parçaların binme payı (jointIn) kullanılır:', splitId, k); return; }
   const gaps = sn.gaps.slice(); gaps[k] = round1(value);
   const tree = replaceBackNode(group.tree, splitId, old => ({ ...(old as any), gaps }));
   await writeBackGroup(group, { tree }, !!opts.preview);
@@ -1028,6 +1092,37 @@ export async function setBackEdgeInset(groupId: string, edge: BackEdgeKey, inset
   const v = round1(inset);
   if (opts.preview && leavesOf(group, leafIds).every(l => Math.abs(backPieceOf(group, l).inset[edge] - v) < 0.05)) return;   // onay hep yazar
   await writeBackGroup(group, { tree: patchLeaves(group.tree, leafIds, l => ({ ...l, inset: { ...(l.inset ?? {}), [edge]: v } })) }, !!opts.preview);
+}
+/** İÇ LEVHAYA BİNME: parça(lar)ın levhaya bağlı derzdeki `edge` kenarında dikme/rafın üzerine binme payı (mm). Parça başına yazılır;
+ *  0..levha kalınlığı, karşı yandaki parçaların binmesiyle ÇAKIŞMAYACAK kadar kırpılır. Yalnız o kenarı bağlı derzde olan parçalara yazar. */
+export async function setBackJointIn(groupId: string, edge: BackEdgeKey, mm: number, leafIds: string[], opts: BackEditOpts = {}): Promise<void> {
+  const group = groupById(groupId);
+  if (!group || !Number.isFinite(mm) || mm < 0) return;
+  const sol = solveFromStore(group);
+  if (!sol) return;
+  const opp: Record<BackEdgeKey, BackEdgeKey> = { uMin: 'uMax', uMax: 'uMin', vMin: 'vMax', vMax: 'vMin' };
+  const vals = new Map<string, number>();
+  for (const id of leafIds) {
+    const js = sol.sides[id]?.[edge];
+    if (!js) continue;
+    // Karşı yan: aynı derzin öbür kenarındaki parçalar; çapraz eksende örtüşenlerin en büyük binmesi.
+    const me = sol.members.find(m => m.leafId === id);
+    let other = 0;
+    for (const [oid, rec] of Object.entries(sol.sides)) {
+      const o = rec[opp[edge]];
+      if (!o || o.splitId !== js.splitId || o.k !== js.k) continue;
+      const om = sol.members.find(m => m.leafId === oid);
+      const isU = edge === 'uMin' || edge === 'uMax';
+      if (me && om && Math.min(isU ? me.v1 : me.u1, isU ? om.v1 : om.u1) - Math.max(isU ? me.v0 : me.u0, isU ? om.v0 : om.u0) <= TOL) continue;
+      other = Math.max(other, o.in);
+    }
+    const max = Math.max(0, js.t - other);
+    if (mm > max + 0.05) console.warn('[YAGO][ARKALIK-BAĞ] binme payı kırpıldı (levha kalınlığı / karşı parça):', id, edge, mm, '→', round1(max));
+    vals.set(id, round1(Math.min(mm, max)));
+  }
+  if (!vals.size) return;
+  if (opts.preview && [...vals].every(([id, v]) => Math.abs((sol.sides[id]?.[edge]?.in ?? -1) - v) < 0.05)) return;   // onay hep yazar
+  await writeBackGroup(group, { tree: patchLeaves(group.tree, [...vals.keys()], l => ({ ...l, jointIn: { ...(l.jointIn ?? {}), [edge]: vals.get(l.id)! } })) }, !!opts.preview);
 }
 /** Kanallı: panellerin arka yüzünden parçanın arka yüzüne mesafe (mm). leafIds boş → grup varsayılanı yazılır, parça değerleri silinir. */
 export async function setBackSetback(groupId: string, mm: number, leafIds: string[] = []): Promise<void> {
@@ -1075,12 +1170,24 @@ export async function setBackPlacement(groupId: string, placement: BackPlacement
   if (leavesOf(group, leafIds).every(l => backPieceOf(group, l).placement === placement)) return;
   await writeBackGroup(group, { tree: patchLeaves(group.tree, leafIds, l => ({ ...l, placement })) });
 }
-/** Çakma parça(lar): kenar binisi — full = panel kalınlığını örter, half = ortasına, none = iç yüzünde biter. leafIds boş → tüm parçalar. */
-export async function setBackEdgeOverlay(groupId: string, edge: BackEdgeKey, mode: BackOverlay, leafIds: string[] = []): Promise<void> {
+/** Çakma parça(lar): `edge` kenarındaki sınır panelinin üzerine binme (mm). 0 = panelin iç yüzünde biter, panel kalınlığı = tamamen örter;
+ *  kalınlıkla kırpılır (açılı sınır levhasında levha kalınlığıyla). leafIds boş → tüm parçalar. */
+export async function setBackEdgeCover(groupId: string, edge: BackEdgeKey, mm: number, leafIds: string[] = [], opts: BackEditOpts = {}): Promise<void> {
   const group = groupById(groupId);
-  if (!group) return;
-  if (leavesOf(group, leafIds).every(l => backPieceOf(group, l).overlay[edge] === mode)) return;
-  await writeBackGroup(group, { tree: patchLeaves(group.tree, leafIds, l => ({ ...l, overlay: { ...(l.overlay ?? {}), [edge]: mode } })) });
+  if (!group || !Number.isFinite(mm) || mm < 0) return;
+  const sol = solveFromStore(group);
+  const st = useAppStore.getState(), parent = shapeById(group.shapeId, st.shapes);
+  // En büyük binme: kenar panelinin kalınlığı; açılı kesim kenarındaysa kesen levhaların en kalını.
+  let t = sol?.ext[edge]?.t ?? 0;
+  if (parent) for (const c of collectBackCuts(parent, st.shapes, st.virtualFaces)) {
+    const { u, v } = backPlaneAxes(group.axis);
+    const cu = group.anchor ? group.anchor[0] : (group.rect.u0 + group.rect.u1) / 2, cv = group.anchor ? group.anchor[1] : (group.rect.v0 + group.rect.v1) / 2;
+    if (Math.hypot(c.n[u], c.n[v]) > 1e-6 && cutEdgeOf(c, cu, cv, group.axis, group.rect.front)?.edge === edge) t = Math.max(t, c.dMax - c.dMin);
+  }
+  const v = round1(t > 0 ? Math.min(mm, t) : mm);
+  if (t > 0 && mm > t + 0.05) console.warn('[YAGO][ARKALIK] binme panel kalınlığıyla kırpıldı:', edge, mm, '→', v);
+  if (opts.preview && leavesOf(group, leafIds).every(l => Math.abs((backPieceOf(group, l).cover[edge] ?? t) - v) < 0.05)) return;   // onay hep yazar
+  await writeBackGroup(group, { tree: patchLeaves(group.tree, leafIds, l => ({ ...l, cover: { ...(l.cover ?? {}), [edge]: v } })) }, !!opts.preview);
 }
 /** Panel ref ile bölünebilir mi: levhanın ortası bir parçanın içinden, iki yanda en az MIN_BACK_SPAN kalarak geçmeli. */
 export function canSplitBackAtPanel(group: BackGroup, np: Pick<BackNearPanel, 'kind' | 'a0' | 'a1' | 'c0' | 'c1' | 'edge'>): boolean {
@@ -1202,7 +1309,7 @@ export function backSlabPolygon(
 ): { normal: Vec3; vertices: Vec3[] } {
   // Önizleme dikdörtgeni (backPickRect) zaten giriş/setback'i içerir → parça uzantısı 0, düzlem rect.front üzerinden.
   const z: BackEdgeGaps = { uMin: 0, uMax: 0, vMin: 0, vMax: 0 };
-  const piece: BackPiece = { placement: group.placement, setback: 0, inset: z, overlay: { uMin: 'full', uMax: 'full', vMin: 'full', vMax: 'full' } };
+  const piece: BackPiece = { placement: group.placement, setback: 0, inset: z, cover: {}, jointIn: {} };
   const m: BackMemberRect = { leafId: PREVIEW_ID, u0: rect.u0, u1: rect.u1, v0: rect.v0, v1: rect.v1, piece, front: rect.front, plane: piecePlane(rect.front, group.side, group.placement, group.thickness) };
   const [mm] = applyBackCuts(group, [m], cuts);
   const g = backMemberVfGeometry(group, mm);
