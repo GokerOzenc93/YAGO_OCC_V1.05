@@ -258,10 +258,16 @@ function meshOnPlaneBoundary2D(
 }
 
 /** Panelin yüz düzlemine değen 2B ayak izi; değmiyorsa null (o yüzeyde engel değil). */
+/** Ayak izi geometrisi: arkalık kanalı açılmış panelde KANALSIZ mesh (yalnız kendi grooved mesh'iyle eşleşiyorsa — sentetik damga değil). */
+export function footprintGeometry(panel: any): THREE.BufferGeometry | undefined {
+  const ug = panel?.ungroovedGeometry as THREE.BufferGeometry | undefined;
+  return ug && panel.geometry && ug.userData?.groovedUuid === panel.geometry.uuid ? ug : panel?.geometry;
+}
 function panelFootprintOnPlane(panel: any, facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, u: THREE.Vector3, v: THREE.Vector3, planeTolerance = 5.0): Point2D[] | null {
-  if (!panel.geometry) return null;
+  const geometry = footprintGeometry(panel);
+  if (!geometry) return null;
   const panelMatrix = getShapeMatrix(panel);
-  const posAttr = panel.geometry.getAttribute('position') as THREE.BufferAttribute;
+  const posAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
   const pts2D: Point2D[] = [], all2D: Point2D[] = [];
   let nMin = Infinity, nMax = -Infinity;
   for (let i = 0; i < posAttr.count; i++) {
@@ -279,7 +285,7 @@ function panelFootprintOnPlane(panel: any, facePlaneNormal: THREE.Vector3, faceP
     }
     return null;
   }
-  const boundary = meshOnPlaneBoundary2D(panel.geometry, panelMatrix, facePlaneNormal, facePlaneOrigin, u, v, planeTolerance);
+  const boundary = meshOnPlaneBoundary2D(geometry, panelMatrix, facePlaneNormal, facePlaneOrigin, u, v, planeTolerance);
   if (boundary && boundary.length >= 3) return boundary;
   const hull = convexHull2D(pts2D);
   return hull.length >= 3 ? hull : null;
@@ -401,8 +407,9 @@ function buildRotationOpsFromPanel(panel: any): RotOp[] {
 function panelFootprintsInParentLocal(
   panel: any, parentWorldToLocal: THREE.Matrix4, nrm: THREE.Vector3, planeN: number, u: THREE.Vector3, v: THREE.Vector3, tol = 3.0
 ): Point2D[][] | null {
-  if (!panel?.geometry) return null;
-  const pos = panel.geometry.getAttribute('position');
+  const geometry = footprintGeometry(panel);
+  if (!geometry) return null;
+  const pos = geometry.getAttribute('position');
   if (!pos) return null;
   const M = new THREE.Matrix4().multiplyMatrices(parentWorldToLocal, getShapeMatrix(panel));
   // Konveks gövde (tam siluet) yalnız sentetik damga içindir; GERÇEK dönmüş geometride siluet, yüze kenarıyla
@@ -451,7 +458,7 @@ function panelFootprintsInParentLocal(
   }
   const pierces = dMin < -tol && dMax > tol;
   if (pierces) {
-    const idx = panel.geometry.getIndex();
+    const idx = geometry.getIndex();
     const cnt = idx ? idx.count : pos.count;
     const at = (k: number) => (idx ? idx.getX(k) : k);
     for (let t = 0; t + 2 < cnt; t += 3) {
@@ -469,7 +476,7 @@ function panelFootprintsInParentLocal(
   }
   if (out.length < 3) return null;
   // İçbükey sınır: düzlem-üstü üçgenlerin kenar halkaları (çok parçalı temasta hepsi; dejenere halkalar elenir).
-  const bEdges = onPlaneBoundaryEdges(panel.geometry, d.map(dd => Math.abs(dd) < tol), i => uv(pts[i], u, v));
+  const bEdges = onPlaneBoundaryEdges(geometry, d.map(dd => Math.abs(dd) < tol), i => uv(pts[i], u, v));
   if (bEdges.length >= 3) {
     const good = walkBoundaryLoops(bEdges, true).filter(l => l.length >= 3 && Math.abs(signedArea2(l)) / 2 > 1.0);
     // Halka yönü mesh sarımından gelir (OCC ve sentetik prizma ters sarılabilir); kırpma (clipByFootprint) CCW
@@ -485,7 +492,7 @@ function panelFootprintsInParentLocal(
     const hb = bbox2(hull);
     const minSpan = Math.min(hb.x1 - hb.x0, hb.y1 - hb.y0);
     // İnce eşiği: geometrinin en ince ekseni (kalınlık, en az 18) + 12 mm pay.
-    const sz = localBboxOf(panel.geometry)!.getSize(new THREE.Vector3());
+    const sz = localBboxOf(geometry)!.getSize(new THREE.Vector3());
     const thinThreshold = Math.max(Math.min(sz.x, sz.y, sz.z), 18) + 12;
     if (minSpan <= thinThreshold) return null;
   }

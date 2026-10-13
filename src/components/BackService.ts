@@ -46,6 +46,13 @@ export const BACK_TYPE_TITLE: Record<BackPlacement, string> = {
   inner: 'Grooved back — sits between the reference panels, set back from their rear face. Each edge is Groove (panel keeps its depth, the piece enters it by the groove depth) or Nail (the panel is shortened to the back panel\'s front face and the piece covers its end)',
 };
 export const BACK_REL_LABEL: Record<BackEdgeRel, string> = { groove: 'Groove', nail: 'Nail' };
+/** Kanal bollaştırma varsayılanı (mm): parçanın önüne / arkasına ve kanal dibine (girişin ötesine). */
+export const BACK_GROOVE_CLEAR = { front: 0.5, back: 0.5, depth: 1 } as const;
+export type BackGrooveClear = { front: number; back: number; depth: number };
+export const backGrooveClearOf = (g: Pick<BackGroup, 'grooveClear'>): BackGrooveClear => {
+  const v = (x: number | undefined, d: number) => (Number.isFinite(x) && (x as number) >= 0 ? (x as number) : d);
+  return { front: v(g.grooveClear?.front, BACK_GROOVE_CLEAR.front), back: v(g.grooveClear?.back, BACK_GROOVE_CLEAR.back), depth: v(g.grooveClear?.depth, BACK_GROOVE_CLEAR.depth) };
+};
 /** Kenar ilişkisi (grup başına); yoksa kanallı. */
 export const edgeRelOf = (g: Pick<BackGroup, 'edgeRel'>, k: keyof BackBounds): BackEdgeRel => g.edgeRel?.[k] ?? 'groove';
 const TOL = 0.5;
@@ -821,6 +828,72 @@ export async function setBackJointRel(groupId: string, splitId: string, k: numbe
   const ref = { ...node.refs[k] };
   if (rel === 'groove') delete ref.rel; else ref.rel = rel;
   await writeBackGroup(group, { tree: replaceBackNode(group.tree, splitId, old => ({ ...(old as any), refs: { ...(old as any).refs, [k]: ref } })) });
+}
+
+// KANAL KESİCİLERİ (PanelEngine.buildPanel): kanallı (groove) ilişkideki sınır paneline / bağlı derz levhasına iç parçanın KANALI
+// katıdan çıkarılır — kutu: kenar ekseninde panelin iç yüzünden `inset + depth` kadar içeri (dışa 5 mm taşar: çakışık yüz olmasın),
+// çapraz eksende parçanın açıklığı, derinlikte [parça arkası − back, parça önü + front]. Yalnız GÖRÜNÜM/katı içindir: ayak izi,
+// damga ve hacim ızgarası kanalsız geometriyi okur (Shape.ungroovedGeometry) → kanal boşluğuna hiçbir panel sızmaz.
+const GROOVE_MOUTH = 5;
+export function backGrooveCuttersFor(panel: Shape): CavityBox[] {
+  const st = useAppStore.getState();
+  const vfId = (panel.parameters as any)?.virtualFaceId as string | undefined;
+  const parentId = (panel.parameters as any)?.parentShapeId as string | undefined;
+  if (!vfId || !parentId || isBackPanel(panel) || panelHasRotation(panel)) return [];
+  const out: CavityBox[] = [];
+  for (const bg of st.backGroups) {
+    if (bg.shapeId !== parentId) continue;
+    const sol = backSolutionMemo(bg);
+    if (!sol) continue;
+    const bounds = sol.bounds ?? bg.bounds;
+    const clear = backGrooveClearOf(bg);
+    const { u, v } = backPlaneAxes(bg.axis);
+    const cells = backCells(sol.solved);
+    const edge = EDGE_KEYS.find(k => bounds[k]?.vfId === vfId);
+    for (const m of sol.members) {
+      if (m.piece.placement !== 'inner') continue;
+      const cell = cells.find(c => c.leafId === m.leafId) ?? m;
+      const rear = m.front, frontF = m.front - bg.side * bg.thickness;
+      const zlo = Math.min(rear, frontF) - (bg.side < 0 ? clear.back : clear.front), zhi = Math.max(rear, frontF) + (bg.side < 0 ? clear.front : clear.back);
+      const push = (a: 0 | 1 | 2, a0: number, a1: number, c: 0 | 1 | 2, c0: number, c1: number) => {
+        const box: CavityBox = { min: [0, 0, 0], max: [0, 0, 0] };
+        box.min[a] = Math.min(a0, a1); box.max[a] = Math.max(a0, a1);
+        box.min[c] = Math.min(c0, c1); box.max[c] = Math.max(c0, c1);
+        box.min[bg.axis] = zlo; box.max[bg.axis] = zhi;
+        out.push(box);
+      };
+      // Grup kenarı: kanallı ilişki, parça kenara değiyor, giriş > 0.
+      if (edge && sol.ext[edge].rel === 'groove' && !sol.ext[edge].nail && cellTouchesEdge(cell, sol.rect, edge)) {
+        const ins = m.piece.inset[edge];
+        if (ins > 0) {
+          const isU = edge === 'uMin' || edge === 'uMax', minSide = edge === 'uMin' || edge === 'vMin';
+          const face = isU ? (minSide ? sol.rect.u0 : sol.rect.u1) : (minSide ? sol.rect.v0 : sol.rect.v1);   // panelin iç yüzü
+          const deep = face + (minSide ? -1 : 1) * (ins + clear.depth), mouth = face + (minSide ? 1 : -1) * GROOVE_MOUTH;
+          if (isU) push(u, deep, mouth, v, m.v0, m.v1); else push(v, deep, mouth, u, m.u0, m.u1);
+        }
+      }
+      // Bağlı derz (dikme/raf): kanallı ilişkide parça levhanın yüzünden `in` kadar girer.
+      const js = sol.sides[m.leafId];
+      if (js) for (const [k, side] of Object.entries(js) as Array<[BackEdgeKey, BackJointSide]>) {
+        if (side.vfId !== vfId || side.rel !== 'groove' || !(side.in > 0)) continue;
+        const isU = k === 'uMin' || k === 'uMax', minSide = k === 'uMin' || k === 'vMin';
+        const face = minSide ? side.a1 : side.a0;   // parçaya bakan levha yüzü
+        const deep = face + (minSide ? -1 : 1) * (side.in + clear.depth), mouth = face + (minSide ? 1 : -1) * GROOVE_MOUTH;
+        if (isU) push(u, deep, mouth, v, m.v0, m.v1); else push(v, deep, mouth, u, m.u0, m.u1);
+      }
+    }
+  }
+  return out;
+}
+/** Kanal bollaştırma (grup başına, mm ≥ 0); eksik alanlar korunur. */
+export async function setBackGrooveClear(groupId: string, patch: Partial<BackGrooveClear>): Promise<void> {
+  const group = groupById(groupId);
+  if (!group) return;
+  const cur = backGrooveClearOf(group);
+  const next: BackGrooveClear = { ...cur };
+  for (const k of ['front', 'back', 'depth'] as const) { const v = patch[k]; if (Number.isFinite(v) && (v as number) >= 0) next[k] = round1(v as number); }
+  if ((['front', 'back', 'depth'] as const).every(k => Math.abs(next[k] - cur[k]) < 0.05)) return;
+  await writeBackGroup(group, { grooveClear: next });
 }
 
 /** Kenar ilişkisi (grup başına): 'nail' → o kenarın paneli iç parçaların ön yüzüne kadar kısaltılır; 'groove' → tam boy, kanal. */

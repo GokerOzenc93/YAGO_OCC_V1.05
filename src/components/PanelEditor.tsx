@@ -37,7 +37,7 @@ import {
   deleteBackGroupWithMembers, editBackSize, equalizeBackGroup, findBackNode, findSolvedBackNode, isBackVf, passiveBackSizeIndex, renameBackGroup, restoreBackLayout,
   setBackEdgeCover, setBackEdgeInset, setBackJointIn, setBackNodeSpacing, setBackNodeSplit, setBackPlacement, setBackSetback,
   setBackSplitGap, backSizeBoundByJoint, setBackThickness, setVfBackBound, solveBackGroup, splitBackAtPanel, toggleBackSizeLock, vfBackBound,
-  BACK_REL_LABEL, backJointRelOf, edgeRelOf, setBackEdgeRel, setBackJointRel,
+  BACK_REL_LABEL, backGrooveClearOf, backJointRelOf, edgeRelOf, setBackEdgeRel, setBackGrooveClear, setBackJointRel,
 } from './BackService';
 
 /* PANEL EDİTÖRÜ — sol çubuktaki panel listesi, önizleme, Taşı/Döndür/Extrude şeritleri,
@@ -2583,8 +2583,12 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
   // GİRİŞ BÖLGELERİ (Goker, Eki 2026 — "arkalığın panelin içine girdiğini daha belirgin göster"): parça ∩ sınır levhası şeridi.
   // groove = parça panelin kanalına giriyor (turuncu, kanal dibi koyu çizgi); nail = parça panelin ucunu örtüyor (taş rengi).
   // Her zaman çizilir (seçim gerekmez); çok ince bölge en az 3 px gösterilir (panelin iç yüzünden dışa doğru).
-  type Zone = { key: string; x: number; y: number; w: number; h: number; kind: 'groove' | 'nail'; vertical: boolean; deepX: number; deepY: number };
+  type Zone = { key: string; x: number; y: number; w: number; h: number; kind: 'groove' | 'nail'; vertical: boolean; deepX: number; deepY: number;
+    /** Kanal (bollaştırılmış) kutusu: parça bölgesi + kanal dibi payı (D), panelin iç yüzü sabit. */
+    groove?: { x: number; y: number; w: number; h: number } };
   const zones: Zone[] = [];
+  const gclear = backGrooveClearOf(group);
+  const pxU = SW / duR, pxV = SH / dvR;   // mm → px
   for (const np of nearPanels) {
     if (np.poly || (!np.edge && !np.ref)) continue;
     const rel: BackEdgeRel = np.edge ? edgeRelOf(group, np.edge) : backJointRelOf(group.tree, np.ref!.splitId, np.ref!.k);
@@ -2603,7 +2607,16 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
       // Çok ince bölge: kanal dibi yönüne doğru en az MINZ px (panelin iç yüzü sabit kalır).
       if (isU && x1 - x0 < MINZ) { if (Math.abs(sx(deep) - x0) < Math.abs(sx(deep) - x1)) x0 = x1 - MINZ; else x1 = x0 + MINZ; }
       if (!isU && y1 - y0 < MINZ) { if (Math.abs(sy(deep) - y0) < Math.abs(sy(deep) - y1)) y0 = y1 - MINZ; else y1 = y0 + MINZ; }
-      zones.push({ key: `z-${np.vfId}-${m.leafId}`, x: x0, y: y0, w: x1 - x0, h: y1 - y0, kind, vertical: isU, deepX: isU ? (Math.abs(sx(deep) - x0) < Math.abs(sx(deep) - x1) ? x0 : x1) : 0, deepY: isU ? 0 : (Math.abs(sy(deep) - y0) < Math.abs(sy(deep) - y1) ? y0 : y1) });
+      const deepX = isU ? (Math.abs(sx(deep) - x0) < Math.abs(sx(deep) - x1) ? x0 : x1) : 0, deepY = isU ? 0 : (Math.abs(sy(deep) - y0) < Math.abs(sy(deep) - y1) ? y0 : y1);
+      // Kanal kutusu: dip payı (D) kanal dibi yönünde eklenir; kanal genişliği (F/B) derinlik ekseninde olduğundan ön görünüşte yok.
+      let grooveBox: Zone['groove'];
+      if (kind === 'groove') {
+        const dpx = gclear.depth * (isU ? pxU : pxV);
+        grooveBox = isU
+          ? (deepX === x0 ? { x: x0 - dpx, y: y0, w: x1 - x0 + dpx, h: y1 - y0 } : { x: x0, y: y0, w: x1 - x0 + dpx, h: y1 - y0 })
+          : (deepY === y0 ? { x: x0, y: y0 - dpx, w: x1 - x0, h: y1 - y0 + dpx } : { x: x0, y: y0, w: x1 - x0, h: y1 - y0 + dpx });
+      }
+      zones.push({ key: `z-${np.vfId}-${m.leafId}`, x: x0, y: y0, w: x1 - x0, h: y1 - y0, kind, vertical: isU, deepX, deepY, groove: grooveBox });
     }
   }
   const editPos = editing ? editables.get(editing.key) : undefined;
@@ -2708,14 +2721,19 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
         {zones.map(z => {
           const groove = z.kind === 'groove';
           const fill = groove ? '#fb923c' : '#78716c', line = groove ? '#c2410c' : '#44403c';
+          const gb = z.groove;
+          // Kanal dibi çizgisi: kanal kutusunun (parça + D payı) dip kenarı.
+          const bx = gb ? (z.vertical ? (z.deepX === z.x ? gb.x : gb.x + gb.w) : 0) : z.deepX;
+          const by = gb ? (z.vertical ? 0 : (z.deepY === z.y ? gb.y : gb.y + gb.h)) : z.deepY;
           return (
             <g key={z.key} style={{ pointerEvents: 'none' }}>
+              {gb && <rect x={gb.x} y={gb.y} width={Math.max(0.5, gb.w)} height={Math.max(0.5, gb.h)} fill="#fff7ed" fillOpacity={0.95} stroke={line} strokeOpacity={0.5} strokeWidth={0.6} strokeDasharray="2 1.5" />}
               <rect x={z.x} y={z.y} width={Math.max(0.5, z.w)} height={Math.max(0.5, z.h)} fill={fill} fillOpacity={groove ? 0.62 : 0.42} />
               <rect x={z.x} y={z.y} width={Math.max(0.5, z.w)} height={Math.max(0.5, z.h)} fill="none" stroke={line} strokeOpacity={0.55} strokeWidth={0.6} />
               {/* Kanal dibi / örtme ucu: kalın net çizgi */}
               {z.vertical
-                ? <line x1={z.deepX} y1={z.y} x2={z.deepX} y2={z.y + z.h} stroke={line} strokeWidth={1.6} strokeLinecap="round" />
-                : <line x1={z.x} y1={z.deepY} x2={z.x + z.w} y2={z.deepY} stroke={line} strokeWidth={1.6} strokeLinecap="round" />}
+                ? <line x1={bx} y1={gb ? gb.y : z.y} x2={bx} y2={(gb ? gb.y + gb.h : z.y + z.h)} stroke={line} strokeWidth={1.6} strokeLinecap="round" />
+                : <line x1={gb ? gb.x : z.x} y1={by} x2={(gb ? gb.x + gb.w : z.x + z.w)} y2={by} stroke={line} strokeWidth={1.6} strokeLinecap="round" />}
             </g>
           );
         })}
@@ -2957,6 +2975,7 @@ const IconSquareBtn = ({ icon: Icon, title, onClick }: { icon: LucideIcon; title
     <Icon size={12.5} strokeWidth={2.2} />
   </button>
 );
+const fmt1 = (v: number) => String(round1(v));
 const unitTxt = (u: string) => <span className="shrink-0 pr-1 text-[10px] font-medium text-stone-400">{u}</span>;
 function CountBox({ icon: Icon, label, value, title, onChange, max = 12 }: { icon: LucideIcon; label: string; value: number; title: string; onChange: (n: number) => void; max?: number }) {
   const [draft, setDraft] = useState<string | null>(null);
@@ -3133,7 +3152,7 @@ export function PanelEditor() {
   const [doorSplitMode, setDoorSplitMode] = useState<{ id: string; mode: 'count' | 'spacing' } | null>(null);
   const [doorAddPick, setDoorAddPick] = useState<{ id: string; axis: 'u' | 'v' } | null>(null);
   // Arkalık kartı: kalınlık/setback taslağı, şema bölge seçimi ve bölme modu (Panel ref store'da: backRefPickGroupId).
-  const [backDraft, setBackDraft] = useState<{ id: string; field: 't' | 'setback'; v: string } | null>(null);
+  const [backDraft, setBackDraft] = useState<{ id: string; field: 't' | 'setback' | 'gf' | 'gb' | 'gd'; v: string } | null>(null);
   const [backNodeSel, setBackNodeSel] = useState<{ id: string; nodes: string[] } | null>(null);
   const [backSplitMode, setBackSplitMode] = useState<{ id: string; mode: 'count' | 'spacing' } | null>(null);
   // Şemada seçili parçalar 3B'de vurgulanır (store.backFocusVfIds); tüm alan seçiliyse ya da seçim yoksa boş → grup vurgusu.
@@ -4156,13 +4175,16 @@ export function PanelEditor() {
       const typeHint = !scoped ? 'All pieces' : targetLeafIds.length === 1 ? `Piece ${memberLabelOf(targetLeafIds[0])}` : `${targetLeafIds.length} pieces`;
       const allKinds = new Set(backLeaves(g.tree).map(l => backPieceOf(g, l).placement));
       const typeTxt = allKinds.size > 1 ? 'mixed nailed / grooved pieces' : `${BACK_TYPE_LABEL[[...allKinds][0] ?? g.placement].toLowerCase()} back panel`;
-      type DraftField = 't' | 'setback';
+      type DraftField = 't' | 'setback' | 'gf' | 'gb' | 'gd';
+      const gc = backGrooveClearOf(g);
       const draft = (field: DraftField, fallback: number) => (backDraft?.id === g.id && backDraft.field === field ? backDraft.v : String(fallback));
       const applyDraft = (field: DraftField) => {
-        const v = parseFloat(draft(field, field === 't' ? g.thickness : setbackVal).replace(',', '.'));
+        const v = parseFloat(draft(field, field === 't' ? g.thickness : field === 'setback' ? setbackVal : field === 'gf' ? gc.front : field === 'gb' ? gc.back : gc.depth).replace(',', '.'));
         setBackDraft(null);
         if (!Number.isFinite(v)) return;
-        if (field === 't') void setBackThickness(g.id, v); else void setBackSetback(g.id, v, scoped ? targetLeafIds : []);
+        if (field === 't') void setBackThickness(g.id, v);
+        else if (field === 'setback') void setBackSetback(g.id, v, scoped ? targetLeafIds : []);
+        else void setBackGrooveClear(g.id, { [field === 'gf' ? 'front' : field === 'gb' ? 'back' : 'depth']: v });
       };
       const numInput = (field: DraftField, fallback: number, mixed = false) => (
         <input type="text" inputMode="decimal" value={draft(field, fallback)} placeholder={mixed ? '…' : undefined}
@@ -4268,6 +4290,17 @@ export function PanelEditor() {
                 <IconSquareBtn icon={Equal} title="Equalize sizes (unlock all)" onClick={() => { void equalizeBackGroup(g.id); }} />
               </div>
               <BackTypeBar value={commonPlacement} hint={typeHint} onPick={t => { void setBackPlacement(g.id, t, scoped ? targetLeafIds : []); }} />
+              {groovedTargets.length > 0 && (
+                // KANAL BOLLAŞTIRMA (grup başına): kanal = parça kalınlığı + F (öne) + B (arkaya); derinlik = giriş + D. Tek kompakt satır.
+                <div className="flex items-center gap-1 mb-1.5">
+                  <FieldBox fixed label="Groove +" title={`Groove clearance (mm, whole group): the groove cut into a grooved panel is wider and deeper than the back piece by these amounts — F: toward the front (into the body), B: toward the rear, D: at the groove bottom (beyond the groove depth "In"). Current groove: ${fmt1(g.thickness + gc.front + gc.back)} wide (${fmt1(g.thickness)} + ${fmt1(gc.front)} + ${fmt1(gc.back)}), depth = In + ${fmt1(gc.depth)}.`}>
+                    <span className="text-[9px] font-semibold text-[#b5ada3] pl-1">F</span>{numInput('gf', gc.front)}
+                    <span className="text-[9px] font-semibold text-[#b5ada3] pl-1">B</span>{numInput('gb', gc.back)}
+                    <span className="text-[9px] font-semibold text-[#b5ada3] pl-1">D</span>{numInput('gd', gc.depth)}{unitTxt('mm')}
+                  </FieldBox>
+                  <span className="text-[10px] text-stone-400 truncate" title="Resulting groove: width × depth beyond the panel's inner face (depth shown for the default groove depth)">groove {fmt1(g.thickness + gc.front + gc.back)} × In+{fmt1(gc.depth)}</span>
+                </div>
+              )}
               <BackSchematic group={g} solution={sol} selectedIndex={selMemberIdx} selectedNodes={picked}
                 memberLabels={g.memberVfIds.map((id, i) => { const mi = members.findIndex(m => m.id === id); return `${label}.${(mi >= 0 ? mi : i) + 1}`; })}
                 cuts={backCuts} nearPanels={nearPanels}

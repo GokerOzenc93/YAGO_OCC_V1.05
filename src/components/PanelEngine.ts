@@ -10,7 +10,7 @@ import {
 } from './Geometry';
 import { isInteriorPanel, isInteriorVf, recalculateInteriorVfs, syncPanelGroups } from './PanelGroupService';
 import { isDoorPanel, isDoorVf, recalculateDoorVfs, syncDoorGroups } from './DoorService';
-import { backNailStampFor, isBackPanel, isBackVf, recalculateBackVfs, syncBackGroups } from './BackService';
+import { backGrooveCuttersFor, backNailStampFor, isBackPanel, isBackVf, recalculateBackVfs, syncBackGroups } from './BackService';
 
 // Kapak ve arkalık panelleri (LEVHA): köşe birleşimine girmez, gövdeyle sığdırılmaz/kesilmez, hiçbir paneli kesmez; damgalamaz —
 // istisna arkalığın iç parçası: ÇAKMA kenarındaki gövde panelini ve sırada kendinden SONRA gelen gövde panelini basar (BackService.backNailStampFor).
@@ -707,7 +707,7 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
   const pp: any = parentFresh.parameters || {};
   const growForRotated = Math.max(parseFloat(pp.width) || 0, parseFloat(pp.height) || 0, parseFloat(pp.depth) || 0, 600) * 1.5;
 
-  const buildPanel = async (panel: Shape, vfsIn: VirtualFace[]): Promise<void> => {
+  const buildPanel = async (panel: Shape, vfsIn: VirtualFace[], groove = true): Promise<void> => {
     try {
       const vf = vfOfPanel(panel, vfsIn);
       if (!vf || !vf.vertices || vf.vertices.length < 3 || !(panel.parameters as any)?.parentShapeId) return;
@@ -799,8 +799,47 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       }
       await shapeRefRotateTargets(rp, panel, vf, children, orderOf, refContacts, updateShape, convertReplicadToThreeGeometry, createPanelFromVirtualFace);
 
+      // ARKALIK KANALI (Goker, Eki 2026 — "arkalığın üzerinde bir çıkartıcı olsun … bollaştırılmış kanal"): kanallı ilişkideki sınır /
+      // derz paneline parçanın bollaştırılmış kutusu katıdan çıkarılır. Yalnız görünüm/katı: kanalsız mesh `ungroovedGeometry`
+      // olarak saklanır ve ayak izi / damga / hacim onu okur → kanal boşluğuna panel sızmaz. Kutu panelin kutusuna değmiyorsa atlanır.
+      // Performans: yalnız SON geçişte kesilir (ilk geçiş ara sonuçtur; VF hesabı kanalsız mesh'i okur), aynı kanalsız mesh +
+      // aynı kesiciler için önceki sonuç yeniden kullanılır (_grooveCache), bitişik kesiciler tek kutuda birleşir.
+      let ungrooved: THREE.BufferGeometry | null = null;
+      let grooved: { rp: any; geometry: THREE.BufferGeometry } | null = null;
+      if (groove && !isSheetPanel(panel) && !isRotated) {
+        const cutters = mergeGrooveCutters(backGrooveCuttersFor(panel));
+        if (cutters.length) {
+          const base = meshed && meshed.shape === rp ? meshed.geometry : convertReplicadToThreeGeometry(rp);
+          const pb = localBboxOf(base);
+          const live = cutters.filter(c => pb && !(c.max[0] <= pb.min.x + 0.01 || c.min[0] >= pb.max.x - 0.01 || c.max[1] <= pb.min.y + 0.01 || c.min[1] >= pb.max.y - 0.01 || c.max[2] <= pb.min.z + 0.01 || c.min[2] >= pb.max.z - 0.01));
+          if (live.length) {
+            const sig = `${meshSignature(base)}|${live.map(c => c.min.map(round1).join(',') + '/' + c.max.map(round1).join(',')).join(';')}`;
+            const hit = _grooveCache.get(panel.id);
+            if (hit && hit.sig === sig) { ungrooved = base; grooved = { rp: hit.rp, geometry: hit.geometry }; }
+            else {
+              const t0 = performance.now();
+              let cut = rp, cutN = 0;
+              for (const c of live) {
+                try {
+                  const box = (await createReplicadBox({ width: c.max[0] - c.min[0], height: c.max[1] - c.min[1], depth: c.max[2] - c.min[2] })).translate(c.min[0], c.min[1], c.min[2]);
+                  cut = cut.cut(box); cutN++;
+                } catch (err) { console.warn('[YAGO][ARKALIK-KANAL] kanal kesimi hatası:', panel.id, errMsg(err)); }
+              }
+              if (cutN) {
+                ungrooved = base; grooved = { rp: cut, geometry: convertReplicadToThreeGeometry(cut) };
+                if (_grooveCache.size > 200) _grooveCache.clear();
+                _grooveCache.set(panel.id, { sig, rp: cut, geometry: grooved.geometry });
+                const dt = performance.now() - t0; if (dt > 250) console.warn('[YAGO][ARKALIK-KANAL] yavaş kesim:', panel.id, cutN, 'kanal', dt.toFixed(0), 'ms');
+              }
+            }
+          }
+        }
+      }
+      if (grooved) rp = grooved.rp;
+
       // Katı extrude'dan sonra değişmediyse mevcut mesh yeniden kullanılır (aynı tessellation).
-      const geometry = meshed && meshed.shape === rp ? meshed.geometry : convertReplicadToThreeGeometry(rp);
+      const geometry = grooved ? grooved.geometry : meshed && meshed.shape === rp ? meshed.geometry : convertReplicadToThreeGeometry(rp);
+      if (ungrooved) ungrooved.userData.groovedUuid = geometry.uuid;
       const paramPatch: any = {};
       if (dimsUpdate) Object.assign(paramPatch, dimsUpdate);
       if (resolvedStepsUpdate) paramPatch.extrudeSteps = resolvedStepsUpdate;
@@ -808,7 +847,7 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       if (stepsChanged) paramPatch.transformSteps = steps;
       // ANINDA YAZ: sonraki panel ve VF yeniden hesabı güncel ayak izini görsün.
       updateShape(panel.id, {
-        geometry, position: parentPos, rotation: [0, 0, 0], replicadShape: rp,
+        geometry, position: parentPos, rotation: [0, 0, 0], replicadShape: rp, ungroovedGeometry: ungrooved ?? undefined,
         ...(Object.keys(paramPatch).length ? { parameters: { ...panel.parameters, ...paramPatch } } : {}),
       } as any);
     } catch (err) {
@@ -831,7 +870,7 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
   let currentVfs = recalc(useAppStore.getState().virtualFaces);
   for (let pass = 0; pass < 2; pass++) {
     for (const panel of children) {
-      await buildPanel(panel, currentVfs);
+      await buildPanel(panel, currentVfs, pass === 1);
       currentVfs = recalc(currentVfs);
     }
   }
@@ -847,6 +886,31 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
   try { syncPanelGroups(parentShapeId); } catch (err) { console.warn('[YAGO][GRUP-SENKRON] hata:', errMsg(err)); }
   try { syncDoorGroups(parentShapeId); } catch (err) { console.warn('[YAGO][KAPAK-SENKRON] hata:', errMsg(err)); }
   try { syncBackGroups(parentShapeId); } catch (err) { console.warn('[YAGO][ARKALIK-SENKRON] hata:', errMsg(err)); }
+}
+
+// ARKALIK KANALI yardımcıları: kanallı sonuç önbelleği (panel id → kanalsız mesh imzası + kesiciler), mesh imzası, kesici birleştirme.
+const _grooveCache = new Map<string, { sig: string; rp: any; geometry: THREE.BufferGeometry }>();
+function meshSignature(g: THREE.BufferGeometry): string {
+  const pos = g.getAttribute('position') as THREE.BufferAttribute | undefined;
+  if (!pos) return '0';
+  let h = 7;
+  for (let i = 0; i < pos.count * 3; i++) h = (Math.imul(h, 31) + Math.round(pos.array[i] * 100)) | 0;
+  return `${pos.count}:${h}`;
+}
+/** Aynı eksen aralıklarına sahip, çapraz eksende bitişik/örtüşen kanal kutuları tek kutuda birleşir (daha az boolean). */
+function mergeGrooveCutters(boxes: CavityBox[]): CavityBox[] {
+  const out: CavityBox[] = boxes.map(b => ({ min: [...b.min] as Vec3, max: [...b.max] as Vec3 }));
+  const same = (x: number, y: number) => Math.abs(x - y) < 0.05;
+  for (let i = 0; i < out.length; i++) for (let j = out.length - 1; j > i; j--) {
+    const a = out[i], b = out[j];
+    const axes = [0, 1, 2].filter(k => same(a.min[k], b.min[k]) && same(a.max[k], b.max[k]));
+    if (axes.length !== 2) continue;
+    const c = [0, 1, 2].find(k => !axes.includes(k))!;
+    if (b.min[c] > a.max[c] + 0.05 || b.max[c] < a.min[c] - 0.05) continue;
+    a.min[c] = Math.min(a.min[c], b.min[c]); a.max[c] = Math.max(a.max[c], b.max[c]);
+    out.splice(j, 1);
+  }
+  return out;
 }
 
 /** VF yeniden hesabının sahip olduğu alanlar (geri kalanı kullanıcı verisidir). */
