@@ -2160,8 +2160,8 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
     }
     // Bağlı derz: bölme bölgesi seçilir (binme pill'leri görünür); zaten görünüyorsa ilki düzenlenir.
     if (np.ref) {
-      const p = [...pillByKey.values()].find(q => q.key.startsWith(`jin-${np.ref!.splitId}-${np.ref!.k}-`));
-      if (p) beginEdit({ key: p.key, v: p.item.txt }); else onPathClick(pathToLeaf(np.ref.splitId), false);
+      const c = bandChips.find(x => x.key.startsWith(`bc-jin-${np.vfId}-${np.ref!.splitId}-${np.ref!.k}-`));
+      if (c) beginEdit({ key: c.key, v: c.item.txt }); else onPathClick(pathToLeaf(np.ref.splitId), false);
       return;
     }
     if (splittable(np)) onSplitAtPanel!(np.vfId);
@@ -2474,7 +2474,6 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
       placedLocks.push(p.lock);
     }
   }
-  const pillByKey = new Map(pills.map(p => [p.key, p]));
   const obstacles = pills.flatMap(p => {
     const o = [{ x: p.cx, y: p.cy, r: Math.max(p.pw, p.ph) / 2 }];
     if (p.lock) o.push({ ...p.lock, r: LOCK_R });
@@ -2523,6 +2522,27 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
             ? `NAILED — the ${what} is shortened to the back panel's front face and both pieces cover its end by their overlap. Click to switch to Groove (the ${what} keeps its full depth, both pieces enter it from both sides).`
             : `GROOVED on both sides — the ${what} keeps its full depth and both pieces enter it by their overlap. Click to switch to Nail (the ${what} is shortened to the back panel's front face automatically; the pieces cover its end).`}`,
           item: valItem(key, null, () => {}, () => {}) }, b.x + b.w / 2, b.y + b.h / 2, b.vertical ? 0 : 1, b.vertical ? 1 : 0, (b.vertical ? b.h : b.w) / 2);
+        // BİNME rozetleri (her yan ayrı, doğrudan düzenlenir): Nail → "On" = parçanın levha ucunun üzerine binmesi,
+        // Groove → "In" = levhaya giriş. Rozet o yanın parçasına doğru kaydırılır (hangi yan olduğu görünsün).
+        for (const which of ['before', 'after'] as const) {
+          const ek: BackEdgeKey = b.vertical ? (which === 'before' ? 'uMax' : 'uMin') : (which === 'before' ? 'vMin' : 'vMax');
+          const ids = allLeafIds.filter(id => { const x = sides[id]?.[ek]; return !!x && x.splitId === splitId && x.k === jk; });
+          if (!ids.length) continue;
+          const ss = ids.map(id => sides[id]![ek]!);
+          const common = ss.every(x => Math.abs(x.in - ss[0].in) < T0) ? ss[0].in : null;
+          const m0 = members.find(mm => mm.leafId === ids[0]);
+          const pcx = m0 ? (sx(m0.u0) + sx(m0.u1)) / 2 : b.x, pcy = m0 ? (sy(m0.v0) + sy(m0.v1)) / 2 : b.y;
+          const dir = b.vertical ? Math.sign(pcx - (b.x + b.w / 2)) || 1 : Math.sign(pcy - (b.y + b.h / 2)) || 1;
+          const lbl = `${rel === 'nail' ? 'On' : 'In'} ${common == null ? '…' : fmt(common)}`;
+          const { ph: cph } = pillSize(lbl, cfs0);
+          const off = (b.vertical ? b.w : b.h) / 2 + cph / 2 + 2;
+          const jkey = `bc-jin-${b.np.vfId}-${splitId}-${jk}-${which}`;
+          const t = ss[0].t;
+          placeChip({ key: jkey, vfId: b.np.vfId, label: lbl, rot: b.vertical ? -90 : 0, warm: rel === 'nail',
+            title: `${b.np.name} (${what}) — ${rel === 'nail' ? 'how far the piece runs onto the ' + what + "'s end" : 'how far the piece enters the ' + what} on this side (${scopeTxt(ids)}): ${common == null ? 'pieces differ' : `${fmt(common)} mm`} of ${fmt(t)} (0 = ends at its face, ${fmt(t)} = covers it fully; default: to its middle). Click to type.`,
+            item: valItem(jkey, common, v => onEditJointIn(ek, v, ids), v => onEditJointIn(ek, v, ids, true)) },
+            b.x + b.w / 2 + (b.vertical ? dir * off : 0), b.y + b.h / 2 + (b.vertical ? 0 : dir * off), b.vertical ? 0 : 1, b.vertical ? 1 : 0, (b.vertical ? b.h : b.w) / 2);
+        }
       }
       if (!k) continue;
       const bcx = b.x + b.w / 2, bcy = b.y + b.h / 2, ux = b.vertical ? 0 : 1, uy = b.vertical ? 1 : 0, half = (b.vertical ? b.h : b.w) / 2;
@@ -2560,6 +2580,32 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
   }
   const editables = new Map<string, { cx: number; cy: number; pw: number; ph: number; f: number; item: ChainItem }>([
     ...pills.map(p => [p.key, p] as const), ...bandChips.filter(c => !c.toggle).map(c => [c.key, c] as const)]);
+  // GİRİŞ BÖLGELERİ (Goker, Eki 2026 — "arkalığın panelin içine girdiğini daha belirgin göster"): parça ∩ sınır levhası şeridi.
+  // groove = parça panelin kanalına giriyor (turuncu, kanal dibi koyu çizgi); nail = parça panelin ucunu örtüyor (taş rengi).
+  // Her zaman çizilir (seçim gerekmez); çok ince bölge en az 3 px gösterilir (panelin iç yüzünden dışa doğru).
+  type Zone = { key: string; x: number; y: number; w: number; h: number; kind: 'groove' | 'nail'; vertical: boolean; deepX: number; deepY: number };
+  const zones: Zone[] = [];
+  for (const np of nearPanels) {
+    if (np.poly || (!np.edge && !np.ref)) continue;
+    const rel: BackEdgeRel = np.edge ? edgeRelOf(group, np.edge) : backJointRelOf(group.tree, np.ref!.splitId, np.ref!.k);
+    for (const m of members) {
+      const isU = np.kind === 'u';
+      const ma0 = isU ? m.u0 : m.v0, ma1 = isU ? m.u1 : m.v1, mc0 = isU ? m.v0 : m.u0, mc1 = isU ? m.v1 : m.u1;
+      const a0 = Math.max(ma0, np.a0), a1 = Math.min(ma1, np.a1), c0 = Math.max(mc0, np.c0), c1 = Math.min(mc1, np.c1);
+      if (a1 - a0 < 0.05 || c1 - c0 < 1) continue;
+      const kind: 'groove' | 'nail' = m.piece.placement === 'outer' || rel === 'nail' ? 'nail' : 'groove';
+      // Kanal dibi = parçanın panel içindeki ucu (panelin iç yüzünden uzak taraf).
+      const deepAtMax = (ma0 + ma1) / 2 < (np.a0 + np.a1) / 2;   // parça panelin min tarafında → kanal dibi bölgenin max ucu
+      const deep = deepAtMax ? a1 : a0;
+      let x0 = isU ? Math.min(sx(a0), sx(a1)) : Math.min(sx(c0), sx(c1)), x1 = isU ? Math.max(sx(a0), sx(a1)) : Math.max(sx(c0), sx(c1));
+      let y0 = isU ? Math.min(sy(c0), sy(c1)) : Math.min(sy(a0), sy(a1)), y1 = isU ? Math.max(sy(c0), sy(c1)) : Math.max(sy(a0), sy(a1));
+      const MINZ = 3;
+      // Çok ince bölge: kanal dibi yönüne doğru en az MINZ px (panelin iç yüzü sabit kalır).
+      if (isU && x1 - x0 < MINZ) { if (Math.abs(sx(deep) - x0) < Math.abs(sx(deep) - x1)) x0 = x1 - MINZ; else x1 = x0 + MINZ; }
+      if (!isU && y1 - y0 < MINZ) { if (Math.abs(sy(deep) - y0) < Math.abs(sy(deep) - y1)) y0 = y1 - MINZ; else y1 = y0 + MINZ; }
+      zones.push({ key: `z-${np.vfId}-${m.leafId}`, x: x0, y: y0, w: x1 - x0, h: y1 - y0, kind, vertical: isU, deepX: isU ? (Math.abs(sx(deep) - x0) < Math.abs(sx(deep) - x1) ? x0 : x1) : 0, deepY: isU ? 0 : (Math.abs(sy(deep) - y0) < Math.abs(sy(deep) - y1) ? y0 : y1) });
+    }
+  }
   const editPos = editing ? editables.get(editing.key) : undefined;
   const captionOf = (m: typeof members[number]) => BACK_TYPE_LABEL[m.piece.placement];
 
@@ -2659,6 +2705,20 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
             <path d={ptsPath(hp)} fill="none" stroke={b.half || b.aligned ? '#e8925a' : '#9a9185'} strokeWidth={0.8} strokeDasharray="3 2" opacity={0.9} strokeLinejoin="round" />
           </g>
         )))}
+        {zones.map(z => {
+          const groove = z.kind === 'groove';
+          const fill = groove ? '#fb923c' : '#78716c', line = groove ? '#c2410c' : '#44403c';
+          return (
+            <g key={z.key} style={{ pointerEvents: 'none' }}>
+              <rect x={z.x} y={z.y} width={Math.max(0.5, z.w)} height={Math.max(0.5, z.h)} fill={fill} fillOpacity={groove ? 0.62 : 0.42} />
+              <rect x={z.x} y={z.y} width={Math.max(0.5, z.w)} height={Math.max(0.5, z.h)} fill="none" stroke={line} strokeOpacity={0.55} strokeWidth={0.6} />
+              {/* Kanal dibi / örtme ucu: kalın net çizgi */}
+              {z.vertical
+                ? <line x1={z.deepX} y1={z.y} x2={z.deepX} y2={z.y + z.h} stroke={line} strokeWidth={1.6} strokeLinecap="round" />
+                : <line x1={z.x} y1={z.deepY} x2={z.x + z.w} y2={z.deepY} stroke={line} strokeWidth={1.6} strokeLinecap="round" />}
+            </g>
+          );
+        })}
         {focusStrips.map((r, i) => {
           const sp = [{ x: r.x, y: r.y }, { x: r.x + r.w, y: r.y }, { x: r.x + r.w, y: r.y + r.h }, { x: r.x, y: r.y + r.h }];
           const cl = stripClip ? clipPolyToConvex(sp, stripClip) : sp;
@@ -2689,7 +2749,7 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
           const rj = !pickable && !np.edge ? refJoint(np) : null;
           const interactive = pickable || splitOn || !!rj || (!!np.edge && (b.na.length > 0 || b.gr.length > 0));
           // Kenar bandının değer rozetleri ayrı çizilir (bandChips); burada yalnız bölme / derz binme rozeti.
-          const chipTxt = pickable || splitOn ? 'Split here' : rj ? rj.txt : null;
+          const chipTxt = pickable || splitOn ? 'Split here' : null;   // bağlı derzin binme değerleri ayrı rozetlerde (bandChips)
           const on = false;
           const cfs = fsT * 0.8;
           const { pw: cw, ph: chh } = chipTxt ? pillSize(chipTxt, cfs) : { pw: 0, ph: 0 };

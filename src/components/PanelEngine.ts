@@ -13,7 +13,7 @@ import { isDoorPanel, isDoorVf, recalculateDoorVfs, syncDoorGroups } from './Doo
 import { backNailStampFor, isBackPanel, isBackVf, recalculateBackVfs, syncBackGroups } from './BackService';
 
 // Kapak ve arkalık panelleri (LEVHA): köşe birleşimine girmez, gövdeyle sığdırılmaz/kesilmez, hiçbir paneli kesmez; damgalamaz —
-// tek istisna arkalığın ÇAKMA kenarı (iç parça, kenar ilişkisi 'nail'): o kenarın gövde panelini basar (BackService.backNailStampFor).
+// istisna arkalığın iç parçası: ÇAKMA kenarındaki gövde panelini ve sırada kendinden SONRA gelen gövde panelini basar (BackService.backNailStampFor).
 const isSheetPanel = (p: any): boolean => isDoorPanel(p) || isBackPanel(p);
 const isSheetVf = (vf: any): boolean => isDoorVf(vf) || isBackVf(vf);
 
@@ -1140,7 +1140,9 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
   const backNailBox = new Map<string, CavityBox | null>();
   const backNailFor = (p: any, vfId: string): CavityBox | null => {
     const key = `${p.id}|${vfId}`;
-    if (!backNailBox.has(key)) backNailBox.set(key, backNailStampFor(p, vfId));
+    // Sıra: arkalık hedef VF'den önceyse (basan) hedef panel arkalığa kadar yerleşir.
+    const myIdx = vfIndexOf.get(vfId);
+    if (!backNailBox.has(key)) backNailBox.set(key, backNailStampFor(p, vfId, myIdx != null && panelPriority(p) < myIdx));
     return backNailBox.get(key) ?? null;
   };
   const stamps = (p: any, vfId: string, myPanel: any, myFaceNormal: THREE.Vector3 | null): boolean => {

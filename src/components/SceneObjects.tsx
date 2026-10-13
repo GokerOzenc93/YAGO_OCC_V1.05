@@ -18,7 +18,7 @@ import {
   type DoorMemberRect, DOOR_GAP, DOOR_THICKNESS, collectDoorCuts, confirmDoorPick, doorCandidatesAt, doorMembersOf, doorPlaneAxes, doorSlabPolygon, isDoorPanel, pickRectFor,
   rayDoorEntry, splitDoorAtPanel,
 } from './DoorService';
-import { BACK_GAP, BACK_THICKNESS, backCandidatesAt, backPickRect, backSlabPolygon, collectBackCuts, confirmBackPick, isBackPanel, rayBackEntry, splitBackAtPanel, vfBackBound } from './BackService';
+import { BACK_GAP, BACK_THICKNESS, backCandidatesAt, backPickObstacle, backPreviewStamp, backPickRect, backSlabPolygon, collectBackCuts, confirmBackPick, isBackPanel, rayBackEntry, splitBackAtPanel, vfBackBound } from './BackService';
 
 /* Sahne nesneleri — canvas içinde şekil başına çizilen her şey: PanelDrawing (panel mesh/kenar/seçim tonu, ref-yüz),
    FaceOverlays (yüz yakalama, VF, fillet, hacim/kapak seçimi), ShapeWithTransform (gövde + TransformControls).
@@ -565,6 +565,8 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
   useEffect(() => { setRaycastPendingVf(pending ? pending.virtualFace : null); }, [pending]);
   // İç paneller de girer (yeni panel sırada SONRA → mevcutlar onu basar); kapaklar/arkalıklar engel değildir.
   const childPanels = useMemo(() => childPanelsOf(shape.id, allShapes).filter(p => !isDoorPanel(p) && !isBackPanel(p)), [allShapes, shape.id]);
+  // Bölge önizlemesi: iç arkalık parçaları da basar (yeni panel sırada en sonda → arkalığa kadar yerleşir; motorla aynı kural).
+  const regionSiblings = useMemo(() => [...childPanels, ...childPanelsOf(shape.id, allShapes).filter(isBackPanel).map(backPreviewStamp).filter((x): x is NonNullable<typeof x> => !!x)], [childPanels, allShapes, shape.id]);
   const groupHasVirtualFace = useCallback((gi: number): boolean => {
     if (gi < 0 || gi >= faceGroups.length || shapeVirtualFaces.length === 0) return false;
     const gn = faceGroups[gi].normal.clone().normalize(), gc = faceGroups[gi].center;
@@ -636,7 +638,7 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
       lastClickRef.current = { point: clickLocal, groupIndex: targetGroupIndex, cycleIndex: 0 };
     }
     setHoveredGroupIndex(targetGroupIndex);
-    setPending(buildFacePreview(previewClickPoint, faceGroups[targetGroupIndex], faces, worldToLocal, shape.id, effGeometry, childPanels));
+    setPending(buildFacePreview(previewClickPoint, faceGroups[targetGroupIndex], faces, worldToLocal, shape.id, effGeometry, regionSiblings));
   };
   if (!raycastMode) return null;
   return (
@@ -841,7 +843,8 @@ export const VolumePickOverlay: React.FC<{ shape: any; allShapes: any[] }> = ({ 
   // Yeniden seçim: ızgara yalnız gruptan ÖNCEKİ panellerle kurulur (sonrakiler + üyeler engel değil).
   const repickGroup = useMemo(() => (volumePickGroupId ? panelGroups.find(g => g.id === volumePickGroupId) || null : null), [panelGroups, volumePickGroupId]);
   // Düz paneller kutu engeli; dönmüş/eğik paneller yarım-uzay.
-  const oset = useMemo(() => (repickGroup ? repickObstacles(repickGroup, shape, allShapes) : collectObstacles(shape, allShapes)), [allShapes, shape, repickGroup]);
+  // Yeni grup sırada en sonda: iç arkalık parçaları engeldir (raf/dikme arkalığa kadar).
+  const oset = useMemo(() => (repickGroup ? repickObstacles(repickGroup, shape, allShapes) : collectObstacles(shape, allShapes, () => true, backPickObstacle)), [allShapes, shape, repickGroup]);
   const grid = useMemo(() => (volumePickMode ? gridForObstacles(shape, oset) : null), [shape, oset, volumePickMode]);
   const currentMesh = useMemo(() => (repickGroup ? surfaceMesh(boxesSurface(repickGroup.region || [repickGroup.cavity])) : null), [repickGroup]);
   useEffect(() => () => { currentMesh?.geo.dispose(); }, [currentMesh]);

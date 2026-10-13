@@ -22,7 +22,10 @@ import { type GapMode, applyGapEditProportional, bodyLocalBox, cycleGapMode, gap
 //    'nail' → iç parça önde olduğundan o kenarın paneli arkalığın ÖN yüzüne kadar OTOMATİK KISALTILIR ve parça ucunu `cover` kadar
 //    örter (girilmemişse tamamen). Kısaltma: dikme/raf → hacim engeli (`backObstacleFor`), gövde paneli → arkalık parçası o paneli
 //    sırası ne olursa olsun BASAR (`backNailStampFor`, PanelEngine.stamps). Çakma kenar derinlik (P) vermez — yoksa panel kısaldıkça
-//    arkalık öne kaçardı. Arkalık panelleri başka hiçbir paneli damgalamaz, gövdeyle kesilmez.
+//    arkalık öne kaçardı. Gövdeyle kesilmez.
+//  • SIRA (Goker, Eki 2026 — "arkalıklar da sıralamaya göre çalışsın"): arkalıktan SONRA konan panel (gövde paneli ya da raf/dikme
+//    grubu; arkalığın kenarı / derzi değilse) arkalığa kadar yerleşir — iç parça levhasıyla basar / hacim engelidir. Önce konan
+//    paneller kenar / derz / geçme kurallarına uyar.
 //  • Dönmüş sınır paneli kenar olmaz; arkalığı büyük-yüz düzlemiyle keser (arkalık düzlemi değişmez).
 //  • Arkalık-sınırı raf/dikme (Goker, Eki 2026): arkalığın GEÇTİĞİ (kenarı olmayan) kanallı levha KISALIR (levha arkalığın ön
 //    yüzünde biter); KENARI olan levha kenar ilişkisine uyar (groove → kısalmaz: "dikme ve sağ yan arasına kanallı arkalık →
@@ -729,12 +732,12 @@ export function backObstacleFor(group: PanelGroup, backPanel: Shape): CavityBox 
   const joint = new Set(backJointRefs(bg.tree).map(r => r.ref.vfId));
   const { u, v } = backPlaneAxes(bg.axis);
   const parent = shapeById(bg.shapeId, useAppStore.getState().shapes);
-  let press = false;
+  let press = false, involved = false;
   for (const id of group.memberVfIds) {
     const edge = EDGE_KEYS.find(k => bounds[k]?.vfId === id);
-    if (edge) { if (sol.ext[edge].nail && cellTouchesEdge(cell, sol.rect, edge)) { press = true; break; } continue; }
+    if (edge) { involved = true; if (sol.ext[edge].nail && cellTouchesEdge(cell, sol.rect, edge)) { press = true; break; } continue; }
     // Levhaya bağlı derz: yalnız ÇAKMA ilişkide (ve parça o derze değiyorsa) kısaltır; kanallıda iki yandan kanal, levha tam boy.
-    if (joint.has(id)) { if (Object.values(sol.sides[m.leafId] ?? {}).some(x => x?.vfId === id && x.rel === 'nail')) { press = true; break; } continue; }
+    if (joint.has(id)) { involved = true; if (Object.values(sol.sides[m.leafId] ?? {}).some(x => x?.vfId === id && x.rel === 'nail')) { press = true; break; } continue; }
     const mvf = vfs.find(f => f.id === id);
     if (!mvf || !vfBackBound(mvf)) continue;
     const p = parent ? panelOfVf(id, useAppStore.getState().shapes) : null;
@@ -743,21 +746,66 @@ export function backObstacleFor(group: PanelGroup, backPanel: Shape): CavityBox 
     const cu = (box.min[u] + box.max[u]) / 2, cv = (box.min[v] + box.max[v]) / 2;
     if (cu > cell.u0 - TOL && cu < cell.u1 + TOL && cv > cell.v0 - TOL && cv < cell.v1 + TOL) { press = true; break; }
   }
-  return press ? backPressBox(bg, sol, m) : null;
+  if (press) return backPressBox(bg, sol, m);
+  // SIRA (Goker, Eki 2026 — "arkalıklar da sıralamaya göre çalışsın; arkalık olan yere panel atınca arkalığa kadar yerleşsin"):
+  // arkalıktan SONRA konan raf/dikme grubu (kenar / derz ilişkisi yoksa) parçanın levhasıyla sınırlanır → arkalığın ön yüzünde biter.
+  if (!involved && backPrecedes(backPanel, group.memberVfIds, vfs)) return backPieceBox(bg, m);
+  return null;
+}
+
+/** Arkalık paneli VF sırasında hedef VF'lerin (hepsinden) ÖNCE mi; hedef henüz VF'siz (yeni grup) → sonra sayılır. */
+function backPrecedes(backPanel: Shape, targetVfIds: string[], vfs: VirtualFace[]): boolean {
+  const idx = (id: string | undefined) => (id ? vfs.findIndex(f => f.id === id) : -1);
+  const mine = idx((backPanel.parameters as any)?.virtualFaceId);
+  if (mine < 0) return false;
+  const others = targetVfIds.map(idx).filter(i => i >= 0);
+  return !others.length || others.every(i => i > mine);
+}
+
+/** Parçanın TAM levha kutusu (gövde-yerel): kenar uzantıları (kanal girişi / bini) dahil; açılı parçada çokgenin kutusu. */
+function backPieceBox(bg: Pick<BackGroup, 'axis' | 'side' | 'thickness'>, m: BackMemberRect): CavityBox {
+  const xs = m.poly ? m.poly.map(q => q.x) : [m.u0, m.u1], ys = m.poly ? m.poly.map(q => q.y) : [m.v0, m.v1];
+  const { u, v } = backPlaneAxes(bg.axis);
+  const box: CavityBox = { min: [0, 0, 0], max: [0, 0, 0] };
+  box.min[u] = Math.min(...xs); box.max[u] = Math.max(...xs);
+  box.min[v] = Math.min(...ys); box.max[v] = Math.max(...ys);
+  box.min[bg.axis] = Math.min(m.front, m.front - bg.side * bg.thickness); box.max[bg.axis] = Math.max(m.front, m.front - bg.side * bg.thickness);
+  return box;
+}
+
+/** Yeni konacak raf/dikmenin hacim seçimi (sırada en sonda): iç arkalık parçası engeldir. */
+export function backPickObstacle(backPanel: Shape): CavityBox | null {
+  const hit = backMemberOfPanel(backPanel);
+  return hit && hit.m.piece.placement === 'inner' ? backPieceBox(hit.bg, hit.m) : null;
+}
+
+/** Gövde paneli yüz seçimi önizlemesi (yeni panel sırada en sonda): iç arkalık parçası kutu damgası olarak kardeş listesine girer. */
+export function backPreviewStamp(backPanel: Shape): Shape | null {
+  const box = backPickObstacle(backPanel);
+  if (!box) return null;
+  const sz = [0, 1, 2].map(a => Math.max(0.01, box.max[a] - box.min[a]));
+  const geo = new THREE.BoxGeometry(sz[0], sz[1], sz[2]).translate((box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2);
+  const parent = shapeById((backPanel.parameters as any)?.parentShapeId);
+  return { ...backPanel, geometry: geo, position: parent ? [...parent.position] : backPanel.position, rotation: parent ? [...parent.rotation] : backPanel.rotation, scale: parent ? [...parent.scale] : backPanel.scale } as Shape;
 }
 
 /** GÖVDE PANELİ KISALTMA (PanelEngine.stamps / buildStamp): iç parça, ÇAKMA kenarındaki gövde panelini (VF `vfId`) sırası ne
  *  olursa olsun basar — damga kutusu parçanın levhası, panelin DIŞ yüzünün 1 mm ötesine uzatılmış (yüz düzlemine değsin); bölge
  *  çözücü şeridin UZUN kenarıyla keser → panel arkalığın ön yüzünde biter. Değilse null (arkalık hiçbir paneli damgalamaz). */
-export function backNailStampFor(backPanel: Shape, vfId: string): CavityBox | null {
+export function backNailStampFor(backPanel: Shape, vfId: string, backFirst = false): CavityBox | null {
   const hit = backMemberOfPanel(backPanel);
   if (!hit || hit.m.piece.placement !== 'inner') return null;
   const { bg, sol, m } = hit;
   const bounds = sol.bounds ?? bg.bounds;
   const edge = EDGE_KEYS.find(k => bounds[k]?.vfId === vfId);
-  if (!edge || !sol.ext[edge].nail) return null;
-  const cell = backCells(sol.solved).find(c => c.leafId === m.leafId) ?? m;
-  return cellTouchesEdge(cell, sol.rect, edge) ? backPressBox(bg, sol, m, 1) : null;
+  if (edge) {
+    if (!sol.ext[edge].nail) return null;
+    const cell = backCells(sol.solved).find(c => c.leafId === m.leafId) ?? m;
+    return cellTouchesEdge(cell, sol.rect, edge) ? backPressBox(bg, sol, m, 1) : null;
+  }
+  // SIRA: arkalıktan SONRA konan gövde paneli (arkalığın kenarı / derzi değilse) parçanın levhasıyla basılır → arkalığa kadar yerleşir.
+  if (!backFirst || backJointRefs(bg.tree).some(r => r.ref.vfId === vfId)) return null;
+  return backPieceBox(bg, m);
 }
 
 /** Levhaya bağlı derzin ilişkisi (yoksa 'groove'). */
