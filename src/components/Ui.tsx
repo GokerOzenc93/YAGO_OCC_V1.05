@@ -598,6 +598,8 @@ const FLOAT_MIN_W = 460;
 const FLOAT_MIN_H = 280;
 const FLOAT_SHADOW = '0 22px 56px -14px rgba(40,30,20,0.30),0 8px 20px -6px rgba(40,30,20,0.16),0 0 0 0.5px rgba(60,50,40,0.10),inset 0 0.5px 0 rgba(255,255,255,0.95)';
 const SIDEBAR_WINDOW_NAME = 'yago-sidebar';
+/** Ayrı tarayıcı penceresi düğmesi şimdilik arayüzde GİZLİ (Goker, Oct 14 2026); kod yolu duruyor — true yapınca geri gelir. */
+const SIDEBAR_WINDOW_ENABLED = false;
 
 const defaultFloatRect = (): FloatRect => {
   const vw = window.innerWidth, vh = window.innerHeight;
@@ -688,7 +690,8 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; panelEditor
   const { selectedShapeId, showOutlines, setShowOutlines, panelSelectMode, setPanelSelectMode } =
     useStoreFields('selectedShapeId', 'showOutlines', 'setShowOutlines', 'panelSelectMode', 'setPanelSelectMode');
   const [initial] = useState(readSidebarLayout);
-  const [mode, setMode] = useState<SidebarMode>(initial.mode);
+  // Açılışta her zaman sola yaslı ve KAPALI başlar (Goker); kaydedilen kip yalnız yüzen panelin konum/boyutu için okunur.
+  const [mode, setMode] = useState<SidebarMode>('docked');
   const [rect, setRect] = useState<FloatRect>(() => clampFloatRect(initial.rect ?? defaultFloatRect()));
   const rectRef = useRef(rect); rectRef.current = rect;
   const [isOpen, setIsOpen] = useState(false);
@@ -854,9 +857,11 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; panelEditor
           <HeaderToggle active={mode === 'floating'} onClick={mode === 'floating' ? dockSidebar : floatSidebar}
             title={mode === 'floating' ? 'Dock the panel back to the left edge' : 'Undock — floating panel you can drag and resize'}
             icon={<PictureInPicture2 size={14} strokeWidth={2} />} />
-          <HeaderToggle active={mode === 'window'} onClick={mode === 'window' ? dockSidebar : popOutSidebar}
-            title={mode === 'window' ? 'Return the panel to the main window' : 'Open the panel in a separate browser window'}
-            icon={<AppWindow size={14} strokeWidth={2} />} />
+          {(SIDEBAR_WINDOW_ENABLED || mode === 'window') && (
+            <HeaderToggle active={mode === 'window'} onClick={mode === 'window' ? dockSidebar : popOutSidebar}
+              title={mode === 'window' ? 'Return the panel to the main window' : 'Open the panel in a separate browser window'}
+              icon={<AppWindow size={14} strokeWidth={2} />} />
+          )}
           {mode === 'docked' && (
             <>
               <div style={VSEP} />
