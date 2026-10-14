@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronRight, Hash, type LucideIcon, PanelLeft, Pin, PinOff, Send, SlidersHorizontal, Square, Box, Layers } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { AppWindow, ChevronRight, GripHorizontal, Hash, type LucideIcon, PanelLeft, PictureInPicture2, Pin, PinOff, Send, SlidersHorizontal, Square, Box, Layers } from 'lucide-react';
 import { CameraType, OrthoMode, type Shape, SnapType, Tool, ViewMode, shapeById, useAppStore, useStoreFields } from '../store';
 import {
   type Vec3, convertReplicadToThreeGeometry, createReplicadBox, getReplicadVertices,
@@ -7,7 +8,7 @@ import {
 } from './Geometry';
 
 /* Uygulama kabuğu: tasarım jetonları, ErrorBoundary, ToolChip, ikonlar, durum çubuğu, terminal,
-   üst araç çubuğu (boolean çıkarma) ve sol kenar çubuğu + kemik teması. */
+   üst araç çubuğu (boolean çıkarma) ve sol kenar çubuğu (yaslı / yüzen / ayrı pencere) + kemik teması. */
 
 export const UI_FONT = "'Inter','SF Pro Text',system-ui,sans-serif";
 export const MONO_FONT = "'SF Mono','Fira Code','Cascadia Code',monospace";
@@ -587,19 +588,151 @@ const HeaderToggle: React.FC<{ active: boolean; onClick: () => void; title: stri
   );
 };
 type SidebarTab = 'parameters' | 'panel-editor';
+/* Kenar çubuğu yerleşimi: 'docked' soldan kayan klasik şerit; 'floating' pencere içinde sürüklenip
+   boyutlanabilen yüzen panel; 'window' ayrı tarayıcı penceresi (portal). Sekmeler ve içerik üç kipte aynıdır. */
+type SidebarMode = 'docked' | 'floating' | 'window';
+type FloatRect = { x: number; y: number; w: number; h: number };
+const SIDEBAR_LAYOUT_KEY = 'yago.sidebar.layout';
+const SIDEBAR_HEADER_H = 40;
+const FLOAT_MIN_W = 460;
+const FLOAT_MIN_H = 280;
+const FLOAT_SHADOW = '0 22px 56px -14px rgba(40,30,20,0.30),0 8px 20px -6px rgba(40,30,20,0.16),0 0 0 0.5px rgba(60,50,40,0.10),inset 0 0.5px 0 rgba(255,255,255,0.95)';
+const SIDEBAR_WINDOW_NAME = 'yago-sidebar';
+
+const defaultFloatRect = (): FloatRect => {
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const w = Math.min(SIDEBAR_WIDTH, Math.max(FLOAT_MIN_W, vw - 48));
+  const h = Math.min(820, Math.max(FLOAT_MIN_H, vh - 132 - 80));
+  return { x: 24, y: 132, w, h };
+};
+/* Panel görünür alanda kalsın: başlığın en az 120 px'i yatayda, başlık şeridi dikeyde pencere içinde. */
+const clampFloatRect = (r: FloatRect): FloatRect => {
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const w = Math.max(FLOAT_MIN_W, Math.min(r.w, Math.max(FLOAT_MIN_W, vw - 16)));
+  const h = Math.max(FLOAT_MIN_H, Math.min(r.h, Math.max(FLOAT_MIN_H, vh - 16)));
+  const x = Math.max(120 - w, Math.min(r.x, vw - 120));
+  const y = Math.max(0, Math.min(r.y, vh - SIDEBAR_HEADER_H));
+  return { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) };
+};
+const readSidebarLayout = (): { mode: 'docked' | 'floating'; rect: FloatRect | null } => {
+  try {
+    const raw = localStorage.getItem(SIDEBAR_LAYOUT_KEY);
+    if (!raw) return { mode: 'docked', rect: null };
+    const j = JSON.parse(raw) as { mode?: unknown; rect?: Partial<FloatRect> | null };
+    const r = j.rect;
+    const ok = !!r && [r.x, r.y, r.w, r.h].every(v => typeof v === 'number' && Number.isFinite(v));
+    return { mode: j.mode === 'floating' ? 'floating' : 'docked', rect: ok ? (r as FloatRect) : null };
+  } catch { return { mode: 'docked', rect: null }; }
+};
+const writeSidebarLayout = (mode: 'docked' | 'floating', rect: FloatRect) => {
+  try { localStorage.setItem(SIDEBAR_LAYOUT_KEY, JSON.stringify({ mode, rect })); } catch { /* depolama yok: yalnız oturum içi */ }
+};
+
+/* Ana belgedeki stil kaynaklarını (Tailwind/Vite stilleri, Google Fonts bağlantısı) açılır pencereye kopyalar. */
+const copyStyleNode = (dst: Document, n: Node) => {
+  if (n instanceof HTMLLinkElement) {
+    if (!/\bstylesheet\b/.test(n.rel)) return;
+    const c = dst.createElement('link'); c.rel = 'stylesheet'; c.href = n.href; dst.head.appendChild(c);
+  } else if (n instanceof HTMLStyleElement) {
+    const c = dst.createElement('style');
+    let css = n.textContent ?? '';
+    if (!css.trim() && n.sheet) { try { css = Array.from(n.sheet.cssRules).map(r => r.cssText).join('\n'); } catch { /* çapraz kaynak */ } }
+    c.textContent = css; dst.head.appendChild(c);
+  }
+};
+const openSidebarWindow = (rect: FloatRect): { win: Window; root: HTMLElement; dispose: () => void } | null => {
+  const left = Math.round(window.screenX + rect.x + 40), top = Math.round(window.screenY + rect.y + 40);
+  let win: Window | null = null;
+  try { win = window.open('', SIDEBAR_WINDOW_NAME, `popup=yes,width=${rect.w},height=${rect.h},left=${left},top=${top}`); } catch { win = null; }
+  if (!win) return null;
+  const doc = win.document;
+  doc.title = 'FurniCAD — Panel';
+  const base = doc.createElement('base'); base.href = document.baseURI; doc.head.appendChild(base);
+  document.head.querySelectorAll('link, style').forEach(n => copyStyleNode(doc, n));
+  // Sonradan eklenen stiller (Vite HMR, tembel yüklenen parçalar) de aktarılsın.
+  const mo = new MutationObserver(muts => { for (const m of muts) m.addedNodes.forEach(n => copyStyleNode(doc, n)); });
+  mo.observe(document.head, { childList: true });
+  doc.body.className = document.body.className;
+  doc.body.style.cssText = 'margin:0;overflow:hidden;background:#ebe8e2;';
+  const root = doc.createElement('div');
+  root.style.cssText = 'position:fixed;inset:0;display:flex;flex-direction:column;';
+  doc.body.appendChild(root);
+  return { win, root, dispose: () => mo.disconnect() };
+};
+
 export const Sidebar: React.FC<{ parametersContent: React.ReactNode; panelEditorContent: React.ReactNode }> = ({ parametersContent, panelEditorContent }) => {
   const { selectedShapeId, showOutlines, setShowOutlines, panelSelectMode, setPanelSelectMode } =
     useStoreFields('selectedShapeId', 'showOutlines', 'setShowOutlines', 'panelSelectMode', 'setPanelSelectMode');
+  const [initial] = useState(readSidebarLayout);
+  const [mode, setMode] = useState<SidebarMode>(initial.mode);
+  const [rect, setRect] = useState<FloatRect>(() => clampFloatRect(initial.rect ?? defaultFloatRect()));
+  const rectRef = useRef(rect); rectRef.current = rect;
   const [isOpen, setIsOpen] = useState(false);
   const [isPinned, setIsPinned] = useState(false);
   const [activeTab, setActiveTab] = useState<SidebarTab>('panel-editor');
   const [pinHover, setPinHover] = useState(false);
   const [handleHover, setHandleHover] = useState(false);
+  const [popupRoot, setPopupRoot] = useState<HTMLElement | null>(null);
+  const popupRef = useRef<{ win: Window; dispose: () => void } | null>(null);
   const sidebarRef = useRef<HTMLDivElement>(null);
   const handleRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{ kind: 'move' | 'resize'; dx: boolean; dy: boolean; sx: number; sy: number; start: FloatRect; live: FloatRect } | null>(null);
   const openSidebar = useCallback(() => { setIsOpen(true); setIsPinned(true); }, []);
 
+  /* ---- kip geçişleri ---- */
+  const closePopup = useCallback(() => {
+    const p = popupRef.current; popupRef.current = null;
+    setPopupRoot(null);
+    if (!p) return;
+    p.dispose();
+    // Portal önce sökülsün (React commit), pencere sonra kapansın.
+    window.setTimeout(() => { try { if (!p.win.closed) p.win.close(); } catch { /* pencere zaten gitmiş */ } }, 0);
+  }, []);
+  const dockSidebar = useCallback(() => {
+    closePopup(); setMode('docked'); setIsPinned(true); setIsOpen(true); writeSidebarLayout('docked', rectRef.current);
+  }, [closePopup]);
+  const floatSidebar = useCallback(() => {
+    closePopup(); setMode('floating'); writeSidebarLayout('floating', rectRef.current);
+  }, [closePopup]);
+  const popOutSidebar = useCallback(() => {
+    if (popupRef.current) { try { popupRef.current.win.focus(); } catch { /* yok */ } return; }
+    const opened = openSidebarWindow(rectRef.current);
+    if (!opened) { console.warn('[Sidebar] Popup window was blocked by the browser — falling back to the floating panel.'); floatSidebar(); return; }
+    popupRef.current = { win: opened.win, dispose: opened.dispose };
+    setPopupRoot(opened.root); setMode('window');
+    writeSidebarLayout('floating', rectRef.current); // yeniden yüklemede en yakın kip: yüzen
+  }, [floatSidebar]);
+
+  /* Kullanıcı ayrı pencereyi kapatırsa panel ana pencereye (sabitli) döner. */
   useEffect(() => {
+    const p = popupRef.current;
+    if (!popupRoot || !p) return;
+    let done = false;
+    const back = () => {
+      if (done || popupRef.current !== p) return;
+      done = true; popupRef.current = null; p.dispose();
+      setPopupRoot(null); setMode('docked'); setIsPinned(true); setIsOpen(true); writeSidebarLayout('docked', rectRef.current);
+    };
+    try { p.win.addEventListener('pagehide', back); } catch { /* erişilemez */ }
+    const iv = window.setInterval(() => { try { if (p.win.closed) back(); } catch { back(); } }, 500);
+    return () => { window.clearInterval(iv); try { p.win.removeEventListener('pagehide', back); } catch { /* gitmiş */ } };
+  }, [popupRoot]);
+  /* Ana sayfa kapanır / yenilenirse yetim pencere kalmasın. */
+  useEffect(() => {
+    const bye = () => { const p = popupRef.current; if (p) { try { p.win.close(); } catch { /* yok */ } } };
+    window.addEventListener('pagehide', bye);
+    return () => { window.removeEventListener('pagehide', bye); bye(); };
+  }, []);
+  /* Pencere boyutu değişince yüzen panel görünür alanda kalsın. */
+  useEffect(() => {
+    if (mode !== 'floating') return;
+    const onResize = () => setRect(r => { const c = clampFloatRect(r); writeSidebarLayout('floating', c); return c; });
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [mode]);
+
+  useEffect(() => {
+    if (mode !== 'docked') return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || !(isOpen || isPinned)) return;
       // Escape şerit girdisinde / aktif panel aracında "iptal"dir — o durumlarda kenar çubuğu KAPANMAZ.
@@ -611,10 +744,10 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; panelEditor
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [isOpen, isPinned]);
+  }, [mode, isOpen, isPinned]);
 
   useEffect(() => {
-    if (!isOpen || isPinned) return;
+    if (mode !== 'docked' || !isOpen || isPinned) return;
     const onPointerDown = (e: PointerEvent) => {
       const target = e.target as Node | null;
       if (!target || sidebarRef.current?.contains(target) || handleRef.current?.contains(target)) return;
@@ -622,56 +755,75 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; panelEditor
     };
     window.addEventListener('pointerdown', onPointerDown, true);
     return () => window.removeEventListener('pointerdown', onPointerDown, true);
-  }, [isOpen, isPinned]);
+  }, [mode, isOpen, isPinned]);
 
-  const isVisible = isOpen || isPinned;
+  /* ---- yüzen panel: sürükleme / boyutlandırma (işaretçi yakalama, canlı DOM güncellemesi, bırakınca state) ---- */
+  const dragStart = (e: React.PointerEvent<HTMLElement>, kind: 'move' | 'resize', dx = false, dy = false) => {
+    if (mode !== 'floating' || e.button !== 0) return;
+    if (kind === 'move' && (e.target as HTMLElement).closest('button')) return;
+    e.preventDefault();
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* desteklenmiyor */ }
+    dragRef.current = { kind, dx, dy, sx: e.clientX, sy: e.clientY, start: rectRef.current, live: rectRef.current };
+  };
+  const dragMove = (e: React.PointerEvent<HTMLElement>) => {
+    const d = dragRef.current; if (!d) return;
+    const mx = e.clientX - d.sx, my = e.clientY - d.sy;
+    const next = d.kind === 'move'
+      ? { ...d.start, x: d.start.x + mx, y: d.start.y + my }
+      : { ...d.start, w: d.start.w + (d.dx ? mx : 0), h: d.start.h + (d.dy ? my : 0) };
+    const c = clampFloatRect(next); d.live = c;
+    const el = sidebarRef.current;
+    if (el) { el.style.left = `${c.x}px`; el.style.top = `${c.y}px`; el.style.width = `${c.w}px`; el.style.height = `${c.h}px`; }
+  };
+  const dragEnd = (e: React.PointerEvent<HTMLElement>) => {
+    const d = dragRef.current; if (!d) return;
+    dragRef.current = null;
+    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* yok */ }
+    setRect(d.live); writeSidebarLayout('floating', d.live);
+  };
+  const resizeHandle = (style: React.CSSProperties, dx: boolean, dy: boolean) => (
+    <div onPointerDown={e => dragStart(e, 'resize', dx, dy)} onPointerMove={dragMove} onPointerUp={dragEnd} onPointerCancel={dragEnd}
+      style={{ position: 'absolute', zIndex: 2, touchAction: 'none', ...style }} />
+  );
+
+  const isVisible = mode !== 'docked' || isOpen || isPinned;
   const tabPane = (tab: SidebarTab, content: React.ReactNode, empty: React.ReactNode) => (
     <div style={{ display: activeTab === tab ? 'block' : 'none' }}>{selectedShapeId ? content : empty}</div>
   );
 
-  return (
-    <>
-      {!isVisible && (
-        <div ref={handleRef} className="fixed left-0 z-40" style={{ top: '120px', bottom: '64px', width: '24px', pointerEvents: 'none' }}>
-          <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: '1px', background: 'linear-gradient(to bottom,transparent,rgba(60,50,40,0.10) 20%,rgba(60,50,40,0.10) 80%,transparent)', pointerEvents: 'none' }} />
-          <button type="button" onClick={openSidebar} onMouseEnter={() => setHandleHover(true)} onMouseLeave={() => setHandleHover(false)} aria-label="Open sidebar"
-            style={{
-              position: 'absolute', top: '50%', transform: `translateY(-50%) translateX(${handleHover ? '3px' : '0'})`, left: '0', width: '24px', height: '72px', padding: 0,
-              borderRadius: '0 11px 11px 0', background: SB.contentBg, border: `1px solid ${SB.groupBorder}`, borderLeft: 'none',
-              boxShadow: handleHover
-                ? '4px 3px 16px rgba(40,30,20,0.16),1.5px 0 4px rgba(40,30,20,0.10),0 0 0 0.5px rgba(60,50,40,0.08),inset 0 0.5px 0 rgba(255,255,255,0.95),inset 0 -0.5px 0 rgba(140,120,100,0.08)'
-                : '2px 1px 8px rgba(40,30,20,0.09),0.5px 0 1px rgba(40,30,20,0.05),0 0 0 0.5px rgba(60,50,40,0.07),inset 0 0.5px 0 rgba(255,255,255,0.95),inset 0 -0.5px 0 rgba(140,120,100,0.06)',
-              display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '5px', cursor: 'pointer', outline: 'none',
-              transition: 'transform 0.22s cubic-bezier(0.4,0,0.2,1),box-shadow 0.22s', pointerEvents: 'auto',
-            }}>
-            <ChevronRight size={14} strokeWidth={2.5} style={{ color: handleHover ? SB.accent : SB.textSecondary, transition: 'color 0.15s,transform 0.22s', transform: handleHover ? 'translateX(1.5px)' : 'translateX(0)' }} />
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', alignItems: 'center' }}>
-              {[0, 1, 2].map(i => <div key={i} style={{ width: '2.5px', height: '2.5px', borderRadius: '50%', background: handleHover ? SB.accent : SB.textMuted, transition: 'background 0.15s', opacity: handleHover ? 0.95 : 0.65 }} />)}
-            </div>
-          </button>
-          {handleHover && (
-            <div style={{ position: 'absolute', top: '50%', left: '0', transform: 'translateY(-50%)', width: '48px', height: '110px', borderRadius: '0 50% 50% 0', background: 'radial-gradient(ellipse at left center,rgba(249,115,22,0.12),transparent 70%)', pointerEvents: 'none', animation: 'ls-glow-in 0.25s ease-out forwards' }} />
-          )}
+  /* Sekme şeridi + içerik: üç kipte de aynı ağaç (docked ↔ floating geçişinde içerik yeniden kurulmaz). */
+  const panelBody = (
+    <div style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%', background: SB.bg, borderRight: mode === 'docked' ? `1px solid ${SB.border}` : 'none', boxShadow: mode === 'docked' ? SB.panelShadow : 'none', fontFamily: UI_FONT }}>
+      <div onPointerDown={e => dragStart(e, 'move')} onPointerMove={dragMove} onPointerUp={dragEnd} onPointerCancel={dragEnd}
+        title={mode === 'floating' ? 'Drag to move the panel' : undefined}
+        style={{ position: 'relative', display: 'flex', alignItems: 'center', height: `${SIDEBAR_HEADER_H}px`, background: SB.tabStripBg, borderBottom: `1px solid ${SB.borderSoft}`, boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.7),0 1px 0 rgba(255,255,255,0.4)', flexShrink: 0, cursor: mode === 'floating' ? 'move' : 'default', userSelect: 'none', touchAction: 'none' }}>
+        <div style={{ display: 'flex', alignItems: 'center', height: '100%', flexShrink: 0, cursor: 'default' }}>
+          <TabBtn active={activeTab === 'parameters'} onClick={() => setActiveTab('parameters')} icon={<SlidersHorizontal size={13.5} strokeWidth={2} />} label="Parameters" />
+          <div style={VSEP} />
+          <TabBtn active={activeTab === 'panel-editor'} onClick={() => setActiveTab('panel-editor')} icon={<PanelLeft size={13.5} strokeWidth={2} />} label="Panel Editor" />
         </div>
-      )}
-
-      <div ref={sidebarRef} className="fixed z-40 flex transition-transform duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]"
-        style={{ top: '120px', bottom: '64px', left: 0, width: `${SIDEBAR_WIDTH}px`, transform: isVisible ? 'translateX(0)' : `translateX(-${SIDEBAR_WIDTH}px)` }}>
-        <div style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%', background: SB.bg, borderRight: `1px solid ${SB.border}`, boxShadow: SB.panelShadow, fontFamily: UI_FONT }}>
-          <div style={{ position: 'relative', display: 'flex', alignItems: 'center', height: '40px', background: SB.tabStripBg, borderBottom: `1px solid ${SB.borderSoft}`, boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.7),0 1px 0 rgba(255,255,255,0.4)', flexShrink: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', height: '100%', flexShrink: 0 }}>
-              <TabBtn active={activeTab === 'parameters'} onClick={() => setActiveTab('parameters')} icon={<SlidersHorizontal size={13.5} strokeWidth={2} />} label="Parameters" />
-              <div style={VSEP} />
-              <TabBtn active={activeTab === 'panel-editor'} onClick={() => setActiveTab('panel-editor')} icon={<PanelLeft size={13.5} strokeWidth={2} />} label="Panel Editor" />
-            </div>
-            <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', height: '100%', flexShrink: 0 }}>
-              <div style={VSEP} />
-              {/* Tek düğme Body ↔ Panel arasında geçer; ikon GÜNCEL modu gösterir (Outline'ın karesinden ayrışsın). */}
-              <HeaderToggle active={panelSelectMode} onClick={() => setPanelSelectMode(!panelSelectMode)}
-                title={panelSelectMode ? 'Selection: Panel (individual panels) — click to switch to Body' : 'Selection: Body (whole bodies) — click to switch to Panel'}
-                icon={panelSelectMode ? <Layers size={14} strokeWidth={2} /> : <Box size={14} strokeWidth={2} />} />
-              <div style={VSEP} />
-              <HeaderToggle active={showOutlines} onClick={() => setShowOutlines(!showOutlines)} title="Show panel outlines" icon={<Square size={13} strokeWidth={2.1} />} />
+        {/* Yüzen kipte boş şerit tutamaktır; ortadaki grip yalnız ipucu. */}
+        <div style={{ flex: 1, minWidth: 0, height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: SB.textMuted, opacity: mode === 'floating' ? 0.7 : 0, pointerEvents: 'none' }}>
+          <GripHorizontal size={14} strokeWidth={2} />
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', height: '100%', flexShrink: 0, cursor: 'default' }}>
+          <div style={VSEP} />
+          {/* Tek düğme Body ↔ Panel arasında geçer; ikon GÜNCEL modu gösterir (Outline'ın karesinden ayrışsın). */}
+          <HeaderToggle active={panelSelectMode} onClick={() => setPanelSelectMode(!panelSelectMode)}
+            title={panelSelectMode ? 'Selection: Panel (individual panels) — click to switch to Body' : 'Selection: Body (whole bodies) — click to switch to Panel'}
+            icon={panelSelectMode ? <Layers size={14} strokeWidth={2} /> : <Box size={14} strokeWidth={2} />} />
+          <div style={VSEP} />
+          <HeaderToggle active={showOutlines} onClick={() => setShowOutlines(!showOutlines)} title="Show panel outlines" icon={<Square size={13} strokeWidth={2.1} />} />
+          <div style={VSEP} />
+          {/* Yerleşim: yüzen panel ↔ sol şerit; ayrı pencere ↔ ana pencere. Etkin olan düğmeye basmak sola yaslar. */}
+          <HeaderToggle active={mode === 'floating'} onClick={mode === 'floating' ? dockSidebar : floatSidebar}
+            title={mode === 'floating' ? 'Dock the panel back to the left edge' : 'Undock — floating panel you can drag and resize'}
+            icon={<PictureInPicture2 size={14} strokeWidth={2} />} />
+          <HeaderToggle active={mode === 'window'} onClick={mode === 'window' ? dockSidebar : popOutSidebar}
+            title={mode === 'window' ? 'Return the panel to the main window' : 'Open the panel in a separate browser window'}
+            icon={<AppWindow size={14} strokeWidth={2} />} />
+          {mode === 'docked' && (
+            <>
               <div style={VSEP} />
               <button onClick={() => { if (isPinned) { setIsPinned(false); setIsOpen(false); } else setIsPinned(true); }}
                 onMouseEnter={() => setPinHover(true)} onMouseLeave={() => setPinHover(false)} title={isPinned ? 'Unpin panel' : 'Pin panel'}
@@ -684,15 +836,69 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; panelEditor
                 {isPinned ? <Pin size={14} strokeWidth={2.2} /> : <PinOff size={14} strokeWidth={2} />}
                 {isPinned && <div style={ACCENT_UNDERLINE('65%')} />}
               </button>
-            </div>
-          </div>
-          <div className="custom-scrollbar bone-skin" style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', background: SB.contentBg, boxShadow: 'inset 0 2px 4px rgba(40,30,20,0.05),inset 0 -1px 0 rgba(140,120,100,0.04)' }}>
-            {tabPane('parameters', parametersContent, <EmptyState icon={<SlidersHorizontal size={18} strokeWidth={1.6} />} title="No shape selected" description="Select an object from the 3D view to edit its parameters" hint="Tip: Click an object or drag a selection box" />)}
-            {tabPane('panel-editor', panelEditorContent, <EmptyState icon={<PanelLeft size={18} strokeWidth={1.6} />} title="No panel selected" description="Select a panel or surface to edit its properties" hint="Tip: Click a surface in face select mode" />)}
-          </div>
+            </>
+          )}
         </div>
       </div>
+      <div className="custom-scrollbar bone-skin" style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', background: SB.contentBg, boxShadow: 'inset 0 2px 4px rgba(40,30,20,0.05),inset 0 -1px 0 rgba(140,120,100,0.04)' }}>
+        {tabPane('parameters', parametersContent, <EmptyState icon={<SlidersHorizontal size={18} strokeWidth={1.6} />} title="No shape selected" description="Select an object from the 3D view to edit its parameters" hint="Tip: Click an object or drag a selection box" />)}
+        {tabPane('panel-editor', panelEditorContent, <EmptyState icon={<PanelLeft size={18} strokeWidth={1.6} />} title="No panel selected" description="Select a panel or surface to edit its properties" hint="Tip: Click a surface in face select mode" />)}
+      </div>
       <style>{SIDEBAR_CSS}</style>
+    </div>
+  );
+
+  /* Sol kenar tutamağı: kapalı şeridi açar; ayrı pencere kipinde o pencereyi öne getirir. */
+  const edgeHandle = (icon: React.ReactNode, label: string, onClick: () => void) => (
+    <div ref={handleRef} className="fixed left-0 z-40" style={{ top: '120px', bottom: '64px', width: '24px', pointerEvents: 'none' }}>
+      <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: '1px', background: 'linear-gradient(to bottom,transparent,rgba(60,50,40,0.10) 20%,rgba(60,50,40,0.10) 80%,transparent)', pointerEvents: 'none' }} />
+      <button type="button" onClick={onClick} onMouseEnter={() => setHandleHover(true)} onMouseLeave={() => setHandleHover(false)} aria-label={label} title={label}
+        style={{
+          position: 'absolute', top: '50%', transform: `translateY(-50%) translateX(${handleHover ? '3px' : '0'})`, left: '0', width: '24px', height: '72px', padding: 0,
+          borderRadius: '0 11px 11px 0', background: SB.contentBg, border: `1px solid ${SB.groupBorder}`, borderLeft: 'none',
+          boxShadow: handleHover
+            ? '4px 3px 16px rgba(40,30,20,0.16),1.5px 0 4px rgba(40,30,20,0.10),0 0 0 0.5px rgba(60,50,40,0.08),inset 0 0.5px 0 rgba(255,255,255,0.95),inset 0 -0.5px 0 rgba(140,120,100,0.08)'
+            : '2px 1px 8px rgba(40,30,20,0.09),0.5px 0 1px rgba(40,30,20,0.05),0 0 0 0.5px rgba(60,50,40,0.07),inset 0 0.5px 0 rgba(255,255,255,0.95),inset 0 -0.5px 0 rgba(140,120,100,0.06)',
+          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '5px', cursor: 'pointer', outline: 'none',
+          transition: 'transform 0.22s cubic-bezier(0.4,0,0.2,1),box-shadow 0.22s', pointerEvents: 'auto',
+        }}>
+        {icon}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', alignItems: 'center' }}>
+          {[0, 1, 2].map(i => <div key={i} style={{ width: '2.5px', height: '2.5px', borderRadius: '50%', background: handleHover ? SB.accent : SB.textMuted, transition: 'background 0.15s', opacity: handleHover ? 0.95 : 0.65 }} />)}
+        </div>
+      </button>
+      {handleHover && (
+        <div style={{ position: 'absolute', top: '50%', left: '0', transform: 'translateY(-50%)', width: '48px', height: '110px', borderRadius: '0 50% 50% 0', background: 'radial-gradient(ellipse at left center,rgba(249,115,22,0.12),transparent 70%)', pointerEvents: 'none', animation: 'ls-glow-in 0.25s ease-out forwards' }} />
+      )}
+    </div>
+  );
+
+  return (
+    <>
+      {mode === 'docked' && !isVisible && edgeHandle(
+        <ChevronRight size={14} strokeWidth={2.5} style={{ color: handleHover ? SB.accent : SB.textSecondary, transition: 'color 0.15s,transform 0.22s', transform: handleHover ? 'translateX(1.5px)' : 'translateX(0)' }} />,
+        'Open sidebar', openSidebar)}
+      {mode === 'window' && edgeHandle(
+        <AppWindow size={14} strokeWidth={2.2} style={{ color: handleHover ? SB.accent : SB.textSecondary, transition: 'color 0.15s' }} />,
+        'Panel is open in a separate window — click to bring it to front', popOutSidebar)}
+
+      {/* Tek çerçeve, iki görünüm: aynı ağaç yuvası → docked ↔ floating geçişinde içerik yeniden kurulmaz. */}
+      {mode !== 'window' && (
+        <div ref={sidebarRef} className={mode === 'docked' ? 'fixed z-40 flex transition-transform duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]' : 'fixed z-40 flex'}
+          style={mode === 'docked'
+            ? { top: '120px', bottom: '64px', left: 0, width: `${SIDEBAR_WIDTH}px`, transform: isVisible ? 'translateX(0)' : `translateX(-${SIDEBAR_WIDTH}px)` }
+            : { left: `${rect.x}px`, top: `${rect.y}px`, width: `${rect.w}px`, height: `${rect.h}px`, borderRadius: '10px', overflow: 'hidden', border: `1px solid ${SB.border}`, boxShadow: FLOAT_SHADOW, background: SB.bg }}>
+          {panelBody}
+          {mode === 'floating' && (
+            <>
+              {resizeHandle({ top: 0, right: 0, width: '6px', height: '100%', cursor: 'ew-resize' }, true, false)}
+              {resizeHandle({ left: 0, bottom: 0, width: '100%', height: '6px', cursor: 'ns-resize' }, false, true)}
+              {resizeHandle({ right: 0, bottom: 0, width: '16px', height: '16px', cursor: 'nwse-resize', background: 'linear-gradient(135deg,transparent 50%,rgba(60,50,40,0.22) 50%,rgba(60,50,40,0.22) 58%,transparent 58%,transparent 72%,rgba(60,50,40,0.22) 72%,rgba(60,50,40,0.22) 80%,transparent 80%)' }, true, true)}
+            </>
+          )}
+        </div>
+      )}
+      {mode === 'window' && popupRoot && createPortal(panelBody, popupRoot)}
     </>
   );
 };
