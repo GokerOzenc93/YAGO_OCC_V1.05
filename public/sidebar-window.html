@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FurniCAD — Panel</title>
+    <!-- Ayrı pencere kabuğu: içerik ana sayfadan React portal ile gelir (Sidebar 'window' kipi).
+         Gerçek bir aynı-kaynak sayfası olduğu için COOP/COEP başlıkları ana sayfayla aynı kalır ve
+         about:blank'in tarayıcıya göre değişen davranışlarından (içeriğin silinmesi) etkilenmez. -->
+    <style>html, body { margin: 0; height: 100%; overflow: hidden; background: #ebe8e2; }</style>
+  </head>
+  <body>
+    <div id="yago-sidebar-root" style="position: fixed; inset: 0; display: flex; flex-direction: column;"></div>
+  </body>
+</html>

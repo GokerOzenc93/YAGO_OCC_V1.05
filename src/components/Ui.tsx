@@ -640,24 +640,48 @@ const copyStyleNode = (dst: Document, n: Node) => {
     c.textContent = css; dst.head.appendChild(c);
   }
 };
-const openSidebarWindow = (rect: FloatRect): { win: Window; root: HTMLElement; dispose: () => void } | null => {
+/* Ayrı pencere: about:blank YERİNE gerçek, aynı kaynaktan bir kabuk sayfası (public/sidebar-window.html) açılır.
+   about:blank'e yazmak bazı tarayıcılarda (özellikle COOP/COEP ile çapraz-kaynak yalıtımlı sayfada — vite.config
+   bu başlıkları gönderiyor) güvenilmez: ilk boş belge asıl yüklemeyle değiştirilir, yazılan içerik silinir ve pencere
+   boş kalır. Kabuk sayfa aynı başlıklarla sunulduğu için açan pencereyle bağı korunur; yüklendiği an portal takılır. */
+const SIDEBAR_WINDOW_URL = `${import.meta.env.BASE_URL}sidebar-window.html`;
+const SIDEBAR_WINDOW_ROOT_ID = 'yago-sidebar-root';
+const SIDEBAR_WINDOW_TIMEOUT_MS = 8000;
+type SidebarWindowHandle = { win: Window; root: HTMLElement; dispose: () => void };
+/** Pencereyi açar, kabuk yüklenince stilleri kopyalayıp `onReady`, olmazsa (engellendi / erişilemedi / zaman aşımı) `onFail` çağırır.
+ *  Dönen fonksiyon bekleyen açılışı iptal eder. */
+const openSidebarWindow = (rect: FloatRect, onReady: (h: SidebarWindowHandle) => void, onFail: (why: string) => void): (() => void) => {
   const left = Math.round(window.screenX + rect.x + 40), top = Math.round(window.screenY + rect.y + 40);
   let win: Window | null = null;
-  try { win = window.open('', SIDEBAR_WINDOW_NAME, `popup=yes,width=${rect.w},height=${rect.h},left=${left},top=${top}`); } catch { win = null; }
-  if (!win) return null;
-  const doc = win.document;
-  doc.title = 'FurniCAD — Panel';
-  const base = doc.createElement('base'); base.href = document.baseURI; doc.head.appendChild(base);
-  document.head.querySelectorAll('link, style').forEach(n => copyStyleNode(doc, n));
-  // Sonradan eklenen stiller (Vite HMR, tembel yüklenen parçalar) de aktarılsın.
-  const mo = new MutationObserver(muts => { for (const m of muts) m.addedNodes.forEach(n => copyStyleNode(doc, n)); });
-  mo.observe(document.head, { childList: true });
-  doc.body.className = document.body.className;
-  doc.body.style.cssText = 'margin:0;overflow:hidden;background:#ebe8e2;';
-  const root = doc.createElement('div');
-  root.style.cssText = 'position:fixed;inset:0;display:flex;flex-direction:column;';
-  doc.body.appendChild(root);
-  return { win, root, dispose: () => mo.disconnect() };
+  try { win = window.open(SIDEBAR_WINDOW_URL, SIDEBAR_WINDOW_NAME, `popup=yes,width=${rect.w},height=${rect.h},left=${left},top=${top}`); } catch { win = null; }
+  if (!win) { onFail('the browser blocked the popup window'); return () => {}; }
+  const w = win;
+  const t0 = performance.now();
+  let timer = 0, cancelled = false;
+  const attach = (doc: Document, root: HTMLElement) => {
+    document.head.querySelectorAll('link, style').forEach(n => copyStyleNode(doc, n));
+    // Sonradan eklenen stiller (Vite HMR, tembel yüklenen parçalar) de aktarılsın.
+    const mo = new MutationObserver(muts => { for (const m of muts) m.addedNodes.forEach(n => copyStyleNode(doc, n)); });
+    mo.observe(document.head, { childList: true });
+    doc.body.className = document.body.className;
+    onReady({ win: w, root, dispose: () => mo.disconnect() });
+  };
+  const fail = (why: string) => { try { w.close(); } catch { /* yok */ } onFail(why); };
+  const poll = () => {
+    if (cancelled) return;
+    let doc: Document | null = null;
+    try {
+      if (w.closed) { onFail('the window was closed before it finished loading'); return; }
+      doc = w.document;
+    } catch { fail('the new window is not reachable from this page (cross-origin isolation)'); return; }
+    // Geçici about:blank değil, kabuk sayfanın kendisi yüklendi mi?
+    const root = doc.getElementById(SIDEBAR_WINDOW_ROOT_ID);
+    if (root && doc.readyState !== 'loading') { attach(doc, root); return; }
+    if (performance.now() - t0 > SIDEBAR_WINDOW_TIMEOUT_MS) { fail(`${SIDEBAR_WINDOW_URL} did not load`); return; }
+    timer = window.setTimeout(poll, 40);
+  };
+  poll();
+  return () => { cancelled = true; window.clearTimeout(timer); try { w.close(); } catch { /* yok */ } };
 };
 
 export const Sidebar: React.FC<{ parametersContent: React.ReactNode; panelEditorContent: React.ReactNode }> = ({ parametersContent, panelEditorContent }) => {
@@ -674,6 +698,7 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; panelEditor
   const [handleHover, setHandleHover] = useState(false);
   const [popupRoot, setPopupRoot] = useState<HTMLElement | null>(null);
   const popupRef = useRef<{ win: Window; dispose: () => void } | null>(null);
+  const popupPendingRef = useRef<(() => void) | null>(null);
   const sidebarRef = useRef<HTMLDivElement>(null);
   const handleRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ kind: 'move' | 'resize'; dx: boolean; dy: boolean; sx: number; sy: number; start: FloatRect; live: FloatRect } | null>(null);
@@ -681,6 +706,7 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; panelEditor
 
   /* ---- kip geçişleri ---- */
   const closePopup = useCallback(() => {
+    popupPendingRef.current?.(); popupPendingRef.current = null;
     const p = popupRef.current; popupRef.current = null;
     setPopupRoot(null);
     if (!p) return;
@@ -696,11 +722,20 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; panelEditor
   }, [closePopup]);
   const popOutSidebar = useCallback(() => {
     if (popupRef.current) { try { popupRef.current.win.focus(); } catch { /* yok */ } return; }
-    const opened = openSidebarWindow(rectRef.current);
-    if (!opened) { console.warn('[Sidebar] Popup window was blocked by the browser — falling back to the floating panel.'); floatSidebar(); return; }
-    popupRef.current = { win: opened.win, dispose: opened.dispose };
-    setPopupRoot(opened.root); setMode('window');
-    writeSidebarLayout('floating', rectRef.current); // yeniden yüklemede en yakın kip: yüzen
+    if (popupPendingRef.current) return; // açılış sürüyor
+    // Pencere yüklenene kadar panel olduğu yerde kalır; hazır olunca portal oraya taşınır.
+    popupPendingRef.current = openSidebarWindow(rectRef.current,
+      h => {
+        popupPendingRef.current = null;
+        popupRef.current = { win: h.win, dispose: h.dispose };
+        setPopupRoot(h.root); setMode('window');
+        writeSidebarLayout('floating', rectRef.current); // yeniden yüklemede en yakın kip: yüzen
+      },
+      why => {
+        popupPendingRef.current = null;
+        console.warn(`[Sidebar] Separate window could not be used (${why}) — falling back to the floating panel.`);
+        floatSidebar();
+      });
   }, [floatSidebar]);
 
   /* Kullanıcı ayrı pencereyi kapatırsa panel ana pencereye (sabitli) döner. */
@@ -719,7 +754,7 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; panelEditor
   }, [popupRoot]);
   /* Ana sayfa kapanır / yenilenirse yetim pencere kalmasın. */
   useEffect(() => {
-    const bye = () => { const p = popupRef.current; if (p) { try { p.win.close(); } catch { /* yok */ } } };
+    const bye = () => { popupPendingRef.current?.(); const p = popupRef.current; if (p) { try { p.win.close(); } catch { /* yok */ } } };
     window.addEventListener('pagehide', bye);
     return () => { window.removeEventListener('pagehide', bye); bye(); };
   }, []);
