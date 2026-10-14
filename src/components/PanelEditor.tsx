@@ -1113,18 +1113,19 @@ function HintCell({ hintKey, active, onHint, label, accent, passive, children }:
     </div>
   );
 }
-/** KANAL KESİT DİYAGRAMI (plan görünüş, ölçeksiz, BÜYÜK): sınır paneli (sağda), içine giren arkalık parçası, bollaştırılmış kanal.
- *  Arka yüz altta. active = vurgulanan ölçü: 't' kalınlık · 'setback' arkadan mesafe · 'gf' / 'gb' / 'gd' ön / arka / dip payı.
+/** KANAL KESİT DİYAGRAMI (plan görünüş, ölçeksiz): dolaba ÖNDEN bakar gibi — ARKA ÜSTTE, ÖN ALTTA (Goker, Eki 2026: "arkası aşağıda
+ *  durması kafa karıştırıcı"). Sınır paneli sağda, arkadan öne uzanır; arkalık parçası üstte (arka tarafta), bollaştırılmış kanal.
+ *  active = vurgulanan ölçü: 't' kalınlık · 'setback' arkadan mesafe · 'gf' / 'gb' / 'gd' ön / arka / dip payı.
  *  Değerler yazılı: kutudaki sayıyla aynı (kullanıcı hangi sayının neresi olduğunu görsün). */
 function BackGrooveDiagram({ active, grooved, t, setback, front, rear, depth, className }: { active: string | null; grooved: boolean; t: number; setback: number; front: number; rear: number; depth: number; className?: string }) {
   const W = BACK_DIAGRAM_W, H = BACK_DIAGRAM_H;
   const O = '#ea580c', OF = '#fdba74', MUTE = '#b8aea0', TXT = '#8f877c', DARK = '#57534e';
   const T = 15, PX0 = 132, PX1 = 164, IN = 16, D = 7, F = 6, R = 6;
-  // Kanallı: panel arka yüzü altta (rear0), arkalık S kadar içerde, panele IN girer. Çakma: arkalık panelin ARKASINDA, ucunu
-  // örter ve panelin DIŞ yüzünde biter (sınırı geçmez).
-  const rear0 = grooved ? H - 22 : H - 36, S = grooved ? 26 : 0;
-  const by0 = grooved ? rear0 - S - T : rear0, by1 = by0 + T;   // arkalık parçası (y)
-  const gx1 = PX0 + IN + D, gy0 = by0 - F, gy1 = by1 + R;        // kanal
+  // Kanallı: panelin arka yüzü ÜSTTE (rear0), arkalık S kadar öne (aşağı) içerde, panele IN girer. Çakma: arkalık panelin ARKASINDA
+  // (üstünde), ucunu örter ve panelin DIŞ yüzünde biter (sınırı geçmez).
+  const rear0 = grooved ? 20 : 36, S = grooved ? 26 : 0;
+  const by0 = grooved ? rear0 + S : rear0 - T, by1 = by0 + T;   // arkalık parçası: by0 = arka yüzü (üst), by1 = ön yüzü (alt)
+  const gx1 = PX0 + IN + D, gy0 = by0 - R, gy1 = by1 + F;        // kanal: üstte arka payı (R), altta ön payı (F)
   const on = (k: string) => active === k;
   const f1 = (v: number) => String(round1(v));
   const col = (k: string) => (on(k) ? O : DARK);
@@ -1134,35 +1135,36 @@ function BackGrooveDiagram({ active, grooved, t, setback, front, rear, depth, cl
   const txt = (x: number, y: number, s: string, k: string, anchor: 'start' | 'middle' | 'end' = 'middle') => (
     <text x={x} y={y} fontSize={9.5} fontWeight={700} fill={col(k)} textAnchor={anchor} fontFamily={UI_FONT} style={{ fontVariantNumeric: 'tabular-nums' }}>{s}</text>
   );
+  const panelLblY = H - 21;
   return (
     <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet" className={`block rounded-[8px] bg-[#faf7f2] ring-1 ring-[#ebe5dc] ${className ?? ''}`} aria-hidden>
-      <text x={8} y={14} fontSize={8.5} fill={TXT} fontFamily={UI_FONT}>front ↑</text>
-      <text x={8} y={H - 7} fontSize={8.5} fill={TXT} fontFamily={UI_FONT}>rear</text>
+      <text x={8} y={13} fontSize={8.5} fill={TXT} fontFamily={UI_FONT}>rear</text>
+      <text x={8} y={H - 7} fontSize={8.5} fill={TXT} fontFamily={UI_FONT}>front ↓</text>
       <line x1={6} y1={rear0} x2={PX1 + 10} y2={rear0} stroke={MUTE} strokeWidth={0.8} strokeDasharray="3 2.5" />
-      {/* sınır paneli */}
-      <rect x={PX0} y={6} width={PX1 - PX0} height={rear0 - 6} fill="#ebe4d9" stroke="#a39a8d" strokeWidth={1} />
-      <text x={(PX0 + PX1) / 2 + 3} y={32} fontSize={8.5} fill="#8f877c" textAnchor="middle" fontFamily={UI_FONT} transform={`rotate(-90 ${(PX0 + PX1) / 2 + 3} 32)`}>panel</text>
+      {/* sınır paneli: arka yüzünden (üst) öne (alt) */}
+      <rect x={PX0} y={rear0} width={PX1 - PX0} height={H - 6 - rear0} fill="#ebe4d9" stroke="#a39a8d" strokeWidth={1} />
+      <text x={(PX0 + PX1) / 2 + 3} y={panelLblY} fontSize={8.5} fill="#8f877c" textAnchor="middle" fontFamily={UI_FONT} transform={`rotate(-90 ${(PX0 + PX1) / 2 + 3} ${panelLblY})`}>panel</text>
       {grooved && <>
         {/* kanal (kesilen boşluk) + vurgular */}
         <rect x={PX0} y={gy0} width={gx1 - PX0} height={gy1 - gy0} fill="#ffffff" stroke={O} strokeOpacity={0.75} strokeWidth={0.9} strokeDasharray="2.5 2" />
-        {on('gf') && <rect x={PX0} y={gy0} width={gx1 - PX0} height={F} fill={OF} stroke={O} strokeWidth={1} />}
-        {on('gb') && <rect x={PX0} y={by1} width={gx1 - PX0} height={R} fill={OF} stroke={O} strokeWidth={1} />}
+        {on('gb') && <rect x={PX0} y={gy0} width={gx1 - PX0} height={R} fill={OF} stroke={O} strokeWidth={1} />}
+        {on('gf') && <rect x={PX0} y={by1} width={gx1 - PX0} height={F} fill={OF} stroke={O} strokeWidth={1} />}
         {on('gd') && <rect x={PX0 + IN} y={gy0} width={D} height={gy1 - gy0} fill={OF} stroke={O} strokeWidth={1} />}
       </>}
       {/* arkalık parçası: kanallıda panele girer, çakmada panelin arkasında ucunu örter (panelin dış yüzünde biter) */}
       <rect x={10} y={by0} width={(grooved ? PX0 + IN : PX1) - 10} height={T} fill={on('t') ? '#fed7aa' : '#f3ece2'} stroke={on('t') ? O : '#78716c'} strokeWidth={1.1} />
       <text x={64} y={by0 + T / 2 + 3} fontSize={8.5} fill="#78716c" textAnchor="middle" fontFamily={UI_FONT}>back panel</text>
-      {/* T — kalınlık */}
-      {dim(20, by0, by1, 't')}{txt(20, by0 - 4, `T ${f1(t)}`, 't')}
+      {/* T — kalınlık (etiket parçanın önünde/altında) */}
+      {dim(20, by0, by1, 't')}{txt(20, by1 + 12, `T ${f1(t)}`, 't')}
       {grooved ? <>
-        {/* S — setback (arka yüzden) */}
-        {dim(100, by1, rear0, 'setback')}{txt(105, (by1 + rear0) / 2 + 3.5, `S ${f1(setback)}`, 'setback', 'start')}
-        {/* F / R / D — paylar */}
-        {txt(W - 6, gy0 + 3, `F ${f1(front)}`, 'gf', 'end')}
-        {txt(W - 6, gy1 + 7, `R ${f1(rear)}`, 'gb', 'end')}
-        {txt(PX0 + IN + D / 2, gy0 - 5, `D ${f1(depth)}`, 'gd')}
+        {/* S — setback (panelin arka yüzünden arkalığın arka yüzüne) */}
+        {dim(100, rear0, by0, 'setback')}{txt(105, (rear0 + by0) / 2 + 3.5, `S ${f1(setback)}`, 'setback', 'start')}
+        {/* R üstte (arkaya), F altta (öne), D kanal dibinde */}
+        {txt(W - 6, gy0 + 3, `R ${f1(rear)}`, 'gb', 'end')}
+        {txt(W - 6, gy1 + 7, `F ${f1(front)}`, 'gf', 'end')}
+        {txt(PX0 + IN + D / 2, gy1 + 13, `D ${f1(depth)}`, 'gd')}
       </> : (
-        <text x={PX1} y={by1 + 14} fontSize={8.5} fontWeight={700} fill={TXT} textAnchor="end" fontFamily={UI_FONT}>nailed on</text>
+        <text x={PX1} y={by0 - 5} fontSize={8.5} fontWeight={700} fill={TXT} textAnchor="end" fontFamily={UI_FONT}>nailed on</text>
       )}
     </svg>
   );
