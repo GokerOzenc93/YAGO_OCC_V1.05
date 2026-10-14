@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowUp, Box, Check, ChevronDown, ChevronRight, Columns3, Crosshair, DoorClosed, Equal, GripVertical, LayoutPanelTop, Lock, type LucideIcon, Minus, Move, Move3d,
-  MoveVertical, Pencil, Pin, Plus, RotateCw, Rows3, SendToBack, Shapes, SlidersHorizontal, SplitSquareHorizontal, SplitSquareVertical, Trash2, Unlink, Unlock, X,
+  MoveVertical, Pencil, Pin, Plus, RotateCcw, RotateCw, Rows3, SendToBack, Shapes, SlidersHorizontal, SplitSquareHorizontal, SplitSquareVertical, Trash2, Unlink, Unlock, X,
 } from 'lucide-react';
 import * as THREE from 'three';
 import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
@@ -33,11 +33,11 @@ import {
 import {
   type BackCut, type BackEdgeKey, type BackLayoutSnap, type BackNearPanel, type BackNodeSolved, type BackSolution,
   BACK_TYPE_LABEL, BACK_TYPE_TITLE, backCutBands, backCutOutline, backFallbackSolution, backGroupName, backLayoutSnapshot, backLeafOfMember, backLeaves,
-  backMemberCount, backNearPanels, backPieceOf, backSetbackOf, backSizeMode, backSpacingTargetsInScope, canSplitBackAtPanel, clearBackSpacing, collectBackCuts, confirmBackPick,
+  backMemberCount, backNearPanels, backPieceOf, backSetbackOf, backSizeMode, canSplitBackAtPanel, collectBackCuts, confirmBackPick,
   deleteBackGroupWithMembers, editBackSize, equalizeBackGroup, findBackNode, findSolvedBackNode, isBackVf, passiveBackSizeIndex, renameBackGroup, restoreBackLayout,
-  setBackEdgeCover, setBackEdgeInset, setBackJointIn, setBackNodeSpacing, setBackNodeSplit, setBackPlacement, setBackSetback,
+  setBackEdgeCover, setBackEdgeInset, setBackJointIn, setBackNodeSplit, setBackPlacement, setBackSetback,
   setBackSplitGap, backSizeBoundByJoint, setBackThickness, setVfBackBound, solveBackGroup, splitBackAtPanel, toggleBackSizeLock, vfBackBound,
-  BACK_REL_LABEL, backGrooveClearOf, backJointRelOf, edgeRelOf, setBackEdgeRel, setBackGrooveClear, setBackJointRel,
+  BACK_REL_LABEL, backGrooveClearOf, backGrooveClearOverridden, backJointRelOf, edgeRelOf, resetBackGrooveClear, setBackEdgeRel, setBackGrooveClear, setBackJointRel,
 } from './BackService';
 
 /* PANEL EDİTÖRÜ — sol çubuktaki panel listesi, önizleme, Taşı/Döndür/Extrude şeritleri,
@@ -331,7 +331,7 @@ const GRIP_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(
 )}") 12 12, move`;
 const PREVIEW_BG = 'radial-gradient(130% 95% at 50% 0%, #fefdfb 0%, #f8f5f0 62%, #f3efe8 100%)';
 const PREVIEW_FRAME = 'relative rounded-[12px] ring-1 ring-[#ebe5dc] overflow-hidden shadow-[inset_0_1px_0_rgba(255,255,255,0.8),0_1px_2px_rgba(60,40,20,0.04)]';
-const SCHEMATIC_CSS = `.yago-gap .lockbtn{transition:transform .12s;transform-box:fill-box;transform-origin:center}.yago-gap .lockbtn:hover{transform:scale(1.12)}.yago-band .chip{opacity:0;transition:opacity .15s}.yago-band.on .chip,.yago-band:hover .chip{opacity:1}.yago-band .hit{transition:fill .12s}.yago-band:hover .hit{fill:rgba(234,88,12,0.10)}.yago-band.pnl:hover .hit{fill:transparent}.yago-band .hov{opacity:0;transition:opacity .12s;pointer-events:none}.yago-band:hover .hov{opacity:1}`;
+const SCHEMATIC_CSS = `.yago-gap .lockbtn{transition:transform .12s;transform-box:fill-box;transform-origin:center}.yago-gap .lockbtn:hover{transform:scale(1.12)}.yago-band .chip{opacity:0;transition:opacity .15s}.yago-band.on .chip,.yago-band:hover .chip{opacity:1}.yago-band .hit{transition:fill .12s}.yago-band:hover .hit{fill:rgba(234,88,12,0.10)}.yago-band.pnl:hover .hit{fill:transparent}.yago-band .hov{opacity:0;transition:opacity .12s;pointer-events:none}.yago-band:hover .hov{opacity:1}@keyframes yagoHintPulse{0%,100%{opacity:1}50%{opacity:.45}}.yago-hint-pulse{animation:yagoHintPulse 1.1s ease-in-out infinite}`;
 const SOFT = {
   area: '#fdfcfa', areaStroke: '#e4ded4',
   part0: '#f5f0e8', part1: '#eae3d7', partStroke: '#b8afa2',
@@ -1095,31 +1095,93 @@ function BackTypeIcon({ type, size = 14, strokeWidth = 1.25 }: { type: BackPlace
   );
 }
 const BACK_TYPES: BackPlacement[] = ['outer', 'inner'];
-/** Arkalık tipi barı: Nailed / Grooved — seçili PARÇA(lar) için (hiçbiri seçili değilse tüm parçalar). value=null → karışık. */
-function BackTypeBar({ value, hint, onPick }: { value: BackPlacement | null; hint: string; onPick: (t: BackPlacement) => void }) {
+/* GÖRSEL İPUCU YAPISI (Goker, Eki 2026 — "nereden bollaştıracağımı kestiremiyorum, yeni kullanıcıya görsel geri dönüş"):
+   değer kutusu (HintCell) üzerine gelince / odaklanınca kendi ANAHTARINI yayar (onHint); aynı anahtarı okuyan şekil (kesit
+   diyagramı, şema) o ölçüyü turuncu vurgular, alt satır (HintCaption) ne olduğunu yazar. Yeni bir ölçü = anahtar + hücre +
+   diyagram parçası + açıklama satırı; başka kartlara (kapak, raf) da aynı üç parça ile bağlanır. */
+type HintProps = { hintKey: string; active: boolean; onHint: (k: string | null) => void };
+/** Tek satırlık değer hücresi: etiket solda, değer sağda; üzerine gelince / odaklanınca anahtarını yayar (diyagram + şema vurgusu).
+ *  Metin ipucu (title) bilerek YOK — geri bildirim görseldir (Goker, Eki 2026). */
+function HintCell({ hintKey, active, onHint, label, accent, passive, children }: HintProps & { label: string; accent?: boolean; passive?: boolean; children: React.ReactNode }) {
   return (
-    <div className="flex items-stretch gap-1.5 mb-1" title={`Back panel type for ${hint.toLowerCase()} — Nailed: behind the reference panels, outside the body (covers their thickness by the overlap set per edge). Grooved: between the reference panels, set back from their rear face; each edge is Groove (panel keeps its depth, piece enters its groove) or Nail (panel shortened to the back panel's front face, piece covers its end) — switch with the Groove / Nail chip on the panel band in the schematic. Each piece keeps its own type, setback, insets and overlaps; select a piece (schematic or its row) to change only that piece.`}>
-      <div className="flex-1 min-w-0" style={{ display: 'grid', gridTemplateColumns: `repeat(${BACK_TYPES.length}, minmax(0,1fr))`, gap: 2, padding: 2, borderRadius: 9, background: '#f3efe8', border: '1px solid #e9e4dc', fontFamily: UI_FONT }}>
-        {BACK_TYPES.map(t => {
-          const on = value === t;
-          return (
-            <button key={t} type="button" title={BACK_TYPE_TITLE[t]} onClick={e => { stop(e); onPick(t); }}
-              className={on ? '' : 'hover:!bg-white hover:!text-stone-800'}
-              style={{
-                height: 34, minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 2, padding: '0 2px', borderRadius: 7, border: 'none', outline: 'none',
-                cursor: 'pointer', background: on ? '#44403c' : 'transparent', color: on ? '#ffffff' : '#57534e',
-                boxShadow: on ? '0 1px 2px rgba(40,30,20,0.25)' : 'none', fontSize: 9.5, fontWeight: 600, letterSpacing: '0.01em', lineHeight: 1, transition: 'background 0.12s,color 0.12s',
-              }}>
-              <BackTypeIcon type={t} size={13} />
-              <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }}>{BACK_TYPE_LABEL[t]}</span>
-            </button>
-          );
-        })}
-      </div>
-      <div className="shrink-0 flex flex-col items-end justify-center" style={{ minWidth: 46 }}>
-        <span className="text-[8.5px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]">Type</span>
-        <span className="text-[10px] font-medium text-stone-500 tabular-nums whitespace-nowrap">{value ? BACK_TYPE_LABEL[value] : 'Mixed'} · {hint}</span>
-      </div>
+    <div onClick={stop}
+      onMouseEnter={() => { if (!passive) onHint(hintKey); }} onMouseLeave={e => { if (!(e.currentTarget as HTMLElement).contains(document.activeElement)) onHint(null); }}
+      onFocusCapture={() => { if (!passive) onHint(hintKey); }} onBlurCapture={() => onHint(null)}
+      className={`min-w-0 h-[25px] pl-[5px] pr-[3px] flex items-center gap-[2px] rounded-[6px] transition-shadow duration-150
+        ${passive ? 'bg-[#f6f2ec] ring-1 ring-[#ebe5dc]' : active ? 'bg-white ring-[1.5px] ring-orange-500 shadow-[0_0_0_2px_rgba(249,115,22,0.12)]' : accent ? 'bg-white ring-1 ring-orange-400/70' : 'bg-white ring-1 ring-[#e6e0d6] shadow-[0_1px_0_rgba(40,30,20,0.03)]'}`}>
+      <span className={`flex-1 min-w-0 truncate text-[8.5px] font-semibold tracking-[0.03em] uppercase leading-none ${passive ? 'text-[#c7beb1]' : active ? 'text-orange-600' : 'text-[#a8a29e]'}`}>{label}</span>
+      {children}
+    </div>
+  );
+}
+/** KANAL KESİT DİYAGRAMI (plan görünüş, ölçeksiz, BÜYÜK): sınır paneli (sağda), içine giren arkalık parçası, bollaştırılmış kanal.
+ *  Arka yüz altta. active = vurgulanan ölçü: 't' kalınlık · 'setback' arkadan mesafe · 'gf' / 'gb' / 'gd' ön / arka / dip payı.
+ *  Değerler yazılı: kutudaki sayıyla aynı (kullanıcı hangi sayının neresi olduğunu görsün). */
+function BackGrooveDiagram({ active, grooved, t, setback, front, rear, depth, className }: { active: string | null; grooved: boolean; t: number; setback: number; front: number; rear: number; depth: number; className?: string }) {
+  const W = 150, H = 104;
+  const O = '#ea580c', OF = '#fdba74', MUTE = '#b8aea0', TXT = '#8f877c', DARK = '#57534e';
+  const T = 13, PX0 = 96, PX1 = 124, IN = 14, D = 6, F = 5, R = 5;
+  // Kanallı: panel arka yüzü altta (rear0), arkalık S kadar içerde, panele IN girer. Çakma: arkalık panelin ARKASINDA, ucunu örter.
+  const rear0 = grooved ? 86 : 64, S = grooved ? 22 : 0;
+  const by0 = grooved ? rear0 - S - T : rear0, by1 = by0 + T;   // arkalık parçası (y)
+  const gx1 = PX0 + IN + D, gy0 = by0 - F, gy1 = by1 + R;        // kanal
+  const on = (k: string) => active === k;
+  const f1 = (v: number) => String(round1(v));
+  const col = (k: string) => (on(k) ? O : DARK);
+  const dim = (x: number, y0: number, y1: number, k: string) => (
+    <g stroke={on(k) ? O : MUTE} strokeWidth={on(k) ? 1.2 : 0.8}><line x1={x} y1={y0} x2={x} y2={y1} /><line x1={x - 2.5} y1={y0} x2={x + 2.5} y2={y0} /><line x1={x - 2.5} y1={y1} x2={x + 2.5} y2={y1} /></g>
+  );
+  const txt = (x: number, y: number, s: string, k: string, anchor: 'start' | 'middle' | 'end' = 'middle', size = 8) => (
+    <text x={x} y={y} fontSize={size} fontWeight={700} fill={col(k)} textAnchor={anchor} fontFamily={UI_FONT} style={{ fontVariantNumeric: 'tabular-nums' }}>{s}</text>
+  );
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet" className={`block w-full h-auto rounded-[7px] bg-[#faf7f2] ring-1 ring-[#ebe5dc] ${className ?? ''}`} aria-hidden>
+      <text x={6} y={11} fontSize={7.5} fill={TXT} fontFamily={UI_FONT}>front ↑</text>
+      <text x={6} y={H - 5} fontSize={7.5} fill={TXT} fontFamily={UI_FONT}>rear</text>
+      <line x1={4} y1={rear0} x2={PX1 + 8} y2={rear0} stroke={MUTE} strokeWidth={0.7} strokeDasharray="2.5 2" />
+      {/* sınır paneli */}
+      <rect x={PX0} y={5} width={PX1 - PX0} height={rear0 - 5} fill="#ebe4d9" stroke="#a39a8d" strokeWidth={0.9} />
+      <text x={(PX0 + PX1) / 2 + 2.5} y={26} fontSize={7} fill="#8f877c" textAnchor="middle" fontFamily={UI_FONT} transform={`rotate(-90 ${(PX0 + PX1) / 2 + 2.5} 26)`}>panel</text>
+      {grooved && <>
+        {/* kanal (kesilen boşluk) + vurgular */}
+        <rect x={PX0} y={gy0} width={gx1 - PX0} height={gy1 - gy0} fill="#ffffff" stroke={O} strokeOpacity={0.75} strokeWidth={0.8} strokeDasharray="2 1.5" />
+        {on('gf') && <rect x={PX0} y={gy0} width={gx1 - PX0} height={F} fill={OF} stroke={O} strokeWidth={0.9} />}
+        {on('gb') && <rect x={PX0} y={by1} width={gx1 - PX0} height={R} fill={OF} stroke={O} strokeWidth={0.9} />}
+        {on('gd') && <rect x={PX0 + IN} y={gy0} width={D} height={gy1 - gy0} fill={OF} stroke={O} strokeWidth={0.9} />}
+      </>}
+      {/* arkalık parçası: kanallıda panele girer, çakmada panelin arkasında ucunu örter */}
+      <rect x={8} y={by0} width={(grooved ? PX0 + IN : PX1 + 4) - 8} height={T} fill={on('t') ? '#fed7aa' : '#f3ece2'} stroke={on('t') ? O : '#78716c'} strokeWidth={1} />
+      <text x={48} y={by0 + T / 2 + 2.5} fontSize={7} fill="#78716c" textAnchor="middle" fontFamily={UI_FONT}>back panel</text>
+      {/* T — kalınlık */}
+      {dim(16, by0, by1, 't')}{txt(16, by0 - 3, `T ${f1(t)}`, 't')}
+      {grooved ? <>
+        {/* S — setback (arka yüzden) */}
+        {dim(72, by1, rear0, 'setback')}{txt(76, (by1 + rear0) / 2 + 3, `S ${f1(setback)}`, 'setback', 'start')}
+        {/* F / R / D — paylar */}
+        {txt(W - 4, gy0 + 2, `F ${f1(front)}`, 'gf', 'end')}
+        {txt(W - 4, gy1 + 6, `R ${f1(rear)}`, 'gb', 'end')}
+        {txt(PX0 + IN + D / 2, gy0 - 4, `D ${f1(depth)}`, 'gd')}
+      </> : (
+        <text x={PX1 + 8} y={by1 + 12} fontSize={7} fontWeight={700} fill={TXT} textAnchor="end" fontFamily={UI_FONT}>nailed on</text>
+      )}
+    </svg>
+  );
+}
+/** Kompakt tip seçici (kart 2. satırı): Nailed / Grooved yan yana, ikon + etiket tek satır. value=null → karışık (ikisi de pasif). */
+function BackTypeSeg({ value, hint, onPick }: { value: BackPlacement | null; hint: string; onPick: (t: BackPlacement) => void }) {
+  return (
+    <div className="shrink-0 flex items-center gap-[2px] p-[2px] h-[28px] rounded-[7px] bg-[#f3efe8] ring-1 ring-[#e6e0d6]" onClick={stop}
+      title={`Back panel type for ${hint.toLowerCase()}${value ? '' : ' (pieces differ)'} — Nailed: behind the reference panels, outside the body. Grooved: between them, set back from their rear face, entering each by a groove. Select a piece (schematic or its row) to change only that piece.`}>
+      {BACK_TYPES.map(t => {
+        const on = value === t;
+        return (
+          <button key={t} type="button" title={BACK_TYPE_TITLE[t]} onClick={e => { stop(e); onPick(t); }}
+            className={`h-[24px] px-1.5 rounded-[5px] flex items-center gap-[3px] text-[10.5px] font-semibold transition-colors duration-150 ${on ? 'bg-[#44403c] text-white shadow-[0_1px_2px_rgba(40,30,20,0.25)]' : 'text-stone-600 hover:bg-white hover:text-stone-800'}`}
+            style={{ fontFamily: UI_FONT }}>
+            <BackTypeIcon type={t} size={10} />{BACK_TYPE_LABEL[t]}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -1949,10 +2011,12 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
 // Arkalık şemasının kenar payı: en dış sınır levhaları (yan / üst / alt) iç dikdörtgenin DIŞINDA, bu payda çizilir; ilişki ve değer
 // rozetleri levhanın üzerinde durur → pay levha + rozet kalınlığını almalı (kapak payı 12 px ile rozetler SVG dışına taşıp kırpılıyordu).
 const BACK_PAD_L = 34, BACK_PAD_T = 34, BACK_PAD_R = 34, BACK_PAD_B = 34;
+/** Arkalık şemasının sabit yüksekliği (px): arkalık ölçüsü ne olursa olsun çerçeve aynı, dikdörtgen içine sığdırılır. */
+const BACK_PREVIEW_H = 340;
 /** ARKALIK ŞEMASI: ön görünüş (arkadan bakış aynalı), parçalar + sınır levhası bantları (çakma parçada bini, kanallı parçada kanal girişi),
  *  açılı levha şeritleri, derz rozetleri ve seçili bölgenin ölçü zincirleri. Değerler PARÇA BAŞINA: kenar rozeti / pill'i seçili
  *  parçalara (seçim yoksa o kenara değen tüm parçalara) yazar; karışık değer "…" / "Mixed" gösterir. */
-function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLabels, cuts, nearPanels, refPick, onEditSize, onToggleLock, onEditSplitGap, onEditInset, onEditJointIn, onPathClick, onRefPick, onSplitAtPanel, onEditCover, onToggleEdgeRel, onToggleJointRel, onEditBegin, onEditCancel }: {
+function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLabels, cuts, nearPanels, refPick, onEditSize, onToggleLock, onEditSplitGap, onEditInset, onEditJointIn, onPathClick, onRefPick, onSplitAtPanel, onEditCover, onToggleEdgeRel, onToggleJointRel, clearVfId, onPickClearEdge, grooveHint, onEditBegin, onEditCancel }: {
   group: BackGroup; selectedIndex: number; memberLabels: string[];
   /** Çözüm (solveBackGroup / backFallbackSolution): iç dikdörtgen, hücreler, parça dikdörtgenleri (kendi tip/inset/bini uzantılarıyla). */
   solution: BackSolution;
@@ -1979,6 +2043,12 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
   onToggleEdgeRel: (edge: BackEdgeKey) => void;
   /** Levhaya bağlı derzin ilişkisi: Groove (iki yandan kanal) ↔ Nail (dikme/raf kısalır). */
   onToggleJointRel: (splitId: string, k: number) => void;
+  /** Kanal payı kapsamı: seçili kenarın (sınır / derz paneli) VF'si — kartta yalnız onun F/R/D değerleri düzenlenir. */
+  clearVfId?: string;
+  /** Kenarın "±" rozeti: o kenarın kanal payını kart satırına getirir (tekrar tık → grup). */
+  onPickClearEdge: (vfId: string) => void;
+  /** Görsel ipucu: kartta kanal payı (ön / arka / dip) değerinin üzerindeyken kanal kutuları vurgulanır (kapsamdaki kenarlar). */
+  grooveHint?: 'gf' | 'gb' | 'gd' | null;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(300);
@@ -1999,11 +2069,14 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
 
   const { axis, side } = group;
   const { rect, solved, members, sides } = solution;   // rect = İÇ dikdörtgen (sınır panellerinin iç yüzleri); parçalar kendi uzantılarıyla dışına taşar
-  const SW = Math.max(40, width - BACK_PAD_L - BACK_PAD_R);
+  // SABİT ÇERÇEVE (Goker, Eki 2026 — "preview yerleşen arkalığın ölçüsüne göre büyüyüp küçülmesin"): şema yüksekliği hep aynı
+  // (BACK_PREVIEW_H); arkalık dikdörtgeni çerçevenin içine oran korunarak sığdırılır ve ortalanır (SW × SH = sığdırılmış ölçü).
+  const FW = Math.max(40, width - BACK_PAD_L - BACK_PAD_R), FH = BACK_PREVIEW_H - BACK_PAD_T - BACK_PAD_B;
   const duR = Math.max(1e-6, rect.u1 - rect.u0), dvR = Math.max(1e-6, rect.v1 - rect.v0);
-  const SH = Math.round(Math.max(DOOR_MIN_ASPECT * SW, Math.min(PREVIEW_HEIGHT - BACK_PAD_T - BACK_PAD_B, SW * dvR / duR)));
-  const height = SH + BACK_PAD_T + BACK_PAD_B;
-  const ox = BACK_PAD_L, oy = BACK_PAD_T;
+  const scaleMm = Math.min(FW / duR, FH / dvR);
+  const SW = Math.round(duR * scaleMm), SH = Math.round(dvR * scaleMm);
+  const height = BACK_PREVIEW_H;
+  const ox = BACK_PAD_L + Math.round((FW - SW) / 2), oy = BACK_PAD_T + Math.round((FH - SH) / 2);
   // Görünüş: arkalık ÖNDEN çizilir (gövdenin içine bakar gibi) — 3B ön görünüşle aynı sol/sağ (Goker: arkadan aynalı görünüş
   // ters geliyordu, soldaki parçayı düzeltirken sağdaki değişiyordu). Sağ yan (X+) aynalı; üst (Y+) → Z aşağı.
   const mirrorU = axis === 0 && side > 0;
@@ -2040,13 +2113,13 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
 
   const I = DOOR_INSET_PX;
   const BAND_MIN = 6;
-  const clampX = (x: number) => Math.max(ox - BACK_PAD_L + 2, Math.min(ox + SW + BACK_PAD_R - 2, x));
-  const clampY = (y: number) => Math.max(oy - BACK_PAD_T + 2, Math.min(oy + SH + BACK_PAD_B - 2, y));
+  const clampX = (x: number) => Math.max(2, Math.min(width - 2, x));
+  const clampY = (y: number) => Math.max(2, Math.min(height - 2, y));
   // Kenar şeritleri: kanallı parçada KANAL GİRİŞİ (pill), çakma parçada bini Full/Half/None (rozet) — ikisi de parça başına.
   const insetEdge = (k: BackEdgeKey) => !!group.bounds[k]?.vfId;
   const invX = (x: number) => rect.u0 + (mirrorU ? (ox + SW - x) : (x - ox)) * duR / SW;
   const invY = (y: number) => (mirrorV ? rect.v0 + (y - oy) * dvR / SH : rect.v1 - (y - oy) * dvR / SH);
-  const areaPx = [[ox - BACK_PAD_L + 2, oy - BACK_PAD_T + 2], [ox + SW + BACK_PAD_R - 2, oy - BACK_PAD_T + 2], [ox + SW + BACK_PAD_R - 2, oy + SH + BACK_PAD_B - 2], [ox - BACK_PAD_L + 2, oy + SH + BACK_PAD_B - 2]];
+  const areaPx = [[2, 2], [width - 2, 2], [width - 2, height - 2], [2, height - 2]];
   const areaMm = areaPx.map(([x, y]) => ({ x: invX(x), y: invY(y) }));
   const ptsPath = (pts: Pt[]) => pts.map((q, i) => `${i ? 'L' : 'M'}${q.x.toFixed(1)},${q.y.toFixed(1)}`).join(' ') + ' Z';
   /** Kenar bandı: `na` = bini rozeti yazılacak parçalar (dış çakma parçalar + ÇAKMA kenardaki iç parçalar), `gr` = kanallı
@@ -2494,7 +2567,9 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
   // kanallı parça → "In <mm>" = kanal derinliği. Değer seçili parçalara (yoksa kenara değen tüm parçalara) yazılır.
   type BandChip = { key: string; vfId: string; cx: number; cy: number; pw: number; ph: number; f: number; label: string; item: ChainItem; rot: number; warm: boolean; title: string;
     /** İlişki rozeti: tık değer düzenlemez, kenar ilişkisini çevirir. */
-    toggle?: () => void };
+    toggle?: () => void;
+    /** Turuncu çerçeve (kenarın kendi kanal payı var). */
+    accent?: boolean };
   const bandChips: BandChip[] = [];
   const cfs0 = fsT * 0.8;
   const placeChip = (c: Omit<BandChip, 'cx' | 'cy' | 'pw' | 'ph' | 'f'>, cx: number, cy: number, ux: number, uy: number, half: number) => {
@@ -2508,6 +2583,15 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
   };
   const valItem = (key: string, v: number | null, commit: (x: number) => void, preview: (x: number) => void): ChainItem =>
     ({ key, kind: 'gap', a: 0, b: 0, txt: v == null ? '' : fmt(v), title: '', commit, preview, min: 0 });
+  // KANAL PAYI rozeti ("±"): kanallı kenarın / derzin kanal bollaştırmasını kart satırına getirir. Seçili → koyu; kendi değeri var → turuncu.
+  const clearChip = (b: Band) => {
+    const vfId = b.np.vfId, on = clearVfId === vfId, own = backGrooveClearOverridden(group, vfId);
+    const c = backGrooveClearOf(group, vfId);
+    const key = `bc-clr-${vfId}`;
+    placeChip({ key, vfId, label: '±', rot: 0, warm: on, accent: own && !on, toggle: () => onPickClearEdge(vfId),
+      title: `${b.np.name} — groove clearance ${own ? '(own values)' : '(group values)'}: F ${fmt(c.front)} · R ${fmt(c.back)} · D ${fmt(c.depth)} mm. Click to edit only this panel's groove clearance in the card row${on ? ' (click again: back to the whole group)' : ''}.`,
+      item: valItem(key, null, () => {}, () => {}) }, b.x + b.w / 2, b.y + b.h / 2, b.vertical ? 0 : 1, b.vertical ? 1 : 0, (b.vertical ? b.h : b.w) / 2);
+  };
   if (!refPick) {
     for (const b of bands) {
       const k = b.np.edge;
@@ -2543,6 +2627,7 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
             item: valItem(jkey, common, v => onEditJointIn(ek, v, ids), v => onEditJointIn(ek, v, ids, true)) },
             b.x + b.w / 2 + (b.vertical ? dir * off : 0), b.y + b.h / 2 + (b.vertical ? 0 : dir * off), b.vertical ? 0 : 1, b.vertical ? 1 : 0, (b.vertical ? b.h : b.w) / 2);
         }
+        if (rel === 'groove') clearChip(b);
       }
       if (!k) continue;
       const bcx = b.x + b.w / 2, bcy = b.y + b.h / 2, ux = b.vertical ? 0 : 1, uy = b.vertical ? 1 : 0, half = (b.vertical ? b.h : b.w) / 2;
@@ -2566,6 +2651,7 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
         placeChip({ key, vfId: b.np.vfId, label: `In ${b.ins == null ? '…' : fmt(b.ins)}`, rot: b.vertical ? -90 : 0, warm: false,
           title: `${edgeName(b)} — ${b.np.name}: groove depth ${b.ins == null ? '(pieces differ)' : `${fmt(b.ins)} mm`} (${scopeTxt(ids)}). Click to type how far the grooved piece enters the panel (0 = ends at its inner face).`,
           item: valItem(key, b.ins, v => onEditInset(k, v, ids), v => onEditInset(k, v, ids, true)) }, bcx, bcy, ux, uy, half);
+        clearChip(b);
       }
     }
     for (const cb of cutBands) {
@@ -2585,9 +2671,10 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
   // Her zaman çizilir (seçim gerekmez); çok ince bölge en az 3 px gösterilir (panelin iç yüzünden dışa doğru).
   type Zone = { key: string; x: number; y: number; w: number; h: number; kind: 'groove' | 'nail'; vertical: boolean; deepX: number; deepY: number;
     /** Kanal (bollaştırılmış) kutusu: parça bölgesi + kanal dibi payı (D), panelin iç yüzü sabit. */
-    groove?: { x: number; y: number; w: number; h: number } };
+    groove?: { x: number; y: number; w: number; h: number };
+    /** Kanal payı bu kenar için düzenleniyor (kart satırı): belirgin çerçeve. */
+    active?: boolean; vfId: string };
   const zones: Zone[] = [];
-  const gclear = backGrooveClearOf(group);
   const pxU = SW / duR, pxV = SH / dvR;   // mm → px
   for (const np of nearPanels) {
     if (np.poly || (!np.edge && !np.ref)) continue;
@@ -2611,12 +2698,12 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
       // Kanal kutusu: dip payı (D) kanal dibi yönünde eklenir; kanal genişliği (F/B) derinlik ekseninde olduğundan ön görünüşte yok.
       let grooveBox: Zone['groove'];
       if (kind === 'groove') {
-        const dpx = gclear.depth * (isU ? pxU : pxV);
+        const dpx = backGrooveClearOf(group, np.vfId).depth * (isU ? pxU : pxV);
         grooveBox = isU
           ? (deepX === x0 ? { x: x0 - dpx, y: y0, w: x1 - x0 + dpx, h: y1 - y0 } : { x: x0, y: y0, w: x1 - x0 + dpx, h: y1 - y0 })
           : (deepY === y0 ? { x: x0, y: y0 - dpx, w: x1 - x0, h: y1 - y0 + dpx } : { x: x0, y: y0, w: x1 - x0, h: y1 - y0 + dpx });
       }
-      zones.push({ key: `z-${np.vfId}-${m.leafId}`, x: x0, y: y0, w: x1 - x0, h: y1 - y0, kind, vertical: isU, deepX, deepY, groove: grooveBox });
+      zones.push({ key: `z-${np.vfId}-${m.leafId}`, x: x0, y: y0, w: x1 - x0, h: y1 - y0, kind, vertical: isU, deepX, deepY, groove: grooveBox, active: clearVfId === np.vfId, vfId: np.vfId });
     }
   }
   const editPos = editing ? editables.get(editing.key) : undefined;
@@ -2728,6 +2815,11 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
           return (
             <g key={z.key} style={{ pointerEvents: 'none' }}>
               {gb && <rect x={gb.x} y={gb.y} width={Math.max(0.5, gb.w)} height={Math.max(0.5, gb.h)} fill="#fff7ed" fillOpacity={0.95} stroke={line} strokeOpacity={0.5} strokeWidth={0.6} strokeDasharray="2 1.5" />}
+              {z.active && gb && <rect x={gb.x - 2} y={gb.y - 2} width={gb.w + 4} height={gb.h + 4} rx={2} fill="none" stroke="#ea580c" strokeWidth={1.4} />}
+              {/* Görsel ipucu: kartta kanal payının üzerindeyken kapsamdaki kanallar yanıp söner gibi belirginleşir. */}
+              {grooveHint && gb && (!clearVfId || clearVfId === z.vfId) && (
+                <rect x={gb.x - 3} y={gb.y - 3} width={gb.w + 6} height={gb.h + 6} rx={3} fill="#f97316" fillOpacity={0.18} stroke="#ea580c" strokeWidth={1.6} className="yago-hint-pulse" />
+              )}
               <rect x={z.x} y={z.y} width={Math.max(0.5, z.w)} height={Math.max(0.5, z.h)} fill={fill} fillOpacity={groove ? 0.62 : 0.42} />
               <rect x={z.x} y={z.y} width={Math.max(0.5, z.w)} height={Math.max(0.5, z.h)} fill="none" stroke={line} strokeOpacity={0.55} strokeWidth={0.6} />
               {/* Kanal dibi / örtme ucu: kalın net çizgi */}
@@ -2825,12 +2917,13 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
           const hide = editing?.key === c.key;
           // İlişki rozeti (Groove / Nail): dolu koyu taş = Nail (panel kısaltılır), açık = Groove; tık çevirir.
           const relOn = !!c.toggle && c.warm;
+          const acc = !relOn && (c.warm || !!c.accent);
           return (
             <g key={c.key} className="yago-band pnl on" style={{ cursor: 'pointer' }} onClick={e => { stop(e); if (c.toggle) c.toggle(); else beginEdit({ key: c.key, v: c.item.txt }); }}>
               <g className="chip" transform={c.rot ? `rotate(${c.rot.toFixed(1)} ${c.cx} ${c.cy})` : undefined}>
-                <rect x={c.cx - c.pw / 2} y={c.cy - c.ph / 2} width={c.pw} height={c.ph} rx={c.ph / 2} fill={relOn ? '#44403c' : c.warm ? '#fff7ed' : '#ffffff'} stroke={relOn ? '#292524' : c.warm ? '#f97316' : '#cfc6b9'} strokeWidth={0.9}
+                <rect x={c.cx - c.pw / 2} y={c.cy - c.ph / 2} width={c.pw} height={c.ph} rx={c.ph / 2} fill={relOn ? '#44403c' : acc ? '#fff7ed' : '#ffffff'} stroke={relOn ? '#292524' : acc ? '#f97316' : '#cfc6b9'} strokeWidth={0.9}
                   style={{ filter: 'drop-shadow(0 1px 1px rgba(40,30,20,0.12))' }} />
-                {!hide && <text x={c.cx} y={c.cy + c.f * 0.36} textAnchor="middle" fontSize={c.f} fontWeight={700} letterSpacing="0.02em" fill={relOn ? '#ffffff' : c.warm ? '#c2410c' : '#57534e'} fontFamily={UI_FONT}
+                {!hide && <text x={c.cx} y={c.cy + c.f * 0.36} textAnchor="middle" fontSize={c.f} fontWeight={700} letterSpacing="0.02em" fill={relOn ? '#ffffff' : acc ? '#c2410c' : '#57534e'} fontFamily={UI_FONT}
                   style={{ fontVariantNumeric: 'tabular-nums' }}>{c.label}</text>}
               </g>
               <title>{c.title}</title>
@@ -2992,9 +3085,36 @@ function CountBox({ icon: Icon, label, value, title, onChange, max = 12 }: { ico
       <StepBtn title="Fewer pieces" disabled={value <= 1} onClick={() => onChange(value - 1)}><Minus size={10} strokeWidth={2.2} /></StepBtn>
       <input type="text" inputMode="numeric" value={draft ?? String(value)} onChange={e => setDraft(e.target.value.replace(/[^0-9]/g, ''))}
         onBlur={commit} onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setDraft(null); if (e.key === 'ArrowUp') { e.preventDefault(); if (value < max) onChange(value + 1); } if (e.key === 'ArrowDown') { e.preventDefault(); if (value > 1) onChange(value - 1); } }} onClick={stop}
-        className="yago-field" style={{ ...FIELD_INPUT, width: 24 }} aria-label={`${label} pieces`} />
+        className="yago-field" style={{ ...FIELD_INPUT, width: 24, flexShrink: 0 }} aria-label={`${label} pieces`} />
       <StepBtn title="More pieces" disabled={value >= max} onClick={() => onChange(value + 1)}><Plus size={10} strokeWidth={2.2} /></StepBtn>
     </FieldBox>
+  );
+}
+/** Arkalık kartı için KOMPAKT sayı kutusu: [ikon][−][n][+] — etiket yerine bölme ikonu (V / H), dar satıra sığar. */
+function CountMini({ icon: Icon, value, title, onChange, max = 12 }: { icon: LucideIcon; value: number; title: string; onChange: (n: number) => void; max?: number }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  useEffect(() => { setDraft(null); }, [value]);
+  const commit = () => {
+    if (draft == null) return;
+    const n = parseInt(draft, 10);
+    setDraft(null);
+    if (Number.isFinite(n) && n >= 1 && n <= max && n !== value) onChange(n);
+  };
+  const step = (d: number, dis: boolean) => (
+    <button type="button" disabled={dis} title={d < 0 ? 'Fewer pieces' : 'More pieces'} onClick={e => { stop(e); if (!dis) onChange(value + d); }}
+      className={`w-[16px] h-[18px] shrink-0 rounded-[4px] flex items-center justify-center ${dis ? 'text-stone-300 cursor-not-allowed' : 'text-stone-500 hover:bg-[#f3efe8] hover:text-stone-800'}`}>
+      {d < 0 ? <Minus size={9} strokeWidth={2.4} /> : <Plus size={9} strokeWidth={2.4} />}
+    </button>
+  );
+  return (
+    <div title={title} onClick={stop} className="shrink-0 w-[64px] h-[28px] px-[3px] flex items-center justify-between gap-0 rounded-[7px] bg-white ring-1 ring-[#e6e0d6] shadow-[0_1px_0_rgba(40,30,20,0.03)]">
+      <Icon size={12} strokeWidth={2} className="shrink-0 text-[#a8a29e] ml-[2px]" />
+      {step(-1, value <= 1)}
+      <input type="text" inputMode="numeric" value={draft ?? String(value)} onChange={e => setDraft(e.target.value.replace(/[^0-9]/g, ''))}
+        onBlur={commit} onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setDraft(null); if (e.key === 'ArrowUp') { e.preventDefault(); if (value < max) onChange(value + 1); } if (e.key === 'ArrowDown') { e.preventDefault(); if (value > 1) onChange(value - 1); } }} onClick={stop}
+        className="yago-field" style={{ ...FIELD_INPUT, width: 18, flexShrink: 0 }} />
+      {step(1, value >= max)}
+    </div>
   );
 }
 /** Spacing kutusu: hedef parça ölçüsü (mm); boş girilirse hedef kalkar (parçalar olduğu gibi kalır). */
@@ -3042,26 +3162,6 @@ function SplitModeSelect({ value, onChange }: { value: 'count' | 'ref' | 'spacin
     </div>
   );
 }
-function BackSplitModeSelect({ value, onChange }: { value: 'count' | 'ref' | 'spacing'; onChange: (v: 'count' | 'ref' | 'spacing') => void }) {
-  const titles: Record<'count' | 'ref' | 'spacing', string> = {
-    count: 'Count — split the selected region by number of pieces (V side by side · H stacked)',
-    ref: 'Panel ref — click a back-reference divider / shelf (3D view or schematic): the back panel splits through its middle, both pieces reach the middle (grooved on both sides of a grooved back) and the joint follows the panel',
-    spacing: 'Spacing — split by target piece size (mm); the number of pieces follows the region length and body resizes',
-  };
-  return (
-    <div className="relative shrink-0" onClick={stop} title={titles[value]}>
-      <select value={value} onChange={e => onChange(e.target.value as 'count' | 'ref' | 'spacing')}
-        className="h-[28px] pl-2.5 pr-7 rounded-[7px] bg-white ring-1 ring-[#e6e0d6] shadow-[0_1px_0_rgba(40,30,20,0.03)] text-[11.5px] font-semibold text-stone-700 appearance-none outline-none cursor-pointer hover:ring-[#dcd4c8] focus:ring-orange-400/60 transition-shadow duration-150"
-        style={{ fontFamily: UI_FONT }}>
-        <option value="count">Count</option>
-        <option value="ref">Panel ref</option>
-        <option value="spacing">Spacing</option>
-      </select>
-      <ChevronDown size={12} strokeWidth={2.2} className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-stone-400" />
-    </div>
-  );
-}
-
 /** Arkalık seçme şeridinde tip. */
 function BackTypeSelect({ value, onChange }: { value: BackPlacement; onChange: (v: BackPlacement) => void }) {
   return (
@@ -3152,9 +3252,12 @@ export function PanelEditor() {
   const [doorSplitMode, setDoorSplitMode] = useState<{ id: string; mode: 'count' | 'spacing' } | null>(null);
   const [doorAddPick, setDoorAddPick] = useState<{ id: string; axis: 'u' | 'v' } | null>(null);
   // Arkalık kartı: kalınlık/setback taslağı, şema bölge seçimi ve bölme modu (Panel ref store'da: backRefPickGroupId).
-  const [backDraft, setBackDraft] = useState<{ id: string; field: 't' | 'setback' | 'gf' | 'gb' | 'gd'; v: string } | null>(null);
+  const [backDraft, setBackDraft] = useState<{ id: string; field: 't' | 'setback' | 'gf' | 'gb' | 'gd'; v: string; scope?: string } | null>(null);
   const [backNodeSel, setBackNodeSel] = useState<{ id: string; nodes: string[] } | null>(null);
-  const [backSplitMode, setBackSplitMode] = useState<{ id: string; mode: 'count' | 'spacing' } | null>(null);
+  /** Kenar bollaştırma kapsamı: seçili kenarın (sınır / derz paneli VF'si) kendi kanal payı düzenlenir; null → grup değeri. */
+  const [backClearEdge, setBackClearEdge] = useState<{ id: string; vfId: string } | null>(null);
+  /** Görsel ipucu: arkalık kartında üzerine gelinen / odaklanan değer (kesit diyagramı + şema vurgusu). */
+  const [backHint, setBackHint] = useState<{ id: string; key: string } | null>(null);
   // Şemada seçili parçalar 3B'de vurgulanır (store.backFocusVfIds); tüm alan seçiliyse ya da seçim yoksa boş → grup vurgusu.
   useEffect(() => {
     const st = useAppStore.getState();
@@ -4169,6 +4272,7 @@ export function PanelEditor() {
       const targetPieces = targetLeafIds.map(id => backPieceOf(g, leafOf(id)));
       const commonPlacement: BackPlacement | null = targetPieces.length && targetPieces.every(p => p.placement === targetPieces[0].placement) ? targetPieces[0].placement : null;
       const groovedTargets = targetPieces.filter(p => p.placement === 'inner');
+      const isGrooved = groovedTargets.length > 0;   // hedef parçalarda kanallı var → kanal bloğu etkin; yoksa çakma görünümü, paylar pasif
       const setbackVal = groovedTargets.length ? groovedTargets[0].setback : backSetbackOf(g);
       const setbackMixed = groovedTargets.some(p => Math.abs(p.setback - setbackVal) > 0.05);
       const memberLabelOf = (leafId: string) => { const li = backLeaves(g.tree).findIndex(l => l.id === leafId); const vfId = g.memberVfIds[li]; const mi = members.findIndex(m => m.id === vfId); return `${label}.${(mi >= 0 ? mi : li) + 1}`; };
@@ -4176,23 +4280,30 @@ export function PanelEditor() {
       const allKinds = new Set(backLeaves(g.tree).map(l => backPieceOf(g, l).placement));
       const typeTxt = allKinds.size > 1 ? 'mixed nailed / grooved pieces' : `${BACK_TYPE_LABEL[[...allKinds][0] ?? g.placement].toLowerCase()} back panel`;
       type DraftField = 't' | 'setback' | 'gf' | 'gb' | 'gd';
-      const gc = backGrooveClearOf(g);
-      const draft = (field: DraftField, fallback: number) => (backDraft?.id === g.id && backDraft.field === field ? backDraft.v : String(fallback));
+      // KANAL PAYI kapsamı: şemada bir kenarın "±" rozeti seçiliyse yalnız o kenar, değilse grup değeri (aynı satırda).
+      const clearVf = backClearEdge?.id === g.id && virtualFaces.some(f => f.id === backClearEdge.vfId) ? backClearEdge.vfId : undefined;
+      const clearName = clearVf ? (virtualFaces.find(f => f.id === clearVf)?.description || 'Edge') : '';
+      const clearOwn = !!clearVf && backGrooveClearOverridden(g, clearVf);
+      const gc = backGrooveClearOf(g, clearVf);
+      const draft = (field: DraftField, fallback: number) => (backDraft?.id === g.id && backDraft.field === field && (backDraft.scope ?? '') === (clearVf ?? '') ? backDraft.v : String(fallback));
       const applyDraft = (field: DraftField) => {
         const v = parseFloat(draft(field, field === 't' ? g.thickness : field === 'setback' ? setbackVal : field === 'gf' ? gc.front : field === 'gb' ? gc.back : gc.depth).replace(',', '.'));
         setBackDraft(null);
         if (!Number.isFinite(v)) return;
         if (field === 't') void setBackThickness(g.id, v);
         else if (field === 'setback') void setBackSetback(g.id, v, scoped ? targetLeafIds : []);
-        else void setBackGrooveClear(g.id, { [field === 'gf' ? 'front' : field === 'gb' ? 'back' : 'depth']: v });
+        else void setBackGrooveClear(g.id, { [field === 'gf' ? 'front' : field === 'gb' ? 'back' : 'depth']: v }, clearVf);
       };
-      const numInput = (field: DraftField, fallback: number, mixed = false) => (
-        <input type="text" inputMode="decimal" value={draft(field, fallback)} placeholder={mixed ? '…' : undefined}
-          onChange={e => setBackDraft({ id: g.id, field, v: e.target.value })}
+      const numInput = (field: DraftField, fallback: number, mixed = false, w = 30, title?: string, passive = false) => (
+        <input type="text" inputMode="decimal" value={passive ? '0' : draft(field, fallback)} placeholder={mixed ? '…' : undefined} title={title} disabled={passive}
+          onChange={e => setBackDraft({ id: g.id, field, v: e.target.value, scope: clearVf })}
           onBlur={() => applyDraft(field)}
           onKeyDown={e => { if (e.key === 'Enter') applyDraft(field); if (e.key === 'Escape') setBackDraft(null); }}
-          onClick={stop} className="yago-field" style={{ ...FIELD_INPUT, width: 34, textAlign: 'right', ...(mixed ? { color: '#9a3412' } : {}) }} />
+          onClick={stop} className="yago-field" style={{ ...FIELD_INPUT, width: w, flexShrink: 0, textAlign: field.startsWith('g') ? 'center' : 'right', ...(mixed ? { color: '#9a3412' } : {}), ...(passive ? { color: '#c7beb1', cursor: 'default' } : {}) }} />
       );
+      // Görsel ipucu: üzerine gelinen değerin anahtarı → diyagram + şema vurgusu + açıklama satırı.
+      const hintKey = backHint?.id === g.id ? backHint.key : null;
+      const onHint = (k: string | null) => setBackHint(k ? { id: g.id, key: k } : null);
       // Seçili düğüm yoldaysa bir seviye iner; yaprak tekrar tıklanırsa seçim kalkar; yolda değilse kök.
       const onPathClick = (path: string[], additive: boolean) => {
         if (!path.length) return;
@@ -4216,22 +4327,6 @@ export function PanelEditor() {
         setBackNodeSel(ids.length ? { id: g.id, nodes: ids } : null);   // sonuç bölge seçili kalır (ardışık ayar)
       };
       const refMode = backRefPickGroupId === g.id;
-      const splitMode: 'count' | 'ref' | 'spacing' = refMode ? 'ref' : backSplitMode?.id === g.id ? backSplitMode.mode : 'count';
-      const pickSplitMode = (m: 'count' | 'ref' | 'spacing') => {
-        if (m === 'ref') { setBackRefPickGroupId(g.id); return; }
-        if (refMode) setBackRefPickGroupId(null);
-        setBackSplitMode({ id: g.id, mode: m });
-      };
-      const scopeIds = picked.length ? picked : [g.tree.id];
-      const sizeOf = (ax: 'u' | 'v') => {
-        if (splitNode.kind === 'split' && splitNode.axis === ax && splitNode.targetSize) return splitNode.targetSize;
-        return backSpacingTargetsInScope(g.tree, scopeIds, ax)[0]?.targetSize ?? null;
-      };
-      const setSize = (ax: 'u' | 'v', mm: number | null) => {
-        if (mm == null) { clearBackSpacing(g.id, scopeIds, ax); return; }
-        const ids = scopeIds.map(id => setBackNodeSpacing(g.id, id, ax, mm)).filter((x): x is string => !!x);
-        setBackNodeSel(ids.length ? { id: g.id, nodes: ids } : null);
-      };
       const nearPanels = backParent ? backNearPanels(g, backParent, shapes, virtualFaces, panelGroups) : [];
       const onRefPick = (vfId: string) => { const ids = splitBackAtPanel(g.id, vfId); if (ids.length) { setBackRefPickGroupId(null); setBackNodeSel({ id: g.id, nodes: ids }); } };
       // Sonradan konan sınır levhası: arkalık levhanın ortasından bölünür (Half) ve sol/üst parça seçilir → aynı rozet Full/Half/None döner.
@@ -4245,7 +4340,6 @@ export function PanelEditor() {
         setBackNodeSel({ id: g.id, nodes: leafId ? [leafId] : ids });
       };
       const regionName = !primary ? 'whole back area' : primary.kind === 'leaf' ? 'the selected piece' : `the selected region (${primary.axis === 'u' ? 'V' : 'H'} ×${primary.children.length})`;
-      const sizeTitle = (ax: 'u' | 'v') => `Spacing ${ax === 'u' ? 'V — target piece width' : 'H — target piece height'} (mm) for ${regionName}: the number of pieces is derived from the region length (nearest fit, equal pieces) and re-derived when the body resizes. Clear it (× or empty + Enter) to cancel the target — the current pieces stay.`;
       const countTitle = (ax: 'u' | 'v') => `${ax === 'u' ? 'Split V — pieces side by side' : 'Split H — pieces stacked'} in ${regionName}. ` +
         `Type or step the number of pieces (1 = not split on this axis). ${splitNode.kind === 'split' && splitNode.axis !== ax ? 'This region is already split the other way: splitting here keeps that split in every new piece (e.g. V ×2 then H ×2 = 2 rows × 2 columns).' : ''}` +
         (picked.length > 1 ? ` Applies to ${picked.length} selected regions.` : '');
@@ -4268,39 +4362,46 @@ export function PanelEditor() {
           </div>
           {open && (
             <div className="yago-expand px-2 pt-2 pb-2" style={{ borderTop: '1px solid #f3e6d6', fontFamily: UI_FONT }} onClick={stop}>
-              <div className="flex items-center gap-1 mb-1.5">
-                <FieldBox fixed label="T" title="Back panel thickness (mm)">{numInput('t', g.thickness)}{unitTxt('mm')}</FieldBox>
-                {groovedTargets.length > 0 && (
-                  <FieldBox fixed label="Setback" accent={scoped} title={`Groove setback (mm) for ${typeHint.toLowerCase()}${scoped ? '' : ' (group default; pieces with their own value are reset)'}: from the reference panels' rear face to the grooved piece's rear face — the groove sits this far in from the back edge.${setbackMixed ? ' Pieces differ — the value you enter applies to all of them.' : ''}`}>
-                    {numInput('setback', setbackVal, setbackMixed)}{unitTxt('mm')}
-                  </FieldBox>
-                )}
-                <BackSplitModeSelect value={splitMode} onChange={pickSplitMode} />
-                {splitMode === 'count' && <>
-                  <CountBox icon={SplitSquareVertical} label="V" value={countOf('u')} title={countTitle('u')} onChange={n => setCount('u', n)} />
-                  <CountBox icon={SplitSquareHorizontal} label="H" value={countOf('v')} title={countTitle('v')} onChange={n => setCount('v', n)} />
-                </>}
-                {splitMode === 'spacing' && <>
-                  <SizeBox icon={SplitSquareVertical} label="V" value={sizeOf('u')} title={sizeTitle('u')} onChange={mm => setSize('u', mm)} />
-                  <SizeBox icon={SplitSquareHorizontal} label="H" value={sizeOf('v')} title={sizeTitle('v')} onChange={mm => setSize('v', mm)} />
-                </>}
-                {splitMode === 'ref' && (
-                  <div className="flex-1 min-w-0"><DockStatus ready text="Pick a divider / shelf" title="Back-reference dividers and shelves glow amber in the 3D view (back panels go transparent); click one in the 3D view or its band in the schematic. The back panel splits through the panel's middle: both pieces reach the middle (grooved on both sides of a grooved back), the panel keeps its full depth and the joint follows it. Esc / another mode cancels." /></div>
-                )}
-                <IconSquareBtn icon={Equal} title="Equalize sizes (unlock all)" onClick={() => { void equalizeBackGroup(g.id); }} />
-              </div>
-              <BackTypeBar value={commonPlacement} hint={typeHint} onPick={t => { void setBackPlacement(g.id, t, scoped ? targetLeafIds : []); }} />
-              {groovedTargets.length > 0 && (
-                // KANAL BOLLAŞTIRMA (grup başına): kanal = parça kalınlığı + F (öne) + B (arkaya); derinlik = giriş + D. Tek kompakt satır.
-                <div className="flex items-center gap-1 mb-1.5">
-                  <FieldBox fixed label="Groove +" title={`Groove clearance (mm, whole group): the groove cut into a grooved panel is wider and deeper than the back piece by these amounts — F: toward the front (into the body), B: toward the rear, D: at the groove bottom (beyond the groove depth "In"). Current groove: ${fmt1(g.thickness + gc.front + gc.back)} wide (${fmt1(g.thickness)} + ${fmt1(gc.front)} + ${fmt1(gc.back)}), depth = In + ${fmt1(gc.depth)}.`}>
-                    <span className="text-[9px] font-semibold text-[#b5ada3] pl-1">F</span>{numInput('gf', gc.front)}
-                    <span className="text-[9px] font-semibold text-[#b5ada3] pl-1">B</span>{numInput('gb', gc.back)}
-                    <span className="text-[9px] font-semibold text-[#b5ada3] pl-1">D</span>{numInput('gd', gc.depth)}{unitTxt('mm')}
-                  </FieldBox>
-                  <span className="text-[10px] text-stone-400 truncate" title="Resulting groove: width × depth beyond the panel's inner face (depth shown for the default groove depth)">groove {fmt1(g.thickness + gc.front + gc.back)} × In+{fmt1(gc.depth)}</span>
+              {/* KANAL BLOĞU — her tipte: solda büyük kesit diyagramı (kanallı: kanal + paylar; çakma: panelin arkasına çakılmış),
+                  sağda üstte tip (Nailed / Grooved) ve bölme V / H / =, altta değer hücreleri. Çakmada setback ve paylar 0 ve pasif.
+                  Başlık / açıklama / metin ipucu yok; geri bildirim görsel (hücre → diyagram + şema vurgusu). */}
+              <div className="mb-1.5 flex gap-1.5 items-stretch" onMouseLeave={() => setBackHint(null)}>
+                <div className="relative shrink-0" style={{ width: '42%', minWidth: 150, maxWidth: 230 }}>
+                  <BackGrooveDiagram active={hintKey} grooved={isGrooved} t={g.thickness} setback={isGrooved ? setbackVal : 0} front={gc.front} rear={gc.back} depth={gc.depth} className="h-full" />
+                  {/* Kenar kapsamı (şemadaki ± rozeti): yalnız bir kenar seçiliyken. */}
+                  {clearVf && (
+                    <div className="absolute bottom-1 right-1 flex items-center gap-[2px]">
+                      <button type="button" onClick={e => { stop(e); setBackClearEdge(null); }}
+                        className="h-[17px] pl-1.5 pr-1 rounded-full flex items-center gap-[2px] bg-orange-50 ring-1 ring-orange-300 text-orange-700 text-[9px] font-semibold hover:bg-orange-100 max-w-[110px]">
+                        <span className="truncate">{clearName}</span><X size={9} strokeWidth={2.6} className="shrink-0" /></button>
+                      {clearOwn && <button type="button" onClick={e => { stop(e); void resetBackGrooveClear(g.id, clearVf); }}
+                        className="w-[17px] h-[17px] rounded-full flex items-center justify-center bg-orange-50 ring-1 ring-orange-300 text-orange-600 hover:bg-orange-100"><RotateCcw size={9} strokeWidth={2.4} /></button>}
+                    </div>
+                  )}
                 </div>
-              )}
+                <div className="flex-1 min-w-0 flex flex-col justify-between gap-[3px]">
+                  {/* Üst: tip solda; bölme V / H ve eşitle sağda (dar sütunda alt satıra sarar, yine sağa yaslı). */}
+                  <div className="flex flex-wrap items-center gap-1">
+                    <BackTypeSeg value={commonPlacement} hint={typeHint} onPick={t => { void setBackPlacement(g.id, t, scoped ? targetLeafIds : []); }} />
+                    <div className="ml-auto flex items-center gap-1">
+                      <CountMini icon={SplitSquareVertical} value={countOf('u')} title={countTitle('u')} onChange={n => setCount('u', n)} />
+                      <CountMini icon={SplitSquareHorizontal} value={countOf('v')} title={countTitle('v')} onChange={n => setCount('v', n)} />
+                      <IconSquareBtn icon={Equal} title="Equalize sizes (unlock all)" onClick={() => { void equalizeBackGroup(g.id); }} />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-x-1 gap-y-[3px]">
+                    <HintCell label="Thick" hintKey="t" active={hintKey === 't'} onHint={onHint}>{numInput('t', g.thickness, false, 27)}</HintCell>
+                    <HintCell label="Setback" hintKey="setback" active={hintKey === 'setback'} onHint={onHint} accent={scoped && isGrooved} passive={!isGrooved}>{numInput('setback', setbackVal, setbackMixed, 27, undefined, !isGrooved)}</HintCell>
+                    <HintCell label="Front +" hintKey="gf" active={hintKey === 'gf'} onHint={onHint} accent={!!clearVf} passive={!isGrooved}>{numInput('gf', gc.front, false, 27, undefined, !isGrooved)}</HintCell>
+                    <HintCell label="Rear +" hintKey="gb" active={hintKey === 'gb'} onHint={onHint} accent={!!clearVf} passive={!isGrooved}>{numInput('gb', gc.back, false, 27, undefined, !isGrooved)}</HintCell>
+                    <HintCell label="Bottom +" hintKey="gd" active={hintKey === 'gd'} onHint={onHint} accent={!!clearVf} passive={!isGrooved}>{numInput('gd', gc.depth, false, 27, undefined, !isGrooved)}</HintCell>
+                    <div className={`min-w-0 h-[25px] pl-[5px] pr-[4px] flex items-center gap-[2px] rounded-[6px] ${isGrooved ? 'bg-[#f6f2ec]' : 'bg-[#f6f2ec] opacity-60'}`}>
+                      <span className="flex-1 min-w-0 truncate text-[8.5px] font-semibold tracking-[0.03em] uppercase leading-none text-[#a8a29e]">Groove</span>
+                      <span className="text-[10.5px] font-semibold text-stone-600 tabular-nums whitespace-nowrap">{isGrooved ? <>{fmt1(g.thickness + gc.front + gc.back)}<span className="text-[8.5px] font-medium text-stone-400">×In+{fmt1(gc.depth)}</span></> : '—'}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
               <BackSchematic group={g} solution={sol} selectedIndex={selMemberIdx} selectedNodes={picked}
                 memberLabels={g.memberVfIds.map((id, i) => { const mi = members.findIndex(m => m.id === id); return `${label}.${(mi >= 0 ? mi : i) + 1}`; })}
                 cuts={backCuts} nearPanels={nearPanels}
@@ -4313,6 +4414,8 @@ export function PanelEditor() {
                 onEditCover={(edge, mm, ids, pv) => { void setBackEdgeCover(g.id, edge, mm, ids, { preview: pv }); }}
                 onToggleEdgeRel={edge => { void setBackEdgeRel(g.id, edge, edgeRelOf(g, edge) === 'nail' ? 'groove' : 'nail'); }}
                 onToggleJointRel={(sid, k) => { void setBackJointRel(g.id, sid, k, backJointRelOf(g.tree, sid, k) === 'nail' ? 'groove' : 'nail'); }}
+                clearVfId={clearVf} onPickClearEdge={vfId => setBackClearEdge(clearVf === vfId ? null : { id: g.id, vfId })}
+                grooveHint={hintKey === 'gf' || hintKey === 'gb' || hintKey === 'gd' ? hintKey : null}
                 onPathClick={onPathClick} />
               <SectionHead label="Back panels" count={members.length} />
               <div className="flex flex-col gap-[2px]">

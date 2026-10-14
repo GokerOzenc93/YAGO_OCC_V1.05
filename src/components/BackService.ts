@@ -49,9 +49,17 @@ export const BACK_REL_LABEL: Record<BackEdgeRel, string> = { groove: 'Groove', n
 /** Kanal bollaştırma varsayılanı (mm): parçanın önüne / arkasına ve kanal dibine (girişin ötesine). */
 export const BACK_GROOVE_CLEAR = { front: 0.5, back: 0.5, depth: 1 } as const;
 export type BackGrooveClear = { front: number; back: number; depth: number };
-export const backGrooveClearOf = (g: Pick<BackGroup, 'grooveClear'>): BackGrooveClear => {
+/** Etkin bollaştırma: vfId verilirse o kenarın (sınır / derz paneli) kendi değerleri, girilmeyen alanlar grup değeri. */
+export const backGrooveClearOf = (g: Pick<BackGroup, 'grooveClear' | 'grooveClearBy'>, vfId?: string): BackGrooveClear => {
   const v = (x: number | undefined, d: number) => (Number.isFinite(x) && (x as number) >= 0 ? (x as number) : d);
-  return { front: v(g.grooveClear?.front, BACK_GROOVE_CLEAR.front), back: v(g.grooveClear?.back, BACK_GROOVE_CLEAR.back), depth: v(g.grooveClear?.depth, BACK_GROOVE_CLEAR.depth) };
+  const base = { front: v(g.grooveClear?.front, BACK_GROOVE_CLEAR.front), back: v(g.grooveClear?.back, BACK_GROOVE_CLEAR.back), depth: v(g.grooveClear?.depth, BACK_GROOVE_CLEAR.depth) };
+  const o = vfId ? g.grooveClearBy?.[vfId] : undefined;
+  return o ? { front: v(o.front, base.front), back: v(o.back, base.back), depth: v(o.depth, base.depth) } : base;
+};
+/** Kenarın kendi bollaştırma değeri var mı (grup değerinden ayrılmış). */
+export const backGrooveClearOverridden = (g: Pick<BackGroup, 'grooveClearBy'>, vfId: string): boolean => {
+  const o = g.grooveClearBy?.[vfId];
+  return !!o && (['front', 'back', 'depth'] as const).some(k => Number.isFinite(o[k]));
 };
 /** Kenar ilişkisi (grup başına); yoksa kanallı. */
 export const edgeRelOf = (g: Pick<BackGroup, 'edgeRel'>, k: keyof BackBounds): BackEdgeRel => g.edgeRel?.[k] ?? 'groove';
@@ -846,7 +854,7 @@ export function backGrooveCuttersFor(panel: Shape): CavityBox[] {
     const sol = backSolutionMemo(bg);
     if (!sol) continue;
     const bounds = sol.bounds ?? bg.bounds;
-    const clear = backGrooveClearOf(bg);
+    const clear = backGrooveClearOf(bg, vfId);   // bu panelin (kenar / derz) kendi değeri, yoksa grup
     const { u, v } = backPlaneAxes(bg.axis);
     const cells = backCells(sol.solved);
     const edge = EDGE_KEYS.find(k => bounds[k]?.vfId === vfId);
@@ -885,15 +893,34 @@ export function backGrooveCuttersFor(panel: Shape): CavityBox[] {
   }
   return out;
 }
-/** Kanal bollaştırma (grup başına, mm ≥ 0); eksik alanlar korunur. */
-export async function setBackGrooveClear(groupId: string, patch: Partial<BackGrooveClear>): Promise<void> {
+/** Kanal bollaştırma (mm ≥ 0): vfId yoksa GRUP değeri (kendi değeri olmayan tüm kenarlar izler), varsa yalnız o kenar (sınır / derz
+ *  paneli). Eksik alanlar korunur. */
+export async function setBackGrooveClear(groupId: string, patch: Partial<BackGrooveClear>, vfId?: string): Promise<void> {
   const group = groupById(groupId);
   if (!group) return;
-  const cur = backGrooveClearOf(group);
-  const next: BackGrooveClear = { ...cur };
-  for (const k of ['front', 'back', 'depth'] as const) { const v = patch[k]; if (Number.isFinite(v) && (v as number) >= 0) next[k] = round1(v as number); }
-  if ((['front', 'back', 'depth'] as const).every(k => Math.abs(next[k] - cur[k]) < 0.05)) return;
-  await writeBackGroup(group, { grooveClear: next });
+  const keys = ['front', 'back', 'depth'] as const;
+  const cur = backGrooveClearOf(group, vfId);
+  const changed = keys.filter(k => { const v = patch[k]; return Number.isFinite(v) && (v as number) >= 0 && Math.abs(round1(v as number) - cur[k]) >= 0.05; });
+  if (!changed.length) return;
+  if (!vfId) {
+    const next: BackGrooveClear = { ...backGrooveClearOf(group) };
+    for (const k of changed) next[k] = round1(patch[k] as number);
+    await writeBackGroup(group, { grooveClear: next });
+    return;
+  }
+  const by = { ...(group.grooveClearBy ?? {}) };
+  const own = { ...(by[vfId] ?? {}) };
+  for (const k of changed) own[k] = round1(patch[k] as number);
+  by[vfId] = own;
+  await writeBackGroup(group, { grooveClearBy: by });
+}
+/** Kenarın kendi bollaştırma değerlerini siler → grup değerine döner. */
+export async function resetBackGrooveClear(groupId: string, vfId: string): Promise<void> {
+  const group = groupById(groupId);
+  if (!group?.grooveClearBy?.[vfId]) return;
+  const by = { ...group.grooveClearBy };
+  delete by[vfId];
+  await writeBackGroup(group, { grooveClearBy: Object.keys(by).length ? by : undefined });
 }
 
 /** Kenar ilişkisi (grup başına): 'nail' → o kenarın paneli iç parçaların ön yüzüne kadar kısaltılır; 'groove' → tam boy, kanal. */

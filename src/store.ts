@@ -206,6 +206,8 @@ export interface BackGroup {
   edgeRel?: Partial<Record<keyof BackBounds, BackEdgeRel>>;
   /** KANAL BOLLAŞTIRMA (mm, grup başına): kanal = parça kalınlığı + front (öne) + back (arkaya); derinlik = giriş + depth. Yoksa varsayılan. */
   grooveClear?: { front?: number; back?: number; depth?: number };
+  /** KENAR BAŞINA bollaştırma (sınır / derz panelinin VF id'si → yalnız girilen alanlar); girilmeyen alan grup değerini izler. */
+  grooveClearBy?: Record<string, { front?: number; back?: number; depth?: number }>;
   /** Derinlik referansı: sınır panelinin arka yüzü. Yoksa en gerideki sınır panelinin yüzü. Çakma (kısaltılan) kenar derinlik vermez. */
   depthRef?: BackBoundRef;
   /** İÇ dikdörtgen (sınır panellerinin iç yüzleri / gövde kenarları); front = sınır panellerinin ARKA yüzü (P). */
