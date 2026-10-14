@@ -2119,7 +2119,6 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
   const clampX = (x: number) => Math.max(2, Math.min(width - 2, x));
   const clampY = (y: number) => Math.max(2, Math.min(height - 2, y));
   // Kenar şeritleri: kanallı parçada KANAL GİRİŞİ (pill), çakma parçada bini Full/Half/None (rozet) — ikisi de parça başına.
-  const insetEdge = (k: BackEdgeKey) => !!group.bounds[k]?.vfId;
   const invX = (x: number) => rect.u0 + (mirrorU ? (ox + SW - x) : (x - ox)) * duR / SW;
   const invY = (y: number) => (mirrorV ? rect.v0 + (y - oy) * dvR / SH : rect.v1 - (y - oy) * dvR / SH);
   const areaPx = [[2, 2], [width - 2, 2], [width - 2, height - 2], [2, height - 2]];
@@ -2181,7 +2180,6 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
     }
     return best ? [{ cb, edge: cb.edge, ...best }] : [];
   });
-  const slopeEdges = new Set<BackEdgeKey>(slopeSegs.map(sg => sg.edge));
   const hiddenParts = (b: Band) => members.flatMap(m => {
     const dx0 = Math.min(sx(m.u0), sx(m.u1)) + I, dx1 = Math.max(sx(m.u0), sx(m.u1)) - I, dy0 = Math.min(sy(m.v1), sy(m.v0)) + I, dy1 = Math.max(sy(m.v1), sy(m.v0)) - I;
     if (dx1 - dx0 < 0.5 || dy1 - dy0 < 0.5) return [];
@@ -2286,7 +2284,6 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
     if (ax === 'v' && y1 - y0 < MINW) { const c = (y0 + y1) / 2; y0 = c - MINW / 2; y1 = c + MINW / 2; }
     focusStrips.push({ x: x0, y: y0, w: x1 - x0, h: y1 - y0 });
   };
-  const edgeKeyName = (k: BackEdgeKey) => (k === 'uMin' ? (mirrorU ? 'Right' : 'Left') : k === 'uMax' ? (mirrorU ? 'Left' : 'Right') : k === 'vMax' ? (mirrorV ? 'Bottom' : 'Top') : (mirrorV ? 'Top' : 'Bottom'));
   type Box4 = { u0: number; u1: number; v0: number; v1: number };
   const outlineMemo = new Map<string, Pt[]>();
   const outlineOf = (r: Box4): Pt[] => {
@@ -2311,30 +2308,12 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
     const lo = Math.max(sp[0], Math.min(c[0], c[1])), hi = Math.min(sp[1], Math.max(c[0], c[1]));
     return hi - lo > 1 ? [lo, hi] : sp;
   };
-  const edgeSpanOf = (R: Box4, k: BackEdgeKey, on?: Box4): [number, number] => {
-    const ax: 'u' | 'v' = k === 'uMin' || k === 'uMax' ? 'u' : 'v';
-    const val = k === 'uMin' ? R.u0 + 0.5 : k === 'uMax' ? R.u1 - 0.5 : k === 'vMin' ? R.v0 + 0.5 : R.v1 - 0.5;
-    const sp = lineSpan(outlineOf(R), ax, val) ?? crossOf(R, ax);
-    return on ? clampSpan(sp, crossOf(on, ax)) : sp;
-  };
   const jointSpanOf = (R: Box4, ax: 'u' | 'v', a: number, b: number, on?: Box4): [number, number] => {
     const sp = lineSpan(outlineOf(R), ax, (a + b) / 2) ?? crossOf(R, ax);
     return on ? clampSpan(sp, crossOf(on, ax)) : sp;
   };
-  // Panel kenarı pill'i = KANAL GİRİŞİ, yalnız o kenara değen KANALLI parçalar için (bölgenin yaprakları içinde); çakma parçada kenar pill'i yok (bini rozeti var).
-  // Pill o parçalara yazar; değerler farklıysa "…" gösterir ve girilen değer hepsine yazılır.
-  const edgeIds = (k: BackEdgeKey, node: BackNodeSolved): string[] => (slopeEdges.has(k) || !insetEdge(k) ? [] : groovedOf(touchingLeaves(k, leafIdsUnder(node))));
-  const insOf = (k: BackEdgeKey, ids: string[]) => commonInset(k, ids) ?? Math.max(0, ...ids.map(id => pieceOfLeaf(id).inset[k]));
-  const edgeItem = (k: BackEdgeKey, ids: string[], a: number, b: number, R: Box4, on: Box4 | undefined, node: BackNodeSolved): ChainItem => {
-    const c = commonInset(k, ids);
-    return { key: `edge-${k}-${node.id}`, kind: 'gap', a, b, txt: c == null ? '…' : fmt(c),
-      title: `${edgeKeyName(k)} groove inset (${scopeTxt(ids)}) — how far the grooved piece enters the panel; click to edit${c == null ? ' (pieces differ — the value you enter applies to all of them)' : ''}`,
-      commit: v => onEditInset(k, v, ids), preview: v => onEditInset(k, v, ids, true), min: 0, span: edgeSpanOf(R, k, on) };
-  };
-  const edgeStrip = (n: BackNodeSolved, k: BackEdgeKey, ins: number) => {
-    if (k === 'uMin') strip('u', rect.u0 - ins, rect.u0, n.v0, n.v1); else if (k === 'uMax') strip('u', rect.u1, rect.u1 + ins, n.v0, n.v1);
-    else if (k === 'vMax') strip('v', rect.v1, rect.v1 + ins, n.u0, n.u1); else strip('v', rect.v0 - ins, rect.v0, n.u0, n.u1);
-  };
+  // KENAR / DERZ BİNME DEĞERLERİ ölçü zincirinde GÖSTERİLMEZ (Goker, Eki 2026 — "arkalığa tıklayınca In / On yanında bir de kanal
+  // derinlik kutucukları geliyor, iki tane binme değeri görünüyor"): bunlar yalnız bandın In / On rozetlerinde; zincir = parça ölçüleri + aralar.
   const slots = new Map<string, { h: number; v: number }>();
   const pushChain = (on: BackNodeSolved, horiz: boolean, items: ChainItem[]) => {
     if (!items.length) return;
@@ -2364,38 +2343,18 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
     return { key: `size-${P.id}-${i}`, kind: 'size', a, b, txt: fmt(w), title: `${horiz ? 'Piece width' : 'Piece height'} — click to edit (open pieces take up the difference)`,
       locked: mode === 'locked', edited: mode === 'hold', lockTitle, onLock: () => onToggleLock(P.id, i), commit: v => onEditSize(P.id, i, v), preview: v => onEditSize(P.id, i, v, true), min: 1 };
   };
-  // LEVHAYA BAĞLI DERZ: boşluk yerine iki yanın BİNME pill'i — parça dikme/rafın üzerine ne kadar biner (parça başına).
-  // 'before' = derzden önceki çocuk (u: sol → uMax, v: üst → vMin), 'after' = sonraki (u: sağ → uMin, v: alt → vMax).
+  // LEVHAYA BAĞLI DERZ: zincirde ara yok (binme değerleri derz bandındaki On / In rozetlerinde).
   const jointSidesOf = (P: SplitS, k: number) => Object.values(sides).flatMap(r => Object.values(r)).filter(x => !!x && x.splitId === P.id && x.k === k);
   const isBoundJoint = (P: SplitS, k: number) => !!P.refs?.[k] && jointSidesOf(P, k).length > 0;
-  const jointInItem = (P: SplitS, k: number, which: 'before' | 'after', node: BackNodeSolved, on: BackNodeSolved, withStrips: boolean): ChainItem | null => {
-    const key: BackEdgeKey = P.axis === 'u' ? (which === 'before' ? 'uMax' : 'uMin') : (which === 'before' ? 'vMin' : 'vMax');
-    const ids = leafIdsUnder(node).filter(id => { const x = sides[id]?.[key]; return !!x && x.splitId === P.id && x.k === k; });
-    if (!ids.length) return null;
-    const ss = ids.map(id => sides[id]![key]!);
-    const common = ss.every(x => Math.abs(x.in - ss[0].in) < T0) ? ss[0].in : null;
-    const inV = common ?? Math.max(...ss.map(x => x.in));
-    const { a0, a1, t } = ss[0];
-    const minKey = key === 'uMin' || key === 'vMin';
-    const a = minKey ? a1 - inV : a0, b = minKey ? a1 : a0 + inV;
-    const what = P.axis === 'u' ? 'divider' : 'shelf';
-    const name = nearPanels.find(np => np.vfId === ss[0].vfId)?.name ?? what;
-    if (withStrips) strip(P.axis, a, b, P.axis === 'u' ? on.v0 : on.u0, P.axis === 'u' ? on.v1 : on.u1);
-    return { key: `jin-${P.id}-${k}-${which}-${node.id}`, kind: 'gap', a, b, txt: common == null ? '…' : fmt(common),
-      title: `Overlap on ${name} (${what}, ${scopeTxt(ids)}) — how far the piece runs onto the ${what}: 0 = ends at its face, ${fmt(t)} = covers it fully${ss.some(x => !x.entered) ? ' (default: to its middle)' : ''}. Click to edit; each side of the ${what} has its own value.${common == null ? ' Pieces differ — the value you enter applies to all of them.' : ''}`,
-      commit: v => onEditJointIn(key, v, ids), preview: v => onEditJointIn(key, v, ids, true), min: 0 };
-  };
   const splitItems = (n: SplitS, withStrips: boolean): ChainItem[] => {
     const horiz = n.axis === 'u', dir = horiz ? 1 : -1;
     const items: ChainItem[] = [];
     let p = horiz ? n.u0 : n.v1;
-    { const k: BackEdgeKey = horiz ? 'uMin' : 'vMax'; const ids = edgeIds(k, n); if (ids.length) { const ins = insOf(k, ids); items.push(edgeItem(k, ids, p - dir * ins, p, n, undefined, n)); if (withStrips) edgeStrip(n, k, ins); } }
     n.children.forEach((_c, i) => {
       const w = n.sizes[i]?.value ?? 0;
       items.push(sizeItem(n, i, p, p + dir * w, horiz));
       p += dir * w;
       if (i < n.children.length - 1 && isBoundJoint(n, i)) {
-        for (const it of [jointInItem(n, i, 'before', n.children[i], n, withStrips), jointInItem(n, i, 'after', n.children[i + 1], n, withStrips)]) if (it) items.push(it);
         p += dir * (n.gaps[i] ?? 0);
       } else if (i < n.children.length - 1) {
         const g = n.gaps[i] ?? 0;
@@ -2404,7 +2363,6 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
         p += dir * g;
       }
     });
-    { const k: BackEdgeKey = horiz ? 'uMax' : 'vMin'; const ids = edgeIds(k, n); if (ids.length) { const ins = insOf(k, ids); items.push(edgeItem(k, ids, p, p + dir * ins, n, undefined, n)); if (withStrips) edgeStrip(n, k, ins); } }
     return items;
   };
   const placeItems = (n: BackNodeSolved, P: SplitS, on: BackNodeSolved): ChainItem[] => {
@@ -2414,32 +2372,26 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
     const items: ChainItem[] = [];
     const start = horiz ? n.u0 : n.v1;
     const c0 = horiz ? on.v0 : on.u0, c1 = horiz ? on.v1 : on.u1;
-    if (idx > 0 && isBoundJoint(P, idx - 1)) { const it = jointInItem(P, idx - 1, 'after', n, on, true); if (it) items.push(it); }
-    else if (idx > 0) { const g = P.gaps[idx - 1] ?? 0; items.push({ key: `sgap-${P.id}-${idx - 1}`, kind: 'gap', a: start - dir * g, b: start, txt: fmt(g), title: 'Gap between pieces — click to edit', commit: v => onEditSplitGap(P.id, idx - 1, v), preview: v => onEditSplitGap(P.id, idx - 1, v, true), min: 0, span: jointSpanOf(P, P.axis, start - dir * g, start, on) }); strip(P.axis, start - dir * g, start, c0, c1); }
-    else { const k: BackEdgeKey = horiz ? 'uMin' : 'vMax'; const ids = edgeIds(k, n); if (ids.length) { const ins = insOf(k, ids); items.push(edgeItem(k, ids, start - dir * ins, start, n, on, n)); edgeStrip(on, k, ins); } }
+    if (idx > 0 && !isBoundJoint(P, idx - 1)) { const g = P.gaps[idx - 1] ?? 0; items.push({ key: `sgap-${P.id}-${idx - 1}`, kind: 'gap', a: start - dir * g, b: start, txt: fmt(g), title: 'Gap between pieces — click to edit', commit: v => onEditSplitGap(P.id, idx - 1, v), preview: v => onEditSplitGap(P.id, idx - 1, v, true), min: 0, span: jointSpanOf(P, P.axis, start - dir * g, start, on) }); strip(P.axis, start - dir * g, start, c0, c1); }
     const w = P.sizes[idx]?.value ?? 0;
     items.push(sizeItem(P, idx, start, start + dir * w, horiz));
     const end = start + dir * w;
-    if (idx < P.children.length - 1 && isBoundJoint(P, idx)) { const it = jointInItem(P, idx, 'before', n, on, true); if (it) items.push(it); }
-    else if (idx < P.children.length - 1) { const g = P.gaps[idx] ?? 0; items.push({ key: `sgap-${P.id}-${idx}`, kind: 'gap', a: end, b: end + dir * g, txt: fmt(g), title: 'Gap between pieces — click to edit', commit: v => onEditSplitGap(P.id, idx, v), preview: v => onEditSplitGap(P.id, idx, v, true), min: 0, span: jointSpanOf(P, P.axis, end, end + dir * g, on) }); strip(P.axis, end, end + dir * g, c0, c1); }
-    else { const k: BackEdgeKey = horiz ? 'uMax' : 'vMin'; const ids = edgeIds(k, n); if (ids.length) { const ins = insOf(k, ids); items.push(edgeItem(k, ids, end, end + dir * ins, n, on, n)); edgeStrip(on, k, ins); } }
+    if (idx < P.children.length - 1 && !isBoundJoint(P, idx)) { const g = P.gaps[idx] ?? 0; items.push({ key: `sgap-${P.id}-${idx}`, kind: 'gap', a: end, b: end + dir * g, txt: fmt(g), title: 'Gap between pieces — click to edit', commit: v => onEditSplitGap(P.id, idx, v), preview: v => onEditSplitGap(P.id, idx, v, true), min: 0, span: jointSpanOf(P, P.axis, end, end + dir * g, on) }); strip(P.axis, end, end + dir * g, c0, c1); }
     return items;
   };
-  const fullItems = (ax: 'u' | 'v', on: BackNodeSolved): ChainItem[] => {
+  const fullItems = (ax: 'u' | 'v'): ChainItem[] => {
     const horiz = ax === 'u', dir = horiz ? 1 : -1;
-    const lo = horiz ? rect.u0 : rect.v1, k0: BackEdgeKey = horiz ? 'uMin' : 'vMax', k1: BackEdgeKey = horiz ? 'uMax' : 'vMin';
+    const lo = horiz ? rect.u0 : rect.v1;
     const span = horiz ? rect.u1 - rect.u0 : rect.v1 - rect.v0;
     const items: ChainItem[] = [];
-    { const ids = edgeIds(k0, on); if (ids.length) { const ins = insOf(k0, ids); items.push(edgeItem(k0, ids, lo - dir * ins, lo, rect, on, on)); edgeStrip(on, k0, ins); } }
     items.push({ key: `full-${ax}`, kind: 'size', a: lo, b: lo + dir * span, txt: fmt(span), title: horiz ? 'Back area width (between the reference panels\' inner faces)' : 'Back area height (between the reference panels\' inner faces)', commit: () => {}, min: 1 });
-    { const ids = edgeIds(k1, on); if (ids.length) { const ins = insOf(k1, ids); items.push(edgeItem(k1, ids, lo + dir * span, lo + dir * (span + ins), rect, on, on)); edgeStrip(on, k1, ins); } }
     return items;
   };
   const crossChain = (n: BackNodeSolved, ax: 'u' | 'v', on: BackNodeSolved) => {
     let A: BackNodeSolved = n, B = solvedParent(A.id);
     while (B && B.axis === ax) { A = B; B = solvedParent(B.id); }
     if (B) pushChain(on, B.axis === 'u', placeItems(A, B, on));
-    else pushChain(on, ax !== 'u', fullItems(ax === 'u' ? 'v' : 'u', on));
+    else pushChain(on, ax !== 'u', fullItems(ax === 'u' ? 'v' : 'u'));
   };
   for (const n of selRegions) {
     if (n.kind === 'split') {
@@ -2449,7 +2401,7 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
     }
     const P = solvedParent(n.id);
     if (P) { pushChain(n, P.axis === 'u', placeItems(n, P, n)); crossChain(P, P.axis, n); }
-    else { pushChain(n, true, fullItems('u', n)); pushChain(n, false, fullItems('v', n)); }
+    else { pushChain(n, true, fullItems('u')); pushChain(n, false, fullItems('v')); }
   }
 
   type Pill = { key: string; cx: number; cy: number; pw: number; ph: number; f: number; item: ChainItem; chain: Chain; x0: number; x1: number; hidden: boolean; lane: number; deg?: number; lock?: { x: number; y: number } };
