@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { AppWindow, ChevronRight, GripHorizontal, Hash, type LucideIcon, PanelLeft, PictureInPicture2, Pin, PinOff, Send, SlidersHorizontal, Square, Box, Layers } from 'lucide-react';
+import { AppWindow, ChevronRight, Columns3, DoorClosed, GripHorizontal, Hash, LayoutPanelTop, type LucideIcon, PanelLeft, PictureInPicture2, Pin, PinOff, Plus, Radius, Rows3, Send, SendToBack, SlidersHorizontal, Spline, Square, Box, Layers } from 'lucide-react';
 import { CameraType, OrthoMode, type Shape, SnapType, Tool, ViewMode, shapeById, useAppStore, useStoreFields } from '../store';
 import {
   type Vec3, convertReplicadToThreeGeometry, createReplicadBox, getReplicadVertices,
@@ -68,6 +68,87 @@ export const ToolChip: React.FC<{ label: string; icon: LucideIcon; active?: bool
   );
 export const ToolChipBar: React.FC<{ children: React.ReactNode }> = ({ children }) => <div className="flex items-center gap-1 flex-wrap -ml-1">{children}</div>;
 
+/* DİKEY ARAÇ RAYI (kenar çubuğu kabuğunun sol kenarı, TAM yükseklik): yalnız İKON — sade kare düğmeler, sağa açılan etiket
+   kartı (ad + kısa açıklama). İki grup: Parameters araçları / Panel Editor araçları; yalnız etkin sekmenin grubu canlı, öteki pasif
+   (soluk, tıklanmaz); şekil seçili değilken ikisi de pasif. Etkin: beyaz kare, ince turuncu çerçeve, turuncu ikon, rayın kenarında
+   turuncu işaret çubuğu. Goker (Eki 2026): "ince ikon ve yan yazı amatör; ciddi ve minimal olsun". */
+export const RAIL_W = 44;
+type RailSpec = { key: string; label: string; icon: LucideIcon; title: string; active?: boolean; badge?: string | number; onClick: () => void };
+/* Panelin YEREL durumuna bağlı ray eylemleri buraya kaydolur (ParametersPanel → özel parametre ekleme). */
+export const railActions: { addCustomParameter: (() => void) | null } = { addCustomParameter: null };
+
+const RailTool: React.FC<Omit<RailSpec, 'key'> & { passive: boolean }> = ({ label, icon: Icon, active = false, badge, onClick, title, passive }) => {
+  const [hov, setHov] = useState(false);
+  const on = active && !passive, hv = hov && !passive;
+  return (
+    <button type="button" onClick={onClick} aria-label={label} aria-pressed={on} disabled={passive}
+      onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)} className="yago-rail-btn"
+      style={{
+        position: 'relative', width: '32px', height: '32px', borderRadius: '7px', border: 'none', outline: 'none', padding: 0, flexShrink: 0,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: passive ? 'default' : 'pointer',
+        background: on ? '#ffffff' : hv ? 'rgba(255,255,255,0.75)' : 'transparent',
+        boxShadow: on ? '0 0 0 1px rgba(234,88,12,0.35),0 1px 3px rgba(40,30,20,0.10)' : hv ? '0 0 0 1px rgba(60,50,40,0.10),0 1px 2px rgba(40,30,20,0.06)' : 'none',
+        opacity: passive ? 0.32 : 1, transition: 'background 0.12s,box-shadow 0.12s,opacity 0.15s',
+      }}>
+      <Icon size={17} strokeWidth={2} style={{ color: on ? '#ea580c' : hv ? '#1c1917' : '#57534e', transition: 'color 0.12s' }} />
+      {badge !== undefined && badge !== '' && (
+        <span style={{ position: 'absolute', top: '2px', right: '1px', minWidth: '12px', height: '12px', padding: '0 3px', borderRadius: '99px', fontSize: '8px', fontWeight: 700, lineHeight: '12px', textAlign: 'center', fontVariantNumeric: 'tabular-nums', background: on ? '#ea580c' : '#78716c', color: '#fff', fontFamily: UI_FONT }}>{badge}</span>
+      )}
+      {/* Etkin işaret çubuğu — rayın sol kenarına oturur */}
+      <span style={{ position: 'absolute', left: '-6px', top: '7px', bottom: '7px', width: '2px', borderRadius: '0 2px 2px 0', background: '#ea580c', opacity: on ? 1 : 0, transition: 'opacity 0.15s', pointerEvents: 'none' }} />
+      {/* Etiket kartı — sağa açılır */}
+      {hv && (
+        <span role="tooltip" style={{
+          position: 'absolute', left: 'calc(100% + 10px)', top: '50%', transform: 'translateY(-50%)', zIndex: 40, pointerEvents: 'none',
+          display: 'flex', flexDirection: 'column', gap: '2px', padding: '6px 9px', minWidth: '96px', maxWidth: '240px', width: 'max-content',
+          background: '#fffefc', border: '1px solid rgba(60,50,40,0.14)', borderRadius: '7px', boxShadow: '0 6px 18px -6px rgba(40,30,20,0.22),0 1px 3px rgba(40,30,20,0.08)',
+          fontFamily: UI_FONT, textAlign: 'left', animation: 'yago-rail-tip 0.12s ease-out',
+        }}>
+          <span style={{ fontSize: '11.5px', fontWeight: 600, color: '#1c1917', letterSpacing: '0.005em' }}>{label}</span>
+          {title !== label && <span style={{ fontSize: '10.5px', fontWeight: 400, color: '#706b65', lineHeight: 1.4, whiteSpace: 'normal' }}>{title}</span>}
+        </span>
+      )}
+    </button>
+  );
+};
+const RAIL_SEP: React.CSSProperties = { width: '20px', height: '1px', margin: '6px 0', background: 'rgba(60,50,40,0.14)', flexShrink: 0 };
+
+export const SidebarRail: React.FC<{ activeTab: 'parameters' | 'panel-editor'; hasShape: boolean }> = ({ activeTab, hasShape }) => {
+  const s = useStoreFields('raycastMode', 'setRaycastMode', 'volumePickMode', 'setVolumePickMode', 'volumePickGroupId', 'doorPickMode', 'setDoorPickMode', 'backPickMode', 'setBackPickMode',
+    'vertexEditMode', 'setVertexEditMode', 'subtractionViewMode', 'setSubtractionViewMode', 'filletMode', 'setFilletMode', 'setFaceEditMode', 'selectedFilletFaces', 'clearFilletFaces', 'clearFilletFaceData', 'selectedShapeId', 'shapes');
+  const sel = shapeById(s.selectedShapeId, s.shapes);
+  const subN = sel?.subtractionGeometries?.filter(x => x !== null).length ?? 0;
+  const params: RailSpec[] = [
+    { key: 'vertex', label: 'Vertex', icon: Spline, title: 'Edit the body outline by moving vertices', active: s.vertexEditMode,
+      onClick: () => { s.setVertexEditMode(!s.vertexEditMode); if (!s.vertexEditMode) { s.setFilletMode(false); s.setFaceEditMode(false); } } },
+    { key: 'subtract', label: 'Subtract', icon: Layers, title: 'Show and edit boolean subtractions', active: s.subtractionViewMode, badge: subN > 0 ? subN : undefined,
+      onClick: () => { s.setSubtractionViewMode(!s.subtractionViewMode); if (!s.subtractionViewMode) { s.setFilletMode(false); s.setFaceEditMode(false); } } },
+    { key: 'fillet', label: 'Fillet', icon: Radius, title: 'Round the edge between two faces', active: s.filletMode, badge: s.selectedFilletFaces.length > 0 ? `${s.selectedFilletFaces.length}/2` : undefined,
+      onClick: () => { const n = !s.filletMode; s.setFilletMode(n); s.setFaceEditMode(n); s.clearFilletFaces(); s.clearFilletFaceData(); if (n) { s.setVertexEditMode(false); s.setSubtractionViewMode(false); } } },
+    { key: 'param', label: 'Parameter', icon: Plus, title: 'Add a custom parameter', onClick: () => railActions.addCustomParameter?.() },
+  ];
+  const vp = (m: 'shelf' | 'divider') => s.volumePickMode === m && !s.volumePickGroupId;
+  const panels: RailSpec[] = [
+    { key: 'panel', label: 'Body panel', icon: LayoutPanelTop, title: 'Click a body face in the 3D view', active: s.raycastMode, onClick: () => s.setRaycastMode(!s.raycastMode) },
+    { key: 'shelf', label: 'Shelf', icon: Rows3, title: 'Click inside a cavity in the 3D view', active: vp('shelf'), onClick: () => s.setVolumePickMode(vp('shelf') ? null : 'shelf') },
+    { key: 'divider', label: 'Divider', icon: Columns3, title: 'Click inside a cavity in the 3D view', active: vp('divider'), onClick: () => s.setVolumePickMode(vp('divider') ? null : 'divider') },
+    { key: 'door', label: 'Door', icon: DoorClosed, title: 'Mark door references on panels, then click a body face', active: s.doorPickMode, onClick: () => s.setDoorPickMode(!s.doorPickMode) },
+    { key: 'back', label: 'Back panel', icon: SendToBack, title: 'Mark back references on panels, then click the body — each click cycles the candidates, largest first', active: s.backPickMode, onClick: () => s.setBackPickMode(!s.backPickMode) },
+  ];
+  const group = (list: RailSpec[], tab: 'parameters' | 'panel-editor') => list.map(({ key, ...t }) => <RailTool key={key} {...t} passive={!hasShape || activeTab !== tab} />);
+  return (
+    <div className="yago-rail" style={{
+      position: 'relative', zIndex: 2, width: `${RAIL_W}px`, flexShrink: 0, alignSelf: 'stretch', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', padding: '10px 0',
+      background: '#f3f0ea', borderRight: '1px solid rgba(60,50,40,0.10)', boxShadow: 'inset -1px 0 0 rgba(255,255,255,0.7)', fontFamily: UI_FONT,
+    }}>
+      <style>{'@keyframes yago-rail-tip { from { opacity: 0; transform: translate(-3px,-50%); } to { opacity: 1; transform: translate(0,-50%); } }'}</style>
+      {group(params, 'parameters')}
+      <div style={RAIL_SEP} />
+      {group(panels, 'panel-editor')}
+    </div>
+  );
+};
+
 // /public/icons/*.svg — stroke="currentColor" sayesinde düğme rengini alır.
 const ICONS = {
   'add-box': '/icons/add-box.svg', 'subtract-box': '/icons/subtract-box.svg', 'camera-perspective': '/icons/camera-perspective.svg', 'camera-orthographic': '/icons/camera-orthographic.svg',
@@ -112,6 +193,14 @@ export const IconButton: React.FC<IconButtonProps> = ({ icon, title, onClick, di
   <button onClick={onClick} disabled={disabled} style={{ width: size, height: size }} title={title}
     className={`flex items-center justify-center rounded transition-all duration-150 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-stone-400 active:scale-95 ${tone === 'exit' ? 'text-amber-700 hover:bg-amber-50 hover:text-amber-800' : 'hover:bg-stone-100'} ${disabled ? 'opacity-30 cursor-not-allowed' : 'cursor-pointer'} ${className}`}>
     <img src={ICONS[icon]} width={iconSize} height={iconSize} alt={icon} draggable={false} />
+  </button>
+);
+/** Açık/kapalı ikon düğmesi (lucide) — IconButton ile aynı ölçü; açıkken açık turuncu zemin + turuncu ikon. */
+export const ToggleIconButton: React.FC<{ active: boolean; onClick: () => void; title: string; icon: LucideIcon; size?: number }> = ({ active, onClick, title, icon: Icon, size = 30 }) => (
+  <button onClick={onClick} title={title} aria-pressed={active} style={{ width: size, height: size }}
+    className={`flex items-center justify-center rounded transition-all duration-150 outline-none cursor-pointer focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-stone-400 active:scale-95
+      ${active ? 'bg-[#fff1e6] text-[#ea580c] shadow-[inset_0_0_0_1px_rgba(234,88,12,0.28)]' : 'text-stone-600 hover:bg-stone-100 hover:text-stone-900'}`}>
+    <Icon size={17} strokeWidth={1.9} />
   </button>
 );
 type PresetProps = Omit<IconButtonProps, 'icon' | 'title'>;
@@ -287,8 +376,8 @@ const intersectingBodies = (sel: Shape | undefined, shapes: Shape[]): Shape[] =>
 };
 
 export const Toolbar: React.FC<{ onOpenCatalog: () => void }> = ({ onOpenCatalog }) => {
-  const { setActiveTool, activeTool, addShape, selectedShapeId, cameraType, setCameraType, snapSettings, toggleSnapSetting, viewMode, setViewMode, cycleViewMode, orthoMode, toggleOrthoMode, shapes, updateShape, deleteShape, panelSelectMode } =
-    useStoreFields('setActiveTool', 'activeTool', 'addShape', 'selectedShapeId', 'cameraType', 'setCameraType', 'snapSettings', 'toggleSnapSetting', 'viewMode', 'setViewMode', 'cycleViewMode', 'orthoMode', 'toggleOrthoMode', 'shapes', 'updateShape', 'deleteShape', 'panelSelectMode');
+  const { setActiveTool, activeTool, addShape, selectedShapeId, cameraType, setCameraType, snapSettings, toggleSnapSetting, viewMode, setViewMode, cycleViewMode, orthoMode, toggleOrthoMode, shapes, updateShape, deleteShape, panelSelectMode, setPanelSelectMode, showOutlines, setShowOutlines } =
+    useStoreFields('setActiveTool', 'activeTool', 'addShape', 'selectedShapeId', 'cameraType', 'setCameraType', 'snapSettings', 'toggleSnapSetting', 'viewMode', 'setViewMode', 'cycleViewMode', 'orthoMode', 'toggleOrthoMode', 'shapes', 'updateShape', 'deleteShape', 'panelSelectMode', 'setPanelSelectMode', 'showOutlines', 'setShowOutlines');
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
   const selectedShape = shapeById(selectedShapeId, shapes);
   const intersecting = React.useMemo(() => { try { return intersectingBodies(selectedShape, shapes); } catch { return []; } }, [selectedShape, shapes]);
@@ -360,6 +449,12 @@ export const Toolbar: React.FC<{ onOpenCatalog: () => void }> = ({ onOpenCatalog
             <VLine m="0 4px" o={0.16} />
             <BtnGroup>
               {viewMode === ViewMode.SOLID ? <ViewSolidButton onClick={cycleViewMode} /> : viewMode === ViewMode.WIREFRAME ? <ViewWireframeButton onClick={cycleViewMode} /> : <ViewXRayButton onClick={cycleViewMode} />}
+              {/* Görünüm sırası (Goker, Eki 2026): seçim kipi Body ↔ Panel ve panel çizgileri — tel görünüş düğmesinin yanında. */}
+              <ToggleIconButton active={panelSelectMode} onClick={() => setPanelSelectMode(!panelSelectMode)}
+                title={panelSelectMode ? 'Selection: Panel — click to select whole bodies' : 'Selection: Body — click to select individual panels'}
+                icon={panelSelectMode ? Layers : Box} />
+              <ToggleIconButton active={showOutlines} onClick={() => setShowOutlines(!showOutlines)} title={showOutlines ? 'Panel outlines: on' : 'Panel outlines: off'} icon={Square} />
+              <VLine h={16} m="0 2px" o={0.14} />
               {cameraType === CameraType.PERSPECTIVE
                 ? <CameraPerspectiveButton onClick={() => setCameraType(CameraType.ORTHOGRAPHIC)} />
                 : <CameraOrthographicButton onClick={() => setCameraType(CameraType.PERSPECTIVE)} />}
@@ -460,7 +555,7 @@ const SB = {
   accentSoft:    '#fff7ed',
   accentGradient:'linear-gradient(90deg,transparent,#f97316 50%,transparent)',
 };
-const SIDEBAR_WIDTH = 560;
+const SIDEBAR_WIDTH = 560 + RAIL_W;   // içerik + dikey araç rayı
 const VSEP: React.CSSProperties = { width: '1px', height: '22px', background: 'linear-gradient(to bottom,transparent,rgba(60,50,40,0.14) 30%,rgba(60,50,40,0.14) 70%,transparent)', flexShrink: 0 };
 const ACCENT_UNDERLINE = (width: string): React.CSSProperties => ({ position: 'absolute', bottom: '-1px', left: '50%', transform: 'translateX(-50%)', width, height: '2px', background: SB.accentGradient, borderRadius: '99px' });
 
@@ -687,8 +782,7 @@ const openSidebarWindow = (rect: FloatRect, onReady: (h: SidebarWindowHandle) =>
 };
 
 export const Sidebar: React.FC<{ parametersContent: React.ReactNode; panelEditorContent: React.ReactNode }> = ({ parametersContent, panelEditorContent }) => {
-  const { selectedShapeId, showOutlines, setShowOutlines, panelSelectMode, setPanelSelectMode } =
-    useStoreFields('selectedShapeId', 'showOutlines', 'setShowOutlines', 'panelSelectMode', 'setPanelSelectMode');
+  const { selectedShapeId } = useStoreFields('selectedShapeId');
   const [initial] = useState(readSidebarLayout);
   // Açılışta her zaman sola yaslı ve KAPALI başlar (Goker); kaydedilen kip yalnız yüzen panelin konum/boyutu için okunur.
   const [mode, setMode] = useState<SidebarMode>('docked');
@@ -846,13 +940,6 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; panelEditor
         </div>
         <div style={{ display: 'flex', alignItems: 'center', height: '100%', flexShrink: 0, cursor: 'default' }}>
           <div style={VSEP} />
-          {/* Tek düğme Body ↔ Panel arasında geçer; ikon GÜNCEL modu gösterir (Outline'ın karesinden ayrışsın). */}
-          <HeaderToggle active={panelSelectMode} onClick={() => setPanelSelectMode(!panelSelectMode)}
-            title={panelSelectMode ? 'Selection: Panel (individual panels) — click to switch to Body' : 'Selection: Body (whole bodies) — click to switch to Panel'}
-            icon={panelSelectMode ? <Layers size={14} strokeWidth={2} /> : <Box size={14} strokeWidth={2} />} />
-          <div style={VSEP} />
-          <HeaderToggle active={showOutlines} onClick={() => setShowOutlines(!showOutlines)} title="Show panel outlines" icon={<Square size={13} strokeWidth={2.1} />} />
-          <div style={VSEP} />
           {/* Yerleşim: yüzen panel ↔ sol şerit; ayrı pencere ↔ ana pencere. Etkin olan düğmeye basmak sola yaslar. */}
           <HeaderToggle active={mode === 'floating'} onClick={mode === 'floating' ? dockSidebar : floatSidebar}
             title={mode === 'floating' ? 'Dock the panel back to the left edge' : 'Undock — floating panel you can drag and resize'}
@@ -880,9 +967,12 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; panelEditor
           )}
         </div>
       </div>
-      <div className="custom-scrollbar bone-skin" style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', background: SB.contentBg, boxShadow: 'inset 0 2px 4px rgba(40,30,20,0.05),inset 0 -1px 0 rgba(140,120,100,0.04)' }}>
-        {tabPane('parameters', parametersContent, <EmptyState icon={<SlidersHorizontal size={18} strokeWidth={1.6} />} title="No shape selected" description="Select an object from the 3D view to edit its parameters" hint="Tip: Click an object or drag a selection box" />)}
-        {tabPane('panel-editor', panelEditorContent, <EmptyState icon={<PanelLeft size={18} strokeWidth={1.6} />} title="No panel selected" description="Select a panel or surface to edit its properties" hint="Tip: Click a surface in face select mode" />)}
+      <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+        <SidebarRail activeTab={activeTab} hasShape={!!selectedShapeId} />
+        <div className="custom-scrollbar bone-skin" style={{ flex: 1, minWidth: 0, overflowY: 'auto', overflowX: 'hidden', background: SB.contentBg, boxShadow: 'inset 0 2px 4px rgba(40,30,20,0.05),inset 0 -1px 0 rgba(140,120,100,0.04)' }}>
+          {tabPane('parameters', parametersContent, <EmptyState icon={<SlidersHorizontal size={18} strokeWidth={1.6} />} title="No shape selected" description="Select an object from the 3D view to edit its parameters" hint="Tip: Click an object or drag a selection box" />)}
+          {tabPane('panel-editor', panelEditorContent, <EmptyState icon={<PanelLeft size={18} strokeWidth={1.6} />} title="No panel selected" description="Select a panel or surface to edit its properties" hint="Tip: Click a surface in face select mode" />)}
+        </div>
       </div>
       <style>{SIDEBAR_CSS}</style>
     </div>
