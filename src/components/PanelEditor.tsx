@@ -10,7 +10,7 @@ import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import {
   type BackEdgeRel, type BackGroup, type BackPlacement, type CavityBox, type DoorAlign, type DoorGroup, type DoorType, type PanelGroup, type Shape, type VirtualFace, childPanelsOf, panelOfVf, requestRebuild, shapeById, useAppStore, useStoreFields,
 } from '../store';
-import { ToolChip, ToolChipBar, UI_FONT } from './Ui';
+import { UI_FONT } from './Ui';
 import { confirmBodyPanelPlacement } from './SceneObjects';
 import { axisDirToVec, convertReplicadToThreeGeometry, createPanelFromVirtualFace, dominantAxisLabel, genId, getFacesAndGroups, isFlatNormal, localBboxOf, round1 } from './Geometry';
 import { clipPolyToConvex, polyArea } from './FaceRegion';
@@ -1180,7 +1180,8 @@ function BackTypeButtons({ value, hint, onPick }: { value: BackPlacement | null;
             className={`min-w-0 h-full px-1 rounded-[7px] flex items-center justify-center gap-1 text-[11px] font-semibold transition-colors duration-150
               ${on ? 'bg-[#44403c] text-white ring-1 ring-[#44403c] shadow-[0_1px_2px_rgba(40,30,20,0.25)]' : 'bg-white text-stone-600 ring-1 ring-[#e6e0d6] hover:bg-[#faf7f2] hover:text-stone-800'}`}
             style={{ fontFamily: UI_FONT }}>
-            <BackTypeIcon type={t} size={10} /><span className="truncate">{BACK_TYPE_LABEL[t]}</span>
+            {/* Dar sütunda etiket kesilmesin: ikon yalnız yer varsa (container query yok → sabit küçük ikon, etiket öncelikli) */}
+            <BackTypeIcon type={t} size={10} /><span className="truncate" style={{ letterSpacing: '-0.01em' }}>{BACK_TYPE_LABEL[t]}</span>
           </button>
         );
       })}
@@ -3441,15 +3442,7 @@ export function PanelEditor() {
     try { await requestRebuild(vf.shapeId); } catch (e) { console.error('[YAGO][YÜZ-ŞEKLİ] rebuild hatası:', e); }
   };
 
-  const panelToolbar = (
-    <ToolChipBar>
-      <ToolChip label="Body Panel" icon={LayoutPanelTop} active={raycastMode} onClick={() => setRaycastMode(!raycastMode)} title="Add a panel on a body face" />
-      <ToolChip label="Shelf" icon={Rows3} active={volumePickMode === 'shelf' && !volumePickGroupId} onClick={() => setVolumePickMode(volumePickMode === 'shelf' && !volumePickGroupId ? null : 'shelf')} title="Add shelves: pick a cavity in the 3D view" />
-      <ToolChip label="Divider" icon={Columns3} active={volumePickMode === 'divider' && !volumePickGroupId} onClick={() => setVolumePickMode(volumePickMode === 'divider' && !volumePickGroupId ? null : 'divider')} title="Add vertical dividers: pick a cavity in the 3D view" />
-      <ToolChip label="Door" icon={DoorClosed} active={doorPickMode} onClick={() => setDoorPickMode(!doorPickMode)} title="Add doors: mark door references on panels (Door ref), then click a body face in the 3D view" />
-      <ToolChip label="Back" icon={SendToBack} active={backPickMode} onClick={() => setBackPickMode(!backPickMode)} title="Add a back panel: mark back references on panels (Back ref), then click the body in the 3D view — the click is taken on the body's back face, even from the front; each click cycles the candidates there, largest first — Nailed (behind the panels, outside) or Grooved (between the panels, in a groove)" />
-    </ToolChipBar>
-  );
+  // Panel türü araçları kenar çubuğu kabuğundaki dikey rayda (Ui.tsx SidebarRail).
 
   const extrudeDock = (() => {
     if (!activePanelId || !activePanel || !faceExtrudeMode) return null;
@@ -4494,14 +4487,13 @@ export function PanelEditor() {
   return (
     <div className="flex flex-col h-full min-h-0">
       <style>{LIST_CSS}</style>
-      <div className="px-3 py-2 border-b border-stone-100 flex items-center justify-between shrink-0">{panelToolbar}</div>
       {raycastDock}
       {volumePickDock}
       {doorPickDock}
       {backPickDock}
       {selectedShape ? (
         <div className="flex-1 min-h-0 overflow-y-auto">
-          <div className="px-1.5 pt-1.5 pb-2 space-y-[2px]">{renderFaceList()}</div>
+          <div className="px-0.5 pb-2 space-y-[2px]">{renderFaceList()}</div>
         </div>
       ) : (
         <div className="flex-1 flex items-center justify-center"><div className="text-center text-stone-400 text-xs py-4">No shape selected</div></div>

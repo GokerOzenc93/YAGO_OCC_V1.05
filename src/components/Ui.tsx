@@ -68,11 +68,12 @@ export const ToolChip: React.FC<{ label: string; icon: LucideIcon; active?: bool
   );
 export const ToolChipBar: React.FC<{ children: React.ReactNode }> = ({ children }) => <div className="flex items-center gap-1 flex-wrap -ml-1">{children}</div>;
 
-/* DİKEY ARAÇ RAYI (kenar çubuğu kabuğunun sol kenarı, TAM yükseklik): yalnız İKON — sade kare düğmeler, sağa açılan etiket
-   kartı (ad + kısa açıklama). İki grup: Parameters araçları / Panel Editor araçları; yalnız etkin sekmenin grubu canlı, öteki pasif
-   (soluk, tıklanmaz); şekil seçili değilken ikisi de pasif. Etkin: beyaz kare, ince turuncu çerçeve, turuncu ikon, rayın kenarında
-   turuncu işaret çubuğu. Goker (Eki 2026): "ince ikon ve yan yazı amatör; ciddi ve minimal olsun". */
-export const RAIL_W = 44;
+/* DİKEY ARAÇ RAYI (kenar çubuğu kabuğunun sol kenarı, TAM yükseklik, 60 px): ikon + altında YATAY kısa etiket — sade kare
+   düğmeler (Goker, Eki 2026: "ikonlardan ne olduğu anlaşılmıyor, yanına veya başka yerine şık şekilde yaz"; dikey yazı ve ince
+   ikon reddedildi). İki grup: Parameters araçları / Panel Editor araçları; yalnız etkin sekmenin grubu canlı, öteki pasif (soluk,
+   tıklanmaz); şekil seçili değilken ikisi de pasif. Etkin: beyaz kart, ince turuncu çerçeve, turuncu ikon + etiket, rayın kenarında
+   turuncu işaret çubuğu. Ayrıntılı açıklama tarayıcı ipucunda (title). */
+export const RAIL_W = 60;
 type RailSpec = { key: string; label: string; icon: LucideIcon; title: string; active?: boolean; badge?: string | number; onClick: () => void };
 /* Panelin YEREL durumuna bağlı ray eylemleri buraya kaydolur (ParametersPanel → özel parametre ekleme). */
 export const railActions: { addCustomParameter: (() => void) | null } = { addCustomParameter: null };
@@ -81,37 +82,28 @@ const RailTool: React.FC<Omit<RailSpec, 'key'> & { passive: boolean }> = ({ labe
   const [hov, setHov] = useState(false);
   const on = active && !passive, hv = hov && !passive;
   return (
-    <button type="button" onClick={onClick} aria-label={label} aria-pressed={on} disabled={passive}
+    <button type="button" onClick={onClick} aria-pressed={on} disabled={passive} title={`${label} — ${title}`}
       onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)} className="yago-rail-btn"
       style={{
-        position: 'relative', width: '32px', height: '32px', borderRadius: '7px', border: 'none', outline: 'none', padding: 0, flexShrink: 0,
-        display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: passive ? 'default' : 'pointer',
+        position: 'relative', width: '50px', height: '46px', borderRadius: '8px', border: 'none', outline: 'none', padding: 0, flexShrink: 0,
+        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '4px', cursor: passive ? 'default' : 'pointer',
         background: on ? '#ffffff' : hv ? 'rgba(255,255,255,0.75)' : 'transparent',
         boxShadow: on ? '0 0 0 1px rgba(234,88,12,0.35),0 1px 3px rgba(40,30,20,0.10)' : hv ? '0 0 0 1px rgba(60,50,40,0.10),0 1px 2px rgba(40,30,20,0.06)' : 'none',
-        opacity: passive ? 0.32 : 1, transition: 'background 0.12s,box-shadow 0.12s,opacity 0.15s',
+        opacity: passive ? 0.32 : 1, transition: 'background 0.12s,box-shadow 0.12s,opacity 0.15s', fontFamily: UI_FONT,
       }}>
-      <Icon size={17} strokeWidth={2} style={{ color: on ? '#ea580c' : hv ? '#1c1917' : '#57534e', transition: 'color 0.12s' }} />
-      {badge !== undefined && badge !== '' && (
-        <span style={{ position: 'absolute', top: '2px', right: '1px', minWidth: '12px', height: '12px', padding: '0 3px', borderRadius: '99px', fontSize: '8px', fontWeight: 700, lineHeight: '12px', textAlign: 'center', fontVariantNumeric: 'tabular-nums', background: on ? '#ea580c' : '#78716c', color: '#fff', fontFamily: UI_FONT }}>{badge}</span>
-      )}
+      <span style={{ position: 'relative', display: 'flex' }}>
+        <Icon size={17} strokeWidth={2} style={{ color: on ? '#ea580c' : hv ? '#1c1917' : '#57534e', transition: 'color 0.12s' }} />
+        {badge !== undefined && badge !== '' && (
+          <span style={{ position: 'absolute', top: '-6px', right: '-11px', minWidth: '13px', height: '13px', padding: '0 3px', borderRadius: '99px', fontSize: '8px', fontWeight: 700, lineHeight: '13px', textAlign: 'center', fontVariantNumeric: 'tabular-nums', background: on ? '#ea580c' : '#78716c', color: '#fff' }}>{badge}</span>
+        )}
+      </span>
+      <span style={{ fontSize: '10px', lineHeight: 1, fontWeight: on ? 600 : 500, letterSpacing: '0.01em', color: on ? '#c2410c' : hv ? '#1c1917' : '#57534e', whiteSpace: 'nowrap', transition: 'color 0.12s' }}>{label}</span>
       {/* Etkin işaret çubuğu — rayın sol kenarına oturur */}
-      <span style={{ position: 'absolute', left: '-6px', top: '7px', bottom: '7px', width: '2px', borderRadius: '0 2px 2px 0', background: '#ea580c', opacity: on ? 1 : 0, transition: 'opacity 0.15s', pointerEvents: 'none' }} />
-      {/* Etiket kartı — sağa açılır */}
-      {hv && (
-        <span role="tooltip" style={{
-          position: 'absolute', left: 'calc(100% + 10px)', top: '50%', transform: 'translateY(-50%)', zIndex: 40, pointerEvents: 'none',
-          display: 'flex', flexDirection: 'column', gap: '2px', padding: '6px 9px', minWidth: '96px', maxWidth: '240px', width: 'max-content',
-          background: '#fffefc', border: '1px solid rgba(60,50,40,0.14)', borderRadius: '7px', boxShadow: '0 6px 18px -6px rgba(40,30,20,0.22),0 1px 3px rgba(40,30,20,0.08)',
-          fontFamily: UI_FONT, textAlign: 'left', animation: 'yago-rail-tip 0.12s ease-out',
-        }}>
-          <span style={{ fontSize: '11.5px', fontWeight: 600, color: '#1c1917', letterSpacing: '0.005em' }}>{label}</span>
-          {title !== label && <span style={{ fontSize: '10.5px', fontWeight: 400, color: '#706b65', lineHeight: 1.4, whiteSpace: 'normal' }}>{title}</span>}
-        </span>
-      )}
+      <span style={{ position: 'absolute', left: '-5px', top: '9px', bottom: '9px', width: '2px', borderRadius: '0 2px 2px 0', background: '#ea580c', opacity: on ? 1 : 0, transition: 'opacity 0.15s', pointerEvents: 'none' }} />
     </button>
   );
 };
-const RAIL_SEP: React.CSSProperties = { width: '20px', height: '1px', margin: '6px 0', background: 'rgba(60,50,40,0.14)', flexShrink: 0 };
+const RAIL_SEP: React.CSSProperties = { width: '28px', height: '1px', margin: '6px 0', background: 'rgba(60,50,40,0.14)', flexShrink: 0 };
 
 export const SidebarRail: React.FC<{ activeTab: 'parameters' | 'panel-editor'; hasShape: boolean }> = ({ activeTab, hasShape }) => {
   const s = useStoreFields('raycastMode', 'setRaycastMode', 'volumePickMode', 'setVolumePickMode', 'volumePickGroupId', 'doorPickMode', 'setDoorPickMode', 'backPickMode', 'setBackPickMode',
@@ -125,23 +117,23 @@ export const SidebarRail: React.FC<{ activeTab: 'parameters' | 'panel-editor'; h
       onClick: () => { s.setSubtractionViewMode(!s.subtractionViewMode); if (!s.subtractionViewMode) { s.setFilletMode(false); s.setFaceEditMode(false); } } },
     { key: 'fillet', label: 'Fillet', icon: Radius, title: 'Round the edge between two faces', active: s.filletMode, badge: s.selectedFilletFaces.length > 0 ? `${s.selectedFilletFaces.length}/2` : undefined,
       onClick: () => { const n = !s.filletMode; s.setFilletMode(n); s.setFaceEditMode(n); s.clearFilletFaces(); s.clearFilletFaceData(); if (n) { s.setVertexEditMode(false); s.setSubtractionViewMode(false); } } },
-    { key: 'param', label: 'Parameter', icon: Plus, title: 'Add a custom parameter', onClick: () => railActions.addCustomParameter?.() },
+    { key: 'param', label: 'Param', icon: Plus, title: 'Add a custom parameter', onClick: () => railActions.addCustomParameter?.() },
   ];
   const vp = (m: 'shelf' | 'divider') => s.volumePickMode === m && !s.volumePickGroupId;
   const panels: RailSpec[] = [
-    { key: 'panel', label: 'Body panel', icon: LayoutPanelTop, title: 'Click a body face in the 3D view', active: s.raycastMode, onClick: () => s.setRaycastMode(!s.raycastMode) },
+    { key: 'panel', label: 'Panel', icon: LayoutPanelTop, title: 'Body panel: click a body face in the 3D view', active: s.raycastMode, onClick: () => s.setRaycastMode(!s.raycastMode) },
     { key: 'shelf', label: 'Shelf', icon: Rows3, title: 'Click inside a cavity in the 3D view', active: vp('shelf'), onClick: () => s.setVolumePickMode(vp('shelf') ? null : 'shelf') },
     { key: 'divider', label: 'Divider', icon: Columns3, title: 'Click inside a cavity in the 3D view', active: vp('divider'), onClick: () => s.setVolumePickMode(vp('divider') ? null : 'divider') },
     { key: 'door', label: 'Door', icon: DoorClosed, title: 'Mark door references on panels, then click a body face', active: s.doorPickMode, onClick: () => s.setDoorPickMode(!s.doorPickMode) },
-    { key: 'back', label: 'Back panel', icon: SendToBack, title: 'Mark back references on panels, then click the body — each click cycles the candidates, largest first', active: s.backPickMode, onClick: () => s.setBackPickMode(!s.backPickMode) },
+    { key: 'back', label: 'Back', icon: SendToBack, title: 'Back panel: mark back references on panels, then click the body — each click cycles the candidates, largest first', active: s.backPickMode, onClick: () => s.setBackPickMode(!s.backPickMode) },
   ];
   const group = (list: RailSpec[], tab: 'parameters' | 'panel-editor') => list.map(({ key, ...t }) => <RailTool key={key} {...t} passive={!hasShape || activeTab !== tab} />);
   return (
     <div className="yago-rail" style={{
-      position: 'relative', zIndex: 2, width: `${RAIL_W}px`, flexShrink: 0, alignSelf: 'stretch', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', padding: '10px 0',
+      position: 'relative', zIndex: 2, width: `${RAIL_W}px`, flexShrink: 0, alignSelf: 'stretch', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px', padding: '8px 0',
       background: '#f3f0ea', borderRight: '1px solid rgba(60,50,40,0.10)', boxShadow: 'inset -1px 0 0 rgba(255,255,255,0.7)', fontFamily: UI_FONT,
     }}>
-      <style>{'@keyframes yago-rail-tip { from { opacity: 0; transform: translate(-3px,-50%); } to { opacity: 1; transform: translate(0,-50%); } }'}</style>
+      
       {group(params, 'parameters')}
       <div style={RAIL_SEP} />
       {group(panels, 'panel-editor')}

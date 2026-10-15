@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import * as THREE from 'three';
-import { Check, Layers, Plus, Radius, Spline, Trash2, X } from 'lucide-react';
+import { Check, Plus, Trash2, X } from 'lucide-react';
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls, PerspectiveCamera } from '@react-three/drei';
 import { createClient } from '@supabase/supabase-js';
 import Scene from './components/Scene';
-import { Sidebar, StatusBar, Terminal, Toolbar, ToolChip, ToolChipBar, UI_FONT } from './components/Ui';
+import { railActions, Sidebar, StatusBar, Terminal, Toolbar, UI_FONT } from './components/Ui';
 import { PanelEditor } from './components/PanelEditor';
 import { type Shape, childPanelsOf, requestRebuild, shapeById, useAppStore, useStoreFields } from './store';
 import { applyShapeChanges, axisIndexOf, evaluateExpression, initReplicad, rebuildBodySolid } from './components/Geometry';
@@ -326,12 +326,8 @@ const ExprRow = ({ label, labelColor, expression, onExpr, result, children }: { 
 );
 
 export function ParametersPanel() {
-  const {
-    selectedShapeId, shapes, updateShape, vertexEditMode, setVertexEditMode,
-    subtractionViewMode, setSubtractionViewMode, selectedSubtractionIndex, setSelectedSubtractionIndex,
-    deleteSubtraction, filletMode, setFilletMode, setFaceEditMode, selectedFilletFaces, clearFilletFaces, clearFilletFaceData,
-  } = useStoreFields('selectedShapeId', 'shapes', 'updateShape', 'vertexEditMode', 'setVertexEditMode', 'subtractionViewMode', 'setSubtractionViewMode',
-    'selectedSubtractionIndex', 'setSelectedSubtractionIndex', 'deleteSubtraction', 'filletMode', 'setFilletMode', 'setFaceEditMode', 'selectedFilletFaces', 'clearFilletFaces', 'clearFilletFaceData');
+  const { selectedShapeId, shapes, updateShape, subtractionViewMode, selectedSubtractionIndex, setSelectedSubtractionIndex, deleteSubtraction } =
+    useStoreFields('selectedShapeId', 'shapes', 'updateShape', 'subtractionViewMode', 'selectedSubtractionIndex', 'setSelectedSubtractionIndex', 'deleteSubtraction');
 
   const [width, setWidth] = useState(0);
   const [height, setHeight] = useState(0);
@@ -449,20 +445,8 @@ export function ParametersPanel() {
     } catch (error) { console.error('Failed to delete fillet:', error); }
   };
 
-  const subtractionCount = selectedShape?.subtractionGeometries?.filter(s => s !== null).length ?? 0;
-  const paramToolbar = (
-    <ToolChipBar>
-      <ToolChip label="Vertex" icon={Spline} active={vertexEditMode} title="Edit vertices"
-        onClick={() => { setVertexEditMode(!vertexEditMode); if (!vertexEditMode) { setFilletMode(false); setFaceEditMode(false); } }} />
-      {subtractionCount > 0 && (
-        <ToolChip label="Subtract" icon={Layers} active={subtractionViewMode} badge={subtractionCount} title="Show subtractions"
-          onClick={() => { setSubtractionViewMode(!subtractionViewMode); if (!subtractionViewMode) { setFilletMode(false); setFaceEditMode(false); } }} />
-      )}
-      <ToolChip label="Fillet" icon={Radius} active={filletMode} badge={selectedFilletFaces.length > 0 ? `${selectedFilletFaces.length}/2` : undefined} title="Fillet two faces"
-        onClick={() => { const n = !filletMode; setFilletMode(n); setFaceEditMode(n); clearFilletFaces(); clearFilletFaceData(); if (n) { setVertexEditMode(false); setSubtractionViewMode(false); } }} />
-      <ToolChip label="Parameter" icon={Plus} onClick={addCustomParameter} title="Add a custom parameter" />
-    </ToolChipBar>
-  );
+  // Araç düğmeleri kenar çubuğu kabuğundaki dikey rayda (Ui.tsx SidebarRail); özel parametre ekleme oraya kaydolur.
+  useEffect(() => { railActions.addCustomParameter = addCustomParameter; return () => { railActions.addCustomParameter = null; }; });
 
   const paramContent = selectedShape ? (
     <div>
@@ -535,8 +519,7 @@ export function ParametersPanel() {
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      <div className="px-3 py-2 border-b border-stone-100 flex items-center justify-between shrink-0">{paramToolbar}</div>
-      <div className="flex-1 min-h-0 overflow-y-auto px-1.5 pt-2 pb-2">{paramContent}</div>
+      <div className="flex-1 min-h-0 overflow-y-auto px-0.5 pt-1 pb-2">{paramContent}</div>
     </div>
   );
 }
