@@ -547,7 +547,7 @@ const SB = {
   accentSoft:    '#fff7ed',
   accentGradient:'linear-gradient(90deg,transparent,#f97316 50%,transparent)',
 };
-const SIDEBAR_WIDTH = 560 + RAIL_W;   // içerik + dikey araç rayı
+const SIDEBAR_WIDTH = 480 + RAIL_W;   // içerik + dikey araç rayı (Goker, Eki 2026: kenar çubuğu daha dar, satır aralıkları ~1 mm)
 const VSEP: React.CSSProperties = { width: '1px', height: '22px', background: 'linear-gradient(to bottom,transparent,rgba(60,50,40,0.14) 30%,rgba(60,50,40,0.14) 70%,transparent)', flexShrink: 0 };
 const ACCENT_UNDERLINE = (width: string): React.CSSProperties => ({ position: 'absolute', bottom: '-1px', left: '50%', transform: 'translateX(-50%)', width, height: '2px', background: SB.accentGradient, borderRadius: '99px' });
 

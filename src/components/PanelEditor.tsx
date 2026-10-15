@@ -1180,8 +1180,8 @@ function BackTypeButtons({ value, hint, onPick }: { value: BackPlacement | null;
             className={`min-w-0 h-full px-1 rounded-[7px] flex items-center justify-center gap-1 text-[11px] font-semibold transition-colors duration-150
               ${on ? 'bg-[#44403c] text-white ring-1 ring-[#44403c] shadow-[0_1px_2px_rgba(40,30,20,0.25)]' : 'bg-white text-stone-600 ring-1 ring-[#e6e0d6] hover:bg-[#faf7f2] hover:text-stone-800'}`}
             style={{ fontFamily: UI_FONT }}>
-            {/* Dar sütunda etiket kesilmesin: ikon yalnız yer varsa (container query yok → sabit küçük ikon, etiket öncelikli) */}
-            <BackTypeIcon type={t} size={10} /><span className="truncate" style={{ letterSpacing: '-0.01em' }}>{BACK_TYPE_LABEL[t]}</span>
+            {/* Dar kenar çubuğunda etiket kesilmesin: yalnız yazı (ikon yok). */}
+            <span className="truncate" style={{ letterSpacing: '-0.01em' }}>{BACK_TYPE_LABEL[t]}</span>
           </button>
         );
       })}
@@ -2929,10 +2929,10 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
 }
 
 /* Satır hizalama: tüm satır türleri aynı sabit sütunları kullanır; üye satırı kartta 8px içeride → sağ alan 8px dar. */
-const ROW_NUM_W = 30;
+const ROW_NUM_W = 20;
 const ROW_BTN = 'w-6 h-6 shrink-0 rounded-md flex items-center justify-center transition-colors duration-150';
 const ROW_ICON = 14;
-const ROW_TRAIL_W = 159;          // 6 × 24px düğme (5 araç: şekil · kapak sınırı · arkalık sınırı · ok · sil + aç/kapa oku) + 5 × 3px aralık
+const ROW_TRAIL_W = 154;          // 6 × 24px düğme (5 araç: şekil · kapak sınırı · arkalık sınırı · ok · sil + aç/kapa oku) + 5 × 2px aralık (Goker: aralıklar ~1 mm)
 const MEMBER_INSET = 8;           // grup kartı gövdesinin yatay dolgusu (px-2)
 type RowKind = 'body' | 'shelf' | 'divider' | 'door' | 'back';
 const ROW_KIND_ICON: Record<RowKind, LucideIcon> = { body: LayoutPanelTop, shelf: Rows3, divider: Columns3, door: DoorClosed, back: SendToBack };
@@ -2965,12 +2965,12 @@ function RowTypeBadge({ kind, active, count, doorBound, backBound }: { kind: Row
 }
 function RowDims({ w, h, t, tLetter = 'T', title }: { w?: number | null; h?: number | null; t?: number | null; tLetter?: string; title?: string }) {
   const cell = (letter: string, v: number | null | undefined, muted = false) => (
-    <span className="inline-flex items-baseline w-[54px]">
-      <span className="w-[11px] text-[11px] font-semibold text-stone-400">{letter}</span>
-      <span className={`ml-[5px] text-[12.5px] font-medium ${muted ? 'text-stone-500' : 'text-stone-700'}`}>{v == null ? '—' : v}</span>
+    <span className="inline-flex items-baseline w-[44px]">
+      <span className="text-[11px] font-semibold text-stone-400">{letter}</span>
+      <span className={`ml-[3px] text-[12.5px] font-medium ${muted ? 'text-stone-500' : 'text-stone-700'}`}>{v == null ? '—' : v}</span>
     </span>
   );
-  const sep = <span className="w-px h-3 bg-[#e6e0d6] mx-[6px] self-center" />;
+  const sep = <span className="w-px h-3 bg-[#e6e0d6] mx-[4px] self-center" />;
   return (
     <span onClick={stop} title={title} className="shrink-0 inline-flex items-baseline leading-none tabular-nums cursor-default">
       {cell('W', w)}{sep}{cell('H', h)}{sep}{cell(tLetter, t, true)}
@@ -3058,13 +3058,13 @@ function CountMini({ icon: Icon, value, title, onChange, max = 12 }: { icon: Luc
   };
   const step = (d: number, dis: boolean) => (
     <button type="button" disabled={dis} title={d < 0 ? 'Fewer pieces' : 'More pieces'} onClick={e => { stop(e); if (!dis) onChange(value + d); }}
-      className={`w-[16px] h-[18px] shrink-0 rounded-[4px] flex items-center justify-center ${dis ? 'text-stone-300 cursor-not-allowed' : 'text-stone-500 hover:bg-[#f3efe8] hover:text-stone-800'}`}>
+      className={`w-[14px] h-[18px] shrink-0 rounded-[4px] flex items-center justify-center ${dis ? 'text-stone-300 cursor-not-allowed' : 'text-stone-500 hover:bg-[#f3efe8] hover:text-stone-800'}`}>
       {d < 0 ? <Minus size={9} strokeWidth={2.4} /> : <Plus size={9} strokeWidth={2.4} />}
     </button>
   );
   return (
-    <div title={title} onClick={stop} className="min-w-0 h-full min-h-[26px] px-[3px] flex items-center justify-between gap-0 overflow-hidden rounded-[7px] bg-white ring-1 ring-[#e6e0d6] shadow-[0_1px_0_rgba(40,30,20,0.03)]">
-      <Icon size={12} strokeWidth={2} className="shrink-0 text-[#a8a29e] ml-[2px]" />
+    <div title={title} onClick={stop} className="min-w-0 h-full min-h-[26px] px-[2px] flex items-center justify-between gap-0 overflow-hidden rounded-[7px] bg-white ring-1 ring-[#e6e0d6] shadow-[0_1px_0_rgba(40,30,20,0.03)]">
+      <Icon size={12} strokeWidth={2} className="shrink-0 text-[#a8a29e] ml-[1px]" />
       {step(-1, value <= 1)}
       <input type="text" inputMode="numeric" value={draft ?? String(value)} onChange={e => setDraft(e.target.value.replace(/[^0-9]/g, ''))}
         onBlur={commit} onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setDraft(null); if (e.key === 'ArrowUp') { e.preventDefault(); if (value < max) onChange(value + 1); } if (e.key === 'ArrowDown') { e.preventDefault(); if (value > 1) onChange(value - 1); } }} onClick={stop}
@@ -3837,7 +3837,7 @@ export function PanelEditor() {
         onDragStart={e => { stop(e); setDragIndex(rowIdx); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', rowKey); }}
         onDragEnd={() => { clearDrag(); setArmedRowKey(null); }}
         onClick={stop} style={{ cursor: GRIP_CURSOR }} title={title}
-        className={`shrink-0 w-[18px] ml-[3px] self-stretch flex items-center justify-center transition-colors duration-150
+        className={`shrink-0 w-[14px] ml-[2px] self-stretch flex items-center justify-center transition-colors duration-150
           ${armedRowKey === rowKey ? 'text-orange-500' : 'text-stone-300/70 group-hover/row:text-stone-400 hover:!text-orange-500'}`}>
         <GripVertical size={13} strokeWidth={1.75} />
       </span>
@@ -3856,10 +3856,10 @@ export function PanelEditor() {
           <div className={`relative flex items-stretch ${sel ? 'bg-[#fff8ef]' : ''}`}>
             {sel && <span className="pointer-events-none absolute left-0 top-[6px] bottom-[6px] w-[2px] rounded-r-full bg-orange-500/90" />}
             {opts.member
-              ? <span className="shrink-0 w-[10px] ml-[3px] self-stretch" />
+              ? <span className="shrink-0 w-[6px] ml-[2px] self-stretch" />
               : grip(rowKey, rowIdx, 'Drag to reorder')}
             <div onClick={e => { stop(e); if (sel) setSelectedPanelRow(null); else setSelectedPanelRow(`vf-${vf.id}`, sid); }}
-              className="flex-1 min-w-0 relative flex items-center gap-1.5 pl-0.5 pr-1 py-[4px] cursor-pointer">
+              className="flex-1 min-w-0 relative flex items-center gap-1 pl-0 pr-0.5 py-[4px] cursor-pointer">
               <RowNum label={label} active={sel} small={opts.member} />
               <RowTypeBadge kind={opts.group ? opts.group.kind : opts.door ? 'door' : opts.back ? 'back' : 'body'} active={sel} doorBound={!!vf.doorBound} backBound={vfBackBound(vf)} />
               {opts.member && (opts.group || opts.door || opts.back) ? (
@@ -3875,7 +3875,7 @@ export function PanelEditor() {
                   placeholder="Panel" title="Panel name" className={`${ROW_INPUT_CLASS} font-medium`} />
               )}
               <RowDims w={dims?.primary} h={dims?.secondary} t={dims?.thickness} tLetter="T" />
-              <div className="flex items-center justify-end gap-[3px] shrink-0 ml-0.5" style={{ width: opts.member ? ROW_TRAIL_W - MEMBER_INSET : ROW_TRAIL_W }} onClick={stop}>
+              <div className="flex items-center justify-end gap-[2px] shrink-0" style={{ width: opts.member ? ROW_TRAIL_W - MEMBER_INSET : ROW_TRAIL_W }} onClick={stop}>
                 {/* İç panelde (raf/dikme) serbest bölge yok → fit-shape gösterilmez. */}
                 {!opts.member && <FitShapeToggle checked={!!vf.fitFaceShape} disabled={!vf.hasPanel} onToggle={() => { void toggleFitShape(vf); }} />}
                 {opts.door || opts.back ? <span className="w-6 h-6 shrink-0" /> : <DoorRefToggle checked={!!vf.doorBound} disabled={!vf.hasPanel} onToggle={() => setVfDoorBound(vf.id, !vf.doorBound)} />}
@@ -3920,13 +3920,13 @@ export function PanelEditor() {
           <div className={`relative flex items-stretch ${selAll ? 'bg-[#fff8ef]' : ''}`}>
             {selAll && <span className="pointer-events-none absolute left-0 top-[6px] bottom-[6px] w-[2px] rounded-r-full bg-orange-500/90" />}
             {grip(rowKey, rowIdx, 'Drag to reorder (whole group)')}
-            <div onClick={toggleRow} className="flex-1 min-w-0 relative flex items-center gap-1.5 pl-0.5 pr-1 py-[4px] cursor-pointer" title={open ? 'Collapse' : 'Expand — selects all panels in this group'}>
+            <div onClick={toggleRow} className="flex-1 min-w-0 relative flex items-center gap-1 pl-0 pr-0.5 py-[4px] cursor-pointer" title={open ? 'Collapse' : 'Expand — selects all panels in this group'}>
               <RowNum label={label} active={selAll} />
               <RowTypeBadge kind={g.kind} active={open} count={g.count} />
               <input type="text" value={groupName(g)} onClick={stop} onChange={e => renamePanelGroup(g.id, e.target.value)} placeholder={groupKindLabel(g.kind)}
                 title="Group name (applies to all its panels)" className={`${ROW_INPUT_CLASS} font-semibold`} />
               <RowDims w={dimsWHD[0]} h={dimsWHD[1]} t={dimsWHD[2]} tLetter="D" title="Cavity width · height · depth" />
-              <div className="flex items-center justify-end gap-[3px] shrink-0 ml-0.5" style={{ width: ROW_TRAIL_W }} onClick={stop}>
+              <div className="flex items-center justify-end gap-[2px] shrink-0" style={{ width: ROW_TRAIL_W }} onClick={stop}>
                 <button onClick={e => { stop(e); deletePanelGroupWithMembers(g.id); }} title="Delete group (all panels)" className={ROW_DEL_CLASS}><Trash2 size={ROW_ICON - 1} strokeWidth={1.9} /></button>
                 <RowChevron open={open} onClick={toggleRow} />
               </div>
@@ -4119,13 +4119,13 @@ export function PanelEditor() {
           <div className={`relative flex items-stretch ${selAll ? 'bg-[#fff8ef]' : ''}`}>
             {selAll && <span className="pointer-events-none absolute left-0 top-[6px] bottom-[6px] w-[2px] rounded-r-full bg-orange-500/90" />}
             {grip(rowKey, rowIdx, 'Drag to reorder (whole group)')}
-            <div onClick={toggleRow} className="flex-1 min-w-0 relative flex items-center gap-1.5 pl-0.5 pr-1 py-[4px] cursor-pointer" title={open ? 'Collapse' : `Expand — selects all ${noun}s in this group`}>
+            <div onClick={toggleRow} className="flex-1 min-w-0 relative flex items-center gap-1 pl-0 pr-0.5 py-[4px] cursor-pointer" title={open ? 'Collapse' : `Expand — selects all ${noun}s in this group`}>
               <RowNum label={label} active={selAll} />
               <RowTypeBadge kind="door" active={open} count={doorMemberCount(g)} />
               <input type="text" value={doorGroupName(g)} onClick={stop} onChange={e => renameDoorGroup(g.id, e.target.value)} placeholder={Noun}
                 title={`Group name (applies to all its ${noun}s)`} className={`${ROW_INPUT_CLASS} font-semibold`} />
               <RowDims w={dimsW} h={dimsH} t={g.thickness} tLetter="T" title={`${Noun} area width · height · thickness (${doorPlacementLabel(g.placement).toLowerCase()} ${noun})`} />
-              <div className="flex items-center justify-end gap-[3px] shrink-0 ml-0.5" style={{ width: ROW_TRAIL_W }} onClick={stop}>
+              <div className="flex items-center justify-end gap-[2px] shrink-0" style={{ width: ROW_TRAIL_W }} onClick={stop}>
                 <button onClick={e => { stop(e); deleteDoorGroupWithMembers(g.id); }} title={`Delete group (all ${noun}s)`} className={ROW_DEL_CLASS}><Trash2 size={ROW_ICON - 1} strokeWidth={1.9} /></button>
                 <RowChevron open={open} onClick={toggleRow} />
               </div>
@@ -4296,13 +4296,13 @@ export function PanelEditor() {
           <div className={`relative flex items-stretch ${selAll ? 'bg-[#fff8ef]' : ''}`}>
             {selAll && <span className="pointer-events-none absolute left-0 top-[6px] bottom-[6px] w-[2px] rounded-r-full bg-orange-500/90" />}
             {grip(rowKey, rowIdx, 'Drag to reorder (whole group)')}
-            <div onClick={toggleRow} className="flex-1 min-w-0 relative flex items-center gap-1.5 pl-0.5 pr-1 py-[4px] cursor-pointer" title={open ? 'Collapse' : 'Expand — selects all back panels in this group'}>
+            <div onClick={toggleRow} className="flex-1 min-w-0 relative flex items-center gap-1 pl-0 pr-0.5 py-[4px] cursor-pointer" title={open ? 'Collapse' : 'Expand — selects all back panels in this group'}>
               <RowNum label={label} active={selAll} />
               <RowTypeBadge kind="back" active={open} count={backMemberCount(g)} />
               <input type="text" value={backGroupName(g)} onClick={stop} onChange={e => renameBackGroup(g.id, e.target.value)} placeholder="Back"
                 title="Group name (applies to all its back panels)" className={`${ROW_INPUT_CLASS} font-semibold`} />
               <RowDims w={dimsW} h={dimsH} t={g.thickness} tLetter="T" title={`Back area width · height (between the reference panels' inner faces) · thickness (${typeTxt})`} />
-              <div className="flex items-center justify-end gap-[3px] shrink-0 ml-0.5" style={{ width: ROW_TRAIL_W }} onClick={stop}>
+              <div className="flex items-center justify-end gap-[2px] shrink-0" style={{ width: ROW_TRAIL_W }} onClick={stop}>
                 <button onClick={e => { stop(e); deleteBackGroupWithMembers(g.id); }} title="Delete group (all back panels)" className={ROW_DEL_CLASS}><Trash2 size={ROW_ICON - 1} strokeWidth={1.9} /></button>
                 <RowChevron open={open} onClick={toggleRow} />
               </div>
@@ -4316,7 +4316,7 @@ export function PanelEditor() {
               {/* KANAL BLOĞU: solda kesit diyagramı (yükseklik = 4 eşit satır), sağda 4 satır × 2 sütun — satır 1: tip combobox'ı + bölme
                   V / H; satır 2–4: Thick · Setback / Front + · Rear + / Bottom + · Groove. Çakmada setback ve paylar 0 ve pasif. */}
               <div className="mb-1.5 flex gap-1.5" style={{ height: BACK_BLOCK_H }} onMouseLeave={() => setBackHint(null)}>
-                <div className="relative shrink-0 h-full" style={{ width: `min(${BACK_DIAGRAM_W}px, 46%)` }}>
+                <div className="relative shrink-0 h-full" style={{ width: `min(${BACK_DIAGRAM_W}px, 40%)` }}>
                   <BackGrooveDiagram active={hintKey} grooved={isGrooved} t={g.thickness} setback={isGrooved ? setbackVal : 0} front={gc.front} rear={gc.back} depth={gc.depth} className="w-full h-full" />
                   {/* Kenar kapsamı (şemadaki ± rozeti): yalnız bir kenar seçiliyken. */}
                   {clearVf && (
