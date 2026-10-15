@@ -763,8 +763,9 @@ export function backObstacleFor(group: PanelGroup, backPanel: Shape): CavityBox 
   }
   if (press) return backPressBox(bg, sol, m);
   // SIRA (Goker, Eki 2026 — "arkalıklar da sıralamaya göre çalışsın; arkalık olan yere panel atınca arkalığa kadar yerleşsin"):
-  // arkalıktan SONRA konan raf/dikme grubu (kenar / derz ilişkisi yoksa) parçanın levhasıyla sınırlanır → arkalığın ön yüzünde biter.
-  if (!involved && backPrecedes(backPanel, group.memberVfIds, vfs)) return backPieceBox(bg, m);
+  // arkalıktan SONRA konan raf/dikme grubu (kenar / derz ilişkisi yoksa) parçanın levhasıyla sınırlanır → arkalığın ön yüzünde,
+  // kanal bolluğu varsa o kadar geride biter (backOrderBox).
+  if (!involved && backPrecedes(backPanel, group.memberVfIds, vfs)) return backOrderBox(bg, m, group.memberVfIds);
   return null;
 }
 
@@ -788,10 +789,24 @@ function backPieceBox(bg: Pick<BackGroup, 'axis' | 'side' | 'thickness'>, m: Bac
   return box;
 }
 
-/** Yeni konacak raf/dikmenin hacim seçimi (sırada en sonda): iç arkalık parçası engeldir. */
+/** SIRA KUTUSU (Goker, Eki 2026 — "panel arkalığa değsin, sonra boşluğa baksın; varsa boşluk kadar tekrar kısalsın"): arkalıktan
+ *  SONRA konan panelin engeli = parçanın levhası, derinlikte KANAL BOLLUĞU kadar genişletilmiş (ön yüzde `front`, arka yüzde `back`)
+ *  → panel arkalığa değmez, bollaştırılmış kanalın sınırında biter (kanal kesicisiyle aynı z aralığı). Bolluk: panelin (vfIds) kendi
+ *  kenar değeri varsa o, yoksa grup değeri; 0 ise levhaya dayanır. */
+function backOrderBox(bg: BackGroup, m: BackMemberRect, vfIds: string[] = []): CavityBox {
+  const box = backPieceBox(bg, m);
+  const own = vfIds.find(id => bg.grooveClearBy?.[id]);
+  const clear = backGrooveClearOf(bg, own);
+  const rear = m.front, frontF = m.front - bg.side * bg.thickness;
+  box.min[bg.axis] = Math.min(rear, frontF) - (bg.side < 0 ? clear.back : clear.front);
+  box.max[bg.axis] = Math.max(rear, frontF) + (bg.side < 0 ? clear.front : clear.back);
+  return box;
+}
+
+/** Yeni konacak raf/dikmenin hacim seçimi (sırada en sonda): iç arkalık parçası (kanal bolluğuyla) engeldir. */
 export function backPickObstacle(backPanel: Shape): CavityBox | null {
   const hit = backMemberOfPanel(backPanel);
-  return hit && hit.m.piece.placement === 'inner' ? backPieceBox(hit.bg, hit.m) : null;
+  return hit && hit.m.piece.placement === 'inner' ? backOrderBox(hit.bg, hit.m) : null;
 }
 
 /** Gövde paneli yüz seçimi önizlemesi (yeni panel sırada en sonda): iç arkalık parçası kutu damgası olarak kardeş listesine girer. */
@@ -818,9 +833,10 @@ export function backNailStampFor(backPanel: Shape, vfId: string, backFirst = fal
     const cell = backCells(sol.solved).find(c => c.leafId === m.leafId) ?? m;
     return cellTouchesEdge(cell, sol.rect, edge) ? backPressBox(bg, sol, m, 1) : null;
   }
-  // SIRA: arkalıktan SONRA konan gövde paneli (arkalığın kenarı / derzi değilse) parçanın levhasıyla basılır → arkalığa kadar yerleşir.
+  // SIRA: arkalıktan SONRA konan gövde paneli (arkalığın kenarı / derzi değilse) parçanın levhasıyla basılır → arkalığa kadar,
+  // kanal bolluğu varsa o kadar geride biter (backOrderBox).
   if (!backFirst || backJointRefs(bg.tree).some(r => r.ref.vfId === vfId)) return null;
-  return backPieceBox(bg, m);
+  return backOrderBox(bg, m, [vfId]);
 }
 
 /** Levhaya bağlı derzin ilişkisi (yoksa 'groove'). */
