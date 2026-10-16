@@ -2964,19 +2964,23 @@ function RowTypeBadge({ kind, active, count, doorBound, backBound }: { kind: Row
     </span>
   );
 }
-/* Ölçü grubu: yumuşak kemik rengi kapsül; harf–değer arası 4 px, değerler hücre içinde sağa yaslı (satırlar arası hizalı);
-   hücre en az 42 px (3 hanelilerde satırlar hizalı), küsuratlı/4 haneli değerde hücre gerektiği kadar genişler, taşmaz. */
+/* Ölçü hücresi: eski sade görünüm (kapsül yok); harften sonra 3 px, değer en fazla 1 ondalık.
+   Sabit 59 px → 5 haneye kadar ("9999.9", "12345") sığar ve tüm satırlarda sütunlar hizalı kalır. */
+const fmtDim = (v: number | null | undefined): string => {
+  if (v == null || !Number.isFinite(v)) return '—';
+  const r = Math.round(v * 10) / 10;
+  return Number.isInteger(r) ? String(r) : r.toFixed(1);
+};
 function RowDims({ w, h, t, tLetter = 'T', title }: { w?: number | null; h?: number | null; t?: number | null; tLetter?: string; title?: string }) {
   const cell = (letter: string, v: number | null | undefined, muted = false) => (
-    <span className="inline-flex items-baseline justify-end gap-[4px] min-w-[42px] whitespace-nowrap">
-      <span className="text-[9.5px] font-semibold tracking-[0.06em] text-stone-400">{letter}</span>
-      <span className={`text-[11.5px] font-medium tracking-[-0.01em] ${muted ? 'text-stone-500' : 'text-stone-700'}`}>{v == null ? '—' : v}</span>
+    <span className="inline-flex items-baseline w-[59px] whitespace-nowrap overflow-hidden">
+      <span className="text-[11px] font-semibold text-stone-400">{letter}</span>
+      <span className={`ml-[3px] text-[12px] font-medium ${muted ? 'text-stone-500' : 'text-stone-700'}`}>{fmtDim(v)}</span>
     </span>
   );
-  const sep = <span className="w-px h-[11px] bg-[#e3ddd2] mx-[5px] self-center" />;
+  const sep = <span className="w-px h-3 bg-[#e6e0d6] mx-[4px] self-center" />;
   return (
-    <span onClick={stop} title={title}
-      className="shrink-0 inline-flex items-center h-[22px] px-[6px] rounded-[6px] bg-[#f6f3ed] ring-1 ring-[#ebe5db]/80 leading-none tabular-nums cursor-default">
+    <span onClick={stop} title={title} className="shrink-0 inline-flex items-baseline leading-none tabular-nums cursor-default">
       {cell('W', w)}{sep}{cell('H', h)}{sep}{cell(tLetter, t, true)}
     </span>
   );

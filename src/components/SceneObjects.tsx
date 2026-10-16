@@ -188,58 +188,153 @@ export const confirmRefOnRightClick = async (e: any) => {
   if (useAppStore.getState().faceExtrudeCavityGroupId) await confirmRefCavityExtrude(); else await confirmRefFaceExtrude();
 };
 
-/* PANEL GİRİŞ EFEKTİ (Goker): panel ilk belirdiğinde dışarıdan gelip yerine oturur. 10 efekt, panel başına rastgele;
-   yönlü efektler panelin DURUMUNU okur — dışa bakan yüz normali, gövde merkezine göre dış yan, uzun kenar, alt kenar. */
-interface EntryCtx { center: THREE.Vector3; size: THREE.Vector3; normal: THREE.Vector3; side: THREE.Vector3; long: THREE.Vector3; far: number }
-const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
-const easeOutExpo = (t: number) => (t >= 1 ? 1 : 1 - Math.pow(2, -10 * t));
-const easeOutBack = (t: number) => { const c = 1.70158; return 1 + (c + 1) * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2); };
-const easeOutBounce = (t: number) => {
-  const n = 7.5625, d = 2.75;
-  if (t < 1 / d) return n * t * t;
-  if (t < 2 / d) return n * (t -= 1.5 / d) * t + 0.75;
-  if (t < 2.5 / d) return n * (t -= 2.25 / d) * t + 0.9375;
-  return n * (t -= 2.625 / d) * t + 0.984375;
+/* PANEL GİRİŞ EFEKTİ (Goker): panel ilk belirdiğinde dışarıdan gelip yerine oturur. Efekt sabit listeden değil
+   BİLEŞİMDEN üretilir: yörünge × yaklaşma yönü × dönüş × ölçek × yumuşatma × pivot (≈100 bin imza), her birinde
+   genlik/açı/tur/süre de rastgele. Son 64 imza hatırlanır ve tekrar çekilmez → aynı hareket fiilen bir daha gelmez.
+   Yönler panelin DURUMUNU okur: dışa bakan yüz normali, gövde merkezine göre dış yan, uzun/kısa kenar, alt kenar.
+   Aynı anda beliren paneller (raf grubu, yükleme) dalga halinde, sırayla gelir. Yalnız sarmalayıcı grubun transformu
+   oynar; t=1'de birebir kimlik. */
+interface EntryCtx { center: THREE.Vector3; size: THREE.Vector3; normal: THREE.Vector3; side: THREE.Vector3; long: THREE.Vector3; short: THREE.Vector3; far: number }
+type Ease = (t: number) => number;
+const EASES: Record<string, Ease> = {
+  cubic: t => 1 - Math.pow(1 - t, 3),
+  quint: t => 1 - Math.pow(1 - t, 5),
+  expo: t => (t >= 1 ? 1 : 1 - Math.pow(2, -10 * t)),
+  circ: t => Math.sqrt(1 - Math.pow(t - 1, 2)),
+  back: t => { const c = 1.70158; return 1 + (c + 1) * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2); },
+  backHard: t => { const c = 2.9; return 1 + (c + 1) * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2); },
+  elastic: t => (t <= 0 ? 0 : t >= 1 ? 1 : Math.pow(2, -10 * t) * Math.sin((t * 10 - 0.75) * (2 * Math.PI / 3)) + 1),
+  bounce: t => {
+    const n = 7.5625, d = 2.75;
+    if (t < 1 / d) return n * t * t;
+    if (t < 2 / d) return n * (t -= 1.5 / d) * t + 0.75;
+    if (t < 2.5 / d) return n * (t -= 2.25 / d) * t + 0.9375;
+    return n * (t -= 2.625 / d) * t + 0.984375;
+  },
 };
 const Y_UP = new THREE.Vector3(0, 1, 0);
-/** p' = pivot + s·R·(p − pivot) + offset → grup dönüşümü. */
-function placeGroup(g: THREE.Group, pivot: THREE.Vector3, q: THREE.Quaternion, s: number, offset: THREE.Vector3) {
-  g.quaternion.copy(q);
-  g.scale.setScalar(s);
-  g.position.copy(pivot).sub(pivot.clone().applyQuaternion(q).multiplyScalar(s)).add(offset);
+const rnd = (a: number, b: number) => a + Math.random() * (b - a);
+const pick = <T,>(arr: readonly T[]): T => arr[Math.floor(Math.random() * arr.length)];
+const sgnR = () => (Math.random() < 0.5 ? -1 : 1);
+const perpOf = (d: THREE.Vector3) => { const a = Math.abs(d.y) < 0.9 ? Y_UP : new THREE.Vector3(1, 0, 0); return new THREE.Vector3().crossVectors(d, a).normalize(); };
+const axisIdx = (v: THREE.Vector3) => { const a = [Math.abs(v.x), Math.abs(v.y), Math.abs(v.z)]; return a.indexOf(Math.max(...a)); };
+
+const FX_PATHS = ['line', 'arc', 'spiral', 'serpent', 'orbit', 'drop', 'still'] as const;
+const FX_DIRS = ['normal', 'side', 'up', 'down', 'long', 'longNeg', 'normalUp', 'normalSide', 'sideUp', 'normalDown'] as const;
+const FX_ROTS = ['none', 'flipLong', 'flipShort', 'twist', 'tumble', 'yaw', 'wobble'] as const;
+const FX_SCALES = ['none', 'grow', 'unfoldLong', 'unfoldShort', 'stretch', 'pulse'] as const;
+const FX_PIVOTS = ['center', 'base', 'longEnd', 'longEndFar', 'sideEdge'] as const;
+interface EntryFx {
+  sig: string; dur: number; delay: number; ease: Ease;
+  path: typeof FX_PATHS[number]; D: THREE.Vector3; L: THREE.Vector3; A: THREE.Vector3; B: THREE.Vector3;
+  k: number; turns: number; waves: number; phi: number;
+  rot: typeof FX_ROTS[number]; ax1: THREE.Vector3; ax2: THREE.Vector3; ang1: number; ang2: number; wobF: number;
+  scale: typeof FX_SCALES[number]; s0: number; sIdx: number; pivot: THREE.Vector3;
 }
-const Q0 = new THREE.Quaternion();
-const slideFx = (dir: (c: EntryCtx) => THREE.Vector3, ease: (t: number) => number, k = 1) =>
-  (t: number, c: EntryCtx, g: THREE.Group) => placeGroup(g, c.center, Q0, 1, dir(c).clone().multiplyScalar(c.far * k * (1 - ease(t))));
-const ENTRY_FX: Array<(t: number, c: EntryCtx, g: THREE.Group) => void> = [
-  slideFx(c => c.normal, easeOutCubic),                     // 1 yüz normalinden kayarak
-  slideFx(c => c.normal, easeOutBack, 0.8),                 // 2 normalden, hafif aşıp oturarak
-  slideFx(() => Y_UP, easeOutBounce),                       // 3 yukarıdan düşüp zıplayarak
-  slideFx(() => Y_UP.clone().negate(), easeOutExpo, 0.7),   // 4 aşağıdan yükselerek
-  slideFx(c => c.side, easeOutExpo),                        // 5 dış yandan
-  slideFx(c => c.long, easeOutCubic, 1.2),                  // 6 uzun kenar boyunca
-  (t, c, g) => {                                            // 7 büyüyerek (normalden hafif yaklaşır)
-    const e = easeOutBack(t);
-    placeGroup(g, c.center, Q0, 0.15 + 0.85 * e, c.normal.clone().multiplyScalar(c.far * 0.3 * (1 - easeOutCubic(t))));
-  },
-  (t, c, g) => {                                            // 8 uzun kenar etrafında dönerek (kapak gibi)
-    const e = easeOutCubic(t);
-    const q = new THREE.Quaternion().setFromAxisAngle(c.long, (Math.PI / 2) * (1 - e));
-    placeGroup(g, c.center, q, 1, c.normal.clone().multiplyScalar(c.far * 0.4 * (1 - e)));
-  },
-  (t, c, g) => {                                            // 9 alt kenardan menteşeli salınarak
-    const e = easeOutBack(t);
-    const axis = Math.abs(c.long.y) > 0.5 ? new THREE.Vector3().crossVectors(c.normal, Y_UP).normalize() : c.long;
-    if (axis.lengthSq() < 0.5) axis.set(1, 0, 0);
-    const pivot = c.center.clone().addScaledVector(Y_UP, -c.size.y / 2);
-    const sign = axis.clone().cross(Y_UP).dot(c.normal) > 0 ? 1 : -1;
-    placeGroup(g, pivot, new THREE.Quaternion().setFromAxisAngle(axis, sign * (Math.PI * 0.38) * (1 - e)), 1, new THREE.Vector3());
-  },
-  (t, c, g) => {                                            // 10 normal etrafında burularak + küçükten
-    const e = easeOutCubic(t);
-    placeGroup(g, c.center, new THREE.Quaternion().setFromAxisAngle(c.normal, Math.PI * (1 - e)), 0.5 + 0.5 * e, c.normal.clone().multiplyScalar(c.far * (1 - e)));
-  },
-];
+const _recentFx: string[] = [];
+const _burst = { t: -1e9, n: 0 };
+
+function buildEntryFx(c: EntryCtx): EntryFx {
+  const dirVec = (d: typeof FX_DIRS[number]): THREE.Vector3 => {
+    switch (d) {
+      case 'normal': return c.normal.clone();
+      case 'side': return c.side.clone();
+      case 'up': return Y_UP.clone();
+      case 'down': return Y_UP.clone().negate();
+      case 'long': return c.long.clone();
+      case 'longNeg': return c.long.clone().negate();
+      case 'normalUp': return c.normal.clone().add(Y_UP).normalize();
+      case 'normalSide': return c.normal.clone().add(c.side).normalize();
+      case 'sideUp': return c.side.clone().add(Y_UP).normalize();
+      default: return c.normal.clone().sub(Y_UP.clone().multiplyScalar(0.7)).normalize();
+    }
+  };
+  let path: EntryFx['path'] = 'line', dir: typeof FX_DIRS[number] = 'normal', rot: EntryFx['rot'] = 'none', scale: EntryFx['scale'] = 'none';
+  let pivotK: typeof FX_PIVOTS[number] = 'center', easeK = 'cubic', sig = '';
+  for (let tries = 0; tries < 30; tries++) {
+    path = pick(FX_PATHS);
+    dir = path === 'drop' ? 'up' : pick(FX_DIRS);
+    rot = pick(FX_ROTS);
+    scale = pick(FX_SCALES);
+    // Yerinde efekt yalnız büyüme/açılma ile: panel hep 'yoktan' gelir, yerinde belirip sallanmaz.
+    if (path === 'still' && scale !== 'grow' && scale !== 'unfoldLong' && scale !== 'unfoldShort') scale = pick(['grow', 'unfoldLong', 'unfoldShort'] as const);
+    pivotK = scale === 'unfoldLong' ? pick(['longEnd', 'longEndFar'] as const) : scale === 'unfoldShort' ? 'sideEdge' : pick(FX_PIVOTS);
+    easeK = path === 'drop' ? pick(['bounce', 'backHard', 'elastic'] as const)
+      : pick(path === 'line' || path === 'still' ? Object.keys(EASES) : ['cubic', 'quint', 'expo', 'circ', 'back', 'backHard', 'elastic']);
+    sig = `${path}|${dir}|${rot}|${scale}|${pivotK}|${easeK}`;
+    if (!_recentFx.includes(sig)) break;
+  }
+  _recentFx.push(sig);
+  if (_recentFx.length > 64) _recentFx.shift();
+
+  const D = dirVec(dir);
+  const L = path === 'arc' && Math.abs(D.y) < 0.7 ? Y_UP.clone() : perpOf(D).multiplyScalar(sgnR());
+  const A = perpOf(D), B = new THREE.Vector3().crossVectors(D, A).normalize();
+  const long = c.long, short = c.short, normal = c.normal;
+  const rotAxes: Record<string, [THREE.Vector3, THREE.Vector3]> = {
+    none: [normal, short], flipLong: [long, short], flipShort: [short, long], twist: [normal, long],
+    tumble: [long, short], yaw: [Y_UP, normal], wobble: [pick([long, short, normal]), normal],
+  };
+  const [ax1, ax2] = rotAxes[rot];
+  const ang1 = rot === 'twist' ? sgnR() * rnd(Math.PI * 0.6, Math.PI * 2)
+    : rot === 'tumble' ? sgnR() * rnd(Math.PI * 0.5, Math.PI * 1.3)
+    : rot === 'yaw' ? sgnR() * rnd(Math.PI / 3, Math.PI)
+    : rot === 'wobble' ? sgnR() * rnd(0.12, 0.28)
+    : sgnR() * rnd(Math.PI / 2, Math.PI * 1.15);
+  const half = c.size.clone().multiplyScalar(0.5);
+  const along = (v: THREE.Vector3) => Math.abs(v.x) * half.x + Math.abs(v.y) * half.y + Math.abs(v.z) * half.z;
+  const pivot = pivotK === 'base' ? c.center.clone().addScaledVector(Y_UP, -half.y)
+    : pivotK === 'longEnd' ? c.center.clone().addScaledVector(long, -along(long))
+    : pivotK === 'longEndFar' ? c.center.clone().addScaledVector(long, along(long))
+    : pivotK === 'sideEdge' ? c.center.clone().addScaledVector(short, sgnR() * along(short))
+    : c.center.clone();
+  const slow = easeK === 'elastic' || easeK === 'bounce' ? 250 : 0;
+  const now = performance.now();
+  _burst.n = now - _burst.t < 140 ? _burst.n + 1 : 0;
+  _burst.t = now;
+  return {
+    sig, ease: EASES[easeK], dur: rnd(620, 1050) + slow, delay: Math.min(_burst.n, 18) * 60 + rnd(0, 70),
+    path, D, L, A, B, k: rnd(0.65, 1.35), turns: rnd(0.6, 1.8) * sgnR(), waves: Math.floor(rnd(2, 5)), phi: sgnR() * rnd(Math.PI / 3, Math.PI * 0.9),
+    rot, ax1: ax1.clone().normalize(), ax2: ax2.clone().normalize(), ang1, ang2: sgnR() * rnd(Math.PI / 4, Math.PI), wobF: Math.floor(rnd(2, 4)) * 2,
+    scale, s0: rnd(0.04, 0.45), sIdx: axisIdx(scale === 'unfoldShort' ? short : scale === 'stretch' ? D : long), pivot,
+  };
+}
+
+const _q1 = new THREE.Quaternion(), _q2 = new THREE.Quaternion();
+function applyEntryFx(fx: EntryFx, t: number, c: EntryCtx, g: THREE.Group) {
+  const e = fx.ease(t), r = 1 - e, far = c.far * fx.k;
+  // Yörünge
+  const off = new THREE.Vector3();
+  switch (fx.path) {
+    case 'line': case 'drop': off.copy(fx.D).multiplyScalar(far * r); break;
+    case 'arc': off.copy(fx.D).multiplyScalar(far * r).addScaledVector(fx.L, far * 0.55 * 4 * e * r); break;
+    case 'spiral': {
+      const th = fx.turns * 2 * Math.PI * r;
+      off.copy(fx.D).multiplyScalar(far * r).addScaledVector(fx.A, Math.cos(th) * far * 0.4 * r).addScaledVector(fx.B, Math.sin(th) * far * 0.4 * r);
+      break;
+    }
+    case 'serpent': off.copy(fx.D).multiplyScalar(far * r).addScaledVector(fx.L, far * 0.2 * Math.sin(fx.waves * Math.PI * e) * r); break;
+    case 'orbit': off.copy(fx.D).applyAxisAngle(Y_UP, fx.phi * r).multiplyScalar(far * r); break;
+    default: break;
+  }
+  // Dönüş
+  const q = new THREE.Quaternion();
+  if (fx.rot === 'wobble') q.setFromAxisAngle(fx.ax1, fx.ang1 * Math.sin(fx.wobF * Math.PI * t) * Math.pow(1 - t, 2) * 4);
+  else if (fx.rot === 'tumble') q.multiplyQuaternions(_q1.setFromAxisAngle(fx.ax1, fx.ang1 * r), _q2.setFromAxisAngle(fx.ax2, fx.ang2 * r));
+  else if (fx.rot !== 'none') q.setFromAxisAngle(fx.ax1, fx.ang1 * r);
+  // Ölçek (geometri ekseninde; sıfıra yaklaşmaz → matris tekil olmaz)
+  const s = new THREE.Vector3(1, 1, 1);
+  if (fx.scale === 'grow') s.setScalar(fx.s0 + (1 - fx.s0) * e);
+  else if (fx.scale === 'unfoldLong' || fx.scale === 'unfoldShort') s.setComponent(fx.sIdx, 0.03 + 0.97 * e);
+  else if (fx.scale === 'stretch') { const st = 1 + 0.45 * r; s.setScalar(1 / Math.sqrt(Math.max(0.2, st))); s.setComponent(fx.sIdx, st); }
+  else if (fx.scale === 'pulse') s.setScalar(1 + 0.1 * Math.sin(2 * Math.PI * t) * (1 - t));
+  s.set(Math.max(0.01, s.x), Math.max(0.01, s.y), Math.max(0.01, s.z));
+  // p' = pivot + R·S·(p − pivot) + off
+  g.quaternion.copy(q);
+  g.scale.copy(s);
+  g.position.copy(fx.pivot).add(off).sub(fx.pivot.clone().multiply(s).applyQuaternion(q));
+}
+
 function entryCtxOf(shape: any): EntryCtx | null {
   const bb = localBboxOf(shape.geometry);
   if (!bb) return null;
@@ -256,20 +351,25 @@ function entryCtxOf(shape: any): EntryCtx | null {
   const normal = axes[thin].clone().multiplyScalar(sgn(thin));
   const sideI = thin !== 0 ? 0 : 2;
   const side = axes[sideI].clone().multiplyScalar(sgn(sideI));
-  const long = axes[longI].clone().multiplyScalar(sgn(longI) || 1);
+  const long = axes[longI === thin ? (thin + 1) % 3 : longI].clone().multiplyScalar(sgn(longI));
+  const short = new THREE.Vector3().crossVectors(normal, long).normalize();
   const far = Math.max(psize.x, psize.y, psize.z) * 0.6 + 250;
-  return { center, size, normal, side, long, far };
+  return { center, size, normal, side, long, short, far };
 }
 function usePanelEntryAnimation(ref: React.RefObject<THREE.Group>, shape: any) {
-  const anim = useRef<{ fx: number; start: number; dur: number; ctx: EntryCtx | null; done: boolean } | null>(null);
-  if (!anim.current) anim.current = { fx: Math.floor(Math.random() * ENTRY_FX.length), start: -1, dur: 600 + Math.random() * 300, ctx: null, done: false };
+  const anim = useRef<{ start: number; ctx: EntryCtx | null; fx: EntryFx | null; done: boolean }>({ start: -1, ctx: null, fx: null, done: false });
   useFrame(({ clock }) => {
-    const a = anim.current!, g = ref.current;
+    const a = anim.current, g = ref.current;
     if (a.done || !g || !shape.geometry) return;
     const now = clock.elapsedTime * 1000;
-    if (a.start < 0) { a.start = now + Math.random() * 150; a.ctx = entryCtxOf(shape); if (!a.ctx) { a.done = true; return; } }
-    const t = Math.min(1, Math.max(0, (now - a.start) / a.dur));
-    ENTRY_FX[a.fx](t, a.ctx!, g);
+    if (a.start < 0) {
+      a.ctx = entryCtxOf(shape);
+      if (!a.ctx) { a.done = true; return; }
+      a.fx = buildEntryFx(a.ctx);
+      a.start = now + a.fx.delay;
+    }
+    const t = Math.min(1, Math.max(0, (now - a.start) / a.fx!.dur));
+    applyEntryFx(a.fx!, t, a.ctx!, g);
     if (t >= 1) { a.done = true; g.position.set(0, 0, 0); g.quaternion.identity(); g.scale.setScalar(1); }
   });
 }
