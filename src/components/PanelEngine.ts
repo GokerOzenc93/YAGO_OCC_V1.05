@@ -464,10 +464,38 @@ async function shapeRefRotateTargets(
 // Vertex düzenlemeli gövde katısı: düzenlenmiş mesh yüzlerinden YARIM-UZAY kesişimi (içbükeyde dışbükey örtü).
 const _bodySolidCache = new WeakMap<object, { key: string; solid: any }>();
 
-function outwardNormal(g: { normal: THREE.Vector3; center: THREE.Vector3 }, center: THREE.Vector3): THREE.Vector3 {
-  const n = g.normal.clone().normalize();
-  if (n.dot(new THREE.Vector3().subVectors(g.center, center)) < 0) n.negate();
-  return n;
+interface BodyPlane { n: THREE.Vector3; d: number; center: THREE.Vector3 }
+
+/** Gövdeyi DESTEKLEYEN düzlemler: tüm köşeler düzlemin iç tarafında kalan yüz grupları (n dışa bakar, n·p ≤ d).
+ * Çıkarma çentiğinin iç yüzleri gövdeyi iki yana böler; onların yarım-uzayı gövdeyi oyar (sol/ön yüz paneli
+ * kesişimde boş kalır, ölçüsü 0 olur) → atlanır. Dışbükey gövdede sonuç birebir, içbükeyde dışbükey örtü. */
+const _bodyPlaneCache = new WeakMap<THREE.BufferGeometry, BodyPlane[]>();
+function supportingBodyPlanes(geo: THREE.BufferGeometry): BodyPlane[] {
+  const hit = _bodyPlaneCache.get(geo);
+  if (hit) return hit;
+  const pos = geo.getAttribute('position') as THREE.BufferAttribute | undefined;
+  if (!pos) return [];
+  const { groups } = getFacesAndGroups(geo);
+  geo.computeBoundingBox();
+  const size = geo.boundingBox!.getSize(new THREE.Vector3());
+  const tol = Math.max(0.5, Math.max(size.x, size.y, size.z) * 1e-4);
+  const out: BodyPlane[] = [];
+  const p = new THREE.Vector3();
+  for (const g of groups) {
+    const n = g.normal.clone().normalize();
+    if (!(n.lengthSq() > 0.5)) continue;
+    const d = g.center.dot(n);
+    let maxS = -Infinity, minS = Infinity;
+    for (let i = 0; i < pos.count; i++) {
+      const s = p.fromBufferAttribute(pos, i).dot(n) - d;
+      if (s > maxS) maxS = s;
+      if (s < minS) minS = s;
+    }
+    if (maxS <= tol) out.push({ n, d, center: g.center });
+    else if (minS >= -tol) out.push({ n: n.negate(), d: -d, center: g.center });
+  }
+  _bodyPlaneCache.set(geo, out);
+  return out;
 }
 
 async function effectiveBodySolid(parent: Shape): Promise<any | null> {
@@ -477,7 +505,7 @@ async function effectiveBodySolid(parent: Shape): Promise<any | null> {
   const cached = parent.geometry ? _bodySolidCache.get(parent.geometry) : undefined;
   if (cached && cached.key === key) return cached.solid.clone();
   const geo = effectiveBodyGeometry(parent);
-  const { groups } = getFacesAndGroups(geo);
+  const planes = supportingBodyPlanes(geo);
   geo.computeBoundingBox();
   const bb = geo.boundingBox!;
   const center = new THREE.Vector3(); bb.getCenter(center);
@@ -488,14 +516,13 @@ async function effectiveBodySolid(parent: Shape): Promise<any | null> {
     [0, 1, 0], M, 0);
   if (!big) return null;
   let solid = big;
-  let cutN = 0;
-  for (const g of groups) {
-    const n = outwardNormal(g, center);
+  for (const pl of planes) {
+    const n = pl.n;
     const H = M * 2;
     // createPanel −normal yönüne uzar → dış yarım-uzay için normal = −n.
-    const outside = await createPanelFromVirtualFace(hugeRectOnPlane(g.center, n, H), [-n.x, -n.y, -n.z], H, 0);
+    const outside = await createPanelFromVirtualFace(hugeRectOnPlane(pl.center, n, H), [-n.x, -n.y, -n.z], H, 0);
     if (!outside) continue;
-    try { solid = solid.cut(outside); cutN++; } catch (e) { console.warn('[YAGO][GÖVDE-KATI] yarım-uzay kesimi hatası:', errMsg(e)); }
+    try { solid = solid.cut(outside); } catch (e) { console.warn('[YAGO][GÖVDE-KATI] yarım-uzay kesimi hatası:', errMsg(e)); }
   }
   if (parent.geometry) _bodySolidCache.set(parent.geometry, { key, solid });
   return solid.clone();
@@ -504,17 +531,9 @@ async function effectiveBodySolid(parent: Shape): Promise<any | null> {
 function tiltedBodyPlanes(parent: Shape): Array<{ n: THREE.Vector3; d: number }> {
   const mods = parent.vertexModifications;
   if (!Array.isArray(mods) || mods.length === 0 || !parent.geometry) return [];
-  const geo = effectiveBodyGeometry(parent);
-  const { groups } = getFacesAndGroups(geo);
-  geo.computeBoundingBox();
-  const center = new THREE.Vector3(); geo.boundingBox!.getCenter(center);
-  const out: Array<{ n: THREE.Vector3; d: number }> = [];
-  for (const g of groups) {
-    if (isFlatNormal(g.normal.clone().normalize(), 0.999 - Number.EPSILON)) continue;
-    const n = outwardNormal(g, center);
-    out.push({ n, d: g.center.dot(n) });
-  }
-  return out;
+  return supportingBodyPlanes(effectiveBodyGeometry(parent))
+    .filter(pl => !isFlatNormal(pl.n, 0.999 - Number.EPSILON))
+    .map(pl => ({ n: pl.n, d: pl.d }));
 }
 
 // Eğik gövde düzlemindeki VF köşeleri dışa uzatılır; sonraki gövde kesişimi ucu eğime göre pahlar.
@@ -569,6 +588,11 @@ async function intersectWithBody(rp: any, panel: Shape, parent: Shape, tag: stri
     if (!body) return rp;
     fmtBounds(rp);   // boş/bozuk şekilde fırlatır → catch
     const out = rp.intersect(body);
+    // Boş kesişim panelin sessizce yok olması (ölçü 0) demektir → kırpma atlanır, uyarı bırakılır.
+    try { fmtBounds(out); } catch {
+      console.warn(`[YAGO][${tag}] gövde kesişimi BOŞ, kırpma atlandı:`, panel.id, 'gövde=', fmtBounds(body));
+      return rp;
+    }
     return out;
   } catch (err) {
     console.warn(`[YAGO][${tag}] gövde kesişimi hatası:`, panel.id, errMsg(err));
