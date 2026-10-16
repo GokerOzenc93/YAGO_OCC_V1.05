@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import { type RefFacePick, type Shape, requestRebuild, shapeById, useAppStore, vfOfPanel } from '../store';
 import {
   type AxisDir, type AxisLetter, type CoplanarFaceGroup, type FaceData, type Vec3, angleToTouchPlane, axisDirToVec, axisIndexOf, axisLetterVec,
-  convertReplicadToThreeGeometry, dominantAxisLabel, fracInBox, genId, getFacesAndGroups, getShapeMatrix, initReplicad, isFlatNormal,
-  localBboxOf, mapAxisToVfLocal, snapToFlatGroup, vfFracOfPoint, vfRawMinAlong, worldBboxOf,
+  convertReplicadToThreeGeometry, createPanelFromVirtualFace, dominantAxisLabel, fracInBox, genId, getFacesAndGroups, getShapeMatrix, hugeRectOnPlane,
+  initReplicad, isFlatNormal, localBboxOf, mapAxisToVfLocal, snapToFlatGroup, vfFracOfPoint, vfRawMinAlong, worldBboxOf,
 } from './Geometry';
 import { pointInTriangle3D } from './FaceRegion';
 
@@ -344,7 +344,7 @@ function findMatchingReplicadFace(replicadShape: any, targetNormal: THREE.Vector
 
 async function applyOneExtrudeStep(currentShape: any, step: ExtrudeStep, geometry: THREE.BufferGeometry): Promise<{ replicadShape: any; geometry: THREE.BufferGeometry; amount: number } | null> {
   const oc = await initReplicad();
-  const { groups } = getFacesAndGroups(geometry);
+  const { faces, groups } = getFacesAndGroups(geometry);
   const stepNormal = new THREE.Vector3(...step.faceNormal);
 
   // Önce düz (eksen-hizalı) gruplar; yoksa eğri normal saklı eski adımlar için gevşek eşleşme.
@@ -377,13 +377,21 @@ async function applyOneExtrudeStep(currentShape: any, step: ExtrudeStep, geometr
   const faceCenter = bestGroup.center.clone();
 
   let extrudeAmount: number;
+  // AÇILI referans: yüz köşelerinin düzleme (yüz normali boyunca) mesafe aralığı; uç eğime göre pahlanır.
+  let bevel: { refC: THREE.Vector3; nOut: THREE.Vector3; tMin: number; tMax: number } | null = null;
   if (step.refPlaneCenterLocal) {
     const refC = new THREE.Vector3(...step.refPlaneCenterLocal);
-    if (step.refPlaneNormalLocal) {
-      const par = Math.abs(new THREE.Vector3(...step.refPlaneNormalLocal).normalize().dot(faceNormal));
-      if (par < 0.7) { console.warn(`[applyOneExtrudeStep] Ref yüzü extrude eksenine paralel değil (|dot|=${par.toFixed(2)}) — adım atlandı`); return null; }
-    }
-    extrudeAmount = refC.clone().sub(faceCenter).dot(faceNormal);
+    const refN = step.refPlaneNormalLocal ? new THREE.Vector3(...step.refPlaneNormalLocal).normalize() : null;
+    const par = refN ? refN.dot(faceNormal) : 1;
+    if (Math.abs(par) < 0.5) { console.warn(`[applyOneExtrudeStep] Ref yüzü extrude eksenine çok dik (|dot|=${Math.abs(par).toFixed(2)}) — adım atlandı`); return null; }
+    if (refN && Math.abs(par) < 0.9999) {
+      const tOf = (p: THREE.Vector3) => refC.clone().sub(p).dot(refN) / par;
+      let tMin = Infinity, tMax = -Infinity;
+      for (const fi of bestGroup.faceIndices) for (const v of faces[fi]?.vertices || []) { const t = tOf(v); if (t < tMin) tMin = t; if (t > tMax) tMax = t; }
+      extrudeAmount = tOf(faceCenter);
+      // Kesilecek yarım-uzay: düzlemin yüz normali tarafı.
+      bevel = { refC, nOut: par > 0 ? refN.clone() : refN.clone().negate(), tMin, tMax };
+    } else extrudeAmount = refC.clone().sub(faceCenter).dot(faceNormal);
   } else if (step.isFixed) {
     const k = dominantAxis(faceNormal);
     const faceDist = faceNormal[k] > 0 ? faceCenter[k] - box.min[k] : box.max[k] - faceCenter[k];
@@ -391,16 +399,31 @@ async function applyOneExtrudeStep(currentShape: any, step: ExtrudeStep, geometr
   } else {
     extrudeAmount = step.value;
   }
-  if (Math.abs(extrudeAmount) < 0.01) { console.warn(`[applyOneExtrudeStep] Extrude amount too small: ${extrudeAmount} for step ${step.axisLabel}`); return null; }
+  if (!bevel && Math.abs(extrudeAmount) < 0.01) { console.warn(`[applyOneExtrudeStep] Extrude amount too small: ${extrudeAmount} for step ${step.axisLabel}`); return null; }
 
   const samplePt = step.samplePoint ? new THREE.Vector3(...step.samplePoint) : undefined;
   const matchingFace = findMatchingReplicadFace(currentShape, faceNormal, faceCenter, samplePt);
   if (!matchingFace) { console.warn(`[applyOneExtrudeStep] No matching replicad face for normal ${faceNormal.toArray()} center ${faceCenter.toArray()}`); return null; }
-  const ocVec = new oc.gp_Vec_4(faceNormal.x * extrudeAmount, faceNormal.y * extrudeAmount, faceNormal.z * extrudeAmount);
-  const prismBuilder = new oc.BRepPrimAPI_MakePrism_1(matchingFace.wrapped, ocVec, false, true);
-  prismBuilder.Build(new oc.Message_ProgressRange_1());
   const { cast } = await import('replicad');
-  const extrudedShape = cast(prismBuilder.Shape());
+  const prismOf = (face: any, len: number): any => {
+    const pb = new oc.BRepPrimAPI_MakePrism_1(face.wrapped, new oc.gp_Vec_4(faceNormal.x * len, faceNormal.y * len, faceNormal.z * len), false, true);
+    pb.Build(new oc.Message_ProgressRange_1());
+    return cast(pb.Shape());
+  };
+  if (bevel) {
+    // 1) Yüz, düzlemi her köşede geçecek kadar uzatılır; 2) yüz sütunu ∩ düzlemin ötesi kesilir → uç eğimli.
+    let shape = currentShape;
+    const ext = bevel.tMax + 1;
+    if (ext > 0.01) shape = shape.fuse(prismOf(matchingFace, ext));
+    const lo = Math.min(bevel.tMin, 0) - 2, hi = Math.max(bevel.tMax, 0) + 2;
+    const column = prismOf(matchingFace.clone().translate(faceNormal.x * lo, faceNormal.y * lo, faceNormal.z * lo), hi - lo);
+    const H = Math.max(box.getSize(new THREE.Vector3()).length(), hi - lo) * 2 + 500;
+    const half = await createPanelFromVirtualFace(hugeRectOnPlane(bevel.refC, bevel.nOut, H), [-bevel.nOut.x, -bevel.nOut.y, -bevel.nOut.z], H, 0);
+    if (!half) return null;
+    const finalShape = shape.cut(column.intersect(half));
+    return { replicadShape: finalShape, geometry: convertReplicadToThreeGeometry(finalShape), amount: extrudeAmount };
+  }
+  const extrudedShape = prismOf(matchingFace, extrudeAmount);
   const finalShape = extrudeAmount > 0 ? currentShape.fuse(extrudedShape) : currentShape.cut(extrudedShape);
   return { replicadShape: finalShape, geometry: convertReplicadToThreeGeometry(finalShape), amount: extrudeAmount };
 }

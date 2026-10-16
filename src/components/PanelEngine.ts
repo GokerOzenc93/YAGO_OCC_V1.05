@@ -4,7 +4,7 @@ import { type ExtrudeStep, type TransformStep, applyExtrudeSteps, applyTransform
 import { computeFaceComponentContour, computeFreeRegionLocal, convexHull2D, panelHasRotation, panelIsTiltedSlab } from './FaceRegion';
 import {
   type CoplanarFaceGroup, type FaceData, type Vec3, angleToTouchPlane, axisDirToVec, axisIndexOf, boundsOverlapBox, convertReplicadToThreeGeometry,
-  createPanelFromVirtualFace, createReplicadBox, effectiveBodyGeometry, errMsg, findFaceByDescriptor, fmtBounds, getFacePlaneAxes,
+  createPanelFromVirtualFace, createReplicadBox, effectiveBodyGeometry, errMsg, findFaceByDescriptor, fmtBounds, getFacePlaneAxes, hugeRectOnPlane,
   getFacesAndGroups, getShapeMatrix, isFlatNormal, localBboxOf, normDeg, panelThickness, pointFromFracBox, projRange, resolveVfFracPoint,
   rotateAboutAxis, round1, uniqueMeshPoints, vertexModsKey, vfRawMinAlong, worldBboxOf,
 } from './Geometry';
@@ -303,14 +303,6 @@ function cornerJoinedVertices(panel: Shape, vf: VirtualFace, vfs: VirtualFace[],
 function vfIsTilted(vf: VirtualFace | undefined | null): boolean {
   if (!vf?.normal) return false;
   return !isFlatNormal(vfNormal(vf));
-}
-
-function hugeRectOnPlane(center: THREE.Vector3, n: THREE.Vector3, H: number): Vec3[] {
-  const { u, v } = getFacePlaneAxes(n);
-  return [[-H, -H], [H, -H], [H, H], [-H, H]].map(([a, b]) => {
-    const w = center.clone().addScaledVector(u, a).addScaledVector(v, b);
-    return [w.x, w.y, w.z] as Vec3;
-  });
 }
 
 function rotatedNormalOf(panel: Shape, vf: VirtualFace): THREE.Vector3 | null {

@@ -75,6 +75,15 @@ export function getFacePlaneAxes(normal: THREE.Vector3): { u: THREE.Vector3; v: 
   return { u, v };
 }
 
+/** Düzlem üzerinde merkezli, 2H×2H köşe listesi (yarım-uzay kesicileri için). */
+export function hugeRectOnPlane(center: THREE.Vector3, n: THREE.Vector3, H: number): Vec3[] {
+  const { u, v } = getFacePlaneAxes(n);
+  return [[-H, -H], [H, -H], [H, H], [-H, H]].map(([a, b]) => {
+    const w = center.clone().addScaledVector(u, a).addScaledVector(v, b);
+    return [w.x, w.y, w.z] as Vec3;
+  });
+}
+
 export function panelThickness(shape: any): number {
   return parseFloat(shape?.parameters?.panelThickness) || 18;
 }
