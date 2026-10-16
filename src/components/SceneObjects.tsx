@@ -188,8 +188,96 @@ export const confirmRefOnRightClick = async (e: any) => {
   if (useAppStore.getState().faceExtrudeCavityGroupId) await confirmRefCavityExtrude(); else await confirmRefFaceExtrude();
 };
 
+/* PANEL GİRİŞ EFEKTİ (Goker): panel ilk belirdiğinde dışarıdan gelip yerine oturur. 10 efekt, panel başına rastgele;
+   yönlü efektler panelin DURUMUNU okur — dışa bakan yüz normali, gövde merkezine göre dış yan, uzun kenar, alt kenar. */
+interface EntryCtx { center: THREE.Vector3; size: THREE.Vector3; normal: THREE.Vector3; side: THREE.Vector3; long: THREE.Vector3; far: number }
+const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
+const easeOutExpo = (t: number) => (t >= 1 ? 1 : 1 - Math.pow(2, -10 * t));
+const easeOutBack = (t: number) => { const c = 1.70158; return 1 + (c + 1) * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2); };
+const easeOutBounce = (t: number) => {
+  const n = 7.5625, d = 2.75;
+  if (t < 1 / d) return n * t * t;
+  if (t < 2 / d) return n * (t -= 1.5 / d) * t + 0.75;
+  if (t < 2.5 / d) return n * (t -= 2.25 / d) * t + 0.9375;
+  return n * (t -= 2.625 / d) * t + 0.984375;
+};
+const Y_UP = new THREE.Vector3(0, 1, 0);
+/** p' = pivot + s·R·(p − pivot) + offset → grup dönüşümü. */
+function placeGroup(g: THREE.Group, pivot: THREE.Vector3, q: THREE.Quaternion, s: number, offset: THREE.Vector3) {
+  g.quaternion.copy(q);
+  g.scale.setScalar(s);
+  g.position.copy(pivot).sub(pivot.clone().applyQuaternion(q).multiplyScalar(s)).add(offset);
+}
+const Q0 = new THREE.Quaternion();
+const slideFx = (dir: (c: EntryCtx) => THREE.Vector3, ease: (t: number) => number, k = 1) =>
+  (t: number, c: EntryCtx, g: THREE.Group) => placeGroup(g, c.center, Q0, 1, dir(c).clone().multiplyScalar(c.far * k * (1 - ease(t))));
+const ENTRY_FX: Array<(t: number, c: EntryCtx, g: THREE.Group) => void> = [
+  slideFx(c => c.normal, easeOutCubic),                     // 1 yüz normalinden kayarak
+  slideFx(c => c.normal, easeOutBack, 0.8),                 // 2 normalden, hafif aşıp oturarak
+  slideFx(() => Y_UP, easeOutBounce),                       // 3 yukarıdan düşüp zıplayarak
+  slideFx(() => Y_UP.clone().negate(), easeOutExpo, 0.7),   // 4 aşağıdan yükselerek
+  slideFx(c => c.side, easeOutExpo),                        // 5 dış yandan
+  slideFx(c => c.long, easeOutCubic, 1.2),                  // 6 uzun kenar boyunca
+  (t, c, g) => {                                            // 7 büyüyerek (normalden hafif yaklaşır)
+    const e = easeOutBack(t);
+    placeGroup(g, c.center, Q0, 0.15 + 0.85 * e, c.normal.clone().multiplyScalar(c.far * 0.3 * (1 - easeOutCubic(t))));
+  },
+  (t, c, g) => {                                            // 8 uzun kenar etrafında dönerek (kapak gibi)
+    const e = easeOutCubic(t);
+    const q = new THREE.Quaternion().setFromAxisAngle(c.long, (Math.PI / 2) * (1 - e));
+    placeGroup(g, c.center, q, 1, c.normal.clone().multiplyScalar(c.far * 0.4 * (1 - e)));
+  },
+  (t, c, g) => {                                            // 9 alt kenardan menteşeli salınarak
+    const e = easeOutBack(t);
+    const axis = Math.abs(c.long.y) > 0.5 ? new THREE.Vector3().crossVectors(c.normal, Y_UP).normalize() : c.long;
+    if (axis.lengthSq() < 0.5) axis.set(1, 0, 0);
+    const pivot = c.center.clone().addScaledVector(Y_UP, -c.size.y / 2);
+    const sign = axis.clone().cross(Y_UP).dot(c.normal) > 0 ? 1 : -1;
+    placeGroup(g, pivot, new THREE.Quaternion().setFromAxisAngle(axis, sign * (Math.PI * 0.38) * (1 - e)), 1, new THREE.Vector3());
+  },
+  (t, c, g) => {                                            // 10 normal etrafında burularak + küçükten
+    const e = easeOutCubic(t);
+    placeGroup(g, c.center, new THREE.Quaternion().setFromAxisAngle(c.normal, Math.PI * (1 - e)), 0.5 + 0.5 * e, c.normal.clone().multiplyScalar(c.far * (1 - e)));
+  },
+];
+function entryCtxOf(shape: any): EntryCtx | null {
+  const bb = localBboxOf(shape.geometry);
+  if (!bb) return null;
+  const size = bb.getSize(new THREE.Vector3()), center = bb.getCenter(new THREE.Vector3());
+  const axes = [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1)];
+  const dims = [size.x, size.y, size.z];
+  const thin = dims.indexOf(Math.min(...dims)), longI = dims.indexOf(Math.max(...dims));
+  const parent = useAppStore.getState().shapes.find((x: any) => x.id === shape.parameters?.parentShapeId);
+  const pbb = parent?.geometry ? localBboxOf(parent.geometry) : null;
+  const pc = pbb ? pbb.getCenter(new THREE.Vector3()) : center.clone();
+  const psize = pbb ? pbb.getSize(new THREE.Vector3()) : size;
+  const rel = center.clone().sub(pc);
+  const sgn = (i: number) => (rel.getComponent(i) >= 0 ? 1 : -1);
+  const normal = axes[thin].clone().multiplyScalar(sgn(thin));
+  const sideI = thin !== 0 ? 0 : 2;
+  const side = axes[sideI].clone().multiplyScalar(sgn(sideI));
+  const long = axes[longI].clone().multiplyScalar(sgn(longI) || 1);
+  const far = Math.max(psize.x, psize.y, psize.z) * 0.6 + 250;
+  return { center, size, normal, side, long, far };
+}
+function usePanelEntryAnimation(ref: React.RefObject<THREE.Group>, shape: any) {
+  const anim = useRef<{ fx: number; start: number; dur: number; ctx: EntryCtx | null; done: boolean } | null>(null);
+  if (!anim.current) anim.current = { fx: Math.floor(Math.random() * ENTRY_FX.length), start: -1, dur: 600 + Math.random() * 300, ctx: null, done: false };
+  useFrame(({ clock }) => {
+    const a = anim.current!, g = ref.current;
+    if (a.done || !g || !shape.geometry) return;
+    const now = clock.elapsedTime * 1000;
+    if (a.start < 0) { a.start = now + Math.random() * 150; a.ctx = entryCtxOf(shape); if (!a.ctx) { a.done = true; return; } }
+    const t = Math.min(1, Math.max(0, (now - a.start) / a.dur));
+    ENTRY_FX[a.fx](t, a.ctx!, g);
+    if (t >= 1) { a.done = true; g.position.set(0, 0, 0); g.quaternion.identity(); g.scale.setScalar(1); }
+  });
+}
+
 export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React.memo(({ shape, isSelected }) => {
   const meshRef = useRef<THREE.Mesh>(null);
+  const animRef = useRef<THREE.Group>(null);
+  usePanelEntryAnimation(animRef, shape);
   const S = useStoreFields('selectShape', 'selectSecondaryShape', 'selectedShapeId', 'selectedPanelRow', 'setSelectedPanelRow', 'panelSelectMode', 'viewMode',
     'faceExtrudeMode', 'faceExtrudeTargetPanelId', 'faceExtrudeSelectedFace', 'setFaceExtrudeSelectedFace', 'setFaceExtrudeClickPoint', 'raycastMode', 'faceExtrudeValueMode', 'faceExtrudeRefCandidate',
     'panelMoveMode', 'panelMoveValueMode', 'panelMoveTargetPanelId', 'panelMoveRefSourceVertex', 'panelMoveRefTargetPanelId', 'panelMoveRefTargetVertex',
@@ -316,6 +404,7 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
 
   return (
     <group name={`shape-${shape.id}`} position={shape.position} rotation={shape.rotation} scale={shape.scale}>
+     <group ref={animRef}>
       {!isWireframe && (
         <mesh ref={meshRef} geometry={shape.geometry} castShadow receiveShadow {...meshEvents}>
           <meshLambertMaterial color={panelColor} emissive={emissive} emissiveIntensity={emissiveIntensity} side={THREE.DoubleSide}
@@ -361,6 +450,7 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
       )}
 
       {isPanelRowSelected && !isGroupSelected && !S.volumePickMode && !S.doorPickMode && !S.backPickMode && <DirectionArrow geometry={shape.geometry} arrowRotated={shape.parameters?.arrowRotated || false} transformSteps={shape.parameters?.transformSteps} />}
+     </group>
     </group>
   );
 });
