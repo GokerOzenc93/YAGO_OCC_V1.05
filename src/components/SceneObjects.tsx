@@ -193,8 +193,12 @@ export const confirmRefOnRightClick = async (e: any) => {
    genlik/açı/tur/süre de rastgele. Son 64 imza hatırlanır ve tekrar çekilmez → aynı hareket fiilen bir daha gelmez.
    Yönler panelin DURUMUNU okur: dışa bakan yüz normali, gövde merkezine göre dış yan, uzun/kısa kenar, alt kenar.
    Aynı anda beliren paneller (raf grubu, yükleme) dalga halinde, sırayla gelir. Yalnız sarmalayıcı grubun transformu
-   oynar; t=1'de birebir kimlik. */
-interface EntryCtx { center: THREE.Vector3; size: THREE.Vector3; normal: THREE.Vector3; side: THREE.Vector3; long: THREE.Vector3; short: THREE.Vector3; far: number }
+   oynar; t=1'de birebir kimlik.
+   İkinci aile (≈%45) OLUŞMA efektleri: panel yerinde, malzemeye enjekte edilen geçici shader ile oluşur — alttan/yandan
+   silme, ortadan iki yana perde, merkezden/köşeden halka, pikselden netleşme, mozaik, erime (noise), jaluzi, tarama.
+   Oluşma cephesi sıcak tonda parlar; kenar çizgileri aynı cepheyle kırpılır ya da sona doğru belirir; bitince shader
+   sökülür (standart programa döner), gölge geri açılır. */
+interface EntryCtx { center: THREE.Vector3; size: THREE.Vector3; min: THREE.Vector3; max: THREE.Vector3; normal: THREE.Vector3; side: THREE.Vector3; long: THREE.Vector3; short: THREE.Vector3; far: number }
 type Ease = (t: number) => number;
 const EASES: Record<string, Ease> = {
   cubic: t => 1 - Math.pow(1 - t, 3),
@@ -225,7 +229,7 @@ const FX_ROTS = ['none', 'flipLong', 'flipShort', 'twist', 'tumble', 'yaw', 'wob
 const FX_SCALES = ['none', 'grow', 'unfoldLong', 'unfoldShort', 'stretch', 'pulse'] as const;
 const FX_PIVOTS = ['center', 'base', 'longEnd', 'longEndFar', 'sideEdge'] as const;
 interface EntryFx {
-  sig: string; dur: number; delay: number; ease: Ease;
+  kind: 'motion'; sig: string; dur: number; delay: number; ease: Ease;
   path: typeof FX_PATHS[number]; D: THREE.Vector3; L: THREE.Vector3; A: THREE.Vector3; B: THREE.Vector3;
   k: number; turns: number; waves: number; phi: number;
   rot: typeof FX_ROTS[number]; ax1: THREE.Vector3; ax2: THREE.Vector3; ang1: number; ang2: number; wobF: number;
@@ -233,6 +237,14 @@ interface EntryFx {
 }
 const _recentFx: string[] = [];
 const _burst = { t: -1e9, n: 0 };
+/** Aynı anda beliren paneller sırayla (dalga) gelir. */
+function burstDelay(): number {
+  const now = performance.now();
+  _burst.n = now - _burst.t < 140 ? _burst.n + 1 : 0;
+  _burst.t = now;
+  return Math.min(_burst.n, 18) * 60 + rnd(0, 70);
+}
+function rememberFx(sig: string) { _recentFx.push(sig); if (_recentFx.length > 64) _recentFx.shift(); }
 
 function buildEntryFx(c: EntryCtx): EntryFx {
   const dirVec = (d: typeof FX_DIRS[number]): THREE.Vector3 => {
@@ -264,8 +276,7 @@ function buildEntryFx(c: EntryCtx): EntryFx {
     sig = `${path}|${dir}|${rot}|${scale}|${pivotK}|${easeK}`;
     if (!_recentFx.includes(sig)) break;
   }
-  _recentFx.push(sig);
-  if (_recentFx.length > 64) _recentFx.shift();
+  rememberFx(sig);
 
   const D = dirVec(dir);
   const L = path === 'arc' && Math.abs(D.y) < 0.7 ? Y_UP.clone() : perpOf(D).multiplyScalar(sgnR());
@@ -289,11 +300,8 @@ function buildEntryFx(c: EntryCtx): EntryFx {
     : pivotK === 'sideEdge' ? c.center.clone().addScaledVector(short, sgnR() * along(short))
     : c.center.clone();
   const slow = easeK === 'elastic' || easeK === 'bounce' ? 250 : 0;
-  const now = performance.now();
-  _burst.n = now - _burst.t < 140 ? _burst.n + 1 : 0;
-  _burst.t = now;
   return {
-    sig, ease: EASES[easeK], dur: rnd(620, 1050) + slow, delay: Math.min(_burst.n, 18) * 60 + rnd(0, 70),
+    kind: 'motion', sig, ease: EASES[easeK], dur: rnd(620, 1050) + slow, delay: burstDelay(),
     path, D, L, A, B, k: rnd(0.65, 1.35), turns: rnd(0.6, 1.8) * sgnR(), waves: Math.floor(rnd(2, 5)), phi: sgnR() * rnd(Math.PI / 3, Math.PI * 0.9),
     rot, ax1: ax1.clone().normalize(), ax2: ax2.clone().normalize(), ang1, ang2: sgnR() * rnd(Math.PI / 4, Math.PI), wobF: Math.floor(rnd(2, 4)) * 2,
     scale, s0: rnd(0.04, 0.45), sIdx: axisIdx(scale === 'unfoldShort' ? short : scale === 'stretch' ? D : long), pivot,
@@ -335,6 +343,123 @@ function applyEntryFx(fx: EntryFx, t: number, c: EntryCtx, g: THREE.Group) {
   g.position.copy(fx.pivot).add(off).sub(fx.pivot.clone().multiply(s).applyQuaternion(q));
 }
 
+/* ── OLUŞMA (reveal) ailesi ── */
+const REVEAL_MODES = ['wipe', 'shutter', 'radial', 'corner', 'pixel', 'mosaic', 'dissolve', 'blinds', 'scan', 'diag'] as const;
+type RevealMode = typeof REVEAL_MODES[number];
+// Shader mod kimlikleri: 1 silme · 2 perde · 3 halka · 4 piksel · 5 mozaik · 6 erime · 7 jaluzi · 8 tarama
+const REVEAL_SHADER_ID: Record<RevealMode, number> = { wipe: 1, diag: 1, shutter: 2, radial: 3, corner: 3, pixel: 4, mosaic: 5, dissolve: 6, blinds: 7, scan: 8 };
+const REVEAL_GLOWS = ['#f59e0b', '#ea580c', '#fbbf24', '#fde68a', '#fff7ed', '#fb923c'] as const;
+interface RevealFx {
+  kind: 'reveal'; sig: string; dur: number; delay: number; mode: RevealMode; shaderId: number;
+  clip: 'wipe' | 'shutter' | null; axis: THREE.Vector3; u: THREE.Vector3; origin: THREE.Vector3; len: number;
+  cell: number; band: number; seed: number; glow: THREE.Color; drift: THREE.Vector3;
+}
+type AnyEntryFx = EntryFx | RevealFx;
+
+function buildRevealFx(c: EntryCtx): RevealFx {
+  const inPlane = [c.long, c.short];
+  const yIn = inPlane.find(a => Math.abs(a.y) > 0.9);   // dik panel: alttan oluşma doğal
+  const corners: THREE.Vector3[] = [];
+  for (let i = 0; i < 8; i++) corners.push(new THREE.Vector3(i & 1 ? c.max.x : c.min.x, i & 2 ? c.max.y : c.min.y, i & 4 ? c.max.z : c.min.z));
+  let mode: RevealMode = 'wipe', axis = Y_UP.clone(), axisKey = 'y', sig = '';
+  for (let tries = 0; tries < 30; tries++) {
+    mode = pick(REVEAL_MODES);
+    // Eksen: dikse ağırlıklı olarak alttan yukarı; aksi halde düzlem içi eksenlerden biri, rastgele yön.
+    const r = Math.random();
+    if (yIn && r < 0.45) { axis = Y_UP.clone().multiplyScalar(r < 0.33 ? 1 : -1); axisKey = r < 0.33 ? 'up' : 'down'; }
+    else if (mode === 'diag') { axis = c.long.clone().multiplyScalar(sgnR()).add(c.short.clone().multiplyScalar(sgnR())).normalize(); axisKey = 'diag'; }
+    else { const a = pick(inPlane); axis = a.clone().multiplyScalar(sgnR()); axisKey = a === c.long ? 'long' : 'short'; }
+    sig = `reveal|${mode}|${axisKey}`;
+    if (!_recentFx.includes(sig)) break;
+  }
+  const proj = corners.map(p => p.dot(axis));
+  const minP = Math.min(...proj), maxP = Math.max(...proj);
+  const span = Math.max(1, maxP - minP);
+  const u = new THREE.Vector3().crossVectors(c.normal, axis).normalize();
+  const inSpan = Math.max(c.size.x, c.size.y, c.size.z);
+  let origin = axis.clone().multiplyScalar(minP), len = span, cell = 10;
+  if (mode === 'shutter') { origin = c.center.clone(); len = span / 2; }
+  else if (mode === 'radial' || mode === 'corner') {
+    origin = mode === 'radial' ? c.center.clone() : pick(corners).clone();
+    len = Math.max(1, ...corners.map(p => p.distanceTo(origin)));
+  }
+  if (mode === 'pixel') cell = THREE.MathUtils.clamp(inSpan / 70, 3, 12);
+  else if (mode === 'mosaic') cell = inSpan / rnd(5, 10);
+  else if (mode === 'dissolve') cell = rnd(50, 130);
+  else if (mode === 'blinds') cell = rnd(28, 80);
+  sig += `|${pick(['a', 'b', 'c'])}`;
+  rememberFx(sig);
+  const drift = Math.random() < 0.5 ? new THREE.Vector3()
+    : (Math.random() < 0.5 ? axis.clone().multiplyScalar(-rnd(25, 80)) : c.normal.clone().multiplyScalar(rnd(30, 110)));
+  return {
+    kind: 'reveal', sig, dur: rnd(950, 1650), delay: burstDelay(), mode, shaderId: REVEAL_SHADER_ID[mode],
+    clip: mode === 'wipe' || mode === 'diag' || mode === 'scan' ? 'wipe' : mode === 'shutter' ? 'shutter' : null,
+    axis, u, origin, len, cell, band: rnd(0.035, 0.09), seed: Math.random() * 100, glow: new THREE.Color(pick(REVEAL_GLOWS)), drift,
+  };
+}
+
+const REVEAL_VERT_PARS = 'varying vec3 vRvPos;\n';
+const REVEAL_FRAG_PARS = `
+uniform float uRvMode; uniform float uRvProg; uniform float uRvLen; uniform float uRvCell; uniform float uRvBand; uniform float uRvSeed;
+uniform vec3 uRvAxis; uniform vec3 uRvOrigin; uniform vec3 uRvGlow; uniform vec3 uRvU;
+varying vec3 vRvPos;
+float rvHash(vec3 p) { p = fract(p * 0.3183099 + vec3(0.71, 0.113, 0.419) + uRvSeed); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+float rvNoise(vec3 x) {
+  vec3 i = floor(x), f = fract(x); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(mix(rvHash(i), rvHash(i + vec3(1, 0, 0)), f.x), mix(rvHash(i + vec3(0, 1, 0)), rvHash(i + vec3(1, 1, 0)), f.x), f.y),
+             mix(mix(rvHash(i + vec3(0, 0, 1)), rvHash(i + vec3(1, 0, 1)), f.x), mix(rvHash(i + vec3(0, 1, 1)), rvHash(i + vec3(1, 1, 1)), f.x), f.y), f.z);
+}
+`;
+const REVEAL_FRAG_MAIN = `
+  float rvGlow = 0.0;
+  if (uRvMode > 0.5) {
+    vec3 rp = vRvPos - uRvOrigin;
+    float sweep = clamp(dot(rp, uRvAxis) / uRvLen, 0.0, 1.0);
+    float d;
+    if (uRvMode < 1.5) d = sweep;
+    else if (uRvMode < 2.5) d = abs(dot(rp, uRvAxis)) / uRvLen;
+    else if (uRvMode < 3.5) d = length(rp) / uRvLen;
+    else if (uRvMode < 4.5) { float c = mix(uRvCell * 9.0, uRvCell, smoothstep(0.0, 0.8, uRvProg)); d = rvHash(floor(vRvPos / c)) * 0.93; }
+    else if (uRvMode < 5.5) d = rvHash(floor(vRvPos / uRvCell)) * 0.82 + sweep * 0.12;
+    else if (uRvMode < 6.5) d = rvNoise(vRvPos / uRvCell) * 0.78 + sweep * 0.2;
+    else if (uRvMode < 7.5) d = fract(dot(rp, uRvU) / uRvCell) * 0.62 + sweep * 0.34;
+    else d = sweep;
+    if (d > uRvProg) discard;
+    float z = uRvProg - d;
+    rvGlow = 1.0 - smoothstep(0.0, uRvBand, z);
+    if (uRvMode > 7.5 && z < uRvBand * 5.0) {
+      if (fract(dot(vRvPos, uRvAxis) / 6.0) > 0.5) discard;
+      rvGlow = max(rvGlow, 0.55 * (1.0 - z / (uRvBand * 5.0)));
+    }
+  }
+`;
+const REVEAL_FRAG_TAIL = '\n  gl_FragColor.rgb = mix(gl_FragColor.rgb, uRvGlow, clamp(rvGlow, 0.0, 1.0) * 0.85);\n';
+const _defaultOnBeforeCompile = THREE.Material.prototype.onBeforeCompile;
+const _defaultCacheKey = THREE.Material.prototype.customProgramCacheKey;
+
+function installRevealShader(mat: THREE.Material, fx: RevealFx): Record<string, { value: any }> {
+  const u: Record<string, { value: any }> = {
+    uRvMode: { value: fx.shaderId }, uRvProg: { value: 0 }, uRvLen: { value: fx.len }, uRvCell: { value: fx.cell }, uRvBand: { value: fx.band },
+    uRvSeed: { value: fx.seed }, uRvAxis: { value: fx.axis.clone() }, uRvOrigin: { value: fx.origin.clone() }, uRvGlow: { value: fx.glow.clone() }, uRvU: { value: fx.u.clone() },
+  };
+  mat.onBeforeCompile = (sh: any) => {
+    Object.assign(sh.uniforms, u);
+    sh.vertexShader = REVEAL_VERT_PARS + sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n  vRvPos = transformed;');
+    sh.fragmentShader = REVEAL_FRAG_PARS + sh.fragmentShader
+      .replace('#include <clipping_planes_fragment>', '#include <clipping_planes_fragment>\n' + REVEAL_FRAG_MAIN)
+      .replace('#include <opaque_fragment>', '#include <opaque_fragment>' + REVEAL_FRAG_TAIL);
+  };
+  mat.customProgramCacheKey = () => 'yago-reveal-v1';
+  mat.needsUpdate = true;
+  return u;
+}
+function uninstallRevealShader(mat: THREE.Material) {
+  mat.onBeforeCompile = _defaultOnBeforeCompile;
+  mat.customProgramCacheKey = _defaultCacheKey;
+  mat.needsUpdate = true;
+}
+const revealCurve = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+
 function entryCtxOf(shape: any): EntryCtx | null {
   const bb = localBboxOf(shape.geometry);
   if (!bb) return null;
@@ -354,10 +479,21 @@ function entryCtxOf(shape: any): EntryCtx | null {
   const long = axes[longI === thin ? (thin + 1) % 3 : longI].clone().multiplyScalar(sgn(longI));
   const short = new THREE.Vector3().crossVectors(normal, long).normalize();
   const far = Math.max(psize.x, psize.y, psize.z) * 0.6 + 250;
-  return { center, size, normal, side, long, short, far };
+  return { center, size, min: bb.min.clone(), max: bb.max.clone(), normal, side, long, short, far };
 }
-function usePanelEntryAnimation(ref: React.RefObject<THREE.Group>, shape: any) {
-  const anim = useRef<{ start: number; ctx: EntryCtx | null; fx: EntryFx | null; done: boolean }>({ start: -1, ctx: null, fx: null, done: false });
+function usePanelEntryAnimation(ref: React.RefObject<THREE.Group>, meshRef: React.RefObject<THREE.Mesh>, lineRef: React.MutableRefObject<any>, shape: any) {
+  const gl = useThree(st => st.gl);
+  const anim = useRef<{ start: number; ctx: EntryCtx | null; fx: AnyEntryFx | null; done: boolean; mat: THREE.Material | null; u: Record<string, { value: any }> | null; shadow: boolean }>(
+    { start: -1, ctx: null, fx: null, done: false, mat: null, u: null, shadow: true });
+  const finishReveal = () => {
+    const a = anim.current;
+    if (a.mat) { uninstallRevealShader(a.mat); a.mat = null; a.u = null; }
+    const mesh = meshRef.current;
+    if (mesh) mesh.castShadow = a.shadow;
+    const lm = lineRef.current?.material;
+    if (lm) { lm.clippingPlanes = null; lm.transparent = false; lm.opacity = 1; lm.needsUpdate = true; }
+  };
+  useEffect(() => () => { if (anim.current.mat) uninstallRevealShader(anim.current.mat); }, []);
   useFrame(({ clock }) => {
     const a = anim.current, g = ref.current;
     if (a.done || !g || !shape.geometry) return;
@@ -365,19 +501,58 @@ function usePanelEntryAnimation(ref: React.RefObject<THREE.Group>, shape: any) {
     if (a.start < 0) {
       a.ctx = entryCtxOf(shape);
       if (!a.ctx) { a.done = true; return; }
-      a.fx = buildEntryFx(a.ctx);
+      a.fx = Math.random() < 0.45 ? buildRevealFx(a.ctx) : buildEntryFx(a.ctx);
       a.start = now + a.fx.delay;
+      if (a.fx.kind === 'reveal') {
+        gl.localClippingEnabled = true;
+        const mesh = meshRef.current;
+        if (mesh && mesh.material && !Array.isArray(mesh.material)) {
+          a.mat = mesh.material;
+          a.u = installRevealShader(a.mat, a.fx);
+          a.shadow = mesh.castShadow;
+          mesh.castShadow = false;   // oluşurken tam gövdenin gölgesi düşmesin
+        }
+      }
     }
-    const t = Math.min(1, Math.max(0, (now - a.start) / a.fx!.dur));
-    applyEntryFx(a.fx!, t, a.ctx!, g);
-    if (t >= 1) { a.done = true; g.position.set(0, 0, 0); g.quaternion.identity(); g.scale.setScalar(1); }
+    const fx = a.fx!;
+    const t = Math.min(1, Math.max(0, (now - a.start) / fx.dur));
+    if (fx.kind === 'motion') applyEntryFx(fx, t, a.ctx!, g);
+    else {
+      const p = revealCurve(t) * 1.04;
+      if (a.u) a.u.uRvProg.value = p;
+      const e = 1 - Math.pow(1 - t, 3);
+      g.position.copy(fx.drift).multiplyScalar(1 - e);
+      g.quaternion.identity(); g.scale.setScalar(1);
+      const line = lineRef.current, lm = line?.material;
+      if (lm) {
+        // Kenarlar: silme/perde modlarında oluşma cephesiyle kırpılır, diğerlerinde sona doğru belirir.
+        if (fx.clip) {
+          line.updateWorldMatrix(true, false);
+          const c0 = fx.origin.dot(fx.axis), reach = Math.min(1, p) * fx.len;
+          const planes = fx.clip === 'wipe'
+            ? [new THREE.Plane(fx.axis.clone().negate(), c0 + reach)]
+            : [new THREE.Plane(fx.axis.clone().negate(), c0 + reach), new THREE.Plane(fx.axis.clone(), -(c0 - reach))];
+          lm.clippingPlanes = planes.map(pl => pl.applyMatrix4(line.matrixWorld));
+        } else {
+          const o = THREE.MathUtils.smoothstep(t, 0.45, 1);
+          if (!lm.transparent) { lm.transparent = true; lm.needsUpdate = true; }
+          lm.opacity = o;
+        }
+      }
+    }
+    if (t >= 1) {
+      a.done = true;
+      g.position.set(0, 0, 0); g.quaternion.identity(); g.scale.setScalar(1);
+      if (fx.kind === 'reveal') finishReveal();
+    }
   });
 }
 
 export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React.memo(({ shape, isSelected }) => {
   const meshRef = useRef<THREE.Mesh>(null);
   const animRef = useRef<THREE.Group>(null);
-  usePanelEntryAnimation(animRef, shape);
+  const edgeRef = useRef<any>(null);
+  usePanelEntryAnimation(animRef, meshRef, edgeRef, shape);
   const S = useStoreFields('selectShape', 'selectSecondaryShape', 'selectedShapeId', 'selectedPanelRow', 'setSelectedPanelRow', 'panelSelectMode', 'viewMode',
     'faceExtrudeMode', 'faceExtrudeTargetPanelId', 'faceExtrudeSelectedFace', 'setFaceExtrudeSelectedFace', 'setFaceExtrudeClickPoint', 'raycastMode', 'faceExtrudeValueMode', 'faceExtrudeRefCandidate',
     'panelMoveMode', 'panelMoveValueMode', 'panelMoveTargetPanelId', 'panelMoveRefSourceVertex', 'panelMoveRefTargetPanelId', 'panelMoveRefTargetVertex',
@@ -497,7 +672,7 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
   const emissive = isPanelRowSelected ? PANEL_SELECT.emissive : moveRefHighlight ? (isMoveRefTargetPanel ? '#22c55e' : REF_COLORS.hoverCss) : isDoorBoundPanel ? DOOR_COLORS.boundEmissive : '#2a2a2a';
   const emissiveIntensity = isPanelRowSelected ? 1 : moveRefHighlight ? (isMoveRefTargetPanel ? 1.0 : 0.8) : isDoorBoundPanel ? 0.55 : 1;
   const edgeLine = (xray: boolean) => edgePoints && (
-    <Line points={edgePoints} segments color={edgeColor} lineWidth={edgeWidth} transparent={false} depthTest={!xray} depthWrite={!xray}
+    <Line ref={edgeRef} points={edgePoints} segments color={edgeColor} lineWidth={edgeWidth} transparent={false} depthTest={!xray} depthWrite={!xray}
       {...(!xray && !isWireframe ? { polygonOffset: true, polygonOffsetFactor: EDGE_OFFSET_FACTOR, polygonOffsetUnits: EDGE_OFFSET_UNITS } : {})}
       renderOrder={EDGE_RENDER_ORDER} raycast={() => null} />
   );
