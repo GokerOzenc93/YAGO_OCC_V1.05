@@ -808,7 +808,10 @@ export function confirmBodyPanelPlacement(vf: VirtualFace | null | undefined): v
   const st = useAppStore.getState();
   if (!vf) return;
   const name = st.placementName.trim();
-  st.addVirtualFace(name ? { ...vf, description: name } : vf);
+  // Gövde paneli varsayılan olarak kapak + arkalık sınırıdır (Goker); satırdaki düğmelerle kapatılabilir.
+  // Var olan kapak/arkalık grupları yeni sınırı sonraki rebuild'de devralır (syncDoorGroups / syncBackGroups).
+  const bound = { ...vf, doorBound: vf.doorBound ?? true, backBound: vf.backBound ?? true };
+  st.addVirtualFace(name ? { ...bound, description: name } : bound);
   st.setRaycastMode(false);
 }
 
