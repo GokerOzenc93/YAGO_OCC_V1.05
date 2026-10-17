@@ -465,12 +465,15 @@ function FitShapeToggle({ checked, disabled, onToggle }: { checked: boolean; dis
   );
 }
 
+/* Kapak / arkalık sınırı açık (Goker: dolgu yok, yalnız yumuşak dış hat). */
+const REF_ON_DOOR = 'text-amber-600/80 ring-1 ring-inset ring-amber-300/50 hover:ring-amber-400/60';
+const REF_ON_BACK = 'text-sky-700/75 ring-1 ring-inset ring-sky-300/50 hover:ring-sky-400/60';
 function DoorRefToggle({ checked, disabled, onToggle }: { checked: boolean; disabled?: boolean; onToggle: () => void }) {
   return (
     <button type="button" role="checkbox" aria-checked={checked} disabled={disabled} onClick={e => { stop(e); if (!disabled) onToggle(); }}
       title={checked ? 'Door reference: ON — doors are built from this panel\'s edges' : 'Mark as door reference'}
-      className={`${ROW_BTN} ${disabled ? 'text-stone-200 cursor-not-allowed' : checked ? 'text-amber-700 bg-amber-50 ring-1 ring-amber-300/80' : 'text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700'}`}>
-      <DoorClosed size={ROW_ICON} strokeWidth={checked ? 2.1 : 1.8} />
+      className={`${ROW_BTN} ${disabled ? 'text-stone-200 cursor-not-allowed' : checked ? REF_ON_DOOR : 'text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700'}`}>
+      <DoorClosed size={ROW_ICON} strokeWidth={1.9} />
     </button>
   );
 }
@@ -479,8 +482,8 @@ function BackRefToggle({ checked, disabled, onToggle }: { checked: boolean; disa
   return (
     <button type="button" role="checkbox" aria-checked={checked} disabled={disabled} onClick={e => { stop(e); if (!disabled) onToggle(); }}
       title={checked ? 'Back panel reference: ON — the back panel is built from this panel\'s edges and can be split at it' : 'Mark as back panel reference'}
-      className={`${ROW_BTN} ${disabled ? 'text-stone-200 cursor-not-allowed' : checked ? 'text-sky-800 bg-sky-50 ring-1 ring-sky-300/80' : 'text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700'}`}>
-      <SendToBack size={ROW_ICON} strokeWidth={checked ? 2.1 : 1.8} />
+      className={`${ROW_BTN} ${disabled ? 'text-stone-200 cursor-not-allowed' : checked ? REF_ON_BACK : 'text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700'}`}>
+      <SendToBack size={ROW_ICON} strokeWidth={1.9} />
     </button>
   );
 }
