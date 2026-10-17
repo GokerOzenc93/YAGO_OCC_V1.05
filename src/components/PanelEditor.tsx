@@ -48,7 +48,7 @@ import {
 const PANEL_THICKNESS = 18;
 const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
 const AXIS_COLORS: Record<string, string> = { 'x+': '#dc2626', 'x-': '#b91c1c', 'y+': '#16a34a', 'y-': '#15803d', 'z+': '#2563eb', 'z-': '#1d4ed8', x: '#dc2626', y: '#16a34a', z: '#2563eb' };
-const SECTION_LABEL: React.CSSProperties = { fontSize: 9.5, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#b5ada3' };
+const SECTION_LABEL: React.CSSProperties = { fontSize: 10, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#b5ada3' };
 
 function geoAxes(geo: THREE.BufferGeometry) {
   const bbox = localBboxOf(geo); if (!bbox) return null;
@@ -270,6 +270,20 @@ function computeGroundDimWorld(geometry: THREE.BufferGeometry, wIdx: number, hId
 
 interface GroundRender { fa: Pt; fb: Pt; da: Pt; db: Pt; cx: number; cy: number; value: number; }
 
+/* Önizleme yazı ölçeği (Goker: "bir tık büyük, okunaklı") — kapak / arkalık / raf-dikme şemaları ve panel önizlemesi aynı ölçek. */
+const schemFs = (w: number) => Math.max(10.5, Math.min(14, w * 0.0285));
+const schemFsT = (fs: number) => Math.max(9.5, fs * 0.88);
+/** Bant rozetleri (Full / Half / Split here / Groove / In …). */
+const chipFs = (fsT: number) => fsT * 0.86;
+/* ŞEMA ROZET DİLİ (Goker: kapak rozetleri arkalık gibi): beyaz = seçenek; koyu taş = AÇIK/seçili durum; turuncu çerçeve = bu tık
+   seçili parçayı / bölmeyi değiştirir; kırmızı = kaldır. */
+const CHIP = {
+  base: { fill: '#ffffff', stroke: '#cfc6b9', text: '#57534e' },
+  on: { fill: '#44403c', stroke: '#292524', text: '#ffffff' },
+  accent: { fill: '#fff7ed', stroke: '#f97316', text: '#c2410c' },
+  danger: { fill: '#fef2f2', stroke: '#ef4444', text: '#b91c1c' },
+} as const;
+const CHIP_SHADOW = 'drop-shadow(0 1px 1px rgba(40,30,20,0.12))';
 const pillSize = (txt: string, fs: number) => ({ pw: Math.max(txt.length * fs * 0.6 + 10, 26), ph: fs + 6 });
 const DIM_LINE = '#b8b0a4';
 const DIM_EXT = '#ddd6ca';
@@ -360,7 +374,7 @@ const DOCK_SHELL: React.CSSProperties = {
 const DOCK_ROW: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 4, padding: '4px 5px 5px' };
 const DOCK_INPUT: React.CSSProperties = {
   flex: 1, minWidth: 0, height: 24, textAlign: 'center',
-  fontFamily: "'SF Mono',ui-monospace,Menlo,monospace", fontSize: 12, fontWeight: 500, fontVariantNumeric: 'tabular-nums',
+  fontFamily: UI_FONT, fontSize: 12.5, fontWeight: 600, fontVariantNumeric: 'tabular-nums',
   color: '#1c1917', background: '#ffffff', border: '1px solid #e6e0d6', borderRadius: 7, outline: 'none', boxShadow: '0 1px 0 rgba(40,30,20,0.02)',
 };
 const dockAxisTag = (color: string): React.CSSProperties => ({
@@ -373,7 +387,7 @@ function DockStatus({ ready = false, dot, text, title, trailing }: { ready?: boo
       background: ready ? 'rgba(22,163,74,0.07)' : '#f5f2ec', border: ready ? '1px solid rgba(22,163,74,0.22)' : '1px solid transparent',
     }}>
       <span style={{ width: 5, height: 5, borderRadius: '50%', background: dot ?? (ready ? '#16a34a' : '#a8a29e'), flexShrink: 0 }} />
-      <span style={{ fontSize: 10.5, fontWeight: 500, color: ready ? '#15803d' : '#78716c', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{text}</span>
+      <span style={{ fontSize: 11, fontWeight: 500, color: ready ? '#15803d' : '#78716c', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{text}</span>
       {trailing}
     </div>
   );
@@ -425,7 +439,7 @@ function Segmented({ items, active, onPick, height = 24 }: { items: SegItem[]; a
             style={{
               height, minWidth: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, padding: '0 6px', borderRadius: 6, border: 'none', outline: 'none',
               cursor: disabled ? 'not-allowed' : 'pointer', background: on ? '#44403c' : 'transparent', color: disabled ? '#c9c2b7' : on ? '#ffffff' : '#57534e',
-              boxShadow: on ? '0 1px 2px rgba(40,30,20,0.25)' : 'none', fontSize: 10.5, fontWeight: 600, letterSpacing: '0.01em', transition: 'background 0.12s,color 0.12s',
+              boxShadow: on ? '0 1px 2px rgba(40,30,20,0.25)' : 'none', fontSize: 11, fontWeight: 600, letterSpacing: '0.01em', transition: 'background 0.12s,color 0.12s',
             }}>
             {Icon && <Icon size={11} strokeWidth={2.1} style={{ flexShrink: 0 }} />}
             <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
@@ -643,7 +657,7 @@ export function PanelPreview2D({ shape, arrowRotated }: { shape: Shape; arrowRot
     if (ctx2d) { ctx2d.clearRect(0, 0, canvas.width, canvas.height); ctx2d.drawImage(renderer.domElement, 0, 0, canvas.width, canvas.height); }
     renderer.renderLists.dispose();
 
-    const fsG = Math.max(10, Math.min(12.5, w * 0.025));
+    const fsG = Math.max(10.5, Math.min(13.5, w * 0.027));
     const items = allDimsW.map(d => {
       const fa = project3D(d.fa, camera, w, h), fb = project3D(d.fb, camera, w, h), da = project3D(d.da, camera, w, h), db = project3D(d.db, camera, w, h);
       const ox = da.x - fa.x, oy = da.y - fa.y, l = Math.hypot(ox, oy) || 1;
@@ -668,7 +682,7 @@ export function PanelPreview2D({ shape, arrowRotated }: { shape: Shape; arrowRot
   };
   const onPointerMove = (e: React.PointerEvent) => { const d = dragRef.current; if (d) setAz(Math.max(-55, Math.min(55, d.az + (e.clientX - d.x) * 0.35))); };
   const onPointerUp = () => { dragRef.current = null; };
-  const fsG = Math.max(10, Math.min(12.5, canvasSize.w * 0.025));
+  const fsG = Math.max(10.5, Math.min(13.5, canvasSize.w * 0.027));
   const asz = Math.max(4, Math.min(6.5, canvasSize.w * 0.014));
 
   return (
@@ -806,7 +820,7 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, b
     return out;
   };
 
-  const fs = Math.max(10, Math.min(13.5, width * 0.027));
+  const fs = schemFs(width);
   const crossAxis = barsHorizontal ? hAxis : vAxis;
   let cursor = stackOrigin;
   const pills = gaps.map((g, k) => {
@@ -826,7 +840,7 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, b
     return { k, cx, cy, pw, ph, txt, a, b, crossMid };
   });
   const asz = Math.max(4, Math.min(6.5, width * 0.014));
-  const fsT = Math.max(9, fs * 0.86);
+  const fsT = schemFsT(fs);
   const tPills = starts.map((st, i) => {
     const txt = String(round1(ts[i]));
     const { pw, ph } = pillSize(txt, fsT);
@@ -864,27 +878,35 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, b
       </g>
     );
   };
-  /* Levha rozetleri (kapak sınırı · arkalık sınırı) levhanın UZUNLUĞU boyunca dizilir → üye sayısı artsa da çakışmaz.
-     Boyut / gölge / kapalı hal kilit düğmesiyle (LockBadge) AYNI (Goker); açık hal satırdaki anahtarlarla aynı tek yumuşak renk. */
-  const BADGE_R = LOCK_R, BADGE_STEP = 2 * LOCK_R + 4, BADGE_ICON = 10;
-  const badge = (key: string, cx: number, cy: number, on: boolean, Icon: LucideIcon, tip: string, onClick: () => void) => (
-    <g key={key} className="lockbtn" style={{ cursor: 'pointer' }} onClick={e => { stop(e); onClick(); }}>
-      <circle cx={cx} cy={cy} r={BADGE_R} fill={on ? '#fdf6ef' : '#ffffff'} stroke={on ? '#e0bf9f' : '#d6cfc3'} strokeWidth={on ? 1 : 0.9} style={{ filter: SOFT.pillShadow }} />
-      <Icon x={cx - BADGE_ICON / 2} y={cy - BADGE_ICON / 2} size={BADGE_ICON} strokeWidth={on ? 2.3 : 2.1} color={on ? '#c0814f' : '#8c8378'} />
-      <title>{tip}</title>
-    </g>
-  );
+  /* Levha rozetleri (kapak sınırı · arkalık sınırı) — YAZILI rozet (Goker): arkalık/kapak şemasındaki bant rozetleriyle aynı dil
+     (beyaz = kapalı, koyu taş = açık). Levhanın UZUNLUĞU boyunca, levha yönünde dizilir → üye sayısı artsa da çakışmaz. */
+  const cfsB = chipFs(fsT);
+  const badge = (key: string, cx: number, cy: number, rot: number, on: boolean, label: string, tip: string, onClick: () => void) => {
+    const { pw, ph } = pillSize(label, cfsB), tone = on ? CHIP.on : CHIP.base;
+    return (
+      <g key={key} style={{ cursor: 'pointer' }} onClick={e => { stop(e); onClick(); }}>
+        <g transform={rot ? `rotate(${rot} ${cx} ${cy})` : undefined}>
+          <rect x={cx - pw / 2} y={cy - ph / 2} width={pw} height={ph} rx={ph / 2} fill={tone.fill} stroke={tone.stroke} strokeWidth={0.9} style={{ filter: CHIP_SHADOW }} />
+          <text x={cx} y={cy + cfsB * 0.36} textAnchor="middle" fontSize={cfsB} fontWeight={700} letterSpacing="0.02em" fill={tone.text} fontFamily={UI_FONT}>{label}</text>
+        </g>
+        <title>{tip}</title>
+      </g>
+    );
+  };
+  const BADGE_LABELS = ['Door ref', 'Back ref'] as const;
   const barBadges = (i: number, x0: number, y0: number, x1: number, y1: number) => {
     const lbl = memberLabels[i] ?? String(i + 1);
-    const at = (k: number): [number, number] => barsHorizontal
-      ? [x1 - BADGE_R - 4 - k * BADGE_STEP, (y0 + y1) / 2]
-      : [(x0 + x1) / 2, y0 + BADGE_R + 4 + k * BADGE_STEP];
+    // Rozet uzunluğu (levha yönünde) = pill genişliği; ilki levhanın ucundan 6 px içeride, aralarında 5 px.
+    const ws = BADGE_LABELS.map(t => pillSize(t, cfsB).pw);
+    const along = (k: number) => 6 + ws.slice(0, k).reduce((a, w) => a + w + 5, 0) + ws[k] / 2;
+    const at = (k: number): [number, number] => barsHorizontal ? [x1 - along(k), (y0 + y1) / 2] : [(x0 + x1) / 2, y0 + along(k)];
+    const rot = barsHorizontal ? 0 : -90;
     const [dx, dy] = at(0), [bx, by] = at(1);
     return (
       <g key={`badges-${i}`}>
-        {badge(`door-${i}`, dx, dy, !!doorRefs[i], DoorClosed,
-          doorRefs[i] ? `Panel ${lbl}: door reference ON — click to remove` : `Panel ${lbl}: mark as door reference`, () => onToggleDoorRef(i))}
-        {badge(`back-${i}`, bx, by, !!backRefs[i], SendToBack,
+        {badge(`door-${i}`, dx, dy, rot, !!doorRefs[i], BADGE_LABELS[0],
+          doorRefs[i] ? `Panel ${lbl}: door reference ON — doors are built from this panel's edges. Click to remove` : `Panel ${lbl}: mark as door reference (doors are built from this panel's edges)`, () => onToggleDoorRef(i))}
+        {badge(`back-${i}`, bx, by, rot, !!backRefs[i], BADGE_LABELS[1],
           backRefs[i] ? `Panel ${lbl}: back panel reference ON — click to remove` : `Panel ${lbl}: mark as back panel reference (the back panel ends at / splits at this panel)`, () => onToggleBackRef(i))}
       </g>
     );
@@ -1067,7 +1089,7 @@ function DoorTypeBar({ value, hint, onPick }: { value: DoorType | null; hint: st
               style={{
                 height: 34, minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 2, padding: '0 2px', borderRadius: 7, border: 'none', outline: 'none',
                 cursor: 'pointer', background: on ? '#44403c' : 'transparent', color: on ? '#ffffff' : '#57534e',
-                boxShadow: on ? '0 1px 2px rgba(40,30,20,0.25)' : 'none', fontSize: 9.5, fontWeight: 600, letterSpacing: '0.01em', lineHeight: 1, transition: 'background 0.12s,color 0.12s',
+                boxShadow: on ? '0 1px 2px rgba(40,30,20,0.25)' : 'none', fontSize: 10, fontWeight: 600, letterSpacing: '0.01em', lineHeight: 1, transition: 'background 0.12s,color 0.12s',
               }}>
               <DoorTypeIcon type={t} size={13} />
               <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }}>{DOOR_TYPE_LABEL[t]}</span>
@@ -1076,8 +1098,8 @@ function DoorTypeBar({ value, hint, onPick }: { value: DoorType | null; hint: st
         })}
       </div>
       <div className="shrink-0 flex flex-col items-end justify-center" style={{ minWidth: 46 }}>
-        <span className="text-[8.5px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]">Type</span>
-        <span className="text-[10px] font-medium text-stone-500 tabular-nums">{hint}</span>
+        <span className="text-[9px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]">Type</span>
+        <span className="text-[10.5px] font-medium text-stone-500 tabular-nums">{hint}</span>
       </div>
     </div>
   );
@@ -1111,7 +1133,7 @@ function HintCell({ hintKey, active, onHint, label, accent, passive, children }:
       onFocusCapture={() => { if (!passive) onHint(hintKey); }} onBlurCapture={() => onHint(null)}
       className={`min-w-0 h-full pl-2 pr-1 flex items-center gap-1 rounded-[7px] transition-shadow duration-150
         ${passive ? 'bg-[#f6f2ec] ring-1 ring-[#ebe5dc]' : active ? 'bg-white ring-[1.5px] ring-orange-500 shadow-[0_0_0_2px_rgba(249,115,22,0.12)]' : accent ? 'bg-white ring-1 ring-orange-400/70' : 'bg-white ring-1 ring-[#e6e0d6] shadow-[0_1px_0_rgba(40,30,20,0.03)]'}`}>
-      <span className={`flex-1 min-w-0 truncate text-[9.5px] font-semibold tracking-[0.08em] uppercase ${passive ? 'text-[#cfc6b9]' : active ? 'text-orange-600' : 'text-[#b5ada3]'}`}>{label}</span>
+      <span className={`flex-1 min-w-0 truncate text-[10px] font-semibold tracking-[0.08em] uppercase ${passive ? 'text-[#cfc6b9]' : active ? 'text-orange-600' : 'text-[#b5ada3]'}`}>{label}</span>
       {children}
     </div>
   );
@@ -1136,17 +1158,17 @@ function BackGrooveDiagram({ active, grooved, t, setback, front, rear, depth, cl
     <g stroke={on(k) ? O : MUTE} strokeWidth={on(k) ? 1.3 : 0.9}><line x1={x} y1={y0} x2={x} y2={y1} /><line x1={x - 3} y1={y0} x2={x + 3} y2={y0} /><line x1={x - 3} y1={y1} x2={x + 3} y2={y1} /></g>
   );
   const txt = (x: number, y: number, s: string, k: string, anchor: 'start' | 'middle' | 'end' = 'middle') => (
-    <text x={x} y={y} fontSize={9.5} fontWeight={700} fill={col(k)} textAnchor={anchor} fontFamily={UI_FONT} style={{ fontVariantNumeric: 'tabular-nums' }}>{s}</text>
+    <text x={x} y={y} fontSize={10.2} fontWeight={700} fill={col(k)} textAnchor={anchor} fontFamily={UI_FONT} style={{ fontVariantNumeric: 'tabular-nums' }}>{s}</text>
   );
   const panelLblY = H - 21;
   return (
     <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet" className={`block rounded-[8px] bg-[#faf7f2] ring-1 ring-[#ebe5dc] ${className ?? ''}`} aria-hidden>
-      <text x={8} y={13} fontSize={8.5} fill={TXT} fontFamily={UI_FONT}>rear</text>
-      <text x={8} y={H - 7} fontSize={8.5} fill={TXT} fontFamily={UI_FONT}>front ↓</text>
+      <text x={8} y={13} fontSize={9.2} fill={TXT} fontFamily={UI_FONT}>rear</text>
+      <text x={8} y={H - 7} fontSize={9.2} fill={TXT} fontFamily={UI_FONT}>front ↓</text>
       <line x1={6} y1={rear0} x2={PX1 + 10} y2={rear0} stroke={MUTE} strokeWidth={0.8} strokeDasharray="3 2.5" />
       {/* sınır paneli: arka yüzünden (üst) öne (alt) */}
       <rect x={PX0} y={rear0} width={PX1 - PX0} height={H - 6 - rear0} fill="#ebe4d9" stroke="#a39a8d" strokeWidth={1} />
-      <text x={(PX0 + PX1) / 2 + 3} y={panelLblY} fontSize={8.5} fill="#8f877c" textAnchor="middle" fontFamily={UI_FONT} transform={`rotate(-90 ${(PX0 + PX1) / 2 + 3} ${panelLblY})`}>panel</text>
+      <text x={(PX0 + PX1) / 2 + 3} y={panelLblY} fontSize={9.2} fill="#8f877c" textAnchor="middle" fontFamily={UI_FONT} transform={`rotate(-90 ${(PX0 + PX1) / 2 + 3} ${panelLblY})`}>panel</text>
       {grooved && <>
         {/* kanal (kesilen boşluk) + vurgular */}
         <rect x={PX0} y={gy0} width={gx1 - PX0} height={gy1 - gy0} fill="#ffffff" stroke={O} strokeOpacity={0.75} strokeWidth={0.9} strokeDasharray="2.5 2" />
@@ -1156,7 +1178,7 @@ function BackGrooveDiagram({ active, grooved, t, setback, front, rear, depth, cl
       </>}
       {/* arkalık parçası: kanallıda panele girer, çakmada panelin arkasında ucunu örter (panelin dış yüzünde biter) */}
       <rect x={10} y={by0} width={(grooved ? PX0 + IN : PX1) - 10} height={T} fill={on('t') ? '#fed7aa' : '#f3ece2'} stroke={on('t') ? O : '#78716c'} strokeWidth={1.1} />
-      <text x={64} y={by0 + T / 2 + 3} fontSize={8.5} fill="#78716c" textAnchor="middle" fontFamily={UI_FONT}>back panel</text>
+      <text x={64} y={by0 + T / 2 + 3} fontSize={9.2} fill="#78716c" textAnchor="middle" fontFamily={UI_FONT}>back panel</text>
       {/* T — kalınlık (etiket parçanın önünde/altında) */}
       {dim(20, by0, by1, 't')}{txt(20, by1 + 12, `T ${f1(t)}`, 't')}
       {grooved ? <>
@@ -1167,7 +1189,7 @@ function BackGrooveDiagram({ active, grooved, t, setback, front, rear, depth, cl
         {txt(W - 6, gy1 + 7, `F ${f1(front)}`, 'gf', 'end')}
         {txt(PX0 + IN + D / 2, gy1 + 13, `D ${f1(depth)}`, 'gd')}
       </> : (
-        <text x={PX1} y={by0 - 5} fontSize={8.5} fontWeight={700} fill={TXT} textAnchor="end" fontFamily={UI_FONT}>nailed on</text>
+        <text x={PX1} y={by0 - 5} fontSize={9.2} fontWeight={700} fill={TXT} textAnchor="end" fontFamily={UI_FONT}>nailed on</text>
       )}
     </svg>
   );
@@ -1264,8 +1286,8 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     [solved, cutsKey, group.placement, group.thickness, group.gap]);
   const sx = (u: number) => (mirrorU ? ox + SW - ((u - rect.u0) / duR) * SW : ox + ((u - rect.u0) / duR) * SW);
   const sy = (v: number) => (mirrorV ? oy + ((v - rect.v0) / dvR) * SH : oy + ((rect.v1 - v) / dvR) * SH);
-  const fs = Math.max(10, Math.min(13.5, width * 0.027));
-  const fsT = Math.max(9, fs * 0.86);
+  const fs = schemFs(width);
+  const fsT = schemFsT(fs);
   const gid = `ds-${group.id.replace(/[^a-zA-Z0-9_-]/g, '')}`;
 
   // Hiza rozeti tıkı derzi levhaya BAĞLAR ve levhayı taşır (kapak yerinde kalır); Shift/Ctrl+tık bağı çözer.
@@ -1727,6 +1749,8 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
     if (p.lock) o.push({ ...p.lock, r: LOCK_R });
     return o;
   });
+  // Parça etiket bloğu (no · ölçü · tür) da engel: "Split here" gibi bant rozetleri etiketin üstüne binmesin.
+  for (const m of members) obstacles.push({ x: (sx(m.u0) + sx(m.u1)) / 2, y: (sy(m.v0) + sy(m.v1)) / 2, r: fsT * 2.6 });
   const chipSpot = (cx: number, cy: number, ux: number, uy: number, half: number, cw: number) => {
     const r = cw / 2 + 2, step = cw / 2 + 6;
     const free = (x: number, y: number) => obstacles.every(o => Math.hypot(o.x - x, o.y - y) >= o.r + r);
@@ -1861,14 +1885,14 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
             const q0 = vertical ? Math.min(sy(c0), sy(c1)) : Math.min(sx(c0), sx(c1)), q1 = vertical ? Math.max(sy(c0), sy(c1)) : Math.max(sx(c0), sx(c1));
             const x = vertical ? a0 : q0, y = vertical ? q0 : a0, w = vertical ? a1 - a0 : q1 - q0, h = vertical ? q1 - q0 : a1 - a0;
             const txt = vertical ? '+ Divider' : '+ Shelf';
-            const cfs = fsT * 0.8, { pw: cw, ph: chh } = pillSize(txt, cfs);
+            const cfs = chipFs(fsT), { pw: cw, ph: chh } = pillSize(txt, cfs);
             const bx = x + w / 2, by = y + h / 2;
             const what = vertical ? 'divider' : 'shelf';
             return (
               <g key={`add-${j.splitId}-${j.k}-${Math.round(c0)}`} className="yago-band on" style={{ cursor: 'pointer' }} onClick={e => { stop(e); onAddPick?.(j.splitId, j.k, e.shiftKey || e.ctrlKey || e.metaKey ? allMids : [mid]); }}>
                 <rect x={x} y={y} width={w} height={h} rx={3} fill="#fb923c" fillOpacity={0.16} stroke="#f97316" strokeWidth={1} strokeDasharray="4 2.5" className="hit" />
                 <g className="chip" transform={vertical ? `rotate(-90 ${bx} ${by})` : undefined}>
-                  <rect x={bx - cw / 2} y={by - chh / 2} width={cw} height={chh} rx={chh / 2} fill="#fff7ed" stroke="#f97316" strokeWidth={0.8} style={{ filter: 'drop-shadow(0 1px 1px rgba(40,30,20,0.12))' }} />
+                  <rect x={bx - cw / 2} y={by - chh / 2} width={cw} height={chh} rx={chh / 2} fill={CHIP.accent.fill} stroke={CHIP.accent.stroke} strokeWidth={0.9} style={{ filter: CHIP_SHADOW }} />
                   <text x={bx} y={by + cfs * 0.36} textAnchor="middle" fontSize={cfs} fontWeight={700} letterSpacing="0.02em" fill="#c2410c" fontFamily={UI_FONT}>{txt}</text>
                 </g>
                 <title>{`Add a ${what} between these two doors${segs.length > 1 ? ` (this part of the joint, ${round1(c1 - c0)} mm)` : ''}: it is created in the free volume behind this spot (listed after the door row) and stays bound to the joint — when the doors change, the ${what} follows.${allMids.length > 1 ? ` Shift+click: a ${what} in every free part of this joint (${allMids.length}).` : ''} It starts at Half overlay (both doors reach its middle); select a door next to it to switch that door to Full.`}</title>
@@ -1908,15 +1932,16 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
           const moveOn = moveMode && jChip === 'Half';
           const chipTxt = rem ? '✕ Remove' : pickable ? 'Split here' : np.edge ? (np.behind ? (b.none ? 'None' : b.half ? 'Half' : 'Full') : null) : splitOn ? 'Full' : jChip;
           const on = np.edge ? b.half : jChip === 'Half';
-          const cfs = fsT * 0.8;
+          const cfs = chipFs(fsT);
           // Kapak seçiliyken (ctx) tek rozet: tık Full → Half → None arasında döner (onBandClick).
           const { pw: cw, ph: chh } = chipTxt ? pillSize(chipTxt, cfs) : { pw: 0, ph: 0 };
-          const overlayChip = !!np.edge && !rem && !pickable;
           const spot = chipTxt ? chipSpot(b.x + b.w / 2, b.y + b.h / 2, b.vertical ? 0 : 1, b.vertical ? 1 : 0, (b.vertical ? b.h : b.w) / 2, cw) : null;
           const bx = spot?.x ?? b.x + b.w / 2, by = spot?.y ?? b.y + b.h / 2;
           const warm = b.half || b.aligned;
+          // Rozet dili arkalıkla aynı (CHIP): rozet HER ZAMAN görünür; Half / taşıma-Half = koyu taş, kapak seçiliyken turuncu çerçeve.
+          const tone = rem ? CHIP.danger : on || moveOn ? CHIP.on : pickable || ctxOn ? CHIP.accent : CHIP.base;
           return (
-            <g key={`hit-${np.vfId}`} className={`yago-band pnl${chipTxt && !overlayChip ? ' on' : ''}`} style={{ cursor: interactive ? 'pointer' : 'default' }}
+            <g key={`hit-${np.vfId}`} className={`yago-band pnl${chipTxt ? ' on' : ''}`} style={{ cursor: interactive ? 'pointer' : 'default' }}
               onClick={interactive ? e => { stop(e); onBandClick(b, e.shiftKey || e.ctrlKey || e.metaKey); } : undefined}>
               {b.np.poly
                 ? <path d={ptsPath(b.pts)} fill="transparent" stroke="transparent" strokeWidth={4} strokeLinejoin="round" className="hit" />
@@ -1928,12 +1953,8 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
               </g>
               {chipTxt && (
                 <g className="chip" transform={b.vertical ? `rotate(-90 ${bx} ${by})` : undefined}>
-                  <rect x={bx - cw / 2} y={by - chh / 2} width={cw} height={chh} rx={chh / 2}
-                    fill={rem ? '#fef2f2' : pickable ? '#fff7ed' : moveOn ? '#2f5d7c' : on ? '#ea580c' : '#ffffff'}
-                    stroke={rem ? '#ef4444' : pickable ? '#f97316' : moveOn ? '#24506e' : moveMode ? '#7c9cb4' : on ? '#c2410c' : ctxOn ? '#f97316' : '#cfc6b9'} strokeWidth={ctxOn || moveMode ? 1.1 : 0.8}
-                    style={{ filter: 'drop-shadow(0 1px 1px rgba(40,30,20,0.12))' }} />
-                  <text x={bx} y={by + cfs * 0.36} textAnchor="middle" fontSize={cfs} fontWeight={700} letterSpacing="0.02em"
-                    fill={rem ? '#b91c1c' : moveOn || on ? '#ffffff' : moveMode ? '#2f5d7c' : pickable || ctxOn ? '#c2410c' : '#78716c'} fontFamily={UI_FONT}>{chipTxt}</text>
+                  <rect x={bx - cw / 2} y={by - chh / 2} width={cw} height={chh} rx={chh / 2} fill={tone.fill} stroke={tone.stroke} strokeWidth={0.9} style={{ filter: CHIP_SHADOW }} />
+                  <text x={bx} y={by + cfs * 0.36} textAnchor="middle" fontSize={cfs} fontWeight={700} letterSpacing="0.02em" fill={tone.text} fontFamily={UI_FONT}>{chipTxt}</text>
                 </g>
               )}
               <title>{bandTip(b)}</title>
@@ -1944,7 +1965,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
         {cutBands.map(cb => {
           const interactive = isOuter && cb.covered && !!cb.edge;
           const chipTxt = interactive ? (cb.half ? 'Half' : 'Full') : null;
-          const cfs = fsT * 0.8;
+          const cfs = chipFs(fsT);
           const { pw: cw, ph: chh } = chipTxt ? pillSize(chipTxt, cfs) : { pw: 0, ph: 0 };
           const d = ptsPath(cb.pts);
           const rad = cb.deg * Math.PI / 180;
@@ -1953,7 +1974,7 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
           const tip = `${cb.cut.name} — angled door reference panel: the door is cut along it (it keeps the side you clicked when placing the door).` +
             (interactive ? ` ${cb.half ? 'HALF overlay — the door reaches the middle of this panel\'s thickness. Click for full overlay.' : 'FULL overlay — the door covers this panel\'s whole thickness. Click for half overlay.'}` : cb.covered ? '' : ' It stands in front of the door plane, so there is no overlay to set.');
           return (
-            <g key={`cuthit-${cb.cut.vfId}`} className="yago-band pnl" style={{ cursor: interactive ? 'pointer' : 'default' }}
+            <g key={`cuthit-${cb.cut.vfId}`} className={`yago-band pnl${chipTxt ? " on" : ""}`} style={{ cursor: interactive ? 'pointer' : 'default' }}
               onClick={interactive ? e => { stop(e); onToggleHalfOverlay(cb.edge!, !cb.half); } : undefined}>
               <path d={d} fill="transparent" stroke="transparent" strokeWidth={4} strokeLinejoin="round" className="hit" />
               <g className="hov">
@@ -1963,9 +1984,9 @@ export function DoorSchematic({ group, selectedIndex, selectedNodes, memberLabel
               </g>
               {chipTxt && (
                 <g className="chip" transform={`rotate(${cb.deg.toFixed(1)} ${spot.x} ${spot.y})`}>
-                  <rect x={spot.x - cw / 2} y={spot.y - chh / 2} width={cw} height={chh} rx={chh / 2} fill={cb.half ? '#ea580c' : '#ffffff'} stroke={cb.half ? '#c2410c' : '#cfc6b9'} strokeWidth={0.8}
-                    style={{ filter: 'drop-shadow(0 1px 1px rgba(40,30,20,0.12))' }} />
-                  <text x={spot.x} y={spot.y + cfs * 0.36} textAnchor="middle" fontSize={cfs} fontWeight={700} letterSpacing="0.02em" fill={cb.half ? '#ffffff' : '#78716c'} fontFamily={UI_FONT}>{chipTxt}</text>
+                  <rect x={spot.x - cw / 2} y={spot.y - chh / 2} width={cw} height={chh} rx={chh / 2} fill={(cb.half ? CHIP.on : CHIP.base).fill} stroke={(cb.half ? CHIP.on : CHIP.base).stroke} strokeWidth={0.9}
+                    style={{ filter: CHIP_SHADOW }} />
+                  <text x={spot.x} y={spot.y + cfs * 0.36} textAnchor="middle" fontSize={cfs} fontWeight={700} letterSpacing="0.02em" fill={(cb.half ? CHIP.on : CHIP.base).text} fontFamily={UI_FONT}>{chipTxt}</text>
                 </g>
               )}
               <title>{tip}</title>
@@ -2114,8 +2135,8 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
   };
   const sx = (u: number) => (mirrorU ? ox + SW - ((u - rect.u0) / duR) * SW : ox + ((u - rect.u0) / duR) * SW);
   const sy = (v: number) => (mirrorV ? oy + ((v - rect.v0) / dvR) * SH : oy + ((rect.v1 - v) / dvR) * SH);
-  const fs = Math.max(10, Math.min(13.5, width * 0.027));
-  const fsT = Math.max(9, fs * 0.86);
+  const fs = schemFs(width);
+  const fsT = schemFsT(fs);
   const gid = `bs-${group.id.replace(/[^a-zA-Z0-9_-]/g, '')}`;
 
   const I = DOOR_INSET_PX;
@@ -2511,6 +2532,8 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
     if (p.lock) o.push({ ...p.lock, r: LOCK_R });
     return o;
   });
+  // Parça etiket bloğu (no · ölçü · tür) da engel: "Split here" gibi bant rozetleri etiketin üstüne binmesin.
+  for (const m of members) obstacles.push({ x: (sx(m.u0) + sx(m.u1)) / 2, y: (sy(m.v0) + sy(m.v1)) / 2, r: fsT * 2.6 });
   const chipSpot = (cx: number, cy: number, ux: number, uy: number, half: number, cw: number) => {
     const r = cw / 2 + 2, step = cw / 2 + 6;
     const free = (x: number, y: number) => obstacles.every(o => Math.hypot(o.x - x, o.y - y) >= o.r + r);
@@ -2530,7 +2553,7 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
     /** Turuncu çerçeve (kenarın kendi kanal payı var). */
     accent?: boolean };
   const bandChips: BandChip[] = [];
-  const cfs0 = fsT * 0.8;
+  const cfs0 = chipFs(fsT);
   const placeChip = (c: Omit<BandChip, 'cx' | 'cy' | 'pw' | 'ph' | 'f'>, cx: number, cy: number, ux: number, uy: number, half: number) => {
     const { pw, ph } = pillSize(c.label, cfs0);
     const sp0 = chipSpot(cx, cy, ux, uy, half, pw);
@@ -2820,7 +2843,7 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
           // Kenar bandının değer rozetleri ayrı çizilir (bandChips); burada yalnız bölme / derz binme rozeti.
           const chipTxt = pickable || splitOn ? 'Split here' : null;   // bağlı derzin binme değerleri ayrı rozetlerde (bandChips)
           const on = false;
-          const cfs = fsT * 0.8;
+          const cfs = chipFs(fsT);
           const { pw: cw, ph: chh } = chipTxt ? pillSize(chipTxt, cfs) : { pw: 0, ph: 0 };
           const overlayChip = !!np.edge && !pickable;
           const spot = chipTxt ? chipSpot(b.x + b.w / 2, b.y + b.h / 2, b.vertical ? 0 : 1, b.vertical ? 1 : 0, (b.vertical ? b.h : b.w) / 2, cw) : null;
@@ -2839,12 +2862,10 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
               </g>
               {chipTxt && (
                 <g className="chip" transform={b.vertical ? `rotate(-90 ${bx} ${by})` : undefined}>
-                  <rect x={bx - cw / 2} y={by - chh / 2} width={cw} height={chh} rx={chh / 2}
-                    fill={pickable || splitOn ? '#fff7ed' : on ? '#ea580c' : '#ffffff'}
-                    stroke={pickable || splitOn ? '#f97316' : on ? '#c2410c' : '#cfc6b9'} strokeWidth={0.8}
-                    style={{ filter: 'drop-shadow(0 1px 1px rgba(40,30,20,0.12))' }} />
-                  <text x={bx} y={by + cfs * 0.36} textAnchor="middle" fontSize={cfs} fontWeight={700} letterSpacing="0.02em"
-                    fill={on ? '#ffffff' : pickable || splitOn ? '#c2410c' : '#78716c'} fontFamily={UI_FONT}>{chipTxt}</text>
+                  {(() => { const tone = on ? CHIP.on : pickable || splitOn ? CHIP.accent : CHIP.base; return (<>
+                    <rect x={bx - cw / 2} y={by - chh / 2} width={cw} height={chh} rx={chh / 2} fill={tone.fill} stroke={tone.stroke} strokeWidth={0.9} style={{ filter: CHIP_SHADOW }} />
+                    <text x={bx} y={by + cfs * 0.36} textAnchor="middle" fontSize={cfs} fontWeight={700} letterSpacing="0.02em" fill={tone.text} fontFamily={UI_FONT}>{chipTxt}</text>
+                  </>); })()}
                 </g>
               )}
               <title>{bandTip(b)}</title>
@@ -2880,9 +2901,9 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
           return (
             <g key={c.key} className="yago-band pnl on" style={{ cursor: 'pointer' }} onClick={e => { stop(e); if (c.toggle) c.toggle(); else beginEdit({ key: c.key, v: c.item.txt }); }}>
               <g className="chip" transform={c.rot ? `rotate(${c.rot.toFixed(1)} ${c.cx} ${c.cy})` : undefined}>
-                <rect x={c.cx - c.pw / 2} y={c.cy - c.ph / 2} width={c.pw} height={c.ph} rx={c.ph / 2} fill={relOn ? '#44403c' : acc ? '#fff7ed' : '#ffffff'} stroke={relOn ? '#292524' : acc ? '#f97316' : '#cfc6b9'} strokeWidth={0.9}
-                  style={{ filter: 'drop-shadow(0 1px 1px rgba(40,30,20,0.12))' }} />
-                {!hide && <text x={c.cx} y={c.cy + c.f * 0.36} textAnchor="middle" fontSize={c.f} fontWeight={700} letterSpacing="0.02em" fill={relOn ? '#ffffff' : acc ? '#c2410c' : '#57534e'} fontFamily={UI_FONT}
+                <rect x={c.cx - c.pw / 2} y={c.cy - c.ph / 2} width={c.pw} height={c.ph} rx={c.ph / 2} fill={(relOn ? CHIP.on : acc ? CHIP.accent : CHIP.base).fill} stroke={(relOn ? CHIP.on : acc ? CHIP.accent : CHIP.base).stroke} strokeWidth={0.9}
+                  style={{ filter: CHIP_SHADOW }} />
+                {!hide && <text x={c.cx} y={c.cy + c.f * 0.36} textAnchor="middle" fontSize={c.f} fontWeight={700} letterSpacing="0.02em" fill={(relOn ? CHIP.on : acc ? CHIP.accent : CHIP.base).text} fontFamily={UI_FONT}
                   style={{ fontVariantNumeric: 'tabular-nums' }}>{c.label}</text>}
               </g>
               <title>{c.title}</title>
@@ -3016,14 +3037,14 @@ function FieldBox({ label, title, accent, fixed, children }: { label: string; ti
     <div title={title} onClick={stop}
       className={`${fixed ? 'shrink-0' : 'flex-1 min-w-0'} h-[28px] pl-2 pr-1 flex items-center gap-1 rounded-[7px] bg-white transition-shadow duration-150
         ${accent ? 'ring-1 ring-orange-400/70 shadow-[0_0_0_2px_rgba(249,115,22,0.08)]' : 'ring-1 ring-[#e6e0d6] shadow-[0_1px_0_rgba(40,30,20,0.03)]'}`}>
-      {label && <span className="shrink-0 text-[9.5px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]">{label}</span>}
+      {label && <span className="shrink-0 text-[10px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]">{label}</span>}
       <div className="flex-1 min-w-0 flex items-center justify-end gap-0.5">{children}</div>
     </div>
   );
 }
 const FIELD_INPUT: React.CSSProperties = {
   width: 40, minWidth: 0, height: 22, textAlign: 'center', border: 'none', outline: 'none', background: 'transparent', padding: 0,
-  fontFamily: "'SF Mono',ui-monospace,Menlo,monospace", fontSize: 12.5, fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: '#1c1917',
+  fontFamily: UI_FONT, fontSize: 13, fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: '#1c1917',
 };
 const StepBtn = ({ title, disabled, onClick, children }: { title: string; disabled?: boolean; onClick: () => void; children: React.ReactNode }) => (
   <button type="button" title={title} disabled={disabled} onClick={e => { stop(e); if (!disabled) onClick(); }}
@@ -3037,7 +3058,7 @@ const IconSquareBtn = ({ icon: Icon, title, onClick }: { icon: LucideIcon; title
   </button>
 );
 const fmt1 = (v: number) => String(round1(v));
-const unitTxt = (u: string) => <span className="shrink-0 pr-1 text-[10px] font-medium text-stone-400">{u}</span>;
+const unitTxt = (u: string) => <span className="shrink-0 pr-1 text-[10.5px] font-medium text-stone-400">{u}</span>;
 function CountBox({ icon: Icon, label, value, title, onChange, max = 12 }: { icon: LucideIcon; label: string; value: number; title: string; onChange: (n: number) => void; max?: number }) {
   const [draft, setDraft] = useState<string | null>(null);
   useEffect(() => { setDraft(null); }, [value]);
@@ -3049,7 +3070,7 @@ function CountBox({ icon: Icon, label, value, title, onChange, max = 12 }: { ico
   };
   return (
     <FieldBox label="" title={title}>
-      <span className="flex items-center gap-[3px] pr-0.5 mr-auto text-[9.5px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]"><Icon size={11} strokeWidth={2} />{label}</span>
+      <span className="flex items-center gap-[3px] pr-0.5 mr-auto text-[10px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]"><Icon size={11} strokeWidth={2} />{label}</span>
       <StepBtn title="Fewer pieces" disabled={value <= 1} onClick={() => onChange(value - 1)}><Minus size={10} strokeWidth={2.2} /></StepBtn>
       <input type="text" inputMode="numeric" value={draft ?? String(value)} onChange={e => setDraft(e.target.value.replace(/[^0-9]/g, ''))}
         onBlur={commit} onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setDraft(null); if (e.key === 'ArrowUp') { e.preventDefault(); if (value < max) onChange(value + 1); } if (e.key === 'ArrowDown') { e.preventDefault(); if (value > 1) onChange(value - 1); } }} onClick={stop}
@@ -3099,7 +3120,7 @@ function SizeBox({ icon: Icon, label, value, title, onChange }: { icon: LucideIc
   };
   return (
     <FieldBox label="" title={title} accent={value != null}>
-      <span className="flex items-center gap-[3px] pr-0.5 mr-auto text-[9.5px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]"><Icon size={11} strokeWidth={2} />{label}</span>
+      <span className="flex items-center gap-[3px] pr-0.5 mr-auto text-[10px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]"><Icon size={11} strokeWidth={2} />{label}</span>
       <input type="text" inputMode="decimal" value={draft ?? (value != null ? String(value) : '')} placeholder="mm" onChange={e => setDraft(e.target.value)}
         onBlur={commit} onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setDraft(null); }} onClick={stop}
         className="yago-field" style={{ ...FIELD_INPUT, width: 44, textAlign: 'right', ...(value != null ? { color: '#9a3412' } : {}) }} aria-label={`${label} target size`} />
@@ -3162,7 +3183,7 @@ function PlacementSelect({ value, onChange }: { value: 'outer' | 'inner'; onChan
 const SectionHead = ({ label, count, rule = true, className = 'px-1 pt-2 pb-1' }: { label: string; count?: number; rule?: boolean; className?: string }) => (
   <div className={`${className} flex items-center gap-2`}>
     <span style={SECTION_LABEL}>{label}</span>
-    {count != null && <span className="text-[10px] font-medium tabular-nums text-stone-300">{count}</span>}
+    {count != null && <span className="text-[10.5px] font-medium tabular-nums text-stone-300">{count}</span>}
     {rule && <div className="flex-1 h-px bg-[#efeae2]" />}
   </div>
 );
@@ -3554,7 +3575,7 @@ export function PanelEditor() {
   const cavityStepsPanel = (g: PanelGroup) => {
     const steps = g.cavitySteps || [];
     if (!steps.length) return null;
-    const tag = (txt: string) => <span className="shrink-0 text-[9.5px] font-semibold px-1.5 h-[18px] leading-[18px] rounded-[5px] bg-[#f3efe8] text-stone-500">{txt}</span>;
+    const tag = (txt: string) => <span className="shrink-0 text-[10px] font-semibold px-1.5 h-[18px] leading-[18px] rounded-[5px] bg-[#f3efe8] text-stone-500">{txt}</span>;
     const save = (id: string) => { const v = parseFloat(stepEdit?.v ?? ''); if (isNaN(v)) return; void updateCavityStep(g.id, id, v); setStepEdit(null); };
     return (
       <div className="shrink-0 mt-2" style={{ fontFamily: UI_FONT }}>
@@ -3568,8 +3589,8 @@ export function PanelEditor() {
               const axisKey = st.axisLabel.toLowerCase();
               return (
                 <div key={st.id} className="group/step flex items-center gap-1.5 pl-1.5 pr-1 h-[30px] rounded-[9px] bg-[#fdfcfa] ring-1 ring-[#ece7df] shadow-[0_1px_0_rgba(68,64,60,0.025)] hover:bg-white hover:ring-[#e2dbd0] transition-colors duration-150">
-                  <span className="shrink-0 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-[#f3efe8] text-[10px] font-semibold text-stone-500 tabular-nums leading-none">{idx + 1}</span>
-                  <span className="shrink-0 text-[10px] font-semibold px-1.5 h-[18px] leading-[18px] rounded-[5px]" style={{ background: 'rgba(14,116,144,0.09)', color: '#0e7490' }}>Vol</span>
+                  <span className="shrink-0 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-[#f3efe8] text-[10.5px] font-semibold text-stone-500 tabular-nums leading-none">{idx + 1}</span>
+                  <span className="shrink-0 text-[10.5px] font-semibold px-1.5 h-[18px] leading-[18px] rounded-[5px]" style={{ background: 'rgba(14,116,144,0.09)', color: '#0e7490' }}>Vol</span>
                   <span className="shrink-0 min-w-[24px] text-center text-[10.5px] font-bold px-1 h-[18px] leading-[18px] rounded-[5px] bg-[#f5f2ec]" style={{ color: AXIS_COLORS[axisKey] || AXIS_COLORS[axisKey[0]] || '#57534e' }}>{st.axisLabel.toUpperCase()}</span>
                   {editing ? (
                     <>
@@ -3733,7 +3754,7 @@ export function PanelEditor() {
       });
     };
     const removeStep = (s: typeof allSteps[number]) => withActivePanel(ps => (s.stepType === 'extrude' ? deleteExtrudeStep : deleteTransformStep)(ps, s.id, updateShape));
-    const tag = (txt: string) => <span className="shrink-0 text-[9.5px] font-semibold px-1.5 h-[18px] leading-[18px] rounded-[5px] bg-[#f3efe8] text-stone-500">{txt}</span>;
+    const tag = (txt: string) => <span className="shrink-0 text-[10px] font-semibold px-1.5 h-[18px] leading-[18px] rounded-[5px] bg-[#f3efe8] text-stone-500">{txt}</span>;
     return (
       <div className="shrink-0 mt-2" style={{ fontFamily: UI_FONT }}>
         <SectionHead label="Steps" count={allSteps.length} className="px-1 pb-1.5" />
@@ -3745,8 +3766,8 @@ export function PanelEditor() {
               const editable = !(s.stepType === 'extrude' && s.isRef) && !(s.stepType === 'rotate' && s.isRef);
               return (
                 <div key={s.id} className="group/step flex items-center gap-1.5 pl-1.5 pr-1 h-[30px] rounded-[9px] bg-[#fdfcfa] ring-1 ring-[#ece7df] shadow-[0_1px_0_rgba(68,64,60,0.025)] hover:bg-white hover:ring-[#e2dbd0] transition-colors duration-150">
-                  <span className="shrink-0 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-[#f3efe8] text-[10px] font-semibold text-stone-500 tabular-nums leading-none">{idx + 1}</span>
-                  <span className="shrink-0 text-[10px] font-semibold px-1.5 h-[18px] leading-[18px] rounded-[5px]" style={{ background: badge.bg, color: badge.color }}>{badge.label}</span>
+                  <span className="shrink-0 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-[#f3efe8] text-[10.5px] font-semibold text-stone-500 tabular-nums leading-none">{idx + 1}</span>
+                  <span className="shrink-0 text-[10.5px] font-semibold px-1.5 h-[18px] leading-[18px] rounded-[5px]" style={{ background: badge.bg, color: badge.color }}>{badge.label}</span>
                   <span className="shrink-0 min-w-[24px] text-center text-[10.5px] font-bold px-1 h-[18px] leading-[18px] rounded-[5px] bg-[#f5f2ec]" style={{ color: AXIS_COLORS[s.axis] || '#57534e' }}>{s.axis.toUpperCase()}</span>
                   {editing ? (
                     <>
@@ -3825,7 +3846,7 @@ export function PanelEditor() {
       <div className="flex flex-col items-center justify-center py-6 text-center">
         <div className="w-8 h-8 rounded-lg bg-stone-100 flex items-center justify-center mb-2"><MoveVertical size={14} className="text-stone-400" /></div>
         <span className="text-xs text-stone-400">No faces added yet</span>
-        <span className="text-[10px] text-stone-300 mt-0.5">Use Body Panel, Shelf or Divider to create panels</span>
+        <span className="text-[10.5px] text-stone-300 mt-0.5">Use Body Panel, Shelf or Divider to create panels</span>
       </div>
     );
 
@@ -3907,7 +3928,7 @@ export function PanelEditor() {
                   {backPiece && <span className="shrink-0 text-stone-400"><BackTypeIcon type={backPiece.placement} size={11} strokeWidth={1.4} /></span>}
                   {opts.door && doorMemberType && <span className="shrink-0 text-stone-400"><DoorTypeIcon type={doorMemberType.type} size={11} strokeWidth={1.4} /></span>}
                   <span className="truncate">{opts.group ? groupName(opts.group) : opts.door ? doorGroupName(opts.door) : backGroupName(opts.back!)}</span>
-                  {opts.door && doorMemberType?.leafCount === 2 && <span className="shrink-0 text-[9.5px] font-semibold text-stone-400 tabular-nums">{doorMemberType.leaf + 1}/2</span>}
+                  {opts.door && doorMemberType?.leafCount === 2 && <span className="shrink-0 text-[10px] font-semibold text-stone-400 tabular-nums">{doorMemberType.leaf + 1}/2</span>}
                 </span>
               ) : (
                 <input type="text" value={vf.description || ''} onClick={stop} onChange={e => updateVirtualFace(vf.id, { description: e.target.value })}
@@ -4190,7 +4211,7 @@ export function PanelEditor() {
                 <IconSquareBtn icon={Equal} title="Equalize sizes (unlock all)" onClick={() => { void equalizeDoorGroup(g.id); }} />
               </div>
               <div className="flex items-center gap-1 mb-1.5">
-                <span className="shrink-0 pl-0.5 pr-1 text-[9.5px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]">Between doors</span>
+                <span className="shrink-0 pl-0.5 pr-1 text-[10px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]">Between doors</span>
                 <CardAction compact icon={Columns3} label="Divider" active={addPick === 'u'} tone="amber"
                   title={g.placement !== 'outer' ? 'Add a divider between two doors — outer doors only (inner doors sit between the panels).' : addJointCount('u') ? `Add a divider between two side-by-side doors: pick a vertical joint in the schematic (${addJointCount('u')}). The divider is created behind that joint, listed after this door row, and follows the joint when the doors change.` : 'No vertical door joint yet — split the door with Split V first.'}
                   onClick={() => toggleAddPick('u')} />
@@ -4361,7 +4382,7 @@ export function PanelEditor() {
                   {clearVf && (
                     <div className="absolute bottom-1 right-1 flex items-center gap-[2px]">
                       <button type="button" onClick={e => { stop(e); setBackClearEdge(null); }}
-                        className="h-[17px] pl-1.5 pr-1 rounded-full flex items-center gap-[2px] bg-orange-50 ring-1 ring-orange-300 text-orange-700 text-[9px] font-semibold hover:bg-orange-100 max-w-[110px]">
+                        className="h-[17px] pl-1.5 pr-1 rounded-full flex items-center gap-[2px] bg-orange-50 ring-1 ring-orange-300 text-orange-700 text-[9.5px] font-semibold hover:bg-orange-100 max-w-[110px]">
                         <span className="truncate">{clearName}</span><X size={9} strokeWidth={2.6} className="shrink-0" /></button>
                       {clearOwn && <button type="button" onClick={e => { stop(e); void resetBackGrooveClear(g.id, clearVf); }}
                         className="w-[17px] h-[17px] rounded-full flex items-center justify-center bg-orange-50 ring-1 ring-orange-300 text-orange-600 hover:bg-orange-100"><RotateCcw size={9} strokeWidth={2.4} /></button>}
@@ -4380,8 +4401,8 @@ export function PanelEditor() {
                   <HintCell label="Rear" hintKey="gb" active={hintKey === 'gb'} onHint={onHint} accent={!!clearVf} passive={!isGrooved}>{numInput('gb', gc.back, false, 34, undefined, !isGrooved)}</HintCell>
                   <HintCell label="Bottom" hintKey="gd" active={hintKey === 'gd'} onHint={onHint} accent={!!clearVf} passive={!isGrooved}>{numInput('gd', gc.depth, false, 34, undefined, !isGrooved)}</HintCell>
                   <div className={`min-w-0 h-full pl-2 pr-1.5 flex items-center gap-1 rounded-[7px] bg-[#f6f2ec] ${isGrooved ? '' : 'opacity-60'}`}>
-                    <span className="flex-1 min-w-0 truncate text-[9.5px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]">Groove</span>
-                    <span className="whitespace-nowrap" style={{ ...FIELD_INPUT, width: 'auto', color: '#57534e' }}>{isGrooved ? <>{fmt1(g.thickness + gc.front + gc.back)}<span className="text-[9.5px] font-medium text-stone-400" style={{ fontFamily: UI_FONT }}> ×In+{fmt1(gc.depth)}</span></> : '—'}</span>
+                    <span className="flex-1 min-w-0 truncate text-[10px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]">Groove</span>
+                    <span className="whitespace-nowrap" style={{ ...FIELD_INPUT, width: 'auto', color: '#57534e' }}>{isGrooved ? <>{fmt1(g.thickness + gc.front + gc.back)}<span className="text-[10px] font-medium text-stone-400" style={{ fontFamily: UI_FONT }}> ×In+{fmt1(gc.depth)}</span></> : '—'}</span>
                   </div>
                 </div>
               </div>
