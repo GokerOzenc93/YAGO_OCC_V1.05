@@ -454,25 +454,24 @@ function DockModeBar({ modes, active, onPick, trailing }: { modes: DockMode[]; a
   );
 }
 
+/* Satırdaki açık anahtarlar (şekil · kapak sınırı · arkalık sınırı) TEK yumuşak renk (Goker): dolgu yok, yalnız ince dış hat. */
+const ROW_TOGGLE_ON = 'text-[#c0814f] ring-1 ring-inset ring-[#ecd6c2] hover:ring-[#e0bf9f]';
 /* "Yüzeyin şeklini al": AÇIK → panel serbest bölgenin tam şeklini alır (L/U/çentik); KAPALI → kardeş kenarında düz kesilir. */
 function FitShapeToggle({ checked, disabled, onToggle }: { checked: boolean; disabled?: boolean; onToggle: () => void }) {
   return (
     <button type="button" role="checkbox" aria-checked={checked} disabled={disabled} onClick={e => { stop(e); if (!disabled) onToggle(); }}
       title={checked ? 'Fit to face shape: ON — the panel takes the full shape of its free region (L / U / notch). Click to cut straight at siblings.' : 'Fit to face shape: OFF — the panel is cut straight at the sibling edge. Click to follow the free region\'s full shape.'}
-      className={`${ROW_BTN} ${disabled ? 'text-stone-200 cursor-not-allowed' : checked ? 'text-teal-700 bg-teal-50 ring-1 ring-teal-300/80' : 'text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700'}`}>
-      <Shapes size={ROW_ICON} strokeWidth={checked ? 2.1 : 1.8} />
+      className={`${ROW_BTN} ${disabled ? 'text-stone-200 cursor-not-allowed' : checked ? ROW_TOGGLE_ON : 'text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700'}`}>
+      <Shapes size={ROW_ICON} strokeWidth={1.9} />
     </button>
   );
 }
 
-/* Kapak / arkalık sınırı açık (Goker: dolgu yok, yalnız yumuşak dış hat). */
-const REF_ON_DOOR = 'text-amber-600/80 ring-1 ring-inset ring-amber-300/50 hover:ring-amber-400/60';
-const REF_ON_BACK = 'text-sky-700/75 ring-1 ring-inset ring-sky-300/50 hover:ring-sky-400/60';
 function DoorRefToggle({ checked, disabled, onToggle }: { checked: boolean; disabled?: boolean; onToggle: () => void }) {
   return (
     <button type="button" role="checkbox" aria-checked={checked} disabled={disabled} onClick={e => { stop(e); if (!disabled) onToggle(); }}
       title={checked ? 'Door reference: ON — doors are built from this panel\'s edges' : 'Mark as door reference'}
-      className={`${ROW_BTN} ${disabled ? 'text-stone-200 cursor-not-allowed' : checked ? REF_ON_DOOR : 'text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700'}`}>
+      className={`${ROW_BTN} ${disabled ? 'text-stone-200 cursor-not-allowed' : checked ? ROW_TOGGLE_ON : 'text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700'}`}>
       <DoorClosed size={ROW_ICON} strokeWidth={1.9} />
     </button>
   );
@@ -482,7 +481,7 @@ function BackRefToggle({ checked, disabled, onToggle }: { checked: boolean; disa
   return (
     <button type="button" role="checkbox" aria-checked={checked} disabled={disabled} onClick={e => { stop(e); if (!disabled) onToggle(); }}
       title={checked ? 'Back panel reference: ON — the back panel is built from this panel\'s edges and can be split at it' : 'Mark as back panel reference'}
-      className={`${ROW_BTN} ${disabled ? 'text-stone-200 cursor-not-allowed' : checked ? REF_ON_BACK : 'text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700'}`}>
+      className={`${ROW_BTN} ${disabled ? 'text-stone-200 cursor-not-allowed' : checked ? ROW_TOGGLE_ON : 'text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700'}`}>
       <SendToBack size={ROW_ICON} strokeWidth={1.9} />
     </button>
   );
@@ -865,12 +864,13 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, b
       </g>
     );
   };
-  /* Levha rozetleri (kapak sınırı · arkalık sınırı) levhanın UZUNLUĞU boyunca dizilir → üye sayısı artsa da çakışmaz. */
-  const BADGE_R = 8, BADGE_STEP = 20;
-  const badge = (key: string, cx: number, cy: number, on: boolean, Icon: LucideIcon, onColor: string, onFill: string, tip: string, onClick: () => void) => (
-    <g key={key} style={{ cursor: 'pointer' }} onClick={e => { stop(e); onClick(); }}>
-      <circle cx={cx} cy={cy} r={BADGE_R} fill={on ? onFill : '#ffffff'} stroke={on ? onColor : '#d6cfc4'} strokeWidth={on ? 1.1 : 0.8} />
-      <Icon x={cx - 4.5} y={cy - 4.5} size={9} strokeWidth={on ? 2.4 : 2} color={on ? onColor : '#a8a29e'} />
+  /* Levha rozetleri (kapak sınırı · arkalık sınırı) levhanın UZUNLUĞU boyunca dizilir → üye sayısı artsa da çakışmaz.
+     Boyut / gölge / kapalı hal kilit düğmesiyle (LockBadge) AYNI (Goker); açık hal satırdaki anahtarlarla aynı tek yumuşak renk. */
+  const BADGE_R = LOCK_R, BADGE_STEP = 2 * LOCK_R + 4, BADGE_ICON = 10;
+  const badge = (key: string, cx: number, cy: number, on: boolean, Icon: LucideIcon, tip: string, onClick: () => void) => (
+    <g key={key} className="lockbtn" style={{ cursor: 'pointer' }} onClick={e => { stop(e); onClick(); }}>
+      <circle cx={cx} cy={cy} r={BADGE_R} fill={on ? '#fdf6ef' : '#ffffff'} stroke={on ? '#e0bf9f' : '#d6cfc3'} strokeWidth={on ? 1 : 0.9} style={{ filter: SOFT.pillShadow }} />
+      <Icon x={cx - BADGE_ICON / 2} y={cy - BADGE_ICON / 2} size={BADGE_ICON} strokeWidth={on ? 2.3 : 2.1} color={on ? '#c0814f' : '#8c8378'} />
       <title>{tip}</title>
     </g>
   );
@@ -882,9 +882,9 @@ export function GroupSchematic({ group, selectedIndex, memberLabels, doorRefs, b
     const [dx, dy] = at(0), [bx, by] = at(1);
     return (
       <g key={`badges-${i}`}>
-        {badge(`door-${i}`, dx, dy, !!doorRefs[i], DoorClosed, '#b45309', '#fffbeb',
+        {badge(`door-${i}`, dx, dy, !!doorRefs[i], DoorClosed,
           doorRefs[i] ? `Panel ${lbl}: door reference ON — click to remove` : `Panel ${lbl}: mark as door reference`, () => onToggleDoorRef(i))}
-        {badge(`back-${i}`, bx, by, !!backRefs[i], SendToBack, '#075985', '#f0f9ff',
+        {badge(`back-${i}`, bx, by, !!backRefs[i], SendToBack,
           backRefs[i] ? `Panel ${lbl}: back panel reference ON — click to remove` : `Panel ${lbl}: mark as back panel reference (the back panel ends at / splits at this panel)`, () => onToggleBackRef(i))}
       </g>
     );
