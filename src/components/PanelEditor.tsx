@@ -2929,18 +2929,21 @@ function BackSchematic({ group, solution, selectedIndex, selectedNodes, memberLa
 }
 
 /* Satır hizalama: tüm satır türleri aynı sabit sütunları kullanır; üye satırı kartta 8px içeride → sağ alan 8px dar. */
-const ROW_NUM_W = 20;
+const ROW_NUM_W = 28;              // "12" ve üye "3.12" rahat sığar (Goker: numaralar dar görünüyordu)
 const ROW_BTN = 'w-[22px] h-[22px] shrink-0 rounded-md flex items-center justify-center transition-colors duration-150';
 const ROW_SPACER = 'w-[22px] h-[22px] shrink-0';
 const ROW_ICON = 13;
 const ROW_TRAIL_W = 137;          // 6 × 22px düğme (5 araç: şekil · kapak sınırı · arkalık sınırı · ok · sil + aç/kapa oku) + 5 × 1px aralık (Goker: grup sıkı dursun)
+/* Seçili satır (Goker: "çok renkli, daha soft"): sıcak kemik zemin + tek ince yumuşak turuncu çizgi; numara/rozet/ok nötr koyu taş. */
+const ROW_SEL_HEAD = 'bg-[#faf8f5]';
+const ROW_SEL_BAR = 'pointer-events-none absolute left-0 top-[7px] bottom-[7px] w-[2px] rounded-r-full bg-orange-300/70';
 const MEMBER_INSET = 8;           // grup kartı gövdesinin yatay dolgusu (px-2)
 type RowKind = 'body' | 'shelf' | 'divider' | 'door' | 'back';
 const ROW_KIND_ICON: Record<RowKind, LucideIcon> = { body: LayoutPanelTop, shelf: Rows3, divider: Columns3, door: DoorClosed, back: SendToBack };
 const ROW_KIND_TITLE: Record<RowKind, string> = { body: 'Body panel', shelf: 'Shelf', divider: 'Divider', door: 'Door', back: 'Back panel' };
 const rowCardClass = (open: boolean, dragging: boolean, armed: boolean) =>
   `group/row relative flex flex-col rounded-[10px] overflow-hidden transition-[background-color,box-shadow,opacity,transform] duration-150 ease-out
-   ${open ? 'bg-[#fffdf9] ring-1 ring-[#efd9c0] shadow-[0_1px_2px_rgba(234,88,12,0.05),0_8px_20px_-14px_rgba(120,70,20,0.35)] my-1'
+   ${open ? 'bg-white ring-1 ring-[#e2dbd1] shadow-[0_1px_2px_rgba(68,64,60,0.04),0_8px_20px_-16px_rgba(68,64,60,0.25)] my-1'
      : 'bg-[#fdfcfa] ring-1 ring-[#ece7df] shadow-[0_1px_0_rgba(68,64,60,0.025)] hover:bg-white hover:ring-[#e2dbd0] hover:shadow-[0_1px_2px_rgba(68,64,60,0.04),0_4px_10px_-8px_rgba(68,64,60,0.18)]'}
    ${dragging ? 'opacity-40 scale-[0.99]' : ''}
    ${armed && !dragging ? '!ring-orange-300 !bg-white shadow-[0_6px_16px_-8px_rgba(234,88,12,0.35)] scale-[1.006]' : ''}`;
@@ -2948,18 +2951,16 @@ const ROW_INPUT_CLASS = 'yago-row-note flex-1 min-w-0 h-[22px] px-[5px] text-[11
 const ROW_DEL_CLASS = `${ROW_BTN} text-stone-400 hover:bg-red-50 hover:text-red-500`;
 const DROP_BAND = 'pointer-events-none h-[7px] mx-1 rounded-full bg-gradient-to-r from-amber-400 via-orange-400 to-amber-400 shadow-[0_0_10px_rgba(245,158,11,0.65),0_1px_2px_rgba(180,83,9,0.3)]';
 
-function RowTypeBadge({ kind, active, count, doorBound, backBound }: { kind: RowKind; active: boolean; count?: number; doorBound?: boolean; backBound?: boolean }) {
+function RowTypeBadge({ kind, active, count }: { kind: RowKind; active: boolean; count?: number }) {
   const Icon = ROW_KIND_ICON[kind];
   return (
-    <span title={(count != null ? `${ROW_KIND_TITLE[kind]} · ${count} panel${count === 1 ? '' : 's'}` : ROW_KIND_TITLE[kind]) + (doorBound ? ' · door reference' : '') + (backBound ? ' · back panel reference' : '')}
+    <span title={count != null ? `${ROW_KIND_TITLE[kind]} · ${count} panel${count === 1 ? '' : 's'}` : ROW_KIND_TITLE[kind]}
       className={`relative shrink-0 w-5 h-5 rounded-[6px] flex items-center justify-center transition-colors duration-150
-        ${active ? 'bg-orange-50 text-orange-500 ring-1 ring-orange-200/70' : 'bg-[#f5f2ec] text-stone-400 group-hover/row:text-stone-500'}`}>
+        ${active ? 'bg-white text-stone-600 ring-1 ring-[#e2dbd1]' : 'bg-[#f5f2ec] text-stone-400 group-hover/row:text-stone-500'}`}>
       <Icon size={13} strokeWidth={2} />
-      {doorBound && count == null && <span className="absolute -bottom-[3px] -right-[3px] w-[7px] h-[7px] rounded-full bg-amber-500 ring-2 ring-[#fdfcfa]" />}
-      {backBound && count == null && <span className="absolute -bottom-[3px] -left-[3px] w-[7px] h-[7px] rounded-full bg-sky-700 ring-2 ring-[#fdfcfa]" />}
       {count != null && (
         <span className={`absolute -top-[5px] -right-[6px] min-w-[13px] h-[13px] px-[3px] rounded-full text-[8.5px] font-bold tabular-nums leading-[13px] text-center ring-2 ring-[#fdfcfa]
-          ${active ? 'bg-orange-500 text-white' : 'bg-stone-500 text-white'}`}>{count}</span>
+          ${active ? 'bg-stone-600 text-white' : 'bg-stone-400 text-white'}`}>{count}</span>
       )}
     </span>
   );
@@ -2986,13 +2987,13 @@ function RowDims({ w, h, t, tLetter = 'T', title }: { w?: number | null; h?: num
   );
 }
 const RowNum = ({ label, active, small }: { label: string; active: boolean; small?: boolean }) => (
-  <span style={{ width: ROW_NUM_W }} className={`shrink-0 ${small ? 'text-[11.5px]' : 'text-[13px]'} text-center font-semibold tabular-nums leading-none transition-colors duration-150
-    ${active ? 'text-orange-600' : 'text-stone-400 group-hover/row:text-stone-600'}`}>{label}</span>
+  <span style={{ width: ROW_NUM_W }} className={`shrink-0 ${small ? 'text-[11px] tracking-[-0.02em]' : 'text-[13px]'} text-center whitespace-nowrap font-semibold tabular-nums leading-none transition-colors duration-150
+    ${active ? 'text-stone-800' : 'text-stone-400 group-hover/row:text-stone-600'}`}>{label}</span>
 );
 /* Satır aç/kapa TEK mantık: tüm satır türlerinde başlık ya da ok tıkı aynı işi yapar (kapalı → aç + seç; açık → kapat + seçim düşer). */
 const RowChevron = ({ open, onClick, title }: { open: boolean; onClick?: (e: React.MouseEvent) => void; title?: string }) => (
   <button type="button" onClick={onClick} title={title ?? (open ? 'Collapse' : 'Expand')}
-    className={`${ROW_BTN} ${open ? 'text-orange-500 bg-orange-50/70 hover:bg-orange-100/70' : 'text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700'}`}>
+    className={`${ROW_BTN} ${open ? 'text-stone-700 bg-[#f1ece4] hover:bg-[#ebe5dc]' : 'text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700'}`}>
     <ChevronRight size={ROW_ICON} strokeWidth={2.1} className={`transition-transform duration-200 ${open ? 'rotate-90' : ''}`} />
   </button>
 );
@@ -3291,6 +3292,33 @@ export function PanelEditor() {
     if (selectedDoorGroupId) openCard(selectedDoorGroupId);
     if (selectedBackGroupId) openCard(selectedBackGroupId);
   }, [selectedPanelRow, selectedPanelGroupId, selectedDoorGroupId, selectedBackGroupId, virtualFaces]);
+
+  // Yeni panel/grup yerleşince (Goker) öteki satırların önizlemeleri kapanır. Satır anahtarı = grup id ya da VF id; grup içi
+  // bölme/adet değişimi yeni ÜYE VF üretir ama anahtar aynı kalır → tetiklemez. Yeni kapak/arkalık seçili gelir, açık kalır.
+  const rowKeysRef = useRef<{ sid: string | null; keys: Set<string> } | null>(null);
+  useEffect(() => {
+    const keyOf = (vf: VirtualFace) => vf.groupId || vf.doorGroupId || vf.backGroupId || vf.id;
+    const keys = new Set(virtualFaces.filter(vf => vf.shapeId === selectedShapeId).map(keyOf));
+    const prev = rowKeysRef.current;
+    rowKeysRef.current = { sid: selectedShapeId, keys };
+    if (!prev || prev.sid !== selectedShapeId) return;
+    const fresh = new Set([...keys].filter(k => !prev.keys.has(k)));
+    if (!fresh.size) return;
+    const st = useAppStore.getState();
+    setOpenCards(cur => { const n = new Set([...cur].filter(id => fresh.has(id))); return n.size === cur.size ? cur : n; });
+    const row = st.selectedPanelRow;
+    if (row !== null) {
+      const vf = typeof row === 'string' && row.startsWith('vf-') ? st.virtualFaces.find(f => f.id === row.slice(3)) : undefined;
+      if (!vf || !fresh.has(keyOf(vf))) setSelectedPanelRow(null);
+    }
+    if (st.selectedPanelGroupId && !fresh.has(st.selectedPanelGroupId)) setSelectedPanelGroupId(null);
+    if (st.selectedDoorGroupId && !fresh.has(st.selectedDoorGroupId)) setSelectedDoorGroupId(null);
+    if (st.selectedBackGroupId && !fresh.has(st.selectedBackGroupId)) setSelectedBackGroupId(null);
+    if (st.doorRefPickGroupId && !fresh.has(st.doorRefPickGroupId)) setDoorRefPickGroupId(null);
+    if (st.backRefPickGroupId && !fresh.has(st.backRefPickGroupId)) setBackRefPickGroupId(null);
+    const keep = <T extends { id: string } | null>(p: T) => (p && !fresh.has(p.id) ? null : p);
+    setDoorNodeSel(keep); setDoorAddPick(keep); setBackNodeSel(keep); setBackClearEdge(keep);
+  }, [virtualFaces, selectedShapeId]);
 
   useEffect(() => {
     if (selectedShapeId !== useAppStore.getState().selectedPanelRowParentId) setSelectedPanelRow(null);
@@ -3767,7 +3795,7 @@ export function PanelEditor() {
     };
     const dis = !vf.hasPanel;
     return (
-      <div className="yago-expand px-2 pt-2 pb-2" style={{ borderTop: '1px solid #f3e6d6' }} onClick={stop}>
+      <div className="yago-expand px-2 pt-2 pb-2" style={{ borderTop: '1px solid #efebe5' }} onClick={stop}>
         <Segmented active={tool} onPick={pickTool} items={[
           { key: 'extrude', label: 'Extrude', Icon: MoveVertical, title: 'Face extrude — pick a face in the 3D view, then Fixed / Dyn / Ref', disabled: dis },
           { key: 'move', label: 'Move', Icon: Move, title: 'Move the panel — Relative / Absolute / To point', disabled: dis },
@@ -3861,15 +3889,15 @@ export function PanelEditor() {
       return (
         <div key={rowKey} ref={el => { const k = `vf-${vf.id}`; if (el) rowRefs.current.set(k, el); else rowRefs.current.delete(k); }}
           className={rowCardClass(sel, dragging, armedRowKey === rowKey)}>
-          <div className={`relative flex items-stretch ${sel ? 'bg-[#fff8ef]' : ''}`}>
-            {sel && <span className="pointer-events-none absolute left-0 top-[6px] bottom-[6px] w-[2px] rounded-r-full bg-orange-500/90" />}
+          <div className={`relative flex items-stretch ${sel ? ROW_SEL_HEAD : ''}`}>
+            {sel && <span className={ROW_SEL_BAR} />}
             {opts.member
               ? <span className="shrink-0 w-[6px] ml-[2px] self-stretch" />
               : grip(rowKey, rowIdx, 'Drag to reorder')}
             <div onClick={e => { stop(e); if (sel) setSelectedPanelRow(null); else setSelectedPanelRow(`vf-${vf.id}`, sid); }}
               className="flex-1 min-w-0 relative flex items-center gap-1 pl-0 pr-0.5 py-[4px] cursor-pointer">
               <RowNum label={label} active={sel} small={opts.member} />
-              <RowTypeBadge kind={opts.group ? opts.group.kind : opts.door ? 'door' : opts.back ? 'back' : 'body'} active={sel} doorBound={!!vf.doorBound} backBound={vfBackBound(vf)} />
+              <RowTypeBadge kind={opts.group ? opts.group.kind : opts.door ? 'door' : opts.back ? 'back' : 'body'} active={sel} />
               {opts.member && (opts.group || opts.door || opts.back) ? (
                 <span title={backPiece ? `${BACK_TYPE_TITLE[backPiece.placement]}${backPiece.placement === 'inner' ? ` · setback ${backPiece.setback} mm` : ''} — name comes from the group (edit it on the group row); select this row to change only this piece's type / setback` : opts.door && doorMemberType ? `${DOOR_TYPE_TITLE[doorMemberType.type]}${doorMemberType.leafCount === 2 ? ` · leaf ${doorMemberType.leaf + 1}/2` : ''} — name comes from the group (edit it on the group row)` : 'Name comes from the group (edit it on the group row)'}
                   className="flex-1 min-w-0 h-[22px] px-[5px] flex items-center gap-1.5 text-[11.5px] font-medium text-stone-500 truncate cursor-default select-none">
@@ -3925,8 +3953,8 @@ export function PanelEditor() {
       return (
         <div key={rowKey} ref={el => { if (el) rowRefs.current.set(rowKey, el); else rowRefs.current.delete(rowKey); }}
           className={rowCardClass(open, dragIndex === rowIdx, armedRowKey === rowKey)}>
-          <div className={`relative flex items-stretch ${selAll ? 'bg-[#fff8ef]' : ''}`}>
-            {selAll && <span className="pointer-events-none absolute left-0 top-[6px] bottom-[6px] w-[2px] rounded-r-full bg-orange-500/90" />}
+          <div className={`relative flex items-stretch ${selAll ? ROW_SEL_HEAD : ''}`}>
+            {selAll && <span className={ROW_SEL_BAR} />}
             {grip(rowKey, rowIdx, 'Drag to reorder (whole group)')}
             <div onClick={toggleRow} className="flex-1 min-w-0 relative flex items-center gap-1 pl-0 pr-0.5 py-[4px] cursor-pointer" title={open ? 'Collapse' : 'Expand — selects all panels in this group'}>
               <RowNum label={label} active={selAll} />
@@ -3941,7 +3969,7 @@ export function PanelEditor() {
             </div>
           </div>
           {open && (
-            <div className="yago-expand px-2 pt-2 pb-2" style={{ borderTop: '1px solid #f3e6d6', fontFamily: UI_FONT }} onClick={stop}>
+            <div className="yago-expand px-2 pt-2 pb-2" style={{ borderTop: '1px solid #efebe5', fontFamily: UI_FONT }} onClick={stop}>
               {(() => {
                 const editingVol = faceExtrudeMode && faceExtrudeCavityGroupId === g.id;
                 const relocating = !!volumePickMode && volumePickGroupId === g.id;
@@ -4124,8 +4152,8 @@ export function PanelEditor() {
         (picked.length > 1 ? ` Applies to ${picked.length} selected regions.` : '');
       return (
         <div key={rowKey} className={rowCardClass(open, dragIndex === rowIdx, armedRowKey === rowKey)}>
-          <div className={`relative flex items-stretch ${selAll ? 'bg-[#fff8ef]' : ''}`}>
-            {selAll && <span className="pointer-events-none absolute left-0 top-[6px] bottom-[6px] w-[2px] rounded-r-full bg-orange-500/90" />}
+          <div className={`relative flex items-stretch ${selAll ? ROW_SEL_HEAD : ''}`}>
+            {selAll && <span className={ROW_SEL_BAR} />}
             {grip(rowKey, rowIdx, 'Drag to reorder (whole group)')}
             <div onClick={toggleRow} className="flex-1 min-w-0 relative flex items-center gap-1 pl-0 pr-0.5 py-[4px] cursor-pointer" title={open ? 'Collapse' : `Expand — selects all ${noun}s in this group`}>
               <RowNum label={label} active={selAll} />
@@ -4140,7 +4168,7 @@ export function PanelEditor() {
             </div>
           </div>
           {open && (
-            <div className="yago-expand px-2 pt-2 pb-2" style={{ borderTop: '1px solid #f3e6d6', fontFamily: UI_FONT }} onClick={stop}>
+            <div className="yago-expand px-2 pt-2 pb-2" style={{ borderTop: '1px solid #efebe5', fontFamily: UI_FONT }} onClick={stop}>
               <div className="flex items-center gap-1 mb-1.5">
                 <PlacementSelect value={g.placement} onChange={v => { void setDoorPlacement(g.id, v); }} />
                 <FieldBox fixed label="T" title={`${Noun} thickness (mm)`}>{numInput('t', g.thickness)}{unitTxt('mm')}</FieldBox>
@@ -4301,8 +4329,8 @@ export function PanelEditor() {
         (picked.length > 1 ? ` Applies to ${picked.length} selected regions.` : '');
       return (
         <div key={rowKey} className={rowCardClass(open, dragIndex === rowIdx, armedRowKey === rowKey)}>
-          <div className={`relative flex items-stretch ${selAll ? 'bg-[#fff8ef]' : ''}`}>
-            {selAll && <span className="pointer-events-none absolute left-0 top-[6px] bottom-[6px] w-[2px] rounded-r-full bg-orange-500/90" />}
+          <div className={`relative flex items-stretch ${selAll ? ROW_SEL_HEAD : ''}`}>
+            {selAll && <span className={ROW_SEL_BAR} />}
             {grip(rowKey, rowIdx, 'Drag to reorder (whole group)')}
             <div onClick={toggleRow} className="flex-1 min-w-0 relative flex items-center gap-1 pl-0 pr-0.5 py-[4px] cursor-pointer" title={open ? 'Collapse' : 'Expand — selects all back panels in this group'}>
               <RowNum label={label} active={selAll} />
@@ -4317,7 +4345,7 @@ export function PanelEditor() {
             </div>
           </div>
           {open && (
-            <div className="yago-expand px-2 pt-2 pb-2" style={{ borderTop: '1px solid #f3e6d6', fontFamily: UI_FONT }} onClick={stop}>
+            <div className="yago-expand px-2 pt-2 pb-2" style={{ borderTop: '1px solid #efebe5', fontFamily: UI_FONT }} onClick={stop}>
               {/* KANAL BLOĞU — her tipte: solda büyük kesit diyagramı (kanallı: kanal + paylar; çakma: panelin arkasına çakılmış),
                   sağda üstte tip (Nailed / Grooved) ve bölme V / H / =, altta değer hücreleri. Çakmada setback ve paylar 0 ve pasif.
                   Başlık / açıklama / metin ipucu yok; geri bildirim görsel (hücre → diyagram + şema vurgusu). */}
