@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { AppWindow, ChevronRight, Columns3, DoorClosed, GripHorizontal, Hash, LayoutPanelTop, type LucideIcon, PanelLeft, PictureInPicture2, Pin, PinOff, Plus, Radius, Rows3, Send, SendToBack, SlidersHorizontal, Spline, Square, Box, Layers } from 'lucide-react';
+import { AppWindow, ChevronRight, Columns3, DoorClosed, GripHorizontal, Hash, LayoutPanelTop, type LucideIcon, PanelLeft, PictureInPicture2, Pin, PinOff, Plus, Radius, Rows3, Send, SendToBack, SlidersHorizontal, Spline, Square, Box, Layers, Container } from 'lucide-react';
 import { CameraType, OrthoMode, type Shape, SnapType, Tool, ViewMode, shapeById, useAppStore, useStoreFields } from '../store';
 import {
   type Vec3, convertReplicadToThreeGeometry, createReplicadBox, getReplicadVertices,
@@ -106,7 +106,7 @@ const RailTool: React.FC<Omit<RailSpec, 'key'> & { passive: boolean }> = ({ labe
 const RAIL_SEP: React.CSSProperties = { width: '28px', height: '1px', margin: '6px 0', background: 'rgba(60,50,40,0.14)', flexShrink: 0 };
 
 export const SidebarRail: React.FC<{ activeTab: 'parameters' | 'panel-editor'; hasShape: boolean }> = ({ activeTab, hasShape }) => {
-  const s = useStoreFields('raycastMode', 'setRaycastMode', 'volumePickMode', 'setVolumePickMode', 'volumePickGroupId', 'doorPickMode', 'setDoorPickMode', 'backPickMode', 'setBackPickMode',
+  const s = useStoreFields('raycastMode', 'setRaycastMode', 'volumePickMode', 'setVolumePickMode', 'volumePickGroupId', 'doorPickMode', 'setDoorPickMode', 'backPickMode', 'setBackPickMode', 'quickBodyMode', 'setQuickBodyMode',
     'vertexEditMode', 'setVertexEditMode', 'subtractionViewMode', 'setSubtractionViewMode', 'filletMode', 'setFilletMode', 'setFaceEditMode', 'selectedFilletFaces', 'clearFilletFaces', 'clearFilletFaceData', 'selectedShapeId', 'shapes');
   const sel = shapeById(s.selectedShapeId, s.shapes);
   const subN = sel?.subtractionGeometries?.filter(x => x !== null).length ?? 0;
@@ -121,6 +121,7 @@ export const SidebarRail: React.FC<{ activeTab: 'parameters' | 'panel-editor'; h
   ];
   const vp = (m: 'shelf' | 'divider') => s.volumePickMode === m && !s.volumePickGroupId;
   const panels: RailSpec[] = [
+    { key: 'body', label: 'Body', icon: Container, title: 'Quick body: corner joints, base (plain / legs / plinth) and back panel placed in one step', active: s.quickBodyMode, onClick: () => s.setQuickBodyMode(!s.quickBodyMode) },
     { key: 'panel', label: 'Panel', icon: LayoutPanelTop, title: 'Body panel: click a body face in the 3D view', active: s.raycastMode, onClick: () => s.setRaycastMode(!s.raycastMode) },
     { key: 'shelf', label: 'Shelf', icon: Rows3, title: 'Click inside a cavity in the 3D view', active: vp('shelf'), onClick: () => s.setVolumePickMode(vp('shelf') ? null : 'shelf') },
     { key: 'divider', label: 'Divider', icon: Columns3, title: 'Click inside a cavity in the 3D view', active: vp('divider'), onClick: () => s.setVolumePickMode(vp('divider') ? null : 'divider') },

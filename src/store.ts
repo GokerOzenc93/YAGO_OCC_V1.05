@@ -282,6 +282,34 @@ export interface PanelGroup {
   createdAt: number;
 }
 
+/* ───────── HIZLI GÖVDE (QuickBodyService) ───────── */
+/** Taban tipi: düz (yere oturur) / ayaklı (küp toplam yükseklik; paneller ayak kadar yukarıda) / bazalı (yanlar yere iner, alt panel baza kadar yukarıda). */
+export type QuickBodyBase = 'plain' | 'legs' | 'plinth';
+/** Köşe birleşimi: 'side' = yan panel köşeden geçer (üst/alt arada), 'horiz' = üst/alt panel geçer (yan arada). */
+export type JoinPass = 'side' | 'horiz';
+export type CornerKey = 'tl' | 'tr' | 'bl' | 'br';
+/** GÖVDE AYAKLARI (gövde `parameters.legs`): silindir ayak; yükseklik alt panelin alt yüzünden canlı okunur (`bottomVfId`), bulunamazsa `height`. */
+export interface BodyLegs {
+  count: 4 | 5 | 6; diameter: number; side: number; front: number; rear: number; height: number; bottomVfId?: string;
+}
+export interface QuickBodyConfig {
+  base: QuickBodyBase;
+  thickness: number;
+  joins: Record<CornerKey, JoinPass>;
+  /** Baza: yükseklik, ön bazanın önden geri çekilmesi, arka bazanın arkadan öne alınması, arka baza var mı. */
+  plinth: { height: number; front: number; rear: number; rearPlinth: boolean };
+  /** Ayaklar: bazalıda isteğe bağlı (count 0 = yok); ayaklı tabanda zorunlu. */
+  legs: { count: 0 | 4 | 5 | 6; height: number; diameter: number; side: number; front: number; rear: number };
+  back: { enabled: boolean; placement: BackPlacement; thickness: number; setback: number; inset: number; clear: { front: number; back: number; depth: number } };
+}
+export const DEFAULT_QUICK_BODY: QuickBodyConfig = {
+  base: 'plinth', thickness: 18,
+  joins: { tl: 'side', tr: 'side', bl: 'side', br: 'side' },
+  plinth: { height: 100, front: 50, rear: 50, rearPlinth: true },
+  legs: { count: 0, height: 100, diameter: 50, side: 60, front: 60, rear: 60 },   // bazalıda ayak varsayılan yok; Legs tabanına geçince 4
+  back: { enabled: true, placement: 'inner', thickness: 8, setback: 10, inset: 10, clear: { front: 0.5, back: 0.5, depth: 1 } },
+};
+
 export interface Shape {
   id: string; type: string;
   position: [number, number, number];
@@ -400,6 +428,11 @@ export interface AppState {
   selectedFilletFaceData: FilletFaceData[];
   addFilletFaceData: (d: FilletFaceData) => void;
   clearFilletFaceData: () => void;
+
+  /** HIZLI GÖVDE modu: köşe birleşimleri + taban (düz/ayaklı/bazalı) + arkalık tek seferde yerleştirilir. */
+  quickBodyMode: boolean; setQuickBodyMode: (b: boolean) => void;
+  quickBodyConfig: QuickBodyConfig; setQuickBodyConfig: (patch: Partial<QuickBodyConfig>) => void;
+  quickBodyBusy: boolean; setQuickBodyBusy: (b: boolean) => void;
 
   raycastMode: boolean; setRaycastMode: (b: boolean) => void;
   /** Yüz yakalamada önizlenen (henüz yerleşmemiş) VF — şeritteki ✓ bununla onaylar. */
@@ -598,7 +631,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   volumePickMode: null,
   setVolumePickMode: (m, groupId = null) => set({
     volumePickMode: m, volumePickGroupId: m ? groupId : null, volumePickCandidates: [], volumePickIndex: 0,
-    ...(m ? { raycastMode: false, raycastPendingVf: null, doorPickMode: false, doorPickCandidates: [], doorPickIndex: 0, backPickMode: false, backPickCandidates: [], backPickIndex: 0, placementName: '' } : {}),
+    ...(m ? { raycastMode: false, raycastPendingVf: null, doorPickMode: false, doorPickCandidates: [], doorPickIndex: 0, backPickMode: false, backPickCandidates: [], backPickIndex: 0, quickBodyMode: false, placementName: '' } : {}),
   }),
   volumePickGroupId: null,
   volumePickCandidates: [], volumePickIndex: 0,
@@ -628,7 +661,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   doorPickMode: false,
   setDoorPickMode: (b) => set({
     doorPickMode: b, doorPickCandidates: [], doorPickIndex: 0,
-    ...(b ? { raycastMode: false, raycastPendingVf: null, volumePickMode: null, volumePickGroupId: null, volumePickCandidates: [], volumePickIndex: 0, backPickMode: false, backPickCandidates: [], backPickIndex: 0, placementName: '' } : {}),
+    ...(b ? { raycastMode: false, raycastPendingVf: null, volumePickMode: null, volumePickGroupId: null, volumePickCandidates: [], volumePickIndex: 0, backPickMode: false, backPickCandidates: [], backPickIndex: 0, quickBodyMode: false, placementName: '' } : {}),
   }),
   doorPickCandidates: [], doorPickIndex: 0,
   setDoorPick: (c, i) => set({ doorPickCandidates: c, doorPickIndex: i }),
@@ -653,7 +686,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   backPickMode: false,
   setBackPickMode: (b) => set({
     backPickMode: b, backPickCandidates: [], backPickIndex: 0,
-    ...(b ? { raycastMode: false, raycastPendingVf: null, volumePickMode: null, volumePickGroupId: null, volumePickCandidates: [], volumePickIndex: 0, doorPickMode: false, doorPickCandidates: [], doorPickIndex: 0, placementName: '' } : {}),
+    ...(b ? { raycastMode: false, raycastPendingVf: null, volumePickMode: null, volumePickGroupId: null, volumePickCandidates: [], volumePickIndex: 0, doorPickMode: false, doorPickCandidates: [], doorPickIndex: 0, quickBodyMode: false, placementName: '' } : {}),
   }),
   backPickCandidates: [], backPickIndex: 0,
   setBackPick: (c, i) => set({ backPickCandidates: c, backPickIndex: i }),
@@ -667,10 +700,19 @@ export const useAppStore = create<AppState>((set, get) => ({
   addFilletFaceData: (d) => set((s) => ({ selectedFilletFaceData: [...s.selectedFilletFaceData, d] })),
   clearFilletFaceData: () => set({ selectedFilletFaceData: [] }),
 
+  quickBodyMode: false,
+  setQuickBodyMode: (b) => set({
+    quickBodyMode: b,
+    ...(b ? { placementName: '', raycastMode: false, raycastPendingVf: null, volumePickMode: null, volumePickGroupId: null, volumePickCandidates: [], volumePickIndex: 0, doorPickMode: false, doorPickCandidates: [], doorPickIndex: 0, backPickMode: false, backPickCandidates: [], backPickIndex: 0 } : {}),
+  }),
+  quickBodyConfig: DEFAULT_QUICK_BODY,
+  setQuickBodyConfig: (patch) => set((s) => ({ quickBodyConfig: { ...s.quickBodyConfig, ...patch } })),
+  quickBodyBusy: false, setQuickBodyBusy: (b) => set({ quickBodyBusy: b }),
+
   raycastMode: false,
   setRaycastMode: (b) => set({
     raycastMode: b, raycastPendingVf: null,
-    ...(b ? { placementName: '', volumePickMode: null, volumePickGroupId: null, volumePickCandidates: [], volumePickIndex: 0, doorPickMode: false, doorPickCandidates: [], doorPickIndex: 0, backPickMode: false, backPickCandidates: [], backPickIndex: 0 } : {}),
+    ...(b ? { placementName: '', volumePickMode: null, volumePickGroupId: null, volumePickCandidates: [], volumePickIndex: 0, doorPickMode: false, doorPickCandidates: [], doorPickIndex: 0, backPickMode: false, backPickCandidates: [], backPickIndex: 0, quickBodyMode: false } : {}),
   }),
   raycastPendingVf: null, setRaycastPendingVf: (v) => set({ raycastPendingVf: v }),
   placementName: '', setPlacementName: (s) => set({ placementName: s }),

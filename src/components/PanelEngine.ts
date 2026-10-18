@@ -647,6 +647,12 @@ export async function rebuildPanelsForParent(parentShapeId: string, opts?: Rebui
   }
 }
 
+/** Gövdenin rebuild kuyruğu boşalana kadar bekler (sürmekte olan + sıradaki); `rebuildPanelsForParent` kuyruğa alınınca erken döner, bu yüzden sıralı akışlar bunu kullanır. */
+export async function whenRebuildIdle(parentShapeId: string, timeoutMs = 60000): Promise<void> {
+  const t0 = Date.now();
+  while ((inFlight.has(parentShapeId) || pending.has(parentShapeId)) && Date.now() - t0 < timeoutMs) await new Promise(r => setTimeout(r, 40));
+}
+
 function mergeResolved<T extends { id: string; resolvedValue?: number }>(steps: T[], resolved: Array<{ id: string; value: number }>): T[] | null {
   if (!resolved.length) return null;
   const byId = new Map(resolved.map(r => [r.id, r.value]));
@@ -1200,7 +1206,10 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
       const eN = new THREE.Vector3(...step.faceNormal).normalize();
       const align = eN.dot(n);
       if (Math.abs(align) < 0.7) continue;
-      if (signedExtrudeAmountOf(p, step, eN) * align > 0.01) return true;
+      // Yalnız UZAYAN adım (amount > 0) yetki verir: kısalan uç yeni alan kaplamaz — karşı uçtaki −X kısaltma
+      // (amount·eN = +X) +X yüzüne "doğru" sayılıp sonraki alt paneli yanların üstüne bastırıyordu (hızlı gövde, ayaklı).
+      const amt = signedExtrudeAmountOf(p, step, eN);
+      if (amt > 0.01 && amt * align > 0.01) return true;
     }
     return false;
   };

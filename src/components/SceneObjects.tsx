@@ -18,6 +18,7 @@ import {
   type DoorMemberRect, DOOR_GAP, DOOR_THICKNESS, collectDoorCuts, confirmDoorPick, doorCandidatesAt, doorMembersOf, doorPlaneAxes, doorSlabPolygon, isDoorPanel, pickRectFor,
   rayDoorEntry, splitDoorAtPanel,
 } from './DoorService';
+import { bodyLegsOf, legHeightOf, legSpots } from './QuickBodyService';
 import { BACK_GAP, BACK_THICKNESS, backCandidatesAt, backPickObstacle, backPreviewStamp, backPickRect, backSlabPolygon, collectBackCuts, confirmBackPick, isBackPanel, rayBackEntry, splitBackAtPanel, vfBackBound } from './BackService';
 
 /* Sahne nesneleri — canvas içinde şekil başına çizilen her şey: PanelDrawing (panel mesh/kenar/seçim tonu, ref-yüz),
@@ -893,6 +894,43 @@ function buildSurfaceMeshes(vf: VirtualFace): { geo: THREE.BufferGeometry; edgeG
   return { geo, edgeGeo };
 }
 
+/* GÖVDE AYAKLARI: silindir ayak + taban diski, gövde-yerel çerçevede (ShapeWithTransform grubunun çocuğu). Yükseklik alt panelin
+   alt yüzünden canlı okunur (QuickBodyService.legHeightOf); seçili ayak satırında ayaklar vurgulanır. Tıklanmaz. */
+const LEG_COLORS = { body: '#4a4542', top: '#6b6460', selected: '#c2410c' } as const;
+export const CabinetLegs: React.FC<{ shape: any }> = ({ shape }) => {
+  const { shapes, selectedPanelRow, viewMode } = useStoreFields('shapes', 'selectedPanelRow', 'viewMode');
+  const legs = bodyLegsOf(shape);
+  const data = useMemo(() => {
+    if (!legs) return null;
+    const bb = localBboxOf(effectiveBodyGeometry(shape)); if (!bb) return null;
+    const h = legHeightOf(shape, legs, shapes);
+    if (!(h > 0.5)) return null;
+    const W = bb.max.x - bb.min.x, D = bb.max.z - bb.min.z;
+    const spots = legSpots(legs, W, D).map(p => ({ x: bb.min.x + p.x, z: bb.min.z + p.z }));
+    return { h, y0: bb.min.y, r: Math.max(4, legs.diameter / 2), spots };
+  }, [legs, shape, shapes]);
+  if (!data || viewMode === ViewMode.WIREFRAME) return null;
+  const active = selectedPanelRow === `legs-${shape.id}`;
+  const col = active ? LEG_COLORS.selected : LEG_COLORS.body;
+  const xray = viewMode === ViewMode.XRAY;
+  return (
+    <group raycast={() => null}>
+      {data.spots.map((p, i) => (
+        <group key={i} position={[p.x, data.y0, p.z]}>
+          <mesh position={[0, data.h / 2, 0]} castShadow receiveShadow raycast={() => null}>
+            <cylinderGeometry args={[data.r, data.r, data.h, 28]} />
+            <meshStandardMaterial color={col} metalness={0.05} roughness={0.85} transparent={xray} opacity={xray ? 0.35 : 1} />
+          </mesh>
+          <mesh position={[0, 1.5, 0]} raycast={() => null}>
+            <cylinderGeometry args={[data.r + 6, data.r + 6, 3, 28]} />
+            <meshStandardMaterial color={active ? LEG_COLORS.selected : LEG_COLORS.top} metalness={0.05} roughness={0.9} transparent={xray} opacity={xray ? 0.35 : 1} />
+          </mesh>
+        </group>
+      ))}
+    </group>
+  );
+};
+
 export const VirtualFaceOverlay: React.FC<{ shape: any }> = ({ shape }) => {
   const { virtualFaces, setSelectedPanelRow, panelSelectMode } = useStoreFields('virtualFaces', 'setSelectedPanelRow', 'panelSelectMode');
   const [hoveredId, setHoveredId] = useState<string | null>(null);
@@ -1717,6 +1755,7 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
         {isSelected && S.backPickMode && <BackPickOverlay shape={shape} />}
         {S.faceExtrudeMode && S.faceExtrudeCavityGroupId && <CavityEditOverlay shape={shape} />}
         <VirtualFaceOverlay shape={shape} />
+        <CabinetLegs shape={shape} />
       </group>
 
       {isSelected && S.activeTool !== Tool.SELECT && groupRef.current && !shape.isReferenceBox && !S.panelSelectMode && (

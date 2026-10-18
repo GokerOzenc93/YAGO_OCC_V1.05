@@ -1,18 +1,19 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowUp, Box, Check, ChevronDown, ChevronRight, Columns3, Crosshair, DoorClosed, Equal, GripVertical, LayoutPanelTop, Lock, type LucideIcon, Minus, Move, Move3d,
-  MoveVertical, Pencil, Pin, Plus, RotateCcw, RotateCw, Rows3, SendToBack, Shapes, SlidersHorizontal, SplitSquareHorizontal, SplitSquareVertical, Trash2, Unlink, Unlock, X,
+  MoveVertical, Pencil, Pin, Plus, RotateCcw, Footprints, RotateCw, Rows3, SendToBack, Shapes, SlidersHorizontal, SplitSquareHorizontal, SplitSquareVertical, Trash2, Unlink, Unlock, X,
 } from 'lucide-react';
 import * as THREE from 'three';
 import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import {
-  type BackEdgeRel, type BackGroup, type BackPlacement, type CavityBox, type DoorAlign, type DoorGroup, type DoorType, type PanelGroup, type Shape, type VirtualFace, childPanelsOf, panelOfVf, requestRebuild, shapeById, useAppStore, useStoreFields,
+  type BackEdgeRel, type BackGroup, type BackPlacement, type CavityBox, type CornerKey, type DoorAlign, type DoorGroup, type DoorType, type JoinPass, type PanelGroup, type QuickBodyBase, type QuickBodyConfig, type Shape, type VirtualFace, childPanelsOf, panelOfVf, requestRebuild, shapeById, useAppStore, useStoreFields,
 } from '../store';
 import { UI_FONT } from './Ui';
 import { confirmBodyPanelPlacement } from './SceneObjects';
-import { axisDirToVec, convertReplicadToThreeGeometry, createPanelFromVirtualFace, dominantAxisLabel, genId, getFacesAndGroups, isFlatNormal, localBboxOf, round1 } from './Geometry';
+import { axisDirToVec, convertReplicadToThreeGeometry, createPanelFromVirtualFace, dominantAxisLabel, effectiveBodyGeometry, genId, getFacesAndGroups, isFlatNormal, localBboxOf, round1 } from './Geometry';
+import { applyQuickBody, bodyLegsOf, effectiveJoins, legHeightOf, legSpots, panelOrderFor, setBodyLegs } from './QuickBodyService';
 import { clipPolyToConvex, polyArea } from './FaceRegion';
 import {
   confirmPanelMoveRef, confirmPanelRotateRef, confirmRefFaceExtrude, deleteExtrudeStep, deleteTransformStep, executeFaceExtrude, executePanelMove,
@@ -1142,10 +1143,13 @@ function HintCell({ hintKey, active, onHint, label, accent, passive, children }:
  *  durması kafa karıştırıcı"). Sınır paneli sağda, arkadan öne uzanır; arkalık parçası üstte (arka tarafta), bollaştırılmış kanal.
  *  active = vurgulanan ölçü: 't' kalınlık · 'setback' arkadan mesafe · 'gf' / 'gb' / 'gd' ön / arka / dip payı.
  *  Değerler yazılı: kutudaki sayıyla aynı (kullanıcı hangi sayının neresi olduğunu görsün). */
-function BackGrooveDiagram({ active, grooved, t, setback, front, rear, depth, className }: { active: string | null; grooved: boolean; t: number; setback: number; front: number; rear: number; depth: number; className?: string }) {
+/** @param inset verilirse kanala giriş derinliği (In) ölçekli çizilir ve etiketlenir (hızlı gövde; arkalık kartında kenar başına olduğundan verilmez). */
+function BackGrooveDiagram({ active, grooved, t, setback, front, rear, depth, inset, className }: { active: string | null; grooved: boolean; t: number; setback: number; front: number; rear: number; depth: number; inset?: number; className?: string }) {
   const W = BACK_DIAGRAM_W, H = BACK_DIAGRAM_H;
   const O = '#ea580c', OF = '#fdba74', MUTE = '#b8aea0', TXT = '#8f877c', DARK = '#57534e';
-  const T = 15, PX0 = 132, PX1 = 164, IN = 16, D = 7, F = 6, R = 6;
+  const T = 15, PX0 = 132, PX1 = 164, D = 7, F = 6, R = 6;
+  // Panel genişliği 32 px ≈ 18 mm; In verilmişse giriş o ölçekte (6..24 px), yoksa temsili 16
+  const IN = inset == null ? 16 : Math.max(6, Math.min(24, (inset / 18) * (PX1 - PX0)));
   // Kanallı: panelin arka yüzü ÜSTTE (rear0), arkalık S kadar öne (aşağı) içerde, panele IN girer. Çakma: arkalık panelin ARKASINDA
   // (üstünde), ucunu örter ve panelin DIŞ yüzünde biter (sınırı geçmez).
   const rear0 = grooved ? 20 : 36, S = grooved ? 26 : 0;
@@ -1188,6 +1192,11 @@ function BackGrooveDiagram({ active, grooved, t, setback, front, rear, depth, cl
         {txt(W - 6, gy0 + 3, `R ${f1(rear)}`, 'gb', 'end')}
         {txt(W - 6, gy1 + 7, `F ${f1(front)}`, 'gf', 'end')}
         {txt(PX0 + IN + D / 2, gy1 + 13, `D ${f1(depth)}`, 'gd')}
+        {inset != null && <>
+          {on('in') && <rect x={PX0} y={by0} width={IN} height={T} fill={OF} stroke={O} strokeWidth={1} />}
+          <g stroke={on('in') ? O : '#8f877c'} strokeWidth={on('in') ? 1.3 : 0.9}><line x1={PX0} y1={by0 + T / 2} x2={PX0 + IN} y2={by0 + T / 2} /><line x1={PX0 + IN} y1={by0 + 3} x2={PX0 + IN} y2={by1 - 3} /></g>
+          {txt(PX0 - 4, by1 + 12, `In ${f1(inset)}`, 'in', 'end')}
+        </>}
       </> : (
         <text x={PX1} y={by0 - 5} fontSize={9.2} fontWeight={700} fill={TXT} textAnchor="end" fontFamily={UI_FONT}>nailed on</text>
       )}
@@ -2962,9 +2971,9 @@ const ROW_TRAIL_W = 137;          // 6 × 22px düğme (5 araç: şekil · kapak
 const ROW_SEL_HEAD = 'bg-[#faf8f5]';
 const ROW_SEL_BAR = 'pointer-events-none absolute left-0 top-[7px] bottom-[7px] w-[2px] rounded-r-full bg-orange-300/70';
 const MEMBER_INSET = 8;           // grup kartı gövdesinin yatay dolgusu (px-2)
-type RowKind = 'body' | 'shelf' | 'divider' | 'door' | 'back';
-const ROW_KIND_ICON: Record<RowKind, LucideIcon> = { body: LayoutPanelTop, shelf: Rows3, divider: Columns3, door: DoorClosed, back: SendToBack };
-const ROW_KIND_TITLE: Record<RowKind, string> = { body: 'Body panel', shelf: 'Shelf', divider: 'Divider', door: 'Door', back: 'Back panel' };
+type RowKind = 'body' | 'shelf' | 'divider' | 'door' | 'back' | 'legs';
+const ROW_KIND_ICON: Record<RowKind, LucideIcon> = { body: LayoutPanelTop, shelf: Rows3, divider: Columns3, door: DoorClosed, back: SendToBack, legs: Footprints };
+const ROW_KIND_TITLE: Record<RowKind, string> = { body: 'Body panel', shelf: 'Shelf', divider: 'Divider', door: 'Door', back: 'Back panel', legs: 'Legs' };
 const rowCardClass = (open: boolean, dragging: boolean, armed: boolean) =>
   `group/row relative flex flex-col rounded-[10px] overflow-hidden transition-[background-color,box-shadow,opacity,transform] duration-150 ease-out
    ${open ? 'bg-white ring-1 ring-[#e2dbd1] shadow-[0_1px_2px_rgba(68,64,60,0.04),0_8px_20px_-16px_rgba(68,64,60,0.25)] my-1'
@@ -3192,6 +3201,288 @@ const LIST_CSS = `@keyframes yagoExpand{from{opacity:0;clip-path:inset(0 0 100% 
 
 type StepEdit = { id: string; v: string } | null;
 
+/* ───────────────────────────── HIZLI GÖVDE (Body) ─────────────────────────────
+   Tek seferlik yapılandırma: taban (Plain / Legs / Plinth), dört köşenin birleşimi (yalnız büyütülmüş köşe detayları — hangi panel üstten biniyor),
+   baza / ayak ölçüleri (yan görünüş + plan), arkalık (arkalık kartıyla aynı kesit diyagramı). Onay → QuickBodyService.applyQuickBody.
+   Görsel dil arkalık kartıyla ortak: HintCell + diyagram vurgusu, FIELD_INPUT, BackTypeButtons, BackGrooveDiagram. */
+const QB_BASE_ITEMS: SegItem[] = [
+  { key: 'plain', label: 'Plain', title: 'Sits on the floor: bottom panel at the base, any corner joints' },
+  { key: 'legs', label: 'Legs', title: 'On legs: the cube is the total height — panels sit leg-height above the floor, legs underneath' },
+  { key: 'plinth', label: 'Plinth', title: 'Plinth: sides reach the floor, bottom panel raised by the plinth height, kick panels front / rear' },
+];
+const QB_CORNER_TITLE: Record<CornerKey, string> = { tl: 'Top-left', tr: 'Top-right', bl: 'Bottom-left', br: 'Bottom-right' };
+
+/** Taslaklı sayı girişi (arkalık kartının numInput'u gibi): Enter / blur onaylar, Esc geri alır. */
+function QbNum({ value, onCommit, passive, w = 34, min = 0, max }: { value: number; onCommit: (v: number) => void; passive?: boolean; w?: number; min?: number; max?: number }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  useEffect(() => { setDraft(null); }, [value]);
+  const commit = () => {
+    if (draft == null) return;
+    const v = parseFloat(draft.replace(',', '.')); setDraft(null);
+    if (!Number.isFinite(v)) return;
+    const c = Math.min(max ?? Infinity, Math.max(min, v));
+    if (Math.abs(c - value) > 1e-6) onCommit(round1(c));
+  };
+  return (
+    <input type="text" inputMode="decimal" value={passive ? '—' : draft ?? fmt1(value)} disabled={passive}
+      onChange={e => setDraft(e.target.value)} onBlur={commit} onFocus={e => e.target.select()}
+      onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setDraft(null); }} onClick={stop}
+      className="yago-field" style={{ ...FIELD_INPUT, width: w, flexShrink: 0, textAlign: 'right', ...(passive ? { color: '#c7beb1', cursor: 'default' } : {}) }} />
+  );
+}
+/** Küçük anahtar (koyu = açık). */
+function QbSwitch({ on, onToggle, title, disabled }: { on: boolean; onToggle: () => void; title?: string; disabled?: boolean }) {
+  return (
+    <button type="button" role="switch" aria-checked={on} title={title} disabled={disabled} onClick={e => { stop(e); if (!disabled) onToggle(); }}
+      className={`relative shrink-0 w-[28px] h-[16px] rounded-full transition-colors duration-150 ${disabled ? 'bg-[#ebe5dc] cursor-not-allowed' : on ? 'bg-[#44403c]' : 'bg-[#d6cfc3] hover:bg-[#c9c1b4]'}`}>
+      <span className={`absolute top-[2px] w-[12px] h-[12px] rounded-full bg-white shadow-[0_1px_2px_rgba(40,30,20,0.3)] transition-[left] duration-150 ${on ? 'left-[14px]' : 'left-[2px]'}`} />
+    </button>
+  );
+}
+/** Küçük seçim kutusu (adet gibi). */
+function QbSelect<T extends string>({ value, options, onChange, passive, w = 44 }: { value: T; options: Array<{ v: T; label: string }>; onChange: (v: T) => void; passive?: boolean; w?: number }) {
+  return (
+    <select value={value} disabled={passive} onChange={e => onChange(e.target.value as T)} onClick={stop}
+      className="yago-field appearance-none cursor-pointer"
+      style={{ ...FIELD_INPUT, width: w, flexShrink: 0, textAlign: 'right', paddingRight: 2, ...(passive ? { color: '#c7beb1', cursor: 'default' } : {}) }}>
+      {options.map(o => <option key={o.v} value={o.v}>{o.label}</option>)}
+    </select>
+  );
+}
+
+/* DÖRT KÖŞE: her köşe büyütülmüş birleşim detayı — hangi panelin üstten bindiği (köşeden geçtiği) görünür; tık değiştirir. */
+const QB_TILE_W = 448, QB_TILE_H = 104;
+function CornerJointTiles({ joins, lockBottom, active, onCorner, onHover }: {
+  joins: Record<CornerKey, JoinPass>; lockBottom: boolean; active: string | null; onCorner: (c: CornerKey) => void; onHover: (c: CornerKey | null) => void;
+}) {
+  const O = '#ea580c', PANEL = '#ebe4d9', PANEL_S = '#a39a8d', PASS = '#d6c9b4', PASS_S = '#6b6460', TXT = '#8f877c';
+  const corners: CornerKey[] = ['tl', 'tr', 'bl', 'br'];
+  const TW = 104, TH = QB_TILE_H, GAP = (QB_TILE_W - 4 * TW) / 5;
+  const BOX_W = 74, BOX_H = 54, T = 16;
+  return (
+    <svg viewBox={`0 0 ${QB_TILE_W} ${QB_TILE_H}`} preserveAspectRatio="xMidYMid meet" className="block w-full" aria-hidden>
+      {corners.map((c, i) => {
+        const x = GAP + i * (TW + GAP), locked = lockBottom && (c === 'bl' || c === 'br');
+        const side = joins[c] === 'side', hi = active === `c-${c}`;
+        const left = c === 'tl' || c === 'bl', top = c === 'tl' || c === 'tr';
+        const bx = x + (TW - BOX_W) / 2, by = 8;
+        // Köşe kutusu: dış köşe kutunun o köşesinde; yan şerit dikey, üst/alt şerit yatay.
+        const vx = left ? bx : bx + BOX_W - T;              // yan şeridin x'i
+        const hy = top ? by : by + BOX_H - T;               // yatay şeridin y'si
+        const vRect = { x: vx, y: side ? by : (top ? by + T : by), w: T, h: side ? BOX_H : BOX_H - T };
+        const hRect = { x: side ? (left ? bx + T : bx) : bx, y: hy, w: side ? BOX_W - T : BOX_W, h: T };
+        const passRect = side ? vRect : hRect, buttRect = side ? hRect : vRect;
+        const fillP = locked ? '#ddd6cb' : hi ? '#fdba74' : PASS, strokeP = locked ? '#b8aea0' : hi ? O : PASS_S;
+        const label = side ? 'Side passes' : (top ? 'Top passes' : 'Bottom passes');
+        // Eğik çizgi: geçen panelin ucu, binen köşeyi ok ile işaret
+        return (
+          <g key={c} onClick={e => { stop(e); if (!locked) onCorner(c); }} onMouseEnter={() => onHover(c)} onMouseLeave={() => onHover(null)} style={{ cursor: locked ? 'default' : 'pointer' }}>
+            <title>{`${QB_CORNER_TITLE[c]}: ${side ? 'side panel passes the corner — top/bottom sits between the sides' : 'top/bottom panel passes the corner — side sits between'}${locked ? ' · fixed in plinth mode (sides reach the floor)' : ' · click to swap'}`}</title>
+            <rect x={x} y={1} width={TW} height={TH - 2} rx={8} fill={hi && !locked ? '#fff7f0' : '#ffffff'} stroke={hi && !locked ? O : '#e6e0d6'} strokeWidth={hi && !locked ? 1.3 : 1} />
+            {/* iç boşluk */}
+            <rect x={bx} y={by} width={BOX_W} height={BOX_H} fill="#f6f2ec" stroke="none" />
+            <rect x={buttRect.x} y={buttRect.y} width={buttRect.w} height={buttRect.h} fill={locked ? '#efe9df' : PANEL} stroke={locked ? '#cfc7bb' : PANEL_S} strokeWidth={1} />
+            <rect x={passRect.x} y={passRect.y} width={passRect.w} height={passRect.h} fill={fillP} stroke={strokeP} strokeWidth={1.2} />
+            {/* kalınlık kenar çizgisi: geçen panelin görünen ucu */}
+            <line x1={side ? vx + (left ? T : 0) : (left ? bx : bx + BOX_W)} y1={side ? (top ? by : by + BOX_H) : hy + (top ? T : 0)}
+              x2={side ? vx + (left ? T : 0) : (left ? bx + T : bx + BOX_W - T)} y2={side ? (top ? by + T : by + BOX_H - T) : hy + (top ? T : 0)}
+              stroke={strokeP} strokeWidth={1.2} />
+            <text x={x + TW / 2} y={TH - 24} fontSize={10} fontWeight={700} fill={locked ? '#b8aea0' : hi ? O : '#57534e'} textAnchor="middle" fontFamily={UI_FONT}>{QB_CORNER_TITLE[c]}</text>
+            <text x={x + TW / 2} y={TH - 11} fontSize={9.4} fontWeight={600} fill={locked ? '#c7beb1' : TXT} textAnchor="middle" fontFamily={UI_FONT}>{locked ? `${label} · fixed` : label}</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+/* Plan görünüşü (üstten; ön altta): ayak yerleri, Ø, yan / ön / arka mesafeleri. Tam genişlik. */
+const QB_PLAN_W = 448, QB_PLAN_H = 176;
+function LegsPlanDiagram({ legs, W, D, active, className }: {
+  legs: { count: number; diameter: number; side: number; front: number; rear: number }; W: number; D: number; active: string | null; className?: string;
+}) {
+  const VW = QB_PLAN_W, VH = QB_PLAN_H;
+  const O = '#ea580c', OF = '#fdba74', MUTE = '#b8aea0', TXT = '#8f877c', DARK = '#57534e';
+  const on = (k: string) => active === k;
+  const PX0 = 64, PW = VW - PX0 - 70, PY0 = 22, PH = VH - PY0 - 26;
+  const s = Math.max(1e-6, Math.min(PW / W, PH / D));
+  const w = W * s, d = D * s, x0 = PX0 + (PW - w) / 2, y0 = PY0 + (PH - d) / 2, x1 = x0 + w, y1 = y0 + d;
+  const r = Math.max(3, (legs.diameter / 2) * s);
+  const spots = legSpots({ count: (legs.count || 4) as 4 | 5 | 6, side: legs.side, front: legs.front, rear: legs.rear }, W, D).map(p => ({ x: x0 + p.x * s, y: y0 + p.z * s }));   // ön (+Z) altta
+  const hi = on('ld') || on('lc');
+  const dim = (xa: number, ya: number, xb: number, yb: number, k: string) => {
+    const h = on(k); const vert = Math.abs(xb - xa) < 0.01;
+    return (
+      <g stroke={h ? O : MUTE} strokeWidth={h ? 1.4 : 0.9}>
+        <line x1={xa} y1={ya} x2={xb} y2={yb} />
+        {vert ? <><line x1={xa - 3.5} y1={ya} x2={xa + 3.5} y2={ya} /><line x1={xb - 3.5} y1={yb} x2={xb + 3.5} y2={yb} /></>
+          : <><line x1={xa} y1={ya - 3.5} x2={xa} y2={ya + 3.5} /><line x1={xb} y1={yb - 3.5} x2={xb} y2={yb + 3.5} /></>}
+      </g>
+    );
+  };
+  const txt = (x: number, y: number, str: string, k: string, anchor: 'start' | 'middle' | 'end' = 'middle') => (
+    <text x={x} y={y} fontSize={10.5} fontWeight={700} fill={on(k) ? O : DARK} textAnchor={anchor} fontFamily={UI_FONT} style={{ fontVariantNumeric: 'tabular-nums' }}>{str}</text>
+  );
+  const first = spots[0], rearLeg = spots[3] ?? spots[2];
+  return (
+    <svg viewBox={`0 0 ${VW} ${VH}`} preserveAspectRatio="xMidYMid meet" className={`block rounded-[8px] bg-[#faf7f2] ring-1 ring-[#ebe5dc] ${className ?? ''}`} aria-hidden>
+      <text x={10} y={13} fontSize={9.4} fill={TXT} fontFamily={UI_FONT}>plan view · rear at top</text>
+      <text x={10} y={VH - 8} fontSize={9.4} fill={TXT} fontFamily={UI_FONT}>front ↓</text>
+      <rect x={x0} y={y0} width={w} height={d} fill="#f3ede4" stroke="#a39a8d" strokeWidth={1} />
+      <text x={(x0 + x1) / 2} y={y0 - 7} fontSize={9.4} fill={TXT} fontFamily={UI_FONT} textAnchor="middle">{`W ${fmt1(W)}`}</text>
+      <text x={x1 + 44} y={(y0 + y1) / 2 + 3} fontSize={9.4} fill={TXT} fontFamily={UI_FONT}>{`D ${fmt1(D)}`}</text>
+      {spots.map((p, i) => (
+        <g key={i}>
+          <circle cx={p.x} cy={p.y} r={r + 3} fill="none" stroke={hi ? O : '#cfc7bb'} strokeWidth={0.7} strokeDasharray="1.8 1.8" />
+          <circle cx={p.x} cy={p.y} r={r} fill={hi ? OF : '#d9d2c6'} stroke={hi ? O : '#78716c'} strokeWidth={1} />
+          <line x1={p.x - r * 0.45} y1={p.y} x2={p.x + r * 0.45} y2={p.y} stroke={hi ? O : '#78716c'} strokeWidth={0.7} />
+          <line x1={p.x} y1={p.y - r * 0.45} x2={p.x} y2={p.y + r * 0.45} stroke={hi ? O : '#78716c'} strokeWidth={0.7} />
+        </g>
+      ))}
+      {/* Ölçüler dışarıda: yan = altta (x0 → ön-sol ayak), ön = solda (ön-sol ayak → ön kenar), arka = sağda (arka kenar → arka-sağ ayak) */}
+      {first && <>{dim(x0, y1 + 11, first.x, y1 + 11, 'ls')}<line x1={first.x} y1={first.y} x2={first.x} y2={y1 + 14} stroke={MUTE} strokeWidth={0.6} strokeDasharray="1.5 1.5" />{txt((x0 + first.x) / 2, y1 + 23, fmt1(legs.side), 'ls')}</>}
+      {first && <>{dim(x0 - 11, first.y, x0 - 11, y1, 'lf')}<line x1={x0 - 14} y1={first.y} x2={first.x} y2={first.y} stroke={MUTE} strokeWidth={0.6} strokeDasharray="1.5 1.5" />{txt(x0 - 15, (first.y + y1) / 2 + 4, fmt1(legs.front), 'lf', 'end')}</>}
+      {rearLeg && <>{dim(x1 + 11, y0, x1 + 11, rearLeg.y, 'lr')}<line x1={rearLeg.x} y1={rearLeg.y} x2={x1 + 14} y2={rearLeg.y} stroke={MUTE} strokeWidth={0.6} strokeDasharray="1.5 1.5" />{txt(x1 + 15, (y0 + rearLeg.y) / 2 + 4, fmt1(legs.rear), 'lr', 'start')}</>}
+      {spots[2] && txt(spots[2].x + r + 5, spots[2].y + 4, `Ø ${fmt1(legs.diameter)}`, 'ld', 'start')}
+      {txt(x1 - 4, y1 - 6 - r * 2 - 4, `${legs.count || 4} legs`, 'lc', 'end')}
+    </svg>
+  );
+}
+
+/* Ayak bloğu: plan diyagramı (tam genişlik) + 3 sütun hücre. Hızlı gövde ve kalıcı Legs satırı ortak kullanır. */
+const QB_CELL_ROW = { gridAutoRows: `${BACK_ROW_H}px`, rowGap: BACK_ROW_GAP } as const;
+function LegsBlock({ legs, W, D, heightReadout, heightEditable, countOptions, onChange, hint, onHint }: {
+  legs: { count: number; height: number; diameter: number; side: number; front: number; rear: number }; W: number; D: number;
+  heightReadout?: number; heightEditable?: boolean; /** boş = adet hücresi yok (adet gövde bloğunda seçilir) */ countOptions: number[]; onChange: (p: Partial<{ count: number; height: number; diameter: number; side: number; front: number; rear: number }>) => void;
+  hint: string | null; onHint: (k: string | null) => void;
+}) {
+  const h = heightReadout ?? legs.height;
+  return (
+    <div className="flex flex-col gap-1.5" onMouseLeave={() => onHint(null)}>
+      <LegsPlanDiagram legs={legs} W={W} D={D} active={hint} className="w-full" />
+      <div className="grid grid-cols-3 gap-x-1" style={QB_CELL_ROW}>
+        {countOptions.length > 0 ? (
+          <HintCell label="Legs" hintKey="lc" active={hint === 'lc'} onHint={onHint}>
+            <QbSelect value={String(legs.count)} options={countOptions.map(n => ({ v: String(n), label: n === 0 ? 'None' : String(n) }))} onChange={v => onChange({ count: parseInt(v, 10) })} />
+          </HintCell>
+        ) : (
+          <div className="min-w-0 h-full pl-2 pr-1.5 flex items-center gap-1 rounded-[7px] bg-[#f6f2ec]" title="Leg layout">
+            <span className="flex-1 min-w-0 truncate text-[10px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]">Layout</span>
+            <span className="whitespace-nowrap text-[11px] font-semibold text-stone-500">{legs.count === 5 ? '4 + centre' : legs.count === 6 ? '4 + front/rear' : 'corners'}</span>
+          </div>
+        )}
+        <HintCell label="Ø" hintKey="ld" active={hint === 'ld'} onHint={onHint}><QbNum value={legs.diameter} min={5} onCommit={v => onChange({ diameter: v })} /></HintCell>
+        <HintCell label="Height" hintKey="lh" active={hint === 'lh'} onHint={onHint} passive={!heightEditable}>
+          {heightEditable ? <QbNum value={legs.height} min={1} onCommit={v => onChange({ height: v })} />
+            : <span className="whitespace-nowrap pr-1" style={{ ...FIELD_INPUT, width: 'auto', color: countOptions.length ? '#57534e' : '#c7beb1' }} title={countOptions.length ? "Read from the bottom panel's underside" : '= plinth height'}>{fmt1(h)}</span>}
+        </HintCell>
+        <HintCell label="Side" hintKey="ls" active={hint === 'ls'} onHint={onHint}><QbNum value={legs.side} onCommit={v => onChange({ side: v })} /></HintCell>
+        <HintCell label="Front" hintKey="lf" active={hint === 'lf'} onHint={onHint}><QbNum value={legs.front} onCommit={v => onChange({ front: v })} /></HintCell>
+        <HintCell label="Rear" hintKey="lr" active={hint === 'lr'} onHint={onHint}><QbNum value={legs.rear} onCommit={v => onChange({ rear: v })} /></HintCell>
+      </div>
+    </div>
+  );
+}
+
+/* HIZLI GÖVDE PANELİ — liste alanının üstünde (kaydırılan alanda; üst şerit yapışık). Diyagramlar tam genişlik, hücreler altında 3 sütun. */
+function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onApply, onExit }: {
+  shape: Shape; cfg: QuickBodyConfig; setCfg: (p: Partial<QuickBodyConfig>) => void; busy: boolean; existingCount: number; onApply: () => void; onExit: () => void;
+}) {
+  const [hint, setHint] = useState<string | null>(null);
+  const onHint = (k: string | null) => setHint(k);
+  const bb = localBboxOf(effectiveBodyGeometry(shape));
+  const W = bb ? bb.max.x - bb.min.x : 600, H = bb ? bb.max.y - bb.min.y : 720, D = bb ? bb.max.z - bb.min.z : 560;
+  const joins = effectiveJoins(cfg);
+  const isPlinth = cfg.base === 'plinth', isLegs = cfg.base === 'legs';
+  const legCount = isLegs ? (cfg.legs.count || 4) : isPlinth ? cfg.legs.count : 0;
+  const panelCount = 4 + (isPlinth ? 1 + (cfg.plinth.rearPlinth ? 1 : 0) : 0);
+  const { cyclic } = panelOrderFor(joins);
+  // Taban değişince ayak: Legs → en az 4; Plinth → otomatik None (Goker); Plain → yok.
+  const setBase = (b: QuickBodyBase) => setCfg({ base: b, legs: { ...cfg.legs, count: b === 'legs' ? (cfg.legs.count || 4) : 0 } });
+  const toggleCorner = (c: CornerKey) => setCfg({ joins: { ...cfg.joins, [c]: cfg.joins[c] === 'side' ? 'horiz' : 'side' } });
+  const b = cfg.back; const grooved = b.placement === 'inner';
+  const status = busy ? 'Building panels…' : cyclic ? 'Corner joints form a cycle — sides will pass first' : `${existingCount ? `${existingCount} panel${existingCount === 1 ? '' : 's'} already on the body · ` : ''}${panelCount} panels${b.enabled ? ' + back' : ''}${legCount ? ` + ${legCount} legs` : ''}`;
+  return (
+    <div style={{ fontFamily: UI_FONT }}>
+      <div className="sticky top-0 z-[3]" style={{ ...DOCK_SHELL, marginTop: 0, borderRadius: 0, border: 'none', borderBottom: '1px solid #ebe5dc', boxShadow: 'none', background: 'linear-gradient(180deg,#fefdfb 0%,#faf8f4 100%)' }}>
+        <div style={DOCK_ROW}>
+          <span style={dockAxisTag('#44403c')}>BODY</span>
+          <div className="flex-1 min-w-0"><Segmented items={QB_BASE_ITEMS} active={cfg.base} onPick={k => setBase(k as QuickBodyBase)} /></div>
+          <ApplyBtn enabled={!busy} onClick={onApply} title="Place body panels" />
+          <ExitBtn onClick={onExit} />
+        </div>
+        <div style={{ ...DOCK_ROW, paddingTop: 0 }}><DockStatus ready={!busy && !cyclic} text={status} /></div>
+      </div>
+      <div className="px-1.5 pb-2" onMouseLeave={() => setHint(null)}>
+        {/* GÖVDE: yalnız dört köşe birleşimi (dolap çizimi yok — Goker), altında 3 sütun hücre */}
+        <div className="pt-1.5 pb-1 flex items-center gap-2 px-0.5">
+          <span style={SECTION_LABEL}>Corner joints</span>
+          <span className="text-[10px] text-stone-400">click a corner to swap which panel passes</span>
+          <div className="flex-1 h-px bg-[#efeae2]" />
+        </div>
+        <CornerJointTiles joins={joins} lockBottom={isPlinth} active={hint} onCorner={toggleCorner} onHover={c => setHint(c ? `c-${c}` : null)} />
+        <div className="mt-1 grid grid-cols-3 gap-x-1" style={QB_CELL_ROW}>
+          <HintCell label="Thick" hintKey="t" active={hint === 't'} onHint={onHint}><QbNum value={cfg.thickness} min={1} onCommit={v => setCfg({ thickness: v })} /></HintCell>
+          <HintCell label="Plinth" hintKey="ph" active={hint === 'ph'} onHint={onHint} passive={!isPlinth}><QbNum value={cfg.plinth.height} min={1} passive={!isPlinth} onCommit={v => setCfg({ plinth: { ...cfg.plinth, height: v } })} /></HintCell>
+          <HintCell label="Front" hintKey="pf" active={hint === 'pf'} onHint={onHint} passive={!isPlinth}><QbNum value={cfg.plinth.front} passive={!isPlinth} onCommit={v => setCfg({ plinth: { ...cfg.plinth, front: v } })} /></HintCell>
+          <HintCell label="Rear" hintKey="pr" active={hint === 'pr'} onHint={onHint} passive={!isPlinth}>
+            <QbSwitch on={cfg.plinth.rearPlinth} disabled={!isPlinth} title="Rear plinth on / off" onToggle={() => setCfg({ plinth: { ...cfg.plinth, rearPlinth: !cfg.plinth.rearPlinth } })} />
+            <QbNum value={cfg.plinth.rear} passive={!isPlinth || !cfg.plinth.rearPlinth} w={30} onCommit={v => setCfg({ plinth: { ...cfg.plinth, rear: v } })} />
+          </HintCell>
+          <HintCell label="Legs" hintKey="lc" active={hint === 'lc'} onHint={onHint} passive={cfg.base === 'plain'}>
+            <QbSelect value={String(legCount)} passive={cfg.base === 'plain'} options={(isLegs ? [4, 5, 6] : [0, 4, 5, 6]).map(n => ({ v: String(n), label: n === 0 ? 'None' : String(n) }))}
+              onChange={v => setCfg({ legs: { ...cfg.legs, count: parseInt(v, 10) as 0 | 4 | 5 | 6 } })} />
+          </HintCell>
+          <HintCell label="Leg H" hintKey="lh" active={hint === 'lh'} onHint={onHint} passive={!isLegs}>
+            {isLegs ? <QbNum value={cfg.legs.height} min={1} onCommit={v => setCfg({ legs: { ...cfg.legs, height: v } })} />
+              : <span className="whitespace-nowrap pr-1" style={{ ...FIELD_INPUT, width: 'auto', color: '#c7beb1' }}>{isPlinth && legCount ? fmt1(cfg.plinth.height) : '—'}</span>}
+          </HintCell>
+          <HintCell label="Back" hintKey="bt" active={hint === 'bt'} onHint={onHint}>
+            <QbSelect value={b.enabled ? b.placement : 'none'} w={70} options={[{ v: 'outer', label: BACK_TYPE_LABEL.outer }, { v: 'inner', label: BACK_TYPE_LABEL.inner }, { v: 'none', label: 'None' }]}
+              onChange={v => setCfg({ back: v === 'none' ? { ...b, enabled: false } : { ...b, enabled: true, placement: v } })} />
+          </HintCell>
+          <div className="col-span-2 min-w-0 h-full pl-2 pr-1.5 flex items-center gap-1 rounded-[7px] bg-[#f6f2ec]" title="Body size W × H × D">
+            <span className="flex-1 min-w-0 truncate text-[10px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]">Size</span>
+            <span className="whitespace-nowrap text-[11px] font-semibold text-stone-500 tabular-nums">{fmt1(W)} × {fmt1(H)} × {fmt1(D)}</span>
+          </div>
+        </div>
+        {/* AYAKLAR */}
+        {legCount > 0 && (
+          <>
+            <SectionHead label="Legs" className="px-0.5 pt-2.5 pb-1" />
+            <LegsBlock legs={{ ...cfg.legs, count: legCount, height: isPlinth ? cfg.plinth.height : cfg.legs.height }} W={W} D={D} heightEditable={isLegs} heightReadout={isPlinth ? cfg.plinth.height : undefined}
+              countOptions={[]} hint={hint} onHint={onHint}
+              onChange={p => setCfg({ legs: { ...cfg.legs, ...(p as Partial<QuickBodyConfig['legs']>) } })} />
+          </>
+        )}
+        {/* ARKALIK: arkalık kartıyla aynı kesit diyagramı, büyük */}
+        {b.enabled && (
+          <>
+            <SectionHead label="Back panel" className="px-0.5 pt-2.5 pb-1" />
+            <div className="flex flex-col gap-1.5">
+              <div className="w-full flex" style={{ height: 200 }}>
+                <BackGrooveDiagram active={hint === 'bi' ? 'in' : hint && hint.startsWith('b') ? hint.slice(1) : null} grooved={grooved} t={b.thickness} setback={grooved ? b.setback : 0} front={b.clear.front} rear={b.clear.back} depth={b.clear.depth} inset={b.inset} className="w-full h-full" />
+              </div>
+              <div className="grid grid-cols-3 gap-x-1" style={QB_CELL_ROW}>
+                <HintCell label="Thick" hintKey="bt" active={hint === 'bt'} onHint={onHint}><QbNum value={b.thickness} min={1} onCommit={v => setCfg({ back: { ...b, thickness: v } })} /></HintCell>
+                <HintCell label="In" hintKey="bi" active={hint === 'bi'} onHint={onHint} passive={!grooved}><QbNum value={b.inset} passive={!grooved} onCommit={v => setCfg({ back: { ...b, inset: v } })} /></HintCell>
+                <HintCell label="Setback" hintKey="bsetback" active={hint === 'bsetback'} onHint={onHint} passive={!grooved}><QbNum value={b.setback} passive={!grooved} onCommit={v => setCfg({ back: { ...b, setback: v } })} /></HintCell>
+                <HintCell label="Front" hintKey="bgf" active={hint === 'bgf'} onHint={onHint} passive={!grooved}><QbNum value={b.clear.front} passive={!grooved} onCommit={v => setCfg({ back: { ...b, clear: { ...b.clear, front: v } } })} /></HintCell>
+                <HintCell label="Rear" hintKey="bgb" active={hint === 'bgb'} onHint={onHint} passive={!grooved}><QbNum value={b.clear.back} passive={!grooved} onCommit={v => setCfg({ back: { ...b, clear: { ...b.clear, back: v } } })} /></HintCell>
+                <HintCell label="Bottom" hintKey="bgd" active={hint === 'bgd'} onHint={onHint} passive={!grooved}><QbNum value={b.clear.depth} passive={!grooved} onCommit={v => setCfg({ back: { ...b, clear: { ...b.clear, depth: v } } })} /></HintCell>
+                <div className={`col-span-2 min-w-0 h-full pl-2 pr-1.5 flex items-center gap-1 rounded-[7px] bg-[#f6f2ec] ${grooved ? '' : 'opacity-60'}`}>
+                  <span className="flex-1 min-w-0 truncate text-[10px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]">Groove</span>
+                  <span className="whitespace-nowrap" style={{ ...FIELD_INPUT, width: 'auto', color: '#57534e' }}>{grooved ? <>{fmt1(b.thickness + b.clear.front + b.clear.back)}<span className="text-[10px] font-medium text-stone-400" style={{ fontFamily: UI_FONT }}> × </span>{fmt1(b.inset + b.clear.depth)}<span className="text-[10px] font-medium text-stone-400" style={{ fontFamily: UI_FONT }}> (In {fmt1(b.inset)} + {fmt1(b.clear.depth)})</span></> : '—'}</span>
+                </div>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function PanelEditor() {
   const { selectedShapeId, shapes, updateShape,
     selectedPanelRow, setSelectedPanelRow, raycastMode, setRaycastMode,
@@ -3212,6 +3503,7 @@ export function PanelEditor() {
     doorGroups, selectedDoorGroupId, setSelectedDoorGroupId, doorPickMode, setDoorPickMode, doorPickCandidates, doorPickIndex, doorPickPlacement, setDoorPickPlacement,
     doorRefPickGroupId, setDoorRefPickGroupId,
     backGroups, selectedBackGroupId, setSelectedBackGroupId, backPickMode, setBackPickMode, backPickCandidates, backPickIndex, backPickPlacement, setBackPickPlacement,
+    quickBodyMode, setQuickBodyMode, quickBodyConfig, setQuickBodyConfig, quickBodyBusy, setQuickBodyBusy,
     backRefPickGroupId, setBackRefPickGroupId,
     raycastPendingVf, placementName, setPlacementName,
   } = useStoreFields('selectedShapeId', 'shapes', 'updateShape',
@@ -3234,7 +3526,7 @@ export function PanelEditor() {
     'doorRefPickGroupId', 'setDoorRefPickGroupId',
     'backGroups', 'selectedBackGroupId', 'setSelectedBackGroupId', 'backPickMode', 'setBackPickMode', 'backPickCandidates', 'backPickIndex', 'backPickPlacement', 'setBackPickPlacement',
     'backRefPickGroupId', 'setBackRefPickGroupId',
-    'raycastPendingVf', 'placementName', 'setPlacementName');
+    'raycastPendingVf', 'placementName', 'setPlacementName', 'quickBodyMode', 'setQuickBodyMode', 'quickBodyConfig', 'setQuickBodyConfig', 'quickBodyBusy', 'setQuickBodyBusy');
   const [doorDraft, setDoorDraft] = useState<{ id: string; field: 't' | 'gap'; v: string } | null>(null);
   // Şema bölge seçimi (düğüm id'leri): her tık bir seviye iner; üye/3B seçimiyle bağı YOK.
   const [doorNodeSel, setDoorNodeSel] = useState<{ id: string; nodes: string[] } | null>(null);
@@ -3247,6 +3539,8 @@ export function PanelEditor() {
   const [backClearEdge, setBackClearEdge] = useState<{ id: string; vfId: string } | null>(null);
   /** Görsel ipucu: arkalık kartında üzerine gelinen / odaklanan değer (kesit diyagramı + şema vurgusu). */
   const [backHint, setBackHint] = useState<{ id: string; key: string } | null>(null);
+  /** Kalıcı Legs satırının plan diyagramı ipucu. */
+  const [legsHint, setLegsHint] = useState<string | null>(null);
   // Şemada seçili parçalar 3B'de vurgulanır (store.backFocusVfIds); tüm alan seçiliyse ya da seçim yoksa boş → grup vurgusu.
   useEffect(() => {
     const st = useAppStore.getState();
@@ -3353,6 +3647,7 @@ export function PanelEditor() {
     if (st.volumePickMode) setVolumePickMode(null);
     if (st.doorPickMode) setDoorPickMode(false);
     if (st.backPickMode) setBackPickMode(false);
+    if (st.quickBodyMode) setQuickBodyMode(false);
     setOpenCards(new Set());
   }, [selectedShapeId]);
   useEffect(() => {
@@ -3842,13 +4137,54 @@ export function PanelEditor() {
     if (!selectedShape?.geometry) return null;
     const sid = selectedShape.id;
     const svf = virtualFaces.filter(vf => vf.shapeId === sid);
-    if (!svf.length) return (
+    const bodyLegs = bodyLegsOf(selectedShape);
+    if (!svf.length && !bodyLegs) return quickBodyMode ? null : (
       <div className="flex flex-col items-center justify-center py-6 text-center">
         <div className="w-8 h-8 rounded-lg bg-stone-100 flex items-center justify-center mb-2"><MoveVertical size={14} className="text-stone-400" /></div>
         <span className="text-xs text-stone-400">No faces added yet</span>
-        <span className="text-[10.5px] text-stone-300 mt-0.5">Use Body Panel, Shelf or Divider to create panels</span>
+        <span className="text-[10.5px] text-stone-300 mt-0.5">Use Body for a quick carcass, or Panel, Shelf and Divider one by one</span>
       </div>
     );
+    /* AYAKLAR SATIRI: VF değil, gövde parametresi; sırası her zaman en başta ("L"). Yükseklik alt panelden canlı okunur. */
+    const legsRow = (legs: NonNullable<typeof bodyLegs>) => {
+      const key = `legs-${sid}`, sel = selectedPanelRow === key;
+      const bb = localBboxOf(effectiveBodyGeometry(selectedShape));
+      const W = bb ? bb.max.x - bb.min.x : 600, D = bb ? bb.max.z - bb.min.z : 560;
+      const h = legHeightOf(selectedShape, legs, shapes);
+      const toggle = (e: React.MouseEvent) => { stop(e); if (sel) setSelectedPanelRow(null); else setSelectedPanelRow(key, sid); };
+      const cell = (letter: string, v: string) => (
+        <span className="inline-flex items-baseline w-[59px] whitespace-nowrap overflow-hidden">
+          <span className="text-[11px] font-semibold text-stone-400">{letter}</span><span className="ml-[3px] text-[12px] font-medium text-stone-700">{v}</span>
+        </span>
+      );
+      const sep = <span className="w-px h-3 bg-[#e6e0d6] mx-[4px] self-center" />;
+      return (
+        <div key={key} className={rowCardClass(sel, false, false)}>
+          <div className={`relative flex items-stretch ${sel ? ROW_SEL_HEAD : ''}`}>
+            {sel && <span className={ROW_SEL_BAR} />}
+            <span className="shrink-0 w-[14px] ml-[2px] self-stretch" />
+            <div onClick={toggle} className="flex-1 min-w-0 relative flex items-center gap-1 pl-0 pr-0.5 py-[4px] cursor-pointer">
+              <RowNum label="L" active={sel} />
+              <RowTypeBadge kind="legs" active={sel} count={legs.count} />
+              <span className="flex-1 min-w-0 h-[22px] px-[5px] flex items-center text-[11.5px] font-medium text-stone-700 truncate select-none" title="Cabinet legs — always first; height follows the bottom panel">Legs</span>
+              <span onClick={stop} className="shrink-0 inline-flex items-baseline leading-none tabular-nums cursor-default" title={`${legs.count} legs · Ø ${fmt1(legs.diameter)} · height ${fmt1(h)} (from the bottom panel)`}>
+                {cell('N', String(legs.count))}{sep}{cell('Ø', fmt1(legs.diameter))}{sep}{cell('H', fmt1(h))}
+              </span>
+              <div className="flex items-center justify-end gap-[1px] shrink-0" style={{ width: ROW_TRAIL_W }} onClick={stop}>
+                <button onClick={e => { stop(e); if (sel) setSelectedPanelRow(null); setBodyLegs(sid, null); }} title="Remove legs" className={ROW_DEL_CLASS}><Trash2 size={ROW_ICON - 1} strokeWidth={1.9} /></button>
+                <RowChevron open={sel} onClick={toggle} />
+              </div>
+            </div>
+          </div>
+          {sel && (
+            <div className="yago-expand px-2 pt-2 pb-2" style={{ borderTop: '1px solid #efebe5', fontFamily: UI_FONT }} onClick={stop}>
+              <LegsBlock legs={legs} W={W} D={D} heightReadout={h} heightEditable={false} countOptions={[4, 5, 6]} hint={legsHint} onHint={setLegsHint}
+                onChange={p => setBodyLegs(sid, p as Partial<NonNullable<typeof bodyLegs>>)} />
+            </div>
+          )}
+        </div>
+      );
+    };
 
     // Düz liste: her VF store sırasıyla kendi satırıdır; listedeki numara = VF sırası = basan/basılan önceliği.
     // İstisna: raf/dikme, kapak ve arkalık grubunun üyeleri store'da bitişik durur ve TEK kart olarak (ilk üyenin sırasında) gösterilir.
@@ -4262,7 +4598,10 @@ export function PanelEditor() {
       const open = openCards.has(g.id) || selAll || members.some(m => selectedPanelRow === `vf-${m.id}`);
       const mIds = members.map(m => m.id);
       const toggleRow = (e: React.MouseEvent) => { stop(e); if (open) closeCard(g.id, mIds); else { setSelectedBackGroupId(g.id); openCard(g.id); } };
-      const dimsW = round1(g.rect.u1 - g.rect.u0), dimsH = round1(g.rect.v1 - g.rect.v0);
+      // Satır W/H = arkalık parçalarının GERÇEK dış ölçüsü (kanala giriş dahil — Goker: "In değeri etki etmiyor" sanılıyordu); üretilmemişse açıklık dikdörtgeni.
+      const memberBoxes = members.map(m => localBboxOf(panelOfVf(m.id, shapes)?.geometry)).filter((b): b is THREE.Box3 => !!b);
+      const ext = memberBoxes.length ? memberBoxes.reduce((acc, b) => acc.union(b), memberBoxes[0].clone()) : null;
+      const dimsW = ext ? round1(ext.max.x - ext.min.x) : round1(g.rect.u1 - g.rect.u0), dimsH = ext ? round1(ext.max.y - ext.min.y) : round1(g.rect.v1 - g.rect.v0);
       const backParent = open ? shapeById(g.shapeId, shapes) : undefined;   // pahalı: kesimler/çözüm yalnız kart açıkken
       const backCuts = backParent ? collectBackCuts(backParent, shapes, virtualFaces) : [];
       // Çözüm: iç dikdörtgen + parça dikdörtgenleri (her parça kendi tip / setback / inset / bini değerleriyle). Gövde yoksa kenar bilgisiz.
@@ -4361,7 +4700,7 @@ export function PanelEditor() {
               <RowTypeBadge kind="back" active={open} count={backMemberCount(g)} />
               <input type="text" value={backGroupName(g)} onClick={stop} onChange={e => renameBackGroup(g.id, e.target.value)} placeholder="Back"
                 title="Group name (applies to all its back panels)" className={`${ROW_INPUT_CLASS} font-semibold`} />
-              <RowDims w={dimsW} h={dimsH} t={g.thickness} tLetter="T" title={`Back area width · height (between the reference panels' inner faces) · thickness (${typeTxt})`} />
+              <RowDims w={dimsW} h={dimsH} t={g.thickness} tLetter="T" title={`Back panel overall width · height (groove entry included) · thickness (${typeTxt})`} />
               <div className="flex items-center justify-end gap-[1px] shrink-0" style={{ width: ROW_TRAIL_W }} onClick={stop}>
                 <button onClick={e => { stop(e); deleteBackGroupWithMembers(g.id); }} title="Delete group (all back panels)" className={ROW_DEL_CLASS}><Trash2 size={ROW_ICON - 1} strokeWidth={1.9} /></button>
                 <RowChevron open={open} onClick={toggleRow} />
@@ -4454,6 +4793,7 @@ export function PanelEditor() {
         </div>
       );
     }
+    if (bodyLegs) elements.unshift(legsRow(bodyLegs));
     return elements;
   };
 
@@ -4544,6 +4884,23 @@ export function PanelEditor() {
     });
   })();
 
+  /* HIZLI GÖVDE: yapılandırma listenin üstünde, kaydırılan alanda (üst şerit yapışık); onay → servis, bitince mod kapanır. */
+  const onQuickBodyApply = async () => {
+    if (!selectedShape || quickBodyBusy) return;
+    setQuickBodyBusy(true);
+    try {
+      const res = await applyQuickBody(selectedShape.id, useAppStore.getState().quickBodyConfig);
+      if (res?.warnings.length) console.warn('[YAGO][HIZLI-GÖVDE] uyarılar:', res.warnings);
+      useAppStore.getState().setQuickBodyMode(false);
+    } catch (e) { console.error('[YAGO][HIZLI-GÖVDE] hata:', e); }
+    finally { setQuickBodyBusy(false); }
+  };
+  const quickBodyPanel = quickBodyMode && selectedShape ? (
+    <QuickBodyPanel shape={selectedShape} cfg={quickBodyConfig} setCfg={setQuickBodyConfig} busy={quickBodyBusy}
+      existingCount={virtualFaces.filter(vf => vf.shapeId === selectedShape.id && !vf.interior).length}
+      onApply={() => { void onQuickBodyApply(); }} onExit={() => setQuickBodyMode(false)} />
+  ) : null;
+
   return (
     <div className="flex flex-col h-full min-h-0">
       <style>{LIST_CSS}</style>
@@ -4553,6 +4910,7 @@ export function PanelEditor() {
       {backPickDock}
       {selectedShape ? (
         <div className="flex-1 min-h-0 overflow-y-auto">
+          {quickBodyPanel}
           <div className="px-0.5 pb-2 space-y-[2px]">{renderFaceList()}</div>
         </div>
       ) : (
