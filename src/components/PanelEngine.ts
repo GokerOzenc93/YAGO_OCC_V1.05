@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { type CavityBox, type PanelGroup, type Shape, type VirtualFace, childPanelsOf, panelOfVf, shapeById, useAppStore, vfOfPanel } from '../store';
 import { type ExtrudeStep, type TransformStep, applyExtrudeSteps, applyTransformSteps, getUnifiedSteps, matchReferenceFace, resolveReferenceFacePlane, stepRefTargets } from './PanelOps';
-import { computeFaceComponentContour, computeFreeRegionLocal, convexHull2D, panelBehindStackPlane, panelHasRotation, panelInnerBigFace, panelIsTiltedSlab } from './FaceRegion';
+import { computeFaceComponentContour, computeFreeRegionLocal, convexHull2D, panelBehindStackPlane, largestFaceNormal, panelHasRotation, panelInnerBigFace, panelIsTiltedSlab } from './FaceRegion';
 import {
   type CoplanarFaceGroup, type FaceData, type Vec3, angleToTouchPlane, axisDirToVec, axisIndexOf, boundsOverlapBox, convertReplicadToThreeGeometry,
   createPanelFromVirtualFace, createReplicadBox, effectiveBodyGeometry, errMsg, findFaceByDescriptor, fmtBounds, getFacePlaneAxes, hugeRectOnPlane,
@@ -622,12 +622,48 @@ async function fitRotatedPanel(
     if (!fresh?.replicadShape || !fresh.geometry) continue;
     try {
       if (!boundsOverlapBox(out.boundingBox.bounds, localBboxOf(fresh.geometry)!)) continue;
-      out = out.cut(fresh.replicadShape.clone());
+      // DÜZ BASAN KARDEŞ (yan/dikme): basılan dönmüş panel, kardeşin BÜYÜK YÜZ düzlemiyle (sonsuz yarım-uzay, çapanın tarafı
+      // kalır) kesilir — katı çıkarması yalnız örtüşen hacmi alıp yanın pahlı tepesinin üstünde kıymık/çentik bırakıyordu
+      // (Goker: "açılı paneli referans alarak yerleşen panelin kenarı düzgün kesilmiyor"). Gerçekten kesişmiyorsa dokunulmaz;
+      // çapa kardeşin kalınlığı içindeyse eski katı kesimi.
+      const half = !panelHasRotation(fresh) ? await flatSiblingHalfSpace(out, fresh, panel) : null;
+      if (half === 'skip') continue;
+      out = half ? out.cut(half) : out.cut(fresh.replicadShape.clone());
     } catch (err) {
       console.warn('[YAGO][DÖNÜŞ-SIĞDIR] kardeş kesimi hatası:', panel.id, '<-', b.id, errMsg(err));
     }
   }
   return out;
+}
+
+/** Düz kardeşin, dönmüş paneli kesecek yarım-uzayı: büyük yüz normali boyunca kardeşin uzak yüzünden öteye (çapanın karşı tarafı).
+ *  'skip' = kesişim yok; null = çapa kalınlık içinde (katı kesimine dön). */
+async function flatSiblingHalfSpace(out: any, sib: Shape, panel: Shape): Promise<any | 'skip' | null> {
+  try {
+    const inter = out.clone().intersect(sib.replicadShape.clone());
+    try { fmtBounds(inter); } catch { return 'skip'; }
+    const bb = inter.boundingBox.bounds as number[][];
+    if (!bb || Math.min(bb[1][0] - bb[0][0], bb[1][1] - bb[0][1], bb[1][2] - bb[0][2]) < 0.2) return 'skip';
+  } catch { return 'skip'; }
+  const vfB = vfOfPanel(sib);
+  const n = vfB ? vfNormal(vfB) : largestFaceNormal(sib.geometry);
+  if (!n) return null;
+  const pts = uniqueMeshPoints(sib.geometry);
+  const { min: dMin, max: dMax } = projRange(pts, n);
+  const vfP = vfOfPanel(panel);
+  const anchorArr = (vfP as any)?.regionAnchor as Vec3 | undefined;
+  const anchor = anchorArr ? new THREE.Vector3(...anchorArr) : vfP ? new THREE.Vector3(...vfP.center) : null;
+  if (!anchor) return null;
+  const aD = anchor.dot(n);
+  if (aD > dMin - 0.5 && aD < dMax + 0.5) return null;
+  // Çapa dMax tarafındaysa d < dMax kesilir (yarım-uzay dMax düzleminden −n yönüne); dMin tarafındaysa d > dMin kesilir.
+  const keepPlus = aD >= dMax;
+  const planeD = keepPlus ? dMax : dMin;
+  const toward = keepPlus ? n.clone() : n.clone().negate();   // kalan taraf
+  const onPlane = n.clone().multiplyScalar(planeD);
+  const H = 100000;
+  // createPanelFromVirtualFace −normal yönünde kalınlaşır → normal = kalan taraf → katı kesilecek tarafa uzanır.
+  return createPanelFromVirtualFace(hugeRectOnPlane(onPlane, n, H), [toward.x, toward.y, toward.z], H, 0);
 }
 
 export interface RebuildOpts {
