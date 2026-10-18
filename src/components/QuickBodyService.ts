@@ -182,6 +182,8 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
     if (!slab) { warnings.push(`${name}: panel solid failed`); return false; }
     const extra: Record<string, unknown> = {};
     const steps: MoveTransformStep[] = [];
+    // 0 mm taşıma adımı yazılmaz (ön baza varsayılan 0 → listede boş adım olmasın)
+    if (opts.move && Math.abs(opts.move[1]) < 0.001) opts.move = undefined;
     if (opts.move) steps.push(moveStep(opts.move[0], opts.move[1], ++ts));
     if (steps.length) extra.transformSteps = steps;
     const exts = (opts.cuts ?? []).map(([cn, label, v]) => extrudeStepFor(slab.geo, cn, label, v, ++ts)).filter((e): e is ExtrudeStep => !!e);

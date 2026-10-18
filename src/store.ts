@@ -305,7 +305,7 @@ export interface QuickBodyConfig {
 export const DEFAULT_QUICK_BODY: QuickBodyConfig = {
   base: 'plinth', thickness: 18,
   joins: { tl: 'side', tr: 'side', bl: 'side', br: 'side' },
-  plinth: { height: 100, front: 50, rear: 50, rearPlinth: true },
+  plinth: { height: 100, front: 0, rear: 50, rearPlinth: true },   // ön baza gövde önüyle aynı hizada, arka baza 50 mm içeride (Goker)
   legs: { count: 0, height: 100, diameter: 50, side: 60, front: 60, rear: 60 },   // bazalıda ayak varsayılan yok; Legs tabanına geçince 4
   back: { enabled: true, placement: 'inner', thickness: 8, setback: 10, inset: 10, clear: { front: 0.5, back: 0.5, depth: 1 } },
 };
