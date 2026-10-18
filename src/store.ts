@@ -70,6 +70,8 @@ export interface VirtualFace {
    *  (altındaki panelin iç yüzü); `stackBaseVfId` altındaki panel — bölge çözümünde yok sayılır, diğer kardeşler o düzlemde damgalar. */
   stackDepth?: number;
   stackBaseVfId?: string;
+  /** Taban panel EĞİMLİ/dönmüşse: VF düzlemi tabanın iç BÜYÜK yüzüdür (gövde yüzü değil); regen konturu tabanın güncel geometrisinden okur. */
+  stackOnPanel?: boolean;
 }
 
 /** Kapak kenar referansı: bir sınır panelinin VF'si ya da gövde kutusunun kenarı. */

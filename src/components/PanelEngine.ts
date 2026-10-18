@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { type CavityBox, type PanelGroup, type Shape, type VirtualFace, childPanelsOf, panelOfVf, shapeById, useAppStore, vfOfPanel } from '../store';
 import { type ExtrudeStep, type TransformStep, applyExtrudeSteps, applyTransformSteps, getUnifiedSteps, matchReferenceFace, resolveReferenceFacePlane, stepRefTargets } from './PanelOps';
-import { computeFaceComponentContour, computeFreeRegionLocal, convexHull2D, panelHasRotation, panelIsTiltedSlab } from './FaceRegion';
+import { computeFaceComponentContour, computeFreeRegionLocal, convexHull2D, panelBehindStackPlane, panelHasRotation, panelInnerBigFace, panelIsTiltedSlab } from './FaceRegion';
 import {
   type CoplanarFaceGroup, type FaceData, type Vec3, angleToTouchPlane, axisDirToVec, axisIndexOf, boundsOverlapBox, convertReplicadToThreeGeometry,
   createPanelFromVirtualFace, createReplicadBox, effectiveBodyGeometry, errMsg, findFaceByDescriptor, fmtBounds, getFacePlaneAxes, hugeRectOnPlane,
@@ -766,7 +766,8 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
           }
         }
       }
-      let rp = await createPanelFromVirtualFace(genVerts, vf.normal, thickness, isRotated ? growForRotated : 0);
+      // Üst üste (eğimli tabanlı) panel bölgesi tabanın iç yüzünden çözülür → büyütülmez, yalnız gövde/kardeş kesimi.
+      let rp = await createPanelFromVirtualFace(genVerts, vf.normal, thickness, isRotated && !vf.stackBaseVfId ? growForRotated : 0);
       if (!rp) return;
 
       const { ops, resolvedRotations } = composeSteps(steps, vf);
@@ -1172,6 +1173,20 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
   const matchOf = new Map<string, { group: CoplanarFaceGroup; contour: ReturnType<typeof computeFaceComponentContour> } | null>();
   const freshVfVertices = new Map<string, Vec3[]>();
   for (const vf of shapeFaces) {
+    // ÜST ÜSTE PANEL — EĞİMLİ TABAN: düzlem tabanın güncel iç büyük yüzü; VF normali o yüzün normalinin tersi (tabana doğru, gövde yüzü sözleşmesi gibi).
+    if (vf.stackOnPanel && vf.stackBaseVfId) {
+      const basePanel = childPanels.find(p => p.parameters?.virtualFaceId === vf.stackBaseVfId);
+      // "İç" yüz = boşluğa bakan: merkezden VF normalinin tersine (boşluğa doğru) uzak bir nokta hedef alınır.
+      const inner = basePanel ? panelInnerBigFace(basePanel, new THREE.Vector3(...vf.center).addScaledVector(new THREE.Vector3(...vf.normal).normalize(), -200)) : null;
+      if (inner) {
+        const nIn = inner.group.normal.clone().normalize();
+        const c = computeFaceComponentContour(inner.faces, inner.group.faceIndices, new THREE.Vector3(...vf.center), nIn);
+        matchOf.set(vf.id, c ? { group: { ...inner.group, normal: nIn.clone().multiplyScalar(-1) }, contour: c } : null);
+        if (c && c.corners.length >= 3) freshVfVertices.set(vf.id, c.corners.map(q => [q.x, q.y, q.z] as Vec3));
+        else if (vf.vertices && vf.vertices.length >= 3) freshVfVertices.set(vf.id, vf.vertices);
+      } else matchOf.set(vf.id, null);
+      continue;
+    }
     // ÜST ÜSTE PANEL: yüz eşlemesi merkez yüze geri izdüşürülerek yapılır; kontur ve tohum yüzün stackDepth içindeki düzlemine taşınır.
     const sd = vf.stackDepth && vf.stackDepth > 0 ? vf.stackDepth : 0;
     const probe = sd ? { ...vf, center: [vf.center[0] + vf.normal[0] * sd, vf.center[1] + vf.normal[1] * sd, vf.center[2] + vf.normal[2] * sd] as Vec3 } : vf;
@@ -1360,10 +1375,12 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
     const myVf = vfById.get(vfId);
     const myFaceNormal = myVf ? new THREE.Vector3(...myVf.normal).normalize() : null;
     // Üst üste panelde altındaki panel kardeş değildir (önündeki panel onun iç yüzünde durur).
-    const baseId = myVf?.stackBaseVfId;
-    const list = childPanels.filter(p => !(baseId && p.parameters?.virtualFaceId === baseId) && stamps(p, vfId, myPanel, myFaceNormal)).map(p => stampOf(p, myFaceNormal, vfId));
+    // Üst üste panelde düzlemin GERİSİNDE kalan paneller (taban + aradaki yığın) kardeş değildir; düzlemi aşanlar kalır.
+    const sd = myVf && myFaceNormal && ((myVf.stackDepth && myVf.stackDepth > 0) || myVf.stackOnPanel) ? 1 : 0;
+    const planeIn = sd && myFaceNormal ? new THREE.Vector3(...myVf!.center).dot(myFaceNormal.clone().multiplyScalar(-1)) : 0;
+    const list = childPanels.filter(p => !(sd && myFaceNormal && panelBehindStackPlane(p, myFaceNormal, planeIn)) && stamps(p, vfId, myPanel, myFaceNormal)).map(p => stampOf(p, myFaceNormal, vfId));
     // Üst üste panel düzlemi gövdenin içindedir: o düzlemi DELEN levhalar (üst/alt/arkalık) gerçek engel sayılır.
-    return myVf?.stackDepth ? list.map(s => (s && typeof s === 'object' ? { ...s, __pierceObstacle: true } : s)) : list;
+    return sd ? list.map(s => (s && typeof s === 'object' ? { ...s, __pierceObstacle: true } : s)) : list;
   };
 
   const updatedMap = new Map<string, VirtualFace>();

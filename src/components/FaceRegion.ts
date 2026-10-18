@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { getFacePlaneAxes, getShapeMatrix, axisDirToVec, localBboxOf, isFlatNormal, panelThickness, type FaceData } from './Geometry';
+import { getFacePlaneAxes, getShapeMatrix, axisDirToVec, localBboxOf, isFlatNormal, panelThickness, getFacesAndGroups, type CoplanarFaceGroup, type FaceData } from './Geometry';
 
 // FaceRegion — panel atma zincirinin saf geometri çekirdeği (UI yok). YAKALAMA ve REGEN aynı fonksiyonları
 // kullanır; iki yol yapısal olarak ayrışamaz.
@@ -289,6 +289,26 @@ function panelFootprintOnPlane(panel: any, facePlaneNormal: THREE.Vector3, faceP
   if (boundary && boundary.length >= 3) return boundary;
   const hull = convexHull2D(pts2D);
   return hull.length >= 3 ? hull : null;
+}
+
+/** ÜST ÜSTE PANEL (eğimli taban): tabanın `toward` noktasına bakan BÜYÜK yüzü (iki büyük yüzden normali o yöne bakan). Gövde-yerel. */
+export function panelInnerBigFace(panel: any, toward: THREE.Vector3): { faces: FaceData[]; group: CoplanarFaceGroup } | null {
+  const geo = panel?.geometry; if (!geo) return null;
+  const { faces, groups } = getFacesAndGroups(geo);
+  const big = [...groups].filter(g => !g.isCurved).sort((a, b) => b.totalArea - a.totalArea).slice(0, 2);
+  const g = big.find(x => x.normal.clone().normalize().dot(toward.clone().sub(x.center)) > 0) ?? null;
+  return g ? { faces, group: g } : null;
+}
+
+/** ÜST ÜSTE PANEL: panelin tamamı, dışa normali `nOut` olan yüzün `planeInward` kadar içindeki düzlemin GERİSİNDE mi (altta kalan
+ *  taban/ara paneller)? Düzlemi aşan levhalar (üst/alt/arkalık) false → engel kalır. Koordinatlar gövde-yerel. */
+export function panelBehindStackPlane(panel: any, nOut: THREE.Vector3, planeInward: number, tol = 0.5): boolean {
+  const bb = localBboxOf(footprintGeometry(panel) ?? panel?.geometry);
+  if (!bb) return false;
+  const inw = nOut.clone().multiplyScalar(-1);
+  let maxIn = -Infinity;
+  for (const x of [bb.min.x, bb.max.x]) for (const y of [bb.min.y, bb.max.y]) for (const z of [bb.min.z, bb.max.z]) maxIn = Math.max(maxIn, x * inw.x + y * inw.y + z * inw.z);
+  return maxIn <= planeInward + tol;
 }
 
 export function findPanelCoveringPoint(worldPt: THREE.Vector3, childPanels: any[], facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3): any | null {

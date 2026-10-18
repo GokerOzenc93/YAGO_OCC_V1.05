@@ -9,7 +9,7 @@ import {
   groupIndexOfFace, localBboxOf,
 } from './Geometry';
 import { REF_COLORS, applyTransformSteps, confirmRefFaceExtrude, cycleRefFacePickFromEvent } from './PanelOps';
-import { computeFaceComponentContour, computeFreeRegionLocal, earClipTriangulate, findPanelCoveringPoint, panelHasRotation, pointInTriangle3D } from './FaceRegion';
+import { computeFaceComponentContour, computeFreeRegionLocal, earClipTriangulate, findPanelCoveringPoint, panelBehindStackPlane, panelHasRotation, panelInnerBigFace, pointInTriangle3D } from './FaceRegion';
 import {
   GROUP_PANEL_THICKNESS, boxSpan, boxesSurface, collectObstacles, confirmRefCavityExtrude, confirmVolumePick, gridForObstacles, groupBoundsPanelPredicate, isInteriorPanel,
   rayCavityCandidates, repickObstacles,
@@ -821,22 +821,37 @@ interface PendingPreview { geo: THREE.BufferGeometry; edgeGeo: THREE.BufferGeome
 /** Tıklanan yüz bileşeninin serbest bölgesi (highlight) ve VF'si. HIGHLIGHT = PANEL: bölge tek kaynaktan (computeFreeRegionLocal);
  *  kontur YEREL uzayda, panel ayak izleri dünya→yerel dönüşümle getirilir. */
 /** ÜST ÜSTE PANEL isteği: yüzün `depth` mm içindeki düzlem (altındaki panelin iç yüzü); altındaki panel bölgede yok sayılır. */
-export interface StackSpec { depth: number; baseVfId: string; basePanelId: string }
+export interface StackSpec { depth: number; baseVfId: string; basePanelId: string; /** eğimli taban: düzlem = tabanın iç büyük yüzü */ onPanel?: any }
 export function buildFacePreview(
   clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces: FaceData[], worldToLocal: THREE.Matrix4,
   shapeId: string, geometry?: THREE.BufferGeometry, childPanels: any[] = [], stack?: StackSpec
 ): PendingPreview | null {
   const clickOnFace = clickWorld.clone().applyMatrix4(worldToLocal);
-  const contour = computeFaceComponentContour(faces, group.faceIndices, clickOnFace, group.normal);
-  if (!contour) return null;
-  const shift = stack ? group.normal.clone().normalize().multiplyScalar(-stack.depth) : null;
-  const corners = shift ? contour.corners.map(c => c.clone().add(shift)) : contour.corners;
-  const clickLocal = shift ? clickOnFace.clone().add(shift) : clickOnFace;
-  const siblings = stack ? childPanels.filter(p => p.id !== stack.basePanelId).map(p => ({ ...p, __pierceObstacle: true })) : childPanels;
-  const region = computeFreeRegionLocal(corners, group.normal, clickLocal, siblings, worldToLocal, shapeId);
+  const faceContour = computeFaceComponentContour(faces, group.faceIndices, clickOnFace, group.normal);
+  if (!faceContour) return null;
+  let contour = faceContour, corners = faceContour.corners, clickLocal = clickOnFace;
+  let nrm = group.normal.clone().normalize();
+  if (stack?.onPanel) {
+    // EĞİMLİ TABAN: düzlem = tabanın iç büyük yüzü; tık o düzleme normal boyunca izdüşer; VF normali tabana doğru.
+    const inner = panelInnerBigFace(stack.onPanel, clickOnFace.clone().addScaledVector(nrm, -200));   // boşluğa bakan büyük yüz
+    if (!inner) return null;
+    const nIn = inner.group.normal.clone().normalize();
+    const seed = clickOnFace.clone().sub(nIn.clone().multiplyScalar(clickOnFace.clone().sub(inner.group.center).dot(nIn)));
+    const c = computeFaceComponentContour(inner.faces, inner.group.faceIndices, seed, nIn);
+    if (!c) return null;
+    contour = c; corners = c.corners; clickLocal = seed; nrm = nIn.clone().multiplyScalar(-1);
+  } else if (stack) {
+    const shift = nrm.clone().multiplyScalar(-stack.depth);
+    corners = faceContour.corners.map(c => c.clone().add(shift));
+    clickLocal = clickOnFace.clone().add(shift);
+  }
+  // Yığındaki paneller (düzlemin gerisinde kalanlar) kardeş değil; düzlemi aşan levhalar delen-engel.
+  const siblings = stack
+    ? childPanels.filter(p => !panelBehindStackPlane(p, nrm, clickLocal.dot(nrm.clone().multiplyScalar(-1)))).map(p => ({ ...p, __pierceObstacle: true }))
+    : childPanels;
+  const region = computeFreeRegionLocal(corners, nrm, clickLocal, siblings, worldToLocal, shapeId);
   if (!region) return null;
   const { u, v, planeN, uMin, vMin, cw, ch, nx, ny, reach, touchingSiblingIds } = region;
-  const nrm = group.normal.clone().normalize();
   const to3D = (px: number, py: number) => new THREE.Vector3().addScaledVector(u, px).addScaledVector(v, py).addScaledVector(nrm, planeN);
   const pos: number[] = [], epos: number[] = [];
   for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
@@ -870,7 +885,7 @@ export function buildFacePreview(
     // Taraf sözleşmesi doğuştan kilitli: regen STORED-WINS birleştirir, bir daha değişmez.
     sideRelations: region.sideRelations,
     faceGroupDescriptor: geometry ? createFaceDescriptor(faces[contour.seedFi], geometry) : undefined,
-    ...(stack ? { stackDepth: stack.depth, stackBaseVfId: stack.baseVfId } : {}),
+    ...(stack ? { stackDepth: stack.depth, stackBaseVfId: stack.baseVfId, ...(stack.onPanel ? { stackOnPanel: true } : {}) } : {}),
     ...({ regionAnchor: [anchor.x, anchor.y, anchor.z] } as any),
   };
   return { geo, edgeGeo, virtualFace };
@@ -1057,15 +1072,34 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
     let previewStack: StackSpec | undefined;
     let cycleCandidates: Array<{ index: number; depth: number; hitPoint: THREE.Vector3; stack?: StackSpec }> | null = null;
     // Örten panelin ÖNÜNE panel: yalnız o yüzde duran, dönmemiş gövde paneli (raf/dikme ucu, kapak, arkalık değil); derinlik = gerçek kalınlığı.
-    const stackSpecFor = (cover: any, gi: number): StackSpec | undefined => {
-      if (!cover || isInteriorPanel(cover) || isDoorPanel(cover) || isBackPanel(cover) || panelHasRotation(cover)) return undefined;
-      const cvf = vfOfPanel(cover); if (!cvf) return undefined;
+    // Yığın derinliği = o noktada üst üste duran TÜM panellerin (taban + önüne atılanlar) en içteki yüzü; yeni panel en öndekinin önüne gelir
+    // (Goker: "ne kadar tıklanırsa o kadar" — 3., 4. panel de yerleşebilsin).
+    const stackSpecFor = (cover: any, gi: number, hitWorld: THREE.Vector3): StackSpec | undefined => {
+      if (!cover || isInteriorPanel(cover) || isDoorPanel(cover) || isBackPanel(cover)) return undefined;
+      // EĞİMLİ / dönmüş taban (Goker: "panel eğimliyse o eğimli yüzey de alternatif olsun"): düzlem tabanın iç büyük yüzü.
+      if (panelHasRotation(cover)) {
+        const cvf = vfOfPanel(cover); if (!cvf) return undefined;
+        const nL = faceGroups[gi].normal.clone().normalize();
+        const inner = panelInnerBigFace(cover, hitWorld.clone().applyMatrix4(worldToLocal).addScaledVector(nL, -200)); if (!inner) return undefined;
+        return { depth: 0, baseVfId: cvf.id, basePanelId: cover.id, onPanel: cover };
+      }
       const nL = faceGroups[gi].normal.clone().normalize();
-      if (new THREE.Vector3(...cvf.normal).normalize().dot(nL) < 0.95) return undefined;
-      const bb = localBboxOf(cover.geometry); if (!bb) return undefined;
       const k = Math.abs(nL.x) > 0.9 ? 'x' : Math.abs(nL.y) > 0.9 ? 'y' : 'z';
-      const depth = bb.max[k] - bb.min[k];
-      return depth > 0.5 ? { depth, baseVfId: cvf.id, basePanelId: cover.id } : undefined;
+      const hitL = hitWorld.clone().applyMatrix4(worldToLocal);
+      const plane = hitL[k];
+      let depth = 0, top: any = null;
+      for (const p of childPanels) {
+        if (isInteriorPanel(p) || isDoorPanel(p) || isBackPanel(p) || panelHasRotation(p)) continue;
+        const pvf = vfOfPanel(p); if (!pvf || new THREE.Vector3(...pvf.normal).normalize().dot(nL) < 0.95) continue;
+        const bb = localBboxOf(p.geometry); if (!bb) continue;
+        const inside = (['x', 'y', 'z'] as const).every(a => a === k || (hitL[a] >= bb.min[a] - 0.5 && hitL[a] <= bb.max[a] + 0.5));
+        if (!inside) continue;
+        const far = nL[k] < 0 ? bb.max[k] : bb.min[k];
+        const d = Math.abs(far - plane);
+        if (d > depth) { depth = d; top = p; }
+      }
+      const tvf = top ? vfOfPanel(top) : undefined;
+      return depth > 0.5 && top && tvf ? { depth, baseVfId: tvf.id, basePanelId: top.id } : undefined;
     };
     const cameraPos = e.camera?.position?.clone();
     if (cameraPos && (isSameSpot || hoveredIsDefined)) {
@@ -1088,7 +1122,7 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
         const cover = findPanelCoveringPoint(hitOnPlane, childPanels, nW, hitOnPlane);
         if (cover) {
           // Vuruş bir panelin altında: (1) o panelin ÖNÜNE panel (iç yüzünde, aynı yüz düzlemi stackDepth içeride), (2) o yüzün en yakın boşluğu.
-          const st = stackSpecFor(cover, gi);
+          const st = stackSpecFor(cover, gi, hitOnPlane);
           if (st) candidateGroups.push({ index: gi, depth: t, hitPoint: hitOnPlane, stack: st });
           const free = nearestFreePointOnGroup(gi, hitOnPlane, nW);
           if (free) candidateGroups.push({ index: gi, depth: t + 0.01, hitPoint: free });
