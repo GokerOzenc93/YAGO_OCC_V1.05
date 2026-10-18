@@ -360,7 +360,19 @@ async function cutByRotatedPressers(
       const H = 100000;
       const half = await createPanelFromVirtualFace(hugeRectOnPlane(onPlane, nR, H), [toward.x, toward.y, toward.z], H, 0);
       const { u: us, v: vs } = getFacePlaneAxes(nS);
-      const hull = convexHull2D(pts.map(q => ({ x: q.dot(us), y: q.dot(vs) })));
+      // ÜST ÜSTE PANEL basan: siluet YIĞININ (taban dahil) siluetidir — arkalık vb. yüzünden kısalan önündeki panelin ulaşmadığı
+      // şeritte basılan (yan) tabanın düzleminde kalıp diş çıkarmasın; kesim düzlemi yine basanın kendi yüzü.
+      const silPts = [...pts];
+      if (vfR.stackBaseVfId) {
+        const baseGeo = shapeById(siblings.find(b => b.parameters?.virtualFaceId === vfR.stackBaseVfId)?.id ?? '')?.geometry;
+        if (baseGeo?.getAttribute('position')) {
+          // Taban silueti basanın düzlem seviyesine kaydırılır (yoksa hull'un çapraz kenarı yanda burulmuş kesim bırakır).
+          const basePts = uniqueMeshPoints(baseGeo);
+          const delta = projRange(basePts, nR).min - dMin;
+          silPts.push(...basePts.map(q => q.clone().addScaledVector(nR, -delta)));
+        }
+      }
+      const hull = convexHull2D(silPts.map(q => ({ x: q.dot(us), y: q.dot(vs) })));
       if (hull.length < 3) continue;
       const silVerts = hull.map(q => {
         const w = new THREE.Vector3().addScaledVector(us, q.x).addScaledVector(vs, q.y).addScaledVector(nS, dS + 1000);

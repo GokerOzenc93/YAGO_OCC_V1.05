@@ -303,11 +303,13 @@ export function panelInnerBigFace(panel: any, toward: THREE.Vector3): { faces: F
 /** ÜST ÜSTE PANEL: panelin tamamı, dışa normali `nOut` olan yüzün `planeInward` kadar içindeki düzlemin GERİSİNDE mi (altta kalan
  *  taban/ara paneller)? Düzlemi aşan levhalar (üst/alt/arkalık) false → engel kalır. Koordinatlar gövde-yerel. */
 export function panelBehindStackPlane(panel: any, nOut: THREE.Vector3, planeInward: number, tol = 0.5): boolean {
-  const bb = localBboxOf(footprintGeometry(panel) ?? panel?.geometry);
-  if (!bb) return false;
+  // Gerçek köşeler (bbox değil): dönmüş levhanın eksen-hizalı kutusu düzlemin iki yanına taşar, kendisi taşmaz.
+  const geo: THREE.BufferGeometry | undefined = footprintGeometry(panel) ?? panel?.geometry;
+  const pos = geo?.getAttribute?.('position') as THREE.BufferAttribute | undefined;
+  if (!pos) return false;
   const inw = nOut.clone().multiplyScalar(-1);
   let maxIn = -Infinity;
-  for (const x of [bb.min.x, bb.max.x]) for (const y of [bb.min.y, bb.max.y]) for (const z of [bb.min.z, bb.max.z]) maxIn = Math.max(maxIn, x * inw.x + y * inw.y + z * inw.z);
+  for (let i = 0; i < pos.count; i++) maxIn = Math.max(maxIn, pos.getX(i) * inw.x + pos.getY(i) * inw.y + pos.getZ(i) * inw.z);
   return maxIn <= planeInward + tol;
 }
 
