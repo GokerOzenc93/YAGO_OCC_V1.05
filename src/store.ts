@@ -66,6 +66,10 @@ export interface VirtualFace {
   /** Arkalık üyesi (interior=true; geometriyi BackService yazar). */
   backGroupId?: string;
   backIndex?: number;
+  /** ÜST ÜSTE PANEL (Goker, 18 Eki 2026 — "seçili panelin önüne panel"): VF gövde yüzünün `stackDepth` mm İÇİNDEKİ düzlemdedir
+   *  (altındaki panelin iç yüzü); `stackBaseVfId` altındaki panel — bölge çözümünde yok sayılır, diğer kardeşler o düzlemde damgalar. */
+  stackDepth?: number;
+  stackBaseVfId?: string;
 }
 
 /** Kapak kenar referansı: bir sınır panelinin VF'si ya da gövde kutusunun kenarı. */

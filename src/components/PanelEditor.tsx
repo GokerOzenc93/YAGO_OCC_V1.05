@@ -4824,9 +4824,10 @@ export function PanelEditor() {
   const raycastDock = (() => {
     if (!raycastMode) return null;
     const ready = !!selectedShape && !!raycastPendingVf;
+    const stackBase = raycastPendingVf?.stackBaseVfId ? virtualFaces.find(f => f.id === raycastPendingVf.stackBaseVfId) : undefined;
     return placementDock({
       tag: 'PANEL', defaultName: 'Panel', ready,
-      status: !selectedShape ? 'Select a body first' : ready ? 'Face selected — click again for the next region · right-click: place' : 'Click a body face in the 3D view',
+      status: !selectedShape ? 'Select a body first' : ready ? `${stackBase ? `In front of ${stackBase.description || 'panel'} (on its inner face)` : 'Face selected'} — click again for the next region · right-click: place` : 'Click a body face in the 3D view',
       onConfirm: () => confirmBodyPanelPlacement(useAppStore.getState().raycastPendingVf),
       onExit: () => setRaycastMode(false), confirmTitle: 'Place panel',
     });

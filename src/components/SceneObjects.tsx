@@ -2,16 +2,16 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three';
 import { Line, TransformControls } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
-import { type BackPick, type CavityPick, type DoorGroup, type DoorPick, type FilletInfo, Tool, ViewMode, type VirtualFace, childPanelsOf, useAppStore, useStoreFields } from '../store';
+import { type BackPick, type CavityPick, type DoorGroup, type DoorPick, type FilletInfo, Tool, ViewMode, type VirtualFace, childPanelsOf, useAppStore, useStoreFields, vfOfPanel } from '../store';
 import {
   type CoplanarFaceGroup, type FaceData, type Vec3, applyFillets, convertReplicadToThreeGeometry, createFaceDescriptor, createFaceHighlightGeometry,
   createGroupBoundaryEdges, edgePointsOf, effectiveBodyGeometry, flatGroupOfFace, genId, getFacePlaneAxes, getFacesAndGroups, getShapeMatrix,
   groupIndexOfFace, localBboxOf,
 } from './Geometry';
 import { REF_COLORS, applyTransformSteps, confirmRefFaceExtrude, cycleRefFacePickFromEvent } from './PanelOps';
-import { computeFaceComponentContour, computeFreeRegionLocal, earClipTriangulate, findPanelCoveringPoint, pointInTriangle3D } from './FaceRegion';
+import { computeFaceComponentContour, computeFreeRegionLocal, earClipTriangulate, findPanelCoveringPoint, panelHasRotation, pointInTriangle3D } from './FaceRegion';
 import {
-  GROUP_PANEL_THICKNESS, boxSpan, boxesSurface, collectObstacles, confirmRefCavityExtrude, confirmVolumePick, gridForObstacles, groupBoundsPanelPredicate,
+  GROUP_PANEL_THICKNESS, boxSpan, boxesSurface, collectObstacles, confirmRefCavityExtrude, confirmVolumePick, gridForObstacles, groupBoundsPanelPredicate, isInteriorPanel,
   rayCavityCandidates, repickObstacles,
 } from './PanelGroupService';
 import {
@@ -820,14 +820,20 @@ interface PendingPreview { geo: THREE.BufferGeometry; edgeGeo: THREE.BufferGeome
 
 /** Tıklanan yüz bileşeninin serbest bölgesi (highlight) ve VF'si. HIGHLIGHT = PANEL: bölge tek kaynaktan (computeFreeRegionLocal);
  *  kontur YEREL uzayda, panel ayak izleri dünya→yerel dönüşümle getirilir. */
+/** ÜST ÜSTE PANEL isteği: yüzün `depth` mm içindeki düzlem (altındaki panelin iç yüzü); altındaki panel bölgede yok sayılır. */
+export interface StackSpec { depth: number; baseVfId: string; basePanelId: string }
 export function buildFacePreview(
   clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces: FaceData[], worldToLocal: THREE.Matrix4,
-  shapeId: string, geometry?: THREE.BufferGeometry, childPanels: any[] = []
+  shapeId: string, geometry?: THREE.BufferGeometry, childPanels: any[] = [], stack?: StackSpec
 ): PendingPreview | null {
-  const clickLocal = clickWorld.clone().applyMatrix4(worldToLocal);
-  const contour = computeFaceComponentContour(faces, group.faceIndices, clickLocal, group.normal);
+  const clickOnFace = clickWorld.clone().applyMatrix4(worldToLocal);
+  const contour = computeFaceComponentContour(faces, group.faceIndices, clickOnFace, group.normal);
   if (!contour) return null;
-  const region = computeFreeRegionLocal(contour.corners, group.normal, clickLocal, childPanels, worldToLocal, shapeId);
+  const shift = stack ? group.normal.clone().normalize().multiplyScalar(-stack.depth) : null;
+  const corners = shift ? contour.corners.map(c => c.clone().add(shift)) : contour.corners;
+  const clickLocal = shift ? clickOnFace.clone().add(shift) : clickOnFace;
+  const siblings = stack ? childPanels.filter(p => p.id !== stack.basePanelId).map(p => ({ ...p, __pierceObstacle: true })) : childPanels;
+  const region = computeFreeRegionLocal(corners, group.normal, clickLocal, siblings, worldToLocal, shapeId);
   if (!region) return null;
   const { u, v, planeN, uMin, vMin, cw, ch, nx, ny, reach, touchingSiblingIds } = region;
   const nrm = group.normal.clone().normalize();
@@ -864,6 +870,7 @@ export function buildFacePreview(
     // Taraf sözleşmesi doğuştan kilitli: regen STORED-WINS birleştirir, bir daha değişmez.
     sideRelations: region.sideRelations,
     faceGroupDescriptor: geometry ? createFaceDescriptor(faces[contour.seedFi], geometry) : undefined,
+    ...(stack ? { stackDepth: stack.depth, stackBaseVfId: stack.baseVfId } : {}),
     ...({ regionAnchor: [anchor.x, anchor.y, anchor.z] } as any),
   };
   return { geo, edgeGeo, virtualFace };
@@ -1047,12 +1054,24 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
 
     let targetGroupIndex = hoveredGroupIndex;
     let previewClickPoint = clickPoint;
-    let cycleCandidates: Array<{ index: number; depth: number; hitPoint: THREE.Vector3 }> | null = null;
+    let previewStack: StackSpec | undefined;
+    let cycleCandidates: Array<{ index: number; depth: number; hitPoint: THREE.Vector3; stack?: StackSpec }> | null = null;
+    // Örten panelin ÖNÜNE panel: yalnız o yüzde duran, dönmemiş gövde paneli (raf/dikme ucu, kapak, arkalık değil); derinlik = gerçek kalınlığı.
+    const stackSpecFor = (cover: any, gi: number): StackSpec | undefined => {
+      if (!cover || isInteriorPanel(cover) || isDoorPanel(cover) || isBackPanel(cover) || panelHasRotation(cover)) return undefined;
+      const cvf = vfOfPanel(cover); if (!cvf) return undefined;
+      const nL = faceGroups[gi].normal.clone().normalize();
+      if (new THREE.Vector3(...cvf.normal).normalize().dot(nL) < 0.95) return undefined;
+      const bb = localBboxOf(cover.geometry); if (!bb) return undefined;
+      const k = Math.abs(nL.x) > 0.9 ? 'x' : Math.abs(nL.y) > 0.9 ? 'y' : 'z';
+      const depth = bb.max[k] - bb.min[k];
+      return depth > 0.5 ? { depth, baseVfId: cvf.id, basePanelId: cover.id } : undefined;
+    };
     const cameraPos = e.camera?.position?.clone();
     if (cameraPos && (isSameSpot || hoveredIsDefined)) {
       // Derinlik döngüsü: panel izi altındaki gruplar atlanır; boşluklar geçerli hedeftir.
       const rayDir = clickPoint.clone().sub(cameraPos).normalize();
-      const candidateGroups: Array<{ index: number; depth: number; hitPoint: THREE.Vector3 }> = [];
+      const candidateGroups: Array<{ index: number; depth: number; hitPoint: THREE.Vector3; stack?: StackSpec }> = [];
       for (let gi = 0; gi < faceGroups.length; gi++) {
         const group = faceGroups[gi];
         const nW = worldNormalOf(gi);
@@ -1066,10 +1085,13 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
           return !!f && pointInTriangle3D(hitOnPlane, f.vertices[0].clone().applyMatrix4(localToWorld), f.vertices[1].clone().applyMatrix4(localToWorld), f.vertices[2].clone().applyMatrix4(localToWorld));
         });
         if (!inside) continue;
-        if (findPanelCoveringPoint(hitOnPlane, childPanels, nW, hitOnPlane)) {
-          // Vuruş bir panelin altında: o yüzün en yakın boşluğu aday (yoksa yüz atlanır — eski davranış).
+        const cover = findPanelCoveringPoint(hitOnPlane, childPanels, nW, hitOnPlane);
+        if (cover) {
+          // Vuruş bir panelin altında: (1) o panelin ÖNÜNE panel (iç yüzünde, aynı yüz düzlemi stackDepth içeride), (2) o yüzün en yakın boşluğu.
+          const st = stackSpecFor(cover, gi);
+          if (st) candidateGroups.push({ index: gi, depth: t, hitPoint: hitOnPlane, stack: st });
           const free = nearestFreePointOnGroup(gi, hitOnPlane, nW);
-          if (free) candidateGroups.push({ index: gi, depth: t, hitPoint: free });
+          if (free) candidateGroups.push({ index: gi, depth: t + 0.01, hitPoint: free });
           continue;
         }
         candidateGroups.push({ index: gi, depth: t, hitPoint: hitOnPlane });
@@ -1077,9 +1099,11 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
       cycleCandidates = candidateGroups.sort((a, b) => a.depth - b.depth);
     }
     if (cycleCandidates && cycleCandidates.length > 0) {
-      const nextCycleIndex = isSameSpot && !hoveredIsDefined ? (lastClickRef.current!.cycleIndex + 1) % cycleCandidates.length : 0;
+      // Aynı noktaya tekrar tık adayları döndürür — örtülü noktada da (panelin önü → o yüzün boşluğu → arkadaki yüzler).
+      const nextCycleIndex = isSameSpot ? (lastClickRef.current!.cycleIndex + 1) % cycleCandidates.length : 0;
       targetGroupIndex = cycleCandidates[nextCycleIndex].index;
       previewClickPoint = cycleCandidates[nextCycleIndex].hitPoint;
+      previewStack = cycleCandidates[nextCycleIndex].stack;
       lastClickRef.current = { point: clickLocal, groupIndex: targetGroupIndex, cycleIndex: nextCycleIndex };
     } else if (hoveredIsDefined) {
       const vfId = coveringPanel?.parameters?.virtualFaceId;
@@ -1089,7 +1113,7 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
       lastClickRef.current = { point: clickLocal, groupIndex: targetGroupIndex, cycleIndex: 0 };
     }
     setHoveredGroupIndex(targetGroupIndex);
-    setPending(buildFacePreview(previewClickPoint, faceGroups[targetGroupIndex], faces, worldToLocal, shape.id, effGeometry, regionSiblings));
+    setPending(buildFacePreview(previewClickPoint, faceGroups[targetGroupIndex], faces, worldToLocal, shape.id, effGeometry, regionSiblings, previewStack));
   };
   if (!raycastMode) return null;
   return (

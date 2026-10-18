@@ -488,7 +488,8 @@ function panelFootprintsInParentLocal(
   if (hull.length < 3) return null;
   // SALT-KESİT KENAR-TEMASI: yüzü yalnız delen (yatık yüzü yok) ince kesit engel değildir — yüzü bölüp bölgenin
   // yarısını silmesin; rebuild'de boolean ile biçilir. Yatık yüzle yaslanan (flatVertCount>0) gerçek engeldir.
-  if (pierces && flatVertCount === 0 && !isRotated) {
+  // İstisna: ÜST ÜSTE PANEL düzleminde (gövde yüzünün içinde) delen levhalar gerçek engeldir (__pierceObstacle — PanelEngine/SceneObjects verir).
+  if (pierces && flatVertCount === 0 && !isRotated && panel.__pierceObstacle !== true) {
     const hb = bbox2(hull);
     const minSpan = Math.min(hb.x1 - hb.x0, hb.y1 - hb.y0);
     // İnce eşiği: geometrinin en ince ekseni (kalınlık, en az 18) + 12 mm pay.
