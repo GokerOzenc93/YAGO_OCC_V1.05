@@ -960,6 +960,9 @@ export const VirtualFaceOverlay: React.FC<{ shape: any }> = ({ shape }) => {
 export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = ({ shape, allShapes = [] }) => {
   const { raycastMode, virtualFaces, setSelectedPanelRow, setRaycastPendingVf } = useStoreFields('raycastMode', 'virtualFaces', 'setSelectedPanelRow', 'setRaycastPendingVf');
   const [hoveredGroupIndex, setHoveredGroupIndex] = useState<number | null>(null);
+  /** Fare bir panelin ÜZERİNDEYKEN (yüz orada panelle örtülü) o panel vurgulanır; tık o yüzün en yakın boşluğunu aday yapar. */
+  const [hoverCover, setHoverCover] = useState<{ id: string; geometry: THREE.BufferGeometry } | null>(null);
+  const hoverProbeRef = useRef<{ gi: number; point: THREE.Vector3 } | null>(null);
   const [pending, setPending] = useState<PendingPreview | null>(null);
   const lastClickRef = useRef<{ point: THREE.Vector3; groupIndex: number; cycleIndex: number } | null>(null);
   const shapeVirtualFaces = useMemo(() => virtualFaces.filter(vf => vf.shapeId === shape.id), [virtualFaces, shape.id]);
@@ -967,7 +970,7 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
   const effGeometry = useMemo(() => effectiveBodyGeometry(shape), [shape.geometry, shape.geometry?.uuid, vertexModsKeyStr]);
   const { localToWorld, worldToLocal } = useShapeMatrices(shape);
   const { faces, groups: faceGroups } = useFaceGroups(effGeometry, () => { setPending(null); lastClickRef.current = null; });
-  useEffect(() => { if (!raycastMode) { setHoveredGroupIndex(null); setPending(null); lastClickRef.current = null; } }, [raycastMode]);
+  useEffect(() => { if (!raycastMode) { setHoveredGroupIndex(null); setHoverCover(null); hoverProbeRef.current = null; setPending(null); lastClickRef.current = null; } }, [raycastMode]);
   useEffect(() => { setRaycastPendingVf(pending ? pending.virtualFace : null); }, [pending]);
   // İç paneller de girer (yeni panel sırada SONRA → mevcutlar onu basar); kapaklar/arkalıklar engel değildir.
   const childPanels = useMemo(() => childPanelsOf(shape.id, allShapes).filter(p => !isDoorPanel(p) && !isBackPanel(p)), [allShapes, shape.id]);
@@ -981,11 +984,47 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
   }, [faceGroups, shapeVirtualFaces]);
   const hoverHighlightGeometry = useMemo(() => (hoveredGroupIndex === null || !faceGroups[hoveredGroupIndex]) ? null
     : createFaceHighlightGeometry(faces, faceGroups[hoveredGroupIndex].faceIndices), [hoveredGroupIndex, faceGroups, faces]);
+  /* PANEL ÜSTÜNDEN YERLEŞTİRME (Goker, 18 Eki 2026 — "panel olan yere tıkladığımda da panel yerleştirebileyim; o yüzeyde boşluk varsa
+     o alanı da, panelin önünü de highlight etsin"): örtülü vuruşta yüz atlanmaz — o yüzün tıklanan noktaya EN YAKIN boş noktası
+     tohum olur (bölge = panelin önündeki/yanındaki boşluk); yüz tamamen doluysa aday olmaz. Diğer akış değişmedi. */
+  const nearestFreePointOnGroup = (gi: number, hitWorld: THREE.Vector3, nW: THREE.Vector3): THREE.Vector3 | null => {
+    const group = faceGroups[gi]; if (!group) return null;
+    const nL = group.normal.clone().normalize();
+    const { u, v } = getFacePlaneAxes(nL);
+    const verts = group.faceIndices.flatMap(fi => faces[fi]?.vertices ?? []);
+    if (!verts.length) return null;
+    let uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity;
+    for (const p of verts) { const a = p.dot(u), b = p.dot(v); if (a < uMin) uMin = a; if (a > uMax) uMax = a; if (b < vMin) vMin = b; if (b > vMax) vMax = b; }
+    const planeN = verts[0].dot(nL);
+    const N = 28, du = (uMax - uMin) / N, dv = (vMax - vMin) / N;
+    if (!(du > 0.01) || !(dv > 0.01)) return null;
+    let best: THREE.Vector3 | null = null, bestD = Infinity;
+    for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+      const pl = new THREE.Vector3().addScaledVector(u, uMin + (i + 0.5) * du).addScaledVector(v, vMin + (j + 0.5) * dv).addScaledVector(nL, planeN);
+      const pw = pl.clone().applyMatrix4(localToWorld);
+      const d = pw.distanceTo(hitWorld);
+      if (d >= bestD) continue;
+      const inside = group.faceIndices.some(fi => { const f = faces[fi]; return !!f && pointInTriangle3D(pl, f.vertices[0], f.vertices[1], f.vertices[2]); });
+      if (!inside) continue;
+      if (findPanelCoveringPoint(pw, childPanels, nW, pw)) continue;
+      best = pw; bestD = d;
+    }
+    return best;
+  };
   const handlePointerMove = (e: any) => {
     if (!raycastMode || faces.length === 0) return;
     e.stopPropagation();
     const gi = groupIndexOfFace(faceGroups, e.faceIndex);
-    if (gi !== -1) setHoveredGroupIndex(gi);
+    if (gi === -1) return;
+    setHoveredGroupIndex(gi);
+    // Örten panel vurgusu: yüz ya da nokta (≥ 8 mm) değişince yeniden bakılır.
+    const pt: THREE.Vector3 = e.point.clone();
+    const prev = hoverProbeRef.current;
+    if (prev && prev.gi === gi && prev.point.distanceTo(pt) < 8) return;
+    hoverProbeRef.current = { gi, point: pt };
+    const nW = faceGroups[gi].normal.clone().normalize().applyMatrix3(new THREE.Matrix3().getNormalMatrix(localToWorld)).normalize();
+    const cover = findPanelCoveringPoint(pt, childPanels, nW, pt);
+    setHoverCover(prevC => (cover ? (prevC && prevC.id === cover.id && prevC.geometry === cover.geometry ? prevC : { id: cover.id, geometry: cover.geometry }) : null));
   };
   const handlePointerDown = (e: any) => {
     if (!raycastMode) return;
@@ -1022,12 +1061,18 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
         const t = group.center.clone().applyMatrix4(localToWorld).sub(cameraPos).dot(nW) / denom;
         if (t < 0) continue;
         const hitOnPlane = cameraPos.clone().addScaledVector(rayDir, t);
-        if (findPanelCoveringPoint(hitOnPlane, childPanels, nW, hitOnPlane)) continue;
         const inside = group.faceIndices.some(fi => {
           const f = faces[fi];
           return !!f && pointInTriangle3D(hitOnPlane, f.vertices[0].clone().applyMatrix4(localToWorld), f.vertices[1].clone().applyMatrix4(localToWorld), f.vertices[2].clone().applyMatrix4(localToWorld));
         });
-        if (inside) candidateGroups.push({ index: gi, depth: t, hitPoint: hitOnPlane });
+        if (!inside) continue;
+        if (findPanelCoveringPoint(hitOnPlane, childPanels, nW, hitOnPlane)) {
+          // Vuruş bir panelin altında: o yüzün en yakın boşluğu aday (yoksa yüz atlanır — eski davranış).
+          const free = nearestFreePointOnGroup(gi, hitOnPlane, nW);
+          if (free) candidateGroups.push({ index: gi, depth: t, hitPoint: free });
+          continue;
+        }
+        candidateGroups.push({ index: gi, depth: t, hitPoint: hitOnPlane });
       }
       cycleCandidates = candidateGroups.sort((a, b) => a.depth - b.depth);
     }
@@ -1049,7 +1094,12 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
   if (!raycastMode) return null;
   return (
     <>
-      <mesh geometry={effGeometry} visible={false} onPointerMove={handlePointerMove} onPointerOut={(e) => { e.stopPropagation(); setHoveredGroupIndex(null); }} onPointerDown={handlePointerDown} />
+      <mesh geometry={effGeometry} visible={false} onPointerMove={handlePointerMove} onPointerOut={(e) => { e.stopPropagation(); setHoveredGroupIndex(null); setHoverCover(null); hoverProbeRef.current = null; }} onPointerDown={handlePointerDown} />
+      {hoverCover && !pending && (
+        <mesh geometry={hoverCover.geometry} raycast={() => null}>
+          {highlightMat(RAYCAST_COLORS.hoverEmpty, SEL_COLORS.faceHoverOpacity, -1, true)}
+        </mesh>
+      )}
       {hoverHighlightGeometry && (
         <mesh geometry={hoverHighlightGeometry} raycast={() => null}>
           {highlightMat(hoveredGroupIndex !== null && groupHasVirtualFace(hoveredGroupIndex) ? RAYCAST_COLORS.hoverHasVF : RAYCAST_COLORS.hoverEmpty, SEL_COLORS.faceHoverOpacity, -1, true)}
