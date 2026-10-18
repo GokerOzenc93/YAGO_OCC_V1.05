@@ -202,11 +202,9 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
   for (const key of order) {
     const f = FACE[key];
     if (key === 'bottom' && lift > 0) {
-      // Ayaklıda 'side' köşede yan kısaltılır → alt yüz düzleminde damgası kalmaz; alt panel o uçtan kalınlık kadar kesilir.
-      const cuts: Array<[Vec3, string, number]> = [];
-      if (cfg.base === 'legs' && joins.bl === 'side') cuts.push([[-1, 0, 0], 'X-', -t]);
-      if (cfg.base === 'legs' && joins.br === 'side') cuts.push([[1, 0, 0], 'X+', -t]);
-      await push(key, f.n, f.seed, QUICK_PANEL_NAME[key], { move: ['y+', lift], cuts });
+      // Yükseltilen alt panelin bölgesi motor tarafından GERÇEK konumunda çözülür (damgalar panelin ötelemesi kadar kaydırılır);
+      // ayaklıda kısaltılmış yanlar o yükseklikte alt paneli keser → ek extrude gerekmez.
+      await push(key, f.n, f.seed, QUICK_PANEL_NAME[key], { move: ['y+', lift] });
     } else if ((key === 'left' || key === 'right') && cfg.base === 'legs' && lift > 0 && joins[key === 'left' ? 'bl' : 'br'] === 'side') {
       // Yan köşeden geçiyor ama ayak kadar yukarıda biter: alt kenar extrude ile kısaltılır (vekil de kısaltılmış).
       await push(key, f.n, f.seed, QUICK_PANEL_NAME[key], {

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { type CavityBox, type PanelGroup, type Shape, type VirtualFace, childPanelsOf, panelOfVf, shapeById, useAppStore, vfOfPanel } from '../store';
 import { type ExtrudeStep, type TransformStep, applyExtrudeSteps, applyTransformSteps, getUnifiedSteps, matchReferenceFace, resolveReferenceFacePlane, stepRefTargets } from './PanelOps';
-import { computeFaceComponentContour, computeFreeRegionLocal, convexHull2D, panelBehindStackPlane, largestFaceNormal, panelHasRotation, panelInnerBigFace, panelIsTiltedSlab } from './FaceRegion';
+import { computeFaceComponentContour, computeFreeRegionLocal, convexHull2D, footprintGeometry, panelBehindStackPlane, largestFaceNormal, panelHasRotation, panelInnerBigFace, panelIsTiltedSlab } from './FaceRegion';
 import {
   type CoplanarFaceGroup, type FaceData, type Vec3, angleToTouchPlane, axisDirToVec, axisIndexOf, boundsOverlapBox, convertReplicadToThreeGeometry,
   createPanelFromVirtualFace, createReplicadBox, effectiveBodyGeometry, errMsg, findFaceByDescriptor, fmtBounds, getFacePlaneAxes, hugeRectOnPlane,
@@ -1418,6 +1418,32 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
     return { ...p, __isRotatedPanel: true, __rotatedRealGeom: true, __composedOps: [] };
   };
 
+  // HEDEFİN KENDİ ÖTELEMESİ: bölge gövde yüzü düzleminde çözülür; taşınmış panel (ör. 100 yukarı alınmış alt) yalnız taşınmış
+  // konumunda var olan engelleri (arkalık çakma damgası, kısaltılmış yan) göremiyordu → damgalar hedefin ötelemesinin tersi kadar
+  // kaydırılır = bölge panelin gerçek konumunda çözülür (Goker, Eki 2026: "alt kısmı nailed yapınca alt panel arkadan kısalmadı").
+  const ownShiftOf = (p: any, vf: VirtualFace | undefined): THREE.Vector3 | null => {
+    if (!p || !vf || !hasMoveSteps(p) || isRotatedPanel(p)) return null;
+    try {
+      const { ops } = composeSteps(getUnifiedSteps(p), { ...(vf as any), rawFaceBBox: undefined });
+      const rda = p.parameters?._refDeltaApplied;
+      const d = new THREE.Vector3();
+      for (const o of ops as any[]) {
+        if (o.kind === 'translate' && o.d) d.add(o.d);
+        else if (o.kind === 'refTranslate') { if (Array.isArray(rda) && rda.length === 3) d.add(new THREE.Vector3(rda[0], rda[1], rda[2])); else if (o.fallback) d.add(o.fallback); }
+      }
+      return d.lengthSq() > 1e-6 ? d : null;
+    } catch { return null; }
+  };
+  // Kaydırılmış damga yüz düzlemini artık ucuyla değil GÖVDESİYLE keser (yan 0..720 → −100..620): ince-kesit istisnası onu engel
+  // saymazdı → __pierceObstacle: taşınmış panelin düzlemini delen her kardeş gerçek engeldir (fiziksel olarak oradadır).
+  // Geometri doğrudan ötelenir (FaceRegion değme kapısı ops'tan ÖNCE ham noktalara bakar); ops'lu damgada dönüş pivotları da
+  // aynı kadar kayar (katı öteleme ops'larla ancak pivotlar birlikte kayınca değişmez).
+  const shiftStamp = (s: any, d: THREE.Vector3): any => {
+    if (!s || typeof s !== 'object' || !s.geometry) return s;
+    const base = footprintGeometry(s) ?? s.geometry;
+    const ops = Array.isArray(s.__composedOps) ? s.__composedOps.map((o: any) => (o && o.kind === 'rotate' && o.pivot ? { ...o, pivot: o.pivot.clone().add(d) } : o)) : undefined;
+    return { ...s, geometry: base.clone().translate(d.x, d.y, d.z), ungroovedGeometry: undefined, __pierceObstacle: true, ...(ops ? { __composedOps: ops } : {}) };
+  };
   const stampingPanelsFor = (vfId: string): any[] => {
     const myPanel = childPanels.find(p => p.parameters?.virtualFaceId === vfId);
     const myVf = vfById.get(vfId);
@@ -1426,9 +1452,11 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
     // Üst üste panelde düzlemin GERİSİNDE kalan paneller (taban + aradaki yığın) kardeş değildir; düzlemi aşanlar kalır.
     const sd = myVf && myFaceNormal && ((myVf.stackDepth && myVf.stackDepth > 0) || myVf.stackOnPanel) ? 1 : 0;
     const planeIn = sd && myFaceNormal ? new THREE.Vector3(...myVf!.center).dot(myFaceNormal.clone().multiplyScalar(-1)) : 0;
-    const list = childPanels.filter(p => !(sd && myFaceNormal && panelBehindStackPlane(p, myFaceNormal, planeIn)) && stamps(p, vfId, myPanel, myFaceNormal)).map(p => stampOf(p, myFaceNormal, vfId));
+    let list = childPanels.filter(p => !(sd && myFaceNormal && panelBehindStackPlane(p, myFaceNormal, planeIn)) && stamps(p, vfId, myPanel, myFaceNormal)).map(p => stampOf(p, myFaceNormal, vfId));
     // Üst üste panel düzlemi gövdenin içindedir: o düzlemi DELEN levhalar (üst/alt/arkalık) gerçek engel sayılır.
-    return sd ? list.map(s => (s && typeof s === 'object' ? { ...s, __pierceObstacle: true } : s)) : list;
+    if (sd) list = list.map(s => (s && typeof s === 'object' ? { ...s, __pierceObstacle: true } : s));
+    const own = ownShiftOf(myPanel, myVf);
+    return own ? list.map(s => shiftStamp(s, own.clone().negate())) : list;
   };
 
   const updatedMap = new Map<string, VirtualFace>();
