@@ -155,7 +155,31 @@ export function setVfBackBound(vfId: string, on: boolean): void {
   const vf = st.virtualFaces.find(f => f.id === vfId);
   if (!vf || vfBackBound(vf) === on) return;
   st.updateVirtualFace(vfId, { backBound: on, ...(vf.splitBack !== undefined ? { splitBack: undefined } : {}) } as Partial<VirtualFace>);
-  if (on) adoptBoundsAfterMark(vf.shapeId);
+  if (on) { adoptBoundsAfterMark(vf.shapeId); splitBacksAtMarked(vf); }
+  else unbindBacksFrom(vf);
+}
+/** Sınır kaldırılınca levhaya bağlı derzler çözülür (ölçüler dondurulur): levha artık sıra kuralına döner (arkalıktan sonraysa arkalıkta biter). */
+function unbindBacksFrom(vf: VirtualFace): void {
+  const st = useAppStore.getState();
+  const others = st.virtualFaces.filter(f => f.id !== vf.id);
+  for (const g of st.backGroups) {
+    if (g.shapeId !== vf.shapeId) continue;
+    const tree = pruneRefs(g.tree, solveBackTree(g), others);
+    if (tree) void writeBackGroup(g, { tree });
+  }
+}
+/** Sonradan sınır yapılan raf/dikme (Goker: "arkalık kısalmıyor"): kenar olmadıysa, levhanın geçtiği her arkalık o levhada bölünür
+ *  (derz levhaya bağlı, kanallı) → parçalar levhada biter, levha arkaya kadar tam boy. */
+function splitBacksAtMarked(vf: VirtualFace): void {
+  const st = useAppStore.getState();
+  const parent = shapeById(vf.shapeId, st.shapes);
+  if (!parent) return;
+  for (const g of st.backGroups) {
+    if (g.shapeId !== vf.shapeId) continue;
+    const np = backNearPanels(g, parent, st.shapes, st.virtualFaces, st.panelGroups).find(p => p.vfId === vf.id);
+    if (!np || np.edge || np.ref || !canSplitBackAtPanel(g, np)) continue;
+    splitBackAtPanel(g.id, vf.id);
+  }
 }
 /** Sınır işaretinden sonra: gövde kenarına bağlı kenarı bu levhayı devralan gruplar hemen yeniden yazılır (rebuild). */
 function adoptBoundsAfterMark(shapeId: string): void {
@@ -1055,13 +1079,22 @@ function rebuildMembers(group: BackGroup, nextGroup: BackGroup, restructured: Se
     if (prev) { ids.push(prev); kept.push(prev); }
     else { const vf = makeMemberVf(nextGroup, i, sol); ids.push(vf.id); fresh.push(vf); }
   });
+  // Grubun listedeki YERİ korunur (Goker: arkalık bölününce parçalar listenin sonuna düşüyor, sonra konan raf/dikme arkalığın
+  // önünde sayılıp arkalığın dışına taşıyordu): hiç üye korunmazsa yeniler ilk eski üyenin yerine girer.
+  const before = useAppStore.getState().virtualFaces.map(f => f.id);
+  const mine = new Set(group.memberVfIds);
+  let anchorIdx = before.findIndex(id => mine.has(id));
+  while (anchorIdx > 0 && mine.has(before[anchorIdx - 1])) anchorIdx--;
+  const anchorPrev = anchorIdx > 0 ? before[anchorIdx - 1] : null;
   removeMemberVfs(group.memberVfIds.filter(id => !kept.includes(id)));
   for (const id of kept) st.updateVirtualFace(id, { backIndex: ids.indexOf(id) });
   st.updateBackGroup(group.id, { ...nextGroup, rect: sol.rect, tree: sol.tree, memberVfIds: ids });
   // Yeni parçalar korunan son üyeden sonra eklenir: grup listede bir arada kalır.
   const order = useAppStore.getState().virtualFaces.map(f => f.id);
   const lastKept = kept.slice().sort((a, b) => order.indexOf(a) - order.indexOf(b)).pop() ?? null;
-  st.insertVirtualFacesAfter(lastKept, fresh);
+  if (lastKept || anchorIdx < 0) st.insertVirtualFacesAfter(lastKept, fresh);
+  else if (anchorPrev) st.insertVirtualFacesAfter(anchorPrev, fresh);
+  else useAppStore.setState(s => ({ virtualFaces: [...fresh, ...s.virtualFaces] }));
   const now = useAppStore.getState();
   if (now.selectedBackGroupId !== group.id && !now.selectedPanelRow) st.setSelectedBackGroupId(group.id);
 }
