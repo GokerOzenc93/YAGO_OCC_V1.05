@@ -1,19 +1,460 @@
 import * as THREE from 'three';
 import {
-  type CavityBox, type CavityPick, type CavityStep, type GapSpec, type PanelGroup, type RefFacePick, type Shape, type VirtualFace,
-  panelOfVf, requestRebuild, shapeById, useAppStore,
-} from '../store';
-import {
-  type Vec3, dominantAxisLabel, effectiveBodyGeometry, genId, getFacesAndGroups, getShapeMatrix, isFlatNormal, localBboxOf, round1, vertexModsKey,
+  type Point2D, type Vec3, panelHasRotation, largestFaceNormal, clipHalfPlane, frontHullOf, clipPolyToConvex, polyArea, genId, round1, localBboxOf,
+  effectiveBodyGeometry, getFacesAndGroups, vertexModsKey, isFlatNormal, matchReferenceFace, getShapeMatrix, dominantAxisLabel, type FaceData,
+  type CoplanarFaceGroup, computeFaceComponentContour, computeFreeRegionLocal, fromPlaneUV, vec3, createFaceDescriptor, createPanelFromVirtualFace,
+  convertReplicadToThreeGeometry, type MoveTransformStep, type ExtrudeStep, axisDirToVec,
 } from './Geometry';
-import { panelHasRotation, polyArea } from './FaceRegion';
-import { matchReferenceFace } from './PanelOps';
-// Döngüsel içe aktarma (DoorService / BackService / SplitShared ↔ PanelGroupService): yalnız işlev gövdelerinde kullanılır — ESM
-// canlı bağlarıyla güvenli.
-import { doorJointForBond, moveDoorJointTo } from './DoorService';
-import { backObstacleFor } from './BackService';
-import { type Pt2, jointCenter, rayBoxEntry, renameMemberVfs, setMemberPanelThickness } from './SplitShared';
+import {
+  type CavityBox, type Shape, type VirtualFace, panelOfVf, type GapSpec, useAppStore, type PanelGroup, type CavityPick, type CavityStep, shapeById,
+  requestRebuild, type RefFacePick, type CornerKey, type QuickBodyConfig, type JoinPass, type BodyLegs, childPanelsOf,
+} from '../store';
+import { backObstacleFor, isBackPanel, backPreviewStamp, backCandidatesAt, BACK_AXIS, BACK_SIDE, createBackGroupFromPick } from './BackService';
+import { doorJointForBond, moveDoorJointTo, isDoorPanel } from './DoorService';
 
+/* PANEL GRUP SERVİSİ — 1) kapak / arkalık / raf-dikme ortak bölme yardımcıları · 2) raf / dikme grupları · 3) hızlı gövde. */
+
+// ════════════════════════════════════════════ 1. ORTAK BÖLME YARDIMCILARI ════════════════════════════════════════════
+// KAPAK / ARKALIK / RAF-DİKME ORTAK YARDIMCILARI: yalnız saf geometri, bölme ağacı gezintisi, ölçü dağıtımı ve üye VF bakımı.
+// İş kuralları (sınır seçimi, bini, kanal, bağ yönü) servislerde kalır. Yardımcılar fonksiyon bildirimi → döngüsel içe aktarmada TDZ yok.
+
+export type Pt2 = Point2D;
+export type Axis3 = 0 | 1 | 2;
+export type EdgeKey = 'uMin' | 'uMax' | 'vMin' | 'vMax';
+export type SlabPlacement = 'inner' | 'outer';
+export type JointAlign = 'min' | 'center' | 'max';
+export interface PlaneRect { u0: number; u1: number; v0: number; v1: number }
+export const EDGE_KEYS: EdgeKey[] = ['uMin', 'uMax', 'vMin', 'vMax'];
+
+// DÜZLEM / ÇOKGEN
+/** Levha düzlemi: u = yatay (sütun), v = düşey (satır). */
+export function planeAxes(axis: Axis3): { u: Axis3; v: Axis3 } {
+  if (axis === 2) return { u: 0, v: 1 };
+  if (axis === 0) return { u: 2, v: 1 };
+  return { u: 0, v: 2 };
+}
+export function rectKey(r: PlaneRect): string { return [r.u0, r.u1, r.v0, r.v1].map(n => Math.round(n)).join('|'); }
+export function rectPoly(r: PlaneRect): Pt2[] { return [{ x: r.u0, y: r.v0 }, { x: r.u1, y: r.v0 }, { x: r.u1, y: r.v1 }, { x: r.u0, y: r.v1 }]; }
+/** Çokgenin dikdörtgen kutusu. */
+export function polyRect(poly: Pt2[], front: number): PlaneRect & { front: number } {
+  const xs = poly.map(q => q.x), ys = poly.map(q => q.y);
+  return { u0: Math.min(...xs), u1: Math.max(...xs), v0: Math.min(...ys), v1: Math.max(...ys), front };
+}
+/** Kırpma çokgeni değiştirdi mi (köşe sayısı ya da 1e-6'dan büyük kayma). */
+export function polyChanged(a: Pt2[], b: Pt2[]): boolean {
+  return a.length !== b.length || a.some((q, i) => Math.abs(q.x - b[i].x) > 1e-6 || Math.abs(q.y - b[i].y) > 1e-6);
+}
+/** Işının kutuya girdiği yüz: eksen, ışının o eksende + yönde olup olmadığı ve giriş t'si; kamera kutunun içindeyse null. */
+export function rayBoxEntry(o: Vec3, d: Vec3, b: CavityBox): { axis: Axis3; pos: boolean; t: number } | null {
+  let best = -Infinity, axis: Axis3 = 0, pos = false;
+  for (const a of [0, 1, 2] as const) {
+    if (Math.abs(d[a]) < 1e-9) continue;
+    const t = d[a] > 0 ? (b.min[a] - o[a]) / d[a] : (b.max[a] - o[a]) / d[a];
+    if (t > best) { best = t; axis = a; pos = d[a] > 0; }
+  }
+  return best > 0 ? { axis, pos, t: best } : null;
+}
+/** Derz merkezi levha yüzlerinden (a0 < a1): 'center' → levha ortası, 'min' → max yüz + yarım derz, 'max' → min yüz − yarım derz. */
+export function jointCenter(a0: number, a1: number, g: number, align: JointAlign): number {
+  return align === 'center' ? (a0 + a1) / 2 : align === 'min' ? a1 + g / 2 : a0 - g / 2;
+}
+/** Derze (p0..p1) hizalı t kalınlıklı levhanın min yüzü. */
+export function alignedMin(p0: number, p1: number, t: number, align: JointAlign): number {
+  return align === 'min' ? p0 - t : align === 'max' ? p1 : (p0 + p1) / 2 - t / 2;
+}
+
+// SINIR PANELLERİ / AÇILI KESİCİLER
+export interface BoundPanel { vfId: string; panelId: string; box: CavityBox; name: string }
+/** Kabul edilen VF'lerin dönmemiş panelleri (gövde-yerel kutu). */
+export function collectBoundPanels(parent: Shape, shapes: Shape[], vfs: VirtualFace[], accept: (vf: VirtualFace) => boolean): BoundPanel[] {
+  const out: BoundPanel[] = [];
+  for (const vf of vfs) {
+    if (vf.shapeId !== parent.id || !accept(vf)) continue;
+    const p = panelOfVf(vf.id, shapes);
+    if (!p || panelHasRotation(p)) continue;
+    const box = panelLocalBox(p, parent);
+    if (!box) continue;
+    out.push({ vfId: vf.id, panelId: p.id, box, name: vf.description || 'Panel' });
+  }
+  return out;
+}
+
+/** Dönmüş sınır paneli: büyük-yüz normali + o normaldeki [dMin,dMax] + kutu; pts = tekil köşeler (şema ön görünüşü). */
+export interface SlabCut { vfId: string; name: string; n: Vec3; dMin: number; dMax: number; box: CavityBox; pts?: Vec3[] }
+export function collectRotatedCuts(parent: Shape, shapes: Shape[], vfs: VirtualFace[], accept: (vf: VirtualFace) => boolean): SlabCut[] {
+  const out: SlabCut[] = [];
+  for (const vf of vfs) {
+    if (vf.shapeId !== parent.id || !accept(vf)) continue;
+    const p = panelOfVf(vf.id, shapes);
+    if (!p || !panelHasRotation(p)) continue;
+    const box = panelLocalBox(p, parent);
+    const n = largestFaceNormal(p.geometry);
+    const pos = p.geometry?.getAttribute?.('position') as THREE.BufferAttribute | undefined;
+    if (!box || !n || !pos) continue;
+    const off = [0, 1, 2].map(k => (p.position?.[k] ?? 0) - (parent.position?.[k] ?? 0));
+    let dMin = Infinity, dMax = -Infinity;
+    const pts: Vec3[] = [], seen = new Set<string>();
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i) + off[0], y = pos.getY(i) + off[1], z = pos.getZ(i) + off[2];
+      const d = x * n.x + y * n.y + z * n.z;
+      if (d < dMin) dMin = d;
+      if (d > dMax) dMax = d;
+      const k = `${Math.round(x * 10)},${Math.round(y * 10)},${Math.round(z * 10)}`;
+      if (!seen.has(k)) { seen.add(k); pts.push([x, y, z]); }
+    }
+    if (!(dMax - dMin > 0.5)) continue;
+    out.push({ vfId: vf.id, name: vf.description || 'Panel', n: [n.x, n.y, n.z], dMin, dMax, box, pts });
+  }
+  return out;
+}
+
+/** Dönmüş kesicinin kestiği KENAR = kaldırılan yönün baskın ekseni (eğik üst → vMax, eğik dikme → uMin/uMax). */
+export function cutEdgeOf(c: SlabCut, cu: number, cv: number, axis: Axis3, front: number): { edge: EdgeKey; keepBelow: boolean } | null {
+  const { u, v } = planeAxes(axis);
+  const A = c.n[u], B = c.n[v], Na = c.n[axis];
+  if (Math.abs(A) < 1e-6 && Math.abs(B) < 1e-6) return null;   // levha düzlemine paralel: kesim anlamsız
+  const keepBelow = A * cu + B * cv + Na * front < (c.dMin + c.dMax) / 2;
+  const ru = keepBelow ? A : -A, rv = keepBelow ? B : -B;
+  const edge: EdgeKey = Math.abs(ru) >= Math.abs(rv) ? (ru > 0 ? 'uMax' : 'uMin') : (rv > 0 ? 'vMax' : 'vMin');
+  return { edge, keepBelow };
+}
+/** Dış levha kesicinin gerisindeyse onu örter (uzak yüze kadar). */
+export function cutCoverFar(c: SlabCut, axis: Axis3, side: 1 | -1, placement: SlabPlacement, front: number): boolean {
+  return placement === 'outer' && (side > 0 ? c.box.max[axis] <= front + TOL : c.box.min[axis] >= front - TOL);
+}
+
+// Şemada açılı sınır levhası: levha düzlemindeki kesit bir ŞERİT (dMin ≤ A·u + B·v + Na·front ≤ dMax), en az minT mm.
+// covered → bini rozeti anlamlı.
+export interface CutBand { cut: SlabCut; poly: Pt2[]; edge: EdgeKey | null; covered: boolean; dir: Pt2 }
+type BandGroup = { axis: Axis3; side: 1 | -1; placement: SlabPlacement; anchor?: [number, number] };
+export function cutBands(group: BandGroup, rect: PlaneRect & { front: number }, cuts: SlabCut[], area: Pt2[], minT: number): CutBand[] {
+  const { u, v } = planeAxes(group.axis);
+  const out: CutBand[] = [];
+  for (const c of cuts) {
+    const A = c.n[u], B = c.n[v], Na = c.n[group.axis];
+    const len = Math.hypot(A, B);
+    if (len < 1e-6) continue;
+    let lo = c.dMin - Na * rect.front, hi = c.dMax - Na * rect.front;
+    if (hi - lo < minT * len) { const m = (lo + hi) / 2; lo = m - minT * len / 2; hi = m + minT * len / 2; }
+    let poly = clipHalfPlane(area, A, B, hi);
+    if (poly.length >= 3) poly = clipHalfPlane(poly, -A, -B, -lo);
+    // Şerit sonsuzdur: panelin gerçek ön görünüşüyle kırpılır, yoksa yan panelin üstüne taşar.
+    if (poly.length >= 3 && c.pts && c.pts.length >= 3) {
+      const hull = frontHullOf(c.pts, u, v);
+      if (hull.length >= 3) poly = clipPolyToConvex(poly, hull);
+    }
+    if (poly.length < 3 || Math.abs(polyArea(poly)) < 1) continue;
+    const cu = group.anchor ? group.anchor[0] : (rect.u0 + rect.u1) / 2, cv = group.anchor ? group.anchor[1] : (rect.v0 + rect.v1) / 2;
+    const ce = cutEdgeOf(c, cu, cv, group.axis, rect.front);
+    const covered = cutCoverFar(c, group.axis, group.side, group.placement, rect.front);
+    out.push({ cut: c, poly, edge: ce?.edge ?? null, covered, dir: { x: -B / len, y: A / len } });
+  }
+  return out;
+}
+
+// KENAR BİLGİSİ
+export type BoundRef = { vfId?: string; body?: boolean };
+/** Kenar: iç / dış yüz (ax ekseninde) + panelin levha düzlemine bakan yüzü (gövde kenarında null). */
+export type EdgeInfo = { ref: BoundRef; inner: number; outer: number; front: number | null };
+export function boundEdgeInfo(
+  ref: BoundRef, parent: Shape, shapes: Shape[], body: CavityBox, ax: Axis3, minSide: boolean, axis: Axis3, side: 1 | -1,
+): EdgeInfo {
+  if (ref.vfId) {
+    const p = panelOfVf(ref.vfId, shapes);
+    const box = p && (p.parameters as any)?.parentShapeId === parent.id ? panelLocalBox(p, parent) : null;
+    if (box) {
+      const inner = minSide ? box.max[ax] : box.min[ax], outer = minSide ? box.min[ax] : box.max[ax];
+      return { ref, inner, outer, front: side > 0 ? box.max[axis] : box.min[axis] };
+    }
+  }
+  const e = minSide ? body.min[ax] : body.max[ax];
+  return { ref: { body: true }, inner: e, outer: e, front: null };
+}
+/** Levha düzlemi = kenar panellerinin EN GERİDEKİ yüzü (tek seçenek); panel yoksa gövde yüzü. */
+export function depthOptions(e: EdgeInfo[], side: 1 | -1, bodyFront: number): Array<{ ref: BoundRef; front: number }> {
+  let best: { ref: BoundRef; front: number } | null = null;
+  for (const x of e) {
+    if (x.front == null) continue;
+    if (!best || side * (x.front - best.front) < 0) best = { ref: x.ref, front: x.front };
+  }
+  return [best ?? { ref: { body: true }, front: bodyFront }];
+}
+export function sameBounds(a: Record<EdgeKey, BoundRef>, b: Record<EdgeKey, BoundRef>): boolean {
+  return EDGE_KEYS.every(k => (a[k]?.vfId ?? '') === (b[k]?.vfId ?? '') && !!a[k]?.body === !!b[k]?.body);
+}
+
+/** Üye VF geometrisi: `plane` düzleminde dikdörtgen ya da kırpılmış çokgen; normal = side (createPanelFromVirtualFace −normal yönünde uzar). */
+export function slabVfGeometry(axis: Axis3, side: 1 | -1, plane: number, m: PlaneRect & { poly?: Pt2[] }): { normal: Vec3; vertices: Vec3[]; center: Vec3 } {
+  const { u, v } = planeAxes(axis);
+  const mk = (uu: number, vv: number): Vec3 => { const p: Vec3 = [0, 0, 0]; p[axis] = plane; p[u] = uu; p[v] = vv; return p; };
+  const normal: Vec3 = [0, 0, 0]; normal[axis] = side;
+  const vertices = (m.poly || rectPoly(m)).map(q => mk(q.x, q.y));
+  const n = m.poly?.length ?? 0;
+  const c = m.poly ? m.poly.reduce((a, q) => ({ x: a.x + q.x / n, y: a.y + q.y / n }), { x: 0, y: 0 }) : { x: (m.u0 + m.u1) / 2, y: (m.v0 + m.v1) / 2 };
+  return { normal, vertices, center: mk(c.x, c.y) };
+}
+
+// BÖLME AĞACI (kapak / arkalık)
+// leaf = parça; split = u (yan yana) / v (ÜSTTEN aşağı) eksende çocuklar (sizes + n−1 gaps); refs = levhaya bağlı derzler.
+export interface SplitFields<C> {
+  id: string; kind: 'split'; axis: 'u' | 'v'; sizes: GapSpec[]; gaps: number[]; children: C[];
+  targetSize?: number; refs?: Record<number, { vfId: string }>;
+}
+export type TreeNode = { id: string; kind: 'leaf' } | SplitFields<TreeNode>;
+type Box2 = PlaneRect;
+export type SolvedBox = Box2 & { depth: number };
+export type SolvedNode = ({ id: string; kind: 'leaf' } & SolvedBox) | (SplitFields<SolvedNode> & SolvedBox);
+export type LeafOf<N> = Extract<N, { kind: 'leaf' }>;
+export type SplitOf<N> = Extract<N, { kind: 'split' }>;
+type RefOf<N> = N extends { kind: 'split'; refs?: Record<number, infer R extends { vfId: string }> } ? R : never;
+
+export function treeLeaves<N extends TreeNode>(n: N): Array<LeafOf<N>> {
+  return n.kind === 'leaf' ? [n as LeafOf<N>] : (n.children as N[]).flatMap(c => treeLeaves(c));
+}
+export function findNode<N extends TreeNode>(n: N, id: string): N | null {
+  if (n.id === id) return n;
+  if (n.kind === 'split') for (const c of n.children as N[]) { const h = findNode(c, id); if (h) return h; }
+  return null;
+}
+export function findParent<N extends TreeNode>(n: N, id: string): SplitOf<N> | null {
+  if (n.kind !== 'split') return null;
+  if (n.children.some(c => c.id === id)) return n as SplitOf<N>;
+  for (const c of n.children as N[]) { const h = findParent(c, id); if (h) return h; }
+  return null;
+}
+export function replaceNode<N extends TreeNode>(n: N, id: string, repl: (old: N) => N): N {
+  if (n.id === id) return repl(n);
+  if (n.kind === 'leaf') return n;
+  const s = n as SplitOf<N>;
+  return { ...s, children: (s.children as N[]).map(c => replaceNode(c, id, repl)) };
+}
+/** Alt ağacın yeni kimlikli kopyası (split kimliği çocuklardan önce üretilir); derz bağları da kopyalanır. */
+export function cloneTree<N extends TreeNode>(n: N, splitPrefix: string, leaf: (l: LeafOf<N>) => N): N {
+  if (n.kind === 'leaf') return leaf(n as LeafOf<N>);
+  const s = n as SplitOf<N>;
+  return {
+    ...s, id: genId(splitPrefix), sizes: s.sizes.map(x => ({ ...x })), gaps: [...s.gaps],
+    children: (s.children as N[]).map(c => cloneTree(c, splitPrefix, leaf)), ...(s.refs ? { refs: { ...s.refs } } : {}),
+  };
+}
+export function jointRefs<N extends TreeNode>(n: N): Array<{ splitId: string; k: number; ref: RefOf<N> }> {
+  if (n.kind === 'leaf') return [];
+  const own = Object.entries(n.refs ?? {}).map(([k, ref]) => ({ splitId: n.id, k: +k, ref: ref as RefOf<N> }));
+  return [...own, ...(n.children as N[]).flatMap(c => jointRefs(c))];
+}
+export function spacingNodes<N extends TreeNode>(n: N, axis: 'u' | 'v'): Array<SplitOf<N>> {
+  if (n.kind !== 'split') return [];
+  const own = n.axis === axis && n.targetSize ? [n as SplitOf<N>] : [];
+  return [...own, ...(n.children as N[]).flatMap(c => spacingNodes(c, axis))];
+}
+/** Kapsamdaki spacing hedefleri; alt ağaçta yoksa seçili bölgeyi ÜRETEN en yakın üst bölmenin hedefi. */
+export function spacingTargetsInScope<N extends TreeNode>(tree: N, scopeIds: string[], axis: 'u' | 'v'): Array<SplitOf<N>> {
+  const roots = (scopeIds.length ? scopeIds : [tree.id]).map(id => findNode(tree, id)).filter((n): n is N => !!n);
+  const out = new Map<string, SplitOf<N>>();
+  for (const r of roots) {
+    const under = spacingNodes(r, axis);
+    if (under.length) { for (const n of under) out.set(n.id, n); continue; }
+    for (let par = findParent(tree, r.id); par; par = findParent(tree, par.id)) {
+      if (par.axis === axis && par.targetSize) { out.set(par.id, par); break; }
+    }
+  }
+  return [...out.values()];
+}
+/** Çözümden ağaca: split ölçüleri çözümden; boş targetSize / refs yazılmaz. */
+export function unsolveTree<S extends TreeNode, N>(n: S, leaf: (l: LeafOf<S>) => N): N {
+  if (n.kind === 'leaf') return leaf(n as LeafOf<S>);
+  const s = n as SplitOf<S>;
+  return {
+    id: s.id, kind: 'split', axis: s.axis, sizes: s.sizes, gaps: s.gaps, children: (s.children as S[]).map(c => unsolveTree(c, leaf)),
+    ...(s.targetSize ? { targetSize: s.targetSize } : {}), ...(s.refs && Object.keys(s.refs).length ? { refs: s.refs } : {}),
+  } as N;
+}
+function sameRefMaps<R>(a: Record<number, R> | undefined, b: Record<number, R> | undefined, eq: (x?: R, y?: R) => boolean): boolean {
+  const ka = Object.keys(a ?? {}), kb = Object.keys(b ?? {});
+  return ka.length === kb.length && ka.every(k => eq(a?.[+k], b?.[+k]));
+}
+/** Ağaç eşit mi (ölçü/boşluk 0.05 toleranslı); yaprak ve derz bağı karşılaştırması servisten. */
+export function sameTree<N extends TreeNode>(
+  a: N, b: N, leafEq: (a: LeafOf<N>, b: LeafOf<N>) => boolean, refEq: (x?: RefOf<N>, y?: RefOf<N>) => boolean,
+): boolean {
+  if (a.kind !== b.kind || a.id !== b.id) return false;
+  if (a.kind === 'leaf' || b.kind === 'leaf') return leafEq(a as LeafOf<N>, b as LeafOf<N>);
+  const x = a as SplitOf<N>, y = b as SplitOf<N>;
+  const sameSize = (s: GapSpec, i: number) =>
+    Math.abs(s.value - y.sizes[i].value) < 0.05 && s.locked === y.sizes[i].locked && !!s.edited === !!y.sizes[i].edited;
+  return x.children.length === y.children.length && x.sizes.length === y.sizes.length && x.sizes.every(sameSize)
+    && x.gaps.length === y.gaps.length && x.gaps.every((g, i) => Math.abs(g - y.gaps[i]) < 0.05)
+    && sameRefMaps(x.refs as Record<number, RefOf<N>> | undefined, y.refs as Record<number, RefOf<N>> | undefined, refEq)
+    && (x.children as N[]).every((c, i) => sameTree(c, y.children[i] as N, leafEq, refEq));
+}
+/** Bağlı levhası silinmiş derz bağları düşer (o bölmenin ölçüleri çözümden dondurulur); değişiklik yoksa null. */
+export function pruneRefs<N extends TreeNode, S extends TreeNode>(tree: N, solved: S, vfs: VirtualFace[]): N | null {
+  let out = tree, changed = false;
+  for (const { splitId, k, ref } of jointRefs(tree)) {
+    if (vfs.some(f => f.id === ref.vfId)) continue;
+    const sn = findNode(solved, splitId);
+    out = replaceNode(out, splitId, old => {
+      const o = old as SplitOf<N>;
+      const refs = { ...(o.refs ?? {}) }; delete refs[k];
+      const sizes = sn && sn.kind === 'split' ? sn.sizes.map(s => ({ ...s, edited: true })) : o.sizes;
+      return { ...o, sizes, refs: Object.keys(refs).length ? refs : undefined };
+    });
+    changed = true;
+  }
+  return changed ? out : null;
+}
+
+// ÖLÇÜ DAĞITIMI
+/** `${splitId}:${k}` → bağlı derzin merkezi (bölmenin ekseninde). */
+export type JointTargets = Map<string, number>;
+export function jointKey(splitId: string, k: number): string { return `${splitId}:${k}`; }
+/** Bölmenin n−1 boşluğu; eksik / geçersiz değer ilk boşluktan, o da yoksa varsayılandan. */
+export function splitGapsOf(n: { children: unknown[]; gaps: number[] }, gap: number): number[] {
+  const m = n.children.length - 1;
+  if (n.gaps.length === m && n.gaps.every(x => Number.isFinite(x) && x >= 0)) return n.gaps.slice();
+  return Array.from({ length: m }, (_, i) => (Number.isFinite(n.gaps[i]) && n.gaps[i] >= 0 ? n.gaps[i] : n.gaps.length ? n.gaps[0] : gap));
+}
+// KATSAYI kuralı: kilitli ölçüler sabit; kalan alan kilitsizlere (girilmişler dahil) mevcut oranlarıyla dağılır.
+// Toplam alanı tutuyorsa sonuç birimdir (kayma yok).
+export function distributeSizes(specs: GapSpec[], L: number, gaps: number[]): GapSpec[] {
+  const out = rescaleGaps(specs, L, gaps.length, gaps);
+  const resid = round1(L - gaps.reduce((a, g) => a + g, 0) - out.reduce((a, g) => a + g.value, 0));
+  if (Math.abs(resid) >= 0.05 && Math.abs(resid) < 1) {
+    // Artık önce son AÇIK ölçüye (pinli değer kıpırdamasın), yoksa son kilitsize.
+    let j = -1;
+    for (let i = out.length - 1; i >= 0 && j < 0; i--) if (gapMode(out[i]) === 'open') j = i;
+    for (let i = out.length - 1; i >= 0 && j < 0; i--) if (!out[i].locked) j = i;
+    if (j >= 0) out[j] = { ...out[j], value: round1(out[j].value + resid) };
+  }
+  return out;
+}
+// along[k] = k. derz merkezinin bölme başlangıcından uzaklığı (u: soldan, v: üstten). Bağ kilitli ölçüye de baskındır;
+// tüm ölçüler edited yazılır → bağsız çözüm aynı değerleri verir. Parçalar (en az 1 mm) sığmazsa bağ yok sayılır.
+export function distributeSizesWithJoints(specs: GapSpec[], L: number, gaps: number[], along: Map<number, number>): GapSpec[] {
+  const n = gaps.length + 1;
+  const base = Array.from({ length: n }, (_, i) => specs[i] ?? { value: 0, locked: false });
+  const ks = [...along.keys()].filter(k => k >= 0 && k < n - 1).sort((a, b) => a - b);
+  if (!ks.length) return distributeSizes(specs, L, gaps);
+  const bounds: Array<{ from: number; to: number; a: number; b: number }> = [];
+  let from = 0, a = 0;
+  for (const k of ks) {
+    const c = along.get(k)!, g = gaps[k] ?? 0;
+    bounds.push({ from, to: k, a, b: c - g / 2 });
+    from = k + 1; a = c + g / 2;
+  }
+  bounds.push({ from, to: n - 1, a, b: L });
+  for (const s of bounds) {
+    const inner = gaps.slice(s.from, s.to).reduce((x, y) => x + y, 0);
+    if (!(s.b - s.a - inner >= s.to - s.from + 1)) return distributeSizes(specs, L, gaps);
+  }
+  const out: GapSpec[] = [];
+  for (const s of bounds) {
+    const segL = s.b - s.a;
+    if (s.to === s.from) { out.push({ ...base[s.from], value: round1(segL), edited: true }); continue; }
+    for (const sz of distributeSizes(base.slice(s.from, s.to + 1), segL, gaps.slice(s.from, s.to))) out.push({ ...sz, edited: true });
+  }
+  return out;
+}
+/** Ağaç çözümü: split alanını çocuklarına dağıtır (u: soldan sağa, v: ÜSTTEN aşağı); toplam her zaman üst alan. Yaprak servisten. */
+export function solveTree<N extends TreeNode, S>(
+  n: N, r: Box2, gap: number, targets: JointTargets | undefined, leaf: (l: LeafOf<N>, at: SolvedBox) => S, depth = 0,
+): S {
+  const { u0, u1, v0, v1 } = r;
+  if (n.kind === 'leaf') return leaf(n as LeafOf<N>, { u0, u1, v0, v1, depth });
+  const s = n as SplitOf<N>;
+  const gaps = splitGapsOf(s, gap);
+  const L = s.axis === 'u' ? u1 - u0 : v1 - v0;
+  const along = new Map<number, number>();
+  if (targets && s.refs) for (const k of Object.keys(s.refs)) {
+    const t = targets.get(jointKey(s.id, +k));
+    if (t != null) along.set(+k, s.axis === 'u' ? t - u0 : v1 - t);
+  }
+  const sizes = along.size ? distributeSizesWithJoints(s.sizes, L, gaps, along) : distributeSizes(s.sizes, L, gaps);
+  const children: S[] = [];
+  let pos = s.axis === 'u' ? u0 : v1;
+  (s.children as N[]).forEach((c, i) => {
+    const w = Math.max(0, sizes[i]?.value ?? 0);
+    if (s.axis === 'u') { children.push(solveTree(c, { u0: pos, u1: pos + w, v0, v1 }, gap, targets, leaf, depth + 1)); pos += w + (gaps[i] ?? 0); }
+    else { children.push(solveTree(c, { u0, u1, v0: pos - w, v1: pos }, gap, targets, leaf, depth + 1)); pos -= w + (gaps[i] ?? 0); }
+  });
+  return { ...s, sizes, gaps, children, u0, u1, v0, v1, depth } as unknown as S;
+}
+
+/** Derz: iki parça arası boşluk [p0, p1], çapraz eksende [c0, c1]. */
+export interface SplitJoint { splitId: string; k: number; axis: 'u' | 'v'; p0: number; p1: number; c0: number; c1: number }
+export function treeJoints(solved: SolvedNode): SplitJoint[] {
+  const out: SplitJoint[] = [];
+  const walk = (n: SolvedNode) => {
+    if (n.kind !== 'split') return;
+    const last = n.children.length - 1;
+    let p = n.axis === 'u' ? n.u0 : n.v1;
+    n.children.forEach((c, i) => {
+      const w = Math.max(0, n.sizes[i]?.value ?? 0), g = n.gaps[i] ?? 0;
+      if (n.axis === 'u') {
+        p += w;
+        if (i < last) { out.push({ splitId: n.id, k: i, axis: 'u', p0: p, p1: p + g, c0: n.v0, c1: n.v1 }); p += g; }
+      } else {
+        p -= w;
+        if (i < last) { out.push({ splitId: n.id, k: i, axis: 'v', p0: p - g, p1: p, c0: n.u0, c1: n.u1 }); p -= g; }
+      }
+      walk(c);
+    });
+  };
+  walk(solved);
+  return out;
+}
+/** Levhanın ortasından (kind ekseninde a0..a1, çaprazda c0..c1) bölünebilen yapraklar: iki yanda en az minSpan kalmalı. */
+export function leavesSplittableAt<S extends SolvedNode>(
+  solved: S, np: { kind: 'u' | 'v'; a0: number; a1: number; c0: number; c1: number }, gap: number, minSpan: number,
+): S[] {
+  const axis = np.kind, pc = (np.a0 + np.a1) / 2, hits: S[] = [];
+  const walk = (n: S) => {
+    if (n.kind === 'split') { (n.children as S[]).forEach(walk); return; }
+    const a0 = axis === 'u' ? n.u0 : n.v0, a1 = axis === 'u' ? n.u1 : n.v1, c0 = axis === 'u' ? n.v0 : n.u0, c1 = axis === 'u' ? n.v1 : n.u1;
+    if (Math.min(c1, np.c1) - Math.max(c0, np.c0) < TOL) return;
+    if (pc - gap / 2 - a0 >= minSpan && a1 - (pc + gap / 2) >= minSpan) hits.push(n);
+  };
+  walk(solved);
+  return hits;
+}
+/** Spacing: hedef ölçülü ilk (DFS) bölmenin alandan türeyen yeni parça sayısı (en az 2); sayı tutuyorsa null. */
+export function spacingResize(solved: SolvedNode, count: (L: number, size: number) => number): { id: string; axis: 'u' | 'v'; n: number } | null {
+  if (solved.kind !== 'split') return null;
+  if (solved.targetSize) {
+    const L = solved.axis === 'u' ? solved.u1 - solved.u0 : solved.v1 - solved.v0;
+    const want = Math.max(2, count(L, solved.targetSize));
+    if (want !== solved.children.length) return { id: solved.id, axis: solved.axis, n: want };
+  }
+  for (const c of solved.children) { const r = spacingResize(c, count); if (r) return r; }
+  return null;
+}
+
+// ÜYE VF BAKIMI
+/** Üye VF'leri ve panellerini siler; silinen satır seçiliyse seçim düşer. */
+export function removeMemberVfs(vfIds: string[]): void {
+  const st = useAppStore.getState();
+  for (const vfId of vfIds) {
+    const p = panelOfVf(vfId, st.shapes);
+    if (p) st.deleteShape(p.id);
+    st.deleteVirtualFace(vfId);
+    if (useAppStore.getState().selectedPanelRow === `vf-${vfId}`) st.setSelectedPanelRow(null);
+  }
+}
+/** Üye VF açıklamaları = grup adı. */
+export function renameMemberVfs(vfIds: string[], name: string): void {
+  const ids = new Set(vfIds);
+  useAppStore.setState(s => ({ virtualFaces: s.virtualFaces.map(f => (ids.has(f.id) ? { ...f, description: name } : f)) }));
+}
+/** Üye panellerin kalınlığı (motor panelThickness, kutu depth okur). */
+export function setMemberPanelThickness(vfIds: string[], t: number): void {
+  const st = useAppStore.getState();
+  for (const vfId of vfIds) {
+    const panel = panelOfVf(vfId, st.shapes);
+    if (panel) st.updateShape(panel.id, { parameters: { ...panel.parameters, panelThickness: t, depth: t } } as any);
+  }
+}
+
+// ══════════════════════════════════════════════ 2. RAF / DİKME GRUPLARI ══════════════════════════════════════════════
 // RAF / DİKME GRUPLARI: grup = şekilli serbest hacim (CavityGrid hücre bölgesi, tohumdan floodRegion) + n panel + n+1 boşluk.
 //  • Her raf kendi dilimindeki kesitin sınır çokgenini alır (sectionPolygon); çıpa (anchorFrac) tohumdur, kutu merkezi değil.
 //  • Boşluk: Σgap + n·t = L; kilitli boşluk sabit, kilitsizler oranla ölçeklenir.
@@ -1699,4 +2140,266 @@ export function syncPanelGroups(parentShapeId: string): void {
       if (n !== g.count) void setGroupCount(g.id, n, { keepTargetGap: true });
     }
   }
+}
+
+// ═══════════════════════════════════════════════════ 3. HIZLI GÖVDE ═══════════════════════════════════════════════════
+/* HIZLI GÖVDE: dört gövde paneli (üst/sol/sağ/alt) + taban (düz / ayaklı / bazalı) + arkalık tek seferde, sanki tek tek
+   yerleştirilmiş gibi üretilir. Sonuç sıradan VF-panelleridir (adımlarına girilip değiştirilir); yalnız AYAKLAR gövde
+   parametresinde kalıcıdır (`parameters.legs`) ve listede ilk sırada çizilir.
+
+   Köşe birleşimi = VF SIRASI: önce yerleşen panel köşeden geçer (basan), sonra yerleşen arada kalır (basılan).
+   Dört köşenin kısıtlarından topolojik sıra çıkarılır; çevrim (fırıldak) kurulamaz → tercih sırası (sol, sağ, üst, alt).
+   Bölgeler YEREL olarak, önceki panellerin (gerekirse taşınmış/kısaltılmış) vekil geometrileriyle hesaplanır; her şey
+   tek seferde store'a yazılır, arkalık ise paneller gerçekten üretildikten (rebuild boşaldıktan) sonra adaylardan kurulur. */
+export type QuickPanelKey = 'top' | 'left' | 'right' | 'bottom';
+export const QUICK_PANEL_NAME: Record<QuickPanelKey, string> = { top: 'Top', left: 'Left', right: 'Right', bottom: 'Bottom' };
+/** Köşe → (yatay panel, yan panel). */
+const CORNER_PANELS: Record<CornerKey, [QuickPanelKey, QuickPanelKey]> = {
+  tl: ['top', 'left'], tr: ['top', 'right'], bl: ['bottom', 'left'], br: ['bottom', 'right'],
+};
+/** Çevrimde ve eşitlikte tercih: yanlar önce (yanlar geçer). */
+const PREFERRED: QuickPanelKey[] = ['left', 'right', 'top', 'bottom'];
+
+/** Etkin köşe birleşimleri: bazalıda alt köşeler her zaman 'side' (alt panel yanların arasında, yanlar yere iner). */
+export function effectiveJoins(cfg: QuickBodyConfig): Record<CornerKey, JoinPass> {
+  return cfg.base === 'plinth' ? { ...cfg.joins, bl: 'side', br: 'side' } : { ...cfg.joins };
+}
+
+/** Köşe kısıtlarından panel sırası (Kahn; eşitlikte PREFERRED). Çevrim → kalanlar tercih sırasıyla eklenir ve `cyclic` işaretlenir. */
+export function panelOrderFor(joins: Record<CornerKey, JoinPass>): { order: QuickPanelKey[]; cyclic: boolean } {
+  const before = new Map<QuickPanelKey, Set<QuickPanelKey>>(PREFERRED.map(k => [k, new Set<QuickPanelKey>()]));
+  for (const c of Object.keys(CORNER_PANELS) as CornerKey[]) {
+    const [h, s] = CORNER_PANELS[c];
+    const [first, second] = joins[c] === 'side' ? [s, h] : [h, s];
+    before.get(second)!.add(first);
+  }
+  const order: QuickPanelKey[] = []; const done = new Set<QuickPanelKey>(); let cyclic = false;
+  while (order.length < PREFERRED.length) {
+    const next = PREFERRED.find(k => !done.has(k) && [...before.get(k)!].every(b => done.has(b)));
+    if (next) { order.push(next); done.add(next); continue; }
+    cyclic = true;
+    const k = PREFERRED.find(x => !done.has(x))!; order.push(k); done.add(k);
+  }
+  return { order, cyclic };
+}
+
+/** Tabanın alt panelin altında bıraktığı yükseklik (ayak / baza); düzde 0. */
+export const baseLiftOf = (cfg: QuickBodyConfig): number => (cfg.base === 'plinth' ? cfg.plinth.height : cfg.base === 'legs' ? cfg.legs.height : 0);
+
+/* ───────── Ayak yerleşimi (gövde-yerel; ön = +Z) ───────── */
+export interface LegSpot { x: number; z: number }
+/** 4 = köşeler; 5 = + merkez; 6 = + ön/arka ortası. `side/front/rear` = ayak MERKEZİNİN kenara mesafesi. */
+export function legSpots(legs: Pick<BodyLegs, 'count' | 'side' | 'front' | 'rear'>, W: number, D: number): LegSpot[] {
+  const xl = legs.side, xr = W - legs.side, zf = D - legs.front, zb = legs.rear;
+  const pts: LegSpot[] = [{ x: xl, z: zf }, { x: xr, z: zf }, { x: xl, z: zb }, { x: xr, z: zb }];
+  if (legs.count === 5) pts.push({ x: W / 2, z: (zf + zb) / 2 });
+  if (legs.count === 6) pts.push({ x: W / 2, z: zf }, { x: W / 2, z: zb });
+  return pts;
+}
+/** Ayak yüksekliği: alt panelin alt yüzü − gövde tabanı (canlı); alt panel yoksa kayıtlı yükseklik. */
+export function legHeightOf(body: Shape, legs: BodyLegs, shapes = useAppStore.getState().shapes): number {
+  const bb = localBboxOf(effectiveBodyGeometry(body));
+  const bottom = legs.bottomVfId ? panelOfVf(legs.bottomVfId, shapes) : undefined;
+  const pb = bottom ? localBboxOf(bottom.geometry) : null;
+  if (bb && pb) { const h = pb.min.y - bb.min.y; if (h > 0.5) return h; }
+  return legs.height;
+}
+export const bodyLegsOf = (body: Shape | undefined | null): BodyLegs | null => (body?.parameters?.legs as BodyLegs | undefined) ?? null;
+export function setBodyLegs(shapeId: string, patch: Partial<BodyLegs> | null): void {
+  const st = useAppStore.getState();
+  const body = shapeById(shapeId, st.shapes); if (!body) return;
+  const next = { ...body.parameters };
+  const defaults: BodyLegs = { count: 4, diameter: 50, side: 60, front: 60, rear: 60, height: 100 };
+  if (patch === null) delete next.legs; else next.legs = { ...(bodyLegsOf(body) ?? defaults), ...patch };
+  st.updateShape(shapeId, { parameters: next } as Partial<Shape>);
+}
+
+/* ───────── Yerel bölge → VF ───────── */
+interface FaceCtx { body: Shape; eff: THREE.BufferGeometry; faces: FaceData[]; groups: CoplanarFaceGroup[]; W2L: THREE.Matrix4; box: THREE.Box3 }
+
+/** Normali `n` olan (dot > 0.999) yüz grupları. */
+const groupsFacing = (groups: CoplanarFaceGroup[], n: Vec3) => {
+  const nv = new THREE.Vector3(...n);
+  return groups.filter(g => g.normal.clone().normalize().dot(nv) > 0.999);
+};
+
+function faceGroupFor(ctx: FaceCtx, n: Vec3, seed: THREE.Vector3): CoplanarFaceGroup | null {
+  const cands = groupsFacing(ctx.groups, n);
+  if (!cands.length) return null;
+  // Çentikli gövdede aynı normalli birden çok yüz: tohuma en yakın merkezli ve en büyük alanlı
+  return cands.sort((a, b) => a.center.distanceTo(seed) - b.center.distanceTo(seed) || b.totalArea - a.totalArea)[0];
+}
+
+/** `buildFacePreview` ile aynı VF kurulumu (önizleme mesh'i olmadan): bölge tek kaynaktan (computeFreeRegionLocal). */
+function vfOnFace(ctx: FaceCtx, n: Vec3, seedLocal: THREE.Vector3, siblings: Shape[], name: string): VirtualFace | null {
+  const group = faceGroupFor(ctx, n, seedLocal); if (!group) return null;
+  const contour = computeFaceComponentContour(ctx.faces, group.faceIndices, seedLocal, group.normal); if (!contour) return null;
+  const region = computeFreeRegionLocal(contour.corners, group.normal, seedLocal, siblings, ctx.W2L, ctx.body.id); if (!region) return null;
+  const nrm = group.normal.clone().normalize();
+  const to3D = (px: number, py: number) => fromPlaneUV(region.u, region.v, nrm, px, py, region.planeN);
+  const anchor = to3D(region.anchor.x, region.anchor.y);
+  return {
+    id: genId('vf'), shapeId: ctx.body.id,
+    normal: vec3(nrm), center: vec3(seedLocal),
+    vertices: region.polygon.map(p => vec3(to3D(p.x, p.y))),
+    description: name, hasPanel: true, parentFaceShape: true, touchingSiblingIds: region.touchingSiblingIds, sideRelations: region.sideRelations,
+    faceGroupDescriptor: createFaceDescriptor(ctx.faces[contour.seedFi], ctx.eff),
+    doorBound: true, backBound: true,
+    ...({ regionAnchor: vec3(anchor) } as Record<string, unknown>),
+  };
+}
+
+async function slabOf(verts: Vec3[], normal: Vec3, t: number): Promise<{ rp: unknown; geo: THREE.BufferGeometry } | null> {
+  const rp = await createPanelFromVirtualFace(verts, normal, t);
+  if (!rp) return null;
+  return { rp, geo: convertReplicadToThreeGeometry(rp) };
+}
+
+function panelShape(body: Shape, vf: VirtualFace, vfIndex: number, geo: THREE.BufferGeometry, rp: unknown, t: number, extra: Record<string, unknown>): Shape {
+  const size = localBboxOf(geo)!.getSize(new THREE.Vector3());
+  const s = [size.x, size.y, size.z]; const [def, alt] = [0, 1, 2].sort((a, b) => s[a] - s[b]).slice(1).sort((a, b) => a - b);
+  return {
+    id: genId('panel-vf'), type: 'panel', position: [...body.position] as Vec3, rotation: body.rotation, scale: [...body.scale] as Vec3,
+    color: '#ffffff', geometry: geo, replicadShape: rp,
+    parameters: {
+      width: s[def], height: s[alt], depth: t, parentShapeId: body.id, faceIndex: -(vfIndex + 1), virtualFaceId: vf.id, arrowRotated: false,
+      panelThickness: t, ...extra,
+    },
+  } as Shape;
+}
+
+const moveStep = (axis: MoveTransformStep['axis'], value: number, ts: number): MoveTransformStep =>
+  ({ id: `step-${ts}`, type: 'move', axis, value, timestamp: ts });
+/** Panelin kendi geometrisinde `label` yönündeki dış yüzünden `value` (dyn; − = kısalt). */
+function extrudeStepFor(geo: THREE.BufferGeometry, n: Vec3, label: string, value: number, ts: number): ExtrudeStep | null {
+  const g = groupsFacing(getFacesAndGroups(geo).groups, n).sort((a, b) => b.totalArea - a.totalArea)[0];
+  if (!g) return null;
+  return { id: genId('ext'), faceNormal: n, faceCenter: vec3(g.center), axisLabel: label, value, isFixed: false, timestamp: ts };
+}
+
+/* ───────── Ana akış ───────── */
+export interface QuickBodyResult { panelCount: number; backCreated: boolean; cyclic: boolean; warnings: string[] }
+
+export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Promise<QuickBodyResult | null> {
+  const st = useAppStore.getState();
+  const body = shapeById(shapeId, st.shapes); if (!body) return null;
+  const eff = effectiveBodyGeometry(body);
+  const { faces, groups } = getFacesAndGroups(eff);
+  const box = localBboxOf(eff); if (!box) return null;
+  const ctx: FaceCtx = { body, eff, faces, groups, W2L: getShapeMatrix(body).clone().invert(), box };
+  const H = box.max.y - box.min.y;
+  const x0 = box.min.x, y0 = box.min.y, z0 = box.min.z, x1 = box.max.x, y1 = box.max.y, z1 = box.max.z;
+  const t = Math.max(1, cfg.thickness);
+  const warnings: string[] = [];
+  const joins = effectiveJoins(cfg);
+  const { order, cyclic } = panelOrderFor(joins);
+  if (cyclic) warnings.push('Corner joints form a cycle — resolved as sides first.');
+  const lift = Math.min(Math.max(0, baseLiftOf(cfg)), Math.max(0, H - 3 * t));
+
+  // Mevcut kardeşler (kapak/arkalık hariç; arkalık parçaları damga olarak)
+  const existing = childPanelsOf(body.id, st.shapes);
+  const siblings: Shape[] = [
+    ...existing.filter(p => !isDoorPanel(p) && !isBackPanel(p)),
+    ...existing.filter(isBackPanel).map(backPreviewStamp).filter((p): p is Shape => !!p),
+  ];
+  const vfCountBefore = st.virtualFaces.filter(f => f.shapeId === body.id).length;
+
+  const FACE: Record<QuickPanelKey, { n: Vec3; seed: THREE.Vector3 }> = {
+    top: { n: [0, 1, 0], seed: new THREE.Vector3((x0 + x1) / 2, y1, (z0 + z1) / 2) },
+    bottom: { n: [0, -1, 0], seed: new THREE.Vector3((x0 + x1) / 2, y0, (z0 + z1) / 2) },
+    left: { n: [-1, 0, 0], seed: new THREE.Vector3(x0, (y0 + y1) / 2, (z0 + z1) / 2) },
+    right: { n: [1, 0, 0], seed: new THREE.Vector3(x1, (y0 + y1) / 2, (z0 + z1) / 2) },
+  };
+  const newVfs: VirtualFace[] = []; const newShapes: Shape[] = [];
+  let ts = Date.now();
+  let bottomVfId: string | undefined;
+
+  const push = async (key: QuickPanelKey | 'plinth' | 'rearPlinth', n: Vec3, seed: THREE.Vector3, name: string, opts: {
+    move?: [MoveTransformStep['axis'], number]; cuts?: Array<[Vec3, string, number]>; proxyVerts?: (v: Vec3[]) => Vec3[]; bound?: boolean;
+  }): Promise<boolean> => {
+    const vf = vfOnFace(ctx, n, seed, siblings, name);
+    if (!vf) { warnings.push(`${name}: no free region on that face`); return false; }
+    if (opts.bound === false) { vf.doorBound = false; vf.backBound = false; }
+    const slab = await slabOf(vf.vertices, vf.normal, t);
+    if (!slab) { warnings.push(`${name}: panel solid failed`); return false; }
+    const extra: Record<string, unknown> = {};
+    const steps: MoveTransformStep[] = [];
+    // 0 mm taşıma adımı yazılmaz (ön baza varsayılan 0 → listede boş adım olmasın)
+    if (opts.move && Math.abs(opts.move[1]) < 0.001) opts.move = undefined;
+    if (opts.move) steps.push(moveStep(opts.move[0], opts.move[1], ++ts));
+    if (steps.length) extra.transformSteps = steps;
+    const exts = (opts.cuts ?? []).map(([cn, label, v]) => extrudeStepFor(slab.geo, cn, label, v, ++ts)).filter((e): e is ExtrudeStep => !!e);
+    if (exts.length) extra.extrudeSteps = exts;
+    const shape = panelShape(body, vf, vfCountBefore + newVfs.length, slab.geo, slab.rp, t, extra);
+    newVfs.push(vf); newShapes.push(shape);
+    if (key === 'bottom') bottomVfId = vf.id;
+    // Sonraki bölgeler için VEKİL: taşınmış / kısaltılmış hâli (motorun üreteceği sonuç)
+    let proxyGeo = slab.geo;
+    if (opts.proxyVerts) { const p = await slabOf(opts.proxyVerts(vf.vertices), vf.normal, t); if (p) proxyGeo = p.geo; }
+    if (opts.move) { const d = axisDirToVec(opts.move[0]).multiplyScalar(opts.move[1]); proxyGeo = proxyGeo.clone().translate(d.x, d.y, d.z); }
+    siblings.push({ ...shape, geometry: proxyGeo });
+    return true;
+  };
+
+  for (const key of order) {
+    const f = FACE[key];
+    if (key === 'bottom' && lift > 0) {
+      // Yükseltilen alt panelin bölgesi motor tarafından GERÇEK konumunda çözülür (damgalar panelin ötelemesi kadar kaydırılır);
+      // ayaklıda kısaltılmış yanlar o yükseklikte alt paneli keser → ek extrude gerekmez.
+      await push(key, f.n, f.seed, QUICK_PANEL_NAME[key], { move: ['y+', lift] });
+    } else if ((key === 'left' || key === 'right') && cfg.base === 'legs' && lift > 0 && joins[key === 'left' ? 'bl' : 'br'] === 'side') {
+      // Yan köşeden geçiyor ama ayak kadar yukarıda biter: alt kenar extrude ile kısaltılır (vekil de kısaltılmış).
+      await push(key, f.n, f.seed, QUICK_PANEL_NAME[key], {
+        cuts: [[[0, -1, 0], 'Y-', -lift]],
+        proxyVerts: vs => vs.map(v => [v[0], Math.max(v[1], y0 + lift), v[2]] as Vec3),
+      });
+    } else {
+      await push(key, f.n, f.seed, QUICK_PANEL_NAME[key], {});
+    }
+  }
+
+  if (cfg.base === 'plinth' && lift > 0) {
+    // Ön baza: alt panelin altında kalan ön yüz şeridi; sonra setback kadar geri (−Z). Kapak/arkalık sınırı DEĞİL.
+    const xm = (x0 + x1) / 2, ym = y0 + lift / 2;
+    await push('plinth', [0, 0, 1], new THREE.Vector3(xm, ym, z1), 'Plinth', { move: ['z-', Math.max(0, cfg.plinth.front)], bound: false });
+    if (cfg.plinth.rearPlinth) {
+      await push('rearPlinth', [0, 0, -1], new THREE.Vector3(xm, ym, z0), 'Rear plinth', { move: ['z+', Math.max(0, cfg.plinth.rear)], bound: false });
+    }
+  }
+
+  if (!newVfs.length) return { panelCount: 0, backCreated: false, cyclic, warnings };
+
+  // Tek seferde yaz: VF'ler sırayla (= basan/basılan), paneller hazır geometriyle (otomatik üretim efekti devreye girmez).
+  useAppStore.setState(s => ({ virtualFaces: [...s.virtualFaces, ...newVfs], shapes: [...s.shapes, ...newShapes] }));
+  // Ayaklar: ayaklı tabanda zorunlu, bazalıda isteğe bağlı (count 0 = yok)
+  const legCount = cfg.base === 'legs' ? (cfg.legs.count || 4) : cfg.base === 'plinth' ? cfg.legs.count : 0;
+  const { diameter, side, front, rear } = cfg.legs;
+  if (legCount) setBodyLegs(body.id, { count: legCount as 4 | 5 | 6, diameter, side, front, rear, height: lift, bottomVfId });
+
+  await requestRebuild(body.id);
+  const { whenRebuildIdle } = await import('./PanelEngine');
+  await whenRebuildIdle(body.id);
+
+  // Arkalık: paneller gerçek geometrisiyle üretildikten sonra adaydan (en büyük, dört panelin arası)
+  let backCreated = false;
+  if (cfg.back.enabled) {
+    const fresh = shapeById(body.id); if (!fresh) return { panelCount: newVfs.length, backCreated, cyclic, warnings };
+    const cy = (y0 + lift + t + (y1 - t)) / 2;
+    const picks = backCandidatesAt(fresh, BACK_AXIS, BACK_SIDE, [(x0 + x1) / 2, cy, z0]);
+    if (picks.length) {
+      // Aday = dört yeni panelin ARASI: yükseltilmiş alt panelin dış yüzü gövde kenarında olmadığından gövde kenarı (yere kadar) da
+      // adaydır ve alanı daha büyüktür — bu yüzden en çok yeni panele dayanan aday seçilir, eşitlikte büyük alan.
+      const ours = new Set(newVfs.filter(v => v.doorBound !== false).map(v => v.id));
+      const score = (p: typeof picks[number]) => [p.bounds.uMin, p.bounds.uMax, p.bounds.vMin, p.bounds.vMax].filter(r => r.vfId && ours.has(r.vfId)).length;
+      const pick = [...picks].sort((a, b) => score(b) - score(a) || b.area - a.area)[0];
+      const b = cfg.back;
+      const g = createBackGroupFromPick(fresh.id, pick, b.placement, 'Back', {
+        thickness: Math.max(1, b.thickness), setback: Math.max(0, b.setback), inset: Math.max(0, b.inset),
+        grooveClear: { front: Math.max(0, b.clear.front), back: Math.max(0, b.clear.back), depth: Math.max(0, b.clear.depth) },
+      });
+      backCreated = !!g;
+      useAppStore.getState().setSelectedBackGroupId(null);
+    } else warnings.push('Back: no candidate between the panels.');
+  }
+  return { panelCount: newVfs.length, backCreated, cyclic, warnings };
 }

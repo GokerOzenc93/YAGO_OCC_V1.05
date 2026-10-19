@@ -289,7 +289,7 @@ export interface PanelGroup {
   createdAt: number;
 }
 
-/* ───────── HIZLI GÖVDE (QuickBodyService) ───────── */
+/* ───────── HIZLI GÖVDE (PanelGroupService › hızlı gövde) ───────── */
 /** Taban tipi: düz (yere oturur) / ayaklı (paneller ayak kadar yukarıda) / bazalı (yanlar yere iner, alt panel baza kadar yukarıda). */
 export type QuickBodyBase = 'plain' | 'legs' | 'plinth';
 /** Köşe birleşimi: 'side' = yan panel köşeden geçer (üst/alt arada), 'horiz' = üst/alt panel geçer (yan arada). */

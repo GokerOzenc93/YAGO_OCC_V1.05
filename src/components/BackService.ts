@@ -5,21 +5,14 @@ import {
 } from '../store';
 import * as THREE from 'three';
 import { type Vec3, genId, round1 } from './Geometry';
-import { clipHalfPlane, panelFrontHull, panelHasRotation, polyArea } from './FaceRegion';
+import { clipHalfPlane, panelFrontHull, panelHasRotation, polyArea } from './Geometry';
 // DİKKAT: BackService ↔ PanelGroupService döngüsel içe aktarım (groupObstacles → backObstacleFor). Modül üst düzeyinde
 // PanelGroupService bağlarını OKUMA; yalnız fonksiyon gövdesinde çağır.
 import { type GapMode, applyGapEditProportional, bodyLocalBox, cycleGapMode, panelLocalBox, passiveGapIndex } from './PanelGroupService';
-import {
-  type BoundPanel, type EdgeInfo, type JointTargets, type PlaneRect, type Pt2, type SlabCut, type SplitJoint,
-  EDGE_KEYS, boundEdgeInfo, cloneTree, collectBoundPanels, collectRotatedCuts, cutBands, cutCoverFar, cutEdgeOf, depthOptions, jointCenter,
-  jointKey, leavesSplittableAt, polyChanged, polyRect, pruneRefs, rectKey, rectPoly, removeMemberVfs, renameMemberVfs, sameBounds, sameTree,
-  setMemberPanelThickness, slabVfGeometry, solveTree, spacingResize, splitGapsOf, unsolveTree,
-  findNode as findBackNode, findNode as findSolvedBackNode, jointRefs as backJointRefs, planeAxes as backPlaneAxes,
-  replaceNode as replaceBackNode, treeJoints as backJoints, treeLeaves as backLeaves,
-} from './SplitShared';
+import { type BoundPanel, type EdgeInfo, type JointTargets, type PlaneRect, type Pt2, type SlabCut, type SplitJoint, EDGE_KEYS, boundEdgeInfo, cloneTree, collectBoundPanels, collectRotatedCuts, cutBands, cutCoverFar, cutEdgeOf, depthOptions, jointCenter, jointKey, leavesSplittableAt, polyChanged, polyRect, pruneRefs, rectKey, rectPoly, removeMemberVfs, renameMemberVfs, sameBounds, sameTree, setMemberPanelThickness, slabVfGeometry, solveTree, spacingResize, splitGapsOf, unsolveTree, findNode as findBackNode, findNode as findSolvedBackNode, jointRefs as backJointRefs, planeAxes as backPlaneAxes, replaceNode as replaceBackNode, treeJoints as backJoints, treeLeaves as backLeaves } from './PanelGroupService';
 
 // ARKALIK (BackService) — kapaktan (DoorService) BAĞIMSIZ servis: kendi tipleri, store dilimi, çözücüsü ve VF yazımı
-// (yalnız saf yardımcılar SplitShared'de ortak).
+// (yalnız saf yardımcılar PanelGroupService'te ortak).
 //  • Sınır = VF.backBound işaretli paneller; yoksa gövde kenarı. Düzlem = gövdenin ARKA yüzü (gövde-yerel ön = +Z → arka = Z−);
 //    seçimde tıklama hangi yüzden gelirse gelsin arka yüze taşınır (rayBackEntry). u = X (sütun), v = Y (satır).
 //  • Grup dikdörtgeni = İÇ dikdörtgen (sınır panellerinin iç yüzleri), front = sınır panellerinin ARKA yüzü (P). Ağaç bu alanı

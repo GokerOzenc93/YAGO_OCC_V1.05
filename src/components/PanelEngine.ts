@@ -1,19 +1,8 @@
 import * as THREE from 'three';
 import { type CavityBox, type PanelGroup, type Shape, type VirtualFace, childPanelsOf, panelOfVf, shapeById, useAppStore, vfOfPanel } from '../store';
-import {
-  type ExtrudeStep, type TransformStep, applyExtrudeSteps, applyTransformSteps, getUnifiedSteps, matchReferenceFace, resolveReferenceFacePlane, stepRefTargets,
-} from './PanelOps';
-import {
-  type RotOp, computeFaceComponentContour, computeFreeRegionLocal, convexHull2D, footprintGeometry, panelBehindStackPlane, largestFaceNormal,
-  panelHasRotation, panelInnerBigFace, panelIsTiltedSlab, toUV,
-} from './FaceRegion';
-import {
-  type CoplanarFaceGroup, type FaceData, type Vec3, angleToTouchPlane, assertBounds, axisDirToVec, axisIndexOf, boundsOverlapBox,
-  convertReplicadToThreeGeometry, createPanelFromVirtualFace, createReplicadBox, createReplicadBoxAt, dot3, effectiveBodyGeometry, errMsg,
-  findFaceByDescriptor, fromPlaneUV, getFacePlaneAxes, getFacesAndGroups, getShapeMatrix, halfSpaceSlab, isFlatNormal, localBboxOf, normDeg,
-  panelThickness, pointFromFracBox, projRange, resolveVfFracPoint, rotateAboutAxis, round1, round3, spanAlong, toVector3, uniqueMeshPoints,
-  uniquePoints, vec3, vertexModsKey, vfRawMinAlong, worldBboxOf,
-} from './Geometry';
+import { type ExtrudeStep, type TransformStep, applyExtrudeSteps, applyTransformSteps, getUnifiedSteps, matchReferenceFace, resolveReferenceFacePlane, stepRefTargets } from './Geometry';
+import { type RotOp, computeFaceComponentContour, computeFreeRegionLocal, convexHull2D, footprintGeometry, panelBehindStackPlane, largestFaceNormal, panelHasRotation, panelInnerBigFace, panelIsTiltedSlab, toUV } from './Geometry';
+import { type CoplanarFaceGroup, type FaceData, type Vec3, angleToTouchPlane, assertBounds, axisDirToVec, axisIndexOf, boundsOverlapBox, convertReplicadToThreeGeometry, createPanelFromVirtualFace, createReplicadBox, createReplicadBoxAt, dot3, effectiveBodyGeometry, errMsg, findFaceByDescriptor, fromPlaneUV, getFacePlaneAxes, getFacesAndGroups, getShapeMatrix, halfSpaceSlab, isFlatNormal, localBboxOf, normDeg, panelThickness, pointFromFracBox, projRange, resolveVfFracPoint, rotateAboutAxis, round1, round3, spanAlong, toVector3, uniqueMeshPoints, uniquePoints, vec3, vertexModsKey, vfRawMinAlong, worldBboxOf } from './Geometry';
 import { isInteriorPanel, isInteriorVf, recalculateInteriorVfs, syncPanelGroups } from './PanelGroupService';
 import { isDoorPanel, isDoorVf, recalculateDoorVfs, syncDoorGroups } from './DoorService';
 import { backGrooveCuttersFor, backNailStampFor, isBackPanel, isBackVf, recalculateBackVfs, syncBackGroups } from './BackService';
@@ -891,7 +880,7 @@ function mergeGrooveCutters(boxes: CavityBox[]): CavityBox[] {
 /** VF yeniden hesabının sahip olduğu alanlar (geri kalanı kullanıcı verisidir). */
 const VF_REGEN_FIELDS = ['normal', 'center', 'vertices', 'rawFaceBBox', 'sideRelations', 'regionAnchor'] as const;
 
-// VF BÖLGE YENİDEN HESABI: VF = eşleşen gövde yüz konturu ∩ serbest bölge (FaceRegion.computeFreeRegionLocal —
+// VF BÖLGE YENİDEN HESABI: VF = eşleşen gövde yüz konturu ∩ serbest bölge (Geometry.computeFreeRegionLocal —
 // yakalama ile aynı → highlight = panel). Damga TEK YÖNLÜ: yalnız sırada ÖNCE gelen (basan) kardeşler damgalar;
 // istisna bu yüze fiziksel İLERLETEN adımlar; datum (ref hedefi) onu referans alan panelce kırpılmaz.
 
@@ -1333,7 +1322,7 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
   };
   // Kaydırılmış damga yüz düzlemini artık ucuyla değil GÖVDESİYLE keser (yan 0..720 → −100..620): ince-kesit istisnası onu engel
   // saymazdı → __pierceObstacle: taşınmış panelin düzlemini delen her kardeş gerçek engeldir (fiziksel olarak oradadır).
-  // Geometri doğrudan ötelenir (FaceRegion değme kapısı ops'tan ÖNCE ham noktalara bakar); ops'lu damgada dönüş pivotları da
+  // Geometri doğrudan ötelenir (serbest bölge değme kapısı ops'tan ÖNCE ham noktalara bakar); ops'lu damgada dönüş pivotları da
   // aynı kadar kayar (katı öteleme ops'larla ancak pivotlar birlikte kayınca değişmez).
   const shiftStamp = (s: any, d: THREE.Vector3): any => {
     if (!s || typeof s !== 'object' || !s.geometry) return s;

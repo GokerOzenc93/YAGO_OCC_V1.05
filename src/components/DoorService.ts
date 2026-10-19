@@ -4,24 +4,13 @@ import {
   panelOfVf, requestRebuild, shapeById, useAppStore,
 } from '../store';
 import { type Vec3, genId, round1 } from './Geometry';
-import { clipHalfPlane, panelFrontHull, panelHasRotation, polyArea } from './FaceRegion';
+import { clipHalfPlane, panelFrontHull, panelHasRotation, polyArea } from './Geometry';
 // DİKKAT: DoorService ↔ PanelGroupService döngüsel içe aktarım. Modül üst düzeyinde PanelGroupService bağlarını OKUMA
 // (`= gapMode` takma adı TDZ'ye düşer: "Cannot access before initialization"); yalnız fonksiyon gövdesinde çağır.
-import {
-  GROUP_PANEL_THICKNESS, type GapMode, applyGapEdit, applyGapEditProportional, bodyLocalBox, boxSpan, collectObstacles, createPanelGroupFromCavity,
-  cycleGapMode, editGroupGap, gridForObstacles, groupFacing, memberThicknessesOf, panelLocalBox, passiveGapIndex, rayCavityCandidates,
-  redistributeForThickness,
-} from './PanelGroupService';
-import {
-  type BoundPanel, type EdgeInfo, type JointTargets, type LeafOf, type PlaneRect, type Pt2, type SlabCut, type SolvedBox, type SplitJoint,
-  EDGE_KEYS, alignedMin, boundEdgeInfo, cloneTree, collectBoundPanels, collectRotatedCuts, cutBands, cutCoverFar, cutEdgeOf, depthOptions,
-  jointCenter, jointKey, leavesSplittableAt, polyChanged, polyRect, pruneRefs, rayBoxEntry, rectKey, rectPoly, removeMemberVfs, renameMemberVfs,
-  sameBounds, sameTree, setMemberPanelThickness, slabVfGeometry, solveTree, spacingResize, splitGapsOf, unsolveTree,
-  findNode as findDoorNode, findNode as findSolvedNode, jointRefs as doorJointRefs, planeAxes as doorPlaneAxes, replaceNode as replaceDoorNode,
-  spacingTargetsInScope as doorSpacingTargetsInScope, treeJoints as doorJoints, treeLeaves as doorLeaves,
-} from './SplitShared';
+import { GROUP_PANEL_THICKNESS, type GapMode, applyGapEdit, applyGapEditProportional, bodyLocalBox, boxSpan, collectObstacles, createPanelGroupFromCavity, cycleGapMode, editGroupGap, gridForObstacles, groupFacing, memberThicknessesOf, panelLocalBox, passiveGapIndex, rayCavityCandidates, redistributeForThickness } from './PanelGroupService';
+import { type BoundPanel, type EdgeInfo, type JointTargets, type LeafOf, type PlaneRect, type Pt2, type SlabCut, type SolvedBox, type SplitJoint, EDGE_KEYS, alignedMin, boundEdgeInfo, cloneTree, collectBoundPanels, collectRotatedCuts, cutBands, cutCoverFar, cutEdgeOf, depthOptions, jointCenter, jointKey, leavesSplittableAt, polyChanged, polyRect, pruneRefs, rayBoxEntry, rectKey, rectPoly, removeMemberVfs, renameMemberVfs, sameBounds, sameTree, setMemberPanelThickness, slabVfGeometry, solveTree, spacingResize, splitGapsOf, unsolveTree, findNode as findDoorNode, findNode as findSolvedNode, jointRefs as doorJointRefs, planeAxes as doorPlaneAxes, replaceNode as replaceDoorNode, spacingTargetsInScope as doorSpacingTargetsInScope, treeJoints as doorJoints, treeLeaves as doorLeaves } from './PanelGroupService';
 
-// KAPAKLAR (DoorService) — yalnız kapak; ARKALIK ayrı serviste (BackService). Ortak saf yardımcılar SplitShared'de.
+// KAPAKLAR (DoorService) — yalnız kapak; ARKALIK ayrı serviste (BackService). Ortak saf yardımcılar PanelGroupService'te.
 //  • Sınır = VF.doorBound işaretli paneller; yoksa gövde kenarı. Düzlem = tıklanan gövde yüzü; u = yatay (sütun), v = düşey (satır).
 //  • İç kapak sınır panellerinin İÇ yüzleri arasına, dış kapak DIŞ yüzlerine kadar (gövdenin dışına taşabilir).
 //  • Bölme = AĞAÇ (DoorGroup.tree); split alanını çocuklarına KATSAYI kuralıyla dağıtır, bölmek üst ölçüsünü değiştirmez.
