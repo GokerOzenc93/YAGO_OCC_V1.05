@@ -1,5 +1,7 @@
 import * as THREE from 'three';
-import { getFacePlaneAxes, getShapeMatrix, axisDirToVec, localBboxOf, isFlatNormal, panelThickness, getFacesAndGroups, type CoplanarFaceGroup, type FaceData } from './Geometry';
+import {
+  type CoplanarFaceGroup, type FaceData, axisDirToVec, getFacePlaneAxes, getFacesAndGroups, getShapeMatrix, isFlatNormal, localBboxOf, panelThickness,
+} from './Geometry';
 
 // FaceRegion — panel atma zincirinin saf geometri çekirdeği (UI yok). YAKALAMA ve REGEN aynı fonksiyonları
 // kullanır; iki yol yapısal olarak ayrışamaz.
@@ -21,7 +23,8 @@ function signedArea2(pts: Point2D[]): number {
   return s;
 }
 const cross2 = (a: Point2D, b: Point2D, c: Point2D) => (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-const uv = (p: THREE.Vector3, u: THREE.Vector3, v: THREE.Vector3): Point2D => ({ x: p.dot(u), y: p.dot(v) });
+/** 3B noktanın (u, v) düzlem koordinatı. */
+export const toUV = (p: THREE.Vector3, u: THREE.Vector3, v: THREE.Vector3): Point2D => ({ x: p.dot(u), y: p.dot(v) });
 
 export function convexHull2D(points: Point2D[]): Point2D[] {
   if (points.length < 3) return [...points];
@@ -54,7 +57,7 @@ export function clipHalfPlane(poly: Point2D[], A: number, B: number, C: number):
   }
   return out;
 }
-export const polyArea = (p: Point2D[]) => { let a = 0; for (let i = 0; i < p.length; i++) { const q = p[i], r = p[(i + 1) % p.length]; a += q.x * r.y - r.x * q.y; } return a / 2; };
+export const polyArea = (p: Point2D[]) => signedArea2(p) / 2;
 /** Çokgeni DIŞBÜKEY çokgenle kırpar (yönelim CW / CCW fark etmez). */
 export function clipPolyToConvex(poly: Point2D[], convex: Point2D[]): Point2D[] {
   if (convex.length < 3) return poly;
@@ -71,10 +74,14 @@ export function clipPolyToConvex(poly: Point2D[], convex: Point2D[]): Point2D[] 
 /** Noktaların (u,v) izdüşümünün dışbükey zarfı (tekilleştirilmiş). */
 export function frontHullOf(pts: Iterable<[number, number, number]>, u: 0 | 1 | 2, v: 0 | 1 | 2): Point2D[] {
   const out: Point2D[] = [], seen = new Set<string>();
-  for (const q of pts) { const k = `${Math.round(q[u] * 10)},${Math.round(q[v] * 10)}`; if (seen.has(k)) continue; seen.add(k); out.push({ x: q[u], y: q[v] }); }
+  for (const q of pts) {
+    const k = `${Math.round(q[u] * 10)},${Math.round(q[v] * 10)}`;
+    if (!seen.has(k)) { seen.add(k); out.push({ x: q[u], y: q[v] }); }
+  }
   return convexHull2D(out);
 }
-/** Panelin ön görünüşü (gövde çerçevesinde u,v izdüşüm zarfı, önbellekli): pahlı yan panel yamuktur, eksen-hizalı kutu eğik paneli örterdi. */
+/** Panelin ön görünüşü (gövde çerçevesinde u,v izdüşüm zarfı, önbellekli): pahlı yan panel yamuktur, eksen-hizalı kutu
+ *  eğik paneli örterdi. */
 const _frontHullCache = new WeakMap<object, { key: string; hull: Point2D[] }>();
 export function panelFrontHull(p: { geometry?: any; position?: number[] }, parent: { position?: number[] }, u: 0 | 1 | 2, v: 0 | 1 | 2): Point2D[] | null {
   const pos = p.geometry?.getAttribute?.('position') as THREE.BufferAttribute | undefined;
@@ -83,7 +90,9 @@ export function panelFrontHull(p: { geometry?: any; position?: number[] }, paren
   const key = `${u}${v}:${off.map(x => x.toFixed(2)).join(',')}:${pos.count}:${pos.version}`;
   const hit = _frontHullCache.get(p.geometry);
   if (hit && hit.key === key) return hit.hull;
-  const pts = function* () { for (let i = 0; i < pos.count; i++) yield [pos.getX(i) + off[0], pos.getY(i) + off[1], pos.getZ(i) + off[2]] as [number, number, number]; };
+  const pts = function* () {
+    for (let i = 0; i < pos.count; i++) yield [pos.getX(i) + off[0], pos.getY(i) + off[1], pos.getZ(i) + off[2]] as [number, number, number];
+  };
   const hull = frontHullOf(pts(), u, v);
   _frontHullCache.set(p.geometry, { key, hull });
   return hull;
@@ -217,10 +226,14 @@ function walkBoundaryLoops(edges2: Edge2[], all: boolean): Point2D[][] {
   return loops;
 }
 
-function onPlaneBoundaryEdges(geometry: THREE.BufferGeometry, onPlane: boolean[], pt2: (i: number) => Point2D): Edge2[] {
+/** Üçgen köşe indeksi okuyucu (indeksli / indekssiz geometri). */
+function triIndexer(geometry: THREE.BufferGeometry): { cnt: number; at: (k: number) => number } {
   const idx = geometry.getIndex();
-  const cnt = idx ? idx.count : (geometry.getAttribute('position') as THREE.BufferAttribute).count;
-  const at = (k: number) => (idx ? idx.getX(k) : k);
+  return { cnt: idx ? idx.count : (geometry.getAttribute('position') as THREE.BufferAttribute).count, at: k => (idx ? idx.getX(k) : k) };
+}
+
+function onPlaneBoundaryEdges(geometry: THREE.BufferGeometry, onPlane: boolean[], pt2: (i: number) => Point2D): Edge2[] {
+  const { cnt, at } = triIndexer(geometry);
   const edgeCount = new Map<string, number>();
   const edgeData = new Map<string, Edge2>();
   for (let t = 0; t + 2 < cnt; t += 3) {
@@ -237,46 +250,29 @@ function onPlaneBoundaryEdges(geometry: THREE.BufferGeometry, onPlane: boolean[]
   return out;
 }
 
-/** Düzlem-üstü üçgenlerden gerçek (içbükey korunur) sınır çokgeni; zincir başarısızsa convexHull. */
-function meshOnPlaneBoundary2D(
-  geometry: THREE.BufferGeometry, panelMatrix: THREE.Matrix4,
-  facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, u: THREE.Vector3, v: THREE.Vector3, planeTolerance: number
-): Point2D[] | null {
-  const posAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
-  if (!posAttr || posAttr.count < 3) return null;
-  const pts2: Point2D[] = [], onPlane: boolean[] = [];
-  for (let i = 0; i < posAttr.count; i++) {
-    const wp = new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)).applyMatrix4(panelMatrix);
-    const d = new THREE.Vector3().subVectors(wp, facePlaneOrigin);
-    onPlane.push(Math.abs(facePlaneNormal.dot(d)) < planeTolerance);
-    pts2.push(uv(d, u, v));
-  }
-  const loop = walkBoundaryLoops(onPlaneBoundaryEdges(geometry, onPlane, i => pts2[i]), false)[0];
-  if (loop && loop.length >= 3) return loop;
-  const flat = pts2.filter((_, i) => onPlane[i]);
-  return flat.length >= 3 ? convexHull2D(flat) : null;
-}
-
-/** Panelin yüz düzlemine değen 2B ayak izi; değmiyorsa null (o yüzeyde engel değil). */
-/** Ayak izi geometrisi: arkalık kanalı açılmış panelde KANALSIZ mesh (yalnız kendi grooved mesh'iyle eşleşiyorsa — sentetik damga değil). */
+/** Ayak izi geometrisi: arkalık kanalı açılmış panelde KANALSIZ mesh (yalnız kendi grooved mesh'iyle eşleşiyorsa — sentetik
+ *  damga değil). */
 export function footprintGeometry(panel: any): THREE.BufferGeometry | undefined {
   const ug = panel?.ungroovedGeometry as THREE.BufferGeometry | undefined;
   return ug && panel.geometry && ug.userData?.groovedUuid === panel.geometry.uuid ? ug : panel?.geometry;
 }
-function panelFootprintOnPlane(panel: any, facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, u: THREE.Vector3, v: THREE.Vector3, planeTolerance = 5.0): Point2D[] | null {
+/** Panelin yüz düzlemine değen 2B ayak izi; değmiyorsa null (o yüzeyde engel değil). */
+function panelFootprintOnPlane(
+  panel: any, facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3, u: THREE.Vector3, v: THREE.Vector3, planeTolerance = 5.0
+): Point2D[] | null {
   const geometry = footprintGeometry(panel);
   if (!geometry) return null;
   const panelMatrix = getShapeMatrix(panel);
   const posAttr = geometry.getAttribute('position') as THREE.BufferAttribute;
-  const pts2D: Point2D[] = [], all2D: Point2D[] = [];
+  const pts2D: Point2D[] = [], all2D: Point2D[] = [], onPlane: boolean[] = [];
   let nMin = Infinity, nMax = -Infinity;
   for (let i = 0; i < posAttr.count; i++) {
     const d = new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)).applyMatrix4(panelMatrix).sub(facePlaneOrigin);
     const signed = facePlaneNormal.dot(d);
     nMin = Math.min(nMin, signed); nMax = Math.max(nMax, signed);
-    const p2 = uv(d, u, v);
-    all2D.push(p2);
-    if (Math.abs(signed) < planeTolerance) pts2D.push(p2);
+    const p2 = toUV(d, u, v), on = Math.abs(signed) < planeTolerance;
+    all2D.push(p2); onPlane.push(on);
+    if (on) pts2D.push(p2);
   }
   if (pts2D.length < 3) {
     if (nMin <= planeTolerance && nMax >= -planeTolerance && all2D.length >= 3) {
@@ -285,8 +281,9 @@ function panelFootprintOnPlane(panel: any, facePlaneNormal: THREE.Vector3, faceP
     }
     return null;
   }
-  const boundary = meshOnPlaneBoundary2D(geometry, panelMatrix, facePlaneNormal, facePlaneOrigin, u, v, planeTolerance);
-  if (boundary && boundary.length >= 3) return boundary;
+  // Düzlem-üstü üçgenlerin gerçek (içbükey korunur) sınır halkası; zincir başarısızsa dışbükey zarf.
+  const loop = walkBoundaryLoops(onPlaneBoundaryEdges(geometry, onPlane, i => all2D[i]), false)[0];
+  if (loop && loop.length >= 3) return loop;
   const hull = convexHull2D(pts2D);
   return hull.length >= 3 ? hull : null;
 }
@@ -315,7 +312,7 @@ export function panelBehindStackPlane(panel: any, nOut: THREE.Vector3, planeInwa
 
 export function findPanelCoveringPoint(worldPt: THREE.Vector3, childPanels: any[], facePlaneNormal: THREE.Vector3, facePlaneOrigin: THREE.Vector3): any | null {
   const { u, v } = getFacePlaneAxes(facePlaneNormal);
-  const p2 = uv(new THREE.Vector3().subVectors(worldPt, facePlaneOrigin), u, v);
+  const p2 = toUV(new THREE.Vector3().subVectors(worldPt, facePlaneOrigin), u, v);
   for (const panel of childPanels) {
     const fp = panelFootprintOnPlane(panel, facePlaneNormal, facePlaneOrigin, u, v);
     if (fp && isPointInsidePolygon(p2, fp)) return panel;
@@ -387,7 +384,7 @@ export function computeFaceComponentContour(
   if (ring.length < 3) return null;
 
   const { u, v } = getFacePlaneAxes(groupNormal.clone().normalize());
-  const ring2D = ring.map(p3 => uv(p3, u, v));
+  const ring2D = ring.map(p3 => toUV(p3, u, v));
   const keep: number[] = [];
   for (let i = 0; i < ring2D.length; i++) {
     if (Math.abs(cross2(ring2D[(i - 1 + ring2D.length) % ring2D.length], ring2D[i], ring2D[(i + 1) % ring2D.length])) > 0.05) keep.push(i);
@@ -406,7 +403,7 @@ export function computeFaceComponentContour(
   return { comp: [...comp], seedFi, corners, center, boundary };
 }
 
-interface RotOp { kind?: 'rotate' | 'translate'; pivot?: THREE.Vector3; axis?: THREE.Vector3; angleRad?: number; d?: THREE.Vector3 }
+export interface RotOp { kind?: 'rotate' | 'translate'; pivot?: THREE.Vector3; axis?: THREE.Vector3; angleRad?: number; d?: THREE.Vector3 }
 
 /** Dönüş ops'u; varsa composeSteps'in çözdüğü __composedOps (gerçek dönüşle birebir). Pivot/axis DÜNYA koordinatında. */
 function buildRotationOpsFromPanel(panel: any): RotOp[] {
@@ -450,7 +447,7 @@ function panelFootprintsInParentLocal(
   if (dMin > tol || dMax < -tol) return null;
   const out: Point2D[] = [];
   let flatVertCount = 0;
-  for (let i = 0; i < pts.length; i++) if (Math.abs(d[i]) < tol) { out.push(uv(pts[i], u, v)); flatVertCount++; }
+  for (let i = 0; i < pts.length; i++) if (Math.abs(d[i]) < tol) { out.push(toUV(pts[i], u, v)); flatVertCount++; }
   if (isRotated) {
     const localOps = buildRotationOpsFromPanel(panel).map(op => ({
       kind: op.kind || 'rotate',
@@ -475,14 +472,12 @@ function panelFootprintsInParentLocal(
       if (mn > tol || mx < -tol) return null;
     }
     if (moved.length < 3) return null;
-    const hull = convexHull2D(moved.map(v3 => uv(v3, u, v)));
+    const hull = convexHull2D(moved.map(v3 => toUV(v3, u, v)));
     return hull.length >= 3 ? [hull] : null;
   }
   const pierces = dMin < -tol && dMax > tol;
   if (pierces) {
-    const idx = geometry.getIndex();
-    const cnt = idx ? idx.count : pos.count;
-    const at = (k: number) => (idx ? idx.getX(k) : k);
+    const { cnt, at } = triIndexer(geometry);
     for (let t = 0; t + 2 < cnt; t += 3) {
       const tri = [at(t), at(t + 1), at(t + 2)];
       for (let e = 0; e < 3; e++) {
@@ -492,13 +487,13 @@ function panelFootprintsInParentLocal(
         if (Math.abs(den) < 1e-9) continue;
         const sT = da / den;
         if (sT < 0 || sT > 1) continue;
-        out.push(uv(new THREE.Vector3().lerpVectors(pts[a], pts[b], sT), u, v));
+        out.push(toUV(new THREE.Vector3().lerpVectors(pts[a], pts[b], sT), u, v));
       }
     }
   }
   if (out.length < 3) return null;
   // İçbükey sınır: düzlem-üstü üçgenlerin kenar halkaları (çok parçalı temasta hepsi; dejenere halkalar elenir).
-  const bEdges = onPlaneBoundaryEdges(geometry, d.map(dd => Math.abs(dd) < tol), i => uv(pts[i], u, v));
+  const bEdges = onPlaneBoundaryEdges(geometry, d.map(dd => Math.abs(dd) < tol), i => toUV(pts[i], u, v));
   if (bEdges.length >= 3) {
     const good = walkBoundaryLoops(bEdges, true).filter(l => l.length >= 3 && Math.abs(signedArea2(l)) / 2 > 1.0);
     // Halka yönü mesh sarımından gelir (OCC ve sentetik prizma ters sarılabilir); kırpma (clipByFootprint) CCW
@@ -755,14 +750,13 @@ function rectilinearFreeRegion(ring2D: Point2D[], blockers: Point2D[][], anchorP
 }
 
 const _tiltCache = new WeakMap<object, boolean>();
-/** En büyük toplam alanlı yüz normali (işaret: ilk sıfırdan farklı bileşen pozitif); geometri yoksa null. */
-export function largestFaceNormal(geo: any): THREE.Vector3 | null {
+/** En büyük toplam alanlı yüz normali (işaret: ilk sıfırdan farklı bileşen pozitif); geometri yoksa null.
+ *  `tol`: x / y bileşeni bu kadar negatif olmadıkça çevrilmez (önizleme çerçevesi 1e-6 ile gürültüye karşı korunur). */
+export function largestFaceNormal(geo: any, tol = 0): THREE.Vector3 | null {
   if (!geo || typeof geo.getAttribute !== 'function') return null;
   const pos = geo.getAttribute('position') as THREE.BufferAttribute | undefined;
   if (!pos) return null;
-  const idx = geo.getIndex();
-  const cnt = idx ? idx.count : pos.count;
-  const at = (k: number) => (idx ? idx.getX(k) : k);
+  const { cnt, at } = triIndexer(geo);
   const bins = new Map<string, { n: THREE.Vector3; a: number }>();
   const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), n = new THREE.Vector3();
   for (let t = 0; t + 2 < cnt; t += 3) {
@@ -771,7 +765,8 @@ export function largestFaceNormal(geo: any): THREE.Vector3 | null {
     const area = n.length() / 2;
     if (area < 1e-6) continue;
     n.divideScalar(area * 2);
-    if (n.x < 0 || (Math.abs(n.x) < 1e-6 && n.y < 0) || (Math.abs(n.x) < 1e-6 && Math.abs(n.y) < 1e-6 && n.z < 0)) n.negate();
+    const x0 = Math.abs(n.x) < 1e-6;
+    if (n.x < -tol || (x0 && n.y < -tol) || (x0 && Math.abs(n.y) < 1e-6 && n.z < 0)) n.negate();
     const key = `${n.x.toFixed(2)},${n.y.toFixed(2)},${n.z.toFixed(2)}`;
     const e = bins.get(key);
     if (e) e.a += area; else bins.set(key, { n: n.clone(), a: area });
@@ -831,7 +826,7 @@ export function computeFreeRegionLocal(
   if (contourCorners.length < 3) return null;
   const nrm = normalLocal.clone().normalize();
   const { u, v } = getFacePlaneAxes(nrm);
-  const ring2D = contourCorners.map(c => uv(c, u, v));
+  const ring2D = contourCorners.map(c => toUV(c, u, v));
   const planeN = contourCorners[0].dot(nrm);
 
   const footprints: Point2D[][] = [];
@@ -863,7 +858,7 @@ export function computeFreeRegionLocal(
   return solveFreeRegionMemo({
     ring2D, nrm, u, v, planeN, footprints, fpRotated, fpIds, fpStrip, touchingSiblingIds,
     seedU: seedLocal.dot(u), seedV: seedLocal.dot(v),
-    prev2D: prevRegionCorners && prevRegionCorners.length >= 3 ? prevRegionCorners.map(c => uv(c, u, v)) : undefined,
+    prev2D: prevRegionCorners && prevRegionCorners.length >= 3 ? prevRegionCorners.map(c => toUV(c, u, v)) : undefined,
     storedSideRelations, fitFaceShape: !!fitFaceShape,
   });
 }
@@ -1048,18 +1043,14 @@ function solveFreeRegion(q: FreeRegionInput): FreeRegionResult {
     }
   }
   const blocking: Point2D[][] = [], blockingRotated: boolean[] = [], blockingStrip: boolean[] = [];
-  const farIds: string[] = [];
   for (let f = 0; f < footprints.length; f++) {
     const pip = fpPips[f];
-    let blocks = false, onFace = false;
+    let blocks = false;
     for (let j = 0; j < ny && !blocks; j++) for (let i = 0; i < nx; i++) {
       const k = j * nx + i;
-      if (!inRing[k] || !pip(PX[i], PY[j])) continue;
-      onFace = true;
-      if (nearReach[k]) { blocks = true; break; }
+      if (inRing[k] && nearReach[k] && pip(PX[i], PY[j])) { blocks = true; break; }
     }
     if (blocks) { blocking.push(footprints[f]); blockingRotated.push(fpRotated[f]); blockingStrip.push(fpStrip[f]); }
-    else if (onFace) farIds.push(fpIds[f] || `#${f}`);
   }
 
   const anchorPt = cellPt(ci, cj);
@@ -1120,9 +1111,7 @@ function solveFreeRegion(q: FreeRegionInput): FreeRegionResult {
     const best = clipByFootprint(exact, fp, blockingRotated[f], pressEdges ? (k => pressEdges!.has(k)) : undefined);
     if (best) {
       exact = best;
-      if (pressEdges) {
-        pressedCutApplied = true;
-      }
+      if (pressEdges) pressedCutApplied = true;
     }
   }
 
@@ -1136,8 +1125,7 @@ function solveFreeRegion(q: FreeRegionInput): FreeRegionResult {
       const rl = rectilinearFreeRegion(ring2D, blocking, anchorPt);
       if (rl) {
         const rs = scorePoly(rl);
-        const accepted = rs.cover >= 0.9 && rs.leak <= 0.1 && rs.cover > hp.cover;
-        if (accepted) exact = rl;
+        if (rs.cover >= 0.9 && rs.leak <= 0.1 && rs.cover > hp.cover) exact = rl;
       }
     }
   }
@@ -1165,21 +1153,13 @@ function solveFreeRegion(q: FreeRegionInput): FreeRegionResult {
           if (fb.y0 >= anchorPt.y - EPS && fb.y0 < ry1) ry1 = fb.y0;
         }
       }
+      // Dikdörtgen de çıkmazsa tam kontur kalır.
       if (rx1 - rx0 > 0.5 && ry1 - ry0 > 0.5) {
         const rect: Point2D[] = [{ x: rx0, y: ry0 }, { x: rx1, y: ry0 }, { x: rx1, y: ry1 }, { x: rx0, y: ry1 }];
         const rs = scorePoly(rect);
         // Taşmayan kırpılmış poligon, kapsaması düşük değilse dar dikdörtgene tercih edilir (alakasız paneller kısalmasın).
         const exactSafe = leak <= 0.1 && exact.length >= 3;
-        if (exactSafe && (!(rs.leak <= 0.1) || cover >= rs.cover)) {
-          polygon = exact;
-          console.warn('[YAGO][BÖLGE] doğrulama düştü → kırpılmış poligon korundu (taşma yok)', { kapsama: cover.toFixed(2), taşma: leak.toFixed(2), dikdörtgenKapsama: rs.cover.toFixed(2) });
-        } else {
-          polygon = rect;
-          console.warn('[YAGO][BÖLGE] doğrulama düştü → güvenli serbest dikdörtgen',
-            { kapsama: cover.toFixed(2), taşma: leak.toFixed(2), yeniKapsama: rs.cover.toFixed(2), u: `${rx0.toFixed(0)}..${rx1.toFixed(0)}`, v: `${ry0.toFixed(0)}..${ry1.toFixed(0)}` });
-        }
-      } else {
-        console.warn('[YAGO][BÖLGE] çokgen grid ile uyuşmadı, tam kontur kullanıldı', { kapsama: cover.toFixed(2), taşma: leak.toFixed(2), köşeN: exact.length });
+        polygon = exactSafe && (!(rs.leak <= 0.1) || cover >= rs.cover) ? exact : rect;
       }
     }
   }
@@ -1196,15 +1176,12 @@ function solveFreeRegion(q: FreeRegionInput): FreeRegionResult {
       const reach2 = new Uint8Array(nx * ny);
       if (free2[cj * nx + ci]) flood4(free2, nx, ny, cj * nx + ci, reach2);
       const traced = traceReachBoundary(reach2, nx, ny, uMin, vMin, cw, ch);
-      if (traced.length >= 3) { shapePoly = fitTracedPolygonToSources(traced, [ring2D, ...straight], Math.max(cw, ch) * 1.6); }
+      if (traced.length >= 3) shapePoly = fitTracedPolygonToSources(traced, [ring2D, ...straight], Math.max(cw, ch) * 1.6);
     }
     if (shapePoly && shapePoly.length >= 3) {
       for (const fp of rotatedFps) { const best = clipByFootprint(shapePoly, fp, true); if (best) shapePoly = best; }
       const ss = scorePoly(shapePoly);
-      const okShape = ss.leak <= 0.1 && ss.cover >= 0.9;
-      if (okShape) polygon = shapePoly;
-    } else {
-      console.warn('[YAGO][BÖLGE][YÜZ-ŞEKLİ] şekil poligonu üretilemedi → mod-kapalı sonuç korundu');
+      if (ss.leak <= 0.1 && ss.cover >= 0.9) polygon = shapePoly;
     }
   }
 
@@ -1217,5 +1194,7 @@ function solveFreeRegion(q: FreeRegionInput): FreeRegionResult {
     if (Math.abs(s) > 1e-6) sideRelations[id] = s > 0 ? 1 : -1;
   }
 
-  return { u, v, planeN, ring2D, footprints, footprintIds: fpIds, touchingSiblingIds, uMin, vMin, cw, ch, nx, ny, reach, anchor: finalAnchor, polygon, sideRelations };
+  return {
+    u, v, planeN, ring2D, footprints, footprintIds: fpIds, touchingSiblingIds, uMin, vMin, cw, ch, nx, ny, reach, anchor: finalAnchor, polygon, sideRelations,
+  };
 }

@@ -1,13 +1,18 @@
 import * as THREE from 'three';
 import {
-  type CavityBox, type CavityPick, type CavityStep, type GapSpec, type PanelGroup, type RefFacePick, type Shape, type VirtualFace, panelOfVf, requestRebuild, shapeById, useAppStore,
+  type CavityBox, type CavityPick, type CavityStep, type GapSpec, type PanelGroup, type RefFacePick, type Shape, type VirtualFace,
+  panelOfVf, requestRebuild, shapeById, useAppStore,
 } from '../store';
-import { type Vec3, dominantAxisLabel, effectiveBodyGeometry, genId, getFacesAndGroups, getShapeMatrix, isFlatNormal, localBboxOf, round1, vertexModsKey } from './Geometry';
-import { panelHasRotation } from './FaceRegion';
+import {
+  type Vec3, dominantAxisLabel, effectiveBodyGeometry, genId, getFacesAndGroups, getShapeMatrix, isFlatNormal, localBboxOf, round1, vertexModsKey,
+} from './Geometry';
+import { panelHasRotation, polyArea } from './FaceRegion';
 import { matchReferenceFace } from './PanelOps';
-// Döngüsel içe aktarma (DoorService / BackService ↔ PanelGroupService): yalnız işlev gövdelerinde kullanılır — ESM canlı bağlarıyla güvenli.
+// Döngüsel içe aktarma (DoorService / BackService / SplitShared ↔ PanelGroupService): yalnız işlev gövdelerinde kullanılır — ESM
+// canlı bağlarıyla güvenli.
 import { doorJointForBond, moveDoorJointTo } from './DoorService';
 import { backObstacleFor } from './BackService';
+import { type Pt2, jointCenter, rayBoxEntry, renameMemberVfs, setMemberPanelThickness } from './SplitShared';
 
 // RAF / DİKME GRUPLARI: grup = şekilli serbest hacim (CavityGrid hücre bölgesi, tohumdan floodRegion) + n panel + n+1 boşluk.
 //  • Her raf kendi dilimindeki kesitin sınır çokgenini alır (sectionPolygon); çıpa (anchorFrac) tohumdur, kutu merkezi değil.
@@ -41,13 +46,8 @@ function dominantDir(d: Vec3): EntryFace {
 
 /** Işının gövde kutusuna girdiği yüz; facing tıklanan yüzden İÇERİ (min → +1). Kamera içerideyse null. */
 function rayEntryFace(o: Vec3, d: Vec3, b: CavityBox): EntryFace | null {
-  let best = -Infinity, axis: 0 | 1 | 2 = 0, facing: 1 | -1 = 1;
-  for (const a of [0, 1, 2] as const) {
-    if (Math.abs(d[a]) < 1e-9) continue;
-    const t = d[a] > 0 ? (b.min[a] - o[a]) / d[a] : (b.max[a] - o[a]) / d[a];
-    if (t > best) { best = t; axis = a; facing = d[a] > 0 ? 1 : -1; }
-  }
-  return best > 0 ? { axis, facing } : null;
+  const e = rayBoxEntry(o, d, b);
+  return e ? { axis: e.axis, facing: e.pos ? 1 : -1 } : null;
 }
 
 const r1 = round1;
@@ -62,7 +62,6 @@ const fracInCavity = (body: CavityBox, p: Vec3, clamp = false): Vec3 => [0, 1, 2
   return clamp ? Math.max(0, Math.min(1, f)) : f;
 }) as Vec3;
 const pointFromFrac = (body: CavityBox, f: Vec3): Vec3 => [0, 1, 2].map(a => body.min[a] + f[a] * (body.max[a] - body.min[a])) as Vec3;
-type Pt2 = { x: number; y: number };
 
 const toCavityBox = (bb: THREE.Box3): CavityBox => ({ min: [bb.min.x, bb.min.y, bb.min.z], max: [bb.max.x, bb.max.y, bb.max.z] });
 
@@ -110,7 +109,9 @@ const insideTiltPlanes = (planes: TiltPlane[], p: Vec3): boolean =>
 const cellInsideTiltPlanes = (planes: TiltPlane[], b: CavityBox): boolean => planes.every(pl => {
   if (!inPlaneRange(pl, boxCenter(b))) return true;
   let best = -Infinity;
-  for (const x of [b.min[0], b.max[0]]) for (const y of [b.min[1], b.max[1]]) for (const z of [b.min[2], b.max[2]]) best = Math.max(best, dot3(pl.n, [x, y, z]) - pl.d);
+  for (const x of [b.min[0], b.max[0]]) for (const y of [b.min[1], b.max[1]]) for (const z of [b.min[2], b.max[2]]) {
+    best = Math.max(best, dot3(pl.n, [x, y, z]) - pl.d);
+  }
   return best >= TOL;
 });
 
@@ -178,7 +179,11 @@ function clippedRegionBBox(g: CavityGrid, cells: Set<number>, planes: TiltPlane[
     }
   }
   if (!Number.isFinite(out.min[0]) || !Number.isFinite(out.max[0])) return raw;
-  for (let a = 0; a < 3; a++) { out.min[a] = Math.max(out.min[a], raw.min[a]); out.max[a] = Math.min(out.max[a], raw.max[a]); if (out.max[a] - out.min[a] < 1) { out.min[a] = raw.min[a]; out.max[a] = raw.max[a]; } }
+  // Ham kutuya kırpılır; eksende 1 mm'den ince kalırsa ham aralık kullanılır.
+  for (let a = 0; a < 3; a++) {
+    out.min[a] = Math.max(out.min[a], raw.min[a]); out.max[a] = Math.min(out.max[a], raw.max[a]);
+    if (out.max[a] - out.min[a] < 1) { out.min[a] = raw.min[a]; out.max[a] = raw.max[a]; }
+  }
   return out;
 }
 function clipPoly3D(poly: Pt3[], n: Vec3, d: number): Pt3[] {
@@ -210,7 +215,8 @@ function planeBoxSection(n: Vec3, d: number, b: CavityBox): Pt3[] | null {
   const u: Vec3 = [n[1] * ax[2] - n[2] * ax[1], n[2] * ax[0] - n[0] * ax[2], n[0] * ax[1] - n[1] * ax[0]];
   const lu = Math.hypot(u[0], u[1], u[2]) || 1; u[0] /= lu; u[1] /= lu; u[2] /= lu;
   const v: Vec3 = [n[1] * u[2] - n[2] * u[1], n[2] * u[0] - n[0] * u[2], n[0] * u[1] - n[1] * u[0]];
-  let poly: Pt3[] = [[-M, -M], [M, -M], [M, M], [-M, M]].map(([a, bb]) => [o[0] + u[0] * a + v[0] * bb, o[1] + u[1] * a + v[1] * bb, o[2] + u[2] * a + v[2] * bb] as Vec3);
+  const at = (a: number, bb: number): Vec3 => [o[0] + u[0] * a + v[0] * bb, o[1] + u[1] * a + v[1] * bb, o[2] + u[2] * a + v[2] * bb];
+  let poly: Pt3[] = [at(-M, -M), at(M, -M), at(M, M), at(-M, M)];
   for (let a = 0; a < 3; a++) {
     const e: Vec3 = [0, 0, 0]; e[a] = 1;
     poly = clipPoly3D(poly, e, b.min[a]); if (poly.length < 3) return null;
@@ -219,14 +225,19 @@ function planeBoxSection(n: Vec3, d: number, b: CavityBox): Pt3[] | null {
   }
   return poly;
 }
-const polyCentroid = (poly: Pt3[]): Vec3 => { const c: Vec3 = [0, 0, 0]; for (const p of poly) { c[0] += p[0]; c[1] += p[1]; c[2] += p[2]; } return [c[0] / poly.length, c[1] / poly.length, c[2] / poly.length]; };
+function polyCentroid(poly: Pt3[]): Vec3 {
+  const c: Vec3 = [0, 0, 0];
+  for (const p of poly) { c[0] += p[0]; c[1] += p[1]; c[2] += p[2]; }
+  return [c[0] / poly.length, c[1] / poly.length, c[2] / poly.length];
+}
 
 function clipSurfaceByPlanes(g: CavityGrid, cells: Set<number>, surface: number[], planes: TiltPlane[]): number[] {
   if (!planes.length) return surface;
   const out: number[] = [];
   const fan = (poly: Pt3[]) => { for (let i = 1; i < poly.length - 1; i++) out.push(...poly[0], ...poly[i], ...poly[i + 1]); };
   for (let t = 0; t < surface.length; t += 9) {
-    let poly: Pt3[] = [[surface[t], surface[t + 1], surface[t + 2]], [surface[t + 3], surface[t + 4], surface[t + 5]], [surface[t + 6], surface[t + 7], surface[t + 8]]];
+    const vtx = (i: number): Vec3 => [surface[i], surface[i + 1], surface[i + 2]];
+    let poly: Pt3[] = [vtx(t), vtx(t + 3), vtx(t + 6)];
     for (const pl of planes) {
       if (!inPlaneRange(pl, polyCentroid(poly))) continue;
       poly = clipPoly3D(poly, pl.n, pl.d);
@@ -324,11 +335,15 @@ const boxesKey = (bs: CavityBox[]) => bs.map(b => [...b.min, ...b.max].map(n => 
 export interface StepPlane { axis: number; coord: number }
 const hasPlane = (g: CavityGrid, pl: StepPlane) => axisPlanes(g, pl.axis).some(v => Math.abs(v - pl.coord) <= TOL);
 
-function buildCavityGrid(parent: Shape, obstacles: CavityBox[], splitBoxes: CavityBox[] = [], tiltFaces: TiltFace[] = [], extraPlanes: StepPlane[] = []): CavityGrid | null {
+function buildCavityGrid(
+  parent: Shape, obstacles: CavityBox[], splitBoxes: CavityBox[] = [], tiltFaces: TiltFace[] = [], extraPlanes: StepPlane[] = [],
+): CavityGrid | null {
   const geo = effectiveBodyGeometry(parent);
   const body = bodyLocalBox(parent);
   if (!geo || !body) return null;
-  const key = `${geo.uuid}|${vertexModsKey(parent.vertexModifications || [])}|${boxesKey(obstacles)}|${boxesKey(splitBoxes)}|${tiltFaces.map(f => `${f.id}:${f.n.map(x => x.toFixed(3)).join(',')}:${f.d.toFixed(1)}`).join(';')}|${extraPlanes.map(e => `${e.axis}:${e.coord.toFixed(1)}`).join(',')}`;
+  const tiltKey = tiltFaces.map(f => `${f.id}:${f.n.map(x => x.toFixed(3)).join(',')}:${f.d.toFixed(1)}`).join(';');
+  const planesKey = extraPlanes.map(e => `${e.axis}:${e.coord.toFixed(1)}`).join(',');
+  const key = `${geo.uuid}|${vertexModsKey(parent.vertexModifications || [])}|${boxesKey(obstacles)}|${boxesKey(splitBoxes)}|${tiltKey}|${planesKey}`;
   const hit = _gridCache.get(key);
   if (hit) return hit;
 
@@ -338,7 +353,8 @@ function buildCavityGrid(parent: Shape, obstacles: CavityBox[], splitBoxes: Cavi
   for (const g of groups) {
     if (!isFlatNormal(g.normal)) continue;
     axisFaces++;
-    (Math.abs(g.normal.x) > 0.999 ? px : Math.abs(g.normal.y) > 0.999 ? py : pz).push(Math.abs(g.normal.x) > 0.999 ? g.center.x : Math.abs(g.normal.y) > 0.999 ? g.center.y : g.center.z);
+    const onX = Math.abs(g.normal.x) > 0.999, onY = Math.abs(g.normal.y) > 0.999;
+    (onX ? px : onY ? py : pz).push(onX ? g.center.x : onY ? g.center.y : g.center.z);
   }
   for (const o of [...obstacles, ...splitBoxes]) { px.push(o.min[0], o.max[0]); py.push(o.min[1], o.max[1]); pz.push(o.min[2], o.max[2]); }
   for (const e of extraPlanes) (e.axis === 0 ? px : e.axis === 1 ? py : pz).push(e.coord);
@@ -347,16 +363,14 @@ function buildCavityGrid(parent: Shape, obstacles: CavityBox[], splitBoxes: Cavi
   const zs = uniqSorted(pz, body.min[2], body.max[2]);
   const nx = xs.length - 1, ny = ys.length - 1, nz = zs.length - 1;
   const grid: CavityGrid = { body, xs, ys, zs, nx, ny, nz, free: new Uint8Array(nx * ny * nz), obstacles, tiltFaces };
-  const plainBox = groups.length === 6 && axisFaces === 6 && !(parent.vertexModifications?.length) && !(parent.subtractionGeometries?.some(Boolean)) && !(parent.fillets?.length);
-  const inside = plainBox ? null : makeInsideMeshTest(geo);
-  const inObstacle = (c: Vec3) => obstacles.some(o =>
-    c[0] > o.min[0] && c[0] < o.max[0] && c[1] > o.min[1] && c[1] < o.max[1] && c[2] > o.min[2] && c[2] < o.max[2]);
-  let freeN = 0;
+  // Düz kutu gövdede mesh içi testine gerek yok.
+  const modified = !!parent.vertexModifications?.length || !!parent.subtractionGeometries?.some(Boolean) || !!parent.fillets?.length;
+  const inside = groups.length === 6 && axisFaces === 6 && !modified ? null : makeInsideMeshTest(geo);
   for (let k = 0; k < nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
     const c: Vec3 = [(xs[i] + xs[i + 1]) / 2, (ys[j] + ys[j + 1]) / 2, (zs[k] + zs[k + 1]) / 2];
-    if (inObstacle(c)) continue;
+    if (obstacles.some(o => strictlyInside(c, o))) continue;
     if (inside && !inside(c)) continue;
-    grid.free[cellIndex(grid, i, j, k)] = 1; freeN++;
+    grid.free[cellIndex(grid, i, j, k)] = 1;
   }
   if (_gridCache.size > 12) _gridCache.delete(_gridCache.keys().next().value as string);
   _gridCache.set(key, grid);
@@ -504,7 +518,6 @@ export function traceMaskLoops(us: number[], vs: number[], filled: (i: number, k
   return loops;
 }
 
-const polyArea = (p: Pt2[]) => { let a = 0; for (let i = 0; i < p.length; i++) { const q = p[i], r = p[(i + 1) % p.length]; a += q.x * r.y - r.x * q.y; } return a / 2; };
 const pointInPoly = (pt: Pt2, poly: Pt2[]) => {
   let inside = false;
   for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
@@ -559,13 +572,16 @@ function facingOf(axis: number, dirAxis: number, at: Vec3, bbox: CavityBox): 1 |
 }
 type RayCtx = { axis: 0 | 1 | 2; dirAxis: number; at: Vec3; arrow: EntryFace };
 
-function pickFromRegion(g: CavityGrid, cells: Set<number>, seed: Vec3, shape: CavityPick['shape'] = 'shaped', planes: TiltPlane[] = [], ray?: RayCtx): CavityPick {
+function pickFromRegion(
+  g: CavityGrid, cells: Set<number>, seed: Vec3, shape: CavityPick['shape'] = 'shaped', planes: TiltPlane[] = [], ray?: RayCtx,
+): CavityPick {
   const bbox = clippedRegionBBox(g, cells, planes);
   const axis = ray?.axis ?? 0;
   const at: Vec3 = ray ? [...ray.at] as Vec3 : [...seed] as Vec3;
   const facing = ray ? facingOf(axis, ray.dirAxis, at, bbox) : 1;
   const arrow: EntryFace = ray ? { ...ray.arrow } : { axis, facing };
-  return { key: `${shape}:${regionKey(cells)}`, bbox, boxes: regionBoxes(g, cells), surface: clipSurfaceByPlanes(g, cells, regionSurface(g, cells), planes), seed, shape, axis, facing, at, arrow };
+  const surface = clipSurfaceByPlanes(g, cells, regionSurface(g, cells), planes);
+  return { key: `${shape}:${regionKey(cells)}`, bbox, boxes: regionBoxes(g, cells), surface, seed, shape, axis, facing, at, arrow };
 }
 
 /** Tohum hücresini içeren, hiçbir yönde büyütülemeyen kutular (3B toplam tablosuyla O(1) doluluk); hacme göre azalan. */
@@ -655,26 +671,31 @@ function panelBoundedBoxes(g: CavityGrid, B: BoxAlt): BoxAlt[] {
 }
 
 /** Düz alternatifler; seçim ailesi ve düz-mod resize çözümü AYNI listeyi kullanmalı. */
+const spansAtLeast = (b: CavityBox, minSpan: number) => boxSpan(b, 0) >= minSpan && boxSpan(b, 1) >= minSpan && boxSpan(b, 2) >= minSpan;
 function boxAlternatives(g: CavityGrid, cells: Set<number>, seedCells: number[], minSpan = 0): BoxAlt[] {
-  const okSpan = (b: CavityBox) => boxSpan(b, 0) >= minSpan && boxSpan(b, 1) >= minSpan && boxSpan(b, 2) >= minSpan;
+  const okSpan = (b: CavityBox) => spansAtLeast(b, minSpan);
   const seen = new Set<string>();
   const out: BoxAlt[] = [];
   const push = (b: BoxAlt) => { const k = fmtBox(b.bbox); if (seen.has(k) || !okSpan(b.bbox)) return; seen.add(k); out.push(b); };
   const maximal: BoxAlt[] = [];
-  for (const sc of seedCells) for (const b of maximalBoxesContaining(g, cells, sc)) { if (!seen.has(fmtBox(b.bbox)) && okSpan(b.bbox)) maximal.push(b); push(b); }
+  for (const sc of seedCells) for (const b of maximalBoxesContaining(g, cells, sc)) {
+    if (!seen.has(fmtBox(b.bbox)) && okSpan(b.bbox)) maximal.push(b);
+    push(b);
+  }
   for (const b of maximal) for (const d of panelBoundedBoxes(g, b)) push(d);
   out.sort((a, b) => b.volume - a.volume);
   return out;
 }
 
 /** Aday ailesi: şekilli bölge (tek kutu değilse) → düz kutular, büyükten küçüğe. */
-function candidateFamily(g: CavityGrid, cells: Set<number>, rayCells: number[], seed: Vec3, minSpan: number, planes: TiltPlane[] = [], ray?: RayCtx): CavityPick[] {
-  const okSpan = (b: CavityBox) => boxSpan(b, 0) >= minSpan && boxSpan(b, 1) >= minSpan && boxSpan(b, 2) >= minSpan;
+function candidateFamily(
+  g: CavityGrid, cells: Set<number>, rayCells: number[], seed: Vec3, minSpan: number, planes: TiltPlane[] = [], ray?: RayCtx,
+): CavityPick[] {
   const out: CavityPick[] = [];
   const boxes = boxAlternatives(g, cells, rayCells, minSpan);
   const regionIsBox = boxes.some(b => !b.derived && b.cells.size === cells.size);
   const shaped = pickFromRegion(g, cells, seed, 'shaped', planes, ray);
-  if (!regionIsBox && okSpan(shaped.bbox)) out.push(shaped);
+  if (!regionIsBox && spansAtLeast(shaped.bbox, minSpan)) out.push(shaped);
   for (const b of boxes) out.push(pickFromRegion(g, b.cells, seed, 'box', planes, ray));
   return out;
 }
@@ -745,7 +766,7 @@ export function redistributeForThickness(gaps: GapSpec[], L: number, count: numb
   if (fresh.length > 0) {
     const fixedSum = out.filter(g => g.locked || g.edited).reduce((s, g) => s + g.value, 0);
     let free = avail - fixedSum;
-    if (free < 0) { console.warn('[YAGO][GRUP-KALINLIK] kilitli/girilmiş boşluklar açıklığa sığmıyor, serbest boşluklar 0:', free.toFixed(1)); free = 0; }
+    if (free < 0) free = 0;   // kilitli/girilmiş boşluklar açıklığa sığmıyor
     for (const g of fresh) g.value = r1(Math.max(MIN_GAP, free / fresh.length));
     return out;
   }
@@ -760,15 +781,15 @@ export function rescaleGaps(gaps: GapSpec[], L: number, count: number, ts: numbe
   const lockedSum = out.filter(g => g.locked).reduce((s, g) => s + g.value, 0);
   let free = avail - lockedSum;
   if (free < -1e-6) {
+    // Kilitliler açıklığa sığmıyor: oransal küçültülür.
     const k = lockedSum > 0 ? Math.max(0, avail) / lockedSum : 0;
-    console.warn('[YAGO][GRUP-BOŞLUK] kilitli boşluklar açıklığa sığmıyor: kilitliΣ=', lockedSum.toFixed(1), 'açıklık=', avail.toFixed(1), '→ kilitliler oransal küçültüldü');
     for (const g of out) if (g.locked) g.value = r1(g.value * k);
     free = 0;
   }
   const unlocked = out.filter(g => !g.locked);
   if (unlocked.length === 0) {
     const last = out[out.length - 1];
-    if (Math.abs(free) > 0.05) { last.value = r1(last.value + free); console.warn('[YAGO][GRUP-BOŞLUK] tüm boşluklar kilitli, artık son boşluğa yazıldı:', free.toFixed(1)); }
+    if (Math.abs(free) > 0.05) last.value = r1(last.value + free);   // tüm boşluklar kilitli: artık son boşluğa
     return out;
   }
   const uSum = unlocked.reduce((s, g) => s + g.value, 0);
@@ -818,34 +839,32 @@ export function cycleGapMode(gaps: GapSpec[], k: number, count = gaps.length): G
   }
   return gaps.map((g, i) => (i === k ? { ...g, locked: next === 'locked', edited: next === 'hold' } : g));
 }
-/** Ölçü girişi (kapak + raf/dikme ortak): fark AÇIK ölçülere oranla (yoksa pinlilere), MIN su doldurma. `base` = düzenleme
- *  başındaki dizi (oranlar her tuşta kaymasın). `force` (kapak derzi bağı) pasifliği yok sayar. */
+/** Ölçü girişi (kapak + raf/dikme ortak): fark AÇIK ölçülere oranla (yoksa pinlilere), MIN su doldurma; sığmayan değer kırpılır.
+ *  `base` = düzenleme başındaki dizi (oranlar her tuşta kaymasın). Pasif ölçü ve diğerleri kilitliyken giriş yok sayılır;
+ *  `force` (kapak derzi bağı) ikisini de yok sayar (hepsi kilitliyse değer alana kırpılır). */
 export function applyGapEditProportional(gaps: GapSpec[], k: number, value: number, L: number, count: number, ts: number[],
-  opts: { base?: GapSpec[]; min?: number; force?: boolean; tag?: string } = {}): GapSpec[] {
-  const n = count + 1, MIN = opts.min ?? MIN_GAP, tag = opts.tag ?? '[YAGO][GRUP-KATSAYI]';
+  opts: { base?: GapSpec[]; min?: number; force?: boolean } = {}): GapSpec[] {
+  const n = count + 1, MIN = opts.min ?? MIN_GAP;
   const cur = gaps.length === n ? gaps : equalGaps(L, count, ts);
   const out = (opts.base && opts.base.length === n
     ? rescaleGaps(opts.base.map((b, i) => ({ ...b, locked: !!cur[i].locked, edited: !!cur[i].edited })), L, count, ts)
     : cur).map(g => ({ ...g }));
   if (k < 0 || k >= n) return out;
-  if (!opts.force && passiveGapIndex(out, n) === k) { console.warn(tag, 'ölçü', k + 1, 'pasif (diğerleri pinli/kilitli, kalanı toplar) — giriş yok sayıldı'); return out; }
+  if (!opts.force && passiveGapIndex(out, n) === k) return out;
   const avail = L - sumT(ts);
   const others = out.map((_, i) => i).filter(i => i !== k);
   const unlocked = others.filter(i => !out[i].locked);
   if (!unlocked.length) {
-    if (!opts.force) { console.warn(tag, 'diğer ölçüler kilitli — ölçü', k + 1, 'girilemez'); return out; }
+    if (!opts.force) return out;
     const lockedSum = others.reduce((a, i) => a + out[i].value, 0);
     out[k] = { ...out[k], value: r1(Math.max(MIN, avail - lockedSum)), edited: true };
-    console.warn(tag, 'diğer ölçüler kilitli, dayatılan değer kırpıldı →', out[k].value);
     return out;
   }
   const open = unlocked.filter(i => gapMode(out[i]) === 'open');
-  if (!open.length) console.warn(tag, 'açık kardeş yok — ölçü', k + 1, 'farkı pinli kardeşlere oranla dağıtıldı');
   const soft = open.length ? open : unlocked;
   const fixedSum = others.filter(i => !soft.includes(i)).reduce((a, i) => a + out[i].value, 0);
   const maxV = avail - fixedSum - soft.length * MIN;
   const v = r1(Math.max(MIN, Math.min(value, maxV)));
-  if (Math.abs(v - value) >= 0.05) console.warn(tag, 'ölçü', k + 1, '=', value, 'sığmıyor → kırpıldı', v, '(sabitΣ=', r1(fixedSum), 'alan=', r1(avail), ')');
   out[k] = { ...out[k], value: v, edited: true };
   let pool = soft.slice(), budget = Math.max(0, avail - fixedSum - v);
   const w = new Map(soft.map(i => [i, Math.max(0, out[i].value)] as [number, number]));
@@ -874,7 +893,7 @@ export function applyGapEdit(gaps: GapSpec[], k: number, value: number, L: numbe
   let free = avail - out[k].value - fixedSum;
   const fresh = others.filter(g => !g.locked && !g.edited);
   if (fresh.length > 0) {
-    if (free < 0) { console.warn('[YAGO][GRUP-BOŞLUK] girilen değer açıklığı aşıyor, serbest boşluklar 0:', free.toFixed(1)); free = 0; }
+    if (free < 0) free = 0;   // girilen değer açıklığı aşıyor
     for (const g of fresh) g.value = r1(free / fresh.length);
     return out;
   }
@@ -886,9 +905,9 @@ export function applyGapEdit(gaps: GapSpec[], k: number, value: number, L: numbe
     else for (const g of soft) g.value = r1(free / soft.length);
     return out;
   }
+  // Diğer boşluklar kilitli: değer kırpılır.
   const lockedSum = others.reduce((s, g) => s + g.value, 0);
   out[k].value = r1(Math.max(MIN_GAP, avail - lockedSum));
-  console.warn('[YAGO][GRUP-BOŞLUK] diğer boşluklar kilitli, değer kırpıldı →', out[k].value);
   return out;
 }
 
@@ -915,12 +934,14 @@ export function panelStarts(cavity: CavityBox, axis: number, facing: 1 | -1, gap
 }
 
 /** Düzlem facing>0 ? start+t : start; createPanelFromVirtualFace −normal yönünde t uzar → levha daima [start, start+t]. */
-function memberVfGeometry(axis: number, cavity: CavityBox, start: number, t: number, section?: Pt2[] | null, facing: 1 | -1 = 1): { normal: Vec3; vertices: Vec3[]; center: Vec3 } {
+function memberVfGeometry(
+  axis: number, cavity: CavityBox, start: number, t: number, section?: Pt2[] | null, facing: 1 | -1 = 1,
+): { normal: Vec3; vertices: Vec3[]; center: Vec3 } {
   const [b, c] = [0, 1, 2].filter(a => a !== axis);
   const plane = facing > 0 ? start + t : start;
   const mk = (vb: number, vc: number): Vec3 => { const p: Vec3 = [0, 0, 0]; p[axis] = plane; p[b] = vb; p[c] = vc; return p; };
-  const poly: Pt2[] = section && section.length >= 3 ? section
-    : [{ x: cavity.min[b], y: cavity.min[c] }, { x: cavity.max[b], y: cavity.min[c] }, { x: cavity.max[b], y: cavity.max[c] }, { x: cavity.min[b], y: cavity.max[c] }];
+  const [b0, b1, c0, c1] = [cavity.min[b], cavity.max[b], cavity.min[c], cavity.max[c]];
+  const poly: Pt2[] = section && section.length >= 3 ? section : [{ x: b0, y: c0 }, { x: b1, y: c0 }, { x: b1, y: c1 }, { x: b0, y: c1 }];
   const vertices = poly.map(q => mk(q.x, q.y));
   const normal: Vec3 = [0, 0, 0]; normal[axis] = facing;
   let cb = 0, cc = 0; for (const q of poly) { cb += q.x; cc += q.y; }
@@ -933,9 +954,10 @@ interface GroupSolution {
   cavityResolved?: Array<{ id: string; value: number }>;
 }
 
+/** Normalin baskın ekseni (eşitlikte küçük indeks). */
+const maxAbsAxis = (n: Vec3) => { const a = [Math.abs(n[0]), Math.abs(n[1]), Math.abs(n[2])]; return a.indexOf(Math.max(...a)); };
 const stepFace = (st: CavityStep): { axis: number; side: 1 | -1 } => {
-  const n = st.faceNormal;
-  const axis = [Math.abs(n[0]), Math.abs(n[1]), Math.abs(n[2])].indexOf(Math.max(Math.abs(n[0]), Math.abs(n[1]), Math.abs(n[2])));
+  const n = st.faceNormal, axis = maxAbsAxis(n);
   return { axis, side: n[axis] >= 0 ? 1 : -1 };
 };
 
@@ -1011,33 +1033,35 @@ function applyCavityStepsToCells(
     if (!cells.size) break;
     const { axis, side } = stepFace(st);
     const rb = regionBBox(g, cells);
-    const anchor: Vec3 = st.anchorFrac ? pointFromFrac(body, st.anchorFrac) : (() => { const c = boxCenter(rb); c[axis] = side > 0 ? rb.max[axis] : rb.min[axis]; return c; })();
+    // Çıpa yoksa bölge kutusunun o yüzünün ortası.
+    let anchor: Vec3;
+    if (st.anchorFrac) anchor = pointFromFrac(body, st.anchorFrac);
+    else { anchor = boxCenter(rb); anchor[axis] = side > 0 ? rb.max[axis] : rb.min[axis]; }
+    // Yüz bulunamayan / referans düzlemi çözülemeyen ya da adım eksenine paralel olmayan adım atlanır.
     const face = findStepFace(g, cells, axis, side, anchor);
-    if (!face) { console.warn('[YAGO][HACİM-ADIM] yüz bulunamadı, adım atlandı:', st.id, st.axisLabel); continue; }
+    if (!face) continue;
     const depth = depthBehind(g, cells, axis, side, face.anchorCell);
     let amount: number;
     if (st.refShapeId) {
       const pl = refPlaneInParent(st, parent, shapes);
-      if (!pl) { console.warn('[YAGO][HACİM-ADIM] referans düzlemi çözülemedi, adım atlandı:', st.id, st.refShapeId); continue; }
-      if (Math.abs(pl.normal[axis]) < 0.7) { console.warn('[YAGO][HACİM-ADIM] referans yüzü adım eksenine paralel değil, adım atlandı:', st.id); continue; }
+      if (!pl || Math.abs(pl.normal[axis]) < 0.7) continue;
       amount = (pl.center[axis] - face.coord) * side;
     } else if (st.isFixed) amount = st.value - depth;
     else amount = st.value;
-    if (amount > 1e-6) { amount = 0; }
-    if (depth + amount < 1) { console.warn('[YAGO][HACİM-ADIM] küçülme derinlikle sınırlandı:', st.id, 'derinlik=', depth.toFixed(1), 'istenen=', amount.toFixed(1)); amount = 1 - depth; }
+    if (amount > 1e-6) amount = 0;   // büyüme ham hacmi aşamaz
+    if (depth + amount < 1) amount = 1 - depth;   // küçülme 1 mm derinlik bırakır
     if (st.refShapeId) resolved.push({ id: st.id, value: r1(amount) });
-    if (Math.abs(amount) < 0.01) { continue; }
+    if (Math.abs(amount) < 0.01) continue;
     const target = r1(face.coord + side * amount);
     planes.push({ axis, coord: target });
     // Dilimi kesen hücre 2. geçişte tam bölünür; burada yalnız tam düşenler çıkar.
     const lo = Math.min(target, face.coord), hi = Math.max(target, face.coord);
     const [ua, va] = [0, 1, 2].filter(a => a !== axis);
-    let removed = 0;
     for (const c of Array.from(cells)) {
       const ijk = cellIJK(g, c);
       if (!face.cols.has(`${ijk[ua]},${ijk[va]}`)) continue;
       const cb = cellBox(g, c);
-      if (cb.min[axis] >= lo - TOL && cb.max[axis] <= hi + TOL) { cells.delete(c); removed++; }
+      if (cb.min[axis] >= lo - TOL && cb.max[axis] <= hi + TOL) cells.delete(c);
     }
   }
   return { cells, planes, resolved };
@@ -1047,7 +1071,9 @@ interface ObstacleSet { obstacles: CavityBox[]; splitBoxes: CavityBox[]; tiltFac
 
 /** Düz paneller kutu engeli; eğik paneller yalnız bölme düzlemi (splitBoxes) + yarım-uzay (tiltFaces).
  *  Kapak hiç engel değildir; arkalık yalnız `backBox` bir kutu verirse (çakma kenarındaki / geçtiği levhayı kısaltır — BackService). */
-export function collectObstacles(parent: Shape, panels: Shape[], include: (p: Shape) => boolean = () => true, backBox: (p: Shape) => CavityBox | null = () => null): ObstacleSet {
+export function collectObstacles(
+  parent: Shape, panels: Shape[], include: (p: Shape) => boolean = () => true, backBox: (p: Shape) => CavityBox | null = () => null,
+): ObstacleSet {
   const obstacles: CavityBox[] = [], splitBoxes: CavityBox[] = [];
   const tilted: Shape[] = [];
   for (const p of panels) {
@@ -1071,7 +1097,9 @@ const groupVfIndex = (group: PanelGroup, vfIdx: Map<string, number>): number => 
 
 /** Hacmi SINIRLAYAN panel yüklemi (çözüm, yeniden seçim ve x-ray aynı kuralı okur): VF sırasında üyelerden ÖNCE gelen gövde
  *  paneli sınırlar, SONRA gelen sınırlamaz (grup basar); başka grup yalnız daha önce oluşturulmuşsa. VF'siz panel sınırlar. */
-export function groupBoundsPanelPredicate(group: PanelGroup, groups: PanelGroup[], vfs: VirtualFace[] = useAppStore.getState().virtualFaces): (p: Shape) => boolean {
+export function groupBoundsPanelPredicate(
+  group: PanelGroup, groups: PanelGroup[], vfs: VirtualFace[] = useAppStore.getState().virtualFaces,
+): (p: Shape) => boolean {
   const byId = new Map(groups.map(g => [g.id, g] as const));
   const vfIdx = new Map(vfs.map((f, i) => [f.id, i] as const));
   const myIdx = groupVfIndex(group, vfIdx);
@@ -1097,7 +1125,11 @@ function groupObstacles(group: PanelGroup, parent: Shape, panels: Shape[], group
 export function repickObstacles(group: PanelGroup, parent: Shape, panels: Shape[]): ObstacleSet {
   return groupObstacles(group, parent, panels, useAppStore.getState().panelGroups);
 }
-export const gridForObstacles = (parent: Shape, o: ObstacleSet, extraPlanes: StepPlane[] = []) => buildCavityGrid(parent, o.obstacles, o.splitBoxes, o.tiltFaces, extraPlanes);
+export const gridForObstacles = (parent: Shape, o: ObstacleSet, extraPlanes: StepPlane[] = []) =>
+  buildCavityGrid(parent, o.obstacles, o.splitBoxes, o.tiltFaces, extraPlanes);
+/** Nokta kutunun içinde mi (sınırlar hariç). */
+const strictlyInside = (c: Vec3, b: CavityBox) =>
+  c[0] > b.min[0] && c[0] < b.max[0] && c[1] > b.min[1] && c[1] < b.max[1] && c[2] > b.min[2] && c[2] < b.max[2];
 
 export function boxesSurface(boxes: CavityBox[]): number[] {
   if (!boxes.length) return [];
@@ -1111,7 +1143,7 @@ export function boxesSurface(boxes: CavityBox[]): number[] {
   const cells = new Set<number>();
   for (let k = 0; k < nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
     const c: Vec3 = [(xs[i] + xs[i + 1]) / 2, (ys[j] + ys[j + 1]) / 2, (zs[k] + zs[k + 1]) / 2];
-    if (boxes.some(b => c[0] > b.min[0] && c[0] < b.max[0] && c[1] > b.min[1] && c[1] < b.max[1] && c[2] > b.min[2] && c[2] < b.max[2])) cells.add(cellIndex(g, i, j, k));
+    if (boxes.some(b => strictlyInside(c, b))) cells.add(cellIndex(g, i, j, k));
   }
   return regionSurface(g, cells);
 }
@@ -1143,10 +1175,14 @@ function solveGroup(group: PanelGroup, parent: Shape, panels: Shape[], groups: P
     const allow = planes.length ? (cc: number) => cellInsideTiltPlanes(planes, cellBox(grid, cc)) : undefined;
     let cells = c >= 0 ? floodRegion(grid, c, allow) : new Set<number>();
     if (group.boxMode && cells.size && c >= 0) {
-      const want = group.boxFrac ? { min: pointFromFrac(grid.body, group.boxFrac.min), max: pointFromFrac(grid.body, group.boxFrac.max) } : cloneBox(group.cavity);
+      const bf = group.boxFrac;
+      const want = bf ? { min: pointFromFrac(grid.body, bf.min), max: pointFromFrac(grid.body, bf.max) } : cloneBox(group.cavity);
       const iou = (a: CavityBox, b: CavityBox) => {
         let inter = 1, va = 1, vb = 1;
-        for (let x = 0; x < 3; x++) { inter *= Math.max(0, Math.min(a.max[x], b.max[x]) - Math.max(a.min[x], b.min[x])); va *= boxSpan(a, x); vb *= boxSpan(b, x); }
+        for (let x = 0; x < 3; x++) {
+          inter *= Math.max(0, Math.min(a.max[x], b.max[x]) - Math.max(a.min[x], b.min[x]));
+          va *= boxSpan(a, x); vb *= boxSpan(b, x);
+        }
         return inter / Math.max(va + vb - inter, 1e-6);
       };
       // Kayıtlı kutu çıpayı içermeyebilir → tohum onun merkez hücresi (bölge dışındaysa çıpa hücresi).
@@ -1177,14 +1213,14 @@ function solveGroup(group: PanelGroup, parent: Shape, panels: Shape[], groups: P
   let region = cells.size ? regionBoxes(grid, cells) : (group.region || [cloneBox(group.cavity)]);
   const minOk = cells.size > 0 && [0, 1, 2].every(a => boxSpan(cavity, a) >= (a === group.axis ? sumT(ts) : tMax));
   if (!minOk) {
-    console.warn('[YAGO][GRUP] hacim bozuk/çok küçük, önceki hacim korunuyor:', group.id, fmtBox(cavity));
+    // Hacim bozuk / çok küçük: önceki hacim korunur.
     cavity = cloneBox(group.cavity);
     region = group.region || [cloneBox(cavity)];
   }
   const L = boxSpan(cavity, group.axis);
   let gaps = rescaleGaps(group.gaps, L, group.count, ts);
-  // Kapak derzine bağ: bağlı üyenin boşluğu derzden yazılır, kalanlar katsayı kuralıyla. Derz yoksa / eksen uyuşmuyorsa
-  // bağ bu çözümde yok sayılır (bayat bağı syncPanelGroups düşürür).
+  // Kapak derzine bağ: bağlı üyenin boşluğu derzden yazılır, kalanlar katsayı kuralıyla. Derz yoksa / eksen uyuşmuyorsa / derz
+  // hacmin dışındaysa bağ bu çözümde yok sayılır (bayat bağı syncPanelGroups düşürür).
   if (group.doorBond) {
     const bj = doorJointForBond(group.doorBond, parent, panels);
     const m = Math.min(Math.max(0, group.doorBond.member ?? 0), group.count - 1);
@@ -1193,8 +1229,7 @@ function solveGroup(group: PanelGroup, parent: Shape, panels: Shape[], groups: P
       const prefix = gaps.slice(0, m).reduce((a, g, i) => a + g.value + ts[i], 0);
       const gm = groupFacing(group) > 0 ? want - cavity.min[group.axis] - prefix : cavity.max[group.axis] - want - ts[m] - prefix;
       if (gm >= -0.05) gaps = applyGapEditProportional(gaps, m, Math.max(0, gm), L, group.count, ts, { force: true });
-      else console.warn('[YAGO][GRUP-KAPAK-BAĞ] derz hacmin dışında, bağ bu çözümde uygulanmadı:', group.id, 'istenen min=', want.toFixed(1), fmtBox(cavity));
-    } else if (bj) console.warn('[YAGO][GRUP-KAPAK-BAĞ] derz ekseni grubun dizilim ekseni değil, bağ uygulanmadı:', group.id, 'XYZ'[bj.axis], 'vs', 'XYZ'[group.axis]);
+    }
   }
   const starts = panelStarts(cavity, group.axis, groupFacing(group), gaps, ts);
   const sections = starts.map((s, i) => {
@@ -1212,8 +1247,19 @@ function solveGroup(group: PanelGroup, parent: Shape, panels: Shape[], groups: P
 function interiorVfPatch(vf: VirtualFace, group: PanelGroup, sol: GroupSolution): Partial<VirtualFace> | null {
   const i = vf.groupIndex ?? group.memberVfIds.indexOf(vf.id);
   if (i < 0 || i >= sol.starts.length) return null;
-  const g = memberVfGeometry(group.axis, sol.cavity, sol.starts[i], memberThicknessesOf(group)[i], sol.sections[i], groupFacing(group));
+  const g = memberGeometry(group, sol, i);
   return { normal: g.normal, vertices: g.vertices, center: g.center, regionAnchor: g.center } as any;
+}
+const memberGeometry = (group: PanelGroup, sol: GroupSolution, i: number) =>
+  memberVfGeometry(group.axis, sol.cavity, sol.starts[i], memberThicknessesOf(group)[i], sol.sections[i], groupFacing(group));
+/** Üye VF'lerinin geometrisi çözümden (st = çağıranın store anlık görüntüsü). */
+function patchMemberVfs(st: ReturnType<typeof useAppStore.getState>, group: PanelGroup, next: PanelGroup, sol: GroupSolution): void {
+  for (const vfId of group.memberVfIds) {
+    const vf = st.virtualFaces.find(f => f.id === vfId);
+    if (!vf) continue;
+    const p = interiorVfPatch(vf, next, sol);
+    if (p) st.updateVirtualFace(vf.id, p);
+  }
 }
 
 /** Regen kancası (VirtualFaceUpdateService): iç VF'ler yüz eşlemesi olmadan grup çözümüyle yeniden yazılır. */
@@ -1250,13 +1296,13 @@ function removeMembers(vfIds: string[]): void {
 }
 
 function makeMemberVf(group: PanelGroup, i: number, sol: GroupSolution): VirtualFace {
-  const g = memberVfGeometry(group.axis, sol.cavity, sol.starts[i], memberThicknessesOf(group)[i], sol.sections[i], groupFacing(group));
+  const g = memberGeometry(group, sol, i);
   return {
     id: genId('vf-int'), shapeId: group.shapeId,
     normal: g.normal, center: g.center, vertices: g.vertices,
     description: groupName(group), hasPanel: false,
     parentFaceShape: false, interior: true, groupId: group.id, groupIndex: i,
-    ...( { regionAnchor: g.center } as any ),
+    ...({ regionAnchor: g.center } as any),
   };
 }
 
@@ -1267,8 +1313,13 @@ function solveFromStore(group: PanelGroup): GroupSolution | null {
   return solveGroup(group, parent, st.shapes, st.panelGroups.some(g => g.id === group.id) ? st.panelGroups : [...st.panelGroups, group]);
 }
 
+/** Düz-mod kutusu gövde kesri olarak (gövde boyutlanınca izler). */
+const boxFracOf = (body: CavityBox, bbox: CavityBox) => ({ min: fracInCavity(body, bbox.min), max: fracInCavity(body, bbox.max) });
+
 /** Grup + ilk üye VF; grup bilerek SEÇİLMEZ / kartı açılmaz. `extra` (ör. doorBond) çözümden önce eklenir. */
-export function createPanelGroupFromCavity(shapeId: string, kind: PanelGroup['kind'], pick: CavityPick, name?: string, extra: Partial<PanelGroup> = {}): PanelGroup | null {
+export function createPanelGroupFromCavity(
+  shapeId: string, kind: PanelGroup['kind'], pick: CavityPick, name?: string, extra: Partial<PanelGroup> = {},
+): PanelGroup | null {
   const st = useAppStore.getState();
   const parent = shapeById(shapeId, st.shapes);
   if (!parent) return null;
@@ -1282,9 +1333,10 @@ export function createPanelGroupFromCavity(shapeId: string, kind: PanelGroup['ki
   const facing: 1 | -1 = axisOk && pick.facing === -1 ? -1 : 1;
   const arrow = pick.arrow ? { ...pick.arrow } : { axis, facing };
   const group: PanelGroup = {
-    id: genId(kind === 'shelf' ? 'shelf' : 'divider'), shapeId, kind, axis, facing, arrow, anchorFrac: fracInCavity(body, pick.seed, true), name: name?.trim() || groupKindLabel(kind),
-    cavity: cloneBox(pick.bbox), region: pick.boxes.map(cloneBox), count, gaps: equalGaps(L, count, [t]), thickness: t, memberThicknesses: [t], memberVfIds: [], createdAt: Date.now(),
-    ...(pick.shape === 'box' ? { boxMode: true, boxFrac: { min: fracInCavity(body, pick.bbox.min), max: fracInCavity(body, pick.bbox.max) } } : {}),
+    id: genId(kind === 'shelf' ? 'shelf' : 'divider'), shapeId, kind, axis, facing, arrow, anchorFrac: fracInCavity(body, pick.seed, true),
+    name: name?.trim() || groupKindLabel(kind), cavity: cloneBox(pick.bbox), region: pick.boxes.map(cloneBox), count,
+    gaps: equalGaps(L, count, [t]), thickness: t, memberThicknesses: [t], memberVfIds: [], createdAt: Date.now(),
+    ...(pick.shape === 'box' ? { boxMode: true, boxFrac: boxFracOf(body, pick.bbox) } : {}),
     ...extra,
   };
   const sol = solveFromStore(group) || fallbackSolution(group, group.gaps, count, pick.seed);
@@ -1325,18 +1377,13 @@ export async function relocatePanelGroup(groupId: string, pick: CavityPick): Pro
   const L = boxSpan(pick.bbox, axis);
   const gaps = axis === group.axis ? rescaleGaps(group.gaps, L, group.count, ts) : equalGaps(L, group.count, ts);
   const patch: Partial<PanelGroup> = {
-    axis, facing, arrow, anchorFrac: fracInCavity(body, pick.seed, true), cavity: cloneBox(pick.bbox), region: pick.boxes.map(cloneBox), gaps, cavitySteps: undefined,
-    boxMode: pick.shape === 'box', boxFrac: pick.shape === 'box' ? { min: fracInCavity(body, pick.bbox.min), max: fracInCavity(body, pick.bbox.max) } : undefined,
+    axis, facing, arrow, anchorFrac: fracInCavity(body, pick.seed, true), cavity: cloneBox(pick.bbox), region: pick.boxes.map(cloneBox),
+    gaps, cavitySteps: undefined, boxMode: pick.shape === 'box', boxFrac: pick.shape === 'box' ? boxFracOf(body, pick.bbox) : undefined,
     doorBond: undefined,
   };
   const next: PanelGroup = { ...group, ...patch };
   const sol = solveFromStore(next) || fallbackSolution(next, gaps, group.count, pick.seed);
-  for (const vfId of group.memberVfIds) {
-    const vf = st.virtualFaces.find(f => f.id === vfId);
-    if (!vf) continue;
-    const p = interiorVfPatch(vf, next, sol);
-    if (p) st.updateVirtualFace(vf.id, p);
-  }
+  patchMemberVfs(st, group, next, sol);
   st.updatePanelGroup(groupId, { ...patch, gaps: sol.gaps });
   await requestRebuild(group.shapeId);
   return true;
@@ -1372,7 +1419,7 @@ export async function setGroupTargetGap(groupId: string, target: number | null):
   if (!group) return;
   const v = target != null && Number.isFinite(target) && target > 0 ? r1(target) : undefined;
   useAppStore.getState().updatePanelGroup(groupId, { targetGap: v });
-  if (v == null) { return; }
+  if (v == null) return;
   const n = countForTargetGap(group, boxSpan(group.cavity, group.axis), v);
   if (n !== group.count) await setGroupCount(groupId, n, { keepTargetGap: true });
   else await equalizeGroupGaps(groupId, { keepTargetGap: true });
@@ -1412,14 +1459,13 @@ function writeGroupGaps(group: PanelGroup, gaps: GapSpec[], extra: Partial<Panel
   const st = useAppStore.getState();
   const next = { ...group, ...extra, gaps };
   const sol = solveFromStore(next) || fallbackSolution(next, gaps, group.count, anchorPoint(group, group.cavity));
-  for (const vfId of group.memberVfIds) {
-    const vf = st.virtualFaces.find(f => f.id === vfId);
-    if (!vf) continue;
-    const patch = interiorVfPatch(vf, next, sol);
-    if (patch) st.updateVirtualFace(vf.id, patch);
-  }
+  patchMemberVfs(st, group, next, sol);
   st.updatePanelGroup(group.id, { ...extra, gaps: sol.gaps });
 }
+
+/** Üye kalınlığı sınırı: en az 1 mm, diğer üyeler ve her boşluğa 1 mm kalacak kadar. */
+const clampMemberThickness = (group: PanelGroup, ts: number[], i: number, value: number, L: number) =>
+  r1(Math.max(1, Math.min(value, Math.max(1, L - (sumT(ts) - ts[i]) - group.count - 1))));
 
 /** Üye kalınlığı; panelin `panelThickness`ı da yazılmalı (motor ve damga/şerit sınıfı onu okur). */
 export async function setGroupMemberThickness(groupId: string, i: number, value: number): Promise<void> {
@@ -1427,17 +1473,15 @@ export async function setGroupMemberThickness(groupId: string, i: number, value:
   if (!group || i < 0 || i >= group.count || !Number.isFinite(value)) return;
   const L = boxSpan(group.cavity, group.axis);
   const ts = memberThicknessesOf(group);
-  const others = sumT(ts) - ts[i];
-  const v = r1(Math.max(1, Math.min(value, Math.max(1, L - others - group.count - 1))));
+  const v = clampMemberThickness(group, ts, i, value, L);
   // Önizleme kalınlığı gruba zaten yazdı: onay yalnız panel parametresi de aynıysa atlanır.
   const panelNow = panelOfVf(group.memberVfIds[i], useAppStore.getState().shapes);
-  if (Math.abs(v - ts[i]) < 0.05 && Math.abs((parseFloat(panelNow?.parameters?.panelThickness) || ts[i]) - v) < 0.05) { groupEditBase = null; return; }
+  const panelT = parseFloat(panelNow?.parameters?.panelThickness) || ts[i];
+  if (Math.abs(v - ts[i]) < 0.05 && Math.abs(panelT - v) < 0.05) { groupEditBase = null; return; }
   ts[i] = v;
   const gaps = rescaleGaps(group.gaps, L, group.count, ts);
   writeGroupGaps(group, gaps, { memberThicknesses: ts });
-  const st = useAppStore.getState();
-  const panel = panelOfVf(group.memberVfIds[i], st.shapes);
-  if (panel) st.updateShape(panel.id, { parameters: { ...panel.parameters, panelThickness: v, depth: v } } as any);
+  setMemberPanelThickness([group.memberVfIds[i]], v);
   await requestRebuild(group.shapeId);
 }
 
@@ -1445,7 +1489,11 @@ export async function setGroupMemberThickness(groupId: string, i: number, value:
 export interface GroupLayoutSnap { gaps: GapSpec[]; memberThicknesses?: number[]; targetGap?: number }
 /** Oran tabanı: düzenleme başındaki boşluklar (önizleme oranları kaymasın). */
 let groupEditBase: { groupId: string; count: number; gaps: GapSpec[] } | null = null;
-const editBaseOf = (group: PanelGroup) => (groupEditBase?.groupId === group.id && groupEditBase.count === group.count ? groupEditBase.gaps : undefined);
+const editBaseOf = (group: PanelGroup) =>
+  (groupEditBase?.groupId === group.id && groupEditBase.count === group.count ? groupEditBase.gaps : undefined);
+/** k. boşluk girilince yeni boşluklar (oran tabanı = düzenleme başı). */
+const editedGaps = (group: PanelGroup, k: number, value: number) =>
+  applyGapEditProportional(group.gaps, k, value, boxSpan(group.cavity, group.axis), group.count, memberThicknessesOf(group), { base: editBaseOf(group) });
 export function groupLayoutSnapshot(groupId: string): GroupLayoutSnap | null {
   const g = groupById(groupId);
   groupEditBase = g ? { groupId, count: g.count, gaps: g.gaps.map(x => ({ ...x })) } : null;
@@ -1454,33 +1502,32 @@ export function groupLayoutSnapshot(groupId: string): GroupLayoutSnap | null {
 export function restoreGroupLayout(groupId: string, snap: GroupLayoutSnap | null | undefined): void {
   groupEditBase = null;
   if (!snap || !groupById(groupId)) return;
-  useAppStore.getState().updatePanelGroup(groupId, { gaps: snap.gaps.map(x => ({ ...x })), memberThicknesses: snap.memberThicknesses?.slice(), targetGap: snap.targetGap });
+  const gaps = snap.gaps.map(x => ({ ...x }));
+  useAppStore.getState().updatePanelGroup(groupId, { gaps, memberThicknesses: snap.memberThicknesses?.slice(), targetGap: snap.targetGap });
 }
 export function previewGroupGap(groupId: string, k: number, value: number): void {
   const group = groupById(groupId);
   if (!group || !Number.isFinite(value) || value < 0) return;
   if (passiveGapIndex(group.gaps, group.count + 1) === k) return;
-  const gaps = applyGapEditProportional(group.gaps, k, value, boxSpan(group.cavity, group.axis), group.count, memberThicknessesOf(group), { base: editBaseOf(group) });
-  useAppStore.getState().updatePanelGroup(groupId, { gaps });
+  useAppStore.getState().updatePanelGroup(groupId, { gaps: editedGaps(group, k, value) });
 }
 export function previewGroupMemberThickness(groupId: string, i: number, value: number): void {
   const group = groupById(groupId);
   if (!group || i < 0 || i >= group.count || !Number.isFinite(value) || value <= 0) return;
   const L = boxSpan(group.cavity, group.axis);
   const ts = memberThicknessesOf(group);
-  const others = sumT(ts) - ts[i];
-  ts[i] = r1(Math.max(1, Math.min(value, Math.max(1, L - others - group.count - 1))));
+  ts[i] = clampMemberThickness(group, ts, i, value, L);
   useAppStore.getState().updatePanelGroup(groupId, { memberThicknesses: ts, gaps: rescaleGaps(group.gaps, L, group.count, ts) });
 }
 
-/** Elle boşluk girişi hedef aralığı kapatır; pasif boşluk girilemez. */
+/** Elle boşluk girişi hedef aralığı kapatır; pasif boşluk (kalanı toplar) girilemez. */
 export async function editGroupGap(groupId: string, k: number, value: number): Promise<void> {
   const group = groupById(groupId);
   if (!group || !Number.isFinite(value)) return;
-  if (passiveGapIndex(group.gaps, group.count + 1) === k) { console.warn('[YAGO][GRUP-KATSAYI] boşluk', k + 1, 'pasif (diğerleri pinli/kilitli, kalanı toplar) — giriş yok sayıldı', groupId); groupEditBase = null; return; }
-  const gaps = applyGapEditProportional(group.gaps, k, value, boxSpan(group.cavity, group.axis), group.count, memberThicknessesOf(group), { base: editBaseOf(group) });
+  if (passiveGapIndex(group.gaps, group.count + 1) === k) { groupEditBase = null; return; }
+  const gaps = editedGaps(group, k, value);
   // Derze bağlı üyenin yan boşluğu girilince LEVHA değil KAPAK DERZİ taşınır (levha rebuild'de derzi izler).
-  // Derz taşınamıyorsa girilen değer kazanır: bağ çözülür.
+  // Derz taşınamıyorsa girilen değer kazanır: bağ çözülür (levha kapağı artık izlemez).
   let extra: Partial<PanelGroup> = group.targetGap != null ? { targetGap: undefined } : {};
   if (group.doorBond) {
     const m = Math.min(Math.max(0, group.doorBond.member ?? 0), group.count - 1);
@@ -1491,10 +1538,8 @@ export async function editGroupGap(groupId: string, k: number, value: number): P
       if (bj && bj.axis === group.axis) {
         const ts = memberThicknessesOf(group);
         const s = panelStarts(group.cavity, group.axis, groupFacing(group), gaps, ts)[m];
-        const a0 = s, a1 = s + ts[m], g = bj.p1 - bj.p0;
-        const center = group.doorBond.align === 'center' ? (a0 + a1) / 2 : group.doorBond.align === 'min' ? a1 + g / 2 : a0 - g / 2;
+        const center = jointCenter(s, s + ts[m], bj.p1 - bj.p0, group.doorBond.align);
         if (await moveDoorJointTo(group.doorBond.doorGroupId, group.doorBond.splitId, group.doorBond.k, center)) return;
-        console.warn('[YAGO][GRUP-KAPAK-BAĞ] kapak derzi taşınamadı → bağ çözüldü, girilen boşluk uygulanıyor (levha kapağı artık izlemez):', groupId);
         extra = { ...extra, doorBond: undefined };
       }
     }
@@ -1518,7 +1563,13 @@ async function commitCavitySteps(group: PanelGroup, steps: CavityStep[]): Promis
   await requestRebuild(group.shapeId);
 }
 
-const axisNormal = (n: Vec3): Vec3 => { const a = [Math.abs(n[0]), Math.abs(n[1]), Math.abs(n[2])]; const i = a.indexOf(Math.max(...a)); const o: Vec3 = [0, 0, 0]; o[i] = n[i] >= 0 ? 1 : -1; return o; };
+/** Baskın eksene yuvarlanmış birim normal. */
+function axisNormal(n: Vec3): Vec3 {
+  const i = maxAbsAxis(n), o: Vec3 = [0, 0, 0];
+  o[i] = n[i] >= 0 ? 1 : -1;
+  return o;
+}
+const axisLabelOf = (n: Vec3) => dominantAxisLabel({ x: n[0], y: n[1], z: n[2] });
 
 function stepAnchorFrac(group: PanelGroup, anchor?: Vec3 | null): Vec3 | undefined {
   if (!anchor) return undefined;
@@ -1538,7 +1589,9 @@ export async function executeCavityExtrude(groupId: string, faceNormal: Vec3, va
   const group = groupById(groupId);
   if (!group || !Number.isFinite(value)) return false;
   const n = axisNormal(faceNormal);
-  const step: CavityStep = { id: genId('cav'), faceNormal: n, axisLabel: dominantAxisLabel({ x: n[0], y: n[1], z: n[2] }), value, isFixed, timestamp: Date.now(), anchorFrac: stepAnchorFrac(group, anchor) };
+  const step: CavityStep = {
+    id: genId('cav'), faceNormal: n, axisLabel: axisLabelOf(n), value, isFixed, timestamp: Date.now(), anchorFrac: stepAnchorFrac(group, anchor),
+  };
   const existing = group.cavitySteps || [];
   const next = upsertCavityStepAt(existing, step);
   if (!isFixed && Math.abs(value) < 0.01 && next.length === existing.length + 1) return false;
@@ -1551,8 +1604,9 @@ export async function executeCavityExtrudeToReference(groupId: string, faceNorma
   if (!group) return false;
   const n = axisNormal(faceNormal);
   const step: CavityStep = {
-    id: genId('cav'), faceNormal: n, axisLabel: dominantAxisLabel({ x: n[0], y: n[1], z: n[2] }), value: 0, isFixed: true, timestamp: Date.now(),
-    refShapeId: ref.panelId, refFaceGroupIndex: ref.faceGroupIndex, refNormalWorld: ref.normalWorld, refPointWorld: ref.pointWorld, anchorFrac: stepAnchorFrac(group, anchor),
+    id: genId('cav'), faceNormal: n, axisLabel: axisLabelOf(n), value: 0, isFixed: true, timestamp: Date.now(),
+    refShapeId: ref.panelId, refFaceGroupIndex: ref.faceGroupIndex, refNormalWorld: ref.normalWorld, refPointWorld: ref.pointWorld,
+    anchorFrac: stepAnchorFrac(group, anchor),
   };
   await commitCavitySteps(group, upsertCavityStepAt(group.cavitySteps || [], step));
   return true;
@@ -1580,12 +1634,12 @@ export function deleteCavityStep(groupId: string, stepId: string): Promise<void>
   return commitCavitySteps(group, (group.cavitySteps || []).filter(s => s.id !== stepId));
 }
 
-/** Rozet: açık → pin → kilitli (GapMode); değer değişmez → rebuild yok. */
+/** Rozet: açık → pin → kilitli (GapMode); değer değişmez → rebuild yok. Son açık boşluk (pasif) pinlenemez / kilitlenemez. */
 export function toggleGroupGapLock(groupId: string, k: number): void {
   const group = groupById(groupId);
   if (!group || k < 0 || k >= group.gaps.length) return;
   const gaps = cycleGapMode(group.gaps, k, group.count + 1);
-  if (!gaps) { console.warn('[YAGO][GRUP-KATSAYI] son açık boşluk pinlenemez/kilitlenemez (pasif, kalanı toplar):', groupId, 'k=', k); return; }
+  if (!gaps) return;
   useAppStore.getState().updatePanelGroup(groupId, { gaps });
 }
 
@@ -1602,8 +1656,7 @@ export function renamePanelGroup(groupId: string, name: string): void {
   const group = groupById(groupId);
   if (!group) return;
   useAppStore.getState().updatePanelGroup(groupId, { name });
-  const ids = new Set(group.memberVfIds);
-  useAppStore.setState(s => ({ virtualFaces: s.virtualFaces.map(f => (ids.has(f.id) ? { ...f, description: name } : f)) }));
+  renameMemberVfs(group.memberVfIds, name);
 }
 
 export function deletePanelGroupWithMembers(groupId: string): void {
@@ -1621,25 +1674,29 @@ export function syncPanelGroups(parentShapeId: string): void {
   if (!parent) return;
   const mine = st.panelGroups.filter(g => g.shapeId === parentShapeId);
   for (const g of mine) {
-    if (g.doorBond && !doorJointForBond(g.doorBond, parent, st.shapes)) { st.updatePanelGroup(g.id, { doorBond: undefined }); console.warn('[YAGO][GRUP-KAPAK-BAĞ] kapak derzi yok, bağ düştü:', g.id, g.doorBond); }
+    // Kapak derzi kalmadıysa bağ düşer.
+    if (g.doorBond && !doorJointForBond(g.doorBond, parent, st.shapes)) st.updatePanelGroup(g.id, { doorBond: undefined });
     const sol = solveGroup(g, parent, st.shapes, st.panelGroups);
     if (!sol) continue;
     const sameBox = boxKey(sol.cavity) === boxKey(g.cavity);
     const sameRegion = boxesKey(sol.region) === boxesKey(g.region || []);
-    const sameGaps = sol.gaps.length === g.gaps.length && sol.gaps.every((x, i) => Math.abs(x.value - g.gaps[i].value) < 0.05 && x.locked === g.gaps[i].locked);
+    const sameGap = (x: GapSpec, i: number) => Math.abs(x.value - g.gaps[i].value) < 0.05 && x.locked === g.gaps[i].locked;
+    const sameGaps = sol.gaps.length === g.gaps.length && sol.gaps.every(sameGap);
+    // Referanslı hacim adımlarının çözülen değeri adıma yazılır.
     const rv = sol.cavityResolved || [];
-    const stepsPatch = rv.length && g.cavitySteps ? g.cavitySteps.map(cs => { const r = rv.find(x => x.id === cs.id); return r && Math.abs((cs.resolvedValue ?? NaN) - r.value) > 0.05 ? { ...cs, resolvedValue: r.value } : cs; }) : null;
+    const withResolved = (cs: CavityStep) => {
+      const r = rv.find(x => x.id === cs.id);
+      return r && Math.abs((cs.resolvedValue ?? NaN) - r.value) > 0.05 ? { ...cs, resolvedValue: r.value } : cs;
+    };
+    const stepsPatch = rv.length && g.cavitySteps ? g.cavitySteps.map(withResolved) : null;
     const stepsChanged = !!stepsPatch && stepsPatch.some((cs, i) => cs !== g.cavitySteps![i]);
     if (!(sameBox && sameRegion && sameGaps && !stepsChanged)) {
       st.updatePanelGroup(g.id, { cavity: sol.cavity, region: sol.region, gaps: sol.gaps, ...(stepsChanged ? { cavitySteps: stepsPatch! } : {}) });
     }
     // Adet farkı yeni rebuild tetikler; o rebuild aynı n'i verir → döngü durur.
     if (g.targetGap != null && g.targetGap > 0) {
-      const L = boxSpan(sol.cavity, g.axis);
-      const n = countForTargetGap(g, L, g.targetGap);
-      if (n !== g.count) {
-        void setGroupCount(g.id, n, { keepTargetGap: true });
-      }
+      const n = countForTargetGap(g, boxSpan(sol.cavity, g.axis), g.targetGap);
+      if (n !== g.count) void setGroupCount(g.id, n, { keepTargetGap: true });
     }
   }
 }

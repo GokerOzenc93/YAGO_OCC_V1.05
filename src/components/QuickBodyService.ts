@@ -12,8 +12,8 @@ import {
   childPanelsOf, panelOfVf, requestRebuild, shapeById, useAppStore,
 } from '../store';
 import {
-  type CoplanarFaceGroup, type FaceData, type Vec3, convertReplicadToThreeGeometry, createFaceDescriptor, createPanelFromVirtualFace,
-  effectiveBodyGeometry, genId, getFacesAndGroups, getShapeMatrix, localBboxOf,
+  type CoplanarFaceGroup, type FaceData, type Vec3, axisDirToVec, convertReplicadToThreeGeometry, createFaceDescriptor, createPanelFromVirtualFace,
+  effectiveBodyGeometry, fromPlaneUV, genId, getFacesAndGroups, getShapeMatrix, localBboxOf, vec3,
 } from './Geometry';
 import { computeFaceComponentContour, computeFreeRegionLocal } from './FaceRegion';
 import type { ExtrudeStep, MoveTransformStep } from './PanelOps';
@@ -23,7 +23,9 @@ import { BACK_AXIS, BACK_SIDE, backCandidatesAt, backPreviewStamp, createBackGro
 export type QuickPanelKey = 'top' | 'left' | 'right' | 'bottom';
 export const QUICK_PANEL_NAME: Record<QuickPanelKey, string> = { top: 'Top', left: 'Left', right: 'Right', bottom: 'Bottom' };
 /** Köşe → (yatay panel, yan panel). */
-const CORNER_PANELS: Record<CornerKey, [QuickPanelKey, QuickPanelKey]> = { tl: ['top', 'left'], tr: ['top', 'right'], bl: ['bottom', 'left'], br: ['bottom', 'right'] };
+const CORNER_PANELS: Record<CornerKey, [QuickPanelKey, QuickPanelKey]> = {
+  tl: ['top', 'left'], tr: ['top', 'right'], bl: ['bottom', 'left'], br: ['bottom', 'right'],
+};
 /** Çevrimde ve eşitlikte tercih: yanlar önce (yanlar geçer). */
 const PREFERRED: QuickPanelKey[] = ['left', 'right', 'top', 'bottom'];
 
@@ -76,16 +78,22 @@ export function setBodyLegs(shapeId: string, patch: Partial<BodyLegs> | null): v
   const st = useAppStore.getState();
   const body = shapeById(shapeId, st.shapes); if (!body) return;
   const next = { ...body.parameters };
-  if (patch === null) delete next.legs; else next.legs = { ...(bodyLegsOf(body) ?? { count: 4, diameter: 50, side: 60, front: 60, rear: 60, height: 100 }), ...patch };
+  const defaults: BodyLegs = { count: 4, diameter: 50, side: 60, front: 60, rear: 60, height: 100 };
+  if (patch === null) delete next.legs; else next.legs = { ...(bodyLegsOf(body) ?? defaults), ...patch };
   st.updateShape(shapeId, { parameters: next } as Partial<Shape>);
 }
 
 /* ───────── Yerel bölge → VF ───────── */
 interface FaceCtx { body: Shape; eff: THREE.BufferGeometry; faces: FaceData[]; groups: CoplanarFaceGroup[]; W2L: THREE.Matrix4; box: THREE.Box3 }
 
-function faceGroupFor(ctx: FaceCtx, n: Vec3, seed: THREE.Vector3): CoplanarFaceGroup | null {
+/** Normali `n` olan (dot > 0.999) yüz grupları. */
+const groupsFacing = (groups: CoplanarFaceGroup[], n: Vec3) => {
   const nv = new THREE.Vector3(...n);
-  const cands = ctx.groups.filter(g => g.normal.clone().normalize().dot(nv) > 0.999);
+  return groups.filter(g => g.normal.clone().normalize().dot(nv) > 0.999);
+};
+
+function faceGroupFor(ctx: FaceCtx, n: Vec3, seed: THREE.Vector3): CoplanarFaceGroup | null {
+  const cands = groupsFacing(ctx.groups, n);
   if (!cands.length) return null;
   // Çentikli gövdede aynı normalli birden çok yüz: tohuma en yakın merkezli ve en büyük alanlı
   return cands.sort((a, b) => a.center.distanceTo(seed) - b.center.distanceTo(seed) || b.totalArea - a.totalArea)[0];
@@ -97,16 +105,16 @@ function vfOnFace(ctx: FaceCtx, n: Vec3, seedLocal: THREE.Vector3, siblings: Sha
   const contour = computeFaceComponentContour(ctx.faces, group.faceIndices, seedLocal, group.normal); if (!contour) return null;
   const region = computeFreeRegionLocal(contour.corners, group.normal, seedLocal, siblings, ctx.W2L, ctx.body.id); if (!region) return null;
   const nrm = group.normal.clone().normalize();
-  const to3D = (px: number, py: number) => new THREE.Vector3().addScaledVector(region.u, px).addScaledVector(region.v, py).addScaledVector(nrm, region.planeN);
+  const to3D = (px: number, py: number) => fromPlaneUV(region.u, region.v, nrm, px, py, region.planeN);
   const anchor = to3D(region.anchor.x, region.anchor.y);
   return {
     id: genId('vf'), shapeId: ctx.body.id,
-    normal: [nrm.x, nrm.y, nrm.z], center: [seedLocal.x, seedLocal.y, seedLocal.z],
-    vertices: region.polygon.map(p => { const c = to3D(p.x, p.y); return [c.x, c.y, c.z] as Vec3; }),
+    normal: vec3(nrm), center: vec3(seedLocal),
+    vertices: region.polygon.map(p => vec3(to3D(p.x, p.y))),
     description: name, hasPanel: true, parentFaceShape: true, touchingSiblingIds: region.touchingSiblingIds, sideRelations: region.sideRelations,
     faceGroupDescriptor: createFaceDescriptor(ctx.faces[contour.seedFi], ctx.eff),
     doorBound: true, backBound: true,
-    ...({ regionAnchor: [anchor.x, anchor.y, anchor.z] } as Record<string, unknown>),
+    ...({ regionAnchor: vec3(anchor) } as Record<string, unknown>),
   };
 }
 
@@ -117,22 +125,25 @@ async function slabOf(verts: Vec3[], normal: Vec3, t: number): Promise<{ rp: unk
 }
 
 function panelShape(body: Shape, vf: VirtualFace, vfIndex: number, geo: THREE.BufferGeometry, rp: unknown, t: number, extra: Record<string, unknown>): Shape {
-  const bb = localBboxOf(geo)!; const size = new THREE.Vector3(); bb.getSize(size);
+  const size = localBboxOf(geo)!.getSize(new THREE.Vector3());
   const s = [size.x, size.y, size.z]; const [def, alt] = [0, 1, 2].sort((a, b) => s[a] - s[b]).slice(1).sort((a, b) => a - b);
   return {
-    id: genId('panel-vf'), type: 'panel', position: [...body.position] as Vec3, rotation: body.rotation, scale: [...body.scale] as Vec3, color: '#ffffff',
-    geometry: geo, replicadShape: rp,
-    parameters: { width: s[def], height: s[alt], depth: t, parentShapeId: body.id, faceIndex: -(vfIndex + 1), virtualFaceId: vf.id, arrowRotated: false, panelThickness: t, ...extra },
+    id: genId('panel-vf'), type: 'panel', position: [...body.position] as Vec3, rotation: body.rotation, scale: [...body.scale] as Vec3,
+    color: '#ffffff', geometry: geo, replicadShape: rp,
+    parameters: {
+      width: s[def], height: s[alt], depth: t, parentShapeId: body.id, faceIndex: -(vfIndex + 1), virtualFaceId: vf.id, arrowRotated: false,
+      panelThickness: t, ...extra,
+    },
   } as Shape;
 }
 
-const moveStep = (axis: MoveTransformStep['axis'], value: number, ts: number): MoveTransformStep => ({ id: `step-${ts}`, type: 'move', axis, value, timestamp: ts });
+const moveStep = (axis: MoveTransformStep['axis'], value: number, ts: number): MoveTransformStep =>
+  ({ id: `step-${ts}`, type: 'move', axis, value, timestamp: ts });
 /** Panelin kendi geometrisinde `label` yönündeki dış yüzünden `value` (dyn; − = kısalt). */
 function extrudeStepFor(geo: THREE.BufferGeometry, n: Vec3, label: string, value: number, ts: number): ExtrudeStep | null {
-  const nv = new THREE.Vector3(...n);
-  const g = getFacesAndGroups(geo).groups.filter(x => x.normal.clone().normalize().dot(nv) > 0.999).sort((a, b) => b.totalArea - a.totalArea)[0];
+  const g = groupsFacing(getFacesAndGroups(geo).groups, n).sort((a, b) => b.totalArea - a.totalArea)[0];
   if (!g) return null;
-  return { id: genId('ext'), faceNormal: n, faceCenter: [g.center.x, g.center.y, g.center.z], axisLabel: label, value, isFixed: false, timestamp: ts };
+  return { id: genId('ext'), faceNormal: n, faceCenter: vec3(g.center), axisLabel: label, value, isFixed: false, timestamp: ts };
 }
 
 /* ───────── Ana akış ───────── */
@@ -194,7 +205,7 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
     // Sonraki bölgeler için VEKİL: taşınmış / kısaltılmış hâli (motorun üreteceği sonuç)
     let proxyGeo = slab.geo;
     if (opts.proxyVerts) { const p = await slabOf(opts.proxyVerts(vf.vertices), vf.normal, t); if (p) proxyGeo = p.geo; }
-    if (opts.move) { const d = new THREE.Vector3(); d.setComponent(opts.move[0][0] === 'x' ? 0 : opts.move[0][0] === 'y' ? 1 : 2, opts.move[0][1] === '+' ? opts.move[1] : -opts.move[1]); proxyGeo = proxyGeo.clone().translate(d.x, d.y, d.z); }
+    if (opts.move) { const d = axisDirToVec(opts.move[0]).multiplyScalar(opts.move[1]); proxyGeo = proxyGeo.clone().translate(d.x, d.y, d.z); }
     siblings.push({ ...shape, geometry: proxyGeo });
     return true;
   };
@@ -218,8 +229,11 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
 
   if (cfg.base === 'plinth' && lift > 0) {
     // Ön baza: alt panelin altında kalan ön yüz şeridi; sonra setback kadar geri (−Z). Kapak/arkalık sınırı DEĞİL.
-    await push('plinth', [0, 0, 1], new THREE.Vector3((x0 + x1) / 2, y0 + lift / 2, z1), 'Plinth', { move: ['z-', Math.max(0, cfg.plinth.front)], bound: false });
-    if (cfg.plinth.rearPlinth) await push('rearPlinth', [0, 0, -1], new THREE.Vector3((x0 + x1) / 2, y0 + lift / 2, z0), 'Rear plinth', { move: ['z+', Math.max(0, cfg.plinth.rear)], bound: false });
+    const xm = (x0 + x1) / 2, ym = y0 + lift / 2;
+    await push('plinth', [0, 0, 1], new THREE.Vector3(xm, ym, z1), 'Plinth', { move: ['z-', Math.max(0, cfg.plinth.front)], bound: false });
+    if (cfg.plinth.rearPlinth) {
+      await push('rearPlinth', [0, 0, -1], new THREE.Vector3(xm, ym, z0), 'Rear plinth', { move: ['z+', Math.max(0, cfg.plinth.rear)], bound: false });
+    }
   }
 
   if (!newVfs.length) return { panelCount: 0, backCreated: false, cyclic, warnings };
@@ -228,7 +242,8 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
   useAppStore.setState(s => ({ virtualFaces: [...s.virtualFaces, ...newVfs], shapes: [...s.shapes, ...newShapes] }));
   // Ayaklar: ayaklı tabanda zorunlu, bazalıda isteğe bağlı (count 0 = yok)
   const legCount = cfg.base === 'legs' ? (cfg.legs.count || 4) : cfg.base === 'plinth' ? cfg.legs.count : 0;
-  if (legCount) setBodyLegs(body.id, { count: legCount as 4 | 5 | 6, diameter: cfg.legs.diameter, side: cfg.legs.side, front: cfg.legs.front, rear: cfg.legs.rear, height: lift, bottomVfId });
+  const { diameter, side, front, rear } = cfg.legs;
+  if (legCount) setBodyLegs(body.id, { count: legCount as 4 | 5 | 6, diameter, side, front, rear, height: lift, bottomVfId });
 
   await requestRebuild(body.id);
   const { whenRebuildIdle } = await import('./PanelEngine');

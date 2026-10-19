@@ -66,11 +66,11 @@ export interface VirtualFace {
   /** Arkalık üyesi (interior=true; geometriyi BackService yazar). */
   backGroupId?: string;
   backIndex?: number;
-  /** ÜST ÜSTE PANEL (Goker, 18 Eki 2026 — "seçili panelin önüne panel"): VF gövde yüzünün `stackDepth` mm İÇİNDEKİ düzlemdedir
-   *  (altındaki panelin iç yüzü); `stackBaseVfId` altındaki panel — bölge çözümünde yok sayılır, diğer kardeşler o düzlemde damgalar. */
+  /** ÜST ÜSTE PANEL: VF düzlemi gövde yüzünün `stackDepth` mm İÇİNDEDİR (alttaki panelin iç yüzü);
+   *  `stackBaseVfId` = alttaki panel — bölge çözümünde yok sayılır, diğer kardeşler o düzlemde damgalar. */
   stackDepth?: number;
   stackBaseVfId?: string;
-  /** Taban panel EĞİMLİ/dönmüşse: VF düzlemi tabanın iç BÜYÜK yüzüdür (gövde yüzü değil); regen konturu tabanın güncel geometrisinden okur. */
+  /** Taban EĞİMLİ/dönmüşse VF düzlemi tabanın iç BÜYÜK yüzüdür; regen konturu tabanın güncel geometrisinden okur. */
   stackOnPanel?: boolean;
 }
 
@@ -127,7 +127,7 @@ export interface DoorGroup {
   /** YARIM BİNME: işaretli kenarda kapak sınır panelinin kalınlık ORTASINA kadar gider, kalan yeniden EŞİT bölünür.
    *  Yalnız dış kapakta ve kenar paneli kapağın gerisindeyken etkilidir. */
   halfOverlay?: { uMin?: boolean; uMax?: boolean; vMin?: boolean; vMax?: boolean };
-  /** HİÇ BİNMEME: işaretli kenarda kapak sınır panelinin İÇ yüzünde biter (panel kalınlığını örtmez). halfOverlay ile birlikte işaretlenmez. */
+  /** HİÇ BİNMEME: işaretli kenarda kapak sınır panelinin İÇ yüzünde biter; halfOverlay ile birlikte işaretlenmez. */
   noOverlay?: { uMin?: boolean; uMax?: boolean; vMin?: boolean; vMax?: boolean };
   /** ÇIPA (u,v): dönmüş sınır panelinde kapak alanı çıpanın tarafına kırpılır (rectByCuts). Yoksa merkez. */
   anchor?: [number, number];
@@ -151,7 +151,8 @@ export interface DoorLeafSplit { leaves: GapSpec[]; gap: number }
 // ARKALIK (BackService) — kapaktan bağımsız veri modeli. Sınır = VF.backBound; üye = VF.backGroupId.
 //  placement 'outer' = arkadan ÇAKMA: sınır panellerinin arka yüzüne, hacmin DIŞINA (panel kalınlığını örter, bini kadar);
 //  'inner' = KANALLI: panellerin arasına, arka yüzden `setback` kadar içerde; her KENARIN ilişkisi ayrı (BackEdgeRel):
-//  'groove' → panel tam boy, parça `inset` kadar kanala girer; 'nail' → panel arkalığın ÖN yüzüne kadar kısalır, parça ucunu `cover` kadar örter.
+//  'groove' → panel tam boy, parça `inset` kadar kanala girer;
+//  'nail' → panel arkalığın ÖN yüzüne kadar kısalır, parça ucunu `cover` kadar örter.
 //  Tip / setback / inset / bini PARÇA BAŞINA (BackNode leaf); kenar ilişkisi GRUP BAŞINA (kenar = o sınır paneliyle derz).
 export type BackPlacement = 'outer' | 'inner';
 /** Kenar ilişkisi (yalnız kanallı/iç parçada anlamlı): kanallı (panel tam boy) ya da çakma (panel arkalığın ön yüzünde biter). */
@@ -178,7 +179,7 @@ export type BackNode =
     placement?: BackPlacement; setback?: number;
     /** Kanallı: kenar başına kanala giriş (mm ≥ 0). Yalnız grup dikdörtgeninin o kenarına değen parçada anlamlı. */
     inset?: Partial<BackEdgeGaps>;
-    /** Çakma: kenar başına sınır panelinin ÜZERİNE BİNME (mm, 0 = iç yüzünde biter … panel kalınlığı = tamamen örter; yoksa tamamen örter). */
+    /** Çakma: kenar başına sınır panelinin ÜZERİNE BİNME (mm; 0 = iç yüzünde biter, kalınlık/yok = tamamen örter). */
     cover?: Partial<BackEdgeGaps>;
     /** İÇ LEVHAYA BİNME (dikme/raf, levhaya bağlı derzde): parçanın o kenarda levhanın üzerine ne kadar bindiği (mm, 0..levha kalınlığı).
      *  Çakma ve kanallı parçada aynı anlam; yoksa levhanın ortası (kalınlık / 2). İki yandaki parçalar ayrı değer taşır. */
@@ -289,7 +290,7 @@ export interface PanelGroup {
 }
 
 /* ───────── HIZLI GÖVDE (QuickBodyService) ───────── */
-/** Taban tipi: düz (yere oturur) / ayaklı (küp toplam yükseklik; paneller ayak kadar yukarıda) / bazalı (yanlar yere iner, alt panel baza kadar yukarıda). */
+/** Taban tipi: düz (yere oturur) / ayaklı (paneller ayak kadar yukarıda) / bazalı (yanlar yere iner, alt panel baza kadar yukarıda). */
 export type QuickBodyBase = 'plain' | 'legs' | 'plinth';
 /** Köşe birleşimi: 'side' = yan panel köşeden geçer (üst/alt arada), 'horiz' = üst/alt panel geçer (yan arada). */
 export type JoinPass = 'side' | 'horiz';
@@ -306,7 +307,10 @@ export interface QuickBodyConfig {
   plinth: { height: number; front: number; rear: number; rearPlinth: boolean };
   /** Ayaklar: bazalıda isteğe bağlı (count 0 = yok); ayaklı tabanda zorunlu. */
   legs: { count: 0 | 4 | 5 | 6; height: number; diameter: number; side: number; front: number; rear: number };
-  back: { enabled: boolean; placement: BackPlacement; thickness: number; setback: number; inset: number; clear: { front: number; back: number; depth: number } };
+  back: {
+    enabled: boolean; placement: BackPlacement; thickness: number; setback: number; inset: number;
+    clear: { front: number; back: number; depth: number };
+  };
 }
 export const DEFAULT_QUICK_BODY: QuickBodyConfig = {
   base: 'plinth', thickness: 18,
@@ -343,7 +347,10 @@ export enum Tool {
   RECTANGLE = 'Rectangle', CIRCLE = 'Circle', DIMENSION = 'Dimension',
 }
 export enum ViewMode { WIREFRAME = 'wireframe', SOLID = 'solid', XRAY = 'xray' }
-export enum SnapType { ENDPOINT = 'endpoint', MIDPOINT = 'midpoint', CENTER = 'center', PERPENDICULAR = 'perpendicular', INTERSECTION = 'intersection', NEAREST = 'nearest' }
+export enum SnapType {
+  ENDPOINT = 'endpoint', MIDPOINT = 'midpoint', CENTER = 'center',
+  PERPENDICULAR = 'perpendicular', INTERSECTION = 'intersection', NEAREST = 'nearest',
+}
 export enum OrthoMode { ON = 'on', OFF = 'off' }
 
 export type RefFacePick = { panelId: string; faceGroupIndex: number; normalWorld: Vec3; pointWorld: Vec3 };
@@ -507,34 +514,47 @@ export const vfOfPanel = (panel: Shape | undefined, vfs: VirtualFace[] = useAppS
 export const requestRebuild = (parentId: string, opts?: { changedPanelId?: string; orderChanged?: boolean }): Promise<void> =>
   import('./components/PanelEngine').then(({ rebuildPanelsForParent }) => rebuildPanelsForParent(parentId, opts));
 
+type Xform = Pick<Shape, 'position' | 'rotation' | 'scale'>;
+/** Dönüşüm farkı: konum/dönüş eklenir, ölçek çarpılır (grup üyeleri ve sürüklenen gövdenin panelleri). */
+export type XformDelta = { pd: number[]; rd: number[]; sd: number[] };
+export const applyXformDelta = (b: Xform, d: XformDelta): Xform => ({
+  position: [b.position[0] + d.pd[0], b.position[1] + d.pd[1], b.position[2] + d.pd[2]],
+  rotation: [b.rotation[0] + d.rd[0], b.rotation[1] + d.rd[1], b.rotation[2] + d.rd[2]],
+  scale: [b.scale[0] * d.sd[0], b.scale[1] * d.sd[1], b.scale[2] * d.sd[2]],
+});
+const patchById = <T extends { id: string }>(list: T[], id: string, u: Partial<T>): T[] => list.map(x => (x.id === id ? { ...x, ...u } : x));
+/** Seçme/yerleştirme modları karşılıklı dışlayıcı: biri açılınca diğerleri adaylarıyla birlikte kapanır. */
+const pickModesOff = () => ({
+  raycastMode: false, raycastPendingVf: null, placementName: '', quickBodyMode: false,
+  volumePickMode: null, volumePickGroupId: null, volumePickCandidates: [], volumePickIndex: 0,
+  doorPickMode: false, doorPickCandidates: [], doorPickIndex: 0,
+  backPickMode: false, backPickCandidates: [], backPickIndex: 0,
+});
+/** Panel satırı / raf / kapak / arkalık seçimi karşılıklı dışlayıcı. */
+const NO_GROUP_SEL = { selectedPanelRow: null, selectedPanelGroupId: null, selectedDoorGroupId: null, selectedBackGroupId: null };
+
 export const useAppStore = create<AppState>((set, get) => ({
   shapes: [],
   addShape: (shape) => set((s) => ({ shapes: [...s.shapes, shape] })),
 
   // Gruplu şekilde konum/dönüş/ölçek değişimi grubun diğer üyelerine aynen uygulanır.
   updateShape: (id, updates) => set((state) => {
-    const sh = state.shapes.find(s => s.id === id);
+    const sh = shapeById(id, state.shapes);
     if (!sh) return {};
+    const moved = 'position' in updates || 'rotation' in updates || 'scale' in updates;
     const shapes = state.shapes.map((s): Shape => {
       if (s.id === id) return { ...s, ...updates };
-      if (sh.groupId && s.groupId === sh.groupId && ('position' in updates || 'rotation' in updates || 'scale' in updates)) {
-        const pd = updates.position ? [0, 1, 2].map(i => updates.position![i] - sh.position[i]) : [0, 0, 0];
-        const rd = updates.rotation ? [0, 1, 2].map(i => updates.rotation![i] - sh.rotation[i]) : [0, 0, 0];
-        const sd = updates.scale ? [0, 1, 2].map(i => updates.scale![i] / sh.scale[i]) : [1, 1, 1];
-        return {
-          ...s,
-          position: [s.position[0] + pd[0], s.position[1] + pd[1], s.position[2] + pd[2]],
-          rotation: [s.rotation[0] + rd[0], s.rotation[1] + rd[1], s.rotation[2] + rd[2]],
-          scale: [s.scale[0] * sd[0], s.scale[1] * sd[1], s.scale[2] * sd[2]],
-        };
-      }
-      return s;
+      if (!sh.groupId || s.groupId !== sh.groupId || !moved) return s;
+      const pd = updates.position ? [0, 1, 2].map(i => updates.position![i] - sh.position[i]) : [0, 0, 0];
+      const rd = updates.rotation ? [0, 1, 2].map(i => updates.rotation![i] - sh.rotation[i]) : [0, 0, 0];
+      const sd = updates.scale ? [0, 1, 2].map(i => updates.scale![i] / sh.scale[i]) : [1, 1, 1];
+      return { ...s, ...applyXformDelta(s, { pd, rd, sd }) };
     });
     return { shapes };
   }),
 
   deleteShape: (id) => set((state) => {
-    const all = new Set([id, ...state.shapes.filter(s => s.type === 'panel' && s.parameters?.parentShapeId === id).map(s => s.id)]);
+    const all = new Set([id, ...childPanelsOf(id, state.shapes).map(s => s.id)]);
     return {
       shapes: state.shapes.filter(s => !all.has(s.id)),
       // Gövdeyle birlikte raf/dikme, kapak ve arkalık grupları da gider (üye VF'leri gövdeye bağlıdır).
@@ -559,7 +579,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   createGroup: (primaryId, secondaryId) => {
     const gid = `group-${Date.now()}`;
     set((s) => ({
-      shapes: s.shapes.map(x => x.id === primaryId ? { ...x, groupId: gid } : x.id === secondaryId ? { ...x, groupId: gid, isReferenceBox: true } : x),
+      shapes: s.shapes.map(x => (x.id === primaryId ? { ...x, groupId: gid }
+        : x.id === secondaryId ? { ...x, groupId: gid, isReferenceBox: true } : x)),
     }));
   },
 
@@ -594,17 +615,17 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   /** Çıkarmayı siler: kalan çıkarmalar + filletlerle gövde baştan kurulur. */
   deleteSubtraction: async (shapeId, idx) => {
-    const sh = get().shapes.find(s => s.id === shapeId);
+    const sh = shapeById(shapeId, get().shapes);
     if (!sh || !sh.subtractionGeometries) return;
     const arr = [...sh.subtractionGeometries];
     arr[idx] = null;
     try {
       const r = await rebuildBodySolid(sh, arr);
       set((S) => ({
-        shapes: S.shapes.map(x => x.id === shapeId ? {
-          ...x, geometry: r.geometry, replicadShape: r.replicadShape, subtractionGeometries: arr, fillets: r.fillets, position: [...sh.position] as Vec3,
-          parameters: { ...x.parameters, scaledBaseVertices: r.scaledBaseVertices },
-        } : x),
+        shapes: S.shapes.map(x => (x.id !== shapeId ? x : {
+          ...x, geometry: r.geometry, replicadShape: r.replicadShape, subtractionGeometries: arr, fillets: r.fillets,
+          position: [...sh.position] as Vec3, parameters: { ...x.parameters, scaledBaseVertices: r.scaledBaseVertices },
+        })),
         selectedSubtractionIndex: null,
       }));
       try { await requestRebuild(shapeId); } catch (err) { console.error('rebuild after subtractor delete fail:', err); }
@@ -614,30 +635,24 @@ export const useAppStore = create<AppState>((set, get) => ({
   showOutlines: readOutlinePref(), setShowOutlines: (b) => { writeOutlinePref(b); set({ showOutlines: b }); },
   selectedPanelRow: null, selectedPanelRowParentId: null,
   // Tek panel seçimi grup seçimini düşürür (ikisi aynı anda olmaz).
-  setSelectedPanelRow: (i, parentId) => set({
-    selectedPanelRow: i, selectedPanelRowParentId: parentId || null,
-    ...(i !== null ? { selectedPanelGroupId: null, selectedDoorGroupId: null, selectedBackGroupId: null } : {}),
-  }),
+  setSelectedPanelRow: (i, parentId) => set({ ...(i !== null ? NO_GROUP_SEL : {}), selectedPanelRow: i, selectedPanelRowParentId: parentId || null }),
   panelSelectMode: false,
-  setPanelSelectMode: (b) => set({ panelSelectMode: b, selectedPanelRow: null, selectedPanelRowParentId: null, selectedPanelGroupId: null, selectedDoorGroupId: null, selectedBackGroupId: null }),
+  setPanelSelectMode: (b) => set({ ...NO_GROUP_SEL, panelSelectMode: b, selectedPanelRowParentId: null }),
   faceEditMode: false, setFaceEditMode: (b) => set({ faceEditMode: b }),
 
   panelGroups: [],
   addPanelGroup: (g) => set((s) => ({ panelGroups: [...s.panelGroups, g] })),
-  updatePanelGroup: (id, u) => set((s) => ({ panelGroups: s.panelGroups.map(g => (g.id === id ? { ...g, ...u } : g)) })),
+  updatePanelGroup: (id, u) => set((s) => ({ panelGroups: patchById(s.panelGroups, id, u) })),
   deletePanelGroup: (id) => set((s) => ({
     panelGroups: s.panelGroups.filter(g => g.id !== id),
     selectedPanelGroupId: s.selectedPanelGroupId === id ? null : s.selectedPanelGroupId,
   })),
   selectedPanelGroupId: null,
-  setSelectedPanelGroupId: (id) => set({
-    selectedPanelGroupId: id,
-    ...(id ? { selectedPanelRow: null, selectedDoorGroupId: null, selectedBackGroupId: null } : {}),
-  }),
+  setSelectedPanelGroupId: (id) => set({ ...(id ? NO_GROUP_SEL : {}), selectedPanelGroupId: id }),
   volumePickMode: null,
   setVolumePickMode: (m, groupId = null) => set({
+    ...(m ? pickModesOff() : {}),
     volumePickMode: m, volumePickGroupId: m ? groupId : null, volumePickCandidates: [], volumePickIndex: 0,
-    ...(m ? { raycastMode: false, raycastPendingVf: null, doorPickMode: false, doorPickCandidates: [], doorPickIndex: 0, backPickMode: false, backPickCandidates: [], backPickIndex: 0, quickBodyMode: false, placementName: '' } : {}),
   }),
   volumePickGroupId: null,
   volumePickCandidates: [], volumePickIndex: 0,
@@ -652,48 +667,39 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   doorGroups: [],
   addDoorGroup: (g) => set((s) => ({ doorGroups: [...s.doorGroups, g] })),
-  updateDoorGroup: (id, u) => set((s) => ({ doorGroups: s.doorGroups.map(g => (g.id === id ? { ...g, ...u } : g)) })),
+  updateDoorGroup: (id, u) => set((s) => ({ doorGroups: patchById(s.doorGroups, id, u) })),
   deleteDoorGroup: (id) => set((s) => ({
     doorGroups: s.doorGroups.filter(g => g.id !== id),
     selectedDoorGroupId: s.selectedDoorGroupId === id ? null : s.selectedDoorGroupId,
   })),
   selectedDoorGroupId: null,
-  setSelectedDoorGroupId: (id) => set({
-    selectedDoorGroupId: id,
-    ...(id ? { selectedPanelRow: null, selectedPanelGroupId: null, selectedBackGroupId: null } : {}),
-  }),
+  setSelectedDoorGroupId: (id) => set({ ...(id ? NO_GROUP_SEL : {}), selectedDoorGroupId: id }),
   doorRefPickGroupId: null,
   setDoorRefPickGroupId: (id) => set({ doorRefPickGroupId: id }),
   doorPickMode: false,
-  setDoorPickMode: (b) => set({
-    doorPickMode: b, doorPickCandidates: [], doorPickIndex: 0,
-    ...(b ? { raycastMode: false, raycastPendingVf: null, volumePickMode: null, volumePickGroupId: null, volumePickCandidates: [], volumePickIndex: 0, backPickMode: false, backPickCandidates: [], backPickIndex: 0, quickBodyMode: false, placementName: '' } : {}),
-  }),
+  setDoorPickMode: (b) => set({ ...(b ? pickModesOff() : {}), doorPickMode: b, doorPickCandidates: [], doorPickIndex: 0 }),
   doorPickCandidates: [], doorPickIndex: 0,
   setDoorPick: (c, i) => set({ doorPickCandidates: c, doorPickIndex: i }),
   doorPickPlacement: 'outer', setDoorPickPlacement: (p) => set({ doorPickPlacement: p }),
 
   backGroups: [],
   addBackGroup: (g) => set((s) => ({ backGroups: [...s.backGroups, g] })),
-  updateBackGroup: (id, u) => set((s) => ({ backGroups: s.backGroups.map(g => (g.id === id ? { ...g, ...u } : g)) })),
+  updateBackGroup: (id, u) => set((s) => ({ backGroups: patchById(s.backGroups, id, u) })),
   deleteBackGroup: (id) => set((s) => ({
     backGroups: s.backGroups.filter(g => g.id !== id),
     selectedBackGroupId: s.selectedBackGroupId === id ? null : s.selectedBackGroupId,
   })),
   selectedBackGroupId: null,
   backFocusVfIds: [],
-  setBackFocusVfIds: (ids) => set((s) => (s.backFocusVfIds.length === ids.length && s.backFocusVfIds.every((x, i) => x === ids[i]) ? {} : { backFocusVfIds: ids })),
-  setSelectedBackGroupId: (id) => set({
-    selectedBackGroupId: id,
-    ...(id ? { selectedPanelRow: null, selectedPanelGroupId: null, selectedDoorGroupId: null } : {}),
+  setBackFocusVfIds: (ids) => set((s) => {
+    const same = s.backFocusVfIds.length === ids.length && s.backFocusVfIds.every((x, i) => x === ids[i]);
+    return same ? {} : { backFocusVfIds: ids };
   }),
+  setSelectedBackGroupId: (id) => set({ ...(id ? NO_GROUP_SEL : {}), selectedBackGroupId: id }),
   backRefPickGroupId: null,
   setBackRefPickGroupId: (id) => set({ backRefPickGroupId: id }),
   backPickMode: false,
-  setBackPickMode: (b) => set({
-    backPickMode: b, backPickCandidates: [], backPickIndex: 0,
-    ...(b ? { raycastMode: false, raycastPendingVf: null, volumePickMode: null, volumePickGroupId: null, volumePickCandidates: [], volumePickIndex: 0, doorPickMode: false, doorPickCandidates: [], doorPickIndex: 0, quickBodyMode: false, placementName: '' } : {}),
-  }),
+  setBackPickMode: (b) => set({ ...(b ? pickModesOff() : {}), backPickMode: b, backPickCandidates: [], backPickIndex: 0 }),
   backPickCandidates: [], backPickIndex: 0,
   setBackPick: (c, i) => set({ backPickCandidates: c, backPickIndex: i }),
   backPickPlacement: 'outer', setBackPickPlacement: (p) => set({ backPickPlacement: p }),
@@ -707,19 +713,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   clearFilletFaceData: () => set({ selectedFilletFaceData: [] }),
 
   quickBodyMode: false,
-  setQuickBodyMode: (b) => set({
-    quickBodyMode: b,
-    ...(b ? { placementName: '', raycastMode: false, raycastPendingVf: null, volumePickMode: null, volumePickGroupId: null, volumePickCandidates: [], volumePickIndex: 0, doorPickMode: false, doorPickCandidates: [], doorPickIndex: 0, backPickMode: false, backPickCandidates: [], backPickIndex: 0 } : {}),
-  }),
+  setQuickBodyMode: (b) => set({ ...(b ? pickModesOff() : {}), quickBodyMode: b }),
   quickBodyConfig: DEFAULT_QUICK_BODY,
   setQuickBodyConfig: (patch) => set((s) => ({ quickBodyConfig: { ...s.quickBodyConfig, ...patch } })),
   quickBodyBusy: false, setQuickBodyBusy: (b) => set({ quickBodyBusy: b }),
 
   raycastMode: false,
-  setRaycastMode: (b) => set({
-    raycastMode: b, raycastPendingVf: null,
-    ...(b ? { placementName: '', volumePickMode: null, volumePickGroupId: null, volumePickCandidates: [], volumePickIndex: 0, doorPickMode: false, doorPickCandidates: [], doorPickIndex: 0, backPickMode: false, backPickCandidates: [], backPickIndex: 0, quickBodyMode: false } : {}),
-  }),
+  setRaycastMode: (b) => set({ ...(b ? pickModesOff() : {}), raycastMode: b, raycastPendingVf: null }),
   raycastPendingVf: null, setRaycastPendingVf: (v) => set({ raycastPendingVf: v }),
   placementName: '', setPlacementName: (s) => set({ placementName: s }),
 
@@ -728,8 +728,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     faceExtrudeMode: b, faceExtrudeSelectedFace: null, faceExtrudeClickPoint: null, faceExtrudeCavityFaceNormal: null,
     ...(!b ? { faceExtrudeTargetPanelId: null, faceExtrudeRefCandidate: null, faceExtrudeCavityGroupId: null } : {}),
   }),
-  faceExtrudeTargetPanelId: null, setFaceExtrudeTargetPanelId: (id) => set({ faceExtrudeTargetPanelId: id, ...(id ? { faceExtrudeCavityGroupId: null, faceExtrudeCavityFaceNormal: null } : {}) }),
-  faceExtrudeCavityGroupId: null, setFaceExtrudeCavityGroupId: (id) => set({ faceExtrudeCavityGroupId: id, ...(id ? { faceExtrudeTargetPanelId: null } : {}) }),
+  faceExtrudeTargetPanelId: null,
+  setFaceExtrudeTargetPanelId: (id) => set({
+    faceExtrudeTargetPanelId: id, ...(id ? { faceExtrudeCavityGroupId: null, faceExtrudeCavityFaceNormal: null } : {}),
+  }),
+  faceExtrudeCavityGroupId: null,
+  setFaceExtrudeCavityGroupId: (id) => set({ faceExtrudeCavityGroupId: id, ...(id ? { faceExtrudeTargetPanelId: null } : {}) }),
   faceExtrudeCavityFaceNormal: null, setFaceExtrudeCavityFaceNormal: (n) => set({ faceExtrudeCavityFaceNormal: n }),
   faceExtrudeSelectedFace: null, setFaceExtrudeSelectedFace: (i) => set({ faceExtrudeSelectedFace: i }),
   faceExtrudeClickPoint: null, setFaceExtrudeClickPoint: (p) => set({ faceExtrudeClickPoint: p }),
@@ -779,7 +783,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   virtualFaces: [],
   // Gövde paneli varsayılan 'Panel' adını alır (description = satır adı); iç üyelerin adı grup adından gelir.
   addVirtualFace: (v) => set((s) => ({ virtualFaces: [...s.virtualFaces, (!v.interior && !v.description) ? { ...v, description: 'Panel' } : v] })),
-  updateVirtualFace: (id, u) => set((s) => ({ virtualFaces: s.virtualFaces.map(f => (f.id === id ? { ...f, ...u } : f)) })),
+  updateVirtualFace: (id, u) => set((s) => ({ virtualFaces: patchById(s.virtualFaces, id, u) })),
   deleteVirtualFace: (id) => set((s) => ({ virtualFaces: s.virtualFaces.filter(f => f.id !== id) })),
   // Sürüklenen grup hedefin ÖNCESİNE (null = sona) taşınır; diğer şekillerin VF'leri yerinde kalır.
   reorderVirtualFaceGroup: (shapeId, fromIds, toGroupFirstId) => {

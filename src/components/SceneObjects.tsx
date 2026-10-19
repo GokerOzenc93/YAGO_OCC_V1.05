@@ -2,24 +2,33 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three';
 import { Line, TransformControls } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
-import { type BackPick, type CavityPick, type DoorGroup, type DoorPick, type FilletInfo, Tool, ViewMode, type VirtualFace, childPanelsOf, useAppStore, useStoreFields, vfOfPanel } from '../store';
+import {
+  type CavityPick, type DoorGroup, type FilletInfo, Tool, ViewMode, type VirtualFace, type XformDelta,
+  applyXformDelta, childPanelsOf, shapeById, useAppStore, useStoreFields, vfOfPanel,
+} from '../store';
 import {
   type CoplanarFaceGroup, type FaceData, type Vec3, applyFillets, convertReplicadToThreeGeometry, createFaceDescriptor, createFaceHighlightGeometry,
   createGroupBoundaryEdges, edgePointsOf, effectiveBodyGeometry, flatGroupOfFace, genId, getFacePlaneAxes, getFacesAndGroups, getShapeMatrix,
   groupIndexOfFace, localBboxOf,
 } from './Geometry';
 import { REF_COLORS, applyTransformSteps, confirmRefFaceExtrude, cycleRefFacePickFromEvent } from './PanelOps';
-import { computeFaceComponentContour, computeFreeRegionLocal, earClipTriangulate, findPanelCoveringPoint, panelBehindStackPlane, panelHasRotation, panelInnerBigFace, pointInTriangle3D } from './FaceRegion';
 import {
-  GROUP_PANEL_THICKNESS, boxSpan, boxesSurface, collectObstacles, confirmRefCavityExtrude, confirmVolumePick, gridForObstacles, groupBoundsPanelPredicate, isInteriorPanel,
-  rayCavityCandidates, repickObstacles,
+  computeFaceComponentContour, computeFreeRegionLocal, earClipTriangulate, findPanelCoveringPoint, panelBehindStackPlane, panelHasRotation,
+  panelInnerBigFace, pointInTriangle3D,
+} from './FaceRegion';
+import {
+  GROUP_PANEL_THICKNESS, boxesSurface, collectObstacles, confirmRefCavityExtrude, confirmVolumePick, gridForObstacles, groupBoundsPanelPredicate,
+  isInteriorPanel, rayCavityCandidates, repickObstacles,
 } from './PanelGroupService';
 import {
-  type DoorMemberRect, DOOR_GAP, DOOR_THICKNESS, collectDoorCuts, confirmDoorPick, doorCandidatesAt, doorMembersOf, doorPlaneAxes, doorSlabPolygon, isDoorPanel, pickRectFor,
-  rayDoorEntry, splitDoorAtPanel,
+  type DoorMemberRect, DOOR_GAP, DOOR_THICKNESS, collectDoorCuts, confirmDoorPick, doorCandidatesAt, doorMembersOf, doorPlaneAxes, doorSlabPolygon,
+  isDoorPanel, pickRectFor, rayDoorEntry, splitDoorAtPanel,
 } from './DoorService';
 import { bodyLegsOf, legHeightOf, legSpots } from './QuickBodyService';
-import { BACK_GAP, BACK_THICKNESS, backCandidatesAt, backPickObstacle, backPreviewStamp, backPickRect, backSlabPolygon, collectBackCuts, confirmBackPick, isBackPanel, rayBackEntry, splitBackAtPanel, vfBackBound } from './BackService';
+import {
+  BACK_GAP, BACK_THICKNESS, backCandidatesAt, backPickObstacle, backPreviewStamp, backPickRect, backSlabPolygon, collectBackCuts, confirmBackPick,
+  isBackPanel, rayBackEntry, splitBackAtPanel, vfBackBound,
+} from './BackService';
 
 /* Sahne nesneleri — canvas içinde şekil başına çizilen her şey: PanelDrawing (panel mesh/kenar/seçim tonu, ref-yüz),
    FaceOverlays (yüz yakalama, VF, fillet, hacim/kapak seçimi), ShapeWithTransform (gövde + TransformControls).
@@ -61,11 +70,6 @@ const SEL_COLORS = {
 
 const DOOR_COLORS = { boundEdge: '#d97706', boundEmissive: '#6b4a10' } as const;
 
-const FaceOutline: React.FC<{ geometry: THREE.BufferGeometry; color: string; width: number }> = ({ geometry, color, width }) => {
-  const pts = useMemo(() => edgePointsOf(geometry, 1), [geometry]);
-  if (pts.length < 2) return null;
-  return <Line points={pts} segments color={color} lineWidth={width} transparent={false} depthTest={false} depthWrite={false} renderOrder={13} raycast={() => null} />;
-};
 /** Yüz-extrude'da hedef dışı paneller: X-ray opaklığı; kenarlar derinlik testli — arkadakiler öndekini delmez. */
 const XRAY_PANEL_OPACITY = 0.35;
 const EXTRUDE_XRAY_EDGE = '#6b7280';
@@ -114,12 +118,15 @@ function swingTriangle(pts: Pt2[], hinge: Pt2, ins: number): Pt2[] | null {
   const he = pick(hinge), pe = pick({ x: -hinge.x, y: -hinge.y });
   if (!he || !pe) return null;
   const apex = { x: (he.a.x + he.b.x) / 2 - he.nx * ins, y: (he.a.y + he.b.y) / 2 - he.ny * ins };
-  const inward = (q: Pt2) => { const dx = c.x - q.x, dy = c.y - q.y, l = Math.hypot(dx, dy) || 1; return { x: q.x + dx / l * ins * 1.4, y: q.y + dy / l * ins * 1.4 }; };
+  const inward = (q: Pt2) => {
+    const dx = c.x - q.x, dy = c.y - q.y, l = Math.hypot(dx, dy) || 1;
+    return { x: q.x + dx / l * ins * 1.4, y: q.y + dy / l * ins * 1.4 };
+  };
   return [inward(pe.a), apex, inward(pe.b)];
 }
 
-/** Kapağın ön yüzüne açılış işareti (her kapakta; seçiliyken vurgulu). Çerçeve: VF poligonu (kesimli kapakta eğik kenar dahil) panel geometrisinin
- *  ön yüzüne oturtulur — kapakta taşıma adımı olsa da işaret mesh'le birlikte kalır. */
+/** Kapağın ön yüzüne açılış işareti (seçiliyken vurgulu). VF poligonu (eğik kenar dahil) panel geometrisinin ön yüzüne oturtulur —
+ *  kapakta taşıma adımı olsa da işaret mesh'le birlikte kalır. */
 const DoorSwingMark: React.FC<{ geometry: THREE.BufferGeometry; vfId: string; active: boolean }> = React.memo(({ geometry, vfId, active }) => {
   const vf = useAppStore(s => s.virtualFaces.find(f => f.id === vfId));
   const group = useAppStore(s => (vf?.doorGroupId ? s.doorGroups.find(g => g.id === vf.doorGroupId) : undefined));
@@ -144,7 +151,9 @@ const DoorSwingMark: React.FC<{ geometry: THREE.BufferGeometry; vfId: string; ac
     const tri = swingTriangle(poly, hinge, ins);
     if (!tri) return null;
     const plane = (group.side > 0 ? bb.max.getComponent(group.axis) : bb.min.getComponent(group.axis)) + group.side * SWING_LIFT;
-    const to3 = (q: Pt2) => { const p = new THREE.Vector3(); p.setComponent(group.axis, plane); p.setComponent(u, q.x + du); p.setComponent(v, q.y + dv); return p; };
+    const to3 = (q: Pt2) => {
+      const p = new THREE.Vector3(); p.setComponent(group.axis, plane); p.setComponent(u, q.x + du); p.setComponent(v, q.y + dv); return p;
+    };
     const dash = THREE.MathUtils.clamp(span * 0.025, 6, 18);
     return { pts: tri.map(to3), dash };
   }, [geometry, vf, group]);
@@ -152,7 +161,7 @@ const DoorSwingMark: React.FC<{ geometry: THREE.BufferGeometry; vfId: string; ac
   return (
     <Line points={mark.pts} color={active ? DOOR_SWING.active : DOOR_SWING.idle} lineWidth={active ? DOOR_SWING.activeWidth : DOOR_SWING.idleWidth}
       dashed dashSize={mark.dash} gapSize={mark.dash * 0.8}
-      transparent={false} depthTest depthWrite={false} renderOrder={3} raycast={() => null} />
+      transparent={false} depthTest depthWrite={false} renderOrder={3} raycast={noRaycast} />
   );
 });
 
@@ -163,22 +172,59 @@ export const EDGE_LINE_WIDTH = 1.0;
 export const EDGE_ANGLE_THRESHOLD = 15;
 
 export const HitMaterial = () => <meshBasicMaterial transparent opacity={0.01} side={THREE.DoubleSide} depthTest={false} depthWrite={false} />;
-const OverlayMat = ({ color, opacity }: { color: number; opacity: number }) => <meshBasicMaterial color={color} transparent opacity={opacity} side={THREE.DoubleSide} depthTest={false} depthWrite={false} />;
+const OverlayMat = ({ color, opacity }: { color: number; opacity: number }) =>
+  <meshBasicMaterial color={color} transparent opacity={opacity} side={THREE.DoubleSide} depthTest={false} depthWrite={false} />;
+/** Yarı saydam dolgu (derinlik yazmaz, derinlik testli): hacim / levha önizlemeleri. */
+const FillMat = ({ color, opacity }: { color: number; opacity: number }) =>
+  <meshBasicMaterial color={color} transparent opacity={opacity} side={THREE.DoubleSide} depthWrite={false} />;
+const noRaycast = () => null;
+const stopEvent = (e: any) => e.stopPropagation();
+/** Vurgu katmanı: tıklanmaz, her şeyin üstünde. */
+const OverlayMesh = ({ geometry, color, opacity, order }: { geometry: THREE.BufferGeometry; color: number; opacity: number; order: number }) => (
+  <mesh geometry={geometry} renderOrder={order} raycast={noRaycast}><OverlayMat color={color} opacity={opacity} /></mesh>
+);
+/** Tıklanmaz, derinlik testsiz kenar çizgileri (segment çiftleri). */
+const EdgeLines = ({ points, color, width, order }: { points: Vec3[]; color: string; width: number; order: number }) => (
+  <Line points={points} segments color={color} lineWidth={width} transparent={false} depthTest={false} depthWrite={false} renderOrder={order} raycast={noRaycast} />
+);
+const FaceOutline: React.FC<{ geometry: THREE.BufferGeometry; color: string; width: number }> = ({ geometry, color, width }) => {
+  const pts = useMemo(() => edgePointsOf(geometry, 1), [geometry]);
+  if (pts.length < 2) return null;
+  return <EdgeLines points={pts} color={color} width={width} order={13} />;
+};
+/** Yüz grubunun vurgu geometrisi (grup yoksa null). */
+const groupHighlight = (faces: FaceData[], groups: CoplanarFaceGroup[], gi: number | null) =>
+  (gi !== null && groups[gi] ? createFaceHighlightGeometry(faces, groups[gi].faceIndices) : null);
+/** Vuruş mesh'inde yüz grubu hover'ı (düz grup). */
+const faceHoverEvents = (groups: CoplanarFaceGroup[], onHover: (gi: number | null) => void) => ({
+  onPointerMove: (e: any) => { e.stopPropagation(); const gi = flatGroupOfFace(groups, e.faceIndex); if (gi !== -1) onHover(gi); },
+  onPointerOut: (e: any) => { e.stopPropagation(); onHover(null); },
+});
+/** Olay noktası şeklin yerel uzayında. */
+const localPointOf = (e: any, shape: any): Vec3 | null => {
+  if (!e.point) return null;
+  const l = e.point.clone().applyMatrix4(getShapeMatrix(shape).invert());
+  return [l.x, l.y, l.z];
+};
+/** Kenar noktaları (açı eşiğiyle); geometri yok / hata → null. */
+const safeEdgePoints = (geo: THREE.BufferGeometry | undefined, angle: number): Vec3[] | null => {
+  try { const p = geo ? edgePointsOf(geo, angle) : []; return p.length ? p : null; } catch { return null; }
+};
 
-export function RefFaceOverlay({ geometry, faces, groups, hoveredGroup, candidateGroup, onHover, onPointerDown, onClick }:
-  { geometry: THREE.BufferGeometry; faces: any[]; groups: any[]; hoveredGroup: number | null; candidateGroup: number | null; onHover: (gi: number | null) => void; onPointerDown?: (e: any) => void; onClick?: (e: any) => void }) {
-  const hoverGeo = useMemo(() => (hoveredGroup !== null && groups[hoveredGroup] ? createFaceHighlightGeometry(faces, groups[hoveredGroup].faceIndices) : null), [hoveredGroup, groups, faces]);
-  const candGeo = useMemo(() => (candidateGroup !== null && candidateGroup >= 0 && groups[candidateGroup] ? createFaceHighlightGeometry(faces, groups[candidateGroup].faceIndices) : null), [candidateGroup, groups, faces]);
+type RefFaceOverlayProps = {
+  geometry: THREE.BufferGeometry; faces: any[]; groups: any[]; hoveredGroup: number | null; candidateGroup: number | null;
+  onHover: (gi: number | null) => void; onPointerDown?: (e: any) => void; onClick?: (e: any) => void;
+};
+export function RefFaceOverlay({ geometry, faces, groups, hoveredGroup, candidateGroup, onHover, onPointerDown, onClick }: RefFaceOverlayProps) {
+  const hoverGeo = useMemo(() => groupHighlight(faces, groups, hoveredGroup), [hoveredGroup, groups, faces]);
+  const candGeo = useMemo(() => groupHighlight(faces, groups, candidateGroup), [candidateGroup, groups, faces]);
   return (
     <>
-      <mesh geometry={geometry} renderOrder={10}
-        onPointerMove={(e: any) => { e.stopPropagation(); const gi = flatGroupOfFace(groups, e.faceIndex); if (gi !== -1) onHover(gi); }}
-        onPointerOut={(e: any) => { e.stopPropagation(); onHover(null); }}
-        onPointerDown={onPointerDown} onClick={onClick} onContextMenu={(e: any) => e.stopPropagation()}>
+      <mesh geometry={geometry} renderOrder={10} {...faceHoverEvents(groups, onHover)} onPointerDown={onPointerDown} onClick={onClick} onContextMenu={stopEvent}>
         <HitMaterial />
       </mesh>
-      {hoverGeo && <mesh geometry={hoverGeo} renderOrder={11} raycast={() => null}><OverlayMat color={REF_COLORS.hover} opacity={REF_COLORS.hoverOpacity} /></mesh>}
-      {candGeo && <mesh geometry={candGeo} renderOrder={12} raycast={() => null}><OverlayMat color={REF_COLORS.selected} opacity={REF_COLORS.selectedOpacity} /></mesh>}
+      {hoverGeo && <OverlayMesh geometry={hoverGeo} order={11} color={REF_COLORS.hover} opacity={REF_COLORS.hoverOpacity} />}
+      {candGeo && <OverlayMesh geometry={candGeo} order={12} color={REF_COLORS.selected} opacity={REF_COLORS.selectedOpacity} />}
     </>
   );
 }
@@ -189,17 +235,14 @@ export const confirmRefOnRightClick = async (e: any) => {
   if (useAppStore.getState().faceExtrudeCavityGroupId) await confirmRefCavityExtrude(); else await confirmRefFaceExtrude();
 };
 
-/* PANEL GİRİŞ EFEKTİ (Goker): panel ilk belirdiğinde dışarıdan gelip yerine oturur. Efekt sabit listeden değil
-   BİLEŞİMDEN üretilir: yörünge × yaklaşma yönü × dönüş × ölçek × yumuşatma × pivot (≈100 bin imza), her birinde
-   genlik/açı/tur/süre de rastgele. Son 64 imza hatırlanır ve tekrar çekilmez → aynı hareket fiilen bir daha gelmez.
-   Yönler panelin DURUMUNU okur: dışa bakan yüz normali, gövde merkezine göre dış yan, uzun/kısa kenar, alt kenar.
-   Aynı anda beliren paneller (raf grubu, yükleme) dalga halinde, sırayla gelir. Yalnız sarmalayıcı grubun transformu
-   oynar; t=1'de birebir kimlik.
-   İkinci aile (≈%45) OLUŞMA efektleri: panel yerinde, malzemeye enjekte edilen geçici shader ile oluşur — alttan/yandan
-   silme, ortadan iki yana perde, merkezden/köşeden halka, pikselden netleşme, mozaik, erime (noise), jaluzi, tarama.
-   Oluşma cephesi sıcak tonda parlar; kenar çizgileri aynı cepheyle kırpılır ya da sona doğru belirir; bitince shader
-   sökülür (standart programa döner), gölge geri açılır. */
-interface EntryCtx { center: THREE.Vector3; size: THREE.Vector3; min: THREE.Vector3; max: THREE.Vector3; normal: THREE.Vector3; side: THREE.Vector3; long: THREE.Vector3; short: THREE.Vector3; far: number }
+/* PANEL GİRİŞ EFEKTİ: panel ilk belirdiğinde dışarıdan gelip yerine oturur (hareket) ya da yerinde, malzemeye enjekte edilen geçici
+   shader ile oluşur (≈%45, oluşma). Efekt bileşimden üretilir (yörünge × yön × dönüş × ölçek × yumuşatma × pivot); son 64 imza
+   tekrar çekilmez. Yönler panelin durumunu okur (dış normal, dış yan, uzun/kısa kenar). Aynı anda beliren paneller dalga halinde
+   gelir. Yalnız sarmalayıcı grubun transformu oynar (t=1'de kimlik); oluşma bitince shader sökülür, gölge geri açılır. */
+interface EntryCtx {
+  center: THREE.Vector3; size: THREE.Vector3; min: THREE.Vector3; max: THREE.Vector3;
+  normal: THREE.Vector3; side: THREE.Vector3; long: THREE.Vector3; short: THREE.Vector3; far: number;
+}
 type Ease = (t: number) => number;
 const EASES: Record<string, Ease> = {
   cubic: t => 1 - Math.pow(1 - t, 3),
@@ -221,7 +264,7 @@ const Y_UP = new THREE.Vector3(0, 1, 0);
 const rnd = (a: number, b: number) => a + Math.random() * (b - a);
 const pick = <T,>(arr: readonly T[]): T => arr[Math.floor(Math.random() * arr.length)];
 const sgnR = () => (Math.random() < 0.5 ? -1 : 1);
-const perpOf = (d: THREE.Vector3) => { const a = Math.abs(d.y) < 0.9 ? Y_UP : new THREE.Vector3(1, 0, 0); return new THREE.Vector3().crossVectors(d, a).normalize(); };
+const perpOf = (d: THREE.Vector3) => new THREE.Vector3().crossVectors(d, Math.abs(d.y) < 0.9 ? Y_UP : new THREE.Vector3(1, 0, 0)).normalize();
 const axisIdx = (v: THREE.Vector3) => { const a = [Math.abs(v.x), Math.abs(v.y), Math.abs(v.z)]; return a.indexOf(Math.max(...a)); };
 
 const FX_PATHS = ['line', 'arc', 'spiral', 'serpent', 'orbit', 'drop', 'still'] as const;
@@ -348,7 +391,9 @@ function applyEntryFx(fx: EntryFx, t: number, c: EntryCtx, g: THREE.Group) {
 const REVEAL_MODES = ['wipe', 'shutter', 'radial', 'corner', 'pixel', 'mosaic', 'dissolve', 'blinds', 'scan', 'diag'] as const;
 type RevealMode = typeof REVEAL_MODES[number];
 // Shader mod kimlikleri: 1 silme · 2 perde · 3 halka · 4 piksel · 5 mozaik · 6 erime · 7 jaluzi · 8 tarama
-const REVEAL_SHADER_ID: Record<RevealMode, number> = { wipe: 1, diag: 1, shutter: 2, radial: 3, corner: 3, pixel: 4, mosaic: 5, dissolve: 6, blinds: 7, scan: 8 };
+const REVEAL_SHADER_ID: Record<RevealMode, number> = {
+  wipe: 1, diag: 1, shutter: 2, radial: 3, corner: 3, pixel: 4, mosaic: 5, dissolve: 6, blinds: 7, scan: 8,
+};
 const REVEAL_GLOWS = ['#f59e0b', '#ea580c', '#fbbf24', '#fde68a', '#fff7ed', '#fb923c'] as const;
 interface RevealFx {
   kind: 'reveal'; sig: string; dur: number; delay: number; mode: RevealMode; shaderId: number;
@@ -441,7 +486,8 @@ const _defaultCacheKey = THREE.Material.prototype.customProgramCacheKey;
 function installRevealShader(mat: THREE.Material, fx: RevealFx): Record<string, { value: any }> {
   const u: Record<string, { value: any }> = {
     uRvMode: { value: fx.shaderId }, uRvProg: { value: 0 }, uRvLen: { value: fx.len }, uRvCell: { value: fx.cell }, uRvBand: { value: fx.band },
-    uRvSeed: { value: fx.seed }, uRvAxis: { value: fx.axis.clone() }, uRvOrigin: { value: fx.origin.clone() }, uRvGlow: { value: fx.glow.clone() }, uRvU: { value: fx.u.clone() },
+    uRvSeed: { value: fx.seed }, uRvAxis: { value: fx.axis.clone() }, uRvOrigin: { value: fx.origin.clone() }, uRvGlow: { value: fx.glow.clone() },
+    uRvU: { value: fx.u.clone() },
   };
   mat.onBeforeCompile = (sh: any) => {
     Object.assign(sh.uniforms, u);
@@ -468,7 +514,7 @@ function entryCtxOf(shape: any): EntryCtx | null {
   const axes = [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1)];
   const dims = [size.x, size.y, size.z];
   const thin = dims.indexOf(Math.min(...dims)), longI = dims.indexOf(Math.max(...dims));
-  const parent = useAppStore.getState().shapes.find((x: any) => x.id === shape.parameters?.parentShapeId);
+  const parent = shapeById(shape.parameters?.parentShapeId);
   const pbb = parent?.geometry ? localBboxOf(parent.geometry) : null;
   const pc = pbb ? pbb.getCenter(new THREE.Vector3()) : center.clone();
   const psize = pbb ? pbb.getSize(new THREE.Vector3()) : size;
@@ -484,8 +530,9 @@ function entryCtxOf(shape: any): EntryCtx | null {
 }
 function usePanelEntryAnimation(ref: React.RefObject<THREE.Group>, meshRef: React.RefObject<THREE.Mesh>, lineRef: React.MutableRefObject<any>, shape: any) {
   const gl = useThree(st => st.gl);
-  const anim = useRef<{ start: number; ctx: EntryCtx | null; fx: AnyEntryFx | null; done: boolean; mat: THREE.Material | null; u: Record<string, { value: any }> | null; shadow: boolean }>(
-    { start: -1, ctx: null, fx: null, done: false, mat: null, u: null, shadow: true });
+  const anim = useRef<{
+    start: number; ctx: EntryCtx | null; fx: AnyEntryFx | null; done: boolean; mat: THREE.Material | null; u: Record<string, { value: any }> | null; shadow: boolean;
+  }>({ start: -1, ctx: null, fx: null, done: false, mat: null, u: null, shadow: true });
   const finishReveal = () => {
     const a = anim.current;
     if (a.mat) { uninstallRevealShader(a.mat); a.mat = null; a.u = null; }
@@ -554,23 +601,26 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
   const animRef = useRef<THREE.Group>(null);
   const edgeRef = useRef<any>(null);
   usePanelEntryAnimation(animRef, meshRef, edgeRef, shape);
-  const S = useStoreFields('selectShape', 'selectSecondaryShape', 'selectedShapeId', 'selectedPanelRow', 'setSelectedPanelRow', 'panelSelectMode', 'viewMode',
-    'faceExtrudeMode', 'faceExtrudeTargetPanelId', 'faceExtrudeSelectedFace', 'setFaceExtrudeSelectedFace', 'setFaceExtrudeClickPoint', 'raycastMode', 'faceExtrudeValueMode', 'faceExtrudeRefCandidate',
-    'panelMoveMode', 'panelMoveValueMode', 'panelMoveTargetPanelId', 'panelMoveRefSourceVertex', 'panelMoveRefTargetPanelId', 'panelMoveRefTargetVertex',
-    'panelRotateMode', 'panelRotateValueMode', 'panelRotateTargetPanelId', 'panelRotatePivot', 'panelRotateRefArmVertex', 'panelRotateAxis', 'panelRotateRefFace', 'setPanelRotateRefFace',
+  const S = useStoreFields('selectShape', 'selectSecondaryShape', 'selectedShapeId', 'selectedPanelRow', 'setSelectedPanelRow', 'panelSelectMode',
+    'viewMode', 'faceExtrudeMode', 'faceExtrudeTargetPanelId', 'faceExtrudeSelectedFace', 'setFaceExtrudeSelectedFace', 'setFaceExtrudeClickPoint',
+    'raycastMode', 'faceExtrudeValueMode', 'faceExtrudeRefCandidate', 'panelMoveMode', 'panelMoveValueMode', 'panelMoveTargetPanelId',
+    'panelMoveRefSourceVertex', 'panelMoveRefTargetPanelId', 'panelMoveRefTargetVertex', 'panelRotateMode', 'panelRotateValueMode',
+    'panelRotateTargetPanelId', 'panelRotatePivot', 'panelRotateRefArmVertex', 'panelRotateAxis', 'panelRotateRefFace', 'setPanelRotateRefFace',
     'selectedPanelGroupId', 'volumePickMode', 'volumePickGroupId', 'selectedDoorGroupId', 'doorPickMode', 'doorRefPickGroupId', 'setDoorRefPickGroupId',
     'selectedBackGroupId', 'backFocusVfIds', 'backPickMode', 'backRefPickGroupId', 'setBackRefPickGroupId', 'virtualFaces');
   const [hoveredExtrudeGroup, setHoveredExtrudeGroup] = useState<number | null>(null);
   const [moveRefHover, setMoveRefHover] = useState(false);
   const { faces, groups: faceGroups } = useMemo(() => (shape.geometry ? getFacesAndGroups(shape.geometry) : { faces: [], groups: [] }), [shape.geometry]);
 
-  const parentShapeId = shape.parameters?.parentShapeId;
-  const virtualFaceId = shape.parameters?.virtualFaceId;
+  const params = shape.parameters;
+  const parentShapeId = params?.parentShapeId;
+  const virtualFaceId = params?.virtualFaceId;
   const isParentSelected = parentShapeId === S.selectedShapeId;
-  const isGroupSelected = isParentSelected && ((!!S.selectedPanelGroupId && shape.parameters?.panelGroupId === S.selectedPanelGroupId)
-    || (!!S.selectedDoorGroupId && shape.parameters?.doorGroupId === S.selectedDoorGroupId)
-    // Arkalık: şemada parça seçiliyse yalnız o parçalar (backFocusVfIds), değilse grubun tüm üyeleri.
-    || (!!S.selectedBackGroupId && shape.parameters?.backGroupId === S.selectedBackGroupId && (!S.backFocusVfIds.length || S.backFocusVfIds.includes(virtualFaceId))));
+  // Arkalık: şemada parça seçiliyse yalnız o parçalar (backFocusVfIds), değilse grubun tüm üyeleri.
+  const backFocused = !S.backFocusVfIds.length || S.backFocusVfIds.includes(virtualFaceId);
+  const isGroupSelected = isParentSelected && ((!!S.selectedPanelGroupId && params?.panelGroupId === S.selectedPanelGroupId)
+    || (!!S.selectedDoorGroupId && params?.doorGroupId === S.selectedDoorGroupId)
+    || (!!S.selectedBackGroupId && params?.backGroupId === S.selectedBackGroupId && backFocused));
   const isRowSelectedRaw = isGroupSelected || (isParentSelected && !!virtualFaceId && S.selectedPanelRow === `vf-${virtualFaceId}`);
   // Sınır vurgusu: kapak seçme/ref → doorBound, arkalık seçme/ref → backBound.
   const ownVf = virtualFaceId ? S.virtualFaces.find(f => f.id === virtualFaceId) : undefined;
@@ -579,7 +629,7 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
   // Bu modlarda kapaklar/arkalıklar saydam ve tıklanmaz: arkasındaki dikme/raf seçilebilsin.
   const isDoorPickGhost = isParentSelected && ((doorPicking && isDoorPanel(shape)) || (backPicking && isBackPanel(shape)));
 
-  const edgePoints = useMemo<Vec3[] | null>(() => { try { const p = edgePointsOf(shape.geometry, EDGE_ANGLE_THRESHOLD); return p.length ? p : null; } catch { return null; } }, [shape.geometry]);
+  const edgePoints = useMemo(() => safeEdgePoints(shape.geometry, EDGE_ANGLE_THRESHOLD), [shape.geometry]);
 
   const isFaceExtrudeTarget = S.faceExtrudeMode && shape.id === S.faceExtrudeTargetPanelId;
   const isFaceExtrudeXray = S.faceExtrudeMode && shape.id !== S.faceExtrudeTargetPanelId;
@@ -590,42 +640,47 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
     const st = useAppStore.getState();
     const g = st.panelGroups.find(x => x.id === S.volumePickGroupId);
     if (!g) return 'none';
-    if (shape.parameters?.panelGroupId === g.id) return 'member';
+    if (params?.panelGroupId === g.id) return 'member';
     return groupBoundsPanelPredicate(g, st.panelGroups, st.virtualFaces)(shape) ? 'bounds' : 'later';
   })();
   const isRepickXray = repickRole === 'member';
   const isRepickHidden = repickRole === 'later';
   const isGhost = isFaceExtrudeXray || isRepickXray || isDoorPickGhost;
   const isPanelRowSelected = isRowSelectedRaw && !isRepickXray;
-  const isRaycastOnParent = (S.raycastMode || S.volumePickMode !== null || S.doorPickMode || S.backPickMode) && parentShapeId && parentShapeId === S.selectedShapeId;
+  const anyPick = S.raycastMode || S.volumePickMode !== null || S.doorPickMode || S.backPickMode;
+  const isRaycastOnParent = anyPick && parentShapeId && parentShapeId === S.selectedShapeId;
   // Ref seçimi ancak hedef yüz seçildikten sonra aktif; hedef dışındaki her panel raycast alır.
   const isExtRefMode = S.faceExtrudeMode && S.faceExtrudeValueMode === 'ref' && S.faceExtrudeSelectedFace !== null;
-  const isRotRefMode = S.panelRotateMode && S.panelRotateValueMode === 'ref' && !!S.panelRotatePivot && !!S.panelRotateRefArmVertex && S.panelRotateAxis !== null;
+  const isRotRefMode = S.panelRotateMode && S.panelRotateValueMode === 'ref' && !!S.panelRotatePivot && !!S.panelRotateRefArmVertex
+    && S.panelRotateAxis !== null;
   const isRefMode = isExtRefMode || isRotRefMode;
   const refOwnerId = isExtRefMode ? S.faceExtrudeTargetPanelId : S.panelRotateTargetPanelId;
   const refCandidate = isExtRefMode ? S.faceExtrudeRefCandidate : S.panelRotateRefFace;
   const isRefPickablePanel = isRefMode && shape.id !== refOwnerId;
   const isRefCandidatePanel = isRefMode && refCandidate?.panelId === shape.id;
-  const isMoveRefTargetPanel = S.panelMoveMode && S.panelMoveValueMode === 'ref' && !!S.panelMoveRefSourceVertex && S.panelMoveRefTargetPanelId === shape.id;
-  const isMoveRefPickMode = S.panelMoveMode && S.panelMoveValueMode === 'ref' && !!S.panelMoveRefSourceVertex && !S.panelMoveRefTargetVertex && shape.id !== S.panelMoveTargetPanelId && S.panelMoveRefTargetPanelId !== shape.id;
+  const moveRefSrc = S.panelMoveMode && S.panelMoveValueMode === 'ref' && !!S.panelMoveRefSourceVertex;
+  const isMoveRefTargetPanel = moveRefSrc && S.panelMoveRefTargetPanelId === shape.id;
+  const isMoveRefPickMode = moveRefSrc && !S.panelMoveRefTargetVertex && shape.id !== S.panelMoveTargetPanelId && S.panelMoveRefTargetPanelId !== shape.id;
   const isMoveRefHovered = isMoveRefPickMode && moveRefHover;
   const moveRefHighlight = isMoveRefTargetPanel || isMoveRefHovered;
-  const disableRaycast = (isFaceExtrudeTarget || (isFaceExtrudeXray && !isRefPickablePanel) || isRaycastOnParent || (!!S.doorRefPickGroupId && isDoorPanel(shape)) || (!!S.backRefPickGroupId && isBackPanel(shape))) && !isMoveRefPickMode;
+  const disableRaycast = (isFaceExtrudeTarget || (isFaceExtrudeXray && !isRefPickablePanel) || isRaycastOnParent
+    || (!!S.doorRefPickGroupId && isDoorPanel(shape)) || (!!S.backRefPickGroupId && isBackPanel(shape))) && !isMoveRefPickMode;
 
   useEffect(() => { const mesh = meshRef.current; if (mesh) mesh.raycast = disableRaycast ? () => {} : THREE.Mesh.prototype.raycast; }, [disableRaycast]);
   useEffect(() => { if (!isMoveRefPickMode && moveRefHover) setMoveRefHover(false); }, [isMoveRefPickMode, moveRefHover]);
 
-  const extrudeHighlightGeometry = useMemo(() => (!isFaceExtrudeTarget || hoveredExtrudeGroup === null || hoveredExtrudeGroup === S.faceExtrudeSelectedFace || !faceGroups[hoveredExtrudeGroup] || faces.length === 0)
-    ? null : createFaceHighlightGeometry(faces, faceGroups[hoveredExtrudeGroup].faceIndices), [isFaceExtrudeTarget, hoveredExtrudeGroup, faceGroups, faces, S.faceExtrudeSelectedFace]);
-  const extrudeSelectedGeometry = useMemo(() => (!isFaceExtrudeTarget || S.faceExtrudeSelectedFace === null || !faceGroups[S.faceExtrudeSelectedFace] || faces.length === 0)
-    ? null : createFaceHighlightGeometry(faces, faceGroups[S.faceExtrudeSelectedFace].faceIndices), [isFaceExtrudeTarget, S.faceExtrudeSelectedFace, faceGroups, faces]);
+  const extrudeHighlightGeometry = useMemo(() => (isFaceExtrudeTarget && hoveredExtrudeGroup !== S.faceExtrudeSelectedFace && faces.length
+    ? groupHighlight(faces, faceGroups, hoveredExtrudeGroup) : null), [isFaceExtrudeTarget, hoveredExtrudeGroup, faceGroups, faces, S.faceExtrudeSelectedFace]);
+  const extrudeSelectedGeometry = useMemo(() => (isFaceExtrudeTarget && faces.length ? groupHighlight(faces, faceGroups, S.faceExtrudeSelectedFace) : null),
+    [isFaceExtrudeTarget, S.faceExtrudeSelectedFace, faceGroups, faces]);
 
   if (!shape.geometry) return null;
   if (isRepickHidden) return null;
 
   const isWireframe = S.viewMode === ViewMode.WIREFRAME;
   const isXray = S.viewMode === ViewMode.XRAY;
-  const edgeColor = moveRefHighlight ? (isMoveRefTargetPanel ? '#15803d' : REF_COLORS.selectedCss) : isDoorBoundPanel ? DOOR_COLORS.boundEdge : isSelected ? PANEL_COLORS.selected.shapeEdge
+  const moveRefCss = isMoveRefTargetPanel ? '#15803d' : REF_COLORS.selectedCss;
+  const edgeColor = moveRefHighlight ? moveRefCss : isDoorBoundPanel ? DOOR_COLORS.boundEdge : isSelected ? PANEL_COLORS.selected.shapeEdge
     : isPanelRowSelected ? PANEL_SELECT.edge : isGhost ? EXTRUDE_XRAY_EDGE : PANEL_COLORS.edge.default;
   const edgeWidth = moveRefHighlight ? EDGE_LINE_WIDTH + 0.9 : isDoorBoundPanel ? EDGE_LINE_WIDTH + 1.1 : isSelected ? EDGE_LINE_WIDTH + 0.7
     : isPanelRowSelected ? EDGE_LINE_WIDTH + PANEL_SELECT.edgeExtra : EDGE_LINE_WIDTH;
@@ -649,7 +704,8 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
     if (S.panelMoveMode) return;
     if (S.panelRotateMode && S.panelRotateValueMode === 'ref') {
       if (isRotRefMode && shape.id !== S.panelRotateTargetPanelId) {
-        cycleRefFacePickFromEvent(e, useAppStore.getState().shapes.filter((x: any) => x.type === 'panel'), S.panelRotateTargetPanelId, S.setPanelRotateRefFace);
+        const panels = useAppStore.getState().shapes.filter((x: any) => x.type === 'panel');
+        cycleRefFacePickFromEvent(e, panels, S.panelRotateTargetPanelId, S.setPanelRotateRefFace);
       }
       return;
     }
@@ -670,74 +726,85 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
     onPointerDown: (e: any) => { if (isExtRefMode && isRefPickablePanel) confirmRefOnRightClick(e); },
     onContextMenu: (e: any) => { if (isRefPickablePanel || isMoveRefPickMode || isMoveRefTargetPanel) e.stopPropagation(); },
   };
-  const emissive = isPanelRowSelected ? PANEL_SELECT.emissive : moveRefHighlight ? (isMoveRefTargetPanel ? '#22c55e' : REF_COLORS.hoverCss) : isDoorBoundPanel ? DOOR_COLORS.boundEmissive : '#2a2a2a';
+  const moveRefEmissive = isMoveRefTargetPanel ? '#22c55e' : REF_COLORS.hoverCss;
+  const emissive = isPanelRowSelected ? PANEL_SELECT.emissive : moveRefHighlight ? moveRefEmissive : isDoorBoundPanel ? DOOR_COLORS.boundEmissive : '#2a2a2a';
   const emissiveIntensity = isPanelRowSelected ? 1 : moveRefHighlight ? (isMoveRefTargetPanel ? 1.0 : 0.8) : isDoorBoundPanel ? 0.55 : 1;
+  const xrayOpacity = moveRefHighlight ? (isMoveRefTargetPanel ? 0.5 : 0.6) : XRAY_PANEL_OPACITY;
+  const opacity = isXray ? xrayOpacity : isGhost ? XRAY_PANEL_OPACITY : isMoveRefTargetPanel ? 0.55 : isMoveRefHovered ? 0.9 : 1;
   const edgeLine = (xray: boolean) => edgePoints && (
     <Line ref={edgeRef} points={edgePoints} segments color={edgeColor} lineWidth={edgeWidth} transparent={false} depthTest={!xray} depthWrite={!xray}
       {...(!xray && !isWireframe ? { polygonOffset: true, polygonOffsetFactor: EDGE_OFFSET_FACTOR, polygonOffsetUnits: EDGE_OFFSET_UNITS } : {})}
-      renderOrder={EDGE_RENDER_ORDER} raycast={() => null} />
+      renderOrder={EDGE_RENDER_ORDER} raycast={noRaycast} />
   );
+  const showArrow = isPanelRowSelected && !isGroupSelected && !S.volumePickMode && !S.doorPickMode && !S.backPickMode;
 
   return (
     <group name={`shape-${shape.id}`} position={shape.position} rotation={shape.rotation} scale={shape.scale}>
-     <group ref={animRef}>
-      {!isWireframe && (
-        <mesh ref={meshRef} geometry={shape.geometry} castShadow receiveShadow {...meshEvents}>
-          <meshLambertMaterial color={panelColor} emissive={emissive} emissiveIntensity={emissiveIntensity} side={THREE.DoubleSide}
-            transparent={isXray || isGhost || moveRefHighlight}
-            opacity={isXray ? (moveRefHighlight ? (isMoveRefTargetPanel ? 0.5 : 0.6) : XRAY_PANEL_OPACITY) : isGhost ? XRAY_PANEL_OPACITY : isMoveRefTargetPanel ? 0.55 : isMoveRefHovered ? 0.9 : 1}
-            depthWrite={!isXray && !isGhost && !isMoveRefTargetPanel}
-            polygonOffset polygonOffsetFactor={MESH_OFFSET} polygonOffsetUnits={MESH_OFFSET} />
-        </mesh>
-      )}
-      {edgeLine(isXray)}
-      {showSwing && <DoorSwingMark geometry={shape.geometry} vfId={virtualFaceId} active={isPanelRowSelected} />}
-
-      {isFaceExtrudeTarget && (
-        <>
-          <mesh geometry={shape.geometry} renderOrder={10}
-            onPointerDown={(e: any) => {
-              if (e.button !== 0) return;
-              e.stopPropagation();
-              const gi = flatGroupOfFace(faceGroups, e.faceIndex);
-              if (gi === -1) return;
-              S.setFaceExtrudeSelectedFace(gi);
-              setHoveredExtrudeGroup(gi);
-              if (e.point) { const local = e.point.clone().applyMatrix4(getShapeMatrix(shape).invert()); S.setFaceExtrudeClickPoint([local.x, local.y, local.z]); }
-            }}
-            onPointerMove={(e: any) => { e.stopPropagation(); const gi = flatGroupOfFace(faceGroups, e.faceIndex); if (gi !== -1) setHoveredExtrudeGroup(gi); }}
-            onPointerOut={(e: any) => { e.stopPropagation(); setHoveredExtrudeGroup(null); }}>
-            <HitMaterial />
+      <group ref={animRef}>
+        {!isWireframe && (
+          <mesh ref={meshRef} geometry={shape.geometry} castShadow receiveShadow {...meshEvents}>
+            <meshLambertMaterial color={panelColor} emissive={emissive} emissiveIntensity={emissiveIntensity} side={THREE.DoubleSide}
+              transparent={isXray || isGhost || moveRefHighlight} opacity={opacity} depthWrite={!isXray && !isGhost && !isMoveRefTargetPanel}
+              polygonOffset polygonOffsetFactor={MESH_OFFSET} polygonOffsetUnits={MESH_OFFSET} />
           </mesh>
-          {extrudeHighlightGeometry && <mesh geometry={extrudeHighlightGeometry} renderOrder={11}><OverlayMat color={SEL_COLORS.extrudeHover} opacity={SEL_COLORS.extrudeHoverOpacity} /></mesh>}
-          {extrudeSelectedGeometry && (
-            <>
-              <mesh geometry={extrudeSelectedGeometry} renderOrder={12}><OverlayMat color={SEL_COLORS.extrudeActive} opacity={SEL_COLORS.extrudeActiveOpacity} /></mesh>
-              <FaceOutline geometry={extrudeSelectedGeometry} color={SEL_COLORS.extrudeEdge} width={SEL_COLORS.extrudeEdgeWidth} />
-            </>
-          )}
-        </>
-      )}
+        )}
+        {edgeLine(isXray)}
+        {showSwing && <DoorSwingMark geometry={shape.geometry} vfId={virtualFaceId} active={isPanelRowSelected} />}
 
-      {isRefPickablePanel && (
-        <RefFaceOverlay geometry={shape.geometry} faces={faces} groups={faceGroups} hoveredGroup={hoveredExtrudeGroup}
-          candidateGroup={isRefCandidatePanel ? (refCandidate?.faceGroupIndex ?? null) : null} onHover={setHoveredExtrudeGroup}
-          onPointerDown={(e: any) => { if (isExtRefMode) confirmRefOnRightClick(e); }} />
-      )}
+        {isFaceExtrudeTarget && (
+          <>
+            <mesh geometry={shape.geometry} renderOrder={10} {...faceHoverEvents(faceGroups, setHoveredExtrudeGroup)}
+              onPointerDown={(e: any) => {
+                if (e.button !== 0) return;
+                e.stopPropagation();
+                const gi = flatGroupOfFace(faceGroups, e.faceIndex);
+                if (gi === -1) return;
+                S.setFaceExtrudeSelectedFace(gi);
+                setHoveredExtrudeGroup(gi);
+                const lp = localPointOf(e, shape);
+                if (lp) S.setFaceExtrudeClickPoint(lp);
+              }}>
+              <HitMaterial />
+            </mesh>
+            {extrudeHighlightGeometry && (
+              <mesh geometry={extrudeHighlightGeometry} renderOrder={11}>
+                <OverlayMat color={SEL_COLORS.extrudeHover} opacity={SEL_COLORS.extrudeHoverOpacity} />
+              </mesh>
+            )}
+            {extrudeSelectedGeometry && (
+              <>
+                <mesh geometry={extrudeSelectedGeometry} renderOrder={12}>
+                  <OverlayMat color={SEL_COLORS.extrudeActive} opacity={SEL_COLORS.extrudeActiveOpacity} />
+                </mesh>
+                <FaceOutline geometry={extrudeSelectedGeometry} color={SEL_COLORS.extrudeEdge} width={SEL_COLORS.extrudeEdgeWidth} />
+              </>
+            )}
+          </>
+        )}
 
-      {isPanelRowSelected && !isGroupSelected && !S.volumePickMode && !S.doorPickMode && !S.backPickMode && <DirectionArrow geometry={shape.geometry} arrowRotated={shape.parameters?.arrowRotated || false} transformSteps={shape.parameters?.transformSteps} />}
-     </group>
+        {isRefPickablePanel && (
+          <RefFaceOverlay geometry={shape.geometry} faces={faces} groups={faceGroups} hoveredGroup={hoveredExtrudeGroup}
+            candidateGroup={isRefCandidatePanel ? (refCandidate?.faceGroupIndex ?? null) : null} onHover={setHoveredExtrudeGroup}
+            onPointerDown={(e: any) => { if (isExtRefMode) confirmRefOnRightClick(e); }} />
+        )}
+
+        {showArrow && (
+          <DirectionArrow geometry={shape.geometry} arrowRotated={params?.arrowRotated || false} transformSteps={params?.transformSteps} />
+        )}
+      </group>
     </group>
   );
 });
 
 // Yön oku: panel yüzeyine yatık, ışıksız kırmızı ok; depthTest=false ile hep panelin üstünde.
-const DirectionArrow: React.FC<{ geometry: THREE.BufferGeometry; arrowRotated?: boolean; transformSteps?: any[] }> = React.memo(({ geometry, arrowRotated = false, transformSteps }) => {
+type DirectionArrowProps = { geometry: THREE.BufferGeometry; arrowRotated?: boolean; transformSteps?: any[] };
+const DirectionArrow: React.FC<DirectionArrowProps> = React.memo(({ geometry, arrowRotated = false, transformSteps }) => {
   const arrowConfig = useMemo(() => {
     const posAttr = geometry?.getAttribute('position') as THREE.BufferAttribute | undefined;
     if (!posAttr) return null;
     // Ölçüler panel dönüşüyle TERS döndürülmüş çerçevede (panel orada eksen-hizalı slab); ok aynı dönüşle geri getirilir.
-    const { rotation: rot } = applyTransformSteps([0, 0, 0], [0, 0, 0], (Array.isArray(transformSteps) ? transformSteps : []) as any);
+    const steps = (Array.isArray(transformSteps) ? transformSteps : []) as any;
+    const { rotation: rot } = applyTransformSteps([0, 0, 0], [0, 0, 0], steps);
     const Q = new THREE.Quaternion().setFromEuler(new THREE.Euler(rot[0], rot[1], rot[2], 'XYZ'));
     const Qinv = Q.clone().invert();
     const bbox = new THREE.Box3();
@@ -751,7 +818,8 @@ const DirectionArrow: React.FC<{ geometry: THREE.BufferGeometry; arrowRotated?: 
     if (arrowRotated) targetAxis = planeAxes.find(a => a !== targetAxis) ?? planeAxes[1];
     const otherAxis = planeAxes.find(a => a !== targetAxis) ?? planeAxes[1];
     const dirVec = new THREE.Vector3().setComponent(targetAxis, 1), perpVec = new THREE.Vector3().setComponent(otherAxis, 1);
-    const quat = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(dirVec, perpVec, new THREE.Vector3().crossVectors(dirVec, perpVec).normalize())).premultiply(Q);
+    const basis = new THREE.Matrix4().makeBasis(dirVec, perpVec, new THREE.Vector3().crossVectors(dirVec, perpVec).normalize());
+    const quat = new THREE.Quaternion().setFromRotationMatrix(basis).premultiply(Q);
     const normalUnit = new THREE.Vector3().setComponent(thinAxisIndex, 1);
     if (normalUnit.clone().applyQuaternion(Q).y < -1e-6) normalUnit.negate();
     const position = center.clone().addScaledVector(normalUnit, thinHalf + 3).applyQuaternion(Q);
@@ -764,16 +832,18 @@ const DirectionArrow: React.FC<{ geometry: THREE.BufferGeometry; arrowRotated?: 
     for (const [x, y] of pts.slice(1)) shape.lineTo(x, y);
     shape.closePath();
     const outline: Vec3[] = [...pts, pts[0]].map(([x, y]) => [x, y, 0]);
-    return { position: position.toArray() as Vec3, quaternion: quat.toArray() as [number, number, number, number], arrowGeo: new THREE.ShapeGeometry(shape), outline };
+    const quaternion = quat.toArray() as [number, number, number, number];
+    return { position: position.toArray() as Vec3, quaternion, arrowGeo: new THREE.ShapeGeometry(shape), outline };
   }, [geometry, arrowRotated, transformSteps]);
   useEffect(() => () => { arrowConfig?.arrowGeo?.dispose(); }, [arrowConfig]);
   if (!arrowConfig) return null;
   return (
     <group position={arrowConfig.position} quaternion={arrowConfig.quaternion} renderOrder={11}>
-      <mesh geometry={arrowConfig.arrowGeo} renderOrder={11} raycast={() => null}>
+      <mesh geometry={arrowConfig.arrowGeo} renderOrder={11} raycast={noRaycast}>
         <meshBasicMaterial color={PANEL_COLORS.arrow.fill} side={THREE.DoubleSide} depthTest={false} depthWrite={false} transparent opacity={0.95} />
       </mesh>
-      <Line points={arrowConfig.outline} color={PANEL_COLORS.arrow.outline} lineWidth={2} transparent={false} depthTest={false} depthWrite={false} renderOrder={12} raycast={() => null} />
+      <Line points={arrowConfig.outline} color={PANEL_COLORS.arrow.outline} lineWidth={2} transparent={false} depthTest={false} depthWrite={false}
+        renderOrder={12} raycast={noRaycast} />
     </group>
   );
 });
@@ -795,14 +865,15 @@ function useFaceGroups(geometry: THREE.BufferGeometry | undefined, onChange?: ()
 }
 
 function useShapeMatrices(shape: any) {
-  const localToWorld = useMemo(() => getShapeMatrix(shape),
-    [shape.position[0], shape.position[1], shape.position[2], shape.rotation[0], shape.rotation[1], shape.rotation[2], shape.scale[0], shape.scale[1], shape.scale[2]]);
+  const p = shape.position, r = shape.rotation, s = shape.scale;
+  const localToWorld = useMemo(() => getShapeMatrix(shape), [p[0], p[1], p[2], r[0], r[1], r[2], s[0], s[1], s[2]]);
   const worldToLocal = useMemo(() => localToWorld.clone().invert(), [localToWorld]);
   return { localToWorld, worldToLocal };
 }
 
 const highlightMat = (color: number, opacity: number, offset = -2, depthTest = false) => (
-  <meshBasicMaterial color={color} transparent opacity={opacity} side={THREE.DoubleSide} polygonOffset polygonOffsetFactor={offset} polygonOffsetUnits={offset} depthTest={depthTest} />
+  <meshBasicMaterial color={color} transparent opacity={opacity} side={THREE.DoubleSide} polygonOffset polygonOffsetFactor={offset} polygonOffsetUnits={offset}
+    depthTest={depthTest} />
 );
 
 export function confirmBodyPanelPlacement(vf: VirtualFace | null | undefined): void {
@@ -818,10 +889,14 @@ export function confirmBodyPanelPlacement(vf: VirtualFace | null | undefined): v
 
 interface PendingPreview { geo: THREE.BufferGeometry; edgeGeo: THREE.BufferGeometry; virtualFace: VirtualFace }
 
+/** ÜST ÜSTE PANEL isteği: yüzün `depth` mm içindeki düzlem (altındaki panelin iç yüzü); altındaki panel bölgede yok sayılır. */
+export interface StackSpec {
+  depth: number; baseVfId: string; basePanelId: string;
+  /** Eğimli taban: düzlem = tabanın büyük yüzü (`face` verilmezse boşluğa bakan). */
+  onPanel?: any; face?: CoplanarFaceGroup;
+}
 /** Tıklanan yüz bileşeninin serbest bölgesi (highlight) ve VF'si. HIGHLIGHT = PANEL: bölge tek kaynaktan (computeFreeRegionLocal);
  *  kontur YEREL uzayda, panel ayak izleri dünya→yerel dönüşümle getirilir. */
-/** ÜST ÜSTE PANEL isteği: yüzün `depth` mm içindeki düzlem (altındaki panelin iç yüzü); altındaki panel bölgede yok sayılır. */
-export interface StackSpec { depth: number; baseVfId: string; basePanelId: string; /** eğimli taban: düzlem = tabanın büyük yüzü (`face` verilmezse boşluğa bakan) */ onPanel?: any; face?: CoplanarFaceGroup }
 export function buildFacePreview(
   clickWorld: THREE.Vector3, group: CoplanarFaceGroup, faces: FaceData[], worldToLocal: THREE.Matrix4,
   shapeId: string, geometry?: THREE.BufferGeometry, childPanels: any[] = [], stack?: StackSpec
@@ -833,7 +908,9 @@ export function buildFacePreview(
   let nrm = group.normal.clone().normalize();
   if (stack?.onPanel) {
     // EĞİMLİ TABAN: düzlem = tabanın iç büyük yüzü; tık o düzleme normal boyunca izdüşer; VF normali tabana doğru.
-    const inner = stack.face ? { faces: getFacesAndGroups(stack.onPanel.geometry).faces, group: stack.face } : panelInnerBigFace(stack.onPanel, clickOnFace.clone().addScaledVector(nrm, -200));   // verilen yüz ya da boşluğa bakan büyük yüz
+    // Verilen yüz ya da boşluğa bakan büyük yüz.
+    const inner = stack.face ? { faces: getFacesAndGroups(stack.onPanel.geometry).faces, group: stack.face }
+      : panelInnerBigFace(stack.onPanel, clickOnFace.clone().addScaledVector(nrm, -200));
     if (!inner) return null;
     const nIn = inner.group.normal.clone().normalize();
     const seed = clickOnFace.clone().sub(nIn.clone().multiplyScalar(clickOnFace.clone().sub(inner.group.center).dot(nIn)));
@@ -846,8 +923,9 @@ export function buildFacePreview(
     clickLocal = clickOnFace.clone().add(shift);
   }
   // Yığındaki paneller (düzlemin gerisinde kalanlar) kardeş değil; düzlemi aşan levhalar delen-engel.
+  const stackPlane = clickLocal.dot(nrm.clone().multiplyScalar(-1));
   const siblings = stack
-    ? childPanels.filter(p => !panelBehindStackPlane(p, nrm, clickLocal.dot(nrm.clone().multiplyScalar(-1)))).map(p => ({ ...p, __pierceObstacle: true }))
+    ? childPanels.filter(p => !panelBehindStackPlane(p, nrm, stackPlane)).map(p => ({ ...p, __pierceObstacle: true }))
     : childPanels;
   const region = computeFreeRegionLocal(corners, nrm, clickLocal, siblings, worldToLocal, shapeId);
   if (!region) return null;
@@ -858,7 +936,7 @@ export function buildFacePreview(
     if (!reach[j * nx + i]) continue;
     const x0 = uMin + i * cw, x1 = x0 + cw, y0 = vMin + j * ch, y1 = y0 + ch;
     const p00 = to3D(x0, y0), p10 = to3D(x1, y0), p11 = to3D(x1, y1), p01 = to3D(x0, y1);
-    pos.push(p00.x, p00.y, p00.z, p10.x, p10.y, p10.z, p11.x, p11.y, p11.z, p00.x, p00.y, p00.z, p11.x, p11.y, p11.z, p01.x, p01.y, p01.z);
+    for (const q of [p00, p10, p11, p00, p11, p01]) pos.push(q.x, q.y, q.z);
     const bnd: Array<[THREE.Vector3, THREE.Vector3]> = [];
     if (i === 0 || !reach[j * nx + i - 1]) bnd.push([p00, p01]);
     if (i === nx - 1 || !reach[j * nx + i + 1]) bnd.push([p10, p11]);
@@ -891,7 +969,9 @@ export function buildFacePreview(
   return { geo, edgeGeo, virtualFace };
 }
 
-const RAYCAST_COLORS = { previewFill: SEL_COLORS.active, previewEdge: SEL_COLORS.edge, hoverEmpty: SEL_COLORS.hover, hoverHasVF: SEL_COLORS.muted, vfFill: 0x38bdf8, vfEdge: 0x0369a1 };
+const RAYCAST_COLORS = {
+  previewFill: SEL_COLORS.active, previewEdge: SEL_COLORS.edge, hoverEmpty: SEL_COLORS.hover, hoverHasVF: SEL_COLORS.muted, vfFill: 0x38bdf8, vfEdge: 0x0369a1,
+};
 
 function buildSurfaceMeshes(vf: VirtualFace): { geo: THREE.BufferGeometry; edgeGeo: THREE.BufferGeometry } | null {
   if (vf.vertices.length < 3) return null;
@@ -901,16 +981,19 @@ function buildSurfaceMeshes(vf: VirtualFace): { geo: THREE.BufferGeometry; edgeG
   const origin = corners[0];
   const projected2D = corners.map(c => { const d = new THREE.Vector3().subVectors(c, origin); return { x: d.dot(uAxis), y: d.dot(vAxis) }; });
   let area = 0;
-  for (let i = 0; i < projected2D.length; i++) { const j = (i + 1) % projected2D.length; area += projected2D[i].x * projected2D[j].y - projected2D[j].x * projected2D[i].y; }
+  for (let i = 0; i < projected2D.length; i++) {
+    const a = projected2D[i], b = projected2D[(i + 1) % projected2D.length];
+    area += a.x * b.y - b.x * a.y;
+  }
   if (area < 0) { projected2D.reverse(); corners.reverse(); }
   const triIndices = earClipTriangulate(projected2D);
   const positions = new Float32Array(triIndices.length * 3);
-  triIndices.forEach((ti, i) => { const c = corners[ti]; positions[i * 3] = c.x; positions[i * 3 + 1] = c.y; positions[i * 3 + 2] = c.z; });
+  triIndices.forEach((ti, i) => corners[ti].toArray(positions, i * 3));
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   geo.computeVertexNormals();
   const edgeVerts: number[] = [];
-  for (let i = 0; i < corners.length; i++) { const a = corners[i], b = corners[(i + 1) % corners.length]; edgeVerts.push(a.x, a.y, a.z, b.x, b.y, b.z); }
+  corners.forEach((a, i) => { const b = corners[(i + 1) % corners.length]; edgeVerts.push(a.x, a.y, a.z, b.x, b.y, b.z); });
   const edgeGeo = new THREE.BufferGeometry();
   edgeGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(edgeVerts), 3));
   return { geo, edgeGeo };
@@ -936,16 +1019,17 @@ export const CabinetLegs: React.FC<{ shape: any }> = ({ shape }) => {
   const col = active ? LEG_COLORS.selected : LEG_COLORS.body;
   const xray = viewMode === ViewMode.XRAY;
   return (
-    <group raycast={() => null}>
+    <group raycast={noRaycast}>
       {data.spots.map((p, i) => (
         <group key={i} position={[p.x, data.y0, p.z]}>
-          <mesh position={[0, data.h / 2, 0]} castShadow receiveShadow raycast={() => null}>
+          <mesh position={[0, data.h / 2, 0]} castShadow receiveShadow raycast={noRaycast}>
             <cylinderGeometry args={[data.r, data.r, data.h, 28]} />
             <meshStandardMaterial color={col} metalness={0.05} roughness={0.85} transparent={xray} opacity={xray ? 0.35 : 1} />
           </mesh>
-          <mesh position={[0, 1.5, 0]} raycast={() => null}>
+          <mesh position={[0, 1.5, 0]} raycast={noRaycast}>
             <cylinderGeometry args={[data.r + 6, data.r + 6, 3, 28]} />
-            <meshStandardMaterial color={active ? LEG_COLORS.selected : LEG_COLORS.top} metalness={0.05} roughness={0.9} transparent={xray} opacity={xray ? 0.35 : 1} />
+            <meshStandardMaterial color={active ? LEG_COLORS.selected : LEG_COLORS.top} metalness={0.05} roughness={0.9}
+              transparent={xray} opacity={xray ? 0.35 : 1} />
           </mesh>
         </group>
       ))}
@@ -979,8 +1063,13 @@ export const VirtualFaceOverlay: React.FC<{ shape: any }> = ({ shape }) => {
   );
 };
 
+/** Gövde paneli değil: iç panel (raf/dikme), kapak ya da arkalık. */
+const isSpecialPanel = (p: any) => isInteriorPanel(p) || isDoorPanel(p) || isBackPanel(p);
+type FaceCandidate = { index: number; depth: number; hitPoint: THREE.Vector3; stack?: StackSpec };
+
 export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = ({ shape, allShapes = [] }) => {
-  const { raycastMode, virtualFaces, setSelectedPanelRow, setRaycastPendingVf } = useStoreFields('raycastMode', 'virtualFaces', 'setSelectedPanelRow', 'setRaycastPendingVf');
+  const { raycastMode, virtualFaces, setSelectedPanelRow, setRaycastPendingVf } = useStoreFields('raycastMode', 'virtualFaces', 'setSelectedPanelRow',
+    'setRaycastPendingVf');
   const [hoveredGroupIndex, setHoveredGroupIndex] = useState<number | null>(null);
   /** Fare bir panelin ÜZERİNDEYKEN (yüz orada panelle örtülü) o panel vurgulanır; tık o yüzün en yakın boşluğunu aday yapar. */
   const [hoverCover, setHoverCover] = useState<{ id: string; geometry: THREE.BufferGeometry } | null>(null);
@@ -991,24 +1080,36 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
   const vertexModsKeyStr = JSON.stringify(shape.vertexModifications || []);
   const effGeometry = useMemo(() => effectiveBodyGeometry(shape), [shape.geometry, shape.geometry?.uuid, vertexModsKeyStr]);
   const { localToWorld, worldToLocal } = useShapeMatrices(shape);
+  const normalMatrix = useMemo(() => new THREE.Matrix3().getNormalMatrix(localToWorld), [localToWorld]);
   const { faces, groups: faceGroups } = useFaceGroups(effGeometry, () => { setPending(null); lastClickRef.current = null; });
-  useEffect(() => { if (!raycastMode) { setHoveredGroupIndex(null); setHoverCover(null); hoverProbeRef.current = null; setPending(null); lastClickRef.current = null; } }, [raycastMode]);
+  useEffect(() => {
+    if (raycastMode) return;
+    setHoveredGroupIndex(null); setHoverCover(null); hoverProbeRef.current = null; setPending(null); lastClickRef.current = null;
+  }, [raycastMode]);
   useEffect(() => { setRaycastPendingVf(pending ? pending.virtualFace : null); }, [pending]);
   // İç paneller de girer (yeni panel sırada SONRA → mevcutlar onu basar); kapaklar/arkalıklar engel değildir.
   const childPanels = useMemo(() => childPanelsOf(shape.id, allShapes).filter(p => !isDoorPanel(p) && !isBackPanel(p)), [allShapes, shape.id]);
   // Bölge önizlemesi: iç arkalık parçaları da basar (yeni panel sırada en sonda → arkalığa kadar yerleşir; motorla aynı kural).
-  const regionSiblings = useMemo(() => [...childPanels, ...childPanelsOf(shape.id, allShapes).filter(isBackPanel).map(backPreviewStamp).filter((x): x is NonNullable<typeof x> => !!x)], [childPanels, allShapes, shape.id]);
+  const regionSiblings = useMemo(() => [
+    ...childPanels, ...childPanelsOf(shape.id, allShapes).filter(isBackPanel).map(backPreviewStamp).filter((x): x is NonNullable<typeof x> => !!x),
+  ], [childPanels, allShapes, shape.id]);
   const groupHasVirtualFace = useCallback((gi: number): boolean => {
     if (gi < 0 || gi >= faceGroups.length || shapeVirtualFaces.length === 0) return false;
     const gn = faceGroups[gi].normal.clone().normalize(), gc = faceGroups[gi].center;
     return shapeVirtualFaces.some(vf => Math.abs(gn.dot(new THREE.Vector3(...vf.normal).normalize())) >= 0.98
       && Math.abs(new THREE.Vector3(...vf.center).sub(gc).dot(gn)) < 2);
   }, [faceGroups, shapeVirtualFaces]);
-  const hoverHighlightGeometry = useMemo(() => (hoveredGroupIndex === null || !faceGroups[hoveredGroupIndex]) ? null
-    : createFaceHighlightGeometry(faces, faceGroups[hoveredGroupIndex].faceIndices), [hoveredGroupIndex, faceGroups, faces]);
-  /* PANEL ÜSTÜNDEN YERLEŞTİRME (Goker, 18 Eki 2026 — "panel olan yere tıkladığımda da panel yerleştirebileyim; o yüzeyde boşluk varsa
-     o alanı da, panelin önünü de highlight etsin"): örtülü vuruşta yüz atlanmaz — o yüzün tıklanan noktaya EN YAKIN boş noktası
-     tohum olur (bölge = panelin önündeki/yanındaki boşluk); yüz tamamen doluysa aday olmaz. Diğer akış değişmedi. */
+  const hoverHighlightGeometry = useMemo(() => groupHighlight(faces, faceGroups, hoveredGroupIndex), [hoveredGroupIndex, faceGroups, faces]);
+  const localNormalOf = (gi: number) => faceGroups[gi].normal.clone().normalize();
+  const worldNormalOf = (gi: number) => localNormalOf(gi).applyMatrix3(normalMatrix).normalize();
+  const inGroup = (fis: number[], fcs: FaceData[], p: THREE.Vector3, toWorld?: THREE.Matrix4) => fis.some(fi => {
+    const f = fcs[fi];
+    if (!f) return false;
+    const [a, b, c] = toWorld ? f.vertices.map(v => v.clone().applyMatrix4(toWorld)) : f.vertices;
+    return pointInTriangle3D(p, a, b, c);
+  });
+  /* PANEL ÜSTÜNDEN YERLEŞTİRME: örtülü vuruşta yüz atlanmaz — o yüzün tıklanan noktaya EN YAKIN boş noktası tohum olur
+     (bölge = panelin önündeki/yanındaki boşluk); yüz tamamen doluysa aday olmaz. */
   const nearestFreePointOnGroup = (gi: number, hitWorld: THREE.Vector3, nW: THREE.Vector3): THREE.Vector3 | null => {
     const group = faceGroups[gi]; if (!group) return null;
     const nL = group.normal.clone().normalize();
@@ -1016,7 +1117,10 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
     const verts = group.faceIndices.flatMap(fi => faces[fi]?.vertices ?? []);
     if (!verts.length) return null;
     let uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity;
-    for (const p of verts) { const a = p.dot(u), b = p.dot(v); if (a < uMin) uMin = a; if (a > uMax) uMax = a; if (b < vMin) vMin = b; if (b > vMax) vMax = b; }
+    for (const p of verts) {
+      const a = p.dot(u), b = p.dot(v);
+      if (a < uMin) uMin = a; if (a > uMax) uMax = a; if (b < vMin) vMin = b; if (b > vMax) vMax = b;
+    }
     const planeN = verts[0].dot(nL);
     const N = 28, du = (uMax - uMin) / N, dv = (vMax - vMin) / N;
     if (!(du > 0.01) || !(dv > 0.01)) return null;
@@ -1026,8 +1130,7 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
       const pw = pl.clone().applyMatrix4(localToWorld);
       const d = pw.distanceTo(hitWorld);
       if (d >= bestD) continue;
-      const inside = group.faceIndices.some(fi => { const f = faces[fi]; return !!f && pointInTriangle3D(pl, f.vertices[0], f.vertices[1], f.vertices[2]); });
-      if (!inside) continue;
+      if (!inGroup(group.faceIndices, faces, pl)) continue;
       if (findPanelCoveringPoint(pw, childPanels, nW, pw)) continue;
       best = pw; bestD = d;
     }
@@ -1044,9 +1147,93 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
     const prev = hoverProbeRef.current;
     if (prev && prev.gi === gi && prev.point.distanceTo(pt) < 8) return;
     hoverProbeRef.current = { gi, point: pt };
-    const nW = faceGroups[gi].normal.clone().normalize().applyMatrix3(new THREE.Matrix3().getNormalMatrix(localToWorld)).normalize();
-    const cover = findPanelCoveringPoint(pt, childPanels, nW, pt);
-    setHoverCover(prevC => (cover ? (prevC && prevC.id === cover.id && prevC.geometry === cover.geometry ? prevC : { id: cover.id, geometry: cover.geometry }) : null));
+    const cover = findPanelCoveringPoint(pt, childPanels, worldNormalOf(gi), pt);
+    setHoverCover(prevC => (!cover ? null
+      : prevC && prevC.id === cover.id && prevC.geometry === cover.geometry ? prevC : { id: cover.id, geometry: cover.geometry }));
+  };
+  // Örten panelin ÖNÜNE panel: yalnız o yüzde duran, dönmemiş gövde paneli; derinlik = o noktada üst üste duran TÜM panellerin
+  // en içteki yüzü (yeni panel en öndekinin önüne gelir — 3., 4. panel de yerleşebilir). Eğimli taban: düzlem tabanın iç büyük yüzü.
+  const stackSpecFor = (cover: any, gi: number, hitWorld: THREE.Vector3): StackSpec | undefined => {
+    if (!cover || isSpecialPanel(cover)) return undefined;
+    if (panelHasRotation(cover)) {
+      const cvf = vfOfPanel(cover); if (!cvf) return undefined;
+      const inner = panelInnerBigFace(cover, hitWorld.clone().applyMatrix4(worldToLocal).addScaledVector(localNormalOf(gi), -200));
+      if (!inner) return undefined;
+      return { depth: 0, baseVfId: cvf.id, basePanelId: cover.id, onPanel: cover, face: inner.group };
+    }
+    const nL = localNormalOf(gi);
+    const k = Math.abs(nL.x) > 0.9 ? 'x' : Math.abs(nL.y) > 0.9 ? 'y' : 'z';
+    const hitL = hitWorld.clone().applyMatrix4(worldToLocal);
+    const plane = hitL[k];
+    let depth = 0, top: any = null;
+    for (const p of childPanels) {
+      if (isSpecialPanel(p) || panelHasRotation(p)) continue;
+      const pvf = vfOfPanel(p); if (!pvf || new THREE.Vector3(...pvf.normal).normalize().dot(nL) < 0.95) continue;
+      const bb = localBboxOf(p.geometry); if (!bb) continue;
+      const inside = (['x', 'y', 'z'] as const).every(a => a === k || (hitL[a] >= bb.min[a] - 0.5 && hitL[a] <= bb.max[a] + 0.5));
+      if (!inside) continue;
+      const d = Math.abs((nL[k] < 0 ? bb.max[k] : bb.min[k]) - plane);
+      if (d > depth) { depth = d; top = p; }
+    }
+    const tvf = top ? vfOfPanel(top) : undefined;
+    return depth > 0.5 && top && tvf ? { depth, baseVfId: tvf.id, basePanelId: top.id } : undefined;
+  };
+  // EĞİMLİ PANELİN KENDİ YÜZLERİ: ışın dönmüş gövde panellerinin iki büyük yüzüyle de kesiştirilir; her vuruş o yüze yaslanan
+  // panel adayıdır (derinlik sırasına girer).
+  const rotatedFaceHits = (cameraPos: THREE.Vector3, clickPoint: THREE.Vector3) => {
+    const hits: Array<FaceCandidate & { stack: StackSpec }> = [];
+    const rayLocalO = cameraPos.clone().applyMatrix4(worldToLocal);
+    const rayLocalD = clickPoint.clone().sub(cameraPos).normalize().transformDirection(worldToLocal).normalize();
+    for (const p of childPanels) {
+      if (isSpecialPanel(p) || !panelHasRotation(p) || !p.geometry) continue;
+      const pvf = vfOfPanel(p); if (!pvf) continue;
+      const nVf = new THREE.Vector3(...pvf.normal).normalize();
+      // Taban VF'sinin gövde yüzü (descriptor için)
+      let gi = -1, best = Infinity;
+      faceGroups.forEach((g, i) => {
+        if (!(g.normal.clone().normalize().dot(nVf) > 0.95)) return;
+        const d = g.center.distanceTo(new THREE.Vector3(...pvf.center));
+        if (d < best) { best = d; gi = i; }
+      });
+      if (gi < 0) continue;
+      const { faces: pf, groups: pg } = getFacesAndGroups(p.geometry);
+      const big = [...pg].filter(g => !g.isCurved).sort((a, b) => b.totalArea - a.totalArea).slice(0, 2);
+      for (const g of big) {
+        const n = g.normal.clone().normalize();
+        const den = n.dot(rayLocalD); if (Math.abs(den) < 1e-6) continue;
+        const t = g.center.clone().sub(rayLocalO).dot(n) / den; if (t < 0) continue;
+        const hitL = rayLocalO.clone().addScaledVector(rayLocalD, t);
+        if (!inGroup(g.faceIndices, pf, hitL)) continue;
+        // Yalnız ışına BAKAN yüz (arka yüz aynı panelin öbür tarafı; o da kendi vuruşuyla gelir)
+        if (den > 0) continue;
+        const stack = { depth: 0, baseVfId: pvf.id, basePanelId: p.id, onPanel: p, face: g };
+        hits.push({ index: gi, depth: t, hitPoint: hitL.clone().applyMatrix4(localToWorld), stack });
+      }
+    }
+    return hits;
+  };
+  // Derinlik döngüsü adayları: panel izi altındaki gruplarda o panelin önü + yüzün en yakın boşluğu; boşluklar geçerli hedeftir.
+  const depthCandidates = (cameraPos: THREE.Vector3, clickPoint: THREE.Vector3, rotHits: Array<FaceCandidate & { stack: StackSpec }>) => {
+    const rayDir = clickPoint.clone().sub(cameraPos).normalize();
+    const out: FaceCandidate[] = [...rotHits];
+    for (let gi = 0; gi < faceGroups.length; gi++) {
+      const group = faceGroups[gi];
+      const nW = worldNormalOf(gi);
+      const denom = nW.dot(rayDir);
+      if (Math.abs(denom) < 1e-6) continue;
+      const t = group.center.clone().applyMatrix4(localToWorld).sub(cameraPos).dot(nW) / denom;
+      if (t < 0) continue;
+      const hitOnPlane = cameraPos.clone().addScaledVector(rayDir, t);
+      if (!inGroup(group.faceIndices, faces, hitOnPlane, localToWorld)) continue;
+      const cover = findPanelCoveringPoint(hitOnPlane, childPanels, nW, hitOnPlane);
+      if (!cover) { out.push({ index: gi, depth: t, hitPoint: hitOnPlane }); continue; }
+      const st = stackSpecFor(cover, gi, hitOnPlane);
+      // Eğimli örten panelin yüzleri ışın kesişiminden (rotHits) zaten adaydır; aynı yüz iki kez eklenmez.
+      if (st && !(st.onPanel && rotHits.some(h => h.stack.basePanelId === st.basePanelId))) out.push({ index: gi, depth: t, hitPoint: hitOnPlane, stack: st });
+      const free = nearestFreePointOnGroup(gi, hitOnPlane, nW);
+      if (free) out.push({ index: gi, depth: t + 0.01, hitPoint: free });
+    }
+    return out.sort((a, b) => a.depth - b.depth);
   };
   const handlePointerDown = (e: any) => {
     if (!raycastMode) return;
@@ -1061,113 +1248,22 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
     const clickPoint: THREE.Vector3 = e.point.clone();
     const clickLocal = clickPoint.clone().applyMatrix4(worldToLocal);
     const isSameSpot = lastClickRef.current && lastClickRef.current.point.distanceTo(clickLocal) < 5;
-    const normalMatrix = new THREE.Matrix3().getNormalMatrix(localToWorld);
-    const worldNormalOf = (gi: number) => faceGroups[gi].normal.clone().normalize().applyMatrix3(normalMatrix).normalize();
     // Nokta değen bir panelin GÜNCEL ayak izi içindeyse yüz orada "tanımlı"dır; aradaki boşluk serbesttir.
     const coveringPanel = findPanelCoveringPoint(clickPoint, childPanels, worldNormalOf(hoveredGroupIndex), clickPoint);
     const hoveredIsDefined = coveringPanel !== null;
-
     let targetGroupIndex = hoveredGroupIndex;
     let previewClickPoint = clickPoint;
     let previewStack: StackSpec | undefined;
-    let cycleCandidates: Array<{ index: number; depth: number; hitPoint: THREE.Vector3; stack?: StackSpec }> | null = null;
-    // Örten panelin ÖNÜNE panel: yalnız o yüzde duran, dönmemiş gövde paneli (raf/dikme ucu, kapak, arkalık değil); derinlik = gerçek kalınlığı.
-    // Yığın derinliği = o noktada üst üste duran TÜM panellerin (taban + önüne atılanlar) en içteki yüzü; yeni panel en öndekinin önüne gelir
-    // (Goker: "ne kadar tıklanırsa o kadar" — 3., 4. panel de yerleşebilsin).
-    const stackSpecFor = (cover: any, gi: number, hitWorld: THREE.Vector3): StackSpec | undefined => {
-      if (!cover || isInteriorPanel(cover) || isDoorPanel(cover) || isBackPanel(cover)) return undefined;
-      // EĞİMLİ / dönmüş taban (Goker: "panel eğimliyse o eğimli yüzey de alternatif olsun"): düzlem tabanın iç büyük yüzü.
-      if (panelHasRotation(cover)) {
-        const cvf = vfOfPanel(cover); if (!cvf) return undefined;
-        const nL = faceGroups[gi].normal.clone().normalize();
-        const inner = panelInnerBigFace(cover, hitWorld.clone().applyMatrix4(worldToLocal).addScaledVector(nL, -200)); if (!inner) return undefined;
-        return { depth: 0, baseVfId: cvf.id, basePanelId: cover.id, onPanel: cover, face: inner.group };
-      }
-      const nL = faceGroups[gi].normal.clone().normalize();
-      const k = Math.abs(nL.x) > 0.9 ? 'x' : Math.abs(nL.y) > 0.9 ? 'y' : 'z';
-      const hitL = hitWorld.clone().applyMatrix4(worldToLocal);
-      const plane = hitL[k];
-      let depth = 0, top: any = null;
-      for (const p of childPanels) {
-        if (isInteriorPanel(p) || isDoorPanel(p) || isBackPanel(p) || panelHasRotation(p)) continue;
-        const pvf = vfOfPanel(p); if (!pvf || new THREE.Vector3(...pvf.normal).normalize().dot(nL) < 0.95) continue;
-        const bb = localBboxOf(p.geometry); if (!bb) continue;
-        const inside = (['x', 'y', 'z'] as const).every(a => a === k || (hitL[a] >= bb.min[a] - 0.5 && hitL[a] <= bb.max[a] + 0.5));
-        if (!inside) continue;
-        const far = nL[k] < 0 ? bb.max[k] : bb.min[k];
-        const d = Math.abs(far - plane);
-        if (d > depth) { depth = d; top = p; }
-      }
-      const tvf = top ? vfOfPanel(top) : undefined;
-      return depth > 0.5 && top && tvf ? { depth, baseVfId: tvf.id, basePanelId: top.id } : undefined;
-    };
     const cameraPos = e.camera?.position?.clone();
-    // EĞİMLİ PANELİN KENDİ YÜZLERİ (Goker: "eğimli panelin altına veya üstüne panel; eğimli yüzüne de tıklayabileyim"): ışın dönmüş
-    // gövde panellerinin iki büyük yüzüyle de kesiştirilir; her vuruş o yüze yaslanan panel adayıdır (derinlik sırasına girer).
-    const rotFaceHits: Array<{ index: number; depth: number; hitPoint: THREE.Vector3; stack: StackSpec }> = [];
-    if (cameraPos) {
-      const rayDir0 = clickPoint.clone().sub(cameraPos).normalize();
-      const rayLocalO = cameraPos.clone().applyMatrix4(worldToLocal), rayLocalD = rayDir0.clone().transformDirection(worldToLocal).normalize();
-      for (const p of childPanels) {
-        if (isInteriorPanel(p) || isDoorPanel(p) || isBackPanel(p) || !panelHasRotation(p) || !p.geometry) continue;
-        const pvf = vfOfPanel(p); if (!pvf) continue;
-        const nVf = new THREE.Vector3(...pvf.normal).normalize();
-        // Taban VF'sinin gövde yüzü (descriptor için)
-        let gi = -1, best = Infinity;
-        faceGroups.forEach((g, i) => { if (g.normal.clone().normalize().dot(nVf) > 0.95) { const d = g.center.distanceTo(new THREE.Vector3(...pvf.center)); if (d < best) { best = d; gi = i; } } });
-        if (gi < 0) continue;
-        const { faces: pf, groups: pg } = getFacesAndGroups(p.geometry);
-        const big = [...pg].filter(g => !g.isCurved).sort((a, b) => b.totalArea - a.totalArea).slice(0, 2);
-        for (const g of big) {
-          const n = g.normal.clone().normalize();
-          const den = n.dot(rayLocalD); if (Math.abs(den) < 1e-6) continue;
-          const t = g.center.clone().sub(rayLocalO).dot(n) / den; if (t < 0) continue;
-          const hitL = rayLocalO.clone().addScaledVector(rayLocalD, t);
-          if (!g.faceIndices.some(fi => { const f = pf[fi]; return !!f && pointInTriangle3D(hitL, f.vertices[0], f.vertices[1], f.vertices[2]); })) continue;
-          // Yalnız ışına BAKAN yüz (arka yüz aynı panelin öbür tarafı; o da kendi vuruşuyla gelir)
-          if (den > 0) continue;
-          rotFaceHits.push({ index: gi, depth: t, hitPoint: hitL.clone().applyMatrix4(localToWorld), stack: { depth: 0, baseVfId: pvf.id, basePanelId: p.id, onPanel: p, face: g } });
-        }
-      }
-    }
-    if (cameraPos && (isSameSpot || hoveredIsDefined || rotFaceHits.length > 0)) {
-      // Derinlik döngüsü: panel izi altındaki gruplar atlanır; boşluklar geçerli hedeftir.
-      const rayDir = clickPoint.clone().sub(cameraPos).normalize();
-      const candidateGroups: Array<{ index: number; depth: number; hitPoint: THREE.Vector3; stack?: StackSpec }> = [...rotFaceHits];
-      for (let gi = 0; gi < faceGroups.length; gi++) {
-        const group = faceGroups[gi];
-        const nW = worldNormalOf(gi);
-        const denom = nW.dot(rayDir);
-        if (Math.abs(denom) < 1e-6) continue;
-        const t = group.center.clone().applyMatrix4(localToWorld).sub(cameraPos).dot(nW) / denom;
-        if (t < 0) continue;
-        const hitOnPlane = cameraPos.clone().addScaledVector(rayDir, t);
-        const inside = group.faceIndices.some(fi => {
-          const f = faces[fi];
-          return !!f && pointInTriangle3D(hitOnPlane, f.vertices[0].clone().applyMatrix4(localToWorld), f.vertices[1].clone().applyMatrix4(localToWorld), f.vertices[2].clone().applyMatrix4(localToWorld));
-        });
-        if (!inside) continue;
-        const cover = findPanelCoveringPoint(hitOnPlane, childPanels, nW, hitOnPlane);
-        if (cover) {
-          // Vuruş bir panelin altında: (1) o panelin ÖNÜNE panel (iç yüzünde, aynı yüz düzlemi stackDepth içeride), (2) o yüzün en yakın boşluğu.
-          const st = stackSpecFor(cover, gi, hitOnPlane);
-          // Eğimli örten panelin yüzleri ışın kesişiminden (rotFaceHits) zaten adaydır; aynı yüz iki kez eklenmez.
-          if (st && !(st.onPanel && rotFaceHits.some(h => h.stack.basePanelId === st.basePanelId))) candidateGroups.push({ index: gi, depth: t, hitPoint: hitOnPlane, stack: st });
-          const free = nearestFreePointOnGroup(gi, hitOnPlane, nW);
-          if (free) candidateGroups.push({ index: gi, depth: t + 0.01, hitPoint: free });
-          continue;
-        }
-        candidateGroups.push({ index: gi, depth: t, hitPoint: hitOnPlane });
-      }
-      cycleCandidates = candidateGroups.sort((a, b) => a.depth - b.depth);
-    }
+    const rotHits = cameraPos ? rotatedFaceHits(cameraPos, clickPoint) : [];
+    const cycleCandidates = cameraPos && (isSameSpot || hoveredIsDefined || rotHits.length > 0) ? depthCandidates(cameraPos, clickPoint, rotHits) : null;
     if (cycleCandidates && cycleCandidates.length > 0) {
       // Aynı noktaya tekrar tık adayları döndürür — örtülü noktada da (panelin önü → o yüzün boşluğu → arkadaki yüzler).
-      const nextCycleIndex = isSameSpot ? (lastClickRef.current!.cycleIndex + 1) % cycleCandidates.length : 0;
-      targetGroupIndex = cycleCandidates[nextCycleIndex].index;
-      previewClickPoint = cycleCandidates[nextCycleIndex].hitPoint;
-      previewStack = cycleCandidates[nextCycleIndex].stack;
-      lastClickRef.current = { point: clickLocal, groupIndex: targetGroupIndex, cycleIndex: nextCycleIndex };
+      const next = isSameSpot ? (lastClickRef.current!.cycleIndex + 1) % cycleCandidates.length : 0;
+      targetGroupIndex = cycleCandidates[next].index;
+      previewClickPoint = cycleCandidates[next].hitPoint;
+      previewStack = cycleCandidates[next].stack;
+      lastClickRef.current = { point: clickLocal, groupIndex: targetGroupIndex, cycleIndex: next };
     } else if (hoveredIsDefined) {
       const vfId = coveringPanel?.parameters?.virtualFaceId;
       if (vfId) setSelectedPanelRow(`vf-${vfId}`, shape.id);
@@ -1179,23 +1275,23 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
     setPending(buildFacePreview(previewClickPoint, faceGroups[targetGroupIndex], faces, worldToLocal, shape.id, effGeometry, regionSiblings, previewStack));
   };
   if (!raycastMode) return null;
+  const hoverColor = hoveredGroupIndex !== null && groupHasVirtualFace(hoveredGroupIndex) ? RAYCAST_COLORS.hoverHasVF : RAYCAST_COLORS.hoverEmpty;
   return (
     <>
-      <mesh geometry={effGeometry} visible={false} onPointerMove={handlePointerMove} onPointerOut={(e) => { e.stopPropagation(); setHoveredGroupIndex(null); setHoverCover(null); hoverProbeRef.current = null; }} onPointerDown={handlePointerDown} />
+      <mesh geometry={effGeometry} visible={false} onPointerMove={handlePointerMove} onPointerDown={handlePointerDown}
+        onPointerOut={(e) => { e.stopPropagation(); setHoveredGroupIndex(null); setHoverCover(null); hoverProbeRef.current = null; }} />
       {hoverCover && !pending && (
-        <mesh geometry={hoverCover.geometry} raycast={() => null}>
+        <mesh geometry={hoverCover.geometry} raycast={noRaycast}>
           {highlightMat(RAYCAST_COLORS.hoverEmpty, SEL_COLORS.faceHoverOpacity, -1, true)}
         </mesh>
       )}
       {hoverHighlightGeometry && (
-        <mesh geometry={hoverHighlightGeometry} raycast={() => null}>
-          {highlightMat(hoveredGroupIndex !== null && groupHasVirtualFace(hoveredGroupIndex) ? RAYCAST_COLORS.hoverHasVF : RAYCAST_COLORS.hoverEmpty, SEL_COLORS.faceHoverOpacity, -1, true)}
-        </mesh>
+        <mesh geometry={hoverHighlightGeometry} raycast={noRaycast}>{highlightMat(hoverColor, SEL_COLORS.faceHoverOpacity, -1, true)}</mesh>
       )}
       {pending && (
         <>
-          <mesh geometry={pending.geo} raycast={() => null}>{highlightMat(RAYCAST_COLORS.previewFill, SEL_COLORS.faceActiveOpacity)}</mesh>
-          <lineSegments geometry={pending.edgeGeo} raycast={() => null}>
+          <mesh geometry={pending.geo} raycast={noRaycast}>{highlightMat(RAYCAST_COLORS.previewFill, SEL_COLORS.faceActiveOpacity)}</mesh>
+          <lineSegments geometry={pending.edgeGeo} raycast={noRaycast}>
             <lineBasicMaterial color={RAYCAST_COLORS.previewEdge} depthTest={false} transparent opacity={0.9} />
           </lineSegments>
         </>
@@ -1205,7 +1301,8 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
 };
 
 export const FaceEditor: React.FC<{ shape: any }> = ({ shape }) => {
-  const { filletMode, selectedFilletFaces, addFilletFace, addFilletFaceData } = useStoreFields('filletMode', 'selectedFilletFaces', 'addFilletFace', 'addFilletFaceData');
+  const { filletMode, selectedFilletFaces, addFilletFace, addFilletFaceData } = useStoreFields('filletMode', 'selectedFilletFaces', 'addFilletFace',
+    'addFilletFaceData');
   const { faces, groups: faceGroups } = useFaceGroups(shape.geometry);
   const [hoveredGroupIndex, setHoveredGroupIndex] = useState<number | null>(null);
 
@@ -1234,17 +1331,21 @@ export const FaceEditor: React.FC<{ shape: any }> = ({ shape }) => {
     if (gi !== -1) setHoveredGroupIndex(gi);
   };
   const selectedFilletGeometries = useMemo(() => (!filletMode || selectedFilletFaces.length === 0) ? []
-    : selectedFilletFaces.map(gi => faceGroups[gi] ? createFaceHighlightGeometry(faces, faceGroups[gi].faceIndices) : null).filter((g): g is THREE.BufferGeometry => !!g),
-    [filletMode, selectedFilletFaces, faceGroups, faces]);
-  const highlightGeometry = useMemo(() => (hoveredGroupIndex === null || !faceGroups[hoveredGroupIndex]) ? null
-    : createFaceHighlightGeometry(faces, faceGroups[hoveredGroupIndex].faceIndices), [hoveredGroupIndex, faceGroups, faces]);
-  const boundaryEdgesGeometry = useMemo(() => (faces.length === 0 || faceGroups.length === 0) ? null : createGroupBoundaryEdges(faces, faceGroups), [faces, faceGroups]);
+    : selectedFilletFaces.map(gi => groupHighlight(faces, faceGroups, gi)).filter((g): g is THREE.BufferGeometry => !!g),
+  [filletMode, selectedFilletFaces, faceGroups, faces]);
+  const highlightGeometry = useMemo(() => groupHighlight(faces, faceGroups, hoveredGroupIndex), [hoveredGroupIndex, faceGroups, faces]);
+  const boundaryEdgesGeometry = useMemo(() => (faces.length === 0 || faceGroups.length === 0) ? null : createGroupBoundaryEdges(faces, faceGroups),
+    [faces, faceGroups]);
   return (
     <>
       <mesh geometry={shape.geometry} visible={false} onPointerMove={handlePointerMove} onPointerOut={(e) => { e.stopPropagation(); setHoveredGroupIndex(null); }}
         onPointerDown={(e) => { e.stopPropagation(); if (e.button === 2 && hoveredGroupIndex !== null) handleFaceSelection(hoveredGroupIndex); }} />
-      {selectedFilletGeometries.map((geom, idx) => <mesh key={`selected-${idx}`} geometry={geom}>{highlightMat(SEL_COLORS.active, SEL_COLORS.faceActiveOpacity)}</mesh>)}
-      {highlightGeometry && !selectedFilletFaces.includes(hoveredGroupIndex!) && <mesh geometry={highlightGeometry}>{highlightMat(SEL_COLORS.hover, SEL_COLORS.faceHoverOpacity)}</mesh>}
+      {selectedFilletGeometries.map((geom, idx) => (
+        <mesh key={`selected-${idx}`} geometry={geom}>{highlightMat(SEL_COLORS.active, SEL_COLORS.faceActiveOpacity)}</mesh>
+      ))}
+      {highlightGeometry && !selectedFilletFaces.includes(hoveredGroupIndex!) && (
+        <mesh geometry={highlightGeometry}>{highlightMat(SEL_COLORS.hover, SEL_COLORS.faceHoverOpacity)}</mesh>
+      )}
       {boundaryEdgesGeometry && (
         <lineSegments geometry={boundaryEdgesGeometry}>
           <lineBasicMaterial color={0xffffff} linewidth={2} depthTest={false} transparent opacity={0.9} />
@@ -1272,7 +1373,11 @@ export async function applyFilletToShape(shape: any, selectedFilletFaces: number
 }
 
 export const FilletEdgeLines: React.FC<{ shape: any }> = ({ shape }) => {
-  const geo = useMemo(() => { if (!shape.geometry) return null; const { faces, groups } = getFacesAndGroups(shape.geometry); return createGroupBoundaryEdges(faces, groups); }, [shape.geometry]);
+  const geo = useMemo(() => {
+    if (!shape.geometry) return null;
+    const { faces, groups } = getFacesAndGroups(shape.geometry);
+    return createGroupBoundaryEdges(faces, groups);
+  }, [shape.geometry]);
   if (!geo) return null;
   return (
     <lineSegments geometry={geo}>
@@ -1293,7 +1398,7 @@ function surfaceMesh(surface: number[]): { geo: THREE.BufferGeometry; edgePts: [
 
 /** Yön oku: hacmin girildiği dış yüzün önünde (hacmin DIŞINDA), hacme bakar; ekranda minPx..maxPx'e kıstırılır.
  *  Derinlik tamponu okun hemen öncesinde temizlenir: her şeyin üstünde çizilir ama kendi yüzleri doğru örtüşür. */
-const FACING_ARROW = { color: '#dc2626', edge: '#7f1d1d', lengthMm: 108, minPx: 43, maxPx: 80, tiltRad: 0.5, gapFrac: 0.2, shaftLen: 0.62 } as const;
+const FACING_ARROW = { edge: '#7f1d1d', lengthMm: 108, minPx: 43, maxPx: 80, tiltRad: 0.5, gapFrac: 0.2, shaftLen: 0.62 } as const;
 
 const FACING_ARROW_GEO: THREE.BufferGeometry = (() => {
   const L = FACING_ARROW.shaftLen, w = 0.075, h = w / 2, A = 0.34, r2 = Math.SQRT2;
@@ -1366,10 +1471,10 @@ export const FacingArrow: React.FC<{ box: { min: Vec3; max: Vec3 }; axis: 0 | 1 
   });
   return (
     <group ref={ref} position={faceCenter} scale={0.0001} renderOrder={30}>
-      <mesh geometry={FACING_ARROW_GEO} raycast={() => null} renderOrder={30} frustumCulled={false} onBeforeRender={(r: THREE.WebGLRenderer) => r.clearDepth()}>
+      <mesh geometry={FACING_ARROW_GEO} raycast={noRaycast} renderOrder={30} frustumCulled={false} onBeforeRender={(r: THREE.WebGLRenderer) => r.clearDepth()}>
         <meshBasicMaterial vertexColors transparent opacity={1} depthTest depthWrite polygonOffset polygonOffsetFactor={1} polygonOffsetUnits={1} />
       </mesh>
-      <lineSegments geometry={FACING_ARROW_EDGES} raycast={() => null} renderOrder={31} frustumCulled={false}>
+      <lineSegments geometry={FACING_ARROW_EDGES} raycast={noRaycast} renderOrder={31} frustumCulled={false}>
         <lineBasicMaterial color={FACING_ARROW.edge} transparent opacity={0.9} depthTest depthWrite={false} />
       </lineSegments>
     </group>
@@ -1378,84 +1483,93 @@ export const FacingArrow: React.FC<{ box: { min: Vec3; max: Vec3 }; axis: 0 | 1 
 
 const boxCenterOf = (b: { min: Vec3; max: Vec3 }): Vec3 => [(b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, (b.min[2] + b.max[2]) / 2];
 
-export const VolumePickOverlay: React.FC<{ shape: any; allShapes: any[] }> = ({ shape, allShapes }) => {
-  const { volumePickMode, volumePickGroupId, volumePickCandidates, volumePickIndex, setVolumePick, panelGroups } =
-    useStoreFields('volumePickMode', 'volumePickGroupId', 'volumePickCandidates', 'volumePickIndex', 'setVolumePick', 'panelGroups');
-  const [hoverPick, setHoverPick] = useState<CavityPick | null>(null);
+/** Görünmez seçim kutusu: gövde kutusundan her yönde 1 mm büyük (açık yüzlerde de olayları alır). */
+const pickBoxGeometry = (b: { min: Vec3; max: Vec3 }) => {
+  const g = new THREE.BoxGeometry(b.max[0] - b.min[0] + 2, b.max[1] - b.min[1] + 2, b.max[2] - b.min[2] + 2);
+  g.translate(...boxCenterOf(b));
+  return g;
+};
+/** Olay ışını şeklin yerel uzayında. */
+const localRay = (e: any, worldToLocal: THREE.Matrix4): [Vec3, Vec3] => {
+  const o = e.ray.origin.clone().applyMatrix4(worldToLocal);
+  const d = e.ray.origin.clone().add(e.ray.direction).applyMatrix4(worldToLocal).sub(o).normalize();
+  return [[o.x, o.y, o.z], [d.x, d.y, d.z]];
+};
+type PickCycle<P> = { hoverPick: P | null; setHoverPick: (p: P | null) => void; onPointerMove: (e: any) => void; onPointerDown: (e: any) => void };
+/** Aday döngüsü (hacim / kapak / arkalık seçme): hover ilk adayı önizler; sol tık aynı aday kümesinde sıradakine geçer, sağ tık onaylar. */
+function usePickCycle<P extends { key: string }>(active: boolean, fromEvent: (e: any) => P[], setPick: (c: P[], i: number) => void, confirm: () => void)
+  : PickCycle<P> {
+  const [hoverPick, setHoverPick] = useState<P | null>(null);
   const lastRef = useRef<{ keys: string; index: number } | null>(null);
-  // Yeniden seçim: ızgara yalnız gruptan ÖNCEKİ panellerle kurulur (sonrakiler + üyeler engel değil).
-  const repickGroup = useMemo(() => (volumePickGroupId ? panelGroups.find(g => g.id === volumePickGroupId) || null : null), [panelGroups, volumePickGroupId]);
-  // Düz paneller kutu engeli; dönmüş/eğik paneller yarım-uzay.
-  // Yeni grup sırada en sonda: iç arkalık parçaları engeldir (raf/dikme arkalığa kadar).
-  const oset = useMemo(() => (repickGroup ? repickObstacles(repickGroup, shape, allShapes) : collectObstacles(shape, allShapes, () => true, backPickObstacle)), [allShapes, shape, repickGroup]);
-  const grid = useMemo(() => (volumePickMode ? gridForObstacles(shape, oset) : null), [shape, oset, volumePickMode]);
-  const currentMesh = useMemo(() => (repickGroup ? surfaceMesh(boxesSurface(repickGroup.region || [repickGroup.cavity])) : null), [repickGroup]);
-  useEffect(() => () => { currentMesh?.geo.dispose(); }, [currentMesh]);
-  const { worldToLocal } = useShapeMatrices(shape);
-  const pickGeo = useMemo(() => {
-    if (!grid) return null;
-    const b = grid.body;
-    const g = new THREE.BoxGeometry(boxSpan(b, 0) + 2, boxSpan(b, 1) + 2, boxSpan(b, 2) + 2);
-    g.translate((b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, (b.min[2] + b.max[2]) / 2);
-    return g;
-  }, [grid]);
-  useEffect(() => () => { pickGeo?.dispose(); }, [pickGeo]);
-  const selected = volumePickCandidates[volumePickIndex] || null;
-  const selectedMesh = useMemo(() => (selected ? surfaceMesh(selected.surface) : null), [selected]);
-  const hoverMesh = useMemo(() => (hoverPick ? surfaceMesh(hoverPick.surface) : null), [hoverPick]);
-  useEffect(() => () => { selectedMesh?.geo.dispose(); }, [selectedMesh]);
-  useEffect(() => () => { hoverMesh?.geo.dispose(); }, [hoverMesh]);
-  useEffect(() => { if (!volumePickMode) { setHoverPick(null); lastRef.current = null; } }, [volumePickMode]);
-
-  const candidatesFromEvent = (e: any): CavityPick[] => {
-    if (!grid || !volumePickMode || !e?.ray) return [];
-    const o = e.ray.origin.clone().applyMatrix4(worldToLocal);
-    const d = e.ray.origin.clone().add(e.ray.direction).applyMatrix4(worldToLocal).sub(o).normalize();
-    return rayCavityCandidates([o.x, o.y, o.z], [d.x, d.y, d.z], grid, GROUP_PANEL_THICKNESS * 2, volumePickMode);
-  };
+  useEffect(() => { if (!active) { setHoverPick(null); lastRef.current = null; } }, [active]);
   const onPointerMove = (e: any) => {
-    if (!volumePickMode) return;
+    if (!active) return;
     e.stopPropagation();
-    const first = candidatesFromEvent(e)[0] || null;
+    const first = fromEvent(e)[0] || null;
     setHoverPick(prev => (prev?.key === first?.key ? prev : first));
   };
   const onPointerDown = (e: any) => {
-    if (!volumePickMode) return;
+    if (!active) return;
     e.stopPropagation();
-    if (e.button === 2) {
-      if (selected) confirmVolumePick(shape.id, volumePickMode, selected);
-      return;
-    }
+    if (e.button === 2) { confirm(); return; }
     if (e.button !== 0) return;
-    const c = candidatesFromEvent(e);
-    if (!c.length) { setVolumePick([], 0); lastRef.current = null; return; }
-    const keys = c.map(b => b.key).join(';');
+    const c = fromEvent(e);
+    if (!c.length) { setPick([], 0); lastRef.current = null; return; }
+    const keys = c.map(x => x.key).join(';');
     const index = lastRef.current && lastRef.current.keys === keys ? (lastRef.current.index + 1) % c.length : 0;
     lastRef.current = { keys, index };
-    setVolumePick(c, index);
+    setPick(c, index);
   };
+  return { hoverPick, setHoverPick, onPointerMove, onPointerDown };
+}
+const PickHitBox = ({ geometry, cycle }: { geometry: THREE.BufferGeometry; cycle: PickCycle<any> }) => (
+  <mesh geometry={geometry} visible={false} onPointerMove={cycle.onPointerMove} onPointerOut={() => cycle.setHoverPick(null)}
+    onPointerDown={cycle.onPointerDown} onContextMenu={stopEvent} />
+);
+const useDisposable = <T extends { dispose: () => void } | null | undefined>(x: T) => { useEffect(() => () => { x?.dispose(); }, [x]); };
+
+export const VolumePickOverlay: React.FC<{ shape: any; allShapes: any[] }> = ({ shape, allShapes }) => {
+  const { volumePickMode, volumePickGroupId, volumePickCandidates, volumePickIndex, setVolumePick, panelGroups } =
+    useStoreFields('volumePickMode', 'volumePickGroupId', 'volumePickCandidates', 'volumePickIndex', 'setVolumePick', 'panelGroups');
+  // Yeniden seçim: ızgara yalnız gruptan ÖNCEKİ panellerle kurulur (sonrakiler + üyeler engel değil).
+  const repickGroup = useMemo(() => (volumePickGroupId ? panelGroups.find(g => g.id === volumePickGroupId) || null : null), [panelGroups, volumePickGroupId]);
+  // Düz paneller kutu engeli; dönmüş/eğik paneller yarım-uzay. Yeni grup sırada en sonda: iç arkalık parçaları engeldir.
+  const oset = useMemo(() => (repickGroup ? repickObstacles(repickGroup, shape, allShapes) : collectObstacles(shape, allShapes, () => true, backPickObstacle)),
+    [allShapes, shape, repickGroup]);
+  const grid = useMemo(() => (volumePickMode ? gridForObstacles(shape, oset) : null), [shape, oset, volumePickMode]);
+  const currentMesh = useMemo(() => (repickGroup ? surfaceMesh(boxesSurface(repickGroup.region || [repickGroup.cavity])) : null), [repickGroup]);
+  useDisposable(currentMesh?.geo);
+  const { worldToLocal } = useShapeMatrices(shape);
+  const pickGeo = useMemo(() => (grid ? pickBoxGeometry(grid.body) : null), [grid]);
+  useDisposable(pickGeo);
+  const selected = volumePickCandidates[volumePickIndex] || null;
+  const cycle = usePickCycle<CavityPick>(!!volumePickMode,
+    e => (grid && volumePickMode && e?.ray ? rayCavityCandidates(...localRay(e, worldToLocal), grid, GROUP_PANEL_THICKNESS * 2, volumePickMode) : []),
+    setVolumePick, () => { if (selected) confirmVolumePick(shape.id, volumePickMode!, selected); });
+  const { hoverPick } = cycle;
+  const selectedMesh = useMemo(() => (selected ? surfaceMesh(selected.surface) : null), [selected]);
+  const hoverMesh = useMemo(() => (hoverPick ? surfaceMesh(hoverPick.surface) : null), [hoverPick]);
+  useDisposable(selectedMesh?.geo);
+  useDisposable(hoverMesh?.geo);
 
   if (!volumePickMode || !pickGeo) return null;
   const hoverIsSelected = !!hoverPick && !!selected && hoverPick.key === selected.key;
   return (
     <>
-      <mesh geometry={pickGeo} visible={false} onPointerMove={onPointerMove} onPointerOut={() => setHoverPick(null)} onPointerDown={onPointerDown} onContextMenu={(e: any) => e.stopPropagation()} />
+      <PickHitBox geometry={pickGeo} cycle={cycle} />
       {currentMesh && currentMesh.edgePts.length >= 2 && (
-        <Line points={currentMesh.edgePts} segments color={PICK_COLORS.currentEdge} lineWidth={1.2} transparent opacity={0.8} depthTest={false} depthWrite={false} renderOrder={4} raycast={() => null} />
+        <Line points={currentMesh.edgePts} segments color={PICK_COLORS.currentEdge} lineWidth={1.2} transparent opacity={0.8} depthTest={false} depthWrite={false}
+          renderOrder={4} raycast={noRaycast} />
       )}
       {hoverMesh && !hoverIsSelected && (
-        <mesh geometry={hoverMesh.geo} raycast={() => null} renderOrder={5}>
-          <meshBasicMaterial color={PICK_COLORS.hover} transparent opacity={SEL_COLORS.volumeHoverOpacity} side={THREE.DoubleSide} depthWrite={false} />
-        </mesh>
+        <mesh geometry={hoverMesh.geo} raycast={noRaycast} renderOrder={5}><FillMat color={PICK_COLORS.hover} opacity={SEL_COLORS.volumeHoverOpacity} /></mesh>
       )}
       {selectedMesh && (
         <>
-          <mesh geometry={selectedMesh.geo} raycast={() => null} renderOrder={6}>
-            <meshBasicMaterial color={PICK_COLORS.selected} transparent opacity={SEL_COLORS.volumeActiveOpacity} side={THREE.DoubleSide} depthWrite={false} />
+          <mesh geometry={selectedMesh.geo} raycast={noRaycast} renderOrder={6}>
+            <FillMat color={PICK_COLORS.selected} opacity={SEL_COLORS.volumeActiveOpacity} />
           </mesh>
-          {selectedMesh.edgePts.length >= 2 && (
-            <Line points={selectedMesh.edgePts} segments color={PICK_COLORS.selectedEdge} lineWidth={SEL_COLORS.edgeWidth} transparent={false} depthTest={false} depthWrite={false} renderOrder={7} raycast={() => null} />
-          )}
+          {selectedMesh.edgePts.length >= 2 && <EdgeLines points={selectedMesh.edgePts} color={PICK_COLORS.selectedEdge} width={SEL_COLORS.edgeWidth} order={7} />}
           {selected && <FacingArrow box={selected.bbox} axis={selected.arrow.axis} facing={selected.arrow.facing} />}
         </>
       )}
@@ -1463,7 +1577,7 @@ export const VolumePickOverlay: React.FC<{ shape: any; allShapes: any[] }> = ({ 
   );
 };
 
-// Kapak seçme: tıklanan gövde yüzü kapak düzlemini verir; adaylar sınır panellerinden büyükten küçüğe (doorCandidatesAt).
+// Kapak / arkalık seçme: tıklanan gövde yüzü levha düzlemini verir; adaylar sınır panellerinden büyükten küçüğe.
 // Aday levha, dönmüş sınır panelleriyle kırpılmış KONVEKS çokgen prizmasıdır (dış yüz −normal yönünde kalınlık kadar).
 type DoorSlabPoly = { normal: Vec3; vertices: Vec3[] };
 const slabPrism = (poly: DoorSlabPoly, t: number): { geo: THREE.BufferGeometry; edges: Vec3[] } => {
@@ -1479,145 +1593,100 @@ const slabPrism = (poly: DoorSlabPoly, t: number): { geo: THREE.BufferGeometry; 
   return { geo, edges };
 };
 const polyKey = (p: DoorSlabPoly, t: number) => `${t}|${p.normal.join(',')}|${p.vertices.map(v => v.map(x => x.toFixed(1)).join(',')).join(';')}`;
-const DoorSlab: React.FC<{ poly: DoorSlabPoly; thickness: number; fill: number; opacity: number; edge?: string; order: number }> = ({ poly, thickness, fill, opacity, edge, order }) => {
+type DoorSlabProps = { poly: DoorSlabPoly; thickness: number; fill: number; opacity: number; edge?: string; order: number };
+const DoorSlab: React.FC<DoorSlabProps> = ({ poly, thickness, fill, opacity, edge, order }) => {
   const key = polyKey(poly, thickness);
   const { geo, edges: pts } = useMemo(() => slabPrism(poly, thickness), [key]);
   useEffect(() => () => geo.dispose(), [geo]);
   return (
     <>
-      <mesh geometry={geo} raycast={() => null} renderOrder={order}>
-        <meshBasicMaterial color={fill} transparent opacity={opacity} side={THREE.DoubleSide} depthWrite={false} />
-      </mesh>
-      {edge && <Line points={pts} segments color={edge} lineWidth={SEL_COLORS.edgeWidth} transparent={false} depthTest={false} depthWrite={false} renderOrder={order + 1} raycast={() => null} />}
+      <mesh geometry={geo} raycast={noRaycast} renderOrder={order}><FillMat color={fill} opacity={opacity} /></mesh>
+      {edge && <EdgeLines points={pts} color={edge} width={SEL_COLORS.edgeWidth} order={order + 1} />}
     </>
   );
 };
+
+type BodyBox = { min: Vec3; max: Vec3 };
+type SlabPickProps<P extends { key: string }> = {
+  shape: any; active: boolean; candidates: P[]; index: number; setPick: (c: P[], i: number) => void; thickness: number;
+  /** Aday önizleme levhası; `deps` (yerleşim + kesimler) değişince yeniden kurulur. */
+  slabOf: (c: P) => DoorSlabPoly; deps: [unknown, unknown];
+  /** Yerel ışın + gövde kutusu → adaylar (alan büyükten küçüğe). */
+  candidatesAt: (o: Vec3, d: Vec3, body: BodyBox) => P[];
+  confirm: (c: P) => void;
+};
+/** Kapak ve arkalık seçmenin ortak gövdesi: görünmez kutu olayları alır, her sol tık sıradaki adaya geçer, sağ tık yerleştirir. */
+function SlabPickOverlay<P extends { key: string }>({ shape, active, candidates, index, setPick, thickness, slabOf, deps, candidatesAt, confirm }: SlabPickProps<P>) {
+  const { worldToLocal } = useShapeMatrices(shape);
+  const body = useMemo((): BodyBox | null => {
+    const bb = localBboxOf(effectiveBodyGeometry(shape));
+    return bb ? { min: [bb.min.x, bb.min.y, bb.min.z], max: [bb.max.x, bb.max.y, bb.max.z] } : null;
+  }, [shape.geometry, shape.vertexModifications]);
+  const pickGeo = useMemo(() => (body ? pickBoxGeometry(body) : null), [body]);
+  useDisposable(pickGeo);
+  const selected = candidates[index] || null;
+  const cycle = usePickCycle<P>(active, e => (body && active && e?.ray ? candidatesAt(...localRay(e, worldToLocal), body) : []), setPick,
+    () => { if (selected) confirm(selected); });
+  const selectedBox = useMemo(() => (selected ? slabOf(selected) : null), [selected, ...deps]);
+  const hoverBox = useMemo(() => (cycle.hoverPick ? slabOf(cycle.hoverPick) : null), [cycle.hoverPick, ...deps]);
+  if (!active || !pickGeo) return null;
+  const hoverIsSelected = !!cycle.hoverPick && !!selected && cycle.hoverPick.key === selected.key;
+  return (
+    <>
+      <PickHitBox geometry={pickGeo} cycle={cycle} />
+      {hoverBox && !hoverIsSelected && (
+        <DoorSlab poly={hoverBox} thickness={thickness} fill={PICK_COLORS.hover} opacity={SEL_COLORS.faceHoverOpacity * 0.6} order={5} />
+      )}
+      {selectedBox && (
+        <DoorSlab poly={selectedBox} thickness={thickness} fill={PICK_COLORS.selected} opacity={SEL_COLORS.faceActiveOpacity * 0.7}
+          edge={PICK_COLORS.selectedEdge} order={6} />
+      )}
+    </>
+  );
+}
+const grownBox = (b: BodyBox, m: number): BodyBox => ({
+  min: [b.min[0] - m, b.min[1] - m, b.min[2] - m], max: [b.max[0] + m, b.max[1] + m, b.max[2] + m],
+});
 
 export const DoorPickOverlay: React.FC<{ shape: any }> = ({ shape }) => {
-  const { doorPickMode, doorPickCandidates, doorPickIndex, setDoorPick, doorPickPlacement, shapes, virtualFaces } =
-    useStoreFields('doorPickMode', 'doorPickCandidates', 'doorPickIndex', 'setDoorPick', 'doorPickPlacement', 'shapes', 'virtualFaces');
-  const [hoverPick, setHoverPick] = useState<DoorPick | null>(null);
-  const lastRef = useRef<{ keys: string; index: number } | null>(null);
-  const { worldToLocal } = useShapeMatrices(shape);
-  const body = useMemo(() => { const bb = localBboxOf(effectiveBodyGeometry(shape)); return bb ? { min: [bb.min.x, bb.min.y, bb.min.z] as Vec3, max: [bb.max.x, bb.max.y, bb.max.z] as Vec3 } : null; }, [shape.geometry, shape.vertexModifications]);
-  const pickGeo = useMemo(() => {
-    if (!body) return null;
-    const g = new THREE.BoxGeometry(body.max[0] - body.min[0] + 2, body.max[1] - body.min[1] + 2, body.max[2] - body.min[2] + 2);
-    g.translate((body.min[0] + body.max[0]) / 2, (body.min[1] + body.max[1]) / 2, (body.min[2] + body.max[2]) / 2);
-    return g;
-  }, [body]);
-  useEffect(() => () => { pickGeo?.dispose(); }, [pickGeo]);
-  useEffect(() => { if (!doorPickMode) { setHoverPick(null); lastRef.current = null; } }, [doorPickMode]);
-  const selected = doorPickCandidates[doorPickIndex] || null;
+  const s = useStoreFields('doorPickMode', 'doorPickCandidates', 'doorPickIndex', 'setDoorPick', 'doorPickPlacement', 'shapes', 'virtualFaces');
+  const { doorPickMode, doorPickPlacement: placement, shapes, virtualFaces } = s;
   const cuts = useMemo(() => (doorPickMode ? collectDoorCuts(shape, shapes, virtualFaces) : []), [doorPickMode, shape, shapes, virtualFaces]);
-  const slabOf = (c: DoorPick | null) => (c ? doorSlabPolygon({ axis: c.axis, side: c.side, placement: doorPickPlacement, thickness: DOOR_THICKNESS, gap: DOOR_GAP, anchor: c.at }, pickRectFor(c, doorPickPlacement), cuts) : null);
-  const selectedBox = useMemo(() => slabOf(selected), [selected, doorPickPlacement, cuts]);
-  const hoverBox = useMemo(() => slabOf(hoverPick), [hoverPick, doorPickPlacement, cuts]);
-
-  const candidatesFromEvent = (e: any): DoorPick[] => {
-    if (!body || !doorPickMode || !e?.ray) return [];
-    const o = e.ray.origin.clone().applyMatrix4(worldToLocal);
-    const d = e.ray.origin.clone().add(e.ray.direction).applyMatrix4(worldToLocal).sub(o).normalize();
-    const entry = rayDoorEntry([o.x, o.y, o.z], [d.x, d.y, d.z], { min: [body.min[0] - 1, body.min[1] - 1, body.min[2] - 1], max: [body.max[0] + 1, body.max[1] + 1, body.max[2] + 1] });
-    if (!entry) return [];
-    return doorCandidatesAt(shape, entry.axis, entry.side, entry.point, shapes, virtualFaces);
-  };
-  const onPointerMove = (e: any) => {
-    if (!doorPickMode) return;
-    e.stopPropagation();
-    const first = candidatesFromEvent(e)[0] || null;
-    setHoverPick(prev => (prev?.key === first?.key ? prev : first));
-  };
-  const onPointerDown = (e: any) => {
-    if (!doorPickMode) return;
-    e.stopPropagation();
-    if (e.button === 2) { if (selected) confirmDoorPick(shape.id, selected); return; }
-    if (e.button !== 0) return;
-    const c = candidatesFromEvent(e);
-    if (!c.length) { setDoorPick([], 0); lastRef.current = null; return; }
-    const keys = c.map(x => x.key).join(';');
-    const index = lastRef.current && lastRef.current.keys === keys ? (lastRef.current.index + 1) % c.length : 0;
-    lastRef.current = { keys, index };
-    setDoorPick(c, index);
-  };
-
-  if (!doorPickMode || !pickGeo) return null;
-  const hoverIsSelected = !!hoverPick && !!selected && hoverPick.key === selected.key;
   return (
-    <>
-      <mesh geometry={pickGeo} visible={false} onPointerMove={onPointerMove} onPointerOut={() => setHoverPick(null)} onPointerDown={onPointerDown} onContextMenu={(e: any) => e.stopPropagation()} />
-      {hoverBox && !hoverIsSelected && <DoorSlab poly={hoverBox} thickness={DOOR_THICKNESS} fill={PICK_COLORS.hover} opacity={SEL_COLORS.faceHoverOpacity * 0.6} order={5} />}
-      {selectedBox && <DoorSlab poly={selectedBox} thickness={DOOR_THICKNESS} fill={PICK_COLORS.selected} opacity={SEL_COLORS.faceActiveOpacity * 0.7} edge={PICK_COLORS.selectedEdge} order={6} />}
-    </>
+    <SlabPickOverlay shape={shape} active={doorPickMode} candidates={s.doorPickCandidates} index={s.doorPickIndex} setPick={s.setDoorPick}
+      thickness={DOOR_THICKNESS} deps={[placement, cuts]} confirm={c => confirmDoorPick(shape.id, c)}
+      slabOf={c => doorSlabPolygon(
+        { axis: c.axis, side: c.side, placement, thickness: DOOR_THICKNESS, gap: DOOR_GAP, anchor: c.at }, pickRectFor(c, placement), cuts)}
+      candidatesAt={(o, d, body) => {
+        const entry = rayDoorEntry(o, d, grownBox(body, 1));
+        return entry ? doorCandidatesAt(shape, entry.axis, entry.side, entry.point, shapes, virtualFaces) : [];
+      }} />
   );
 };
 
-// ARKALIK SEÇME (BackService): kapak akışıyla aynı görünüm — görünmez kutu olayları alır, tıklama ARKA yüze taşınır (rayBackEntry),
-// adaylar alan büyükten küçüğe, her sol tık bir sonrakine geçer, sağ tık yerleştirir.
+// ARKALIK SEÇME (BackService): kapak akışıyla aynı — tıklama gövdenin ARKA yüzüne taşınır (rayBackEntry).
 export const BackPickOverlay: React.FC<{ shape: any }> = ({ shape }) => {
-  const { backPickMode, backPickCandidates, backPickIndex, setBackPick, backPickPlacement, shapes, virtualFaces } =
-    useStoreFields('backPickMode', 'backPickCandidates', 'backPickIndex', 'setBackPick', 'backPickPlacement', 'shapes', 'virtualFaces');
-  const [hoverPick, setHoverPick] = useState<BackPick | null>(null);
-  const lastRef = useRef<{ keys: string; index: number } | null>(null);
-  const { worldToLocal } = useShapeMatrices(shape);
-  const body = useMemo(() => { const bb = localBboxOf(effectiveBodyGeometry(shape)); return bb ? { min: [bb.min.x, bb.min.y, bb.min.z] as Vec3, max: [bb.max.x, bb.max.y, bb.max.z] as Vec3 } : null; }, [shape.geometry, shape.vertexModifications]);
-  const pickGeo = useMemo(() => {
-    if (!body) return null;
-    const g = new THREE.BoxGeometry(body.max[0] - body.min[0] + 2, body.max[1] - body.min[1] + 2, body.max[2] - body.min[2] + 2);
-    g.translate((body.min[0] + body.max[0]) / 2, (body.min[1] + body.max[1]) / 2, (body.min[2] + body.max[2]) / 2);
-    return g;
-  }, [body]);
-  useEffect(() => () => { pickGeo?.dispose(); }, [pickGeo]);
-  useEffect(() => { if (!backPickMode) { setHoverPick(null); lastRef.current = null; } }, [backPickMode]);
-  const selected = backPickCandidates[backPickIndex] || null;
+  const s = useStoreFields('backPickMode', 'backPickCandidates', 'backPickIndex', 'setBackPick', 'backPickPlacement', 'shapes', 'virtualFaces');
+  const { backPickMode, backPickPlacement: placement, shapes, virtualFaces } = s;
   const cuts = useMemo(() => (backPickMode ? collectBackCuts(shape, shapes, virtualFaces) : []), [backPickMode, shape, shapes, virtualFaces]);
-  const slabOf = (c: BackPick | null) => (c ? backSlabPolygon({ axis: c.axis, side: c.side, placement: backPickPlacement, thickness: BACK_THICKNESS, gap: BACK_GAP, anchor: c.at }, backPickRect(c, backPickPlacement), cuts) : null);
-  const selectedBox = useMemo(() => slabOf(selected), [selected, backPickPlacement, cuts]);
-  const hoverBox = useMemo(() => slabOf(hoverPick), [hoverPick, backPickPlacement, cuts]);
-
-  const candidatesFromEvent = (e: any): BackPick[] => {
-    if (!body || !backPickMode || !e?.ray) return [];
-    const o = e.ray.origin.clone().applyMatrix4(worldToLocal);
-    const d = e.ray.origin.clone().add(e.ray.direction).applyMatrix4(worldToLocal).sub(o).normalize();
-    const entry = rayBackEntry([o.x, o.y, o.z], [d.x, d.y, d.z], body);
-    if (!entry) return [];
-    return backCandidatesAt(shape, entry.axis, entry.side, entry.point, shapes, virtualFaces);
-  };
-  const onPointerMove = (e: any) => {
-    if (!backPickMode) return;
-    e.stopPropagation();
-    const first = candidatesFromEvent(e)[0] || null;
-    setHoverPick(prev => (prev?.key === first?.key ? prev : first));
-  };
-  const onPointerDown = (e: any) => {
-    if (!backPickMode) return;
-    e.stopPropagation();
-    if (e.button === 2) { if (selected) confirmBackPick(shape.id, selected); return; }
-    if (e.button !== 0) return;
-    const c = candidatesFromEvent(e);
-    if (!c.length) { setBackPick([], 0); lastRef.current = null; return; }
-    const keys = c.map(x => x.key).join(';');
-    const index = lastRef.current && lastRef.current.keys === keys ? (lastRef.current.index + 1) % c.length : 0;
-    lastRef.current = { keys, index };
-    setBackPick(c, index);
-  };
-
-  if (!backPickMode || !pickGeo) return null;
-  const hoverIsSelected = !!hoverPick && !!selected && hoverPick.key === selected.key;
   return (
-    <>
-      <mesh geometry={pickGeo} visible={false} onPointerMove={onPointerMove} onPointerOut={() => setHoverPick(null)} onPointerDown={onPointerDown} onContextMenu={(e: any) => e.stopPropagation()} />
-      {hoverBox && !hoverIsSelected && <DoorSlab poly={hoverBox} thickness={BACK_THICKNESS} fill={PICK_COLORS.hover} opacity={SEL_COLORS.faceHoverOpacity * 0.6} order={5} />}
-      {selectedBox && <DoorSlab poly={selectedBox} thickness={BACK_THICKNESS} fill={PICK_COLORS.selected} opacity={SEL_COLORS.faceActiveOpacity * 0.7} edge={PICK_COLORS.selectedEdge} order={6} />}
-    </>
+    <SlabPickOverlay shape={shape} active={backPickMode} candidates={s.backPickCandidates} index={s.backPickIndex} setPick={s.setBackPick}
+      thickness={BACK_THICKNESS} deps={[placement, cuts]} confirm={c => confirmBackPick(shape.id, c)}
+      slabOf={c => backSlabPolygon(
+        { axis: c.axis, side: c.side, placement, thickness: BACK_THICKNESS, gap: BACK_GAP, anchor: c.at }, backPickRect(c, placement), cuts)}
+      candidatesAt={(o, d, body) => {
+        const entry = rayBackEntry(o, d, body);
+        return entry ? backCandidatesAt(shape, entry.axis, entry.side, entry.point, shapes, virtualFaces) : [];
+      }} />
   );
 };
 
 // Hacim düzenleme: grubun şekilli hacmi çizilir; seçilen yüzün normali + tıklama noktası (çıpa) store'a yazılır.
 export const CavityEditOverlay: React.FC<{ shape: any }> = ({ shape }) => {
-  const { panelGroups, faceExtrudeCavityGroupId, faceExtrudeSelectedFace, setFaceExtrudeSelectedFace, setFaceExtrudeCavityFaceNormal, setFaceExtrudeClickPoint, faceExtrudeValueMode } =
-    useStoreFields('panelGroups', 'faceExtrudeCavityGroupId', 'faceExtrudeSelectedFace', 'setFaceExtrudeSelectedFace', 'setFaceExtrudeCavityFaceNormal', 'setFaceExtrudeClickPoint', 'faceExtrudeValueMode');
-  const group = panelGroups.find(g => g.id === faceExtrudeCavityGroupId);
+  const S = useStoreFields('panelGroups', 'faceExtrudeCavityGroupId', 'faceExtrudeSelectedFace', 'setFaceExtrudeSelectedFace',
+    'setFaceExtrudeCavityFaceNormal', 'setFaceExtrudeClickPoint', 'faceExtrudeValueMode');
+  const selFace = S.faceExtrudeSelectedFace;
+  const group = S.panelGroups.find(g => g.id === S.faceExtrudeCavityGroupId);
   const active = !!group && group.shapeId === shape.id;
   const cav = group?.cavity;
   const boxes = group ? (group.region && group.region.length ? group.region : cav ? [cav] : []) : [];
@@ -1633,42 +1702,38 @@ export const CavityEditOverlay: React.FC<{ shape: any }> = ({ shape }) => {
     return g;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cavKey]);
-  useEffect(() => () => { boxGeo?.dispose(); }, [boxGeo]);
+  useDisposable(boxGeo);
   const { faces, groups } = useMemo(() => (boxGeo ? getFacesAndGroups(boxGeo) : { faces: [], groups: [] }), [boxGeo]);
   const edgePts = useMemo(() => (boxGeo ? edgePointsOf(boxGeo, 1) : []), [boxGeo]);
-  const hoverGeo = useMemo(() => (hovered !== null && hovered !== faceExtrudeSelectedFace && groups[hovered] ? createFaceHighlightGeometry(faces, groups[hovered].faceIndices) : null), [hovered, faceExtrudeSelectedFace, groups, faces]);
-  const selGeo = useMemo(() => (faceExtrudeSelectedFace !== null && groups[faceExtrudeSelectedFace] ? createFaceHighlightGeometry(faces, groups[faceExtrudeSelectedFace].faceIndices) : null), [faceExtrudeSelectedFace, groups, faces]);
+  const hoverGeo = useMemo(() => (hovered !== selFace ? groupHighlight(faces, groups, hovered) : null), [hovered, selFace, groups, faces]);
+  const selGeo = useMemo(() => groupHighlight(faces, groups, selFace), [selFace, groups, faces]);
   useEffect(() => { if (!active) setHovered(null); }, [active]);
   if (!active || !boxGeo) return null;
-  const isRefPhase = faceExtrudeValueMode === 'ref' && faceExtrudeSelectedFace !== null;
+  const isRefPhase = S.faceExtrudeValueMode === 'ref' && selFace !== null;
+  const onPointerDown = (e: any) => {
+    if (e.button === 2) { if (isRefPhase) void confirmRefOnRightClick(e); return; }
+    if (e.button !== 0 || isRefPhase) return;   // ref aşamasında tıklama referans seçimine gider (gövde/panel)
+    e.stopPropagation();
+    const gi = flatGroupOfFace(groups, e.faceIndex);
+    if (gi === -1) return;
+    const n = groups[gi].normal.clone().normalize();
+    S.setFaceExtrudeSelectedFace(gi);
+    S.setFaceExtrudeCavityFaceNormal([n.x, n.y, n.z]);
+    const lp = localPointOf(e, shape);
+    if (lp) S.setFaceExtrudeClickPoint(lp);
+    setHovered(gi);
+  };
   return (
     <>
-      <mesh geometry={boxGeo} raycast={() => null} renderOrder={5}>
-        <meshBasicMaterial color={PICK_COLORS.selected} transparent opacity={SEL_COLORS.volumeActiveOpacity} side={THREE.DoubleSide} depthWrite={false} />
-      </mesh>
-      {edgePts.length >= 2 && <Line points={edgePts} segments color={PICK_COLORS.selectedEdge} lineWidth={SEL_COLORS.edgeWidth} transparent={false} depthTest={false} depthWrite={false} renderOrder={7} raycast={() => null} />}
-      <mesh geometry={boxGeo} renderOrder={10}
-        onPointerDown={(e: any) => {
-          if (e.button === 2) { if (isRefPhase) void confirmRefOnRightClick(e); return; }
-          if (e.button !== 0 || isRefPhase) return;   // ref aşamasında tıklama referans seçimine gider (gövde/panel)
-          e.stopPropagation();
-          const gi = flatGroupOfFace(groups, e.faceIndex);
-          if (gi === -1) return;
-          const n = groups[gi].normal.clone().normalize();
-          setFaceExtrudeSelectedFace(gi);
-          setFaceExtrudeCavityFaceNormal([n.x, n.y, n.z]);
-          if (e.point) { const local = e.point.clone().applyMatrix4(getShapeMatrix(shape).invert()); setFaceExtrudeClickPoint([local.x, local.y, local.z]); }
-          setHovered(gi);
-        }}
-        onPointerMove={(e: any) => { e.stopPropagation(); const gi = flatGroupOfFace(groups, e.faceIndex); if (gi !== -1) setHovered(gi); }}
-        onPointerOut={(e: any) => { e.stopPropagation(); setHovered(null); }}
-        onContextMenu={(e: any) => e.stopPropagation()}>
+      <mesh geometry={boxGeo} raycast={noRaycast} renderOrder={5}><FillMat color={PICK_COLORS.selected} opacity={SEL_COLORS.volumeActiveOpacity} /></mesh>
+      {edgePts.length >= 2 && <EdgeLines points={edgePts} color={PICK_COLORS.selectedEdge} width={SEL_COLORS.edgeWidth} order={7} />}
+      <mesh geometry={boxGeo} renderOrder={10} onPointerDown={onPointerDown} {...faceHoverEvents(groups, setHovered)} onContextMenu={stopEvent}>
         <HitMaterial />
       </mesh>
-      {hoverGeo && <mesh geometry={hoverGeo} renderOrder={11} raycast={() => null}><OverlayMat color={SEL_COLORS.hover} opacity={SEL_COLORS.faceHoverOpacity} /></mesh>}
+      {hoverGeo && <OverlayMesh geometry={hoverGeo} order={11} color={SEL_COLORS.hover} opacity={SEL_COLORS.faceHoverOpacity} />}
       {selGeo && (
         <>
-          <mesh geometry={selGeo} renderOrder={12} raycast={() => null}><OverlayMat color={SEL_COLORS.active} opacity={SEL_COLORS.faceActiveOpacity} /></mesh>
+          <OverlayMesh geometry={selGeo} order={12} color={SEL_COLORS.active} opacity={SEL_COLORS.faceActiveOpacity} />
           <FaceOutline geometry={selGeo} color={SEL_COLORS.edge} width={SEL_COLORS.extrudeEdgeWidth} />
         </>
       )}
@@ -1676,19 +1741,22 @@ export const CavityEditOverlay: React.FC<{ shape: any }> = ({ shape }) => {
   );
 };
 
-const EDGE_COLOR = '#5b6470';
+const EDGE_COLOR = PANEL_COLORS.edge.default;
 type Xform = { position: Vec3; rotation: Vec3; scale: Vec3 };
-const readXform = (o: THREE.Object3D): Xform => ({ position: o.position.toArray() as Vec3, rotation: o.rotation.toArray().slice(0, 3) as Vec3, scale: o.scale.toArray() as Vec3 });
-function deltaOf(from: Xform, to: Xform) {
-  return { pd: [0, 1, 2].map(i => to.position[i] - from.position[i]), rd: [0, 1, 2].map(i => to.rotation[i] - from.rotation[i]), sd: [0, 1, 2].map(i => to.scale[i] / from.scale[i]) };
-}
-const applyDelta = (base: Xform, d: ReturnType<typeof deltaOf>): Xform => ({
-  position: [base.position[0] + d.pd[0], base.position[1] + d.pd[1], base.position[2] + d.pd[2]],
-  rotation: [base.rotation[0] + d.rd[0], base.rotation[1] + d.rd[1], base.rotation[2] + d.rd[2]],
-  scale: [base.scale[0] * d.sd[0], base.scale[1] * d.sd[1], base.scale[2] * d.sd[2]],
+const readXform = (o: THREE.Object3D): Xform => ({
+  position: o.position.toArray() as Vec3, rotation: o.rotation.toArray().slice(0, 3) as Vec3, scale: o.scale.toArray() as Vec3,
+});
+const deltaOf = (from: Xform, to: Xform): XformDelta => ({
+  pd: [0, 1, 2].map(i => to.position[i] - from.position[i]),
+  rd: [0, 1, 2].map(i => to.rotation[i] - from.rotation[i]),
+  sd: [0, 1, 2].map(i => to.scale[i] / from.scale[i]),
 });
 
-const SubtractionMesh: React.FC<{ subtraction: any; index: number; isHovered: boolean; isSubtractionSelected: boolean; isSelected: boolean; setHovered: (i: number | null) => void; setSelected: (i: number | null) => void }> =
+type SubtractionMeshProps = {
+  subtraction: any; index: number; isHovered: boolean; isSubtractionSelected: boolean; isSelected: boolean;
+  setHovered: (i: number | null) => void; setSelected: (i: number | null) => void;
+};
+const SubtractionMesh: React.FC<SubtractionMeshProps> =
   React.memo(({ subtraction, index, isHovered, isSubtractionSelected, isSelected, setHovered, setSelected }) => {
     // Merkezli geometri (eski kayıtlar) kök köşeye ötelenir.
     const meshOffset = useMemo<Vec3>(() => {
@@ -1703,7 +1771,8 @@ const SubtractionMesh: React.FC<{ subtraction: any; index: number; isHovered: bo
           onPointerOver={(e) => { e.stopPropagation(); if (isSelected) setHovered(index); }}
           onPointerOut={(e) => { e.stopPropagation(); setHovered(null); }}
           onClick={(e) => { e.stopPropagation(); if (isSelected) setSelected(isSubtractionSelected ? null : index); }}>
-          <meshStandardMaterial color={(isHovered || isSubtractionSelected) ? 0xff0000 : 0xffff00} transparent opacity={0.35} depthWrite={false} side={THREE.DoubleSide} />
+          <meshStandardMaterial color={(isHovered || isSubtractionSelected) ? 0xff0000 : 0xffff00} transparent opacity={0.35} depthWrite={false}
+            side={THREE.DoubleSide} />
         </mesh>
       </group>
     );
@@ -1711,10 +1780,11 @@ const SubtractionMesh: React.FC<{ subtraction: any; index: number; isHovered: bo
 SubtractionMesh.displayName = 'SubtractionMesh';
 
 export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orbitControlsRef: any }> = React.memo(({ shape, isSelected, orbitControlsRef }) => {
-  const S = useStoreFields('selectShape', 'selectSecondaryShape', 'secondarySelectedShapeId', 'selectedShapeId', 'activeTool', 'viewMode', 'subtractionViewMode',
-    'hoveredSubtractionIndex', 'setHoveredSubtractionIndex', 'selectedSubtractionIndex', 'setSelectedSubtractionIndex', 'showOutlines', 'setSelectedPanelRow', 'panelSelectMode',
-    'faceEditMode', 'filletMode', 'raycastMode', 'shapes', 'faceExtrudeMode', 'faceExtrudeValueMode', 'faceExtrudeTargetPanelId', 'faceExtrudeSelectedFace', 'faceExtrudeRefCandidate',
-    'setFaceExtrudeRefCandidate', 'panelMoveMode', 'panelMoveValueMode', 'panelMoveRefSourceVertex', 'panelMoveRefTargetPanelId', 'panelRotateMode', 'volumePickMode',
+  const S = useStoreFields('selectShape', 'selectSecondaryShape', 'secondarySelectedShapeId', 'selectedShapeId', 'activeTool', 'viewMode',
+    'subtractionViewMode', 'hoveredSubtractionIndex', 'setHoveredSubtractionIndex', 'selectedSubtractionIndex', 'setSelectedSubtractionIndex',
+    'showOutlines', 'setSelectedPanelRow', 'panelSelectMode', 'faceEditMode', 'filletMode', 'raycastMode', 'shapes', 'faceExtrudeMode',
+    'faceExtrudeValueMode', 'faceExtrudeTargetPanelId', 'faceExtrudeSelectedFace', 'faceExtrudeRefCandidate', 'setFaceExtrudeRefCandidate',
+    'panelMoveMode', 'panelMoveValueMode', 'panelMoveRefSourceVertex', 'panelMoveRefTargetPanelId', 'panelRotateMode', 'volumePickMode',
     'faceExtrudeCavityGroupId', 'doorPickMode', 'backPickMode');
   const { scene } = useThree();
   const meshRef = useRef<THREE.Mesh>(null);
@@ -1727,8 +1797,9 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
   const [hoveredRefGroup, setHoveredRefGroup] = useState<number | null>(null);
   const [moveRefHover, setMoveRefHover] = useState(false);
   const vertexModsString = useMemo(() => JSON.stringify(shape.vertexModifications || []), [shape.vertexModifications]);
-  const { faces: refFaces, groups: refFaceGroups } = useMemo(() => (shape.geometry ? getFacesAndGroups(effectiveBodyGeometry(shape)) : { faces: [], groups: [] }), [shape.geometry, vertexModsString]);
-  const edgePoints = useMemo<Vec3[] | null>(() => { try { const p = localGeometry ? edgePointsOf(localGeometry, 5) : []; return p.length ? p : null; } catch { return null; } }, [localGeometry]);
+  const { faces: refFaces, groups: refFaceGroups } = useMemo(() => (shape.geometry ? getFacesAndGroups(effectiveBodyGeometry(shape)) : { faces: [], groups: [] }),
+    [shape.geometry, vertexModsString]);
+  const edgePoints = useMemo(() => safeEdgePoints(localGeometry, 5), [localGeometry]);
 
   // Çizilen gövde = effectiveBodyGeometry (yerleştirme, VF regen ve motorla aynı kaynak).
   useEffect(() => {
@@ -1757,7 +1828,8 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
       isDragging = event.value;
       if (orbitControlsRef.current) orbitControlsRef.current.enabled = !event.value;
       if (event.value && groupRef.current) {
-        initialRef.current = { self: readXform(groupRef.current), childPanels: new Map(childPanelsOf(shape.id).map(p => [p.id, { position: [...p.position] as Vec3, rotation: [...p.rotation] as Vec3, scale: [...p.scale] as Vec3 }])) };
+        const snapshot = (p: Xform): Xform => ({ position: [...p.position] as Vec3, rotation: [...p.rotation] as Vec3, scale: [...p.scale] as Vec3 });
+        initialRef.current = { self: readXform(groupRef.current), childPanels: new Map(childPanelsOf(shape.id).map(p => [p.id, snapshot(p)])) };
       }
       if (!event.value && groupRef.current && initialRef.current) {
         const final = readXform(groupRef.current);
@@ -1770,9 +1842,9 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
           if (!sh) return state;
           return { shapes: state.shapes.map(s => {
             if (s.id === shape.id) return { ...s, ...final };
-            if (sh.groupId && s.groupId === sh.groupId) return { ...s, ...applyDelta(s, d) };
+            if (sh.groupId && s.groupId === sh.groupId) return { ...s, ...applyXformDelta(s, d) };
             const init = captured.get(s.id);
-            return init ? { ...s, ...applyDelta(init, d) } : s;
+            return init ? { ...s, ...applyXformDelta(init, d) } : s;
           }) };
         });
         requestAnimationFrame(() => { isUpdatingRef.current = false; });
@@ -1785,20 +1857,21 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
       initialRef.current.childPanels.forEach((init, panelId) => {
         const g = scene.getObjectByName(`shape-${panelId}`);
         if (!g) return;
-        const x = applyDelta(init, d);
+        const x = applyXformDelta(init, d);
         g.position.set(...x.position); g.rotation.set(...x.rotation); g.scale.set(...x.scale);
       });
     };
     controls.addEventListener('dragging-changed', onDraggingChanged);
     controls.addEventListener('change', onChange);
-    cleanupListenersRef.current = () => { controls.removeEventListener('dragging-changed', onDraggingChanged); controls.removeEventListener('change', onChange); };
+    cleanupListenersRef.current = () => {
+      controls.removeEventListener('dragging-changed', onDraggingChanged); controls.removeEventListener('change', onChange);
+    };
   }, [shape.id, orbitControlsRef, scene]);
 
   const isWireframe = S.viewMode === ViewMode.WIREFRAME;
   const isXray = S.viewMode === ViewMode.XRAY;
   const shouldShowAsReference = shape.isReferenceBox || shape.id === S.secondarySelectedShapeId;
   const hasPanels = S.shapes.some(s => s.type === 'panel' && s.parameters?.parentShapeId === shape.id);
-  const noopRaycast = useCallback(() => {}, []);
   const isMoveRefPickActive = S.panelMoveMode && S.panelMoveValueMode === 'ref' && !!S.panelMoveRefSourceVertex && !S.panelMoveRefTargetPanelId;
   const isRefMode = S.faceExtrudeMode && S.faceExtrudeValueMode === 'ref' && S.faceExtrudeSelectedFace !== null;
   // Görünmez gövde mesh'i yalnız panel/yüz seçim modlarında bastırılır (ref modları muaf);
@@ -1820,12 +1893,19 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
 
   if (shape.isolated === false || !localGeometry) return null;
 
-  const raycastProps = suppressBodyRaycast ? { raycast: noopRaycast } : {};
-  const hoverProps = isMoveRefPickActive ? { onPointerOver: (e: any) => { e.stopPropagation(); setMoveRefHover(true); }, onPointerOut: () => { if (moveRefHover) setMoveRefHover(false); } } : {};
+  const raycastProps = suppressBodyRaycast ? { raycast: noRaycast } : {};
+  const hoverProps = isMoveRefPickActive ? {
+    onPointerOver: (e: any) => { e.stopPropagation(); setMoveRefHover(true); },
+    onPointerOut: () => { if (moveRefHover) setMoveRefHover(false); },
+  } : {};
   const outlinesVisible = S.showOutlines || S.raycastMode || !!S.volumePickMode || S.doorPickMode || S.backPickMode;
   const outline = (color: string, width: number, depthWrite: boolean) => outlinesVisible && edgePoints && (
-    <Line points={edgePoints} segments color={color} lineWidth={width} transparent={false} depthTest depthWrite={depthWrite} renderOrder={1} raycast={() => null} />
+    <Line points={edgePoints} segments color={color} lineWidth={width} transparent={false} depthTest depthWrite={depthWrite} renderOrder={1} raycast={noRaycast} />
   );
+  const accented = isSelected || shouldShowAsReference;
+  const geoUuid = shape.geometry?.uuid || '';
+  const bodyEmissive = moveRefBodyHighlight ? (isMoveRefTargetPanel ? '#22c55e' : REF_COLORS.hoverCss) : '#000000';
+  const bodyOpacity = hasPanels ? (moveRefBodyHighlight ? 0.35 : 0) : (moveRefBodyHighlight ? 0.5 : 0.06);
 
   return (
     <>
@@ -1849,15 +1929,16 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
         onDoubleClick={(e) => { e.stopPropagation(); S.selectShape(shape.id); }}
         onContextMenu={(e: any) => { if (isMoveRefPickActive || isMoveRefTargetPanel) e.stopPropagation(); }}>
         {shape.subtractionGeometries && S.subtractionViewMode && shape.subtractionGeometries.map((sub: any, index: number) => sub && (
-          <SubtractionMesh key={`${shape.id}-subtraction-${index}`} subtraction={sub} index={index} isHovered={S.hoveredSubtractionIndex === index && isSelected}
-            isSubtractionSelected={S.selectedSubtractionIndex === index && isSelected} isSelected={isSelected} setHovered={S.setHoveredSubtractionIndex} setSelected={S.setSelectedSubtractionIndex} />
+          <SubtractionMesh key={`${shape.id}-subtraction-${index}`} subtraction={sub} index={index} isSelected={isSelected}
+            isHovered={S.hoveredSubtractionIndex === index && isSelected} isSubtractionSelected={S.selectedSubtractionIndex === index && isSelected}
+            setHovered={S.setHoveredSubtractionIndex} setSelected={S.setSelectedSubtractionIndex} />
         ))}
 
         {!isWireframe && !isXray && !shouldShowAsReference && (
           <>
             <mesh ref={meshRef} geometry={localGeometry} castShadow receiveShadow {...raycastProps} {...hoverProps}>
-              <meshStandardMaterial color="#c8c8c8" emissive={moveRefBodyHighlight ? (isMoveRefTargetPanel ? '#22c55e' : REF_COLORS.hoverCss) : '#000000'} emissiveIntensity={moveRefBodyHighlight ? 0.9 : 0}
-                metalness={0} roughness={1.0} transparent opacity={hasPanels ? (moveRefBodyHighlight ? 0.35 : 0) : (moveRefBodyHighlight ? 0.5 : 0.06)}
+              <meshStandardMaterial color="#c8c8c8" emissive={bodyEmissive} emissiveIntensity={moveRefBodyHighlight ? 0.9 : 0}
+                metalness={0} roughness={1.0} transparent opacity={bodyOpacity}
                 side={THREE.DoubleSide} depthWrite={false} flatShading={false} polygonOffset polygonOffsetFactor={4} polygonOffsetUnits={8} />
             </mesh>
             {outline(EDGE_COLOR, isSelected ? EDGE_LINE_WIDTH + 0.5 : EDGE_LINE_WIDTH, false)}
@@ -1866,22 +1947,22 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
         {isWireframe && (
           <>
             <mesh ref={meshRef} geometry={localGeometry} visible={false} {...raycastProps} />
-            {outline(isSelected ? '#60a5fa' : shouldShowAsReference ? '#ef4444' : EDGE_COLOR, isSelected || shouldShowAsReference ? EDGE_LINE_WIDTH + 0.75 : EDGE_LINE_WIDTH + 0.25, true)}
+            {outline(isSelected ? '#60a5fa' : shouldShowAsReference ? '#ef4444' : EDGE_COLOR, accented ? EDGE_LINE_WIDTH + 0.75 : EDGE_LINE_WIDTH + 0.25, true)}
           </>
         )}
         {(isXray || shouldShowAsReference) && (
           <>
             <mesh ref={meshRef} geometry={localGeometry} castShadow receiveShadow {...raycastProps}>
-              <meshStandardMaterial color={shouldShowAsReference ? '#ef4444' : '#c8c8c8'} emissive="#000000" emissiveIntensity={0} metalness={0} roughness={1.0} transparent
-                opacity={hasPanels ? 0 : shouldShowAsReference ? 0.2 : 0.06} side={THREE.DoubleSide} depthWrite={false} flatShading={false} />
+              <meshStandardMaterial color={shouldShowAsReference ? '#ef4444' : '#c8c8c8'} emissive="#000000" emissiveIntensity={0} metalness={0} roughness={1.0}
+                transparent opacity={hasPanels ? 0 : shouldShowAsReference ? 0.2 : 0.06} side={THREE.DoubleSide} depthWrite={false} flatShading={false} />
             </mesh>
-            {outline(isSelected ? '#1e40af' : shouldShowAsReference ? '#991b1b' : EDGE_COLOR, isSelected || shouldShowAsReference ? EDGE_LINE_WIDTH + 0.5 : EDGE_LINE_WIDTH, false)}
+            {outline(isSelected ? '#1e40af' : shouldShowAsReference ? '#991b1b' : EDGE_COLOR, accented ? EDGE_LINE_WIDTH + 0.5 : EDGE_LINE_WIDTH, false)}
           </>
         )}
 
         {shape.fillets?.length > 0 && S.filletMode && <FilletEdgeLines shape={shape} />}
-        {isSelected && S.faceEditMode && <FaceEditor key={`face-editor-${shape.id}-${shape.geometry?.uuid || ''}-${(shape.fillets || []).length}`} shape={shape} />}
-        {isSelected && S.raycastMode && <FaceRaycastOverlay key={`raycast-${shape.id}-${shape.geometry?.uuid || ''}`} shape={shape} allShapes={S.shapes} />}
+        {isSelected && S.faceEditMode && <FaceEditor key={`face-editor-${shape.id}-${geoUuid}-${(shape.fillets || []).length}`} shape={shape} />}
+        {isSelected && S.raycastMode && <FaceRaycastOverlay key={`raycast-${shape.id}-${geoUuid}`} shape={shape} allShapes={S.shapes} />}
         {isRefMode && (
           <RefFaceOverlay geometry={localGeometry} faces={refFaces} groups={refFaceGroups} hoveredGroup={hoveredRefGroup}
             candidateGroup={isRefCandidateShape ? (S.faceExtrudeRefCandidate?.faceGroupIndex ?? null) : null}

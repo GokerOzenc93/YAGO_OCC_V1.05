@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import { type RefFacePick, type Shape, requestRebuild, shapeById, useAppStore, vfOfPanel } from '../store';
 import {
   type AxisDir, type AxisLetter, type CoplanarFaceGroup, type FaceData, type Vec3, angleToTouchPlane, axisDirToVec, axisIndexOf, axisLetterVec,
-  convertReplicadToThreeGeometry, createPanelFromVirtualFace, dominantAxisLabel, fracInBox, genId, getFacesAndGroups, getShapeMatrix, hugeRectOnPlane,
-  initReplicad, isFlatNormal, localBboxOf, mapAxisToVfLocal, snapToFlatGroup, vfFracOfPoint, vfRawMinAlong, worldBboxOf,
+  convertReplicadToThreeGeometry, dominantAxisLabel, fracInBox, genId, getFacesAndGroups, getShapeMatrix, halfSpaceSlab, initReplicad, isFlatNormal,
+  localBboxOf, mapAxisToVfLocal, round1, round3, snapToFlatGroup, spanAlong, vec3, vfFracOfPoint, vfRawMinAlong, worldBboxOf,
 } from './Geometry';
 import { pointInTriangle3D } from './FaceRegion';
 
@@ -88,6 +88,9 @@ export function getUnifiedSteps(panel: Shape): TransformStep[] {
 
 const commitSteps = (panel: Shape, steps: TransformStep[], updateShape: UpdateShape) =>
   commitAndRebuild(panel, { transformSteps: steps }, updateShape);
+/** Adımı sıralı listenin sonuna ekler ve rebuild tetikler. */
+const appendStep = (panel: Shape, step: TransformStep, updateShape: UpdateShape) =>
+  commitSteps(panel, [...getUnifiedSteps(panel), step], updateShape);
 
 export function stepRefTargets(panel: any): { extrude: Set<string>; move: Set<string>; rotate: Set<string> } {
   const extrude = new Set<string>(), move = new Set<string>(), rotate = new Set<string>();
@@ -119,8 +122,7 @@ export function applyTransformSteps(basePosition: Vec3, baseRotation: Vec3, step
       pos = pivot.clone().add(pos.sub(pivot).applyQuaternion(q));
     }
   }
-  const e = new THREE.Euler().setFromQuaternion(quat, 'XYZ');
-  return { position: [pos.x, pos.y, pos.z], rotation: [e.x, e.y, e.z] };
+  return { position: vec3(pos), rotation: vec3(new THREE.Euler().setFromQuaternion(quat, 'XYZ')) };
 }
 
 export interface PanelMoveParams { panelShape: Shape; axis: AxisDir; value: number; updateShape: UpdateShape }
@@ -137,10 +139,7 @@ async function addMoveStep({ panelShape, axis, value, updateShape }: PanelMovePa
   const now = Date.now();
   let anchor: MoveTransformStep['anchor'];
   if (vf && vf.vertices.length >= 3) {
-    const i = axisIndexOf(axis);
-    let min = Infinity, max = -Infinity;
-    for (const c of vf.vertices) { if (c[i] < min) min = c[i]; if (c[i] > max) max = c[i]; }
-    const span = Math.abs(max - min);
+    const span = spanAlong(vf.vertices, axisIndexOf(axis));
     if (span >= 1) anchor = { faceSpanAlongAxis: span };
   }
   // FIXED çıpası yalnız henüz dönüş adımı yoksa (ham konum dönmemiş çerçevede geçerli).
@@ -157,7 +156,9 @@ async function addMoveStep({ panelShape, axis, value, updateShape }: PanelMovePa
 }
 
 /** REF taşıma: köşeler şekillerinin dünya kutusunda ORANSAL saklanır → hedef boyutlanınca bağ yeniden çözülür. */
-async function executePanelMoveRef(panelShape: Shape, sourceVertex: Vec3, targetPanelId: string, targetVertex: Vec3, updateShape: UpdateShape): Promise<boolean> {
+async function executePanelMoveRef(
+  panelShape: Shape, sourceVertex: Vec3, targetPanelId: string, targetVertex: Vec3, updateShape: UpdateShape,
+): Promise<boolean> {
   const d = new THREE.Vector3(...targetVertex).sub(new THREE.Vector3(...sourceVertex));
   const dist = d.length();
   if (dist < 0.001) return false;
@@ -174,7 +175,7 @@ async function executePanelMoveRef(panelShape: Shape, sourceVertex: Vec3, target
     ...(refSourceFrac ? { refSourceFrac } : {}), ...(refTargetFrac ? { refTargetFrac } : {}),
     _refAxisVec: [d.x / dist, d.y / dist, d.z / dist], _refDist: dist,
   };
-  return commitSteps(fresh, [...getUnifiedSteps(fresh), step], updateShape);
+  return appendStep(fresh, step, updateShape);
 }
 
 export interface PanelRotateParams { panelShape: Shape; axis: AxisLetter; value: number; pivot: Vec3; updateShape: UpdateShape }
@@ -188,22 +189,23 @@ export async function executePanelRotate({ panelShape, axis, value, pivot, updat
     id: `step-${now}`, type: 'rotate', axis, axisVec: vf?.normal ? mapAxisToVfLocal(vf, axis) : undefined,
     value, pivot, pivotVfFrac: vf?.normal ? vfFracOfPoint(vf, pivot) : undefined, timestamp: now,
   };
-  return commitSteps(fresh, [...getUnifiedSteps(fresh), step], updateShape);
+  return appendStep(fresh, step, updateShape);
 }
 
 /** REF dönüş: nişan noktası referans yüzün düzlemine değene kadar döner; açı her rebuild'de
  * yeniden çözülür (PanelEngine.resolveRefRotateDeg). */
-async function executePanelRotateRef(panelShape: Shape, pivot: Vec3, armVertex: Vec3, axis: AxisLetter, face: RefFacePick, updateShape: UpdateShape): Promise<boolean> {
+async function executePanelRotateRef(
+  panelShape: Shape, pivot: Vec3, armVertex: Vec3, axis: AxisLetter, face: RefFacePick, updateShape: UpdateShape,
+): Promise<boolean> {
   const fresh = freshShape(panelShape);
   const vf = vfOfPanel(fresh);
   const axisVec = mapAxisToVfLocal(vf, axis);
   const axisWorld = axisVec ? new THREE.Vector3(...axisVec) : axisLetterVec(axis);
-  // Oluşturma anındaki açı — yalnız çözüm başarısız olursa yedek.
+  // Oluşturma anındaki açı — yalnız çözüm başarısız olursa yedek; yüze ulaşılamıyorsa en yakın yaklaşma açısı.
   const sol = angleToTouchPlane(new THREE.Vector3(...pivot), new THREE.Vector3(...armVertex), axisWorld,
     new THREE.Vector3(...face.normalWorld), new THREE.Vector3(...face.pointWorld), 0);
-  if (!sol) { console.warn('[YAGO][REF-DÖN] nişan noktası eksen üstünde — açı tanımsız, iptal'); return false; }
-  if (!sol.touched) console.warn('[YAGO][REF-DÖN] nişan noktası referans yüze ULAŞAMIYOR — en yakın yaklaşma açısı kullanılıyor:', sol.deg.toFixed(2));
-  const deg0 = Math.round(sol.deg * 1000) / 1000;
+  if (!sol) return false;   // nişan noktası eksen üstünde — açı tanımsız
+  const deg0 = round3(sol.deg);
   const pivotVfFrac = vf ? vfFracOfPoint(vf, pivot) : undefined;
   const refArmVfFrac = vf ? vfFracOfPoint(vf, armVertex) : undefined;
   const now = Date.now();
@@ -212,7 +214,7 @@ async function executePanelRotateRef(panelShape: Shape, pivot: Vec3, armVertex: 
     refTargetPanelId: face.panelId, refTargetFaceGroupIndex: face.faceGroupIndex, refTargetFaceNormal: face.normalWorld, refTargetFacePoint: face.pointWorld,
     refArmVertex: armVertex, ...(refArmVfFrac ? { refArmVfFrac } : {}),
   };
-  return commitSteps(fresh, [...getUnifiedSteps(fresh), step], updateShape);
+  return appendStep(fresh, step, updateShape);
 }
 
 export function updateTransformStep(panelShape: Shape, stepId: string, newValue: number, updateShape: UpdateShape): Promise<boolean> {
@@ -225,14 +227,15 @@ export function deleteTransformStep(panelShape: Shape, stepId: string, updateSha
   return commitSteps(fresh, getUnifiedSteps(fresh).filter(s => s.id !== stepId), updateShape);
 }
 
+const extrudeStepsOf = (panel: Shape): ExtrudeStep[] => panel.parameters?.extrudeSteps || [];
+
 export function updateExtrudeStep(panelShape: Shape, stepId: string, newValue: number, updateShape: UpdateShape): Promise<boolean> {
-  const steps: ExtrudeStep[] = panelShape.parameters?.extrudeSteps || [];
-  return commitAndRebuild(panelShape, { extrudeSteps: steps.map(s => (s.id === stepId ? { ...s, value: newValue } : s)) }, updateShape);
+  const steps = extrudeStepsOf(panelShape).map(s => (s.id === stepId ? { ...s, value: newValue } : s));
+  return commitAndRebuild(panelShape, { extrudeSteps: steps }, updateShape);
 }
 
 export function deleteExtrudeStep(panelShape: Shape, stepId: string, updateShape: UpdateShape): Promise<boolean> {
-  const steps: ExtrudeStep[] = panelShape.parameters?.extrudeSteps || [];
-  return commitAndRebuild(panelShape, { extrudeSteps: steps.filter(s => s.id !== stepId) }, updateShape);
+  return commitAndRebuild(panelShape, { extrudeSteps: extrudeStepsOf(panelShape).filter(s => s.id !== stepId) }, updateShape);
 }
 
 export async function confirmPanelMoveRef(): Promise<boolean> {
@@ -305,7 +308,9 @@ export function findExistingStepForFace(steps: ExtrudeStep[], faceNormal: THREE.
   return best;
 }
 
-function findMatchingReplicadFace(replicadShape: any, targetNormal: THREE.Vector3, targetCenter: THREE.Vector3, samplePoint?: THREE.Vector3): any | null {
+function findMatchingReplicadFace(
+  replicadShape: any, targetNormal: THREE.Vector3, targetCenter: THREE.Vector3, samplePoint?: THREE.Vector3,
+): any | null {
   const faces = replicadShape.faces;
   if (!faces || faces.length === 0) return null;
   const targetLabel = dominantAxisLabel(targetNormal);
@@ -325,8 +330,9 @@ function findMatchingReplicadFace(replicadShape: any, targetNormal: THREE.Vector
           let sx = 0, sy = 0, sz = 0;
           const n = fm.vertices.length / 3;
           for (let j = 0; j < fm.vertices.length; j += 3) {
-            sx += fm.vertices[j]; sy += fm.vertices[j + 1]; sz += fm.vertices[j + 2];
-            if (samplePoint) minPtDist = Math.min(minPtDist, Math.hypot(fm.vertices[j] - samplePoint.x, fm.vertices[j + 1] - samplePoint.y, fm.vertices[j + 2] - samplePoint.z));
+            const x = fm.vertices[j], y = fm.vertices[j + 1], z = fm.vertices[j + 2];
+            sx += x; sy += y; sz += z;
+            if (samplePoint) minPtDist = Math.min(minPtDist, Math.hypot(x - samplePoint.x, y - samplePoint.y, z - samplePoint.z));
           }
           center = new THREE.Vector3(sx / n, sy / n, sz / n);
         }
@@ -342,18 +348,19 @@ function findMatchingReplicadFace(replicadShape: any, targetNormal: THREE.Vector
   return candidates[0].face;
 }
 
-async function applyOneExtrudeStep(currentShape: any, step: ExtrudeStep, geometry: THREE.BufferGeometry): Promise<{ replicadShape: any; geometry: THREE.BufferGeometry; amount: number } | null> {
+type ExtrudeResult = { replicadShape: any; geometry: THREE.BufferGeometry; amount: number };
+
+async function applyOneExtrudeStep(currentShape: any, step: ExtrudeStep, geometry: THREE.BufferGeometry): Promise<ExtrudeResult | null> {
   const oc = await initReplicad();
   const { faces, groups } = getFacesAndGroups(geometry);
   const stepNormal = new THREE.Vector3(...step.faceNormal);
 
   // Önce düz (eksen-hizalı) gruplar; yoksa eğri normal saklı eski adımlar için gevşek eşleşme.
-  const flatAligned = groups.filter(g => { const n = g.normal.clone().normalize(); return isFlatNormal(n) && dominantAxisLabel(n) === step.axisLabel; });
-  const aligned = flatAligned.length > 0 ? flatAligned : groups.filter(g => { const n = g.normal.clone().normalize(); return dominantAxisLabel(n) === step.axisLabel && n.dot(stepNormal) > 0.5; });
-  if (aligned.length === 0) {
-    console.warn(`[applyOneExtrudeStep] No aligned face group for axis ${step.axisLabel}. Groups:`, groups.map(g => dominantAxisLabel(g.normal.clone().normalize())));
-    return null;
-  }
+  const onAxis = (pred: (n: THREE.Vector3) => boolean) =>
+    groups.filter(g => { const n = g.normal.clone().normalize(); return dominantAxisLabel(n) === step.axisLabel && pred(n); });
+  const flatAligned = onAxis(n => isFlatNormal(n));
+  const aligned = flatAligned.length > 0 ? flatAligned : onAxis(n => n.dot(stepNormal) > 0.5);
+  if (aligned.length === 0) return null;
 
   const box = localBboxOf(geometry)!;
   const stepCenter = new THREE.Vector3(...step.faceCenter);
@@ -383,11 +390,13 @@ async function applyOneExtrudeStep(currentShape: any, step: ExtrudeStep, geometr
     const refC = new THREE.Vector3(...step.refPlaneCenterLocal);
     const refN = step.refPlaneNormalLocal ? new THREE.Vector3(...step.refPlaneNormalLocal).normalize() : null;
     const par = refN ? refN.dot(faceNormal) : 1;
-    if (Math.abs(par) < 0.5) { console.warn(`[applyOneExtrudeStep] Ref yüzü extrude eksenine çok dik (|dot|=${Math.abs(par).toFixed(2)}) — adım atlandı`); return null; }
+    if (Math.abs(par) < 0.5) return null;   // ref yüzü extrude eksenine çok dik → adım atlanır
     if (refN && Math.abs(par) < 0.9999) {
       const tOf = (p: THREE.Vector3) => refC.clone().sub(p).dot(refN) / par;
       let tMin = Infinity, tMax = -Infinity;
-      for (const fi of bestGroup.faceIndices) for (const v of faces[fi]?.vertices || []) { const t = tOf(v); if (t < tMin) tMin = t; if (t > tMax) tMax = t; }
+      for (const fi of bestGroup.faceIndices) {
+        for (const v of faces[fi]?.vertices || []) { const t = tOf(v); if (t < tMin) tMin = t; if (t > tMax) tMax = t; }
+      }
       extrudeAmount = tOf(faceCenter);
       // Kesilecek yarım-uzay: düzlemin yüz normali tarafı.
       bevel = { refC, nOut: par > 0 ? refN.clone() : refN.clone().negate(), tMin, tMax };
@@ -399,14 +408,15 @@ async function applyOneExtrudeStep(currentShape: any, step: ExtrudeStep, geometr
   } else {
     extrudeAmount = step.value;
   }
-  if (!bevel && Math.abs(extrudeAmount) < 0.01) { console.warn(`[applyOneExtrudeStep] Extrude amount too small: ${extrudeAmount} for step ${step.axisLabel}`); return null; }
+  if (!bevel && Math.abs(extrudeAmount) < 0.01) return null;
 
   const samplePt = step.samplePoint ? new THREE.Vector3(...step.samplePoint) : undefined;
   const matchingFace = findMatchingReplicadFace(currentShape, faceNormal, faceCenter, samplePt);
-  if (!matchingFace) { console.warn(`[applyOneExtrudeStep] No matching replicad face for normal ${faceNormal.toArray()} center ${faceCenter.toArray()}`); return null; }
+  if (!matchingFace) return null;
   const { cast } = await import('replicad');
   const prismOf = (face: any, len: number): any => {
-    const pb = new oc.BRepPrimAPI_MakePrism_1(face.wrapped, new oc.gp_Vec_4(faceNormal.x * len, faceNormal.y * len, faceNormal.z * len), false, true);
+    const vec = new oc.gp_Vec_4(faceNormal.x * len, faceNormal.y * len, faceNormal.z * len);
+    const pb = new oc.BRepPrimAPI_MakePrism_1(face.wrapped, vec, false, true);
     pb.Build(new oc.Message_ProgressRange_1());
     return cast(pb.Shape());
   };
@@ -418,7 +428,7 @@ async function applyOneExtrudeStep(currentShape: any, step: ExtrudeStep, geometr
     const lo = Math.min(bevel.tMin, 0) - 2, hi = Math.max(bevel.tMax, 0) + 2;
     const column = prismOf(matchingFace.clone().translate(faceNormal.x * lo, faceNormal.y * lo, faceNormal.z * lo), hi - lo);
     const H = Math.max(box.getSize(new THREE.Vector3()).length(), hi - lo) * 2 + 500;
-    const half = await createPanelFromVirtualFace(hugeRectOnPlane(bevel.refC, bevel.nOut, H), [-bevel.nOut.x, -bevel.nOut.y, -bevel.nOut.z], H, 0);
+    const half = await halfSpaceSlab(bevel.refC, bevel.nOut, bevel.nOut.clone().negate(), H);
     if (!half) return null;
     const finalShape = shape.cut(column.intersect(half));
     return { replicadShape: finalShape, geometry: convertReplicadToThreeGeometry(finalShape), amount: extrudeAmount };
@@ -441,20 +451,17 @@ export async function applyExtrudeSteps(
     let effectiveStep = step;
     if (step.refShapeId && shapes) {
       const plane = resolveReferenceFacePlane(step.refShapeId, step.refFaceGroupIndex ?? -1, shapes, step.refNormalWorld, step.refPointWorld);
-      if (!plane) {
-        // Referans silinmiş/çözülemiyor → adım HİÇ uygulanmaz (yanlışlıkla tam kesim olmasın).
-        console.warn(`[YAGO][EXTRUDE-REF] Referans düzlemi çözülemedi: ${step.refShapeId} — adım atlandı`);
-        continue;
-      }
-      effectiveStep = { ...step, refPlaneCenterLocal: [plane.center.x, plane.center.y, plane.center.z], refPlaneNormalLocal: [plane.normal.x, plane.normal.y, plane.normal.z] };
+      // Referans silinmiş/çözülemiyor → adım HİÇ uygulanmaz (yanlışlıkla tam kesim olmasın).
+      if (!plane) continue;
+      effectiveStep = { ...step, refPlaneCenterLocal: vec3(plane.center), refPlaneNormalLocal: vec3(plane.normal) };
     }
     const result = await applyOneExtrudeStep(currentReplicad, effectiveStep, currentGeometry);
     if (result) {
       currentReplicad = result.replicadShape;
       currentGeometry = result.geometry;
       anyApplied = true;
-      if (step.refShapeId) resolved.push({ id: step.id, value: Math.round(result.amount * 10) / 10 });
-    } else console.warn(`[YAGO][EXTRUDE] Adım uygulanamadı: ${step.axisLabel} (id=${step.id})`);
+      if (step.refShapeId) resolved.push({ id: step.id, value: round1(result.amount) });
+    }
   }
   return anyApplied ? { shape: currentReplicad, geometry: currentGeometry, resolved } : null;
 }
@@ -477,9 +484,19 @@ function resolveClickedFace(panel: Shape, faceGroupIndex: number): { faceNormal:
   return { faceNormal, faceCenter };
 }
 
-/** Aynı yüz = aynı eksen + merkez < 1 mm → mevcut adımın yerine konur. */
-function upsertExtrudeStep(steps: ExtrudeStep[], step: ExtrudeStep): { steps: ExtrudeStep[]; existed: boolean } {
-  const idx = steps.findIndex(s => s.axisLabel === step.axisLabel && new THREE.Vector3(...s.faceCenter).distanceTo(new THREE.Vector3(...step.faceCenter)) < 1.0);
+/** Tıklanan yüze extrude adımı; aynı yüz (aynı eksen + merkez < 1 mm) → mevcut adımın yerine konur. */
+function upsertFaceStep(
+  panel: Shape, faceGroupIndex: number, value: number, isFixed: boolean, clickPoint: Vec3 | undefined, extra: Partial<ExtrudeStep> = {},
+): { steps: ExtrudeStep[]; existed: boolean } | null {
+  const face = resolveClickedFace(panel, faceGroupIndex);
+  if (!face) return null;
+  const steps = extrudeStepsOf(panel);
+  const step: ExtrudeStep = {
+    id: genId('ext'), faceNormal: vec3(face.faceNormal), faceCenter: vec3(face.faceCenter), axisLabel: dominantAxisLabel(face.faceNormal),
+    value, isFixed, timestamp: Date.now(), samplePoint: clickPoint, ...extra,
+  };
+  const center = new THREE.Vector3(...step.faceCenter);
+  const idx = steps.findIndex(s => s.axisLabel === step.axisLabel && new THREE.Vector3(...s.faceCenter).distanceTo(center) < 1.0);
   return { steps: idx >= 0 ? steps.map((s, i) => (i === idx ? step : s)) : [...steps, step], existed: idx >= 0 };
 }
 
@@ -489,28 +506,21 @@ export interface FaceExtrudeParams {
 }
 
 export async function executeFaceExtrude({ panelShape: panel, faceGroupIndex, value, isFixed, updateShape, clickPoint }: FaceExtrudeParams): Promise<boolean> {
-  const face = resolveClickedFace(panel, faceGroupIndex);
-  if (!face) return false;
-  const existing: ExtrudeStep[] = panel.parameters?.extrudeSteps || [];
-  const up = upsertExtrudeStep(existing, {
-    id: genId('ext'), faceNormal: [face.faceNormal.x, face.faceNormal.y, face.faceNormal.z], faceCenter: [face.faceCenter.x, face.faceCenter.y, face.faceCenter.z],
-    axisLabel: dominantAxisLabel(face.faceNormal), value, isFixed, timestamp: Date.now(), samplePoint: clickPoint,
-  });
+  const up = upsertFaceStep(panel, faceGroupIndex, value, isFixed, clickPoint);
+  if (!up) return false;
   // Dinamik modda değer = delta.
   if (!isFixed && Math.abs(value) < 0.01 && !up.existed) return false;
   return commitAndRebuild(panel, { extrudeSteps: up.steps }, updateShape);
 }
 
 /** Ref extrude: değer rebuild'de referansın güncel düzleminden çözülür (value=0 işaretçi). */
-async function executeFaceExtrudeToReference(panel: Shape, faceGroupIndex: number, ref: RefFacePick, clickPoint: Vec3 | undefined, updateShape: UpdateShape): Promise<boolean> {
-  const face = resolveClickedFace(panel, faceGroupIndex);
-  if (!face) return false;
-  const existing: ExtrudeStep[] = panel.parameters?.extrudeSteps || [];
-  const up = upsertExtrudeStep(existing, {
-    id: genId('ext'), faceNormal: [face.faceNormal.x, face.faceNormal.y, face.faceNormal.z], faceCenter: [face.faceCenter.x, face.faceCenter.y, face.faceCenter.z],
-    axisLabel: dominantAxisLabel(face.faceNormal), value: 0, isFixed: true, timestamp: Date.now(), samplePoint: clickPoint,
+async function executeFaceExtrudeToReference(
+  panel: Shape, faceGroupIndex: number, ref: RefFacePick, clickPoint: Vec3 | undefined, updateShape: UpdateShape,
+): Promise<boolean> {
+  const up = upsertFaceStep(panel, faceGroupIndex, 0, true, clickPoint, {
     refShapeId: ref.panelId, refFaceGroupIndex: ref.faceGroupIndex, refNormalWorld: ref.normalWorld, refPointWorld: ref.pointWorld,
   });
+  if (!up) return false;
   return commitAndRebuild(panel, { extrudeSteps: up.steps }, updateShape);
 }
 
@@ -542,13 +552,13 @@ function gatherRefFaceCandidates(rayOrigin: THREE.Vector3, rayDir: THREE.Vector3
       if (t < 0) continue;
       const hit = rayOrigin.clone().addScaledVector(dir, t);
       const inside = group.faceIndices.some(fi => {
-        const f = faces[fi];
-        return !!f && pointInTriangle3D(hit, f.vertices[0].clone().applyMatrix4(M), f.vertices[1].clone().applyMatrix4(M), f.vertices[2].clone().applyMatrix4(M));
+        const w = faces[fi]?.vertices.map(q => q.clone().applyMatrix4(M));
+        return !!w && pointInTriangle3D(hit, w[0], w[1], w[2]);
       });
       if (!inside) continue;
       const snapped = snapToFlatGroup(gi, groups);
       const sNormalWorld = (groups[snapped] || group).normal.clone().normalize().applyMatrix3(normalMatrix).normalize();
-      out.push({ shapeId: s.id, faceGroupIndex: snapped, depth: t, pointWorld: [hit.x, hit.y, hit.z], normalWorld: [sNormalWorld.x, sNormalWorld.y, sNormalWorld.z] });
+      out.push({ shapeId: s.id, faceGroupIndex: snapped, depth: t, pointWorld: vec3(hit), normalWorld: vec3(sNormalWorld) });
     }
   }
   out.sort((a, b) => a.depth - b.depth);

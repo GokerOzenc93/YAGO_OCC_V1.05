@@ -23,21 +23,23 @@ export interface CatalogItem {
   geometry_data: any; shape_parameters?: any; subtraction_geometries?: any[]; fillets?: any[];
   preview_image?: string; created_at: string; updated_at: string;
 }
+// Supabase yapılandırılmamışsa yerel kip: katalog boş, silme yapılmaz.
 export const catalogService = {
   async getAll(): Promise<CatalogItem[]> {
-    if (!supabase) { console.warn('Supabase not configured - running in local mode'); return []; }
+    if (!supabase) return [];
     const { data, error } = await supabase.from('geometry_catalog').select('*').order('created_at', { ascending: false });
     if (error) { console.error('Error fetching catalog items:', error); return []; }
     return data || [];
   },
   async delete(id: string): Promise<boolean> {
-    if (!supabase) { console.warn('Supabase not configured - cannot delete from catalog'); return false; }
+    if (!supabase) return false;
     const { error } = await supabase.from('geometry_catalog').delete().eq('id', id);
     if (error) { console.error('Error deleting catalog item:', error); return false; }
     return true;
   },
 };
 
+const PREVIEW_BOX = 'w-full aspect-square rounded-lg overflow-hidden bg-gradient-to-br from-slate-100 to-slate-200';
 const createGeometryFromType = (type: string, p: any = {}): THREE.BufferGeometry => {
   switch (type) {
     case 'cylinder': return new THREE.CylinderGeometry(p.radius || 50, p.radius || 50, p.height || 100, p.segments || 32);
@@ -52,7 +54,7 @@ const GeometryPreview: React.FC<{ geometryData: any }> = ({ geometryData }) => {
     return Math.max(size.x, size.y, size.z) * 2.2;
   }, [geometry]);
   return (
-    <div className="w-full aspect-square rounded-lg overflow-hidden bg-gradient-to-br from-slate-100 to-slate-200">
+    <div className={PREVIEW_BOX}>
       <Canvas dpr={[1, 2]} gl={{ alpha: false, antialias: true }}>
         <color attach="background" args={['#f8fafc']} />
         <PerspectiveCamera makeDefault position={[cameraDistance, cameraDistance * 0.7, cameraDistance * 0.8]} fov={40} />
@@ -66,78 +68,89 @@ const GeometryPreview: React.FC<{ geometryData: any }> = ({ geometryData }) => {
   );
 };
 
-const CatalogPanel: React.FC<{ isOpen: boolean; onClose: () => void; onLoad: (item: CatalogItem) => void | Promise<void>; onDelete: (id: string) => void; items: CatalogItem[] }> =
-  ({ isOpen, onClose, onLoad, onDelete, items }) => {
-    const [selectedTag, setSelectedTag] = useState<string | null>(null);
-    const [selectedItem, setSelectedItem] = useState<CatalogItem | null>(null);
-    const [position, setPosition] = useState({ x: 0, y: 0 });
-    const [drag, setDrag] = useState<{ x: number; y: number } | null>(null);
-    const allTags = Array.from(new Set(items.flatMap(item => item.tags)));
-    const filteredItems = items.filter(item => !selectedTag || item.tags.includes(selectedTag));
+const ACTION_BTN = 'px-3 py-1.5 text-xs font-medium rounded transition-all flex items-center gap-1';
+const TAG_BTN = 'w-full text-left px-3 py-2 text-xs font-medium rounded transition-colors flex items-center justify-between';
+type CatalogPanelProps = {
+  isOpen: boolean; onClose: () => void; onLoad: (item: CatalogItem) => void | Promise<void>; onDelete: (id: string) => void; items: CatalogItem[];
+};
+const CatalogPanel: React.FC<CatalogPanelProps> = ({ isOpen, onClose, onLoad, onDelete, items }) => {
+  const [selectedTag, setSelectedTag] = useState<string | null>(null);
+  const [selectedItem, setSelectedItem] = useState<CatalogItem | null>(null);
+  const [position, setPosition] = useState({ x: 0, y: 0 });
+  const [drag, setDrag] = useState<{ x: number; y: number } | null>(null);
+  const allTags = Array.from(new Set(items.flatMap(item => item.tags)));
+  const filteredItems = items.filter(item => !selectedTag || item.tags.includes(selectedTag));
 
-    useEffect(() => { if (isOpen) setPosition({ x: window.innerWidth / 2 - 400, y: window.innerHeight / 2 - 350 }); }, [isOpen]);
-    useEffect(() => {
-      if (!drag) return;
-      const onMove = (e: MouseEvent) => setPosition({ x: e.clientX - drag.x, y: e.clientY - drag.y });
-      const onUp = () => setDrag(null);
-      document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp);
-      return () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
-    }, [drag]);
-    if (!isOpen) return null;
+  useEffect(() => { if (isOpen) setPosition({ x: window.innerWidth / 2 - 400, y: window.innerHeight / 2 - 350 }); }, [isOpen]);
+  useEffect(() => {
+    if (!drag) return;
+    const onMove = (e: MouseEvent) => setPosition({ x: e.clientX - drag.x, y: e.clientY - drag.y });
+    const onUp = () => setDrag(null);
+    document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp);
+    return () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+  }, [drag]);
+  if (!isOpen) return null;
 
-    const actionBtn = (enabled: boolean, cls: string, onClick: () => void, icon: React.ReactNode, label: string) => (
-      <button onClick={onClick} disabled={!enabled}
-        className={`px-3 py-1.5 text-xs font-medium rounded transition-all flex items-center gap-1 ${enabled ? cls : 'bg-stone-300 text-stone-500 cursor-not-allowed'}`}>
-        {icon}{label}
-      </button>
-    );
-    const tagBtn = (tag: string | null, label: string, count: number) => (
-      <button key={tag ?? '__all'} onClick={() => setSelectedTag(tag)}
-        className={`w-full text-left px-3 py-2 text-xs font-medium rounded transition-colors flex items-center justify-between ${tag ? 'uppercase' : ''} ${selectedTag === tag ? 'bg-orange-600 text-white' : 'bg-white text-slate-700 hover:bg-stone-200'}`}>
-        <span>{label}</span><span className="text-xs">{count}</span>
-      </button>
-    );
-    return (
-      <div className="fixed inset-0 z-50 pointer-events-none">
-        <div className="absolute bg-stone-50 rounded-2xl shadow-2xl w-full max-w-3xl h-[700px] border border-stone-300 flex flex-col pointer-events-auto"
-          style={{ left: `${position.x}px`, top: `${position.y}px`, cursor: drag ? 'grabbing' : 'default' }}
-          onMouseDown={e => { if ((e.target as HTMLElement).closest('.drag-handle')) setDrag({ x: e.clientX - position.x, y: e.clientY - position.y }); }}>
-          <div className="drag-handle flex items-center justify-between px-5 py-4 cursor-grab active:cursor-grabbing">
-            <h1 className="text-xl font-bold text-slate-900">Geometry Catalog</h1>
-            <div className="flex items-center gap-2">
-              {actionBtn(!!selectedItem, 'bg-orange-600 text-white hover:bg-orange-700', () => { if (selectedItem) { onLoad(selectedItem); setSelectedItem(null); } }, <Plus size={14} strokeWidth={2} />, 'Insert')}
-              {actionBtn(!!selectedItem, 'bg-orange-400 text-white hover:bg-orange-500', () => { if (selectedItem && confirm(`Delete "${selectedItem.code}"?`)) { onDelete(selectedItem.id); setSelectedItem(null); } }, <Trash2 size={14} strokeWidth={2} />, 'Delete')}
-              <button onClick={onClose} className="p-1.5 rounded hover:bg-stone-200 transition-colors ml-1"><X size={16} className="text-slate-700" /></button>
+  const insertSelected = () => { if (selectedItem) { onLoad(selectedItem); setSelectedItem(null); } };
+  const deleteSelected = () => {
+    if (selectedItem && confirm(`Delete "${selectedItem.code}"?`)) { onDelete(selectedItem.id); setSelectedItem(null); }
+  };
+  const actionBtn = (enabled: boolean, cls: string, onClick: () => void, icon: React.ReactNode, label: string) => (
+    <button onClick={onClick} disabled={!enabled}
+      className={`${ACTION_BTN} ${enabled ? cls : 'bg-stone-300 text-stone-500 cursor-not-allowed'}`}>
+      {icon}{label}
+    </button>
+  );
+  const tagBtn = (tag: string | null, label: string, count: number) => (
+    <button key={tag ?? '__all'} onClick={() => setSelectedTag(tag)}
+      className={`${TAG_BTN} ${tag ? 'uppercase' : ''} ${selectedTag === tag ? 'bg-orange-600 text-white' : 'bg-white text-slate-700 hover:bg-stone-200'}`}>
+      <span>{label}</span><span className="text-xs">{count}</span>
+    </button>
+  );
+  return (
+    <div className="fixed inset-0 z-50 pointer-events-none">
+      <div className="absolute bg-stone-50 rounded-2xl shadow-2xl w-full max-w-3xl h-[700px] border border-stone-300 flex flex-col pointer-events-auto"
+        style={{ left: `${position.x}px`, top: `${position.y}px`, cursor: drag ? 'grabbing' : 'default' }}
+        onMouseDown={e => { if ((e.target as HTMLElement).closest('.drag-handle')) setDrag({ x: e.clientX - position.x, y: e.clientY - position.y }); }}>
+        <div className="drag-handle flex items-center justify-between px-5 py-4 cursor-grab active:cursor-grabbing">
+          <h1 className="text-xl font-bold text-slate-900">Geometry Catalog</h1>
+          <div className="flex items-center gap-2">
+            {actionBtn(!!selectedItem, 'bg-orange-600 text-white hover:bg-orange-700', insertSelected, <Plus size={14} strokeWidth={2} />, 'Insert')}
+            {actionBtn(!!selectedItem, 'bg-orange-400 text-white hover:bg-orange-500', deleteSelected, <Trash2 size={14} strokeWidth={2} />, 'Delete')}
+            <button onClick={onClose} className="p-1.5 rounded hover:bg-stone-200 transition-colors ml-1"><X size={16} className="text-slate-700" /></button>
+          </div>
+        </div>
+        <div className="flex-1 flex overflow-hidden">
+          <div className="flex-1 overflow-x-auto px-5 pb-5">
+            <div className="flex gap-3">
+              {filteredItems.map(item => (
+                <div key={item.id} onClick={() => setSelectedItem(item)}
+                  className={`flex-shrink-0 w-44 rounded-lg p-3 transition-all cursor-pointer border-2 ${selectedItem?.id === item.id
+                    ? 'border-orange-500 bg-white shadow-lg' : 'border-orange-300 bg-orange-50 hover:border-orange-400 hover:shadow-md'}`}>
+                  {item.preview_image
+                    ? <div className={PREVIEW_BOX}><img src={item.preview_image} alt={item.code} className="w-full h-full object-contain" /></div>
+                    : <GeometryPreview geometryData={item.geometry_data} />}
+                  <div className="mt-2">
+                    <h3 className="font-semibold text-slate-900 text-xs leading-tight">{item.code} / {item.description || 'No description'}</h3>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
-          <div className="flex-1 flex overflow-hidden">
-            <div className="flex-1 overflow-x-auto px-5 pb-5">
-              <div className="flex gap-3">
-                {filteredItems.map(item => (
-                  <div key={item.id} onClick={() => setSelectedItem(item)}
-                    className={`flex-shrink-0 w-44 rounded-lg p-3 transition-all cursor-pointer border-2 ${selectedItem?.id === item.id ? 'border-orange-500 bg-white shadow-lg' : 'border-orange-300 bg-orange-50 hover:border-orange-400 hover:shadow-md'}`}>
-                    {item.preview_image
-                      ? <div className="w-full aspect-square rounded-lg overflow-hidden bg-gradient-to-br from-slate-100 to-slate-200"><img src={item.preview_image} alt={item.code} className="w-full h-full object-contain" /></div>
-                      : <GeometryPreview geometryData={item.geometry_data} />}
-                    <div className="mt-2"><h3 className="font-semibold text-slate-900 text-xs leading-tight">{item.code} / {item.description || 'No description'}</h3></div>
-                  </div>
-                ))}
-              </div>
-            </div>
-            <div className="w-48 bg-stone-100 flex flex-col">
-              <div className="p-4">
-                <h3 className="text-[10px] font-semibold text-slate-600 mb-3 uppercase tracking-wide">Categories</h3>
-                <div className="space-y-1.5">
-                  {tagBtn(null, 'All Items', items.length)}
-                  {allTags.map(tag => tagBtn(tag, tag, items.filter(item => item.tags.includes(tag)).length))}
-                </div>
+          <div className="w-48 bg-stone-100 flex flex-col">
+            <div className="p-4">
+              <h3 className="text-[10px] font-semibold text-slate-600 mb-3 uppercase tracking-wide">Categories</h3>
+              <div className="space-y-1.5">
+                {tagBtn(null, 'All Items', items.length)}
+                {allTags.map(tag => tagBtn(tag, tag, items.filter(item => item.tags.includes(tag)).length))}
               </div>
             </div>
           </div>
         </div>
       </div>
-    );
-  };
+    </div>
+  );
+};
 
 const panelSetsByParent = (shapes: Shape[]) => {
   const m = new Map<string, Set<string>>();
@@ -170,9 +183,11 @@ function App() {
   // OpenCascade / vaat hataları sayfayı yeniden yüklemesin.
   useEffect(() => {
     const onError = (e: ErrorEvent) => {
-      if (e.message?.includes('BindingError') || e.message?.includes('OpenCascade')) { e.preventDefault(); console.error('Caught global error (prevented reload):', e.message); }
+      if (!e.message?.includes('BindingError') && !e.message?.includes('OpenCascade')) return;
+      e.preventDefault();
+      console.error('Caught global error (prevented reload):', e.message);
     };
-    const onUnhandledRejection = (e: PromiseRejectionEvent) => { e.preventDefault(); console.warn('Caught unhandled rejection (prevented reload):', String(e.reason?.message || e.reason || '')); };
+    const onUnhandledRejection = (e: PromiseRejectionEvent) => e.preventDefault();
     window.addEventListener('error', onError);
     window.addEventListener('unhandledrejection', onUnhandledRejection);
     return () => { window.removeEventListener('error', onError); window.removeEventListener('unhandledrejection', onUnhandledRejection); };
@@ -207,7 +222,10 @@ function App() {
         const h = parseFloat(sub.parameters?.height) || sub.geometrySize?.[1] || 100;
         const d = parseFloat(sub.parameters?.depth) || sub.geometrySize?.[2] || 100;
         const geometry = new THREE.BoxGeometry(w, h, d); geometry.translate(w / 2, h / 2, d / 2);
-        return { geometry, relativeOffset: sub.relativeOffset || [0, 0, 0], relativeRotation: sub.relativeRotation || [0, 0, 0], scale: sub.scale || [1, 1, 1], parameters: sub.parameters };
+        return {
+          geometry, relativeOffset: sub.relativeOffset || [0, 0, 0], relativeRotation: sub.relativeRotation || [0, 0, 0],
+          scale: sub.scale || [1, 1, 1], parameters: sub.parameters,
+        };
       });
       addShape({
         id: `${geometryData.type || 'box'}-${Date.now()}`, type: geometryData.type || 'box',
@@ -249,7 +267,8 @@ function App() {
         <Terminal />
         <StatusBar />
       </div>
-      <CatalogPanel isOpen={catalogOpen} onClose={() => setCatalogOpen(false)} onLoad={handleLoadFromCatalog} onDelete={handleDeleteFromCatalog} items={catalogItems} />
+      <CatalogPanel isOpen={catalogOpen} onClose={() => setCatalogOpen(false)} onLoad={handleLoadFromCatalog}
+        onDelete={handleDeleteFromCatalog} items={catalogItems} />
     </div>
   );
 }
@@ -266,20 +285,32 @@ const SUB_ROWS: Array<[SubKey, string, string]> = [
   ['rotX', 'RX', 'Rotation X'], ['rotY', 'RY', 'Rotation Y'], ['rotZ', 'RZ', 'Rotation Z'],
 ];
 const RAD2DEG = 180 / Math.PI;
+const evalSubs = (expr: (k: SubKey) => string, ctx: Record<string, number>) =>
+  Object.fromEntries(SUB_KEYS.map(k => [k, { expression: expr(k), result: evaluateExpression(expr(k), ctx) }])) as Record<SubKey, ExprResult>;
 
-const P_ROW = 'group/prow flex items-center gap-1.5 h-[30px] pl-1 pr-1 rounded-[9px] bg-[#fdfcfa] ring-1 ring-[#ece7df] shadow-[0_1px_0_rgba(68,64,60,0.025)] hover:bg-white hover:ring-[#e2dbd0] focus-within:!bg-white focus-within:!ring-[#f0d6ba] transition-colors duration-150';
+const P_ROW = 'group/prow flex items-center gap-1.5 h-[30px] pl-1 pr-1 rounded-[9px] bg-[#fdfcfa] ring-1 ring-[#ece7df] shadow-[0_1px_0_rgba(68,64,60,0.025)]'
+  + ' hover:bg-white hover:ring-[#e2dbd0] focus-within:!bg-white focus-within:!ring-[#f0d6ba] transition-colors duration-150';
 const P_LABEL = 'shrink-0 w-[30px] text-center text-[11px] font-semibold tracking-wide tabular-nums select-none';
-const P_INPUT = 'yago-param-input shrink-0 w-[84px] h-[22px] px-1.5 text-[12px] font-mono tabular-nums text-stone-800 bg-transparent border border-transparent rounded-[6px] outline-none placeholder:text-stone-300 hover:border-[#ebe5dc] focus:bg-white focus:border-orange-400/50 transition-colors';
+// Sessiz giriş alanı (değer / not): ortak çerçevesiz zemin + odak/geçiş sınıfları.
+const P_BARE = 'bg-transparent border border-transparent';
+const P_FX = 'outline-none placeholder:text-stone-300 hover:border-[#ebe5dc] focus:bg-white focus:border-orange-400/50 transition-colors';
+const P_INPUT = `yago-param-input shrink-0 w-[84px] h-[22px] px-1.5 text-[12px] font-mono tabular-nums text-stone-800 ${P_BARE} rounded-[6px] ${P_FX}`;
 const P_RESULT = 'shrink-0 w-[56px] text-right text-[11px] tabular-nums text-stone-400 select-none';
 const P_DESC = 'flex-1 min-w-0 truncate pl-1 text-[11px] text-stone-400 select-none';
-const P_NOTE = 'yago-row-note flex-1 min-w-0 h-[22px] px-[5px] text-[11.5px] text-stone-600 bg-transparent border border-transparent rounded-[5px] outline-none placeholder:text-stone-300 hover:border-[#ebe5dc] focus:bg-white focus:border-orange-400/50 transition-colors';
+const P_NOTE = `yago-row-note flex-1 min-w-0 h-[22px] px-[5px] text-[11.5px] text-stone-600 ${P_BARE} rounded-[5px] ${P_FX}`;
 const P_ICON_BTN = 'shrink-0 w-5 h-5 rounded-md flex items-center justify-center text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700 transition-colors duration-150';
 const P_DEL_BTN = `${P_ICON_BTN} opacity-0 group-hover/prow:opacity-100 focus-visible:opacity-100 hover:!bg-red-50 hover:!text-red-500`;
+const APPLY_BTN = 'w-full mt-3 h-[30px] rounded-[8px] bg-[#44403c] text-white text-[11.5px] font-semibold tracking-[0.01em]'
+  + ' shadow-[0_1px_3px_rgba(40,30,20,0.22)] hover:bg-[#57534e] active:bg-[#292524] transition-colors duration-150'
+  + ' flex items-center justify-center gap-1.5';
 
-const ParamSection: React.FC<{ title: string; count?: number; accent?: string; right?: React.ReactNode; children: React.ReactNode }> = ({ title, count, accent, right, children }) => (
+type ParamSectionProps = { title: string; count?: number; accent?: string; right?: React.ReactNode; children: React.ReactNode };
+const ParamSection: React.FC<ParamSectionProps> = ({ title, count, accent, right, children }) => (
   <div className="mt-3 first:mt-0">
     <div className="px-1 pb-1.5 flex items-center gap-2">
-      <span style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: accent || '#b5ada3', fontFamily: UI_FONT }}>{title}</span>
+      <span style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: accent || '#b5ada3', fontFamily: UI_FONT }}>
+        {title}
+      </span>
       {count !== undefined && <span className="text-[10px] font-medium tabular-nums text-stone-300">{count}</span>}
       <div className="flex-1 h-px bg-[#efeae2]" />
       {right}
@@ -316,7 +347,10 @@ const ParameterRow: React.FC<{ label: string; value: number; onChange: (v: numbe
       </div>
     );
   };
-const ExprRow = ({ label, labelColor, expression, onExpr, result, children }: { label: string; labelColor: string; expression: string; onExpr: (v: string) => void; result: number; children: React.ReactNode }) => (
+type ExprRowProps = {
+  label: string; labelColor: string; expression: string; onExpr: (v: string) => void; result: number; children: React.ReactNode;
+};
+const ExprRow = ({ label, labelColor, expression, onExpr, result, children }: ExprRowProps) => (
   <div className={P_ROW}>
     <span className={P_LABEL} style={{ color: labelColor }}>{label}</span>
     <input type="text" value={expression} onChange={e => onExpr(e.target.value)} className={P_INPUT} placeholder="expr" />
@@ -327,7 +361,8 @@ const ExprRow = ({ label, labelColor, expression, onExpr, result, children }: { 
 
 export function ParametersPanel() {
   const { selectedShapeId, shapes, updateShape, subtractionViewMode, selectedSubtractionIndex, setSelectedSubtractionIndex, deleteSubtraction } =
-    useStoreFields('selectedShapeId', 'shapes', 'updateShape', 'subtractionViewMode', 'selectedSubtractionIndex', 'setSelectedSubtractionIndex', 'deleteSubtraction');
+    useStoreFields('selectedShapeId', 'shapes', 'updateShape', 'subtractionViewMode', 'selectedSubtractionIndex',
+      'setSelectedSubtractionIndex', 'deleteSubtraction');
 
   const [width, setWidth] = useState(0);
   const [height, setHeight] = useState(0);
@@ -364,13 +399,13 @@ export function ParametersPanel() {
     if (!sub || !pos) return;
     const size = new THREE.Box3().setFromBufferAttribute(pos as THREE.BufferAttribute).getSize(new THREE.Vector3());
     const p = sub.parameters, off = sub.relativeOffset, rr = sub.relativeRotation;
+    const deg = (i: number) => String((rr?.[i] || 0) * RAD2DEG);
     const raw: Record<SubKey, string> = {
       width: p?.width ?? String(size.x), height: p?.height ?? String(size.y), depth: p?.depth ?? String(size.z),
       posX: p?.posX ?? String(off?.[0] || 0), posY: p?.posY ?? String(off?.[1] || 0), posZ: p?.posZ ?? String(off?.[2] || 0),
-      rotX: p?.rotX ?? String((rr?.[0] || 0) * RAD2DEG), rotY: p?.rotY ?? String((rr?.[1] || 0) * RAD2DEG), rotZ: p?.rotZ ?? String((rr?.[2] || 0) * RAD2DEG),
+      rotX: p?.rotX ?? deg(0), rotY: p?.rotY ?? deg(1), rotZ: p?.rotZ ?? deg(2),
     };
-    const ctx = getEvalContext();
-    setSubParams(Object.fromEntries(SUB_KEYS.map(k => [k, { expression: raw[k], result: evaluateExpression(raw[k], ctx) }])) as Record<SubKey, ExprResult>);
+    setSubParams(evalSubs(k => raw[k], getEvalContext()));
   }, [selectedShape?.id, selectedSubtractionIndex, selectedShape?.subtractionGeometries?.length, width, height, depth, customParameters]);
 
   const handleSubParamChange = (param: SubKey, expression: string) =>
@@ -380,7 +415,9 @@ export function ParametersPanel() {
     setCustomParameters(updated);
     if (selectedShape) updateShape(selectedShape.id, { parameters: { ...selectedShape.parameters, customParameters: updated } });
   };
-  const addCustomParameter = () => persistCustom([...customParameters, { id: `param-${Date.now()}`, name: `P${customParameters.length + 1}`, expression: '0', result: 0, description: 'Custom Parameter' }]);
+  const addCustomParameter = () => persistCustom([...customParameters, {
+    id: `param-${Date.now()}`, name: `P${customParameters.length + 1}`, expression: '0', result: 0, description: 'Custom Parameter',
+  }]);
   const updateCustomParameter = (id: string, field: keyof CustomParameter, value: string) =>
     setCustomParameters(customParameters.map(param => {
       if (param.id !== id) return param;
@@ -417,10 +454,10 @@ export function ParametersPanel() {
   const handleApplyChanges = async () => {
     const currentShape = shapeById(selectedShapeId);
     if (!currentShape) return;
-    const ctx = getEvalContext();
-    const evalSub = Object.fromEntries(SUB_KEYS.map(k => [k, { expression: subParams[k].expression, result: evaluateExpression(subParams[k].expression, ctx) }])) as Record<SubKey, ExprResult>;
+    const evalSub = evalSubs(k => subParams[k].expression, getEvalContext());
     await applyShapeChanges({
-      selectedShape: { ...currentShape, position: [...currentShape.position] as [number, number, number] }, width, height, depth, rotX: rot[0], rotY: rot[1], rotZ: rot[2],
+      selectedShape: { ...currentShape, position: [...currentShape.position] as [number, number, number] },
+      width, height, depth, rotX: rot[0], rotY: rot[1], rotZ: rot[2],
       customParameters, vertexModifications, filletRadii, selectedSubtractionIndex,
       subWidth: evalSub.width.result, subHeight: evalSub.height.result, subDepth: evalSub.depth.result,
       subPosX: evalSub.posX.result, subPosY: evalSub.posY.result, subPosZ: evalSub.posZ.result,
@@ -435,7 +472,8 @@ export function ParametersPanel() {
     if (!currentShape) return;
     const newFillets = (currentShape.fillets || []).filter((_: any, i: number) => i !== filletIndex);
     try {
-      const r = await rebuildBodySolid({ parameters: currentShape.parameters, fillets: newFillets }, currentShape.subtractionGeometries, { width, height, depth });
+      const r = await rebuildBodySolid(
+        { parameters: currentShape.parameters, fillets: newFillets }, currentShape.subtractionGeometries, { width, height, depth });
       updateShape(currentShape.id, {
         geometry: r.geometry, replicadShape: r.replicadShape, fillets: r.fillets,
         position: [...currentShape.position] as [number, number, number],
@@ -474,10 +512,13 @@ export function ParametersPanel() {
         <ParamSection title="Parameters" count={customParameters.length}>
           {customParameters.map(param => (
             <div key={param.id} className={P_ROW}>
-              <input type="text" value={param.name} onChange={e => updateCustomParameter(param.id, 'name', e.target.value)} className={`${P_INPUT} !w-[40px] text-center !font-semibold`} />
-              <input type="text" value={param.expression} onChange={e => updateCustomParameter(param.id, 'expression', e.target.value)} className={`${P_INPUT} !w-[74px]`} placeholder="expr" />
+              <input type="text" value={param.name} onChange={e => updateCustomParameter(param.id, 'name', e.target.value)}
+                className={`${P_INPUT} !w-[40px] text-center !font-semibold`} />
+              <input type="text" value={param.expression} onChange={e => updateCustomParameter(param.id, 'expression', e.target.value)}
+                className={`${P_INPUT} !w-[74px]`} placeholder="expr" />
               <span className={P_RESULT}>{param.result.toFixed(2)}</span>
-              <input type="text" value={param.description} onChange={e => updateCustomParameter(param.id, 'description', e.target.value)} className={P_NOTE} placeholder="note…" />
+              <input type="text" value={param.description} onChange={e => updateCustomParameter(param.id, 'description', e.target.value)}
+                className={P_NOTE} placeholder="note…" />
               <DelBtn title="Delete" onClick={() => persistCustom(customParameters.filter(p => p.id !== param.id))} />
             </div>
           ))}
@@ -487,12 +528,14 @@ export function ParametersPanel() {
         <ParamSection title={`Subtraction #${selectedSubtractionIndex + 1}`} accent="#b45309"
           right={
             <div className="flex items-center gap-px">
-              <DelBtn title="Delete subtraction" className={`${P_ICON_BTN} hover:!bg-red-50 hover:!text-red-500`} onClick={() => { void deleteSubtraction(selectedShape.id, selectedSubtractionIndex); }} />
+              <DelBtn title="Delete subtraction" className={`${P_ICON_BTN} hover:!bg-red-50 hover:!text-red-500`}
+                onClick={() => { void deleteSubtraction(selectedShape.id, selectedSubtractionIndex); }} />
               <button onClick={() => setSelectedSubtractionIndex(null)} className={P_ICON_BTN} title="Close"><X size={12} strokeWidth={2} /></button>
             </div>
           }>
           {SUB_ROWS.map(([key, label, desc]) => (
-            <ExprRow key={key} label={label} labelColor="#b45309" expression={subParams[key].expression} onExpr={v => handleSubParamChange(key, v)} result={subParams[key].result}>
+            <ExprRow key={key} label={label} labelColor="#b45309" expression={subParams[key].expression}
+              onExpr={v => handleSubParamChange(key, v)} result={subParams[key].result}>
               <span className={P_DESC}>{desc}</span>
             </ExprRow>
           ))}
@@ -502,16 +545,16 @@ export function ParametersPanel() {
       {vertexModifications.length > 0 && (
         <ParamSection title="Vertex edits" count={vertexModifications.length}>
           {vertexModifications.map((mod, idx) => (
-            <ExprRow key={idx} label={`V${mod.vertexIndex}`} labelColor="#a8a29e" expression={mod.expression} onExpr={v => updateVertexModification(idx, 'expression', v)}
-              result={evaluateExpression(mod.expression, getEvalContext())}>
-              <input type="text" value={mod.description || ''} onChange={e => updateVertexModification(idx, 'description', e.target.value)} className={P_NOTE} placeholder="note…" />
+            <ExprRow key={idx} label={`V${mod.vertexIndex}`} labelColor="#a8a29e" expression={mod.expression}
+              onExpr={v => updateVertexModification(idx, 'expression', v)} result={evaluateExpression(mod.expression, getEvalContext())}>
+              <input type="text" value={mod.description || ''} onChange={e => updateVertexModification(idx, 'description', e.target.value)}
+                className={P_NOTE} placeholder="note…" />
               <DelBtn title="Delete vertex edit" onClick={() => deleteVertexModification(idx)} />
             </ExprRow>
           ))}
         </ParamSection>
       )}
-      <button onClick={handleApplyChanges}
-        className="w-full mt-3 h-[30px] rounded-[8px] bg-[#44403c] text-white text-[11.5px] font-semibold tracking-[0.01em] shadow-[0_1px_3px_rgba(40,30,20,0.22)] hover:bg-[#57534e] active:bg-[#292524] transition-colors duration-150 flex items-center justify-center gap-1.5">
+      <button onClick={handleApplyChanges} className={APPLY_BTN}>
         <Check size={13} strokeWidth={2.4} /> Apply
       </button>
     </div>

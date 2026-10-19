@@ -13,8 +13,23 @@ export type AxisLetter = 'x' | 'y' | 'z';
 
 export const genId = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 export const round1 = (v: number) => Math.round(v * 10) / 10;
+export const round3 = (v: number) => Math.round(v * 1000) / 1000;
 export const errMsg = (e: unknown) => (e as any)?.message || String(e);
-export const fmtBounds = (shape: any) => shape.boundingBox.bounds.map((v: number[]) => v.map(n => n.toFixed(0)).join(',')).join('..');
+
+type XYZ = { x: number; y: number; z: number };
+export const vec3 = (v: XYZ): Vec3 => [v.x, v.y, v.z];
+export const toVector3 = (a: ArrayLike<number>) => new THREE.Vector3(a[0], a[1], a[2]);
+/** Dizi-nokta · vektör (a[0]·n.x + a[1]·n.y + a[2]·n.z). */
+export const dot3 = (a: ArrayLike<number>, n: XYZ) => a[0] * n.x + a[1] * n.y + a[2] * n.z;
+/** Düzlem çerçevesinden 3B nokta: u·x + v·y + n·d. */
+export const fromPlaneUV = (u: THREE.Vector3, v: THREE.Vector3, n: THREE.Vector3, x: number, y: number, d: number) =>
+  new THREE.Vector3().addScaledVector(u, x).addScaledVector(v, y).addScaledVector(n, d);
+/** Köşelerin `i` eksenindeki açıklığı (|max − min|). */
+export function spanAlong(verts: ArrayLike<number>[], i: number): number {
+  let min = Infinity, max = -Infinity;
+  for (const c of verts) { if (c[i] < min) min = c[i]; if (c[i] > max) max = c[i]; }
+  return Math.abs(max - min);
+}
 
 export const axisIndexOf = (axis: string): 0 | 1 | 2 => (axis[0] === 'x' ? 0 : axis[0] === 'y' ? 1 : 2);
 
@@ -78,10 +93,7 @@ export function getFacePlaneAxes(normal: THREE.Vector3): { u: THREE.Vector3; v: 
 /** Düzlem üzerinde merkezli, 2H×2H köşe listesi (yarım-uzay kesicileri için). */
 export function hugeRectOnPlane(center: THREE.Vector3, n: THREE.Vector3, H: number): Vec3[] {
   const { u, v } = getFacePlaneAxes(n);
-  return [[-H, -H], [H, -H], [H, H], [-H, H]].map(([a, b]) => {
-    const w = center.clone().addScaledVector(u, a).addScaledVector(v, b);
-    return [w.x, w.y, w.z] as Vec3;
-  });
+  return [[-H, -H], [H, -H], [H, H], [-H, H]].map(([a, b]) => vec3(center.clone().addScaledVector(u, a).addScaledVector(v, b)));
 }
 
 export function panelThickness(shape: any): number {
@@ -114,18 +126,21 @@ export function boundsOverlapBox(rb: number[][], bb: THREE.Box3): boolean {
     && rb[0][2] < bb.max.z - 0.5 && rb[1][2] > bb.min.z + 0.5;
 }
 
-export function uniqueMeshPoints(geometry: THREE.BufferGeometry, scale = 10): THREE.Vector3[] {
-  const pos = geometry.getAttribute('position') as THREE.BufferAttribute;
-  const pts: THREE.Vector3[] = [];
-  if (!pos) return pts;
-  const seen = new Set<string>();
-  for (let i = 0; i < pos.count; i++) {
-    const p = new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i));
+/** 1/scale ızgarasında tekilleştirir (ilk görülen kalır). */
+export function uniquePoints(pts: Iterable<THREE.Vector3>, scale = 10): THREE.Vector3[] {
+  const out: THREE.Vector3[] = [], seen = new Set<string>();
+  for (const p of pts) {
     const key = `${Math.round(p.x * scale)},${Math.round(p.y * scale)},${Math.round(p.z * scale)}`;
     if (seen.has(key)) continue;
-    seen.add(key); pts.push(p);
+    seen.add(key); out.push(p);
   }
-  return pts;
+  return out;
+}
+
+export function uniqueMeshPoints(geometry: THREE.BufferGeometry, scale = 10): THREE.Vector3[] {
+  const pos = geometry.getAttribute('position') as THREE.BufferAttribute;
+  if (!pos) return [];
+  return uniquePoints(Array.from({ length: pos.count }, (_, i) => new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i))), scale);
 }
 
 export function edgePointsOf(geometry: THREE.BufferGeometry, thresholdDeg = 15): [number, number, number][] {
@@ -154,7 +169,7 @@ function vfUvBox(vf: VfLike) {
   const { n, u, v } = vfPlaneBasis(vf.normal);
   let uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity, nOff = 0;
   for (const c of vf.vertices) {
-    const w = new THREE.Vector3(c[0], c[1], c[2]);
+    const w = toVector3(c);
     uMin = Math.min(uMin, w.dot(u)); uMax = Math.max(uMax, w.dot(u));
     vMin = Math.min(vMin, w.dot(v)); vMax = Math.max(vMax, w.dot(v));
     nOff = w.dot(n);
@@ -189,7 +204,7 @@ export function mapAxisToVfLocal(vf: { normal: Vec3 | number[] } | undefined | n
   const wa = axisLetterVec(axis);
   const du = Math.abs(wa.dot(u)), dv = Math.abs(wa.dot(v)), dn = Math.abs(wa.dot(n));
   const chosen = dn >= du && dn >= dv ? n : du >= dv ? u : v;
-  return [chosen.x, chosen.y, chosen.z];
+  return vec3(chosen);
 }
 
 /** FIXED taşıma çıpası: VF HAM yüzünün eksen boyunca min konumu (yüz kaydıkça ters öteleme → panel mutlak konumda kalır). */
@@ -199,18 +214,14 @@ export function vfRawMinAlong(vf: VirtualFace, axisLetter: string): number | nul
   const p = new THREE.Vector3(Math.abs(a.x), Math.abs(a.y), Math.abs(a.z));
   if (p.lengthSq() < 0.5) return null;
   const n = new THREE.Vector3(...(vf.normal as Vec3)).normalize();
-  const c0 = vf.vertices[0];
-  const planeD = c0[0] * n.x + c0[1] * n.y + c0[2] * n.z;
+  const planeD = dot3(vf.vertices[0], n);
   const rb = (vf as any).rawFaceBBox as { xMin: number; xMax: number; yMin: number; yMax: number } | undefined;
   let min = Infinity;
   if (rb) {
     const { u, v } = getFacePlaneAxes(n);
-    for (const x of [rb.xMin, rb.xMax]) for (const y of [rb.yMin, rb.yMax]) {
-      const w = new THREE.Vector3().addScaledVector(u, x).addScaledVector(v, y).addScaledVector(n, planeD);
-      min = Math.min(min, w.dot(p));
-    }
+    for (const x of [rb.xMin, rb.xMax]) for (const y of [rb.yMin, rb.yMax]) min = Math.min(min, fromPlaneUV(u, v, n, x, y, planeD).dot(p));
   } else {
-    for (const c of vf.vertices) min = Math.min(min, c[0] * p.x + c[1] * p.y + c[2] * p.z);
+    for (const c of vf.vertices) min = Math.min(min, dot3(c, p));
   }
   return Number.isFinite(min) ? min : null;
 }
@@ -274,7 +285,7 @@ const angleDeg = (a: THREE.Vector3, b: THREE.Vector3) => Math.acos(Math.min(1, M
 export function extractFacesFromGeometry(geometry: THREE.BufferGeometry): FaceData[] {
   const faces: FaceData[] = [];
   const positionAttribute = geometry.getAttribute('position');
-  if (!positionAttribute) { console.warn('No position attribute found in geometry'); return faces; }
+  if (!positionAttribute) return faces;
   const positions = positionAttribute.array as Float32Array;
   const indices = geometry.getIndex()?.array as Uint16Array | Uint32Array | undefined;
   const faceCount = Math.floor((indices ? indices.length : positions.length / 3) / 3);
@@ -429,7 +440,8 @@ export function createGroupBoundaryEdges(faces: FaceData[], groups: CoplanarFace
   edgeMap.forEach((edge) => {
     if (edge.faces.length !== 2) return;
     const g1 = faceToGroup.get(edge.faces[0]), g2 = faceToGroup.get(edge.faces[1]);
-    if (g1 !== undefined && g2 !== undefined && g1 !== g2) edgeVertices.push(edge.v1.x, edge.v1.y, edge.v1.z, edge.v2.x, edge.v2.y, edge.v2.z);
+    if (g1 === undefined || g2 === undefined || g1 === g2) return;
+    edgeVertices.push(edge.v1.x, edge.v1.y, edge.v1.z, edge.v2.x, edge.v2.y, edge.v2.z);
   });
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(edgeVertices, 3));
@@ -466,7 +478,7 @@ function describeFace(face: FaceData, boundingBox: THREE.Box3): FaceDescriptor {
   ];
   const axisDirection = getAxisDirection(face.normal);
   return {
-    normal: [face.normal.x, face.normal.y, face.normal.z],
+    normal: vec3(face.normal),
     normalizedCenter,
     area: face.area,
     isCurved: face.isCurved || axisDirection === null,
@@ -504,7 +516,6 @@ export function findFaceByDescriptor(descriptor: FaceDescriptor, faces: FaceData
     }
     if (score < bestScore) { bestScore = score; bestMatch = face; }
   }
-  if (!bestMatch) console.warn(`No face match found for normal: [${descriptor.normal.map(n => n.toFixed(2)).join(', ')}], AxisDir: ${targetAxisDir}`);
   return bestMatch;
 }
 
@@ -538,6 +549,15 @@ export const createReplicadBox = async ({ width, height, depth }: BoxSize): Prom
   return draw().movePointerTo([0, 0]).lineTo([width, 0]).lineTo([width, height]).lineTo([0, height]).close().sketchOnPlane().extrude(depth);
 };
 
+/** min..max köşeli eksen-hizalı kutu katısı. */
+export const createReplicadBoxAt = async (min: ArrayLike<number>, max: ArrayLike<number>): Promise<any> =>
+  (await createReplicadBox({ width: max[0] - min[0], height: max[1] - min[1], depth: max[2] - min[2] })).translate(min[0], min[1], min[2]);
+
+/** Boş/bozuk OCC katısında bounds erişimi fırlatır → çağıranın catch'ine düşer (sonuç yazılmaz). */
+export function assertBounds(shape: any): void {
+  shape.boundingBox.bounds.forEach((v: number[]) => v.forEach(n => n.toFixed(0)));
+}
+
 export const convertReplicadToThreeGeometry = (shape: any): THREE.BufferGeometry => {
   try {
     const mesh = shape.mesh({ tolerance: 0.1, angularTolerance: 30 });
@@ -563,12 +583,13 @@ export const performBooleanCut = async (
   await initReplicad();
   try {
     let t = cuttingShape;
-    if (cuttingScale && (cuttingScale[0] !== 1 || cuttingScale[1] !== 1 || cuttingScale[2] !== 1)) t = t.scale(cuttingScale[0], cuttingScale[1], cuttingScale[2]);
+    const s = cuttingScale, p = cuttingPosition;
+    if (s && (s[0] !== 1 || s[1] !== 1 || s[2] !== 1)) t = t.scale(s[0], s[1], s[2]);
     if (cuttingRotation) {
       const axes: Vec3[] = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
       for (let i = 0; i < 3; i++) if (cuttingRotation[i] !== 0) t = t.rotate(cuttingRotation[i] * (180 / Math.PI), [0, 0, 0], axes[i]);
     }
-    if (cuttingPosition && (cuttingPosition[0] !== 0 || cuttingPosition[1] !== 0 || cuttingPosition[2] !== 0)) t = t.translate(cuttingPosition[0], cuttingPosition[1], cuttingPosition[2]);
+    if (p && (p[0] !== 0 || p[1] !== 0 || p[2] !== 0)) t = t.translate(p[0], p[1], p[2]);
     return baseShape.cut(t);
   } catch (error) {
     console.error('Boolean cut failed:', error);
@@ -586,11 +607,12 @@ export const createPanelFromVirtualFace = async (
   // up: normale EN DİK dünya ekseni (en küçük |bileşen|). Baskın bileşen seçimi 45° gibi eşit bileşenli
   // normallerde dejenere cross üretip u/v tabanını bozar.
   const anx = Math.abs(n.x), any_ = Math.abs(n.y), anz = Math.abs(n.z);
-  const up = anx <= any_ && anx <= anz ? new THREE.Vector3(1, 0, 0) : any_ <= anx && any_ <= anz ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(0, 0, 1);
+  const up = anx <= any_ && anx <= anz ? new THREE.Vector3(1, 0, 0)
+    : any_ <= anx && any_ <= anz ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(0, 0, 1);
   const uAxis = new THREE.Vector3().crossVectors(n, up).normalize();
   const vAxis = new THREE.Vector3().crossVectors(n, uAxis).normalize();
 
-  const v3s = vertices.map(v => new THREE.Vector3(v[0], v[1], v[2]));
+  const v3s = vertices.map(toVector3);
   const center = new THREE.Vector3();
   v3s.forEach(v => center.add(v));
   center.divideScalar(v3s.length);
@@ -621,10 +643,7 @@ export const createPanelFromVirtualFace = async (
     const f = cleaned[0], l = cleaned[cleaned.length - 1];
     if (Math.hypot(f[0] - l[0], f[1] - l[1]) < DUP_TOL) cleaned.pop(); else break;
   }
-  if (cleaned.length < 3) {
-    console.warn('[YAGO][ÜRETİM] createPanelFromVirtualFace: dejenere çokgen (temizlik sonrası <3 köşe), panel atlandı. hamKöşeN=', vertices.length);
-    return null;
-  }
+  if (cleaned.length < 3) return null;   // dejenere çokgen → panel atlanır
   projected = cleaned;
 
   // CCW garantisi — replicad CW çokgeni delik sayar. SIFIR-ALAN KAPISI: kıymık elenir.
@@ -633,17 +652,19 @@ export const createPanelFromVirtualFace = async (
     const j = (i + 1) % projected.length;
     signedArea += projected[i][0] * projected[j][1] - projected[j][0] * projected[i][1];
   }
-  if (Math.abs(signedArea) / 2 < 1e-3) {
-    console.warn('[YAGO][ÜRETİM] createPanelFromVirtualFace: sıfır-alan çokgen, panel atlandı. alan=', Math.abs(signedArea) / 2);
-    return null;
-  }
+  if (Math.abs(signedArea) / 2 < 1e-3) return null;
   if (signedArea < 0) projected = projected.slice().reverse();
 
   let sketch = draw().movePointerTo(projected[0]);
   for (let i = 1; i < projected.length; i++) sketch = sketch.lineTo(projected[i]);
-  const plane = new Plane([center.x, center.y, center.z], [uAxis.x, uAxis.y, uAxis.z], [n.x, n.y, n.z]);
+  const plane = new Plane(vec3(center), vec3(uAxis), vec3(n));
   return sketch.close().sketchOnPlane(plane).extrude(-panelThickness);
 };
+
+/** YARIM-UZAY KESİCİ: düzlemde (center, planeN tabanı) 2H×2H dev levha; levha `keepN`in TERSİNE H kalınlaşır
+ *  (createPanelFromVirtualFace −normal yönüne uzar) → keepN tarafı kalır, öbür taraf kesilir. */
+export const halfSpaceSlab = (center: THREE.Vector3, planeN: THREE.Vector3, keepN: THREE.Vector3, H: number) =>
+  createPanelFromVirtualFace(hugeRectOnPlane(center, planeN, H), vec3(keepN), H, 0);
 
 export interface VertexModification {
   vertexIndex: number;
@@ -663,7 +684,8 @@ export function getBoxVertices(width: number, height: number, depth: number): TH
   ];
 }
 
-const key2 = (x: number, y: number, z: number) => `${Math.round(x * 100) / 100},${Math.round(y * 100) / 100},${Math.round(z * 100) / 100}`;
+const r2 = (v: number) => Math.round(v * 100) / 100;
+const key2 = (x: number, y: number, z: number) => `${r2(x)},${r2(y)},${r2(z)}`;
 
 export async function getReplicadVertices(replicadShape: any): Promise<THREE.Vector3[]> {
   try {
@@ -675,7 +697,7 @@ export async function getReplicadVertices(replicadShape: any): Promise<THREE.Vec
       if (mesh && mesh.vertices) {
         const uniq = new Map<string, THREE.Vector3>();
         for (let i = 0; i < mesh.vertices.length; i += 3) {
-          const x = Math.round(mesh.vertices[i] * 100) / 100, y = Math.round(mesh.vertices[i + 1] * 100) / 100, z = Math.round(mesh.vertices[i + 2] * 100) / 100;
+          const x = r2(mesh.vertices[i]), y = r2(mesh.vertices[i + 1]), z = r2(mesh.vertices[i + 2]);
           const k = `${x},${y},${z}`;
           if (!uniq.has(k)) uniq.set(k, new THREE.Vector3(x, y, z));
         }
@@ -685,7 +707,7 @@ export async function getReplicadVertices(replicadShape: any): Promise<THREE.Vec
     if (!Array.isArray(vertices) || vertices.length === 0) return [];
     return vertices.map((v: any) => {
       if (v && typeof v.point === 'function') { const p = v.point(); return new THREE.Vector3(p[0], p[1], p[2]); }
-      if (Array.isArray(v)) return new THREE.Vector3(v[0], v[1], v[2]);
+      if (Array.isArray(v)) return toVector3(v);
       if (v && typeof v.x === 'number') return new THREE.Vector3(v.x, v.y, v.z);
       return null;
     }).filter((v): v is THREE.Vector3 => v !== null);
@@ -700,7 +722,7 @@ export async function getReplicadVertices(replicadShape: any): Promise<THREE.Vec
 export async function resolveBaseVertices(shape: any): Promise<THREE.Vector3[]> {
   const p = shape?.parameters;
   if (!p) return [];
-  if (Array.isArray(p.scaledBaseVertices) && p.scaledBaseVertices.length > 0) return p.scaledBaseVertices.map((v: number[]) => new THREE.Vector3(v[0], v[1], v[2]));
+  if (Array.isArray(p.scaledBaseVertices) && p.scaledBaseVertices.length > 0) return p.scaledBaseVertices.map(toVector3);
   if (shape.replicadShape) return getReplicadVertices(shape.replicadShape);
   if (shape.type === 'box') return getBoxVertices(p.width, p.height, p.depth);
   return [];
@@ -780,17 +802,18 @@ export function evaluateExpression(expression: string, context: Record<string, n
   } catch { return fallback; }
 }
 
-const vec3 = (v: THREE.Vector3): Vec3 => [v.x, v.y, v.z];
-
 export async function updateFilletCentersForNewGeometry(fillets: FilletInfo[], newGeometry: THREE.BufferGeometry, newSize: BoxSize): Promise<FilletInfo[]> {
   if (!fillets || fillets.length === 0) return fillets;
   const faces = extractFacesFromGeometry(newGeometry);
   return fillets.map((fillet, idx) => {
-    if (!fillet.face1Descriptor || !fillet.face2Descriptor) { console.warn(`Fillet #${idx + 1} missing descriptors, skipping update`); return fillet; }
+    if (!fillet.face1Descriptor || !fillet.face2Descriptor) return fillet;
     const f1 = findFaceByDescriptor(fillet.face1Descriptor, faces, newGeometry);
     const f2 = findFaceByDescriptor(fillet.face2Descriptor, faces, newGeometry);
     if (!f1 || !f2) { console.error(`Could not find matching face${f1 ? '2' : '1'} for fillet #${idx + 1}`); return fillet; }
-    return { ...fillet, face1Data: { normal: vec3(f1.normal), center: vec3(f1.center) }, face2Data: { normal: vec3(f2.normal), center: vec3(f2.center) }, originalSize: newSize };
+    return {
+      ...fillet, face1Data: { normal: vec3(f1.normal), center: vec3(f1.center) },
+      face2Data: { normal: vec3(f2.normal), center: vec3(f2.center) }, originalSize: newSize,
+    };
   });
 }
 
@@ -799,11 +822,14 @@ export async function applyFillets(replicadShape: any, fillets: FilletInfo[], sh
   let currentShape = replicadShape;
   const tolerance = Math.max(shapeSize.width || 1, shapeSize.height || 1, shapeSize.depth || 1) * 0.08;
   for (const fillet of fillets) {
-    const scale = new THREE.Vector3(shapeSize.width / fillet.originalSize.width, shapeSize.height / fillet.originalSize.height, shapeSize.depth / fillet.originalSize.depth);
+    const o = fillet.originalSize;
+    const scale = new THREE.Vector3(shapeSize.width / o.width, shapeSize.height / o.height, shapeSize.depth / o.depth);
     // Yüz düzlemi (n, d), fillet kaydedildiği boyuttan güncel boyuta ölçeklenmiş.
     const plane = (f: FilletInfo['face1Data']) => {
       const n = new THREE.Vector3(...f.normal);
-      const d = f.planeD !== undefined ? f.planeD * (n.x !== 0 ? scale.x : n.y !== 0 ? scale.y : scale.z) : n.dot(new THREE.Vector3(...f.center).multiply(scale));
+      const d = f.planeD !== undefined
+        ? f.planeD * (n.x !== 0 ? scale.x : n.y !== 0 ? scale.y : scale.z)
+        : n.dot(new THREE.Vector3(...f.center).multiply(scale));
       return { n, d };
     };
     const p1 = plane(fillet.face1Data), p2 = plane(fillet.face2Data);
@@ -854,7 +880,7 @@ export async function rebuildBodySolid(
     shape = await applyFillets(shape, fillets, sz);
   }
   const verts = await getReplicadVertices(shape);
-  return { replicadShape: shape, geometry: convertReplicadToThreeGeometry(shape), scaledBaseVertices: verts.map(v => [v.x, v.y, v.z]), fillets };
+  return { replicadShape: shape, geometry: convertReplicadToThreeGeometry(shape), scaledBaseVertices: verts.map(vec3), fillets };
 }
 
 type ExprResult = { expression: string; result: number };
@@ -888,7 +914,7 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
     let newBaseVertices: THREE.Vector3[] = [];
     if (cur.scaledBaseVertices?.length > 0 || selectedShape.replicadShape) {
       const curBase: THREE.Vector3[] = cur.scaledBaseVertices?.length > 0
-        ? cur.scaledBaseVertices.map((v: number[]) => new THREE.Vector3(v[0], v[1], v[2]))
+        ? cur.scaledBaseVertices.map(toVector3)
         : await getReplicadVertices(selectedShape.replicadShape);
       newBaseVertices = dimensionsChanged ? curBase.map(v => v.clone().multiply(scale)) : curBase;
     } else if (selectedShape.type === 'box') newBaseVertices = getBoxVertices(width, height, depth);
@@ -907,7 +933,10 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
     });
 
     const baseUpdate = {
-      parameters: { ...cur, width, height, depth, customParameters, scaledBaseVertices: newBaseVertices.length > 0 ? newBaseVertices.map(vec3) : cur.scaledBaseVertices },
+      parameters: {
+        ...cur, width, height, depth, customParameters,
+        scaledBaseVertices: newBaseVertices.length > 0 ? newBaseVertices.map(vec3) : cur.scaledBaseVertices,
+      },
       vertexModifications: updatedVertexMods,
       rotation: degToRad(rotX, rotY, rotZ),
       scale: selectedShape.scale,
@@ -933,17 +962,14 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
       needsSolid = true;
     }
 
-    if (!needsSolid) {
-      updateShape(selectedShape.id, { rotation: baseUpdate.rotation, scale: baseUpdate.scale, vertexModifications: baseUpdate.vertexModifications, parameters: baseUpdate.parameters });
-      return;
-    }
+    const { rotation, scale: shapeScale, vertexModifications: vMods, parameters } = baseUpdate;
+    if (!needsSolid) { updateShape(selectedShape.id, { rotation, scale: shapeScale, vertexModifications: vMods, parameters }); return; }
     const r = await rebuildBodySolid({ parameters: cur, fillets: withRadii(selectedShape.fillets || []) }, subtractions, size);
     updateShape(selectedShape.id, {
       geometry: r.geometry, replicadShape: r.replicadShape, fillets: r.fillets,
       ...(hasSubtractionChanges ? { subtractionGeometries: subtractions } : {}),
       position: [...selectedShape.position] as Vec3,
-      rotation: baseUpdate.rotation, scale: baseUpdate.scale, vertexModifications: baseUpdate.vertexModifications,
-      parameters: { ...baseUpdate.parameters, scaledBaseVertices: r.scaledBaseVertices },
+      rotation, scale: shapeScale, vertexModifications: vMods, parameters: { ...parameters, scaledBaseVertices: r.scaledBaseVertices },
     });
   } catch (error) {
     console.error('Failed to update parameters:', error);
