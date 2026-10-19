@@ -72,6 +72,9 @@ export interface VirtualFace {
   stackBaseVfId?: string;
   /** Taban EĞİMLİ/dönmüşse VF düzlemi tabanın iç BÜYÜK yüzüdür; regen konturu tabanın güncel geometrisinden okur. */
   stackOnPanel?: boolean;
+  /** ARKALIĞIN ÖNÜ: `stackDepth` her regen'de arkalık parçası + önündeki bitişik katmanlardan yeniden okunur (BackService.backStackAt);
+   *  bulunamazsa kayıtlı değer kalır. */
+  stackOnBack?: boolean;
   /** HIZLI GÖVDE parçası (üst / sol / sağ / alt / baza / arka baza): ayarlar gövdede saklanır, yeniden uygulamada aynı VF güncellenir. */
   quickBody?: QuickBodyPart;
 }

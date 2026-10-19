@@ -24,7 +24,7 @@ import {
 } from './PanelGroupService';
 import {
   vfBackBound, isBackPanel, splitBackAtPanel, backPreviewStamp, backPickObstacle, collectBackCuts, BACK_THICKNESS, confirmBackPick, backSlabPolygon,
-  BACK_GAP, backPickRect, rayBackEntry, backCandidatesAt,
+  BACK_GAP, backPickRect, rayBackEntry, backCandidatesAt, backStackAt,
 } from './BackService';
 import { ErrorBoundary } from './Ui';
 
@@ -893,6 +893,8 @@ export interface StackSpec {
   depth: number; baseVfId: string; basePanelId: string;
   /** Eğimli taban: düzlem = tabanın büyük yüzü (`face` verilmezse boşluğa bakan). */
   onPanel?: any; face?: CoplanarFaceGroup;
+  /** Arkalığın önü: derinlik her regen'de arkalık + önündeki katmanlardan yeniden okunur (VF.stackOnBack). */
+  onBack?: boolean;
 }
 /** Tıklanan yüz bileşeninin serbest bölgesi (highlight) ve VF'si. HIGHLIGHT = PANEL: bölge tek kaynaktan (computeFreeRegionLocal);
  *  kontur YEREL uzayda, panel ayak izleri dünya→yerel dönüşümle getirilir. */
@@ -921,10 +923,12 @@ export function buildFacePreview(
     corners = faceContour.corners.map(c => c.clone().add(shift));
     clickLocal = clickOnFace.clone().add(shift);
   }
-  // Yığındaki paneller (düzlemin gerisinde kalanlar) kardeş değil; düzlemi aşan levhalar delen-engel.
+  // Yığındaki paneller (düzlemin gerisinde kalanlar) kardeş değil; düzlemi aşan levhalar delen-engel. Arkalık damgası (kanal bolluğuyla
+  // şişirilmiş kutu) GERÇEK parçasıyla sınanır: önündeki düzlemde bolluk payı kadar taşıp bölgeyi silmesin.
   const stackPlane = clickLocal.dot(nrm.clone().multiplyScalar(-1));
+  const realOf = (p: any) => (isBackPanel(p) ? shapeById(p.id) ?? p : p);
   const siblings = stack
-    ? childPanels.filter(p => !panelBehindStackPlane(p, nrm, stackPlane)).map(p => ({ ...p, __pierceObstacle: true }))
+    ? childPanels.filter(p => !panelBehindStackPlane(realOf(p), nrm, stackPlane)).map(p => ({ ...p, __pierceObstacle: true }))
     : childPanels;
   const region = computeFreeRegionLocal(corners, nrm, clickLocal, siblings, worldToLocal, shapeId);
   if (!region) return null;
@@ -962,7 +966,10 @@ export function buildFacePreview(
     // Taraf sözleşmesi doğuştan kilitli: regen STORED-WINS birleştirir, bir daha değişmez.
     sideRelations: region.sideRelations,
     faceGroupDescriptor: geometry ? createFaceDescriptor(faces[contour.seedFi], geometry) : undefined,
-    ...(stack ? { stackDepth: stack.depth, stackBaseVfId: stack.baseVfId, ...(stack.onPanel ? { stackOnPanel: true } : {}) } : {}),
+    ...(stack ? {
+      stackDepth: stack.depth, stackBaseVfId: stack.baseVfId,
+      ...(stack.onPanel ? { stackOnPanel: true } : {}), ...(stack.onBack ? { stackOnBack: true } : {}),
+    } : {}),
     ...({ regionAnchor: [anchor.x, anchor.y, anchor.z] } as any),
   };
   return { geo, edgeGeo, virtualFace };
@@ -1092,6 +1099,9 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
   const regionSiblings = useMemo(() => [
     ...childPanels, ...childPanelsOf(shape.id, allShapes).filter(isBackPanel).map(backPreviewStamp).filter((x): x is NonNullable<typeof x> => !!x),
   ], [childPanels, allShapes, shape.id]);
+  // Arkalığın önü: arkalık parçaları + önlerine yığılabilen gövde panelleri (katmanlar).
+  const backPanels = useMemo(() => childPanelsOf(shape.id, allShapes).filter(isBackPanel), [allShapes, shape.id]);
+  const stackLayers = useMemo(() => childPanels.filter(p => !isSpecialPanel(p) && !panelHasRotation(p)), [childPanels]);
   const groupHasVirtualFace = useCallback((gi: number): boolean => {
     if (gi < 0 || gi >= faceGroups.length || shapeVirtualFaces.length === 0) return false;
     const gn = faceGroups[gi].normal.clone().normalize(), gc = faceGroups[gi].center;
@@ -1130,6 +1140,8 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
       const d = pw.distanceTo(hitWorld);
       if (d >= bestD) continue;
       if (!inGroup(group.faceIndices, faces, pl)) continue;
+      // Kanallı arkalığın arkası boşluk değildir (panel arkalığın içine girerdi).
+      if (backPanels.length && backStackAt(nL, pl, backPanels, [])) continue;
       if (findPanelCoveringPoint(pw, childPanels, nW, pw)) continue;
       best = pw; bestD = d;
     }
@@ -1146,7 +1158,8 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
     const prev = hoverProbeRef.current;
     if (prev && prev.gi === gi && prev.point.distanceTo(pt) < 8) return;
     hoverProbeRef.current = { gi, point: pt };
-    const cover = findPanelCoveringPoint(pt, childPanels, worldNormalOf(gi), pt);
+    const cover = findPanelCoveringPoint(pt, childPanels, worldNormalOf(gi), pt)
+      ?? (backPanels.length ? backStackAt(localNormalOf(gi), pt.clone().applyMatrix4(worldToLocal), backPanels, stackLayers)?.base : null) ?? null;
     setHoverCover(prevC => (!cover ? null
       : prevC && prevC.id === cover.id && prevC.geometry === cover.geometry ? prevC : { id: cover.id, geometry: cover.geometry }));
   };
@@ -1176,6 +1189,14 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
     }
     const tvf = top ? vfOfPanel(top) : undefined;
     return depth > 0.5 && top && tvf ? { depth, baseVfId: tvf.id, basePanelId: top.id } : undefined;
+  };
+  /** ARKALIĞIN ÖNÜ: yüzün bu noktasının arkasında (yüzün içinde) kanallı arkalık varsa önüne panel isteği — taban arkalık ya da önüne
+   *  yığılmış en içteki katman; örtülü nokta gibi davranır (arkalığın önü → yüzün en yakın boşluğu). */
+  const backSpecAt = (gi: number, hitWorld: THREE.Vector3): StackSpec | undefined => {
+    if (!backPanels.length) return undefined;
+    const hit = backStackAt(localNormalOf(gi), hitWorld.clone().applyMatrix4(worldToLocal), backPanels, stackLayers);
+    const bvf = hit ? vfOfPanel(hit.base) : undefined;
+    return hit && bvf ? { depth: hit.depth, baseVfId: bvf.id, basePanelId: hit.base.id, onBack: true } : undefined;
   };
   // EĞİMLİ PANELİN KENDİ YÜZLERİ: ışın dönmüş gövde panellerinin iki büyük yüzüyle de kesiştirilir; her vuruş o yüze yaslanan
   // panel adayıdır (derinlik sırasına girer).
@@ -1225,7 +1246,14 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
       const hitOnPlane = cameraPos.clone().addScaledVector(rayDir, t);
       if (!inGroup(group.faceIndices, faces, hitOnPlane, localToWorld)) continue;
       const cover = findPanelCoveringPoint(hitOnPlane, childPanels, nW, hitOnPlane);
-      if (!cover) { out.push({ index: gi, depth: t, hitPoint: hitOnPlane }); continue; }
+      if (!cover) {
+        const bst = backSpecAt(gi, hitOnPlane);
+        if (!bst) { out.push({ index: gi, depth: t, hitPoint: hitOnPlane }); continue; }
+        out.push({ index: gi, depth: t, hitPoint: hitOnPlane, stack: bst });
+        const freeB = nearestFreePointOnGroup(gi, hitOnPlane, nW);
+        if (freeB) out.push({ index: gi, depth: t + 0.01, hitPoint: freeB });
+        continue;
+      }
       const st = stackSpecFor(cover, gi, hitOnPlane);
       // Eğimli örten panelin yüzleri ışın kesişiminden (rotHits) zaten adaydır; aynı yüz iki kez eklenmez.
       if (st && !(st.onPanel && rotHits.some(h => h.stack.basePanelId === st.basePanelId))) out.push({ index: gi, depth: t, hitPoint: hitOnPlane, stack: st });
@@ -1250,12 +1278,15 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
     // Nokta değen bir panelin GÜNCEL ayak izi içindeyse yüz orada "tanımlı"dır; aradaki boşluk serbesttir.
     const coveringPanel = findPanelCoveringPoint(clickPoint, childPanels, worldNormalOf(hoveredGroupIndex), clickPoint);
     const hoveredIsDefined = coveringPanel !== null;
+    // Kanallı arkalığın arkasına tık da örtülü sayılır: ilk tıkta adaylar (arkalığın önü → boşluk) gelir.
+    const hoveredUnderBack = !hoveredIsDefined && !!backSpecAt(hoveredGroupIndex, clickPoint);
     let targetGroupIndex = hoveredGroupIndex;
     let previewClickPoint = clickPoint;
     let previewStack: StackSpec | undefined;
     const cameraPos = e.camera?.position?.clone();
     const rotHits = cameraPos ? rotatedFaceHits(cameraPos, clickPoint) : [];
-    const cycleCandidates = cameraPos && (isSameSpot || hoveredIsDefined || rotHits.length > 0) ? depthCandidates(cameraPos, clickPoint, rotHits) : null;
+    const cycleCandidates = cameraPos && (isSameSpot || hoveredIsDefined || hoveredUnderBack || rotHits.length > 0)
+      ? depthCandidates(cameraPos, clickPoint, rotHits) : null;
     if (cycleCandidates && cycleCandidates.length > 0) {
       // Aynı noktaya tekrar tık adayları döndürür — örtülü noktada da (panelin önü → o yüzün boşluğu → arkadaki yüzler).
       const next = isSameSpot ? (lastClickRef.current!.cycleIndex + 1) % cycleCandidates.length : 0;

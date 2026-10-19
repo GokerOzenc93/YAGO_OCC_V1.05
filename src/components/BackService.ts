@@ -5,7 +5,7 @@ import {
 } from '../store';
 import * as THREE from 'three';
 import { type Vec3, genId, round1 } from './Geometry';
-import { clipHalfPlane, panelFrontHull, panelHasRotation, polyArea } from './Geometry';
+import { clipHalfPlane, footprintGeometry, localBboxOf, panelFrontHull, panelHasRotation, polyArea } from './Geometry';
 // DİKKAT: BackService ↔ PanelGroupService döngüsel içe aktarım (groupObstacles → backObstacleFor). Modül üst düzeyinde
 // PanelGroupService bağlarını OKUMA; yalnız fonksiyon gövdesinde çağır.
 import { type GapMode, applyGapEditProportional, bodyLocalBox, cycleGapMode, panelLocalBox, passiveGapIndex } from './PanelGroupService';
@@ -720,6 +720,37 @@ export function backPreviewStamp(backPanel: Shape): Shape | null {
     ...backPanel, geometry: geo, position: parent ? [...parent.position] : backPanel.position,
     rotation: parent ? [...parent.rotation] : backPanel.rotation, scale: parent ? [...parent.scale] : backPanel.scale,
   } as Shape;
+}
+
+/** ARKALIĞIN ÖNÜNE PANEL (Goker, Eki 2026 — "arkalığın önüne panel yerleştiremiyorum"): gövde yüzünün (gövde-yerel, dışa normal `nL`)
+ *  `pL` noktasının arkasında, yüzün İÇİNDE duran arkalık parçası + önüne BİTİŞİK yığılmış katmanlar (`layers`: o yüzde duran dönmemiş
+ *  gövde panelleri). Döner: en içteki yüzün yüzden içeri derinliği + o panel (taban). Konuma göre çözülür (parça id'si değil) → arkalık
+ *  bölünse / setback ya da kalınlığı değişse de izlenir. Dış (çakma tip) parça yüzün dışındadır → null (yüzün kendisi zaten önüdür). */
+export function backStackAt(
+  nL: THREE.Vector3, pL: THREE.Vector3, backs: Shape[], layers: Shape[], vfs: VirtualFace[] = useAppStore.getState().virtualFaces,
+): { depth: number; base: Shape } | null {
+  const k = Math.abs(nL.x) > 0.9 ? 'x' : Math.abs(nL.y) > 0.9 ? 'y' : Math.abs(nL.z) > 0.9 ? 'z' : null;
+  if (!k) return null;
+  const inSgn = nL[k] < 0 ? 1 : -1;
+  const span = (p: Shape) => {
+    const vf = vfs.find(f => f.id === (p.parameters as any)?.virtualFaceId);
+    if (!vf || new THREE.Vector3(...vf.normal).normalize().dot(nL) < 0.95) return null;
+    const bb = localBboxOf(footprintGeometry(p) ?? p.geometry);
+    if (!bb || !(['x', 'y', 'z'] as const).every(a => a === k || (pL[a] >= bb.min[a] - 0.5 && pL[a] <= bb.max[a] + 0.5))) return null;
+    const a = (bb.min[k] - pL[k]) * inSgn, b = (bb.max[k] - pL[k]) * inSgn;
+    return { near: Math.min(a, b), far: Math.max(a, b) };
+  };
+  let best: { depth: number; base: Shape } | null = null;
+  for (const p of backs) { const s = span(p); if (s && s.far > 0.5 && (!best || s.far > best.depth)) best = { depth: s.far, base: p }; }
+  if (!best) return null;
+  // Katmanlar zincir halinde: yakın yüzü o anki en içteki yüze değen panel bir sonraki katmandır.
+  const spans = layers.map(p => ({ p, s: span(p) })).filter(x => !!x.s) as Array<{ p: Shape; s: { near: number; far: number } }>;
+  for (let guard = 0; guard < spans.length; guard++) {
+    const next = spans.find(x => Math.abs(x.s.near - best!.depth) < 1 && x.s.far > best!.depth + 0.5);
+    if (!next) break;
+    best = { depth: next.s.far, base: next.p };
+  }
+  return best;
 }
 
 /** GÖVDE PANELİ KISALTMA (PanelEngine.stamps / buildStamp): iç parça, ÇAKMA kenarındaki gövde panelini (VF `vfId`) sırası ne

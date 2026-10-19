@@ -5,7 +5,7 @@ import { type RotOp, computeFaceComponentContour, computeFreeRegionLocal, convex
 import { type CoplanarFaceGroup, type FaceData, type Vec3, angleToTouchPlane, assertBounds, axisDirToVec, axisIndexOf, boundsOverlapBox, convertReplicadToThreeGeometry, createPanelFromVirtualFace, createReplicadBox, createReplicadBoxAt, dot3, effectiveBodyGeometry, errMsg, findFaceByDescriptor, fromPlaneUV, getFacePlaneAxes, getFacesAndGroups, getShapeMatrix, halfSpaceSlab, isFlatNormal, localBboxOf, normDeg, panelThickness, pointFromFracBox, projRange, resolveVfFracPoint, rotateAboutAxis, round1, round3, spanAlong, toVector3, uniqueMeshPoints, uniquePoints, vec3, vertexModsKey, vfRawMinAlong, worldBboxOf } from './Geometry';
 import { isInteriorPanel, isInteriorVf, recalculateInteriorVfs, syncPanelGroups } from './PanelGroupService';
 import { isDoorPanel, isDoorVf, recalculateDoorVfs, syncDoorGroups } from './DoorService';
-import { backGrooveCuttersFor, backNailStampFor, isBackPanel, isBackVf, recalculateBackVfs, syncBackGroups } from './BackService';
+import { backGrooveCuttersFor, backNailStampFor, backStackAt, isBackPanel, isBackVf, recalculateBackVfs, syncBackGroups } from './BackService';
 
 // Kapak ve arkalık panelleri (LEVHA): köşe birleşimine girmez, gövdeyle sığdırılmaz/kesilmez, hiçbir paneli kesmez; damgalamaz —
 // istisna arkalığın iç parçası: ÇAKMA kenarındaki ve sırada kendinden SONRA gelen gövde panelini basar (BackService.backNailStampFor).
@@ -878,7 +878,7 @@ function mergeGrooveCutters(boxes: CavityBox[]): CavityBox[] {
 }
 
 /** VF yeniden hesabının sahip olduğu alanlar (geri kalanı kullanıcı verisidir). */
-const VF_REGEN_FIELDS = ['normal', 'center', 'vertices', 'rawFaceBBox', 'sideRelations', 'regionAnchor'] as const;
+const VF_REGEN_FIELDS = ['normal', 'center', 'vertices', 'rawFaceBBox', 'sideRelations', 'regionAnchor', 'stackDepth'] as const;
 
 // VF BÖLGE YENİDEN HESABI: VF = eşleşen gövde yüz konturu ∩ serbest bölge (Geometry.computeFreeRegionLocal —
 // yakalama ile aynı → highlight = panel). Damga TEK YÖNLÜ: yalnız sırada ÖNCE gelen (basan) kardeşler damgalar;
@@ -1115,6 +1115,7 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
 
   const matchOf = new Map<string, { group: CoplanarFaceGroup; contour: ReturnType<typeof computeFaceComponentContour> } | null>();
   const freshVfVertices = new Map<string, Vec3[]>();
+  const freshStackDepth = new Map<string, number>();
   /** Taze ham kontur köşeleri; kontur yoksa mevcut VF köşeleri. */
   const setFresh = (vf: VirtualFace, corners: THREE.Vector3[] | undefined) => {
     if (corners && corners.length >= 3) freshVfVertices.set(vf.id, corners.map(vec3));
@@ -1136,11 +1137,22 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
       continue;
     }
     // ÜST ÜSTE PANEL: yüz eşlemesi merkez yüze geri izdüşürülerek yapılır; kontur ve tohum yüzün stackDepth içindeki düzlemine taşınır.
-    const sd = vf.stackDepth && vf.stackDepth > 0 ? vf.stackDepth : 0;
-    const probe = sd ? { ...vf, center: [0, 1, 2].map(i => vf.center[i] + vf.normal[i] * sd) as Vec3 } : vf;
+    const sd0 = vf.stackDepth && vf.stackDepth > 0 ? vf.stackDepth : 0;
+    const probe = sd0 ? { ...vf, center: [0, 1, 2].map(i => vf.center[i] + vf.normal[i] * sd0) as Vec3 } : vf;
     const group = findMatchingFaceGroup(probe, faces, faceGroups, shape.geometry);
     const gN = group ? group.normal.clone().normalize() : null;
     let contour = group && gN ? computeFaceComponentContour(faces, group.faceIndices, toVector3(probe.center), gN) : null;
+    let sd = sd0;
+    if (vf.stackOnBack && contour && gN) {
+      // ARKALIĞIN ÖNÜ: derinlik arkalık parçası + önüne yığılmış (sırada önce gelen) bitişik katmanlardan her regen'de yeniden okunur.
+      const c = toVector3(probe.center);
+      const onFace = c.addScaledVector(gN, contour.corners[0].dot(gN) - c.dot(gN));
+      const myIdx = vfIndexOf.get(vf.id) ?? Number.MAX_SAFE_INTEGER;
+      const layers = childPanels.filter(p => !isBackPanel(p) && !isDoorPanel(p) && !isInteriorPanel(p) && !panelHasRotation(p)
+        && p.parameters?.virtualFaceId !== vf.id && panelPriority(p) < myIdx);
+      const hit = backStackAt(gN, onFace, childPanels.filter(isBackPanel), layers, virtualFaces);
+      if (hit) { sd = hit.depth; if (Math.abs(sd - sd0) > 1e-3) freshStackDepth.set(vf.id, sd); }
+    }
     if (contour && gN && sd) {
       const sh = gN.clone().multiplyScalar(-sd);
       const mv = (p: THREE.Vector3) => p.clone().add(sh);
@@ -1341,7 +1353,9 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
     // Üst üste panelde altındaki panel kardeş değildir (önündeki panel onun iç yüzünde durur).
     // Üst üste panelde düzlemin GERİSİNDE kalan paneller (taban + aradaki yığın) kardeş değildir; düzlemi aşanlar kalır.
     const sd = myVf && myFaceNormal && ((myVf.stackDepth && myVf.stackDepth > 0) || myVf.stackOnPanel) ? 1 : 0;
-    const planeIn = sd && myFaceNormal ? new THREE.Vector3(...myVf!.center).dot(myFaceNormal.clone().multiplyScalar(-1)) : 0;
+    // Düz yığında düzlem bu geçişin konturundan (derinlik yeni okunmuş olabilir); eğimli tabanda VF merkezinden.
+    const fresh = sd && !myVf!.stackOnPanel ? matchOf.get(vfId)?.contour?.corners[0] : undefined;
+    const planeIn = sd && myFaceNormal ? (fresh ?? new THREE.Vector3(...myVf!.center)).dot(myFaceNormal.clone().multiplyScalar(-1)) : 0;
     const behind = (p: any) => !!sd && !!myFaceNormal && panelBehindStackPlane(p, myFaceNormal, planeIn);
     let list = childPanels.filter(p => !behind(p) && stamps(p, vfId, myPanel, myFaceNormal)).map(p => stampOf(p, myFaceNormal, vfId));
     // Üst üste panel düzlemi gövdenin içindedir: o düzlemi DELEN levhalar (üst/alt/arkalık) gerçek engel sayılır.
@@ -1354,7 +1368,8 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
   for (const vf of shapeFaces) {
     const m = matchOf.get(vf.id);
     const regen = m && m.contour ? regenerateParentFaceShapeVF(vf, shape.id, m.group, m.contour, worldToLocal, stampingPanelsFor(vf.id)) : null;
-    updatedMap.set(vf.id, regen || vf);
+    const sdNew = regen ? freshStackDepth.get(vf.id) : undefined;
+    updatedMap.set(vf.id, regen ? (sdNew !== undefined ? { ...regen, stackDepth: sdNew } : regen) : vf);
   }
   return virtualFaces.map(vf => updatedMap.get(vf.id) || interiorMap.get(vf.id) || vf);
 }
