@@ -994,7 +994,7 @@ function makeMemberVf(group: BackGroup, i: number, sol: BackSolution): VirtualFa
 /** `init`: hızlı gövde gibi çağıranların varsayılanları (kalınlık / setback / giriş / bollaştırma) ezen değerleri. */
 export function createBackGroupFromPick(
   shapeId: string, pick: BackPick, placement: BackPlacement, name?: string,
-  init?: Partial<Pick<BackGroup, 'thickness' | 'setback' | 'inset' | 'grooveClear'>>,
+  init?: Partial<Pick<BackGroup, 'thickness' | 'setback' | 'inset' | 'grooveClear' | 'quickBody'>>,
 ): BackGroup | null {
   const st = useAppStore.getState();
   const parent = shapeById(shapeId, st.shapes);
@@ -1306,6 +1306,19 @@ export async function setBackThickness(groupId: string, t: number): Promise<void
   if (Math.abs(v - group.thickness) < 0.05) return;
   setMemberPanelThickness(group.memberVfIds, v);
   await writeBackGroup(group, { thickness: v });
+}
+/** Grup varsayılanlarını tek seferde yazar (hızlı gövde ayarları yeniden uygulanınca): tip · kalınlık · setback · giriş · kanal payları.
+ *  Parça başına tip / setback / giriş değerleri silinir (hepsi yeni ayarı izler); bölme, bini ve kenar payları korunur. */
+export async function setBackDefaults(groupId: string, d: { placement: BackPlacement; thickness: number; setback: number; inset: number; grooveClear: BackGrooveClear }): Promise<void> {
+  const group = groupById(groupId);
+  if (!group) return;
+  const t = Math.max(1, round1(d.thickness));
+  if (Math.abs(t - group.thickness) >= 0.05) setMemberPanelThickness(group.memberVfIds, t);
+  const tree = patchLeaves(group.tree, [], l => { const { placement: _p, setback: _s, inset: _i, ...rest } = l; return rest; });
+  await writeBackGroup(group, {
+    placement: d.placement, thickness: t, setback: Math.max(0, round1(d.setback)), inset: Math.max(0, round1(d.inset)),
+    grooveClear: { front: Math.max(0, d.grooveClear.front), back: Math.max(0, d.grooveClear.back), depth: Math.max(0, d.grooveClear.depth) }, tree,
+  });
 }
 export function renameBackGroup(groupId: string, name: string): void {
   const group = groupById(groupId);

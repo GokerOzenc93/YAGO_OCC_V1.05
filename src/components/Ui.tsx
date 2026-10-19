@@ -86,7 +86,10 @@ export class ErrorBoundary extends React.Component<{ children: React.ReactNode; 
    ikisi de pasif. Ayrıntılı açıklama tarayıcı ipucunda (title). */
 export const RAIL_W = 60;
 type SidebarTab = 'parameters' | 'panel-editor';
-type RailSpec = { key: string; label: string; icon: LucideIcon; title: string; active?: boolean; badge?: string | number; onClick: () => void };
+type RailSpec = {
+  key: string; label: string; icon: LucideIcon; title: string; active?: boolean; badge?: string | number; onClick: () => void;
+  /** Sekme açıkken de pasif (ör. hızlı gövde zaten yerleşmiş). */ disabled?: boolean;
+};
 /* Panelin YEREL durumuna bağlı ray eylemleri buraya kaydolur (ParametersPanel → özel parametre ekleme). */
 export const railActions: { addCustomParameter: (() => void) | null } = { addCustomParameter: null };
 
@@ -140,10 +143,12 @@ export const SidebarRail: React.FC<{ activeTab: SidebarTab; hasShape: boolean }>
   const s = useStoreFields('raycastMode', 'setRaycastMode', 'volumePickMode', 'setVolumePickMode', 'volumePickGroupId', 'doorPickMode',
     'setDoorPickMode', 'backPickMode', 'setBackPickMode', 'quickBodyMode', 'setQuickBodyMode', 'vertexEditMode', 'setVertexEditMode',
     'subtractionViewMode', 'setSubtractionViewMode', 'filletMode', 'setFilletMode', 'setFaceEditMode', 'selectedFilletFaces', 'clearFilletFaces',
-    'clearFilletFaceData', 'selectedShapeId', 'shapes');
+    'clearFilletFaceData', 'selectedShapeId', 'shapes', 'virtualFaces');
   const sel = shapeById(s.selectedShapeId, s.shapes);
   const subN = sel?.subtractionGeometries?.filter(x => x !== null).length ?? 0;
   const filletN = s.selectedFilletFaces.length;
+  // Hızlı gövde yerleşmişse düğme pasif (Goker): paneller listedeki Body satırından düzenlenir; hepsi silinince yeniden etkin.
+  const bodyPlaced = !!sel && s.virtualFaces.some(f => f.shapeId === sel.id && !!f.quickBody);
   const toggle = (on: boolean, set: (b: boolean) => void) => ({ active: on, onClick: () => set(!on) });
   // Vertex / Subtract açılınca fillet ve yüz düzenleme kapanır; Fillet açılınca ikisi kapanır.
   const toggleEdit = (on: boolean, set: (b: boolean) => void) => ({
@@ -165,8 +170,9 @@ export const SidebarRail: React.FC<{ activeTab: SidebarTab; hasShape: boolean }>
   const vp = (m: 'shelf' | 'divider') => s.volumePickMode === m && !s.volumePickGroupId;
   const volume = (m: 'shelf' | 'divider') => ({ active: vp(m), onClick: () => s.setVolumePickMode(vp(m) ? null : m) });
   const panels: RailSpec[] = [
-    { key: 'body', label: 'Body', icon: Container, ...toggle(s.quickBodyMode, s.setQuickBodyMode),
-      title: 'Quick body: corner joints, base (plain / legs / plinth) and back panel placed in one step' },
+    { key: 'body', label: 'Body', icon: Container, ...toggle(s.quickBodyMode, s.setQuickBodyMode), disabled: bodyPlaced,
+      title: bodyPlaced ? 'Body panels are already placed — open the Body row at the top of the list to revise them, or delete them to place again'
+        : 'Quick body: corner joints, base (plain / legs / plinth) and back panel placed in one step' },
     { key: 'panel', label: 'Panel', icon: LayoutPanelTop, title: 'Body panel: click a body face in the 3D view', ...toggle(s.raycastMode, s.setRaycastMode) },
     { key: 'shelf', label: 'Shelf', icon: Rows3, title: 'Click inside a cavity in the 3D view', ...volume('shelf') },
     { key: 'divider', label: 'Divider', icon: Columns3, title: 'Click inside a cavity in the 3D view', ...volume('divider') },
@@ -175,7 +181,8 @@ export const SidebarRail: React.FC<{ activeTab: SidebarTab; hasShape: boolean }>
     { key: 'back', label: 'Back', icon: SendToBack, ...toggle(s.backPickMode, s.setBackPickMode),
       title: 'Back panel: mark back references on panels, then click the body — each click cycles the candidates, largest first' },
   ];
-  const group = (list: RailSpec[], tab: SidebarTab) => list.map(({ key, ...t }) => <RailTool key={key} {...t} passive={!hasShape || activeTab !== tab} />);
+  const group = (list: RailSpec[], tab: SidebarTab) =>
+    list.map(({ key, disabled, ...t }) => <RailTool key={key} {...t} passive={!hasShape || activeTab !== tab || !!disabled} />);
   return (
     <div className="yago-rail" style={RAIL_STYLE}>
       {group(params, 'parameters')}

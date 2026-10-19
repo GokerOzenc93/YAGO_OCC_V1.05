@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Check, X, type LucideIcon, Lock, SlidersHorizontal, Crosshair, LayoutPanelTop, Rows3, Columns3, DoorClosed, SendToBack, Footprints, Shapes,
   ChevronRight, Minus, Plus, ChevronDown, Pencil, Trash2, Unlink, MoveVertical, Move, RotateCw, GripVertical, ArrowUp, Box, Move3d, Equal,
-  SplitSquareVertical, SplitSquareHorizontal, RotateCcw,
+  SplitSquareVertical, SplitSquareHorizontal, RotateCcw, Container,
 } from 'lucide-react';
 import { type Box3 } from 'three';
 import { UI_FONT } from './Ui';
@@ -41,7 +41,7 @@ import {
   confirmVolumePick, type TreeNode, findNode, treeLeaves, memberThicknessesOf, bodyLegsOf, legHeightOf, setBodyLegs, boxSpan, groupKindLabel,
   renamePanelGroup, deletePanelGroupWithMembers, setGroupCount, startCavityEdit, startGroupRepick, setGroupTargetGap, equalizeGroupGaps,
   previewGroupGap, editGroupGap, toggleGroupGapLock, groupLayoutSnapshot, restoreGroupLayout, type GroupLayoutSnap, previewGroupMemberThickness,
-  setGroupMemberThickness, applyQuickBody,
+  setGroupMemberThickness, applyQuickBody, quickBodyOf, quickBodyVfsOf, removeQuickBody,
 } from './PanelGroupService';
 import { confirmBodyPanelPlacement } from './Scene';
 
@@ -192,12 +192,12 @@ export const ROW_SEL_BAR = 'pointer-events-none absolute left-0 top-[7px] bottom
 export const MEMBER_INSET = 8;           // grup kartı gövdesinin yatay dolgusu (px-2)
 /** Pasif/kapalı buton rengi (satır araçları). */
 export const ROW_IDLE = 'text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700';
-type RowKind = 'body' | 'shelf' | 'divider' | 'door' | 'back' | 'legs';
+type RowKind = 'body' | 'shelf' | 'divider' | 'door' | 'back' | 'legs' | 'quick';
 const ROW_KIND_ICON: Record<RowKind, LucideIcon> = {
-  body: LayoutPanelTop, shelf: Rows3, divider: Columns3, door: DoorClosed, back: SendToBack, legs: Footprints,
+  body: LayoutPanelTop, shelf: Rows3, divider: Columns3, door: DoorClosed, back: SendToBack, legs: Footprints, quick: Container,
 };
 const ROW_KIND_TITLE: Record<RowKind, string> = {
-  body: 'Body panel', shelf: 'Shelf', divider: 'Divider', door: 'Door', back: 'Back panel', legs: 'Legs',
+  body: 'Body panel', shelf: 'Shelf', divider: 'Divider', door: 'Door', back: 'Back panel', legs: 'Legs', quick: 'Quick body',
 };
 export const rowCardClass = (open: boolean, dragging: boolean, armed: boolean) =>
   `group/row relative flex flex-col rounded-[10px] overflow-hidden transition-[background-color,box-shadow,opacity,transform] duration-150 ease-out
@@ -789,7 +789,7 @@ export function LegsBlock({ legs, W, D, heightReadout, heightEditable, countOpti
       <LegsPlanDiagram legs={legs} W={W} D={D} active={hint} className="w-full" />
       <div className="grid grid-cols-3 gap-x-1" style={QB_CELL_ROW}>
         {countOptions.length > 0
-          ? cell('Legs', 'lc', <QbSelect value={String(legs.count)} options={countOpts(countOptions)} onChange={v => onChange({ count: parseInt(v, 10) })} />)
+          ? cell('Leg count', 'lc', <QbSelect value={String(legs.count)} options={countOpts(countOptions)} onChange={v => onChange({ count: parseInt(v, 10) })} />)
           : (
             <ReadCell label="Layout" title="Leg layout">
               <span className="whitespace-nowrap text-[11px] font-semibold text-stone-500">
@@ -797,23 +797,48 @@ export function LegsBlock({ legs, W, D, heightReadout, heightEditable, countOpti
               </span>
             </ReadCell>
           )}
-        {num('Ø', 'ld', legs.diameter, v => onChange({ diameter: v }), false, 5)}
-        {heightEditable ? num('Height', 'lh', legs.height, v => onChange({ height: v }), false, 1) : cell('Height', 'lh', (
+        {num('Diameter', 'ld', legs.diameter, v => onChange({ diameter: v }), false, 5)}
+        {heightEditable ? num('Leg height', 'lh', legs.height, v => onChange({ height: v }), false, 1) : cell('Leg height', 'lh', (
           <ReadValue color={countOptions.length ? '#57534e' : '#c7beb1'} title={countOptions.length ? "Read from the bottom panel's underside" : '= plinth height'}>
             {fmt1(heightReadout ?? legs.height)}
           </ReadValue>
         ), true)}
-        {num('Side', 'ls', legs.side, v => onChange({ side: v }))}
-        {num('Front', 'lf', legs.front, v => onChange({ front: v }))}
-        {num('Rear', 'lr', legs.rear, v => onChange({ rear: v }))}
+        {num('Side offset', 'ls', legs.side, v => onChange({ side: v }))}
+        {num('Front offset', 'lf', legs.front, v => onChange({ front: v }))}
+        {num('Rear offset', 'lr', legs.rear, v => onChange({ rear: v }))}
       </div>
     </div>
   );
 }
 
-/* HIZLI GÖVDE PANELİ — liste alanının üstünde (kaydırılan alanda; üst şerit yapışık). Diyagramlar tam genişlik, hücreler altında 3 sütun. */
-export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onApply, onExit }: {
-  shape: Shape; cfg: QuickBodyConfig; setCfg: (p: Partial<QuickBodyConfig>) => void; busy: boolean; existingCount: number; onApply: () => void; onExit: () => void;
+/* BÖLÜM KUTUSU: hızlı gövde panelinin üç bölümü (gövde panelleri · ayaklar · arkalık) ayrı kutularda, başlıkta bölümün ana seçimi
+   (Goker: "gövde, arkalık ve ayak kısımları iç içe giriyor"). */
+function QbSection({ title, sub, trailing, children }: Kids & { title: string; sub?: string; trailing?: React.ReactNode }) {
+  return (
+    <div className="rounded-[10px] ring-1 ring-[#e6e0d6] bg-white overflow-hidden shadow-[0_1px_2px_rgba(68,64,60,0.04)]">
+      <div className="flex items-center gap-2 pl-2.5 pr-1.5 h-[32px] bg-[#f6f2ec] border-b border-[#ebe5dc]">
+        <span style={{ ...SECTION_LABEL, color: '#57534e' }}>{title}</span>
+        {sub && <span className="min-w-0 truncate text-[10px] font-medium text-stone-400">{sub}</span>}
+        <div className="flex-1" />
+        {trailing}
+      </div>
+      <div className="p-1.5">{children}</div>
+    </div>
+  );
+}
+const QbNote = ({ children }: Kids) => <div className="px-1 py-1 text-[10.5px] leading-snug text-stone-400">{children}</div>;
+const QB_BACK_ITEMS: SegItem[] = [
+  { key: 'none', label: 'None', title: 'No back panel' },
+  { key: 'outer', label: BACK_TYPE_LABEL.outer, title: 'Nailed onto the rear edges of the body panels' },
+  { key: 'inner', label: BACK_TYPE_LABEL.inner, title: 'Sits in a groove cut into the body panels, set back from the rear' },
+];
+const QB_LEG_OPTS = (ns: number[]) => ns.map(n => ({ v: String(n), label: n === 0 ? 'None' : `${n} legs` }));
+
+/* HIZLI GÖVDE PANELİ — liste alanının üstünde (üst şerit yapışık) ya da Body satırının içinde (`revise`: ayarlar gövdeden gelir,
+   ✓ panelleri yerinde yeniden kurar). Üç ayrı bölüm: GÖVDE PANELLERİ (köşeler, kalınlık, baza) · AYAKLAR · ARKALIK. */
+export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onApply, onExit, revise }: {
+  shape: Shape; cfg: QuickBodyConfig; setCfg: (p: Partial<QuickBodyConfig>) => void; busy: boolean; existingCount: number; onApply: () => void;
+  onExit: () => void; revise?: boolean;
 }) {
   const [hint, setHint] = useState<string | null>(null);
   const { cell, num } = hintCells(hint, setHint);
@@ -832,79 +857,98 @@ export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onAppl
   // Taban değişince ayak: Legs → en az 4; Plinth → otomatik None (Goker); Plain → yok.
   const setBase = (base: QuickBodyBase) => setCfg({ base, legs: { ...cfg.legs, count: base === 'legs' ? (cfg.legs.count || 4) : 0 } });
   const toggleCorner = (c: CornerKey) => setCfg({ joins: { ...cfg.joins, [c]: cfg.joins[c] === 'side' ? 'horiz' : 'side' } });
+  const summary = `${panelCount} panels${b.enabled ? ` + ${BACK_TYPE_LABEL[b.placement].toLowerCase()} back` : ''}${legCount ? ` + ${legCount} legs` : ''}`;
   const existing = existingCount ? `${existingCount} panel${existingCount === 1 ? '' : 's'} already on the body · ` : '';
-  const status = busy ? 'Building panels…' : cyclic ? 'Corner joints form a cycle — sides will pass first'
-    : `${existing}${panelCount} panels${b.enabled ? ' + back' : ''}${legCount ? ` + ${legCount} legs` : ''}`;
+  const status = busy ? 'Building panels…' : cyclic ? 'Corner joints form a cycle — sides will pass first' : revise ? `Rebuild: ${summary}` : `${existing}${summary}`;
+  const statusTitle = revise
+    ? 'Re-applies these settings to the body panels placed by Quick body: the same rows are updated in place (same order, first in the list), '
+      + 'parts that no longer apply are removed, the back panel and legs follow. Shelves, dividers and doors are kept; manual steps on the body panels are reset.'
+    : undefined;
   const sub = (s: React.ReactNode) => <span className="text-[10px] font-medium text-stone-400" style={{ fontFamily: UI_FONT }}>{s}</span>;
+  const backKey = b.enabled ? b.placement : 'none';
   return (
     <div style={{ fontFamily: UI_FONT }}>
-      <div className="sticky top-0 z-[3]" style={DOCK_STRIP}>
+      <div className={revise ? '' : 'sticky top-0 z-[3]'} style={DOCK_STRIP}>
         <div style={DOCK_ROW}>
-          <span style={dockAxisTag('#44403c')}>BODY</span>
+          <span style={dockAxisTag('#44403c')} title="Base: how the body meets the floor">BASE</span>
           <div className="flex-1 min-w-0"><Segmented items={QB_BASE_ITEMS} active={cfg.base} onPick={k => setBase(k as QuickBodyBase)} /></div>
-          <ApplyBtn enabled={!busy} onClick={onApply} title="Place body panels" />
-          <ExitBtn onClick={onExit} />
+          <ApplyBtn enabled={!busy} onClick={onApply} title={revise ? 'Rebuild the body panels with these settings' : 'Place body panels'} />
+          {!revise && <ExitBtn onClick={onExit} />}
         </div>
-        <div style={{ ...DOCK_ROW, paddingTop: 0 }}><DockStatus ready={!busy && !cyclic} text={status} /></div>
+        <div style={{ ...DOCK_ROW, paddingTop: 0 }}><DockStatus ready={!busy && !cyclic} text={status} title={statusTitle} /></div>
       </div>
-      <div className="px-1.5 pb-2" onMouseLeave={() => setHint(null)}>
-        {/* GÖVDE: yalnız dört köşe birleşimi (dolap çizimi yok — Goker), altında 3 sütun hücre */}
-        <div className="pt-1.5 pb-1 flex items-center gap-2 px-0.5">
-          <span style={SECTION_LABEL}>Corner joints</span>
-          <span className="text-[10px] text-stone-400">click a corner to swap which panel passes</span>
-          <div className="flex-1 h-px bg-[#efeae2]" />
-        </div>
-        <CornerJointTiles joins={joins} lockBottom={isPlinth} active={hint} onCorner={toggleCorner} onHover={c => setHint(c ? `c-${c}` : null)} />
-        <div className="mt-1 grid grid-cols-3 gap-x-1" style={QB_CELL_ROW}>
-          {num('Thick', 't', cfg.thickness, v => setCfg({ thickness: v }), false, 1)}
-          {num('Plinth', 'ph', cfg.plinth.height, v => setPlinth({ height: v }), !isPlinth, 1)}
-          {num('Front', 'pf', cfg.plinth.front, v => setPlinth({ front: v }), !isPlinth)}
-          {cell('Rear', 'pr', <>
-            <QbSwitch on={cfg.plinth.rearPlinth} disabled={!isPlinth} title="Rear plinth on / off"
-              onToggle={() => setPlinth({ rearPlinth: !cfg.plinth.rearPlinth })} />
-            <QbNum value={cfg.plinth.rear} passive={!isPlinth || !cfg.plinth.rearPlinth} w={30} onCommit={v => setPlinth({ rear: v })} />
-          </>, !isPlinth)}
-          {cell('Legs', 'lc', <QbSelect value={String(legCount)} passive={isPlain} options={countOpts(isLegs ? [4, 5, 6] : [0, 4, 5, 6])}
-            onChange={v => setLegs({ count: parseInt(v, 10) as 0 | 4 | 5 | 6 })} />, isPlain)}
-          {isLegs ? num('Leg H', 'lh', cfg.legs.height, v => setLegs({ height: v }), false, 1)
-            : cell('Leg H', 'lh', <ReadValue color="#c7beb1">{isPlinth && legCount ? fmt1(cfg.plinth.height) : '—'}</ReadValue>, true)}
-          {cell('Back', 'bt', <QbSelect value={b.enabled ? b.placement : 'none'} w={70}
-            options={[{ v: 'outer', label: BACK_TYPE_LABEL.outer }, { v: 'inner', label: BACK_TYPE_LABEL.inner }, { v: 'none', label: 'None' }]}
-            onChange={v => setBack(v === 'none' ? { enabled: false } : { enabled: true, placement: v })} />)}
-          <ReadCell label="Size" title="Body size W × H × D" className="col-span-2">
-            <span className="whitespace-nowrap text-[11px] font-semibold text-stone-500 tabular-nums">{fmt1(W)} × {fmt1(H)} × {fmt1(D)}</span>
-          </ReadCell>
-        </div>
-        {legCount > 0 && <>
-          <SectionHead label="Legs" className="px-0.5 pt-2.5 pb-1" />
-          <LegsBlock legs={{ ...cfg.legs, count: legCount, height: isPlinth ? cfg.plinth.height : cfg.legs.height }} W={W} D={D} heightEditable={isLegs}
-            heightReadout={isPlinth ? cfg.plinth.height : undefined} countOptions={[]} hint={hint} onHint={setHint}
-            onChange={p => setLegs(p as Partial<QuickBodyConfig['legs']>)} />
-        </>}
-        {/* ARKALIK: arkalık kartıyla aynı kesit diyagramı, büyük */}
-        {b.enabled && <>
-          <SectionHead label="Back panel" className="px-0.5 pt-2.5 pb-1" />
-          <div className="flex flex-col gap-1.5">
-            <div className="w-full flex" style={{ height: 200 }}>
-              <BackGrooveDiagram active={hint === 'bi' ? 'in' : hint && hint.startsWith('b') ? hint.slice(1) : null} grooved={grooved} t={b.thickness}
-                setback={grooved ? b.setback : 0} front={b.clear.front} rear={b.clear.back} depth={b.clear.depth} inset={b.inset} className="w-full h-full" />
-            </div>
-            <div className="grid grid-cols-3 gap-x-1" style={QB_CELL_ROW}>
-              {num('Thick', 'bt', b.thickness, v => setBack({ thickness: v }), false, 1)}
-              {num('In', 'bi', b.inset, v => setBack({ inset: v }), !grooved)}
-              {num('Setback', 'bsetback', b.setback, v => setBack({ setback: v }), !grooved)}
-              {num('Front', 'bgf', b.clear.front, v => setClear({ front: v }), !grooved)}
-              {num('Rear', 'bgb', b.clear.back, v => setClear({ back: v }), !grooved)}
-              {num('Bottom', 'bgd', b.clear.depth, v => setClear({ depth: v }), !grooved)}
-              <ReadCell label="Groove" className={`col-span-2 ${grooved ? '' : 'opacity-60'}`}>
-                <ReadValue color="#57534e" className="whitespace-nowrap">{grooved ? <>
-                  {fmt1(b.thickness + b.clear.front + b.clear.back)}{sub(' × ')}{fmt1(b.inset + b.clear.depth)}
-                  {sub(<> (In {fmt1(b.inset)} + {fmt1(b.clear.depth)})</>)}
-                </> : '—'}</ReadValue>
-              </ReadCell>
-            </div>
+      <div className="px-1.5 pt-1.5 pb-2 flex flex-col gap-1.5" onMouseLeave={() => setHint(null)}>
+        {/* 1 · GÖVDE PANELLERİ: dört köşe birleşimi (dolap çizimi yok — Goker), kalınlık + ölçü, bazalıda baza ölçüleri */}
+        <QbSection title="Body panels" sub={`${panelCount} panels · ${isPlinth ? 'sides reach the floor' : isLegs ? 'raised on legs' : 'on the floor'}`}>
+          <div className="pb-1 px-0.5 flex items-center gap-2">
+            <span style={SECTION_LABEL}>Corner joints</span>
+            <span className="text-[10px] text-stone-400">click a corner to swap which panel passes</span>
           </div>
-        </>}
+          <CornerJointTiles joins={joins} lockBottom={isPlinth} active={hint} onCorner={toggleCorner} onHover={c => setHint(c ? `c-${c}` : null)} />
+          <div className="mt-1.5 grid grid-cols-2 gap-x-1" style={QB_CELL_ROW}>
+            {num('Panel thickness', 't', cfg.thickness, v => setCfg({ thickness: v }), false, 1)}
+            <ReadCell label="Body size" title="Body width × height × depth">
+              <span className="whitespace-nowrap text-[11px] font-semibold text-stone-500 tabular-nums">{fmt1(W)} × {fmt1(H)} × {fmt1(D)}</span>
+            </ReadCell>
+          </div>
+          {isPlinth && <>
+            <div className="pt-2 pb-1 px-0.5 flex items-center gap-2">
+              <span style={SECTION_LABEL}>Plinth</span>
+              <span className="text-[10px] text-stone-400">kick panels under the bottom panel, between the sides</span>
+            </div>
+            <div className="grid grid-cols-2 gap-x-1" style={QB_CELL_ROW}>
+              {num('Plinth height', 'ph', cfg.plinth.height, v => setPlinth({ height: v }), false, 1)}
+              {num('Front plinth setback', 'pf', cfg.plinth.front, v => setPlinth({ front: v }))}
+              {cell('Rear plinth', 'pr', <>
+                <span className="text-[10.5px] font-medium text-stone-400 pr-1">{cfg.plinth.rearPlinth ? 'on' : 'off'}</span>
+                <QbSwitch on={cfg.plinth.rearPlinth} title="Rear plinth on / off" onToggle={() => setPlinth({ rearPlinth: !cfg.plinth.rearPlinth })} />
+              </>)}
+              {num('Rear plinth inset', 'pri', cfg.plinth.rear, v => setPlinth({ rear: v }), !cfg.plinth.rearPlinth)}
+            </div>
+          </>}
+        </QbSection>
+
+        {/* 2 · AYAKLAR: adet başlıkta; plan diyagramı + ölçüler */}
+        <QbSection title="Legs" sub={isLegs ? 'body height includes the legs' : isPlinth ? 'optional, under the bottom panel' : undefined}
+          trailing={isPlain ? <span className="pr-1 text-[11px] font-semibold text-stone-300">None</span>
+            : <SelectBox value={String(legCount)} title="Number of legs" options={QB_LEG_OPTS(isLegs ? [4, 5, 6] : [0, 4, 5, 6]).map(o => [o.v, o.label])}
+              onChange={v => setLegs({ count: parseInt(v, 10) as 0 | 4 | 5 | 6 })} />}>
+          {legCount > 0 ? (
+            <LegsBlock legs={{ ...cfg.legs, count: legCount, height: isPlinth ? cfg.plinth.height : cfg.legs.height }} W={W} D={D} heightEditable={isLegs}
+              heightReadout={isPlinth ? cfg.plinth.height : undefined} countOptions={[]} hint={hint} onHint={setHint}
+              onChange={p => setLegs(p as Partial<QuickBodyConfig['legs']>)} />
+          ) : (
+            <QbNote>{isPlain ? 'A plain base sits on the floor — choose Legs or Plinth for legs.' : 'No legs — the plinth carries the body. Pick a count to add legs under the bottom panel.'}</QbNote>
+          )}
+        </QbSection>
+
+        {/* 3 · ARKALIK: tip başlıkta; arkalık kartıyla aynı kesit diyagramı, büyük */}
+        <QbSection title="Back panel" sub={b.enabled ? (grooved ? 'in a groove, set back from the rear' : 'nailed on the rear edges') : undefined}
+          trailing={<div style={{ width: 206 }}><Segmented height={22} items={QB_BACK_ITEMS} active={backKey}
+            onPick={k => setBack(k === 'none' ? { enabled: false } : { enabled: true, placement: k as BackPlacement })} /></div>}>
+          {b.enabled ? (
+            <div className="flex flex-col gap-1.5">
+              <div className="w-full flex" style={{ height: 196 }}>
+                <BackGrooveDiagram active={hint === 'bi' ? 'in' : hint && hint.startsWith('b') ? hint.slice(1) : null} grooved={grooved} t={b.thickness}
+                  setback={grooved ? b.setback : 0} front={b.clear.front} rear={b.clear.back} depth={b.clear.depth} inset={b.inset} className="w-full h-full" />
+              </div>
+              <div className="grid grid-cols-2 gap-x-1" style={QB_CELL_ROW}>
+                {num('Thickness', 'bt', b.thickness, v => setBack({ thickness: v }), false, 1)}
+                {num('Setback from rear', 'bsetback', b.setback, v => setBack({ setback: v }), !grooved)}
+                {num('Groove entry (In)', 'bi', b.inset, v => setBack({ inset: v }), !grooved)}
+                {num('Groove bottom gap', 'bgd', b.clear.depth, v => setClear({ depth: v }), !grooved)}
+                {num('Groove gap · front', 'bgf', b.clear.front, v => setClear({ front: v }), !grooved)}
+                {num('Groove gap · rear', 'bgb', b.clear.back, v => setClear({ back: v }), !grooved)}
+                <ReadCell label="Groove width × depth" className={`col-span-2 ${grooved ? '' : 'opacity-60'}`}>
+                  <ReadValue color="#57534e" className="whitespace-nowrap">{grooved ? <>
+                    {fmt1(b.thickness + b.clear.front + b.clear.back)}{sub(' × ')}{fmt1(b.inset + b.clear.depth)}
+                    {sub(<> (In {fmt1(b.inset)} + {fmt1(b.clear.depth)})</>)}
+                  </> : '—'}</ReadValue>
+                </ReadCell>
+              </div>
+            </div>
+          ) : <QbNote>No back panel — the rear stays open. Choose Nailed or Grooved to add one.</QbNote>}
+        </QbSection>
       </div>
     </div>
   );
@@ -1485,6 +1529,8 @@ export function PanelEditor() {
   const [backHint, setBackHint] = useState<{ id: string; key: string } | null>(null);
   /** Kalıcı Legs satırının plan diyagramı ipucu. */
   const [legsHint, setLegsHint] = useState<string | null>(null);
+  /** Body satırı: gövdede saklı hızlı gövde ayarlarının düzenleme taslağı (satır kapanınca / ✓ sonrası düşer → saklı ayar görünür). */
+  const [quickDraft, setQuickDraft] = useState<{ sid: string; cfg: QuickBodyConfig } | null>(null);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
   const [armedRowKey, setArmedRowKey] = useState<string | null>(null);
@@ -1564,7 +1610,8 @@ export function PanelEditor() {
     if (!fresh.size) return;
     const st = useAppStore.getState();
     setOpenCards(cur => { const n = new Set([...cur].filter(id => fresh.has(id))); return n.size === cur.size ? cur : n; });
-    if (st.selectedPanelRow !== null) {
+    // Body satırı açıkken yeniden kurulan parçalar "yeni" sayılmaz (satır açık kalır).
+    if (st.selectedPanelRow !== null && !String(st.selectedPanelRow).startsWith('quick-')) {
       const vf = st.virtualFaces.find(f => f.id === rowVfId(st.selectedPanelRow));
       if (!vf || !fresh.has(keyOf(vf))) setSelectedPanelRow(null);
     }
@@ -1584,6 +1631,15 @@ export function PanelEditor() {
     if (st.quickBodyMode) setQuickBodyMode(false);
     setOpenCards(new Set());
   }, [selectedShapeId]);
+  // Hızlı gövde açılınca gövdede saklı ayarlar taslağa yüklenir (Goker: "ayarını tut"); paneller zaten yerleşmişse yapılandırma
+  // Body satırından yapılır — mod kapanır.
+  useEffect(() => {
+    if (!quickBodyMode || !selectedShape) return;
+    if (quickBodyVfsOf(selectedShape.id, useAppStore.getState().virtualFaces).length) { setQuickBodyMode(false); return; }
+    const saved = quickBodyOf(selectedShape);
+    if (saved) setQuickBodyConfig(JSON.parse(JSON.stringify(saved)) as QuickBodyConfig);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [quickBodyMode, selectedShapeId]);
   useEffect(() => {
     if (missing(selectedDoorGroupId, doorGroups)) setSelectedDoorGroupId(null);
     if (missing(doorRefPickGroupId, doorGroups)) setDoorRefPickGroupId(null);
@@ -1889,6 +1945,35 @@ export function PanelEditor() {
             </div>
           );
         },
+      });
+    };
+
+    /* BODY SATIRI: hızlı gövde AYARLARI (gövde parametresi); her zaman en başta ("B"), Legs'ten önce. Açılınca aynı yapılandırma paneli
+       (revise): ✓ panelleri yerinde yeniden kurar; × hızlı gövdenin kurduğu her şeyi kaldırır (ayarlar gövdede kalır). */
+    const quickRow = (saved: QuickBodyConfig, parts: number) => {
+      const key = `quick-${sid}`, sel = selectedPanelRow === key;
+      const draft = sel && quickDraft?.sid === sid ? quickDraft.cfg : saved;
+      const baseLabel = { plain: 'Plain', legs: 'Legs', plinth: 'Plinth' }[saved.base];
+      const backTxt = saved.back.enabled ? `${BACK_TYPE_LABEL[saved.back.placement].toLowerCase()} back` : 'no back';
+      const legs = saved.base === 'legs' ? (saved.legs.count || 4) : saved.base === 'plinth' ? saved.legs.count : 0;
+      const toggle = (e: React.MouseEvent) => { stop(e); setQuickDraft(null); if (sel) setSelectedPanelRow(null); else setSelectedPanelRow(key, sid); };
+      return rowShell({
+        key, open: sel, sel, lead: <span className="shrink-0 w-[14px] ml-[2px] self-stretch" />, onToggle: toggle,
+        num: 'B', kind: 'quick', count: parts,
+        name: <span title="Quick body settings — always first. Open to revise the base, corner joints, thickness, plinth, legs and back, then ✓ to rebuild."
+          className="flex-1 min-w-0 h-[22px] px-[5px] flex items-center gap-1.5 text-[11.5px] font-medium text-stone-700 truncate select-none">
+          Body<span className="min-w-0 truncate text-[10.5px] font-medium text-stone-400">· {baseLabel} · {backTxt}</span>
+        </span>,
+        dims: <RowCells title={`${parts} body panels · panel thickness ${fmt1(saved.thickness)} · ${legs ? `${legs} legs` : 'no legs'}`}
+          cells={[['T', saved.thickness], ['Legs', legs ? String(legs) : '—']]} />,
+        trail: <RowDelBtn title="Remove everything Quick body placed: body panels, plinth, legs and its back panel (the settings are kept)"
+          onClick={() => { if (sel) setSelectedPanelRow(null); setQuickDraft(null); removeQuickBody(sid); }} />,
+        body: () => (
+          <div className="yago-expand" style={{ borderTop: '1px solid #efebe5' }} onClick={stop}>
+            <QuickBodyPanel revise shape={selectedShape} cfg={draft} setCfg={p => setQuickDraft({ sid, cfg: { ...draft, ...p } })} busy={quickBodyBusy}
+              existingCount={0} onApply={() => { void onQuickBodyApply(draft, true); }} onExit={() => setSelectedPanelRow(null)} />
+          </div>
+        ),
       });
     };
 
@@ -2235,17 +2320,17 @@ export function PanelEditor() {
                   <CountMini icon={SplitSquareVertical} value={rg.countOf('u')} title={rg.countTitle('u')} onChange={n => rg.setCount('u', n)} />
                   <CountMini icon={SplitSquareHorizontal} value={rg.countOf('v')} title={rg.countTitle('v')} onChange={n => rg.setCount('v', n)} />
                 </div>
-                {cell('Thick', 't', g.thickness)}
+                {cell('Thickness', 't', g.thickness)}
                 {cell('Setback', 'setback', setbackVal, { accent: scoped && isGrooved, passive: !isGrooved, mixed: setbackMixed })}
-                {cell('Front', 'gf', gc.front, pas)}
-                {cell('Rear', 'gb', gc.back, pas)}
-                {cell('Bottom', 'gd', gc.depth, pas)}
-                <div className={`${READ_CELL} ${isGrooved ? '' : 'opacity-60'}`}>
+                {cell('Front gap', 'gf', gc.front, pas)}
+                {cell('Rear gap', 'gb', gc.back, pas)}
+                {cell('Bottom gap', 'gd', gc.depth, pas)}
+                <div className={`${READ_CELL} ${isGrooved ? '' : 'opacity-60'}`} title="Groove width × depth (In = entry into the panel, set per edge in the schematic)">
                   <span className={`flex-1 min-w-0 truncate ${CELL_LABEL}`}>Groove</span>
                   <span className="whitespace-nowrap" style={{ ...FIELD_INPUT, width: 'auto', color: '#57534e' }}>
                     {isGrooved ? <>
                       {fmt1(g.thickness + gc.front + gc.back)}
-                      <span className="text-[10px] font-medium text-stone-400" style={{ fontFamily: UI_FONT }}> ×In+{fmt1(gc.depth)}</span>
+                      <span className="text-[10px] font-medium text-stone-400" style={{ fontFamily: UI_FONT }}> × In + {fmt1(gc.depth)}</span>
                     </> : '—'}
                   </span>
                 </div>
@@ -2304,16 +2389,19 @@ export function PanelEditor() {
       );
     }
     if (bodyLegs) elements.unshift(legsRow(bodyLegs));
+    const quickParts = quickBodyVfsOf(sid, svf).length, quickSaved = quickBodyOf(selectedShape);
+    if (quickParts && quickSaved) elements.unshift(quickRow(quickSaved, quickParts));
     return elements;
   };
 
-  /* HIZLI GÖVDE: yapılandırma listenin üstünde, kaydırılan alanda (üst şerit yapışık); onay → servis, bitince mod kapanır. */
-  const onQuickBodyApply = async () => {
+  /* HIZLI GÖVDE: yapılandırma listenin üstünde (üst şerit yapışık) ya da Body satırında (revise). Onay → servis; bitince mod kapanır /
+     taslak düşer (saklı ayar görünür). */
+  const onQuickBodyApply = async (cfg: QuickBodyConfig, revise = false) => {
     if (!selectedShape || quickBodyBusy) return;
     setQuickBodyBusy(true);
     try {
-      await applyQuickBody(selectedShape.id, useAppStore.getState().quickBodyConfig);
-      setQuickBodyMode(false);
+      await applyQuickBody(selectedShape.id, cfg);
+      if (revise) setQuickDraft(null); else setQuickBodyMode(false);
     } catch (e) { console.error('[YAGO][HIZLI-GÖVDE] hata:', e); }
     finally { setQuickBodyBusy(false); }
   };
@@ -2327,7 +2415,7 @@ export function PanelEditor() {
           {quickBodyMode && (
             <QuickBodyPanel shape={selectedShape} cfg={quickBodyConfig} setCfg={setQuickBodyConfig} busy={quickBodyBusy}
               existingCount={virtualFaces.filter(vf => vf.shapeId === selectedShape.id && !vf.interior).length}
-              onApply={() => { void onQuickBodyApply(); }} onExit={() => setQuickBodyMode(false)} />
+              onApply={() => { void onQuickBodyApply(useAppStore.getState().quickBodyConfig); }} onExit={() => setQuickBodyMode(false)} />
           )}
           <div className="px-0.5 pb-2 space-y-[2px]">{renderFaceList()}</div>
         </div>

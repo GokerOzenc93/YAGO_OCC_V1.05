@@ -7,9 +7,12 @@ import {
 } from './Geometry';
 import {
   type CavityBox, type Shape, type VirtualFace, panelOfVf, type GapSpec, useAppStore, type PanelGroup, type CavityPick, type CavityStep, shapeById,
-  requestRebuild, type RefFacePick, type CornerKey, type QuickBodyConfig, type JoinPass, type BodyLegs, childPanelsOf,
+  requestRebuild, type RefFacePick, type CornerKey, type QuickBodyConfig, type JoinPass, type BodyLegs, childPanelsOf, type QuickBodyPart,
 } from '../store';
-import { backObstacleFor, isBackPanel, backPreviewStamp, backCandidatesAt, BACK_AXIS, BACK_SIDE, createBackGroupFromPick } from './BackService';
+import {
+  backObstacleFor, isBackPanel, backPreviewStamp, backCandidatesAt, BACK_AXIS, BACK_SIDE, createBackGroupFromPick, setBackDefaults,
+  deleteBackGroupWithMembers,
+} from './BackService';
 import { doorJointForBond, moveDoorJointTo, isDoorPanel } from './DoorService';
 
 /* PANEL GRUP SERVİSİ — 1) kapak / arkalık / raf-dikme ortak bölme yardımcıları · 2) raf / dikme grupları · 3) hızlı gövde. */
@@ -2150,7 +2153,12 @@ export function syncPanelGroups(parentShapeId: string): void {
    Köşe birleşimi = VF SIRASI: önce yerleşen panel köşeden geçer (basan), sonra yerleşen arada kalır (basılan).
    Dört köşenin kısıtlarından topolojik sıra çıkarılır; çevrim (fırıldak) kurulamaz → tercih sırası (sol, sağ, üst, alt).
    Bölgeler YEREL olarak, önceki panellerin (gerekirse taşınmış/kısaltılmış) vekil geometrileriyle hesaplanır; her şey
-   tek seferde store'a yazılır, arkalık ise paneller gerçekten üretildikten (rebuild boşaldıktan) sonra adaylardan kurulur. */
+   tek seferde store'a yazılır, arkalık ise paneller gerçekten üretildikten (rebuild boşaldıktan) sonra adaylardan kurulur.
+
+   AYARLAR gövdede saklanır (`parameters.quickBody`), parçalar VF.quickBody ile işaretlidir (Goker: "ayarını tut, tekrar seçip
+   revize edeyim"). Yeniden uygulama: aynı parçanın VF / panel id'si korunur (raf, kapak, arkalık referansları bozulmaz), kalkan
+   parçalar silinir, gövde VF'leri HER ZAMAN gövdenin öteki VF'lerinin ÖNÜNE yazılır (gövde panelleri önce yerleşir, geçer);
+   hızlı gövdenin kurduğu arkalık (`BackGroup.quickBody`) yerinde güncellenir, ayaklar yeniden yazılır. */
 export type QuickPanelKey = 'top' | 'left' | 'right' | 'bottom';
 export const QUICK_PANEL_NAME: Record<QuickPanelKey, string> = { top: 'Top', left: 'Left', right: 'Right', bottom: 'Bottom' };
 /** Köşe → (yatay panel, yan panel). */
@@ -2255,17 +2263,42 @@ async function slabOf(verts: Vec3[], normal: Vec3, t: number): Promise<{ rp: unk
   return { rp, geo: convertReplicadToThreeGeometry(rp) };
 }
 
-function panelShape(body: Shape, vf: VirtualFace, vfIndex: number, geo: THREE.BufferGeometry, rp: unknown, t: number, extra: Record<string, unknown>): Shape {
+/** Panel şekli; `prev` verilirse aynı id ve ok yönü korunur (yeniden uygulama). */
+function panelShape(body: Shape, vf: VirtualFace, vfIndex: number, geo: THREE.BufferGeometry, rp: unknown, t: number, extra: Record<string, unknown>, prev?: Shape): Shape {
   const size = localBboxOf(geo)!.getSize(new THREE.Vector3());
   const s = [size.x, size.y, size.z]; const [def, alt] = [0, 1, 2].sort((a, b) => s[a] - s[b]).slice(1).sort((a, b) => a - b);
   return {
-    id: genId('panel-vf'), type: 'panel', position: [...body.position] as Vec3, rotation: body.rotation, scale: [...body.scale] as Vec3,
+    id: prev?.id ?? genId('panel-vf'), type: 'panel', position: [...body.position] as Vec3, rotation: body.rotation, scale: [...body.scale] as Vec3,
     color: '#ffffff', geometry: geo, replicadShape: rp,
     parameters: {
-      width: s[def], height: s[alt], depth: t, parentShapeId: body.id, faceIndex: -(vfIndex + 1), virtualFaceId: vf.id, arrowRotated: false,
-      panelThickness: t, ...extra,
+      width: s[def], height: s[alt], depth: t, parentShapeId: body.id, faceIndex: -(vfIndex + 1), virtualFaceId: vf.id,
+      arrowRotated: !!prev?.parameters?.arrowRotated, panelThickness: t, ...extra,
     },
   } as Shape;
+}
+
+/** Gövdede saklı hızlı gövde ayarları (yoksa null). */
+export const quickBodyOf = (body: Shape | undefined | null): QuickBodyConfig | null => (body?.parameters?.quickBody as QuickBodyConfig | undefined) ?? null;
+/** Gövdenin hızlı gövde parçası olan VF'leri (liste sırasıyla). */
+export const quickBodyVfsOf = (bodyId: string | null | undefined, vfs = useAppStore.getState().virtualFaces): VirtualFace[] =>
+  bodyId ? vfs.filter(f => f.shapeId === bodyId && !!f.quickBody) : [];
+const quickBackGroupOf = (bodyId: string) => useAppStore.getState().backGroups.find(g => g.shapeId === bodyId && g.quickBody);
+
+/** Hızlı gövdenin kurduğu her şeyi kaldırır: parça panelleri + VF'leri, ayaklar, kurduğu arkalık. Ayarlar gövdede kalır. */
+export function removeQuickBody(shapeId: string): void {
+  const st = useAppStore.getState();
+  const vfs = quickBodyVfsOf(shapeId, st.virtualFaces);
+  const back = quickBackGroupOf(shapeId);
+  if (back) deleteBackGroupWithMembers(back.id);
+  if (bodyLegsOf(shapeById(shapeId))) setBodyLegs(shapeId, null);
+  if (!vfs.length) return;
+  const vfIds = new Set(vfs.map(v => v.id));
+  const panelIds = new Set(vfs.map(v => panelOfVf(v.id, st.shapes)?.id).filter((id): id is string => !!id));
+  useAppStore.setState(s => ({
+    virtualFaces: s.virtualFaces.filter(f => !vfIds.has(f.id)),
+    shapes: s.shapes.filter(x => !panelIds.has(x.id)),
+    selectedPanelRow: typeof s.selectedPanelRow === 'string' && vfIds.has(s.selectedPanelRow.replace(/^vf-/, '')) ? null : s.selectedPanelRow,
+  }));
 }
 
 const moveStep = (axis: MoveTransformStep['axis'], value: number, ts: number): MoveTransformStep =>
@@ -2296,13 +2329,22 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
   if (cyclic) warnings.push('Corner joints form a cycle — resolved as sides first.');
   const lift = Math.min(Math.max(0, baseLiftOf(cfg)), Math.max(0, H - 3 * t));
 
-  // Mevcut kardeşler (kapak/arkalık hariç; arkalık parçaları damga olarak)
-  const existing = childPanelsOf(body.id, st.shapes);
+  // YENİDEN UYGULAMA: önceki parçalar (anahtar → VF + panel) yerinde güncellenir; kurulu arkalık yerinde güncellenir.
+  const prevVfs = quickBodyVfsOf(body.id, st.virtualFaces);
+  const prev = new Map<QuickBodyPart, { vf: VirtualFace; panel: Shape | undefined }>(
+    prevVfs.map(v => [v.quickBody!, { vf: v, panel: panelOfVf(v.id, st.shapes) }]),
+  );
+  const prevPanelIds = new Set([...prev.values()].map(p => p.panel?.id).filter((id): id is string => !!id));
+  const prevBack = quickBackGroupOf(body.id);
+  const prevBackVfIds = new Set(prevBack?.memberVfIds ?? []);
+  const isPrevBackPanel = (p: Shape) => prevBackVfIds.has(p.parameters?.virtualFaceId);
+
+  // Mevcut kardeşler (kapak/arkalık ve önceki hızlı gövde parçaları hariç; öteki arkalık parçaları damga olarak)
+  const existing = childPanelsOf(body.id, st.shapes).filter(p => !prevPanelIds.has(p.id) && !isPrevBackPanel(p));
   const siblings: Shape[] = [
     ...existing.filter(p => !isDoorPanel(p) && !isBackPanel(p)),
     ...existing.filter(isBackPanel).map(backPreviewStamp).filter((p): p is Shape => !!p),
   ];
-  const vfCountBefore = st.virtualFaces.filter(f => f.shapeId === body.id).length;
 
   const FACE: Record<QuickPanelKey, { n: Vec3; seed: THREE.Vector3 }> = {
     top: { n: [0, 1, 0], seed: new THREE.Vector3((x0 + x1) / 2, y1, (z0 + z1) / 2) },
@@ -2314,11 +2356,14 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
   let ts = Date.now();
   let bottomVfId: string | undefined;
 
-  const push = async (key: QuickPanelKey | 'plinth' | 'rearPlinth', n: Vec3, seed: THREE.Vector3, name: string, opts: {
+  const push = async (key: QuickBodyPart, n: Vec3, seed: THREE.Vector3, name: string, opts: {
     move?: [MoveTransformStep['axis'], number]; cuts?: Array<[Vec3, string, number]>; proxyVerts?: (v: Vec3[]) => Vec3[]; bound?: boolean;
   }): Promise<boolean> => {
-    const vf = vfOnFace(ctx, n, seed, siblings, name);
-    if (!vf) { warnings.push(`${name}: no free region on that face`); return false; }
+    const old = prev.get(key);
+    const fresh = vfOnFace(ctx, n, seed, siblings, old?.vf.description || name);
+    if (!fresh) { warnings.push(`${name}: no free region on that face`); return false; }
+    // Aynı parça: VF ve panel id'si korunur (raf / kapak / arkalık referansları bozulmaz); yüz şekli tercihi de korunur.
+    const vf: VirtualFace = { ...fresh, id: old?.vf.id ?? fresh.id, quickBody: key, ...(old?.vf.fitFaceShape ? { fitFaceShape: true } : {}) };
     if (opts.bound === false) { vf.doorBound = false; vf.backBound = false; }
     const slab = await slabOf(vf.vertices, vf.normal, t);
     if (!slab) { warnings.push(`${name}: panel solid failed`); return false; }
@@ -2330,7 +2375,7 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
     if (steps.length) extra.transformSteps = steps;
     const exts = (opts.cuts ?? []).map(([cn, label, v]) => extrudeStepFor(slab.geo, cn, label, v, ++ts)).filter((e): e is ExtrudeStep => !!e);
     if (exts.length) extra.extrudeSteps = exts;
-    const shape = panelShape(body, vf, vfCountBefore + newVfs.length, slab.geo, slab.rp, t, extra);
+    const shape = panelShape(body, vf, newVfs.length, slab.geo, slab.rp, t, extra, old?.panel);
     newVfs.push(vf); newShapes.push(shape);
     if (key === 'bottom') bottomVfId = vf.id;
     // Sonraki bölgeler için VEKİL: taşınmış / kısaltılmış hâli (motorun üreteceği sonuç)
@@ -2369,20 +2414,43 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
 
   if (!newVfs.length) return { panelCount: 0, backCreated: false, cyclic, warnings };
 
-  // Tek seferde yaz: VF'ler sırayla (= basan/basılan), paneller hazır geometriyle (otomatik üretim efekti devreye girmez).
-  useAppStore.setState(s => ({ virtualFaces: [...s.virtualFaces, ...newVfs], shapes: [...s.shapes, ...newShapes] }));
-  // Ayaklar: ayaklı tabanda zorunlu, bazalıda isteğe bağlı (count 0 = yok)
+  // Tek seferde yaz: eski parçalar düşer, yeni VF'ler sırayla (= basan/basılan) gövdenin ÖTEKİ VF'lerinin ÖNÜNE girer; korunan
+  // paneller yerinde güncellenir, yeniler eklenir (hazır geometri: otomatik üretim efekti devreye girmez). Ayarlar gövdeye yazılır.
+  const dropVf = new Set(prevVfs.map(v => v.id)), keepPanel = new Map(newShapes.map(p => [p.id, p]));
+  const dropPanel = new Set([...prevPanelIds].filter(id => !keepPanel.has(id)));
+  useAppStore.setState(s => {
+    const rest = s.virtualFaces.filter(f => !dropVf.has(f.id));
+    const at = rest.findIndex(f => f.shapeId === body.id);
+    const virtualFaces = at < 0 ? [...rest, ...newVfs] : [...rest.slice(0, at), ...newVfs, ...rest.slice(at)];
+    const shapes = s.shapes.filter(x => !dropPanel.has(x.id)).map(x => keepPanel.get(x.id) ?? (x.id === body.id
+      ? { ...x, parameters: { ...x.parameters, quickBody: JSON.parse(JSON.stringify(cfg)) as QuickBodyConfig } } : x));
+    const added = newShapes.filter(p => !s.shapes.some(x => x.id === p.id));
+    return { virtualFaces, shapes: [...shapes, ...added] };
+  });
+  // Ayaklar: ayaklı tabanda zorunlu, bazalıda isteğe bağlı (count 0 = yok); yeniden uygulamada kalkan ayaklar silinir.
   const legCount = cfg.base === 'legs' ? (cfg.legs.count || 4) : cfg.base === 'plinth' ? cfg.legs.count : 0;
   const { diameter, side, front, rear } = cfg.legs;
   if (legCount) setBodyLegs(body.id, { count: legCount as 4 | 5 | 6, diameter, side, front, rear, height: lift, bottomVfId });
+  else if (prevVfs.length && bodyLegsOf(shapeById(body.id))) setBodyLegs(body.id, null);
 
   await requestRebuild(body.id);
   const { whenRebuildIdle } = await import('./PanelEngine');
   await whenRebuildIdle(body.id);
 
-  // Arkalık: paneller gerçek geometrisiyle üretildikten sonra adaydan (en büyük, dört panelin arası)
+  // Arkalık: paneller gerçek geometrisiyle üretildikten sonra adaydan (en büyük, dört panelin arası); hızlı gövdenin kurduğu
+  // arkalık duruyorsa yerinde güncellenir (bölmeleri korunur), arkalık kapatıldıysa silinir.
   let backCreated = false;
-  if (cfg.back.enabled) {
+  const b = cfg.back;
+  const live = quickBackGroupOf(body.id);
+  if (!b.enabled) {
+    if (live) deleteBackGroupWithMembers(live.id);
+  } else if (live) {
+    await setBackDefaults(live.id, {
+      placement: b.placement, thickness: b.thickness, setback: b.setback, inset: b.inset,
+      grooveClear: { front: b.clear.front, back: b.clear.back, depth: b.clear.depth },
+    });
+    backCreated = true;
+  } else {
     const fresh = shapeById(body.id); if (!fresh) return { panelCount: newVfs.length, backCreated, cyclic, warnings };
     const cy = (y0 + lift + t + (y1 - t)) / 2;
     const picks = backCandidatesAt(fresh, BACK_AXIS, BACK_SIDE, [(x0 + x1) / 2, cy, z0]);
@@ -2392,10 +2460,9 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
       const ours = new Set(newVfs.filter(v => v.doorBound !== false).map(v => v.id));
       const score = (p: typeof picks[number]) => [p.bounds.uMin, p.bounds.uMax, p.bounds.vMin, p.bounds.vMax].filter(r => r.vfId && ours.has(r.vfId)).length;
       const pick = [...picks].sort((a, b) => score(b) - score(a) || b.area - a.area)[0];
-      const b = cfg.back;
       const g = createBackGroupFromPick(fresh.id, pick, b.placement, 'Back', {
         thickness: Math.max(1, b.thickness), setback: Math.max(0, b.setback), inset: Math.max(0, b.inset),
-        grooveClear: { front: Math.max(0, b.clear.front), back: Math.max(0, b.clear.back), depth: Math.max(0, b.clear.depth) },
+        grooveClear: { front: Math.max(0, b.clear.front), back: Math.max(0, b.clear.back), depth: Math.max(0, b.clear.depth) }, quickBody: true,
       });
       backCreated = !!g;
       useAppStore.getState().setSelectedBackGroupId(null);

@@ -72,6 +72,8 @@ export interface VirtualFace {
   stackBaseVfId?: string;
   /** Taban EĞİMLİ/dönmüşse VF düzlemi tabanın iç BÜYÜK yüzüdür; regen konturu tabanın güncel geometrisinden okur. */
   stackOnPanel?: boolean;
+  /** HIZLI GÖVDE parçası (üst / sol / sağ / alt / baza / arka baza): ayarlar gövdede saklanır, yeniden uygulamada aynı VF güncellenir. */
+  quickBody?: QuickBodyPart;
 }
 
 /** Kapak kenar referansı: bir sınır panelinin VF'si ya da gövde kutusunun kenarı. */
@@ -230,6 +232,8 @@ export interface BackGroup {
   memberVfIds: string[];
   name?: string;
   createdAt: number;
+  /** Hızlı gövdenin kurduğu arkalık: ayarlar yeniden uygulanınca bu grup yerinde güncellenir. */
+  quickBody?: boolean;
 }
 
 /** Raf/dikme boşluğu: değer (mm) + kilit (küp boyutlanınca sabit kalır). */
@@ -292,6 +296,8 @@ export interface PanelGroup {
 /* ───────── HIZLI GÖVDE (PanelGroupService › hızlı gövde) ───────── */
 /** Taban tipi: düz (yere oturur) / ayaklı (paneller ayak kadar yukarıda) / bazalı (yanlar yere iner, alt panel baza kadar yukarıda). */
 export type QuickBodyBase = 'plain' | 'legs' | 'plinth';
+/** Hızlı gövdenin ürettiği panel parçaları (VF.quickBody). */
+export type QuickBodyPart = 'top' | 'left' | 'right' | 'bottom' | 'plinth' | 'rearPlinth';
 /** Köşe birleşimi: 'side' = yan panel köşeden geçer (üst/alt arada), 'horiz' = üst/alt panel geçer (yan arada). */
 export type JoinPass = 'side' | 'horiz';
 export type CornerKey = 'tl' | 'tr' | 'bl' | 'br';
