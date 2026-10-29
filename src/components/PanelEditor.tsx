@@ -1008,7 +1008,7 @@ export function ExtrudeDock({ panel, cavity, draft, setDraft }: DraftProps & { p
     <div style={DOCK_SHELL}>
       {showBar && (
         <DockModeBar active={faceExtrudeValueMode}
-          modes={dockModes(cavity ? ['fixed', 'dyn', 'ref'] : ['fixed', 'dyn', 'ref', 'arrow'], {
+          modes={dockModes(cavity ? ['fixed', 'dyn', 'ref'] : ['arrow', 'fixed', 'dyn', 'ref'], {
             fixed: { sub: 'Constant', title: cavity ? 'Fixed — cavity size along this axis' : 'Fixed — constant thickness' },
             ref: { sub: 'To face', title: 'Ref — up to a reference face' },
             arrow: { title: 'Arrow — no face pick: click an arrow in the 3D view, the panel\'s outer edge grows by the value (− shrinks)' },
