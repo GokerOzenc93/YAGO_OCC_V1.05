@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Check, X, type LucideIcon, Lock, SlidersHorizontal, Crosshair, LayoutPanelTop, Rows3, Columns3, DoorClosed, SendToBack, Footprints, Shapes,
   ChevronRight, Minus, Plus, ChevronDown, Pencil, Trash2, Unlink, MoveVertical, Move, RotateCw, GripVertical, ArrowUp, Box, Move3d, Equal,
-  SplitSquareVertical, SplitSquareHorizontal, RotateCcw, Container,
+  SplitSquareVertical, SplitSquareHorizontal, RotateCcw, Container, Expand,
 } from 'lucide-react';
 import { type Box3 } from 'three';
 import { UI_FONT } from './Ui';
@@ -11,7 +11,7 @@ import {
   GroupSchematic, DoorSchematic, BackSchematic,
 } from './PanelSchematics';
 import {
-  type BackPlacement, type DoorType, type CornerKey, type JoinPass, type Shape, type QuickBodyConfig, type QuickBodyBase, type PanelGroup,
+  type BackPlacement, type DoorType, type CornerKey, type JoinPass, type Shape, type QuickBodyConfig, type QuickBodyBase, type PanelGroup, type FaceExtrudeValueMode,
   useStoreFields, useAppStore, type VirtualFace, type DoorGroup, type BackGroup, shapeById, childPanelsOf, panelOfVf, requestRebuild,
 } from '../store';
 import {
@@ -92,15 +92,13 @@ export function DockStatus({ ready = false, dot, text, title, trailing }: {
     </div>
   );
 }
-/** Onay düğmesi: yalnız ✓ (şeritler) ya da `label` ile yazılı ("Build" — hızlı gövde: yeni kullanıcı ne yapacağını görsün). */
-export function ApplyBtn({ enabled, onClick, title = 'Apply', label }: { enabled: boolean; onClick: () => void; title?: string; label?: string }) {
+export function ApplyBtn({ enabled, onClick, title = 'Apply' }: { enabled: boolean; onClick: () => void; title?: string }) {
   return (
     <button onClick={e => { stop(e); onClick(); }} title={title} style={{
-      flexShrink: 0, width: label ? undefined : 28, padding: label ? '0 10px 0 8px' : 0, gap: 5, height: 24, borderRadius: 6, border: 'none', outline: 'none',
-      cursor: enabled ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', justifyContent: 'center',
-      background: enabled ? '#44403c' : '#ebe6de', color: enabled ? '#ffffff' : '#b5ada3', fontFamily: UI_FONT, fontSize: 11.5, fontWeight: 600,
-      letterSpacing: '0.01em', whiteSpace: 'nowrap', boxShadow: enabled ? '0 1px 2px rgba(40,30,20,0.22)' : 'none', transition: 'background 0.12s',
-    }}><Check size={13} strokeWidth={2.4} />{label}</button>
+      flexShrink: 0, width: 28, height: 24, borderRadius: 6, border: 'none', outline: 'none', cursor: enabled ? 'pointer' : 'not-allowed',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', background: enabled ? '#44403c' : '#ebe6de', color: enabled ? '#ffffff' : '#b5ada3',
+      boxShadow: enabled ? '0 1px 2px rgba(40,30,20,0.22)' : 'none', transition: 'background 0.12s',
+    }}><Check size={13} strokeWidth={2.4} /></button>
   );
 }
 export function ExitBtn({ onClick }: { onClick: () => void }) {
@@ -164,6 +162,7 @@ const DOCK_MODE_DEFS: Record<string, Omit<DockMode, 'key'>> = {
   fixed: { label: 'Fixed', sub: 'Constant', Icon: Lock },
   dyn:   { label: 'Dyn',   sub: 'Dynamic',   Icon: SlidersHorizontal },
   ref:   { label: 'Ref',   sub: 'Reference', Icon: Crosshair },
+  arrow: { label: 'Arrow', sub: 'Outer edge', Icon: Expand },
 };
 export const dockModes = (keys: string[], overrides: Record<string, Partial<DockMode>> = {}): DockMode[] =>
   keys.map(k => ({ key: k, ...DOCK_MODE_DEFS[k], ...(overrides[k] || {}) } as DockMode));
@@ -625,96 +624,11 @@ export const BACK_DIAGRAM_W = 224, BACK_DIAGRAM_H = BACK_BLOCK_H;
 /* ───────────────────────────── HIZLI GÖVDE (Body) ─────────────────────────────
    Tek seferlik yapılandırma: taban (Plain / Legs / Plinth), dört köşe birleşimi, baza / ayak ölçüleri, arkalık. Onay → applyQuickBody (PanelGroupService).
    Görsel dil arkalık kartıyla ortak: HintCell + diyagram vurgusu, FIELD_INPUT, BackGrooveDiagram. */
-/* SEÇENEK KARTLARI (Goker, Eki 2026 — "seçenekler göze karışık, ilk temel seçenek sönük, ne seçileceği net değil; bilmeyen biri bile
-   yapabilsin"): her seçim (taban · ayak sayısı · arkalık) AYNI dilde — küçük resim + ad + bir satır açıklama; seçili kart turuncu halka +
-   köşede onay rozeti, seçilmemişler tam okunur (soluk DEĞİL). Kapak / raf kartlarında da kullanılabilir. */
-export type OptionCard = { key: string; label: string; sub?: string; picto?: React.ReactNode; title?: string; disabled?: boolean };
-export function OptionCards({ items, active, onPick, compact, columns }: {
-  items: OptionCard[]; active: string | null; onPick: (k: string) => void; /** resim üstte, yazı altta (dar kartlar) */ compact?: boolean; columns?: number;
-}) {
-  return (
-    <div role="radiogroup" className="grid gap-1.5" style={{ gridTemplateColumns: `repeat(${columns ?? items.length}, minmax(0,1fr))`, fontFamily: UI_FONT }}>
-      {items.map(({ key, label, sub, picto, title, disabled }) => {
-        const on = active === key;
-        return (
-          <button key={key} type="button" role="radio" aria-checked={on} title={title ?? (sub ? `${label} — ${sub}` : label)} disabled={disabled}
-            onClick={e => { stop(e); if (!disabled) onPick(key); }}
-            className={`relative min-w-0 rounded-[10px] text-left transition-[background-color,box-shadow,transform] duration-150 ease-out
-              ${compact ? 'flex flex-col items-center gap-1 px-1 pt-2 pb-1.5' : 'flex items-center gap-2 pl-2 pr-5 py-1.5 min-h-[50px]'}
-              ${disabled ? 'bg-[#f6f2ec] ring-1 ring-[#ebe5dc] cursor-not-allowed'
-                : on ? 'bg-[#fff8f1] ring-[1.5px] ring-orange-500/80 shadow-[0_0_0_3px_rgba(234,88,12,0.10),0_1px_2px_rgba(68,64,60,0.06)] cursor-default'
-                  : 'bg-white ring-1 ring-[#e3dcd2] shadow-[0_1px_0_rgba(40,30,20,0.03)] hover:ring-[#cfc5b7] hover:bg-[#fcfaf7] hover:shadow-[0_3px_8px_-4px_rgba(68,64,60,0.25)] hover:-translate-y-[1px] cursor-pointer'}`}>
-            {picto && <span className={`shrink-0 ${compact ? '' : 'pr-0.5'}`} style={{ color: disabled ? '#cfc6b9' : on ? O : '#8c8276' }}>{picto}</span>}
-            <span className={`min-w-0 flex flex-col ${compact ? 'items-center text-center' : ''}`}>
-              <span className={`leading-tight ${compact ? 'text-[11px]' : 'text-[12px]'} font-semibold ${disabled ? 'text-[#c7beb1]' : on ? 'text-stone-900' : 'text-[#44403c]'}`}>{label}</span>
-              {sub && <span className={`leading-snug ${compact ? 'text-[9.5px]' : 'text-[10px]'} ${disabled ? 'text-[#cfc6b9]' : on ? 'text-stone-600' : 'text-stone-500'}`}>{sub}</span>}
-            </span>
-            {on && (
-              <span className="absolute top-[5px] right-[5px] w-[15px] h-[15px] rounded-full bg-orange-500 text-white flex items-center justify-center shadow-[0_1px_2px_rgba(234,88,12,0.4)]">
-                <Check size={10} strokeWidth={3} />
-              </span>
-            )}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-/* Kart resimleri (48×32): taban = yandan görünüş (zemin çizgisi altta); arkalık = plan kesiti (arka üstte); ayak = plan. currentColor ile renklenir. */
-const PICTO = { fill: '#eee8df', stroke: 'currentColor', strokeWidth: 1.2 } as const;
-const PictoSvg = ({ children }: Kids) => <svg width={44} height={30} viewBox="0 0 48 32" aria-hidden className="block">{children}</svg>;
-const floorLine = <line x1={2} y1={29} x2={46} y2={29} stroke="currentColor" strokeWidth={1.2} strokeOpacity={0.55} strokeDasharray="2 1.5" />;
-function BasePicto({ kind }: { kind: QuickBodyBase }) {
-  return (
-    <PictoSvg>
-      {floorLine}
-      {kind === 'plain' && <rect x={9} y={5} width={30} height={24} {...PICTO} />}
-      {kind === 'legs' && <>
-        <rect x={9} y={3} width={30} height={18} {...PICTO} />
-        <rect x={12} y={21} width={3} height={8} fill="currentColor" /><rect x={33} y={21} width={3} height={8} fill="currentColor" />
-      </>}
-      {kind === 'plinth' && <>
-        <rect x={9} y={3} width={30} height={26} {...PICTO} />
-        <line x1={9} y1={21} x2={39} y2={21} stroke="currentColor" strokeWidth={1.2} />
-        <rect x={14} y={23} width={20} height={6} fill="currentColor" fillOpacity={0.45} />
-      </>}
-    </PictoSvg>
-  );
-}
-function BackPicto({ kind }: { kind: 'none' | BackPlacement }) {
-  return (
-    <PictoSvg>
-      <rect x={6} y={7} width={6} height={22} {...PICTO} /><rect x={36} y={7} width={6} height={22} {...PICTO} />
-      {kind === 'none' && <line x1={12} y1={9} x2={36} y2={9} stroke="currentColor" strokeWidth={1} strokeOpacity={0.5} strokeDasharray="2 2" />}
-      {kind === 'outer' && <rect x={4} y={2} width={40} height={5} fill="currentColor" fillOpacity={0.5} stroke="currentColor" strokeWidth={1.2} />}
-      {kind === 'inner' && <rect x={9} y={11} width={30} height={5} fill="currentColor" fillOpacity={0.5} stroke="currentColor" strokeWidth={1.2} />}
-    </PictoSvg>
-  );
-}
-function LegsPicto({ count }: { count: number }) {
-  const pts = count ? [[11, 8], [37, 8], [11, 25], [37, 25]] : [];
-  if (count === 5) pts.push([24, 16.5]);
-  if (count === 6) pts.push([24, 8], [24, 25]);
-  return (
-    <PictoSvg>
-      <rect x={6} y={3} width={36} height={27} fill="#eee8df" stroke="currentColor" strokeWidth={1.2} strokeOpacity={count ? 1 : 0.5} strokeDasharray={count ? undefined : '2 2'} />
-      {pts.map(([x, y], i) => <circle key={i} cx={x} cy={y} r={2.6} fill="currentColor" />)}
-    </PictoSvg>
-  );
-}
-const QB_BASE_CARDS: OptionCard[] = [
-  { key: 'plain', label: 'Plain', sub: 'sits on the floor', picto: <BasePicto kind="plain" /> },
-  { key: 'legs', label: 'On legs', sub: 'raised on legs', picto: <BasePicto kind="legs" /> },
-  { key: 'plinth', label: 'Plinth', sub: 'sides reach the floor', picto: <BasePicto kind="plinth" /> },
+const QB_BASE_ITEMS: SegItem[] = [
+  { key: 'plain', label: 'Plain', title: 'Sits on the floor: bottom panel at the base, any corner joints' },
+  { key: 'legs', label: 'Legs', title: 'On legs: the cube is the total height — panels sit leg-height above the floor, legs underneath' },
+  { key: 'plinth', label: 'Plinth', title: 'Plinth: sides reach the floor, bottom panel raised by the plinth height, kick panels front / rear' },
 ];
-const QB_BACK_CARDS: OptionCard[] = [
-  { key: 'none', label: 'No back', sub: 'rear stays open', picto: <BackPicto kind="none" /> },
-  { key: 'outer', label: BACK_TYPE_LABEL.outer, sub: 'on the rear edges', picto: <BackPicto kind="outer" /> },
-  { key: 'inner', label: BACK_TYPE_LABEL.inner, sub: 'in a groove, set back', picto: <BackPicto kind="inner" /> },
-];
-const QB_LEG_SUB: Record<number, string> = { 0: 'no legs', 4: 'corners', 5: 'corners + centre', 6: 'corners + front/rear' };
-const qbLegCards = (ns: number[]): OptionCard[] =>
-  ns.map(n => ({ key: String(n), label: n === 0 ? 'None' : `${n} legs`, sub: QB_LEG_SUB[n], picto: <LegsPicto count={n} /> }));
 const QB_CORNER_TITLE: Record<CornerKey, string> = { tl: 'Top-left', tr: 'Top-right', bl: 'Bottom-left', br: 'Bottom-right' };
 const QB_CELL_ROW = { gridAutoRows: `${BACK_ROW_H}px`, rowGap: BACK_ROW_GAP } as const;
 const qbField = (w: number, passive?: boolean): React.CSSProperties =>
@@ -900,34 +814,29 @@ export function LegsBlock({ legs, W, D, heightReadout, heightEditable, countOpti
 
 /* BÖLÜM KUTUSU: hızlı gövde panelinin üç bölümü (gövde panelleri · ayaklar · arkalık) ayrı kutularda, başlıkta bölümün ana seçimi
    (Goker: "gövde, arkalık ve ayak kısımları iç içe giriyor"). */
-/* ADIM KUTUSU: numaralı başlık (1 Base · 2 Body panels · 3 Legs · 4 Back panel) + o adımın seçili durumu düz yazıyla; seçim kartları
-   ve ölçüler kutunun İÇİNDE (başlıkta seçim yok — Goker: "ne seçileceği net değil"). `muted`: bu kurulumda geçersiz adım (ör. düz tabanda ayak). */
-function QbSection({ step, title, sub, muted, children }: Partial<Kids> & { step: number; title: string; sub?: React.ReactNode; muted?: boolean }) {
+function QbSection({ title, sub, trailing, children }: Kids & { title: string; sub?: string; trailing?: React.ReactNode }) {
   return (
-    <div className={`rounded-[10px] ring-1 overflow-hidden ${muted ? 'ring-[#ebe5dc] bg-[#faf8f4]' : 'ring-[#e3dcd2] bg-white shadow-[0_1px_2px_rgba(68,64,60,0.04)]'}`}>
-      <div className={`flex items-center gap-2 pl-2 pr-2.5 h-[34px] ${muted ? '' : 'bg-[#f6f2ec] border-b border-[#ebe5dc]'}`}>
-        <span className={`shrink-0 w-[18px] h-[18px] rounded-full flex items-center justify-center text-[10px] font-bold tabular-nums
-          ${muted ? 'bg-[#ebe5dc] text-[#a39a8d]' : 'bg-[#44403c] text-white'}`}>{step}</span>
-        <span className={`shrink-0 text-[11.5px] font-semibold ${muted ? 'text-[#a39a8d]' : 'text-stone-800'}`}>{title}</span>
-        {sub && <span className="min-w-0 truncate text-[10.5px] font-medium text-stone-500">{sub}</span>}
+    <div className="rounded-[10px] ring-1 ring-[#e6e0d6] bg-white overflow-hidden shadow-[0_1px_2px_rgba(68,64,60,0.04)]">
+      <div className="flex items-center gap-2 pl-2.5 pr-1.5 h-[32px] bg-[#f6f2ec] border-b border-[#ebe5dc]">
+        <span style={{ ...SECTION_LABEL, color: '#57534e' }}>{title}</span>
+        {sub && <span className="min-w-0 truncate text-[10px] font-medium text-stone-400">{sub}</span>}
+        <div className="flex-1" />
+        {trailing}
       </div>
-      {children != null && <div className="p-1.5">{children}</div>}
+      <div className="p-1.5">{children}</div>
     </div>
   );
 }
-const QbNote = ({ children }: Kids) => <div className="px-1 py-1 text-[10.5px] leading-snug text-stone-500">{children}</div>;
-/** Kartların altındaki ölçü alanının başlığı. */
-const QbSubhead = ({ label, hint }: { label: string; hint?: string }) => (
-  <div className="pt-2 pb-1 px-0.5 flex items-center gap-2">
-    <span style={SECTION_LABEL}>{label}</span>
-    {hint && <span className="min-w-0 truncate text-[10px] text-stone-400">{hint}</span>}
-  </div>
-);
-const QB_BASE_SUB: Record<QuickBodyBase, string> = { plain: 'Plain — sits on the floor', legs: 'On legs — body height includes the legs', plinth: 'Plinth — sides reach the floor' };
+const QbNote = ({ children }: Kids) => <div className="px-1 py-1 text-[10.5px] leading-snug text-stone-400">{children}</div>;
+const QB_BACK_ITEMS: SegItem[] = [
+  { key: 'none', label: 'None', title: 'No back panel' },
+  { key: 'outer', label: BACK_TYPE_LABEL.outer, title: 'Nailed onto the rear edges of the body panels' },
+  { key: 'inner', label: BACK_TYPE_LABEL.inner, title: 'Sits in a groove cut into the body panels, set back from the rear' },
+];
+const QB_LEG_OPTS = (ns: number[]) => ns.map(n => ({ v: String(n), label: n === 0 ? 'None' : `${n} legs` }));
 
 /* HIZLI GÖVDE PANELİ — liste alanının üstünde (üst şerit yapışık) ya da Body satırının içinde (`revise`: ayarlar gövdeden gelir,
-   Rebuild panelleri yerinde yeniden kurar). Dört numaralı adım: TABAN (kartlar + baza ölçüleri) · GÖVDE PANELLERİ (köşeler, kalınlık) ·
-   AYAKLAR (kartlar + plan) · ARKALIK (kartlar + kesit). Üst şerit: durum + Build. */
+   ✓ panelleri yerinde yeniden kurar). Üç ayrı bölüm: GÖVDE PANELLERİ (köşeler, kalınlık, baza) · AYAKLAR · ARKALIK. */
 export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onApply, onExit, revise }: {
   shape: Shape; cfg: QuickBodyConfig; setCfg: (p: Partial<QuickBodyConfig>) => void; busy: boolean; existingCount: number; onApply: () => void;
   onExit: () => void; revise?: boolean;
@@ -958,26 +867,36 @@ export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onAppl
     : undefined;
   const sub = (s: React.ReactNode) => <span className="text-[10px] font-medium text-stone-400" style={{ fontFamily: UI_FONT }}>{s}</span>;
   const backKey = b.enabled ? b.placement : 'none';
-  const legsSub = isPlain ? 'none — a plain base sits on the floor' : legCount ? `${legCount} legs · ${QB_LEG_SUB[legCount]}` : 'none — the plinth carries the body';
-  const backSub = !b.enabled ? 'none — the rear stays open' : grooved ? 'Grooved — in a groove, set back from the rear' : 'Nailed — on the rear edges';
   return (
     <div style={{ fontFamily: UI_FONT }}>
-      {/* Üst şerit: ne kurulacağı (durum) + tek net eylem (Build / Rebuild) — taban seçimi aşağıda 1. adım kartlarında */}
       <div className={revise ? '' : 'sticky top-0 z-[3]'} style={DOCK_STRIP}>
         <div style={DOCK_ROW}>
-          <span style={dockAxisTag('#44403c')} title="Quick body — builds the whole carcass in one step">BODY</span>
-          <DockStatus ready={!busy && !cyclic} text={status} title={statusTitle} />
-          <ApplyBtn enabled={!busy} onClick={onApply} label={revise ? 'Rebuild' : 'Build'}
-            title={revise ? 'Rebuild the body panels with these settings' : 'Place the body panels with these settings'} />
+          <span style={dockAxisTag('#44403c')} title="Base: how the body meets the floor">BASE</span>
+          <div className="flex-1 min-w-0"><Segmented items={QB_BASE_ITEMS} active={cfg.base} onPick={k => setBase(k as QuickBodyBase)} /></div>
+          <ApplyBtn enabled={!busy} onClick={onApply} title={revise ? 'Rebuild the body panels with these settings' : 'Place body panels'} />
           {!revise && <ExitBtn onClick={onExit} />}
         </div>
+        <div style={{ ...DOCK_ROW, paddingTop: 0 }}><DockStatus ready={!busy && !cyclic} text={status} title={statusTitle} /></div>
       </div>
       <div className="px-1.5 pt-1.5 pb-2 flex flex-col gap-1.5" onMouseLeave={() => setHint(null)}>
-        {/* 1 · TABAN: ana seçim — üç büyük kart; bazalıda baza ölçüleri hemen altında */}
-        <QbSection step={1} title="Base" sub={QB_BASE_SUB[cfg.base]}>
-          <OptionCards compact items={QB_BASE_CARDS} active={cfg.base} onPick={k => setBase(k as QuickBodyBase)} />
+        {/* 1 · GÖVDE PANELLERİ: dört köşe birleşimi (dolap çizimi yok — Goker), kalınlık + ölçü, bazalıda baza ölçüleri */}
+        <QbSection title="Body panels" sub={`${panelCount} panels · ${isPlinth ? 'sides reach the floor' : isLegs ? 'raised on legs' : 'on the floor'}`}>
+          <div className="pb-1 px-0.5 flex items-center gap-2">
+            <span style={SECTION_LABEL}>Corner joints</span>
+            <span className="text-[10px] text-stone-400">click a corner to swap which panel passes</span>
+          </div>
+          <CornerJointTiles joins={joins} lockBottom={isPlinth} active={hint} onCorner={toggleCorner} onHover={c => setHint(c ? `c-${c}` : null)} />
+          <div className="mt-1.5 grid grid-cols-2 gap-x-1" style={QB_CELL_ROW}>
+            {num('Panel thickness', 't', cfg.thickness, v => setCfg({ thickness: v }), false, 1)}
+            <ReadCell label="Body size" title="Body width × height × depth">
+              <span className="whitespace-nowrap text-[11px] font-semibold text-stone-500 tabular-nums">{fmt1(W)} × {fmt1(H)} × {fmt1(D)}</span>
+            </ReadCell>
+          </div>
           {isPlinth && <>
-            <QbSubhead label="Plinth" hint="kick panels under the bottom panel, between the sides" />
+            <div className="pt-2 pb-1 px-0.5 flex items-center gap-2">
+              <span style={SECTION_LABEL}>Plinth</span>
+              <span className="text-[10px] text-stone-400">kick panels under the bottom panel, between the sides</span>
+            </div>
             <div className="grid grid-cols-2 gap-x-1" style={QB_CELL_ROW}>
               {num('Plinth height', 'ph', cfg.plinth.height, v => setPlinth({ height: v }), false, 1)}
               {num('Front plinth setback', 'pf', cfg.plinth.front, v => setPlinth({ front: v }))}
@@ -990,42 +909,26 @@ export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onAppl
           </>}
         </QbSection>
 
-        {/* 2 · GÖVDE PANELLERİ: dört köşe birleşimi (dolap çizimi yok — Goker), kalınlık + ölçü */}
-        <QbSection step={2} title="Body panels" sub={`${panelCount} panels · ${isPlinth ? 'sides reach the floor' : isLegs ? 'raised on legs' : 'on the floor'}`}>
-          <div className="pb-1 px-0.5 flex items-center gap-2">
-            <span style={SECTION_LABEL}>Corner joints</span>
-            <span className="text-[10px] text-stone-400">click a corner to swap which panel passes</span>
-          </div>
-          <CornerJointTiles joins={joins} lockBottom={isPlinth} active={hint} onCorner={toggleCorner} onHover={c => setHint(c ? `c-${c}` : null)} />
-          <div className="mt-1.5 grid grid-cols-2 gap-x-1" style={QB_CELL_ROW}>
-            {num('Panel thickness', 't', cfg.thickness, v => setCfg({ thickness: v }), false, 1)}
-            <ReadCell label="Body size" title="Body width × height × depth">
-              <span className="whitespace-nowrap text-[11px] font-semibold text-stone-500 tabular-nums">{fmt1(W)} × {fmt1(H)} × {fmt1(D)}</span>
-            </ReadCell>
-          </div>
+        {/* 2 · AYAKLAR: adet başlıkta; plan diyagramı + ölçüler */}
+        <QbSection title="Legs" sub={isLegs ? 'body height includes the legs' : isPlinth ? 'optional, under the bottom panel' : undefined}
+          trailing={isPlain ? <span className="pr-1 text-[11px] font-semibold text-stone-300">None</span>
+            : <SelectBox value={String(legCount)} title="Number of legs" options={QB_LEG_OPTS(isLegs ? [4, 5, 6] : [0, 4, 5, 6]).map(o => [o.v, o.label])}
+              onChange={v => setLegs({ count: parseInt(v, 10) as 0 | 4 | 5 | 6 })} />}>
+          {legCount > 0 ? (
+            <LegsBlock legs={{ ...cfg.legs, count: legCount, height: isPlinth ? cfg.plinth.height : cfg.legs.height }} W={W} D={D} heightEditable={isLegs}
+              heightReadout={isPlinth ? cfg.plinth.height : undefined} countOptions={[]} hint={hint} onHint={setHint}
+              onChange={p => setLegs(p as Partial<QuickBodyConfig['legs']>)} />
+          ) : (
+            <QbNote>{isPlain ? 'A plain base sits on the floor — choose Legs or Plinth for legs.' : 'No legs — the plinth carries the body. Pick a count to add legs under the bottom panel.'}</QbNote>
+          )}
         </QbSection>
 
-        {/* 3 · AYAKLAR: adet kartları (ayaklı tabanda 4/5/6, bazalıda None da var) + plan diyagramı; düz tabanda adım kapalı */}
-        {isPlain ? <QbSection step={3} title="Legs" sub={legsSub} muted /> : (
-          <QbSection step={3} title="Legs" sub={legsSub}>
-            <OptionCards compact items={qbLegCards(isLegs ? [4, 5, 6] : [0, 4, 5, 6])} active={String(legCount)}
-              onPick={k => setLegs({ count: parseInt(k, 10) as 0 | 4 | 5 | 6 })} />
-            {legCount > 0 ? (
-              <div className="pt-1.5">
-                <LegsBlock legs={{ ...cfg.legs, count: legCount, height: isPlinth ? cfg.plinth.height : cfg.legs.height }} W={W} D={D} heightEditable={isLegs}
-                  heightReadout={isPlinth ? cfg.plinth.height : undefined} countOptions={[]} hint={hint} onHint={setHint}
-                  onChange={p => setLegs(p as Partial<QuickBodyConfig['legs']>)} />
-              </div>
-            ) : <QbNote>The plinth carries the body — pick a count to add legs under the bottom panel.</QbNote>}
-          </QbSection>
-        )}
-
-        {/* 4 · ARKALIK: tip kartları + arkalık kartıyla aynı kesit diyagramı, büyük */}
-        <QbSection step={4} title="Back panel" sub={backSub}>
-          <OptionCards compact items={QB_BACK_CARDS} active={backKey}
-            onPick={k => setBack(k === 'none' ? { enabled: false } : { enabled: true, placement: k as BackPlacement })} />
-          {b.enabled && (
-            <div className="pt-1.5 flex flex-col gap-1.5">
+        {/* 3 · ARKALIK: tip başlıkta; arkalık kartıyla aynı kesit diyagramı, büyük */}
+        <QbSection title="Back panel" sub={b.enabled ? (grooved ? 'in a groove, set back from the rear' : 'nailed on the rear edges') : undefined}
+          trailing={<div style={{ width: 206 }}><Segmented height={22} items={QB_BACK_ITEMS} active={backKey}
+            onPick={k => setBack(k === 'none' ? { enabled: false } : { enabled: true, placement: k as BackPlacement })} /></div>}>
+          {b.enabled ? (
+            <div className="flex flex-col gap-1.5">
               <div className="w-full flex" style={{ height: 196 }}>
                 <BackGrooveDiagram active={hint === 'bi' ? 'in' : hint && hint.startsWith('b') ? hint.slice(1) : null} grooved={grooved} t={b.thickness}
                   setback={grooved ? b.setback : 0} front={b.clear.front} rear={b.clear.back} depth={b.clear.depth} inset={b.inset} className="w-full h-full" />
@@ -1045,7 +948,7 @@ export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onAppl
                 </ReadCell>
               </div>
             </div>
-          )}
+          ) : <QbNote>No back panel — the rear stays open. Choose Nailed or Grooved to add one.</QbNote>}
         </QbSection>
       </div>
     </div>
@@ -1080,7 +983,9 @@ export function ExtrudeDock({ panel, cavity, draft, setDraft }: DraftProps & { p
   if (!faceExtrudeMode || (cavity ? faceExtrudeCavityGroupId !== cavity.id : !panel)) return null;
   const { setFaceExtrudeMode, setFaceExtrudeSelectedFace, setFaceExtrudeRefCandidate, setFaceExtrudeValueMode, setFaceExtrudeThickness, updateShape } =
     useAppStore.getState();
-  const hf = faceExtrudeSelectedFace !== null && (!cavity || !!faceExtrudeCavityFaceNormal);
+  // OK MODU (yalnız panel): yüz seçilmez — 3D'deki oklar panelin en dış yüzünü şerit değerince büyütür; onay düğmesi yok, her tık uygular.
+  const isArrow = !cavity && faceExtrudeValueMode === 'arrow';
+  const hf = !isArrow && faceExtrudeSelectedFace !== null && (!cavity || !!faceExtrudeCavityFaceNormal);
   const isRef = faceExtrudeValueMode === 'ref', isFixed = faceExtrudeValueMode === 'fixed';
   const refPanel = isRef && !!faceExtrudeRefCandidate?.panelId;
   const refFace = refPanel && faceExtrudeRefCandidate!.faceGroupIndex >= 0;
@@ -1097,25 +1002,35 @@ export function ExtrudeDock({ panel, cavity, draft, setDraft }: DraftProps & { p
       clickPoint: faceExtrudeClickPoint ?? undefined });
     exit();
   };
+  // Mod çubuğu yüz seçilmeden de görünür: ok modu yüz seçimi olmadan başlar (Goker: "o moda tıkladığımda oklar olsun").
+  const showBar = hf || !cavity;
   return (
     <div style={DOCK_SHELL}>
-      {hf && (
+      {showBar && (
         <DockModeBar active={faceExtrudeValueMode}
-          modes={dockModes(['fixed', 'dyn', 'ref'], {
+          modes={dockModes(cavity ? ['fixed', 'dyn', 'ref'] : ['fixed', 'dyn', 'ref', 'arrow'], {
             fixed: { sub: 'Constant', title: cavity ? 'Fixed — cavity size along this axis' : 'Fixed — constant thickness' },
             ref: { sub: 'To face', title: 'Ref — up to a reference face' },
+            arrow: { title: 'Arrow — no face pick: click an arrow in the 3D view, the panel\'s outer edge grows by the value (− shrinks)' },
           })}
-          onPick={k => { setFaceExtrudeValueMode(k as 'fixed' | 'dyn' | 'ref'); if (k !== 'ref') setFaceExtrudeRefCandidate(null); }} />
+          onPick={k => {
+            setFaceExtrudeValueMode(k as FaceExtrudeValueMode);
+            if (k !== 'ref') setFaceExtrudeRefCandidate(null);
+            if (k === 'arrow') setFaceExtrudeSelectedFace(null);
+          }} />
       )}
       <div style={DOCK_ROW}>
         {cavity && <span style={dockAxisTag('#44403c')}>VOL</span>}
-        {!hf ? <DockStatus text={cavity ? 'Pick a face of the volume in the 3D view' : 'Pick a face in the 3D view'} />
+        {isArrow && <span style={dockAxisTag('#44403c')} title="Growth per click (mm); negative shrinks">MM</span>}
+        {isArrow ? <NumInput draft={draft} setDraft={setDraft} setValue={setFaceExtrudeThickness} fallback={faceExtrudeThickness} onEscape={exit} />
+          : !hf ? <DockStatus text={cavity ? 'Pick a face of the volume in the 3D view' : 'Pick a face in the 3D view'} />
           : isRef ? <DockStatus ready={refFace} text={refFace ? 'Reference face selected' : refPanel ? 'Pick the reference face' : 'Pick the reference panel'} />
           : <NumInput draft={draft} setDraft={setDraft} setValue={setFaceExtrudeThickness} fallback={faceExtrudeThickness}
               onEnter={cavity ? onApply : undefined} onEscape={cavity ? exit : undefined} />}
         {hf && <ApplyBtn enabled={!(isRef && !refFace)} onClick={onApply} />}
         <ExitBtn onClick={exit} />
       </div>
+      {isArrow && <div style={{ ...DOCK_ROW, paddingTop: 0 }}><DockStatus ready text="Click an arrow in the 3D view — the outer edge grows by this value" /></div>}
     </div>
   );
 }
@@ -1312,7 +1227,7 @@ export function PanelSteps({ panel, ...edit }: StepEditProps & { panel?: Shape }
   };
   const steps = [
     ...ext.map(s => item(s, 'extrude', s.axisLabel, s.resolvedValue != null ? s.resolvedValue : s.value, !!s.refShapeId,
-      s.isFixed !== undefined ? (s.refShapeId ? 'R' : s.isFixed ? 'F' : 'D') : undefined)),
+      s.isFixed !== undefined ? (s.refShapeId ? 'R' : s.outer ? 'A' : s.isFixed ? 'F' : 'D') : undefined)),
     ...tr.map(s => item(s, s.type, s.axis, s.type === 'rotate' && typeof s.resolvedValue === 'number' ? s.resolvedValue : s.value,
       !!s.refTargetPanelId, s.refTargetPanelId ? 'R' : undefined)),
   ].sort((a, b) => a.ts - b.ts);

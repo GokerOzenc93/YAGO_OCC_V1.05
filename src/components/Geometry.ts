@@ -2244,6 +2244,8 @@ export interface ExtrudeStep {
   refPlaneCenterLocal?: Vec3;
   refPlaneNormalLocal?: Vec3;
   resolvedValue?: number;
+  /** OK modu adımı: her rebuild'de bu eksen yönündeki EN DIŞ yüze uygulanır (aynı ok tekrar tıklanınca değer toplanır). */
+  outer?: boolean;
 }
 
 /** Panelin güncel store kopyası (komut, bayat prop yerine bunu kullanır). */
@@ -2524,8 +2526,10 @@ function findMatchingReplicadFace(
 }
 
 type ExtrudeResult = { replicadShape: any; geometry: THREE.BufferGeometry; amount: number };
+/** Adım uygulanabilir ama miktar ≈ 0 (ör. referans düzlemi yüzle çakışık): katı değişmez, çözülen değer yine kaydedilir. */
+type ExtrudeNoop = { noop: true; amount: number };
 
-async function applyOneExtrudeStep(currentShape: any, step: ExtrudeStep, geometry: THREE.BufferGeometry): Promise<ExtrudeResult | null> {
+async function applyOneExtrudeStep(currentShape: any, step: ExtrudeStep, geometry: THREE.BufferGeometry): Promise<ExtrudeResult | ExtrudeNoop | null> {
   const oc = await initReplicad();
   const { faces, groups } = getFacesAndGroups(geometry);
   const stepNormal = new THREE.Vector3(...step.faceNormal);
@@ -2547,7 +2551,10 @@ async function applyOneExtrudeStep(currentShape: any, step: ExtrudeStep, geometr
   const BOUNDARY_TOL = 5.0;
   const stepNearBoundary = Math.abs(stepCenter[axisKey] - expectedBoundary) < BOUNDARY_TOL;
   let bestGroup = aligned[0];
-  if (aligned.length > 1) {
+  if (step.outer) {
+    // OK modu: kaydedilen merkeze bakılmaz, o yöndeki EN DIŞ yüz (çentikli panelde yuva yüzü değil).
+    for (const g of aligned) if (g.center.dot(stepNorm) > bestGroup.center.dot(stepNorm) + 1e-6) bestGroup = g;
+  } else if (aligned.length > 1) {
     let bestScore = Infinity;
     for (const g of aligned) {
       const penalty = stepNearBoundary && Math.abs(g.center[axisKey] - expectedBoundary) > BOUNDARY_TOL ? 10000 : 0;
@@ -2583,7 +2590,7 @@ async function applyOneExtrudeStep(currentShape: any, step: ExtrudeStep, geometr
   } else {
     extrudeAmount = step.value;
   }
-  if (!bevel && Math.abs(extrudeAmount) < 0.01) return null;
+  if (!bevel && Math.abs(extrudeAmount) < 0.01) return { noop: true, amount: 0 };
 
   const samplePt = step.samplePoint ? new THREE.Vector3(...step.samplePoint) : undefined;
   const matchingFace = findMatchingReplicadFace(currentShape, faceNormal, faceCenter, samplePt);
@@ -2608,9 +2615,40 @@ async function applyOneExtrudeStep(currentShape: any, step: ExtrudeStep, geometr
     const finalShape = shape.cut(column.intersect(half));
     return { replicadShape: finalShape, geometry: convertReplicadToThreeGeometry(finalShape), amount: extrudeAmount };
   }
-  const extrudedShape = prismOf(matchingFace, extrudeAmount);
-  const finalShape = extrudeAmount > 0 ? currentShape.fuse(extrudedShape) : currentShape.cut(extrudedShape);
+  // OK modu: en dış düzlemdeki TÜM yüzler birlikte (çentikli panelde yuvanın iki yanındaki uç parçaları da) — tek yüz değil.
+  const faceList = step.outer ? outermostReplicadFaces(currentShape, faceNormal, matchingFace) : [matchingFace];
+  let finalShape = currentShape;
+  for (const f of faceList) {
+    const extrudedShape = prismOf(f, extrudeAmount);
+    finalShape = extrudeAmount > 0 ? finalShape.fuse(extrudedShape) : finalShape.cut(extrudedShape);
+  }
   return { replicadShape: finalShape, geometry: convertReplicadToThreeGeometry(finalShape), amount: extrudeAmount };
+}
+
+/** `n` yönünde en dışta (eşleşen yüzün düzleminde, ±0.5 mm) duran, aynı normalli bütün replicad yüzleri; `first` listede kalır. */
+function outermostReplicadFaces(replicadShape: any, n: THREE.Vector3, first: any): any[] {
+  const planeOf = (face: any): number | null => {
+    try {
+      const fm = face.mesh({ tolerance: 1.0, angularTolerance: 15 });
+      if (!fm.vertices || fm.vertices.length < 3) return null;
+      let s = 0; const cnt = fm.vertices.length / 3;
+      for (let j = 0; j < fm.vertices.length; j += 3) s += fm.vertices[j] * n.x + fm.vertices[j + 1] * n.y + fm.vertices[j + 2] * n.z;
+      return s / cnt;
+    } catch { return null; }
+  };
+  const d0 = planeOf(first);
+  if (d0 == null) return [first];
+  const out: any[] = [first];
+  for (const face of replicadShape.faces || []) {
+    if (face === first) continue;
+    try {
+      const nv = face.normalAt(0.5, 0.5);
+      if (new THREE.Vector3(nv.x, nv.y, nv.z).dot(n) < 0.9) continue;
+      const d = planeOf(face);
+      if (d != null && Math.abs(d - d0) < 0.5) out.push(face);
+    } catch { /* yüz okunamadı */ }
+  }
+  return out;
 }
 
 /** Katı, çağıran tarafından DOĞRU ÇERÇEVEDE verilmeli (VF'den üretilmiş + dönüşümler işlenmiş). */
@@ -2631,6 +2669,9 @@ export async function applyExtrudeSteps(
       effectiveStep = { ...step, refPlaneCenterLocal: vec3(plane.center), refPlaneNormalLocal: vec3(plane.normal) };
     }
     const result = await applyOneExtrudeStep(currentReplicad, effectiveStep, currentGeometry);
+    // 0 mm'e çözülen REF adımı (referans yüz zaten uçla çakışık): katı değişmez ama resolvedValue=0 YAZILIR — yazılmazsa damga
+    // (PanelEngine.stepAmount) adımı "fixed 0 − açıklık" sayıp çöküyordu → yüzeyin şeklini alan kardeş çentiğini kaybediyordu.
+    if (result && 'noop' in result) { if (step.refShapeId) resolved.push({ id: step.id, value: 0 }); continue; }
     if (result) {
       currentReplicad = result.replicadShape;
       currentGeometry = result.geometry;
@@ -2638,7 +2679,8 @@ export async function applyExtrudeSteps(
       if (step.refShapeId) resolved.push({ id: step.id, value: round1(result.amount) });
     }
   }
-  return anyApplied ? { shape: currentReplicad, geometry: currentGeometry, resolved } : null;
+  // Hiç uygulanmasa da çözülen (0 mm) ref değerleri geri döner → resolvedValue yazılır.
+  return anyApplied || resolved.length ? { shape: currentReplicad, geometry: currentGeometry, resolved } : null;
 }
 
 /** Tıklanan yüz grubu (parent-yerel); eğri (fillet) grup en yakın aynı eksenli düz yüze yaslanır. */
@@ -2686,6 +2728,37 @@ export async function executeFaceExtrude({ panelShape: panel, faceGroupIndex, va
   // Dinamik modda değer = delta.
   if (!isFixed && Math.abs(value) < 0.01 && !up.existed) return false;
   return commitAndRebuild(panel, { extrudeSteps: up.steps }, updateShape);
+}
+
+/** OK MODU (Goker, Eki 2026 — "yüz seçmek istemiyorum; move'daki gibi oklar olsun, panelin en dış sınırını yazılan ölçü kadar büyütsün"):
+ *  `axis` yönündeki EN DIŞ yüz `delta` kadar büyür (− küçülür). Aynı yönün ok adımı zaten varsa değeri toplanır (her tık = +delta);
+ *  adım `outer` işaretlidir → rebuild'de hep o yöndeki en dış yüze uygulanır. */
+export async function executeFaceExtrudeOuter({ panelShape, axis, delta, updateShape }: {
+  panelShape: Shape; axis: AxisDir; delta: number; updateShape: UpdateShape;
+}): Promise<boolean> {
+  const panel = freshShape(panelShape);
+  if (!panel.geometry || Math.abs(delta) < 0.01) return false;
+  const dir = axisDirToVec(axis);
+  const { groups } = getFacesAndGroups(panel.geometry);
+  let best = -1, bestD = -Infinity;
+  groups.forEach((g, i) => {
+    if (g.normal.clone().normalize().dot(dir) < 0.7) return;
+    const d = g.center.dot(dir);
+    if (d > bestD + 1e-6 || (Math.abs(d - bestD) <= 1e-6 && best >= 0 && g.totalArea > groups[best].totalArea)) { bestD = d; best = i; }
+  });
+  if (best < 0) return false;
+  const face = resolveClickedFace(panel, best);
+  if (!face) return false;
+  const label = dominantAxisLabel(face.faceNormal);
+  const steps = extrudeStepsOf(panel);
+  const idx = steps.findIndex(s => s.outer && s.axisLabel === label);
+  const next = idx >= 0
+    ? steps.map((s, i) => (i === idx ? { ...s, value: round1(s.value + delta), isFixed: false, resolvedValue: undefined } : s))
+    : [...steps, { id: genId('ext'), faceNormal: vec3(face.faceNormal), faceCenter: vec3(face.faceCenter), axisLabel: label, value: round1(delta),
+        isFixed: false, timestamp: Date.now(), outer: true } as ExtrudeStep];
+  // Toplam 0'a dönen ok adımı silinir (listede boş adım kalmasın).
+  const cleaned = next.filter(s => !(s.outer && Math.abs(s.value) < 0.01));
+  return commitAndRebuild(panel, { extrudeSteps: cleaned }, updateShape);
 }
 
 /** Ref extrude: değer rebuild'de referansın güncel düzleminden çözülür (value=0 işaretçi). */

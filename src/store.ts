@@ -298,6 +298,7 @@ export interface PanelGroup {
 
 /* ───────── HIZLI GÖVDE (PanelGroupService › hızlı gövde) ───────── */
 /** Taban tipi: düz (yere oturur) / ayaklı (paneller ayak kadar yukarıda) / bazalı (yanlar yere iner, alt panel baza kadar yukarıda). */
+export type FaceExtrudeValueMode = 'fixed' | 'dyn' | 'ref' | 'arrow';
 export type QuickBodyBase = 'plain' | 'legs' | 'plinth';
 /** Hızlı gövdenin ürettiği panel parçaları (VF.quickBody). */
 export type QuickBodyPart = 'top' | 'left' | 'right' | 'bottom' | 'plinth' | 'rearPlinth';
@@ -468,7 +469,8 @@ export interface AppState {
   faceExtrudeClickPoint: Vec3 | null; setFaceExtrudeClickPoint: (p: Vec3 | null) => void;
   faceExtrudeThickness: number; setFaceExtrudeThickness: (v: number) => void;
   /** 'fixed' = sabit ölçü, 'dyn' = delta, 'ref' = referans yüze bağlı. */
-  faceExtrudeValueMode: 'fixed' | 'dyn' | 'ref'; setFaceExtrudeValueMode: (m: 'fixed' | 'dyn' | 'ref') => void;
+  /** 'arrow' = ok modu: yüz seçilmez, 3D'deki oklar panelin EN DIŞ yüzünü değer kadar büyütür. */
+  faceExtrudeValueMode: FaceExtrudeValueMode; setFaceExtrudeValueMode: (m: FaceExtrudeValueMode) => void;
   faceExtrudeRefCandidate: RefFacePick | null; setFaceExtrudeRefCandidate: (v: RefFacePick | null) => void;
   /** Extrude modu panel yerine raf/dikme grubunun HACMİNİ hedefler. */
   faceExtrudeCavityGroupId: string | null; setFaceExtrudeCavityGroupId: (id: string | null) => void;

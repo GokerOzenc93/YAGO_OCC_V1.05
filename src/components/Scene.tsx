@@ -16,7 +16,7 @@ import {
   panelBehindStackPlane, computeFreeRegionLocal, genId, createFaceDescriptor, getFacePlaneAxes, earClipTriangulate, effectiveBodyGeometry,
   pointInTriangle3D, findPanelCoveringPoint, groupIndexOfFace, panelHasRotation, createGroupBoundaryEdges, applyFillets,
   convertReplicadToThreeGeometry, type AxisLetter, type AxisDir, axisDirToVec, uniqueMeshPoints, resolveBaseVertices, composeVertexTargets,
-  confirmPanelMoveRef, confirmPanelRotateRef, resetRefFacePick, axisIndexOf, getReplicadVertices,
+  confirmPanelMoveRef, confirmPanelRotateRef, resetRefFacePick, axisIndexOf, getReplicadVertices, executeFaceExtrudeOuter,
 } from './Geometry';
 import {
   confirmRefCavityExtrude, groupBoundsPanelPredicate, bodyLegsOf, legHeightOf, legSpots, isInteriorPanel, repickObstacles, collectObstacles,
@@ -630,7 +630,8 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
 
   const edgePoints = useMemo(() => safeEdgePoints(shape.geometry, EDGE_ANGLE_THRESHOLD), [shape.geometry]);
 
-  const isFaceExtrudeTarget = S.faceExtrudeMode && shape.id === S.faceExtrudeTargetPanelId;
+  // Ok modunda yüz seçilmez (oklar en dış yüzü büyütür) → yüz yakalama / vurgu kapalı, panel normal çizilir.
+  const isFaceExtrudeTarget = S.faceExtrudeMode && shape.id === S.faceExtrudeTargetPanelId && S.faceExtrudeValueMode !== 'arrow';
   const isFaceExtrudeXray = S.faceExtrudeMode && shape.id !== S.faceExtrudeTargetPanelId;
   // Yeniden hacim seçimi: sahne grubun adımından ÖNCEKİ duruma döner — sonraki paneller hiç çizilmez
   // (repickObstacles aynı yüklemi okur), grubun kendi üyeleri saydam, öncekiler katı.
@@ -2214,15 +2215,25 @@ function MoveArrow({ axisLabel, color, hoverColor, origin, length, onSelect, sel
     color: lit ? hoverColor : color, transparent: true, opacity: lit ? 1 : 0.88, depthTest: false,
     emissive: new THREE.Color(lit ? color : 0x000000), emissiveIntensity: isSelected ? 0.55 : hovered ? 0.35 : 0.06, roughness: 0.62, metalness: 0.04,
   };
+  // Ok gövdesi de etiket gibi tıklanır / vurgulanır (Goker: "oka tıkladığımda"): ince sap zor hedef → görünmez geniş silindir yakalar.
+  const hitEvents = {
+    onClick: (e: any) => { e.stopPropagation(); onSelect(axisLabel); },
+    onPointerOver: (e: any) => { e.stopPropagation(); setHovered(true); hoverCursor(true); },
+    onPointerOut: () => { setHovered(false); hoverCursor(false); },
+  };
   return (
     <group ref={groupRef} position={origin}>
-      <mesh position={along(shaftLength / 2)} rotation={rotation} renderOrder={RENDER_ORDER}>
+      <mesh position={along(shaftLength / 2)} rotation={rotation} renderOrder={RENDER_ORDER} raycast={noRaycast}>
         <cylinderGeometry args={[shaftRadius, shaftRadius, shaftLength, 24]} />
         <meshStandardMaterial {...matProps} />
       </mesh>
-      <mesh position={along(shaftLength + coneHeight / 2)} rotation={rotation} renderOrder={RENDER_ORDER}>
+      <mesh position={along(shaftLength + coneHeight / 2)} rotation={rotation} renderOrder={RENDER_ORDER} raycast={noRaycast}>
         <coneGeometry args={[coneRadius, coneHeight, 32]} />
         <meshStandardMaterial {...matProps} />
+      </mesh>
+      <mesh position={along(length / 2)} rotation={rotation} {...hitEvents}>
+        <cylinderGeometry args={[coneRadius * 1.6, coneRadius * 1.6, length, 12]} />
+        <meshBasicMaterial transparent opacity={0} depthTest={false} depthWrite={false} />
       </mesh>
       <AxisLabel position={along(length * 1.2)} text={AXIS_DISPLAY[axisLabel]} onClick={() => onSelect(axisLabel)} onHover={setHovered}
         style={{
@@ -2247,13 +2258,9 @@ function OriginSphere({ position, size, baseLength }: { position: Vec3; size: nu
   );
 }
 
-export function PanelMoveGizmo({ panelShape }: { panelShape: Shape }) {
-  const s = useStoreFields('panelMoveAxis', 'setPanelMoveAxis', 'panelMoveValueMode', 'panelMoveRefSourceVertex', 'setPanelMoveRefSourceVertex',
-    'panelMoveRefTargetPanelId', 'setPanelMoveRefTargetPanelId', 'panelMoveRefTargetVertex', 'setPanelMoveRefTargetVertex', 'shapes');
-  const { panelMoveRefSourceVertex: srcVertex, panelMoveRefTargetPanelId: targetId, panelMoveRefTargetVertex: tgtVertex, shapes } = s;
-  const isRefMode = s.panelMoveValueMode === 'ref';
-  const freshPanel = useMemo(() => shapeById(panelShape.id, shapes) || panelShape, [shapes, panelShape.id, panelShape]);
-  const { centerOrigin, axisOrigins, arrowLength } = useMemo(() => {
+/** Altı ok + merkez: panelin dünya kutusunun yüz merkezlerinden dışarı (taşıma ve ok-extrude gizmoları aynı yerleşimi kullanır). */
+function useArrowLayout(freshPanel: Shape) {
+  return useMemo(() => {
     const bbox = localBboxOf(freshPanel.geometry);
     if (!bbox) {
       const o = freshPanel.position;
@@ -2278,6 +2285,15 @@ export function PanelMoveGizmo({ panelShape }: { panelShape: Shape }) {
       arrowLength: maxDim * 0.2,
     };
   }, [freshPanel.position, freshPanel.rotation, freshPanel.scale, freshPanel.geometry]);
+}
+
+export function PanelMoveGizmo({ panelShape }: { panelShape: Shape }) {
+  const s = useStoreFields('panelMoveAxis', 'setPanelMoveAxis', 'panelMoveValueMode', 'panelMoveRefSourceVertex', 'setPanelMoveRefSourceVertex',
+    'panelMoveRefTargetPanelId', 'setPanelMoveRefTargetPanelId', 'panelMoveRefTargetVertex', 'setPanelMoveRefTargetVertex', 'shapes');
+  const { panelMoveRefSourceVertex: srcVertex, panelMoveRefTargetPanelId: targetId, panelMoveRefTargetVertex: tgtVertex, shapes } = s;
+  const isRefMode = s.panelMoveValueMode === 'ref';
+  const freshPanel = useMemo(() => shapeById(panelShape.id, shapes) || panelShape, [shapes, panelShape.id, panelShape]);
+  const { centerOrigin, axisOrigins, arrowLength } = useArrowLayout(freshPanel);
   const sourceVertices = useMemo(() => (isRefMode && freshPanel.geometry ? computeRealCorners(freshPanel) : []), [isRefMode, freshPanel]);
   const targetPanel = useMemo(() => (isRefMode && targetId ? shapeById(targetId, shapes) || null : null), [isRefMode, targetId, shapes]);
   const targetVertices = useMemo(() => (targetPanel?.geometry ? computeRealCorners(targetPanel) : []), [targetPanel]);
@@ -2303,6 +2319,32 @@ export function PanelMoveGizmo({ panelShape }: { panelShape: Shape }) {
       {isRefMode && targetId && targetVertices.map((v, i) => (
         <GizmoDot key={`tgt-${i}`} position={v} isSelected={vertEq(tgtVertex, v)} accent="#ea580c" onClick={s.setPanelMoveRefTargetVertex}
           groupRef={refAt(sourceVertices.length + i)} />
+      ))}
+    </group>
+  );
+}
+
+/* OK-EXTRUDE GİZMOSU (Goker, Eki 2026 — "face extrude'da bir mod daha: yüz seçmeden, move'daki oklarla panelin en dış sınırını yazılan
+   ölçü kadar büyüt"): taşıma gizmosuyla aynı oklar; bir oka tıklamak o yöndeki EN DIŞ yüzü şerit değerince hemen büyütür (− küçültür),
+   aynı ok tekrar tıklanınca toplanır. Tıklanan ok kısa süre seçili görünür. */
+export function PanelExtrudeGizmo({ panelShape }: { panelShape: Shape }) {
+  const { shapes, faceExtrudeThickness, updateShape } = useStoreFields('shapes', 'faceExtrudeThickness', 'updateShape');
+  const freshPanel = useMemo(() => shapeById(panelShape.id, shapes) || panelShape, [shapes, panelShape.id, panelShape]);
+  const { centerOrigin, axisOrigins, arrowLength } = useArrowLayout(freshPanel);
+  const [flash, setFlash] = useState<AxisDir | null>(null);
+  const busy = useRef(false);
+  const grow = async (axis: AxisDir) => {
+    if (busy.current) return;
+    busy.current = true; setFlash(axis);
+    try { await executeFaceExtrudeOuter({ panelShape: freshPanel, axis, delta: faceExtrudeThickness, updateShape }); }
+    finally { busy.current = false; setTimeout(() => setFlash(f => (f === axis ? null : f)), 260); }
+  };
+  return (
+    <group>
+      <OriginSphere position={centerOrigin} size={arrowLength * 0.055} baseLength={arrowLength} />
+      {MOVE_AXES.map(({ axis, color, hover }) => (
+        <MoveArrow key={axis} axisLabel={axis} color={color} hoverColor={hover} origin={axisOrigins[axis]} length={arrowLength}
+          onSelect={a => { void grow(a); }} selectedAxis={flash} />
       ))}
     </group>
   );
@@ -2927,10 +2969,12 @@ function RotateRefConfirmOnRightClick() {
 }
 
 function PanelGizmos({ shapes }: { shapes: any[] }) {
-  const s = useStoreFields('panelMoveMode', 'panelMoveTargetPanelId', 'panelRotateMode', 'panelRotateTargetPanelId');
+  const s = useStoreFields('panelMoveMode', 'panelMoveTargetPanelId', 'panelRotateMode', 'panelRotateTargetPanelId', 'faceExtrudeMode',
+    'faceExtrudeValueMode', 'faceExtrudeTargetPanelId', 'faceExtrudeCavityGroupId');
   const panelOf = (on: boolean, id: string | null) => { const p = on && id ? shapeById(id, shapes) : undefined; return p && p.type === 'panel' ? p : null; };
   const mv = panelOf(s.panelMoveMode, s.panelMoveTargetPanelId), rt = panelOf(s.panelRotateMode, s.panelRotateTargetPanelId);
-  return <>{mv && <PanelMoveGizmo panelShape={mv} />}{rt && <PanelRotateGizmo panelShape={rt} />}</>;
+  const ex = panelOf(s.faceExtrudeMode && s.faceExtrudeValueMode === 'arrow' && !s.faceExtrudeCavityGroupId, s.faceExtrudeTargetPanelId);
+  return <>{mv && <PanelMoveGizmo panelShape={mv} />}{rt && <PanelRotateGizmo panelShape={rt} />}{ex && <PanelExtrudeGizmo panelShape={ex} />}</>;
 }
 
 const GL_OPTS = { antialias: true, alpha: false, preserveDrawingBuffer: true, powerPreference: 'high-performance' } as const;
