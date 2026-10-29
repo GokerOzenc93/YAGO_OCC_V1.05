@@ -2733,12 +2733,16 @@ export async function executeFaceExtrude({ panelShape: panel, faceGroupIndex, va
 /** OK MODU (Goker, Eki 2026 — "yüz seçmek istemiyorum; move'daki gibi oklar olsun, panelin en dış sınırını yazılan ölçü kadar büyütsün"):
  *  `axis` yönündeki EN DIŞ yüz `delta` kadar büyür (− küçülür). Aynı yönün ok adımı zaten varsa değeri toplanır (her tık = +delta);
  *  adım `outer` işaretlidir → rebuild'de hep o yöndeki en dış yüze uygulanır. */
-export async function executeFaceExtrudeOuter({ panelShape, axis, delta, updateShape }: {
-  panelShape: Shape; axis: AxisDir; delta: number; updateShape: UpdateShape;
+export async function executeFaceExtrudeOuter({ panelShape, axis, delta: value, mode = 'dyn', updateShape }: {
+  panelShape: Shape; axis: AxisDir; delta: number; /** fixed: panelin o eksendeki TOPLAM ölçüsü `delta` olur (ok ucundaki Dyn/Fixed) */ mode?: 'dyn' | 'fixed'; updateShape: UpdateShape;
 }): Promise<boolean> {
   const panel = freshShape(panelShape);
-  if (!panel.geometry || Math.abs(delta) < 0.01) return false;
+  if (!panel.geometry) return false;
   const dir = axisDirToVec(axis);
+  const bbSize = localBboxOf(panel.geometry)?.getSize(new THREE.Vector3());
+  const span = bbSize ? Math.abs(bbSize.dot(new THREE.Vector3(Math.abs(dir.x), Math.abs(dir.y), Math.abs(dir.z)))) : 0;
+  const delta = mode === 'fixed' ? round1(value - span) : value;
+  if (Math.abs(delta) < 0.01) return false;
   const { groups } = getFacesAndGroups(panel.geometry);
   let best = -1, bestD = -Infinity;
   groups.forEach((g, i) => {

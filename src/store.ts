@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
 import * as THREE from 'three';
 import { type AxisDir, type Vec3, type VertexModification, rebuildBodySolid } from './components/Geometry';
+import type { PlinthSet, PlinthPick, ArrowMode } from './components/PlinthService';
 
 export interface SubtractionParameters {
   width: string; height: string; depth: string;
@@ -298,7 +299,8 @@ export interface PanelGroup {
 
 /* ───────── HIZLI GÖVDE (PanelGroupService › hızlı gövde) ───────── */
 /** Taban tipi: düz (yere oturur) / ayaklı (paneller ayak kadar yukarıda) / bazalı (yanlar yere iner, alt panel baza kadar yukarıda). */
-export type FaceExtrudeValueMode = 'fixed' | 'dyn' | 'ref' | 'arrow';
+/** 'arrow' = ok modu DYN (her tık değer kadar), 'arrowFixed' = ok modu FIXED (o eksendeki toplam ölçü = değer). */
+export type FaceExtrudeValueMode = 'arrow' | 'arrowFixed' | 'fixed' | 'dyn' | 'ref';
 export type QuickBodyBase = 'plain' | 'legs' | 'plinth';
 /** Hızlı gövdenin ürettiği panel parçaları (VF.quickBody). */
 export type QuickBodyPart = 'top' | 'left' | 'right' | 'bottom' | 'plinth' | 'rearPlinth';
@@ -442,6 +444,17 @@ export interface AppState {
   backRefPickGroupId: string | null; setBackRefPickGroupId: (id: string | null) => void;
   backPickCandidates: BackPick[]; backPickIndex: number;
   setBackPick: (c: BackPick[], i: number) => void;
+
+  /* BAZA AYAĞI SETLERİ (PlinthService): gövdeden bağımsız setler; seçme modu raf/dikme gibi hacim tıklamasıyla. */
+  plinthSets: PlinthSet[];
+  addPlinthSet: (s: PlinthSet) => void; updatePlinthSet: (id: string, u: Partial<PlinthSet>) => void; deletePlinthSet: (id: string) => void;
+  plinthPickMode: boolean; setPlinthPickMode: (b: boolean) => void;
+  plinthPickCandidates: PlinthPick[]; plinthPickIndex: number; setPlinthPick: (c: PlinthPick[], i: number) => void;
+  /** Aday hacmin varsayılan yüksekliği (mm). */
+  plinthPickHeight: number; setPlinthPickHeight: (h: number) => void;
+  /** Set oklarının modu ve tık değeri. */
+  plinthArrowMode: ArrowMode; setPlinthArrowMode: (m: ArrowMode) => void;
+  plinthArrowValue: number; setPlinthArrowValue: (v: number) => void;
   /** Arkalık seçmede tip: 'outer' = arkadan çakma, 'inner' = kanallı. */
   backPickPlacement: BackPlacement; setBackPickPlacement: (p: BackPlacement) => void;
 
@@ -469,7 +482,7 @@ export interface AppState {
   faceExtrudeClickPoint: Vec3 | null; setFaceExtrudeClickPoint: (p: Vec3 | null) => void;
   faceExtrudeThickness: number; setFaceExtrudeThickness: (v: number) => void;
   /** 'fixed' = sabit ölçü, 'dyn' = delta, 'ref' = referans yüze bağlı. */
-  /** 'arrow' = ok modu: yüz seçilmez, 3D'deki oklar panelin EN DIŞ yüzünü değer kadar büyütür. */
+  /** 'arrow' / 'arrowFixed' = ok modları: yüz seçilmez, 3D'deki oklar panelin EN DIŞ yüzünü büyütür (dyn: değer kadar · fixed: ölçü = değer). */
   faceExtrudeValueMode: FaceExtrudeValueMode; setFaceExtrudeValueMode: (m: FaceExtrudeValueMode) => void;
   faceExtrudeRefCandidate: RefFacePick | null; setFaceExtrudeRefCandidate: (v: RefFacePick | null) => void;
   /** Extrude modu panel yerine raf/dikme grubunun HACMİNİ hedefler. */
@@ -540,6 +553,7 @@ const pickModesOff = () => ({
   volumePickMode: null, volumePickGroupId: null, volumePickCandidates: [], volumePickIndex: 0,
   doorPickMode: false, doorPickCandidates: [], doorPickIndex: 0,
   backPickMode: false, backPickCandidates: [], backPickIndex: 0,
+  plinthPickMode: false, plinthPickCandidates: [], plinthPickIndex: 0,
 });
 /** Panel satırı / raf / kapak / arkalık seçimi karşılıklı dışlayıcı. */
 const NO_GROUP_SEL = { selectedPanelRow: null, selectedPanelGroupId: null, selectedDoorGroupId: null, selectedBackGroupId: null };
@@ -572,6 +586,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       panelGroups: state.panelGroups.filter(g => g.shapeId !== id),
       doorGroups: state.doorGroups.filter(g => g.shapeId !== id),
       backGroups: state.backGroups.filter(g => g.shapeId !== id),
+      plinthSets: state.plinthSets.filter(g => g.shapeId !== id),
       selectedShapeId: all.has(state.selectedShapeId || '') ? null : state.selectedShapeId,
       secondarySelectedShapeId: all.has(state.secondarySelectedShapeId || '') ? null : state.secondarySelectedShapeId,
     };
@@ -714,6 +729,21 @@ export const useAppStore = create<AppState>((set, get) => ({
   backPickCandidates: [], backPickIndex: 0,
   setBackPick: (c, i) => set({ backPickCandidates: c, backPickIndex: i }),
   backPickPlacement: 'outer', setBackPickPlacement: (p) => set({ backPickPlacement: p }),
+
+  plinthSets: [],
+  addPlinthSet: (ps) => set((s) => ({ plinthSets: [...s.plinthSets, ps] })),
+  updatePlinthSet: (id, u) => set((s) => ({ plinthSets: patchById(s.plinthSets, id, u) })),
+  deletePlinthSet: (id) => set((s) => ({
+    plinthSets: s.plinthSets.filter(x => x.id !== id),
+    selectedPanelRow: s.selectedPanelRow === `plinth-${id}` ? null : s.selectedPanelRow,
+  })),
+  plinthPickMode: false,
+  setPlinthPickMode: (b) => set({ ...(b ? pickModesOff() : {}), plinthPickMode: b, plinthPickCandidates: [], plinthPickIndex: 0 }),
+  plinthPickCandidates: [], plinthPickIndex: 0,
+  setPlinthPick: (c, i) => set({ plinthPickCandidates: c, plinthPickIndex: i }),
+  plinthPickHeight: 100, setPlinthPickHeight: (h) => set({ plinthPickHeight: Math.max(1, h), plinthPickCandidates: [], plinthPickIndex: 0 }),
+  plinthArrowMode: 'dyn', setPlinthArrowMode: (m) => set({ plinthArrowMode: m }),
+  plinthArrowValue: 10, setPlinthArrowValue: (v) => set({ plinthArrowValue: v }),
 
   filletMode: false, setFilletMode: (e) => set({ filletMode: e, selectedFilletFaces: [], selectedFilletFaceData: [] }),
   selectedFilletFaces: [],

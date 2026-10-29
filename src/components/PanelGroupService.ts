@@ -14,6 +14,7 @@ import {
   deleteBackGroupWithMembers,
 } from './BackService';
 import { doorJointForBond, moveDoorJointTo, isDoorPanel } from './DoorService';
+import { removeQuickBodyPlinth, syncQuickBodyPlinth } from './PlinthService';
 
 /* PANEL GRUP SERVİSİ — 1) kapak / arkalık / raf-dikme ortak bölme yardımcıları · 2) raf / dikme grupları · 3) hızlı gövde. */
 
@@ -2290,7 +2291,7 @@ export function removeQuickBody(shapeId: string): void {
   const vfs = quickBodyVfsOf(shapeId, st.virtualFaces);
   const back = quickBackGroupOf(shapeId);
   if (back) deleteBackGroupWithMembers(back.id);
-  if (bodyLegsOf(shapeById(shapeId))) setBodyLegs(shapeId, null);
+  removeQuickBodyPlinth(shapeId);
   if (!vfs.length) return;
   const vfIds = new Set(vfs.map(v => v.id));
   const panelIds = new Set(vfs.map(v => panelOfVf(v.id, st.shapes)?.id).filter((id): id is string => !!id));
@@ -2427,11 +2428,11 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
     const added = newShapes.filter(p => !s.shapes.some(x => x.id === p.id));
     return { virtualFaces, shapes: [...shapes, ...added] };
   });
-  // Ayaklar: ayaklı tabanda zorunlu, bazalıda isteğe bağlı (count 0 = yok); yeniden uygulamada kalkan ayaklar silinir.
+  // Ayaklar: ayaklı tabanda zorunlu, bazalıda isteğe bağlı (count 0 = yok) — baza ayağı SETİ (PlinthService, alt panele bağlı, zemine
+  // basar); yeniden uygulamada güncellenir / kalkan ayaklar silinir.
   const legCount = cfg.base === 'legs' ? (cfg.legs.count || 4) : cfg.base === 'plinth' ? cfg.legs.count : 0;
   const { diameter, side, front, rear } = cfg.legs;
-  if (legCount) setBodyLegs(body.id, { count: legCount as 4 | 5 | 6, diameter, side, front, rear, height: lift, bottomVfId });
-  else if (prevVfs.length && bodyLegsOf(shapeById(body.id))) setBodyLegs(body.id, null);
+  syncQuickBodyPlinth(body.id, legCount ? { count: legCount as 4 | 5 | 6, diameter, side, front, rear } : null, bottomVfId, lift);
 
   await requestRebuild(body.id);
   const { whenRebuildIdle } = await import('./PanelEngine');

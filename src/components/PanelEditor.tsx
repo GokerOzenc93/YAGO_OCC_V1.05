@@ -38,12 +38,15 @@ import {
 } from './Geometry';
 import {
   legSpots, effectiveJoins, panelOrderFor, confirmRefCavityExtrude, executeCavityExtrude, updateCavityStep, deleteCavityStep, groupName,
-  confirmVolumePick, type TreeNode, findNode, treeLeaves, memberThicknessesOf, bodyLegsOf, legHeightOf, setBodyLegs, boxSpan, groupKindLabel,
+  confirmVolumePick, type TreeNode, findNode, treeLeaves, memberThicknessesOf, boxSpan, groupKindLabel,
   renamePanelGroup, deletePanelGroupWithMembers, setGroupCount, startCavityEdit, startGroupRepick, setGroupTargetGap, equalizeGroupGaps,
   previewGroupGap, editGroupGap, toggleGroupGapLock, groupLayoutSnapshot, restoreGroupLayout, type GroupLayoutSnap, previewGroupMemberThickness,
   setGroupMemberThickness, applyQuickBody, quickBodyOf, quickBodyVfsOf, removeQuickBody,
 } from './PanelGroupService';
 import { confirmBodyPanelPlacement } from './Scene';
+import {
+  type PlinthSet, confirmPlinthPick, plinthRowKey, plinthSetsOf, plinthSize, plinthName, setPlinthLegs, setPlinthHeight, plinthIsBound,
+} from './PlinthService';
 
 /* PANEL EDİTÖRÜ — 1) şerit + liste satırı parçaları · 2) kart blokları (ipucu hücresi, kanal / ayak diyagramları, hızlı gövde) ·
    3) şeritler, adım listeleri, yerleştirme şeritleri · 4) panel listesi ve kartlar. Şemalar PanelSchematics.tsx'te. */
@@ -157,12 +160,14 @@ export function Segmented({ items, active, onPick, height = 24 }: { items: SegIt
     </div>
   );
 }
-type DockMode = { key: string; label: string; sub: string; Icon: LucideIcon; title?: string };
+type DockMode = { key: string; label: string; sub: string; Icon?: LucideIcon; title?: string };
 const DOCK_MODE_DEFS: Record<string, Omit<DockMode, 'key'>> = {
   fixed: { label: 'Fixed', sub: 'Constant', Icon: Lock },
   dyn:   { label: 'Dyn',   sub: 'Dynamic',   Icon: SlidersHorizontal },
   ref:   { label: 'Ref',   sub: 'Reference', Icon: Crosshair },
-  arrow: { label: 'Arrow', sub: 'Outer edge', Icon: Expand },
+  // İkonsuz: beş modlu çubukta (480 px) etiket kesilmesin.
+  arrow: { label: 'Arrow dyn', sub: 'Outer edge · relative' },
+  arrowFixed: { label: 'Arrow fixed', sub: 'Outer edge · size' },
 };
 export const dockModes = (keys: string[], overrides: Record<string, Partial<DockMode>> = {}): DockMode[] =>
   keys.map(k => ({ key: k, ...DOCK_MODE_DEFS[k], ...(overrides[k] || {}) } as DockMode));
@@ -193,12 +198,12 @@ export const ROW_SEL_BAR = 'pointer-events-none absolute left-0 top-[7px] bottom
 export const MEMBER_INSET = 8;           // grup kartı gövdesinin yatay dolgusu (px-2)
 /** Pasif/kapalı buton rengi (satır araçları). */
 export const ROW_IDLE = 'text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700';
-type RowKind = 'body' | 'shelf' | 'divider' | 'door' | 'back' | 'legs' | 'quick';
+type RowKind = 'body' | 'shelf' | 'divider' | 'door' | 'back' | 'legs' | 'quick' | 'plinth';
 const ROW_KIND_ICON: Record<RowKind, LucideIcon> = {
-  body: LayoutPanelTop, shelf: Rows3, divider: Columns3, door: DoorClosed, back: SendToBack, legs: Footprints, quick: Container,
+  body: LayoutPanelTop, shelf: Rows3, divider: Columns3, door: DoorClosed, back: SendToBack, legs: Footprints, quick: Container, plinth: Footprints,
 };
 const ROW_KIND_TITLE: Record<RowKind, string> = {
-  body: 'Body panel', shelf: 'Shelf', divider: 'Divider', door: 'Door', back: 'Back panel', legs: 'Legs', quick: 'Quick body',
+  body: 'Body panel', shelf: 'Shelf', divider: 'Divider', door: 'Door', back: 'Back panel', legs: 'Legs', quick: 'Quick body', plinth: 'Plinth leg set',
 };
 export const rowCardClass = (open: boolean, dragging: boolean, armed: boolean) =>
   `group/row relative flex flex-col rounded-[10px] overflow-hidden transition-[background-color,box-shadow,opacity,transform] duration-150 ease-out
@@ -812,6 +817,24 @@ export function LegsBlock({ legs, W, D, heightReadout, heightEditable, countOpti
   );
 }
 
+/** Baza seti kartı: ok tık değeri (mm) + Dyn/Fixed (ok ucundaki düğmeyle aynı durum). */
+function PlinthArrowRow() {
+  const { plinthArrowMode, setPlinthArrowMode, plinthArrowValue, setPlinthArrowValue } =
+    useStoreFields('plinthArrowMode', 'setPlinthArrowMode', 'plinthArrowValue', 'setPlinthArrowValue');
+  return (
+    <div className="mt-1.5 grid grid-cols-2 gap-x-1" style={QB_CELL_ROW}>
+      <HintCell label="Arrow step" hintKey="pa" active={false} onHint={() => {}}>
+        <QbNum value={plinthArrowValue} onCommit={setPlinthArrowValue} w={44} min={-100000} />
+      </HintCell>
+      <div className="min-w-0 h-full">
+        <Segmented height={BACK_ROW_H} active={plinthArrowMode} onPick={k => setPlinthArrowMode(k as 'dyn' | 'fixed')}
+          items={[{ key: 'dyn', label: 'Arrow dyn', Icon: Expand, title: 'Arrow dyn — each arrow click moves that face by the step' },
+            { key: 'fixed', label: 'Arrow fixed', Icon: Expand, title: 'Arrow fixed — the set size along the arrow becomes the step value' }]} />
+      </div>
+    </div>
+  );
+}
+
 /* BÖLÜM KUTUSU: hızlı gövde panelinin üç bölümü (gövde panelleri · ayaklar · arkalık) ayrı kutularda, başlıkta bölümün ana seçimi
    (Goker: "gövde, arkalık ve ayak kısımları iç içe giriyor"). */
 function QbSection({ title, sub, trailing, children }: Kids & { title: string; sub?: string; trailing?: React.ReactNode }) {
@@ -983,8 +1006,10 @@ export function ExtrudeDock({ panel, cavity, draft, setDraft }: DraftProps & { p
   if (!faceExtrudeMode || (cavity ? faceExtrudeCavityGroupId !== cavity.id : !panel)) return null;
   const { setFaceExtrudeMode, setFaceExtrudeSelectedFace, setFaceExtrudeRefCandidate, setFaceExtrudeValueMode, setFaceExtrudeThickness, updateShape } =
     useAppStore.getState();
-  // OK MODU (yalnız panel): yüz seçilmez — 3D'deki oklar panelin en dış yüzünü şerit değerince büyütür; onay düğmesi yok, her tık uygular.
-  const isArrow = !cavity && faceExtrudeValueMode === 'arrow';
+  // OK MODLARI (yalnız panel): yüz seçilmez — 3D'deki oklar panelin en dış yüzünü büyütür; onay düğmesi yok, her tık uygular.
+  // "Arrow dyn" = her tık değer kadar · "Arrow fixed" = o eksendeki toplam ölçü = değer (Goker: iki ayrı mod, ok ucunda düğme yok).
+  const arrowFixed = faceExtrudeValueMode === 'arrowFixed';
+  const isArrow = !cavity && (faceExtrudeValueMode === 'arrow' || arrowFixed);
   const hf = !isArrow && faceExtrudeSelectedFace !== null && (!cavity || !!faceExtrudeCavityFaceNormal);
   const isRef = faceExtrudeValueMode === 'ref', isFixed = faceExtrudeValueMode === 'fixed';
   const refPanel = isRef && !!faceExtrudeRefCandidate?.panelId;
@@ -1008,15 +1033,16 @@ export function ExtrudeDock({ panel, cavity, draft, setDraft }: DraftProps & { p
     <div style={DOCK_SHELL}>
       {showBar && (
         <DockModeBar active={faceExtrudeValueMode}
-          modes={dockModes(cavity ? ['fixed', 'dyn', 'ref'] : ['arrow', 'fixed', 'dyn', 'ref'], {
+          modes={dockModes(cavity ? ['fixed', 'dyn', 'ref'] : ['arrow', 'arrowFixed', 'fixed', 'dyn', 'ref'], {
             fixed: { sub: 'Constant', title: cavity ? 'Fixed — cavity size along this axis' : 'Fixed — constant thickness' },
             ref: { sub: 'To face', title: 'Ref — up to a reference face' },
-            arrow: { title: 'Arrow — no face pick: click an arrow in the 3D view, the panel\'s outer edge grows by the value (− shrinks)' },
+            arrow: { title: 'Arrow dyn — no face pick: click an arrow in the 3D view, the outer edge grows by the value (− shrinks)' },
+            arrowFixed: { title: 'Arrow fixed — no face pick: click an arrow in the 3D view, the panel size along it becomes the value' },
           })}
           onPick={k => {
             setFaceExtrudeValueMode(k as FaceExtrudeValueMode);
             if (k !== 'ref') setFaceExtrudeRefCandidate(null);
-            if (k === 'arrow') setFaceExtrudeSelectedFace(null);
+            if (k === 'arrow' || k === 'arrowFixed') setFaceExtrudeSelectedFace(null);
           }} />
       )}
       <div style={DOCK_ROW}>
@@ -1030,7 +1056,10 @@ export function ExtrudeDock({ panel, cavity, draft, setDraft }: DraftProps & { p
         {hf && <ApplyBtn enabled={!(isRef && !refFace)} onClick={onApply} />}
         <ExitBtn onClick={exit} />
       </div>
-      {isArrow && <div style={{ ...DOCK_ROW, paddingTop: 0 }}><DockStatus ready text="Click an arrow in the 3D view — the outer edge grows by this value" /></div>}
+      {isArrow && <div style={{ ...DOCK_ROW, paddingTop: 0 }}>
+        <DockStatus ready text={arrowFixed ? 'Click an arrow in the 3D view — the panel size along it becomes this value'
+          : 'Click an arrow in the 3D view — the outer edge grows by this value (− shrinks)'} />
+      </div>}
     </div>
   );
 }
@@ -1284,10 +1313,12 @@ export function PlacementDocks({ shape }: { shape: Shape | undefined }) {
   const {
     virtualFaces, panelGroups, raycastMode, raycastPendingVf, volumePickMode, volumePickGroupId, volumePickCandidates, volumePickIndex,
     doorPickMode, doorPickCandidates, doorPickIndex, doorPickPlacement, backPickMode, backPickCandidates, backPickIndex, backPickPlacement,
+    plinthPickMode, plinthPickCandidates, plinthPickIndex, plinthPickHeight,
   } = useStoreFields('virtualFaces', 'panelGroups', 'raycastMode', 'raycastPendingVf', 'volumePickMode', 'volumePickGroupId', 'volumePickCandidates',
     'volumePickIndex', 'doorPickMode', 'doorPickCandidates', 'doorPickIndex', 'doorPickPlacement', 'backPickMode', 'backPickCandidates', 'backPickIndex',
-    'backPickPlacement');
-  const { setRaycastMode, setVolumePickMode, setDoorPickMode, setDoorPickPlacement, setBackPickMode, setBackPickPlacement } = useAppStore.getState();
+    'backPickPlacement', 'plinthPickMode', 'plinthPickCandidates', 'plinthPickIndex', 'plinthPickHeight');
+  const { setRaycastMode, setVolumePickMode, setDoorPickMode, setDoorPickPlacement, setBackPickMode, setBackPickPlacement, setPlinthPickMode, setPlinthPickHeight } =
+    useAppStore.getState();
   const noShape = 'Select a body first';
   const boundCount = (bound: (f: VirtualFace) => boolean) => (shape ? virtualFaces.filter(f => f.shapeId === shape.id && bound(f)).length : 0);
 
@@ -1343,7 +1374,21 @@ export function PlacementDocks({ shape }: { shape: Shape | undefined }) {
         onConfirm={() => { if (ready && shape) confirmBackPick(shape.id, backPickCandidates[backPickIndex]); }} onExit={() => setBackPickMode(false)} />
     );
   };
-  return <>{raycastMode && raycast()}{volumePickMode && volume(volumePickMode)}{doorPickMode && door()}{backPickMode && back()}</>;
+  // BAZA AYAĞI SETİ şeridi (PlinthService): aday hacim yüksekliği şeritte (varsayılan 100); tık döner, sağ tık / ✓ yerleştirir.
+  const plinth = () => {
+    const n = plinthPickCandidates.length, ready = !!shape && n > 0, cur = plinthPickCandidates[plinthPickIndex];
+    return (
+      <PlacementDock tag="PLINTH" defaultName="Plinth" ready={ready} confirmTitle="Place plinth leg set"
+        lead={<div className="shrink-0 flex items-center gap-1" title="Height of the set inside the body (mm), from the floor up — a raised bottom panel also offers the gap under it">
+          <span style={dockAxisTag('#16a34a')}>H</span><QbNum value={plinthPickHeight} min={1} w={40} onCommit={setPlinthPickHeight} /></div>}
+        status={!shape ? noShape
+          : n === 0 ? 'Click the body in the 3D view — the set volume is highlighted (feet stand on the floor)'
+          : `${plinthPickIndex + 1}/${n} · ${cur.label} · ${fmt1(cur.box.max[0] - cur.box.min[0])} × ${fmt1(cur.box.max[1] - cur.box.min[1])} × ${fmt1(cur.box.max[2] - cur.box.min[2])} — click: next · right-click: place`}
+        onConfirm={() => { if (ready && shape) confirmPlinthPick(shape.id, plinthPickCandidates[plinthPickIndex], useAppStore.getState().placementName); }}
+        onExit={() => setPlinthPickMode(false)} />
+    );
+  };
+  return <>{raycastMode && raycast()}{volumePickMode && volume(volumePickMode)}{doorPickMode && door()}{backPickMode && back()}{plinthPickMode && plinth()}</>;
 }
 
 /* ───────────── SATIR PARÇALARI ───────────── */
@@ -1514,12 +1559,13 @@ export function PanelEditor() {
     faceExtrudeMode, faceExtrudeTargetPanelId, faceExtrudeSelectedFace, faceExtrudeClickPoint, faceExtrudeValueMode, faceExtrudeCavityGroupId,
     faceExtrudeCavityFaceNormal, panelMoveMode, panelMoveTargetPanelId, panelMoveAxis, panelRotateMode, panelRotateTargetPanelId, panelRotateAxis,
     doorGroups, selectedDoorGroupId, doorRefPickGroupId, backGroups, selectedBackGroupId, backRefPickGroupId, quickBodyMode, quickBodyConfig, quickBodyBusy,
+    plinthSets,
   } = useStoreFields(
     'selectedShapeId', 'shapes', 'selectedPanelRow', 'virtualFaces', 'panelGroups', 'selectedPanelGroupId', 'volumePickMode', 'volumePickGroupId',
     'faceExtrudeMode', 'faceExtrudeTargetPanelId', 'faceExtrudeSelectedFace', 'faceExtrudeClickPoint', 'faceExtrudeValueMode', 'faceExtrudeCavityGroupId',
     'faceExtrudeCavityFaceNormal', 'panelMoveMode', 'panelMoveTargetPanelId', 'panelMoveAxis', 'panelRotateMode', 'panelRotateTargetPanelId', 'panelRotateAxis',
     'doorGroups', 'selectedDoorGroupId', 'doorRefPickGroupId', 'backGroups', 'selectedBackGroupId', 'backRefPickGroupId', 'quickBodyMode', 'quickBodyConfig',
-    'quickBodyBusy',
+    'quickBodyBusy', 'plinthSets',
   );
   // Eylemler sabittir (store kurulurken tanımlanır) → abonelik gerekmez.
   const {
@@ -1641,6 +1687,7 @@ export function PanelEditor() {
     if (st.volumePickMode) setVolumePickMode(null);
     if (st.doorPickMode) setDoorPickMode(false);
     if (st.backPickMode) setBackPickMode(false);
+    if (st.plinthPickMode) st.setPlinthPickMode(false);
     if (st.quickBodyMode) setQuickBodyMode(false);
     setOpenCards(new Set());
   }, [selectedShapeId]);
@@ -1840,8 +1887,8 @@ export function PanelEditor() {
     if (!selectedShape?.geometry) return null;
     const sid = selectedShape.id;
     const svf = virtualFaces.filter(vf => vf.shapeId === sid);
-    const bodyLegs = bodyLegsOf(selectedShape);
-    if (!svf.length && !bodyLegs) return quickBodyMode ? null : (
+    const bodySets = plinthSetsOf(sid, plinthSets);
+    if (!svf.length && !bodySets.length) return quickBodyMode ? null : (
       <div className="flex flex-col items-center justify-center py-6 text-center">
         <div className="w-8 h-8 rounded-lg bg-stone-100 flex items-center justify-center mb-2"><MoveVertical size={14} className="text-stone-400" /></div>
         <span className="text-xs text-stone-400">No faces added yet</span>
@@ -1937,27 +1984,26 @@ export function PanelEditor() {
       </div>
     );
 
-    /* AYAKLAR SATIRI: VF değil, gövde parametresi; sırası her zaman en başta ("L"). Yükseklik alt panelden canlı okunur. */
-    const legsRow = (legs: NonNullable<typeof bodyLegs>) => {
-      const key = `legs-${sid}`, sel = selectedPanelRow === key;
-      const h = legHeightOf(selectedShape, legs, shapes);
+    /* BAZA AYAĞI SETİ SATIRI (PlinthService): VF değil, gövdeden bağımsız set ("P"); seçilince 3D'de set okları (Dyn/Fixed düğmesi ok ucunda).
+       Kart: ayak düzeni (adet / Ø / kenar mesafeleri) + yükseklik + ok tık değeri ve modu. */
+    const plinthRow = (set: PlinthSet) => {
+      const key = plinthRowKey(set.id), sel = selectedPanelRow === key;
+      const [W, H, D] = plinthSize(set, shapes), bound = plinthIsBound(set);
       return rowShell({
         key, open: sel, sel, lead: <span className="shrink-0 w-[14px] ml-[2px] self-stretch" />, onToggle: rowToggle(key, sel),
-        num: 'L', kind: 'legs', count: legs.count,
-        name: <span title="Cabinet legs — always first; height follows the bottom panel"
-          className="flex-1 min-w-0 h-[22px] px-[5px] flex items-center text-[11.5px] font-medium text-stone-700 truncate select-none">Legs</span>,
-        dims: <RowCells title={`${legs.count} legs · Ø ${fmt1(legs.diameter)} · height ${fmt1(h)} (from the bottom panel)`}
-          cells={[['N', String(legs.count)], ['Ø', fmt1(legs.diameter)], ['H', fmt1(h)]]} />,
-        trail: <RowDelBtn title="Remove legs" onClick={() => { if (sel) setSelectedPanelRow(null); setBodyLegs(sid, null); }} />,
-        body: () => {
-          const bb = localBboxOf(effectiveBodyGeometry(selectedShape));
-          return (
-            <div className={CARD_BODY} style={CARD_BODY_STYLE} onClick={stop}>
-              <LegsBlock legs={legs} W={bb ? bb.max.x - bb.min.x : 600} D={bb ? bb.max.z - bb.min.z : 560} heightReadout={h} heightEditable={false}
-                countOptions={[4, 5, 6]} hint={legsHint} onHint={setLegsHint} onChange={p => setBodyLegs(sid, p as Partial<typeof legs>)} />
-            </div>
-          );
-        },
+        num: String(svf.length + bodySets.indexOf(set) + 1), kind: 'plinth', count: set.legs.count,
+        name: <span title={`Plinth leg set — ${fmt1(W)} × ${fmt1(H)} × ${fmt1(D)} · feet stand on the body floor · ${bound ? 'height follows the bottom panel' : 'resize with the arrows in the 3D view'}`}
+          className="flex-1 min-w-0 h-[22px] px-[5px] flex items-center text-[11.5px] font-medium text-stone-700 truncate select-none">{plinthName(set)}</span>,
+        dims: <RowCells title={`${set.legs.count} legs · Ø ${fmt1(set.legs.diameter)} · height ${fmt1(H)}${bound ? ' (from the bottom panel)' : ''} · set ${fmt1(W)} × ${fmt1(D)}`}
+          cells={[['N', String(set.legs.count)], ['Ø', fmt1(set.legs.diameter)], ['H', fmt1(H)]]} />,
+        trail: <RowDelBtn title="Remove plinth leg set" onClick={() => { if (sel) setSelectedPanelRow(null); useAppStore.getState().deletePlinthSet(set.id); }} />,
+        body: () => (
+          <div className={CARD_BODY} style={CARD_BODY_STYLE} onClick={stop}>
+            <LegsBlock legs={{ ...set.legs, height: H }} W={W} D={D} heightEditable={!bound} heightReadout={bound ? H : undefined} countOptions={[4, 5, 6]} hint={legsHint} onHint={setLegsHint}
+              onChange={p => { if (p.height != null) setPlinthHeight(set.id, p.height); const rest = { ...p }; delete rest.height; if (Object.keys(rest).length) setPlinthLegs(set.id, rest as Partial<PlinthSet['legs']>); }} />
+            <PlinthArrowRow />
+          </div>
+        ),
       });
     };
 
@@ -2401,7 +2447,7 @@ export function PanelEditor() {
         </div>
       );
     }
-    if (bodyLegs) elements.unshift(legsRow(bodyLegs));
+    for (const set of bodySets) elements.push(plinthRow(set));
     const quickParts = quickBodyVfsOf(sid, svf).length, quickSaved = quickBodyOf(selectedShape);
     if (quickParts && quickSaved) elements.unshift(quickRow(quickSaved, quickParts));
     return elements;

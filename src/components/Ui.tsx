@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   type LucideIcon, Spline, Layers, Radius, Plus, Container, LayoutPanelTop, Rows3, Columns3, DoorClosed, SendToBack, Hash, ChevronRight, Send, Box,
-  Square, SlidersHorizontal, PanelLeft, GripHorizontal, PictureInPicture2, AppWindow, Pin, PinOff, Trash2, X, Check,
+  Square, SlidersHorizontal, PanelLeft, GripHorizontal, PictureInPicture2, AppWindow, Pin, PinOff, Trash2, X, Check, Footprints,
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { createClient } from '@supabase/supabase-js';
@@ -141,7 +141,7 @@ const RailTool: React.FC<Omit<RailSpec, 'key'> & { passive: boolean }> = ({ labe
 
 export const SidebarRail: React.FC<{ activeTab: SidebarTab; hasShape: boolean }> = ({ activeTab, hasShape }) => {
   const s = useStoreFields('raycastMode', 'setRaycastMode', 'volumePickMode', 'setVolumePickMode', 'volumePickGroupId', 'doorPickMode',
-    'setDoorPickMode', 'backPickMode', 'setBackPickMode', 'quickBodyMode', 'setQuickBodyMode', 'vertexEditMode', 'setVertexEditMode',
+    'setDoorPickMode', 'backPickMode', 'setBackPickMode', 'plinthPickMode', 'setPlinthPickMode', 'quickBodyMode', 'setQuickBodyMode', 'vertexEditMode', 'setVertexEditMode',
     'subtractionViewMode', 'setSubtractionViewMode', 'filletMode', 'setFilletMode', 'setFaceEditMode', 'selectedFilletFaces', 'clearFilletFaces',
     'clearFilletFaceData', 'selectedShapeId', 'shapes', 'virtualFaces');
   const sel = shapeById(s.selectedShapeId, s.shapes);
@@ -180,6 +180,8 @@ export const SidebarRail: React.FC<{ activeTab: SidebarTab; hasShape: boolean }>
       title: 'Mark door references on panels, then click a body face' },
     { key: 'back', label: 'Back', icon: SendToBack, ...toggle(s.backPickMode, s.setBackPickMode),
       title: 'Back panel: mark back references on panels, then click the body — each click cycles the candidates, largest first' },
+    { key: 'plinth', label: 'Plinth', icon: Footprints, ...toggle(s.plinthPickMode, s.setPlinthPickMode),
+      title: 'Plinth leg set: click the body — the volume under the bottom panel / below the body is highlighted, click cycles, right-click places' },
   ];
   const group = (list: RailSpec[], tab: SidebarTab) =>
     list.map(({ key, disabled, ...t }) => <RailTool key={key} {...t} passive={!hasShape || activeTab !== tab || !!disabled} />);
