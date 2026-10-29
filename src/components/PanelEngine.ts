@@ -752,11 +752,14 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
         try {
           const ext = await applyExtrudeSteps(rp, extrudeSteps, useAppStore.getState().shapes);
           if (ext) {
-            rp = ext.shape;
-            meshed = { shape: ext.shape, geometry: ext.geometry };
-            const es = localBboxOf(ext.geometry)!.getSize(new THREE.Vector3());
-            const dsz = [es.x, es.y, es.z].sort((a, b) => b - a);
-            dimsUpdate = { width: round1(dsz[0]), height: round1(dsz[1]), depth: round1(dsz[2]) };
+            // Katı değişmediyse (yalnız 0 mm'e çözülen ref adımı) mesh/ölçü dokunulmaz; çözülen değer yine yazılır.
+            if (ext.shape !== rp) {
+              rp = ext.shape;
+              meshed = { shape: ext.shape, geometry: ext.geometry };
+              const es = localBboxOf(ext.geometry)!.getSize(new THREE.Vector3());
+              const dsz = [es.x, es.y, es.z].sort((a, b) => b - a);
+              dimsUpdate = { width: round1(dsz[0]), height: round1(dsz[1]), depth: round1(dsz[2]) };
+            }
             resolvedStepsUpdate = mergeResolved(extrudeSteps, ext.resolved) as ExtrudeStep[] | null;
           }
         } catch (err) {
@@ -948,8 +951,10 @@ function stampBaseVertsFromVf(vf: VirtualFace | undefined, freshRawVerts: Vec3[]
 }
 
 /** Adımın işaretli miktarı: çözülmüş değer; FIXED'da hedef − mevcut açıklık; DYN'de değer. */
+// REF adımı yalnız çözülen değeriyle sayılır: çözülmemiş/çözülemeyen ref (silinmiş referans, ilk geçiş) katıyı DEĞİŞTİRMEZ → damga da 0
+// (eski: isFixed+value 0 → −açıklık → damga çöküyor, kardeşin fit bölgesi çentiksiz kalıyordu).
 const stepAmount = (step: any, span: number): number => (step.resolvedValue !== undefined && step.resolvedValue !== null ? step.resolvedValue
-  : step.isFixed ? (step.value ?? 0) - span : (step.value ?? 0));
+  : step.refShapeId ? 0 : step.isFixed ? (step.value ?? 0) - span : (step.value ?? 0));
 
 // Extrude'lu DAMGA: VF tabanı adımların İŞARETLİ miktarıyla budanır (gerçek extrude ile birebir); hedef yüze BAKAN büyüme yansıtılmaz.
 // Kalınlık extrude'u (adım normali ≈ VF normali) damgayı ötelemez, [tMin,tMax] (başlangıç [−th,0]) aralığını değiştirir.
@@ -1170,6 +1175,7 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
   // İŞARETLİ EXTRUDE MİKTARI (damga-trim ile birebir): + uzuyor, − kısalıyor.
   const signedExtrudeAmountOf = (p: any, step: any, eN: THREE.Vector3): number => {
     if (step.resolvedValue !== undefined && step.resolvedValue !== null) return step.resolvedValue;
+    if (step.refShapeId) return 0;   // çözülmemiş ref adımı katıyı değiştirmez (stepAmount ile aynı)
     if (!step.isFixed) return step.value ?? 0;
     const vfId = p?.parameters?.virtualFaceId;
     const verts = vfId ? stampBaseVertices.get(vfId) || freshVfVertices.get(vfId) || vfById.get(vfId)?.vertices : undefined;
@@ -1220,7 +1226,11 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
     if (isSheetPanel(p)) return false;
     // Raf/dikme yalnız VF sırasıyla basar (istisna yok) — PanelGroupService.groupObstacles da aynı sırayı okur.
     if (isInteriorPanel(p)) return precedes(p, vfId);
-    if (myPanel && (refsOf(myPanel).extrude.has(p.id) || refsOf(p).rotate.has(myPanel.id))) return false;
+    // Extrude REFERANSI (datum) bu paneli damgalamaz (extrude çözer) — AMA "yüzeyin şeklini al" açıksa datum damgalamaya devam eder:
+    // bölgenin şekli o ayak izinden doğar; muaf tutulunca çentik kaybolup extrude edilen yüz yok oluyordu (Goker, Eki 2026 —
+    // "fit to face ile oluşan yüzü, basan paneli referans gösterip extrude edemiyorum").
+    const myFit = !!vfById.get(vfId)?.fitFaceShape;
+    if (myPanel && ((refsOf(myPanel).extrude.has(p.id) && !myFit) || refsOf(p).rotate.has(myPanel.id))) return false;
     const pIsRefBoundToMe = !!myPanel && refsOf(p).move.has(myPanel.id);
     if (myPanel && refsOf(p).extrude.has(myPanel.id) && extrudeAdvancesTowardFace(p, myFaceNormal)) return true;
     // Farklı yüzdeki taşınmış / yüze doğru extrude'lu panel sırayı devirebilir (datum hariç).
