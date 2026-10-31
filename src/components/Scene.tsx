@@ -16,7 +16,7 @@ import {
   panelBehindStackPlane, computeFreeRegionLocal, genId, createFaceDescriptor, getFacePlaneAxes, earClipTriangulate, effectiveBodyGeometry,
   pointInTriangle3D, findPanelCoveringPoint, groupIndexOfFace, panelHasRotation, createGroupBoundaryEdges, applyFillets,
   convertReplicadToThreeGeometry, type AxisLetter, type AxisDir, axisDirToVec, uniqueMeshPoints, resolveBaseVertices, composeVertexTargets,
-  confirmPanelMoveRef, confirmPanelRotateRef, resetRefFacePick, axisIndexOf, getReplicadVertices, executeFaceExtrudeOuter, round1,
+  confirmPanelMoveRef, confirmPanelRotateRef, resetRefFacePick, axisIndexOf, getReplicadVertices, round1,
 } from './Geometry';
 import {
   type PlinthPick, confirmPlinthPick, plinthBoxOf, plinthCandidates, plinthLegSpots, plinthPickBox, plinthRowKey, plinthSetsOf, isPlinthRow,
@@ -1754,10 +1754,13 @@ const BoxFacePickOverlay: React.FC<{ shape: any; active: boolean; boxes: Array<{
   useEffect(() => { if (!active) setHovered(null); }, [active]);
   if (!active || !boxGeo) return null;
   const isRefPhase = S.faceExtrudeValueMode === 'ref' && selFace !== null;
+  // Ok modları yüz seçmez: hacim yalnız gösterilir, tık yutulur (gövdeye / panellere düşmesin), oklar ExtrudeArrowGizmo'da.
+  const arrowMode = S.faceExtrudeValueMode === 'arrow' || S.faceExtrudeValueMode === 'arrowFixed';
   const onPointerDown = (e: any) => {
     if (e.button === 2) { if (isRefPhase) void confirmRefOnRightClick(e); return; }
     if (e.button !== 0 || isRefPhase) return;   // ref aşamasında tıklama referans seçimine gider (gövde/panel)
     e.stopPropagation();
+    if (arrowMode) return;
     const gi = flatGroupOfFace(groups, e.faceIndex);
     if (gi === -1) return;
     const n = groups[gi].normal.clone().normalize();
@@ -1771,10 +1774,10 @@ const BoxFacePickOverlay: React.FC<{ shape: any; active: boolean; boxes: Array<{
     <>
       <mesh geometry={boxGeo} raycast={noRaycast} renderOrder={5}><FillMat color={PICK_COLORS.selected} opacity={SEL_COLORS.volumeActiveOpacity} /></mesh>
       {edgePts.length >= 2 && <EdgeLines points={edgePts} color={PICK_COLORS.selectedEdge} width={SEL_COLORS.edgeWidth} order={7} />}
-      <mesh geometry={boxGeo} renderOrder={10} onPointerDown={onPointerDown} {...faceHoverEvents(groups, setHovered)} onContextMenu={stopEvent}>
+      <mesh geometry={boxGeo} renderOrder={10} onPointerDown={onPointerDown} {...(arrowMode ? {} : faceHoverEvents(groups, setHovered))} onContextMenu={stopEvent}>
         <HitMaterial />
       </mesh>
-      {hoverGeo && <OverlayMesh geometry={hoverGeo} order={11} color={SEL_COLORS.hover} opacity={SEL_COLORS.faceHoverOpacity} />}
+      {hoverGeo && !arrowMode && <OverlayMesh geometry={hoverGeo} order={11} color={SEL_COLORS.hover} opacity={SEL_COLORS.faceHoverOpacity} />}
       {selGeo && (
         <>
           <OverlayMesh geometry={selGeo} order={12} color={SEL_COLORS.active} opacity={SEL_COLORS.faceActiveOpacity} />
@@ -2275,31 +2278,33 @@ function OriginSphere({ position, size, baseLength }: { position: Vec3; size: nu
 
 /** Altı ok + merkez: panelin dünya kutusunun yüz merkezlerinden dışarı (taşıma ve ok-extrude gizmoları aynı yerleşimi kullanır). */
 function useArrowLayout(freshPanel: Shape) {
-  return useMemo(() => {
-    const bbox = localBboxOf(freshPanel.geometry);
-    if (!bbox) {
-      const o = freshPanel.position;
-      return { centerOrigin: o, axisOrigins: Object.fromEntries(MOVE_AXES.map(a => [a.axis, o])) as Record<string, Vec3>, arrowLength: 40 };
-    }
-    const mat = getShapeMatrix(freshPanel);
-    const toWorld = (lx: number, ly: number, lz: number) => worldOf(new THREE.Vector3(lx, ly, lz), mat);
-    const mn = bbox.min, mx = bbox.max, c = bbox.getCenter(new THREE.Vector3());
-    const size = bbox.getSize(new THREE.Vector3());
-    const maxDim = Math.max(size.x, size.y, size.z);
-    const gap = maxDim * GAP_RATIO;
-    const gapped = (lx: number, ly: number, lz: number, d: Vec3): Vec3 => {
-      const w = toWorld(lx, ly, lz); return [w[0] + d[0] * gap, w[1] + d[1] * gap, w[2] + d[2] * gap];
-    };
-    return {
-      centerOrigin: toWorld(c.x, c.y, c.z),
-      axisOrigins: {
-        'x+': gapped(mx.x, c.y, c.z, [1, 0, 0]), 'x-': gapped(mn.x, c.y, c.z, [-1, 0, 0]),
-        'y+': gapped(c.x, mx.y, c.z, [0, 1, 0]), 'y-': gapped(c.x, mn.y, c.z, [0, -1, 0]),
-        'z+': gapped(c.x, c.y, mx.z, [0, 0, 1]), 'z-': gapped(c.x, c.y, mn.z, [0, 0, -1]),
-      } as Record<string, Vec3>,
-      arrowLength: maxDim * 0.2,
-    };
-  }, [freshPanel.position, freshPanel.rotation, freshPanel.scale, freshPanel.geometry]);
+  return useMemo(() => arrowLayoutOf(localBboxOf(freshPanel.geometry), getShapeMatrix(freshPanel), freshPanel.position),
+    [freshPanel.position, freshPanel.rotation, freshPanel.scale, freshPanel.geometry]);
+}
+type ArrowLayout = { centerOrigin: Vec3; axisOrigins: Record<string, Vec3>; arrowLength: number };
+/** Yerel kutu (`mat` ile dünyaya) → ok yerleşimi; kutu yoksa tüm oklar `fallback` noktasında. */
+function arrowLayoutOf(bbox: THREE.Box3 | null | undefined, mat: THREE.Matrix4, fallback: Vec3): ArrowLayout {
+  if (!bbox) {
+    const o = fallback;
+    return { centerOrigin: o, axisOrigins: Object.fromEntries(MOVE_AXES.map(a => [a.axis, o])) as Record<string, Vec3>, arrowLength: 40 };
+  }
+  const toWorld = (lx: number, ly: number, lz: number) => worldOf(new THREE.Vector3(lx, ly, lz), mat);
+  const mn = bbox.min, mx = bbox.max, c = bbox.getCenter(new THREE.Vector3());
+  const size = bbox.getSize(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z);
+  const gap = maxDim * GAP_RATIO;
+  const gapped = (lx: number, ly: number, lz: number, d: Vec3): Vec3 => {
+    const w = toWorld(lx, ly, lz); return [w[0] + d[0] * gap, w[1] + d[1] * gap, w[2] + d[2] * gap];
+  };
+  return {
+    centerOrigin: toWorld(c.x, c.y, c.z),
+    axisOrigins: {
+      'x+': gapped(mx.x, c.y, c.z, [1, 0, 0]), 'x-': gapped(mn.x, c.y, c.z, [-1, 0, 0]),
+      'y+': gapped(c.x, mx.y, c.z, [0, 1, 0]), 'y-': gapped(c.x, mn.y, c.z, [0, -1, 0]),
+      'z+': gapped(c.x, c.y, mx.z, [0, 0, 1]), 'z-': gapped(c.x, c.y, mn.z, [0, 0, -1]),
+    } as Record<string, Vec3>,
+    arrowLength: maxDim * 0.2,
+  };
 }
 
 export function PanelMoveGizmo({ panelShape }: { panelShape: Shape }) {
@@ -2339,32 +2344,34 @@ export function PanelMoveGizmo({ panelShape }: { panelShape: Shape }) {
   );
 }
 
-/* OK-EXTRUDE GİZMOSU (Goker, Eki 2026 — "face extrude'da bir mod daha: yüz seçmeden, move'daki oklarla panelin en dış sınırını yazılan
-   ölçü kadar büyüt"): taşıma gizmosuyla aynı oklar; bir oka tıklamak o yöndeki EN DIŞ yüzü şerit değerince hemen büyütür (− küçültür),
-   aynı ok tekrar tıklanınca toplanır. Tıklanan ok kısa süre seçili görünür. */
-export function PanelExtrudeGizmo({ panelShape }: { panelShape: Shape }) {
-  const { shapes, faceExtrudeThickness, updateShape, faceExtrudeValueMode } = useStoreFields('shapes', 'faceExtrudeThickness', 'updateShape', 'faceExtrudeValueMode');
-  // İki ayrı mod (Goker): "Arrow dyn" = her tık değer kadar ekler; "Arrow fixed" = panelin o eksendeki toplam ölçüsü değer olur.
-  const arrowMode = faceExtrudeValueMode === 'arrowFixed' ? 'fixed' : 'dyn';
-  const freshPanel = useMemo(() => shapeById(panelShape.id, shapes) || panelShape, [shapes, panelShape.id, panelShape]);
-  const { centerOrigin, axisOrigins, arrowLength } = useArrowLayout(freshPanel);
-  const [flash, setFlash] = useState<AxisDir | null>(null);
-  const busy = useRef(false);
-  const grow = async (axis: AxisDir) => {
-    if (busy.current) return;
-    busy.current = true; setFlash(axis);
-    try { await executeFaceExtrudeOuter({ panelShape: freshPanel, axis, delta: faceExtrudeThickness, mode: arrowMode, updateShape }); }
-    finally { busy.current = false; setTimeout(() => setFlash(f => (f === axis ? null : f)), 260); }
-  };
+/* OK-EXTRUDE GİZMOSU (Goker, Eki 2026 — "face extrude'da bir mod daha: yüz seçmeden, move'daki oklarla en dış sınırı büyüt"; "arrow dyn /
+   fixed her yerde olsun — raf/dikme hacminde ve ayak hacminde de"): taşıma gizmosuyla aynı oklar. AKIŞ (Goker: "önce oka tıkla, değeri
+   gir, onayla"): ok tıklaması yalnız SEÇER (tekrar tık bırakır); uygulama Panel Editor şeridindeki onaydadır (ExtrudeDock). */
+function ExtrudeArrowGizmo({ layout }: { layout: ArrowLayout }) {
+  const { faceExtrudeArrowAxis, setFaceExtrudeArrowAxis } = useStoreFields('faceExtrudeArrowAxis', 'setFaceExtrudeArrowAxis');
+  const { centerOrigin, axisOrigins, arrowLength } = layout;
   return (
     <group>
       <OriginSphere position={centerOrigin} size={arrowLength * 0.055} baseLength={arrowLength} />
       {MOVE_AXES.map(({ axis, color, hover }) => (
         <MoveArrow key={axis} axisLabel={axis} color={color} hoverColor={hover} origin={axisOrigins[axis]} length={arrowLength}
-          onSelect={a => { void grow(a); }} selectedAxis={flash} />
+          onSelect={a => setFaceExtrudeArrowAxis(a === faceExtrudeArrowAxis ? null : a)} selectedAxis={faceExtrudeArrowAxis} />
       ))}
     </group>
   );
+}
+export function PanelExtrudeGizmo({ panelShape }: { panelShape: Shape }) {
+  const { shapes } = useStoreFields('shapes');
+  const freshPanel = useMemo(() => shapeById(panelShape.id, shapes) || panelShape, [shapes, panelShape.id, panelShape]);
+  return <ExtrudeArrowGizmo layout={useArrowLayout(freshPanel)} />;
+}
+/** Kutu hedefi (raf/dikme hacmi · baza seti): oklar gövde-yerel kutunun yüz merkezlerinden dışarı. */
+function BoxExtrudeGizmo({ parent, box }: { parent: Shape; box: { min: Vec3; max: Vec3 } }) {
+  const key = [...box.min, ...box.max].map(n => n.toFixed(1)).join('|');
+  const layout = useMemo(() => arrowLayoutOf(new THREE.Box3(new THREE.Vector3(...box.min), new THREE.Vector3(...box.max)), getShapeMatrix(parent), parent.position),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [key, parent.position, parent.rotation, parent.scale]);
+  return <ExtrudeArrowGizmo layout={layout} />;
 }
 
 /* BAZA AYAĞI SETİ (PlinthService) — seçme kaplaması, çizim ve ok gizmosu. */
@@ -3120,13 +3127,20 @@ function RotateRefConfirmOnRightClick() {
     }} />;
 }
 
-function PanelGizmos({ shapes }: { shapes: any[] }) {
+export function PanelGizmos({ shapes }: { shapes: any[] }) {
   const s = useStoreFields('panelMoveMode', 'panelMoveTargetPanelId', 'panelRotateMode', 'panelRotateTargetPanelId', 'faceExtrudeMode',
-    'faceExtrudeValueMode', 'faceExtrudeTargetPanelId', 'faceExtrudeCavityGroupId');
+    'faceExtrudeValueMode', 'faceExtrudeTargetPanelId', 'faceExtrudeCavityGroupId', 'faceExtrudePlinthId', 'panelGroups', 'plinthSets');
   const panelOf = (on: boolean, id: string | null) => { const p = on && id ? shapeById(id, shapes) : undefined; return p && p.type === 'panel' ? p : null; };
   const mv = panelOf(s.panelMoveMode, s.panelMoveTargetPanelId), rt = panelOf(s.panelRotateMode, s.panelRotateTargetPanelId);
-  const ex = panelOf(s.faceExtrudeMode && (s.faceExtrudeValueMode === 'arrow' || s.faceExtrudeValueMode === 'arrowFixed') && !s.faceExtrudeCavityGroupId, s.faceExtrudeTargetPanelId);
-  return <>{mv && <PanelMoveGizmo panelShape={mv} />}{rt && <PanelRotateGizmo panelShape={rt} />}{ex && <PanelExtrudeGizmo panelShape={ex} />}</>;
+  const arrowOn = s.faceExtrudeMode && (s.faceExtrudeValueMode === 'arrow' || s.faceExtrudeValueMode === 'arrowFixed');
+  const ex = panelOf(arrowOn && !s.faceExtrudeCavityGroupId && !s.faceExtrudePlinthId, s.faceExtrudeTargetPanelId);
+  // Hacim / baza seti ok modu: kutu = grubun hacmi (bölge kutusu) ya da setin etkin kutusu.
+  const cav = arrowOn && s.faceExtrudeCavityGroupId ? s.panelGroups.find(g => g.id === s.faceExtrudeCavityGroupId) : undefined;
+  const ps = arrowOn && s.faceExtrudePlinthId ? s.plinthSets.find(x => x.id === s.faceExtrudePlinthId) : undefined;
+  const boxParent = cav ? shapeById(cav.shapeId, shapes) : ps ? shapeById(ps.shapeId, shapes) : undefined;
+  const box = cav ? cav.cavity : ps ? plinthBoxOf(ps, shapes) : null;
+  return <>{mv && <PanelMoveGizmo panelShape={mv} />}{rt && <PanelRotateGizmo panelShape={rt} />}{ex && <PanelExtrudeGizmo panelShape={ex} />}
+    {boxParent && box && <BoxExtrudeGizmo parent={boxParent} box={box} />}</>;
 }
 
 const GL_OPTS = { antialias: true, alpha: false, preserveDrawingBuffer: true, powerPreference: 'high-performance' } as const;

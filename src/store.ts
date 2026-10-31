@@ -492,6 +492,8 @@ export interface AppState {
   faceExtrudeCavityFaceNormal: Vec3 | null; setFaceExtrudeCavityFaceNormal: (n: Vec3 | null) => void;
   /** Baza seti hacim düzenleme (Volume): hedef set — panel / grup hedefiyle karşılıklı dışlayıcı. */
   faceExtrudePlinthId: string | null; setFaceExtrudePlinthId: (id: string | null) => void;
+  /** Ok modlarında seçili ok (Goker: "önce oka tıkla, sonra değeri gir ve onayla"): tık yalnız seçer, şeritteki onay uygular. */
+  faceExtrudeArrowAxis: AxisDir | null; setFaceExtrudeArrowAxis: (a: AxisDir | null) => void;
 
   panelMoveMode: boolean; setPanelMoveMode: (b: boolean) => void;
   panelMoveTargetPanelId: string | null; setPanelMoveTargetPanelId: (id: string | null) => void;
@@ -768,23 +770,26 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   faceExtrudeMode: false,
   setFaceExtrudeMode: (b) => set({
-    faceExtrudeMode: b, faceExtrudeSelectedFace: null, faceExtrudeClickPoint: null, faceExtrudeCavityFaceNormal: null,
+    faceExtrudeMode: b, faceExtrudeSelectedFace: null, faceExtrudeClickPoint: null, faceExtrudeCavityFaceNormal: null, faceExtrudeArrowAxis: null,
     ...(!b ? { faceExtrudeTargetPanelId: null, faceExtrudeRefCandidate: null, faceExtrudeCavityGroupId: null, faceExtrudePlinthId: null } : {}),
   }),
   faceExtrudeTargetPanelId: null,
   setFaceExtrudeTargetPanelId: (id) => set({
-    faceExtrudeTargetPanelId: id, ...(id ? { faceExtrudeCavityGroupId: null, faceExtrudeCavityFaceNormal: null, faceExtrudePlinthId: null } : {}),
+    faceExtrudeTargetPanelId: id, faceExtrudeArrowAxis: null,
+    ...(id ? { faceExtrudeCavityGroupId: null, faceExtrudeCavityFaceNormal: null, faceExtrudePlinthId: null } : {}),
   }),
   faceExtrudeCavityGroupId: null,
-  setFaceExtrudeCavityGroupId: (id) => set({ faceExtrudeCavityGroupId: id, ...(id ? { faceExtrudeTargetPanelId: null, faceExtrudePlinthId: null } : {}) }),
+  setFaceExtrudeCavityGroupId: (id) => set({ faceExtrudeCavityGroupId: id, faceExtrudeArrowAxis: null,
+    ...(id ? { faceExtrudeTargetPanelId: null, faceExtrudePlinthId: null } : {}) }),
   faceExtrudePlinthId: null,
-  setFaceExtrudePlinthId: (id) => set({ faceExtrudePlinthId: id, faceExtrudeSelectedFace: null, faceExtrudeCavityFaceNormal: null,
+  setFaceExtrudePlinthId: (id) => set({ faceExtrudePlinthId: id, faceExtrudeSelectedFace: null, faceExtrudeCavityFaceNormal: null, faceExtrudeArrowAxis: null,
     ...(id ? { faceExtrudeTargetPanelId: null, faceExtrudeCavityGroupId: null } : {}) }),
   faceExtrudeCavityFaceNormal: null, setFaceExtrudeCavityFaceNormal: (n) => set({ faceExtrudeCavityFaceNormal: n }),
   faceExtrudeSelectedFace: null, setFaceExtrudeSelectedFace: (i) => set({ faceExtrudeSelectedFace: i }),
   faceExtrudeClickPoint: null, setFaceExtrudeClickPoint: (p) => set({ faceExtrudeClickPoint: p }),
   faceExtrudeThickness: 18, setFaceExtrudeThickness: (v) => set({ faceExtrudeThickness: v }),
-  faceExtrudeValueMode: 'fixed', setFaceExtrudeValueMode: (m) => set({ faceExtrudeValueMode: m }),
+  faceExtrudeValueMode: 'fixed', setFaceExtrudeValueMode: (m) => set({ faceExtrudeValueMode: m, faceExtrudeArrowAxis: null }),
+  faceExtrudeArrowAxis: null, setFaceExtrudeArrowAxis: (a) => set({ faceExtrudeArrowAxis: a }),
   faceExtrudeRefCandidate: null, setFaceExtrudeRefCandidate: (v) => set({ faceExtrudeRefCandidate: v }),
 
   panelMoveMode: false,

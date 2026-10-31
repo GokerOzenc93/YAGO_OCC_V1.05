@@ -2097,6 +2097,36 @@ export async function executeCavityExtrude(groupId: string, faceNormal: Vec3, va
   return true;
 }
 
+/** OK İLE HACİM (Goker, Eki 2026 — "arrow dyn / fixed hacimlerde de olsun"): yüz seçilmez, oka göre hacmin o yöndeki EN DIŞ yüzü.
+ *  Adım çıpasız yazılır (motor bölge kutusunun o yüzünün ortasını çıpa alır → dış yüz). Aynı yönde çıpasız adım varsa birleşir:
+ *  dyn → değer ona eklenir (fixed adımda ölçü değer kadar değişir, ref adımda çözülen değerden dyn'e döner); fixed → ölçü = değer.
+ *  Hacim yalnız serbest alan içinde değişir (büyüme ham hacmi aşamaz). */
+export async function executeCavityExtrudeOuter(groupId: string, axis: AxisDirLike, value: number, mode: 'dyn' | 'fixed'): Promise<boolean> {
+  const group = groupById(groupId);
+  if (!group || !Number.isFinite(value)) return false;
+  const d = axisDirToVec(axis);
+  const n = axisNormal([d.x, d.y, d.z]);
+  const f = stepFace({ faceNormal: n } as CavityStep);
+  const steps = group.cavitySteps || [];
+  const idx = steps.findIndex(s => { const g = stepFace(s); return !s.anchorFrac && g.axis === f.axis && g.side === f.side; });
+  const old = idx >= 0 ? steps[idx] : undefined;
+  let isFixed = mode === 'fixed', v = value;
+  if (!isFixed && old) {
+    if (old.refShapeId) v = (old.resolvedValue ?? 0) + value;
+    else { v = old.value + value; isFixed = old.isFixed; }
+  }
+  v = r1(v);
+  const step: CavityStep = { id: old?.id ?? genId('cav'), faceNormal: n, axisLabel: axisLabelOf(n), value: v, isFixed, timestamp: Date.now() };
+  // Toplam 0'a dönen dyn adımı kalkar (hacim ilk hâline döner).
+  const next = !isFixed && Math.abs(v) < 0.01
+    ? steps.filter((_, i) => i !== idx)
+    : idx >= 0 ? steps.map((s, i) => (i === idx ? step : s)) : [...steps, step];
+  if (next.length === steps.length && idx < 0) return false;
+  await commitCavitySteps(group, next);
+  return true;
+}
+type AxisDirLike = Parameters<typeof axisDirToVec>[0];
+
 export async function executeCavityExtrudeToReference(groupId: string, faceNormal: Vec3, ref: RefFacePick, anchor?: Vec3 | null): Promise<boolean> {
   const group = groupById(groupId);
   if (!group) return false;

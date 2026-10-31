@@ -31,13 +31,13 @@ import {
   setDoorJointRef, setDoorJointOverlay,
 } from './DoorService';
 import {
-  round1, localBboxOf, effectiveBodyGeometry, confirmRefFaceExtrude, executeFaceExtrude, confirmPanelMoveRef, executePanelMoveFixed, executePanelMove,
+  round1, localBboxOf, effectiveBodyGeometry, confirmRefFaceExtrude, executeFaceExtrude, executeFaceExtrudeOuter, confirmPanelMoveRef, executePanelMoveFixed, executePanelMove,
   confirmPanelRotateRef, executePanelRotate, type ExtrudeStep, type TransformStep, updateExtrudeStep, updateTransformStep, deleteExtrudeStep,
   deleteTransformStep, createPanelFromVirtualFace, convertReplicadToThreeGeometry, genId, getFacesAndGroups, isFlatNormal, dominantAxisLabel,
   findExistingStepForFace,
 } from './Geometry';
 import {
-  legSpots, effectiveJoins, panelOrderFor, confirmRefCavityExtrude, executeCavityExtrude, updateCavityStep, deleteCavityStep, groupName,
+  legSpots, effectiveJoins, panelOrderFor, confirmRefCavityExtrude, executeCavityExtrude, executeCavityExtrudeOuter, updateCavityStep, deleteCavityStep, groupName,
   confirmVolumePick, type TreeNode, findNode, treeLeaves, memberThicknessesOf, boxSpan, groupKindLabel,
   renamePanelGroup, deletePanelGroupWithMembers, setGroupCount, startCavityEdit, startGroupRepick, setGroupTargetGap, equalizeGroupGaps,
   previewGroupGap, editGroupGap, toggleGroupGapLock, groupLayoutSnapshot, restoreGroupLayout, type GroupLayoutSnap, previewGroupMemberThickness,
@@ -46,7 +46,7 @@ import {
 import { confirmBodyPanelPlacement } from './Scene';
 import {
   type PlinthSet, confirmPlinthPick, plinthRowKey, plinthSetsOf, plinthSize, plinthName, setPlinthLegs, setPlinthHeight, plinthIsBound,
-  applyPlinthFace, deletePlinthSetAndSync, finishPlinthEdit, startPlinthVolumeEdit,
+  applyPlinthFace, applyPlinthArrow, deletePlinthSetAndSync, finishPlinthEdit, startPlinthVolumeEdit,
 } from './PlinthService';
 
 /* PANEL EDİTÖRÜ — 1) şerit + liste satırı parçaları · 2) kart blokları (ipucu hücresi, kanal / ayak diyagramları, hızlı gövde) ·
@@ -978,22 +978,25 @@ const axisInput = (axis: string, { draft, setDraft }: DraftProps, setValue: (v: 
   </>
 );
 
-/** Yüz extrude (panel) ve hacim (`cavity`) şeridi: Fixed / Dyn / Ref modu, ref durumu ya da değer, onay / çıkış. */
+/** Ok uygulaması sürerken ikinci onay yok sayılır (Enter + düğme aynı anda). */
+let _arrowApplyBusy = false;
+/** Yüz extrude (panel), hacim (`cavity`) ve baza seti (`plinth`) şeridi: Arrow dyn / Arrow fixed / Fixed / Dyn / Ref, onay / çıkış. */
 export function ExtrudeDock({ panel, cavity, plinth, draft, setDraft }: DraftProps & { panel?: Shape; cavity?: PanelGroup; plinth?: PlinthSet }) {
   const {
     faceExtrudeMode, faceExtrudeSelectedFace, faceExtrudeThickness, faceExtrudeValueMode, faceExtrudeRefCandidate, faceExtrudeClickPoint,
-    faceExtrudeCavityGroupId, faceExtrudeCavityFaceNormal, faceExtrudePlinthId,
+    faceExtrudeCavityGroupId, faceExtrudeCavityFaceNormal, faceExtrudePlinthId, faceExtrudeArrowAxis,
   } = useStoreFields('faceExtrudeMode', 'faceExtrudeSelectedFace', 'faceExtrudeThickness', 'faceExtrudeValueMode', 'faceExtrudeRefCandidate',
-    'faceExtrudeClickPoint', 'faceExtrudeCavityGroupId', 'faceExtrudeCavityFaceNormal', 'faceExtrudePlinthId');
+    'faceExtrudeClickPoint', 'faceExtrudeCavityGroupId', 'faceExtrudeCavityFaceNormal', 'faceExtrudePlinthId', 'faceExtrudeArrowAxis');
   if (!faceExtrudeMode || (cavity ? faceExtrudeCavityGroupId !== cavity.id : plinth ? faceExtrudePlinthId !== plinth.id : !panel)) return null;
-  const { setFaceExtrudeMode, setFaceExtrudeSelectedFace, setFaceExtrudeRefCandidate, setFaceExtrudeValueMode, setFaceExtrudeThickness, updateShape } =
-    useAppStore.getState();
-  // Kutu hedefi (raf/dikme hacmi ya da baza seti): yüz 3D'de kutu üzerinde seçilir; baza setinde yalnız Fixed / Dyn.
+  const { setFaceExtrudeMode, setFaceExtrudeSelectedFace, setFaceExtrudeRefCandidate, setFaceExtrudeValueMode, setFaceExtrudeThickness, setFaceExtrudeArrowAxis,
+    updateShape } = useAppStore.getState();
+  // Kutu hedefi (raf/dikme hacmi ya da baza seti): yüz 3D'de kutu üzerinde seçilir; baza setinde Ref yok.
   const boxTarget = !!cavity || !!plinth;
-  // OK MODLARI (yalnız panel): yüz seçilmez — 3D'deki oklar panelin en dış yüzünü büyütür; onay düğmesi yok, her tık uygular.
-  // "Arrow dyn" = her tık değer kadar · "Arrow fixed" = o eksendeki toplam ölçü = değer (Goker: iki ayrı mod, ok ucunda düğme yok).
+  // OK MODLARI (panel, raf/dikme hacmi, baza seti — Goker: "her yerde olsun"): yüz seçilmez — 3D'deki oklar hedefin EN DIŞ yüzünü oynatır.
+  // "Arrow dyn" = değer kadar (− küçültür) · "Arrow fixed" = o eksendeki toplam ölçü = değer. AKIŞ: önce oka tıkla (seçer), sonra değeri
+  // gir, onayla (Enter / ✓) → uygulanır; ok seçimi düşer, mod açık kalır.
   const arrowFixed = faceExtrudeValueMode === 'arrowFixed';
-  const isArrow = !boxTarget && (faceExtrudeValueMode === 'arrow' || arrowFixed);
+  const isArrow = faceExtrudeValueMode === 'arrow' || arrowFixed;
   const hf = !isArrow && faceExtrudeSelectedFace !== null && (!boxTarget || !!faceExtrudeCavityFaceNormal);
   const isRef = !plinth && faceExtrudeValueMode === 'ref', isFixed = faceExtrudeValueMode === 'fixed';
   const refPanel = isRef && !!faceExtrudeRefCandidate?.panelId;
@@ -1016,44 +1019,69 @@ export function ExtrudeDock({ panel, cavity, plinth, draft, setDraft }: DraftPro
       clickPoint: faceExtrudeClickPoint ?? undefined });
     exit();
   };
-  // Mod çubuğu yüz seçilmeden de görünür: ok modu yüz seçimi olmadan başlar (Goker: "o moda tıkladığımda oklar olsun").
-  const showBar = hf || !boxTarget;
-  const modeKeys = plinth ? ['fixed', 'dyn'] : cavity ? ['fixed', 'dyn', 'ref'] : ['arrow', 'arrowFixed', 'fixed', 'dyn', 'ref'];
-  const barActive = plinth && !['fixed', 'dyn'].includes(faceExtrudeValueMode) ? 'dyn' : faceExtrudeValueMode;
+  const onArrowApply = async () => {
+    const st = useAppStore.getState();
+    const axis = st.faceExtrudeArrowAxis, value = st.faceExtrudeThickness;
+    if (!axis || _arrowApplyBusy || !Number.isFinite(value)) return;
+    const mode = arrowFixed ? 'fixed' : 'dyn';
+    _arrowApplyBusy = true;
+    try {
+      if (plinth) applyPlinthArrow(plinth.id, axis, value, mode);
+      else if (cavity) await executeCavityExtrudeOuter(cavity.id, axis, value, mode);
+      else {
+        const fresh = shapeById(panel!.id, st.shapes) || panel!;
+        await executeFaceExtrudeOuter({ panelShape: fresh, axis, delta: value, mode, updateShape });
+      }
+    } finally { _arrowApplyBusy = false; }
+    setFaceExtrudeArrowAxis(null);
+  };
+  // Mod çubuğu yüz seçilmeden de görünür: ok modu yüz seçimi olmadan başlar.
+  const modeKeys = plinth ? ['arrow', 'arrowFixed', 'fixed', 'dyn'] : ['arrow', 'arrowFixed', 'fixed', 'dyn', 'ref'];
+  const barActive = plinth && faceExtrudeValueMode === 'ref' ? 'dyn' : faceExtrudeValueMode;
+  const what = plinth ? 'set' : cavity ? 'volume' : 'panel';
+  const arrowHelp = !faceExtrudeArrowAxis ? 'Click an arrow in the 3D view, then enter the value and confirm'
+    : arrowFixed ? `The ${what} size along ${AXIS_LABEL[faceExtrudeArrowAxis]} becomes this value`
+    : `The ${what}'s outer face moves by this value (− shrinks)`;
   return (
     <div style={DOCK_SHELL}>
-      {showBar && (
-        <DockModeBar active={barActive}
-          modes={dockModes(modeKeys, {
-            fixed: { sub: 'Constant', title: cavity ? 'Fixed — cavity size along this axis' : 'Fixed — constant thickness' },
-            ref: { sub: 'To face', title: 'Ref — up to a reference face' },
-            arrow: { title: 'Arrow dyn — no face pick: click an arrow in the 3D view, the outer edge grows by the value (− shrinks)' },
-            arrowFixed: { title: 'Arrow fixed — no face pick: click an arrow in the 3D view, the panel size along it becomes the value' },
-          })}
-          onPick={k => {
-            setFaceExtrudeValueMode(k as FaceExtrudeValueMode);
-            if (k !== 'ref') setFaceExtrudeRefCandidate(null);
-            if (k === 'arrow' || k === 'arrowFixed') setFaceExtrudeSelectedFace(null);
-          }} />
-      )}
+      <DockModeBar active={barActive}
+        modes={dockModes(modeKeys, {
+          fixed: { sub: 'Constant', title: boxTarget ? `Fixed — ${what} size along the picked face's axis` : 'Fixed — constant thickness' },
+          ref: { sub: 'To face', title: 'Ref — up to a reference face' },
+          arrow: { title: `Arrow dyn — no face pick: click an arrow, enter the value, confirm — the ${what}'s outer face moves by it (− shrinks)` },
+          arrowFixed: { title: `Arrow fixed — no face pick: click an arrow, enter the value, confirm — the ${what} size along it becomes the value` },
+        })}
+        onPick={k => {
+          setFaceExtrudeValueMode(k as FaceExtrudeValueMode);
+          if (k !== 'ref') setFaceExtrudeRefCandidate(null);
+          if (k === 'arrow' || k === 'arrowFixed') setFaceExtrudeSelectedFace(null);
+        }} />
       <div style={DOCK_ROW}>
         {boxTarget && <span style={dockAxisTag('#44403c')}>VOL</span>}
-        {isArrow && <span style={dockAxisTag('#44403c')} title="Growth per click (mm); negative shrinks">MM</span>}
-        {isArrow ? <NumInput draft={draft} setDraft={setDraft} setValue={setFaceExtrudeThickness} fallback={faceExtrudeThickness} onEscape={exit} />
+        {isArrow ? (faceExtrudeArrowAxis
+          ? <>
+              <span style={dockAxisTag(AXIS_COLORS[faceExtrudeArrowAxis] || '#44403c')} title={arrowFixed ? 'Size along this arrow (mm)' : 'Move of the outer face (mm); negative shrinks'}>
+                {AXIS_LABEL[faceExtrudeArrowAxis]}
+              </span>
+              <NumInput key={faceExtrudeArrowAxis} autoFocus draft={draft} setDraft={setDraft} setValue={setFaceExtrudeThickness} fallback={faceExtrudeThickness}
+                onEnter={() => { void onArrowApply(); }} onEscape={() => setFaceExtrudeArrowAxis(null)} />
+            </>
+          : <DockStatus text="Click an arrow in the 3D view" />)
           : !hf ? <DockStatus text={boxTarget ? 'Pick a face of the volume in the 3D view' : 'Pick a face in the 3D view'} />
           : isRef ? <DockStatus ready={refFace} text={refFace ? 'Reference face selected' : refPanel ? 'Pick the reference face' : 'Pick the reference panel'} />
           : <NumInput draft={draft} setDraft={setDraft} setValue={setFaceExtrudeThickness} fallback={faceExtrudeThickness}
               onEnter={boxTarget ? onApply : undefined} onEscape={boxTarget ? exit : undefined} />}
+        {isArrow && <ApplyBtn enabled={!!faceExtrudeArrowAxis} onClick={() => { void onArrowApply(); }} />}
         {hf && <ApplyBtn enabled={!(isRef && !refFace)} onClick={onApply} />}
         <ExitBtn onClick={exit} />
       </div>
       {isArrow && <div style={{ ...DOCK_ROW, paddingTop: 0 }}>
-        <DockStatus ready text={arrowFixed ? 'Click an arrow in the 3D view — the panel size along it becomes this value'
-          : 'Click an arrow in the 3D view — the outer edge grows by this value (− shrinks)'} />
+        <DockStatus ready={!!faceExtrudeArrowAxis} text={arrowHelp} />
       </div>}
     </div>
   );
 }
+const AXIS_LABEL: Record<string, string> = { 'x+': '+X', 'x-': '−X', 'y+': '+Y', 'y-': '−Y', 'z+': '+Z', 'z-': '−Z' };
 
 const MOVE_REF_STEPS = ['Pick the source point', 'Pick the target panel', 'Pick the target point', 'Ready — right-click to confirm'];
 export function MoveDock({ panel, ...draft }: DraftProps & { panel?: Shape }) {
