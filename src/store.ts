@@ -484,10 +484,14 @@ export interface AppState {
   plinthPickCandidates: PlinthPick[]; plinthPickIndex: number; setPlinthPick: (c: PlinthPick[], i: number) => void;
   /** Aday hacmin varsayılan yüksekliği (mm). */
   plinthPickHeight: number; setPlinthPickHeight: (h: number) => void;
-  /** Yerleştirmede ÖN yön: null = tıklanan gövde yüzünden; şeritten seçilirse o yön. */
+  /** Yerleştirmede ÖN yön: null = gövdenin ön yönü (parametre / kapaklar / +Z); şeritten seçilirse o yön (onayda gövdeye yazılır). */
   plinthPickFacing: AxisDir | null; setPlinthPickFacing: (a: AxisDir | null) => void;
   /** Yerleştirmede kullanılacak ayak seti (LegPreset id; null = yerleşik ayak, varsayılan düzen). */
   plinthPickPresetId: string | null; setPlinthPickPresetId: (id: string | null) => void;
+  /** GÖVDE YÜZ ROLLERİ (Parameters › Faces): liste açıkken gövdenin yüzlerinde rol etiketleri (`faceRoleLabelsShapeId`), listede
+   *  üzerine gelinen yüz 3D'de vurgulanır (yüz grubu indeksi, bodyFaces). */
+  faceRoleLabelsShapeId: string | null; setFaceRoleLabelsShapeId: (id: string | null) => void;
+  faceRoleHover: { shapeId: string; gi: number } | null; setFaceRoleHover: (h: { shapeId: string; gi: number } | null) => void;
 
   /* AKSESUAR KÜTÜPHANESİ (AccessoryService): modeller / ayak modelleri / ayak setleri — IndexedDB'den yüklenir, burada canlı kopya. */
   accessoryModels: AccessoryModel[]; legModels: LegModel[]; legPresets: LegPreset[];
@@ -792,6 +796,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   plinthPickHeight: 100, setPlinthPickHeight: (h) => set({ plinthPickHeight: Math.max(1, h), plinthPickCandidates: [], plinthPickIndex: 0 }),
   plinthPickFacing: null, setPlinthPickFacing: (a) => set({ plinthPickFacing: a }),
   plinthPickPresetId: null, setPlinthPickPresetId: (id) => set({ plinthPickPresetId: id }),
+  faceRoleLabelsShapeId: null, setFaceRoleLabelsShapeId: (id) => set({ faceRoleLabelsShapeId: id }),
+  faceRoleHover: null, setFaceRoleHover: (h) => set({ faceRoleHover: h }),
 
   accessoryModels: [], legModels: [], legPresets: [],
   setAccessoryLibrary: (lib) => set((s) => ({

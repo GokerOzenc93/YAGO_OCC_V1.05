@@ -46,12 +46,13 @@ import {
 import { confirmBodyPanelPlacement } from './Scene';
 import {
   type PlinthSet, type PlinthFacing, confirmPlinthPick, plinthRowKey, plinthSetsOf, plinthSize, plinthName, setPlinthLegs, setPlinthHeight, plinthIsBound,
-  applyPlinthFace, applyPlinthArrow, deletePlinthSetAndSync, finishPlinthEdit, startPlinthVolumeEdit, applyLegPresetToSet, setPlinthFacing, plinthFacingOf,
-  PLINTH_FACINGS, PLINTH_FACING_LABEL, plinthLegRules, plinthFootprint,
+  applyPlinthFace, applyPlinthArrow, deletePlinthSetAndSync, finishPlinthEdit, startPlinthVolumeEdit, applyLegPresetToSet, plinthFacingOf,
+  PLINTH_FACINGS, PLINTH_FACING_LABEL, plinthFootprint, plinthLegsAuto, plinthLegSpots, plinthLegPoints, type PlinthLegs, type LegAdjust,
 } from './PlinthService';
 import { legModelById, legModelDims, legPresetById, legsFromPreset } from './AccessoryService';
 import {
-  type LegRule, type Pt, LEG_ANCHOR_LABEL, LEG_ANCHOR_X, LEG_ANCHOR_Z, type LegAnchorX, type LegAnchorZ, polyExtent, rectPoly, resolveLegRule, standardLegRules, standardOf, toFacing,
+  type EdgeRole, type LegRule, type Pt, FACE_ROLE_LABEL, LEG_ANCHOR_LABEL, LEG_ANCHOR_X, LEG_ANCHOR_Z, type LegAnchorX, type LegAnchorZ, polyExtent, rectPoly,
+  resolveLegRule, standardLegRules, standardOf, toFacing,
 } from './LegLayout';
 
 /* PANEL EDİTÖRÜ — 1) şerit + liste satırı parçaları · 2) kart blokları (ipucu hücresi, kanal / ayak diyagramları, hızlı gövde) ·
@@ -808,9 +809,13 @@ export function LegsPlanDiagram({ legs, W, D, active, className }: { legs: Omit<
 
 /* ───────────── AYAK AYAK KURALLAR (LegLayout; Goker: "her ayağın yerini parametrik belirleyeyim: ön kenardan şu kadar, yandan şu kadar,
    ya da tam ortaya; karmaşık şekillerde de uysun") ───────────── */
-/** KURAL DİYAGRAMI: iz çokgeni ön çerçevede (ön ALTTA), ayaklar numaralı; seçili ayağın çapa ölçüleri (kenardan içeri). */
-export function LegRulesDiagram({ rules, footprint, facing, diameter, active, className }: {
-  rules: LegRule[]; footprint: Pt[]; facing: PlinthFacing; diameter: number; active: number | null; className?: string;
+/** Kenar rolü renkleri (3D rozetlerle aynı): ön turuncu, arka koyu, sol mavi, sağ petrol. */
+const ROLE_COLOR: Record<string, string> = { front: '#c2410c', rear: '#44403c', left: '#2563eb', right: '#0f766e', top: '#78716c', bottom: '#78716c' };
+/** KURAL / OTOMATİK DİYAGRAM: iz çokgeni ön çerçevede (ön ALTTA), ayaklar numaralı; kural kipinde seçili ayağın çapa ölçüleri (kenardan
+ *  içeri), otomatik kipte `points` (gövde-yerel) çizilir. `edges` verilirse her kenarın ROLÜ dışına yazılır (gövde yüzünden gelen dolu,
+ *  normalden türeyen soluk) — Goker: "L şekilde bile ayağın önünü / yanını / arkasını bileyim". */
+export function LegRulesDiagram({ rules, points, edges, footprint, facing, diameter, active, className }: {
+  rules?: LegRule[]; points?: Array<Pt | null>; edges?: EdgeRole[]; footprint: Pt[]; facing: PlinthFacing; diameter: number; active: number | null; className?: string;
 }) {
   const VW = 448, VH = 176, PX0 = 56, PW = VW - PX0 - 62, PY0 = 20, PH = VH - PY0 - 24;
   const poly = footprint.map(p => toFacing(p, facing));
@@ -820,11 +825,24 @@ export function LegRulesDiagram({ rules, footprint, facing, diameter, active, cl
   // ön çerçeve: u sağa, v öne → ekranda ön altta (y büyür)
   const X = (u: number) => x0 + (u - e.x0) * sc, Y = (v: number) => y0 + (v - e.y0) * sc;
   const R = Math.max(10, diameter / 2) * 1.15;
-  const pts = rules.map(r => resolveLegRule(r, poly, R));
+  const pts: Array<Pt | null> = points ? points.map(p => (p ? toFacing(p, facing) : null)) : (rules ?? []).map(r => resolveLegRule(r, poly, R));
   const r = Math.max(3.5, (diameter / 2) * sc);
   const path = poly.map((q, i) => `${i ? 'L' : 'M'}${X(q.x).toFixed(1)} ${Y(q.y).toFixed(1)}`).join(' ') + ' Z';
   const { dim, txt, note } = diagramKit(active == null ? null : 'a', { fs: 10.5, noteFs: 9.4, tick: 3.5, wOn: 1.4 });
-  const sel = active != null ? rules[active] : undefined, sp = active != null ? pts[active] : undefined;
+  const sel = active != null && rules ? rules[active] : undefined, sp = active != null ? pts[active] : undefined;
+  // Kenar rol etiketleri: kenar ortasından dış normal yönünde (ön çerçevede; toFacing doğrusal → vektöre de uygulanır)
+  const roleLabels = (edges ?? []).filter(ed => ed.len * sc >= 22).map((ed, i) => {
+    const m = toFacing(ed.mid, facing), n = toFacing(ed.n, facing);
+    const lx = X(m.x) + n.x * 9, ly = Y(m.y) + n.y * 9 + 3;
+    const anchor = Math.abs(n.x) > 0.5 ? (n.x > 0 ? 'start' : 'end') : 'middle';
+    return (
+      <text key={`role-${i}`} x={lx} y={ly} fontSize={8} fontWeight={700} letterSpacing="0.08em" textAnchor={anchor} fontFamily={UI_FONT}
+        fill={ROLE_COLOR[ed.role]} opacity={ed.source === 'body' ? 1 : 0.55}>
+        <title>{`${FACE_ROLE_LABEL[ed.role]} — ${ed.source === 'body' ? 'from the body face (Parameters › Faces)' : 'from the edge direction'}`}</title>
+        {FACE_ROLE_LABEL[ed.role].toUpperCase()}
+      </text>
+    );
+  });
   // Seçili ayak için çapa ölçüleri: o çizgideki gerçek kenar (çokgenle kesişim) → ayak merkezi
   const edgeU = (v: number, side: 'left' | 'right') => {
     const xs: number[] = [];
@@ -842,10 +860,11 @@ export function LegRulesDiagram({ rules, footprint, facing, diameter, active, cl
     <DiagramSvg w={VW} h={VH} className={className}>
       {note(10, 13, 'plan · rear at top')}{note(10, VH - 8, 'front ↓')}
       <path d={path} fill="#f3ede4" stroke="#a39a8d" strokeWidth={1} strokeLinejoin="round" />
-      {note(X((e.x0 + e.x1) / 2), y0 - 7, `W ${fmt1(W)}`, { textAnchor: 'middle' })}
-      {note(X(e.x1) + 8, Y((e.y0 + e.y1) / 2) + 3, `D ${fmt1(D)}`)}
+      {note(VW - 10, 13, `W ${fmt1(W)} · D ${fmt1(D)}`, { textAnchor: 'end' })}
+      {roleLabels}
       {pts.map((p, i) => {
         const hi = i === active;
+        if (!p) return null;
         return (
           <g key={i}>
             <circle cx={X(p.x)} cy={Y(p.y)} r={r} fill={hi ? OF : '#d9d2c6'} stroke={hi ? O : '#78716c'} strokeWidth={hi ? 1.4 : 1} />
@@ -872,8 +891,8 @@ export function LegRulesDiagram({ rules, footprint, facing, diameter, active, cl
 const ANCHOR_X_OPTS = LEG_ANCHOR_X.map(a => ({ v: a, label: LEG_ANCHOR_LABEL[a] }));
 const ANCHOR_Z_OPTS = LEG_ANCHOR_Z.map(a => ({ v: a, label: LEG_ANCHOR_LABEL[a] }));
 /** KURAL DÜZENLEYİCİ: diyagram + ayak başına satır (X çapası · mm · Z çapası · mm · sil) + ayak ekle + standart düzen üreteci (4/5/6). */
-export function LegRulesEditor({ rules, onChange, footprint, facing = 'z+', diameter, children }: {
-  rules: LegRule[]; onChange: (rules: LegRule[]) => void; footprint?: Pt[]; facing?: PlinthFacing; diameter: number; children?: React.ReactNode;
+export function LegRulesEditor({ rules, onChange, footprint, edges, facing = 'z+', diameter, children }: {
+  rules: LegRule[]; onChange: (rules: LegRule[]) => void; footprint?: Pt[]; edges?: EdgeRole[]; facing?: PlinthFacing; diameter: number; children?: React.ReactNode;
 }) {
   const [active, setActive] = useState<number | null>(null);
   const fp = footprint && footprint.length >= 3 ? footprint : rectPoly(0, 0, 600, 560);
@@ -888,7 +907,7 @@ export function LegRulesEditor({ rules, onChange, footprint, facing = 'z+', diam
   );
   return (
     <div className="flex flex-col gap-1.5" onMouseLeave={() => setActive(null)}>
-      <LegRulesDiagram rules={rules} footprint={fp} facing={facing} diameter={diameter} active={active} className="w-full" />
+      <LegRulesDiagram rules={rules} edges={edges} footprint={fp} facing={facing} diameter={diameter} active={active} className="w-full" />
       {children}
       <div className="flex flex-col gap-1">
         {rules.map((r, i) => (
@@ -926,6 +945,61 @@ export function LegRulesEditor({ rules, onChange, footprint, facing = 'z+', diam
             {n}
           </button>
         ))}
+      </div>
+    </div>
+  );
+}
+
+/* AYAK KARTI DÜZENİ (Goker: "ayağı seçeyim, referans kübün yüzlerine göre otomatik yerleşsin; ayaklarda rol detayı gösterme; Custom'da
+   otomatik yerleşen mesafeleri mevcut pozisyonun üzerine ilave olarak revize edeyim"): yerleşim her zaman otomatik köşe düzeni
+   (LegLayout.autoLegPoints — kenar rolleri gövde yüzlerinden, kartta görünmez). Auto = adet · yan · ön · arka mesafeleri;
+   Custom = ayak başına Δ (sağa / öne, mm) + ayağı kapatma — otomatik noktanın üzerine eklenir, diyagram sonucu çizer. */
+const AUTO_COUNT_OPTS = [{ v: '4', label: 'Corners' }, { v: '5', label: '+ centre' }, { v: '6', label: '+ front / rear' }];
+export function AutoLegsCells({ legs, onChange }: { legs: PlinthLegs; onChange: (p: Partial<PlinthLegs>) => void }) {
+  const [hint, setHint] = useState<string | null>(null);
+  const { cell, num } = hintCells(hint, setHint);
+  return (
+    <div className="grid grid-cols-3 gap-x-1" style={QB_CELL_ROW} onMouseLeave={() => setHint(null)}>
+      {cell('Layout', 'lc', <QbSelect value={String(legs.count)} options={AUTO_COUNT_OPTS} w={88} onChange={v => onChange({ count: parseInt(v, 10) as 4 | 5 | 6 })} />)}
+      {num('Side offset', 'ls', legs.side, v => onChange({ side: v }))}
+      {num('Front offset', 'lf', legs.front, v => onChange({ front: v }))}
+      {num('Rear offset', 'lr', legs.rear, v => onChange({ rear: v }))}
+    </div>
+  );
+}
+/** CUSTOM: otomatik ayakların üzerine Δ — satır başına (ayak no · Δ side (+ sağa) · Δ front (+ öne) · açık/kapalı); ↺ hepsini sıfırlar. */
+export function LegAdjustEditor({ count, adjust, onChange, active, onActive }: {
+  count: number; adjust: LegAdjust[]; onChange: (a: LegAdjust[]) => void; active: number | null; onActive: (i: number | null) => void;
+}) {
+  const at = (i: number): LegAdjust => adjust[i] ?? { du: 0, dv: 0 };
+  const set = (i: number, patch: Partial<LegAdjust>) => {
+    const next: LegAdjust[] = Array.from({ length: Math.max(count, adjust.length) }, (_, k) => ({ ...at(k) }));
+    next[i] = { ...next[i], ...patch };
+    onChange(next);
+  };
+  const cell = (k: string, label: string, body: React.ReactNode) => (
+    <div key={k} className="flex-1 min-w-0 h-full flex items-center gap-1 px-1.5 rounded-[6px] bg-white ring-1 ring-[#e6e0d6]">
+      <span className="shrink-0 text-[9.5px] font-semibold uppercase tracking-[0.06em] text-stone-400">{label}</span>
+      <div className="flex-1 min-w-0 flex justify-end">{body}</div>
+    </div>
+  );
+  return (
+    <div className="flex flex-col gap-1" onMouseLeave={() => onActive(null)}>
+      {Array.from({ length: count }, (_, i) => {
+        const a = at(i), on = !a.off;
+        return (
+          <div key={i} className={`h-[26px] flex items-center gap-1 rounded-[7px] px-1 ${active === i ? 'bg-[#fff4ec]' : ''} ${on ? '' : 'opacity-55'}`} onMouseEnter={() => onActive(i)}>
+            <span className={`shrink-0 w-[18px] h-[18px] rounded-[5px] text-[10px] font-bold flex items-center justify-center tabular-nums ${active === i ? 'bg-[#ea580c] text-white' : 'bg-[#f3efe8] text-stone-500'}`}>{i + 1}</span>
+            {cell('u', 'Δ side', <QbNum value={a.du} min={-100000} w={44} passive={!on} onCommit={v => set(i, { du: v })} />)}
+            {cell('v', 'Δ front', <QbNum value={a.dv} min={-100000} w={44} passive={!on} onCommit={v => set(i, { dv: v })} />)}
+            <QbSwitch on={on} onToggle={() => set(i, { off: on })} title={on ? 'Leg on — click to remove this leg' : 'Leg removed — click to bring it back'} />
+          </div>
+        );
+      })}
+      <div className="flex items-center gap-1 pt-0.5">
+        <span className="text-[10px] text-stone-400">Δ side: + to the right · Δ front: + toward the front (on top of the automatic position)</span>
+        <div className="flex-1" />
+        <CardAction compact icon={RotateCcw} label="Reset" title="Clear every adjustment (back to the automatic positions)" onClick={() => onChange([])} />
       </div>
     </div>
   );
@@ -1082,18 +1156,7 @@ export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onAppl
               {cfg.legs.legModelId && <span className="text-[10.5px] text-stone-400 truncate">model: {legModelById(cfg.legs.legModelId)?.name ?? 'missing'}</span>}
             </div>
           )}
-          {legCount > 0 && cfg.legs.rules && cfg.legs.rules.length ? (
-            /* Ayak ayak kurallar (setten): gövde izi dikdörtgen, ön +Z; düzenleme set bağını düşürür */
-            <LegRulesEditor rules={cfg.legs.rules} footprint={rectPoly(0, 0, W, D)} facing="z+" diameter={cfg.legs.diameter}
-              onChange={rules => setLegs({ rules, count: Math.max(4, Math.min(6, rules.length)) as 4 | 5 | 6, presetId: null })}>
-              <div className="grid grid-cols-3 gap-x-1" style={QB_CELL_ROW}>
-                <ReadCell label="Legs"><ReadValue color="#57534e">{cfg.legs.rules.length}</ReadValue></ReadCell>
-                {isLegs ? num('Leg height', 'lh', cfg.legs.height, v => setLegs({ height: v }), false, 1)
-                  : <ReadCell label="Leg height" title="= plinth height"><ReadValue color="#c7beb1">{fmt1(cfg.plinth.height)}</ReadValue></ReadCell>}
-                <ReadCell label="Layout"><span className="text-[11px] font-semibold text-stone-500 truncate">{legPresetById(cfg.legs.presetId)?.name ?? 'custom'}</span></ReadCell>
-              </div>
-            </LegRulesEditor>
-          ) : legCount > 0 ? (
+          {legCount > 0 ? (
             <LegsBlock legs={{ ...cfg.legs, count: legCount, height: isPlinth ? cfg.plinth.height : cfg.legs.height }} W={W} D={D} heightEditable={isLegs}
               heightReadout={isPlinth ? cfg.plinth.height : undefined} countOptions={[]} hint={hint} onHint={setHint}
               onChange={p => setLegs({ ...(p as Partial<QuickBodyConfig['legs']>), ...(['count', 'side', 'front', 'rear'].some(k => k in p) ? { presetId: null, rules: null } : {}) })} />
@@ -1508,10 +1571,10 @@ export function PlacementDocks({ shape }: { shape: Shape | undefined }) {
   const {
     virtualFaces, panelGroups, raycastMode, raycastPendingVf, volumePickMode, volumePickGroupId, volumePickCandidates, volumePickIndex,
     doorPickMode, doorPickCandidates, doorPickIndex, doorPickPlacement, backPickMode, backPickCandidates, backPickIndex, backPickPlacement,
-    plinthPickMode, plinthPickCandidates, plinthPickIndex, plinthPickHeight, plinthPickFacing, plinthPickPresetId,
+    plinthPickMode, plinthPickCandidates, plinthPickIndex, plinthPickHeight, plinthPickPresetId,
   } = useStoreFields('virtualFaces', 'panelGroups', 'raycastMode', 'raycastPendingVf', 'volumePickMode', 'volumePickGroupId', 'volumePickCandidates',
     'volumePickIndex', 'doorPickMode', 'doorPickCandidates', 'doorPickIndex', 'doorPickPlacement', 'backPickMode', 'backPickCandidates', 'backPickIndex',
-    'backPickPlacement', 'plinthPickMode', 'plinthPickCandidates', 'plinthPickIndex', 'plinthPickHeight', 'plinthPickFacing', 'plinthPickPresetId');
+    'backPickPlacement', 'plinthPickMode', 'plinthPickCandidates', 'plinthPickIndex', 'plinthPickHeight', 'plinthPickPresetId');
   const { setRaycastMode, setVolumePickMode, setDoorPickMode, setDoorPickPlacement, setBackPickMode, setBackPickPlacement, setPlinthPickMode, setPlinthPickHeight } =
     useAppStore.getState();
   const noShape = 'Select a body first';
@@ -1572,22 +1635,19 @@ export function PlacementDocks({ shape }: { shape: Shape | undefined }) {
   // BAZA AYAĞI SETİ şeridi (PlinthService): aday hacim yüksekliği şeritte (varsayılan 100); tık döner, sağ tık / ✓ yerleştirir.
   const plinth = () => {
     const n = plinthPickCandidates.length, ready = !!shape && n > 0, cur = plinthPickCandidates[plinthPickIndex];
-    const { setPlinthPickFacing, setPlinthPickPresetId } = useAppStore.getState();
-    const facing: PlinthFacing = plinthPickFacing ?? cur?.facing ?? 'z+';
+    const { setPlinthPickPresetId } = useAppStore.getState();
     return (
       <PlacementDock tag="PLINTH" defaultName="Plinth" ready={ready} confirmTitle="Place plinth leg set"
         lead={<div className="shrink-0 flex items-center gap-1" title="Height of the set inside the body (mm), from the floor up — a raised bottom panel also offers the gap under it">
           <span style={dockAxisTag('#16a34a')}>H</span><QbNum value={plinthPickHeight} min={1} w={40} onCommit={setPlinthPickHeight} /></div>}
         status={!shape ? noShape
-          : n === 0 ? 'Click the body in the 3D view — the side you click becomes the FRONT · the set volume is highlighted'
-          : `${plinthPickIndex + 1}/${n} · ${cur.label} · front ${PLINTH_FACING_LABEL[cur.facing]} · ${fmt1(cur.box.max[0] - cur.box.min[0])} × ${fmt1(cur.box.max[1] - cur.box.min[1])} × ${fmt1(cur.box.max[2] - cur.box.min[2])} — click: next · right-click: place`}
+          : n === 0 ? 'Click the body in the 3D view — the set volume is highlighted; legs follow the body faces (Parameters › Faces)'
+          : `${plinthPickIndex + 1}/${n} · ${cur.label} · ${fmt1(cur.box.max[0] - cur.box.min[0])} × ${fmt1(cur.box.max[1] - cur.box.min[1])} × ${fmt1(cur.box.max[2] - cur.box.min[2])} — click: next · right-click: place`}
         onConfirm={() => { if (ready && shape) confirmPlinthPick(shape.id, plinthPickCandidates[plinthPickIndex], useAppStore.getState().placementName); }}
         onExit={() => setPlinthPickMode(false)}
         extra={<div style={{ ...DOCK_ROW, paddingTop: 0 }}>
           <span style={dockAxisTag('#44403c')} title="Leg set from the Accessories tab (layout + model); Custom = built-in foot">SET</span>
           <div className="flex-1 min-w-0 flex"><LegPresetSelect value={plinthPickPresetId} onChange={id => { setPlinthPickPresetId(id); const p = legPresetById(id); if (p && p.height > 0) setPlinthPickHeight(p.height); }} /></div>
-          <span style={dockAxisTag('#b91c1c')} title="Front side — set by the body face you click, or pick here">FRONT</span>
-          <FacingSelect value={facing} onChange={f => setPlinthPickFacing(f)} />
         </div>} />
     );
   };
@@ -2201,15 +2261,15 @@ export function PanelEditor() {
        Kart: ayak düzeni (adet / Ø / kenar mesafeleri) + yükseklik + ok tık değeri ve modu. */
     const plinthRow = (set: PlinthSet, rowIdx: number, label: string) => {
       const key = plinthRowKey(set.id), sel = selectedPanelRow === key;
-      const [W, H, D] = plinthSize(set, shapes), bound = plinthIsBound(set);
+      const [W, H, D] = plinthSize(set, shapes), bound = plinthIsBound(set), legCount = plinthLegSpots(set, shapes).length;
       return rowShell({
         key, refKey: key, open: sel, sel, dragging: dragIndex === rowIdx, armed: armedRowKey === key,
         lead: grip(key, rowIdx, 'Drag to reorder — earlier set presses later panels; a later set sits between earlier panels'), onToggle: rowToggle(key, sel),
-        num: label, kind: 'plinth', count: set.legs.count,
+        num: label, kind: 'plinth', count: legCount,
         name: <span title={`Plinth leg set — ${fmt1(W)} × ${fmt1(H)} × ${fmt1(D)} · feet stand on the body floor · ${bound ? 'height follows the bottom panel' : 'Volume: pick a face in the 3D view and set its size'}`}
           className="flex-1 min-w-0 h-[22px] px-[5px] flex items-center text-[11.5px] font-medium text-stone-700 truncate select-none">{plinthName(set)}</span>,
-        dims: <RowCells title={`${set.legs.count} legs · height ${fmt1(H)}${bound ? ' (from the bottom panel)' : ''} · set ${fmt1(W)} × ${fmt1(D)}`}
-          cells={[['N', String(set.legs.count)], ['H', fmt1(H)], ['W', fmt1(W)]]} />,
+        dims: <RowCells title={`${legCount} legs · height ${fmt1(H)}${bound ? ' (from the bottom panel)' : ''} · set ${fmt1(W)} × ${fmt1(D)}`}
+          cells={[['N', String(legCount)], ['H', fmt1(H)], ['W', fmt1(W)]]} />,
         trail: <>
           {sel && <button type="button" title="Done — finish editing this set (arrows close, selection clears)" onClick={e => { stop(e); finishPlinthEdit(); }}
             className={`${ROW_BTN} text-[#16a34a] hover:bg-green-50`}><Check size={ROW_ICON} strokeWidth={2.4} /></button>}
@@ -2227,34 +2287,48 @@ export function PanelEditor() {
                 <CardAction compact icon={Check} label="Done" title="Finish editing this set" onClick={finishPlinthEdit} />
               </div>
               {editingVol && <ExtrudeDock plinth={set} draft={extrudeThicknessStr} setDraft={setExtrudeThicknessStr} />}
-              {/* Ayak seti (aksesuar kütüphanesi) + ön yön: set düzeni / modeli buradan çağrılır; elle düzen değişince set bağı düşer */}
+              {/* Ayak seti (aksesuar kütüphanesi): düzen / model buradan; yerleşim otomatik (gövde yüz rolleri Parameters'ta) */}
               <div className={`flex items-center gap-1.5 ${editingVol ? 'mt-1.5' : ''}`}>
                 <span style={SECTION_LABEL}>Leg set</span>
                 <div className="flex-1 min-w-0 flex"><LegPresetSelect value={set.legs.presetId} onChange={id => applyLegPresetToSet(set.id, id)} /></div>
-                <span style={SECTION_LABEL} title="Front side of the set — front / rear offsets follow it">Front</span>
-                <FacingSelect value={plinthFacingOf(set)} onChange={f => setPlinthFacing(set.id, f)} />
+                <span style={SECTION_LABEL}>Layout</span>
+                <Segmented height={20} active={plinthLegsAuto(set.legs) ? 'auto' : 'custom'}
+                  onPick={k => setPlinthLegs(set.id, { adjust: k === 'auto' ? null : (set.legs.adjust ?? []) })}
+                  items={[
+                    { key: 'auto', label: 'Auto', title: 'Legs placed automatically from the body faces (front / rear / sides — Parameters › Faces)' },
+                    { key: 'custom', label: 'Custom', title: 'Adjust each automatically placed leg: Δ side / Δ front on top of its position, or remove it' },
+                  ]} />
               </div>
               {set.legs.legModelId && (() => { const lm = legModelById(set.legs.legModelId), dims = legModelDims(lm); return (
                 <div className="mt-1 px-1 text-[10.5px] text-stone-400">
                   Model: <span className="font-semibold text-stone-500">{lm?.name ?? 'missing'}</span>{dims ? ` · Ø ${fmt1(dims.diameter)} · natural height ${fmt1(dims.height)}` : ''}
                 </div>); })()}
-              {/* AYAK AYAK KURALLAR (LegLayout): iz çokgeni gerçek (gövde tabanı ∩ set kutusu), ön yöne göre; yükseklik hücresi altta */}
-              <div className="mt-1.5">
-                <LegRulesEditor rules={plinthLegRules(set.legs)} footprint={plinthFootprint(set)} facing={plinthFacingOf(set)} diameter={set.legs.diameter}
-                  onChange={rules => setPlinthLegs(set.id, { rules })}>
-                  <div className="grid grid-cols-3 gap-x-1" style={QB_CELL_ROW}>
-                    <ReadCell label="Legs" title="Number of legs"><ReadValue color="#57534e">{plinthLegRules(set.legs).length}</ReadValue></ReadCell>
-                    {bound ? (
-                      <ReadCell label="Leg height" title="Read from the bottom panel's underside"><ReadValue color="#57534e">{fmt1(H)}</ReadValue></ReadCell>
-                    ) : (
-                      <HintCell label="Leg height" hintKey="lh" active={legsHint === 'lh'} onHint={setLegsHint}>
-                        <QbNum value={H} min={1} onCommit={v => setPlinthHeight(set.id, v)} />
-                      </HintCell>
-                    )}
-                    <ReadCell label="Ø" title="Foot diameter (from the model)"><ReadValue color="#57534e">{fmt1(set.legs.diameter)}</ReadValue></ReadCell>
+              {/* Diyagram: iz çokgeni (bölge) + yerleşen ayaklar (rol yazısı yok); hücreler ortak; Auto mesafeler / Custom Δ satırları */}
+              {(() => {
+                const auto = plinthLegsAuto(set.legs), fp = plinthFootprint(set), facing = plinthFacingOf(set);
+                const all = plinthLegPoints(set), onCount = all.filter(p => !p.off).length;
+                return (
+                  <div className="mt-1.5 flex flex-col gap-1.5">
+                    <LegRulesDiagram points={all.map(p => (p.off ? null : { x: p.x, y: p.z }))} footprint={fp} facing={facing} diameter={set.legs.diameter}
+                      active={legsHint && legsHint.startsWith('leg-') ? parseInt(legsHint.slice(4), 10) : null} className="w-full" />
+                    <div className="grid grid-cols-3 gap-x-1" style={QB_CELL_ROW}>
+                      <ReadCell label="Legs" title="Number of legs"><ReadValue color="#57534e">{onCount}</ReadValue></ReadCell>
+                      {bound ? (
+                        <ReadCell label="Leg height" title="Read from the bottom panel's underside"><ReadValue color="#57534e">{fmt1(H)}</ReadValue></ReadCell>
+                      ) : (
+                        <HintCell label="Leg height" hintKey="lh" active={legsHint === 'lh'} onHint={setLegsHint}>
+                          <QbNum value={H} min={1} onCommit={v => setPlinthHeight(set.id, v)} />
+                        </HintCell>
+                      )}
+                      <ReadCell label="Ø" title="Foot diameter (from the model)"><ReadValue color="#57534e">{fmt1(set.legs.diameter)}</ReadValue></ReadCell>
+                    </div>
+                    {auto
+                      ? <AutoLegsCells legs={set.legs} onChange={p => setPlinthLegs(set.id, p)} />
+                      : <LegAdjustEditor count={all.length} adjust={set.legs.adjust ?? []} onChange={a => setPlinthLegs(set.id, { adjust: a })}
+                        active={legsHint && legsHint.startsWith('leg-') ? parseInt(legsHint.slice(4), 10) : null} onActive={i => setLegsHint(i == null ? null : `leg-${i}`)} />}
                   </div>
-                </LegRulesEditor>
-              </div>
+                );
+              })()}
             </div>
           );
         },

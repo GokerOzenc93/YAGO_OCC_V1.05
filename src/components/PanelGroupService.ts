@@ -14,7 +14,7 @@ import {
   deleteBackGroupWithMembers,
 } from './BackService';
 import { doorJointForBond, moveDoorJointTo, isDoorPanel } from './DoorService';
-import { plinthBoxOf, plinthSetsOf, removeQuickBodyPlinth, syncQuickBodyPlinth } from './PlinthService';
+import { plinthBoxesOf, plinthSetsOf, removeQuickBodyPlinth, syncQuickBodyPlinth } from './PlinthService';
 import { legModelById, legModelDims } from './AccessoryService';
 
 /* PANEL GRUP SERVİSİ — 1) kapak / arkalık / raf-dikme ortak bölme yardımcıları · 2) raf / dikme grupları · 3) hızlı gövde. */
@@ -1531,8 +1531,8 @@ export function collectObstacles(
     if (!b) continue;
     if (panelHasRotation(p)) { splitBoxes.push(b); tilted.push(p); } else obstacles.push(b);
   }
-  // BAZA AYAĞI SETLERİ (Goker: "ayak konduktan sonra raf ve dikme sadece o hacme kadar çalışmalı"): set hacmi her zaman engeldir.
-  for (const ps of plinthSetsOf(parent.id)) obstacles.push(plinthBoxOf(ps));
+  // BAZA AYAĞI SETLERİ (Goker: "ayak konduktan sonra raf ve dikme sadece o hacme kadar çalışmalı"): set hacmi (bölge kutuları) her zaman engeldir.
+  for (const ps of plinthSetsOf(parent.id)) obstacles.push(...plinthBoxesOf(ps));
   return { obstacles, splitBoxes, tiltFaces: tiltedPanelFaces(parent, tilted) };
 }
 
@@ -1636,6 +1636,37 @@ export function boxesSurface(boxes: CavityBox[]): number[] {
     if (boxes.some(b => strictlyInside(c, b))) cells.add(cellIndex(g, i, j, k));
   }
   return regionSurface(g, cells);
+}
+
+/** KUTU İÇİ SERBEST BÖLGE (baza ayağı seti; Goker: "ayak da raf ve dikme gibi mevcut hacmin şeklini alsın"): gövdenin içi, engellerin
+ *  dışı hücreler `box` ile kırpılır ve `seed`den taşırılır (L gövde, çıkarma, erken yan paneller). Kutular (birleşik) + bbox + taban
+ *  çokgeni (x, z; tüm katmanlarda serbest hücreler). Tohum serbest değilse kutudaki en yakın serbest hücre. */
+export interface FreeRegion { boxes: CavityBox[]; bbox: CavityBox; poly: Pt2[] }
+export function freeRegionInBox(parent: Shape, obstacles: CavityBox[], box: CavityBox, seed: Vec3): FreeRegion | null {
+  const g = buildCavityGrid(parent, obstacles, [], [], boxPlanes(box));
+  if (!g) return null;
+  const inBox = (c: number) => {
+    const cb = cellBox(g, c);
+    return [0, 1, 2].every(a => cb.min[a] >= box.min[a] - TOL && cb.max[a] <= box.max[a] + TOL);
+  };
+  let s = cellOfPoint(g, seed);
+  if (s < 0 || !g.free[s] || !inBox(s)) {
+    s = -1; let bestD = Infinity;
+    for (let c = 0; c < g.free.length; c++) {
+      if (!g.free[c] || !inBox(c)) continue;
+      const b = cellBox(g, c);
+      let d = 0;
+      for (let a = 0; a < 3; a++) { const q = Math.max(b.min[a] - seed[a], 0, seed[a] - b.max[a]); d += q * q; }
+      if (d < bestD) { bestD = d; s = c; }
+    }
+  }
+  if (s < 0) return null;
+  const cells = floodRegion(g, s, inBox);
+  if (!cells.size) return null;
+  const bbox = regionBBox(g, cells);
+  const poly = sectionPolygon(g, cells, 1, bbox.min[1], bbox.max[1], seed)
+    ?? [{ x: bbox.min[0], y: bbox.min[2] }, { x: bbox.max[0], y: bbox.min[2] }, { x: bbox.max[0], y: bbox.max[2] }, { x: bbox.min[0], y: bbox.max[2] }];
+  return { boxes: mergeRegionBoxes(regionBoxes(g, cells)), bbox, poly };
 }
 
 const anchorPoint = (group: PanelGroup, body: CavityBox): Vec3 => pointFromFrac(body, group.anchorFrac);

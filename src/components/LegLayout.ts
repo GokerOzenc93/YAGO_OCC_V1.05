@@ -11,6 +11,10 @@
    toplam kapsamına göre alınır, sonra o çizgideki GERÇEK kenarlara göre iki geçişte düzeltilir: u'daki dikey açıklıktan v (ön/arka
    kenar orada neredeyse), v'deki yatay açıklıktan u (sol/sağ kenar orada neredeyse). Çukur şekillerde çizgi birden çok aralık kesebilir;
    mevcut noktaya en yakın aralık alınır. Son olarak ayak (yarıçap R) çokgenin içinde kalacak biçimde kıstırılır.
+   YÜZ / KENAR ROLLERİ + OTOMATİK KÖŞE DÜZENİ (Goker, Eki 2026 — "ayak da raf ve dikme gibi hacmin şeklini alsın; L ya da karmaşık
+   küplerde ayağın önünü / yanını / arkasını belirleyeyim; otomatik olsun; gerekirse yüzlere rol vereyim, roller parametrede olsun"):
+   rol = dış normalin ön yöne göre baskın bileşeni (roleOfHorizontal / roleOfNormal); iz çokgeninin kenarları rol alır (edgeRoles — gövde
+   yüzü eşlemesi PlinthService'ten gelir); autoLegPoints her köşeye rolüne göre ötelenmiş kenarların kesişiminde ayak koyar.
    Bu dosya store'a bağlı değildir (saf hesap); PlinthService / Accessories / PanelEditor kullanır. */
 import type { AxisDir } from './Geometry';
 
@@ -132,11 +136,164 @@ export function resolveLegRule(rule: LegRule, poly: Pt[], R: number): Pt {
   return { x: r1(u), y: r1(v) };
 }
 
+/** Noktayı iz çokgeninin içinde R payıyla tutar (o çizgideki aralığa kıstırma; Δ düzeltmesi dışarı taşınca). */
+export function clampInsidePoly(q: Pt, poly: Pt[], R: number): Pt {
+  let u = q.x, v = q.y;
+  const sv = pickSpan(spansAtX(poly, u), v); if (sv) v = clampIn(v, sv[0], sv[1], R);
+  const su = pickSpan(spansAtY(poly, v), u); if (su) u = clampIn(u, su[0], su[1], R);
+  if (!pointInPoly({ x: u, y: v }, poly)) { const e = polyExtent(poly); u = clampIn(u, e.x0, e.x1, R); v = clampIn(v, e.y0, e.y1, R); }
+  return { x: r1(u), y: r1(v) };
+}
+
 /** KURALLAR → gövde-yerel (x, z) ayak merkezleri. `footprint` gövde-yerel çokgen (x, z); `facing` ön yön. */
 export function resolveLegRules(rules: LegRule[], footprint: Pt[], facing: Facing, R: number): Array<{ x: number; z: number }> {
   if (footprint.length < 3) return [];
   const poly = footprint.map(p => toFacing({ x: p.x, y: p.y }, facing));
   return rules.map(r => { const q = fromFacing(resolveLegRule(r, poly, R), facing); return { x: q.x, z: q.y }; });
+}
+
+/* ───────── YÜZ / KENAR ROLLERİ (Goker, Eki 2026 — "L ya da karmaşık küplerde bile ayağın önünü, yanını, arkasını belirleyeyim; akıllı,
+   mümkünse otomatik; olmazsa referans kübün yüzlerine ön / arka / sağ / sol / üst / alt rolü vereyim, roller parametrede olsun").
+   Rol = yüzün DIŞ normalinin ön yöne göre baskın bileşeni (üst/alt: |ny| baskın). Gövde yüzlerinin rolü PlinthService.bodyFaces'te
+   okunur (parametre üstüne yazar); iz çokgeninin her kenarı gövde yüzünden rolünü alır, panel kesiğinden gelen kenar normalden. ───────── */
+export type FaceRole = 'front' | 'rear' | 'left' | 'right' | 'top' | 'bottom';
+export const FACE_ROLES: FaceRole[] = ['front', 'rear', 'left', 'right', 'top', 'bottom'];
+export const FACE_ROLE_LABEL: Record<FaceRole, string> = { front: 'Front', rear: 'Rear', left: 'Left', right: 'Right', top: 'Top', bottom: 'Bottom' };
+export const FACE_ROLE_SHORT: Record<FaceRole, string> = { front: 'F', rear: 'R', left: 'L', right: 'Rt', top: 'T', bottom: 'B' };
+/** Ön yön vektörü (gövde-yerel x,z) ve sağ = up × front (önde durup gövdeye bakanın sağı). toFacing ile aynı çerçeve. */
+export function facingVectors(facing: Facing): { front: Pt; right: Pt } {
+  switch (facing) {
+    case 'z-': return { front: { x: 0, y: -1 }, right: { x: -1, y: 0 } };
+    case 'x+': return { front: { x: 1, y: 0 }, right: { x: 0, y: -1 } };
+    case 'x-': return { front: { x: -1, y: 0 }, right: { x: 0, y: 1 } };
+    default: return { front: { x: 0, y: 1 }, right: { x: 1, y: 0 } };
+  }
+}
+/** Yatay DIŞ normal (gövde-yerel x,z) → rol; eşitlikte (45°) ön/arka kazanır. */
+export function roleOfHorizontal(n: Pt, facing: Facing): FaceRole {
+  const { front, right } = facingVectors(facing);
+  const df = n.x * front.x + n.y * front.y, dr = n.x * right.x + n.y * right.y;
+  return Math.abs(df) >= Math.abs(dr) - 1e-9 ? (df >= 0 ? 'front' : 'rear') : (dr > 0 ? 'right' : 'left');
+}
+/** 3B dış normal → rol: |ny| yatay bileşene baskınsa üst / alt. */
+export function roleOfNormal(n: { x: number; y: number; z: number }, facing: Facing): FaceRole {
+  if (Math.abs(n.y) >= Math.hypot(n.x, n.z)) return n.y > 0 ? 'top' : 'bottom';
+  return roleOfHorizontal({ x: n.x, y: n.z }, facing);
+}
+
+/* ───────── Çokgen kenarları ───────── */
+export const signedArea = (p: Pt[]): number => {
+  let s = 0;
+  for (let i = 0; i < p.length; i++) { const a = p[i], b = p[(i + 1) % p.length]; s += a.x * b.y - b.x * a.y; }
+  return s / 2;
+};
+export const polyCentroid = (p: Pt[]): Pt => {
+  let a = 0, cx = 0, cy = 0;
+  for (let i = 0; i < p.length; i++) {
+    const q = p[i], r = p[(i + 1) % p.length], w = q.x * r.y - r.x * q.y;
+    a += w; cx += (q.x + r.x) * w; cy += (q.y + r.y) * w;
+  }
+  if (Math.abs(a) < 1e-9) { const e = polyExtent(p); return { x: (e.x0 + e.x1) / 2, y: (e.y0 + e.y1) / 2 }; }
+  return { x: cx / (3 * a), y: cy / (3 * a) };
+};
+/** Ardışık yinelenen ve doğrudaş (kenar ortası) noktalar düşer; kapanış yinelemesi kalkar. */
+export function cleanPoly(poly: Pt[], tol = 1e-3): Pt[] {
+  const out: Pt[] = [];
+  for (const q of poly) { const l = out[out.length - 1]; if (!l || Math.hypot(l.x - q.x, l.y - q.y) > tol) out.push({ x: q.x, y: q.y }); }
+  while (out.length > 1 && Math.hypot(out[0].x - out[out.length - 1].x, out[0].y - out[out.length - 1].y) <= tol) out.pop();
+  for (let pass = 0; pass < 2 && out.length > 3; pass++) {
+    for (let i = out.length - 1; i >= 0 && out.length > 3; i--) {
+      const p = out[(i - 1 + out.length) % out.length], q = out[i], r = out[(i + 1) % out.length];
+      const cr = (q.x - p.x) * (r.y - q.y) - (q.y - p.y) * (r.x - q.x);
+      const l1 = Math.hypot(q.x - p.x, q.y - p.y), l2 = Math.hypot(r.x - q.x, r.y - q.y);
+      // |cr| = l1·l2·sinθ → sinθ ≈ 0 ve aynı yön → kenar ortası
+      if (Math.abs(cr) <= 1e-6 * Math.max(1, l1 * l2) && (q.x - p.x) * (r.x - q.x) + (q.y - p.y) * (r.y - q.y) > 0) out.splice(i, 1);
+    }
+  }
+  return out;
+}
+export interface PolyEdge { i: number; a: Pt; b: Pt; mid: Pt; d: Pt; n: Pt; len: number }
+/** Kenarlar (a→b), birim yön d ve birim DIŞ normal n (yönelim imzalı alandan). */
+export function polygonEdges(poly: Pt[]): PolyEdge[] {
+  const ccw = signedArea(poly) > 0;
+  const out: PolyEdge[] = [];
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i + 1) % poly.length];
+    const len = Math.hypot(b.x - a.x, b.y - a.y); if (len < 1e-6) continue;
+    const d = { x: (b.x - a.x) / len, y: (b.y - a.y) / len };
+    const n = ccw ? { x: d.y, y: -d.x } : { x: -d.y, y: d.x };
+    out.push({ i, a, b, mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, d, n, len });
+  }
+  return out;
+}
+export interface EdgeRole extends PolyEdge { role: FaceRole; source: 'body' | 'auto' }
+/** Kenar rolleri: `resolve` (gövde yüzü eşlemesi, parametre rolü dahil) bir rol verirse o; yoksa normalden otomatik. */
+export function edgeRoles(poly: Pt[], facing: Facing, resolve?: (mid: Pt, n: Pt) => FaceRole | null): EdgeRole[] {
+  return polygonEdges(poly).map(e => {
+    const r = resolve ? resolve(e.mid, e.n) : null;
+    return { ...e, role: r ?? roleOfHorizontal(e.n, facing), source: r ? 'body' : 'auto' };
+  });
+}
+/** Noktanın [a,b] parçasına uzaklığı. */
+const segDist = (q: Pt, a: Pt, b: Pt): number => {
+  const dx = b.x - a.x, dy = b.y - a.y, l2 = dx * dx + dy * dy;
+  const t = l2 > 0 ? Math.max(0, Math.min(1, ((q.x - a.x) * dx + (q.y - a.y) * dy) / l2)) : 0;
+  return Math.hypot(q.x - (a.x + dx * t), q.y - (a.y + dy * t));
+};
+
+/* ───────── OTOMATİK KÖŞE DÜZENİ (Goker: "akıllıca, mümkünse otomatik") ─────────
+   Her DIŞBÜKEY köşeye bir ayak: köşeyi kuran iki kenar kendi rolünün mesafesi kadar içeri ötelenir (ön → front, arka → rear, yan → side),
+   öteli çizgilerin kesişimi ayak merkezidir — kenar açısı ne olursa olsun (pahlı köşe, L, U). İçbükey köşelere de (`inner`, varsayılan açık)
+   aynı yolla ayak gelir (L gövdenin iç köşesi). 5 = + merkez (iz çokgeninde kalır), 6 = + her ön / arka kenarın iki ayağı arasına orta ayak.
+   Dikdörtgende sonuç eski 4 / 5 / 6 düzeniyle (legSpots) birebir aynıdır. */
+export interface AutoLegCfg { count: 4 | 5 | 6; side: number; front: number; rear: number; inner?: boolean }
+export const offsetForRole = (r: FaceRole, cfg: Pick<AutoLegCfg, 'side' | 'front' | 'rear'>): number =>
+  r === 'front' ? cfg.front : r === 'rear' ? cfg.rear : cfg.side;
+export function autoLegPoints(poly: Pt[], edges: EdgeRole[], cfg: AutoLegCfg, facing: Facing, R: number): Pt[] {
+  const n = edges.length; if (n < 3) return [];
+  const ccw = signedArea(poly) > 0;
+  const inner = cfg.inner !== false;
+  const lineC = (e: EdgeRole) => e.n.x * e.a.x + e.n.y * e.a.y - offsetForRole(e.role, cfg);   // n·q = c (içeri öteli)
+  const settle = (q: Pt): Pt | null => {
+    // Ayak (yarıçap R) hiçbir kenara R'den yakın olmasın: yakın kenardan içeri itilir; sonunda çokgenin içinde kalmalı.
+    let p = { x: q.x, y: q.y };
+    for (let pass = 0; pass < 3; pass++) {
+      for (const e of edges) {
+        const dist = segDist(p, e.a, e.b);
+        if (dist < R - 1e-6) { const push = R - dist; p = { x: p.x - e.n.x * push, y: p.y - e.n.y * push }; }
+      }
+    }
+    return pointInPoly(p, poly) ? { x: r1(p.x), y: r1(p.y) } : null;
+  };
+  const pts: Pt[] = [];
+  const add = (q: Pt | null) => { if (q && !pts.some(p => Math.hypot(p.x - q.x, p.y - q.y) < 1)) pts.push(q); };
+  for (let i = 0; i < n; i++) {
+    const e0 = edges[(i - 1 + n) % n], e1 = edges[i];
+    const cross = e0.d.x * e1.d.y - e0.d.y * e1.d.x;
+    if (Math.abs(cross) < 1e-6) continue;                       // doğrudaş: köşe değil
+    const convex = (cross > 0) === ccw;
+    if (!convex && !inner) continue;
+    const c0 = lineC(e0), c1 = lineC(e1), det = e0.n.x * e1.n.y - e0.n.y * e1.n.x;
+    if (Math.abs(det) < 1e-9) continue;
+    add(settle({ x: (c0 * e1.n.y - c1 * e0.n.y) / det, y: (e0.n.x * c1 - e1.n.x * c0) / det }));
+  }
+  if (cfg.count === 5) {
+    const q = fromFacing(resolveLegRule({ ax: 'center', dx: 0, az: 'center', dz: 0 }, poly.map(p => toFacing(p, facing)), R), facing);
+    add(settle(q));
+  }
+  if (cfg.count === 6) {
+    for (const e of edges) {
+      if (e.role !== 'front' && e.role !== 'rear') continue;
+      const c = lineC(e);
+      const on = pts.filter(p => Math.abs(e.n.x * p.x + e.n.y * p.y - c) < 0.5).sort((p, q) => (p.x * e.d.x + p.y * e.d.y) - (q.x * e.d.x + q.y * e.d.y));
+      for (let k = 0; k + 1 < on.length; k++) {
+        const a = on[k], b = on[k + 1];
+        if (Math.hypot(b.x - a.x, b.y - a.y) > 4 * R) add(settle({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }));
+      }
+    }
+  }
+  // Numaralama kararlı: önden arkaya (v azalan), soldan sağa (u artan).
+  return pts.map(p => ({ p, f: toFacing(p, facing) })).sort((a, b) => (b.f.y - a.f.y) || (a.f.x - b.f.x)).map(x => x.p);
 }
 
 /** Çokgeni eksen-hizalı dikdörtgenle kırpar (Sutherland–Hodgman, 4 kenar). */

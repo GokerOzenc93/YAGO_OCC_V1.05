@@ -13,6 +13,8 @@ import {
   translatedBboxOf, createReplicadBox, convertReplicadToThreeGeometry, type Vec3, performBooleanCut, getReplicadVertices, evaluateExpression,
   axisIndexOf, applyShapeChanges, rebuildBodySolid,
 } from './Geometry';
+import { PLINTH_FACINGS, PLINTH_FACING_LABEL, type PlinthFacing, bodyFaces, bodyFrontAxis, setBodyFaceRole, setBodyFrontAxis } from './PlinthService';
+import { FACE_ROLES, FACE_ROLE_LABEL, type FaceRole } from './LegLayout';
 
 /* Uygulama kabuğu: tasarım jetonları, ErrorBoundary, ikonlar, durum çubuğu, terminal,
    üst araç çubuğu (boolean çıkarma) ve sol kenar çubuğu (yaslı / yüzen / ayrı pencere) + kemik teması. */
@@ -1531,6 +1533,54 @@ const ExprRow = ({ label, labelColor, expression, onExpr, result, children }: Ex
   </div>
 );
 
+/* YÜZ ROLLERİ (Goker, Eki 2026 — "referans kübün yüzeylerine ön arka sağ sol üst alt rolü vereyim; roller parametrede olsun"):
+   gövdenin ÖN yönü (Auto = kapakların yüzü, yoksa +Z; ya da ±X / ±Z) + her düz yüzün rolü (otomatik: normal ön yöne göre; satırdan
+   üstüne yazılır, Auto'ya dönülür; gövde parametresi `faceRoles`). Satıra gelince yüz 3D'de vurgulanır (Scene.FaceRoleHighlight).
+   Baza ayağı setleri ayak ön / arka / yan mesafelerini bu rollerden okur (PlinthService.plinthEdgeRoles). */
+const P_SELECT = `yago-param-input shrink-0 h-[22px] px-1 text-[11px] font-medium text-stone-700 ${P_BARE} rounded-[6px] ${P_FX} cursor-pointer`;
+const ROLE_DOT: Record<FaceRole, string> = { front: '#c2410c', rear: '#44403c', left: '#2563eb', right: '#0f766e', top: '#a8a29e', bottom: '#a8a29e' };
+function FacesSection({ shape }: { shape: Shape }) {
+  const { setFaceRoleHover, setFaceRoleLabelsShapeId, doorGroups } = useStoreFields('setFaceRoleHover', 'setFaceRoleLabelsShapeId', 'doorGroups');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const faces = useMemo(() => bodyFaces(shape), [shape, shape.parameters?.faceRoles, doorGroups]);
+  const front = bodyFrontAxis(shape);
+  // Liste açıkken roller kübün üzerinde (Scene.BodyFaceRoleLabels); kapanınca / gövde değişince kalkar.
+  useEffect(() => { setFaceRoleLabelsShapeId(shape.id); return () => { setFaceRoleLabelsShapeId(null); setFaceRoleHover(null); }; }, [shape.id, setFaceRoleLabelsShapeId, setFaceRoleHover]);
+  if (!faces.length) return null;
+  const hover = (gi: number | null) => setFaceRoleHover(gi == null ? null : { shapeId: shape.id, gi });
+  const axisLabel = (f: { axis: string | null }) => (f.axis ? (PLINTH_FACING_LABEL[f.axis] ?? f.axis) : '∠');
+  return (
+    <ParamSection title="Faces" count={faces.length}
+      right={<span className="text-[10px] font-medium text-stone-400 select-none" title="Where the body's front is: Auto = the face with the doors (else +Z)">
+        front {PLINTH_FACING_LABEL[front.facing]}{front.source === 'doors' ? ' · doors' : front.source === 'default' ? ' · auto' : ''}
+      </span>}>
+      <div className={P_ROW} title="Front of the body — Auto: read from the doors (else +Z). Every face role and the plinth leg offsets follow it.">
+        <span className={P_LABEL} style={{ color: '#a8a29e' }}>Front</span>
+        <select value={front.source === 'parameter' ? front.facing : 'auto'} onChange={e => setBodyFrontAxis(shape.id, e.target.value === 'auto' ? null : (e.target.value as PlinthFacing))}
+          className={`${P_SELECT} w-[84px]`} style={{ fontFamily: UI_FONT }}>
+          <option value="auto">Auto</option>
+          {PLINTH_FACINGS.map(f => <option key={f} value={f}>{PLINTH_FACING_LABEL[f]}</option>)}
+        </select>
+        <span className={P_DESC}>{front.source === 'doors' ? `from the doors → ${PLINTH_FACING_LABEL[front.facing]}` : front.source === 'default' ? 'no doors yet → +Z' : 'set here'}</span>
+      </div>
+      {faces.map(f => (
+        <div key={f.gi} className={P_ROW} onMouseEnter={() => hover(f.gi)} onMouseLeave={() => hover(null)}
+          title={`${axisLabel(f)} face · ${f.size[0]} × ${f.size[1]} mm · auto role ${FACE_ROLE_LABEL[f.auto]}${f.overridden ? ` · overridden → ${FACE_ROLE_LABEL[f.role]}` : ''}`}>
+          <span className={P_LABEL} style={{ color: f.axis ? '#a8a29e' : '#b45309' }}>{axisLabel(f)}</span>
+          <span className="shrink-0 w-[8px] h-[8px] rounded-full" style={{ background: ROLE_DOT[f.role], opacity: f.overridden ? 1 : 0.55 }} />
+          <select value={f.overridden ? f.role : 'auto'} onChange={e => setBodyFaceRole(shape.id, f.gi, e.target.value === 'auto' ? null : (e.target.value as FaceRole))}
+            className={`${P_SELECT} w-[104px] ${f.overridden ? '!text-orange-700 font-semibold' : ''}`} style={{ fontFamily: UI_FONT }}>
+            <option value="auto">Auto · {FACE_ROLE_LABEL[f.auto]}</option>
+            {FACE_ROLES.map(r => <option key={r} value={r}>{FACE_ROLE_LABEL[r]}</option>)}
+          </select>
+          <span className={P_DESC}>{f.size[0]} × {f.size[1]}{f.overridden ? ` · was ${FACE_ROLE_LABEL[f.auto]}` : ''}</span>
+          {f.overridden && <DelBtn title="Back to the automatic role" onClick={() => setBodyFaceRole(shape.id, f.gi, null)} />}
+        </div>
+      ))}
+    </ParamSection>
+  );
+}
+
 export function ParametersPanel() {
   const { selectedShapeId, shapes, updateShape, subtractionViewMode, selectedSubtractionIndex, setSelectedSubtractionIndex, deleteSubtraction } =
     useStoreFields('selectedShapeId', 'shapes', 'updateShape', 'subtractionViewMode', 'selectedSubtractionIndex',
@@ -1671,6 +1721,7 @@ export function ParametersPanel() {
             onChange={v => setRot(prev => { const n = [...prev] as [number, number, number]; n[i] = v; return n; })} />
         ))}
       </ParamSection>
+      {selectedShape.type !== 'panel' && <FacesSection shape={selectedShape} />}
       {filletRadii.length > 0 && (
         <ParamSection title="Fillet" count={filletRadii.length}>
           {filletRadii.map((radius, idx) => (

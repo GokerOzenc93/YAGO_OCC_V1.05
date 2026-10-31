@@ -19,13 +19,14 @@ import {
   confirmPanelMoveRef, confirmPanelRotateRef, resetRefFacePick, axisIndexOf, getReplicadVertices, round1,
 } from './Geometry';
 import {
-  type PlinthPick, type PlinthFacing, confirmPlinthPick, plinthBoxOf, plinthCandidates, plinthLegSpots, plinthPickBox, plinthRowKey, plinthSetsOf, isPlinthRow,
-  finishPlinthEdit,
+  type PlinthPick, type PlinthRegion, confirmPlinthPick, plinthBoxOf, plinthBoxesOf, plinthCandidates, plinthLegSpots, plinthPickBox,
+  plinthRowKey, plinthSetsOf, isPlinthRow, finishPlinthEdit, plinthRegionOf, prismGeometry, bodyFrontAxis, bodyFaces,
 } from './PlinthService';
+import { FACE_ROLE_LABEL } from './LegLayout';
 import { type LegAssemblyPart, legAssembly, onAccessoryGeometry } from './AccessoryService';
 import {
   confirmRefCavityExtrude, groupBoundsPanelPredicate, isInteriorPanel, repickObstacles, collectObstacles,
-  gridForObstacles, boxesSurface, rayCavityCandidates, GROUP_PANEL_THICKNESS, confirmVolumePick, rayBoxEntry,
+  gridForObstacles, boxesSurface, rayCavityCandidates, GROUP_PANEL_THICKNESS, confirmVolumePick,
 } from './PanelGroupService';
 import {
   vfBackBound, isBackPanel, splitBackAtPanel, backPreviewStamp, backPickObstacle, collectBackCuts, BACK_THICKNESS, confirmBackPick, backSlabPolygon,
@@ -1182,7 +1183,8 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
       if (!(depth > 0.5) || Math.abs(dL.y) < 1e-6) continue;
       const tL = (b.max[1] - oL.y) / dL.y; if (tL < 0) continue;
       const hL = oL.clone().addScaledVector(dL, tL);
-      if (hL.x < b.min[0] - 0.5 || hL.x > b.max[0] + 0.5 || hL.z < b.min[2] - 0.5 || hL.z > b.max[2] + 0.5) continue;
+      // Setin üstü bölge şeklindedir (L / çentik): vuruş bölge kutularından birinin x/z kapsamında olmalı
+      if (!plinthBoxesOf(ps).some(rb => hL.x >= rb.min[0] - 0.5 && hL.x <= rb.max[0] + 0.5 && hL.z >= rb.min[2] - 0.5 && hL.z <= rb.max[2] + 0.5)) continue;
       const cx = (b.min[0] + b.max[0]) / 2, cz = (b.min[2] + b.max[2]) / 2;
       const gi = bottoms.reduce((best, x) => (Math.hypot(x.g.center.x - cx, x.g.center.z - cz) < Math.hypot(best.g.center.x - cx, best.g.center.z - cz) ? x : best)).i;
       const hitW = hL.clone().applyMatrix4(localToWorld);
@@ -1736,7 +1738,8 @@ export const PlinthEditOverlay: React.FC<{ shape: any }> = ({ shape }) => {
   const S = useStoreFields('plinthSets', 'faceExtrudePlinthId', 'shapes');
   const set = S.plinthSets.find(x => x.id === S.faceExtrudePlinthId);
   const active = !!set && set.shapeId === shape.id;
-  const boxes = useMemo(() => (set ? [plinthBoxOf(set, S.shapes)] : []), [set, S.shapes]);
+  // Bölge kutuları: L sette iki +X yüzü gibi ayrı düzlemler de seçilebilir; uygulanan ölçü kapsamın o eksenidir (applyPlinthFace)
+  const boxes = useMemo(() => (set ? plinthBoxesOf(set, S.shapes) : []), [set, S.shapes]);
   return <BoxFacePickOverlay shape={shape} active={active} boxes={boxes} />;
 };
 /** Kutu yüzeyinde yüz seçimi (hacim / baza seti): seçilen yüzün normali + tıklama noktası store'a yazılır. */
@@ -1841,7 +1844,7 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
     'showOutlines', 'setSelectedPanelRow', 'panelSelectMode', 'faceEditMode', 'filletMode', 'raycastMode', 'shapes', 'faceExtrudeMode',
     'faceExtrudeValueMode', 'faceExtrudeTargetPanelId', 'faceExtrudeSelectedFace', 'faceExtrudeRefCandidate', 'setFaceExtrudeRefCandidate',
     'panelMoveMode', 'panelMoveValueMode', 'panelMoveRefSourceVertex', 'panelMoveRefTargetPanelId', 'panelRotateMode', 'volumePickMode',
-    'faceExtrudeCavityGroupId', 'doorPickMode', 'backPickMode', 'plinthPickMode', 'faceExtrudePlinthId');
+    'faceExtrudeCavityGroupId', 'doorPickMode', 'backPickMode', 'plinthPickMode', 'faceExtrudePlinthId', 'faceRoleHover', 'faceRoleLabelsShapeId');
   const { scene } = useThree();
   const meshRef = useRef<THREE.Mesh>(null);
   const groupRef = useRef<THREE.Group>(null);
@@ -2032,6 +2035,8 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
         {S.faceExtrudeMode && S.faceExtrudeCavityGroupId && <CavityEditOverlay shape={shape} />}
         {S.faceExtrudeMode && S.faceExtrudePlinthId && <PlinthEditOverlay shape={shape} />}
         <VirtualFaceOverlay shape={shape} />
+        {S.faceRoleLabelsShapeId === shape.id && <BodyFaceRoleLabels shape={shape} hovered={S.faceRoleHover?.shapeId === shape.id ? S.faceRoleHover!.gi : null} />}
+        {S.faceRoleHover && S.faceRoleHover.shapeId === shape.id && <FaceRoleHighlight shape={shape} faces={refFaces} groups={refFaceGroups} gi={S.faceRoleHover.gi} />}
       </group>
 
       {isSelected && S.activeTool !== Tool.SELECT && groupRef.current && !shape.isReferenceBox && !S.panelSelectMode && (
@@ -2386,36 +2391,22 @@ function BoxExtrudeGizmo({ parent, box }: { parent: Shape; box: { min: Vec3; max
 /* BAZA AYAĞI SETİ (PlinthService) — seçme kaplaması, çizim ve ok gizmosu. */
 /** Seçme: gövde + altındaki varsayılan yükseklik tıklanır; adaylar (alt panelin altı · gövdenin altı) raf/dikme gibi döner, sağ tık yerleştirir. */
 export const PlinthPickOverlay: React.FC<{ shape: any }> = ({ shape }) => {
-  const s = useStoreFields('plinthPickMode', 'plinthPickCandidates', 'plinthPickIndex', 'setPlinthPick', 'plinthPickHeight', 'shapes', 'virtualFaces', 'plinthPickFacing');
-  const { plinthPickMode: active, plinthPickHeight: H, shapes, virtualFaces, plinthPickFacing: facingOverride } = s;
+  const s = useStoreFields('plinthPickMode', 'plinthPickCandidates', 'plinthPickIndex', 'setPlinthPick', 'plinthPickHeight', 'shapes', 'virtualFaces');
+  const { plinthPickMode: active, plinthPickHeight: H, shapes, virtualFaces } = s;
   const hitBox = useMemo(() => (active ? plinthPickBox(shape) : null), [active, shape]);
   const pickGeo = useMemo(() => (hitBox ? pickBoxGeometry(hitBox) : null), [hitBox]);
   useDisposable(pickGeo);
-  const { worldToLocal } = useShapeMatrices(shape);
-  // ÖN YÖN (Goker: "raf/dikme atar gibi ön tarafını belirlemeliyim"): tıklanan gövde yüzü (yan yüzler) ön olur; üstten/alttan tık → +Z;
-  // şeritten seçilmiş yön varsa o. Adaylar o yönle üretilir (anahtar yönü içerir → yön değişince seçim yenilenir).
-  const facingAt = (e: any): PlinthFacing => {
-    if (facingOverride) return facingOverride;
-    if (!hitBox || !e?.ray) return 'z+';
-    const [o, d] = localRay(e, worldToLocal);
-    const ent = rayBoxEntry(o, d, hitBox);
-    if (!ent || ent.axis === 1) return 'z+';
-    // `pos` = ışın o eksende + yönde → MIN yüzden girer; tıklanan yüz = giriş yüzü.
-    return (ent.axis === 0 ? (ent.pos ? 'x-' : 'x+') : (ent.pos ? 'z-' : 'z+')) as PlinthFacing;
-  };
-  const candsAt = (e: any) => (active ? plinthCandidates(shape, shapes, virtualFaces, H, facingAt(e)) : []);
+  // ÖN YÖN gövdenin parametresidir (bodyFrontAxis: parametre → kapaklar → +Z; Goker: "roller parametrede olsun, ayakta gelmesin").
+  const candsAt = () => (active ? plinthCandidates(shape, shapes, virtualFaces, H, bodyFrontAxis(shape).facing) : []);
   const selected = s.plinthPickCandidates[s.plinthPickIndex] || null;
   const cycle = usePickCycle<PlinthPick>(active, candsAt, s.setPlinthPick, () => { if (selected) confirmPlinthPick(shape.id, selected, useAppStore.getState().placementName); });
-  // Şeritten yön değişince seçili adaylar o yöne çevrilir (kutu aynı).
-  useEffect(() => {
-    if (!active || !facingOverride || !s.plinthPickCandidates.length) return;
-    if (s.plinthPickCandidates.every(c => c.facing === facingOverride)) return;
-    s.setPlinthPick(s.plinthPickCandidates.map(c => ({ ...c, facing: facingOverride, key: c.key.replace(/:[xz][+-]$/, `:${facingOverride}`) })), s.plinthPickIndex);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [facingOverride, active]);
   const { hoverPick } = cycle;
-  const selectedMesh = useMemo(() => (selected ? surfaceMesh(boxesSurface([selected.box])) : null), [selected]);
-  const hoverMesh = useMemo(() => (hoverPick ? surfaceMesh(boxesSurface([hoverPick.box])) : null), [hoverPick]);
+  // Aday hacim gerçek şekliyle (bölge prizması: L gövde, çıkarma, yanlar arası); bölge yoksa kutu
+  const pickMesh = (p: PlinthPick) => (p.poly && p.poly.length >= 3
+    ? (() => { const geo = prismGeometry(p.poly, p.box.min[1], p.box.max[1]); return { geo, edgePts: edgePointsOf(geo, 1) }; })()
+    : surfaceMesh(boxesSurface(p.boxes?.length ? p.boxes : [p.box])));
+  const selectedMesh = useMemo(() => (selected ? pickMesh(selected) : null), [selected]);
+  const hoverMesh = useMemo(() => (hoverPick ? pickMesh(hoverPick) : null), [hoverPick]);
   useDisposable(selectedMesh?.geo); useDisposable(hoverMesh?.geo);
   if (!active || !pickGeo) return null;
   const hoverIsSelected = !!hoverPick && !!selected && hoverPick.key === selected.key;
@@ -2429,19 +2420,11 @@ export const PlinthPickOverlay: React.FC<{ shape: any }> = ({ shape }) => {
         <>
           <mesh geometry={selectedMesh.geo} raycast={noRaycast} renderOrder={6}><FillMat color={PICK_COLORS.selected} opacity={SEL_COLORS.volumeActiveOpacity} /></mesh>
           {selectedMesh.edgePts.length >= 2 && <EdgeLines points={selectedMesh.edgePts} color={PICK_COLORS.selectedEdge} width={SEL_COLORS.edgeWidth} order={7} />}
-          {selected && <PlinthFrontArrow box={selected.box} facing={selected.facing} />}
         </>
       )}
     </>
   );
 };
-/** ÖN ok: ön yüzün dışından içeri (raf/dikme okuyla aynı dil) + "Front" etiketi. */
-const PlinthFrontArrow: React.FC<{ box: { min: Vec3; max: Vec3 }; facing: PlinthFacing }> = ({ box, facing }) => {
-  const axis = facing[0] === 'x' ? 0 : 2;
-  // FacingArrow: facing>0 → min yüz, +eksen; ön +Z/+X = max yüz → facing −1 (dıştan içeri).
-  return <FacingArrow box={box} axis={axis} facing={facing[1] === '+' ? -1 : 1} label="Front" />;
-};
-
 /** Setler (gövde-yerel çerçevede): ayak silindirleri + taban diski; tık satırı seçer; seçili sette oklar. */
 /* MUTFAK PLASTİK BAZA AYAĞI (Goker: "gerçeğine benzer model"): yere oturan yuvarlak taban + dişli ayar mili + üstte dişli yuva (kovan) +
    vidalı montaj tablası. Ölçüler Ø (taban çapı) ve set yüksekliğinden türetilir; her parça lathe/cylinder, renk antrasit plastik. */
@@ -2506,19 +2489,20 @@ export const PlinthSets: React.FC<{ shape: any }> = ({ shape }) => {
   const { plinthSets, selectedPanelRow, setSelectedPanelRow, viewMode, shapes, faceExtrudeMode, faceExtrudePlinthId, raycastMode } =
     useStoreFields('plinthSets', 'selectedPanelRow', 'setSelectedPanelRow', 'viewMode', 'shapes', 'faceExtrudeMode', 'faceExtrudePlinthId', 'raycastMode');
   const sets = useMemo(() => plinthSetsOf(shape.id, plinthSets), [plinthSets, shape.id]);
-  // Etkin kutu: taban zeminde, üst bağlı alt panelden (canlı) — alt panel taşınınca / gövde boyutlanınca ayak yine zemine basar.
-  const boxes = useMemo(() => sets.map(set => plinthBoxOf(set, shapes)), [sets, shapes]);
+  // Etkin bölge: taban zeminde, üst bağlı alt panelden (canlı), şekil gövde + erken yanlardan (L / çentik) — ayaklar bölgenin içinde.
+  const regions = useMemo(() => sets.map(set => plinthRegionOf(set, shapes)), [sets, shapes]);
+  const spots = useMemo(() => sets.map(set => plinthLegSpots(set, shapes)), [sets, shapes]);
   if (!sets.length || viewMode === ViewMode.WIREFRAME) return null;
   const xray = viewMode === ViewMode.XRAY;
   return (
     <>
       {sets.map((set, k) => {
         const active = selectedPanelRow === plinthRowKey(set.id);
-        const box = boxes[k], h = box.max[1] - box.min[1], y0 = box.min[1];
+        const box = regions[k].bbox, h = box.max[1] - box.min[1], y0 = box.min[1];
         const click = (e: any) => { e.stopPropagation(); setSelectedPanelRow(active ? null : plinthRowKey(set.id), shape.id); };
         return (
           <group key={set.id}>
-            {plinthLegSpots(set, box).map((p, i) => (
+            {spots[k].map((p, i) => (
               <group key={i} position={[p.x, y0, p.z]}>
                 {/* Panel yerleştirme kipinde ayaklar tıklamayı ALMAZ: ışın gövdenin yüz seçimine gider (setin üstü orada aday) */}
                 {set.legs.legModelId
@@ -2526,8 +2510,8 @@ export const PlinthSets: React.FC<{ shape: any }> = ({ shape }) => {
                   : <PlinthFoot h={h} d={set.legs.diameter} active={active} xray={xray} onClick={click} pickable={!raycastMode} />}
               </group>
             ))}
-            {/* Hacim düzenlemede (Volume) kutu ve yüz seçimi PlinthEditOverlay'de çizilir */}
-            {active && !(faceExtrudeMode && faceExtrudePlinthId === set.id) && <PlinthVolume box={box} />}
+            {/* Hacim düzenlemede (Volume) bölge ve yüz seçimi PlinthEditOverlay'de çizilir */}
+            {active && !(faceExtrudeMode && faceExtrudePlinthId === set.id) && <PlinthVolume region={regions[k]} />}
           </group>
         );
       })}
@@ -2563,9 +2547,63 @@ export function ImportedFoot({ legModelId, h, d, active, xray, onClick, pickable
     </group>
   );
 }
-/** Seçili setin hacmi: raf/dikme seçimiyle aynı dil (mavi dolgu + kırmızı kenar). */
-function PlinthVolume({ box }: { box: { min: Vec3; max: Vec3 } }) {
-  const m = useMemo(() => surfaceMesh(boxesSurface([box])), [box]);
+const ROLE_CHIP: Record<string, string> = { front: '#c2410c', rear: '#44403c', left: '#2563eb', right: '#0f766e', top: '#78716c', bottom: '#78716c' };
+/** KÜBÜN ÜZERİNDE ROLLER (Goker: "kübün üzerinde hangi role ait olduğunu göster; rolleri Parameters'ta listeyle yönet"): Faces listesi
+ *  açıkken seçili gövdenin her düz yüzünün ortasında rol rozeti (parametreyle üstüne yazılan = dolu, otomatik = soluk; listede
+ *  üzerine gelinen büyür). */
+const BodyFaceRoleLabels: React.FC<{ shape: any; hovered: number | null }> = ({ shape, hovered }) => {
+  const { doorGroups } = useStoreFields('doorGroups');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const faces = useMemo(() => bodyFaces(shape), [shape, shape.parameters?.faceRoles, doorGroups]);
+  return (
+    <>
+      {faces.map(f => {
+        const hot = hovered === f.gi;
+        if (hot) return null;   // vurgu bileşeni kendi rozetini çizer
+        return (
+          <Html key={f.gi} position={[f.center[0] + f.normal[0] * 6, f.center[1] + f.normal[1] * 6, f.center[2] + f.normal[2] * 6]} center zIndexRange={[880, 900]}
+            style={{ pointerEvents: 'none' }}>
+            <div style={{
+              fontFamily: FONT, fontSize: 9, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', lineHeight: '14px', padding: '0 6px',
+              borderRadius: 4, whiteSpace: 'nowrap', border: `1px solid ${ROLE_CHIP[f.role]}`,
+              background: f.overridden ? ROLE_CHIP[f.role] : 'rgba(255,252,247,0.92)', color: f.overridden ? '#fff' : ROLE_CHIP[f.role],
+              boxShadow: '0 1px 3px rgba(40,30,20,0.22)',
+            }}>
+              {FACE_ROLE_LABEL[f.role]}
+            </div>
+          </Html>
+        );
+      })}
+    </>
+  );
+};
+/** YÜZ ROLÜ VURGUSU (Parameters › Faces satırına gelince): yüz grubu turuncu dolgu + kenar, ortasında rol rozeti. */
+const FaceRoleHighlight: React.FC<{ shape: any; faces: FaceData[]; groups: CoplanarFaceGroup[]; gi: number }> = ({ shape, faces, groups, gi }) => {
+  const geo = useMemo(() => groupHighlight(faces, groups, gi), [faces, groups, gi]);
+  useDisposable(geo);
+  const face = useMemo(() => bodyFaces(shape).find(f => f.gi === gi), [shape, gi]);
+  if (!geo || !face) return null;
+  const at: Vec3 = [face.center[0] + face.normal[0] * 4, face.center[1] + face.normal[1] * 4, face.center[2] + face.normal[2] * 4];
+  return (
+    <>
+      <OverlayMesh geometry={geo} order={12} color={SEL_COLORS.active} opacity={SEL_COLORS.faceActiveOpacity} />
+      <FaceOutline geometry={geo} color={SEL_COLORS.edge} width={SEL_COLORS.extrudeEdgeWidth} />
+      <Html position={at} center zIndexRange={[900, 950]} style={{ pointerEvents: 'none' }}>
+        <div style={{
+          fontFamily: FONT, fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', lineHeight: '16px', padding: '1px 7px',
+          borderRadius: 4, whiteSpace: 'nowrap', background: ROLE_CHIP[face.role], color: '#fff', boxShadow: '0 1px 3px rgba(40,30,20,0.3)',
+        }}>
+          {FACE_ROLE_LABEL[face.role]}{face.overridden ? ' ·' : ''}
+        </div>
+      </Html>
+    </>
+  );
+};
+/** Seçili setin hacmi: raf/dikme seçimiyle aynı dil (mavi dolgu + kırmızı kenar) — bölge prizması (L / pahlı gövdede gerçek şekil).
+ *  Rol etiketi burada YOK (Goker: "roller ayakta gelmesin" — roller kübün üzerinde, Parameters › Faces açıkken). */
+function PlinthVolume({ region }: { region: PlinthRegion }) {
+  const { bbox, poly } = region;
+  const m = useMemo(() => { const geo = prismGeometry(poly, bbox.min[1], bbox.max[1]); return { geo, edgePts: edgePointsOf(geo, 1) }; }, [poly, bbox]);
   useDisposable(m.geo);
   return (
     <>

@@ -6,7 +6,7 @@ import { type CoplanarFaceGroup, type FaceData, type Vec3, angleToTouchPlane, as
 import { isInteriorPanel, isInteriorVf, recalculateInteriorVfs, syncPanelGroups } from './PanelGroupService';
 import { isDoorPanel, isDoorVf, recalculateDoorVfs, syncDoorGroups } from './DoorService';
 import { backGrooveCuttersFor, backNailStampFor, backStackAt, isBackPanel, isBackVf, recalculateBackVfs, syncBackGroups } from './BackService';
-import { isPlinthVf, plinthBoxOf, plinthSetsOf } from './PlinthService';
+import { isPlinthVf, plinthBoxOf, plinthPrismOf, plinthSetsOf } from './PlinthService';
 
 // Kapak ve arkalık panelleri (LEVHA): köşe birleşimine girmez, gövdeyle sığdırılmaz/kesilmez, hiçbir paneli kesmez; damgalamaz —
 // istisna arkalığın iç parçası: ÇAKMA kenarındaki ve sırada kendinden SONRA gelen gövde panelini basar (BackService.backNailStampFor).
@@ -1368,18 +1368,17 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
       ...(ops ? { __composedOps: ops } : {}),
     };
   };
-  /** Set kutusu = düz panel gibi damga (kalınlık = yükseklik; ayak izi kutunun yüze değen yüzü). */
+  /** Set hacmi = düz panel gibi damga (kalınlık = yükseklik): bölgenin taban çokgeni prizması — L / pahlı sette yüze değen yüz yalnız
+   *  o kenarın dikdörtgenidir (sağ yan yalnız arka kolun derinliğince basılır); dikdörtgende kutuyla aynı. */
   const plinthStampCache = new Map<string, any>();
   const plinthStampOf = (ps: { id: string; vfId: string }, body: Shape): any => {
     const hit = plinthStampCache.get(ps.id); if (hit) return hit;
     const full = plinthSetsOf(body.id).find(x => x.id === ps.id); if (!full) return null;
     const b = plinthBoxOf(full, shapesArr, virtualFaces);
-    const sz = [0, 1, 2].map(a => Math.max(0.01, b.max[a] - b.min[a]));
-    const mid = [0, 1, 2].map(a => (b.min[a] + b.max[a]) / 2);
     const st = {
       id: `plinth-stamp-${ps.id}`, type: 'panel', position: body.position, rotation: body.rotation, scale: body.scale,
-      geometry: new THREE.BoxGeometry(sz[0], sz[1], sz[2]).translate(mid[0], mid[1], mid[2]),
-      parameters: { parentShapeId: body.id, virtualFaceId: ps.vfId, panelThickness: sz[1] }, __pierceObstacle: true,
+      geometry: plinthPrismOf(full, shapesArr, virtualFaces),
+      parameters: { parentShapeId: body.id, virtualFaceId: ps.vfId, panelThickness: Math.max(0.01, b.max[1] - b.min[1]) }, __pierceObstacle: true,
     };
     plinthStampCache.set(ps.id, st);
     return st;
