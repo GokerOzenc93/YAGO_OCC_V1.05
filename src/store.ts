@@ -344,8 +344,8 @@ export interface AccessoryModel {
   id: string; name: string; fileName: string; ext: string; unit: AccessoryUnit; upAxis: 'y' | 'z'; size: Vec3; createdAt: number;
 }
 export interface LegModelPart { modelId: string; role: LegPartRole }
-/** Ayak modeli: 1–3 parça (taban / mil / tabla); yalnız 'stem' rolü uzar. */
-export interface LegModel { id: string; name: string; parts: LegModelPart[]; createdAt: number }
+/** Ayak modeli: 3 yuva (alt / orta / üst = base / stem / top); `stretch` = uzayan yuva (varsayılan orta). */
+export interface LegModel { id: string; name: string; parts: LegModelPart[]; stretch?: LegPartRole; createdAt: number }
 /** Ayak seti ("kaset"): hangi model, kaç ayak, kenar mesafeleri (parametrik: kutu ölçüsünden bağımsız), varsayılan yükseklik. */
 export interface LegPreset {
   id: string; name: string; legModelId: string | null; count: 4 | 5 | 6; side: number; front: number; rear: number; height: number; createdAt: number;

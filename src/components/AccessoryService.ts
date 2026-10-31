@@ -28,7 +28,11 @@ export const ACCESSORY_FORMATS: Record<string, { loader: string; label: string }
   amf: { loader: 'amf', label: 'AMF' }, wrl: { loader: 'wrl', label: 'VRML' }, vrml: { loader: 'wrl', label: 'VRML' },
   step: { loader: 'step', label: 'STEP' }, stp: { loader: 'step', label: 'STEP' },
 };
-export const ACCESSORY_ACCEPT = Object.keys(ACCESSORY_FORMATS).map(e => `.${e}`).join(',');
+/** Dosya seçicide DWG de görünür: seçilirse STLOUT yönlendirmesi verilir (DWG ayrıştırılmaz — 3D katılar ACIS, ücretsiz okuyucu yok). */
+export const ACCESSORY_ACCEPT = [...Object.keys(ACCESSORY_FORMATS), 'dwg', 'dxf'].map(e => `.${e}`).join(',');
+export const DWG_HINT = 'DWG / DXF cannot be read directly — in AutoCAD run STLOUT on the solid and import the .stl';
+/** Biçimin olağan yukarı ekseni: CAD / baskı biçimleri Z-yukarı (AutoCAD STLOUT dahil), diğerleri Y-yukarı. */
+export const defaultUpAxis = (fileName: string): 'y' | 'z' => (['stl', 'step', 'stp', '3mf', 'amf', 'ply'].includes(extOf(fileName)) ? 'z' : 'y');
 export const UNIT_FACTOR: Record<AccessoryUnit, number> = { mm: 1, cm: 10, m: 1000, in: 25.4 };
 export const LEG_ROLE_LABEL: Record<LegPartRole, string> = { base: 'Base', stem: 'Stem', top: 'Top plate' };
 export const LEG_ROLE_TITLE: Record<LegPartRole, string> = {
@@ -200,8 +204,10 @@ export async function loadAccessoryLibrary(): Promise<void> {
 }
 
 /** DOSYA İÇE AKTAR: çöz, normalize et, üst bilgi + baytları kaydet. Hata → fırlatır (UI gösterir). */
-export async function importAccessoryFile(file: File, unit: AccessoryUnit = 'mm', upAxis: 'y' | 'z' = 'y', name?: string): Promise<AccessoryModel> {
-  if (!isSupportedAccessoryFile(file.name)) throw new Error(`Unsupported file type: .${extOf(file.name)}`);
+export async function importAccessoryFile(file: File, unit: AccessoryUnit = 'mm', upAxis: 'y' | 'z' = defaultUpAxis(file.name), name?: string): Promise<AccessoryModel> {
+  const ext = extOf(file.name);
+  if (ext === 'dwg' || ext === 'dxf') throw new Error(DWG_HINT);
+  if (!isSupportedAccessoryFile(file.name)) throw new Error(`Unsupported file type: .${ext}`);
   const bytes = await file.arrayBuffer();
   const raw = await parseAccessoryBytes(bytes, file.name);
   const { geo, size } = normalizeAccessoryGeometry(raw, unit, upAxis);
@@ -287,7 +293,15 @@ export async function deleteLegPreset(id: string): Promise<void> {
   useAppStore.getState().removeLegPreset(id);
   await idbDelete('legPresets', id);
 }
-export const newLegModel = (name = 'Leg'): LegModel => ({ id: genId('leg'), name, parts: [], createdAt: Date.now() });
+export const newLegModel = (name = 'Leg'): LegModel => ({ id: genId('leg'), name, parts: [], stretch: 'stem', createdAt: Date.now() });
+/** Uzayan yuva (eski kayıtlarda alan yok → orta). */
+export const legStretchOf = (leg: Pick<LegModel, 'stretch'>): LegPartRole => leg.stretch ?? 'stem';
+/** Hiçbir ayak modelinde (ve `keep` içinde) kullanılmayan içe aktarılmış dosyaları siler (vazgeçilen / değiştirilen yuvalar). */
+export async function pruneUnusedAccessoryModels(keep: string[] = []): Promise<void> {
+  const st = useAppStore.getState();
+  const used = new Set([...keep, ...st.legModels.flatMap(l => l.parts.map(p => p.modelId))]);
+  for (const m of st.accessoryModels) if (!used.has(m.id)) await deleteAccessoryModel(m.id);
+}
 export const newLegPreset = (name = 'Leg set'): LegPreset =>
   ({ id: genId('legset'), name, legModelId: null, count: 4, side: 60, front: 60, rear: 60, height: 100, createdAt: Date.now() });
 
@@ -295,21 +309,22 @@ export const newLegPreset = (name = 'Leg set'): LegPreset =>
 export const orderedParts = (parts: LegModelPart[]): LegModelPart[] => parts.map((p, i) => ({ p, i })).sort((a, b) => ROLE_ORDER[a.p.role] - ROLE_ORDER[b.p.role] || a.i - b.i).map(x => x.p);
 
 export interface LegAssemblyPart { modelId: string; role: LegPartRole; y: number; scaleY: number; geo: THREE.BufferGeometry; size: Vec3 }
-/** Ayak montajı: parçalar alt alta; `stem` yüksekliği = h − diğer parçalar (en az 1 mm) → yalnız mil uzar. Hazır olmayan parça yoksa null. */
+/** Ayak montajı: yuvalar alttan üste; UZAYAN yuvanın yüksekliği = h − diğerleri (en az 1 mm) → yalnız o uzar. Hazır olmayan parça varsa null. */
 export function legAssembly(leg: LegModel, h: number, geoOf: (id: string) => { geo: THREE.BufferGeometry; size: Vec3 } | null = accessoryGeometryNow): LegAssemblyPart[] | null {
   const parts = orderedParts(leg.parts);
   if (!parts.length) return null;
   const resolved = parts.map(p => ({ p, g: geoOf(p.modelId) }));
   if (resolved.some(r => !r.g)) return null;
-  const hasStem = parts.some(p => p.role === 'stem');
-  const fixedH = resolved.filter(r => r.p.role !== 'stem').reduce((a, r) => a + r.g!.size[1], 0);
-  const stemNatural = resolved.filter(r => r.p.role === 'stem').reduce((a, r) => a + r.g!.size[1], 0);
+  const stretch = legStretchOf(leg);
+  const hasStem = parts.some(p => p.role === stretch);
+  const fixedH = resolved.filter(r => r.p.role !== stretch).reduce((a, r) => a + r.g!.size[1], 0);
+  const stemNatural = resolved.filter(r => r.p.role === stretch).reduce((a, r) => a + r.g!.size[1], 0);
   const stemTarget = Math.max(1, h - fixedH);
   const stemScale = hasStem && stemNatural > 1e-6 ? stemTarget / stemNatural : 1;
   const out: LegAssemblyPart[] = [];
   let y = 0;
   for (const r of resolved) {
-    const scaleY = r.p.role === 'stem' ? stemScale : 1;
+    const scaleY = r.p.role === stretch ? stemScale : 1;
     out.push({ modelId: r.p.modelId, role: r.p.role, y, scaleY, geo: r.g!.geo, size: r.g!.size });
     y += r.g!.size[1] * scaleY;
   }
@@ -325,7 +340,7 @@ export function legModelDims(leg: LegModel | undefined, models = useAppStore.get
   }
   return { height: round1(h), diameter: round1(d) };
 }
-export const legModelHasStem = (leg: LegModel | undefined) => !!leg && leg.parts.some(p => p.role === 'stem');
+export const legModelHasStem = (leg: LegModel | undefined) => !!leg && leg.parts.some(p => p.role === legStretchOf(leg));
 
 /** Setten PlinthLegs alanları (PlinthService / hızlı gövde): adet, kenar mesafeleri, model, Ø modelden (yoksa 50). */
 export function legsFromPreset(preset: LegPreset, st = useAppStore.getState()): { count: 4 | 5 | 6; diameter: number; side: number; front: number; rear: number; legModelId: string | null; presetId: string } {

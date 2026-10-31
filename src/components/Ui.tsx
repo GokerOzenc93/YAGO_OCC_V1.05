@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   type LucideIcon, Spline, Layers, Radius, Plus, Container, LayoutPanelTop, Rows3, Columns3, DoorClosed, SendToBack, Hash, ChevronRight, Send, Box,
-  Square, SlidersHorizontal, PanelLeft, GripHorizontal, PictureInPicture2, AppWindow, Pin, PinOff, Trash2, X, Check, Footprints, Wrench, Upload, LayoutGrid,
+  Square, SlidersHorizontal, PanelLeft, GripHorizontal, PictureInPicture2, AppWindow, Pin, PinOff, Trash2, X, Check, Footprints, Wrench,
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { createClient } from '@supabase/supabase-js';
@@ -90,9 +90,8 @@ type RailSpec = {
   key: string; label: string; icon: LucideIcon; title: string; active?: boolean; badge?: string | number; onClick: () => void;
   /** Sekme açıkken de pasif (ör. hızlı gövde zaten yerleşmiş). */ disabled?: boolean;
 };
-/* Panelin YEREL durumuna bağlı ray eylemleri buraya kaydolur (ParametersPanel → özel parametre ekleme; AccessoriesPanel → model içe aktar / yeni set). */
-export const railActions: { addCustomParameter: (() => void) | null; importAccessory: (() => void) | null; newLegSet: (() => void) | null } =
-  { addCustomParameter: null, importAccessory: null, newLegSet: null };
+/* Panelin YEREL durumuna bağlı ray eylemleri buraya kaydolur (ParametersPanel → özel parametre ekleme). */
+export const railActions: { addCustomParameter: (() => void) | null } = { addCustomParameter: null };
 
 const RAIL_BTN: React.CSSProperties = {
   position: 'relative', width: '50px', height: '46px', borderRadius: '8px', border: 'none', outline: 'none', padding: 0, flexShrink: 0,
@@ -141,7 +140,7 @@ const RailTool: React.FC<Omit<RailSpec, 'key'> & { passive: boolean }> = ({ labe
 };
 
 export const SidebarRail: React.FC<{ activeTab: SidebarTab; hasShape: boolean }> = ({ activeTab, hasShape }) => {
-  const s = useStoreFields('raycastMode', 'setRaycastMode', 'volumePickMode', 'setVolumePickMode', 'volumePickGroupId', 'doorPickMode',
+  const s = useStoreFields('accessoryCategory', 'setAccessoryCategory', 'raycastMode', 'setRaycastMode', 'volumePickMode', 'setVolumePickMode', 'volumePickGroupId', 'doorPickMode',
     'setDoorPickMode', 'backPickMode', 'setBackPickMode', 'plinthPickMode', 'setPlinthPickMode', 'quickBodyMode', 'setQuickBodyMode', 'vertexEditMode', 'setVertexEditMode',
     'subtractionViewMode', 'setSubtractionViewMode', 'filletMode', 'setFilletMode', 'setFaceEditMode', 'selectedFilletFaces', 'clearFilletFaces',
     'clearFilletFaceData', 'selectedShapeId', 'shapes', 'virtualFaces');
@@ -184,11 +183,9 @@ export const SidebarRail: React.FC<{ activeTab: SidebarTab; hasShape: boolean }>
     { key: 'plinth', label: 'Plinth', icon: Footprints, ...toggle(s.plinthPickMode, s.setPlinthPickMode),
       title: 'Plinth leg set: click the body — the volume under the bottom panel / below the body is highlighted, click cycles, right-click places' },
   ];
-  // AKSESUAR (Goker, Eki 2026): kütüphane gövdeden bağımsız → şekil seçili olmasa da etkin.
+  // AKSESUAR (Goker, Eki 2026): kategori raydan seçilir (panelde ayrıca tip seçimi yok); kütüphane gövdeden bağımsız → şekil seçili olmasa da etkin.
   const accessories: RailSpec[] = [
-    { key: 'acc-import', label: 'Import', icon: Upload, title: 'Import a 3D model file (glb, gltf, obj, stl, fbx, dae, ply, 3mf, 3ds, amf, wrl, step) as an accessory part',
-      onClick: () => railActions.importAccessory?.() },
-    { key: 'acc-legset', label: 'Leg set', icon: LayoutGrid, title: 'New leg set: model + 4 / 5 / 6 legs + offsets, saved to the library', onClick: () => railActions.newLegSet?.() },
+    { key: 'acc-legs', label: 'Legs', icon: Footprints, title: 'Leg models and leg sets', active: s.accessoryCategory === 'legs', onClick: () => s.setAccessoryCategory('legs') },
   ];
   const group = (list: RailSpec[], tab: SidebarTab, needShape = true) =>
     list.map(({ key, disabled, ...t }) => <RailTool key={key} {...t} passive={(needShape && !hasShape) || activeTab !== tab || !!disabled} />);
