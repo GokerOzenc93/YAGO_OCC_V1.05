@@ -628,6 +628,22 @@ function backPressBox(bg: BackGroup, sol: BackSolution, m: BackMemberRect, extra
  *  bağlı derz de değil: bütün arkalık). Kanallı kenar (groove) ve levhaya bağlı derz kısaltmaz; dış (çakma tip) parça gövdenin
  *  dışındadır, kısaltmaz. Döner: engel kutusu (çakma kenarda levhanın tüm kalınlığını kapsar) ya da null. */
 export function backObstacleFor(group: PanelGroup, backPanel: Shape): CavityBox | null {
+  const r = backGroupRelation(group, backPanel);
+  if (!r) return null;
+  const { bg, sol, m, press, involved } = r;
+  if (press) return backPressBox(bg, sol, m);
+  // SIRA: arkalıktan SONRA konan raf/dikme grubu (kenar / derz ilişkisi yoksa) parçanın levhasıyla sınırlanır → arkalığın ön yüzünde,
+  // kanal bolluğu varsa o kadar geride biter (backOrderBox).
+  if (!involved && backPrecedes(backPanel, group.memberVfIds, useAppStore.getState().virtualFaces)) return backOrderBox(bg, m, group.memberVfIds);
+  return null;
+}
+
+/** Grup ↔ iç parça ilişkisi (backObstacleFor ve backMemberCutFor aynı okumayı paylaşır): `press` = grup baskısı (çakma kenar üye /
+ *  çakma derz üye / parçanın geçtiği arkalık-sınırı üye), `involved` = bir üye parçanın kenarı ya da levhaya bağlı derzi,
+ *  `free` = kenar, derz ve arkalık-sınırı OLMAYAN üyeler (parçayla hiçbir ilişkisi yok). Parça iç tip değilse / gruba ait değilse null. */
+function backGroupRelation(group: PanelGroup, backPanel: Shape): {
+  bg: BackGroup; sol: BackSolution; m: BackMemberRect; press: boolean; involved: boolean; free: string[];
+} | null {
   const hit = backMemberOfPanel(backPanel);
   if (!hit || hit.bg.shapeId !== group.shapeId || hit.m.piece.placement !== 'inner') return null;
   const { bg, sol, m } = hit;
@@ -639,6 +655,7 @@ export function backObstacleFor(group: PanelGroup, backPanel: Shape): CavityBox 
   const parent = shapeById(bg.shapeId, useAppStore.getState().shapes);
   const nailedJoint = (id: string) => Object.values(sol.sides[m.leafId] ?? {}).some(x => x?.vfId === id && x.rel === 'nail');
   let press = false, involved = false;
+  const free: string[] = [];
   for (const id of group.memberVfIds) {
     const edge = EDGE_KEYS.find(k => bounds[k]?.vfId === id);
     if (edge) {
@@ -653,7 +670,8 @@ export function backObstacleFor(group: PanelGroup, backPanel: Shape): CavityBox 
       continue;
     }
     const mvf = vfs.find(f => f.id === id);
-    if (!mvf || !vfBackBound(mvf)) continue;
+    if (!mvf) continue;
+    if (!vfBackBound(mvf)) { free.push(id); continue; }
     const p = parent ? panelOfVf(id, useAppStore.getState().shapes) : null;
     const box = p && parent ? panelLocalBox(p, parent) : null;
     if (!box) continue;
@@ -661,11 +679,25 @@ export function backObstacleFor(group: PanelGroup, backPanel: Shape): CavityBox 
     const cu = (box.min[u] + box.max[u]) / 2, cv = (box.min[v] + box.max[v]) / 2;
     if (cu > cell.u0 - TOL && cu < cell.u1 + TOL && cv > cell.v0 - TOL && cv < cell.v1 + TOL) { press = true; break; }
   }
-  if (press) return backPressBox(bg, sol, m);
-  // SIRA: arkalıktan SONRA konan raf/dikme grubu (kenar / derz ilişkisi yoksa) parçanın levhasıyla sınırlanır → arkalığın ön yüzünde,
-  // kanal bolluğu varsa o kadar geride biter (backOrderBox).
-  if (!involved && backPrecedes(backPanel, group.memberVfIds, vfs)) return backOrderBox(bg, m, group.memberVfIds);
-  return null;
+  return { bg, sol, m, press, involved, free };
+}
+
+/** ÜYE KISALTMA (Goker, Eki 2026 — "çoklu rafta yalnız biri backref ise diğerleri kısalmalı, arkalık içinden geçiyor"): grup düzeyinde
+ *  engel YOKKEN (bir üye parçanın kanallı kenarı ya da levhaya bağlı KANALLI derzi → grup ilişkili, backObstacleFor null) kenar / derz /
+ *  arkalık-sınırı olmayan üyeler parçanın levhasından geçmemeli → her biri parçanın ön yüzünde (kanal bolluğu kadar geride) biter;
+ *  ilişkili üye tam boy kalır (iki yandan kanal). Grup hacmi DEĞİŞMEZ; yalnız bu üyelerin kesiti kırpılır (PanelGroupService.solveGroup).
+ *  Kutu: parçanın hücresi — bağlı derzde levhanın parçaya bakan yüzünde durur (levhaya girmez), kanallı kenarda hücre kenarı
+ *  (backPressBox kenar kuralı) — derinlikte sıra kutusu aralığı (backOrderBox). Döner: kutu + uygulanacak üye VF'leri, yoksa null. */
+export function backMemberCutFor(group: PanelGroup, backPanel: Shape): { box: CavityBox; vfIds: string[] } | null {
+  const r = backGroupRelation(group, backPanel);
+  if (!r || r.press || !r.involved || !r.free.length) return null;
+  const { bg, sol, m } = r;
+  const { u, v } = backPlaneAxes(bg.axis);
+  const uv = backPressBox(bg, sol, m);
+  const box = backOrderBox(bg, m, r.free);
+  box.min[u] = uv.min[u]; box.max[u] = uv.max[u];
+  box.min[v] = uv.min[v]; box.max[v] = uv.max[v];
+  return { box, vfIds: r.free };
 }
 
 /** Arkalık paneli VF sırasında hedef VF'lerin (hepsinden) ÖNCE mi; hedef henüz VF'siz (yeni grup) → sonra sayılır. */

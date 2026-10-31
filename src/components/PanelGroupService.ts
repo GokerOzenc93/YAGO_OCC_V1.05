@@ -10,7 +10,7 @@ import {
   requestRebuild, type RefFacePick, type CornerKey, type QuickBodyConfig, type JoinPass, type BodyLegs, childPanelsOf, type QuickBodyPart,
 } from '../store';
 import {
-  backObstacleFor, isBackPanel, backPreviewStamp, backCandidatesAt, BACK_AXIS, BACK_SIDE, createBackGroupFromPick, setBackDefaults,
+  backObstacleFor, backMemberCutFor, isBackPanel, backPreviewStamp, backCandidatesAt, BACK_AXIS, BACK_SIDE, createBackGroupFromPick, setBackDefaults,
   deleteBackGroupWithMembers,
 } from './BackService';
 import { doorJointForBond, moveDoorJointTo, isDoorPanel } from './DoorService';
@@ -1568,6 +1568,48 @@ function groupObstacles(group: PanelGroup, parent: Shape, panels: Shape[], group
   return collectObstacles(parent, panels, p => bounds(p), p => backObstacleFor(group, p));
 }
 
+/** ÜYE BAŞINA ARKALIK KESİMİ (BackService.backMemberCutFor): grubun bir üyesi iç parçanın kanallı kenarı / bağlı derzi iken ilişkisiz
+ *  üyeler parçanın levhasından geçmesin — grup hacmi değişmez, yalnız o üyelerin kesiti kutunun dışında alınır (solveGroup). */
+type MemberCut = { box: CavityBox; vfIds: string[] };
+function groupMemberBackCuts(group: PanelGroup, parent: Shape, panels: Shape[]): MemberCut[] {
+  const out: MemberCut[] = [];
+  for (const p of panels) {
+    if (p.type !== 'panel' || p.parameters?.parentShapeId !== parent.id || !isBackPanel(p)) continue;
+    const c = backMemberCutFor(group, p);
+    if (c) out.push(c);
+  }
+  return out;
+}
+const boxPlanes = (b: CavityBox): StepPlane[] => [0, 1, 2].flatMap(a => [{ axis: a, coord: b.min[a] }, { axis: a, coord: b.max[a] }]);
+/** Hücre merkezi kutulardan birinin içinde olan hücreler düşer (kutu düzlemleri ızgarada olmalı). */
+const cellsOutsideBoxes = (g: CavityGrid, cells: Set<number>, boxes: CavityBox[]): Set<number> =>
+  new Set([...cells].filter(c => !boxes.some(b => strictlyInside(boxCenter(cellBox(g, c)), b))));
+/** Kesme düzlemleri bölgeyi gereksiz böler: iki eksende eş, üçüncüde bitişik kutular birleştirilir (bölge kutu sayısı kesimsiz halle aynı kalsın). */
+function mergeRegionBoxes(boxes: CavityBox[]): CavityBox[] {
+  const out = boxes.map(cloneBox);
+  const eq = (a: number, b: number) => Math.abs(a - b) <= TOL;
+  for (let changed = true; changed;) {
+    changed = false;
+    outer: for (let i = 0; i < out.length; i++) for (let j = i + 1; j < out.length; j++) {
+      const a = out[i], b = out[j];
+      for (let ax = 0; ax < 3; ax++) {
+        const others = [0, 1, 2].filter(x => x !== ax);
+        if (!others.every(x => eq(a.min[x], b.min[x]) && eq(a.max[x], b.max[x]))) continue;
+        if (eq(a.max[ax], b.min[ax])) a.max[ax] = b.max[ax];
+        else if (eq(b.max[ax], a.min[ax])) a.min[ax] = b.min[ax];
+        else continue;
+        out.splice(j, 1); changed = true; break outer;
+      }
+    }
+  }
+  return out;
+}
+/** i. üyenin VF kimliği (groupIndex öncelikli, yoksa dizi sırası). */
+function memberVfIdAt(group: PanelGroup, i: number, vfs: VirtualFace[]): string | undefined {
+  for (const id of group.memberVfIds) { const vf = vfs.find(f => f.id === id); if (vf && vf.groupIndex === i) return id; }
+  return group.memberVfIds[i];
+}
+
 /** Yeniden seçim ızgarası çözümle AYNI engel kümesiyle kurulur → grubun şu anki yeri de aday olur. */
 export function repickObstacles(group: PanelGroup, parent: Shape, panels: Shape[]): ObstacleSet {
   return groupObstacles(group, parent, panels, useAppStore.getState().panelGroups);
@@ -1602,9 +1644,12 @@ function solveGroup(group: PanelGroup, parent: Shape, panels: Shape[], groups: P
   const ts = memberThicknessesOf(group);
   const tMax = ts.length ? Math.max(...ts) : group.thickness;
   const hasSteps = !!group.cavitySteps?.length;
+  // Üye başına arkalık kesimleri: kutu düzlemleri ızgaraya girer (hücreler kutu sınırında bölünsün); hacim/bölge etkilenmez.
+  const memberCuts = groupMemberBackCuts(group, parent, panels);
+  const cutPlanes = memberCuts.flatMap(c => boxPlanes(c.box));
 
   const solveCells = (extra: StepPlane[]) => {
-    const grid = gridForObstacles(parent, oset, extra);
+    const grid = gridForObstacles(parent, oset, cutPlanes.length ? [...cutPlanes, ...extra] : extra);
     if (!grid) return null;
     let seed = anchorPoint(group, grid.body);
     let c = cellOfPoint(grid, seed);
@@ -1658,6 +1703,7 @@ function solveGroup(group: PanelGroup, parent: Shape, panels: Shape[], groups: P
   const { grid, seed, planes, cells } = R;
   let cavity = cells.size ? clippedRegionBBox(grid, cells, planes) : cloneBox(group.cavity);
   let region = cells.size ? regionBoxes(grid, cells) : (group.region || [cloneBox(group.cavity)]);
+  if (cutPlanes.length && cells.size) region = mergeRegionBoxes(region);
   const minOk = cells.size > 0 && [0, 1, 2].every(a => boxSpan(cavity, a) >= (a === group.axis ? sumT(ts) : tMax));
   if (!minOk) {
     // Hacim bozuk / çok küçük: önceki hacim korunur.
@@ -1679,10 +1725,15 @@ function solveGroup(group: PanelGroup, parent: Shape, panels: Shape[], groups: P
     }
   }
   const starts = panelStarts(cavity, group.axis, groupFacing(group), gaps, ts);
+  const vfsNow = memberCuts.length ? useAppStore.getState().virtualFaces : [];
   const sections = starts.map((s, i) => {
     if (!minOk) return null;
     const t = ts[i];
-    const poly = sectionPolygon(grid, cells, group.axis, s, s + t, seed);
+    // İlişkisiz üye: kesiti arkalık kesme kutularının dışında (parçanın ön yüzünde biter); diğer üyeler tam bölge.
+    const vfId = memberCuts.length ? memberVfIdAt(group, i, vfsNow) : undefined;
+    const cutBoxes = vfId ? memberCuts.filter(c => c.vfIds.includes(vfId)).map(c => c.box) : [];
+    const cellsI = cutBoxes.length ? cellsOutsideBoxes(grid, cells, cutBoxes) : cells;
+    const poly = sectionPolygon(grid, cellsI, group.axis, s, s + t, seed);
     if (!poly || !planes.length) return poly;
     const clipped = clipSectionByPlanes(poly, group.axis, s, s + t, planes);
     return clipped.length >= 3 ? clipped : poly;
