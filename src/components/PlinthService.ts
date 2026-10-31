@@ -14,8 +14,14 @@
 import { type CavityBox, type Shape, type VirtualFace, useAppStore, shapeById, childPanelsOf, vfOfPanel, panelOfVf, requestRebuild } from '../store';
 import { type AxisDir, type Vec3, axisDirToVec, effectiveBodyGeometry, genId, localBboxOf, round1 } from './Geometry';
 import { legSpots } from './PanelGroupService';
+import { legsFromPreset, legPresetById } from './AccessoryService';
 
-export type PlinthLegs = { count: 4 | 5 | 6; diameter: number; side: number; front: number; rear: number };
+/** Ayak düzeni. `legModelId` = aksesuar kütüphanesinden ayak modeli (yoksa yerleşik plastik ayak); `presetId` = uygulanan ayak seti. */
+export type PlinthLegs = { count: 4 | 5 | 6; diameter: number; side: number; front: number; rear: number; legModelId?: string | null; presetId?: string | null };
+/** ÖN yön (gövde-yerel): ayak ön/arka mesafeleri bu yöne göre; varsayılan +Z. */
+export type PlinthFacing = AxisDir;
+export const PLINTH_FACINGS: PlinthFacing[] = ['z+', 'z-', 'x+', 'x-'];
+export const PLINTH_FACING_LABEL: Record<string, string> = { 'z+': '+Z', 'z-': '−Z', 'x+': '+X', 'x-': '−X' };
 export interface PlinthSet {
   id: string; shapeId: string; name: string;
   /** Sıralama yer tutucusu VF (store.virtualFaces içinde; `plinthId` = set). */
@@ -27,9 +33,12 @@ export interface PlinthSet {
   bottomVfId?: string;
   /** Hızlı gövdenin kurduğu set (Body satırıyla birlikte kaldırılır / yeniden kurulur). */
   quickBody?: boolean;
+  /** Ön yön (Goker: "yerleşirken ön tarafı ok ile belirlemeliyim"); yoksa +Z. */
+  facing?: PlinthFacing;
   createdAt: number;
 }
-export interface PlinthPick { key: string; box: CavityBox; where: 'underBottom' | 'inside'; label: string; bottomVfId?: string }
+export interface PlinthPick { key: string; box: CavityBox; where: 'underBottom' | 'inside'; label: string; bottomVfId?: string; facing: PlinthFacing }
+export const plinthFacingOf = (s: Pick<PlinthSet, 'facing'>): PlinthFacing => s.facing ?? 'z+';
 /** Ok modu: dyn = her tık değer kadar; fixed = o eksendeki toplam ölçü = değer. */
 export type ArrowMode = 'dyn' | 'fixed';
 
@@ -112,9 +121,16 @@ export function plinthLegSpots(s: PlinthSet, box = plinthBoxOf(s)): Array<{ x: n
   const W = box.max[0] - box.min[0], D = box.max[2] - box.min[2];
   const R = Math.max(10, s.legs.diameter / 2) * 1.15;
   const clamp = (v: number, lo: number, hi: number) => (hi < lo ? (lo + hi) / 2 : Math.min(hi, Math.max(lo, v)));
-  return legSpots(s.legs, W, D).map(p => ({
+  return legSpotsFacing(s.legs, W, D, plinthFacingOf(s)).map(p => ({
     x: clamp(box.min[0] + p.x, box.min[0] + R, box.max[0] - R), z: clamp(box.min[2] + p.z, box.min[2] + R, box.max[2] - R),
   }));
+}
+/** `legSpots` ön = +Z varsayar; ön yöne göre döndürülür (W = x açıklığı, D = z açıklığı; sonuç kutu-yerel x/z). */
+export function legSpotsFacing(legs: Pick<PlinthLegs, 'count' | 'side' | 'front' | 'rear'>, W: number, D: number, facing: PlinthFacing): Array<{ x: number; z: number }> {
+  if (facing === 'z+') return legSpots(legs, W, D);
+  if (facing === 'z-') return legSpots(legs, W, D).map(p => ({ x: p.x, z: D - p.z }));
+  // Ön ±X: derinlik ekseni X — düzen (genişlik = D, derinlik = W) hesaplanıp eksenler takas edilir.
+  return legSpots(legs, D, W).map(p => ({ x: facing === 'x+' ? p.z : W - p.z, z: p.x }));
 }
 
 /** Gövdenin ALT yüzündeki (normal −Y) panel: en alçak alt yüzlü olan. */
@@ -131,7 +147,7 @@ function bottomPanelOf(body: Shape, shapes: Shape[], vfs: VirtualFace[]): { pane
 
 /** Aday hacimler (gövde-yerel), ikisi de ZEMİNDEN başlar: (1) yükseltilmiş alt panelin altı (panele bağlanır), (2) gövdenin içinde
  *  zemin → varsayılan yükseklik — alt panel olmasa da. */
-export function plinthCandidates(body: Shape, shapes: Shape[], vfs: VirtualFace[], height: number): PlinthPick[] {
+export function plinthCandidates(body: Shape, shapes: Shape[], vfs: VirtualFace[], height: number, facing: PlinthFacing = 'z+'): PlinthPick[] {
   const bb = localBboxOf(effectiveBodyGeometry(body)); if (!bb) return [];
   const H = Math.max(1, height);
   const x0 = bb.min.x, x1 = bb.max.x, z0 = bb.min.z, z1 = bb.max.z, y0 = bb.min.y;
@@ -139,11 +155,11 @@ export function plinthCandidates(body: Shape, shapes: Shape[], vfs: VirtualFace[
   const bottom = bottomPanelOf(body, shapes, vfs);
   const under = bottom ? localBboxOf(bottom.panel.geometry)!.min.y : null;
   if (bottom && under != null && under - y0 > 1) {
-    out.push({ key: `under:${bottom.vf.id}:${round1(under)}`, where: 'underBottom', label: 'Under the bottom panel (follows it)', bottomVfId: bottom.vf.id,
-      box: { min: [x0, y0, z0], max: [x1, under, z1] } });
+    out.push({ key: `under:${bottom.vf.id}:${round1(under)}:${facing}`, where: 'underBottom', label: 'Under the bottom panel (follows it)', bottomVfId: bottom.vf.id,
+      box: { min: [x0, y0, z0], max: [x1, under, z1] }, facing });
   }
   const top = Math.min(y0 + H, bb.max.y);
-  out.push({ key: `inside:${round1(top)}`, where: 'inside', label: 'Inside the body, on the floor', box: { min: [x0, y0, z0], max: [x1, top, z1] } });
+  out.push({ key: `inside:${round1(top)}:${facing}`, where: 'inside', label: 'Inside the body, on the floor', box: { min: [x0, y0, z0], max: [x1, top, z1] }, facing });
   return out;
 }
 
@@ -198,7 +214,7 @@ export function applyPlinthFace(id: string, normal: Vec3, value: number, mode: A
 }
 
 /** Set kurar (yerleştirme ve hızlı gövde ortak). */
-export function createPlinthSet(shapeId: string, box: CavityBox, legs: PlinthLegs, opts: { name?: string; bottomVfId?: string; quickBody?: boolean } = {}): PlinthSet {
+export function createPlinthSet(shapeId: string, box: CavityBox, legs: PlinthLegs, opts: { name?: string; bottomVfId?: string; quickBody?: boolean; facing?: PlinthFacing } = {}): PlinthSet {
   const st = useAppStore.getState();
   const n = plinthSetsOf(shapeId, st.plinthSets).length + 1;
   const id = genId('plinth'), vfId = genId('vf');
@@ -207,6 +223,7 @@ export function createPlinthSet(shapeId: string, box: CavityBox, legs: PlinthLeg
     id, shapeId, name, vfId,
     box: { min: [...box.min] as Vec3, max: [...box.max] as Vec3 }, legs: { ...legs }, createdAt: Date.now(),
     ...(opts.bottomVfId ? { bottomVfId: opts.bottomVfId } : {}), ...(opts.quickBody ? { quickBody: true } : {}),
+    ...(opts.facing && opts.facing !== 'z+' ? { facing: opts.facing } : {}),
   };
   // Sıralama yer tutucusu: listede setin yeri; paneli yok (interior + plinthId → motor yüz eşlemesine almaz).
   const c: Vec3 = [(box.min[0] + box.max[0]) / 2, box.min[1], (box.min[2] + box.max[2]) / 2];
@@ -218,11 +235,13 @@ export function createPlinthSet(shapeId: string, box: CavityBox, legs: PlinthLeg
   if (!opts.quickBody) syncAfterPlinthChange(shapeId);   // hızlı gövde kendi rebuild'ini tetikler
   return set;
 }
-/** Onay: set kurulur, satırı seçilir, seçme modu kapanır. */
+/** Onay: set kurulur (şeritte seçili ayak seti varsa onun düzeni / modeli; ön yön adaydan), satırı seçilir, seçme modu kapanır. */
 export function confirmPlinthPick(shapeId: string, pick: PlinthPick, name?: string): PlinthSet | null {
   const st = useAppStore.getState();
   if (!shapeById(shapeId, st.shapes)) return null;
-  const set = createPlinthSet(shapeId, pick.box, DEFAULT_PLINTH_LEGS, { name, bottomVfId: pick.bottomVfId });
+  const preset = legPresetById(st.plinthPickPresetId, st);
+  const legs: PlinthLegs = preset ? legsFromPreset(preset, st) : DEFAULT_PLINTH_LEGS;
+  const set = createPlinthSet(shapeId, pick.box, legs, { name, bottomVfId: pick.bottomVfId, facing: pick.facing });
   st.setPlinthPickMode(false);
   st.setSelectedPanelRow(plinthRowKey(set.id), shapeId);
   return set;
@@ -263,7 +282,25 @@ export function removeQuickBodyPlinth(shapeId: string): void {
 export function setPlinthLegs(id: string, patch: Partial<PlinthLegs>): void {
   const st = useAppStore.getState();
   const s = st.plinthSets.find(x => x.id === id); if (!s) return;
-  st.updatePlinthSet(id, { legs: { ...s.legs, ...patch } });
+  // Düzen elle değişince set artık o "kaset" değil (model korunur).
+  const detach = ['count', 'side', 'front', 'rear'].some(k => k in patch) && !('presetId' in patch);
+  st.updatePlinthSet(id, { legs: { ...s.legs, ...patch, ...(detach ? { presetId: null } : {}) } });
+}
+/** AYAK SETİ UYGULA (Goker: "kaydettiğim ayak kasetlerini ayak kısmında çağıralım"): düzen + model setten; bağsız sette yükseklik de. */
+export function applyLegPresetToSet(id: string, presetId: string | null): void {
+  const st = useAppStore.getState();
+  const s = st.plinthSets.find(x => x.id === id); if (!s) return;
+  const preset = legPresetById(presetId, st);
+  if (!preset) { st.updatePlinthSet(id, { legs: { ...s.legs, presetId: null } }); return; }
+  st.updatePlinthSet(id, { legs: legsFromPreset(preset, st) });
+  if (!plinthIsBound(s) && preset.height > 0) setPlinthHeight(id, preset.height);
+  else syncAfterPlinthChange(s.shapeId);
+}
+/** Ön yön değişince ayaklar döner (kutu aynı). */
+export function setPlinthFacing(id: string, facing: PlinthFacing): void {
+  const st = useAppStore.getState();
+  const s = st.plinthSets.find(x => x.id === id); if (!s) return;
+  st.updatePlinthSet(id, { facing: facing === 'z+' ? undefined : facing });
 }
 /** Yükseklik: taban zeminde sabit, üst yüz oynar (bağlı sette etkisiz — üst alt panelden gelir). */
 export function setPlinthHeight(id: string, h: number): void {

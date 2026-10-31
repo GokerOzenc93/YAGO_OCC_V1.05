@@ -45,9 +45,11 @@ import {
 } from './PanelGroupService';
 import { confirmBodyPanelPlacement } from './Scene';
 import {
-  type PlinthSet, confirmPlinthPick, plinthRowKey, plinthSetsOf, plinthSize, plinthName, setPlinthLegs, setPlinthHeight, plinthIsBound,
-  applyPlinthFace, applyPlinthArrow, deletePlinthSetAndSync, finishPlinthEdit, startPlinthVolumeEdit,
+  type PlinthSet, type PlinthFacing, confirmPlinthPick, plinthRowKey, plinthSetsOf, plinthSize, plinthName, setPlinthLegs, setPlinthHeight, plinthIsBound,
+  applyPlinthFace, applyPlinthArrow, deletePlinthSetAndSync, finishPlinthEdit, startPlinthVolumeEdit, applyLegPresetToSet, setPlinthFacing, plinthFacingOf,
+  PLINTH_FACINGS, PLINTH_FACING_LABEL,
 } from './PlinthService';
+import { legModelById, legModelDims, legPresetById } from './AccessoryService';
 
 /* PANEL EDİTÖRÜ — 1) şerit + liste satırı parçaları · 2) kart blokları (ipucu hücresi, kanal / ayak diyagramları, hızlı gövde) ·
    3) şeritler, adım listeleri, yerleştirme şeritleri · 4) panel listesi ve kartlar. Şemalar PanelSchematics.tsx'te. */
@@ -441,13 +443,31 @@ export function SizeBox({ icon: Icon, label, value, title, onChange }: {
 }
 const SELECT_CLASS = 'h-[28px] pl-2.5 pr-7 rounded-[7px] bg-white ring-1 ring-[#e6e0d6] shadow-[0_1px_0_rgba(40,30,20,0.03)] text-[11.5px] font-semibold '
   + 'text-stone-700 appearance-none outline-none cursor-pointer hover:ring-[#dcd4c8] focus:ring-orange-400/60 transition-shadow duration-150';
-function SelectBox<T extends string>({ value, options, title, onChange }: { value: T; options: Array<[T, string]>; title: string; onChange: (v: T) => void }) {
+export function SelectBox<T extends string>({ value, options, title, onChange }: { value: T; options: Array<[T, string]>; title: string; onChange: (v: T) => void }) {
   return (
     <div className="relative shrink-0" onClick={stop} title={title}>
       <select value={value} onChange={e => onChange(e.target.value as T)} className={SELECT_CLASS} style={{ fontFamily: UI_FONT }}>
         {options.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
       </select>
       <ChevronDown size={12} strokeWidth={2.2} className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-stone-400" />
+    </div>
+  );
+}
+/** AYAK SETİ SEÇİCİ (aksesuar kütüphanesi; Goker: "kaydettiğim ayak kasetlerini ayak kısmında çağıralım"): yerleşik ayak + kayıtlı setler. */
+export function LegPresetSelect({ value, onChange, title = 'Leg set — a saved leg layout and model from the Accessories tab' }: {
+  value: string | null | undefined; onChange: (presetId: string | null) => void; title?: string;
+}) {
+  const { legPresets, legModels } = useStoreFields('legPresets', 'legModels');
+  const opts: Array<[string, string]> = [['', legPresets.length ? 'Custom · built-in foot' : 'Built-in foot (no saved sets)'],
+    ...legPresets.map(p => [p.id, `${p.name} · ${p.count} legs${p.legModelId ? ` · ${legModels.find(m => m.id === p.legModelId)?.name ?? 'model'}` : ''}`] as [string, string])];
+  return <SelectBox value={value && legPresets.some(p => p.id === value) ? value : ''} options={opts} title={title} onChange={v => onChange(v || null)} />;
+}
+/** ÖN YÖN seçici (baza seti): +Z / −Z / +X / −X. */
+export function FacingSelect({ value, onChange, height = 22 }: { value: PlinthFacing; onChange: (f: PlinthFacing) => void; height?: number }) {
+  return (
+    <div style={{ width: 148 }}>
+      <Segmented height={height} active={value} onPick={k => onChange(k as PlinthFacing)}
+        items={PLINTH_FACINGS.map(f => ({ key: f, label: PLINTH_FACING_LABEL[f], title: `Front faces ${PLINTH_FACING_LABEL[f]}` }))} />
     </div>
   );
 }
@@ -636,13 +656,13 @@ const QB_BASE_ITEMS: SegItem[] = [
   { key: 'plinth', label: 'Plinth', title: 'Plinth: sides reach the floor, bottom panel raised by the plinth height, kick panels front / rear' },
 ];
 const QB_CORNER_TITLE: Record<CornerKey, string> = { tl: 'Top-left', tr: 'Top-right', bl: 'Bottom-left', br: 'Bottom-right' };
-const QB_CELL_ROW = { gridAutoRows: `${BACK_ROW_H}px`, rowGap: BACK_ROW_GAP } as const;
+export const QB_CELL_ROW = { gridAutoRows: `${BACK_ROW_H}px`, rowGap: BACK_ROW_GAP } as const;
 const qbField = (w: number, passive?: boolean): React.CSSProperties =>
   ({ ...FIELD_INPUT, width: w, flexShrink: 0, textAlign: 'right', ...(passive ? PASSIVE_INPUT : {}) });
 const countOpts = (ns: number[]) => ns.map(n => ({ v: String(n), label: n === 0 ? 'None' : String(n) }));
 
 /** Taslaklı sayı girişi: Enter / blur onaylar, Esc geri alır. */
-function QbNum({ value, onCommit, passive, w = 34, min = 0, max }: {
+export function QbNum({ value, onCommit, passive, w = 34, min = 0, max }: {
   value: number; onCommit: (v: number) => void; passive?: boolean; w?: number; min?: number; max?: number;
 }) {
   const [draft, setDraft] = useDraft(value);
@@ -671,7 +691,7 @@ function QbSwitch({ on, onToggle, title, disabled }: { on: boolean; onToggle: ()
     </button>
   );
 }
-function QbSelect<T extends string>({ value, options, onChange, passive, w = 44 }: {
+export function QbSelect<T extends string>({ value, options, onChange, passive, w = 44 }: {
   value: T; options: Array<{ v: T; label: string }>; onChange: (v: T) => void; passive?: boolean; w?: number;
 }) {
   return (
@@ -681,18 +701,18 @@ function QbSelect<T extends string>({ value, options, onChange, passive, w = 44 
     </select>
   );
 }
-const ReadCell = ({ label, title, className = '', children }: Kids & { label: string; title?: string; className?: string }) => (
+export const ReadCell = ({ label, title, className = '', children }: Kids & { label: string; title?: string; className?: string }) => (
   <div className={`${className} ${READ_CELL}`} title={title}>
     <span className={`flex-1 min-w-0 truncate ${CELL_LABEL}`}>{label}</span>
     {children}
   </div>
 );
 /** Giriş kutusu yazısıyla salt-okunur değer. */
-const ReadValue = ({ color, title, className = 'whitespace-nowrap pr-1', children }: Kids & { color: string; title?: string; className?: string }) => (
+export const ReadValue = ({ color, title, className = 'whitespace-nowrap pr-1', children }: Kids & { color: string; title?: string; className?: string }) => (
   <span className={className} style={{ ...FIELD_INPUT, width: 'auto', color }} title={title}>{children}</span>
 );
 /** Aynı ipucu durumuna bağlı hücreler: `cell` serbest içerik, `num` QbNum (pasiflik hücre ve giriş için ortak). */
-function hintCells(hint: string | null, onHint: (k: string | null) => void) {
+export function hintCells(hint: string | null, onHint: (k: string | null) => void) {
   const cell = (label: string, k: string, body: React.ReactNode, passive?: boolean) => (
     <HintCell label={label} hintKey={k} active={hint === k} onHint={onHint} passive={passive}>{body}</HintCell>
   );
@@ -743,7 +763,7 @@ function CornerJointTiles({ joins, lockBottom, active, onCorner, onHover }: {
 
 type LegDims = { count: number; height: number; diameter: number; side: number; front: number; rear: number };
 /* Plan görünüşü (üstten; ön altta): ayak yerleri, Ø, yan / ön / arka mesafeleri. Tam genişlik. */
-function LegsPlanDiagram({ legs, W, D, active, className }: { legs: Omit<LegDims, 'height'>; W: number; D: number; active: string | null; className?: string }) {
+export function LegsPlanDiagram({ legs, W, D, active, className }: { legs: Omit<LegDims, 'height'>; W: number; D: number; active: string | null; className?: string }) {
   const VW = 448, VH = 176, PX0 = 64, PW = VW - PX0 - 70, PY0 = 22, PH = VH - PY0 - 26;
   const s = Math.max(1e-6, Math.min(PW / W, PH / D));
   const w = W * s, d = D * s, x0 = PX0 + (PW - w) / 2, y0 = PY0 + (PH - d) / 2, x1 = x0 + w, y1 = y0 + d;
@@ -819,7 +839,7 @@ export function LegsBlock({ legs, W, D, heightReadout, heightEditable, countOpti
 
 /* BÖLÜM KUTUSU: hızlı gövde panelinin üç bölümü (gövde panelleri · ayaklar · arkalık) ayrı kutularda, başlıkta bölümün ana seçimi
    (Goker: "gövde, arkalık ve ayak kısımları iç içe giriyor"). */
-function QbSection({ title, sub, trailing, children }: Kids & { title: string; sub?: string; trailing?: React.ReactNode }) {
+export function QbSection({ title, sub, trailing, children }: Kids & { title: string; sub?: string; trailing?: React.ReactNode }) {
   return (
     <div className="rounded-[10px] ring-1 ring-[#e6e0d6] bg-white overflow-hidden shadow-[0_1px_2px_rgba(68,64,60,0.04)]">
       <div className="flex items-center gap-2 pl-2.5 pr-1.5 h-[32px] bg-[#f6f2ec] border-b border-[#ebe5dc]">
@@ -832,7 +852,7 @@ function QbSection({ title, sub, trailing, children }: Kids & { title: string; s
     </div>
   );
 }
-const QbNote = ({ children }: Kids) => <div className="px-1 py-1 text-[10.5px] leading-snug text-stone-400">{children}</div>;
+export const QbNote = ({ children }: Kids) => <div className="px-1 py-1 text-[10.5px] leading-snug text-stone-400">{children}</div>;
 const QB_BACK_ITEMS: SegItem[] = [
   { key: 'none', label: 'None', title: 'No back panel' },
   { key: 'outer', label: BACK_TYPE_LABEL.outer, title: 'Nailed onto the rear edges of the body panels' },
@@ -918,11 +938,25 @@ export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onAppl
         <QbSection title="Legs" sub={isLegs ? 'body height includes the legs' : isPlinth ? 'optional, under the bottom panel' : undefined}
           trailing={isPlain ? <span className="pr-1 text-[11px] font-semibold text-stone-300">None</span>
             : <SelectBox value={String(legCount)} title="Number of legs" options={QB_LEG_OPTS(isLegs ? [4, 5, 6] : [0, 4, 5, 6]).map(o => [o.v, o.label])}
-              onChange={v => setLegs({ count: parseInt(v, 10) as 0 | 4 | 5 | 6 })} />}>
+              onChange={v => setLegs({ count: parseInt(v, 10) as 0 | 4 | 5 | 6, presetId: null })} />}>
+          {legCount > 0 && (
+            <div className="flex items-center gap-1.5 pb-1.5">
+              <span style={SECTION_LABEL}>Leg set</span>
+              <div className="flex-1 min-w-0 flex">
+                <LegPresetSelect value={cfg.legs.presetId} onChange={id => {
+                  const p = legPresetById(id);
+                  if (!p) { setLegs({ presetId: null }); return; }
+                  // Set düzeni ve modeli hızlı gövde ayarına yazılır (Ø modelden, applyQuickBody'de); Legs tabanında yükseklik de.
+                  setLegs({ presetId: p.id, legModelId: p.legModelId, count: p.count, side: p.side, front: p.front, rear: p.rear, ...(isLegs ? { height: p.height } : {}) });
+                }} />
+              </div>
+              {cfg.legs.legModelId && <span className="text-[10.5px] text-stone-400 truncate">model: {legModelById(cfg.legs.legModelId)?.name ?? 'missing'}</span>}
+            </div>
+          )}
           {legCount > 0 ? (
             <LegsBlock legs={{ ...cfg.legs, count: legCount, height: isPlinth ? cfg.plinth.height : cfg.legs.height }} W={W} D={D} heightEditable={isLegs}
               heightReadout={isPlinth ? cfg.plinth.height : undefined} countOptions={[]} hint={hint} onHint={setHint}
-              onChange={p => setLegs(p as Partial<QuickBodyConfig['legs']>)} />
+              onChange={p => setLegs({ ...(p as Partial<QuickBodyConfig['legs']>), ...(['count', 'side', 'front', 'rear'].some(k => k in p) ? { presetId: null } : {}) })} />
           ) : (
             <QbNote>{isPlain ? 'A plain base sits on the floor — choose Legs or Plinth for legs.' : 'No legs — the plinth carries the body. Pick a count to add legs under the bottom panel.'}</QbNote>
           )}
@@ -1301,9 +1335,10 @@ export function VolumeSteps({ group: g, ...edit }: StepEditProps & { group: Pane
 const rectTxt = (r: { u0: number; u1: number; v0: number; v1: number }) => `${Math.round(r.u1 - r.u0)}×${Math.round(r.v1 - r.v0)}`;
 
 /* Ortak yerleştirme şeridi: ad ve (kapakta) outer/inner yerleştirme ÖNCESİ seçilir; Enter = sahnede sağ tık. */
-function PlacementDock({ tag, defaultName, showName = true, ready, status, onConfirm, onExit, confirmTitle, lead }: {
+function PlacementDock({ tag, defaultName, showName = true, ready, status, onConfirm, onExit, confirmTitle, lead, extra }: {
   tag: string; defaultName: string; showName?: boolean; ready: boolean; status: string;
   onConfirm: () => void; onExit: () => void; confirmTitle: string; lead?: React.ReactNode;
+  /** Durum satırının altında ek satır (ör. baza seti: ayak seti + ön yön). */ extra?: React.ReactNode;
 }) {
   const name = useAppStore(s => s.placementName);
   return (
@@ -1324,6 +1359,7 @@ function PlacementDock({ tag, defaultName, showName = true, ready, status, onCon
         <ExitBtn onClick={onExit} />
       </div>
       {showName && <div style={{ ...DOCK_ROW, paddingTop: 0 }}><DockStatus ready={ready} text={status} /></div>}
+      {extra}
     </div>
   );
 }
@@ -1332,10 +1368,10 @@ export function PlacementDocks({ shape }: { shape: Shape | undefined }) {
   const {
     virtualFaces, panelGroups, raycastMode, raycastPendingVf, volumePickMode, volumePickGroupId, volumePickCandidates, volumePickIndex,
     doorPickMode, doorPickCandidates, doorPickIndex, doorPickPlacement, backPickMode, backPickCandidates, backPickIndex, backPickPlacement,
-    plinthPickMode, plinthPickCandidates, plinthPickIndex, plinthPickHeight,
+    plinthPickMode, plinthPickCandidates, plinthPickIndex, plinthPickHeight, plinthPickFacing, plinthPickPresetId,
   } = useStoreFields('virtualFaces', 'panelGroups', 'raycastMode', 'raycastPendingVf', 'volumePickMode', 'volumePickGroupId', 'volumePickCandidates',
     'volumePickIndex', 'doorPickMode', 'doorPickCandidates', 'doorPickIndex', 'doorPickPlacement', 'backPickMode', 'backPickCandidates', 'backPickIndex',
-    'backPickPlacement', 'plinthPickMode', 'plinthPickCandidates', 'plinthPickIndex', 'plinthPickHeight');
+    'backPickPlacement', 'plinthPickMode', 'plinthPickCandidates', 'plinthPickIndex', 'plinthPickHeight', 'plinthPickFacing', 'plinthPickPresetId');
   const { setRaycastMode, setVolumePickMode, setDoorPickMode, setDoorPickPlacement, setBackPickMode, setBackPickPlacement, setPlinthPickMode, setPlinthPickHeight } =
     useAppStore.getState();
   const noShape = 'Select a body first';
@@ -1396,15 +1432,23 @@ export function PlacementDocks({ shape }: { shape: Shape | undefined }) {
   // BAZA AYAĞI SETİ şeridi (PlinthService): aday hacim yüksekliği şeritte (varsayılan 100); tık döner, sağ tık / ✓ yerleştirir.
   const plinth = () => {
     const n = plinthPickCandidates.length, ready = !!shape && n > 0, cur = plinthPickCandidates[plinthPickIndex];
+    const { setPlinthPickFacing, setPlinthPickPresetId } = useAppStore.getState();
+    const facing: PlinthFacing = plinthPickFacing ?? cur?.facing ?? 'z+';
     return (
       <PlacementDock tag="PLINTH" defaultName="Plinth" ready={ready} confirmTitle="Place plinth leg set"
         lead={<div className="shrink-0 flex items-center gap-1" title="Height of the set inside the body (mm), from the floor up — a raised bottom panel also offers the gap under it">
           <span style={dockAxisTag('#16a34a')}>H</span><QbNum value={plinthPickHeight} min={1} w={40} onCommit={setPlinthPickHeight} /></div>}
         status={!shape ? noShape
-          : n === 0 ? 'Click the body in the 3D view — the set volume is highlighted (feet stand on the floor)'
-          : `${plinthPickIndex + 1}/${n} · ${cur.label} · ${fmt1(cur.box.max[0] - cur.box.min[0])} × ${fmt1(cur.box.max[1] - cur.box.min[1])} × ${fmt1(cur.box.max[2] - cur.box.min[2])} — click: next · right-click: place`}
+          : n === 0 ? 'Click the body in the 3D view — the side you click becomes the FRONT · the set volume is highlighted'
+          : `${plinthPickIndex + 1}/${n} · ${cur.label} · front ${PLINTH_FACING_LABEL[cur.facing]} · ${fmt1(cur.box.max[0] - cur.box.min[0])} × ${fmt1(cur.box.max[1] - cur.box.min[1])} × ${fmt1(cur.box.max[2] - cur.box.min[2])} — click: next · right-click: place`}
         onConfirm={() => { if (ready && shape) confirmPlinthPick(shape.id, plinthPickCandidates[plinthPickIndex], useAppStore.getState().placementName); }}
-        onExit={() => setPlinthPickMode(false)} />
+        onExit={() => setPlinthPickMode(false)}
+        extra={<div style={{ ...DOCK_ROW, paddingTop: 0 }}>
+          <span style={dockAxisTag('#44403c')} title="Leg set from the Accessories tab (layout + model); Custom = built-in foot">SET</span>
+          <div className="flex-1 min-w-0 flex"><LegPresetSelect value={plinthPickPresetId} onChange={id => { setPlinthPickPresetId(id); const p = legPresetById(id); if (p && p.height > 0) setPlinthPickHeight(p.height); }} /></div>
+          <span style={dockAxisTag('#b91c1c')} title="Front side — set by the body face you click, or pick here">FRONT</span>
+          <FacingSelect value={facing} onChange={f => setPlinthPickFacing(f)} />
+        </div>} />
     );
   };
   return <>{raycastMode && raycast()}{volumePickMode && volume(volumePickMode)}{doorPickMode && door()}{backPickMode && back()}{plinthPickMode && plinth()}</>;
@@ -2043,7 +2087,18 @@ export function PanelEditor() {
                 <CardAction compact icon={Check} label="Done" title="Finish editing this set" onClick={finishPlinthEdit} />
               </div>
               {editingVol && <ExtrudeDock plinth={set} draft={extrudeThicknessStr} setDraft={setExtrudeThicknessStr} />}
-              <div className={editingVol ? 'mt-1.5' : ''}>
+              {/* Ayak seti (aksesuar kütüphanesi) + ön yön: set düzeni / modeli buradan çağrılır; elle düzen değişince set bağı düşer */}
+              <div className={`flex items-center gap-1.5 ${editingVol ? 'mt-1.5' : ''}`}>
+                <span style={SECTION_LABEL}>Leg set</span>
+                <div className="flex-1 min-w-0 flex"><LegPresetSelect value={set.legs.presetId} onChange={id => applyLegPresetToSet(set.id, id)} /></div>
+                <span style={SECTION_LABEL} title="Front side of the set — front / rear offsets follow it">Front</span>
+                <FacingSelect value={plinthFacingOf(set)} onChange={f => setPlinthFacing(set.id, f)} />
+              </div>
+              {set.legs.legModelId && (() => { const lm = legModelById(set.legs.legModelId), dims = legModelDims(lm); return (
+                <div className="mt-1 px-1 text-[10.5px] text-stone-400">
+                  Model: <span className="font-semibold text-stone-500">{lm?.name ?? 'missing'}</span>{dims ? ` · Ø ${fmt1(dims.diameter)} · natural height ${fmt1(dims.height)}` : ''}
+                </div>); })()}
+              <div className="mt-1.5">
                 <LegsBlock legs={{ ...set.legs, height: H }} W={W} D={D} heightEditable={!bound} heightReadout={bound ? H : undefined} countOptions={[4, 5, 6]} hint={legsHint} onHint={setLegsHint}
                   onChange={p => { if (p.height != null) setPlinthHeight(set.id, p.height); const rest = { ...p }; delete rest.height; if (Object.keys(rest).length) setPlinthLegs(set.id, rest as Partial<PlinthSet['legs']>); }} />
               </div>

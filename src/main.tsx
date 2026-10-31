@@ -6,6 +6,8 @@ import { type CatalogItem, catalogService, Toolbar, Sidebar, ParametersPanel, Te
 import { initReplicad, rebuildBodySolid } from './components/Geometry';
 import Scene from './components/Scene';
 import { PanelEditor } from './components/PanelEditor';
+import { AccessoriesPanel } from './components/Accessories';
+import { loadAccessoryLibrary } from './components/AccessoryService';
 // Yan etki: rebuild motoru store'a kaydolur (bkz. store.requestRebuild).
 import './components/PanelEngine';
 import './index.css';
@@ -59,6 +61,8 @@ function App() {
   useEffect(() => {
     setOpenCascadeLoading(true);
     initReplicad().catch(err => console.error('Failed to preload OpenCascade:', err)).finally(() => setOpenCascadeLoading(false));
+    // Aksesuar kütüphanesi (ayak modelleri / setleri) tarayıcıdan (IndexedDB) yüklenir.
+    loadAccessoryLibrary().catch(err => console.error('Failed to load the accessory library:', err));
   }, []);
 
   const handleOpenCatalog = async () => { await loadCatalogItems(); setCatalogOpen(true); };
@@ -119,7 +123,7 @@ function App() {
       <Toolbar onOpenCatalog={handleOpenCatalog} />
       <div className="flex-1 overflow-hidden relative">
         <Scene />
-        <Sidebar parametersContent={<ParametersPanel />} panelEditorContent={<PanelEditor />} />
+        <Sidebar parametersContent={<ParametersPanel />} panelEditorContent={<PanelEditor />} accessoriesContent={<AccessoriesPanel />} />
       </div>
       <div className="relative">
         <Terminal />

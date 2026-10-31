@@ -15,6 +15,7 @@ import {
 } from './BackService';
 import { doorJointForBond, moveDoorJointTo, isDoorPanel } from './DoorService';
 import { plinthBoxOf, plinthSetsOf, removeQuickBodyPlinth, syncQuickBodyPlinth } from './PlinthService';
+import { legModelById, legModelDims } from './AccessoryService';
 
 /* PANEL GRUP SERVİSİ — 1) kapak / arkalık / raf-dikme ortak bölme yardımcıları · 2) raf / dikme grupları · 3) hızlı gövde. */
 
@@ -2514,8 +2515,13 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
   // Ayaklar: ayaklı tabanda zorunlu, bazalıda isteğe bağlı (count 0 = yok) — baza ayağı SETİ (PlinthService, alt panele bağlı, zemine
   // basar); yeniden uygulamada güncellenir / kalkan ayaklar silinir.
   const legCount = cfg.base === 'legs' ? (cfg.legs.count || 4) : cfg.base === 'plinth' ? cfg.legs.count : 0;
-  const { diameter, side, front, rear } = cfg.legs;
-  syncQuickBodyPlinth(body.id, legCount ? { count: legCount as 4 | 5 | 6, diameter, side, front, rear } : null, bottomVfId, lift);
+  const { side, front, rear } = cfg.legs;
+  // Aksesuar kütüphanesinden ayak modeli seçildiyse Ø modelden (Goker: "çap model neyse o gelmeli"), yoksa yerleşik ayak Ø.
+  const legModel = legModelById(cfg.legs.legModelId);
+  const diameter = legModelDims(legModel)?.diameter || cfg.legs.diameter;
+  syncQuickBodyPlinth(body.id, legCount ? {
+    count: legCount as 4 | 5 | 6, diameter, side, front, rear, legModelId: legModel ? legModel.id : null, presetId: cfg.legs.presetId ?? null,
+  } : null, bottomVfId, lift);
 
   await requestRebuild(body.id);
   const { whenRebuildIdle } = await import('./PanelEngine');

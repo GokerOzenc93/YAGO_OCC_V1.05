@@ -7,6 +7,8 @@ import { createClient } from '@supabase/supabase-js';
 import Scene from './components/Scene';
 import { railActions, Sidebar, StatusBar, Terminal, Toolbar, UI_FONT } from './components/Ui';
 import { PanelEditor } from './components/PanelEditor';
+import { AccessoriesPanel } from './components/Accessories';
+import { loadAccessoryLibrary } from './components/AccessoryService';
 import { type Shape, childPanelsOf, requestRebuild, shapeById, useAppStore, useStoreFields } from './store';
 import { applyShapeChanges, axisIndexOf, evaluateExpression, initReplicad, rebuildBodySolid } from './components/Geometry';
 // Yan etki: rebuild motoru store'a kaydolur (bkz. store.requestRebuild).
@@ -201,6 +203,8 @@ function App() {
   useEffect(() => {
     setOpenCascadeLoading(true);
     initReplicad().catch(err => console.error('Failed to preload OpenCascade:', err)).finally(() => setOpenCascadeLoading(false));
+    // Aksesuar kütüphanesi (ayak modelleri / setleri) tarayıcıdan (IndexedDB) yüklenir.
+    loadAccessoryLibrary().catch(err => console.error('Failed to load the accessory library:', err));
   }, []);
 
   const handleOpenCatalog = async () => { await loadCatalogItems(); setCatalogOpen(true); };
@@ -261,7 +265,7 @@ function App() {
       <Toolbar onOpenCatalog={handleOpenCatalog} />
       <div className="flex-1 overflow-hidden relative">
         <Scene />
-        <Sidebar parametersContent={<ParametersPanel />} panelEditorContent={<PanelEditor />} />
+        <Sidebar parametersContent={<ParametersPanel />} panelEditorContent={<PanelEditor />} accessoriesContent={<AccessoriesPanel />} />
       </div>
       <div className="relative">
         <Terminal />

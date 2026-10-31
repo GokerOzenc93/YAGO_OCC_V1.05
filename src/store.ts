@@ -323,12 +323,34 @@ export interface QuickBodyConfig {
   /** Baza: yükseklik, ön bazanın önden geri çekilmesi, arka bazanın arkadan öne alınması, arka baza var mı. */
   plinth: { height: number; front: number; rear: number; rearPlinth: boolean };
   /** Ayaklar: bazalıda isteğe bağlı (count 0 = yok); ayaklı tabanda zorunlu. */
-  legs: { count: 0 | 4 | 5 | 6; height: number; diameter: number; side: number; front: number; rear: number };
+  legs: {
+    count: 0 | 4 | 5 | 6; height: number; diameter: number; side: number; front: number; rear: number;
+    /** Aksesuar kütüphanesinden ayak seti (LegPreset) / ayak modeli (LegModel); yoksa yerleşik plastik ayak. */
+    presetId?: string | null; legModelId?: string | null;
+  };
   back: {
     enabled: boolean; placement: BackPlacement; thickness: number; setback: number; inset: number;
     clear: { front: number; back: number; depth: number };
   };
 }
+/* ───────── AKSESUAR KÜTÜPHANESİ (AccessoryService; Goker, Eki 2026 — "Panel editör yanında Aksesuar sekmesi; ayak modelini dışarıdan
+   al, 3 parça, orta parça uzasın; 4/5/6 ayak setlerini kaydet, ayak kısmında çağır") ───────── */
+export type AccessoryUnit = 'mm' | 'cm' | 'm' | 'in';
+export type AccessoryCategory = 'legs' | 'rails' | 'hinges';
+/** Ayak parçası rolü: taban (zemine basar) · gövde/mil (set yüksekliğine göre UZAR) · üst tabla (panele vidalanır). */
+export type LegPartRole = 'base' | 'stem' | 'top';
+/** İçe aktarılmış model dosyası — bayt dizisi IndexedDB'de, burada üst bilgi. `size` = normalize edilmiş ölçü (mm; Y yukarı, taban y=0). */
+export interface AccessoryModel {
+  id: string; name: string; fileName: string; ext: string; unit: AccessoryUnit; upAxis: 'y' | 'z'; size: Vec3; createdAt: number;
+}
+export interface LegModelPart { modelId: string; role: LegPartRole }
+/** Ayak modeli: 1–3 parça (taban / mil / tabla); yalnız 'stem' rolü uzar. */
+export interface LegModel { id: string; name: string; parts: LegModelPart[]; createdAt: number }
+/** Ayak seti ("kaset"): hangi model, kaç ayak, kenar mesafeleri (parametrik: kutu ölçüsünden bağımsız), varsayılan yükseklik. */
+export interface LegPreset {
+  id: string; name: string; legModelId: string | null; count: 4 | 5 | 6; side: number; front: number; rear: number; height: number; createdAt: number;
+}
+
 export const DEFAULT_QUICK_BODY: QuickBodyConfig = {
   base: 'plinth', thickness: 18,
   joins: { tl: 'side', tr: 'side', bl: 'side', br: 'side' },
@@ -457,6 +479,18 @@ export interface AppState {
   plinthPickCandidates: PlinthPick[]; plinthPickIndex: number; setPlinthPick: (c: PlinthPick[], i: number) => void;
   /** Aday hacmin varsayılan yüksekliği (mm). */
   plinthPickHeight: number; setPlinthPickHeight: (h: number) => void;
+  /** Yerleştirmede ÖN yön: null = tıklanan gövde yüzünden; şeritten seçilirse o yön. */
+  plinthPickFacing: AxisDir | null; setPlinthPickFacing: (a: AxisDir | null) => void;
+  /** Yerleştirmede kullanılacak ayak seti (LegPreset id; null = yerleşik ayak, varsayılan düzen). */
+  plinthPickPresetId: string | null; setPlinthPickPresetId: (id: string | null) => void;
+
+  /* AKSESUAR KÜTÜPHANESİ (AccessoryService): modeller / ayak modelleri / ayak setleri — IndexedDB'den yüklenir, burada canlı kopya. */
+  accessoryModels: AccessoryModel[]; legModels: LegModel[]; legPresets: LegPreset[];
+  setAccessoryLibrary: (lib: { accessoryModels?: AccessoryModel[]; legModels?: LegModel[]; legPresets?: LegPreset[] }) => void;
+  upsertAccessoryModel: (m: AccessoryModel) => void; removeAccessoryModel: (id: string) => void;
+  upsertLegModel: (m: LegModel) => void; removeLegModel: (id: string) => void;
+  upsertLegPreset: (p: LegPreset) => void; removeLegPreset: (id: string) => void;
+  accessoryCategory: AccessoryCategory; setAccessoryCategory: (c: AccessoryCategory) => void;
   /** Arkalık seçmede tip: 'outer' = arkadan çakma, 'inner' = kanallı. */
   backPickPlacement: BackPlacement; setBackPickPlacement: (p: BackPlacement) => void;
 
@@ -559,8 +593,11 @@ const pickModesOff = () => ({
   volumePickMode: null, volumePickGroupId: null, volumePickCandidates: [], volumePickIndex: 0,
   doorPickMode: false, doorPickCandidates: [], doorPickIndex: 0,
   backPickMode: false, backPickCandidates: [], backPickIndex: 0,
-  plinthPickMode: false, plinthPickCandidates: [], plinthPickIndex: 0,
+  plinthPickMode: false, plinthPickCandidates: [], plinthPickIndex: 0, plinthPickFacing: null,
 });
+/** Kimliğe göre ekle / değiştir (sıra korunur, yeni öğe sona). */
+const upsertById = <T extends { id: string }>(list: T[], item: T): T[] =>
+  list.some(x => x.id === item.id) ? list.map(x => (x.id === item.id ? item : x)) : [...list, item];
 /** Panel satırı / raf / kapak / arkalık seçimi karşılıklı dışlayıcı. */
 const NO_GROUP_SEL = { selectedPanelRow: null, selectedPanelGroupId: null, selectedDoorGroupId: null, selectedBackGroupId: null };
 
@@ -744,10 +781,24 @@ export const useAppStore = create<AppState>((set, get) => ({
     selectedPanelRow: s.selectedPanelRow === `plinth-${id}` ? null : s.selectedPanelRow,
   })),
   plinthPickMode: false,
-  setPlinthPickMode: (b) => set({ ...(b ? pickModesOff() : {}), plinthPickMode: b, plinthPickCandidates: [], plinthPickIndex: 0 }),
+  setPlinthPickMode: (b) => set({ ...(b ? pickModesOff() : {}), plinthPickMode: b, plinthPickCandidates: [], plinthPickIndex: 0, plinthPickFacing: null }),
   plinthPickCandidates: [], plinthPickIndex: 0,
   setPlinthPick: (c, i) => set({ plinthPickCandidates: c, plinthPickIndex: i }),
   plinthPickHeight: 100, setPlinthPickHeight: (h) => set({ plinthPickHeight: Math.max(1, h), plinthPickCandidates: [], plinthPickIndex: 0 }),
+  plinthPickFacing: null, setPlinthPickFacing: (a) => set({ plinthPickFacing: a }),
+  plinthPickPresetId: null, setPlinthPickPresetId: (id) => set({ plinthPickPresetId: id }),
+
+  accessoryModels: [], legModels: [], legPresets: [],
+  setAccessoryLibrary: (lib) => set((s) => ({
+    accessoryModels: lib.accessoryModels ?? s.accessoryModels, legModels: lib.legModels ?? s.legModels, legPresets: lib.legPresets ?? s.legPresets,
+  })),
+  upsertAccessoryModel: (m) => set((s) => ({ accessoryModels: upsertById(s.accessoryModels, m) })),
+  removeAccessoryModel: (id) => set((s) => ({ accessoryModels: s.accessoryModels.filter(x => x.id !== id) })),
+  upsertLegModel: (m) => set((s) => ({ legModels: upsertById(s.legModels, m) })),
+  removeLegModel: (id) => set((s) => ({ legModels: s.legModels.filter(x => x.id !== id) })),
+  upsertLegPreset: (p) => set((s) => ({ legPresets: upsertById(s.legPresets, p) })),
+  removeLegPreset: (id) => set((s) => ({ legPresets: s.legPresets.filter(x => x.id !== id) })),
+  accessoryCategory: 'legs', setAccessoryCategory: (c) => set({ accessoryCategory: c }),
 
   filletMode: false, setFilletMode: (e) => set({ filletMode: e, selectedFilletFaces: [], selectedFilletFaceData: [] }),
   selectedFilletFaces: [],

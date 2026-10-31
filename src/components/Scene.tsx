@@ -19,12 +19,13 @@ import {
   confirmPanelMoveRef, confirmPanelRotateRef, resetRefFacePick, axisIndexOf, getReplicadVertices, round1,
 } from './Geometry';
 import {
-  type PlinthPick, confirmPlinthPick, plinthBoxOf, plinthCandidates, plinthLegSpots, plinthPickBox, plinthRowKey, plinthSetsOf, isPlinthRow,
+  type PlinthPick, type PlinthFacing, confirmPlinthPick, plinthBoxOf, plinthCandidates, plinthLegSpots, plinthPickBox, plinthRowKey, plinthSetsOf, isPlinthRow,
   finishPlinthEdit,
 } from './PlinthService';
+import { type LegAssemblyPart, legAssembly, onAccessoryGeometry } from './AccessoryService';
 import {
   confirmRefCavityExtrude, groupBoundsPanelPredicate, isInteriorPanel, repickObstacles, collectObstacles,
-  gridForObstacles, boxesSurface, rayCavityCandidates, GROUP_PANEL_THICKNESS, confirmVolumePick,
+  gridForObstacles, boxesSurface, rayCavityCandidates, GROUP_PANEL_THICKNESS, confirmVolumePick, rayBoxEntry,
 } from './PanelGroupService';
 import {
   vfBackBound, isBackPanel, splitBackAtPanel, backPreviewStamp, backPickObstacle, collectBackCuts, BACK_THICKNESS, confirmBackPick, backSlabPolygon,
@@ -1459,7 +1460,7 @@ const FACING_ARROW_GEO: THREE.BufferGeometry = (() => {
 })();
 const FACING_ARROW_EDGES = new THREE.EdgesGeometry(FACING_ARROW_GEO, 25);
 
-export const FacingArrow: React.FC<{ box: { min: Vec3; max: Vec3 }; axis: 0 | 1 | 2; facing: 1 | -1 }> = ({ box, axis, facing }) => {
+export const FacingArrow: React.FC<{ box: { min: Vec3; max: Vec3 }; axis: 0 | 1 | 2; facing: 1 | -1; label?: string }> = ({ box, axis, facing, label }) => {
   const ref = useRef<THREE.Group>(null);
   const faceCenter = useMemo<Vec3>(() => {
     const c = boxCenterOf(box); c[axis] = facing > 0 ? box.min[axis] : box.max[axis]; return c;
@@ -1509,6 +1510,14 @@ export const FacingArrow: React.FC<{ box: { min: Vec3; max: Vec3 }; axis: 0 | 1 
       <lineSegments geometry={FACING_ARROW_EDGES} raycast={noRaycast} renderOrder={31} frustumCulled={false}>
         <lineBasicMaterial color={FACING_ARROW.edge} transparent opacity={0.9} depthTest depthWrite={false} />
       </lineSegments>
+      {label && (
+        <Html position={[-(FACING_ARROW.gapFrac + FACING_ARROW.shaftLen + 0.55), 0, 0]} center zIndexRange={[999, 1000]} style={{ pointerEvents: 'none' }}>
+          <div style={{
+            fontFamily: FONT, fontSize: 10.5, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: '#ffffff', background: '#b91c1c',
+            padding: '2px 7px', borderRadius: 5, whiteSpace: 'nowrap', boxShadow: '0 1px 3px rgba(40,30,20,0.25)',
+          }}>{label}</div>
+        </Html>
+      )}
     </group>
   );
 };
@@ -2377,14 +2386,33 @@ function BoxExtrudeGizmo({ parent, box }: { parent: Shape; box: { min: Vec3; max
 /* BAZA AYAĞI SETİ (PlinthService) — seçme kaplaması, çizim ve ok gizmosu. */
 /** Seçme: gövde + altındaki varsayılan yükseklik tıklanır; adaylar (alt panelin altı · gövdenin altı) raf/dikme gibi döner, sağ tık yerleştirir. */
 export const PlinthPickOverlay: React.FC<{ shape: any }> = ({ shape }) => {
-  const s = useStoreFields('plinthPickMode', 'plinthPickCandidates', 'plinthPickIndex', 'setPlinthPick', 'plinthPickHeight', 'shapes', 'virtualFaces');
-  const { plinthPickMode: active, plinthPickHeight: H, shapes, virtualFaces } = s;
-  const cands = useMemo(() => (active ? plinthCandidates(shape, shapes, virtualFaces, H) : []), [active, shape, shapes, virtualFaces, H]);
+  const s = useStoreFields('plinthPickMode', 'plinthPickCandidates', 'plinthPickIndex', 'setPlinthPick', 'plinthPickHeight', 'shapes', 'virtualFaces', 'plinthPickFacing');
+  const { plinthPickMode: active, plinthPickHeight: H, shapes, virtualFaces, plinthPickFacing: facingOverride } = s;
   const hitBox = useMemo(() => (active ? plinthPickBox(shape) : null), [active, shape]);
   const pickGeo = useMemo(() => (hitBox ? pickBoxGeometry(hitBox) : null), [hitBox]);
   useDisposable(pickGeo);
+  const { worldToLocal } = useShapeMatrices(shape);
+  // ÖN YÖN (Goker: "raf/dikme atar gibi ön tarafını belirlemeliyim"): tıklanan gövde yüzü (yan yüzler) ön olur; üstten/alttan tık → +Z;
+  // şeritten seçilmiş yön varsa o. Adaylar o yönle üretilir (anahtar yönü içerir → yön değişince seçim yenilenir).
+  const facingAt = (e: any): PlinthFacing => {
+    if (facingOverride) return facingOverride;
+    if (!hitBox || !e?.ray) return 'z+';
+    const [o, d] = localRay(e, worldToLocal);
+    const ent = rayBoxEntry(o, d, hitBox);
+    if (!ent || ent.axis === 1) return 'z+';
+    // `pos` = ışın o eksende + yönde → MIN yüzden girer; tıklanan yüz = giriş yüzü.
+    return (ent.axis === 0 ? (ent.pos ? 'x-' : 'x+') : (ent.pos ? 'z-' : 'z+')) as PlinthFacing;
+  };
+  const candsAt = (e: any) => (active ? plinthCandidates(shape, shapes, virtualFaces, H, facingAt(e)) : []);
   const selected = s.plinthPickCandidates[s.plinthPickIndex] || null;
-  const cycle = usePickCycle<PlinthPick>(active, () => cands, s.setPlinthPick, () => { if (selected) confirmPlinthPick(shape.id, selected, useAppStore.getState().placementName); });
+  const cycle = usePickCycle<PlinthPick>(active, candsAt, s.setPlinthPick, () => { if (selected) confirmPlinthPick(shape.id, selected, useAppStore.getState().placementName); });
+  // Şeritten yön değişince seçili adaylar o yöne çevrilir (kutu aynı).
+  useEffect(() => {
+    if (!active || !facingOverride || !s.plinthPickCandidates.length) return;
+    if (s.plinthPickCandidates.every(c => c.facing === facingOverride)) return;
+    s.setPlinthPick(s.plinthPickCandidates.map(c => ({ ...c, facing: facingOverride, key: c.key.replace(/:[xz][+-]$/, `:${facingOverride}`) })), s.plinthPickIndex);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [facingOverride, active]);
   const { hoverPick } = cycle;
   const selectedMesh = useMemo(() => (selected ? surfaceMesh(boxesSurface([selected.box])) : null), [selected]);
   const hoverMesh = useMemo(() => (hoverPick ? surfaceMesh(boxesSurface([hoverPick.box])) : null), [hoverPick]);
@@ -2401,10 +2429,17 @@ export const PlinthPickOverlay: React.FC<{ shape: any }> = ({ shape }) => {
         <>
           <mesh geometry={selectedMesh.geo} raycast={noRaycast} renderOrder={6}><FillMat color={PICK_COLORS.selected} opacity={SEL_COLORS.volumeActiveOpacity} /></mesh>
           {selectedMesh.edgePts.length >= 2 && <EdgeLines points={selectedMesh.edgePts} color={PICK_COLORS.selectedEdge} width={SEL_COLORS.edgeWidth} order={7} />}
+          {selected && <PlinthFrontArrow box={selected.box} facing={selected.facing} />}
         </>
       )}
     </>
   );
+};
+/** ÖN ok: ön yüzün dışından içeri (raf/dikme okuyla aynı dil) + "Front" etiketi. */
+const PlinthFrontArrow: React.FC<{ box: { min: Vec3; max: Vec3 }; facing: PlinthFacing }> = ({ box, facing }) => {
+  const axis = facing[0] === 'x' ? 0 : 2;
+  // FacingArrow: facing>0 → min yüz, +eksen; ön +Z/+X = max yüz → facing −1 (dıştan içeri).
+  return <FacingArrow box={box} axis={axis} facing={facing[1] === '+' ? -1 : 1} label="Front" />;
 };
 
 /** Setler (gövde-yerel çerçevede): ayak silindirleri + taban diski; tık satırı seçer; seçili sette oklar. */
@@ -2486,7 +2521,9 @@ export const PlinthSets: React.FC<{ shape: any }> = ({ shape }) => {
             {plinthLegSpots(set, box).map((p, i) => (
               <group key={i} position={[p.x, y0, p.z]}>
                 {/* Panel yerleştirme kipinde ayaklar tıklamayı ALMAZ: ışın gövdenin yüz seçimine gider (setin üstü orada aday) */}
-                <PlinthFoot h={h} d={set.legs.diameter} active={active} xray={xray} onClick={click} pickable={!raycastMode} />
+                {set.legs.legModelId
+                  ? <ImportedFoot legModelId={set.legs.legModelId} h={h} d={set.legs.diameter} active={active} xray={xray} onClick={click} pickable={!raycastMode} />
+                  : <PlinthFoot h={h} d={set.legs.diameter} active={active} xray={xray} onClick={click} pickable={!raycastMode} />}
               </group>
             ))}
             {/* Hacim düzenlemede (Volume) kutu ve yüz seçimi PlinthEditOverlay'de çizilir */}
@@ -2497,6 +2534,35 @@ export const PlinthSets: React.FC<{ shape: any }> = ({ shape }) => {
     </>
   );
 };
+/* AKSESUAR KÜTÜPHANESİNDEN AYAK (AccessoryService; Goker: "ayak modelini dışarıdan alayım, 3 parça, orta parça uzasın"): parçalar
+   alt alta, `stem` set yüksekliğine göre Y'de ölçeklenir. Geometri henüz çözülmediyse yerleşik ayak çizilir (gelince değişir). */
+export function useLegAssembly(legModelId: string | null | undefined, h: number): LegAssemblyPart[] | null {
+  const { legModels } = useStoreFields('legModels');
+  const [tick, setTick] = useState(0);
+  useEffect(() => onAccessoryGeometry(() => setTick(t => t + 1)), []);
+  const leg = legModelId ? legModels.find(x => x.id === legModelId) : undefined;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  return useMemo(() => (leg ? legAssembly(leg, h) : null), [leg, h, tick]);
+}
+const IMPORTED_FOOT_COLORS: Record<string, string> = { base: FOOT_COLORS.plastic, stem: FOOT_COLORS.housing, top: FOOT_COLORS.plate };
+export function ImportedFoot({ legModelId, h, d, active, xray, onClick, pickable = true }: {
+  legModelId: string; h: number; d: number; active: boolean; xray: boolean; onClick: (e: any) => void; pickable?: boolean;
+}) {
+  const parts = useLegAssembly(legModelId, h);
+  if (!parts) return <PlinthFoot h={h} d={d} active={active} xray={xray} onClick={onClick} pickable={pickable} />;
+  const ev = pickable ? { onClick, onPointerOver: (e: any) => { e.stopPropagation(); hoverCursor(true); }, onPointerOut: () => hoverCursor(false) }
+    : { raycast: noRaycast };
+  return (
+    <group>
+      {parts.map((p, i) => (
+        <mesh key={`${p.modelId}-${i}`} geometry={p.geo} position={[0, p.y, 0]} scale={[1, p.scaleY, 1]} castShadow receiveShadow {...ev}>
+          <meshStandardMaterial color={IMPORTED_FOOT_COLORS[p.role]} metalness={0.05} roughness={0.6} transparent={xray} opacity={xray ? 0.35 : 1}
+            emissive={active ? LEG_COLORS.selected : '#000000'} emissiveIntensity={active ? 0.45 : 0} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
 /** Seçili setin hacmi: raf/dikme seçimiyle aynı dil (mavi dolgu + kırmızı kenar). */
 function PlinthVolume({ box }: { box: { min: Vec3; max: Vec3 } }) {
   const m = useMemo(() => surfaceMesh(boxesSurface([box])), [box]);

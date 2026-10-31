@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   type LucideIcon, Spline, Layers, Radius, Plus, Container, LayoutPanelTop, Rows3, Columns3, DoorClosed, SendToBack, Hash, ChevronRight, Send, Box,
-  Square, SlidersHorizontal, PanelLeft, GripHorizontal, PictureInPicture2, AppWindow, Pin, PinOff, Trash2, X, Check, Footprints,
+  Square, SlidersHorizontal, PanelLeft, GripHorizontal, PictureInPicture2, AppWindow, Pin, PinOff, Trash2, X, Check, Footprints, Wrench, Upload, LayoutGrid,
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { createClient } from '@supabase/supabase-js';
@@ -85,13 +85,14 @@ export class ErrorBoundary extends React.Component<{ children: React.ReactNode; 
    anlaşılmıyordu). İki grup — Parameters / Panel Editor araçları; yalnız etkin sekmenin grubu canlı, şekil seçili değilken
    ikisi de pasif. Ayrıntılı açıklama tarayıcı ipucunda (title). */
 export const RAIL_W = 60;
-type SidebarTab = 'parameters' | 'panel-editor';
+type SidebarTab = 'parameters' | 'panel-editor' | 'accessories';
 type RailSpec = {
   key: string; label: string; icon: LucideIcon; title: string; active?: boolean; badge?: string | number; onClick: () => void;
   /** Sekme açıkken de pasif (ör. hızlı gövde zaten yerleşmiş). */ disabled?: boolean;
 };
-/* Panelin YEREL durumuna bağlı ray eylemleri buraya kaydolur (ParametersPanel → özel parametre ekleme). */
-export const railActions: { addCustomParameter: (() => void) | null } = { addCustomParameter: null };
+/* Panelin YEREL durumuna bağlı ray eylemleri buraya kaydolur (ParametersPanel → özel parametre ekleme; AccessoriesPanel → model içe aktar / yeni set). */
+export const railActions: { addCustomParameter: (() => void) | null; importAccessory: (() => void) | null; newLegSet: (() => void) | null } =
+  { addCustomParameter: null, importAccessory: null, newLegSet: null };
 
 const RAIL_BTN: React.CSSProperties = {
   position: 'relative', width: '50px', height: '46px', borderRadius: '8px', border: 'none', outline: 'none', padding: 0, flexShrink: 0,
@@ -183,13 +184,21 @@ export const SidebarRail: React.FC<{ activeTab: SidebarTab; hasShape: boolean }>
     { key: 'plinth', label: 'Plinth', icon: Footprints, ...toggle(s.plinthPickMode, s.setPlinthPickMode),
       title: 'Plinth leg set: click the body — the volume under the bottom panel / below the body is highlighted, click cycles, right-click places' },
   ];
-  const group = (list: RailSpec[], tab: SidebarTab) =>
-    list.map(({ key, disabled, ...t }) => <RailTool key={key} {...t} passive={!hasShape || activeTab !== tab || !!disabled} />);
+  // AKSESUAR (Goker, Eki 2026): kütüphane gövdeden bağımsız → şekil seçili olmasa da etkin.
+  const accessories: RailSpec[] = [
+    { key: 'acc-import', label: 'Import', icon: Upload, title: 'Import a 3D model file (glb, gltf, obj, stl, fbx, dae, ply, 3mf, 3ds, amf, wrl, step) as an accessory part',
+      onClick: () => railActions.importAccessory?.() },
+    { key: 'acc-legset', label: 'Leg set', icon: LayoutGrid, title: 'New leg set: model + 4 / 5 / 6 legs + offsets, saved to the library', onClick: () => railActions.newLegSet?.() },
+  ];
+  const group = (list: RailSpec[], tab: SidebarTab, needShape = true) =>
+    list.map(({ key, disabled, ...t }) => <RailTool key={key} {...t} passive={(needShape && !hasShape) || activeTab !== tab || !!disabled} />);
   return (
     <div className="yago-rail" style={RAIL_STYLE}>
       {group(params, 'parameters')}
       <div style={RAIL_SEP} />
       {group(panels, 'panel-editor')}
+      <div style={RAIL_SEP} />
+      {group(accessories, 'accessories', false)}
     </div>
   );
 };
@@ -1026,7 +1035,8 @@ const EDGE_GLOW: React.CSSProperties = {
 const RESIZE_GRIP_BG = 'linear-gradient(135deg,transparent 50%,rgba(60,50,40,0.22) 50%,rgba(60,50,40,0.22) 58%,transparent 58%,'
   + 'transparent 72%,rgba(60,50,40,0.22) 72%,rgba(60,50,40,0.22) 80%,transparent 80%)';
 
-export const Sidebar: React.FC<{ parametersContent: React.ReactNode; panelEditorContent: React.ReactNode }> = ({ parametersContent, panelEditorContent }) => {
+export const Sidebar: React.FC<{ parametersContent: React.ReactNode; panelEditorContent: React.ReactNode; accessoriesContent?: React.ReactNode }> =
+  ({ parametersContent, panelEditorContent, accessoriesContent }) => {
   const { selectedShapeId } = useStoreFields('selectedShapeId');
   const [initial] = useState(readSidebarLayout);
   // Açılışta her zaman sola yaslı ve KAPALI başlar; kaydedilen kip yalnız yüzen panelin konum/boyutu için okunur.
@@ -1164,8 +1174,8 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; panelEditor
 
   const isVisible = mode !== 'docked' || isOpen || isPinned;
   const docked = mode === 'docked', floating = mode === 'floating';
-  const tabPane = (tab: SidebarTab, content: React.ReactNode, empty: React.ReactNode) => (
-    <div style={{ display: activeTab === tab ? 'block' : 'none' }}>{selectedShapeId ? content : empty}</div>
+  const tabPane = (tab: SidebarTab, content: React.ReactNode, empty: React.ReactNode, needShape = true) => (
+    <div style={{ display: activeTab === tab ? 'block' : 'none' }}>{selectedShapeId || !needShape ? content : empty}</div>
   );
   const togglePin = () => { if (isPinned) { setIsPinned(false); setIsOpen(false); } else setIsPinned(true); };
 
@@ -1183,6 +1193,11 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; panelEditor
           <div style={VSEP} />
           <TabBtn active={activeTab === 'panel-editor'} onClick={() => setActiveTab('panel-editor')}
             icon={<PanelLeft size={13.5} strokeWidth={2} />} label="Panel Editor" />
+          {accessoriesContent && <>
+            <div style={VSEP} />
+            <TabBtn active={activeTab === 'accessories'} onClick={() => setActiveTab('accessories')}
+              icon={<Wrench size={13.5} strokeWidth={2} />} label="Accessories" />
+          </>}
         </div>
         {/* Yüzen kipte boş şerit tutamaktır; ortadaki grip yalnız ipucu. */}
         <div style={{
@@ -1230,6 +1245,7 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; panelEditor
           {tabPane('panel-editor', panelEditorContent,
             <EmptyState icon={<PanelLeft size={18} strokeWidth={1.6} />} title="No panel selected"
               description="Select a panel or surface to edit its properties" hint="Tip: Click a surface in face select mode" />)}
+          {accessoriesContent && tabPane('accessories', accessoriesContent, null, false)}
         </div>
       </div>
       <style>{SIDEBAR_CSS}</style>
