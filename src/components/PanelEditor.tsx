@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Check, X, type LucideIcon, Lock, SlidersHorizontal, Crosshair, LayoutPanelTop, Rows3, Columns3, DoorClosed, SendToBack, Footprints, Shapes,
   ChevronRight, Minus, Plus, ChevronDown, Pencil, Trash2, Unlink, MoveVertical, Move, RotateCw, GripVertical, ArrowUp, Box, Move3d, Equal,
-  SplitSquareVertical, SplitSquareHorizontal, RotateCcw, Container, Expand,
+  SplitSquareVertical, SplitSquareHorizontal, RotateCcw, Container,
 } from 'lucide-react';
 import { type Box3 } from 'three';
 import { UI_FONT } from './Ui';
@@ -778,7 +778,6 @@ function LegsPlanDiagram({ legs, W, D, active, className }: { legs: Omit<LegDims
         {dim(x1 + 11, y0, x1 + 11, rearLeg.y, 'lr')}{lead(rearLeg.x, rearLeg.y, x1 + 14, rearLeg.y)}
         {txt(x1 + 15, (y0 + rearLeg.y) / 2 + 4, fmt1(legs.rear), 'lr', 'start')}
       </>}
-      {spots[2] && txt(spots[2].x + r + 5, spots[2].y + 4, `Ø ${fmt1(legs.diameter)}`, 'ld', 'start')}
       {txt(x1 - 4, y1 - 6 - r * 2 - 4, `${legs.count || 4} legs`, 'lc', 'end')}
     </DiagramSvg>
   );
@@ -794,6 +793,7 @@ export function LegsBlock({ legs, W, D, heightReadout, heightEditable, countOpti
   return (
     <div className="flex flex-col gap-1.5" onMouseLeave={() => onHint(null)}>
       <LegsPlanDiagram legs={legs} W={W} D={D} active={hint} className="w-full" />
+      {/* Ø modelden (sabit): yalnız adet · yükseklik · kenar mesafeleri */}
       <div className="grid grid-cols-3 gap-x-1" style={QB_CELL_ROW}>
         {countOptions.length > 0
           ? cell('Leg count', 'lc', <QbSelect value={String(legs.count)} options={countOpts(countOptions)} onChange={v => onChange({ count: parseInt(v, 10) })} />)
@@ -804,7 +804,6 @@ export function LegsBlock({ legs, W, D, heightReadout, heightEditable, countOpti
               </span>
             </ReadCell>
           )}
-        {num('Diameter', 'ld', legs.diameter, v => onChange({ diameter: v }), false, 5)}
         {heightEditable ? num('Leg height', 'lh', legs.height, v => onChange({ height: v }), false, 1) : cell('Leg height', 'lh', (
           <ReadValue color={countOptions.length ? '#57534e' : '#c7beb1'} title={countOptions.length ? "Read from the bottom panel's underside" : '= plinth height'}>
             {fmt1(heightReadout ?? legs.height)}
@@ -813,24 +812,6 @@ export function LegsBlock({ legs, W, D, heightReadout, heightEditable, countOpti
         {num('Side offset', 'ls', legs.side, v => onChange({ side: v }))}
         {num('Front offset', 'lf', legs.front, v => onChange({ front: v }))}
         {num('Rear offset', 'lr', legs.rear, v => onChange({ rear: v }))}
-      </div>
-    </div>
-  );
-}
-
-/** Baza seti kartı: ok tık değeri (mm) + Dyn/Fixed (ok ucundaki düğmeyle aynı durum). */
-function PlinthArrowRow() {
-  const { plinthArrowMode, setPlinthArrowMode, plinthArrowValue, setPlinthArrowValue } =
-    useStoreFields('plinthArrowMode', 'setPlinthArrowMode', 'plinthArrowValue', 'setPlinthArrowValue');
-  return (
-    <div className="mt-1.5 grid grid-cols-2 gap-x-1" style={QB_CELL_ROW}>
-      <HintCell label="Arrow step" hintKey="pa" active={false} onHint={() => {}}>
-        <QbNum value={plinthArrowValue} onCommit={setPlinthArrowValue} w={44} min={-100000} />
-      </HintCell>
-      <div className="min-w-0 h-full">
-        <Segmented height={BACK_ROW_H} active={plinthArrowMode} onPick={k => setPlinthArrowMode(k as 'dyn' | 'fixed')}
-          items={[{ key: 'dyn', label: 'Arrow dyn', Icon: Expand, title: 'Arrow dyn — each arrow click moves that face by the step' },
-            { key: 'fixed', label: 'Arrow fixed', Icon: Expand, title: 'Arrow fixed — the set size along the arrow becomes the step value' }]} />
       </div>
     </div>
   );
@@ -1681,7 +1662,9 @@ export function PanelEditor() {
     setOpenCards(cur => { const n = new Set([...cur].filter(id => fresh.has(id))); return n.size === cur.size ? cur : n; });
     // Body satırı açıkken yeniden kurulan parçalar "yeni" sayılmaz (satır açık kalır).
     if (st.selectedPanelRow !== null && !String(st.selectedPanelRow).startsWith('quick-')) {
-      const vf = st.virtualFaces.find(f => f.id === rowVfId(st.selectedPanelRow));
+      const row = String(st.selectedPanelRow);
+      // Baza seti satırı: yer tutucu VF'si yeni ise (set az önce yerleşti) seçim kalır.
+      const vf = row.startsWith('plinth-') ? st.virtualFaces.find(f => f.plinthId === row.slice('plinth-'.length)) : st.virtualFaces.find(f => f.id === rowVfId(st.selectedPanelRow));
       if (!vf || !fresh.has(keyOf(vf))) setSelectedPanelRow(null);
     }
     const stale = (id: string) => !fresh.has(id);
@@ -1728,7 +1711,8 @@ export function PanelEditor() {
   useEffect(() => {
     // YARIŞ KORUMASI: ilk VF'nin hasPanel yazımı efekti yeniden tetikler; üretimi süren VF'ler modül düzeyinde
     // işaretlenmezse aynı VF için İKİNCİ panel yaratılır (üst üste iki raf).
-    const pending = virtualFaces.filter(vf => !vf.hasPanel && !_creatingPanelForVf.has(vf.id) && !panelOfVf(vf.id, useAppStore.getState().shapes));
+    // Baza seti yer tutucusu VF'nin paneli YOKTUR (Goker: "ayakla beraber panel gelmesin") — otomatik üretime girmez.
+    const pending = virtualFaces.filter(vf => !vf.hasPanel && !vf.plinthId && !_creatingPanelForVf.has(vf.id) && !panelOfVf(vf.id, useAppStore.getState().shapes));
     if (!pending.length) return;
     for (const vf of pending) _creatingPanelForVf.add(vf.id);
     (async () => {
@@ -1913,10 +1897,13 @@ export function PanelEditor() {
     // Düz liste: her VF store sırasıyla kendi satırıdır; listedeki numara = VF sırası = basan/basılan önceliği.
     // İstisna: raf/dikme, kapak ve arkalık grubunun üyeleri store'da bitişik durur ve TEK kart olarak (ilk üyenin sırasında) gösterilir.
     type Row = { kind: 'vf'; vf: VirtualFace } | { kind: 'group'; group: PanelGroup; members: VirtualFace[] }
-      | { kind: 'door'; group: DoorGroup; members: VirtualFace[] } | { kind: 'back'; group: BackGroup; members: VirtualFace[] };
+      | { kind: 'door'; group: DoorGroup; members: VirtualFace[] } | { kind: 'back'; group: BackGroup; members: VirtualFace[] }
+      | { kind: 'plinth'; set: PlinthSet; vf: VirtualFace };
     const rows: Row[] = [];
     const seenGroups = new Set<string>();
     for (const vf of svf) {
+      // Baza seti yer tutucusu: setin satırı VF sırasındaki yerinde (sürüklenerek sıralanır).
+      if (vf.plinthId) { const ps = bodySets.find(x => x.id === vf.plinthId); if (ps) rows.push({ kind: 'plinth', set: ps, vf }); continue; }
       const g = vf.groupId ? panelGroups.find(x => x.id === vf.groupId) : undefined;
       const dg = vf.doorGroupId ? doorGroups.find(x => x.id === vf.doorGroupId) : undefined;
       const bg = vf.backGroupId ? backGroups.find(x => x.id === vf.backGroupId) : undefined;
@@ -1928,8 +1915,8 @@ export function PanelEditor() {
         : dg ? { kind: 'door', group: dg, members: svf.filter(m => m.doorGroupId === dg.id) }
         : { kind: 'back', group: bg!, members: svf.filter(m => m.backGroupId === bg!.id) });
     }
-    const idsOf = (r: Row) => (r.kind === 'vf' ? [r.vf.id] : r.members.map(m => m.id));
-    const rowKeyOf = (r: Row) => (r.kind === 'vf' ? r.vf.id : `grp-${r.group.id}`);
+    const idsOf = (r: Row) => (r.kind === 'vf' || r.kind === 'plinth' ? [r.vf.id] : r.members.map(m => m.id));
+    const rowKeyOf = (r: Row) => (r.kind === 'vf' ? r.vf.id : r.kind === 'plinth' ? plinthRowKey(r.set.id) : `grp-${r.group.id}`);
     const clearDrag = () => { setDragIndex(null); setDropIndex(null); };
 
     const deletePanelAndFace = async (vfId: string) => {
@@ -2000,16 +1987,17 @@ export function PanelEditor() {
 
     /* BAZA AYAĞI SETİ SATIRI (PlinthService): VF değil, gövdeden bağımsız set ("P"); seçilince 3D'de set okları (Dyn/Fixed düğmesi ok ucunda).
        Kart: ayak düzeni (adet / Ø / kenar mesafeleri) + yükseklik + ok tık değeri ve modu. */
-    const plinthRow = (set: PlinthSet) => {
+    const plinthRow = (set: PlinthSet, rowIdx: number, label: string) => {
       const key = plinthRowKey(set.id), sel = selectedPanelRow === key;
       const [W, H, D] = plinthSize(set, shapes), bound = plinthIsBound(set);
       return rowShell({
-        key, open: sel, sel, lead: <span className="shrink-0 w-[14px] ml-[2px] self-stretch" />, onToggle: rowToggle(key, sel),
-        num: String(svf.length + bodySets.indexOf(set) + 1), kind: 'plinth', count: set.legs.count,
-        name: <span title={`Plinth leg set — ${fmt1(W)} × ${fmt1(H)} × ${fmt1(D)} · feet stand on the body floor · ${bound ? 'height follows the bottom panel' : 'resize with the arrows in the 3D view'}`}
+        key, refKey: key, open: sel, sel, dragging: dragIndex === rowIdx, armed: armedRowKey === key,
+        lead: grip(key, rowIdx, 'Drag to reorder — earlier set presses later panels; a later set sits between earlier panels'), onToggle: rowToggle(key, sel),
+        num: label, kind: 'plinth', count: set.legs.count,
+        name: <span title={`Plinth leg set — ${fmt1(W)} × ${fmt1(H)} × ${fmt1(D)} · feet stand on the body floor · ${bound ? 'height follows the bottom panel' : 'Volume: pick a face in the 3D view and set its size'}`}
           className="flex-1 min-w-0 h-[22px] px-[5px] flex items-center text-[11.5px] font-medium text-stone-700 truncate select-none">{plinthName(set)}</span>,
-        dims: <RowCells title={`${set.legs.count} legs · Ø ${fmt1(set.legs.diameter)} · height ${fmt1(H)}${bound ? ' (from the bottom panel)' : ''} · set ${fmt1(W)} × ${fmt1(D)}`}
-          cells={[['N', String(set.legs.count)], ['Ø', fmt1(set.legs.diameter)], ['H', fmt1(H)]]} />,
+        dims: <RowCells title={`${set.legs.count} legs · height ${fmt1(H)}${bound ? ' (from the bottom panel)' : ''} · set ${fmt1(W)} × ${fmt1(D)}`}
+          cells={[['N', String(set.legs.count)], ['H', fmt1(H)], ['W', fmt1(W)]]} />,
         trail: <>
           {sel && <button type="button" title="Done — finish editing this set (arrows close, selection clears)" onClick={e => { stop(e); finishPlinthEdit(); }}
             className={`${ROW_BTN} text-[#16a34a] hover:bg-green-50`}><Check size={ROW_ICON} strokeWidth={2.4} /></button>}
@@ -2031,7 +2019,6 @@ export function PanelEditor() {
                 <LegsBlock legs={{ ...set.legs, height: H }} W={W} D={D} heightEditable={!bound} heightReadout={bound ? H : undefined} countOptions={[4, 5, 6]} hint={legsHint} onHint={setLegsHint}
                   onChange={p => { if (p.height != null) setPlinthHeight(set.id, p.height); const rest = { ...p }; delete rest.height; if (Object.keys(rest).length) setPlinthLegs(set.id, rest as Partial<PlinthSet['legs']>); }} />
               </div>
-              <PlinthArrowRow />
             </div>
           );
         },
@@ -2461,6 +2448,7 @@ export function PanelEditor() {
           }}
           onDrop={e => { e.preventDefault(); if (dragIndex !== null) void onRowDropBelow(dragIndex, rowIdx); }}>
           {row.kind === 'vf' ? vfRow(row.vf, rowIdx, label, {})
+            : row.kind === 'plinth' ? plinthRow(row.set, rowIdx, label)
             : row.kind === 'door' ? doorCard(row.group, row.members, rowIdx, label)
             : row.kind === 'back' ? backCard(row.group, row.members, rowIdx, label)
             : groupCard(row.group, row.members, rowIdx, label)}
@@ -2478,7 +2466,6 @@ export function PanelEditor() {
         </div>
       );
     }
-    for (const set of bodySets) elements.push(plinthRow(set));
     const quickParts = quickBodyVfsOf(sid, svf).length, quickSaved = quickBodyOf(selectedShape);
     if (quickParts && quickSaved) elements.unshift(quickRow(quickSaved, quickParts));
     return elements;

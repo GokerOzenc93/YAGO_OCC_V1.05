@@ -19,8 +19,8 @@ import {
   confirmPanelMoveRef, confirmPanelRotateRef, resetRefFacePick, axisIndexOf, getReplicadVertices, executeFaceExtrudeOuter, round1,
 } from './Geometry';
 import {
-  type PlinthPick, type PlinthSet, applyPlinthArrow, confirmPlinthPick, plinthBoxCenter, plinthBoxOf, plinthCandidates, plinthFaceCenters,
-  plinthLegSpots, plinthPickBox, plinthRowKey, plinthSetsOf, isPlinthRow, finishPlinthEdit,
+  type PlinthPick, confirmPlinthPick, plinthBoxOf, plinthCandidates, plinthLegSpots, plinthPickBox, plinthRowKey, plinthSetsOf, isPlinthRow,
+  finishPlinthEdit,
 } from './PlinthService';
 import {
   confirmRefCavityExtrude, groupBoundsPanelPredicate, isInteriorPanel, repickObstacles, collectObstacles,
@@ -900,6 +900,8 @@ export interface StackSpec {
   onPanel?: any; face?: CoplanarFaceGroup;
   /** Arkalığın önü: derinlik her regen'de arkalık + önündeki katmanlardan yeniden okunur (VF.stackOnBack). */
   onBack?: boolean;
+  /** Ayağın üstü: derinlik her regen'de baza setinin üst yüzünden okunur (VF.stackOnPlinthId). */
+  onPlinth?: string;
 }
 /** Tıklanan yüz bileşeninin serbest bölgesi (highlight) ve VF'si. HIGHLIGHT = PANEL: bölge tek kaynaktan (computeFreeRegionLocal);
  *  kontur YEREL uzayda, panel ayak izleri dünya→yerel dönüşümle getirilir. */
@@ -974,6 +976,7 @@ export function buildFacePreview(
     ...(stack ? {
       stackDepth: stack.depth, stackBaseVfId: stack.baseVfId,
       ...(stack.onPanel ? { stackOnPanel: true } : {}), ...(stack.onBack ? { stackOnBack: true } : {}),
+      ...(stack.onPlinth ? { stackOnPlinthId: stack.onPlinth } : {}),
     } : {}),
     ...({ regionAnchor: [anchor.x, anchor.y, anchor.z] } as any),
   };
@@ -1015,7 +1018,7 @@ const LEG_COLORS = { selected: '#c2410c' } as const;
 export const VirtualFaceOverlay: React.FC<{ shape: any }> = ({ shape }) => {
   const { virtualFaces, setSelectedPanelRow, panelSelectMode } = useStoreFields('virtualFaces', 'setSelectedPanelRow', 'panelSelectMode');
   const [hoveredId, setHoveredId] = useState<string | null>(null);
-  const shapeFaces = useMemo(() => virtualFaces.filter(f => f.shapeId === shape.id && !f.hasPanel), [virtualFaces, shape.id]);
+  const shapeFaces = useMemo(() => virtualFaces.filter(f => f.shapeId === shape.id && !f.hasPanel && !f.plinthId), [virtualFaces, shape.id]);
   const meshes = useMemo(() => shapeFaces.map(vf => { const r = buildSurfaceMeshes(vf); return r ? { id: vf.id, vf, ...r } : null; })
     .filter(Boolean) as Array<{ id: string; vf: VirtualFace; geo: THREE.BufferGeometry; edgeGeo: THREE.BufferGeometry }>, [shapeFaces]);
   if (meshes.length === 0) return null;
@@ -1042,16 +1045,18 @@ export const VirtualFaceOverlay: React.FC<{ shape: any }> = ({ shape }) => {
 const isSpecialPanel = (p: any) => isInteriorPanel(p) || isDoorPanel(p) || isBackPanel(p);
 type FaceCandidate = { index: number; depth: number; hitPoint: THREE.Vector3; stack?: StackSpec };
 
+/** Panel yerleştirmede baza setine tıklama (PlinthSets → FaceRaycastOverlay): set id + dünya noktası. */
+const plinthPlaceRequest: { current: ((setId: string, hitWorld: THREE.Vector3) => void) | null } = { current: null };
 export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = ({ shape, allShapes = [] }) => {
-  const { raycastMode, virtualFaces, setSelectedPanelRow, setRaycastPendingVf } = useStoreFields('raycastMode', 'virtualFaces', 'setSelectedPanelRow',
-    'setRaycastPendingVf');
+  const { raycastMode, virtualFaces, setSelectedPanelRow, setRaycastPendingVf, plinthSets } = useStoreFields('raycastMode', 'virtualFaces', 'setSelectedPanelRow',
+    'setRaycastPendingVf', 'plinthSets');
   const [hoveredGroupIndex, setHoveredGroupIndex] = useState<number | null>(null);
   /** Fare bir panelin ÜZERİNDEYKEN (yüz orada panelle örtülü) o panel vurgulanır; tık o yüzün en yakın boşluğunu aday yapar. */
   const [hoverCover, setHoverCover] = useState<{ id: string; geometry: THREE.BufferGeometry } | null>(null);
   const hoverProbeRef = useRef<{ gi: number; point: THREE.Vector3 } | null>(null);
   const [pending, setPending] = useState<PendingPreview | null>(null);
   const lastClickRef = useRef<{ point: THREE.Vector3; groupIndex: number; cycleIndex: number } | null>(null);
-  const shapeVirtualFaces = useMemo(() => virtualFaces.filter(vf => vf.shapeId === shape.id), [virtualFaces, shape.id]);
+  const shapeVirtualFaces = useMemo(() => virtualFaces.filter(vf => vf.shapeId === shape.id && !vf.plinthId), [virtualFaces, shape.id]);
   const vertexModsKeyStr = JSON.stringify(shape.vertexModifications || []);
   const effGeometry = useMemo(() => effectiveBodyGeometry(shape), [shape.geometry, shape.geometry?.uuid, vertexModsKeyStr]);
   const { localToWorld, worldToLocal } = useShapeMatrices(shape);
@@ -1159,6 +1164,37 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
     const tvf = top ? vfOfPanel(top) : undefined;
     return depth > 0.5 && top && tvf ? { depth, baseVfId: tvf.id, basePanelId: top.id } : undefined;
   };
+  /** AYAĞIN ÜSTÜ (Goker: "normal panel yerleşirken ayağın üzerine referans alarak tıklanıp panel yerleşmeli"): alt yüzün bu noktası bir
+   *  baza setinin kapsamındaysa panel setin ÜST düzlemine (zemin + set yüksekliği) ister; derinlik her regen'de setten okunur. */
+  const bodySets = useMemo(() => plinthSetsOf(shape.id, plinthSets), [plinthSets, shape.id]);
+  const plinthSpecAt = (gi: number, hitWorld: THREE.Vector3): StackSpec | undefined => {
+    if (!bodySets.length) return undefined;
+    const nL = localNormalOf(gi); if (nL.y > -0.95) return undefined;   // yalnız alt yüz
+    const hl = hitWorld.clone().applyMatrix4(worldToLocal);
+    for (const ps of bodySets) {
+      const b = plinthBoxOf(ps);
+      if (hl.x < b.min[0] - 0.5 || hl.x > b.max[0] + 0.5 || hl.z < b.min[2] - 0.5 || hl.z > b.max[2] + 0.5) continue;
+      const depth = b.max[1] - b.min[1];
+      if (depth > 0.5) return { depth, baseVfId: ps.vfId, basePanelId: `plinth-${ps.id}`, onPlinth: ps.id };
+    }
+    return undefined;
+  };
+  // PlinthSets'ten gelen doğrudan tık: alt yüz grubu bulunur, setin üstüne önizleme kurulur.
+  useEffect(() => {
+    if (!raycastMode) return;
+    plinthPlaceRequest.current = (setId, hitWorld) => {
+      const ps = bodySets.find(x => x.id === setId); if (!ps) return;
+      let gi = -1; faceGroups.forEach((g, i) => { if (g.normal.clone().normalize().y < -0.95 && gi < 0) gi = i; });
+      if (gi < 0) return;
+      const b = plinthBoxOf(ps), hl = hitWorld.clone().applyMatrix4(worldToLocal);
+      const onFace = new THREE.Vector3(Math.min(b.max[0], Math.max(b.min[0], hl.x)), b.min[1], Math.min(b.max[2], Math.max(b.min[2], hl.z))).applyMatrix4(localToWorld);
+      const st: StackSpec = { depth: b.max[1] - b.min[1], baseVfId: ps.vfId, basePanelId: `plinth-${ps.id}`, onPlinth: ps.id };
+      setHoveredGroupIndex(gi);
+      lastClickRef.current = { point: onFace.clone().applyMatrix4(worldToLocal), groupIndex: gi, cycleIndex: 0 };
+      setPending(buildFacePreview(onFace, faceGroups[gi], faces, worldToLocal, shape.id, effGeometry, regionSiblings, st));
+    };
+    return () => { plinthPlaceRequest.current = null; };
+  }, [raycastMode, bodySets, faceGroups, faces, worldToLocal, localToWorld, shape.id, effGeometry, regionSiblings]);
   /** ARKALIĞIN ÖNÜ: yüzün bu noktasının arkasında (yüzün içinde) kanallı arkalık varsa önüne panel isteği — taban arkalık ya da önüne
    *  yığılmış en içteki katman; örtülü nokta gibi davranır (arkalığın önü → yüzün en yakın boşluğu). */
   const backSpecAt = (gi: number, hitWorld: THREE.Vector3): StackSpec | undefined => {
@@ -1216,7 +1252,7 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
       if (!inGroup(group.faceIndices, faces, hitOnPlane, localToWorld)) continue;
       const cover = findPanelCoveringPoint(hitOnPlane, childPanels, nW, hitOnPlane);
       if (!cover) {
-        const bst = backSpecAt(gi, hitOnPlane);
+        const bst = plinthSpecAt(gi, hitOnPlane) ?? backSpecAt(gi, hitOnPlane);
         if (!bst) { out.push({ index: gi, depth: t, hitPoint: hitOnPlane }); continue; }
         out.push({ index: gi, depth: t, hitPoint: hitOnPlane, stack: bst });
         const freeB = nearestFreePointOnGroup(gi, hitOnPlane, nW);
@@ -1247,8 +1283,8 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
     // Nokta değen bir panelin GÜNCEL ayak izi içindeyse yüz orada "tanımlı"dır; aradaki boşluk serbesttir.
     const coveringPanel = findPanelCoveringPoint(clickPoint, childPanels, worldNormalOf(hoveredGroupIndex), clickPoint);
     const hoveredIsDefined = coveringPanel !== null;
-    // Kanallı arkalığın arkasına tık da örtülü sayılır: ilk tıkta adaylar (arkalığın önü → boşluk) gelir.
-    const hoveredUnderBack = !hoveredIsDefined && !!backSpecAt(hoveredGroupIndex, clickPoint);
+    // Kanallı arkalığın arkasına / baza setinin kapsamına tık da örtülü sayılır: ilk tıkta adaylar (arkalığın önü / setin üstü → boşluk) gelir.
+    const hoveredUnderBack = !hoveredIsDefined && (!!plinthSpecAt(hoveredGroupIndex, clickPoint) || !!backSpecAt(hoveredGroupIndex, clickPoint));
     let targetGroupIndex = hoveredGroupIndex;
     let previewClickPoint = clickPoint;
     let previewStack: StackSpec | undefined;
@@ -2427,8 +2463,8 @@ function PlinthFoot({ h, d, active, xray, onClick }: { h: number; d: number; act
 
 /** Setler (gövde-yerel çerçevede): plastik baza ayakları; tık satırı seçer; seçili sette set hacmi (raf/dikme seçimi gibi) + oklar. */
 export const PlinthSets: React.FC<{ shape: any }> = ({ shape }) => {
-  const { plinthSets, selectedPanelRow, setSelectedPanelRow, viewMode, shapes, faceExtrudeMode, faceExtrudePlinthId } =
-    useStoreFields('plinthSets', 'selectedPanelRow', 'setSelectedPanelRow', 'viewMode', 'shapes', 'faceExtrudeMode', 'faceExtrudePlinthId');
+  const { plinthSets, selectedPanelRow, setSelectedPanelRow, viewMode, shapes, faceExtrudeMode, faceExtrudePlinthId, raycastMode } =
+    useStoreFields('plinthSets', 'selectedPanelRow', 'setSelectedPanelRow', 'viewMode', 'shapes', 'faceExtrudeMode', 'faceExtrudePlinthId', 'raycastMode');
   const sets = useMemo(() => plinthSetsOf(shape.id, plinthSets), [plinthSets, shape.id]);
   // Etkin kutu: taban zeminde, üst bağlı alt panelden (canlı) — alt panel taşınınca / gövde boyutlanınca ayak yine zemine basar.
   const boxes = useMemo(() => sets.map(set => plinthBoxOf(set, shapes)), [sets, shapes]);
@@ -2439,22 +2475,45 @@ export const PlinthSets: React.FC<{ shape: any }> = ({ shape }) => {
       {sets.map((set, k) => {
         const active = selectedPanelRow === plinthRowKey(set.id);
         const box = boxes[k], h = box.max[1] - box.min[1], y0 = box.min[1];
-        const click = (e: any) => { e.stopPropagation(); setSelectedPanelRow(active ? null : plinthRowKey(set.id), shape.id); };
+        // Panel yerleştirme kipinde sete tık = setin ÜSTÜNE panel isteği (FaceRaycastOverlay); yoksa satırı seçer.
+        const click = (e: any) => {
+          e.stopPropagation();
+          if (raycastMode) { plinthPlaceRequest.current?.(set.id, e.point.clone()); return; }
+          setSelectedPanelRow(active ? null : plinthRowKey(set.id), shape.id);
+        };
+        const sz = [box.max[0] - box.min[0], h, box.max[2] - box.min[2]], mid = [(box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2];
         return (
           <group key={set.id}>
+            {raycastMode && (
+              // Setin ÜST yüzüne tık gövde yüzlerinden önce yakalanır (mesafe 0): kullanıcı yukarıdan setin üstüne bakıp tıklıyorsa panel
+              // oraya ister; yan/alt yüzlerden gelen ışın normal yüz seçimine bırakılır.
+              <mesh position={mid as unknown as Vec3} raycast={plinthTopRaycast} onPointerDown={(e: any) => { if (e.button === 0) click(e); }}>
+                <boxGeometry args={[sz[0], sz[1], sz[2]]} />
+                <meshBasicMaterial transparent opacity={0.07} color={SEL_COLORS.hover} depthWrite={false} />
+              </mesh>
+            )}
             {plinthLegSpots(set, box).map((p, i) => (
               <group key={i} position={[p.x, y0, p.z]}>
                 <PlinthFoot h={h} d={set.legs.diameter} active={active} xray={xray} onClick={click} />
               </group>
             ))}
-            {/* Hacim düzenlemede (Volume) kutu ve yüz seçimi PlinthEditOverlay'de; oklar gizlenir ki yakalama silindirleri yüz tıklamasını kesmesin */}
+            {/* Hacim düzenlemede (Volume) kutu ve yüz seçimi PlinthEditOverlay'de çizilir */}
             {active && !(faceExtrudeMode && faceExtrudePlinthId === set.id) && <PlinthVolume box={box} />}
-            {active && !(faceExtrudeMode && faceExtrudePlinthId === set.id) && <PlinthArrowGizmo set={set} box={box} />}
           </group>
         );
       })}
     </>
   );
+};
+/** Set kutusunun yalnız +Y (üst) yüzüne vuruşlar sayılır ve öne alınır (mesafe 0) — gövdenin yüz-seçim örtüsünden önce gelsin. */
+const plinthTopRaycast = function (this: THREE.Mesh, rc: THREE.Raycaster, hits: THREE.Intersection[]) {
+  const tmp: THREE.Intersection[] = [];
+  THREE.Mesh.prototype.raycast.call(this, rc, tmp);
+  const up = new THREE.Vector3(0, 1, 0).transformDirection(this.matrixWorld);
+  for (const h of tmp) {
+    const n = h.face?.normal ? h.face.normal.clone().transformDirection(this.matrixWorld) : null;
+    if (n && n.dot(up) > 0.9 && rc.ray.direction.dot(n) < 0) { h.distance = 0; hits.push(h); }
+  }
 };
 /** Seçili setin hacmi: raf/dikme seçimiyle aynı dil (mavi dolgu + kırmızı kenar). */
 function PlinthVolume({ box }: { box: { min: Vec3; max: Vec3 } }) {
@@ -2465,35 +2524,6 @@ function PlinthVolume({ box }: { box: { min: Vec3; max: Vec3 } }) {
       <mesh geometry={m.geo} raycast={noRaycast} renderOrder={6}><FillMat color={PICK_COLORS.selected} opacity={SEL_COLORS.volumeActiveOpacity} /></mesh>
       {m.edgePts.length >= 2 && <EdgeLines points={m.edgePts} color={PICK_COLORS.selectedEdge} width={SEL_COLORS.edgeWidth} order={7} />}
     </>
-  );
-}
-
-/** Set okları: kutu yüz merkezlerinde (dışarı GAP kadar açık), taşıma okları stili; tık = o yüzü değer kadar oynat (Arrow dyn) ya da o
- *  eksendeki ölçüyü değer yap (Arrow fixed) — mod set kartındaki iki seçenekten. Gövde-yerel grupta çizilir (ShapeWithTransform çocuğu). */
-function PlinthArrowGizmo({ set, box }: { set: PlinthSet; box: { min: Vec3; max: Vec3 } }) {
-  const { plinthArrowMode, plinthArrowValue } = useStoreFields('plinthArrowMode', 'plinthArrowValue');
-  const [flash, setFlash] = useState<AxisDir | null>(null);
-  const { centers, arrowLength, center } = useMemo(() => {
-    const fc = plinthFaceCenters(box);
-    const size = [box.max[0] - box.min[0], box.max[1] - box.min[1], box.max[2] - box.min[2]];
-    const maxDim = Math.max(...size, 60), gap = maxDim * GAP_RATIO;
-    const out = {} as Record<AxisDir, Vec3>;
-    for (const { axis } of MOVE_AXES) { const d = axisDirToVec(axis), c = fc[axis]; out[axis] = [c[0] + d.x * gap, c[1] + d.y * gap, c[2] + d.z * gap]; }
-    const c = plinthBoxCenter(box);
-    return { centers: out, arrowLength: maxDim * 0.2, center: [c.x, c.y, c.z] as Vec3 };
-  }, [box]);
-  const click = (axis: AxisDir) => {
-    applyPlinthArrow(set.id, axis, plinthArrowValue, plinthArrowMode);
-    setFlash(axis); setTimeout(() => setFlash(f => (f === axis ? null : f)), 260);
-  };
-  return (
-    <group>
-      <OriginSphere position={center} size={arrowLength * 0.055} baseLength={arrowLength} />
-      {MOVE_AXES.map(({ axis, color, hover }) => (
-        <MoveArrow key={axis} axisLabel={axis} color={color} hoverColor={hover} origin={centers[axis]} length={arrowLength} onSelect={click}
-          selectedAxis={flash} />
-      ))}
-    </group>
   );
 }
 

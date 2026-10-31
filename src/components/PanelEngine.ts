@@ -6,11 +6,12 @@ import { type CoplanarFaceGroup, type FaceData, type Vec3, angleToTouchPlane, as
 import { isInteriorPanel, isInteriorVf, recalculateInteriorVfs, syncPanelGroups } from './PanelGroupService';
 import { isDoorPanel, isDoorVf, recalculateDoorVfs, syncDoorGroups } from './DoorService';
 import { backGrooveCuttersFor, backNailStampFor, backStackAt, isBackPanel, isBackVf, recalculateBackVfs, syncBackGroups } from './BackService';
+import { isPlinthVf, plinthBoxOf, plinthSetsOf } from './PlinthService';
 
 // Kapak ve arkalık panelleri (LEVHA): köşe birleşimine girmez, gövdeyle sığdırılmaz/kesilmez, hiçbir paneli kesmez; damgalamaz —
 // istisna arkalığın iç parçası: ÇAKMA kenarındaki ve sırada kendinden SONRA gelen gövde panelini basar (BackService.backNailStampFor).
 const isSheetPanel = (p: any): boolean => isDoorPanel(p) || isBackPanel(p);
-const isSheetVf = (vf: any): boolean => isDoorVf(vf) || isBackVf(vf);
+const isSheetVf = (vf: any): boolean => isDoorVf(vf) || isBackVf(vf) || isPlinthVf(vf);
 
 // PANEL MOTORU: (A) rebuildPanelsForParent — panelleri SPEC'ten (VF bağı + transform/extrude adımları) her rebuild'de
 // sıfırdan üretir; (B) VF bölge yeniden hesabı. BASAN/BASILAN = store'daki virtualFaces sırası (önce gelen basar).
@@ -1148,6 +1149,17 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
     const gN = group ? group.normal.clone().normalize() : null;
     let contour = group && gN ? computeFaceComponentContour(faces, group.faceIndices, toVector3(probe.center), gN) : null;
     let sd = sd0;
+    // AYAĞIN ÜSTÜ: derinlik = zeminden setin üst yüzüne (set yükselince / alt panele bağlı set değişince panel onunla gider).
+    if (vf.stackOnPlinthId && contour && gN) {
+      const ps = plinthSetsOf(shape.id).find(x => x.id === vf.stackOnPlinthId);
+      if (ps) {
+        const pb = plinthBoxOf(ps, shapesArr);
+        const faceD = contour.corners[0].dot(gN);                      // yüz düzlemi (alt yüzde −y0)
+        const topD = new THREE.Vector3(0, pb.max[1], 0).dot(gN);         // setin üst düzlemi, yüz normali yönünde
+        const d = faceD - topD;
+        if (d > 0.5 && Math.abs(d - sd0) > 1e-3) { sd = d; freshStackDepth.set(vf.id, d); }
+      }
+    }
     if (vf.stackOnBack && contour && gN) {
       // ARKALIĞIN ÖNÜ: derinlik arkalık parçası + önüne yığılmış (sırada önce gelen) bitişik katmanlardan her regen'de yeniden okunur.
       const c = toVector3(probe.center);
@@ -1356,6 +1368,22 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
       ...(ops ? { __composedOps: ops } : {}),
     };
   };
+  /** Set kutusu = düz panel gibi damga (kalınlık = yükseklik; ayak izi kutunun yüze değen yüzü). */
+  const plinthStampCache = new Map<string, any>();
+  const plinthStampOf = (ps: { id: string; vfId: string }, body: Shape): any => {
+    const hit = plinthStampCache.get(ps.id); if (hit) return hit;
+    const full = plinthSetsOf(body.id).find(x => x.id === ps.id); if (!full) return null;
+    const b = plinthBoxOf(full, shapesArr, virtualFaces);
+    const sz = [0, 1, 2].map(a => Math.max(0.01, b.max[a] - b.min[a]));
+    const mid = [0, 1, 2].map(a => (b.min[a] + b.max[a]) / 2);
+    const st = {
+      id: `plinth-stamp-${ps.id}`, type: 'panel', position: body.position, rotation: body.rotation, scale: body.scale,
+      geometry: new THREE.BoxGeometry(sz[0], sz[1], sz[2]).translate(mid[0], mid[1], mid[2]),
+      parameters: { parentShapeId: body.id, virtualFaceId: ps.vfId, panelThickness: sz[1] }, __pierceObstacle: true,
+    };
+    plinthStampCache.set(ps.id, st);
+    return st;
+  };
   const stampingPanelsFor = (vfId: string): any[] => {
     const myPanel = childPanels.find(p => p.parameters?.virtualFaceId === vfId);
     const myVf = vfById.get(vfId);
@@ -1368,6 +1396,15 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
     const planeIn = sd && myFaceNormal ? (fresh ?? new THREE.Vector3(...myVf!.center)).dot(myFaceNormal.clone().multiplyScalar(-1)) : 0;
     const behind = (p: any) => !!sd && !!myFaceNormal && panelBehindStackPlane(p, myFaceNormal, planeIn);
     let list = childPanels.filter(p => !behind(p) && stamps(p, vfId, myPanel, myFaceNormal)).map(p => stampOf(p, myFaceNormal, vfId));
+    // BAZA AYAĞI SETLERİ: sırada bu VF'den ÖNCE gelen set, kutusuyla damgalar (basan); sonra gelen set bu panelin arasında kalır
+    // (PlinthService.clipByEarlierPanels). Üst üste tabanı olan set düzlemin gerisindedir → `behind` eler.
+    const myIdx = vfIndexOf.get(vfId) ?? Number.MAX_SAFE_INTEGER;
+    for (const ps of plinthSetsOf(shape.id)) {
+      const pi = vfIndexOf.get(ps.vfId);
+      if (pi == null || pi >= myIdx || myVf?.stackOnPlinthId === ps.id) continue;
+      const st = plinthStampOf(ps, shape);
+      if (st && !behind(st)) list.push(st);
+    }
     // Üst üste panel düzlemi gövdenin içindedir: o düzlemi DELEN levhalar (üst/alt/arkalık) gerçek engel sayılır.
     if (sd) list = list.map(s => (s && typeof s === 'object' ? { ...s, __pierceObstacle: true } : s));
     const own = ownShiftOf(myPanel, myVf);

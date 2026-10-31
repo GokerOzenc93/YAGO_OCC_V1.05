@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
 import * as THREE from 'three';
 import { type AxisDir, type Vec3, type VertexModification, rebuildBodySolid } from './components/Geometry';
-import type { PlinthSet, PlinthPick, ArrowMode } from './components/PlinthService';
+import type { PlinthSet, PlinthPick } from './components/PlinthService';
 
 export interface SubtractionParameters {
   width: string; height: string; depth: string;
@@ -78,6 +78,11 @@ export interface VirtualFace {
   stackOnBack?: boolean;
   /** HIZLI GÖVDE parçası (üst / sol / sağ / alt / baza / arka baza): ayarlar gövdede saklanır, yeniden uygulamada aynı VF güncellenir. */
   quickBody?: QuickBodyPart;
+  /** BAZA AYAĞI SETİ yer tutucusu (PlinthService): paneli yok; listede/sıralamada setin yeri — sırada önce gelen set sonraki panelleri
+   *  kutusuyla basar, sonra gelen set önceki panellerin arasında kalır. */
+  plinthId?: string;
+  /** AYAĞIN ÜSTÜ: `stackDepth` her regen'de setin üst yüzünden yeniden okunur (set yükselince panel onunla gider). */
+  stackOnPlinthId?: string;
 }
 
 /** Kapak kenar referansı: bir sınır panelinin VF'si ya da gövde kutusunun kenarı. */
@@ -452,9 +457,6 @@ export interface AppState {
   plinthPickCandidates: PlinthPick[]; plinthPickIndex: number; setPlinthPick: (c: PlinthPick[], i: number) => void;
   /** Aday hacmin varsayılan yüksekliği (mm). */
   plinthPickHeight: number; setPlinthPickHeight: (h: number) => void;
-  /** Set oklarının modu ve tık değeri. */
-  plinthArrowMode: ArrowMode; setPlinthArrowMode: (m: ArrowMode) => void;
-  plinthArrowValue: number; setPlinthArrowValue: (v: number) => void;
   /** Arkalık seçmede tip: 'outer' = arkadan çakma, 'inner' = kanallı. */
   backPickPlacement: BackPlacement; setBackPickPlacement: (p: BackPlacement) => void;
 
@@ -744,8 +746,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   plinthPickCandidates: [], plinthPickIndex: 0,
   setPlinthPick: (c, i) => set({ plinthPickCandidates: c, plinthPickIndex: i }),
   plinthPickHeight: 100, setPlinthPickHeight: (h) => set({ plinthPickHeight: Math.max(1, h), plinthPickCandidates: [], plinthPickIndex: 0 }),
-  plinthArrowMode: 'dyn', setPlinthArrowMode: (m) => set({ plinthArrowMode: m }),
-  plinthArrowValue: 10, setPlinthArrowValue: (v) => set({ plinthArrowValue: v }),
 
   filletMode: false, setFilletMode: (e) => set({ filletMode: e, selectedFilletFaces: [], selectedFilletFaceData: [] }),
   selectedFilletFaces: [],
