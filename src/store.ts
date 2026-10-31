@@ -488,6 +488,8 @@ export interface AppState {
   /** Extrude modu panel yerine raf/dikme grubunun HACMİNİ hedefler. */
   faceExtrudeCavityGroupId: string | null; setFaceExtrudeCavityGroupId: (id: string | null) => void;
   faceExtrudeCavityFaceNormal: Vec3 | null; setFaceExtrudeCavityFaceNormal: (n: Vec3 | null) => void;
+  /** Baza seti hacim düzenleme (Volume): hedef set — panel / grup hedefiyle karşılıklı dışlayıcı. */
+  faceExtrudePlinthId: string | null; setFaceExtrudePlinthId: (id: string | null) => void;
 
   panelMoveMode: boolean; setPanelMoveMode: (b: boolean) => void;
   panelMoveTargetPanelId: string | null; setPanelMoveTargetPanelId: (id: string | null) => void;
@@ -767,14 +769,17 @@ export const useAppStore = create<AppState>((set, get) => ({
   faceExtrudeMode: false,
   setFaceExtrudeMode: (b) => set({
     faceExtrudeMode: b, faceExtrudeSelectedFace: null, faceExtrudeClickPoint: null, faceExtrudeCavityFaceNormal: null,
-    ...(!b ? { faceExtrudeTargetPanelId: null, faceExtrudeRefCandidate: null, faceExtrudeCavityGroupId: null } : {}),
+    ...(!b ? { faceExtrudeTargetPanelId: null, faceExtrudeRefCandidate: null, faceExtrudeCavityGroupId: null, faceExtrudePlinthId: null } : {}),
   }),
   faceExtrudeTargetPanelId: null,
   setFaceExtrudeTargetPanelId: (id) => set({
-    faceExtrudeTargetPanelId: id, ...(id ? { faceExtrudeCavityGroupId: null, faceExtrudeCavityFaceNormal: null } : {}),
+    faceExtrudeTargetPanelId: id, ...(id ? { faceExtrudeCavityGroupId: null, faceExtrudeCavityFaceNormal: null, faceExtrudePlinthId: null } : {}),
   }),
   faceExtrudeCavityGroupId: null,
-  setFaceExtrudeCavityGroupId: (id) => set({ faceExtrudeCavityGroupId: id, ...(id ? { faceExtrudeTargetPanelId: null } : {}) }),
+  setFaceExtrudeCavityGroupId: (id) => set({ faceExtrudeCavityGroupId: id, ...(id ? { faceExtrudeTargetPanelId: null, faceExtrudePlinthId: null } : {}) }),
+  faceExtrudePlinthId: null,
+  setFaceExtrudePlinthId: (id) => set({ faceExtrudePlinthId: id, faceExtrudeSelectedFace: null, faceExtrudeCavityFaceNormal: null,
+    ...(id ? { faceExtrudeTargetPanelId: null, faceExtrudeCavityGroupId: null } : {}) }),
   faceExtrudeCavityFaceNormal: null, setFaceExtrudeCavityFaceNormal: (n) => set({ faceExtrudeCavityFaceNormal: n }),
   faceExtrudeSelectedFace: null, setFaceExtrudeSelectedFace: (i) => set({ faceExtrudeSelectedFace: i }),
   faceExtrudeClickPoint: null, setFaceExtrudeClickPoint: (p) => set({ faceExtrudeClickPoint: p }),

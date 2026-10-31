@@ -11,7 +11,7 @@
    (− içeri), Arrow fixed = setin o eksendeki ölçüsü değer olur. Ayaklar her zaman kutunun içinde kalır.
    Şimdilik yalnız geometri: set hiçbir paneli itmez / kesmez — panel ilişkileri sonraki adımda. */
 import * as THREE from 'three';
-import { type CavityBox, type Shape, type VirtualFace, useAppStore, shapeById, childPanelsOf, vfOfPanel, panelOfVf } from '../store';
+import { type CavityBox, type Shape, type VirtualFace, useAppStore, shapeById, childPanelsOf, vfOfPanel, panelOfVf, requestRebuild } from '../store';
 import { type AxisDir, type Vec3, axisDirToVec, effectiveBodyGeometry, genId, localBboxOf, round1 } from './Geometry';
 import { legSpots } from './PanelGroupService';
 
@@ -116,6 +116,45 @@ export function plinthPickBox(body: Shape): CavityBox | null {
   return { min: [bb.min.x, bb.min.y, bb.min.z], max: [bb.max.x, bb.max.y, bb.max.z] };
 }
 
+/** Set hacmi raf/dikme hacimlerini sınırlar (collectObstacles): hacim değişince gövdede grup varsa yeniden çözülür. */
+function syncAfterPlinthChange(shapeId: string): void {
+  const st = useAppStore.getState();
+  if (st.panelGroups.some(g => g.shapeId === shapeId)) void requestRebuild(shapeId);
+}
+export function deletePlinthSetAndSync(id: string): void {
+  const st = useAppStore.getState();
+  const s = st.plinthSets.find(x => x.id === id); if (!s) return;
+  if (st.faceExtrudePlinthId === id) st.setFaceExtrudeMode(false);
+  st.deletePlinthSet(id);
+  syncAfterPlinthChange(s.shapeId);
+}
+/** Set düzenlemesini bitir (✓ / Esc): satır seçimi ve açık hacim düzenlemesi kapanır. */
+export function finishPlinthEdit(): void {
+  const st = useAppStore.getState();
+  if (st.faceExtrudePlinthId) st.setFaceExtrudeMode(false);
+  if (typeof st.selectedPanelRow === 'string' && st.selectedPanelRow.startsWith('plinth-')) st.setSelectedPanelRow(null);
+}
+export const isPlinthRow = (row: unknown): row is string => typeof row === 'string' && row.startsWith('plinth-');
+
+/* HACİM DÜZENLEME (Volume, raf/dikme hacmindeki gibi — yalnız Fixed / Dyn): set kutusunun bir yüzü 3D'de seçilir, değer uygulanır. */
+export function startPlinthVolumeEdit(id: string): void {
+  const st = useAppStore.getState();
+  if (st.panelMoveMode) st.setPanelMoveMode(false);
+  if (st.panelRotateMode) st.setPanelRotateMode(false);
+  st.setFaceExtrudeMode(true);
+  st.setFaceExtrudePlinthId(id);
+}
+/** Seçilen yüz normali → ok yönü. */
+export const axisDirOfNormal = (n: Vec3): AxisDir | null => {
+  const a = [Math.abs(n[0]), Math.abs(n[1]), Math.abs(n[2])], i = a.indexOf(Math.max(...a));
+  if (a[i] < 0.5) return null;
+  return (['x', 'y', 'z'][i] + (n[i] > 0 ? '+' : '-')) as AxisDir;
+};
+export function applyPlinthFace(id: string, normal: Vec3, value: number, mode: ArrowMode): boolean {
+  const axis = axisDirOfNormal(normal);
+  return axis ? applyPlinthArrow(id, axis, value, mode) : false;
+}
+
 /** Set kurar (yerleştirme ve hızlı gövde ortak). */
 export function createPlinthSet(shapeId: string, box: CavityBox, legs: PlinthLegs, opts: { name?: string; bottomVfId?: string; quickBody?: boolean } = {}): PlinthSet {
   const st = useAppStore.getState();
@@ -126,6 +165,7 @@ export function createPlinthSet(shapeId: string, box: CavityBox, legs: PlinthLeg
     ...(opts.bottomVfId ? { bottomVfId: opts.bottomVfId } : {}), ...(opts.quickBody ? { quickBody: true } : {}),
   };
   st.addPlinthSet(set);
+  syncAfterPlinthChange(shapeId);
   return set;
 }
 /** Onay: set kurulur, satırı seçilir, seçme modu kapanır. */
@@ -166,6 +206,7 @@ export function setPlinthHeight(id: string, h: number): void {
   const s = st.plinthSets.find(x => x.id === id); if (!s || plinthIsBound(s)) return;
   const v = Math.max(1, h);
   st.updatePlinthSet(id, { box: { min: [...s.box.min] as Vec3, max: [s.box.max[0], round1(s.box.min[1] + v), s.box.max[2]] } });
+  syncAfterPlinthChange(s.shapeId);
 }
 
 /** Ok: X/Z = o kutu yüzü oynar; Y (iki ok da) = yalnız ÜST yüz / yükseklik — taban zeminde kalır. dyn → `value` kadar (− içeri; y− için
@@ -188,6 +229,7 @@ export function applyPlinthArrow(id: string, axis: AxisDir, value: number, mode:
   const next = plinthBoxAfterArrow(cur, axis, value, mode);
   if (next === cur) return false;
   st.updatePlinthSet(id, { box: next });
+  syncAfterPlinthChange(s.shapeId);
   return true;
 }
 

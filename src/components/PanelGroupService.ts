@@ -14,7 +14,7 @@ import {
   deleteBackGroupWithMembers,
 } from './BackService';
 import { doorJointForBond, moveDoorJointTo, isDoorPanel } from './DoorService';
-import { removeQuickBodyPlinth, syncQuickBodyPlinth } from './PlinthService';
+import { plinthBoxOf, plinthSetsOf, removeQuickBodyPlinth, syncQuickBodyPlinth } from './PlinthService';
 
 /* PANEL GRUP SERVİSİ — 1) kapak / arkalık / raf-dikme ortak bölme yardımcıları · 2) raf / dikme grupları · 3) hızlı gövde. */
 
@@ -1530,6 +1530,8 @@ export function collectObstacles(
     if (!b) continue;
     if (panelHasRotation(p)) { splitBoxes.push(b); tilted.push(p); } else obstacles.push(b);
   }
+  // BAZA AYAĞI SETLERİ (Goker: "ayak konduktan sonra raf ve dikme sadece o hacme kadar çalışmalı"): set hacmi her zaman engeldir.
+  for (const ps of plinthSetsOf(parent.id)) obstacles.push(plinthBoxOf(ps));
   return { obstacles, splitBoxes, tiltFaces: tiltedPanelFaces(parent, tilted) };
 }
 

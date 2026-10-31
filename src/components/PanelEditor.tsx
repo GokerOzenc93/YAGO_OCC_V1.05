@@ -46,6 +46,7 @@ import {
 import { confirmBodyPanelPlacement } from './Scene';
 import {
   type PlinthSet, confirmPlinthPick, plinthRowKey, plinthSetsOf, plinthSize, plinthName, setPlinthLegs, setPlinthHeight, plinthIsBound,
+  applyPlinthFace, deletePlinthSetAndSync, finishPlinthEdit, startPlinthVolumeEdit,
 } from './PlinthService';
 
 /* PANEL EDİTÖRÜ — 1) şerit + liste satırı parçaları · 2) kart blokları (ipucu hücresi, kanal / ayak diyagramları, hızlı gövde) ·
@@ -997,26 +998,33 @@ const axisInput = (axis: string, { draft, setDraft }: DraftProps, setValue: (v: 
 );
 
 /** Yüz extrude (panel) ve hacim (`cavity`) şeridi: Fixed / Dyn / Ref modu, ref durumu ya da değer, onay / çıkış. */
-export function ExtrudeDock({ panel, cavity, draft, setDraft }: DraftProps & { panel?: Shape; cavity?: PanelGroup }) {
+export function ExtrudeDock({ panel, cavity, plinth, draft, setDraft }: DraftProps & { panel?: Shape; cavity?: PanelGroup; plinth?: PlinthSet }) {
   const {
     faceExtrudeMode, faceExtrudeSelectedFace, faceExtrudeThickness, faceExtrudeValueMode, faceExtrudeRefCandidate, faceExtrudeClickPoint,
-    faceExtrudeCavityGroupId, faceExtrudeCavityFaceNormal,
+    faceExtrudeCavityGroupId, faceExtrudeCavityFaceNormal, faceExtrudePlinthId,
   } = useStoreFields('faceExtrudeMode', 'faceExtrudeSelectedFace', 'faceExtrudeThickness', 'faceExtrudeValueMode', 'faceExtrudeRefCandidate',
-    'faceExtrudeClickPoint', 'faceExtrudeCavityGroupId', 'faceExtrudeCavityFaceNormal');
-  if (!faceExtrudeMode || (cavity ? faceExtrudeCavityGroupId !== cavity.id : !panel)) return null;
+    'faceExtrudeClickPoint', 'faceExtrudeCavityGroupId', 'faceExtrudeCavityFaceNormal', 'faceExtrudePlinthId');
+  if (!faceExtrudeMode || (cavity ? faceExtrudeCavityGroupId !== cavity.id : plinth ? faceExtrudePlinthId !== plinth.id : !panel)) return null;
   const { setFaceExtrudeMode, setFaceExtrudeSelectedFace, setFaceExtrudeRefCandidate, setFaceExtrudeValueMode, setFaceExtrudeThickness, updateShape } =
     useAppStore.getState();
+  // Kutu hedefi (raf/dikme hacmi ya da baza seti): yüz 3D'de kutu üzerinde seçilir; baza setinde yalnız Fixed / Dyn.
+  const boxTarget = !!cavity || !!plinth;
   // OK MODLARI (yalnız panel): yüz seçilmez — 3D'deki oklar panelin en dış yüzünü büyütür; onay düğmesi yok, her tık uygular.
   // "Arrow dyn" = her tık değer kadar · "Arrow fixed" = o eksendeki toplam ölçü = değer (Goker: iki ayrı mod, ok ucunda düğme yok).
   const arrowFixed = faceExtrudeValueMode === 'arrowFixed';
-  const isArrow = !cavity && (faceExtrudeValueMode === 'arrow' || arrowFixed);
-  const hf = !isArrow && faceExtrudeSelectedFace !== null && (!cavity || !!faceExtrudeCavityFaceNormal);
-  const isRef = faceExtrudeValueMode === 'ref', isFixed = faceExtrudeValueMode === 'fixed';
+  const isArrow = !boxTarget && (faceExtrudeValueMode === 'arrow' || arrowFixed);
+  const hf = !isArrow && faceExtrudeSelectedFace !== null && (!boxTarget || !!faceExtrudeCavityFaceNormal);
+  const isRef = !plinth && faceExtrudeValueMode === 'ref', isFixed = faceExtrudeValueMode === 'fixed';
   const refPanel = isRef && !!faceExtrudeRefCandidate?.panelId;
   const refFace = refPanel && faceExtrudeRefCandidate!.faceGroupIndex >= 0;
   const exit = () => { setFaceExtrudeSelectedFace(null); setFaceExtrudeMode(false); setFaceExtrudeRefCandidate(null); };
   const onApply = async () => {
     if (!hf) return;
+    if (plinth) {
+      // Baza seti: Fixed = o eksendeki set ölçüsü değer olur · Dyn = yüz değer kadar dışarı (− içeri). Yüz seçili kalır, tekrar uygulanabilir.
+      applyPlinthFace(plinth.id, faceExtrudeCavityFaceNormal!, faceExtrudeThickness, isFixed ? 'fixed' : 'dyn');
+      return;
+    }
     if (cavity) {
       if (isRef) { if (!refFace) return; await confirmRefCavityExtrude(); }
       else { await executeCavityExtrude(cavity.id, faceExtrudeCavityFaceNormal!, faceExtrudeThickness, isFixed, faceExtrudeClickPoint); exit(); }
@@ -1028,12 +1036,14 @@ export function ExtrudeDock({ panel, cavity, draft, setDraft }: DraftProps & { p
     exit();
   };
   // Mod çubuğu yüz seçilmeden de görünür: ok modu yüz seçimi olmadan başlar (Goker: "o moda tıkladığımda oklar olsun").
-  const showBar = hf || !cavity;
+  const showBar = hf || !boxTarget;
+  const modeKeys = plinth ? ['fixed', 'dyn'] : cavity ? ['fixed', 'dyn', 'ref'] : ['arrow', 'arrowFixed', 'fixed', 'dyn', 'ref'];
+  const barActive = plinth && !['fixed', 'dyn'].includes(faceExtrudeValueMode) ? 'dyn' : faceExtrudeValueMode;
   return (
     <div style={DOCK_SHELL}>
       {showBar && (
-        <DockModeBar active={faceExtrudeValueMode}
-          modes={dockModes(cavity ? ['fixed', 'dyn', 'ref'] : ['arrow', 'arrowFixed', 'fixed', 'dyn', 'ref'], {
+        <DockModeBar active={barActive}
+          modes={dockModes(modeKeys, {
             fixed: { sub: 'Constant', title: cavity ? 'Fixed — cavity size along this axis' : 'Fixed — constant thickness' },
             ref: { sub: 'To face', title: 'Ref — up to a reference face' },
             arrow: { title: 'Arrow dyn — no face pick: click an arrow in the 3D view, the outer edge grows by the value (− shrinks)' },
@@ -1046,13 +1056,13 @@ export function ExtrudeDock({ panel, cavity, draft, setDraft }: DraftProps & { p
           }} />
       )}
       <div style={DOCK_ROW}>
-        {cavity && <span style={dockAxisTag('#44403c')}>VOL</span>}
+        {boxTarget && <span style={dockAxisTag('#44403c')}>VOL</span>}
         {isArrow && <span style={dockAxisTag('#44403c')} title="Growth per click (mm); negative shrinks">MM</span>}
         {isArrow ? <NumInput draft={draft} setDraft={setDraft} setValue={setFaceExtrudeThickness} fallback={faceExtrudeThickness} onEscape={exit} />
-          : !hf ? <DockStatus text={cavity ? 'Pick a face of the volume in the 3D view' : 'Pick a face in the 3D view'} />
+          : !hf ? <DockStatus text={boxTarget ? 'Pick a face of the volume in the 3D view' : 'Pick a face in the 3D view'} />
           : isRef ? <DockStatus ready={refFace} text={refFace ? 'Reference face selected' : refPanel ? 'Pick the reference face' : 'Pick the reference panel'} />
           : <NumInput draft={draft} setDraft={setDraft} setValue={setFaceExtrudeThickness} fallback={faceExtrudeThickness}
-              onEnter={cavity ? onApply : undefined} onEscape={cavity ? exit : undefined} />}
+              onEnter={boxTarget ? onApply : undefined} onEscape={boxTarget ? exit : undefined} />}
         {hf && <ApplyBtn enabled={!(isRef && !refFace)} onClick={onApply} />}
         <ExitBtn onClick={exit} />
       </div>
@@ -1559,13 +1569,13 @@ export function PanelEditor() {
     faceExtrudeMode, faceExtrudeTargetPanelId, faceExtrudeSelectedFace, faceExtrudeClickPoint, faceExtrudeValueMode, faceExtrudeCavityGroupId,
     faceExtrudeCavityFaceNormal, panelMoveMode, panelMoveTargetPanelId, panelMoveAxis, panelRotateMode, panelRotateTargetPanelId, panelRotateAxis,
     doorGroups, selectedDoorGroupId, doorRefPickGroupId, backGroups, selectedBackGroupId, backRefPickGroupId, quickBodyMode, quickBodyConfig, quickBodyBusy,
-    plinthSets,
+    plinthSets, faceExtrudePlinthId,
   } = useStoreFields(
     'selectedShapeId', 'shapes', 'selectedPanelRow', 'virtualFaces', 'panelGroups', 'selectedPanelGroupId', 'volumePickMode', 'volumePickGroupId',
     'faceExtrudeMode', 'faceExtrudeTargetPanelId', 'faceExtrudeSelectedFace', 'faceExtrudeClickPoint', 'faceExtrudeValueMode', 'faceExtrudeCavityGroupId',
     'faceExtrudeCavityFaceNormal', 'panelMoveMode', 'panelMoveTargetPanelId', 'panelMoveAxis', 'panelRotateMode', 'panelRotateTargetPanelId', 'panelRotateAxis',
     'doorGroups', 'selectedDoorGroupId', 'doorRefPickGroupId', 'backGroups', 'selectedBackGroupId', 'backRefPickGroupId', 'quickBodyMode', 'quickBodyConfig',
-    'quickBodyBusy', 'plinthSets',
+    'quickBodyBusy', 'plinthSets', 'faceExtrudePlinthId',
   );
   // Eylemler sabittir (store kurulurken tanımlanır) → abonelik gerekmez.
   const {
@@ -1797,11 +1807,15 @@ export function PanelEditor() {
   useEffect(() => {
     const stopExtrude = () => { setFaceExtrudeSelectedFace(null); setFaceExtrudeRefCandidate(null); setFaceExtrudeMode(false); };
     if (faceExtrudeMode && faceExtrudeCavityGroupId) { if (!groupLive(faceExtrudeCavityGroupId)) stopExtrude(); return; }
+    if (faceExtrudeMode && faceExtrudePlinthId) {
+      if (!plinthSets.some(x => x.id === faceExtrudePlinthId) || selectedPanelRow !== plinthRowKey(faceExtrudePlinthId)) stopExtrude();
+      return;
+    }
     if (faceExtrudeMode && uiLeftPanel(faceExtrudeTargetPanelId)) stopExtrude();
     if (panelMoveMode && uiLeftPanel(panelMoveTargetPanelId)) { setPanelMoveAxis(null); setPanelMoveMode(false); }
     if (panelRotateMode && uiLeftPanel(panelRotateTargetPanelId)) { setPanelRotateAxis(null); setPanelRotateMode(false); }
   }, [activePanelId, selectedPanelRow, selectedShapeId, selectedPanelGroupId, panelGroups, faceExtrudeMode, faceExtrudeTargetPanelId, faceExtrudeCavityGroupId,
-    panelMoveMode, panelMoveTargetPanelId, panelRotateMode, panelRotateTargetPanelId]);
+    faceExtrudePlinthId, plinthSets, panelMoveMode, panelMoveTargetPanelId, panelRotateMode, panelRotateTargetPanelId]);
 
   // Hacim yüzü seçilince o eksendeki mevcut hacim adımı şeride yüklenir.
   useEffect(() => {
@@ -1996,14 +2010,31 @@ export function PanelEditor() {
           className="flex-1 min-w-0 h-[22px] px-[5px] flex items-center text-[11.5px] font-medium text-stone-700 truncate select-none">{plinthName(set)}</span>,
         dims: <RowCells title={`${set.legs.count} legs · Ø ${fmt1(set.legs.diameter)} · height ${fmt1(H)}${bound ? ' (from the bottom panel)' : ''} · set ${fmt1(W)} × ${fmt1(D)}`}
           cells={[['N', String(set.legs.count)], ['Ø', fmt1(set.legs.diameter)], ['H', fmt1(H)]]} />,
-        trail: <RowDelBtn title="Remove plinth leg set" onClick={() => { if (sel) setSelectedPanelRow(null); useAppStore.getState().deletePlinthSet(set.id); }} />,
-        body: () => (
-          <div className={CARD_BODY} style={CARD_BODY_STYLE} onClick={stop}>
-            <LegsBlock legs={{ ...set.legs, height: H }} W={W} D={D} heightEditable={!bound} heightReadout={bound ? H : undefined} countOptions={[4, 5, 6]} hint={legsHint} onHint={setLegsHint}
-              onChange={p => { if (p.height != null) setPlinthHeight(set.id, p.height); const rest = { ...p }; delete rest.height; if (Object.keys(rest).length) setPlinthLegs(set.id, rest as Partial<PlinthSet['legs']>); }} />
-            <PlinthArrowRow />
-          </div>
-        ),
+        trail: <>
+          {sel && <button type="button" title="Done — finish editing this set (arrows close, selection clears)" onClick={e => { stop(e); finishPlinthEdit(); }}
+            className={`${ROW_BTN} text-[#16a34a] hover:bg-green-50`}><Check size={ROW_ICON} strokeWidth={2.4} /></button>}
+          <RowDelBtn title="Remove plinth leg set" onClick={() => { finishPlinthEdit(); deletePlinthSetAndSync(set.id); }} />
+        </>,
+        body: () => {
+          const editingVol = faceExtrudeMode && faceExtrudePlinthId === set.id;
+          return (
+            <div className={CARD_BODY} style={CARD_BODY_STYLE} onClick={stop}>
+              {/* Hacim düzenleme (raf/dikme Volume gibi, yalnız Fixed / Dyn) + bitir */}
+              <div className="flex items-center gap-1 mb-1.5">
+                <CardAction compact icon={Box} label="Volume" active={editingVol} title="Edit the set volume: pick a face in the 3D view, then Fixed (size) or Dyn (offset)"
+                  onClick={() => { if (editingVol) setFaceExtrudeMode(false); else startPlinthVolumeEdit(set.id); }} />
+                <div className="flex-1" />
+                <CardAction compact icon={Check} label="Done" title="Finish editing this set" onClick={finishPlinthEdit} />
+              </div>
+              {editingVol && <ExtrudeDock plinth={set} draft={extrudeThicknessStr} setDraft={setExtrudeThicknessStr} />}
+              <div className={editingVol ? 'mt-1.5' : ''}>
+                <LegsBlock legs={{ ...set.legs, height: H }} W={W} D={D} heightEditable={!bound} heightReadout={bound ? H : undefined} countOptions={[4, 5, 6]} hint={legsHint} onHint={setLegsHint}
+                  onChange={p => { if (p.height != null) setPlinthHeight(set.id, p.height); const rest = { ...p }; delete rest.height; if (Object.keys(rest).length) setPlinthLegs(set.id, rest as Partial<PlinthSet['legs']>); }} />
+              </div>
+              <PlinthArrowRow />
+            </div>
+          );
+        },
       });
     };
 

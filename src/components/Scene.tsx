@@ -20,7 +20,7 @@ import {
 } from './Geometry';
 import {
   type PlinthPick, type PlinthSet, applyPlinthArrow, confirmPlinthPick, plinthBoxCenter, plinthBoxOf, plinthCandidates, plinthFaceCenters,
-  plinthLegSpots, plinthPickBox, plinthRowKey, plinthSetsOf,
+  plinthLegSpots, plinthPickBox, plinthRowKey, plinthSetsOf, isPlinthRow, finishPlinthEdit,
 } from './PlinthService';
 import {
   confirmRefCavityExtrude, groupBoundsPanelPredicate, isInteriorPanel, repickObstacles, collectObstacles,
@@ -1682,13 +1682,25 @@ export const BackPickOverlay: React.FC<{ shape: any }> = ({ shape }) => {
 
 // Hacim düzenleme: grubun şekilli hacmi çizilir; seçilen yüzün normali + tıklama noktası (çıpa) store'a yazılır.
 export const CavityEditOverlay: React.FC<{ shape: any }> = ({ shape }) => {
-  const S = useStoreFields('panelGroups', 'faceExtrudeCavityGroupId', 'faceExtrudeSelectedFace', 'setFaceExtrudeSelectedFace',
-    'setFaceExtrudeCavityFaceNormal', 'setFaceExtrudeClickPoint', 'faceExtrudeValueMode');
-  const selFace = S.faceExtrudeSelectedFace;
+  const S = useStoreFields('panelGroups', 'faceExtrudeCavityGroupId');
   const group = S.panelGroups.find(g => g.id === S.faceExtrudeCavityGroupId);
   const active = !!group && group.shapeId === shape.id;
   const cav = group?.cavity;
   const boxes = group ? (group.region && group.region.length ? group.region : cav ? [cav] : []) : [];
+  return <BoxFacePickOverlay shape={shape} active={active} boxes={boxes} />;
+};
+// Baza seti hacim düzenleme (Volume): set kutusu — aynı yüz seçimi, yalnız Fixed / Dyn (şerit uygular).
+export const PlinthEditOverlay: React.FC<{ shape: any }> = ({ shape }) => {
+  const S = useStoreFields('plinthSets', 'faceExtrudePlinthId', 'shapes');
+  const set = S.plinthSets.find(x => x.id === S.faceExtrudePlinthId);
+  const active = !!set && set.shapeId === shape.id;
+  const boxes = useMemo(() => (set ? [plinthBoxOf(set, S.shapes)] : []), [set, S.shapes]);
+  return <BoxFacePickOverlay shape={shape} active={active} boxes={boxes} />;
+};
+/** Kutu yüzeyinde yüz seçimi (hacim / baza seti): seçilen yüzün normali + tıklama noktası store'a yazılır. */
+const BoxFacePickOverlay: React.FC<{ shape: any; active: boolean; boxes: Array<{ min: Vec3; max: Vec3 }> }> = ({ shape, active, boxes }) => {
+  const S = useStoreFields('faceExtrudeSelectedFace', 'setFaceExtrudeSelectedFace', 'setFaceExtrudeCavityFaceNormal', 'setFaceExtrudeClickPoint', 'faceExtrudeValueMode');
+  const selFace = S.faceExtrudeSelectedFace;
   const cavKey = boxes.map(b => [...b.min, ...b.max].map(n => n.toFixed(1)).join('|')).join(';');
   const [hovered, setHovered] = useState<number | null>(null);
   const boxGeo = useMemo(() => {
@@ -1784,7 +1796,7 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
     'showOutlines', 'setSelectedPanelRow', 'panelSelectMode', 'faceEditMode', 'filletMode', 'raycastMode', 'shapes', 'faceExtrudeMode',
     'faceExtrudeValueMode', 'faceExtrudeTargetPanelId', 'faceExtrudeSelectedFace', 'faceExtrudeRefCandidate', 'setFaceExtrudeRefCandidate',
     'panelMoveMode', 'panelMoveValueMode', 'panelMoveRefSourceVertex', 'panelMoveRefTargetPanelId', 'panelRotateMode', 'volumePickMode',
-    'faceExtrudeCavityGroupId', 'doorPickMode', 'backPickMode', 'plinthPickMode');
+    'faceExtrudeCavityGroupId', 'doorPickMode', 'backPickMode', 'plinthPickMode', 'faceExtrudePlinthId');
   const { scene } = useThree();
   const meshRef = useRef<THREE.Mesh>(null);
   const groupRef = useRef<THREE.Group>(null);
@@ -1973,6 +1985,7 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
         {isSelected && S.plinthPickMode && <PlinthPickOverlay shape={shape} />}
         <PlinthSets shape={shape} />
         {S.faceExtrudeMode && S.faceExtrudeCavityGroupId && <CavityEditOverlay shape={shape} />}
+        {S.faceExtrudeMode && S.faceExtrudePlinthId && <PlinthEditOverlay shape={shape} />}
         <VirtualFaceOverlay shape={shape} />
       </group>
 
@@ -2414,7 +2427,8 @@ function PlinthFoot({ h, d, active, xray, onClick }: { h: number; d: number; act
 
 /** Setler (gövde-yerel çerçevede): plastik baza ayakları; tık satırı seçer; seçili sette set hacmi (raf/dikme seçimi gibi) + oklar. */
 export const PlinthSets: React.FC<{ shape: any }> = ({ shape }) => {
-  const { plinthSets, selectedPanelRow, setSelectedPanelRow, viewMode, shapes } = useStoreFields('plinthSets', 'selectedPanelRow', 'setSelectedPanelRow', 'viewMode', 'shapes');
+  const { plinthSets, selectedPanelRow, setSelectedPanelRow, viewMode, shapes, faceExtrudeMode, faceExtrudePlinthId } =
+    useStoreFields('plinthSets', 'selectedPanelRow', 'setSelectedPanelRow', 'viewMode', 'shapes', 'faceExtrudeMode', 'faceExtrudePlinthId');
   const sets = useMemo(() => plinthSetsOf(shape.id, plinthSets), [plinthSets, shape.id]);
   // Etkin kutu: taban zeminde, üst bağlı alt panelden (canlı) — alt panel taşınınca / gövde boyutlanınca ayak yine zemine basar.
   const boxes = useMemo(() => sets.map(set => plinthBoxOf(set, shapes)), [sets, shapes]);
@@ -2433,8 +2447,9 @@ export const PlinthSets: React.FC<{ shape: any }> = ({ shape }) => {
                 <PlinthFoot h={h} d={set.legs.diameter} active={active} xray={xray} onClick={click} />
               </group>
             ))}
-            {active && <PlinthVolume box={box} />}
-            {active && <PlinthArrowGizmo set={set} box={box} />}
+            {/* Hacim düzenlemede (Volume) kutu ve yüz seçimi PlinthEditOverlay'de; oklar gizlenir ki yakalama silindirleri yüz tıklamasını kesmesin */}
+            {active && !(faceExtrudeMode && faceExtrudePlinthId === set.id) && <PlinthVolume box={box} />}
+            {active && !(faceExtrudeMode && faceExtrudePlinthId === set.id) && <PlinthArrowGizmo set={set} box={box} />}
           </group>
         );
       })}
@@ -3132,6 +3147,7 @@ const Scene: React.FC = () => {
         if (st.doorPickMode) { st.setDoorPickMode(false); return; }
         if (st.backPickMode) { st.setBackPickMode(false); return; }
         if (st.plinthPickMode) { st.setPlinthPickMode(false); return; }
+        if (isPlinthRow(st.selectedPanelRow)) { finishPlinthEdit(); return; }   // seçili baza seti: önce seti bırak (Goker: "ayak seçili kalıyor")
         if (st.faceExtrudeMode || st.panelMoveMode || st.panelRotateMode) {
           if (st.faceExtrudeMode) { st.setFaceExtrudeSelectedFace(null); st.setFaceExtrudeRefCandidate(null); st.setFaceExtrudeMode(false); }
           if (st.panelMoveMode) { st.setPanelMoveAxis(null); st.setPanelMoveMode(false); }
