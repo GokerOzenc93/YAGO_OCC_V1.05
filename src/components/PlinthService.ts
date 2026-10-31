@@ -233,11 +233,26 @@ export function syncQuickBodyPlinth(shapeId: string, legs: PlinthLegs | null, bo
   const st = useAppStore.getState();
   const body = shapeById(shapeId, st.shapes); if (!body) return;
   const existing = quickPlinthSetOf(shapeId, st.plinthSets);
-  if (!legs) { if (existing) st.deletePlinthSet(existing.id); return; }
+  // Ayak kalkınca setin sıralama VF'si de düşer (yalnız set silinirse listede görünmeyen yetim VF kalır, sonraki ekleme ikinci VF açar).
+  if (!legs) { removeQuickBodyPlinth(shapeId); return; }
   const bb = localBboxOf(effectiveBodyGeometry(body)); if (!bb) return;
   const box: CavityBox = { min: [bb.min.x, bb.min.y, bb.min.z], max: [bb.max.x, bb.min.y + Math.max(1, lift), bb.max.z] };
+  const set = existing ?? createPlinthSet(shapeId, box, legs, { name: 'Legs', bottomVfId, quickBody: true });
   if (existing) st.updatePlinthSet(existing.id, { box, legs: { ...legs }, bottomVfId });
-  else createPlinthSet(shapeId, box, legs, { name: 'Legs', bottomVfId, quickBody: true });
+  placeAfterQuickBody(shapeId, set.vfId);
+}
+/** SIRA (Goker: "ayak her zaman quick body yönteminde bodyden sonra gelmeli"): hızlı gövde ayak setinin VF'si gövdenin SON hızlı gövde
+ *  parçasının (Body satırları: yanlar/üst/alt/bazalar) hemen arkasına alınır — her Build/Rebuild'de. Body parçası yoksa yerinde kalır. */
+function placeAfterQuickBody(shapeId: string, vfId: string): void {
+  useAppStore.setState(s => {
+    const vf = s.virtualFaces.find(f => f.id === vfId);
+    if (!vf) return {};
+    const rest = s.virtualFaces.filter(f => f.id !== vfId);
+    let last = -1;
+    rest.forEach((f, i) => { if (f.shapeId === shapeId && f.quickBody) last = i; });
+    if (last < 0 || s.virtualFaces[last + 1]?.id === vfId) return {};
+    return { virtualFaces: [...rest.slice(0, last + 1), vf, ...rest.slice(last + 1)] };
+  });
 }
 export function removeQuickBodyPlinth(shapeId: string): void {
   const st = useAppStore.getState();
