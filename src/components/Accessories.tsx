@@ -18,7 +18,8 @@ import {
   ACCESSORY_ACCEPT, type LegAssemblyPart, accessoryGeometryNow, deleteLegModel, deleteLegPreset, importAccessoryFile, legAssembly, legModelDims,
   legStretchOf, newLegModel, newLegPreset, onAccessoryGeometry, pruneUnusedAccessoryModels, saveLegModel, saveLegPreset, updateAccessoryModel,
 } from './AccessoryService';
-import { ApplyBtn, CardAction, ExitBtn, FIELD_INPUT, LegsBlock, QbSection, QbSelect, SECTION_LABEL, SelectBox, dockAxisTag } from './PanelEditor';
+import { ApplyBtn, CardAction, ExitBtn, FIELD_INPUT, LegRulesEditor, QB_CELL_ROW, QbNum, QbSection, QbSelect, ReadCell, ReadValue, SECTION_LABEL, SelectBox, dockAxisTag } from './PanelEditor';
+import { presetRules } from './AccessoryService';
 import { fmt1, stop } from './PanelSchematics';
 
 const UNIT_OPTS: Array<{ v: AccessoryUnit; label: string }> = [{ v: 'mm', label: 'mm' }, { v: 'cm', label: 'cm' }, { v: 'm', label: 'm' }, { v: 'in', label: 'in' }];
@@ -152,8 +153,9 @@ function LegModelEditor({ draft, setDraft, onSave, onCancel }: { draft: LegModel
 function LegPresetEditor({ draft, setDraft, legModels, onSave, onCancel }: {
   draft: LegPreset; setDraft: (p: LegPreset) => void; legModels: LegModel[]; onSave: () => void; onCancel: () => void;
 }) {
-  const [hint, setHint] = useState<string | null>(null);
   const modelOpts: Array<[string, string]> = [['', 'Built-in foot'], ...legModels.map(m => [m.id, m.name] as [string, string])];
+  const rules = presetRules(draft);
+  const diameter = legModelDims(legModels.find(m => m.id === draft.legModelId))?.diameter || 50;
   return (
     <div className="flex flex-col gap-1.5" onClick={stop}>
       <div className="flex items-center gap-1.5">
@@ -168,10 +170,17 @@ function LegPresetEditor({ draft, setDraft, legModels, onSave, onCancel }: {
         <span style={SECTION_LABEL}>Model</span>
         <div className="flex-1 min-w-0 flex"><SelectBox value={draft.legModelId ?? ''} options={modelOpts} title="Foot model" onChange={v => setDraft({ ...draft, legModelId: v || null })} /></div>
       </div>
-      <LegsBlock legs={{ count: draft.count, height: draft.height, diameter: legModelDims(legModels.find(m => m.id === draft.legModelId))?.diameter || 50, side: draft.side, front: draft.front, rear: draft.rear }}
-        W={600} D={560} heightEditable countOptions={[4, 5, 6]} hint={hint} onHint={setHint}
-        onChange={p => setDraft({ ...draft, ...(p.count != null ? { count: p.count as 4 | 5 | 6 } : {}), ...(p.height != null ? { height: p.height } : {}),
-          ...(p.side != null ? { side: p.side } : {}), ...(p.front != null ? { front: p.front } : {}), ...(p.rear != null ? { rear: p.rear } : {}) })} />
+      {/* Ayak ayak kurallar — örnek iz 600 × 560 (set kutudan bağımsız: kenardan mm); yerleşince gerçek ize göre çözülür */}
+      <LegRulesEditor rules={rules} footprint={undefined} facing="z+" diameter={diameter}
+        onChange={r => setDraft({ ...draft, rules: r, count: Math.max(4, Math.min(6, r.length)) as 4 | 5 | 6 })}>
+        <div className="grid grid-cols-3 gap-x-1" style={QB_CELL_ROW}>
+          <ReadCell label="Legs"><ReadValue color="#57534e">{rules.length}</ReadValue></ReadCell>
+          <ReadCell label="Height" title="Default height of a free set (a set under a bottom panel follows the panel)">
+            <QbNum value={draft.height} min={1} onCommit={v => setDraft({ ...draft, height: v })} />
+          </ReadCell>
+          <ReadCell label="Ø" title="Foot diameter (from the model)"><ReadValue color="#57534e">{fmt1(diameter)}</ReadValue></ReadCell>
+        </div>
+      </LegRulesEditor>
     </div>
   );
 }

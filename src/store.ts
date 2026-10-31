@@ -3,6 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import * as THREE from 'three';
 import { type AxisDir, type Vec3, type VertexModification, rebuildBodySolid } from './components/Geometry';
 import type { PlinthSet, PlinthPick } from './components/PlinthService';
+import type { LegRule } from './components/LegLayout';
 
 export interface SubtractionParameters {
   width: string; height: string; depth: string;
@@ -327,6 +328,8 @@ export interface QuickBodyConfig {
     count: 0 | 4 | 5 | 6; height: number; diameter: number; side: number; front: number; rear: number;
     /** Aksesuar kütüphanesinden ayak seti (LegPreset) / ayak modeli (LegModel); yoksa yerleşik plastik ayak. */
     presetId?: string | null; legModelId?: string | null;
+    /** Ayak ayak kurallar (LegLayout); yoksa count / side / front / rear standart düzeni. */
+    rules?: LegRule[] | null;
   };
   back: {
     enabled: boolean; placement: BackPlacement; thickness: number; setback: number; inset: number;
@@ -346,9 +349,11 @@ export interface AccessoryModel {
 export interface LegModelPart { modelId: string; role: LegPartRole }
 /** Ayak modeli: 3 yuva (alt / orta / üst = base / stem / top); `stretch` = uzayan yuva (varsayılan orta). */
 export interface LegModel { id: string; name: string; parts: LegModelPart[]; stretch?: LegPartRole; createdAt: number }
-/** Ayak seti ("kaset"): hangi model, kaç ayak, kenar mesafeleri (parametrik: kutu ölçüsünden bağımsız), varsayılan yükseklik. */
+/** Ayak seti ("kaset"): hangi model, AYAK AYAK kurallar (LegLayout.LegRule — çapa + mm; iz çokgenine göre çözülür), varsayılan yükseklik.
+ *  count / side / front / rear: standart düzen üreteci parametreleri (eski kayıtlarda kural yoksa düzen bunlardan türer). */
 export interface LegPreset {
   id: string; name: string; legModelId: string | null; count: 4 | 5 | 6; side: number; front: number; rear: number; height: number; createdAt: number;
+  rules?: LegRule[];
 }
 
 export const DEFAULT_QUICK_BODY: QuickBodyConfig = {

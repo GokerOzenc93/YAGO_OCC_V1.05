@@ -15,9 +15,17 @@ import { type CavityBox, type Shape, type VirtualFace, useAppStore, shapeById, c
 import { type AxisDir, type Vec3, axisDirToVec, effectiveBodyGeometry, genId, localBboxOf, round1 } from './Geometry';
 import { legSpots } from './PanelGroupService';
 import { legsFromPreset, legPresetById } from './AccessoryService';
+import { type LegRule, type Pt, clipPolyToRect, rectPoly, resolveLegRules, standardLegRules } from './LegLayout';
+import { computeFaceComponentContour, getFacesAndGroups } from './Geometry';
+import * as THREE from 'three';
 
-/** Ayak düzeni. `legModelId` = aksesuar kütüphanesinden ayak modeli (yoksa yerleşik plastik ayak); `presetId` = uygulanan ayak seti. */
-export type PlinthLegs = { count: 4 | 5 | 6; diameter: number; side: number; front: number; rear: number; legModelId?: string | null; presetId?: string | null };
+/** Ayak düzeni. `legModelId` = aksesuar kütüphanesinden ayak modeli (yoksa yerleşik plastik ayak); `presetId` = uygulanan ayak seti;
+ *  `rules` = ayak ayak kurallar (LegLayout; Goker: "ayak ayak parametrik") — yoksa count / side / front / rear standart düzeni. */
+export type PlinthLegs = {
+  count: 4 | 5 | 6; diameter: number; side: number; front: number; rear: number; legModelId?: string | null; presetId?: string | null; rules?: LegRule[] | null;
+};
+/** Setin etkin kuralları (yoksa standart düzen). */
+export const plinthLegRules = (legs: PlinthLegs): LegRule[] => (legs.rules && legs.rules.length ? legs.rules : standardLegRules(legs.count, legs.side, legs.front, legs.rear));
 /** ÖN yön (gövde-yerel): ayak ön/arka mesafeleri bu yöne göre; varsayılan +Z. */
 export type PlinthFacing = AxisDir;
 export const PLINTH_FACINGS: PlinthFacing[] = ['z+', 'z-', 'x+', 'x-'];
@@ -117,13 +125,48 @@ export const plinthSize = (s: PlinthSet, shapes?: Shape[]): Vec3 => {
 
 /** Ayak merkezleri (gövde-yerel x/z): kutu kapsamına `legSpots` düzeni; ayak (taban diski + montaj tablası ≈ 1.15·Ø/2) HER ZAMAN
  *  hacmin içinde kalır — kenar mesafesi küçük ya da hacim dar olsa da merkez [min + R, max − R] aralığına kıstırılır. */
-export function plinthLegSpots(s: PlinthSet, box = plinthBoxOf(s)): Array<{ x: number; z: number }> {
+export function plinthLegSpots(s: PlinthSet, box = plinthBoxOf(s), shapes = useAppStore.getState().shapes): Array<{ x: number; z: number }> {
   const W = box.max[0] - box.min[0], D = box.max[2] - box.min[2];
   const R = Math.max(10, s.legs.diameter / 2) * 1.15;
   const clamp = (v: number, lo: number, hi: number) => (hi < lo ? (lo + hi) / 2 : Math.min(hi, Math.max(lo, v)));
+  // AYAK AYAK KURALLAR (LegLayout): iz çokgenine (gövde tabanı ∩ set kutusu — L gövde vb.) göre çözülür.
+  if (s.legs.rules && s.legs.rules.length) {
+    const fp = plinthFootprint(s, box, shapes);
+    const pts = resolveLegRules(s.legs.rules, fp, plinthFacingOf(s), R);
+    if (pts.length) return pts;
+  }
   return legSpotsFacing(s.legs, W, D, plinthFacingOf(s)).map(p => ({
     x: clamp(box.min[0] + p.x, box.min[0] + R, box.max[0] - R), z: clamp(box.min[2] + p.z, box.min[2] + R, box.max[2] - R),
   }));
+}
+/** AYAK İZİ (gövde-yerel x/z çokgeni): gövdenin TABAN yüzünün dış çevresi (vertex düzenlenmiş / L gövdede dikdörtgen değil) set kutusuyla
+ *  kırpılmış; taban çevresi bulunamazsa kutu dikdörtgeni. Diyagram ve kural çözümü aynı çokgeni okur. */
+export function plinthFootprint(s: PlinthSet, box = plinthBoxOf(s), shapes = useAppStore.getState().shapes): Pt[] {
+  const rect = rectPoly(box.min[0], box.min[2], box.max[0], box.max[2]);
+  const body = shapeById(s.shapeId, shapes);
+  const outline = body ? bodyFloorOutline(body) : null;
+  if (!outline || outline.length < 3) return rect;
+  const clipped = clipPolyToRect(outline, box.min[0], box.min[2], box.max[0], box.max[2]);
+  return clipped.length >= 3 ? clipped : rect;
+}
+const _outlineCache = new WeakMap<object, Pt[] | null>();
+/** Gövde taban yüzünün (normal −Y, en alçak) dış çevresi, (x, z). */
+function bodyFloorOutline(body: Shape): Pt[] | null {
+  const geo = effectiveBodyGeometry(body);
+  if (!geo) return null;
+  if (_outlineCache.has(geo)) return _outlineCache.get(geo) ?? null;
+  let out: Pt[] | null = null;
+  try {
+    const { faces, groups } = getFacesAndGroups(geo);
+    const bottoms = groups.filter(g => g.normal.y < -0.9).sort((a, b) => a.center.y - b.center.y);
+    const g = bottoms[0];
+    if (g) {
+      const c = computeFaceComponentContour(faces, g.faceIndices, g.center.clone(), g.normal.clone().normalize());
+      if (c && c.corners.length >= 3) out = c.corners.map((v: THREE.Vector3) => ({ x: v.x, y: v.z }));
+    }
+  } catch { out = null; }
+  _outlineCache.set(geo, out);
+  return out;
 }
 /** `legSpots` ön = +Z varsayar; ön yöne göre döndürülür (W = x açıklığı, D = z açıklığı; sonuç kutu-yerel x/z). */
 export function legSpotsFacing(legs: Pick<PlinthLegs, 'count' | 'side' | 'front' | 'rear'>, W: number, D: number, facing: PlinthFacing): Array<{ x: number; z: number }> {
@@ -282,9 +325,12 @@ export function removeQuickBodyPlinth(shapeId: string): void {
 export function setPlinthLegs(id: string, patch: Partial<PlinthLegs>): void {
   const st = useAppStore.getState();
   const s = st.plinthSets.find(x => x.id === id); if (!s) return;
-  // Düzen elle değişince set artık o "kaset" değil (model korunur).
-  const detach = ['count', 'side', 'front', 'rear'].some(k => k in patch) && !('presetId' in patch);
-  st.updatePlinthSet(id, { legs: { ...s.legs, ...patch, ...(detach ? { presetId: null } : {}) } });
+  // Düzen elle değişince set artık o "kaset" değil (model korunur). Standart alanlar değişince ayak ayak kurallar düşer (standart düzen).
+  const detach = ['count', 'side', 'front', 'rear', 'rules'].some(k => k in patch) && !('presetId' in patch);
+  const dropRules = ['count', 'side', 'front', 'rear'].some(k => k in patch) && !('rules' in patch);
+  const next: PlinthLegs = { ...s.legs, ...patch, ...(detach ? { presetId: null } : {}), ...(dropRules ? { rules: null } : {}) };
+  if (next.rules && next.rules.length) next.count = Math.max(4, Math.min(6, next.rules.length)) as 4 | 5 | 6;
+  st.updatePlinthSet(id, { legs: next });
 }
 /** AYAK SETİ UYGULA (Goker: "kaydettiğim ayak kasetlerini ayak kısmında çağıralım"): düzen + model setten; bağsız sette yükseklik de. */
 export function applyLegPresetToSet(id: string, presetId: string | null): void {

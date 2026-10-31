@@ -17,6 +17,7 @@ import {
   type AccessoryModel, type AccessoryUnit, type LegModel, type LegModelPart, type LegPartRole, type LegPreset, useAppStore,
 } from '../store';
 import { type Vec3, convertReplicadToThreeGeometry, genId, initReplicad, round1 } from './Geometry';
+import { type LegRule, standardLegRules } from './LegLayout';
 
 /* ───────────────────────────── Biçimler ───────────────────────────── */
 /** Desteklenen uzantılar (küçük harf, noktasız) → yükleyici anahtarı. */
@@ -303,7 +304,7 @@ export async function pruneUnusedAccessoryModels(keep: string[] = []): Promise<v
   for (const m of st.accessoryModels) if (!used.has(m.id)) await deleteAccessoryModel(m.id);
 }
 export const newLegPreset = (name = 'Leg set'): LegPreset =>
-  ({ id: genId('legset'), name, legModelId: null, count: 4, side: 60, front: 60, rear: 60, height: 100, createdAt: Date.now() });
+  ({ id: genId('legset'), name, legModelId: null, count: 4, side: 60, front: 60, rear: 60, height: 100, rules: standardLegRules(4, 60, 60, 60), createdAt: Date.now() });
 
 /** Parçalar rol sırasına (taban → mil → tabla) dizilir; aynı rolde ekleme sırası korunur. */
 export const orderedParts = (parts: LegModelPart[]): LegModelPart[] => parts.map((p, i) => ({ p, i })).sort((a, b) => ROLE_ORDER[a.p.role] - ROLE_ORDER[b.p.role] || a.i - b.i).map(x => x.p);
@@ -343,10 +344,19 @@ export function legModelDims(leg: LegModel | undefined, models = useAppStore.get
 export const legModelHasStem = (leg: LegModel | undefined) => !!leg && leg.parts.some(p => p.role === legStretchOf(leg));
 
 /** Setten PlinthLegs alanları (PlinthService / hızlı gövde): adet, kenar mesafeleri, model, Ø modelden (yoksa 50). */
-export function legsFromPreset(preset: LegPreset, st = useAppStore.getState()): { count: 4 | 5 | 6; diameter: number; side: number; front: number; rear: number; legModelId: string | null; presetId: string } {
+export function legsFromPreset(preset: LegPreset, st = useAppStore.getState()): {
+  count: 4 | 5 | 6; diameter: number; side: number; front: number; rear: number; legModelId: string | null; presetId: string; rules: LegRule[];
+} {
   const leg = preset.legModelId ? st.legModels.find(x => x.id === preset.legModelId) : undefined;
   const dims = legModelDims(leg, st.accessoryModels);
-  return { count: preset.count, diameter: dims?.diameter || 50, side: preset.side, front: preset.front, rear: preset.rear, legModelId: leg ? leg.id : null, presetId: preset.id };
+  const rules = presetRules(preset);
+  return {
+    count: Math.max(4, Math.min(6, rules.length)) as 4 | 5 | 6, diameter: dims?.diameter || 50, side: preset.side, front: preset.front, rear: preset.rear,
+    legModelId: leg ? leg.id : null, presetId: preset.id, rules,
+  };
 }
+/** Setin ayak ayak kuralları (eski kayıt: standart düzenden türer). */
+export const presetRules = (p: Pick<LegPreset, 'rules' | 'count' | 'side' | 'front' | 'rear'>): LegRule[] =>
+  p.rules && p.rules.length ? p.rules : standardLegRules(p.count, p.side, p.front, p.rear);
 export const legPresetById = (id: string | null | undefined, st = useAppStore.getState()) => (id ? st.legPresets.find(p => p.id === id) : undefined);
 export const legModelById = (id: string | null | undefined, st = useAppStore.getState()) => (id ? st.legModels.find(p => p.id === id) : undefined);

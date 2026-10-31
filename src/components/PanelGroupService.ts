@@ -2521,6 +2521,7 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
   const diameter = legModelDims(legModel)?.diameter || cfg.legs.diameter;
   syncQuickBodyPlinth(body.id, legCount ? {
     count: legCount as 4 | 5 | 6, diameter, side, front, rear, legModelId: legModel ? legModel.id : null, presetId: cfg.legs.presetId ?? null,
+    rules: cfg.legs.rules && cfg.legs.rules.length ? cfg.legs.rules : null,
   } : null, bottomVfId, lift);
 
   await requestRebuild(body.id);
