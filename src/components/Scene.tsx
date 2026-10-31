@@ -1045,8 +1045,6 @@ export const VirtualFaceOverlay: React.FC<{ shape: any }> = ({ shape }) => {
 const isSpecialPanel = (p: any) => isInteriorPanel(p) || isDoorPanel(p) || isBackPanel(p);
 type FaceCandidate = { index: number; depth: number; hitPoint: THREE.Vector3; stack?: StackSpec };
 
-/** Panel yerleştirmede baza setine tıklama (PlinthSets → FaceRaycastOverlay): set id + dünya noktası. */
-const plinthPlaceRequest: { current: ((setId: string, hitWorld: THREE.Vector3) => void) | null } = { current: null };
 export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = ({ shape, allShapes = [] }) => {
   const { raycastMode, virtualFaces, setSelectedPanelRow, setRaycastPendingVf, plinthSets } = useStoreFields('raycastMode', 'virtualFaces', 'setSelectedPanelRow',
     'setRaycastPendingVf', 'plinthSets');
@@ -1164,37 +1162,36 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
     const tvf = top ? vfOfPanel(top) : undefined;
     return depth > 0.5 && top && tvf ? { depth, baseVfId: tvf.id, basePanelId: top.id } : undefined;
   };
-  /** AYAĞIN ÜSTÜ (Goker: "normal panel yerleşirken ayağın üzerine referans alarak tıklanıp panel yerleşmeli"): alt yüzün bu noktası bir
-   *  baza setinin kapsamındaysa panel setin ÜST düzlemine (zemin + set yüksekliği) ister; derinlik her regen'de setten okunur. */
+  /** AYAĞIN ÜSTÜ (Goker: "ayak olan hacmin üstü de alternatif yerleşecek yüzeylerden biri olsun; standart davranışı koru"): ışın baza
+   *  setinin ÜST düzlemini setin x/z kapsamında kesiyorsa, derinlik döngüsüne bir aday eklenir — gövdenin ALT yüzü, setin üst düzlemine
+   *  kaydırılmış (üst üste panel, derinlik her regen'de setten okunur). İlk tık ve öteki adaylar değişmez; aday ışın sırasında yerini alır. */
   const bodySets = useMemo(() => plinthSetsOf(shape.id, plinthSets), [plinthSets, shape.id]);
-  const plinthSpecAt = (gi: number, hitWorld: THREE.Vector3): StackSpec | undefined => {
-    if (!bodySets.length) return undefined;
-    const nL = localNormalOf(gi); if (nL.y > -0.95) return undefined;   // yalnız alt yüz
-    const hl = hitWorld.clone().applyMatrix4(worldToLocal);
+  const plinthTopHits = (cameraPos: THREE.Vector3, clickPoint: THREE.Vector3): FaceCandidate[] => {
+    if (!bodySets.length) return [];
+    // Alt yüz grubu (normal −Y); çentikli gövdede set merkezine en yakın
+    const bottoms = faceGroups.map((g, i) => ({ g, i })).filter(x => x.g.normal.clone().normalize().y < -0.95);
+    if (!bottoms.length) return [];
+    const rayDir = clickPoint.clone().sub(cameraPos).normalize();
+    const oL = cameraPos.clone().applyMatrix4(worldToLocal);
+    const dL = clickPoint.clone().applyMatrix4(worldToLocal).sub(oL).normalize();
+    const out: FaceCandidate[] = [];
     for (const ps of bodySets) {
       const b = plinthBoxOf(ps);
-      if (hl.x < b.min[0] - 0.5 || hl.x > b.max[0] + 0.5 || hl.z < b.min[2] - 0.5 || hl.z > b.max[2] + 0.5) continue;
       const depth = b.max[1] - b.min[1];
-      if (depth > 0.5) return { depth, baseVfId: ps.vfId, basePanelId: `plinth-${ps.id}`, onPlinth: ps.id };
+      if (!(depth > 0.5) || Math.abs(dL.y) < 1e-6) continue;
+      const tL = (b.max[1] - oL.y) / dL.y; if (tL < 0) continue;
+      const hL = oL.clone().addScaledVector(dL, tL);
+      if (hL.x < b.min[0] - 0.5 || hL.x > b.max[0] + 0.5 || hL.z < b.min[2] - 0.5 || hL.z > b.max[2] + 0.5) continue;
+      const cx = (b.min[0] + b.max[0]) / 2, cz = (b.min[2] + b.max[2]) / 2;
+      const gi = bottoms.reduce((best, x) => (Math.hypot(x.g.center.x - cx, x.g.center.z - cz) < Math.hypot(best.g.center.x - cx, best.g.center.z - cz) ? x : best)).i;
+      const hitW = hL.clone().applyMatrix4(localToWorld);
+      // Önizleme noktası alt yüzün düzleminde (buildFacePreview stack.depth kadar içeri kaydırır)
+      const onFace = new THREE.Vector3(hL.x, b.min[1], hL.z).applyMatrix4(localToWorld);
+      out.push({ index: gi, depth: hitW.clone().sub(cameraPos).dot(rayDir), hitPoint: onFace,
+        stack: { depth, baseVfId: ps.vfId, basePanelId: `plinth-${ps.id}`, onPlinth: ps.id } });
     }
-    return undefined;
+    return out;
   };
-  // PlinthSets'ten gelen doğrudan tık: alt yüz grubu bulunur, setin üstüne önizleme kurulur.
-  useEffect(() => {
-    if (!raycastMode) return;
-    plinthPlaceRequest.current = (setId, hitWorld) => {
-      const ps = bodySets.find(x => x.id === setId); if (!ps) return;
-      let gi = -1; faceGroups.forEach((g, i) => { if (g.normal.clone().normalize().y < -0.95 && gi < 0) gi = i; });
-      if (gi < 0) return;
-      const b = plinthBoxOf(ps), hl = hitWorld.clone().applyMatrix4(worldToLocal);
-      const onFace = new THREE.Vector3(Math.min(b.max[0], Math.max(b.min[0], hl.x)), b.min[1], Math.min(b.max[2], Math.max(b.min[2], hl.z))).applyMatrix4(localToWorld);
-      const st: StackSpec = { depth: b.max[1] - b.min[1], baseVfId: ps.vfId, basePanelId: `plinth-${ps.id}`, onPlinth: ps.id };
-      setHoveredGroupIndex(gi);
-      lastClickRef.current = { point: onFace.clone().applyMatrix4(worldToLocal), groupIndex: gi, cycleIndex: 0 };
-      setPending(buildFacePreview(onFace, faceGroups[gi], faces, worldToLocal, shape.id, effGeometry, regionSiblings, st));
-    };
-    return () => { plinthPlaceRequest.current = null; };
-  }, [raycastMode, bodySets, faceGroups, faces, worldToLocal, localToWorld, shape.id, effGeometry, regionSiblings]);
   /** ARKALIĞIN ÖNÜ: yüzün bu noktasının arkasında (yüzün içinde) kanallı arkalık varsa önüne panel isteği — taban arkalık ya da önüne
    *  yığılmış en içteki katman; örtülü nokta gibi davranır (arkalığın önü → yüzün en yakın boşluğu). */
   const backSpecAt = (gi: number, hitWorld: THREE.Vector3): StackSpec | undefined => {
@@ -1240,7 +1237,7 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
   // Derinlik döngüsü adayları: panel izi altındaki gruplarda o panelin önü + yüzün en yakın boşluğu; boşluklar geçerli hedeftir.
   const depthCandidates = (cameraPos: THREE.Vector3, clickPoint: THREE.Vector3, rotHits: Array<FaceCandidate & { stack: StackSpec }>) => {
     const rayDir = clickPoint.clone().sub(cameraPos).normalize();
-    const out: FaceCandidate[] = [...rotHits];
+    const out: FaceCandidate[] = [...rotHits, ...plinthTopHits(cameraPos, clickPoint)];
     for (let gi = 0; gi < faceGroups.length; gi++) {
       const group = faceGroups[gi];
       const nW = worldNormalOf(gi);
@@ -1252,7 +1249,7 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
       if (!inGroup(group.faceIndices, faces, hitOnPlane, localToWorld)) continue;
       const cover = findPanelCoveringPoint(hitOnPlane, childPanels, nW, hitOnPlane);
       if (!cover) {
-        const bst = plinthSpecAt(gi, hitOnPlane) ?? backSpecAt(gi, hitOnPlane);
+        const bst = backSpecAt(gi, hitOnPlane);
         if (!bst) { out.push({ index: gi, depth: t, hitPoint: hitOnPlane }); continue; }
         out.push({ index: gi, depth: t, hitPoint: hitOnPlane, stack: bst });
         const freeB = nearestFreePointOnGroup(gi, hitOnPlane, nW);
@@ -1283,8 +1280,8 @@ export const FaceRaycastOverlay: React.FC<{ shape: any; allShapes?: any[] }> = (
     // Nokta değen bir panelin GÜNCEL ayak izi içindeyse yüz orada "tanımlı"dır; aradaki boşluk serbesttir.
     const coveringPanel = findPanelCoveringPoint(clickPoint, childPanels, worldNormalOf(hoveredGroupIndex), clickPoint);
     const hoveredIsDefined = coveringPanel !== null;
-    // Kanallı arkalığın arkasına / baza setinin kapsamına tık da örtülü sayılır: ilk tıkta adaylar (arkalığın önü / setin üstü → boşluk) gelir.
-    const hoveredUnderBack = !hoveredIsDefined && (!!plinthSpecAt(hoveredGroupIndex, clickPoint) || !!backSpecAt(hoveredGroupIndex, clickPoint));
+    // Kanallı arkalığın arkasına tık da örtülü sayılır: ilk tıkta adaylar (arkalığın önü → boşluk) gelir.
+    const hoveredUnderBack = !hoveredIsDefined && !!backSpecAt(hoveredGroupIndex, clickPoint);
     let targetGroupIndex = hoveredGroupIndex;
     let previewClickPoint = clickPoint;
     let previewStack: StackSpec | undefined;
@@ -2438,13 +2435,14 @@ function plinthFootGeometries(h: number, d: number) {
   footGeoCache.set(key, out);
   return out;
 }
-function PlinthFoot({ h, d, active, xray, onClick }: { h: number; d: number; active: boolean; xray: boolean; onClick: (e: any) => void }) {
+function PlinthFoot({ h, d, active, xray, onClick, pickable = true }: { h: number; d: number; active: boolean; xray: boolean; onClick: (e: any) => void; pickable?: boolean }) {
   const g = useMemo(() => plinthFootGeometries(h, d), [h, d]);
   const mat = (color: string, rough = 0.62) => (
     <meshStandardMaterial color={color} metalness={0.05} roughness={rough} transparent={xray} opacity={xray ? 0.35 : 1}
       emissive={active ? LEG_COLORS.selected : '#000000'} emissiveIntensity={active ? 0.45 : 0} />
   );
-  const ev = { onClick, onPointerOver: (e: any) => { e.stopPropagation(); hoverCursor(true); }, onPointerOut: () => hoverCursor(false) };
+  const ev = pickable ? { onClick, onPointerOver: (e: any) => { e.stopPropagation(); hoverCursor(true); }, onPointerOut: () => hoverCursor(false) }
+    : { raycast: noRaycast };
   return (
     <group>
       <mesh geometry={g.base} castShadow receiveShadow {...ev}>{mat(FOOT_COLORS.plastic, 0.7)}</mesh>
@@ -2475,26 +2473,13 @@ export const PlinthSets: React.FC<{ shape: any }> = ({ shape }) => {
       {sets.map((set, k) => {
         const active = selectedPanelRow === plinthRowKey(set.id);
         const box = boxes[k], h = box.max[1] - box.min[1], y0 = box.min[1];
-        // Panel yerleştirme kipinde sete tık = setin ÜSTÜNE panel isteği (FaceRaycastOverlay); yoksa satırı seçer.
-        const click = (e: any) => {
-          e.stopPropagation();
-          if (raycastMode) { plinthPlaceRequest.current?.(set.id, e.point.clone()); return; }
-          setSelectedPanelRow(active ? null : plinthRowKey(set.id), shape.id);
-        };
-        const sz = [box.max[0] - box.min[0], h, box.max[2] - box.min[2]], mid = [(box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2];
+        const click = (e: any) => { e.stopPropagation(); setSelectedPanelRow(active ? null : plinthRowKey(set.id), shape.id); };
         return (
           <group key={set.id}>
-            {raycastMode && (
-              // Setin ÜST yüzüne tık gövde yüzlerinden önce yakalanır (mesafe 0): kullanıcı yukarıdan setin üstüne bakıp tıklıyorsa panel
-              // oraya ister; yan/alt yüzlerden gelen ışın normal yüz seçimine bırakılır.
-              <mesh position={mid as unknown as Vec3} raycast={plinthTopRaycast} onPointerDown={(e: any) => { if (e.button === 0) click(e); }}>
-                <boxGeometry args={[sz[0], sz[1], sz[2]]} />
-                <meshBasicMaterial transparent opacity={0.07} color={SEL_COLORS.hover} depthWrite={false} />
-              </mesh>
-            )}
             {plinthLegSpots(set, box).map((p, i) => (
               <group key={i} position={[p.x, y0, p.z]}>
-                <PlinthFoot h={h} d={set.legs.diameter} active={active} xray={xray} onClick={click} />
+                {/* Panel yerleştirme kipinde ayaklar tıklamayı ALMAZ: ışın gövdenin yüz seçimine gider (setin üstü orada aday) */}
+                <PlinthFoot h={h} d={set.legs.diameter} active={active} xray={xray} onClick={click} pickable={!raycastMode} />
               </group>
             ))}
             {/* Hacim düzenlemede (Volume) kutu ve yüz seçimi PlinthEditOverlay'de çizilir */}
@@ -2504,16 +2489,6 @@ export const PlinthSets: React.FC<{ shape: any }> = ({ shape }) => {
       })}
     </>
   );
-};
-/** Set kutusunun yalnız +Y (üst) yüzüne vuruşlar sayılır ve öne alınır (mesafe 0) — gövdenin yüz-seçim örtüsünden önce gelsin. */
-const plinthTopRaycast = function (this: THREE.Mesh, rc: THREE.Raycaster, hits: THREE.Intersection[]) {
-  const tmp: THREE.Intersection[] = [];
-  THREE.Mesh.prototype.raycast.call(this, rc, tmp);
-  const up = new THREE.Vector3(0, 1, 0).transformDirection(this.matrixWorld);
-  for (const h of tmp) {
-    const n = h.face?.normal ? h.face.normal.clone().transformDirection(this.matrixWorld) : null;
-    if (n && n.dot(up) > 0.9 && rc.ray.direction.dot(n) < 0) { h.distance = 0; hits.push(h); }
-  }
 };
 /** Seçili setin hacmi: raf/dikme seçimiyle aynı dil (mavi dolgu + kırmızı kenar). */
 function PlinthVolume({ box }: { box: { min: Vec3; max: Vec3 } }) {
