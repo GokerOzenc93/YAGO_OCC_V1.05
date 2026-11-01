@@ -14,8 +14,9 @@ import {
   deleteBackGroupWithMembers,
 } from './BackService';
 import { doorJointForBond, moveDoorJointTo, isDoorPanel } from './DoorService';
-import { axisDirOfNormal, bodyFaces, bodyFacesByRole, plinthLegBoxes, plinthSetsOf, removeQuickBodyPlinth, syncQuickBodyPlinth } from './PlinthService';
-import { legModelById, legModelDims } from './AccessoryService';
+import {
+  type PlinthLegs, axisDirOfNormal, bodyFaces, bodyFacesByRole, plinthLegBoxes, plinthLegsOf, plinthSetsOf, removeQuickBodyPlinth, syncQuickBodyPlinth,
+} from './PlinthService';
 
 /* PANEL GRUP SERVİSİ — 1) kapak / arkalık / raf-dikme ortak bölme yardımcıları · 2) raf / dikme grupları · 3) hızlı gövde. */
 
@@ -2309,6 +2310,18 @@ export function panelOrderFor(joins: Record<CornerKey, JoinPass>): { order: Quic
 
 /** Tabanın alt panelin altında bıraktığı yükseklik (ayak / baza); düzde 0. */
 export const baseLiftOf = (cfg: QuickBodyConfig): number => (cfg.base === 'plinth' ? cfg.plinth.height : cfg.base === 'legs' ? cfg.legs.height : 0);
+/** HIZLI GÖVDE AYAKLARI (etkin düzen; baza seti kartıyla aynı kural — PlinthService.plinthLegsOf): ayak her zaman KAYITLI bir settir
+ *  (cfg.legs.presetId; seçilmemişse kütüphanedeki ilk set) — model + Ø setten; Auto'da adet / mesafeler de setten, Custom'da cfg.legs'in
+ *  kendi değerleri. Kütüphane boşsa cfg alanları (yerleşik ayak). null = bu tabanda ayak yok (düz taban; bazalıda count 0). */
+export function quickLegsOf(cfg: QuickBodyConfig, st = useAppStore.getState()): PlinthLegs | null {
+  const on = cfg.base === 'legs' || (cfg.base === 'plinth' && cfg.legs.count > 0);
+  if (!on) return null;
+  const own: PlinthLegs = {
+    count: (cfg.legs.count || 4) as 4 | 5 | 6, diameter: cfg.legs.diameter, side: cfg.legs.side, front: cfg.legs.front, rear: cfg.legs.rear,
+    legModelId: cfg.legs.legModelId ?? null, presetId: cfg.legs.presetId ?? null, custom: !!cfg.legs.custom,
+  };
+  return plinthLegsOf(own, st);
+}
 
 /* ───────── Ayak yerleşimi (gövde-yerel; ön = +Z) ───────── */
 export interface LegSpot { x: number; z: number }
@@ -2572,14 +2585,11 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
   });
   // Ayaklar: ayaklı tabanda zorunlu, bazalıda isteğe bağlı (count 0 = yok) — baza ayağı SETİ (PlinthService, alt panele bağlı, zemine
   // basar); yeniden uygulamada güncellenir / kalkan ayaklar silinir.
-  const legCount = cfg.base === 'legs' ? (cfg.legs.count || 4) : cfg.base === 'plinth' ? cfg.legs.count : 0;
-  const { side, front, rear } = cfg.legs;
-  // Aksesuar kütüphanesinden ayak modeli seçildiyse Ø modelden (Goker: "çap model neyse o gelmeli"), yoksa yerleşik ayak Ø.
-  const legModel = legModelById(cfg.legs.legModelId);
-  const diameter = legModelDims(legModel)?.diameter || cfg.legs.diameter;
-  syncQuickBodyPlinth(body.id, legCount ? {
-    count: legCount as 4 | 5 | 6, diameter, side, front, rear, legModelId: legModel ? legModel.id : null, presetId: cfg.legs.presetId ?? null,
-    rules: cfg.legs.rules && cfg.legs.rules.length ? cfg.legs.rules : null,
+  // Ayak = kayıtlı set (model + Ø setten; Auto'da düzen de) — quickLegsOf; set kartı aynı kuralla canlı okur.
+  const L = quickLegsOf(cfg);
+  syncQuickBodyPlinth(body.id, L ? {
+    count: L.count, diameter: L.diameter, side: L.side, front: L.front, rear: L.rear, legModelId: L.legModelId ?? null, presetId: L.presetId ?? null,
+    custom: !!L.custom,
   } : null, bottomVfId, lift);
 
   await requestRebuild(body.id);

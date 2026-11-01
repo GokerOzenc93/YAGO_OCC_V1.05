@@ -17,7 +17,7 @@ import {
   type AccessoryModel, type AccessoryUnit, type LegModel, type LegModelPart, type LegPartRole, type LegPreset, useAppStore,
 } from '../store';
 import { type Vec3, convertReplicadToThreeGeometry, genId, initReplicad, round1 } from './Geometry';
-import { type LegRule, standardLegRules } from './LegLayout';
+import { type LegRule, standardLegRules, standardOf } from './LegLayout';
 
 /* ───────────────────────────── Biçimler ───────────────────────────── */
 /** Desteklenen uzantılar (küçük harf, noktasız) → yükleyici anahtarı. */
@@ -70,7 +70,11 @@ function flattenObject(root: THREE.Object3D): THREE.BufferGeometry | null {
   if (!allNormals) for (const p of parts) p.deleteAttribute('normal');
   const merged = parts.length === 1 ? parts[0] : mergeGeometries(parts, false);
   if (!merged) return null;
-  if (!merged.getAttribute('normal')) merged.computeVertexNormals();
+  // Normal yoksa ya da bozuksa (ör. STL'de sıfır yüz normalleri → siyah gölgeleme) yeniden hesaplanır.
+  const nrm = merged.getAttribute('normal') as THREE.BufferAttribute | undefined;
+  let bad = !nrm;
+  if (nrm) for (let i = 0; i < nrm.count; i += Math.max(1, Math.floor(nrm.count / 256))) { if (Math.hypot(nrm.getX(i), nrm.getY(i), nrm.getZ(i)) < 0.5) { bad = true; break; } }
+  if (bad) merged.computeVertexNormals();
   return merged;
 }
 
@@ -343,20 +347,27 @@ export function legModelDims(leg: LegModel | undefined, models = useAppStore.get
 }
 export const legModelHasStem = (leg: LegModel | undefined) => !!leg && leg.parts.some(p => p.role === legStretchOf(leg));
 
+/** Setin KÖŞE DÜZENİ (adet + kenar mesafeleri). Yerleşim her zaman otomatik köşe düzenidir; eski kayıtların ayak ayak kuralları
+ *  standart düzene denkse oradan okunur, değilse setin alanları. */
+export function presetLayout(p: Pick<LegPreset, 'rules' | 'count' | 'side' | 'front' | 'rear'>): { count: 4 | 5 | 6; side: number; front: number; rear: number } {
+  const std = p.rules && p.rules.length ? standardOf(p.rules) : null;
+  return std ?? { count: p.count, side: p.side, front: p.front, rear: p.rear };
+}
 /** Setten PlinthLegs alanları (PlinthService / hızlı gövde): adet, kenar mesafeleri, model, Ø modelden (yoksa 50). */
 export function legsFromPreset(preset: LegPreset, st = useAppStore.getState()): {
   count: 4 | 5 | 6; diameter: number; side: number; front: number; rear: number; legModelId: string | null; presetId: string; rules: LegRule[];
 } {
   const leg = preset.legModelId ? st.legModels.find(x => x.id === preset.legModelId) : undefined;
   const dims = legModelDims(leg, st.accessoryModels);
-  const rules = presetRules(preset);
-  return {
-    count: Math.max(4, Math.min(6, rules.length)) as 4 | 5 | 6, diameter: dims?.diameter || 50, side: preset.side, front: preset.front, rear: preset.rear,
-    legModelId: leg ? leg.id : null, presetId: preset.id, rules,
-  };
+  const L = presetLayout(preset);
+  return { ...L, diameter: dims?.diameter || 50, legModelId: leg ? leg.id : null, presetId: preset.id, rules: standardLegRules(L.count, L.side, L.front, L.rear) };
 }
 /** Setin ayak ayak kuralları (eski kayıt: standart düzenden türer). */
 export const presetRules = (p: Pick<LegPreset, 'rules' | 'count' | 'side' | 'front' | 'rear'>): LegRule[] =>
   p.rules && p.rules.length ? p.rules : standardLegRules(p.count, p.side, p.front, p.rear);
 export const legPresetById = (id: string | null | undefined, st = useAppStore.getState()) => (id ? st.legPresets.find(p => p.id === id) : undefined);
+/** KULLANILACAK AYAK SETİ (Goker: "sadece kayıtlı ayaklar gelsin, yerleşik ayak seçeneği hiç gelmesin"): verilen id'nin seti; yoksa
+ *  (eski kayıt / hiç seçilmemiş) kütüphanedeki İLK set; kütüphane boşsa undefined (yalnız o zaman yerleşik ayak çizilir). */
+export const resolveLegPreset = (id: string | null | undefined, st = useAppStore.getState()): LegPreset | undefined =>
+  legPresetById(id, st) ?? st.legPresets[0];
 export const legModelById = (id: string | null | undefined, st = useAppStore.getState()) => (id ? st.legModels.find(p => p.id === id) : undefined);

@@ -21,6 +21,7 @@ import {
 import {
   type PlinthPick, type PlinthRegion, confirmPlinthPick, plinthBoxOf, plinthBoxesOf, plinthCandidates, plinthLegSpots, plinthPickBox,
   plinthRowKey, plinthSetsOf, isPlinthRow, finishPlinthEdit, plinthRegionOf, prismGeometry, bodyFrontAxis, bodyFaces, setBodyFaceRole, bodyFacesByRole,
+  plinthLegsOf,
 } from './PlinthService';
 import { FACE_ROLES, FACE_ROLE_LABEL, type FaceRole } from './LegLayout';
 import { type LegAssemblyPart, legAssembly, onAccessoryGeometry } from './AccessoryService';
@@ -2488,12 +2489,17 @@ function PlinthFoot({ h, d, active, xray, onClick, pickable = true }: { h: numbe
 
 /** Setler (gövde-yerel çerçevede): plastik baza ayakları; tık satırı seçer; seçili sette set hacmi (raf/dikme seçimi gibi) + oklar. */
 export const PlinthSets: React.FC<{ shape: any }> = ({ shape }) => {
-  const { plinthSets, selectedPanelRow, setSelectedPanelRow, viewMode, shapes, faceExtrudeMode, faceExtrudePlinthId, raycastMode } =
-    useStoreFields('plinthSets', 'selectedPanelRow', 'setSelectedPanelRow', 'viewMode', 'shapes', 'faceExtrudeMode', 'faceExtrudePlinthId', 'raycastMode');
+  const { plinthSets, selectedPanelRow, setSelectedPanelRow, viewMode, shapes, faceExtrudeMode, faceExtrudePlinthId, raycastMode, legPresets, legModels, accessoryModels } =
+    useStoreFields('plinthSets', 'selectedPanelRow', 'setSelectedPanelRow', 'viewMode', 'shapes', 'faceExtrudeMode', 'faceExtrudePlinthId', 'raycastMode',
+      'legPresets', 'legModels', 'accessoryModels');
   const sets = useMemo(() => plinthSetsOf(shape.id, plinthSets), [plinthSets, shape.id]);
   // Etkin bölge: taban zeminde, üst bağlı alt panelden (canlı), şekil gövde + erken yanlardan (L / çentik) — ayaklar bölgenin içinde.
   const regions = useMemo(() => sets.map(set => plinthRegionOf(set, shapes)), [sets, shapes]);
-  const spots = useMemo(() => sets.map(set => plinthLegSpots(set, shapes)), [sets, shapes]);
+  // Etkin ayak düzeni kayıtlı setten okunur: kütüphane (set / model / Ø) değişince ayaklar da yenilenir.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const legsOf = useMemo(() => sets.map(set => plinthLegsOf(set.legs)), [sets, legPresets, legModels, accessoryModels]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const spots = useMemo(() => sets.map(set => plinthLegSpots(set, shapes)), [sets, shapes, legsOf]);
   if (!sets.length || viewMode === ViewMode.WIREFRAME) return null;
   const xray = viewMode === ViewMode.XRAY;
   return (
@@ -2502,14 +2508,16 @@ export const PlinthSets: React.FC<{ shape: any }> = ({ shape }) => {
         const active = selectedPanelRow === plinthRowKey(set.id);
         const box = regions[k].bbox, h = box.max[1] - box.min[1], y0 = box.min[1];
         const click = (e: any) => { e.stopPropagation(); setSelectedPanelRow(active ? null : plinthRowKey(set.id), shape.id); };
+        // Model ve Ø kayıtlı setten (Auto'da düzen de); kütüphanede set yoksa yerleşik ayak.
+        const L = legsOf[k];
         return (
           <group key={set.id}>
             {spots[k].map((p, i) => (
               <group key={i} position={[p.x, y0, p.z]}>
                 {/* Panel yerleştirme kipinde ayaklar tıklamayı ALMAZ: ışın gövdenin yüz seçimine gider (setin üstü orada aday) */}
-                {set.legs.legModelId
-                  ? <ImportedFoot legModelId={set.legs.legModelId} h={h} d={set.legs.diameter} active={active} xray={xray} onClick={click} pickable={!raycastMode} />
-                  : <PlinthFoot h={h} d={set.legs.diameter} active={active} xray={xray} onClick={click} pickable={!raycastMode} />}
+                {L.legModelId
+                  ? <ImportedFoot legModelId={L.legModelId} h={h} d={L.diameter} active={active} xray={xray} onClick={click} pickable={!raycastMode} />
+                  : <PlinthFoot h={h} d={L.diameter} active={active} xray={xray} onClick={click} pickable={!raycastMode} />}
               </group>
             ))}
             {/* Hacim düzenlemede (Volume) bölge ve yüz seçimi PlinthEditOverlay'de çizilir */}

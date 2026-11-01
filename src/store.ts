@@ -336,9 +336,11 @@ export interface QuickBodyConfig {
   /** Ayaklar: bazalıda isteğe bağlı (count 0 = yok); ayaklı tabanda zorunlu. */
   legs: {
     count: 0 | 4 | 5 | 6; height: number; diameter: number; side: number; front: number; rear: number;
-    /** Aksesuar kütüphanesinden ayak seti (LegPreset) / ayak modeli (LegModel); yoksa yerleşik plastik ayak. */
+    /** Ayak seti (Aksesuar sekmesi; seçilmemişse kütüphanedeki ilk set) — model + Ø her zaman setten (PanelGroupService.quickLegsOf). */
     presetId?: string | null; legModelId?: string | null;
-    /** Ayak ayak kurallar (LegLayout); yoksa count / side / front / rear standart düzeni. */
+    /** Custom: adet / mesafeler buradaki değerler; Auto (yok): setten canlı. */
+    custom?: boolean;
+    /** Eski kayıt: ayak ayak kurallar (yerleşimde okunmaz). */
     rules?: LegRule[] | null;
   };
   back: {

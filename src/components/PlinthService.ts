@@ -26,25 +26,42 @@ import {
   getFacesAndGroups, localBboxOf, round1,
 } from './Geometry';
 import { type FreeRegion, freeRegionInBox, legSpots } from './PanelGroupService';
-import { legsFromPreset, legPresetById } from './AccessoryService';
+import { legsFromPreset, resolveLegPreset } from './AccessoryService';
 import {
   type EdgeRole, type FaceRole, type LegRule, type Pt, autoLegPoints, clampInsidePoly, cleanPoly, clipPolyToRect, edgeRoles, fromFacing, rectPoly,
   roleOfNormal, signedArea, standardLegRules, toFacing,
 } from './LegLayout';
 import * as THREE from 'three';
 
-/** Ayak düzeni. `legModelId` = aksesuar kütüphanesinden ayak modeli (yoksa yerleşik plastik ayak); `presetId` = uygulanan ayak seti.
- *  YERLEŞİM HER ZAMAN OTOMATİKTİR (Goker: "ayağı seçeyim, referans kübün yüzlerine göre otomatik yerleşsin"): köşe düzeni count / side /
- *  front / rear ile, kenar rolleri gövde yüzlerinden. `adjust` = CUSTOM: otomatik yerleşen her ayağın ÜZERİNE Δ düzeltme (ön çerçeve:
- *  du sağa, dv öne; `off` = ayak kaldırıldı) — null/undefined = Auto. `rules` (eski kasetlerden) yerleşimde okunmaz. */
+/** Ayak düzeni. AYAK HER ZAMAN KAYITLI BİR SETTİR (Goker: "sadece kayıtlı ayaklar gelsin"): `presetId` = Aksesuar sekmesindeki ayak seti
+ *  (yoksa kütüphanedeki ilk set — resolveLegPreset); model ve Ø her zaman o setten okunur. YERLEŞİM HER ZAMAN OTOMATİKTİR (köşe düzeni
+ *  count / side / front / rear ile, kenar rolleri gövde yüzlerinden):
+ *  • AUTO (`custom` yok): düzen de setten CANLI okunur — Aksesuar sekmesinde set değişirse ayaklar da değişir.
+ *  • CUSTOM (`custom: true`; Goker: "custom bazada mesafeler sade biçimde panel editörden girilebilsin, hazır ayağın mesafeleri sonradan
+ *    değişsin"): count / side / front / rear bu setin KENDİ değerleri (Custom'a geçerken setten kopyalanır), set bağı kalır; `adjust` =
+ *    ayak başına ek Δ (ön çerçeve: du sağa, dv öne; `off` = ayak kaldırıldı).
+ *  `rules` (eski kasetlerden) yerleşimde okunmaz. */
 export interface LegAdjust { du: number; dv: number; off?: boolean }
 export type PlinthLegs = {
   count: 4 | 5 | 6; diameter: number; side: number; front: number; rear: number; legModelId?: string | null; presetId?: string | null; rules?: LegRule[] | null;
-  inner?: boolean; adjust?: LegAdjust[] | null;
+  inner?: boolean; custom?: boolean; adjust?: LegAdjust[] | null;
 };
 /** Setin standart kuralları (yalnız eski kaset / kural düzenleyici uyumu için). */
 export const plinthLegRules = (legs: PlinthLegs): LegRule[] => (legs.rules && legs.rules.length ? legs.rules : standardLegRules(legs.count, legs.side, legs.front, legs.rear));
-export const plinthLegsAuto = (legs: PlinthLegs): boolean => !legs.adjust;
+/** Auto = düzen setten; eski kayıtta Δ listesi varsa Custom sayılır. */
+export const plinthLegsAuto = (legs: PlinthLegs): boolean => !legs.custom && !legs.adjust;
+/** ETKİN ayak düzeni: model + Ø kayıtlı setten; Auto'da adet / mesafeler de setten, Custom'da bu setin kendi değerleri. Kütüphanede set
+ *  yoksa kaydedilen alanlar (yerleşik ayak). Çizim, damga, engel ve kart hepsi bunu okur. */
+export function plinthLegsOf(legs: PlinthLegs, st = useAppStore.getState()): PlinthLegs {
+  const preset = resolveLegPreset(legs.presetId, st);
+  if (!preset) return legs;
+  const P = legsFromPreset(preset, st);
+  const auto = plinthLegsAuto(legs);
+  return {
+    ...legs, presetId: P.presetId, legModelId: P.legModelId, diameter: P.diameter,
+    ...(auto ? { count: P.count, side: P.side, front: P.front, rear: P.rear } : {}),
+  };
+}
 /** ÖN yön (gövde-yerel): ayak ön/arka mesafeleri bu yöne göre; gövde parametresi (bkz. bodyFrontAxis). */
 export type PlinthFacing = AxisDir;
 export const PLINTH_FACINGS: PlinthFacing[] = ['z+', 'z-', 'x+', 'x-'];
@@ -310,7 +327,7 @@ export function plinthBoxesOf(s: PlinthSet, shapes?: Shape[], vfs?: VirtualFace[
  *  DEĞİL, yalnız ayakların kendisidir — her ayak için taban diski + montaj tablası (R = 1.15·Ø/2) çevresinde zeminden setin üstüne kutu. */
 export function plinthLegBoxes(s: PlinthSet, shapes = useAppStore.getState().shapes, vfs?: VirtualFace[]): CavityBox[] {
   const b = plinthRegionOf(s, shapes, vfs).bbox;
-  const R = legRadius(s.legs);
+  const R = legRadius(plinthLegsOf(s.legs));
   return plinthLegSpots(s, shapes).map(p => ({ min: [p.x - R, b.min[1], p.z - R] as Vec3, max: [p.x + R, b.max[1], p.z + R] as Vec3 }));
 }
 export const plinthHeight = (s: PlinthSet, shapes?: Shape[]) => { const b = plinthBoxOf(s, shapes); return b.max[1] - b.min[1]; };
@@ -373,16 +390,17 @@ export function plinthEdgeRoles(s: PlinthSet, shapes = useAppStore.getState().sh
   const yMid = (region.bbox.min[1] + region.bbox.max[1]) / 2;
   return edgeRoles(region.poly, facing, (mid, n) => bodyFaceRoleAt(body, [mid.x, yMid, mid.y], n));
 }
-/** OTOMATİK ayak merkezleri (gövde-yerel x/z; Δ düzeltme uygulanmamış): köşe düzeni + kenar rolleri. */
+/** OTOMATİK ayak merkezleri (gövde-yerel x/z; Δ düzeltme uygulanmamış): köşe düzeni (etkin düzen: Auto'da setten) + kenar rolleri. */
 export function plinthAutoLegSpots(s: PlinthSet, shapes = useAppStore.getState().shapes, region = plinthRegionOf(s, shapes)): Pt[] {
-  return autoLegPoints(region.poly, plinthEdgeRoles(s, shapes, region), { count: s.legs.count, side: s.legs.side, front: s.legs.front, rear: s.legs.rear, inner: s.legs.inner }, plinthFacingOf(s, shapes), legRadius(s.legs));
+  const L = plinthLegsOf(s.legs);
+  return autoLegPoints(region.poly, plinthEdgeRoles(s, shapes, region), { count: L.count, side: L.side, front: L.front, rear: L.rear, inner: L.inner }, plinthFacingOf(s, shapes), legRadius(L));
 }
 /** TÜM ayaklar otomatik sırada: otomatik nokta + CUSTOM Δ (ön çerçevede, izin içinde kıstırılmış) + kapalı mı (kart satırları / diyagram). */
 export function plinthLegPoints(s: PlinthSet, shapes = useAppStore.getState().shapes): Array<{ x: number; z: number; off: boolean }> {
   const region = plinthRegionOf(s, shapes);
-  const R = legRadius(s.legs);
+  const R = legRadius(plinthLegsOf(s.legs));
   const facing = plinthFacingOf(s, shapes);
-  const adj = s.legs.adjust ?? [];
+  const adj = plinthLegsAuto(s.legs) ? [] : (s.legs.adjust ?? []);
   return plinthAutoLegSpots(s, shapes, region).map((p, i) => {
     const a = adj[i];
     if (!a || (!a.du && !a.dv)) return { x: p.x, z: p.y, off: !!a?.off };
@@ -397,12 +415,13 @@ export function plinthLegSpots(s: PlinthSet, shapes = useAppStore.getState().sha
   const all = plinthLegPoints(s, shapes);
   if (all.length) return all.filter(p => !p.off).map(p => ({ x: p.x, z: p.z }));
   const region = plinthRegionOf(s, shapes);
-  const R = legRadius(s.legs);
+  const L = plinthLegsOf(s.legs);
+  const R = legRadius(L);
   const facing = plinthFacingOf(s, shapes);
   // Son çare: dikdörtgen düzen, kutuya kıstırılmış.
   const box = region.bbox, W = box.max[0] - box.min[0], D = box.max[2] - box.min[2];
   const clamp = (v: number, lo: number, hi: number) => (hi < lo ? (lo + hi) / 2 : Math.min(hi, Math.max(lo, v)));
-  return legSpotsFacing(s.legs, W, D, facing).map(p => ({
+  return legSpotsFacing(L, W, D, facing).map(p => ({
     x: clamp(box.min[0] + p.x, box.min[0] + R, box.max[0] - R), z: clamp(box.min[2] + p.z, box.min[2] + R, box.max[2] - R),
   }));
 }
@@ -484,6 +503,19 @@ function syncAfterPlinthChange(shapeId: string): void {
   const st = useAppStore.getState();
   if (st.panelGroups.some(g => g.shapeId === shapeId) || childPanelsOf(shapeId, st.shapes).length) void requestRebuild(shapeId);
 }
+/** Kütüphanedeki bir ayak seti / modeli değişince (Aksesuar sekmesi): o seti Auto okuyan (ya da ilk sete düşen) her set yeniden çözülür —
+ *  ayak kutuları (engel / damga) yeni Ø ve düzene göre. */
+export function syncPlinthSetsUsingPreset(presetId: string | null): void {
+  const st = useAppStore.getState();
+  const done = new Set<string>();
+  for (const s of st.plinthSets) {
+    if (done.has(s.shapeId)) continue;
+    const p = resolveLegPreset(s.legs.presetId, st);
+    if (presetId && p && p.id !== presetId) continue;
+    done.add(s.shapeId);
+    syncAfterPlinthChange(s.shapeId);
+  }
+}
 export function deletePlinthSetAndSync(id: string): void {
   const st = useAppStore.getState();
   const s = st.plinthSets.find(x => x.id === id); if (!s) return;
@@ -549,7 +581,8 @@ export function createPlinthSet(shapeId: string, box: CavityBox, legs: PlinthLeg
 export function confirmPlinthPick(shapeId: string, pick: PlinthPick, name?: string): PlinthSet | null {
   const st = useAppStore.getState();
   if (!shapeById(shapeId, st.shapes)) return null;
-  const preset = legPresetById(st.plinthPickPresetId, st);
+  // Şeritte seçili set; seçilmemişse kütüphanedeki ilk set (yerleşik ayak yalnız kütüphane boşsa).
+  const preset = resolveLegPreset(st.plinthPickPresetId, st);
   const legs: PlinthLegs = preset ? legsFromPreset(preset, st) : DEFAULT_PLINTH_LEGS;
   const set = createPlinthSet(shapeId, pick.box, legs, { name, bottomVfId: pick.bottomVfId, facing: pick.facing });
   st.setPlinthPickMode(false);
@@ -592,18 +625,28 @@ export function removeQuickBodyPlinth(shapeId: string): void {
 export function setPlinthLegs(id: string, patch: Partial<PlinthLegs>): void {
   const st = useAppStore.getState();
   const s = st.plinthSets.find(x => x.id === id); if (!s) return;
-  // Düzen (adet / mesafeler) elle değişince set artık o "kaset" değil (model korunur); Δ düzeltme (Custom) sete özel, kaset bağı kalır.
-  const detach = ['count', 'side', 'front', 'rear', 'inner'].some(k => k in patch) && !('presetId' in patch);
-  const next: PlinthLegs = { ...s.legs, ...patch, ...(detach ? { presetId: null } : {}) };
+  // Düzen (adet / mesafeler / Δ) yalnız Custom'da sete yazılır — set bağı (model, Ø) her zaman kalır.
+  const edits = ['count', 'side', 'front', 'rear', 'inner', 'adjust'].some(k => k in patch);
+  const next: PlinthLegs = { ...s.legs, ...patch, ...(edits && !('custom' in patch) ? { custom: true } : {}) };
   st.updatePlinthSet(id, { legs: next });
 }
-/** AYAK SETİ UYGULA (Goker: "kaydettiğim ayak kasetlerini ayak kısmında çağıralım"): düzen + model setten; bağsız sette yükseklik de. */
+/** AUTO ↔ CUSTOM. Custom'a geçerken setin o anki (setten okunan) düzeni kopyalanır — alanlar oradan düzenlenir; Auto'ya dönünce düzen
+ *  yine setten canlı okunur, Δ düzeltmeler silinir. */
+export function setPlinthLegsMode(id: string, mode: 'auto' | 'custom'): void {
+  const st = useAppStore.getState();
+  const s = st.plinthSets.find(x => x.id === id); if (!s) return;
+  if (mode === 'auto') { st.updatePlinthSet(id, { legs: { ...s.legs, custom: false, adjust: null } }); return; }
+  const L = plinthLegsOf(s.legs, st);
+  st.updatePlinthSet(id, { legs: { ...s.legs, count: L.count, side: L.side, front: L.front, rear: L.rear, custom: true, adjust: s.legs.adjust ?? [] } });
+}
+/** AYAK SETİ UYGULA (Goker: "kaydettiğim ayak kasetlerini ayak kısmında çağıralım"): düzen + model setten (Auto'ya döner); bağsız sette
+ *  yükseklik de. Set bulunamazsa (silinmiş) kütüphanedeki ilk set. */
 export function applyLegPresetToSet(id: string, presetId: string | null): void {
   const st = useAppStore.getState();
   const s = st.plinthSets.find(x => x.id === id); if (!s) return;
-  const preset = legPresetById(presetId, st);
-  if (!preset) { st.updatePlinthSet(id, { legs: { ...s.legs, presetId: null } }); return; }
-  st.updatePlinthSet(id, { legs: legsFromPreset(preset, st) });
+  const preset = resolveLegPreset(presetId, st);
+  if (!preset) { st.updatePlinthSet(id, { legs: { ...s.legs, presetId: null, custom: false, adjust: null } }); syncAfterPlinthChange(s.shapeId); return; }
+  st.updatePlinthSet(id, { legs: { ...legsFromPreset(preset, st), custom: false, adjust: null } });
   if (!plinthIsBound(s) && preset.height > 0) setPlinthHeight(id, preset.height);
   else syncAfterPlinthChange(s.shapeId);
 }

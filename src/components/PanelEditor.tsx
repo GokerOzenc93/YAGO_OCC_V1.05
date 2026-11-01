@@ -37,23 +37,21 @@ import {
   findExistingStepForFace,
 } from './Geometry';
 import {
-  legSpots, effectiveJoins, panelOrderFor, confirmRefCavityExtrude, executeCavityExtrude, executeCavityExtrudeOuter, updateCavityStep, deleteCavityStep, groupName,
+  effectiveJoins, panelOrderFor, confirmRefCavityExtrude, executeCavityExtrude, executeCavityExtrudeOuter, updateCavityStep, deleteCavityStep, groupName,
   confirmVolumePick, type TreeNode, findNode, treeLeaves, memberThicknessesOf, boxSpan, groupKindLabel,
   renamePanelGroup, deletePanelGroupWithMembers, setGroupCount, startCavityEdit, startGroupRepick, setGroupTargetGap, equalizeGroupGaps,
   previewGroupGap, editGroupGap, toggleGroupGapLock, groupLayoutSnapshot, restoreGroupLayout, type GroupLayoutSnap, previewGroupMemberThickness,
-  setGroupMemberThickness, applyQuickBody, quickBodyOf, quickBodyVfsOf, removeQuickBody,
+  setGroupMemberThickness, applyQuickBody, quickBodyOf, quickBodyVfsOf, removeQuickBody, quickLegsOf,
 } from './PanelGroupService';
 import { confirmBodyPanelPlacement } from './Scene';
 import {
   type PlinthSet, type PlinthFacing, confirmPlinthPick, plinthRowKey, plinthSetsOf, plinthSize, plinthName, setPlinthLegs, setPlinthHeight, plinthIsBound,
   applyPlinthFace, applyPlinthArrow, deletePlinthSetAndSync, finishPlinthEdit, startPlinthVolumeEdit, applyLegPresetToSet, plinthFacingOf,
-  PLINTH_FACINGS, PLINTH_FACING_LABEL, plinthFootprint, plinthLegsAuto, plinthLegSpots, plinthLegPoints, type PlinthLegs, type LegAdjust,
+  PLINTH_FACING_LABEL, plinthFootprint, plinthLegsAuto, plinthLegSpots, plinthLegPoints, plinthLegsOf, setPlinthLegsMode, bodyFrontAxis,
+  type PlinthLegs, type LegAdjust,
 } from './PlinthService';
-import { legModelById, legModelDims, legPresetById, legsFromPreset } from './AccessoryService';
-import {
-  type EdgeRole, type LegRule, type Pt, FACE_ROLE_LABEL, LEG_ANCHOR_LABEL, LEG_ANCHOR_X, LEG_ANCHOR_Z, type LegAnchorX, type LegAnchorZ, polyExtent, rectPoly,
-  resolveLegRule, standardLegRules, standardOf, toFacing,
-} from './LegLayout';
+import { legModelById, legModelDims, legPresetById, presetLayout, resolveLegPreset } from './AccessoryService';
+import { type Pt, autoLegPoints, edgeRoles, polyExtent, rectPoly, toFacing } from './LegLayout';
 
 /* PANEL EDİTÖRÜ — 1) şerit + liste satırı parçaları · 2) kart blokları (ipucu hücresi, kanal / ayak diyagramları, hızlı gövde) ·
    3) şeritler, adım listeleri, yerleştirme şeritleri · 4) panel listesi ve kartlar. Şemalar PanelSchematics.tsx'te. */
@@ -457,23 +455,29 @@ export function SelectBox<T extends string>({ value, options, title, onChange }:
     </div>
   );
 }
-/** AYAK SETİ SEÇİCİ (aksesuar kütüphanesi; Goker: "kaydettiğim ayak kasetlerini ayak kısmında çağıralım"): yerleşik ayak + kayıtlı setler. */
+/** AYAK SETİ SEÇİCİ (Goker: "sadece kayıtlı ayaklar gelsin; yerleşik / custom ayak seçeneği hiçbir zaman gelmesin"): YALNIZ Aksesuar
+ *  sekmesinde kaydedilen setler. Seçilmemiş / silinmiş set → kütüphanedeki ilk set gösterilir (yerleşim de onu kullanır —
+ *  AccessoryService.resolveLegPreset). Kütüphane boşsa pasif kutu: önce bir set kaydedilir. */
 export function LegPresetSelect({ value, onChange, title = 'Leg set — a saved leg layout and model from the Accessories tab' }: {
   value: string | null | undefined; onChange: (presetId: string | null) => void; title?: string;
 }) {
   const { legPresets, legModels } = useStoreFields('legPresets', 'legModels');
-  const opts: Array<[string, string]> = [['', legPresets.length ? 'Custom · built-in foot' : 'Built-in foot (no saved sets)'],
-    ...legPresets.map(p => [p.id, `${p.name} · ${p.count} legs${p.legModelId ? ` · ${legModels.find(m => m.id === p.legModelId)?.name ?? 'model'}` : ''}`] as [string, string])];
-  return <SelectBox value={value && legPresets.some(p => p.id === value) ? value : ''} options={opts} title={title} onChange={v => onChange(v || null)} />;
-}
-/** ÖN YÖN seçici (baza seti): +Z / −Z / +X / −X. */
-export function FacingSelect({ value, onChange, height = 22 }: { value: PlinthFacing; onChange: (f: PlinthFacing) => void; height?: number }) {
-  return (
-    <div style={{ width: 148 }}>
-      <Segmented height={height} active={value} onPick={k => onChange(k as PlinthFacing)}
-        items={PLINTH_FACINGS.map(f => ({ key: f, label: PLINTH_FACING_LABEL[f], title: `Front faces ${PLINTH_FACING_LABEL[f]}` }))} />
-    </div>
-  );
+  if (!legPresets.length) {
+    return (
+      <div className="relative shrink-0" onClick={stop} title="No saved leg sets yet — save one in the Accessories tab (Leg sets › New)">
+        <select disabled value="" className={`${SELECT_CLASS} opacity-60 cursor-default`} style={{ fontFamily: UI_FONT }}>
+          <option value="">No saved leg sets · Accessories tab</option>
+        </select>
+        <ChevronDown size={12} strokeWidth={2.2} className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-stone-300" />
+      </div>
+    );
+  }
+  const cur = legPresets.find(p => p.id === value) ?? legPresets[0];
+  const opts: Array<[string, string]> = legPresets.map(p => {
+    const L = presetLayout(p), lm = legModels.find(m => m.id === p.legModelId);
+    return [p.id, `${p.name} · ${L.count} legs${lm ? ` · ${lm.name}` : ''}`] as [string, string];
+  });
+  return <SelectBox value={cur.id} options={opts} title={title} onChange={v => onChange(v)} />;
 }
 export type SplitMode = 'count' | 'ref' | 'spacing';
 const SPLIT_MODE_TITLE: Record<SplitMode, string> = {
@@ -663,7 +667,6 @@ const QB_CORNER_TITLE: Record<CornerKey, string> = { tl: 'Top-left', tr: 'Top-ri
 export const QB_CELL_ROW = { gridAutoRows: `${BACK_ROW_H}px`, rowGap: BACK_ROW_GAP } as const;
 const qbField = (w: number, passive?: boolean): React.CSSProperties =>
   ({ ...FIELD_INPUT, width: w, flexShrink: 0, textAlign: 'right', ...(passive ? PASSIVE_INPUT : {}) });
-const countOpts = (ns: number[]) => ns.map(n => ({ v: String(n), label: n === 0 ? 'None' : String(n) }));
 
 /** Taslaklı sayı girişi: Enter / blur onaylar, Esc geri alır. */
 export function QbNum({ value, onCommit, passive, w = 34, min = 0, max }: {
@@ -766,208 +769,126 @@ function CornerJointTiles({ joins, lockBottom, active, onCorner, onHover }: {
 }
 
 type LegDims = { count: number; height: number; diameter: number; side: number; front: number; rear: number };
-/* Plan görünüşü (üstten; ön altta): ayak yerleri, Ø, yan / ön / arka mesafeleri. Tam genişlik. */
-export function LegsPlanDiagram({ legs, W, D, active, className }: { legs: Omit<LegDims, 'height'>; W: number; D: number; active: string | null; className?: string }) {
-  const VW = 448, VH = 176, PX0 = 64, PW = VW - PX0 - 70, PY0 = 22, PH = VH - PY0 - 26;
-  const s = Math.max(1e-6, Math.min(PW / W, PH / D));
-  const w = W * s, d = D * s, x0 = PX0 + (PW - w) / 2, y0 = PY0 + (PH - d) / 2, x1 = x0 + w, y1 = y0 + d;
-  const r = Math.max(3, (legs.diameter / 2) * s);
-  const spots = legSpots({ count: (legs.count || 4) as 4 | 5 | 6, side: legs.side, front: legs.front, rear: legs.rear }, W, D)
-    .map(p => ({ x: x0 + p.x * s, y: y0 + p.z * s }));   // ön (+Z) altta
-  const { on, dim, txt, note } = diagramKit(active, { fs: 10.5, noteFs: 9.4, tick: 3.5, wOn: 1.4 });
-  const hi = on('ld') || on('lc'), legStroke = hi ? O : '#78716c';
-  const lead = (xa: number, ya: number, xb: number, yb: number) =>
-    <line x1={xa} y1={ya} x2={xb} y2={yb} stroke={MUTE} strokeWidth={0.6} strokeDasharray="1.5 1.5" />;
-  const first = spots[0], rearLeg = spots[3] ?? spots[2];
-  return (
-    <DiagramSvg w={VW} h={VH} className={className}>
-      {note(10, 13, 'plan view · rear at top')}{note(10, VH - 8, 'front ↓')}
-      <rect x={x0} y={y0} width={w} height={d} fill="#f3ede4" stroke="#a39a8d" strokeWidth={1} />
-      {note((x0 + x1) / 2, y0 - 7, `W ${fmt1(W)}`, { textAnchor: 'middle' })}
-      {note(x1 + 44, (y0 + y1) / 2 + 3, `D ${fmt1(D)}`)}
-      {spots.map((p, i) => (
-        <g key={i}>
-          <circle cx={p.x} cy={p.y} r={r + 3} fill="none" stroke={hi ? O : '#cfc7bb'} strokeWidth={0.7} strokeDasharray="1.8 1.8" />
-          <circle cx={p.x} cy={p.y} r={r} fill={hi ? OF : '#d9d2c6'} stroke={legStroke} strokeWidth={1} />
-          <line x1={p.x - r * 0.45} y1={p.y} x2={p.x + r * 0.45} y2={p.y} stroke={legStroke} strokeWidth={0.7} />
-          <line x1={p.x} y1={p.y - r * 0.45} x2={p.x} y2={p.y + r * 0.45} stroke={legStroke} strokeWidth={0.7} />
-        </g>
-      ))}
-      {/* Ölçüler dışarıda: yan = altta (x0 → ön-sol ayak), ön = solda (ön-sol ayak → ön kenar), arka = sağda (arka kenar → arka-sağ ayak) */}
-      {first && <>
-        {dim(x0, y1 + 11, first.x, y1 + 11, 'ls')}{lead(first.x, first.y, first.x, y1 + 14)}{txt((x0 + first.x) / 2, y1 + 23, fmt1(legs.side), 'ls')}
-        {dim(x0 - 11, first.y, x0 - 11, y1, 'lf')}{lead(x0 - 14, first.y, first.x, first.y)}{txt(x0 - 15, (first.y + y1) / 2 + 4, fmt1(legs.front), 'lf', 'end')}
-      </>}
-      {rearLeg && <>
-        {dim(x1 + 11, y0, x1 + 11, rearLeg.y, 'lr')}{lead(rearLeg.x, rearLeg.y, x1 + 14, rearLeg.y)}
-        {txt(x1 + 15, (y0 + rearLeg.y) / 2 + 4, fmt1(legs.rear), 'lr', 'start')}
-      </>}
-      {txt(x1 - 4, y1 - 6 - r * 2 - 4, `${legs.count || 4} legs`, 'lc', 'end')}
-    </DiagramSvg>
-  );
-}
 
-/* ───────────── AYAK AYAK KURALLAR (LegLayout; Goker: "her ayağın yerini parametrik belirleyeyim: ön kenardan şu kadar, yandan şu kadar,
-   ya da tam ortaya; karmaşık şekillerde de uysun") ───────────── */
-/** Kenar rolü renkleri (3D rozetlerle aynı): ön turuncu, arka koyu, sol mavi, sağ petrol. */
-const ROLE_COLOR: Record<string, string> = { front: '#c2410c', rear: '#44403c', left: '#2563eb', right: '#0f766e', top: '#78716c', bottom: '#78716c' };
-/** KURAL / OTOMATİK DİYAGRAM: iz çokgeni ön çerçevede (ön ALTTA), ayaklar numaralı; kural kipinde seçili ayağın çapa ölçüleri (kenardan
- *  içeri), otomatik kipte `points` (gövde-yerel) çizilir. `edges` verilirse her kenarın ROLÜ dışına yazılır (gövde yüzünden gelen dolu,
- *  normalden türeyen soluk) — Goker: "L şekilde bile ayağın önünü / yanını / arkasını bileyim". */
-export function LegRulesDiagram({ rules, points, edges, footprint, facing, diameter, active, className }: {
-  rules?: LegRule[]; points?: Array<Pt | null>; edges?: EdgeRole[]; footprint: Pt[]; facing: PlinthFacing; diameter: number; active: number | null; className?: string;
+/* ───────────── AYAK DÜZENİ DİYAGRAMI (plan; baza seti kartı · hızlı gövde · Aksesuar set düzenleyici ORTAK) ─────────────
+   Goker: "ayağı seçeyim, kübün yüzlerine göre otomatik yerleşsin; ayaklarda rol detayı gösterme". İz çokgeni ön çerçevede (ön ALTTA),
+   ayaklar numaralı (önden arkaya, soldan sağa — LegLayout.autoLegPoints sırası). Yan / ön / arka mesafeleri ÖLÇÜLÜR: 1. ayak ↔ sol ve
+   ön kenar, son ayak ↔ arka kenar (Custom Δ'da da gerçek değer görünür). active: 'ls' · 'lf' · 'lr' · 'lc' · 'leg-<i>'. */
+export function LegLayoutDiagram({ points, footprint, facing, diameter, active, className, dims = true }: {
+  points: Array<Pt | null>; footprint: Pt[]; facing: PlinthFacing; diameter: number; active: string | null; className?: string;
+  /** mesafe ölçüleri (yan · ön · arka) çizilsin mi */ dims?: boolean;
 }) {
-  const VW = 448, VH = 176, PX0 = 56, PW = VW - PX0 - 62, PY0 = 20, PH = VH - PY0 - 24;
   const poly = footprint.map(p => toFacing(p, facing));
   const e = polyExtent(poly), W = Math.max(1, e.x1 - e.x0), D = Math.max(1, e.y1 - e.y0);
+  // Yükseklik ize uyar: iz genişliği dolduracak kadar (en az 176, en çok 300 birim) — küçük kare izler artık minik çizilmez
+  const VW = 448, PX0 = 58, PW = VW - PX0 - 62, PY0 = 24;
+  const VH = Math.round(Math.min(300, Math.max(176, PY0 + 32 + PW * (D / W)))), PH = VH - PY0 - 32;
   const sc = Math.max(1e-6, Math.min(PW / W, PH / D));
-  const w = W * sc, d = D * sc, x0 = PX0 + (PW - w) / 2, y0 = PY0 + (PH - d) / 2;
+  const w = W * sc, d = D * sc, x0 = PX0 + (PW - w) / 2, y0 = PY0 + (PH - d) / 2, x1 = x0 + w, y1 = y0 + d;
   // ön çerçeve: u sağa, v öne → ekranda ön altta (y büyür)
   const X = (u: number) => x0 + (u - e.x0) * sc, Y = (v: number) => y0 + (v - e.y0) * sc;
-  const R = Math.max(10, diameter / 2) * 1.15;
-  const pts: Array<Pt | null> = points ? points.map(p => (p ? toFacing(p, facing) : null)) : (rules ?? []).map(r => resolveLegRule(r, poly, R));
-  const r = Math.max(3.5, (diameter / 2) * sc);
+  const pts: Array<Pt | null> = points.map(p => (p ? toFacing(p, facing) : null));
+  const r = Math.max(4, (diameter / 2) * sc), ring = Math.max(r + 3, r * 1.15 + 2);
   const path = poly.map((q, i) => `${i ? 'L' : 'M'}${X(q.x).toFixed(1)} ${Y(q.y).toFixed(1)}`).join(' ') + ' Z';
-  const { dim, txt, note } = diagramKit(active == null ? null : 'a', { fs: 10.5, noteFs: 9.4, tick: 3.5, wOn: 1.4 });
-  const sel = active != null && rules ? rules[active] : undefined, sp = active != null ? pts[active] : undefined;
-  // Kenar rol etiketleri: kenar ortasından dış normal yönünde (ön çerçevede; toFacing doğrusal → vektöre de uygulanır)
-  const roleLabels = (edges ?? []).filter(ed => ed.len * sc >= 22).map((ed, i) => {
-    const m = toFacing(ed.mid, facing), n = toFacing(ed.n, facing);
-    const lx = X(m.x) + n.x * 9, ly = Y(m.y) + n.y * 9 + 3;
-    const anchor = Math.abs(n.x) > 0.5 ? (n.x > 0 ? 'start' : 'end') : 'middle';
-    return (
-      <text key={`role-${i}`} x={lx} y={ly} fontSize={8} fontWeight={700} letterSpacing="0.08em" textAnchor={anchor} fontFamily={UI_FONT}
-        fill={ROLE_COLOR[ed.role]} opacity={ed.source === 'body' ? 1 : 0.55}>
-        <title>{`${FACE_ROLE_LABEL[ed.role]} — ${ed.source === 'body' ? 'from the body face (Parameters › Faces)' : 'from the edge direction'}`}</title>
-        {FACE_ROLE_LABEL[ed.role].toUpperCase()}
-      </text>
-    );
-  });
-  // Seçili ayak için çapa ölçüleri: o çizgideki gerçek kenar (çokgenle kesişim) → ayak merkezi
-  const edgeU = (v: number, side: 'left' | 'right') => {
+  const { on, dim, txt, note } = diagramKit(active, { fs: 10.5, noteFs: 9.4, tick: 3.5, wOn: 1.4 });
+  const legOn = (i: number) => on(`leg-${i}`) || on('lc');
+  const lead = (xa: number, ya: number, xb: number, yb: number) =>
+    <line x1={xa} y1={ya} x2={xb} y2={yb} stroke={MUTE} strokeWidth={0.6} strokeDasharray="1.5 1.5" />;
+  // Kenar kesişimi: o çizgideki (v sabit → sol/sağ; u sabit → ön/arka) gerçek çokgen kenarı
+  const edgeU = (v: number, u: number, side: 'left' | 'right') => {
     const xs: number[] = [];
     for (let i = 0; i < poly.length; i++) { const a = poly[i], b = poly[(i + 1) % poly.length]; if ((a.y <= v && b.y > v) || (b.y <= v && a.y > v)) xs.push(a.x + ((v - a.y) * (b.x - a.x)) / (b.y - a.y)); }
-    if (!xs.length) return side === 'left' ? e.x0 : e.x1;
-    return side === 'left' ? Math.max(...xs.filter(x => x <= (sp?.x ?? Infinity) + 1e-6), e.x0) : Math.min(...xs.filter(x => x >= (sp?.x ?? -Infinity) - 1e-6), e.x1);
+    const c = side === 'left' ? xs.filter(x => x <= u + 1e-6) : xs.filter(x => x >= u - 1e-6);
+    if (!c.length) return side === 'left' ? e.x0 : e.x1;
+    return side === 'left' ? Math.max(...c) : Math.min(...c);
   };
-  const edgeV = (u: number, side: 'front' | 'rear') => {
+  const edgeV = (u: number, v: number, side: 'front' | 'rear') => {
     const ys: number[] = [];
     for (let i = 0; i < poly.length; i++) { const a = poly[i], b = poly[(i + 1) % poly.length]; if ((a.x <= u && b.x > u) || (b.x <= u && a.x > u)) ys.push(a.y + ((u - a.x) * (b.y - a.y)) / (b.x - a.x)); }
-    if (!ys.length) return side === 'front' ? e.y1 : e.y0;
-    return side === 'rear' ? Math.max(...ys.filter(y => y <= (sp?.y ?? Infinity) + 1e-6), e.y0) : Math.min(...ys.filter(y => y >= (sp?.y ?? -Infinity) - 1e-6), e.y1);
+    const c = side === 'front' ? ys.filter(y => y >= v - 1e-6) : ys.filter(y => y <= v + 1e-6);
+    if (!c.length) return side === 'front' ? e.y1 : e.y0;
+    return side === 'front' ? Math.min(...c) : Math.max(...c);
   };
+  const live = pts.filter((p): p is Pt => !!p);
+  const first = live[0], last = live[live.length - 1];
   return (
     <DiagramSvg w={VW} h={VH} className={className}>
-      {note(10, 13, 'plan · rear at top')}{note(10, VH - 8, 'front ↓')}
+      {note(10, 14, 'plan · rear at top')}{note(10, VH - 9, 'front ↓', { fill: '#c2410c', fontWeight: 700 })}
+      <text x={VW - 10} y={14} fontSize={9.4} fill={TXT} fontFamily={UI_FONT} textAnchor="end" style={{ fontVariantNumeric: 'tabular-nums' }}>
+        {`W ${fmt1(W)} · D ${fmt1(D)} · `}<tspan fill={on('lc') ? O : DARK} fontWeight={700}>{`${live.length} legs`}</tspan>
+      </text>
       <path d={path} fill="#f3ede4" stroke="#a39a8d" strokeWidth={1} strokeLinejoin="round" />
-      {note(VW - 10, 13, `W ${fmt1(W)} · D ${fmt1(D)}`, { textAnchor: 'end' })}
-      {roleLabels}
+      {/* ön kenar vurgusu: ön çerçevede v = e.y1 üzerindeki kenarlar (turuncu) */}
+      {poly.map((a, i) => {
+        const b = poly[(i + 1) % poly.length];
+        if (Math.abs(a.y - e.y1) > 1e-6 || Math.abs(b.y - e.y1) > 1e-6) return null;
+        return <line key={`f-${i}`} x1={X(a.x)} y1={Y(a.y)} x2={X(b.x)} y2={Y(b.y)} stroke="#c2410c" strokeOpacity={0.8} strokeWidth={2} strokeLinecap="round" />;
+      })}
       {pts.map((p, i) => {
-        const hi = i === active;
         if (!p) return null;
+        const hi = legOn(i);
         return (
           <g key={i}>
+            <circle cx={X(p.x)} cy={Y(p.y)} r={ring} fill="none" stroke={hi ? O : '#cfc7bb'} strokeWidth={0.7} strokeDasharray="1.8 1.8" />
             <circle cx={X(p.x)} cy={Y(p.y)} r={r} fill={hi ? OF : '#d9d2c6'} stroke={hi ? O : '#78716c'} strokeWidth={hi ? 1.4 : 1} />
             <text x={X(p.x)} y={Y(p.y) + 3.4} fontSize={9.5} fontWeight={700} fill={hi ? '#7c2d12' : DARK} textAnchor="middle" fontFamily={UI_FONT}>{i + 1}</text>
           </g>
         );
       })}
-      {sel && sp && (() => {
-        const px = X(sp.x), py = Y(sp.y);
-        const out: React.ReactNode[] = [];
-        if (sel.ax !== 'center') {
-          const eu = edgeU(sp.y, sel.ax), ex = X(eu);
-          out.push(<g key="u">{dim(ex, py, px, py, 'a')}{txt((ex + px) / 2, py - 5, fmt1(sel.dx), 'a')}</g>);
-        } else out.push(<g key="u">{dim(X(e.x0), py, X(e.x1), py, 'a')}{txt((X(e.x0) + px) / 2, py - 5, sel.dx ? `centre ${sel.dx > 0 ? '+' : ''}${fmt1(sel.dx)}` : 'centre', 'a')}</g>);
-        if (sel.az !== 'center') {
-          const ev = edgeV(sp.x, sel.az), ey = Y(ev);
-          out.push(<g key="v">{dim(px, ey, px, py, 'a')}{txt(px + 5, (ey + py) / 2 + 3.5, fmt1(sel.dz), 'a', 'start')}</g>);
-        } else out.push(<g key="v">{dim(px, Y(e.y0), px, Y(e.y1), 'a')}{txt(px + 5, (Y(e.y0) + py) / 2 + 3.5, sel.dz ? `centre ${sel.dz > 0 ? '+' : ''}${fmt1(sel.dz)}` : 'centre', 'a', 'start')}</g>);
-        return out;
+      {/* Ölçüler dışarıda: yan = altta (sol kenar → 1. ayak), ön = solda (1. ayak → ön kenar), arka = sağda (arka kenar → son ayak) */}
+      {dims && first && (() => {
+        const eu = edgeU(first.y, first.x, 'left'), ev = edgeV(first.x, first.y, 'front');
+        const px = X(first.x), py = Y(first.y), ex = X(eu), ey = Y(ev);
+        return <>
+          {dim(ex, y1 + 11, px, y1 + 11, 'ls')}{lead(px, py, px, y1 + 14)}{lead(ex, ey, ex, y1 + 14)}
+          {txt((ex + px) / 2, y1 + 23, fmt1(first.x - eu), 'ls')}
+          {dim(x0 - 11, py, x0 - 11, ey, 'lf')}{lead(x0 - 14, py, px, py)}{lead(x0 - 14, ey, ex, ey)}
+          {txt(x0 - 15, (py + ey) / 2 + 4, fmt1(ev - first.y), 'lf', 'end')}
+        </>;
+      })()}
+      {dims && last && (() => {
+        const ev = edgeV(last.x, last.y, 'rear');
+        const px = X(last.x), py = Y(last.y), ey = Y(ev);
+        return <>
+          {dim(x1 + 11, ey, x1 + 11, py, 'lr')}{lead(px, py, x1 + 14, py)}{lead(px, ey, x1 + 14, ey)}
+          {txt(x1 + 15, (ey + py) / 2 + 4, fmt1(last.y - ev), 'lr', 'start')}
+        </>;
       })()}
     </DiagramSvg>
   );
 }
-const ANCHOR_X_OPTS = LEG_ANCHOR_X.map(a => ({ v: a, label: LEG_ANCHOR_LABEL[a] }));
-const ANCHOR_Z_OPTS = LEG_ANCHOR_Z.map(a => ({ v: a, label: LEG_ANCHOR_LABEL[a] }));
-/** KURAL DÜZENLEYİCİ: diyagram + ayak başına satır (X çapası · mm · Z çapası · mm · sil) + ayak ekle + standart düzen üreteci (4/5/6). */
-export function LegRulesEditor({ rules, onChange, footprint, edges, facing = 'z+', diameter, children }: {
-  rules: LegRule[]; onChange: (rules: LegRule[]) => void; footprint?: Pt[]; edges?: EdgeRole[]; facing?: PlinthFacing; diameter: number; children?: React.ReactNode;
-}) {
-  const [active, setActive] = useState<number | null>(null);
-  const fp = footprint && footprint.length >= 3 ? footprint : rectPoly(0, 0, 600, 560);
-  const std = standardOf(rules);
-  const [gen, setGen] = useState({ side: std?.side ?? 60, front: std?.front ?? 60, rear: std?.rear ?? 60 });
-  const setRule = (i: number, patch: Partial<LegRule>) => onChange(rules.map((r, k) => (k === i ? { ...r, ...patch } : r)));
-  const cell = (k: string, w: string, label: string, body: React.ReactNode) => (
-    <div key={k} className={`${w} min-w-0 h-full flex items-center gap-1 px-1.5 rounded-[6px] bg-white ring-1 ring-[#e6e0d6]`}>
-      <span className="shrink-0 text-[9.5px] font-semibold uppercase tracking-[0.06em] text-stone-400">{label}</span>
-      <div className="flex-1 min-w-0 flex justify-end">{body}</div>
-    </div>
-  );
-  return (
-    <div className="flex flex-col gap-1.5" onMouseLeave={() => setActive(null)}>
-      <LegRulesDiagram rules={rules} edges={edges} footprint={fp} facing={facing} diameter={diameter} active={active} className="w-full" />
-      {children}
-      <div className="flex flex-col gap-1">
-        {rules.map((r, i) => (
-          <div key={i} className={`h-[26px] flex items-center gap-1 rounded-[7px] px-1 ${active === i ? 'bg-[#fff4ec]' : ''}`} onMouseEnter={() => setActive(i)}>
-            <span className={`shrink-0 w-[18px] h-[18px] rounded-[5px] text-[10px] font-bold flex items-center justify-center tabular-nums ${active === i ? 'bg-[#ea580c] text-white' : 'bg-[#f3efe8] text-stone-500'}`}>{i + 1}</span>
-            {cell('x', 'flex-1', 'X', <div className="flex items-center gap-0.5">
-              <QbSelect value={r.ax} options={ANCHOR_X_OPTS} w={58} onChange={v => setRule(i, { ax: v as LegAnchorX, ...(v === 'center' && r.ax !== 'center' ? { dx: 0 } : {}) })} />
-              <QbNum value={r.dx} min={r.ax === 'center' ? -100000 : 0} w={38} onCommit={v => setRule(i, { dx: v })} />
-            </div>)}
-            {cell('z', 'flex-1', 'Z', <div className="flex items-center gap-0.5">
-              <QbSelect value={r.az} options={ANCHOR_Z_OPTS} w={58} onChange={v => setRule(i, { az: v as LegAnchorZ, ...(v === 'center' && r.az !== 'center' ? { dz: 0 } : {}) })} />
-              <QbNum value={r.dz} min={r.az === 'center' ? -100000 : 0} w={38} onCommit={v => setRule(i, { dz: v })} />
-            </div>)}
-            <button type="button" title="Remove leg" disabled={rules.length <= 1} onClick={e => { stop(e); onChange(rules.filter((_, k) => k !== i)); }}
-              className="shrink-0 w-[22px] h-[22px] flex items-center justify-center rounded-[6px] text-stone-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-stone-400">
-              <Trash2 size={11.5} strokeWidth={1.9} />
-            </button>
-          </div>
-        ))}
-      </div>
-      <div className="flex items-center gap-1 pt-0.5">
-        <CardAction compact icon={Plus} label="Leg" title="Add a leg (centre; edit its anchors)" onClick={() => onChange([...rules, { ax: 'center', dx: 0, az: 'center', dz: 0 }])} />
-        <div className="flex-1" />
-        <span className="text-[9.5px] font-semibold uppercase tracking-[0.06em] text-stone-400" title="Standard layouts from these offsets">Std</span>
-        {(['side', 'front', 'rear'] as const).map(k => (
-          <div key={k} className="h-[24px] flex items-center gap-1 px-1.5 rounded-[6px] bg-white ring-1 ring-[#e6e0d6]" title={`${k} offset for the standard layout`}>
-            <span className="text-[9.5px] font-semibold uppercase text-stone-400">{k[0]}</span>
-            <QbNum value={gen[k]} w={30} onCommit={v => setGen(g => ({ ...g, [k]: v }))} />
-          </div>
-        ))}
-        {([4, 5, 6] as const).map(n => (
-          <button key={n} type="button" title={`${n} legs: corners${n === 5 ? ' + centre' : n === 6 ? ' + front / rear middle' : ''}`}
-            onClick={e => { stop(e); onChange(standardLegRules(n, gen.side, gen.front, gen.rear)); }}
-            className={`h-[24px] w-[26px] rounded-[6px] text-[11px] font-semibold ring-1 transition-colors ${std && std.count === n ? 'bg-[#44403c] text-white ring-[#44403c]' : 'bg-white text-stone-600 ring-[#e6e0d6] hover:bg-[#faf7f2]'}`}>
-            {n}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
+/** Dikdörtgen gövde (W × D, ön = gövdenin ön yönü) için otomatik ayak noktaları — hızlı gövde / set düzenleyici önizlemesi. */
+export function rectLegPoints(legs: Pick<LegDims, 'count' | 'side' | 'front' | 'rear' | 'diameter'>, W: number, D: number, facing: PlinthFacing = 'z+'): Pt[] {
+  const poly = rectPoly(0, 0, W, D), R = Math.max(10, legs.diameter / 2) * 1.15;
+  return autoLegPoints(poly, edgeRoles(poly, facing), { count: (legs.count || 4) as 4 | 5 | 6, side: legs.side, front: legs.front, rear: legs.rear }, facing, R);
 }
 
-/* AYAK KARTI DÜZENİ (Goker: "ayağı seçeyim, referans kübün yüzlerine göre otomatik yerleşsin; ayaklarda rol detayı gösterme; Custom'da
-   otomatik yerleşen mesafeleri mevcut pozisyonun üzerine ilave olarak revize edeyim"): yerleşim her zaman otomatik köşe düzeni
-   (LegLayout.autoLegPoints — kenar rolleri gövde yüzlerinden, kartta görünmez). Auto = adet · yan · ön · arka mesafeleri;
-   Custom = ayak başına Δ (sağa / öne, mm) + ayağı kapatma — otomatik noktanın üzerine eklenir, diyagram sonucu çizer. */
+/* AYAK DÜZENİ HÜCRELERİ (Goker: "custom bazada mesafeler sade biçimde panel editörden girilebilsin, hazır ayağın mesafeleri sonradan
+   değiştirilebilsin"): Layout (köşeler / + merkez / + ön-arka) · yan · ön · arka. AUTO: değerler kayıtlı setten, salt okunur (üzerine
+   gelince diyagramda vurgu); CUSTOM: aynı hücreler düzenlenir — set bağı (model, Ø) kalır. */
 const AUTO_COUNT_OPTS = [{ v: '4', label: 'Corners' }, { v: '5', label: '+ centre' }, { v: '6', label: '+ front / rear' }];
-export function AutoLegsCells({ legs, onChange }: { legs: PlinthLegs; onChange: (p: Partial<PlinthLegs>) => void }) {
-  const [hint, setHint] = useState<string | null>(null);
-  const { cell, num } = hintCells(hint, setHint);
+const LAYOUT_LABEL: Record<number, string> = { 4: 'Corners', 5: '+ centre', 6: '+ front / rear' };
+export function LegLayoutCells({ legs, editable, heightCell, diameter, diameterTitle, onChange, hint, onHint }: {
+  legs: Pick<LegDims, 'count' | 'side' | 'front' | 'rear'>; editable: boolean;
+  /** yükseklik hücresi (çağıran kurar: okunur / düzenlenir) */ heightCell: React.ReactNode; diameter: number; diameterTitle?: string;
+  onChange: (p: Partial<Pick<LegDims, 'count' | 'side' | 'front' | 'rear'>>) => void; hint: string | null; onHint: (k: string | null) => void;
+}) {
+  const { cell, num } = hintCells(hint, onHint);
+  const ro = (label: string, k: string, v: React.ReactNode) => cell(label, k, <ReadValue color="#8f877c" title="From the leg set — switch Layout to Custom to change">{v}</ReadValue>);
   return (
-    <div className="grid grid-cols-3 gap-x-1" style={QB_CELL_ROW} onMouseLeave={() => setHint(null)}>
-      {cell('Layout', 'lc', <QbSelect value={String(legs.count)} options={AUTO_COUNT_OPTS} w={88} onChange={v => onChange({ count: parseInt(v, 10) as 4 | 5 | 6 })} />)}
-      {num('Side offset', 'ls', legs.side, v => onChange({ side: v }))}
-      {num('Front offset', 'lf', legs.front, v => onChange({ front: v }))}
-      {num('Rear offset', 'lr', legs.rear, v => onChange({ rear: v }))}
+    <div className="grid grid-cols-3 gap-x-1" style={QB_CELL_ROW} onMouseLeave={() => onHint(null)}>
+      {editable
+        ? cell('Layout', 'lc', <QbSelect value={String(legs.count || 4)} options={AUTO_COUNT_OPTS} w={96} onChange={v => onChange({ count: parseInt(v, 10) })} />)
+        : ro('Layout', 'lc', LAYOUT_LABEL[legs.count] ?? 'Corners')}
+      {heightCell}
+      <ReadCell label="Ø" title={diameterTitle ?? 'Foot diameter'}><ReadValue color="#57534e">{fmt1(diameter)}</ReadValue></ReadCell>
+      {editable ? num('Side offset', 'ls', legs.side, v => onChange({ side: v })) : ro('Side offset', 'ls', fmt1(legs.side))}
+      {editable ? num('Front offset', 'lf', legs.front, v => onChange({ front: v })) : ro('Front offset', 'lf', fmt1(legs.front))}
+      {editable ? num('Rear offset', 'lr', legs.rear, v => onChange({ rear: v })) : ro('Rear offset', 'lr', fmt1(legs.rear))}
     </div>
   );
 }
-/** CUSTOM: otomatik ayakların üzerine Δ — satır başına (ayak no · Δ side (+ sağa) · Δ front (+ öne) · açık/kapalı); ↺ hepsini sıfırlar. */
+/** CUSTOM — ayak başına ek Δ (ayak no · Δ side (+ sağa) · Δ front (+ öne) · açık/kapalı); ↺ hepsini sıfırlar. Kartta açılır bölümde. */
 export function LegAdjustEditor({ count, adjust, onChange, active, onActive }: {
   count: number; adjust: LegAdjust[]; onChange: (a: LegAdjust[]) => void; active: number | null; onActive: (i: number | null) => void;
 }) {
@@ -999,42 +920,42 @@ export function LegAdjustEditor({ count, adjust, onChange, active, onActive }: {
       <div className="flex items-center gap-1 pt-0.5">
         <span className="text-[10px] text-stone-400">Δ side: + to the right · Δ front: + toward the front (on top of the automatic position)</span>
         <div className="flex-1" />
-        <CardAction compact icon={RotateCcw} label="Reset" title="Clear every adjustment (back to the automatic positions)" onClick={() => onChange([])} />
+        <CardAction compact icon={RotateCcw} label="Reset" title="Clear every per-leg adjustment (back to the offsets above)" onClick={() => onChange([])} />
       </div>
     </div>
   );
 }
+/** Auto | Custom (Goker: Custom = hazır ayağın mesafeleri sonradan değiştirilebilsin). */
+export const LegModeSegmented = ({ custom, onPick, height = 20 }: { custom: boolean; onPick: (custom: boolean) => void; height?: number }) => (
+  <Segmented height={height} active={custom ? 'custom' : 'auto'} onPick={k => onPick(k === 'custom')}
+    items={[
+      { key: 'auto', label: 'Auto', title: 'Layout from the saved leg set; legs placed automatically from the body faces (Parameters › Faces)' },
+      { key: 'custom', label: 'Custom', title: 'Edit the layout and offsets of this set here (the saved leg set is kept for the model)' },
+    ]} />
+);
 
-/* Ayak bloğu: plan diyagramı (tam genişlik) + 3 sütun hücre. Hızlı gövde ve kalıcı Legs satırı ortak kullanır. */
-export function LegsBlock({ legs, W, D, heightReadout, heightEditable, countOptions, onChange, hint, onHint }: {
-  legs: LegDims; W: number; D: number; heightReadout?: number; heightEditable?: boolean;
-  /** boş = adet hücresi yok (adet gövde bloğunda seçilir) */ countOptions: number[];
-  onChange: (p: Partial<LegDims>) => void; hint: string | null; onHint: (k: string | null) => void;
+/* Hızlı gövde AYAK BLOĞU: set seçici + Auto | Custom, plan diyagramı (gövde W × D, ön = gövdenin ön yönü), ölçü hücreleri. */
+export function LegsBlock({ legs, W, D, facing, custom, presetId, heightReadout, heightEditable, onChange, onPreset, onMode, hint, onHint }: {
+  legs: LegDims; W: number; D: number; facing: PlinthFacing; custom: boolean; presetId: string | null | undefined;
+  heightReadout?: number; heightEditable?: boolean;
+  onChange: (p: Partial<LegDims>) => void; onPreset: (id: string | null) => void; onMode: (custom: boolean) => void; hint: string | null; onHint: (k: string | null) => void;
 }) {
-  const { cell, num } = hintCells(hint, onHint);
+  const { num, cell } = hintCells(hint, onHint);
+  const points = useMemo(() => rectLegPoints(legs, W, D, facing), [legs.count, legs.side, legs.front, legs.rear, legs.diameter, W, D, facing]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const lm = legModelById(resolveLegPreset(presetId)?.legModelId);
   return (
     <div className="flex flex-col gap-1.5" onMouseLeave={() => onHint(null)}>
-      <LegsPlanDiagram legs={legs} W={W} D={D} active={hint} className="w-full" />
-      {/* Ø modelden (sabit): yalnız adet · yükseklik · kenar mesafeleri */}
-      <div className="grid grid-cols-3 gap-x-1" style={QB_CELL_ROW}>
-        {countOptions.length > 0
-          ? cell('Leg count', 'lc', <QbSelect value={String(legs.count)} options={countOpts(countOptions)} onChange={v => onChange({ count: parseInt(v, 10) })} />)
-          : (
-            <ReadCell label="Layout" title="Leg layout">
-              <span className="whitespace-nowrap text-[11px] font-semibold text-stone-500">
-                {legs.count === 5 ? '4 + centre' : legs.count === 6 ? '4 + front/rear' : 'corners'}
-              </span>
-            </ReadCell>
-          )}
-        {heightEditable ? num('Leg height', 'lh', legs.height, v => onChange({ height: v }), false, 1) : cell('Leg height', 'lh', (
-          <ReadValue color={countOptions.length ? '#57534e' : '#c7beb1'} title={countOptions.length ? "Read from the bottom panel's underside" : '= plinth height'}>
-            {fmt1(heightReadout ?? legs.height)}
-          </ReadValue>
-        ), true)}
-        {num('Side offset', 'ls', legs.side, v => onChange({ side: v }))}
-        {num('Front offset', 'lf', legs.front, v => onChange({ front: v }))}
-        {num('Rear offset', 'lr', legs.rear, v => onChange({ rear: v }))}
+      <div className="flex items-center gap-1.5">
+        <span style={SECTION_LABEL}>Leg set</span>
+        <div className="flex-1 min-w-0 flex"><LegPresetSelect value={presetId} onChange={onPreset} /></div>
+        <span style={SECTION_LABEL}>Layout</span>
+        <LegModeSegmented custom={custom} onPick={onMode} />
       </div>
+      <LegLayoutDiagram points={points} footprint={rectPoly(0, 0, W, D)} facing={facing} diameter={legs.diameter} active={hint} className="w-full" />
+      <LegLayoutCells legs={legs} editable={custom} diameter={legs.diameter} diameterTitle={lm ? `Foot diameter — from the model "${lm.name}"` : undefined}
+        onChange={onChange} hint={hint} onHint={onHint}
+        heightCell={heightEditable ? num('Leg height', 'lh', legs.height, v => onChange({ height: v }), false, 1)
+          : cell('Leg height', 'lh', <ReadValue color="#8f877c" title="= plinth height">{fmt1(heightReadout ?? legs.height)}</ReadValue>)} />
     </div>
   );
 }
@@ -1060,7 +981,6 @@ const QB_BACK_ITEMS: SegItem[] = [
   { key: 'outer', label: BACK_TYPE_LABEL.outer, title: 'Nailed onto the rear edges of the body panels' },
   { key: 'inner', label: BACK_TYPE_LABEL.inner, title: 'Sits in a groove cut into the body panels, set back from the rear' },
 ];
-const QB_LEG_OPTS = (ns: number[]) => ns.map(n => ({ v: String(n), label: n === 0 ? 'None' : `${n} legs` }));
 
 /* HIZLI GÖVDE PANELİ — liste alanının üstünde (üst şerit yapışık) ya da Body satırının içinde (`revise`: ayarlar gövdeden gelir,
    ✓ panelleri yerinde yeniden kurar). Üç ayrı bölüm: GÖVDE PANELLERİ (köşeler, kalınlık, baza) · AYAKLAR · ARKALIK. */
@@ -1074,7 +994,12 @@ export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onAppl
   const W = bb ? bb.max.x - bb.min.x : 600, H = bb ? bb.max.y - bb.min.y : 720, D = bb ? bb.max.z - bb.min.z : 560;
   const joins = effectiveJoins(cfg);
   const isPlinth = cfg.base === 'plinth', isLegs = cfg.base === 'legs', isPlain = cfg.base === 'plain';
-  const legCount = isLegs ? (cfg.legs.count || 4) : isPlinth ? cfg.legs.count : 0;
+  // Etkin ayak düzeni (kayıtlı set; Auto'da düzen setten) — kütüphane değişince yenilenir
+  const { legPresets, legModels, accessoryModels } = useStoreFields('legPresets', 'legModels', 'accessoryModels');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const legsLive = useMemo(() => quickLegsOf(cfg), [cfg.base, cfg.legs, legPresets, legModels, accessoryModels]);
+  const legCount = legsLive ? legsLive.count : 0;
+  const legsCustom = !!cfg.legs.custom;
   const panelCount = 4 + (isPlinth ? 1 + (cfg.plinth.rearPlinth ? 1 : 0) : 0);
   const { cyclic } = panelOrderFor(joins);
   const b = cfg.back, grooved = b.placement === 'inner';
@@ -1136,32 +1061,31 @@ export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onAppl
           </>}
         </QbSection>
 
-        {/* 2 · AYAKLAR: adet başlıkta; plan diyagramı + ölçüler */}
+        {/* 2 · AYAKLAR (Goker: "sadece kayıtlı ayaklar gelsin"): ayak = kayıtlı set; bazalıda başlıkta var/yok; set + Auto | Custom +
+            plan diyagramı + ölçü hücreleri (Auto: setten, salt okunur · Custom: düzenlenir) */}
         <QbSection title="Legs" sub={isLegs ? 'body height includes the legs' : isPlinth ? 'optional, under the bottom panel' : undefined}
           trailing={isPlain ? <span className="pr-1 text-[11px] font-semibold text-stone-300">None</span>
-            : <SelectBox value={String(legCount)} title="Number of legs" options={QB_LEG_OPTS(isLegs ? [4, 5, 6] : [0, 4, 5, 6]).map(o => [o.v, o.label])}
-              onChange={v => setLegs({ count: parseInt(v, 10) as 0 | 4 | 5 | 6, presetId: null, rules: null })} />}>
-          {legCount > 0 && (
-            <div className="flex items-center gap-1.5 pb-1.5">
-              <span style={SECTION_LABEL}>Leg set</span>
-              <div className="flex-1 min-w-0 flex">
-                <LegPresetSelect value={cfg.legs.presetId} onChange={id => {
-                  const p = legPresetById(id);
-                  if (!p) { setLegs({ presetId: null }); return; }
-                  // Set düzeni ve modeli hızlı gövde ayarına yazılır (Ø modelden, applyQuickBody'de); Legs tabanında yükseklik de.
-                  const L = legsFromPreset(p);
-                  setLegs({ presetId: p.id, legModelId: p.legModelId, count: L.count, side: p.side, front: p.front, rear: p.rear, rules: L.rules, ...(isLegs ? { height: p.height } : {}) });
-                }} />
-              </div>
-              {cfg.legs.legModelId && <span className="text-[10.5px] text-stone-400 truncate">model: {legModelById(cfg.legs.legModelId)?.name ?? 'missing'}</span>}
-            </div>
-          )}
-          {legCount > 0 ? (
-            <LegsBlock legs={{ ...cfg.legs, count: legCount, height: isPlinth ? cfg.plinth.height : cfg.legs.height }} W={W} D={D} heightEditable={isLegs}
-              heightReadout={isPlinth ? cfg.plinth.height : undefined} countOptions={[]} hint={hint} onHint={setHint}
-              onChange={p => setLegs({ ...(p as Partial<QuickBodyConfig['legs']>), ...(['count', 'side', 'front', 'rear'].some(k => k in p) ? { presetId: null, rules: null } : {}) })} />
+            : isPlinth ? <div style={{ width: 118 }}><Segmented height={22} active={legCount ? 'on' : 'off'}
+              items={[{ key: 'off', label: 'None', title: 'No legs — the plinth carries the body' }, { key: 'on', label: 'Legs', title: 'Legs under the bottom panel (saved leg set)' }]}
+              onPick={k => setLegs({ count: k === 'on' ? ((cfg.legs.count || 4) as 4 | 5 | 6) : 0 })} /></div>
+            : null}>
+          {legsLive ? (
+            <LegsBlock legs={{ ...legsLive, count: legsLive.count, diameter: legsLive.diameter, height: isPlinth ? cfg.plinth.height : cfg.legs.height }}
+              W={W} D={D} facing={bodyFrontAxis(shape).facing} custom={legsCustom} presetId={legsLive.presetId} heightEditable={isLegs}
+              heightReadout={isPlinth ? cfg.plinth.height : undefined} hint={hint} onHint={setHint}
+              onChange={p => setLegs({ ...(p as Partial<QuickBodyConfig['legs']>), ...(['count', 'side', 'front', 'rear'].some(k => k in p) ? { custom: true } : {}) })}
+              onPreset={id => {
+                // Set değişince Auto'ya döner (düzen + model setten); Legs tabanında yükseklik de setten.
+                const p = resolveLegPreset(id);
+                setLegs({ presetId: p ? p.id : null, legModelId: p?.legModelId ?? null, custom: false, rules: null, ...(isLegs && p && p.height > 0 ? { height: p.height } : {}) });
+              }}
+              onMode={c => {
+                // Custom'a geçerken o anki (setten okunan) düzen kopyalanır; Auto'ya dönünce setten canlı okunur.
+                if (c && legsLive) setLegs({ custom: true, count: legsLive.count, side: legsLive.side, front: legsLive.front, rear: legsLive.rear });
+                else setLegs({ custom: false });
+              }} />
           ) : (
-            <QbNote>{isPlain ? 'A plain base sits on the floor — choose Legs or Plinth for legs.' : 'No legs — the plinth carries the body. Pick a count to add legs under the bottom panel.'}</QbNote>
+            <QbNote>{isPlain ? 'A plain base sits on the floor — choose Legs or Plinth for legs.' : 'No legs — the plinth carries the body. Choose Legs to add a saved leg set under the bottom panel.'}</QbNote>
           )}
         </QbSection>
 
@@ -1646,7 +1570,7 @@ export function PlacementDocks({ shape }: { shape: Shape | undefined }) {
         onConfirm={() => { if (ready && shape) confirmPlinthPick(shape.id, plinthPickCandidates[plinthPickIndex], useAppStore.getState().placementName); }}
         onExit={() => setPlinthPickMode(false)}
         extra={<div style={{ ...DOCK_ROW, paddingTop: 0 }}>
-          <span style={dockAxisTag('#44403c')} title="Leg set from the Accessories tab (layout + model); Custom = built-in foot">SET</span>
+          <span style={dockAxisTag('#44403c')} title="Leg set from the Accessories tab (layout + model) — only saved sets">SET</span>
           <div className="flex-1 min-w-0 flex"><LegPresetSelect value={plinthPickPresetId} onChange={id => { setPlinthPickPresetId(id); const p = legPresetById(id); if (p && p.height > 0) setPlinthPickHeight(p.height); }} /></div>
         </div>} />
     );
@@ -1851,6 +1775,8 @@ export function PanelEditor() {
   const [backHint, setBackHint] = useState<{ id: string; key: string } | null>(null);
   /** Kalıcı Legs satırının plan diyagramı ipucu. */
   const [legsHint, setLegsHint] = useState<string | null>(null);
+  /** Baza seti kartı · Custom: ayak başına Δ satırları açık mı (varsayılan kapalı — Goker: "sade") */
+  const [legsPerLegOpen, setLegsPerLegOpen] = useState(false);
   /** Body satırı: gövdede saklı hızlı gövde ayarlarının düzenleme taslağı (satır kapanınca / ✓ sonrası düşer → saklı ayar görünür). */
   const [quickDraft, setQuickDraft] = useState<{ sid: string; cfg: QuickBodyConfig } | null>(null);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
@@ -2287,45 +2213,48 @@ export function PanelEditor() {
                 <CardAction compact icon={Check} label="Done" title="Finish editing this set" onClick={finishPlinthEdit} />
               </div>
               {editingVol && <ExtrudeDock plinth={set} draft={extrudeThicknessStr} setDraft={setExtrudeThicknessStr} />}
-              {/* Ayak seti (aksesuar kütüphanesi): düzen / model buradan; yerleşim otomatik (gövde yüz rolleri Parameters'ta) */}
-              <div className={`flex items-center gap-1.5 ${editingVol ? 'mt-1.5' : ''}`}>
-                <span style={SECTION_LABEL}>Leg set</span>
-                <div className="flex-1 min-w-0 flex"><LegPresetSelect value={set.legs.presetId} onChange={id => applyLegPresetToSet(set.id, id)} /></div>
-                <span style={SECTION_LABEL}>Layout</span>
-                <Segmented height={20} active={plinthLegsAuto(set.legs) ? 'auto' : 'custom'}
-                  onPick={k => setPlinthLegs(set.id, { adjust: k === 'auto' ? null : (set.legs.adjust ?? []) })}
-                  items={[
-                    { key: 'auto', label: 'Auto', title: 'Legs placed automatically from the body faces (front / rear / sides — Parameters › Faces)' },
-                    { key: 'custom', label: 'Custom', title: 'Adjust each automatically placed leg: Δ side / Δ front on top of its position, or remove it' },
-                  ]} />
-              </div>
-              {set.legs.legModelId && (() => { const lm = legModelById(set.legs.legModelId), dims = legModelDims(lm); return (
-                <div className="mt-1 px-1 text-[10.5px] text-stone-400">
-                  Model: <span className="font-semibold text-stone-500">{lm?.name ?? 'missing'}</span>{dims ? ` · Ø ${fmt1(dims.diameter)} · natural height ${fmt1(dims.height)}` : ''}
-                </div>); })()}
-              {/* Diyagram: iz çokgeni (bölge) + yerleşen ayaklar (rol yazısı yok); hücreler ortak; Auto mesafeler / Custom Δ satırları */}
+              {/* AYAK SETİ (Goker: "sadece kayıtlı ayaklar gelsin"): yalnız kayıtlı setler; model + Ø setten. Layout: Auto = düzen setten
+                  canlı · Custom = adet / mesafeler bu sette düzenlenir (hazır ayağın mesafeleri sonradan değişir), ayak başına Δ açılır bölümde */}
               {(() => {
-                const auto = plinthLegsAuto(set.legs), fp = plinthFootprint(set), facing = plinthFacingOf(set);
-                const all = plinthLegPoints(set), onCount = all.filter(p => !p.off).length;
+                const L = plinthLegsOf(set.legs), auto = plinthLegsAuto(set.legs), fp = plinthFootprint(set), facing = plinthFacingOf(set);
+                const all = plinthLegPoints(set);
+                const lm = legModelById(L.legModelId), dims = legModelDims(lm);
+                const activeLeg = legsHint && legsHint.startsWith('leg-') ? parseInt(legsHint.slice(4), 10) : null;
                 return (
-                  <div className="mt-1.5 flex flex-col gap-1.5">
-                    <LegRulesDiagram points={all.map(p => (p.off ? null : { x: p.x, y: p.z }))} footprint={fp} facing={facing} diameter={set.legs.diameter}
-                      active={legsHint && legsHint.startsWith('leg-') ? parseInt(legsHint.slice(4), 10) : null} className="w-full" />
-                    <div className="grid grid-cols-3 gap-x-1" style={QB_CELL_ROW}>
-                      <ReadCell label="Legs" title="Number of legs"><ReadValue color="#57534e">{onCount}</ReadValue></ReadCell>
-                      {bound ? (
-                        <ReadCell label="Leg height" title="Read from the bottom panel's underside"><ReadValue color="#57534e">{fmt1(H)}</ReadValue></ReadCell>
-                      ) : (
-                        <HintCell label="Leg height" hintKey="lh" active={legsHint === 'lh'} onHint={setLegsHint}>
-                          <QbNum value={H} min={1} onCommit={v => setPlinthHeight(set.id, v)} />
-                        </HintCell>
-                      )}
-                      <ReadCell label="Ø" title="Foot diameter (from the model)"><ReadValue color="#57534e">{fmt1(set.legs.diameter)}</ReadValue></ReadCell>
+                  <div className={`flex flex-col gap-1.5 ${editingVol ? 'mt-1.5' : ''}`}>
+                    <div className="flex items-center gap-1.5">
+                      <span style={SECTION_LABEL}>Leg set</span>
+                      <div className="flex-1 min-w-0 flex"><LegPresetSelect value={L.presetId} onChange={id => applyLegPresetToSet(set.id, id)} /></div>
+                      <span style={SECTION_LABEL}>Layout</span>
+                      <LegModeSegmented custom={!auto} onPick={c => { setPlinthLegsMode(set.id, c ? 'custom' : 'auto'); if (!c) setLegsPerLegOpen(false); }} />
                     </div>
-                    {auto
-                      ? <AutoLegsCells legs={set.legs} onChange={p => setPlinthLegs(set.id, p)} />
-                      : <LegAdjustEditor count={all.length} adjust={set.legs.adjust ?? []} onChange={a => setPlinthLegs(set.id, { adjust: a })}
-                        active={legsHint && legsHint.startsWith('leg-') ? parseInt(legsHint.slice(4), 10) : null} onActive={i => setLegsHint(i == null ? null : `leg-${i}`)} />}
+                    {lm && (
+                      <div className="px-1 -mt-0.5 text-[10.5px] text-stone-400 truncate">
+                        Model: <span className="font-semibold text-stone-500">{lm.name}</span>{dims ? ` · Ø ${fmt1(dims.diameter)} · natural height ${fmt1(dims.height)}` : ''}
+                      </div>
+                    )}
+                    {/* Diyagram: iz çokgeni (bölge) + yerleşen ayaklar; ölçüler gerçek (Δ dahil) */}
+                    <LegLayoutDiagram points={all.map(p => (p.off ? null : { x: p.x, y: p.z }))} footprint={fp} facing={facing} diameter={L.diameter}
+                      active={legsHint} className="w-full" />
+                    <LegLayoutCells legs={L} editable={!auto} diameter={L.diameter} diameterTitle={lm ? `Foot diameter — from the model "${lm.name}"` : undefined}
+                      onChange={p => setPlinthLegs(set.id, p as Partial<PlinthLegs>)} hint={legsHint} onHint={setLegsHint}
+                      heightCell={bound
+                        ? <ReadCell label="Leg height" title="Read from the bottom panel's underside"><ReadValue color="#57534e">{fmt1(H)}</ReadValue></ReadCell>
+                        : <HintCell label="Leg height" hintKey="lh" active={legsHint === 'lh'} onHint={setLegsHint}><QbNum value={H} min={1} onCommit={v => setPlinthHeight(set.id, v)} /></HintCell>} />
+                    {!auto && (
+                      <div className="flex flex-col gap-1">
+                        <div className="flex items-center gap-1">
+                          <CardAction compact icon={legsPerLegOpen ? ChevronDown : ChevronRight} label={`Per leg${(set.legs.adjust ?? []).some(a => a && (a.du || a.dv || a.off)) ? ' ·' : ''}`}
+                            active={legsPerLegOpen} title="Fine-tune single legs: Δ side / Δ front on top of the offsets above, or remove a leg"
+                            onClick={() => setLegsPerLegOpen(o => !o)} />
+                          <span className="text-[10px] text-stone-400 truncate">{legsPerLegOpen ? 'on top of the offsets above' : 'move or remove single legs'}</span>
+                        </div>
+                        {legsPerLegOpen && (
+                          <LegAdjustEditor count={all.length} adjust={set.legs.adjust ?? []} onChange={a => setPlinthLegs(set.id, { adjust: a })}
+                            active={activeLeg} onActive={i => setLegsHint(i == null ? null : `leg-${i}`)} />
+                        )}
+                      </div>
+                    )}
                   </div>
                 );
               })()}
@@ -2342,7 +2271,7 @@ export function PanelEditor() {
       const draft = sel && quickDraft?.sid === sid ? quickDraft.cfg : saved;
       const baseLabel = { plain: 'Plain', legs: 'Legs', plinth: 'Plinth' }[saved.base];
       const backTxt = saved.back.enabled ? `${BACK_TYPE_LABEL[saved.back.placement].toLowerCase()} back` : 'no back';
-      const legs = saved.base === 'legs' ? (saved.legs.count || 4) : saved.base === 'plinth' ? saved.legs.count : 0;
+      const legs = quickLegsOf(saved)?.count ?? 0;
       const toggle = (e: React.MouseEvent) => { stop(e); setQuickDraft(null); if (sel) setSelectedPanelRow(null); else setSelectedPanelRow(key, sid); };
       return rowShell({
         key, open: sel, sel, lead: <span className="shrink-0 w-[14px] ml-[2px] self-stretch" />, onToggle: toggle,
