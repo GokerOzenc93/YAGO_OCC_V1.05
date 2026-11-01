@@ -531,6 +531,9 @@ export interface CavityGrid {
   nx: number; ny: number; nz: number;
   /** 1 = serbest (gövde içinde, panel dışında). */
   free: Uint8Array;
+  /** Gövde katısının içi (düzenlenmiş gövde: vertex / çıkarma / pah); düz kutuda yok. Işın örnekleri bununla da sınanır — hücre
+   *  merkezi içeride diye kabul edilen büyük hücrenin gövde DIŞINDA kalan kısmına (eğik üstün üstü) aday verilmez. */
+  inside?: (p: Vec3) => boolean;
   obstacles?: CavityBox[];
   /** Eğik panel yüzleri: kutu değil YARIM-UZAY olarak sınırlar. */
   tiltFaces?: TiltFace[];
@@ -813,10 +816,24 @@ function buildCavityGrid(
   // Düz kutu gövdede mesh içi testine gerek yok.
   const modified = !!parent.vertexModifications?.length || !!parent.subtractionGeometries?.some(Boolean) || !!parent.fillets?.length;
   const inside = groups.length === 6 && axisFaces === 6 && !modified ? null : makeInsideMeshTest(geo);
+  if (inside) grid.inside = inside;
+  // Hücre gövdenin içinde mi: merkez, değilse 8 iç örnek (¼ / ¾). Eğik gövde yüzünü (vertex düzenlemesi) kesen BÜYÜK hücrenin merkezi
+  // eğimin üstünde kalabilir; yalnız merkeze bakılınca hücre dolu sayılıp boşluk eğimden çok aşağıda kesiliyordu (Goker: "eğimli
+  // üstlü dolapta kapak derzinden atılan dikme kısa kalıyor"). Kısmen içerideki hücre serbesttir; eğik üst panel yarım-uzayı
+  // (tiltFaces) bölgeyi kırpar, motor iç paneli gövdeyle keser.
+  const cellInBody = (i: number, j: number, k: number, c: Vec3): boolean => {
+    if (!inside) return true;
+    if (inside(c)) return true;
+    for (const fx of [0.25, 0.75]) for (const fy of [0.25, 0.75]) for (const fz of [0.25, 0.75]) {
+      const q: Vec3 = [xs[i] + (xs[i + 1] - xs[i]) * fx, ys[j] + (ys[j + 1] - ys[j]) * fy, zs[k] + (zs[k + 1] - zs[k]) * fz];
+      if (inside(q)) return true;
+    }
+    return false;
+  };
   for (let k = 0; k < nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
     const c: Vec3 = [(xs[i] + xs[i + 1]) / 2, (ys[j] + ys[j + 1]) / 2, (zs[k] + zs[k + 1]) / 2];
     if (obstacles.some(o => strictlyInside(c, o))) continue;
-    if (inside && !inside(c)) continue;
+    if (!cellInBody(i, j, k, c)) continue;
     grid.free[cellIndex(grid, i, j, k)] = 1;
   }
   if (_gridCache.size > 12) _gridCache.delete(_gridCache.keys().next().value as string);
@@ -1173,6 +1190,8 @@ export function rayCavityCandidates(originLocal: Vec3, dirLocal: Vec3, g: Cavity
     const p: Vec3 = [originLocal[0] + dirLocal[0] * tm, originLocal[1] + dirLocal[1] * tm, originLocal[2] + dirLocal[2] * tm];
     const c = cellOfPoint(g, p);
     if (c < 0 || !g.free[c]) continue;
+    // Gövdenin dışından geçen örnek (eğik üstün üstü, çentik boşluğu) aday açmaz — hücre merkezi içeride olsa da.
+    if (g.inside && !g.inside(p)) continue;
     const planes = orientTiltPlanes(g.tiltFaces, p);
     if (!insideTiltPlanes(planes, p)) continue;
     let ri = -1;

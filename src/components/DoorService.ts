@@ -1166,8 +1166,18 @@ export function addPanelAtDoorJoint(groupId: string, splitId: string, k: number,
   dir[ga] = -group.side;
   const grid = gridForObstacles(parent, collectObstacles(parent, st.shapes));
   if (!grid) return null;
-  const cands = rayCavityCandidates(origin, dir, grid, GROUP_PANEL_THICKNESS * 2, kind);
-  const pick = cands.find(c => c.shape === 'shaped') ?? cands[0];
+  // Derzin tıklanan yüksekliğinde ışın gövdeye girmiyorsa (eğik üst: yamuk kapağın derzi gövdenin üstünden taşar — Goker: "eğimli
+  // kapaktan iki kapak arasına dikme yerleştiremiyorum") derz boyunca ona en yakın yükseklikten denenir.
+  const tries = [atC];
+  for (let i = 1; i <= 8; i++) tries.push(j.c0 + ((j.c1 - j.c0) * i) / 9);
+  tries.sort((a, b) => Math.abs(a - atC) - Math.abs(b - atC));
+  let pick: ReturnType<typeof rayCavityCandidates>[number] | undefined;
+  for (const c of tries) {
+    const o: Vec3 = [...origin] as Vec3; o[cross] = c;
+    const cands = rayCavityCandidates(o, dir, grid, GROUP_PANEL_THICKNESS * 2, kind);
+    pick = cands.find(x => x.shape === 'shaped') ?? cands[0];
+    if (pick) break;
+  }
   if (!pick) return null;
   // Dizilim ekseni = derzin kalınlık ekseni (ışın yönünden bağımsız); sayım MİN'den.
   const bond: DoorBond = { doorGroupId: groupId, splitId, k, align: 'center', member: 0 };
