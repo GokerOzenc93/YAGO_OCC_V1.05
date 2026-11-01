@@ -267,7 +267,8 @@ export function backCandidatesAt(parent: Shape, axis: 0 | 1 | 2, side: 1 | -1, c
   if (faceBox) { body.min[axis] = bodyAll.min[axis]; body.max[axis] = bodyAll.max[axis]; }
   const faceBoxOut = faceBox ? { min: [...body.min] as Vec3, max: [...body.max] as Vec3 } : undefined;
   const { u, v } = backPlaneAxes(axis);
-  const bounds = collectBackBoundPanels(parent, shapes, vfs, true);
+  const inFace = (b: CavityBox) => !faceBox || ([u, v] as const).every(a => Math.min(b.max[a], faceBox.max[a]) - Math.max(b.min[a], faceBox.min[a]) > TOL);
+  const bounds = collectBackBoundPanels(parent, shapes, vfs, true).filter(bp => inFace(bp.box));
   const cu = click[u], cv = click[v];
   const frontOf = (b: CavityBox) => (side > 0 ? b.max[axis] : b.min[axis]);
   const bodyFront = side > 0 ? body.max[axis] : body.min[axis];

@@ -60,12 +60,37 @@ export const doorLeafAxis = (t: DoorType | undefined): 'u' | 'v' | null => (t ==
 /** Varsayılan tip: sol yarı left, sağ yarı right (çift kapağın doğal menteşeleri). */
 export const defaultDoorType = (c: number, count: number): DoorType => (count >= 2 && c >= count / 2 ? 'right' : 'left');
 
-/** Işının gövde kutusuna girdiği yüz (side: max yüz → +1, min yüz → −1) + nokta; kamera kutunun içindeyse null. */
-export function rayDoorEntry(o: Vec3, d: Vec3, b: CavityBox): { axis: 0 | 1 | 2; side: 1 | -1; point: Vec3 } | null {
+/** ÖN yüz adayı (PlinthService.bodyFacesByRole(body, 'front')): eksen, yön, köşe kutusu (eksen boyunca = yüz düzlemi). */
+export interface FrontFace { axis: 0 | 1 | 2; side: 1 | -1; bounds: { min: Vec3; max: Vec3 } }
+/** Tıklama ÖNCE FRONT rolündeki yüzlere gider (Goker: "L köşe dolabında front rolüne sahip yüzlere öncelikle kapak yerleşmeli"): ışının
+ *  yüz sınırları içinde ilk kestiği ön yüz (gerçek düzlemi — çentik yüzü gövde kutusunun içinde); hiçbirini kesmiyorsa eski davranış:
+ *  gövde kutusuna girdiği yüz (side: max yüz → +1, min yüz → −1). Kamera kutunun içindeyse null. */
+export function rayDoorEntry(o: Vec3, d: Vec3, b: CavityBox, fronts?: FrontFace[]): { axis: 0 | 1 | 2; side: 1 | -1; point: Vec3; faceBox?: CavityBox } | null {
+  let best: { f: FrontFace; t: number } | null = null;
+  for (const f of fronts ?? []) {
+    if (Math.abs(d[f.axis]) < 1e-9) continue;
+    const plane = f.bounds.min[f.axis];
+    const t = (plane - o[f.axis]) / d[f.axis];
+    if (!(t > 0)) continue;
+    const p: Vec3 = [o[0] + d[0] * t, o[1] + d[1] * t, o[2] + d[2] * t];
+    const inside = ([0, 1, 2] as const).every(a => a === f.axis || (p[a] >= f.bounds.min[a] - 1 && p[a] <= f.bounds.max[a] + 1));
+    if (inside && (!best || t < best.t)) best = { f, t };
+  }
+  if (best) {
+    const { f, t } = best;
+    const point: Vec3 = [o[0] + d[0] * t, o[1] + d[1] * t, o[2] + d[2] * t]; point[f.axis] = f.bounds.min[f.axis];
+    return { axis: f.axis, side: f.side, point, faceBox: { min: [...f.bounds.min] as Vec3, max: [...f.bounds.max] as Vec3 } };
+  }
   const e = rayBoxEntry(o, d, b);
   if (!e) return null;
   const point: Vec3 = [o[0] + d[0] * e.t, o[1] + d[1] * e.t, o[2] + d[2] * e.t];
   return { axis: e.axis, side: e.pos ? -1 : 1, point };
+}
+/** Grubun gövde kutusu: seçildiği ön yüzün kutusu (`faceBox`; eksen boyunca = yüz düzlemi → kapak düzlemi orası), yoksa gövde kutusu. */
+function doorBodyBox(group: Pick<DoorGroup, 'faceBox'>, parent: Shape): CavityBox | null {
+  const all = bodyLocalBox(parent);
+  if (!all || !group.faceBox) return all;
+  return { min: [...group.faceBox.min] as Vec3, max: [...group.faceBox.max] as Vec3 };
 }
 
 export type DoorBoundPanel = BoundPanel;
@@ -163,14 +188,18 @@ function rectAtDepth(e: DoorEdges, side: 1 | -1, placement: DoorGroup['placement
 
 // Kapak adayları: dört yandaki sınır seçeneklerinin her kombinasyonu bir dikdörtgen; seçilen panel çapraz açıklıkla örtüşmeli
 // (kısa dikme yalnız kendi boyunu sınırlar). Sıra: alan büyükten küçüğe (önce dıştakiler).
-export function doorCandidatesAt(parent: Shape, axis: 0 | 1 | 2, side: 1 | -1, click: Vec3, shapes?: Shape[], vfs?: VirtualFace[]): DoorPick[] {
-  const body = bodyLocalBox(parent);
+export function doorCandidatesAt(parent: Shape, axis: 0 | 1 | 2, side: 1 | -1, click: Vec3, shapes?: Shape[], vfs?: VirtualFace[], faceBox?: CavityBox): DoorPick[] {
+  // `faceBox` = tıklanan ÖN yüzün kutusu: gövde kenarları o yüzle sınırlanır, kapak düzlemi o yüzün düzlemidir (çentik yüzünde
+  // komşu panelin "önü" yüzü aşar → derinlik yüz düzlemine kıstırılır).
+  const body = doorBodyBox({ faceBox }, parent);
   if (!body) return [];
   const { u, v } = doorPlaneAxes(axis);
-  const bounds = collectDoorBoundPanels(parent, shapes, vfs, true);
+  // Yüz seçiminde yalnız o yüzün önünde kalan sınır panelleri (L: sol arm'ın yanı çentik yüzünün kenarı olamaz)
+  const inFace = (b: CavityBox) => !faceBox || ([u, v] as const).every(a => Math.min(b.max[a], faceBox.max[a]) - Math.max(b.min[a], faceBox.min[a]) > TOL);
+  const bounds = collectDoorBoundPanels(parent, shapes, vfs, true).filter(bp => inFace(bp.box));
   const cu = click[u], cv = click[v];
-  const frontOf = (b: CavityBox) => (side > 0 ? b.max[axis] : b.min[axis]);
   const bodyFront = side > 0 ? body.max[axis] : body.min[axis];
+  const frontOf = (b: CavityBox) => (faceBox ? bodyFront : (side > 0 ? b.max[axis] : b.min[axis]));
   // Gövde kenarı da seçenektir, o yanda gövde kenarına dayanan sınır paneli yoksa (yalnız iç dikme işaretliyken BÜTÜN kapak da aday).
   const optsFor = (ax: 0 | 1 | 2, cx: 0 | 1 | 2, c: number, minSide: boolean): SideOpt[] => {
     const out: SideOpt[] = [];
@@ -214,7 +243,7 @@ export function doorCandidatesAt(parent: Shape, axis: 0 | 1 | 2, side: 1 | -1, c
       const inner = shrink('inner', rectAtDepth(edges, side, 'inner', d.front)), outer = shrink('outer', rectAtDepth(edges, side, 'outer', d.front));
       out.push({
         key: `${axis}${side > 0 ? '+' : '-'}:${key}@${Math.round(d.front)}`, axis, side, bounds: boundsRef,
-        inner, outer, at,
+        inner, outer, at, ...(faceBox ? { faceBox: { min: [...faceBox.min] as Vec3, max: [...faceBox.max] as Vec3 } } : {}),
         area: (inner.u1 - inner.u0) * (inner.v1 - inner.v0), boundPanelCount: panelN,
         depth: d.ref, depthIndex: di, depthCount: depths.length,
       });
@@ -331,7 +360,7 @@ export function resolveDoorBounds(
   group: DoorGroup, parent: Shape, shapes: Shape[] = useAppStore.getState().shapes, vfs: VirtualFace[] = useAppStore.getState().virtualFaces,
 ): DoorBounds {
   if (EDGE_KEYS.every(k => group.bounds[k]?.vfId)) return group.bounds;
-  const body = bodyLocalBox(parent);
+  const body = doorBodyBox(group, parent);
   if (!body) return group.bounds;
   const bps = collectDoorBoundPanels(parent, shapes, vfs, true);
   if (!bps.length) return group.bounds;
@@ -357,7 +386,7 @@ export function resolveDoorBounds(
 }
 
 function solveDoorEdges(group: DoorGroup, parent: Shape, shapes: Shape[]): { edges: DoorEdges; P: number; bounds: DoorBounds } | null {
-  const body = bodyLocalBox(parent);
+  const body = doorBodyBox(group, parent);
   if (!body) return null;
   const { u, v } = doorPlaneAxes(group.axis);
   const bounds = resolveDoorBounds(group, parent, shapes);
@@ -373,6 +402,7 @@ function solveDoorEdges(group: DoorGroup, parent: Shape, shapes: Shape[]): { edg
     const hit = all.find(x => x.ref.vfId === group.depthRef!.vfId && x.front != null);
     if (hit) P = hit.front!;
   }
+  if (group.faceBox) P = bodyFront;   // ön yüz seçimi: kapak düzlemi = o yüzün düzlemi (komşu panel yüzü aşsa da)
   return { edges, P, bounds };
 }
 /** Seçme önizlemesi: adayın yerleşime göre dikdörtgeni. */
@@ -632,7 +662,7 @@ export function createDoorGroupFromPick(shapeId: string, pick: DoorPick, placeme
   const rect = placement === 'inner' ? { ...pick.inner } : { ...pick.outer };
   const group: DoorGroup = {
     id: genId('door'), shapeId, axis: pick.axis, side: pick.side, placement, bounds: pick.bounds, depthRef: pick.depth, rect,
-    anchor: pick.at, tree: makeDoorLeaf('left'),
+    anchor: pick.at, tree: makeDoorLeaf('left'), ...(pick.faceBox ? { faceBox: pick.faceBox } : {}),
     edgeGaps: { uMin: DOOR_GAP, uMax: DOOR_GAP, vMin: DOOR_GAP, vMax: DOOR_GAP },
     gap: DOOR_GAP, thickness: DOOR_THICKNESS,
     memberVfIds: [], name: name?.trim() || 'Door', createdAt: Date.now(),

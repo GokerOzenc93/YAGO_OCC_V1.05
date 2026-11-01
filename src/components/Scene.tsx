@@ -1701,8 +1701,9 @@ export const DoorPickOverlay: React.FC<{ shape: any }> = ({ shape }) => {
       slabOf={c => doorSlabPolygon(
         { axis: c.axis, side: c.side, placement, thickness: DOOR_THICKNESS, gap: DOOR_GAP, anchor: c.at }, pickRectFor(c, placement), cuts)}
       candidatesAt={(o, d, body) => {
-        const entry = rayDoorEntry(o, d, grownBox(body, 1));
-        return entry ? doorCandidatesAt(shape, entry.axis, entry.side, entry.point, shapes, virtualFaces) : [];
+        // Önce FRONT rolündeki yüzler (Parameters › Faces; L köşe dolabının çentik yüzü dahil), sonra gövde kutusunun girilen yüzü
+        const entry = rayDoorEntry(o, d, grownBox(body, 1), bodyFacesByRole(shape, 'front'));
+        return entry ? doorCandidatesAt(shape, entry.axis, entry.side, entry.point, shapes, virtualFaces, entry.faceBox) : [];
       }} />
   );
 };

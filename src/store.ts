@@ -94,6 +94,9 @@ export interface DoorRect { u0: number; u1: number; v0: number; v1: number; fron
 /** Kapak adayı: tıklanan gövde yüzü düzleminde sınır paneli kenarlarından kurulan iç/dış dikdörtgen; alan büyükten küçüğe. */
 export interface DoorPick {
   key: string; axis: 0 | 1 | 2; side: 1 | -1; bounds: DoorBounds;
+  /** Seçildiği ÖN rolündeki yüzün köşe kutusu (gövde-yerel; eksen boyunca = yüz düzlemi): L köşe dolabında çentik yüzü kutudan dar ve
+   *  içerde — gövde kenarları ve kapak düzlemi bu yüzü okur. */
+  faceBox?: CavityBox;
   inner: DoorRect; outer: DoorRect; area: number;
   /** Kapak düzleminin derinlik referansı + aynı dikdörtgendeki sırası. */
   depth: DoorBoundRef; depthIndex: number; depthCount: number;
@@ -125,6 +128,8 @@ export interface DoorEdgeGaps { uMin: number; uMax: number; vMin: number; vMax: 
 export interface DoorGroup {
   id: string; shapeId: string;
   axis: 0 | 1 | 2; side: 1 | -1;
+  /** Seçildiği ön yüzün köşe kutusu (bkz. DoorPick.faceBox); yoksa gövde kutusu. */
+  faceBox?: CavityBox;
   /** 'outer' = dış kapak (panel kalınlıklarının dışından, önde); 'inner' = iç kapak (panellerin arasına, önü panellerle hizalı). */
   placement: 'outer' | 'inner';
   bounds: DoorBounds;
