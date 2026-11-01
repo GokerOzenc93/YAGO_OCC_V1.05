@@ -8,7 +8,7 @@ import { type Vec3, genId, round1 } from './Geometry';
 import { clipHalfPlane, footprintGeometry, localBboxOf, panelFrontHull, panelHasRotation, polyArea } from './Geometry';
 // DİKKAT: BackService ↔ PanelGroupService döngüsel içe aktarım (groupObstacles → backObstacleFor). Modül üst düzeyinde
 // PanelGroupService bağlarını OKUMA; yalnız fonksiyon gövdesinde çağır.
-import { type GapMode, applyGapEditProportional, bodyLocalBox, cycleGapMode, panelLocalBox, passiveGapIndex } from './PanelGroupService';
+import { type GapMode, applyGapEditProportional, bodyLocalBox, liveFaceBox, cycleGapMode, panelLocalBox, passiveGapIndex } from './PanelGroupService';
 import { type BoundPanel, type EdgeInfo, type JointTargets, type PlaneRect, type Pt2, type SlabCut, type SplitJoint, EDGE_KEYS, boundEdgeInfo, cloneTree, collectBoundPanels, collectRotatedCuts, cutBands, cutCoverFar, cutEdgeOf, depthOptions, jointCenter, jointKey, leavesSplittableAt, polyChanged, polyRect, pruneRefs, rectKey, rectPoly, removeMemberVfs, renameMemberVfs, sameBounds, sameTree, setMemberPanelThickness, slabVfGeometry, solveTree, spacingResize, splitGapsOf, unsolveTree, findNode as findBackNode, findNode as findSolvedBackNode, jointRefs as backJointRefs, planeAxes as backPlaneAxes, replaceNode as replaceBackNode, treeJoints as backJoints, treeLeaves as backLeaves } from './PanelGroupService';
 
 // ARKALIK (BackService) — kapaktan (DoorService) BAĞIMSIZ servis: kendi tipleri, store dilimi, çözücüsü ve VF yazımı
@@ -527,9 +527,11 @@ export function placeBackPieces(
 // arkalık kenarı olur → bini / kanal girişi o levhaya göre çalışır. Panel kenarları korunur; yalnız gövde kenarları devralınır.
 /** Grubun gövde kutusu: seçildiği arka yüzün kutusu (`faceBox`; eksen boyunca = yüz düzlemi → arkalık düzlemi orası, çentik yüzü
  *  gövde kutusunun içinde olsa da), yoksa gövde kutusu. */
-function backBodyBox(group: Pick<BackGroup, 'faceBox' | 'axis'>, parent: Shape): CavityBox | null {
+function backBodyBox(group: Pick<BackGroup, 'faceBox' | 'axis'> & Partial<Pick<BackGroup, 'side'>>, parent: Shape): CavityBox | null {
   const all = bodyLocalBox(parent);
   if (!all || !group.faceBox) return all;
+  // Kurulu grup: yüz CANLI eşlenir (gövde derinliği / çıkarma değişince arkalık yüzle gider); seçim anında saklı kutu.
+  if (group.side != null) return liveFaceBox(parent, group.axis, group.side, group.faceBox);
   return { min: [...group.faceBox.min] as Vec3, max: [...group.faceBox.max] as Vec3 };
 }
 export function resolveBackBounds(
@@ -1481,6 +1483,11 @@ export function syncBackGroups(parentShapeId: string): void {
   if (!parent) return;
   for (const g of st.backGroups) {
     if (g.shapeId !== parentShapeId) continue;
+    // Seçilen yüz gövdeyle birlikte değiştiyse (derinlik / çıkarma / vertex) saklı yüz kutusu güncellenir — sonraki eşleme yeni yerden.
+    if (g.faceBox) {
+      const live = liveFaceBox(parent, g.axis, g.side, g.faceBox);
+      if ([0, 1, 2].some(a => Math.abs(live.min[a] - g.faceBox!.min[a]) > 0.05 || Math.abs(live.max[a] - g.faceBox!.max[a]) > 0.05)) st.updateBackGroup(g.id, { faceBox: live });
+    }
     const sol = solveBackGroup(g, parent, st.shapes);
     if (!sol) continue;
     const pruned = pruneRefs(g.tree, sol.solved, st.virtualFaces);

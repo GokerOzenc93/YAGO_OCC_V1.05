@@ -78,6 +78,8 @@ const DOOR_COLORS = { boundEdge: '#d97706', boundEmissive: '#6b4a10' } as const;
 
 /** Yüz-extrude'da hedef dışı paneller: X-ray opaklığı; kenarlar derinlik testli — arkadakiler öndekini delmez. */
 const XRAY_PANEL_OPACITY = 0.35;
+/** X-ray kipinde panel dolgusu (kenarlar net okunsun diye hayalet panellerden daha saydam). */
+const XRAY_MODE_PANEL_OPACITY = 0.22;
 const EXTRUDE_XRAY_EDGE = '#6b7280';
 
 /* KAPAK AÇILIŞ İŞARETİ (3B) — PanelEditor şemasındaki DIN/AWI sözleşmesinin aynısı: kulp kenarının iki köşesinden menteşe
@@ -133,7 +135,7 @@ function swingTriangle(pts: Pt2[], hinge: Pt2, ins: number): Pt2[] | null {
 
 /** Kapağın ön yüzüne açılış işareti (seçiliyken vurgulu). VF poligonu (eğik kenar dahil) panel geometrisinin ön yüzüne oturtulur —
  *  kapakta taşıma adımı olsa da işaret mesh'le birlikte kalır. */
-const DoorSwingMark: React.FC<{ geometry: THREE.BufferGeometry; vfId: string; active: boolean }> = React.memo(({ geometry, vfId, active }) => {
+const DoorSwingMark: React.FC<{ geometry: THREE.BufferGeometry; vfId: string; active: boolean; mono?: string }> = React.memo(({ geometry, vfId, active, mono }) => {
   const vf = useAppStore(s => s.virtualFaces.find(f => f.id === vfId));
   const group = useAppStore(s => (vf?.doorGroupId ? s.doorGroups.find(g => g.id === vf.doorGroupId) : undefined));
   const mark = useMemo(() => {
@@ -165,15 +167,21 @@ const DoorSwingMark: React.FC<{ geometry: THREE.BufferGeometry; vfId: string; ac
   }, [geometry, vf, group]);
   if (!mark) return null;
   return (
-    <Line points={mark.pts} color={active ? DOOR_SWING.active : DOOR_SWING.idle} lineWidth={active ? DOOR_SWING.activeWidth : DOOR_SWING.idleWidth}
+    <Line points={mark.pts} color={mono ?? (active ? DOOR_SWING.active : DOOR_SWING.idle)} lineWidth={active ? DOOR_SWING.activeWidth : DOOR_SWING.idleWidth}
       dashed dashSize={mark.dash} gapSize={mark.dash * 0.8}
-      transparent={false} depthTest depthWrite={false} renderOrder={3} raycast={noRaycast} />
+      transparent={!!mono} depthTest={!mono} depthWrite={false} renderOrder={mono ? XRAY_EDGE.order : 3} raycast={noRaycast} />
   );
 });
 
 // Z-FIGHTING: mesh küçük pozitif polygonOffset alır; kenar çizgisi yalnız SABİT birim payı alır, EĞİM (factor) payı ALMAZ —
 // eğim payı uzaklaştıkça büyür ve değen arka panellerin kenarı öndeki yüzü delip görünür.
 const MESH_OFFSET = 1.0, EDGE_OFFSET_FACTOR = 0, EDGE_OFFSET_UNITS = -1.0, EDGE_RENDER_ORDER = 1;
+/** GÖRÜNÜM KİPİ ÇİZGİLERİ (Goker: "wireframe modunda çizgiler hepsi aynı renk olsun; x-ray modunda çizgiler hiç belli değil, daha net
+ *  görünsün"). WIREFRAME: gövde, panel, kapak ve açılış işareti TEK renk (seçim yalnız kalınlıkla belli). X-RAY: kenarlar saydam
+ *  dolguların ARDINDAN çizilir (saydam geçiş + yüksek renderOrder — eskiden opak geçişte kalıp üstüne binen dolgular çizgiyi siliyordu),
+ *  koyu ve biraz kalın; panel dolgusu daha saydam. */
+const WIRE_COLOR = '#3f4650';
+const XRAY_EDGE = { color: '#2f3640', extra: 0.45, order: 30 };
 export const EDGE_LINE_WIDTH = 1.0;
 export const EDGE_ANGLE_THRESHOLD = 15;
 
@@ -687,8 +695,10 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
   const isWireframe = S.viewMode === ViewMode.WIREFRAME;
   const isXray = S.viewMode === ViewMode.XRAY;
   const moveRefCss = isMoveRefTargetPanel ? '#15803d' : REF_COLORS.selectedCss;
-  const edgeColor = moveRefHighlight ? moveRefCss : isDoorBoundPanel ? DOOR_COLORS.boundEdge : isSelected ? PANEL_COLORS.selected.shapeEdge
+  const edgeColorRaw = moveRefHighlight ? moveRefCss : isDoorBoundPanel ? DOOR_COLORS.boundEdge : isSelected ? PANEL_COLORS.selected.shapeEdge
     : isPanelRowSelected ? PANEL_SELECT.edge : isGhost ? EXTRUDE_XRAY_EDGE : PANEL_COLORS.edge.default;
+  // Wireframe: tek renk; X-ray: varsayılan kenar koyulaşır (vurgular kendi rengini korur).
+  const edgeColor = isWireframe ? WIRE_COLOR : isXray && edgeColorRaw === PANEL_COLORS.edge.default ? XRAY_EDGE.color : edgeColorRaw;
   const edgeWidth = moveRefHighlight ? EDGE_LINE_WIDTH + 0.9 : isDoorBoundPanel ? EDGE_LINE_WIDTH + 1.1 : isSelected ? EDGE_LINE_WIDTH + 0.7
     : isPanelRowSelected ? EDGE_LINE_WIDTH + PANEL_SELECT.edgeExtra : EDGE_LINE_WIDTH;
   // Seçim tonu: tarama yok — dolgu harmanlanır; ref/taşıma vurgusu varken o rol önceliklidir.
@@ -736,12 +746,13 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
   const moveRefEmissive = isMoveRefTargetPanel ? '#22c55e' : REF_COLORS.hoverCss;
   const emissive = isPanelRowSelected ? PANEL_SELECT.emissive : moveRefHighlight ? moveRefEmissive : isDoorBoundPanel ? DOOR_COLORS.boundEmissive : '#2a2a2a';
   const emissiveIntensity = isPanelRowSelected ? 1 : moveRefHighlight ? (isMoveRefTargetPanel ? 1.0 : 0.8) : isDoorBoundPanel ? 0.55 : 1;
-  const xrayOpacity = moveRefHighlight ? (isMoveRefTargetPanel ? 0.5 : 0.6) : XRAY_PANEL_OPACITY;
+  const xrayOpacity = moveRefHighlight ? (isMoveRefTargetPanel ? 0.5 : 0.6) : XRAY_MODE_PANEL_OPACITY;
   const opacity = isXray ? xrayOpacity : isGhost ? XRAY_PANEL_OPACITY : isMoveRefTargetPanel ? 0.55 : isMoveRefHovered ? 0.9 : 1;
   const edgeLine = (xray: boolean) => edgePoints && (
-    <Line ref={edgeRef} points={edgePoints} segments color={edgeColor} lineWidth={edgeWidth} transparent={false} depthTest={!xray} depthWrite={!xray}
+    <Line ref={edgeRef} points={edgePoints} segments color={edgeColor} lineWidth={xray ? edgeWidth + XRAY_EDGE.extra : edgeWidth}
+      transparent={xray} opacity={1} depthTest={!xray} depthWrite={!xray}
       {...(!xray && !isWireframe ? { polygonOffset: true, polygonOffsetFactor: EDGE_OFFSET_FACTOR, polygonOffsetUnits: EDGE_OFFSET_UNITS } : {})}
-      renderOrder={EDGE_RENDER_ORDER} raycast={noRaycast} />
+      renderOrder={xray ? XRAY_EDGE.order : EDGE_RENDER_ORDER} raycast={noRaycast} />
   );
   const showArrow = isPanelRowSelected && !isGroupSelected && !S.volumePickMode && !S.doorPickMode && !S.backPickMode && !S.plinthPickMode;
 
@@ -756,7 +767,7 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
           </mesh>
         )}
         {edgeLine(isXray)}
-        {showSwing && <DoorSwingMark geometry={shape.geometry} vfId={virtualFaceId} active={isPanelRowSelected} />}
+        {showSwing && <DoorSwingMark geometry={shape.geometry} vfId={virtualFaceId} active={isPanelRowSelected} mono={isWireframe ? WIRE_COLOR : isXray ? XRAY_EDGE.color : undefined} />}
 
         {isFaceExtrudeTarget && (
           <>
@@ -1961,8 +1972,9 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
     onPointerOut: () => { if (moveRefHover) setMoveRefHover(false); },
   } : {};
   const outlinesVisible = S.showOutlines || S.raycastMode || !!S.volumePickMode || S.doorPickMode || S.backPickMode || S.plinthPickMode;
-  const outline = (color: string, width: number, depthWrite: boolean) => outlinesVisible && edgePoints && (
-    <Line points={edgePoints} segments color={color} lineWidth={width} transparent={false} depthTest depthWrite={depthWrite} renderOrder={1} raycast={noRaycast} />
+  const outline = (color: string, width: number, depthWrite: boolean, onTop = false) => outlinesVisible && edgePoints && (
+    <Line points={edgePoints} segments color={color} lineWidth={width} transparent={onTop} depthTest={!onTop} depthWrite={depthWrite && !onTop}
+      renderOrder={onTop ? XRAY_EDGE.order : 1} raycast={noRaycast} />
   );
   const accented = isSelected || shouldShowAsReference;
   const geoUuid = shape.geometry?.uuid || '';
@@ -2009,7 +2021,7 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
         {isWireframe && (
           <>
             <mesh ref={meshRef} geometry={localGeometry} visible={false} {...raycastProps} />
-            {outline(isSelected ? '#60a5fa' : shouldShowAsReference ? '#ef4444' : EDGE_COLOR, accented ? EDGE_LINE_WIDTH + 0.75 : EDGE_LINE_WIDTH + 0.25, true)}
+            {outline(WIRE_COLOR, accented ? EDGE_LINE_WIDTH + 0.75 : EDGE_LINE_WIDTH + 0.25, true)}
           </>
         )}
         {(isXray || shouldShowAsReference) && (
@@ -2018,7 +2030,7 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
               <meshStandardMaterial color={shouldShowAsReference ? '#ef4444' : '#c8c8c8'} emissive="#000000" emissiveIntensity={0} metalness={0} roughness={1.0}
                 transparent opacity={hasPanels ? 0 : shouldShowAsReference ? 0.2 : 0.06} side={THREE.DoubleSide} depthWrite={false} flatShading={false} />
             </mesh>
-            {outline(isSelected ? '#1e40af' : shouldShowAsReference ? '#991b1b' : EDGE_COLOR, accented ? EDGE_LINE_WIDTH + 0.5 : EDGE_LINE_WIDTH, false)}
+            {outline(isSelected ? '#1e40af' : shouldShowAsReference ? '#991b1b' : XRAY_EDGE.color, (accented ? EDGE_LINE_WIDTH + 0.5 : EDGE_LINE_WIDTH) + XRAY_EDGE.extra, false, isXray)}
           </>
         )}
 

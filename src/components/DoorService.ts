@@ -7,7 +7,7 @@ import { type Vec3, genId, round1 } from './Geometry';
 import { clipHalfPlane, panelFrontHull, panelHasRotation, polyArea } from './Geometry';
 // DİKKAT: DoorService ↔ PanelGroupService döngüsel içe aktarım. Modül üst düzeyinde PanelGroupService bağlarını OKUMA
 // (`= gapMode` takma adı TDZ'ye düşer: "Cannot access before initialization"); yalnız fonksiyon gövdesinde çağır.
-import { GROUP_PANEL_THICKNESS, type GapMode, applyGapEdit, applyGapEditProportional, bodyLocalBox, boxSpan, collectObstacles, createPanelGroupFromCavity, cycleGapMode, editGroupGap, gridForObstacles, groupFacing, memberThicknessesOf, panelLocalBox, passiveGapIndex, rayCavityCandidates, redistributeForThickness } from './PanelGroupService';
+import { GROUP_PANEL_THICKNESS, liveFaceBox, type GapMode, applyGapEdit, applyGapEditProportional, bodyLocalBox, boxSpan, collectObstacles, createPanelGroupFromCavity, cycleGapMode, editGroupGap, gridForObstacles, groupFacing, memberThicknessesOf, panelLocalBox, passiveGapIndex, rayCavityCandidates, redistributeForThickness } from './PanelGroupService';
 import { type BoundPanel, type EdgeInfo, type JointTargets, type LeafOf, type PlaneRect, type Pt2, type SlabCut, type SolvedBox, type SplitJoint, EDGE_KEYS, alignedMin, boundEdgeInfo, cloneTree, collectBoundPanels, collectRotatedCuts, cutBands, cutCoverFar, cutEdgeOf, depthOptions, jointCenter, jointKey, leavesSplittableAt, polyChanged, polyRect, pruneRefs, rayBoxEntry, rectKey, rectPoly, removeMemberVfs, renameMemberVfs, sameBounds, sameTree, setMemberPanelThickness, slabVfGeometry, solveTree, spacingResize, splitGapsOf, unsolveTree, findNode as findDoorNode, findNode as findSolvedNode, jointRefs as doorJointRefs, planeAxes as doorPlaneAxes, replaceNode as replaceDoorNode, spacingTargetsInScope as doorSpacingTargetsInScope, treeJoints as doorJoints, treeLeaves as doorLeaves } from './PanelGroupService';
 
 // KAPAKLAR (DoorService) — yalnız kapak; ARKALIK ayrı serviste (BackService). Ortak saf yardımcılar PanelGroupService'te.
@@ -89,9 +89,11 @@ export function rayDoorEntry(o: Vec3, d: Vec3, b: CavityBox, fronts?: FrontFace[
   return { axis: e.axis, side: e.pos ? -1 : 1, point };
 }
 /** Grubun gövde kutusu: seçildiği ön yüzün kutusu (`faceBox`; eksen boyunca = yüz düzlemi → kapak düzlemi orası), yoksa gövde kutusu. */
-function doorBodyBox(group: Pick<DoorGroup, 'faceBox'>, parent: Shape): CavityBox | null {
+function doorBodyBox(group: Pick<DoorGroup, 'faceBox'> & Partial<Pick<DoorGroup, 'axis' | 'side'>>, parent: Shape): CavityBox | null {
   const all = bodyLocalBox(parent);
   if (!all || !group.faceBox) return all;
+  // Kurulu grup: yüz CANLI eşlenir (gövde derinliği / çıkarma değişince kapak yüzle gider); seçim anında saklı kutu.
+  if (group.axis != null && group.side != null) return liveFaceBox(parent, group.axis, group.side, group.faceBox);
   return { min: [...group.faceBox.min] as Vec3, max: [...group.faceBox.max] as Vec3 };
 }
 
@@ -1225,6 +1227,11 @@ export function syncDoorGroups(parentShapeId: string): void {
   if (!parent) return;
   for (const g of st.doorGroups) {
     if (g.shapeId !== parentShapeId) continue;
+    // Seçilen yüz gövdeyle birlikte değiştiyse (derinlik / çıkarma / vertex) saklı yüz kutusu güncellenir — sonraki eşleme yeni yerden.
+    if (g.faceBox) {
+      const live = liveFaceBox(parent, g.axis, g.side, g.faceBox);
+      if ([0, 1, 2].some(a => Math.abs(live.min[a] - g.faceBox!.min[a]) > 0.05 || Math.abs(live.max[a] - g.faceBox!.max[a]) > 0.05)) st.updateDoorGroup(g.id, { faceBox: live });
+    }
     const sol = solveDoorGroup(g, parent, st.shapes);
     if (!sol) continue;
     if (g.panelAlign) st.updateDoorGroup(g.id, { panelAlign: undefined });   // eski kayıt

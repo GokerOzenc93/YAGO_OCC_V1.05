@@ -517,6 +517,50 @@ export function bodyLocalBox(parent: Shape): CavityBox | null {
   return bb ? toCavityBox(bb) : null;
 }
 
+/** CANLI YÜZ KUTUSU (Goker: "kübün derinliği değişince / subtract güncellenince kapak yerinde kalıyor"): kapak / arkalık grubunun
+ *  seçildiği yüzün kutusu (`faceBox`) seçim anında saklanır; gövde boyutu, çıkarma ya da vertex düzenlemesi değişince yüz yer
+ *  değiştirir. Saklı kutu GÜNCEL gövdede aynı yöne bakan (eksen + yön) düz yüzlerle eşlenir: yüz düzlemindeki iki eksende en çok
+ *  örtüşen yüz (örtüşme yoksa düzlem içi merkezi en yakın) — derinlik değişince ön yüz yeni z'ye, genişlik değişince yeni ölçüye,
+ *  çentik büyüyünce / küçülünce çentik yüzüyle birlikte gider. Uygun yüz yoksa saklı kutu kalır. */
+const _faceBoxCache = new Map<string, Array<{ box: CavityBox }>>();
+export function liveFaceBox(parent: Shape, axis: 0 | 1 | 2, side: 1 | -1, stored: CavityBox): CavityBox {
+  const geo = effectiveBodyGeometry(parent);
+  if (!geo) return stored;
+  const pos = geo.getAttribute('position') as THREE.BufferAttribute | undefined;
+  const key = `${geo.uuid}|${pos?.version ?? 0}|${axis}${side}`;
+  let faces = _faceBoxCache.get(key);
+  if (!faces) {
+    faces = [];
+    try {
+      const { faces: fd, groups } = getFacesAndGroups(geo);
+      for (const g of groups) {
+        if (g.isCurved) continue;
+        const c = g.normal.getComponent(axis) * side;
+        if (c < 0.999) continue;
+        const box: CavityBox = { min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] };
+        for (const fi of g.faceIndices) for (const v of fd[fi].vertices) for (let a = 0; a < 3; a++) {
+          const x = v.getComponent(a); if (x < box.min[a]) box.min[a] = x; if (x > box.max[a]) box.max[a] = x;
+        }
+        faces.push({ box });
+      }
+    } catch { /* yüz çözülemedi → saklı kutu */ }
+    if (_faceBoxCache.size > 64) _faceBoxCache.delete(_faceBoxCache.keys().next().value as string);
+    _faceBoxCache.set(key, faces);
+  }
+  if (!faces.length) return stored;
+  const [u, v] = ([0, 1, 2] as const).filter(a => a !== axis);
+  const ov = (b: CavityBox, a: number) => Math.max(0, Math.min(b.max[a], stored.max[a]) - Math.max(b.min[a], stored.min[a]));
+  const mid = (b: CavityBox, a: number) => (b.min[a] + b.max[a]) / 2;
+  let best = faces[0], bestScore = -Infinity;
+  for (const f of faces) {
+    const area = ov(f.box, u) * ov(f.box, v);
+    const dist = Math.hypot(mid(f.box, u) - mid(stored, u), mid(f.box, v) - mid(stored, v));
+    const score = area > 1e-6 ? area : -dist;
+    if (score > bestScore) { bestScore = score; best = f; }
+  }
+  return { min: [...best.box.min] as Vec3, max: [...best.box.max] as Vec3 };
+}
+
 /** Panel geometrisi gövde çerçevesindedir; yalnız konum farkı eklenir. */
 export function panelLocalBox(p: Shape, parent: Shape): CavityBox | null {
   const bb = localBboxOf(p.geometry);
