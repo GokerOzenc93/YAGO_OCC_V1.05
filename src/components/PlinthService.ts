@@ -34,32 +34,33 @@ import {
 import * as THREE from 'three';
 
 /** Ayak düzeni. AYAK HER ZAMAN KAYITLI BİR SETTİR (Goker: "sadece kayıtlı ayaklar gelsin"): `presetId` = Aksesuar sekmesindeki ayak seti
- *  (yoksa kütüphanedeki ilk set — resolveLegPreset); model ve Ø her zaman o setten okunur. YERLEŞİM HER ZAMAN OTOMATİKTİR (köşe düzeni
- *  count / side / front / rear ile, kenar rolleri gövde yüzlerinden):
- *  • AUTO (`custom` yok): düzen de setten CANLI okunur — Aksesuar sekmesinde set değişirse ayaklar da değişir.
- *  • CUSTOM (`custom: true`; Goker: "custom bazada mesafeler sade biçimde panel editörden girilebilsin, hazır ayağın mesafeleri sonradan
- *    değişsin"): count / side / front / rear bu setin KENDİ değerleri (Custom'a geçerken setten kopyalanır), set bağı kalır; `adjust` =
- *    ayak başına ek Δ (ön çerçeve: du sağa, dv öne; `off` = ayak kaldırıldı).
- *  `rules` (eski kasetlerden) yerleşimde okunmaz. */
+ *  (yoksa kütüphanedeki ilk set — resolveLegPreset); model ve Ø her zaman o setten. YERLEŞİM HER ZAMAN OTOMATİKTİR (köşe düzeni count /
+ *  side / front / rear ile, kenar rolleri gövde yüzlerinden).
+ *  • Düzen / mesafeler (Layout · Side · Front · Rear) Auto'da da DÜZENLENİR (Goker: "auto modunda da front rear side ofsetler açık
+ *    kalabilir"): elle girilince `ownLayout` — değerler setin kendisinde; yoksa ayak setinden canlı.
+ *  • AUTO / CUSTOM yalnız AYAK LİSTESİ: Custom (`custom: true`) = ayak başına Δ (ön çerçeve: du sağa, dv öne; `off` = ayak kaldırıldı)
+ *    uygulanır ve liste düzenlenir; Auto'da liste pasif, Δ'lar saklanır ama uygulanmaz.
+ *  `rules` (eski kasetlerden) yerleşimde okunmaz. Eski kayıt: `custom` = kendi düzeni + Δ. */
 export interface LegAdjust { du: number; dv: number; off?: boolean }
 export type PlinthLegs = {
   count: 4 | 5 | 6; diameter: number; side: number; front: number; rear: number; legModelId?: string | null; presetId?: string | null; rules?: LegRule[] | null;
-  inner?: boolean; custom?: boolean; adjust?: LegAdjust[] | null;
+  inner?: boolean; ownLayout?: boolean; custom?: boolean; adjust?: LegAdjust[] | null;
 };
 /** Setin standart kuralları (yalnız eski kaset / kural düzenleyici uyumu için). */
 export const plinthLegRules = (legs: PlinthLegs): LegRule[] => (legs.rules && legs.rules.length ? legs.rules : standardLegRules(legs.count, legs.side, legs.front, legs.rear));
-/** Auto = düzen setten; eski kayıtta Δ listesi varsa Custom sayılır. */
-export const plinthLegsAuto = (legs: PlinthLegs): boolean => !legs.custom && !legs.adjust;
-/** ETKİN ayak düzeni: model + Ø kayıtlı setten; Auto'da adet / mesafeler de setten, Custom'da bu setin kendi değerleri. Kütüphanede set
- *  yoksa kaydedilen alanlar (yerleşik ayak). Çizim, damga, engel ve kart hepsi bunu okur. */
+/** Auto = ayak başına Δ uygulanmaz (liste pasif); eski kayıtta `custom` yoksa Δ listesi varsa Custom. */
+export const plinthLegsAuto = (legs: PlinthLegs): boolean => !(legs.custom ?? !!legs.adjust);
+/** Düzen / mesafeler setin kendisinde mi (elle girildi); eski kayıtta `custom` aynı anlamdaydı. */
+export const plinthOwnLayout = (legs: PlinthLegs): boolean => legs.ownLayout ?? !!legs.custom;
+/** ETKİN ayak düzeni: model + Ø kayıtlı setten; adet / mesafeler elle girildiyse setin kendi değerleri, yoksa ayak setinden. Kütüphanede
+ *  set yoksa kaydedilen alanlar (yerleşik ayak). Çizim, damga, engel ve kart hepsi bunu okur. */
 export function plinthLegsOf(legs: PlinthLegs, st = useAppStore.getState()): PlinthLegs {
   const preset = resolveLegPreset(legs.presetId, st);
   if (!preset) return legs;
   const P = legsFromPreset(preset, st);
-  const auto = plinthLegsAuto(legs);
   return {
     ...legs, presetId: P.presetId, legModelId: P.legModelId, diameter: P.diameter,
-    ...(auto ? { count: P.count, side: P.side, front: P.front, rear: P.rear } : {}),
+    ...(plinthOwnLayout(legs) ? {} : { count: P.count, side: P.side, front: P.front, rear: P.rear }),
   };
 }
 /** ÖN yön (gövde-yerel): ayak ön/arka mesafeleri bu yöne göre; gövde parametresi (bkz. bodyFrontAxis). */
@@ -600,7 +601,8 @@ export function syncQuickBodyPlinth(shapeId: string, legs: PlinthLegs | null, bo
   const bb = localBboxOf(effectiveBodyGeometry(body)); if (!bb) return;
   const box: CavityBox = { min: [bb.min.x, bb.min.y, bb.min.z], max: [bb.max.x, bb.min.y + Math.max(1, lift), bb.max.z] };
   const set = existing ?? createPlinthSet(shapeId, box, legs, { name: 'Legs', bottomVfId, quickBody: true });
-  if (existing) st.updatePlinthSet(existing.id, { box, legs: { ...legs }, bottomVfId });
+  // Yeniden kurulumda setin ayak listesi (Auto / Custom + Δ) korunur — hızlı gövde yalnız düzeni / modeli yazar.
+  if (existing) st.updatePlinthSet(existing.id, { box, legs: { ...legs, custom: existing.legs.custom, adjust: existing.legs.adjust }, bottomVfId });
   placeAfterQuickBody(shapeId, set.vfId);
 }
 /** SIRA (Goker: "ayak her zaman quick body yönteminde bodyden sonra gelmeli"): hızlı gövde ayak setinin VF'si gövdenin SON hızlı gövde
@@ -625,28 +627,36 @@ export function removeQuickBodyPlinth(shapeId: string): void {
 export function setPlinthLegs(id: string, patch: Partial<PlinthLegs>): void {
   const st = useAppStore.getState();
   const s = st.plinthSets.find(x => x.id === id); if (!s) return;
-  // Düzen (adet / mesafeler / Δ) yalnız Custom'da sete yazılır — set bağı (model, Ø) her zaman kalır.
-  const edits = ['count', 'side', 'front', 'rear', 'inner', 'adjust'].some(k => k in patch);
-  const next: PlinthLegs = { ...s.legs, ...patch, ...(edits && !('custom' in patch) ? { custom: true } : {}) };
+  // Düzen / mesafe elle girilince setin kendi değeri olur (set bağı — model, Ø — kalır); Δ listesi modu değiştirmez.
+  const layout = ['count', 'side', 'front', 'rear', 'inner'].some(k => k in patch);
+  const base = layout && !plinthOwnLayout(s.legs) ? plinthLegsOf(s.legs, st) : s.legs;
+  const next: PlinthLegs = {
+    ...s.legs, ...(layout ? { count: base.count, side: base.side, front: base.front, rear: base.rear } : {}), ...patch,
+    ...(layout && !('ownLayout' in patch) ? { ownLayout: true } : {}), custom: 'custom' in patch ? patch.custom : !plinthLegsAuto(s.legs),
+  };
   st.updatePlinthSet(id, { legs: next });
 }
-/** AUTO ↔ CUSTOM. Custom'a geçerken setin o anki (setten okunan) düzeni kopyalanır — alanlar oradan düzenlenir; Auto'ya dönünce düzen
- *  yine setten canlı okunur, Δ düzeltmeler silinir. */
+/** AUTO ↔ CUSTOM (yalnız ayak başına Δ listesi): Custom'da Δ'lar uygulanır ve düzenlenir; Auto'da saklanır, uygulanmaz. */
 export function setPlinthLegsMode(id: string, mode: 'auto' | 'custom'): void {
   const st = useAppStore.getState();
   const s = st.plinthSets.find(x => x.id === id); if (!s) return;
-  if (mode === 'auto') { st.updatePlinthSet(id, { legs: { ...s.legs, custom: false, adjust: null } }); return; }
-  const L = plinthLegsOf(s.legs, st);
-  st.updatePlinthSet(id, { legs: { ...s.legs, count: L.count, side: L.side, front: L.front, rear: L.rear, custom: true, adjust: s.legs.adjust ?? [] } });
+  st.updatePlinthSet(id, { legs: { ...s.legs, ownLayout: plinthOwnLayout(s.legs), custom: mode === 'custom', adjust: s.legs.adjust ?? [] } });
 }
-/** AYAK SETİ UYGULA (Goker: "kaydettiğim ayak kasetlerini ayak kısmında çağıralım"): düzen + model setten (Auto'ya döner); bağsız sette
+/** Düzen / mesafeler ayak setine döner (elle girilenler bırakılır). */
+export function resetPlinthLayout(id: string): void {
+  const st = useAppStore.getState();
+  const s = st.plinthSets.find(x => x.id === id); if (!s) return;
+  st.updatePlinthSet(id, { legs: { ...s.legs, ownLayout: false, custom: !plinthLegsAuto(s.legs) } });
+}
+/** AYAK SETİ UYGULA (Goker: "kaydettiğim ayak kasetlerini ayak kısmında çağıralım"): düzen + model setten, Δ'lar silinir; bağsız sette
  *  yükseklik de. Set bulunamazsa (silinmiş) kütüphanedeki ilk set. */
 export function applyLegPresetToSet(id: string, presetId: string | null): void {
   const st = useAppStore.getState();
   const s = st.plinthSets.find(x => x.id === id); if (!s) return;
   const preset = resolveLegPreset(presetId, st);
-  if (!preset) { st.updatePlinthSet(id, { legs: { ...s.legs, presetId: null, custom: false, adjust: null } }); syncAfterPlinthChange(s.shapeId); return; }
-  st.updatePlinthSet(id, { legs: { ...legsFromPreset(preset, st), custom: false, adjust: null } });
+  const keep = { custom: !plinthLegsAuto(s.legs), ownLayout: false, adjust: null };
+  if (!preset) { st.updatePlinthSet(id, { legs: { ...s.legs, presetId: null, ...keep } }); syncAfterPlinthChange(s.shapeId); return; }
+  st.updatePlinthSet(id, { legs: { ...legsFromPreset(preset, st), ...keep } });
   if (!plinthIsBound(s) && preset.height > 0) setPlinthHeight(id, preset.height);
   else syncAfterPlinthChange(s.shapeId);
 }

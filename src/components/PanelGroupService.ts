@@ -2311,14 +2311,14 @@ export function panelOrderFor(joins: Record<CornerKey, JoinPass>): { order: Quic
 /** Tabanın alt panelin altında bıraktığı yükseklik (ayak / baza); düzde 0. */
 export const baseLiftOf = (cfg: QuickBodyConfig): number => (cfg.base === 'plinth' ? cfg.plinth.height : cfg.base === 'legs' ? cfg.legs.height : 0);
 /** HIZLI GÖVDE AYAKLARI (etkin düzen; baza seti kartıyla aynı kural — PlinthService.plinthLegsOf): ayak her zaman KAYITLI bir settir
- *  (cfg.legs.presetId; seçilmemişse kütüphanedeki ilk set) — model + Ø setten; Auto'da adet / mesafeler de setten, Custom'da cfg.legs'in
- *  kendi değerleri. Kütüphane boşsa cfg alanları (yerleşik ayak). null = bu tabanda ayak yok (düz taban; bazalıda count 0). */
+ *  (cfg.legs.presetId; seçilmemişse kütüphanedeki ilk set) — model + Ø setten; adet / mesafeler elle girildiyse (`ownLayout`) cfg.legs'in
+ *  kendi değerleri, yoksa setten. Kütüphane boşsa cfg alanları (yerleşik ayak). null = bu tabanda ayak yok (düz taban; bazalıda count 0). */
 export function quickLegsOf(cfg: QuickBodyConfig, st = useAppStore.getState()): PlinthLegs | null {
   const on = cfg.base === 'legs' || (cfg.base === 'plinth' && cfg.legs.count > 0);
   if (!on) return null;
   const own: PlinthLegs = {
     count: (cfg.legs.count || 4) as 4 | 5 | 6, diameter: cfg.legs.diameter, side: cfg.legs.side, front: cfg.legs.front, rear: cfg.legs.rear,
-    legModelId: cfg.legs.legModelId ?? null, presetId: cfg.legs.presetId ?? null, custom: !!cfg.legs.custom,
+    legModelId: cfg.legs.legModelId ?? null, presetId: cfg.legs.presetId ?? null, ownLayout: cfg.legs.ownLayout ?? !!cfg.legs.custom,
   };
   return plinthLegsOf(own, st);
 }
@@ -2589,7 +2589,7 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
   const L = quickLegsOf(cfg);
   syncQuickBodyPlinth(body.id, L ? {
     count: L.count, diameter: L.diameter, side: L.side, front: L.front, rear: L.rear, legModelId: L.legModelId ?? null, presetId: L.presetId ?? null,
-    custom: !!L.custom,
+    ownLayout: !!L.ownLayout,
   } : null, bottomVfId, lift);
 
   await requestRebuild(body.id);

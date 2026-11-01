@@ -47,10 +47,10 @@ import { confirmBodyPanelPlacement } from './Scene';
 import {
   type PlinthSet, type PlinthFacing, confirmPlinthPick, plinthRowKey, plinthSetsOf, plinthSize, plinthName, setPlinthLegs, setPlinthHeight, plinthIsBound,
   applyPlinthFace, applyPlinthArrow, deletePlinthSetAndSync, finishPlinthEdit, startPlinthVolumeEdit, applyLegPresetToSet, plinthFacingOf,
-  PLINTH_FACING_LABEL, plinthFootprint, plinthLegsAuto, plinthLegSpots, plinthLegPoints, plinthLegsOf, setPlinthLegsMode, bodyFrontAxis,
+  PLINTH_FACING_LABEL, plinthFootprint, plinthLegsAuto, plinthLegSpots, plinthLegPoints, plinthLegsOf, setPlinthLegsMode, bodyFrontAxis, plinthOwnLayout, resetPlinthLayout,
   type PlinthLegs, type LegAdjust,
 } from './PlinthService';
-import { legModelById, legModelDims, legPresetById, presetLayout, resolveLegPreset } from './AccessoryService';
+import { legPresetById, presetLayout, resolveLegPreset } from './AccessoryService';
 import { type Pt, autoLegPoints, edgeRoles, polyExtent, rectPoly, toFacing } from './LegLayout';
 
 /* PANEL EDİTÖRÜ — 1) şerit + liste satırı parçaları · 2) kart blokları (ipucu hücresi, kanal / ayak diyagramları, hızlı gövde) ·
@@ -688,7 +688,7 @@ export function QbNum({ value, onCommit, passive, w = 34, min = 0, max }: {
   );
 }
 /** Küçük anahtar (koyu = açık). */
-function QbSwitch({ on, onToggle, title, disabled }: { on: boolean; onToggle: () => void; title?: string; disabled?: boolean }) {
+export function QbSwitch({ on, onToggle, title, disabled }: { on: boolean; onToggle: () => void; title?: string; disabled?: boolean }) {
   return (
     <button type="button" role="switch" aria-checked={on} title={title} disabled={disabled} onClick={e => { stop(e); if (!disabled) onToggle(); }}
       className={`relative shrink-0 w-[28px] h-[16px] rounded-full transition-colors duration-150
@@ -863,34 +863,30 @@ export function rectLegPoints(legs: Pick<LegDims, 'count' | 'side' | 'front' | '
   return autoLegPoints(poly, edgeRoles(poly, facing), { count: (legs.count || 4) as 4 | 5 | 6, side: legs.side, front: legs.front, rear: legs.rear }, facing, R);
 }
 
-/* AYAK DÜZENİ HÜCRELERİ (Goker: "custom bazada mesafeler sade biçimde panel editörden girilebilsin, hazır ayağın mesafeleri sonradan
-   değiştirilebilsin"): Layout (köşeler / + merkez / + ön-arka) · yan · ön · arka. AUTO: değerler kayıtlı setten, salt okunur (üzerine
-   gelince diyagramda vurgu); CUSTOM: aynı hücreler düzenlenir — set bağı (model, Ø) kalır. */
+/* AYAK DÜZENİ HÜCRELERİ: Layout (köşeler / + merkez / + ön-arka) · Leg height · Ø · yan · ön · arka. Her zaman düzenlenir (Goker: "auto
+   modunda da front rear side ofsetler açık kalabilir") — elle girilen değer setin kendisinde kalır; değerler ayak setinden geliyorsa soluk. */
 const AUTO_COUNT_OPTS = [{ v: '4', label: 'Corners' }, { v: '5', label: '+ centre' }, { v: '6', label: '+ front / rear' }];
-const LAYOUT_LABEL: Record<number, string> = { 4: 'Corners', 5: '+ centre', 6: '+ front / rear' };
-export function LegLayoutCells({ legs, editable, heightCell, diameter, diameterTitle, onChange, hint, onHint }: {
-  legs: Pick<LegDims, 'count' | 'side' | 'front' | 'rear'>; editable: boolean;
-  /** yükseklik hücresi (çağıran kurar: okunur / düzenlenir) */ heightCell: React.ReactNode; diameter: number; diameterTitle?: string;
+export function LegLayoutCells({ legs, heightCell, diameter, onChange, hint, onHint }: {
+  legs: Pick<LegDims, 'count' | 'side' | 'front' | 'rear'>;
+  /** yükseklik hücresi (çağıran kurar: okunur / düzenlenir) */ heightCell: React.ReactNode; diameter: number;
   onChange: (p: Partial<Pick<LegDims, 'count' | 'side' | 'front' | 'rear'>>) => void; hint: string | null; onHint: (k: string | null) => void;
 }) {
   const { cell, num } = hintCells(hint, onHint);
-  const ro = (label: string, k: string, v: React.ReactNode) => cell(label, k, <ReadValue color="#8f877c" title="From the leg set — switch Layout to Custom to change">{v}</ReadValue>);
   return (
     <div className="grid grid-cols-3 gap-x-1" style={QB_CELL_ROW} onMouseLeave={() => onHint(null)}>
-      {editable
-        ? cell('Layout', 'lc', <QbSelect value={String(legs.count || 4)} options={AUTO_COUNT_OPTS} w={96} onChange={v => onChange({ count: parseInt(v, 10) })} />)
-        : ro('Layout', 'lc', LAYOUT_LABEL[legs.count] ?? 'Corners')}
+      {cell('Layout', 'lc', <QbSelect value={String(legs.count || 4)} options={AUTO_COUNT_OPTS} w={96} onChange={v => onChange({ count: parseInt(v, 10) })} />)}
       {heightCell}
-      <ReadCell label="Ø" title={diameterTitle ?? 'Foot diameter'}><ReadValue color="#57534e">{fmt1(diameter)}</ReadValue></ReadCell>
-      {editable ? num('Side offset', 'ls', legs.side, v => onChange({ side: v })) : ro('Side offset', 'ls', fmt1(legs.side))}
-      {editable ? num('Front offset', 'lf', legs.front, v => onChange({ front: v })) : ro('Front offset', 'lf', fmt1(legs.front))}
-      {editable ? num('Rear offset', 'lr', legs.rear, v => onChange({ rear: v })) : ro('Rear offset', 'lr', fmt1(legs.rear))}
+      <ReadCell label="Ø"><ReadValue color="#57534e">{fmt1(diameter)}</ReadValue></ReadCell>
+      {num('Side offset', 'ls', legs.side, v => onChange({ side: v }))}
+      {num('Front offset', 'lf', legs.front, v => onChange({ front: v }))}
+      {num('Rear offset', 'lr', legs.rear, v => onChange({ rear: v }))}
     </div>
   );
 }
-/** CUSTOM — ayak başına ek Δ (ayak no · Δ side (+ sağa) · Δ front (+ öne) · açık/kapalı); ↺ hepsini sıfırlar. Kartta açılır bölümde. */
-export function LegAdjustEditor({ count, adjust, onChange, active, onActive }: {
-  count: number; adjust: LegAdjust[]; onChange: (a: LegAdjust[]) => void; active: number | null; onActive: (i: number | null) => void;
+/** AYAK LİSTESİ — ayak başına Δ (ayak no · Δ side (+ sağa) · Δ front (+ öne) · açık/kapalı); kartta her zaman görünür (Goker: "per leg
+ *  demeye gerek yok, direk liste gelsin"), yalnız Custom'da etkin (`passive` = Auto: soluk, düzenlenmez). */
+export function LegAdjustEditor({ count, adjust, onChange, active, onActive, passive }: {
+  count: number; adjust: LegAdjust[]; onChange: (a: LegAdjust[]) => void; active: number | null; onActive: (i: number | null) => void; passive?: boolean;
 }) {
   const at = (i: number): LegAdjust => adjust[i] ?? { du: 0, dv: 0 };
   const set = (i: number, patch: Partial<LegAdjust>) => {
@@ -905,55 +901,53 @@ export function LegAdjustEditor({ count, adjust, onChange, active, onActive }: {
     </div>
   );
   return (
-    <div className="flex flex-col gap-1" onMouseLeave={() => onActive(null)}>
+    <div className={`flex flex-col gap-1 ${passive ? 'opacity-50' : ''}`} onMouseLeave={() => onActive(null)}>
       {Array.from({ length: count }, (_, i) => {
-        const a = at(i), on = !a.off;
+        const a = passive ? { du: 0, dv: 0 } : at(i), on = !a.off;
         return (
           <div key={i} className={`h-[26px] flex items-center gap-1 rounded-[7px] px-1 ${active === i ? 'bg-[#fff4ec]' : ''} ${on ? '' : 'opacity-55'}`} onMouseEnter={() => onActive(i)}>
             <span className={`shrink-0 w-[18px] h-[18px] rounded-[5px] text-[10px] font-bold flex items-center justify-center tabular-nums ${active === i ? 'bg-[#ea580c] text-white' : 'bg-[#f3efe8] text-stone-500'}`}>{i + 1}</span>
-            {cell('u', 'Δ side', <QbNum value={a.du} min={-100000} w={44} passive={!on} onCommit={v => set(i, { du: v })} />)}
-            {cell('v', 'Δ front', <QbNum value={a.dv} min={-100000} w={44} passive={!on} onCommit={v => set(i, { dv: v })} />)}
-            <QbSwitch on={on} onToggle={() => set(i, { off: on })} title={on ? 'Leg on — click to remove this leg' : 'Leg removed — click to bring it back'} />
+            {cell('u', 'Δ side', <QbNum value={a.du} min={-100000} w={44} passive={passive || !on} onCommit={v => set(i, { du: v })} />)}
+            {cell('v', 'Δ front', <QbNum value={a.dv} min={-100000} w={44} passive={passive || !on} onCommit={v => set(i, { dv: v })} />)}
+            <QbSwitch on={on} disabled={passive} onToggle={() => set(i, { off: on })} title={on ? 'Leg on' : 'Leg removed'} />
           </div>
         );
       })}
-      <div className="flex items-center gap-1 pt-0.5">
-        <span className="text-[10px] text-stone-400">Δ side: + to the right · Δ front: + toward the front (on top of the automatic position)</span>
-        <div className="flex-1" />
-        <CardAction compact icon={RotateCcw} label="Reset" title="Clear every per-leg adjustment (back to the offsets above)" onClick={() => onChange([])} />
-      </div>
+      {!passive && (adjust ?? []).some(x => x && (x.du || x.dv || x.off)) && (
+        <div className="flex justify-end pt-0.5">
+          <CardAction compact icon={RotateCcw} label="Reset" title="Clear every leg adjustment" onClick={() => onChange([])} />
+        </div>
+      )}
     </div>
   );
 }
-/** Auto | Custom (Goker: Custom = hazır ayağın mesafeleri sonradan değiştirilebilsin). */
+/** Auto | Custom (Custom = ayak listesi etkin). */
 export const LegModeSegmented = ({ custom, onPick, height = 20 }: { custom: boolean; onPick: (custom: boolean) => void; height?: number }) => (
   <Segmented height={height} active={custom ? 'custom' : 'auto'} onPick={k => onPick(k === 'custom')}
     items={[
-      { key: 'auto', label: 'Auto', title: 'Layout from the saved leg set; legs placed automatically from the body faces (Parameters › Faces)' },
-      { key: 'custom', label: 'Custom', title: 'Edit the layout and offsets of this set here (the saved leg set is kept for the model)' },
+      { key: 'auto', label: 'Auto', title: 'Legs placed automatically from the offsets' },
+      { key: 'custom', label: 'Custom', title: 'Move or remove single legs (leg list)' },
     ]} />
 );
 
-/* Hızlı gövde AYAK BLOĞU: set seçici + Auto | Custom, plan diyagramı (gövde W × D, ön = gövdenin ön yönü), ölçü hücreleri. */
-export function LegsBlock({ legs, W, D, facing, custom, presetId, heightReadout, heightEditable, onChange, onPreset, onMode, hint, onHint }: {
-  legs: LegDims; W: number; D: number; facing: PlinthFacing; custom: boolean; presetId: string | null | undefined;
+/* Hızlı gövde AYAK BLOĞU: set seçici (+ ↺ elle girilen mesafeler sete döner), plan diyagramı (gövde W × D, ön = gövdenin ön yönü),
+   ölçü hücreleri (her zaman düzenlenir). */
+export function LegsBlock({ legs, W, D, facing, own, presetId, heightReadout, heightEditable, onChange, onPreset, onReset, hint, onHint }: {
+  legs: LegDims; W: number; D: number; facing: PlinthFacing; own: boolean; presetId: string | null | undefined;
   heightReadout?: number; heightEditable?: boolean;
-  onChange: (p: Partial<LegDims>) => void; onPreset: (id: string | null) => void; onMode: (custom: boolean) => void; hint: string | null; onHint: (k: string | null) => void;
+  onChange: (p: Partial<LegDims>) => void; onPreset: (id: string | null) => void; onReset: () => void; hint: string | null; onHint: (k: string | null) => void;
 }) {
   const { num, cell } = hintCells(hint, onHint);
   const points = useMemo(() => rectLegPoints(legs, W, D, facing), [legs.count, legs.side, legs.front, legs.rear, legs.diameter, W, D, facing]);   // eslint-disable-line react-hooks/exhaustive-deps
-  const lm = legModelById(resolveLegPreset(presetId)?.legModelId);
   return (
     <div className="flex flex-col gap-1.5" onMouseLeave={() => onHint(null)}>
       <div className="flex items-center gap-1.5">
         <span style={SECTION_LABEL}>Leg set</span>
         <div className="flex-1 min-w-0 flex"><LegPresetSelect value={presetId} onChange={onPreset} /></div>
-        <span style={SECTION_LABEL}>Layout</span>
-        <LegModeSegmented custom={custom} onPick={onMode} />
+        {own && <CardAction compact icon={RotateCcw} label="Set values" title="Back to the leg set's layout and offsets" onClick={onReset} />}
       </div>
       <LegLayoutDiagram points={points} footprint={rectPoly(0, 0, W, D)} facing={facing} diameter={legs.diameter} active={hint} className="w-full" />
-      <LegLayoutCells legs={legs} editable={custom} diameter={legs.diameter} diameterTitle={lm ? `Foot diameter — from the model "${lm.name}"` : undefined}
-        onChange={onChange} hint={hint} onHint={onHint}
+      <LegLayoutCells legs={legs} diameter={legs.diameter} onChange={onChange} hint={hint} onHint={onHint}
         heightCell={heightEditable ? num('Leg height', 'lh', legs.height, v => onChange({ height: v }), false, 1)
           : cell('Leg height', 'lh', <ReadValue color="#8f877c" title="= plinth height">{fmt1(heightReadout ?? legs.height)}</ReadValue>)} />
     </div>
@@ -999,7 +993,7 @@ export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onAppl
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const legsLive = useMemo(() => quickLegsOf(cfg), [cfg.base, cfg.legs, legPresets, legModels, accessoryModels]);
   const legCount = legsLive ? legsLive.count : 0;
-  const legsCustom = !!cfg.legs.custom;
+  const legsOwn = cfg.legs.ownLayout ?? !!cfg.legs.custom;
   const panelCount = 4 + (isPlinth ? 1 + (cfg.plinth.rearPlinth ? 1 : 0) : 0);
   const { cyclic } = panelOrderFor(joins);
   const b = cfg.back, grooved = b.placement === 'inner';
@@ -1061,8 +1055,8 @@ export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onAppl
           </>}
         </QbSection>
 
-        {/* 2 · AYAKLAR (Goker: "sadece kayıtlı ayaklar gelsin"): ayak = kayıtlı set; bazalıda başlıkta var/yok; set + Auto | Custom +
-            plan diyagramı + ölçü hücreleri (Auto: setten, salt okunur · Custom: düzenlenir) */}
+        {/* 2 · AYAKLAR (Goker: "sadece kayıtlı ayaklar gelsin"): ayak = kayıtlı set; bazalıda başlıkta var/yok; set + plan diyagramı +
+            ölçü hücreleri (her zaman düzenlenir; elle girilen değer hızlı gövdede kalır, ↺ sete döner) */}
         <QbSection title="Legs" sub={isLegs ? 'body height includes the legs' : isPlinth ? 'optional, under the bottom panel' : undefined}
           trailing={isPlain ? <span className="pr-1 text-[11px] font-semibold text-stone-300">None</span>
             : isPlinth ? <div style={{ width: 118 }}><Segmented height={22} active={legCount ? 'on' : 'off'}
@@ -1071,19 +1065,20 @@ export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onAppl
             : null}>
           {legsLive ? (
             <LegsBlock legs={{ ...legsLive, count: legsLive.count, diameter: legsLive.diameter, height: isPlinth ? cfg.plinth.height : cfg.legs.height }}
-              W={W} D={D} facing={bodyFrontAxis(shape).facing} custom={legsCustom} presetId={legsLive.presetId} heightEditable={isLegs}
+              W={W} D={D} facing={bodyFrontAxis(shape).facing} own={legsOwn} presetId={legsLive.presetId} heightEditable={isLegs}
               heightReadout={isPlinth ? cfg.plinth.height : undefined} hint={hint} onHint={setHint}
-              onChange={p => setLegs({ ...(p as Partial<QuickBodyConfig['legs']>), ...(['count', 'side', 'front', 'rear'].some(k => k in p) ? { custom: true } : {}) })}
-              onPreset={id => {
-                // Set değişince Auto'ya döner (düzen + model setten); Legs tabanında yükseklik de setten.
-                const p = resolveLegPreset(id);
-                setLegs({ presetId: p ? p.id : null, legModelId: p?.legModelId ?? null, custom: false, rules: null, ...(isLegs && p && p.height > 0 ? { height: p.height } : {}) });
+              onChange={p => {
+                // Mesafe / düzen elle girilince hızlı gövdenin kendi değeri olur (o anki etkin düzenin üstüne)
+                const lay = ['count', 'side', 'front', 'rear'].some(k => k in p);
+                setLegs({ ...(lay && !legsOwn ? { count: legsLive.count as 4 | 5 | 6, side: legsLive.side, front: legsLive.front, rear: legsLive.rear } : {}),
+                  ...(p as Partial<QuickBodyConfig['legs']>), ...(lay ? { ownLayout: true, custom: false } : {}) });
               }}
-              onMode={c => {
-                // Custom'a geçerken o anki (setten okunan) düzen kopyalanır; Auto'ya dönünce setten canlı okunur.
-                if (c && legsLive) setLegs({ custom: true, count: legsLive.count, side: legsLive.side, front: legsLive.front, rear: legsLive.rear });
-                else setLegs({ custom: false });
-              }} />
+              onPreset={id => {
+                // Set değişince düzen + model setten; Legs tabanında yükseklik de setten.
+                const p = resolveLegPreset(id);
+                setLegs({ presetId: p ? p.id : null, legModelId: p?.legModelId ?? null, ownLayout: false, custom: false, rules: null, ...(isLegs && p && p.height > 0 ? { height: p.height } : {}) });
+              }}
+              onReset={() => setLegs({ ownLayout: false, custom: false })} />
           ) : (
             <QbNote>{isPlain ? 'A plain base sits on the floor — choose Legs or Plinth for legs.' : 'No legs — the plinth carries the body. Choose Legs to add a saved leg set under the bottom panel.'}</QbNote>
           )}
@@ -1775,8 +1770,6 @@ export function PanelEditor() {
   const [backHint, setBackHint] = useState<{ id: string; key: string } | null>(null);
   /** Kalıcı Legs satırının plan diyagramı ipucu. */
   const [legsHint, setLegsHint] = useState<string | null>(null);
-  /** Baza seti kartı · Custom: ayak başına Δ satırları açık mı (varsayılan kapalı — Goker: "sade") */
-  const [legsPerLegOpen, setLegsPerLegOpen] = useState(false);
   /** Body satırı: gövdede saklı hızlı gövde ayarlarının düzenleme taslağı (satır kapanınca / ✓ sonrası düşer → saklı ayar görünür). */
   const [quickDraft, setQuickDraft] = useState<{ sid: string; cfg: QuickBodyConfig } | null>(null);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
@@ -2213,48 +2206,33 @@ export function PanelEditor() {
                 <CardAction compact icon={Check} label="Done" title="Finish editing this set" onClick={finishPlinthEdit} />
               </div>
               {editingVol && <ExtrudeDock plinth={set} draft={extrudeThicknessStr} setDraft={setExtrudeThicknessStr} />}
-              {/* AYAK SETİ (Goker: "sadece kayıtlı ayaklar gelsin"): yalnız kayıtlı setler; model + Ø setten. Layout: Auto = düzen setten
-                  canlı · Custom = adet / mesafeler bu sette düzenlenir (hazır ayağın mesafeleri sonradan değişir), ayak başına Δ açılır bölümde */}
+              {/* AYAK SETİ (Goker: "sadece kayıtlı ayaklar gelsin"): yalnız kayıtlı setler; model + Ø setten. Mesafe hücreleri her zaman
+                  düzenlenir (↺ sete döner). Auto | Custom yalnız AYAK LİSTESİ: liste her zaman görünür, Custom'da etkin (Goker: "per leg demeye
+                  gerek yok, direk liste gelsin; custom seçilince liste aktif olsun") */}
               {(() => {
-                const L = plinthLegsOf(set.legs), auto = plinthLegsAuto(set.legs), fp = plinthFootprint(set), facing = plinthFacingOf(set);
-                const all = plinthLegPoints(set);
-                const lm = legModelById(L.legModelId), dims = legModelDims(lm);
+                const L = plinthLegsOf(set.legs), auto = plinthLegsAuto(set.legs), own = plinthOwnLayout(set.legs);
+                const fp = plinthFootprint(set), facing = plinthFacingOf(set), all = plinthLegPoints(set);
                 const activeLeg = legsHint && legsHint.startsWith('leg-') ? parseInt(legsHint.slice(4), 10) : null;
                 return (
                   <div className={`flex flex-col gap-1.5 ${editingVol ? 'mt-1.5' : ''}`}>
                     <div className="flex items-center gap-1.5">
                       <span style={SECTION_LABEL}>Leg set</span>
                       <div className="flex-1 min-w-0 flex"><LegPresetSelect value={L.presetId} onChange={id => applyLegPresetToSet(set.id, id)} /></div>
-                      <span style={SECTION_LABEL}>Layout</span>
-                      <LegModeSegmented custom={!auto} onPick={c => { setPlinthLegsMode(set.id, c ? 'custom' : 'auto'); if (!c) setLegsPerLegOpen(false); }} />
+                      {own && <CardAction compact icon={RotateCcw} label="Set values" title="Back to the leg set's layout and offsets" onClick={() => resetPlinthLayout(set.id)} />}
                     </div>
-                    {lm && (
-                      <div className="px-1 -mt-0.5 text-[10.5px] text-stone-400 truncate">
-                        Model: <span className="font-semibold text-stone-500">{lm.name}</span>{dims ? ` · Ø ${fmt1(dims.diameter)} · natural height ${fmt1(dims.height)}` : ''}
-                      </div>
-                    )}
-                    {/* Diyagram: iz çokgeni (bölge) + yerleşen ayaklar; ölçüler gerçek (Δ dahil) */}
                     <LegLayoutDiagram points={all.map(p => (p.off ? null : { x: p.x, y: p.z }))} footprint={fp} facing={facing} diameter={L.diameter}
                       active={legsHint} className="w-full" />
-                    <LegLayoutCells legs={L} editable={!auto} diameter={L.diameter} diameterTitle={lm ? `Foot diameter — from the model "${lm.name}"` : undefined}
-                      onChange={p => setPlinthLegs(set.id, p as Partial<PlinthLegs>)} hint={legsHint} onHint={setLegsHint}
+                    <LegLayoutCells legs={L} diameter={L.diameter} onChange={p => setPlinthLegs(set.id, p as Partial<PlinthLegs>)} hint={legsHint} onHint={setLegsHint}
                       heightCell={bound
                         ? <ReadCell label="Leg height" title="Read from the bottom panel's underside"><ReadValue color="#57534e">{fmt1(H)}</ReadValue></ReadCell>
                         : <HintCell label="Leg height" hintKey="lh" active={legsHint === 'lh'} onHint={setLegsHint}><QbNum value={H} min={1} onCommit={v => setPlinthHeight(set.id, v)} /></HintCell>} />
-                    {!auto && (
-                      <div className="flex flex-col gap-1">
-                        <div className="flex items-center gap-1">
-                          <CardAction compact icon={legsPerLegOpen ? ChevronDown : ChevronRight} label={`Per leg${(set.legs.adjust ?? []).some(a => a && (a.du || a.dv || a.off)) ? ' ·' : ''}`}
-                            active={legsPerLegOpen} title="Fine-tune single legs: Δ side / Δ front on top of the offsets above, or remove a leg"
-                            onClick={() => setLegsPerLegOpen(o => !o)} />
-                          <span className="text-[10px] text-stone-400 truncate">{legsPerLegOpen ? 'on top of the offsets above' : 'move or remove single legs'}</span>
-                        </div>
-                        {legsPerLegOpen && (
-                          <LegAdjustEditor count={all.length} adjust={set.legs.adjust ?? []} onChange={a => setPlinthLegs(set.id, { adjust: a })}
-                            active={activeLeg} onActive={i => setLegsHint(i == null ? null : `leg-${i}`)} />
-                        )}
-                      </div>
-                    )}
+                    <div className="flex items-center gap-1.5 pt-0.5">
+                      <span style={SECTION_LABEL}>Legs</span>
+                      <div className="flex-1" />
+                      <LegModeSegmented custom={!auto} onPick={c => setPlinthLegsMode(set.id, c ? 'custom' : 'auto')} />
+                    </div>
+                    <LegAdjustEditor count={all.length} adjust={set.legs.adjust ?? []} passive={auto} onChange={a => setPlinthLegs(set.id, { adjust: a })}
+                      active={activeLeg} onActive={i => setLegsHint(i == null ? null : `leg-${i}`)} />
                   </div>
                 );
               })()}

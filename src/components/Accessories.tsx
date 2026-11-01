@@ -4,9 +4,8 @@
 
    AYAK
    • Leg models — 3 yuva: Top · Middle · Bottom (üstten alta, ayağın kendisi gibi). Her yuvaya bir model dosyası; birim + yukarı ekseni
-     yuvada. Top / Bottom MODEL ÖLÇÜSÜNDE kalır, YALNIZ Middle yüksekliğe göre uzar (Goker); Middle ayrıca X / Z'de ölçeklenir, her parça
-     X / Y / Z taşınır (yuvadaki ✥ düğmesi). Önizleme gerçek montaj; ORİJİN görünür (Goker: "ayağı eklediğimde gösteren sahne büyük ve
-     profesyonel olsun, ayağın orijin noktasını göster").
+     kartta. Her parça: nihai ölçü (Size X / Y / Z, mm), taşıma (Move X / Y / Z), Stretch (açık = ayak boyu değişince uzar; kapalı =
+     Size Y'de sabit; varsayılan yalnız Middle açık). Önizleme gerçek montaj; ORİJİN görünür.
    • Leg sets ("kaset") — model + köşe düzeni (4/5/6) + kenar mesafeleri + varsayılan yükseklik. Yerleşim her zaman otomatiktir (gövde
      yüz rolleri); baza seti kartı / Body ayakları / yerleştirme şeridi YALNIZ bu setleri listeler (PanelEditor.LegPresetSelect).
    Kütüphane bu tarayıcıda (IndexedDB). */
@@ -14,16 +13,17 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { Canvas, useThree } from '@react-three/fiber';
 import { ContactShadows, GizmoHelper, GizmoViewport, Grid, Html, Line, OrbitControls } from '@react-three/drei';
-import { Plus, Trash2, Upload, Pencil, MoveVertical, Crosshair, Move3d, Link2, Link2Off, RotateCcw } from 'lucide-react';
+import { Plus, Trash2, Upload, Pencil, RotateCcw } from 'lucide-react';
 import { type AccessoryUnit, type LegModel, type LegModelPart, type LegPartRole, type LegPreset, useStoreFields } from '../store';
 import { UI_FONT } from './Ui';
+import { type Vec3 } from './Geometry';
 import {
   ACCESSORY_ACCEPT, type LegAssemblyPart, accessoryGeometryNow, assemblyFootprint, deleteLegModel, deleteLegPreset, importAccessoryFile, legAssembly,
-  legModelDims, legModelHasStem, legPartOffset, legPartScale, legStretchOf, newLegModel, newLegPreset, onAccessoryGeometry, presetLayout, pruneUnusedAccessoryModels, saveLegModel, saveLegPreset, updateAccessoryModel,
+  legModelDims, legModelHasStem, legPartDims, legPartOffset, legPartStretches, newLegModel, newLegPreset, onAccessoryGeometry, presetLayout, pruneUnusedAccessoryModels, saveLegModel, saveLegPreset, updateAccessoryModel,
 } from './AccessoryService';
 import {
-  ApplyBtn, CardAction, ExitBtn, FIELD_INPUT, LegLayoutCells, LegLayoutDiagram, QB_CELL_ROW, QbNum, QbSection, QbSelect, ReadCell, ReadValue,
-  SECTION_LABEL, SelectBox, rectLegPoints,
+  ApplyBtn, CARD_BODY, CARD_BODY_STYLE, CardAction, ExitBtn, FIELD_INPUT, LegLayoutCells, LegLayoutDiagram, QB_CELL_ROW, QbNum, QbSection, QbSelect,
+  QbSwitch, ROW_SEL_BAR, ROW_SEL_HEAD, ReadCell, ReadValue, RowCells, RowChevron, SECTION_LABEL, SelectBox, rectLegPoints, rowCardClass,
 } from './PanelEditor';
 import { standardLegRules } from './LegLayout';
 import { syncPlinthSetsUsingPreset } from './PlinthService';
@@ -46,7 +46,7 @@ function useDraftAssembly(leg: LegModel | null, h: number): LegAssemblyPart[] | 
   const [tick, setTick] = useState(0);
   useEffect(() => onAccessoryGeometry(() => setTick(t => t + 1)), []);
   // Parçalar + taşıma / ölçek: değişince montaj yeniden kurulur
-  const key = leg ? JSON.stringify(leg.parts.map(p => [p.modelId, p.role, p.offset ?? null, p.scale ?? null])) : '';
+  const key = leg ? JSON.stringify(leg.parts.map(p => [p.modelId, p.role, p.offset ?? null, p.dims ?? null, p.stretch ?? null, p.scale ?? null])) : '';
   // eslint-disable-next-line react-hooks/exhaustive-deps
   return useMemo(() => (leg && leg.parts.length ? legAssembly(leg, h, accessoryGeometryNow) : null), [key, h, tick]);
 }
@@ -97,7 +97,7 @@ function OriginMarker({ len, footprint }: { len: number; footprint: number }) {
           fontFamily: UI_FONT, fontSize: 9.5, fontWeight: 700, color: '#7c2d12', whiteSpace: 'nowrap', padding: '2px 6px', borderRadius: 6,
           background: 'rgba(255,247,237,0.92)', border: '1px solid rgba(234,88,12,0.35)', boxShadow: '0 1px 2px rgba(68,64,60,0.08)',
         }}>
-          Origin 0 · 0 · 0 <span style={{ fontWeight: 600, color: '#9a3412' }}>· floor contact, centre of footprint</span>
+          Origin 0 · 0 · 0
         </div>
       </Html>
     </group>
@@ -122,14 +122,13 @@ function HeightMark({ x, total }: { x: number; total: number }) {
 const HUD: React.CSSProperties = { fontFamily: UI_FONT, fontSize: 10.5, color: '#78716c', pointerEvents: 'none', fontVariantNumeric: 'tabular-nums' };
 /** AYAK ÖNİZLEME SAHNESİ: büyük 3/4 görünüş — ızgara zemin, temas gölgesi, üç ışık, eksen gizmosu, ORİJİN işareti, yükseklik ölçüsü;
  *  uzayan parça turuncu. Sürükle = döndür, tekerlek = yaklaş. */
-function LegPreview({ leg, height, stretch }: { leg: LegModel | null; height: number; stretch: LegPartRole }) {
+function LegPreview({ leg, height }: { leg: LegModel | null; height: number }) {
   const parts = useDraftAssembly(leg, height);
   const footprint = useMemo(() => (parts ? Math.max(20, assemblyFootprint(parts)) : 60), [parts]);
   const total = useMemo(() => (parts ? parts.reduce((a, p) => Math.max(a, p.y + p.size[1] * p.scaleY), 0) : height), [parts, height]);
   const R = Math.max(total, footprint) * 1.15;
   // Kamera model ya da yükseklik kutusu değişince modele yeniden oturur (kutu Enter / blur ile tek seferde yazılır).
   const fitKey = parts ? `${parts.map(p => p.modelId).join('|')}@${Math.round(total)}@${Math.round(footprint)}` : 'none';
-  const stretching = parts?.find(p => p.role === stretch);
   return (
     <div className="relative w-full rounded-[10px] overflow-hidden ring-1 ring-[#e6e0d6] shadow-[inset_0_1px_0_rgba(255,255,255,0.8)]"
       style={{ height: PREVIEW_H, background: 'radial-gradient(120% 90% at 50% 10%, #fdfcfa 0%, #f3eee7 55%, #e9e3da 100%)' }}>
@@ -148,7 +147,7 @@ function LegPreview({ leg, height, stretch }: { leg: LegModel | null; height: nu
         {parts?.map((p, i) => (
           <mesh key={`${p.modelId}-${i}`} geometry={p.geo} position={[p.x, p.y, p.z]} scale={[p.scaleX, p.scaleY, p.scaleZ]} castShadow receiveShadow>
             {/* Uzayan parça turuncu: hangisinin uzadığı görünür */}
-            <meshStandardMaterial color={p.role === stretch ? '#c2410c' : '#34312d'} roughness={p.role === stretch ? 0.55 : 0.45} metalness={0.12} />
+            <meshStandardMaterial color={p.stretch ? '#c2410c' : '#34312d'} roughness={p.stretch ? 0.55 : 0.45} metalness={0.12} />
           </mesh>
         ))}
         <OriginMarker len={Math.max(footprint * 0.8, total * 0.3)} footprint={footprint} />
@@ -158,17 +157,6 @@ function LegPreview({ leg, height, stretch }: { leg: LegModel | null; height: nu
           <GizmoViewport axisColors={[AXIS.x, AXIS.y, AXIS.z]} labelColor="#57534e" hideNegativeAxes />
         </GizmoHelper>
       </Canvas>
-      {/* HUD */}
-      <div className="absolute left-2.5 top-2 flex flex-col gap-0.5" style={HUD}>
-        <div className="flex items-center gap-1.5">
-          <span className="inline-block w-[9px] h-[9px] rounded-[2px]" style={{ background: '#c2410c' }} />
-          <span className="font-semibold text-stone-600">{stretching ? 'Middle stretches · Top / Bottom keep their size' : 'no middle part — fixed height'}</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <Crosshair size={10} strokeWidth={2.2} style={{ color: '#ea580c' }} />
-          <span>origin = floor contact · imports are re-centred (XZ centre, base at Y 0)</span>
-        </div>
-      </div>
       {parts && (
         <div className="absolute left-2.5 bottom-2 flex items-center gap-2" style={HUD}>
           <span className="font-semibold text-stone-600">H {fmt1(total)}</span><span>·</span>
@@ -176,18 +164,20 @@ function LegPreview({ leg, height, stretch }: { leg: LegModel | null; height: nu
           <span>{parts.length} part{parts.length === 1 ? '' : 's'}</span>
         </div>
       )}
-      <div className="absolute right-2.5 top-2" style={HUD}>drag · orbit &nbsp; wheel · zoom</div>
       {!parts && leg && leg.parts.length > 0 && (
-        <div className="absolute inset-0 flex items-center justify-center text-[11px] text-stone-400" style={{ fontFamily: UI_FONT }}>Loading model…</div>
+        <div className="absolute inset-0 flex items-center justify-center text-[11px] text-stone-400" style={{ fontFamily: UI_FONT }}>Loading…</div>
       )}
       {!parts && (!leg || !leg.parts.length) && (
-        <div className="absolute inset-0 flex items-center justify-center text-[11px] text-stone-400" style={{ fontFamily: UI_FONT }}>Add a model to a slot below — it is shown here standing on its origin</div>
+        <div className="absolute inset-0 flex items-center justify-center text-[11px] text-stone-400" style={{ fontFamily: UI_FONT }}>Add a model below</div>
       )}
     </div>
   );
 }
 
-/* ───────────────────────────── Ayak modeli: 3 yuva ───────────────────────────── */
+/* ───────────────────────────── Ayak modeli: 3 yuva ─────────────────────────────
+   Goker: "middle / base / bottom'da da scale ve move olsun; panel editör gibi düzenlemeye tıklayınca satırları gelsin; scale yüzde değil
+   net ölçü; her parçada stretch özelliği olsun". Yuva = Panel Editor satırı gibi: başlık (yuva · model · X / Y / Z ölçüsü · ↕ · ok);
+   tıklayınca kart: Size X / Y / Z (nihai mm) · Move X / Y / Z (mm) · Stretch · Unit · Up · Replace / Remove. Tek kart açık. */
 /** Düzenlenebilir hücre (beyaz; Panel Editor hücreleriyle aynı görünüm). */
 const EditCell = ({ label, title, children }: { label: string; title?: string; children: React.ReactNode }) => (
   <div title={title} onClick={stop} className="min-w-0 h-full pl-2 pr-1 flex items-center gap-1 rounded-[7px] bg-white ring-1 ring-[#e6e0d6] shadow-[0_1px_0_rgba(40,30,20,0.03)]">
@@ -195,104 +185,66 @@ const EditCell = ({ label, title, children }: { label: string; title?: string; c
     {children}
   </div>
 );
-const isMoved = (p?: LegModelPart) => !!p && legPartOffset(p).some(v => Math.abs(v) > 1e-6);
-const isScaled = (p?: LegModelPart) => !!p && legPartScale(p).some(v => Math.abs(v - 1) > 1e-6);
-/** TAŞIMA / ÖLÇEK (Goker: "middle parça diğer eksenlerde scale edilsin, x y z koordinatlarında da taşıyabileyim"): her parça Move X / Y / Z
- *  (mm; Y istifte — üstündekiler de kayar, orta parça boyu telafi eder, toplam yükseklik aynı kalır); yalnız Middle'da Scale X / Z (%) —
- *  kilitliyken X = Z (yuvarlak ayak yuvarlak kalır). Top / Bottom model ölçüsünde kalır. */
-function PartTransform({ part, size, onChange }: { part: LegModelPart; size: [number, number, number]; onChange: (patch: Partial<LegModelPart>) => void }) {
-  const [ox, oy, oz] = legPartOffset(part), [sx, sz] = legPartScale(part);
-  const stem = part.role === 'stem';
-  const [linked, setLinked] = useState(Math.abs(sx - sz) < 1e-6);
-  const setOff = (i: number, v: number) => { const o = [ox, oy, oz] as [number, number, number]; o[i] = v; onChange({ offset: o }); };
-  const setScale = (i: 0 | 1, pct: number) => {
-    const v = Math.max(1, pct) / 100;
-    onChange({ scale: linked ? [v, v] : (i === 0 ? [v, sz] : [sx, v]) });
-  };
-  const num = (v: number, on: (v: number) => void, min = -100000) => <QbNum value={v} min={min} w={44} onCommit={on} />;
-  return (
-    <div className="px-1.5 pb-1.5 pt-0.5 flex flex-col gap-1">
-      <div className="grid grid-cols-3 gap-x-1" style={QB_CELL_ROW}>
-        <EditCell label="Move X" title="Move along X (mm) — red axis">{num(ox, v => setOff(0, v))}</EditCell>
-        <EditCell label="Move Y" title="Move along Y (mm) — the parts above move with it; the middle part absorbs it, the leg height stays">{num(oy, v => setOff(1, v))}</EditCell>
-        <EditCell label="Move Z" title="Move along Z (mm) — blue axis">{num(oz, v => setOff(2, v))}</EditCell>
-      </div>
-      {stem ? (
-        <div className="grid grid-cols-3 gap-x-1" style={QB_CELL_ROW}>
-          <EditCell label="Scale X %" title={`Scale the middle part along X — ${fmt1(size[0] * sx)} mm wide`}>{num(sx * 100, v => setScale(0, v), 1)}</EditCell>
-          <EditCell label="Scale Z %" title={`Scale the middle part along Z — ${fmt1(size[2] * sz)} mm deep`}>{num(sz * 100, v => setScale(1, v), 1)}</EditCell>
-          <div className="min-w-0 h-full flex items-center gap-1">
-            <button type="button" onClick={e => { stop(e); if (!linked) onChange({ scale: [sx, sx] }); setLinked(!linked); }}
-              title={linked ? 'X and Z scale together (round stays round) — click to unlock' : 'X and Z scale separately — click to lock X = Z'}
-              className={`h-full flex-1 min-w-0 px-2 flex items-center justify-center gap-1.5 rounded-[7px] ring-1 text-[10px] font-semibold uppercase tracking-[0.06em] transition-colors
-                ${linked ? 'bg-[#44403c] text-white ring-[#44403c]' : 'bg-white text-stone-500 ring-[#e6e0d6] hover:bg-[#faf7f2]'}`}>
-              {linked ? <Link2 size={12} strokeWidth={2.2} /> : <Link2Off size={12} strokeWidth={2.2} />}<span className="truncate">X = Z</span>
-            </button>
-            <button type="button" title="Reset move and scale" onClick={e => { stop(e); onChange({ offset: undefined, scale: undefined }); setLinked(true); }} className={ICON_BTN}>
-              <RotateCcw size={12} strokeWidth={2} />
-            </button>
-          </div>
-        </div>
-      ) : (
-        <div className="flex items-center gap-1 px-0.5">
-          <span className="text-[10px] text-stone-400">Keeps its model size — only the middle part stretches and scales</span>
-          <div className="flex-1" />
-          <button type="button" title="Reset move" onClick={e => { stop(e); onChange({ offset: undefined }); }} className={ICON_BTN}><RotateCcw size={12} strokeWidth={2} /></button>
-        </div>
-      )}
-    </div>
-  );
-}
-function SlotRow({ label, role, draft, setDraft, onPick, busy }: {
-  label: string; role: LegPartRole; draft: LegModel; setDraft: (m: LegModel) => void; onPick: (role: LegPartRole) => void; busy: boolean;
+const SLOT_ROLE_LABEL: Record<LegPartRole, string> = { top: 'Top', stem: 'Middle', base: 'Bottom' };
+function SlotRow({ role, draft, setDraft, onPick, busy, open, onToggle }: {
+  role: LegPartRole; draft: LegModel; setDraft: (m: LegModel) => void; onPick: (role: LegPartRole) => void; busy: boolean;
+  open: boolean; onToggle: () => void;
 }) {
   const { accessoryModels } = useStoreFields('accessoryModels');
-  const [open, setOpen] = useState(false);
   const part = draft.parts.find(p => p.role === role);
   const m = part ? accessoryModels.find(x => x.id === part.modelId) : undefined;
-  const stem = role === legStretchOf(draft);
-  const moved = isMoved(part), scaled = isScaled(part);
   const setPart = (patch: Partial<LegModelPart>) => setDraft({ ...draft, parts: draft.parts.map(p => (p.role === role ? { ...p, ...patch } : p)) });
-  const [sx, sz] = part ? legPartScale(part) : [1, 1];
-  return (
-    <div className="w-full min-w-0 rounded-[8px] bg-white ring-1 ring-[#e6e0d6]">
-      <div className="h-[34px] pl-2 pr-1 flex items-center gap-2">
-        <span className="shrink-0 w-[46px] text-[10px] font-semibold uppercase tracking-[0.06em] text-stone-500">{label}</span>
-        {m ? <>
-          <div className="flex-1 min-w-0 flex flex-col leading-tight" title={m.fileName}>
-            <span className="truncate text-[11.5px] font-medium text-stone-700">{m.name}</span>
-            <span className={`truncate ${MUTED}`}>
-              {stem && scaled ? <>{fmt1(m.size[0] * sx)} × <span className="text-[#c2410c]">↕</span> × {fmt1(m.size[2] * sz)}</>
-                : <>{fmt1(m.size[0])} × {stem ? <span className="text-[#c2410c]">↕</span> : fmt1(m.size[1])} × {fmt1(m.size[2])}</>}
-              {moved && part ? <span className="text-stone-500"> · moved {legPartOffset(part).map(v => fmt1(v)).join(' / ')}</span> : null}
-            </span>
-          </div>
-          <QbSelect value={m.unit} options={UNIT_OPTS} w={40} onChange={v => void updateAccessoryModel(m.id, { unit: v })} />
-          <QbSelect value={m.upAxis} options={UP_OPTS} w={36} onChange={v => void updateAccessoryModel(m.id, { upAxis: v })} />
-        </> : (
-          <button type="button" disabled={busy} onClick={e => { stop(e); onPick(role); }}
-            className="flex-1 min-w-0 h-[24px] flex items-center justify-center gap-1.5 rounded-[6px] border border-dashed border-[#d6cfc3] text-[11px] font-semibold text-stone-500 hover:bg-[#faf7f2] hover:text-stone-700">
-            <Upload size={12} strokeWidth={2} />Add model
-          </button>
-        )}
-        {/* Uzayan parça her zaman Middle (rozet, düğme değil); Top / Bottom model ölçüsünde */}
-        {stem
-          ? <span title="Stretches with the leg height (Top and Bottom keep their model size)"
-            className="shrink-0 w-[24px] h-[24px] flex items-center justify-center rounded-[6px] bg-orange-50 text-[#c2410c] ring-1 ring-orange-300"><MoveVertical size={12} strokeWidth={2.2} /></span>
-          : <span className="shrink-0 w-[24px]" />}
-        {m && (
-          <button type="button" title={stem ? 'Move / scale this part' : 'Move this part'} onClick={e => { stop(e); setOpen(o => !o); }}
-            className={`${ICON_BTN} relative ${open ? '!bg-[#44403c] !text-white' : ''}`}>
-            <Move3d size={12} strokeWidth={1.9} />
-            {(moved || scaled) && !open && <span className="absolute top-[3px] right-[3px] w-[5px] h-[5px] rounded-full bg-[#ea580c]" />}
-          </button>
-        )}
-        {m && <button type="button" title="Replace" disabled={busy} onClick={e => { stop(e); onPick(role); }} className={ICON_BTN}><Upload size={12} strokeWidth={1.9} /></button>}
-        {m && <button type="button" title="Remove" onClick={e => { stop(e); setDraft({ ...draft, parts: draft.parts.filter(p => p.role !== role) }); }} className={DEL_BTN}>
-          <Trash2 size={12} strokeWidth={1.9} />
-        </button>}
+  const label = SLOT_ROLE_LABEL[role];
+  if (!part || !m) {
+    return (
+      <div className={`${rowCardClass(false, false, false)} h-[34px] !flex-row items-center gap-2 pl-2.5 pr-1.5`}>
+        <span className="shrink-0 w-[50px] text-[10px] font-semibold uppercase tracking-[0.06em] text-stone-500">{label}</span>
+        <button type="button" disabled={busy} onClick={e => { stop(e); onPick(role); }}
+          className="flex-1 min-w-0 h-[24px] flex items-center justify-center gap-1.5 rounded-[6px] border border-dashed border-[#d6cfc3] text-[11px] font-semibold text-stone-500 hover:bg-white hover:text-stone-700">
+          <Upload size={12} strokeWidth={2} />Add model
+        </button>
       </div>
-      {open && m && part && <PartTransform part={part} size={m.size} onChange={setPart} />}
+    );
+  }
+  const dims = legPartDims(part, m.size), off = legPartOffset(part), st = legPartStretches(part);
+  const setDim = (i: number, v: number) => { const d = [...dims] as Vec3; d[i] = Math.max(0.1, v); setPart({ dims: d, scale: undefined }); };
+  const setOff = (i: number, v: number) => { const o = [...off] as Vec3; o[i] = v; setPart({ offset: o }); };
+  const num = (v: number, on: (v: number) => void, min = -100000) => <QbNum value={v} min={min} w={46} onCommit={on} />;
+  const toggle = (e: React.MouseEvent) => { stop(e); onToggle(); };
+  return (
+    <div className={rowCardClass(open, false, false)}>
+      <div onClick={toggle} className={`relative h-[34px] pl-2.5 pr-1 flex items-center gap-2 cursor-pointer ${open ? ROW_SEL_HEAD : ''}`}>
+        {open && <span className={ROW_SEL_BAR} />}
+        <span className="shrink-0 w-[50px] text-[10px] font-semibold uppercase tracking-[0.06em] text-stone-500">{label}</span>
+        <span className="flex-1 min-w-0 truncate text-[11.5px] font-medium text-stone-700" title={m.fileName}>{m.name}</span>
+        <RowCells cells={[['X', dims[0]], ['Y', st ? '↕' : dims[1]], ['Z', dims[2]]]} title={`${fmt1(dims[0])} × ${fmt1(dims[1])} × ${fmt1(dims[2])} mm${st ? ' · stretches' : ''}`} />
+        <RowChevron open={open} onClick={toggle} />
+      </div>
+      {open && (
+        <div className={CARD_BODY} style={CARD_BODY_STYLE} onClick={stop}>
+          <div className="flex flex-col gap-1">
+            <div className="grid grid-cols-3 gap-x-1" style={QB_CELL_ROW}>
+              <EditCell label="Size X">{num(dims[0], v => setDim(0, v), 0.1)}</EditCell>
+              <EditCell label="Size Y" title={st ? 'Stretches with the leg height (this value sets its share)' : undefined}>{num(dims[1], v => setDim(1, v), 0.1)}</EditCell>
+              <EditCell label="Size Z">{num(dims[2], v => setDim(2, v), 0.1)}</EditCell>
+              <EditCell label="Move X">{num(off[0], v => setOff(0, v))}</EditCell>
+              <EditCell label="Move Y">{num(off[1], v => setOff(1, v))}</EditCell>
+              <EditCell label="Move Z">{num(off[2], v => setOff(2, v))}</EditCell>
+              <EditCell label="Stretch" title={st ? 'Stretches when the leg height changes' : 'Fixed at Size Y'}>
+                <QbSwitch on={st} onToggle={() => setPart({ stretch: !st })} />
+              </EditCell>
+              <EditCell label="Unit"><QbSelect value={m.unit} options={UNIT_OPTS} w={40} onChange={v => void updateAccessoryModel(m.id, { unit: v })} /></EditCell>
+              <EditCell label="Up"><QbSelect value={m.upAxis} options={UP_OPTS} w={40} onChange={v => void updateAccessoryModel(m.id, { upAxis: v })} /></EditCell>
+            </div>
+            <div className="flex items-center gap-1 pt-0.5">
+              <CardAction compact icon={Upload} label="Replace" title="Replace the model file (size and move are kept)" onClick={() => onPick(role)} />
+              <CardAction compact icon={RotateCcw} label="Reset" title="Model size, no move" onClick={() => setPart({ dims: undefined, offset: undefined, scale: undefined })} />
+              <div className="flex-1" />
+              <CardAction compact icon={Trash2} label="Remove" title="Remove this part" onClick={() => setDraft({ ...draft, parts: draft.parts.filter(p => p.role !== role) })} />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -301,6 +253,7 @@ function LegModelEditor({ draft, setDraft, onSave, onCancel }: { draft: LegModel
   const [testH, setTestH] = useState(100);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [openSlot, setOpenSlot] = useState<LegPartRole | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const slotRef = useRef<LegPartRole>('stem');
   const draftRef = useRef(draft); draftRef.current = draft;
@@ -311,12 +264,13 @@ function LegModelEditor({ draft, setDraft, onSave, onCancel }: { draft: LegModel
     try {
       const m = await importAccessoryFile(f);
       const role = slotRef.current, cur = draftRef.current;
-      // Model değiştirilirse yuvanın taşıma / ölçeği korunur
+      // Model değiştirilirse yuvanın ölçü / taşıma / uzama ayarı korunur
       const prev = cur.parts.find(p => p.role === role);
       setDraft({ ...cur, parts: [...cur.parts.filter(p => p.role !== role), { ...(prev ?? {}), modelId: m.id, role }] });
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setBusy(false); }
   };
+  const stretchy = legModelHasStem(draft), natural = legModelDims(draft)?.height ?? 0;
   return (
     <div className="flex flex-col gap-1.5" onClick={stop}>
       <div className="flex items-center gap-1.5">
@@ -327,29 +281,18 @@ function LegModelEditor({ draft, setDraft, onSave, onCancel }: { draft: LegModel
         <ApplyBtn enabled={!busy && draft.parts.length > 0} onClick={onSave} title="Save" />
         <ExitBtn onClick={onCancel} />
       </div>
-      <LegPreview leg={draft} height={testH} stretch={legStretchOf(draft)} />
-      {/* AYAK YÜKSEKLİĞİ (Goker: "yüksekliği bir kutucukla gireyim, slider istemiyorum"): mm kutusu — orta parça bu yüksekliğe uzar
-          (set yüksekliği gibi). Orta parça yoksa ayak sabit boydur: kutu pasif, doğal yükseklik yazılır. */}
-      {(() => {
-        const stretchy = legModelHasStem(draft), natural = legModelDims(draft)?.height ?? 0;
-        return (
-          <div className="grid grid-cols-2 gap-x-1" style={QB_CELL_ROW}>
-            {stretchy ? (
-              <EditCell label="Leg height" title="Leg height (mm) — the middle part stretches to it, like the set height does; Top / Bottom keep their size">
-                <QbNum value={testH} min={1} w={56} onCommit={setTestH} />
-              </EditCell>
-            ) : (
-              <ReadCell label="Leg height" title="No middle part — the leg keeps its natural height (add a Middle model to make it stretch)">
-                <ReadValue color="#a8a29e">{natural ? `${fmt1(natural)} · fixed` : '—'}</ReadValue>
-              </ReadCell>
-            )}
-            <ReadCell label="Natural height" title="Sum of the parts as imported (middle part not stretched), with the Y moves">
-              <ReadValue color="#57534e">{natural ? fmt1(natural) : '—'}</ReadValue>
-            </ReadCell>
-          </div>
-        );
-      })()}
-      {SLOTS.map(s => <SlotRow key={s.role} label={s.label} role={s.role} draft={draft} setDraft={setDraft} onPick={pick} busy={busy} />)}
+      <LegPreview leg={draft} height={testH} />
+      {/* Ayak yüksekliği (mm kutusu): uzayan parçalar bu boya uzar; uzayan parça yoksa ayak doğal boyunda sabit */}
+      <div className="grid grid-cols-2 gap-x-1" style={QB_CELL_ROW}>
+        {stretchy
+          ? <EditCell label="Leg height"><QbNum value={testH} min={1} w={56} onCommit={setTestH} /></EditCell>
+          : <ReadCell label="Leg height"><ReadValue color="#a8a29e">{natural ? `${fmt1(natural)} · fixed` : '—'}</ReadValue></ReadCell>}
+        <ReadCell label="Natural height"><ReadValue color="#57534e">{natural ? fmt1(natural) : '—'}</ReadValue></ReadCell>
+      </div>
+      <div className="flex flex-col gap-1">
+        {SLOTS.map(s => <SlotRow key={s.role} role={s.role} draft={draft} setDraft={setDraft} onPick={pick} busy={busy}
+          open={openSlot === s.role} onToggle={() => setOpenSlot(o => (o === s.role ? null : s.role))} />)}
+      </div>
       <input ref={fileRef} type="file" accept={ACCESSORY_ACCEPT} className="hidden" onChange={e => { void onFile(e.target.files); e.target.value = ''; }} />
       {(busy || error) && <div className={`px-1 text-[10.5px] ${error ? 'text-red-600' : 'text-stone-400'}`}>{busy ? 'Importing…' : error}</div>}
     </div>
@@ -392,12 +335,11 @@ function LegPresetEditor({ draft, setDraft, legModels, onSave, onCancel }: {
       </div>
       <LegLayoutDiagram points={points} footprint={[{ x: 0, y: 0 }, { x: SAMPLE_W, y: 0 }, { x: SAMPLE_W, y: SAMPLE_D }, { x: 0, y: SAMPLE_D }]} facing="z+"
         diameter={diameter} active={hint} className="w-full" />
-      <LegLayoutCells legs={L} editable diameter={diameter} diameterTitle={lm ? `Foot diameter — from the model "${lm.name}"` : 'Foot diameter (no model: 50)'}
+      <LegLayoutCells legs={L} diameter={diameter}
         onChange={setLayout} hint={hint} onHint={setHint}
-        heightCell={<ReadCell label="Height" title="Default height of a free set (a set under a bottom panel follows the panel)">
+        heightCell={<EditCell label="Height" title="Default height of a free set (a set under a bottom panel follows the panel)">
           <QbNum value={draft.height} min={1} onCommit={v => setDraft({ ...draft, height: v })} />
-        </ReadCell>} />
-      <div className="px-1 text-[10px] text-stone-400">Sample body {SAMPLE_W} × {SAMPLE_D} · when placed, legs follow the real body outline and its face roles</div>
+        </EditCell>} />
     </div>
   );
 }

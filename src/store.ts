@@ -338,8 +338,8 @@ export interface QuickBodyConfig {
     count: 0 | 4 | 5 | 6; height: number; diameter: number; side: number; front: number; rear: number;
     /** Ayak seti (Aksesuar sekmesi; seçilmemişse kütüphanedeki ilk set) — model + Ø her zaman setten (PanelGroupService.quickLegsOf). */
     presetId?: string | null; legModelId?: string | null;
-    /** Custom: adet / mesafeler buradaki değerler; Auto (yok): setten canlı. */
-    custom?: boolean;
+    /** Düzen / mesafeler elle girildi: adet / mesafeler buradaki değerler; yoksa setten canlı (eski kayıtta `custom` aynı anlamda). */
+    ownLayout?: boolean; custom?: boolean;
     /** Eski kayıt: ayak ayak kurallar (yerleşimde okunmaz). */
     rules?: LegRule[] | null;
   };
@@ -358,11 +358,13 @@ export type LegPartRole = 'base' | 'stem' | 'top';
 export interface AccessoryModel {
   id: string; name: string; fileName: string; ext: string; unit: AccessoryUnit; upAxis: 'y' | 'z'; size: Vec3; createdAt: number;
 }
-/** Ayak parçası. `offset` = TAŞIMA (mm; x / y / z — x·z düz kaydırma, y istif içinde: üstteki parçalar da kayar, orta parça boyu
- *  telafi eder → toplam yükseklik değişmez). `scale` = YALNIZ orta parça: X / Z ölçek çarpanı (Y set yüksekliğinden gelir). */
-export interface LegModelPart { modelId: string; role: LegPartRole; offset?: Vec3; scale?: [number, number] }
-/** Ayak modeli: 3 yuva (alt / orta / üst = base / stem / top). Üst ve alt model ölçüsünde kalır; YALNIZ orta parça yüksekliğe göre uzar
- *  (Goker). `stretch` = eski kayıt alanı, okunmaz. */
+/** Ayak parçası (Goker: "her parçada scale ve move olsun; scale yüzde değil net ölçü; her parçada stretch özelliği olsun").
+ *  `dims` = NİHAİ ölçü (mm; x / y / z — yoksa modelin kendi ölçüsü). `offset` = TAŞIMA (mm; x·z düz kaydırma, y istif içinde: üstteki
+ *  parçalar da kayar, uzayan parçalar telafi eder → toplam yükseklik değişmez). `stretch` = ayak boyu değişince bu parça da uzar /
+ *  kısalır (yoksa: orta parça evet, üst / alt hayır); kapalıysa `dims[1]` boyunda sabit kalır. `scale` = eski kayıt (orta parça X/Z çarpanı). */
+export interface LegModelPart { modelId: string; role: LegPartRole; offset?: Vec3; dims?: Vec3; stretch?: boolean; scale?: [number, number] }
+/** Ayak modeli: 3 yuva (alt / orta / üst = base / stem / top); hangi parçaların uzadığı parça başına (`LegModelPart.stretch`).
+ *  `stretch` = eski kayıt alanı, okunmaz. */
 export interface LegModel { id: string; name: string; parts: LegModelPart[]; stretch?: LegPartRole; createdAt: number }
 /** Ayak seti ("kaset"): hangi model, AYAK AYAK kurallar (LegLayout.LegRule — çapa + mm; iz çokgenine göre çözülür), varsayılan yükseklik.
  *  count / side / front / rear: standart düzen üreteci parametreleri (eski kayıtlarda kural yoksa düzen bunlardan türer). */
