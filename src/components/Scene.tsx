@@ -20,9 +20,9 @@ import {
 } from './Geometry';
 import {
   type PlinthPick, type PlinthRegion, confirmPlinthPick, plinthBoxOf, plinthBoxesOf, plinthCandidates, plinthLegSpots, plinthPickBox,
-  plinthRowKey, plinthSetsOf, isPlinthRow, finishPlinthEdit, plinthRegionOf, prismGeometry, bodyFrontAxis, bodyFaces,
+  plinthRowKey, plinthSetsOf, isPlinthRow, finishPlinthEdit, plinthRegionOf, prismGeometry, bodyFrontAxis, bodyFaces, setBodyFaceRole,
 } from './PlinthService';
-import { FACE_ROLE_LABEL } from './LegLayout';
+import { FACE_ROLES, FACE_ROLE_LABEL, type FaceRole } from './LegLayout';
 import { type LegAssemblyPart, legAssembly, onAccessoryGeometry } from './AccessoryService';
 import {
   confirmRefCavityExtrude, groupBoundsPanelPredicate, isInteriorPanel, repickObstacles, collectObstacles,
@@ -1844,7 +1844,7 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
     'showOutlines', 'setSelectedPanelRow', 'panelSelectMode', 'faceEditMode', 'filletMode', 'raycastMode', 'shapes', 'faceExtrudeMode',
     'faceExtrudeValueMode', 'faceExtrudeTargetPanelId', 'faceExtrudeSelectedFace', 'faceExtrudeRefCandidate', 'setFaceExtrudeRefCandidate',
     'panelMoveMode', 'panelMoveValueMode', 'panelMoveRefSourceVertex', 'panelMoveRefTargetPanelId', 'panelRotateMode', 'volumePickMode',
-    'faceExtrudeCavityGroupId', 'doorPickMode', 'backPickMode', 'plinthPickMode', 'faceExtrudePlinthId', 'faceRoleHover', 'faceRoleLabelsShapeId');
+    'faceExtrudeCavityGroupId', 'doorPickMode', 'backPickMode', 'plinthPickMode', 'faceExtrudePlinthId', 'faceRoleHover', 'showFaceRoles');
   const { scene } = useThree();
   const meshRef = useRef<THREE.Mesh>(null);
   const groupRef = useRef<THREE.Group>(null);
@@ -2035,7 +2035,7 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
         {S.faceExtrudeMode && S.faceExtrudeCavityGroupId && <CavityEditOverlay shape={shape} />}
         {S.faceExtrudeMode && S.faceExtrudePlinthId && <PlinthEditOverlay shape={shape} />}
         <VirtualFaceOverlay shape={shape} />
-        {S.faceRoleLabelsShapeId === shape.id && <BodyFaceRoleLabels shape={shape} hovered={S.faceRoleHover?.shapeId === shape.id ? S.faceRoleHover!.gi : null} />}
+        {S.showFaceRoles && isSelected && <BodyFaceRoleLabels shape={shape} hovered={S.faceRoleHover?.shapeId === shape.id ? S.faceRoleHover!.gi : null} />}
         {S.faceRoleHover && S.faceRoleHover.shapeId === shape.id && <FaceRoleHighlight shape={shape} faces={refFaces} groups={refFaceGroups} gi={S.faceRoleHover.gi} />}
       </group>
 
@@ -2548,54 +2548,49 @@ export function ImportedFoot({ legModelId, h, d, active, xray, onClick, pickable
   );
 }
 const ROLE_CHIP: Record<string, string> = { front: '#c2410c', rear: '#44403c', left: '#2563eb', right: '#0f766e', top: '#78716c', bottom: '#78716c' };
-/** KÜBÜN ÜZERİNDE ROLLER (Goker: "kübün üzerinde hangi role ait olduğunu göster; rolleri Parameters'ta listeyle yönet"): Faces listesi
- *  açıkken seçili gövdenin her düz yüzünün ortasında rol rozeti (parametreyle üstüne yazılan = dolu, otomatik = soluk; listede
- *  üzerine gelinen büyür). */
+/** KÜBÜN ÜZERİNDE ROLLER (Goker: "Show face roles açılınca her yüze rolünü yaz; sahnedeki role tıklayınca listeden değiştireyim, listeye
+ *  de etki etsin"): seçili gövdenin her düz yüzünün ortasında TIKLANABİLİR rol rozeti — rozet bir seçim kutusudur (6 rol), seçim
+ *  gövde parametresine yazılır (Parameters › Faces listesi aynı store'u okur). Üstüne yazılan = dolu, otomatik = soluk; listede
+ *  üzerine gelinen yüz vurgu bileşeninde. */
 const BodyFaceRoleLabels: React.FC<{ shape: any; hovered: number | null }> = ({ shape, hovered }) => {
-  const { doorGroups } = useStoreFields('doorGroups');
+  const { doorGroups, setFaceRoleHover } = useStoreFields('doorGroups', 'setFaceRoleHover');
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const faces = useMemo(() => bodyFaces(shape), [shape, shape.parameters?.faceRoles, doorGroups]);
+  const stopAll = { onPointerDown: stopEvent, onPointerUp: stopEvent, onClick: stopEvent, onDoubleClick: stopEvent, onContextMenu: stopEvent };
   return (
     <>
       {faces.map(f => {
         const hot = hovered === f.gi;
-        if (hot) return null;   // vurgu bileşeni kendi rozetini çizer
         return (
           <Html key={f.gi} position={[f.center[0] + f.normal[0] * 6, f.center[1] + f.normal[1] * 6, f.center[2] + f.normal[2] * 6]} center zIndexRange={[880, 900]}
             style={{ pointerEvents: 'none' }}>
-            <div style={{
-              fontFamily: FONT, fontSize: 9, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', lineHeight: '14px', padding: '0 6px',
-              borderRadius: 4, whiteSpace: 'nowrap', border: `1px solid ${ROLE_CHIP[f.role]}`,
-              background: f.overridden ? ROLE_CHIP[f.role] : 'rgba(255,252,247,0.92)', color: f.overridden ? '#fff' : ROLE_CHIP[f.role],
-              boxShadow: '0 1px 3px rgba(40,30,20,0.22)',
-            }}>
-              {FACE_ROLE_LABEL[f.role]}
-            </div>
+            <select value={f.role} title={`${FACE_ROLE_LABEL[f.role]} — click to change this face's role`} {...stopAll}
+              onChange={e => setBodyFaceRole(shape.id, f.gi, e.target.value as FaceRole)}
+              onMouseEnter={() => setFaceRoleHover({ shapeId: shape.id, gi: f.gi })} onMouseLeave={() => setFaceRoleHover(null)}
+              style={{
+                pointerEvents: 'auto', cursor: 'pointer', appearance: 'none', WebkitAppearance: 'none', outline: 'none',
+                fontFamily: FONT, fontSize: hot ? 10 : 9, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', lineHeight: '14px', padding: '0 7px',
+                borderRadius: 4, whiteSpace: 'nowrap', border: `1px solid ${ROLE_CHIP[f.role]}`,
+                background: f.overridden || hot ? ROLE_CHIP[f.role] : 'rgba(255,252,247,0.92)', color: f.overridden || hot ? '#fff' : ROLE_CHIP[f.role],
+                boxShadow: hot ? '0 1px 4px rgba(40,30,20,0.35)' : '0 1px 3px rgba(40,30,20,0.22)', transition: 'font-size 0.1s',
+              }}>
+              {FACE_ROLES.map(r => <option key={r} value={r} style={{ textTransform: 'none', color: '#1c1917', background: '#fff' }}>{FACE_ROLE_LABEL[r]}</option>)}
+            </select>
           </Html>
         );
       })}
     </>
   );
 };
-/** YÜZ ROLÜ VURGUSU (Parameters › Faces satırına gelince): yüz grubu turuncu dolgu + kenar, ortasında rol rozeti. */
-const FaceRoleHighlight: React.FC<{ shape: any; faces: FaceData[]; groups: CoplanarFaceGroup[]; gi: number }> = ({ shape, faces, groups, gi }) => {
+/** YÜZ ROLÜ VURGUSU (Faces satırına ya da küpteki rozete gelince): yüz grubu turuncu dolgu + kenar (rozet BodyFaceRoleLabels'ta). */
+const FaceRoleHighlight: React.FC<{ shape: any; faces: FaceData[]; groups: CoplanarFaceGroup[]; gi: number }> = ({ faces, groups, gi }) => {
   const geo = useMemo(() => groupHighlight(faces, groups, gi), [faces, groups, gi]);
   useDisposable(geo);
-  const face = useMemo(() => bodyFaces(shape).find(f => f.gi === gi), [shape, gi]);
-  if (!geo || !face) return null;
-  const at: Vec3 = [face.center[0] + face.normal[0] * 4, face.center[1] + face.normal[1] * 4, face.center[2] + face.normal[2] * 4];
+  if (!geo) return null;
   return (
     <>
       <OverlayMesh geometry={geo} order={12} color={SEL_COLORS.active} opacity={SEL_COLORS.faceActiveOpacity} />
       <FaceOutline geometry={geo} color={SEL_COLORS.edge} width={SEL_COLORS.extrudeEdgeWidth} />
-      <Html position={at} center zIndexRange={[900, 950]} style={{ pointerEvents: 'none' }}>
-        <div style={{
-          fontFamily: FONT, fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', lineHeight: '16px', padding: '1px 7px',
-          borderRadius: 4, whiteSpace: 'nowrap', background: ROLE_CHIP[face.role], color: '#fff', boxShadow: '0 1px 3px rgba(40,30,20,0.3)',
-        }}>
-          {FACE_ROLE_LABEL[face.role]}{face.overridden ? ' ·' : ''}
-        </div>
-      </Html>
     </>
   );
 };

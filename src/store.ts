@@ -488,9 +488,9 @@ export interface AppState {
   plinthPickFacing: AxisDir | null; setPlinthPickFacing: (a: AxisDir | null) => void;
   /** Yerleştirmede kullanılacak ayak seti (LegPreset id; null = yerleşik ayak, varsayılan düzen). */
   plinthPickPresetId: string | null; setPlinthPickPresetId: (id: string | null) => void;
-  /** GÖVDE YÜZ ROLLERİ (Parameters › Faces): liste açıkken gövdenin yüzlerinde rol etiketleri (`faceRoleLabelsShapeId`), listede
-   *  üzerine gelinen yüz 3D'de vurgulanır (yüz grubu indeksi, bodyFaces). */
-  faceRoleLabelsShapeId: string | null; setFaceRoleLabelsShapeId: (id: string | null) => void;
+  /** GÖVDE YÜZ ROLLERİ (Parameters › Faces): "Show face roles" açıkken (varsayılan kapalı) liste görünür ve seçili gövdenin yüzlerinde
+   *  tıklanabilir rol rozetleri çizilir (iki yön de store'dan: sahnedeki rozet ↔ liste); listede üzerine gelinen yüz 3D'de vurgulanır. */
+  showFaceRoles: boolean; setShowFaceRoles: (b: boolean) => void;
   faceRoleHover: { shapeId: string; gi: number } | null; setFaceRoleHover: (h: { shapeId: string; gi: number } | null) => void;
 
   /* AKSESUAR KÜTÜPHANESİ (AccessoryService): modeller / ayak modelleri / ayak setleri — IndexedDB'den yüklenir, burada canlı kopya. */
@@ -796,7 +796,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   plinthPickHeight: 100, setPlinthPickHeight: (h) => set({ plinthPickHeight: Math.max(1, h), plinthPickCandidates: [], plinthPickIndex: 0 }),
   plinthPickFacing: null, setPlinthPickFacing: (a) => set({ plinthPickFacing: a }),
   plinthPickPresetId: null, setPlinthPickPresetId: (id) => set({ plinthPickPresetId: id }),
-  faceRoleLabelsShapeId: null, setFaceRoleLabelsShapeId: (id) => set({ faceRoleLabelsShapeId: id }),
+  showFaceRoles: false, setShowFaceRoles: (b) => set({ showFaceRoles: b, ...(b ? {} : { faceRoleHover: null }) }),
   faceRoleHover: null, setFaceRoleHover: (h) => set({ faceRoleHover: h }),
 
   accessoryModels: [], legModels: [], legPresets: [],

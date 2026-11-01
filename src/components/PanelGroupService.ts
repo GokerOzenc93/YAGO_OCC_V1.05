@@ -14,7 +14,7 @@ import {
   deleteBackGroupWithMembers,
 } from './BackService';
 import { doorJointForBond, moveDoorJointTo, isDoorPanel } from './DoorService';
-import { plinthBoxesOf, plinthSetsOf, removeQuickBodyPlinth, syncQuickBodyPlinth } from './PlinthService';
+import { plinthLegBoxes, plinthSetsOf, removeQuickBodyPlinth, syncQuickBodyPlinth } from './PlinthService';
 import { legModelById, legModelDims } from './AccessoryService';
 
 /* PANEL GRUP SERVİSİ — 1) kapak / arkalık / raf-dikme ortak bölme yardımcıları · 2) raf / dikme grupları · 3) hızlı gövde. */
@@ -1531,8 +1531,8 @@ export function collectObstacles(
     if (!b) continue;
     if (panelHasRotation(p)) { splitBoxes.push(b); tilted.push(p); } else obstacles.push(b);
   }
-  // BAZA AYAĞI SETLERİ (Goker: "ayak konduktan sonra raf ve dikme sadece o hacme kadar çalışmalı"): set hacmi (bölge kutuları) her zaman engeldir.
-  for (const ps of plinthSetsOf(parent.id)) obstacles.push(...plinthBoxesOf(ps));
+  // BAZA AYAĞI SETLERİ: yalnız AYAKLAR engeldir (Goker: "ayağın aksesuarına çarpmıyorsa panel o kısma yerleşsin") — set hacmi değil.
+  for (const ps of plinthSetsOf(parent.id)) obstacles.push(...plinthLegBoxes(ps));
   return { obstacles, splitBoxes, tiltFaces: tiltedPanelFaces(parent, tilted) };
 }
 

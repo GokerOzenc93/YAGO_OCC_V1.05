@@ -302,9 +302,16 @@ export function plinthRegionOf(s: PlinthSet, shapes = useAppStore.getState().sha
 export function plinthBoxOf(s: PlinthSet, shapes = useAppStore.getState().shapes, vfs = useAppStore.getState().virtualFaces): CavityBox {
   return plinthRegionOf(s, shapes, vfs).bbox;
 }
-/** Bölge kutuları (raf/dikme engeli, yüz seçimi). */
+/** Bölge kutuları (hacim çizimi / yüz seçimi / setin üstüne panel). */
 export function plinthBoxesOf(s: PlinthSet, shapes?: Shape[], vfs?: VirtualFace[]): CavityBox[] {
   return plinthRegionOf(s, shapes, vfs).boxes;
+}
+/** AYAK KUTULARI (Goker: "baza ayağı varsa bile ayağın aksesuarına çarpmıyorsa panel o kısma yerleşsin"): engel ve damga set hacmi
+ *  DEĞİL, yalnız ayakların kendisidir — her ayak için taban diski + montaj tablası (R = 1.15·Ø/2) çevresinde zeminden setin üstüne kutu. */
+export function plinthLegBoxes(s: PlinthSet, shapes = useAppStore.getState().shapes, vfs?: VirtualFace[]): CavityBox[] {
+  const b = plinthRegionOf(s, shapes, vfs).bbox;
+  const R = legRadius(s.legs);
+  return plinthLegSpots(s, shapes).map(p => ({ min: [p.x - R, b.min[1], p.z - R] as Vec3, max: [p.x + R, b.max[1], p.z + R] as Vec3 }));
 }
 export const plinthHeight = (s: PlinthSet, shapes?: Shape[]) => { const b = plinthBoxOf(s, shapes); return b.max[1] - b.min[1]; };
 /** Zeminden setin üstüne (üst üste panel derinliği). */

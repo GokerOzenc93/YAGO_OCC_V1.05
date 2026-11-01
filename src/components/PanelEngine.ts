@@ -6,7 +6,7 @@ import { type CoplanarFaceGroup, type FaceData, type Vec3, angleToTouchPlane, as
 import { isInteriorPanel, isInteriorVf, recalculateInteriorVfs, syncPanelGroups } from './PanelGroupService';
 import { isDoorPanel, isDoorVf, recalculateDoorVfs, syncDoorGroups } from './DoorService';
 import { backGrooveCuttersFor, backNailStampFor, backStackAt, isBackPanel, isBackVf, recalculateBackVfs, syncBackGroups } from './BackService';
-import { isPlinthVf, plinthBoxOf, plinthPrismOf, plinthSetsOf } from './PlinthService';
+import { isPlinthVf, plinthBoxOf, plinthLegBoxes, plinthSetsOf } from './PlinthService';
 
 // Kapak ve arkalık panelleri (LEVHA): köşe birleşimine girmez, gövdeyle sığdırılmaz/kesilmez, hiçbir paneli kesmez; damgalamaz —
 // istisna arkalığın iç parçası: ÇAKMA kenarındaki ve sırada kendinden SONRA gelen gövde panelini basar (BackService.backNailStampFor).
@@ -1368,20 +1368,24 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
       ...(ops ? { __composedOps: ops } : {}),
     };
   };
-  /** Set hacmi = düz panel gibi damga (kalınlık = yükseklik): bölgenin taban çokgeni prizması — L / pahlı sette yüze değen yüz yalnız
-   *  o kenarın dikdörtgenidir (sağ yan yalnız arka kolun derinliğince basılır); dikdörtgende kutuyla aynı. */
-  const plinthStampCache = new Map<string, any>();
-  const plinthStampOf = (ps: { id: string; vfId: string }, body: Shape): any => {
+  /** AYAK DAMGALARI (Goker: "ayağın aksesuarına çarpmıyorsa panel o kısma yerleşsin"): set hacmi değil, her AYAK ayrı bir kutu damgası
+   *  (taban diski + tabla çevresi, zemin → set üstü) — ayağa değmeyen baza panosu / alt panel tam yerleşir, değen yalnız o ayak kadar
+   *  çentiklenir. Ayrı damgalar: ayak izi sınır yürüyüşü tek halka okur. */
+  const plinthStampCache = new Map<string, any[]>();
+  const plinthStampsOf = (ps: { id: string; vfId: string }, body: Shape): any[] => {
     const hit = plinthStampCache.get(ps.id); if (hit) return hit;
-    const full = plinthSetsOf(body.id).find(x => x.id === ps.id); if (!full) return null;
-    const b = plinthBoxOf(full, shapesArr, virtualFaces);
-    const st = {
-      id: `plinth-stamp-${ps.id}`, type: 'panel', position: body.position, rotation: body.rotation, scale: body.scale,
-      geometry: plinthPrismOf(full, shapesArr, virtualFaces),
-      parameters: { parentShapeId: body.id, virtualFaceId: ps.vfId, panelThickness: Math.max(0.01, b.max[1] - b.min[1]) }, __pierceObstacle: true,
-    };
-    plinthStampCache.set(ps.id, st);
-    return st;
+    const full = plinthSetsOf(body.id).find(x => x.id === ps.id); if (!full) return [];
+    const list = plinthLegBoxes(full, shapesArr, virtualFaces).map((b, i) => {
+      const sz = [0, 1, 2].map(a => Math.max(0.01, b.max[a] - b.min[a]));
+      const mid = [0, 1, 2].map(a => (b.min[a] + b.max[a]) / 2);
+      return {
+        id: `plinth-stamp-${ps.id}-${i}`, type: 'panel', position: body.position, rotation: body.rotation, scale: body.scale,
+        geometry: new THREE.BoxGeometry(sz[0], sz[1], sz[2]).translate(mid[0], mid[1], mid[2]),
+        parameters: { parentShapeId: body.id, virtualFaceId: ps.vfId, panelThickness: sz[1] }, __pierceObstacle: true,
+      };
+    });
+    plinthStampCache.set(ps.id, list);
+    return list;
   };
   const stampingPanelsFor = (vfId: string): any[] => {
     const myPanel = childPanels.find(p => p.parameters?.virtualFaceId === vfId);
@@ -1401,8 +1405,7 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
     for (const ps of plinthSetsOf(shape.id)) {
       const pi = vfIndexOf.get(ps.vfId);
       if (pi == null || pi >= myIdx || myVf?.stackOnPlinthId === ps.id) continue;
-      const st = plinthStampOf(ps, shape);
-      if (st && !behind(st)) list.push(st);
+      for (const st of plinthStampsOf(ps, shape)) if (!behind(st)) list.push(st);
     }
     // Üst üste panel düzlemi gövdenin içindedir: o düzlemi DELEN levhalar (üst/alt/arkalık) gerçek engel sayılır.
     if (sd) list = list.map(s => (s && typeof s === 'object' ? { ...s, __pierceObstacle: true } : s));
