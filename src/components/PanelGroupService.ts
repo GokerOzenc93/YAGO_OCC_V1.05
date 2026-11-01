@@ -14,7 +14,7 @@ import {
   deleteBackGroupWithMembers,
 } from './BackService';
 import { doorJointForBond, moveDoorJointTo, isDoorPanel } from './DoorService';
-import { axisDirOfNormal, bodyFacesByRole, plinthLegBoxes, plinthSetsOf, removeQuickBodyPlinth, syncQuickBodyPlinth } from './PlinthService';
+import { axisDirOfNormal, bodyFaces, bodyFacesByRole, plinthLegBoxes, plinthSetsOf, removeQuickBodyPlinth, syncQuickBodyPlinth } from './PlinthService';
 import { legModelById, legModelDims } from './AccessoryService';
 
 /* PANEL GRUP SERVİSİ — 1) kapak / arkalık / raf-dikme ortak bölme yardımcıları · 2) raf / dikme grupları · 3) hızlı gövde. */
@@ -2369,6 +2369,8 @@ function vfOnFace(ctx: FaceCtx, n: Vec3, seedLocal: THREE.Vector3, siblings: Sha
     description: name, hasPanel: true, parentFaceShape: true, touchingSiblingIds: region.touchingSiblingIds, sideRelations: region.sideRelations,
     faceGroupDescriptor: createFaceDescriptor(ctx.faces[contour.seedFi], ctx.eff),
     doorBound: true, backBound: true,
+    // Dikdörtgen olmayan yüz (L gövdenin üstü / altı): panel yüzün şeklini alır — yoksa kutu çentiğin üstünde boşlukta kalır.
+    ...(contour.corners.length > 4 ? { fitFaceShape: true } : {}),
     ...({ regionAnchor: vec3(anchor) } as Record<string, unknown>),
   };
 }
@@ -2470,10 +2472,13 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
     right: { n: [1, 0, 0], seed: new THREE.Vector3(x1, (y0 + y1) / 2, (z0 + z1) / 2) },
   };
   const roleFaces = (role: 'top' | 'bottom' | 'left' | 'right' | 'front' | 'rear') => bodyFacesByRole(body, role).sort((a, b) => b.area - a.area);
+  // Yüz rolleri hiç çözülemediyse (yüz bulunamadı) eski kutu yüzleri; roller varsa rolü boş kalan parça KURULMAZ (Goker: +X yüzü
+  // Rear yapınca sağ yan panel gelmemeli — oraya arkalık gelir).
+  const noRoles = !bodyFaces(body).length;
   const FACE: Record<QuickPanelKey, Array<{ n: Vec3; seed: THREE.Vector3 }>> = { top: [], bottom: [], left: [], right: [] };
   for (const key of ['top', 'bottom', 'left', 'right'] as QuickPanelKey[]) {
     const list = roleFaces(key).map(f => ({ n: f.normal, seed: new THREE.Vector3(...f.center) }));
-    FACE[key] = list.length ? list : [fallback[key]];
+    FACE[key] = list.length ? list : noRoles ? [fallback[key]] : [];
   }
   const partKey = (key: QuickBodyPartBase, i: number): QuickBodyPart => (i ? `${key}#${i}` : key);
   const partName = (base: string, i: number) => (i ? `${base} ${i + 1}` : base);
@@ -2536,13 +2541,13 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
     const ym = y0 + lift / 2;
     const fronts = roleFaces('front'), rears = roleFaces('rear');
     const inward = (n: Vec3) => axisDirOfNormal([-n[0], -n[1], -n[2]]);
-    const frontList = fronts.length ? fronts.map(f => ({ n: f.normal, c: f.center })) : [{ n: [0, 0, 1] as Vec3, c: [(x0 + x1) / 2, ym, z1] as Vec3 }];
+    const frontList = fronts.length ? fronts.map(f => ({ n: f.normal, c: f.center })) : noRoles ? [{ n: [0, 0, 1] as Vec3, c: [(x0 + x1) / 2, ym, z1] as Vec3 }] : [];
     for (let i = 0; i < frontList.length; i++) {
       const f = frontList[i], ax = inward(f.n); if (!ax || ax[0] === 'y') continue;
       await push(partKey('plinth', i), f.n, new THREE.Vector3(f.c[0], ym, f.c[2]), partName('Plinth', i), { move: [ax, Math.max(0, cfg.plinth.front)], bound: false });
     }
     if (cfg.plinth.rearPlinth) {
-      const rearList = rears.length ? rears.map(f => ({ n: f.normal, c: f.center })) : [{ n: [0, 0, -1] as Vec3, c: [(x0 + x1) / 2, ym, z0] as Vec3 }];
+      const rearList = rears.length ? rears.map(f => ({ n: f.normal, c: f.center })) : noRoles ? [{ n: [0, 0, -1] as Vec3, c: [(x0 + x1) / 2, ym, z0] as Vec3 }] : [];
       for (let i = 0; i < rearList.length; i++) {
         const f = rearList[i], ax = inward(f.n); if (!ax || ax[0] === 'y') continue;
         await push(partKey('rearPlinth', i), f.n, new THREE.Vector3(f.c[0], ym, f.c[2]), partName('Rear plinth', i), { move: [ax, Math.max(0, cfg.plinth.rear)], bound: false });
@@ -2602,7 +2607,8 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
     const cy = (y0 + lift + t + (y1 - t)) / 2;
     const rears = roleFaces('rear').filter(f => f.axis !== 1);
     const targets = rears.length ? rears.map(f => ({ axis: f.axis, side: f.side, click: [f.center[0], cy, f.center[2]] as Vec3, box: f.bounds as CavityBox | undefined }))
-      : [{ axis: BACK_AXIS as 0 | 1 | 2, side: BACK_SIDE as 1 | -1, click: [(x0 + x1) / 2, cy, z0] as Vec3, box: undefined }];
+      : noRoles ? [{ axis: BACK_AXIS as 0 | 1 | 2, side: BACK_SIDE as 1 | -1, click: [(x0 + x1) / 2, cy, z0] as Vec3, box: undefined }] : [];
+    if (!targets.length) warnings.push('Back: no face with the Rear role.');
     const seenKeys = new Set<string>();
     targets.forEach((tg, i) => {
       const picks = backCandidatesAt(fresh, tg.axis, tg.side, tg.click, undefined, undefined, tg.box);

@@ -67,6 +67,8 @@ export const backGrooveClearOverridden = (g: Pick<BackGroup, 'grooveClearBy'>, v
 export const edgeRelOf = (g: Pick<BackGroup, 'edgeRel'>, k: keyof BackBounds): BackEdgeRel => g.edgeRel?.[k] ?? 'groove';
 const TOL = 0.5;
 const MIN_BACK_SPAN = 40;
+/** Yüz seçiminde sınır panelinin yüz düzlemine ulaşma payı (mm). */
+const REACH_TOL = 60;
 const MIN_BACK_SIZE = 1;
 const PREVIEW_ID = 'önizleme';
 const MAX_BACK_SPLIT = 12;
@@ -260,18 +262,21 @@ const backLeafById = (tree: BackNode, id: string): BackLeaf | null => { const n 
 // Arkalık adayları: dört yandaki sınır seçeneklerinin her kombinasyonu bir dikdörtgen; seçilen panel çapraz açıklıkla örtüşmeli.
 // Hepsi tıklanan noktayı içerir. Sıra: alan büyükten küçüğe (önce dıştakiler).
 export function backCandidatesAt(parent: Shape, axis: 0 | 1 | 2, side: 1 | -1, click: Vec3, shapes?: Shape[], vfs?: VirtualFace[], faceBox?: CavityBox): BackPick[] {
-  // `faceBox` = tıklanan ARKA yüzün köşe kutusu (L gövde: çentikli yüz kutudan dar) — gövde kenarı seçenekleri o yüzle sınırlanır.
-  const bodyAll = bodyLocalBox(parent);
-  if (!bodyAll) return [];
-  const body: CavityBox = faceBox ? { min: [...faceBox.min] as Vec3, max: [...faceBox.max] as Vec3 } : bodyAll;
-  if (faceBox) { body.min[axis] = bodyAll.min[axis]; body.max[axis] = bodyAll.max[axis]; }
-  const faceBoxOut = faceBox ? { min: [...body.min] as Vec3, max: [...body.max] as Vec3 } : undefined;
+  // `faceBox` = tıklanan ARKA yüzün köşe kutusu (eksen boyunca = yüz düzlemi; L gövde: çentikli yüz kutudan dar ve İÇERDE olabilir) —
+  // gövde kenarı seçenekleri o yüzle sınırlanır, arkalık düzlemi o yüzün düzlemidir.
+  const body = backBodyBox({ faceBox, axis }, parent);
+  if (!body) return [];
+  const faceBoxOut = faceBox ? { min: [...faceBox.min] as Vec3, max: [...faceBox.max] as Vec3 } : undefined;
   const { u, v } = backPlaneAxes(axis);
-  const inFace = (b: CavityBox) => !faceBox || ([u, v] as const).every(a => Math.min(b.max[a], faceBox.max[a]) - Math.max(b.min[a], faceBox.min[a]) > TOL);
-  const bounds = collectBackBoundPanels(parent, shapes, vfs, true).filter(bp => inFace(bp.box));
-  const cu = click[u], cv = click[v];
-  const frontOf = (b: CavityBox) => (side > 0 ? b.max[axis] : b.min[axis]);
   const bodyFront = side > 0 ? body.max[axis] : body.min[axis];
+  const inFace = (b: CavityBox) => !faceBox || ([u, v] as const).every(a => Math.min(b.max[a], faceBox.max[a]) - Math.max(b.min[a], faceBox.min[a]) > TOL);
+  // Yüz seçiminde sınır paneli o yüzün DÜZLEMİNE ulaşmalı (+X yüzünün arkalığını x=0'daki sol yan sınırlayamaz — L gövdede arkalık
+  // yarım kalıyordu); pay: küçük geri çekilmeler (REACH_TOL) yine sayılır.
+  const reaches = (b: CavityBox) => !faceBox || (b.min[axis] <= bodyFront + REACH_TOL && b.max[axis] >= bodyFront - REACH_TOL);
+  const bounds = collectBackBoundPanels(parent, shapes, vfs, true).filter(bp => inFace(bp.box) && reaches(bp.box));
+  const cu = click[u], cv = click[v];
+  // Yüz seçiminde yüzü aşan panelin "arkası" yüz düzlemidir (çentik yüzünü geçen yan/üst/alt).
+  const frontOf = (b: CavityBox) => (faceBox ? bodyFront : (side > 0 ? b.max[axis] : b.min[axis]));
   // Gövde kenarı da seçenektir, o yanda gövde kenarına dayanan sınır paneli yoksa.
   const optsFor = (ax: 0 | 1 | 2, cx: 0 | 1 | 2, c: number, minSide: boolean): SideOpt[] => {
     const out: SideOpt[] = [];
@@ -520,13 +525,12 @@ export function placeBackPieces(
 
 // SONRADAN KONAN SINIR LEVHASI: arkalık gövde kenarına bağlıyken o kenara sonradan konup sınır işaretlenen levha (yan/üst/alt panel)
 // arkalık kenarı olur → bini / kanal girişi o levhaya göre çalışır. Panel kenarları korunur; yalnız gövde kenarları devralınır.
-/** Grubun gövde kutusu: seçildiği arka yüzün kutusu (`faceBox`, eksen boyunca gövde kutusu), yoksa gövde kutusu. */
+/** Grubun gövde kutusu: seçildiği arka yüzün kutusu (`faceBox`; eksen boyunca = yüz düzlemi → arkalık düzlemi orası, çentik yüzü
+ *  gövde kutusunun içinde olsa da), yoksa gövde kutusu. */
 function backBodyBox(group: Pick<BackGroup, 'faceBox' | 'axis'>, parent: Shape): CavityBox | null {
   const all = bodyLocalBox(parent);
   if (!all || !group.faceBox) return all;
-  const b: CavityBox = { min: [...group.faceBox.min] as Vec3, max: [...group.faceBox.max] as Vec3 };
-  b.min[group.axis] = all.min[group.axis]; b.max[group.axis] = all.max[group.axis];
-  return b;
+  return { min: [...group.faceBox.min] as Vec3, max: [...group.faceBox.max] as Vec3 };
 }
 export function resolveBackBounds(
   group: BackGroup, parent: Shape, shapes: Shape[] = useAppStore.getState().shapes, vfs: VirtualFace[] = useAppStore.getState().virtualFaces,
@@ -577,6 +581,11 @@ function solveBackEdges(group: BackGroup, parent: Shape, shapes: Shape[]): { edg
   else if (group.depthRef?.vfId) {
     const hit = depthEdges.find(x => x.ref.vfId === group.depthRef!.vfId && x.front != null);
     if (hit) P = hit.front!;
+  }
+  if (group.faceBox) {
+    // Yüz seçimi: arkalık düzlemi = o yüzün düzlemi; yüzü aşan sınır panellerinin arkası da o düzlemdir (çakma örtme doğru çalışsın).
+    P = bodyFront;
+    for (const k of ['l', 'r', 'b', 't'] as const) if (edges[k].front != null) edges[k] = { ...edges[k], front: P };
   }
   return { edges, P, bounds, nail };
 }

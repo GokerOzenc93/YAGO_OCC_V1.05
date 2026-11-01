@@ -101,19 +101,12 @@ export interface BodyFace {
   descriptor: FaceDescriptor; auto: FaceRole; role: FaceRole; overridden: boolean;
 }
 export const FACE_ROLE_ORDER: FaceRole[] = ['front', 'rear', 'left', 'right', 'top', 'bottom'];
-const facingOfAxisSide = (axis: 0 | 1 | 2, side: 1 | -1): PlinthFacing => (`${['x', 'y', 'z'][axis]}${side > 0 ? '+' : '-'}` as PlinthFacing);
 export const bodyFaceRolesOf = (body: Shape | undefined | null): BodyFaceRoles => (body?.parameters?.faceRoles as BodyFaceRoles | undefined) ?? {};
-/** ÖN YÖN: parametre → kapakların yüzü (en çok kapak grubu olan yatay yüz) → +Z. */
-export function bodyFrontAxis(body: Shape | undefined | null, st = useAppStore.getState()): { facing: PlinthFacing; source: 'parameter' | 'doors' | 'default' } {
+/** ÖN YÖN: parametre (Parameters › Faces), yoksa +Z. Kapaklardan ÇIKARILMAZ (Goker: kapak yerleşince roller değişiyordu — roller
+ *  kübün ayarıdır, kapak rolleri izler, tersi değil). */
+export function bodyFrontAxis(body: Shape | undefined | null, _st = useAppStore.getState()): { facing: PlinthFacing; source: 'parameter' | 'default' } {
   const fr = bodyFaceRolesOf(body);
   if (fr.frontAxis && PLINTH_FACINGS.includes(fr.frontAxis)) return { facing: fr.frontAxis, source: 'parameter' };
-  if (body) {
-    const counts = new Map<PlinthFacing, number>();
-    for (const g of st.doorGroups) if (g.shapeId === body.id && g.axis !== 1) { const f = facingOfAxisSide(g.axis, g.side); counts.set(f, (counts.get(f) ?? 0) + 1); }
-    let best: PlinthFacing | null = null, bc = 0;
-    for (const [f, c] of counts) if (c > bc) { best = f; bc = c; }
-    if (best) return { facing: best, source: 'doors' };
-  }
   return { facing: 'z+', source: 'default' };
 }
 const axisOfNormal = (n: THREE.Vector3): AxisDir | null => {

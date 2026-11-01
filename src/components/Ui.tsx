@@ -1559,12 +1559,12 @@ function FacesSection({ shape }: { shape: Shape }) {
       </button>}>
       {showFaceRoles && (
         <>
-          <div className={P_ROW} title="Front of the body — read from the doors until you pick one here (else +Z). Every face role and the plinth leg offsets follow it.">
+          <div className={P_ROW} title="Front of the body (default +Z). Every face role, the plinth leg offsets, doors, backs and the quick body follow it.">
             <span className={P_LABEL} style={{ color: '#a8a29e' }}>Front</span>
             <select value={front.facing} onChange={e => setBodyFrontAxis(shape.id, e.target.value as PlinthFacing)} className={`${P_SELECT} w-[84px]`} style={{ fontFamily: UI_FONT }}>
               {PLINTH_FACINGS.map(f => <option key={f} value={f}>{PLINTH_FACING_LABEL[f]}</option>)}
             </select>
-            <span className={P_DESC}>{front.source === 'doors' ? 'from the doors' : front.source === 'parameter' ? 'set here' : ''}</span>
+            <span className={P_DESC}>{front.source === 'parameter' ? 'set here' : 'default'}</span>
           </div>
           {faces.map(f => (
             <div key={f.gi} className={P_ROW} onMouseEnter={() => hover(f.gi)} onMouseLeave={() => hover(null)}

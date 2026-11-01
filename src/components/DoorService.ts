@@ -29,6 +29,8 @@ export const DOOR_THICKNESS = 18;
 export const DOOR_GAP = 3;
 const TOL = 0.5;
 const MIN_DOOR_SPAN = 40;
+/** Yüz seçiminde sınır panelinin yüz düzlemine ulaşma payı (mm). */
+const REACH_TOL = 60;
 const MIN_DOOR_SIZE = 1;
 const PREVIEW_ID = 'önizleme';
 const MAX_DOOR_SPLIT = 12;
@@ -194,11 +196,13 @@ export function doorCandidatesAt(parent: Shape, axis: 0 | 1 | 2, side: 1 | -1, c
   const body = doorBodyBox({ faceBox }, parent);
   if (!body) return [];
   const { u, v } = doorPlaneAxes(axis);
-  // Yüz seçiminde yalnız o yüzün önünde kalan sınır panelleri (L: sol arm'ın yanı çentik yüzünün kenarı olamaz)
-  const inFace = (b: CavityBox) => !faceBox || ([u, v] as const).every(a => Math.min(b.max[a], faceBox.max[a]) - Math.max(b.min[a], faceBox.min[a]) > TOL);
-  const bounds = collectDoorBoundPanels(parent, shapes, vfs, true).filter(bp => inFace(bp.box));
-  const cu = click[u], cv = click[v];
   const bodyFront = side > 0 ? body.max[axis] : body.min[axis];
+  // Yüz seçiminde yalnız o yüzün önünde kalan VE yüz düzlemine ulaşan sınır panelleri (L: sol kolun yanı çentik yüzünün kenarı olamaz;
+  // +X yüzünün kapağını x=0'daki sol yan sınırlayamaz)
+  const inFace = (b: CavityBox) => !faceBox || ([u, v] as const).every(a => Math.min(b.max[a], faceBox.max[a]) - Math.max(b.min[a], faceBox.min[a]) > TOL);
+  const reaches = (b: CavityBox) => !faceBox || (b.min[axis] <= bodyFront + REACH_TOL && b.max[axis] >= bodyFront - REACH_TOL);
+  const bounds = collectDoorBoundPanels(parent, shapes, vfs, true).filter(bp => inFace(bp.box) && reaches(bp.box));
+  const cu = click[u], cv = click[v];
   const frontOf = (b: CavityBox) => (faceBox ? bodyFront : (side > 0 ? b.max[axis] : b.min[axis]));
   // Gövde kenarı da seçenektir, o yanda gövde kenarına dayanan sınır paneli yoksa (yalnız iç dikme işaretliyken BÜTÜN kapak da aday).
   const optsFor = (ax: 0 | 1 | 2, cx: 0 | 1 | 2, c: number, minSide: boolean): SideOpt[] => {
@@ -402,7 +406,12 @@ function solveDoorEdges(group: DoorGroup, parent: Shape, shapes: Shape[]): { edg
     const hit = all.find(x => x.ref.vfId === group.depthRef!.vfId && x.front != null);
     if (hit) P = hit.front!;
   }
-  if (group.faceBox) P = bodyFront;   // ön yüz seçimi: kapak düzlemi = o yüzün düzlemi (komşu panel yüzü aşsa da)
+  if (group.faceBox) {
+    // Ön yüz seçimi: kapak düzlemi = o yüzün düzlemi; yüzü aşan sınır panellerinin (üst/alt/yan çentik yüzünün ötesine uzanır) "önü"
+    // de o düzlemdir — yoksa Full bindirme örtülmez ve kapak üstten/alttan panel kalınlığı kadar kısa kalır (Goker'in L hatası).
+    P = bodyFront;
+    for (const k of ['l', 'r', 'b', 't'] as const) if (edges[k].front != null) edges[k] = { ...edges[k], front: P };
+  }
   return { edges, P, bounds };
 }
 /** Seçme önizlemesi: adayın yerleşime göre dikdörtgeni. */

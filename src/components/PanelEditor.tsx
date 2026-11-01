@@ -15,7 +15,7 @@ import {
   useStoreFields, useAppStore, type VirtualFace, type DoorGroup, type BackGroup, shapeById, childPanelsOf, panelOfVf, requestRebuild,
 } from '../store';
 import {
-  BACK_TYPE_TITLE, BACK_TYPE_LABEL, vfBackBound, isBackVf, confirmBackPick, backLeaves, backPieceOf, backLeafOfMember, backGroupName, setVfBackBound,
+  BACK_TYPE_TITLE, BACK_TYPE_LABEL, vfBackBound, isBackVf, confirmBackPick, backLeaves, backPieceOf, backLeafOfMember, backGroupName, setVfBackBound, backPlaneAxes,
   backMemberCount, renameBackGroup, deleteBackGroupWithMembers, solveBackGroup, backFallbackSolution, findSolvedBackNode, setBackNodeSplit,
   splitBackAtPanel, findBackNode, backSetbackOf, backGrooveClearOverridden, backGrooveClearOf, setBackThickness, setBackSetback, setBackGrooveClear,
   resetBackGrooveClear, setBackPlacement, collectBackCuts, backNearPanels, editBackSize, toggleBackSizeLock, setBackSplitGap, setBackEdgeInset,
@@ -2624,8 +2624,13 @@ export function PanelEditor() {
         selected: selectedBackGroupId, select: setSelectedBackGroupId, kind: 'back', count: backMemberCount(g), name: backGroupName(g),
         placeholder: 'Back', plural: 'back panels', section: 'Back panels', member: { back: g },
         rename: v => renameBackGroup(g.id, v), remove: () => deleteBackGroupWithMembers(g.id),
-        dims: <RowDims w={round1(ext ? ext.max.x - ext.min.x : g.rect.u1 - g.rect.u0)} h={round1(ext ? ext.max.y - ext.min.y : g.rect.v1 - g.rect.v0)}
-          t={g.thickness} tLetter="T" title={`Back panel overall width · height (groove entry included) · thickness (${typeTxt})`} />,
+        dims: (() => {
+          // Dış ölçü arkalığın DÜZLEM eksenlerinde (u/v): X yüzündeki arkalıkta u = Z (eski kod x/y okuyup kalınlığı W sanıyordu)
+          const { u, v } = backPlaneAxes(g.axis);
+          const span = (a: 0 | 1 | 2) => (ext ? ext.max.getComponent(a) - ext.min.getComponent(a) : 0);
+          return <RowDims w={round1(ext ? span(u) : g.rect.u1 - g.rect.u0)} h={round1(ext ? span(v) : g.rect.v1 - g.rect.v0)}
+            t={g.thickness} tLetter="T" title={`Back panel overall width · height (groove entry included) · thickness (${typeTxt})`} />;
+        })(),
         body: () => {
           const parent = shapeById(g.shapeId, shapes);   // pahalı: kesimler / çözüm yalnız kart açıkken
           // Çözüm: iç dikdörtgen + parça dikdörtgenleri (her parça kendi tip / setback / inset / bini değerleriyle). Gövde yoksa kenar bilgisiz.
