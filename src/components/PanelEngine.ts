@@ -857,7 +857,10 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       if (stepsChanged) paramPatch.transformSteps = steps;
       // ANINDA YAZ: sonraki panel ve VF yeniden hesabı güncel ayak izini görsün.
       updateShape(panel.id, {
-        geometry, position: parentPos, rotation: [0, 0, 0], replicadShape: rp, ungroovedGeometry: ungrooved ?? undefined,
+        // Panel geometrisi GÖVDE-YEREL çerçevededir → dönüşümü gövdeninkiyle AYNI olmalı (Goker: "küp sahnede dönünce paneller dönmemiş
+        // gibi yerinde kalıyor" — eskiden dönüş [0,0,0]'a sıfırlanıyordu).
+        geometry, position: parentPos, rotation: [...(parentFresh.rotation || [0, 0, 0])] as Vec3, scale: [...(parentFresh.scale || [1, 1, 1])] as Vec3,
+        replicadShape: rp, ungroovedGeometry: ungrooved ?? undefined,
         ...(Object.keys(paramPatch).length ? { parameters: { ...panel.parameters, ...paramPatch } } : {}),
       } as any);
     } catch (err) {

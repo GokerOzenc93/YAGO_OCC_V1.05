@@ -636,8 +636,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     const sh = shapeById(id, state.shapes);
     if (!sh) return {};
     const moved = 'position' in updates || 'rotation' in updates || 'scale' in updates;
+    // GÖVDENİN PANELLERİ gövdeyle aynı dönüşümü taşır (geometrileri gövde-yerel): gövde taşınınca / dönünce / ölçeklenince (parametre
+    // paneli, gizmo, grup) paneller de aynı değeri alır — eskiden yalnız sürükleme taşıyordu, parametreden döndürünce paneller kalıyordu.
+    const bodyXf = moved && sh.type !== 'panel' ? {
+      ...(updates.position ? { position: [...updates.position] as Vec3 } : {}),
+      ...(updates.rotation ? { rotation: [...updates.rotation] as Vec3 } : {}),
+      ...(updates.scale ? { scale: [...updates.scale] as Vec3 } : {}),
+    } : null;
     const shapes = state.shapes.map((s): Shape => {
       if (s.id === id) return { ...s, ...updates };
+      if (bodyXf && s.type === 'panel' && (s.parameters as any)?.parentShapeId === id) return { ...s, ...bodyXf };
       if (!sh.groupId || s.groupId !== sh.groupId || !moved) return s;
       const pd = updates.position ? [0, 1, 2].map(i => updates.position![i] - sh.position[i]) : [0, 0, 0];
       const rd = updates.rotation ? [0, 1, 2].map(i => updates.rotation![i] - sh.rotation[i]) : [0, 0, 0];

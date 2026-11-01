@@ -630,6 +630,11 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
   const parentShapeId = params?.parentShapeId;
   const virtualFaceId = params?.virtualFaceId;
   const isParentSelected = parentShapeId === S.selectedShapeId;
+  // Gövde dönüşümü: panel geometrisi gövde-yerel → panel her zaman gövdenin GÜNCEL konum / dönüş / ölçeğiyle çizilir (eski kayıtlarda
+  // panelin kendi dönüşü 0 kalmış olabilir; Goker: "küp dönünce paneller dönmüyor").
+  const parentPos = useAppStore(st => (parentShapeId ? st.shapes.find(x => x.id === parentShapeId)?.position : undefined));
+  const parentRot = useAppStore(st => (parentShapeId ? st.shapes.find(x => x.id === parentShapeId)?.rotation : undefined));
+  const parentScale = useAppStore(st => (parentShapeId ? st.shapes.find(x => x.id === parentShapeId)?.scale : undefined));
   // Arkalık: şemada parça seçiliyse yalnız o parçalar (backFocusVfIds), değilse grubun tüm üyeleri.
   const backFocused = !S.backFocusVfIds.length || S.backFocusVfIds.includes(virtualFaceId);
   const isGroupSelected = isParentSelected && ((!!S.selectedPanelGroupId && params?.panelGroupId === S.selectedPanelGroupId)
@@ -757,7 +762,7 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
   const showArrow = isPanelRowSelected && !isGroupSelected && !S.volumePickMode && !S.doorPickMode && !S.backPickMode && !S.plinthPickMode;
 
   return (
-    <group name={`shape-${shape.id}`} position={shape.position} rotation={shape.rotation} scale={shape.scale}>
+    <group name={`shape-${shape.id}`} position={parentPos ?? shape.position} rotation={parentRot ?? shape.rotation} scale={parentScale ?? shape.scale}>
       <group ref={animRef}>
         {!isWireframe && (
           <mesh ref={meshRef} geometry={shape.geometry} castShadow receiveShadow {...meshEvents}>
