@@ -9,6 +9,7 @@
       her yazım IDB'ye de gider. indexedDB yoksa (Node harness) yalnız bellek.
    3) Ayak modeli (LegModel) = 1–3 parça + rol: base (zemin) · stem (UZAR) · top (tabla). `legAssembly(leg, h)` parçaları alt alta dizer;
       stem yüksekliği = h − (diğer parçalar) → set yüksekliği değişince yalnız mil uzar/kısalır (Goker). Stem yoksa hiçbir parça ölçeklenmez.
+      Üst / alt her zaman model ölçüsünde; orta parça ayrıca X/Z'de ölçeklenir (`scale`), her parça X/Y/Z taşınır (`offset`).
    4) Ayak seti (LegPreset, "kaset"): model + adet + kenar mesafeleri + varsayılan yükseklik. `legsFromPreset` → PlinthLegs (baza seti / hızlı gövde).
    Bu dosya PlinthService'i İÇE AKTARMAZ (PlinthService buradan okur). */
 import * as THREE from 'three';
@@ -299,8 +300,13 @@ export async function deleteLegPreset(id: string): Promise<void> {
   await idbDelete('legPresets', id);
 }
 export const newLegModel = (name = 'Leg'): LegModel => ({ id: genId('leg'), name, parts: [], stretch: 'stem', createdAt: Date.now() });
-/** Uzayan yuva (eski kayıtlarda alan yok → orta). */
-export const legStretchOf = (leg: Pick<LegModel, 'stretch'>): LegPartRole => leg.stretch ?? 'stem';
+/** UZAYAN YUVA her zaman ORTA parçadır (Goker: "top ve base modeli neyse o ölçüde kalsın, middle parça yükseklikten büyüyüp küçülsün");
+ *  eski kayıtlardaki `stretch` seçimi okunmaz. */
+export const legStretchOf = (_leg?: Pick<LegModel, 'stretch'>): LegPartRole => 'stem';
+/** Parçanın taşıması (mm) ve X/Z ölçeği (yalnız orta parça; üst / alt her zaman 1). */
+export const legPartOffset = (p: Pick<LegModelPart, 'offset'>): Vec3 => [p.offset?.[0] ?? 0, p.offset?.[1] ?? 0, p.offset?.[2] ?? 0];
+export const legPartScale = (p: Pick<LegModelPart, 'scale' | 'role'>): [number, number] =>
+  (p.role === 'stem' ? [Math.max(0.01, p.scale?.[0] ?? 1), Math.max(0.01, p.scale?.[1] ?? 1)] : [1, 1]);
 /** Hiçbir ayak modelinde (ve `keep` içinde) kullanılmayan içe aktarılmış dosyaları siler (vazgeçilen / değiştirilen yuvalar). */
 export async function pruneUnusedAccessoryModels(keep: string[] = []): Promise<void> {
   const st = useAppStore.getState();
@@ -313,8 +319,14 @@ export const newLegPreset = (name = 'Leg set'): LegPreset =>
 /** Parçalar rol sırasına (taban → mil → tabla) dizilir; aynı rolde ekleme sırası korunur. */
 export const orderedParts = (parts: LegModelPart[]): LegModelPart[] => parts.map((p, i) => ({ p, i })).sort((a, b) => ROLE_ORDER[a.p.role] - ROLE_ORDER[b.p.role] || a.i - b.i).map(x => x.p);
 
-export interface LegAssemblyPart { modelId: string; role: LegPartRole; y: number; scaleY: number; geo: THREE.BufferGeometry; size: Vec3 }
-/** Ayak montajı: yuvalar alttan üste; UZAYAN yuvanın yüksekliği = h − diğerleri (en az 1 mm) → yalnız o uzar. Hazır olmayan parça varsa null. */
+/** Montajdaki parça: konum (x, y, z — parça yerel orijini: XZ merkezi, tabanı) + ölçek (X/Z yalnız orta parçada; Y yalnız orta parçada uzama). */
+export interface LegAssemblyPart {
+  modelId: string; role: LegPartRole; x: number; y: number; z: number; scaleX: number; scaleY: number; scaleZ: number; geo: THREE.BufferGeometry; size: Vec3;
+}
+/** AYAK MONTAJI: yuvalar alttan üste (taban → orta → üst). Üst ve alt MODEL ÖLÇÜSÜNDE kalır; ORTA parçanın boyu = h − (üst + alt +
+ *  Y taşımaları), en az 1 mm → toplam her zaman h (Goker: "middle parça yükseklikten büyüyüp küçülebilsin"). Orta parça X/Z'de ayrıca
+ *  ölçeklenir; her parça X / Y / Z taşınır (Y istifte: üstündekiler de kayar). Orta parça yoksa hiçbir parça uzamaz. Hazır olmayan
+ *  parça varsa null. */
 export function legAssembly(leg: LegModel, h: number, geoOf: (id: string) => { geo: THREE.BufferGeometry; size: Vec3 } | null = accessoryGeometryNow): LegAssemblyPart[] | null {
   const parts = orderedParts(leg.parts);
   if (!parts.length) return null;
@@ -322,26 +334,34 @@ export function legAssembly(leg: LegModel, h: number, geoOf: (id: string) => { g
   if (resolved.some(r => !r.g)) return null;
   const stretch = legStretchOf(leg);
   const hasStem = parts.some(p => p.role === stretch);
-  const fixedH = resolved.filter(r => r.p.role !== stretch).reduce((a, r) => a + r.g!.size[1], 0);
+  const offY = resolved.reduce((a, r) => a + legPartOffset(r.p)[1], 0);
+  const fixedH = resolved.filter(r => r.p.role !== stretch).reduce((a, r) => a + r.g!.size[1], 0) + offY;
   const stemNatural = resolved.filter(r => r.p.role === stretch).reduce((a, r) => a + r.g!.size[1], 0);
   const stemTarget = Math.max(1, h - fixedH);
   const stemScale = hasStem && stemNatural > 1e-6 ? stemTarget / stemNatural : 1;
   const out: LegAssemblyPart[] = [];
   let y = 0;
   for (const r of resolved) {
+    const [ox, oy, oz] = legPartOffset(r.p), [sx, sz] = legPartScale(r.p);
     const scaleY = r.p.role === stretch ? stemScale : 1;
-    out.push({ modelId: r.p.modelId, role: r.p.role, y, scaleY, geo: r.g!.geo, size: r.g!.size });
+    y += oy;
+    out.push({ modelId: r.p.modelId, role: r.p.role, x: ox, y, z: oz, scaleX: sx, scaleY, scaleZ: sz, geo: r.g!.geo, size: r.g!.size });
     y += r.g!.size[1] * scaleY;
   }
   return out;
 }
-/** Modelin doğal yüksekliği (parçaların toplamı) ve taban izi çapı (en geniş parçanın XZ ölçüsü). */
+/** Montaj parçalarının taban izi çapı: orijinden en uzak XZ noktasının iki katı (ölçek + taşıma dahil). */
+export const assemblyFootprint = (parts: Array<Pick<LegAssemblyPart, 'x' | 'z' | 'scaleX' | 'scaleZ' | 'size'>>): number =>
+  parts.reduce((d, p) => Math.max(d, p.size[0] * p.scaleX + 2 * Math.abs(p.x), p.size[2] * p.scaleZ + 2 * Math.abs(p.z)), 0);
+/** Modelin doğal yüksekliği (parçaların toplamı + Y taşımaları; orta parça uzamadan) ve taban izi çapı (ölçek + taşıma dahil). */
 export function legModelDims(leg: LegModel | undefined, models = useAppStore.getState().accessoryModels): { height: number; diameter: number } | null {
   if (!leg || !leg.parts.length) return null;
   let h = 0, d = 0;
   for (const p of leg.parts) {
     const m = models.find(x => x.id === p.modelId); if (!m) continue;
-    h += m.size[1]; d = Math.max(d, m.size[0], m.size[2]);
+    const [ox, oy, oz] = legPartOffset(p), [sx, sz] = legPartScale(p);
+    h += m.size[1] + oy;
+    d = Math.max(d, m.size[0] * sx + 2 * Math.abs(ox), m.size[2] * sz + 2 * Math.abs(oz));
   }
   return { height: round1(h), diameter: round1(d) };
 }

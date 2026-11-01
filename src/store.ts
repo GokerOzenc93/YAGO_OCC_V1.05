@@ -358,8 +358,11 @@ export type LegPartRole = 'base' | 'stem' | 'top';
 export interface AccessoryModel {
   id: string; name: string; fileName: string; ext: string; unit: AccessoryUnit; upAxis: 'y' | 'z'; size: Vec3; createdAt: number;
 }
-export interface LegModelPart { modelId: string; role: LegPartRole }
-/** Ayak modeli: 3 yuva (alt / orta / üst = base / stem / top); `stretch` = uzayan yuva (varsayılan orta). */
+/** Ayak parçası. `offset` = TAŞIMA (mm; x / y / z — x·z düz kaydırma, y istif içinde: üstteki parçalar da kayar, orta parça boyu
+ *  telafi eder → toplam yükseklik değişmez). `scale` = YALNIZ orta parça: X / Z ölçek çarpanı (Y set yüksekliğinden gelir). */
+export interface LegModelPart { modelId: string; role: LegPartRole; offset?: Vec3; scale?: [number, number] }
+/** Ayak modeli: 3 yuva (alt / orta / üst = base / stem / top). Üst ve alt model ölçüsünde kalır; YALNIZ orta parça yüksekliğe göre uzar
+ *  (Goker). `stretch` = eski kayıt alanı, okunmaz. */
 export interface LegModel { id: string; name: string; parts: LegModelPart[]; stretch?: LegPartRole; createdAt: number }
 /** Ayak seti ("kaset"): hangi model, AYAK AYAK kurallar (LegLayout.LegRule — çapa + mm; iz çokgenine göre çözülür), varsayılan yükseklik.
  *  count / side / front / rear: standart düzen üreteci parametreleri (eski kayıtlarda kural yoksa düzen bunlardan türer). */

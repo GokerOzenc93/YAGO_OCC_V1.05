@@ -2549,7 +2549,7 @@ export function ImportedFoot({ legModelId, h, d, active, xray, onClick, pickable
   return (
     <group>
       {parts.map((p, i) => (
-        <mesh key={`${p.modelId}-${i}`} geometry={p.geo} position={[0, p.y, 0]} scale={[1, p.scaleY, 1]} castShadow receiveShadow {...ev}>
+        <mesh key={`${p.modelId}-${i}`} geometry={p.geo} position={[p.x, p.y, p.z]} scale={[p.scaleX, p.scaleY, p.scaleZ]} castShadow receiveShadow {...ev}>
           <meshStandardMaterial color={IMPORTED_FOOT_COLORS[p.role]} metalness={0.05} roughness={0.6} transparent={xray} opacity={xray ? 0.35 : 1}
             emissive={active ? LEG_COLORS.selected : '#000000'} emissiveIntensity={active ? 0.45 : 0} />
         </mesh>
