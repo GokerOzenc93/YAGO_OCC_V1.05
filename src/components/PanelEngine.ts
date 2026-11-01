@@ -247,6 +247,44 @@ function cornerJoinedVertices(panel: Shape, vf: VirtualFace, vfs: VirtualFace[],
   return verts;
 }
 
+// GEOMETRİK İÇ İÇE GEÇME KORUMASI (Goker, Kas 2026 — "bir yerde panel varsa başka bir panel onun yüzeyine iç içe geçmemeli; panel
+// sırasına ve birleşim tipine göre davranmalı; bunları artık geometrik olarak çözüyor olmam gerekiyor"): bölge / damga mantığı ne
+// derse desin, SON katı sırada ÖNCE üretilen (basan) kardeşlerin katısıyla GERÇEKTEN çakışıyorsa (kesişim hacmi > 1 mm³) o katıdan
+// çıkarılır. Yalnız düz, adımsız gövde / iç paneller için (kapak / arkalık levhası, dönmüş ve taşınmış / extrude'lu paneller kendi
+// kurallarıyla çözülür). Kesim paneli tamamen yok ederse (iki panel aynı yerde) özgün katı kalır, uyarı yazılır.
+const _overlapBox = (shape: any): { min: number[]; max: number[] } | null => {
+  try { const b = shape.boundingBox.bounds; return { min: [b[0][0], b[0][1], b[0][2]], max: [b[1][0], b[1][1], b[1][2]] }; } catch { return null; }
+};
+export async function cutByEarlierOverlaps(rp: any, panel: Shape, earlier: Shape[]): Promise<any> {
+  if (!earlier.length) return rp;
+  const mine = _overlapBox(rp);
+  if (!mine) return rp;
+  let measureVolume: ((s: any) => number) | null = null;
+  let out = rp;
+  for (const e of earlier) {
+    const es = (e as any).replicadShape;
+    if (!es) continue;
+    const eb = _overlapBox(es);
+    if (!eb) continue;
+    // Kutu kesişimi her eksende > 0.5 mm değilse çakışma yok (temas / kenar paylaşımı)
+    if ([0, 1, 2].some(k => Math.min(mine.max[k], eb.max[k]) - Math.max(mine.min[k], eb.min[k]) < 0.5)) continue;
+    try {
+      if (!measureVolume) measureVolume = (await import('replicad')).measureVolume;
+      const inter = out.intersect(es);
+      let vol = 0; try { vol = measureVolume(inter); } catch { vol = 0; }
+      if (vol < 1) continue;
+      const cut = out.cut(es);
+      const cv = measureVolume(cut);
+      if (cv < 1) { console.warn('[YAGO][MOTOR] panel tamamen önceki panelin içinde — kesilmedi:', panel.id, '⊂', e.id); continue; }
+      out = cut;
+      console.info('[YAGO][MOTOR] iç içe geçme kesildi:', panel.id, '−', e.id, `${round1(vol)} mm³`);
+    } catch (err) {
+      console.warn('[YAGO][MOTOR] iç içe geçme kesimi başarısız:', panel.id, e.id, errMsg(err));
+    }
+  }
+  return out;
+}
+
 // DÖNÜŞ-KESİMİ: dönmüş/eğik BASAN, basılanı kendine bakan yüzünün yarım-uzayıyla keser (siluet prizmasıyla sınırlı).
 
 function vfIsTilted(vf: VirtualFace | undefined | null): boolean {
@@ -770,6 +808,13 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
 
       if (!panelHasRotation(panel) && !isSheetPanel(panel)) rp = await cutByRotatedPressers(rp, panel, vf, children, vfsIn, orderOf);
       await shapeRefRotateTargets(rp, panel, vf, children, orderOf, refContacts, updateShape);
+      // İÇ İÇE GEÇME KORUMASI: son geçişte, sırada önce üretilen kardeşlerin katısı bu katıdan çıkarılır (gerçek çakışma varsa).
+      if (groove && !isRotated && !isSheetPanel(panel) && !hasAnySteps(panel) && !vf.stackBaseVfId) {
+        const myIdx = children.findIndex(c => c.id === panel.id);
+        const now = useAppStore.getState().shapes;
+        const earlier = children.slice(0, Math.max(0, myIdx)).map(c => shapeById(c.id, now)).filter((c): c is Shape => !!c && !isSheetPanel(c));
+        rp = await cutByEarlierOverlaps(rp, panel, earlier);
+      }
 
       // ARKALIK KANALI (Goker, Eki 2026): kanallı ilişkideki sınır / derz paneline parçanın bollaştırılmış kutusu katıdan çıkarılır.
       // Yalnız görünüm/katı: kanalsız mesh `ungroovedGeometry` olarak saklanır, ayak izi / damga / hacim onu okur → kanal boşluğuna

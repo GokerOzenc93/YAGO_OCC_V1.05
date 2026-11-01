@@ -2013,6 +2013,12 @@ function solveFreeRegion(q: FreeRegionInput): FreeRegionResult {
   }
   const reach = new Uint8Array(nx * ny);
   if (free[cj * nx + ci]) flood4(free, nx, ny, cj * nx + ci, reach);
+  // YÜZ TAMAMEN DOLU (hiç serbest hücre yok — orada zaten bir panel var): bölge BOŞ döner; eskiden "engel yok" sayılıp tam kontur
+  // dönüyor, hızlı gövde / çağıran var olan panelin üstüne ikinci bir panel koyuyordu (iç içe geçme).
+  if (!free[cj * nx + ci]) {
+    const finalAnchor0 = cellPt(ci, cj);
+    return { u, v, planeN, ring2D, footprints, footprintIds: fpIds, touchingSiblingIds, uMin, vMin, cw, ch, nx, ny, reach, anchor: finalAnchor0, polygon: [], sideRelations: {} };
+  }
 
   // ENGEL = yalnız çapanın eriştiği bölgeye (reach, 1 hücre genişletilmiş) BİTİŞİK iz; yarım-düzlem kırpması sonsuz
   // olduğundan uzak bir iz (dikmenin öbür tarafındaki raf) bu bölmeyi de keserdi.

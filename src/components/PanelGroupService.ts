@@ -2371,7 +2371,9 @@ function faceGroupFor(ctx: FaceCtx, n: Vec3, seed: THREE.Vector3): CoplanarFaceG
 function vfOnFace(ctx: FaceCtx, n: Vec3, seedLocal: THREE.Vector3, siblings: Shape[], name: string): VirtualFace | null {
   const group = faceGroupFor(ctx, n, seedLocal); if (!group) return null;
   const contour = computeFaceComponentContour(ctx.faces, group.faceIndices, seedLocal, group.normal); if (!contour) return null;
-  const region = computeFreeRegionLocal(contour.corners, group.normal, seedLocal, siblings, ctx.W2L, ctx.body.id); if (!region) return null;
+  const region = computeFreeRegionLocal(contour.corners, group.normal, seedLocal, siblings, ctx.W2L, ctx.body.id);
+  // Yüzde serbest yer yok (orada zaten bir panel var — ör. elle konmuş yan): parça KURULMAZ (üstüne ikinci panel gelmez).
+  if (!region || region.polygon.length < 3) return null;
   const nrm = group.normal.clone().normalize();
   const to3D = (px: number, py: number) => fromPlaneUV(region.u, region.v, nrm, px, py, region.planeN);
   const anchor = to3D(region.anchor.x, region.anchor.y);
