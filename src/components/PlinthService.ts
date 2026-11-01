@@ -206,7 +206,13 @@ export function setBodyFaceRole(shapeId: string, gi: number, role: FaceRole | nu
   const overrides = role && role !== face.auto ? [...kept, { descriptor: face.descriptor, role }] : kept;
   st.updateShape(shapeId, { parameters: { ...body.parameters, faceRoles: { ...fr, overrides } } } as Partial<Shape>);
 }
-/** Rolü `role` olan EKSEN-HİZALI yüzler (hızlı gövde ve arkalık seçimi): eksen, yön, köşe kutusu, merkez; alan azalan. */
+/** Rolü `role` olan TÜM düz yüzler — eğik olanlar dahil (Goker: "vertexlerle kübün şeklini değiştirince eğimli yerlere de panel yerleşsin;
+ *  rolü olduğu için her türlü panel yerleşmeli"): normal, merkez, alan, eksen (eğikse null); alan azalan. Hızlı gövde yan / üst / alt
+ *  panelleri bunu okur; eksen gerektiren işler (baza, arkalık) eksenli olanları süzer. */
+export function bodyFacesByRoleAll(body: Shape | undefined | null, role: FaceRole, st = useAppStore.getState()): Array<{ axis: AxisDir | null; bounds: { min: Vec3; max: Vec3 }; center: Vec3; normal: Vec3; area: number }> {
+  return bodyFaces(body, st).filter(f => f.role === role).map(f => ({ axis: f.axis ?? null, bounds: f.bounds, center: f.center, normal: f.normal, area: f.area }));
+}
+/** Rolü `role` olan EKSEN-HİZALI yüzler (arkalık seçimi, baza): eksen, yön, köşe kutusu, merkez; alan azalan. */
 export function bodyFacesByRole(body: Shape | undefined | null, role: FaceRole, st = useAppStore.getState()): Array<{ axis: 0 | 1 | 2; side: 1 | -1; bounds: { min: Vec3; max: Vec3 }; center: Vec3; normal: Vec3; area: number }> {
   return bodyFaces(body, st).filter(f => f.role === role && f.axis).map(f => ({
     axis: ({ x: 0, y: 1, z: 2 } as const)[f.axis![0] as 'x' | 'y' | 'z'], side: (f.axis![1] === '+' ? 1 : -1) as 1 | -1,

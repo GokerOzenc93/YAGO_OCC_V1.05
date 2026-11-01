@@ -15,7 +15,7 @@ import {
 } from './BackService';
 import { doorJointForBond, moveDoorJointTo, isDoorPanel } from './DoorService';
 import {
-  type PlinthLegs, axisDirOfNormal, bodyFaces, bodyFacesByRole, plinthLegBoxes, plinthLegsOf, plinthSetsOf, removeQuickBodyPlinth, syncQuickBodyPlinth,
+  type PlinthLegs, axisDirOfNormal, bodyFaces, bodyFacesByRole, bodyFacesByRoleAll, plinthLegBoxes, plinthLegsOf, plinthSetsOf, removeQuickBodyPlinth, syncQuickBodyPlinth,
 } from './PlinthService';
 
 /* PANEL GRUP SERVİSİ — 1) kapak / arkalık / raf-dikme ortak bölme yardımcıları · 2) raf / dikme grupları · 3) hızlı gövde. */
@@ -2487,12 +2487,14 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
     right: { n: [1, 0, 0], seed: new THREE.Vector3(x1, (y0 + y1) / 2, (z0 + z1) / 2) },
   };
   const roleFaces = (role: 'top' | 'bottom' | 'left' | 'right' | 'front' | 'rear') => bodyFacesByRole(body, role).sort((a, b) => b.area - a.area);
+  // Yan / üst / alt: EĞİK yüzler de (vertex düzenlemeli gövde) — panel yüzün gerçek normaliyle kurulur, motor eğik levha olarak çözer.
+  const roleFacesAll = (role: 'top' | 'bottom' | 'left' | 'right') => bodyFacesByRoleAll(body, role).sort((a, b) => b.area - a.area);
   // Yüz rolleri hiç çözülemediyse (yüz bulunamadı) eski kutu yüzleri; roller varsa rolü boş kalan parça KURULMAZ (Goker: +X yüzü
   // Rear yapınca sağ yan panel gelmemeli — oraya arkalık gelir).
   const noRoles = !bodyFaces(body).length;
   const FACE: Record<QuickPanelKey, Array<{ n: Vec3; seed: THREE.Vector3 }>> = { top: [], bottom: [], left: [], right: [] };
   for (const key of ['top', 'bottom', 'left', 'right'] as QuickPanelKey[]) {
-    const list = roleFaces(key).map(f => ({ n: f.normal, seed: new THREE.Vector3(...f.center) }));
+    const list = roleFacesAll(key).map(f => ({ n: f.normal, seed: new THREE.Vector3(...f.center) }));
     FACE[key] = list.length ? list : noRoles ? [fallback[key]] : [];
   }
   const partKey = (key: QuickBodyPartBase, i: number): QuickBodyPart => (i ? `${key}#${i}` : key);
