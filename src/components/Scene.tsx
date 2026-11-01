@@ -20,7 +20,7 @@ import {
 } from './Geometry';
 import {
   type PlinthPick, type PlinthRegion, confirmPlinthPick, plinthBoxOf, plinthBoxesOf, plinthCandidates, plinthLegSpots, plinthPickBox,
-  plinthRowKey, plinthSetsOf, isPlinthRow, finishPlinthEdit, plinthRegionOf, prismGeometry, bodyFrontAxis, bodyFaces, setBodyFaceRole,
+  plinthRowKey, plinthSetsOf, isPlinthRow, finishPlinthEdit, plinthRegionOf, prismGeometry, bodyFrontAxis, bodyFaces, setBodyFaceRole, bodyFacesByRole,
 } from './PlinthService';
 import { FACE_ROLES, FACE_ROLE_LABEL, type FaceRole } from './LegLayout';
 import { type LegAssemblyPart, legAssembly, onAccessoryGeometry } from './AccessoryService';
@@ -1718,8 +1718,9 @@ export const BackPickOverlay: React.FC<{ shape: any }> = ({ shape }) => {
       slabOf={c => backSlabPolygon(
         { axis: c.axis, side: c.side, placement, thickness: BACK_THICKNESS, gap: BACK_GAP, anchor: c.at }, backPickRect(c, placement), cuts)}
       candidatesAt={(o, d, body) => {
-        const entry = rayBackEntry(o, d, body);
-        return entry ? backCandidatesAt(shape, entry.axis, entry.side, entry.point, shapes, virtualFaces) : [];
+        // Tıklama REAR rolündeki yüze taşınır (Parameters › Faces); L gövdede iki rear yüz → hangisine tıklandıysa o
+        const entry = rayBackEntry(o, d, body, bodyFacesByRole(shape, 'rear'));
+        return entry ? backCandidatesAt(shape, entry.axis, entry.side, entry.point, shapes, virtualFaces, entry.bounds) : [];
       }} />
   );
 };

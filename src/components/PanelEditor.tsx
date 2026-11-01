@@ -1626,9 +1626,9 @@ export function PlacementDocks({ shape }: { shape: Shape | undefined }) {
       <PlacementDock tag="BACK" defaultName="Back" ready={ready} confirmTitle="Place back panel"
         lead={<BackTypeSelect value={backPickPlacement} onChange={setBackPickPlacement} />}
         status={!shape ? noShape
-          : n === 0 ? (boundN ? `Click the body (taken on its back face) · ${boundN} back ref${boundN === 1 ? '' : 's'}`
-            : 'No back refs — body edges bound the back · click the body (taken on its back face)')
-          : `Back ${backPickIndex + 1}/${n} · ${rectTxt(backPickPlacement === 'inner' ? cur.inner : cur.outer)} — click: next · right-click: place`}
+          : n === 0 ? (boundN ? `Click a REAR face of the body · ${boundN} back ref${boundN === 1 ? '' : 's'}`
+            : 'No back refs — body edges bound the back · click a REAR face of the body (Parameters › Faces)')
+          : `Back ${backPickIndex + 1}/${n} · rear face ${PLINTH_FACING_LABEL[`${['x', 'y', 'z'][cur.axis]}${cur.side > 0 ? '+' : '-'}`]} · ${rectTxt(backPickPlacement === 'inner' ? cur.inner : cur.outer)} — click: next · right-click: place`}
         onConfirm={() => { if (ready && shape) confirmBackPick(shape.id, backPickCandidates[backPickIndex]); }} onExit={() => setBackPickMode(false)} />
     );
   };

@@ -7,14 +7,14 @@ import {
 } from './Geometry';
 import {
   type CavityBox, type Shape, type VirtualFace, panelOfVf, type GapSpec, useAppStore, type PanelGroup, type CavityPick, type CavityStep, shapeById,
-  requestRebuild, type RefFacePick, type CornerKey, type QuickBodyConfig, type JoinPass, type BodyLegs, childPanelsOf, type QuickBodyPart,
+  requestRebuild, type RefFacePick, type CornerKey, type QuickBodyConfig, type JoinPass, type BodyLegs, childPanelsOf, type QuickBodyPart, type QuickBodyPartBase,
 } from '../store';
 import {
   backObstacleFor, backMemberCutFor, isBackPanel, backPreviewStamp, backCandidatesAt, BACK_AXIS, BACK_SIDE, createBackGroupFromPick, setBackDefaults,
   deleteBackGroupWithMembers,
 } from './BackService';
 import { doorJointForBond, moveDoorJointTo, isDoorPanel } from './DoorService';
-import { plinthLegBoxes, plinthSetsOf, removeQuickBodyPlinth, syncQuickBodyPlinth } from './PlinthService';
+import { axisDirOfNormal, bodyFacesByRole, plinthLegBoxes, plinthSetsOf, removeQuickBodyPlinth, syncQuickBodyPlinth } from './PlinthService';
 import { legModelById, legModelDims } from './AccessoryService';
 
 /* PANEL GRUP SERVİSİ — 1) kapak / arkalık / raf-dikme ortak bölme yardımcıları · 2) raf / dikme grupları · 3) hızlı gövde. */
@@ -2398,14 +2398,13 @@ export const quickBodyOf = (body: Shape | undefined | null): QuickBodyConfig | n
 /** Gövdenin hızlı gövde parçası olan VF'leri (liste sırasıyla). */
 export const quickBodyVfsOf = (bodyId: string | null | undefined, vfs = useAppStore.getState().virtualFaces): VirtualFace[] =>
   bodyId ? vfs.filter(f => f.shapeId === bodyId && !!f.quickBody) : [];
-const quickBackGroupOf = (bodyId: string) => useAppStore.getState().backGroups.find(g => g.shapeId === bodyId && g.quickBody);
+const quickBackGroupsOf = (bodyId: string) => useAppStore.getState().backGroups.filter(g => g.shapeId === bodyId && g.quickBody);
 
 /** Hızlı gövdenin kurduğu her şeyi kaldırır: parça panelleri + VF'leri, ayaklar, kurduğu arkalık. Ayarlar gövdede kalır. */
 export function removeQuickBody(shapeId: string): void {
   const st = useAppStore.getState();
   const vfs = quickBodyVfsOf(shapeId, st.virtualFaces);
-  const back = quickBackGroupOf(shapeId);
-  if (back) deleteBackGroupWithMembers(back.id);
+  for (const back of quickBackGroupsOf(shapeId)) deleteBackGroupWithMembers(back.id);
   removeQuickBodyPlinth(shapeId);
   if (!vfs.length) return;
   const vfIds = new Set(vfs.map(v => v.id));
@@ -2451,8 +2450,7 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
     prevVfs.map(v => [v.quickBody!, { vf: v, panel: panelOfVf(v.id, st.shapes) }]),
   );
   const prevPanelIds = new Set([...prev.values()].map(p => p.panel?.id).filter((id): id is string => !!id));
-  const prevBack = quickBackGroupOf(body.id);
-  const prevBackVfIds = new Set(prevBack?.memberVfIds ?? []);
+  const prevBackVfIds = new Set(quickBackGroupsOf(body.id).flatMap(g => g.memberVfIds));
   const isPrevBackPanel = (p: Shape) => prevBackVfIds.has(p.parameters?.virtualFaceId);
 
   // Mevcut kardeşler (kapak/arkalık ve önceki hızlı gövde parçaları hariç; öteki arkalık parçaları damga olarak)
@@ -2462,12 +2460,23 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
     ...existing.filter(isBackPanel).map(backPreviewStamp).filter((p): p is Shape => !!p),
   ];
 
-  const FACE: Record<QuickPanelKey, { n: Vec3; seed: THREE.Vector3 }> = {
+  // YÜZ ROLLERİNE GÖRE (Goker: "quick body kübün yüz rollerine göre otomatik gelsin: left ise sol panel, üst ise üst; bazalıysa front
+  // olan yerlere baza, rear olan yerlere arkalık"): her rolün EKSEN-HİZALI yüzleri (Parameters › Faces; L gövdede bir rolde birden çok
+  // yüz → "Right", "Right 2"); rolde yüz yoksa eski kutu yüzü.
+  const fallback: Record<QuickPanelKey, { n: Vec3; seed: THREE.Vector3 }> = {
     top: { n: [0, 1, 0], seed: new THREE.Vector3((x0 + x1) / 2, y1, (z0 + z1) / 2) },
     bottom: { n: [0, -1, 0], seed: new THREE.Vector3((x0 + x1) / 2, y0, (z0 + z1) / 2) },
     left: { n: [-1, 0, 0], seed: new THREE.Vector3(x0, (y0 + y1) / 2, (z0 + z1) / 2) },
     right: { n: [1, 0, 0], seed: new THREE.Vector3(x1, (y0 + y1) / 2, (z0 + z1) / 2) },
   };
+  const roleFaces = (role: 'top' | 'bottom' | 'left' | 'right' | 'front' | 'rear') => bodyFacesByRole(body, role).sort((a, b) => b.area - a.area);
+  const FACE: Record<QuickPanelKey, Array<{ n: Vec3; seed: THREE.Vector3 }>> = { top: [], bottom: [], left: [], right: [] };
+  for (const key of ['top', 'bottom', 'left', 'right'] as QuickPanelKey[]) {
+    const list = roleFaces(key).map(f => ({ n: f.normal, seed: new THREE.Vector3(...f.center) }));
+    FACE[key] = list.length ? list : [fallback[key]];
+  }
+  const partKey = (key: QuickBodyPartBase, i: number): QuickBodyPart => (i ? `${key}#${i}` : key);
+  const partName = (base: string, i: number) => (i ? `${base} ${i + 1}` : base);
   const newVfs: VirtualFace[] = []; const newShapes: Shape[] = [];
   let ts = Date.now();
   let bottomVfId: string | undefined;
@@ -2503,28 +2512,41 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
   };
 
   for (const key of order) {
-    const f = FACE[key];
-    if (key === 'bottom' && lift > 0) {
-      // Yükseltilen alt panelin bölgesi motor tarafından GERÇEK konumunda çözülür (damgalar panelin ötelemesi kadar kaydırılır);
-      // ayaklıda kısaltılmış yanlar o yükseklikte alt paneli keser → ek extrude gerekmez.
-      await push(key, f.n, f.seed, QUICK_PANEL_NAME[key], { move: ['y+', lift] });
-    } else if ((key === 'left' || key === 'right') && cfg.base === 'legs' && lift > 0 && joins[key === 'left' ? 'bl' : 'br'] === 'side') {
-      // Yan köşeden geçiyor ama ayak kadar yukarıda biter: alt kenar extrude ile kısaltılır (vekil de kısaltılmış).
-      await push(key, f.n, f.seed, QUICK_PANEL_NAME[key], {
-        cuts: [[[0, -1, 0], 'Y-', -lift]],
-        proxyVerts: vs => vs.map(v => [v[0], Math.max(v[1], y0 + lift), v[2]] as Vec3),
-      });
-    } else {
-      await push(key, f.n, f.seed, QUICK_PANEL_NAME[key], {});
+    for (let i = 0; i < FACE[key].length; i++) {
+      const f = FACE[key][i], pk = partKey(key, i), nm = partName(QUICK_PANEL_NAME[key], i);
+      if (key === 'bottom' && lift > 0) {
+        // Yükseltilen alt panelin bölgesi motor tarafından GERÇEK konumunda çözülür (damgalar panelin ötelemesi kadar kaydırılır);
+        // ayaklıda kısaltılmış yanlar o yükseklikte alt paneli keser → ek extrude gerekmez.
+        await push(pk, f.n, f.seed, nm, { move: ['y+', lift] });
+      } else if ((key === 'left' || key === 'right') && cfg.base === 'legs' && lift > 0 && joins[key === 'left' ? 'bl' : 'br'] === 'side') {
+        // Yan köşeden geçiyor ama ayak kadar yukarıda biter: alt kenar extrude ile kısaltılır (vekil de kısaltılmış).
+        await push(pk, f.n, f.seed, nm, {
+          cuts: [[[0, -1, 0], 'Y-', -lift]],
+          proxyVerts: vs => vs.map(v => [v[0], Math.max(v[1], y0 + lift), v[2]] as Vec3),
+        });
+      } else {
+        await push(pk, f.n, f.seed, nm, {});
+      }
     }
   }
 
   if (cfg.base === 'plinth' && lift > 0) {
-    // Ön baza: alt panelin altında kalan ön yüz şeridi; sonra setback kadar geri (−Z). Kapak/arkalık sınırı DEĞİL.
-    const xm = (x0 + x1) / 2, ym = y0 + lift / 2;
-    await push('plinth', [0, 0, 1], new THREE.Vector3(xm, ym, z1), 'Plinth', { move: ['z-', Math.max(0, cfg.plinth.front)], bound: false });
+    // BAZALAR: her FRONT rolündeki yüzün alt şeridine ön baza (içeri setback kadar), her REAR yüze arka baza (içeri inset kadar);
+    // L gövdede iki ön yüz → iki baza. Kapak/arkalık sınırı DEĞİL. Rolde yüz yoksa +Z / −Z.
+    const ym = y0 + lift / 2;
+    const fronts = roleFaces('front'), rears = roleFaces('rear');
+    const inward = (n: Vec3) => axisDirOfNormal([-n[0], -n[1], -n[2]]);
+    const frontList = fronts.length ? fronts.map(f => ({ n: f.normal, c: f.center })) : [{ n: [0, 0, 1] as Vec3, c: [(x0 + x1) / 2, ym, z1] as Vec3 }];
+    for (let i = 0; i < frontList.length; i++) {
+      const f = frontList[i], ax = inward(f.n); if (!ax || ax[0] === 'y') continue;
+      await push(partKey('plinth', i), f.n, new THREE.Vector3(f.c[0], ym, f.c[2]), partName('Plinth', i), { move: [ax, Math.max(0, cfg.plinth.front)], bound: false });
+    }
     if (cfg.plinth.rearPlinth) {
-      await push('rearPlinth', [0, 0, -1], new THREE.Vector3(xm, ym, z0), 'Rear plinth', { move: ['z+', Math.max(0, cfg.plinth.rear)], bound: false });
+      const rearList = rears.length ? rears.map(f => ({ n: f.normal, c: f.center })) : [{ n: [0, 0, -1] as Vec3, c: [(x0 + x1) / 2, ym, z0] as Vec3 }];
+      for (let i = 0; i < rearList.length; i++) {
+        const f = rearList[i], ax = inward(f.n); if (!ax || ax[0] === 'y') continue;
+        await push(partKey('rearPlinth', i), f.n, new THREE.Vector3(f.c[0], ym, f.c[2]), partName('Rear plinth', i), { move: [ax, Math.max(0, cfg.plinth.rear)], bound: false });
+      }
     }
   }
 
@@ -2559,36 +2581,46 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
   const { whenRebuildIdle } = await import('./PanelEngine');
   await whenRebuildIdle(body.id);
 
-  // Arkalık: paneller gerçek geometrisiyle üretildikten sonra adaydan (en büyük, dört panelin arası); hızlı gövdenin kurduğu
-  // arkalık duruyorsa yerinde güncellenir (bölmeleri korunur), arkalık kapatıldıysa silinir.
+  // Arkalık: paneller gerçek geometrisiyle üretildikten sonra her REAR rolündeki yüze bir arkalık (Goker: "rear olan kısma arkalık
+  // ata; L kübün iki rear yüzü olabilir"); hızlı gövdenin kurduğu arkalıklar duruyorsa yerinde güncellenir (bölmeleri korunur),
+  // arkalık kapatıldıysa silinir. Rolde yüz yoksa −Z.
   let backCreated = false;
   const b = cfg.back;
-  const live = quickBackGroupOf(body.id);
+  const live = quickBackGroupsOf(body.id);
   if (!b.enabled) {
-    if (live) deleteBackGroupWithMembers(live.id);
-  } else if (live) {
-    await setBackDefaults(live.id, {
-      placement: b.placement, thickness: b.thickness, setback: b.setback, inset: b.inset,
-      grooveClear: { front: b.clear.front, back: b.clear.back, depth: b.clear.depth },
-    });
+    for (const g of live) deleteBackGroupWithMembers(g.id);
+  } else if (live.length) {
+    for (const g of live) {
+      await setBackDefaults(g.id, {
+        placement: b.placement, thickness: b.thickness, setback: b.setback, inset: b.inset,
+        grooveClear: { front: b.clear.front, back: b.clear.back, depth: b.clear.depth },
+      });
+    }
     backCreated = true;
   } else {
     const fresh = shapeById(body.id); if (!fresh) return { panelCount: newVfs.length, backCreated, cyclic, warnings };
     const cy = (y0 + lift + t + (y1 - t)) / 2;
-    const picks = backCandidatesAt(fresh, BACK_AXIS, BACK_SIDE, [(x0 + x1) / 2, cy, z0]);
-    if (picks.length) {
-      // Aday = dört yeni panelin ARASI: yükseltilmiş alt panelin dış yüzü gövde kenarında olmadığından gövde kenarı (yere kadar) da
+    const rears = roleFaces('rear').filter(f => f.axis !== 1);
+    const targets = rears.length ? rears.map(f => ({ axis: f.axis, side: f.side, click: [f.center[0], cy, f.center[2]] as Vec3, box: f.bounds as CavityBox | undefined }))
+      : [{ axis: BACK_AXIS as 0 | 1 | 2, side: BACK_SIDE as 1 | -1, click: [(x0 + x1) / 2, cy, z0] as Vec3, box: undefined }];
+    const seenKeys = new Set<string>();
+    targets.forEach((tg, i) => {
+      const picks = backCandidatesAt(fresh, tg.axis, tg.side, tg.click, undefined, undefined, tg.box);
+      if (!picks.length) { warnings.push(`Back${i ? ` ${i + 1}` : ''}: no candidate between the panels.`); return; }
+      // Aday = yeni panellerin ARASI: yükseltilmiş alt panelin dış yüzü gövde kenarında olmadığından gövde kenarı (yere kadar) da
       // adaydır ve alanı daha büyüktür — bu yüzden en çok yeni panele dayanan aday seçilir, eşitlikte büyük alan.
       const ours = new Set(newVfs.filter(v => v.doorBound !== false).map(v => v.id));
       const score = (p: typeof picks[number]) => [p.bounds.uMin, p.bounds.uMax, p.bounds.vMin, p.bounds.vMax].filter(r => r.vfId && ours.has(r.vfId)).length;
       const pick = [...picks].sort((a, b) => score(b) - score(a) || b.area - a.area)[0];
-      const g = createBackGroupFromPick(fresh.id, pick, b.placement, 'Back', {
+      if (seenKeys.has(pick.key)) return;
+      seenKeys.add(pick.key);
+      const g = createBackGroupFromPick(fresh.id, pick, b.placement, i ? `Back ${i + 1}` : 'Back', {
         thickness: Math.max(1, b.thickness), setback: Math.max(0, b.setback), inset: Math.max(0, b.inset),
         grooveClear: { front: Math.max(0, b.clear.front), back: Math.max(0, b.clear.back), depth: Math.max(0, b.clear.depth) }, quickBody: true,
       });
-      backCreated = !!g;
-      useAppStore.getState().setSelectedBackGroupId(null);
-    } else warnings.push('Back: no candidate between the panels.');
+      backCreated = backCreated || !!g;
+    });
+    useAppStore.getState().setSelectedBackGroupId(null);
   }
   return { panelCount: newVfs.length, backCreated, cyclic, warnings };
 }

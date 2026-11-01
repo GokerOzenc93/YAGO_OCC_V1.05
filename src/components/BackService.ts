@@ -83,16 +83,35 @@ export const backGroupName = (g: Pick<BackGroup, 'name'>) => g.name ?? 'Back';
 export const vfBackBound = (vf: Pick<VirtualFace, 'backBound' | 'splitBack'> | undefined | null): boolean => !!(vf?.backBound ?? vf?.splitBack);
 export type BackEdgeKey = keyof BackBounds;
 
-/** Işın hangi yüzden girerse girsin (önden, açıdan) tıklama gövdenin ARKA yüzüne taşınır — ışının arka düzlemle kesişimi, yüzün
- *  içine kırpılır; adaylar hep arka yüzde kurulur. Işın düzleme paralel ya da arkaya bakmıyorsa null. */
-export function rayBackEntry(o: Vec3, d: Vec3, b: CavityBox): { axis: 0 | 1 | 2; side: 1 | -1; point: Vec3 } | null {
-  const axis = BACK_AXIS, side = BACK_SIDE;
-  if (Math.abs(d[axis]) < 1e-9) return null;
-  const t = (b.min[axis] - o[axis]) / d[axis];
-  if (!(t > 0)) return null;
-  const point: Vec3 = [o[0] + d[0] * t, o[1] + d[1] * t, b.min[axis]];
-  for (const a of [0, 1] as const) point[a] = Math.min(b.max[a], Math.max(b.min[a], point[a]));
-  return { axis, side, point };
+/** ARKA yüz adayı: gövdenin REAR rolündeki eksen-hizalı bir yüzü (PlinthService.bodyFaces; Goker: "rear olan kısma arkalık ata —
+ *  L kübün iki rear yüzü olabilir, oralara tıklatayım"). `bounds` = yüzün köşe kutusu (gövde-yerel). */
+export interface RearFace { axis: 0 | 1 | 2; side: 1 | -1; bounds: { min: Vec3; max: Vec3 } }
+/** Tıklama bir REAR yüze taşınır: ışın verilen arka yüz düzlemlerinden (gövde kutusunun o yüzü) hangisini yüzün sınırları içinde
+ *  önce kesiyorsa o yüz; hiçbirini kesmiyorsa ilk arka yüzün düzlemine izdüşüm (kırpılmış). Arka yüz listesi yoksa eski −Z. */
+export function rayBackEntry(o: Vec3, d: Vec3, b: CavityBox, rears?: RearFace[]): { axis: 0 | 1 | 2; side: 1 | -1; point: Vec3; bounds: CavityBox } | null {
+  const list: RearFace[] = rears && rears.length ? rears : [{ axis: BACK_AXIS, side: BACK_SIDE, bounds: { min: [...b.min] as Vec3, max: [...b.max] as Vec3 } }];
+  const planeOf = (r: RearFace) => (r.side > 0 ? b.max[r.axis] : b.min[r.axis]);
+  const at = (r: RearFace, t: number): Vec3 => { const p: Vec3 = [o[0] + d[0] * t, o[1] + d[1] * t, o[2] + d[2] * t]; p[r.axis] = planeOf(r); return p; };
+  let best: { r: RearFace; t: number } | null = null;
+  for (const r of list) {
+    if (Math.abs(d[r.axis]) < 1e-9) continue;
+    const t = (planeOf(r) - o[r.axis]) / d[r.axis];
+    if (!(t > 0)) continue;
+    const p = at(r, t);
+    const inside = ([0, 1, 2] as const).every(a => a === r.axis || (p[a] >= r.bounds.min[a] - 1 && p[a] <= r.bounds.max[a] + 1));
+    if (inside && (!best || t < best.t)) best = { r, t };
+  }
+  if (!best) {
+    const r = list[0];
+    if (Math.abs(d[r.axis]) < 1e-9) return null;
+    const t = (planeOf(r) - o[r.axis]) / d[r.axis];
+    if (!(t > 0)) return null;
+    best = { r, t };
+  }
+  const { r, t } = best;
+  const point = at(r, t);
+  for (const a of [0, 1, 2] as const) if (a !== r.axis) point[a] = Math.min(r.bounds.max[a], Math.max(r.bounds.min[a], point[a]));
+  return { axis: r.axis, side: r.side, point, bounds: { min: [...r.bounds.min] as Vec3, max: [...r.bounds.max] as Vec3 } };
 }
 
 export type BackBoundPanel = BoundPanel;
@@ -240,9 +259,13 @@ const backLeafById = (tree: BackNode, id: string): BackLeaf | null => { const n 
 
 // Arkalık adayları: dört yandaki sınır seçeneklerinin her kombinasyonu bir dikdörtgen; seçilen panel çapraz açıklıkla örtüşmeli.
 // Hepsi tıklanan noktayı içerir. Sıra: alan büyükten küçüğe (önce dıştakiler).
-export function backCandidatesAt(parent: Shape, axis: 0 | 1 | 2, side: 1 | -1, click: Vec3, shapes?: Shape[], vfs?: VirtualFace[]): BackPick[] {
-  const body = bodyLocalBox(parent);
-  if (!body) return [];
+export function backCandidatesAt(parent: Shape, axis: 0 | 1 | 2, side: 1 | -1, click: Vec3, shapes?: Shape[], vfs?: VirtualFace[], faceBox?: CavityBox): BackPick[] {
+  // `faceBox` = tıklanan ARKA yüzün köşe kutusu (L gövde: çentikli yüz kutudan dar) — gövde kenarı seçenekleri o yüzle sınırlanır.
+  const bodyAll = bodyLocalBox(parent);
+  if (!bodyAll) return [];
+  const body: CavityBox = faceBox ? { min: [...faceBox.min] as Vec3, max: [...faceBox.max] as Vec3 } : bodyAll;
+  if (faceBox) { body.min[axis] = bodyAll.min[axis]; body.max[axis] = bodyAll.max[axis]; }
+  const faceBoxOut = faceBox ? { min: [...body.min] as Vec3, max: [...body.max] as Vec3 } : undefined;
   const { u, v } = backPlaneAxes(axis);
   const bounds = collectBackBoundPanels(parent, shapes, vfs, true);
   const cu = click[u], cv = click[v];
@@ -291,7 +314,7 @@ export function backCandidatesAt(parent: Shape, axis: 0 | 1 | 2, side: 1 | -1, c
       const inner = shrink('inner', rectAtDepth(edges, side, 'inner', d.front)), outer = shrink('outer', rectAtDepth(edges, side, 'outer', d.front));
       out.push({
         key: `${axis}${side > 0 ? '+' : '-'}:${key}@${Math.round(d.front)}`, axis, side, bounds: boundsRef,
-        inner, outer, at,
+        inner, outer, at, ...(faceBoxOut ? { faceBox: faceBoxOut } : {}),
         area: (inner.u1 - inner.u0) * (inner.v1 - inner.v0), boundPanelCount: panelN,
         depth: d.ref, depthIndex: di, depthCount: depths.length,
       });
@@ -496,11 +519,19 @@ export function placeBackPieces(
 
 // SONRADAN KONAN SINIR LEVHASI: arkalık gövde kenarına bağlıyken o kenara sonradan konup sınır işaretlenen levha (yan/üst/alt panel)
 // arkalık kenarı olur → bini / kanal girişi o levhaya göre çalışır. Panel kenarları korunur; yalnız gövde kenarları devralınır.
+/** Grubun gövde kutusu: seçildiği arka yüzün kutusu (`faceBox`, eksen boyunca gövde kutusu), yoksa gövde kutusu. */
+function backBodyBox(group: Pick<BackGroup, 'faceBox' | 'axis'>, parent: Shape): CavityBox | null {
+  const all = bodyLocalBox(parent);
+  if (!all || !group.faceBox) return all;
+  const b: CavityBox = { min: [...group.faceBox.min] as Vec3, max: [...group.faceBox.max] as Vec3 };
+  b.min[group.axis] = all.min[group.axis]; b.max[group.axis] = all.max[group.axis];
+  return b;
+}
 export function resolveBackBounds(
   group: BackGroup, parent: Shape, shapes: Shape[] = useAppStore.getState().shapes, vfs: VirtualFace[] = useAppStore.getState().virtualFaces,
 ): BackBounds {
   if (EDGE_KEYS.every(k => group.bounds[k]?.vfId)) return group.bounds;
-  const body = bodyLocalBox(parent);
+  const body = backBodyBox(group, parent);
   if (!body) return group.bounds;
   const bps = collectBackBoundPanels(parent, shapes, vfs, true);
   if (!bps.length) return group.bounds;
@@ -526,7 +557,7 @@ export function resolveBackBounds(
 }
 
 function solveBackEdges(group: BackGroup, parent: Shape, shapes: Shape[]): { edges: BackEdges; P: number; bounds: BackBounds; nail: Set<BackEdgeKey> } | null {
-  const body = bodyLocalBox(parent);
+  const body = backBodyBox(group, parent);
   if (!body) return null;
   const { u, v } = backPlaneAxes(group.axis);
   const bounds = resolveBackBounds(group, parent, shapes);
@@ -1090,7 +1121,7 @@ export function createBackGroupFromPick(
   const group: BackGroup = {
     id: genId('back'), shapeId, setback: BACK_SETBACK, inset: BACK_INSET, axis: pick.axis, side: pick.side, placement,
     bounds: pick.bounds, depthRef: pick.depth, rect, anchor: pick.at, tree: makeBackLeaf(),
-    gap: BACK_GAP, thickness: BACK_THICKNESS,
+    gap: BACK_GAP, thickness: BACK_THICKNESS, ...(pick.faceBox ? { faceBox: pick.faceBox } : {}),
     memberVfIds: [], name: name?.trim() || 'Back', createdAt: Date.now(),
     ...init,
   };

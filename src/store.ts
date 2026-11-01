@@ -206,6 +206,8 @@ export type BackNode =
   };
 /** Arkalık adayı: gövdenin ARKA yüzü düzleminde sınır paneli kenarlarından kurulan iç/dış dikdörtgen; alan büyükten küçüğe. */
 export interface BackPick {
+  /** Seçildiği arka yüzün köşe kutusu (gövde-yerel); gövde kenarları bununla sınırlanır. */
+  faceBox?: CavityBox;
   key: string; axis: 0 | 1 | 2; side: 1 | -1; bounds: BackBounds;
   inner: BackRect; outer: BackRect; area: number;
   depth: BackBoundRef; depthIndex: number; depthCount: number;
@@ -244,6 +246,8 @@ export interface BackGroup {
   createdAt: number;
   /** Hızlı gövdenin kurduğu arkalık: ayarlar yeniden uygulanınca bu grup yerinde güncellenir. */
   quickBody?: boolean;
+  /** Seçildiği ARKA yüzün köşe kutusu (gövde-yerel; L gövdede çentikli yüz kutudan dar): gövde kenarı sınırları bu kutuyu okur. */
+  faceBox?: CavityBox;
 }
 
 /** Raf/dikme boşluğu: değer (mm) + kilit (küp boyutlanınca sabit kalır). */
@@ -308,8 +312,9 @@ export interface PanelGroup {
 /** 'arrow' = ok modu DYN (her tık değer kadar), 'arrowFixed' = ok modu FIXED (o eksendeki toplam ölçü = değer). */
 export type FaceExtrudeValueMode = 'arrow' | 'arrowFixed' | 'fixed' | 'dyn' | 'ref';
 export type QuickBodyBase = 'plain' | 'legs' | 'plinth';
-/** Hızlı gövdenin ürettiği panel parçaları (VF.quickBody). */
-export type QuickBodyPart = 'top' | 'left' | 'right' | 'bottom' | 'plinth' | 'rearPlinth';
+/** Hızlı gövdenin ürettiği panel parçaları (VF.quickBody). Aynı rolde birden çok yüz (L gövde: iki sağ yüz, iki ön baza) → `key#n`. */
+export type QuickBodyPartBase = 'top' | 'left' | 'right' | 'bottom' | 'plinth' | 'rearPlinth';
+export type QuickBodyPart = QuickBodyPartBase | `${QuickBodyPartBase}#${number}`;
 /** Köşe birleşimi: 'side' = yan panel köşeden geçer (üst/alt arada), 'horiz' = üst/alt panel geçer (yan arada). */
 export type JoinPass = 'side' | 'horiz';
 export type CornerKey = 'tl' | 'tr' | 'bl' | 'br';
