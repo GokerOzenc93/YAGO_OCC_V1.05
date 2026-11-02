@@ -560,6 +560,37 @@ export const createReplicadBox = async ({ width, height, depth }: BoxSize): Prom
 export const createReplicadBoxAt = async (min: ArrayLike<number>, max: ArrayLike<number>): Promise<any> =>
   (await createReplicadBox({ width: max[0] - min[0], height: max[1] - min[1], depth: max[2] - min[2] })).translate(min[0], min[1], min[2]);
 
+/** Delik silindiri: `start`'tan `dir` yönünde `length` boyunda, yarıçap r. */
+export const createHoleCylinder = async (start: Vec3, dir: Vec3, radius: number, length: number): Promise<any> => {
+  await initReplicad();
+  const { makeCylinder } = await import('replicad');
+  return makeCylinder(radius, length, start, dir);
+};
+/** ÇOK ARAÇLI TEK BOOLEAN (Goker, Kas 2026 — "delik çıkarmayı olabildiğince en hızlı yöntemle yap, ileride çok delik olacak"):
+ *  base − (tüm araçlar) TEK BRepAlgoAPI_Cut (SetArguments / SetTools listesi). Node OCC harness ölçümü, 600×560×18 panel: 16 delik
+ *  ardışık cut 958 ms · compound tek cut 251 ms · SetTools 119 ms; 40 delik 3.9 s · 0.74 s · 0.26 s. Glue (commonFace) kesimi ATLIYOR
+ *  (hacim değişmedi) → kullanılmaz; BRepFeat_MakeCylindricalHole ardışıktan biraz hızlı, listeden 5× yavaş.
+ *  `simplify` = aynı düzlemdeki yüzleri birleştir (kutu kesicilerde, replicad.cut ile aynı). Sonuç 3B katı değilse fırlatır. */
+export async function cutWithTools(base: any, tools: any[], simplify = false): Promise<any> {
+  if (!tools.length) return base;
+  const oc = await initReplicad();
+  const { cast } = await import('replicad');
+  const args = new oc.TopTools_ListOfShape_1(); args.Append_1(base.wrapped);
+  const list = new oc.TopTools_ListOfShape_1(); for (const t of tools) list.Append_1(t.wrapped);
+  const op = new oc.BRepAlgoAPI_Cut_1();
+  const progress = new oc.Message_ProgressRange_1();
+  try {
+    op.SetArguments(args); op.SetTools(list);
+    op.SetCheckInverted(false);   // girdiler düzgün katılar; ters katı denetimi atlanır (~%10)
+    op.Build(progress);
+    if (simplify) op.SimplifyResult(true, true, 1e-3);
+    if (op.HasErrors()) throw new Error('boolean cut failed');
+    const out = cast(op.Shape());
+    if (!(out as any).wrapped || typeof (out as any).cut !== 'function') throw new Error('cut result is not a 3D shape');
+    return out;
+  } finally { args.delete(); list.delete(); op.delete(); progress.delete(); }
+}
+
 /** Boş/bozuk OCC katısında bounds erişimi fırlatır → çağıranın catch'ine düşer (sonuç yazılmaz). */
 export function assertBounds(shape: any): void {
   shape.boundingBox.bounds.forEach((v: number[]) => v.forEach(n => n.toFixed(0)));

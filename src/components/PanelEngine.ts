@@ -1,12 +1,13 @@
 import * as THREE from 'three';
-import { type CavityBox, type PanelGroup, type Shape, type VirtualFace, childPanelsOf, panelOfVf, shapeById, useAppStore, vfOfPanel } from '../store';
+import { type CavityBox, type PanelGroup, type PanelHole, type Shape, type VirtualFace, childPanelsOf, panelOfVf, shapeById, useAppStore, vfOfPanel } from '../store';
 import { type ExtrudeStep, type TransformStep, applyExtrudeSteps, applyTransformSteps, getUnifiedSteps, matchReferenceFace, resolveReferenceFacePlane, stepRefTargets } from './Geometry';
 import { type RotOp, computeFaceComponentContour, computeFreeRegionLocal, convexHull2D, footprintGeometry, panelBehindStackPlane, largestFaceNormal, panelHasRotation, panelInnerBigFace, panelIsTiltedSlab, toUV } from './Geometry';
-import { type CoplanarFaceGroup, type FaceData, type Vec3, angleToTouchPlane, assertBounds, axisDirToVec, axisIndexOf, boundsOverlapBox, convertReplicadToThreeGeometry, createPanelFromVirtualFace, createReplicadBox, createReplicadBoxAt, dot3, effectiveBodyGeometry, errMsg, findFaceByDescriptor, fromPlaneUV, getFacePlaneAxes, getFacesAndGroups, getShapeMatrix, halfSpaceSlab, isFlatNormal, localBboxOf, normDeg, panelThickness, pointFromFracBox, projRange, resolveVfFracPoint, rotateAboutAxis, round1, round3, spanAlong, toVector3, uniqueMeshPoints, uniquePoints, vec3, vertexModsKey, vfRawMinAlong, worldBboxOf } from './Geometry';
+import { type CoplanarFaceGroup, type FaceData, type Vec3, angleToTouchPlane, assertBounds, axisDirToVec, axisIndexOf, boundsOverlapBox, convertReplicadToThreeGeometry, createHoleCylinder, createPanelFromVirtualFace, createReplicadBox, createReplicadBoxAt, cutWithTools, dot3, effectiveBodyGeometry, errMsg, findFaceByDescriptor, fromPlaneUV, getFacePlaneAxes, getFacesAndGroups, getShapeMatrix, halfSpaceSlab, isFlatNormal, localBboxOf, normDeg, panelThickness, pointFromFracBox, projRange, resolveVfFracPoint, rotateAboutAxis, round1, round3, spanAlong, toVector3, uniqueMeshPoints, uniquePoints, vec3, vertexModsKey, vfRawMinAlong, worldBboxOf } from './Geometry';
 import { isInteriorPanel, isInteriorVf, recalculateInteriorVfs, syncPanelGroups } from './PanelGroupService';
 import { isDoorPanel, isDoorVf, recalculateDoorVfs, syncDoorGroups } from './DoorService';
 import { backGrooveCuttersFor, backNailStampFor, backStackAt, isBackPanel, isBackVf, recalculateBackVfs, syncBackGroups } from './BackService';
-import { isPlinthVf, plinthBoxOf, plinthLegBoxes, plinthSetsOf } from './PlinthService';
+import { isPlinthVf, plinthBoxOf, plinthHoleCuttersFor, plinthLegBoxes, plinthSetsOf } from './PlinthService';
+import { type HoleCutter, holeCutterBox, panelHoleRecord } from './AccessoryService';
 
 // Kapak ve arkalık panelleri (LEVHA): köşe birleşimine girmez, gövdeyle sığdırılmaz/kesilmez, hiçbir paneli kesmez; damgalamaz —
 // istisna arkalığın iç parçası: ÇAKMA kenarındaki ve sırada kendinden SONRA gelen gövde panelini basar (BackService.backNailStampFor).
@@ -816,30 +817,34 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
         rp = await cutByEarlierOverlaps(rp, panel, earlier);
       }
 
-      // ARKALIK KANALI (Goker, Eki 2026): kanallı ilişkideki sınır / derz paneline parçanın bollaştırılmış kutusu katıdan çıkarılır.
-      // Yalnız görünüm/katı: kanalsız mesh `ungroovedGeometry` olarak saklanır, ayak izi / damga / hacim onu okur → kanal boşluğuna
-      // panel sızmaz. Yalnız SON geçişte kesilir; aynı kanalsız mesh + kesiciler için sonuç yeniden kullanılır (_grooveCache).
+      // SON GEÇİŞ KESİCİLERİ — ARKALIK KANALI (Goker, Eki 2026: kanallı sınır / derz paneline parçanın bollaştırılmış kutusu) +
+      // AKSESUAR DELİKLERİ (Goker, Kas 2026: ayağın deliği panele değdiği yerden çıkarılır; PlinthService.plinthHoleCuttersFor).
+      // Yalnız görünüm/katı: kesilmemiş mesh `ungroovedGeometry` olarak saklanır, ayak izi / damga / hacim / sıralama onu okur →
+      // kanal ve delik boşluğuna panel sızmaz, panel mantığı etkilenmez. Yalnız SON geçişte, paneli kesen kesiciler TEK boolean'da
+      // (Geometry.cutWithTools — çok araçlı BRepAlgoAPI_Cut; ardışık cut'tan 5–10× hızlı); aynı mesh + kesiciler için sonuç yeniden
+      // kullanılır (_grooveCache). Delik kaydı (Shape.holes) üretim listesi için yazılır.
       let ungrooved: THREE.BufferGeometry | null = null;
-      let grooved: { rp: any; geometry: THREE.BufferGeometry } | null = null;
-      if (groove && !isSheetPanel(panel) && !isRotated) {
-        const cutters = mergeGrooveCutters(backGrooveCuttersFor(panel));
-        if (cutters.length) {
+      let grooved: { rp: any; geometry: THREE.BufferGeometry; holes: PanelHole[] } | null = null;
+      if (groove && !isSheetPanel(panel)) {
+        const boxes = isRotated ? [] : mergeGrooveCutters(backGrooveCuttersFor(panel));
+        const holes = plinthHoleCuttersFor(panel);
+        if (boxes.length || holes.length) {
           const base = meshed && meshed.shape === rp ? meshed.geometry : convertReplicadToThreeGeometry(rp);
           const pb = localBboxOf(base);
-          const live = pb ? cutters.filter(c => boxTouches(c, pb)) : [];
-          if (live.length) {
-            const sig = `${meshSignature(base)}|${live.map(c => c.min.map(round1).join(',') + '/' + c.max.map(round1).join(',')).join(';')}`;
+          const liveBoxes = pb ? boxes.filter(c => boxTouches(c, pb)) : [];
+          const liveHoles = pb ? holes.filter(c => boxTouches(holeCutterBox(c), pb)) : [];
+          if (pb && (liveBoxes.length || liveHoles.length)) {
+            const sig = `${meshSignature(base)}|${liveBoxes.map(c => c.min.map(round1).join(',') + '/' + c.max.map(round1).join(',')).join(';')}|${liveHoles.map(c => c.key).join(';')}`;
             const hit = _grooveCache.get(panel.id);
-            if (hit && hit.sig === sig) { ungrooved = base; grooved = { rp: hit.rp, geometry: hit.geometry }; }
+            if (hit && hit.sig === sig) { ungrooved = base; grooved = { rp: hit.rp, geometry: hit.geometry, holes: hit.holes }; }
             else {
-              let cut = rp, cutN = 0;
-              for (const c of live) {
-                try { cut = cut.cut(await createReplicadBoxAt(c.min, c.max)); cutN++; } catch { /* kesilemeyen kanal atlanır */ }
-              }
-              if (cutN) {
-                ungrooved = base; grooved = { rp: cut, geometry: convertReplicadToThreeGeometry(cut) };
+              const pbox = { min: [pb.min.x, pb.min.y, pb.min.z] as Vec3, max: [pb.max.x, pb.max.y, pb.max.z] as Vec3 };
+              const cut = await cutByTools(rp, liveBoxes, liveHoles, pbox);
+              if (cut) {
+                const holeRecords = liveHoles.map(c => panelHoleRecord(c, pbox));
+                ungrooved = base; grooved = { rp: cut, geometry: convertReplicadToThreeGeometry(cut), holes: holeRecords };
                 if (_grooveCache.size > 200) _grooveCache.clear();
-                _grooveCache.set(panel.id, { sig, rp: cut, geometry: grooved.geometry });
+                _grooveCache.set(panel.id, { sig, rp: cut, geometry: grooved.geometry, holes: holeRecords });
               }
             }
           }
@@ -860,7 +865,7 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
         // Panel geometrisi GÖVDE-YEREL çerçevededir → dönüşümü gövdeninkiyle AYNI olmalı (Goker: "küp sahnede dönünce paneller dönmemiş
         // gibi yerinde kalıyor" — eskiden dönüş [0,0,0]'a sıfırlanıyordu).
         geometry, position: parentPos, rotation: [...(parentFresh.rotation || [0, 0, 0])] as Vec3, scale: [...(parentFresh.scale || [1, 1, 1])] as Vec3,
-        replicadShape: rp, ungroovedGeometry: ungrooved ?? undefined,
+        replicadShape: rp, ungroovedGeometry: ungrooved ?? undefined, holes: grooved?.holes.length ? grooved.holes : undefined,
         ...(Object.keys(paramPatch).length ? { parameters: { ...panel.parameters, ...paramPatch } } : {}),
       } as any);
     } catch (err) {
@@ -905,7 +910,29 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
 /** Kesici kutu panel kutusuna (0.01 pay) değiyor mu? */
 const boxTouches = (c: CavityBox, b: THREE.Box3) => !(c.max[0] <= b.min.x + 0.01 || c.min[0] >= b.max.x - 0.01
   || c.max[1] <= b.min.y + 0.01 || c.min[1] >= b.max.y - 0.01 || c.max[2] <= b.min.z + 0.01 || c.min[2] >= b.max.z - 0.01);
-const _grooveCache = new Map<string, { sig: string; rp: any; geometry: THREE.BufferGeometry }>();
+const _grooveCache = new Map<string, { sig: string; rp: any; geometry: THREE.BufferGeometry; holes: PanelHole[] }>();
+/** Kutu + silindir kesicileri tek boolean'da çıkarır; sonuç kutusu panel kutusundan sapıyorsa (bozuk boolean) ya da işlem hata verirse
+ *  ARDIŞIK kesime düşer (kesilemeyen araç atlanır — eski kanal davranışı). Hiçbir araç kesilemezse null. */
+async function cutByTools(rp: any, boxes: CavityBox[], holes: HoleCutter[], pb: CavityBox): Promise<any | null> {
+  const tools: any[] = [];
+  for (const c of boxes) { try { tools.push(await createReplicadBoxAt(c.min, c.max)); } catch { /* bozuk kutu atlanır */ } }
+  for (const c of holes) { try { tools.push(await createHoleCylinder(c.start, c.dir, c.radius, c.length)); } catch { /* bozuk silindir atlanır */ } }
+  if (!tools.length) return null;
+  const sane = (s: any): boolean => {
+    try {
+      const b = s.boundingBox.bounds as [number[], number[]];
+      return [0, 1, 2].every(a => Math.abs(b[0][a] - pb.min[a]) < 1 && Math.abs(b[1][a] - pb.max[a]) < 1);
+    } catch { return false; }
+  };
+  try {
+    const cut = await cutWithTools(rp, tools, boxes.length > 0);
+    if (sane(cut)) return cut;
+    console.error('[YAGO][MOTOR] çok araçlı kesim kutuyu bozdu, ardışık kesime dönülüyor');
+  } catch (err) { console.error('[YAGO][MOTOR] çok araçlı kesim hatası, ardışık kesime dönülüyor:', errMsg(err)); }
+  let cut = rp, n = 0;
+  for (const t of tools) { try { const c = cut.cut(t); if (sane(c)) { cut = c; n++; } } catch { /* kesilemeyen araç atlanır */ } }
+  return n ? cut : null;
+}
 function meshSignature(g: THREE.BufferGeometry): string {
   const pos = g.getAttribute('position') as THREE.BufferAttribute | undefined;
   if (!pos) return '0';

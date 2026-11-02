@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
-  type LucideIcon, Spline, Layers, Radius, Plus, Container, LayoutPanelTop, Rows3, Columns3, DoorClosed, SendToBack, Hash, ChevronRight, Send, Box,
+  type LucideIcon, Spline, Layers, SwatchBook, Radius, Plus, Container, LayoutPanelTop, Rows3, Columns3, DoorClosed, SendToBack, Hash, ChevronRight, Send, Box,
   Square, SlidersHorizontal, PanelLeft, GripHorizontal, PictureInPicture2, AppWindow, Pin, PinOff, Trash2, X, Check, Footprints, Wrench,
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
@@ -188,6 +188,7 @@ export const SidebarRail: React.FC<{ activeTab: SidebarTab; hasShape: boolean }>
   // AKSESUAR (Goker, Eki 2026): kategori raydan seçilir (panelde ayrıca tip seçimi yok); kütüphane gövdeden bağımsız → şekil seçili olmasa da etkin.
   const accessories: RailSpec[] = [
     { key: 'acc-legs', label: 'Legs', icon: Footprints, title: 'Leg models and leg sets', active: s.accessoryCategory === 'legs', onClick: () => s.setAccessoryCategory('legs') },
+    { key: 'acc-layers', label: 'Layers', icon: SwatchBook, title: 'Accessory layers — shared by every accessory part (name + colour)', active: s.accessoryCategory === 'layers', onClick: () => s.setAccessoryCategory('layers') },
   ];
   const group = (list: RailSpec[], tab: SidebarTab, needShape = true) =>
     list.map(({ key, disabled, ...t }) => <RailTool key={key} {...t} passive={(needShape && !hasShape) || activeTab !== tab || !!disabled} />);

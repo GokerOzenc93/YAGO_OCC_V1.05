@@ -26,7 +26,7 @@ import {
   getFacesAndGroups, localBboxOf, round1,
 } from './Geometry';
 import { type FreeRegion, freeRegionInBox, legSpots } from './PanelGroupService';
-import { legsFromPreset, resolveLegPreset } from './AccessoryService';
+import { type HoleCutter, legHoleCutters, legModelById, legsFromPreset, resolveLegPreset } from './AccessoryService';
 import {
   type EdgeRole, type FaceRole, type LegRule, type Pt, autoLegPoints, clampInsidePoly, cleanPoly, clipPolyToRect, edgeRoles, fromFacing, rectPoly,
   roleOfNormal, signedArea, standardLegRules, toFacing,
@@ -336,6 +336,25 @@ export function plinthLegBoxes(s: PlinthSet, shapes = useAppStore.getState().sha
   const b = plinthRegionOf(s, shapes, vfs).bbox;
   const R = legRadius(plinthLegsOf(s.legs));
   return plinthLegSpots(s, shapes).map(p => ({ min: [p.x - R, b.min[1], p.z - R] as Vec3, max: [p.x + R, b.max[1], p.z + R] as Vec3 }));
+}
+/** AYAK DELİKLERİ → KESİCİLER (Goker, Kas 2026 — "ayağın deliği panele değdiği yerden çıkarma yapacak"): gövdedeki her setin her
+ *  ayağı, kayıtlı ayak modelinin deliklerini (HoleSpec) kendi yerine (ayak merkezi, zemin) taşır; PanelEngine son geçişte bu
+ *  silindirleri paneli kesenlerle süzüp TEK boolean ile çıkarır. Yalnız görünüm / katı — ayak izi, damga, sıralama kesilmemiş
+ *  geometriyi (Shape.ungroovedGeometry) okur. Geometri çözülmesi gerekmez (düzen model ölçülerinden). */
+export function plinthHoleCuttersFor(panel: Shape, st = useAppStore.getState()): HoleCutter[] {
+  const parentId = (panel.parameters as any)?.parentShapeId as string | undefined;
+  if (!parentId) return [];
+  const out: HoleCutter[] = [];
+  for (const s of plinthSetsOf(parentId, st.plinthSets)) {
+    const leg = legModelById(plinthLegsOf(s.legs, st).legModelId, st);
+    if (!leg?.holes?.length) continue;
+    const b = plinthRegionOf(s, st.shapes, st.virtualFaces).bbox;
+    const y0 = b.min[1], h = Math.max(1, b.max[1] - y0);
+    plinthLegSpots(s, st.shapes).forEach((p, i) => {
+      out.push(...legHoleCutters(leg, h, [p.x, y0, p.z], holeId => ({ kind: 'leg', setId: s.id, legIndex: i, holeId })));
+    });
+  }
+  return out;
 }
 export const plinthHeight = (s: PlinthSet, shapes?: Shape[]) => { const b = plinthBoxOf(s, shapes); return b.max[1] - b.min[1]; };
 /** Zeminden setin üstüne (üst üste panel derinliği). */

@@ -351,7 +351,24 @@ export interface QuickBodyConfig {
 /* ───────── AKSESUAR KÜTÜPHANESİ (AccessoryService; Goker, Eki 2026 — "Panel editör yanında Aksesuar sekmesi; ayak modelini dışarıdan
    al, 3 parça, orta parça uzasın; 4/5/6 ayak setlerini kaydet, ayak kısmında çağır") ───────── */
 export type AccessoryUnit = 'mm' | 'cm' | 'm' | 'in';
-export type AccessoryCategory = 'legs' | 'rails' | 'hinges';
+export type AccessoryCategory = 'legs' | 'rails' | 'hinges' | 'layers';
+/** AKSESUAR KATMANI (Goker, Kas 2026 — "ayağın parçalarının katmanını seçebileyim; katmanları bir listede tut, tüm aksesuarlarda
+ *  kullanılacak"): kütüphane geneli liste (IndexedDB `layers`); her aksesuar parçası bir katmana bağlanır (`layerId`), katmanın rengi
+ *  parçayı boyar (önizleme + sahne). Gelecekte ray / menteşe parçaları da aynı listeyi okur. */
+export interface AccessoryLayer { id: string; name: string; color: string; createdAt: number }
+/** DELİK (genel, Goker, Kas 2026 — "ayağın modelinin üzerine delik atabileyim; yönü, x y z pozisyonu ayağın sıfırına göre, çapı ve
+ *  derinliği olsun; ileride başka yerlerde de kullanılacak"): aksesuarın KENDİ çerçevesinde silindirik delik tanımı.
+ *  `dir` = delme yönü (birim; yüzeyden dışarı, dokunduğu panelin içine), `pos` = deliğin ağız merkezi, `diameter` / `depth` mm.
+ *  `part` = bağlı parça (ayakta Top / Middle / Bottom): `pos` o parçanın ÖLÇEKSİZ model uzayındadır → parça uzayınca / taşınınca /
+ *  ölçüsü değişince delik yüzeydeki yerini korur (panele vidalanan tabla deliği ayak boyuyla birlikte yükselir). `part` yok → `pos`
+ *  doğrudan aksesuar sıfırına göre. Panele etkisi: silindir (ağızdan `depth` kadar) ∩ panel katıdan çıkarılır (PanelEngine). */
+export interface HoleSpec { id: string; part?: LegPartRole | null; pos: Vec3; dir: Vec3; diameter: number; depth: number; name?: string }
+/** PANELDEKİ DELİK KAYDI (üretim / CNC; PanelEngine her rebuild'de yazar — Shape.holes): gövde-yerel giriş noktası, yön (panelin
+ *  içine), çap, panel içindeki gerçek derinlik, giriş yüzü ekseni, delinen yüzeyden geçiyor mu; kaynak aksesuar. */
+export interface PanelHole {
+  id: string; entry: Vec3; dir: Vec3; diameter: number; depth: number; through: boolean; face: AxisDir | null;
+  source: { kind: 'leg'; setId: string; legIndex: number; holeId: string } | { kind: string; [k: string]: unknown };
+}
 /** Ayak parçası rolü: taban (zemine basar) · gövde/mil (set yüksekliğine göre UZAR) · üst tabla (panele vidalanır). */
 export type LegPartRole = 'base' | 'stem' | 'top';
 /** İçe aktarılmış model dosyası — bayt dizisi IndexedDB'de, burada üst bilgi. `size` = normalize edilmiş ölçü (mm; Y yukarı, taban y=0). */
@@ -362,10 +379,10 @@ export interface AccessoryModel {
  *  `dims` = NİHAİ ölçü (mm; x / y / z — yoksa modelin kendi ölçüsü). `offset` = TAŞIMA (mm; x·z düz kaydırma, y istif içinde: üstteki
  *  parçalar da kayar, uzayan parçalar telafi eder → toplam yükseklik değişmez). `stretch` = ayak boyu değişince bu parça da uzar /
  *  kısalır (yoksa: orta parça evet, üst / alt hayır); kapalıysa `dims[1]` boyunda sabit kalır. `scale` = eski kayıt (orta parça X/Z çarpanı). */
-export interface LegModelPart { modelId: string; role: LegPartRole; offset?: Vec3; dims?: Vec3; stretch?: boolean; scale?: [number, number] }
+export interface LegModelPart { modelId: string; role: LegPartRole; offset?: Vec3; dims?: Vec3; stretch?: boolean; scale?: [number, number]; layerId?: string | null }
 /** Ayak modeli: 3 yuva (alt / orta / üst = base / stem / top); hangi parçaların uzadığı parça başına (`LegModelPart.stretch`).
- *  `stretch` = eski kayıt alanı, okunmaz. */
-export interface LegModel { id: string; name: string; parts: LegModelPart[]; stretch?: LegPartRole; createdAt: number }
+ *  `holes` = ayağın delikleri (HoleSpec; panele dokunan yer panelden çıkarılır). `stretch` = eski kayıt alanı, okunmaz. */
+export interface LegModel { id: string; name: string; parts: LegModelPart[]; holes?: HoleSpec[]; stretch?: LegPartRole; createdAt: number }
 /** Ayak seti ("kaset"): hangi model, AYAK AYAK kurallar (LegLayout.LegRule — çapa + mm; iz çokgenine göre çözülür), varsayılan yükseklik.
  *  count / side / front / rear: standart düzen üreteci parametreleri (eski kayıtlarda kural yoksa düzen bunlardan türer). */
 export interface LegPreset {
@@ -390,8 +407,10 @@ export interface Shape {
   color?: string;
   parameters: Record<string, any>;
   replicadShape?: any;
-  /** Arkalık kanalı açılmış panelde KANALSIZ mesh (ayak izi / damga için; userData.groovedUuid = eşleştiği `geometry`). */
+  /** Arkalık kanalı / delik açılmış panelde KESİLMEMİŞ mesh (ayak izi / damga için; userData.groovedUuid = eşleştiği `geometry`). */
   ungroovedGeometry?: THREE.BufferGeometry;
+  /** Panele işlenen delikler (aksesuar kaynaklı; PanelEngine son geçişte yazar) — üretim listesi. */
+  holes?: PanelHole[];
   isolated?: boolean;
   vertexModifications?: VertexModification[];
   groupId?: string;
@@ -511,11 +530,12 @@ export interface AppState {
   faceRoleHover: { shapeId: string; gi: number } | null; setFaceRoleHover: (h: { shapeId: string; gi: number } | null) => void;
 
   /* AKSESUAR KÜTÜPHANESİ (AccessoryService): modeller / ayak modelleri / ayak setleri — IndexedDB'den yüklenir, burada canlı kopya. */
-  accessoryModels: AccessoryModel[]; legModels: LegModel[]; legPresets: LegPreset[];
-  setAccessoryLibrary: (lib: { accessoryModels?: AccessoryModel[]; legModels?: LegModel[]; legPresets?: LegPreset[] }) => void;
+  accessoryModels: AccessoryModel[]; legModels: LegModel[]; legPresets: LegPreset[]; accessoryLayers: AccessoryLayer[];
+  setAccessoryLibrary: (lib: { accessoryModels?: AccessoryModel[]; legModels?: LegModel[]; legPresets?: LegPreset[]; accessoryLayers?: AccessoryLayer[] }) => void;
   upsertAccessoryModel: (m: AccessoryModel) => void; removeAccessoryModel: (id: string) => void;
   upsertLegModel: (m: LegModel) => void; removeLegModel: (id: string) => void;
   upsertLegPreset: (p: LegPreset) => void; removeLegPreset: (id: string) => void;
+  upsertAccessoryLayer: (l: AccessoryLayer) => void; removeAccessoryLayer: (id: string) => void;
   accessoryCategory: AccessoryCategory; setAccessoryCategory: (c: AccessoryCategory) => void;
   /** Arkalık seçmede tip: 'outer' = arkadan çakma, 'inner' = kanallı. */
   backPickPlacement: BackPlacement; setBackPickPlacement: (p: BackPlacement) => void;
@@ -824,10 +844,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   showFaceRoles: false, setShowFaceRoles: (b) => set({ showFaceRoles: b, ...(b ? {} : { faceRoleHover: null }) }),
   faceRoleHover: null, setFaceRoleHover: (h) => set({ faceRoleHover: h }),
 
-  accessoryModels: [], legModels: [], legPresets: [],
+  accessoryModels: [], legModels: [], legPresets: [], accessoryLayers: [],
   setAccessoryLibrary: (lib) => set((s) => ({
     accessoryModels: lib.accessoryModels ?? s.accessoryModels, legModels: lib.legModels ?? s.legModels, legPresets: lib.legPresets ?? s.legPresets,
+    accessoryLayers: lib.accessoryLayers ?? s.accessoryLayers,
   })),
+  upsertAccessoryLayer: (l) => set((s) => ({ accessoryLayers: upsertById(s.accessoryLayers, l) })),
+  removeAccessoryLayer: (id) => set((s) => ({ accessoryLayers: s.accessoryLayers.filter(x => x.id !== id) })),
   upsertAccessoryModel: (m) => set((s) => ({ accessoryModels: upsertById(s.accessoryModels, m) })),
   removeAccessoryModel: (id) => set((s) => ({ accessoryModels: s.accessoryModels.filter(x => x.id !== id) })),
   upsertLegModel: (m) => set((s) => ({ legModels: upsertById(s.legModels, m) })),
