@@ -351,6 +351,8 @@ export const orderedParts = (parts: LegModelPart[]): LegModelPart[] => parts.map
 export interface LegPartPlacement {
   modelId: string; role: LegPartRole; stretch: boolean; x: number; y: number; z: number; scaleX: number; scaleY: number; scaleZ: number;
   size: Vec3; layerId: string | null;
+  /** Temas düzleminin üstünde kalan (panele giren) kısım, mm — yalnız en üst parçada > 0. */
+  embed: number;
 }
 /** Montajdaki parça: yer + çözülmüş geometri. */
 export interface LegAssemblyPart extends LegPartPlacement { geo: THREE.BufferGeometry }
@@ -365,7 +367,11 @@ export function legLayout(leg: LegModel, h: number, sizeOf: (id: string) => Vec3
   if (resolved.some(r => !r.size)) return null;
   const rows = resolved.map(r => ({ ...r, d: legPartDims(r.p, r.size!), st: legPartStretches(r.p), off: legPartOffset(r.p) }));
   const offY = rows.reduce((a, r) => a + r.off[1], 0);
-  const fixedH = rows.filter(r => !r.st).reduce((a, r) => a + r.d[1], 0) + offY;
+  // PANELE GİREN KISIM: en üst parçanın tepesinden `embed` kadarı temas düzleminin üstünde → ayak boyu h temas düzlemine kadar,
+  // model h + embed'e uzanır (uzayan parçalar embed kadar daha uzar). Uzayan üst parçada okunmaz.
+  const top = rows[rows.length - 1];
+  const embed = top.st ? 0 : legPartEmbed(top.p, top.d[1]);
+  const fixedH = rows.filter(r => !r.st).reduce((a, r) => a + r.d[1], 0) + offY - embed;
   const stretchNatural = rows.filter(r => r.st).reduce((a, r) => a + r.d[1], 0);
   const k = stretchNatural > 1e-6 ? Math.max(1, h - fixedH) / stretchNatural : 1;
   const out: LegPartPlacement[] = [];
@@ -377,10 +383,37 @@ export function legLayout(leg: LegModel, h: number, sizeOf: (id: string) => Vec3
     out.push({
       modelId: r.p.modelId, role: r.p.role, stretch: r.st, x: r.off[0], y, z: r.off[2],
       scaleX: ratio(r.d[0], size[0]), scaleY: ratio(hy, size[1]), scaleZ: ratio(r.d[2], size[2]), size, layerId: r.p.layerId ?? null,
+      embed: r === top ? embed : 0,
     });
     y += hy;
   }
   return out;
+}
+/** Parçanın panele giren kısmı (mm), parça boyundan küçük tutulur. */
+export const legPartEmbed = (p: Pick<LegModelPart, 'embed'>, partHeight: number): number => Math.max(0, Math.min(p.embed ?? 0, Math.max(0, partHeight - 0.1)));
+/** TEMAS YÜKSEKLİĞİ (panelin altı): en üst parçanın tepesi − panele giren kısım; model tepesi `legTopHeight`. */
+export const legContactHeight = (parts: LegPartPlacement[]): number => parts.reduce((a, p) => Math.max(a, p.y + p.size[1] * p.scaleY - p.embed), 0);
+export const legTopHeight = (parts: LegPartPlacement[]): number => parts.reduce((a, p) => Math.max(a, p.y + p.size[1] * p.scaleY), 0);
+/** PANELE GİREN KISMI MODELDEN BUL: +Y bakan üçgenlerin y'ye göre alan toplamı — en büyük alanlı yatay düzlem = temas düzlemi (tabla
+ *  üstü); embed = model tepesi − o düzlem (model uzayında; nihai ölçüye `scaleY` ile). Üstte pim / vida yuvası yoksa 0. */
+export function detectPartEmbed(geo: THREE.BufferGeometry, scaleY = 1): number {
+  const pos = geo.getAttribute('position') as THREE.BufferAttribute | undefined; if (!pos) return 0;
+  const index = geo.index; const n = index ? index.count : pos.count;
+  const area = new Map<number, number>(); let top = -Infinity;
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), u = new THREE.Vector3(), v = new THREE.Vector3();
+  for (let i = 0; i + 2 < n; i += 3) {
+    const i0 = index ? index.getX(i) : i, i1 = index ? index.getX(i + 1) : i + 1, i2 = index ? index.getX(i + 2) : i + 2;
+    a.fromBufferAttribute(pos, i0); b.fromBufferAttribute(pos, i1); c.fromBufferAttribute(pos, i2);
+    top = Math.max(top, a.y, b.y, c.y);
+    u.subVectors(b, a); v.subVectors(c, a); u.cross(v);
+    const l = u.length(); if (l < 1e-9 || u.y / l < 0.95) continue;
+    const y = Math.round(((a.y + b.y + c.y) / 3) * 20) / 20;
+    area.set(y, (area.get(y) ?? 0) + l / 2);
+  }
+  if (!area.size || !Number.isFinite(top)) return 0;
+  let bestY = top, bestA = -1;
+  for (const [y, ar] of area) if (ar > bestA) { bestA = ar; bestY = y; }
+  return round1(Math.max(0, top - bestY) * scaleY);
 }
 const modelSizeNow = (id: string): Vec3 | null => useAppStore.getState().accessoryModels.find(m => m.id === id)?.size ?? null;
 /** AYAK MONTAJI (çizim): düzen + çözülmüş geometriler. Hazır olmayan parça varsa null. */
@@ -397,10 +430,12 @@ export const assemblyFootprint = (parts: Array<Pick<LegAssemblyPart, 'x' | 'z' |
 export function legModelDims(leg: LegModel | undefined, models = useAppStore.getState().accessoryModels): { height: number; diameter: number } | null {
   if (!leg || !leg.parts.length) return null;
   let h = 0, d = 0;
-  for (const p of leg.parts) {
+  const ordered = orderedParts(leg.parts);
+  for (const p of ordered) {
     const m = models.find(x => x.id === p.modelId); if (!m) continue;
     const [ox, oy, oz] = legPartOffset(p), [dx, dy, dz] = legPartDims(p, m.size);
     h += dy + oy;
+    if (p === ordered[ordered.length - 1] && !legPartStretches(p)) h -= legPartEmbed(p, dy);   // temas yüksekliği: panele giren kısım sayılmaz
     d = Math.max(d, dx + 2 * Math.abs(ox), dz + 2 * Math.abs(oz));
   }
   return { height: round1(h), diameter: round1(d) };

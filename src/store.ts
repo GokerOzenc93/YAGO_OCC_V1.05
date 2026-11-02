@@ -379,7 +379,13 @@ export interface AccessoryModel {
  *  `dims` = NİHAİ ölçü (mm; x / y / z — yoksa modelin kendi ölçüsü). `offset` = TAŞIMA (mm; x·z düz kaydırma, y istif içinde: üstteki
  *  parçalar da kayar, uzayan parçalar telafi eder → toplam yükseklik değişmez). `stretch` = ayak boyu değişince bu parça da uzar /
  *  kısalır (yoksa: orta parça evet, üst / alt hayır); kapalıysa `dims[1]` boyunda sabit kalır. `scale` = eski kayıt (orta parça X/Z çarpanı). */
-export interface LegModelPart { modelId: string; role: LegPartRole; offset?: Vec3; dims?: Vec3; stretch?: boolean; scale?: [number, number]; layerId?: string | null }
+export interface LegModelPart {
+  modelId: string; role: LegPartRole; offset?: Vec3; dims?: Vec3; stretch?: boolean; scale?: [number, number]; layerId?: string | null;
+  /** PANELE GİREN KISIM (mm; Goker, Kas 2026 — "üst parçanın deliğe girecek yerleri panelin içine girsin; STL'nin en üst noktası orası olduğu
+   *  için panele sokmuyor"): parçanın tepesinden bu kadarı TEMAS düzleminin üstündedir (tabla üstündeki pimler / vida yuvaları). Ayak
+   *  boyu temas düzlemine kadar sayılır, model bu kadar panelin içine uzanır. Yalnız en üstteki parçada okunur. */
+  embed?: number;
+}
 /** Ayak modeli: 3 yuva (alt / orta / üst = base / stem / top); hangi parçaların uzadığı parça başına (`LegModelPart.stretch`).
  *  `holes` = ayağın delikleri (HoleSpec; panele dokunan yer panelden çıkarılır). `stretch` = eski kayıt alanı, okunmaz. */
 export interface LegModel { id: string; name: string; parts: LegModelPart[]; holes?: HoleSpec[]; stretch?: LegPartRole; createdAt: number }

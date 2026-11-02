@@ -30,8 +30,8 @@ import { UI_FONT } from './Ui';
 import { type AxisDir, type Vec3, round1 } from './Geometry';
 import {
   ACCESSORY_ACCEPT, HOLE_AXES, HOLE_DEFAULTS, LAYER_DEFAULT_COLOR, type LegAssemblyPart, type LegHoleAt, type SnapPoint, accessoryGeometryNow, assemblyFootprint, axisVecOf,
-  deleteAccessoryLayer, deleteLegModel, deleteLegPreset, holeAxisOf, holeLegPos, holePosFromLeg, importAccessoryFile, layerUseCount, legAssembly, legHolesAt,
-  legModelDims, legModelHasStem, legPartDims, legPartOffset, legPartStretches, meshSnapPoints, newAccessoryLayer, newHole, newLegModel, newLegPreset, onAccessoryGeometry,
+  deleteAccessoryLayer, deleteLegModel, deleteLegPreset, detectPartEmbed, holeAxisOf, holeLegPos, holePosFromLeg, importAccessoryFile, layerUseCount, legAssembly, legContactHeight, legHolesAt,
+  legModelDims, legModelHasStem, legPartDims, legPartEmbed, legPartOffset, legPartStretches, legTopHeight, meshSnapPoints, newAccessoryLayer, newHole, newLegModel, newLegPreset, onAccessoryGeometry,
   presetLayout, pruneUnusedAccessoryModels, saveAccessoryLayer, saveLegModel, saveLegPreset, snapDirToAxis, updateAccessoryModel,
 } from './AccessoryService';
 import {
@@ -60,7 +60,7 @@ function useDraftAssembly(leg: LegModel | null, h: number): LegAssemblyPart[] | 
   const [tick, setTick] = useState(0);
   useEffect(() => onAccessoryGeometry(() => setTick(t => t + 1)), []);
   // Parçalar + taşıma / ölçek / katman: değişince montaj yeniden kurulur
-  const key = leg ? JSON.stringify(leg.parts.map(p => [p.modelId, p.role, p.offset ?? null, p.dims ?? null, p.stretch ?? null, p.scale ?? null, p.layerId ?? null])) : '';
+  const key = leg ? JSON.stringify(leg.parts.map(p => [p.modelId, p.role, p.offset ?? null, p.dims ?? null, p.stretch ?? null, p.scale ?? null, p.layerId ?? null, p.embed ?? null])) : '';
   // eslint-disable-next-line react-hooks/exhaustive-deps
   return useMemo(() => (leg && leg.parts.length ? legAssembly(leg, h, accessoryGeometryNow) : null), [key, h, tick]);
 }
@@ -144,6 +144,22 @@ function HeightMark({ x, total }: { x: number; total: number }) {
           {fmt1(total)}
         </span>
       </Html>
+    </group>
+  );
+}
+/** HAYALET PANEL: temas düzleminde oturan yarı saydam 18 mm levha — ayağın neye vidalandığı ve panele giren kısım (pimler) görünür.
+ *  Işına yanıt vermez (parça seçimi / yakalama engellenmez). */
+function GhostPanel({ y, size }: { y: number; size: number }) {
+  const t = 18;
+  const edges = useMemo(() => { const h = size / 2; const pts: [number, number, number][] = [[-h, 0, -h], [h, 0, -h], [h, 0, h], [-h, 0, h], [-h, 0, -h]]; return pts; }, [size]);
+  return (
+    <group position={[0, y, 0]}>
+      <mesh position={[0, t / 2, 0]} raycast={() => null} renderOrder={5}>
+        <boxGeometry args={[size, t, size]} />
+        <meshStandardMaterial color="#d6b98f" transparent opacity={0.16} depthWrite={false} roughness={0.9} />
+      </mesh>
+      <Line points={edges} color="#c9b18f" lineWidth={0.9} transparent opacity={0.7} />
+      <Line points={edges.map(p => [p[0], t, p[2]] as [number, number, number])} color="#c9b18f" lineWidth={0.9} transparent opacity={0.5} />
     </group>
   );
 }
@@ -321,7 +337,9 @@ function LegPreview({ leg, parts, height, layers, openSlot, onSelectSlot, holeMo
     return () => el.removeEventListener('wheel', onWheel);
   }, []);
   const footprint = useMemo(() => (parts ? Math.max(20, assemblyFootprint(parts)) : 60), [parts]);
-  const total = useMemo(() => (parts ? parts.reduce((a, p) => Math.max(a, p.y + p.size[1] * p.scaleY), 0) : height), [parts, height]);
+  // total = model tepesi (kadraj); contact = temas yüksekliği (panelin altı; ölçü ve HUD) — pimler panele giriyorsa farklıdır
+  const total = useMemo(() => (parts ? legTopHeight(parts) : height), [parts, height]);
+  const contact = useMemo(() => (parts ? legContactHeight(parts) : height), [parts, height]);
   const holes = useMemo(() => (leg ? legHolesAt(leg, parts) : []), [leg, parts]);
   const R = Math.max(total, footprint) * 1.15;
   // Kamera model ya da yükseklik kutusu değişince modele yeniden oturur (kutu Enter / blur ile tek seferde yazılır).
@@ -345,7 +363,8 @@ function LegPreview({ leg, parts, height, layers, openSlot, onSelectSlot, holeMo
         <LegScene parts={parts} holes={holes} layers={layers} openSlot={openSlot} onSelectSlot={onSelectSlot} holeMode={holeMode} holeRadius={holeRadius}
           selectedHoleId={selectedHoleId} onSelectHole={onSelectHole} onAddHole={onAddHole} R={R} />
         <OriginMark len={Math.max(footprint * 0.45, total * 0.16)} />
-        {parts && <HeightMark x={footprint / 2 + Math.max(8, footprint * 0.22)} total={total} />}
+        {parts && <HeightMark x={footprint / 2 + Math.max(8, footprint * 0.22)} total={contact} />}
+        {parts && <GhostPanel y={contact} size={Math.max(footprint * 1.9, 90)} />}
         {/* Sol = döndür · orta = yaklaş · SAĞ = kaydır */}
         <OrbitControls makeDefault enablePan screenSpacePanning panSpeed={0.9} enableDamping dampingFactor={0.12} minDistance={R * 1.2} maxDistance={R * 12} maxPolarAngle={Math.PI * 0.85}
           mouseButtons={{ LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN }} />
@@ -364,7 +383,8 @@ function LegPreview({ leg, parts, height, layers, openSlot, onSelectSlot, holeMo
       )}
       {parts && (
         <div className="absolute left-2.5 bottom-2 flex items-center gap-1.5" style={HUD}>
-          <span className="font-semibold text-stone-500">H {fmt1(total)}</span><span>·</span>
+          <span className="font-semibold text-stone-500" title={total - contact > 0.05 ? `Height to the panel; ${fmt1(total - contact)} mm goes into the panel` : 'Height to the panel'}>H {fmt1(contact)}</span>
+          {total - contact > 0.05 && <><span>·</span><span title="Into the panel">↑ {fmt1(total - contact)}</span></>}<span>·</span>
           <span className="font-semibold text-stone-500">Ø {fmt1(footprint)}</span><span>·</span>
           <span>{parts.length} part{parts.length === 1 ? '' : 's'}</span>
           {holes.length > 0 && <><span>·</span><span>{holes.length} hole{holes.length === 1 ? '' : 's'}</span></>}
@@ -425,7 +445,9 @@ function SlotRow({ role, draft, setDraft, onPick, busy, open, onToggle, layers }
       </div>
     );
   }
-  const dims = legPartDims(part, m.size), off = legPartOffset(part), st = legPartStretches(part);
+  const dims = legPartDims(part, m.size), off = legPartOffset(part), st = legPartStretches(part), embed = legPartEmbed(part, dims[1]);
+  // Modelden bul: geometri hazırsa en büyük +Y düzlem; nihai ölçüye (Size Y / model Y) göre
+  const detectEmbed = () => { const g = accessoryGeometryNow(part.modelId); return g ? detectPartEmbed(g.geo, dims[1] / (g.size[1] || 1)) : 0; };
   const layer = layers.find(l => l.id === part.layerId);
   const setDim = (i: number, v: number) => { const d = [...dims] as Vec3; d[i] = Math.max(0.1, v); setPart({ dims: d, scale: undefined }); };
   const setOff = (i: number, v: number) => { const o = [...off] as Vec3; o[i] = v; setPart({ offset: o }); };
@@ -439,7 +461,8 @@ function SlotRow({ role, draft, setDraft, onPick, busy, open, onToggle, layers }
         <span className="shrink-0 w-[50px] text-[10px] font-semibold uppercase tracking-[0.06em] text-stone-500">{label}</span>
         <Swatch color={layer?.color ?? LAYER_DEFAULT_COLOR} size={8} />
         <span className="flex-1 min-w-0 truncate text-[11.5px] font-medium text-stone-700" title={`${m.fileName}${layer ? ` · layer ${layer.name}` : ''}`}>{m.name}</span>
-        <RowCells cells={[['X', dims[0]], ['Y', st ? '↕' : dims[1]], ['Z', dims[2]]]} title={`${fmt1(dims[0])} × ${fmt1(dims[1])} × ${fmt1(dims[2])} mm${st ? ' · stretches' : ''}`} />
+        {embed > 0 && <span className="shrink-0 text-[10px] font-semibold tabular-nums text-stone-400" title={`${fmt1(embed)} mm goes into the panel`}>↑{fmt1(embed)}</span>}
+        <RowCells cells={[['X', dims[0]], ['Y', st ? '↕' : dims[1]], ['Z', dims[2]]]} title={`${fmt1(dims[0])} × ${fmt1(dims[1])} × ${fmt1(dims[2])} mm${st ? ' · stretches' : ''}${embed > 0 ? ` · ${fmt1(embed)} into the panel` : ''}`} />
         <RowChevron open={open} onClick={toggle} />
       </div>
       {open && (
@@ -460,10 +483,17 @@ function SlotRow({ role, draft, setDraft, onPick, busy, open, onToggle, layers }
               <EditCell label="Layer" className="col-span-2" title="Layer of this part — colour in the preview and the 3D scene (Accessories › Layers)">
                 <LayerSelect value={part.layerId} layers={layers} onChange={id => setPart({ layerId: id })} />
               </EditCell>
+              {role === 'top' && (
+                <EditCell label="Into panel" title="How much of the top of this part sits above the contact plane and goes INTO the panel (pins, screw bosses above the plate). The leg height is measured to the contact plane; the model extends this far into the panel. ↻ = detect from the model (largest upward-facing plane).">
+                  <button type="button" title="Detect from the model: the largest upward-facing plane is the contact plane" onClick={e => { stop(e); setPart({ embed: detectEmbed() }); }}
+                    className="w-[18px] h-[18px] shrink-0 rounded-[5px] flex items-center justify-center text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700"><RotateCcw size={11} strokeWidth={2.2} /></button>
+                  {num(embed, v => setPart({ embed: Math.max(0, v) }), 0)}
+                </EditCell>
+              )}
             </div>
             <div className="flex items-center gap-1 pt-0.5">
               <CardAction compact icon={Upload} label="Replace" title="Replace the model file (size and move are kept)" onClick={() => onPick(role)} />
-              <CardAction compact icon={RotateCcw} label="Reset" title="Model size, no move" onClick={() => setPart({ dims: undefined, offset: undefined, scale: undefined })} />
+              <CardAction compact icon={RotateCcw} label="Reset" title="Model size, no move" onClick={() => setPart({ dims: undefined, offset: undefined, scale: undefined, embed: undefined })} />
               <div className="flex-1" />
               <CardAction compact icon={Trash2} label="Remove" title="Remove this part (and its holes)" onClick={removePart} />
             </div>
