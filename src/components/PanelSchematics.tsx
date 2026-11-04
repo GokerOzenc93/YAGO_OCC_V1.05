@@ -47,28 +47,29 @@ export const schemFsT = (fs: number) => Math.max(9.5, fs * 0.88);
 export const chipFs = (fsT: number) => fsT * 0.86;
 /* ŞEMA ROZET DİLİ (Goker: kapak rozetleri arkalık gibi): beyaz = seçenek; koyu taş = AÇIK/seçili durum; turuncu çerçeve = bu tık
    seçili parçayı / bölmeyi değiştirir; kırmızı = kaldır. */
+/* ÖNİZLEME GÖRSEL DİLİ (Goker, Kas 2026 — "preview ekranları minimal ve profesyonel"): düz kâğıt zemin, gölgesiz düz parçalar, ince
+   ölçü çizgileri, çerçevesiz-hafif pill'ler; turuncu yalnız seçim / etkin durum. Gradyanlar tek renge indirildi (aynı id'ler korunur). */
 export const CHIP = {
-  base: { fill: '#ffffff', stroke: '#cfc6b9', text: '#57534e' },
-  on: { fill: '#44403c', stroke: '#292524', text: '#ffffff' },
-  accent: { fill: '#fff7ed', stroke: '#f97316', text: '#c2410c' },
+  base: { fill: '#ffffff', stroke: '#d3ccc2', text: '#57534e' },
+  on: { fill: '#292524', stroke: '#292524', text: '#ffffff' },
+  accent: { fill: '#fff4ec', stroke: '#ea580c', text: '#c2410c' },
   danger: { fill: '#fef2f2', stroke: '#ef4444', text: '#b91c1c' },
 } as const;
 export type ChipTone = { fill: string; stroke: string; text: string };
-export const CHIP_SHADOW = 'drop-shadow(0 1px 1px rgba(40,30,20,0.12))';
+export const CHIP_SHADOW = 'none';
 export const pillSize = (txt: string, fs: number) => ({ pw: Math.max(txt.length * fs * 0.6 + 10, 26), ph: fs + 6 });
-export const DIM_LINE = '#b8b0a4';
-export const DIM_EXT = '#ddd6ca';
+export const DIM_LINE = '#9a928a';
+export const DIM_EXT = '#d3ccc2';
 export const SOFT = {
-  area: '#fdfcfa', areaStroke: '#e4ded4',
-  part0: '#f5f0e8', part1: '#eae3d7', partStroke: '#b8afa2',
-  sel0: '#f8f0e6', sel1: '#f0e3d1', selStroke: '#dcae84',
-  on0: '#fdeee1', on1: '#f9dcc4', onStroke: '#ea580c',
-  label: '#a39b90', shadow: 'drop-shadow(0 1px 1.5px rgba(70,50,30,0.09))',
-  pillStroke: '#ece6dc', pillShadow: 'drop-shadow(0 1px 1px rgba(60,40,20,0.06))',
+  area: '#ffffff', areaStroke: '#ddd7ce',
+  part0: '#f0ebe3', part1: '#f0ebe3', partStroke: '#a69d91',
+  sel0: '#f7efe5', sel1: '#f7efe5', selStroke: '#d9a57a',
+  on0: '#fdeadb', on1: '#fdeadb', onStroke: '#ea580c',
+  label: '#8f877c', shadow: 'none',
+  pillStroke: '#ddd7ce', pillShadow: 'none',
 };
-export const PREVIEW_BG = 'radial-gradient(130% 95% at 50% 0%, #fefdfb 0%, #f8f5f0 62%, #f3efe8 100%)';
-export const PREVIEW_FRAME =
-  'relative rounded-[12px] ring-1 ring-[#ebe5dc] overflow-hidden shadow-[inset_0_1px_0_rgba(255,255,255,0.8),0_1px_2px_rgba(60,40,20,0.04)]';
+export const PREVIEW_BG = '#faf8f5';
+export const PREVIEW_FRAME = 'relative rounded-[9px] ring-1 ring-[#e3ddd4] overflow-hidden';
 export const PREVIEW_HEIGHT = 500;
 export const SCHEMATIC_CSS = [
   '.yago-gap .lockbtn{transition:transform .12s;transform-box:fill-box;transform-origin:center}.yago-gap .lockbtn:hover{transform:scale(1.12)}',
@@ -102,7 +103,7 @@ export function DimPill({ cx, cy, txt, fs, fill = '#ffffff', stroke = SOFT.pillS
       <rect x={cx - pw / 2} y={cy - ph / 2} width={pw} height={ph} rx={ph / 2} fill={fill} stroke={stroke} strokeWidth={strokeWidth}
         style={{ filter: SOFT.pillShadow, ...(onClick ? { cursor: 'text' } : {}) }} onClick={onClick}>{title && <title>{title}</title>}</rect>
       {!hideText && (
-        <text x={cx} y={cy + fs * 0.36} textAnchor="middle" fontSize={fs} fontWeight={500} fill={color} fontFamily={UI_FONT}
+        <text x={cx} y={cy + fs * 0.36} textAnchor="middle" fontSize={fs} fontWeight={600} fill={color} fontFamily={UI_FONT}
           style={{ fontVariantNumeric: 'tabular-nums', pointerEvents: 'none' }}>{txt}</text>
       )}
     </>
@@ -140,9 +141,8 @@ export function Chip({ cx, cy, txt, fs, tone, rot, className }: {
   const { pw, ph } = pillSize(txt, fs);
   return (
     <g className={className} transform={rot ? `rotate(${rot} ${cx} ${cy})` : undefined}>
-      <rect x={cx - pw / 2} y={cy - ph / 2} width={pw} height={ph} rx={ph / 2} fill={tone.fill} stroke={tone.stroke} strokeWidth={0.9}
-        style={{ filter: CHIP_SHADOW }} />
-      <text x={cx} y={cy + fs * 0.36} textAnchor="middle" fontSize={fs} fontWeight={700} letterSpacing="0.02em" fill={tone.text}
+      <rect x={cx - pw / 2} y={cy - ph / 2} width={pw} height={ph} rx={ph / 2} fill={tone.fill} stroke={tone.stroke} strokeWidth={0.8} />
+      <text x={cx} y={cy + fs * 0.36} textAnchor="middle" fontSize={fs} fontWeight={600} letterSpacing="0.02em" fill={tone.text}
         fontFamily={UI_FONT}>{txt}</text>
     </g>
   );
@@ -489,8 +489,8 @@ function computeGroundDimWorld(geometry: THREE.BufferGeometry, wIdx: number, hId
 }
 
 interface GroundRender { fa: Pt; fb: Pt; da: Pt; db: Pt; cx: number; cy: number; value: number; }
-const PREVIEW_PANEL_COLOR = 0xeee7dc;
-const PREVIEW_EDGE_COLOR = 0xa1988b;
+const PREVIEW_PANEL_COLOR = 0xf0ebe3;
+const PREVIEW_EDGE_COLOR = 0x8f877c;
 const PREVIEW_LIGHT = { hemi: 1.0, ambient: 0.3, key: 1.9, fill: 0.55 };
 const dimFs = (w: number) => Math.max(10.5, Math.min(13.5, w * 0.027));
 const arrowSize = (w: number) => Math.max(4, Math.min(6.5, w * 0.014));
@@ -679,7 +679,7 @@ export function PanelPreview2D({ shape, arrowRotated }: { shape: Shape; arrowRot
   return (
     <div ref={wrapRef} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerLeave={onPointerUp}
       style={{ position: 'absolute', inset: 0, userSelect: 'none', cursor: 'ew-resize', touchAction: 'none' }}>
-      <canvas ref={canvasRef} style={{ display: 'block', ...fill, filter: 'drop-shadow(0 8px 14px rgba(60,40,20,0.06))' }} />
+      <canvas ref={canvasRef} style={{ display: 'block', ...fill }} />
       <svg style={{ ...fill, pointerEvents: 'none', overflow: 'visible' }} viewBox={`0 0 ${canvasSize.w} ${canvasSize.h}`}>
         {ground.map((d, i) => (
           <g key={`gd-${i}`}>
@@ -912,7 +912,7 @@ export function GroupSchematic({
         <SoftDefs id={gsid} />
         <path d={silhouettePath} fill={SOFT.area} stroke={SOFT.areaStroke} strokeWidth={1} strokeLinejoin="round" fillRule="evenodd" />
         <g style={{ pointerEvents: 'none' }} opacity={0.95}>
-          <path d={facingArrow} fill="none" stroke="#dc2626" strokeWidth={2.4} strokeLinecap="butt" strokeLinejoin="miter" />
+          <path d={facingArrow} fill="none" stroke="#ea580c" strokeWidth={2} strokeLinecap="butt" strokeLinejoin="miter" />
           <title>Gaps and members are counted from this side</title>
         </g>
         {starts.map((st, i) => runsAt(st, st + ts[i]).map((r, ri) => bar(`bar-${i}-${ri}`, i, barBox(i, r))))}
@@ -1388,7 +1388,7 @@ export function SchemFrame({ wrapRef, width, height, gid, view, overlay, childre
           <VGrad id={`${gid}-part`} from={SOFT.part0} to={SOFT.part1} />
           <VGrad id={`${gid}-part-on`} from={SOFT.on0} to={SOFT.on1} />
           <VGrad id={`${gid}-part-sel`} from={SOFT.sel0} to={SOFT.sel1} />
-          <HatchDef id={`${gid}-hatch`} stroke="#bfb5a6" w={0.7} />
+          <HatchDef id={`${gid}-hatch`} stroke="#c9c1b6" w={0.7} />
           <HatchDef id={`${gid}-hatch-on`} stroke="#e8925a" w={0.9} />
         </defs>
         <rect x={view.ox} y={view.oy} width={view.SW} height={view.SH} rx={3} fill={SOFT.area} stroke={SOFT.areaStroke} strokeWidth={0.8} />
@@ -1401,9 +1401,9 @@ export function SchemFrame({ wrapRef, width, height, gid, view, overlay, childre
 /** Levha bandı (taralı); warm = sıcak ton (bini / bağlı derz). */
 export const BandFill = ({ gid, pts, warm }: { gid: string; pts: Pt[]; warm: boolean }) => (
   <g style={NO_PTR}>
-    <path d={ptsPath(pts)} fill={warm ? '#f9dcc4' : '#ddd4c6'} />
+    <path d={ptsPath(pts)} fill={warm ? '#fbe3d1' : '#e5dfd5'} />
     <path d={ptsPath(pts)} fill={hatch(gid, warm)} />
-    <path d={ptsPath(pts)} fill="none" stroke={warm ? '#e07b3c' : '#a39a8d'} strokeWidth={1} strokeLinejoin="round" />
+    <path d={ptsPath(pts)} fill="none" stroke={warm ? '#e07b3c' : '#a69d91'} strokeWidth={0.9} strokeLinejoin="round" />
   </g>
 );
 /** Bandın parçaların altında kalan kısımları (kesikli). */
@@ -1440,7 +1440,7 @@ export const FocusStrips = ({ strips, clip }: { strips: Rect[]; clip: Pt[] | nul
     const sp = [{ x: r.x, y: r.y }, { x: r.x + r.w, y: r.y }, { x: r.x + r.w, y: r.y + r.h }, { x: r.x, y: r.y + r.h }];
     const cl = clip ? clipPolyToConvex(sp, clip) : sp;
     return cl.length >= 3
-      ? <path key={`fs-${i}`} d={ptsPath(cl)} fill="#f97316" fillOpacity={0.28} stroke="#ea580c" strokeOpacity={0.55} strokeWidth={0.6} style={NO_PTR} /> : null;
+      ? <path key={`fs-${i}`} d={ptsPath(cl)} fill="#f97316" fillOpacity={0.22} stroke="#ea580c" strokeOpacity={0.5} strokeWidth={0.6} style={NO_PTR} /> : null;
   })}</>
 );
 /** Seçili bölge çerçevesi (bölme kesikli); açılı kesimle küçülmüş bölgede gerçek şekli (`shape`, mm). */
@@ -1488,12 +1488,8 @@ export function MemberCell({ m, view, gid, on, inSel, lbl, tip, caption, fsT, pi
           <title>{tip}</title>
         </rect>
       )}
-      {!pts && w > 6 && h > 6 && (
-        <rect x={x0 + 1} y={y0 + 1} width={Math.max(0, w - 2)} height={Math.max(0, h - 2)} rx={1.5} fill="none" stroke="#ffffff" strokeOpacity={0.55}
-          strokeWidth={0.8} style={NO_PTR} />
-      )}
       {extra?.(b, pts)}
-      <text x={cx} y={ty0 + fsT * 0.36} textAnchor="middle" fontSize={fsT} fontWeight={on ? 700 : 650} fill={on ? '#ea580c' : '#8f877c'} fontFamily={UI_FONT}
+      <text x={cx} y={ty0 + fsT * 0.36} textAnchor="middle" fontSize={fsT} fontWeight={on ? 700 : 600} fill={on ? '#ea580c' : '#78716c'} fontFamily={UI_FONT}
         style={NUM_TXT}>{lbl}</text>
       {showSize && (
         <text x={cx} y={ty0 + lh + fsz * 0.36} textAnchor="middle" fontSize={fsz} fontWeight={500} fill={on ? '#c2410c' : '#a39b90'} fontFamily={UI_FONT}
@@ -2314,7 +2310,7 @@ export function BackSchematic({
               <rect x={gb.x - 3} y={gb.y - 3} width={gb.w + 6} height={gb.h + 6} rx={3} fill="#f97316" fillOpacity={0.18} stroke="#ea580c" strokeWidth={1.6}
                 className="yago-hint-pulse" />
             )}
-            <rect x={z.x} y={z.y} width={Math.max(0.5, z.w)} height={Math.max(0.5, z.h)} fill={fill} fillOpacity={groove ? 0.62 : 0.42} />
+            <rect x={z.x} y={z.y} width={Math.max(0.5, z.w)} height={Math.max(0.5, z.h)} fill={fill} fillOpacity={groove ? 0.5 : 0.36} />
             <rect x={z.x} y={z.y} width={Math.max(0.5, z.w)} height={Math.max(0.5, z.h)} fill="none" stroke={line} strokeOpacity={0.55} strokeWidth={0.6} />
             {/* Kanal dibi / örtme ucu: kalın net çizgi */}
             {z.vertical

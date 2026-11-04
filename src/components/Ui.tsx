@@ -34,6 +34,24 @@ export const TOKENS = {
   modClr: '#7c3aed',
 } as const;
 
+/* KENAR ÇUBUĞU YAZI / RENK STANDARDI (Goker, Kas 2026 — "yazı boyutu, stili, başlıklar ve açıklamalar standart olsun"):
+   tüm kartlar, şeritler ve parametre satırları yalnız bu dört yazı rolünü kullanır. CSS sınıfları SIDEBAR_CSS'te (yago-section ·
+   yago-label · yago-hint · yago-value); satır içi stil gerekince aynı değerler buradan alınır. */
+export const INK = {
+  text: '#1c1917', soft: '#44403c', muted: '#78716c', faint: '#a39b91', line: '#e3ddd4', lineSoft: '#ece7e0',
+  card: '#ffffff', well: '#f6f3ee', accent: '#ea580c', accentInk: '#c2410c', accentSoft: '#fff4ec', accentLine: 'rgba(234,88,12,0.45)',
+} as const;
+export const TYPE = {
+  /** Bölüm başlığı (BODY PANELS · STEPS · DIMENSIONS). */
+  section: { fontSize: 10, fontWeight: 600, letterSpacing: '0.09em', textTransform: 'uppercase', color: INK.muted, fontFamily: UI_FONT } as React.CSSProperties,
+  /** Hücre etiketi (Thickness · Columns · Setback). */
+  label: { fontSize: 10.5, fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase', color: INK.muted, fontFamily: UI_FONT } as React.CSSProperties,
+  /** Açıklama / ipucu satırı. */
+  hint: { fontSize: 11, fontWeight: 400, lineHeight: 1.45, color: INK.faint, fontFamily: UI_FONT } as React.CSSProperties,
+  /** Değer (sayı). */
+  value: { fontSize: 12.5, fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: INK.text, fontFamily: UI_FONT } as React.CSSProperties,
+} as const;
+
 /** Fare üzerinde mi: [durum, onMouseEnter/onMouseLeave işleyicileri]. */
 const useHover = () => {
   const [hov, setHov] = useState(false);
@@ -730,15 +748,14 @@ export const Toolbar: React.FC<{ onOpenCatalog: () => void }> = ({ onOpenCatalog
 };
 
 const SB = {
-  bg:            'linear-gradient(180deg,#f4f2ee 0%,#ebe8e2 100%)',
-  contentBg:     'linear-gradient(180deg,#fdfcfa 0%,#f6f3ed 100%)',
-  tabStripBg:    '#fdfcfa',
-  border:        '#d6d1c8',
+  bg:            '#f3f0ea',
+  contentBg:     '#f8f6f2',
+  tabStripBg:    '#fcfbf9',
+  border:        '#d9d3ca',
   borderSoft:    '#e4dfd7',
   groupBorder:   'rgba(60,50,40,0.14)',
   hairline:      'rgba(60,50,40,0.08)',
-  panelShadow:   '6px 0 28px -6px rgba(40,30,20,0.14),2px 0 6px -1px rgba(40,30,20,0.10),0.5px 0 1px rgba(40,30,20,0.06),'
-    + '0 0 0 0.5px rgba(60,50,40,0.07),inset -0.5px 0 0 rgba(140,120,100,0.06),inset 0.5px 0 0 rgba(255,255,255,0.95)',
+  panelShadow:   '4px 0 18px -8px rgba(40,30,20,0.12),1px 0 2px rgba(40,30,20,0.06)',
   textPrimary:   '#1c1917',
   textSecondary: '#44403c',
   textTertiary:  '#706b65',
@@ -759,11 +776,11 @@ const TabBtn: React.FC<{ active: boolean; onClick: () => void; icon: React.React
     <button onClick={onClick} {...hoverProps}
       style={{
         height: '100%', padding: '0 16px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '7px',
-        background: active ? 'linear-gradient(180deg,#ffffff 0%,#fdfbf7 100%)' : hov ? 'rgba(60,50,40,0.045)' : 'transparent',
+        background: active ? '#ffffff' : hov ? 'rgba(60,50,40,0.045)' : 'transparent',
         border: 'none', cursor: 'pointer', outline: 'none', position: 'relative',
         color: active ? SB.accent : hov ? SB.textPrimary : SB.textTertiary,
-        fontSize: '12.5px', fontWeight: active ? 600 : 500, letterSpacing: active ? '-0.005em' : '0.02em', fontFamily: UI_FONT,
-        transition: 'color 0.12s,background 0.12s', boxShadow: active ? 'inset 0 1px 0 rgba(255,255,255,0.9)' : 'none', flexShrink: 0,
+        fontSize: '12px', fontWeight: active ? 600 : 500, letterSpacing: '0.01em', fontFamily: UI_FONT,
+        transition: 'color 0.12s,background 0.12s', flexShrink: 0,
       }}>
       {icon}<span>{label}</span>
       {active && <div style={ACCENT_UNDERLINE('calc(100% - 24px)')} />}
@@ -776,19 +793,15 @@ const EMPTY_WRAP: React.CSSProperties = {
   textAlign: 'center', animation: 'ls-empty-in 0.3s ease-out forwards',
 };
 const EMPTY_ICON: React.CSSProperties = {
-  position: 'relative', width: '52px', height: '52px', borderRadius: '14px', background: 'linear-gradient(180deg,#ffffff 0%,#f4f1ea 100%)',
-  border: `1px solid ${SB.groupBorder}`,
-  boxShadow: '0 4px 12px -2px rgba(40,30,20,0.10),0 1px 3px rgba(40,30,20,0.06),0 0 0 0.5px rgba(60,50,40,0.05),'
-    + 'inset 0 1px 0 rgba(255,255,255,0.95),inset 0 -1px 0 rgba(140,120,100,0.06)',
-  display: 'flex', alignItems: 'center', justifyContent: 'center', color: SB.textTertiary, marginBottom: '16px',
+  position: 'relative', width: '48px', height: '48px', borderRadius: '12px', background: '#ffffff', border: `1px solid ${SB.borderSoft}`,
+  display: 'flex', alignItems: 'center', justifyContent: 'center', color: SB.textTertiary, marginBottom: '14px',
 };
 const EMPTY_GLOW: React.CSSProperties = {
   position: 'absolute', top: '-3px', right: '-3px', width: '10px', height: '10px', borderRadius: '50%',
   background: 'radial-gradient(circle,rgba(234,88,12,0.18),transparent 70%)',
 };
 const EMPTY_HINT: React.CSSProperties = {
-  display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '6px 11px', background: 'rgba(255,255,255,0.6)', border: `0.5px solid ${SB.hairline}`,
-  borderRadius: '99px', boxShadow: '0 1px 2px rgba(40,30,20,0.04),inset 0 1px 0 rgba(255,255,255,0.8)',
+  display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '5px 11px', background: '#ffffff', border: `1px solid ${SB.borderSoft}`, borderRadius: '99px',
 };
 const EmptyState: React.FC<{ icon: React.ReactNode; title: string; description: string; hint: string }> = ({ icon, title, description, hint }) => (
   <div style={EMPTY_WRAP}>
@@ -815,18 +828,36 @@ const SIDEBAR_CSS = `
 .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(60,50,40,0.18); border-radius: 99px; border: 2.5px solid transparent; background-clip: padding-box; }
 .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(60,50,40,0.32); background-clip: padding-box; border: 2.5px solid transparent; }
 .bone-skin {
-  --bone-bg: #fdfcfa; --bone-border-soft: #e4dfd7; --bone-text: #1c1917; --bone-text-soft: #44403c; --bone-text-muted: #706b65; --bone-text-faint: #9c9590;
-  --bone-accent: #ea580c; --bone-accent-soft: #fff7ed; --bone-accent-bord: rgba(234,88,12,0.28);
+  --bone-bg: #ffffff; --bone-border-soft: #e3ddd4; --bone-text: #1c1917; --bone-text-soft: #44403c; --bone-text-muted: #78716c; --bone-text-faint: #a39b91;
+  --bone-accent: #ea580c; --bone-accent-soft: #fff4ec; --bone-accent-bord: rgba(234,88,12,0.30);
   font-family: ${UI_FONT}; color: var(--bone-text); padding: 8px 6px 16px !important;
 }
+/* YAZI ROLLERİ — kenar çubuğundaki tek tipografi ölçeği (Ui.TYPE ile aynı değerler). */
+.bone-skin .yago-section { font-size: 10px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: var(--bone-text-muted); white-space: nowrap; }
+.bone-skin .yago-label { font-size: 10.5px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--bone-text-muted); white-space: nowrap; }
+.bone-skin .yago-hint { font-size: 11px; font-weight: 400; line-height: 1.45; color: var(--bone-text-faint); }
+.bone-skin .yago-value { font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--bone-text); }
+.bone-skin .yago-unit { font-size: 10.5px; font-weight: 500; color: var(--bone-text-faint); }
+/* HÜCRE (etiket + değer kutusu): üzerine gelince kenar koyulaşır, odakta ince turuncu halka — tüm kartlarda aynı. */
+.bone-skin .yago-cell { background: #ffffff; box-shadow: 0 0 0 1px #e3ddd4; border-radius: 7px; transition: box-shadow 0.14s, background 0.14s; }
+.bone-skin .yago-cell:hover { box-shadow: 0 0 0 1px #cfc7bc; }
+.bone-skin .yago-cell:focus-within { box-shadow: 0 0 0 1px rgba(234,88,12,0.55), 0 0 0 3px rgba(234,88,12,0.10); }
+.bone-skin .yago-cell.is-accent { box-shadow: 0 0 0 1px rgba(234,88,12,0.55); }
+.bone-skin .yago-cell.is-passive { background: #f6f3ee; box-shadow: 0 0 0 1px #ebe6df; }
+.bone-skin .yago-cell.is-passive:hover { box-shadow: 0 0 0 1px #ebe6df; }
+/* Düğme basışı: hafif küçülme (kenar çubuğu içindeki tüm düğmeler). */
+.bone-skin button:not(:disabled):active { transform: scale(0.97); }
+/* Kart gövdesi açılış animasyonu */
+@keyframes yagoExpand { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+.bone-skin .yago-expand { animation: yagoExpand 180ms cubic-bezier(.2,.7,.2,1) both; }
 /* Kenar çubuğundaki tüm girişler */
 .bone-skin input[type="text"], .bone-skin textarea {
-  background: linear-gradient(180deg,#ffffff 0%,#fbfaf6 100%) !important; border: 1px solid rgba(60,50,40,0.14) !important; border-radius: 6px !important;
-  color: var(--bone-text) !important; font-family: 'Inter',system-ui,sans-serif !important; font-size: 11.5px !important; font-weight: 500 !important;
-  letter-spacing: 0.012em !important; height: 24px !important; padding: 0 8px !important;
-  box-shadow: inset 0 1px 2px rgba(40,30,20,0.04),0 0 0 0.5px rgba(60,50,40,0.04) !important;
+  background: #ffffff !important; border: 1px solid #e3ddd4 !important; border-radius: 6px !important;
+  color: var(--bone-text) !important; font-family: 'Inter',system-ui,sans-serif !important; font-size: 12px !important; font-weight: 500 !important;
+  letter-spacing: 0.005em !important; height: 24px !important; padding: 0 8px !important; box-shadow: none !important;
   transition: border-color 0.15s, box-shadow 0.15s, background 0.15s !important; outline: none !important;
 }
+.bone-skin input[type="text"]:hover, .bone-skin textarea:hover { border-color: #cfc7bc !important; }
 /* Panel satırı notu — kutusuz, sessiz alan: üzerine gelince kıl-çizgi, odakta beyaz zemin + turuncu halka (özgüllük genel kuralı geçer). */
 .bone-skin input[type="text"].yago-row-note { background: transparent !important; border: 1px solid transparent !important; border-radius: 5px !important;
   box-shadow: none !important; height: 22px !important; padding: 0 5px !important; font-size: 11.5px !important; font-weight: 450 !important;
@@ -837,30 +868,30 @@ const SIDEBAR_CSS = `
   box-shadow: 0 0 0 2px rgba(249,115,22,0.10) !important; color: #1c1917 !important; }
 /* Grup kartı değer kutusu içi giriş — çerçeve kutunun kendisinde; giriş çıplak, odakta yalnız hafif zemin. */
 .bone-skin input[type="text"].yago-field { background: transparent !important; border: 1px solid transparent !important; border-radius: 5px !important;
-  box-shadow: none !important; height: 22px !important; padding: 0 4px !important; font-family: 'SF Mono',ui-monospace,Menlo,monospace !important;
-  font-size: 12.5px !important; font-weight: 600 !important; letter-spacing: 0 !important; color: #1c1917 !important; }
+  box-shadow: none !important; height: 22px !important; padding: 0 4px !important; font-family: 'Inter',system-ui,sans-serif !important;
+  font-size: 12.5px !important; font-weight: 600 !important; letter-spacing: 0 !important; color: #1c1917 !important; font-variant-numeric: tabular-nums; }
 .bone-skin input[type="text"].yago-field::placeholder { color: #c9c2b8 !important; font-weight: 500 !important; }
-.bone-skin input[type="text"].yago-field:hover { background: #faf8f4 !important; }
-.bone-skin input[type="text"].yago-field:focus { background: #fff7ed !important; border-color: rgba(249,115,22,0.35) !important; }
+.bone-skin input[type="text"].yago-field:hover { background: #f8f6f2 !important; }
+.bone-skin input[type="text"].yago-field:focus { background: #ffffff !important; border-color: transparent !important; box-shadow: none !important; }
 /* Ad girişi (yerleştirme şeridi): metin alanı — sayı fontu değil arayüz fontu. */
 .bone-skin input[type="text"].yago-field.yago-field-text { font-family: 'Inter',system-ui,sans-serif !important; font-size: 12px !important;
   font-weight: 500 !important; text-align: left !important; }
 /* Parametre değeri — aynı sessiz alan, sayısal yazı. */
 .bone-skin input[type="text"].yago-param-input { background: transparent !important; border: 1px solid transparent !important; border-radius: 6px !important;
-  box-shadow: none !important; height: 22px !important; padding: 0 6px !important; font-family: 'SF Mono',ui-monospace,Menlo,monospace !important;
-  font-size: 12px !important; font-weight: 500 !important; letter-spacing: 0 !important; color: #292524 !important; font-variant-numeric: tabular-nums; }
+  box-shadow: none !important; height: 22px !important; padding: 0 6px !important; font-family: 'Inter',system-ui,sans-serif !important;
+  font-size: 12.5px !important; font-weight: 600 !important; letter-spacing: 0 !important; color: #1c1917 !important; font-variant-numeric: tabular-nums; }
 .bone-skin input[type="text"].yago-param-input::placeholder { color: #c9c2b8 !important; }
-.bone-skin input[type="text"].yago-param-input:hover { border-color: #ebe5dc !important; background: rgba(255,255,255,0.6) !important; }
-.bone-skin input[type="text"].yago-param-input:focus { background: #ffffff !important; border-color: rgba(249,115,22,0.45) !important;
-  box-shadow: 0 0 0 2px rgba(249,115,22,0.10) !important; }
+.bone-skin input[type="text"].yago-param-input:hover { background: #f8f6f2 !important; }
+.bone-skin input[type="text"].yago-param-input:focus { background: #ffffff !important; border-color: transparent !important; box-shadow: none !important; }
 .bone-skin input[type="text"].font-mono { font-family: ${MONO_FONT} !important; font-size: 11px !important; letter-spacing: 0.02em !important; }
 /* Odak — araç çubuğu aramasıyla aynı turuncu halka */
-.bone-skin input[type="text"]:focus, .bone-skin textarea:focus { border-color: #f97316 !important;
-  box-shadow: 0 0 0 2.5px rgba(249,115,22,0.14),inset 0 1px 2px rgba(40,30,20,0.03) !important; background: #ffffff !important; }
+.bone-skin input[type="text"]:focus, .bone-skin textarea:focus { border-color: rgba(234,88,12,0.55) !important;
+  box-shadow: 0 0 0 3px rgba(234,88,12,0.10) !important; background: #ffffff !important; }
 /* Düğmeler */
 .bone-skin button { font-family: 'Inter',system-ui,sans-serif; font-weight: 500; letter-spacing: 0.012em;
   transition: background 0.12s, color 0.12s, box-shadow 0.12s, transform 0.12s !important; }
 .bone-skin button:disabled { opacity: 0.4 !important; cursor: not-allowed !important; }
+.bone-skin select { font-family: 'Inter',system-ui,sans-serif; }
 /* Tailwind metin tonları */
 .bone-skin .text-stone-400 { color: var(--bone-text-faint) !important; }
 .bone-skin .text-stone-500 { color: var(--bone-text-muted) !important; }
@@ -1006,13 +1037,11 @@ const openSidebarWindow = (rect: FloatRect, onReady: (h: SidebarWindowHandle) =>
 
 const SIDEBAR_HEADER: React.CSSProperties = {
   position: 'relative', display: 'flex', alignItems: 'center', height: `${SIDEBAR_HEADER_H}px`, background: SB.tabStripBg,
-  borderBottom: `1px solid ${SB.borderSoft}`, boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.7),0 1px 0 rgba(255,255,255,0.4)', flexShrink: 0,
-  userSelect: 'none', touchAction: 'none',
+  borderBottom: `1px solid ${SB.borderSoft}`, flexShrink: 0, userSelect: 'none', touchAction: 'none',
 };
 const HEADER_SIDE: React.CSSProperties = { display: 'flex', alignItems: 'center', height: '100%', flexShrink: 0, cursor: 'default' };
 const SIDEBAR_SCROLL: React.CSSProperties = {
   flex: 1, minWidth: 0, overflowY: 'auto', overflowX: 'hidden', background: SB.contentBg,
-  boxShadow: 'inset 0 2px 4px rgba(40,30,20,0.05),inset 0 -1px 0 rgba(140,120,100,0.04)',
 };
 const EDGE_LINE: React.CSSProperties = {
   position: 'absolute', left: 0, top: 0, bottom: 0, width: '1px', pointerEvents: 'none',
@@ -1463,34 +1492,33 @@ const RAD2DEG = 180 / Math.PI;
 const evalSubs = (expr: (k: SubKey) => string, ctx: Record<string, number>) =>
   Object.fromEntries(SUB_KEYS.map(k => [k, { expression: expr(k), result: evaluateExpression(expr(k), ctx) }])) as Record<SubKey, ExprResult>;
 
-const P_ROW = 'group/prow flex items-center gap-1.5 h-[30px] pl-1 pr-1 rounded-[9px] bg-[#fdfcfa] ring-1 ring-[#ece7df] shadow-[0_1px_0_rgba(68,64,60,0.025)]'
-  + ' hover:bg-white hover:ring-[#e2dbd0] focus-within:!bg-white focus-within:!ring-[#f0d6ba] transition-colors duration-150';
-const P_LABEL = 'shrink-0 w-[30px] text-center text-[11px] font-semibold tracking-wide tabular-nums select-none';
+/* PARAMETRE SATIRI (Goker, Kas 2026 — CAD özellik paneli gibi): [kod] Etiket ………… [değer] birim. Satır üzerine gelince kenar koyulaşır,
+   odakta ince turuncu halka (yago-cell). */
+const P_ROW = 'group/prow yago-cell flex items-center gap-1.5 h-[30px] pl-2 pr-1';
+const P_CODE = 'shrink-0 w-[22px] text-[10px] font-semibold tracking-[0.04em] tabular-nums text-[#a39b91] select-none';
 // Sessiz giriş alanı (değer / not): ortak çerçevesiz zemin + odak/geçiş sınıfları.
 const P_BARE = 'bg-transparent border border-transparent';
-const P_FX = 'outline-none placeholder:text-stone-300 hover:border-[#ebe5dc] focus:bg-white focus:border-orange-400/50 transition-colors';
-const P_INPUT = `yago-param-input shrink-0 w-[84px] h-[22px] px-1.5 text-[12px] font-mono tabular-nums text-stone-800 ${P_BARE} rounded-[6px] ${P_FX}`;
+const P_FX = 'outline-none placeholder:text-stone-300 transition-colors';
+const P_INPUT = `yago-param-input shrink-0 w-[84px] h-[22px] px-1.5 text-right ${P_BARE} rounded-[6px] ${P_FX}`;
 const P_RESULT = 'shrink-0 w-[56px] text-right text-[11px] tabular-nums text-stone-400 select-none';
-const P_DESC = 'flex-1 min-w-0 truncate pl-1 text-[11px] text-stone-400 select-none';
+const P_DESC = 'flex-1 min-w-0 truncate text-[12px] font-medium text-[#44403c] select-none';
 const P_NOTE = `yago-row-note flex-1 min-w-0 h-[22px] px-[5px] text-[11.5px] text-stone-600 ${P_BARE} rounded-[5px] ${P_FX}`;
 const P_ICON_BTN = 'shrink-0 w-5 h-5 rounded-md flex items-center justify-center text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700 transition-colors duration-150';
 const P_DEL_BTN = `${P_ICON_BTN} opacity-0 group-hover/prow:opacity-100 focus-visible:opacity-100 hover:!bg-red-50 hover:!text-red-500`;
-const APPLY_BTN = 'w-full mt-3 h-[30px] rounded-[8px] bg-[#44403c] text-white text-[11.5px] font-semibold tracking-[0.01em]'
-  + ' shadow-[0_1px_3px_rgba(40,30,20,0.22)] hover:bg-[#57534e] active:bg-[#292524] transition-colors duration-150'
-  + ' flex items-center justify-center gap-1.5';
+const APPLY_BTN = 'w-full mt-3 h-[30px] rounded-[7px] bg-[#292524] text-white text-[11.5px] font-semibold tracking-[0.01em]'
+  + ' hover:bg-[#44403c] active:bg-[#1c1917] transition-colors duration-150 flex items-center justify-center gap-1.5';
 
-type ParamSectionProps = { title: string; count?: number; accent?: string; right?: React.ReactNode; children: React.ReactNode };
-const ParamSection: React.FC<ParamSectionProps> = ({ title, count, accent, right, children }) => (
+type ParamSectionProps = { title: string; count?: number; accent?: string; hint?: string; right?: React.ReactNode; children: React.ReactNode };
+const ParamSection: React.FC<ParamSectionProps> = ({ title, count, accent, hint, right, children }) => (
   <div className="mt-3 first:mt-0">
     <div className="px-1 pb-1.5 flex items-center gap-2">
-      <span style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: accent || '#b5ada3', fontFamily: UI_FONT }}>
-        {title}
-      </span>
-      {count !== undefined && <span className="text-[10px] font-medium tabular-nums text-stone-300">{count}</span>}
-      <div className="flex-1 h-px bg-[#efeae2]" />
+      <span className="yago-section" style={accent ? { color: accent } : undefined}>{title}</span>
+      {count !== undefined && <span className="text-[10px] font-medium tabular-nums text-[#a39b91]">{count}</span>}
+      {hint && <span className="yago-hint min-w-0 truncate">{hint}</span>}
+      <div className="flex-1 h-px bg-[#e9e4dd]" />
       {right}
     </div>
-    <div className="flex flex-col gap-[2px] p-px">{children}</div>
+    <div className="flex flex-col gap-[3px] p-px">{children}</div>
   </div>
 );
 const DelBtn = ({ title, onClick, className = P_DEL_BTN }: { title: string; onClick: () => void; className?: string }) => (
@@ -1514,10 +1542,10 @@ const ParameterRow: React.FC<{ label: string; value: number; onChange: (v: numbe
     };
     return (
       <div className={P_ROW}>
-        <span className={P_LABEL} style={{ color: '#a8a29e' }}>{label}</span>
-        <input type="text" value={inputValue} onChange={handleChange} onFocus={() => setIsFocused(true)} onBlur={handleBlur} className={P_INPUT} />
-        <span className="shrink-0 w-[56px] -ml-1 text-left text-[11px] text-stone-400 select-none">{unit}</span>
+        <span className={P_CODE}>{label}</span>
         <span className={P_DESC}>{description}</span>
+        <input type="text" value={inputValue} onChange={handleChange} onFocus={() => setIsFocused(true)} onBlur={handleBlur} className={P_INPUT} />
+        <span className="yago-unit shrink-0 w-[26px] pr-1 text-left select-none">{unit}</span>
         {trailing}
       </div>
     );
@@ -1527,8 +1555,8 @@ type ExprRowProps = {
 };
 const ExprRow = ({ label, labelColor, expression, onExpr, result, children }: ExprRowProps) => (
   <div className={P_ROW}>
-    <span className={P_LABEL} style={{ color: labelColor }}>{label}</span>
-    <input type="text" value={expression} onChange={e => onExpr(e.target.value)} className={P_INPUT} placeholder="expr" />
+    <span className={P_CODE} style={{ color: labelColor }}>{label}</span>
+    <input type="text" value={expression} onChange={e => onExpr(e.target.value)} className={`${P_INPUT} !text-left`} placeholder="expr" />
     <span className={P_RESULT}>{result.toFixed(2)}</span>
     {children}
   </div>
@@ -1554,29 +1582,30 @@ function FacesSection({ shape }: { shape: Shape }) {
     <ParamSection title="Faces" count={faces.length}
       right={<button type="button" onClick={() => setShowFaceRoles(!showFaceRoles)} aria-pressed={showFaceRoles}
         title="Show the role of every face on the body (click a label in the 3D view to change it) and list the faces here"
-        className={`h-[20px] px-2 rounded-[6px] text-[10px] font-semibold tracking-[0.02em] ring-1 transition-colors
-          ${showFaceRoles ? 'bg-[#44403c] text-white ring-[#44403c]' : 'bg-white text-stone-600 ring-[#e6e0d6] hover:bg-[#faf7f2]'}`}>
+        className={`h-[22px] px-2.5 rounded-[6px] text-[10.5px] font-semibold tracking-[0.02em] ring-1 transition-colors
+          ${showFaceRoles ? 'bg-[#292524] text-white ring-[#292524]' : 'bg-white text-stone-600 ring-[#e3ddd4] hover:bg-[#f6f3ee] hover:ring-[#cfc7bc] hover:text-stone-800'}`}>
         Show face roles
       </button>}>
       {showFaceRoles && (
         <>
           <div className={P_ROW} title="Front of the body (default +Z). Every face role, the plinth leg offsets, doors, backs and the quick body follow it.">
-            <span className={P_LABEL} style={{ color: '#a8a29e' }}>Front</span>
+            <span className={P_CODE}>F</span>
+            <span className={P_DESC}>Front of the body</span>
+            <span className="yago-hint shrink-0 pr-1">{front.source === 'parameter' ? 'set here' : 'default'}</span>
             <select value={front.facing} onChange={e => setBodyFrontAxis(shape.id, e.target.value as PlinthFacing)} className={`${P_SELECT} w-[84px]`} style={{ fontFamily: UI_FONT }}>
               {PLINTH_FACINGS.map(f => <option key={f} value={f}>{PLINTH_FACING_LABEL[f]}</option>)}
             </select>
-            <span className={P_DESC}>{front.source === 'parameter' ? 'set here' : 'default'}</span>
           </div>
           {faces.map(f => (
             <div key={f.gi} className={P_ROW} onMouseEnter={() => hover(f.gi)} onMouseLeave={() => hover(null)}
               title={`${axisLabel(f)} face · ${f.size[0]} × ${f.size[1]} mm · ${FACE_ROLE_LABEL[f.role]}`}>
-              <span className={P_LABEL} style={{ color: f.axis ? '#a8a29e' : '#b45309' }}>{axisLabel(f)}</span>
+              <span className={P_CODE} style={f.axis ? undefined : { color: '#b45309' }}>{axisLabel(f)}</span>
               <span className="shrink-0 w-[8px] h-[8px] rounded-full" style={{ background: ROLE_DOT[f.role] }} />
+              <span className={P_DESC}>{f.size[0]} × {f.size[1]} <span className="yago-unit">mm</span></span>
               <select value={f.role} onChange={e => setBodyFaceRole(shape.id, f.gi, e.target.value as FaceRole)}
                 className={`${P_SELECT} w-[90px] ${f.overridden ? '!text-orange-700 font-semibold' : ''}`} style={{ fontFamily: UI_FONT }}>
                 {FACE_ROLES.map(r => <option key={r} value={r}>{FACE_ROLE_LABEL[r]}</option>)}
               </select>
-              <span className={P_DESC}>{f.size[0]} × {f.size[1]}</span>
               {f.overridden && <DelBtn title="Reset this face" onClick={() => setBodyFaceRole(shape.id, f.gi, null)} />}
             </div>
           ))}

@@ -2,10 +2,10 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Check, X, type LucideIcon, Lock, SlidersHorizontal, Crosshair, LayoutPanelTop, Rows3, Columns3, DoorClosed, SendToBack, Footprints, Shapes,
   ChevronRight, Minus, Plus, ChevronDown, Pencil, Trash2, Unlink, MoveVertical, Move, RotateCw, GripVertical, ArrowUp, Box, Move3d, Equal,
-  SplitSquareVertical, SplitSquareHorizontal, RotateCcw, Container,
+  RotateCcw, Container,
 } from 'lucide-react';
 import { type Box3 } from 'three';
-import { UI_FONT } from './Ui';
+import { UI_FONT, INK, TYPE } from './Ui';
 import {
   stop, parseNum, DoorTypeIcon, type Kids, fmt1, panelDims, geoAxes, PREVIEW_FRAME, PREVIEW_HEIGHT, PREVIEW_BG, PanelPreview2D, BackTypeIcon,
   GroupSchematic, DoorSchematic, BackSchematic,
@@ -59,41 +59,40 @@ import { type Pt, autoLegPoints, edgeRoles, polyExtent, rectPoly, toFacing } fro
 export const AXIS_COLORS: Record<string, string> = {
   'x+': '#dc2626', 'x-': '#b91c1c', 'y+': '#16a34a', 'y-': '#15803d', 'z+': '#2563eb', 'z-': '#1d4ed8', x: '#dc2626', y: '#16a34a', z: '#2563eb',
 };
-export const SECTION_LABEL: React.CSSProperties = { fontSize: 10, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#b5ada3' };
+export const SECTION_LABEL: React.CSSProperties = TYPE.section;
 
 // ═════════════════════════════════════════ 1. ŞERİT + LİSTE SATIRI PARÇALARI ═════════════════════════════════════════
 /* ───────────── ŞERİT (DOCK) ───────────── */
 
 export const DOCK_SHELL: React.CSSProperties = {
-  position: 'relative', marginTop: 5, borderRadius: 12, background: 'linear-gradient(180deg,#fefdfb 0%,#faf8f4 100%)', border: '1px solid #ebe5dc',
-  boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.8), 0 1px 2px rgba(60,40,20,0.04)', display: 'flex', flexDirection: 'column', overflow: 'hidden',
-  fontFamily: UI_FONT,
+  position: 'relative', marginTop: 5, borderRadius: 9, background: INK.well, border: `1px solid ${INK.line}`,
+  display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: UI_FONT,
 };
 /** Liste üstüne yapışık şerit (yerleştirme / hızlı gövde). */
 export const DOCK_STRIP: React.CSSProperties = {
-  ...DOCK_SHELL, marginTop: 0, borderRadius: 0, border: 'none', borderBottom: '1px solid #ebe5dc', boxShadow: 'none',
-  background: 'linear-gradient(180deg,#fefdfb 0%,#faf8f4 100%)',
+  ...DOCK_SHELL, marginTop: 0, borderRadius: 0, border: 'none', borderBottom: `1px solid ${INK.line}`, background: '#fcfbf9',
 };
-export const DOCK_ROW: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 4, padding: '4px 5px 5px' };
+export const DOCK_ROW: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 4, padding: '5px 6px' };
 const DOCK_INPUT: React.CSSProperties = {
-  flex: 1, minWidth: 0, height: 24, textAlign: 'center',
+  flex: 1, minWidth: 0, height: 26, textAlign: 'center',
   fontFamily: UI_FONT, fontSize: 12.5, fontWeight: 600, fontVariantNumeric: 'tabular-nums',
-  color: '#1c1917', background: '#ffffff', border: '1px solid #e6e0d6', borderRadius: 7, outline: 'none', boxShadow: '0 1px 0 rgba(40,30,20,0.02)',
+  color: INK.text, background: '#ffffff', border: `1px solid ${INK.line}`, borderRadius: 7, outline: 'none',
 };
+/** Şerit başlık etiketi (DOOR · BACK · X …). */
 export const dockAxisTag = (color: string): React.CSSProperties => ({
-  flexShrink: 0, fontSize: 10, fontWeight: 700, fontFamily: UI_FONT, color, height: 20, lineHeight: '20px', padding: '0 6px', borderRadius: 5,
-  background: '#f5f2ec',
+  flexShrink: 0, fontSize: 10, fontWeight: 700, fontFamily: UI_FONT, letterSpacing: '0.06em', color, height: 22, lineHeight: '22px', padding: '0 7px',
+  borderRadius: 5, background: color === '#44403c' ? '#ece7e0' : '#f3f0ea',
 });
 export function DockStatus({ ready = false, dot, text, title, trailing }: {
   ready?: boolean; dot?: string; text: string; title?: string; trailing?: React.ReactNode;
 }) {
   return (
     <div title={title} style={{
-      flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 6, height: 24, padding: '0 8px', borderRadius: 6,
-      background: ready ? 'rgba(22,163,74,0.07)' : '#f5f2ec', border: ready ? '1px solid rgba(22,163,74,0.22)' : '1px solid transparent',
+      flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 7, height: 26, padding: '0 9px', borderRadius: 6,
+      background: ready ? 'rgba(22,163,74,0.07)' : 'rgba(60,50,40,0.045)', border: ready ? '1px solid rgba(22,163,74,0.22)' : '1px solid transparent',
     }}>
-      <span style={{ width: 5, height: 5, borderRadius: '50%', background: dot ?? (ready ? '#16a34a' : '#a8a29e'), flexShrink: 0 }} />
-      <span style={{ fontSize: 11, fontWeight: 500, color: ready ? '#15803d' : '#78716c', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+      <span style={{ width: 5, height: 5, borderRadius: '50%', background: dot ?? (ready ? '#16a34a' : INK.faint), flexShrink: 0 }} />
+      <span style={{ fontSize: 11, fontWeight: 500, color: ready ? '#15803d' : INK.muted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
         {text}
       </span>
       {trailing}
@@ -102,18 +101,18 @@ export function DockStatus({ ready = false, dot, text, title, trailing }: {
 }
 export function ApplyBtn({ enabled, onClick, title = 'Apply' }: { enabled: boolean; onClick: () => void; title?: string }) {
   return (
-    <button onClick={e => { stop(e); onClick(); }} title={title} style={{
-      flexShrink: 0, width: 28, height: 24, borderRadius: 6, border: 'none', outline: 'none', cursor: enabled ? 'pointer' : 'not-allowed',
-      display: 'flex', alignItems: 'center', justifyContent: 'center', background: enabled ? '#44403c' : '#ebe6de', color: enabled ? '#ffffff' : '#b5ada3',
-      boxShadow: enabled ? '0 1px 2px rgba(40,30,20,0.22)' : 'none', transition: 'background 0.12s',
+    <button onClick={e => { stop(e); onClick(); }} title={title} disabled={!enabled} className={enabled ? 'hover:!bg-[#44403c]' : ''} style={{
+      flexShrink: 0, width: 30, height: 26, borderRadius: 6, border: 'none', outline: 'none', cursor: enabled ? 'pointer' : 'not-allowed',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', background: enabled ? '#292524' : '#e8e3dc', color: enabled ? '#ffffff' : '#a39b91',
+      transition: 'background 0.12s',
     }}><Check size={13} strokeWidth={2.4} /></button>
   );
 }
 export function ExitBtn({ onClick }: { onClick: () => void }) {
   return (
-    <button onClick={e => { stop(e); onClick(); }} title="Exit" className="hover:!bg-[#f3efe8] hover:!text-stone-600" style={{
-      flexShrink: 0, width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 6, border: 'none',
-      cursor: 'pointer', outline: 'none', background: 'transparent', color: '#a8a29e', transition: 'color 0.12s,background 0.12s',
+    <button onClick={e => { stop(e); onClick(); }} title="Exit" className="hover:!bg-[#ece7e0] hover:!text-stone-700" style={{
+      flexShrink: 0, width: 26, height: 26, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 6, border: 'none',
+      cursor: 'pointer', outline: 'none', background: 'transparent', color: INK.faint, transition: 'color 0.12s,background 0.12s',
     }}><X size={13} strokeWidth={2} /></button>
   );
 }
@@ -140,22 +139,22 @@ export function NumInput({ draft, setDraft, setValue, fallback, onEnter, onEscap
 }
 
 export type SegItem = { key: string; label: string; Icon?: LucideIcon; title?: string; disabled?: boolean };
-export function Segmented({ items, active, onPick, height = 24 }: { items: SegItem[]; active: string | null; onPick: (k: string) => void; height?: number }) {
+export function Segmented({ items, active, onPick, height = 26 }: { items: SegItem[]; active: string | null; onPick: (k: string) => void; height?: number }) {
   return (
     <div style={{
-      display: 'grid', gridTemplateColumns: `repeat(${items.length}, minmax(0,1fr))`, gap: 2, padding: 2, borderRadius: 8,
-      background: '#f3efe8', border: '1px solid #e9e4dc', fontFamily: UI_FONT,
+      display: 'grid', gridTemplateColumns: `repeat(${items.length}, minmax(0,1fr))`, gap: 2, padding: 2, borderRadius: 7,
+      background: '#ece8e1', fontFamily: UI_FONT,
     }}>
       {items.map(({ key, label, Icon, title, disabled }) => {
         const on = active === key;
         return (
           <button key={key} type="button" title={title || label} disabled={disabled} onClick={e => { stop(e); if (!disabled) onPick(key); }}
-            className={on || disabled ? '' : 'hover:!bg-white hover:!text-stone-800'}
+            className={on || disabled ? '' : 'hover:!bg-white hover:!text-stone-900 hover:!shadow-[0_1px_2px_rgba(40,30,20,0.10)]'}
             style={{
-              height, minWidth: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, padding: '0 6px', borderRadius: 6,
-              border: 'none', outline: 'none', cursor: disabled ? 'not-allowed' : 'pointer', background: on ? '#44403c' : 'transparent',
-              color: disabled ? '#c9c2b7' : on ? '#ffffff' : '#57534e', boxShadow: on ? '0 1px 2px rgba(40,30,20,0.25)' : 'none',
-              fontSize: 11, fontWeight: 600, letterSpacing: '0.01em', transition: 'background 0.12s,color 0.12s',
+              height, minWidth: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, padding: '0 6px', borderRadius: 5,
+              border: 'none', outline: 'none', cursor: disabled ? 'not-allowed' : 'pointer', background: on ? '#292524' : 'transparent',
+              color: disabled ? '#c9c2b7' : on ? '#ffffff' : '#57534e',
+              fontSize: 11, fontWeight: 600, letterSpacing: '0.01em', transition: 'background 0.12s,color 0.12s,box-shadow 0.12s',
             }}>
             {Icon && <Icon size={11} strokeWidth={2.1} style={{ flexShrink: 0 }} />}
             <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
@@ -198,11 +197,11 @@ export const ROW_ICON = 13;
 // 6 × 22px düğme (5 araç: şekil · kapak sınırı · arkalık sınırı · ok · sil + aç/kapa oku) + 5 × 1px aralık (Goker: grup sıkı dursun)
 export const ROW_TRAIL_W = 137;
 /* Seçili satır (Goker: "çok renkli, daha soft"): sıcak kemik zemin + tek ince yumuşak turuncu çizgi; numara/rozet/ok nötr koyu taş. */
-export const ROW_SEL_HEAD = 'bg-[#faf8f5]';
-export const ROW_SEL_BAR = 'pointer-events-none absolute left-0 top-[7px] bottom-[7px] w-[2px] rounded-r-full bg-orange-300/70';
+export const ROW_SEL_HEAD = 'bg-[#fbf9f6]';
+export const ROW_SEL_BAR = 'pointer-events-none absolute left-0 top-[6px] bottom-[6px] w-[2px] rounded-r-full bg-orange-500/80';
 export const MEMBER_INSET = 8;           // grup kartı gövdesinin yatay dolgusu (px-2)
 /** Pasif/kapalı buton rengi (satır araçları). */
-export const ROW_IDLE = 'text-stone-400 hover:bg-[#f3efe8] hover:text-stone-700';
+export const ROW_IDLE = 'text-stone-400 hover:bg-[#ece7e0] hover:text-stone-900';
 type RowKind = 'body' | 'shelf' | 'divider' | 'door' | 'back' | 'legs' | 'quick' | 'plinth';
 const ROW_KIND_ICON: Record<RowKind, LucideIcon> = {
   body: LayoutPanelTop, shelf: Rows3, divider: Columns3, door: DoorClosed, back: SendToBack, legs: Footprints, quick: Container, plinth: Footprints,
@@ -210,27 +209,28 @@ const ROW_KIND_ICON: Record<RowKind, LucideIcon> = {
 const ROW_KIND_TITLE: Record<RowKind, string> = {
   body: 'Body panel', shelf: 'Shelf', divider: 'Divider', door: 'Door', back: 'Back panel', legs: 'Legs', quick: 'Quick body', plinth: 'Plinth leg set',
 };
+/* SATIR KARTI (Goker, Kas 2026): düz beyaz kart, ince kenar; üzerine gelince kenar koyulaşır ve kart hafifçe kalkar; açıkken daha belirgin
+   kenar + yumuşak gölge. Sürüklemede soluk, tutamaç basılıyken turuncu kenar. */
 export const rowCardClass = (open: boolean, dragging: boolean, armed: boolean) =>
-  `group/row relative flex flex-col rounded-[10px] overflow-hidden transition-[background-color,box-shadow,opacity,transform] duration-150 ease-out
-   ${open ? 'bg-white ring-1 ring-[#e2dbd1] shadow-[0_1px_2px_rgba(68,64,60,0.04),0_8px_20px_-16px_rgba(68,64,60,0.25)] my-1'
-     : 'bg-[#fdfcfa] ring-1 ring-[#ece7df] shadow-[0_1px_0_rgba(68,64,60,0.025)] hover:bg-white hover:ring-[#e2dbd0] hover:shadow-[0_1px_2px_rgba(68,64,60,0.04),0_4px_10px_-8px_rgba(68,64,60,0.18)]'}
+  `group/row yago-row relative flex flex-col rounded-[9px] overflow-hidden bg-white ring-1 transition-[box-shadow,opacity,transform] duration-150 ease-out
+   ${open ? 'ring-[#d4cdc3] shadow-[0_1px_2px_rgba(40,30,20,0.05),0_10px_24px_-18px_rgba(40,30,20,0.30)] my-1'
+     : 'ring-[#e6e1d9] hover:ring-[#c4bcb0] hover:shadow-[0_3px_8px_-3px_rgba(40,30,20,0.16)]'}
    ${dragging ? 'opacity-40 scale-[0.99]' : ''}
-   ${armed && !dragging ? '!ring-orange-300 !bg-white shadow-[0_6px_16px_-8px_rgba(234,88,12,0.35)] scale-[1.006]' : ''}`;
-export const ROW_INPUT_CLASS = 'yago-row-note flex-1 min-w-0 h-[22px] px-[5px] text-[11.5px] text-stone-700 bg-transparent border border-transparent '
-  + 'rounded-[5px] outline-none placeholder:text-stone-300 hover:border-[#ebe5dc] focus:bg-white focus:border-orange-400/50 transition-colors';
+   ${armed && !dragging ? '!ring-orange-300 shadow-[0_6px_16px_-8px_rgba(234,88,12,0.35)] scale-[1.006]' : ''}`;
+export const ROW_INPUT_CLASS = 'yago-row-note flex-1 min-w-0 h-[22px] px-[5px] text-[12px] text-stone-700 bg-transparent border border-transparent '
+  + 'rounded-[5px] outline-none placeholder:text-stone-300 transition-colors';
 export const ROW_DEL_CLASS = `${ROW_BTN} text-stone-400 hover:bg-red-50 hover:text-red-500`;
-export const DROP_BAND = 'pointer-events-none h-[7px] mx-1 rounded-full bg-gradient-to-r from-amber-400 via-orange-400 to-amber-400 '
-  + 'shadow-[0_0_10px_rgba(245,158,11,0.65),0_1px_2px_rgba(180,83,9,0.3)]';
+export const DROP_BAND = 'pointer-events-none h-[5px] mx-1 rounded-full bg-orange-400 shadow-[0_0_8px_rgba(234,88,12,0.45)]';
 /** Kart gövdesi (açılınca). */
 export const CARD_BODY = 'yago-expand px-2 pt-2 pb-2';
-export const CARD_BODY_STYLE: React.CSSProperties = { borderTop: '1px solid #efebe5', fontFamily: UI_FONT };
-/** Hücre etiketi (FieldBox / HintCell / salt-okunur hücre). */
-export const CELL_LABEL = 'text-[10px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]';
+export const CARD_BODY_STYLE: React.CSSProperties = { borderTop: `1px solid ${INK.lineSoft}`, fontFamily: UI_FONT };
+/** Hücre etiketi (FieldBox / HintCell / salt-okunur hücre) — ortak yazı rolü (Ui.TYPE.label). */
+export const CELL_LABEL = 'yago-label';
 /** Salt-okunur hücre zemini. */
-export const READ_CELL = 'min-w-0 h-full pl-2 pr-1.5 flex items-center gap-1 rounded-[7px] bg-[#f6f2ec]';
+export const READ_CELL = 'yago-cell is-passive min-w-0 h-full pl-2 pr-1.5 flex items-center gap-1';
 
 /* Satırdaki açık anahtarlar (şekil · kapak sınırı · arkalık sınırı) TEK yumuşak renk (Goker): dolgu yok, yalnız ince dış hat. */
-const ROW_TOGGLE_ON = 'text-[#c0814f] ring-1 ring-inset ring-[#ecd6c2] hover:ring-[#e0bf9f]';
+const ROW_TOGGLE_ON = 'text-[#c2410c] ring-1 ring-inset ring-[#efcdb4] hover:bg-[#fff4ec] hover:ring-[#e9a97f]';
 type ToggleProps = { checked: boolean; disabled?: boolean; onToggle: () => void };
 function RowToggle({ checked, disabled, onToggle, icon: Icon, title }: ToggleProps & { icon: LucideIcon; title: string }) {
   return (
@@ -259,12 +259,12 @@ export function RowTypeBadge({ kind, active, count }: { kind: RowKind; active: b
   const Icon = ROW_KIND_ICON[kind];
   return (
     <span title={count != null ? `${ROW_KIND_TITLE[kind]} · ${count} panel${count === 1 ? '' : 's'}` : ROW_KIND_TITLE[kind]}
-      className={`relative shrink-0 w-5 h-5 rounded-[6px] flex items-center justify-center transition-colors duration-150
-        ${active ? 'bg-white text-stone-600 ring-1 ring-[#e2dbd1]' : 'bg-[#f5f2ec] text-stone-400 group-hover/row:text-stone-500'}`}>
+      className={`relative shrink-0 w-5 h-5 rounded-[5px] flex items-center justify-center transition-colors duration-150
+        ${active ? 'bg-[#292524] text-white' : 'bg-[#f1ede6] text-stone-500 group-hover/row:bg-[#e9e4dc] group-hover/row:text-stone-700'}`}>
       <Icon size={13} strokeWidth={2} />
       {count != null && (
-        <span className={`absolute -top-[5px] -right-[6px] min-w-[13px] h-[13px] px-[3px] rounded-full text-[8.5px] font-bold tabular-nums leading-[13px] text-center ring-2 ring-[#fdfcfa]
-          ${active ? 'bg-stone-600 text-white' : 'bg-stone-400 text-white'}`}>{count}</span>
+        <span className={`absolute -top-[5px] -right-[6px] min-w-[13px] h-[13px] px-[3px] rounded-full text-[8.5px] font-bold tabular-nums leading-[13px] text-center ring-2 ring-white
+          ${active ? 'bg-[#ea580c] text-white' : 'bg-stone-400 text-white'}`}>{count}</span>
       )}
     </span>
   );
@@ -302,39 +302,42 @@ export const RowNum = ({ label, active, small }: { label: string; active: boolea
 /* Satır aç/kapa TEK mantık: tüm satır türlerinde başlık ya da ok tıkı aynı işi yapar (kapalı → aç + seç; açık → kapat + seçim düşer). */
 export const RowChevron = ({ open, onClick, title }: { open: boolean; onClick?: (e: React.MouseEvent) => void; title?: string }) => (
   <button type="button" onClick={onClick} title={title ?? (open ? 'Collapse' : 'Expand')}
-    className={`${ROW_BTN} ${open ? 'text-stone-700 bg-[#f1ece4] hover:bg-[#ebe5dc]' : ROW_IDLE}`}>
+    className={`${ROW_BTN} ${open ? 'text-stone-800 bg-[#ece7e0] hover:bg-[#e3ddd4]' : ROW_IDLE}`}>
     <ChevronRight size={ROW_ICON} strokeWidth={2.1} className={`transition-transform duration-200 ${open ? 'rotate-90' : ''}`} />
   </button>
 );
 const cardActionCls = (on: boolean, tone: 'stone' | 'amber' = 'stone') =>
   `h-[26px] min-w-0 flex items-center justify-center gap-1.5 rounded-[7px] text-[11px] font-semibold tracking-[0.01em] transition-[background-color,color,box-shadow] duration-150
-   ${on ? (tone === 'amber' ? 'bg-amber-50 text-amber-800 ring-1 ring-amber-300 shadow-[0_1px_2px_rgba(217,119,6,0.18)]' : 'bg-[#44403c] text-white ring-1 ring-[#44403c] shadow-[0_1px_3px_rgba(40,30,20,0.22)]')
-     : 'bg-white ring-1 ring-[#e6e0d6] text-stone-600 shadow-[0_1px_0_rgba(40,30,20,0.03)] hover:bg-[#faf7f2] hover:ring-[#dcd4c8] hover:text-stone-800'}`;
-export function CardAction({ icon: Icon, label, active = false, tone, title, onClick, compact }: {
-  icon: LucideIcon; label: string; active?: boolean; tone?: 'stone' | 'amber'; title: string; onClick: () => void; compact?: boolean;
+   ${on ? (tone === 'amber' ? 'bg-[#fff4ec] text-[#9a3412] ring-1 ring-orange-300' : 'bg-[#292524] text-white ring-1 ring-[#292524]')
+     : 'bg-white ring-1 ring-[#e3ddd4] text-stone-600 hover:bg-[#f6f3ee] hover:ring-[#cfc7bc] hover:text-stone-900'}`;
+export function CardAction({ icon: Icon, label, active = false, tone, title, onClick, compact, className = '' }: {
+  icon: LucideIcon; label: string; active?: boolean; tone?: 'stone' | 'amber'; title: string; onClick: () => void; compact?: boolean; className?: string;
 }) {
   return (
-    <button type="button" title={title} onClick={e => { stop(e); onClick(); }} className={`${cardActionCls(active, tone)}${compact ? ' shrink-0 !h-[28px] px-2.5' : ''}`}>
+    <button type="button" title={title} onClick={e => { stop(e); onClick(); }} className={`${cardActionCls(active, tone)}${compact ? ' shrink-0 !h-[28px] px-2.5' : ''} ${className}`}>
       <Icon size={12} strokeWidth={2} className="shrink-0" /><span className="truncate">{label}</span>
     </button>
   );
 }
-export function FieldBox({ label, title, accent, fixed, children }: { label: string; title?: string; accent?: boolean; fixed?: boolean; children: React.ReactNode }) {
+/** ETİKETLİ HÜCRE: [etiket] …… [kontrol]. Her değer kutusunun ne olduğu tek bakışta okunur (Goker: "kutucuklar tek bakışta anlaşılmıyor").
+ *  `fixed` = içeriği kadar; yoksa satırı paylaşır. `className` ızgara hücresi için (col-span …). */
+export function FieldBox({ label, title, accent, fixed, passive, className = '', children }: {
+  label: string; title?: string; accent?: boolean; fixed?: boolean; passive?: boolean; className?: string; children: React.ReactNode;
+}) {
   return (
     <div title={title} onClick={stop}
-      className={`${fixed ? 'shrink-0' : 'flex-1 min-w-0'} h-[28px] pl-2 pr-1 flex items-center gap-1 rounded-[7px] bg-white transition-shadow duration-150
-        ${accent ? 'ring-1 ring-orange-400/70 shadow-[0_0_0_2px_rgba(249,115,22,0.08)]' : 'ring-1 ring-[#e6e0d6] shadow-[0_1px_0_rgba(40,30,20,0.03)]'}`}>
-      {label && <span className={`shrink-0 ${CELL_LABEL}`}>{label}</span>}
+      className={`yago-cell ${fixed ? 'shrink-0' : 'flex-1 min-w-0'} h-[28px] pl-2 pr-1 flex items-center gap-1 ${accent ? 'is-accent' : ''} ${passive ? 'is-passive' : ''} ${className}`}>
+      {label && <span className={`shrink-0 ${CELL_LABEL} ${passive ? 'opacity-60' : ''}`}>{label}</span>}
       <div className="flex-1 min-w-0 flex items-center justify-end gap-0.5">{children}</div>
     </div>
   );
 }
 export const FIELD_INPUT: React.CSSProperties = {
   width: 40, minWidth: 0, height: 22, textAlign: 'center', border: 'none', outline: 'none', background: 'transparent', padding: 0,
-  fontFamily: UI_FONT, fontSize: 13, fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: '#1c1917',
+  fontFamily: UI_FONT, fontSize: 12.5, fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: INK.text,
 };
 /** Pasif (girilemez) değer rengi. */
-export const PASSIVE_INPUT: React.CSSProperties = { color: '#c7beb1', cursor: 'default' };
+export const PASSIVE_INPUT: React.CSSProperties = { color: '#b8b0a6', cursor: 'default' };
 export const StepBtn = ({ title, disabled, onClick, children }: { title: string; disabled?: boolean; onClick: () => void; children: React.ReactNode }) => (
   <button type="button" title={title} disabled={disabled} onClick={e => { stop(e); if (!disabled) onClick(); }}
     className={`w-[20px] h-[20px] shrink-0 rounded-[5px] flex items-center justify-center transition-colors duration-150
@@ -342,7 +345,7 @@ export const StepBtn = ({ title, disabled, onClick, children }: { title: string;
 );
 export const IconSquareBtn = ({ icon: Icon, title, onClick }: { icon: LucideIcon; title: string; onClick: () => void }) => (
   <button type="button" title={title} onClick={e => { stop(e); onClick(); }}
-    className="shrink-0 w-[28px] h-[28px] rounded-[7px] flex items-center justify-center bg-white ring-1 ring-[#e6e0d6] text-stone-500 shadow-[0_1px_0_rgba(40,30,20,0.03)] hover:bg-[#faf7f2] hover:ring-[#dcd4c8] hover:text-stone-800 transition-colors duration-150">
+    className="shrink-0 w-[28px] h-[28px] rounded-[7px] flex items-center justify-center bg-white ring-1 ring-[#e3ddd4] text-stone-500 hover:bg-[#f6f3ee] hover:ring-[#cfc7bc] hover:text-stone-900 transition-colors duration-150">
     <Icon size={12.5} strokeWidth={2.2} />
   </button>
 );
@@ -353,7 +356,7 @@ export const ClearBtn = ({ title, label, onClick }: { title: string; label: stri
     <X size={11} strokeWidth={2.4} />
   </button>
 );
-export const unitTxt = (u: string) => <span className="shrink-0 pr-1 text-[10.5px] font-medium text-stone-400">{u}</span>;
+export const unitTxt = (u: string) => <span className="yago-unit shrink-0 pr-1">{u}</span>;
 
 /** Yerel metin taslağı: değer dışarıdan değişince taslak düşer. */
 export function useDraft(value: unknown) {
@@ -381,44 +384,22 @@ function useCountInput(value: number, max: number, onChange: (n: number) => void
     onChange: (e: React.ChangeEvent<HTMLInputElement>) => setDraft(e.target.value.replace(/[^0-9]/g, '')),
   };
 }
-const FIELD_TAG = `flex items-center gap-[3px] pr-0.5 mr-auto ${CELL_LABEL}`;
-export function CountBox({ icon: Icon, label, value, title, onChange, max = 12 }: {
-  icon: LucideIcon; label: string; value: number; title: string; onChange: (n: number) => void; max?: number;
+/** ADET KUTUSU: [Etiket] [−][n][+] — etiket yazılı (Columns / Rows / Quantity), ikon yok (Goker: ne olduğu anlaşılsın). */
+export function CountBox({ label, value, title, onChange, max = 12, className }: {
+  icon?: LucideIcon; label: string; value: number; title: string; onChange: (n: number) => void; max?: number; className?: string;
 }) {
   const input = useCountInput(value, max, onChange);
   return (
-    <FieldBox label="" title={title}>
-      <span className={FIELD_TAG}><Icon size={11} strokeWidth={2} />{label}</span>
-      <StepBtn title="Fewer pieces" disabled={value <= 1} onClick={() => onChange(value - 1)}><Minus size={10} strokeWidth={2.2} /></StepBtn>
-      <input {...input} style={{ ...FIELD_INPUT, width: 24, flexShrink: 0 }} aria-label={`${label} pieces`} />
-      <StepBtn title="More pieces" disabled={value >= max} onClick={() => onChange(value + 1)}><Plus size={10} strokeWidth={2.2} /></StepBtn>
+    <FieldBox label={label} title={title} className={className}>
+      <StepBtn title="Fewer" disabled={value <= 1} onClick={() => onChange(value - 1)}><Minus size={10} strokeWidth={2.2} /></StepBtn>
+      <input {...input} style={{ ...FIELD_INPUT, width: 24, flexShrink: 0 }} aria-label={label} />
+      <StepBtn title="More" disabled={value >= max} onClick={() => onChange(value + 1)}><Plus size={10} strokeWidth={2.2} /></StepBtn>
     </FieldBox>
   );
 }
-/** Arkalık kartı için KOMPAKT sayı kutusu: [ikon][−][n][+] — etiket yerine bölme ikonu (V / H), dar satıra sığar. */
-export function CountMini({ icon: Icon, value, title, onChange, max = 12 }: {
-  icon: LucideIcon; value: number; title: string; onChange: (n: number) => void; max?: number;
-}) {
-  const input = useCountInput(value, max, onChange);
-  const step = (d: number, dis: boolean) => (
-    <button type="button" disabled={dis} title={d < 0 ? 'Fewer pieces' : 'More pieces'} onClick={e => { stop(e); if (!dis) onChange(value + d); }}
-      className={`w-[14px] h-[18px] shrink-0 rounded-[4px] flex items-center justify-center ${dis ? 'text-stone-300 cursor-not-allowed' : 'text-stone-500 hover:bg-[#f3efe8] hover:text-stone-800'}`}>
-      {d < 0 ? <Minus size={9} strokeWidth={2.4} /> : <Plus size={9} strokeWidth={2.4} />}
-    </button>
-  );
-  return (
-    <div title={title} onClick={stop}
-      className="min-w-0 h-full min-h-[26px] px-[2px] flex items-center justify-between gap-0 overflow-hidden rounded-[7px] bg-white ring-1 ring-[#e6e0d6] shadow-[0_1px_0_rgba(40,30,20,0.03)]">
-      <Icon size={12} strokeWidth={2} className="shrink-0 text-[#a8a29e] ml-[1px]" />
-      {step(-1, value <= 1)}
-      <input {...input} style={{ ...FIELD_INPUT, width: 18, flexShrink: 0 }} />
-      {step(1, value >= max)}
-    </div>
-  );
-}
 /** Spacing kutusu: hedef parça ölçüsü (mm); boş girilirse hedef kalkar (parçalar olduğu gibi kalır). */
-export function SizeBox({ icon: Icon, label, value, title, onChange }: {
-  icon: LucideIcon; label: string; value: number | null; title: string; onChange: (mm: number | null) => void;
+export function SizeBox({ label, value, title, onChange, className }: {
+  icon?: LucideIcon; label: string; value: number | null; title: string; onChange: (mm: number | null) => void; className?: string;
 }) {
   const [draft, setDraft] = useDraft(value);
   const commit = () => {
@@ -430,26 +411,43 @@ export function SizeBox({ icon: Icon, label, value, title, onChange }: {
     if (Number.isFinite(v) && v > 0 && v !== value) onChange(v);
   };
   return (
-    <FieldBox label="" title={title} accent={value != null}>
-      <span className={FIELD_TAG}><Icon size={11} strokeWidth={2} />{label}</span>
-      <input type="text" inputMode="decimal" value={draft ?? (value != null ? String(value) : '')} placeholder="mm" onChange={e => setDraft(e.target.value)}
+    <FieldBox label={label} title={title} accent={value != null} className={className}>
+      <input type="text" inputMode="decimal" value={draft ?? (value != null ? String(value) : '')} placeholder="auto" onChange={e => setDraft(e.target.value)}
         onBlur={commit} onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setDraft(null); }} onClick={stop}
-        className="yago-field" style={{ ...FIELD_INPUT, width: 44, textAlign: 'right', ...(value != null ? { color: '#9a3412' } : {}) }}
+        className="yago-field" style={{ ...FIELD_INPUT, width: 44, textAlign: 'right', ...(value != null ? { color: INK.accentInk } : {}) }}
         aria-label={`${label} target size`} />
-      {value != null && (
-        <ClearBtn title="Clear the spacing target (the current pieces stay; change them with Count)" label={`Clear ${label} target size`}
-          onClick={() => { setDraft(null); onChange(null); }} />
-      )}
+      {value != null
+        ? <ClearBtn title="Clear the target size (the current pieces stay; change them with the count)" label={`Clear ${label} target size`}
+            onClick={() => { setDraft(null); onChange(null); }} />
+        : unitTxt('mm')}
     </FieldBox>
   );
 }
-const SELECT_CLASS = 'h-[28px] pl-2.5 pr-7 rounded-[7px] bg-white ring-1 ring-[#e6e0d6] shadow-[0_1px_0_rgba(40,30,20,0.03)] text-[11.5px] font-semibold '
-  + 'text-stone-700 appearance-none outline-none cursor-pointer hover:ring-[#dcd4c8] focus:ring-orange-400/60 transition-shadow duration-150';
-export function SelectBox<T extends string>({ value, options, title, onChange }: { value: T; options: Array<[T, string]>; title: string; onChange: (v: T) => void }) {
+const SELECT_CLASS = 'h-[28px] pl-2.5 pr-7 rounded-[7px] bg-white ring-1 ring-[#e3ddd4] text-[11.5px] font-semibold '
+  + 'text-stone-700 appearance-none outline-none cursor-pointer hover:ring-[#cfc7bc] hover:text-stone-900 focus:ring-orange-400/60 transition-shadow duration-150';
+/** Çıplak seçim kutusu (etiketli hücre içinde): çerçevesiz, sağa yaslı, ince ok. */
+const BARE_SELECT = 'h-[22px] pl-1 pr-5 rounded-[5px] bg-transparent text-[12px] font-semibold text-stone-800 appearance-none outline-none cursor-pointer '
+  + 'hover:bg-[#f6f3ee] focus:bg-white transition-colors duration-150';
+/** Seçim kutusu: `label` verilirse etiketli hücre ([Etiket] …… [Seçim ▾]); yoksa bağımsız kutu. */
+export function SelectBox<T extends string>({ value, options, title, onChange, label, className }: {
+  value: T; options: Array<[T, string]>; title: string; onChange: (v: T) => void; label?: string; className?: string;
+}) {
+  if (label) {
+    return (
+      <FieldBox label={label} title={title} className={className}>
+        <div className="relative min-w-0">
+          <select value={value} onChange={e => onChange(e.target.value as T)} className={BARE_SELECT} style={{ fontFamily: UI_FONT }}>
+            {options.map(([v, lbl]) => <option key={v} value={v}>{lbl}</option>)}
+          </select>
+          <ChevronDown size={11} strokeWidth={2.2} className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-stone-400" />
+        </div>
+      </FieldBox>
+    );
+  }
   return (
-    <div className="relative shrink-0" onClick={stop} title={title}>
+    <div className={`relative shrink-0 ${className ?? ''}`} onClick={stop} title={title}>
       <select value={value} onChange={e => onChange(e.target.value as T)} className={SELECT_CLASS} style={{ fontFamily: UI_FONT }}>
-        {options.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+        {options.map(([v, lbl]) => <option key={v} value={v}>{lbl}</option>)}
       </select>
       <ChevronDown size={12} strokeWidth={2.2} className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-stone-400" />
     </div>
@@ -458,26 +456,27 @@ export function SelectBox<T extends string>({ value, options, title, onChange }:
 /** AYAK SETİ SEÇİCİ (Goker: "sadece kayıtlı ayaklar gelsin; yerleşik / custom ayak seçeneği hiçbir zaman gelmesin"): YALNIZ Aksesuar
  *  sekmesinde kaydedilen setler. Seçilmemiş / silinmiş set → kütüphanedeki ilk set gösterilir (yerleşim de onu kullanır —
  *  AccessoryService.resolveLegPreset). Kütüphane boşsa pasif kutu: önce bir set kaydedilir. */
-export function LegPresetSelect({ value, onChange, title = 'Leg set — a saved leg layout and model from the Accessories tab' }: {
-  value: string | null | undefined; onChange: (presetId: string | null) => void; title?: string;
+export function LegPresetSelect({ value, onChange, label, title = 'Leg set — a saved leg layout and model from the Accessories tab' }: {
+  value: string | null | undefined; onChange: (presetId: string | null) => void; label?: string; title?: string;
 }) {
   const { legPresets, legModels } = useStoreFields('legPresets', 'legModels');
   if (!legPresets.length) {
-    return (
-      <div className="relative shrink-0" onClick={stop} title="No saved leg sets yet — save one in the Accessories tab (Leg sets › New)">
-        <select disabled value="" className={`${SELECT_CLASS} opacity-60 cursor-default`} style={{ fontFamily: UI_FONT }}>
+    const empty = (
+      <div className="relative min-w-0" onClick={stop} title="No saved leg sets yet — save one in the Accessories tab (Leg sets › New)">
+        <select disabled value="" className={`${label ? BARE_SELECT : SELECT_CLASS} opacity-60 cursor-default`} style={{ fontFamily: UI_FONT }}>
           <option value="">No saved leg sets · Accessories tab</option>
         </select>
-        <ChevronDown size={12} strokeWidth={2.2} className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-stone-300" />
+        <ChevronDown size={11} strokeWidth={2.2} className={`pointer-events-none absolute ${label ? 'right-1' : 'right-2'} top-1/2 -translate-y-1/2 text-stone-300`} />
       </div>
     );
+    return label ? <FieldBox label={label} title={title}>{empty}</FieldBox> : empty;
   }
   const cur = legPresets.find(p => p.id === value) ?? legPresets[0];
   const opts: Array<[string, string]> = legPresets.map(p => {
     const L = presetLayout(p), lm = legModels.find(m => m.id === p.legModelId);
     return [p.id, `${p.name} · ${L.count} legs${lm ? ` · ${lm.name}` : ''}`] as [string, string];
   });
-  return <SelectBox value={cur.id} options={opts} title={title} onChange={v => onChange(v)} />;
+  return <SelectBox label={label} className={label ? 'flex-1' : undefined} value={cur.id} options={opts} title={title} onChange={v => onChange(v)} />;
 }
 export type SplitMode = 'count' | 'ref' | 'spacing';
 const SPLIT_MODE_TITLE: Record<SplitMode, string> = {
@@ -485,55 +484,59 @@ const SPLIT_MODE_TITLE: Record<SplitMode, string> = {
   ref: 'Panel ref — click a door-reference divider / shelf (3D view or schematic): the door splits through its middle; door sizes stay, afterwards Left / Center / Right moves the panel',
   spacing: 'Spacing — split by target piece size (mm); the number of pieces follows the region length and body resizes',
 };
-export const SplitModeSelect = ({ value, onChange }: { value: SplitMode; onChange: (v: SplitMode) => void }) => (
-  <SelectBox value={value} onChange={onChange} title={SPLIT_MODE_TITLE[value]} options={[['count', 'Count'], ['ref', 'Panel ref'], ['spacing', 'Spacing']]} />
+export const SplitModeSelect = ({ value, onChange, className }: { value: SplitMode; onChange: (v: SplitMode) => void; className?: string }) => (
+  <SelectBox label="Split by" className={className} value={value} onChange={onChange} title={SPLIT_MODE_TITLE[value]}
+    options={[['count', 'Count'], ['ref', 'Panel ref'], ['spacing', 'Spacing']]} />
 );
 /** Arkalık seçme şeridinde tip. */
 export const BackTypeSelect = ({ value, onChange }: { value: BackPlacement; onChange: (v: BackPlacement) => void }) => (
-  <SelectBox value={value} onChange={onChange} title={BACK_TYPE_TITLE[value]} options={[['outer', BACK_TYPE_LABEL.outer], ['inner', BACK_TYPE_LABEL.inner]]} />
+  <SelectBox label="Mount" value={value} onChange={onChange} title={BACK_TYPE_TITLE[value]} options={[['outer', BACK_TYPE_LABEL.outer], ['inner', BACK_TYPE_LABEL.inner]]} />
 );
-export const PlacementSelect = ({ value, onChange }: { value: 'outer' | 'inner'; onChange: (v: 'outer' | 'inner') => void }) => (
-  <SelectBox value={value} onChange={onChange} options={[['outer', 'Outer'], ['inner', 'Inner']]}
+export const PlacementSelect = ({ value, onChange, className }: { value: 'outer' | 'inner'; onChange: (v: 'outer' | 'inner') => void; className?: string }) => (
+  <SelectBox label="Mount" className={className} value={value} onChange={onChange} options={[['outer', 'Outer'], ['inner', 'Inner']]}
     title={value === 'outer' ? 'Outer door — over the reference panels, in front of them' : 'Inner (inset) door — between the reference panels, flush with their front'} />
 );
 
-export const SectionHead = ({ label, count, rule = true, className = 'px-1 pt-2 pb-1' }: { label: string; count?: number; rule?: boolean; className?: string }) => (
-  <div className={`${className} flex items-center gap-2`}>
-    <span style={SECTION_LABEL}>{label}</span>
-    {count != null && <span className="text-[10.5px] font-medium tabular-nums text-stone-300">{count}</span>}
-    {rule && <div className="flex-1 h-px bg-[#efeae2]" />}
+/** BÖLÜM BAŞLIĞI: etiket · adet · açıklama · çizgi · sağ eklenti — tüm kartlarda aynı. */
+export const SectionHead = ({ label, count, hint, rule = true, right, className = 'px-1 pt-2 pb-1' }: {
+  label: string; count?: number; hint?: string; rule?: boolean; right?: React.ReactNode; className?: string;
+}) => (
+  <div className={`${className} flex items-center gap-2 min-w-0`}>
+    <span className="yago-section">{label}</span>
+    {count != null && <span className="text-[10.5px] font-medium tabular-nums text-[#a39b91]">{count}</span>}
+    {hint && <span className="yago-hint min-w-0 truncate">{hint}</span>}
+    {rule && <div className="flex-1 h-px bg-[#e9e4dd]" />}
+    {right}
   </div>
 );
 
-export const LIST_CSS = '@keyframes yagoExpand{from{opacity:0;clip-path:inset(0 0 100% 0);transform:translateY(-4px)}to{opacity:1;clip-path:inset(0 0 0 0);transform:none}}'
-  + '.yago-expand{animation:yagoExpand 260ms cubic-bezier(.2,.7,.2,1) both}';
+/** Liste CSS'i — kart açılış animasyonu Ui.SIDEBAR_CSS'te (.yago-expand); burada yalnız sürükleme imleci kalır. */
+export const LIST_CSS = '';
+/** KAPAK TİPİ: başlık satırı (etiket + kapsam) üstte, sekiz tip tam genişlikte altta. */
 export function DoorTypeBar({ value, hint, onPick }: { value: DoorType | null; hint: string; onPick: (t: DoorType) => void }) {
   return (
-    <div className="flex items-stretch gap-1.5 mb-1"
+    <div className="mb-1.5"
       title="Door type — applies to the doors selected in the schematic (click a door; Shift/Ctrl+click adds more; none selected = all doors). The selection clears once a type is applied.">
-      <div className="flex-1 min-w-0" style={{
-        display: 'grid', gridTemplateColumns: `repeat(${DOOR_TYPES.length}, minmax(0,1fr))`, gap: 2, padding: 2, borderRadius: 9, background: '#f3efe8',
-        border: '1px solid #e9e4dc', fontFamily: UI_FONT,
+      <SectionHead label="Door type" hint={hint} className="px-0.5 pb-1" />
+      <div style={{
+        display: 'grid', gridTemplateColumns: `repeat(${DOOR_TYPES.length}, minmax(0,1fr))`, gap: 2, padding: 2, borderRadius: 7, background: '#ece8e1',
+        fontFamily: UI_FONT,
       }}>
         {DOOR_TYPES.map(t => {
           const on = value === t;
           return (
             <button key={t} type="button" title={DOOR_TYPE_TITLE[t]} onClick={e => { stop(e); onPick(t); }}
-              className={on ? '' : 'hover:!bg-white hover:!text-stone-800'} style={{
-                height: 34, minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 2, padding: '0 2px',
-                borderRadius: 7, border: 'none', outline: 'none', cursor: 'pointer', background: on ? '#44403c' : 'transparent',
-                color: on ? '#ffffff' : '#57534e', boxShadow: on ? '0 1px 2px rgba(40,30,20,0.25)' : 'none', fontSize: 10, fontWeight: 600,
-                letterSpacing: '0.01em', lineHeight: 1, transition: 'background 0.12s,color 0.12s',
+              className={on ? '' : 'hover:!bg-white hover:!text-stone-900 hover:!shadow-[0_1px_2px_rgba(40,30,20,0.10)]'} style={{
+                height: 36, minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 3, padding: '0 2px',
+                borderRadius: 5, border: 'none', outline: 'none', cursor: 'pointer', background: on ? '#292524' : 'transparent',
+                color: on ? '#ffffff' : '#57534e', fontSize: 10, fontWeight: 600,
+                letterSpacing: '0.01em', lineHeight: 1, transition: 'background 0.12s,color 0.12s,box-shadow 0.12s',
               }}>
               <DoorTypeIcon type={t} size={13} />
               <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }}>{DOOR_TYPE_LABEL[t]}</span>
             </button>
           );
         })}
-      </div>
-      <div className="shrink-0 flex flex-col items-end justify-center" style={{ minWidth: 46 }}>
-        <span className="text-[9px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]">Type</span>
-        <span className="text-[10.5px] font-medium text-stone-500 tabular-nums">{hint}</span>
       </div>
     </div>
   );
@@ -551,11 +554,8 @@ export function HintCell({ hintKey, active, onHint, label, accent, passive, chil
   return (
     <div onClick={stop} onMouseEnter={emit} onFocusCapture={emit} onBlurCapture={() => onHint(null)}
       onMouseLeave={e => { if (!(e.currentTarget as HTMLElement).contains(document.activeElement)) onHint(null); }}
-      className={`min-w-0 h-full pl-2 pr-1 flex items-center gap-1 rounded-[7px] transition-shadow duration-150
-        ${passive ? 'bg-[#f6f2ec] ring-1 ring-[#ebe5dc]' : active ? 'bg-white ring-[1.5px] ring-orange-500 shadow-[0_0_0_2px_rgba(249,115,22,0.12)]'
-          : accent ? 'bg-white ring-1 ring-orange-400/70' : 'bg-white ring-1 ring-[#e6e0d6] shadow-[0_1px_0_rgba(40,30,20,0.03)]'}`}>
-      <span className={`flex-1 min-w-0 truncate text-[10px] font-semibold tracking-[0.08em] uppercase
-        ${passive ? 'text-[#cfc6b9]' : active ? 'text-orange-600' : 'text-[#b5ada3]'}`}>{label}</span>
+      className={`yago-cell min-w-0 h-full pl-2 pr-1 flex items-center gap-1 ${passive ? 'is-passive' : active || accent ? 'is-accent' : ''}`}>
+      <span className={`flex-1 min-w-0 truncate ${CELL_LABEL} ${passive ? 'opacity-60' : active ? '!text-orange-700' : ''}`}>{label}</span>
       {children}
     </div>
   );
@@ -564,7 +564,7 @@ export function HintCell({ hintKey, active, onHint, label, accent, passive, chil
 /* ───────────── DİYAGRAM ORTAKLARI (kanal kesiti + ayak planı) ───────────── */
 const O = '#ea580c', OF = '#fdba74', MUTE = '#b8aea0', TXT = '#8f877c', DARK = '#57534e';
 const DiagramSvg = ({ w, h, className, children }: Kids & { w: number; h: number; className?: string }) => (
-  <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="xMidYMid meet" className={`block rounded-[8px] bg-[#faf7f2] ring-1 ring-[#ebe5dc] ${className ?? ''}`}
+  <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="xMidYMid meet" className={`block rounded-[7px] bg-[#fbfaf7] ring-1 ring-[#e9e4dd] ${className ?? ''}`}
     aria-hidden>{children}</svg>
 );
 /** Ölçü çizgisi (uçları çentikli), değer yazısı, soluk not, vurgu dolgusu — `active` anahtarı turuncu. */
@@ -634,22 +634,6 @@ export function BackGrooveDiagram({ active, grooved, t, setback, front, rear, de
     </DiagramSvg>
   );
 }
-/** Tip düğmeleri (kart hücresi): Nailed ve Grooved yan yana İKİ AYRI düğme, hücreyi eşit paylaşır; value=null → ikisi de pasif (karışık). */
-export function BackTypeButtons({ value, hint, onPick }: { value: BackPlacement | null; hint: string; onPick: (t: BackPlacement) => void }) {
-  return (
-    <div className="min-w-0 h-full grid grid-cols-2 gap-1" onClick={stop}>
-      {(['outer', 'inner'] as const).map(t => (
-        <button key={t} type="button" title={`${BACK_TYPE_LABEL[t]} — ${hint.toLowerCase()}`} onClick={e => { stop(e); onPick(t); }} style={{ fontFamily: UI_FONT }}
-          className={`min-w-0 h-full px-1 rounded-[7px] flex items-center justify-center gap-1 text-[11px] font-semibold transition-colors duration-150
-            ${value === t ? 'bg-[#44403c] text-white ring-1 ring-[#44403c] shadow-[0_1px_2px_rgba(40,30,20,0.25)]'
-              : 'bg-white text-stone-600 ring-1 ring-[#e6e0d6] hover:bg-[#faf7f2] hover:text-stone-800'}`}>
-          {/* Dar kenar çubuğunda etiket kesilmesin: yalnız yazı (ikon yok). */}
-          <span className="truncate" style={{ letterSpacing: '-0.01em' }}>{BACK_TYPE_LABEL[t]}</span>
-        </button>
-      ))}
-    </div>
-  );
-}
 /** Arkalık kartı kanal bloğu: 4 eşit satır (satır yüksekliği BACK_ROW_H) — diyagram yüksekliği bloğun tamamı. */
 export const BACK_ROW_H = 28, BACK_ROW_GAP = 4, BACK_BLOCK_H = 4 * BACK_ROW_H + 3 * BACK_ROW_GAP;
 /** Kesit diyagramı viewBox'ı: blok yüksekliğinde, GENİŞ (en-boy ≈ 1.8) — hücreler dar, diyagram geniş. */
@@ -692,7 +676,7 @@ export function QbSwitch({ on, onToggle, title, disabled }: { on: boolean; onTog
   return (
     <button type="button" role="switch" aria-checked={on} title={title} disabled={disabled} onClick={e => { stop(e); if (!disabled) onToggle(); }}
       className={`relative shrink-0 w-[28px] h-[16px] rounded-full transition-colors duration-150
-        ${disabled ? 'bg-[#ebe5dc] cursor-not-allowed' : on ? 'bg-[#44403c]' : 'bg-[#d6cfc3] hover:bg-[#c9c1b4]'}`}>
+        ${disabled ? 'bg-[#ebe5dc] cursor-not-allowed' : on ? 'bg-[#292524] hover:bg-[#44403c]' : 'bg-[#d6cfc3] hover:bg-[#c3bbae]'}`}>
       <span className={`absolute top-[2px] w-[12px] h-[12px] rounded-full bg-white shadow-[0_1px_2px_rgba(40,30,20,0.3)] transition-[left] duration-150
         ${on ? 'left-[14px]' : 'left-[2px]'}`} />
     </button>
@@ -723,8 +707,9 @@ export function hintCells(hint: string | null, onHint: (k: string | null) => voi
   const cell = (label: string, k: string, body: React.ReactNode, passive?: boolean) => (
     <HintCell label={label} hintKey={k} active={hint === k} onHint={onHint} passive={passive}>{body}</HintCell>
   );
-  const num = (label: string, k: string, value: number, onCommit: (v: number) => void, passive?: boolean, min?: number) =>
-    cell(label, k, <QbNum value={value} min={min} passive={passive} onCommit={onCommit} />, passive);
+  // Sayısal hücrede birim her zaman yazılır (Goker: ne olduğu tek bakışta anlaşılsın).
+  const num = (label: string, k: string, value: number, onCommit: (v: number) => void, passive?: boolean, min?: number, unit = 'mm') =>
+    cell(label, k, <><QbNum value={value} min={min} passive={passive} onCommit={onCommit} />{unit && unitTxt(unit)}</>, passive);
   return { cell, num };
 }
 
@@ -876,10 +861,10 @@ export function LegLayoutCells({ legs, heightCell, diameter, onChange, hint, onH
     <div className="grid grid-cols-3 gap-x-1" style={QB_CELL_ROW} onMouseLeave={() => onHint(null)}>
       {cell('Layout', 'lc', <QbSelect value={String(legs.count || 4)} options={AUTO_COUNT_OPTS} w={96} onChange={v => onChange({ count: parseInt(v, 10) })} />)}
       {heightCell}
-      <ReadCell label="Ø"><ReadValue color="#57534e">{fmt1(diameter)}</ReadValue></ReadCell>
-      {num('Side offset', 'ls', legs.side, v => onChange({ side: v }))}
-      {num('Front offset', 'lf', legs.front, v => onChange({ front: v }))}
-      {num('Rear offset', 'lr', legs.rear, v => onChange({ rear: v }))}
+      <ReadCell label="Leg Ø" title="Leg diameter — from the leg model"><ReadValue color={INK.soft}>{fmt1(diameter)}</ReadValue>{unitTxt('mm')}</ReadCell>
+      {num('From side', 'ls', legs.side, v => onChange({ side: v }))}
+      {num('From front', 'lf', legs.front, v => onChange({ front: v }))}
+      {num('From rear', 'lr', legs.rear, v => onChange({ rear: v }))}
     </div>
   );
 }
@@ -894,9 +879,9 @@ export function LegAdjustEditor({ count, adjust, onChange, active, onActive, pas
     next[i] = { ...next[i], ...patch };
     onChange(next);
   };
-  const cell = (k: string, label: string, body: React.ReactNode) => (
-    <div key={k} className="flex-1 min-w-0 h-full flex items-center gap-1 px-1.5 rounded-[6px] bg-white ring-1 ring-[#e6e0d6]">
-      <span className="shrink-0 text-[9.5px] font-semibold uppercase tracking-[0.06em] text-stone-400">{label}</span>
+  const cell = (k: string, label: string, title: string, body: React.ReactNode) => (
+    <div key={k} title={title} className="yago-cell flex-1 min-w-0 h-full flex items-center gap-1 pl-2 pr-1" onClick={stop}>
+      <span className={`shrink-0 ${CELL_LABEL}`}>{label}</span>
       <div className="flex-1 min-w-0 flex justify-end">{body}</div>
     </div>
   );
@@ -905,11 +890,11 @@ export function LegAdjustEditor({ count, adjust, onChange, active, onActive, pas
       {Array.from({ length: count }, (_, i) => {
         const a = passive ? { du: 0, dv: 0 } : at(i), on = !a.off;
         return (
-          <div key={i} className={`h-[26px] flex items-center gap-1 rounded-[7px] px-1 ${active === i ? 'bg-[#fff4ec]' : ''} ${on ? '' : 'opacity-55'}`} onMouseEnter={() => onActive(i)}>
-            <span className={`shrink-0 w-[18px] h-[18px] rounded-[5px] text-[10px] font-bold flex items-center justify-center tabular-nums ${active === i ? 'bg-[#ea580c] text-white' : 'bg-[#f3efe8] text-stone-500'}`}>{i + 1}</span>
-            {cell('u', 'Δ side', <QbNum value={a.du} min={-100000} w={44} passive={passive || !on} onCommit={v => set(i, { du: v })} />)}
-            {cell('v', 'Δ front', <QbNum value={a.dv} min={-100000} w={44} passive={passive || !on} onCommit={v => set(i, { dv: v })} />)}
-            <QbSwitch on={on} disabled={passive} onToggle={() => set(i, { off: on })} title={on ? 'Leg on' : 'Leg removed'} />
+          <div key={i} className={`h-[28px] flex items-center gap-1 rounded-[7px] px-1 transition-colors duration-120 ${active === i ? 'bg-[#fff4ec]' : 'hover:bg-[#f8f6f2]'} ${on ? '' : 'opacity-55'}`} onMouseEnter={() => onActive(i)}>
+            <span className={`shrink-0 w-[20px] h-[20px] rounded-[5px] text-[10.5px] font-bold flex items-center justify-center tabular-nums ${active === i ? 'bg-[#ea580c] text-white' : 'bg-[#ece8e1] text-stone-600'}`}>{i + 1}</span>
+            {cell('u', 'Side Δ', `Leg ${i + 1} — shift along the side (+ to the right) on top of the automatic position`, <QbNum value={a.du} min={-100000} w={44} passive={passive || !on} onCommit={v => set(i, { du: v })} />)}
+            {cell('v', 'Front Δ', `Leg ${i + 1} — shift towards the front (+ forward) on top of the automatic position`, <QbNum value={a.dv} min={-100000} w={44} passive={passive || !on} onCommit={v => set(i, { dv: v })} />)}
+            <QbSwitch on={on} disabled={passive} onToggle={() => set(i, { off: on })} title={on ? 'Leg on — click to remove this leg' : 'Leg removed — click to put it back'} />
           </div>
         );
       })}
@@ -942,14 +927,13 @@ export function LegsBlock({ legs, W, D, facing, own, presetId, heightReadout, he
   return (
     <div className="flex flex-col gap-1.5" onMouseLeave={() => onHint(null)}>
       <div className="flex items-center gap-1.5">
-        <span style={SECTION_LABEL}>Leg set</span>
-        <div className="flex-1 min-w-0 flex"><LegPresetSelect value={presetId} onChange={onPreset} /></div>
+        <div className="flex-1 min-w-0 flex"><LegPresetSelect label="Leg set" value={presetId} onChange={onPreset} /></div>
         {own && <CardAction compact icon={RotateCcw} label="Set values" title="Back to the leg set's layout and offsets" onClick={onReset} />}
       </div>
       <LegLayoutDiagram points={points} footprint={rectPoly(0, 0, W, D)} facing={facing} diameter={legs.diameter} active={hint} className="w-full" />
       <LegLayoutCells legs={legs} diameter={legs.diameter} onChange={onChange} hint={hint} onHint={onHint}
         heightCell={heightEditable ? num('Leg height', 'lh', legs.height, v => onChange({ height: v }), false, 1)
-          : cell('Leg height', 'lh', <ReadValue color="#8f877c" title="= plinth height">{fmt1(heightReadout ?? legs.height)}</ReadValue>)} />
+          : cell('Leg height', 'lh', <><ReadValue color={INK.muted} title="= plinth height">{fmt1(heightReadout ?? legs.height)}</ReadValue>{unitTxt('mm')}</>)} />
     </div>
   );
 }
@@ -958,10 +942,10 @@ export function LegsBlock({ legs, W, D, facing, own, presetId, heightReadout, he
    (Goker: "gövde, arkalık ve ayak kısımları iç içe giriyor"). */
 export function QbSection({ title, sub, trailing, children }: Kids & { title: string; sub?: string; trailing?: React.ReactNode }) {
   return (
-    <div className="rounded-[10px] ring-1 ring-[#e6e0d6] bg-white overflow-hidden shadow-[0_1px_2px_rgba(68,64,60,0.04)]">
-      <div className="flex items-center gap-2 pl-2.5 pr-1.5 h-[32px] bg-[#f6f2ec] border-b border-[#ebe5dc]">
-        <span style={{ ...SECTION_LABEL, color: '#57534e' }}>{title}</span>
-        {sub && <span className="min-w-0 truncate text-[10px] font-medium text-stone-400">{sub}</span>}
+    <div className="rounded-[9px] ring-1 ring-[#e3ddd4] bg-white overflow-hidden">
+      <div className="flex items-center gap-2 pl-2.5 pr-1.5 h-[34px] bg-[#f8f6f2] border-b border-[#ebe6df]">
+        <span className="yago-section" style={{ color: INK.soft }}>{title}</span>
+        {sub && <span className="yago-hint min-w-0 truncate">{sub}</span>}
         <div className="flex-1" />
         {trailing}
       </div>
@@ -969,7 +953,7 @@ export function QbSection({ title, sub, trailing, children }: Kids & { title: st
     </div>
   );
 }
-export const QbNote = ({ children }: Kids) => <div className="px-1 py-1 text-[10.5px] leading-snug text-stone-400">{children}</div>;
+export const QbNote = ({ children }: Kids) => <div className="yago-hint px-1 py-1">{children}</div>;
 const QB_BACK_ITEMS: SegItem[] = [
   { key: 'none', label: 'None', title: 'No back panel' },
   { key: 'outer', label: BACK_TYPE_LABEL.outer, title: 'Nailed onto the rear edges of the body panels' },
@@ -1011,7 +995,7 @@ export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onAppl
     ? 'Re-applies these settings to the body panels placed by Quick body: the same rows are updated in place (same order, first in the list), '
       + 'parts that no longer apply are removed, the back panel and legs follow. Shelves, dividers and doors are kept; manual steps on the body panels are reset.'
     : undefined;
-  const sub = (s: React.ReactNode) => <span className="text-[10px] font-medium text-stone-400" style={{ fontFamily: UI_FONT }}>{s}</span>;
+  const sub = (s: React.ReactNode) => <span className="yago-unit">{s}</span>;
   const backKey = b.enabled ? b.placement : 'none';
   return (
     <div style={{ fontFamily: UI_FONT }}>
@@ -1027,27 +1011,21 @@ export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onAppl
       <div className="px-1.5 pt-1.5 pb-2 flex flex-col gap-1.5" onMouseLeave={() => setHint(null)}>
         {/* 1 · GÖVDE PANELLERİ: dört köşe birleşimi (dolap çizimi yok — Goker), kalınlık + ölçü, bazalıda baza ölçüleri */}
         <QbSection title="Body panels" sub={`${panelCount} panels · ${isPlinth ? 'sides reach the floor' : isLegs ? 'raised on legs' : 'on the floor'}`}>
-          <div className="pb-1 px-0.5 flex items-center gap-2">
-            <span style={SECTION_LABEL}>Corner joints</span>
-            <span className="text-[10px] text-stone-400">click a corner to swap which panel passes</span>
-          </div>
+          <SectionHead label="Corner joints" hint="click a corner to swap which panel passes" rule={false} className="pb-1 px-0.5" />
           <CornerJointTiles joins={joins} lockBottom={isPlinth} active={hint} onCorner={toggleCorner} onHover={c => setHint(c ? `c-${c}` : null)} />
           <div className="mt-1.5 grid grid-cols-2 gap-x-1" style={QB_CELL_ROW}>
             {num('Panel thickness', 't', cfg.thickness, v => setCfg({ thickness: v }), false, 1)}
-            <ReadCell label="Body size" title="Body width × height × depth">
-              <span className="whitespace-nowrap text-[11px] font-semibold text-stone-500 tabular-nums">{fmt1(W)} × {fmt1(H)} × {fmt1(D)}</span>
+            <ReadCell label="Body size" title="Body width × height × depth (mm)">
+              <span className="whitespace-nowrap text-[11.5px] font-semibold text-stone-600 tabular-nums">{fmt1(W)} × {fmt1(H)} × {fmt1(D)}</span>{unitTxt('mm')}
             </ReadCell>
           </div>
           {isPlinth && <>
-            <div className="pt-2 pb-1 px-0.5 flex items-center gap-2">
-              <span style={SECTION_LABEL}>Plinth</span>
-              <span className="text-[10px] text-stone-400">kick panels under the bottom panel, between the sides</span>
-            </div>
+            <SectionHead label="Plinth" hint="kick panels under the bottom panel, between the sides" rule={false} className="pt-2 pb-1 px-0.5" />
             <div className="grid grid-cols-2 gap-x-1" style={QB_CELL_ROW}>
               {num('Plinth height', 'ph', cfg.plinth.height, v => setPlinth({ height: v }), false, 1)}
               {num('Front plinth setback', 'pf', cfg.plinth.front, v => setPlinth({ front: v }))}
               {cell('Rear plinth', 'pr', <>
-                <span className="text-[10.5px] font-medium text-stone-400 pr-1">{cfg.plinth.rearPlinth ? 'on' : 'off'}</span>
+                <span className="yago-unit pr-1">{cfg.plinth.rearPlinth ? 'on' : 'off'}</span>
                 <QbSwitch on={cfg.plinth.rearPlinth} title="Rear plinth on / off" onToggle={() => setPlinth({ rearPlinth: !cfg.plinth.rearPlinth })} />
               </>)}
               {num('Rear plinth inset', 'pri', cfg.plinth.rear, v => setPlinth({ rear: v }), !cfg.plinth.rearPlinth)}
@@ -1058,7 +1036,7 @@ export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onAppl
         {/* 2 · AYAKLAR (Goker: "sadece kayıtlı ayaklar gelsin"): ayak = kayıtlı set; bazalıda başlıkta var/yok; set + plan diyagramı +
             ölçü hücreleri (her zaman düzenlenir; elle girilen değer hızlı gövdede kalır, ↺ sete döner) */}
         <QbSection title="Legs" sub={isLegs ? 'body height includes the legs' : isPlinth ? 'optional, under the bottom panel' : undefined}
-          trailing={isPlain ? <span className="pr-1 text-[11px] font-semibold text-stone-300">None</span>
+          trailing={isPlain ? <span className="pr-1 text-[11px] font-semibold text-[#a39b91]">None</span>
             : isPlinth ? <div style={{ width: 118 }}><Segmented height={22} active={legCount ? 'on' : 'off'}
               items={[{ key: 'off', label: 'None', title: 'No legs — the plinth carries the body' }, { key: 'on', label: 'Legs', title: 'Legs under the bottom panel (saved leg set)' }]}
               onPick={k => setLegs({ count: k === 'on' ? ((cfg.legs.count || 4) as 4 | 5 | 6) : 0 })} /></div>
@@ -1137,7 +1115,10 @@ const axisInput = (axis: string, { draft, setDraft }: DraftProps, setValue: (v: 
 /** Ok uygulaması sürerken ikinci onay yok sayılır (Enter + düğme aynı anda). */
 let _arrowApplyBusy = false;
 /** Yüz extrude (panel), hacim (`cavity`) ve baza seti (`plinth`) şeridi: Arrow dyn / Arrow fixed / Fixed / Dyn / Ref, onay / çıkış. */
-export function ExtrudeDock({ panel, cavity, plinth, draft, setDraft }: DraftProps & { panel?: Shape; cavity?: PanelGroup; plinth?: PlinthSet }) {
+export function ExtrudeDock({ panel, cavity, plinth, draft, setDraft, onDone }: DraftProps & {
+  panel?: Shape; cavity?: PanelGroup; plinth?: PlinthSet;
+  /** Onaylanan yüz işlemi bitince (Goker: "işlem bitince o panel kapansın") — ok kipinde çağrılmaz (ardışık uygulama). */ onDone?: () => void;
+}) {
   const {
     faceExtrudeMode, faceExtrudeSelectedFace, faceExtrudeThickness, faceExtrudeValueMode, faceExtrudeRefCandidate, faceExtrudeClickPoint,
     faceExtrudeCavityGroupId, faceExtrudeCavityFaceNormal, faceExtrudePlinthId, faceExtrudeArrowAxis,
@@ -1168,12 +1149,14 @@ export function ExtrudeDock({ panel, cavity, plinth, draft, setDraft }: DraftPro
     if (cavity) {
       if (isRef) { if (!refFace) return; await confirmRefCavityExtrude(); }
       else { await executeCavityExtrude(cavity.id, faceExtrudeCavityFaceNormal!, faceExtrudeThickness, isFixed, faceExtrudeClickPoint); exit(); }
+      onDone?.();
       return;
     }
     if (isRef) { if (!refFace) return; await confirmRefFaceExtrude(); }
     else await executeFaceExtrude({ panelShape: panel!, faceGroupIndex: faceExtrudeSelectedFace!, value: faceExtrudeThickness, isFixed, updateShape,
       clickPoint: faceExtrudeClickPoint ?? undefined });
     exit();
+    onDone?.();
   };
   const onArrowApply = async () => {
     const st = useAppStore.getState();
@@ -1240,7 +1223,7 @@ export function ExtrudeDock({ panel, cavity, plinth, draft, setDraft }: DraftPro
 const AXIS_LABEL: Record<string, string> = { 'x+': '+X', 'x-': '−X', 'y+': '+Y', 'y-': '−Y', 'z+': '+Z', 'z-': '−Z' };
 
 const MOVE_REF_STEPS = ['Pick the source point', 'Pick the target panel', 'Pick the target point', 'Ready — right-click to confirm'];
-export function MoveDock({ panel, ...draft }: DraftProps & { panel?: Shape }) {
+export function MoveDock({ panel, onDone, ...draft }: DraftProps & { panel?: Shape; onDone?: () => void }) {
   const {
     panelMoveMode, panelMoveAxis, panelMoveValue, panelMoveValueMode, panelMoveRefSourceVertex, panelMoveRefTargetPanelId, panelMoveRefTargetVertex,
   } = useStoreFields('panelMoveMode', 'panelMoveAxis', 'panelMoveValue', 'panelMoveValueMode', 'panelMoveRefSourceVertex', 'panelMoveRefTargetPanelId',
@@ -1262,6 +1245,7 @@ export function MoveDock({ panel, ...draft }: DraftProps & { panel?: Shape }) {
       await move({ panelShape: panel, axis: panelMoveAxis!, value: panelMoveValue, updateShape });
     }
     setPanelMoveAxis(null); setPanelMoveValue(0); draft.setDraft('0'); setPanelMoveMode(false);
+    onDone?.();
   };
   return (
     <div style={DOCK_SHELL}>
@@ -1293,7 +1277,7 @@ const ROTATE_REF_STEPS: Array<[string, string]> = [
   ['Ready — right-click to confirm', 'Right-click anywhere in the scene — the link is kept and the reference panel edge is beveled to the slope'],
 ];
 /* Döndürme ref modu: onaydan sonra bağ KALICIDIR — referans taşındıkça panel nişan noktasıyla yeniden döner. */
-export function RotateDock({ panel, ...draft }: DraftProps & { panel?: Shape }) {
+export function RotateDock({ panel, onDone, ...draft }: DraftProps & { panel?: Shape; onDone?: () => void }) {
   const { panelRotateMode, panelRotatePivot, panelRotateAxis, panelRotateValue, panelRotateValueMode, panelRotateRefArmVertex, panelRotateRefFace } =
     useStoreFields('panelRotateMode', 'panelRotatePivot', 'panelRotateAxis', 'panelRotateValue', 'panelRotateValueMode', 'panelRotateRefArmVertex',
       'panelRotateRefFace');
@@ -1305,10 +1289,11 @@ export function RotateDock({ panel, ...draft }: DraftProps & { panel?: Shape }) 
   const refReady = isRef && hasPivot && hasArm && hasAxis && !!panelRotateRefFace;
   const exit = () => { setPanelRotateAxis(null); setPanelRotatePivot(null); setPanelRotateMode(false); if (isRef) setSelectedPanelRow(null); };
   const onApply = async () => {
-    if (isRef) { if (!refReady) return; await confirmPanelRotateRef(); setPanelRotateMode(false); setSelectedPanelRow(null); return; }
+    if (isRef) { if (!refReady) return; await confirmPanelRotateRef(); setPanelRotateMode(false); setSelectedPanelRow(null); onDone?.(); return; }
     if (!hasAxis || !hasPivot) return;
     await executePanelRotate({ panelShape: panel, axis: panelRotateAxis!, value: panelRotateValue, pivot: panelRotatePivot!, updateShape });
     setPanelRotateAxis(null); setPanelRotateValue(0); draft.setDraft('0');
+    onDone?.();
   };
   const modeBar = (trailing?: React.ReactNode) => (
     <DockModeBar trailing={trailing} active={panelRotateValueMode}
@@ -1375,7 +1360,7 @@ const VOL_BADGE = { label: 'Vol', bg: 'rgba(14,116,144,0.09)', color: '#0e7490' 
 
 /** Adım listesi: sıra · tür · eksen · değer (✎ → ✓ / ✗) · F/D/R · sil. */
 function StepList({ label, maxHeight, steps, edit, setEdit }: StepEditProps & { label: string; maxHeight: number; steps: StepItem[] }) {
-  const tag = (txt: string) => <span className="shrink-0 text-[10px] font-semibold px-1.5 h-[18px] leading-[18px] rounded-[5px] bg-[#f3efe8] text-stone-500">{txt}</span>;
+  const tag = (txt: string) => <span className="shrink-0 text-[10px] font-semibold px-1.5 h-[18px] leading-[18px] rounded-[5px] bg-[#ece8e1] text-stone-600">{txt}</span>;
   const save = (s: StepItem) => { const v = parseFloat(edit?.v ?? ''); if (!isNaN(v)) s.save(v); };
   return (
     <div className="shrink-0 mt-2" style={{ fontFamily: UI_FONT }}>
@@ -1383,8 +1368,8 @@ function StepList({ label, maxHeight, steps, edit, setEdit }: StepEditProps & { 
       <div className="overflow-y-auto" style={{ maxHeight }}>
         <div className="flex flex-col gap-[2px] p-px">
           {steps.map((s, idx) => (
-            <div key={s.id} className="group/step flex items-center gap-1.5 pl-1.5 pr-1 h-[30px] rounded-[9px] bg-[#fdfcfa] ring-1 ring-[#ece7df] shadow-[0_1px_0_rgba(68,64,60,0.025)] hover:bg-white hover:ring-[#e2dbd0] transition-colors duration-150">
-              <span className="shrink-0 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-[#f3efe8] text-[10.5px] font-semibold text-stone-500 tabular-nums leading-none">{idx + 1}</span>
+            <div key={s.id} className="group/step yago-cell flex items-center gap-1.5 pl-1.5 pr-1 h-[30px]">
+              <span className="shrink-0 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-[#ece8e1] text-[10.5px] font-semibold text-stone-600 tabular-nums leading-none">{idx + 1}</span>
               <span className="shrink-0 text-[10.5px] font-semibold px-1.5 h-[18px] leading-[18px] rounded-[5px]" style={{ background: s.badge.bg, color: s.badge.color }}>{s.badge.label}</span>
               <span className="shrink-0 min-w-[24px] text-center text-[10.5px] font-bold px-1 h-[18px] leading-[18px] rounded-[5px] bg-[#f5f2ec]" style={{ color: s.axisColor }}>{s.axis}</span>
               {edit?.id === s.id ? (
@@ -1392,13 +1377,13 @@ function StepList({ label, maxHeight, steps, edit, setEdit }: StepEditProps & { 
                   <input type="text" inputMode="numeric" autoFocus value={edit.v}
                     onChange={e => setEdit({ id: s.id, v: e.target.value })}
                     onKeyDown={e => { if (e.key === 'Escape') setEdit(null); else if (e.key === 'Enter') save(s); }}
-                    className="flex-1 min-w-0 h-[22px] text-center font-mono text-[12px] font-medium tabular-nums text-stone-800 bg-white border border-[#e6e0d6] rounded-[6px] outline-none focus:border-orange-400/60 focus:shadow-[0_0_0_2px_rgba(249,115,22,0.10)]" />
+                    className="yago-field flex-1 min-w-0 !text-center" />
                   <button onClick={() => save(s)} style={iconBtn('#5b5346')}><Check size={11} /></button>
                   <button onClick={() => setEdit(null)} style={iconBtn('#a8a29e')}><X size={11} /></button>
                 </>
               ) : (
                 <>
-                  <span className="flex-1 pl-1 font-mono text-[12px] font-medium text-stone-700 tabular-nums">{s.value}{s.unit}</span>
+                  <span className="flex-1 pl-1 yago-value">{s.value}{s.unit}</span>
                   {s.tag && tag(s.tag)}
                   {s.editable && (
                     <button onClick={() => setEdit({ id: s.id, v: String(s.value) })} style={iconBtn('#a8a29e')}
@@ -1469,7 +1454,7 @@ function PlacementDock({ tag, defaultName, showName = true, ready, status, onCon
         <span style={dockAxisTag('#44403c')}>{tag}</span>
         {lead}
         {showName ? (
-          <FieldBox label="" title={`Name of the new ${defaultName.toLowerCase()} (empty = ${defaultName})`}>
+          <FieldBox label="Name" title={`Name of the new ${defaultName.toLowerCase()} (empty = ${defaultName})`}>
             <input type="text" autoFocus value={name} placeholder={defaultName} spellCheck={false}
               onChange={e => useAppStore.getState().setPlacementName(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' && ready) onConfirm(); if (e.key === 'Escape') onExit(); }}
@@ -1557,16 +1542,15 @@ export function PlacementDocks({ shape }: { shape: Shape | undefined }) {
     const { setPlinthPickPresetId } = useAppStore.getState();
     return (
       <PlacementDock tag="PLINTH" defaultName="Plinth" ready={ready} confirmTitle="Place plinth leg set"
-        lead={<div className="shrink-0 flex items-center gap-1" title="Height of the set inside the body (mm), from the floor up — a raised bottom panel also offers the gap under it">
-          <span style={dockAxisTag('#16a34a')}>H</span><QbNum value={plinthPickHeight} min={1} w={40} onCommit={setPlinthPickHeight} /></div>}
+        lead={<FieldBox fixed label="Height" title="Height of the set inside the body (mm), from the floor up — a raised bottom panel also offers the gap under it">
+          <QbNum value={plinthPickHeight} min={1} w={40} onCommit={setPlinthPickHeight} />{unitTxt('mm')}</FieldBox>}
         status={!shape ? noShape
           : n === 0 ? 'Click the body in the 3D view — the set volume is highlighted; legs follow the body faces (Parameters › Faces)'
           : `${plinthPickIndex + 1}/${n} · ${cur.label} · ${fmt1(cur.box.max[0] - cur.box.min[0])} × ${fmt1(cur.box.max[1] - cur.box.min[1])} × ${fmt1(cur.box.max[2] - cur.box.min[2])} — click: next · right-click: place`}
         onConfirm={() => { if (ready && shape) confirmPlinthPick(shape.id, plinthPickCandidates[plinthPickIndex], useAppStore.getState().placementName); }}
         onExit={() => setPlinthPickMode(false)}
         extra={<div style={{ ...DOCK_ROW, paddingTop: 0 }}>
-          <span style={dockAxisTag('#44403c')} title="Leg set from the Accessories tab (layout + model) — only saved sets">SET</span>
-          <div className="flex-1 min-w-0 flex"><LegPresetSelect value={plinthPickPresetId} onChange={id => { setPlinthPickPresetId(id); const p = legPresetById(id); if (p && p.height > 0) setPlinthPickHeight(p.height); }} /></div>
+          <div className="flex-1 min-w-0 flex"><LegPresetSelect label="Leg set" value={plinthPickPresetId} onChange={id => { setPlinthPickPresetId(id); const p = legPresetById(id); if (p && p.height > 0) setPlinthPickHeight(p.height); }} /></div>
         </div>} />
     );
   };
@@ -1595,7 +1579,7 @@ export function DoorBondBadge({ g, onUnbind }: { g: PanelGroup; onUnbind: () => 
   const how = b.align === 'center' ? 'Half overlay — centered on the joint'
     : b.align === 'min' ? 'Full overlay of the lower / left door' : 'Full overlay of the upper / right door';
   return (
-    <span className="shrink-0 h-[28px] pl-2 pr-1 inline-flex items-center gap-1 rounded-[7px] bg-orange-50 ring-1 ring-orange-200/70 text-[10.5px] font-semibold text-orange-700"
+    <span className="shrink-0 h-[28px] pl-2 pr-1 inline-flex items-center gap-1 rounded-[7px] bg-[#fff4ec] ring-1 ring-orange-200 text-[10.5px] font-semibold text-[#c2410c]"
       title={`Bound to a door joint (${how}): this ${g.kind} follows the doors — when the door sizes change it moves with the joint. `
         + 'Editing its gap here moves the door joint instead. Unbind to free it (it stays where it is).'}>
       <DoorClosed size={12} strokeWidth={2} /><span>Door joint</span>
@@ -1621,7 +1605,7 @@ export function JointPanelBar({ outer, pick, joints, added, freeParts, onToggle 
   const rm = added ? ' · ✕ Remove to delete' : '';
   return (
     <div className="flex items-center gap-1 mb-1.5">
-      <span className={`shrink-0 pl-0.5 pr-1 ${CELL_LABEL}`}>Between doors</span>
+      <span className={`shrink-0 pl-0.5 pr-1.5 ${CELL_LABEL}`}>Between doors</span>
       <CardAction compact icon={Columns3} label="Divider" active={pick === 'u'} tone="amber" title={title('u')} onClick={() => onToggle('u')} />
       <CardAction compact icon={Rows3} label="Shelf" active={pick === 'v'} tone="amber" title={title('v')} onClick={() => onToggle('v')} />
       {pick && (
@@ -1741,13 +1725,13 @@ export function PanelEditor() {
     faceExtrudeMode, faceExtrudeTargetPanelId, faceExtrudeSelectedFace, faceExtrudeClickPoint, faceExtrudeValueMode, faceExtrudeCavityGroupId,
     faceExtrudeCavityFaceNormal, panelMoveMode, panelMoveTargetPanelId, panelMoveAxis, panelRotateMode, panelRotateTargetPanelId, panelRotateAxis,
     doorGroups, selectedDoorGroupId, doorRefPickGroupId, backGroups, selectedBackGroupId, backRefPickGroupId, quickBodyMode, quickBodyConfig, quickBodyBusy,
-    plinthSets, faceExtrudePlinthId,
+    plinthSets, faceExtrudePlinthId, raycastMode, doorPickMode, backPickMode, plinthPickMode,
   } = useStoreFields(
     'selectedShapeId', 'shapes', 'selectedPanelRow', 'virtualFaces', 'panelGroups', 'selectedPanelGroupId', 'volumePickMode', 'volumePickGroupId',
     'faceExtrudeMode', 'faceExtrudeTargetPanelId', 'faceExtrudeSelectedFace', 'faceExtrudeClickPoint', 'faceExtrudeValueMode', 'faceExtrudeCavityGroupId',
     'faceExtrudeCavityFaceNormal', 'panelMoveMode', 'panelMoveTargetPanelId', 'panelMoveAxis', 'panelRotateMode', 'panelRotateTargetPanelId', 'panelRotateAxis',
     'doorGroups', 'selectedDoorGroupId', 'doorRefPickGroupId', 'backGroups', 'selectedBackGroupId', 'backRefPickGroupId', 'quickBodyMode', 'quickBodyConfig',
-    'quickBodyBusy', 'plinthSets', 'faceExtrudePlinthId',
+    'quickBodyBusy', 'plinthSets', 'faceExtrudePlinthId', 'raycastMode', 'doorPickMode', 'backPickMode', 'plinthPickMode',
   );
   // Eylemler sabittir (store kurulurken tanımlanır) → abonelik gerekmez.
   const {
@@ -1777,8 +1761,9 @@ export function PanelEditor() {
   const [armedRowKey, setArmedRowKey] = useState<string | null>(null);
   /** Kart alanlarının yerel metin taslağı; anahtar = grup id : alan (: kenar kapsamı). */
   const [fieldDraft, setFieldDraft] = useState<{ key: string; v: string } | null>(null);
-  // Kart açıklığı seçimden AYRI yerel durum: üye seçilince açılır ve üye editörü kapanınca da açık KALIR; yalnız chevron kapatır.
-  const [openCards, setOpenCards] = useState<Set<string>>(() => new Set());
+  // TEK AÇIK KART (Goker, Kas 2026 — "tıkladığımda sadece o ilgili yer açılsın, işlem bitince kapansın"): kart açıklığı akordeondur —
+  // seçilen satırın kartı açılır, diğerleri kapanır; üye editörü kapanınca grup kartı açık kalır (bağlam), chevron ya da yeni bir seçim kapatır.
+  const [openCardId, setOpenCardId] = useState<string | null>(null);
   const [stepEdit, setStepEdit] = useState<StepEdit>(null);
   const [extrudeThicknessStr, setExtrudeThicknessStr] = useState(() => String(useAppStore.getState().faceExtrudeThickness));
   const [moveValueStr, setMoveValueStr] = useState('0');
@@ -1799,7 +1784,7 @@ export function PanelEditor() {
   useOnChange(panelMoveAxis, () => { setMoveValueStr('0'); setPanelMoveValue(0); });
   useOnChange(panelRotateAxis, () => { setRotateValueStr('0'); setPanelRotateValue(0); });
 
-  const openCard = (id: string) => setOpenCards(prev => (prev.has(id) ? prev : new Set(prev).add(id)));
+  const openCard = (id: string) => setOpenCardId(id);
   /** Store'daki grup seçimlerinden (raf/dikme · kapak · arkalık) koşulu tutanı düşürür; çağrı sırası sabit. */
   const dropGroupSel = (drop: (id: string, groups: Array<{ id: string; shapeId: string }>) => boolean) => {
     const st = useAppStore.getState();
@@ -1813,7 +1798,7 @@ export function PanelEditor() {
     if (st.backRefPickGroupId && drop(st.backRefPickGroupId)) setBackRefPickGroupId(null);
   };
   const closeCard = (id: string, memberIds: string[]) => {
-    setOpenCards(prev => { if (!prev.has(id)) return prev; const n = new Set(prev); n.delete(id); return n; });
+    setOpenCardId(cur => (cur === id ? null : cur));
     dropGroupSel(x => x === id);
     const row = rowVfId(useAppStore.getState().selectedPanelRow);
     if (row && memberIds.includes(row)) setSelectedPanelRow(null);
@@ -1836,8 +1821,19 @@ export function PanelEditor() {
   const activeDims = panelDims(activePanel);
 
   useEffect(() => {
-    for (const id of [groupOf(vfById(selVf)), selectedPanelGroupId, selectedDoorGroupId, selectedBackGroupId]) if (id) openCard(id);
+    // Seçimin kartı açılır (akordeon); grup dışı bir satır (gövde paneli · Body · baza seti) seçilince grup kartları kapanır.
+    const gid = groupOf(vfById(selVf)) || selectedPanelGroupId || selectedDoorGroupId || selectedBackGroupId || null;
+    if (gid) setOpenCardId(gid);
+    else if (selectedPanelRow !== null) setOpenCardId(null);
   }, [selectedPanelRow, selectedPanelGroupId, selectedDoorGroupId, selectedBackGroupId, virtualFaces]);
+  // YERLEŞTİRME ARACI AÇILINCA (panel · raf · dikme · kapak · arkalık · baza · hızlı gövde) açık kart / seçim kapanır: yalnız şerit görünür.
+  const pickActive = raycastMode || (!!volumePickMode && !volumePickGroupId) || doorPickMode || backPickMode || plinthPickMode || quickBodyMode;
+  useEffect(() => {
+    if (!pickActive) return;
+    if (useAppStore.getState().selectedPanelRow !== null) setSelectedPanelRow(null);
+    dropGroupSel(() => true);
+    setOpenCardId(null);
+  }, [pickActive]);
 
   // Yeni panel/grup yerleşince (Goker) öteki satırların önizlemeleri kapanır. Satır anahtarı = grup id ya da VF id; grup içi
   // bölme/adet değişimi yeni ÜYE VF üretir ama anahtar aynı kalır → tetiklemez. Yeni kapak/arkalık seçili gelir, açık kalır.
@@ -1850,7 +1846,7 @@ export function PanelEditor() {
     const fresh = new Set([...keys].filter(k => !prev.keys.has(k)));
     if (!fresh.size) return;
     const st = useAppStore.getState();
-    setOpenCards(cur => { const n = new Set([...cur].filter(id => fresh.has(id))); return n.size === cur.size ? cur : n; });
+    setOpenCardId(cur => (cur && fresh.has(cur) ? cur : null));
     // Body satırı açıkken yeniden kurulan parçalar "yeni" sayılmaz (satır açık kalır).
     if (st.selectedPanelRow !== null && !String(st.selectedPanelRow).startsWith('quick-')) {
       const row = String(st.selectedPanelRow);
@@ -1873,7 +1869,7 @@ export function PanelEditor() {
     if (st.backPickMode) setBackPickMode(false);
     if (st.plinthPickMode) st.setPlinthPickMode(false);
     if (st.quickBodyMode) setQuickBodyMode(false);
-    setOpenCards(new Set());
+    setOpenCardId(null);
   }, [selectedShapeId]);
   // Hızlı gövde açılınca gövdede saklı ayarlar taslağa yüklenir (Goker: "ayarını tut"); paneller zaten yerleşmişse yapılandırma
   // Body satırından yapılır — mod kapanır.
@@ -2032,6 +2028,8 @@ export function PanelEditor() {
     };
   };
 
+  /** İşlem onaylanınca açık panel satırı kapanır (Goker: "işlem bittikten sonra kapanmalı"). */
+  const rowDone = () => setSelectedPanelRow(null);
   /* Şerit önizlemenin ÜSTÜNDE olmalı (altındayken 500px önizlemenin altında kalıp görünmüyordu). */
   const renderExpandedBody = (vf: VirtualFace, vp: Shape | undefined) => {
     const tools = {
@@ -2057,9 +2055,9 @@ export function PanelEditor() {
           { key: 'move', label: 'Move', Icon: Move, title: 'Move the panel — Relative / Absolute / To point', disabled: dis },
           { key: 'rotate', label: 'Rotate', Icon: RotateCw, title: 'Rotate the panel — Angle / Aim at face', disabled: dis },
         ]} />
-        <ExtrudeDock panel={activePanel} draft={extrudeThicknessStr} setDraft={setExtrudeThicknessStr} />
-        <MoveDock panel={activePanel} draft={moveValueStr} setDraft={setMoveValueStr} />
-        <RotateDock panel={activePanel} draft={rotateValueStr} setDraft={setRotateValueStr} />
+        <ExtrudeDock panel={activePanel} draft={extrudeThicknessStr} setDraft={setExtrudeThicknessStr} onDone={rowDone} />
+        <MoveDock panel={activePanel} draft={moveValueStr} setDraft={setMoveValueStr} onDone={rowDone} />
+        <RotateDock panel={activePanel} draft={rotateValueStr} setDraft={setRotateValueStr} onDone={rowDone} />
         <div className={`${PREVIEW_FRAME} mt-1.5`} style={{ height: PREVIEW_HEIGHT, background: PREVIEW_BG }}>
           {activeDims && activePanel
             ? <PanelPreview2D key={activePanel.id} shape={activePanel} arrowRotated={!!activePanel.parameters?.arrowRotated} />
@@ -2161,7 +2159,7 @@ export function PanelEditor() {
         <div className={`relative flex items-stretch ${o.sel ? ROW_SEL_HEAD : ''}`}>
           {o.sel && <span className={ROW_SEL_BAR} />}
           {o.lead}
-          <div onClick={o.onToggle} className="flex-1 min-w-0 relative flex items-center gap-1 pl-0 pr-0.5 py-[4px] cursor-pointer" title={o.title}>
+          <div onClick={o.onToggle} className="flex-1 min-w-0 relative flex items-center gap-1 pl-0 pr-0.5 py-[4px] cursor-pointer transition-colors duration-150 hover:bg-[#f7f5f1]" title={o.title}>
             <RowNum label={o.num} active={o.sel} small={o.small} />
             <RowTypeBadge kind={o.kind} active={o.open} count={o.count} />
             {o.name}
@@ -2224,8 +2222,8 @@ export function PanelEditor() {
                       active={legsHint} className="w-full" />
                     <LegLayoutCells legs={L} diameter={L.diameter} onChange={p => setPlinthLegs(set.id, p as Partial<PlinthLegs>)} hint={legsHint} onHint={setLegsHint}
                       heightCell={bound
-                        ? <ReadCell label="Leg height" title="Read from the bottom panel's underside"><ReadValue color="#57534e">{fmt1(H)}</ReadValue></ReadCell>
-                        : <HintCell label="Leg height" hintKey="lh" active={legsHint === 'lh'} onHint={setLegsHint}><QbNum value={H} min={1} onCommit={v => setPlinthHeight(set.id, v)} /></HintCell>} />
+                        ? <ReadCell label="Leg height" title="Read from the bottom panel's underside"><ReadValue color={INK.soft}>{fmt1(H)}</ReadValue>{unitTxt('mm')}</ReadCell>
+                        : <HintCell label="Leg height" hintKey="lh" active={legsHint === 'lh'} onHint={setLegsHint}><QbNum value={H} min={1} onCommit={v => setPlinthHeight(set.id, v)} />{unitTxt('mm')}</HintCell>} />
                     <div className="flex items-center gap-1.5 pt-0.5">
                       <span style={SECTION_LABEL}>Legs</span>
                       <div className="flex-1" />
@@ -2325,7 +2323,7 @@ export function PanelEditor() {
       rename: (v: string) => void; remove: () => void; dims: React.ReactNode; section: string; member: VfOpts; body: () => React.ReactNode;
     }) => {
       const rowKey = `grp-${id}`, selAll = o.selected === id;
-      const open = openCards.has(id) || selAll || members.some(m => m.id === selVf);
+      const open = openCardId === id || selAll || members.some(m => m.id === selVf);
       const toggle = (e: React.MouseEvent) => { stop(e); if (open) closeCard(id, members.map(m => m.id)); else { o.select(id); openCard(id); } };
       return rowShell({
         key: rowKey, refKey: rowKey, open, sel: selAll, dragging: dragIndex === rowIdx, armed: armedRowKey === rowKey,
@@ -2360,6 +2358,7 @@ export function PanelEditor() {
           const applyCount = (n: number) => { setFieldDraft(null); if (!isNaN(n) && n >= 1 && n !== g.count) void setGroupCount(g.id, n); };
           const mvf = g.memberVfIds.map(vfById);
           return <>
+            {/* Satır 1: hacim araçları · satır 2: etiketli değer hücreleri (Goker: kutucuklar tek bakışta anlaşılsın) */}
             <div className="flex items-center gap-1 mb-1.5">
               <CardAction compact icon={Box} label="Volume" active={editingVol}
                 title="Edit the volume: pick a face in the 3D view, then extrude it (fixed / dyn / ref)"
@@ -2369,26 +2368,28 @@ export function PanelEditor() {
                 onClick={() => { if (relocating) setVolumePickMode(null); else startGroupRepick(g.id); }} />
               <DoorBondBadge g={g} onUnbind={() => updatePanelGroup(g.id, { doorBond: undefined })} />
               <span className="flex-1 min-w-0" />
-              <FieldBox fixed label="Qty" title="Number of panels">
+              <CardAction compact icon={Equal} label="Equalize" title="Equalize gaps (unlock all)" onClick={() => { void equalizeGroupGaps(g.id); }} />
+            </div>
+            <div className="grid grid-cols-2 gap-x-1 mb-1.5" style={QB_CELL_ROW}>
+              <FieldBox label="Quantity" title="Number of panels in this group">
                 <StepBtn title="Fewer" disabled={g.count <= 1} onClick={() => applyCount(g.count - 1)}><Minus size={11} strokeWidth={2.2} /></StepBtn>
                 <input {...draftInput(`${g.id}:count`, String(g.count), raw => applyCount(parseInt(raw, 10)))} inputMode="numeric"
                   style={{ ...FIELD_INPUT, width: 26 }} />
                 <StepBtn title="More" onClick={() => applyCount(g.count + 1)}><Plus size={11} strokeWidth={2.2} /></StepBtn>
               </FieldBox>
-              <FieldBox fixed label="Spacing" accent={autoGap}
+              <FieldBox label="Spacing" accent={autoGap}
                 title={autoGap ? `Target spacing ${g.targetGap} mm — the count follows the volume size. Clear to stop.`
                   : 'Target spacing (mm): the count is set to match it and follows the volume size'}>
                 <input {...draftInput(`${g.id}:gap`, autoGap ? String(g.targetGap) : '', raw => {
                   const v = parseNum(raw), next = Number.isFinite(v) && v > 0 ? round1(v) : null;
                   if (next !== (autoGap ? g.targetGap : null)) void setGroupTargetGap(g.id, next);
                 })} inputMode="decimal" placeholder="auto"
-                  style={{ ...FIELD_INPUT, width: 44, textAlign: 'right', ...(autoGap ? { color: '#9a3412' } : {}) }} />
+                  style={{ ...FIELD_INPUT, width: 44, textAlign: 'right', ...(autoGap ? { color: INK.accentInk } : {}) }} />
                 {autoGap ? (
                   <ClearBtn title="Clear the target spacing (the current count stays)" label="Clear target spacing"
                     onClick={() => { setFieldDraft(null); void setGroupTargetGap(g.id, null); }} />
                 ) : unitTxt('mm')}
               </FieldBox>
-              <IconSquareBtn icon={Equal} title="Equalize gaps (unlock all)" onClick={() => { void equalizeGroupGaps(g.id); }} />
             </div>
             <GroupSchematic group={g} selectedIndex={selIdx(g.memberVfIds)} memberLabels={memberLabels(label, members, g.memberVfIds)}
               onEditGap={(k, v, pv) => { if (pv) previewGroupGap(g.id, k, v); else void editGroupGap(g.id, k, v); }}
@@ -2399,7 +2400,7 @@ export function PanelEditor() {
               onEditThickness={(i, v, pv) => { if (pv) previewGroupMemberThickness(g.id, i, v); else void setGroupMemberThickness(g.id, i, v); }}
               onSelectMember={i => { const id = g.memberVfIds[i]; if (id) setSelectedPanelRow(`vf-${id}`, sid); }}
               onToggleDoorRef={i => { const f = mvf[i]; if (f) setVfDoorBound(f.id, !f.doorBound); }} />
-            <ExtrudeDock cavity={g} draft={extrudeThicknessStr} setDraft={setExtrudeThicknessStr} />
+            <ExtrudeDock cavity={g} draft={extrudeThicknessStr} setDraft={setExtrudeThicknessStr} onDone={() => closeCard(g.id, g.memberVfIds)} />
             <VolumeSteps group={g} edit={stepEdit} setEdit={setStepEdit} />
           </>;
         },
@@ -2462,10 +2463,13 @@ export function PanelEditor() {
         const sizeTitle = (ax: 'u' | 'v') => `Spacing ${ax === 'u' ? 'V — target door width' : 'H — target door height'} (mm) for ${rg.regionName}: `
           + 'the number of pieces is derived from the region length (nearest fit, equal pieces) and re-derived when the body resizes. '
           + 'Clear it (× or empty + Enter) to cancel the target — the current pieces stay.';
+        const splitScope = rg.regionName;
         return <>
-          <div className="flex items-center gap-1 mb-1.5">
+          {/* Etiketli hücreler (Goker, Kas 2026 — "doors … kutucuklar tek bakışta anlaşılmıyor"): satır 1 montaj · kalınlık · eşitle,
+              satır 2 bölme yöntemi · sütun / satır adedi (ya da hedef kapak ölçüsü). Yazılı etiket, ikon yok. */}
+          <div className="grid grid-cols-3 gap-x-1 mb-1" style={QB_CELL_ROW}>
             <PlacementSelect value={g.placement} onChange={v => { void setDoorPlacement(g.id, v); }} />
-            <FieldBox fixed label="T" title="Door thickness (mm)">
+            <FieldBox label="Thickness" title="Door thickness (mm)">
               <input {...draftInput(`${g.id}:t`, String(g.thickness), raw => {
                 const v = parseNum(raw);
                 if (Number.isFinite(v)) void setDoorThickness(g.id, v);
@@ -2473,25 +2477,28 @@ export function PanelEditor() {
                 inputMode="decimal" style={{ ...FIELD_INPUT, width: 34, textAlign: 'right' }} />
               {unitTxt('mm')}
             </FieldBox>
+            <CardAction icon={Equal} label="Equalize" className="!h-full" title="Equalize door sizes (unlock all)" onClick={() => { void equalizeDoorGroup(g.id); }} />
             <SplitModeSelect value={splitMode} onChange={pickSplitMode} />
             {splitMode === 'count' && <>
-              <CountBox icon={SplitSquareVertical} label="V" value={rg.countOf('u')} title={rg.countTitle('u')} onChange={n => rg.setCount('u', n)} />
-              <CountBox icon={SplitSquareHorizontal} label="H" value={rg.countOf('v')} title={rg.countTitle('v')} onChange={n => rg.setCount('v', n)} />
+              <CountBox label="Columns" value={rg.countOf('u')} title={rg.countTitle('u')} onChange={n => rg.setCount('u', n)} />
+              <CountBox label="Rows" value={rg.countOf('v')} title={rg.countTitle('v')} onChange={n => rg.setCount('v', n)} />
             </>}
             {splitMode === 'spacing' && <>
-              <SizeBox icon={SplitSquareVertical} label="V" value={sizeOf('u')} title={sizeTitle('u')} onChange={mm => setSize('u', mm)} />
-              <SizeBox icon={SplitSquareHorizontal} label="H" value={sizeOf('v')} title={sizeTitle('v')} onChange={mm => setSize('v', mm)} />
+              <SizeBox label="Door W" value={sizeOf('u')} title={sizeTitle('u')} onChange={mm => setSize('u', mm)} />
+              <SizeBox label="Door H" value={sizeOf('v')} title={sizeTitle('v')} onChange={mm => setSize('v', mm)} />
             </>}
             {splitMode === 'ref' && (
-              <div className="flex-1 min-w-0">
-                <DockStatus ready text="Pick a divider / shelf"
+              <div className="col-span-2 min-w-0 flex">
+                <DockStatus ready text="Pick a divider / shelf in the 3D view or the schematic"
                   title={'Door-reference dividers and shelves glow amber in the 3D view (doors go transparent); click one in the 3D view or its band in the '
                     + "schematic. The door splits through the panel's middle and the joint is bound to the panel: when the panel moves, the doors follow. "
                     + 'Esc / another mode cancels.'} />
               </div>
             )}
-            <IconSquareBtn icon={Equal} title="Equalize sizes (unlock all)" onClick={() => { void equalizeDoorGroup(g.id); }} />
           </div>
+          <div className="px-0.5 pb-1.5 yago-hint truncate">{splitMode === 'count' ? `Split ${splitScope} into columns (side by side) and rows (stacked)`
+            : splitMode === 'spacing' ? `Target door size for ${splitScope} — the count follows the opening and the body size`
+            : 'Split at a door-reference divider or shelf — the joint follows that panel'}</div>
           <JointPanelBar outer={g.placement === 'outer'} pick={addPick} onToggle={toggleAddPick}
             joints={{ u: joints.filter(j => j.axis === 'u').length, v: joints.filter(j => j.axis === 'v').length }}
             added={addPick ? panelGroups.filter(pg => pg.doorBond?.doorGroupId === g.id && pg.axis === planeAx[addPick]).length : 0}
@@ -2586,27 +2593,41 @@ export function PanelEditor() {
               <input {...draftInput(`${g.id}:${field}:${clearVf ?? ''}`, String(value), commit(field))} {...(o.passive ? { value: '0' } : {})}
                 inputMode="decimal" placeholder={o.mixed ? '…' : undefined} disabled={o.passive}
                 style={{
-                  ...FIELD_INPUT, width: 34, flexShrink: 0, textAlign: 'right', ...(o.mixed ? { color: '#9a3412' } : {}), ...(o.passive ? PASSIVE_INPUT : {}),
+                  ...FIELD_INPUT, width: 30, flexShrink: 0, textAlign: 'right', ...(o.mixed ? { color: INK.accentInk } : {}), ...(o.passive ? PASSIVE_INPUT : {}),
                 }} />
+              {unitTxt('mm')}
             </HintCell>
           );
           const pas = { accent: !!clearVf, passive: !isGrooved };
           return <>
-            {/* KANAL BLOĞU: solda kesit diyagramı (yükseklik = 4 eşit satır), sağda 4 satır × 2 sütun — satır 1: tip + bölme V / H;
-                satır 2–4: Thick · Setback / Front + · Rear + / Bottom + · Groove. Çakmada setback ve paylar 0 ve pasif; geri bildirim görsel. */}
+            {/* MONTAJ SATIRI (Goker, Kas 2026 — kapak kartıyla aynı dil): Mount = Nailed | Grooved + hangi parçalara uygulandığı. */}
+            <div className="grid grid-cols-3 gap-x-1 mb-1" style={QB_CELL_ROW}>
+              <FieldBox label="Mount" className="col-span-2"
+                title="Nailed = on the rear edges of the body panels · Grooved = in a groove cut into them, set back from the rear. Applies to the pieces selected in the schematic (none = all).">
+                <div className="flex-1 min-w-0">
+                  <Segmented height={22} active={commonPlacement} onPick={k => { void setBackPlacement(g.id, k as BackPlacement, scoped ? targetLeafIds : []); }}
+                    items={[{ key: 'outer', label: BACK_TYPE_LABEL.outer, title: BACK_TYPE_TITLE.outer }, { key: 'inner', label: BACK_TYPE_LABEL.inner, title: BACK_TYPE_TITLE.inner }]} />
+                </div>
+              </FieldBox>
+              <ReadCell label="Pieces" title="Which pieces the mount and setback apply to — click pieces in the schematic to narrow it down">
+                <span className="truncate text-[11.5px] font-semibold text-stone-600 pr-1">{typeHint}</span>
+              </ReadCell>
+            </div>
+            {/* KANAL BLOĞU: solda kesit diyagramı (yükseklik = 4 eşit satır), sağda 4 satır × 2 sütun — Thickness · Setback / Front gap · Rear gap /
+                Bottom gap · Groove / Columns · Rows. Çakmada setback ve paylar 0 ve pasif; geri bildirim görsel. */}
             <div className="mb-1.5 flex gap-1.5" style={{ height: BACK_BLOCK_H }} onMouseLeave={() => setBackHint(null)}>
-              <div className="relative shrink-0 h-full" style={{ width: `min(${BACK_DIAGRAM_W}px, 40%)` }}>
+              <div className="relative shrink-0 h-full" style={{ width: `min(${BACK_DIAGRAM_W}px, 37%)` }}>
                 <BackGrooveDiagram active={hintKey} grooved={isGrooved} t={g.thickness} setback={isGrooved ? setbackVal : 0} front={gc.front} rear={gc.back}
                   depth={gc.depth} className="w-full h-full" />
                 {/* Kenar kapsamı (şemadaki ± rozeti): yalnız bir kenar seçiliyken. */}
                 {clearVf && (
                   <div className="absolute bottom-1 right-1 flex items-center gap-[2px]">
                     <button type="button" onClick={e => { stop(e); setBackClearEdge(null); }}
-                      className="h-[17px] pl-1.5 pr-1 rounded-full flex items-center gap-[2px] bg-orange-50 ring-1 ring-orange-300 text-orange-700 text-[9.5px] font-semibold hover:bg-orange-100 max-w-[110px]">
+                      className="h-[18px] pl-1.5 pr-1 rounded-full flex items-center gap-[2px] bg-[#fff4ec] ring-1 ring-orange-300 text-[#c2410c] text-[10px] font-semibold hover:bg-orange-100 max-w-[110px]">
                       <span className="truncate">{clearName}</span><X size={9} strokeWidth={2.6} className="shrink-0" /></button>
                     {clearOwn && (
                       <button type="button" onClick={e => { stop(e); void resetBackGrooveClear(g.id, clearVf); }}
-                        className="w-[17px] h-[17px] rounded-full flex items-center justify-center bg-orange-50 ring-1 ring-orange-300 text-orange-600 hover:bg-orange-100">
+                        className="w-[18px] h-[18px] rounded-full flex items-center justify-center bg-[#fff4ec] ring-1 ring-orange-300 text-[#c2410c] hover:bg-orange-100">
                         <RotateCcw size={9} strokeWidth={2.4} />
                       </button>
                     )}
@@ -2614,11 +2635,6 @@ export function PanelEditor() {
                 )}
               </div>
               <div className="flex-1 min-w-0 grid grid-cols-2 gap-x-1" style={{ gridTemplateRows: 'repeat(4, minmax(0, 1fr))', rowGap: BACK_ROW_GAP }}>
-                <BackTypeButtons value={commonPlacement} hint={typeHint} onPick={t => { void setBackPlacement(g.id, t, scoped ? targetLeafIds : []); }} />
-                <div className="min-w-0 h-full grid grid-cols-2 gap-1">
-                  <CountMini icon={SplitSquareVertical} value={rg.countOf('u')} title={rg.countTitle('u')} onChange={n => rg.setCount('u', n)} />
-                  <CountMini icon={SplitSquareHorizontal} value={rg.countOf('v')} title={rg.countTitle('v')} onChange={n => rg.setCount('v', n)} />
-                </div>
                 {cell('Thickness', 't', g.thickness)}
                 {cell('Setback', 'setback', setbackVal, { accent: scoped && isGrooved, passive: !isGrooved, mixed: setbackMixed })}
                 {cell('Front gap', 'gf', gc.front, pas)}
@@ -2626,13 +2642,15 @@ export function PanelEditor() {
                 {cell('Bottom gap', 'gd', gc.depth, pas)}
                 <div className={`${READ_CELL} ${isGrooved ? '' : 'opacity-60'}`} title="Groove width × depth (In = entry into the panel, set per edge in the schematic)">
                   <span className={`flex-1 min-w-0 truncate ${CELL_LABEL}`}>Groove</span>
-                  <span className="whitespace-nowrap" style={{ ...FIELD_INPUT, width: 'auto', color: '#57534e' }}>
+                  <span className="whitespace-nowrap pr-1" style={{ ...FIELD_INPUT, width: 'auto', color: INK.soft }}>
                     {isGrooved ? <>
                       {fmt1(g.thickness + gc.front + gc.back)}
-                      <span className="text-[10px] font-medium text-stone-400" style={{ fontFamily: UI_FONT }}> × In + {fmt1(gc.depth)}</span>
+                      <span className="yago-unit"> × In + {fmt1(gc.depth)}</span>
                     </> : '—'}
                   </span>
                 </div>
+                <CountBox label="Columns" value={rg.countOf('u')} title={rg.countTitle('u')} onChange={n => rg.setCount('u', n)} />
+                <CountBox label="Rows" value={rg.countOf('v')} title={rg.countTitle('v')} onChange={n => rg.setCount('v', n)} />
               </div>
             </div>
             <BackSchematic group={g} solution={sol} selectedIndex={selMemberIdx} selectedNodes={rg.picked}
@@ -2700,7 +2718,8 @@ export function PanelEditor() {
     setQuickBodyBusy(true);
     try {
       await applyQuickBody(selectedShape.id, cfg);
-      if (revise) setQuickDraft(null); else setQuickBodyMode(false);
+      // Onaydan sonra satır / şerit kapanır (Goker: "işlem bitince kapansın").
+      if (revise) { setQuickDraft(null); setSelectedPanelRow(null); } else setQuickBodyMode(false);
     } catch (e) { console.error('[YAGO][HIZLI-GÖVDE] hata:', e); }
     finally { setQuickBodyBusy(false); }
   };

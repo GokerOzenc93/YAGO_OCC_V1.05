@@ -47,8 +47,8 @@ const UP_OPTS: Array<{ v: 'y' | 'z'; label: string }> = [{ v: 'y', label: 'Y↑'
 /** Yuvalar ekranda ÜSTTEN alta (ayağın kendisi gibi); montaj alttan üste (AccessoryService.orderedParts). */
 const SLOTS: Array<{ role: LegPartRole; label: string }> = [{ role: 'top', label: 'Top' }, { role: 'stem', label: 'Middle' }, { role: 'base', label: 'Bottom' }];
 const SLOT_ROLE_LABEL: Record<LegPartRole, string> = { top: 'Top', stem: 'Middle', base: 'Bottom' };
-const ROW = 'w-full min-w-0 h-[30px] pl-2 pr-1 flex items-center gap-2 rounded-[8px] bg-white ring-1 ring-[#e6e0d6]';
-const ICON_BTN = 'shrink-0 w-[24px] h-[24px] flex items-center justify-center rounded-[6px] text-stone-400 hover:text-stone-700 hover:bg-[#f3efe8] transition-colors';
+const ROW = 'yago-cell w-full min-w-0 h-[30px] pl-2 pr-1 flex items-center gap-2';
+const ICON_BTN = 'shrink-0 w-[24px] h-[24px] flex items-center justify-center rounded-[6px] text-stone-400 hover:text-stone-900 hover:bg-[#ece7e0] transition-colors';
 const DEL_BTN = `${ICON_BTN} hover:!text-red-600 hover:!bg-red-50`;
 const TEXT_INPUT: React.CSSProperties = { ...FIELD_INPUT, width: 'auto', flex: 1, textAlign: 'left', fontSize: 12 };
 const MUTED = 'text-[10.5px] text-stone-400 tabular-nums';
@@ -319,7 +319,7 @@ function LegScene({ parts, holes, layers, openSlot, onSelectSlot, holeMode, hole
 }
 const HUD: React.CSSProperties = { fontFamily: UI_FONT, fontSize: 10.5, color: '#8a8378', pointerEvents: 'none', fontVariantNumeric: 'tabular-nums' };
 const PREVIEW_TOOL = (on: boolean) => `h-[24px] px-2 flex items-center gap-1.5 rounded-[6px] text-[10.5px] font-semibold transition-colors duration-150
-  ${on ? 'bg-[#44403c] text-white shadow-[0_1px_2px_rgba(40,30,20,0.25)]' : 'bg-white/90 text-stone-600 ring-1 ring-[#e6e0d6] hover:bg-white hover:text-stone-800'}`;
+  ${on ? 'bg-[#292524] text-white' : 'bg-white/90 text-stone-600 ring-1 ring-[#e3ddd4] hover:bg-white hover:ring-[#cfc7bc] hover:text-stone-900'}`;
 /** AYAK ÖNİZLEME SAHNESİ: stüdyo ışığı, ince ızgara zemin, temas gölgesi, katman renkli parçalar, delik işaretleri, sade orijin,
  *  yükseklik ölçüsü, köşede ince eksen üçlüsü. Sol sürükle = döndür, SAĞ sürükle = kaydır (pan), tekerlek = yaklaş (kenar çubuğunu
  *  kaydırmaz — Goker). Sağ üstte "Hole" kipi (yüzeye / yakalama noktasına tık → delik). */
@@ -345,7 +345,7 @@ function LegPreview({ leg, parts, height, layers, openSlot, onSelectSlot, holeMo
   // Kamera model ya da yükseklik kutusu değişince modele yeniden oturur (kutu Enter / blur ile tek seferde yazılır).
   const fitKey = parts ? `${parts.map(p => p.modelId).join('|')}@${Math.round(total)}@${Math.round(footprint)}` : 'none';
   return (
-    <div ref={box} onContextMenu={e => e.preventDefault()} className="relative w-full rounded-[10px] overflow-hidden ring-1 ring-[#e6e0d6] shadow-[inset_0_1px_0_rgba(255,255,255,0.8)]"
+    <div ref={box} onContextMenu={e => e.preventDefault()} className="relative w-full rounded-[9px] overflow-hidden ring-1 ring-[#e3ddd4]"
       style={{ height: PREVIEW_H, background: 'linear-gradient(180deg,#fbfaf7 0%,#f2eee7 100%)', overscrollBehavior: 'contain' }}>
       <Canvas dpr={[1, 2]} shadows camera={{ position: [R * 2.6, total * 0.5 + R * 1.9, R * 2.85], fov: 26, near: 1, far: 20000 }}
         gl={{ antialias: true, alpha: true }} style={{ touchAction: 'none' }} onPointerMissed={() => { if (!holeMode) onSelectHole(null); }}>
@@ -406,8 +406,8 @@ function LegPreview({ leg, parts, height, layers, openSlot, onSelectSlot, holeMo
    tıklayınca kart: Size X / Y / Z (nihai mm) · Move X / Y / Z (mm) · Stretch · Unit · Up · Layer · Replace / Remove. Tek kart açık. */
 /** Düzenlenebilir hücre (beyaz; Panel Editor hücreleriyle aynı görünüm). */
 const EditCell = ({ label, title, className = '', children }: { label: string; title?: string; className?: string; children: React.ReactNode }) => (
-  <div title={title} onClick={stop} className={`${className} min-w-0 h-full pl-2 pr-1 flex items-center gap-1 rounded-[7px] bg-white ring-1 ring-[#e6e0d6] shadow-[0_1px_0_rgba(40,30,20,0.03)]`}>
-    <span className="flex-1 min-w-0 truncate text-[10px] font-semibold tracking-[0.08em] uppercase text-[#b5ada3]">{label}</span>
+  <div title={title} onClick={stop} className={`${className} yago-cell min-w-0 h-full pl-2 pr-1 flex items-center gap-1`}>
+    <span className="yago-label flex-1 min-w-0 truncate">{label}</span>
     {children}
   </div>
 );
@@ -437,9 +437,9 @@ function SlotRow({ role, draft, setDraft, onPick, busy, open, onToggle, layers }
   if (!part || !m) {
     return (
       <div className={`${rowCardClass(false, false, false)} h-[34px] !flex-row items-center gap-2 pl-2.5 pr-1.5`}>
-        <span className="shrink-0 w-[50px] text-[10px] font-semibold uppercase tracking-[0.06em] text-stone-500">{label}</span>
+        <span className="yago-label shrink-0 w-[50px]">{label}</span>
         <button type="button" disabled={busy} onClick={e => { stop(e); onPick(role); }}
-          className="flex-1 min-w-0 h-[24px] flex items-center justify-center gap-1.5 rounded-[6px] border border-dashed border-[#d6cfc3] text-[11px] font-semibold text-stone-500 hover:bg-white hover:text-stone-700">
+          className="flex-1 min-w-0 h-[24px] flex items-center justify-center gap-1.5 rounded-[6px] border border-dashed border-[#d3ccc2] text-[11px] font-semibold text-stone-500 hover:bg-[#f6f3ee] hover:border-[#bfb7ab] hover:text-stone-800 transition-colors">
           <Upload size={12} strokeWidth={2} />Add model
         </button>
       </div>
@@ -456,9 +456,9 @@ function SlotRow({ role, draft, setDraft, onPick, busy, open, onToggle, layers }
   const removePart = () => setDraft({ ...draft, parts: draft.parts.filter(p => p.role !== role), holes: (draft.holes ?? []).filter(h => h.part !== role) });
   return (
     <div className={rowCardClass(open, false, false)}>
-      <div onClick={toggle} className={`relative h-[34px] pl-2.5 pr-1 flex items-center gap-2 cursor-pointer ${open ? ROW_SEL_HEAD : ''}`}>
+      <div onClick={toggle} className={`relative h-[34px] pl-2.5 pr-1 flex items-center gap-2 cursor-pointer transition-colors duration-150 hover:bg-[#faf8f5] ${open ? ROW_SEL_HEAD : ''}`}>
         {open && <span className={ROW_SEL_BAR} />}
-        <span className="shrink-0 w-[50px] text-[10px] font-semibold uppercase tracking-[0.06em] text-stone-500">{label}</span>
+        <span className="yago-label shrink-0 w-[50px]">{label}</span>
         <Swatch color={layer?.color ?? LAYER_DEFAULT_COLOR} size={8} />
         <span className="flex-1 min-w-0 truncate text-[11.5px] font-medium text-stone-700" title={`${m.fileName}${layer ? ` · layer ${layer.name}` : ''}`}>{m.name}</span>
         {embed > 0 && <span className="shrink-0 text-[10px] font-semibold tabular-nums text-stone-400" title={`${fmt1(embed)} mm goes into the panel`}>↑{fmt1(embed)}</span>}
@@ -529,7 +529,7 @@ function HoleRow({ hole, index, legPos, parts, selected, onSelect, onChange, onR
   return (
     <div ref={ref} onClick={e => { stop(e); onSelect(); }}
       className={`relative h-[30px] pl-2 pr-1 flex items-center gap-[5px] rounded-[8px] ring-1 cursor-pointer transition-colors duration-150
-        ${selected ? 'bg-[#faf8f5] ring-[#e2dbd1]' : 'bg-white ring-[#e6e0d6] hover:bg-[#fdfcfa]'}`}>
+        ${selected ? 'bg-[#fbf9f6] ring-[#d4cdc3]' : 'bg-white ring-[#e6e1d9] hover:ring-[#cfc7bc]'}`}>
       {selected && <span className={ROW_SEL_BAR} />}
       <span className={`shrink-0 w-[14px] text-[11px] font-semibold tabular-nums ${selected ? 'text-stone-700' : 'text-stone-400'}`}>{index + 1}</span>
       <span onClick={stop} title="Drilling direction — out of the leg surface, into the panel it touches">
@@ -605,9 +605,9 @@ function LegModelEditor({ draft, setDraft, onSave, onCancel, layers }: {
     <>
       {/* YAPIŞIK üst blok: ad + önizleme (kenar çubuğu kayarken yerinde kalır) */}
       <div className="sticky top-0 z-30 -mx-1.5 -mt-1.5 px-1.5 pt-1.5 pb-1.5 flex flex-col gap-1.5" onClick={stop}
-        style={{ background: 'linear-gradient(180deg,#fdfcfa 0%,#faf8f4 100%)', boxShadow: '0 6px 10px -8px rgba(40,30,20,0.18)' }}>
+        style={{ background: '#f8f6f2', boxShadow: '0 6px 10px -8px rgba(40,30,20,0.18)' }}>
         <div className="flex items-center gap-1.5">
-          <div className="flex-1 min-w-0 h-[28px] px-2 flex items-center rounded-[7px] bg-white ring-1 ring-[#e6e0d6]">
+          <div className="yago-cell flex-1 min-w-0 h-[28px] px-2 flex items-center">
             <input type="text" value={draft.name} placeholder="Leg model" spellCheck={false} onChange={e => setDraft({ ...draft, name: e.target.value })}
               onKeyDown={e => { if (e.key === 'Enter') onSave(); if (e.key === 'Escape') onCancel(); }} className="yago-field yago-field-text" style={TEXT_INPUT} />
           </div>
@@ -676,7 +676,7 @@ function LegPresetEditor({ draft, setDraft, legModels, onSave, onCancel }: {
   return (
     <div className="flex flex-col gap-1.5" onClick={stop} onMouseLeave={() => setHint(null)}>
       <div className="flex items-center gap-1.5">
-        <div className="flex-1 min-w-0 h-[28px] px-2 flex items-center rounded-[7px] bg-white ring-1 ring-[#e6e0d6]">
+        <div className="yago-cell flex-1 min-w-0 h-[28px] px-2 flex items-center">
           <input type="text" value={draft.name} placeholder="Leg set" spellCheck={false} onChange={e => setDraft({ ...draft, name: e.target.value })}
             onKeyDown={e => { if (e.key === 'Enter') onSave(); if (e.key === 'Escape') onCancel(); }} className="yago-field yago-field-text" style={TEXT_INPUT} />
         </div>
@@ -684,9 +684,8 @@ function LegPresetEditor({ draft, setDraft, legModels, onSave, onCancel }: {
         <ExitBtn onClick={onCancel} />
       </div>
       <div className="flex items-center gap-1.5">
-        <span style={SECTION_LABEL}>Model</span>
         <div className="flex-1 min-w-0 flex">
-          <SelectBox value={lm ? lm.id : ''} options={modelOpts} title="Foot model (Leg models above) — Ø comes from it" onChange={v => setDraft({ ...draft, legModelId: v || null })} />
+          <SelectBox label="Model" className="flex-1" value={lm ? lm.id : ''} options={modelOpts} title="Foot model (Leg models above) — Ø comes from it" onChange={v => setDraft({ ...draft, legModelId: v || null })} />
         </div>
       </div>
       <LegLayoutDiagram points={points} footprint={[{ x: 0, y: 0 }, { x: SAMPLE_W, y: 0 }, { x: SAMPLE_W, y: SAMPLE_D }, { x: 0, y: SAMPLE_D }]} facing="z+"
@@ -737,7 +736,7 @@ function LayersPanel() {
 }
 
 /* ═════════════════════════════════ Panel ═════════════════════════════════ */
-const Empty = () => <div className="px-1 py-0.5 text-[11px] text-stone-300">None yet</div>;
+const Empty = () => <div className="yago-hint px-1 py-0.5">None yet</div>;
 export function AccessoriesPanel() {
   const { accessoryCategory, accessoryModels, legModels, legPresets, accessoryLayers } = useStoreFields('accessoryCategory', 'accessoryModels', 'legModels', 'legPresets', 'accessoryLayers');
   const [legDraft, setLegDraft] = useState<LegModel | null>(null);
