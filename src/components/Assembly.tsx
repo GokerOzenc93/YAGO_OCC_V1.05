@@ -53,8 +53,10 @@ import {
 import { legPresetById, presetLayout, resolveLegPreset } from './AccessoryService';
 import { type Pt, autoLegPoints, edgeRoles, polyExtent, rectPoly, toFacing } from './LegLayout';
 
-/* PANEL EDİTÖRÜ — 1) şerit + liste satırı parçaları · 2) kart blokları (ipucu hücresi, kanal / ayak diyagramları, hızlı gövde) ·
-   3) şeritler, adım listeleri, yerleştirme şeritleri · 4) panel listesi ve kartlar. Şemalar PanelSchematics.tsx'te. */
+/* ASSEMBLY (eski "Panel Editor" — Goker, Kas 2026: "artık sadece panel yerleşmiyor; ayak, menteşe, ileride çekmece de gelecek —
+   hiyerarşik ürün ağacı"): gövdenin parça listesi / ürün ağacı sekmesi. 1) şerit + liste satırı parçaları · 2) kart blokları (ipucu
+   hücresi, kanal / ayak diyagramları, hızlı gövde) · 3) şeritler, adım listeleri, yerleştirme şeritleri · 4) parça listesi ve kartlar.
+   Şemalar PanelSchematics.tsx'te. */
 
 export const AXIS_COLORS: Record<string, string> = {
   'x+': '#dc2626', 'x-': '#b91c1c', 'y+': '#16a34a', 'y-': '#15803d', 'z+': '#2563eb', 'z-': '#1d4ed8', x: '#dc2626', y: '#16a34a', z: '#2563eb',
@@ -1096,8 +1098,8 @@ export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onAppl
 
 // ═══════════════════════════════════════════════ 3. ŞERİTLER + ADIMLAR ═══════════════════════════════════════════════
 /* PANEL EDİTÖRÜ PARÇALARI — Extrude / Hacim / Taşı / Döndür şeritleri, işlem adımları, yerleştirme şeritleri, satır parçaları,
-   kapak derzi parçaları ve kapak / arkalık şemalarının ortak bölge seçimi (PanelEditor kullanır). Şeritler store'u kendisi okur;
-   değer taslakları PanelEditor'da kalır (eksen değişince orada sıfırlanır). */
+   kapak derzi parçaları ve kapak / arkalık şemalarının ortak bölge seçimi (AssemblyPanel kullanır). Şeritler store'u kendisi okur;
+   değer taslakları AssemblyPanel'de kalır (eksen değişince orada sıfırlanır). */
 
 type Ax = 'u' | 'v';
 type DraftProps = { draft: string; setDraft: (s: string) => void };
@@ -1719,7 +1721,7 @@ function useScrollIntoView(rows: React.MutableRefObject<Map<number | string, HTM
   }, [key]);
 }
 
-export function PanelEditor() {
+export function AssemblyPanel() {
   const {
     selectedShapeId, shapes, selectedPanelRow, virtualFaces, panelGroups, selectedPanelGroupId, volumePickMode, volumePickGroupId,
     faceExtrudeMode, faceExtrudeTargetPanelId, faceExtrudeSelectedFace, faceExtrudeClickPoint, faceExtrudeValueMode, faceExtrudeCavityGroupId,

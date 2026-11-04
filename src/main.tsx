@@ -5,7 +5,7 @@ import { type Shape, useStoreFields, useAppStore, requestRebuild } from './store
 import { type CatalogItem, catalogService, Toolbar, Sidebar, ParametersPanel, Terminal, StatusBar, CatalogPanel, ErrorBoundary } from './components/Ui';
 import { initReplicad, rebuildBodySolid } from './components/Geometry';
 import Scene from './components/Scene';
-import { PanelEditor } from './components/PanelEditor';
+import { AssemblyPanel } from './components/Assembly';
 import { AccessoriesPanel } from './components/Accessories';
 import { loadAccessoryLibrary } from './components/AccessoryService';
 // Yan etki: rebuild motoru store'a kaydolur (bkz. store.requestRebuild).
@@ -123,7 +123,7 @@ function App() {
       <Toolbar onOpenCatalog={handleOpenCatalog} />
       <div className="flex-1 overflow-hidden relative">
         <Scene />
-        <Sidebar parametersContent={<ParametersPanel />} panelEditorContent={<PanelEditor />} accessoriesContent={<AccessoriesPanel />} />
+        <Sidebar parametersContent={<ParametersPanel />} assemblyContent={<AssemblyPanel />} accessoriesContent={<AccessoriesPanel />} />
       </div>
       <div className="relative">
         <Terminal />

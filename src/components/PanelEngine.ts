@@ -1447,10 +1447,15 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
    *  (taban diski + tabla çevresi, zemin → set üstü) — ayağa değmeyen baza panosu / alt panel tam yerleşir, değen yalnız o ayak kadar
    *  çentiklenir. Ayrı damgalar: ayak izi sınır yürüyüşü tek halka okur. */
   const plinthStampCache = new Map<string, any[]>();
+  // Ayak kutusunun ÜSTÜ setin üst düzleminden biraz aşağı çekilir (> değme toleransı 3 mm): set ÖNCE gelince (Goker, Kas 2026 — "ayak
+  // her zaman hızlı gövdede ilk sırada") setin üstüne oturan alt panel ayak tablalarına yalnız DEĞER, çarpmaz → bölgesi çentiklenmez;
+  // ayak hacminden gerçekten GEÇEN panel (zemine inen yan / baza panosu) yine damgalanır. Sap deliği ayrı kesicidir (plinthHoleCuttersFor).
+  const PLINTH_STAMP_TOP_CLEAR = 4;
   const plinthStampsOf = (ps: { id: string; vfId: string }, body: Shape): any[] => {
     const hit = plinthStampCache.get(ps.id); if (hit) return hit;
     const full = plinthSetsOf(body.id).find(x => x.id === ps.id); if (!full) return [];
-    const list = plinthLegBoxes(full, shapesArr, virtualFaces).map((b, i) => {
+    const list = plinthLegBoxes(full, shapesArr, virtualFaces).map((b0, i) => {
+      const b = { min: b0.min, max: [b0.max[0], Math.max(b0.min[1] + 0.01, b0.max[1] - PLINTH_STAMP_TOP_CLEAR), b0.max[2]] as Vec3 };
       const sz = [0, 1, 2].map(a => Math.max(0.01, b.max[a] - b.min[a]));
       const mid = [0, 1, 2].map(a => (b.min[a] + b.max[a]) / 2);
       return {

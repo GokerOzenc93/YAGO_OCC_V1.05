@@ -6,7 +6,7 @@ import { OrbitControls, PerspectiveCamera } from '@react-three/drei';
 import { createClient } from '@supabase/supabase-js';
 import Scene from './components/Scene';
 import { railActions, Sidebar, StatusBar, Terminal, Toolbar, UI_FONT } from './components/Ui';
-import { PanelEditor } from './components/PanelEditor';
+import { AssemblyPanel } from './components/Assembly';
 import { AccessoriesPanel } from './components/Accessories';
 import { loadAccessoryLibrary } from './components/AccessoryService';
 import { type Shape, childPanelsOf, requestRebuild, shapeById, useAppStore, useStoreFields } from './store';
@@ -265,7 +265,7 @@ function App() {
       <Toolbar onOpenCatalog={handleOpenCatalog} />
       <div className="flex-1 overflow-hidden relative">
         <Scene />
-        <Sidebar parametersContent={<ParametersPanel />} panelEditorContent={<PanelEditor />} accessoriesContent={<AccessoriesPanel />} />
+        <Sidebar parametersContent={<ParametersPanel />} assemblyContent={<AssemblyPanel />} accessoriesContent={<AccessoriesPanel />} />
       </div>
       <div className="relative">
         <Terminal />

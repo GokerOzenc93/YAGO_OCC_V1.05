@@ -628,19 +628,19 @@ export function syncQuickBodyPlinth(shapeId: string, legs: PlinthLegs | null, bo
   const set = existing ?? createPlinthSet(shapeId, box, legs, { name: 'Legs', bottomVfId, quickBody: true });
   // Yeniden kurulumda setin ayak listesi (Auto / Custom + Δ) korunur — hızlı gövde yalnız düzeni / modeli yazar.
   if (existing) st.updatePlinthSet(existing.id, { box, legs: { ...legs, custom: existing.legs.custom, adjust: existing.legs.adjust }, bottomVfId });
-  placeAfterQuickBody(shapeId, set.vfId);
+  placeBeforeQuickBody(shapeId, set.vfId);
 }
-/** SIRA (Goker: "ayak her zaman quick body yönteminde bodyden sonra gelmeli"): hızlı gövde ayak setinin VF'si gövdenin SON hızlı gövde
- *  parçasının (Body satırları: yanlar/üst/alt/bazalar) hemen arkasına alınır — her Build/Rebuild'de. Body parçası yoksa yerinde kalır. */
-function placeAfterQuickBody(shapeId: string, vfId: string): void {
+/** SIRA (Goker, Kas 2026: "ayak her zaman hızlı gövdede ilk sırada olmalı, ona göre hızlı gövde yerleşsin" — önceki "bodyden sonra"
+ *  kuralının yerine): hızlı gövde ayak setinin VF'si gövdenin İLK hızlı gövde parçasının (yanlar/üst/alt/bazalar) hemen ÖNÜNE alınır —
+ *  her Build/Rebuild'de; set basan taraf olur, gövde panelleri ayaklara göre çözülür. Body parçası yoksa yerinde kalır. */
+function placeBeforeQuickBody(shapeId: string, vfId: string): void {
   useAppStore.setState(s => {
     const vf = s.virtualFaces.find(f => f.id === vfId);
     if (!vf) return {};
     const rest = s.virtualFaces.filter(f => f.id !== vfId);
-    let last = -1;
-    rest.forEach((f, i) => { if (f.shapeId === shapeId && f.quickBody) last = i; });
-    if (last < 0 || s.virtualFaces[last + 1]?.id === vfId) return {};
-    return { virtualFaces: [...rest.slice(0, last + 1), vf, ...rest.slice(last + 1)] };
+    const first = rest.findIndex(f => f.shapeId === shapeId && !!f.quickBody);
+    if (first < 0 || s.virtualFaces[first]?.id === vfId) return {};
+    return { virtualFaces: [...rest.slice(0, first), vf, ...rest.slice(first)] };
   });
 }
 export function removeQuickBodyPlinth(shapeId: string): void {

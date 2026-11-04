@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   type LucideIcon, Spline, Layers, SwatchBook, Radius, Plus, Container, LayoutPanelTop, Rows3, Columns3, DoorClosed, SendToBack, Hash, ChevronRight, Send, Box,
-  Square, SlidersHorizontal, PanelLeft, GripHorizontal, PictureInPicture2, AppWindow, Pin, PinOff, Trash2, X, Check, Footprints, Wrench,
+  Square, SlidersHorizontal, ListTree, GripHorizontal, PictureInPicture2, AppWindow, Pin, PinOff, Trash2, X, Check, Footprints, Wrench,
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { createClient } from '@supabase/supabase-js';
@@ -102,10 +102,10 @@ export class ErrorBoundary extends React.Component<{ children: React.ReactNode; 
 }
 
 /* DİKEY ARAÇ RAYI (kenar çubuğu kabuğunun sol kenarı, tam yükseklik): ikon + altında yatay kısa etiket (ikon tek başına
-   anlaşılmıyordu). İki grup — Parameters / Panel Editor araçları; yalnız etkin sekmenin grubu canlı, şekil seçili değilken
-   ikisi de pasif. Ayrıntılı açıklama tarayıcı ipucunda (title). */
+   anlaşılmıyordu). Üç grup — Parameters / Assembly / Accessories araçları; yalnız etkin sekmenin grubu ÇİZİLİR (ötekiler görünmez),
+   şekil seçili değilken Parameters ve Assembly grubu pasif. Ayrıntılı açıklama tarayıcı ipucunda (title). */
 export const RAIL_W = 60;
-type SidebarTab = 'parameters' | 'panel-editor' | 'accessories';
+type SidebarTab = 'parameters' | 'assembly' | 'accessories';
 type RailSpec = {
   key: string; label: string; icon: LucideIcon; title: string; active?: boolean; badge?: string | number; onClick: () => void;
   /** Sekme açıkken de pasif (ör. hızlı gövde zaten yerleşmiş). */ disabled?: boolean;
@@ -127,7 +127,6 @@ const RAIL_MARK: React.CSSProperties = {
   position: 'absolute', left: '-5px', top: '9px', bottom: '9px', width: '2px', borderRadius: '0 2px 2px 0', background: '#ea580c',
   transition: 'opacity 0.15s', pointerEvents: 'none',
 };
-const RAIL_SEP: React.CSSProperties = { width: '28px', height: '1px', margin: '6px 0', background: 'rgba(60,50,40,0.14)', flexShrink: 0 };
 const RAIL_STYLE: React.CSSProperties = {
   position: 'relative', zIndex: 2, width: `${RAIL_W}px`, flexShrink: 0, alignSelf: 'stretch', display: 'flex', flexDirection: 'column',
   alignItems: 'center', gap: '2px', padding: '8px 0', background: '#f3f0ea', borderRight: '1px solid rgba(60,50,40,0.10)',
@@ -208,14 +207,13 @@ export const SidebarRail: React.FC<{ activeTab: SidebarTab; hasShape: boolean }>
     { key: 'acc-legs', label: 'Legs', icon: Footprints, title: 'Leg models and leg sets', active: s.accessoryCategory === 'legs', onClick: () => s.setAccessoryCategory('legs') },
     { key: 'acc-layers', label: 'Layers', icon: SwatchBook, title: 'Accessory layers — shared by every accessory part (name + colour)', active: s.accessoryCategory === 'layers', onClick: () => s.setAccessoryCategory('layers') },
   ];
+  // Yalnız ETKİN sekmenin araçları çizilir (Goker, Kas 2026: "diğer düğmeler hiç gelmesin, görünmesin" — pasif/soluk grup yok).
   const group = (list: RailSpec[], tab: SidebarTab, needShape = true) =>
-    list.map(({ key, disabled, ...t }) => <RailTool key={key} {...t} passive={(needShape && !hasShape) || activeTab !== tab || !!disabled} />);
+    activeTab === tab ? list.map(({ key, disabled, ...t }) => <RailTool key={key} {...t} passive={(needShape && !hasShape) || !!disabled} />) : null;
   return (
     <div className="yago-rail" style={RAIL_STYLE}>
       {group(params, 'parameters')}
-      <div style={RAIL_SEP} />
-      {group(panels, 'panel-editor')}
-      <div style={RAIL_SEP} />
+      {group(panels, 'assembly')}
       {group(accessories, 'accessories', false)}
     </div>
   );
@@ -1064,8 +1062,8 @@ const EDGE_GLOW: React.CSSProperties = {
 const RESIZE_GRIP_BG = 'linear-gradient(135deg,transparent 50%,rgba(60,50,40,0.22) 50%,rgba(60,50,40,0.22) 58%,transparent 58%,'
   + 'transparent 72%,rgba(60,50,40,0.22) 72%,rgba(60,50,40,0.22) 80%,transparent 80%)';
 
-export const Sidebar: React.FC<{ parametersContent: React.ReactNode; panelEditorContent: React.ReactNode; accessoriesContent?: React.ReactNode }> =
-  ({ parametersContent, panelEditorContent, accessoriesContent }) => {
+export const Sidebar: React.FC<{ parametersContent: React.ReactNode; assemblyContent: React.ReactNode; accessoriesContent?: React.ReactNode }> =
+  ({ parametersContent, assemblyContent, accessoriesContent }) => {
   const { selectedShapeId } = useStoreFields('selectedShapeId');
   const [initial] = useState(readSidebarLayout);
   // Açılışta her zaman sola yaslı ve KAPALI başlar; kaydedilen kip yalnız yüzen panelin konum/boyutu için okunur.
@@ -1074,7 +1072,7 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; panelEditor
   const rectRef = useRef(rect); rectRef.current = rect;
   const [isOpen, setIsOpen] = useState(false);
   const [isPinned, setIsPinned] = useState(false);
-  const [activeTab, setActiveTab] = useState<SidebarTab>('panel-editor');
+  const [activeTab, setActiveTab] = useState<SidebarTab>('assembly');
   const [pinHover, pinHoverProps] = useHover();
   const [handleHover, handleHoverProps] = useHover();
   const [popupRoot, setPopupRoot] = useState<HTMLElement | null>(null);
@@ -1220,8 +1218,9 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; panelEditor
           <TabBtn active={activeTab === 'parameters'} onClick={() => setActiveTab('parameters')}
             icon={<SlidersHorizontal size={13.5} strokeWidth={2} />} label="Parameters" />
           <div style={VSEP} />
-          <TabBtn active={activeTab === 'panel-editor'} onClick={() => setActiveTab('panel-editor')}
-            icon={<PanelLeft size={13.5} strokeWidth={2} />} label="Panel Editor" />
+          {/* ASSEMBLY (Goker, Kas 2026: "artık sadece panel yerleşmiyor — ayak, menteşe, ileride çekmece; hiyerarşik ürün ağacı"): eski "Panel Editor". */}
+          <TabBtn active={activeTab === 'assembly'} onClick={() => setActiveTab('assembly')}
+            icon={<ListTree size={13.5} strokeWidth={2} />} label="Assembly" />
           {accessoriesContent && <>
             <div style={VSEP} />
             <TabBtn active={activeTab === 'accessories'} onClick={() => setActiveTab('accessories')}
@@ -1271,9 +1270,9 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; panelEditor
           {tabPane('parameters', parametersContent,
             <EmptyState icon={<SlidersHorizontal size={18} strokeWidth={1.6} />} title="No shape selected"
               description="Select an object from the 3D view to edit its parameters" hint="Tip: Click an object or drag a selection box" />)}
-          {tabPane('panel-editor', panelEditorContent,
-            <EmptyState icon={<PanelLeft size={18} strokeWidth={1.6} />} title="No panel selected"
-              description="Select a panel or surface to edit its properties" hint="Tip: Click a surface in face select mode" />)}
+          {tabPane('assembly', assemblyContent,
+            <EmptyState icon={<ListTree size={18} strokeWidth={1.6} />} title="No body selected"
+              description="Select a body in the 3D view to see and build its parts — panels, legs, doors, backs" hint="Tip: Click a body, then pick a tool on the left" />)}
           {accessoriesContent && tabPane('accessories', accessoriesContent, null, false)}
         </div>
       </div>

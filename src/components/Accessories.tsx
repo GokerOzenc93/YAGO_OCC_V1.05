@@ -1,6 +1,6 @@
 /* AKSESUAR SEKMESİ (Goker, Eki 2026 — "Panel editör yanında Aksesuar sekmesi; ilk seçenek ayak, sonra ray / menteşe"; "üstteki tip seçimine
    gerek yok, soldan işaretliyorum; açıklamaları azalt, temiz olsun; ayak için 3 model ekleyebileyim").
-   Kategori soldaki raydan seçilir (Legs · Layers). Panel Editor / Parameters ile aynı parçalar ve yazı tipleri.
+   Kategori soldaki raydan seçilir (Legs · Layers). Assembly / Parameters ile aynı parçalar ve yazı tipleri.
 
    AYAK
    • Leg models — 3 yuva: Top · Middle · Bottom (üstten alta, ayağın kendisi gibi). Her yuvaya bir model dosyası; birim + yukarı ekseni
@@ -11,7 +11,7 @@
      kıstırılmış), o parçaya bağlı (ayak uzayınca tabla deliği de yükselir). Liste satırı: yön · Ø · derinlik · X / Y / Z (ayak sıfırına
      göre, düzenlenebilir). Gövdede ayak yerleşince delik panele değdiği yerden panelden çıkarılır (PanelEngine, tek boolean).
    • Leg sets ("kaset") — model + köşe düzeni (4/5/6) + kenar mesafeleri + varsayılan yükseklik. Yerleşim her zaman otomatiktir (gövde
-     yüz rolleri); baza seti kartı / Body ayakları / yerleştirme şeridi YALNIZ bu setleri listeler (PanelEditor.LegPresetSelect).
+     yüz rolleri); baza seti kartı / Body ayakları / yerleştirme şeridi YALNIZ bu setleri listeler (Assembly.LegPresetSelect).
    KATMANLAR (Goker, Kas 2026): kütüphane geneli liste (ad + renk) — her aksesuar parçası bir katmana bağlanır; ileride ray / menteşe de.
    Kütüphane bu tarayıcıda (IndexedDB).
 
@@ -37,7 +37,7 @@ import {
 import {
   ApplyBtn, CARD_BODY, CARD_BODY_STYLE, CardAction, ExitBtn, FIELD_INPUT, LegLayoutCells, LegLayoutDiagram, QB_CELL_ROW, QbNum, QbSection, QbSelect,
   QbSwitch, ROW_SEL_BAR, ROW_SEL_HEAD, ReadCell, ReadValue, RowCells, RowChevron, SECTION_LABEL, SelectBox, rectLegPoints, rowCardClass,
-} from './PanelEditor';
+} from './Assembly';
 import { standardLegRules } from './LegLayout';
 import { syncPlinthSetsUsingPreset } from './PlinthService';
 import { fmt1, stop } from './PanelSchematics';
@@ -402,9 +402,9 @@ function LegPreview({ leg, parts, height, layers, openSlot, onSelectSlot, holeMo
 
 /* ═════════════════════════════════ Ayak modeli: 3 yuva ═════════════════════════════════
    Goker: "middle / base / bottom'da da scale ve move olsun; panel editör gibi düzenlemeye tıklayınca satırları gelsin; scale yüzde değil
-   net ölçü; her parçada stretch özelliği olsun". Yuva = Panel Editor satırı gibi: başlık (yuva · model · X / Y / Z ölçüsü · ↕ · ok);
+   net ölçü; her parçada stretch özelliği olsun". Yuva = Assembly satırı gibi: başlık (yuva · model · X / Y / Z ölçüsü · ↕ · ok);
    tıklayınca kart: Size X / Y / Z (nihai mm) · Move X / Y / Z (mm) · Stretch · Unit · Up · Layer · Replace / Remove. Tek kart açık. */
-/** Düzenlenebilir hücre (beyaz; Panel Editor hücreleriyle aynı görünüm). */
+/** Düzenlenebilir hücre (beyaz; Assembly hücreleriyle aynı görünüm). */
 const EditCell = ({ label, title, className = '', children }: { label: string; title?: string; className?: string; children: React.ReactNode }) => (
   <div title={title} onClick={stop} className={`${className} yago-cell min-w-0 h-full pl-2 pr-1 flex items-center gap-1`}>
     <span className="yago-label flex-1 min-w-0 truncate">{label}</span>
