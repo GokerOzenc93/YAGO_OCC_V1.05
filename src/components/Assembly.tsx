@@ -13,6 +13,7 @@ import {
 import {
   type BackPlacement, type DoorType, type CornerKey, type JoinPass, type Shape, type QuickBodyConfig, type QuickBodyBase, type PanelGroup, type FaceExtrudeValueMode,
   useStoreFields, useAppStore, type VirtualFace, type DoorGroup, type BackGroup, shapeById, childPanelsOf, panelOfVf, requestRebuild,
+  type QuickBodyRails, type RailKind, type RailSpec, type RailBackRel, railsOf,
 } from '../store';
 import {
   BACK_TYPE_TITLE, BACK_TYPE_LABEL, vfBackBound, isBackVf, confirmBackPick, backLeaves, backPieceOf, backLeafOfMember, backGroupName, setVfBackBound, backPlaneAxes,
@@ -37,11 +38,11 @@ import {
   findExistingStepForFace,
 } from './Geometry';
 import {
-  effectiveJoins, panelOrderFor, confirmRefCavityExtrude, executeCavityExtrude, executeCavityExtrudeOuter, updateCavityStep, deleteCavityStep, groupName,
+  effectiveJoins, panelOrderFor, baseLiftOf, confirmRefCavityExtrude, executeCavityExtrude, executeCavityExtrudeOuter, updateCavityStep, deleteCavityStep, groupName,
   confirmVolumePick, type TreeNode, findNode, treeLeaves, memberThicknessesOf, boxSpan, groupKindLabel,
   renamePanelGroup, deletePanelGroupWithMembers, setGroupCount, startCavityEdit, startGroupRepick, setGroupTargetGap, equalizeGroupGaps,
   previewGroupGap, editGroupGap, toggleGroupGapLock, groupLayoutSnapshot, restoreGroupLayout, type GroupLayoutSnap, previewGroupMemberThickness,
-  setGroupMemberThickness, applyQuickBody, quickBodyOf, quickBodyVfsOf, removeQuickBody, quickLegsOf,
+  setGroupMemberThickness, applyQuickBody, quickBodyOf, quickBodyVfsOf, removeQuickBody, quickLegsOf, lockedCorners, railCountOf, railBackRelOf,
 } from './PanelGroupService';
 import { confirmBodyPanelPlacement } from './Scene';
 import {
@@ -655,8 +656,9 @@ const qbField = (w: number, passive?: boolean): React.CSSProperties =>
   ({ ...FIELD_INPUT, width: w, flexShrink: 0, textAlign: 'right', ...(passive ? PASSIVE_INPUT : {}) });
 
 /** Taslaklı sayı girişi: Enter / blur onaylar, Esc geri alır. */
-export function QbNum({ value, onCommit, passive, w = 34, min = 0, max }: {
+export function QbNum({ value, onCommit, passive, w = 34, min = 0, max, autoFocus }: {
   value: number; onCommit: (v: number) => void; passive?: boolean; w?: number; min?: number; max?: number;
+  /** açılınca odaklan (tıkla → yaz → Enter akışı) */ autoFocus?: boolean;
 }) {
   const [draft, setDraft] = useDraft(value);
   const commit = () => {
@@ -667,7 +669,7 @@ export function QbNum({ value, onCommit, passive, w = 34, min = 0, max }: {
     if (Math.abs(c - value) > 1e-6) onCommit(round1(c));
   };
   return (
-    <input type="text" inputMode="decimal" value={passive ? '—' : draft ?? fmt1(value)} disabled={passive}
+    <input type="text" inputMode="decimal" value={passive ? '—' : draft ?? fmt1(value)} disabled={passive} autoFocus={autoFocus && !passive}
       onChange={e => setDraft(e.target.value)} onBlur={commit} onFocus={e => e.target.select()}
       onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setDraft(null); }} onClick={stop}
       className="yago-field" style={qbField(w, passive)} />
@@ -715,15 +717,16 @@ export function hintCells(hint: string | null, onHint: (k: string | null) => voi
   return { cell, num };
 }
 
-/* DÖRT KÖŞE: her köşe büyütülmüş birleşim detayı — hangi panelin üstten bindiği (köşeden geçtiği) görünür; tık değiştirir. */
-function CornerJointTiles({ joins, lockBottom, active, onCorner, onHover }: {
-  joins: Record<CornerKey, JoinPass>; lockBottom: boolean; active: string | null; onCorner: (c: CornerKey) => void; onHover: (c: CornerKey | null) => void;
+/* DÖRT KÖŞE: her köşe büyütülmüş birleşim detayı — hangi panelin üstten bindiği (köşeden geçtiği) görünür; tık değiştirir.
+   `locked` = değiştirilemeyen köşeler + nedeni (bazalı alt köşeler, kayıtlı yüzün köşeleri). */
+function CornerJointTiles({ joins, locked: lockedMap, active, onCorner, onHover }: {
+  joins: Record<CornerKey, JoinPass>; locked: Partial<Record<CornerKey, string>>; active: string | null; onCorner: (c: CornerKey) => void; onHover: (c: CornerKey | null) => void;
 }) {
   const VW = 448, TW = 104, TH = 104, GAP = (VW - 4 * TW) / 5, BOX_W = 74, BOX_H = 54, T = 16;
   return (
     <svg viewBox={`0 0 ${VW} ${TH}`} preserveAspectRatio="xMidYMid meet" className="block w-full" aria-hidden>
       {(['tl', 'tr', 'bl', 'br'] as const).map((c, i) => {
-        const x = GAP + i * (TW + GAP), locked = lockBottom && (c === 'bl' || c === 'br');
+        const x = GAP + i * (TW + GAP), lockWhy = lockedMap[c], locked = !!lockWhy;
         const side = joins[c] === 'side', hi = active === `c-${c}`, hot = hi && !locked;
         const left = c === 'tl' || c === 'bl', top = c === 'tl' || c === 'tr';
         // Kutunun dış köşesi (ox, oy) ve şerit kalınlığı kadar içerisi (ix, iy); yan şerit dikey, üst/alt şerit yatay.
@@ -737,7 +740,7 @@ function CornerJointTiles({ joins, lockBottom, active, onCorner, onHover }: {
           <g key={c} onClick={e => { stop(e); if (!locked) onCorner(c); }} onMouseEnter={() => onHover(c)} onMouseLeave={() => onHover(null)}
             style={{ cursor: locked ? 'default' : 'pointer' }}>
             <title>{`${QB_CORNER_TITLE[c]}: ${side ? 'side panel passes the corner — top/bottom sits between the sides'
-              : 'top/bottom panel passes the corner — side sits between'}${locked ? ' · fixed in plinth mode (sides reach the floor)' : ' · click to swap'}`}</title>
+              : 'top/bottom panel passes the corner — side sits between'}${locked ? ` · ${lockWhy}` : ' · click to swap'}`}</title>
             <rect x={x} y={1} width={TW} height={TH - 2} rx={8} fill={hot ? '#fff7f0' : '#ffffff'} stroke={hot ? O : '#e6e0d6'} strokeWidth={hot ? 1.3 : 1} />
             <rect x={bx} y={by} width={BOX_W} height={BOX_H} fill="#f6f2ec" stroke="none" />
             <rect x={butt.x} y={butt.y} width={butt.w} height={butt.h} fill={locked ? '#efe9df' : '#ebe4d9'} stroke={locked ? '#cfc7bb' : '#a39a8d'} strokeWidth={1} />
@@ -752,6 +755,337 @@ function CornerJointTiles({ joins, lockBottom, active, onCorner, onHover }: {
         );
       })}
     </svg>
+  );
+}
+
+/* ───────── ÜST / ALT: TEMSİLİ DOLAP (Goker, Kas 2026 — "arayüzü basitleştir; temsili küçük bir kabin üzerinden kayıtlara tıklatarak
+   değerleri değiştirelim; alt alta bir sürü seçenek anlaşılmıyor, görsellerden tek bakışta anlaşılmıyor") ─────────
+   Eğik izdüşümde (ön sol-altta, derinlik sağ-yukarı) küçük bir gövde: yanlar, üst / alt (tam panel ya da ön + arka kayıt — girilen
+   ölçülerle orantılı), baza / ayak, arkalık; köşe birleşimleri de yansır. Dört köşede etiket (sol = ön, sağ = arka) güncel değeri
+   gösterir. Kayıta / panele / boş yere (kesik çizgi) ya da etikete tıklanınca ALTINDAKİ TEK ŞERİTTE düzenlenir: tip (Full panel ·
+   Horizontal · Vertical · None), ölçü + çektirme (ölçü kutusu otomatik odaklanır: tıkla → yaz → Enter), arka kayıtta arkalık ilişkisi.
+   Değer kutusuna gelince çizimde o ölçü vurgulanır (genişlik / yükseklik = kayıt üzerinde ölçü çizgisi, çektirme = kenardan kayıta bant).
+   Ressam sırası: kutular ayrık eksende sıralanır (x büyük / y büyük / z küçük = önde) — RailCabinet içi `miniPaintOrder`. */
+type RailSlot = { face: 'top' | 'bottom'; pos: 'front' | 'rear' };
+const slotKey = (s: RailSlot) => `${s.face}-${s.pos}`;
+const RAIL_SLOTS: RailSlot[] = [{ face: 'top', pos: 'front' }, { face: 'top', pos: 'rear' }, { face: 'bottom', pos: 'front' }, { face: 'bottom', pos: 'rear' }];
+type MiniBox = { x0: number; x1: number; y0: number; y1: number; z0: number; z1: number };
+type MiniKind = 'side' | 'panel' | 'rail' | 'back' | 'plinth' | 'leg' | 'ghost';
+interface MiniPart { key: string; box: MiniBox; kind: MiniKind; slot?: RailSlot }
+const MINI_KX = 0.52, MINI_KY = 0.3, MINI_T = 7;
+const clampN = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
+/** [ön, üst, sağ] yüz dolguları. */
+const MINI_FILL: Record<string, [string, string, string]> = {
+  side: ['#ece6dc', '#f7f3ed', '#ddd5c8'], panel: ['#e3d8c6', '#f0e8db', '#d4c7b1'], rail: ['#dccbb0', '#ebdec9', '#cbb798'],
+  back: ['#d2cabd', '#e2dcd2', '#c3baab'], plinth: ['#c2bbb2', '#d5cfc7', '#b1a99f'], leg: ['#6b6460', '#8a837d', '#57534e'],
+  sel: ['#fdba74', '#fed7aa', '#f6a35c'], hot: ['#fde2c4', '#feecd8', '#f9cf9f'],
+};
+const RAIL_TYPE_LABEL: Record<RailKind | 'panel', string> = { panel: 'Full panel', horizontal: 'Horizontal', vertical: 'Vertical', none: 'None' };
+
+/** Ressam sırası: iki kutu bir eksende ayrıksa önde olan sonra çizilir; eksenler çelişirse izdüşümler örtüşmez (kenar eklenmez). */
+function miniPaintOrder(parts: MiniPart[]): MiniPart[] {
+  const E = 0.01, n = parts.length, after = parts.map(() => new Set<number>());
+  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+    const a = parts[i].box, b = parts[j].box, v: number[] = [];
+    if (a.x0 >= b.x1 - E) v.push(1); else if (b.x0 >= a.x1 - E) v.push(-1);
+    if (a.y0 >= b.y1 - E) v.push(1); else if (b.y0 >= a.y1 - E) v.push(-1);
+    if (a.z1 <= b.z0 + E) v.push(1); else if (b.z1 <= a.z0 + E) v.push(-1);
+    if (!v.length || v.some(x => x !== v[0])) continue;
+    if (v[0] > 0) after[i].add(j); else after[j].add(i);
+  }
+  const done = new Set<number>(), out: MiniPart[] = [];
+  while (out.length < n) {
+    let k = parts.findIndex((_, i) => !done.has(i) && [...after[i]].every(j => done.has(j)));
+    if (k < 0) k = parts.findIndex((_, i) => !done.has(i));
+    done.add(k); out.push(parts[k]);
+  }
+  return out;
+}
+
+/** Temsili dolabın parçaları (çizim birimi; x sağa, y yukarı, z arkaya — ön z=0). Gövde oranı sınırlanır, kalınlık abartılır. */
+function miniCabinetModel(cfg: QuickBodyConfig, W: number, H: number, D: number, legsOn: boolean) {
+  const VW = 448, VH = 236, T = MINI_T;
+  const rh = clampN(H / Math.max(1, W), 0.7, 1.7), rd = clampN(D / Math.max(1, W), 0.55, 1.1);
+  const s = Math.min(196 / (1 + rd * MINI_KX), (VH - 30) / (rh + rd * MINI_KY));
+  const Wd = s, Hd = s * rh, Dd = s * rd;
+  const OX = (VW - (Wd + Dd * MINI_KX)) / 2, OY = 15 + Hd + Dd * MINI_KY;
+  const zmm = (v: number) => (v / Math.max(1, D)) * Dd, ymm = (v: number) => (v / Math.max(1, H)) * Hd;
+  const liftMm = Math.min(Math.max(0, baseLiftOf(cfg)), Math.max(0, H - 3 * cfg.thickness));
+  const lift = liftMm > 0 ? clampN(ymm(liftMm), 10, Hd * 0.2) : 0;
+  const j = effectiveJoins(cfg), b = cfg.back, grooved = b.enabled && b.placement === 'inner';
+  const bT = 4, bS = grooved ? clampN(zmm(b.setback), 3, 10) : 0;
+  const R = { top: railsOf(cfg, 'top'), bottom: railsOf(cfg, 'bottom') };
+  const sb = (mm: number) => (mm > 0 ? Math.max(3, clampN(zmm(mm), 0, Dd * 0.3)) : 0);
+  /** Kayıt kutusu (yok → null). `kindOverride` = boş yerin hayaleti için varsayılan yatay kayıt. */
+  const railBox = (slot: RailSlot, spec: RailSpec, ghost = false): MiniBox | null => {
+    const top = slot.face === 'top', front = slot.pos === 'front';
+    const rel = ghost ? 'groove' : railBackRelOf(cfg, slot.face);
+    const kind = ghost ? 'horizontal' : spec.kind, own = ghost ? 0 : sb(spec.setback);
+    if (kind === 'horizontal') {
+      const w = clampN(zmm(ghost ? 100 : spec.size), 8, Dd * 0.42), y0 = top ? Hd - T : lift;
+      const z1 = front ? own + w : Dd - Math.max(own, !front && rel === 'infront' ? bS + bT : 0);
+      return { x0: T, x1: Wd - T, y0, y1: y0 + T, z0: z1 - w, z1 };
+    }
+    if (kind === 'vertical') {
+      const h = clampN(ymm(spec.size), 10, Hd * 0.3), y0 = top ? Hd - h : lift;
+      const back = !front && rel === 'infront' ? own + bS + bT : own;
+      const z0 = front ? own : Dd - back - T;
+      return { x0: T, x1: Wd - T, y0, y1: y0 + h, z0, z1: z0 + T };
+    }
+    return null;
+  };
+  const parts: MiniPart[] = [];
+  const rails: Partial<Record<string, MiniBox>> = {};
+  for (const slot of RAIL_SLOTS) {
+    const r = R[slot.face]; if (r.mode !== 'rails') continue;
+    const bx = railBox(slot, r[slot.pos]);
+    if (bx) { rails[slotKey(slot)] = bx; parts.push({ key: slotKey(slot), box: bx, kind: 'rail', slot }); }
+    else parts.push({ key: `ghost-${slotKey(slot)}`, box: railBox(slot, r[slot.pos], true)!, kind: 'ghost', slot });
+  }
+  // Arkalık: kanallı → arka yüzden bS içeride, sınırlar üst / alt yapıya göre; çakma → gövdenin arkasında.
+  if (b.enabled) {
+    const boundY = (face: 'top' | 'bottom'): number => {
+      const r = R[face], top = face === 'top';
+      if (r.mode === 'panel') return top ? Hd - T : lift + T;
+      const rb = rails[`${face}-rear`];
+      if (!rb) return top ? Hd : 0;
+      if (railBackRelOf(cfg, face) === 'infront') return top ? Hd : (r.rear.kind === 'horizontal' ? lift : 0);
+      return top ? rb.y0 : rb.y1;
+    };
+    parts.push(grooved
+      ? { key: 'back', kind: 'back', box: { x0: T, x1: Wd - T, y0: boundY('bottom'), y1: boundY('top'), z0: Dd - bS - bT, z1: Dd - bS } }
+      : { key: 'back', kind: 'back', box: { x0: 0, x1: Wd, y0: R.bottom.mode === 'panel' || R.bottom.rear.kind !== 'none' ? lift : 0, y1: Hd, z0: Dd, z1: Dd + bT } });
+  }
+  const topPanel = R.top.mode === 'panel', botPanel = R.bottom.mode === 'panel';
+  const sideY0 = cfg.base === 'legs' ? lift : 0;
+  const side = (key: string, x0: number, horizBottom: boolean, horizTop: boolean) => parts.push({ key, kind: 'side', box: {
+    x0, x1: x0 + T, y0: botPanel && horizBottom ? lift + T : sideY0, y1: topPanel && horizTop ? Hd - T : Hd, z0: 0, z1: Dd } });
+  side('left', 0, j.bl === 'horiz', j.tl === 'horiz');
+  side('right', Wd - T, j.br === 'horiz', j.tr === 'horiz');
+  if (topPanel) parts.push({ key: 'top', kind: 'panel', slot: { face: 'top', pos: 'front' },
+    box: { x0: j.tl === 'horiz' ? 0 : T, x1: j.tr === 'horiz' ? Wd : Wd - T, y0: Hd - T, y1: Hd, z0: 0, z1: Dd } });
+  if (botPanel) parts.push({ key: 'bottom', kind: 'panel', slot: { face: 'bottom', pos: 'front' },
+    box: { x0: j.bl === 'horiz' ? 0 : T, x1: j.br === 'horiz' ? Wd : Wd - T, y0: lift, y1: lift + T, z0: 0, z1: Dd } });
+  if (cfg.base === 'plinth' && lift > 0) {
+    const pf = sb(cfg.plinth.front);
+    parts.push({ key: 'plinth', kind: 'plinth', box: { x0: T, x1: Wd - T, y0: 0, y1: lift, z0: pf, z1: pf + T } });
+    if (cfg.plinth.rearPlinth) {
+      const pr = Dd - sb(cfg.plinth.rear);
+      parts.push({ key: 'rear-plinth', kind: 'plinth', box: { x0: T, x1: Wd - T, y0: 0, y1: lift, z0: pr - T, z1: pr } });
+    }
+  }
+  if (legsOn && lift > 0) {
+    for (const [i, x] of [T + 3, Wd - T - 8].entries()) for (const [k, z] of [5, Dd - 10].entries()) {
+      parts.push({ key: `leg-${i}${k}`, kind: 'leg', box: { x0: x, x1: x + 5, y0: 0, y1: lift, z0: z, z1: z + 5 } });
+    }
+  }
+  return { VW, VH, Wd, Hd, Dd, OX, OY, lift, parts: miniPaintOrder(parts), rails, R };
+}
+
+/** TEMSİLİ DOLAP çizimi: parçalar + dört köşe etiketi; tıklanan yer `onPick`, üzerine gelinen `onHover`. `hint` = şerit hücresi ipucu. */
+function RailCabinet({ cfg, W, H, D, legsOn, sel, hover, hint, onPick, onHover }: {
+  cfg: QuickBodyConfig; W: number; H: number; D: number; legsOn: boolean; sel: RailSlot | null; hover: string | null; hint: string | null;
+  onPick: (s: RailSlot) => void; onHover: (k: string | null) => void;
+}) {
+  const m = miniCabinetModel(cfg, W, H, D, legsOn);
+  const P = (x: number, y: number, z: number) => [m.OX + x + z * MINI_KX, m.OY - y - z * MINI_KY] as const;
+  const pts = (list: ReadonlyArray<readonly [number, number]>) => list.map(p => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ');
+  const faceSel = (s?: RailSlot) => !!s && !!sel && (sel.face === s.face && (m.R[s.face].mode === 'panel' || sel.pos === s.pos));
+  const faceHot = (s?: RailSlot) => !!s && !!hover && (m.R[s.face].mode === 'panel' ? hover.startsWith(`${s.face}-`) : hover === slotKey(s));
+  const hexOf = (b: MiniBox) => [P(b.x0, b.y0, b.z0), P(b.x1, b.y0, b.z0), P(b.x1, b.y0, b.z1), P(b.x1, b.y1, b.z1), P(b.x0, b.y1, b.z1), P(b.x0, b.y1, b.z0)];
+  const centerOf = (b: MiniBox) => P((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, (b.z0 + b.z1) / 2);
+  const part = (p: MiniPart) => {
+    const b = p.box, s = p.slot, on = faceSel(s), hot = !on && faceHot(s);
+    const clickable = !!s;
+    const handlers = clickable ? {
+      onClick: (e: React.MouseEvent) => { stop(e); onPick(m.R[s!.face].mode === 'panel' && sel?.face === s!.face ? sel : s!); },
+      onMouseEnter: () => onHover(slotKey(s!)), onMouseLeave: () => onHover(null), style: { cursor: 'pointer' as const },
+    } : {};
+    const title = s ? `${s.face === 'top' ? 'Top' : 'Bottom'}${m.R[s.face].mode === 'panel' ? ' panel' : ` ${s.pos} rail`} — click to change` : undefined;
+    if (p.kind === 'ghost') {
+      return (
+        <g key={p.key} {...handlers}>
+          {title && <title>{`${title} (no rail here — click to add one)`}</title>}
+          <polygon points={pts(hexOf(b))} fill={on ? '#fff1e3' : hot ? '#fff7f0' : 'rgba(255,255,255,0.01)'} stroke={on || hot ? O : '#b8aea0'}
+            strokeWidth={on ? 1.3 : 1} strokeDasharray="3 2.5" strokeLinejoin="round" />
+        </g>
+      );
+    }
+    const pal = on ? MINI_FILL.sel : hot ? MINI_FILL.hot : MINI_FILL[p.kind];
+    const stroke = on ? '#c2410c' : hot ? '#ea8a3c' : p.kind === 'leg' ? '#3f3a36' : '#7c736a';
+    const sw = on ? 1.1 : 0.7;
+    const faces: Array<[ReadonlyArray<readonly [number, number]>, string]> = [
+      [[P(b.x1, b.y0, b.z0), P(b.x1, b.y0, b.z1), P(b.x1, b.y1, b.z1), P(b.x1, b.y1, b.z0)], pal[2]],
+      [[P(b.x0, b.y1, b.z0), P(b.x1, b.y1, b.z0), P(b.x1, b.y1, b.z1), P(b.x0, b.y1, b.z1)], pal[1]],
+      [[P(b.x0, b.y0, b.z0), P(b.x1, b.y0, b.z0), P(b.x1, b.y1, b.z0), P(b.x0, b.y1, b.z0)], pal[0]],
+    ];
+    return (
+      <g key={p.key} {...handlers}>
+        {title && <title>{title}</title>}
+        {faces.map(([f, fill], i) => <polygon key={i} points={pts(f)} fill={fill} stroke={stroke} strokeWidth={sw} strokeLinejoin="round" />)}
+        {/* ince kayıtlar kolay tıklansın: görünmez geniş çerçeve */}
+        {clickable && <polygon points={pts(hexOf(b))} fill="none" stroke="transparent" strokeWidth={8} strokeLinejoin="round" />}
+      </g>
+    );
+  };
+  // Şerit hücresi ipucu: ölçü çizgisi (kayıt üzerinde) ya da çektirme bandı (kenardan kayıta).
+  const hintMark = (() => {
+    if (!hint) return null;
+    const mm = /^(top|bottom)-(front|rear)-(size|setback)$/.exec(hint);
+    if (!mm) return null;
+    const slot: RailSlot = { face: mm[1] as RailSlot['face'], pos: mm[2] as RailSlot['pos'] };
+    const b = m.rails[slotKey(slot)]; if (!b) return null;
+    const spec = m.R[slot.face][slot.pos], top = slot.face === 'top', front = slot.pos === 'front';
+    if (mm[3] === 'size') {
+      const tick = (a: readonly [number, number], dx: number, dy: number) => <line x1={a[0] - dx} y1={a[1] - dy} x2={a[0] + dx} y2={a[1] + dy} />;
+      if (spec.kind === 'horizontal') {
+        const x = b.x0 + 10, a = P(x, b.y1, b.z0), c = P(x, b.y1, b.z1);
+        return <g stroke={O} strokeWidth={1.6} strokeLinecap="round"><line x1={a[0]} y1={a[1]} x2={c[0]} y2={c[1]} />{tick(a, 3, 0)}{tick(c, 3, 0)}</g>;
+      }
+      const a = P(b.x1 - 10, b.y0, b.z0), c = P(b.x1 - 10, b.y1, b.z0);
+      return <g stroke={O} strokeWidth={1.6} strokeLinecap="round"><line x1={a[0]} y1={a[1]} x2={c[0]} y2={c[1]} />{tick(a, 3, 0)}{tick(c, 3, 0)}</g>;
+    }
+    const y = top ? m.Hd : m.lift + (spec.kind === 'horizontal' ? MINI_T : 0);
+    const [z0, z1] = front ? [0, b.z0] : [b.z1, m.Dd];
+    // Çektirme 0: ölçünün alındığı kenar çizilir (kayıt o kenarda).
+    if (z1 - z0 < 0.5) {
+      const ze = front ? 0 : m.Dd, a = P(b.x0, y, ze), c = P(b.x1, y, ze);
+      return <line x1={a[0]} y1={a[1]} x2={c[0]} y2={c[1]} stroke={O} strokeWidth={2.2} strokeLinecap="round" />;
+    }
+    const band = [P(b.x0, y, z0), P(b.x1, y, z0), P(b.x1, y, z1), P(b.x0, y, z1)];
+    return <polygon points={pts(band)} fill={O} fillOpacity={0.35} stroke={O} strokeWidth={1} strokeDasharray="3 2" />;
+  })();
+  // Etiketler: sol sütun = ön (üst / alt), sağ sütun = arka; çizgi parçanın merkezine.
+  const PILL_W = 108, PILL_H = 36;
+  const pill = (slot: RailSlot) => {
+    const r = m.R[slot.face], left = slot.pos === 'front', x = left ? 4 : m.VW - 4 - PILL_W, y = slot.face === 'top' ? 8 : m.VH - 8 - PILL_H;
+    const spec = r[slot.pos], panel = r.mode === 'panel';
+    const value = panel ? RAIL_TYPE_LABEL.panel : spec.kind === 'none' ? 'None' : `${RAIL_TYPE_LABEL[spec.kind]} ${fmt1(spec.size)}`;
+    const k = slotKey(slot), on = !!sel && sel.face === slot.face && sel.pos === slot.pos, hot = !on && hover === k;
+    const box = panel ? m.parts.find(p => p.key === slot.face)?.box : m.rails[k] ?? m.parts.find(p => p.key === `ghost-${k}`)?.box;
+    const anchor = box ? (panel ? P((box.x0 + box.x1) / 2, box.y1, left ? m.Dd * 0.22 : m.Dd * 0.78) : centerOf(box)) : null;
+    const ex = left ? x + PILL_W : x, ey = y + PILL_H / 2;
+    return (
+      <g key={`pill-${k}`} onClick={e => { stop(e); onPick(slot); }} onMouseEnter={() => onHover(k)} onMouseLeave={() => onHover(null)} style={{ cursor: 'pointer' }}>
+        <title>{`${slot.face === 'top' ? 'Top' : 'Bottom'} ${slot.pos} — click to change`}</title>
+        {anchor && <>
+          <line x1={ex} y1={ey} x2={anchor[0]} y2={anchor[1]} stroke={on || hot ? O : '#b8aea0'} strokeWidth={on ? 1.1 : 0.8} strokeDasharray={on ? undefined : '2.5 2.5'} />
+          <circle cx={anchor[0]} cy={anchor[1]} r={2.4} fill={on || hot ? O : '#a39a8d'} stroke="#fff" strokeWidth={0.8} />
+        </>}
+        <rect x={x} y={y} width={PILL_W} height={PILL_H} rx={8} fill={on ? '#fff4ec' : '#ffffff'} stroke={on ? O : hot ? '#c4bcb0' : '#e3ddd4'} strokeWidth={on ? 1.4 : 1} />
+        <text x={x + 10} y={y + 14} fontSize={8.6} fontWeight={700} letterSpacing="0.07em" fill={on ? '#c2410c' : TXT} fontFamily={UI_FONT}>
+          {`${slot.face === 'top' ? 'TOP' : 'BOTTOM'} ${slot.pos === 'front' ? 'FRONT' : 'REAR'}`}
+        </text>
+        <text x={x + 10} y={y + 28} fontSize={11} fontWeight={650} fill={on ? '#9a3412' : spec.kind === 'none' && !panel ? '#a39b91' : DARK} fontFamily={UI_FONT}
+          style={{ fontVariantNumeric: 'tabular-nums' }}>{value}</text>
+      </g>
+    );
+  };
+  const fl = P(m.Wd / 2, 0, 0);
+  return (
+    <DiagramSvg w={m.VW} h={m.VH} className="w-full">
+      <g pointerEvents="visiblePainted">{m.parts.map(part)}</g>
+      {hintMark}
+      <text x={fl[0]} y={Math.min(m.VH - 4, fl[1] + 13)} fontSize={9} fontWeight={700} letterSpacing="0.08em" fill="#c2410c" textAnchor="middle"
+        fontFamily={UI_FONT}>FRONT</text>
+      {RAIL_SLOTS.map(pill)}
+    </DiagramSvg>
+  );
+}
+
+/** Arka kayıt ↔ arkalık küçük kesit ikonu (yan kesit; ARKA SAĞDA, üst yüz üstte — alt yüz aynalı). */
+function RailRelIcon({ kind, rel, bottom, on }: { kind: RailKind; rel: RailBackRel; bottom: boolean; on: boolean }) {
+  const H = 22, my = (y: number, h: number) => (bottom ? H - y - h : y);
+  const railF = on ? '#fdba74' : '#d6c9b4', backF = on ? '#e7e5e4' : '#c9bfb1', st = on ? '#fafaf9' : '#6b6460';
+  const r = kind === 'vertical'
+    ? (rel === 'groove' ? { x: 25, y: 1, w: 6, h: 11 } : { x: 17, y: 1, w: 6, h: 11 })
+    : (rel === 'groove' ? { x: 7, y: 1, w: 24, h: 6 } : { x: 5, y: 1, w: 18, h: 6 });
+  const back = rel === 'groove'
+    ? { x: 26, y: kind === 'vertical' ? 10 : 5, w: 3, h: kind === 'vertical' ? 11 : 16 }
+    : { x: 25, y: 1, w: 3, h: 20 };
+  return (
+    <svg viewBox={`0 0 34 ${H}`} width={34} height={H} aria-hidden className="shrink-0">
+      <line x1={32} y1={0} x2={32} y2={H} stroke={st} strokeOpacity={0.45} strokeDasharray="2 1.5" strokeWidth={0.8} />
+      <rect x={back.x} y={my(back.y, back.h)} width={back.w} height={back.h} fill={backF} stroke={st} strokeWidth={0.8} />
+      <rect x={r.x} y={my(r.y, r.h)} width={r.w} height={r.h} fill={railF} stroke={st} strokeWidth={0.9} />
+      {rel === 'groove' && <rect x={back.x} y={kind === 'vertical' ? my(back.y, 2) : my(5, 2)} width={back.w} height={2} fill="none" stroke={st} strokeWidth={0.7} strokeDasharray="1 0.8" />}
+    </svg>
+  );
+}
+
+/* ÜST / ALT BLOĞU: temsili dolap + seçilen parçanın tek düzenleme şeridi. */
+function TopBottomBlock({ cfg, setCfg, W, H, D, legsOn, hint, onHint }: {
+  cfg: QuickBodyConfig; setCfg: (p: Partial<QuickBodyConfig>) => void; W: number; H: number; D: number; legsOn: boolean;
+  hint: string | null; onHint: (k: string | null) => void;
+}) {
+  const [sel, setSel] = useState<RailSlot | null>(null);
+  const [hover, setHover] = useState<string | null>(null);
+  const { cell } = hintCells(hint, onHint);
+  const setFace = (face: RailSlot['face'], p: Partial<QuickBodyRails>) => setCfg({ [face]: { ...railsOf(cfg, face), ...p } } as Partial<QuickBodyConfig>);
+  const setRail = (s: RailSlot, p: Partial<RailSpec>) => { const r = railsOf(cfg, s.face); setFace(s.face, { [s.pos]: { ...r[s.pos], ...p } } as Partial<QuickBodyRails>); };
+  const pick = (s: RailSlot) => setSel(cur => (cur && slotKey(cur) === slotKey(s) ? null : s));
+  const editor = (() => {
+    if (!sel) return <QbNote>Click a top or bottom part on the cabinet (or its label) to change it — full panel, horizontal or vertical rail, or none.</QbNote>;
+    const r = railsOf(cfg, sel.face), spec = r[sel.pos], rails = r.mode === 'rails', isRail = rails && spec.kind !== 'none';
+    const Face = sel.face === 'top' ? 'Top' : 'Bottom', front = sel.pos === 'front', k = slotKey(sel);
+    const active = rails ? spec.kind : 'panel';
+    const typeItems: SegItem[] = [
+      { key: 'panel', label: 'Full panel', title: `${Face}: one full panel between the sides (replaces both rails)` },
+      { key: 'horizontal', label: 'Horizontal', title: `Rail lying flat in the ${sel.face} plane — its width is measured front-to-back` },
+      { key: 'vertical', label: 'Vertical', title: `Rail standing on edge at the ${sel.pos} face — its height is measured top-to-bottom` },
+      { key: 'none', label: 'None', title: `No ${sel.pos} rail — the ${sel.face} stays open there` },
+    ];
+    const b = cfg.back, grooved = b.enabled && b.placement === 'inner', rel = railBackRelOf(cfg, sel.face);
+    return (
+      <div key={k} className="flex flex-col gap-1">
+        <div className="flex items-center gap-1.5">
+          <span style={dockAxisTag('#44403c')}>{`${Face.toUpperCase()} · ${front ? 'FRONT' : 'REAR'}`}</span>
+          <div className="flex-1 min-w-0"><Segmented height={26} items={typeItems} active={active}
+            onPick={t => (t === 'panel' ? setFace(sel.face, { mode: 'panel' }) : setFace(sel.face, { mode: 'rails', [sel.pos]: { ...spec, kind: t as RailKind } } as Partial<QuickBodyRails>))} /></div>
+          <ExitBtn onClick={() => setSel(null)} />
+        </div>
+        {/* tip değişince hücreler yeniden kurulur → ölçü kutusu yine odaklanır (Horizontal → Vertical → yaz → Enter) */}
+        {isRail && (
+          <div key={`${k}-${spec.kind}`} className="grid grid-cols-2 gap-x-1" style={QB_CELL_ROW}>
+            {cell(spec.kind === 'vertical' ? 'Height' : 'Width', `${k}-size`,
+              <><QbNum autoFocus value={spec.size} min={1} w={40} onCommit={v => setRail(sel, { size: v })} />{unitTxt('mm')}</>)}
+            {cell(front ? 'Setback from front' : 'Setback from rear', `${k}-setback`,
+              <><QbNum value={spec.setback} w={40} onCommit={v => setRail(sel, { setback: v })} />{unitTxt('mm')}</>)}
+          </div>
+        )}
+        {isRail && !front && b.enabled && (grooved ? (
+          <div className="flex items-center gap-1.5">
+            <span className={`shrink-0 w-[74px] pl-1 ${CELL_LABEL}`}>Back panel</span>
+            <div className="flex-1 min-w-0 grid grid-cols-2 gap-[2px] p-[2px] rounded-[7px] bg-[#ece8e1]">
+              {([['groove', 'Grooved into rail', 'The rail reaches the rear; the back panel enters a groove cut into the rail'],
+                ['infront', 'Rail in front of back', 'The rail sits in front of the back panel; the back panel runs behind it up to the body edge']] as const).map(([key, label, title]) => {
+                const on = rel === key;
+                return (
+                  <button key={key} type="button" title={title} onClick={e => { stop(e); setFace(sel.face, { backRel: key }); }}
+                    className={on ? '' : 'hover:!bg-white hover:!text-stone-900'} style={{
+                      height: 30, minWidth: 0, display: 'flex', alignItems: 'center', gap: 6, padding: '0 6px', borderRadius: 5, border: 'none', outline: 'none',
+                      cursor: 'pointer', background: on ? '#292524' : 'transparent', color: on ? '#ffffff' : '#57534e', fontSize: 11, fontWeight: 600,
+                      fontFamily: UI_FONT, transition: 'background 0.12s,color 0.12s',
+                    }}>
+                    <RailRelIcon kind={spec.kind} rel={key} bottom={sel.face === 'bottom'} on={on} />
+                    <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ) : <QbNote>Nailed back: the rear rail stays flush with the rear face and the back panel is nailed onto it.</QbNote>)}
+      </div>
+    );
+  })();
+  const t = railsOf(cfg, 'top'), bo = railsOf(cfg, 'bottom');
+  const sum = (r: QuickBodyRails) => (r.mode === 'panel' ? 'panel' : railCountOf(r) ? `${railCountOf(r)} rail${railCountOf(r) === 1 ? '' : 's'}` : 'open');
+  return (
+    <div className="pt-2" onMouseLeave={() => setHover(null)}>
+      <SectionHead label="Top & bottom" hint={`top ${sum(t)} · bottom ${sum(bo)} · click a part to change it`} rule={false} className="pb-1 px-0.5" />
+      <RailCabinet cfg={cfg} W={W} H={H} D={D} legsOn={legsOn} sel={sel} hover={hover} hint={hint} onPick={pick} onHover={setHover} />
+      <div className="pt-1.5">{editor}</div>
+    </div>
   );
 }
 
@@ -980,7 +1314,9 @@ export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onAppl
   const legsLive = useMemo(() => quickLegsOf(cfg), [cfg.base, cfg.legs, legPresets, legModels, accessoryModels]);
   const legCount = legsLive ? legsLive.count : 0;
   const legsOwn = cfg.legs.ownLayout ?? !!cfg.legs.custom;
-  const panelCount = 4 + (isPlinth ? 1 + (cfg.plinth.rearPlinth ? 1 : 0) : 0);
+  const topR = railsOf(cfg, 'top'), botR = railsOf(cfg, 'bottom');
+  const anyRails = topR.mode === 'rails' || botR.mode === 'rails';
+  const panelCount = 2 + railCountOf(topR) + railCountOf(botR) + (isPlinth ? 1 + (cfg.plinth.rearPlinth ? 1 : 0) : 0);
   const { cyclic } = panelOrderFor(joins);
   const b = cfg.back, grooved = b.placement === 'inner';
   const setPlinth = (p: Partial<QuickBodyConfig['plinth']>) => setCfg({ plinth: { ...cfg.plinth, ...p } });
@@ -990,7 +1326,8 @@ export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onAppl
   // Taban değişince ayak: Legs → en az 4; Plinth → otomatik None (Goker); Plain → yok.
   const setBase = (base: QuickBodyBase) => setCfg({ base, legs: { ...cfg.legs, count: base === 'legs' ? (cfg.legs.count || 4) : 0 } });
   const toggleCorner = (c: CornerKey) => setCfg({ joins: { ...cfg.joins, [c]: cfg.joins[c] === 'side' ? 'horiz' : 'side' } });
-  const summary = `${panelCount} panels${b.enabled ? ` + ${BACK_TYPE_LABEL[b.placement].toLowerCase()} back` : ''}${legCount ? ` + ${legCount} legs` : ''}`;
+  const railsTxt = anyRails ? ` (${[topR.mode === 'rails' ? 'top rails' : '', botR.mode === 'rails' ? 'bottom rails' : ''].filter(Boolean).join(', ')})` : '';
+  const summary = `${panelCount} panels${railsTxt}${b.enabled ? ` + ${BACK_TYPE_LABEL[b.placement].toLowerCase()} back` : ''}${legCount ? ` + ${legCount} legs` : ''}`;
   const existing = existingCount ? `${existingCount} panel${existingCount === 1 ? '' : 's'} already on the body · ` : '';
   const status = busy ? 'Building panels…' : cyclic ? 'Corner joints form a cycle — sides will pass first' : revise ? `Rebuild: ${summary}` : `${existing}${summary}`;
   const statusTitle = revise
@@ -1013,14 +1350,16 @@ export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onAppl
       <div className="px-1.5 pt-1.5 pb-2 flex flex-col gap-1.5" onMouseLeave={() => setHint(null)}>
         {/* 1 · GÖVDE PANELLERİ: dört köşe birleşimi (dolap çizimi yok — Goker), kalınlık + ölçü, bazalıda baza ölçüleri */}
         <QbSection title="Body panels" sub={`${panelCount} panels · ${isPlinth ? 'sides reach the floor' : isLegs ? 'raised on legs' : 'on the floor'}`}>
-          <SectionHead label="Corner joints" hint="click a corner to swap which panel passes" rule={false} className="pb-1 px-0.5" />
-          <CornerJointTiles joins={joins} lockBottom={isPlinth} active={hint} onCorner={toggleCorner} onHover={c => setHint(c ? `c-${c}` : null)} />
+          <SectionHead label="Corner joints" hint={anyRails ? 'rails always sit between the sides · click a free corner to swap' : 'click a corner to swap which panel passes'} rule={false} className="pb-1 px-0.5" />
+          <CornerJointTiles joins={joins} locked={lockedCorners(cfg)} active={hint} onCorner={toggleCorner} onHover={c => setHint(c ? `c-${c}` : null)} />
           <div className="mt-1.5 grid grid-cols-2 gap-x-1" style={QB_CELL_ROW}>
             {num('Panel thickness', 't', cfg.thickness, v => setCfg({ thickness: v }), false, 1)}
             <ReadCell label="Body size" title="Body width × height × depth (mm)">
               <span className="whitespace-nowrap text-[11.5px] font-semibold text-stone-600 tabular-nums">{fmt1(W)} × {fmt1(H)} × {fmt1(D)}</span>{unitTxt('mm')}
             </ReadCell>
           </div>
+          {/* ÜST / ALT: temsili dolap — parçaya tıkla, altındaki şeritte düzenle (Goker: "temsili kabin üzerinden, basit ve dinamik") */}
+          <TopBottomBlock cfg={cfg} setCfg={setCfg} W={W} H={H} D={D} legsOn={legCount > 0} hint={hint} onHint={setHint} />
           {isPlinth && <>
             <SectionHead label="Plinth" hint="kick panels under the bottom panel, between the sides" rule={false} className="pt-2 pb-1 px-0.5" />
             <div className="grid grid-cols-2 gap-x-1" style={QB_CELL_ROW}>
@@ -2248,7 +2587,9 @@ export function AssemblyPanel() {
       const key = `quick-${sid}`, sel = selectedPanelRow === key;
       const draft = sel && quickDraft?.sid === sid ? quickDraft.cfg : saved;
       const baseLabel = { plain: 'Plain', legs: 'Legs', plinth: 'Plinth' }[saved.base];
-      const backTxt = saved.back.enabled ? `${BACK_TYPE_LABEL[saved.back.placement].toLowerCase()} back` : 'no back';
+      const railFaces = (['top', 'bottom'] as const).filter(f => railsOf(saved, f).mode === 'rails');
+      const railsTxt = railFaces.length ? ` · ${railFaces.join(' + ')} rails` : '';
+      const backTxt = `${saved.back.enabled ? `${BACK_TYPE_LABEL[saved.back.placement].toLowerCase()} back` : 'no back'}${railsTxt}`;
       const legs = quickLegsOf(saved)?.count ?? 0;
       const toggle = (e: React.MouseEvent) => { stop(e); setQuickDraft(null); if (sel) setSelectedPanelRow(null); else setSelectedPanelRow(key, sid); };
       return rowShell({

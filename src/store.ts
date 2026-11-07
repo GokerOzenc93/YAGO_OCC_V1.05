@@ -317,9 +317,32 @@ export interface PanelGroup {
 /** 'arrow' = ok modu DYN (her tık değer kadar), 'arrowFixed' = ok modu FIXED (o eksendeki toplam ölçü = değer). */
 export type FaceExtrudeValueMode = 'arrow' | 'arrowFixed' | 'fixed' | 'dyn' | 'ref';
 export type QuickBodyBase = 'plain' | 'legs' | 'plinth';
-/** Hızlı gövdenin ürettiği panel parçaları (VF.quickBody). Aynı rolde birden çok yüz (L gövde: iki sağ yüz, iki ön baza) → `key#n`. */
-export type QuickBodyPartBase = 'top' | 'left' | 'right' | 'bottom' | 'plinth' | 'rearPlinth';
+/** Hızlı gövdenin ürettiği panel parçaları (VF.quickBody). Aynı rolde birden çok yüz (L gövde: iki sağ yüz, iki ön baza) → `key#n`.
+ *  `topFront/topRear/bottomFront/bottomRear` = üst / alt panel YERİNE kayıtlar (PanelGroupService › hızlı gövde kayıtları). */
+export type QuickBodyPartBase = 'top' | 'left' | 'right' | 'bottom' | 'plinth' | 'rearPlinth' | 'topFront' | 'topRear' | 'bottomFront' | 'bottomRear';
 export type QuickBodyPart = QuickBodyPartBase | `${QuickBodyPartBase}#${number}`;
+/* ───────── KAYITLAR (Goker, Kas 2026 — "üst panel yok / alt panel yok seçeneği; onun yerine kayıt (traverse) arayüzü: ön / arka,
+   yatay / dikey, ölçü ve çektirme; arka kayıtta arkalık kanal mı, kayıt arkalığın önüne mi") ─────────
+   Mutfak gövdelerinde bütün üst panel yerine iki kısa panel (kayıt) kullanılır. `kind`: 'horizontal' = yatay (üst / alt düzlemde yatan,
+   derinlik yönünde `size` genişliğinde şerit) · 'vertical' = dikey (ön / arka yüzde dik duran, `size` yüksekliğinde şerit) · 'none' = yok.
+   `setback` = kayıtın gövdenin ön / arka yüzünden içeri çekilmesi (mm). Kalınlık = gövde panel kalınlığı. */
+export type RailKind = 'none' | 'horizontal' | 'vertical';
+/** Arka kayıt ↔ KANALLI arkalık: 'groove' = arkalık kayıta kanal açar (kayıt arka yüze kadar, arkalık içine girer) ·
+ *  'infront' = kayıt arkalığın ÖNÜNE yerleşir (arkalık kayıtın arkasından gövde kenarına kadar sürer; yatay kayıt arkalığın ön yüzüne
+ *  kadar kısaltılır, dikey kayıt arkalığın önüne çekilir). Çakma arkalıkta anlamsız (kayıt arka yüzde, arkalık üstüne çakılır). */
+export type RailBackRel = 'groove' | 'infront';
+export interface RailSpec { kind: RailKind; size: number; setback: number }
+/** Üst ya da alt yüzün yapısı: tam panel ya da kayıtlar (ön + arka; ikisi de 'none' → açık). */
+export interface QuickBodyRails { mode: 'panel' | 'rails'; front: RailSpec; rear: RailSpec; backRel: RailBackRel }
+export const DEFAULT_RAILS: QuickBodyRails = {
+  mode: 'panel', front: { kind: 'horizontal', size: 100, setback: 0 }, rear: { kind: 'horizontal', size: 100, setback: 0 }, backRel: 'groove',
+};
+/** Etkin kayıt ayarı (eski kayıtlı yapılandırmada alan yok → tam panel). */
+export const railsOf = (cfg: Pick<QuickBodyConfig, 'top' | 'bottom'>, face: 'top' | 'bottom'): QuickBodyRails => {
+  const r = cfg[face];
+  if (!r) return DEFAULT_RAILS;
+  return { ...DEFAULT_RAILS, ...r, front: { ...DEFAULT_RAILS.front, ...(r.front ?? {}) }, rear: { ...DEFAULT_RAILS.rear, ...(r.rear ?? {}) } };
+};
 /** Köşe birleşimi: 'side' = yan panel köşeden geçer (üst/alt arada), 'horiz' = üst/alt panel geçer (yan arada). */
 export type JoinPass = 'side' | 'horiz';
 export type CornerKey = 'tl' | 'tr' | 'bl' | 'br';
@@ -347,6 +370,9 @@ export interface QuickBodyConfig {
     enabled: boolean; placement: BackPlacement; thickness: number; setback: number; inset: number;
     clear: { front: number; back: number; depth: number };
   };
+  /** Üst / alt yüz: tam panel ya da kayıtlar (yoksa tam panel — eski kayıtlar). */
+  top?: QuickBodyRails;
+  bottom?: QuickBodyRails;
 }
 /* ───────── AKSESUAR KÜTÜPHANESİ (AccessoryService; Goker, Eki 2026 — "Panel editör yanında Aksesuar sekmesi; ayak modelini dışarıdan
    al, 3 parça, orta parça uzasın; 4/5/6 ayak setlerini kaydet, ayak kısmında çağır") ───────── */
@@ -402,6 +428,7 @@ export const DEFAULT_QUICK_BODY: QuickBodyConfig = {
   plinth: { height: 100, front: 0, rear: 50, rearPlinth: true },   // ön baza gövde önüyle aynı hizada, arka baza 50 mm içeride (Goker)
   legs: { count: 0, height: 100, diameter: 50, side: 60, front: 60, rear: 60 },   // bazalıda ayak varsayılan yok; Legs tabanına geçince 4
   back: { enabled: true, placement: 'inner', thickness: 8, setback: 10, inset: 10, clear: { front: 0.5, back: 0.5, depth: 1 } },
+  top: DEFAULT_RAILS, bottom: DEFAULT_RAILS,
 };
 
 export interface Shape {

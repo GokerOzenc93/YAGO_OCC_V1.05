@@ -1121,10 +1121,10 @@ function makeMemberVf(group: BackGroup, i: number, sol: BackSolution): VirtualFa
   };
 }
 
-/** `init`: hızlı gövde gibi çağıranların varsayılanları (kalınlık / setback / giriş / bollaştırma) ezen değerleri. */
+/** `init`: hızlı gövde gibi çağıranların varsayılanları (kalınlık / setback / giriş / bollaştırma / kenar ilişkisi) ezen değerleri. */
 export function createBackGroupFromPick(
   shapeId: string, pick: BackPick, placement: BackPlacement, name?: string,
-  init?: Partial<Pick<BackGroup, 'thickness' | 'setback' | 'inset' | 'grooveClear' | 'quickBody'>>,
+  init?: Partial<Pick<BackGroup, 'thickness' | 'setback' | 'inset' | 'grooveClear' | 'quickBody' | 'edgeRel'>>,
 ): BackGroup | null {
   const st = useAppStore.getState();
   const parent = shapeById(shapeId, st.shapes);
