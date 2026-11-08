@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Check, X, type LucideIcon, Lock, SlidersHorizontal, Crosshair, LayoutPanelTop, Rows3, Columns3, DoorClosed, SendToBack, Footprints, Shapes,
   ChevronRight, Minus, Plus, ChevronDown, Pencil, Trash2, Unlink, MoveVertical, Move, RotateCw, GripVertical, ArrowUp, Box, Move3d, Equal,
-  RotateCcw, Container,
+  RotateCcw, Container, ChevronLeft,
 } from 'lucide-react';
 import { type Box3 } from 'three';
 import { UI_FONT, INK, TYPE } from './Ui';
@@ -14,6 +14,7 @@ import {
   type BackPlacement, type DoorType, type CornerKey, type Shape, type QuickBodyConfig, type QuickBodyBase, type PanelGroup, type FaceExtrudeValueMode,
   useStoreFields, useAppStore, type VirtualFace, type DoorGroup, type BackGroup, shapeById, childPanelsOf, panelOfVf, requestRebuild,
   type QuickBodyRails, type RailKind, type RailSpec, type RailBackRel, railsOf, type QuickBodyPanelKey, type PanelEdgeDir, PANEL_EDGE_DIRS,
+  type QuickBackRefKey,
 } from '../store';
 import {
   BACK_TYPE_TITLE, BACK_TYPE_LABEL, vfBackBound, isBackVf, confirmBackPick, backLeaves, backPieceOf, backLeafOfMember, backGroupName, setVfBackBound, backPlaneAxes,
@@ -43,7 +44,7 @@ import {
   renamePanelGroup, deletePanelGroupWithMembers, setGroupCount, startCavityEdit, startGroupRepick, setGroupTargetGap, equalizeGroupGaps,
   previewGroupGap, editGroupGap, toggleGroupGapLock, groupLayoutSnapshot, restoreGroupLayout, type GroupLayoutSnap, previewGroupMemberThickness,
   setGroupMemberThickness, applyQuickBody, quickBodyOf, quickBodyVfsOf, removeQuickBody, quickLegsOf, lockedCorners, railCountOf, railBackRelOf, facePartCountOf,
-  panelEdgeValue, panelEdgeLimits,
+  panelEdgeValue, panelEdgeLimits, backRefOf,
 } from './PanelGroupService';
 import { confirmBodyPanelPlacement } from './Scene';
 import {
@@ -718,11 +719,10 @@ export function hintCells(hint: string | null, onHint: (k: string | null) => voi
   return { cell, num };
 }
 
-/* ÜST / ALT SEÇİMİ (Goker, 8 Kas 2026 — "üst ve alt panelin olup olmaması birleşim tipi gibi değil bir seçim gibi olsun; seçenekler fazla
-   artıyor; 3 seçenek: None · Rails · Full panel; Rails seçilirse kayıt arayüzünü aç; kutucukları ilk gördüğümde anlayayım"):
-   her yüz için bir satır, üç RESİMLİ kutu — küçük eğik dolap, o yüz vurgulu: None = yüz boş (kesik çizgi), Rails = önde + arkada şerit,
-   Full panel = tam levha. Öbür yüz gerçek hâliyle soluk çizilir. Rails / Full panel → temsili dolap (kayıt arayüzü) açılır; Full panel'de
-   kayıt yuvaları boş gelir ("+ Add rail" — panel + kayıt yine mümkün). */
+/* ÜST / ALT SEÇİMİ (Goker, 8 Kas 2026 — "3 seçenek: none, kayıt, full panel; kayıt seçilirse kayıt arayüzünü aç"; sonra "body panel ile
+   cabinet arayüzünü birleştirelim, seçenekler preview görselinin yanında olsun; gözü korkutmayan bir arayüz"): seçim artık TEMSİLİ DOLABIN
+   kayıt etiketi satırında, iki kayıt etiketinin ARASINDA küçük bir simgeli şerit — "TOP · ⌐ None · ≡ Rails · ▬ Full" (RailCabinet.faceSeg).
+   Önceki büyük resimli kutular (FaceChoiceRows) kaldırıldı; dolap çizimi seçimi anında gösterir. */
 export type FaceChoice = 'none' | 'rails' | 'panel';
 /** Yüzün seçimi: panel → Full panel; kayıt var ya da Rails seçildi (iki kayıt da "None" yapılsa bile) → Rails; yoksa None. */
 const faceChoiceOf = (r: QuickBodyRails, railsPicked = false): FaceChoice =>
@@ -730,84 +730,10 @@ const faceChoiceOf = (r: QuickBodyRails, railsPicked = false): FaceChoice =>
 const FACE_CHOICES: Array<{ key: FaceChoice; label: string; tip: (face: 'top' | 'bottom') => string }> = [
   { key: 'none', label: 'None', tip: f => `No ${f} panel and no rails — the ${f} stays open` },
   { key: 'rails', label: 'Rails', tip: f => `Short rails instead of a full ${f} panel — front / rear, horizontal or vertical` },
-  { key: 'panel', label: 'Full panel', tip: f => `One full ${f} panel — rails can still be added ${f === 'top' ? 'under' : 'on'} it` },
+  { key: 'panel', label: 'Full', tip: f => `One full ${f} panel — rails can still be added ${f === 'top' ? 'under' : 'on'} it` },
 ];
-const CTX_FILL: [string, string, string] = ['#f4f0ea', '#faf8f5', '#e9e3da'];
-
-/** Kutu resmi: küçük eğik dolap (yanlar + arkalık soluk), `face` yüzü `choice` ile vurgulu, öbür yüz `other` ile soluk. */
-function FaceChoiceArt({ face, choice, other, on }: { face: 'top' | 'bottom'; choice: FaceChoice; other: FaceChoice; on: boolean }) {
-  const VW = 120, VH = 62, W = 62, H = 40, D = 34, T = 5, KX = 0.55, KY = 0.32, RW = 9;
-  const OX = (VW - (W + D * KX)) / 2, OY = (VH + H + D * KY) / 2;
-  const P = (x: number, y: number, z: number) => `${(OX + x + z * KX).toFixed(1)},${(OY - y - z * KY).toFixed(1)}`;
-  const parts: MiniPart[] = [
-    { key: 'ctx-l', kind: 'side', box: { x0: 0, x1: T, y0: 0, y1: H, z0: 0, z1: D } },
-    { key: 'ctx-r', kind: 'side', box: { x0: W - T, x1: W, y0: 0, y1: H, z0: 0, z1: D } },
-    { key: 'ctx-b', kind: 'back', box: { x0: T, x1: W - T, y0: 0, y1: H, z0: D - 2, z1: D } },
-  ];
-  const faceParts = (f: 'top' | 'bottom', c: FaceChoice, hi: boolean) => {
-    const y0 = f === 'top' ? H - T : 0, pre = hi ? 'hi' : 'ctx';
-    const box = (z0: number, z1: number): MiniBox => ({ x0: T, x1: W - T, y0, y1: y0 + T, z0, z1 });
-    if (c === 'panel') parts.push({ key: `${pre}-${f}`, kind: 'panel', box: box(0, D - 2) });
-    if (c === 'rails') parts.push({ key: `${pre}-${f}-f`, kind: 'rail', box: box(0, RW) }, { key: `${pre}-${f}-r`, kind: 'rail', box: box(D - 2 - RW, D - 2) });
-  };
-  faceParts(face, choice, true);
-  faceParts(face === 'top' ? 'bottom' : 'top', other, false);
-  const HI: [string, string, string] = on ? MINI_FILL.sel : ['#d9c7a8', '#e9dcc6', '#c9b593'];
-  const poly = (p: MiniPart) => {
-    const b = p.box, hi = p.key.startsWith('hi');
-    const pal = hi ? HI : CTX_FILL, stroke = hi ? (on ? '#c2410c' : '#7c736a') : '#c9c0b3';
-    return (
-      <g key={p.key}>
-        <polygon points={[P(b.x1, b.y0, b.z0), P(b.x1, b.y0, b.z1), P(b.x1, b.y1, b.z1), P(b.x1, b.y1, b.z0)].join(' ')} fill={pal[2]} stroke={stroke} strokeWidth={0.8} strokeLinejoin="round" />
-        <polygon points={[P(b.x0, b.y1, b.z0), P(b.x1, b.y1, b.z0), P(b.x1, b.y1, b.z1), P(b.x0, b.y1, b.z1)].join(' ')} fill={pal[1]} stroke={stroke} strokeWidth={0.8} strokeLinejoin="round" />
-        <polygon points={[P(b.x0, b.y0, b.z0), P(b.x1, b.y0, b.z0), P(b.x1, b.y1, b.z0), P(b.x0, b.y1, b.z0)].join(' ')} fill={pal[0]} stroke={stroke} strokeWidth={0.8} strokeLinejoin="round" />
-      </g>
-    );
-  };
-  // None: yüzün yeri kesik çizgiyle (altta parçaların ARKASINDA kalır → önce, üstte en önde → sonra).
-  const yN = face === 'top' ? H : 0;
-  const empty = choice === 'none' && (
-    <polygon points={[P(T, yN, 0), P(W - T, yN, 0), P(W - T, yN, D - 2), P(T, yN, D - 2)].join(' ')} fill={on ? 'rgba(234,88,12,0.08)' : 'none'}
-      stroke={on ? O : '#a39a8d'} strokeWidth={1.1} strokeDasharray="3 2.2" strokeLinejoin="round" />
-  );
-  return (
-    <svg viewBox={`0 0 ${VW} ${VH}`} preserveAspectRatio="xMidYMid meet" className="block w-full" aria-hidden>
-      {face === 'bottom' && empty}
-      {miniPaintOrder(parts).map(poly)}
-      {face === 'top' && empty}
-    </svg>
-  );
-}
-/** Üst / alt satırları: [TOP] [None] [Rails] [Full panel] · [BOTTOM] … — tık seçer (Rails → iki yatay kayıtla başlar). */
-function FaceChoiceRows({ choice, onPick, disabled }: {
-  choice: Record<'top' | 'bottom', FaceChoice>; onPick: (face: 'top' | 'bottom', c: FaceChoice) => void;
-  /** seçilemeyen kutular ve nedeni (ör. ayaklıda alt None) */ disabled?: Partial<Record<'top' | 'bottom', Partial<Record<FaceChoice, string>>>>;
-}) {
-  return (
-    <div className="flex flex-col gap-1.5">
-      {(['top', 'bottom'] as const).map(face => (
-        <div key={face} className="grid gap-1.5" style={{ gridTemplateColumns: '50px repeat(3, minmax(0,1fr))' }}>
-          <div className="flex items-center pl-1 yago-section" style={{ color: INK.soft }}>{face === 'top' ? 'Top' : 'Bottom'}</div>
-          {FACE_CHOICES.map(o => {
-            const on = choice[face] === o.key, why = on ? undefined : disabled?.[face]?.[o.key];
-            return (
-              <button key={o.key} type="button" title={why ?? o.tip(face)} aria-pressed={on} aria-disabled={!!why} data-face={face} data-choice={o.key}
-                onClick={e => { stop(e); if (!on && !why) onPick(face, o.key); }}
-                className={`relative flex flex-col items-stretch rounded-[9px] px-1 pt-1 pb-1.5 transition-[box-shadow,background-color] duration-150 ${on
-                  ? 'bg-[#fff7f0] ring-[1.5px] ring-[#ea580c]' : why ? 'bg-[#fbfaf8] ring-1 ring-[#ece7df] opacity-50 cursor-not-allowed'
-                    : 'bg-white ring-1 ring-[#e3ddd4] hover:ring-[#c4bcb0] hover:shadow-[0_3px_8px_-4px_rgba(40,30,20,0.18)]'}`}
-                style={{ fontFamily: UI_FONT }}>
-                {on && <span className="absolute top-1 right-1 w-[15px] h-[15px] rounded-full bg-[#ea580c] text-white flex items-center justify-center"><Check size={9} strokeWidth={3} /></span>}
-                <FaceChoiceArt face={face} choice={o.key} other={choice[face === 'top' ? 'bottom' : 'top']} on={on} />
-                <span className={`text-center text-[11.5px] font-semibold leading-none ${on ? 'text-[#9a3412]' : 'text-stone-700'}`}>{o.label}</span>
-              </button>
-            );
-          })}
-        </div>
-      ))}
-    </div>
-  );
-}
+/** Yüz seçiminin kutu / yüz kısıtı (ör. ayaklıda alt None): yüz → seçenek → neden. */
+export type FaceChoiceDisabled = Partial<Record<'top' | 'bottom', Partial<Record<FaceChoice, string>>>>;
 
 /* KÖŞELER — TEMSİLİ DOLAP ÜZERİNDE (Goker, 8 Kas 2026: "panel birleşim tiplerini arayüzdeki temsili dolap üzerinden yapmaya
    çalışmalıyız"; önceki 2 × 2 köşe kutuları kalktı): dolabın dört ön köşesinin yanında birer ROZET — içinde büyütülmüş köşe (geçen
@@ -854,9 +780,11 @@ function cornerText(c: CornerKey, side: boolean, railFace: boolean, why?: string
    (cornerGlyph) — üzerine gelince o köşenin parçaları vurgulanır, tık değiştirir (ayrı köşe kutuları yok).
    GÖVDE PANELLERİ de tıklanır (Goker, 8 Kas 2026 — "alt üst sağ ve sol panellerin uzatma ve kısaltma değerlerini arayüzden
    girebileyim"): yan / üst / alt panele tık → uç şeridi (+ uzatır, − kısaltır); uçlar çizimde orantılı (3..14 birim) görünür. Kayıt
-   etiketleri dolabın üstünde / altında kendi satırında → dolap büyük çizilir ("preview biraz daha büyüsün"). Yüzün None · Rails · Full panel seçimi YALNIZ üstteki resimli kutularda (FaceChoiceRows);
-   dolapta panel tıklanmaz. "None" yüzün yuvası / etiketi çizilmez; boş yuva etiketi "+ Add rail". Dikey kayıt + panelde kayıt ↔ panel
-   birleşimi kayıt şeridinde iki resimli kartla (RailJoinCards). */
+   etiketleri dolabın üstünde / altında kendi satırında → dolap büyük çizilir ("preview biraz daha büyüsün").
+   ARKALIK REFERANSI (BackRefChip): panel / arka kayıt şeridinde; arkalık çizimde de referansın arka yüzünden yerleşir. Yüzün None ·
+   Rails · Full seçimi kayıt etiketi satırının ORTASINDA (faceSeg; Goker: "body panel ile cabinet arayüzünü birleştirelim"). "None" yüzün
+   yuvası / etiketi / köşe rozeti çizilmez; boş yuva etiketi "+ Add rail". Dikey kayıt + panelde kayıt ↔ panel birleşimi kayıt şeridinde
+   iki resimli kartla (RailJoinCards). */
 type RailSlot = { face: 'top' | 'bottom'; pos: 'front' | 'rear' };
 const slotKey = (s: RailSlot) => `${s.face}-${s.pos}`;
 const RAIL_SLOTS: RailSlot[] = [{ face: 'top', pos: 'front' }, { face: 'top', pos: 'rear' }, { face: 'bottom', pos: 'front' }, { face: 'bottom', pos: 'rear' }];
@@ -897,9 +825,10 @@ function miniPaintOrder(parts: MiniPart[]): MiniPart[] {
 
 /** Temsili dolabın parçaları (çizim birimi; x sağa, y yukarı, z arkaya — ön z=0). Gövde oranı sınırlanır, kalınlık abartılır. */
 function miniCabinetModel(cfg: QuickBodyConfig, W: number, H: number, D: number, legsOn: boolean, shown: Record<'top' | 'bottom', boolean>) {
+  void shown;
   // BÜYÜK ÖNİZLEME (Goker, 8 Kas 2026 — "preview biraz daha büyüsün"): kayıt etiketleri dolabın ÜSTÜNDE ve ALTINDA kendi satırlarında →
   // dolap genişliği etiketlerle sınırlanmaz (eskiden 196 birim → şimdi 280 / yükseklik 220). None yüzün etiket satırı daralır.
-  const VW = 448, T = MINI_T, TB = shown.top ? 52 : 16, BB = shown.bottom ? 50 : 6;
+  const VW = 448, T = MINI_T, TB = 52, BB = 50;   // üst / alt etiket satırları hep var (yüz seçimi şeridi orada)
   const rh = clampN(H / Math.max(1, W), 0.7, 1.7), rd = clampN(D / Math.max(1, W), 0.55, 1.1);
   const s = Math.min(280 / (1 + rd * MINI_KX), 220 / (rh + rd * MINI_KY));
   const Wd = s, Hd = s * rh, Dd = s * rd;
@@ -952,20 +881,6 @@ function miniCabinetModel(cfg: QuickBodyConfig, W: number, H: number, D: number,
     if (bx) { rails[slotKey(slot)] = bx; parts.push({ key: slotKey(slot), box: bx, kind: 'rail', slot }); }
     else if (shown[slot.face]) parts.push({ key: `ghost-${slotKey(slot)}`, box: railBox(slot, r[slot.pos], true)!, kind: 'ghost', slot });
   }
-  // Arkalık: kanallı → arka yüzden bS içeride, sınırlar üst / alt yapıya göre; çakma → gövdenin arkasında.
-  if (b.enabled) {
-    // Sınır: kanal ilişkili arka kayıt varsa kayıt (panel olsa da); yoksa panel; o da yoksa gövde kenarı.
-    const boundY = (face: 'top' | 'bottom'): number => {
-      const r = R[face], top = face === 'top';
-      const rb = rails[`${face}-rear`];
-      if (rb && railBackRelOf(cfg, face) === 'groove') return top ? rb.y0 : rb.y1;
-      if (r.panel && !(r.rear.kind === 'vertical' && r.rear.join === 'rail')) return top ? Hd - T : lift + T;
-      return top ? Hd : 0;
-    };
-    parts.push(grooved
-      ? { key: 'back', kind: 'back', box: { x0: T, x1: Wd - T, y0: boundY('bottom'), y1: boundY('top'), z0: Dd - bS - bT, z1: Dd - bS } }
-      : { key: 'back', kind: 'back', box: { x0: 0, x1: Wd, y0: R.bottom.panel || R.bottom.rear.kind !== 'none' ? lift : 0, y1: Hd, z0: Dd, z1: Dd + bT } });
-  }
   const topPanel = R.top.panel, botPanel = R.bottom.panel;
   const sideY0 = cfg.base === 'legs' ? lift : 0;
   const side = (key: 'left' | 'right', x0: number, horizBottom: boolean, horizTop: boolean) => parts.push({ key, kind: 'side', box: withExt(key, {
@@ -979,6 +894,25 @@ function miniCabinetModel(cfg: QuickBodyConfig, W: number, H: number, D: number,
   };
   if (topPanel) { const [z0, z1] = panelZ('top'); parts.push({ key: 'top', kind: 'panel', box: withExt('top', { x0: j.tl === 'horiz' ? 0 : T, x1: j.tr === 'horiz' ? Wd : Wd - T, y0: Hd - T, y1: Hd, z0, z1 }) }); }
   if (botPanel) { const [z0, z1] = panelZ('bottom'); parts.push({ key: 'bottom', kind: 'panel', box: withExt('bottom', { x0: j.bl === 'horiz' ? 0 : T, x1: j.br === 'horiz' ? Wd : Wd - T, y0: lift, y1: lift + T, z0, z1 }) }); }
+  // Arkalık: kanallı → arka yüzden bS içeride, sınırlar üst / alt yapıya göre; çakma → gövdenin arkasında. ARKALIK REFERANSI varsa
+  // (backRefOf) arka yüz = referans parçanın arka yüzü → parça kısalınca çizimde de arkalık onunla gelir.
+  if (b.enabled) {
+    const refKey = backRefOf(cfg);
+    const refBox = !refKey ? undefined : refKey === 'topRear' || refKey === 'bottomRear'
+      ? rails[`${refKey === 'topRear' ? 'top' : 'bottom'}-rear`] : parts.find(x => x.key === refKey)?.box;
+    const rearZ = refBox ? refBox.z1 : Dd;
+    // Sınır: kanal ilişkili arka kayıt varsa kayıt (panel olsa da); yoksa panel; o da yoksa gövde kenarı.
+    const boundY = (face: 'top' | 'bottom'): number => {
+      const r = R[face], top = face === 'top';
+      const rb = rails[`${face}-rear`];
+      if (rb && railBackRelOf(cfg, face) === 'groove') return top ? rb.y0 : rb.y1;
+      if (r.panel && !(r.rear.kind === 'vertical' && r.rear.join === 'rail')) return top ? Hd - T : lift + T;
+      return top ? Hd : 0;
+    };
+    parts.push(grooved
+      ? { key: 'back', kind: 'back', box: { x0: T, x1: Wd - T, y0: boundY('bottom'), y1: boundY('top'), z0: rearZ - bS - bT, z1: rearZ - bS } }
+      : { key: 'back', kind: 'back', box: { x0: 0, x1: Wd, y0: R.bottom.panel || R.bottom.rear.kind !== 'none' ? lift : 0, y1: Hd, z0: rearZ, z1: rearZ + bT } });
+  }
   if (cfg.base === 'plinth' && lift > 0) {
     const pf = sb(cfg.plinth.front);
     parts.push({ key: 'plinth', kind: 'plinth', box: { x0: T, x1: Wd - T, y0: 0, y1: lift, z0: pf, z1: pf + T } });
@@ -996,8 +930,10 @@ function miniCabinetModel(cfg: QuickBodyConfig, W: number, H: number, D: number,
 }
 
 /** TEMSİLİ DOLAP çizimi: parçalar + dört köşe etiketi; tıklanan yer `onPick`, üzerine gelinen `onHover`. `hint` = şerit hücresi ipucu. */
-function RailCabinet({ cfg, W, H, D, legsOn, shown, sel, selPanel, hover, hint, onPick, onPickPanel, onHover, onCorner }: {
+function RailCabinet({ cfg, W, H, D, legsOn, shown, choice, choiceDisabled, onChoice, sel, selPanel, hover, hint, onPick, onPickPanel, onHover, onCorner }: {
   cfg: QuickBodyConfig; W: number; H: number; D: number; legsOn: boolean; sel: RailSlot | null; hint: string | null;
+  /** yüz seçimi (None · Rails · Full) — etiket satırının ortasındaki şerit */ choice: Record<'top' | 'bottom', FaceChoice>;
+  choiceDisabled?: FaceChoiceDisabled; onChoice: (face: 'top' | 'bottom', c: FaceChoice) => void;
   /** seçili gövde paneli (uç uzatma / kısaltma şeridi) */ selPanel: QuickBodyPanelKey | null;
   /** üzerine gelinen: kayıt yuvası (`top-front` …), panel (`panel-left` …) ya da köşe rozeti (`corner-tl` …) */ hover: string | null;
   /** yüz "None" değil → yuvaları / etiketleri / köşe rozetleri çizilir */ shown: Record<'top' | 'bottom', boolean>;
@@ -1165,6 +1101,42 @@ function RailCabinet({ cfg, W, H, D, legsOn, shown, sel, selPanel, hover, hint, 
       </g>
     );
   };
+  // YÜZ SEÇİMİ ŞERİDİ (etiket satırının ortasında): [TOP] ⌐ None · ≡ Rails · ▬ Full — küçük yan kesit simgeleri (iki yan + o yüz).
+  const SEG_H = 24, SEG_BTN = 52;
+  const faceGlyph = (face: 'top' | 'bottom', c: FaceChoice, x: number, y: number, color: string) => {
+    const top = face === 'top', ye = top ? y + 1.5 : y + 10.5, ys = top ? y + 2 : y, h = 9;
+    return (
+      <g stroke={color} strokeWidth={1.5} strokeLinecap="round" fill="none">
+        <line x1={x + 1} y1={ys} x2={x + 1} y2={ys + h} /><line x1={x + 13} y1={ys} x2={x + 13} y2={ys + h} />
+        {c === 'none' && <line x1={x + 1} y1={ye} x2={x + 13} y2={ye} strokeDasharray="2 1.8" strokeWidth={1.1} />}
+        {c === 'rails' && <><line x1={x + 1} y1={ye} x2={x + 5.2} y2={ye} strokeWidth={2.2} /><line x1={x + 8.8} y1={ye} x2={x + 13} y2={ye} strokeWidth={2.2} /></>}
+        {c === 'panel' && <line x1={x + 1} y1={ye} x2={x + 13} y2={ye} strokeWidth={2.4} />}
+      </g>
+    );
+  };
+  const faceSeg = (face: 'top' | 'bottom') => {
+    const top = face === 'top', SEG_LBL = top ? 30 : 48, SEG_W = SEG_LBL + 3 * SEG_BTN + 8;
+    const rowY = top ? 6 : m.VH - 4 - PILL_H, x0 = (m.VW - SEG_W) / 2, y = rowY + (PILL_H - SEG_H) / 2;
+    return (
+      <g key={`seg-${face}`} data-faceseg={face}>
+        <rect x={x0} y={y} width={SEG_W} height={SEG_H} rx={7} fill="#ece8e1" />
+        <text x={x0 + 8} y={y + SEG_H / 2 + 3.2} fontSize={8.6} fontWeight={700} letterSpacing="0.07em" fill={TXT} fontFamily={UI_FONT}>{top ? 'TOP' : 'BOTTOM'}</text>
+        {FACE_CHOICES.map((o, i) => {
+          const on = choice[face] === o.key, why = on ? undefined : choiceDisabled?.[face]?.[o.key];
+          const bx = x0 + SEG_LBL + 4 + i * SEG_BTN, color = why ? '#c9c2b7' : on ? '#ffffff' : '#57534e';
+          return (
+            <g key={o.key} data-face={face} data-choice={o.key} aria-pressed={on} aria-disabled={!!why}
+              onClick={e => { stop(e); if (!on && !why) onChoice(face, o.key); }} style={{ cursor: on || why ? 'default' : 'pointer' }}>
+              <title>{why ?? o.tip(face)}</title>
+              <rect x={bx} y={y + 2} width={SEG_BTN - 2} height={SEG_H - 4} rx={5} fill={on ? '#292524' : 'transparent'} className={on || why ? '' : 'yago-seg-hover'} />
+              {faceGlyph(face, o.key, bx + 6, y + 6.5, color)}
+              <text x={bx + 24} y={y + SEG_H / 2 + 3.4} fontSize={9.6} fontWeight={600} fill={color} fontFamily={UI_FONT}>{o.label}</text>
+            </g>
+          );
+        })}
+      </g>
+    );
+  };
   const corners = (['tl', 'tr', 'bl', 'br'] as CornerKey[]).filter(c => shown[c[0] === 't' ? 'top' : 'bottom']);
   const fl = P(m.Wd / 2, 0, 0);
   return (
@@ -1175,6 +1147,8 @@ function RailCabinet({ cfg, W, H, D, legsOn, shown, sel, selPanel, hover, hint, 
       <text x={fl[0]} y={Math.min(m.VH - 4, fl[1] + 13)} fontSize={9} fontWeight={700} letterSpacing="0.08em" fill="#c2410c" textAnchor="middle"
         fontFamily={UI_FONT}>FRONT</text>
       {RAIL_SLOTS.filter(s => shown[s.face]).map(pill)}
+      {faceSeg('top')}
+      {faceSeg('bottom')}
     </DiagramSvg>
   );
 }
@@ -1326,11 +1300,38 @@ const railTypeIcon = (kind: RailKind) => (({ style }: { style?: React.CSSPropert
 )) as unknown as LucideIcon;
 const RAIL_TYPE_ICON: Record<RailKind, LucideIcon> = { none: railTypeIcon('none'), horizontal: railTypeIcon('horizontal'), vertical: railTypeIcon('vertical') };
 
+/* ARKALIK REFERANSI ÇİPİ (Goker, 8 Kas 2026 — "panele arkalık ofseti için referans al seçeneği koy; o panel kısalsa bile arkalık o
+   panele göre yerleşsin"; "arka dik kayıt öne move edilirse arkalık da onunla taşınmalı"): panel / arka kayıt şeridinde. Açık = arkalığın
+   setback'i bu parçanın ARKA yüzünden ölçülür ve parça kısalınca / taşınınca arkalık onunla gider (BackGroup.depthRefLive). Kanallı arka
+   kayıt kendiliğinden referanstır ("auto"); açık çipe tık → gövdenin arka yüzü ('body'), kapalı çipe tık → bu parça. */
+const BACK_REF_LABEL: Record<QuickBackRefKey, string> = {
+  left: 'left side', right: 'right side', top: 'top panel', bottom: 'bottom panel', topRear: 'top rear rail', bottomRear: 'bottom rear rail',
+};
+function BackRefChip({ cfg, part, setCfg }: { cfg: QuickBodyConfig; part: QuickBackRefKey; setCfg: (p: Partial<QuickBodyConfig>) => void }) {
+  if (!cfg.back.enabled) return null;
+  const on = backRefOf(cfg) === part, auto = on && cfg.backRef !== part;
+  const title = on
+    ? `The back panel is placed from this ${BACK_REF_LABEL[part]}'s rear face and follows it when it is shortened or moved${auto ? ' (automatic for a rear rail the back sits in)' : ''} — click to place it from the body's rear face`
+    : `Place the back panel from this ${BACK_REF_LABEL[part]}'s rear face — it follows the part when it is shortened or moved`;
+  return (
+    <button type="button" title={title} aria-pressed={on} data-backref={part} onClick={e => { stop(e); setCfg({ backRef: on ? 'body' : part }); }}
+      className={`shrink-0 h-[24px] pl-1.5 pr-2 rounded-[6px] flex items-center gap-1.5 text-[11px] font-semibold transition-colors duration-150 ${on
+        ? 'bg-[#fff4ec] text-[#c2410c] ring-1 ring-[#ea580c]' : 'bg-white text-stone-600 ring-1 ring-[#e3ddd4] hover:ring-[#c4bcb0] hover:text-stone-800'}`}
+      style={{ fontFamily: UI_FONT }}>
+      <span className={`w-[13px] h-[13px] rounded-[3px] flex items-center justify-center ${on ? 'bg-[#ea580c] text-white' : 'ring-1 ring-inset ring-[#c9c0b3]'}`}>
+        {on && <Check size={9} strokeWidth={3} />}
+      </span>
+      {auto ? 'Back reference · auto' : 'Back reference'}
+    </button>
+  );
+}
+
 /* TEMSİLİ DOLAP BLOĞU: dolap (kayıtlar + köşe rozetleri + tıklanan gövde paneli; üst / alt None olsa da yanlar için hep çizilir) +
    seçilen kaydın ya da panelin tek düzenleme şeridi. */
-function TopBottomBlock({ cfg, setCfg, W, H, D, legsOn, choice, hint, onHint }: {
+function TopBottomBlock({ cfg, setCfg, W, H, D, legsOn, choice, choiceDisabled, onChoice, hint, onHint }: {
   cfg: QuickBodyConfig; setCfg: (p: Partial<QuickBodyConfig>) => void; W: number; H: number; D: number; legsOn: boolean;
-  choice: Record<'top' | 'bottom', FaceChoice>; hint: string | null; onHint: (k: string | null) => void;
+  choice: Record<'top' | 'bottom', FaceChoice>; choiceDisabled?: FaceChoiceDisabled; onChoice: (face: 'top' | 'bottom', c: FaceChoice) => void;
+  hint: string | null; onHint: (k: string | null) => void;
 }) {
   const [selRaw, setSel] = useState<RailSlot | null>(null);
   const [selPanelRaw, setSelPanel] = useState<QuickBodyPanelKey | null>(null);
@@ -1358,6 +1359,7 @@ function TopBottomBlock({ cfg, setCfg, W, H, D, legsOn, choice, hint, onHint }: 
         <div className="flex items-center gap-1.5">
           <span style={dockAxisTag('#44403c')}>{PANEL_TITLE[k].toUpperCase()}</span>
           <span className="flex-1 min-w-0 truncate yago-hint">+ extends · − shortens</span>
+          <BackRefChip cfg={cfg} part={k} setCfg={setCfg} />
           <ExitBtn onClick={() => setSelPanel(null)} />
         </div>
         <div className="grid grid-cols-2 gap-x-1" style={QB_CELL_ROW}>
@@ -1400,6 +1402,9 @@ function TopBottomBlock({ cfg, setCfg, W, H, D, legsOn, choice, hint, onHint }: 
               <><QbNum value={spec.setback} w={40} onCommit={v => setRail(sel.face, pos, { setback: v })} />{unitTxt('mm')}</>)}
           </div>
         )}
+        {isRail && !front && railBackRelOf(cfg, sel.face) !== 'infront' && cfg.back.enabled && (
+          <div className="flex justify-end"><BackRefChip cfg={cfg} part={sel.face === 'top' ? 'topRear' : 'bottomRear'} setCfg={setCfg} /></div>
+        )}
         {spec.kind === 'vertical' && r.panel && (
           <RailJoinCards face={sel.face} pos={pos} passes={spec.join === 'rail'} onPick={p => setRail(sel.face, pos, { join: p ? 'rail' : 'panel' })} />
         )}
@@ -1410,9 +1415,9 @@ function TopBottomBlock({ cfg, setCfg, W, H, D, legsOn, choice, hint, onHint }: 
     );
   })();
   return (
-    <div className="pt-2" onMouseLeave={() => setHover(null)}>
-      <SectionHead label="Cabinet" hint="click a panel, rail or corner" rule={false} className="pb-1 px-0.5" />
-      <RailCabinet cfg={cfg} W={W} H={H} D={D} legsOn={legsOn} shown={shown} sel={sel} selPanel={selPanel} hover={hover} hint={hint} onPick={pick}
+    <div onMouseLeave={() => setHover(null)}>
+      <RailCabinet cfg={cfg} W={W} H={H} D={D} legsOn={legsOn} shown={shown} choice={choice} choiceDisabled={choiceDisabled} onChoice={onChoice}
+        sel={sel} selPanel={selPanel} hover={hover} hint={hint} onPick={pick}
         onPickPanel={pickPanel} onHover={setHover} onCorner={c => setCfg({ joins: { ...cfg.joins, [c]: cfg.joins[c] === 'side' ? 'horiz' : 'side' } })} />
       {editor}
       {panelEditor}
@@ -1607,10 +1612,13 @@ export function LegsBlock({ legs, W, D, facing, own, presetId, heightReadout, he
 
 /* BÖLÜM KUTUSU: hızlı gövde panelinin üç bölümü (gövde panelleri · ayaklar · arkalık) ayrı kutularda, başlıkta bölümün ana seçimi
    (Goker: "gövde, arkalık ve ayak kısımları iç içe giriyor"). */
-export function QbSection({ title, sub, trailing, children }: Kids & { title: string; sub?: string; trailing?: React.ReactNode }) {
+export function QbSection({ icon: Icon, title, sub, trailing, children }: Kids & { icon?: LucideIcon; title: string; sub?: string; trailing?: React.ReactNode }) {
+  // BÖLÜM AYRIMI (Goker, 8 Kas 2026 — "arkalık veya baza ayarları diğer arayüzlerle iç içe geçiyor, başka bir gruba geçildiği belli olmuyor"):
+  // başlık bandı koyu kemik + simge + alt kenarda ince çizgi; bölümler arası boşluk geniş (gap-3).
   return (
-    <div className="rounded-[9px] ring-1 ring-[#e3ddd4] bg-white overflow-hidden">
-      <div className={`flex items-center gap-2 pl-2.5 pr-1.5 h-[34px] bg-[#f8f6f2] ${children ? 'border-b border-[#ebe6df]' : ''}`}>
+    <div className="rounded-[10px] ring-1 ring-[#ddd6cc] bg-white overflow-hidden shadow-[0_1px_2px_rgba(40,30,20,0.04)]">
+      <div className={`flex items-center gap-2 pl-2.5 pr-1.5 h-[34px] bg-[#f1ede6] ${children ? 'border-b border-[#e3dcd1]' : ''}`}>
+        {Icon && <Icon size={13} strokeWidth={1.9} className="shrink-0 text-stone-500" />}
         <span className="yago-section" style={{ color: INK.soft }}>{title}</span>
         {sub && <span className="yago-hint min-w-0 truncate">{sub}</span>}
         <div className="flex-1" />
@@ -1622,6 +1630,13 @@ export function QbSection({ title, sub, trailing, children }: Kids & { title: st
   );
 }
 export const QbNote = ({ children }: Kids) => <div className="yago-hint px-1 py-1">{children}</div>;
+/** Bölüm İÇİ alt başlık çizgisi ("PLINTH ─────"): etiket + sağa doğru silinen hairline; üstünde geniş boşluk. */
+export const SectionRule = ({ label, className = 'pt-3 pb-1 px-0.5' }: { label: string; className?: string }) => (
+  <div className={`${className} flex items-center gap-2 min-w-0`}>
+    <span className="yago-section">{label}</span>
+    <div className="flex-1 h-px" style={{ background: 'linear-gradient(90deg, #d4cdc2, rgba(212,205,194,0))' }} />
+  </div>
+);
 const QB_BACK_ITEMS: SegItem[] = [
   { key: 'none', label: 'None', title: 'No back panel' },
   { key: 'outer', label: BACK_TYPE_LABEL.outer, title: 'Nailed onto the rear edges of the body panels' },
@@ -1696,14 +1711,13 @@ export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onAppl
         </div>
         <div style={{ ...DOCK_ROW, paddingTop: 0 }}><DockStatus ready={!busy && !cyclic} text={status} title={statusTitle} /></div>
       </div>
-      <div className="px-1.5 pt-1.5 pb-2 flex flex-col gap-1.5" onMouseLeave={() => setHint(null)}>
-        {/* 1 · GÖVDE PANELLERİ: üst / alt seçimi (None · Rails · Full panel — resimli kutular) → temsili dolap (kayıtlar + köşe rozetleri)
-            → kalınlık + ölçü → bazalıda baza ölçüleri */}
-        <QbSection title="Body panels" sub={`${panelCount} panels · ${isPlinth ? 'sides reach the floor' : isLegs ? 'raised on legs' : 'on the floor'}`}>
-          <FaceChoiceRows choice={choice} onPick={pickChoice} disabled={noneWhy} />
+      <div className="px-1.5 pt-2 pb-2 flex flex-col gap-3" onMouseLeave={() => setHint(null)}>
+        {/* 1 · GÖVDE: tek arayüz — temsili dolap (üst / alt seçimi etiket satırında, kayıtlar, köşe rozetleri, panel uçları) → kalınlık +
+            ölçü → bazalıda baza ölçüleri (Goker: "body panel ile cabinet arayüzünü birleştirelim") */}
+        <QbSection icon={Container} title="Body" sub={`${panelCount} panels · ${isPlinth ? 'sides reach the floor' : isLegs ? 'raised on legs' : 'on the floor'}`}>
           {/* yüz seçimi değişince kayıt seçimi sıfırlanır (key) — açık şerit eski seçime ait kalmasın */}
           <TopBottomBlock key={`${choice.top}-${choice.bottom}`} cfg={cfg} setCfg={setCfg} W={W} H={H} D={D} legsOn={legCount > 0} choice={choice}
-            hint={hint} onHint={setHint} />
+            choiceDisabled={noneWhy} onChoice={pickChoice} hint={hint} onHint={setHint} />
           <div className="mt-2 grid grid-cols-2 gap-x-1" style={QB_CELL_ROW}>
             {num('Panel thickness', 't', cfg.thickness, v => setCfg({ thickness: v }), false, 1)}
             <ReadCell label="Body size" title="Body width × height × depth (mm)">
@@ -1711,7 +1725,7 @@ export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onAppl
             </ReadCell>
           </div>
           {isPlinth && <>
-            <SectionHead label="Plinth" rule={false} className="pt-2 pb-1 px-0.5" />
+            <SectionRule label="Plinth" />
             <div className="grid grid-cols-2 gap-x-1" style={QB_CELL_ROW}>
               {num('Plinth height', 'ph', cfg.plinth.height, v => setPlinth({ height: v }), false, 1)}
               {num('Front plinth setback', 'pf', cfg.plinth.front, v => setPlinth({ front: v }))}
@@ -1726,7 +1740,7 @@ export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onAppl
 
         {/* 2 · AYAKLAR (Goker: "sadece kayıtlı ayaklar gelsin"): ayak = kayıtlı set; bazalıda başlıkta var/yok; set + plan diyagramı +
             ölçü hücreleri (her zaman düzenlenir; elle girilen değer hızlı gövdede kalır, ↺ sete döner) */}
-        <QbSection title="Legs" sub={isLegs ? 'body height includes the legs' : isPlinth ? 'optional, under the bottom panel' : undefined}
+        <QbSection icon={Footprints} title="Legs" sub={isLegs ? 'body height includes the legs' : isPlinth ? 'optional, under the bottom panel' : undefined}
           trailing={isPlain ? <span className="pr-1 text-[11px] font-semibold text-[#a39b91]">None</span>
             : isPlinth ? <div style={{ width: 118 }}><Segmented height={22} active={legCount ? 'on' : 'off'}
               items={[{ key: 'off', label: 'None', title: 'No legs — the plinth carries the body' }, { key: 'on', label: 'Legs', title: 'Legs under the bottom panel (saved leg set)' }]}
@@ -1752,7 +1766,8 @@ export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onAppl
         </QbSection>
 
         {/* 3 · ARKALIK: tip başlıkta; arkalık kartıyla aynı kesit diyagramı, büyük */}
-        <QbSection title="Back panel" sub={b.enabled ? (grooved ? 'in a groove, set back from the rear' : 'nailed on the rear edges') : undefined}
+        <QbSection icon={SendToBack} title="Back panel" sub={b.enabled ? (grooved ? `in a groove, set back from the ${backRefOf(cfg) ? BACK_REF_LABEL[backRefOf(cfg)!] : 'rear'}`
+          : 'nailed on the rear edges') : undefined}
           trailing={<div style={{ width: 206 }}><Segmented height={22} items={QB_BACK_ITEMS} active={backKey}
             onPick={k => setBack(k === 'none' ? { enabled: false } : { enabled: true, placement: k as BackPlacement })} /></div>}>
           {b.enabled ? (
@@ -1763,7 +1778,7 @@ export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onAppl
               </div>
               <div className="grid grid-cols-2 gap-x-1" style={QB_CELL_ROW}>
                 {num('Thickness', 'bt', b.thickness, v => setBack({ thickness: v }), false, 1)}
-                {num('Setback from rear', 'bsetback', b.setback, v => setBack({ setback: v }), !grooved)}
+                {num(backRefOf(cfg) ? `Setback from ${BACK_REF_LABEL[backRefOf(cfg)!]}` : 'Setback from rear', 'bsetback', b.setback, v => setBack({ setback: v }), !grooved)}
                 {num('Groove entry (In)', 'bi', b.inset, v => setBack({ inset: v }), !grooved)}
                 {num('Groove bottom gap', 'bgd', b.clear.depth, v => setClear({ depth: v }), !grooved)}
                 {num('Groove gap · front', 'bgf', b.clear.front, v => setClear({ front: v }), !grooved)}
@@ -2535,7 +2550,10 @@ export function AssemblyPanel() {
     const fresh = new Set([...keys].filter(k => !prev.keys.has(k)));
     if (!fresh.size) return;
     const st = useAppStore.getState();
-    setOpenCardId(cur => (cur && fresh.has(cur) ? cur : null));
+    // KAPAKTAN EKLENEN raf / dikme (doorBond → açık kapak kartı): kapak kartı AÇIK KALIR, yeni gruplar arka planda listeye girer
+    // (Goker: "kapak içinden raf veya dikme yerleştirince her seferinde kapak arayüzünden çıkıyor, bunu yapma").
+    const addedFrom = (id: string) => [...fresh].every(k => st.panelGroups.some(pg => pg.id === k && pg.doorBond?.doorGroupId === id));
+    setOpenCardId(cur => (cur && (fresh.has(cur) || addedFrom(cur)) ? cur : null));
     // Body satırı açıkken yeniden kurulan parçalar "yeni" sayılmaz (satır açık kalır).
     if (st.selectedPanelRow !== null && !String(st.selectedPanelRow).startsWith('quick-')) {
       const row = String(st.selectedPanelRow);
@@ -2543,7 +2561,7 @@ export function AssemblyPanel() {
       const vf = row.startsWith('plinth-') ? st.virtualFaces.find(f => f.plinthId === row.slice('plinth-'.length)) : st.virtualFaces.find(f => f.id === rowVfId(st.selectedPanelRow));
       if (!vf || !fresh.has(keyOf(vf))) setSelectedPanelRow(null);
     }
-    const stale = (id: string) => !fresh.has(id);
+    const stale = (id: string) => !fresh.has(id) && !addedFrom(id);
     dropGroupSel(stale); dropRefPick(stale);
     const keep = <T extends { id: string } | null>(p: T) => (p && stale(p.id) ? null : p);
     setDoorNodeSel(keep); setDoorAddPick(keep); setBackNodeSel(keep); setBackClearEdge(keep);
@@ -2796,6 +2814,17 @@ export function AssemblyPanel() {
     const idsOf = (r: Row) => (r.kind === 'vf' || r.kind === 'plinth' ? [r.vf.id] : r.members.map(m => m.id));
     const rowKeyOf = (r: Row) => (r.kind === 'vf' ? r.vf.id : r.kind === 'plinth' ? plinthRowKey(r.set.id) : `grp-${r.group.id}`);
     const clearDrag = () => { setDragIndex(null); setDropIndex(null); };
+    // ODAK ANAHTARI: açık olan tek satır (aşağıda ODAK GÖRÜNÜMÜ) — tutamaç odakta çizilmez (sıralama yalnız listede).
+    const focusKey = (() => {
+      if (selectedPanelRow !== null) {
+        const r = String(selectedPanelRow);
+        if (r.startsWith('quick-') || r.startsWith('plinth-')) return r;
+        const vf = svf.find(f => f.id === rowVfId(selectedPanelRow));
+        if (vf) { const gid = groupOf(vf); return gid ? `grp-${gid}` : vf.id; }
+      }
+      const gid = openCardId || selectedPanelGroupId || selectedDoorGroupId || selectedBackGroupId;
+      return gid && rows.some(r => rowKeyOf(r) === `grp-${gid}`) ? `grp-${gid}` : null;
+    })();
 
     const deletePanelAndFace = async (vfId: string) => {
       const p = panelOfVf(vfId, shapes);
@@ -2819,7 +2848,7 @@ export function AssemblyPanel() {
       if (next && rowKeyOf(next) === rowKeyOf(rows[draggedRowIdx])) return clearDrag();
       await doReorder(idsOf(rows[draggedRowIdx]), next ? idsOf(next)[0] : null);
     };
-    const grip = (rowKey: string, rowIdx: number, title: string) => (
+    const grip = (rowKey: string, rowIdx: number, title: string) => (focusKey ? <span className="shrink-0 w-[14px] ml-[2px] self-stretch" /> : (
       <span draggable
         onMouseDown={() => setArmedRowKey(rowKey)} onMouseUp={() => setArmedRowKey(null)}
         onMouseLeave={() => { if (dragIndex === null) setArmedRowKey(null); }}
@@ -2830,11 +2859,25 @@ export function AssemblyPanel() {
           ${armedRowKey === rowKey ? 'text-orange-500' : 'text-stone-300/70 group-hover/row:text-stone-400 hover:!text-orange-500'}`}>
         <GripVertical size={13} strokeWidth={1.75} />
       </span>
-    );
+    ));
     const rowRef = (k: string) => (el: HTMLDivElement | null) => { if (el) rowRefs.current.set(k, el); else rowRefs.current.delete(k); };
-    // Satır başlığı / ok: kapalı → aç + seç; açık → kapat (seçim düşer).
-    const rowToggle = (key: string, sel: boolean) => (e: React.MouseEvent) => {
-      stop(e); if (sel) setSelectedPanelRow(null); else setSelectedPanelRow(key, sid);
+    // TEK AÇIK (Goker, 8 Kas 2026 — "her zaman bir grup açık kalsın"): bir satır açılırken öteki her şey kapanır — grup / kapak / arkalık
+    // seçimleri, açık kart, Body taslağı. Üye satırı (grup kartının içinde) kartını kapatmaz.
+    const soloRow = (key: string, inCard?: string) => {
+      if (!inCard) { dropGroupSel(() => true); setOpenCardId(null); }
+      else dropGroupSel(x => x !== inCard);
+      dropRefPick(() => true); setQuickDraft(null);
+      setSelectedPanelRow(key, sid);
+    };
+    /** Odağı tümden kapat: liste yeniden dolar. */
+    const closeFocus = () => {
+      if (useAppStore.getState().selectedPanelRow !== null) setSelectedPanelRow(null);
+      setQuickDraft(null); dropGroupSel(() => true); dropRefPick(() => true); setOpenCardId(null);
+      setDoorNodeSel(null); setDoorAddPick(null); setBackNodeSel(null); setBackClearEdge(null);
+    };
+    // Satır başlığı / ok: kapalı → aç + seç (tek açık); açık → kapat (seçim düşer).
+    const rowToggle = (key: string, sel: boolean, inCard?: string) => (e: React.MouseEvent) => {
+      stop(e); if (sel) setSelectedPanelRow(null); else soloRow(key, inCard);
     };
     const selIdx = (ids: string[]) => ids.findIndex(id => id === selVf);
 
@@ -2942,7 +2985,7 @@ export function AssemblyPanel() {
       }).join('');
       const backTxt = `${saved.back.enabled ? `${BACK_TYPE_LABEL[saved.back.placement].toLowerCase()} back` : 'no back'}${railsTxt}`;
       const legs = quickLegsOf(saved)?.count ?? 0;
-      const toggle = (e: React.MouseEvent) => { stop(e); setQuickDraft(null); if (sel) setSelectedPanelRow(null); else setSelectedPanelRow(key, sid); };
+      const toggle = (e: React.MouseEvent) => { stop(e); if (sel) { setQuickDraft(null); setSelectedPanelRow(null); } else soloRow(key); };
       return rowShell({
         key, open: sel, sel, lead: <span className="shrink-0 w-[14px] ml-[2px] self-stretch" />, onToggle: toggle,
         num: 'B', kind: 'quick', count: parts,
@@ -2977,7 +3020,8 @@ export function AssemblyPanel() {
       return rowShell({
         key: vf.id, refKey: `vf-${vf.id}`, open: sel, sel, dragging: !member && dragIndex === rowIdx, armed: armedRowKey === vf.id,
         lead: member ? <span className="shrink-0 w-[6px] ml-[2px] self-stretch" /> : grip(vf.id, rowIdx, 'Drag to reorder'),
-        onToggle: rowToggle(`vf-${vf.id}`, sel), num: label, small: member, kind: group ? group.kind : door ? 'door' : back ? 'back' : 'body',
+        onToggle: rowToggle(`vf-${vf.id}`, sel, member ? (group ?? door ?? back)?.id : undefined), num: label, small: member,
+        kind: group ? group.kind : door ? 'door' : back ? 'back' : 'body',
         name: member && (group || slab) ? (
           <span title={memberTitle}
             className="flex-1 min-w-0 h-[22px] px-[5px] flex items-center gap-1.5 text-[11.5px] font-medium text-stone-500 truncate cursor-default select-none">
@@ -3018,7 +3062,15 @@ export function AssemblyPanel() {
     }) => {
       const rowKey = `grp-${id}`, selAll = o.selected === id;
       const open = openCardId === id || selAll || members.some(m => m.id === selVf);
-      const toggle = (e: React.MouseEvent) => { stop(e); if (open) closeCard(id, members.map(m => m.id)); else { o.select(id); openCard(id); } };
+      const toggle = (e: React.MouseEvent) => {
+        stop(e);
+        if (open) { closeCard(id, members.map(m => m.id)); return; }
+        // Tek açık: başka satırın seçimi / öteki kartlar / Body taslağı kapanır.
+        const row = useAppStore.getState().selectedPanelRow;
+        if (row !== null && !members.some(m => `vf-${m.id}` === row)) setSelectedPanelRow(null);
+        dropGroupSel(x => x !== id); dropRefPick(x => x !== id); setQuickDraft(null);
+        o.select(id); openCard(id);
+      };
       return rowShell({
         key: rowKey, refKey: rowKey, open, sel: selAll, dragging: dragIndex === rowIdx, armed: armedRowKey === rowKey,
         lead: grip(rowKey, rowIdx, 'Drag to reorder (whole group)'), onToggle: toggle,
@@ -3369,23 +3421,49 @@ export function AssemblyPanel() {
       });
     };
 
+    const renderRow = (row: Row, rowIdx: number) => {
+      const label = String(rowIdx + 1);
+      return row.kind === 'vf' ? vfRow(row.vf, rowIdx, label, {})
+        : row.kind === 'plinth' ? plinthRow(row.set, rowIdx, label)
+        : row.kind === 'door' ? doorCard(row.group, row.members, rowIdx, label)
+        : row.kind === 'back' ? backCard(row.group, row.members, rowIdx, label)
+        : groupCard(row.group, row.members, rowIdx, label);
+    };
+    const quickParts = quickBodyVfsOf(sid, svf).length, quickSaved = quickBodyOf(selectedShape);
+
+    // ODAK GÖRÜNÜMÜ (Goker, 8 Kas 2026 — "alt alta çok panel açık birikiyor; her zaman bir grup açık kalsın, içinde olunan arayüz en
+    // yukarıda açılsın, kapatınca satırlar sıra efektiyle dolsun"): açık olan TEK şey (gövde paneli · grup / kapak / arkalık kartı · baza
+    // seti · Body) listenin yerine tek başına, üstünde "‹ All panels" şeridiyle; öteki satırlar gizli. Kapanınca liste satırları sırayla
+    // belirir (yago-row-in, satır başına gecikme).
+    if (focusKey) {
+      const idx = rows.findIndex(r => rowKeyOf(r) === focusKey);
+      const focused = focusKey.startsWith('quick-') ? (quickParts && quickSaved ? quickRow(quickSaved, quickParts) : null) : idx >= 0 ? renderRow(rows[idx], idx) : null;
+      if (focused) {
+        const total = rows.length + (quickParts && quickSaved ? 1 : 0);
+        return [
+          <button key="focus-bar" type="button" onClick={e => { stop(e); closeFocus(); }} title="Back to the list — closes this editor"
+            className="yago-row-in w-full h-[26px] mb-0.5 pl-1 pr-2 rounded-[7px] flex items-center gap-1 text-[11px] font-semibold text-stone-500 hover:bg-[#f1ede6] hover:text-stone-800 transition-colors"
+            style={{ fontFamily: UI_FONT }}>
+            <ChevronLeft size={14} strokeWidth={2.2} />All panels<span className="font-medium text-stone-400">· {total}</span>
+          </button>,
+          <div key={`focus-${focusKey}`} className="yago-expand">{focused}</div>,
+        ];
+      }
+    }
+
     const elements: React.ReactNode[] = [];
     rows.forEach((row, rowIdx) => {
       const draggingThis = dragIndex === rowIdx, dropHere = dropIndex === rowIdx;
-      const label = String(rowIdx + 1);
       elements.push(
-        <div key={`wrap-${rowKeyOf(row)}`} className={dropHere ? 'rounded-[10px] ring-1 ring-amber-300 bg-[#fffbf0]' : ''}
+        <div key={`wrap-${rowKeyOf(row)}`} className={`yago-row-in ${dropHere ? 'rounded-[10px] ring-1 ring-amber-300 bg-[#fffbf0]' : ''}`}
+          style={{ animationDelay: `${Math.min(rowIdx + 1, 14) * 22}ms` }}
           onDragOver={e => {
             if (dragIndex === null || draggingThis) return;
             e.preventDefault(); e.dataTransfer.dropEffect = 'move';
             if (dropIndex !== rowIdx) setDropIndex(rowIdx);
           }}
           onDrop={e => { e.preventDefault(); if (dragIndex !== null) void onRowDropBelow(dragIndex, rowIdx); }}>
-          {row.kind === 'vf' ? vfRow(row.vf, rowIdx, label, {})
-            : row.kind === 'plinth' ? plinthRow(row.set, rowIdx, label)
-            : row.kind === 'door' ? doorCard(row.group, row.members, rowIdx, label)
-            : row.kind === 'back' ? backCard(row.group, row.members, rowIdx, label)
-            : groupCard(row.group, row.members, rowIdx, label)}
+          {renderRow(row, rowIdx)}
         </div>
       );
       if (dropHere && !draggingThis) elements.push(<div key={`${rowKeyOf(row)}-drop-ind`} className={`${DROP_BAND} -my-0.5`} />);
@@ -3400,8 +3478,7 @@ export function AssemblyPanel() {
         </div>
       );
     }
-    const quickParts = quickBodyVfsOf(sid, svf).length, quickSaved = quickBodyOf(selectedShape);
-    if (quickParts && quickSaved) elements.unshift(quickRow(quickSaved, quickParts));
+    if (quickParts && quickSaved) elements.unshift(<div key="wrap-quick" className="yago-row-in">{quickRow(quickSaved, quickParts)}</div>);
     return elements;
   };
 

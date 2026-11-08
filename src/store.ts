@@ -236,6 +236,9 @@ export interface BackGroup {
   grooveClearBy?: Record<string, { front?: number; back?: number; depth?: number }>;
   /** Derinlik referansı: sınır panelinin arka yüzü. Yoksa en gerideki sınır panelinin yüzü. Çakma (kısaltılan) kenar derinlik vermez. */
   depthRef?: BackBoundRef;
+  /** CANLI DERİNLİK REFERANSI (hızlı gövde: "arkalık referansı" seçilen panel / kanallı arka kayıt): yüz seçimiyle kurulan grupta
+   *  bile düzlem `depthRef` panelinin arka yüzünden ölçülür (sınır olmasa da) → panel kısalınca / taşınınca arkalık onunla gider. */
+  depthRefLive?: boolean;
   /** İÇ dikdörtgen (sınır panellerinin iç yüzleri / gövde kenarları); front = sınır panellerinin ARKA yüzü (P). */
   rect: BackRect;
   /** Bölme ağacı (kök = iç dikdörtgen). */
@@ -389,7 +392,13 @@ export interface QuickBodyConfig {
    *  girebileyim"): panel başına uç değerleri (mm; + uzatır, − kısaltır) — yanlarda ön / arka / üst / alt, üst / alt panelde ön / arka /
    *  sol / sağ uç. Kurulumda panelin o yöndeki dış yüzüne dyn extrude adımı olarak yazılır (PanelGroupService.applyQuickBody). */
   ext?: Partial<Record<QuickBodyPanelKey, PanelEdgeExt>>;
+  /** ARKALIK REFERANSI (Goker, 8 Kas 2026 — "panele arkalık ofseti için referans al seçeneği; o panel kısalsa bile arkalık o panele
+   *  göre yerleşsin"): arkalığın setback'i bu parçanın ARKA yüzünden ölçülür ve parça sonradan kısalınca / taşınınca arkalık izler.
+   *  Yoksa (null): kanallı arka kayıt (önce üst) otomatik referans; o da yoksa gövdenin arka yüzü. 'body' = otomatik referans da
+   *  kapalı (her zaman gövdenin arka yüzü). */
+  backRef?: QuickBackRefKey | 'body' | null;
 }
+export type QuickBackRefKey = QuickBodyPanelKey | 'topRear' | 'bottomRear';
 export type QuickBodyPanelKey = 'left' | 'right' | 'top' | 'bottom';
 export type PanelEdgeDir = 'front' | 'rear' | 'top' | 'bottom' | 'left' | 'right';
 export type PanelEdgeExt = Partial<Record<PanelEdgeDir, number>>;

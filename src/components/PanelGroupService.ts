@@ -8,7 +8,7 @@ import {
 import {
   type CavityBox, type Shape, type VirtualFace, panelOfVf, type GapSpec, useAppStore, type PanelGroup, type CavityPick, type CavityStep, shapeById,
   requestRebuild, type RefFacePick, type CornerKey, type QuickBodyConfig, type JoinPass, type BodyLegs, childPanelsOf, type QuickBodyPart, type QuickBodyPartBase,
-  type QuickBodyRails, type RailSpec, type RailBackRel, railsOf, type PanelEdgeDir, PANEL_EDGE_DIRS, panelEdgeOf,
+  type QuickBodyRails, type RailSpec, type RailBackRel, railsOf, type PanelEdgeDir, PANEL_EDGE_DIRS, panelEdgeOf, type QuickBackRefKey, type BackGroup,
 } from '../store';
 import {
   backObstacleFor, backMemberCutFor, isBackPanel, backPreviewStamp, backCandidatesAt, BACK_AXIS, BACK_SIDE, createBackGroupFromPick, setBackDefaults,
@@ -2421,6 +2421,24 @@ export function panelEdgeValue(cfg: QuickBodyConfig, key: QuickPanelKey, dir: Pa
   return Math.min(hi, Math.max(lo, panelEdgeOf(cfg, key, dir)));
 }
 
+/** ETKİN ARKALIK REFERANSI: seçilen parça (cfg.backRef; varsa ve geçerliyse — yanlar her zaman, üst / alt panel varken, arka kayıt
+ *  varken ve arkalığın önünde değilken); yoksa KANALLI arkalıkta arkalık sınırı olan arka kayıt (önce üst, sonra alt) — kayıt öne
+ *  alınınca arkalık onunla gelir; o da yoksa null (gövdenin arka yüzü). */
+export function backRefOf(cfg: QuickBodyConfig): QuickBackRefKey | null {
+  const rearRailOk = (face: 'top' | 'bottom') => railsOf(cfg, face).rear.kind !== 'none' && railBackRelOf(cfg, face) !== 'infront';
+  const valid = (k: QuickBackRefKey) => (k === 'left' || k === 'right' ? true : k === 'top' || k === 'bottom' ? railsOf(cfg, k).panel
+    : rearRailOk(k === 'topRear' ? 'top' : 'bottom'));
+  if (!cfg.back.enabled || cfg.backRef === 'body') return null;
+  if (cfg.backRef && valid(cfg.backRef)) return cfg.backRef;
+  if (cfg.back.placement !== 'inner') return null;
+  for (const face of ['top', 'bottom'] as const) {
+    const r = railsOf(cfg, face);
+    // Kayıt arkalık sınırı mı (pushRails rearBound ile aynı): panel yoksa, kanallı arkalıkta ya da kayıt paneli geçiyorsa.
+    if (rearRailOk(face) && (!r.panel || railPassesPanel(r, 'rear') || r.backRel === 'groove')) return face === 'top' ? 'topRear' : 'bottomRear';
+  }
+  return null;
+}
+
 /** Etkin köşe birleşimleri: bazalıda alt köşeler her zaman 'side' (alt panel yanların arasında, yanlar yere iner); kayıtlı yüzün köşeleri
  *  de 'side' — yalnız iki kayıt da yatayken kullanıcının seçimi geçerli. */
 export function effectiveJoins(cfg: QuickBodyConfig): Record<CornerKey, JoinPass> {
@@ -2908,6 +2926,11 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
   // arkalık kapatıldıysa silinir. Rolde yüz yoksa −Z.
   let backCreated = false;
   const b = cfg.back;
+  // ARKALIK REFERANSI (backRefOf): seçilen / otomatik parçanın VF'si CANLI derinlik referansı olur → arkalık o parçanın arka yüzünden
+  // ölçülür, parça kısalınca / taşınınca (ör. arka dik kayıt öne alınınca) arkalık onunla gider. Yoksa yüz düzlemi (eski davranış).
+  const refKey = backRefOf(cfg), refVf = refKey ? newVfs.find(v => v.quickBody === refKey) : undefined;
+  const depthInit = (fallback?: BackGroup['depthRef']): Pick<BackGroup, 'depthRef' | 'depthRefLive'> =>
+    (refVf ? { depthRef: { vfId: refVf.id }, depthRefLive: true } : { depthRef: fallback, depthRefLive: false });
   let live = quickBackGroupsOf(body.id);
   // Arkalığın sınırlarını değiştiren bir kayıt ayarı değiştiyse (üst / alt panel ↔ kayıt, arka kayıt tipi, kanal / önüne) kurulu arkalık
   // eski VF'lere bağlıdır → silinip adaydan yeniden kurulur (bölmeleri korunamaz); yoksa yerinde güncellenir.
@@ -2921,6 +2944,7 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
     for (const g of live) deleteBackGroupWithMembers(g.id);
   } else if (live.length) {
     for (const g of live) {
+      useAppStore.getState().updateBackGroup(g.id, depthInit());
       await setBackDefaults(g.id, {
         placement: b.placement, thickness: b.thickness, setback: b.setback, inset: b.inset,
         grooveClear: { front: b.clear.front, back: b.clear.back, depth: b.clear.depth },
@@ -2949,6 +2973,7 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
       const g = createBackGroupFromPick(fresh.id, pick, b.placement, i ? `Back ${i + 1}` : 'Back', {
         thickness: Math.max(1, b.thickness), setback: Math.max(0, b.setback), inset: Math.max(0, b.inset),
         grooveClear: { front: Math.max(0, b.clear.front), back: Math.max(0, b.clear.back), depth: Math.max(0, b.clear.depth) }, quickBody: true,
+        ...depthInit(pick.depth),
       });
       backCreated = backCreated || !!g;
     });

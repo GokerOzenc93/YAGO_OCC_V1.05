@@ -848,6 +848,12 @@ const SIDEBAR_CSS = `
 /* Kart gövdesi açılış animasyonu */
 @keyframes yagoExpand { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
 .bone-skin .yago-expand { animation: yagoExpand 180ms cubic-bezier(.2,.7,.2,1) both; }
+/* Satırların sırayla dolması (Goker, Kas 2026 — "kapatınca satırlar sıra efektli, şık bir şekilde dolsun"): her satır mount olurken kayarak
+   belirir; gecikme satır sırasıyla (inline animationDelay). */
+@keyframes yagoRowIn { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }
+.bone-skin .yago-row-in { animation: yagoRowIn 260ms cubic-bezier(.2,.7,.2,1) both; }
+/* SVG içi şerit düğmesi (temsili dolap, yüz seçimi): üzerine gelince açık zemin */
+.bone-skin g:hover > .yago-seg-hover { fill: #ffffff; }
 /* Kenar çubuğundaki tüm girişler */
 .bone-skin input[type="text"], .bone-skin textarea {
   background: #ffffff !important; border: 1px solid #e3ddd4 !important; border-radius: 6px !important;

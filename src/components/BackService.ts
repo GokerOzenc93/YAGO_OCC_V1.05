@@ -586,7 +586,19 @@ function solveBackEdges(group: BackGroup, parent: Shape, shapes: Shape[]): { edg
   }
   if (group.faceBox) {
     // Yüz seçimi: arkalık düzlemi = o yüzün düzlemi; yüzü aşan sınır panellerinin arkası da o düzlemdir (çakma örtme doğru çalışsın).
+    // CANLI REFERANS (depthRefLive): düzlem referans panelin arka yüzü — sınır kenarıysa o kenarın yüzü, değilse panelin kutusu
+    // (çakma / kısaltılan kenar geri besleme yüzünden yok sayılır).
     P = bodyFront;
+    const ref = group.depthRefLive ? group.depthRef?.vfId : undefined;
+    if (ref && !keyed.some(([k, x]) => nail.has(k) && x.ref.vfId === ref)) {
+      const hit = depthEdges.find(x => x.ref.vfId === ref && x.front != null);
+      if (hit) P = hit.front!;
+      else {
+        const p = panelOfVf(ref, shapes);
+        const box = p && (p.parameters as { parentShapeId?: string })?.parentShapeId === parent.id ? panelLocalBox(p, parent) : null;
+        if (box) P = group.side > 0 ? box.max[group.axis] : box.min[group.axis];
+      }
+    }
     for (const k of ['l', 'r', 'b', 't'] as const) if (edges[k].front != null) edges[k] = { ...edges[k], front: P };
   }
   return { edges, P, bounds, nail };
@@ -1124,7 +1136,7 @@ function makeMemberVf(group: BackGroup, i: number, sol: BackSolution): VirtualFa
 /** `init`: hızlı gövde gibi çağıranların varsayılanları (kalınlık / setback / giriş / bollaştırma / kenar ilişkisi) ezen değerleri. */
 export function createBackGroupFromPick(
   shapeId: string, pick: BackPick, placement: BackPlacement, name?: string,
-  init?: Partial<Pick<BackGroup, 'thickness' | 'setback' | 'inset' | 'grooveClear' | 'quickBody' | 'edgeRel'>>,
+  init?: Partial<Pick<BackGroup, 'thickness' | 'setback' | 'inset' | 'grooveClear' | 'quickBody' | 'edgeRel' | 'depthRef' | 'depthRefLive'>>,
 ): BackGroup | null {
   const st = useAppStore.getState();
   const parent = shapeById(shapeId, st.shapes);
