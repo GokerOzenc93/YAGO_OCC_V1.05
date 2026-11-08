@@ -852,8 +852,11 @@ const SIDEBAR_CSS = `
    belirir; gecikme satır sırasıyla (inline animationDelay). */
 @keyframes yagoRowIn { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }
 .bone-skin .yago-row-in { animation: yagoRowIn 260ms cubic-bezier(.2,.7,.2,1) both; }
+/* Traverse seçim kutusu (temsili dolap): etiketten açılır gibi */
+@keyframes yagoPop { from { opacity: 0; transform: translateY(-4px) scale(0.985); } to { opacity: 1; transform: none; } }
+.bone-skin .yago-pop { animation: yagoPop 170ms cubic-bezier(.2,.7,.2,1) both; }
 /* SVG içi şerit düğmesi (temsili dolap, yüz seçimi): üzerine gelince açık zemin */
-.bone-skin g:hover > .yago-seg-hover { fill: #ffffff; }
+.bone-skin g:hover > .yago-seg-hover { fill: #ffffff; stroke: #c4bcb0; }
 /* Kenar çubuğundaki tüm girişler */
 .bone-skin input[type="text"], .bone-skin textarea {
   background: #ffffff !important; border: 1px solid #e3ddd4 !important; border-radius: 6px !important;

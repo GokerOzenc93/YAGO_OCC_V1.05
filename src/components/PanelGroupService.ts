@@ -2363,7 +2363,7 @@ export function syncPanelGroups(parentShapeId: string): void {
 export type QuickPanelKey = 'top' | 'left' | 'right' | 'bottom';
 export const QUICK_PANEL_NAME: Record<QuickPanelKey, string> = { top: 'Top', left: 'Left', right: 'Right', bottom: 'Bottom' };
 /** Kayıt parçası adları (liste). */
-export const QUICK_RAIL_NAME = { topFront: 'Top front rail', topRear: 'Top rear rail', bottomFront: 'Bottom front rail', bottomRear: 'Bottom rear rail' } as const;
+export const QUICK_RAIL_NAME = { topFront: 'Top front traverse', topRear: 'Top rear traverse', bottomFront: 'Bottom front traverse', bottomRear: 'Bottom rear traverse' } as const;
 /** Köşe → (yatay panel, yan panel). */
 const CORNER_PANELS: Record<CornerKey, [QuickPanelKey, QuickPanelKey]> = {
   tl: ['top', 'left'], tr: ['top', 'right'], bl: ['bottom', 'left'], br: ['bottom', 'right'],
@@ -2447,7 +2447,7 @@ export function effectiveJoins(cfg: QuickBodyConfig): Record<CornerKey, JoinPass
   if (railsLockCorners(cfg, 'top')) { j.tl = 'side'; j.tr = 'side'; }
   return j;
 }
-const RAIL_LOCK_WHY = 'no panel: rails sit between the sides — set both rails to horizontal to change';
+const RAIL_LOCK_WHY = 'no panel: the traverses sit between the sides — set both traverses to horizontal to change';
 /** Kilitli köşeler ve nedeni (arayüz: köşe kareleri "fixed"). */
 export function lockedCorners(cfg: QuickBodyConfig): Partial<Record<CornerKey, string>> {
   const out: Partial<Record<CornerKey, string>> = {};
@@ -2769,7 +2769,9 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
       front: fwd, rear: neg(fwd), top: [0, 1, 0], bottom: [0, -1, 0],
       left: FACE.left[0]?.n ?? [-1, 0, 0], right: FACE.right[0]?.n ?? [1, 0, 0],
     };
-    return PANEL_EDGE_DIRS[key].map(d => [d, panelEdgeValue(cfg, key, d)] as const).filter(([, v]) => Math.abs(v) > 0.001)
+    // Paneli GEÇEN dikey traverse'in ucunda panel ucu traverse'e devredilir (traverse o kadar içeri gelir, panel onda biter) → atlanır.
+    const passEnd = (d: PanelEdgeDir) => (key === 'top' || key === 'bottom') && (d === 'front' || d === 'rear') && railPassesPanel(railsOf(cfg, key), d);
+    return PANEL_EDGE_DIRS[key].filter(d => !passEnd(d)).map(d => [d, panelEdgeValue(cfg, key, d)] as const).filter(([, v]) => Math.abs(v) > 0.001)
       .map(([d, v]) => [nOf[d], labelOf(nOf[d]), v] as QuickCut);
   };
   /** Yüzün kayıtları: `which` = üst / alt, `faceList` = o rolün üst / alt yüzleri (yatay kayıtlar + istif tabanı), `withPanel` = yüzde tam panel
@@ -2786,7 +2788,12 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
       if ((phase === 'before' && !passes) || (phase === 'after' && passes)) continue;
       const key: QuickBodyPartBase = `${which}${side === 'front' ? 'Front' : 'Rear'}` as QuickBodyPartBase;
       const nm = QUICK_RAIL_NAME[key as keyof typeof QUICK_RAIL_NAME];
-      const size = Math.max(1, spec.size), own = Math.max(0, spec.setback);
+      const size = Math.max(1, spec.size);
+      // PANELİ İZLER (Goker, 8 Kas 2026 — "alt panel arkadan kısalınca alt arka dik kayıt onun beraberinde gelmeli"): panelli yüzde
+      // panel o uçtan KISALDIYSA (cfg.ext) traverse de o kadar içeri gelir (yatay = panelin üstünde / altında kalır, dikey = panelin
+      // kenarında durur; paneli geçen dikey traverse panelin yeni ucunu belirler). Uzatma traverse'i taşımaz.
+      const follow = withPanel ? Math.max(0, -panelEdgeValue(cfg, which, side)) : 0;
+      const own = Math.max(0, spec.setback) + follow;
       // Arkalığın ÖNÜNE (yatay / dikey): arkalığın ön yüzüne kadar çekilir (kendi çektirmesi üstüne), arkalık sınırı değil.
       const infront = side === 'rear' && rel === 'infront';
       const setback = own + (infront ? backS + backT : 0);
