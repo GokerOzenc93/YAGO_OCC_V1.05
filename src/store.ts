@@ -385,7 +385,21 @@ export interface QuickBodyConfig {
   /** Üst / alt yüz: tam panel ya da kayıtlar (yoksa tam panel — eski kayıtlar). */
   top?: QuickBodyRails;
   bottom?: QuickBodyRails;
+  /** PANEL UÇ UZATMA / KISALTMA (Goker, 8 Kas 2026 — "alt üst sağ ve sol panellerin uzatma ve kısaltma değerlerini arayüzden
+   *  girebileyim"): panel başına uç değerleri (mm; + uzatır, − kısaltır) — yanlarda ön / arka / üst / alt, üst / alt panelde ön / arka /
+   *  sol / sağ uç. Kurulumda panelin o yöndeki dış yüzüne dyn extrude adımı olarak yazılır (PanelGroupService.applyQuickBody). */
+  ext?: Partial<Record<QuickBodyPanelKey, PanelEdgeExt>>;
 }
+export type QuickBodyPanelKey = 'left' | 'right' | 'top' | 'bottom';
+export type PanelEdgeDir = 'front' | 'rear' | 'top' | 'bottom' | 'left' | 'right';
+export type PanelEdgeExt = Partial<Record<PanelEdgeDir, number>>;
+/** Panelin düzenlenebilen uçları: yanlarda ön / arka / üst / alt, üst / alt panelde ön / arka / sol / sağ. */
+export const PANEL_EDGE_DIRS: Record<QuickBodyPanelKey, PanelEdgeDir[]> = {
+  left: ['front', 'rear', 'top', 'bottom'], right: ['front', 'rear', 'top', 'bottom'],
+  top: ['front', 'rear', 'left', 'right'], bottom: ['front', 'rear', 'left', 'right'],
+};
+/** Panelin uç değeri (yoksa 0). */
+export const panelEdgeOf = (cfg: QuickBodyConfig, key: QuickBodyPanelKey, dir: PanelEdgeDir): number => cfg.ext?.[key]?.[dir] ?? 0;
 /* ───────── AKSESUAR KÜTÜPHANESİ (AccessoryService; Goker, Eki 2026 — "Panel editör yanında Aksesuar sekmesi; ayak modelini dışarıdan
    al, 3 parça, orta parça uzasın; 4/5/6 ayak setlerini kaydet, ayak kısmında çağır") ───────── */
 export type AccessoryUnit = 'mm' | 'cm' | 'm' | 'in';

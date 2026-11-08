@@ -8,7 +8,7 @@ import {
 import {
   type CavityBox, type Shape, type VirtualFace, panelOfVf, type GapSpec, useAppStore, type PanelGroup, type CavityPick, type CavityStep, shapeById,
   requestRebuild, type RefFacePick, type CornerKey, type QuickBodyConfig, type JoinPass, type BodyLegs, childPanelsOf, type QuickBodyPart, type QuickBodyPartBase,
-  type QuickBodyRails, type RailSpec, type RailBackRel, railsOf,
+  type QuickBodyRails, type RailSpec, type RailBackRel, railsOf, type PanelEdgeDir, PANEL_EDGE_DIRS, panelEdgeOf,
 } from '../store';
 import {
   backObstacleFor, backMemberCutFor, isBackPanel, backPreviewStamp, backCandidatesAt, BACK_AXIS, BACK_SIDE, createBackGroupFromPick, setBackDefaults,
@@ -2399,6 +2399,28 @@ export const railsBothHorizontal = (cfg: QuickBodyConfig, face: 'top' | 'bottom'
 /** Panelsiz yüzün köşeleri kilitli mi (kayıt yok / dikey kayıt var → yanlar geçer). */
 const railsLockCorners = (cfg: QuickBodyConfig, face: 'top' | 'bottom') => !facePanelOn(cfg, face) && !railsBothHorizontal(cfg, face);
 
+/** PANEL UCUNUN İZİNLİ ARALIĞI (cfg.ext; + uzat, − kısalt): köşede GEÇEN parçanın ucu yalnız uzar (kısalırsa yüz bölgesi boşalan
+ *  yere açılır, karşı parça içine girer), DURAN parçanın ucu yalnız kısalır (uzarsa geçen parçaya girer). Yüzü boş (None) köşede yanın
+ *  ucu serbest; ön / arka uçlar serbest. Motor (edgeCutsFor) ve arayüz aynı aralığı kullanır. */
+export function panelEdgeLimits(cfg: QuickBodyConfig, key: QuickPanelKey, dir: PanelEdgeDir): [number, number] {
+  const j = effectiveJoins(cfg), isSide = key === 'left' || key === 'right';
+  if (isSide && (dir === 'top' || dir === 'bottom')) {
+    if (!facePartCountOf(railsOf(cfg, dir))) return [-Infinity, Infinity];
+    const c = `${dir === 'top' ? 't' : 'b'}${key === 'left' ? 'l' : 'r'}` as CornerKey;
+    return j[c] === 'side' ? [0, Infinity] : [-Infinity, 0];
+  }
+  if (!isSide && (dir === 'left' || dir === 'right')) {
+    const c = `${key === 'top' ? 't' : 'b'}${dir === 'left' ? 'l' : 'r'}` as CornerKey;
+    return j[c] === 'horiz' ? [0, Infinity] : [-Infinity, 0];
+  }
+  return [-Infinity, Infinity];
+}
+/** Panel ucunun ETKİN değeri: kayıtlı değer izinli aralığa kırpılır (köşe birleşimi sonradan değişse de parçalar iç içe girmez). */
+export function panelEdgeValue(cfg: QuickBodyConfig, key: QuickPanelKey, dir: PanelEdgeDir): number {
+  const [lo, hi] = panelEdgeLimits(cfg, key, dir);
+  return Math.min(hi, Math.max(lo, panelEdgeOf(cfg, key, dir)));
+}
+
 /** Etkin köşe birleşimleri: bazalıda alt köşeler her zaman 'side' (alt panel yanların arasında, yanlar yere iner); kayıtlı yüzün köşeleri
  *  de 'side' — yalnız iki kayıt da yatayken kullanıcının seçimi geçerli. */
 export function effectiveJoins(cfg: QuickBodyConfig): Record<CornerKey, JoinPass> {
@@ -2596,6 +2618,16 @@ function clampVerts(vs: Vec3[], cuts: QuickCut[]): Vec3[] {
   return out;
 }
 
+/** Kesim listelerini birleştir: aynı yöndeki dyn kesimler TEK adımda toplanır (iki adım aynı yüzü ayrı ayrı okumasın). */
+function mergeCuts(...lists: QuickCut[][]): QuickCut[] {
+  const out: QuickCut[] = [];
+  for (const c of lists.flat()) {
+    const same = out.find(o => !o[3] && !c[3] && o[0][0] * c[0][0] + o[0][1] * c[0][1] + o[0][2] * c[0][2] > 0.999);
+    if (same) same[2] += c[2]; else out.push([c[0], c[1], c[2], c[3]]);
+  }
+  return out.filter(c => c[3] || Math.abs(c[2]) > 0.001);
+}
+
 /* ───────── Ana akış ───────── */
 export interface QuickBodyResult { panelCount: number; backCreated: boolean; cyclic: boolean; warnings: string[] }
 
@@ -2711,6 +2743,17 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
     return l.length ? l.map(f => ({ n: f.normal, c: f.center })) : noRoles ? [{ n, c: boxFaceCenter(n) }] : [];
   };
   const inward = (n: Vec3) => axisDirOfNormal(neg(n));
+  /** Panelin UÇ değerleri (cfg.ext; + uzat, − kısalt) → dyn kesimler: ön / arka = gövdenin ön ekseni, üst / alt = ±Y, sol / sağ = yan
+   *  yüzlerin normali (roller yoksa ±X). */
+  const edgeCutsFor = (key: QuickPanelKey): QuickCut[] => {
+    const ext = cfg.ext?.[key]; if (!ext) return [];
+    const nOf: Record<PanelEdgeDir, Vec3> = {
+      front: fwd, rear: neg(fwd), top: [0, 1, 0], bottom: [0, -1, 0],
+      left: FACE.left[0]?.n ?? [-1, 0, 0], right: FACE.right[0]?.n ?? [1, 0, 0],
+    };
+    return PANEL_EDGE_DIRS[key].map(d => [d, panelEdgeValue(cfg, key, d)] as const).filter(([, v]) => Math.abs(v) > 0.001)
+      .map(([d, v]) => [nOf[d], labelOf(nOf[d]), v] as QuickCut);
+  };
   /** Yüzün kayıtları: `which` = üst / alt, `faceList` = o rolün üst / alt yüzleri (yatay kayıtlar + istif tabanı), `withPanel` = yüzde tam panel
    *  var (kayıtlar panelin içinde: yatay → panelin iç yüzüne istif, dikey → ön / arka yüzde panele dayalı). `phase` (panelli yüz):
    *  'before' = paneli GEÇEN dikey kayıtlar (panelden ÖNCE; kenara kadar, panel onlarda kısalır), 'after' = kalanlar (yanlardan sonra). */
@@ -2791,19 +2834,15 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
     const pb = (key === 'top' || key === 'bottom') && panelYieldsBackTo(cfg, key) ? { backBound: false } : {};
     for (let i = 0; i < FACE[key].length; i++) {
       const f = FACE[key][i], pk = partKey(key, i), nm = partName(QUICK_PANEL_NAME[key], i);
-      if (key === 'bottom' && lift > 0) {
-        // Yükseltilen alt panelin bölgesi motor tarafından GERÇEK konumunda çözülür (damgalar panelin ötelemesi kadar kaydırılır);
-        // ayaklıda kısaltılmış yanlar o yükseklikte alt paneli keser → ek extrude gerekmez.
-        await push(pk, f.n, f.seed, nm, { move: ['y+', lift], ...pb });
-      } else if ((key === 'left' || key === 'right') && cfg.base === 'legs' && lift > 0 && joins[key === 'left' ? 'bl' : 'br'] === 'side') {
-        // Yan köşeden geçiyor ama ayak kadar yukarıda biter: alt kenar extrude ile kısaltılır (vekil de kısaltılmış).
-        await push(pk, f.n, f.seed, nm, {
-          cuts: [[[0, -1, 0], 'Y-', -lift]],
-          proxyVerts: vs => vs.map(v => [v[0], Math.max(v[1], y0 + lift), v[2]] as Vec3),
-        });
-      } else {
-        await push(pk, f.n, f.seed, nm, pb);
-      }
+      // Ayaklıda yan köşeden geçiyor ama ayak kadar yukarıda biter: alt kenar extrude ile kısaltılır. Kullanıcının uç değerleri
+      // (uzat / kısalt) aynı yöndeki kesime eklenir; vekil kısaltmaları izler (büyütme vekile yansımaz — damga kuralı).
+      const legCut: QuickCut[] = (key === 'left' || key === 'right') && cfg.base === 'legs' && lift > 0 && joins[key === 'left' ? 'bl' : 'br'] === 'side'
+        ? [[[0, -1, 0], 'Y-', -lift]] : [];
+      const cuts = mergeCuts(legCut, edgeCutsFor(key));
+      const withCuts = cuts.length ? { cuts, proxyVerts: (vs: Vec3[]) => clampVerts(vs, cuts) } : {};
+      // Yükseltilen alt panelin bölgesi motor tarafından GERÇEK konumunda çözülür (damgalar panelin ötelemesi kadar kaydırılır);
+      // ayaklıda kısaltılmış yanlar o yükseklikte alt paneli keser → ek extrude gerekmez.
+      await push(pk, f.n, f.seed, nm, { ...(key === 'bottom' && lift > 0 ? { move: ['y+', lift] as [MoveTransformStep['axis'], number] } : {}), ...withCuts, ...pb });
     }
   }
   for (const key of railsAfter) await pushRails(key, FACE[key], true, 'after');
@@ -2814,7 +2853,9 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
     // bölgesi yukarı açık olabilir) üst yüzünden FIXED baza yüksekliği.
     const ym = y0 + lift / 2;
     const fronts = roleFaces('front'), rears = roleFaces('rear');
-    const plinthCuts: QuickCut[] = !facePanelOn(cfg, 'bottom') ? [[[0, 1, 0], 'Y+', lift, true]] : [];
+    // Baza yüksekliği HER ZAMAN sabitlenir: alt panel yoksa ya da önden / arkadan kısaltıldıysa yüz bölgesi yukarı açılır (baza
+    // üst panele kadar uzardı).
+    const plinthCuts: QuickCut[] = [[[0, 1, 0], 'Y+', lift, true]];
     const plinthProxy = plinthCuts.length ? (vs: Vec3[]) => clampVerts(vs, plinthCuts) : undefined;
     const frontList = fronts.length ? fronts.map(f => ({ n: f.normal, c: f.center })) : noRoles ? [{ n: [0, 0, 1] as Vec3, c: [(x0 + x1) / 2, ym, z1] as Vec3 }] : [];
     for (let i = 0; i < frontList.length; i++) {
