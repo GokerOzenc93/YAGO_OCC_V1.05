@@ -3,12 +3,12 @@ import {
   type Point2D, type Vec3, panelHasRotation, largestFaceNormal, clipHalfPlane, frontHullOf, clipPolyToConvex, polyArea, genId, round1, localBboxOf,
   effectiveBodyGeometry, getFacesAndGroups, vertexModsKey, isFlatNormal, matchReferenceFace, getShapeMatrix, dominantAxisLabel, type FaceData,
   type CoplanarFaceGroup, computeFaceComponentContour, computeFreeRegionLocal, fromPlaneUV, vec3, createFaceDescriptor, createPanelFromVirtualFace,
-  convertReplicadToThreeGeometry, type MoveTransformStep, type ExtrudeStep, axisDirToVec,
+  convertReplicadToThreeGeometry, type MoveTransformStep, type ExtrudeStep, axisDirToVec, panelBehindStackPlane,
 } from './Geometry';
 import {
   type CavityBox, type Shape, type VirtualFace, panelOfVf, type GapSpec, useAppStore, type PanelGroup, type CavityPick, type CavityStep, shapeById,
   requestRebuild, type RefFacePick, type CornerKey, type QuickBodyConfig, type JoinPass, type BodyLegs, childPanelsOf, type QuickBodyPart, type QuickBodyPartBase,
-  type QuickBodyRails, type RailSpec, type RailBackRel, type BackGroup, railsOf,
+  type QuickBodyRails, type RailSpec, type RailBackRel, railsOf,
 } from '../store';
 import {
   backObstacleFor, backMemberCutFor, isBackPanel, backPreviewStamp, backCandidatesAt, BACK_AXIS, BACK_SIDE, createBackGroupFromPick, setBackDefaults,
@@ -2343,14 +2343,23 @@ export function syncPanelGroups(parentShapeId: string): void {
    hızlı gövdenin kurduğu arkalık (`BackGroup.quickBody`) yerinde güncellenir, ayaklar yeniden yazılır.
 
    KAYITLAR (Goker, Kas 2026 — "üst panel yok / alt panel yok seçeneği; yerine kayıt arayüzü"): üst / alt panel yerine ön + arka kayıt
-   (store.QuickBodyRails). Yatay kayıt = üst / alt YÜZDE yatan şerit: tam serbest bölge, ön / arka kenardan `setback` kadar dyn kesim +
+   (store.QuickBodyRails; Goker, 8 Kas 2026 — "üst ya da alt panel varsa da kayıt yerleşebilir": panel VAR/YOK ile ön / arka kayıt
+   BAĞIMSIZ). Panel varken: dikey kayıt ön / arka yüzde panele dayanır (yüz bölgesinde panelin şeridi sınırdır), yatay kayıt panelin iç
+   yüzüne İSTİFLENİR (VF.stackDepth = panel kalınlığı, altta + lift; motor her regen'de aynı düzlemde çözer) ve kayıtlar köşe birleşiminden
+   bağımsız olarak YANLARDAN SONRA yerleşir (hep yanların arasında). DİKEY kayıt ↔ panel birleşimi (`RailSpec.join`, Goker 8 Kas 2026 —
+   "dikey kayıt ve bütün panel varsa 2 panel arasındaki birleşim tipini de göster"): 'panel' = panel geçer (yukarıdaki) · 'rail' = kayıt
+   geçer: kayıt PANELDEN ÖNCE ve yüz kenarından başlar (panelsizle aynı kesimler), panel kayıtın yüzünde kısalır; panel yanların üstünden
+   geçen köşede kayıt yanlardan da önce kurulduğundan o uçtan t kadar X kesimi alır. Panelsiz: yatay kayıt = üst / alt YÜZDE yatan şerit: tam serbest bölge, ön / arka kenardan `setback` kadar dyn kesim +
    karşı yüzden FIXED genişlik (`size`) — gövde derinliği değişse de kayıt genişliği sabit kalır. Dikey kayıt = ÖN / ARKA YÜZDE dik duran
    şerit: üstte alt yüzünden fixed yükseklik; altta üst yüzünden fixed (lift + size) + alt yüzünden dyn −lift (ayak / baza yüksekliği
    kadar yukarıda; move kullanılmaz — ön yüz bölgesi tam boy olduğundan taşıma paneli gövdenin üstüne taşırırdı), çektirme = içeri move.
-   Kayıtlı yüzün köşeleri her zaman 'side' (yanlar geçer; kayıt yanların üstünden geçemez). ARKA KAYIT ↔ KANALLI ARKALIK (`backRel`):
-   'groove' → kayıt arkalık sınırı, arkalık kayıta `inset` kadar girer (kanal kesicisi kayıtı oyar) · 'infront' → yatay kayıtta arkalık
-   kenarı 'nail' ilişkisiyle (kayıt arkalığın ön yüzüne kadar kısalır, arkalık kayıtın arkasından gövde kenarına sürer), dikey kayıtta
-   kayıt arkalık sınırı DEĞİLDİR ve arkalığın önüne (setback + kalınlık) çekilir (damga mekanizması arkalığa paralel levhayı kısaltamaz). */
+   Kayıtlı yüzün köşeleri 'side' (yanlar geçer); YALNIZ ön ve arka kayıt İKİSİ DE YATAYSA köşe birleşimi serbesttir (Goker, Kas 2026 —
+   "her 2 kayıt da yatay olduğunda birleşim tipi değişebilsin; üst ve alt için ayrı ayrı") — 'horiz' = kayıtlar yanların üstünden / altından
+   geçer (sıra: kayıtlar önce, yan panel kayıtın büyük yüzünde biter: H − t, tam derinlik). ARKA KAYIT ↔ KANALLI ARKALIK (`backRel`):
+   'groove' → kayıt arkalık sınırı, arkalık kayıta `inset` kadar girer (kanal kesicisi kayıtı oyar); panel varsa panel bu durumda arkalık
+   sınırı DEĞİLDİR (arkalık panele değil kayıta girer) · 'infront' → kayıt (yatay da dikey de) arkalık sınırı DEĞİLDİR ve arkalığın
+   önüne (setback + kalınlık) çekilir; arkalık kayıtın arkasından panele (panel varsa, kanallı) ya da gövde kenarına sürer. Panel +
+   ÇAKMA arkalıkta panel sınırdır (arkalık paneli de örter), arka kayıt değil. */
 export type QuickPanelKey = 'top' | 'left' | 'right' | 'bottom';
 export const QUICK_PANEL_NAME: Record<QuickPanelKey, string> = { top: 'Top', left: 'Left', right: 'Right', bottom: 'Bottom' };
 /** Kayıt parçası adları (liste). */
@@ -2362,28 +2371,49 @@ const CORNER_PANELS: Record<CornerKey, [QuickPanelKey, QuickPanelKey]> = {
 /** Çevrimde ve eşitlikte tercih: yanlar önce (yanlar geçer). */
 const PREFERRED: QuickPanelKey[] = ['left', 'right', 'top', 'bottom'];
 
-/** Kayıt modundaki yüz (üst / alt). */
-export const faceIsRails = (cfg: QuickBodyConfig, face: 'top' | 'bottom'): boolean => railsOf(cfg, face).mode === 'rails';
+/** Yüzde tam panel var mı. */
+export const facePanelOn = (cfg: QuickBodyConfig, face: 'top' | 'bottom'): boolean => railsOf(cfg, face).panel;
 /** Etkin arka kayıt ↔ arkalık ilişkisi: yalnız KANALLI arkalıkta seçilir; çakma / arkalıksız → kayıt arka yüzde, sınır (groove). */
 export const railBackRelOf = (cfg: QuickBodyConfig, face: 'top' | 'bottom'): RailBackRel =>
   cfg.back.enabled && cfg.back.placement === 'inner' ? railsOf(cfg, face).backRel : 'groove';
-/** Kayıtlı yüzün parça sayısı (ön + arka; 'none' sayılmaz). */
-export const railCountOf = (r: QuickBodyRails): number => (r.mode === 'rails' ? (r.front.kind !== 'none' ? 1 : 0) + (r.rear.kind !== 'none' ? 1 : 0) : 1);
+/** Yüzdeki kayıt sayısı (ön + arka; 'none' sayılmaz; panel sayılmaz). */
+export const railCountOf = (r: QuickBodyRails): number => (r.front.kind !== 'none' ? 1 : 0) + (r.rear.kind !== 'none' ? 1 : 0);
+/** Yüzün parça sayısı: panel + kayıtlar. */
+export const facePartCountOf = (r: QuickBodyRails): number => (r.panel ? 1 : 0) + railCountOf(r);
+/** Panel + arka kayıt + kanallı arkalık + kanal ilişkisi → arkalık kayıta girer, panel arkalık sınırı DEĞİL. */
+export const panelYieldsBackTo = (cfg: QuickBodyConfig, face: 'top' | 'bottom'): boolean => {
+  const r = railsOf(cfg, face);
+  // Arka dikey kayıt paneli geçiyorsa panel arka kenarda değildir → sınır değil (arkalık kayıta ya da gövde kenarına).
+  return r.panel && r.rear.kind !== 'none'
+    && (railPassesPanel(r, 'rear') || (cfg.back.enabled && cfg.back.placement === 'inner' && r.backRel === 'groove'));
+};
+/** Dikey kayıt aynı yüzdeki tam paneli GEÇİYOR mu (RailSpec.join 'rail'): kayıt yüz kenarına kadar, panel kayıtın yüzünde kısalır. */
+export const railPassesPanel = (r: QuickBodyRails, pos: 'front' | 'rear'): boolean => r.panel && r[pos].kind === 'vertical' && r[pos].join === 'rail';
+
+/** PANELSİZ yüzde ön + arka kayıt İKİSİ DE yatay → köşe birleşimi seçilebilir (kayıtlar yanların üstünden / altından geçebilir). Panel
+ *  varsa köşeyi panel belirler (kayıtlar hep yanların arasında). */
+export const railsBothHorizontal = (cfg: QuickBodyConfig, face: 'top' | 'bottom'): boolean => {
+  const r = railsOf(cfg, face);
+  return !r.panel && r.front.kind === 'horizontal' && r.rear.kind === 'horizontal';
+};
+/** Panelsiz yüzün köşeleri kilitli mi (kayıt yok / dikey kayıt var → yanlar geçer). */
+const railsLockCorners = (cfg: QuickBodyConfig, face: 'top' | 'bottom') => !facePanelOn(cfg, face) && !railsBothHorizontal(cfg, face);
 
 /** Etkin köşe birleşimleri: bazalıda alt köşeler her zaman 'side' (alt panel yanların arasında, yanlar yere iner); kayıtlı yüzün köşeleri
- *  de 'side' (kayıtlar yanların arasında — kayıt yanların üstünden geçemez). */
+ *  de 'side' — yalnız iki kayıt da yatayken kullanıcının seçimi geçerli. */
 export function effectiveJoins(cfg: QuickBodyConfig): Record<CornerKey, JoinPass> {
   const j = { ...cfg.joins };
-  if (cfg.base === 'plinth' || faceIsRails(cfg, 'bottom')) { j.bl = 'side'; j.br = 'side'; }
-  if (faceIsRails(cfg, 'top')) { j.tl = 'side'; j.tr = 'side'; }
+  if (cfg.base === 'plinth' || railsLockCorners(cfg, 'bottom')) { j.bl = 'side'; j.br = 'side'; }
+  if (railsLockCorners(cfg, 'top')) { j.tl = 'side'; j.tr = 'side'; }
   return j;
 }
+const RAIL_LOCK_WHY = 'no panel: rails sit between the sides — set both rails to horizontal to change';
 /** Kilitli köşeler ve nedeni (arayüz: köşe kareleri "fixed"). */
 export function lockedCorners(cfg: QuickBodyConfig): Partial<Record<CornerKey, string>> {
   const out: Partial<Record<CornerKey, string>> = {};
-  if (faceIsRails(cfg, 'top')) out.tl = out.tr = 'rails sit between the sides';
+  if (railsLockCorners(cfg, 'top')) out.tl = out.tr = RAIL_LOCK_WHY;
   if (cfg.base === 'plinth') out.bl = out.br = 'fixed in plinth mode (sides reach the floor)';
-  else if (faceIsRails(cfg, 'bottom')) out.bl = out.br = 'rails sit between the sides';
+  else if (railsLockCorners(cfg, 'bottom')) out.bl = out.br = RAIL_LOCK_WHY;
   return out;
 }
 
@@ -2464,11 +2494,20 @@ function faceGroupFor(ctx: FaceCtx, n: Vec3, seed: THREE.Vector3): CoplanarFaceG
   return cands.sort((a, b) => a.center.distanceTo(seed) - b.center.distanceTo(seed) || b.totalArea - a.totalArea)[0];
 }
 
-/** `buildFacePreview` ile aynı VF kurulumu (önizleme mesh'i olmadan): bölge tek kaynaktan (computeFreeRegionLocal). */
-function vfOnFace(ctx: FaceCtx, n: Vec3, seedLocal: THREE.Vector3, siblings: Shape[], name: string): VirtualFace | null {
+/** `buildFacePreview` ile aynı VF kurulumu (önizleme mesh'i olmadan): bölge tek kaynaktan (computeFreeRegionLocal). `stack` = ÜST ÜSTE
+ *  (panelin iç yüzüne istiflenmiş) VF — buildFacePreview'ün yığın dalıyla birebir: kontur ve tohum yüzden `depth` kadar içeri, düzlemin
+ *  GERİSİNDEKİ paneller (taban panel) kardeş değil, kalanlar delen-engel; motor regen'i aynı düzlemi `stackDepth` ile yeniden çözer. */
+function vfOnFace(ctx: FaceCtx, n: Vec3, seedLocal: THREE.Vector3, siblings: Shape[], name: string, stack?: { depth: number; baseVfId: string }): VirtualFace | null {
   const group = faceGroupFor(ctx, n, seedLocal); if (!group) return null;
   const contour = computeFaceComponentContour(ctx.faces, group.faceIndices, seedLocal, group.normal); if (!contour) return null;
-  const region = computeFreeRegionLocal(contour.corners, group.normal, seedLocal, siblings, ctx.W2L, ctx.body.id);
+  let corners = contour.corners, seedAt = seedLocal, sibs = siblings;
+  if (stack) {
+    const nOut = group.normal.clone().normalize(), sh = nOut.clone().multiplyScalar(-stack.depth);
+    corners = corners.map(c => c.clone().add(sh)); seedAt = seedLocal.clone().add(sh);
+    const plane = seedAt.dot(nOut.clone().multiplyScalar(-1));
+    sibs = siblings.filter(p => !panelBehindStackPlane(p, nOut, plane)).map(p => ({ ...p, __pierceObstacle: true } as Shape));
+  }
+  const region = computeFreeRegionLocal(corners, group.normal, seedAt, sibs, ctx.W2L, ctx.body.id);
   // Yüzde serbest yer yok (orada zaten bir panel var — ör. elle konmuş yan): parça KURULMAZ (üstüne ikinci panel gelmez).
   if (!region || region.polygon.length < 3) return null;
   const nrm = group.normal.clone().normalize();
@@ -2476,11 +2515,12 @@ function vfOnFace(ctx: FaceCtx, n: Vec3, seedLocal: THREE.Vector3, siblings: Sha
   const anchor = to3D(region.anchor.x, region.anchor.y);
   return {
     id: genId('vf'), shapeId: ctx.body.id,
-    normal: vec3(nrm), center: vec3(seedLocal),
+    normal: vec3(nrm), center: vec3(seedAt),
     vertices: region.polygon.map(p => vec3(to3D(p.x, p.y))),
     description: name, hasPanel: true, parentFaceShape: true, touchingSiblingIds: region.touchingSiblingIds, sideRelations: region.sideRelations,
     faceGroupDescriptor: createFaceDescriptor(ctx.faces[contour.seedFi], ctx.eff),
     doorBound: true, backBound: true,
+    ...(stack ? { stackDepth: stack.depth, stackBaseVfId: stack.baseVfId } : {}),
     // Dikdörtgen olmayan yüz (L gövdenin üstü / altı): panel yüzün şeklini alır — yoksa kutu çentiğin üstünde boşlukta kalır.
     ...(contour.corners.length > 4 ? { fitFaceShape: true } : {}),
     ...({ regionAnchor: vec3(anchor) } as Record<string, unknown>),
@@ -2621,9 +2661,10 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
   const push = async (key: QuickBodyPart, n: Vec3, seed: THREE.Vector3, name: string, opts: {
     move?: [MoveTransformStep['axis'], number]; cuts?: QuickCut[]; proxyVerts?: (v: Vec3[]) => Vec3[]; bound?: boolean;
     /** Kapak / arkalık sınırı ayrı ayrı (kayıtlar: ön kayıt kapak sınırı, arka kayıt arkalık sınırı). */ doorBound?: boolean; backBound?: boolean;
+    /** panelin iç yüzüne istif (yatay kayıt + panel) */ stack?: { depth: number; baseVfId: string };
   }): Promise<boolean> => {
     const old = prev.get(key);
-    const fresh = vfOnFace(ctx, n, seed, siblings, old?.vf.description || name);
+    const fresh = vfOnFace(ctx, n, seed, siblings, old?.vf.description || name, opts.stack);
     if (!fresh) { warnings.push(`${name}: no free region on that face`); return false; }
     // Aynı parça: VF ve panel id'si korunur (raf / kapak / arkalık referansları bozulmaz); yüz şekli tercihi de korunur.
     const vf: VirtualFace = { ...fresh, id: old?.vf.id ?? fresh.id, quickBody: key, ...(old?.vf.fitFaceShape ? { fitFaceShape: true } : {}) };
@@ -2670,38 +2711,64 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
     return l.length ? l.map(f => ({ n: f.normal, c: f.center })) : noRoles ? [{ n, c: boxFaceCenter(n) }] : [];
   };
   const inward = (n: Vec3) => axisDirOfNormal(neg(n));
-  /** Kayıtlı yüz: `which` = üst / alt, `faceList` = yatay kayıtların yüzleri (o rolün üst / alt yüz listesi). */
-  const pushRails = async (which: 'top' | 'bottom', faceList: Array<{ n: Vec3; seed: THREE.Vector3 }>) => {
+  /** Yüzün kayıtları: `which` = üst / alt, `faceList` = o rolün üst / alt yüzleri (yatay kayıtlar + istif tabanı), `withPanel` = yüzde tam panel
+   *  var (kayıtlar panelin içinde: yatay → panelin iç yüzüne istif, dikey → ön / arka yüzde panele dayalı). `phase` (panelli yüz):
+   *  'before' = paneli GEÇEN dikey kayıtlar (panelden ÖNCE; kenara kadar, panel onlarda kısalır), 'after' = kalanlar (yanlardan sonra). */
+  const pushRails = async (which: 'top' | 'bottom', faceList: Array<{ n: Vec3; seed: THREE.Vector3 }>, withPanel: boolean, phase: 'all' | 'before' | 'after' = 'all') => {
     const r = railsOf(cfg, which), top = which === 'top', rel = railBackRelOf(cfg, which);
-    const b = cfg.back, backT = b.enabled ? Math.max(1, b.thickness) : 0, backS = b.enabled && b.placement === 'inner' ? Math.max(0, b.setback) : 0;
+    const b = cfg.back, grooved = b.enabled && b.placement === 'inner';
+    const backT = b.enabled ? Math.max(1, b.thickness) : 0, backS = grooved ? Math.max(0, b.setback) : 0;
+    const stackD = top ? t : lift + t;                        // panelin iç yüzü: yüzden içeri (altta panel lift kadar yukarıda)
     for (const side of ['front', 'rear'] as const) {
       const spec: RailSpec = r[side]; if (spec.kind === 'none') continue;
+      const passes = railPassesPanel(r, side);
+      if ((phase === 'before' && !passes) || (phase === 'after' && passes)) continue;
       const key: QuickBodyPartBase = `${which}${side === 'front' ? 'Front' : 'Rear'}` as QuickBodyPartBase;
       const nm = QUICK_RAIL_NAME[key as keyof typeof QUICK_RAIL_NAME];
       const size = Math.max(1, spec.size), own = Math.max(0, spec.setback);
-      // Dikey arka kayıt + arkalığın önüne: sınır değil, arkalığın ön yüzüne kadar çekilir (kendi çektirmesi üstüne).
-      const infrontVertical = side === 'rear' && rel === 'infront' && spec.kind === 'vertical';
-      const setback = own + (infrontVertical ? backS + backT : 0);
-      const bound = side === 'front' ? { doorBound: true, backBound: false } : { doorBound: false, backBound: !infrontVertical };
+      // Arkalığın ÖNÜNE (yatay / dikey): arkalığın ön yüzüne kadar çekilir (kendi çektirmesi üstüne), arkalık sınırı değil.
+      const infront = side === 'rear' && rel === 'infront';
+      const setback = own + (infront ? backS + backT : 0);
+      // Arka kayıt arkalık sınırı: kanal ilişkisinde; panel + çakma arkalıkta panel sınırdır (arkalık paneli de örter), kayıt değil —
+      // kayıt paneli geçiyorsa (arka kenarda o var) yine kayıt.
+      const rearBound = !infront && (!withPanel || grooved || passes);
+      const bound = side === 'front' ? { doorBound: true, backBound: false } : { doorBound: false, backBound: rearBound };
       const out = side === 'front' ? fwd : bwd, inn = side === 'front' ? bwd : fwd;   // dış kenar normali, karşı yüz normali
       if (spec.kind === 'horizontal') {
-        // Üst / alt yüzde yatan şerit: dış kenardan setback kadar kesilir, karşı yüzden genişlik SABİTLENİR; alt yüzde ayak / baza kadar yukarı.
+        // Yatay şerit: dış kenardan setback kadar kesilir, karşı yüzden genişlik SABİTLENİR. Panelsiz: yüzde (altta lift kadar yukarı);
+        // panelli: panelin iç yüzüne istif.
         const cuts: QuickCut[] = [...(setback > 0 ? [[out, labelOf(out), -setback] as QuickCut] : []), [inn, labelOf(inn), size, true]];
         for (let i = 0; i < faceList.length; i++) {
           const f = faceList[i];
+          const base = withPanel ? newVfs.find(v => v.quickBody === partKey(which, i)) : undefined;
+          if (withPanel && !base) { warnings.push(`${partName(nm, i)}: no ${which} panel to sit on`); continue; }
           await push(partKey(key, i), f.n, f.seed, partName(nm, i), {
-            ...(!top && lift > 0 ? { move: ['y+', lift] as [MoveTransformStep['axis'], number] } : {}), cuts, proxyVerts: vs => clampVerts(vs, cuts), ...bound,
+            ...(base ? { stack: { depth: stackD, baseVfId: base.id } } : !top && lift > 0 ? { move: ['y+', lift] as [MoveTransformStep['axis'], number] } : {}),
+            cuts, proxyVerts: vs => clampVerts(vs, cuts), ...bound,
           });
         }
       } else {
-        // Ön / arka yüzde dik duran şerit: üstte alt yüzünden fixed yükseklik; altta üst yüzünden fixed (lift + h) + alt yüzünden dyn −lift.
+        // Ön / arka yüzde dik duran şerit — panelli: panelden itibaren fixed yükseklik (üstte alttan, altta üstten); panelsiz: üstte alt
+        // yüzünden fixed yükseklik, altta üst yüzünden fixed (lift + h) + alt yüzünden dyn −lift.
+        // Kayıt kenardan başlar: panel yok ya da kayıt paneli geçiyor (panelden önce yerleşir, panel bu kayıtta kısalır).
+        const fromEdge = !withPanel || passes;
         const cuts: QuickCut[] = top ? [[[0, -1, 0], 'Y-', size, true]]
+          : !fromEdge ? [[[0, 1, 0], 'Y+', size, true]]
           : [[[0, 1, 0], 'Y+', lift + size, true], ...(lift > 0 ? [[[0, -1, 0], 'Y-', -lift] as QuickCut] : [])];
+        // Paneli geçen kayıt, panel yanların üstünden geçen köşede yanlardan ÖNCE kurulur → o uçtan kalınlık kadar kesilir (yanların
+        // arasında kalır; kısalmış damgası yana değmez).
+        if (passes) {
+          const [cl, cr] = top ? [joins.tl, joins.tr] : [joins.bl, joins.br];
+          const nl = FACE.left[0]?.n ?? [-1, 0, 0] as Vec3, nr = FACE.right[0]?.n ?? [1, 0, 0] as Vec3;
+          if (cl === 'horiz') cuts.push([nl, labelOf(nl), -t]);
+          if (cr === 'horiz') cuts.push([nr, labelOf(nr), -t]);
+        }
         const list = side === 'front' ? facesOfRole('front', fwd) : facesOfRole('rear', bwd);
         if (!list.length) warnings.push(`${nm}: no face with the ${side} role`);
+        const off = fromEdge ? 0 : t;
         for (let i = 0; i < list.length; i++) {
           const f = list[i], ax = inward(f.n); if (!ax || ax[0] === 'y') continue;
-          const seed = new THREE.Vector3(f.c[0], top ? y1 - size / 2 : y0 + lift + size / 2, f.c[2]);
+          const seed = new THREE.Vector3(f.c[0], top ? y1 - off - size / 2 : y0 + lift + off + size / 2, f.c[2]);
           await push(partKey(key, i), f.n, seed, partName(nm, i), {
             ...(setback > 0 ? { move: [ax, setback] as [MoveTransformStep['axis'], number] } : {}), cuts, proxyVerts: vs => clampVerts(vs, cuts), ...bound,
           });
@@ -2710,14 +2777,24 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
     }
   };
 
+  // Panelsiz yüzün kayıtları köşe sırasında panelin yerini alır; panelli yüzün kayıtları YANLARDAN SONRA (hep yanların arasında).
+  const railsAfter: Array<'top' | 'bottom'> = [];
   for (const key of order) {
-    if ((key === 'top' || key === 'bottom') && faceIsRails(cfg, key)) { await pushRails(key, FACE[key]); continue; }
+    if (key === 'top' || key === 'bottom') {
+      const r = railsOf(cfg, key);
+      if (!r.panel) { await pushRails(key, FACE[key], false); continue; }
+      // Paneli geçen dikey kayıtlar panelden ÖNCE (panel onların yüzünde kısalır); kalanlar yanlardan sonra.
+      await pushRails(key, FACE[key], true, 'before');
+      if (railCountOf(r) > (['front', 'rear'] as const).filter(p => railPassesPanel(r, p)).length) railsAfter.push(key);
+    }
+    // Panel + arka kayıt + kanal: arkalık kayıta girer → panel arkalık sınırı değil.
+    const pb = (key === 'top' || key === 'bottom') && panelYieldsBackTo(cfg, key) ? { backBound: false } : {};
     for (let i = 0; i < FACE[key].length; i++) {
       const f = FACE[key][i], pk = partKey(key, i), nm = partName(QUICK_PANEL_NAME[key], i);
       if (key === 'bottom' && lift > 0) {
         // Yükseltilen alt panelin bölgesi motor tarafından GERÇEK konumunda çözülür (damgalar panelin ötelemesi kadar kaydırılır);
         // ayaklıda kısaltılmış yanlar o yükseklikte alt paneli keser → ek extrude gerekmez.
-        await push(pk, f.n, f.seed, nm, { move: ['y+', lift] });
+        await push(pk, f.n, f.seed, nm, { move: ['y+', lift], ...pb });
       } else if ((key === 'left' || key === 'right') && cfg.base === 'legs' && lift > 0 && joins[key === 'left' ? 'bl' : 'br'] === 'side') {
         // Yan köşeden geçiyor ama ayak kadar yukarıda biter: alt kenar extrude ile kısaltılır (vekil de kısaltılmış).
         await push(pk, f.n, f.seed, nm, {
@@ -2725,10 +2802,11 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
           proxyVerts: vs => vs.map(v => [v[0], Math.max(v[1], y0 + lift), v[2]] as Vec3),
         });
       } else {
-        await push(pk, f.n, f.seed, nm, {});
+        await push(pk, f.n, f.seed, nm, pb);
       }
     }
   }
+  for (const key of railsAfter) await pushRails(key, FACE[key], true, 'after');
 
   if (cfg.base === 'plinth' && lift > 0) {
     // BAZALAR: her FRONT rolündeki yüzün alt şeridine ön baza (içeri setback kadar), her REAR yüze arka baza (içeri inset kadar);
@@ -2736,7 +2814,7 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
     // bölgesi yukarı açık olabilir) üst yüzünden FIXED baza yüksekliği.
     const ym = y0 + lift / 2;
     const fronts = roleFaces('front'), rears = roleFaces('rear');
-    const plinthCuts: QuickCut[] = faceIsRails(cfg, 'bottom') ? [[[0, 1, 0], 'Y+', lift, true]] : [];
+    const plinthCuts: QuickCut[] = !facePanelOn(cfg, 'bottom') ? [[[0, 1, 0], 'Y+', lift, true]] : [];
     const plinthProxy = plinthCuts.length ? (vs: Vec3[]) => clampVerts(vs, plinthCuts) : undefined;
     const frontList = fronts.length ? fronts.map(f => ({ n: f.normal, c: f.center })) : noRoles ? [{ n: [0, 0, 1] as Vec3, c: [(x0 + x1) / 2, ym, z1] as Vec3 }] : [];
     for (let i = 0; i < frontList.length; i++) {
@@ -2795,15 +2873,9 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
   const backKeyOf = (c: QuickBodyConfig | null) => (['top', 'bottom'] as const).map(f => {
     if (!c) return 'none';
     const r = railsOf(c, f);
-    return r.mode === 'panel' ? 'panel' : `${r.rear.kind}:${c.back.enabled && c.back.placement === 'inner' ? r.backRel : 'groove'}:${r.rear.setback}`;
+    return `${r.panel ? 'P' : '-'}:${r.rear.kind}:${r.rear.join ?? 'panel'}:${c.back.enabled && c.back.placement === 'inner' ? r.backRel : 'groove'}:${r.rear.setback}`;
   }).join('|');
   if (live.length && backKeyOf(prevCfg) !== backKeyOf(cfg)) { for (const g of live) deleteBackGroupWithMembers(g.id); live = []; }
-  // Arka kayıt "arkalığın önüne" (yatay): o kenar 'nail' — kayıt arkalığın ön yüzüne kadar kısalır, arkalık kayıtın arkasından kenara sürer.
-  const edgeRel: NonNullable<BackGroup['edgeRel']> = {};
-  for (const f of ['top', 'bottom'] as const) {
-    const r = railsOf(cfg, f);
-    if (r.mode === 'rails' && r.rear.kind === 'horizontal' && railBackRelOf(cfg, f) === 'infront') edgeRel[f === 'top' ? 'vMax' : 'vMin'] = 'nail';
-  }
   if (!b.enabled) {
     for (const g of live) deleteBackGroupWithMembers(g.id);
   } else if (live.length) {
@@ -2836,7 +2908,6 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
       const g = createBackGroupFromPick(fresh.id, pick, b.placement, i ? `Back ${i + 1}` : 'Back', {
         thickness: Math.max(1, b.thickness), setback: Math.max(0, b.setback), inset: Math.max(0, b.inset),
         grooveClear: { front: Math.max(0, b.clear.front), back: Math.max(0, b.clear.back), depth: Math.max(0, b.clear.depth) }, quickBody: true,
-        ...(Object.keys(edgeRel).length ? { edgeRel } : {}),
       });
       backCreated = backCreated || !!g;
     });

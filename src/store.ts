@@ -331,17 +331,29 @@ export type RailKind = 'none' | 'horizontal' | 'vertical';
  *  'infront' = kayıt arkalığın ÖNÜNE yerleşir (arkalık kayıtın arkasından gövde kenarına kadar sürer; yatay kayıt arkalığın ön yüzüne
  *  kadar kısaltılır, dikey kayıt arkalığın önüne çekilir). Çakma arkalıkta anlamsız (kayıt arka yüzde, arkalık üstüne çakılır). */
 export type RailBackRel = 'groove' | 'infront';
-export interface RailSpec { kind: RailKind; size: number; setback: number }
+/** Dikey kayıt ↔ aynı yüzdeki tam panel birleşimi (Goker, 8 Kas 2026 — "dikey kayıt ve bütün panel varsa 2 panel arasındaki birleşim
+ *  tipini göster, tüm dikey parçalarda"): 'panel' = panel geçer (kayıt panelin altında / üstünde, varsayılan) · 'rail' = kayıt geçer
+ *  (kayıt yüz kenarına kadar, panel kayıtın yüzünde kısalır). Yalnız dikey kayıt + panel varken anlamlı. */
+export type RailJoin = 'panel' | 'rail';
+export interface RailSpec { kind: RailKind; size: number; setback: number; join?: RailJoin }
 /** Üst ya da alt yüzün yapısı: tam panel ya da kayıtlar (ön + arka; ikisi de 'none' → açık). */
-export interface QuickBodyRails { mode: 'panel' | 'rails'; front: RailSpec; rear: RailSpec; backRel: RailBackRel }
+/** Üst ya da alt yüzün yapısı (Goker, Kas 2026 — "üst ya da alt panel varsa da kayıt yerleşebilir"): tam panel VAR/YOK ve ön + arka
+ *  kayıt BİRBİRİNDEN BAĞIMSIZ. Panel varken kayıtlar panelin altında (üstte) / üstünde (altta) durur: dikey kayıt ön / arka yüzde
+ *  panele dayanır, yatay kayıt panelin iç yüzüne istiflenir. Panel yok + iki kayıt 'none' → açık. `mode` = eski kayıt alanı
+ *  ('panel' = yalnız panel, kayıtlar yok sayılırdı · 'rails' = panelsiz kayıtlar) — `railsOf` `panel`a çevirir. */
+export interface QuickBodyRails { panel: boolean; front: RailSpec; rear: RailSpec; backRel: RailBackRel; mode?: 'panel' | 'rails' }
 export const DEFAULT_RAILS: QuickBodyRails = {
-  mode: 'panel', front: { kind: 'horizontal', size: 100, setback: 0 }, rear: { kind: 'horizontal', size: 100, setback: 0 }, backRel: 'groove',
+  panel: true, front: { kind: 'none', size: 100, setback: 0 }, rear: { kind: 'none', size: 100, setback: 0 }, backRel: 'groove',
 };
-/** Etkin kayıt ayarı (eski kayıtlı yapılandırmada alan yok → tam panel). */
+/** Etkin kayıt ayarı (alan yok → tam panel; eski `mode` kaydı → `panel`, eski tam panelde kayıtlar yok). */
 export const railsOf = (cfg: Pick<QuickBodyConfig, 'top' | 'bottom'>, face: 'top' | 'bottom'): QuickBodyRails => {
   const r = cfg[face];
   if (!r) return DEFAULT_RAILS;
-  return { ...DEFAULT_RAILS, ...r, front: { ...DEFAULT_RAILS.front, ...(r.front ?? {}) }, rear: { ...DEFAULT_RAILS.rear, ...(r.rear ?? {}) } };
+  const legacy = typeof r.panel !== 'boolean';
+  const panel = legacy ? r.mode !== 'rails' : r.panel;
+  const front = { ...DEFAULT_RAILS.front, ...(r.front ?? {}) }, rear = { ...DEFAULT_RAILS.rear, ...(r.rear ?? {}) };
+  if (legacy && panel) { front.kind = 'none'; rear.kind = 'none'; }
+  return { panel, front, rear, backRel: r.backRel ?? 'groove' };
 };
 /** Köşe birleşimi: 'side' = yan panel köşeden geçer (üst/alt arada), 'horiz' = üst/alt panel geçer (yan arada). */
 export type JoinPass = 'side' | 'horiz';
