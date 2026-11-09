@@ -1115,8 +1115,9 @@ export function clipRegionToRailStrip(
     const toHi = dv.dot(u) * tx + dv.dot(v) * ty > 0;
     // Hedefli uzatma: kenarın o ucunda bandın ortasından hedef yüze kadar yeniden ölçülür; ölçülemezse kayıtlı miktar.
     const live = e.to && resolveExt ? resolveExt(e, lineAt(toHi ? hi : lo, s + w / 2)) : null;
+    // + uzatır (iç köşe), − kısaltır (dış köşede komşu kayıtın / arkalığın gerisinde kalmak için).
     const amount = live != null && live > 0.5 ? live : e.amount;
-    if (!(amount > 0)) continue;
+    if (Math.abs(amount) < 1e-6) continue;
     if (toHi) hi += amount; else lo -= amount;
   }
   let out = clipHalfPlane(polygon, nx, ny, d - s);                     // kenardan setback içeri
@@ -1127,9 +1128,15 @@ export function clipRegionToRailStrip(
   const clean: Point2D[] = [];
   for (const q of out) { const l = clean[clean.length - 1]; if (!l || Math.hypot(l.x - q.x, l.y - q.y) > 0.01) clean.push(q); }
   while (clean.length > 1 && Math.hypot(clean[0].x - clean[clean.length - 1].x, clean[0].y - clean[clean.length - 1].y) <= 0.01) clean.pop();
-  for (let i = clean.length - 1; i >= 0 && clean.length > 3; i--) {
-    const p = clean[(i - 1 + clean.length) % clean.length], q = clean[i], r = clean[(i + 1) % clean.length];
-    if (Math.abs(cross2(p, q, r)) <= 1e-6 * Math.max(1, Math.hypot(q.x - p.x, q.y - p.y) * Math.hypot(r.x - q.x, r.y - q.y))) clean.splice(i, 1);
+  // Doğrudaş ve GERİ DÖNEN (sıfır genişlikli diken — çentikli bölgenin şeritle kırpılmasından) köşeler: açının sinüsü ~0 (ölçekten
+  // bağımsız; kayan nokta gürültüsüne dayanıklı). Her silmede komşular değişir → değişmeyene kadar.
+  for (let changed = true, guard = 0; changed && clean.length > 3 && guard < 8; guard++) {
+    changed = false;
+    for (let i = clean.length - 1; i >= 0 && clean.length > 3; i--) {
+      const p = clean[(i - 1 + clean.length) % clean.length], q = clean[i], r = clean[(i + 1) % clean.length];
+      const la = Math.hypot(q.x - p.x, q.y - p.y), lb = Math.hypot(r.x - q.x, r.y - q.y);
+      if (la < 0.01 || lb < 0.01 || Math.abs(cross2(p, q, r)) <= 1e-3 * la * lb) { clean.splice(i, 1); changed = true; }
+    }
   }
   if (clean.length < 3 || Math.abs(polyArea(clean)) < 1) return null;
   // Merkez: şerit çokgeninin ağırlık merkezi (tohum sonraki regen'de şeridin içinde kalsın)
@@ -1163,31 +1170,47 @@ export function railLandingOnBody(faces: FaceData[], groups: CoplanarFaceGroup[]
   }
   return best == null ? null : best - Math.max(0, to.depth) / dn;
 }
-/** Çokgeni `dir` yönündeki uç köşelerinden `amount` kadar uzatır (dikey kayıtın iç köşe uzatması; köşeler gövde-yerel). */
-export function extendPolygonAlong(verts: THREE.Vector3[], dir: THREE.Vector3, amount: number): THREE.Vector3[] {
-  if (!(amount > 0) || verts.length < 3) return verts;
+/** Çokgenin `dir` yönündeki ucunu `T` düzlemine (p·dir = T) getirir: uç ötedeyse yarım düzlemle kırpar, berideyse uç köşeleri T'ye
+ *  taşır (dikey kayıt uç ayarı; köşeler gövde-yerel, çokgen düzlemsel). */
+export function setPolygonEndAlong(verts: THREE.Vector3[], dir: THREE.Vector3, T: number): THREE.Vector3[] {
+  if (verts.length < 3) return verts;
   const d = dir.clone().normalize();
   const pr = verts.map(p => p.dot(d)), mx = Math.max(...pr);
-  return verts.map((p, i) => (pr[i] >= mx - 0.01 ? p.clone().addScaledVector(d, amount) : p));
+  if (Math.abs(T - mx) < 0.01) return verts;
+  if (T > mx) return verts.map((p, i) => (pr[i] >= mx - 0.01 ? p.clone().addScaledVector(d, T - mx) : p));
+  const out: THREE.Vector3[] = [];
+  for (let i = 0; i < verts.length; i++) {
+    const a = verts[i], b = verts[(i + 1) % verts.length], fa = pr[i] - T, fb = pr[(i + 1) % verts.length] - T;
+    if (fa <= 0) out.push(a);
+    if ((fa < 0 && fb > 0) || (fa > 0 && fb < 0)) out.push(a.clone().lerp(b, fa / (fa - fb)));
+  }
+  return out.length >= 3 ? out : verts;
 }
-/** Dikey kayıt uzatmasının ölçüm noktası: çokgenin `dir` uç köşelerinin ortası, VF düzleminden bant ortası kadar içeri (−normal). */
-export function railExtOrigin(verts: THREE.Vector3[], dir: THREE.Vector3, normal: THREE.Vector3, band: [number, number]): THREE.Vector3 {
+/** Dikey kayıt uç ölçüm noktası: yüz konturunun `dir` uç köşelerinin ortası (köşe çizgisi), VF düzleminden bant ortası kadar içeri. */
+export function railExtOrigin(contour: THREE.Vector3[], dir: THREE.Vector3, normal: THREE.Vector3, band: [number, number]): THREE.Vector3 {
   const d = dir.clone().normalize();
-  const pr = verts.map(p => p.dot(d)), mx = Math.max(...pr);
-  const ends = verts.filter((_, i) => pr[i] >= mx - 0.01);
+  const pr = contour.map(p => p.dot(d)), mx = Math.max(...pr);
+  const ends = contour.filter((_, i) => pr[i] >= mx - 0.01);
   const c = ends.reduce((acc, p) => acc.add(p), new THREE.Vector3()).divideScalar(Math.max(1, ends.length));
   return c.addScaledVector(normal.clone().normalize(), -(band[0] + band[1]) / 2);
 }
-/** Dikey kayıt VF'sinin uzatmaları (kuruluş: kayıtlı miktar; regen: `land` verilirse hedefe yeniden ölçülür). */
+/** Dikey kayıt VF'sinin uç ayarları (VirtualFace.railExt): her uç, YÜZ KONTURUNUN o yöndeki ucundan (köşe çizgisi) `amount` kadar ötede
+ *  biter — + uzatır (iç köşe, hedefe kadar; `land` verilirse her regen'de yeniden ölçülür), − kısaltır (dış köşede komşu kayıtın /
+ *  arkalığın gerisinde kalır; bölge zaten daha kısaysa dokunulmaz). */
 export function applyRailExt(
-  verts: THREE.Vector3[], normal: THREE.Vector3, exts: Array<RailExt & { band: [number, number] }> | undefined,
+  verts: THREE.Vector3[], contour: THREE.Vector3[], normal: THREE.Vector3, exts: Array<RailExt & { band: [number, number] }> | undefined,
   land?: (from: THREE.Vector3, dir: THREE.Vector3, to: RailExtTarget) => number | null,
 ): THREE.Vector3[] {
   let out = verts;
   for (const e of exts ?? []) {
-    const dir = new THREE.Vector3(...e.dir);
-    const live = e.to && land ? land(railExtOrigin(out, dir, normal, e.band), dir, e.to) : null;
-    out = extendPolygonAlong(out, dir, live != null && live > 0.5 ? live : e.amount);
+    const dir = new THREE.Vector3(...e.dir).normalize();
+    const live = e.to && land ? land(railExtOrigin(contour, dir, normal, e.band), dir, e.to) : null;
+    const amount = live != null && live > 0.5 ? live : e.amount;
+    const cmax = Math.max(...contour.map(p => p.dot(dir)));
+    const rmax = Math.max(...out.map(p => p.dot(dir)));
+    const T = cmax + amount;
+    if (amount < 0 && T >= rmax - 0.01) continue;     // bölge zaten kısa (önceki parça damgalamış)
+    out = setPolygonEndAlong(out, dir, T);
   }
   return out;
 }

@@ -1548,8 +1548,8 @@ function regenerateParentFaceShapeVF(
       ?? clipRegionToRailStrip(contour.corners.map(uvOf), contour.corners.map(uvOf), vf.railStrip, u, v, cUV, resolve);
     if (clip) { cornersOut = clip.polygon.map(to3D); centerOut = to3D(clip.center); }
   }
-  // DİKEY KAYIT İÇ KÖŞE UZATMASI: bölge, kenar yönündeki ucundan hedefe kadar uzatılır (yüzün dışına, gövdenin içinde).
-  if (vf.railExt?.length) cornersOut = applyRailExt(cornersOut, localNormal, vf.railExt, land);
+  // DİKEY KAYIT UÇ AYARI: iç köşede hedefe kadar uzar (yüzün dışına, gövdenin içinde), dış köşede komşunun gerisinde kalır.
+  if (vf.railExt?.length) cornersOut = applyRailExt(cornersOut, contour.corners, localNormal, vf.railExt, land);
 
   const out: any = { ...vf, normal: vec3(localNormal), vertices: cornersOut.map(vec3), center: vec3(centerOut) };
   out.rawFaceBBox = { ...newB };

@@ -2566,8 +2566,8 @@ function vfOnFace(
     if (!clip) return null;
     polygon = clip.polygon; center = to3D(clip.center.x, clip.center.y);
   }
-  // DİKEY KAYIT İÇ KÖŞE UZATMASI (VirtualFace.railExt): bölge kenar yönündeki ucundan uzar — motor regen'i hedefe yeniden ölçer.
-  const verts3 = applyRailExt(polygon.map(p => to3D(p.x, p.y)), nrm, railExt);
+  // DİKEY KAYIT UÇ AYARI (VirtualFace.railExt): yüz konturunun ucuna göre uzar / kısalır — motor regen'i hedefe yeniden ölçer.
+  const verts3 = applyRailExt(polygon.map(p => to3D(p.x, p.y)), corners, nrm, railExt);
   return {
     id: genId('vf'), shapeId: ctx.body.id,
     normal: vec3(nrm), center: vec3(center),
@@ -2892,27 +2892,43 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
       return best && best.amount > 0.5 ? best : null;
     };
     type ExtSpec = { amount: number; to?: RailExtTarget };
-    /** Kenarın bir ucundaki uzatma (yalnız İÇBÜKEY köşe): komşu yan panel → t (t×t boşluk); komşu kenarda kayıt → hedefe daha kısa
-     *  yoldan değen geçer (öteki null); komşuda kayıt yok → ilk desteğe kadar. Karar iki kenar için simetrik (faza ve sıraya bakmaz). */
+    /** Komşunun ÇEKTİRMESİ (kenar çizgisinden boşluğa ilk dolu yüzü): kayıtlı kenar → bandın dış kıyısı (kayıtın arka yüzü); kayıtsız ARKA
+     *  kenar + kanallı arkalık + kayıt arkalığın önünde → arkalığın iç yüzü (çektirme + kalınlık); diğer → 0. */
+    const reachOf = (nb: EdgeRole): number => {
+      const s0 = railSideOf(nb);
+      if (s0) return bandOf(s0)[0];
+      return nb.role === 'rear' && rel === 'infront' ? backS + backT : 0;
+    };
+    /** Kenarın bir ucundaki ayar (+ uzat, − kısalt).
+     *  DIŞBÜKEY köşe (Goker, 10 Kas 2026 — "mavi seçili kayıt arkalığın içine girmiş"): komşunun çektirmesi kadar KISALIR — kayıt komşu
+     *  yüzün arkalığından / geri çekilmiş kayıtından geçip gövde kenarına kadar uzanmaz (arkalığın önündeki kayıt, öbür yüzün arkalığında
+     *  biter). Yan panel kendi damgasıyla keser.
+     *  İÇBÜKEY köşe: komşu yan panel → t (t×t boşluk); komşu kenarda kayıt → hedefe daha kısa yoldan değen GEÇER (hedefe kadar uzar), öteki
+     *  geçenin dış yüzüne kadar uzar (geçen geri çekilmişse aradaki boşluk kalmaz); komşuda kayıt yok → ilk desteğe kadar. Karar iki kenar
+     *  için simetrik (faza ve sıraya bakmaz). */
     const extAt = (edges: RailEdge[], e: RailEdge, atStart: boolean): ExtSpec | null => {
-      if (!(atStart ? e.startConcave : e.endConcave)) return null;
       const nb = edges.find(f => f.i === (atStart ? e.prev.i : e.next.i));
       if (!nb) return null;
+      if (!(atStart ? e.startConcave : e.endConcave)) {
+        const back = reachOf(nb);
+        return back > 0.01 ? { amount: -back } : null;
+      }
       if (nb.role === 'left' || nb.role === 'right') return { amount: t };
+      const nbSide = railSideOf(nb), meSide = sideOf(e.role);
+      const butt = (): ExtSpec | null => (nbSide && bandOf(nbSide)[0] > 0.01 ? { amount: bandOf(nbSide)[0] } : null);
       // Paneli GEÇEN dikey kayıt panelin yüksekliğindedir: hedefe uzarsa tam paneli ikiye böler → panel varken iç köşe eski kuralla
       // kapanır (paneli geçen önce yerleşir, komşusunun bandı kadar uzar; panel zaten her şeyi taşır).
-      const nbSide = railSideOf(nb), meSide = sideOf(e.role);
       if (withPanel && nbSide && meSide && (railPassesPanel(r, meSide) || railPassesPanel(r, nbSide))) {
         const mp = railPassesPanel(r, meSide), np = railPassesPanel(r, nbSide);
         const iFirst = mp !== np ? mp : e.i < nb.i;
-        return iFirst ? { amount: bandOf(nbSide)[1] } : null;
+        return iFirst ? { amount: bandOf(nbSide)[1] } : butt();
       }
       const mine = landingOf(edges, e, atStart);
-      if (railSideOf(nb)) {
+      if (nbSide) {
         const theirs = landingOf(edges, nb, !atStart);
-        if (!mine && !theirs) return e.i < nb.i ? { amount: bandOf(railSideOf(nb)!)[1] } : null;   // ölçülemedi: eski kural (komşunun altına)
+        if (!mine && !theirs) return e.i < nb.i ? { amount: bandOf(nbSide)[1] } : butt();   // ölçülemedi: eski kural (komşunun altına)
         const iPass = !!mine && (!theirs || mine.amount < theirs.amount - 0.5 || (Math.abs(mine.amount - theirs.amount) <= 0.5 && e.i < nb.i));
-        return iPass ? mine : null;
+        return iPass ? mine : butt();
       }
       return mine;
     };
@@ -2931,7 +2947,7 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
       const bound = side === 'front' ? { doorBound: true, backBound: false } : { doorBound: false, backBound: rearBound };
       const dirStart: Vec3 = [-e.d.x, 0, -e.d.y], dirEnd: Vec3 = [e.d.x, 0, e.d.y];   // kenar boyunca uçlara doğru (gövde-yerel)
       const exts: RailExt[] = ([[extAt(perFace[faceIdx], e, true), dirStart], [extAt(perFace[faceIdx], e, false), dirEnd]] as Array<[ExtSpec | null, Vec3]>)
-        .filter((x): x is [ExtSpec, Vec3] => !!x[0] && x[0].amount > 0.01)
+        .filter((x): x is [ExtSpec, Vec3] => !!x[0] && Math.abs(x[0].amount) > 0.01)
         .map(([x, dir]) => ({ dir, amount: x.amount, ...(x.to ? { to: x.to } : {}) }));
       if (spec.kind === 'horizontal') {
         // Yatay şerit: kenara bağlı (railStrip) — kenardan setback içeri, genişlik size, kenar boyu (+ iç köşe uzatmaları). Panelsiz: yüzde

@@ -575,10 +575,10 @@ export function resolveBackBounds(
 /* ARKALIK ↔ ARKALIK KÖŞE BİRLEŞİMİ (Goker, Kas 2026 — "L dolabın arkasındaki yan yana gelen arkalıklar iç içe geçmesin; bir arkalık
    diğerini sınırlasın, biri diğerinin üzerine binsin, sadece kanalı uzasın"): grubun GÖVDE KENARI başka bir arkalık grubunun yüz
    düzlemindeyse (iki arka yüz o köşe çizgisinde buluşur — L / çentikli gövdenin dış ya da iç köşesi) iki arkalık birleşir: BÜYÜK yüzlü
-   arkalık GEÇER (kenarı, ötekinin levhasının tüm kalınlığını örter — kenar yönünde levhanın uzak yüzü), öteki ona DAYANIR (geçenin
-   levhasının yakın yüzünde biter). Dış köşede ikisi de kısalır, iç köşede ikisi de köşeye kadar uzar; artık iç içe geçmez, köşe açık
-   kalmaz. Yalnız ötekinin DERİNLİĞİ (levha aralığı; kenarlardan bağımsız) okunur → döngü yok. Kenar gövde kenarı kalır (kanal girişi
-   yok); üst / alt / yan kanal parçanın yeni açıklığıyla uzar (backGrooveCuttersFor — komşu parçaya taşan kanal da kesilir). */
+   arkalık GEÇER — dış köşede gövde kenarına kadar (sona kadar; Goker, 10 Kas 2026), iç köşede ötekinin levhasının tüm kalınlığını
+   örter —, öteki ona DAYANIR (geçenin levhasının yakın yüzünde biter). Artık iç içe geçmez, köşe açık kalmaz. Yalnız ötekinin
+   DERİNLİĞİ (levha aralığı; kenarlardan bağımsız) okunur → döngü yok. Kenar gövde kenarı kalır (kanal girişi yok); üst / alt / yan
+   kanal parçanın yeni açıklığıyla uzar (backGrooveCuttersFor — komşu parçaya taşan kanal da kesilir). */
 const BACK_JOIN_TOL = 1;
 /** Grubun levhasının kendi ekseni boyunca aralığı (grup varsayılan tip / setback / kalınlıkla; köşe birleşimleri okunmaz). */
 function backSlabRange(g: BackGroup, parent: Shape, shapes: Shape[]): [number, number] | null {
@@ -614,8 +614,10 @@ function applyBackCornerJoins(group: BackGroup, parent: Shape, shapes: Shape[], 
       if (!slab) continue;
       const theirs = areaOf(ob, o.axis);
       const pass = mine > theirs + 1 || (Math.abs(mine - theirs) <= 1 && group.id < o.id);
-      // Kenar yönünde ilerleme: max kenar +, min kenar −. Geçen → ötekinin UZAK yüzü; dayanan → geçenin YAKIN yüzü.
-      const target = pass ? (minSide ? slab[0] : slab[1]) : (minSide ? slab[1] : slab[0]);
+      // Kenar yönünde ilerleme: max kenar +, min kenar −. Geçen → gövde kenarı ile ötekinin UZAK yüzünden hangisi daha ötedeyse
+      // (Goker, Kas 2026 — "arkalık kısa kalmış, sona kadar gitmeli": dış köşede gövde kenarına kadar, iç köşede ötekinin levhasının
+      // tamamını örter); dayanan → geçenin YAKIN yüzü.
+      const target = pass ? (minSide ? Math.min(E, slab[0]) : Math.max(E, slab[1])) : (minSide ? slab[1] : slab[0]);
       edges[ek] = { ref: { body: true }, inner: target, outer: target, front: null };
       break;
     }
