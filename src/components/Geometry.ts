@@ -3,7 +3,7 @@ import initOpenCascade from 'opencascade.js';
 import { setOC } from 'replicad';
 import {
   type VirtualFace, type FaceDescriptor, type FilletInfo, type SubtractedGeometry, type Shape, shapeById, requestRebuild, vfOfPanel, type RefFacePick,
-  useAppStore,
+  type RailStripSpec, type RailExt, type RailExtTarget, useAppStore,
 } from '../store';
 
 /* GEOMETRY — 1) geometri çekirdeği + OCC katı servisi · 2) yüz bölgesi (serbest bölge, ayak izi, 2B çokgen) ·
@@ -1071,6 +1071,126 @@ export function clipHalfPlane(poly: Point2D[], A: number, B: number, C: number):
   return out;
 }
 export const polyArea = (p: Point2D[]) => signedArea2(p) / 2;
+
+/* ───────── KAYIT ŞERİDİ (VirtualFace.railStrip; Goker, Kas 2026 — "kayıtlar aynı ayak gibi referans kübün yüzey rollerine göre akıllı
+   yerleşsin; L dolaba öne 2 kayıt gerekiyorsa otomatik gelsin") ─────────
+   Yatay kayıt, yüz KONTURUNUN bir kenarına bağlı şerittir: düzlem-içi dış normali `n` olan, tohuma en yakın kontur kenarı; kenar
+   çizgisinden `setback`..`setback+size` içeri; kenar boyunca kenarın kendi uçları (+ `ext` uzatmaları — içbükey köşede komşu parçanın
+   altına). Serbest bölge (yanlar / önce yerleşen kayıtlar düşmüş) bu şeride kırpılır. Eski yol (tam bölge + ön yüzden dyn kesim +
+   karşı yüzden FIXED genişlik) L konturda yanlış yüzü kesiyordu (arka kayıt çentik derinliğinde çıkıyordu) ve ikinci ön kenara hiç
+   kayıt vermiyordu. Kenar her regen'de yeniden bulunduğundan gövde ölçüsü değişince kayıt kenarı izler, genişliği sabit kalır. */
+export interface RailStripClip { polygon: Point2D[]; center: Point2D; edge: { a: Point2D; b: Point2D } }
+/** `resolveExt` (motor regen'i): hedefli uzatmanın miktarını yeniden ölçer — `fromUV` = kenarın o ucunda bandın ortası (düzlem koord.). */
+export function clipRegionToRailStrip(
+  polygon: Point2D[], ring2D: Point2D[], strip: RailStripSpec, u: THREE.Vector3, v: THREE.Vector3, seedUV: Point2D,
+  resolveExt?: (e: RailExt, fromUV: Point2D) => number | null,
+): RailStripClip | null {
+  if (polygon.length < 3 || ring2D.length < 3) return null;
+  const n3 = new THREE.Vector3(...strip.n);
+  let nx = n3.dot(u), ny = n3.dot(v);
+  const nl = Math.hypot(nx, ny); if (nl < 1e-6) return null;
+  nx /= nl; ny /= nl;
+  // Kontur kenarları: dış normal yönelimden (imzalı alan); `n` ile eş yönlü olanlar arasından tohuma en yakın (eşitlikte uzun).
+  const ccw = signedArea2(ring2D) > 0;
+  let best: { a: Point2D; b: Point2D; dist: number; len: number } | null = null;
+  for (let i = 0; i < ring2D.length; i++) {
+    const a = ring2D[i], b = ring2D[(i + 1) % ring2D.length];
+    const dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy); if (len < 1e-6) continue;
+    const ex = ccw ? dy / len : -dy / len, ey = ccw ? -dx / len : dx / len;
+    if (ex * nx + ey * ny < 0.95) continue;
+    const t = Math.max(0, Math.min(1, ((seedUV.x - a.x) * dx + (seedUV.y - a.y) * dy) / (len * len)));
+    const dist = Math.hypot(seedUV.x - (a.x + dx * t), seedUV.y - (a.y + dy * t));
+    if (!best || dist < best.dist - 1e-6 || (Math.abs(dist - best.dist) <= 1e-6 && len > best.len)) best = { a, b, dist, len };
+  }
+  if (!best) return null;
+  const { a, b } = best;
+  const tx = (b.x - a.x) / best.len, ty = (b.y - a.y) / best.len;     // kenar yönü
+  const d = nx * a.x + ny * a.y;                                       // kenar çizgisi: n·p = d
+  let lo = Math.min(tx * a.x + ty * a.y, tx * b.x + ty * b.y), hi = Math.max(tx * a.x + ty * a.y, tx * b.x + ty * b.y);
+  const s = Math.max(0, strip.setback), w = Math.max(0.5, strip.size);
+  const ta = tx * a.x + ty * a.y;
+  const lineAt = (tt: number, off: number): Point2D => ({ x: a.x + (tt - ta) * tx - nx * off, y: a.y + (tt - ta) * ty - ny * off });
+  for (const e of strip.ext ?? []) {
+    const dv = new THREE.Vector3(...e.dir);
+    const toHi = dv.dot(u) * tx + dv.dot(v) * ty > 0;
+    // Hedefli uzatma: kenarın o ucunda bandın ortasından hedef yüze kadar yeniden ölçülür; ölçülemezse kayıtlı miktar.
+    const live = e.to && resolveExt ? resolveExt(e, lineAt(toHi ? hi : lo, s + w / 2)) : null;
+    const amount = live != null && live > 0.5 ? live : e.amount;
+    if (!(amount > 0)) continue;
+    if (toHi) hi += amount; else lo -= amount;
+  }
+  let out = clipHalfPlane(polygon, nx, ny, d - s);                     // kenardan setback içeri
+  out = clipHalfPlane(out, -nx, -ny, -(d - s - w));                     // genişlik
+  out = clipHalfPlane(out, tx, ty, hi);                                 // kenar boyu (+ uzatma)
+  out = clipHalfPlane(out, -tx, -ty, -lo);
+  // Temizlik: ardışık yinelenen ve doğrudaş (kenar ortası) noktalar
+  const clean: Point2D[] = [];
+  for (const q of out) { const l = clean[clean.length - 1]; if (!l || Math.hypot(l.x - q.x, l.y - q.y) > 0.01) clean.push(q); }
+  while (clean.length > 1 && Math.hypot(clean[0].x - clean[clean.length - 1].x, clean[0].y - clean[clean.length - 1].y) <= 0.01) clean.pop();
+  for (let i = clean.length - 1; i >= 0 && clean.length > 3; i--) {
+    const p = clean[(i - 1 + clean.length) % clean.length], q = clean[i], r = clean[(i + 1) % clean.length];
+    if (Math.abs(cross2(p, q, r)) <= 1e-6 * Math.max(1, Math.hypot(q.x - p.x, q.y - p.y) * Math.hypot(r.x - q.x, r.y - q.y))) clean.splice(i, 1);
+  }
+  if (clean.length < 3 || Math.abs(polyArea(clean)) < 1) return null;
+  // Merkez: şerit çokgeninin ağırlık merkezi (tohum sonraki regen'de şeridin içinde kalsın)
+  let A = 0, cx = 0, cy = 0;
+  for (let i = 0; i < clean.length; i++) {
+    const p = clean[i], q = clean[(i + 1) % clean.length], wgt = p.x * q.y - q.x * p.y;
+    A += wgt; cx += (p.x + q.x) * wgt; cy += (p.y + q.y) * wgt;
+  }
+  const center = Math.abs(A) > 1e-9 ? { x: cx / (3 * A), y: cy / (3 * A) }
+    : { x: clean.reduce((s0, p) => s0 + p.x, 0) / clean.length, y: clean.reduce((s0, p) => s0 + p.y, 0) / clean.length };
+  return { polygon: clean, center, edge: { a, b } };
+}
+/** İÇ KÖŞEDEN UZAYAN KAYITIN HEDEFE MESAFESİ (gövde-yerel): `from` (kayıt bandının o uçtaki ortası) noktasından `dir` yönünde, dış normali
+ *  `to.n` olan gövde yüzlerinden ışının ilk çarptığı (kutusu içinde) yüzün düzlemine mesafe − `to.depth` (hedef kenarın dolu bandı).
+ *  Yüz yoksa null. */
+export function railLandingOnBody(faces: FaceData[], groups: CoplanarFaceGroup[], from: THREE.Vector3, dir: THREE.Vector3, to: RailExtTarget): number | null {
+  const n = new THREE.Vector3(...to.n).normalize(), d = dir.clone().normalize();
+  const dn = d.dot(n);
+  if (dn < 0.2) return null;
+  let best: number | null = null;
+  for (const g of groups) {
+    const gn = g.normal.clone().normalize();
+    if (gn.dot(n) < 0.95) continue;
+    const s = (g.center.dot(gn) - from.dot(gn)) / d.dot(gn);
+    if (!(s > 0.5) || (best != null && s >= best)) continue;
+    const q = from.clone().addScaledVector(d, s);
+    const bb = new THREE.Box3();
+    for (const fi of g.faceIndices) for (const p of faces[fi]?.vertices ?? []) bb.expandByPoint(p);
+    if (bb.isEmpty() || !bb.expandByScalar(1).containsPoint(q)) continue;
+    best = s;
+  }
+  return best == null ? null : best - Math.max(0, to.depth) / dn;
+}
+/** Çokgeni `dir` yönündeki uç köşelerinden `amount` kadar uzatır (dikey kayıtın iç köşe uzatması; köşeler gövde-yerel). */
+export function extendPolygonAlong(verts: THREE.Vector3[], dir: THREE.Vector3, amount: number): THREE.Vector3[] {
+  if (!(amount > 0) || verts.length < 3) return verts;
+  const d = dir.clone().normalize();
+  const pr = verts.map(p => p.dot(d)), mx = Math.max(...pr);
+  return verts.map((p, i) => (pr[i] >= mx - 0.01 ? p.clone().addScaledVector(d, amount) : p));
+}
+/** Dikey kayıt uzatmasının ölçüm noktası: çokgenin `dir` uç köşelerinin ortası, VF düzleminden bant ortası kadar içeri (−normal). */
+export function railExtOrigin(verts: THREE.Vector3[], dir: THREE.Vector3, normal: THREE.Vector3, band: [number, number]): THREE.Vector3 {
+  const d = dir.clone().normalize();
+  const pr = verts.map(p => p.dot(d)), mx = Math.max(...pr);
+  const ends = verts.filter((_, i) => pr[i] >= mx - 0.01);
+  const c = ends.reduce((acc, p) => acc.add(p), new THREE.Vector3()).divideScalar(Math.max(1, ends.length));
+  return c.addScaledVector(normal.clone().normalize(), -(band[0] + band[1]) / 2);
+}
+/** Dikey kayıt VF'sinin uzatmaları (kuruluş: kayıtlı miktar; regen: `land` verilirse hedefe yeniden ölçülür). */
+export function applyRailExt(
+  verts: THREE.Vector3[], normal: THREE.Vector3, exts: Array<RailExt & { band: [number, number] }> | undefined,
+  land?: (from: THREE.Vector3, dir: THREE.Vector3, to: RailExtTarget) => number | null,
+): THREE.Vector3[] {
+  let out = verts;
+  for (const e of exts ?? []) {
+    const dir = new THREE.Vector3(...e.dir);
+    const live = e.to && land ? land(railExtOrigin(out, dir, normal, e.band), dir, e.to) : null;
+    out = extendPolygonAlong(out, dir, live != null && live > 0.5 ? live : e.amount);
+  }
+  return out;
+}
 /** Çokgeni DIŞBÜKEY çokgenle kırpar (yönelim CW / CCW fark etmez). */
 export function clipPolyToConvex(poly: Point2D[], convex: Point2D[]): Point2D[] {
   if (convex.length < 3) return poly;

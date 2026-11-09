@@ -219,8 +219,9 @@ export function bodyFacesByRole(body: Shape | undefined | null, role: FaceRole, 
     bounds: f.bounds, center: f.center, normal: f.normal, area: f.area,
   }));
 }
-/** Gövde-yerel noktadan geçen, dış normali `n` (yatay, x/z) olan gövde yüzünün rolü; yüz yoksa null (panel kesiği → otomatik). */
-export function bodyFaceRoleAt(body: Shape | undefined | null, p: Vec3, n: Pt, st = useAppStore.getState()): FaceRole | null {
+/** Gövde-yerel noktadan geçen, dış normali `n` (yatay, x/z) olan DÜŞEY gövde yüzü (rolüyle); yüz yoksa null (panel kesiği). Ayak izi
+ *  kenarları (plinthEdgeRoles) ve hızlı gövde kayıt kenarları (PanelGroupService.railEdgesOf) bununla yüze / role bağlanır. */
+export function bodyFaceAt(body: Shape | undefined | null, p: Vec3, n: Pt, st = useAppStore.getState()): BodyFace | null {
   if (!body) return null;
   const tol = 2;
   for (const f of bodyFaces(body, st)) {
@@ -230,10 +231,13 @@ export function bodyFaceRoleAt(body: Shape | undefined | null, p: Vec3, n: Pt, s
     const dist = f.normal[0] * (p[0] - f.center[0]) + f.normal[1] * (p[1] - f.center[1]) + f.normal[2] * (p[2] - f.center[2]);
     if (Math.abs(dist) > tol) continue;
     if ([0, 1, 2].some(a => p[a] < f.bounds.min[a] - tol || p[a] > f.bounds.max[a] + tol)) continue;
-    return f.role;
+    return f;
   }
   return null;
 }
+/** Noktadan geçen eş-normalli gövde yüzünün rolü; yüz yoksa null (→ otomatik). */
+export const bodyFaceRoleAt = (body: Shape | undefined | null, p: Vec3, n: Pt, st = useAppStore.getState()): FaceRole | null =>
+  bodyFaceAt(body, p, n, st)?.role ?? null;
 
 /* ───────── ETKİN HACİM: bölge ───────── */
 /** Gövdenin zemini (yerel alt düzlem). */

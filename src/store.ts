@@ -84,7 +84,22 @@ export interface VirtualFace {
   plinthId?: string;
   /** AYAĞIN ÜSTÜ: `stackDepth` her regen'de setin üst yüzünden yeniden okunur (set yükselince panel onunla gider). */
   stackOnPlinthId?: string;
+  /** KAYIT ŞERİDİ (hızlı gövde YATAY kayıtı; PanelGroupService › pushRails): serbest bölge, yüz KONTURUNUN `n` yönlü kenarından
+   *  `setback`..`setback+size` içerideki şeride kırpılır (Geometry.clipRegionToRailStrip). Kenar her regen'de tohuma en yakın
+   *  eş-normalli kontur kenarı olarak yeniden bulunur → gövde ölçüsü değişince kayıt kenarı izler, genişliği sabit kalır. */
+  railStrip?: RailStripSpec;
+  /** DİKEY KAYIT İÇ KÖŞE UZATMASI: VF bölgesi `dir` yönündeki ucundan uzatılır (bkz. RailExt); `band` = levhanın plan bandı (VF
+   *  düzleminden içeri [lo, hi] mm — çektirme..çektirme+kalınlık), hedef ölçümü bandın ortasından yapılır. */
+  railExt?: Array<RailExt & { band: [number, number] }>;
 }
+/** İç köşe uzatmasının HEDEFİ: dış normali `n` olan gövde yüzü (plan çokgeninin kenarı); uzatma o yüzün düzleminden `depth` önce biter
+ *  (kenarın DOLU bandı: kayıt çektirme + genişlik / kalınlık, yan panel kalınlığı; boşsa 0). Motor her regen'de yeniden ölçer → gövde
+ *  ölçüsü değişince kayıt hedefe değmeye devam eder. */
+export interface RailExtTarget { n: Vec3; depth: number }
+/** Kayıt ucu uzatması: `dir` kenar boyunca o uca doğru birim yön, `amount` mm (kuruluşta ölçülen; `to` yoksa sabit). */
+export interface RailExt { dir: Vec3; amount: number; to?: RailExtTarget }
+/** Kayıt şeridi: `n` = bağlı kenarın düzlem-içi DIŞ normali (gövde-yerel, yatay); `ext` = kenarın uçlarında uzatma (iç köşede). */
+export interface RailStripSpec { n: Vec3; setback: number; size: number; ext?: RailExt[] }
 
 /** Kapak kenar referansı: bir sınır panelinin VF'si ya da gövde kutusunun kenarı. */
 export interface DoorBoundRef { vfId?: string; body?: boolean }

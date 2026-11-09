@@ -1,7 +1,7 @@
 import * as THREE from 'three';
-import { type CavityBox, type PanelGroup, type PanelHole, type Shape, type VirtualFace, childPanelsOf, panelOfVf, shapeById, useAppStore, vfOfPanel } from '../store';
+import { type CavityBox, type PanelGroup, type PanelHole, type RailExt, type RailExtTarget, type Shape, type VirtualFace, childPanelsOf, panelOfVf, shapeById, useAppStore, vfOfPanel } from '../store';
 import { type ExtrudeStep, type TransformStep, applyExtrudeSteps, applyTransformSteps, getUnifiedSteps, matchReferenceFace, resolveReferenceFacePlane, stepRefTargets } from './Geometry';
-import { type RotOp, computeFaceComponentContour, computeFreeRegionLocal, convexHull2D, footprintGeometry, panelBehindStackPlane, largestFaceNormal, panelHasRotation, panelInnerBigFace, panelIsTiltedSlab, toUV } from './Geometry';
+import { type RotOp, applyRailExt, clipRegionToRailStrip, railLandingOnBody, computeFaceComponentContour, computeFreeRegionLocal, convexHull2D, footprintGeometry, panelBehindStackPlane, largestFaceNormal, panelHasRotation, panelInnerBigFace, panelIsTiltedSlab, toUV } from './Geometry';
 import { type CoplanarFaceGroup, type FaceData, type Vec3, angleToTouchPlane, assertBounds, axisDirToVec, axisIndexOf, boundsOverlapBox, convertReplicadToThreeGeometry, createHoleCylinder, createPanelFromVirtualFace, createReplicadBox, createReplicadBoxAt, cutWithTools, dot3, effectiveBodyGeometry, errMsg, findFaceByDescriptor, fromPlaneUV, getFacePlaneAxes, getFacesAndGroups, getShapeMatrix, halfSpaceSlab, isFlatNormal, localBboxOf, normDeg, panelThickness, pointFromFracBox, projRange, resolveVfFracPoint, rotateAboutAxis, round1, round3, spanAlong, toVector3, uniqueMeshPoints, uniquePoints, vec3, vertexModsKey, vfRawMinAlong, worldBboxOf } from './Geometry';
 import { isInteriorPanel, isInteriorVf, recalculateInteriorVfs, syncPanelGroups } from './PanelGroupService';
 import { isDoorPanel, isDoorVf, recalculateDoorVfs, syncDoorGroups } from './DoorService';
@@ -1056,9 +1056,19 @@ function trimmedStampGeometryFromVf(vf: VirtualFace, thickness: number, extrudeS
     const amount = stepAmount(step, Math.max(...projs) - Math.min(...projs));
     if (Math.abs(amount) < 0.01) continue;
     if (alignT > 0.7 && amount > 0) continue;
-    const threshold = amount < 0 ? Math.max(...projs) + amount : Math.min(...projs) + amount;
+    const mx = Math.max(...projs);
+    if (amount > 0) {
+      // BÜYÜME (hedef yüze bakmayan): adımın yüzündeki (en dış) köşeler amount kadar dışarı — gerçek extrude ile birebir. Eskiden MİN
+      // taraf içeri çekiliyordu (ters: iç köşeye uzatılan kayıtın damgası karşı ucundan kısalıyor, uzatma hiç görünmüyordu).
+      for (let i = 0; i < trimmed.length; i++) {
+        if (projs[i] < mx - 0.01) continue;
+        trimmed[i][0] += amount * eN.x; trimmed[i][1] += amount * eN.y; trimmed[i][2] += amount * eN.z;
+      }
+      continue;
+    }
+    const threshold = mx + amount;
     for (let i = 0; i < trimmed.length; i++) {
-      if (amount < 0 ? projs[i] > threshold : projs[i] < threshold) {
+      if (projs[i] > threshold) {
         const delta = threshold - projs[i];
         trimmed[i][0] += delta * eN.x; trimmed[i][1] += delta * eN.y; trimmed[i][2] += delta * eN.z;
       }
@@ -1493,10 +1503,12 @@ function recalculateVirtualFacesForShape(shape: Shape, virtualFaces: VirtualFace
     return own ? list.map(s => shiftStamp(s, own.clone().negate())) : list;
   };
 
+  // KAYIT UZATMASI hedefe (gövde yüzü) her regen'de yeniden ölçülür (RailExtTarget; gövde ölçüsü değişince kayıt hedefe değer).
+  const land = (from: THREE.Vector3, dir: THREE.Vector3, to: RailExtTarget) => railLandingOnBody(faces, faceGroups, from, dir, to);
   const updatedMap = new Map<string, VirtualFace>();
   for (const vf of shapeFaces) {
     const m = matchOf.get(vf.id);
-    const regen = m && m.contour ? regenerateParentFaceShapeVF(vf, shape.id, m.group, m.contour, worldToLocal, stampingPanelsFor(vf.id)) : null;
+    const regen = m && m.contour ? regenerateParentFaceShapeVF(vf, shape.id, m.group, m.contour, worldToLocal, stampingPanelsFor(vf.id), land) : null;
     const sdNew = regen ? freshStackDepth.get(vf.id) : undefined;
     updatedMap.set(vf.id, regen ? (sdNew !== undefined ? { ...regen, stackDepth: sdNew } : regen) : vf);
   }
@@ -1508,6 +1520,7 @@ function regenerateParentFaceShapeVF(
   vf: VirtualFace, shapeId: string, matchedGroup: CoplanarFaceGroup,
   contour: NonNullable<ReturnType<typeof computeFaceComponentContour>>,
   worldToLocal: THREE.Matrix4, siblingPanels: any[],
+  land?: (from: THREE.Vector3, dir: THREE.Vector3, to: RailExtTarget) => number | null,
 ): VirtualFace {
   const localNormal = matchedGroup.normal.clone().normalize();
   const seed = toVector3(vf.center);
@@ -1521,11 +1534,24 @@ function regenerateParentFaceShapeVF(
 
   const storedRel = (vf as any).sideRelations as Record<string, number> | undefined;
   const prevRegion = vf.vertices && vf.vertices.length >= 3 ? vf.vertices.map(([x, y, z]) => new THREE.Vector3(x, y, z)) : undefined;
-  const region = computeFreeRegionLocal(contour.corners, localNormal, seed, siblingPanels, worldToLocal, shapeId, prevRegion, storedRel, !!vf.fitFaceShape);
+  // Kayıt şeridi bölgenin TAM şeklinden kırpılır (L konturda yanlar / önceki kayıtlar kesin düşsün).
+  const region = computeFreeRegionLocal(contour.corners, localNormal, seed, siblingPanels, worldToLocal, shapeId, prevRegion, storedRel, !!vf.fitFaceShape || !!vf.railStrip);
 
-  const cornersOut = region && region.polygon.length >= 3 ? region.polygon.map(to3D) : contour.corners;
+  let cornersOut = region && region.polygon.length >= 3 ? region.polygon.map(to3D) : contour.corners;
+  let centerOut = newCenter;
+  if (vf.railStrip) {
+    // KAYIT ŞERİDİ: serbest bölge, konturun bağlı kenarından şeride kırpılır; bölge boşsa (yüz dolu) kontur şeridi kalır. Merkez şeridin
+    // ağırlık merkezine alınır → sonraki regen'de tohum şeridin içinde, kenar eşlemesi kararlı.
+    const base = region && region.polygon.length >= 3 ? region.polygon : contour.corners.map(uvOf);
+    const resolve = land ? (e: RailExt, fromUV: { x: number; y: number }) => (e.to ? land(to3D(fromUV), new THREE.Vector3(...e.dir), e.to) : null) : undefined;
+    const clip = clipRegionToRailStrip(base, contour.corners.map(uvOf), vf.railStrip, u, v, cUV, resolve)
+      ?? clipRegionToRailStrip(contour.corners.map(uvOf), contour.corners.map(uvOf), vf.railStrip, u, v, cUV, resolve);
+    if (clip) { cornersOut = clip.polygon.map(to3D); centerOut = to3D(clip.center); }
+  }
+  // DİKEY KAYIT İÇ KÖŞE UZATMASI: bölge, kenar yönündeki ucundan hedefe kadar uzatılır (yüzün dışına, gövdenin içinde).
+  if (vf.railExt?.length) cornersOut = applyRailExt(cornersOut, localNormal, vf.railExt, land);
 
-  const out: any = { ...vf, normal: vec3(localNormal), vertices: cornersOut.map(vec3), center: vec3(newCenter) };
+  const out: any = { ...vf, normal: vec3(localNormal), vertices: cornersOut.map(vec3), center: vec3(centerOut) };
   out.rawFaceBBox = { ...newB };
   out.sideRelations = { ...(region?.sideRelations || {}), ...(storedRel || {}) };
   if (region?.anchor) out.regionAnchor = vec3(to3D(region.anchor));
