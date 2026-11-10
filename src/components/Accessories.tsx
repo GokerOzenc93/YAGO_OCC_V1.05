@@ -460,7 +460,7 @@ function SlotRow({ role, draft, setDraft, onPick, busy, open, onToggle, layers }
         {open && <span className={ROW_SEL_BAR} />}
         <span className="yago-label shrink-0 w-[50px]">{label}</span>
         <Swatch color={layer?.color ?? LAYER_DEFAULT_COLOR} size={8} />
-        <span className="flex-1 min-w-0 truncate text-[11.5px] font-medium text-stone-700" title={`${m.fileName}${layer ? ` · layer ${layer.name}` : ''}`}>{m.name}</span>
+        <span className="flex-1 min-w-0 truncate text-[11.5px] font-medium text-stone-700" title={`${m.source ? `${m.source} → STL` : m.fileName}${layer ? ` · layer ${layer.name}` : ''}`}>{m.name}</span>
         {embed > 0 && <span className="shrink-0 text-[10px] font-semibold tabular-nums text-stone-400" title={`${fmt1(embed)} mm goes into the panel`}>↑{fmt1(embed)}</span>}
         <RowCells cells={[['X', dims[0]], ['Y', st ? '↕' : dims[1]], ['Z', dims[2]]]} title={`${fmt1(dims[0])} × ${fmt1(dims[1])} × ${fmt1(dims[2])} mm${st ? ' · stretches' : ''}${embed > 0 ? ` · ${fmt1(embed)} into the panel` : ''}`} />
         <RowChevron open={open} onClick={toggle} />
@@ -559,6 +559,7 @@ function LegModelEditor({ draft, setDraft, onSave, onCancel, layers }: {
   const [testH, setTestH] = useState(100);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);   // DWG / DXF dönüşüm özeti (hata değil)
   const [openSlot, setOpenSlot] = useState<LegPartRole | null>(null);
   const [holeMode, setHoleMode] = useState(false);
   const [selectedHole, setSelectedHole] = useState<string | null>(null);
@@ -566,12 +567,13 @@ function LegModelEditor({ draft, setDraft, onSave, onCancel, layers }: {
   const slotRef = useRef<LegPartRole>('stem');
   const draftRef = useRef(draft); draftRef.current = draft;
   const selRef = useRef(selectedHole); selRef.current = selectedHole;
-  const pick = (role: LegPartRole) => { slotRef.current = role; setError(null); fileRef.current?.click(); };
+  const pick = (role: LegPartRole) => { slotRef.current = role; setError(null); setInfo(null); fileRef.current?.click(); };
   const onFile = async (files: FileList | null) => {
     const f = files?.[0]; if (!f) return;
-    setBusy(true); setError(null);
+    setBusy(true); setError(null); setInfo(null);
     try {
       const m = await importAccessoryFile(f);
+      setInfo(m.note ?? null);
       const role = slotRef.current, cur = draftRef.current;
       // Model değiştirilirse yuvanın ölçü / taşıma / uzama / katman ayarı korunur
       const prev = cur.parts.find(p => p.role === role);
@@ -648,7 +650,7 @@ function LegModelEditor({ draft, setDraft, onSave, onCancel, layers }: {
             </div>
           )}
           <input ref={fileRef} type="file" accept={ACCESSORY_ACCEPT} className="hidden" onChange={e => { void onFile(e.target.files); e.target.value = ''; }} />
-          {(busy || error) && <div className={`px-1 text-[10.5px] ${error ? 'text-red-600' : 'text-stone-400'}`}>{busy ? 'Importing…' : error}</div>}
+          {(busy || error || info) && <div className={`px-1 text-[10.5px] ${busy ? 'text-stone-400' : error ? 'text-red-600' : 'text-stone-500'}`}>{busy ? 'Importing…' : error ?? info}</div>}
         </div>
       </QbSection>
     </>

@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "build:dwg2stl": "cargo build --release --lib --target wasm32-wasip1 --manifest-path dwg2stl/Cargo.toml && node -e \"require('fs').copyFileSync('dwg2stl/target/wasm32-wasip1/release/dwg2stl.wasm','public/dwg2stl.wasm')\""
   },
   "dependencies": {
     "@react-three/drei": "^9.97.0",

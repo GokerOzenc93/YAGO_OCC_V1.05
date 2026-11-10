@@ -4,12 +4,13 @@ import {
   effectiveBodyGeometry, getFacesAndGroups, vertexModsKey, isFlatNormal, matchReferenceFace, getShapeMatrix, dominantAxisLabel, type FaceData,
   type CoplanarFaceGroup, computeFaceComponentContour, computeFreeRegionLocal, fromPlaneUV, vec3, createFaceDescriptor, createPanelFromVirtualFace,
   convertReplicadToThreeGeometry, type MoveTransformStep, type ExtrudeStep, axisDirToVec, panelBehindStackPlane, clipRegionToRailStrip, toUV, applyRailExt,
+  initReplicad, rebuildBodySolid,
 } from './Geometry';
 import {
   type CavityBox, type Shape, type VirtualFace, panelOfVf, type GapSpec, useAppStore, type PanelGroup, type CavityPick, type CavityStep, shapeById,
   requestRebuild, type RefFacePick, type CornerKey, type QuickBodyConfig, type JoinPass, type BodyLegs, childPanelsOf, type QuickBodyPart, type QuickBodyPartBase,
   type QuickBodyRails, type RailSpec, type RailBackRel, railsOf, type PanelEdgeDir, PANEL_EDGE_DIRS, panelEdgeOf, type QuickBackRefKey, type BackGroup,
-  type RailStripSpec, type RailExt, type RailExtTarget,
+  type RailStripSpec, type RailExt, type RailExtTarget, DEFAULT_QUICK_BODY, DEFAULT_RAILS,
 } from '../store';
 import { type EdgeRole, type Pt, cleanPoly, edgeRoles } from './LegLayout';
 import {
@@ -19,7 +20,7 @@ import {
 import { doorJointForBond, moveDoorJointTo, isDoorPanel } from './DoorService';
 import {
   type BodyFace, type PlinthLegs, axisDirOfNormal, bodyFaceAt, bodyFaces, bodyFacesByRole, bodyFacesByRoleAll, bodyFrontAxis, plinthLegBoxes, plinthLegsOf,
-  plinthSetsOf, removeQuickBodyPlinth, syncQuickBodyPlinth,
+  plinthSetsOf, removeQuickBodyPlinth, syncQuickBodyPlinth, setBodyFaceRole, setBodyFrontAxis,
 } from './PlinthService';
 
 /* PANEL GRUP SERVİSİ — 1) kapak / arkalık / raf-dikme ortak bölme yardımcıları · 2) raf / dikme grupları · 3) hızlı gövde. */
@@ -3167,4 +3168,151 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
     useAppStore.getState().setSelectedBackGroupId(null);
   }
   return { panelCount: newVfs.length, backCreated, cyclic, warnings };
+}
+
+/* ───────── Traverse (kayıt) senaryoları — eski src/components/rails.ts ─────────
+   Hızlı gövde traverslerinin kutu ve L gövdede nereye yerleştiğini ölçer (gerçek replicad / OCC). Uygulama çağırmaz; Node harness'i
+   ya da tarayıcı konsolu çağırır, sonuç satır listesi olarak döner. Senaryo adı: box | L | L-corner | L-backnotch öneki + parçalar
+   (panel · bottom · back · legs · horiz · passes · sb · xfront) + son ek -v (dikey) / -h (yatay). Örn. "L-panel-back-h". */
+export interface RailsScenarioOptions {
+  /** Aynı ayarla ikinci kez uygula: parça kimlikleri korunuyor mu. */
+  reapply?: boolean;
+  /** Gövde derinliği +100: şerit kenarı izlemeli, genişlik sabit kalmalı. */
+  resize?: boolean;
+  /** İkinci tam rebuild'den sonra da döküm. */
+  dumpAfter?: boolean;
+}
+export interface RailsScenarioRow { name: string; key: string; min: Vec3; max: Vec3; verts: Vec3[] | null }
+export interface RailsScenarioResult {
+  lines: string[];
+  /** İkinci tam rebuild sonucu konum değiştiren parça sayısı (0 = kararlı). */
+  drift: number;
+  /** Son dökümdeki parçalar (gövde-yerel kutu + VF köşeleri). */
+  rows: RailsScenarioRow[];
+  W: number; H: number; D: number; notch: { x0: number; z0: number; w: number; d: number } | null;
+}
+export async function railsScenario(scen: string, opt: RailsScenarioOptions = {}): Promise<RailsScenarioResult> {
+  const { whenRebuildIdle } = await import('./PanelEngine');
+  const lines: string[] = [];
+  const say = (...a: unknown[]) => lines.push(a.map(x => (typeof x === 'string' ? x : String(x))).join(' '));
+  const r1 = (v: number) => Math.round(v * 10) / 10;
+  const fmt = (b: THREE.Box3) => `x ${r1(b.min.x)}..${r1(b.max.x)}  y ${r1(b.min.y)}..${r1(b.max.y)}  z ${r1(b.min.z)}..${r1(b.max.z)}`;
+  // Arkalık üyeleri: UI'daki "paneli olmayan VF'ye panel üret" efektinin (Assembly.tsx) karşılığı
+  const materializePending = async (bodyId: string) => {
+    const s0 = useAppStore.getState();
+    const pending = s0.virtualFaces.filter(vf => vf.shapeId === bodyId && !vf.hasPanel && !vf.plinthId && !s0.shapes.some(x => x.parameters?.virtualFaceId === vf.id));
+    for (const vf of pending) {
+      const bgrp = vf.backGroupId ? s0.backGroups.find(bg => bg.id === vf.backGroupId) : undefined;
+      const th = bgrp ? bgrp.thickness : 18;
+      const rp = await createPanelFromVirtualFace(vf.vertices, vf.normal, th); if (!rp) continue;
+      const g = convertReplicadToThreeGeometry(rp);
+      const body = s0.shapes.find(x => x.id === bodyId)!;
+      useAppStore.getState().addShape({
+        id: genId('panel-vf'), type: 'panel', position: [...body.position], rotation: body.rotation, scale: [...body.scale], color: '#fff', geometry: g, replicadShape: rp,
+        parameters: { width: 0, height: 0, depth: th, parentShapeId: bodyId, virtualFaceId: vf.id, panelThickness: th, ...(vf.backGroupId ? { backGroupId: vf.backGroupId } : {}) },
+      } as unknown as Shape);
+      useAppStore.getState().updateVirtualFace(vf.id, { hasPanel: true });
+    }
+    if (pending.length) { await requestRebuild(bodyId); await whenRebuildIdle(bodyId); }
+    return pending.length;
+  };
+  const makeBody = async (id: string, W: number, H: number, D: number, notch?: { x0: number; z0: number; w: number; d: number }): Promise<Shape> => {
+    const size = { width: W, height: H, depth: D };
+    const subs = notch ? [{ parameters: { width: notch.w, height: H + 2, depth: notch.d }, relativeOffset: [notch.x0, -1, notch.z0] as Vec3 }] : [];
+    const r = await rebuildBodySolid({ parameters: size }, subs, size, false);
+    return {
+      id, type: 'box', geometry: r.geometry, replicadShape: r.replicadShape, position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1], color: '#fff',
+      parameters: { ...size, scaledBaseVertices: r.scaledBaseVertices }, vertexModifications: [], subtractionGeometries: [], fillets: [],
+    } as unknown as Shape;
+  };
+  const rail = (kind: 'horizontal' | 'vertical' | 'none', size = 100, setback = 0) => ({ kind, size, setback }) as RailSpec;
+
+  await initReplicad();
+  const st = useAppStore.getState();
+  const W = 800, H = 720, D = 560;
+  const isL = scen.startsWith('L');
+  // L: ön-sağ köşede çentik (x 450..800, z 300..560 boş) → ön yüzler: z=560 (x 0..450) ve z=300 (x 450..800); +X yüzler: x=800 (z 0..300) ve x=450 (z 300..560)
+  const notch = isL ? { x0: 450, z0: 300, w: 400, d: 300 } : null;
+  const body = await makeBody('body-1', W, H, D, notch ?? undefined);
+  st.addShape(body);
+  const faces = bodyFaces(body);
+  say(`[${scen}] gövde yüzleri:`, faces.map(f => `${f.role}${f.overridden ? '*' : ''}@${f.axis ?? 'tilt'} c=(${f.center.map(r1).join(',')})`).join(' | '));
+  const rolesNow = () => bodyFaces(useAppStore.getState().shapes.find(x => x.id === body.id)!).map(f => `${f.role}${f.overridden ? '*' : ''}@${f.axis}`).join(' | ');
+  if (scen.startsWith('L-corner')) {
+    // KÖŞE DOLABI: çentik yüzleri ÖN (x=450 → front), x=0 → rear, z=560 → left; z=0 rear, x=800 right otomatik
+    const by = (ax: string, pred: (c: Vec3) => boolean) => faces.find(f => f.axis === ax && pred(f.center));
+    const notchX = by('x+', c => c[0] < 500), leftX = by('x-', () => true), frontZ = by('z+', c => c[2] > 500);
+    if (notchX) setBodyFaceRole(body.id, notchX.gi, 'front');
+    if (leftX) setBodyFaceRole(body.id, leftX.gi, 'rear');
+    if (frontZ) setBodyFaceRole(body.id, frontZ.gi, 'left');
+    say(`[${scen}] roller:`, rolesNow());
+  }
+  if (scen === 'box-xfront-h') setBodyFrontAxis(body.id, 'x+');
+  if (scen.startsWith('L-backnotch')) {
+    // ARKA ÇENTİKLİ: ön −Z; x=450 duvarı 'rear' üstüne yazılır (z=560 / z=300 otomatik rear), x=0 / x=800 yanlar
+    setBodyFrontAxis(body.id, 'z-');
+    const wall = bodyFaces(useAppStore.getState().shapes.find(x => x.id === body.id)!).find(f => f.axis === 'x+' && f.center[0] < 500);
+    if (wall) setBodyFaceRole(body.id, wall.gi, 'rear');
+    say(`[${scen}] roller:`, rolesNow());
+  }
+  const k = scen.endsWith('-v') ? 'vertical' as const : 'horizontal' as const;
+  const cfg: QuickBodyConfig = JSON.parse(JSON.stringify({ ...DEFAULT_QUICK_BODY, top: { ...DEFAULT_RAILS }, bottom: { ...DEFAULT_RAILS } }));
+  cfg.base = 'plinth'; cfg.plinth = { height: 100, front: 0, rear: 50, rearPlinth: false }; cfg.legs.count = 0;
+  cfg.back = { ...cfg.back, enabled: scen.includes('back') };
+  const join = scen.includes('passes') ? 'rail' as const : undefined;
+  const rails = { panel: scen.includes('panel'), front: { ...rail(k, 100, scen.includes('sb') ? 20 : 0), join }, rear: { ...rail(k, 80, 0), join }, backRel: 'groove' as const } as QuickBodyRails;
+  const plain = { panel: true, front: rail('none'), rear: rail('none'), backRel: 'groove' as const } as QuickBodyRails;
+  if (scen.includes('bottom')) { cfg.bottom = rails; cfg.top = plain; } else { cfg.top = rails; cfg.bottom = plain; }
+  if (scen.includes('horiz')) cfg.joins = { tl: 'horiz', tr: 'horiz', bl: 'horiz', br: 'horiz' };
+  if (scen.includes('legs')) { cfg.base = 'legs'; cfg.legs = { ...cfg.legs, count: 4, height: 100 }; }
+  say(`[${scen}] cfg top:`, JSON.stringify(railsOf(cfg, 'top')));
+  const t0 = Date.now();
+  const res = await applyQuickBody(body.id, cfg);
+  await whenRebuildIdle(body.id);
+  const made = await materializePending(body.id);
+  say(`[${scen}] sonuç:`, JSON.stringify(res), `${Date.now() - t0} ms`, made ? `(+${made} arkalık paneli)` : '');
+  let rows: RailsScenarioRow[] = [];
+  const dump = (label: string) => {
+    const now = useAppStore.getState();
+    rows = [];
+    {
+      for (const p of now.shapes.filter(x => x.parameters?.parentShapeId === body.id)) {
+        const bb = localBboxOf(p.geometry); if (!bb) continue;
+        const vf = now.virtualFaces.find(f => f.id === p.parameters?.virtualFaceId);
+        rows.push({ name: vf?.description ?? p.id, key: vf?.quickBody ?? (vf?.backGroupId ? 'back' : '?'), min: [bb.min.x, bb.min.y, bb.min.z], max: [bb.max.x, bb.max.y, bb.max.z], verts: vf?.vertices ?? null });
+      }
+    }
+    for (const vf of quickBodyVfsOf(body.id, now.virtualFaces)) {
+      const p = now.shapes.find(x => x.parameters?.virtualFaceId === vf.id);
+      const bb = p ? localBboxOf(p.geometry) : null;
+      say(`  ${label}${String(vf.quickBody).padEnd(14)} ${vf.description.padEnd(24)} ${bb ? fmt(bb) : '—'}  köşe:${vf.vertices.length}${vf.railStrip ? ' strip' : ''}`);
+    }
+    for (const g of now.backGroups.filter(x => x.shapeId === body.id)) for (const mid of g.memberVfIds) {
+      const p = now.shapes.find(x => x.parameters?.virtualFaceId === mid); const bb = p ? localBboxOf(p.geometry) : null;
+      say(`  ${label}${'back'.padEnd(14)} ${(g.name ?? '').padEnd(24)} ${bb ? fmt(bb) : '—'}`);
+    }
+  };
+  dump('');
+  if (opt.reapply) {
+    const ids = new Set(useAppStore.getState().shapes.filter(x => x.parameters?.parentShapeId === body.id).map(x => x.id));
+    const res2 = await applyQuickBody(body.id, cfg); await whenRebuildIdle(body.id);
+    const ids2 = useAppStore.getState().shapes.filter(x => x.parameters?.parentShapeId === body.id).map(x => x.id);
+    say(`[${scen}] yeniden uygulama:`, JSON.stringify(res2), `id korunan ${ids2.filter(i => ids.has(i)).length}/${ids2.length}`);
+    dump('R ');
+  }
+  if (opt.resize) {
+    const nb = await makeBody(body.id, W, H, D + 100, isL ? { x0: 450, z0: 400, w: 400, d: 300 } : undefined);
+    useAppStore.getState().updateShape(body.id, { geometry: nb.geometry, replicadShape: nb.replicadShape, parameters: { ...body.parameters, depth: D + 100 } } as Partial<Shape>);
+    await requestRebuild(body.id); await whenRebuildIdle(body.id);
+    say(`[${scen}] RESIZE derinlik ${D} → ${D + 100}:`);
+    dump('S ');
+  }
+  // İkinci tam rebuild: kararlı mı?
+  const before = new Map(useAppStore.getState().shapes.filter(x => x.parameters?.parentShapeId === body.id).map(x => [x.id, fmt(localBboxOf(x.geometry)!)]));
+  await requestRebuild(body.id); await whenRebuildIdle(body.id);
+  const after = useAppStore.getState().shapes.filter(x => x.parameters?.parentShapeId === body.id);
+  const drifted = after.filter(x => before.get(x.id) !== fmt(localBboxOf(x.geometry)!));
+  say(`[${scen}] 2. rebuild: ${drifted.length ? 'DEĞİŞTİ → ' + drifted.map(x => `${x.id}: ${before.get(x.id)} → ${fmt(localBboxOf(x.geometry)!)}`).join('; ') : 'kararlı'}`);
+  if (opt.dumpAfter) dump('2 ');
+  return { lines, drift: drifted.length, rows, W, H, D, notch };
 }

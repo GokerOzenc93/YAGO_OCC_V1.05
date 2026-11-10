@@ -1,0 +1,26 @@
+# dwg2stl — DWG / DXF içindeki 3B katıları (ACIS) ve mesh'leri ikili STL'ye çevirir.
+# Çıktı tarayıcıda çalışan tek bir WASM dosyasıdır: public/dwg2stl.wasm — derleme: `npm run build:dwg2stl`
+# (Rust + wasm32-wasip1 hedefi gerekir: rustup target add wasm32-wasip1). WASI hedefi çünkü acadrust'ın saat bağımlılığı
+# wasm32-unknown-unknown'da wasm-bindgen ister; WASI'de düz içe aktarım yeter (vekil: AccessoryService.convertDwgToStl).
+# Sınama: `cargo test --release` (ayrıntı lib.rs sonunda).
+# Lisans notu: okuyucu `acadrust` MPL-2.0 (değiştirilmeden kullanılır), `spade` MIT/Apache-2.0 — GPL bağımlılığı YOK.
+[package]
+name = "dwg2stl"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+acadrust = { version = "=0.6.8", default-features = false }
+spade = "2.15.1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

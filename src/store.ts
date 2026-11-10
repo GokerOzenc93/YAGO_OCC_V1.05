@@ -447,9 +447,11 @@ export interface PanelHole {
 }
 /** Ayak parçası rolü: taban (zemine basar) · gövde/mil (set yüksekliğine göre UZAR) · üst tabla (panele vidalanır). */
 export type LegPartRole = 'base' | 'stem' | 'top';
-/** İçe aktarılmış model dosyası — bayt dizisi IndexedDB'de, burada üst bilgi. `size` = normalize edilmiş ölçü (mm; Y yukarı, taban y=0). */
+/** İçe aktarılmış model dosyası — bayt dizisi IndexedDB'de, burada üst bilgi. `size` = normalize edilmiş ölçü (mm; Y yukarı, taban y=0).
+ *  DWG / DXF'ten çevrilen modelde saklanan baytlar STL'dir: `source` = özgün dosya adı, `note` = dönüşüm özeti (kullanıcıya gösterilir). */
 export interface AccessoryModel {
   id: string; name: string; fileName: string; ext: string; unit: AccessoryUnit; upAxis: 'y' | 'z'; size: Vec3; createdAt: number;
+  source?: string; note?: string;
 }
 /** Ayak parçası (Goker: "her parçada scale ve move olsun; scale yüzde değil net ölçü; her parçada stretch özelliği olsun").
  *  `dims` = NİHAİ ölçü (mm; x / y / z — yoksa modelin kendi ölçüsü). `offset` = TAŞIMA (mm; x·z düz kaydırma, y istif içinde: üstteki

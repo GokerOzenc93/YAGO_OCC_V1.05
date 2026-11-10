@@ -5,6 +5,9 @@
    KATMANLAR
    1) Dosya → geometri: Three örnek yükleyicileri (glTF/GLB, OBJ, STL, FBX, DAE, PLY, 3MF, 3DS, AMF, WRL) + STEP (replicad / OpenCascade).
       Sonuç TEK BufferGeometry: birim ölçeği (mm/cm/m/in), yukarı ekseni (Y/Z), XZ'de merkezlenmiş, tabanı y=0'da ("normalize").
+      DWG / DXF (Goker, Kas 2026 — "elimdeki aksesuarlar DWG; içeri alırken STL'ye çevirip alalım"): içe aktarırken `public/dwg2stl.wasm`
+      ile ikili STL'ye çevrilir ve kütüphaneye STL OLARAK kaydedilir (`convertDwgToStl`; kaynak: dwg2stl/lib.rs). Dönüştürücü yalnız
+      içe aktarma anında yüklenir; kayıtlı modeller ona bağlı değildir.
    2) Kalıcılık: IndexedDB `yago-accessories` — `models` (üst bilgi + ham bayt dizisi), `legModels`, `legPresets`. Store'daki kopya canlıdır;
       her yazım IDB'ye de gider. indexedDB yoksa (Node harness) yalnız bellek.
    3) Ayak modeli (LegModel) = 1–3 parça + rol: base (zemin) · stem (UZAR) · top (tabla). `legAssembly(leg, h)` parçaları alt alta dizer;
@@ -35,9 +38,9 @@ export const ACCESSORY_FORMATS: Record<string, { loader: string; label: string }
   amf: { loader: 'amf', label: 'AMF' }, wrl: { loader: 'wrl', label: 'VRML' }, vrml: { loader: 'wrl', label: 'VRML' },
   step: { loader: 'step', label: 'STEP' }, stp: { loader: 'step', label: 'STEP' },
 };
-/** Dosya seçicide DWG de görünür: seçilirse STLOUT yönlendirmesi verilir (DWG ayrıştırılmaz — 3D katılar ACIS, ücretsiz okuyucu yok). */
-export const ACCESSORY_ACCEPT = [...Object.keys(ACCESSORY_FORMATS), 'dwg', 'dxf'].map(e => `.${e}`).join(',');
-export const DWG_HINT = 'DWG / DXF cannot be read directly — in AutoCAD run STLOUT on the solid and import the .stl';
+/** İçe aktarırken STL'ye ÇEVRİLEN çizim biçimleri (ayrıştırıcıları yok: kütüphaneye STL baytları yazılır). */
+export const CAD_CONVERT_EXTS = ['dwg', 'dxf'];
+export const ACCESSORY_ACCEPT = [...Object.keys(ACCESSORY_FORMATS), ...CAD_CONVERT_EXTS].map(e => `.${e}`).join(',');
 /** Biçimin olağan yukarı ekseni: CAD / baskı biçimleri Z-yukarı (AutoCAD STLOUT dahil), diğerleri Y-yukarı. */
 export const defaultUpAxis = (fileName: string): 'y' | 'z' => (['stl', 'step', 'stp', '3mf', 'amf', 'ply'].includes(extOf(fileName)) ? 'z' : 'y');
 export const UNIT_FACTOR: Record<AccessoryUnit, number> = { mm: 1, cm: 10, m: 1000, in: 25.4 };
@@ -49,7 +52,7 @@ export const LEG_ROLE_TITLE: Record<LegPartRole, string> = {
 };
 const ROLE_ORDER: Record<LegPartRole, number> = { base: 0, stem: 1, top: 2 };
 export const extOf = (fileName: string) => (fileName.split('.').pop() || '').toLowerCase();
-export const isSupportedAccessoryFile = (fileName: string) => !!ACCESSORY_FORMATS[extOf(fileName)];
+export const isSupportedAccessoryFile = (fileName: string) => !!ACCESSORY_FORMATS[extOf(fileName)] || CAD_CONVERT_EXTS.includes(extOf(fileName));
 
 /* ───────────────────────────── Dosya → geometri ───────────────────────────── */
 const textOf = (buf: ArrayBuffer) => new TextDecoder().decode(buf);
@@ -159,6 +162,66 @@ export function normalizeAccessoryGeometry(raw: THREE.BufferGeometry, unit: Acce
   return { geo, size: [round1(b2.max.x - b2.min.x), round1(b2.max.y - b2.min.y), round1(b2.max.z - b2.min.z)] };
 }
 
+/* ───────────────────────────── DWG / DXF → STL (dwg2stl.wasm) ───────────────────────────── */
+/** Dönüştürücü raporu. `units` = çizimin $INSUNITS değeri; `approxFaces` = tam çözülemeyip sınırından düz yama ile kapatılan yüzler. */
+export interface DwgReport { units: number; solids: number; faces: number; approxFaces: number; meshes: number; triangles: number; notes: string[]; error: string | null }
+/** $INSUNITS → kütüphane birimi (tanımadığı / birimsiz çizimde mm varsayılır). */
+const DWG_UNIT: Record<number, AccessoryUnit> = { 1: 'in', 4: 'mm', 5: 'cm', 6: 'm' };
+let dwgModule: Promise<WebAssembly.Module> | null = null;
+/** Harness / Node: WASM baytlarını elle vermek için (tarayıcıda `public/dwg2stl.wasm` kendiliğinden indirilir). */
+export function setDwgConverterWasm(bytes: BufferSource): void { dwgModule = WebAssembly.compile(bytes); }
+function loadDwgModule(): Promise<WebAssembly.Module> {
+  if (!dwgModule) {
+    const url = `${import.meta.env.BASE_URL}dwg2stl.wasm`;
+    dwgModule = fetch(url).then(async r => {
+      if (!r.ok) throw new Error(`DWG converter could not be loaded (${r.status})`);
+      return WebAssembly.compile(await r.arrayBuffer());
+    });
+    dwgModule.catch(() => { dwgModule = null; });   // ağ hatasından sonra yeniden denenebilsin
+  }
+  return dwgModule;
+}
+/** DWG / DXF baytları → ikili STL. Tamamen tarayıcıda çalışır (dosya dışarı gönderilmez). Her çağrı TAZE bir WASM örneği kurar:
+ *  dönüştürücü belleği serbest bırakmaz, örnekle birlikte atılır; bozuk dosyada tuzağa düşerse sonraki çağrıyı etkilemez.
+ *  Modül WASI hedefiyle derlidir ama dosya / ortam kullanmaz — aşağıdaki küçük vekil yeter (saat, rastgele sayı, yazı çıktısı yutulur). */
+export async function convertDwgToStl(bytes: ArrayBuffer): Promise<{ stl: ArrayBuffer; report: DwgReport }> {
+  const mod = await loadDwgModule();
+  let mem!: WebAssembly.Memory;
+  const view = () => new DataView(mem.buffer);
+  const wasi: Record<string, (...a: number[]) => number> = {
+    random_get: (p, n) => { crypto.getRandomValues(new Uint8Array(mem.buffer, p, n)); return 0; },
+    environ_sizes_get: (pc, ps) => { view().setUint32(pc, 0, true); view().setUint32(ps, 0, true); return 0; },
+    environ_get: () => 0,
+    clock_time_get: (_id, _prec, p) => { view().setBigUint64(p, BigInt(Math.round(performance.now() * 1e6)), true); return 0; },
+    fd_write: (_fd, iovs, n, pw) => { let t = 0; for (let i = 0; i < n; i++) t += view().getUint32(iovs + i * 8 + 4, true); view().setUint32(pw, t, true); return 0; },
+    fd_close: () => 0, fd_fdstat_get: () => 8, fd_prestat_get: () => 8, fd_prestat_dir_name: () => 8, path_open: () => 44,
+    proc_exit: code => { throw new Error(`DWG converter stopped (${code})`); },
+  };
+  let res: { ok: number; stl: ArrayBuffer; report: DwgReport };
+  try {
+    const inst = await WebAssembly.instantiate(mod, { wasi_snapshot_preview1: wasi });
+    const ex = inst.exports as unknown as { memory: WebAssembly.Memory; d2s_alloc: (n: number) => number; d2s_convert: (p: number, n: number, chord: number) => number };
+    mem = ex.memory;
+    const p = ex.d2s_alloc(bytes.byteLength);
+    new Uint8Array(mem.buffer, p, bytes.byteLength).set(new Uint8Array(bytes));
+    const r = ex.d2s_convert(p, bytes.byteLength, 0);   // 0 → varsayılan kiriş sapması (model köşegeninin binde biri)
+    const [ok, dp, dl, jp, jl] = new Uint32Array(mem.buffer.slice(r, r + 20));
+    res = { ok, stl: mem.buffer.slice(dp, dp + dl), report: JSON.parse(new TextDecoder().decode(new Uint8Array(mem.buffer, jp, jl))) as DwgReport };
+  } catch (e) {
+    console.error('[YAGO] dwg2stl', e);
+    throw new Error('The drawing could not be converted (unsupported or damaged file)');
+  }
+  if (!res.ok) throw new Error(res.report.error || 'The drawing could not be converted');
+  return { stl: res.stl, report: res.report };
+}
+/** Dönüşüm özeti (kullanıcıya): kaç katı / ağ, hangi birim varsayıldı, yamalanan yüz var mı. */
+function dwgNote(rep: DwgReport, unit: AccessoryUnit): string {
+  const parts = [rep.solids ? `${rep.solids} solid${rep.solids > 1 ? 's' : ''}` : '', rep.meshes ? `${rep.meshes} mesh${rep.meshes > 1 ? 'es' : ''}` : ''].filter(Boolean).join(' + ');
+  const unitNote = DWG_UNIT[rep.units] ? `unit ${unit} (from the drawing)` : `unit ${unit} (drawing has none set)`;
+  const approx = rep.approxFaces ? ` · ${rep.approxFaces} of ${rep.faces} faces approximated` : '';
+  return `Converted to STL: ${parts} · ${rep.triangles.toLocaleString('en-US')} triangles · ${unitNote}${approx}`;
+}
+
 /* ───────────────────────────── Kalıcılık (IndexedDB) ───────────────────────────── */
 const DB_NAME = 'yago-accessories', DB_VERSION = 2;   // v2: `layers` deposu
 const STORES = ['models', 'legModels', 'legPresets', 'layers'] as const;
@@ -231,17 +294,28 @@ function seededFlag(set = false): boolean {
   } catch { return false; }
 }
 
-/** DOSYA İÇE AKTAR: çöz, normalize et, üst bilgi + baytları kaydet. Hata → fırlatır (UI gösterir). */
-export async function importAccessoryFile(file: File, unit: AccessoryUnit = 'mm', upAxis: 'y' | 'z' = defaultUpAxis(file.name), name?: string): Promise<AccessoryModel> {
+/** DOSYA İÇE AKTAR: çöz, normalize et, üst bilgi + baytları kaydet. Hata → fırlatır (UI gösterir).
+ *  DWG / DXF: önce STL'ye çevrilir; kayıt STL'dir (`fileName` = ad.stl, `source` = özgün dosya adı, `note` = dönüşüm özeti).
+ *  Birim verilmediyse çizimin $INSUNITS değeri kullanılır; yukarı eksen AutoCAD'deki gibi Z. */
+export async function importAccessoryFile(file: File, unit?: AccessoryUnit, upAxis?: 'y' | 'z', name?: string): Promise<AccessoryModel> {
   const ext = extOf(file.name);
-  if (ext === 'dwg' || ext === 'dxf') throw new Error(DWG_HINT);
   if (!isSupportedAccessoryFile(file.name)) throw new Error(`Unsupported file type: .${ext}`);
-  const bytes = await file.arrayBuffer();
-  const raw = await parseAccessoryBytes(bytes, file.name);
-  const { geo, size } = normalizeAccessoryGeometry(raw, unit, upAxis);
+  const base = file.name.replace(/\.[^.]+$/, '');
+  let bytes = await file.arrayBuffer();
+  let fileName = file.name;
+  let converted: Pick<AccessoryModel, 'source' | 'note'> = {};
+  if (CAD_CONVERT_EXTS.includes(ext)) {
+    const { stl, report } = await convertDwgToStl(bytes);
+    bytes = stl; fileName = `${base}.stl`;
+    unit = unit ?? DWG_UNIT[report.units] ?? 'mm';
+    converted = { source: file.name, note: dwgNote(report, unit) };
+  }
+  const u = unit ?? 'mm', up = upAxis ?? defaultUpAxis(fileName);
+  const raw = await parseAccessoryBytes(bytes, fileName);
+  const { geo, size } = normalizeAccessoryGeometry(raw, u, up);
   raw.dispose();
   const model: AccessoryModel = {
-    id: genId('acc'), name: (name || file.name.replace(/\.[^.]+$/, '')).trim() || 'Model', fileName: file.name, ext: extOf(file.name), unit, upAxis, size, createdAt: Date.now(),
+    id: genId('acc'), name: (name || base).trim() || 'Model', fileName, ext: extOf(fileName), unit: u, upAxis: up, size, createdAt: Date.now(), ...converted,
   };
   bytesCache.set(model.id, bytes);
   geoCache.set(model.id, Promise.resolve({ geo, size })); readyGeo.set(model.id, { geo, size });
