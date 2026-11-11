@@ -535,6 +535,8 @@ export interface AppState {
   cameraType: CameraType; setCameraType: (t: CameraType) => void;
   viewMode: ViewMode; setViewMode: (m: ViewMode) => void; cycleViewMode: () => void;
   orthoMode: OrthoMode; toggleOrthoMode: () => void;
+  /** Uygulama geneli nesne yakalama: ana anahtar + kipler (2B çizim, ileride panel yerleşimi vb. aynı kaynağı okur). */
+  snapEnabled: boolean; setSnapEnabled: (b: boolean) => void;
   snapSettings: Record<SnapType, boolean>; toggleSnapSetting: (t: SnapType) => void;
   opencascadeLoading: boolean; setOpenCascadeLoading: (l: boolean) => void;
 
@@ -801,7 +803,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   orthoMode: OrthoMode.OFF,
   toggleOrthoMode: () => set((s) => ({ orthoMode: s.orthoMode === OrthoMode.ON ? OrthoMode.OFF : OrthoMode.ON })),
-  // 2B çizim araçlarının nesne yakalama kipleri (Draft.ts okur).
+  // Nesne yakalama — tek kaynak (Draft.ts ve sonraki tüketiciler okur).
+  snapEnabled: true, setSnapEnabled: (b) => set({ snapEnabled: b }),
   snapSettings: { endpoint: true, midpoint: true, center: true, quadrant: true, perpendicular: true, intersection: true, tangent: false, nearest: false },
   toggleSnapSetting: (t) => set((s) => ({ snapSettings: { ...s.snapSettings, [t]: !s.snapSettings[t] } })),
   opencascadeLoading: false, setOpenCascadeLoading: (l) => set({ opencascadeLoading: l }),

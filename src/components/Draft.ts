@@ -765,6 +765,8 @@ export interface DraftState {
   aids: Aids; lastCmd: string | null; recent: Record<string, string>;
   /** Komut satırında o an yazılan metin (imleç yanındaki dinamik girişte yankılanır). */
   typed: string;
+  /** Sağdaki Drawing paneli açık mı. */
+  panelOpen: boolean;
 }
 const DYN0 = { len: null, ang: null, field: 'len' as const };
 export const useDraft = create<DraftState>(() => ({
@@ -775,7 +777,7 @@ export const useDraft = create<DraftState>(() => ({
     ortho: false, polar: true, polarStep: 45, osnap: true, dyn: true,
     snaps: { endpoint: true, midpoint: true, center: true, quadrant: true, intersection: true, perpendicular: true, tangent: false, nearest: false },
   },
-  lastCmd: null, recent: {}, typed: '',
+  lastCmd: null, recent: {}, typed: '', panelOpen: false,
 }));
 const get = useDraft.getState, set = useDraft.setState;
 
@@ -790,6 +792,7 @@ let lastMove: { raw: P2; tol: number; shift: boolean; ctrl: boolean } | null = n
 let extraSnap: Shape2[] = [];
 export const setExtraSnap = (s: Shape2[]) => { extraSnap = s; };
 export const setTyped = (t: string) => { if (get().typed !== t) set({ typed: t }); };
+export const setPanelOpen = (b: boolean) => set({ panelOpen: b });
 
 const say = (t: string) => set(s => ({ log: [...s.log.slice(-59), t] }));
 const stripEnt = (e: Entity): Shape2 => { const s: Record<string, unknown> = { ...e }; delete s.id; delete s.plane; return s as unknown as Shape2; };

@@ -7,6 +7,7 @@ import { initReplicad, rebuildBodySolid } from './components/Geometry';
 import Scene from './components/Scene';
 import { AssemblyPanel } from './components/Assembly';
 import { AccessoriesPanel } from './components/Accessories';
+import { DraftViewport, DrawingPanel } from './components/DraftView';
 import { loadAccessoryLibrary } from './components/AccessoryService';
 // Yan etki: rebuild motoru store'a kaydolur (bkz. store.requestRebuild).
 import './components/PanelEngine';
@@ -121,9 +122,11 @@ function App() {
         </div>
       )}
       <Toolbar onOpenCatalog={handleOpenCatalog} />
-      <div className="flex-1 overflow-hidden relative">
-        <Scene />
+      <div className="flex-1 overflow-hidden relative" style={{ background: '#fdfcfa' }}>
+        {/* Sağdaki Drawing paneli açıkken 3B görünüm sağdan daralır (DraftView). */}
+        <DraftViewport><Scene /></DraftViewport>
         <Sidebar parametersContent={<ParametersPanel />} assemblyContent={<AssemblyPanel />} accessoriesContent={<AccessoriesPanel />} />
+        <DrawingPanel />
       </div>
       <div className="relative">
         <Terminal />

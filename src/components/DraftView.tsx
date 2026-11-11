@@ -5,15 +5,16 @@ import { useThree, useFrame } from '@react-three/fiber';
 import { useAppStore, OrthoMode, SnapType, type Shape } from '../store';
 import { getShapeMatrix } from './Geometry';
 import {
-  type DraftPlane, type Entity, type Geo, type GeoStyle, type LineS, type P2, type Shape2, type SnapKind, COMMANDS, GROUND_PLANE, SNAP_KINDS, SNAP_LABEL,
+  type DraftPlane, type Entity, type Geo, type GeoStyle, type LineS, type P2, type Shape2, type SnapKind, GROUND_PLANE, SNAP_KINDS, SNAP_LABEL,
   activatePlane, closestOn, commandActive, commandById, deg, dist, enterKey, fmt, pointerClick, pointerLeave, pointerMove, selectEntity, setAids, setExtraSnap,
-  setPlanePick, startCommand, tessellate, useDraft,
+  setPanelOpen, setPlanePick, startCommand, tessellate, useDraft,
 } from './Draft';
 
-/* 2B ÇİZİM GÖRÜNÜMÜ — Draft.ts çekirdeğinin sahne katmanı ve araç şeridi.
+/* 2B ÇİZİM GÖRÜNÜMÜ — Draft.ts çekirdeğinin sahne katmanı ve sağdaki Drawing paneli.
    DraftLayer (Canvas içinde): çizim düzlemi (zemin · gövde yüzü · panel yüzü), fare → düzlem koordinatı, nesne/önizleme çizimi,
    yakalama işareti, imleç yanında dinamik giriş, yüz seçilince kamerayı yüze karşıdan getirme.
-   DraftRibbon (araç çubuğu satırı): Plane · Draw · Modify · yardımcılar. DraftStatus: durum çubuğu parçası.
+   DrawingPanel (sağdan açılan panel): Plane · Draw · Modify · Object snap · Drafting aids. DraftViewport: panel açıkken 3B görünümü daraltır.
+   DraftStatus: durum çubuğu parçası.
    Fare kuralı (komut etkinken): sol tık = nokta/nesne, sağ tık (sürüklemeden) = Enter, sağ sürükle = kaydır, tekerlek = yakınlaş. */
 
 // ═════════════════════════════════════════════════ 1. DÜZLEM · KAMERA ═════════════════════════════════════════════════
@@ -251,6 +252,7 @@ const IDENT = new THREE.Matrix4();
 export const DraftLayer: React.FC = () => {
   const camera = useThree(s => s.camera), gl = useThree(s => s.gl), size = useThree(s => s.size), controls = useThree(s => s.controls) as unknown as OrbitLike;
   const shapes = useAppStore(s => s.shapes), ortho = useAppStore(s => s.orthoMode), snapSettings = useAppStore(s => s.snapSettings);
+  const snapOn = useAppStore(s => s.snapEnabled);
   const planes = useDraft(s => s.planes), activeId = useDraft(s => s.activePlane), entities = useDraft(s => s.entities), selection = useDraft(s => s.selection);
   const hoverId = useDraft(s => s.hoverId), preview = useDraft(s => s.preview), cursor = useDraft(s => s.cursor), cmd = useDraft(s => s.cmd);
   const planePick = useDraft(s => s.planePick), dynOn = useDraft(s => s.aids.dyn);
@@ -267,8 +269,8 @@ export const DraftLayer: React.FC = () => {
     return m;
   }, [entities]);
 
-  // Ortho ve yakalama ayarları uygulamanın mevcut düğmelerinden (store) gelir.
-  useEffect(() => { setAids({ ortho: ortho === OrthoMode.ON, snaps: snapSettings as unknown as Record<SnapKind, boolean> }); }, [ortho, snapSettings]);
+  // Ortho ve nesne yakalama uygulama geneli ayardır (store) — çizim sürücüsüne yansıtılır.
+  useEffect(() => { setAids({ ortho: ortho === OrthoMode.ON, osnap: snapOn, snaps: snapSettings as unknown as Record<SnapKind, boolean> }); }, [ortho, snapOn, snapSettings]);
   const busy = !!cmd;
   useEffect(() => { setExtraSnap(busy ? planeEdges(activeInv, shapes) : []); }, [busy, activeInv, shapes]);
   const kind = cmd?.kind ?? null;
@@ -441,7 +443,7 @@ export const DraftLayer: React.FC = () => {
   );
 };
 
-// ═════════════════════════════════════════════════ 3. ARAÇ ŞERİDİ ═════════════════════════════════════════════════════
+// ═════════════════════════════════════════════════ 3. DRAWING PANELİ ══════════════════════════════════════════════════
 const dot = (x: number, y: number, r = 1.7) => <circle cx={x} cy={y} r={r} fill="currentColor" stroke="none" />;
 const ring = (x: number, y: number, r = 1.8) => <circle cx={x} cy={y} r={r} fill="#fdfcfa" strokeWidth={1.3} />;
 const dash = { strokeDasharray: '2.2 2.2', strokeWidth: 1.1 } as const;
@@ -504,147 +506,254 @@ const ICONS: Record<string, React.ReactNode> = {
   osnap: <><rect x="5" y="5" width="14" height="14" /><rect x="15.5" y="2.5" width="6" height="6" fill="currentColor" stroke="none" /></>,
   dyn: <><path d="M4 4l5.5 13 1.8-5.7L17 9.5z" /><rect x="13" y="15" width="8" height="5.5" rx="1" strokeWidth={1.3} /></>,
   caret: <path d="M7 10l5 5 5-5" strokeWidth={2.2} />,
+  close: <path d="M6.5 6.5l11 11M17.5 6.5l-11 11" strokeWidth={1.8} />,
+  drawing: <><path d="M4 20l1.2-4.4L16.6 4.2a2 2 0 0 1 2.8 0l.4.4a2 2 0 0 1 0 2.8L8.4 18.8z" /><path d="M14.5 6.3l3.2 3.2" /><path d="M13 20h7" /></>,
 };
 const DIcon: React.FC<{ name: string; size?: number }> = ({ name, size = 18 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>{ICONS[name]}</svg>
 );
-const RIBBON_CSS = `
-  .dr-row{position:relative;display:flex;align-items:center;height:42px;padding:0 14px;background:linear-gradient(180deg,#f6f4f0 0%,#edeae4 100%);
-    border-bottom:1px solid #d6d1c8;box-shadow:inset 0 1px 0 rgba(255,255,255,0.85),0 1px 4px rgba(60,50,40,0.04);font-family:${UI_FONT};user-select:none}
-  .dr-grp{display:flex;align-items:center;gap:1px;padding:2px;background:linear-gradient(180deg,#fdfcfa 0%,#f6f3ed 100%);border:1px solid rgba(60,50,40,0.14);border-radius:8px;
-    box-shadow:0 1.5px 3px rgba(40,30,20,0.09),0 0 0 0.5px rgba(60,50,40,0.07),inset 0 0.5px 0 rgba(255,255,255,0.95);flex-shrink:0}
-  .dr-cap{font-size:9.5px;font-weight:600;letter-spacing:0.09em;text-transform:uppercase;color:#9c9590;margin:0 7px 0 2px;flex-shrink:0}
-  .dr-sep{width:1px;height:18px;margin:0 9px;background:rgba(60,50,40,0.12);flex-shrink:0}
-  .dr-btn{position:relative;display:flex;align-items:center;justify-content:center;gap:5px;min-width:30px;height:30px;padding:0;border-radius:6px;border:none;background:transparent;
-    color:#6b6560;cursor:pointer;flex-shrink:0;outline:none;font:500 11.5px ${UI_FONT};transition:background .1s,color .1s,box-shadow .1s}
-  .dr-btn:hover{background:rgba(0,0,0,0.05);color:#1c1917}
-  .dr-btn:active{transform:scale(0.95)}
-  .dr-btn.on{background:rgba(234,88,12,0.08);color:#ea580c;box-shadow:0 0 0 1px rgba(234,88,12,0.28)}
-  .dr-btn.txt{padding:0 8px}
-  .dr-btn.caret{min-width:13px;width:13px;margin-left:-2px;color:#a8a29e}
-  .dr-tip{pointer-events:none;position:absolute;top:calc(100% + 6px);left:50%;transform:translateX(-50%);background:#1c1917;color:#fafaf9;font-size:10px;font-weight:500;
-    letter-spacing:0.02em;padding:3px 7px;border-radius:5px;white-space:nowrap;z-index:80;opacity:0;transition:opacity .12s}
-  .dr-btn:hover>.dr-tip{opacity:1}
-  .dr-tip b{font-family:${MONO_FONT};font-weight:500;color:#fdba74;margin-left:6px}
-  .dr-menu{position:absolute;top:calc(100% + 5px);left:0;min-width:214px;padding:4px;background:#fdfcfa;border:1px solid rgba(60,50,40,0.16);border-radius:9px;
-    box-shadow:0 12px 30px -10px rgba(40,30,20,0.32),0 2px 6px rgba(40,30,20,0.08);z-index:90}
-  .dr-mi{display:flex;align-items:center;gap:9px;width:100%;height:30px;padding:0 9px;border:none;background:transparent;border-radius:6px;font:500 12px ${UI_FONT};color:#44403c;
-    cursor:pointer;text-align:left;white-space:nowrap}
-  .dr-mi:hover{background:#fff7ed;color:#c2410c}
-  .dr-mi.on{color:#ea580c}
-  .dr-mi i{margin-left:auto;padding-left:14px;font:400 10px ${MONO_FONT};color:#a8a29e;font-style:normal}
-  .dr-mi .chk{width:14px;height:14px;border-radius:4px;box-shadow:inset 0 0 0 1px rgba(60,50,40,0.25);display:flex;align-items:center;justify-content:center;flex-shrink:0}
-  .dr-mi .chk.on{background:#ea580c;box-shadow:none}
-`;
-const FAMILIES: Record<string, { label: string; def: string }> = {
-  circle: { label: 'Circle', def: 'CIRCLE' }, arc: { label: 'Arc', def: 'ARC_3P' }, shape: { label: 'Rectangle / Polygon', def: 'RECT' }, ellipse: { label: 'Ellipse', def: 'ELLIPSE' },
-  trim: { label: 'Trim / Extend', def: 'TRIM' }, fillet: { label: 'Fillet / Chamfer', def: 'FILLET' }, array: { label: 'Array', def: 'ARRAYRECT' },
+// ── Sağ Drawing paneli ──
+/* Sağ kenardan açılan panel (sol kenar çubuğunun aynası). Kenardaki dikey "DRAWING" sekmesi paneli açar/kapatır ve panelle birlikte kayar.
+   Panel açıkken 3B görünüm sağdan daralır (görünüm küpü ve çizim alanı panelin altında kalmasın). Düğmeler üst araç çubuğuyla aynı ölçüde
+   (30 px, ikon 18 px); özelliğe göre gruplanır. Üzerine gelinen aracın adı ve komut kısaltması alttaki okuma şeridinde görünür. */
+export const PANEL_W = 268;
+const PANEL_SLIDE_MS = 300;
+const P = {
+  bg: '#f8f6f2', head: '#fcfbf9', border: '#d9d3ca', soft: '#e4dfd7', group: 'rgba(60,50,40,0.14)',
+  ink: '#1c1917', body: '#44403c', mute: '#78716c', faint: '#9c9590', accent: '#ea580c',
 };
+const PANEL_CSS = `
+  .dp-root{font-family:${UI_FONT};color:${P.ink};user-select:none}
+  .dp-scroll::-webkit-scrollbar{width:10px}
+  .dp-scroll::-webkit-scrollbar-thumb{background:rgba(60,50,40,0.18);border-radius:99px;border:2.5px solid transparent;background-clip:padding-box}
+  .dp-sec{border-bottom:1px solid ${P.soft}}
+  .dp-sec-h{display:flex;align-items:center;gap:6px;height:34px;padding:0 12px 0 10px}
+  .dp-sec-t{display:flex;align-items:center;gap:6px;flex:1;height:100%;border:none;background:transparent;padding:0;cursor:pointer;outline:none;
+    font:600 10px ${UI_FONT};letter-spacing:0.09em;text-transform:uppercase;color:${P.mute}}
+  .dp-sec-t:hover{color:${P.ink}}
+  .dp-sec-t svg{transition:transform .18s}
+  .dp-sec-t.shut svg{transform:rotate(-90deg)}
+  .dp-sec-b{padding:2px 14px 14px}
+  .dp-flow{display:flex;flex-wrap:wrap;gap:12px 8px}
+  .dp-blk{display:flex;flex-direction:column;gap:5px}
+  .dp-cap{font:600 9.5px ${UI_FONT};letter-spacing:0.08em;text-transform:uppercase;color:${P.faint};padding-left:2px}
+  .dp-card{display:grid;gap:1px;padding:2px;background:linear-gradient(180deg,#fdfcfa 0%,#f6f3ed 100%);border:1px solid ${P.group};border-radius:8px;
+    box-shadow:0 1.5px 3px rgba(40,30,20,0.09),0 0.5px 1px rgba(40,30,20,0.05),0 0 0 0.5px rgba(60,50,40,0.07),inset 0 0.5px 0 rgba(255,255,255,0.95)}
+  .dp-btn{position:relative;display:flex;align-items:center;justify-content:center;gap:6px;width:30px;height:30px;padding:0;border:none;border-radius:6px;
+    background:transparent;color:#6b6560;cursor:pointer;outline:none;flex-shrink:0;font:500 12px ${UI_FONT};
+    transition:background .1s,color .1s,box-shadow .1s,transform .1s}
+  .dp-btn:hover{background:rgba(0,0,0,0.05);color:${P.ink};transform:scale(1.06)}
+  .dp-btn:active{transform:scale(0.95)}
+  .dp-btn.on{background:rgba(234,88,12,0.08);color:${P.accent};box-shadow:0 0 0 1px rgba(234,88,12,0.28);transform:none}
+  .dp-btn.txt{width:auto;flex:1;padding:0 8px}
+  .dp-btn.txt:hover{transform:none}
+  .dp-btn:focus-visible{box-shadow:0 0 0 2px rgba(234,88,12,0.45)}
+  .dp-chips{display:grid;grid-template-columns:1fr 1fr;gap:5px}
+  .dp-chip{display:flex;align-items:center;gap:7px;height:30px;padding:0 8px;border:none;border-radius:7px;background:#f3f0ea;box-shadow:0 0 0 1px #e6e1d9;
+    color:${P.mute};font:500 11.5px ${UI_FONT};cursor:pointer;outline:none;text-align:left;white-space:nowrap;overflow:hidden;
+    transition:box-shadow .12s,background .12s,color .12s,opacity .12s}
+  .dp-chip:hover{box-shadow:0 0 0 1px #cfc7bc;color:${P.ink}}
+  .dp-chip svg{color:#a8a29e}
+  .dp-chip.on{background:#fff;color:${P.ink};box-shadow:0 0 0 1px rgba(234,88,12,0.38),0 1px 2px rgba(40,30,20,0.06)}
+  .dp-chip.on svg{color:${P.accent}}
+  .dp-chip.dim{opacity:0.45}
+  .dp-chip.wide{grid-column:span 2}
+  .dp-chip kbd{margin-left:auto;font:500 9.5px ${MONO_FONT};color:${P.faint};background:rgba(60,50,40,0.06);padding:1px 4px;border-radius:3px}
+  .dp-chip.on kbd{color:#c2410c;background:rgba(234,88,12,0.07)}
+  .dp-steps{display:flex;gap:3px}
+  .dp-step{flex:1;min-width:0;height:24px;padding:0;border:none;border-radius:5px;background:#f3f0ea;box-shadow:0 0 0 1px #e6e1d9;font:500 10.5px ${MONO_FONT};color:${P.mute};
+    cursor:pointer;outline:none;transition:box-shadow .12s,background .12s,color .12s}
+  .dp-step:hover{box-shadow:0 0 0 1px #cfc7bc;color:${P.ink}}
+  .dp-step.on{background:#fff;color:#c2410c;box-shadow:0 0 0 1px rgba(234,88,12,0.38),0 1px 2px rgba(40,30,20,0.06)}
+  .dp-switch{position:relative;width:30px;height:17px;border:none;border-radius:99px;background:#d6d1c8;cursor:pointer;outline:none;flex-shrink:0;
+    transition:background .15s;box-shadow:inset 0 1px 2px rgba(40,30,20,0.12)}
+  .dp-switch::after{content:'';position:absolute;top:2px;left:2px;width:13px;height:13px;border-radius:50%;background:#fff;
+    box-shadow:0 1px 2px rgba(40,30,20,0.25);transition:transform .15s}
+  .dp-switch.on{background:${P.accent}}
+  .dp-switch.on::after{transform:translateX(13px)}
+  .dp-x{width:30px;height:30px;display:flex;align-items:center;justify-content:center;border:none;border-radius:6px;background:transparent;color:${P.mute};
+    cursor:pointer;outline:none;transition:background .1s,color .1s}
+  .dp-x:hover{background:rgba(60,50,40,0.06);color:${P.ink}}
+  .dp-tab{position:absolute;top:50%;left:-26px;width:26px;height:118px;padding:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;
+    background:${P.bg};border:1px solid ${P.group};border-right:none;border-radius:11px 0 0 11px;cursor:pointer;outline:none;
+    transform:translateY(-50%);transition:transform .22s cubic-bezier(0.4,0,0.2,1),box-shadow .22s,background .15s;
+    box-shadow:-2px 1px 8px rgba(40,30,20,0.09),-0.5px 0 1px rgba(40,30,20,0.05),inset 0 0.5px 0 rgba(255,255,255,0.95)}
+  .dp-tab span{writing-mode:vertical-rl;font:600 10px ${UI_FONT};letter-spacing:0.2em;text-transform:uppercase;color:${P.body};transition:color .15s}
+  .dp-tab i{width:5px;height:5px;border-radius:50%;background:${P.accent};box-shadow:0 0 0 3px rgba(234,88,12,0.15)}
+  .dp-tab:hover{box-shadow:-4px 3px 16px rgba(40,30,20,0.16),-1.5px 0 4px rgba(40,30,20,0.10),inset 0 0.5px 0 rgba(255,255,255,0.95)}
+  .dp-tab:hover span{color:${P.accent}}
+  .dp-tab.shut:hover{transform:translateY(-50%) translateX(-3px)}
+  .dp-tab.open{background:#fff;border-color:${P.border}}
+  .dp-tab.open span{color:${P.accent}}
+  .dp-tab.open::before{content:'';position:absolute;left:-1px;top:18px;bottom:18px;width:2px;border-radius:2px;background:linear-gradient(180deg,transparent,#f97316 50%,transparent)}
+`;
+type Block = { label: string; prefix?: string; ids: string[] };
+const DRAW_BLOCKS: Block[] = [
+  { label: 'Lines', ids: ['LINE', 'PLINE'] },
+  { label: 'Rectangle', ids: ['RECT', 'RECT_ROT', 'RECT_CEN'] },
+  { label: 'Circle', prefix: 'Circle', ids: ['CIRCLE', 'CIRCLE_CD', 'CIRCLE_2P', 'CIRCLE_3P', 'CIRCLE_TTR', 'CIRCLE_TTT'] },
+  { label: 'Polygon', ids: ['POLY', 'POLY_C', 'POLY_E'] },
+  { label: 'Ellipse', prefix: 'Ellipse', ids: ['ELLIPSE', 'ELLIPSE_AXIS', 'ELLIPSE_ARC'] },
+  { label: 'Arc', prefix: 'Arc', ids: ['ARC_3P', 'ARC_SCE', 'ARC_SCA', 'ARC_SCL', 'ARC_SEA', 'ARC_SED', 'ARC_SER', 'ARC_CSE', 'ARC_CSA', 'ARC_CSL', 'ARC_CONT'] },
+];
+const MODIFY_BLOCKS: Block[] = [
+  { label: 'Transform', ids: ['MOVE', 'COPY', 'ROTATE', 'SCALE', 'MIRROR', 'STRETCH'] },
+  { label: 'Edit', ids: ['TRIM', 'EXTEND', 'OFFSET', 'FILLET', 'CHAMFER'] },
+  { label: 'Clean up', ids: ['EXPLODE', 'ERASE'] },
+  { label: 'Array', ids: ['ARRAYRECT', 'ARRAYPATH', 'ARRAYPOLAR'] },
+];
+const MAX_COLS = 7;
 const aliasOf = (id: string) => commandById(id)?.aliases[0] ?? id;
 const POLAR_STEPS = [90, 45, 30, 22.5, 15, 10, 5];
+type Hint = { title: string; key?: string } | null;
 
-export const DraftRibbon: React.FC = () => {
-  const cmdId = useDraft(s => s.cmd?.id ?? null), recent = useDraft(s => s.recent), aids = useDraft(s => s.aids);
-  const activePlane = useDraft(s => s.activePlane), planePick = useDraft(s => s.planePick), planeLabel = useDraft(s => s.planes.find(p => p.id === s.activePlane)?.label ?? 'Ground');
-  const ortho = useAppStore(s => s.orthoMode) === OrthoMode.ON, toggleOrtho = useAppStore(s => s.toggleOrthoMode);
-  const snapSettings = useAppStore(s => s.snapSettings), toggleSnap = useAppStore(s => s.toggleSnapSetting);
-  const [menu, setMenu] = useState<string | null>(null);
-  useEffect(() => {
-    if (!menu) return;
-    const close = (e: MouseEvent) => { if (!(e.target as HTMLElement | null)?.closest?.('.dr-menu,.dr-btn.caret')) setMenu(null); };
-    window.addEventListener('pointerdown', close);
-    return () => window.removeEventListener('pointerdown', close);
-  }, [menu]);
-  // Odak düğmede kalmasın: sonraki Enter / Boşluk komut satırına gitsin, düğmeyi yeniden tetiklemesin.
-  const run = (id: string) => { setMenu(null); (document.activeElement as HTMLElement | null)?.blur?.(); startCommand(id); };
-  const tool = (id: string) => {
-    const def = commandById(id)!;
-    return (
-      <button key={id} className={`dr-btn${cmdId === id ? ' on' : ''}`} onClick={() => run(id)}>
-        <DIcon name={id} /><span className="dr-tip">{def.label}<b>{aliasOf(id)}</b></span>
-      </button>
-    );
-  };
-  /** Ana düğme son kullanılan yöntemi çalıştırır; ok tüm yöntemleri açar. */
-  const family = (key: string) => {
-    const f = FAMILIES[key], cur = recent[key] ?? f.def, items = COMMANDS.filter(c => c.family === key), def = commandById(cur)!;
-    return (
-      <div key={key} style={{ position: 'relative', display: 'flex' }}>
-        <button className={`dr-btn${items.some(c => c.id === cmdId) ? ' on' : ''}`} onClick={() => run(cur)}>
-          <DIcon name={cur} /><span className="dr-tip">{f.label}: {def.label}<b>{aliasOf(cur)}</b></span>
-        </button>
-        <button className="dr-btn caret" onClick={() => setMenu(menu === key ? null : key)} aria-label={`${f.label} methods`}><DIcon name="caret" size={11} /></button>
-        {menu === key && (
-          <div className="dr-menu">
-            {items.map(c => <button key={c.id} className={`dr-mi${c.id === cur ? ' on' : ''}`} onClick={() => run(c.id)}><DIcon name={c.id} size={17} />{c.label}<i>{c.id}</i></button>)}
-          </div>
-        )}
+const Section: React.FC<{ title: string; right?: React.ReactNode; children: React.ReactNode }> = ({ title, right, children }) => {
+  const [open, setOpen] = useState(true);
+  return (
+    <div className="dp-sec">
+      <div className="dp-sec-h">
+        <button className={`dp-sec-t${open ? '' : ' shut'}`} onClick={() => setOpen(!open)} aria-expanded={open}><DIcon name="caret" size={12} />{title}</button>
+        {right}
       </div>
-    );
-  };
-  const toggle = (icon: string, label: string, key: string, on: boolean, onClick: () => void) => (
-    <button className={`dr-btn${on ? ' on' : ''}`} onClick={onClick} aria-pressed={on}><DIcon name={icon} /><span className="dr-tip">{label}: {on ? 'on' : 'off'}{key && <b>{key}</b>}</span></button>
+      {open && <div className="dp-sec-b">{children}</div>}
+    </div>
+  );
+};
+
+export const DrawingPanel: React.FC = () => {
+  const open = useDraft(s => s.panelOpen), cmd = useDraft(s => s.cmd), aids = useDraft(s => s.aids);
+  const activePlane = useDraft(s => s.activePlane), planePick = useDraft(s => s.planePick);
+  const planeLabel = useDraft(s => s.planes.find(p => p.id === s.activePlane)?.label ?? 'Ground');
+  const ortho = useAppStore(s => s.orthoMode) === OrthoMode.ON, toggleOrtho = useAppStore(s => s.toggleOrthoMode);
+  const snapOn = useAppStore(s => s.snapEnabled), setSnapOn = useAppStore(s => s.setSnapEnabled);
+  const snapSettings = useAppStore(s => s.snapSettings), toggleSnap = useAppStore(s => s.toggleSnapSetting);
+  const [hint, setHint] = useState<Hint>(null);
+  const tip = (title: string, key?: string) => ({ onMouseEnter: () => setHint({ title, key }), onMouseLeave: () => setHint(null) });
+  // Odak düğmede kalmasın: sonraki Enter / Boşluk komut satırına gitsin, düğmeyi yeniden tetiklemesin.
+  const run = (id: string) => { (document.activeElement as HTMLElement | null)?.blur?.(); startCommand(id); };
+  const blocks = (list: Block[]) => (
+    <div className="dp-flow">
+      {list.map(b => (
+        <div key={b.label} className="dp-blk">
+          <span className="dp-cap">{b.label}</span>
+          <div className="dp-card" style={{ gridTemplateColumns: `repeat(${Math.min(b.ids.length, MAX_COLS)}, 30px)` }}>
+            {b.ids.map(id => {
+              const def = commandById(id)!, title = b.prefix ? `${b.prefix} · ${def.label}` : def.label;
+              return (
+                <button key={id} className={`dp-btn${cmd?.id === id ? ' on' : ''}`} onClick={() => run(id)} aria-label={title} {...tip(title, aliasOf(id))}>
+                  <DIcon name={id} />
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
   );
   const onFace = activePlane !== GROUND_PLANE.id;
+  const readout = hint
+    ? <><span style={{ color: P.ink, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis' }}>{hint.title}</span>
+      {hint.key && <kbd style={{ marginLeft: 'auto', font: `500 10px ${MONO_FONT}`, color: '#c2410c', background: 'rgba(234,88,12,0.08)', padding: '2px 5px', borderRadius: 4 }}>{hint.key}</kbd>}</>
+    : cmd
+      ? <><i style={{ width: 6, height: 6, borderRadius: '50%', background: P.accent, flexShrink: 0 }} />
+        <span style={{ color: '#c2410c', fontWeight: 600, fontFamily: MONO_FONT, fontSize: 10.5 }}>{cmd.id.replace('_', ' ')}</span>
+        <span style={{ color: P.mute, overflow: 'hidden', textOverflow: 'ellipsis' }}>{cmd.prompt.replace(/^.*? {2}/, '')}</span></>
+      : <span style={{ color: P.faint }}>Pick a tool or type a command</span>;
+
   return (
-    <div className="dr-row">
-      <style>{RIBBON_CSS}</style>
-      <span className="dr-cap">Plane</span>
-      <div className="dr-grp">
-        <button className={`dr-btn txt${!onFace && !planePick ? ' on' : ''}`} onClick={() => activatePlane('ground')}>
-          <DIcon name="ground" size={17} />Ground<span className="dr-tip">Draw on the ground plane</span>
-        </button>
-        <button className={`dr-btn txt${onFace || planePick ? ' on' : ''}`} onClick={() => setPlanePick(!planePick)}>
-          <DIcon name="face" size={17} />{planePick ? 'Click a face…' : onFace ? planeLabel : 'Face'}
-          <span className="dr-tip">Click a body or panel face to draw on it — the view turns to face it</span>
-        </button>
-        <button className="dr-btn" onClick={() => viewPlaneFn?.()}><DIcon name="look" /><span className="dr-tip">Look straight at the drawing plane</span></button>
-      </div>
-      <span className="dr-sep" />
-      <span className="dr-cap">Draw</span>
-      <div className="dr-grp">{tool('LINE')}{tool('PLINE')}{family('circle')}{family('arc')}{family('shape')}{family('ellipse')}</div>
-      <span className="dr-sep" />
-      <span className="dr-cap">Modify</span>
-      <div className="dr-grp">
-        {tool('MOVE')}{tool('COPY')}{tool('STRETCH')}{tool('ROTATE')}{tool('MIRROR')}{tool('SCALE')}{family('trim')}{family('fillet')}{family('array')}
-        {tool('ERASE')}{tool('EXPLODE')}{tool('OFFSET')}
-      </div>
-      <span className="dr-sep" />
-      <div className="dr-grp" style={{ marginLeft: 'auto' }}>
-        {toggle('ortho', 'Ortho', 'F8', ortho, toggleOrtho)}
-        <div style={{ position: 'relative', display: 'flex' }}>
-          {toggle('polar', `Polar tracking ${aids.polarStep}°`, 'F10', aids.polar, () => setAids({ polar: !aids.polar }))}
-          <button className="dr-btn caret" onClick={() => setMenu(menu === 'polar' ? null : 'polar')} aria-label="Polar angle"><DIcon name="caret" size={11} /></button>
-          {menu === 'polar' && (
-            <div className="dr-menu" style={{ left: 'auto', right: 0, minWidth: 150 }}>
-              {POLAR_STEPS.map(a => (
-                <button key={a} className={`dr-mi${aids.polarStep === a ? ' on' : ''}`} onClick={() => { setAids({ polarStep: a, polar: true }); setMenu(null); }}>
-                  <span className={`chk${aids.polarStep === a ? ' on' : ''}`} />{a}° increments
-                </button>
-              ))}
-            </div>
-          )}
+    <div className="dp-root" style={{
+      position: 'absolute', top: 0, right: 0, bottom: 64, width: PANEL_W, zIndex: 35,
+      transform: open ? 'translateX(0)' : `translateX(${PANEL_W}px)`, transition: `transform ${PANEL_SLIDE_MS}ms cubic-bezier(0.4,0,0.2,1)`,
+    }}>
+      <style>{PANEL_CSS}</style>
+      <button className={`dp-tab ${open ? 'open' : 'shut'}`} onClick={() => setPanelOpen(!open)} aria-expanded={open}
+        title={open ? 'Close the drawing tools' : 'Open the drawing tools'}>
+        <span>Drawing</span>
+        {cmd && <i />}
+      </button>
+      <div style={{
+        display: 'flex', flexDirection: 'column', height: '100%', background: P.bg, borderLeft: `1px solid ${P.border}`,
+        boxShadow: open ? '-4px 0 18px -8px rgba(40,30,20,0.12),-1px 0 2px rgba(40,30,20,0.06)' : 'none',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, height: 40, padding: '0 6px 0 14px', background: P.head, borderBottom: `1px solid ${P.soft}`, flexShrink: 0 }}>
+          <span style={{ color: P.accent, display: 'flex' }}><DIcon name="drawing" size={16} /></span>
+          <span style={{ fontSize: 12.5, fontWeight: 600, letterSpacing: '0.01em' }}>Drawing</span>
+          <span style={{ fontSize: 10.5, fontWeight: 500, color: P.mute, background: 'rgba(60,50,40,0.06)', padding: '2px 7px', borderRadius: 99, whiteSpace: 'nowrap' }}>
+            {planeLabel}
+          </span>
+          <button className="dp-x" style={{ marginLeft: 'auto' }} onClick={() => setPanelOpen(false)} aria-label="Close" {...tip('Close the panel')}><DIcon name="close" size={15} /></button>
         </div>
-        <div style={{ position: 'relative', display: 'flex' }}>
-          {toggle('osnap', 'Object snap', 'F3', aids.osnap, () => setAids({ osnap: !aids.osnap }))}
-          <button className="dr-btn caret" onClick={() => setMenu(menu === 'osnap' ? null : 'osnap')} aria-label="Object snap modes"><DIcon name="caret" size={11} /></button>
-          {menu === 'osnap' && (
-            <div className="dr-menu" style={{ left: 'auto', right: 0, minWidth: 176 }}>
+        <div className="dp-scroll" style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
+          <Section title="Plane">
+            <div className="dp-card" style={{ display: 'flex' }}>
+              <button className={`dp-btn txt${!onFace && !planePick ? ' on' : ''}`} onClick={() => activatePlane('ground')} {...tip('Draw on the ground plane')}>
+                <DIcon name="ground" size={17} />Ground
+              </button>
+              <button className={`dp-btn txt${onFace || planePick ? ' on' : ''}`} onClick={() => setPlanePick(!planePick)}
+                {...tip('Click a body or panel face — the view turns to face it')}>
+                <DIcon name="face" size={17} />{planePick ? 'Pick a face…' : 'Face'}
+              </button>
+              <button className="dp-btn" onClick={() => viewPlaneFn?.()} aria-label="Look at plane" {...tip('Look straight at the drawing plane')}><DIcon name="look" /></button>
+            </div>
+          </Section>
+          <Section title="Draw">{blocks(DRAW_BLOCKS)}</Section>
+          <Section title="Modify">{blocks(MODIFY_BLOCKS)}</Section>
+          <Section title="Object snap"
+            right={<button className={`dp-switch${snapOn ? ' on' : ''}`} onClick={() => setSnapOn(!snapOn)} aria-pressed={snapOn} aria-label="Object snap"
+              {...tip(`Object snap ${snapOn ? 'on' : 'off'}`, 'F3')} />}>
+            <div className="dp-chips">
               {SNAP_KINDS.map(k => {
                 const on = !!snapSettings[k as unknown as SnapType];
                 return (
-                  <button key={k} className="dr-mi" onClick={() => toggleSnap(k as unknown as SnapType)}>
-                    <span className={`chk${on ? ' on' : ''}`} /><SnapGlyph kind={k} size={15} color={on ? '#0f766e' : '#a8a29e'} />{SNAP_LABEL[k]}
+                  <button key={k} className={`dp-chip${on ? ' on' : ''}${snapOn ? '' : ' dim'}`} onClick={() => toggleSnap(k as unknown as SnapType)} aria-pressed={on}>
+                    <SnapGlyph kind={k} size={16} color="currentColor" />{SNAP_LABEL[k]}
                   </button>
                 );
               })}
             </div>
-          )}
+          </Section>
+          <Section title="Drafting aids">
+            <div className="dp-chips">
+              <button className={`dp-chip${ortho ? ' on' : ''}`} onClick={toggleOrtho} aria-pressed={ortho} {...tip('Ortho — lock to horizontal / vertical', 'F8')}>
+                <DIcon name="ortho" size={16} />Ortho<kbd>F8</kbd>
+              </button>
+              <button className={`dp-chip${aids.polar ? ' on' : ''}`} onClick={() => setAids({ polar: !aids.polar })} aria-pressed={aids.polar}
+                {...tip(`Polar tracking every ${aids.polarStep}°`, 'F10')}>
+                <DIcon name="polar" size={16} />Polar<kbd>F10</kbd>
+              </button>
+              <button className={`dp-chip wide${aids.dyn ? ' on' : ''}`} onClick={() => setAids({ dyn: !aids.dyn })} aria-pressed={aids.dyn}
+                {...tip('Dynamic input — prompt and length / angle next to the cursor', 'Tab')}>
+                <DIcon name="dyn" size={16} />Dynamic input<kbd>Tab</kbd>
+              </button>
+            </div>
+            <div className="dp-cap" style={{ margin: '12px 0 5px' }}>Polar angle</div>
+            <div className="dp-steps">
+              {POLAR_STEPS.map(a => (
+                <button key={a} className={`dp-step${aids.polarStep === a && aids.polar ? ' on' : ''}`} onClick={() => setAids({ polarStep: a, polar: true })}
+                  {...tip(`Track every ${a}°`)}>{a}°</button>
+              ))}
+            </div>
+          </Section>
         </div>
-        {toggle('dyn', 'Dynamic input', '', aids.dyn, () => setAids({ dyn: !aids.dyn }))}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 7, height: 34, padding: '0 14px', borderTop: `1px solid ${P.soft}`, background: P.head,
+          fontSize: 11.5, whiteSpace: 'nowrap', overflow: 'hidden', flexShrink: 0,
+        }}>{readout}</div>
       </div>
     </div>
   );
+};
+
+/** 3B görünüm sarmalayıcısı: panel açılınca hemen daralır (panel boşalan yere kayar), kapanınca kayma bitince genişler — tuval tek kez yeniden boyutlanır. */
+export const DraftViewport: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const open = useDraft(s => s.panelOpen);
+  const [inset, setInset] = useState(open ? PANEL_W : 0);
+  useEffect(() => {
+    if (open) { setInset(PANEL_W); return; }
+    const t = window.setTimeout(() => setInset(0), PANEL_SLIDE_MS);
+    return () => window.clearTimeout(t);
+  }, [open]);
+  return <div style={{ position: 'absolute', top: 0, left: 0, bottom: 0, right: inset }}>{children}</div>;
 };
 
 /** Durum çubuğu parçası: etkin düzlem, çizim nesnesi sayısı ve imleç koordinatı. */

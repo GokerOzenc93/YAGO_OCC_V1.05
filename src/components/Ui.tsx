@@ -8,7 +8,7 @@ import { createClient } from '@supabase/supabase-js';
 import * as THREE from 'three';
 import { Canvas } from '@react-three/fiber';
 import { PerspectiveCamera, OrbitControls } from '@react-three/drei';
-import { useStoreFields, shapeById, ViewMode, type Shape, Tool, SnapType, CameraType, OrthoMode, useAppStore, childPanelsOf, requestRebuild } from '../store';
+import { useStoreFields, shapeById, ViewMode, type Shape, Tool, CameraType, OrthoMode, useAppStore, childPanelsOf, requestRebuild } from '../store';
 import {
   translatedBboxOf, createReplicadBox, convertReplicadToThreeGeometry, type Vec3, performBooleanCut, getReplicadVertices, evaluateExpression,
   axisIndexOf, applyShapeChanges, rebuildBodySolid,
@@ -18,7 +18,7 @@ import { FACE_ROLES, FACE_ROLE_LABEL, type FaceRole } from './LegLayout';
 import {
   useDraft, submitText, cancelCommand, commandActive, tabKey, setAids, setTyped, setPlanePick, selectEntity, eraseSelection, undo, redo, isCommandName,
 } from './Draft';
-import { DraftRibbon, DraftStatus } from './DraftView';
+import { DraftStatus } from './DraftView';
 
 /* Uygulama kabuğu: tasarım jetonları, ErrorBoundary, ikonlar, durum çubuğu, terminal,
    üst araç çubuğu (boolean çıkarma) ve sol kenar çubuğu (yaslı / yüzen / ayrı pencere) + kemik teması. */
@@ -406,7 +406,7 @@ export const Terminal: React.FC = () => {
       const st = useDraft.getState(), active = commandActive();
       if (e.key === 'F8') { e.preventDefault(); useAppStore.getState().toggleOrthoMode(); return; }
       if (e.key === 'F10') { e.preventDefault(); setAids({ polar: !st.aids.polar }); return; }
-      if (e.key === 'F3') { e.preventDefault(); setAids({ osnap: !st.aids.osnap }); return; }
+      if (e.key === 'F3') { e.preventDefault(); const a = useAppStore.getState(); a.setSnapEnabled(!a.snapEnabled); return; }
       if (inField && !own) return;
       if (e.key === 'Escape') {
         // Çizim komutu / düzlem seçimi / çizim seçimi varsa Esc yalnız onu kapatır (Scene'in Esc'i çalışmaz).
@@ -654,8 +654,8 @@ const TOOL_ROW: React.CSSProperties = {
 };
 
 export const Toolbar: React.FC<{ onOpenCatalog: () => void }> = ({ onOpenCatalog }) => {
-  const s = useStoreFields('setActiveTool', 'activeTool', 'addShape', 'selectedShapeId', 'cameraType', 'setCameraType', 'snapSettings',
-    'toggleSnapSetting', 'viewMode', 'setViewMode', 'cycleViewMode', 'orthoMode', 'toggleOrthoMode', 'shapes', 'updateShape', 'deleteShape',
+  const s = useStoreFields('setActiveTool', 'activeTool', 'addShape', 'selectedShapeId', 'cameraType', 'setCameraType',
+    'viewMode', 'setViewMode', 'cycleViewMode', 'orthoMode', 'toggleOrthoMode', 'shapes', 'updateShape', 'deleteShape',
     'panelSelectMode', 'setPanelSelectMode', 'showOutlines', 'setShowOutlines');
   const { activeTool, setActiveTool, selectedShapeId, panelSelectMode } = s;
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
@@ -701,9 +701,6 @@ export const Toolbar: React.FC<{ onOpenCatalog: () => void }> = ({ onOpenCatalog
 
   const toolBtn = (icon: IconName, label: string, tool: Tool, disabled = false) => (
     <TBtn icon={icon} label={label} active={activeTool === tool} disabled={disabled} onClick={() => setActiveTool(tool)} />
-  );
-  const snapBtn = (icon: IconName, label: string, t: SnapType) => (
-    <TBtn icon={icon} label={label} active={s.snapSettings[t]} onClick={() => s.toggleSnapSetting(t)} />
   );
   const ViewBtn = s.viewMode === ViewMode.SOLID ? ViewSolidButton : s.viewMode === ViewMode.WIREFRAME ? ViewWireframeButton : ViewXRayButton;
   const noSel = !selectedShapeId;
@@ -804,14 +801,6 @@ export const Toolbar: React.FC<{ onOpenCatalog: () => void }> = ({ onOpenCatalog
           </BtnGroup>
           <VLine />
           <BtnGroup>
-            {snapBtn('snap-endpoint', 'Endpoint', SnapType.ENDPOINT)}
-            {snapBtn('snap-midpoint', 'Midpoint', SnapType.MIDPOINT)}
-            {snapBtn('snap-center', 'Center', SnapType.CENTER)}
-            {snapBtn('snap-quadrant', 'Quadrant', SnapType.QUADRANT)}
-            {snapBtn('snap-intersection', 'Intersection', SnapType.INTERSECTION)}
-          </BtnGroup>
-          <VLine />
-          <BtnGroup>
             <AddBoxButton onClick={handleAddBox} />
             <SubtractBoxButton onClick={handleSubtract} disabled={noSel || !hasIntersectingShapes}
               className={hasIntersectingShapes ? 'text-red-400 hover:bg-red-50 hover:text-red-500' : ''} />
@@ -822,8 +811,6 @@ export const Toolbar: React.FC<{ onOpenCatalog: () => void }> = ({ onOpenCatalog
             <IconButton icon="folder-open" title="Catalog" onClick={onOpenCatalog} />
           </BtnGroup>
         </div>
-        {/* 2B çizim şeridi: düzlem · Draw · Modify · çizim yardımcıları (DraftView). */}
-        <DraftRibbon />
       </div>
     </>
   );
