@@ -15,6 +15,10 @@ import {
 } from './Geometry';
 import { PLINTH_FACINGS, PLINTH_FACING_LABEL, type PlinthFacing, bodyFaces, bodyFrontAxis, setBodyFaceRole, setBodyFrontAxis } from './PlinthService';
 import { FACE_ROLES, FACE_ROLE_LABEL, type FaceRole } from './LegLayout';
+import {
+  useDraft, submitText, cancelCommand, commandActive, tabKey, setAids, setTyped, setPlanePick, selectEntity, eraseSelection, undo, redo, isCommandName,
+} from './Draft';
+import { DraftRibbon, DraftStatus } from './DraftView';
 
 /* Uygulama kabuğu: tasarım jetonları, ErrorBoundary, ikonlar, durum çubuğu, terminal,
    üst araç çubuğu (boolean çıkarma) ve sol kenar çubuğu (yaslı / yüzen / ayrı pencere) + kemik teması. */
@@ -320,6 +324,7 @@ export const StatusBar: React.FC = () => {
           valueColor={TOKENS.infoClr} mono /></>
       )}
       {vertexModCount > 0 && <><VSep /><LabelValue label="Edits" value={vertexModCount} valueColor={TOKENS.modClr} mono /></>}
+      <DraftStatus />
       <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
         <span style={{ color: TOKENS.labelClr, fontSize: '10.5px', fontWeight: 420, letterSpacing: '0.05em', textTransform: 'uppercase' }}>mm</span>
         <VSep />
@@ -351,65 +356,143 @@ const TERM_ENTER_HINT: React.CSSProperties = {
   color: '#b0aaa4', fontSize: '9.5px', fontFamily: MONO_FONT, fontWeight: 500, letterSpacing: '0.05em', textTransform: 'uppercase', padding: '2px 5px',
   background: 'rgba(60,50,40,0.06)', borderRadius: '4px', flexShrink: 0,
 };
-// Kısayol harfleri ve gezinme/düzenleme tuşları terminale yazılmaz.
-const TERM_HOTKEYS = ['t', 'f', 'r', 'l', 'b', 'u', 'i', 'c', 'h', 'v', 'z', '1', '2', '3'];
+// Gezinme/düzenleme tuşları terminale yazılmaz.
 const TERM_PASS_KEYS = [
-  'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab', 'Escape', 'Shift', 'CapsLock', 'Insert', 'Delete', 'Home', 'End', 'PageUp', 'PageDown',
+  'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Shift', 'CapsLock', 'Insert', 'Delete', 'Home', 'End', 'PageUp', 'PageDown', 'Control', 'Alt', 'Meta',
 ];
+const TERM_PROMPT: React.CSSProperties = { color: '#44403c', fontSize: '11.5px', fontWeight: 500, whiteSpace: 'nowrap', flexShrink: 0 };
+const TERM_OPT: React.CSSProperties = {
+  height: '18px', padding: '0 6px', border: 'none', borderRadius: '4px', background: 'rgba(60,50,40,0.07)', color: '#57534e', fontSize: '11px', fontWeight: 500,
+  cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0, fontFamily: UI_FONT,
+};
+/** Seçenek etiketi: yazılacak harfler (anahtar) turuncu ve kalın. */
+const OptLabel: React.FC<{ label: string; k: string }> = ({ label, k }) => {
+  let i = label.indexOf(k);
+  if (i < 0) i = label.toUpperCase().indexOf(k);
+  if (i < 0) return <>{label}</>;
+  return <>{label.slice(0, i)}<b style={{ color: '#d9540a', fontWeight: 700 }}>{label.slice(i, i + k.length)}</b>{label.slice(i + k.length)}</>;
+};
 
+/** Komut satırı. Çizim komutu etkinken istemi ve [seçenekleri] gösterir; yazılan metin (komut adı · seçenek harfi · koordinat · sayı)
+    Draft sürücüsüne gider. Enter / Boşluk onaylar veya son komutu yineler, Esc iptal eder, Tab uzunluk ↔ açı alanını değiştirir. */
 export const Terminal: React.FC = () => {
   const [commandInput, setCommandInput] = useState('');
   const [inputFocus, setInputFocus] = useState(false);
   const [sendHover, sendHoverProps] = useHover();
   const inputRef = useRef<HTMLInputElement>(null);
+  const textRef = useRef('');
+  textRef.current = commandInput;
+  const cmd = useDraft(s => s.cmd), planePick = useDraft(s => s.planePick), lastLog = useDraft(s => s.log[s.log.length - 1] ?? '');
+  useEffect(() => { setTyped(commandInput); }, [commandInput]);
+
+  // Bekleyen fillet / vertex işlemi varsa girilen sayı ona gider (Scene'in window köprüsü); aksi halde çizim sürücüsüne.
+  const executeCommand = useCallback((command: string) => {
+    const trimmed = command.trim();
+    const w = window as any;
+    const num = parseFloat(trimmed);
+    if (!commandActive() && trimmed) {
+      if (w.pendingFilletOperation) { if (!isNaN(num) && num > 0) w.handleFilletRadius?.(num); setCommandInput(''); return; }
+      if (w.pendingVertexEdit) { if (!isNaN(num)) { w.handleVertexOffset?.(num); setCommandInput(''); } return; }
+    }
+    submitText(trimmed);
+    setCommandInput('');
+  }, []);
 
   useEffect(() => {
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-      if (TERM_HOTKEYS.includes(e.key.toLowerCase())) return;
-      if (e.ctrlKey || e.altKey || e.metaKey || e.key.startsWith('F') || TERM_PASS_KEYS.includes(e.key)) return;
-      if (e.key.length > 1 && !['Backspace', 'Enter', 'Space'].includes(e.key)) return;
-      if (/^[a-zA-Z0-9\.\,\+\-\*\/\(\)]$/.test(e.key) || e.key === 'Backspace' || e.key === 'Space') {
+      const t = e.target as HTMLElement | null;
+      const own = t === inputRef.current;
+      const inField = t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement || !!t?.isContentEditable;
+      const st = useDraft.getState(), active = commandActive();
+      if (e.key === 'F8') { e.preventDefault(); useAppStore.getState().toggleOrthoMode(); return; }
+      if (e.key === 'F10') { e.preventDefault(); setAids({ polar: !st.aids.polar }); return; }
+      if (e.key === 'F3') { e.preventDefault(); setAids({ osnap: !st.aids.osnap }); return; }
+      if (inField && !own) return;
+      if (e.key === 'Escape') {
+        // Çizim komutu / düzlem seçimi / çizim seçimi varsa Esc yalnız onu kapatır (Scene'in Esc'i çalışmaz).
+        if (active || st.planePick || st.selection.length) {
+          e.preventDefault(); e.stopPropagation();
+          if (!cancelCommand()) { setPlanePick(false); selectEntity(null); }
+        }
+        if (own) setCommandInput('');
+        return;
+      }
+      if (e.ctrlKey || e.metaKey) {
+        const k = e.key.toLowerCase();
+        if (e.altKey || (own && textRef.current)) return;
+        if (k === 'z' && (active || st.undoStack.length || (e.shiftKey && st.redoStack.length))) { e.preventDefault(); e.stopPropagation(); if (e.shiftKey) redo(); else undo(); }
+        else if (k === 'y' && st.redoStack.length) { e.preventDefault(); e.stopPropagation(); redo(); }
+        return;
+      }
+      if (e.altKey) return;
+      if (e.key === 'Delete' && !active && st.selection.length && !(own && textRef.current)) { e.preventDefault(); e.stopPropagation(); eraseSelection(); return; }
+      if (own) return;   // odak komut satırında: tuşlar input'un kendi işleyicisinde
+      if (e.key === 'Enter' || e.key === ' ') {
+        const onControl = !!t?.closest?.('button,a,select,summary,[role="button"]');
+        if (active || (st.lastCmd && !onControl && !(window as any).pendingFilletOperation && !(window as any).pendingVertexEdit)) {
+          e.preventDefault(); e.stopPropagation();
+          if (onControl) t?.blur?.();
+          executeCommand(textRef.current);
+        }
+        return;
+      }
+      if (e.key === 'Tab') { if (active && tabKey(textRef.current)) { e.preventDefault(); setCommandInput(''); } return; }
+      if (TERM_PASS_KEYS.includes(e.key) || (e.key.length > 1 && e.key.startsWith('F'))) return;
+      if (e.key.length > 1 && e.key !== 'Backspace') return;
+      if (/^[a-zA-Z0-9.,+\-*/()@<#]$/.test(e.key) || e.key === 'Backspace') {
         e.preventDefault();
         if (!inputRef.current) return;
         inputRef.current.focus();
-        setCommandInput(prev => (e.key === 'Backspace' ? prev.slice(0, -1) : e.key === 'Space' ? prev + ' ' : prev + e.key));
+        setCommandInput(prev => (e.key === 'Backspace' ? prev.slice(0, -1) : prev + e.key));
       }
     };
     window.addEventListener('keydown', handleGlobalKeyDown, true);
     return () => window.removeEventListener('keydown', handleGlobalKeyDown, true);
-  }, []);
+  }, [executeCommand]);
 
-  // Bekleyen fillet / vertex işlemi varsa girilen sayı ona gider (Scene'in window köprüsü).
-  const executeCommand = (command: string) => {
-    const trimmed = command.trim();
-    if (!trimmed) return;
-    const w = window as any;
-    const num = parseFloat(trimmed);
-    if (w.pendingFilletOperation) { if (!isNaN(num) && num > 0) w.handleFilletRadius?.(num); setCommandInput(''); return; }
-    if (w.pendingVertexEdit) { if (!isNaN(num)) { w.handleVertexOffset?.(num); setCommandInput(''); } return; }
-    setCommandInput('');
+  const onInputKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') { e.preventDefault(); executeCommand(commandInput); }
+    else if (e.key === ' ' && (commandActive() || !commandInput.trim() || isCommandName(commandInput))) { e.preventDefault(); executeCommand(commandInput); }
+    else if (e.key === 'Tab' && commandActive() && tabKey(commandInput)) { e.preventDefault(); setCommandInput(''); }
   };
+  const pickOpt = (key: string) => { submitText(key); setCommandInput(''); inputRef.current?.focus(); };
   const hasCmd = !!commandInput.trim();
   const sendLift = (y: string) => (e: React.MouseEvent<HTMLButtonElement>) => { if (hasCmd) e.currentTarget.style.transform = `translateY(${y})`; };
+  const promptText = cmd ? cmd.prompt : planePick ? 'PLANE  Click a body or panel face to draw on' : '';
 
   return (
     <div className="fixed bottom-0 left-0 right-0 z-30" style={TERM_BAR}>
       <div style={{ display: 'flex', alignItems: 'center', height: '100%', padding: '0 10px', gap: '8px' }}>
         <div style={TERM_CMD}>
           <Hash size={11} style={{ color: TT.promptClr }} />
-          <span style={{ color: TT.promptClr, fontSize: '10.5px', fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase' }}>CMD</span>
+          <span style={{ color: TT.promptClr, fontSize: '10.5px', fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase' }}>{cmd ? cmd.id.replace('_', ' ') : 'CMD'}</span>
         </div>
         <div style={{
-          flex: 1, display: 'flex', alignItems: 'center', height: '26px', padding: '0 10px', gap: '6px', background: TT.inputBg,
-          border: `1px solid ${inputFocus ? '#f97316' : TT.inputBorder}`, borderRadius: '7px', transition: 'border-color 0.15s,box-shadow 0.15s',
-          boxShadow: inputFocus ? '0 0 0 2.5px rgba(249,115,22,0.14),inset 0 1px 2px rgba(40,30,20,0.04)' : TT.inputShadow,
+          flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', height: '26px', padding: '0 10px', gap: '6px', background: TT.inputBg,
+          border: `1px solid ${inputFocus || cmd ? '#f97316' : TT.inputBorder}`, borderRadius: '7px', transition: 'border-color 0.15s,box-shadow 0.15s',
+          boxShadow: inputFocus ? '0 0 0 2.5px rgba(249,115,22,0.14),inset 0 1px 2px rgba(40,30,20,0.04)' : TT.inputShadow, overflow: 'hidden',
         }}>
-          <ChevronRight size={12} style={{ color: inputFocus ? TT.promptClr : '#a8a29e', flexShrink: 0, transition: 'color 0.15s' }} />
-          <input ref={inputRef} type="text" value={commandInput} onChange={e => setCommandInput(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') executeCommand(commandInput); }}
-            onFocus={() => setInputFocus(true)} onBlur={() => setInputFocus(false)} placeholder="Enter a command or value..." style={TERM_INPUT} />
-          {commandInput && <span style={TERM_ENTER_HINT}>⏎ Enter</span>}
+          <ChevronRight size={12} style={{ color: inputFocus || cmd ? TT.promptClr : '#a8a29e', flexShrink: 0, transition: 'color 0.15s' }} />
+          {promptText && (
+            <span style={TERM_PROMPT}>
+              {promptText.replace(/^.*? {2}/, '')}{cmd?.def ? <span style={{ color: '#9c9590' }}> &lt;{cmd.def}&gt;</span> : null}{cmd && !cmd.opts.length ? ':' : ''}
+            </span>
+          )}
+          {cmd && cmd.opts.length > 0 && (
+            <span style={{ display: 'flex', alignItems: 'center', gap: '3px', flexShrink: 1, minWidth: 0, overflow: 'hidden' }}>
+              {cmd.opts.map(op => (
+                <button key={op.key} style={TERM_OPT} title={`Type ${op.key}`} onMouseDown={e => e.preventDefault()} onClick={() => pickOpt(op.key)}>
+                  <OptLabel label={op.label} k={op.key} />
+                </button>
+              ))}
+              <span style={TERM_PROMPT}>:</span>
+            </span>
+          )}
+          <input ref={inputRef} type="text" value={commandInput} onChange={e => setCommandInput(e.target.value)} onKeyDown={onInputKey}
+            onFocus={() => setInputFocus(true)} onBlur={() => setInputFocus(false)} spellCheck={false} autoComplete="off"
+            placeholder={cmd || planePick ? '' : 'Type a command (LINE, CIRCLE, TRIM…) or a value'} style={{ ...TERM_INPUT, minWidth: '60px' }} />
+          {commandInput ? <span style={TERM_ENTER_HINT}>⏎ Enter</span>
+            : lastLog ? <span style={{ color: '#a8a29e', fontSize: '10.5px', fontFamily: MONO_FONT, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '38%' }}>{lastLog}</span> : null}
         </div>
         <button onClick={() => executeCommand(commandInput)} {...sendHoverProps} disabled={!hasCmd}
           style={{
@@ -724,8 +807,7 @@ export const Toolbar: React.FC<{ onOpenCatalog: () => void }> = ({ onOpenCatalog
             {snapBtn('snap-endpoint', 'Endpoint', SnapType.ENDPOINT)}
             {snapBtn('snap-midpoint', 'Midpoint', SnapType.MIDPOINT)}
             {snapBtn('snap-center', 'Center', SnapType.CENTER)}
-            {/* Quadrant snap henüz bağlı değil (store'da SnapType.QUADRANT yok) — düğme yer tutucu. */}
-            <TBtn icon="snap-quadrant" label="Quadrant" onClick={() => {}} />
+            {snapBtn('snap-quadrant', 'Quadrant', SnapType.QUADRANT)}
             {snapBtn('snap-intersection', 'Intersection', SnapType.INTERSECTION)}
           </BtnGroup>
           <VLine />
@@ -740,6 +822,8 @@ export const Toolbar: React.FC<{ onOpenCatalog: () => void }> = ({ onOpenCatalog
             <IconButton icon="folder-open" title="Catalog" onClick={onOpenCatalog} />
           </BtnGroup>
         </div>
+        {/* 2B çizim şeridi: düzlem · Draw · Modify · çizim yardımcıları (DraftView). */}
+        <DraftRibbon />
       </div>
     </>
   );

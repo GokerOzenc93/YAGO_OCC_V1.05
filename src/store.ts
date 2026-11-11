@@ -513,8 +513,8 @@ export enum Tool {
 }
 export enum ViewMode { WIREFRAME = 'wireframe', SOLID = 'solid', XRAY = 'xray' }
 export enum SnapType {
-  ENDPOINT = 'endpoint', MIDPOINT = 'midpoint', CENTER = 'center',
-  PERPENDICULAR = 'perpendicular', INTERSECTION = 'intersection', NEAREST = 'nearest',
+  ENDPOINT = 'endpoint', MIDPOINT = 'midpoint', CENTER = 'center', QUADRANT = 'quadrant',
+  PERPENDICULAR = 'perpendicular', INTERSECTION = 'intersection', TANGENT = 'tangent', NEAREST = 'nearest',
 }
 export enum OrthoMode { ON = 'on', OFF = 'off' }
 
@@ -801,7 +801,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   orthoMode: OrthoMode.OFF,
   toggleOrthoMode: () => set((s) => ({ orthoMode: s.orthoMode === OrthoMode.ON ? OrthoMode.OFF : OrthoMode.ON })),
-  snapSettings: { endpoint: false, midpoint: false, center: false, perpendicular: false, intersection: false, nearest: false },
+  // 2B çizim araçlarının nesne yakalama kipleri (Draft.ts okur).
+  snapSettings: { endpoint: true, midpoint: true, center: true, quadrant: true, perpendicular: true, intersection: true, tangent: false, nearest: false },
   toggleSnapSetting: (t) => set((s) => ({ snapSettings: { ...s.snapSettings, [t]: !s.snapSettings[t] } })),
   opencascadeLoading: false, setOpenCascadeLoading: (l) => set({ opencascadeLoading: l }),
 

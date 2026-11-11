@@ -34,6 +34,7 @@ import {
   BACK_GAP, backPickRect, rayBackEntry, backCandidatesAt, backStackAt,
 } from './BackService';
 import { ErrorBoundary } from './Ui';
+import { DraftLayer } from './DraftView';
 
 // ═════════════════════════════════════════════════ 1. SAHNE NESNELERİ ═════════════════════════════════════════════════
 /* Sahne nesneleri — canvas içinde şekil başına çizilen her şey: PanelDrawing (panel mesh/kenar/seçim tonu, ref-yüz),
@@ -3430,6 +3431,8 @@ const Scene: React.FC = () => {
         <MoveRefConfirmOnRightClick />
         <RotateRefConfirmOnRightClick />
         <PanelGizmos shapes={shapes} />
+        {/* 2B çizim katmanı: çizim düzlemi, nesneler, önizleme, yakalama işareti (DraftView). */}
+        <DraftLayer />
 
         <mesh position={[0, -1, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
           <planeGeometry args={[30000, 30000]} />
