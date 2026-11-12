@@ -35,6 +35,7 @@ import {
 } from './BackService';
 import { ErrorBoundary } from './Ui';
 import { DraftLayer } from './DraftView';
+import { useDraft } from './Draft';
 
 // ═════════════════════════════════════════════════ 1. SAHNE NESNELERİ ═════════════════════════════════════════════════
 /* Sahne nesneleri — canvas içinde şekil başına çizilen her şey: PanelDrawing (panel mesh/kenar/seçim tonu, ref-yüz),
@@ -625,6 +626,7 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
     'selectedBackGroupId', 'backFocusVfIds', 'backPickMode', 'backRefPickGroupId', 'setBackRefPickGroupId', 'virtualFaces');
   const [hoveredExtrudeGroup, setHoveredExtrudeGroup] = useState<number | null>(null);
   const [moveRefHover, setMoveRefHover] = useState(false);
+  const draftIso = useDraft(st => st.isolate);
   const { faces, groups: faceGroups } = useMemo(() => (shape.geometry ? getFacesAndGroups(shape.geometry) : { faces: [], groups: [] }), [shape.geometry]);
 
   const params = shape.parameters;
@@ -697,6 +699,8 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
 
   if (!shape.geometry) return null;
   if (isRepickHidden) return null;
+  // Yüz çiziminde izolasyon (DraftView): yalnız hedef panel çizilir; gövde yüzüne çizimde tüm paneller gizlenir.
+  if (draftIso && draftIso.targetId !== shape.id) return null;
 
   const isWireframe = S.viewMode === ViewMode.WIREFRAME;
   const isXray = S.viewMode === ViewMode.XRAY;
@@ -1875,6 +1879,7 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
   const [geometryKey, setGeometryKey] = useState(0);
   const [hoveredRefGroup, setHoveredRefGroup] = useState<number | null>(null);
   const [moveRefHover, setMoveRefHover] = useState(false);
+  const draftIso = useDraft(st => st.isolate);
   const vertexModsString = useMemo(() => JSON.stringify(shape.vertexModifications || []), [shape.vertexModifications]);
   const { faces: refFaces, groups: refFaceGroups } = useMemo(() => (shape.geometry ? getFacesAndGroups(effectiveBodyGeometry(shape)) : { faces: [], groups: [] }),
     [shape.geometry, vertexModsString]);
@@ -1971,13 +1976,16 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
   }, [isRefMode, shape.id, S.faceExtrudeTargetPanelId, S.faceExtrudeCavityGroupId, S.setFaceExtrudeRefCandidate]);
 
   if (shape.isolated === false || !localGeometry) return null;
+  // Yüz çiziminde izolasyon (DraftView): başka gövdeler gizlenir; hedef GÖVDE yüzüyse (panelleri gizli) gövde görünür kılınır.
+  if (draftIso && draftIso.bodyId !== shape.id) return null;
+  const isoBody = draftIso?.kind === 'body' && draftIso.targetId === shape.id;
 
   const raycastProps = suppressBodyRaycast ? { raycast: noRaycast } : {};
   const hoverProps = isMoveRefPickActive ? {
     onPointerOver: (e: any) => { e.stopPropagation(); setMoveRefHover(true); },
     onPointerOut: () => { if (moveRefHover) setMoveRefHover(false); },
   } : {};
-  const outlinesVisible = S.showOutlines || S.raycastMode || !!S.volumePickMode || S.doorPickMode || S.backPickMode || S.plinthPickMode;
+  const outlinesVisible = S.showOutlines || S.raycastMode || !!S.volumePickMode || S.doorPickMode || S.backPickMode || S.plinthPickMode || isoBody;
   const outline = (color: string, width: number, depthWrite: boolean, onTop = false) => outlinesVisible && edgePoints && (
     <Line points={edgePoints} segments color={color} lineWidth={width} transparent={onTop} depthTest={!onTop} depthWrite={depthWrite && !onTop}
       renderOrder={onTop ? XRAY_EDGE.order : 1} raycast={noRaycast} />
@@ -1985,7 +1993,7 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
   const accented = isSelected || shouldShowAsReference;
   const geoUuid = shape.geometry?.uuid || '';
   const bodyEmissive = moveRefBodyHighlight ? (isMoveRefTargetPanel ? '#22c55e' : REF_COLORS.hoverCss) : '#000000';
-  const bodyOpacity = hasPanels ? (moveRefBodyHighlight ? 0.35 : 0) : (moveRefBodyHighlight ? 0.5 : 0.06);
+  const bodyOpacity = isoBody ? 0.14 : hasPanels ? (moveRefBodyHighlight ? 0.35 : 0) : (moveRefBodyHighlight ? 0.5 : 0.06);
 
   return (
     <>
@@ -2052,10 +2060,10 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
         {isSelected && S.doorPickMode && <DoorPickOverlay shape={shape} />}
         {isSelected && S.backPickMode && <BackPickOverlay shape={shape} />}
         {isSelected && S.plinthPickMode && <PlinthPickOverlay shape={shape} />}
-        <PlinthSets shape={shape} />
+        {!draftIso && <PlinthSets shape={shape} />}
         {S.faceExtrudeMode && S.faceExtrudeCavityGroupId && <CavityEditOverlay shape={shape} />}
         {S.faceExtrudeMode && S.faceExtrudePlinthId && <PlinthEditOverlay shape={shape} />}
-        <VirtualFaceOverlay shape={shape} />
+        {!draftIso && <VirtualFaceOverlay shape={shape} />}
         {S.showFaceRoles && isSelected && <BodyFaceRoleLabels shape={shape} hovered={S.faceRoleHover?.shapeId === shape.id ? S.faceRoleHover!.gi : null} />}
         {S.faceRoleHover && S.faceRoleHover.shapeId === shape.id && <FaceRoleHighlight shape={shape} faces={refFaces} groups={refFaceGroups} gi={S.faceRoleHover.gi} />}
       </group>

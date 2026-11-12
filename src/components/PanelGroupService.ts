@@ -2638,6 +2638,8 @@ function panelShape(body: Shape, vf: VirtualFace, vfIndex: number, geo: THREE.Bu
     parameters: {
       width: s[def], height: s[alt], depth: t, parentShapeId: body.id, faceIndex: -(vfIndex + 1), virtualFaceId: vf.id,
       arrowRotated: !!prev?.parameters?.arrowRotated, panelThickness: t, ...extra,
+      // Çizim adımları (Drawing › yüze uygula) parça yeniden kurulurken korunur: yüz çapasına bağlıdırlar, yeni ölçüde yeniden çözülürler.
+      ...(prev?.parameters?.sketchFeatures?.length ? { sketchFeatures: prev.parameters.sketchFeatures } : {}),
     },
   } as Shape;
 }

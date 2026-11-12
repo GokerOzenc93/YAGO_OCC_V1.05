@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Check, X, type LucideIcon, Lock, SlidersHorizontal, Crosshair, LayoutPanelTop, Rows3, Columns3, DoorClosed, SendToBack, Footprints, Shapes,
   ChevronRight, Minus, Plus, ChevronDown, Pencil, Trash2, Unlink, MoveVertical, Move, RotateCw, GripVertical, ArrowUp, Box, Move3d, Equal,
-  RotateCcw, Container, ChevronLeft,
+  RotateCcw, Container, ChevronLeft, PenLine,
 } from 'lucide-react';
 import { type Box3 } from 'three';
 import { UI_FONT, INK, TYPE } from './Ui';
@@ -47,6 +47,8 @@ import {
   panelEdgeValue, panelEdgeLimits, backRefOf,
 } from './PanelGroupService';
 import { confirmBodyPanelPlacement } from './Scene';
+import { useDraft as useSketch } from './Draft';
+import { beginFacePick, deleteSketch, editSketch, exitFace, sketchFeaturesOf } from './DraftView';
 import {
   type PlinthSet, type PlinthFacing, confirmPlinthPick, plinthRowKey, plinthSetsOf, plinthSize, plinthName, setPlinthLegs, setPlinthHeight, plinthIsBound,
   applyPlinthFace, applyPlinthArrow, deletePlinthSetAndSync, finishPlinthEdit, startPlinthVolumeEdit, applyLegPresetToSet, plinthFacingOf,
@@ -2193,6 +2195,8 @@ type StepEditProps = { edit: StepEdit; setEdit: (e: StepEdit) => void };
 type StepItem = {
   id: string; badge: { label: string; bg: string; color: string }; axis: string; axisColor: string; value: number; unit?: string; tag?: string;
   editable: boolean; save: (v: number) => void; remove: () => void;
+  /** Çizim adımı: değer yerine metin · ✎ çizimi düzenlemeye açar (satır içi sayı girişi yok) · uygulanamadıysa neden · düzenleniyor mu. */
+  text?: string; onEdit?: () => void; error?: string; live?: boolean; title?: string;
 };
 const STEP_BADGE: Record<string, StepItem['badge']> = {
   move: { label: 'Move', bg: 'rgba(22,163,74,0.08)', color: '#15803d' },
@@ -2200,6 +2204,27 @@ const STEP_BADGE: Record<string, StepItem['badge']> = {
   extrude: { label: 'Ext', bg: 'rgba(217,119,6,0.09)', color: '#b45309' },
 };
 const VOL_BADGE = { label: 'Vol', bg: 'rgba(14,116,144,0.09)', color: '#0e7490' };
+const SKETCH_BADGE: Record<'cut' | 'shape', StepItem['badge']> = {
+  cut: { label: 'Cut', bg: 'rgba(225,29,72,0.08)', color: '#be123c' },
+  shape: { label: 'Shape', bg: 'rgba(124,58,237,0.09)', color: '#6d28d9' },
+};
+const ANCHOR_TXT = (a: [number, number]) => (a[0] === 0.5 && a[1] === 0.5 ? 'centre'
+  : `${a[1] === 1 ? 'top' : a[1] === 0 ? 'bottom' : 'middle'} ${a[0] === 0 ? 'left' : a[0] === 1 ? 'right' : 'centre'}`);
+/** Çizim adımları (Drawing panelinden yüze uygulanan Cut / Shape): ✎ çizimi yüzünde düzenlemeye açar, çöp adımı siler. Katıya öteki
+ *  adımlardan SONRA uygulanır → listede de sonda durur. */
+function sketchStepItems(target: Shape, liveId: string | null): StepItem[] {
+  const errs: Record<string, string> = target.parameters?.sketchErrors || {};
+  return sketchFeaturesOf(target).map(f => {
+    const ax = 'xyz'[domAxis(f.n)], str = f.stretch[0] || f.stretch[1] ? ` · stretch ${f.stretch[0] ? 'X' : ''}${f.stretch[1] ? 'Y' : ''}` : '';
+    return {
+      id: f.id, badge: SKETCH_BADGE[f.op], axis: ax.toUpperCase(), axisColor: AXIS_COLORS[ax] || '#57534e', value: f.depth ?? 0,
+      text: f.op === 'shape' ? 'Outline' : f.depth == null ? 'Through' : `${fmt1(f.depth)} deep`, editable: true, save: () => { /* satır içi değer yok */ },
+      onEdit: () => { void editSketch(target.id, f.id); }, remove: () => { void deleteSketch(target.id, f.id); },
+      error: errs[f.id], live: liveId === f.id,
+      title: `${f.name} — anchored to the ${ANCHOR_TXT(f.anchor)} of the face${str}. Pencil: edit the drawing.`,
+    };
+  });
+}
 
 /** Adım listesi: sıra · tür · eksen · değer (✎ → ✓ / ✗) · F/D/R · sil. */
 function StepList({ label, maxHeight, steps, edit, setEdit }: StepEditProps & { label: string; maxHeight: number; steps: StepItem[] }) {
@@ -2211,7 +2236,7 @@ function StepList({ label, maxHeight, steps, edit, setEdit }: StepEditProps & { 
       <div className="overflow-y-auto" style={{ maxHeight }}>
         <div className="flex flex-col gap-[2px] p-px">
           {steps.map((s, idx) => (
-            <div key={s.id} className="group/step yago-cell flex items-center gap-1.5 pl-1.5 pr-1 h-[30px]">
+            <div key={s.id} title={s.title} className={`group/step yago-cell flex items-center gap-1.5 pl-1.5 pr-1 h-[30px]${s.live ? ' is-accent' : ''}`}>
               <span className="shrink-0 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-[#ece8e1] text-[10.5px] font-semibold text-stone-600 tabular-nums leading-none">{idx + 1}</span>
               <span className="shrink-0 text-[10.5px] font-semibold px-1.5 h-[18px] leading-[18px] rounded-[5px]" style={{ background: s.badge.bg, color: s.badge.color }}>{s.badge.label}</span>
               <span className="shrink-0 min-w-[24px] text-center text-[10.5px] font-bold px-1 h-[18px] leading-[18px] rounded-[5px] bg-[#f5f2ec]" style={{ color: s.axisColor }}>{s.axis}</span>
@@ -2226,10 +2251,14 @@ function StepList({ label, maxHeight, steps, edit, setEdit }: StepEditProps & { 
                 </>
               ) : (
                 <>
-                  <span className="flex-1 pl-1 yago-value">{s.value}{s.unit}</span>
+                  <span className="flex-1 min-w-0 truncate pl-1 yago-value">{s.live ? 'Editing…' : s.text ?? <>{s.value}{s.unit}</>}</span>
+                  {s.error && (
+                    <span title={`Could not be applied: ${s.error}`}
+                      className="shrink-0 text-[10px] font-bold px-1.5 h-[18px] leading-[18px] rounded-[5px] bg-red-50 text-red-600">!</span>
+                  )}
                   {s.tag && tag(s.tag)}
                   {s.editable && (
-                    <button onClick={() => setEdit({ id: s.id, v: String(s.value) })} style={iconBtn('#a8a29e')}
+                    <button onClick={() => (s.onEdit ? s.onEdit() : setEdit({ id: s.id, v: String(s.value) }))} style={iconBtn('#a8a29e')}
                       className="hover:!bg-[#f3efe8] hover:!text-stone-700"><Pencil size={10.5} strokeWidth={1.9} /></button>
                   )}
                   <button onClick={s.remove} style={iconBtn('#a8a29e')}
@@ -2245,8 +2274,10 @@ function StepList({ label, maxHeight, steps, edit, setEdit }: StepEditProps & { 
 }
 /** Panel adımları (extrude + taşı / döndür, zaman sırasıyla). Ref adımlarında donmuş value değil, çözülen gerçek miktar gösterilir. */
 export function PanelSteps({ panel, ...edit }: StepEditProps & { panel?: Shape }) {
+  const liveId = useSketch(s => s.session?.featureId ?? null);
   const ext: ExtrudeStep[] = panel?.parameters?.extrudeSteps || [], tr: TransformStep[] = panel?.parameters?.transformSteps || [];
-  if (!panel || (!ext.length && !tr.length)) return null;
+  const sk = panel ? sketchStepItems(panel, liveId) : [];
+  if (!panel || (!ext.length && !tr.length && !sk.length)) return null;
   const { updateShape } = useAppStore.getState();
   const item = (s: { id: string; timestamp: number }, type: string, axis: string, value: number, isRef: boolean, tag: string | undefined) => {
     const isExt = type === 'extrude';
@@ -2263,7 +2294,14 @@ export function PanelSteps({ panel, ...edit }: StepEditProps & { panel?: Shape }
     ...tr.map(s => item(s, s.type, s.axis, s.type === 'rotate' && typeof s.resolvedValue === 'number' ? s.resolvedValue : s.value,
       !!s.refTargetPanelId, s.refTargetPanelId ? 'R' : undefined)),
   ].sort((a, b) => a.ts - b.ts);
-  return <StepList label="Steps" maxHeight={200} steps={steps} {...edit} />;
+  return <StepList label="Steps" maxHeight={200} steps={[...steps, ...sk]} {...edit} />;
+}
+/** Gövde adımları: gövde yüzüne uygulanan çizim kesimleri (liste başında; gövdede panel olmasa da görünür). */
+export function BodySketchSteps({ shape, ...edit }: StepEditProps & { shape: Shape }) {
+  const liveId = useSketch(s => s.session?.featureId ?? null);
+  const steps = sketchStepItems(shape, liveId);
+  if (!steps.length) return null;
+  return <div className="px-0.5 pb-1.5"><StepList label="Body steps" maxHeight={160} steps={steps} {...edit} /></div>;
 }
 /** Hacim (cavity) adımları. */
 export function VolumeSteps({ group: g, ...edit }: StepEditProps & { group: PanelGroup }) {
@@ -2608,6 +2646,7 @@ export function AssemblyPanel() {
   // seçilen satırın kartı açılır, diğerleri kapanır; üye editörü kapanınca grup kartı açık kalır (bağlam), chevron ya da yeni bir seçim kapatır.
   const [openCardId, setOpenCardId] = useState<string | null>(null);
   const [stepEdit, setStepEdit] = useState<StepEdit>(null);
+  const draftIso = useSketch(st => st.isolate);   // çizim yüzü bu gövdenin bir paneliyse o panelin Sketch düğmesi etkin görünür
   const [extrudeThicknessStr, setExtrudeThicknessStr] = useState(() => String(useAppStore.getState().faceExtrudeThickness));
   const [moveValueStr, setMoveValueStr] = useState('0');
   const [rotateValueStr, setRotateValueStr] = useState('0');
@@ -2884,10 +2923,18 @@ export function AssemblyPanel() {
       rotate: [panelRotateMode, panelRotateTargetPanelId, setPanelRotateMode, setPanelRotateTargetPanelId],
     } as const;
     type Tool = keyof typeof tools;
-    const tool = (Object.keys(tools) as Tool[]).find(k => tools[k][0] && tools[k][1] === vp?.id) ?? null;
+    // Sketch: Drawing panelinin yüz seçimi yalnız BU panelde açılır; panel çizim yüzüyken düğme etkin görünür (tekrar tık → zemine dön).
+    const sketching = !!vp && draftIso?.targetId === vp.id;
+    const tool = sketching ? 'sketch' : (Object.keys(tools) as Tool[]).find(k => tools[k][0] && tools[k][1] === vp?.id) ?? null;
     // Aynı araca tık → kapanır; başka araca → açık olan kapanır, yenisi bu panelde açılır.
     const pickTool = (k: string) => {
       if (!vp) return;
+      if (k === 'sketch') {
+        for (const [on, , off] of Object.values(tools)) if (on) off(false);
+        if (sketching) void exitFace(); else beginFacePick(vp.id);
+        return;
+      }
+      if (sketching) void exitFace();
       const [, , setMode, setTarget] = tools[k as Tool];
       if (k === tool) return setMode(false);
       for (const [on, , off] of Object.values(tools)) if (on) off(false);
@@ -2900,6 +2947,7 @@ export function AssemblyPanel() {
           { key: 'extrude', label: 'Extrude', Icon: MoveVertical, title: 'Face extrude — pick a face in the 3D view, then Fixed / Dyn / Ref', disabled: dis },
           { key: 'move', label: 'Move', Icon: Move, title: 'Move the panel — Relative / Absolute / To point', disabled: dis },
           { key: 'rotate', label: 'Rotate', Icon: RotateCw, title: 'Rotate the panel — Angle / Aim at face', disabled: dis },
+          { key: 'sketch', label: 'Sketch', Icon: PenLine, title: 'Draw on a face of this panel, then cut it out or give the panel that shape', disabled: dis },
         ]} />
         <ExtrudeDock panel={activePanel} draft={extrudeThicknessStr} setDraft={setExtrudeThicknessStr} onDone={rowDone} />
         <MoveDock panel={activePanel} draft={moveValueStr} setDraft={setMoveValueStr} onDone={rowDone} />
@@ -2921,13 +2969,17 @@ export function AssemblyPanel() {
     const sid = selectedShape.id;
     const svf = virtualFaces.filter(vf => vf.shapeId === sid);
     const bodySets = plinthSetsOf(sid, plinthSets);
-    if (!svf.length && !bodySets.length) return quickBodyMode ? null : (
-      <div className="flex flex-col items-center justify-center py-6 text-center">
+    // Gövde adımları (gövde yüzüne uygulanan çizim kesimleri): liste başında; odak görünümünde gizli.
+    const bodySteps = sketchFeaturesOf(selectedShape).length
+      ? <BodySketchSteps key="body-steps" shape={selectedShape} edit={stepEdit} setEdit={setStepEdit} /> : null;
+    if (!svf.length && !bodySets.length) return quickBodyMode ? bodySteps : [
+      bodySteps,
+      <div key="no-faces" className="flex flex-col items-center justify-center py-6 text-center">
         <div className="w-8 h-8 rounded-lg bg-stone-100 flex items-center justify-center mb-2"><MoveVertical size={14} className="text-stone-400" /></div>
         <span className="text-xs text-stone-400">No faces added yet</span>
         <span className="text-[10.5px] text-stone-300 mt-0.5">Use Body for a quick carcass, or Panel, Shelf and Divider one by one</span>
-      </div>
-    );
+      </div>,
+    ];
 
     // Düz liste: her VF store sırasıyla kendi satırıdır; listedeki numara = VF sırası = basan/basılan önceliği.
     // İstisna: raf/dikme, kapak ve arkalık grubunun üyeleri store'da bitişik durur ve TEK kart olarak (ilk üyenin sırasında) gösterilir.
@@ -3618,6 +3670,7 @@ export function AssemblyPanel() {
       );
     }
     if (quickParts && quickSaved) elements.unshift(<div key="wrap-quick" className="yago-row-in">{quickRow(quickSaved, quickParts)}</div>);
+    if (bodySteps) elements.unshift(bodySteps);
     return elements;
   };
 

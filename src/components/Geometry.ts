@@ -3,8 +3,9 @@ import initOpenCascade from 'opencascade.js';
 import { setOC } from 'replicad';
 import {
   type VirtualFace, type FaceDescriptor, type FilletInfo, type SubtractedGeometry, type Shape, shapeById, requestRebuild, vfOfPanel, type RefFacePick,
-  type RailStripSpec, type RailExt, type RailExtTarget, useAppStore,
+  type RailStripSpec, type RailExt, type RailExtTarget, type SketchFeature, useAppStore,
 } from '../store';
+import { type Shape2, profileLoops, scaleShapeXY, moveShape } from './Draft';
 
 /* GEOMETRY — 1) geometri çekirdeği + OCC katı servisi · 2) yüz bölgesi (serbest bölge, ayak izi, 2B çokgen) ·
    3) panel işlem adımları (taşı / döndür / yüz extrude, referans yüz seçimi). */
@@ -591,6 +592,100 @@ export async function cutWithTools(base: any, tools: any[], simplify = false): P
   } finally { args.delete(); list.delete(); op.delete(); progress.delete(); }
 }
 
+// ── ÇİZİM ADIMLARI (Goker, Kas 2026 — "çizimi panelin yüzeyine göre parametrik hale getirip panelden / yüzeyden çıkarayım ya da panele o
+//    çizimin şeklini vereyim; sonradan çizimi düzenleyebileyim; mevcut panel mantığı bozulmasın") ──
+// Adım (`store.SketchFeature`) hedefin `parameters.sketchFeatures` listesinde durur: yüz yönü (n, u) + çapa + yüz ölçüsüne göre bağıl 2B
+// nesneler. Her üretimde yüz çerçevesi KESİLMEMİŞ mesh'ten yeniden okunur (en dış düzlem + o düzlemdeki köşelerin kutusu) → panel / gövde
+// ölçüsü değişince çizim çapasına göre yerini korur (uzama açıksa yüzle birlikte ölçeklenir). Panelde kanal / delik gibi yalnız SON geçişte,
+// katının üzerine uygulanır; ayak izi / damga / sıralama kesilmemiş mesh'i (`ungroovedGeometry`) okumaya devam eder.
+export interface SketchFrame { o: THREE.Vector3; u: THREE.Vector3; v: THREE.Vector3; n: THREE.Vector3; w: number; h: number; through: number }
+/** Yüz çerçevesi: mesh'in n yönündeki en dış düzlemi (inset kadar içeride), orijin = o düzlemdeki köşelerin (u,v) alt-sol köşesi.
+ *  q: adım yazıldıktan sonra panele eklenen / çözülen dönüşler (n ve u dönüş ÖNCESİ yönlerdir). through = düzlemden karşı yüze mesafe. */
+export function sketchFrameOf(mesh: THREE.BufferGeometry | undefined | null, n3: Vec3, u3: Vec3, inset = 0, q?: THREE.Quaternion | null): SketchFrame | null {
+  const pos = mesh?.getAttribute('position') as THREE.BufferAttribute | undefined;
+  if (!pos || !pos.count) return null;
+  const n = toVector3(n3).normalize(), u = toVector3(u3);
+  if (q) { n.applyQuaternion(q); u.applyQuaternion(q); }
+  u.addScaledVector(n, -u.dot(n));
+  if (u.lengthSq() < 1e-9) return null;
+  u.normalize();
+  const v = new THREE.Vector3().crossVectors(n, u), p = new THREE.Vector3();
+  let dMax = -Infinity, dMin = Infinity;
+  for (let i = 0; i < pos.count; i++) { const d = p.fromBufferAttribute(pos, i).dot(n); if (d > dMax) dMax = d; if (d < dMin) dMin = d; }
+  let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+  for (let i = 0; i < pos.count; i++) {
+    p.fromBufferAttribute(pos, i);
+    if (dMax - p.dot(n) > 0.3) continue;
+    const pu = p.dot(u), pv = p.dot(v);
+    if (pu < u0) u0 = pu; if (pu > u1) u1 = pu; if (pv < v0) v0 = pv; if (pv > v1) v1 = pv;
+  }
+  if (!isFinite(u0)) return null;
+  const d = dMax - Math.max(0, inset);
+  return { o: n.clone().multiplyScalar(d).addScaledVector(u, u0).addScaledVector(v, v0), u, v, n, w: u1 - u0, h: v1 - v0, through: d - dMin };
+}
+/** Adımın nesneleri yüz koordinatında (orijin = yüzün alt-sol köşesi): uzama ölçeği + çapa ötelemesi uygulanmış. */
+export function placeSketchShapes(f: SketchFeature, w: number, h: number): Shape2[] {
+  const sx = f.stretch[0] && f.baseSize[0] > 1e-6 ? w / f.baseSize[0] : 1, sy = f.stretch[1] && f.baseSize[1] > 1e-6 ? h / f.baseSize[1] : 1;
+  const at = { x: f.anchor[0] * w, y: f.anchor[1] * h };
+  return f.shapes.map(s => moveShape(scaleShapeXY(s, sx, sy), at));
+}
+/** Düzenlenen adım üretimde atlanır (çizim oturumu boyunca katı o adım olmadan görünür). */
+let _sketchSuppressed: string | null = null;
+export const setSketchSuppressed = (id: string | null) => { _sketchSuppressed = id; };
+export const liveSketchFeatures = (shape: { parameters?: any } | undefined | null): SketchFeature[] =>
+  ((shape?.parameters?.sketchFeatures ?? []) as SketchFeature[]).filter(f => f && f.id !== _sketchSuppressed);
+/** Önbellek anahtarı: adımların üretimi etkileyen tüm alanları. */
+export const sketchFeaturesKey = (feats: SketchFeature[]) => JSON.stringify(feats.map(f => [f.id, f.op, f.depth, f.n, f.u, f.inset, f.anchor, f.stretch, f.baseSize, f.shapes]));
+
+/** Adımın kesici katısı: kapalı döngüler yüz düzleminin 1 mm DIŞINDAN içeri doğru prizmalanır; iç içe döngülerde tek sıra ada / deliktir. */
+async function sketchToolOf(f: SketchFeature, fr: SketchFrame): Promise<any | null> {
+  await initReplicad();
+  const { draw, Plane } = await import('replicad');
+  const { loops } = profileLoops(placeSketchShapes(f, fr.w, fr.h));
+  if (!loops.length) return null;
+  const LIFT = 1;
+  const through = f.op === 'shape' || f.depth == null || !(f.depth > 0);
+  const len = (through ? fr.through + 1 : Math.min(f.depth as number, fr.through + 1)) + LIFT;
+  const plane = new Plane(vec3(fr.o.clone().addScaledVector(fr.n, LIFT)), vec3(fr.u), vec3(fr.n));
+  let tool: any = null;
+  for (const l of loops) {
+    let pen: any = draw([l.start.x, l.start.y]);
+    l.segs.forEach((s, i) => {
+      if (s.mid) pen = pen.threePointsArcTo([s.to.x, s.to.y], [s.mid.x, s.mid.y]);
+      else if (i < l.segs.length - 1) pen = pen.lineTo([s.to.x, s.to.y]);   // son doğruyu close() çizer (aynı noktaya lineTo OCC'de fırlatır)
+    });
+    const prism = pen.close().sketchOnPlane(plane).extrude(-len);
+    tool = !tool ? prism : l.depth % 2 === 0 ? tool.fuse(prism) : tool.cut(prism);
+  }
+  return tool;
+}
+/** Adımları sırayla katıya uygular: cut = profili çıkar, shape = yalnız profilin içini bırak. Çerçeve her adımda KESİLMEMİŞ mesh'ten okunur
+ *  (adımlar birbirinin çapasını bozmaz). Uygulanamayan adım atlanır ve `errors`a yazılır; katı o adım olmadan devam eder. */
+export async function applySketchFeatures(solid: any, mesh: THREE.BufferGeometry, feats: SketchFeature[], q?: THREE.Quaternion | null):
+  Promise<{ shape: any; applied: number; errors: Record<string, string> }> {
+  let shape = solid, applied = 0;
+  const errors: Record<string, string> = {};
+  for (const f of feats) {
+    try {
+      const fr = sketchFrameOf(mesh, f.n, f.u, f.inset, q);
+      if (!fr) throw new Error('Face not found');
+      const tool = await sketchToolOf(f, fr);
+      if (!tool) throw new Error('No closed profile');
+      const next = f.op === 'shape' ? shape.intersect(tool) : shape.cut(tool);
+      if (!next?.wrapped || typeof next.cut !== 'function') throw new Error('Result is not a solid');
+      const b = next.boundingBox.bounds as [number[], number[]];
+      if (![...b[0], ...b[1]].every(Number.isFinite) || b[1].some((x, i) => x - b[0][i] < 1e-6)) throw new Error(f.op === 'shape' ? 'Profile does not overlap the face' : 'Nothing left after the cut');
+      shape = next; applied++;
+    } catch (err) {
+      // OCC istisnaları sayı (WASM işaretçisi) olarak gelir → okunur bir nedene çevrilir.
+      const raw = errMsg(err);
+      errors[f.id] = /^\d+$/.test(raw) ? (f.op === 'shape' ? 'Profile does not overlap the face' : 'Profile could not be cut (check for self-intersections)') : raw;
+      console.error('[YAGO][ÇİZİM] adım uygulanamadı:', f.name, raw);
+    }
+  }
+  return { shape, applied, errors };
+}
+
 /** Boş/bozuk OCC katısında bounds erişimi fırlatır → çağıranın catch'ine düşer (sonuç yazılmaz). */
 export function assertBounds(shape: any): void {
   shape.boundingBox.bounds.forEach((v: number[]) => v.forEach(n => n.toFixed(0)));
@@ -898,12 +993,16 @@ function subtractionSize(sub: any): BoxSize {
   };
 }
 
-export interface RebuiltBody { replicadShape: any; geometry: THREE.BufferGeometry; scaledBaseVertices: number[][]; fillets: FilletInfo[] }
+export interface RebuiltBody {
+  replicadShape: any; geometry: THREE.BufferGeometry; scaledBaseVertices: number[][]; fillets: FilletInfo[];
+  /** Çizim adımı olan gövdede: adımlar uygulanmadan ÖNCEKİ mesh (yüz çerçevesinin okunduğu) ve uygulanamayan adımlar. */
+  sketchBase?: THREE.BufferGeometry; sketchErrors?: Record<string, string>;
+}
 
 /** Kutu − çıkarmalar (+ filletler); fillet merkezleri yeni geometriye göre tazelenir (refreshFillets=false → olduğu gibi). */
 export async function rebuildBodySolid(
   body: { parameters?: any; fillets?: FilletInfo[] }, subtractions: Array<SubtractedGeometry | any | null> | undefined,
-  size?: BoxSize, refreshFillets = true
+  size?: BoxSize, refreshFillets = true, withSketch = true
 ): Promise<RebuiltBody> {
   const sz: BoxSize = size || { width: body.parameters?.width || 1, height: body.parameters?.height || 1, depth: body.parameters?.depth || 1 };
   let shape = await createReplicadBox(sz);
@@ -917,8 +1016,18 @@ export async function rebuildBodySolid(
     if (refreshFillets) fillets = await updateFilletCentersForNewGeometry(fillets, convertReplicadToThreeGeometry(shape), sz);
     shape = await applyFillets(shape, fillets, sz);
   }
+  // ÇİZİM ADIMLARI (gövde): kutu − çıkarmalar − fillet'ten SONRA, gövdenin `parameters.sketchFeatures` listesi sırayla uygulanır.
+  // Adımı olmayan gövdede bu blok çalışmaz (eski sonuç birebir aynı).
+  const feats = withSketch ? liveSketchFeatures(body) : [];
+  let sketchBase: THREE.BufferGeometry | undefined, sketchErrors: Record<string, string> | undefined;
+  if (feats.length) {
+    sketchBase = convertReplicadToThreeGeometry(shape);
+    const res = await applySketchFeatures(shape, sketchBase, feats);
+    shape = res.shape;
+    if (Object.keys(res.errors).length) sketchErrors = res.errors;
+  }
   const verts = await getReplicadVertices(shape);
-  return { replicadShape: shape, geometry: convertReplicadToThreeGeometry(shape), scaledBaseVertices: verts.map(vec3), fillets };
+  return { replicadShape: shape, geometry: convertReplicadToThreeGeometry(shape), scaledBaseVertices: verts.map(vec3), fillets, sketchBase, sketchErrors };
 }
 
 type ExprResult = { expression: string; result: number };
@@ -1007,7 +1116,9 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
       geometry: r.geometry, replicadShape: r.replicadShape, fillets: r.fillets,
       ...(hasSubtractionChanges ? { subtractionGeometries: subtractions } : {}),
       position: [...selectedShape.position] as Vec3,
-      rotation, scale: shapeScale, vertexModifications: vMods, parameters: { ...parameters, scaledBaseVertices: r.scaledBaseVertices },
+      rotation, scale: shapeScale, vertexModifications: vMods,
+      // Çizim adımı olan gövdede uygulanamayan adımlar tazelenir (adımı olmayan gövdede parametreler eskisiyle aynı kalır).
+      parameters: { ...parameters, scaledBaseVertices: r.scaledBaseVertices, ...(parameters.sketchFeatures?.length ? { sketchErrors: r.sketchErrors } : {}) },
     });
   } catch (error) {
     console.error('Failed to update parameters:', error);

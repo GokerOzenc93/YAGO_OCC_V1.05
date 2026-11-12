@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 import { type CavityBox, type PanelGroup, type PanelHole, type RailExt, type RailExtTarget, type Shape, type VirtualFace, childPanelsOf, panelOfVf, shapeById, useAppStore, vfOfPanel } from '../store';
-import { type ExtrudeStep, type TransformStep, applyExtrudeSteps, applyTransformSteps, getUnifiedSteps, matchReferenceFace, resolveReferenceFacePlane, stepRefTargets } from './Geometry';
+import {
+  type ExtrudeStep, type TransformStep, applyExtrudeSteps, applyTransformSteps, getUnifiedSteps, matchReferenceFace, resolveReferenceFacePlane, stepRefTargets,
+  applySketchFeatures, liveSketchFeatures, sketchFeaturesKey,
+} from './Geometry';
 import { type RotOp, applyRailExt, clipRegionToRailStrip, railLandingOnBody, computeFaceComponentContour, computeFreeRegionLocal, convexHull2D, footprintGeometry, panelBehindStackPlane, largestFaceNormal, panelHasRotation, panelInnerBigFace, panelIsTiltedSlab, toUV } from './Geometry';
 import { type CoplanarFaceGroup, type FaceData, type Vec3, angleToTouchPlane, assertBounds, axisDirToVec, axisIndexOf, boundsOverlapBox, convertReplicadToThreeGeometry, createHoleCylinder, createPanelFromVirtualFace, createReplicadBox, createReplicadBoxAt, cutWithTools, dot3, effectiveBodyGeometry, errMsg, findFaceByDescriptor, fromPlaneUV, getFacePlaneAxes, getFacesAndGroups, getShapeMatrix, halfSpaceSlab, isFlatNormal, localBboxOf, normDeg, panelThickness, pointFromFracBox, projRange, resolveVfFracPoint, rotateAboutAxis, round1, round3, spanAlong, toVector3, uniqueMeshPoints, uniquePoints, vec3, vertexModsKey, vfRawMinAlong, worldBboxOf } from './Geometry';
 import { isInteriorPanel, isInteriorVf, recalculateInteriorVfs, syncPanelGroups } from './PanelGroupService';
@@ -193,6 +196,13 @@ export function composeSteps(steps: TransformStep[], vf: VirtualFace): {
     }
   }
   return { quat: frame, ops, resolvedRotations };
+}
+
+/** Panelin döndürme adımlarının bileşik dönüşü — çizim adımının yüz yönleri bu dönüş GERİ ALINARAK saklanır (Geometry.sketchFrameOf q). */
+export function panelStepRotation(panel: Shape, vfs: VirtualFace[] = useAppStore.getState().virtualFaces): THREE.Quaternion {
+  const vf = vfOfPanel(panel, vfs);
+  if (!vf) return new THREE.Quaternion();
+  try { return composeSteps(getUnifiedSteps(panel), vf).quat.clone(); } catch { return new THREE.Quaternion(); }
 }
 
 export function resolveRefTranslateDelta(op: any, rpWorldBox: THREE.Box3): THREE.Vector3 {
@@ -757,7 +767,7 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       let rp = await createPanelFromVirtualFace(genVerts, vf.normal, thickness, isRotated && !vf.stackBaseVfId ? growForRotated : 0);
       if (!rp) return;
 
-      const { ops, resolvedRotations } = composeSteps(steps, vf);
+      const { ops, resolvedRotations, quat: stepRot } = composeSteps(steps, vf);
       const mergedRot = mergeResolved(steps, resolvedRotations);
       if (mergedRot) { steps = mergedRot as TransformStep[]; stepsChanged = true; }
       let refDeltaApplied: Vec3 | null = null;
@@ -852,10 +862,39 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       }
       if (grooved) rp = grooved.rp;
 
+      // ÇİZİM ADIMLARI (Goker, Kas 2026 — "çizimi panelden çıkarayım ya da panele o çizimin şeklini vereyim; mevcut panel mantığı bozulmasın"):
+      // kanal / delik gibi yalnız SON geçişte ve katının EN ÜSTÜNE uygulanır (Geometry.applySketchFeatures). Yüz çerçevesi kesilmemiş
+      // mesh'ten okunur; kesilmemiş mesh `ungroovedGeometry` olarak kalır → ayak izi / damga / hacim / sıralama çizimden ETKİLENMEZ.
+      // Aynı katı + aynı adımlar için sonuç yeniden kullanılır (_sketchCache). Adımı olmayan panelde bu blok hiç çalışmaz.
+      let preGeo: THREE.BufferGeometry | null = null;
+      let sketched: { rp: any; geometry: THREE.BufferGeometry } | null = null;
+      let sketchErrors: Record<string, string> = {};
+      const feats = groove ? liveSketchFeatures(panel) : [];
+      if (feats.length) {
+        preGeo = grooved ? grooved.geometry : meshed && meshed.shape === rp ? meshed.geometry : convertReplicadToThreeGeometry(rp);
+        const baseGeo = ungrooved ?? preGeo;
+        const sig = `${meshSignature(preGeo)}|${meshSignature(baseGeo)}|${stepRot.toArray().map(x => x.toFixed(5)).join(',')}|${sketchFeaturesKey(feats)}`;
+        const hit = _sketchCache.get(panel.id);
+        if (hit && hit.sig === sig) { sketched = hit.rp ? { rp: hit.rp, geometry: hit.geometry! } : null; sketchErrors = hit.errors; }
+        else {
+          const res = await applySketchFeatures(rp, baseGeo, feats, stepRot);
+          sketched = res.applied ? { rp: res.shape, geometry: convertReplicadToThreeGeometry(res.shape) } : null;
+          sketchErrors = res.errors;
+          if (_sketchCache.size > 200) _sketchCache.clear();
+          _sketchCache.set(panel.id, { sig, rp: sketched?.rp ?? null, geometry: sketched?.geometry ?? null, errors: sketchErrors });
+        }
+        if (sketched) { ungrooved = baseGeo; rp = sketched.rp; }
+      }
+
       // Katı extrude'dan sonra değişmediyse mevcut mesh yeniden kullanılır (aynı tessellation).
-      const geometry = grooved ? grooved.geometry : meshed && meshed.shape === rp ? meshed.geometry : convertReplicadToThreeGeometry(rp);
+      const geometry = sketched ? sketched.geometry : preGeo ?? (grooved ? grooved.geometry : meshed && meshed.shape === rp ? meshed.geometry : convertReplicadToThreeGeometry(rp));
       if (ungrooved) ungrooved.userData.groovedUuid = geometry.uuid;
       const paramPatch: any = {};
+      // Uygulanamayan çizim adımları (boş profil, yüz dışında kalan şekil…) panelde işaretlenir → adım listesinde uyarı.
+      if (groove) {
+        const errs = Object.keys(sketchErrors).length ? sketchErrors : undefined;
+        if (JSON.stringify((panel.parameters as any)?.sketchErrors ?? null) !== JSON.stringify(errs ?? null)) paramPatch.sketchErrors = errs;
+      }
       if (dimsUpdate) Object.assign(paramPatch, dimsUpdate);
       if (resolvedStepsUpdate) paramPatch.extrudeSteps = resolvedStepsUpdate;
       if (refDeltaApplied) paramPatch._refDeltaApplied = refDeltaApplied;
@@ -911,6 +950,8 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
 const boxTouches = (c: CavityBox, b: THREE.Box3) => !(c.max[0] <= b.min.x + 0.01 || c.min[0] >= b.max.x - 0.01
   || c.max[1] <= b.min.y + 0.01 || c.min[1] >= b.max.y - 0.01 || c.max[2] <= b.min.z + 0.01 || c.min[2] >= b.max.z - 0.01);
 const _grooveCache = new Map<string, { sig: string; rp: any; geometry: THREE.BufferGeometry; holes: PanelHole[] }>();
+/** Çizim adımı sonucu önbelleği: panel id → (adım öncesi katı + adımlar) imzası. rp null = hiçbir adım uygulanamadı. */
+const _sketchCache = new Map<string, { sig: string; rp: any | null; geometry: THREE.BufferGeometry | null; errors: Record<string, string> }>();
 /** Kutu + silindir kesicileri tek boolean'da çıkarır; sonuç kutusu panel kutusundan sapıyorsa (bozuk boolean) ya da işlem hata verirse
  *  ARDIŞIK kesime düşer (kesilemeyen araç atlanır — eski kanal davranışı). Hiçbir araç kesilemezse null. */
 async function cutByTools(rp: any, boxes: CavityBox[], holes: HoleCutter[], pb: CavityBox): Promise<any | null> {

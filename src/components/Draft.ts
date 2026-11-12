@@ -671,6 +671,94 @@ function alongShape(s: Shape2, lenAt: number): { p: P2; ang: number } {
 }
 const shapeLength = (s: Shape2) => primsOf(s).reduce((l, p) => l + primLen(p), 0);
 
+// ── Profil döngüleri — çizim adımı (kes / şekil ver; Geometry.applySketchFeatures) kapalı döngüleri buradan alır ──
+const reversePrim = (p: Prim): Prim => (p.k === 's' ? { k: 's', a: p.b, b: p.a } : { ...p, a0: p.a0 + p.sw, sw: -p.sw });
+const signedArea = (pts: P2[]) => { let a = 0; for (let i = 0; i < pts.length; i++) { const q = pts[(i + 1) % pts.length]; a += pts[i].x * q.y - q.x * pts[i].y; } return a / 2; };
+const pointInPoly = (p: P2, poly: P2[]) => {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i], b = poly[j];
+    if ((a.y > p.y) !== (b.y > p.y) && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+  }
+  return inside;
+};
+/** Döngü parçası: `mid` varsa start→to arası yay o noktadan geçer, yoksa doğru. */
+export type ProfileSeg = { to: P2; mid?: P2 };
+/** Kapalı profil: saat yönünün tersine; depth = kaç döngünün içinde (çift = dolu bölge, tek = ada/delik). */
+export interface ProfileLoop { start: P2; segs: ProfileSeg[]; pts: P2[]; depth: number }
+/** Nesnelerden kapalı döngüleri çıkarır: kapalı nesneler (daire · elips · kapalı polyline) doğrudan, açık nesneler (çizgi · yay · açık polyline)
+ *  uç uca (tol) zincirlenerek. Kapanmayan zincirler `open` olarak sayılır. Elips parçaları doğru parçalarına bölünür. */
+export function profileLoops(shapes: Shape2[], tol = 0.05): { loops: ProfileLoop[]; open: number } {
+  const closed: Prim[][] = [], chains: Prim[][] = [];
+  for (const s of shapes) {
+    const ps = primsOf(s).filter(p => primLen(p) > LEN_EPS);
+    if (ps.length) (isClosedShape(s) ? closed : chains).push(ps);
+  }
+  let open = 0;
+  while (chains.length) {
+    let cur = chains.pop()!;
+    for (;;) {
+      const end = primEnd(cur[cur.length - 1]);
+      if (same(primStart(cur[0]), end, tol)) break;
+      const i = chains.findIndex(c => same(primStart(c[0]), end, tol) || same(primEnd(c[c.length - 1]), end, tol));
+      if (i < 0) break;
+      const c = chains.splice(i, 1)[0];
+      cur = cur.concat(same(primStart(c[0]), end, tol) ? c : c.slice().reverse().map(reversePrim));
+    }
+    const isLoop = same(primStart(cur[0]), primEnd(cur[cur.length - 1]), tol) && (cur.length > 1 || cur[0].k !== 's');
+    if (isLoop) closed.push(cur); else open++;
+  }
+  const loops: ProfileLoop[] = [];
+  for (const ps of closed) {
+    let flat: (Seg | Arc)[] = [];
+    for (const p of ps) {
+      if (p.k === 'e') {
+        const n = Math.max(8, Math.ceil(Math.abs(p.sw) / (Math.PI / 36)));
+        for (let i = 0; i < n; i++) flat.push({ k: 's', a: primPoint(p, i / n), b: primPoint(p, (i + 1) / n) });
+      } else if (p.k === 'a' && Math.abs(p.sw) > Math.PI * 1.5) flat.push(slicePrim(p, 0, 0.5) as Arc, slicePrim(p, 0.5, 1) as Arc);
+      else flat.push(p);
+    }
+    const sample = (list: (Seg | Arc)[]) => list.flatMap(p => {
+      if (p.k === 's') return [p.a];
+      const n = Math.max(2, Math.ceil(Math.abs(p.sw) / (Math.PI / 18)));
+      return Array.from({ length: n }, (_, i) => primPoint(p, i / n));
+    });
+    let pts = sample(flat);
+    const area = signedArea(pts);
+    if (Math.abs(area) < 1e-3) continue;
+    if (area < 0) { flat = flat.slice().reverse().map(reversePrim) as (Seg | Arc)[]; pts = sample(flat); }
+    const start = primStart(flat[0]);
+    const segs: ProfileSeg[] = flat.map((p, i) => {
+      const to = i === flat.length - 1 ? start : primEnd(p);
+      return p.k === 's' ? { to } : { to, mid: primPoint(p, 0.5) };
+    });
+    loops.push({ start, segs, pts, depth: 0 });
+  }
+  for (const l of loops) l.depth = loops.filter(o => o !== l && pointInPoly(l.pts[0], o.pts)).length;
+  loops.sort((a, b) => a.depth - b.depth);
+  return { loops, open };
+}
+/** Nesneyi orijine göre X ve Y'de ayrı ölçekler. Eşit ölçek birebir; farklı ölçekte daire → elips, yay → elips yayı, yaylı polyline ve
+ *  eğik elips → kırık çizgi (doğru parçalarına bölünür). */
+export function scaleShapeXY(s: Shape2, sx: number, sy: number): Shape2 {
+  if (Math.abs(sx - 1) < 1e-9 && Math.abs(sy - 1) < 1e-9) return s;
+  if (Math.abs(sx - sy) < 1e-9) return transformShape(s, mScale(P(0, 0), sx));
+  const sc = (p: P2): P2 => ({ x: p.x * sx, y: p.y * sy });
+  const poly = (): PlineS => {
+    const pts = tessellate(s, Math.PI / 36).map(sc), closed = isClosedShape(s);
+    if (closed && pts.length > 1 && same(pts[0], pts[pts.length - 1])) pts.pop();
+    return { t: 'pline', v: pts.map(p => ({ x: p.x, y: p.y })), closed: closed || undefined };
+  };
+  switch (s.t) {
+    case 'line': return { t: 'line', a: sc(s.a), b: sc(s.b) };
+    case 'circle': return { t: 'ellipse', c: sc(s.c), mx: P(s.r * sx, 0), ratio: sy / sx };
+    case 'arc': return { t: 'ellipse', c: sc(s.c), mx: P(s.r * sx, 0), ratio: sy / sx, a0: s.a0, a1: s.a1 };
+    case 'ellipse': return poly();
+    case 'pline': return s.v.some(v => v.b) ? poly() : { t: 'pline', v: s.v.map(v => ({ x: v.x * sx, y: v.y * sy })), closed: s.closed };
+  }
+}
+export const moveShape = <T extends Shape2>(s: T, d: P2): T => transformShape(s, mTranslate(d));
+
 // ═════════════════════════════════════════════════ 5. NESNE YAKALAMA ══════════════════════════════════════════════════
 export type SnapKind = 'endpoint' | 'midpoint' | 'center' | 'quadrant' | 'intersection' | 'perpendicular' | 'tangent' | 'nearest';
 export const SNAP_KINDS: SnapKind[] = ['endpoint', 'midpoint', 'center', 'quadrant', 'intersection', 'perpendicular', 'tangent', 'nearest'];
@@ -767,7 +855,17 @@ export interface DraftState {
   typed: string;
   /** Sağdaki Drawing paneli açık mı. */
   panelOpen: boolean;
+  /** Yüz seçiminde tıklanan ADAY yüz (vurgulanır; onaylanınca çizim düzlemi olur). */
+  planeCandidate: { label: string } | null;
+  /** Yüz çiziminde izolasyon: yalnız hedef (panel ya da gövde) çizilir, diğer paneller gizlenir. */
+  isolate: DraftIsolate | null;
+  /** Çizim adımı düzenleme oturumu: adımın nesneleri geçici olarak bu düzlemde durur. */
+  session: { targetId: string; featureId: string; name: string; planeId: string } | null;
+  /** Yüze uygulama ayarları (Cut / Shape, derinlik, çapa, uzama) — Drawing paneli. */
+  apply: SketchApply;
 }
+export interface DraftIsolate { targetId: string; bodyId: string; kind: 'panel' | 'body' }
+export interface SketchApply { op: 'cut' | 'shape'; through: boolean; depth: number; anchor: [number, number]; stretch: [boolean, boolean] }
 const DYN0 = { len: null, ang: null, field: 'len' as const };
 export const useDraft = create<DraftState>(() => ({
   planes: [GROUND_PLANE], activePlane: GROUND_PLANE.id, planePick: false,
@@ -778,6 +876,8 @@ export const useDraft = create<DraftState>(() => ({
     snaps: { endpoint: true, midpoint: true, center: true, quadrant: true, intersection: true, perpendicular: true, tangent: false, nearest: false },
   },
   lastCmd: null, recent: {}, typed: '', panelOpen: false,
+  planeCandidate: null, isolate: null, session: null,
+  apply: { op: 'cut', through: true, depth: 8, anchor: [0, 0], stretch: [false, false] },
 }));
 const get = useDraft.getState, set = useDraft.setState;
 
@@ -791,11 +891,18 @@ let lastMove: { raw: P2; tol: number; shift: boolean; ctrl: boolean } | null = n
 /** Aktif düzleme düşen gövde/panel kenarları — yalnız yakalama kaynağı (görünüm katmanı verir). */
 let extraSnap: Shape2[] = [];
 export const setExtraSnap = (s: Shape2[]) => { extraSnap = s; };
+/** Yüz seçimini onaylayan işlev (sahne katmanı kaydolur; Enter ve sağ tık buraya düşer). */
+let planeConfirm: (() => void) | null = null;
+export const setPlaneConfirm = (f: (() => void) | null) => { planeConfirm = f; };
 export const setTyped = (t: string) => { if (get().typed !== t) set({ typed: t }); };
 export const setPanelOpen = (b: boolean) => set({ panelOpen: b });
+export const setPlaneCandidate = (c: DraftState['planeCandidate']) => set({ planeCandidate: c });
+export const setIsolate = (i: DraftIsolate | null) => set({ isolate: i });
+export const setSession = (x: DraftState['session']) => set({ session: x });
+export const setApply = (patch: Partial<SketchApply>) => set(s => ({ apply: { ...s.apply, ...patch } }));
 
 const say = (t: string) => set(s => ({ log: [...s.log.slice(-59), t] }));
-const stripEnt = (e: Entity): Shape2 => { const s: Record<string, unknown> = { ...e }; delete s.id; delete s.plane; return s as unknown as Shape2; };
+export const stripEnt = (e: Entity): Shape2 => { const s: Record<string, unknown> = { ...e }; delete s.id; delete s.plane; return s as unknown as Shape2; };
 const planeEnts = () => { const st = get(); return st.entities.filter(e => e.plane === st.activePlane); };
 
 interface Ctx {
@@ -930,6 +1037,8 @@ export function pointerClick(raw: P2, tol: number, shift: boolean, ctrl: boolean
 /** Enter / Boşluk / sağ tık: komut içindeyse onay, boştaysa son komutu yineler. */
 export function enterKey() {
   if (gen) { advance({ k: 'enter' }); return; }
+  // Yüz seçimi: Enter / sağ tık vurgulanan adayı onaylar (DraftView kaydolur).
+  if (get().planePick) { planeConfirm?.(); return; }
   const last = get().lastCmd;
   if (last) startCommand(last);
 }
@@ -1015,17 +1124,35 @@ export function eraseSelection(): boolean {
 }
 const near3 = (a: V3, b: V3, tol: number) => Math.abs(a[0] - b[0]) <= tol && Math.abs(a[1] - b[1]) <= tol && Math.abs(a[2] - b[2]) <= tol;
 /** Çizim düzlemini etkinleştirir; aynı yüz daha önce kullanıldıysa o düzlem (ve üzerindeki çizimler) yeniden kullanılır. */
-export function activatePlane(pl: Omit<DraftPlane, 'id'> | 'ground') {
+/** fresh: mevcut düzlem yeniden kullanılmaz (adım düzenleme oturumu kendi düzleminde çalışır). Etkinleşen düzlemin id'si döner. */
+export function activatePlane(pl: Omit<DraftPlane, 'id'> | 'ground', fresh = false): string {
   cancelCommand();
   const st = get();
-  if (pl === 'ground') { set({ activePlane: GROUND_PLANE.id, planePick: false, selection: [] }); return; }
-  const hit = st.planes.find(q => q.kind === 'face' && q.shapeId === pl.shapeId && near3(q.n, pl.n, 1e-4) && near3(q.origin, pl.origin, 0.05) && near3(q.u, pl.u, 1e-4));
+  if (pl === 'ground') { set({ activePlane: GROUND_PLANE.id, planePick: false, planeCandidate: null, selection: [] }); return GROUND_PLANE.id; }
+  const hit = fresh ? undefined
+    : st.planes.find(q => q.kind === 'face' && q.id !== st.session?.planeId && q.shapeId === pl.shapeId && near3(q.n, pl.n, 1e-4) && near3(q.origin, pl.origin, 0.05) && near3(q.u, pl.u, 1e-4));
   const used = new Set(st.entities.map(e => e.plane));
   const plane: DraftPlane = hit ?? { ...pl, id: `pl${Date.now().toString(36)}${(seq++).toString(36)}` };
   set({ planes: [...st.planes.filter(q => q.id === GROUND_PLANE.id || q.id === plane.id || used.has(q.id)).filter(q => q.id !== plane.id), plane],
-    activePlane: plane.id, planePick: false, selection: [] });
+    activePlane: plane.id, planePick: false, planeCandidate: null, selection: [] });
+  return plane.id;
 }
-export const setPlanePick = (on: boolean) => { if (on) cancelCommand(); set({ planePick: on }); };
+export const setPlanePick = (on: boolean) => { if (on) cancelCommand(); set({ planePick: on, planeCandidate: null }); };
+/** Nesneleri bir düzleme yükler (adım düzenleme oturumu); geri alma yığınına girmez. */
+export function loadEntities(shapes: Shape2[], planeId: string): Entity[] {
+  const made = shapes.map(s => ({ ...s, id: `d${Date.now().toString(36)}${(seq++).toString(36)}`, plane: planeId }) as Entity);
+  set(st => ({ entities: [...st.entities, ...made] }));
+  return made;
+}
+/** Düzlemdeki (ids verilirse yalnız onlar) nesneleri depodan çıkarır ve biçimlerini döndürür. Geri alma yığınları temizlenir:
+ *  nesneler artık bir çizim adımına aittir, eski anlık görüntüler onları serbest çizim olarak geri getirmemeli. */
+export function takeEntities(planeId: string, ids?: string[]): Shape2[] {
+  const k = ids ? new Set(ids) : null, st = get();
+  const taken = st.entities.filter(e => e.plane === planeId && (!k || k.has(e.id)));
+  const gone = new Set(taken.map(e => e.id));
+  set({ entities: st.entities.filter(e => !gone.has(e.id)), selection: st.selection.filter(i => !gone.has(i)), undoStack: [], redoStack: [] });
+  return taken.map(stripEnt);
+}
 
 // ═════════════════════════════════════════════════ 7. KOMUTLAR ════════════════════════════════════════════════════════
 const o = (label: string, key: string): Opt => ({ label, key });

@@ -383,6 +383,7 @@ export const Terminal: React.FC = () => {
   const textRef = useRef('');
   textRef.current = commandInput;
   const cmd = useDraft(s => s.cmd), planePick = useDraft(s => s.planePick), lastLog = useDraft(s => s.log[s.log.length - 1] ?? '');
+  const faceCand = useDraft(s => s.planeCandidate?.label ?? null);
   useEffect(() => { setTyped(commandInput); }, [commandInput]);
 
   // Bekleyen fillet / vertex işlemi varsa girilen sayı ona gider (Scene'in window köprüsü); aksi halde çizim sürücüsüne.
@@ -429,7 +430,7 @@ export const Terminal: React.FC = () => {
       if (own) return;   // odak komut satırında: tuşlar input'un kendi işleyicisinde
       if (e.key === 'Enter' || e.key === ' ') {
         const onControl = !!t?.closest?.('button,a,select,summary,[role="button"]');
-        if (active || (st.lastCmd && !onControl && !(window as any).pendingFilletOperation && !(window as any).pendingVertexEdit)) {
+        if (active || (st.planePick && !onControl) || (st.lastCmd && !onControl && !(window as any).pendingFilletOperation && !(window as any).pendingVertexEdit)) {
           e.preventDefault(); e.stopPropagation();
           if (onControl) t?.blur?.();
           executeCommand(textRef.current);
@@ -458,7 +459,9 @@ export const Terminal: React.FC = () => {
   const pickOpt = (key: string) => { submitText(key); setCommandInput(''); inputRef.current?.focus(); };
   const hasCmd = !!commandInput.trim();
   const sendLift = (y: string) => (e: React.MouseEvent<HTMLButtonElement>) => { if (hasCmd) e.currentTarget.style.transform = `translateY(${y})`; };
-  const promptText = cmd ? cmd.prompt : planePick ? 'PLANE  Click a body or panel face to draw on' : '';
+  const promptText = cmd ? cmd.prompt : !planePick ? ''
+    : faceCand ? `PLANE  ${faceCand} — right-click or Enter to confirm, click again for the face behind`
+      : 'PLANE  Click a body or panel face to draw on';
 
   return (
     <div className="fixed bottom-0 left-0 right-0 z-30" style={TERM_BAR}>
@@ -1395,7 +1398,8 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; assemblyCon
 
       {/* Tek çerçeve, iki görünüm: aynı ağaç yuvası → docked ↔ floating geçişinde içerik yeniden kurulmaz. */}
       {mode !== 'window' && (
-        <div ref={sidebarRef} className={docked ? 'fixed z-40 flex transition-transform duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]' : 'fixed z-40 flex'}
+        <div ref={sidebarRef} data-yago-sidebar={docked && isVisible ? 'open' : undefined}
+          className={docked ? 'fixed z-40 flex transition-transform duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]' : 'fixed z-40 flex'}
           style={docked
             ? { top: '120px', bottom: '64px', left: 0, width: `${SIDEBAR_WIDTH}px`, transform: isVisible ? 'translateX(0)' : `translateX(-${SIDEBAR_WIDTH}px)` }
             : {

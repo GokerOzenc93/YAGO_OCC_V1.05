@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { type AxisDir, type Vec3, type VertexModification, rebuildBodySolid } from './components/Geometry';
 import type { PlinthSet, PlinthPick } from './components/PlinthService';
 import type { LegRule } from './components/LegLayout';
+import type { Shape2 } from './components/Draft';
 
 export interface SubtractionParameters {
   width: string; height: string; depth: string;
@@ -27,6 +28,19 @@ export interface FilletInfo {
   face2Data: { normal: [number, number, number]; center: [number, number, number]; planeD?: number };
   radius: number;
   originalSize: { width: number; height: number; depth: number };
+}
+
+/** ÇİZİM ADIMI (Geometry.applySketchFeatures): hedefin (panel / gövde) bir yüzüne bağlı 2B profil — panelden / gövdeden ÇIKARILIR (cut) ya da
+ *  panele ŞEKLİ verilir (shape). Hedefin `parameters.sketchFeatures` listesinde durur.
+ *  n / u: yüzün dışa normali ve çizim X ekseni, gövde-yerel (panelde döndürme adımları GERİ ALINMIŞ yönler → sonradan eklenen dönüş çizimi taşır).
+ *  inset: yüz hedefin o yöndeki en dış düzleminden ne kadar içeride (normalde 0). anchor: yüz kutusunda çapa (0 / 0.5 / 1 × en, boy);
+ *  shapes çapaya GÖRE koordinattadır. stretch: o eksende yüzle birlikte ölçeklen (baseSize = adım yazılırkenki yüz ölçüsü). depth null = boydan boya. */
+export interface SketchFeature {
+  id: string; name: string; timestamp: number;
+  op: 'cut' | 'shape'; depth: number | null;
+  n: Vec3; u: Vec3; inset: number;
+  anchor: [number, number]; stretch: [boolean, boolean]; baseSize: [number, number];
+  shapes: Shape2[];
 }
 
 export interface SubtractedGeometry {

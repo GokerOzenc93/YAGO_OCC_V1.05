@@ -2,12 +2,17 @@ import * as THREE from 'three';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Line, Html } from '@react-three/drei';
 import { useThree, useFrame } from '@react-three/fiber';
-import { useAppStore, OrthoMode, SnapType, type Shape } from '../store';
-import { getShapeMatrix } from './Geometry';
+import { useAppStore, OrthoMode, SnapType, type Shape, type SketchFeature, childPanelsOf, requestRebuild, shapeById, vfOfPanel } from '../store';
 import {
-  type DraftPlane, type Entity, type Geo, type GeoStyle, type LineS, type P2, type Shape2, type SnapKind, GROUND_PLANE, SNAP_KINDS, SNAP_LABEL,
-  activatePlane, closestOn, commandActive, commandById, deg, dist, enterKey, fmt, pointerClick, pointerLeave, pointerMove, selectEntity, setAids, setExtraSnap,
-  setPanelOpen, setPlanePick, startCommand, tessellate, useDraft,
+  createFaceHighlightGeometry, effectiveBodyGeometry, footprintGeometry, genId, getFacesAndGroups, getShapeMatrix, groupIndexOfFace, placeSketchShapes,
+  rebuildBodySolid, setSketchSuppressed, sketchFrameOf,
+} from './Geometry';
+import { panelStepRotation, whenRebuildIdle } from './PanelEngine';
+import {
+  type DraftIsolate, type SketchApply, type DraftPlane, type Entity, type Geo, type GeoStyle, type LineS, type P2, type Shape2, type SnapKind, type V3, GROUND_PLANE, SNAP_KINDS,
+  SNAP_LABEL, activatePlane, cancelCommand, closestOn, commandActive, commandById, deg, dist, enterKey, fmt, loadEntities, moveShape, pointerClick, pointerLeave,
+  pointerMove, profileLoops, selectEntity, setAids, setApply, setExtraSnap, setIsolate, setPanelOpen, setPlaneCandidate, setPlaneConfirm, setPlanePick, setSession,
+  startCommand, stripEnt, takeEntities, tessellate, useDraft,
 } from './Draft';
 
 /* 2B ÇİZİM GÖRÜNÜMÜ — Draft.ts çekirdeğinin sahne katmanı ve sağdaki Drawing paneli.
@@ -56,9 +61,9 @@ function rayOnPlane(ray: THREE.Ray, m: THREE.Matrix4, inv: THREE.Matrix4): { p: 
 }
 const edgeCache = new WeakMap<THREE.BufferGeometry, Float32Array>();
 /** Etkin düzleme düşen gövde/panel kenarları — yalnız yakalama kaynağı (uç · orta · kesişim · dik). */
-function planeEdges(inv: THREE.Matrix4, shapes: Shape[]): LineS[] {
+function planeEdges(inv: THREE.Matrix4, list: Shape[], shapes: Shape[]): LineS[] {
   const out: LineS[] = [], a = new THREE.Vector3(), b = new THREE.Vector3(), m = new THREE.Matrix4();
-  for (const s of shapes) {
+  for (const s of list) {
     if (!s.geometry?.getAttribute?.('position')) continue;
     let e = edgeCache.get(s.geometry);
     if (!e) { const eg = new THREE.EdgesGeometry(s.geometry, 15); e = new Float32Array(eg.getAttribute('position').array); eg.dispose(); edgeCache.set(s.geometry, e); }
@@ -70,23 +75,27 @@ function planeEdges(inv: THREE.Matrix4, shapes: Shape[]): LineS[] {
   }
   return out;
 }
-type FacePick = { plane: Omit<DraftPlane, 'id'>; center: THREE.Vector3; normal: THREE.Vector3; up: THREE.Vector3; extent: number };
-/** Tıklanan gövde / panel yüzünden çizim düzlemi: X sağa, Y yukarı (yatay yüzde arkaya), orijin yüzün sol-alt köşesi. */
-function pickFace(ray: THREE.Ray, shapes: Shape[]): FacePick | null {
-  const byMesh = new Map<THREE.Object3D, Shape>();
-  for (const s of shapes) {
-    if (!s.geometry?.getAttribute?.('position')) continue;
-    const mesh = new THREE.Mesh(s.geometry);
-    mesh.matrixAutoUpdate = false; mesh.matrixWorld.copy(hostMatrix(s, shapes));
-    byMesh.set(mesh, s);
-  }
-  const rc = new THREE.Raycaster(ray.origin, ray.direction);
-  const hits = rc.intersectObjects([...byMesh.keys()], false).filter(h => h.face);
-  if (!hits.length) return null;
-  // Panelin dış yüzü gövde yüzüyle çakışır: aynı derinlikte panel tercih edilir.
-  const hit = hits.find(h => h.distance - hits[0].distance < 0.5 && byMesh.get(h.object)?.type === 'panel') ?? hits[0];
-  const shape = byMesh.get(hit.object)!, hostM = hostMatrix(shape, shapes), hostInv = hostM.clone().invert();
-  const nL = hit.face!.normal.clone();
+/** Yüz adayı: çizim düzlemi + hedef + vurgu geometrisi (gövde-yerel) + kamera hedefi. */
+type FacePick = {
+  plane: Omit<DraftPlane, 'id'>; shapeId: string; kind: 'panel' | 'body'; bodyId: string; label: string; key: string;
+  center: THREE.Vector3; normal: THREE.Vector3; up: THREE.Vector3; extent: number; highlight: THREE.BufferGeometry; hostM: THREE.Matrix4;
+};
+const isPanel = (s: Shape) => s.type === 'panel';
+const bodyIdOf = (s: Shape): string => (isPanel(s) ? (s.parameters?.parentShapeId as string) || s.id : s.id);
+/** Çizilen (tıklanabilir) geometri: panelde kendi mesh'i, gövdede vertex düzenlemeleri uygulanmış mesh. */
+const shownGeometryOf = (s: Shape) => (isPanel(s) ? s.geometry : effectiveBodyGeometry(s));
+/** İzolasyonda yalnız görünen şekiller: hedef panel (+ gövdesi) ya da hedef gövde. */
+const visibleShapes = (shapes: Shape[], iso: DraftIsolate | null) =>
+  (iso ? shapes.filter(s => s.id === iso.targetId) : shapes);
+/** Tıklanan gövde / panel yüzünden aday: X sağa, Y yukarı (yatay yüzde arkaya), orijin yüzün sol-alt köşesi.
+ *  Panelde orijin KESİLMEMİŞ mesh'ten okunur (çizim adımı uygulanmış panelde de yüzün gerçek köşesi). */
+function facePickOf(shape: Shape, hit: THREE.Intersection, shapes: Shape[]): FacePick | null {
+  const geo = (hit.object as THREE.Mesh).geometry;
+  const { faces, groups } = getFacesAndGroups(geo);
+  const gi = groupIndexOfFace(groups, hit.faceIndex ?? undefined);
+  if (!hit.face || gi < 0 || groups[gi].isCurved) return null;
+  const hostM = hostMatrix(shape, shapes), hostInv = hostM.clone().invert();
+  const nL = hit.face.normal.clone();
   (['x', 'y', 'z'] as const).forEach(k => { if (Math.abs(nL[k]) < 1e-6) nL[k] = 0; });
   nL.normalize();
   const nW = nL.clone().transformDirection(hostM);
@@ -94,7 +103,8 @@ function pickFace(ray: THREE.Ray, shapes: Shape[]): FacePick | null {
   const uW = new THREE.Vector3().crossVectors(vW, nW).normalize();
   vW = new THREE.Vector3().crossVectors(nW, uW).normalize();
   const uL = uW.clone().transformDirection(hostInv), vL = vW.clone().transformDirection(hostInv), pL = hit.point.clone().applyMatrix4(hostInv);
-  const pos = shape.geometry.getAttribute('position'), q = new THREE.Vector3();
+  const src = (isPanel(shape) ? footprintGeometry(shape) : null) ?? geo;
+  const pos = src.getAttribute('position'), q = new THREE.Vector3();
   let u0 = Infinity, v0 = Infinity, u1 = -Infinity, v1 = -Infinity;
   for (let i = 0; i < pos.count; i++) {
     q.fromBufferAttribute(pos as THREE.BufferAttribute, i).sub(pL);
@@ -105,29 +115,92 @@ function pickFace(ray: THREE.Ray, shapes: Shape[]): FacePick | null {
   if (!isFinite(u0)) { u0 = v0 = u1 = v1 = 0; }
   const origin = pL.clone().addScaledVector(uL, u0).addScaledVector(vL, v0);
   const center = pL.clone().addScaledVector(uL, (u0 + u1) / 2).addScaledVector(vL, (v0 + v1) / 2).applyMatrix4(hostM);
-  const name = shape.type === 'panel' ? 'Panel face' : 'Body face';
+  const label = isPanel(shape) ? vfOfPanel(shape)?.description || 'Panel' : 'Body';
+  const r3 = (x: number) => Math.round(x * 1000) / 1000;
   return {
-    plane: { kind: 'face', shapeId: shape.id, origin: origin.toArray() as [number, number, number], u: uL.toArray() as [number, number, number],
-      v: vL.toArray() as [number, number, number], n: nL.toArray() as [number, number, number], label: name },
-    center, normal: nW, up: vW, extent: Math.max(u1 - u0, v1 - v0, 100),
+    plane: { kind: 'face', shapeId: shape.id, origin: origin.toArray() as V3, u: uL.toArray() as V3, v: vL.toArray() as V3, n: nL.toArray() as V3, label },
+    shapeId: shape.id, kind: isPanel(shape) ? 'panel' : 'body', bodyId: bodyIdOf(shape), label,
+    key: `${shape.id}|${r3(nL.x)},${r3(nL.y)},${r3(nL.z)}|${Math.round(pL.dot(nL) * 10)}`,
+    center, normal: nW, up: vW, extent: Math.max(u1 - u0, v1 - v0, 100), highlight: createFaceHighlightGeometry(faces, groups[gi].faceIndices), hostM,
   };
+}
+/** Şeklin ANA yüzü: en geniş düz yüz (eşit iki geniş yüzden kameraya bakan). Panel satırındaki Sketch aracı seçime bununla başlar. */
+function mainFacePick(shape: Shape, shapes: Shape[], camPos: THREE.Vector3 | null): FacePick | null {
+  const geo = shownGeometryOf(shape);
+  if (!geo?.getAttribute?.('position')) return null;
+  const { faces, groups } = getFacesAndGroups(geo), hostM = hostMatrix(shape, shapes);
+  let best = -1, bestScore = -Infinity;
+  groups.forEach((g, i) => {
+    if (g.isCurved || !g.faceIndices.length) return;
+    const area = g.faceIndices.reduce((a, fi) => a + (faces[fi]?.area ?? 0), 0);
+    const toCam = camPos ? g.normal.clone().transformDirection(hostM).dot(camPos.clone().sub(g.center.clone().applyMatrix4(hostM))) : 0;
+    const score = area * (toCam > 0 ? 1.001 : 1);
+    if (score > bestScore) { bestScore = score; best = i; }
+  });
+  const f = best >= 0 ? faces[groups[best].faceIndices[0]] : undefined;
+  if (!f) return null;
+  // facePickOf vuruştan yalnız geometriyi, üçgen indeksini, yerel normali ve dünya noktasını okur.
+  const hit = { object: new THREE.Mesh(geo), faceIndex: f.faceIndex, face: { normal: groups[best].normal.clone().normalize() }, point: f.center.clone().applyMatrix4(hostM) };
+  return facePickOf(shape, hit as unknown as THREE.Intersection, shapes);
+}
+/** Işın boyunca yüz adayları, yakından uzağa. Panelli gövdenin mesh'i sahnede GÖRÜNMEZ (opaklık 0) → o gövdenin yüzleri sıranın sonuna
+ *  alınır: ilk tık her zaman görünen paneli vurgular, gövde yüzüne aynı noktaya tekrar tıklayarak geçilir. `only`: yalnız o şekil. */
+function faceCandidates(ray: THREE.Ray, shapes: Shape[], iso: DraftIsolate | null, only?: string | null, max = 8): FacePick[] {
+  const byMesh = new Map<THREE.Object3D, Shape>(), list = visibleShapes(shapes, iso);
+  for (const s of list) {
+    if (only && s.id !== only) continue;
+    const g = shownGeometryOf(s);
+    if (!g?.getAttribute?.('position')) continue;
+    const mesh = new THREE.Mesh(g);
+    mesh.matrixAutoUpdate = false; mesh.matrixWorld.copy(hostMatrix(s, shapes));
+    byMesh.set(mesh, s);
+  }
+  const all = new THREE.Raycaster(ray.origin, ray.direction).intersectObjects([...byMesh.keys()], false).filter(h => h.face);
+  const hosts = new Set(list.filter(isPanel).map(bodyIdOf));
+  const ghost = (h: THREE.Intersection) => hosts.has(byMesh.get(h.object)!.id);
+  const hits = [...all.filter(h => !ghost(h)), ...all.filter(ghost)];
+  const out: FacePick[] = [], seen = new Set<string>();
+  for (const hit of hits) {
+    const pick = facePickOf(byMesh.get(hit.object)!, hit, shapes);
+    if (!pick || seen.has(pick.key)) continue;
+    seen.add(pick.key); out.push(pick);
+    if (out.length >= max) break;
+  }
+  return out;
 }
 /** Kamerayı düzleme karşıdan getirir: hedef yüz merkezi, bakış yüz normali boyunca, yüz ekrana sığar. */
 type OrbitLike = { target: THREE.Vector3; enableDamping: boolean; update: () => void } | null | undefined;
-function flyTo(camera: THREE.Camera, controls: OrbitLike, target: THREE.Vector3, dir: THREE.Vector3, up: THREE.Vector3, extent: number, viewH: number) {
+let flyGen = 0, flyDamping: boolean | null = null;   // üst üste binen uçuşlarda yalnız sonuncusu sürer; sönümleme ilk uçuştan önceki değere döner
+/** Tuvalin GÖRÜNEN bölgesi: açık sol kenar paneli tuvalin üstünü örter (tuval daralmaz) → yüz, kalan bölgenin ortasına getirilir. */
+function viewInset(canvas: HTMLElement): { shiftPx: number; visW: number } {
+  const r = canvas.getBoundingClientRect(), sb = document.querySelector('[data-yago-sidebar="open"]')?.getBoundingClientRect();
+  const cover = sb && sb.left <= r.left + 2 && sb.right > r.left ? Math.min(sb.right - r.left, r.width * 0.7) : 0;
+  return { shiftPx: cover / 2, visW: r.width - cover };
+}
+function flyTo(camera: THREE.Camera, controls: OrbitLike, focus: THREE.Vector3, dir: THREE.Vector3, up: THREE.Vector3, extent: number, viewH: number,
+  exact?: { dist: number; zoom: number } | null, view?: { shiftPx: number; visW: number }) {
   if (!controls?.target) return;
   const persp = camera as THREE.PerspectiveCamera, ortho = camera as THREE.OrthographicCamera;
   const startT = controls.target.clone(), startDir = camera.position.clone().sub(startT), startDist = startDir.length() || 1;
   startDir.normalize();
   const endDir = dir.clone().normalize(), endUp = up.clone().normalize(), startUp = camera.up.clone();
-  const endDist = persp.isPerspectiveCamera ? Math.max(250, (extent * 0.8) / Math.tan((persp.fov * Math.PI / 180) / 2)) : startDist;
-  const startZoom = ortho.zoom, endZoom = ortho.isOrthographicCamera ? viewH / (extent * 1.6) : startZoom;
+  const fit = view ? Math.min(1, Math.max(0.3, view.visW / viewH)) : 1, tanHalf = persp.isPerspectiveCamera ? Math.tan((persp.fov * Math.PI / 180) / 2) : 0;
+  const endDist = exact ? exact.dist : persp.isPerspectiveCamera ? Math.max(250, (extent * 0.8) / tanHalf / fit) : startDist;
+  const startZoom = ortho.zoom, endZoom = exact ? exact.zoom : ortho.isOrthographicCamera ? (viewH / (extent * 1.6)) * fit : startZoom;
+  // Odak noktası görünen bölgenin ortasına: kamera hedefi ekranda `shiftPx` kadar sola kayar.
+  const target = focus.clone();
+  if (view?.shiftPx) {
+    const wpp = persp.isPerspectiveCamera ? (2 * endDist * tanHalf) / viewH : (ortho.top - ortho.bottom) / endZoom / viewH;
+    target.addScaledVector(new THREE.Vector3().crossVectors(endUp, endDir).normalize(), -view.shiftPx * wpp);
+  }
   const full = new THREE.Quaternion().setFromUnitVectors(startDir, endDir), ident = new THREE.Quaternion(), step = new THREE.Quaternion();
   const curDir = new THREE.Vector3(), curT = new THREE.Vector3();
-  const wasDamping = controls.enableDamping;
+  const gen = ++flyGen;
+  if (flyDamping === null) flyDamping = controls.enableDamping;
   controls.enableDamping = false;
   const t0 = performance.now(), dur = 420;
   const tick = () => {
+    if (gen !== flyGen) return;
     const raw = Math.min((performance.now() - t0) / dur, 1), e = raw < 0.5 ? 2 * raw * raw : 1 - Math.pow(-2 * raw + 2, 2) / 2;
     step.copy(ident).slerp(full, e);
     curDir.copy(startDir).applyQuaternion(step);
@@ -139,7 +212,7 @@ function flyTo(camera: THREE.Camera, controls: OrbitLike, target: THREE.Vector3,
     camera.lookAt(curT);
     if (ortho.isOrthographicCamera) { ortho.zoom = startZoom + (endZoom - startZoom) * e; ortho.updateProjectionMatrix(); }
     controls.update();
-    if (raw < 1) requestAnimationFrame(tick); else controls.enableDamping = wasDamping;
+    if (raw < 1) requestAnimationFrame(tick); else { controls.enableDamping = flyDamping ?? controls.enableDamping; flyDamping = null; }
   };
   tick();
 }
@@ -246,6 +319,218 @@ const DynTip: React.FC = () => {
     </div>
   );
 };
+// ── YÜZ OTURUMU: aday → onay → izolasyon; çizim adımı yaz / düzenle / sil ──
+/* Goker (Kas 2026): "yüz seçimini tıkladıkça seçilecek yüzeyi göstersin, onaylayınca çalışsın, diğer paneller izole olsun; çizimi panelin
+   yüzeyine göre parametrik yapıp panelden / yüzeyden çıkarayım ya da panele şeklini vereyim; sonradan çizimi düzenleyebileyim."
+   Adım hedefin `parameters.sketchFeatures` listesine yazılır (store.SketchFeature); katıya Geometry.applySketchFeatures uygular
+   (panelde motorun son geçişi, gövdede rebuildBodySolid). Düzenleme: adımın nesneleri geçici bir düzleme yüklenir, o adım bastırılır
+   (katı adımsız görünür), kaydedince nesneler çapaya göre geri yazılır. */
+type CamPose = { pos: THREE.Vector3; target: THREE.Vector3; up: THREE.Vector3; zoom: number };
+const sceneApi: {
+  fly: ((center: THREE.Vector3, normal: THREE.Vector3, up: THREE.Vector3, extent: number) => void) | null;
+  pose: (() => CamPose | null) | null; restore: ((p: CamPose) => void) | null;
+} = { fly: null, pose: null, restore: null };
+let savedPose: CamPose | null = null;      // yüze geçmeden önceki kamera — yüzden çıkınca geri gelir
+let applyBeforeEdit: SketchApply | null = null;   // adım düzenlenirken panel o adımın ayarlarını gösterir; bitince öncekiler döner
+const keepPose = () => { if (!savedPose) savedPose = sceneApi.pose?.() ?? null; };
+/** Yüzden çıkış: zemin düzlemi, izolasyon kalkar, kamera yüze geçmeden önceki yerine döner. */
+function leaveFace() {
+  activatePlane('ground'); setIsolate(null);
+  if (savedPose) { sceneApi.restore?.(savedPose); savedPose = null; }
+}
+let pickOnly: string | null = null;        // yüz seçimi yalnız bu şekilde (panel satırındaki Sketch aracı)
+let prePick = false;                       // Sketch aracı paneli seçim için tek başına karşıya aldı (onaylanmazsa geri alınır)
+let candidate: FacePick | null = null;     // onay bekleyen aday (depoda yalnız etiketi durur)
+const v3 = (a: ArrayLike<number>) => new THREE.Vector3(a[0], a[1], a[2]);
+const arr3 = (v: THREE.Vector3): V3 => [v.x, v.y, v.z];
+export const sketchFeaturesOf = (s: Shape | undefined | null): SketchFeature[] => (s?.parameters?.sketchFeatures as SketchFeature[] | undefined) ?? [];
+/** Etkin yüz düzleminin hedefi (panel / gövde). */
+export function faceTarget(): { plane: DraftPlane; shape: Shape; kind: 'panel' | 'body'; bodyId: string } | null {
+  const st = useDraft.getState(), plane = st.planes.find(p => p.id === st.activePlane);
+  const shape = plane?.kind === 'face' ? shapeById(plane.shapeId) : undefined;
+  return plane && shape ? { plane, shape, kind: isPanel(shape) ? 'panel' : 'body', bodyId: bodyIdOf(shape) } : null;
+}
+/** Onaylanmadan biten Sketch aracı seçimi: ön izolasyon kalkar, kamera eski yerine döner (`stay`: yüz kipinde kalınacak — kamera dönmez). */
+function dropPrePick(stay = false) {
+  if (!prePick) return;
+  prePick = false; pickOnly = null; candidate = null;
+  setIsolate(null);
+  if (!stay && savedPose) { sceneApi.restore?.(savedPose); savedPose = null; }
+}
+/** Yüz seçimini başlatır. `onlyShapeId` (panel satırındaki Sketch aracı): panel tek başına ve karşıdan gösterilir, ana yüzü aday olarak
+ *  vurgulanır — kullanıcı onaylar ya da panelin başka bir yüzüne tıklar (panel listede / başka panellerin arkasında kalsa da görünür). */
+export function beginFacePick(onlyShapeId: string | null = null) {
+  if (useDraft.getState().session) return;   // düzenleme oturumu sürerken yüz değiştirilmez
+  dropPrePick(true);
+  pickOnly = onlyShapeId; candidate = null;
+  setIsolate(null); setPanelOpen(true); setPlanePick(true);
+  (document.activeElement as HTMLElement | null)?.blur?.();   // odak düğmede kalırsa Enter onay yerine düğmeyi yeniden tetikler
+  const only = onlyShapeId ? shapeById(onlyShapeId) : undefined;
+  const c = only ? mainFacePick(only, useAppStore.getState().shapes, sceneApi.pose?.()?.pos ?? null) : null;
+  if (!c) return;
+  candidate = c; setPlaneCandidate({ label: c.label });
+  keepPose(); prePick = true;
+  setIsolate({ targetId: c.shapeId, bodyId: c.bodyId, kind: c.kind });
+  sceneApi.fly?.(c.center, c.normal, c.up, c.extent);
+}
+export function cancelFacePick(stay = false) { dropPrePick(stay); pickOnly = null; candidate = null; setPlanePick(false); }
+/** Vurgulanan adayı çizim düzlemi yapar: kamera yüze karşıdan gelir, hedef dışındaki paneller gizlenir. */
+export function confirmFacePick() {
+  const c = candidate;
+  if (!c) return;
+  candidate = null; pickOnly = null; prePick = false;
+  keepPose();
+  activatePlane(c.plane);
+  setIsolate({ targetId: c.shapeId, bodyId: c.bodyId, kind: c.kind });
+  if (c.kind === 'body') setApply({ op: 'cut' });
+  sceneApi.fly?.(c.center, c.normal, c.up, c.extent);
+}
+setPlaneConfirm(confirmFacePick);
+export function toggleIsolate() {
+  if (useDraft.getState().isolate) { setIsolate(null); return; }
+  const t = faceTarget();
+  if (t) setIsolate({ targetId: t.shape.id, bodyId: t.bodyId, kind: t.kind });
+}
+/** Zemine dön: oturum varsa kaydedilmeden kapanır, izolasyon kalkar, kamera eski yerine döner. */
+export async function exitFace() {
+  cancelFacePick();
+  if (useDraft.getState().session) await finishSketchEdit(false); else leaveFace();
+}
+/** Hedefin çizim adımları UYGULANMAMIŞ mesh'i (yüz çerçevesinin okunduğu): panelde ayak izi mesh'i, gövdede adımsız katı. */
+async function uncutMeshOf(target: Shape): Promise<THREE.BufferGeometry> {
+  if (isPanel(target)) return footprintGeometry(target) ?? target.geometry;
+  if (!sketchFeaturesOf(target).length) return target.geometry;
+  return (await rebuildBodySolid({ parameters: target.parameters, fillets: target.fillets }, target.subtractionGeometries, undefined, false, false)).geometry;
+}
+const stepRotationOf = (target: Shape) => (isPanel(target) ? panelStepRotation(target) : new THREE.Quaternion());
+/** Hedef katıyı yeniden üretir: panelde motor (yalnız o panel değişti), gövdede katı + panelleri. */
+async function rebuildTarget(id: string) {
+  const s = shapeById(id);
+  if (!s) return;
+  const bodyId = bodyIdOf(s);
+  if (isPanel(s)) { await requestRebuild(bodyId, { changedPanelId: s.id }); await whenRebuildIdle(bodyId); return; }
+  const r = await rebuildBodySolid({ parameters: s.parameters, fillets: s.fillets }, s.subtractionGeometries, undefined, false);
+  const now = shapeById(id);
+  if (!now) return;
+  useAppStore.getState().updateShape(id, {
+    geometry: r.geometry, replicadShape: r.replicadShape, parameters: { ...now.parameters, scaledBaseVertices: r.scaledBaseVertices, sketchErrors: r.sketchErrors },
+  });
+  if (childPanelsOf(id).length) { await requestRebuild(id); await whenRebuildIdle(id); }
+}
+const writeFeatures = (targetId: string, next: (old: SketchFeature[]) => SketchFeature[]) => {
+  const t = shapeById(targetId);
+  if (t) useAppStore.getState().updateShape(targetId, { parameters: { ...t.parameters, sketchFeatures: next(sketchFeaturesOf(t)) } });
+};
+/** Etkin yüzdeki çizimi (seçim varsa yalnız seçilenleri) hedefe adım olarak yazar; oturum açıksa düzenlenen adımı kaydeder.
+ *  Hata varsa kullanıcıya gösterilecek metin döner. */
+export async function applySketch(): Promise<string | null> {
+  const st = useDraft.getState();
+  if (st.session) return finishSketchEdit(true);
+  const ft = faceTarget();
+  if (!ft) return 'Pick a face first.';
+  const ents = st.entities.filter(e => e.plane === ft.plane.id), picked = ents.filter(e => st.selection.includes(e.id)), use = picked.length ? picked : ents;
+  if (!profileLoops(use).loops.length) return 'Draw a closed profile on the face first.';
+  if (ft.kind === 'body' && ft.shape.vertexModifications?.length) return 'Not available on a vertex-edited body yet.';
+  cancelCommand();
+  await whenRebuildIdle(ft.bodyId);
+  const target = shapeById(ft.shape.id);
+  if (!target) return 'The face no longer exists.';
+  const a = st.apply, q = stepRotationOf(target), qi = q.clone().invert();
+  // Yüz yönleri dönüş ÖNCESİ saklanır → panele sonradan eklenen / yeniden çözülen dönüş çizimi birlikte taşır.
+  const nI = v3(ft.plane.n).applyQuaternion(qi), uI = v3(ft.plane.u).applyQuaternion(qi);
+  const mesh = await uncutMeshOf(target), f0 = sketchFrameOf(mesh, arr3(nI), arr3(uI), 0, q);
+  if (!f0) return 'The face could not be resolved.';
+  const depthIn = f0.o.clone().sub(v3(ft.plane.origin)).dot(f0.n), inset = depthIn > 0.05 ? depthIn : 0;
+  const fr = sketchFrameOf(mesh, arr3(nI), arr3(uI), inset, q)!;
+  // Düzlem koordinatı → yüz çerçevesi (orijin farkı) → çapaya göre.
+  const d = v3(ft.plane.origin).sub(fr.o), off = { x: d.dot(fr.u) - a.anchor[0] * fr.w, y: d.dot(fr.v) - a.anchor[1] * fr.h };
+  const op = ft.kind === 'body' ? 'cut' : a.op, label = op === 'cut' ? 'Cut' : 'Shape';
+  const feature: SketchFeature = {
+    id: genId('sk'), name: `${label} ${sketchFeaturesOf(target).filter(f => f.op === op).length + 1}`, timestamp: Date.now(),
+    op, depth: op === 'shape' || a.through ? null : Math.max(0.1, a.depth), n: arr3(nI), u: arr3(uI), inset,
+    anchor: [...a.anchor], stretch: [...a.stretch], baseSize: [fr.w, fr.h], shapes: use.map(e => moveShape(stripEnt(e), off)),
+  };
+  writeFeatures(target.id, old => [...old, feature]);
+  takeEntities(ft.plane.id, use.map(e => e.id));
+  await rebuildTarget(target.id);
+  const err = shapeById(target.id)?.parameters?.sketchErrors?.[feature.id] as string | undefined;
+  return err ? `Step added, but it could not be applied: ${err}` : null;
+}
+/** Adımı düzenlemeye açar: yüz düzlemi + izolasyon, adım bastırılır (katı adımsız), nesneleri oturum düzlemine yüklenir. */
+export async function editSketch(targetId: string, featureId: string) {
+  if (useDraft.getState().session?.featureId === featureId) return;   // zaten açık — süren düzenleme korunur
+  if (useDraft.getState().session) await finishSketchEdit(false, true);
+  const first = shapeById(targetId), f = sketchFeaturesOf(first).find(x => x.id === featureId);
+  if (!first || !f) return;
+  cancelCommand(); cancelFacePick(true);
+  const bodyId = bodyIdOf(first), kind = isPanel(first) ? 'panel' as const : 'body' as const;
+  await whenRebuildIdle(bodyId);
+  setSketchSuppressed(featureId);
+  await rebuildTarget(targetId);
+  const target = shapeById(targetId);
+  const fr = target ? sketchFrameOf(await uncutMeshOf(target), f.n, f.u, f.inset, stepRotationOf(target)) : null;
+  if (!target || !fr) { setSketchSuppressed(null); await rebuildTarget(targetId); return; }
+  const name = isPanel(target) ? vfOfPanel(target)?.description || 'Panel' : 'Body';
+  const planeId = activatePlane({ kind: 'face', shapeId: targetId, origin: arr3(fr.o), u: arr3(fr.u), v: arr3(fr.v), n: arr3(fr.n), label: name }, true);
+  loadEntities(placeSketchShapes(f, fr.w, fr.h), planeId);
+  if (!applyBeforeEdit) applyBeforeEdit = { ...useDraft.getState().apply };
+  setApply({ op: f.op, through: f.depth == null, ...(f.depth != null ? { depth: f.depth } : {}), anchor: [f.anchor[0], f.anchor[1]], stretch: [f.stretch[0], f.stretch[1]] });
+  setSession({ targetId, featureId, name: f.name, planeId });
+  setIsolate({ targetId, bodyId, kind }); setPanelOpen(true);
+  keepPose();
+  const hostM = hostMatrix(target, useAppStore.getState().shapes);
+  sceneApi.fly?.(fr.o.clone().addScaledVector(fr.u, fr.w / 2).addScaledVector(fr.v, fr.h / 2).applyMatrix4(hostM),
+    fr.n.clone().transformDirection(hostM), fr.v.clone().transformDirection(hostM), Math.max(fr.w, fr.h, 100));
+}
+/** Düzenleme oturumunu kapatır. save: oturum düzlemindeki TÜM nesneler adıma (Drawing panelindeki güncel ayarlarla) geri yazılır.
+ *  Oturum bitince yüzden de çıkılır (tüm model + önceki kamera) — sonuç bağlamında görünsün; `stay`: başka adıma geçilirken yüzde kal. */
+export async function finishSketchEdit(save: boolean, stay = false): Promise<string | null> {
+  const st = useDraft.getState(), ses = st.session;
+  if (!ses) return null;
+  const target = shapeById(ses.targetId), f = sketchFeaturesOf(target).find(x => x.id === ses.featureId);
+  cancelCommand();
+  if (save && target && f) {
+    const ents = st.entities.filter(e => e.plane === ses.planeId);
+    if (!profileLoops(ents).loops.length) return 'The step needs at least one closed profile.';
+    const fr = sketchFrameOf(await uncutMeshOf(target), f.n, f.u, f.inset, stepRotationOf(target));
+    if (!fr) return 'The face could not be resolved.';
+    const a = st.apply, off = { x: -a.anchor[0] * fr.w, y: -a.anchor[1] * fr.h }, op = isPanel(target) ? a.op : 'cut';
+    const next: SketchFeature = {
+      ...f, op, depth: op === 'shape' || a.through ? null : Math.max(0.1, a.depth), anchor: [...a.anchor], stretch: [...a.stretch], baseSize: [fr.w, fr.h],
+      shapes: ents.map(e => moveShape(stripEnt(e), off)),
+    };
+    writeFeatures(target.id, old => old.map(x => (x.id === f.id ? next : x)));
+  }
+  takeEntities(ses.planeId);
+  setSketchSuppressed(null); setSession(null);
+  if (!stay && applyBeforeEdit) { setApply(applyBeforeEdit); applyBeforeEdit = null; }
+  if (target) await rebuildTarget(target.id);
+  if (!stay) leaveFace();
+  return null;
+}
+export async function deleteSketch(targetId: string, featureId: string) {
+  if (useDraft.getState().session?.featureId === featureId) await finishSketchEdit(false);
+  const t = shapeById(targetId);
+  if (!t) return;
+  await whenRebuildIdle(bodyIdOf(t));
+  writeFeatures(targetId, old => old.filter(x => x.id !== featureId));
+  await rebuildTarget(targetId);
+}
+
+const FaceGlow: React.FC<{ pick: FacePick; strong: boolean }> = ({ pick, strong }) => {
+  const xf = useMemo(() => xfOf(pick.hostM), [pick]);
+  const edges = useMemo(() => new THREE.EdgesGeometry(pick.highlight, 1), [pick]);
+  useEffect(() => () => { edges.dispose(); }, [edges]);
+  return (
+    <group position={xf.position} quaternion={xf.quaternion} scale={xf.scale}>
+      <mesh geometry={pick.highlight} renderOrder={900}>
+        <meshBasicMaterial color="#ea580c" transparent opacity={strong ? 0.36 : 0.13} depthTest={false} depthWrite={false} side={THREE.DoubleSide} />
+      </mesh>
+      {strong && <lineSegments geometry={edges} renderOrder={901}><lineBasicMaterial color="#c2410c" depthTest={false} transparent /></lineSegments>}
+    </group>
+  );
+};
+
 const PICKBOX_CURSOR = `url("data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15"><rect x="3.5" y="3.5" width="8" height="8" fill="none" stroke="#1c1917" stroke-width="1.2"/></svg>')}") 7 7, crosshair`;
 const IDENT = new THREE.Matrix4();
 
@@ -255,8 +540,22 @@ export const DraftLayer: React.FC = () => {
   const snapOn = useAppStore(s => s.snapEnabled);
   const planes = useDraft(s => s.planes), activeId = useDraft(s => s.activePlane), entities = useDraft(s => s.entities), selection = useDraft(s => s.selection);
   const hoverId = useDraft(s => s.hoverId), preview = useDraft(s => s.preview), cursor = useDraft(s => s.cursor), cmd = useDraft(s => s.cmd);
-  const planePick = useDraft(s => s.planePick), dynOn = useDraft(s => s.aids.dyn);
+  const planePick = useDraft(s => s.planePick), dynOn = useDraft(s => s.aids.dyn), iso = useDraft(s => s.isolate), candTick = useDraft(s => s.planeCandidate);
   const [wpp, setWpp] = useState(1);
+  const [hoverFace, setHoverFace] = useState<FacePick | null>(null);
+  const cand = planePick && candTick ? candidate : null;
+  useEffect(() => { if (!planePick) { setHoverFace(null); dropPrePick(); } }, [planePick]);   // Esc / komut başlatma seçimi kapatırsa ön izolasyon da kalkar
+  // Hedef (panel / gövde) silinirse düzenleme oturumu, izolasyon ve o yüzün düzlemi düşer.
+  useEffect(() => {
+    const st = useDraft.getState(), gone = (id: string) => !shapes.some(s => s.id === id);
+    if (st.session && gone(st.session.targetId)) {
+      takeEntities(st.session.planeId); setSketchSuppressed(null); setSession(null);
+      if (applyBeforeEdit) { setApply(applyBeforeEdit); applyBeforeEdit = null; }
+    }
+    if (st.isolate && gone(st.isolate.targetId)) setIsolate(null);
+    const pl = st.planes.find(p => p.id === st.activePlane);
+    if (pl?.kind === 'face' && pl.shapeId && gone(pl.shapeId)) leaveFace();
+  }, [shapes]);
 
   const matrices = useMemo(() => new Map(planes.map(p => [p.id, planeMatrix(p, shapes)])), [planes, shapes]);
   const activeM = matrices.get(activeId) ?? IDENT;
@@ -272,7 +571,8 @@ export const DraftLayer: React.FC = () => {
   // Ortho ve nesne yakalama uygulama geneli ayardır (store) — çizim sürücüsüne yansıtılır.
   useEffect(() => { setAids({ ortho: ortho === OrthoMode.ON, osnap: snapOn, snaps: snapSettings as unknown as Record<SnapKind, boolean> }); }, [ortho, snapOn, snapSettings]);
   const busy = !!cmd;
-  useEffect(() => { setExtraSnap(busy ? planeEdges(activeInv, shapes) : []); }, [busy, activeInv, shapes]);
+  // Yakalama kaynağı yalnız GÖRÜNEN şekillerin kenarlarıdır (izolasyonda hedef panel / gövde).
+  useEffect(() => { setExtraSnap(busy ? planeEdges(activeInv, visibleShapes(shapes, iso), shapes) : []); }, [busy, activeInv, shapes, iso]);
   const kind = cmd?.kind ?? null;
   useEffect(() => {
     gl.domElement.style.cursor = planePick ? 'copy' : kind ? (kind === 'pick' ? PICKBOX_CURSOR : 'crosshair') : '';
@@ -299,15 +599,22 @@ export const DraftLayer: React.FC = () => {
         target = loc.applyMatrix4(L.activeM);
         extent = Math.max(200, L.camera.position.distanceTo(t) * 0.5);
       }
-      flyTo(L.camera, L.controls, target, n, up, extent, L.size.height);
+      flyTo(L.camera, L.controls, target, n, up, extent, L.size.height, null, viewInset(gl.domElement));
     };
-    return () => { viewPlaneFn = null; };
+    sceneApi.fly = (c, n, up, extent) => { const L = live.current; flyTo(L.camera, L.controls, c, n, up, extent, L.size.height, null, viewInset(gl.domElement)); };
+    sceneApi.pose = () => {
+      const L = live.current;
+      return L.controls?.target ? { pos: L.camera.position.clone(), target: L.controls.target.clone(), up: L.camera.up.clone(), zoom: (L.camera as THREE.OrthographicCamera).zoom ?? 1 } : null;
+    };
+    sceneApi.restore = p => { const L = live.current; flyTo(L.camera, L.controls, p.target, p.pos.clone().sub(p.target), p.up, 0, L.size.height, { dist: p.pos.distanceTo(p.target), zoom: p.zoom }); };
+    return () => { viewPlaneFn = null; sceneApi.fly = null; sceneApi.pose = null; sceneApi.restore = null; };
   }, []);
 
   // Fare: pencere düzeyinde yakalama aşaması — komut etkinken tıklama gövde/panel işleyicilerine ve yörünge kontrolüne ULAŞMAZ.
   useEffect(() => {
     const el = gl.domElement, rc = new THREE.Raycaster(), ndc = new THREE.Vector2();
     let rightDown: { x: number; y: number } | null = null, swallow = false, inside = false;
+    let pickSpot: { x: number; y: number; idx: number; keys: string } | null = null;
     const rayOf = (e: MouseEvent) => {
       const r = el.getBoundingClientRect();
       ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
@@ -341,6 +648,14 @@ export const DraftLayer: React.FC = () => {
     const onMove = (e: PointerEvent) => {
       if (e.target !== el) { if (inside) { inside = false; pointerLeave(); } return; }
       const st = useDraft.getState();
+      // Yüz seçimi: imlecin altındaki yüz hafifçe vurgulanır (tıklanınca aday olur).
+      if (st.planePick) {
+        if (e.buttons !== 0) return;
+        const c = inViewCube(e) ? null : faceCandidates(rayOf(e), live.current.shapes, st.isolate, pickOnly, 1)[0] ?? null;
+        setHoverFace(prev => (prev?.key === c?.key ? prev : c));
+        if (!inViewCube(e)) stop(e);
+        return;
+      }
       if (!st.cmd && !st.entities.length) return;
       const h = onActive(e);
       if (!h) return;
@@ -356,9 +671,18 @@ export const DraftLayer: React.FC = () => {
       if (e.button === 2) { rightDown = { x: e.clientX, y: e.clientY }; return; }
       if (e.button !== 0) return;
       const st = useDraft.getState();
+      // YÜZ SEÇİMİ (Goker: "tıkladıkça seçilecek yüzeyi göstersin, onaylayınca çalışsın"): tık ADAYI belirler ve vurgular; aynı noktaya
+      // yeniden tık ışın boyunca bir sonraki yüze geçer (panel → arkasındaki gövde yüzü → …). Onay: sağ tık / Enter / paneldeki ✓.
       if (st.planePick) {
-        const f = pickFace(rayOf(e), live.current.shapes);
-        if (f) { activatePlane(f.plane); flyTo(live.current.camera, live.current.controls, f.center, f.normal, f.up, f.extent, live.current.size.height); }
+        const list = faceCandidates(rayOf(e), live.current.shapes, st.isolate, pickOnly);
+        if (list.length) {
+          const keys = list.map(c => c.key).join('|');
+          const again = !!pickSpot && pickSpot.keys === keys && Math.hypot(e.clientX - pickSpot.x, e.clientY - pickSpot.y) < 8;
+          const idx = again ? (pickSpot!.idx + 1) % list.length : 0;
+          pickSpot = { x: e.clientX, y: e.clientY, idx, keys };
+          candidate = list[idx];
+          setPlaneCandidate({ label: list.length > 1 ? `${candidate.label} (${idx + 1}/${list.length})` : candidate.label });
+        }
         swallow = true; stop(e);
         return;
       }
@@ -377,7 +701,7 @@ export const DraftLayer: React.FC = () => {
       if (e.button === 2 && rightDown) {
         const still = Math.hypot(e.clientX - rightDown.x, e.clientY - rightDown.y) < 5;
         rightDown = null;
-        if (still && commandActive()) enterKey();
+        if (still && (commandActive() || useDraft.getState().planePick)) enterKey();
       }
       if (swallow && e.button === 0) stop(e);
     };
@@ -401,9 +725,12 @@ export const DraftLayer: React.FC = () => {
     <>
       {planes.map(pl => {
         const m = matrices.get(pl.id), ents = byPlane.get(pl.id);
+        if (iso && pl.kind === 'face' && pl.shapeId !== iso.targetId) return null;   // izolasyonda gizlenen şeklin yüzündeki çizim de gizlenir
         return m && ents?.length ? <PlaneEntities key={pl.id} matrix={m} ents={ents} active={pl.id === activeId} selection={selSet} hoverId={hoverId} dash={wpp} /> : null;
       })}
       {showUcs && <UcsIcon matrix={activeM} />}
+      {planePick && hoverFace && hoverFace.key !== cand?.key && <FaceGlow pick={hoverFace} strong={false} />}
+      {cand && <FaceGlow pick={cand} strong />}
       {busy && (
         <group position={activeXf.position} quaternion={activeXf.quaternion} scale={activeXf.scale}>
           <group position={[0, 0, LIFT]}>
@@ -506,6 +833,13 @@ const ICONS: Record<string, React.ReactNode> = {
   osnap: <><rect x="5" y="5" width="14" height="14" /><rect x="15.5" y="2.5" width="6" height="6" fill="currentColor" stroke="none" /></>,
   dyn: <><path d="M4 4l5.5 13 1.8-5.7L17 9.5z" /><rect x="13" y="15" width="8" height="5.5" rx="1" strokeWidth={1.3} /></>,
   caret: <path d="M7 10l5 5 5-5" strokeWidth={2.2} />,
+  check: <path d="M5 12.5l4.5 4.5L19 7.5" strokeWidth={2.1} />,
+  cut: <><rect x="4" y="4" width="16" height="16" rx="1.5" /><circle cx="12" cy="12" r="4.2" {...dash} strokeWidth={1.4} /></>,
+  shape: <><rect x="3.5" y="3.5" width="17" height="17" {...dash} /><path d="M6 18.5V11a5 5 0 0 1 5-5h7.5v7.5a5 5 0 0 1-5 5z" /></>,
+  stretchx: <path d="M3 12h18M3 12l3.5-3.5M3 12l3.5 3.5M21 12l-3.5-3.5M21 12l-3.5 3.5" />,
+  stretchy: <path d="M12 3v18M12 3 8.5 6.5M12 3l3.5 3.5M12 21l-3.5-3.5M12 21l3.5-3.5" />,
+  pencil: <><path d="M4 20l1.2-4.4L16.6 4.2a2 2 0 0 1 2.8 0l.4.4a2 2 0 0 1 0 2.8L8.4 18.8z" /><path d="M14.5 6.3l3.2 3.2" /></>,
+  trash: <path d="M4 7h16M9 7V4.5h6V7M6.5 7l1 13h9l1-13M10 11v6M14 11v6" />,
   close: <path d="M6.5 6.5l11 11M17.5 6.5l-11 11" strokeWidth={1.8} />,
   drawing: <><path d="M4 20l1.2-4.4L16.6 4.2a2 2 0 0 1 2.8 0l.4.4a2 2 0 0 1 0 2.8L8.4 18.8z" /><path d="M14.5 6.3l3.2 3.2" /><path d="M13 20h7" /></>,
 };
@@ -571,6 +905,37 @@ const PANEL_CSS = `
     box-shadow:0 1px 2px rgba(40,30,20,0.25);transition:transform .15s}
   .dp-switch.on{background:${P.accent}}
   .dp-switch.on::after{transform:translateX(13px)}
+  .dp-btn:disabled{opacity:0.4;cursor:not-allowed}
+  .dp-note{margin-top:8px;padding:9px 10px;border-radius:8px;background:#fff;box-shadow:0 0 0 1px rgba(234,88,12,0.28)}
+  .dp-seg{display:flex;gap:1px;padding:2px;background:#efebe4;border-radius:8px;box-shadow:inset 0 0 0 1px rgba(60,50,40,0.08)}
+  .dp-seg button{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;height:26px;border:none;border-radius:6px;background:transparent;color:${P.mute};
+    font:500 11.5px ${UI_FONT};cursor:pointer;outline:none;white-space:nowrap;transition:background .12s,color .12s,box-shadow .12s}
+  .dp-seg button:hover{color:${P.ink}}
+  .dp-seg button.on{background:#fff;color:${P.ink};font-weight:600;box-shadow:0 1px 2px rgba(40,30,20,0.12),0 0 0 0.5px rgba(60,50,40,0.10)}
+  .dp-seg button.on svg{color:${P.accent}}
+  .dp-num{display:flex;align-items:center;gap:3px;width:76px;height:30px;padding:0 7px;border-radius:7px;background:#fff;box-shadow:0 0 0 1px #e3ddd4;
+    transition:box-shadow .12s}
+  .dp-num:focus-within{box-shadow:0 0 0 1px rgba(234,88,12,0.55),0 0 0 3px rgba(234,88,12,0.10)}
+  .dp-num.off{background:#f3f0ea;box-shadow:0 0 0 1px #ebe6df}
+  .dp-num input{flex:1;min-width:0;width:100%;border:none;outline:none;background:transparent;text-align:right;font:600 12px ${MONO_FONT};color:${P.ink}}
+  .dp-num span{font:500 10px ${UI_FONT};color:${P.faint}}
+  .dp-anchor{display:grid;grid-template-columns:repeat(3,22px);grid-template-rows:repeat(3,22px);gap:1px;padding:3px;border-radius:8px;background:#fff;
+    box-shadow:0 0 0 1px #e3ddd4;flex-shrink:0}
+  .dp-anchor button{display:flex;align-items:center;justify-content:center;border:none;border-radius:5px;background:transparent;cursor:pointer;outline:none;padding:0}
+  .dp-anchor button i{width:6px;height:6px;border-radius:50%;background:#d6d1c8;transition:transform .12s,background .12s}
+  .dp-anchor button:hover{background:#f6f3ee}
+  .dp-anchor button:hover i{background:${P.mute}}
+  .dp-anchor button.on i{background:${P.accent};transform:scale(1.5);box-shadow:0 0 0 3px rgba(234,88,12,0.16)}
+  .dp-primary{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;height:30px;border:none;border-radius:7px;cursor:pointer;outline:none;
+    background:linear-gradient(180deg,#f97316 0%,#ea580c 100%);color:#fff;font:600 12px ${UI_FONT};
+    box-shadow:0 1px 2px rgba(234,88,12,0.35),0 0 0 0.5px rgba(154,52,18,0.4),inset 0 1px 0 rgba(255,255,255,0.25);transition:filter .12s,transform .08s}
+  .dp-primary:hover{filter:brightness(1.06)}
+  .dp-primary:active{transform:translateY(0.5px)}
+  .dp-primary:disabled{background:#e7e2da;color:#a8a29e;box-shadow:inset 0 0 0 0.5px rgba(60,50,40,0.1);cursor:not-allowed;filter:none}
+  .dp-ghost{height:30px;padding:0 11px;border:none;border-radius:7px;background:#fff;box-shadow:0 0 0 1px #e3ddd4;color:${P.body};font:500 12px ${UI_FONT};
+    cursor:pointer;outline:none;transition:box-shadow .12s,color .12s}
+  .dp-ghost:hover{box-shadow:0 0 0 1px #cfc7bc;color:${P.ink}}
+  .dp-ghost:disabled{opacity:0.5;cursor:not-allowed}
   .dp-x{width:30px;height:30px;display:flex;align-items:center;justify-content:center;border:none;border-radius:6px;background:transparent;color:${P.mute};
     cursor:pointer;outline:none;transition:background .1s,color .1s}
   .dp-x:hover{background:rgba(60,50,40,0.06);color:${P.ink}}
@@ -620,10 +985,114 @@ const Section: React.FC<{ title: string; right?: React.ReactNode; children: Reac
   );
 };
 
+/** Çapa ızgarası: üst sıra önce (yüzde Y yukarı). */
+const ANCHORS: [number, number][] = [[0, 1], [0.5, 1], [1, 1], [0, 0.5], [0.5, 0.5], [1, 0.5], [0, 0], [0.5, 0], [1, 0]];
+const anchorName = (ax: number, ay: number) => (ax === 0.5 && ay === 0.5 ? 'the centre of the face'
+  : `the ${ay === 1 ? 'top' : ay === 0 ? 'bottom' : 'middle'}${ax === 0.5 ? ' centre' : ax === 0 ? '-left' : '-right'}${ax !== 0.5 && ay !== 0.5 ? ' corner' : ' edge'}`);
+type TipFn = (title: string, key?: string) => { onMouseEnter: () => void; onMouseLeave: () => void };
+/** YÜZE UYGULA: etkin yüzdeki kapalı profilleri hedefe adım olarak yazar (Cut = çıkar · Shape = panele şeklini ver); derinlik, çapa ve
+ *  uzama burada seçilir. Düzenleme oturumunda aynı blok o adımın ayarlarını gösterir ve "Save changes" ile geri yazar. */
+const FaceApply: React.FC<{ tip: TipFn }> = ({ tip }) => {
+  const apply = useDraft(s => s.apply), session = useDraft(s => s.session), activePlane = useDraft(s => s.activePlane);
+  const entities = useDraft(s => s.entities), selection = useDraft(s => s.selection);
+  useAppStore(s => s.shapes);   // hedef silinir / değişirse blok yenilensin
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
+  const [depthStr, setDepthStr] = useState(String(apply.depth));
+  useEffect(() => { setDepthStr(String(apply.depth)); }, [apply.depth]);
+  useEffect(() => { setMsg(null); }, [activePlane, session?.featureId]);
+  const stats = useMemo(() => {
+    const on = entities.filter(e => e.plane === activePlane), picked = on.filter(e => selection.includes(e.id));
+    const r = profileLoops(session || !picked.length ? on : picked);
+    return { loops: r.loops.length, open: r.open, picked: session ? 0 : picked.length };
+  }, [entities, selection, activePlane, session]);
+  const ft = faceTarget();
+  if (!ft) return null;
+  const isBody = ft.kind === 'body', op = isBody ? 'cut' : apply.op, shaped = op === 'shape';
+  const commitDepth = () => { const v = parseFloat(depthStr.replace(',', '.')); if (isFinite(v) && v > 0) setApply({ depth: Math.round(v * 100) / 100 }); else setDepthStr(String(apply.depth)); };
+  const go = async () => {
+    if (busy) return;
+    setBusy(true); setMsg(null);
+    try {
+      const wasEdit = !!session, err = await applySketch();
+      setMsg(err ? { text: err, ok: false } : { text: wasEdit ? 'Step updated.' : `${shaped ? 'Shape' : 'Cut'} step added to ${ft.plane.label}.`, ok: true });
+    } catch (e) { setMsg({ text: `Failed: ${(e as Error)?.message ?? e}`, ok: false }); }
+    finally { setBusy(false); }
+  };
+  const cancelEdit = async () => { if (busy) return; setBusy(true); try { await finishSketchEdit(false); } finally { setBusy(false); } };
+  const [ax, ay] = apply.anchor;
+  return (
+    <Section title={session ? `Edit step · ${session.name}` : `Apply to ${isBody ? 'body' : 'panel'}`}>
+      <div className="dp-seg">
+        <button className={op === 'cut' ? 'on' : ''} onClick={() => setApply({ op: 'cut' })} {...tip('Cut — remove the drawn profile from the ' + (isBody ? 'body' : 'panel'))}>
+          <DIcon name="cut" size={16} />Cut
+        </button>
+        {!isBody && (
+          <button className={shaped ? 'on' : ''} onClick={() => setApply({ op: 'shape' })} {...tip('Shape — the panel takes the outline of the drawn profile')}>
+            <DIcon name="shape" size={16} />Shape
+          </button>
+        )}
+      </div>
+      {!shaped && (
+        <>
+          <div className="dp-cap" style={{ margin: '11px 0 5px' }}>Depth</div>
+          <div style={{ display: 'flex', gap: 5 }}>
+            <div className="dp-seg" style={{ flex: 1 }}>
+              <button className={apply.through ? 'on' : ''} onClick={() => setApply({ through: true })} {...tip('Cut all the way through')}>Through</button>
+              <button className={!apply.through ? 'on' : ''} onClick={() => setApply({ through: false })} {...tip('Pocket — cut to a set depth from the face')}>Pocket</button>
+            </div>
+            <label className={`dp-num${apply.through ? ' off' : ''}`}>
+              <input type="text" inputMode="decimal" value={apply.through ? '' : depthStr} disabled={apply.through} placeholder="—" spellCheck={false}
+                onChange={e => setDepthStr(e.target.value)} onBlur={commitDepth} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }} />
+              <span>mm</span>
+            </label>
+          </div>
+        </>
+      )}
+      <div className="dp-cap" style={{ margin: '11px 0 5px' }}>Position when the {isBody ? 'body' : 'panel'} resizes</div>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'stretch' }}>
+        <div className="dp-anchor" role="radiogroup" aria-label="Anchor">
+          {ANCHORS.map(([x, y]) => (
+            <button key={`${x}-${y}`} role="radio" aria-checked={x === ax && y === ay} className={x === ax && y === ay ? 'on' : ''}
+              onClick={() => setApply({ anchor: [x, y] })} {...tip(`Anchor: ${anchorName(x, y)}`)}><i /></button>
+          ))}
+        </div>
+        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <span style={{ fontSize: 11, lineHeight: 1.35, color: P.mute }}>Keeps its distance from <b style={{ color: P.ink, fontWeight: 600 }}>{anchorName(ax, ay)}</b>.</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 'auto' }}>
+            <span style={{ flex: 1, minWidth: 0, fontSize: 11, color: P.mute, whiteSpace: 'nowrap' }}>Stretch</span>
+            {(['X', 'Y'] as const).map((k, i) => (
+              <button key={k} className={`dp-chip${apply.stretch[i] ? ' on' : ''}`} style={{ flex: 'none', width: 46, padding: 0, gap: 4, justifyContent: 'center' }}
+                aria-pressed={apply.stretch[i]} aria-label={`Stretch ${k}`}
+                onClick={() => setApply({ stretch: i === 0 ? [!apply.stretch[0], apply.stretch[1]] : [apply.stretch[0], !apply.stretch[1]] })}
+                {...tip(`Stretch ${k} — the drawing scales with the face ${i === 0 ? 'width' : 'height'}`)}>
+                <DIcon name={i === 0 ? 'stretchx' : 'stretchy'} size={15} />{k}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '12px 0 7px', fontSize: 11, color: stats.loops ? P.body : P.mute }}>
+        <i style={{ width: 6, height: 6, borderRadius: '50%', background: stats.loops ? '#0f766e' : '#cfc7bc', flexShrink: 0 }} />
+        {stats.loops ? `${stats.loops} closed profile${stats.loops > 1 ? 's' : ''}${stats.picked ? ' selected' : ''}` : 'Draw a closed profile on the face'}
+        {stats.open > 0 && <span style={{ color: P.faint }}>· {stats.open} open (ignored)</span>}
+      </div>
+      <div style={{ display: 'flex', gap: 5 }}>
+        <button className="dp-primary" disabled={busy || !stats.loops} onClick={() => { void go(); }}>
+          <DIcon name="check" size={15} />{busy ? 'Working…' : session ? 'Save changes' : shaped ? 'Apply shape' : 'Apply cut'}
+        </button>
+        {session && <button className="dp-ghost" disabled={busy} onClick={() => { void cancelEdit(); }}>Cancel</button>}
+      </div>
+      {msg && <div style={{ marginTop: 7, fontSize: 11, lineHeight: 1.35, color: msg.ok ? '#0f766e' : '#b91c1c' }}>{msg.text}</div>}
+    </Section>
+  );
+};
+
 export const DrawingPanel: React.FC = () => {
   const open = useDraft(s => s.panelOpen), cmd = useDraft(s => s.cmd), aids = useDraft(s => s.aids);
   const activePlane = useDraft(s => s.activePlane), planePick = useDraft(s => s.planePick);
   const planeLabel = useDraft(s => s.planes.find(p => p.id === s.activePlane)?.label ?? 'Ground');
+  const candLabel = useDraft(s => s.planeCandidate?.label ?? null), iso = useDraft(s => s.isolate), session = useDraft(s => s.session);
   const ortho = useAppStore(s => s.orthoMode) === OrthoMode.ON, toggleOrtho = useAppStore(s => s.toggleOrthoMode);
   const snapOn = useAppStore(s => s.snapEnabled), setSnapOn = useAppStore(s => s.setSnapEnabled);
   const snapSettings = useAppStore(s => s.snapSettings), toggleSnap = useAppStore(s => s.toggleSnapSetting);
@@ -686,16 +1155,45 @@ export const DrawingPanel: React.FC = () => {
         <div className="dp-scroll" style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
           <Section title="Plane">
             <div className="dp-card" style={{ display: 'flex' }}>
-              <button className={`dp-btn txt${!onFace && !planePick ? ' on' : ''}`} onClick={() => activatePlane('ground')} {...tip('Draw on the ground plane')}>
+              <button className={`dp-btn txt${!onFace && !planePick ? ' on' : ''}`} onClick={() => { void exitFace(); }} {...tip('Draw on the ground plane')}>
                 <DIcon name="ground" size={17} />Ground
               </button>
-              <button className={`dp-btn txt${onFace || planePick ? ' on' : ''}`} onClick={() => setPlanePick(!planePick)}
-                {...tip('Click a body or panel face — the view turns to face it')}>
-                <DIcon name="face" size={17} />{planePick ? 'Pick a face…' : 'Face'}
+              <button className={`dp-btn txt${onFace || planePick ? ' on' : ''}`} disabled={!!session} onClick={() => (planePick ? cancelFacePick() : beginFacePick())}
+                {...tip(session ? 'Finish editing the step first' : 'Pick a body or panel face to draw on')}>
+                <DIcon name="face" size={17} />{planePick ? 'Picking…' : 'Face'}
               </button>
               <button className="dp-btn" onClick={() => viewPlaneFn?.()} aria-label="Look at plane" {...tip('Look straight at the drawing plane')}><DIcon name="look" /></button>
             </div>
+            {/* Yüz seçimi: tıklanan aday vurgulanır, ONAYLANINCA düzlem olur (sağ tık / Enter da onaylar). */}
+            {planePick && (
+              <div className="dp-note">
+                <div style={{ fontSize: 11.5, color: candLabel ? P.ink : P.mute }}>
+                  {candLabel ? <>Highlighted: <b style={{ fontWeight: 600 }}>{candLabel}</b></> : 'Click a face in the 3D view.'}
+                </div>
+                <div style={{ fontSize: 10.5, lineHeight: 1.4, color: P.faint, margin: '3px 0 8px' }}>
+                  {iso ? 'Orbit and click another face of this panel to change it.' : 'Click the same spot again for the face behind it.'}
+                </div>
+                <div style={{ display: 'flex', gap: 5 }}>
+                  <button className="dp-primary" disabled={!candLabel} onClick={confirmFacePick} {...tip('Confirm the highlighted face', 'Enter')}>
+                    <DIcon name="check" size={15} />Confirm face
+                  </button>
+                  <button className="dp-ghost" onClick={() => cancelFacePick()}>Cancel</button>
+                </div>
+              </div>
+            )}
+            {onFace && !planePick && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8 }}>
+                <span style={{ flex: 1, minWidth: 0, fontSize: 11.5, color: P.body, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  On <b style={{ fontWeight: 600, color: P.ink }}>{planeLabel}</b>
+                </span>
+                <button className={`dp-chip${iso ? ' on' : ''}`} style={{ padding: '0 8px', height: 26 }} aria-pressed={!!iso} onClick={toggleIsolate}
+                  {...tip(iso ? 'Isolated — the other panels are hidden. Click to show them.' : 'Hide everything except the face you draw on')}>
+                  <DIcon name="look" size={15} />Isolate
+                </button>
+              </div>
+            )}
           </Section>
+          {onFace && !planePick && <FaceApply tip={tip} />}
           <Section title="Draw">{blocks(DRAW_BLOCKS)}</Section>
           <Section title="Modify">{blocks(MODIFY_BLOCKS)}</Section>
           <Section title="Object snap"
