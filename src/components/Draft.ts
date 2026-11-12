@@ -54,7 +54,8 @@ export type EllipseS = { t: 'ellipse'; c: P2; mx: P2; ratio: number; a0?: number
 export type PV = { x: number; y: number; b?: number };
 export type PlineS = { t: 'pline'; v: PV[]; closed?: boolean };
 export type Shape2 = LineS | CircleS | ArcS | EllipseS | PlineS;
-export type Entity = Shape2 & { id: string; plane: string };
+/** pb: kontrol noktalarının parametrik bağ tercihleri (sıra = ctrlPoints) · re: daire yarıçapı formülü — yalnız Parametric kipte anlamlıdır. */
+export type Entity = Shape2 & { id: string; plane: string; pb?: (PtPref | undefined)[]; re?: string };
 export type GeoStyle = 'ghost' | 'rubber' | 'hi' | 'del' | 'track';
 /** Geçici çizim (önizleme): nesne biçimi + stil, veya seçim penceresi. */
 export type Geo = (Shape2 & { style?: GeoStyle }) | { t: 'box'; a: P2; b: P2; crossing: boolean };
@@ -759,6 +760,166 @@ export function scaleShapeXY(s: Shape2, sx: number, sy: number): Shape2 {
 }
 export const moveShape = <T extends Shape2>(s: T, d: P2): T => transformShape(s, mTranslate(d));
 
+// ── PARAMETRİK NOKTALAR (Goker, Kas 2026 — "her çizgi her yönde parametrik büyüyüp küçülsün; bazı geometriler belirli bir yöne doğru büyüsün;
+//    çizileni sonradan parametrik yapabileyim; tek çapa + uzama yöntemi de kalsın") ──
+// Her nesnenin KONTROL NOKTALARI vardır: doğru = 2 uç · yay = başlangıç + bitiş (yay açısı korunur) · polyline = köşeler (bulge korunur) ·
+// daire / elips = merkez. Her noktanın X'i ve Y'si AYRI bağlanır: L = sol / alt kenardan sabit · R = sağ / üst kenardan sabit ·
+// C = yüz ortasından sabit · P = yüz ölçüsünün oranı · F = formül. Formül değişkenleri: W, H (yüz eni / boyu) + çağıranın verdikleri
+// (gövde ölçüleri BW / BH / BD, gövdenin özel parametreleri).
+export type BindKind = 'L' | 'R' | 'C' | 'P';
+export type SketchBind = { k: BindKind; v: number } | { k: 'F'; e: string };
+export interface PtBind { x: SketchBind; y: SketchBind }
+/** Düzenleyicide noktanın bağ TERCİHİ: yalnız tür saklanır, değer her zaman çizimdeki koordinattan türetilir (F'de ifade saklanır). */
+export type AxisPref = { k: BindKind } | { k: 'F'; e: string };
+export interface PtPref { x?: AxisPref; y?: AxisPref }
+/** Bağlanmamış noktaların varsayılanı: kenar türü ya da 'A' = en yakın kenar. */
+export type BindDefault = 'L' | 'R' | 'C' | 'A';
+
+const EXPR_FN: Record<string, (...a: number[]) => number> = {
+  min: Math.min, max: Math.max, abs: Math.abs, round: Math.round, floor: Math.floor, ceil: Math.ceil, sqrt: Math.sqrt,
+};
+/** Küçük, güvenli ifade değerlendirici: + − * / ^ ( ), sayılar (12.5 ya da 12,5), değişkenler, min / max / abs / round / floor / ceil / sqrt.
+ *  Bilinmeyen ad, sözdizimi hatası ya da sonlu olmayan sonuç → null. (İşlev argümanlarında virgül ayırıcıdır, ondalık için nokta yazılır.) */
+export function evalExpr(text: string, vars: Record<string, number>): number | null {
+  const s = text;
+  let i = 0, fnDepth = 0;
+  const fail = (): never => { throw new Error('expr'); };
+  const ws = () => { while (i < s.length && /\s/.test(s[i])) i++; };
+  const lookup = (name: string): number => {
+    if (Object.prototype.hasOwnProperty.call(vars, name)) return vars[name];
+    const k = Object.keys(vars).filter(v => v.toLowerCase() === name.toLowerCase());
+    return k.length === 1 ? vars[k[0]] : fail();
+  };
+  const primary = (): number => {
+    ws();
+    if (s[i] === '(') { i++; const v = expr(); ws(); if (s[i] !== ')') fail(); i++; return v; }
+    const rest = s.slice(i), m = (fnDepth ? /^(?:\d+(?:\.\d+)?|\.\d+)/ : /^(?:\d+(?:[.,]\d+)?|\.\d+)/).exec(rest);
+    if (m) { i += m[0].length; return parseFloat(m[0].replace(',', '.')); }
+    const id = /^[A-Za-z_À-ɏ][\wÀ-ɏ]*/.exec(rest);
+    if (!id) return fail();
+    i += id[0].length; ws();
+    if (s[i] !== '(') return lookup(id[0]);
+    const f = EXPR_FN[id[0].toLowerCase()];
+    if (!f) return fail();
+    i++; fnDepth++;
+    const args = [expr()];
+    for (ws(); s[i] === ',' || s[i] === ';'; ws()) { i++; args.push(expr()); }
+    if (s[i] !== ')') fail();
+    i++; fnDepth--;
+    return f(...args);
+  };
+  const unary = (): number => { ws(); if (s[i] === '-') { i++; return -unary(); } if (s[i] === '+') { i++; return unary(); } return primary(); };
+  const factor = (): number => { const b = unary(); ws(); if (s[i] === '^') { i++; return Math.pow(b, factor()); } return b; };
+  const term = (): number => {
+    let v = factor();
+    for (ws(); s[i] === '*' || s[i] === '/'; ws()) { const op = s[i++], r = factor(); v = op === '*' ? v * r : v / r; }
+    return v;
+  };
+  function expr(): number {
+    let v = term();
+    for (ws(); s[i] === '+' || s[i] === '-'; ws()) { const op = s[i++], r = term(); v = op === '+' ? v + r : v - r; }
+    return v;
+  }
+  try { const v = expr(); ws(); return i === s.length && Number.isFinite(v) ? v : null; } catch { return null; }
+}
+
+/** Bağın verdiği koordinat (size = o eksendeki yüz ölçüsü). Formül çözülemezse null. */
+export function bindCoord(b: SketchBind, size: number, vars: Record<string, number>): number | null {
+  switch (b.k) {
+    case 'L': return b.v;
+    case 'R': return size - b.v;
+    case 'C': return size / 2 + b.v;
+    case 'P': return size * b.v;
+    case 'F': return evalExpr(b.e, vars);
+  }
+}
+/** Koordinattan bağ: tür verilir, değer o anki yüz ölçüsünden türetilir (nokta yerinde kalır). */
+export function bindFrom(k: BindKind, coord: number, size: number): SketchBind {
+  const r = (n: number, d: number) => Math.round(n * d) / d;
+  return { k, v: k === 'L' ? r(coord, 1000) : k === 'R' ? r(size - coord, 1000) : k === 'C' ? r(coord - size / 2, 1000) : size > LEN_EPS ? r(coord / size, 1e6) : 0 };
+}
+/** En yakın kenar: tam ortadaysa C, sol / alt yarıdaysa L, değilse R. */
+export const autoKind = (coord: number, size: number): 'L' | 'R' | 'C' => (Math.abs(coord - size / 2) < 0.5 ? 'C' : coord < size / 2 ? 'L' : 'R');
+/** Bağın okunur ifadesi (formül alanında görünen): 50 · W-50 · W/2+20 · W*0.25 · formülün kendisi. S = eksenin ölçü adı (W ya da H). */
+export function bindText(b: SketchBind, S: 'W' | 'H'): string {
+  const n = (v: number) => fmt(v, 2);
+  switch (b.k) {
+    case 'L': return n(b.v);
+    case 'R': return Math.abs(b.v) < 0.005 ? S : b.v > 0 ? `${S}-${n(b.v)}` : `${S}+${n(-b.v)}`;
+    case 'C': return Math.abs(b.v) < 0.005 ? `${S}/2` : b.v > 0 ? `${S}/2+${n(b.v)}` : `${S}/2-${n(-b.v)}`;
+    case 'P': return `${S}*${fmt(b.v, 4)}`;
+    case 'F': return b.e;
+  }
+}
+/** Yazılan metinden bağ: sade kalıplar (50 · W-50 · W/2+20 · W*0.25) kenar bağına, gerisi formüle döner. Çözülemeyen metin → null. */
+export function parseBind(text: string, S: 'W' | 'H', vars: Record<string, number>): SketchBind | null {
+  if (evalExpr(text, vars) === null) return null;
+  const t = text.replace(/\s+/g, ''), num = '(\\d+(?:[.,]\\d+)?|\\.\\d+)', f = (x: string) => parseFloat(x.replace(',', '.'));
+  const re = (p: string) => new RegExp(`^${p}$`, 'i').exec(t);
+  let m: RegExpExecArray | null;
+  if ((m = re(`(-?)${num}`))) return { k: 'L', v: (m[1] ? -1 : 1) * f(m[2]) };
+  if (re(S)) return { k: 'R', v: 0 };
+  if ((m = re(`${S}([+-])${num}`))) return { k: 'R', v: (m[1] === '-' ? 1 : -1) * f(m[2]) };
+  if (re(`${S}/2`)) return { k: 'C', v: 0 };
+  if ((m = re(`${S}/2([+-])${num}`))) return { k: 'C', v: (m[1] === '+' ? 1 : -1) * f(m[2]) };
+  if ((m = re(`${S}\\*${num}`)) || (m = re(`${num}\\*${S}`))) return { k: 'P', v: f(m[1]) };
+  return { k: 'F', e: text.trim() };
+}
+
+/** Nesnenin kontrol noktaları: doğru 2 uç · yay başlangıç + bitiş · polyline köşeleri · daire / elips merkezi. */
+export function ctrlPoints(s: Shape2): P2[] {
+  switch (s.t) {
+    case 'line': return [s.a, s.b];
+    case 'circle': case 'ellipse': return [s.c];
+    case 'arc': return [add(s.c, polar(s.a0, s.r)), add(s.c, polar(s.a1, s.r))];
+    case 'pline': return s.v.map(v => P(v.x, v.y));
+  }
+}
+/** Kontrol noktaları değiştirilmiş nesne: yayda yeni uçlar + eski yay açısından merkez / yarıçap yeniden bulunur; polyline'da bulge korunur;
+ *  dairede isteğe bağlı yeni yarıçap. */
+export function withCtrl(s: Shape2, pts: P2[], r?: number): Shape2 {
+  switch (s.t) {
+    case 'line': return { ...s, a: pts[0], b: pts[1] };
+    case 'circle': return { ...s, c: pts[0], r: r !== undefined && r > LEN_EPS ? r : s.r };
+    case 'ellipse': return { ...s, c: pts[0] };
+    case 'arc': {
+      const arc = same(pts[0], pts[1]) ? null : arcFromBulge(pts[0], pts[1], Math.tan(ccwDelta(s.a0, s.a1) / 4));
+      return arc ? { ...s, ...arc } : s;
+    }
+    case 'pline': return { ...s, v: s.v.map((v, i) => ({ ...v, x: pts[i].x, y: pts[i].y })) };
+  }
+}
+/** Nokta bağlı adımın nesnelerini verilen yüz ölçüsünde çözer (koordinatlar yüz çerçevesinde: orijin = yüzün sol-alt köşesi).
+ *  Formül çözülemezse hata fırlatır → adım uygulanmaz, listede uyarı görünür. */
+export function resolveParam(shapes: Shape2[], pts: PtBind[][], radii: (string | null)[] | undefined, w: number, h: number, vars: Record<string, number>): Shape2[] {
+  const v = { ...vars, W: w, H: h };
+  const need = (b: SketchBind, size: number): number => {
+    const c = bindCoord(b, size, v);
+    if (c === null) throw new Error(`Formula "${b.k === 'F' ? b.e : ''}" could not be evaluated`);
+    return c;
+  };
+  return shapes.map((s, i) => {
+    const bs = pts[i] ?? [], np = ctrlPoints(s).map((p, j) => (bs[j] ? P(need(bs[j].x, w), need(bs[j].y, h)) : p));
+    const re = s.t === 'circle' ? radii?.[i] : null;
+    let r: number | undefined;
+    if (re) { const x = evalExpr(re, v); if (x === null || x <= 0) throw new Error(`Radius formula "${re}" could not be evaluated`); r = x; }
+    return withCtrl(s, np, r);
+  });
+}
+/** Düzenleyicideki nokta tercihlerinden adımın bağları (nesne yüz çerçevesi koordinatında verilir): tür tercihten — yoksa varsayılandan,
+ *  'A' = en yakın kenar — değer koordinattan. Formüllü nokta elle taşınmışsa (formül artık o koordinatı vermiyorsa) formül düşer. */
+export function bindsOf(s: Shape2, prefs: (PtPref | undefined)[] | undefined, w: number, h: number, dflt: [BindDefault, BindDefault], vars: Record<string, number>): PtBind[] {
+  const v = { ...vars, W: w, H: h };
+  const axis = (pref: AxisPref | undefined, coord: number, size: number, d: BindDefault): SketchBind => {
+    if (pref?.k === 'F') { const val = evalExpr(pref.e, v); if (val !== null && Math.abs(val - coord) < 0.02) return { k: 'F', e: pref.e }; }
+    return bindFrom(pref && pref.k !== 'F' ? pref.k : d === 'A' ? autoKind(coord, size) : d, coord, size);
+  };
+  return ctrlPoints(s).map((p, j) => ({ x: axis(prefs?.[j]?.x, p.x, w, dflt[0]), y: axis(prefs?.[j]?.y, p.y, h, dflt[1]) }));
+}
+/** Adımın bağlarından düzenleyici tercihleri (adım düzenlemeye açılırken). */
+export const prefsOf = (pts: PtBind[] | undefined): PtPref[] | undefined =>
+  pts?.map(b => ({ x: b.x.k === 'F' ? { k: 'F', e: b.x.e } : { k: b.x.k }, y: b.y.k === 'F' ? { k: 'F', e: b.y.e } : { k: b.y.k } }));
+
 // ═════════════════════════════════════════════════ 5. NESNE YAKALAMA ══════════════════════════════════════════════════
 export type SnapKind = 'endpoint' | 'midpoint' | 'center' | 'quadrant' | 'intersection' | 'perpendicular' | 'tangent' | 'nearest';
 export const SNAP_KINDS: SnapKind[] = ['endpoint', 'midpoint', 'center', 'quadrant', 'intersection', 'perpendicular', 'tangent', 'nearest'];
@@ -863,9 +1024,22 @@ export interface DraftState {
   session: { targetId: string; featureId: string; name: string; planeId: string } | null;
   /** Yüze uygulama ayarları (Cut / Shape, derinlik, çapa, uzama) — Drawing paneli. */
   apply: SketchApply;
+  /** Parametric kip — seçili kontrol noktaları ("nesneId:sıra"). */
+  psel: string[];
+  /** Etkin yüzün çerçevesi (sahne katmanı yazar): düzlem koordinatı + (dx, dy) = yüz çerçevesi koordinatı (orijin yüzün sol-alt köşesi);
+   *  w / h yüz ölçüsü; vars formül değişkenleri (W, H dahil). */
+  face: DraftFace | null;
+  /** Parametric önizleme: sanal yüz ölçüsü (null = kapalı) — çizimin o ölçüde alacağı hâl sahnede hayalet olarak çizilir. */
+  pview: { w: number; h: number } | null;
 }
+export interface DraftFace { planeId: string; dx: number; dy: number; w: number; h: number; vars: Record<string, number> }
 export interface DraftIsolate { targetId: string; bodyId: string; kind: 'panel' | 'body' }
-export interface SketchApply { op: 'cut' | 'shape'; through: boolean; depth: number; anchor: [number, number]; stretch: [boolean, boolean] }
+/** mode: 'anchor' = tek çapa + uzama (eski yöntem) · 'points' = her nokta kenara / formüle bağlı. auto: bağlanmamış noktalar en yakın
+ *  kenara bağlanır (kapalıysa çapaya). */
+export interface SketchApply {
+  op: 'cut' | 'shape'; through: boolean; depth: number; anchor: [number, number]; stretch: [boolean, boolean];
+  mode: 'anchor' | 'points'; auto: boolean;
+}
 const DYN0 = { len: null, ang: null, field: 'len' as const };
 export const useDraft = create<DraftState>(() => ({
   planes: [GROUND_PLANE], activePlane: GROUND_PLANE.id, planePick: false,
@@ -877,7 +1051,8 @@ export const useDraft = create<DraftState>(() => ({
   },
   lastCmd: null, recent: {}, typed: '', panelOpen: false,
   planeCandidate: null, isolate: null, session: null,
-  apply: { op: 'cut', through: true, depth: 8, anchor: [0, 0], stretch: [false, false] },
+  apply: { op: 'cut', through: true, depth: 8, anchor: [0, 0], stretch: [false, false], mode: 'anchor', auto: true },
+  psel: [], face: null, pview: null,
 }));
 const get = useDraft.getState, set = useDraft.setState;
 
@@ -900,9 +1075,20 @@ export const setPlaneCandidate = (c: DraftState['planeCandidate']) => set({ plan
 export const setIsolate = (i: DraftIsolate | null) => set({ isolate: i });
 export const setSession = (x: DraftState['session']) => set({ session: x });
 export const setApply = (patch: Partial<SketchApply>) => set(s => ({ apply: { ...s.apply, ...patch } }));
+export const setFace = (f: DraftFace | null) => set({ face: f });
+export const setPView = (v: DraftState['pview']) => set({ pview: v });
+export const setPSel = (keys: string[]) => set({ psel: keys });
 
 const say = (t: string) => set(s => ({ log: [...s.log.slice(-59), t] }));
-export const stripEnt = (e: Entity): Shape2 => { const s: Record<string, unknown> = { ...e }; delete s.id; delete s.plane; return s as unknown as Shape2; };
+export const stripEnt = (e: Entity): Shape2 => { const s: Record<string, unknown> = { ...e }; delete s.id; delete s.plane; delete s.pb; delete s.re; return s as unknown as Shape2; };
+/** Nesne güncellenirken nokta bağ tercihleri korunur (tür ve kontrol noktası sayısı aynıysa); yeni biçimle taşınan eski alanlar atılır. */
+const keepPrefs = (old: Entity, next: Entity): Entity => {
+  const out = { ...next };
+  delete out.pb; delete out.re;
+  if (old.pb && old.t === next.t && ctrlPoints(old).length === ctrlPoints(next).length) out.pb = old.pb;
+  if (old.re && next.t === 'circle') out.re = old.re;
+  return out;
+};
 const planeEnts = () => { const st = get(); return st.entities.filter(e => e.plane === st.activePlane); };
 
 interface Ctx {
@@ -911,10 +1097,15 @@ interface Ctx {
 }
 const ctx: Ctx = {
   ents: planeEnts,
-  add(s) { const e = { ...s, id: `d${Date.now().toString(36)}${(seq++).toString(36)}`, plane: get().activePlane } as Entity; set(st => ({ entities: [...st.entities, e] })); return e; },
+  add(s) {
+    const e = { ...s, id: `d${Date.now().toString(36)}${(seq++).toString(36)}`, plane: get().activePlane } as Entity;
+    delete e.pb; delete e.re;   // yeni nesne (kopya dahil) bağsız başlar → varsayılan bağ
+    set(st => ({ entities: [...st.entities, e] }));
+    return e;
+  },
   addAll(ss) { return ss.map(s => this.add(s)); },
   remove(ids) { const k = new Set(ids); set(st => ({ entities: st.entities.filter(e => !k.has(e.id)), selection: st.selection.filter(i => !k.has(i)) })); },
-  update(id, s) { set(st => ({ entities: st.entities.map(e => (e.id === id ? ({ ...s, id, plane: e.plane } as Entity) : e)) })); },
+  update(id, s) { set(st => ({ entities: st.entities.map(e => (e.id === id ? keepPrefs(e, { ...s, id, plane: e.plane } as Entity) : e)) })); },
   sel() { const k = new Set(get().selection); return planeEnts().filter(e => k.has(e.id)); },
   setSel(ids) { set({ selection: ids }); },
   msg: say,
@@ -1108,11 +1299,11 @@ export function setAids(patch: Partial<Aids>) { set(s => ({ aids: { ...s.aids, .
 // ── Seçim ve düzlem (boşta) ──
 export function selectEntity(id: string | null, additive = false) {
   const st = get();
-  if (!id) { if (st.selection.length) set({ selection: [] }); return; }
+  if (!id) { if (st.selection.length || st.psel.length) set({ selection: [], psel: [] }); return; }
   const e = st.entities.find(x => x.id === id);
   if (!e) return;
-  if (e.plane !== st.activePlane) { set({ activePlane: e.plane, selection: [id] }); return; }
-  set({ selection: additive ? (st.selection.includes(id) ? st.selection.filter(i => i !== id) : [...st.selection, id]) : [id] });
+  if (e.plane !== st.activePlane) { set({ activePlane: e.plane, selection: [id], psel: [] }); return; }
+  set({ selection: additive ? (st.selection.includes(id) ? st.selection.filter(i => i !== id) : [...st.selection, id]) : [id], psel: [] });
 }
 export function eraseSelection(): boolean {
   const st = get();
@@ -1128,19 +1319,22 @@ const near3 = (a: V3, b: V3, tol: number) => Math.abs(a[0] - b[0]) <= tol && Mat
 export function activatePlane(pl: Omit<DraftPlane, 'id'> | 'ground', fresh = false): string {
   cancelCommand();
   const st = get();
-  if (pl === 'ground') { set({ activePlane: GROUND_PLANE.id, planePick: false, planeCandidate: null, selection: [] }); return GROUND_PLANE.id; }
+  if (pl === 'ground') { set({ activePlane: GROUND_PLANE.id, planePick: false, planeCandidate: null, selection: [], psel: [], pview: null }); return GROUND_PLANE.id; }
   const hit = fresh ? undefined
     : st.planes.find(q => q.kind === 'face' && q.id !== st.session?.planeId && q.shapeId === pl.shapeId && near3(q.n, pl.n, 1e-4) && near3(q.origin, pl.origin, 0.05) && near3(q.u, pl.u, 1e-4));
   const used = new Set(st.entities.map(e => e.plane));
   const plane: DraftPlane = hit ?? { ...pl, id: `pl${Date.now().toString(36)}${(seq++).toString(36)}` };
   set({ planes: [...st.planes.filter(q => q.id === GROUND_PLANE.id || q.id === plane.id || used.has(q.id)).filter(q => q.id !== plane.id), plane],
-    activePlane: plane.id, planePick: false, planeCandidate: null, selection: [] });
+    activePlane: plane.id, planePick: false, planeCandidate: null, selection: [], psel: [], pview: null });
   return plane.id;
 }
 export const setPlanePick = (on: boolean) => { if (on) cancelCommand(); set({ planePick: on, planeCandidate: null }); };
 /** Nesneleri bir düzleme yükler (adım düzenleme oturumu); geri alma yığınına girmez. */
-export function loadEntities(shapes: Shape2[], planeId: string): Entity[] {
-  const made = shapes.map(s => ({ ...s, id: `d${Date.now().toString(36)}${(seq++).toString(36)}`, plane: planeId }) as Entity);
+export function loadEntities(shapes: Shape2[], planeId: string, prefs?: (PtPref[] | undefined)[], radii?: (string | null | undefined)[]): Entity[] {
+  const made = shapes.map((s, i) => ({
+    ...s, id: `d${Date.now().toString(36)}${(seq++).toString(36)}`, plane: planeId,
+    ...(prefs?.[i] ? { pb: prefs[i] } : {}), ...(radii?.[i] && s.t === 'circle' ? { re: radii[i]! } : {}),
+  }) as Entity);
   set(st => ({ entities: [...st.entities, ...made] }));
   return made;
 }
@@ -1150,8 +1344,63 @@ export function takeEntities(planeId: string, ids?: string[]): Shape2[] {
   const k = ids ? new Set(ids) : null, st = get();
   const taken = st.entities.filter(e => e.plane === planeId && (!k || k.has(e.id)));
   const gone = new Set(taken.map(e => e.id));
-  set({ entities: st.entities.filter(e => !gone.has(e.id)), selection: st.selection.filter(i => !gone.has(i)), undoStack: [], redoStack: [] });
+  set({ entities: st.entities.filter(e => !gone.has(e.id)), selection: st.selection.filter(i => !gone.has(i)), undoStack: [], redoStack: [], psel: [] });
   return taken.map(stripEnt);
+}
+
+// ── Parametric kip: nokta seçimi ve bağ atama ──
+export const ptKey = (id: string, i: number) => `${id}:${i}`;
+const splitKey = (k: string): [string, number] => { const j = k.lastIndexOf(':'); return [k.slice(0, j), +k.slice(j + 1)]; };
+const groupKeys = (keys: string[]) => { const m = new Map<string, number[]>(); for (const k of keys) { const [id, i] = splitKey(k); m.set(id, [...(m.get(id) ?? []), i]); } return m; };
+/** Bağ düğmelerinin hedefi: seçili noktalar; hiç yoksa seçili nesnelerin tüm noktaları (etkin düzlemde). */
+export function paramTargets(st: Pick<DraftState, 'entities' | 'activePlane' | 'psel' | 'selection'> = get()): string[] {
+  const on = new Map(st.entities.filter(e => e.plane === st.activePlane).map(e => [e.id, e]));
+  const live = st.psel.filter(k => { const [id, i] = splitKey(k), e = on.get(id); return !!e && i < ctrlPoints(e).length; });
+  if (live.length) return live;
+  return st.selection.flatMap(id => { const e = on.get(id); return e ? ctrlPoints(e).map((_, i) => ptKey(id, i)) : []; });
+}
+/** İmlecin altındaki kontrol noktası (etkin düzlem). */
+export function pointAt(q: P2, tol: number): string | null {
+  let best: string | null = null, bd = tol;
+  for (const e of planeEnts()) ctrlPoints(e).forEach((p, i) => { const d = dist(p, q); if (d <= bd) { bd = d; best = ptKey(e.id, i); } });
+  return best;
+}
+/** Noktayı seçer; additive: seçime ekler / seçiliyse çıkarır. */
+export function togglePoint(key: string, additive: boolean) {
+  const cur = get().psel;
+  set({ psel: additive ? (cur.includes(key) ? cur.filter(k => k !== key) : [...cur, key]) : [key], selection: [] });
+}
+function mapEnts(ids: Set<string>, f: (e: Entity) => Entity, undoable: boolean) {
+  const st = get(), next = st.entities.map(e => (ids.has(e.id) ? f(e) : e));
+  set(undoable ? { entities: next, undoStack: [...st.undoStack.slice(-49), st.entities], redoStack: [] } : { entities: next });
+}
+const prefsArr = (e: Entity): PtPref[] => ctrlPoints(e).map((_, i) => ({ ...(e.pb?.[i] ?? {}) }));
+/** Noktalara bağ TÜRÜ verir — nokta yerinde kalır, yalnız hangi kenara bağlı olduğu değişir. pref null: tercih silinir (varsayılana döner). */
+export function setPointPrefs(keys: string[], axis: 'x' | 'y', pref: AxisPref | null) {
+  const by = groupKeys(keys);
+  mapEnts(new Set(by.keys()), e => {
+    const pb = prefsArr(e);
+    for (const i of by.get(e.id)!) if (pb[i]) { if (pref) pb[i][axis] = pref; else delete pb[i][axis]; }
+    return { ...e, pb };
+  }, false);
+}
+/** Noktaları o eksende verilen koordinata TAŞIR (düzlem koordinatı) ve bağ tercihini yazar — değer / formül girişi. Geri alınabilir. */
+export function movePointsTo(keys: string[], axis: 'x' | 'y', coord: number, pref: AxisPref) {
+  const by = groupKeys(keys);
+  mapEnts(new Set(by.keys()), e => {
+    const cp = ctrlPoints(e), pb = prefsArr(e);
+    for (const i of by.get(e.id)!) if (cp[i]) { cp[i] = axis === 'x' ? P(coord, cp[i].y) : P(cp[i].x, coord); pb[i][axis] = pref; }
+    return { ...(withCtrl(e, cp) as Entity), pb };
+  }, true);
+}
+/** Dairelerin yarıçapı: r uygulanır; expr verilirse formül olarak saklanır (yüz ölçüsü değişince yeniden hesaplanır). Geri alınabilir. */
+export function setCircleRadius(ids: string[], r: number, expr: string | null) {
+  mapEnts(new Set(ids), e => {
+    if (e.t !== 'circle' || !(r > LEN_EPS)) return e;
+    const out: Entity = { ...e, r };
+    if (expr) out.re = expr; else delete out.re;
+    return out;
+  }, true);
 }
 
 // ═════════════════════════════════════════════════ 7. KOMUTLAR ════════════════════════════════════════════════════════
@@ -1189,6 +1438,29 @@ function* selectObjects(c: Ctx, tag: string, usePre = true): G<Entity[] | null> 
   const out = c.ents().filter(e => ids.has(e.id));
   c.setSel(out.map(e => e.id));
   return out.length ? out : null;
+}
+
+/** Parametric kip — kontrol noktası seçimi: noktaya tık ekler / çıkarır; boşluğa tık pencere açar (içindeki noktalar eklenir, Shift çıkarır). */
+function* PSEL(c: Ctx): G {
+  const all = () => c.ents().flatMap(e => ctrlPoints(e).map((_, i) => ptKey(e.id, i)));
+  for (;;) {
+    const n = get().psel.length;
+    const ev = yield {
+      kind: 'point', noSnap: true, noTrack: true, opts: [o('All', 'A'), o('Clear', 'C')],
+      prompt: `POINTS  Click a point, or the first corner of a window${n ? `  (${n} selected)` : ''}`,
+    };
+    if (isOpt(ev, 'A')) { set({ psel: all(), selection: [] }); continue; }
+    if (isOpt(ev, 'C')) { set({ psel: [] }); continue; }
+    if (ev.k !== 'pt') return;
+    const hit = pointAt(ev.p, lastMove?.tol ?? 0);
+    if (hit) { togglePoint(hit, true); continue; }
+    const a = ev.p;
+    const e2 = yield { kind: 'point', noSnap: true, noTrack: true, prompt: 'POINTS  Specify opposite corner', preview: cur => [{ t: 'box', a, b: cur, crossing: false }] };
+    if (e2.k !== 'pt') continue;
+    const cur = new Set(get().psel);
+    for (const e of c.ents()) ctrlPoints(e).forEach((p, i) => { if (inBox(p, a, e2.p)) { if (e2.shift) cur.delete(ptKey(e.id, i)); else cur.add(ptKey(e.id, i)); } });
+    set({ psel: [...cur], selection: [] });
+  }
 }
 
 // ── DRAW ──
@@ -2193,6 +2465,7 @@ export const COMMANDS: CmdDef[] = [
   M('ERASE', 'Erase', ERASE, ['E', 'DELETE']),
   M('EXPLODE', 'Explode', EXPLODE, ['X']),
   M('OFFSET', 'Offset', OFFSET, ['O']),
+  M('PSEL', 'Select points', PSEL, ['POINTS']),
 ];
 export const commandById = (id: string) => COMMANDS.find(c => c.id === id);
 /** Metin bir komut adı / kısaltması mı? (komut satırında Boşluk = Enter kararı için) */

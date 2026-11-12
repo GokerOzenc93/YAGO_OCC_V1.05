@@ -2220,8 +2220,10 @@ function sketchStepItems(target: Shape, liveId: string | null): StepItem[] {
       id: f.id, badge: SKETCH_BADGE[f.op], axis: ax.toUpperCase(), axisColor: AXIS_COLORS[ax] || '#57534e', value: f.depth ?? 0,
       text: f.op === 'shape' ? 'Outline' : f.depth == null ? 'Through' : `${fmt1(f.depth)} deep`, editable: true, save: () => { /* satır içi değer yok */ },
       onEdit: () => { void editSketch(target.id, f.id); }, remove: () => { void deleteSketch(target.id, f.id); },
-      error: errs[f.id], live: liveId === f.id,
-      title: `${f.name} — anchored to the ${ANCHOR_TXT(f.anchor)} of the face${str}. Pencil: edit the drawing.`,
+      error: errs[f.id], live: liveId === f.id, tag: f.mode === 'points' ? 'P' : undefined,
+      title: f.mode === 'points'
+        ? `${f.name} — parametric: every point is tied to an edge, a ratio or a formula. Pencil: edit the drawing.`
+        : `${f.name} — anchored to the ${ANCHOR_TXT(f.anchor)} of the face${str}. Pencil: edit the drawing.`,
     };
   });
 }

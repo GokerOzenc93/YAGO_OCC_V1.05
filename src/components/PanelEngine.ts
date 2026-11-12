@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { type CavityBox, type PanelGroup, type PanelHole, type RailExt, type RailExtTarget, type Shape, type VirtualFace, childPanelsOf, panelOfVf, shapeById, useAppStore, vfOfPanel } from '../store';
 import {
   type ExtrudeStep, type TransformStep, applyExtrudeSteps, applyTransformSteps, getUnifiedSteps, matchReferenceFace, resolveReferenceFacePlane, stepRefTargets,
-  applySketchFeatures, liveSketchFeatures, sketchFeaturesKey,
+  applySketchFeatures, liveSketchFeatures, sketchFeaturesKey, sketchVarsOf,
 } from './Geometry';
 import { type RotOp, applyRailExt, clipRegionToRailStrip, railLandingOnBody, computeFaceComponentContour, computeFreeRegionLocal, convexHull2D, footprintGeometry, panelBehindStackPlane, largestFaceNormal, panelHasRotation, panelInnerBigFace, panelIsTiltedSlab, toUV } from './Geometry';
 import { type CoplanarFaceGroup, type FaceData, type Vec3, angleToTouchPlane, assertBounds, axisDirToVec, axisIndexOf, boundsOverlapBox, convertReplicadToThreeGeometry, createHoleCylinder, createPanelFromVirtualFace, createReplicadBox, createReplicadBoxAt, cutWithTools, dot3, effectiveBodyGeometry, errMsg, findFaceByDescriptor, fromPlaneUV, getFacePlaneAxes, getFacesAndGroups, getShapeMatrix, halfSpaceSlab, isFlatNormal, localBboxOf, normDeg, panelThickness, pointFromFracBox, projRange, resolveVfFracPoint, rotateAboutAxis, round1, round3, spanAlong, toVector3, uniqueMeshPoints, uniquePoints, vec3, vertexModsKey, vfRawMinAlong, worldBboxOf } from './Geometry';
@@ -873,11 +873,13 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
       if (feats.length) {
         preGeo = grooved ? grooved.geometry : meshed && meshed.shape === rp ? meshed.geometry : convertReplicadToThreeGeometry(rp);
         const baseGeo = ungrooved ?? preGeo;
-        const sig = `${meshSignature(preGeo)}|${meshSignature(baseGeo)}|${stepRot.toArray().map(x => x.toFixed(5)).join(',')}|${sketchFeaturesKey(feats)}`;
+        // Parametric adımların formül değişkenleri üst gövdeden okunur (ölçüler + özel parametreler); değerleri önbellek anahtarına girer.
+        const vars = feats.some(f => f.mode === 'points') ? sketchVarsOf((shapeById(parentShapeId) ?? parentFresh)?.parameters) : {};
+        const sig = `${meshSignature(preGeo)}|${meshSignature(baseGeo)}|${stepRot.toArray().map(x => x.toFixed(5)).join(',')}|${sketchFeaturesKey(feats)}|${JSON.stringify(vars)}`;
         const hit = _sketchCache.get(panel.id);
         if (hit && hit.sig === sig) { sketched = hit.rp ? { rp: hit.rp, geometry: hit.geometry! } : null; sketchErrors = hit.errors; }
         else {
-          const res = await applySketchFeatures(rp, baseGeo, feats, stepRot);
+          const res = await applySketchFeatures(rp, baseGeo, feats, stepRot, vars);
           sketched = res.applied ? { rp: res.shape, geometry: convertReplicadToThreeGeometry(res.shape) } : null;
           sketchErrors = res.errors;
           if (_sketchCache.size > 200) _sketchCache.clear();

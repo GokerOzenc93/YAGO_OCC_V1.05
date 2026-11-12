@@ -5,7 +5,7 @@ import {
   type VirtualFace, type FaceDescriptor, type FilletInfo, type SubtractedGeometry, type Shape, shapeById, requestRebuild, vfOfPanel, type RefFacePick,
   type RailStripSpec, type RailExt, type RailExtTarget, type SketchFeature, useAppStore,
 } from '../store';
-import { type Shape2, profileLoops, scaleShapeXY, moveShape } from './Draft';
+import { type Shape2, profileLoops, scaleShapeXY, moveShape, resolveParam } from './Draft';
 
 /* GEOMETRY — 1) geometri çekirdeği + OCC katı servisi · 2) yüz bölgesi (serbest bölge, ayak izi, 2B çokgen) ·
    3) panel işlem adımları (taşı / döndür / yüz extrude, referans yüz seçimi). */
@@ -624,7 +624,9 @@ export function sketchFrameOf(mesh: THREE.BufferGeometry | undefined | null, n3:
   return { o: n.clone().multiplyScalar(d).addScaledVector(u, u0).addScaledVector(v, v0), u, v, n, w: u1 - u0, h: v1 - v0, through: d - dMin };
 }
 /** Adımın nesneleri yüz koordinatında (orijin = yüzün alt-sol köşesi): uzama ölçeği + çapa ötelemesi uygulanmış. */
-export function placeSketchShapes(f: SketchFeature, w: number, h: number): Shape2[] {
+export function placeSketchShapes(f: SketchFeature, w: number, h: number, vars: Record<string, number> = {}): Shape2[] {
+  // Parametric kip: her kontrol noktası kendi bağıyla (kenar / oran / formül) çözülür; formül çözülemezse fırlatır.
+  if (f.mode === 'points' && f.pts) return resolveParam(f.shapes, f.pts, f.radii, w, h, vars);
   const sx = f.stretch[0] && f.baseSize[0] > 1e-6 ? w / f.baseSize[0] : 1, sy = f.stretch[1] && f.baseSize[1] > 1e-6 ? h / f.baseSize[1] : 1;
   const at = { x: f.anchor[0] * w, y: f.anchor[1] * h };
   return f.shapes.map(s => moveShape(scaleShapeXY(s, sx, sy), at));
@@ -635,13 +637,24 @@ export const setSketchSuppressed = (id: string | null) => { _sketchSuppressed = 
 export const liveSketchFeatures = (shape: { parameters?: any } | undefined | null): SketchFeature[] =>
   ((shape?.parameters?.sketchFeatures ?? []) as SketchFeature[]).filter(f => f && f.id !== _sketchSuppressed);
 /** Önbellek anahtarı: adımların üretimi etkileyen tüm alanları. */
-export const sketchFeaturesKey = (feats: SketchFeature[]) => JSON.stringify(feats.map(f => [f.id, f.op, f.depth, f.n, f.u, f.inset, f.anchor, f.stretch, f.baseSize, f.shapes]));
+export const sketchFeaturesKey = (feats: SketchFeature[]) =>
+  JSON.stringify(feats.map(f => [f.id, f.op, f.depth, f.n, f.u, f.inset, f.anchor, f.stretch, f.baseSize, f.shapes, f.mode, f.pts, f.radii]));
+/** Parametric adımların formül değişkenleri (W / H çözümde yüz ölçüsünden eklenir): gövde ölçüleri BW / BH / BD + gövdenin özel
+ *  parametreleri (Parameters paneli). Panelde üst gövdenin parametreleri verilir. */
+export function sketchVarsOf(bodyParams: any, size?: { width: number; height: number; depth: number }): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const p of (bodyParams?.customParameters ?? []) as { name?: string; result?: number }[]) {
+    if (p?.name && typeof p.result === 'number' && Number.isFinite(p.result)) out[p.name] = p.result;
+  }
+  out.BW = size?.width ?? bodyParams?.width ?? 0; out.BH = size?.height ?? bodyParams?.height ?? 0; out.BD = size?.depth ?? bodyParams?.depth ?? 0;
+  return out;
+}
 
 /** Adımın kesici katısı: kapalı döngüler yüz düzleminin 1 mm DIŞINDAN içeri doğru prizmalanır; iç içe döngülerde tek sıra ada / deliktir. */
-async function sketchToolOf(f: SketchFeature, fr: SketchFrame): Promise<any | null> {
+async function sketchToolOf(f: SketchFeature, fr: SketchFrame, vars: Record<string, number>): Promise<any | null> {
   await initReplicad();
   const { draw, Plane } = await import('replicad');
-  const { loops } = profileLoops(placeSketchShapes(f, fr.w, fr.h));
+  const { loops } = profileLoops(placeSketchShapes(f, fr.w, fr.h, vars));
   if (!loops.length) return null;
   const LIFT = 1;
   const through = f.op === 'shape' || f.depth == null || !(f.depth > 0);
@@ -661,7 +674,8 @@ async function sketchToolOf(f: SketchFeature, fr: SketchFrame): Promise<any | nu
 }
 /** Adımları sırayla katıya uygular: cut = profili çıkar, shape = yalnız profilin içini bırak. Çerçeve her adımda KESİLMEMİŞ mesh'ten okunur
  *  (adımlar birbirinin çapasını bozmaz). Uygulanamayan adım atlanır ve `errors`a yazılır; katı o adım olmadan devam eder. */
-export async function applySketchFeatures(solid: any, mesh: THREE.BufferGeometry, feats: SketchFeature[], q?: THREE.Quaternion | null):
+export async function applySketchFeatures(solid: any, mesh: THREE.BufferGeometry, feats: SketchFeature[], q?: THREE.Quaternion | null,
+  vars: Record<string, number> = {}):
   Promise<{ shape: any; applied: number; errors: Record<string, string> }> {
   let shape = solid, applied = 0;
   const errors: Record<string, string> = {};
@@ -669,7 +683,7 @@ export async function applySketchFeatures(solid: any, mesh: THREE.BufferGeometry
     try {
       const fr = sketchFrameOf(mesh, f.n, f.u, f.inset, q);
       if (!fr) throw new Error('Face not found');
-      const tool = await sketchToolOf(f, fr);
+      const tool = await sketchToolOf(f, fr, vars);
       if (!tool) throw new Error('No closed profile');
       const next = f.op === 'shape' ? shape.intersect(tool) : shape.cut(tool);
       if (!next?.wrapped || typeof next.cut !== 'function') throw new Error('Result is not a solid');
@@ -1022,7 +1036,7 @@ export async function rebuildBodySolid(
   let sketchBase: THREE.BufferGeometry | undefined, sketchErrors: Record<string, string> | undefined;
   if (feats.length) {
     sketchBase = convertReplicadToThreeGeometry(shape);
-    const res = await applySketchFeatures(shape, sketchBase, feats);
+    const res = await applySketchFeatures(shape, sketchBase, feats, null, sketchVarsOf(body.parameters, sz));
     shape = res.shape;
     if (Object.keys(res.errors).length) sketchErrors = res.errors;
   }
@@ -1097,6 +1111,9 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
 
     let subtractions: any[] | undefined = selectedShape.subtractionGeometries;
     let needsSolid = dimensionsChanged || (filletsChanged && !!selectedShape.replicadShape);
+    // Parametric çizim adımı olan gövdede özel parametre değeri değişirse katı yeniden kurulur (adım formülleri o değerleri okur).
+    const customKey = (list: any[] | undefined) => JSON.stringify((list ?? []).map(p => [p?.name, p?.result]));
+    if ((cur.sketchFeatures ?? []).some((f: SketchFeature) => f?.mode === 'points') && customKey(cur.customParameters) !== customKey(customParameters)) needsSolid = true;
     if (hasSubtractionChanges) {
       const updated = {
         ...selectedShape.subtractionGeometries![selectedSubtractionIndex!],
@@ -1111,7 +1128,7 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
 
     const { rotation, scale: shapeScale, vertexModifications: vMods, parameters } = baseUpdate;
     if (!needsSolid) { updateShape(selectedShape.id, { rotation, scale: shapeScale, vertexModifications: vMods, parameters }); return; }
-    const r = await rebuildBodySolid({ parameters: cur, fillets: withRadii(selectedShape.fillets || []) }, subtractions, size);
+    const r = await rebuildBodySolid({ parameters: { ...cur, customParameters }, fillets: withRadii(selectedShape.fillets || []) }, subtractions, size);
     updateShape(selectedShape.id, {
       geometry: r.geometry, replicadShape: r.replicadShape, fillets: r.fillets,
       ...(hasSubtractionChanges ? { subtractionGeometries: subtractions } : {}),

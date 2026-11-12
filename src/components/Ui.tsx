@@ -411,7 +411,7 @@ export const Terminal: React.FC = () => {
       if (inField && !own) return;
       if (e.key === 'Escape') {
         // Çizim komutu / düzlem seçimi / çizim seçimi varsa Esc yalnız onu kapatır (Scene'in Esc'i çalışmaz).
-        if (active || st.planePick || st.selection.length) {
+        if (active || st.planePick || st.selection.length || st.psel.length) {
           e.preventDefault(); e.stopPropagation();
           if (!cancelCommand()) { setPlanePick(false); selectEntity(null); }
         }

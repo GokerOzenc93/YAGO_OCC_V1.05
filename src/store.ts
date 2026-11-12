@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import { type AxisDir, type Vec3, type VertexModification, rebuildBodySolid } from './components/Geometry';
 import type { PlinthSet, PlinthPick } from './components/PlinthService';
 import type { LegRule } from './components/LegLayout';
-import type { Shape2 } from './components/Draft';
+import type { PtBind, Shape2 } from './components/Draft';
 
 export interface SubtractionParameters {
   width: string; height: string; depth: string;
@@ -41,6 +41,10 @@ export interface SketchFeature {
   n: Vec3; u: Vec3; inset: number;
   anchor: [number, number]; stretch: [boolean, boolean]; baseSize: [number, number];
   shapes: Shape2[];
+  /** PARAMETRİK kip (Draft.resolveParam): `mode: 'points'` ise çapa / uzama KULLANILMAZ — shapes yüz çerçevesi koordinatındadır (orijin
+   *  yüzün sol-alt köşesi, baseSize ölçüsünde) ve her nesnenin her kontrol noktası kendi X / Y bağıyla çözülür: sol / sağ / orta / oran /
+   *  formül (pts[nesne][nokta]). radii: dairelerde yarıçap formülü (yoksa sabit). mode yoksa eski yöntem. */
+  mode?: 'points'; pts?: PtBind[][]; radii?: (string | null)[];
 }
 
 export interface SubtractedGeometry {
