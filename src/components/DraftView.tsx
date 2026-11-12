@@ -9,12 +9,12 @@ import {
 } from './Geometry';
 import { panelStepRotation, whenRebuildIdle } from './PanelEngine';
 import {
-  type DraftIsolate, type SketchApply, type DraftPlane, type DraftFace, type BindDefault, type BindKind, type SketchBind, type Entity, type Geo, type GeoStyle, type LineS, type P2, type Shape2, type SnapKind, type V3, GROUND_PLANE, SNAP_KINDS,
+  type DraftIsolate, type SketchApply, type DraftPlane, type DraftFace, type BindDefault, type CircleS, type SketchBind, type Entity, type Geo, type GeoStyle, type LineS, type P2, type Shape2, type SnapKind, type V3, GROUND_PLANE, SNAP_KINDS,
   SNAP_LABEL, activatePlane, cancelCommand, closestOn, commandActive, commandById, deg, dist, enterKey, fmt, loadEntities, moveShape, pointerClick, pointerLeave,
   pointerMove, profileLoops, selectEntity, setAids, setApply, setExtraSnap, setIsolate, setPanelOpen, setPlaneCandidate, setPlaneConfirm, setPlanePick, setSession,
   startCommand, stripEnt, takeEntities, tessellate, useDraft,
   autoKind, bindCoord, bindText, bindsOf, ctrlPoints, evalExpr, movePointsTo, paramTargets, parseBind, pointAt, prefsOf, ptKey,
-  setCircleRadius, setFace, setPSel, setPView, setPointPrefs, togglePoint,
+  segmentAt, selectPoints, setCircleRadius, setFace, setPHover, setPointPrefs, setRefEdges, togglePoint,
 } from './Draft';
 
 /* 2B ÇİZİM GÖRÜNÜMÜ — Draft.ts çekirdeğinin sahne katmanı ve sağdaki Drawing paneli.
@@ -253,8 +253,11 @@ const PlaneEntities: React.FC<{ matrix: THREE.Matrix4; ents: Entity[]; active: b
         <group position={[0, 0, LIFT]}>
           {ents.map(e => {
             const sel = selection.has(e.id), hov = hoverId === e.id;
-            return <DLine key={e.id} s={e} color={sel ? COL.sel : hov ? COL.hi : active ? COL.ent : COL.other} width={sel ? 2.2 : hov ? 2.6 : active ? 1.7 : 1.3}
-              dash={sel ? dash * 5 : 0} order={sel || hov ? 21 : 20} depth />;
+            // Referans kenar (panelin / gövdenin kendi çizgisi): ince ve soluk; üzerine gelince / seçilince öteki nesneler gibi vurgulanır.
+            const ref = !!e.ref && !sel && !hov;
+            if (ref) return null;   // panelin kendi kenarı zaten sahnede çizili — üstüne ikinci bir çizgi kalabalık yapar
+            return <DLine key={e.id} s={e} color={sel ? COL.sel : hov ? COL.hi : ref ? COL.hi : active ? COL.ent : COL.other} width={sel ? 2.2 : hov ? 2.6 : ref ? 1.2 : active ? 1.7 : 1.3}
+              dash={sel ? dash * 5 : 0} order={sel || hov ? 21 : 20} depth opacity={ref ? 0.5 : 1} />;
           })}
         </group>
       </group>
@@ -384,7 +387,6 @@ export function confirmFacePick() {
   keepPose();
   activatePlane(c.plane);
   setIsolate({ targetId: c.shapeId, bodyId: c.bodyId, kind: c.kind });
-  if (c.kind === 'body') setApply({ op: 'cut' });
   sceneApi.fly?.(c.center, c.normal, c.up, c.extent);
 }
 setPlaneConfirm(confirmFacePick);
@@ -481,7 +483,7 @@ export async function applySketch(): Promise<string | null> {
   if (st.session) return finishSketchEdit(true);
   const ft = faceTarget();
   if (!ft) return 'Pick a face first.';
-  const ents = st.entities.filter(e => e.plane === ft.plane.id), picked = ents.filter(e => st.selection.includes(e.id)), use = picked.length ? picked : ents;
+  const ents = st.entities.filter(e => e.plane === ft.plane.id && !e.ref), picked = ents.filter(e => st.selection.includes(e.id)), use = picked.length ? picked : ents;
   if (!profileLoops(use).loops.length) return 'Draw a closed profile on the face first.';
   if (ft.kind === 'body' && ft.shape.vertexModifications?.length) return 'Not available on a vertex-edited body yet.';
   cancelCommand();
@@ -490,14 +492,13 @@ export async function applySketch(): Promise<string | null> {
   if (!target) return 'The face no longer exists.';
   const a = st.apply, r = await frameOfPlane(target, ft.plane);
   if (!r) return 'The face could not be resolved.';
-  const op = ft.kind === 'body' ? 'cut' : a.op, label = op === 'cut' ? 'Cut' : 'Shape';
+  const op = a.op, label = op === 'cut' ? 'Cut' : 'Shape';
   const feature: SketchFeature = {
     id: genId('sk'), name: `${label} ${sketchFeaturesOf(target).filter(f => f.op === op).length + 1}`, timestamp: Date.now(),
     op, depth: op === 'shape' || a.through ? null : Math.max(0.1, a.depth), n: r.n, u: r.u, inset: r.inset,
     ...sketchPayload(use, a, r.fr.w, r.fr.h, r.dx, r.dy, varsOfTarget(target)),
   };
   writeFeatures(target.id, old => [...old, feature]);
-  setPView(null);
   takeEntities(ft.plane.id, use.map(e => e.id));
   await rebuildTarget(target.id);
   const err = shapeById(target.id)?.parameters?.sketchErrors?.[feature.id] as string | undefined;
@@ -544,11 +545,11 @@ export async function finishSketchEdit(save: boolean, stay = false): Promise<str
   const target = shapeById(ses.targetId), f = sketchFeaturesOf(target).find(x => x.id === ses.featureId);
   cancelCommand();
   if (save && target && f) {
-    const ents = st.entities.filter(e => e.plane === ses.planeId);
+    const ents = st.entities.filter(e => e.plane === ses.planeId && !e.ref);
     if (!profileLoops(ents).loops.length) return 'The step needs at least one closed profile.';
     const fr = sketchFrameOf(await uncutMeshOf(target), f.n, f.u, f.inset, stepRotationOf(target));
     if (!fr) return 'The face could not be resolved.';
-    const a = st.apply, op = isPanel(target) ? a.op : 'cut';
+    const a = st.apply, op = a.op;
     // Oturum düzleminin orijini yüz çerçevesinin orijinidir (dx = dy = 0). Kip değişmişse eski kipin alanları adımdan düşer.
     const { mode: _m, pts: _p, radii: _r, ...kept } = f;
     void _m; void _p; void _r;
@@ -558,7 +559,6 @@ export async function finishSketchEdit(save: boolean, stay = false): Promise<str
     writeFeatures(target.id, old => old.map(x => (x.id === f.id ? next : x)));
   }
   takeEntities(ses.planeId);
-  setPView(null);
   setSketchSuppressed(null); setSession(null);
   if (!stay && applyBeforeEdit) { setApply(applyBeforeEdit); applyBeforeEdit = null; }
   if (target) await rebuildTarget(target.id);
@@ -586,13 +586,54 @@ function paramPoints(ents: Entity[], face: DraftFace, a: SketchApply): PInfo[] {
   }
   return out;
 }
-/** Çizimin verilen (sanal) yüz ölçüsünde alacağı hâl, düzlem koordinatında — geçerli kipin kurallarıyla. Formül çözülemezse null. */
-function previewShapes(ents: Entity[], face: DraftFace, a: SketchApply, w: number, h: number): Shape2[] | null {
-  try {
-    const pl = sketchPayload(ents, a, face.w, face.h, face.dx, face.dy, face.vars), back = { x: -face.dx, y: -face.dy };
-    return placeSketchShapes(pl as SketchFeature, w, h, face.vars).map(s => moveShape(s, back));
-  } catch { return null; }
+type EdgeKind = 'L' | 'C' | 'R';
+/** İmlecin altındaki YÜZ REFERANSI: kenar (sol / sağ → X, alt / üst → Y) ya da orta çizgi; köşede ve tam ortada ikisi birden. */
+function faceRefAt(p: P2, tol: number, f: DraftFace): { x?: EdgeKind; y?: EdgeKind } | null {
+  const fx = p.x + f.dx, fy = p.y + f.dy, t = tol * 1.2;
+  if (fx < -t || fx > f.w + t || fy < -t || fy > f.h + t) return null;
+  const near = (v: number, size: number): EdgeKind | undefined => (Math.abs(v) <= t ? 'L' : Math.abs(v - size) <= t ? 'R' : Math.abs(v - size / 2) <= t ? 'C' : undefined);
+  const x = near(fx, f.w), y = near(fy, f.h);
+  return x || y ? { x, y } : null;
 }
+const refKey = (r: { x?: EdgeKind; y?: EdgeKind }) => [r.x && `x${r.x}`, r.y && `y${r.y}`].filter(Boolean).join(' ');
+/** Seçili (yoksa tüm) noktaları en yakın kenarlarına bağlar (tam ortadaysa ortaya). */
+function autoBind() {
+  const st = useDraft.getState(), f = st.face;
+  if (!f || f.planeId !== st.activePlane) return;
+  const tg = new Set(paramTargets(st));
+  for (const axis of ['x', 'y'] as const) {
+    const size = axis === 'x' ? f.w : f.h, off = axis === 'x' ? f.dx : f.dy, by: Record<EdgeKind, string[]> = { L: [], R: [], C: [] };
+    for (const e of st.entities) {
+      if (e.plane !== st.activePlane || e.ref) continue;
+      ctrlPoints(e).forEach((q, i) => { const k = ptKey(e.id, i); if (!tg.size || tg.has(k)) by[autoKind((axis === 'x' ? q.x : q.y) + off, size)].push(k); });
+    }
+    for (const k of ['L', 'R', 'C'] as const) if (by[k].length) setPointPrefs(by[k], axis, { k });
+  }
+}
+/** Ekrandaki ölçü etiketi: tıklanınca YERİNDE düzenlenir (Enter uygular, Esc / dışarı tık vazgeçer). onCommit false dönerse değer kabul
+ *  edilmemiştir (alan kırmızı kalır). Düzenleme durumu DimField'da tutulur: Html içeriği ayrı bir DOM kökünde çizilir, giriş alanının
+ *  durumu sahne (R3F) ağacında dursaydı her tuşta eski değere geri dönerdi. */
+type DimProps = { text: string; edit: string; color: string; title: string; onCommit: (t: string) => boolean };
+const DimField: React.FC<DimProps> = ({ text, edit, color, title, onCommit }) => {
+  const [val, setVal] = useState<string | null>(null);
+  const [bad, setBad] = useState(false);
+  if (val === null) return (
+    <button type="button" title={title} aria-label={`Dimension ${text}`} onClick={() => { setVal(edit); setBad(false); }}
+      style={{ ...TAG, pointerEvents: 'auto', cursor: 'text', border: 'none', color, boxShadow: `0 0 0 1px ${color}66` }}>{text}</button>
+  );
+  return (
+    <input autoFocus value={val} spellCheck={false} aria-label="Dimension value" onFocus={e => e.target.select()}
+      onChange={e => { setVal(e.target.value); setBad(false); }} onBlur={() => setVal(null)}
+      onKeyDown={e => { if (e.key === 'Enter') { if (onCommit(val)) setVal(null); else setBad(true); } else if (e.key === 'Escape') setVal(null); }}
+      style={{
+        width: Math.max(52, val.length * 7 + 18), height: 21, padding: '0 5px', borderRadius: 5, border: 'none', outline: 'none', textAlign: 'center',
+        font: `600 11px ${MONO_FONT}`, color: '#1c1917', background: '#fff', boxShadow: bad ? '0 0 0 1.5px #dc2626' : '0 0 0 1.5px #ea580c, 0 3px 10px -3px rgba(40,30,20,0.35)',
+      }} />
+  );
+};
+const DimTag: React.FC<DimProps & { at: P2 }> = ({ at, ...rest }) => (
+  <Html position={[at.x, at.y, 0]} center zIndexRange={[44, 0]}><DimField {...rest} /></Html>
+);
 const BIND_COL = { edge: '#0f766e', ratio: '#7c3aed', formula: '#2563eb' };
 const bindCol = (b: SketchBind) => (b.k === 'F' ? BIND_COL.formula : b.k === 'P' ? BIND_COL.ratio : BIND_COL.edge);
 const TAG: React.CSSProperties = {
@@ -601,9 +642,9 @@ const TAG: React.CSSProperties = {
 };
 /** Sahne katmanı (etkin düzlemin yerel koordinatında). Her noktada küçük kare tutamak + bağlı olduğu kenara doğru çentikler: sola / sağa /
  *  aşağı / yukarı = o kenardan sabit, iki yana kısa = ortadan, iki yana uzun = oran (mor) ya da formül (mavi). Seçili noktalarda bağlı
- *  kenara kesikli kılavuz + değer. `pview`: çizimin o yüz ölçüsündeki hâli + yüz çerçevesi hayalet olarak. */
-const ParamOverlay: React.FC<{ ents: Entity[]; face: DraftFace; apply: SketchApply; targets: Set<string>; pview: { w: number; h: number } | null; wpp: number }> =
-  ({ ents, face, apply, targets, pview, wpp }) => {
+ *  kenara kesikli kılavuz + değer. */
+const ParamOverlay: React.FC<{ ents: Entity[]; face: DraftFace; apply: SketchApply; targets: Set<string>; wpp: number }> =
+  ({ ents, face, apply, targets, wpp }) => {
     const show = apply.mode === 'points';
     const infos = useMemo(() => (show ? paramPoints(ents, face, apply) : []), [show, ents, face, apply]);
     const geo = useMemo(() => {
@@ -627,36 +668,71 @@ const ParamOverlay: React.FC<{ ents: Entity[]; face: DraftFace; apply: SketchApp
       return { all: mk(all), sel: mk(sel), ticks };
     }, [infos, targets, wpp]);
     useEffect(() => () => { geo.all.dispose(); geo.sel.dispose(); geo.ticks.dispose(); }, [geo]);
-    // Seçili noktaların kılavuzları (kalabalık olmasın diye ilk 4 nokta): bağlı kenardan / ortadan noktaya kesikli çizgi + değer.
+    // Seçili noktaların kılavuzları: aynı bağı paylaşan noktalara TEK ölçü (eksen başına en çok 3) — bağlı kenardan / ortadan noktaya
+    // kesikli çizgi + tıklanıp yerinde düzenlenen değer.
     const guides = useMemo(() => {
-      const out: { key: string; line: LineS | null; at: P2; text: string; color: string }[] = [];
+      const out: { key: string; info: PInfo; axis: 'x' | 'y'; line: LineS | null; at: P2; text: string; edit: string; color: string }[] = [];
       const x0 = -face.dx, y0 = -face.dy;
-      const one = (i: PInfo, b: SketchBind, horiz: boolean) => {
-        const size = horiz ? face.w : face.h, o = horiz ? x0 : y0, at = horiz ? i.p.x : i.p.y, color = bindCol(b);
-        // Etiketler tutamağı ve birbirini örtmesin: yatay kılavuzun değeri çizginin üstünde, dikeyinki sağında; formüller noktanın altında / üstünde.
-        if (b.k === 'F') { out.push({ key: `${i.key}${horiz ? 'x' : 'y'}`, line: null, at: pt(i.p.x, i.p.y + (horiz ? -17 : 17) * wpp), text: `${horiz ? 'X' : 'Y'} = ${b.e}`, color }); return; }
-        const ref = b.k === 'R' ? o + size : b.k === 'C' ? o + size / 2 : o;
-        const text = b.k === 'P' ? `${fmt(b.v * 100, 1)}%` : b.k === 'C' && Math.abs(b.v) < 0.005 ? 'centre' : fmt(Math.abs(b.v), 1);
-        const line: LineS = horiz ? { t: 'line', a: pt(ref, i.p.y), b: pt(at, i.p.y) } : { t: 'line', a: pt(i.p.x, ref), b: pt(i.p.x, at) };
-        out.push({ key: `${i.key}${horiz ? 'x' : 'y'}`, line, at: horiz ? pt((ref + at) / 2, i.p.y + 10 * wpp) : pt(i.p.x + 24 * wpp, (ref + at) / 2), text, color });
-      };
-      for (const i of infos.filter(q => targets.has(q.key)).slice(0, 4)) { one(i, i.bx, true); one(i, i.by, false); }
+      for (const horiz of [true, false]) {
+        const seen = new Set<string>();
+        for (const i of infos) {
+          if (!targets.has(i.key)) continue;
+          const b = horiz ? i.bx : i.by, sig = bindText(b, horiz ? 'W' : 'H');
+          if (seen.has(sig) || seen.size >= 3) continue;
+          seen.add(sig);
+          const key = `${i.key}${horiz ? 'x' : 'y'}`, axis = horiz ? 'x' as const : 'y' as const, color = bindCol(b);
+          // Etiketler tutamağı ve birbirini örtmesin: değer, kılavuz çizgisinin yüzün İÇİNE bakan yanında durur (köşeye yakın noktada X ve Y
+          // etiketleri ayrı yönlere açılır); formül noktanın altında / üstünde.
+          const inY = i.p.y + face.dy < face.h / 2 ? 1 : -1, inX = i.p.x + face.dx < face.w / 2 ? 1 : -1;
+          if (b.k === 'F') { out.push({ key, info: i, axis, line: null, at: pt(i.p.x, i.p.y + (horiz ? -17 : 17) * wpp), text: `${horiz ? 'X' : 'Y'} = ${b.e}`, edit: b.e, color }); continue; }
+          const size = horiz ? face.w : face.h, o = horiz ? x0 : y0, at = horiz ? i.p.x : i.p.y, ref = b.k === 'R' ? o + size : b.k === 'C' ? o + size / 2 : o;
+          const text = b.k === 'P' ? `${fmt(b.v * 100, 1)}%` : b.k === 'C' && Math.abs(b.v) < 0.005 ? 'centre' : fmt(Math.abs(b.v), 1);
+          const line: LineS = horiz ? { t: 'line', a: pt(ref, i.p.y), b: pt(at, i.p.y) } : { t: 'line', a: pt(i.p.x, ref), b: pt(i.p.x, at) };
+          out.push({ key, info: i, axis, line, at: horiz ? pt((ref + at) / 2, i.p.y + inY * 13 * wpp) : pt(i.p.x + inX * 26 * wpp, (ref + at) / 2), text, edit: b.k === 'P' ? `${fmt(b.v * 100, 2)}%` : fmt(Math.abs(b.v), 2), color });
+        }
+      }
       return out;
     }, [infos, targets, face, wpp]);
-    const ghost = useMemo(() => {
-      if (!pview || (Math.abs(pview.w - face.w) < 0.01 && Math.abs(pview.h - face.h) < 0.01)) return null;
-      const x0 = -face.dx, y0 = -face.dy;
-      const rect: Shape2 = { t: 'pline', closed: true, v: [pt(x0, y0), pt(x0 + pview.w, y0), pt(x0 + pview.w, y0 + pview.h), pt(x0, y0 + pview.h)] };
-      return { rect, shapes: previewShapes(ents, face, apply, pview.w, pview.h) ?? [] };
-    }, [pview, ents, face, apply]);
+    /** Ölçü değeri yazıldı: düz sayı = bağlı kenardan / ortadan mesafe · "25%" = yüz ölçüsünün oranı · başka metin = formül (W, H, özel
+     *  parametreler). Aynı bağı paylaşan seçili noktaların hepsi birlikte taşınır. */
+    const editDim = (i: PInfo, axis: 'x' | 'y', raw: string): boolean => {
+      const X = axis === 'x', S = X ? 'W' as const : 'H' as const, b = X ? i.bx : i.by, size = X ? face.w : face.h, off = X ? face.dx : face.dy;
+      const keys = infos.filter(q => targets.has(q.key) && bindText(X ? q.bx : q.by, S) === bindText(b, S)).map(q => q.key);
+      const t = raw.trim(), num = /^\d+(?:[.,]\d+)?$/.test(t) ? parseFloat(t.replace(',', '.')) : null, pct = /^(\d+(?:[.,]\d+)?)\s*%$/.exec(t);
+      if (pct || (num !== null && b.k === 'P')) { movePointsTo(keys, axis, (size * (pct ? parseFloat(pct[1].replace(',', '.')) : num!)) / 100 - off, { k: 'P' }); return true; }
+      if (num !== null && b.k !== 'F') {
+        movePointsTo(keys, axis, (b.k === 'L' ? num : b.k === 'R' ? size - num : size / 2 + (b.v < 0 ? -num : num)) - off, { k: b.k });
+        return true;
+      }
+      const nb = parseBind(t, S, face.vars), at = nb ? bindCoord(nb, size, face.vars) : null;
+      if (!nb || at === null) return false;
+      movePointsTo(keys, axis, at - off, nb.k === 'F' ? { k: 'F', e: nb.e } : { k: nb.k });
+      return true;
+    };
+    // Seçili dairelerin yarıçap etiketi (sayı ya da formül yazılabilir).
+    const radii = useMemo(() => [...new Set(infos.filter(i => i.circle && targets.has(i.key)).map(i => i.id))].slice(0, 3)
+      .map(id => ents.find(e => e.id === id)).filter((e): e is Entity & CircleS => e?.t === 'circle'), [infos, targets, ents]);
+    const editRadius = (id: string, raw: string): boolean => {
+      const v = evalExpr(raw, face.vars);
+      if (v === null || v <= 0) return false;
+      setCircleRadius([id], v, /^\s*\d+(?:[.,]\d+)?\s*$/.test(raw) ? null : raw.trim());
+      return true;
+    };
+    // Yüz referansları (seçim varken): dört kenar + iki orta çizgi. Seçimin bağlı olduğu turuncu, imlecin altındaki kalın.
+    const hover = useDraft(st => st.phover);
+    const refs = useMemo(() => {
+      const sel = infos.filter(i => targets.has(i.key));
+      if (!sel.length) return [];
+      const kx = sel.every(i => i.bx.k === sel[0].bx.k) ? sel[0].bx.k : null, ky = sel.every(i => i.by.k === sel[0].by.k) ? sel[0].by.k : null;
+      const x0 = -face.dx, y0 = -face.dy, w = face.w, h = face.h, ln = (ax: number, ay: number, bx: number, by: number): LineS => ({ t: 'line', a: pt(ax, ay), b: pt(bx, by) });
+      return [
+        { id: 'xL', s: ln(x0, y0, x0, y0 + h), on: kx === 'L', mid: false }, { id: 'xC', s: ln(x0 + w / 2, y0, x0 + w / 2, y0 + h), on: kx === 'C', mid: true },
+        { id: 'xR', s: ln(x0 + w, y0, x0 + w, y0 + h), on: kx === 'R', mid: false }, { id: 'yL', s: ln(x0, y0, x0 + w, y0), on: ky === 'L', mid: false },
+        { id: 'yC', s: ln(x0, y0 + h / 2, x0 + w, y0 + h / 2), on: ky === 'C', mid: true }, { id: 'yR', s: ln(x0, y0 + h, x0 + w, y0 + h), on: ky === 'R', mid: false },
+      ];
+    }, [infos, targets, face]);
     return (
       <>
-        {ghost && (
-          <>
-            <DLine s={ghost.rect} color="#0f766e" width={1.2} dash={wpp * 5} order={1090} depth={false} opacity={0.9} />
-            {ghost.shapes.map((s, i) => <DLine key={i} s={s} color="#0f766e" width={2.2} dash={0} order={1091} depth={false} />)}
-          </>
-        )}
         {show && (
           <>
             <lineSegments geometry={geo.ticks} renderOrder={1095}><lineBasicMaterial vertexColors depthTest={false} depthWrite={false} transparent /></lineSegments>
@@ -664,13 +740,20 @@ const ParamOverlay: React.FC<{ ents: Entity[]; face: DraftFace; apply: SketchApp
             <points geometry={geo.all} renderOrder={1097}><pointsMaterial size={6} sizeAttenuation={false} color="#292524" depthTest={false} depthWrite={false} transparent /></points>
             <points geometry={geo.sel} renderOrder={1098}><pointsMaterial size={13} sizeAttenuation={false} color="#fdfcfa" depthTest={false} depthWrite={false} transparent /></points>
             <points geometry={geo.sel} renderOrder={1099}><pointsMaterial size={9} sizeAttenuation={false} color="#ea580c" depthTest={false} depthWrite={false} transparent /></points>
+            {refs.map(r => {
+              const hot = !!hover && hover.split(' ').includes(r.id);
+              return <DLine key={r.id} s={r.s} color={r.on ? '#ea580c' : '#0f766e'} width={hot ? 4.5 : r.on ? 3 : 1.6} dash={r.mid ? wpp * 7 : 0} order={1093} depth={false}
+                opacity={hot || r.on ? 1 : 0.5} />;
+            })}
             {guides.map(gd => (
               <React.Fragment key={gd.key}>
                 {gd.line && <DLine s={gd.line} color={gd.color} width={1} dash={wpp * 3} order={1094} depth={false} opacity={0.9} />}
-                <Html position={[gd.at.x, gd.at.y, 0]} center zIndexRange={[44, 0]} style={{ pointerEvents: 'none' }}>
-                  <span style={{ ...TAG, color: gd.color, boxShadow: `0 0 0 1px ${gd.color}55` }}>{gd.text}</span>
-                </Html>
+                <DimTag at={gd.at} text={gd.text} edit={gd.edit} color={gd.color} title="Click to type a value" onCommit={t => editDim(gd.info, gd.axis, t)} />
               </React.Fragment>
+            ))}
+            {radii.map(c => (
+              <DimTag key={`r${c.id}`} at={pt(c.c.x + c.r * 0.71 + 16 * wpp, c.c.y + c.r * 0.71 + 10 * wpp)} text={`R ${c.re ?? fmt(c.r, 1)}`} edit={c.re ?? fmt(c.r, 2)}
+                color={c.re ? BIND_COL.formula : BIND_COL.edge} title="Click to type the radius" onCommit={t => editRadius(c.id, t)} />
             ))}
           </>
         )}
@@ -702,7 +785,7 @@ export const DraftLayer: React.FC = () => {
   const planes = useDraft(s => s.planes), activeId = useDraft(s => s.activePlane), entities = useDraft(s => s.entities), selection = useDraft(s => s.selection);
   const hoverId = useDraft(s => s.hoverId), preview = useDraft(s => s.preview), cursor = useDraft(s => s.cursor), cmd = useDraft(s => s.cmd);
   const planePick = useDraft(s => s.planePick), dynOn = useDraft(s => s.aids.dyn), iso = useDraft(s => s.isolate), candTick = useDraft(s => s.planeCandidate);
-  const face = useDraft(s => s.face), apply = useDraft(s => s.apply), psel = useDraft(s => s.psel), pview = useDraft(s => s.pview);
+  const face = useDraft(s => s.face), apply = useDraft(s => s.apply), psel = useDraft(s => s.psel);
   const [wpp, setWpp] = useState(1);
   const [hoverFace, setHoverFace] = useState<FacePick | null>(null);
   // Etkin yüzün çerçevesi (ölçü + formül değişkenleri) depoda güncel tutulur: düzlem ya da hedefin geometrisi değişince yeniden okunur.
@@ -737,6 +820,12 @@ export const DraftLayer: React.FC = () => {
   const busy = !!cmd;
   // Yakalama kaynağı yalnız GÖRÜNEN şekillerin kenarlarıdır (izolasyonda hedef panel / gövde).
   useEffect(() => { setExtraSnap(busy ? planeEdges(activeInv, visibleShapes(shapes, iso), shapes) : []); }, [busy, activeInv, shapes, iso]);
+  // REFERANS KENARLAR (Goker: "yüzü seçtikten sonra ofseti ve diğer işlemleri panelin çizgileri üzerinden de yapabileyim"): etkin yüzün
+  // sahibinin (panel / gövde) o düzlemdeki kenarları çizim nesnesi gibi SEÇİLEBİLİR olur (Draft.setRefEdges) — değiştirilemez, adıma girmez.
+  useEffect(() => {
+    const pl = planes.find(q => q.id === activeId), host = pl?.kind === 'face' ? shapes.find(x => x.id === pl.shapeId) : undefined;
+    setRefEdges(host ? activeId : null, host ? planeEdges(activeInv, [host], shapes) : []);
+  }, [activeId, planes, activeInv, shapes, entities]);   // entities: çizime katılan / silinen kenar için referanslar yeniden süzülür
   const kind = cmd?.kind ?? null;
   useEffect(() => {
     gl.domElement.style.cursor = planePick ? 'copy' : kind ? (kind === 'pick' ? PICKBOX_CURSOR : 'crosshair') : '';
@@ -823,6 +912,11 @@ export const DraftLayer: React.FC = () => {
       if (!st.cmd && !st.entities.length) return;
       const h = onActive(e);
       if (!h) return;
+      // Parametric kip: seçim varken imlecin altındaki yüz referansı (kenar / orta çizgi) vurgulanır.
+      if (!st.cmd && st.apply.mode === 'points' && st.face?.planeId === st.activePlane && e.buttons === 0) {
+        const r = paramTargets(st).length && !pointAt(h.p, h.tol) && !segmentAt(h.p, h.tol) ? faceRefAt(h.p, h.tol, st.face) : null;
+        setPHover(r ? refKey(r) : null);
+      }
       inside = true;
       const w = tolAt(h.world) / PICK_PX;
       setWpp(prev => (Math.abs(w - prev) / prev > 0.12 ? w : prev));
@@ -858,9 +952,25 @@ export const DraftLayer: React.FC = () => {
       }
       if (!st.entities.length) return;
       // Parametric kip: tutamağa tık o kontrol noktasını seçer (Shift / Ctrl: seçime ekler / çıkarır).
+      // PARAMETRIC KİP — her şey ekranda: tutamak = o nokta · çizimin bir kenarı = iki ucu (Shift / Ctrl seçime ekler) · seçim varken
+      // YÜZÜN KENARI ya da ORTA ÇİZGİSİ = seçili noktalar ona bağlanır (köşe: X ve Y birlikte) · boşluk = seçimi bırak.
       if (st.apply.mode === 'points' && st.face?.planeId === st.activePlane) {
-        const h = onActive(e), key = h ? pointAt(h.p, h.tol) : null;
-        if (key) { togglePoint(key, e.shiftKey || e.ctrlKey || e.metaKey); swallow = true; stop(e); return; }
+        const h = onActive(e), add = e.shiftKey || e.ctrlKey || e.metaKey;
+        if (h) {
+          const key = pointAt(h.p, h.tol);
+          if (key) { togglePoint(key, add); swallow = true; stop(e); return; }
+          const seg = segmentAt(h.p, h.tol);
+          if (seg) { selectPoints(seg.keys, seg.id, add); swallow = true; stop(e); return; }
+          const tg = paramTargets(st), r = tg.length ? faceRefAt(h.p, h.tol, st.face) : null;
+          if (r) {
+            if (r.x) setPointPrefs(tg, 'x', { k: r.x });
+            if (r.y) setPointPrefs(tg, 'y', { k: r.y });
+            swallow = true; stop(e);
+            return;
+          }
+        }
+        if (st.selection.length || st.psel.length) selectEntity(null);
+        return;
       }
       const id = pickAny(e);
       if (id) { selectEntity(id, e.shiftKey); swallow = true; stop(e); }
@@ -888,8 +998,8 @@ export const DraftLayer: React.FC = () => {
   }, [gl]);
 
   const toWorld = (p: P2) => new THREE.Vector3(p.x, p.y, 0).applyMatrix4(activeM);
-  const activeEnts = byPlane.get(activeId);
-  const paramFace = face && face.planeId === activeId && activeEnts?.length && (apply.mode === 'points' || pview) ? face : null;
+  const activeEnts = useMemo(() => (byPlane.get(activeId) ?? []).filter(e => !e.ref), [byPlane, activeId]);
+  const paramFace = face && face.planeId === activeId && activeEnts.length && apply.mode === 'points' ? face : null;
   const targets = useMemo(() => new Set(paramFace ? paramTargets({ entities, activePlane: activeId, psel, selection }) : []), [paramFace, entities, activeId, psel, selection]);
   const showUcs = busy || planePick || activeId !== GROUND_PLANE.id || (byPlane.get(activeId)?.length ?? 0) > 0;
   const track = cursor?.track, trackLen = wpp * 6000;
@@ -901,10 +1011,11 @@ export const DraftLayer: React.FC = () => {
         return m && ents?.length ? <PlaneEntities key={pl.id} matrix={m} ents={ents} active={pl.id === activeId} selection={selSet} hoverId={hoverId} dash={wpp} /> : null;
       })}
       {showUcs && <UcsIcon matrix={activeM} />}
-      {paramFace && !planePick && (
+      {/* Komut sürerken (trim, ofset…) tutamaklar ve bağ çizgileri GİZLİDİR — yalnız çizim ve panel kenarları görünür. */}
+      {paramFace && !planePick && !busy && (
         <group position={activeXf.position} quaternion={activeXf.quaternion} scale={activeXf.scale}>
           <group position={[0, 0, LIFT]}>
-            <ParamOverlay ents={activeEnts!} face={paramFace} apply={apply} targets={targets} pview={pview} wpp={wpp} />
+            <ParamOverlay ents={activeEnts} face={paramFace} apply={apply} targets={targets} wpp={wpp} />
           </group>
         </group>
       )}
@@ -1002,6 +1113,7 @@ const ICONS: Record<string, React.ReactNode> = {
   ARRAYPATH: <><path d="M3 19C7 5 17 5 21 19" {...dash} /><rect x="2" y="15.5" width="4" height="4" /><rect x="10" y="6.5" width="4" height="4" /><rect x="18" y="15.5" width="4" height="4" /></>,
   ARRAYPOLAR: <>{[0, 60, 120, 180, 240, 300].map(a => <circle key={a} cx={12 + 8 * Math.cos(a * Math.PI / 180)} cy={12 + 8 * Math.sin(a * Math.PI / 180)} r="2.1" />)}{dot(12, 12, 1.4)}</>,
   ERASE: <><path d="M9 20h11" /><path d="M5.2 13.2 12.6 5.8a2 2 0 0 1 2.8 0l3 3a2 2 0 0 1 0 2.8L11 19H8l-2.8-2.8a2 2 0 0 1 0-3z" /><path d="M9.5 9 15 14.5" strokeWidth={1.2} /></>,
+  JOIN: <><path d="M4 17 9 8" /><path d="M9 8h7l4 7" />{ring(9, 8, 2.1)}{ring(16, 8, 2.1)}{dot(4, 17, 1.4)}{dot(20, 15, 1.4)}</>,
   EXPLODE: <><rect x="9" y="9" width="6" height="6" /><path d="M7 7 3.5 3.5M17 7l3.5-3.5M7 17l-3.5 3.5M17 17l3.5 3.5M3.5 6.5v-3h3M17.5 3.5h3v3M3.5 17.5v3h3M20.5 17.5v3h-3" strokeWidth={1.3} /></>,
   OFFSET: <><path d="M4 20v-9a7 7 0 0 1 7-7h9" /><path d="M9.5 20v-8.5a2 2 0 0 1 2-2H20" strokeWidth={1.2} {...{ strokeDasharray: '3 2' }} /></>,
   ground: <><path d="M3 17 8 8h13l-5 9z" /><path d="M5.5 12.5h13M12 8l-3 9M17 8l-3.5 9" strokeWidth={1} /></>,
@@ -1013,14 +1125,8 @@ const ICONS: Record<string, React.ReactNode> = {
   dyn: <><path d="M4 4l5.5 13 1.8-5.7L17 9.5z" /><rect x="13" y="15" width="8" height="5.5" rx="1" strokeWidth={1.3} /></>,
   caret: <path d="M7 10l5 5 5-5" strokeWidth={2.2} />,
   check: <path d="M5 12.5l4.5 4.5L19 7.5" strokeWidth={2.1} />,
-  bindL: <path d="M5 4v16M19 12H9M12.5 8.5 9 12l3.5 3.5" />,
-  bindR: <path d="M19 4v16M5 12h10M11.5 8.5 15 12l-3.5 3.5" />,
-  bindCx: <><path d="M12 3.5v17" {...dash} /><path d="M4 12h5M20 12h-5M7 9.8 9.2 12 7 14.2M17 9.8 14.8 12l2.2 2.2" /></>,
-  bindB: <path d="M4 19h16M12 5v10M8.5 11.5 12 15l3.5-3.5" />,
-  bindT: <path d="M4 5h16M12 19V9M8.5 12.5 12 9l3.5 3.5" />,
-  bindCy: <><path d="M3.5 12h17" {...dash} /><path d="M12 4v5M12 20v-5M9.8 7 12 9.2 14.2 7M9.8 17 12 14.8l2.2 2.2" /></>,
+  solo: <><rect x="3.5" y="3.5" width="17" height="17" rx="1.5" {...dash} /><rect x="8" y="8" width="8" height="8" rx="1" /></>,
   auto: <><path d="M4 4v16h16" /><path d="M9 15l3-3M14 10l3-3" /><rect x="11" y="9" width="4" height="4" rx="0.6" transform="rotate(45 13 11)" /></>,
-  pick: <><rect x="4" y="4" width="13" height="13" rx="1" {...dash} /><rect x="8.5" y="8.5" width="4" height="4" fill="currentColor" stroke="none" /><path d="M15 15l5 2-2.2 0.8L17 20z" fill="currentColor" strokeWidth={1} /></>,
   modeA: <><rect x="4" y="4" width="16" height="16" rx="1.5" /><circle cx="8" cy="16" r="1.8" fill="currentColor" stroke="none" /></>,
   modeP: <><rect x="4" y="4" width="16" height="16" rx="1.5" {...dash} /><path d="M8 4v4M4 8h4M16 20v-4M20 16h-4" /><circle cx="8" cy="8" r="1.5" fill="currentColor" stroke="none" /><circle cx="16" cy="16" r="1.5" fill="currentColor" stroke="none" /></>,
   cut: <><rect x="4" y="4" width="16" height="16" rx="1.5" /><circle cx="12" cy="12" r="4.2" {...dash} strokeWidth={1.4} /></>,
@@ -1069,6 +1175,8 @@ const PANEL_CSS = `
   .dp-btn:active{transform:scale(0.95)}
   .dp-btn.on{background:rgba(234,88,12,0.08);color:${P.accent};box-shadow:0 0 0 1px rgba(234,88,12,0.28);transform:none}
   .dp-btn.txt{width:auto;flex:1;padding:0 8px}
+  .dp-btn.lg{width:36px;height:36px;border-radius:7px}
+  .dp-btn.fam:not(.on){box-shadow:inset 0 -2px 0 ${P.accent}}
   .dp-btn.txt:hover{transform:none}
   .dp-btn:focus-visible{box-shadow:0 0 0 2px rgba(234,88,12,0.45)}
   .dp-chips{display:grid;grid-template-columns:1fr 1fr;gap:5px}
@@ -1126,29 +1234,6 @@ const PANEL_CSS = `
   .dp-ghost:hover{box-shadow:0 0 0 1px #cfc7bc;color:${P.ink}}
   .dp-ghost:disabled{opacity:0.5;cursor:not-allowed}
   .dp-chip:disabled{opacity:0.4;cursor:not-allowed}
-  .dp-bindrow{display:flex;align-items:center;gap:5px}
-  .dp-axis{width:11px;flex-shrink:0;font:700 10.5px ${MONO_FONT};color:${P.mute};text-align:center}
-  .dp-bindseg{display:flex;gap:1px;padding:2px;border-radius:8px;background:#fff;box-shadow:0 0 0 1px #e3ddd4;flex-shrink:0}
-  .dp-mini{display:flex;align-items:center;justify-content:center;width:26px;height:26px;border:none;border-radius:6px;background:transparent;color:${P.mute};
-    cursor:pointer;outline:none;padding:0;font:700 11.5px ${UI_FONT};transition:background .12s,color .12s,box-shadow .12s}
-  .dp-mini:hover:not(:disabled){background:#f6f3ee;color:${P.ink}}
-  .dp-mini.on{background:#fff7ed;color:${P.accent};box-shadow:inset 0 0 0 1px rgba(234,88,12,0.5)}
-  .dp-mini:disabled{opacity:0.35;cursor:not-allowed}
-  .dp-expr{flex:1;min-width:0;display:flex;align-items:center;gap:4px;height:30px;padding:0 7px;border-radius:7px;background:#fff;box-shadow:0 0 0 1px #e3ddd4;
-    transition:box-shadow .12s}
-  .dp-expr:focus-within{box-shadow:0 0 0 1px rgba(234,88,12,0.55),0 0 0 3px rgba(234,88,12,0.10)}
-  .dp-expr.fx{box-shadow:0 0 0 1px rgba(37,99,235,0.45)}
-  .dp-expr.bad{box-shadow:0 0 0 1px #dc2626,0 0 0 3px rgba(220,38,38,0.10)}
-  .dp-expr span{font:600 11px ${MONO_FONT};color:${P.faint}}
-  .dp-expr input{flex:1;min-width:0;width:100%;border:none;outline:none;background:transparent;font:600 11.5px ${MONO_FONT};color:${P.ink}}
-  .dp-expr input::placeholder{color:${P.faint};font-weight:500}
-  .dp-link{border:none;background:none;padding:0 3px;height:24px;font:500 11px ${UI_FONT};color:${P.mute};cursor:pointer;outline:none;border-radius:5px}
-  .dp-link:hover:not(:disabled){color:${P.accent};background:#fff7ed}
-  .dp-link:disabled{opacity:0.4;cursor:not-allowed}
-  .dp-anchor.sm{grid-template-columns:repeat(3,15px);grid-template-rows:repeat(3,15px);padding:2px}
-  .dp-anchor.sm button i{width:4px;height:4px}
-  .dp-range{flex:1;min-width:0;height:16px;margin:0;accent-color:${P.accent};cursor:pointer;outline:none}
-  .dp-range:focus-visible{filter:drop-shadow(0 0 2px rgba(234,88,12,0.7))}
   .dp-x{width:30px;height:30px;display:flex;align-items:center;justify-content:center;border:none;border-radius:6px;background:transparent;color:${P.mute};
     cursor:pointer;outline:none;transition:background .1s,color .1s}
   .dp-x:hover{background:rgba(60,50,40,0.06);color:${P.ink}}
@@ -1177,16 +1262,15 @@ const DRAW_BLOCKS: Block[] = [
 const MODIFY_BLOCKS: Block[] = [
   { label: 'Transform', ids: ['MOVE', 'COPY', 'ROTATE', 'SCALE', 'MIRROR', 'STRETCH'] },
   { label: 'Edit', ids: ['TRIM', 'EXTEND', 'OFFSET', 'FILLET', 'CHAMFER'] },
-  { label: 'Clean up', ids: ['EXPLODE', 'ERASE'] },
+  { label: 'Join / split', ids: ['JOIN', 'EXPLODE', 'ERASE'] },
   { label: 'Array', ids: ['ARRAYRECT', 'ARRAYPATH', 'ARRAYPOLAR'] },
 ];
-const MAX_COLS = 7;
 const aliasOf = (id: string) => commandById(id)?.aliases[0] ?? id;
 const POLAR_STEPS = [90, 45, 30, 22.5, 15, 10, 5];
 type Hint = { title: string; key?: string } | null;
 
-const Section: React.FC<{ title: string; right?: React.ReactNode; children: React.ReactNode }> = ({ title, right, children }) => {
-  const [open, setOpen] = useState(true);
+const Section: React.FC<{ title: string; right?: React.ReactNode; closed?: boolean; children: React.ReactNode }> = ({ title, right, closed, children }) => {
+  const [open, setOpen] = useState(!closed);
   return (
     <div className="dp-sec">
       <div className="dp-sec-h">
@@ -1203,174 +1287,6 @@ const ANCHORS: [number, number][] = [[0, 1], [0.5, 1], [1, 1], [0, 0.5], [0.5, 0
 const anchorName = (ax: number, ay: number) => (ax === 0.5 && ay === 0.5 ? 'the centre of the face'
   : `the ${ay === 1 ? 'top' : ay === 0 ? 'bottom' : 'middle'}${ax === 0.5 ? ' centre' : ax === 0 ? '-left' : '-right'}${ax !== 0.5 && ay !== 0.5 ? ' corner' : ' edge'}`);
 type TipFn = (title: string, key?: string) => { onMouseEnter: () => void; onMouseLeave: () => void };
-/** Bir eksenin bağ satırı: [kenar · orta · karşı kenar · %] + ifade alanı. Düğme yalnız bağ TÜRÜNÜ değiştirir (nokta yerinde kalır);
- *  alana yazılan değer / formül noktayı oraya TAŞIR (50 · W-50 · W/2+20 · W*0.25 kenar bağı olur, gerisi formül olarak saklanır). */
-const BindRow: React.FC<{ axis: 'x' | 'y'; face: DraftFace; tg: PInfo[]; tip: TipFn }> = ({ axis, face, tg, tip }) => {
-  const X = axis === 'x', S = X ? 'W' : 'H', size = X ? face.w : face.h, off = X ? face.dx : face.dy;
-  const bOf = (i: PInfo) => (X ? i.bx : i.by), keys = tg.map(i => i.key);
-  const kind = tg.length && tg.every(i => bOf(i).k === bOf(tg[0]).k) ? bOf(tg[0]).k : null;
-  const text = tg.length && tg.every(i => bindText(bOf(i), S) === bindText(bOf(tg[0]), S)) ? bindText(bOf(tg[0]), S) : '';
-  const [draft, setDraft] = useState<string | null>(null);
-  const [bad, setBad] = useState(false);
-  const sig = keys.join('|');
-  useEffect(() => { setDraft(null); setBad(false); }, [sig, text]);
-  const commit = () => {
-    if (draft === null || !keys.length || draft.trim() === text) { setDraft(null); setBad(false); return; }
-    const b = parseBind(draft, S, face.vars), at = b ? bindCoord(b, size, face.vars) : null;
-    if (!b || at === null) { setBad(true); return; }
-    movePointsTo(keys, axis, at - off, b.k === 'F' ? { k: 'F', e: b.e } : { k: b.k });
-    setDraft(null); setBad(false);
-  };
-  const BTN: [BindKind, string, string][] = X
-    ? [['L', 'bindL', 'Left — keeps its distance from the left edge'], ['C', 'bindCx', 'Centre — keeps its distance from the middle of the face'],
-      ['R', 'bindR', 'Right — keeps its distance from the right edge'], ['P', 'pct', 'Ratio — stays at the same percentage of the face width']]
-    : [['L', 'bindB', 'Bottom — keeps its distance from the bottom edge'], ['C', 'bindCy', 'Middle — keeps its distance from the middle of the face'],
-      ['R', 'bindT', 'Top — keeps its distance from the top edge'], ['P', 'pct', 'Ratio — stays at the same percentage of the face height']];
-  return (
-    <div className="dp-bindrow">
-      <span className="dp-axis">{X ? 'X' : 'Y'}</span>
-      <div className="dp-bindseg" role="group" aria-label={`${X ? 'X' : 'Y'} binding`}>
-        {BTN.map(([k, icon, title]) => (
-          <button key={k} className={`dp-mini${kind === k ? ' on' : ''}`} disabled={!keys.length} aria-pressed={kind === k} aria-label={`${X ? 'X' : 'Y'} ${title.split(' — ')[0]}`}
-            onClick={() => setPointPrefs(keys, axis, { k })} {...tip(title)}>
-            {icon === 'pct' ? '%' : <DIcon name={icon} size={16} />}
-          </button>
-        ))}
-      </div>
-      <label className={`dp-expr${bad ? ' bad' : ''}${kind === 'F' ? ' fx' : ''}`} {...tip(`${X ? 'X' : 'Y'} of the selected points — type a value or a formula (${S}, numbers, your parameters); Enter moves the points there`)}>
-        <span>=</span>
-        <input type="text" spellCheck={false} disabled={!keys.length} value={draft ?? text} placeholder={keys.length ? (text ? '' : 'mixed') : '—'} aria-label={`${X ? 'X' : 'Y'} formula`}
-          onChange={e => { setDraft(e.target.value); setBad(false); }} onBlur={commit}
-          onKeyDown={e => { if (e.key === 'Enter') commit(); else if (e.key === 'Escape') { setDraft(null); setBad(false); (e.target as HTMLInputElement).blur(); } }} />
-      </label>
-    </div>
-  );
-};
-/** PARAMETRIC KİP paneli (Goker: "her çizgi her yönde parametrik büyüsün; bazı geometriler belirli yöne doğru; çizileni sonradan parametrik
- *  yapabileyim"): nokta seç (tutamağa tık · pencere · nesne seçimi) → X / Y'yi kenara, ortaya, orana bağla ya da formül yaz. Bağlanmamış
- *  noktalar varsayılanı izler (en yakın kenar ya da çapa). */
-const ParamBox: React.FC<{ tip: TipFn; host: string }> = ({ tip, host }) => {
-  const face = useDraft(s => s.face), apply = useDraft(s => s.apply), entities = useDraft(s => s.entities), activePlane = useDraft(s => s.activePlane);
-  const psel = useDraft(s => s.psel), selection = useDraft(s => s.selection), picking = useDraft(s => s.cmd?.id === 'PSEL');
-  const ents = useMemo(() => entities.filter(e => e.plane === activePlane), [entities, activePlane]);
-  const live = face && face.planeId === activePlane ? face : null;
-  const infos = useMemo(() => (live ? paramPoints(ents, live, apply) : []), [ents, live, apply]);
-  const keys = useMemo(() => paramTargets({ entities, activePlane, psel, selection }), [entities, activePlane, psel, selection]);
-  const [rDraft, setRDraft] = useState<string | null>(null);
-  const [rBad, setRBad] = useState(false);
-  const set = new Set(keys), tg = infos.filter(i => set.has(i.key));
-  const circles = [...new Set(tg.filter(i => i.circle).map(i => i.id))].map(id => ents.find(e => e.id === id)).filter((e): e is Entity & { t: 'circle' } => e?.t === 'circle');
-  const rText = circles.length && circles.every(c => (c.re ?? fmt(c.r, 2)) === (circles[0].re ?? fmt(circles[0].r, 2))) ? circles[0].re ?? fmt(circles[0].r, 2) : '';
-  const rSig = circles.map(c => c.id).join('|');
-  useEffect(() => { setRDraft(null); setRBad(false); }, [rSig, rText]);
-  if (!live) return <div style={{ margin: '9px 0 2px', fontSize: 11, color: P.mute }}>Reading the face…</div>;
-  const commitR = () => {
-    if (rDraft === null || !circles.length || rDraft.trim() === rText) { setRDraft(null); setRBad(false); return; }
-    const v = evalExpr(rDraft, live.vars);
-    if (v === null || v <= 0) { setRBad(true); return; }
-    setCircleRadius(circles.map(c => c.id), v, /^\s*\d+(?:[.,]\d+)?\s*$/.test(rDraft) ? null : rDraft.trim());
-    setRDraft(null); setRBad(false);
-  };
-  /** En yakın kenar: her nokta kendi yarısındaki kenara (tam ortadaysa ortaya) bağlanır. Seçim yoksa tüm noktalar. */
-  const auto = () => {
-    const list = tg.length ? tg : infos;
-    for (const axis of ['x', 'y'] as const) {
-      const size = axis === 'x' ? live.w : live.h, off = axis === 'x' ? live.dx : live.dy, by: Record<'L' | 'R' | 'C', string[]> = { L: [], R: [], C: [] };
-      for (const i of list) by[autoKind((axis === 'x' ? i.p.x : i.p.y) + off, size)].push(i.key);
-      for (const k of ['L', 'R', 'C'] as const) if (by[k].length) setPointPrefs(by[k], axis, { k });
-    }
-  };
-  const unbind = () => { setPointPrefs(keys, 'x', null); setPointPrefs(keys, 'y', null); };
-  const custom = Object.keys(live.vars).filter(k => !['W', 'H', 'BW', 'BH', 'BD'].includes(k));
-  const [ax, ay] = apply.anchor;
-  return (
-    <div style={{ marginTop: 9 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 6 }}>
-        <span style={{ flex: 1, minWidth: 0, fontSize: 11, color: tg.length ? P.ink : P.mute, fontWeight: tg.length ? 600 : 400, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-          {tg.length ? `${tg.length} point${tg.length > 1 ? 's' : ''} selected` : infos.length ? `${infos.length} points — pick some` : 'Draw first, then bind points'}
-        </span>
-        <button className={`dp-chip${picking ? ' on' : ''}`} style={{ height: 24, padding: '0 7px', gap: 4, fontSize: 11 }} disabled={!infos.length}
-          onClick={() => (picking ? cancelCommand() : startCommand('PSEL'))} {...tip('Pick points — click handles or drag a window around them', 'PSEL')}>
-          <DIcon name="pick" size={14} />Pick
-        </button>
-        <button className="dp-link" disabled={!infos.length} onClick={() => setPSel(infos.map(i => i.key))} {...tip('Select every point on this face')}>All</button>
-        <button className="dp-link" disabled={!keys.length} onClick={() => { setPSel([]); selectEntity(null); }} {...tip('Clear the point selection', 'Esc')}>None</button>
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-        <BindRow axis="x" face={live} tg={tg} tip={tip} />
-        <BindRow axis="y" face={live} tg={tg} tip={tip} />
-        {circles.length > 0 && (
-          <div className="dp-bindrow">
-            <span className="dp-axis">R</span>
-            <label className={`dp-expr${rBad ? ' bad' : ''}${circles.some(c => c.re) ? ' fx' : ''}`} {...tip('Circle radius — a value or a formula (for example W/10)')}>
-              <span>=</span>
-              <input type="text" spellCheck={false} value={rDraft ?? rText} placeholder={rText ? '' : 'mixed'} aria-label="Radius formula"
-                onChange={e => { setRDraft(e.target.value); setRBad(false); }} onBlur={commitR}
-                onKeyDown={e => { if (e.key === 'Enter') commitR(); else if (e.key === 'Escape') { setRDraft(null); setRBad(false); (e.target as HTMLInputElement).blur(); } }} />
-            </label>
-          </div>
-        )}
-      </div>
-      <div style={{ display: 'flex', gap: 5, marginTop: 7 }}>
-        <button className="dp-chip" style={{ flex: 1, justifyContent: 'center', gap: 5 }} disabled={!infos.length} onClick={auto}
-          {...tip(tg.length ? 'Auto — tie the selected points to their nearest edges' : 'Auto — tie every point to its nearest edges')}>
-          <DIcon name="auto" size={15} />Auto{tg.length ? '' : ' all'}
-        </button>
-        <button className="dp-chip" style={{ justifyContent: 'center', padding: '0 9px' }} disabled={!keys.length} onClick={unbind}
-          {...tip('Unbind — the selected points go back to the default below')}>Unbind</button>
-      </div>
-      <div className="dp-cap" style={{ margin: '11px 0 5px' }}>Points you have not bound</div>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-        <div className="dp-seg" style={{ flex: 1 }}>
-          <button className={apply.auto ? 'on' : ''} onClick={() => setApply({ auto: true })} {...tip('Each unbound point follows its nearest edges')}>Nearest edge</button>
-          <button className={!apply.auto ? 'on' : ''} onClick={() => setApply({ auto: false })} {...tip('Unbound points all follow one anchor of the face')}>Anchor</button>
-        </div>
-        {!apply.auto && (
-          <div className="dp-anchor sm" role="radiogroup" aria-label="Default anchor">
-            {ANCHORS.map(([x, y]) => (
-              <button key={`${x}-${y}`} role="radio" aria-checked={x === ax && y === ay} className={x === ax && y === ay ? 'on' : ''}
-                onClick={() => setApply({ anchor: [x, y] })} {...tip(`Unbound points follow ${anchorName(x, y)}`)}><i /></button>
-            ))}
-          </div>
-        )}
-      </div>
-      <div style={{ marginTop: 8, fontSize: 10.5, lineHeight: 1.45, color: P.faint }}>
-        Formulas: <b style={{ color: P.mute, fontWeight: 600 }}>W</b>, <b style={{ color: P.mute, fontWeight: 600 }}>H</b> = this face ({fmt(live.w, 1)} × {fmt(live.h, 1)}) · BW, BH, BD = {host === 'body' ? 'body' : 'its body'}
-        {custom.length > 0 && <> · {custom.slice(0, 6).join(', ')}{custom.length > 6 ? '…' : ''}</>}
-      </div>
-    </div>
-  );
-};
-/** Sanal yüz ölçüsü: kaydırıcıyla yüzü büyütüp küçültünce çizimin o ölçüde alacağı hâl sahnede yeşil hayalet olarak görünür (iki kipte de). */
-const SizePreview: React.FC<{ tip: TipFn }> = ({ tip }) => {
-  const face = useDraft(s => s.face), pview = useDraft(s => s.pview), apply = useDraft(s => s.apply), entities = useDraft(s => s.entities), activePlane = useDraft(s => s.activePlane);
-  const live = face && face.planeId === activePlane ? face : null;
-  const w = pview?.w ?? live?.w ?? 0, h = pview?.h ?? live?.h ?? 0;
-  const broken = useMemo(() => !!live && !!pview && previewShapes(entities.filter(e => e.plane === activePlane), live, apply, w, h) === null, [live, pview, entities, activePlane, apply, w, h]);
-  if (!live) return null;
-  const on = !!pview && (Math.abs(w - live.w) > 0.01 || Math.abs(h - live.h) > 0.01);
-  const row = (label: string, val: number, base: number, put: (v: number) => void) => (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-      <span className="dp-axis">{label}</span>
-      <input className="dp-range" type="range" min={Math.round(base * 0.5)} max={Math.round(base * 2)} step={1} value={Math.round(val)} aria-label={`Preview ${label}`}
-        onChange={e => put(+e.target.value)} {...tip(`Preview: pretend the face is this ${label === 'W' ? 'wide' : 'tall'} — nothing is changed`)} />
-      <span style={{ width: 38, textAlign: 'right', font: `600 11px ${MONO_FONT}`, color: Math.abs(val - base) > 0.01 ? '#0f766e' : P.mute }}>{fmt(val, 0)}</span>
-    </div>
-  );
-  return (
-    <div style={{ marginTop: 11 }}>
-      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 4 }}>
-        <span className="dp-cap" style={{ flex: 1 }}>Try a size</span>
-        {on && <button className="dp-link" onClick={() => setPView(null)} {...tip('Back to the real face size')}>Reset</button>}
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-        {row('W', w, live.w, v => setPView({ w: v, h }))}
-        {row('H', h, live.h, v => setPView({ w, h: v }))}
-      </div>
-      {broken && <div style={{ marginTop: 4, fontSize: 11, color: '#b91c1c' }}>A formula cannot be evaluated at this size.</div>}
-    </div>
-  );
-};
 /** YÜZE UYGULA: etkin yüzdeki kapalı profilleri hedefe adım olarak yazar (Cut = çıkar · Shape = panele şeklini ver); derinlik, çapa ve
  *  uzama burada seçilir. Düzenleme oturumunda aynı blok o adımın ayarlarını gösterir ve "Save changes" ile geri yazar. */
 const FaceApply: React.FC<{ tip: TipFn }> = ({ tip }) => {
@@ -1383,40 +1299,41 @@ const FaceApply: React.FC<{ tip: TipFn }> = ({ tip }) => {
   useEffect(() => { setDepthStr(String(apply.depth)); }, [apply.depth]);
   useEffect(() => { setMsg(null); }, [activePlane, session?.featureId]);
   const stats = useMemo(() => {
-    const on = entities.filter(e => e.plane === activePlane), picked = on.filter(e => selection.includes(e.id));
+    const on = entities.filter(e => e.plane === activePlane && !e.ref), picked = on.filter(e => selection.includes(e.id));
     const r = profileLoops(session || !picked.length ? on : picked);
-    return { loops: r.loops.length, open: r.open, picked: session ? 0 : picked.length };
+    return { loops: r.loops.length, open: r.open, picked: session ? 0 : picked.length, count: on.length };
   }, [entities, selection, activePlane, session]);
+  const nSel = useDraft(st => (st.apply.mode === 'points' ? paramTargets(st).length : 0));
   const ft = faceTarget();
   if (!ft) return null;
-  const isBody = ft.kind === 'body', op = isBody ? 'cut' : apply.op, shaped = op === 'shape', param = apply.mode === 'points';
+  const isBody = ft.kind === 'body', op = apply.op, shaped = op === 'shape', param = apply.mode === 'points';
   const commitDepth = () => { const v = parseFloat(depthStr.replace(',', '.')); if (isFinite(v) && v > 0) setApply({ depth: Math.round(v * 100) / 100 }); else setDepthStr(String(apply.depth)); };
   const go = async () => {
     if (busy) return;
     setBusy(true); setMsg(null);
     try {
       const wasEdit = !!session, err = await applySketch();
-      setMsg(err ? { text: err, ok: false } : { text: wasEdit ? 'Step updated.' : `${shaped ? 'Shape' : 'Cut'} step added to ${ft.plane.label}.`, ok: true });
+      setMsg(err ? { text: err, ok: false } : null);   // başarı ayrıca yazılmaz: sonuç sahnede ve Assembly'de görünür
+      void wasEdit;
     } catch (e) { setMsg({ text: `Failed: ${(e as Error)?.message ?? e}`, ok: false }); }
     finally { setBusy(false); }
   };
   const cancelEdit = async () => { if (busy) return; setBusy(true); try { await finishSketchEdit(false); } finally { setBusy(false); } };
   const [ax, ay] = apply.anchor;
+  const noun = isBody ? 'body' : 'panel';
   return (
-    <Section title={session ? `Edit step · ${session.name}` : `Apply to ${isBody ? 'body' : 'panel'}`}>
-      <div className="dp-seg">
-        <button className={op === 'cut' ? 'on' : ''} onClick={() => setApply({ op: 'cut' })} {...tip('Cut — remove the drawn profile from the ' + (isBody ? 'body' : 'panel'))}>
-          <DIcon name="cut" size={16} />Cut
-        </button>
-        {!isBody && (
-          <button className={shaped ? 'on' : ''} onClick={() => setApply({ op: 'shape' })} {...tip('Shape — the panel takes the outline of the drawn profile')}>
+    <Section title={session ? `Edit · ${session.name}` : `Apply to ${noun}`}
+      right={<span style={{ fontSize: 10.5, fontWeight: 500, color: stats.loops ? '#0f766e' : P.faint }}>{stats.loops} profile{stats.loops === 1 ? '' : 's'}</span>}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div className="dp-seg">
+          <button className={op === 'cut' ? 'on' : ''} onClick={() => setApply({ op: 'cut' })} {...tip(`Cut — remove the drawn profile from the ${noun}`)}>
+            <DIcon name="cut" size={16} />Cut
+          </button>
+          <button className={shaped ? 'on' : ''} onClick={() => setApply({ op: 'shape' })} {...tip(`Shape — the ${noun} takes the outline of the drawn profile`)}>
             <DIcon name="shape" size={16} />Shape
           </button>
-        )}
-      </div>
-      {!shaped && (
-        <>
-          <div className="dp-cap" style={{ margin: '11px 0 5px' }}>Depth</div>
+        </div>
+        {!shaped && (
           <div style={{ display: 'flex', gap: 5 }}>
             <div className="dp-seg" style={{ flex: 1 }}>
               <button className={apply.through ? 'on' : ''} onClick={() => setApply({ through: true })} {...tip('Cut all the way through')}>Through</button>
@@ -1428,54 +1345,52 @@ const FaceApply: React.FC<{ tip: TipFn }> = ({ tip }) => {
               <span>mm</span>
             </label>
           </div>
-        </>
-      )}
-      <div className="dp-cap" style={{ margin: '11px 0 5px' }}>When the {isBody ? 'body' : 'panel'} resizes</div>
-      <div className="dp-seg">
-        <button className={!param ? 'on' : ''} onClick={() => setApply({ mode: 'anchor' })} {...tip('Simple — the whole drawing follows one anchor, with optional stretch')}>
-          <DIcon name="modeA" size={16} />Simple
-        </button>
-        <button className={param ? 'on' : ''} onClick={() => setApply({ mode: 'points' })} {...tip('Parametric — every point is tied to an edge, the centre, a ratio or a formula')}>
-          <DIcon name="modeP" size={16} />Parametric
-        </button>
-      </div>
-      {param ? <ParamBox tip={tip} host={ft.kind} /> : (
-      <div style={{ display: 'flex', gap: 10, alignItems: 'stretch', marginTop: 9 }}>
-        <div className="dp-anchor" role="radiogroup" aria-label="Anchor">
-          {ANCHORS.map(([x, y]) => (
-            <button key={`${x}-${y}`} role="radio" aria-checked={x === ax && y === ay} className={x === ax && y === ay ? 'on' : ''}
-              onClick={() => setApply({ anchor: [x, y] })} {...tip(`Anchor: ${anchorName(x, y)}`)}><i /></button>
-          ))}
+        )}
+        <div className="dp-seg">
+          <button className={!param ? 'on' : ''} onClick={() => setApply({ mode: 'anchor' })} {...tip(`Simple — the drawing follows one anchor of the ${noun}, with optional stretch`)}>
+            <DIcon name="modeA" size={16} />Simple
+          </button>
+          <button className={param ? 'on' : ''} onClick={() => setApply({ mode: 'points', auto: true })}
+            {...tip('Parametric — click a point or edge of the drawing, then the face edge it follows; click a dimension to type it')}>
+            <DIcon name="modeP" size={16} />Parametric
+          </button>
         </div>
-        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <span style={{ fontSize: 11, lineHeight: 1.35, color: P.mute }}>Keeps its distance from <b style={{ color: P.ink, fontWeight: 600 }}>{anchorName(ax, ay)}</b>.</span>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 'auto' }}>
-            <span style={{ flex: 1, minWidth: 0, fontSize: 11, color: P.mute, whiteSpace: 'nowrap' }}>Stretch</span>
-            {(['X', 'Y'] as const).map((k, i) => (
-              <button key={k} className={`dp-chip${apply.stretch[i] ? ' on' : ''}`} style={{ flex: 'none', width: 46, padding: 0, gap: 4, justifyContent: 'center' }}
-                aria-pressed={apply.stretch[i]} aria-label={`Stretch ${k}`}
-                onClick={() => setApply({ stretch: i === 0 ? [!apply.stretch[0], apply.stretch[1]] : [apply.stretch[0], !apply.stretch[1]] })}
-                {...tip(`Stretch ${k} — the drawing scales with the face ${i === 0 ? 'width' : 'height'}`)}>
-                <DIcon name={i === 0 ? 'stretchx' : 'stretchy'} size={15} />{k}
-              </button>
-            ))}
+        {param ? (
+          /* PARAMETRIC — düzenleme EKRANDA yapılır: nokta / kenar seç → yüzün kenarını göster → ölçüye tıklayıp yaz. Panelde yalnız Auto. */
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ flex: 1, minWidth: 0, fontSize: 11, color: nSel ? P.ink : P.faint, fontWeight: nSel ? 600 : 400 }}>{nSel ? `${nSel} selected` : 'Nearest edge'}</span>
+            <button className="dp-chip" style={{ height: 26, padding: '0 9px', gap: 5 }} disabled={!stats.count} onClick={autoBind}
+              {...tip(nSel ? 'Auto — tie the selected points to their nearest edges' : 'Auto — tie every point to its nearest edges')}>
+              <DIcon name="auto" size={15} />Auto
+            </button>
           </div>
+        ) : (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <div className="dp-anchor" role="radiogroup" aria-label="Anchor">
+              {ANCHORS.map(([x, y]) => (
+                <button key={`${x}-${y}`} role="radio" aria-checked={x === ax && y === ay} className={x === ax && y === ay ? 'on' : ''}
+                  onClick={() => setApply({ anchor: [x, y] })} {...tip(`Anchor: keeps its distance from ${anchorName(x, y)}`)}><i /></button>
+              ))}
+            </div>
+            <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 5 }}>
+              {(['X', 'Y'] as const).map((k, i) => (
+                <button key={k} className={`dp-chip${apply.stretch[i] ? ' on' : ''}`} style={{ gap: 6 }} aria-pressed={apply.stretch[i]} aria-label={`Stretch ${k}`}
+                  onClick={() => setApply({ stretch: i === 0 ? [!apply.stretch[0], apply.stretch[1]] : [apply.stretch[0], !apply.stretch[1]] })}
+                  {...tip(`Stretch ${k} — the drawing scales with the face ${i === 0 ? 'width' : 'height'}`)}>
+                  <DIcon name={i === 0 ? 'stretchx' : 'stretchy'} size={15} />Stretch {k}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: 5, marginTop: 2 }}>
+          <button className="dp-primary" disabled={busy || !stats.loops} onClick={() => { void go(); }} {...tip(stats.loops ? '' : 'Draw a closed profile on the face first')}>
+            <DIcon name="check" size={15} />{busy ? 'Working…' : session ? 'Save changes' : shaped ? 'Apply shape' : 'Apply cut'}
+          </button>
+          {session && <button className="dp-ghost" disabled={busy} onClick={() => { void cancelEdit(); }}>Cancel</button>}
         </div>
+        {msg && <div style={{ fontSize: 11, lineHeight: 1.35, color: '#b91c1c' }}>{msg.text}</div>}
       </div>
-      )}
-      <SizePreview tip={tip} />
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '12px 0 7px', fontSize: 11, color: stats.loops ? P.body : P.mute }}>
-        <i style={{ width: 6, height: 6, borderRadius: '50%', background: stats.loops ? '#0f766e' : '#cfc7bc', flexShrink: 0 }} />
-        {stats.loops ? `${stats.loops} closed profile${stats.loops > 1 ? 's' : ''}${stats.picked ? ' selected' : ''}` : 'Draw a closed profile on the face'}
-        {stats.open > 0 && <span style={{ color: P.faint }}>· {stats.open} open (ignored)</span>}
-      </div>
-      <div style={{ display: 'flex', gap: 5 }}>
-        <button className="dp-primary" disabled={busy || !stats.loops} onClick={() => { void go(); }}>
-          <DIcon name="check" size={15} />{busy ? 'Working…' : session ? 'Save changes' : shaped ? 'Apply shape' : 'Apply cut'}
-        </button>
-        {session && <button className="dp-ghost" disabled={busy} onClick={() => { void cancelEdit(); }}>Cancel</button>}
-      </div>
-      {msg && <div style={{ marginTop: 7, fontSize: 11, lineHeight: 1.35, color: msg.ok ? '#0f766e' : '#b91c1c' }}>{msg.text}</div>}
     </Section>
   );
 };
@@ -1492,25 +1407,52 @@ export const DrawingPanel: React.FC = () => {
   const tip = (title: string, key?: string) => ({ onMouseEnter: () => setHint({ title, key }), onMouseLeave: () => setHint(null) });
   // Odak düğmede kalmasın: sonraki Enter / Boşluk komut satırına gitsin, düğmeyi yeniden tetiklemesin.
   const run = (id: string) => { (document.activeElement as HTMLElement | null)?.blur?.(); startCommand(id); };
-  const blocks = (list: Block[]) => (
-    <div className="dp-flow">
-      {list.map(b => (
-        <div key={b.label} className="dp-blk">
-          <span className="dp-cap">{b.label}</span>
-          <div className="dp-card" style={{ gridTemplateColumns: `repeat(${Math.min(b.ids.length, MAX_COLS)}, 30px)` }}>
-            {b.ids.map(id => {
-              const def = commandById(id)!, title = b.prefix ? `${b.prefix} · ${def.label}` : def.label;
-              return (
-                <button key={id} className={`dp-btn${cmd?.id === id ? ' on' : ''}`} onClick={() => run(id)} aria-label={title} {...tip(title, aliasOf(id))}>
-                  <DIcon name={id} />
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      ))}
+  // ARAÇLAR (Goker: "düğmeleri daha da büyüt; basit ve kategorilerine göre sınıflanmış olsun"): 36 px düğmeler, her kategori kendi başlığı
+  // altında. Çizimde her AİLE (dikdörtgen, çokgen, daire, elips, yay) tek düğmedir ve son kullanılan yöntemi başlatır; ailenin öteki
+  // yöntemleri o aile etkinken en altta tek satır olarak açılır.
+  const [fam, setFam] = useState<string | null>(null);
+  const [last, setLast] = useState<Record<string, string>>({});
+  const titleOf = (b: Block | null, id: string) => { const def = commandById(id)!; return b?.prefix ? `${b.prefix} · ${def.label}` : def.label; };
+  const tool = (id: string, b: Block | null, big: boolean, onPick?: () => void) => (
+    <button key={id} className={`dp-btn${big ? ' lg' : ''}${cmd?.id === id ? ' on' : ''}`} onClick={() => { onPick?.(); run(id); }} aria-label={titleOf(b, id)} {...tip(titleOf(b, id), aliasOf(id))}>
+      <DIcon name={id} size={big ? 21 : 18} />
+    </button>
+  );
+  const group = (label: string, kids: React.ReactNode, n: number) => (
+    <div key={label} className="dp-blk">
+      <span className="dp-cap">{label}</span>
+      <div className="dp-card" style={{ gridTemplateColumns: `repeat(${n}, 36px)` }}>{kids}</div>
     </div>
   );
+  const family = (b: Block) => {
+    const id = last[b.label] ?? b.ids[0], on = !!cmd && b.ids.includes(cmd.id);
+    return (
+      <button key={b.label} className={`dp-btn lg${on ? ' on' : ''}${fam === b.label ? ' fam' : ''}`} aria-label={titleOf(b, id)} aria-expanded={fam === b.label}
+        onClick={() => { setFam(b.label); run(id); }} {...tip(`${titleOf(b, id)}  ·  ${b.ids.length} methods`, aliasOf(id))}>
+        <DIcon name={id} size={21} />
+      </button>
+    );
+  };
+  const blk = (label: string) => DRAW_BLOCKS.find(b => b.label === label)!;
+  const openFam = DRAW_BLOCKS.find(b => b.label === fam && b.ids.length > 2) ?? null;
+  const drawTools = (
+    <>
+      <div className="dp-flow">
+        {group('Lines', blk('Lines').ids.map(id => tool(id, blk('Lines'), true, () => setFam(null))), 2)}
+        {group('Curves', [family(blk('Arc')), family(blk('Circle')), family(blk('Ellipse'))], 3)}
+        {group('Shapes', [family(blk('Rectangle')), family(blk('Polygon'))], 2)}
+      </div>
+      {openFam && (
+        <div className="dp-blk" style={{ marginTop: 9 }}>
+          <span className="dp-cap">{openFam.label} methods</span>
+          <div className="dp-card" style={{ gridTemplateColumns: `repeat(${Math.min(openFam.ids.length, 6)}, 36px)` }}>
+            {openFam.ids.map(id => tool(id, openFam, true, () => setLast(l => ({ ...l, [openFam.label]: id }))))}
+          </div>
+        </div>
+      )}
+    </>
+  );
+  const modifyTools = <div className="dp-flow">{MODIFY_BLOCKS.map(b => group(b.label, b.ids.map(id => tool(id, b, true)), b.ids.length))}</div>;
   const onFace = activePlane !== GROUND_PLANE.id;
   const readout = hint
     ? <><span style={{ color: P.ink, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis' }}>{hint.title}</span>
@@ -1519,7 +1461,7 @@ export const DrawingPanel: React.FC = () => {
       ? <><i style={{ width: 6, height: 6, borderRadius: '50%', background: P.accent, flexShrink: 0 }} />
         <span style={{ color: '#c2410c', fontWeight: 600, fontFamily: MONO_FONT, fontSize: 10.5 }}>{cmd.id.replace('_', ' ')}</span>
         <span style={{ color: P.mute, overflow: 'hidden', textOverflow: 'ellipsis' }}>{cmd.prompt.replace(/^.*? {2}/, '')}</span></>
-      : <span style={{ color: P.faint }}>Pick a tool or type a command</span>;
+      : null;
 
   return (
     <div className="dp-root" style={{
@@ -1555,40 +1497,29 @@ export const DrawingPanel: React.FC = () => {
                 <DIcon name="face" size={17} />{planePick ? 'Picking…' : 'Face'}
               </button>
               <button className="dp-btn" onClick={() => viewPlaneFn?.()} aria-label="Look at plane" {...tip('Look straight at the drawing plane')}><DIcon name="look" /></button>
+              {onFace && !planePick && (
+                <button className={`dp-btn${iso ? ' on' : ''}`} aria-pressed={!!iso} aria-label="Isolate" onClick={toggleIsolate}
+                  {...tip(iso ? 'Isolated — click to show the other parts again' : 'Isolate — hide everything except this face')}><DIcon name="solo" /></button>
+              )}
             </div>
             {/* Yüz seçimi: tıklanan aday vurgulanır, ONAYLANINCA düzlem olur (sağ tık / Enter da onaylar). */}
             {planePick && (
-              <div className="dp-note">
-                <div style={{ fontSize: 11.5, color: candLabel ? P.ink : P.mute }}>
-                  {candLabel ? <>Highlighted: <b style={{ fontWeight: 600 }}>{candLabel}</b></> : 'Click a face in the 3D view.'}
-                </div>
-                <div style={{ fontSize: 10.5, lineHeight: 1.4, color: P.faint, margin: '3px 0 8px' }}>
-                  {iso ? 'Orbit and click another face of this panel to change it.' : 'Click the same spot again for the face behind it.'}
-                </div>
-                <div style={{ display: 'flex', gap: 5 }}>
-                  <button className="dp-primary" disabled={!candLabel} onClick={confirmFacePick} {...tip('Confirm the highlighted face', 'Enter')}>
-                    <DIcon name="check" size={15} />Confirm face
-                  </button>
-                  <button className="dp-ghost" onClick={() => cancelFacePick()}>Cancel</button>
-                </div>
-              </div>
-            )}
-            {onFace && !planePick && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8 }}>
-                <span style={{ flex: 1, minWidth: 0, fontSize: 11.5, color: P.body, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  On <b style={{ fontWeight: 600, color: P.ink }}>{planeLabel}</b>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 7 }}>
+                <span style={{ flex: 1, minWidth: 0, fontSize: 11.5, fontWeight: candLabel ? 600 : 400, color: candLabel ? P.ink : P.faint, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {candLabel ?? 'Click a face'}
                 </span>
-                <button className={`dp-chip${iso ? ' on' : ''}`} style={{ padding: '0 8px', height: 26 }} aria-pressed={!!iso} onClick={toggleIsolate}
-                  {...tip(iso ? 'Isolated — the other panels are hidden. Click to show them.' : 'Hide everything except the face you draw on')}>
-                  <DIcon name="look" size={15} />Isolate
+                <button className="dp-primary" style={{ flex: 'none', padding: '0 11px' }} disabled={!candLabel} onClick={confirmFacePick}
+                  {...tip('Confirm the highlighted face — click the same spot again for the face behind', 'Enter')}>
+                  <DIcon name="check" size={15} />Confirm
                 </button>
+                <button className="dp-ghost" style={{ padding: '0 9px' }} onClick={() => cancelFacePick()}>Cancel</button>
               </div>
             )}
           </Section>
           {onFace && !planePick && <FaceApply tip={tip} />}
-          <Section title="Draw">{blocks(DRAW_BLOCKS)}</Section>
-          <Section title="Modify">{blocks(MODIFY_BLOCKS)}</Section>
-          <Section title="Object snap"
+          <Section title="Draw">{drawTools}</Section>
+          <Section title="Modify">{modifyTools}</Section>
+          <Section title="Object snap" closed
             right={<button className={`dp-switch${snapOn ? ' on' : ''}`} onClick={() => setSnapOn(!snapOn)} aria-pressed={snapOn} aria-label="Object snap"
               {...tip(`Object snap ${snapOn ? 'on' : 'off'}`, 'F3')} />}>
             <div className="dp-chips">
@@ -1602,7 +1533,7 @@ export const DrawingPanel: React.FC = () => {
               })}
             </div>
           </Section>
-          <Section title="Drafting aids">
+          <Section title="Drafting aids" closed>
             <div className="dp-chips">
               <button className={`dp-chip${ortho ? ' on' : ''}`} onClick={toggleOrtho} aria-pressed={ortho} {...tip('Ortho — lock to horizontal / vertical', 'F8')}>
                 <DIcon name="ortho" size={16} />Ortho<kbd>F8</kbd>
@@ -1648,7 +1579,7 @@ export const DraftViewport: React.FC<{ children: React.ReactNode }> = ({ childre
 
 /** Durum çubuğu parçası: etkin düzlem, çizim nesnesi sayısı ve imleç koordinatı. */
 export const DraftStatus: React.FC = () => {
-  const label = useDraft(s => s.planes.find(p => p.id === s.activePlane)?.label ?? 'Ground'), count = useDraft(s => s.entities.length);
+  const label = useDraft(s => s.planes.find(p => p.id === s.activePlane)?.label ?? 'Ground'), count = useDraft(s => s.entities.reduce((n, e) => n + (e.ref ? 0 : 1), 0));
   const selected = useDraft(s => s.selection.length), x = useDraft(s => (s.cursor && s.cmd ? Math.round(s.cursor.p.x * 10) / 10 : null));
   const y = useDraft(s => (s.cursor && s.cmd ? Math.round(s.cursor.p.y * 10) / 10 : null));
   if (!count && label === 'Ground' && x === null) return null;

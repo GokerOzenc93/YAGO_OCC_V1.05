@@ -55,7 +55,10 @@ export type PV = { x: number; y: number; b?: number };
 export type PlineS = { t: 'pline'; v: PV[]; closed?: boolean };
 export type Shape2 = LineS | CircleS | ArcS | EllipseS | PlineS;
 /** pb: kontrol noktalarının parametrik bağ tercihleri (sıra = ctrlPoints) · re: daire yarıçapı formülü — yalnız Parametric kipte anlamlıdır. */
-export type Entity = Shape2 & { id: string; plane: string; pb?: (PtPref | undefined)[]; re?: string };
+/** ref: REFERANS kenar — yüzü seçilen panelin / gövdenin o yüzdeki kenarı (sahne katmanı yazar). Komutlar seçebilir (ofset kaynağı, trim
+ *  sınırı, uzatma hedefi, yakalama). Bir komut kenarı DEĞİŞTİRİRSE (trim, extend, fillet, taşı, sil…) o kenarın bağlı olduğu tüm çevre
+ *  çizime KATILIR (Draft.adoptRef): artık normal çizim nesneleridir, kapalı profil sayılır ve adıma girer. Dokunulmamış referans adıma girmez. */
+export type Entity = Shape2 & { id: string; plane: string; pb?: (PtPref | undefined)[]; re?: string; ref?: boolean };
 export type GeoStyle = 'ghost' | 'rubber' | 'hi' | 'del' | 'track';
 /** Geçici çizim (önizleme): nesne biçimi + stil, veya seçim penceresi. */
 export type Geo = (Shape2 & { style?: GeoStyle }) | { t: 'box'; a: P2; b: P2; crossing: boolean };
@@ -1031,6 +1034,8 @@ export interface DraftState {
   face: DraftFace | null;
   /** Parametric önizleme: sanal yüz ölçüsü (null = kapalı) — çizimin o ölçüde alacağı hâl sahnede hayalet olarak çizilir. */
   pview: { w: number; h: number } | null;
+  /** Parametric kip: imlecin altındaki yüz referansı ('xL' | 'xC' | 'xR' | 'yL' | 'yC' | 'yR', köşede ikisi birden: 'xL yR'). */
+  phover: string | null;
 }
 export interface DraftFace { planeId: string; dx: number; dy: number; w: number; h: number; vars: Record<string, number> }
 export interface DraftIsolate { targetId: string; bodyId: string; kind: 'panel' | 'body' }
@@ -1052,7 +1057,7 @@ export const useDraft = create<DraftState>(() => ({
   lastCmd: null, recent: {}, typed: '', panelOpen: false,
   planeCandidate: null, isolate: null, session: null,
   apply: { op: 'cut', through: true, depth: 8, anchor: [0, 0], stretch: [false, false], mode: 'anchor', auto: true },
-  psel: [], face: null, pview: null,
+  psel: [], face: null, pview: null, phover: null,
 }));
 const get = useDraft.getState, set = useDraft.setState;
 
@@ -1080,16 +1085,32 @@ export const setPView = (v: DraftState['pview']) => set({ pview: v });
 export const setPSel = (keys: string[]) => set({ psel: keys });
 
 const say = (t: string) => set(s => ({ log: [...s.log.slice(-59), t] }));
-export const stripEnt = (e: Entity): Shape2 => { const s: Record<string, unknown> = { ...e }; delete s.id; delete s.plane; delete s.pb; delete s.re; return s as unknown as Shape2; };
+export const stripEnt = (e: Entity): Shape2 => { const s: Record<string, unknown> = { ...e }; delete s.id; delete s.plane; delete s.pb; delete s.re; delete s.ref; return s as unknown as Shape2; };
 /** Nesne güncellenirken nokta bağ tercihleri korunur (tür ve kontrol noktası sayısı aynıysa); yeni biçimle taşınan eski alanlar atılır. */
 const keepPrefs = (old: Entity, next: Entity): Entity => {
   const out = { ...next };
-  delete out.pb; delete out.re;
+  delete out.pb; delete out.re; delete out.ref;
   if (old.pb && old.t === next.t && ctrlPoints(old).length === ctrlPoints(next).length) out.pb = old.pb;
   if (old.re && next.t === 'circle') out.re = old.re;
   return out;
 };
 const planeEnts = () => { const st = get(); return st.entities.filter(e => e.plane === st.activePlane); };
+/** Referans kenarı ÇİZİME KATAR: kenarın uç uca bağlı olduğu tüm çevre (aynı düzlemdeki referans kenarlar) normal çizim nesnesi olur —
+ *  kimlikleri korunur, komut işine onlarla devam eder. Böylece kırpılan / yuvarlatılan panel çevresi kapalı profil olarak kalır. */
+function adoptRef(id: string) {
+  const st = get(), e0 = st.entities.find(e => e.id === id);
+  if (!e0?.ref || e0.t !== 'line') return;
+  const key = (p: P2) => `${Math.round(p.x / 0.05)},${Math.round(p.y / 0.05)}`;
+  const refs = st.entities.filter((e): e is Entity & LineS => !!e.ref && e.plane === e0.plane && e.t === 'line');
+  const take = new Set([id]), nodes = new Set([key(e0.a), key(e0.b)]);
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const r of refs) if (!take.has(r.id) && (nodes.has(key(r.a)) || nodes.has(key(r.b)))) { take.add(r.id); nodes.add(key(r.a)); nodes.add(key(r.b)); grew = true; }
+  }
+  set({ entities: st.entities.map(e => { if (!take.has(e.id)) return e; const o = { ...e }; delete o.ref; return o; }) });
+}
+/** Etkin düzlemdeki ÇİZİLMİŞ nesneler (referans kenarlar hariç) — parametrik noktalar yalnız bunlardadır. */
+const drawnEnts = () => planeEnts().filter(e => !e.ref);
 
 interface Ctx {
   ents(): Entity[]; add(s: Shape2): Entity; addAll(ss: Shape2[]): Entity[]; remove(ids: string[]): void; update(id: string, s: Shape2): void;
@@ -1099,13 +1120,17 @@ const ctx: Ctx = {
   ents: planeEnts,
   add(s) {
     const e = { ...s, id: `d${Date.now().toString(36)}${(seq++).toString(36)}`, plane: get().activePlane } as Entity;
-    delete e.pb; delete e.re;   // yeni nesne (kopya dahil) bağsız başlar → varsayılan bağ
+    delete e.pb; delete e.re; delete e.ref;   // yeni nesne (kopya dahil) bağsız başlar → varsayılan bağ; referans kenarın kopyası normal çizimdir
     set(st => ({ entities: [...st.entities, e] }));
     return e;
   },
   addAll(ss) { return ss.map(s => this.add(s)); },
-  remove(ids) { const k = new Set(ids); set(st => ({ entities: st.entities.filter(e => !k.has(e.id)), selection: st.selection.filter(i => !k.has(i)) })); },
-  update(id, s) { set(st => ({ entities: st.entities.map(e => (e.id === id ? keepPrefs(e, { ...s, id, plane: e.plane } as Entity) : e)) })); },
+  // Referans kenar (panelin / gövdenin kendi çizgisi) değiştirilir ya da silinirse önce çevresiyle birlikte çizime katılır (adoptRef).
+  remove(ids) { ids.forEach(adoptRef); const k = new Set(ids); set(st => ({ entities: st.entities.filter(e => !k.has(e.id)), selection: st.selection.filter(i => !k.has(i)) })); },
+  update(id, s) {
+    adoptRef(id);
+    set(st => ({ entities: st.entities.map(e => (e.id === id ? keepPrefs(e, { ...s, id, plane: e.plane } as Entity) : e)) }));
+  },
   sel() { const k = new Set(get().selection); return planeEnts().filter(e => k.has(e.id)); },
   setSel(ids) { set({ selection: ids }); },
   msg: say,
@@ -1186,17 +1211,19 @@ export function cancelCommand(): boolean {
   return true;
 }
 export const commandActive = () => !!gen;
+/** Geri al / yinele anlık görüntüsü + O ANKİ referans kenarlar (referanslar sahneden gelir, geçmişe ait değildir). */
+const withRefs = (snap: Entity[], now: Entity[]) => [...snap.filter(e => !e.ref), ...now.filter(e => e.ref)];
 export function undo() {
   cancelCommand();
   const st = get();
   if (!st.undoStack.length) { say('Nothing to undo.'); return; }
-  set({ entities: st.undoStack[st.undoStack.length - 1], undoStack: st.undoStack.slice(0, -1), redoStack: [...st.redoStack, st.entities], selection: [] });
+  set({ entities: withRefs(st.undoStack[st.undoStack.length - 1], st.entities), undoStack: st.undoStack.slice(0, -1), redoStack: [...st.redoStack, st.entities], selection: [], psel: [] });
 }
 export function redo() {
   cancelCommand();
   const st = get();
   if (!st.redoStack.length) { say('Nothing to redo.'); return; }
-  set({ entities: st.redoStack[st.redoStack.length - 1], redoStack: st.redoStack.slice(0, -1), undoStack: [...st.undoStack, st.entities], selection: [] });
+  set({ entities: withRefs(st.redoStack[st.redoStack.length - 1], st.entities), redoStack: st.redoStack.slice(0, -1), undoStack: [...st.undoStack, st.entities], selection: [], psel: [] });
 }
 /** Komutu adı veya kısaltmasıyla başlatır (LINE · L …). */
 export function startCommand(name: string): boolean {
@@ -1309,7 +1336,8 @@ export function eraseSelection(): boolean {
   const st = get();
   if (!st.selection.length) return false;
   const k = new Set(st.selection);
-  set({ entities: st.entities.filter(e => !k.has(e.id)), selection: [], undoStack: [...st.undoStack.slice(-49), st.entities], redoStack: [] });
+  st.selection.forEach(adoptRef);   // seçili panel kenarı silinirse çevresi çizime katılır, o kenar gider
+  set({ entities: get().entities.filter(e => !k.has(e.id)), selection: [], psel: [], undoStack: [...st.undoStack.slice(-49), st.entities], redoStack: [] });
   say(`${k.size} object(s) erased.`);
   return true;
 }
@@ -1354,7 +1382,7 @@ const splitKey = (k: string): [string, number] => { const j = k.lastIndexOf(':')
 const groupKeys = (keys: string[]) => { const m = new Map<string, number[]>(); for (const k of keys) { const [id, i] = splitKey(k); m.set(id, [...(m.get(id) ?? []), i]); } return m; };
 /** Bağ düğmelerinin hedefi: seçili noktalar; hiç yoksa seçili nesnelerin tüm noktaları (etkin düzlemde). */
 export function paramTargets(st: Pick<DraftState, 'entities' | 'activePlane' | 'psel' | 'selection'> = get()): string[] {
-  const on = new Map(st.entities.filter(e => e.plane === st.activePlane).map(e => [e.id, e]));
+  const on = new Map(st.entities.filter(e => e.plane === st.activePlane && !e.ref).map(e => [e.id, e]));
   const live = st.psel.filter(k => { const [id, i] = splitKey(k), e = on.get(id); return !!e && i < ctrlPoints(e).length; });
   if (live.length) return live;
   return st.selection.flatMap(id => { const e = on.get(id); return e ? ctrlPoints(e).map((_, i) => ptKey(id, i)) : []; });
@@ -1362,8 +1390,107 @@ export function paramTargets(st: Pick<DraftState, 'entities' | 'activePlane' | '
 /** İmlecin altındaki kontrol noktası (etkin düzlem). */
 export function pointAt(q: P2, tol: number): string | null {
   let best: string | null = null, bd = tol;
-  for (const e of planeEnts()) ctrlPoints(e).forEach((p, i) => { const d = dist(p, q); if (d <= bd) { bd = d; best = ptKey(e.id, i); } });
+  for (const e of drawnEnts()) ctrlPoints(e).forEach((p, i) => { const d = dist(p, q); if (d <= bd) { bd = d; best = ptKey(e.id, i); } });
   return best;
+}
+/** İmlecin altındaki çizim PARÇASI: doğru / yay → iki ucu · polyline → tıklanan kenarın iki köşesi · daire / elips → merkez. */
+export function segmentAt(q: P2, tol: number): { id: string; keys: string[] } | null {
+  let best: { id: string; keys: string[] } | null = null, bd = tol;
+  for (const e of drawnEnts()) {
+    if (e.t !== 'pline') { const d = closestOn(e, q).d; if (d <= bd) { bd = d; best = { id: e.id, keys: ctrlPoints(e).map((_, i) => ptKey(e.id, i)) }; } continue; }
+    const n = e.v.length, m = e.closed ? n : n - 1;
+    for (let j = 0; j < m; j++) {
+      const a = e.v[j], b = e.v[(j + 1) % n];
+      if (same(a, b)) continue;
+      const d = primClosest(a.b ? bulgeArc(a, b, a.b) : { k: 's', a: P(a.x, a.y), b: P(b.x, b.y) }, q).d;
+      if (d <= bd) { bd = d; best = { id: e.id, keys: [ptKey(e.id, j), ptKey(e.id, (j + 1) % n)] }; }
+    }
+  }
+  return best;
+}
+/** Bir parçanın noktalarını seçer (nesnesi de seçili olur → Delete onu siler); additive: seçime ekler. */
+export function selectPoints(keys: string[], entId: string, additive: boolean) {
+  const st = get();
+  set(additive ? { psel: [...new Set([...st.psel, ...keys])], selection: [...new Set([...st.selection, entId])] } : { psel: keys, selection: [entId] });
+}
+export const setPHover = (h: string | null) => { if (get().phover !== h) set({ phover: h }); };
+/** Uç uca değen doğru parçalarını zincirler (aynı doğrultudaki ardışık parçalar birleşir): kapalı / açık polyline'lar. */
+export function chainLines(lines: LineS[], tol = 0.05): PlineS[] {
+  const key = (p: P2) => `${Math.round(p.x / tol)},${Math.round(p.y / tol)}`;
+  const at = new Map<string, number[]>();
+  lines.forEach((l, i) => { for (const k of [key(l.a), key(l.b)]) at.set(k, [...(at.get(k) ?? []), i]); });
+  const used = new Set<number>(), out: PlineS[] = [];
+  const walk = (from: P2, grow: (p: P2) => void) => {
+    for (let cur = from; ;) {
+      const inc = at.get(key(cur)) ?? [], next = inc.length === 2 ? inc.find(i => !used.has(i)) : undefined;
+      if (next === undefined) return;
+      used.add(next);
+      cur = key(lines[next].a) === key(cur) ? lines[next].b : lines[next].a;
+      grow(cur);
+    }
+  };
+  lines.forEach((l, i) => {
+    if (used.has(i) || same(l.a, l.b, tol)) return;
+    used.add(i);
+    const pts: P2[] = [l.a, l.b];
+    walk(l.b, p => pts.push(p));
+    let closed = pts.length > 3 && key(pts[0]) === key(pts[pts.length - 1]);
+    if (closed) pts.pop(); else { walk(l.a, p => pts.unshift(p)); closed = pts.length > 3 && key(pts[0]) === key(pts[pts.length - 1]); if (closed) pts.pop(); }
+    // aynı doğrultudaki ara köşeler atılır
+    const keep = pts.filter((p, j) => {
+      if (!closed && (j === 0 || j === pts.length - 1)) return true;
+      const a = pts[(j - 1 + pts.length) % pts.length], b = pts[(j + 1) % pts.length];
+      return Math.abs(cross(sub(p, a), sub(b, p))) > 1e-6 * Math.max(1, dist(a, p) * dist(p, b)) || dot(sub(p, a), sub(b, p)) < 0;
+    });
+    if (keep.length >= 2) out.push({ t: 'pline', v: keep.map(p => ({ x: p.x, y: p.y })), closed: (closed && keep.length > 2) || undefined });
+  });
+  return out;
+}
+/** BİLEŞİK ÇİZGİ: `start` ile uç uca bağlı (aynı türden: çizim ya da referans) doğru / yay / açık polyline nesneleri tek polyline olarak.
+ *  Bir uçta birden çok komşu varsa (çatallanma) zincir orada durur. Kapalı nesne, elips ve tek başına nesne için null. */
+export function chainOf(ents: Entity[], start: Entity, tol = 0.01): { ids: string[]; shape: PlineS } | null {
+  const linear = (e: Entity) => !isClosedShape(e) && e.t !== 'ellipse' && e.t !== 'circle';
+  if (!linear(start)) return null;
+  const pool = ents.filter(e => e.id !== start.id && !!e.ref === !!start.ref && linear(e)).map(e => ({ id: e.id, ps: primsOf(e) })).filter(x => x.ps.length);
+  let ps = primsOf(start);
+  if (!ps.length) return null;
+  const ids = [start.id], used = new Set<string>();
+  const grow = (tail: boolean) => {
+    for (;;) {
+      const at = tail ? primEnd(ps[ps.length - 1]) : primStart(ps[0]);
+      if (ps.length > 1 && same(primStart(ps[0]), primEnd(ps[ps.length - 1]), tol)) return;   // kapandı
+      const cand = pool.filter(x => !used.has(x.id) && (same(primStart(x.ps[0]), at, tol) || same(primEnd(x.ps[x.ps.length - 1]), at, tol)));
+      if (cand.length !== 1) return;
+      const x = cand[0], fwd = same(primStart(x.ps[0]), at, tol) === tail;
+      const seq = fwd ? x.ps : x.ps.slice().reverse().map(reversePrim);
+      ps = tail ? [...ps, ...seq] : [...seq, ...ps];
+      used.add(x.id); ids.push(x.id);
+    }
+  };
+  grow(true); grow(false);
+  const closed = ps.length > 1 && same(primStart(ps[0]), primEnd(ps[ps.length - 1]), tol);
+  if (ids.length < 2 && !(closed && start.t === 'pline')) return null;
+  return { ids, shape: plineOfPrims(ps, closed) };
+}
+/** Etkin yüzün REFERANS kenarlarını yazar (yalnız o düzlemde; öteki düzlemlerdeki eski referanslar düşer). Aynıysa depo yenilenmez. */
+export function setRefEdges(planeId: string | null, lines: LineS[]) {
+  const st = get(), old = st.entities.filter(e => e.ref);
+  // Çizime katılmış (ya da üstüne aynı doğrultuda çizim yapılmış) kenar yeniden referans olarak gelmez: aynı çizgi iki kez seçilmesin.
+  const drawn = planeId ? st.entities.filter(e => !e.ref && e.plane === planeId).flatMap(e => primsOf(e)).filter((p): p is Seg => p.k === 's') : [];
+  const covered = (l: LineS) => {
+    const len = dist(l.a, l.b), u = unit(sub(l.b, l.a));
+    return drawn.some(d => {
+      if (Math.abs(cross(sub(d.a, l.a), u)) > 0.05 || Math.abs(cross(sub(d.b, l.a), u)) > 0.05) return false;
+      const t0 = dot(sub(d.a, l.a), u), t1 = dot(sub(d.b, l.a), u);
+      return Math.min(len, Math.max(t0, t1)) - Math.max(0, Math.min(t0, t1)) > 0.5;
+    });
+  };
+  const segs = planeId ? chainLines(lines).flatMap(pl => primsOf(pl).map(p => (p.k === 's' ? L(p.a, p.b) : null)).filter((x): x is LineS => !!x)).filter(l => !covered(l)) : [];
+  const sig = (l: LineS) => `${fmt(l.a.x, 2)},${fmt(l.a.y, 2)},${fmt(l.b.x, 2)},${fmt(l.b.y, 2)}`;
+  if (old.length === segs.length && old.every((e, i) => e.plane === planeId && e.t === 'line' && sig(e) === sig(segs[i]))) return;
+  const made = segs.map(l => ({ ...l, id: `r${Date.now().toString(36)}${(seq++).toString(36)}`, plane: planeId!, ref: true }) as Entity);
+  const gone = new Set(old.map(e => e.id));
+  set({ entities: [...st.entities.filter(e => !e.ref), ...made], selection: st.selection.filter(i => !gone.has(i)) });
 }
 /** Noktayı seçer; additive: seçime ekler / seçiliyse çıkarır. */
 export function togglePoint(key: string, additive: boolean) {
@@ -1441,8 +1568,8 @@ function* selectObjects(c: Ctx, tag: string, usePre = true): G<Entity[] | null> 
 }
 
 /** Parametric kip — kontrol noktası seçimi: noktaya tık ekler / çıkarır; boşluğa tık pencere açar (içindeki noktalar eklenir, Shift çıkarır). */
-function* PSEL(c: Ctx): G {
-  const all = () => c.ents().flatMap(e => ctrlPoints(e).map((_, i) => ptKey(e.id, i)));
+function* PSEL(): G {
+  const all = () => drawnEnts().flatMap(e => ctrlPoints(e).map((_, i) => ptKey(e.id, i)));
   for (;;) {
     const n = get().psel.length;
     const ev = yield {
@@ -1458,7 +1585,7 @@ function* PSEL(c: Ctx): G {
     const e2 = yield { kind: 'point', noSnap: true, noTrack: true, prompt: 'POINTS  Specify opposite corner', preview: cur => [{ t: 'box', a, b: cur, crossing: false }] };
     if (e2.k !== 'pt') continue;
     const cur = new Set(get().psel);
-    for (const e of c.ents()) ctrlPoints(e).forEach((p, i) => { if (inBox(p, a, e2.p)) { if (e2.shift) cur.delete(ptKey(e.id, i)); else cur.add(ptKey(e.id, i)); } });
+    for (const e of drawnEnts()) ctrlPoints(e).forEach((p, i) => { if (inBox(p, a, e2.p)) { if (e2.shift) cur.delete(ptKey(e.id, i)); else cur.add(ptKey(e.id, i)); } });
     set({ psel: [...cur], selection: [] });
   }
 }
@@ -1494,15 +1621,20 @@ function* PLINE(c: Ctx): G {
     if (id) c.update(id, s); else id = c.add(s).id;
   };
   const dirNow = () => (v.length < 2 ? (vars.last && same(vars.last.p, v[0]) ? vars.last.ang : 0) : endTangent(v[v.length - 2], v[v.length - 1]));
+  // Goker: "polyline'da başladığı ve bittiği nokta ayrı iki nokta oluyor; tam kapansın" → başlangıç noktasına tıklanınca polyline KAPALI
+  // olur (son köşe eklenmez) ve komut biter.
+  let closedNow = false;
   const push = (p: P2, bulge = 0) => {
     if (same(p, v[v.length - 1])) return;
     v[v.length - 1] = { x: v[v.length - 1].x, y: v[v.length - 1].y, ...(Math.abs(bulge) > 1e-9 ? { b: bulge } : {}) };
+    if (v.length >= 3 && same(p, v[0], 1e-3)) { commit(true); closedNow = true; return; }
     v.push({ x: p.x, y: p.y });
     commit();
   };
   const withSeg = (p: P2, bulge = 0): Geo[] => [{ t: 'pline', v: [...v.slice(0, -1), { ...v[v.length - 1], b: bulge || undefined }, { x: p.x, y: p.y }], style: 'ghost' }];
   const tag = 'PLINE';
   for (;;) {
+    if (closedNow) break;
     const last: P2 = v[v.length - 1], n = v.length;
     if (!arcMode) {
       const ev = yield {
@@ -2391,11 +2523,15 @@ function* OFFSET(c: Ctx): G {
   if (!through) vars.offsetDist = d;
   const made: string[] = [];
   for (;;) {
-    const e1 = yield { kind: 'pick', prompt: 'OFFSET  Select object to offset', def: 'Exit', opts: [o('Exit', 'E'), o('Undo', 'U')], preview: (_c, m) => ghost(m.ent ? stripEnt(m.ent) : null, 'hi') };
+    const e1 = yield { kind: 'pick', prompt: 'OFFSET  Select object to offset  (Shift-click: that segment only)', def: 'Exit', opts: [o('Exit', 'E'), o('Undo', 'U')], preview: (_c, m) => ghost(m.ent ? (m.shift ? null : chainOf(c.ents(), m.ent))?.shape ?? stripEnt(m.ent) : null, 'hi') };
     if (isOpt(e1, 'U')) { const id = made.pop(); if (id) c.remove([id]); else c.msg('Nothing to undo.'); continue; }
     if (e1.k !== 'pt') return;
     if (!e1.ent) continue;
-    const src = stripEnt(e1.ent);
+    // BİLEŞİK OFSET (Goker: "her çizgiyi tek tek yapıyor; bileşik çizgi halinde ofset olmalı"): tıklanan nesne, uç uca bağlı olduğu
+    // çizgilerle birlikte TEK polyline olarak ofsetlenir — panel / gövde çevresi ve ayrı ayrı çizilmiş çizgi zincirleri dahil.
+    // Shift ile tıklanırsa yalnız o nesne.
+    const chain = e1.shift ? null : chainOf(c.ents(), e1.ent);
+    const src: Shape2 = chain ? chain.shape : stripEnt(e1.ent);
     if (src.t === 'ellipse') { c.msg('Cannot offset that object.'); continue; }
     let multi = false;
     for (;;) {
@@ -2412,6 +2548,27 @@ function* OFFSET(c: Ctx): G {
       if (!multi) break;
     }
   }
+}
+
+/** JOIN: seçilen, uç uca değen doğru / yay / polyline'ları tek polyline yapar (uçlar buluşuyorsa KAPALI). Panel / gövde kenarı seçilirse
+ *  çevresi çizime katılır. */
+function* JOIN(c: Ctx): G {
+  const sel = yield* selectObjects(c, 'JOIN');
+  if (!sel) return;
+  const left = new Map(sel.map(e => [e.id, e]));
+  let made = 0, eaten = 0;
+  for (const e of sel) {
+    if (!left.has(e.id)) continue;
+    const ch = chainOf([...left.values()], e);
+    left.delete(e.id);
+    if (!ch) continue;
+    ch.ids.forEach(id => left.delete(id));
+    c.remove(ch.ids);
+    c.add(ch.shape);
+    made++; eaten += ch.ids.length;
+  }
+  c.setSel([]);
+  c.msg(made ? `${eaten} object(s) joined into ${made} polyline(s).` : 'Nothing to join — the objects must touch end to end.');
 }
 
 // ── Kayıt ──
@@ -2465,6 +2622,7 @@ export const COMMANDS: CmdDef[] = [
   M('ERASE', 'Erase', ERASE, ['E', 'DELETE']),
   M('EXPLODE', 'Explode', EXPLODE, ['X']),
   M('OFFSET', 'Offset', OFFSET, ['O']),
+  M('JOIN', 'Join', JOIN, ['J']),
   M('PSEL', 'Select points', PSEL, ['POINTS']),
 ];
 export const commandById = (id: string) => COMMANDS.find(c => c.id === id);
