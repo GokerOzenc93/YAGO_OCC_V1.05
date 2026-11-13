@@ -36,7 +36,7 @@ import {
   round1, localBboxOf, effectiveBodyGeometry, confirmRefFaceExtrude, executeFaceExtrude, executeFaceExtrudeOuter, confirmPanelMoveRef, executePanelMoveFixed, executePanelMove,
   confirmPanelRotateRef, executePanelRotate, type ExtrudeStep, type TransformStep, updateExtrudeStep, updateTransformStep, deleteExtrudeStep,
   deleteTransformStep, createPanelFromVirtualFace, convertReplicadToThreeGeometry, genId, getFacesAndGroups, isFlatNormal, dominantAxisLabel,
-  findExistingStepForFace,
+  findExistingStepForFace, isPostSketchFace,
 } from './Geometry';
 import {
   effectiveJoins, panelOrderFor, baseLiftOf, confirmRefCavityExtrude, executeCavityExtrude, executeCavityExtrudeOuter, updateCavityStep, deleteCavityStep, groupName,
@@ -2278,8 +2278,10 @@ function StepList({ label, maxHeight, steps, edit, setEdit }: StepEditProps & { 
 export function PanelSteps({ panel, ...edit }: StepEditProps & { panel?: Shape }) {
   const liveId = useSketch(s => s.session?.featureId ?? null);
   const ext: ExtrudeStep[] = panel?.parameters?.extrudeSteps || [], tr: TransformStep[] = panel?.parameters?.transformSteps || [];
+  // Çizim SONRASI extrude adımları (çizimin açtığı yüzlere): motor sırasıyla — çizim adımlarından sonra listelenir.
+  const post: ExtrudeStep[] = panel?.parameters?.postExtrudeSteps || [];
   const sk = panel ? sketchStepItems(panel, liveId) : [];
-  if (!panel || (!ext.length && !tr.length && !sk.length)) return null;
+  if (!panel || (!ext.length && !tr.length && !sk.length && !post.length)) return null;
   const { updateShape } = useAppStore.getState();
   const item = (s: { id: string; timestamp: number }, type: string, axis: string, value: number, isRef: boolean, tag: string | undefined) => {
     const isExt = type === 'extrude';
@@ -2296,7 +2298,9 @@ export function PanelSteps({ panel, ...edit }: StepEditProps & { panel?: Shape }
     ...tr.map(s => item(s, s.type, s.axis, s.type === 'rotate' && typeof s.resolvedValue === 'number' ? s.resolvedValue : s.value,
       !!s.refTargetPanelId, s.refTargetPanelId ? 'R' : undefined)),
   ].sort((a, b) => a.ts - b.ts);
-  return <StepList label="Steps" maxHeight={200} steps={[...steps, ...sk]} {...edit} />;
+  const postItems = post.map(s => item(s, 'extrude', s.axisLabel, s.resolvedValue != null ? s.resolvedValue : s.value, !!s.refShapeId,
+    s.refShapeId ? 'R' : s.isFixed ? 'F' : 'D')).sort((a, b) => a.ts - b.ts);
+  return <StepList label="Steps" maxHeight={200} steps={[...steps, ...sk, ...postItems]} {...edit} />;
 }
 /** Gövde adımları: gövde yüzüne uygulanan çizim kesimleri (liste başında; gövdede panel olmasa da görünür). */
 export function BodySketchSteps({ shape, ...edit }: StepEditProps & { shape: Shape }) {
@@ -2816,6 +2820,8 @@ export function AssemblyPanel() {
               ...(vf.groupId ? { panelGroupId: vf.groupId, panelThickness: th } : {}),
               ...(vf.doorGroupId ? { doorGroupId: vf.doorGroupId, panelThickness: th } : {}),
               ...(vf.backGroupId ? { backGroupId: vf.backGroupId, panelThickness: th } : {}),
+              // Eğri yüz paneli: motor katıyı gövdenin eğri yüzünden kurar (ilk mesh köşe dörtgeninden geçici levhadır).
+              ...(vf.curved ? { curved: true } : {}),
             },
           } as Shape);
           updateVirtualFace(vf.id, { hasPanel: true });
@@ -2838,11 +2844,13 @@ export function AssemblyPanel() {
   // Seçilen yüzde mevcut extrude adımı varsa değeri (ve ref dışında modu) şeride yüklenir.
   useEffect(() => {
     if (faceExtrudeSelectedFace === null || !activePanel?.geometry || faceExtrudeCavityGroupId) return;
-    const steps = activePanel.parameters?.extrudeSteps || []; if (!steps.length) return;
+    // Çizimin açtığı yüz (çizim SONRASI adım): kendi listesinde, yüz olduğu gibi (eksene yaslanmaz).
+    const post = isPostSketchFace(activePanel, faceExtrudeSelectedFace);
+    const steps = (post ? activePanel.parameters?.postExtrudeSteps : activePanel.parameters?.extrudeSteps) || []; if (!steps.length) return;
     const { groups } = getFacesAndGroups(activePanel.geometry);
     let g = groups[faceExtrudeSelectedFace]; if (!g) return;
     const gn = g.normal.clone().normalize();
-    if (!isFlatNormal(gn, 0.9)) {
+    if (!post && !isFlatNormal(gn, 0.9)) {
       const flat = groups
         .filter(f => { const fn = f.normal.clone().normalize(); return isFlatNormal(fn, 0.9) && dominantAxisLabel(fn) === dominantAxisLabel(gn); })
         .sort((a, b) => a.center.distanceTo(g!.center) - b.center.distanceTo(g!.center))[0];

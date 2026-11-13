@@ -321,6 +321,103 @@ function calculateSurfaceType(face: FaceData, faces: FaceData[], adjacencyMap: M
   return 'curved';
 }
 
+/** B-REP YÜZ BİLGİSİ (Goker, Kas 2026 — "çizimle şekil verince oluşan yüzler çoğu zaman tek yüz oluyor, eğri yüzeyleri ayırmalıyız"):
+ *  OCC katısından üretilen mesh'te her üçgenin hangi GERÇEK yüzeye ait olduğu (`tri`) ve o yüzeyin düz mü eğri mi olduğu (`curved`).
+ *  Mesh açısına bakan eski sezgi teğet geçişte (düz kenar → radüs → düz kenar) üçünü tek "düz" yüz sayıyordu: silindir şeritleri iki
+ *  eş-düzlem üçgenden oluşur (→ "düz"), komşu şeritler 10°'den az döner (→ aynı grup). Aynı silindirin dikişle bölünmüş parçaları tek
+ *  yüzey kimliği alır (`surfaceKeyOf`). */
+export interface BrepTriInfo { tri: Int32Array; curved: Uint8Array; keys: string[]; /** köşe başına GERÇEK yüzey normali (OCC) — eğri yüzde fasetanınki değil */ normals?: Float32Array }
+const brepInfoOf = (geometry: THREE.BufferGeometry, faceCount: number): BrepTriInfo | null => {
+  const b = geometry.userData?.brep as BrepTriInfo | undefined;
+  return b && b.tri?.length === faceCount ? b : null;
+};
+/** Eğri yüzeyin kimliği: silindirde eksen + yarıçap (dikişle / kesimle ikiye bölünen aynı silindir tek yüz sayılır); ötekilerde yüzün kendisi. */
+export function surfaceKeyOf(oc: any, face: any, type: string, index: number): string {
+  if (type !== 'CYLINDRE') return `f${index}`;
+  let ad: any = null;
+  try {
+    ad = new oc.BRepAdaptor_Surface_2(face.wrapped, true);
+    const cyl = ad.Cylinder(), ax = cyl.Axis(), loc = ax.Location(), dir = ax.Direction(), r = cyl.Radius();
+    let d = new THREE.Vector3(dir.X(), dir.Y(), dir.Z());
+    const o = new THREE.Vector3(loc.X(), loc.Y(), loc.Z());
+    // Eksen yönü işaretsiz, eksen noktası eksen üzerinde orijine en yakın nokta → aynı silindir aynı anahtarı verir.
+    if (d.x < -1e-6 || (Math.abs(d.x) <= 1e-6 && (d.y < -1e-6 || (Math.abs(d.y) <= 1e-6 && d.z < 0)))) d = d.negate();
+    o.addScaledVector(d, -o.dot(d));
+    const q = (x: number) => (Math.round(x * 100) / 100 || 0).toFixed(2);
+    return `c${q(r)}|${q(d.x)},${q(d.y)},${q(d.z)}|${q(o.x)},${q(o.y)},${q(o.z)}`;
+  } catch { return `f${index}`; }
+  finally { try { ad?.delete(); } catch { /* sarmalayıcı zaten bırakılmış */ } }
+}
+function brepTriInfo(shape: any, mesh: { triangles: ArrayLike<number>; vertices: ArrayLike<number>; normals?: ArrayLike<number>; faceGroups?: Array<{ start: number; count: number; faceId: number }> }): BrepTriInfo | null {
+  const fg = mesh.faceGroups;
+  if (!fg?.length) return null;
+  try {
+    const oc = window.__ocInstance;
+    const tri = new Int32Array(Math.floor(mesh.triangles.length / 3)).fill(-1);
+    const curved: number[] = [], keys: string[] = [], keyId = new Map<string, number>();
+    let k = 0, fi = 0;
+    for (const face of shape.faces as any[]) {
+      fi++;
+      if (k >= fg.length) break;
+      if (face.hashCode !== fg[k].faceId) continue;   // üçgenlenmemiş yüz mesh'te yok
+      const type = String(face.geomType);
+      const key = type === 'PLANE' ? `p${fi}` : surfaceKeyOf(oc, face, type, fi);
+      let id = keyId.get(key);
+      if (id === undefined) { id = curved.length; keyId.set(key, id); curved.push(type === 'PLANE' ? 0 : 1); keys.push(key); }
+      const t0 = fg[k].start / 3, t1 = t0 + fg[k].count / 3;
+      for (let t = t0; t < t1; t++) tri[t] = id;
+      k++;
+    }
+    if (k !== fg.length || tri.includes(-1)) return null;
+    const hasNormals = !!mesh.normals && mesh.normals.length === mesh.vertices.length;
+    // TEĞET SÜREKLİ serbest eğri yüzler (elips yayı parçaları, spline dilimleri — silindir DEĞİL) tek yüzdür: ortak sınır köşelerinde gerçek
+    // yüzey normalleri aynıysa (≥ 2 köşe) kimlikleri birleşir, anahtarları "fA+fB" olur. Silindirler yalnız aynı eksen + yarıçapla birleşir
+    // (farklı yarıçaplı teğet radüsler ayrı yüz kalır).
+    const free = curved.map((c, id) => !!c && keys[id].startsWith('f'));
+    if (hasNormals && free.filter(Boolean).length > 1) {
+      const root = curved.map((_, i) => i);
+      const find = (x: number): number => { while (root[x] !== x) { root[x] = root[root[x]]; x = root[x]; } return x; };
+      const V = mesh.vertices, Nn = mesh.normals!, T = mesh.triangles;
+      const at = new Map<string, Array<{ id: number; v: number }>>();
+      const seen = new Set<number>();
+      for (let t = 0; t < tri.length; t++) {
+        const id = tri[t];
+        if (!free[id]) continue;
+        for (let c = 0; c < 3; c++) {
+          const v = T[t * 3 + c];
+          if (seen.has(v)) continue;
+          seen.add(v);
+          const kk = `${Math.round(V[v * 3] * 100)},${Math.round(V[v * 3 + 1] * 100)},${Math.round(V[v * 3 + 2] * 100)}`;
+          const l = at.get(kk);
+          if (l) l.push({ id, v }); else at.set(kk, [{ id, v }]);
+        }
+      }
+      const smooth = new Map<string, number>();
+      for (const l of at.values()) for (let i = 0; i < l.length; i++) for (let j = i + 1; j < l.length; j++) {
+        const a = l[i], b = l[j];
+        if (a.id === b.id) continue;
+        const dot = Nn[a.v * 3] * Nn[b.v * 3] + Nn[a.v * 3 + 1] * Nn[b.v * 3 + 1] + Nn[a.v * 3 + 2] * Nn[b.v * 3 + 2];
+        if (Math.abs(dot) < 0.9995) continue;
+        const pk = a.id < b.id ? `${a.id}|${b.id}` : `${b.id}|${a.id}`;
+        smooth.set(pk, (smooth.get(pk) ?? 0) + 1);
+      }
+      for (const [pk, cnt] of smooth) {
+        if (cnt < 2) continue;
+        const [a, b] = pk.split('|').map(Number), ra = find(a), rb = find(b);
+        if (ra !== rb) { root[Math.max(ra, rb)] = Math.min(ra, rb); }
+      }
+      if (root.some((r, i) => r !== i)) {
+        const members = new Map<number, number[]>();
+        root.forEach((_, i) => { const r = find(i); (members.get(r) ?? members.set(r, []).get(r)!).push(i); });
+        for (const [r, list] of members) if (list.length > 1) keys[r] = list.map(i => keys[i]).join('+');
+        for (let t = 0; t < tri.length; t++) tri[t] = find(tri[t]);
+      }
+    }
+    const normals = curved.some(Boolean) && hasNormals ? Float32Array.from(mesh.normals!) : undefined;
+    return { tri, curved: Uint8Array.from(curved), keys, normals };
+  } catch { return null; }
+}
+
 /** Köşe paylaşan üçgen komşuluğu (tolerans 0.001, `<`). Uzamsal ızgarayla O(F); ikili O(F²) taramayla BİREBİR
  * aynı sonuç, kümeler artan indeks sırasıyla dolar (gruplama gezinme sırası değişmez). */
 function buildAdjacencyMap(faces: FaceData[], tolerance = 0.001): Map<number, Set<number>> {
@@ -349,30 +446,45 @@ function buildAdjacencyMap(faces: FaceData[], tolerance = 0.001): Map<number, Se
   return adjacencyMap;
 }
 
-function groupCoplanarFaces(faces: FaceData[], thresholdAngleDegrees = 10): CoplanarFaceGroup[] {
+function groupCoplanarFaces(faces: FaceData[], thresholdAngleDegrees = 10, brep: BrepTriInfo | null = null): CoplanarFaceGroup[] {
   const groups: CoplanarFaceGroup[] = [];
   const visited = new Set<number>();
   const adjacencyMap = buildAdjacencyMap(faces);
   const surfaceTypes = new Map<number, 'flat' | 'curved'>();
   faces.forEach((face) => {
-    const surfaceType = calculateSurfaceType(face, faces, adjacencyMap);
+    const surfaceType = brep ? (brep.curved[brep.tri[face.faceIndex]] ? 'curved' : 'flat') : calculateSurfaceType(face, faces, adjacencyMap);
     surfaceTypes.set(face.faceIndex, surfaceType);
     face.isCurved = surfaceType === 'curved';
   });
+  // B-Rep kipinde düz yüzeylerin normali (alan ağırlıklı): kıymık üçgenin gürültülü normali eş-düzlem sınamasını bozmasın.
+  const surfNormal: THREE.Vector3[] = [];
+  if (brep) {
+    for (const f of faces) {
+      const id = brep.tri[f.faceIndex];
+      (surfNormal[id] ??= new THREE.Vector3()).addScaledVector(f.normal, f.area);
+    }
+    surfNormal.forEach(n => n.normalize());
+  }
+  /** Komşu üçgen aynı yüze mi ait? B-Rep: düzde aynı yüzey ya da EŞ-DÜZLEM (< 1°) komşu yüzey, eğride aynı yüzey kimliği — teğet geçen
+   *  düz / eğri ve küçük açılı düz / düz yüzler ayrı kalır. B-Rep yoksa (vertex düzenlemeli gövde, sentetik prizma) eski açı eşiği. */
+  const joins = (curr: number, next: number, curvedStart: boolean): boolean => {
+    if (!brep) return angleDeg(faces[curr].normal, faces[next].normal) < (curvedStart ? 45 : thresholdAngleDegrees);
+    const a = brep.tri[curr], b = brep.tri[next];
+    return a === b || (!curvedStart && angleDeg(surfNormal[a], surfNormal[b]) < 1);
+  };
   for (let startIdx = 0; startIdx < faces.length; startIdx++) {
     if (visited.has(startIdx)) continue;
     const currentGroup: number[] = [startIdx];
     visited.add(startIdx);
     const stack: number[] = [startIdx];
     const startSurfaceType = surfaceTypes.get(startIdx) || 'curved';
-    const effectiveThreshold = startSurfaceType === 'curved' ? 45 : thresholdAngleDegrees;
     while (stack.length > 0) {
       const currIdx = stack.pop()!;
       const neighbors = adjacencyMap.get(currIdx);
       if (!neighbors) continue;
       for (const neighborIdx of neighbors) {
         if (visited.has(neighborIdx) || startSurfaceType !== (surfaceTypes.get(neighborIdx) || 'curved')) continue;
-        if (angleDeg(faces[currIdx].normal, faces[neighborIdx].normal) < effectiveThreshold) {
+        if (joins(currIdx, neighborIdx, startSurfaceType === 'curved')) {
           visited.add(neighborIdx);
           currentGroup.push(neighborIdx);
           stack.push(neighborIdx);
@@ -398,7 +510,7 @@ export function getFacesAndGroups(geometry: THREE.BufferGeometry): { faces: Face
   const hit = _faceGroupCache.get(geometry);
   if (hit && hit.arr === pos?.array && hit.ver === ver) return hit;
   const faces = extractFacesFromGeometry(geometry);
-  const groups = groupCoplanarFaces(faces);
+  const groups = groupCoplanarFaces(faces, 10, brepInfoOf(geometry, faces.length));
   const entry = { arr: pos?.array, ver, faces, groups };
   _faceGroupCache.set(geometry, entry);
   return entry;
@@ -429,6 +541,23 @@ export function snapToFlatGroup(gi: number, groups: CoplanarFaceGroup[]): number
 
 export const flatGroupOfFace = (groups: CoplanarFaceGroup[], faceIndex: number | undefined) =>
   snapToFlatGroup(groupIndexOfFace(groups, faceIndex), groups);
+
+/** Eğri yüz VF'sinin güncel gövde mesh'indeki yüzü: ortalama normali benzer (dot > 0.5) eğri gruplardan, üçgeni `center`a en yakın olan. */
+export function matchCurvedFaceGroup(center: THREE.Vector3, normal: THREE.Vector3, faces: FaceData[], groups: CoplanarFaceGroup[]):
+  { group: CoplanarFaceGroup; nearest: THREE.Vector3 } | null {
+  let best: { group: CoplanarFaceGroup; nearest: THREE.Vector3 } | null = null, bestScore = Infinity;
+  for (const g of groups) {
+    if (!g.isCurved) continue;
+    const dot = g.normal.clone().normalize().dot(normal);
+    if (dot < 0.5) continue;
+    let d2 = Infinity, near: THREE.Vector3 | null = null;
+    for (const fi of g.faceIndices) { const f = faces[fi]; if (!f) continue; const d = f.center.distanceToSquared(center); if (d < d2) { d2 = d; near = f.center; } }
+    if (!near) continue;
+    const score = Math.sqrt(d2) + (1 - dot) * 200;
+    if (score < bestScore) { bestScore = score; best = { group: g, nearest: near.clone() }; }
+  }
+  return best;
+}
 
 export function createGroupBoundaryEdges(faces: FaceData[], groups: CoplanarFaceGroup[]): THREE.BufferGeometry {
   const edgeVertices: number[] = [];
@@ -592,6 +721,21 @@ export async function cutWithTools(base: any, tools: any[], simplify = false): P
   } finally { args.delete(); list.delete(); op.delete(); progress.delete(); }
 }
 
+/** GÜVENLİ KESİŞİM ÖLÇÜSÜ: a ∩ b hacmi, KESME üzerinden — vol(a) − vol(a − b). OCC'nin Common'u (replicad.intersect de, tek Build'li
+ *  BRepAlgoAPI_Common da) çok eş-düzlem yüzlü çiftlerde BOŞ dönebiliyor: Node OCC ölçümü — gövdeyle kesişmiş V-çentik duvar paneli ∩ arka
+ *  panel = 0 mm³ (üst üste denense de), aynı çiftte Cut doğru (110 310 mm³ eksiliyor) ve Cut'tan SONRA Common da doğru dönüyor. "Kesişmiyor"
+ *  kararı yalnız Common'a bırakılırsa kardeş kesimi atlanıp paneller iç içe kalıyordu. Ölçülemezse 0. */
+export async function overlapVolumeByCut(a: any, b: any): Promise<number> {
+  try {
+    const { measureVolume } = await import('replicad');
+    const v0 = measureVolume(a);
+    const rest = a.clone().cut(b.clone());
+    let v1 = 0; try { v1 = measureVolume(rest); } catch { v1 = 0; }
+    const dv = v0 - v1;
+    return Number.isFinite(dv) && dv > 0 ? dv : 0;
+  } catch { return 0; }
+}
+
 // ── ÇİZİM ADIMLARI (Goker, Kas 2026 — "çizimi panelin yüzeyine göre parametrik hale getirip panelden / yüzeyden çıkarayım ya da panele o
 //    çizimin şeklini vereyim; sonradan çizimi düzenleyebileyim; mevcut panel mantığı bozulmasın") ──
 // Adım (`store.SketchFeature`) hedefin `parameters.sketchFeatures` listesinde durur: yüz yönü (n, u) + çapa + yüz ölçüsüne göre bağıl 2B
@@ -665,6 +809,7 @@ async function sketchToolOf(f: SketchFeature, fr: SketchFrame, vars: Record<stri
     let pen: any = draw([l.start.x, l.start.y]);
     l.segs.forEach((s, i) => {
       if (s.mid) pen = pen.threePointsArcTo([s.to.x, s.to.y], [s.mid.x, s.mid.y]);
+      else if (s.bez) pen = pen.bezierCurveTo([s.to.x, s.to.y], [[s.bez[0].x, s.bez[0].y], [s.bez[1].x, s.bez[1].y]]);   // elips yayı (gerçek eğri)
       else if (i < l.segs.length - 1) pen = pen.lineTo([s.to.x, s.to.y]);   // son doğruyu close() çizer (aynı noktaya lineTo OCC'de fırlatır)
     });
     const prism = pen.close().sketchOnPlane(plane).extrude(-len);
@@ -712,6 +857,9 @@ export const convertReplicadToThreeGeometry = (shape: any): THREE.BufferGeometry
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(Array.from(mesh.vertices as ArrayLike<number>), 3));
     geometry.setIndex(Array.from(mesh.triangles as ArrayLike<number>));
+    // Üçgen → gerçek (B-Rep) yüzey eşlemesi: yüz gruplaması eğri / düz ayrımını buradan okur (getFacesAndGroups).
+    const brep = brepTriInfo(shape, mesh);
+    if (brep) geometry.userData.brep = brep;
     geometry.computeVertexNormals();
     geometry.computeBoundingBox();
     geometry.computeBoundingSphere();
@@ -2061,6 +2209,8 @@ export function largestFaceNormal(geo: any, tol = 0): THREE.Vector3 | null {
 }
 /** VF-eğimli levha (eğilmiş gövde yüzünde): dönüş adımı yok ama DÖNMÜŞ kardeş gibi ele alınır. */
 export function panelIsTiltedSlab(panel: any): boolean {
+  // Eğri yüz paneli eğik levha değildir (dilimlenmiş silindir yüzü "en büyük yüz" oyununu şansa bırakır); kendi yoluyla çözülür.
+  if (panel?.parameters?.curved) return false;
   const geo = panel?.geometry;
   if (!geo || typeof geo.getAttribute !== 'function') return false;
   const hit = _tiltCache.get(geo);
@@ -2554,6 +2704,9 @@ export interface ExtrudeStep {
   resolvedValue?: number;
   /** OK modu adımı: her rebuild'de bu eksen yönündeki EN DIŞ yüze uygulanır (aynı ok tekrar tıklanınca değer toplanır). */
   outer?: boolean;
+  /** ÇİZİM SONRASI adım (`parameters.postExtrudeSteps` listesinde durur): çizim adımları (Shape / Cut) uygulanmış katının yüzüne uygulanır —
+   *  çizimin açtığı eğimli / düz kalınlık yüzü böyle extrude edilir. Çizim gibi yalnız katı / görünüm düzeyindedir (komşular tepki vermez). */
+  afterSketch?: boolean;
 }
 
 /** Panelin güncel store kopyası (komut, bayat prop yerine bunu kullanır). */
@@ -2577,16 +2730,17 @@ const commitSteps = (panel: Shape, steps: TransformStep[], updateShape: UpdateSh
 const appendStep = (panel: Shape, step: TransformStep, updateShape: UpdateShape) =>
   commitSteps(panel, [...getUnifiedSteps(panel), step], updateShape);
 
-export function stepRefTargets(panel: any): { extrude: Set<string>; move: Set<string>; rotate: Set<string> } {
-  const extrude = new Set<string>(), move = new Set<string>(), rotate = new Set<string>();
+export function stepRefTargets(panel: any): { extrude: Set<string>; move: Set<string>; rotate: Set<string>; /** çizim sonrası extrude ref'leri: yalnız üretim sırası */ post: Set<string> } {
+  const extrude = new Set<string>(), move = new Set<string>(), rotate = new Set<string>(), post = new Set<string>();
   const p = panel?.parameters;
   if (Array.isArray(p?.extrudeSteps)) for (const s of p.extrudeSteps) if (s?.refShapeId) extrude.add(s.refShapeId);
+  if (Array.isArray(p?.postExtrudeSteps)) for (const s of p.postExtrudeSteps) if (s?.refShapeId) post.add(s.refShapeId);
   if (Array.isArray(p?.transformSteps)) for (const s of p.transformSteps) {
     if (!s?.refTargetPanelId) continue;
     if (s.type === 'move') move.add(s.refTargetPanelId);
     else if (s.type === 'rotate') rotate.add(s.refTargetPanelId);
   }
-  return { extrude, move, rotate };
+  return { extrude, move, rotate, post };
 }
 
 // Motorla AYNI kural: move o anki dönüş çerçevesinin ekseninde ilerler.
@@ -2712,15 +2866,22 @@ export function deleteTransformStep(panelShape: Shape, stepId: string, updateSha
   return commitSteps(fresh, getUnifiedSteps(fresh).filter(s => s.id !== stepId), updateShape);
 }
 
-const extrudeStepsOf = (panel: Shape): ExtrudeStep[] => panel.parameters?.extrudeSteps || [];
+type ExtrudeListKey = 'extrudeSteps' | 'postExtrudeSteps';
+const extrudeStepsOf = (panel: Shape, key: ExtrudeListKey = 'extrudeSteps'): ExtrudeStep[] => panel.parameters?.[key] || [];
+/** Çizim SONRASI extrude adımları (çizim adımları uygulanmış katının yüzlerine). */
+export const postExtrudeStepsOf = (panel: Shape | undefined | null): ExtrudeStep[] => (panel?.parameters?.postExtrudeSteps as ExtrudeStep[] | undefined) ?? [];
+/** Adımın durduğu liste (çizim öncesi / sonrası). */
+const extrudeListOf = (panel: Shape, stepId: string): ExtrudeListKey => (postExtrudeStepsOf(panel).some(s => s.id === stepId) ? 'postExtrudeSteps' : 'extrudeSteps');
 
 export function updateExtrudeStep(panelShape: Shape, stepId: string, newValue: number, updateShape: UpdateShape): Promise<boolean> {
-  const steps = extrudeStepsOf(panelShape).map(s => (s.id === stepId ? { ...s, value: newValue } : s));
-  return commitAndRebuild(panelShape, { extrudeSteps: steps }, updateShape);
+  const key = extrudeListOf(panelShape, stepId);
+  const steps = extrudeStepsOf(panelShape, key).map(s => (s.id === stepId ? { ...s, value: newValue } : s));
+  return commitAndRebuild(panelShape, { [key]: steps }, updateShape);
 }
 
 export function deleteExtrudeStep(panelShape: Shape, stepId: string, updateShape: UpdateShape): Promise<boolean> {
-  return commitAndRebuild(panelShape, { extrudeSteps: extrudeStepsOf(panelShape).filter(s => s.id !== stepId) }, updateShape);
+  const key = extrudeListOf(panelShape, stepId);
+  return commitAndRebuild(panelShape, { [key]: extrudeStepsOf(panelShape, key).filter(s => s.id !== stepId) }, updateShape);
 }
 
 export async function confirmPanelMoveRef(): Promise<boolean> {
@@ -2827,10 +2988,13 @@ function findMatchingReplicadFace(
   }
   if (candidates.length === 0) return null;
   if (candidates.length === 1) return candidates[0].face;
+  // EĞİK hedef (çizimin açtığı pahlı yüz): önce hedefe PARALEL yüzler — aynı baskın eksendeki düz uç yüzü yanlışlıkla seçilmesin.
+  const parallel = isFlatNormal(targetNormal) ? [] : candidates.filter(c => c.dot > 0.9995);
+  const pool = parallel.length ? parallel : candidates;
   // Tıklama noktası varsa: tessellation'ı o noktaya EN YAKIN yüz (iç yuva duvarları uzak kalır).
-  if (samplePoint) candidates.sort((a, b) => a.minPtDist - b.minPtDist || b.dot - a.dot);
-  else candidates.sort((a, b) => a.dist - b.dist || b.dot - a.dot);
-  return candidates[0].face;
+  if (samplePoint) pool.sort((a, b) => a.minPtDist - b.minPtDist || b.dot - a.dot);
+  else pool.sort((a, b) => a.dist - b.dist || b.dot - a.dot);
+  return pool[0].face;
 }
 
 type ExtrudeResult = { replicadShape: any; geometry: THREE.BufferGeometry; amount: number };
@@ -2846,7 +3010,10 @@ async function applyOneExtrudeStep(currentShape: any, step: ExtrudeStep, geometr
   const onAxis = (pred: (n: THREE.Vector3) => boolean) =>
     groups.filter(g => { const n = g.normal.clone().normalize(); return dominantAxisLabel(n) === step.axisLabel && pred(n); });
   const flatAligned = onAxis(n => isFlatNormal(n));
-  const aligned = flatAligned.length > 0 ? flatAligned : onAxis(n => n.dot(stepNormal) > 0.5);
+  // EĞİK yüz adımı (çizimin açtığı pah): yalnız o normale paralel DÜZ gruplar — aynı baskın eksendeki uç yüzüne kaymasın.
+  const stepUnit = stepNormal.clone().normalize();
+  const tiltedExact = isFlatNormal(stepUnit) ? [] : groups.filter(g => !g.isCurved && g.normal.clone().normalize().dot(stepUnit) > 0.9995);
+  const aligned = tiltedExact.length > 0 ? tiltedExact : flatAligned.length > 0 ? flatAligned : onAxis(n => n.dot(stepNormal) > 0.5);
   if (aligned.length === 0) return null;
 
   const box = localBboxOf(geometry)!;
@@ -2991,15 +3158,16 @@ export async function applyExtrudeSteps(
   return anyApplied || resolved.length ? { shape: currentReplicad, geometry: currentGeometry, resolved } : null;
 }
 
-/** Tıklanan yüz grubu (parent-yerel); eğri (fillet) grup en yakın aynı eksenli düz yüze yaslanır. */
-function resolveClickedFace(panel: Shape, faceGroupIndex: number): { faceNormal: THREE.Vector3; faceCenter: THREE.Vector3 } | null {
+/** Tıklanan yüz grubu (parent-yerel); eğri (fillet) grup en yakın aynı eksenli düz yüze yaslanır. `exact`: düz ama EĞİK yüz olduğu gibi
+ *  kalır (çizim sonrası adım — yüz son katıda gerçekten vardır); eğri yüz her durumda düz komşuya yaslanır. */
+function resolveClickedFace(panel: Shape, faceGroupIndex: number, exact = false): { faceNormal: THREE.Vector3; faceCenter: THREE.Vector3 } | null {
   if (!panel.geometry) return null;
   const { groups } = getFacesAndGroups(panel.geometry);
   if (faceGroupIndex < 0 || faceGroupIndex >= groups.length) return null;
   const raw = groups[faceGroupIndex];
   let faceNormal = raw.normal.clone().normalize();
   let faceCenter = raw.center.clone();
-  if (!isFlatNormal(faceNormal)) {
+  if (!isFlatNormal(faceNormal) && !(exact && !raw.isCurved)) {
     const axLbl = dominantAxisLabel(faceNormal);
     const candidate = groups
       .filter(g => { const n = g.normal.clone().normalize(); return isFlatNormal(n) && dominantAxisLabel(n) === axLbl; })
@@ -3009,20 +3177,47 @@ function resolveClickedFace(panel: Shape, faceGroupIndex: number): { faceNormal:
   return { faceNormal, faceCenter };
 }
 
-/** Tıklanan yüze extrude adımı; aynı yüz (aynı eksen + merkez < 1 mm) → mevcut adımın yerine konur. */
+/** ÇİZİM SONRASI YÜZ MÜ (Goker, Kas 2026 — "panele çizimle şekil verince oluşan yüzü kalınlığından face extrude edemiyorum")? Çizim adımları
+ *  motorun SON aşamasıdır; extrude adımları ondan önce uygulandığı için çizimin açtığı yüz o aşamada yoktu (adım başka yüze kayıyordu) ve
+ *  Shape'te büyüyen kısım profille yeniden kırpılıyordu. Kural: panelde Shape adımı varsa tıklanan her düz yüz, yalnız Cut varsa çizim
+ *  öncesi katıda bulunmayan yüz (kesimin açtığı duvar) çizim SONRASI extrude edilir; çizimsiz panelde ve eğri yüzde eski yol. */
+export function isPostSketchFace(panel: Shape, faceGroupIndex: number): boolean {
+  const feats = liveSketchFeatures(panel);
+  if (!feats.length || !panel.geometry) return false;
+  const g = getFacesAndGroups(panel.geometry).groups[faceGroupIndex];
+  if (!g || g.isCurved) return false;
+  if (feats.some(f => f.op === 'shape')) return true;
+  const pre = footprintGeometry(panel);
+  if (!pre || pre === panel.geometry) return false;
+  const n = g.normal.clone().normalize(), d = g.center.dot(n);
+  const { faces: pf, groups: pg } = getFacesAndGroups(pre);
+  // Çizim öncesi katıda aynı düzlemde, bu yüzün merkezini kapsayan yüz var mı?
+  return !pg.some(q => {
+    if (q.isCurved || q.normal.clone().normalize().dot(n) < 0.9995 || Math.abs(q.center.dot(n) - d) > 0.1) return false;
+    const bb = new THREE.Box3();
+    for (const fi of q.faceIndices) for (const p of pf[fi]?.vertices ?? []) bb.expandByPoint(p);
+    return bb.expandByScalar(0.5).containsPoint(g.center);
+  });
+}
+
+/** Tıklanan yüze extrude adımı; aynı yüz (aynı eksen + merkez < 1 mm) → mevcut adımın yerine konur. `key` = adımın yazılacağı liste. */
 function upsertFaceStep(
   panel: Shape, faceGroupIndex: number, value: number, isFixed: boolean, clickPoint: Vec3 | undefined, extra: Partial<ExtrudeStep> = {},
-): { steps: ExtrudeStep[]; existed: boolean } | null {
-  const face = resolveClickedFace(panel, faceGroupIndex);
+): { steps: ExtrudeStep[]; existed: boolean; key: ExtrudeListKey } | null {
+  const post = isPostSketchFace(panel, faceGroupIndex);
+  const face = resolveClickedFace(panel, faceGroupIndex, post);
   if (!face) return null;
-  const steps = extrudeStepsOf(panel);
+  const key: ExtrudeListKey = post ? 'postExtrudeSteps' : 'extrudeSteps';
+  const steps = extrudeStepsOf(panel, key);
   const step: ExtrudeStep = {
     id: genId('ext'), faceNormal: vec3(face.faceNormal), faceCenter: vec3(face.faceCenter), axisLabel: dominantAxisLabel(face.faceNormal),
-    value, isFixed, timestamp: Date.now(), samplePoint: clickPoint, ...extra,
+    value, isFixed, timestamp: Date.now(), samplePoint: clickPoint, ...(post ? { afterSketch: true } : {}), ...extra,
   };
-  const center = new THREE.Vector3(...step.faceCenter);
-  const idx = steps.findIndex(s => s.axisLabel === step.axisLabel && new THREE.Vector3(...s.faceCenter).distanceTo(center) < 1.0);
-  return { steps: idx >= 0 ? steps.map((s, i) => (i === idx ? step : s)) : [...steps, step], existed: idx >= 0 };
+  const center = new THREE.Vector3(...step.faceCenter), normal = new THREE.Vector3(...step.faceNormal);
+  // Çizim sonrası adımda aynı baskın eksende birden çok eğik yüz olabilir → normal de eşleşmeli.
+  const idx = steps.findIndex(s => s.axisLabel === step.axisLabel && new THREE.Vector3(...s.faceCenter).distanceTo(center) < 1.0
+    && (!post || new THREE.Vector3(...s.faceNormal).dot(normal) > 0.999));
+  return { steps: idx >= 0 ? steps.map((s, i) => (i === idx ? step : s)) : [...steps, step], existed: idx >= 0, key };
 }
 
 export interface FaceExtrudeParams {
@@ -3035,7 +3230,7 @@ export async function executeFaceExtrude({ panelShape: panel, faceGroupIndex, va
   if (!up) return false;
   // Dinamik modda değer = delta.
   if (!isFixed && Math.abs(value) < 0.01 && !up.existed) return false;
-  return commitAndRebuild(panel, { extrudeSteps: up.steps }, updateShape);
+  return commitAndRebuild(panel, { [up.key]: up.steps }, updateShape);
 }
 
 /** OK MODU (Goker, Eki 2026 — "yüz seçmek istemiyorum; move'daki gibi oklar olsun, panelin en dış sınırını yazılan ölçü kadar büyütsün"):
@@ -3081,7 +3276,7 @@ async function executeFaceExtrudeToReference(
     refShapeId: ref.panelId, refFaceGroupIndex: ref.faceGroupIndex, refNormalWorld: ref.normalWorld, refPointWorld: ref.pointWorld,
   });
   if (!up) return false;
-  return commitAndRebuild(panel, { extrudeSteps: up.steps }, updateShape);
+  return commitAndRebuild(panel, { [up.key]: up.steps }, updateShape);
 }
 
 // Referans yüz seçimi: aynı noktaya her tıklamada ışın boyunca bir arkadaki yüze geçilir (tüm şekiller).

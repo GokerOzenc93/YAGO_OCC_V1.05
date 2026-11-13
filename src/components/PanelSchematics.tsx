@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
-import { round1, localBboxOf, axisDirToVec, largestFaceNormal, isFlatNormal, clipPolyToConvex, polyArea } from './Geometry';
+import { round1, localBboxOf, axisDirToVec, largestFaceNormal, isFlatNormal, clipPolyToConvex, polyArea, getFacesAndGroups } from './Geometry';
 import { UI_FONT } from './Ui';
 import {
   type DoorType, type BackPlacement, type Shape, type CavityBox, type PanelGroup, type DoorAlign, type DoorGroup, type BackGroup, type BackEdgeRel,
@@ -332,7 +332,8 @@ export function panelFrameOf(shape: Shape | undefined | null): { geo: THREE.Buff
   const inv = stepsFrameQuat(steps).invert();
   let out = geo;
   if (Math.abs(inv.w) < 0.9999999) { out = geo.clone(); out.applyQuaternion(inv); }
-  const n = largestFaceNormal(out, 1e-6);
+  // Eğri yüz panelinde "en büyük yüz normali" dilimlenmiş silindirin bir fasetasıdır → çerçeve ona göre döndürülmez.
+  const n = shape?.parameters?.curved ? null : largestFaceNormal(out, 1e-6);
   if (n && !isFlatNormal(n, 0.9999)) {
     const ax = [Math.abs(n.x), Math.abs(n.y), Math.abs(n.z)]; const i = ax.indexOf(Math.max(...ax));
     const target = new THREE.Vector3().setComponent(i, Math.sign(n.getComponent(i)) || 1);
@@ -346,7 +347,26 @@ export function panelFrameOf(shape: Shape | undefined | null): { geo: THREE.Buff
 }
 
 /** Liste satırı ölçüleri: en / boy (ok yönüne göre) + kalınlık (parametreden; dönmüş panelde bbox'ın en küçüğü gerçek kalınlık değildir). */
+/** EĞRİ YÜZ PANELİ ölçüleri: açınım boyu (en geniş eğri yüzün alanı ÷ eksen boyu) × eksen boyunca düz boy — bükülecek levhanın ölçüsü.
+ *  Eksen, eğri yüzün üçgen normallerinin hepsine dik yöndür. */
+function curvedPanelDims(geo: THREE.BufferGeometry): { arc: number; length: number } | null {
+  const { faces, groups } = getFacesAndGroups(geo);
+  const g = groups.filter(x => x.isCurved).sort((a, b) => b.totalArea - a.totalArea)[0];
+  if (!g || g.faceIndices.length < 2) return null;
+  const n0 = faces[g.faceIndices[0]].normal, axis = new THREE.Vector3(), c = new THREE.Vector3();
+  for (const fi of g.faceIndices) { c.crossVectors(n0, faces[fi].normal); if (c.dot(axis) < 0) c.negate(); axis.add(c); }
+  if (axis.lengthSq() < 1e-9) return null;
+  axis.normalize();
+  let lo = Infinity, hi = -Infinity;
+  for (const fi of g.faceIndices) for (const v of faces[fi].vertices) { const d = v.dot(axis); if (d < lo) lo = d; if (d > hi) hi = d; }
+  const length = hi - lo;
+  return length > 0.5 ? { arc: g.totalArea / length, length } : null;
+}
 export const panelDims = (p: Shape | undefined | null) => {
+  if (p?.parameters?.curved && p.geometry) {
+    const c = curvedPanelDims(p.geometry as THREE.BufferGeometry);
+    if (c) return { primary: round1(c.arc), secondary: round1(c.length), thickness: round1(parseFloat(p.parameters?.panelThickness) || 18) };
+  }
   const geo = panelFrameOf(p)?.geo; if (!geo) return null;
   const r = geoAxes(geo); if (!r) return null;
   const pa = r.axes.slice(1).map(a => a.i).sort((a, b) => a - b);

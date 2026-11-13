@@ -686,12 +686,14 @@ const pointInPoly = (p: P2, poly: P2[]) => {
   }
   return inside;
 };
-/** Döngü parçası: `mid` varsa start→to arası yay o noktadan geçer, yoksa doğru. */
-export type ProfileSeg = { to: P2; mid?: P2 };
+/** Döngü parçası: `mid` varsa start→to arası yay o noktadan geçer; `bez` varsa kübik Bezier (iki kontrol noktası — elips yayı); yoksa doğru. */
+export type ProfileSeg = { to: P2; mid?: P2; bez?: [P2, P2] };
 /** Kapalı profil: saat yönünün tersine; depth = kaç döngünün içinde (çift = dolu bölge, tek = ada/delik). */
 export interface ProfileLoop { start: P2; segs: ProfileSeg[]; pts: P2[]; depth: number }
 /** Nesnelerden kapalı döngüleri çıkarır: kapalı nesneler (daire · elips · kapalı polyline) doğrudan, açık nesneler (çizgi · yay · açık polyline)
- *  uç uca (tol) zincirlenerek. Kapanmayan zincirler `open` olarak sayılır. Elips parçaları doğru parçalarına bölünür. */
+ *  uç uca (tol) zincirlenerek. Kapanmayan zincirler `open` olarak sayılır. Elips yayları ≤ 45°'lik parçalara bölünür ve her parça kübik
+ *  Bezier olarak verilir (sapma ≈ yarıçapın milyonda 4'ü): katıda kırık çizgi yerine GERÇEK eğri → kesimin duvarı onlarca küçük düz yüz
+ *  değil tek eğri yüzdür (Geometry: eğri yüz ayrımı). */
 export function profileLoops(shapes: Shape2[], tol = 0.05): { loops: ProfileLoop[]; open: number } {
   const closed: Prim[][] = [], chains: Prim[][] = [];
   for (const s of shapes) {
@@ -714,27 +716,34 @@ export function profileLoops(shapes: Shape2[], tol = 0.05): { loops: ProfileLoop
   }
   const loops: ProfileLoop[] = [];
   for (const ps of closed) {
-    let flat: (Seg | Arc)[] = [];
+    let flat: Prim[] = [];
     for (const p of ps) {
       if (p.k === 'e') {
-        const n = Math.max(8, Math.ceil(Math.abs(p.sw) / (Math.PI / 36)));
-        for (let i = 0; i < n; i++) flat.push({ k: 's', a: primPoint(p, i / n), b: primPoint(p, (i + 1) / n) });
+        const n = Math.max(1, Math.ceil(Math.abs(p.sw) / (Math.PI / 4) - 1e-9));
+        for (let i = 0; i < n; i++) flat.push({ ...p, a0: p.a0 + (p.sw * i) / n, sw: p.sw / n });
       } else if (p.k === 'a' && Math.abs(p.sw) > Math.PI * 1.5) flat.push(slicePrim(p, 0, 0.5) as Arc, slicePrim(p, 0.5, 1) as Arc);
       else flat.push(p);
     }
-    const sample = (list: (Seg | Arc)[]) => list.flatMap(p => {
+    const sample = (list: Prim[]) => list.flatMap(p => {
       if (p.k === 's') return [p.a];
       const n = Math.max(2, Math.ceil(Math.abs(p.sw) / (Math.PI / 18)));
       return Array.from({ length: n }, (_, i) => primPoint(p, i / n));
     });
+    /** Elips yayı parçasının (≤ 45°) kübik Bezier kontrol noktaları: uçlardaki türev × (4/3)·tan(Δ/4). */
+    const ellBezier = (p: Ell): [P2, P2] => {
+      const my = mul(perp(p.mx), p.ratio), k = (4 / 3) * Math.tan(p.sw / 4);
+      const der = (t: number): P2 => ({ x: -p.mx.x * Math.sin(t) + my.x * Math.cos(t), y: -p.mx.y * Math.sin(t) + my.y * Math.cos(t) });
+      const d0 = der(p.a0), d1 = der(p.a0 + p.sw), a = ellPt(p, p.a0), b = ellPt(p, p.a0 + p.sw);
+      return [{ x: a.x + d0.x * k, y: a.y + d0.y * k }, { x: b.x - d1.x * k, y: b.y - d1.y * k }];
+    };
     let pts = sample(flat);
     const area = signedArea(pts);
     if (Math.abs(area) < 1e-3) continue;
-    if (area < 0) { flat = flat.slice().reverse().map(reversePrim) as (Seg | Arc)[]; pts = sample(flat); }
+    if (area < 0) { flat = flat.slice().reverse().map(reversePrim); pts = sample(flat); }
     const start = primStart(flat[0]);
     const segs: ProfileSeg[] = flat.map((p, i) => {
       const to = i === flat.length - 1 ? start : primEnd(p);
-      return p.k === 's' ? { to } : { to, mid: primPoint(p, 0.5) };
+      return p.k === 's' ? { to } : p.k === 'e' ? { to, bez: ellBezier(p) } : { to, mid: primPoint(p, 0.5) };
     });
     loops.push({ start, segs, pts, depth: 0 });
   }

@@ -70,6 +70,10 @@ export interface VirtualFace {
   sideRelations?: Record<string, number>;
   /** Açıkken panel serbest bölgenin tam (L/U/çentikli) şeklini alır. */
   fitFaceShape?: boolean;
+  /** EĞRİ YÜZ PANELİ (radüslü gövde yüzü): panel o yüzeyin içe doğru kalınlaştırılmış halidir (PanelEngine.curvedPanelSolid). `vertices`
+   *  yüzün köşe dörtgeni (kiriş düzlemi), `normal` yüzün ortalama normali, `center` yüz üzerindeki tık noktasıdır; bölge çözümüne girmez,
+   *  komşularıyla katı düzeyinde (sıraya göre) kesişir. */
+  curved?: boolean;
   /** İç panel (raf/dikme/kapak): konumu grup çözücüsü yazar; regen'de yüz eşlemesine girmez. */
   interior?: boolean;
   groupId?: string;

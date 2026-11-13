@@ -640,34 +640,20 @@ const TAG: React.CSSProperties = {
   padding: '0 4px', borderRadius: 4, background: 'rgba(253,252,250,0.95)', fontFamily: MONO_FONT, fontSize: 10, fontWeight: 600, lineHeight: '15px',
   whiteSpace: 'nowrap', pointerEvents: 'none', userSelect: 'none',
 };
-/** Sahne katmanı (etkin düzlemin yerel koordinatında). Her noktada küçük kare tutamak + bağlı olduğu kenara doğru çentikler: sola / sağa /
- *  aşağı / yukarı = o kenardan sabit, iki yana kısa = ortadan, iki yana uzun = oran (mor) ya da formül (mavi). Seçili noktalarda bağlı
- *  kenara kesikli kılavuz + değer. */
+/** Sahne katmanı (etkin düzlemin yerel koordinatında). Her noktada küçük kare tutamak (düğüm); seçili noktalarda bağlı kenara kesikli
+ *  kılavuz + değer. Bağ çentikleri KALDIRILDI (Goker, Kas 2026 — "parametrik kipte yalnız çizgiler ve parametre düğüm noktaları olsun"):
+ *  noktanın neye bağlı olduğu seçilince kılavuzundan ve vurgulanan yüz kenarından okunur. */
 const ParamOverlay: React.FC<{ ents: Entity[]; face: DraftFace; apply: SketchApply; targets: Set<string>; wpp: number }> =
   ({ ents, face, apply, targets, wpp }) => {
     const show = apply.mode === 'points';
     const infos = useMemo(() => (show ? paramPoints(ents, face, apply) : []), [show, ents, face, apply]);
     const geo = useMemo(() => {
-      const all: number[] = [], sel: number[] = [], seg: number[] = [], col: number[] = [], c = new THREE.Color();
-      const g = 7 * wpp, long = 11 * wpp, short = 5 * wpp;
-      const tick = (x: number, y: number, dx: number, dy: number, len: number, hex: string) => {
-        seg.push(x + dx * g, y + dy * g, 0, x + dx * (g + len), y + dy * (g + len), 0);
-        c.set(hex); col.push(c.r, c.g, c.b, c.r, c.g, c.b);
-      };
-      for (const i of infos) {
-        (targets.has(i.key) ? sel : all).push(i.p.x, i.p.y, 0);
-        const cx = bindCol(i.bx), cy = bindCol(i.by);
-        if (i.bx.k === 'L') tick(i.p.x, i.p.y, -1, 0, long, cx); else if (i.bx.k === 'R') tick(i.p.x, i.p.y, 1, 0, long, cx);
-        else { const l = i.bx.k === 'C' ? short : long; tick(i.p.x, i.p.y, -1, 0, l, cx); tick(i.p.x, i.p.y, 1, 0, l, cx); }
-        if (i.by.k === 'L') tick(i.p.x, i.p.y, 0, -1, long, cy); else if (i.by.k === 'R') tick(i.p.x, i.p.y, 0, 1, long, cy);
-        else { const l = i.by.k === 'C' ? short : long; tick(i.p.x, i.p.y, 0, -1, l, cy); tick(i.p.x, i.p.y, 0, 1, l, cy); }
-      }
+      const all: number[] = [], sel: number[] = [];
+      for (const i of infos) (targets.has(i.key) ? sel : all).push(i.p.x, i.p.y, 0);
       const mk = (a: number[]) => { const b = new THREE.BufferGeometry(); b.setAttribute('position', new THREE.Float32BufferAttribute(a, 3)); return b; };
-      const ticks = mk(seg);
-      ticks.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
-      return { all: mk(all), sel: mk(sel), ticks };
-    }, [infos, targets, wpp]);
-    useEffect(() => () => { geo.all.dispose(); geo.sel.dispose(); geo.ticks.dispose(); }, [geo]);
+      return { all: mk(all), sel: mk(sel) };
+    }, [infos, targets]);
+    useEffect(() => () => { geo.all.dispose(); geo.sel.dispose(); }, [geo]);
     // Seçili noktaların kılavuzları: aynı bağı paylaşan noktalara TEK ölçü (eksen başına en çok 3) — bağlı kenardan / ortadan noktaya
     // kesikli çizgi + tıklanıp yerinde düzenlenen değer.
     const guides = useMemo(() => {
@@ -735,7 +721,6 @@ const ParamOverlay: React.FC<{ ents: Entity[]; face: DraftFace; apply: SketchApp
       <>
         {show && (
           <>
-            <lineSegments geometry={geo.ticks} renderOrder={1095}><lineBasicMaterial vertexColors depthTest={false} depthWrite={false} transparent /></lineSegments>
             <points geometry={geo.all} renderOrder={1096}><pointsMaterial size={10} sizeAttenuation={false} color="#fdfcfa" depthTest={false} depthWrite={false} transparent /></points>
             <points geometry={geo.all} renderOrder={1097}><pointsMaterial size={6} sizeAttenuation={false} color="#292524" depthTest={false} depthWrite={false} transparent /></points>
             <points geometry={geo.sel} renderOrder={1098}><pointsMaterial size={13} sizeAttenuation={false} color="#fdfcfa" depthTest={false} depthWrite={false} transparent /></points>
