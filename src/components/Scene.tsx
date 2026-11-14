@@ -3476,6 +3476,7 @@ const GL_OPTS = { antialias: true, alpha: false, preserveDrawingBuffer: true, po
 
 const Scene: React.FC = () => {
   const controlsRef = useRef<any>(null);
+  const upFixRef = useRef<THREE.Vector3 | null>(null);   // hareketin başındaki bakış yönü; yalnız yön değişirse (döndürme) up düzeltilir
   const { shapes, cameraType, selectedShapeId, secondarySelectedShapeId, selectShape, deleteShape, exitIsolation, vertexEditMode, setVertexEditMode,
     selectedVertexIndex, setSelectedVertexIndex, vertexDirection, setVertexDirection, setFaceEditMode, filletMode, selectedFilletFaces, clearFilletFaces } =
     useStoreFields('shapes', 'cameraType', 'selectedShapeId', 'secondarySelectedShapeId', 'selectShape', 'deleteShape', 'exitIsolation',
@@ -3603,14 +3604,21 @@ const Scene: React.FC = () => {
         <directionalLight position={[0, 2000, -2000]} intensity={0.3} />
         <directionalLight position={[500, 500, 3000]} intensity={0.5} />
 
-        {/* Turntable: üst / alt görünüşte up (0,0,∓1) olduğundan döndürme başlarken up dünya-Y'ye alınır (zemin hep yatay). */}
+        {/* Turntable: üst / alt / yüz görünüşünde up dünya-Y değildir; up yalnız görünüm GERÇEKTEN döndürülünce dünya-Y'ye alınır.
+            'start' kaydırma (sağ tık), tekerlek ve sürüklemesiz tıkta da gelir — orada up'a dokunmak görünümü kendi ekseninde çeviriyordu. */}
         <OrbitControls ref={controlsRef} makeDefault target={[0, 0, 0]} enableDamping dampingFactor={0.2} rotateSpeed={0.8} maxDistance={25000} minDistance={50}
           onStart={() => {
             const c: any = controlsRef.current;
-            const cam: any = c?.object;
-            if (!cam?.up) return;
+            upFixRef.current = c?.object ? c.object.position.clone().sub(c.target).normalize() : null;
+          }}
+          onChange={() => {
+            const d0 = upFixRef.current, c: any = controlsRef.current, cam: any = c?.object;
+            if (!d0 || !cam?.up) return;
+            if (cam.position.clone().sub(c.target).normalize().angleTo(d0) < 1e-4) return;   // kaydırma / yakınlaştırma: yön aynı
+            upFixRef.current = null;
             if (cam.up.x !== 0 || cam.up.y !== 1 || cam.up.z !== 0) { cam.up.set(0, 1, 0); c.update(); }
-          }} />
+          }}
+          onEnd={() => { upFixRef.current = null; }} />
 
         {shapes.map(shape => {
           const isSel = selectedShapeId === shape.id;

@@ -1067,6 +1067,9 @@ export const setExtraSnap = (s: Shape2[]) => { extraSnap = s; };
 /** Yüz seçimini onaylayan işlev (sahne katmanı kaydolur; Enter ve sağ tık buraya düşer). */
 let planeConfirm: (() => void) | null = null;
 export const setPlaneConfirm = (f: (() => void) | null) => { planeConfirm = f; };
+// Çizim yalnız yüzde yapılır: yüz yokken komut başlatılırsa yüz seçimi açılır (DraftView kaydolur).
+let planeNeeded: (() => void) | null = null;
+export const setPlaneNeeded = (f: (() => void) | null) => { planeNeeded = f; };
 export const setTyped = (t: string) => { if (get().typed !== t) set({ typed: t }); };
 export const setPanelOpen = (b: boolean) => set({ panelOpen: b });
 export const setPlaneCandidate = (c: DraftState['planeCandidate']) => set({ planeCandidate: c });
@@ -1222,6 +1225,7 @@ export function startCommand(name: string): boolean {
   if (up === 'REDO') { redo(); return true; }
   const def = COMMANDS.find(c => c.id === up || c.aliases.includes(up));
   if (!def) return false;
+  if (get().activePlane === GROUND_PLANE.id) { say('Pick a face to draw on first.'); planeNeeded?.(); return true; }
   cancelCommand();
   curDef = def; undoBase = get().entities;
   set(s => ({ lastCmd: def.id, recent: def.family ? { ...s.recent, [def.family]: def.id } : s.recent, planePick: false }));

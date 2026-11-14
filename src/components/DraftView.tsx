@@ -11,7 +11,7 @@ import { panelStepRotation, whenRebuildIdle } from './PanelEngine';
 import {
   type DraftIsolate, type SketchApply, type DraftPlane, type DraftFace, type BindDefault, type CircleS, type SketchBind, type Entity, type Geo, type GeoStyle, type LineS, type P2, type Shape2, type SnapKind, type V3, GROUND_PLANE, SNAP_KINDS,
   SNAP_LABEL, activatePlane, cancelCommand, closestOn, commandActive, commandById, deg, dist, enterKey, fmt, loadEntities, moveShape, pointerClick, pointerLeave,
-  pointerMove, profileLoops, selectEntity, setAids, setApply, setExtraSnap, setIsolate, setPanelOpen, setPlaneCandidate, setPlaneConfirm, setPlanePick, setSession,
+  pointerMove, profileLoops, selectEntity, setAids, setApply, setExtraSnap, setIsolate, setPanelOpen, setPlaneCandidate, setPlaneConfirm, setPlaneNeeded, setPlanePick, setSession,
   startCommand, stripEnt, takeEntities, tessellate, useDraft,
   autoKind, bindCoord, bindText, bindsOf, ctrlPoints, evalExpr, movePointsTo, paramTargets, parseBind, pointAt, prefsOf, ptKey,
   segmentAt, selectPoints, setCircleRadius, setFace, setPHover, setPointPrefs, setRefEdges, togglePoint,
@@ -403,6 +403,7 @@ export function confirmFacePick() {
   })();
 }
 setPlaneConfirm(confirmFacePick);
+setPlaneNeeded(() => { if (!useDraft.getState().planePick) beginFacePick(); });
 export function toggleIsolate() {
   if (useDraft.getState().isolate) { setIsolate(null); return; }
   const t = faceTarget();
@@ -414,8 +415,14 @@ export async function exitFace() {
   if (useDraft.getState().session) await finishSketchEdit(false); else leaveFace();
 }
 // İzolasyon — tek kural: yalnız yüz seçimi / yüz düzlemi / adım oturumu sürerken; hiçbiri yoksa hangi yoldan çıkılırsa çıkılsın kalkar
-// ve kamera geri döner. Drawing paneli kapanınca yüzden çıkılır.
+// ve kamera geri döner. Drawing paneli kapanınca yüzden çıkılır; açılınca (yüz yoksa) doğrudan yüz seçimi başlar — zemine çizim yok.
 useDraft.subscribe((st, prev) => {
+  // Zemin çizim düzlemi değil: önceki sürümden / geri almadan kalan zemin çizimi atılır.
+  if (st.entities !== prev.entities && st.entities.some(e => e.plane === GROUND_PLANE.id)) takeEntities(GROUND_PLANE.id);
+  if (!prev.panelOpen && st.panelOpen) queueMicrotask(() => {
+    const now = useDraft.getState();   // Sketch aracı (beginFacePick) paneli kendisi açar → seçim zaten sürüyorsa dokunulmaz
+    if (now.panelOpen && !now.planePick && !now.session && now.activePlane === GROUND_PLANE.id) beginFacePick();
+  });
   if (st.isolate && !st.planePick && !st.session && st.activePlane === GROUND_PLANE.id) {
     setIsolate(null);
     if (savedPose) { const p = savedPose; savedPose = null; sceneApi.restore?.(p); }
@@ -958,7 +965,7 @@ export const DraftLayer: React.FC = () => {
       const L = live.current, st = useDraft.getState(), ray = rayOf(e);
       let best: string | null = null, bt = Infinity;
       for (const pl of st.planes) {
-        if (pl.kind === 'face' && pl.id !== st.activePlane) continue;   // gizli (etkin olmayan yüz) düzlemin çizimi seçilemez
+        if (pl.id !== st.activePlane) continue;   // yalnız etkin yüzün çizimi seçilir (gizli yüzler, zemin)
         const m = L.matrices.get(pl.id), on = st.entities.filter(x => x.plane === pl.id);
         if (!m || !on.length) continue;
         const h = rayOnPlane(ray, m, m.clone().invert());
@@ -1073,7 +1080,7 @@ export const DraftLayer: React.FC = () => {
   const activeEnts = useMemo(() => (byPlane.get(activeId) ?? []).filter(e => !e.ref), [byPlane, activeId]);
   const paramFace = face && face.planeId === activeId && activeEnts.length && apply.mode === 'points' ? face : null;
   const targets = useMemo(() => new Set(paramFace ? paramTargets({ entities, activePlane: activeId, psel, selection }) : []), [paramFace, entities, activeId, psel, selection]);
-  const showUcs = busy || planePick || activeId !== GROUND_PLANE.id || (byPlane.get(activeId)?.length ?? 0) > 0;
+  const showUcs = activeId !== GROUND_PLANE.id && !planePick;   // zeminde / yüz seçerken eksen işareti yok (panel kapanınca yüzden çıkılır → kalkar)
   const track = cursor?.track, trackLen = wpp * 6000;
   return (
     <>
@@ -1516,7 +1523,7 @@ const FaceApply: React.FC<{ tip: TipFn }> = ({ tip }) => {
 export const DrawingPanel: React.FC = () => {
   const open = useDraft(s => s.panelOpen), cmd = useDraft(s => s.cmd), aids = useDraft(s => s.aids);
   const activePlane = useDraft(s => s.activePlane), planePick = useDraft(s => s.planePick);
-  const planeLabel = useDraft(s => s.planes.find(p => p.id === s.activePlane)?.label ?? 'Ground');
+  const planeLabel = useDraft(s => (s.activePlane === GROUND_PLANE.id ? 'No face' : s.planes.find(p => p.id === s.activePlane)?.label ?? 'Face'));
   const candLabel = useDraft(s => s.planeCandidate?.label ?? null), iso = useDraft(s => s.isolate), session = useDraft(s => s.session);
   const ortho = useAppStore(s => s.orthoMode) === OrthoMode.ON, toggleOrtho = useAppStore(s => s.toggleOrthoMode);
   const snapOn = useAppStore(s => s.snapEnabled), setSnapOn = useAppStore(s => s.setSnapEnabled);
@@ -1603,23 +1610,26 @@ export const DrawingPanel: React.FC = () => {
           <button className="dp-x" style={{ marginLeft: 'auto' }} onClick={() => setPanelOpen(false)} aria-label="Close" {...tip('Close the panel')}><DIcon name="close" size={15} /></button>
         </div>
         <div className="dp-scroll" style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
-          <Section title="Plane">
+          {/* Çizim yalnız seçilen yüzde: panel açılınca yüz seçimi başlar; aday vurgulanır, ONAYLANINCA düzlem olur (sağ tık / Enter da onaylar). */}
+          <Section title="Face">
             <div className="dp-card" style={{ display: 'flex' }}>
-              <button className={`dp-btn txt${!onFace && !planePick ? ' on' : ''}`} onClick={() => { void exitFace(); }} {...tip('Draw on the ground plane')}>
-                <DIcon name="ground" size={17} />Ground
+              <button className={`dp-btn txt${planePick ? ' on' : ''}`} disabled={!!session} onClick={() => (planePick ? cancelFacePick() : beginFacePick())}
+                {...tip(session ? 'Finish editing the step first' : onFace ? 'Pick another body or panel face' : 'Pick a body or panel face to draw on')}>
+                <DIcon name="face" size={17} />{planePick ? 'Picking…' : onFace ? 'Change face' : 'Pick face'}
               </button>
-              <button className={`dp-btn txt${onFace || planePick ? ' on' : ''}`} disabled={!!session} onClick={() => (planePick ? cancelFacePick() : beginFacePick())}
-                {...tip(session ? 'Finish editing the step first' : 'Pick a body or panel face to draw on')}>
-                <DIcon name="face" size={17} />{planePick ? 'Picking…' : 'Face'}
-              </button>
-              <button className="dp-btn" onClick={() => viewPlaneFn?.()} aria-label="Look at plane" {...tip('Look straight at the drawing plane')}><DIcon name="look" /></button>
               {onFace && !planePick && (
-                <button className={`dp-btn${iso ? ' on' : ''}`} aria-pressed={!!iso} aria-label="Isolate" onClick={toggleIsolate}
-                  {...tip(iso ? 'Isolated — click to show the other parts again' : 'Isolate — hide everything except this face')}><DIcon name="solo" /></button>
+                <>
+                  <button className="dp-btn" onClick={() => viewPlaneFn?.()} aria-label="Look at face" {...tip('Look straight at the face')}><DIcon name="look" /></button>
+                  <button className={`dp-btn${iso ? ' on' : ''}`} aria-pressed={!!iso} aria-label="Isolate" onClick={toggleIsolate}
+                    {...tip(iso ? 'Isolated — click to show the other parts again' : 'Isolate — hide everything except this face')}><DIcon name="solo" /></button>
+                  <button className="dp-btn" aria-label="Leave face" onClick={() => {
+                    if (sessionDirty()) useDraft.setState(s => ({ log: [...s.log.slice(-59), 'Unsaved changes on this step — Update or Cancel first.'] }));
+                    else void exitFace();
+                  }} {...tip('Leave the face', 'Esc')}><DIcon name="close" size={15} /></button>
+                </>
               )}
             </div>
-            {/* Yüz seçimi: tıklanan aday vurgulanır, ONAYLANINCA düzlem olur (sağ tık / Enter da onaylar). */}
-            {planePick && (
+            {planePick ? (
               <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 7 }}>
                 <span style={{ flex: 1, minWidth: 0, fontSize: 11.5, fontWeight: candLabel ? 600 : 400, color: candLabel ? P.ink : P.faint, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {candLabel ?? 'Click a face'}
@@ -1630,6 +1640,8 @@ export const DrawingPanel: React.FC = () => {
                 </button>
                 <button className="dp-ghost" style={{ padding: '0 9px' }} onClick={() => cancelFacePick()}>Cancel</button>
               </div>
+            ) : !onFace && (
+              <div style={{ marginTop: 7, fontSize: 11.5, color: P.faint }}>Drawing works on a body or panel face — pick one to start.</div>
             )}
           </Section>
           {onFace && !planePick && <FaceApply tip={tip} />}
@@ -1695,10 +1707,11 @@ export const DraftViewport: React.FC<{ children: React.ReactNode }> = ({ childre
 
 /** Durum çubuğu parçası: etkin düzlem, çizim nesnesi sayısı ve imleç koordinatı. */
 export const DraftStatus: React.FC = () => {
-  const label = useDraft(s => s.planes.find(p => p.id === s.activePlane)?.label ?? 'Ground'), count = useDraft(s => s.entities.reduce((n, e) => n + (e.ref ? 0 : 1), 0));
+  const label = useDraft(s => (s.activePlane === GROUND_PLANE.id ? null : s.planes.find(p => p.id === s.activePlane)?.label ?? 'Face'));
+  const count = useDraft(s => s.entities.reduce((n, e) => n + (e.ref || e.plane !== s.activePlane ? 0 : 1), 0));
   const selected = useDraft(s => s.selection.length), x = useDraft(s => (s.cursor && s.cmd ? Math.round(s.cursor.p.x * 10) / 10 : null));
   const y = useDraft(s => (s.cursor && s.cmd ? Math.round(s.cursor.p.y * 10) / 10 : null));
-  if (!count && label === 'Ground' && x === null) return null;
+  if (label === null) return null;   // çizim yalnız yüzde
   const cap: React.CSSProperties = { color: '#9c9590', fontSize: '10.5px', fontWeight: 420, letterSpacing: '0.05em', textTransform: 'uppercase' };
   const val: React.CSSProperties = { color: '#44403c', fontSize: '11px', fontWeight: 500, fontFamily: MONO_FONT };
   return (
