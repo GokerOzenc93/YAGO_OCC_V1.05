@@ -781,7 +781,12 @@ function fitVertsToBodyEdges(
     if (!found) { if (tilted) off[i] = t * 3 + 2; continue; }
     const m = found.m, mo = m.dot(o3), c = m.dot(n);
     if (found.curved && c > 0.94) continue;        // eğri komşuya teğet geçiş
-    if (found.curved && mo > 0 && c > mo * STEEP_JOIN) continue;   // eğri komşuya DİK birleşim: yay boyunca incecik dil uzamaz (curvedPanelSolid ile aynı eşik)
+    // YAYVAN / DİK BİRLEŞİM (m·n > 1,2·m·o — iki yüz arasındaki kırıklık ≈ 40°'den az; düz komşuda da, eğri komşuda da): "panel komşu
+    // yüzden çıkana kadar uzar" kuralı t·(m·n)/(m·o) verir; yüzler eş-düzleme yaklaştıkça bu patlar (10° kırık üstte 100 mm) → panel
+    // KOMŞU YÜZÜN altına kama olarak taşıyor, o yüze konan panelle iç içe geçiyordu (Goker, Kas 2026 — "seçtiğim yüze panel atarken
+    // başka yüzeye de taşırıyor"). Dışbükey kırıkta iki panelin katmanı zaten örtüşür (boşluk doğmaz) → kenar UZAMAZ, panel kendi
+    // yüzünde biter; iki panel sıraya göre kesişir. (İçbükey yayvan kırık eski kuralında: orada katmanlar ayrışır, uzatma boşluğu kapatır.)
+    if (mo > 0 && c > mo * STEEP_JOIN) continue;
     // Çokgen yayı KİRİŞLERLE izler; sırada önce gelen eğri panelin katısı aynı yayın GERÇEK yüzeyidir → neredeyse çakışan faset / eğri
     // yüzeylerle Cut çok yavaş (elips yüzeyde panel başına 26 s) ve kırılgan. Kenar biraz dışa taşırılıp gövdeyle kesilir: levhanın
     // kenarı gövdenin gerçek yüzeyi olur (aynı yüzey → temiz boolean, ~2 s), ayrıca kenar faset değil gerçek yay kalır.
