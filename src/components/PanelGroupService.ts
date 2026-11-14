@@ -892,7 +892,7 @@ function uniqSorted(vals: number[], lo: number, hi: number): number[] {
 }
 
 /** Kapalı mesh içinde mi: ışın paritesi; eğik ışın kenar/köşe dejenerasyonlarını önler. */
-function makeInsideMeshTest(geo: THREE.BufferGeometry): (p: Vec3) => boolean {
+export function makeInsideMeshTest(geo: THREE.BufferGeometry): (p: Vec3) => boolean {
   const pos = geo.getAttribute('position') as THREE.BufferAttribute;
   const idx = geo.getIndex();
   const n = idx ? idx.count : pos.count;

@@ -701,7 +701,7 @@ export const createHoleCylinder = async (start: Vec3, dir: Vec3, radius: number,
  *  ardışık cut 958 ms · compound tek cut 251 ms · SetTools 119 ms; 40 delik 3.9 s · 0.74 s · 0.26 s. Glue (commonFace) kesimi ATLIYOR
  *  (hacim değişmedi) → kullanılmaz; BRepFeat_MakeCylindricalHole ardışıktan biraz hızlı, listeden 5× yavaş.
  *  `simplify` = aynı düzlemdeki yüzleri birleştir (kutu kesicilerde, replicad.cut ile aynı). Sonuç 3B katı değilse fırlatır. */
-export async function cutWithTools(base: any, tools: any[], simplify = false): Promise<any> {
+export async function cutWithTools(base: any, tools: any[], simplify = false, /** OCC bulanık toleransı (mm): eş-yüzeyli çiftte sağlam kesim. */ fuzzy = 0): Promise<any> {
   if (!tools.length) return base;
   const oc = await initReplicad();
   const { cast } = await import('replicad');
@@ -712,6 +712,7 @@ export async function cutWithTools(base: any, tools: any[], simplify = false): P
   try {
     op.SetArguments(args); op.SetTools(list);
     op.SetCheckInverted(false);   // girdiler düzgün katılar; ters katı denetimi atlanır (~%10)
+    if (fuzzy > 0) op.SetFuzzyValue(fuzzy);
     op.Build(progress);
     if (simplify) op.SimplifyResult(true, true, 1e-3);
     if (op.HasErrors()) throw new Error('boolean cut failed');

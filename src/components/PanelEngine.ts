@@ -6,7 +6,7 @@ import {
 } from './Geometry';
 import { type RotOp, applyRailExt, clipRegionToRailStrip, railLandingOnBody, computeFaceComponentContour, computeFreeRegionLocal, convexHull2D, footprintGeometry, panelBehindStackPlane, largestFaceNormal, panelHasRotation, panelInnerBigFace, panelIsTiltedSlab, toUV } from './Geometry';
 import { type BrepTriInfo, type CoplanarFaceGroup, type FaceData, type Vec3, initReplicad, matchCurvedFaceGroup, overlapVolumeByCut, surfaceKeyOf, angleToTouchPlane, assertBounds, axisDirToVec, axisIndexOf, boundsOverlapBox, convertReplicadToThreeGeometry, createHoleCylinder, createPanelFromVirtualFace, createReplicadBox, createReplicadBoxAt, cutWithTools, dot3, effectiveBodyGeometry, errMsg, findFaceByDescriptor, fromPlaneUV, getFacePlaneAxes, getFacesAndGroups, getShapeMatrix, halfSpaceSlab, isFlatNormal, localBboxOf, normDeg, panelThickness, pointFromFracBox, projRange, resolveVfFracPoint, rotateAboutAxis, round1, round3, spanAlong, toVector3, uniqueMeshPoints, uniquePoints, vec3, vertexModsKey, vfRawMinAlong, worldBboxOf } from './Geometry';
-import { isInteriorPanel, isInteriorVf, recalculateInteriorVfs, syncPanelGroups } from './PanelGroupService';
+import { isInteriorPanel, isInteriorVf, makeInsideMeshTest, recalculateInteriorVfs, syncPanelGroups } from './PanelGroupService';
 import { edgeGapsOf, isDoorPanel, isDoorVf, recalculateDoorVfs, syncDoorGroups } from './DoorService';
 import { backGrooveCuttersFor, backNailStampFor, backStackAt, isBackPanel, isBackVf, recalculateBackVfs, syncBackGroups } from './BackService';
 import { isPlinthVf, plinthBoxOf, plinthHoleCuttersFor, plinthLegBoxes, plinthSetsOf } from './PlinthService';
@@ -266,6 +266,65 @@ function cornerJoinedVertices(panel: Shape, vf: VirtualFace, vfs: VirtualFace[],
 const _overlapBox = (shape: any): { min: number[]; max: number[] } | null => {
   try { const b = shape.boundingBox.bounds; return { min: [b[0][0], b[0][1], b[0][2]], max: [b[1][0], b[1][1], b[1][2]] }; } catch { return null; }
 };
+// SAĞLAM BOOLEAN (Goker, Kas 2026 — "bombeli panele dayanan panel bazen iç içe, hatta dışarı çıkıyor; bombeli panel onu kesemiyor").
+// OCC, eş-yüzeyli çiftte (gövdeyle kesilmiş yan panelin üstü = eğri panelin dış yüzeyi, dış yüzü = eğri panelin uç yüzü) Cut / Common'u
+// SESSİZCE boş çevirebiliyor: hata yok, katı aynen geri dönüyor. Biçimlenmiş gövdede sıraya göre iç içe geçme yalnız katı kesimine
+// dayandığından (bölge damgası yok) sessiz başarısızlık doğrudan iç içe / gövde dışına taşan panel demek. Sonuç boolean'dan BAĞIMSIZ
+// (mesh) sınanır; başarısızsa bulanık toleranslı Cut ve Common üzerinden yeniden denenir.
+const _insideTests = new WeakMap<THREE.BufferGeometry, (p: Vec3) => boolean>();
+const insideTestOf = (geo: THREE.BufferGeometry) => {
+  let t = _insideTests.get(geo);
+  if (!t) { t = makeInsideMeshTest(geo); _insideTests.set(geo, t); }
+  return t;
+};
+/** Katının İÇ örnekleri: her üçgenin merkezinden `depth` mm içeride (yüzeyde paylaşılan / faset payındaki nokta örnek olmaz). */
+function interiorProbes(geo: THREE.BufferGeometry, depth = 1): Vec3[] {
+  const pos = geo.getAttribute('position') as THREE.BufferAttribute, idx = geo.getIndex();
+  const n = idx ? idx.count : pos.count, self = insideTestOf(geo), out: Vec3[] = [];
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), nn = new THREE.Vector3(), cen = new THREE.Vector3();
+  for (let t = 0; t + 2 < n; t += 3) {
+    a.fromBufferAttribute(pos, idx ? idx.getX(t) : t); b.fromBufferAttribute(pos, idx ? idx.getX(t + 1) : t + 1); c.fromBufferAttribute(pos, idx ? idx.getX(t + 2) : t + 2);
+    nn.crossVectors(b.clone().sub(a), c.clone().sub(a));
+    const area2 = nn.length();
+    if (area2 < 8) continue;
+    nn.divideScalar(area2); cen.copy(a).add(b).add(c).divideScalar(3);
+    for (const sgn of [-1, 1]) {
+      const q: Vec3 = [cen.x + nn.x * depth * sgn, cen.y + nn.y * depth * sgn, cen.z + nn.z * depth * sgn];
+      if (self(q)) { out.push(q); break; }
+    }
+  }
+  return out;
+}
+/** `a` katısının iç örneklerinden kaçı `bGeo` katısının içinde (mesh; boolean'sız). */
+function probesInside(aGeo: THREE.BufferGeometry, bGeo: THREE.BufferGeometry): { inside: number; total: number } {
+  const bb = localBboxOf(bGeo), test = insideTestOf(bGeo), probes = interiorProbes(aGeo);
+  let inside = 0;
+  if (bb) for (const q of probes) if (q[0] > bb.min.x && q[0] < bb.max.x && q[1] > bb.min.y && q[1] < bb.max.y && q[2] > bb.min.z && q[2] < bb.max.z && test(q)) inside++;
+  return { inside, total: probes.length };
+}
+const volOf = (measureVolume: (s: any) => number, x: any): number => { try { return measureVolume(x); } catch { return NaN; } };
+/** out − tool, doğrulamalı. Hacim azaldıysa kabul; azalmadıysa iki katı GERÇEKTEN örtüşüyor mu diye mesh'ten bakılır — örtüşüyorsa
+ *  kesim sessizce başarısız olmuştur: bulanık Cut (1e-3, 1e-2) ve Common üzerinden (out − (out ∩ tool)) yeniden denenir. */
+async function robustCut(out: any, tool: any, toolGeo: THREE.BufferGeometry | null, label: string): Promise<{ rp: any; removed: number }> {
+  const { measureVolume } = await import('replicad');
+  const v0 = volOf(measureVolume, out);
+  const accept = (x: any): number => { try { assertBounds(x); } catch { return NaN; } const v = volOf(measureVolume, x); return v > 1 && v < v0 - 1 ? v : NaN; };
+  let cut: any = null, v = NaN;
+  try { cut = out.clone().cut(tool.clone()); v = accept(cut); } catch { cut = null; }
+  if (Number.isFinite(v)) return { rp: cut, removed: v0 - v };
+  // Değişmedi: gerçekten örtüşmüyorsa yapılacak iş yok.
+  let overlap = false;
+  try { const og = convertReplicadToThreeGeometry(out); overlap = probesInside(og, toolGeo ?? convertReplicadToThreeGeometry(tool)).inside >= 2; og.dispose(); } catch { overlap = false; }
+  if (!overlap) return { rp: out, removed: 0 };
+  for (const fuzzy of [1e-3, 1e-2]) {
+    try { cut = await cutWithTools(out.clone(), [tool.clone()], false, fuzzy); v = accept(cut); } catch { v = NaN; }
+    if (Number.isFinite(v)) { console.info('[YAGO][MOTOR] kesim bulanık toleransla kuruldu:', label, fuzzy); return { rp: cut, removed: v0 - v }; }
+  }
+  try { const common = out.clone().intersect(tool.clone()); assertBounds(common); cut = out.clone().cut(common); v = accept(cut); } catch { v = NaN; }
+  if (Number.isFinite(v)) { console.info('[YAGO][MOTOR] kesim ortak hacim üzerinden kuruldu:', label); return { rp: cut, removed: v0 - v }; }
+  console.warn('[YAGO][MOTOR] kesim kurulamadı (paneller iç içe kalabilir):', label);
+  return { rp: out, removed: 0 };
+}
 const _curvedCutCache = new Map<string, any>();
 const _bodyClipCache = new WeakMap<THREE.BufferGeometry, Map<string, any>>();
 export async function cutByEarlierOverlaps(rp: any, panel: Shape, earlier: Shape[]): Promise<any> {
@@ -283,17 +342,22 @@ export async function cutByEarlierOverlaps(rp: any, panel: Shape, earlier: Shape
     if ([0, 1, 2].some(k => Math.min(mine.max[k], eb.max[k]) - Math.max(mine.min[k], eb.min[k]) < 0.5)) continue;
     try {
       if (!measureVolume) measureVolume = (await import('replicad')).measureVolume;
+      const { measureShapeVolumeProperties } = await import('replicad');
       if (isCurvedPanel(e)) {
         // Eğri panelle sınama ayrı boolean istemez (pahalı): tek kesim, hacim azaldıysa kabul. Sonuç iki katının imzasıyla (hacim + kutu)
         // saklanır: elips yüzeyli panelde kesim ≈ 2,5 s, değişmeyen çift her rebuild'de yeniden kesilmez.
         const v0 = measureVolume(out);
-        const sig = (x: any, vol: number) => `${vol.toFixed(2)}|${(x.boundingBox.bounds as number[][]).flat().map(n => n.toFixed(2)).join(',')}`;
-        const key = `${sig(out, v0)}#${sig(es, measureVolume(es))}`;
+        // İmza: hacim + kutu + AĞIRLIK MERKEZİ (ayna simetriği katıların hacmi ve kutusu aynıdır — merkezsiz imza yanlış katıyı döndürüyordu).
+        const sig = (x: any) => {
+          const pr = measureShapeVolumeProperties(x), c = pr.centerOfMass;
+          return `${pr.volume.toFixed(2)}|${c.map((n: number) => n.toFixed(3)).join(',')}|${(x.boundingBox.bounds as number[][]).flat().map(n => n.toFixed(2)).join(',')}`;
+        };
+        const key = `${sig(out)}#${sig(es)}`;
         let cut: any = null;
         const hit = _curvedCutCache.get(key);
         if (hit) { try { cut = hit.clone(); } catch { _curvedCutCache.delete(key); } }
         if (!cut) {
-          cut = out.clone().cut(es.clone());
+          cut = (await robustCut(out, es, (e as any).geometry ?? null, `${panel.id} − ${e.id}`)).rp;
           if (_curvedCutCache.size > 24) _curvedCutCache.delete(_curvedCutCache.keys().next().value as string);
           _curvedCutCache.set(key, cut.clone());
         }
@@ -646,6 +710,8 @@ interface BodyEdgeFit { verts: Vec3[]; clip: boolean; limits: Array<{ m: THREE.V
  *  - Eğri komşuya TEĞET geçiş: dokunulmaz (iki panel uç uca oturur).
  *  - `tilted` (eğik yüzün kendi paneli): gövde kenarı olmayan (kardeşle sınırlı) kenarlar 3t + 2 uzar; sırada önce gelen kardeş keser.
  *  Hiçbir kenar işlem istemiyorsa null. */
+/** Eğri yüz ↔ düz yüz birleşiminde uzatma üst oranı (m·n / m·o = tan açı ≈ 50°); ötesi "dik birleşim". */
+const STEEP_JOIN = 1.2;
 function fitVertsToBodyEdges(
   geo: THREE.BufferGeometry, normal: Vec3, verts: Vec3[], t: number, tilted: boolean,
   /** Eğri komşuya DİK kenarlar (ön / arka yüzün yay kenarı) bu kadar dışa taşırılıp gövdeyle kesilir. */ curvedGrow = 0,
@@ -715,6 +781,7 @@ function fitVertsToBodyEdges(
     if (!found) { if (tilted) off[i] = t * 3 + 2; continue; }
     const m = found.m, mo = m.dot(o3), c = m.dot(n);
     if (found.curved && c > 0.94) continue;        // eğri komşuya teğet geçiş
+    if (found.curved && mo > 0 && c > mo * STEEP_JOIN) continue;   // eğri komşuya DİK birleşim: yay boyunca incecik dil uzamaz (curvedPanelSolid ile aynı eşik)
     // Çokgen yayı KİRİŞLERLE izler; sırada önce gelen eğri panelin katısı aynı yayın GERÇEK yüzeyidir → neredeyse çakışan faset / eğri
     // yüzeylerle Cut çok yavaş (elips yüzeyde panel başına 26 s) ve kırılgan. Kenar biraz dışa taşırılıp gövdeyle kesilir: levhanın
     // kenarı gövdenin gerçek yüzeyi olur (aynı yüzey → temiz boolean, ~2 s), ayrıca kenar faset değil gerçek yay kalır.
@@ -824,7 +891,10 @@ async function curvedPanelSolid(parent: Shape, vf: VirtualFace, t: number): Prom
     if (Math.abs(mo) < 0.05) continue;   // teğet / eş-düzlem komşu
     // Dışbükey DİK komşuda (m·n ≈ 0) uç zaten komşu yüzdedir. İçbükey dik komşuda (basamağın üstünden dik çıkan yay) köşe küpü boş
     // kalıyordu: uç t kadar uzar, komşunun panel katmanının dibinde biter; komşu panel sıraya göre kesişir.
-    if (mo > 0) { if (cn > 0.02) ends.push({ mid, o, ext: Math.min((t * cn) / mo + 1, t * 6 + 2) }); }
+    // DİK BİRLEŞİM (yay yan yüze 50°'den dik iniyor: m·n > 1,2·m·o): uzatma t·(m·n)/(m·o) hızla büyür — eğri panel yan yüz boyunca
+    // 50–110 mm'lik incecik bir kama olarak iniyordu (ve o kama komşu paneli kesemiyordu). Bu açıda uç yüzü yana değil AŞAĞI bakar,
+    // altı zaten yan panelin yeridir → uzatılmaz; iki panel sıraya göre uç düzleminde / yan panelin tepesinde birleşir.
+    if (mo > 0) { if (cn > 0.02 && cn <= mo * STEEP_JOIN) ends.push({ mid, o, ext: Math.min((t * cn) / mo + 1, t * 6 + 2) }); }
     else {
       ends.push({ mid, o, ext: Math.min((t * (1 + Math.max(0, -cn))) / -mo + 1, t * 6 + 2) });
       limits.push({ m: m.clone(), d: m.dot(c.a) - t });
@@ -904,7 +974,7 @@ async function clipToGroupCavity(rp: any, panel: Shape): Promise<any> {
   } catch { return rp; }
 }
 
-async function intersectWithBody(rp: any, parent: Shape, fallbackBox: boolean): Promise<any> {
+async function intersectWithBody(rp: any, parent: Shape, fallbackBox: boolean, /** Doğrulama sonucu (yalnız biçimlenmiş gövde). */ status?: { ok: boolean }): Promise<any> {
   try {
     let body = await effectiveBodySolid(parent);
     if (!body && fallbackBox) {
@@ -913,6 +983,36 @@ async function intersectWithBody(rp: any, parent: Shape, fallbackBox: boolean): 
     }
     if (!body) return rp;
     assertBounds(rp);
+    // BİÇİMLENMİŞ GÖVDE: sonuç boolean'dan bağımsız doğrulanır (bkz. robustCut) — hacmi artmamış ve iç örnekleri gövde mesh'inin içinde
+    // olmalı. Common sessizce paneli AYNEN döndürürse kenarı gövde yüzüne oturtulmuş (uzatılmış) panel gövdenin dışına taşıyordu.
+    if (parent.geometry && bodyIsShaped(parent)) {
+      const { measureVolume } = await import('replicad');
+      const v0 = volOf(measureVolume, rp), bodyGeo = parent.geometry;
+      const valid = (x: any): boolean => {
+        try {
+          assertBounds(x);
+          const v = volOf(measureVolume, x);
+          if (!(v > 1) || v > v0 + 0.5) return false;
+          const g = convertReplicadToThreeGeometry(x), r = probesInside(g, bodyGeo);
+          g.dispose();
+          return r.total - r.inside < 2;
+        } catch { return false; }
+      };
+      const tries: Array<() => Promise<any> | any> = [
+        () => rp.clone().intersect(body.clone()),
+        () => { const outside = rp.clone().cut(body.clone()); return volOf(measureVolume, outside) > 0.5 ? rp.clone().cut(outside) : rp; },
+        async () => { const outside = await cutWithTools(rp.clone(), [body.clone()], false, 1e-3); return cutWithTools(rp.clone(), [outside], false, 1e-3); },
+        () => body.clone().intersect(rp.clone()),
+      ];
+      for (let i = 0; i < tries.length; i++) {
+        let x: any = null;
+        try { x = await tries[i](); } catch { x = null; }
+        if (x && valid(x)) { if (i > 0) console.info('[YAGO][MOTOR] gövde kesişimi yedek yolla kuruldu:', i); if (status) status.ok = true; return x; }
+      }
+      console.warn('[YAGO][MOTOR] gövde kesişimi doğrulanamadı (panel gövdeye sığdırılamadı)');
+      if (status) status.ok = false;
+      return rp;
+    }
     try {
       const out = rp.intersect(body);
       assertBounds(out);   // boş kesişim = panel sessizce yok olur (ölçü 0) → kırpma atlanır
@@ -1172,12 +1272,12 @@ async function fitRotatedPanel(
         if (!cut) {
           const inf = await flatSiblingHalfSpace(out, fresh, panel);
           if (inf === 'skip') continue;
-          cut = inf ? out.cut(inf) : out.cut(fresh.replicadShape.clone());
+          cut = inf ? out.cut(inf) : (await robustCut(out, fresh.replicadShape, fresh.geometry, `${panel.id} − ${fresh.id}`)).rp;
         }
         out = cut;
         continue;
       }
-      out = half ? out.cut(half) : out.cut(fresh.replicadShape.clone());
+      out = half ? out.cut(half) : solidCut || isCurvedPanel(fresh) ? (await robustCut(out, fresh.replicadShape, fresh.geometry, `${panel.id} − ${fresh.id}`)).rp : out.cut(fresh.replicadShape.clone());
     } catch { /* kardeş kesimi atlanır */ }
   }
   return out;
@@ -1496,8 +1596,14 @@ async function rebuildOnce(parentShapeId: string, opts?: RebuildOpts): Promise<v
         let done = false;
         if (hit && edgeFit && !(edgeFit.limits.length)) { try { rp = hit.clone(); done = true; } catch { bucket!.delete(clipKey!); } }
         if (!done) {
-          rp = await intersectWithBody(rp, parentFresh, false);
-          if (bucket && !(edgeFit!.limits.length)) { if (bucket.size > 16) bucket.delete(bucket.keys().next().value as string); bucket.set(clipKey!, rp.clone()); }
+          const status = { ok: true };
+          rp = await intersectWithBody(rp, parentFresh, false, status);
+          if (!status.ok && edgeFit && genVerts !== buildVerts) {
+            // Uzatılmış levha gövdeye sığdırılamadı: uzatılmamış köşelerle (gövde yüzünün kendi bölgesi) yeniden — dışarı taşmaz.
+            const plain = await createPanelFromVirtualFace(buildVerts, vf.normal, thickness, 0).catch(() => null);
+            if (plain) rp = await intersectWithBody(plain, parentFresh, false, status);
+          }
+          if (status.ok && bucket && !(edgeFit!.limits.length)) { if (bucket.size > 16) bucket.delete(bucket.keys().next().value as string); bucket.set(clipKey!, rp.clone()); }
         }
       }
       // Biçimlenmiş gövdede arkalık, eğimli / eğri gövde panellerinin İÇ yüzünde biter (o panellere kanal açılmaz; arkalık içlerinden
