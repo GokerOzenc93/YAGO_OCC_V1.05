@@ -33,6 +33,7 @@ import {
   vfBackBound, isBackPanel, splitBackAtPanel, backPreviewStamp, backPickObstacle, collectBackCuts, BACK_THICKNESS, confirmBackPick, backSlabPolygon,
   BACK_GAP, backPickRect, rayBackEntry, backCandidatesAt, backStackAt,
 } from './BackService';
+import { panelStampsRegions } from './PanelEngine';
 import { ErrorBoundary } from './Ui';
 import { DraftLayer } from './DraftView';
 import { useDraft } from './Draft';
@@ -973,7 +974,8 @@ export function buildFacePreview(
   const siblings = stack
     ? childPanels.filter(p => !panelBehindStackPlane(realOf(p), nrm, stackPlane)).map(p => ({ ...p, __pierceObstacle: true }))
     : childPanels;
-  const region = computeFreeRegionLocal(corners, nrm, clickLocal, siblings, worldToLocal, shapeId);
+  // Eğri yüz paneli bölge damgalamaz (motorla aynı kural: komşusuyla katı düzeyinde kesişir).
+  const region = computeFreeRegionLocal(corners, nrm, clickLocal, siblings.filter(p => panelStampsRegions(p, shapeById(shapeId))), worldToLocal, shapeId);
   if (!region) return null;
   const { u, v, planeN, uMin, vMin, cw, ch, nx, ny, reach, touchingSiblingIds } = region;
   const to3D = (px: number, py: number) => new THREE.Vector3().addScaledVector(u, px).addScaledVector(v, py).addScaledVector(nrm, planeN);
@@ -1501,6 +1503,38 @@ function surfaceMesh(surface: number[]): { geo: THREE.BufferGeometry; edgePts: [
   return { geo, edgePts: edgePointsOf(geo, 1) };
 }
 
+// GERÇEK ŞEKİL ÖNİZLEMESİ (Goker, Kas 2026 — "oval gövdede dikme / raf / kapak / arkalık atarken hacmi tam düzgün seçeyim"): aday hacim
+// ızgara hücrelerinden, aday levha dikdörtgenden gelir → kemerli / eğimli gövdede önizleme gövdenin dışına ve eğri panelin içine taşar.
+// Kutu önizleme hemen çizilir; motorun OCC ile kestiği gerçek şekil (PanelEngine.refinedVolumeSurface / refinedSlabSurface) hazır olunca
+// onun yerini alır. Düz kutu gövdede motor null döner → önizleme aynen kalır. Sonuç anahtarla saklanır (aynı adaya dönünce bekleme yok).
+const _refinedCache = new Map<string, Float32Array | null>();
+function useRefinedSoup(key: string | null, build: () => Promise<Float32Array | null>, delayMs = 0): Float32Array | null {
+  const [, bump] = useState(0);
+  const buildRef = useRef(build);
+  buildRef.current = build;
+  useEffect(() => {
+    if (!key || _refinedCache.has(key)) return;
+    let live = true;
+    const h = setTimeout(() => {
+      buildRef.current().catch(() => null).then(v => {
+        if (_refinedCache.size > 48) _refinedCache.delete(_refinedCache.keys().next().value as string);
+        _refinedCache.set(key, v ?? null);
+        if (live) bump(x => x + 1);
+      });
+    }, delayMs);
+    return () => { live = false; clearTimeout(h); };
+  }, [key, delayMs]);
+  return key ? _refinedCache.get(key) ?? null : null;
+}
+/** Üçgen çorbası → mesh + kenar çizgileri (eğri yüzün faset kenarları çizilmez). */
+function soupMesh(soup: Float32Array): { geo: THREE.BufferGeometry; edgePts: [number, number, number][] } {
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(soup, 3));
+  geo.computeVertexNormals();
+  return { geo, edgePts: edgePointsOf(geo, 20) };
+}
+const panelsStamp = (shapeId: string, shapes: any[]) => childPanelsOf(shapeId, shapes).map(p => p.geometry?.uuid ?? '').join(',');
+
 /** Yön oku: hacmin girildiği dış yüzün önünde (hacmin DIŞINDA), hacme bakar; ekranda minPx..maxPx'e kıstırılır.
  *  Derinlik tamponu okun hemen öncesinde temizlenir: her şeyin üstünde çizilir ama kendi yüzleri doğru örtüşür. */
 const FACING_ARROW = { edge: '#7f1d1d', lengthMm: 108, minPx: 43, maxPx: 80, tiltRad: 0.5, gapFrac: 0.2, shaftLen: 0.62 } as const;
@@ -1660,13 +1694,21 @@ export const VolumePickOverlay: React.FC<{ shape: any; allShapes: any[] }> = ({ 
     e => (grid && volumePickMode && e?.ray ? rayCavityCandidates(...localRay(e, worldToLocal), grid, GROUP_PANEL_THICKNESS * 2, volumePickMode) : []),
     setVolumePick, () => { if (selected) confirmVolumePick(shape.id, volumePickMode!, selected); });
   const { hoverPick } = cycle;
-  const selectedMesh = useMemo(() => (selected ? surfaceMesh(selected.surface) : null), [selected]);
-  const hoverMesh = useMemo(() => (hoverPick ? surfaceMesh(hoverPick.surface) : null), [hoverPick]);
+  const hoverIsSelected = !!hoverPick && !!selected && hoverPick.key === selected.key;
+  // Gerçek şekil: bölge kutuları ∩ gövde − ızgaradaki eğri / eğik paneller.
+  const cutIds = useMemo(() => [...(oset.solids ?? []).map(x => x.id), ...oset.tiltFaces.map(x => x.id)], [oset]);
+  const refineKey = (p: CavityPick | null) => (p && volumePickMode
+    ? `vol|${shape.geometry?.uuid}|${p.boxes.map(b => [...b.min, ...b.max].map(n => n.toFixed(1)).join(',')).join(';')}|${p.seed.map(n => n.toFixed(0)).join(',')}|${cutIds.map(id => shapeById(id, allShapes)?.geometry?.uuid ?? '').join(',')}`
+    : null);
+  const refine = (p: CavityPick | null) => async () => (p ? (await import('./PanelEngine')).refinedVolumeSurface(shape, p.boxes, p.seed, cutIds) : null);
+  const selectedSoup = useRefinedSoup(refineKey(selected), refine(selected));
+  const hoverSoup = useRefinedSoup(hoverIsSelected ? null : refineKey(hoverPick), refine(hoverPick), 180);
+  const selectedMesh = useMemo(() => (selected ? (selectedSoup ? soupMesh(selectedSoup) : surfaceMesh(selected.surface)) : null), [selected, selectedSoup]);
+  const hoverMesh = useMemo(() => (hoverPick ? (hoverSoup ? soupMesh(hoverSoup) : surfaceMesh(hoverPick.surface)) : null), [hoverPick, hoverSoup]);
   useDisposable(selectedMesh?.geo);
   useDisposable(hoverMesh?.geo);
 
   if (!volumePickMode || !pickGeo) return null;
-  const hoverIsSelected = !!hoverPick && !!selected && hoverPick.key === selected.key;
   return (
     <>
       <PickHitBox geometry={pickGeo} cycle={cycle} />
@@ -1706,10 +1748,17 @@ const slabPrism = (poly: DoorSlabPoly, t: number): { geo: THREE.BufferGeometry; 
   return { geo, edges };
 };
 const polyKey = (p: DoorSlabPoly, t: number) => `${t}|${p.normal.join(',')}|${p.vertices.map(v => v.map(x => x.toFixed(1)).join(',')).join(';')}`;
-type DoorSlabProps = { poly: DoorSlabPoly; thickness: number; fill: number; opacity: number; edge?: string; order: number };
-const DoorSlab: React.FC<DoorSlabProps> = ({ poly, thickness, fill, opacity, edge, order }) => {
+type SlabRefine = { key: string; build: () => Promise<Float32Array | null> };
+type DoorSlabProps = { poly: DoorSlabPoly; thickness: number; fill: number; opacity: number; edge?: string; order: number; refine?: SlabRefine | null; delay?: number };
+const DoorSlab: React.FC<DoorSlabProps> = ({ poly, thickness, fill, opacity, edge, order, refine, delay = 0 }) => {
   const key = polyKey(poly, thickness);
-  const { geo, edges: pts } = useMemo(() => slabPrism(poly, thickness), [key]);
+  // Şekilli gövdede levhanın gerçek şekli (kemeri izleyen kapak / arkalık) hazır olunca dikdörtgen prizmanın yerini alır.
+  const soup = useRefinedSoup(refine ? `${refine.key}|${key}` : null, refine ? refine.build : async () => null, delay);
+  const { geo, edges: pts } = useMemo(() => {
+    if (!soup) return slabPrism(poly, thickness);
+    const m = soupMesh(soup);
+    return { geo: m.geo, edges: m.edgePts as Vec3[] };
+  }, [key, soup]);
   useEffect(() => () => geo.dispose(), [geo]);
   return (
     <>
@@ -1724,12 +1773,14 @@ type SlabPickProps<P extends { key: string }> = {
   shape: any; active: boolean; candidates: P[]; index: number; setPick: (c: P[], i: number) => void; thickness: number;
   /** Aday önizleme levhası; `deps` (yerleşim + kesimler) değişince yeniden kurulur. */
   slabOf: (c: P) => DoorSlabPoly; deps: [unknown, unknown];
+  /** Şekilli gövdede adayın gerçek şekli (PanelEngine.refinedSlabSurface); anahtar adayın çokgeniyle tamamlanır. */
+  refineOf?: (c: P, poly: DoorSlabPoly) => SlabRefine | null;
   /** Yerel ışın + gövde kutusu → adaylar (alan büyükten küçüğe). */
   candidatesAt: (o: Vec3, d: Vec3, body: BodyBox) => P[];
   confirm: (c: P) => void;
 };
 /** Kapak ve arkalık seçmenin ortak gövdesi: görünmez kutu olayları alır, her sol tık sıradaki adaya geçer, sağ tık yerleştirir. */
-function SlabPickOverlay<P extends { key: string }>({ shape, active, candidates, index, setPick, thickness, slabOf, deps, candidatesAt, confirm }: SlabPickProps<P>) {
+function SlabPickOverlay<P extends { key: string }>({ shape, active, candidates, index, setPick, thickness, slabOf, deps, candidatesAt, confirm, refineOf }: SlabPickProps<P>) {
   const { worldToLocal } = useShapeMatrices(shape);
   const body = useMemo((): BodyBox | null => {
     const bb = localBboxOf(effectiveBodyGeometry(shape));
@@ -1748,11 +1799,12 @@ function SlabPickOverlay<P extends { key: string }>({ shape, active, candidates,
     <>
       <PickHitBox geometry={pickGeo} cycle={cycle} />
       {hoverBox && !hoverIsSelected && (
-        <DoorSlab poly={hoverBox} thickness={thickness} fill={PICK_COLORS.hover} opacity={SEL_COLORS.faceHoverOpacity * 0.6} order={5} />
+        <DoorSlab poly={hoverBox} thickness={thickness} fill={PICK_COLORS.hover} opacity={SEL_COLORS.faceHoverOpacity * 0.6} order={5}
+          refine={refineOf && cycle.hoverPick ? refineOf(cycle.hoverPick, hoverBox) : null} delay={180} />
       )}
       {selectedBox && (
         <DoorSlab poly={selectedBox} thickness={thickness} fill={PICK_COLORS.selected} opacity={SEL_COLORS.faceActiveOpacity * 0.7}
-          edge={PICK_COLORS.selectedEdge} order={6} />
+          edge={PICK_COLORS.selectedEdge} order={6} refine={refineOf && selected ? refineOf(selected, selectedBox) : null} />
       )}
     </>
   );
@@ -1768,6 +1820,10 @@ export const DoorPickOverlay: React.FC<{ shape: any }> = ({ shape }) => {
   return (
     <SlabPickOverlay shape={shape} active={doorPickMode} candidates={s.doorPickCandidates} index={s.doorPickIndex} setPick={s.setDoorPick}
       thickness={DOOR_THICKNESS} deps={[placement, cuts]} confirm={c => confirmDoorPick(shape.id, c)}
+      refineOf={(c, poly) => ({
+        key: `door|${shape.geometry?.uuid}|${placement}|${panelsStamp(shape.id, shapes)}`,
+        build: async () => (await import('./PanelEngine')).refinedSlabSurface(shape, 'door', poly, DOOR_THICKNESS, c.axis, c.side, DOOR_GAP),
+      })}
       slabOf={c => doorSlabPolygon(
         { axis: c.axis, side: c.side, placement, thickness: DOOR_THICKNESS, gap: DOOR_GAP, anchor: c.at }, pickRectFor(c, placement), cuts)}
       candidatesAt={(o, d, body) => {
@@ -1786,6 +1842,10 @@ export const BackPickOverlay: React.FC<{ shape: any }> = ({ shape }) => {
   return (
     <SlabPickOverlay shape={shape} active={backPickMode} candidates={s.backPickCandidates} index={s.backPickIndex} setPick={s.setBackPick}
       thickness={BACK_THICKNESS} deps={[placement, cuts]} confirm={c => confirmBackPick(shape.id, c)}
+      refineOf={(c, poly) => ({
+        key: `back|${shape.geometry?.uuid}|${placement}|${panelsStamp(shape.id, shapes)}`,
+        build: async () => (await import('./PanelEngine')).refinedSlabSurface(shape, 'back', poly, BACK_THICKNESS, c.axis, c.side, 0),
+      })}
       slabOf={c => backSlabPolygon(
         { axis: c.axis, side: c.side, placement, thickness: BACK_THICKNESS, gap: BACK_GAP, anchor: c.at }, backPickRect(c, placement), cuts)}
       candidatesAt={(o, d, body) => {

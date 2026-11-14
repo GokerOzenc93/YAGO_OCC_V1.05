@@ -82,7 +82,8 @@ export function collectBoundPanels(parent: Shape, shapes: Shape[], vfs: VirtualF
   for (const vf of vfs) {
     if (vf.shapeId !== parent.id || !accept(vf)) continue;
     const p = panelOfVf(vf.id, shapes);
-    if (!p || panelHasRotation(p)) continue;
+    // Eğri panelin kutusu kemerin altını da kapatır → kapak / arkalık sınırı olamaz; levha onun katısıyla şekillenir (motor).
+    if (!p || panelHasRotation(p) || (p.parameters as any)?.curved) continue;
     const box = panelLocalBox(p, parent);
     if (!box) continue;
     out.push({ vfId: vf.id, panelId: p.id, box, name: vf.description || 'Panel' });
@@ -586,7 +587,27 @@ export interface CavityGrid {
   obstacles?: CavityBox[];
   /** Eğik panel yüzleri: kutu değil YARIM-UZAY olarak sınırlar. */
   tiltFaces?: TiltFace[];
+  /** Eğri paneller: kutu değil KATI (mesh içi) olarak sınırlar. */
+  solids?: SolidObstacle[];
 }
+
+// EĞRİ PANEL (gövdenin radüslü yüzündeki): kutusu kemerin altındaki boşluğu da kapatır (Goker: "oval gövdede dikme / raf hacmi
+// düzgün seçilmiyor") → ızgarada kutu engeli DEĞİL katıdır: hücre ancak tamamı katının içindeyse dolu sayılır, ışın örnekleri ve
+// hacim açıklığı (refineRegionExtents) katının gerçek yüzeyini okur; üyeyi motor panelin katısıyla keser (cutByEarlierOverlaps).
+interface SolidObstacle { id: string; vfId?: string; key: string; bbox: CavityBox; inside: (p: Vec3) => boolean }
+const _solidTests = new WeakMap<THREE.BufferGeometry, (p: Vec3) => boolean>();
+function solidObstacleOf(p: Shape, parent: Shape, bbox: CavityBox): SolidObstacle {
+  let test = _solidTests.get(p.geometry);
+  if (!test) { test = makeInsideMeshTest(p.geometry); _solidTests.set(p.geometry, test); }
+  const d = [0, 1, 2].map(i => (p.position?.[i] ?? 0) - (parent.position?.[i] ?? 0));
+  const t = test;
+  const inside = (q: Vec3) => {
+    for (let a = 0; a < 3; a++) if (q[a] < bbox.min[a] || q[a] > bbox.max[a]) return false;
+    return t([q[0] - d[0], q[1] - d[1], q[2] - d[2]]);
+  };
+  return { id: p.id, vfId: (p.parameters as any)?.virtualFaceId, key: `${p.id}:${p.geometry.uuid}:${d.map(x => x.toFixed(1)).join(',')}`, bbox, inside };
+}
+const isCurvedBodyPanel = (p: Shape): boolean => !!(p.parameters as any)?.curved;
 
 // EĞİK PANELLER: kutu engeli kama boşluğunu kaybettirir → ızgarada engel değil, tohuma bakan yüzün yarım-uzayıyla kırpılır.
 // VF sırasında ÖNCE ise (basan) üye uzak yüze uzatılır (motor cutByRotatedPressers pahlar); sonra ise yakın yüze (iç içe geçmez).
@@ -657,6 +678,83 @@ const boxFaces = (b: CavityBox): Pt3[][] => {
 
 /** Bölgenin eğik düzlemlerle kırpılmış gerçek dış kutusu; dizilim açıklığı L bunu okur (tık noktasından bağımsız olmalı). */
 function clippedRegionBBox(g: CavityGrid, cells: Set<number>, planes: TiltPlane[]): CavityBox {
+  return refineRegionExtents(g, cells, planeClippedBBox(g, cells, planes), planes);
+}
+
+// GERÇEK AÇIKLIK: hücreler eksen-düzlemlidir; eğri panelin (katı) ya da şekilli gövdenin kestiği hücre "kısmen serbest" sayılır ve
+// kutusu boşluğun ötesine taşar (kemerin altındaki bölge kemerin kutusuna kadar çıkar). Dizilim açıklığı L ve seçim kutusu gerçek
+// serbest noktaları okumalı: her eksen yönünde, bölge sütunlarında (kafes + en iyi sütunun çevresinde arama) serbest olan en uç nokta.
+const _extentCache = new WeakMap<CavityGrid, Map<string, CavityBox>>();
+function refineRegionExtents(g: CavityGrid, cells: Set<number>, box: CavityBox, planes: TiltPlane[]): CavityBox {
+  if (!cells.size) return box;
+  const solids = (g.solids || []).filter(s => [0, 1, 2].every(a => s.bbox.min[a] < box.max[a] - TOL && s.bbox.max[a] > box.min[a] + TOL));
+  if (!solids.length && !g.inside) return box;
+  let cache = _extentCache.get(g);
+  if (!cache) { cache = new Map(); _extentCache.set(g, cache); }
+  const key = `${regionKey(cells)}|${planes.map(pl => `${pl.id}:${pl.d.toFixed(1)}`).join(',')}`;
+  const hit = cache.get(key);
+  if (hit) return cloneBox(hit);
+  const free = (p: Vec3): boolean => {
+    const c = cellOfPoint(g, p);
+    if (c < 0 || !cells.has(c)) return false;
+    if (g.inside && !g.inside(p)) return false;
+    for (const s of solids) if (s.inside(p)) return false;
+    return insideTiltPlanes(planes, p);
+  };
+  const N = 7, EPS = 0.05, out = cloneBox(box);
+  for (let a = 0; a < 3; a++) {
+    const [ua, va] = [0, 1, 2].filter(x => x !== a);
+    const span = box.max[a] - box.min[a];
+    if (span < 2) continue;
+    const lat = (x: number) => { const lo = box.min[x], hi = box.max[x], r: number[] = [lo + EPS]; for (let i = 0; i < N; i++) r.push(lo + (hi - lo) * (i + 0.5) / N); r.push(hi - EPS); return r; };
+    const us = lat(ua), vs = lat(va);
+    for (const dir of [1, -1] as const) {
+      const bound = dir > 0 ? box.max[a] : box.min[a];
+      const pt = (u: number, v: number, h: number): Vec3 => { const q: Vec3 = [0, 0, 0]; q[a] = h; q[ua] = u; q[va] = v; return q; };
+      // Sınırın hemen içinde serbest nokta varsa o yön zaten doğru.
+      let reached = false;
+      for (const u of us) { for (const v of vs) if (free(pt(u, v, bound - dir * EPS))) { reached = true; break; } if (reached) break; }
+      if (reached) continue;
+      // Sütunda sınırdan içeri doğru ilk serbest nokta (kaba adım + ikiye bölme); yoksa null.
+      const column = (u: number, v: number): number | null => {
+        const K = 16; let prev = bound;
+        for (let i = 1; i <= K; i++) {
+          const h = bound - dir * span * i / K;
+          if (free(pt(u, v, h + dir * EPS * (i === K ? -1 : 0)))) {
+            let lo = h, hi = prev;                 // lo serbest, hi dolu
+            for (let it = 0; it < 12; it++) { const m = (lo + hi) / 2; if (free(pt(u, v, m))) lo = m; else hi = m; }
+            return lo;
+          }
+          prev = h;
+        }
+        return null;
+      };
+      const better = (x: number, y: number) => (dir > 0 ? x > y : x < y);
+      let best: { u: number; v: number; h: number } | null = null;
+      for (const u of us) for (const v of vs) { const h = column(u, v); if (h != null && (!best || better(h, best.h))) best = { u, v, h }; }
+      if (!best) continue;
+      // En iyi sütunun çevresinde küçülen adımla arama (kemerin tepesi kafes sütununa denk gelmeyebilir).
+      let su = (box.max[ua] - box.min[ua]) / N, sv = (box.max[va] - box.min[va]) / N;
+      const clampTo = (x: number, ax: number) => Math.min(box.max[ax] - EPS, Math.max(box.min[ax] + EPS, x));
+      for (let it = 0; it < 10 && (su > 0.5 || sv > 0.5); it++) {
+        let moved = false;
+        for (const [du, dv] of [[su, 0], [-su, 0], [0, sv], [0, -sv]]) {
+          const u = clampTo(best.u + du, ua), v = clampTo(best.v + dv, va);
+          const h = column(u, v);
+          if (h != null && better(h, best.h + dir * 1e-3)) { best = { u, v, h }; moved = true; }
+        }
+        if (!moved) { su /= 2; sv /= 2; }
+      }
+      if (dir > 0) out.max[a] = Math.min(box.max[a], round1(best.h)); else out.min[a] = Math.max(box.min[a], round1(best.h));
+    }
+    if (out.max[a] - out.min[a] < 1) { out.min[a] = box.min[a]; out.max[a] = box.max[a]; }
+  }
+  if (cache.size > 64) cache.delete(cache.keys().next().value as string);
+  cache.set(key, cloneBox(out));
+  return out;
+}
+
+function planeClippedBBox(g: CavityGrid, cells: Set<number>, planes: TiltPlane[]): CavityBox {
   const raw = regionBBox(g, cells);
   if (!planes.length || !cells.size) return raw;
   const out: CavityBox = { min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] };
@@ -836,13 +934,15 @@ const hasPlane = (g: CavityGrid, pl: StepPlane) => axisPlanes(g, pl.axis).some(v
 
 function buildCavityGrid(
   parent: Shape, obstacles: CavityBox[], splitBoxes: CavityBox[] = [], tiltFaces: TiltFace[] = [], extraPlanes: StepPlane[] = [],
+  solids: SolidObstacle[] = [],
 ): CavityGrid | null {
   const geo = effectiveBodyGeometry(parent);
   const body = bodyLocalBox(parent);
   if (!geo || !body) return null;
   const tiltKey = tiltFaces.map(f => `${f.id}:${f.n.map(x => x.toFixed(3)).join(',')}:${f.d.toFixed(1)}`).join(';');
   const planesKey = extraPlanes.map(e => `${e.axis}:${e.coord.toFixed(1)}`).join(',');
-  const key = `${geo.uuid}|${vertexModsKey(parent.vertexModifications || [])}|${boxesKey(obstacles)}|${boxesKey(splitBoxes)}|${tiltKey}|${planesKey}`;
+  const solidKey = solids.map(x => x.key).join(';');
+  const key = `${geo.uuid}|${vertexModsKey(parent.vertexModifications || [])}|${boxesKey(obstacles)}|${boxesKey(splitBoxes)}|${tiltKey}|${planesKey}|${solidKey}`;
   const hit = _gridCache.get(key);
   if (hit) return hit;
 
@@ -850,7 +950,8 @@ function buildCavityGrid(
   const px: number[] = [], py: number[] = [], pz: number[] = [];
   let axisFaces = 0;
   for (const g of groups) {
-    if (!isFlatNormal(g.normal)) continue;
+    // Eğri yüzün ORTALAMA normali eksene denk gelebilir (simetrik kemer → +Y): düzlem değildir, ızgara düzlemi / kutu gövde sayımı dışı.
+    if (g.isCurved || !isFlatNormal(g.normal)) continue;
     axisFaces++;
     const onX = Math.abs(g.normal.x) > 0.999, onY = Math.abs(g.normal.y) > 0.999;
     (onX ? px : onY ? py : pz).push(onX ? g.center.x : onY ? g.center.y : g.center.z);
@@ -861,7 +962,7 @@ function buildCavityGrid(
   const ys = uniqSorted(py, body.min[1], body.max[1]);
   const zs = uniqSorted(pz, body.min[2], body.max[2]);
   const nx = xs.length - 1, ny = ys.length - 1, nz = zs.length - 1;
-  const grid: CavityGrid = { body, xs, ys, zs, nx, ny, nz, free: new Uint8Array(nx * ny * nz), obstacles, tiltFaces };
+  const grid: CavityGrid = { body, xs, ys, zs, nx, ny, nz, free: new Uint8Array(nx * ny * nz), obstacles, tiltFaces, ...(solids.length ? { solids } : {}) };
   // Düz kutu gövdede mesh içi testine gerek yok.
   const modified = !!parent.vertexModifications?.length || !!parent.subtractionGeometries?.some(Boolean) || !!parent.fillets?.length;
   const inside = groups.length === 6 && axisFaces === 6 && !modified ? null : makeInsideMeshTest(geo);
@@ -870,12 +971,14 @@ function buildCavityGrid(
   // eğimin üstünde kalabilir; yalnız merkeze bakılınca hücre dolu sayılıp boşluk eğimden çok aşağıda kesiliyordu (Goker: "eğimli
   // üstlü dolapta kapak derzinden atılan dikme kısa kalıyor"). Kısmen içerideki hücre serbesttir; eğik üst panel yarım-uzayı
   // (tiltFaces) bölgeyi kırpar, motor iç paneli gövdeyle keser.
+  // Eğri panel katısı da aynı kuralla: örneklerinden biri gövdenin içinde VE hiçbir katının içinde değilse hücre serbesttir.
+  const ptFree = (q: Vec3): boolean => (!inside || inside(q)) && !solids.some(x => x.inside(q));
   const cellInBody = (i: number, j: number, k: number, c: Vec3): boolean => {
-    if (!inside) return true;
-    if (inside(c)) return true;
+    if (!inside && !solids.length) return true;
+    if (ptFree(c)) return true;
     for (const fx of [0.25, 0.75]) for (const fy of [0.25, 0.75]) for (const fz of [0.25, 0.75]) {
       const q: Vec3 = [xs[i] + (xs[i + 1] - xs[i]) * fx, ys[j] + (ys[j + 1] - ys[j]) * fy, zs[k] + (zs[k + 1] - zs[k]) * fz];
-      if (inside(q)) return true;
+      if (ptFree(q)) return true;
     }
     return false;
   };
@@ -1094,6 +1197,8 @@ function pickFromRegion(
   const facing = ray ? facingOf(axis, ray.dirAxis, at, bbox) : 1;
   const arrow: EntryFace = ray ? { ...ray.arrow } : { axis, facing };
   const surface = clipSurfaceByPlanes(g, cells, regionSurface(g, cells), planes);
+  // Açıklık inceltildiyse (kemerin altı) kaba yüzey de o kutuya kıstırılır; gerçek şekli önizleme sonradan çizer (Scene.useRefinedSoup).
+  if (g.solids?.length || g.inside) for (let i = 0; i < surface.length; i++) surface[i] = Math.min(bbox.max[i % 3], Math.max(bbox.min[i % 3], surface[i]));
   return { key: `${shape}:${regionKey(cells)}`, bbox, boxes: regionBoxes(g, cells), surface, seed, shape, axis, facing, at, arrow };
 }
 
@@ -1241,6 +1346,7 @@ export function rayCavityCandidates(originLocal: Vec3, dirLocal: Vec3, g: Cavity
     if (c < 0 || !g.free[c]) continue;
     // Gövdenin dışından geçen örnek (eğik üstün üstü, çentik boşluğu) aday açmaz — hücre merkezi içeride olsa da.
     if (g.inside && !g.inside(p)) continue;
+    if (g.solids?.some(x => x.inside(p))) continue;
     const planes = orientTiltPlanes(g.tiltFaces, p);
     if (!insideTiltPlanes(planes, p)) continue;
     let ri = -1;
@@ -1582,14 +1688,14 @@ function applyCavityStepsToCells(
   return { cells, planes, resolved };
 }
 
-interface ObstacleSet { obstacles: CavityBox[]; splitBoxes: CavityBox[]; tiltFaces: TiltFace[] }
+interface ObstacleSet { obstacles: CavityBox[]; splitBoxes: CavityBox[]; tiltFaces: TiltFace[]; solids?: SolidObstacle[] }
 
-/** Düz paneller kutu engeli; eğik paneller yalnız bölme düzlemi (splitBoxes) + yarım-uzay (tiltFaces).
+/** Düz paneller kutu engeli; eğik paneller yalnız bölme düzlemi (splitBoxes) + yarım-uzay (tiltFaces); EĞRİ paneller katı (solids).
  *  Kapak hiç engel değildir; arkalık yalnız `backBox` bir kutu verirse (çakma kenarındaki / geçtiği levhayı kısaltır — BackService). */
 export function collectObstacles(
   parent: Shape, panels: Shape[], include: (p: Shape) => boolean = () => true, backBox: (p: Shape) => CavityBox | null = () => null,
 ): ObstacleSet {
-  const obstacles: CavityBox[] = [], splitBoxes: CavityBox[] = [];
+  const obstacles: CavityBox[] = [], splitBoxes: CavityBox[] = [], solids: SolidObstacle[] = [];
   const tilted: Shape[] = [];
   for (const p of panels) {
     if (p.type !== 'panel' || (p.parameters as any)?.parentShapeId !== parent.id) continue;
@@ -1598,11 +1704,12 @@ export function collectObstacles(
     if (!include(p)) continue;
     const b = panelLocalBox(p, parent);
     if (!b) continue;
-    if (panelHasRotation(p)) { splitBoxes.push(b); tilted.push(p); } else obstacles.push(b);
+    if (isCurvedBodyPanel(p)) { splitBoxes.push(b); solids.push(solidObstacleOf(p, parent, b)); }
+    else if (panelHasRotation(p)) { splitBoxes.push(b); tilted.push(p); } else obstacles.push(b);
   }
   // BAZA AYAĞI SETLERİ: yalnız AYAKLAR engeldir (Goker: "ayağın aksesuarına çarpmıyorsa panel o kısma yerleşsin") — set hacmi değil.
   for (const ps of plinthSetsOf(parent.id)) obstacles.push(...plinthLegBoxes(ps));
-  return { obstacles, splitBoxes, tiltFaces: tiltedPanelFaces(parent, tilted) };
+  return { obstacles, splitBoxes, tiltFaces: tiltedPanelFaces(parent, tilted), ...(solids.length ? { solids } : {}) };
 }
 
 /** Grubun VF sırası = en küçük üye indeksi (üye yoksa ∞: mevcut her panel önce). */
@@ -1685,7 +1792,7 @@ export function repickObstacles(group: PanelGroup, parent: Shape, panels: Shape[
   return groupObstacles(group, parent, panels, useAppStore.getState().panelGroups);
 }
 export const gridForObstacles = (parent: Shape, o: ObstacleSet, extraPlanes: StepPlane[] = []) =>
-  buildCavityGrid(parent, o.obstacles, o.splitBoxes, o.tiltFaces, extraPlanes);
+  buildCavityGrid(parent, o.obstacles, o.splitBoxes, o.tiltFaces, extraPlanes, o.solids);
 /** Nokta kutunun içinde mi (sınırlar hariç). */
 const strictlyInside = (c: Vec3, b: CavityBox) =>
   c[0] > b.min[0] && c[0] < b.max[0] && c[1] > b.min[1] && c[1] < b.max[1] && c[2] > b.min[2] && c[2] < b.max[2];
