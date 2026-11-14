@@ -18,7 +18,7 @@ import { FACE_ROLES, FACE_ROLE_LABEL, type FaceRole } from './LegLayout';
 import {
   useDraft, submitText, cancelCommand, commandActive, tabKey, setAids, setTyped, setPlanePick, selectEntity, eraseSelection, undo, redo, isCommandName,
 } from './Draft';
-import { DraftStatus } from './DraftView';
+import { DraftStatus, exitFace, sessionDirty } from './DraftView';
 
 /* Uygulama kabuğu: tasarım jetonları, ErrorBoundary, ikonlar, durum çubuğu, terminal,
    üst araç çubuğu (boolean çıkarma) ve sol kenar çubuğu (yaslı / yüzen / ayrı pencere) + kemik teması. */
@@ -414,6 +414,13 @@ export const Terminal: React.FC = () => {
         if (active || st.planePick || st.selection.length || st.psel.length) {
           e.preventDefault(); e.stopPropagation();
           if (!cancelCommand()) { setPlanePick(false); selectEntity(null); }
+        } else if (st.activePlane !== 'ground' || st.session) {
+          // YÜZ KİPİNDE BOŞTA Esc = yüzden çık (Goker, Kas 2026 — "çıktığımda izolasyon mutlaka kalksın"): eskiden bu Esc Scene'e düşüyor,
+          // gövde seçimi kalkıyor ama yüz + izolasyon açık kalıyordu. Düzenlenen adımda kaydedilmemiş değişiklik varsa çıkılmaz (yanlışlıkla
+          // basılan Esc emeği silmesin) — komut satırı Update / Cancel'ı gösterir.
+          e.preventDefault(); e.stopPropagation();
+          if (sessionDirty()) useDraft.setState(s => ({ log: [...s.log.slice(-59), 'Unsaved changes on this step — Update or Cancel in the Drawing panel.'] }));
+          else void exitFace();
         }
         if (own) setCommandInput('');
         return;

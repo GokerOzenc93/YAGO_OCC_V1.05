@@ -1357,8 +1357,13 @@ export function activatePlane(pl: Omit<DraftPlane, 'id'> | 'ground', fresh = fal
   cancelCommand();
   const st = get();
   if (pl === 'ground') { set({ activePlane: GROUND_PLANE.id, planePick: false, planeCandidate: null, selection: [], psel: [], pview: null }); return GROUND_PLANE.id; }
-  const hit = fresh ? undefined
-    : st.planes.find(q => q.kind === 'face' && q.id !== st.session?.planeId && q.shapeId === pl.shapeId && near3(q.n, pl.n, 1e-4) && near3(q.origin, pl.origin, 0.05) && near3(q.u, pl.u, 1e-4));
+  // AYNI YÜZ = aynı hedef + aynı yön + EŞ DÜZLEM (orijin aynı olmak zorunda değil; nesneler bulunan düzlemin kendi orijinine göredir).
+  // Eskiden orijin de aynı olmalıydı: adım düzenleme oturumunun düzlemi (orijin = yüz çerçevesinin köşesi) ile yüz seçiminin düzlemi aynı
+  // yüzde iki ayrı düzlem oluyor, birinde bırakılan çizim yüze yeniden girilince öbüründe görünmüyordu ("çizgiler kalıyor").
+  const coplanar = (q: DraftPlane) => Math.abs((q.origin[0] - pl.origin[0]) * pl.n[0] + (q.origin[1] - pl.origin[1]) * pl.n[1] + (q.origin[2] - pl.origin[2]) * pl.n[2]) < 0.05;
+  const same = (q: DraftPlane) => q.kind === 'face' && q.id !== st.session?.planeId && q.shapeId === pl.shapeId && near3(q.n, pl.n, 1e-4) && near3(q.u, pl.u, 1e-4) && coplanar(q);
+  // Önce üzerinde çizim olan düzlem (bekleyen çizim kaybolmasın), yoksa ilk eşleşen.
+  const hit = fresh ? undefined : st.planes.find(q => same(q) && st.entities.some(e => e.plane === q.id)) ?? st.planes.find(same);
   const used = new Set(st.entities.map(e => e.plane));
   const plane: DraftPlane = hit ?? { ...pl, id: `pl${Date.now().toString(36)}${(seq++).toString(36)}` };
   set({ planes: [...st.planes.filter(q => q.id === GROUND_PLANE.id || q.id === plane.id || used.has(q.id)).filter(q => q.id !== plane.id), plane],

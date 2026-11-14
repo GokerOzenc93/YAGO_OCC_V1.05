@@ -3161,12 +3161,65 @@ const ViewCube: React.FC = () => {
 const PERSP_FOV = 45;
 /** Odak düzleminde perspektifle aynı ölçeği veren ortografik zoom. */
 const orthoZoomFor = (dist: number, h: number) => h / (2 * dist * Math.tan((PERSP_FOV * Math.PI / 180) / 2));
+/** Ters eşleme: ortografik zoom'un verdiği çerçeveyi perspektifte veren uzaklık. */
+const perspDistFor = (zoom: number, h: number) => h / (2 * Math.max(zoom, 1e-6) * Math.tan((PERSP_FOV * Math.PI / 180) / 2));
+// PERSPEKTİF ↔ ORTOGRAFİK GEÇİŞ (Goker, Kas 2026 — "yüz seçince / gizmodan standart görünüşe geçince otomatik ortografik; geçişte ekran
+// kaymasın, aynı bakış açısından efektli geçsin"). İki kamera ayrı nesnedir; aradaki fark "dolly-zoom" ile eritilir: perspektif kamera
+// hedefteki çerçeveyi koruyarak görüş açısını PERSP_FOV → NARROW_FOV daraltıp geri çekilir (neredeyse paralel izdüşüm), o anda
+// ortografik kamera aynı çerçeveyle devralır; dönüşte tersi. Ortografikte yakınlaştırma zoom'dur, uzaklık değişmez → perspektife
+// dönerken uzaklık zoom'dan hesaplanır (eski kod kayıtlı konuma dönüyor, ortografikte yakınlaştırdıktan sonra görüntü sıçrıyordu).
+const NARROW_FOV = 4, CAMERA_BLEND_MS = 260;
+const tanHalfDeg = (deg: number) => Math.tan((deg * Math.PI / 180) / 2);
 
 const CameraController: React.FC<{ controlsRef: React.RefObject<any>; cameraType: CameraType }> = ({ controlsRef, cameraType }) => {
   const cameraRef = useRef<THREE.PerspectiveCamera | THREE.OrthographicCamera>(null);
   const savedRef  = useRef<{ position: THREE.Vector3; target: THREE.Vector3; up: THREE.Vector3 } | null>(null);
   const prevType  = useRef<CameraType>(cameraType);
-  const { size }  = useThree();  // canvas boyutu (CSS px, pencere değil)
+  const { size, invalidate } = useThree();  // canvas boyutu (CSS px, pencere değil)
+  // Sahnedeki kamera tipi: store'daki tipten geçiş animasyonu kadar geride kalır (perspektif önce daralır, sonra değişir).
+  const [shown, setShown] = useState<CameraType>(cameraType);
+  const busyRef = useRef(false);       // geçiş sürüyor: konum kaydı ve yörünge algısı durur
+  const autoRef = useRef(false);       // ortografiğe OTOMATİK girildi (yüz / standart görünüş) → döndürünce perspektife dönülür
+  const internalRef = useRef(false);   // tip değişimini biz istedik (araç çubuğundan elle değişim otomatiği bırakır)
+  const waiters = useRef<Array<() => void>>([]);
+  const enterRef = useRef<{ target: THREE.Vector3; dir: THREE.Vector3; dist: number } | null>(null);
+  const boundControls = useRef<any>(null);
+  const blendTarget = useRef<THREE.Vector3 | null>(null);
+  const blendUp = useRef(new THREE.Vector3(0, 1, 0));
+  const blendM = useRef(new THREE.Matrix4());
+  const epochRef = useRef(0);          // her geçiş bir kuşak: üst üste gelen geçişte eski animasyon döngüsü kendini bırakır
+  // Geçiş boyunca her karede, drei'nin OrbitControls güncellemesinden (öncelik −1) ÖNCE: yeni kurulan kontrol örneği hedefi (0,0,0) ile
+  // gelir ve KURULURKEN kamerayı oraya çevirir (tip değişiminde görülen "ekran kayması"). Hedef yeniden yazılır, kontrol bekletilir,
+  // kameranın yönelimi geçişin hedefine göre yeniden kurulur.
+  useFrame(() => {
+    const c = controlsRef.current, t = blendTarget.current, cam = cameraRef.current;
+    if (!busyRef.current || !t) return;
+    if (c) { c.target.copy(t); c.enabled = false; }
+    if (cam) { cam.quaternion.setFromRotationMatrix(blendM.current.lookAt(cam.position, t, blendUp.current)); cam.updateMatrixWorld(); }
+  }, -2);
+  const finishBlend = useCallback((target?: THREE.Vector3, viewUp?: THREE.Vector3, oldControls?: any) => {
+    // Kamera değişince OrbitControls YENİDEN kurulur ve yörünge çerçevesini o andaki camera.up'tan alır. Üst / alt görünüşte up
+    // dünya-Y değildir (0,0,∓1) → o up'la kurulan kontrol döndürmeyi kilitliyordu. Kamera bu yüzden up = dünya-Y ile bağlanır
+    // (yönelim kuaterniyonla verilir); yeni kontrol örneği geldikten sonra görünüşün up'ı geri yazılır ve hedef yeniden atanır.
+    let n = 0;
+    const settle = () => {
+      const c = controlsRef.current, cam = cameraRef.current;
+      const fresh = !!c && (c !== oldControls || n >= 3);
+      if (c && target) {
+        c.target.copy(target);
+        if (fresh) { if (cam && viewUp) cam.up.copy(viewUp); c.enabled = true; c.update(); }
+        else c.enabled = false;
+      }
+      invalidate();
+      if (++n < 5 && !(fresh && n >= 2)) { requestAnimationFrame(settle); return; }
+      busyRef.current = false;
+      blendTarget.current = null;
+      waiters.current.splice(0).forEach(r => r());
+    };
+    blendTarget.current = target ? target.clone() : null;
+    if (viewUp) blendUp.current.copy(viewUp);
+    settle();
+  }, [controlsRef, invalidate]);
 
   // Snap: hedef etrafında sabit yarıçapla yörünge (yön slerp, konum lerp değil); tween boyunca damping kapalı ki ilk tıkta tam otursun.
   const snapToView = useCallback((dir: THREE.Vector3, up: THREE.Vector3) => {
@@ -3203,9 +3256,74 @@ const CameraController: React.FC<{ controlsRef: React.RefObject<any>; cameraType
       cam.lookAt(target);
       controls.update();
       controls.enableDamping = wasDamping;
+      // Standart (eksene dik) görünüş → ortografik; köşe / kenar görünüşü → otomatik girildiyse perspektife.
+      const axial = Math.max(Math.abs(endDir.x), Math.abs(endDir.y), Math.abs(endDir.z)) > 0.999;
+      void (window as any).__cameraAuto?.(axial ? 'ortho' : 'persp');
     };
     tick();
   }, [controlsRef]);
+
+  useEffect(() => {
+    const ORTHO = CameraType.ORTHOGRAPHIC, PERSP = CameraType.PERSPECTIVE;
+    (window as any).__cameraAuto = (type: 'ortho' | 'persp'): Promise<void> => new Promise<void>(res => {
+      const st = useAppStore.getState(), cur = st.cameraType;
+      // Geçiş sürerken gelen istek kaybolmaz: süren geçiş bitince yeniden denenir (yüze girip hemen çıkmak gibi).
+      if (busyRef.current) { waiters.current.push(() => { void ((window as any).__cameraAuto?.(type) ?? Promise.resolve()).then(res); }); return; }
+      if (type === 'ortho') { if (cur === ORTHO) { res(); return; } autoRef.current = true; }
+      else { if (cur !== ORTHO || !autoRef.current) { res(); return; } autoRef.current = false; }
+      internalRef.current = true;
+      waiters.current.push(res);
+      st.setCameraType(type === 'ortho' ? ORTHO : PERSP);
+    });
+    return () => { delete (window as any).__cameraAuto; };
+  }, []);
+
+  // Store'daki tip değişti → geçiş. P→O: önce bu (perspektif) kamerada daral, sonra tipi değiştir. O→P: tipi değiştir, yeni kamerada aç.
+  useEffect(() => {
+    if (!internalRef.current) autoRef.current = false;
+    internalRef.current = false;
+    if (cameraType === shown) return;
+    const cam = cameraRef.current, controls = controlsRef.current;
+    if (!cam || !controls) { setShown(cameraType); return; }
+    const target = controls.target.clone();
+    const off = cam.position.clone().sub(target), dir = off.clone().normalize(), up = cam.up.clone();
+    const h = size.height || window.innerHeight;
+    const ep = ++epochRef.current;
+    busyRef.current = true;
+    blendTarget.current = target.clone();
+    blendUp.current.copy(up);
+    if (cameraType === CameraType.ORTHOGRAPHIC && cam instanceof THREE.PerspectiveCamera) {
+      // Başlangıç kameranın O ANKİ açısıdır (yarıda kalmış bir açılmanın üstüne gelindiyse 45° değildir) → çerçeve yine korunur.
+      const fov0 = cam.fov, dNow = off.length() || 1, tanNow = tanHalfDeg(fov0), d0 = dNow * tanNow / tanHalfDeg(PERSP_FOV), t0 = performance.now();
+      controls.enabled = false;
+      const tick = () => {
+        if (ep !== epochRef.current) return;
+        const raw = Math.min((performance.now() - t0) / CAMERA_BLEND_MS, 1), e = raw * raw * (3 - 2 * raw);
+        const fov = fov0 + (NARROW_FOV - fov0) * e, d = dNow * tanNow / tanHalfDeg(fov);
+        cam.fov = fov; cam.near = Math.max(1, d / 100); cam.far = d + 50000;
+        cam.position.copy(target).addScaledVector(dir, d);
+        cam.lookAt(target); cam.updateProjectionMatrix(); cam.updateMatrixWorld();
+        invalidate();
+        if (raw < 1) { requestAnimationFrame(tick); return; }
+        savedRef.current = { position: target.clone().addScaledVector(dir, d0), target: target.clone(), up };
+        if (useAppStore.getState().cameraType !== CameraType.ORTHOGRAPHIC) {
+          // Daralma sürerken tip geri alındı: perspektif kamera eski açısına / yerine döner, kamera değişmez.
+          cam.fov = PERSP_FOV; cam.near = Math.max(1, d0 / 100); cam.far = 50000;
+          cam.position.copy(target).addScaledVector(dir, d0); cam.lookAt(target); cam.updateProjectionMatrix();
+          finishBlend(target, up);
+          return;
+        }
+        setShown(CameraType.ORTHOGRAPHIC);
+      };
+      tick();
+    } else if (cameraType === CameraType.PERSPECTIVE && cam instanceof THREE.OrthographicCamera) {
+      const d0 = Math.min(25000, Math.max(50, perspDistFor(cam.zoom, h)));
+      savedRef.current = { position: target.clone().addScaledVector(dir, d0), target: target.clone(), up };
+      enterRef.current = { target: target.clone(), dir, dist: d0 };
+      setShown(CameraType.PERSPECTIVE);
+    } else { busyRef.current = false; blendTarget.current = null; setShown(cameraType); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cameraType]);
 
   useEffect(() => {
     (window as any).__snapView = snapToView;
@@ -3214,42 +3332,89 @@ const CameraController: React.FC<{ controlsRef: React.RefObject<any>; cameraType
 
   // Orto ↔ perspektif: kamera kıpırdamaz, FOV sabit; yalnız projeksiyon değişir — pan/taşıma sonrası görünüm uçmaz.
   useLayoutEffect(() => {
-    if (prevType.current === cameraType) return;
+    if (prevType.current === shown) return;
     const saved = savedRef.current;
     const cam = cameraRef.current;
     const controls = controlsRef.current;
-    if (!saved || !cam || !controls) { prevType.current = cameraType; return; }
-    const target = saved.target.clone();
+    if (!saved || !cam || !controls) { prevType.current = shown; finishBlend(); return; }
+    const target = saved.target.clone(), viewUp = saved.up.clone();
     const dist   = saved.position.distanceTo(target) || 1;
-    controls.target.copy(target);
+    const lookM = new THREE.Matrix4();
+    const orient = (at: THREE.Vector3) => { cam.quaternion.setFromRotationMatrix(lookM.lookAt(cam.position, at, viewUp)); cam.updateMatrixWorld(); };
     cam.position.copy(saved.position);  // yerinde kal — dolly yok
-    cam.up.copy(saved.up);
-    if (cameraType === CameraType.ORTHOGRAPHIC && cam instanceof THREE.OrthographicCamera) {
+    cam.up.set(0, 1, 0);                // yeni OrbitControls bu up'la kurulur (bkz. finishBlend)
+    prevType.current = shown;
+    if (shown === CameraType.ORTHOGRAPHIC && cam instanceof THREE.OrthographicCamera) {
       cam.zoom = orthoZoomFor(dist, size.height || window.innerHeight);
       cam.updateProjectionMatrix();
-    } else if (cameraType === CameraType.PERSPECTIVE && cam instanceof THREE.PerspectiveCamera) {
-      cam.fov = PERSP_FOV;
-      cam.updateProjectionMatrix();
+      orient(target);
+      finishBlend(target, viewUp, controls);
+      return;
     }
-    cam.lookAt(target);
-    controls.update();
-    prevType.current = cameraType;
-  }, [cameraType, controlsRef, size.height]);
+    const enter = enterRef.current;
+    enterRef.current = null;
+    if (shown === CameraType.PERSPECTIVE && cam instanceof THREE.PerspectiveCamera && enter) {
+      // Ortografikten gelindi: dar açıyla (aynı çerçeve) başla, boyamadan önce yerleş, sonra PERSP_FOV'a açıl.
+      const d0 = enter.dist, tan0 = tanHalfDeg(PERSP_FOV), t0 = performance.now(), ep = epochRef.current;
+      const place = (e: number) => {
+        const fov = NARROW_FOV + (PERSP_FOV - NARROW_FOV) * e, d = d0 * tan0 / tanHalfDeg(fov);
+        cam.fov = fov; cam.near = Math.max(1, d / 100); cam.far = Math.max(50000, d + 50000);
+        cam.position.copy(enter.target).addScaledVector(enter.dir, d);
+        orient(enter.target); cam.updateProjectionMatrix();
+        invalidate();
+      };
+      place(0);
+      const tick = () => {
+        if (ep !== epochRef.current) return;   // açılırken yeniden ortografik istendi: o geçiş bu kameranın şimdiki açısından sürdürür
+        const c = controlsRef.current;
+        if (c) { c.enabled = false; c.target.copy(enter.target); }
+        const raw = Math.min((performance.now() - t0) / CAMERA_BLEND_MS, 1), e = raw * raw * (3 - 2 * raw);
+        place(e);
+        if (raw < 1) { requestAnimationFrame(tick); return; }
+        cam.far = 50000; cam.updateProjectionMatrix();
+        finishBlend(enter.target, viewUp, controls);
+      };
+      requestAnimationFrame(tick);
+      return;
+    }
+    if (cam instanceof THREE.PerspectiveCamera) { cam.fov = PERSP_FOV; cam.updateProjectionMatrix(); }
+    orient(target);
+    finishBlend(target, viewUp, controls);
+  }, [shown, controlsRef, size.height, finishBlend, invalidate]);
 
   useEffect(() => {
+    // Otomatik ortografikten çıkış: kullanıcı görünümü DÖNDÜRÜP bırakınca perspektife dönülür (sürükleme sırasında kamera değişirse
+    // OrbitControls yeniden kurulur, sürükleme kopar → bırakılınca). Kaydırma / yakınlaştırma yönü değiştirmez, tetiklemez.
+    let dir0: THREE.Vector3 | null = null;
+    const dirOf = (c: any) => c.object.position.clone().sub(c.target).normalize();
+    const onStart = () => { const c = boundControls.current; dir0 = c && !busyRef.current ? dirOf(c) : null; };
+    const onEnd = () => {
+      const c = boundControls.current;
+      if (!c || !dir0 || busyRef.current || !autoRef.current) return;
+      if (dirOf(c).angleTo(dir0) > 0.02) void (window as any).__cameraAuto?.('persp');
+    };
+    const bind = (c: any) => {
+      const old = boundControls.current;
+      if (old === c) return;
+      old?.removeEventListener?.('start', onStart); old?.removeEventListener?.('end', onEnd);
+      c?.addEventListener?.('start', onStart); c?.addEventListener?.('end', onEnd);
+      boundControls.current = c ?? null;
+    };
     const id = setInterval(() => {
       const cam = cameraRef.current, controls = controlsRef.current;
       if (!cam || !controls) return;
+      bind(controls);
+      if (busyRef.current) return;
       savedRef.current = { position: cam.position.clone(), target: controls.target.clone(), up: cam.up.clone() };
     }, 100);
-    return () => clearInterval(id);
+    return () => { clearInterval(id); bind(null); };
   }, [controlsRef]);
 
   // DİNAMİK NEAR: sabit near'da derinlik çözünürlüğü uzaklığın karesiyle kötüleşir; ~10 m'de polygonOffset panel kalınlığını
   // aşar, değen panelin kenarı öndeki yüzü deler. near = uzaklık/100 (≥1). Ortografik etkilenmez.
   useFrame(() => {
     const cam = cameraRef.current, controls = controlsRef.current;
-    if (!(cam instanceof THREE.PerspectiveCamera) || !controls) return;
+    if (!(cam instanceof THREE.PerspectiveCamera) || !controls || busyRef.current) return;
     const near = Math.max(1, cam.position.distanceTo(controls.target) / 100);
     if (Math.abs(near - cam.near) / cam.near > 0.05) { cam.near = near; cam.updateProjectionMatrix(); }
   });
@@ -3262,9 +3427,9 @@ const CameraController: React.FC<{ controlsRef: React.RefObject<any>; cameraType
     const dist = s.position.distanceTo(s.target) || 1;
     return { position: s.position.toArray() as [number, number, number], zoom: orthoZoomFor(dist, size.height || window.innerHeight) };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cameraType]);
+  }, [shown]);
 
-  return cameraType === CameraType.PERSPECTIVE
+  return shown === CameraType.PERSPECTIVE
     ? <PerspectiveCamera ref={cameraRef as React.RefObject<THREE.PerspectiveCamera>} makeDefault position={mount.position} fov={PERSP_FOV}
       near={1} far={50000} />
     : <OrthographicCamera ref={cameraRef as React.RefObject<THREE.OrthographicCamera>} makeDefault position={mount.position} zoom={mount.zoom}

@@ -349,7 +349,7 @@ export function panelFrameOf(shape: Shape | undefined | null): { geo: THREE.Buff
 /** Liste satırı ölçüleri: en / boy (ok yönüne göre) + kalınlık (parametreden; dönmüş panelde bbox'ın en küçüğü gerçek kalınlık değildir). */
 /** EĞRİ YÜZ PANELİ ölçüleri: açınım boyu (en geniş eğri yüzün alanı ÷ eksen boyu) × eksen boyunca düz boy — bükülecek levhanın ölçüsü.
  *  Eksen, eğri yüzün üçgen normallerinin hepsine dik yöndür. */
-function curvedPanelDims(geo: THREE.BufferGeometry): { arc: number; length: number } | null {
+function curvedPanelDims(geo: THREE.BufferGeometry): { arc: number; length: number; axis: THREE.Vector3 } | null {
   const { faces, groups } = getFacesAndGroups(geo);
   const g = groups.filter(x => x.isCurved).sort((a, b) => b.totalArea - a.totalArea)[0];
   if (!g || g.faceIndices.length < 2) return null;
@@ -360,7 +360,7 @@ function curvedPanelDims(geo: THREE.BufferGeometry): { arc: number; length: numb
   let lo = Infinity, hi = -Infinity;
   for (const fi of g.faceIndices) for (const v of faces[fi].vertices) { const d = v.dot(axis); if (d < lo) lo = d; if (d > hi) hi = d; }
   const length = hi - lo;
-  return length > 0.5 ? { arc: g.totalArea / length, length } : null;
+  return length > 0.5 ? { arc: g.totalArea / length, length, axis } : null;
 }
 export const panelDims = (p: Shape | undefined | null) => {
   if (p?.parameters?.curved && p.geometry) {
@@ -628,8 +628,17 @@ export function PanelPreview2D({ shape, arrowRotated }: { shape: Shape; arrowRot
     const upW = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
 
     const subGeos: any[] = Array.isArray(shape.subtractionGeometries) ? shape.subtractionGeometries : [];
+    const groundDims = computeGroundDimWorld(frameGeo, wIdx, hIdx, minIdx, upW);
+    // BOMBELİ PANEL (Goker, Kas 2026 — "panelin ölçüsü olarak açılmış halinin ölçüsünü göster"): önizleme paneli bükülmüş haliyle çizer;
+    // ölçüler kutunun (kirişin) değil AÇINIMIN ölçüsüdür — liste satırıyla aynı (panelDims): eğri boyunca açınım boyu, eksen boyunca düz boy.
+    const dev = shape.parameters?.curved ? curvedPanelDims(frameGeo) : null;
+    if (dev && groundDims.length === 2) {
+      const wAlongAxis = Math.abs(dev.axis.getComponent(wIdx)) >= Math.abs(dev.axis.getComponent(hIdx));
+      groundDims[0].length = round1(wAlongAxis ? dev.length : dev.arc);
+      groundDims[1].length = round1(wAlongAxis ? dev.arc : dev.length);
+    }
     const allDimsW = [
-      ...computeGroundDimWorld(frameGeo, wIdx, hIdx, minIdx, upW),
+      ...groundDims,
       ...(subGeos.length ? cutDimsFromSubGeos(subGeos, bbox, sz, minIdx, nDir, unrotated ? undefined : frameM) : computeCutDimsWorld(frameGeo, minIdx, nDir)),
     ];
 

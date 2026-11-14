@@ -180,7 +180,7 @@ function viewInset(canvas: HTMLElement): { shiftPx: number; visW: number } {
   return { shiftPx: cover / 2, visW: r.width - cover };
 }
 function flyTo(camera: THREE.Camera, controls: OrbitLike, focus: THREE.Vector3, dir: THREE.Vector3, up: THREE.Vector3, extent: number, viewH: number,
-  exact?: { dist: number; zoom: number } | null, view?: { shiftPx: number; visW: number }) {
+  exact?: { dist: number; zoom: number } | null, view?: { shiftPx: number; visW: number }, done?: () => void) {
   if (!controls?.target) return;
   const persp = camera as THREE.PerspectiveCamera, ortho = camera as THREE.OrthographicCamera;
   const startT = controls.target.clone(), startDir = camera.position.clone().sub(startT), startDist = startDir.length() || 1;
@@ -214,10 +214,12 @@ function flyTo(camera: THREE.Camera, controls: OrbitLike, focus: THREE.Vector3, 
     camera.lookAt(curT);
     if (ortho.isOrthographicCamera) { ortho.zoom = startZoom + (endZoom - startZoom) * e; ortho.updateProjectionMatrix(); }
     controls.update();
-    if (raw < 1) requestAnimationFrame(tick); else { controls.enableDamping = flyDamping ?? controls.enableDamping; flyDamping = null; }
+    if (raw < 1) requestAnimationFrame(tick); else { controls.enableDamping = flyDamping ?? controls.enableDamping; flyDamping = null; done?.(); }
   };
   tick();
 }
+/** Yüze / düzleme KARŞIDAN bakış bittiğinde: perspektifteyse ortografiğe geçilir (Scene.CameraController — çerçeve korunur). */
+const toOrtho = () => { void (window as any).__cameraAuto?.('ortho'); };
 /** Şeritteki "View plane" düğmesi — sahne katmanı kaydolur. */
 let viewPlaneFn: (() => void) | null = null;
 
@@ -379,15 +381,38 @@ export function beginFacePick(onlyShapeId: string | null = null) {
   sceneApi.fly?.(c.center, c.normal, c.up, c.extent);
 }
 export function cancelFacePick(stay = false) { dropPrePick(stay); pickOnly = null; candidate = null; setPlanePick(false); }
-/** Vurgulanan adayı çizim düzlemi yapar: kamera yüze karşıdan gelir, hedef dışındaki paneller gizlenir. */
+/** Etkin yüzün hedefindeki, O YÜZE yazılmış çizim adımları (aynı dışa normal + aynı derinlik). */
+export async function faceSteps(): Promise<SketchFeature[]> {
+  const ft = faceTarget();
+  if (!ft) return [];
+  const st = useDraft.getState(), feats = sketchFeaturesOf(ft.shape);
+  if (!feats.length) return [];
+  // Düzenleme oturumunun düzlemi adımın kendi çerçevesidir → aynı yüzün adımları o adımın yönüyle süzülür.
+  const cur = st.session ? feats.find(f => f.id === st.session!.featureId) : undefined;
+  const ref = cur ? { n: cur.n, inset: cur.inset } : await frameOfPlane(ft.shape, ft.plane).catch(() => null);
+  if (!ref) return [];
+  return feats.filter(f => v3(f.n).dot(v3(ref.n)) > 0.999 && Math.abs((f.inset || 0) - (ref.inset || 0)) < 0.5);
+}
+/** Vurgulanan adayı çizim düzlemi yapar: kamera yüze karşıdan gelir, hedef dışındaki paneller gizlenir.
+ *  YÜZDE ÇİZİM ADIMI VARSA (Goker, Kas 2026 — "çizimi yaptıktan sonra tekrar düzenlemek çok karışık; yüze girince hazır gelsin"): son adım
+ *  kendiliğinden düzenlemeye açılır (nesneleri yüze yüklenir, Apply o adımı günceller) — Assembly'de adımı bulup kaleme basmak gerekmez.
+ *  Yüzde uygulanmamış serbest çizim duruyorsa dokunulmaz (o çizim yeni bir adım olacaktır). */
 export function confirmFacePick() {
   const c = candidate;
   if (!c) return;
   candidate = null; pickOnly = null; prePick = false;
   keepPose();
-  activatePlane(c.plane);
+  const planeId = activatePlane(c.plane);
   setIsolate({ targetId: c.shapeId, bodyId: c.bodyId, kind: c.kind });
   sceneApi.fly?.(c.center, c.normal, c.up, c.extent);
+  void (async () => {
+    const st = useDraft.getState();
+    if (st.session || st.entities.some(e => e.plane === planeId && !e.ref)) return;
+    const on = await faceSteps();
+    const now = useDraft.getState();
+    if (!on.length || now.session || now.activePlane !== planeId || now.planePick) return;
+    await editSketch(c.shapeId, on[on.length - 1].id);
+  })();
 }
 setPlaneConfirm(confirmFacePick);
 export function toggleIsolate() {
@@ -400,6 +425,20 @@ export async function exitFace() {
   cancelFacePick();
   if (useDraft.getState().session) await finishSketchEdit(false); else leaveFace();
 }
+// İZOLASYON — TEK KURAL (Goker, Kas 2026 — "çıktığımda panellerin izole olma durumunu MUTLAKA kaldırsın"): izolasyon yalnız yüz seçimi
+// sürerken, bir yüz düzlemi etkinken ya da adım düzenlenirken geçerlidir. Bu üçü de yoksa — hangi yoldan çıkılmış olursa olsun (Esc,
+// başka komut, panelin kapanması, hedefin silinmesi, unutulmuş bir çıkış noktası) — izolasyon kalkar ve kamera yüze geçmeden önceki
+// yerine döner. Drawing paneli kapanınca yüz kipinden de çıkılır (araçlar yokken izole görünümde kalınmaz).
+useDraft.subscribe((st, prev) => {
+  if (st.isolate && !st.planePick && !st.session && st.activePlane === GROUND_PLANE.id) {
+    setIsolate(null);
+    if (savedPose) { const p = savedPose; savedPose = null; sceneApi.restore?.(p); }
+  }
+  if (prev.panelOpen && !st.panelOpen && (st.activePlane !== GROUND_PLANE.id || st.planePick || st.session)) void exitFace();
+  // Adım düzenlenirken oturum düzleminden çıkıldıysa (zemine / başka düzleme geçen bir komut) oturum da kapanır — açık kalan oturum
+  // izolasyonu ve bastırılmış adımı asılı bırakırdı.
+  else if (st.session && st.session === prev.session && prev.activePlane === st.session.planeId && st.activePlane !== st.session.planeId) void finishSketchEdit(false);
+});
 /** Hedefin çizim adımları UYGULANMAMIŞ mesh'i (yüz çerçevesinin okunduğu): panelde ayak izi mesh'i, gövdede adımsız katı. */
 const uncutCache = new WeakMap<THREE.BufferGeometry, THREE.BufferGeometry>();   // gövde mesh'i → adımsız mesh'i (gövde yeniden kurulunca düşer)
 async function uncutMeshOf(target: Shape): Promise<THREE.BufferGeometry> {
@@ -458,6 +497,47 @@ function sketchPayload(ents: Entity[], a: SketchApply, w: number, h: number, dx:
   };
 }
 const stepRotationOf = (target: Shape) => (isPanel(target) ? panelStepRotation(target) : new THREE.Quaternion());
+/** GÖVDE ŞEKLE UYAR (Goker, Kas 2026 — "referans kutuya çizerek şekil verdiysem en dış sınırlarındaki ölçüleri alsın"): gövdenin TAM bir
+ *  dış yüzüne çizilen Shape profili kutudan taşıyorsa kutuyla kırpılıyor (kemerin tepesi düzleşiyor), küçükse gövdenin W / H / D değerleri
+ *  eski kutunun ölçüsü olarak kalıyordu. Profilin yüz çerçevesindeki dış kutusu okunur; gövdenin o iki ölçüsü ona eşitlenir, gövde
+ *  profilin sol-alt sınırına ötelenir (şekil dünyada yerinden oynamaz; panelleri gövdeyle taşınır). Kutu profilin dışında ≤ 0,01 mm pay
+ *  bırakacak şekilde yuvarlanır (yay tepesi kutu yüzüyle kesilip incecik düz yüz doğmasın). Dönen değerler yeni çerçevenin ölçüsü ve
+ *  çizimin yeni çerçeveye göre ötelemesidir; uyarlama yapılmadıysa null.
+ *  FORMÜLE BAĞLI nokta / yarıçap varsa (Parametric) uyarlama yapılmaz: formüller kutunun kenarlarından ve W / H değerlerinden ölçülür,
+ *  kutuyu değiştirmek onları geçersiz kılar (bindsOf formülü düşürürdü) — orada kutu referanstır, şekil kutuyu izler. */
+function fitBodyToProfile(target: Shape, fr: SketchFrame, ents: Entity[], dx: number, dy: number, param: boolean): { w: number; h: number; dx: number; dy: number } | null {
+  if (isPanel(target) || target.vertexModifications?.length) return null;
+  if (param && ents.some(e => (e.t === 'circle' && !!e.re) || e.pb?.some(b => b?.x?.k === 'F' || b?.y?.k === 'F'))) return null;
+  const P = target.parameters as { width?: number; height?: number; depth?: number };
+  const dims = [Number(P.width), Number(P.height), Number(P.depth)];
+  if (dims.some(d => !Number.isFinite(d))) return null;
+  const axisOf = (v: THREE.Vector3) => { const a = [Math.abs(v.x), Math.abs(v.y), Math.abs(v.z)], i = a.indexOf(Math.max(...a)); return a[i] > 0.9999 ? { i, s: Math.sign(v.getComponent(i)) } : null; };
+  const U = axisOf(fr.u), V = axisOf(fr.v);
+  if (!U || !V || U.i === V.i) return null;
+  if (Math.abs(fr.w - dims[U.i]) > 0.05 || Math.abs(fr.h - dims[V.i]) > 0.05) return null;   // gövdenin tam dış yüzü değil (basamak / iç yüz)
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const e of ents) for (const p of tessellate(e, Math.PI / 720)) { x0 = Math.min(x0, p.x + dx); y0 = Math.min(y0, p.y + dy); x1 = Math.max(x1, p.x + dx); y1 = Math.max(y1, p.y + dy); }
+  if (!(x1 - x0 > 1) || !(y1 - y0 > 1)) return null;
+  const lo = (v: number) => Math.floor(v * 100 + 1e-6) / 100, up = (v: number) => Math.ceil(v * 100 - 1e-6) / 100;
+  const ox = lo(x0), oy = lo(y0), w = up(x1 - ox), h = up(y1 - oy);
+  if (Math.abs(ox) < 0.011 && Math.abs(oy) < 0.011 && Math.abs(w - fr.w) < 0.011 && Math.abs(h - fr.h) < 0.011) return null;
+  // Çerçevenin 0 noktası yüzün (u, v) en küçük köşesidir; u / v gövde ekseninin tersine bakıyorsa kutu öbür uçtan ölçülür.
+  const shift = new THREE.Vector3();
+  shift.setComponent(U.i, U.s > 0 ? ox : fr.w - (ox + w));
+  shift.setComponent(V.i, shift.getComponent(V.i) + (V.s > 0 ? oy : fr.h - (oy + h)));
+  const size = [...dims]; size[U.i] = w; size[V.i] = h;
+  const pos = arr3(shift.clone().applyMatrix4(hostMatrix(target, useAppStore.getState().shapes)));
+  // Gövde + kendi panelleri taşınır (updateShape grubun öbür üyelerini de ötelerdi — şekil yerinde kaldığı için onlar oynamamalı).
+  useAppStore.setState(st => ({
+    shapes: st.shapes.map(x => (x.id === target.id ? { ...x, position: pos, parameters: { ...x.parameters, width: size[0], height: size[1], depth: size[2] } }
+      : x.type === 'panel' && x.parameters?.parentShapeId === target.id ? { ...x, position: [...pos] as V3 } : x)),
+  }));
+  // Gövdenin çizim düzlemleri gövde-yereldir: gövde ötelenince dünyada yerlerinde kalsınlar (yüzde bekleyen öbür çizimler kaymasın).
+  useDraft.setState(st => ({
+    planes: st.planes.map(pl => (pl.kind === 'face' && pl.shapeId === target.id ? { ...pl, origin: arr3(v3(pl.origin).sub(shift)) } : pl)),
+  }));
+  return { w, h, dx: dx - ox, dy: dy - oy };
+}
 /** Hedef katıyı yeniden üretir: panelde motor (yalnız o panel değişti), gövdede katı + panelleri. */
 async function rebuildTarget(id: string) {
   const s = shapeById(id);
@@ -493,10 +573,13 @@ export async function applySketch(): Promise<string | null> {
   const a = st.apply, r = await frameOfPlane(target, ft.plane);
   if (!r) return 'The face could not be resolved.';
   const op = a.op, label = op === 'cut' ? 'Cut' : 'Shape';
+  const fit = op === 'shape' && ft.kind === 'body' && r.inset < 0.05 ? fitBodyToProfile(target, r.fr, use, r.dx, r.dy, a.mode === 'points') : null;
+  const g = fit ?? { w: r.fr.w, h: r.fr.h, dx: r.dx, dy: r.dy };
+  const host = fit ? shapeById(target.id) ?? target : target;   // uyarlamadan sonra güncel ölçüler (formül değişkenleri BW / BH / BD)
   const feature: SketchFeature = {
     id: genId('sk'), name: `${label} ${sketchFeaturesOf(target).filter(f => f.op === op).length + 1}`, timestamp: Date.now(),
     op, depth: op === 'shape' || a.through ? null : Math.max(0.1, a.depth), n: r.n, u: r.u, inset: r.inset,
-    ...sketchPayload(use, a, r.fr.w, r.fr.h, r.dx, r.dy, varsOfTarget(target)),
+    ...sketchPayload(use, a, g.w, g.h, g.dx, g.dy, varsOfTarget(host)),
   };
   writeFeatures(target.id, old => [...old, feature]);
   takeEntities(ft.plane.id, use.map(e => e.id));
@@ -504,6 +587,10 @@ export async function applySketch(): Promise<string | null> {
   const err = shapeById(target.id)?.parameters?.sketchErrors?.[feature.id] as string | undefined;
   return err ? `Step added, but it could not be applied: ${err}` : null;
 }
+// Açık adımın çizimi yüklendiği andan beri değişti mi (boşta Esc kaydedilmemiş emeği silmesin diye sorulur).
+let sessionBase = '';
+const sessionKey = (planeId: string) => JSON.stringify(useDraft.getState().entities.filter(e => e.plane === planeId && !e.ref));
+export const sessionDirty = () => { const ses = useDraft.getState().session; return !!ses && sessionKey(ses.planeId) !== sessionBase; };
 /** Adımı düzenlemeye açar: yüz düzlemi + izolasyon, adım bastırılır (katı adımsız), nesneleri oturum düzlemine yüklenir. */
 export async function editSketch(targetId: string, featureId: string) {
   if (useDraft.getState().session?.featureId === featureId) return;   // zaten açık — süren düzenleme korunur
@@ -525,6 +612,7 @@ export async function editSketch(targetId: string, featureId: string) {
   let loaded = f.shapes;
   try { loaded = placeSketchShapes(f, fr.w, fr.h, varsOfTarget(target)); } catch { /* bozuk formül: saklı nesneler düzenlenir */ }
   loadEntities(loaded, planeId, param ? f.pts!.map(prefsOf) : undefined, param ? f.radii : undefined);
+  sessionBase = sessionKey(planeId);
   if (!applyBeforeEdit) applyBeforeEdit = { ...useDraft.getState().apply };
   setApply({
     op: f.op, through: f.depth == null, ...(f.depth != null ? { depth: f.depth } : {}), anchor: [f.anchor[0], f.anchor[1]], stretch: [f.stretch[0], f.stretch[1]],
@@ -553,8 +641,11 @@ export async function finishSketchEdit(save: boolean, stay = false): Promise<str
     // Oturum düzleminin orijini yüz çerçevesinin orijinidir (dx = dy = 0). Kip değişmişse eski kipin alanları adımdan düşer.
     const { mode: _m, pts: _p, radii: _r, ...kept } = f;
     void _m; void _p; void _r;
+    const fit = op === 'shape' && !isPanel(target) && (f.inset || 0) < 0.05 ? fitBodyToProfile(target, fr, ents, 0, 0, a.mode === 'points') : null;
+    const g = fit ?? { w: fr.w, h: fr.h, dx: 0, dy: 0 };
     const next: SketchFeature = {
-      ...kept, op, depth: op === 'shape' || a.through ? null : Math.max(0.1, a.depth), ...sketchPayload(ents, a, fr.w, fr.h, 0, 0, varsOfTarget(target)),
+      ...kept, op, depth: op === 'shape' || a.through ? null : Math.max(0.1, a.depth),
+      ...sketchPayload(ents, a, g.w, g.h, g.dx, g.dy, varsOfTarget(fit ? shapeById(target.id) ?? target : target)),
     };
     writeFeatures(target.id, old => old.map(x => (x.id === f.id ? next : x)));
   }
@@ -563,6 +654,12 @@ export async function finishSketchEdit(save: boolean, stay = false): Promise<str
   if (!stay && applyBeforeEdit) { setApply(applyBeforeEdit); applyBeforeEdit = null; }
   if (target) await rebuildTarget(target.id);
   if (!stay) leaveFace();
+  else {
+    // Yüzde kalınıyor ("+ New" / başka adıma geçiş): oturumun boşalan düzlemi yerine yüzün KENDİ düzlemine dönülür — orada bekleyen serbest
+    // çizim varsa yeniden görünür, yeni çizilenler de yüze sonraki girişte aynı düzlemde bulunur.
+    const now = useDraft.getState(), pl = now.planes.find(q => q.id === ses.planeId);
+    if (pl && now.activePlane === pl.id && !now.session) { const { id: _id, ...rest } = pl; void _id; activatePlane(rest); }
+  }
   return null;
 }
 export async function deleteSketch(targetId: string, featureId: string) {
@@ -614,15 +711,31 @@ function autoBind() {
  *  edilmemiştir (alan kırmızı kalır). Düzenleme durumu DimField'da tutulur: Html içeriği ayrı bir DOM kökünde çizilir, giriş alanının
  *  durumu sahne (R3F) ağacında dursaydı her tuşta eski değere geri dönerdi. */
 type DimProps = { text: string; edit: string; color: string; title: string; onCommit: (t: string) => boolean };
+/** Açık ölçü alanına metin ekleyen işlev (Drawing panelindeki parametre listesi kullanır); alan kapalıyken null. */
+let dimInsert: ((txt: string) => void) | null = null;
 const DimField: React.FC<DimProps> = ({ text, edit, color, title, onCommit }) => {
   const [val, setVal] = useState<string | null>(null);
   const [bad, setBad] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const editing = val !== null;
+  useEffect(() => {
+    if (!editing) return;
+    const ins = (txt: string) => {
+      const el = inputRef.current;
+      if (!el) return;
+      const a = el.selectionStart ?? el.value.length, b = el.selectionEnd ?? a, next = el.value.slice(0, a) + txt + el.value.slice(b);
+      setVal(next); setBad(false);
+      requestAnimationFrame(() => { el.focus(); el.setSelectionRange(a + txt.length, a + txt.length); });
+    };
+    dimInsert = ins;
+    return () => { if (dimInsert === ins) dimInsert = null; };
+  }, [editing]);
   if (val === null) return (
     <button type="button" title={title} aria-label={`Dimension ${text}`} onClick={() => { setVal(edit); setBad(false); }}
       style={{ ...TAG, pointerEvents: 'auto', cursor: 'text', border: 'none', color, boxShadow: `0 0 0 1px ${color}66` }}>{text}</button>
   );
   return (
-    <input autoFocus value={val} spellCheck={false} aria-label="Dimension value" onFocus={e => e.target.select()}
+    <input ref={inputRef} autoFocus value={val} spellCheck={false} aria-label="Dimension value" onFocus={e => e.target.select()}
       onChange={e => { setVal(e.target.value); setBad(false); }} onBlur={() => setVal(null)}
       onKeyDown={e => { if (e.key === 'Enter') { if (onCommit(val)) setVal(null); else setBad(true); } else if (e.key === 'Escape') setVal(null); }}
       style={{
@@ -837,14 +950,19 @@ export const DraftLayer: React.FC = () => {
         target = loc.applyMatrix4(L.activeM);
         extent = Math.max(200, L.camera.position.distanceTo(t) * 0.5);
       }
-      flyTo(L.camera, L.controls, target, n, up, extent, L.size.height, null, viewInset(gl.domElement));
+      flyTo(L.camera, L.controls, target, n, up, extent, L.size.height, null, viewInset(gl.domElement), toOrtho);
     };
-    sceneApi.fly = (c, n, up, extent) => { const L = live.current; flyTo(L.camera, L.controls, c, n, up, extent, L.size.height, null, viewInset(gl.domElement)); };
+    sceneApi.fly = (c, n, up, extent) => { const L = live.current; flyTo(L.camera, L.controls, c, n, up, extent, L.size.height, null, viewInset(gl.domElement), toOrtho); };
     sceneApi.pose = () => {
       const L = live.current;
       return L.controls?.target ? { pos: L.camera.position.clone(), target: L.controls.target.clone(), up: L.camera.up.clone(), zoom: (L.camera as THREE.OrthographicCamera).zoom ?? 1 } : null;
     };
-    sceneApi.restore = p => { const L = live.current; flyTo(L.camera, L.controls, p.target, p.pos.clone().sub(p.target), p.up, 0, L.size.height, { dist: p.pos.distanceTo(p.target), zoom: p.zoom }); };
+    // Yüzden çıkış: otomatik ortografiğe girildiyse önce perspektife dönülür (kamera nesnesi değişir → iki kare beklenir), sonra eski yere.
+    sceneApi.restore = p => {
+      const go = () => { const L = live.current; flyTo(L.camera, L.controls, p.target, p.pos.clone().sub(p.target), p.up, 0, L.size.height, { dist: p.pos.distanceTo(p.target), zoom: p.zoom }); };
+      const sw = (window as any).__cameraAuto?.('persp') as Promise<void> | undefined;
+      if (sw) void sw.then(() => requestAnimationFrame(() => requestAnimationFrame(go))); else go();
+    };
     return () => { viewPlaneFn = null; sceneApi.fly = null; sceneApi.pose = null; sceneApi.restore = null; };
   }, []);
 
@@ -871,6 +989,7 @@ export const DraftLayer: React.FC = () => {
       const L = live.current, st = useDraft.getState(), ray = rayOf(e);
       let best: string | null = null, bt = Infinity;
       for (const pl of st.planes) {
+        if (pl.kind === 'face' && pl.id !== st.activePlane) continue;   // gizli (etkin olmayan yüz) düzlemin çizimi seçilemez
         const m = L.matrices.get(pl.id), on = st.entities.filter(x => x.plane === pl.id);
         if (!m || !on.length) continue;
         const h = rayOnPlane(ray, m, m.clone().invert());
@@ -894,7 +1013,8 @@ export const DraftLayer: React.FC = () => {
         if (!inViewCube(e)) stop(e);
         return;
       }
-      if (!st.cmd && !st.entities.length) return;
+      // Drawing paneli kapalıyken çizim nesneleri imlece tepki vermez (Goker: "kalan çizgileri tıklatma bana").
+      if (!st.cmd && (!st.entities.length || !st.panelOpen)) { if (st.hoverId) pointerLeave(); return; }
       const h = onActive(e);
       if (!h) return;
       // Parametric kip: seçim varken imlecin altındaki yüz referansı (kenar / orta çizgi) vurgulanır.
@@ -935,7 +1055,7 @@ export const DraftLayer: React.FC = () => {
         swallow = true; stop(e);
         return;
       }
-      if (!st.entities.length) return;
+      if (!st.entities.length || !st.panelOpen) return;
       // Parametric kip: tutamağa tık o kontrol noktasını seçer (Shift / Ctrl: seçime ekler / çıkarır).
       // PARAMETRIC KİP — her şey ekranda: tutamak = o nokta · çizimin bir kenarı = iki ucu (Shift / Ctrl seçime ekler) · seçim varken
       // YÜZÜN KENARI ya da ORTA ÇİZGİSİ = seçili noktalar ona bağlanır (köşe: X ve Y birlikte) · boşluk = seçimi bırak.
@@ -993,6 +1113,8 @@ export const DraftLayer: React.FC = () => {
       {planes.map(pl => {
         const m = matrices.get(pl.id), ents = byPlane.get(pl.id);
         if (iso && pl.kind === 'face' && pl.shapeId !== iso.targetId) return null;   // izolasyonda gizlenen şeklin yüzündeki çizim de gizlenir
+        // Yüzden çıkınca o yüzde kalan (uygulanmamış) çizim sahnede durmaz, tıklamayı da çalmaz; aynı yüze girince geri gelir.
+        if (pl.kind === 'face' && pl.id !== activeId) return null;
         return m && ents?.length ? <PlaneEntities key={pl.id} matrix={m} ents={ents} active={pl.id === activeId} selection={selSet} hoverId={hoverId} dash={wpp} /> : null;
       })}
       {showUcs && <UcsIcon matrix={activeM} />}
@@ -1277,7 +1399,12 @@ type TipFn = (title: string, key?: string) => { onMouseEnter: () => void; onMous
 const FaceApply: React.FC<{ tip: TipFn }> = ({ tip }) => {
   const apply = useDraft(s => s.apply), session = useDraft(s => s.session), activePlane = useDraft(s => s.activePlane);
   const entities = useDraft(s => s.entities), selection = useDraft(s => s.selection);
-  useAppStore(s => s.shapes);   // hedef silinir / değişirse blok yenilensin
+  const shapesNow = useAppStore(s => s.shapes);   // hedef silinir / değişirse blok yenilensin
+  const faceVars = useDraft(s => s.face?.vars ?? null);
+  const [showVars, setShowVars] = useState(false);
+  // Bu yüze yazılmış adımlar: yüze girince sonuncusu kendiliğinden açılır; birden çoksa buradan geçilir, "New" yeni adım başlatır.
+  const [steps, setSteps] = useState<SketchFeature[]>([]);
+  useEffect(() => { let live = true; void faceSteps().then(x => { if (live) setSteps(x); }); return () => { live = false; }; }, [activePlane, session?.featureId, shapesNow]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [depthStr, setDepthStr] = useState(String(apply.depth));
@@ -1304,12 +1431,40 @@ const FaceApply: React.FC<{ tip: TipFn }> = ({ tip }) => {
     finally { setBusy(false); }
   };
   const cancelEdit = async () => { if (busy) return; setBusy(true); try { await finishSketchEdit(false); } finally { setBusy(false); } };
+  /** Başka adıma / yeni adıma geçiş: açık adım önce kaydedilir (kapalı profil yoksa uyarıp yerinde kalır), yüzde kalınır. */
+  const switchStep = async (id: string | null) => {
+    if (busy || (id && session?.featureId === id) || (!id && !session)) return;
+    setBusy(true); setMsg(null);
+    try {
+      if (session) { const err = await finishSketchEdit(true, true); if (err) { setMsg({ text: err, ok: false }); return; } }
+      if (id) await editSketch(ft.shape.id, id);
+    } catch (e) { setMsg({ text: `Failed: ${(e as Error)?.message ?? e}`, ok: false }); }
+    finally { setBusy(false); }
+  };
+  // Parametre listesi (Goker: "noktalara parametre vermek için Parameters kısmındaki liste bir düğmeyle gelsin"): tıklanan ad, sahnede
+  // AÇIK olan ölçü alanına imlecin olduğu yere yazılır. Önce gövdenin özel parametreleri, sonra yüz / gövde ölçüleri.
+  const BUILTIN = ['W', 'H', 'BW', 'BH', 'BD'];
+  const varList = faceVars ? [...Object.keys(faceVars).filter(k => !BUILTIN.includes(k)), ...BUILTIN.filter(k => k in faceVars)] : [];
+  const pickVar = (name: string) => {
+    if (dimInsert) { dimInsert(name); setMsg(null); }
+    else setMsg({ text: 'Click a dimension on the drawing first, then pick the parameter.', ok: true });
+  };
   const [ax, ay] = apply.anchor;
   const noun = isBody ? 'body' : 'panel';
   return (
     <Section title={session ? `Edit · ${session.name}` : `Apply to ${noun}`}
       right={<span style={{ fontSize: 10.5, fontWeight: 500, color: stats.loops ? '#0f766e' : P.faint }}>{stats.loops} profile{stats.loops === 1 ? '' : 's'}</span>}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {steps.length > 0 && (
+          <div className="dp-steps" role="tablist" aria-label="Steps on this face" style={{ flexWrap: 'wrap' }}>
+            {steps.map(f => (
+              <button key={f.id} role="tab" aria-selected={session?.featureId === f.id} className={`dp-step${session?.featureId === f.id ? ' on' : ''}`} disabled={busy}
+                style={{ padding: '0 8px', width: 'auto', flex: 'none' }} onClick={() => { void switchStep(f.id); }} {...tip(`Edit ${f.name} — its drawing is loaded on the face`)}>{f.name}</button>
+            ))}
+            <button role="tab" aria-selected={!session} className={`dp-step${!session ? ' on' : ''}`} disabled={busy} style={{ padding: '0 8px', width: 'auto', flex: 'none' }}
+              onClick={() => { void switchStep(null); }} {...tip('Start another step on this face')}>+ New</button>
+          </div>
+        )}
         <div className="dp-seg">
           <button className={op === 'cut' ? 'on' : ''} onClick={() => setApply({ op: 'cut' })} {...tip(`Cut — remove the drawn profile from the ${noun}`)}>
             <DIcon name="cut" size={16} />Cut
@@ -1344,6 +1499,11 @@ const FaceApply: React.FC<{ tip: TipFn }> = ({ tip }) => {
           /* PARAMETRIC — düzenleme EKRANDA yapılır: nokta / kenar seç → yüzün kenarını göster → ölçüye tıklayıp yaz. Panelde yalnız Auto. */
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <span style={{ flex: 1, minWidth: 0, fontSize: 11, color: nSel ? P.ink : P.faint, fontWeight: nSel ? 600 : 400 }}>{nSel ? `${nSel} selected` : 'Nearest edge'}</span>
+            <button className={`dp-chip${showVars ? ' on' : ''}`} style={{ height: 26, padding: '0 9px', gap: 5 }} aria-pressed={showVars} aria-label="Parameters"
+              onMouseDown={e => e.preventDefault()} onClick={() => setShowVars(v => !v)}
+              {...tip('Parameters — click a dimension on the drawing, then pick a parameter to write it in')}>
+              <span style={{ fontFamily: MONO_FONT, fontWeight: 700, color: '#a8a29e' }}>ƒ</span>Parameters
+            </button>
             <button className="dp-chip" style={{ height: 26, padding: '0 9px', gap: 5 }} disabled={!stats.count} onClick={autoBind}
               {...tip(nSel ? 'Auto — tie the selected points to their nearest edges' : 'Auto — tie every point to its nearest edges')}>
               <DIcon name="auto" size={15} />Auto
@@ -1368,13 +1528,23 @@ const FaceApply: React.FC<{ tip: TipFn }> = ({ tip }) => {
             </div>
           </div>
         )}
+        {param && showVars && (
+          <div role="listbox" aria-label="Parameter list" style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+            {varList.map(k => (
+              <button key={k} role="option" aria-selected={false} className="dp-chip" style={{ height: 24, padding: '0 7px', gap: 5, fontFamily: MONO_FONT, fontSize: 11 }}
+                onMouseDown={e => e.preventDefault()} onClick={() => pickVar(k)} {...tip(`${k} = ${fmt(faceVars![k], 2)}`)}>
+                <b style={{ color: P.ink }}>{k}</b><span style={{ color: P.faint }}>{fmt(faceVars![k], 1)}</span>
+              </button>
+            ))}
+          </div>
+        )}
         <div style={{ display: 'flex', gap: 5, marginTop: 2 }}>
           <button className="dp-primary" disabled={busy || !stats.loops} onClick={() => { void go(); }} {...tip(stats.loops ? '' : 'Draw a closed profile on the face first')}>
-            <DIcon name="check" size={15} />{busy ? 'Working…' : session ? 'Save changes' : shaped ? 'Apply shape' : 'Apply cut'}
+            <DIcon name="check" size={15} />{busy ? 'Working…' : session ? (shaped ? 'Update shape' : 'Update cut') : shaped ? 'Apply shape' : 'Apply cut'}
           </button>
           {session && <button className="dp-ghost" disabled={busy} onClick={() => { void cancelEdit(); }}>Cancel</button>}
         </div>
-        {msg && <div style={{ fontSize: 11, lineHeight: 1.35, color: '#b91c1c' }}>{msg.text}</div>}
+        {msg && <div style={{ fontSize: 11, lineHeight: 1.35, color: msg.ok ? P.mute : '#b91c1c' }}>{msg.text}</div>}
       </div>
     </Section>
   );
