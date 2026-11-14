@@ -2,7 +2,9 @@ import { useState, useEffect } from 'react';
 import * as THREE from 'three';
 import { createRoot } from 'react-dom/client';
 import { type Shape, useStoreFields, useAppStore, requestRebuild } from './store';
-import { type CatalogItem, catalogService, Toolbar, Sidebar, ParametersPanel, Terminal, StatusBar, CatalogPanel, ErrorBoundary } from './components/Ui';
+import {
+  type CatalogItem, catalogService, Toolbar, Sidebar, ParametersPanel, Terminal, StatusBar, CatalogPanel, ErrorBoundary,
+} from './components/Ui';
 import { initReplicad, rebuildBodySolid } from './components/Geometry';
 import Scene from './components/Scene';
 import { AssemblyPanel } from './components/Assembly';

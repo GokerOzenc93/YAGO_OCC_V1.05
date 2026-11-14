@@ -20,8 +20,7 @@ import {
 } from './Draft';
 import { DraftStatus, exitFace, sessionDirty } from './DraftView';
 
-/* Uygulama kabuğu: tasarım jetonları, ErrorBoundary, ikonlar, durum çubuğu, terminal,
-   üst araç çubuğu (boolean çıkarma) ve sol kenar çubuğu (yaslı / yüzen / ayrı pencere) + kemik teması. */
+/* Uygulama kabuğu: tasarım jetonları, ErrorBoundary, ikonlar, durum çubuğu, terminal, üst araç çubuğu ve sol kenar çubuğu. */
 
 export const UI_FONT = "'Inter','SF Pro Text',system-ui,sans-serif";
 export const MONO_FONT = "'SF Mono','Fira Code','Cascadia Code',monospace";
@@ -38,9 +37,7 @@ export const TOKENS = {
   modClr: '#7c3aed',
 } as const;
 
-/* KENAR ÇUBUĞU YAZI / RENK STANDARDI (Goker, Kas 2026 — "yazı boyutu, stili, başlıklar ve açıklamalar standart olsun"):
-   tüm kartlar, şeritler ve parametre satırları yalnız bu dört yazı rolünü kullanır. CSS sınıfları SIDEBAR_CSS'te (yago-section ·
-   yago-label · yago-hint · yago-value); satır içi stil gerekince aynı değerler buradan alınır. */
+/* Kenar çubuğu yazı standardı: tüm kartlar yalnız bu dört rolü kullanır (CSS: SIDEBAR_CSS'teki yago-section / label / hint / value). */
 export const INK = {
   text: '#1c1917', soft: '#44403c', muted: '#78716c', faint: '#a39b91', line: '#e3ddd4', lineSoft: '#ece7e0',
   card: '#ffffff', well: '#f6f3ee', accent: '#ea580c', accentInk: '#c2410c', accentSoft: '#fff4ec', accentLine: 'rgba(234,88,12,0.45)',
@@ -105,9 +102,7 @@ export class ErrorBoundary extends React.Component<{ children: React.ReactNode; 
   }
 }
 
-/* DİKEY ARAÇ RAYI (kenar çubuğu kabuğunun sol kenarı, tam yükseklik): ikon + altında yatay kısa etiket (ikon tek başına
-   anlaşılmıyordu). Üç grup — Parameters / Assembly / Accessories araçları; yalnız etkin sekmenin grubu ÇİZİLİR (ötekiler görünmez),
-   şekil seçili değilken Parameters ve Assembly grubu pasif. Ayrıntılı açıklama tarayıcı ipucunda (title). */
+/* Dikey araç rayı: ikon + kısa etiket; yalnız etkin sekmenin grubu çizilir, şekil seçili değilken Parameters / Assembly pasif. */
 export const RAIL_W = 60;
 type SidebarTab = 'parameters' | 'assembly' | 'accessories';
 type RailSpec = {
@@ -170,7 +165,7 @@ export const SidebarRail: React.FC<{ activeTab: SidebarTab; hasShape: boolean }>
   const sel = shapeById(s.selectedShapeId, s.shapes);
   const subN = sel?.subtractionGeometries?.filter(x => x !== null).length ?? 0;
   const filletN = s.selectedFilletFaces.length;
-  // Hızlı gövde yerleşmişse düğme pasif (Goker): paneller listedeki Body satırından düzenlenir; hepsi silinince yeniden etkin.
+  // Hızlı gövde yerleşmişse düğme pasif: paneller listedeki Body satırından düzenlenir; hepsi silinince yeniden etkin.
   const bodyPlaced = !!sel && s.virtualFaces.some(f => f.shapeId === sel.id && !!f.quickBody);
   const toggle = (on: boolean, set: (b: boolean) => void) => ({ active: on, onClick: () => set(!on) });
   // Vertex / Subtract açılınca fillet ve yüz düzenleme kapanır; Fillet açılınca ikisi kapanır.
@@ -206,12 +201,12 @@ export const SidebarRail: React.FC<{ activeTab: SidebarTab; hasShape: boolean }>
     { key: 'plinth', label: 'Plinth', icon: Footprints, ...toggle(s.plinthPickMode, s.setPlinthPickMode),
       title: 'Plinth leg set: click the body — the volume under the bottom panel / below the body is highlighted, click cycles, right-click places' },
   ];
-  // AKSESUAR (Goker, Eki 2026): kategori raydan seçilir (panelde ayrıca tip seçimi yok); kütüphane gövdeden bağımsız → şekil seçili olmasa da etkin.
+  // Aksesuar: kategori raydan seçilir (panelde ayrıca tip seçimi yok); kütüphane gövdeden bağımsız → şekil seçili olmasa da etkin.
   const accessories: RailSpec[] = [
     { key: 'acc-legs', label: 'Legs', icon: Footprints, title: 'Leg models and leg sets', active: s.accessoryCategory === 'legs', onClick: () => s.setAccessoryCategory('legs') },
     { key: 'acc-layers', label: 'Layers', icon: SwatchBook, title: 'Accessory layers — shared by every accessory part (name + colour)', active: s.accessoryCategory === 'layers', onClick: () => s.setAccessoryCategory('layers') },
   ];
-  // Yalnız ETKİN sekmenin araçları çizilir (Goker, Kas 2026: "diğer düğmeler hiç gelmesin, görünmesin" — pasif/soluk grup yok).
+  // Yalnız ETKİN sekmenin araçları çizilir (pasif / soluk grup yok).
   const group = (list: RailSpec[], tab: SidebarTab, needShape = true) =>
     activeTab === tab ? list.map(({ key, disabled, ...t }) => <RailTool key={key} {...t} passive={(needShape && !hasShape) || !!disabled} />) : null;
   return (
@@ -373,8 +368,7 @@ const OptLabel: React.FC<{ label: string; k: string }> = ({ label, k }) => {
   return <>{label.slice(0, i)}<b style={{ color: '#d9540a', fontWeight: 700 }}>{label.slice(i, i + k.length)}</b>{label.slice(i + k.length)}</>;
 };
 
-/** Komut satırı. Çizim komutu etkinken istemi ve [seçenekleri] gösterir; yazılan metin (komut adı · seçenek harfi · koordinat · sayı)
-    Draft sürücüsüne gider. Enter / Boşluk onaylar veya son komutu yineler, Esc iptal eder, Tab uzunluk ↔ açı alanını değiştirir. */
+/** Komut satırı: etkin komutun istemi ve seçenekleri; Enter / Boşluk onaylar ya da son komutu yineler, Esc iptal, Tab uzunluk ↔ açı. */
 export const Terminal: React.FC = () => {
   const [commandInput, setCommandInput] = useState('');
   const [inputFocus, setInputFocus] = useState(false);
@@ -415,9 +409,8 @@ export const Terminal: React.FC = () => {
           e.preventDefault(); e.stopPropagation();
           if (!cancelCommand()) { setPlanePick(false); selectEntity(null); }
         } else if (st.activePlane !== 'ground' || st.session) {
-          // YÜZ KİPİNDE BOŞTA Esc = yüzden çık (Goker, Kas 2026 — "çıktığımda izolasyon mutlaka kalksın"): eskiden bu Esc Scene'e düşüyor,
-          // gövde seçimi kalkıyor ama yüz + izolasyon açık kalıyordu. Düzenlenen adımda kaydedilmemiş değişiklik varsa çıkılmaz (yanlışlıkla
-          // basılan Esc emeği silmesin) — komut satırı Update / Cancel'ı gösterir.
+          // Yüz kipinde boşta Esc = yüzden çık (yoksa Scene'e düşüp yüz + izolasyon açık kalıyordu).
+          // Adımda kaydedilmemiş değişiklik varsa çıkılmaz.
           e.preventDefault(); e.stopPropagation();
           if (sessionDirty()) useDraft.setState(s => ({ log: [...s.log.slice(-59), 'Unsaved changes on this step — Update or Cancel in the Drawing panel.'] }));
           else void exitFace();
@@ -929,7 +922,7 @@ const SIDEBAR_CSS = `
 /* Kart gövdesi açılış animasyonu */
 @keyframes yagoExpand { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
 .bone-skin .yago-expand { animation: yagoExpand 180ms cubic-bezier(.2,.7,.2,1) both; }
-/* Satırların sırayla dolması (Goker, Kas 2026 — "kapatınca satırlar sıra efektli, şık bir şekilde dolsun"): her satır mount olurken kayarak
+/* Satırların sırayla dolması: her satır mount olurken kayarak
    belirir; gecikme satır sırasıyla (inline animationDelay). */
 @keyframes yagoRowIn { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }
 .bone-skin .yago-row-in { animation: yagoRowIn 260ms cubic-bezier(.2,.7,.2,1) both; }
@@ -1025,8 +1018,7 @@ const HeaderToggle: React.FC<HeaderToggleProps> = ({ active, onClick, title, ico
     </button>
   );
 };
-/* Kenar çubuğu yerleşimi: 'docked' soldan kayan klasik şerit; 'floating' pencere içinde sürüklenip
-   boyutlanabilen yüzen panel; 'window' ayrı tarayıcı penceresi (portal). Sekmeler ve içerik üç kipte aynıdır. */
+/* Kenar çubuğu yerleşimi: 'docked' kayan şerit, 'floating' sürüklenen panel, 'window' ayrı pencere (portal); içerik üçünde aynı. */
 type SidebarMode = 'docked' | 'floating' | 'window';
 type FloatRect = { x: number; y: number; w: number; h: number };
 const SIDEBAR_LAYOUT_KEY = 'yago.sidebar.layout';
@@ -1080,14 +1072,12 @@ const copyStyleNode = (dst: Document, n: Node) => {
     c.textContent = css; dst.head.appendChild(c);
   }
 };
-/* Ayrı pencere about:blank YERİNE aynı kaynaktan bir kabuk sayfası (public/sidebar-window.html) açar: COOP/COEP yalıtımında
-   about:blank'e yazılan içerik asıl yüklemeyle silinir; kabuk aynı başlıklarla sunulduğu için açan pencereyle bağ korunur. */
+/* Ayrı pencere about:blank yerine aynı kaynaktan kabuk sayfası açar: COOP/COEP yalıtımında about:blank'e yazılan içerik silinir. */
 const SIDEBAR_WINDOW_URL = `${import.meta.env.BASE_URL}sidebar-window.html`;
 const SIDEBAR_WINDOW_ROOT_ID = 'yago-sidebar-root';
 const SIDEBAR_WINDOW_TIMEOUT_MS = 8000;
 type SidebarWindowHandle = { win: Window; root: HTMLElement; dispose: () => void };
-/** Pencereyi açar, kabuk yüklenince stilleri kopyalayıp `onReady`, olmazsa (engellendi / erişilemedi / zaman aşımı) `onFail` çağırır.
- *  Dönen fonksiyon bekleyen açılışı iptal eder. */
+/** Pencereyi açar; kabuk yüklenince `onReady`, engellenirse / zaman aşımında `onFail`. Dönen işlev açılışı iptal eder. */
 const openSidebarWindow = (rect: FloatRect, onReady: (h: SidebarWindowHandle) => void, onFail: () => void): (() => void) => {
   const left = Math.round(window.screenX + rect.x + 40), top = Math.round(window.screenY + rect.y + 40);
   let win: Window | null = null;
@@ -1308,7 +1298,7 @@ export const Sidebar: React.FC<{ parametersContent: React.ReactNode; assemblyCon
           <TabBtn active={activeTab === 'parameters'} onClick={() => setActiveTab('parameters')}
             icon={<SlidersHorizontal size={13.5} strokeWidth={2} />} label="Parameters" />
           <div style={VSEP} />
-          {/* ASSEMBLY (Goker, Kas 2026: "artık sadece panel yerleşmiyor — ayak, menteşe, ileride çekmece; hiyerarşik ürün ağacı"): eski "Panel Editor". */}
+          {/* ASSEMBLY — hiyerarşik ürün ağacı (eski "Panel Editor"). */}
           <TabBtn active={activeTab === 'assembly'} onClick={() => setActiveTab('assembly')}
             icon={<ListTree size={13.5} strokeWidth={2} />} label="Assembly" />
           {accessoriesContent && <>
@@ -1582,8 +1572,7 @@ const RAD2DEG = 180 / Math.PI;
 const evalSubs = (expr: (k: SubKey) => string, ctx: Record<string, number>) =>
   Object.fromEntries(SUB_KEYS.map(k => [k, { expression: expr(k), result: evaluateExpression(expr(k), ctx) }])) as Record<SubKey, ExprResult>;
 
-/* PARAMETRE SATIRI (Goker, Kas 2026 — CAD özellik paneli gibi): [kod] Etiket ………… [değer] birim. Satır üzerine gelince kenar koyulaşır,
-   odakta ince turuncu halka (yago-cell). */
+/* Parametre satırı: [kod] Etiket …… [değer] birim; üzerine gelince kenar koyulaşır, odakta turuncu halka (yago-cell). */
 const P_ROW = 'group/prow yago-cell flex items-center gap-1.5 h-[30px] pl-2 pr-1';
 const P_CODE = 'shrink-0 w-[22px] text-[10px] font-semibold tracking-[0.04em] tabular-nums text-[#a39b91] select-none';
 // Sessiz giriş alanı (değer / not): ortak çerçevesiz zemin + odak/geçiş sınıfları.
@@ -1652,10 +1641,8 @@ const ExprRow = ({ label, labelColor, expression, onExpr, result, children }: Ex
   </div>
 );
 
-/* YÜZ ROLLERİ (Goker, Eki 2026 — "referans kübün yüzeylerine ön arka sağ sol üst alt rolü vereyim; roller parametrede olsun"):
-   gövdenin ÖN yönü (Auto = kapakların yüzü, yoksa +Z; ya da ±X / ±Z) + her düz yüzün rolü (otomatik: normal ön yöne göre; satırdan
-   üstüne yazılır, Auto'ya dönülür; gövde parametresi `faceRoles`). Satıra gelince yüz 3D'de vurgulanır (Scene.FaceRoleHighlight).
-   Baza ayağı setleri ayak ön / arka / yan mesafelerini bu rollerden okur (PlinthService.plinthEdgeRoles). */
+/* Yüz rolleri: gövdenin ön yönü (Auto = kapak yüzü, yoksa +Z) + her düz yüzün rolü (otomatik, satırdan üstüne yazılır → `faceRoles`).
+   Satıra gelince yüz vurgulanır; baza ayak mesafeleri bu rollerden okunur. */
 const P_SELECT = `yago-param-input shrink-0 h-[22px] px-1 text-[11px] font-medium text-stone-700 ${P_BARE} rounded-[6px] ${P_FX} cursor-pointer`;
 const ROLE_DOT: Record<FaceRole, string> = { front: '#c2410c', rear: '#44403c', left: '#2563eb', right: '#0f766e', top: '#a8a29e', bottom: '#a8a29e' };
 function FacesSection({ shape }: { shape: Shape }) {
@@ -1667,7 +1654,7 @@ function FacesSection({ shape }: { shape: Shape }) {
   if (!faces.length) return null;
   const hover = (gi: number | null) => setFaceRoleHover(gi == null ? null : { shapeId: shape.id, gi });
   const axisLabel = (f: { axis: string | null }) => (f.axis ? (PLINTH_FACING_LABEL[f.axis] ?? f.axis) : '∠');
-  // Goker: "liste kapalı görünsün; Show face roles düğmesi (varsayılan kapalı) açılınca yüzlere yaz; sahnedeki rozete tıklayınca da değişsin"
+  // Liste varsayılan kapalı; "Show face roles" açılınca yüzlere rozet yazılır, rozete tık da değiştirir.
   return (
     <ParamSection title="Faces" count={faces.length}
       right={<button type="button" onClick={() => setShowFaceRoles(!showFaceRoles)} aria-pressed={showFaceRoles}

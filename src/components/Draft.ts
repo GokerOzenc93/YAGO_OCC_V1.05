@@ -1,11 +1,7 @@
 import { create } from 'zustand';
 
-/* 2B ÇİZİM ÇEKİRDEĞİ — three/React bağımsız (Node'da test edilebilir).
-   1) Geometri: nokta/vektör, ilkel (doğru parçası · yay · elips), kesişim, dilimleme, dönüşüm, öteleme (offset), köşe (fillet/chamfer).
-   2) Nesne yakalama (object snap) ve koordinat girişi (x,y · @dx,dy · @d<a · <a).
-   3) Komut sürücüsü: her komut bir üreteçtir (generator) — `yield` ile istem (Req) verir, girdi (Ev) alır. İstem metinleri ve
-      [seçenek] harfleri klasik CAD komut satırı akışını izler; kod özgündür (dışarıdan kopya yok).
-   Nesneler her zaman bir ÇİZİM DÜZLEMİNE (DraftPlane) aittir ve o düzlemin 2B koordinatlarında saklanır. */
+/* 2B ÇİZİM ÇEKİRDEĞİ — three / React bağımsız. 1) Geometri (ilkel, kesişim, dilim, ofset, köşe) · 2) yakalama + koordinat girişi ·
+   3) komut sürücüsü: her komut bir üreteç (yield istem, girdi alır). Nesneler bir çizim düzlemine (DraftPlane) ait, o düzlemin 2B koordinatında. */
 
 // ═════════════════════════════════════════════════ 1. TEMEL MATEMATİK ═════════════════════════════════════════════════
 export type P2 = { x: number; y: number };
@@ -55,9 +51,8 @@ export type PV = { x: number; y: number; b?: number };
 export type PlineS = { t: 'pline'; v: PV[]; closed?: boolean };
 export type Shape2 = LineS | CircleS | ArcS | EllipseS | PlineS;
 /** pb: kontrol noktalarının parametrik bağ tercihleri (sıra = ctrlPoints) · re: daire yarıçapı formülü — yalnız Parametric kipte anlamlıdır. */
-/** ref: REFERANS kenar — yüzü seçilen panelin / gövdenin o yüzdeki kenarı (sahne katmanı yazar). Komutlar seçebilir (ofset kaynağı, trim
- *  sınırı, uzatma hedefi, yakalama). Bir komut kenarı DEĞİŞTİRİRSE (trim, extend, fillet, taşı, sil…) o kenarın bağlı olduğu tüm çevre
- *  çizime KATILIR (Draft.adoptRef): artık normal çizim nesneleridir, kapalı profil sayılır ve adıma girer. Dokunulmamış referans adıma girmez. */
+/** ref: referans kenar (seçilen yüzün kenarı). Komutlar seçebilir; bir komut kenarı değiştirirse bağlı çevre çizime katılır (adoptRef),
+ *  dokunulmamış referans adıma girmez. */
 export type Entity = Shape2 & { id: string; plane: string; pb?: (PtPref | undefined)[]; re?: string; ref?: boolean };
 export type GeoStyle = 'ghost' | 'rubber' | 'hi' | 'del' | 'track';
 /** Geçici çizim (önizleme): nesne biçimi + stil, veya seçim penceresi. */
@@ -690,10 +685,8 @@ const pointInPoly = (p: P2, poly: P2[]) => {
 export type ProfileSeg = { to: P2; mid?: P2; bez?: [P2, P2] };
 /** Kapalı profil: saat yönünün tersine; depth = kaç döngünün içinde (çift = dolu bölge, tek = ada/delik). */
 export interface ProfileLoop { start: P2; segs: ProfileSeg[]; pts: P2[]; depth: number }
-/** Nesnelerden kapalı döngüleri çıkarır: kapalı nesneler (daire · elips · kapalı polyline) doğrudan, açık nesneler (çizgi · yay · açık polyline)
- *  uç uca (tol) zincirlenerek. Kapanmayan zincirler `open` olarak sayılır. Elips yayları ≤ 45°'lik parçalara bölünür ve her parça kübik
- *  Bezier olarak verilir (sapma ≈ yarıçapın milyonda 4'ü): katıda kırık çizgi yerine GERÇEK eğri → kesimin duvarı onlarca küçük düz yüz
- *  değil tek eğri yüzdür (Geometry: eğri yüz ayrımı). */
+/** Kapalı döngüler: kapalı nesneler doğrudan, açıklar uç uca zincirlenir (kapanmayan → `open`). Elips yayları ≤ 45° kübik Bezier'e bölünür:
+ *  katıda kırık çizgi yerine tek eğri yüz olsun. */
 export function profileLoops(shapes: Shape2[], tol = 0.05): { loops: ProfileLoop[]; open: number } {
   const closed: Prim[][] = [], chains: Prim[][] = [];
   for (const s of shapes) {
@@ -751,8 +744,7 @@ export function profileLoops(shapes: Shape2[], tol = 0.05): { loops: ProfileLoop
   loops.sort((a, b) => a.depth - b.depth);
   return { loops, open };
 }
-/** Nesneyi orijine göre X ve Y'de ayrı ölçekler. Eşit ölçek birebir; farklı ölçekte daire → elips, yay → elips yayı, yaylı polyline ve
- *  eğik elips → kırık çizgi (doğru parçalarına bölünür). */
+/** Nesneyi X / Y'de ayrı ölçekler; farklı ölçekte daire → elips, yay → elips yayı, yaylı polyline / eğik elips → kırık çizgi. */
 export function scaleShapeXY(s: Shape2, sx: number, sy: number): Shape2 {
   if (Math.abs(sx - 1) < 1e-9 && Math.abs(sy - 1) < 1e-9) return s;
   if (Math.abs(sx - sy) < 1e-9) return transformShape(s, mScale(P(0, 0), sx));
@@ -772,12 +764,9 @@ export function scaleShapeXY(s: Shape2, sx: number, sy: number): Shape2 {
 }
 export const moveShape = <T extends Shape2>(s: T, d: P2): T => transformShape(s, mTranslate(d));
 
-// ── PARAMETRİK NOKTALAR (Goker, Kas 2026 — "her çizgi her yönde parametrik büyüyüp küçülsün; bazı geometriler belirli bir yöne doğru büyüsün;
-//    çizileni sonradan parametrik yapabileyim; tek çapa + uzama yöntemi de kalsın") ──
-// Her nesnenin KONTROL NOKTALARI vardır: doğru = 2 uç · yay = başlangıç + bitiş (yay açısı korunur) · polyline = köşeler (bulge korunur) ·
-// daire / elips = merkez. Her noktanın X'i ve Y'si AYRI bağlanır: L = sol / alt kenardan sabit · R = sağ / üst kenardan sabit ·
-// C = yüz ortasından sabit · P = yüz ölçüsünün oranı · F = formül. Formül değişkenleri: W, H (yüz eni / boyu) + çağıranın verdikleri
-// (gövde ölçüleri BW / BH / BD, gövdenin özel parametreleri).
+// ── PARAMETRİK NOKTALAR ──
+// Kontrol noktaları: doğru 2 uç · yay uçlar (açı korunur) · polyline köşeler · daire / elips merkez. X ve Y ayrı bağlanır:
+// L / R kenardan, C ortadan, P oran, F formül (W, H + çağıranın değişkenleri BW / BH / BD, özel parametreler).
 export type BindKind = 'L' | 'R' | 'C' | 'P';
 export type SketchBind = { k: BindKind; v: number } | { k: 'F'; e: string };
 export interface PtBind { x: SketchBind; y: SketchBind }
@@ -790,8 +779,7 @@ export type BindDefault = 'L' | 'R' | 'C' | 'A';
 const EXPR_FN: Record<string, (...a: number[]) => number> = {
   min: Math.min, max: Math.max, abs: Math.abs, round: Math.round, floor: Math.floor, ceil: Math.ceil, sqrt: Math.sqrt,
 };
-/** Küçük, güvenli ifade değerlendirici: + − * / ^ ( ), sayılar (12.5 ya da 12,5), değişkenler, min / max / abs / round / floor / ceil / sqrt.
- *  Bilinmeyen ad, sözdizimi hatası ya da sonlu olmayan sonuç → null. (İşlev argümanlarında virgül ayırıcıdır, ondalık için nokta yazılır.) */
+/** Güvenli ifade değerlendirici: + − * / ^ ( ), sayılar (12,5 de), değişkenler, min / max / abs / round / floor / ceil / sqrt. Hata → null. */
 export function evalExpr(text: string, vars: Record<string, number>): number | null {
   const s = text;
   let i = 0, fnDepth = 0;
@@ -887,8 +875,7 @@ export function ctrlPoints(s: Shape2): P2[] {
     case 'pline': return s.v.map(v => P(v.x, v.y));
   }
 }
-/** Kontrol noktaları değiştirilmiş nesne: yayda yeni uçlar + eski yay açısından merkez / yarıçap yeniden bulunur; polyline'da bulge korunur;
- *  dairede isteğe bağlı yeni yarıçap. */
+/** Kontrol noktaları değiştirilmiş nesne: yayda merkez / yarıçap eski açıdan yeniden bulunur, polyline bulge korunur. */
 export function withCtrl(s: Shape2, pts: P2[], r?: number): Shape2 {
   switch (s.t) {
     case 'line': return { ...s, a: pts[0], b: pts[1] };
@@ -901,8 +888,7 @@ export function withCtrl(s: Shape2, pts: P2[], r?: number): Shape2 {
     case 'pline': return { ...s, v: s.v.map((v, i) => ({ ...v, x: pts[i].x, y: pts[i].y })) };
   }
 }
-/** Nokta bağlı adımın nesnelerini verilen yüz ölçüsünde çözer (koordinatlar yüz çerçevesinde: orijin = yüzün sol-alt köşesi).
- *  Formül çözülemezse hata fırlatır → adım uygulanmaz, listede uyarı görünür. */
+/** Nokta bağlı adımı yüz ölçüsünde çözer (orijin yüzün sol-alt köşesi). Formül çözülemezse fırlatır → adım uygulanmaz. */
 export function resolveParam(shapes: Shape2[], pts: PtBind[][], radii: (string | null)[] | undefined, w: number, h: number, vars: Record<string, number>): Shape2[] {
   const v = { ...vars, W: w, H: h };
   const need = (b: SketchBind, size: number): number => {
@@ -918,8 +904,8 @@ export function resolveParam(shapes: Shape2[], pts: PtBind[][], radii: (string |
     return withCtrl(s, np, r);
   });
 }
-/** Düzenleyicideki nokta tercihlerinden adımın bağları (nesne yüz çerçevesi koordinatında verilir): tür tercihten — yoksa varsayılandan,
- *  'A' = en yakın kenar — değer koordinattan. Formüllü nokta elle taşınmışsa (formül artık o koordinatı vermiyorsa) formül düşer. */
+/** Nokta tercihlerinden bağlar: tür tercihten ya da varsayılandan ('A' = en yakın kenar), değer koordinattan.
+ *  Formüllü nokta elle taşınmışsa formül düşer. */
 export function bindsOf(s: Shape2, prefs: (PtPref | undefined)[] | undefined, w: number, h: number, dflt: [BindDefault, BindDefault], vars: Record<string, number>): PtBind[] {
   const v = { ...vars, W: w, H: h };
   const axis = (pref: AxisPref | undefined, coord: number, size: number, d: BindDefault): SketchBind => {
@@ -1038,8 +1024,7 @@ export interface DraftState {
   apply: SketchApply;
   /** Parametric kip — seçili kontrol noktaları ("nesneId:sıra"). */
   psel: string[];
-  /** Etkin yüzün çerçevesi (sahne katmanı yazar): düzlem koordinatı + (dx, dy) = yüz çerçevesi koordinatı (orijin yüzün sol-alt köşesi);
-   *  w / h yüz ölçüsü; vars formül değişkenleri (W, H dahil). */
+  /** Etkin yüzün çerçevesi: düzlem koordinatı + (dx, dy) = yüz çerçevesi koordinatı; w / h yüz ölçüsü; vars formül değişkenleri. */
   face: DraftFace | null;
   /** Parametric önizleme: sanal yüz ölçüsü (null = kapalı) — çizimin o ölçüde alacağı hâl sahnede hayalet olarak çizilir. */
   pview: { w: number; h: number } | null;
@@ -1048,8 +1033,7 @@ export interface DraftState {
 }
 export interface DraftFace { planeId: string; dx: number; dy: number; w: number; h: number; vars: Record<string, number> }
 export interface DraftIsolate { targetId: string; bodyId: string; kind: 'panel' | 'body' }
-/** mode: 'anchor' = tek çapa + uzama (eski yöntem) · 'points' = her nokta kenara / formüle bağlı. auto: bağlanmamış noktalar en yakın
- *  kenara bağlanır (kapalıysa çapaya). */
+/** mode: 'anchor' = tek çapa + uzama · 'points' = her nokta kenara / formüle bağlı. auto: bağsız noktalar en yakın kenara. */
 export interface SketchApply {
   op: 'cut' | 'shape'; through: boolean; depth: number; anchor: [number, number]; stretch: [boolean, boolean];
   mode: 'anchor' | 'points'; auto: boolean;
@@ -1090,8 +1074,6 @@ export const setIsolate = (i: DraftIsolate | null) => set({ isolate: i });
 export const setSession = (x: DraftState['session']) => set({ session: x });
 export const setApply = (patch: Partial<SketchApply>) => set(s => ({ apply: { ...s.apply, ...patch } }));
 export const setFace = (f: DraftFace | null) => set({ face: f });
-export const setPView = (v: DraftState['pview']) => set({ pview: v });
-export const setPSel = (keys: string[]) => set({ psel: keys });
 
 const say = (t: string) => set(s => ({ log: [...s.log.slice(-59), t] }));
 export const stripEnt = (e: Entity): Shape2 => { const s: Record<string, unknown> = { ...e }; delete s.id; delete s.plane; delete s.pb; delete s.re; delete s.ref; return s as unknown as Shape2; };
@@ -1104,8 +1086,7 @@ const keepPrefs = (old: Entity, next: Entity): Entity => {
   return out;
 };
 const planeEnts = () => { const st = get(); return st.entities.filter(e => e.plane === st.activePlane); };
-/** Referans kenarı ÇİZİME KATAR: kenarın uç uca bağlı olduğu tüm çevre (aynı düzlemdeki referans kenarlar) normal çizim nesnesi olur —
- *  kimlikleri korunur, komut işine onlarla devam eder. Böylece kırpılan / yuvarlatılan panel çevresi kapalı profil olarak kalır. */
+/** Referans kenarı çizime katar: uç uca bağlı tüm çevre normal nesne olur (kimlik korunur) → kırpılan çevre kapalı profil kalır. */
 function adoptRef(id: string) {
   const st = get(), e0 = st.entities.find(e => e.id === id);
   if (!e0?.ref || e0.t !== 'line') return;
@@ -1357,9 +1338,7 @@ export function activatePlane(pl: Omit<DraftPlane, 'id'> | 'ground', fresh = fal
   cancelCommand();
   const st = get();
   if (pl === 'ground') { set({ activePlane: GROUND_PLANE.id, planePick: false, planeCandidate: null, selection: [], psel: [], pview: null }); return GROUND_PLANE.id; }
-  // AYNI YÜZ = aynı hedef + aynı yön + EŞ DÜZLEM (orijin aynı olmak zorunda değil; nesneler bulunan düzlemin kendi orijinine göredir).
-  // Eskiden orijin de aynı olmalıydı: adım düzenleme oturumunun düzlemi (orijin = yüz çerçevesinin köşesi) ile yüz seçiminin düzlemi aynı
-  // yüzde iki ayrı düzlem oluyor, birinde bırakılan çizim yüze yeniden girilince öbüründe görünmüyordu ("çizgiler kalıyor").
+  // Aynı yüz = aynı hedef + yön + eş düzlem (orijin şartı yok): yoksa oturum düzlemi ile seçim düzlemi ayrı düşüp çizim kayboluyordu.
   const coplanar = (q: DraftPlane) => Math.abs((q.origin[0] - pl.origin[0]) * pl.n[0] + (q.origin[1] - pl.origin[1]) * pl.n[1] + (q.origin[2] - pl.origin[2]) * pl.n[2]) < 0.05;
   const same = (q: DraftPlane) => q.kind === 'face' && q.id !== st.session?.planeId && q.shapeId === pl.shapeId && near3(q.n, pl.n, 1e-4) && near3(q.u, pl.u, 1e-4) && coplanar(q);
   // Önce üzerinde çizim olan düzlem (bekleyen çizim kaybolmasın), yoksa ilk eşleşen.
@@ -1380,8 +1359,7 @@ export function loadEntities(shapes: Shape2[], planeId: string, prefs?: (PtPref[
   set(st => ({ entities: [...st.entities, ...made] }));
   return made;
 }
-/** Düzlemdeki (ids verilirse yalnız onlar) nesneleri depodan çıkarır ve biçimlerini döndürür. Geri alma yığınları temizlenir:
- *  nesneler artık bir çizim adımına aittir, eski anlık görüntüler onları serbest çizim olarak geri getirmemeli. */
+/** Düzlemdeki nesneleri depodan çıkarıp döndürür; geri alma yığınları temizlenir (nesneler artık adıma ait). */
 export function takeEntities(planeId: string, ids?: string[]): Shape2[] {
   const k = ids ? new Set(ids) : null, st = get();
   const taken = st.entities.filter(e => e.plane === planeId && (!k || k.has(e.id)));
@@ -1460,8 +1438,7 @@ export function chainLines(lines: LineS[], tol = 0.05): PlineS[] {
   });
   return out;
 }
-/** BİLEŞİK ÇİZGİ: `start` ile uç uca bağlı (aynı türden: çizim ya da referans) doğru / yay / açık polyline nesneleri tek polyline olarak.
- *  Bir uçta birden çok komşu varsa (çatallanma) zincir orada durur. Kapalı nesne, elips ve tek başına nesne için null. */
+/** Bileşik çizgi: `start` ile uç uca bağlı doğru / yay / açık polyline'lar tek polyline; çatallanmada durur. Kapalı / tek nesnede null. */
 export function chainOf(ents: Entity[], start: Entity, tol = 0.01): { ids: string[]; shape: PlineS } | null {
   const linear = (e: Entity) => !isClosedShape(e) && e.t !== 'ellipse' && e.t !== 'circle';
   if (!linear(start)) return null;
@@ -1635,8 +1612,7 @@ function* PLINE(c: Ctx): G {
     if (id) c.update(id, s); else id = c.add(s).id;
   };
   const dirNow = () => (v.length < 2 ? (vars.last && same(vars.last.p, v[0]) ? vars.last.ang : 0) : endTangent(v[v.length - 2], v[v.length - 1]));
-  // Goker: "polyline'da başladığı ve bittiği nokta ayrı iki nokta oluyor; tam kapansın" → başlangıç noktasına tıklanınca polyline KAPALI
-  // olur (son köşe eklenmez) ve komut biter.
+  // Başlangıç noktasına tıklanınca polyline kapanır (son köşe eklenmez) ve komut biter.
   let closedNow = false;
   const push = (p: P2, bulge = 0) => {
     if (same(p, v[v.length - 1])) return;
@@ -2541,9 +2517,7 @@ function* OFFSET(c: Ctx): G {
     if (isOpt(e1, 'U')) { const id = made.pop(); if (id) c.remove([id]); else c.msg('Nothing to undo.'); continue; }
     if (e1.k !== 'pt') return;
     if (!e1.ent) continue;
-    // BİLEŞİK OFSET (Goker: "her çizgiyi tek tek yapıyor; bileşik çizgi halinde ofset olmalı"): tıklanan nesne, uç uca bağlı olduğu
-    // çizgilerle birlikte TEK polyline olarak ofsetlenir — panel / gövde çevresi ve ayrı ayrı çizilmiş çizgi zincirleri dahil.
-    // Shift ile tıklanırsa yalnız o nesne.
+    // Bileşik ofset: tıklanan nesne uç uca bağlı çizgileriyle tek polyline olarak ofsetlenir; Shift ile yalnız o nesne.
     const chain = e1.shift ? null : chainOf(c.ents(), e1.ent);
     const src: Shape2 = chain ? chain.shape : stripEnt(e1.ent);
     if (src.t === 'ellipse') { c.msg('Cannot offset that object.'); continue; }
@@ -2564,8 +2538,7 @@ function* OFFSET(c: Ctx): G {
   }
 }
 
-/** JOIN: seçilen, uç uca değen doğru / yay / polyline'ları tek polyline yapar (uçlar buluşuyorsa KAPALI). Panel / gövde kenarı seçilirse
- *  çevresi çizime katılır. */
+/** JOIN: uç uca değen doğru / yay / polyline'ları tek polyline yapar (uçlar buluşursa kapalı); kenar seçilirse çevresi çizime katılır. */
 function* JOIN(c: Ctx): G {
   const sel = yield* selectObjects(c, 'JOIN');
   if (!sel) return;

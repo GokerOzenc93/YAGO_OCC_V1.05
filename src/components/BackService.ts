@@ -5,31 +5,28 @@ import {
 } from '../store';
 import * as THREE from 'three';
 import { type Vec3, genId, round1 } from './Geometry';
-import { clipHalfPlane, footprintGeometry, localBboxOf, panelFrontHull, panelHasRotation, polyArea } from './Geometry';
-// DİKKAT: BackService ↔ PanelGroupService döngüsel içe aktarım (groupObstacles → backObstacleFor). Modül üst düzeyinde
-// PanelGroupService bağlarını OKUMA; yalnız fonksiyon gövdesinde çağır.
-import { type GapMode, applyGapEditProportional, bodyLocalBox, liveFaceBox, cycleGapMode, isInteriorPanel, panelLocalBox, passiveGapIndex } from './PanelGroupService';
-import { type BoundPanel, type EdgeInfo, type JointTargets, type PlaneRect, type Pt2, type SlabCut, type SplitJoint, EDGE_KEYS, boundEdgeInfo, cloneTree, collectBoundPanels, collectRotatedCuts, cutBands, cutCoverFar, cutEdgeOf, depthOptions, jointCenter, jointKey, leavesSplittableAt, polyChanged, polyRect, pruneRefs, rectKey, rectPoly, removeMemberVfs, renameMemberVfs, sameBounds, sameTree, setMemberPanelThickness, slabVfGeometry, solveTree, spacingResize, splitGapsOf, unsolveTree, findNode as findBackNode, findNode as findSolvedBackNode, jointRefs as backJointRefs, planeAxes as backPlaneAxes, replaceNode as replaceBackNode, treeJoints as backJoints, treeLeaves as backLeaves } from './PanelGroupService';
+import { clipHalfPlane, footprintGeometry, localBboxOf, panelHasRotation, polyArea } from './Geometry';
+// DİKKAT: BackService ↔ PanelGroupService döngüsel import (groupObstacles → backObstacleFor) — üst düzeyde okuma, yalnız fonksiyon içinde.
+import {
+  applyGapEditProportional, bodyLocalBox, resplitNode, nearSlabsOf, adoptEdgeSlabs, liveFaceBox, cycleGapMode, isInteriorPanel, panelLocalBox,
+  passiveGapIndex,
+} from './PanelGroupService';
+import {
+  type BoundPanel, type EdgeInfo, type JointTargets, type PlaneRect, type Pt2, type SlabCut, type SplitJoint, EDGE_KEYS, boundEdgeInfo, cloneTree,
+  collectBoundPanels, collectRotatedCuts, cutBands, cutCoverFar, cutEdgeOf, depthOptions, jointCenter, jointKey, leavesSplittableAt, polyChanged,
+  polyRect, pruneRefs, rectKey, rectPoly, removeMemberVfs, renameMemberVfs, sameBounds, sameTree, setMemberPanelThickness, slabVfGeometry, solveTree,
+  spacingResize, splitGapsOf, unsolveTree, findNode as findBackNode, findNode as findSolvedBackNode, jointRefs as backJointRefs,
+  planeAxes as backPlaneAxes, replaceNode as replaceBackNode, treeJoints as backJoints, treeLeaves as backLeaves,
+} from './PanelGroupService';
 
-// ARKALIK (BackService) — kapaktan (DoorService) BAĞIMSIZ servis: kendi tipleri, store dilimi, çözücüsü ve VF yazımı
-// (yalnız saf yardımcılar PanelGroupService'te ortak).
-//  • Sınır = VF.backBound işaretli paneller; yoksa gövde kenarı. Düzlem = gövdenin ARKA yüzü (gövde-yerel ön = +Z → arka = Z−);
-//    seçimde tıklama hangi yüzden gelirse gelsin arka yüze taşınır (rayBackEntry). u = X (sütun), v = Y (satır).
-//  • Grup dikdörtgeni = İÇ dikdörtgen (sınır panellerinin iç yüzleri), front = sınır panellerinin ARKA yüzü (P). Ağaç bu alanı
-//    KATSAYI kuralıyla böler; bölmek üst ölçüsünü değiştirmez.
-//  • HER PARÇA kendi tipini taşır (yoksa grup varsayılanı): 'outer' = arkadan ÇAKMA (P'nin dışında, kenarda sınır panelini bini
-//    kadar örter: full = kalınlık · half · none); 'inner' = KANALLI (P'den `setback` kadar içerde, kenarda panele `inset` kadar girer).
-//  • KENAR İLİŞKİSİ (grup başına `edgeRel`): 'groove' (varsayılan) → panel TAM BOY, iç parça kanala `inset` kadar girer; 'nail' → o
-//    kenarın paneli arkalığın ÖN yüzüne kadar OTOMATİK KISALTILIR, parça ucunu `cover` kadar örter (girilmemişse tamamen). Kısaltma:
-//    dikme/raf → hacim engeli (backObstacleFor), gövde paneli → parça o paneli sırası ne olursa olsun BASAR (backNailStampFor).
-//    Çakma kenar derinlik (P) vermez — yoksa panel kısaldıkça arkalık öne kaçardı. Gövdeyle kesilmez.
-//  • SIRA: arkalıktan SONRA konan panel (arkalığın kenarı / derzi değilse) arkalığa kadar yerleşir — iç parça levhasıyla basar /
-//    hacim engelidir. Önce konan paneller kenar / derz / geçme kurallarına uyar.
-//  • Dönmüş sınır paneli kenar olmaz; arkalığı büyük-yüz düzlemiyle keser (arkalık düzlemi değişmez).
-//  • Arkalık-sınırı raf/dikme: arkalığın GEÇTİĞİ (kenarı olmayan) kanallı levha KISALIR; KENARI olan levha kenar ilişkisine uyar
-//    (groove → kısalmaz). Panel ref ile levhada BÖLÜNÜNCE derz levhayı izler (BackNode.refs, hep 'center'); derz ilişkisi
-//    (BackJointRef.rel): groove → iki yandan kanal, levha tam boy; nail → levha arkalığın ön yüzüne kadar KISALIR (hacim engeli),
-//    parçalar ucunu `jointIn` kadar örter. Full / Half / Left / Right binisi YOK.
+// ARKALIK — kapaktan bağımsız servis (ortak saf yardımcılar PanelGroupService'te).
+//  • Sınır = backBound paneller, yoksa gövde kenarı. Düzlem = gövdenin arka yüzü (tıklama arka yüze taşınır); u = X, v = Y.
+//  • Grup dikdörtgeni = iç dikdörtgen, front = sınır panellerinin arka yüzü (P); ağaç katsayıyla böler.
+//  • Parça tipi: 'outer' = çakma (P'nin dışında, bini kadar örter), 'inner' = kanallı (P'den setback içerde, inset kadar girer).
+//  • Kenar ilişkisi (`edgeRel`): 'groove' panel tam boy; 'nail' panel arkalığın ön yüzüne kadar kısalır (raf/dikme → hacim engeli,
+//    gövde paneli → damga). Çakma kenar derinlik vermez (yoksa arkalık öne kaçar).
+//  • Sıra: arkalıktan sonra konan panel arkalığa kadar yerleşir. Dönmüş sınır paneli kenar olmaz.
+//  • Panel ref ile bölünen derz levhayı izler ('center'); groove → iki yandan kanal, nail → levha kısalır, parçalar `jointIn` örter.
 
 export { backJointRefs, backJoints, backLeaves, backPlaneAxes, findBackNode, findSolvedBackNode, replaceBackNode, cutBands as backCutBands };
 export { gapMode as backSizeMode, passiveGapIndex as passiveBackSizeIndex } from './PanelGroupService';
@@ -74,7 +71,6 @@ const PREVIEW_ID = 'önizleme';
 const MAX_BACK_SPLIT = 12;
 const NEAR_EXTRA = 3;        // arkalık kenarı ile levha arasındaki "yaklaşma" payı (mm), boşluğun üstüne
 const THIN_PANEL = 60;       // levha sayılacak en büyük kalınlık (mm)
-const EDGE_ADOPT_TOL = 1;    // gövde kenarı ile levhanın dış yüzü arası en büyük fark (mm)
 const GROOVE_MOUTH = 5;      // kanal kesicisi panelin iç yüzünden dışa taşar: çakışık yüz olmasın (mm)
 const NEIGHBOR_SLACK = 20;   // komşu kapak panelin iç yüzü kanal çizgisinden en çok bu kadar boşluğa taşabilir (mm)
 export const BACK_JOINT_NEAR = 30;   // levha merkezi ile derz merkezi arası en büyük uzaklık (mm; + yarım kalınlık + yarım derz)
@@ -86,11 +82,9 @@ export const backGroupName = (g: Pick<BackGroup, 'name'>) => g.name ?? 'Back';
 export const vfBackBound = (vf: Pick<VirtualFace, 'backBound' | 'splitBack'> | undefined | null): boolean => !!(vf?.backBound ?? vf?.splitBack);
 export type BackEdgeKey = keyof BackBounds;
 
-/** ARKA yüz adayı: gövdenin REAR rolündeki eksen-hizalı bir yüzü (PlinthService.bodyFaces; Goker: "rear olan kısma arkalık ata —
- *  L kübün iki rear yüzü olabilir, oralara tıklatayım"). `bounds` = yüzün köşe kutusu (gövde-yerel). */
+/** Arka yüz adayı: gövdenin rear rolündeki eksen-hizalı yüzü (L'de iki tane olabilir). `bounds` = yüzün kutusu (gövde-yerel). */
 export interface RearFace { axis: 0 | 1 | 2; side: 1 | -1; bounds: { min: Vec3; max: Vec3 } }
-/** Tıklama bir REAR yüze taşınır: ışın verilen arka yüz düzlemlerinden (gövde kutusunun o yüzü) hangisini yüzün sınırları içinde
- *  önce kesiyorsa o yüz; hiçbirini kesmiyorsa ilk arka yüzün düzlemine izdüşüm (kırpılmış). Arka yüz listesi yoksa eski −Z. */
+/** Tıklama bir rear yüze taşınır: ışının sınırları içinde önce kestiği yüz, yoksa ilk yüze kırpılmış izdüşüm. Liste yoksa −Z. */
 export function rayBackEntry(o: Vec3, d: Vec3, b: CavityBox, rears?: RearFace[]): { axis: 0 | 1 | 2; side: 1 | -1; point: Vec3; bounds: CavityBox } | null {
   const list: RearFace[] = rears && rears.length ? rears : [{ axis: BACK_AXIS, side: BACK_SIDE, bounds: { min: [...b.min] as Vec3, max: [...b.max] as Vec3 } }];
   const planeOf = (r: RearFace) => (r.side > 0 ? b.max[r.axis] : b.min[r.axis]);
@@ -133,8 +127,7 @@ export function collectBackCuts(
   return collectRotatedCuts(parent, shapes, vfs, vf => vfBackBound(vf) && !isBackVf(vf));
 }
 
-// Üyeyi dönmüş panellerin büyük-yüz düzlemleriyle kırpar; kesim arkalığın İKİ yüzeyinde alınır, kısıtlayıcı olan tutulur
-// (arkalık eğik panele girmez). Kenar boşluğu = kesicinin kestiği kenarın boşluğu.
+// Üyeyi dönmüş panellerin büyük-yüz düzlemleriyle kırpar; iki yüzeyde ölçülür, kısıtlayıcı olan tutulur.
 function clipMemberByCuts(
   m: PlaneRect, cuts: BackCut[], axis: 0 | 1 | 2, side: 1 | -1, placement: BackPlacement, thickness: number, front: number,
   gapIn: number | BackEdgeGaps, cover?: Partial<BackEdgeGaps>, ref?: [number, number],
@@ -190,8 +183,7 @@ function unbindBacksFrom(vf: VirtualFace): void {
     if (tree) void writeBackGroup(g, { tree });
   }
 }
-/** Sonradan sınır yapılan raf/dikme (Goker: "arkalık kısalmıyor"): kenar olmadıysa, levhanın geçtiği her arkalık o levhada bölünür
- *  (derz levhaya bağlı, kanallı) → parçalar levhada biter, levha arkaya kadar tam boy. */
+/** Sonradan sınır yapılan raf/dikme kenar olmadıysa geçtiği her arkalık o levhada bölünür (derz bağlı, kanallı). */
 function splitBacksAtMarked(vf: VirtualFace): void {
   const st = useAppStore.getState();
   const parent = shapeById(vf.shapeId, st.shapes);
@@ -218,16 +210,14 @@ function adoptBoundsAfterMark(shapeId: string): void {
 type SideOpt = EdgeInfo & { cross: [number, number]; name: string };
 type BackEdges = { l: EdgeInfo; r: EdgeInfo; b: EdgeInfo; t: EdgeInfo };
 
-// KENAR KURALI: P = derinlik referansının arka yüzü. Çakma parça P'nin dışında [P, P+side·t]: sınır paneli arkalığın gerisindeyse
-// (arka yüzü P'de ya da daha geride) kalınlığını bini kadar örter; kanallı parça P−side·setback'ten içerde, panele inset kadar girer.
+// Kenar kuralı: P = derinlik referansının arka yüzü. Çakma [P, P+side·t] (gerideki paneli bini kadar örter); kanallı P−side·setback'ten.
 const edgeCovered = (x: EdgeInfo, side: 1 | -1, P: number) => x.front != null && (side > 0 ? x.front <= P + TOL : x.front >= P - TOL);
 /** Aday önizlemesi: tüm kenarlar iç yüzde (inner) ya da örtülen kenarlar dış yüzde (outer). */
 function rectAtDepth(e: BackEdges, side: 1 | -1, placement: BackPlacement, P: number): BackRect {
   const pick = (x: EdgeInfo) => (placement === 'outer' && edgeCovered(x, side, P) ? x.outer : x.inner);
   return { u0: pick(e.l), u1: pick(e.r), v0: pick(e.b), v1: pick(e.t), front: P };
 }
-/** Kenar bilgisi (çözümden): sınır panelinin kalınlığı (gövde kenarı 0), çakma parçanın onu örtebilmesi (gerisinde mi),
- *  kenar ilişkisi ve `nail` = ilişki çakma + sınır paneli var + kenara değen İÇ parça var (panel kısaltılır, derinlik vermez). */
+/** Kenar bilgisi: sınır kalınlığı, örtülebilirlik, ilişki; `nail` = çakma + sınır paneli + kenara değen iç parça (kısaltılır). */
 export type BackEdgeExt = Record<BackEdgeKey, { t: number; covered: boolean; rel: BackEdgeRel; nail: boolean }>;
 const edgeExtOf = (e: BackEdges, side: 1 | -1, P: number, g: Pick<BackGroup, 'edgeRel'>, nailActive: Set<BackEdgeKey>): BackEdgeExt => {
   const one = (x: EdgeInfo, k: BackEdgeKey) => ({
@@ -260,27 +250,22 @@ function activeNailEdges(
 }
 const backLeafById = (tree: BackNode, id: string): BackLeaf | null => { const n = findBackNode(tree, id); return n && n.kind === 'leaf' ? n : null; };
 
-// Arkalık adayları: dört yandaki sınır seçeneklerinin her kombinasyonu bir dikdörtgen; seçilen panel çapraz açıklıkla örtüşmeli.
-// Hepsi tıklanan noktayı içerir. Sıra: alan büyükten küçüğe (önce dıştakiler).
+// Arkalık adayları: dört yandaki sınır seçeneklerinin kombinasyonları; tıklamayı içerir. Alan büyükten küçüğe.
 export function backCandidatesAt(parent: Shape, axis: 0 | 1 | 2, side: 1 | -1, click: Vec3, shapes?: Shape[], vfs?: VirtualFace[], faceBox?: CavityBox): BackPick[] {
-  // `faceBox` = tıklanan ARKA yüzün köşe kutusu (eksen boyunca = yüz düzlemi; L gövde: çentikli yüz kutudan dar ve İÇERDE olabilir) —
-  // gövde kenarı seçenekleri o yüzle sınırlanır, arkalık düzlemi o yüzün düzlemidir.
+  // `faceBox` = tıklanan arka yüzün kutusu (L'de çentikli yüz içeride olabilir); arkalık düzlemi o yüz.
   const body = backBodyBox({ faceBox, axis }, parent);
   if (!body) return [];
   const faceBoxOut = faceBox ? { min: [...faceBox.min] as Vec3, max: [...faceBox.max] as Vec3 } : undefined;
   const { u, v } = backPlaneAxes(axis);
   const bodyFront = side > 0 ? body.max[axis] : body.min[axis];
   const inFace = (b: CavityBox) => !faceBox || ([u, v] as const).every(a => Math.min(b.max[a], faceBox.max[a]) - Math.max(b.min[a], faceBox.min[a]) > TOL);
-  // Yüz seçiminde sınır paneli o yüzün DÜZLEMİNE ulaşmalı (+X yüzünün arkalığını x=0'daki sol yan sınırlayamaz — L gövdede arkalık
-  // yarım kalıyordu); pay: küçük geri çekilmeler (REACH_TOL) yine sayılır.
+  // Yüz seçiminde sınır paneli o yüzün düzlemine ulaşmalı (REACH_TOL payıyla) — L gövdede arkalık yarım kalıyordu.
   const reaches = (b: CavityBox) => !faceBox || (b.min[axis] <= bodyFront + REACH_TOL && b.max[axis] >= bodyFront - REACH_TOL);
   const bounds = collectBackBoundPanels(parent, shapes, vfs, true).filter(bp => inFace(bp.box) && reaches(bp.box));
   const cu = click[u], cv = click[v];
   // Yüz seçiminde yüzü aşan panelin "arkası" yüz düzlemidir (çentik yüzünü geçen yan/üst/alt).
   const frontOf = (b: CavityBox) => (faceBox ? bodyFront : (side > 0 ? b.max[axis] : b.min[axis]));
-  // Gövde kenarı da seçenektir, o yanda gövde kenarına dayanan ve tıklama hizasını (`cc`, çapraz eksen) ÖRTEN sınır paneli yoksa —
-  // kenara dayanan ama hizayı örtmeyen parça (L köşe dolabında arka yüzün kenarı boyunca uzanan öteki arka KAYIT) kenarı kapatmaz;
-  // eskiden kenarı kapatıyor, kayıt yan sınır olarak kesişmeyince aday hiç çıkmıyordu.
+  // Gövde kenarı da seçenektir, o yanda tıklama hizasını örten sınır paneli yoksa (L'de kenar boyunca uzanan öteki kayıt kenarı kapatmaz).
   const optsFor = (ax: 0 | 1 | 2, cx: 0 | 1 | 2, c: number, cc: number, minSide: boolean): SideOpt[] => {
     const out: SideOpt[] = [];
     const edge = minSide ? body.min[ax] : body.max[ax];
@@ -296,9 +281,7 @@ export function backCandidatesAt(parent: Shape, axis: 0 | 1 | 2, side: 1 | -1, c
     if (!out.some(o => Math.abs(o.outer - edge) <= TOL && o.cross[0] - TOL <= cc && cc <= o.cross[1] + TOL)) {
       out.push({ ref: { body: true }, inner: edge, outer: edge, cross: [body.min[cx], body.max[cx]], front: null, name: 'Body' });
     }
-    // AYNI ÇİZGİDE birden çok sınır paneli (L köşede iki arka yüzün kayıtları aynı yükseklikte): aynı dikdörtgeni verirler ve aday
-    // tekilleştirmesi ilk geleni tutardı — komşu yüzün 18 mm'lik kayıtı bu yüzün asıl kayıtının yerine geçiyordu. Kenarı (yüz
-    // kutusunun çapraz açıklığı) en çok kaplayan kalır.
+    // Aynı çizgide birden çok sınır paneli (L köşe): kenarı en çok kaplayan kalır (yoksa komşu yüzün kaydı yer değiştiriyordu).
     const cover = (o: SideOpt) => Math.min(o.cross[1], body.max[cx]) - Math.max(o.cross[0], body.min[cx]);
     const best = new Map<number, SideOpt>();
     for (const o of out) { const k = Math.round(o.inner * 2); const b = best.get(k); if (!b || cover(o) > cover(b) + TOL) best.set(k, o); }
@@ -341,8 +324,7 @@ export function backCandidatesAt(parent: Shape, axis: 0 | 1 | 2, side: 1 | -1, c
 
 export const backSetbackOf = (g: Pick<BackGroup, 'setback'>) =>
   (Number.isFinite(g.setback) && (g.setback as number) >= 0 ? (g.setback as number) : BACK_SETBACK);
-/** Seçme önizlemesi: adayın dikdörtgeni yeni grubun çözüleceği yere taşınır — kanallıda panel kenarları inset kadar genişler,
- *  düzlem setback kadar içerde. */
+/** Seçme önizlemesi: aday yeni grubun çözüleceği yere taşınır (kanallıda kenarlar inset kadar geniş, düzlem setback içerde). */
 export function backPickRect(pick: BackPick, placement: BackPlacement): BackRect {
   const r = placement === 'inner' ? { ...pick.inner } : { ...pick.outer };
   if (placement !== 'inner') return r;
@@ -400,8 +382,6 @@ export const backMemberCount = (g: Pick<BackGroup, 'tree'>) => backLeaves(g.tree
 /** Alt ağacın yeni kimlikli kopyası; derz bağları da kopyalanır. */
 export const cloneBackNode = (n: BackNode): BackNode => cloneTree(n, 'bs', l => ({ ...l, id: genId('bl') }));
 
-export type BackSizeMode = GapMode;
-
 /** Ağaç çözümü: split alanını çocuklarına dağıtır (u: soldan sağa, v: ÜSTTEN aşağı); toplam her zaman üst alan. */
 export function solveBackTree(g: BackLayout, rect: BackRect = g.rect, targets?: BackJointTargets): BackNodeSolved {
   return solveTree(g.tree, rect, g.gap, targets, (l, at): BackNodeSolved => ({ ...l, ...at }));
@@ -451,8 +431,7 @@ export function backJointTargets(
 /** Parçanın bağlı derzdeki kenarı: levhanın yüzleri, kalınlığı ve etkin binme (girilmemişse kalınlık/2 = levhanın ortası). */
 export interface BackJointSide { splitId: string; k: number; vfId: string; a0: number; a1: number; t: number; in: number; entered: boolean; rel: BackEdgeRel }
 export type BackJointSides = Record<string, Partial<Record<BackEdgeKey, BackJointSide>>>;
-/** Yaprak → bağlı derze değen kenarları. u bölmesinde k. çocuğun uMax'ı / (k+1). çocuğun uMin'i; v bölmesi ÜSTTEN dizilir:
- *  k. çocuğun vMin'i / (k+1). çocuğun vMax'ı. Dış kenar bilgisi alt düğümlere aktarılır (çocuğun o kenarı da derze değer). */
+/** Yaprak → bağlı derze değen kenarları (v bölmesi üstten dizilir); dış kenar bilgisi alt düğümlere aktarılır. */
 export function backJointSides(solved: BackNodeSolved, faces: Map<string, BackJointFace>, tree: BackNode): BackJointSides {
   const out: BackJointSides = {};
   if (!faces.size) return out;
@@ -498,10 +477,8 @@ export function backCells(solved: BackNodeSolved): BackCell[] {
   walk(solved);
   return out;
 }
-/** Hücre → parça: grup dikdörtgeninin kenarına değen kenar parçanın tipine göre uzar — kanallı + groove kenar: panele `inset` kadar
- *  girer; kanallı + NAIL kenar: panel kısaltıldığından ucunun üzerine `cover` kadar biner (girilmemişse tamamen); çakma (dış):
- *  örtülen panelin üzerine `cover` mm biner (girilmemişse kalınlığın tamamı). Sayı bölmesi derzinde uzama yok.
- *  LEVHAYA BAĞLI derzde kenar levhanın yüzünden ölçülür: parça levhanın üzerine kendi `jointIn` değeri kadar biner (iki tip için aynı). */
+/** Hücre → parça: kenar tipine göre uzar — kanallı+groove `inset` girer; kanallı+nail ucuna `cover` biner; çakma panelin üstüne `cover`.
+ *  Sayı derzinde uzama yok; levhaya bağlı derzde levha yüzünden `jointIn` kadar. */
 export function placeBackPieces(
   g: Pick<BackGroup, 'placement' | 'setback' | 'inset' | 'bounds' | 'tree' | 'side' | 'thickness'>, cells: BackCell[], rect: BackRect,
   ext: BackEdgeExt, sides: BackJointSides = {},
@@ -532,10 +509,8 @@ export function placeBackPieces(
   });
 }
 
-// SONRADAN KONAN SINIR LEVHASI: arkalık gövde kenarına bağlıyken o kenara sonradan konup sınır işaretlenen levha (yan/üst/alt panel)
-// arkalık kenarı olur → bini / kanal girişi o levhaya göre çalışır. Panel kenarları korunur; yalnız gövde kenarları devralınır.
-/** Grubun gövde kutusu: seçildiği arka yüzün kutusu (`faceBox`; eksen boyunca = yüz düzlemi → arkalık düzlemi orası, çentik yüzü
- *  gövde kutusunun içinde olsa da), yoksa gövde kutusu. */
+// Sonradan konan sınır levhası: gövde kenarına bağlı arkalığın o kenarı levhaya geçer (yalnız gövde kenarları devralınır).
+/** Grubun gövde kutusu: seçildiği arka yüzün kutusu (`faceBox`), yoksa gövde kutusu. */
 function backBodyBox(group: Pick<BackGroup, 'faceBox' | 'axis'> & Partial<Pick<BackGroup, 'side'>>, parent: Shape): CavityBox | null {
   const all = bodyLocalBox(parent);
   if (!all || !group.faceBox) return all;
@@ -552,33 +527,11 @@ export function resolveBackBounds(
   const bps = collectBackBoundPanels(parent, shapes, vfs, true);
   if (!bps.length) return group.bounds;
   const { u, v } = backPlaneAxes(group.axis);
-  let out = group.bounds;
-  for (const k of EDGE_KEYS) {
-    if (group.bounds[k]?.vfId) continue;
-    const isU = k === 'uMin' || k === 'uMax', minSide = k === 'uMin' || k === 'vMin';
-    const ax = isU ? u : v, cx = isU ? v : u;
-    const edge = minSide ? body.min[ax] : body.max[ax];
-    const c0 = isU ? group.rect.v0 : group.rect.u0, c1 = isU ? group.rect.v1 : group.rect.u1;
-    let best: BackBoundPanel | null = null, bestOv = MIN_BACK_SPAN;
-    for (const bp of bps) {
-      const b = bp.box, t = b.max[ax] - b.min[ax];
-      if (t > THIN_PANEL || t > b.max[cx] - b.min[cx]) continue;
-      if (Math.abs((minSide ? b.min[ax] : b.max[ax]) - edge) > EDGE_ADOPT_TOL) continue;
-      const ov = Math.min(b.max[cx], c1) - Math.max(b.min[cx], c0);
-      if (ov > bestOv) { bestOv = ov; best = bp; }
-    }
-    if (best) { if (out === group.bounds) out = { ...group.bounds }; out[k] = { vfId: best.vfId }; }
-  }
-  return out;
+  return adoptEdgeSlabs(group.bounds, body, bps, u, v, group.rect, MIN_BACK_SPAN);
 }
 
-/* ARKALIK ↔ ARKALIK KÖŞE BİRLEŞİMİ (Goker, Kas 2026 — "L dolabın arkasındaki yan yana gelen arkalıklar iç içe geçmesin; bir arkalık
-   diğerini sınırlasın, biri diğerinin üzerine binsin, sadece kanalı uzasın"): grubun GÖVDE KENARI başka bir arkalık grubunun yüz
-   düzlemindeyse (iki arka yüz o köşe çizgisinde buluşur — L / çentikli gövdenin dış ya da iç köşesi) iki arkalık birleşir: BÜYÜK yüzlü
-   arkalık GEÇER — dış köşede gövde kenarına kadar (sona kadar; Goker, 10 Kas 2026), iç köşede ötekinin levhasının tüm kalınlığını
-   örter —, öteki ona DAYANIR (geçenin levhasının yakın yüzünde biter). Artık iç içe geçmez, köşe açık kalmaz. Yalnız ötekinin
-   DERİNLİĞİ (levha aralığı; kenarlardan bağımsız) okunur → döngü yok. Kenar gövde kenarı kalır (kanal girişi yok); üst / alt / yan
-   kanal parçanın yeni açıklığıyla uzar (backGrooveCuttersFor — komşu parçaya taşan kanal da kesilir). */
+/* ARKALIK ↔ ARKALIK KÖŞE: gövde kenarı başka bir arkalığın yüz düzlemindeyse büyük yüzlü arkalık geçer (dış köşede gövde kenarına,
+   iç köşede ötekinin kalınlığını örter), öteki ona dayanır. Yalnız ötekinin derinliği okunur → döngü yok; kanal yeni açıklıkla uzar. */
 const BACK_JOIN_TOL = 1;
 /** Grubun levhasının kendi ekseni boyunca aralığı (grup varsayılan tip / setback / kalınlıkla; köşe birleşimleri okunmaz). */
 function backSlabRange(g: BackGroup, parent: Shape, shapes: Shape[]): [number, number] | null {
@@ -614,9 +567,7 @@ function applyBackCornerJoins(group: BackGroup, parent: Shape, shapes: Shape[], 
       if (!slab) continue;
       const theirs = areaOf(ob, o.axis);
       const pass = mine > theirs + 1 || (Math.abs(mine - theirs) <= 1 && group.id < o.id);
-      // Kenar yönünde ilerleme: max kenar +, min kenar −. Geçen → gövde kenarı ile ötekinin UZAK yüzünden hangisi daha ötedeyse
-      // (Goker, Kas 2026 — "arkalık kısa kalmış, sona kadar gitmeli": dış köşede gövde kenarına kadar, iç köşede ötekinin levhasının
-      // tamamını örter); dayanan → geçenin YAKIN yüzü.
+      // Kenar yönünde ilerleme (max +, min −). Geçen: gövde kenarı ile ötekinin uzak yüzünden ötedeki; dayanan: geçenin yakın yüzü.
       const target = pass ? (minSide ? Math.min(E, slab[0]) : Math.max(E, slab[1])) : (minSide ? slab[1] : slab[0]);
       edges[ek] = { ref: { body: true }, inner: target, outer: target, front: null };
       break;
@@ -632,8 +583,7 @@ function solveBackEdgesRaw(group: BackGroup, parent: Shape, shapes: Shape[]): { 
   const ei = (ref: BackBoundRef, ax: 0 | 1 | 2, minSide: boolean) => boundEdgeInfo(ref, parent, shapes, body, ax, minSide, group.axis, group.side);
   const edges: BackEdges = { l: ei(bounds.uMin, u, true), r: ei(bounds.uMax, u, false), b: ei(bounds.vMin, v, true), t: ei(bounds.vMax, v, false) };
   const bodyFront = group.side > 0 ? body.max[group.axis] : body.min[group.axis];
-  // ÇAKMA (kısaltılan) kenarlar derinlik VERMEZ: paneli biz arkalığın ön yüzüne kadar kısaltıyoruz; arka yüzü okunsa arkalık her
-  // rebuild'de öne kaçar (geri besleme). İç dikdörtgen derinlikten bağımsızdır → kenarlar önce, derinlik sonra.
+  // Çakma kenarlar derinlik vermez: kısaltılan panelin arka yüzü okunsa arkalık her rebuild'de öne kaçar. Önce kenarlar, sonra derinlik.
   const nail = activeNailEdges({ ...group, bounds }, edges, rectAtDepth(edges, group.side, 'inner', bodyFront));
   const keyed: Array<[BackEdgeKey, EdgeInfo]> = [['uMin', edges.l], ['uMax', edges.r], ['vMin', edges.b], ['vMax', edges.t]];
   const depthEdges = keyed.filter(([k]) => !nail.has(k)).map(([, x]) => x);
@@ -646,9 +596,7 @@ function solveBackEdgesRaw(group: BackGroup, parent: Shape, shapes: Shape[]): { 
     if (hit) P = hit.front!;
   }
   if (group.faceBox) {
-    // Yüz seçimi: arkalık düzlemi = o yüzün düzlemi; yüzü aşan sınır panellerinin arkası da o düzlemdir (çakma örtme doğru çalışsın).
-    // CANLI REFERANS (depthRefLive): düzlem referans panelin arka yüzü — sınır kenarıysa o kenarın yüzü, değilse panelin kutusu
-    // (çakma / kısaltılan kenar geri besleme yüzünden yok sayılır).
+    // Yüz seçimi: arkalık düzlemi o yüz. Canlı referans: sınır kenarıysa o kenarın yüzü, değilse panel kutusu (çakma kenar yok sayılır).
     P = bodyFront;
     const ref = group.depthRefLive ? group.depthRef?.vfId : undefined;
     if (ref && !keyed.some(([k, x]) => nail.has(k) && x.ref.vfId === ref)) {
@@ -688,8 +636,7 @@ export function solveBackGroup(group: BackGroup, parent: Shape, shapes: Shape[])
   return { rect, tree: solvedToBackTree(solved), solved, members, bounds, ext, sides };
 }
 
-// ÇÖZÜM ÖNBELLEĞİ (rebuild içi): aynı store anlık görüntüsü (shapes / VF / gruplar) için grup çözümü bir kez; motor her gövde
-// paneli ve her raf/dikme grubu için arkalık baskısını sorar.
+// Çözüm önbelleği (rebuild içi): aynı store anlık görüntüsü için grup çözümü bir kez.
 let _solMemo: { shapes: Shape[]; vfs: VirtualFace[]; groups: BackGroup[]; sols: Map<string, BackSolution | null> } | null = null;
 function backSolutionMemo(group: BackGroup): BackSolution | null {
   const st = useAppStore.getState();
@@ -725,9 +672,8 @@ function boxOf(ranges: Array<[0 | 1 | 2, number, number]>): CavityBox {
   return box;
 }
 
-/** BASKI KUTUSU (gövde-yerel): iç parçanın levhası — hücre; çakma kenarda sınır panelinin DIŞ yüzüne kadar uzar (panelin tüm
- *  kalınlığı bloke, bini değerinden bağımsız), kanallı kenarda ve levhaya bağlı derzde panele GİRMEZ (hücre kenarı / levha yüzü),
- *  sayı derzinde hücre kenarı. Derinlik: parçanın gerçek kalınlık aralığı. `extra` = çakma kenarda dış yüzün ötesine pay (damga). */
+/** Baskı kutusu: iç parçanın levhası; çakma kenarda sınır panelinin dış yüzüne kadar, kanallı kenarda / bağlı derzde girmez.
+ *  `extra` = çakma kenarda dış yüzün ötesine pay. */
 function backPressBox(bg: BackGroup, sol: BackSolution, m: BackMemberRect, extra = 0): CavityBox {
   const cell = backCells(sol.solved).find(c => c.leafId === m.leafId) ?? m;
   let { u0, u1, v0, v1 } = cell;
@@ -746,24 +692,19 @@ function backPressBox(bg: BackGroup, sol: BackSolution, m: BackMemberRect, extra
   return boxOf([[u, u0, u1], [v, v0, v1], [bg.axis, m.front, m.front - bg.side * bg.thickness]]);
 }
 
-/** KISALTMA KURALI (PanelGroupService.groupObstacles): iç (kanallı tip) arkalık parçası raf/dikme grubunun hacim engelidir ⇔
- *  grubun bir üyesi parçanın ÇAKMA kenarıdır (kenar ilişkisi 'nail') YA DA arkalık-sınırı bir üyeden parça GEÇİYOR (üye kenar da,
- *  bağlı derz de değil: bütün arkalık). Kanallı kenar (groove) ve levhaya bağlı derz kısaltmaz; dış (çakma tip) parça gövdenin
- *  dışındadır, kısaltmaz. Döner: engel kutusu (çakma kenarda levhanın tüm kalınlığını kapsar) ya da null. */
+/** Kısaltma kuralı: iç parça raf/dikme grubunun hacim engelidir ⇔ bir üye çakma kenarıysa ya da parça arkalık-sınırı üyeden geçiyorsa.
+ *  Döner: engel kutusu ya da null. */
 export function backObstacleFor(group: PanelGroup, backPanel: Shape): CavityBox | null {
   const r = backGroupRelation(group, backPanel);
   if (!r) return null;
   const { bg, sol, m, press, involved } = r;
   if (press) return backPressBox(bg, sol, m);
-  // SIRA: arkalıktan SONRA konan raf/dikme grubu (kenar / derz ilişkisi yoksa) parçanın levhasıyla sınırlanır → arkalığın ön yüzünde,
-  // kanal bolluğu varsa o kadar geride biter (backOrderBox).
+  // Sıra: arkalıktan sonra konan grup parçanın levhasıyla sınırlanır (backOrderBox).
   if (!involved && backPrecedes(backPanel, group.memberVfIds, useAppStore.getState().virtualFaces)) return backOrderBox(bg, m, group.memberVfIds);
   return null;
 }
 
-/** Grup ↔ iç parça ilişkisi (backObstacleFor ve backMemberCutFor aynı okumayı paylaşır): `press` = grup baskısı (çakma kenar üye /
- *  çakma derz üye / parçanın geçtiği arkalık-sınırı üye), `involved` = bir üye parçanın kenarı ya da levhaya bağlı derzi,
- *  `free` = kenar, derz ve arkalık-sınırı OLMAYAN üyeler (parçayla hiçbir ilişkisi yok). Parça iç tip değilse / gruba ait değilse null. */
+/** Grup ↔ iç parça ilişkisi: `press` = baskı yapan üyeler, `involved` = kenar / bağlı derz üyeleri, `free` = ilişkisiz üyeler. */
 function backGroupRelation(group: PanelGroup, backPanel: Shape): {
   bg: BackGroup; sol: BackSolution; m: BackMemberRect; press: boolean; involved: boolean; free: string[];
 } | null {
@@ -805,12 +746,8 @@ function backGroupRelation(group: PanelGroup, backPanel: Shape): {
   return { bg, sol, m, press, involved, free };
 }
 
-/** ÜYE KISALTMA (Goker, Eki 2026 — "çoklu rafta yalnız biri backref ise diğerleri kısalmalı, arkalık içinden geçiyor"): grup düzeyinde
- *  engel YOKKEN (bir üye parçanın kanallı kenarı ya da levhaya bağlı KANALLI derzi → grup ilişkili, backObstacleFor null) kenar / derz /
- *  arkalık-sınırı olmayan üyeler parçanın levhasından geçmemeli → her biri parçanın ön yüzünde (kanal bolluğu kadar geride) biter;
- *  ilişkili üye tam boy kalır (iki yandan kanal). Grup hacmi DEĞİŞMEZ; yalnız bu üyelerin kesiti kırpılır (PanelGroupService.solveGroup).
- *  Kutu: parçanın hücresi — bağlı derzde levhanın parçaya bakan yüzünde durur (levhaya girmez), kanallı kenarda hücre kenarı
- *  (backPressBox kenar kuralı) — derinlikte sıra kutusu aralığı (backOrderBox). Döner: kutu + uygulanacak üye VF'leri, yoksa null. */
+/** Üye kısaltma: grup düzeyinde engel yokken ilişkisiz üyeler parçanın levhasından geçmemeli → ön yüzünde biter; ilişkili üye tam boy.
+ *  Grup hacmi değişmez, yalnız bu üyelerin kesiti kırpılır. Döner: kutu + üye VF'leri ya da null. */
 export function backMemberCutFor(group: PanelGroup, backPanel: Shape): { box: CavityBox; vfIds: string[] } | null {
   const r = backGroupRelation(group, backPanel);
   if (!r || r.press || !r.involved || !r.free.length) return null;
@@ -844,9 +781,7 @@ function backPieceBox(bg: Pick<BackGroup, 'axis' | 'side' | 'thickness'>, m: Bac
   return box;
 }
 
-/** SIRA KUTUSU: arkalıktan SONRA konan panelin engeli = parçanın levhası, derinlikte KANAL BOLLUĞU kadar genişletilmiş (ön yüzde
- *  `front`, arka yüzde `back`) → panel arkalığa değmez, bollaştırılmış kanalın sınırında biter (kanal kesicisiyle aynı z aralığı).
- *  Bolluk: panelin (vfIds) kendi kenar değeri varsa o, yoksa grup değeri; 0 ise levhaya dayanır. */
+/** Sıra kutusu: parçanın levhası, derinlikte kanal bolluğu kadar geniş (panel bollaştırılmış kanalın sınırında biter). */
 function backOrderBox(bg: BackGroup, m: BackMemberRect, vfIds: string[] = []): CavityBox {
   const box = backPieceBox(bg, m);
   const own = vfIds.find(id => bg.grooveClearBy?.[id]);
@@ -877,10 +812,8 @@ export function backPreviewStamp(backPanel: Shape): Shape | null {
   } as Shape;
 }
 
-/** ARKALIĞIN ÖNÜNE PANEL (Goker, Eki 2026 — "arkalığın önüne panel yerleştiremiyorum"): gövde yüzünün (gövde-yerel, dışa normal `nL`)
- *  `pL` noktasının arkasında, yüzün İÇİNDE duran arkalık parçası + önüne BİTİŞİK yığılmış katmanlar (`layers`: o yüzde duran dönmemiş
- *  gövde panelleri). Döner: en içteki yüzün yüzden içeri derinliği + o panel (taban). Konuma göre çözülür (parça id'si değil) → arkalık
- *  bölünse / setback ya da kalınlığı değişse de izlenir. Dış (çakma tip) parça yüzün dışındadır → null (yüzün kendisi zaten önüdür). */
+/** Arkalığın önüne panel: yüzün arkasında duran arkalık + önüne yığılmış gövde panelleri; en içteki derinlik + taban paneli.
+ *  Konuma göre çözülür (bölünse de izlenir). Çakma parça → null. */
 export function backStackAt(
   nL: THREE.Vector3, pL: THREE.Vector3, backs: Shape[], layers: Shape[], vfs: VirtualFace[] = useAppStore.getState().virtualFaces,
 ): { depth: number; base: Shape } | null {
@@ -908,9 +841,7 @@ export function backStackAt(
   return best;
 }
 
-/** GÖVDE PANELİ KISALTMA (PanelEngine.stamps / buildStamp): iç parça, ÇAKMA kenarındaki gövde panelini (VF `vfId`) sırası ne
- *  olursa olsun basar — damga kutusu parçanın levhası, panelin DIŞ yüzünün 1 mm ötesine uzatılmış (yüz düzlemine değsin); bölge
- *  çözücü şeridin UZUN kenarıyla keser → panel arkalığın ön yüzünde biter. Değilse null (arkalık hiçbir paneli damgalamaz). */
+/** Gövde paneli kısaltma: iç parça çakma kenarındaki gövde panelini sırası ne olursa olsun basar (damga dış yüzün 1 mm ötesine). */
 export function backNailStampFor(backPanel: Shape, vfId: string, backFirst = false): CavityBox | null {
   const hit = backMemberOfPanel(backPanel);
   if (!hit || hit.m.piece.placement !== 'inner') return null;
@@ -922,8 +853,7 @@ export function backNailStampFor(backPanel: Shape, vfId: string, backFirst = fal
     const cell = backCells(sol.solved).find(c => c.leafId === m.leafId) ?? m;
     return cellTouchesEdge(cell, sol.rect, edge) ? backPressBox(bg, sol, m, 1) : null;
   }
-  // SIRA: arkalıktan SONRA konan gövde paneli (arkalığın kenarı / derzi değilse) parçanın levhasıyla basılır → arkalığa kadar,
-  // kanal bolluğu varsa o kadar geride biter (backOrderBox).
+  // Sıra: arkalıktan sonra konan gövde paneli parçanın levhasıyla basılır (backOrderBox).
   if (!backFirst || backJointRefs(bg.tree).some(r => r.ref.vfId === vfId)) return null;
   return backOrderBox(bg, m, [vfId]);
 }
@@ -946,20 +876,15 @@ export async function setBackJointRel(groupId: string, splitId: string, k: numbe
   await writeBackGroup(group, { tree });
 }
 
-// KANAL KESİCİLERİ (PanelEngine.buildPanel): kanallı (groove) ilişkideki sınır paneline / bağlı derz levhasına iç parçanın KANALI
-// katıdan çıkarılır — kutu: kenar ekseninde panelin iç yüzünden `inset + depth` kadar içeri (dışa GROOVE_MOUTH taşar), çapraz
-// eksende parçanın açıklığı, derinlikte [parça arkası − back, parça önü + front]. Yalnız GÖRÜNÜM/katı içindir: ayak izi, damga ve
-// hacim ızgarası kanalsız geometriyi okur (Shape.ungroovedGeometry) → kanal boşluğuna hiçbir panel sızmaz.
+// Kanal kesicileri: groove ilişkili sınır paneline / derz levhasına iç parçanın kanalı açılır (dışa GROOVE_MOUTH taşar).
+// Yalnız görünüm / katı: ayak izi, damga ve hacim ızgarası kanalsız geometriyi okur (ungroovedGeometry).
 export function backGrooveCuttersFor(panel: Shape): CavityBox[] {
   const st = useAppStore.getState();
   const vfId = (panel.parameters as any)?.virtualFaceId as string | undefined;
   const parentId = (panel.parameters as any)?.parentShapeId as string | undefined;
   if (!vfId || !parentId || isBackPanel(panel) || panelHasRotation(panel)) return [];
   const out: CavityBox[] = [];
-  // KANAL KOMŞUYA TAŞAR (Goker, Kas 2026 — "kayıt arkalık panelinin içine geçiyor karmaşık durumlarda"; "sadece kanalı uzamalı"): parçanın
-  // kanallı kenarı sınır panelinin YANINDAKİ bir gövde paneline de giriyorsa (L / çentikli gövdede kenar boyunca iki kayıt; köşe
-  // birleşiminde uzayan arkalık komşu kayıtın altına girer) o panele de aynı kanal açılır. Yalnız gövde panelleri (raf / dikme / kapak /
-  // arkalık değil); panelin kanalsız kutusu parçanın kanal girişiyle kesişmeli.
+  // Kanal komşuya taşar: kanallı kenar sınır panelinin yanındaki bir gövde paneline de giriyorsa (L / köşe) ona da kanal açılır.
   const parent = shapeById(parentId, st.shapes);
   const myVf = st.virtualFaces.find(f => f.id === vfId);
   const plainBody = !!parent && !!myVf && !myVf.interior && !isInteriorPanel(panel);
@@ -985,8 +910,7 @@ export function backGrooveCuttersFor(panel: Shape): CavityBox[] {
       const rear = m.front, frontF = m.front - bg.side * bg.thickness;
       const zlo = Math.min(rear, frontF) - (bg.side < 0 ? clear.back : clear.front);
       const zhi = Math.max(rear, frontF) + (bg.side < 0 ? clear.front : clear.back);
-      // k kenarında parçaya bakan `face` yüzünden `ins + depth` içeri, GROOVE_MOUTH dışarı; çaprazda parçanın açıklığı. `mouthAt` = ağzın
-      // uzatılacağı yüz (komşu panelin iç yüzü sınırınkinden boşluğa doğruysa kanal oradan başlar).
+      // k kenarında `face` yüzünden `ins + depth` içeri, GROOVE_MOUTH dışarı. `mouthAt` = ağzın uzatılacağı yüz.
       const push = (k: BackEdgeKey, face: number, ins: number, mouthAt = face) => {
         const isU = k === 'uMin' || k === 'uMax', minSide = k === 'uMin' || k === 'vMin';
         const deep = face + (minSide ? -1 : 1) * (ins + clear.depth);
@@ -1000,9 +924,7 @@ export function backGrooveCuttersFor(panel: Shape): CavityBox[] {
       if (edge && sol.ext[edge].rel === 'groove' && !sol.ext[edge].nail && cellTouchesEdge(cell, sol.rect, edge) && m.piece.inset[edge] > 0) {
         push(edge, faceOf(edge), m.piece.inset[edge]);
       }
-      // Komşu gövde paneli: başka bir kanallı kenarın giriş bölgesine giriyor VE o kenarı sınır paneli gibi KAPATIYOR — boşluğa bakan
-      // yüzü kanal çizgisinde (en çok NEIGHBOR_SLACK içeride); kenar boyunca uzanan yan / taban paneli (yüzü uzakta) kendi kanalını
-      // zaten alır, ona ikinci yarık açılmaz.
+      // Komşu gövde paneli kenarı sınır gibi kapatıyorsa (yüzü kanal çizgisinde, ≤ NEIGHBOR_SLACK) kanal alır; uzaktaki ikinci yarık açılmaz.
       if (myBox) for (const k of EDGE_KEYS) {
         if (k === edge || !bounds[k]?.vfId || sol.ext[k].rel !== 'groove' || sol.ext[k].nail || !cellTouchesEdge(cell, sol.rect, k)) continue;
         const ins = m.piece.inset[k];
@@ -1027,8 +949,7 @@ export function backGrooveCuttersFor(panel: Shape): CavityBox[] {
   }
   return out;
 }
-/** Kanal bollaştırma (mm ≥ 0): vfId yoksa GRUP değeri (kendi değeri olmayan tüm kenarlar izler), varsa yalnız o kenar (sınır / derz
- *  paneli). Eksik alanlar korunur. */
+/** Kanal bollaştırma (mm ≥ 0): vfId yoksa grup değeri, varsa yalnız o kenar. */
 export async function setBackGrooveClear(groupId: string, patch: Partial<BackGrooveClear>, vfId?: string): Promise<void> {
   const group = groupById(groupId);
   if (!group) return;
@@ -1158,50 +1079,15 @@ export function backNearPanels(
   const rb = resolveBackBounds(group, parent, shapes, vfs);
   const edgeOf = (vfId: string): BackEdgeKey | undefined => EDGE_KEYS.find(k => rb[k]?.vfId === vfId);
   const refs = backJointRefs(group.tree);
-  const out: BackNearPanel[] = [];
-  for (const bp of collectBackBoundPanels(parent, shapes, vfs, !allPanels)) {
-    const b = bp.box;
-    const tu = b.max[u] - b.min[u], tv = b.max[v] - b.min[v];
-    let kind: 'u' | 'v';
-    if (tu <= THIN_PANEL && tu <= tv) kind = 'u'; else if (tv <= THIN_PANEL) kind = 'v'; else continue;
-    const a0 = kind === 'u' ? b.min[u] : b.min[v], a1 = kind === 'u' ? b.max[u] : b.max[v];
-    const c0 = kind === 'u' ? b.min[v] : b.min[u], c1 = kind === 'u' ? b.max[v] : b.max[u];
-    const touching = ms.some(m => {
-      const mc0 = kind === 'u' ? m.v0 : m.u0, mc1 = kind === 'u' ? m.v1 : m.u1;
-      const ma0 = kind === 'u' ? m.u0 : m.v0, ma1 = kind === 'u' ? m.u1 : m.v1;
-      if (Math.min(mc1, c1) - Math.max(mc0, c0) < TOL) return false;
-      return Math.max(ma0, a0) - Math.min(ma1, a1) <= near;
-    });
-    if (!touching) continue;
-    const behind = group.side > 0 ? b.max[group.axis] <= front + TOL : b.min[group.axis] >= front - TOL;
-    const vf = vfs.find(f => f.id === bp.vfId);
-    const pg = vf?.groupId ? panelGroups.find(g => g.id === vf.groupId) : undefined;
-    const memberIndex = pg ? (vf!.groupIndex ?? pg.memberVfIds.indexOf(vf!.id)) : undefined;
-    const edge = edgeOf(bp.vfId);
-    // Derz: bağlıysa o derz; değilse aynı eksende çapraz örtüşen en yakını. Kenar levhasında aranmaz.
-    let joint: BackJoint | undefined, ref: BackNearPanel['ref'];
-    if (!edge) {
-      const bound = refs.find(r => r.ref.vfId === bp.vfId && joints.some(j => j.splitId === r.splitId && j.k === r.k && j.axis === kind));
-      if (bound) {
-        ref = { splitId: bound.splitId, k: bound.k };
-        joint = joints.find(j => j.splitId === bound.splitId && j.k === bound.k);
-      } else {
-        const pc = (a0 + a1) / 2, t = a1 - a0;
-        let best = Infinity;
-        for (const j of joints) {
-          if (j.axis !== kind || Math.min(j.c1, c1) - Math.max(j.c0, c0) < TOL) continue;
-          const d = Math.abs((j.p0 + j.p1) / 2 - pc);
-          if (d <= t / 2 + (j.p1 - j.p0) / 2 + BACK_JOINT_NEAR && d < best) { best = d; joint = j; }
-        }
-      }
-    }
-    const ps = shapeById(bp.panelId, shapes);
-    const hull = ps ? panelFrontHull(ps, parent, u, v) : null;
-    const boxArea = (b.max[u] - b.min[u]) * (b.max[v] - b.min[v]);
-    const poly = hull && hull.length >= 3 && boxArea - Math.abs(polyArea(hull)) > Math.max(1, boxArea * 1e-3) ? hull : undefined;
-    out.push({ vfId: bp.vfId, panelId: bp.panelId, name: bp.name, kind, a0, a1, c0, c1, behind, edge, groupId: pg?.id, memberIndex, joint, ref, poly });
-  }
-  return out;
+  // Bağlı derz: levhayı izleyen derz (BackNode.refs).
+  const boundJoint = (vfId: string, kind: 'u' | 'v') => {
+    const bound = refs.find(r => r.ref.vfId === vfId && joints.some(j => j.splitId === r.splitId && j.k === r.k && j.axis === kind));
+    return bound ? { ref: { splitId: bound.splitId, k: bound.k }, joint: joints.find(j => j.splitId === bound.splitId && j.k === bound.k) } : null;
+  };
+  return nearSlabsOf({
+    bps: collectBackBoundPanels(parent, shapes, vfs, !allPanels), parent, shapes, vfs, panelGroups,
+    u, v, axis: group.axis, side: group.side, front, cells: ms, joints, near, jointNear: BACK_JOINT_NEAR, edgeOf, boundJoint,
+  });
 }
 
 const groupById = (id: string) => useAppStore.getState().backGroups.find(g => g.id === id);
@@ -1284,8 +1170,7 @@ async function writeBackGroup(group: BackGroup, patch: Partial<BackGroup>, previ
   await requestRebuild(group.shapeId);
 }
 
-// Yapı değişince: yaprak id'si eşleşen VF/paneller (adımlarıyla) korunur, yalnız backIndex yazılır; eksikler yeni VF
-// (paneli otomatik üretim yaratır). restructured = üyeleri her durumda yenilenecek yapraklar. Üye sayısı tutmuyorsa hepsi yenilenir.
+// Yapı değişince eşleşen yaprakların VF / panelleri korunur, yalnız backIndex yazılır; eksikler yeni VF.
 function rebuildMembers(group: BackGroup, nextGroup: BackGroup, restructured: Set<string>): void {
   const st = useAppStore.getState();
   const sol = solveFromStore(nextGroup) || backFallbackSolution(nextGroup);
@@ -1298,8 +1183,7 @@ function rebuildMembers(group: BackGroup, nextGroup: BackGroup, restructured: Se
     if (prev) { ids.push(prev); kept.push(prev); }
     else { const vf = makeMemberVf(nextGroup, i, sol); ids.push(vf.id); fresh.push(vf); }
   });
-  // Grubun listedeki YERİ korunur (Goker: arkalık bölününce parçalar listenin sonuna düşüyor, sonra konan raf/dikme arkalığın
-  // önünde sayılıp arkalığın dışına taşıyordu): hiç üye korunmazsa yeniler ilk eski üyenin yerine girer.
+  // Grubun listedeki yeri korunur (yoksa sonra konan raf/dikme arkalığın önünde sayılıp dışarı taşıyordu).
   const before = useAppStore.getState().virtualFaces.map(f => f.id);
   const mine = new Set(group.memberVfIds);
   let anchorIdx = before.findIndex(id => mine.has(id));
@@ -1318,59 +1202,19 @@ function rebuildMembers(group: BackGroup, nextGroup: BackGroup, restructured: Se
   if (now.selectedBackGroupId !== group.id && !now.selectedPanelRow) st.setSelectedBackGroupId(group.id);
 }
 
-// Yaprak → split; aynı eksenli split → çocuk ekle/çıkar (count = 1 → ilk parça kalır); diğer eksen → sarılır, mevcut bölme her
-// parçada kopyalanır. Üst ölçüler değişmez. Döner: sonuç düğümün id'si (arayüz seçimi), işlem yoksa null.
+// Yaprak → split; aynı eksende çocuk ekle / çıkar, öbür eksende sarılır. Üst ölçüler değişmez. Döner: düğüm id'si ya da null.
 export function setBackNodeSplit(groupId: string, nodeId: string, axis: 'u' | 'v', count: number, opts: { keepTargetSize?: boolean } = {}): string | null {
   const group = groupById(groupId);
   const node = group ? findBackNode(group.tree, nodeId) : null;
   if (!group || !node || !Number.isFinite(count)) return null;
   const n = Math.max(1, Math.min(MAX_BACK_SPLIT, Math.round(count)));
-  const newLeaves = (k: number) => Array.from({ length: k }, () => makeBackLeaf());
-  const gapsFor = (m: number, old: number[] = []) => Array.from({ length: m }, (_, i) => old[i] ?? old[0] ?? group.gap);
-  const rebuildWith = (id: string, repl: BackNode, restructured: Set<string>) =>
-    rebuildMembers(group, { ...group, tree: replaceBackNode(group.tree, id, () => repl) }, restructured);
-  if (node.kind === 'leaf') {
-    if (n <= 1) return node.id;
-    const split: BackNode = { id: genId('bs'), kind: 'split', axis, sizes: [], gaps: gapsFor(n - 1), children: newLeaves(n) };
-    rebuildWith(node.id, split, new Set([node.id]));
-    return split.id;
-  }
-  if (node.axis === axis) {
-    if (n === node.children.length) return node.id;
-    if (n <= 1) {
-      const first = node.children[0];
-      rebuildWith(node.id, first, new Set(node.children.slice(1).flatMap(c => backLeaves(c).map(l => l.id))));
-      return first.id;
-    }
-    const restructured = new Set<string>();
-    let children = node.children.slice();
-    if (n > children.length) {
-      // Artış: son parça bir bölmeyse yeni parçalar onun kopyası (bölünmüş hal korunur), değilse eşit yeni parçalar.
-      const last = children[children.length - 1], add = n - children.length;
-      children = [...children, ...(last.kind === 'split' ? Array.from({ length: add }, () => cloneBackNode(last)) : newLeaves(add))];
-    } else {
-      for (const c of children.slice(n)) for (const l of backLeaves(c)) restructured.add(l.id);
-      children = children.slice(0, n);
-    }
-    // Elle sayı girildiyse spacing hedefi kalkar; derz bağları kalan derzlerde (k < n−1) korunur.
-    const refs = Object.fromEntries(Object.entries(node.refs ?? {}).filter(([k]) => +k < n - 1)) as Record<number, BackJointRef>;
-    const next: BackNode = {
-      ...node, children, gaps: gapsFor(n - 1, node.gaps), sizes: [],
-      targetSize: opts.keepTargetSize ? node.targetSize : undefined, refs: Object.keys(refs).length ? refs : undefined,
-    };
-    rebuildWith(node.id, next, restructured);
-    return node.id;
-  }
-  if (n <= 1) return node.id;
-  const wrap: BackNode = {
-    id: genId('bs'), kind: 'split', axis, sizes: [], gaps: gapsFor(n - 1), children: [node, ...Array.from({ length: n - 1 }, () => cloneBackNode(node))],
-  };
-  rebuildWith(node.id, wrap, new Set());
-  return wrap.id;
+  const r = resplitNode(node, axis, n, group.gap, !!opts.keepTargetSize,
+    { prefix: 'bs', clone: cloneBackNode, leaves: k => Array.from({ length: k }, () => makeBackLeaf()) });
+  if (r.repl) rebuildMembers(group, { ...group, tree: replaceBackNode(group.tree, node.id, () => r.repl!) }, r.restructured!);
+  return r.id;
 }
 
-/** Panel ref: levhanın merkezinden geçen her parça ikiye bölünür, derz levhaya 'center' bağlanır (levha taşınınca arkalık izler).
- *  Levha arkalığa değmeli ve grup sınırı olmamalı; raf/dikme üyesi değilse de bölünür ama rozetle taşınamaz (derz levhaya gider). */
+/** Panel ref: levhanın merkezinden geçen parçalar bölünür, derz levhaya 'center' bağlanır. Levha arkalığa değmeli, grup sınırı olmamalı. */
 export function splitBackAtPanel(groupId: string, vfId: string): string[] {
   const group = groupById(groupId);
   if (!group) return [];
@@ -1453,8 +1297,7 @@ export async function setBackEdgeInset(groupId: string, edge: BackEdgeKey, inset
   const tree = patchLeaves(group.tree, leafIds, l => ({ ...l, inset: { ...(l.inset ?? {}), [edge]: v } }));
   await writeBackGroup(group, { tree }, !!opts.preview);
 }
-/** İÇ LEVHAYA BİNME: parça(lar)ın levhaya bağlı derzdeki `edge` kenarında dikme/rafın üzerine binme payı (mm). Parça başına yazılır;
- *  0..levha kalınlığı, karşı yandaki parçaların binmesiyle ÇAKIŞMAYACAK kadar kırpılır. Yalnız o kenarı bağlı derzde olan parçalara yazar. */
+/** İç levhaya binme: bağlı derzdeki `edge` kenarında bini (0..levha kalınlığı), karşı yandakilerle çakışmayacak kadar kırpılır. */
 export async function setBackJointIn(groupId: string, edge: BackEdgeKey, mm: number, leafIds: string[], opts: BackEditOpts = {}): Promise<void> {
   const group = groupById(groupId);
   if (!group || !Number.isFinite(mm) || mm < 0) return;
@@ -1512,8 +1355,7 @@ export function restoreBackLayout(groupId: string, snap: BackLayoutSnap | null |
   if (!snap || !groupById(groupId)) return;
   useAppStore.getState().updateBackGroup(groupId, { tree: snap.tree, gap: snap.gap, rect: snap.rect });
 }
-/** Tip (çakma/kanallı): leafIds verilirse o parçalar; boşsa grup varsayılanı yazılır ve parça değerleri silinir (hepsi izler).
- *  Hücre ölçüleri değişmez (uzantılar hücrenin dışında); parça kendi inset/bini değerlerini korur. */
+/** Tip (çakma / kanallı): leafIds verilirse o parçalar, boşsa grup varsayılanı (parça değerleri silinir). */
 export async function setBackPlacement(groupId: string, placement: BackPlacement, leafIds: string[] = []): Promise<void> {
   const group = groupById(groupId);
   if (!group) return;
@@ -1525,8 +1367,7 @@ export async function setBackPlacement(groupId: string, placement: BackPlacement
   if (leavesOf(group, leafIds).every(l => backPieceOf(group, l).placement === placement)) return;
   await writeBackGroup(group, { tree: patchLeaves(group.tree, leafIds, l => ({ ...l, placement })) });
 }
-/** Çakma parça(lar): `edge` kenarındaki sınır panelinin üzerine binme (mm). 0 = panelin iç yüzünde biter, panel kalınlığı = tamamen
- *  örter; kalınlıkla kırpılır (açılı sınır levhasında levha kalınlığıyla). leafIds boş → tüm parçalar. */
+/** Çakma parça bini (mm): 0 = panelin iç yüzünde biter, kalınlık = tamamen örter. leafIds boş → tüm parçalar. */
 export async function setBackEdgeCover(groupId: string, edge: BackEdgeKey, mm: number, leafIds: string[] = [], opts: BackEditOpts = {}): Promise<void> {
   const group = groupById(groupId);
   if (!group || !Number.isFinite(mm) || mm < 0) return;
@@ -1559,8 +1400,7 @@ export async function setBackThickness(groupId: string, t: number): Promise<void
   setMemberPanelThickness(group.memberVfIds, v);
   await writeBackGroup(group, { thickness: v });
 }
-/** Grup varsayılanlarını tek seferde yazar (hızlı gövde ayarları yeniden uygulanınca): tip · kalınlık · setback · giriş · kanal payları.
- *  Parça başına tip / setback / giriş değerleri silinir (hepsi yeni ayarı izler); bölme, bini ve kenar payları korunur. */
+/** Grup varsayılanlarını tek seferde yazar (hızlı gövde); parça başına tip / setback / giriş silinir, bölme ve biniler korunur. */
 export async function setBackDefaults(groupId: string, d: { placement: BackPlacement; thickness: number; setback: number; inset: number; grooveClear: BackGrooveClear }): Promise<void> {
   const group = groupById(groupId);
   if (!group) return;
@@ -1588,8 +1428,7 @@ export function deleteBackGroupWithMembers(groupId: string): void {
 const sameBackRef = (x?: BackJointRef, y?: BackJointRef) =>
   y?.vfId === x?.vfId && y?.align === x?.align && (y?.rel ?? 'groove') === (x?.rel ?? 'groove');
 
-/** Rebuild sonrası (PanelEngine): store'daki dikdörtgen/ağaç güncel çözümle eşitlenir (bağlı derzlerin izlediği levha dahil).
- *  Bağlı levhası silinmiş derz bağı düşer (ölçüler dondurulur). */
+/** Rebuild sonrası store'daki dikdörtgen / ağaç güncel çözümle eşitlenir; levhası silinmiş derz bağı düşer. */
 export function syncBackGroups(parentShapeId: string): void {
   const st = useAppStore.getState();
   const parent = shapeById(parentShapeId, st.shapes);

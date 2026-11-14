@@ -7,13 +7,11 @@ import {
 } from '../store';
 import { type Shape2, profileLoops, scaleShapeXY, moveShape, resolveParam } from './Draft';
 
-/* GEOMETRY — 1) geometri çekirdeği + OCC katı servisi · 2) yüz bölgesi (serbest bölge, ayak izi, 2B çokgen) ·
-   3) panel işlem adımları (taşı / döndür / yüz extrude, referans yüz seçimi). */
+/* GEOMETRY — 1) geometri çekirdeği + OCC katı servisi · 2) yüz bölgesi · 3) panel işlem adımları (taşı / döndür / extrude, ref yüz). */
 
 // ════════════════════════════════════════════ 1. GEOMETRİ ÇEKİRDEĞİ + OCC ════════════════════════════════════════════
-// Geometri çekirdeği: (A) saf three.js — eksen/matris/kutu yardımcıları, VF düzlem tabanı + oransal çıpalar,
-// dönüş açısı çözücüleri, mesh yüz çıkarımı + eş-düzlem gruplama + yüz tanımlayıcı;
-// (B) replicad/OCC katı servisi — kutu, boolean, VF'den panel, vertex düzenleme, fillet, gövde rebuild, Apply.
+// (A) saf three.js: eksen / matris / kutu, VF düzlem tabanı, dönüş çözücüleri, mesh yüz çıkarımı ve gruplama;
+// (B) replicad / OCC: kutu, boolean, VF'den panel, vertex düzenleme, fillet, gövde rebuild.
 
 export type Vec3 = [number, number, number];
 export type AxisDir = 'x+' | 'x-' | 'y+' | 'y-' | 'z+' | 'z-';
@@ -160,8 +158,8 @@ export function edgePointsOf(geometry: THREE.BufferGeometry, thresholdDeg = 15):
   return pts;
 }
 
-// Pivot/nişan VF dikdörtgenine ORANSAL saklanır (u/v ∈ [0,1] + normal ofseti) → yüzle birlikte kayar.
-// NOT: vfPlaneBasis getFacePlaneAxes'tan farklıdır; kayıtlı pivotVfFrac/refArmVfFrac buna bağlı — birleştirilemez.
+// Pivot / nişan VF dikdörtgenine oransal saklanır (u / v ∈ [0,1] + normal ofseti).
+// NOT: vfPlaneBasis getFacePlaneAxes'tan farklıdır; kayıtlı oranlar buna bağlı — birleştirilemez.
 
 function vfPlaneBasis(normal: Vec3 | number[]): { n: THREE.Vector3; u: THREE.Vector3; v: THREE.Vector3 } {
   const n = new THREE.Vector3(normal[0], normal[1], normal[2]).normalize();
@@ -239,8 +237,8 @@ export function rotateAboutAxis(pt: THREE.Vector3, pivot: THREE.Vector3, axis: T
   return pt.clone().sub(pivot).applyQuaternion(q).add(pivot);
 }
 
-/** Pivot etrafında dönen nişan noktası düzleme hangi açıda değer: A cosθ + B sinθ = c'nin `prefer`e yakın kökü.
- * Ulaşılamıyorsa en yakın yaklaşma açısı (touched=false); nişan eksen üstündeyse null. */
+/** Pivot etrafında dönen nişan düzleme hangi açıda değer: A cosθ + B sinθ = c'nin `prefer`e yakın kökü.
+ *  Ulaşılamıyorsa en yakın açı (touched=false); nişan eksen üstündeyse null. */
 export function angleToTouchPlane(
   pivot: THREE.Vector3, arm: THREE.Vector3, axis: THREE.Vector3,
   planeNormal: THREE.Vector3, planePoint: THREE.Vector3, prefer = 0
@@ -321,11 +319,8 @@ function calculateSurfaceType(face: FaceData, faces: FaceData[], adjacencyMap: M
   return 'curved';
 }
 
-/** B-REP YÜZ BİLGİSİ (Goker, Kas 2026 — "çizimle şekil verince oluşan yüzler çoğu zaman tek yüz oluyor, eğri yüzeyleri ayırmalıyız"):
- *  OCC katısından üretilen mesh'te her üçgenin hangi GERÇEK yüzeye ait olduğu (`tri`) ve o yüzeyin düz mü eğri mi olduğu (`curved`).
- *  Mesh açısına bakan eski sezgi teğet geçişte (düz kenar → radüs → düz kenar) üçünü tek "düz" yüz sayıyordu: silindir şeritleri iki
- *  eş-düzlem üçgenden oluşur (→ "düz"), komşu şeritler 10°'den az döner (→ aynı grup). Aynı silindirin dikişle bölünmüş parçaları tek
- *  yüzey kimliği alır (`surfaceKeyOf`). */
+/** B-Rep yüz bilgisi: her üçgenin ait olduğu gerçek yüzey (`tri`) ve düz / eğri (`curved`). Mesh açısı sezgisi teğet geçişte
+ *  (düz → radüs → düz) üçünü tek yüz sayıyordu. Dikişle bölünmüş silindir parçaları tek kimlik alır (`surfaceKeyOf`). */
 export interface BrepTriInfo { tri: Int32Array; curved: Uint8Array; keys: string[]; /** köşe başına GERÇEK yüzey normali (OCC) — eğri yüzde fasetanınki değil */ normals?: Float32Array }
 const brepInfoOf = (geometry: THREE.BufferGeometry, faceCount: number): BrepTriInfo | null => {
   const b = geometry.userData?.brep as BrepTriInfo | undefined;
@@ -370,9 +365,8 @@ function brepTriInfo(shape: any, mesh: { triangles: ArrayLike<number>; vertices:
     }
     if (k !== fg.length || tri.includes(-1)) return null;
     const hasNormals = !!mesh.normals && mesh.normals.length === mesh.vertices.length;
-    // TEĞET SÜREKLİ serbest eğri yüzler (elips yayı parçaları, spline dilimleri — silindir DEĞİL) tek yüzdür: ortak sınır köşelerinde gerçek
-    // yüzey normalleri aynıysa (≥ 2 köşe) kimlikleri birleşir, anahtarları "fA+fB" olur. Silindirler yalnız aynı eksen + yarıçapla birleşir
-    // (farklı yarıçaplı teğet radüsler ayrı yüz kalır).
+    // Teğet sürekli serbest eğri yüzler (elips / spline dilimleri) ortak köşelerde normaller aynıysa tek yüz olur ("fA+fB");
+    // silindirler yalnız aynı eksen + yarıçapla birleşir.
     const free = curved.map((c, id) => !!c && keys[id].startsWith('f'));
     if (hasNormals && free.filter(Boolean).length > 1) {
       const root = curved.map((_, i) => i);
@@ -418,8 +412,7 @@ function brepTriInfo(shape: any, mesh: { triangles: ArrayLike<number>; vertices:
   } catch { return null; }
 }
 
-/** Köşe paylaşan üçgen komşuluğu (tolerans 0.001, `<`). Uzamsal ızgarayla O(F); ikili O(F²) taramayla BİREBİR
- * aynı sonuç, kümeler artan indeks sırasıyla dolar (gruplama gezinme sırası değişmez). */
+/** Köşe paylaşan üçgen komşuluğu (tol 0.001). Uzamsal ızgarayla O(F); O(F²) taramayla birebir aynı sıra. */
 function buildAdjacencyMap(faces: FaceData[], tolerance = 0.001): Map<number, Set<number>> {
   const cellOf = (x: number) => Math.floor(x / tolerance);
   const grid = new Map<string, Array<{ fi: number; p: THREE.Vector3 }>>();
@@ -465,8 +458,7 @@ function groupCoplanarFaces(faces: FaceData[], thresholdAngleDegrees = 10, brep:
     }
     surfNormal.forEach(n => n.normalize());
   }
-  /** Komşu üçgen aynı yüze mi ait? B-Rep: düzde aynı yüzey ya da EŞ-DÜZLEM (< 1°) komşu yüzey, eğride aynı yüzey kimliği — teğet geçen
-   *  düz / eğri ve küçük açılı düz / düz yüzler ayrı kalır. B-Rep yoksa (vertex düzenlemeli gövde, sentetik prizma) eski açı eşiği. */
+  /** Komşu üçgen aynı yüz mü: B-Rep'te düzde aynı yüzey ya da eş-düzlem (< 1°), eğride aynı kimlik. B-Rep yoksa eski açı eşiği. */
   const joins = (curr: number, next: number, curvedStart: boolean): boolean => {
     if (!brep) return angleDeg(faces[curr].normal, faces[next].normal) < (curvedStart ? 45 : thresholdAngleDegrees);
     const a = brep.tri[curr], b = brep.tri[next];
@@ -696,11 +688,8 @@ export const createHoleCylinder = async (start: Vec3, dir: Vec3, radius: number,
   const { makeCylinder } = await import('replicad');
   return makeCylinder(radius, length, start, dir);
 };
-/** ÇOK ARAÇLI TEK BOOLEAN (Goker, Kas 2026 — "delik çıkarmayı olabildiğince en hızlı yöntemle yap, ileride çok delik olacak"):
- *  base − (tüm araçlar) TEK BRepAlgoAPI_Cut (SetArguments / SetTools listesi). Node OCC harness ölçümü, 600×560×18 panel: 16 delik
- *  ardışık cut 958 ms · compound tek cut 251 ms · SetTools 119 ms; 40 delik 3.9 s · 0.74 s · 0.26 s. Glue (commonFace) kesimi ATLIYOR
- *  (hacim değişmedi) → kullanılmaz; BRepFeat_MakeCylindricalHole ardışıktan biraz hızlı, listeden 5× yavaş.
- *  `simplify` = aynı düzlemdeki yüzleri birleştir (kutu kesicilerde, replicad.cut ile aynı). Sonuç 3B katı değilse fırlatır. */
+/** Çok araçlı tek boolean: base − (tüm araçlar) tek BRepAlgoAPI_Cut (SetTools). 16 delikte ardışık cut 958 ms → 119 ms.
+ *  Glue (commonFace) kesimi atlıyor → kullanılmaz. `simplify` = eş-düzlem yüzleri birleştir. 3B katı değilse fırlatır. */
 export async function cutWithTools(base: any, tools: any[], simplify = false, /** OCC bulanık toleransı (mm): eş-yüzeyli çiftte sağlam kesim. */ fuzzy = 0): Promise<any> {
   if (!tools.length) return base;
   const oc = await initReplicad();
@@ -722,10 +711,8 @@ export async function cutWithTools(base: any, tools: any[], simplify = false, /*
   } finally { args.delete(); list.delete(); op.delete(); progress.delete(); }
 }
 
-/** GÜVENLİ KESİŞİM ÖLÇÜSÜ: a ∩ b hacmi, KESME üzerinden — vol(a) − vol(a − b). OCC'nin Common'u (replicad.intersect de, tek Build'li
- *  BRepAlgoAPI_Common da) çok eş-düzlem yüzlü çiftlerde BOŞ dönebiliyor: Node OCC ölçümü — gövdeyle kesişmiş V-çentik duvar paneli ∩ arka
- *  panel = 0 mm³ (üst üste denense de), aynı çiftte Cut doğru (110 310 mm³ eksiliyor) ve Cut'tan SONRA Common da doğru dönüyor. "Kesişmiyor"
- *  kararı yalnız Common'a bırakılırsa kardeş kesimi atlanıp paneller iç içe kalıyordu. Ölçülemezse 0. */
+/** Güvenli kesişim ölçüsü: vol(a) − vol(a − b). OCC Common çok eş-düzlem yüzlü çiftlerde boş dönebiliyor (aynı çiftte Cut doğru);
+ *  yalnız Common'a güvenilirse kardeş kesimi atlanıp paneller iç içe kalıyordu. Ölçülemezse 0. */
 export async function overlapVolumeByCut(a: any, b: any): Promise<number> {
   try {
     const { measureVolume } = await import('replicad');
@@ -737,15 +724,12 @@ export async function overlapVolumeByCut(a: any, b: any): Promise<number> {
   } catch { return 0; }
 }
 
-// ── ÇİZİM ADIMLARI (Goker, Kas 2026 — "çizimi panelin yüzeyine göre parametrik hale getirip panelden / yüzeyden çıkarayım ya da panele o
-//    çizimin şeklini vereyim; sonradan çizimi düzenleyebileyim; mevcut panel mantığı bozulmasın") ──
-// Adım (`store.SketchFeature`) hedefin `parameters.sketchFeatures` listesinde durur: yüz yönü (n, u) + çapa + yüz ölçüsüne göre bağıl 2B
-// nesneler. Her üretimde yüz çerçevesi KESİLMEMİŞ mesh'ten yeniden okunur (en dış düzlem + o düzlemdeki köşelerin kutusu) → panel / gövde
-// ölçüsü değişince çizim çapasına göre yerini korur (uzama açıksa yüzle birlikte ölçeklenir). Panelde kanal / delik gibi yalnız SON geçişte,
-// katının üzerine uygulanır; ayak izi / damga / sıralama kesilmemiş mesh'i (`ungroovedGeometry`) okumaya devam eder.
+// ── ÇİZİM ADIMLARI ──
+// Adım (`SketchFeature`) yüz yönü + çapa + bağıl 2B nesneler. Yüz çerçevesi her üretimde kesilmemiş mesh'ten okunur → ölçü değişince
+// çizim çapasına göre yer korur. Panelde son geçişte katıya uygulanır; ayak izi / damga / sıralama `ungroovedGeometry` okur.
 export interface SketchFrame { o: THREE.Vector3; u: THREE.Vector3; v: THREE.Vector3; n: THREE.Vector3; w: number; h: number; through: number }
-/** Yüz çerçevesi: mesh'in n yönündeki en dış düzlemi (inset kadar içeride), orijin = o düzlemdeki köşelerin (u,v) alt-sol köşesi.
- *  q: adım yazıldıktan sonra panele eklenen / çözülen dönüşler (n ve u dönüş ÖNCESİ yönlerdir). through = düzlemden karşı yüze mesafe. */
+/** Yüz çerçevesi: mesh'in n yönündeki en dış düzlemi (inset içeride), orijin o düzlemdeki köşelerin sol-alt köşesi.
+ *  q: adımdan sonra eklenen dönüşler (n, u dönüş öncesi). through = karşı yüze mesafe. */
 export function sketchFrameOf(mesh: THREE.BufferGeometry | undefined | null, n3: Vec3, u3: Vec3, inset = 0, q?: THREE.Quaternion | null): SketchFrame | null {
   const pos = mesh?.getAttribute('position') as THREE.BufferAttribute | undefined;
   if (!pos || !pos.count) return null;
@@ -784,8 +768,7 @@ export const liveSketchFeatures = (shape: { parameters?: any } | undefined | nul
 /** Önbellek anahtarı: adımların üretimi etkileyen tüm alanları. */
 export const sketchFeaturesKey = (feats: SketchFeature[]) =>
   JSON.stringify(feats.map(f => [f.id, f.op, f.depth, f.n, f.u, f.inset, f.anchor, f.stretch, f.baseSize, f.shapes, f.mode, f.pts, f.radii]));
-/** Parametric adımların formül değişkenleri (W / H çözümde yüz ölçüsünden eklenir): gövde ölçüleri BW / BH / BD + gövdenin özel
- *  parametreleri (Parameters paneli). Panelde üst gövdenin parametreleri verilir. */
+/** Parametric formül değişkenleri: BW / BH / BD + gövdenin özel parametreleri (W / H çözümde eklenir). Panelde üst gövdeninkiler. */
 export function sketchVarsOf(bodyParams: any, size?: { width: number; height: number; depth: number }): Record<string, number> {
   const out: Record<string, number> = {};
   for (const p of (bodyParams?.customParameters ?? []) as { name?: string; result?: number }[]) {
@@ -818,8 +801,7 @@ async function sketchToolOf(f: SketchFeature, fr: SketchFrame, vars: Record<stri
   }
   return tool;
 }
-/** Adımları sırayla katıya uygular: cut = profili çıkar, shape = yalnız profilin içini bırak. Çerçeve her adımda KESİLMEMİŞ mesh'ten okunur
- *  (adımlar birbirinin çapasını bozmaz). Uygulanamayan adım atlanır ve `errors`a yazılır; katı o adım olmadan devam eder. */
+/** Adımları sırayla uygular (cut çıkar, shape içini bırakır); çerçeve her adımda kesilmemiş mesh'ten. Uygulanamayan adım `errors`a yazılır. */
 export async function applySketchFeatures(solid: any, mesh: THREE.BufferGeometry, feats: SketchFeature[], q?: THREE.Quaternion | null,
   vars: Record<string, number> = {}):
   Promise<{ shape: any; applied: number; errors: Record<string, string> }> {
@@ -900,8 +882,7 @@ export const createPanelFromVirtualFace = async (
   const { draw, Plane } = await import('replicad');
   const n = new THREE.Vector3(...normal).normalize();
 
-  // up: normale EN DİK dünya ekseni (en küçük |bileşen|). Baskın bileşen seçimi 45° gibi eşit bileşenli
-  // normallerde dejenere cross üretip u/v tabanını bozar.
+  // up: normale en dik dünya ekseni (en küçük |bileşen|); baskın bileşen seçimi 45°'de dejenere cross üretir.
   const anx = Math.abs(n.x), any_ = Math.abs(n.y), anz = Math.abs(n.z);
   const up = anx <= any_ && anx <= anz ? new THREE.Vector3(1, 0, 0)
     : any_ <= anx && any_ <= anz ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(0, 0, 1);
@@ -917,8 +898,7 @@ export const createPanelFromVirtualFace = async (
     return [d.dot(uAxis), d.dot(vAxis)];
   });
 
-  // Döndürülmüş panelde slab kübü aşacak kadar büyütülür, parent-küp kesişimi duvara kadar kırpar. Köşeleri tek
-  // tek itmek konkav VF'yi kendine katlar → yalnız SINIR DİKDÖRTGENİ büyütülür; çentikler kesimle yeniden oluşur.
+  // Dönmüş panelde slab kübü aşacak kadar büyütülür, gövde kesişimi kırpar. Yalnız sınır dikdörtgeni büyür (köşe itmek konkav VF'yi katlar).
   if (planeExpand > 0) {
     let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
     for (const [pu, pv] of projected) { minU = Math.min(minU, pu); maxU = Math.max(maxU, pu); minV = Math.min(minV, pv); maxV = Math.max(maxV, pv); }
@@ -926,8 +906,7 @@ export const createPanelFromVirtualFace = async (
     projected = [[minU, minV], [maxU, minV], [maxU, maxV], [minU, maxV]];
   }
 
-  // Sutherland-Hodgman kırpması mevcut köşeyle BİREBİR aynı nokta üretebilir; draw().lineTo(aynı nokta) OCC'de
-  // WASM exception atar → panel üretilmez. Ardışık çiftler (wrap-around dahil) ayıklanır.
+  // Sutherland-Hodgman aynı noktayı üretebilir; draw().lineTo(aynı nokta) OCC'de WASM exception atar → ardışık çiftler ayıklanır.
   const DUP_TOL = 1e-4;
   const cleaned: [number, number][] = [];
   for (const p of projected) {
@@ -957,8 +936,7 @@ export const createPanelFromVirtualFace = async (
   return sketch.close().sketchOnPlane(plane).extrude(-panelThickness);
 };
 
-/** YARIM-UZAY KESİCİ: düzlemde (center, planeN tabanı) 2H×2H dev levha; levha `keepN`in TERSİNE H kalınlaşır
- *  (createPanelFromVirtualFace −normal yönüne uzar) → keepN tarafı kalır, öbür taraf kesilir. */
+/** Yarım-uzay kesici: düzlemde 2H×2H levha, `keepN`in tersine H kalınlaşır → keepN tarafı kalır. */
 export const halfSpaceSlab = (center: THREE.Vector3, planeN: THREE.Vector3, keepN: THREE.Vector3, H: number) =>
   createPanelFromVirtualFace(hugeRectOnPlane(center, planeN, H), vec3(keepN), H, 0);
 
@@ -1013,8 +991,7 @@ export async function getReplicadVertices(replicadShape: any): Promise<THREE.Vec
   }
 }
 
-/** TEK KAYNAK taban köşe listesi: editör, terminal ve mesh aynı listeyi kullanır (vertexIndex = bu listenin indeksi).
- * Öncelik: scaledBaseVertices → replicad köşeleri → kutu parametreleri. */
+/** Tek kaynak taban köşe listesi (vertexIndex bu listenin indeksi): scaledBaseVertices → replicad köşeleri → kutu parametreleri. */
 export async function resolveBaseVertices(shape: any): Promise<THREE.Vector3[]> {
   const p = shape?.parameters;
   if (!p) return [];
@@ -1038,8 +1015,7 @@ export function composeVertexTargets(base: THREE.Vector3[], mods: any[] | undefi
   return out;
 }
 
-/** Koordinat eşlemeli: düzenlemenin originalPosition'ındaki TÜM mesh kopyaları yalnız düzenleme EKSENİNDE
- * hedefe çekilir. Düzenleme yoksa girdinin KENDİSİ döner (klon yok). */
+/** originalPosition'daki tüm mesh kopyaları yalnız düzenleme ekseninde hedefe çekilir. Düzenleme yoksa girdi döner (klon yok). */
 function applyVertexModsToGeometry(base: THREE.BufferGeometry, mods: any[] | undefined): THREE.BufferGeometry {
   if (!base || !Array.isArray(mods) || mods.length === 0 || !base.getAttribute('position')) return base;
   const geom = base.clone();
@@ -1074,8 +1050,7 @@ export function vertexModsKey(mods: any[] | undefined): string {
   return JSON.stringify(mods.map(m => [m?.vertexIndex, m?.direction, m?.originalPosition, m?.newPosition]));
 }
 
-/** SÖZLEŞME: store'daki `shape.geometry` hep TABAN'dır; vertex düzenlemeleri çizim, yüz yakalama, VF hesabı ve
- * motorun gövde kutusunda BU fonksiyonla uygulanır. Düzenleme yoksa `shape.geometry`'nin kendisi döner. */
+/** Sözleşme: store'daki `shape.geometry` hep tabandır; vertex düzenlemeleri bununla uygulanır. Düzenleme yoksa kendisi döner. */
 const _effCache = new WeakMap<THREE.BufferGeometry, { key: string; geo: THREE.BufferGeometry }>();
 export function effectiveBodyGeometry(shape: any): THREE.BufferGeometry {
   const base: THREE.BufferGeometry | undefined = shape?.geometry;
@@ -1179,8 +1154,7 @@ export async function rebuildBodySolid(
     if (refreshFillets) fillets = await updateFilletCentersForNewGeometry(fillets, convertReplicadToThreeGeometry(shape), sz);
     shape = await applyFillets(shape, fillets, sz);
   }
-  // ÇİZİM ADIMLARI (gövde): kutu − çıkarmalar − fillet'ten SONRA, gövdenin `parameters.sketchFeatures` listesi sırayla uygulanır.
-  // Adımı olmayan gövdede bu blok çalışmaz (eski sonuç birebir aynı).
+  // Çizim adımları (gövde): kutu − çıkarmalar − fillet'ten sonra sırayla. Adımsız gövdede çalışmaz.
   const feats = withSketch ? liveSketchFeatures(body) : [];
   let sketchBase: THREE.BufferGeometry | undefined, sketchErrors: Record<string, string> | undefined;
   if (feats.length) {
@@ -1293,11 +1267,9 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
 }
 
 // ═══════════════════════════════════════════════════ 2. YÜZ BÖLGESİ ═══════════════════════════════════════════════════
-// YÜZ BÖLGESİ — panel atma zincirinin saf geometri çekirdeği (UI yok). YAKALAMA ve REGEN aynı fonksiyonları
-// kullanır; iki yol yapısal olarak ayrışamaz.
-//  • Öncelik zinciri (computeFreeRegionLocal): kayıtlı bağ-ilişkisi > örtüşme sürekliliği > seed.
-//  • Tam siluet yalnız sentetik damgaya aittir; gerçek dönmüş geometri (__rotatedRealGeom) kesit yolundan geçer.
-//  • Çentikli (C/L/U) kardeş yüze birden fazla ayrık şeritle değebilir; her şerit ayrı engeldir.
+// Panel atma zincirinin saf geometri çekirdeği; yakalama ve regen aynı fonksiyonları kullanır.
+//  • Öncelik (computeFreeRegionLocal): kayıtlı bağ-ilişkisi > örtüşme sürekliliği > seed.
+//  • Tam siluet yalnız sentetik damgada; gerçek dönmüş geometri kesit yolundan. Çentikli kardeşin her şeridi ayrı engel.
 
 export type Point2D = { x: number; y: number };
 type BBox2 = { x0: number; x1: number; y0: number; y1: number };
@@ -1348,14 +1320,36 @@ export function clipHalfPlane(poly: Point2D[], A: number, B: number, C: number):
   return out;
 }
 export const polyArea = (p: Point2D[]) => signedArea2(p) / 2;
+/** Kapak açılış işareti (DIN/AWI) noktaları [kulp köşesi, tepe, kulp köşesi]: menteşe kenarı = dış normali `hinge` yönüne en çok bakan
+ *  (eşitlikte en uzun) kenar, kulp kenarı karşısı; tepe menteşe kenarının ortasından `ins` içeride. Şema ve 3B işaret aynı kuralı okur. */
+export function swingPoints(pts: Point2D[], hinge: Point2D, ins: number, minLen = 0): [Point2D, Point2D, Point2D] | null {
+  if (pts.length < 3) return null;
+  const c = { x: pts.reduce((a, q) => a + q.x, 0) / pts.length, y: pts.reduce((a, q) => a + q.y, 0) / pts.length };
+  const edges = pts.map((a, i) => {
+    const b = pts[(i + 1) % pts.length];
+    const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    let nx = (b.y - a.y) / len, ny = -(b.x - a.x) / len;
+    if (nx * ((a.x + b.x) / 2 - c.x) + ny * ((a.y + b.y) / 2 - c.y) < 0) { nx = -nx; ny = -ny; }
+    return { a, b, len, nx, ny };
+  }).filter(e => e.len > minLen);
+  const pick = (d: Point2D) => {
+    const sc = edges.map(e => ({ e, dot: e.nx * d.x + e.ny * d.y })).filter(x => x.dot > 0.5);
+    if (!sc.length) return null;
+    const top = Math.max(...sc.map(x => x.dot));
+    return sc.filter(x => x.dot > top - 0.15).sort((p, q) => q.e.len - p.e.len)[0].e;
+  };
+  const he = pick(hinge), pe = pick({ x: -hinge.x, y: -hinge.y });
+  if (!he || !pe) return null;
+  const inward = (q: Point2D) => {
+    const dx = c.x - q.x, dy = c.y - q.y, l = Math.hypot(dx, dy) || 1;
+    return { x: q.x + dx / l * ins * 1.4, y: q.y + dy / l * ins * 1.4 };
+  };
+  return [inward(pe.a), { x: (he.a.x + he.b.x) / 2 - he.nx * ins, y: (he.a.y + he.b.y) / 2 - he.ny * ins }, inward(pe.b)];
+}
 
-/* ───────── KAYIT ŞERİDİ (VirtualFace.railStrip; Goker, Kas 2026 — "kayıtlar aynı ayak gibi referans kübün yüzey rollerine göre akıllı
-   yerleşsin; L dolaba öne 2 kayıt gerekiyorsa otomatik gelsin") ─────────
-   Yatay kayıt, yüz KONTURUNUN bir kenarına bağlı şerittir: düzlem-içi dış normali `n` olan, tohuma en yakın kontur kenarı; kenar
-   çizgisinden `setback`..`setback+size` içeri; kenar boyunca kenarın kendi uçları (+ `ext` uzatmaları — içbükey köşede komşu parçanın
-   altına). Serbest bölge (yanlar / önce yerleşen kayıtlar düşmüş) bu şeride kırpılır. Eski yol (tam bölge + ön yüzden dyn kesim +
-   karşı yüzden FIXED genişlik) L konturda yanlış yüzü kesiyordu (arka kayıt çentik derinliğinde çıkıyordu) ve ikinci ön kenara hiç
-   kayıt vermiyordu. Kenar her regen'de yeniden bulunduğundan gövde ölçüsü değişince kayıt kenarı izler, genişliği sabit kalır. */
+/* ───────── KAYIT ŞERİDİ (VirtualFace.railStrip) ─────────
+   Yatay kayıt yüz konturunun bir kenarına bağlı şerittir: dış normali `n`, tohuma en yakın kenar; `setback`..`setback+size` içeri,
+   kenar boyunca uçlar (+ `ext`). Serbest bölge bu şeride kırpılır. Kenar her regen'de yeniden bulunur (L konturda doğru yüz). */
 export interface RailStripClip { polygon: Point2D[]; center: Point2D; edge: { a: Point2D; b: Point2D } }
 /** `resolveExt` (motor regen'i): hedefli uzatmanın miktarını yeniden ölçer — `fromUV` = kenarın o ucunda bandın ortası (düzlem koord.). */
 export function clipRegionToRailStrip(
@@ -1405,8 +1399,7 @@ export function clipRegionToRailStrip(
   const clean: Point2D[] = [];
   for (const q of out) { const l = clean[clean.length - 1]; if (!l || Math.hypot(l.x - q.x, l.y - q.y) > 0.01) clean.push(q); }
   while (clean.length > 1 && Math.hypot(clean[0].x - clean[clean.length - 1].x, clean[0].y - clean[clean.length - 1].y) <= 0.01) clean.pop();
-  // Doğrudaş ve GERİ DÖNEN (sıfır genişlikli diken — çentikli bölgenin şeritle kırpılmasından) köşeler: açının sinüsü ~0 (ölçekten
-  // bağımsız; kayan nokta gürültüsüne dayanıklı). Her silmede komşular değişir → değişmeyene kadar.
+  // Doğrudaş ve geri dönen (sıfır genişlikli diken) köşeler: açının sinüsü ~0; değişmeyene kadar.
   for (let changed = true, guard = 0; changed && clean.length > 3 && guard < 8; guard++) {
     changed = false;
     for (let i = clean.length - 1; i >= 0 && clean.length > 3; i--) {
@@ -1426,9 +1419,7 @@ export function clipRegionToRailStrip(
     : { x: clean.reduce((s0, p) => s0 + p.x, 0) / clean.length, y: clean.reduce((s0, p) => s0 + p.y, 0) / clean.length };
   return { polygon: clean, center, edge: { a, b } };
 }
-/** İÇ KÖŞEDEN UZAYAN KAYITIN HEDEFE MESAFESİ (gövde-yerel): `from` (kayıt bandının o uçtaki ortası) noktasından `dir` yönünde, dış normali
- *  `to.n` olan gövde yüzlerinden ışının ilk çarptığı (kutusu içinde) yüzün düzlemine mesafe − `to.depth` (hedef kenarın dolu bandı).
- *  Yüz yoksa null. */
+/** İç köşeden uzayan kaydın hedefe mesafesi: `from`dan `dir` yönünde dış normali `to.n` olan ilk yüze − `to.depth`. Yoksa null. */
 export function railLandingOnBody(faces: FaceData[], groups: CoplanarFaceGroup[], from: THREE.Vector3, dir: THREE.Vector3, to: RailExtTarget): number | null {
   const n = new THREE.Vector3(...to.n).normalize(), d = dir.clone().normalize();
   const dn = d.dot(n);
@@ -1447,8 +1438,7 @@ export function railLandingOnBody(faces: FaceData[], groups: CoplanarFaceGroup[]
   }
   return best == null ? null : best - Math.max(0, to.depth) / dn;
 }
-/** Çokgenin `dir` yönündeki ucunu `T` düzlemine (p·dir = T) getirir: uç ötedeyse yarım düzlemle kırpar, berideyse uç köşeleri T'ye
- *  taşır (dikey kayıt uç ayarı; köşeler gövde-yerel, çokgen düzlemsel). */
+/** Çokgenin `dir` ucunu T düzlemine getirir: ötedeyse kırpar, berideyse uç köşeleri taşır. */
 export function setPolygonEndAlong(verts: THREE.Vector3[], dir: THREE.Vector3, T: number): THREE.Vector3[] {
   if (verts.length < 3) return verts;
   const d = dir.clone().normalize();
@@ -1471,9 +1461,7 @@ export function railExtOrigin(contour: THREE.Vector3[], dir: THREE.Vector3, norm
   const c = ends.reduce((acc, p) => acc.add(p), new THREE.Vector3()).divideScalar(Math.max(1, ends.length));
   return c.addScaledVector(normal.clone().normalize(), -(band[0] + band[1]) / 2);
 }
-/** Dikey kayıt VF'sinin uç ayarları (VirtualFace.railExt): her uç, YÜZ KONTURUNUN o yöndeki ucundan (köşe çizgisi) `amount` kadar ötede
- *  biter — + uzatır (iç köşe, hedefe kadar; `land` verilirse her regen'de yeniden ölçülür), − kısaltır (dış köşede komşu kayıtın /
- *  arkalığın gerisinde kalır; bölge zaten daha kısaysa dokunulmaz). */
+/** Dikey kayıt uç ayarları (railExt): her uç kontur ucundan `amount` ötede biter (+ uzatır — `land` ile her regen ölçülür, − kısaltır). */
 export function applyRailExt(
   verts: THREE.Vector3[], contour: THREE.Vector3[], normal: THREE.Vector3, exts: Array<RailExt & { band: [number, number] }> | undefined,
   land?: (from: THREE.Vector3, dir: THREE.Vector3, to: RailExtTarget) => number | null,
@@ -1618,8 +1606,7 @@ export function pointInTriangle3D(p: THREE.Vector3, a: THREE.Vector3, b: THREE.V
 
 type Edge2 = { a: Point2D; b: Point2D };
 
-/** Kenar-halkası grafiğinden halkaları yürür. all=false: yalnız ilk kenardan başlayan halka; all=true: tüm
- *  bağlantısız halkalar (çentikli kardeş yüze ayrı şeritlerle değer; tek halka görünmeyen şeridi kaçırır). */
+/** Kenar-halkası grafiğinden halkalar. all=true: tüm bağlantısız halkalar (çentikli kardeş ayrı şeritlerle değer). */
 function walkBoundaryLoops(edges2: Edge2[], all: boolean): Point2D[][] {
   if (edges2.length < 3) return [];
   const keyOf = (p: Point2D) => `${p.x.toFixed(2)},${p.y.toFixed(2)}`;
@@ -1730,8 +1717,7 @@ export function panelInnerBigFace(panel: any, toward: THREE.Vector3): { faces: F
   return g ? { faces, group: g } : null;
 }
 
-/** ÜST ÜSTE PANEL: panelin tamamı, dışa normali `nOut` olan yüzün `planeInward` kadar içindeki düzlemin GERİSİNDE mi (altta kalan
- *  taban/ara paneller)? Düzlemi aşan levhalar (üst/alt/arkalık) false → engel kalır. Koordinatlar gövde-yerel. */
+/** Üst üste panel: panelin tamamı yüzün `planeInward` içindeki düzlemin gerisinde mi? Düzlemi aşan levhalar engel kalır. */
 export function panelBehindStackPlane(panel: any, nOut: THREE.Vector3, planeInward: number, tol = 0.5): boolean {
   // Gerçek köşeler (bbox değil): dönmüş levhanın eksen-hizalı kutusu düzlemin iki yanına taşar, kendisi taşmaz.
   const geo: THREE.BufferGeometry | undefined = footprintGeometry(panel) ?? panel?.geometry;
@@ -1753,8 +1739,7 @@ export function findPanelCoveringPoint(worldPt: THREE.Vector3, childPanels: any[
   return null;
 }
 
-/** Seed'i içeren/ona en yakın üçgenin bağlantılı bileşeninin konturu, sınır kenarları ve alan-ağırlıklı merkezi.
- *  VF her zaman tıklanan bileşenin GERÇEK konturudur; ayrık eş-düzlem parçalar asla birleşmez. */
+/** Seed'in bağlantılı bileşeninin konturu, sınır kenarları ve merkezi. VF her zaman tıklanan bileşenin gerçek konturu. */
 export function computeFaceComponentContour(
   faces: FaceData[], faceIndices: number[], seedLocal: THREE.Vector3, groupNormal: THREE.Vector3
 ): { comp: number[]; seedFi: number; corners: THREE.Vector3[]; center: THREE.Vector3; boundary: Array<{ a: THREE.Vector3; b: THREE.Vector3 }> } | null {
@@ -1864,8 +1849,7 @@ function panelFootprintsInParentLocal(
   const pos = geometry.getAttribute('position');
   if (!pos) return null;
   const M = new THREE.Matrix4().multiplyMatrices(parentWorldToLocal, getShapeMatrix(panel));
-  // Konveks gövde (tam siluet) yalnız sentetik damga içindir; GERÇEK dönmüş geometride siluet, yüze kenarıyla
-  // değen panelde yüzün yarısını dolu gösterir. Engel, panelin yüze DEĞEN alanıdır, gölgesi değil.
+  // Konveks siluet yalnız sentetik damgada; gerçek dönmüş geometride engel panelin yüze değen alanıdır, gölgesi değil.
   const isRotated = panel.__isRotatedPanel === true && panel.__rotatedRealGeom !== true;
   const pts: THREE.Vector3[] = []; const d: number[] = [];
   let dMin = Infinity, dMax = -Infinity;
@@ -1929,16 +1913,14 @@ function panelFootprintsInParentLocal(
   const bEdges = onPlaneBoundaryEdges(geometry, d.map(dd => Math.abs(dd) < tol), i => toUV(pts[i], u, v));
   if (bEdges.length >= 3) {
     const good = walkBoundaryLoops(bEdges, true).filter(l => l.length >= 3 && Math.abs(signedArea2(l)) / 2 > 1.0);
-    // Halka yönü mesh sarımından gelir (OCC ve sentetik prizma ters sarılabilir); kırpma (clipByFootprint) CCW
-    // (pozitif alan) varsayar — ters halkada şeridin UZAK kenarı seçilir ve bölge dikmenin içinden geçer.
+    // Halka yönü mesh sarımından gelir; clipByFootprint CCW varsayar — ters halkada uzak kenar seçilip bölge dikmeden geçerdi.
     for (const l of good) if (signedArea2(l) < 0) l.reverse();
     if (good.length > 0) return good;
   }
   const hull = convexHull2D(out);
   if (hull.length < 3) return null;
-  // SALT-KESİT KENAR-TEMASI: yüzü yalnız delen (yatık yüzü yok) ince kesit engel değildir — yüzü bölüp bölgenin
-  // yarısını silmesin; rebuild'de boolean ile biçilir. Yatık yüzle yaslanan (flatVertCount>0) gerçek engeldir.
-  // İstisna: ÜST ÜSTE PANEL düzleminde (gövde yüzünün içinde) delen levhalar gerçek engeldir (__pierceObstacle — PanelEngine / Scene verir).
+  // Salt-kesit temas: yüzü yalnız delen ince kesit engel değil (rebuild'de boolean biçer); yatık yüzle yaslanan gerçek engel.
+  // İstisna: üst üste panel düzleminde delen levhalar engeldir (__pierceObstacle).
   if (pierces && flatVertCount === 0 && !isRotated && panel.__pierceObstacle !== true) {
     const hb = bbox2(hull);
     const minSpan = Math.min(hb.x1 - hb.x0, hb.y1 - hb.y0);
@@ -2007,8 +1989,7 @@ function traceReachBoundary(reach: Uint8Array, nx: number, ny: number, uMin: num
   return out.length >= 3 ? out : bestRing;
 }
 
-/** Grid halkasını kaynak kenarlara (yüz konturu + ayak izleri) oturtur: köşe en yakın doğruya / iki doğrunun
- *  kesişimine taşınır; eşdoğrusal köşeler atılınca merdiven basamakları tek köşegene çöker. */
+/** Grid halkasını kaynak kenarlara oturtur (merdiven basamakları tek köşegene çöker). */
 function fitTracedPolygonToSources(poly: Point2D[], sources: Point2D[][], tolDist: number): Point2D[] {
   if (poly.length < 3) return poly;
   type Seg = { a: Point2D; d: Point2D; len: number };
@@ -2071,8 +2052,7 @@ function effectiveSlabThickness(panel: any): number {
   return Number.isFinite(mn) && mn > 0.5 ? Math.max(base, mn) : base;
 }
 
-/** Kanonik şerit çerçevesi: hull merkezi + uzun kenara dik, işareti kanonik birim eksen — taraf işareti
- *  (sign(dot(P−c, p̂))) şerit hafif eğilse de regen'ler arası karşılaştırılabilir. */
+/** Kanonik şerit çerçevesi: hull merkezi + uzun kenara dik kanonik eksen — taraf işareti regen'ler arası karşılaştırılabilir. */
 function canonicalStripFrame(fp: Point2D[]): { c: Point2D; p: Point2D } {
   let cx = 0, cy = 0;
   for (const q of fp) { cx += q.x; cy += q.y; }
@@ -2091,8 +2071,7 @@ function canonicalStripFrame(fp: Point2D[]): { c: Point2D; p: Point2D } {
 }
 const stripSide = (pt: Point2D, fr: { c: Point2D; p: Point2D }) => (pt.x - fr.c.x) * fr.p.x + (pt.y - fr.c.y) * fr.p.y;
 
-/** Dikdörtgensel KESİN serbest bölge: yarım-düzlem kırpması içbükey (L/U) bölgenin bir kolunu siler; eksen-hizalı
- *  geometride koordinat-sıkıştırılmış ızgarada çözülür, uygun değilse null. `nib` = köşe cebi budama eşiği (0 → yok). */
+/** Dikdörtgensel kesin serbest bölge (koordinat-sıkıştırılmış ızgara): yarım-düzlem kırpması L / U kolunu siliyordu. `nib` = cep budama. */
 function rectilinearFreeRegion(ring2D: Point2D[], blockers: Point2D[][], anchorPt: Point2D, nib = 25): Point2D[] | null {
   const AX = 0.05;
   if (ring2D.length < 4) return null;
@@ -2183,8 +2162,7 @@ function rectilinearFreeRegion(ring2D: Point2D[], blockers: Point2D[][], anchorP
 }
 
 const _tiltCache = new WeakMap<object, boolean>();
-/** En büyük toplam alanlı yüz normali (işaret: ilk sıfırdan farklı bileşen pozitif); geometri yoksa null.
- *  `tol`: x / y bileşeni bu kadar negatif olmadıkça çevrilmez (önizleme çerçevesi 1e-6 ile gürültüye karşı korunur). */
+/** En büyük toplam alanlı yüz normali (işaret: ilk sıfırdan farklı bileşen +). `tol`: önizlemede gürültüye karşı. */
 export function largestFaceNormal(geo: any, tol = 0): THREE.Vector3 | null {
   if (!geo || typeof geo.getAttribute !== 'function') return null;
   const pos = geo.getAttribute('position') as THREE.BufferAttribute | undefined;
@@ -2235,8 +2213,7 @@ export function panelHasRotation(panel: any): boolean {
   return Array.isArray(ts) && ts.some((st: any) => st?.type === 'rotate' && (Math.abs(degOf(st)) > 1e-6 || Math.abs(st?.value || 0) > 1e-6));
 }
 
-// SERBEST BÖLGE: ayak izleri tek zincirle parent-yerel uzaya taşınır; geometri tam çokgen farkından gelir
-// (köşegen tırtıksız), grid yalnız KARAR verir (hangi iz engelliyor, sonuç görülen reach ile uyuşuyor mu).
+// Serbest bölge: geometri tam çokgen farkından (tırtıksız), grid yalnız karar verir.
 
 export interface FreeRegionResult {
   u: THREE.Vector3; v: THREE.Vector3; planeN: number;
@@ -2250,9 +2227,8 @@ export interface FreeRegionResult {
   sideRelations: Record<string, number>;
 }
 
-/** @param prevRegionCorners (regen) önceki VF çokgeni: dönmüş şerit seed üstünden süpürülünce bölge taraf değiştirmesin.
- *  @param storedSideRelations panel ilk temas ettiği tarafa bağlı kalır (öncelik: ilişki > süreklilik > seed).
- *  @param fitFaceShape true → çapadan dolan serbest bölgenin TAM şekli. */
+/** @param prevRegionCorners önceki VF çokgeni (bölge taraf değiştirmesin).
+ *  @param storedSideRelations ilk temas tarafı. @param fitFaceShape true → çapadan dolan bölgenin tam şekli. */
 export function computeFreeRegionLocal(
   contourCorners: THREE.Vector3[], normalLocal: THREE.Vector3, seedLocal: THREE.Vector3,
   siblingPanels: any[], parentWorldToLocal: THREE.Matrix4, parentShapeId?: string,
@@ -2330,8 +2306,7 @@ function solveFreeRegionMemo(q: FreeRegionInput): FreeRegionResult {
     sideRelations: { ...r.sideRelations }, reach: r.reach.slice(), anchor: { ...r.anchor }, ring2D: [...r.ring2D] };
 }
 
-/** UZAK-TEĞET KIRPMA: kenar, çapadan uzağa hull'un en uzak noktasının 1mm İÇİNE ötelenir — bölge şeridin içinde
- *  biter, dönüş-kesimi temizler (dışarıda kırpılırsa eğime paralel kıymık kalır). */
+/** Uzak-teğet kırpma: kenar hull'un en uzak noktasının 1 mm içine ötelenir (dışarıda kırpılırsa kıymık kalır). */
 function farTangentEdge(fp: Point2D[], a: Point2D, b: Point2D, anchorPt: Point2D): [Point2D, Point2D] {
   const dx = b.x - a.x, dy = b.y - a.y;
   const len = Math.hypot(dx, dy) || 1e-9;
@@ -2389,8 +2364,7 @@ function solveFreeRegion(q: FreeRegionInput): FreeRegionResult {
   let continuityConnected = false; // tek-bileşenli süreklilik (doğrulama gevşetilir)
   let relationChosen = false;      // kayıtlı bağ ilişkisi uygulandı (doğrulama gevşetilir)
 
-  // ÖNCELİK 1 — yarı-düzlem kısıtları: kayıtlı taraf işaretleri, yoksa seed'den türetilen; engel regen'ler arası
-  // sıçrasa da panel kısıt tarafında kalır. Kısıt yoksa sonraki katmanlara düşülür.
+  // Öncelik 1 — yarı-düzlem kısıtları: kayıtlı taraf işaretleri, yoksa seed'den; engel sıçrasa da panel kısıt tarafında kalır.
   {
     const seedPt = cellPt(ci, cj);
     const constraints: Array<{ fr: { c: Point2D; p: Point2D }; sign: number }> = [];
@@ -2466,15 +2440,13 @@ function solveFreeRegion(q: FreeRegionInput): FreeRegionResult {
   }
   const reach = new Uint8Array(nx * ny);
   if (free[cj * nx + ci]) flood4(free, nx, ny, cj * nx + ci, reach);
-  // YÜZ TAMAMEN DOLU (hiç serbest hücre yok — orada zaten bir panel var): bölge BOŞ döner; eskiden "engel yok" sayılıp tam kontur
-  // dönüyor, hızlı gövde / çağıran var olan panelin üstüne ikinci bir panel koyuyordu (iç içe geçme).
+  // Yüz tamamen doluysa bölge boş döner (eskiden tam kontur dönüp var olan panelin üstüne ikinci panel konuyordu).
   if (!free[cj * nx + ci]) {
     const finalAnchor0 = cellPt(ci, cj);
     return { u, v, planeN, ring2D, footprints, footprintIds: fpIds, touchingSiblingIds, uMin, vMin, cw, ch, nx, ny, reach, anchor: finalAnchor0, polygon: [], sideRelations: {} };
   }
 
-  // ENGEL = yalnız çapanın eriştiği bölgeye (reach, 1 hücre genişletilmiş) BİTİŞİK iz; yarım-düzlem kırpması sonsuz
-  // olduğundan uzak bir iz (dikmenin öbür tarafındaki raf) bu bölmeyi de keserdi.
+  // Engel = yalnız çapanın eriştiği bölgeye bitişik iz (yarım-düzlem sonsuz; uzak iz bu bölmeyi de keserdi).
   const nearReach = new Uint8Array(nx * ny);
   for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
     if (!reach[j * nx + i]) continue;
@@ -2531,8 +2503,7 @@ function solveFreeRegion(q: FreeRegionInput): FreeRegionResult {
     return best && best.length >= 3 ? best : null;
   };
 
-  // BASMA DÜZLEMİ: basan panel basılanı büyük yüzünün düzlemiyle (şeridin uzun kenarı) keser, ucuyla değil;
-  // uç kenarla kesim (basanın üstünden devam) yalnız "yüzeyin şeklini al" açıkken istenir.
+  // Basma düzlemi: basan basılanı büyük yüzünün düzlemiyle keser, ucuyla değil (uç kesimi yalnız "yüzeyin şeklini al"da).
   let pressedCutApplied = false;
   let exact: Point2D[] = ring2D;
   for (let f = 0; f < blocking.length; f++) {
@@ -2557,8 +2528,7 @@ function solveFreeRegion(q: FreeRegionInput): FreeRegionResult {
   }
 
   let polygon = ring2D;
-  // İçbükey kurtarma: yarım-düzlem sonucu reach'in belirgin kısmını kaybettiyse (L/U kolu) kesin dikdörtgensel bölge.
-  // Basma düzlemi + konveks yüzde atlanır: basanın altı bilerek kaybedilmiştir, kurtarma paneli onun etrafına sarar.
+  // İçbükey kurtarma: yarım-düzlem sonucu reach'in belirgin kısmını kaybettiyse kesin dikdörtgensel bölge (basma düzleminde atlanır).
   const skipConcaveRecovery = pressedCutApplied && isConvexPolygon2D(ring2D);
   if (exact.length >= 3 && blocking.length > 0 && !blockingRotated.some(Boolean) && !skipConcaveRecovery) {
     const hp = scorePoly(exact);
@@ -2605,8 +2575,7 @@ function solveFreeRegion(q: FreeRegionInput): FreeRegionResult {
     }
   }
 
-  // YÜZEYİN ŞEKLİNİ AL: çapadan dolan serbest bölgenin tamamı. Düz engeller eksen-hizalıysa kesin çözüm (cep budama
-  // kapalı), değilse grid izlenip kaynak kenarlara oturtulur; dönmüşlerde uzak-teğet aynen. Doğrulanmazsa mod-kapalı sonuç kalır.
+  // Yüzeyin şeklini al: çapadan dolan bölgenin tamamı; eksen-hizalıysa kesin, değilse grid + oturtma. Doğrulanmazsa mod-kapalı sonuç.
   if (fitFaceShape) {
     const straight: Point2D[][] = [], rotatedFps: Point2D[][] = [];
     for (let f = 0; f < blocking.length; f++) (blockingRotated[f] ? rotatedFps : straight).push(blocking[f]);
@@ -2641,10 +2610,8 @@ function solveFreeRegion(q: FreeRegionInput): FreeRegionResult {
 }
 
 // ══════════════════════════════════════════════ 3. PANEL İŞLEM ADIMLARI ══════════════════════════════════════════════
-// Panel işlem adımları (taşı / döndür / yüz extrude) + referans yüz seçimi.
-// Tek gerçek kaynak: parameters.transformSteps (sıralı move|rotate) + extrudeSteps; geometriyi PanelEngine
-// her rebuild'de sıfırdan üretir — burada yalnız adım yazılır + rebuild tetiklenir. Eksen PANEL-YEREL (VF tabanı),
-// pivot/nişan VF'ye ORANSAL; REF bağları her rebuild'de GÜNCEL geometriden çözülür (value yalnız yedek).
+// Tek kaynak: parameters.transformSteps + extrudeSteps; PanelEngine her rebuild'de sıfırdan üretir, burada yalnız adım yazılır.
+// Eksen panel-yerel, pivot / nişan VF'ye oransal; ref bağları her rebuild'de güncel geometriden (value yedek).
 
 type UpdateShape = (id: string, updates: Partial<Shape>) => void;
 
@@ -2705,8 +2672,7 @@ export interface ExtrudeStep {
   resolvedValue?: number;
   /** OK modu adımı: her rebuild'de bu eksen yönündeki EN DIŞ yüze uygulanır (aynı ok tekrar tıklanınca değer toplanır). */
   outer?: boolean;
-  /** ÇİZİM SONRASI adım (`parameters.postExtrudeSteps` listesinde durur): çizim adımları (Shape / Cut) uygulanmış katının yüzüne uygulanır —
-   *  çizimin açtığı eğimli / düz kalınlık yüzü böyle extrude edilir. Çizim gibi yalnız katı / görünüm düzeyindedir (komşular tepki vermez). */
+  /** Çizim sonrası adım (`postExtrudeSteps`): çizim uygulanmış katının yüzüne; yalnız katı / görünüm (komşular tepki vermez). */
   afterSketch?: boolean;
 }
 
@@ -2915,8 +2881,7 @@ export async function confirmRefFaceExtrude(): Promise<void> {
 
 const dominantAxis = (n: THREE.Vector3): AxisLetter => dominantAxisLabel(n)[0].toLowerCase() as AxisLetter;
 
-/** Referans yüz grubunu GÜNCEL geometride bulur: normal (>0.8) + tıklama noktasına en yakın merkez;
- * nokta/normal yoksa saklı indeks. Referans taşınmış/boyutlanmış olsa da doğru grup bulunur. */
+/** Referans yüz grubunu güncel geometride bulur: normal (> 0.8) + tıklamaya en yakın merkez; yoksa saklı indeks. */
 export function matchReferenceFace(
   ref: Shape | undefined, refFaceGroupIndex: number, refNormalWorld?: Vec3, refPointWorld?: Vec3
 ): { group: CoplanarFaceGroup; faces: FaceData[]; matrix: THREE.Matrix4 } | null {
@@ -3145,8 +3110,7 @@ export async function applyExtrudeSteps(
       effectiveStep = { ...step, refPlaneCenterLocal: vec3(plane.center), refPlaneNormalLocal: vec3(plane.normal) };
     }
     const result = await applyOneExtrudeStep(currentReplicad, effectiveStep, currentGeometry);
-    // 0 mm'e çözülen REF adımı (referans yüz zaten uçla çakışık): katı değişmez ama resolvedValue=0 YAZILIR — yazılmazsa damga
-    // (PanelEngine.stepAmount) adımı "fixed 0 − açıklık" sayıp çöküyordu → yüzeyin şeklini alan kardeş çentiğini kaybediyordu.
+    // 0 mm'e çözülen ref adımında da resolvedValue=0 yazılır — yoksa damga adımı "fixed 0 − açıklık" sayıp çöküyordu.
     if (result && 'noop' in result) { if (step.refShapeId) resolved.push({ id: step.id, value: 0 }); continue; }
     if (result) {
       currentReplicad = result.replicadShape;
@@ -3159,8 +3123,7 @@ export async function applyExtrudeSteps(
   return anyApplied || resolved.length ? { shape: currentReplicad, geometry: currentGeometry, resolved } : null;
 }
 
-/** Tıklanan yüz grubu (parent-yerel); eğri (fillet) grup en yakın aynı eksenli düz yüze yaslanır. `exact`: düz ama EĞİK yüz olduğu gibi
- *  kalır (çizim sonrası adım — yüz son katıda gerçekten vardır); eğri yüz her durumda düz komşuya yaslanır. */
+/** Tıklanan yüz grubu; eğri grup en yakın düz yüze yaslanır. `exact`: eğik düz yüz olduğu gibi kalır. */
 function resolveClickedFace(panel: Shape, faceGroupIndex: number, exact = false): { faceNormal: THREE.Vector3; faceCenter: THREE.Vector3 } | null {
   if (!panel.geometry) return null;
   const { groups } = getFacesAndGroups(panel.geometry);
@@ -3178,10 +3141,8 @@ function resolveClickedFace(panel: Shape, faceGroupIndex: number, exact = false)
   return { faceNormal, faceCenter };
 }
 
-/** ÇİZİM SONRASI YÜZ MÜ (Goker, Kas 2026 — "panele çizimle şekil verince oluşan yüzü kalınlığından face extrude edemiyorum")? Çizim adımları
- *  motorun SON aşamasıdır; extrude adımları ondan önce uygulandığı için çizimin açtığı yüz o aşamada yoktu (adım başka yüze kayıyordu) ve
- *  Shape'te büyüyen kısım profille yeniden kırpılıyordu. Kural: panelde Shape adımı varsa tıklanan her düz yüz, yalnız Cut varsa çizim
- *  öncesi katıda bulunmayan yüz (kesimin açtığı duvar) çizim SONRASI extrude edilir; çizimsiz panelde ve eğri yüzde eski yol. */
+/** Çizim sonrası yüz mü? Çizim motorun son aşaması; önceki extrude çizimin açtığı yüzü bulamıyordu. Shape adımı varsa her düz yüz,
+ *  yalnız Cut varsa kesimin açtığı yüz çizim sonrası extrude edilir. */
 export function isPostSketchFace(panel: Shape, faceGroupIndex: number): boolean {
   const feats = liveSketchFeatures(panel);
   if (!feats.length || !panel.geometry) return false;
@@ -3234,9 +3195,7 @@ export async function executeFaceExtrude({ panelShape: panel, faceGroupIndex, va
   return commitAndRebuild(panel, { [up.key]: up.steps }, updateShape);
 }
 
-/** OK MODU (Goker, Eki 2026 — "yüz seçmek istemiyorum; move'daki gibi oklar olsun, panelin en dış sınırını yazılan ölçü kadar büyütsün"):
- *  `axis` yönündeki EN DIŞ yüz `delta` kadar büyür (− küçülür). Aynı yönün ok adımı zaten varsa değeri toplanır (her tık = +delta);
- *  adım `outer` işaretlidir → rebuild'de hep o yöndeki en dış yüze uygulanır. */
+/** Ok modu: `axis` yönündeki en dış yüz `delta` büyür; aynı yönün ok adımı varsa toplanır. Adım `outer` → hep en dış yüze uygulanır. */
 export async function executeFaceExtrudeOuter({ panelShape, axis, delta: value, mode = 'dyn', updateShape }: {
   panelShape: Shape; axis: AxisDir; delta: number; /** fixed: panelin o eksendeki TOPLAM ölçüsü `delta` olur (ok ucundaki Dyn/Fixed) */ mode?: 'dyn' | 'fixed'; updateShape: UpdateShape;
 }): Promise<boolean> {
@@ -3280,8 +3239,7 @@ async function executeFaceExtrudeToReference(
   return commitAndRebuild(panel, { [up.key]: up.steps }, updateShape);
 }
 
-// Referans yüz seçimi: aynı noktaya her tıklamada ışın boyunca bir arkadaki yüze geçilir (tüm şekiller).
-// PanelDrawing ve ShapeWithTransform aynı fonksiyonu çağırır; döngü durumu modül düzeyinde (tek seçim).
+// Referans yüz seçimi: aynı noktaya her tık ışın boyunca arkadaki yüze geçer; döngü durumu modül düzeyinde.
 
 export const REF_COLORS = {
   hover: 0xf2d57e, selected: 0xdfae4c, hoverCss: '#f2d57e', selectedCss: '#dfae4c', hoverOpacity: 0.42, selectedOpacity: 0.68,

@@ -58,10 +58,8 @@ import {
 import { legPresetById, presetLayout, resolveLegPreset } from './AccessoryService';
 import { type Pt, autoLegPoints, edgeRoles, polyExtent, rectPoly, toFacing } from './LegLayout';
 
-/* ASSEMBLY (eski "Panel Editor" — Goker, Kas 2026: "artık sadece panel yerleşmiyor; ayak, menteşe, ileride çekmece de gelecek —
-   hiyerarşik ürün ağacı"): gövdenin parça listesi / ürün ağacı sekmesi. 1) şerit + liste satırı parçaları · 2) kart blokları (ipucu
-   hücresi, kanal / ayak diyagramları, hızlı gövde) · 3) şeritler, adım listeleri, yerleştirme şeritleri · 4) parça listesi ve kartlar.
-   Şemalar PanelSchematics.tsx'te. */
+/* ASSEMBLY — gövdenin parça listesi / ürün ağacı sekmesi. 1) şerit + satır parçaları · 2) kart blokları (ipucu hücresi, diyagramlar,
+   hızlı gövde) · 3) şeritler, adım listeleri, yerleştirme · 4) parça listesi ve kartlar. Şemalar PanelSchematics.tsx'te. */
 
 export const AXIS_COLORS: Record<string, string> = {
   'x+': '#dc2626', 'x-': '#b91c1c', 'y+': '#16a34a', 'y-': '#15803d', 'z+': '#2563eb', 'z-': '#1d4ed8', x: '#dc2626', y: '#16a34a', z: '#2563eb',
@@ -197,13 +195,13 @@ export function DockModeBar({ modes, active, onPick, trailing }: {
 /* ───────────── LİSTE SATIRI ───────────── */
 
 /* Satır hizalama: tüm satır türleri aynı sabit sütunları kullanır; üye satırı kartta 8px içeride → sağ alan 8px dar. */
-const ROW_NUM_W = 28;              // "12" ve üye "3.12" rahat sığar (Goker: numaralar dar görünüyordu)
+const ROW_NUM_W = 28;              // "12" ve üye "3.12" rahat sığar
 export const ROW_BTN = 'w-[22px] h-[22px] shrink-0 rounded-md flex items-center justify-center transition-colors duration-150';
 export const ROW_SPACER = 'w-[22px] h-[22px] shrink-0';
 export const ROW_ICON = 13;
-// 6 × 22px düğme (5 araç: şekil · kapak sınırı · arkalık sınırı · ok · sil + aç/kapa oku) + 5 × 1px aralık (Goker: grup sıkı dursun)
+// 6 × 22px düğme (5 araç: şekil · kapak sınırı · arkalık sınırı · ok · sil + aç/kapa oku) + 5 × 1px aralık
 export const ROW_TRAIL_W = 137;
-/* Seçili satır (Goker: "çok renkli, daha soft"): sıcak kemik zemin + tek ince yumuşak turuncu çizgi; numara/rozet/ok nötr koyu taş. */
+/* Seçili satır: sıcak kemik zemin + tek ince yumuşak turuncu çizgi; numara/rozet/ok nötr koyu taş. */
 export const ROW_SEL_HEAD = 'bg-[#fbf9f6]';
 export const ROW_SEL_BAR = 'pointer-events-none absolute left-0 top-[6px] bottom-[6px] w-[2px] rounded-r-full bg-orange-500/80';
 export const MEMBER_INSET = 8;           // grup kartı gövdesinin yatay dolgusu (px-2)
@@ -216,8 +214,7 @@ const ROW_KIND_ICON: Record<RowKind, LucideIcon> = {
 const ROW_KIND_TITLE: Record<RowKind, string> = {
   body: 'Body panel', shelf: 'Shelf', divider: 'Divider', door: 'Door', back: 'Back panel', legs: 'Legs', quick: 'Quick body', plinth: 'Plinth leg set',
 };
-/* SATIR KARTI (Goker, Kas 2026): düz beyaz kart, ince kenar; üzerine gelince kenar koyulaşır ve kart hafifçe kalkar; açıkken daha belirgin
-   kenar + yumuşak gölge. Sürüklemede soluk, tutamaç basılıyken turuncu kenar. */
+/* Satır kartı: düz beyaz, ince kenar; hover'da kenar koyulaşır, açıkken belirgin kenar + gölge; sürüklemede soluk. */
 export const rowCardClass = (open: boolean, dragging: boolean, armed: boolean) =>
   `group/row yago-row relative flex flex-col rounded-[9px] overflow-hidden bg-white ring-1 transition-[box-shadow,opacity,transform] duration-150 ease-out
    ${open ? 'ring-[#d4cdc3] shadow-[0_1px_2px_rgba(40,30,20,0.05),0_10px_24px_-18px_rgba(40,30,20,0.30)] my-1'
@@ -236,7 +233,7 @@ export const CELL_LABEL = 'yago-label';
 /** Salt-okunur hücre zemini. */
 export const READ_CELL = 'yago-cell is-passive min-w-0 h-full pl-2 pr-1.5 flex items-center gap-1';
 
-/* Satırdaki açık anahtarlar (şekil · kapak sınırı · arkalık sınırı) TEK yumuşak renk (Goker): dolgu yok, yalnız ince dış hat. */
+/* Satırdaki açık anahtarlar (şekil · kapak sınırı · arkalık sınırı) tek yumuşak renk: dolgu yok, yalnız ince dış hat. */
 const ROW_TOGGLE_ON = 'text-[#c2410c] ring-1 ring-inset ring-[#efcdb4] hover:bg-[#fff4ec] hover:ring-[#e9a97f]';
 type ToggleProps = { checked: boolean; disabled?: boolean; onToggle: () => void };
 function RowToggle({ checked, disabled, onToggle, icon: Icon, title }: ToggleProps & { icon: LucideIcon; title: string }) {
@@ -276,8 +273,7 @@ export function RowTypeBadge({ kind, active, count }: { kind: RowKind; active: b
     </span>
   );
 }
-/* Ölçü hücresi: eski sade görünüm (kapsül yok); harften sonra 3 px, değer en fazla 1 ondalık.
-   Sabit 59 px → 5 haneye kadar ("9999.9", "12345") sığar ve tüm satırlarda sütunlar hizalı kalır. */
+/* Ölçü hücresi: sabit 59 px → 5 haneye kadar sığar, sütunlar hizalı; en fazla 1 ondalık. */
 const fmtDim = (v: number | null | undefined): string => {
   if (v == null || !Number.isFinite(v)) return '—';
   const r = Math.round(v * 10) / 10;
@@ -326,8 +322,7 @@ export function CardAction({ icon: Icon, label, active = false, tone, title, onC
     </button>
   );
 }
-/** ETİKETLİ HÜCRE: [etiket] …… [kontrol]. Her değer kutusunun ne olduğu tek bakışta okunur (Goker: "kutucuklar tek bakışta anlaşılmıyor").
- *  `fixed` = içeriği kadar; yoksa satırı paylaşır. `className` ızgara hücresi için (col-span …). */
+/** Etiketli hücre: [etiket] …… [kontrol]. `fixed` = içeriği kadar, yoksa satırı paylaşır. */
 export function FieldBox({ label, title, accent, fixed, passive, className = '', children }: {
   label: string; title?: string; accent?: boolean; fixed?: boolean; passive?: boolean; className?: string; children: React.ReactNode;
 }) {
@@ -349,12 +344,6 @@ export const StepBtn = ({ title, disabled, onClick, children }: { title: string;
   <button type="button" title={title} disabled={disabled} onClick={e => { stop(e); if (!disabled) onClick(); }}
     className={`w-[20px] h-[20px] shrink-0 rounded-[5px] flex items-center justify-center transition-colors duration-150
       ${disabled ? 'text-stone-300 cursor-not-allowed' : 'text-stone-500 hover:bg-[#f3efe8] hover:text-stone-800'}`}>{children}</button>
-);
-export const IconSquareBtn = ({ icon: Icon, title, onClick }: { icon: LucideIcon; title: string; onClick: () => void }) => (
-  <button type="button" title={title} onClick={e => { stop(e); onClick(); }}
-    className="shrink-0 w-[28px] h-[28px] rounded-[7px] flex items-center justify-center bg-white ring-1 ring-[#e3ddd4] text-stone-500 hover:bg-[#f6f3ee] hover:ring-[#cfc7bc] hover:text-stone-900 transition-colors duration-150">
-    <Icon size={12.5} strokeWidth={2.2} />
-  </button>
 );
 /** Alan içindeki küçük temizle (×) düğmesi. */
 export const ClearBtn = ({ title, label, onClick }: { title: string; label: string; onClick: () => void }) => (
@@ -391,7 +380,7 @@ function useCountInput(value: number, max: number, onChange: (n: number) => void
     onChange: (e: React.ChangeEvent<HTMLInputElement>) => setDraft(e.target.value.replace(/[^0-9]/g, '')),
   };
 }
-/** ADET KUTUSU: [Etiket] [−][n][+] — etiket yazılı (Columns / Rows / Quantity), ikon yok (Goker: ne olduğu anlaşılsın). */
+/** ADET KUTUSU: [Etiket] [−][n][+] — etiket yazılı (Columns / Rows / Quantity), ikon yok. */
 export function CountBox({ label, value, title, onChange, max = 12, className }: {
   icon?: LucideIcon; label: string; value: number; title: string; onChange: (n: number) => void; max?: number; className?: string;
 }) {
@@ -460,9 +449,7 @@ export function SelectBox<T extends string>({ value, options, title, onChange, l
     </div>
   );
 }
-/** AYAK SETİ SEÇİCİ (Goker: "sadece kayıtlı ayaklar gelsin; yerleşik / custom ayak seçeneği hiçbir zaman gelmesin"): YALNIZ Aksesuar
- *  sekmesinde kaydedilen setler. Seçilmemiş / silinmiş set → kütüphanedeki ilk set gösterilir (yerleşim de onu kullanır —
- *  AccessoryService.resolveLegPreset). Kütüphane boşsa pasif kutu: önce bir set kaydedilir. */
+/** Ayak seti seçici: yalnız kayıtlı setler; seçilmemiş / silinmiş → ilk set (resolveLegPreset). Kütüphane boşsa pasif. */
 export function LegPresetSelect({ value, onChange, label, title = 'Leg set — a saved leg layout and model from the Accessories tab' }: {
   value: string | null | undefined; onChange: (presetId: string | null) => void; label?: string; title?: string;
 }) {
@@ -550,9 +537,7 @@ export function DoorTypeBar({ value, hint, onPick }: { value: DoorType | null; h
 }
 
 // ══════════════════════════════════════════════════ 2. KART BLOKLARI ══════════════════════════════════════════════════
-/* GÖRSEL İPUCU (Goker, Eki 2026 — "nereden bollaştıracağımı kestiremiyorum"): değer hücresi üzerine gelince / odaklanınca ANAHTARINI
-   yayar (onHint); aynı anahtarı okuyan diyagram / şema o ölçüyü turuncu vurgular. Yeni ölçü = anahtar + hücre + diyagram parçası.
-   Metin ipucu (title) bilerek YOK — geri bildirim görseldir. */
+/* Görsel ipucu: değer hücresi hover / odakta anahtarını yayar (onHint), diyagram o ölçüyü turuncu vurgular. Metin ipucu bilerek yok. */
 type HintProps = { hintKey: string; active: boolean; onHint: (k: string | null) => void };
 export function HintCell({ hintKey, active, onHint, label, accent, passive, children }: HintProps & {
   label: string; accent?: boolean; passive?: boolean; children: React.ReactNode;
@@ -593,17 +578,14 @@ function diagramKit(active: string | null, { fs, noteFs, tick, wOn }: { fs: numb
   return { on, dim, txt, note, mark };
 }
 
-/** KANAL KESİT DİYAGRAMI (plan görünüş, ölçeksiz): dolaba önden bakar gibi ARKA ÜSTTE, ÖN ALTTA (Goker: "arkası aşağıda durması
- *  kafa karıştırıcı"); sınır paneli sağda. active: 't' · 'setback' · 'gf' / 'gb' / 'gd' (ön / arka / dip payı) · 'in'.
- *  Değerler kutudaki sayıyla aynı yazılır. `inset` verilirse (hızlı gövde) In ölçekli çizilir; arkalık kartında kenar başına olduğundan verilmez. */
+/** Kanal kesit diyagramı (plan, ölçeksiz): arka üstte, ön altta; sınır paneli sağda. `inset` verilirse (hızlı gövde) In ölçekli. */
 export function BackGrooveDiagram({ active, grooved, t, setback, front, rear, depth, inset, className }: {
   active: string | null; grooved: boolean; t: number; setback: number; front: number; rear: number; depth: number; inset?: number; className?: string;
 }) {
   const W = BACK_DIAGRAM_W, H = BACK_DIAGRAM_H, T = 15, PX0 = 132, PX1 = 164, D = 7, F = 6, R = 6;
   // Panel genişliği 32 px ≈ 18 mm; In verilmişse giriş o ölçekte (6..24 px), yoksa temsili 16
   const IN = inset == null ? 16 : Math.max(6, Math.min(24, (inset / 18) * (PX1 - PX0)));
-  // Kanallı: panelin arka yüzü ÜSTTE (rear0), arkalık S kadar öne (aşağı) içerde, panele IN girer. Çakma: arkalık panelin ARKASINDA
-  // (üstünde), ucunu örter ve panelin DIŞ yüzünde biter (sınırı geçmez).
+  // Kanallı: arkalık panelin arka yüzünden S içeride, panele IN girer. Çakma: panelin arkasında, ucunu örter.
   const rear0 = grooved ? 20 : 36, S = grooved ? 26 : 0;
   const by0 = grooved ? rear0 + S : rear0 - T, by1 = by0 + T;   // arkalık parçası: by0 = arka yüzü (üst), by1 = ön yüzü (alt)
   const gx1 = PX0 + IN + D, gy0 = by0 - R, gy1 = by1 + F;        // kanal: üstte arka payı (R), altta ön payı (F)
@@ -647,8 +629,7 @@ export const BACK_ROW_H = 28, BACK_ROW_GAP = 4, BACK_BLOCK_H = 4 * BACK_ROW_H + 
 export const BACK_DIAGRAM_W = 224, BACK_DIAGRAM_H = BACK_BLOCK_H;
 
 /* ───────────────────────────── HIZLI GÖVDE (Body) ─────────────────────────────
-   Tek seferlik yapılandırma: taban (Plain / Legs / Plinth), dört köşe birleşimi, baza / ayak ölçüleri, arkalık. Onay → applyQuickBody (PanelGroupService).
-   Görsel dil arkalık kartıyla ortak: HintCell + diyagram vurgusu, FIELD_INPUT, BackGrooveDiagram. */
+   Taban (Plain / Legs / Plinth), köşe birleşimleri, baza / ayak ölçüleri, arkalık. Onay → applyQuickBody. */
 const QB_BASE_ITEMS: SegItem[] = [
   { key: 'plain', label: 'Plain', title: 'Sits on the floor: bottom panel at the base, any corner joints' },
   { key: 'legs', label: 'Legs', title: 'On legs: the cube is the total height — panels sit leg-height above the floor, legs underneath' },
@@ -715,16 +696,13 @@ export function hintCells(hint: string | null, onHint: (k: string | null) => voi
   const cell = (label: string, k: string, body: React.ReactNode, passive?: boolean) => (
     <HintCell label={label} hintKey={k} active={hint === k} onHint={onHint} passive={passive}>{body}</HintCell>
   );
-  // Sayısal hücrede birim her zaman yazılır (Goker: ne olduğu tek bakışta anlaşılsın).
+  // Sayısal hücrede birim her zaman yazılır.
   const num = (label: string, k: string, value: number, onCommit: (v: number) => void, passive?: boolean, min?: number, unit = 'mm') =>
     cell(label, k, <><QbNum value={value} min={min} passive={passive} onCommit={onCommit} />{unit && unitTxt(unit)}</>, passive);
   return { cell, num };
 }
 
-/* ÜST / ALT SEÇİMİ (Goker, 8 Kas 2026 — "3 seçenek: none, kayıt, full panel; kayıt seçilirse kayıt arayüzünü aç"; sonra "body panel ile
-   cabinet arayüzünü birleştirelim, seçenekler preview görselinin yanında olsun; gözü korkutmayan bir arayüz"): seçim artık TEMSİLİ DOLABIN
-   kayıt etiketi satırında, iki kayıt etiketinin ARASINDA küçük bir simgeli şerit — "TOP · ⌐ None · ≡ Rails · ▬ Full" (RailCabinet.faceSeg).
-   Önceki büyük resimli kutular (FaceChoiceRows) kaldırıldı; dolap çizimi seçimi anında gösterir. */
+/* Üst / alt seçimi (None · Rails · Full) temsili dolabın kayıt etiketi satırında (RailCabinet.faceSeg). */
 export type FaceChoice = 'none' | 'rails' | 'panel';
 /** Yüzün seçimi: panel → Full panel; kayıt var ya da Rails seçildi (iki kayıt da "None" yapılsa bile) → Rails; yoksa None. */
 const faceChoiceOf = (r: QuickBodyRails, railsPicked = false): FaceChoice =>
@@ -737,10 +715,7 @@ const FACE_CHOICES: Array<{ key: FaceChoice; label: string; tip: (face: 'top' | 
 /** Yüz seçiminin kutu / yüz kısıtı (ör. ayaklıda alt None): yüz → seçenek → neden. */
 export type FaceChoiceDisabled = Partial<Record<'top' | 'bottom', Partial<Record<FaceChoice, string>>>>;
 
-/* KÖŞELER — TEMSİLİ DOLAP ÜZERİNDE (Goker, 8 Kas 2026: "panel birleşim tiplerini arayüzdeki temsili dolap üzerinden yapmaya
-   çalışmalıyız"; önceki 2 × 2 köşe kutuları kalktı): dolabın dört ön köşesinin yanında birer ROZET — içinde büyütülmüş köşe (geçen
-   parça koyu, kalınlık kenarı çizgili). Rozete gelince o köşedeki iki parça çizimde vurgulanır (geçen turuncu, duran açık) ve yanında
-   "Top passes" gibi tek satır; tık değiştirir. Kilitli köşe rozeti soluk (nedeni title'da). Yüzü "None" olan köşede rozet yok. */
+/* Köşeler temsili dolap üzerinde: dört ön köşede rozet; hover iki parçayı vurgular, tık değiştirir. "None" yüzün köşesinde rozet yok. */
 type CornerTone = 'idle' | 'hot' | 'locked';
 /** Köşe simgesi (x, y sol üst; w × h). */
 function cornerGlyph(c: CornerKey, side: boolean, x: number, y: number, w: number, h: number, tone: CornerTone) {
@@ -768,25 +743,10 @@ function cornerText(c: CornerKey, side: boolean, railFace: boolean, why?: string
   return { sub, title };
 }
 
-/* ───────── ÜST / ALT: TEMSİLİ DOLAP (Goker, Kas 2026 — "arayüzü basitleştir; temsili küçük bir kabin üzerinden kayıtlara tıklatarak
-   değerleri değiştirelim; alt alta bir sürü seçenek anlaşılmıyor, görsellerden tek bakışta anlaşılmıyor") ─────────
-   Eğik izdüşümde (ön sol-altta, derinlik sağ-yukarı) küçük bir gövde: yanlar, üst / alt (tam panel ya da ön + arka kayıt — girilen
-   ölçülerle orantılı), baza / ayak, arkalık; köşe birleşimleri de yansır. Dört köşede etiket (sol = ön, sağ = arka) güncel değeri
-   gösterir. Kayıta / boş yuvaya (kesik çizgi) ya da etikete tıklanınca ALTINDAKİ TEK ŞERİTTE düzenlenir: tip (None · Horizontal ·
-   Vertical — simgeli), ölçü + çektirme (ölçü kutusu otomatik odaklanır: tıkla → yaz → Enter), arka kayıtta arkalık ilişkisi.
-   Değer kutusuna gelince çizimde o ölçü vurgulanır (genişlik / yükseklik = kayıt üzerinde ölçü çizgisi, çektirme = kenardan kayıta bant).
-   Ressam sırası: kutular ayrık eksende sıralanır (x büyük / y büyük / z küçük = önde) — RailCabinet içi `miniPaintOrder`.
-   PANEL + KAYIT (Goker, 8 Kas 2026): panel varken kayıtlar panelin altında (üstte) / üstünde (altta) çizilir; paneli GEÇEN dikey kayıt
-   kenara kadar uzanır, panel onda kısalır. Tam panel DOLU çizilir; yalnız o yüzün bir kayıt yuvası seçili / üzerindeyken saydam (Goker:
-   "kayıt seçerken kayıt görünsün, çıkınca full panel görünmeye devam etsin"). KÖŞE BİRLEŞİMLERİ de burada: dört ön köşede rozet
-   (cornerGlyph) — üzerine gelince o köşenin parçaları vurgulanır, tık değiştirir (ayrı köşe kutuları yok).
-   GÖVDE PANELLERİ de tıklanır (Goker, 8 Kas 2026 — "alt üst sağ ve sol panellerin uzatma ve kısaltma değerlerini arayüzden
-   girebileyim"): yan / üst / alt panele tık → uç şeridi (+ uzatır, − kısaltır); uçlar çizimde orantılı (3..14 birim) görünür. Kayıt
-   etiketleri dolabın üstünde / altında kendi satırında → dolap büyük çizilir ("preview biraz daha büyüsün").
-   ARKALIK REFERANSI (BackRefChip): panel / arka kayıt şeridinde; arkalık çizimde de referansın arka yüzünden yerleşir. Yüzün None ·
-   Rails · Full seçimi kayıt etiketi satırının ORTASINDA (faceSeg; Goker: "body panel ile cabinet arayüzünü birleştirelim"). "None" yüzün
-   yuvası / etiketi / köşe rozeti çizilmez; boş yuva etiketi "+ Add rail". Dikey kayıt + panelde kayıt ↔ panel birleşimi kayıt şeridinde
-   iki resimli kartla (RailJoinCards). */
+/* ───────── ÜST / ALT: TEMSİLİ DOLAP ─────────
+   Eğik izdüşümde küçük gövde (yanlar, üst / alt panel ya da kayıtlar, baza / ayak, arkalık, köşe birleşimleri), ölçülerle orantılı.
+   Kayıta / boş yuvaya / etikete tık → alttaki tek şeritte düzenlenir; değer kutusu hover'ında ölçü çizimde vurgulanır.
+   Gövde paneline tık → uç şeridi. Ressam sırası `miniPaintOrder`. Tam panel dolu, yalnız kayıt yuvası seçiliyken saydam. */
 type RailSlot = { face: 'top' | 'bottom'; pos: 'front' | 'rear' };
 const slotKey = (s: RailSlot) => `${s.face}-${s.pos}`;
 const RAIL_SLOTS: RailSlot[] = [{ face: 'top', pos: 'front' }, { face: 'top', pos: 'rear' }, { face: 'bottom', pos: 'front' }, { face: 'bottom', pos: 'rear' }];
@@ -829,8 +789,7 @@ function miniPaintOrder(parts: MiniPart[]): MiniPart[] {
 function miniCabinetModel(cfg: QuickBodyConfig, W: number, H: number, D: number, legsOn: boolean, shown: Record<'top' | 'bottom', boolean>,
   /** açık traverse kutusu için etiket satırının altına / üstüne eklenen boşluk (çizim birimi) */ extra = { top: 0, bottom: 0 },
   /** seçim kutusunda üzerine gelinen tip: o yuva bu tiple ÖNİZLENİR (kesik turuncu) */ preview: { slot: RailSlot; kind: RailKind } | null = null) {
-  // BÜYÜK ÖNİZLEME (Goker, 8 Kas 2026 — "preview biraz daha büyüsün"): kayıt etiketleri dolabın ÜSTÜNDE ve ALTINDA kendi satırlarında →
-  // dolap genişliği etiketlerle sınırlanmaz (eskiden 196 birim → şimdi 280 / yükseklik 220). None yüzün etiket satırı daralır.
+  // Büyük önizleme: kayıt etiketleri dolabın üstünde / altında kendi satırında (dolap genişliği etiketlerle sınırlanmaz).
   const VW = 448, T = MINI_T, TB = 54 + extra.top, BB = 52 + extra.bottom;   // üst / alt etiket satırları (40 yüksek) hep var (yüz seçimi orada)
   const rh = clampN(H / Math.max(1, W), 0.7, 1.7), rd = clampN(D / Math.max(1, W), 0.55, 1.1);
   const s = Math.min(280 / (1 + rd * MINI_KX), 220 / (rh + rd * MINI_KY));
@@ -906,8 +865,7 @@ function miniCabinetModel(cfg: QuickBodyConfig, W: number, H: number, D: number,
   };
   if (topPanel) { const [z0, z1] = panelZ('top'); parts.push({ key: 'top', kind: 'panel', box: withExt('top', { x0: j.tl === 'horiz' ? 0 : T, x1: j.tr === 'horiz' ? Wd : Wd - T, y0: Hd - T, y1: Hd, z0, z1 }) }); }
   if (botPanel) { const [z0, z1] = panelZ('bottom'); parts.push({ key: 'bottom', kind: 'panel', box: withExt('bottom', { x0: j.bl === 'horiz' ? 0 : T, x1: j.br === 'horiz' ? Wd : Wd - T, y0: lift, y1: lift + T, z0, z1 }) }); }
-  // Arkalık: kanallı → arka yüzden bS içeride, sınırlar üst / alt yapıya göre; çakma → gövdenin arkasında. ARKALIK REFERANSI varsa
-  // (backRefOf) arka yüz = referans parçanın arka yüzü → parça kısalınca çizimde de arkalık onunla gelir.
+  // Arkalık: kanallı → arka yüzden bS içeride; çakma → gövdenin arkasında. Referans varsa arka yüz = referans parçanın arka yüzü.
   if (b.enabled) {
     const refKey = backRefOf(cfg);
     const refBox = !refKey ? undefined : refKey === 'topRear' || refKey === 'bottomRear'
@@ -945,8 +903,7 @@ function miniCabinetModel(cfg: QuickBodyConfig, W: number, H: number, D: number,
 function RailCabinet({ cfg, W, H, D, legsOn, shown, choice, choiceDisabled, onChoice, sel, selPanel, hover, hint, onPick, onPickPanel, onHover, onCorner,
   pop, preview }: {
   cfg: QuickBodyConfig; W: number; H: number; D: number; legsOn: boolean; sel: RailSlot | null; hint: string | null;
-  /** TRAVERSE SEÇİM KUTUSU (HTML): seçili yuvanın etiketinden açılır — üst yuvada etiket satırının ALTINDA, alt yuvada ÜSTÜNDE; dolap
-   *  kutunun yüksekliği kadar kayar (kutu dolabı örtmez). */ pop?: { slot: RailSlot; node: React.ReactNode } | null;
+  /** Traverse seçim kutusu: seçili yuvanın etiketinden açılır (üstte altına, altta üstüne), dolabı örtmez. */ pop?: { slot: RailSlot; node: React.ReactNode } | null;
   /** seçim kutusunda üzerine gelinen tip — yuvada önizlenir */ preview?: { slot: RailSlot; kind: RailKind } | null;
   /** yüz seçimi (None · Rails · Full) — etiket satırının ortasındaki şerit */ choice: Record<'top' | 'bottom', FaceChoice>;
   choiceDisabled?: FaceChoiceDisabled; onChoice: (face: 'top' | 'bottom', c: FaceChoice) => void;
@@ -1020,8 +977,7 @@ function RailCabinet({ cfg, W, H, D, legsOn, shown, choice, choiceDisabled, onCh
     const pal = on || role === 'pass' ? MINI_FILL.sel : hot || role === 'butt' ? MINI_FILL.hot : MINI_FILL[p.kind];
     const stroke = on || role === 'pass' ? '#c2410c' : hot || role === 'butt' ? '#ea8a3c' : p.kind === 'leg' ? '#3f3a36' : p.kind === 'rail' ? '#a0703f' : '#7c736a';
     const sw = on || role === 'pass' ? 1.1 : 0.7;
-    // Tam panel NORMAL çizilir (Goker: "kayıt seçeneklerinden çıkınca full panel görünmeye devam etsin"); yalnız o yüzün bir kayıt yuvası
-    // seçili / üzerindeyken saydam → altındaki (üstündeki) kayıt görünür.
+    // Tam panel normal çizilir; yalnız o yüzün kayıt yuvası seçili / hover'dayken saydam.
     const pf = p.kind === 'panel' ? (p.key as 'top' | 'bottom') : null;
     const railFocus = !!pf && (sel?.face === pf || (!!hover && hover.startsWith(`${pf}-`)));
     const seeThrough = railFocus;
@@ -1136,9 +1092,7 @@ function RailCabinet({ cfg, W, H, D, legsOn, shown, choice, choiceDisabled, onCh
       </g>
     );
   };
-  // YÜZ SEÇİMİ KUTUSU (etiket satırının ortasında; Goker: "None / Traverse / Full düğmelerini güzelleştir, belirginleştir"): kayıt
-  // etiketleriyle AYNI dilde bir kutu — üstte küçük başlık (TOP / BOTTOM), altında üç düğme: seçili koyu dolgu + beyaz yazı, ötekiler
-  // üzerine gelince kemik; simgeler yan kesit (iki yan + o yüz: kesik = yok, iki kısa = traverse, dolu = tam panel); kapalı düğme soluk.
+  // Yüz seçimi kutusu: başlık (TOP / BOTTOM) + üç düğme (seçili koyu dolgu); simgeler yan kesit.
   const BTN_W: Record<FaceChoice, number> = { none: 60, rails: 82, panel: 54 }, BTN_H = 21, SEG_PAD = 4;
   const faceGlyph = (face: 'top' | 'bottom', c: FaceChoice, x: number, y: number, color: string) => {
     const top = face === 'top', h = 10, w = 14, ye = top ? y + 1.4 : y + h - 1.4;
@@ -1177,8 +1131,7 @@ function RailCabinet({ cfg, W, H, D, legsOn, shown, choice, choiceDisabled, onCh
       </g>
     );
   };
-  // YUVALAR EN ÜSTTE (Goker: "kayıtların temsili gövdede nerede olacağı tam anlaşılmıyor"): boş yuva = kesik amber kutu + açık dolgu,
-  // dolu traverse'in ana hatları da kesik amber (panelin altında / üstünde kalsa da görünür). Boş yuva tıklanır (seçim kutusu açılır).
+  // Yuvalar en üstte: boş yuva kesik amber kutu, dolu traverse ana hatları da kesik amber (panelin ardında da görünsün).
   const slotOverlay = (s: RailSlot) => {
     const k = slotKey(s), on = faceSel(s), hot = !on && faceHot(s);
     const rb = m.rails[k], gp = m.parts.find(x => x.key === `ghost-${k}`);
@@ -1230,9 +1183,7 @@ function RailCabinet({ cfg, W, H, D, legsOn, shown, choice, choiceDisabled, onCh
   );
 }
 
-/* ARKA KAYIT ↔ ARKALIK SEÇENEK KARTLARI (Goker, Kas 2026 — "kanal seçenekleri daha net anlaşılır olsun"): iki büyük kart, her birinde
-   YAN KESİT detayı — ön solda, ARKA SAĞDA (temsili dolapla aynı yön), üst yüz üstte (alt yüz aynalı); kayıt, arkalık, KANAL turuncu,
-   gövdenin arka / üst kenarı kesik çizgi; kanal girişi (In) gerçek değeriyle yazılı. Kayıt tipine göre (yatay / dikey) çizim değişir. */
+/* Arka kayıt ↔ arkalık seçenek kartları: iki kart, yan kesit (ön solda, arka sağda); kanal turuncu, In gerçek değeriyle. */
 function RailBackDetail({ kind, rel, bottom, inset }: { kind: RailKind; rel: RailBackRel; bottom: boolean; inset: number }) {
   const VW = 200, VH = 100, RX = 172, TY = 16, T = 16, BT = 7, BS = 9, IN = 9, RW = 92, RH = 46, CL = 1.4;
   // Alt yüz: dikeyde ayna (y' = VH − y); dikdörtgen ve yazı için ayrı yardımcı.
@@ -1324,9 +1275,7 @@ function RailBackCards({ kind, rel, bottom, back, onPick }: {
   );
 }
 
-/* DİKEY KAYIT ↔ TAM PANEL (Goker, Kas 2026 — "dikey kayıt ve bütün panel varsa 2 panel arasındaki birleşim tipini göster"): kayıt şeridinde
-   iki kart, YAN KESİT — ön kayıtta ön solda, arka kayıtta arka sağda; üst yüz üstte (alt yüz aynalı). Geçen parça koyu (köşe kutularıyla
-   aynı dil), gövde kenarları kesik çizgi. */
+/* Dikey kayıt ↔ tam panel: iki kart, yan kesit; geçen parça koyu. */
 function RailJoinDetail({ front, bottom, passes, on }: { front: boolean; bottom: boolean; passes: boolean; on: boolean }) {
   const VW = 200, VH = 90, FX = 26, EY = 16, T = 14, RH = 46, PX1 = 186;
   const R = (x: number, y: number, w: number, h: number) => ({ x: front ? x : VW - x - w, y: bottom ? VH - y - h : y, width: w, height: h });
@@ -1367,10 +1316,7 @@ function RailJoinCards({ face, pos, passes, onPick }: { face: 'top' | 'bottom'; 
   );
 }
 
-/* TRAVERSE SEÇİM KUTUSU (Goker, 8 Kas 2026 — "bottom rear içindeki seçenekler buradan gelmeli; dik ve yatay traverslerin alternatifleri
-   buradan değişsin; add traverse default none gelsin, istenirse dik ve yatay seçilsin; şık bir seçim ekranı olsun"): etiketten açılan
-   kutuda üç RESİMLİ kart — None · Horizontal · Vertical. Resim = küçük eğik dolap, o YUVADAKİ traverse turuncu (nerede olacağı tek
-   bakışta); karta gelince dolapta da önizlenir. Tip seçilince altında ölçü + çektirme (ölçü kutusu otomatik odaklı). */
+/* Traverse seçim kutusu: None · Horizontal · Vertical resimli kartlar (yuvadaki traverse turuncu, hover dolapta önizler). */
 const TILE_CTX: [string, string, string] = ['#f4f0ea', '#faf8f5', '#e9e3da'];
 function SlotTileArt({ slot, kind, withPanel, on }: { slot: RailSlot; kind: RailKind; withPanel: boolean; on: boolean }) {
   const VW = 132, VH = 70, W = 64, H = 44, D = 36, T = 5, KX = 0.55, KY = 0.32;
@@ -1414,10 +1360,8 @@ const SLOT_KIND_OPTS: Array<{ key: RailKind; label: string; tip: (pos: 'front' |
 ];
 
 
-/* ARKALIK REFERANSI ÇİPİ (Goker, 8 Kas 2026 — "panele arkalık ofseti için referans al seçeneği koy; o panel kısalsa bile arkalık o
-   panele göre yerleşsin"; "arka dik kayıt öne move edilirse arkalık da onunla taşınmalı"): panel / arka kayıt şeridinde. Açık = arkalığın
-   setback'i bu parçanın ARKA yüzünden ölçülür ve parça kısalınca / taşınınca arkalık onunla gider (BackGroup.depthRefLive). Kanallı arka
-   kayıt kendiliğinden referanstır ("auto"); açık çipe tık → gövdenin arka yüzü ('body'), kapalı çipe tık → bu parça. */
+/* Arkalık referansı çipi: açık = setback bu parçanın arka yüzünden (parça kısalınca arkalık izler). Kanallı arka kayıt kendiliğinden
+   referans ("auto"); açık çipe tık → 'body', kapalıya tık → bu parça. */
 const BACK_REF_LABEL: Record<QuickBackRefKey, string> = {
   left: 'left side', right: 'right side', top: 'top panel', bottom: 'bottom panel', topRear: 'top rear traverse', bottomRear: 'bottom rear traverse',
 };
@@ -1440,8 +1384,7 @@ function BackRefChip({ cfg, part, setCfg }: { cfg: QuickBodyConfig; part: QuickB
   );
 }
 
-/* TEMSİLİ DOLAP BLOĞU: dolap (kayıtlar + köşe rozetleri + tıklanan gövde paneli; üst / alt None olsa da yanlar için hep çizilir) +
-   seçilen kaydın ya da panelin tek düzenleme şeridi. */
+/* Temsili dolap bloğu: dolap + seçilen kaydın ya da panelin düzenleme şeridi. */
 function TopBottomBlock({ cfg, setCfg, W, H, D, legsOn, choice, choiceDisabled, onChoice, hint, onHint, initialSel = null }: {
   cfg: QuickBodyConfig; setCfg: (p: Partial<QuickBodyConfig>) => void; W: number; H: number; D: number; legsOn: boolean;
   choice: Record<'top' | 'bottom', FaceChoice>; choiceDisabled?: FaceChoiceDisabled; onChoice: (face: 'top' | 'bottom', c: FaceChoice) => void;
@@ -1464,9 +1407,7 @@ function TopBottomBlock({ cfg, setCfg, W, H, D, legsOn, choice, choiceDisabled, 
   const pick = (s: RailSlot) => { setSelPanel(null); setPreviewKind(null); setSel(cur => (cur && slotKey(cur) === slotKey(s) ? null : s)); };
   const pickPanel = (k: QuickBodyPanelKey) => { setSel(null); setSelPanel(cur => (cur === k ? null : k)); };
   const setExt = (k: QuickBodyPanelKey, d: PanelEdgeDir, v: number) => setCfg({ ext: { ...cfg.ext, [k]: { ...cfg.ext?.[k], [d]: v } } });
-  // PANEL UÇLARI ŞERİDİ (Goker, 8 Kas 2026 — "alt üst sağ ve sol panellerin uzatma ve kısaltma değerlerini arayüzden girebileyim"):
-  // dolapta panele tık → dört uç (yan: ön / arka / üst / alt · üst / alt panel: ön / arka / sol / sağ); + uzatır, − kısaltır. Köşede
-  // GEÇEN parçanın ucu yalnız uzar ("+ only"), DURAN parçanınki yalnız kısalır ("− only") — panelEdgeLimits (motorla ortak).
+  // Panel uçları şeridi: panele tık → dört uç (+ uzat, − kısalt); geçen parça yalnız uzar, duran yalnız kısalır (panelEdgeLimits).
   const panelEditor = (() => {
     if (!selPanel) return null;
     const k = selPanel;
@@ -1561,10 +1502,8 @@ function TopBottomBlock({ cfg, setCfg, W, H, D, legsOn, choice, choiceDisabled, 
 
 type LegDims = { count: number; height: number; diameter: number; side: number; front: number; rear: number };
 
-/* ───────────── AYAK DÜZENİ DİYAGRAMI (plan; baza seti kartı · hızlı gövde · Aksesuar set düzenleyici ORTAK) ─────────────
-   Goker: "ayağı seçeyim, kübün yüzlerine göre otomatik yerleşsin; ayaklarda rol detayı gösterme". İz çokgeni ön çerçevede (ön ALTTA),
-   ayaklar numaralı (önden arkaya, soldan sağa — LegLayout.autoLegPoints sırası). Yan / ön / arka mesafeleri ÖLÇÜLÜR: 1. ayak ↔ sol ve
-   ön kenar, son ayak ↔ arka kenar (Custom Δ'da da gerçek değer görünür). active: 'ls' · 'lf' · 'lr' · 'lc' · 'leg-<i>'. */
+/* ───────────── AYAK DÜZENİ DİYAGRAMI (baza seti · hızlı gövde · Aksesuar ortak) ─────────────
+   İz çokgeni ön çerçevede (ön altta), ayaklar numaralı (autoLegPoints sırası); yan / ön / arka mesafeleri ölçülür. */
 export function LegLayoutDiagram({ points, footprint, facing, diameter, active, className, dims = true }: {
   points: Array<Pt | null>; footprint: Pt[]; facing: PlinthFacing; diameter: number; active: string | null; className?: string;
   /** mesafe ölçüleri (yan · ön · arka) çizilsin mi */ dims?: boolean;
@@ -1654,8 +1593,7 @@ export function rectLegPoints(legs: Pick<LegDims, 'count' | 'side' | 'front' | '
   return autoLegPoints(poly, edgeRoles(poly, facing), { count: (legs.count || 4) as 4 | 5 | 6, side: legs.side, front: legs.front, rear: legs.rear }, facing, R);
 }
 
-/* AYAK DÜZENİ HÜCRELERİ: Layout (köşeler / + merkez / + ön-arka) · Leg height · Ø · yan · ön · arka. Her zaman düzenlenir (Goker: "auto
-   modunda da front rear side ofsetler açık kalabilir") — elle girilen değer setin kendisinde kalır; değerler ayak setinden geliyorsa soluk. */
+/* Ayak düzeni hücreleri: her zaman düzenlenir; elle girilen değer sette kalır, setten gelen soluk. */
 const AUTO_COUNT_OPTS = [{ v: '4', label: 'Corners' }, { v: '5', label: '+ centre' }, { v: '6', label: '+ front / rear' }];
 export function LegLayoutCells({ legs, heightCell, diameter, onChange, hint, onHint }: {
   legs: Pick<LegDims, 'count' | 'side' | 'front' | 'rear'>;
@@ -1674,8 +1612,7 @@ export function LegLayoutCells({ legs, heightCell, diameter, onChange, hint, onH
     </div>
   );
 }
-/** AYAK LİSTESİ — ayak başına Δ (ayak no · Δ side (+ sağa) · Δ front (+ öne) · açık/kapalı); kartta her zaman görünür (Goker: "per leg
- *  demeye gerek yok, direk liste gelsin"), yalnız Custom'da etkin (`passive` = Auto: soluk, düzenlenmez). */
+/** Ayak listesi: ayak başına Δ (side, front, açık / kapalı); her zaman görünür, yalnız Custom'da etkin. */
 export function LegAdjustEditor({ count, adjust, onChange, active, onActive, passive }: {
   count: number; adjust: LegAdjust[]; onChange: (a: LegAdjust[]) => void; active: number | null; onActive: (i: number | null) => void; passive?: boolean;
 }) {
@@ -1721,8 +1658,7 @@ export const LegModeSegmented = ({ custom, onPick, height = 20 }: { custom: bool
     ]} />
 );
 
-/* Hızlı gövde AYAK BLOĞU: set seçici (+ ↺ elle girilen mesafeler sete döner), plan diyagramı (gövde W × D, ön = gövdenin ön yönü),
-   ölçü hücreleri (her zaman düzenlenir). */
+/* Hızlı gövde ayak bloğu: set seçici (+ ↺), plan diyagramı, ölçü hücreleri. */
 export function LegsBlock({ legs, W, D, facing, own, presetId, heightReadout, heightEditable, onChange, onPreset, onReset, hint, onHint }: {
   legs: LegDims; W: number; D: number; facing: PlinthFacing; own: boolean; presetId: string | null | undefined;
   heightReadout?: number; heightEditable?: boolean;
@@ -1744,11 +1680,9 @@ export function LegsBlock({ legs, W, D, facing, own, presetId, heightReadout, he
   );
 }
 
-/* BÖLÜM KUTUSU: hızlı gövde panelinin üç bölümü (gövde panelleri · ayaklar · arkalık) ayrı kutularda, başlıkta bölümün ana seçimi
-   (Goker: "gövde, arkalık ve ayak kısımları iç içe giriyor"). */
+/* Bölüm kutusu: gövde panelleri · ayaklar · arkalık ayrı kutularda, başlıkta bölümün ana seçimi. */
 export function QbSection({ icon: Icon, title, sub, trailing, children }: Kids & { icon?: LucideIcon; title: string; sub?: string; trailing?: React.ReactNode }) {
-  // BÖLÜM AYRIMI (Goker, 8 Kas 2026 — "arkalık veya baza ayarları diğer arayüzlerle iç içe geçiyor, başka bir gruba geçildiği belli olmuyor"):
-  // başlık bandı koyu kemik + simge + alt kenarda ince çizgi; bölümler arası boşluk geniş (gap-3).
+  // Bölüm ayrımı: koyu kemik başlık bandı + simge + ince alt çizgi; bölümler arası geniş boşluk.
   return (
     <div className="rounded-[10px] ring-1 ring-[#ddd6cc] bg-white overflow-hidden shadow-[0_1px_2px_rgba(40,30,20,0.04)]">
       <div className={`flex items-center gap-2 pl-2.5 pr-1.5 h-[34px] bg-[#f1ede6] ${children ? 'border-b border-[#e3dcd1]' : ''}`}>
@@ -1758,12 +1692,11 @@ export function QbSection({ icon: Icon, title, sub, trailing, children }: Kids &
         <div className="flex-1" />
         {trailing}
       </div>
-      {/* gövde yoksa (ör. ayak / arkalık "None") yalnız başlık — açıklama notu yer kaplamaz (Goker) */}
+      {/* gövde yoksa (ör. ayak / arkalık "None") yalnız başlık — açıklama notu yer kaplamaz */}
       {children ? <div className="p-1.5">{children}</div> : null}
     </div>
   );
 }
-export const QbNote = ({ children }: Kids) => <div className="yago-hint px-1 py-1">{children}</div>;
 /** Bölüm İÇİ alt başlık çizgisi ("PLINTH ─────"): etiket + sağa doğru silinen hairline; üstünde geniş boşluk. */
 export const SectionRule = ({ label, className = 'pt-3 pb-1 px-0.5' }: { label: string; className?: string }) => (
   <div className={`${className} flex items-center gap-2 min-w-0`}>
@@ -1777,9 +1710,7 @@ const QB_BACK_ITEMS: SegItem[] = [
   { key: 'inner', label: BACK_TYPE_LABEL.inner, title: 'Sits in a groove cut into the body panels, set back from the rear' },
 ];
 
-/* HIZLI GÖVDE PANELİ — liste alanının üstünde (üst şerit yapışık) ya da Body satırının içinde (`revise`: ayarlar gövdeden gelir,
-   ✓ panelleri yerinde yeniden kurar). Üç ayrı bölüm: GÖVDE PANELLERİ (üst / alt seçimi, kayıtlar, köşeler, kalınlık, baza) · AYAKLAR ·
-   ARKALIK. */
+/* Hızlı gövde paneli: liste üstünde ya da Body satırında (`revise`: ✓ yerinde yeniden kurar). Üç bölüm: gövde · ayaklar · arkalık. */
 export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onApply, onExit, revise }: {
   shape: Shape; cfg: QuickBodyConfig; setCfg: (p: Partial<QuickBodyConfig>) => void; busy: boolean; existingCount: number; onApply: () => void;
   onExit: () => void; revise?: boolean;
@@ -1807,8 +1738,7 @@ export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onAppl
   const choice = { top: faceChoiceOf(topR, railsPicked.top), bottom: faceChoiceOf(botR, railsPicked.bottom) };
   const pickChoice = (face: 'top' | 'bottom', c: FaceChoice) => {
     const r = face === 'top' ? topR : botR, off = (x: RailSpec): RailSpec => ({ ...x, kind: 'none' });
-    // None → panel ve traversler yok · Full → panel, yuvalar boş · Traverse → panel kalkar, yuvalar BOŞ gelir (Goker: "add traverse
-    // default none gelsin, istenirse dik ve yatay seçilsin") ve ön yuvanın seçim kutusu açılır.
+    // None → panel / traverse yok · Full → panel · Traverse → panel kalkar, yuvalar boş gelir ve ön yuvanın kutusu açılır.
     const next: QuickBodyRails = c === 'none' ? { ...r, panel: false, front: off(r.front), rear: off(r.rear) }
       : c === 'panel' ? { ...r, panel: true, front: off(r.front), rear: off(r.rear) }
         : { ...r, panel: false };
@@ -1822,9 +1752,7 @@ export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onAppl
   const setLegs = (p: Partial<QuickBodyConfig['legs']>) => setCfg({ legs: { ...cfg.legs, ...p } });
   const setBack = (p: Partial<QuickBodyConfig['back']>) => setCfg({ back: { ...b, ...p } });
   const setClear = (p: Partial<QuickBodyConfig['back']['clear']>) => setBack({ clear: { ...b.clear, ...p } });
-  // Taban değişince ayak: Legs → en az 4; Plinth → otomatik None (Goker); Plain → yok.
-  // Alt "None" yalnız DÜZ tabanda (Goker: "bazalı olduğunda da alt paneli none yapma seçeneğini iptal et"): ayak alt panele (ya da ilk
-  // alt traverse) bağlanır, baza alt panelin altında durur → ayaklı / bazalı tabana geçerken alt None ise tam panel gelir.
+  // Taban değişince ayak: Legs → en az 4, Plinth → None, Plain → yok. Alt "None" yalnız düz tabanda (ayak / baza alt panele bağlı).
   const withBottom = (p: Partial<QuickBodyConfig>): Partial<QuickBodyConfig> => (choice.bottom === 'none' ? { ...p, bottom: { ...botR, panel: true, mode: undefined } } : p);
   const setBase = (base: QuickBodyBase) => {
     const p: Partial<QuickBodyConfig> = { base, legs: { ...cfg.legs, count: base === 'legs' ? (cfg.legs.count || 4) : 0 } };
@@ -1853,8 +1781,7 @@ export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onAppl
         <div style={{ ...DOCK_ROW, paddingTop: 0 }}><DockStatus ready={!busy && !cyclic} text={status} title={statusTitle} /></div>
       </div>
       <div className="px-1.5 pt-2 pb-2 flex flex-col gap-3" onMouseLeave={() => setHint(null)}>
-        {/* 1 · GÖVDE: tek arayüz — temsili dolap (üst / alt seçimi etiket satırında, kayıtlar, köşe rozetleri, panel uçları) → kalınlık +
-            ölçü → bazalıda baza ölçüleri (Goker: "body panel ile cabinet arayüzünü birleştirelim") */}
+        {/* 1 · Gövde: temsili dolap → kalınlık + ölçü → bazalıda baza ölçüleri. */}
         <QbSection icon={Container} title="Body" sub={`${panelCount} panels · ${isPlinth ? 'sides reach the floor' : isLegs ? 'raised on legs' : 'on the floor'}`}>
           {/* yüz seçimi değişince kayıt seçimi sıfırlanır (key) — açık şerit eski seçime ait kalmasın */}
           <TopBottomBlock key={`${choice.top}-${choice.bottom}`} cfg={cfg} setCfg={setCfg} W={W} H={H} D={D} legsOn={legCount > 0} choice={choice}
@@ -1879,8 +1806,7 @@ export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onAppl
           </>}
         </QbSection>
 
-        {/* 2 · AYAKLAR (Goker: "sadece kayıtlı ayaklar gelsin"): ayak = kayıtlı set; bazalıda başlıkta var/yok; set + plan diyagramı +
-            ölçü hücreleri (her zaman düzenlenir; elle girilen değer hızlı gövdede kalır, ↺ sete döner) */}
+        {/* 2 · Ayaklar: kayıtlı set + plan diyagramı + ölçü hücreleri (↺ sete döner). */}
         <QbSection icon={Footprints} title="Legs" sub={isLegs ? 'body height includes the legs' : isPlinth ? 'optional, under the bottom panel' : undefined}
           trailing={isPlain ? <span className="pr-1 text-[11px] font-semibold text-[#a39b91]">None</span>
             : isPlinth ? <div style={{ width: 118 }}><Segmented height={22} active={legCount ? 'on' : 'off'}
@@ -1940,9 +1866,7 @@ export function QuickBodyPanel({ shape, cfg, setCfg, busy, existingCount, onAppl
 }
 
 // ═══════════════════════════════════════════════ 3. ŞERİTLER + ADIMLAR ═══════════════════════════════════════════════
-/* PANEL EDİTÖRÜ PARÇALARI — Extrude / Hacim / Taşı / Döndür şeritleri, işlem adımları, yerleştirme şeritleri, satır parçaları,
-   kapak derzi parçaları ve kapak / arkalık şemalarının ortak bölge seçimi (AssemblyPanel kullanır). Şeritler store'u kendisi okur;
-   değer taslakları AssemblyPanel'de kalır (eksen değişince orada sıfırlanır). */
+/* PANEL EDİTÖRÜ PARÇALARI — şeritler, adımlar, yerleştirme, satır ve kapak derzi parçaları. Şeritler store'u okur; taslaklar AssemblyPanel'de. */
 
 type Ax = 'u' | 'v';
 type DraftProps = { draft: string; setDraft: (s: string) => void };
@@ -1962,7 +1886,7 @@ let _arrowApplyBusy = false;
 /** Yüz extrude (panel), hacim (`cavity`) ve baza seti (`plinth`) şeridi: Arrow dyn / Arrow fixed / Fixed / Dyn / Ref, onay / çıkış. */
 export function ExtrudeDock({ panel, cavity, plinth, draft, setDraft, onDone }: DraftProps & {
   panel?: Shape; cavity?: PanelGroup; plinth?: PlinthSet;
-  /** Onaylanan yüz işlemi bitince (Goker: "işlem bitince o panel kapansın") — ok kipinde çağrılmaz (ardışık uygulama). */ onDone?: () => void;
+  /** Onaylanan yüz işlemi bitince — ok kipinde çağrılmaz (ardışık uygulama). */ onDone?: () => void;
 }) {
   const {
     faceExtrudeMode, faceExtrudeSelectedFace, faceExtrudeThickness, faceExtrudeValueMode, faceExtrudeRefCandidate, faceExtrudeClickPoint,
@@ -1974,9 +1898,7 @@ export function ExtrudeDock({ panel, cavity, plinth, draft, setDraft, onDone }: 
     updateShape } = useAppStore.getState();
   // Kutu hedefi (raf/dikme hacmi ya da baza seti): yüz 3D'de kutu üzerinde seçilir; baza setinde Ref yok.
   const boxTarget = !!cavity || !!plinth;
-  // OK MODLARI (panel, raf/dikme hacmi, baza seti — Goker: "her yerde olsun"): yüz seçilmez — 3D'deki oklar hedefin EN DIŞ yüzünü oynatır.
-  // "Arrow dyn" = değer kadar (− küçültür) · "Arrow fixed" = o eksendeki toplam ölçü = değer. AKIŞ: önce oka tıkla (seçer), sonra değeri
-  // gir, onayla (Enter / ✓) → uygulanır; ok seçimi düşer, mod açık kalır.
+  // Ok modları: 3D'deki oklar hedefin en dış yüzünü oynatır (dyn = değer kadar, fixed = toplam ölçü). Önce oka tıkla, değeri gir, onayla.
   const arrowFixed = faceExtrudeValueMode === 'arrowFixed';
   const isArrow = faceExtrudeValueMode === 'arrow' || arrowFixed;
   const hf = !isArrow && faceExtrudeSelectedFace !== null && (!boxTarget || !!faceExtrudeCavityFaceNormal);
@@ -2210,8 +2132,7 @@ const SKETCH_BADGE: Record<'cut' | 'shape', StepItem['badge']> = {
 };
 const ANCHOR_TXT = (a: [number, number]) => (a[0] === 0.5 && a[1] === 0.5 ? 'centre'
   : `${a[1] === 1 ? 'top' : a[1] === 0 ? 'bottom' : 'middle'} ${a[0] === 0 ? 'left' : a[0] === 1 ? 'right' : 'centre'}`);
-/** Çizim adımları (Drawing panelinden yüze uygulanan Cut / Shape): ✎ çizimi yüzünde düzenlemeye açar, çöp adımı siler. Katıya öteki
- *  adımlardan SONRA uygulanır → listede de sonda durur. */
+/** Çizim adımları: ✎ yüzünde düzenler, çöp siler. Katıya öteki adımlardan sonra uygulandığından listede sonda. */
 function sketchStepItems(target: Shape, liveId: string | null): StepItem[] {
   const errs: Record<string, string> = target.parameters?.sketchErrors || {};
   return sketchFeaturesOf(target).map(f => {
@@ -2566,9 +2487,7 @@ export function regionTools<N extends TreeNode>(o: {
 }
 
 // ════════════════════════════════════════════ 4. PANEL LİSTESİ VE KARTLAR ════════════════════════════════════════════
-/* PANEL EDİTÖRÜ — sol çubuktaki panel listesi (VF satırları, ayaklar, raf/dikme · kapak · arkalık grup kartları), satır
-   önizlemesi ve liste durumu. Şeritler / adım listeleri bu dosyanın üst bölümünde; mantık motora (Geometry / PanelGroupService /
-   DoorService / BackService) delege edilir, burada yalnız arayüz durumu tutulur. */
+/* PANEL EDİTÖRÜ — sol çubuktaki parça listesi, satır önizlemesi ve liste durumu; mantık servislere delege, burada yalnız arayüz durumu. */
 
 const PANEL_THICKNESS = 18;
 /** Paneli üretilmekte olan VF id'leri (yarış koruması, bkz. otomatik panel efekti). */
@@ -2648,8 +2567,7 @@ export function AssemblyPanel() {
   const [armedRowKey, setArmedRowKey] = useState<string | null>(null);
   /** Kart alanlarının yerel metin taslağı; anahtar = grup id : alan (: kenar kapsamı). */
   const [fieldDraft, setFieldDraft] = useState<{ key: string; v: string } | null>(null);
-  // TEK AÇIK KART (Goker, Kas 2026 — "tıkladığımda sadece o ilgili yer açılsın, işlem bitince kapansın"): kart açıklığı akordeondur —
-  // seçilen satırın kartı açılır, diğerleri kapanır; üye editörü kapanınca grup kartı açık kalır (bağlam), chevron ya da yeni bir seçim kapatır.
+  // Tek açık kart: seçilen satırın kartı açılır, diğerleri kapanır; üye editörü kapanınca grup kartı açık kalır.
   const [openCardId, setOpenCardId] = useState<string | null>(null);
   const [stepEdit, setStepEdit] = useState<StepEdit>(null);
   const draftIso = useSketch(st => st.isolate);   // çizim yüzü bu gövdenin bir paneliyse o panelin Sketch düğmesi etkin görünür
@@ -2723,8 +2641,7 @@ export function AssemblyPanel() {
     setOpenCardId(null);
   }, [pickActive]);
 
-  // Yeni panel/grup yerleşince (Goker) öteki satırların önizlemeleri kapanır. Satır anahtarı = grup id ya da VF id; grup içi
-  // bölme/adet değişimi yeni ÜYE VF üretir ama anahtar aynı kalır → tetiklemez. Yeni kapak/arkalık seçili gelir, açık kalır.
+  // Yeni panel / grup yerleşince öteki satırların önizlemeleri kapanır (anahtar = grup id ya da VF id). Yeni kapak / arkalık seçili gelir.
   useEffect(() => {
     const keyOf = (vf: VirtualFace) => groupOf(vf) || vf.id;
     const keys = new Set(virtualFaces.filter(vf => vf.shapeId === selectedShapeId).map(keyOf));
@@ -2734,8 +2651,7 @@ export function AssemblyPanel() {
     const fresh = new Set([...keys].filter(k => !prev.keys.has(k)));
     if (!fresh.size) return;
     const st = useAppStore.getState();
-    // KAPAKTAN EKLENEN raf / dikme (doorBond → açık kapak kartı): kapak kartı AÇIK KALIR, yeni gruplar arka planda listeye girer
-    // (Goker: "kapak içinden raf veya dikme yerleştirince her seferinde kapak arayüzünden çıkıyor, bunu yapma").
+    // Kapaktan eklenen raf / dikme: kapak kartı açık kalır, yeni gruplar arka planda listeye girer.
     const addedFrom = (id: string) => [...fresh].every(k => st.panelGroups.some(pg => pg.id === k && pg.doorBond?.doorGroupId === id));
     setOpenCardId(cur => (cur && (fresh.has(cur) || addedFrom(cur)) ? cur : null));
     // Body satırı açıkken yeniden kurulan parçalar "yeni" sayılmaz (satır açık kalır).
@@ -2762,8 +2678,7 @@ export function AssemblyPanel() {
     if (st.quickBodyMode) setQuickBodyMode(false);
     setOpenCardId(null);
   }, [selectedShapeId]);
-  // Hızlı gövde açılınca gövdede saklı ayarlar taslağa yüklenir (Goker: "ayarını tut"); paneller zaten yerleşmişse yapılandırma
-  // Body satırından yapılır — mod kapanır.
+  // Hızlı gövde açılınca saklı ayarlar taslağa yüklenir; paneller yerleşmişse yapılandırma Body satırından.
   useEffect(() => {
     if (!quickBodyMode || !selectedShape) return;
     if (quickBodyVfsOf(selectedShape.id, useAppStore.getState().virtualFaces).length) { setQuickBodyMode(false); return; }
@@ -2787,9 +2702,8 @@ export function AssemblyPanel() {
   }, [doorRefPickGroupId, doorAddPick, backRefPickGroupId]);
 
   useEffect(() => {
-    // YARIŞ KORUMASI: ilk VF'nin hasPanel yazımı efekti yeniden tetikler; üretimi süren VF'ler modül düzeyinde
-    // işaretlenmezse aynı VF için İKİNCİ panel yaratılır (üst üste iki raf).
-    // Baza seti yer tutucusu VF'nin paneli YOKTUR (Goker: "ayakla beraber panel gelmesin") — otomatik üretime girmez.
+    // Yarış koruması: üretimi süren VF'ler modül düzeyinde işaretlenir (yoksa aynı VF için ikinci panel doğar).
+    // Baza seti yer tutucusunun paneli yoktur — otomatik üretime girmez.
     const pending = virtualFaces.filter(vf => !vf.hasPanel && !vf.plinthId && !_creatingPanelForVf.has(vf.id) && !panelOfVf(vf.id, useAppStore.getState().shapes));
     if (!pending.length) return;
     for (const vf of pending) _creatingPanelForVf.add(vf.id);
@@ -2861,8 +2775,7 @@ export function AssemblyPanel() {
     if (existing) { setFaceExtrudeThickness(existing.value); if (faceExtrudeValueMode !== 'ref') setFaceExtrudeValueMode(existing.isFixed ? 'fixed' : 'dyn'); }
   }, [faceExtrudeSelectedFace, activePanelId, shapes]);
 
-  // GARANTİ ÇIKIŞ: komut yalnız "açık satırın paneli === hedef panel" iken geçerli. Rebuild sırasında activePanelId
-  // bir an null olabilir — bu çıkış SAYILMAZ (yalnız satır kapanınca ya da başka panele geçilince).
+  // Garanti çıkış: yalnız "açık satırın paneli === hedef" iken; rebuild sırasında anlık null çıkış sayılmaz.
   const uiLeftPanel = (targetId: string | null) => selectedPanelRow === null || (!!activePanelId && targetId !== activePanelId);
   // Hacim düzenlemenin geçerlilik koşulu: grup bu gövdede ve kartı AÇIK (tümü seçili ya da bir üye satırı açık).
   const groupLive = (gid: string) => panelGroups.some(g => g.id === gid && g.shapeId === selectedShapeId)
@@ -2923,7 +2836,7 @@ export function AssemblyPanel() {
     };
   };
 
-  /** İşlem onaylanınca açık panel satırı kapanır (Goker: "işlem bittikten sonra kapanmalı"). */
+  /** İşlem onaylanınca açık panel satırı kapanır. */
   const rowDone = () => setSelectedPanelRow(null);
   /* Şerit önizlemenin ÜSTÜNDE olmalı (altındayken 500px önizlemenin altında kalıp görünmüyordu). */
   const renderExpandedBody = (vf: VirtualFace, vp: Shape | undefined) => {
@@ -2991,8 +2904,7 @@ export function AssemblyPanel() {
       </div>,
     ];
 
-    // Düz liste: her VF store sırasıyla kendi satırıdır; listedeki numara = VF sırası = basan/basılan önceliği.
-    // İstisna: raf/dikme, kapak ve arkalık grubunun üyeleri store'da bitişik durur ve TEK kart olarak (ilk üyenin sırasında) gösterilir.
+    // Düz liste: her VF store sırasıyla bir satır (numara = basan / basılan önceliği); grup üyeleri tek kart olarak ilk üyenin yerinde.
     type Row = { kind: 'vf'; vf: VirtualFace } | { kind: 'group'; group: PanelGroup; members: VirtualFace[] }
       | { kind: 'door'; group: DoorGroup; members: VirtualFace[] } | { kind: 'back'; group: BackGroup; members: VirtualFace[] }
       | { kind: 'plinth'; set: PlinthSet; vf: VirtualFace };
@@ -3035,8 +2947,7 @@ export function AssemblyPanel() {
       // Panel silindiyse rebuild'i App izleyicisi tetikler; yalnız paneli olmayan VF için burada.
       if (!p) { try { await requestRebuild(sid); } catch (e) { console.error('Silme sonrası rebuild hatası:', e); } }
     };
-    // reorderVirtualFaceGroup zaten rebuild tetikler; ikinci rebuild BİLİNÇLİ: ref-dönüş açıları geçişler arasında
-    // yakınsar, tek geçiş farklı sonuç verir (harness ile doğrulandı).
+    // reorderVirtualFaceGroup zaten rebuild tetikler; ikincisi bilinçli: ref-dönüş açıları geçişler arasında yakınsar.
     const doReorder = async (draggedIds: string[], targetId: string | null) => {
       clearDrag();
       reorderVirtualFaceGroup(sid, draggedIds, targetId);
@@ -3062,8 +2973,7 @@ export function AssemblyPanel() {
       </span>
     ));
     const rowRef = (k: string) => (el: HTMLDivElement | null) => { if (el) rowRefs.current.set(k, el); else rowRefs.current.delete(k); };
-    // TEK AÇIK (Goker, 8 Kas 2026 — "her zaman bir grup açık kalsın"): bir satır açılırken öteki her şey kapanır — grup / kapak / arkalık
-    // seçimleri, açık kart, Body taslağı. Üye satırı (grup kartının içinde) kartını kapatmaz.
+    // Tek açık: bir satır açılırken öteki her şey kapanır (seçimler, kart, Body taslağı); üye satırı grup kartını kapatmaz.
     const soloRow = (key: string, inCard?: string) => {
       if (!inCard) { dropGroupSel(() => true); setOpenCardId(null); }
       else dropGroupSel(x => x !== inCard);
@@ -3107,8 +3017,7 @@ export function AssemblyPanel() {
       </div>
     );
 
-    /* BAZA AYAĞI SETİ SATIRI (PlinthService): VF değil, gövdeden bağımsız set ("P"); seçilince 3D'de set okları (Dyn/Fixed düğmesi ok ucunda).
-       Kart: ayak düzeni (adet / Ø / kenar mesafeleri) + yükseklik + ok tık değeri ve modu. */
+    /* Baza ayağı seti satırı: VF değil, bağımsız set ("P"); seçilince 3D'de set okları. Kart: ayak düzeni + yükseklik + ok değeri / modu. */
     const plinthRow = (set: PlinthSet, rowIdx: number, label: string) => {
       const key = plinthRowKey(set.id), sel = selectedPanelRow === key;
       const [W, H, D] = plinthSize(set, shapes), bound = plinthIsBound(set), legCount = plinthLegSpots(set, shapes).length;
@@ -3137,9 +3046,7 @@ export function AssemblyPanel() {
                 <CardAction compact icon={Check} label="Done" title="Finish editing this set" onClick={finishPlinthEdit} />
               </div>
               {editingVol && <ExtrudeDock plinth={set} draft={extrudeThicknessStr} setDraft={setExtrudeThicknessStr} />}
-              {/* AYAK SETİ (Goker: "sadece kayıtlı ayaklar gelsin"): yalnız kayıtlı setler; model + Ø setten. Mesafe hücreleri her zaman
-                  düzenlenir (↺ sete döner). Auto | Custom yalnız AYAK LİSTESİ: liste her zaman görünür, Custom'da etkin (Goker: "per leg demeye
-                  gerek yok, direk liste gelsin; custom seçilince liste aktif olsun") */}
+              {/* Ayak seti: yalnız kayıtlı setler; mesafe hücreleri her zaman düzenlenir (↺); Auto | Custom yalnız ayak listesi. */}
               {(() => {
                 const L = plinthLegsOf(set.legs), auto = plinthLegsAuto(set.legs), own = plinthOwnLayout(set.legs);
                 const fp = plinthFootprint(set), facing = plinthFacingOf(set), all = plinthLegPoints(set);
@@ -3173,8 +3080,7 @@ export function AssemblyPanel() {
       });
     };
 
-    /* BODY SATIRI: hızlı gövde AYARLARI (gövde parametresi); her zaman en başta ("B"), Legs'ten önce. Açılınca aynı yapılandırma paneli
-       (revise): ✓ panelleri yerinde yeniden kurar; × hızlı gövdenin kurduğu her şeyi kaldırır (ayarlar gövdede kalır). */
+    /* Body satırı: hızlı gövde ayarları, her zaman en başta ("B"). ✓ yerinde yeniden kurar; × kurulan her şeyi kaldırır (ayarlar kalır). */
     const quickRow = (saved: QuickBodyConfig, parts: number) => {
       const key = `quick-${sid}`, sel = selectedPanelRow === key;
       const draft = sel && quickDraft?.sid === sid ? quickDraft.cfg : saved;
@@ -3305,7 +3211,7 @@ export function AssemblyPanel() {
           const applyCount = (n: number) => { setFieldDraft(null); if (!isNaN(n) && n >= 1 && n !== g.count) void setGroupCount(g.id, n); };
           const mvf = g.memberVfIds.map(vfById);
           return <>
-            {/* Satır 1: hacim araçları · satır 2: etiketli değer hücreleri (Goker: kutucuklar tek bakışta anlaşılsın) */}
+            {/* Satır 1: hacim araçları · satır 2: etiketli değer hücreleri */}
             <div className="flex items-center gap-1 mb-1.5">
               <CardAction compact icon={Box} label="Volume" active={editingVol}
                 title="Edit the volume: pick a face in the 3D view, then extrude it (fixed / dyn / ref)"
@@ -3412,8 +3318,7 @@ export function AssemblyPanel() {
           + 'Clear it (× or empty + Enter) to cancel the target — the current pieces stay.';
         const splitScope = rg.regionName;
         return <>
-          {/* Etiketli hücreler (Goker, Kas 2026 — "doors … kutucuklar tek bakışta anlaşılmıyor"): satır 1 montaj · kalınlık · eşitle,
-              satır 2 bölme yöntemi · sütun / satır adedi (ya da hedef kapak ölçüsü). Yazılı etiket, ikon yok. */}
+          {/* Etiketli hücreler: satır 1 montaj · kalınlık · eşitle; satır 2 bölme yöntemi · sütun / satır (ya da hedef ölçü). */}
           <div className="grid grid-cols-3 gap-x-1 mb-1" style={QB_CELL_ROW}>
             <PlacementSelect value={g.placement} onChange={v => { void setDoorPlacement(g.id, v); }} />
             <FieldBox label="Thickness" title="Door thickness (mm)">
@@ -3472,11 +3377,9 @@ export function AssemblyPanel() {
       },
     });
 
-    // ARKALIK kartı (BackService): kapak kartından AYRI — kanal bloğu (tip · bölme V / H · değerler), şema ve üyeler.
-    // Bölge seçimi bu kartın durumudur; Panel ref modu store'da (3B'de levha tıkı).
+    // Arkalık kartı: kanal bloğu, şema ve üyeler. Bölge seçimi kartın durumu; Panel ref modu store'da.
     const backCard = (g: BackGroup, members: VirtualFace[], rowIdx: number, label: string) => {
-      // Satır W/H = arkalık parçalarının GERÇEK dış ölçüsü (kanala giriş dahil — Goker: "In değeri etki etmiyor" sanılıyordu);
-      // parçalar henüz üretilmemişse açıklık dikdörtgeni.
+      // Satır W / H = parçaların gerçek dış ölçüsü (kanala giriş dahil); henüz üretilmemişse açıklık dikdörtgeni.
       const boxes = members.map(m => localBboxOf(panelOfVf(m.id, shapes)?.geometry)).filter((b): b is Box3 => !!b);
       const ext = boxes.length ? boxes.reduce((acc, b) => acc.union(b), boxes[0].clone()) : null;
       const kinds = new Set(backLeaves(g.tree).map(l => backPieceOf(g, l).placement));
@@ -3503,8 +3406,7 @@ export function AssemblyPanel() {
           });
           const selMemberIdx = selIdx(g.memberVfIds);
           const leaves = backLeaves(g.tree);
-          // HEDEF PARÇALAR (tip / setback): seçili bölgelerin yaprakları, yoksa seçili üye satırının parçası,
-          // yoksa tüm parçalar (grup varsayılanı yazılır).
+          // Hedef parçalar (tip / setback): seçili bölgelerin yaprakları, yoksa seçili üye, yoksa tümü (grup varsayılanı).
           const memberLeaf = selMemberIdx >= 0 ? backLeafOfMember(g, selMemberIdx) : undefined;
           const scoped = rg.picked.length > 0 || !!memberLeaf;
           const targetLeafIds = rg.picked.length ? leafIdsUnder(g.tree, rg.picked) : memberLeaf ? [memberLeaf.id] : leaves.map(l => l.id);
@@ -3547,7 +3449,7 @@ export function AssemblyPanel() {
           );
           const pas = { accent: !!clearVf, passive: !isGrooved };
           return <>
-            {/* MONTAJ SATIRI (Goker, Kas 2026 — kapak kartıyla aynı dil): Mount = Nailed | Grooved + hangi parçalara uygulandığı. */}
+            {/* Montaj satırı (kapak kartıyla aynı dil): Mount = Nailed | Grooved + hangi parçalara uygulandığı. */}
             <div className="grid grid-cols-3 gap-x-1 mb-1" style={QB_CELL_ROW}>
               <FieldBox label="Mount" className="col-span-2"
                 title="Nailed = on the rear edges of the body panels · Grooved = in a groove cut into them, set back from the rear. Applies to the pieces selected in the schematic (none = all).">
@@ -3560,8 +3462,7 @@ export function AssemblyPanel() {
                 <span className="truncate text-[11.5px] font-semibold text-stone-600 pr-1">{typeHint}</span>
               </ReadCell>
             </div>
-            {/* KANAL BLOĞU: solda kesit diyagramı (yükseklik = 4 eşit satır), sağda 4 satır × 2 sütun — Thickness · Setback / Front gap · Rear gap /
-                Bottom gap · Groove / Columns · Rows. Çakmada setback ve paylar 0 ve pasif; geri bildirim görsel. */}
+            {/* Kanal bloğu: solda kesit diyagramı, sağda 4 × 2 değer; çakmada setback ve paylar pasif. */}
             <div className="mb-1.5 flex gap-1.5" style={{ height: BACK_BLOCK_H }} onMouseLeave={() => setBackHint(null)}>
               <div className="relative shrink-0 h-full" style={{ width: `min(${BACK_DIAGRAM_W}px, 37%)` }}>
                 <BackGrooveDiagram active={hintKey} grooved={isGrooved} t={g.thickness} setback={isGrooved ? setbackVal : 0} front={gc.front} rear={gc.back}
@@ -3632,10 +3533,7 @@ export function AssemblyPanel() {
     };
     const quickParts = quickBodyVfsOf(sid, svf).length, quickSaved = quickBodyOf(selectedShape);
 
-    // ODAK GÖRÜNÜMÜ (Goker, 8 Kas 2026 — "alt alta çok panel açık birikiyor; her zaman bir grup açık kalsın, içinde olunan arayüz en
-    // yukarıda açılsın, kapatınca satırlar sıra efektiyle dolsun"): açık olan TEK şey (gövde paneli · grup / kapak / arkalık kartı · baza
-    // seti · Body) listenin yerine tek başına, üstünde "‹ All panels" şeridiyle; öteki satırlar gizli. Kapanınca liste satırları sırayla
-    // belirir (yago-row-in, satır başına gecikme).
+    // Odak görünümü: açık olan tek şey listenin yerine "‹ All panels" şeridiyle; kapanınca satırlar sırayla belirir (yago-row-in).
     if (focusKey) {
       const idx = rows.findIndex(r => rowKeyOf(r) === focusKey);
       const focused = focusKey.startsWith('quick-') ? (quickParts && quickSaved ? quickRow(quickSaved, quickParts) : null) : idx >= 0 ? renderRow(rows[idx], idx) : null;
@@ -3684,14 +3582,13 @@ export function AssemblyPanel() {
     return elements;
   };
 
-  /* HIZLI GÖVDE: yapılandırma listenin üstünde (üst şerit yapışık) ya da Body satırında (revise). Onay → servis; bitince mod kapanır /
-     taslak düşer (saklı ayar görünür). */
+  /* Hızlı gövde: liste üstünde ya da Body satırında; onay → servis, bitince mod kapanır. */
   const onQuickBodyApply = async (cfg: QuickBodyConfig, revise = false) => {
     if (!selectedShape || quickBodyBusy) return;
     setQuickBodyBusy(true);
     try {
       await applyQuickBody(selectedShape.id, cfg);
-      // Onaydan sonra satır / şerit kapanır (Goker: "işlem bitince kapansın").
+      // Onaydan sonra satır / şerit kapanır.
       if (revise) { setQuickDraft(null); setSelectedPanelRow(null); } else setQuickBodyMode(false);
     } catch (e) { console.error('[YAGO][HIZLI-GÖVDE] hata:', e); }
     finally { setQuickBodyBusy(false); }

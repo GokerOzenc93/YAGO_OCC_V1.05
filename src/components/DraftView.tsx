@@ -17,12 +17,8 @@ import {
   segmentAt, selectPoints, setCircleRadius, setFace, setPHover, setPointPrefs, setRefEdges, togglePoint,
 } from './Draft';
 
-/* 2B ÇİZİM GÖRÜNÜMÜ — Draft.ts çekirdeğinin sahne katmanı ve sağdaki Drawing paneli.
-   DraftLayer (Canvas içinde): çizim düzlemi (zemin · gövde yüzü · panel yüzü), fare → düzlem koordinatı, nesne/önizleme çizimi,
-   yakalama işareti, imleç yanında dinamik giriş, yüz seçilince kamerayı yüze karşıdan getirme.
-   DrawingPanel (sağdan açılan panel): Plane · Draw · Modify · Object snap · Drafting aids. DraftViewport: panel açıkken 3B görünümü daraltır.
-   DraftStatus: durum çubuğu parçası.
-   Fare kuralı (komut etkinken): sol tık = nokta/nesne, sağ tık (sürüklemeden) = Enter, sağ sürükle = kaydır, tekerlek = yakınlaş. */
+/* 2B ÇİZİM GÖRÜNÜMÜ — Draft.ts çekirdeğinin sahne katmanı (DraftLayer) ve sağdaki Drawing paneli.
+   Fare (komut etkinken): sol tık nokta / nesne, sağ tık (sürüklemeden) Enter, sağ sürükle kaydır, tekerlek yakınlaş. */
 
 // ═════════════════════════════════════════════════ 1. DÜZLEM · KAMERA ═════════════════════════════════════════════════
 const LIFT = 0.3;        // mm — çizgiler yüzeyle çakışıp titremesin
@@ -89,8 +85,7 @@ const shownGeometryOf = (s: Shape) => (isPanel(s) ? s.geometry : effectiveBodyGe
 /** İzolasyonda yalnız görünen şekiller: hedef panel (+ gövdesi) ya da hedef gövde. */
 const visibleShapes = (shapes: Shape[], iso: DraftIsolate | null) =>
   (iso ? shapes.filter(s => s.id === iso.targetId) : shapes);
-/** Tıklanan gövde / panel yüzünden aday: X sağa, Y yukarı (yatay yüzde arkaya), orijin yüzün sol-alt köşesi.
- *  Panelde orijin KESİLMEMİŞ mesh'ten okunur (çizim adımı uygulanmış panelde de yüzün gerçek köşesi). */
+/** Tıklanan yüzden aday: X sağa, Y yukarı (yatay yüzde arkaya), orijin sol-alt köşe; panelde kesilmemiş mesh'ten. */
 function facePickOf(shape: Shape, hit: THREE.Intersection, shapes: Shape[]): FacePick | null {
   const geo = (hit.object as THREE.Mesh).geometry;
   const { faces, groups } = getFacesAndGroups(geo);
@@ -145,8 +140,7 @@ function mainFacePick(shape: Shape, shapes: Shape[], camPos: THREE.Vector3 | nul
   const hit = { object: new THREE.Mesh(geo), faceIndex: f.faceIndex, face: { normal: groups[best].normal.clone().normalize() }, point: f.center.clone().applyMatrix4(hostM) };
   return facePickOf(shape, hit as unknown as THREE.Intersection, shapes);
 }
-/** Işın boyunca yüz adayları, yakından uzağa. Panelli gövdenin mesh'i sahnede GÖRÜNMEZ (opaklık 0) → o gövdenin yüzleri sıranın sonuna
- *  alınır: ilk tık her zaman görünen paneli vurgular, gövde yüzüne aynı noktaya tekrar tıklayarak geçilir. `only`: yalnız o şekil. */
+/** Işın boyunca yüz adayları, yakından uzağa. Panelli gövdenin mesh'i görünmez → gövde yüzleri sona; `only`: yalnız o şekil. */
 function faceCandidates(ray: THREE.Ray, shapes: Shape[], iso: DraftIsolate | null, only?: string | null, max = 8): FacePick[] {
   const byMesh = new Map<THREE.Object3D, Shape>(), list = visibleShapes(shapes, iso);
   for (const s of list) {
@@ -327,11 +321,8 @@ const DynTip: React.FC = () => {
   );
 };
 // ── YÜZ OTURUMU: aday → onay → izolasyon; çizim adımı yaz / düzenle / sil ──
-/* Goker (Kas 2026): "yüz seçimini tıkladıkça seçilecek yüzeyi göstersin, onaylayınca çalışsın, diğer paneller izole olsun; çizimi panelin
-   yüzeyine göre parametrik yapıp panelden / yüzeyden çıkarayım ya da panele şeklini vereyim; sonradan çizimi düzenleyebileyim."
-   Adım hedefin `parameters.sketchFeatures` listesine yazılır (store.SketchFeature); katıya Geometry.applySketchFeatures uygular
-   (panelde motorun son geçişi, gövdede rebuildBodySolid). Düzenleme: adımın nesneleri geçici bir düzleme yüklenir, o adım bastırılır
-   (katı adımsız görünür), kaydedince nesneler çapaya göre geri yazılır. */
+/* Çizim adımı hedefin `parameters.sketchFeatures` listesine yazılır; katıya Geometry.applySketchFeatures uygular.
+   Düzenleme: adımın nesneleri geçici düzleme yüklenir, adım bastırılır, kaydedince geri yazılır. */
 type CamPose = { pos: THREE.Vector3; target: THREE.Vector3; up: THREE.Vector3; zoom: number };
 const sceneApi: {
   fly: ((center: THREE.Vector3, normal: THREE.Vector3, up: THREE.Vector3, extent: number) => void) | null;
@@ -364,8 +355,7 @@ function dropPrePick(stay = false) {
   setIsolate(null);
   if (!stay && savedPose) { sceneApi.restore?.(savedPose); savedPose = null; }
 }
-/** Yüz seçimini başlatır. `onlyShapeId` (panel satırındaki Sketch aracı): panel tek başına ve karşıdan gösterilir, ana yüzü aday olarak
- *  vurgulanır — kullanıcı onaylar ya da panelin başka bir yüzüne tıklar (panel listede / başka panellerin arkasında kalsa da görünür). */
+/** Yüz seçimini başlatır. `onlyShapeId` (panel satırındaki Sketch): panel tek başına gösterilir, ana yüzü aday olarak vurgulanır. */
 export function beginFacePick(onlyShapeId: string | null = null) {
   if (useDraft.getState().session) return;   // düzenleme oturumu sürerken yüz değiştirilmez
   dropPrePick(true);
@@ -393,10 +383,8 @@ export async function faceSteps(): Promise<SketchFeature[]> {
   if (!ref) return [];
   return feats.filter(f => v3(f.n).dot(v3(ref.n)) > 0.999 && Math.abs((f.inset || 0) - (ref.inset || 0)) < 0.5);
 }
-/** Vurgulanan adayı çizim düzlemi yapar: kamera yüze karşıdan gelir, hedef dışındaki paneller gizlenir.
- *  YÜZDE ÇİZİM ADIMI VARSA (Goker, Kas 2026 — "çizimi yaptıktan sonra tekrar düzenlemek çok karışık; yüze girince hazır gelsin"): son adım
- *  kendiliğinden düzenlemeye açılır (nesneleri yüze yüklenir, Apply o adımı günceller) — Assembly'de adımı bulup kaleme basmak gerekmez.
- *  Yüzde uygulanmamış serbest çizim duruyorsa dokunulmaz (o çizim yeni bir adım olacaktır). */
+/** Vurgulanan adayı çizim düzlemi yapar (kamera karşıdan, hedef dışı paneller gizli). Yüzde adım varsa sonuncusu düzenlemeye açılır;
+ *  bekleyen serbest çizim varsa dokunulmaz. */
 export function confirmFacePick() {
   const c = candidate;
   if (!c) return;
@@ -425,18 +413,15 @@ export async function exitFace() {
   cancelFacePick();
   if (useDraft.getState().session) await finishSketchEdit(false); else leaveFace();
 }
-// İZOLASYON — TEK KURAL (Goker, Kas 2026 — "çıktığımda panellerin izole olma durumunu MUTLAKA kaldırsın"): izolasyon yalnız yüz seçimi
-// sürerken, bir yüz düzlemi etkinken ya da adım düzenlenirken geçerlidir. Bu üçü de yoksa — hangi yoldan çıkılmış olursa olsun (Esc,
-// başka komut, panelin kapanması, hedefin silinmesi, unutulmuş bir çıkış noktası) — izolasyon kalkar ve kamera yüze geçmeden önceki
-// yerine döner. Drawing paneli kapanınca yüz kipinden de çıkılır (araçlar yokken izole görünümde kalınmaz).
+// İzolasyon — tek kural: yalnız yüz seçimi / yüz düzlemi / adım oturumu sürerken; hiçbiri yoksa hangi yoldan çıkılırsa çıkılsın kalkar
+// ve kamera geri döner. Drawing paneli kapanınca yüzden çıkılır.
 useDraft.subscribe((st, prev) => {
   if (st.isolate && !st.planePick && !st.session && st.activePlane === GROUND_PLANE.id) {
     setIsolate(null);
     if (savedPose) { const p = savedPose; savedPose = null; sceneApi.restore?.(p); }
   }
   if (prev.panelOpen && !st.panelOpen && (st.activePlane !== GROUND_PLANE.id || st.planePick || st.session)) void exitFace();
-  // Adım düzenlenirken oturum düzleminden çıkıldıysa (zemine / başka düzleme geçen bir komut) oturum da kapanır — açık kalan oturum
-  // izolasyonu ve bastırılmış adımı asılı bırakırdı.
+  // Oturum düzleminden çıkıldıysa oturum da kapanır (yoksa izolasyon ve bastırılmış adım asılı kalırdı).
   else if (st.session && st.session === prev.session && prev.activePlane === st.session.planeId && st.activePlane !== st.session.planeId) void finishSketchEdit(false);
 });
 /** Hedefin çizim adımları UYGULANMAMIŞ mesh'i (yüz çerçevesinin okunduğu): panelde ayak izi mesh'i, gövdede adımsız katı. */
@@ -481,8 +466,7 @@ async function syncFace() {
 }
 const anchorKind = (a: number): 'L' | 'R' | 'C' => (a === 0 ? 'L' : a === 1 ? 'R' : 'C');
 const bindDefaults = (a: SketchApply): [BindDefault, BindDefault] => (a.auto ? ['A', 'A'] : [anchorKind(a.anchor[0]), anchorKind(a.anchor[1])]);
-/** Çizim nesnelerinden adımın geometri alanları. Simple: nesneler çapaya göre + uzama. Parametric: nesneler yüz çerçevesinde, her kontrol
- *  noktası kendi bağıyla (tercih → yoksa varsayılan; değer koordinattan), dairelerde geçerliyse yarıçap formülü. */
+/** Çizimden adımın geometri alanları. Simple: çapaya göre + uzama. Parametric: her kontrol noktası kendi bağıyla (+ yarıçap formülü). */
 function sketchPayload(ents: Entity[], a: SketchApply, w: number, h: number, dx: number, dy: number, vars: Record<string, number>):
   Pick<SketchFeature, 'anchor' | 'stretch' | 'baseSize' | 'shapes' | 'mode' | 'pts' | 'radii'> {
   if (a.mode !== 'points') {
@@ -497,14 +481,9 @@ function sketchPayload(ents: Entity[], a: SketchApply, w: number, h: number, dx:
   };
 }
 const stepRotationOf = (target: Shape) => (isPanel(target) ? panelStepRotation(target) : new THREE.Quaternion());
-/** GÖVDE ŞEKLE UYAR (Goker, Kas 2026 — "referans kutuya çizerek şekil verdiysem en dış sınırlarındaki ölçüleri alsın"): gövdenin TAM bir
- *  dış yüzüne çizilen Shape profili kutudan taşıyorsa kutuyla kırpılıyor (kemerin tepesi düzleşiyor), küçükse gövdenin W / H / D değerleri
- *  eski kutunun ölçüsü olarak kalıyordu. Profilin yüz çerçevesindeki dış kutusu okunur; gövdenin o iki ölçüsü ona eşitlenir, gövde
- *  profilin sol-alt sınırına ötelenir (şekil dünyada yerinden oynamaz; panelleri gövdeyle taşınır). Kutu profilin dışında ≤ 0,01 mm pay
- *  bırakacak şekilde yuvarlanır (yay tepesi kutu yüzüyle kesilip incecik düz yüz doğmasın). Dönen değerler yeni çerçevenin ölçüsü ve
- *  çizimin yeni çerçeveye göre ötelemesidir; uyarlama yapılmadıysa null.
- *  FORMÜLE BAĞLI nokta / yarıçap varsa (Parametric) uyarlama yapılmaz: formüller kutunun kenarlarından ve W / H değerlerinden ölçülür,
- *  kutuyu değiştirmek onları geçersiz kılar (bindsOf formülü düşürürdü) — orada kutu referanstır, şekil kutuyu izler. */
+/** Gövde şekle uyar: tam dış yüze çizilen Shape profili kutudan taşıyor / küçük kalıyorsa gövdenin o iki ölçüsü profilin dış kutusu olur,
+ *  gövde ötelenir (şekil dünyada yerinde kalır). 0,01 mm dışa yuvarlanır (yay tepesinde ince düz yüz doğmasın).
+ *  Parametric'te formüle bağlı nokta varsa yapılmaz (formüller kutudan ölçülür). Döner: yeni çerçeve + öteleme, ya da null. */
 function fitBodyToProfile(target: Shape, fr: SketchFrame, ents: Entity[], dx: number, dy: number, param: boolean): { w: number; h: number; dx: number; dy: number } | null {
   if (isPanel(target) || target.vertexModifications?.length) return null;
   if (param && ents.some(e => (e.t === 'circle' && !!e.re) || e.pb?.some(b => b?.x?.k === 'F' || b?.y?.k === 'F'))) return null;
@@ -556,8 +535,7 @@ const writeFeatures = (targetId: string, next: (old: SketchFeature[]) => SketchF
   const t = shapeById(targetId);
   if (t) useAppStore.getState().updateShape(targetId, { parameters: { ...t.parameters, sketchFeatures: next(sketchFeaturesOf(t)) } });
 };
-/** Etkin yüzdeki çizimi (seçim varsa yalnız seçilenleri) hedefe adım olarak yazar; oturum açıksa düzenlenen adımı kaydeder.
- *  Hata varsa kullanıcıya gösterilecek metin döner. */
+/** Etkin yüzdeki çizimi (seçim varsa yalnız seçilenleri) adım olarak yazar; oturum açıksa adımı kaydeder. Hata metni döner. */
 export async function applySketch(): Promise<string | null> {
   const st = useDraft.getState();
   if (st.session) return finishSketchEdit(true);
@@ -625,8 +603,7 @@ export async function editSketch(targetId: string, featureId: string) {
   sceneApi.fly?.(fr.o.clone().addScaledVector(fr.u, fr.w / 2).addScaledVector(fr.v, fr.h / 2).applyMatrix4(hostM),
     fr.n.clone().transformDirection(hostM), fr.v.clone().transformDirection(hostM), Math.max(fr.w, fr.h, 100));
 }
-/** Düzenleme oturumunu kapatır. save: oturum düzlemindeki TÜM nesneler adıma (Drawing panelindeki güncel ayarlarla) geri yazılır.
- *  Oturum bitince yüzden de çıkılır (tüm model + önceki kamera) — sonuç bağlamında görünsün; `stay`: başka adıma geçilirken yüzde kal. */
+/** Oturumu kapatır. save: düzlemdeki tüm nesneler adıma geri yazılır. Bitince yüzden çıkılır; `stay`: başka adıma geçerken yüzde kal. */
 export async function finishSketchEdit(save: boolean, stay = false): Promise<string | null> {
   const st = useDraft.getState(), ses = st.session;
   if (!ses) return null;
@@ -655,8 +632,7 @@ export async function finishSketchEdit(save: boolean, stay = false): Promise<str
   if (target) await rebuildTarget(target.id);
   if (!stay) leaveFace();
   else {
-    // Yüzde kalınıyor ("+ New" / başka adıma geçiş): oturumun boşalan düzlemi yerine yüzün KENDİ düzlemine dönülür — orada bekleyen serbest
-    // çizim varsa yeniden görünür, yeni çizilenler de yüze sonraki girişte aynı düzlemde bulunur.
+    // Yüzde kalınıyor: yüzün kendi düzlemine dönülür (bekleyen serbest çizim yeniden görünsün).
     const now = useDraft.getState(), pl = now.planes.find(q => q.id === ses.planeId);
     if (pl && now.activePlane === pl.id && !now.session) { const { id: _id, ...rest } = pl; void _id; activatePlane(rest); }
   }
@@ -707,9 +683,8 @@ function autoBind() {
     for (const k of ['L', 'R', 'C'] as const) if (by[k].length) setPointPrefs(by[k], axis, { k });
   }
 }
-/** Ekrandaki ölçü etiketi: tıklanınca YERİNDE düzenlenir (Enter uygular, Esc / dışarı tık vazgeçer). onCommit false dönerse değer kabul
- *  edilmemiştir (alan kırmızı kalır). Düzenleme durumu DimField'da tutulur: Html içeriği ayrı bir DOM kökünde çizilir, giriş alanının
- *  durumu sahne (R3F) ağacında dursaydı her tuşta eski değere geri dönerdi. */
+/** Ekrandaki ölçü etiketi: tıklanınca yerinde düzenlenir (Enter uygular, Esc vazgeçer; onCommit false → kırmızı).
+ *  Durum burada: Html ayrı DOM kökünde, R3F ağacında dursaydı her tuşta sıfırlanırdı. */
 type DimProps = { text: string; edit: string; color: string; title: string; onCommit: (t: string) => boolean };
 /** Açık ölçü alanına metin ekleyen işlev (Drawing panelindeki parametre listesi kullanır); alan kapalıyken null. */
 let dimInsert: ((txt: string) => void) | null = null;
@@ -753,9 +728,7 @@ const TAG: React.CSSProperties = {
   padding: '0 4px', borderRadius: 4, background: 'rgba(253,252,250,0.95)', fontFamily: MONO_FONT, fontSize: 10, fontWeight: 600, lineHeight: '15px',
   whiteSpace: 'nowrap', pointerEvents: 'none', userSelect: 'none',
 };
-/** Sahne katmanı (etkin düzlemin yerel koordinatında). Her noktada küçük kare tutamak (düğüm); seçili noktalarda bağlı kenara kesikli
- *  kılavuz + değer. Bağ çentikleri KALDIRILDI (Goker, Kas 2026 — "parametrik kipte yalnız çizgiler ve parametre düğüm noktaları olsun"):
- *  noktanın neye bağlı olduğu seçilince kılavuzundan ve vurgulanan yüz kenarından okunur. */
+/** Parametric sahne katmanı: her noktada kare tutamak; seçili noktalarda bağlı kenara kesikli kılavuz + değer. */
 const ParamOverlay: React.FC<{ ents: Entity[]; face: DraftFace; apply: SketchApply; targets: Set<string>; wpp: number }> =
   ({ ents, face, apply, targets, wpp }) => {
     const show = apply.mode === 'points';
@@ -767,8 +740,7 @@ const ParamOverlay: React.FC<{ ents: Entity[]; face: DraftFace; apply: SketchApp
       return { all: mk(all), sel: mk(sel) };
     }, [infos, targets]);
     useEffect(() => () => { geo.all.dispose(); geo.sel.dispose(); }, [geo]);
-    // Seçili noktaların kılavuzları: aynı bağı paylaşan noktalara TEK ölçü (eksen başına en çok 3) — bağlı kenardan / ortadan noktaya
-    // kesikli çizgi + tıklanıp yerinde düzenlenen değer.
+    // Seçili noktaların kılavuzları: aynı bağı paylaşanlara tek ölçü (eksen başına en çok 3).
     const guides = useMemo(() => {
       const out: { key: string; info: PInfo; axis: 'x' | 'y'; line: LineS | null; at: P2; text: string; edit: string; color: string }[] = [];
       const x0 = -face.dx, y0 = -face.dy;
@@ -780,8 +752,7 @@ const ParamOverlay: React.FC<{ ents: Entity[]; face: DraftFace; apply: SketchApp
           if (seen.has(sig) || seen.size >= 3) continue;
           seen.add(sig);
           const key = `${i.key}${horiz ? 'x' : 'y'}`, axis = horiz ? 'x' as const : 'y' as const, color = bindCol(b);
-          // Etiketler tutamağı ve birbirini örtmesin: değer, kılavuz çizgisinin yüzün İÇİNE bakan yanında durur (köşeye yakın noktada X ve Y
-          // etiketleri ayrı yönlere açılır); formül noktanın altında / üstünde.
+          // Etiketler örtüşmesin: değer kılavuzun yüze bakan yanında, formül noktanın altında / üstünde.
           const inY = i.p.y + face.dy < face.h / 2 ? 1 : -1, inX = i.p.x + face.dx < face.w / 2 ? 1 : -1;
           if (b.k === 'F') { out.push({ key, info: i, axis, line: null, at: pt(i.p.x, i.p.y + (horiz ? -17 : 17) * wpp), text: `${horiz ? 'X' : 'Y'} = ${b.e}`, edit: b.e, color }); continue; }
           const size = horiz ? face.w : face.h, o = horiz ? x0 : y0, at = horiz ? i.p.x : i.p.y, ref = b.k === 'R' ? o + size : b.k === 'C' ? o + size / 2 : o;
@@ -792,8 +763,7 @@ const ParamOverlay: React.FC<{ ents: Entity[]; face: DraftFace; apply: SketchApp
       }
       return out;
     }, [infos, targets, face, wpp]);
-    /** Ölçü değeri yazıldı: düz sayı = bağlı kenardan / ortadan mesafe · "25%" = yüz ölçüsünün oranı · başka metin = formül (W, H, özel
-     *  parametreler). Aynı bağı paylaşan seçili noktaların hepsi birlikte taşınır. */
+    /** Ölçü yazıldı: sayı = mesafe · "25%" = oran · başka metin = formül. Aynı bağı paylaşan seçili noktalar birlikte taşınır. */
     const editDim = (i: PInfo, axis: 'x' | 'y', raw: string): boolean => {
       const X = axis === 'x', S = X ? 'W' as const : 'H' as const, b = X ? i.bx : i.by, size = X ? face.w : face.h, off = X ? face.dx : face.dy;
       const keys = infos.filter(q => targets.has(q.key) && bindText(X ? q.bx : q.by, S) === bindText(b, S)).map(q => q.key);
@@ -918,8 +888,7 @@ export const DraftLayer: React.FC = () => {
   const busy = !!cmd;
   // Yakalama kaynağı yalnız GÖRÜNEN şekillerin kenarlarıdır (izolasyonda hedef panel / gövde).
   useEffect(() => { setExtraSnap(busy ? planeEdges(activeInv, visibleShapes(shapes, iso), shapes) : []); }, [busy, activeInv, shapes, iso]);
-  // REFERANS KENARLAR (Goker: "yüzü seçtikten sonra ofseti ve diğer işlemleri panelin çizgileri üzerinden de yapabileyim"): etkin yüzün
-  // sahibinin (panel / gövde) o düzlemdeki kenarları çizim nesnesi gibi SEÇİLEBİLİR olur (Draft.setRefEdges) — değiştirilemez, adıma girmez.
+  // Referans kenarlar: etkin yüzün sahibinin o düzlemdeki kenarları seçilebilir (setRefEdges) — değiştirilemez, adıma girmez.
   useEffect(() => {
     const pl = planes.find(q => q.id === activeId), host = pl?.kind === 'face' ? shapes.find(x => x.id === pl.shapeId) : undefined;
     setRefEdges(host ? activeId : null, host ? planeEdges(activeInv, [host], shapes) : []);
@@ -1013,7 +982,7 @@ export const DraftLayer: React.FC = () => {
         if (!inViewCube(e)) stop(e);
         return;
       }
-      // Drawing paneli kapalıyken çizim nesneleri imlece tepki vermez (Goker: "kalan çizgileri tıklatma bana").
+      // Drawing paneli kapalıyken çizim nesneleri imlece tepki vermez.
       if (!st.cmd && (!st.entities.length || !st.panelOpen)) { if (st.hoverId) pointerLeave(); return; }
       const h = onActive(e);
       if (!h) return;
@@ -1034,8 +1003,7 @@ export const DraftLayer: React.FC = () => {
       if (e.button === 2) { rightDown = { x: e.clientX, y: e.clientY }; return; }
       if (e.button !== 0) return;
       const st = useDraft.getState();
-      // YÜZ SEÇİMİ (Goker: "tıkladıkça seçilecek yüzeyi göstersin, onaylayınca çalışsın"): tık ADAYI belirler ve vurgular; aynı noktaya
-      // yeniden tık ışın boyunca bir sonraki yüze geçer (panel → arkasındaki gövde yüzü → …). Onay: sağ tık / Enter / paneldeki ✓.
+      // Yüz seçimi: tık adayı vurgular, aynı noktaya yeniden tık ışın boyunca sonraki yüze geçer. Onay: sağ tık / Enter / ✓.
       if (st.planePick) {
         const list = faceCandidates(rayOf(e), live.current.shapes, st.isolate, pickOnly);
         if (list.length) {
@@ -1056,9 +1024,8 @@ export const DraftLayer: React.FC = () => {
         return;
       }
       if (!st.entities.length || !st.panelOpen) return;
-      // Parametric kip: tutamağa tık o kontrol noktasını seçer (Shift / Ctrl: seçime ekler / çıkarır).
-      // PARAMETRIC KİP — her şey ekranda: tutamak = o nokta · çizimin bir kenarı = iki ucu (Shift / Ctrl seçime ekler) · seçim varken
-      // YÜZÜN KENARI ya da ORTA ÇİZGİSİ = seçili noktalar ona bağlanır (köşe: X ve Y birlikte) · boşluk = seçimi bırak.
+      // Parametric: tutamak = o nokta · çizim kenarı = iki ucu (Shift / Ctrl ekler) · seçim varken yüz kenarı / orta çizgisi = bağla ·
+      // boşluk = seçimi bırak.
       if (st.apply.mode === 'points' && st.face?.planeId === st.activePlane) {
         const h = onActive(e), add = e.shiftKey || e.ctrlKey || e.metaKey;
         if (h) {
@@ -1249,9 +1216,7 @@ const DIcon: React.FC<{ name: string; size?: number }> = ({ name, size = 18 }) =
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>{ICONS[name]}</svg>
 );
 // ── Sağ Drawing paneli ──
-/* Sağ kenardan açılan panel (sol kenar çubuğunun aynası). Kenardaki dikey "DRAWING" sekmesi paneli açar/kapatır ve panelle birlikte kayar.
-   Panel açıkken 3B görünüm sağdan daralır (görünüm küpü ve çizim alanı panelin altında kalmasın). Düğmeler üst araç çubuğuyla aynı ölçüde
-   (30 px, ikon 18 px); özelliğe göre gruplanır. Üzerine gelinen aracın adı ve komut kısaltması alttaki okuma şeridinde görünür. */
+/* Sağdan açılan Drawing paneli (sol kenar çubuğunun aynası); açıkken 3B görünüm sağdan daralır. */
 export const PANEL_W = 268;
 const PANEL_SLIDE_MS = 300;
 const P = {
@@ -1394,8 +1359,7 @@ const ANCHORS: [number, number][] = [[0, 1], [0.5, 1], [1, 1], [0, 0.5], [0.5, 0
 const anchorName = (ax: number, ay: number) => (ax === 0.5 && ay === 0.5 ? 'the centre of the face'
   : `the ${ay === 1 ? 'top' : ay === 0 ? 'bottom' : 'middle'}${ax === 0.5 ? ' centre' : ax === 0 ? '-left' : '-right'}${ax !== 0.5 && ay !== 0.5 ? ' corner' : ' edge'}`);
 type TipFn = (title: string, key?: string) => { onMouseEnter: () => void; onMouseLeave: () => void };
-/** YÜZE UYGULA: etkin yüzdeki kapalı profilleri hedefe adım olarak yazar (Cut = çıkar · Shape = panele şeklini ver); derinlik, çapa ve
- *  uzama burada seçilir. Düzenleme oturumunda aynı blok o adımın ayarlarını gösterir ve "Save changes" ile geri yazar. */
+/** Yüze uygula: kapalı profiller adım olur (Cut / Shape); oturumda aynı blok adımın ayarlarını gösterir. */
 const FaceApply: React.FC<{ tip: TipFn }> = ({ tip }) => {
   const apply = useDraft(s => s.apply), session = useDraft(s => s.session), activePlane = useDraft(s => s.activePlane);
   const entities = useDraft(s => s.entities), selection = useDraft(s => s.selection);
@@ -1441,8 +1405,7 @@ const FaceApply: React.FC<{ tip: TipFn }> = ({ tip }) => {
     } catch (e) { setMsg({ text: `Failed: ${(e as Error)?.message ?? e}`, ok: false }); }
     finally { setBusy(false); }
   };
-  // Parametre listesi (Goker: "noktalara parametre vermek için Parameters kısmındaki liste bir düğmeyle gelsin"): tıklanan ad, sahnede
-  // AÇIK olan ölçü alanına imlecin olduğu yere yazılır. Önce gövdenin özel parametreleri, sonra yüz / gövde ölçüleri.
+  // Parametre listesi: tıklanan ad açık ölçü alanına imleç yerinden yazılır. Önce özel parametreler, sonra ölçüler.
   const BUILTIN = ['W', 'H', 'BW', 'BH', 'BD'];
   const varList = faceVars ? [...Object.keys(faceVars).filter(k => !BUILTIN.includes(k)), ...BUILTIN.filter(k => k in faceVars)] : [];
   const pickVar = (name: string) => {
@@ -1562,9 +1525,7 @@ export const DrawingPanel: React.FC = () => {
   const tip = (title: string, key?: string) => ({ onMouseEnter: () => setHint({ title, key }), onMouseLeave: () => setHint(null) });
   // Odak düğmede kalmasın: sonraki Enter / Boşluk komut satırına gitsin, düğmeyi yeniden tetiklemesin.
   const run = (id: string) => { (document.activeElement as HTMLElement | null)?.blur?.(); startCommand(id); };
-  // ARAÇLAR (Goker: "düğmeleri daha da büyüt; basit ve kategorilerine göre sınıflanmış olsun"): 36 px düğmeler, her kategori kendi başlığı
-  // altında. Çizimde her AİLE (dikdörtgen, çokgen, daire, elips, yay) tek düğmedir ve son kullanılan yöntemi başlatır; ailenin öteki
-  // yöntemleri o aile etkinken en altta tek satır olarak açılır.
+  // Araçlar kategoriye göre; her aile (dikdörtgen, çokgen, daire, elips, yay) tek düğme, son yöntemi başlatır, öteki yöntemler altta.
   const [fam, setFam] = useState<string | null>(null);
   const [last, setLast] = useState<Record<string, string>>({});
   const titleOf = (b: Block | null, id: string) => { const def = commandById(id)!; return b?.prefix ? `${b.prefix} · ${def.label}` : def.label; };
@@ -1720,7 +1681,7 @@ export const DrawingPanel: React.FC = () => {
   );
 };
 
-/** 3B görünüm sarmalayıcısı: panel açılınca hemen daralır (panel boşalan yere kayar), kapanınca kayma bitince genişler — tuval tek kez yeniden boyutlanır. */
+/** 3B görünüm sarmalayıcısı: panel açılınca hemen daralır, kapanınca kayma bitince genişler (tuval tek kez boyutlanır). */
 export const DraftViewport: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const open = useDraft(s => s.panelOpen);
   const [inset, setInset] = useState(open ? PANEL_W : 0);

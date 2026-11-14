@@ -1,23 +1,7 @@
-/* AKSESUAR SEKMESİ (Goker, Eki 2026 — "Panel editör yanında Aksesuar sekmesi; ilk seçenek ayak, sonra ray / menteşe"; "üstteki tip seçimine
-   gerek yok, soldan işaretliyorum; açıklamaları azalt, temiz olsun; ayak için 3 model ekleyebileyim").
-   Kategori soldaki raydan seçilir (Legs · Layers). Assembly / Parameters ile aynı parçalar ve yazı tipleri.
-
-   AYAK
-   • Leg models — 3 yuva: Top · Middle · Bottom (üstten alta, ayağın kendisi gibi). Her yuvaya bir model dosyası; birim + yukarı ekseni
-     kartta. Her parça: nihai ölçü (Size X / Y / Z, mm), taşıma (Move X / Y / Z), Stretch (açık = ayak boyu değişince uzar; kapalı =
-     Size Y'de sabit; varsayılan yalnız Middle açık), KATMAN (rengi parçayı boyar). Önizleme gerçek montaj; ORİJİN görünür.
-   • Holes (Goker, Kas 2026 — "ayağın modelinin üzerine program üzerinden delik atabileyim; delik listesi: yön, X Y Z ayağın sıfırına göre,
-     çap, derinlik"): önizlemede "Hole" kipi açılır, bir parçanın yüzüne tıklanır → delik o noktada, yönü yüzeyin dış normali (eksene
-     kıstırılmış), o parçaya bağlı (ayak uzayınca tabla deliği de yükselir). Liste satırı: yön · Ø · derinlik · X / Y / Z (ayak sıfırına
-     göre, düzenlenebilir). Gövdede ayak yerleşince delik panele değdiği yerden panelden çıkarılır (PanelEngine, tek boolean).
-   • Leg sets ("kaset") — model + köşe düzeni (4/5/6) + kenar mesafeleri + varsayılan yükseklik. Yerleşim her zaman otomatiktir (gövde
-     yüz rolleri); baza seti kartı / Body ayakları / yerleştirme şeridi YALNIZ bu setleri listeler (Assembly.LegPresetSelect).
-   KATMANLAR (Goker, Kas 2026): kütüphane geneli liste (ad + renk) — her aksesuar parçası bir katmana bağlanır; ileride ray / menteşe de.
-   Kütüphane bu tarayıcıda (IndexedDB).
-
-   ÖNİZLEME SAHNESİ (Goker, Kas 2026 — "sahne daha güzel, gizmo daha minimal; bir CAD programının aksesuar düzenleme profesyonelliğinde"):
-   düz sıcak zemin + ince ızgara, stüdyo ışığı + yumuşak temas gölgesi, parçalar katman renginde; orijin = küçük nokta + üç kısa ince
-   eksen (yazı rozeti / iz halkası yok); yükseklik ölçüsü ince çizgi; köşede ince eksen üçlüsü (MiniTriad — tık o görünüşe döndürür). */
+/* AKSESUAR SEKMESİ — kategori soldaki raydan (Legs · Layers); Assembly / Parameters ile aynı parçalar.
+   Ayak modeli: 3 yuva (Top · Middle · Bottom), her parça nihai ölçü + taşıma + Stretch + katman; delikler önizlemede parça yüzüne
+   tıklanarak eklenir (yön = yüz normali, parçaya bağlı). Ayak seti ("kaset") = model + köşe düzeni + mesafeler + yükseklik; yerleşim
+   otomatik (gövde yüz rolleri). Katmanlar kütüphane geneli (ad + renk). Kütüphane IndexedDB'de. */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { Canvas, useThree } from '@react-three/fiber';
@@ -147,8 +131,7 @@ function HeightMark({ x, total }: { x: number; total: number }) {
     </group>
   );
 }
-/** HAYALET PANEL: temas düzleminde oturan yarı saydam 18 mm levha — ayağın neye vidalandığı ve panele giren kısım (pimler) görünür.
- *  Işına yanıt vermez (parça seçimi / yakalama engellenmez). */
+/** Hayalet panel: temas düzleminde yarı saydam 18 mm levha (panele giren kısım görünür); ışına yanıt vermez. */
 function GhostPanel({ y, size }: { y: number; size: number }) {
   const t = 18;
   const edges = useMemo(() => { const h = size / 2; const pts: [number, number, number][] = [[-h, 0, -h], [h, 0, -h], [h, 0, h], [-h, 0, h], [-h, 0, -h]]; return pts; }, [size]);
@@ -242,9 +225,8 @@ function SnapDots({ cands }: { cands: SnapCand[] }) {
   if (!cands.length) return null;
   return <points geometry={geo} renderOrder={11}><pointsMaterial size={3} sizeAttenuation={false} color="#a3998c" depthTest={false} transparent opacity={0.85} /></points>;
 }
-/** SAHNE İÇİ: parçalar + delikler + yakalama. Delik kipinde imleç parçanın üstünde olmasa da (arka plan küresi) en yakın yakalama
- *  noktasına (ekranda ≤ 14 px) kilitlenir — delik merkezi boşluktayken bile yakalanır; yoksa yüzeydeki nokta (0.5 mm'e yuvarlanmış).
- *  Yön: yüzeye gelinmişse o yüzün normali, yakalanan noktada aynı parça değilse noktanın kameraya bakan normali — eksene kıstırılmış. */
+/** Sahne içi: parçalar + delikler + yakalama. Delik kipinde ≤ 14 px içindeki yakalama noktasına kilitlenir (boşluktaki delik ağzı da),
+ *  yoksa yüzey noktası (0,5 mm). Yön: yüz normali ya da noktanın kameraya bakan normali, eksene kıstırılmış. */
 function LegScene({ parts, holes, layers, openSlot, onSelectSlot, holeMode, holeRadius, selectedHoleId, onSelectHole, onAddHole, R }: {
   parts: LegAssemblyPart[] | null; holes: LegHoleAt[]; layers: AccessoryLayer[]; openSlot: LegPartRole | null; onSelectSlot: (r: LegPartRole) => void;
   holeMode: boolean; holeRadius: number; selectedHoleId: string | null; onSelectHole: (id: string | null) => void; onAddHole: (at: PickAt) => void; R: number;
@@ -320,9 +302,7 @@ function LegScene({ parts, holes, layers, openSlot, onSelectSlot, holeMode, hole
 const HUD: React.CSSProperties = { fontFamily: UI_FONT, fontSize: 10.5, color: '#8a8378', pointerEvents: 'none', fontVariantNumeric: 'tabular-nums' };
 const PREVIEW_TOOL = (on: boolean) => `h-[24px] px-2 flex items-center gap-1.5 rounded-[6px] text-[10.5px] font-semibold transition-colors duration-150
   ${on ? 'bg-[#292524] text-white' : 'bg-white/90 text-stone-600 ring-1 ring-[#e3ddd4] hover:bg-white hover:ring-[#cfc7bc] hover:text-stone-900'}`;
-/** AYAK ÖNİZLEME SAHNESİ: stüdyo ışığı, ince ızgara zemin, temas gölgesi, katman renkli parçalar, delik işaretleri, sade orijin,
- *  yükseklik ölçüsü, köşede ince eksen üçlüsü. Sol sürükle = döndür, SAĞ sürükle = kaydır (pan), tekerlek = yaklaş (kenar çubuğunu
- *  kaydırmaz — Goker). Sağ üstte "Hole" kipi (yüzeye / yakalama noktasına tık → delik). */
+/** Ayak önizleme sahnesi. Sol sürükle döndür, sağ sürükle kaydır, tekerlek yaklaş (kenar çubuğunu kaydırmaz); "Hole" kipi delik ekler. */
 function LegPreview({ leg, parts, height, layers, openSlot, onSelectSlot, holeMode, onHoleMode, holeRadius, selectedHoleId, onSelectHole, onAddHole }: {
   leg: LegModel | null; parts: LegAssemblyPart[] | null; height: number; layers: AccessoryLayer[]; openSlot: LegPartRole | null; onSelectSlot: (r: LegPartRole) => void;
   holeMode: boolean; onHoleMode: (b: boolean) => void; holeRadius: number; selectedHoleId: string | null; onSelectHole: (id: string | null) => void;
@@ -401,9 +381,7 @@ function LegPreview({ leg, parts, height, layers, openSlot, onSelectSlot, holeMo
 }
 
 /* ═════════════════════════════════ Ayak modeli: 3 yuva ═════════════════════════════════
-   Goker: "middle / base / bottom'da da scale ve move olsun; panel editör gibi düzenlemeye tıklayınca satırları gelsin; scale yüzde değil
-   net ölçü; her parçada stretch özelliği olsun". Yuva = Assembly satırı gibi: başlık (yuva · model · X / Y / Z ölçüsü · ↕ · ok);
-   tıklayınca kart: Size X / Y / Z (nihai mm) · Move X / Y / Z (mm) · Stretch · Unit · Up · Layer · Replace / Remove. Tek kart açık. */
+   Yuva = Assembly satırı gibi başlık; tıklayınca kart (Size / Move nihai mm · Stretch · Unit · Up · Layer). Tek kart açık. */
 /** Düzenlenebilir hücre (beyaz; Assembly hücreleriyle aynı görünüm). */
 const EditCell = ({ label, title, className = '', children }: { label: string; title?: string; className?: string; children: React.ReactNode }) => (
   <div title={title} onClick={stop} className={`${className} yago-cell min-w-0 h-full pl-2 pr-1 flex items-center gap-1`}>
@@ -505,9 +483,7 @@ function SlotRow({ role, draft, setDraft, onPick, busy, open, onToggle, layers }
 }
 
 /* ═════════════════════════════════ Delikler ═════════════════════════════════
-   TEK SATIR (Goker: "pozisyon, çap, derinlik girdileri tek satıra sığsın, sade görünsün"): # · yön · X Y Z · Ø D · parça · sil —
-   hepsi satırda düzenlenir, kart yok. Satıra tık deliği seçer (3D'de turuncu); 3D'de deliğe tık satırı seçer; Delete seçili deliği siler.
-   X / Y / Z AYAK SIFIRINA göre gösterilir ve düzenlenir; parçaya bağlı delik parçayla birlikte taşınır (tabla deliği ayak boyuyla yükselir). */
+   Tek satır, kart yok: # · yön · X Y Z (ayak sıfırına göre) · Ø D · parça · sil. Satır ↔ 3D seçimi eşli; Delete siler. */
 const PART_OPTS: Array<{ v: string; label: string }> = [{ v: '', label: 'Origin' }, { v: 'top', label: 'Top' }, { v: 'stem', label: 'Middle' }, { v: 'base', label: 'Bottom' }];
 const DIR_OPTS = [...HOLE_AXES.map(a => ({ v: a.v as string, label: a.label })), { v: 'custom', label: '·' }];
 /** Satır içi küçük alan: harf + değer. */
@@ -551,8 +527,7 @@ function HoleRow({ hole, index, legPos, parts, selected, onSelect, onChange, onR
   );
 }
 
-/** Ayak modeli düzenleyici: üst blok (ad + önizleme) kenar çubuğunda YAPIŞIK kalır (Goker: "sahneyi scroll ile kaydırmasın, hem sahneyi
- *  hem delikleri göreyim"); altındaki yükseklik / yuvalar / delikler kayar. */
+/** Ayak modeli düzenleyici: üst blok (ad + önizleme) yapışık kalır — sahne kaydırılmadan delikler görülsün; altı kayar. */
 function LegModelEditor({ draft, setDraft, onSave, onCancel, layers }: {
   draft: LegModel; setDraft: (m: LegModel) => void; onSave: () => void; onCancel: () => void; layers: AccessoryLayer[];
 }) {
@@ -658,8 +633,7 @@ function LegModelEditor({ draft, setDraft, onSave, onCancel, layers }: {
 }
 
 /* ═════════════════════════════════ Ayak seti ═════════════════════════════════ */
-/** SET DÜZENLEYİCİ (sade): model · köşe düzeni (4/5/6) · yan / ön / arka mesafeleri · varsayılan yükseklik. Plan diyagramı örnek gövde
- *  izinde (600 × 560) otomatik yerleşimi gösterir; yerleşince gerçek gövde izine ve yüz rollerine göre çözülür. */
+/** Set düzenleyici: model · köşe düzeni · mesafeler · yükseklik. Plan örnek iz (600 × 560) üstünde; yerleşince gerçek ize göre çözülür. */
 function LegPresetEditor({ draft, setDraft, legModels, onSave, onCancel }: {
   draft: LegPreset; setDraft: (p: LegPreset) => void; legModels: LegModel[]; onSave: () => void; onCancel: () => void;
 }) {
@@ -702,7 +676,7 @@ function LegPresetEditor({ draft, setDraft, legModels, onSave, onCancel }: {
 }
 
 /* ═════════════════════════════════ Katmanlar ═════════════════════════════════
-   Satır: renk (tık → renk seçici) · ad (yerinde düzenlenir) · kullanan parça sayısı · sil. Liste kütüphane genelidir. */
+   Satır: renk · ad (yerinde düzenlenir) · kullanan parça sayısı · sil. */
 function LayerRow({ layer, uses }: { layer: AccessoryLayer; uses: number }) {
   const [name, setName] = useState(layer.name);
   useEffect(() => setName(layer.name), [layer.name]);

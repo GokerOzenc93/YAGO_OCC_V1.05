@@ -30,20 +30,17 @@ export interface FilletInfo {
   originalSize: { width: number; height: number; depth: number };
 }
 
-/** ÇİZİM ADIMI (Geometry.applySketchFeatures): hedefin (panel / gövde) bir yüzüne bağlı 2B profil — panelden / gövdeden ÇIKARILIR (cut) ya da
- *  panele ŞEKLİ verilir (shape). Hedefin `parameters.sketchFeatures` listesinde durur.
- *  n / u: yüzün dışa normali ve çizim X ekseni, gövde-yerel (panelde döndürme adımları GERİ ALINMIŞ yönler → sonradan eklenen dönüş çizimi taşır).
- *  inset: yüz hedefin o yöndeki en dış düzleminden ne kadar içeride (normalde 0). anchor: yüz kutusunda çapa (0 / 0.5 / 1 × en, boy);
- *  shapes çapaya GÖRE koordinattadır. stretch: o eksende yüzle birlikte ölçeklen (baseSize = adım yazılırkenki yüz ölçüsü). depth null = boydan boya. */
+/** Çizim adımı (Geometry.applySketchFeatures): hedefin bir yüzüne bağlı 2B profil — çıkarılır (cut) ya da şekli verilir (shape).
+ *  n / u: yüzün dış normali ve çizim X ekseni, gövde-yerel (panelde dönüş adımları geri alınmış → sonradan eklenen dönüş çizimi taşır).
+ *  inset: yüzün en dış düzlemden derinliği. anchor: yüz kutusunda çapa, shapes ona göre. stretch: yüzle ölçeklen (baseSize). depth null = boydan boya. */
 export interface SketchFeature {
   id: string; name: string; timestamp: number;
   op: 'cut' | 'shape'; depth: number | null;
   n: Vec3; u: Vec3; inset: number;
   anchor: [number, number]; stretch: [boolean, boolean]; baseSize: [number, number];
   shapes: Shape2[];
-  /** PARAMETRİK kip (Draft.resolveParam): `mode: 'points'` ise çapa / uzama KULLANILMAZ — shapes yüz çerçevesi koordinatındadır (orijin
-   *  yüzün sol-alt köşesi, baseSize ölçüsünde) ve her nesnenin her kontrol noktası kendi X / Y bağıyla çözülür: sol / sağ / orta / oran /
-   *  formül (pts[nesne][nokta]). radii: dairelerde yarıçap formülü (yoksa sabit). mode yoksa eski yöntem. */
+  /** Parametric kip (`mode: 'points'`): çapa / uzama kullanılmaz; shapes yüz çerçevesinde, her kontrol noktası kendi X / Y bağıyla çözülür
+   *  (pts[nesne][nokta]). radii: daire yarıçap formülü. */
   mode?: 'points'; pts?: PtBind[][]; radii?: (string | null)[];
 }
 
@@ -70,9 +67,8 @@ export interface VirtualFace {
   sideRelations?: Record<string, number>;
   /** Açıkken panel serbest bölgenin tam (L/U/çentikli) şeklini alır. */
   fitFaceShape?: boolean;
-  /** EĞRİ YÜZ PANELİ (radüslü gövde yüzü): panel o yüzeyin içe doğru kalınlaştırılmış halidir (PanelEngine.curvedPanelSolid). `vertices`
-   *  yüzün köşe dörtgeni (kiriş düzlemi), `normal` yüzün ortalama normali, `center` yüz üzerindeki tık noktasıdır; bölge çözümüne girmez,
-   *  komşularıyla katı düzeyinde (sıraya göre) kesişir. */
+  /** Eğri yüz paneli: yüzeyin içe kalınlaştırılmışı (PanelEngine.curvedPanelSolid). vertices = kiriş dörtgeni, normal = ortalama, center = tık.
+   *  Bölge çözümüne girmez; komşularıyla katı düzeyinde sıraya göre kesişir. */
   curved?: boolean;
   /** İç panel (raf/dikme/kapak): konumu grup çözücüsü yazar; regen'de yüz eşlemesine girmez. */
   interior?: boolean;
@@ -90,33 +86,26 @@ export interface VirtualFace {
   /** Arkalık üyesi (interior=true; geometriyi BackService yazar). */
   backGroupId?: string;
   backIndex?: number;
-  /** ÜST ÜSTE PANEL: VF düzlemi gövde yüzünün `stackDepth` mm İÇİNDEDİR (alttaki panelin iç yüzü);
-   *  `stackBaseVfId` = alttaki panel — bölge çözümünde yok sayılır, diğer kardeşler o düzlemde damgalar. */
+  /** Üst üste panel: VF düzlemi gövde yüzünün `stackDepth` mm içinde; `stackBaseVfId` = alttaki panel (bölge çözümünde yok sayılır). */
   stackDepth?: number;
   stackBaseVfId?: string;
   /** Taban EĞİMLİ/dönmüşse VF düzlemi tabanın iç BÜYÜK yüzüdür; regen konturu tabanın güncel geometrisinden okur. */
   stackOnPanel?: boolean;
-  /** ARKALIĞIN ÖNÜ: `stackDepth` her regen'de arkalık parçası + önündeki bitişik katmanlardan yeniden okunur (BackService.backStackAt);
-   *  bulunamazsa kayıtlı değer kalır. */
+  /** Arkalığın önü: `stackDepth` her regen'de arkalık + önündeki katmanlardan yeniden okunur (backStackAt). */
   stackOnBack?: boolean;
   /** HIZLI GÖVDE parçası (üst / sol / sağ / alt / baza / arka baza): ayarlar gövdede saklanır, yeniden uygulamada aynı VF güncellenir. */
   quickBody?: QuickBodyPart;
-  /** BAZA AYAĞI SETİ yer tutucusu (PlinthService): paneli yok; listede/sıralamada setin yeri — sırada önce gelen set sonraki panelleri
-   *  kutusuyla basar, sonra gelen set önceki panellerin arasında kalır. */
+  /** Baza ayağı seti yer tutucusu: paneli yok; sıradaki yeri basan / basılan ilişkisini belirler. */
   plinthId?: string;
   /** AYAĞIN ÜSTÜ: `stackDepth` her regen'de setin üst yüzünden yeniden okunur (set yükselince panel onunla gider). */
   stackOnPlinthId?: string;
-  /** KAYIT ŞERİDİ (hızlı gövde YATAY kayıtı; PanelGroupService › pushRails): serbest bölge, yüz KONTURUNUN `n` yönlü kenarından
-   *  `setback`..`setback+size` içerideki şeride kırpılır (Geometry.clipRegionToRailStrip). Kenar her regen'de tohuma en yakın
-   *  eş-normalli kontur kenarı olarak yeniden bulunur → gövde ölçüsü değişince kayıt kenarı izler, genişliği sabit kalır. */
+  /** Kayıt şeridi (hızlı gövde yatay kaydı): serbest bölge yüz konturunun `n` yönlü kenarından `setback`..`setback+size` şeride kırpılır;
+   *  kenar her regen'de yeniden bulunur → gövde ölçüsü değişince kayıt izler. */
   railStrip?: RailStripSpec;
-  /** DİKEY KAYIT İÇ KÖŞE UZATMASI: VF bölgesi `dir` yönündeki ucundan uzatılır (bkz. RailExt); `band` = levhanın plan bandı (VF
-   *  düzleminden içeri [lo, hi] mm — çektirme..çektirme+kalınlık), hedef ölçümü bandın ortasından yapılır. */
+  /** Dikey kayıt iç köşe uzatması: bölge `dir` ucundan uzatılır; `band` = levhanın plan bandı (VF düzleminden [lo, hi]). */
   railExt?: Array<RailExt & { band: [number, number] }>;
 }
-/** İç köşe uzatmasının HEDEFİ: dış normali `n` olan gövde yüzü (plan çokgeninin kenarı); uzatma o yüzün düzleminden `depth` önce biter
- *  (kenarın DOLU bandı: kayıt çektirme + genişlik / kalınlık, yan panel kalınlığı; boşsa 0). Motor her regen'de yeniden ölçer → gövde
- *  ölçüsü değişince kayıt hedefe değmeye devam eder. */
+/** İç köşe uzatmasının hedefi: dış normali `n` olan gövde yüzü; uzatma o düzlemden `depth` önce biter. Her regen'de yeniden ölçülür. */
 export interface RailExtTarget { n: Vec3; depth: number }
 /** Kayıt ucu uzatması: `dir` kenar boyunca o uca doğru birim yön, `amount` mm (kuruluşta ölçülen; `to` yoksa sabit). */
 export interface RailExt { dir: Vec3; amount: number; to?: RailExtTarget }
@@ -131,8 +120,7 @@ export interface DoorRect { u0: number; u1: number; v0: number; v1: number; fron
 /** Kapak adayı: tıklanan gövde yüzü düzleminde sınır paneli kenarlarından kurulan iç/dış dikdörtgen; alan büyükten küçüğe. */
 export interface DoorPick {
   key: string; axis: 0 | 1 | 2; side: 1 | -1; bounds: DoorBounds;
-  /** Seçildiği ÖN rolündeki yüzün köşe kutusu (gövde-yerel; eksen boyunca = yüz düzlemi): L köşe dolabında çentik yüzü kutudan dar ve
-   *  içerde — gövde kenarları ve kapak düzlemi bu yüzü okur. */
+  /** Seçildiği ön yüzün kutusu (gövde-yerel): L köşe dolabında çentik yüzü kutudan dar ve içerde. */
   faceBox?: CavityBox;
   inner: DoorRect; outer: DoorRect; area: number;
   /** Kapak düzleminin derinlik referansı + aynı dikdörtgendeki sırası. */
@@ -143,17 +131,15 @@ export interface DoorPick {
   /** Tıklanan nokta (u,v): açılı sınır panelinde kapağın hangi tarafta kalacağını belirler. */
   at?: [number, number];
 }
-/** KAPAK AĞACI: leaf = kapak; split = u (yan yana) / v (üst üste) eksende çocuklar (sizes + n−1 gaps).
- *  Çocuk ölçüleri (+ aralar) toplamı HER ZAMAN düğümün alanıdır → bölmek üst bölmenin ölçüsünü değiştirmez.
- *  Üye sırası = DFS yaprak sırası; double/fold yaprak iki üye verir. */
+/** Kapak ağacı: leaf = kapak; split = u / v eksende çocuklar (sizes + n−1 gaps). Çocuklar + aralar = düğüm alanı (bölmek üstü değiştirmez).
+ *  Üye sırası = DFS yaprak sırası; double / fold iki üye verir. */
 export type DoorNode =
   | { id: string; kind: 'leaf'; type: DoorType; leafSplit?: DoorLeafSplit }
   | {
     id: string; kind: 'split'; axis: 'u' | 'v'; sizes: GapSpec[]; gaps: number[]; children: DoorNode[];
     /** SPACING: hedef parça ölçüsü (mm); parça sayısı her çözümde alandan türetilir. Sayı elle girilince kalkar. */
     targetSize?: number;
-    /** DERZ BAĞI (kapak levhayı izler): k. derz her çözümde bağlı dikme/rafın güncel konumundan türetilir
-     *  ('center' = levha ortası, 'min'/'max' = levha o taraftaki kapağın arkasında); bağlı ölçüler çözümden yazılır. */
+    /** Derz bağı: k. derz her çözümde bağlı dikme / rafın güncel konumundan türetilir ('center' / 'min' / 'max'). */
     refs?: Record<number, DoorJointRef>;
   };
 /** Derz bağı (KAPAK levhayı izler): bağlı levhanın VF id'si + derzin levhaya göre konumu. */
@@ -178,8 +164,7 @@ export interface DoorGroup {
   edgeGaps: DoorEdgeGaps;
   /** Varsayılan kapak boşluğu (mm): yeni bölmede doğan aralar ve kanat araları bununla. */
   gap: number;
-  /** YARIM BİNME: işaretli kenarda kapak sınır panelinin kalınlık ORTASINA kadar gider, kalan yeniden EŞİT bölünür.
-   *  Yalnız dış kapakta ve kenar paneli kapağın gerisindeyken etkilidir. */
+  /** Yarım binme: işaretli kenarda kapak sınır panelinin kalınlık ortasına gider (yalnız dış kapak, panel gerideyken). */
   halfOverlay?: { uMin?: boolean; uMax?: boolean; vMin?: boolean; vMax?: boolean };
   /** HİÇ BİNMEME: işaretli kenarda kapak sınır panelinin İÇ yüzünde biter; halfOverlay ile birlikte işaretlenmez. */
   noOverlay?: { uMin?: boolean; uMax?: boolean; vMin?: boolean; vMax?: boolean };
@@ -194,20 +179,16 @@ export interface DoorGroup {
   createdAt: number;
 }
 
-/** KAPAK TİPİ (bakana göre): left/right = yan menteşe; up = kalkar; down = düşer; double = iki kanat (yatayda bölünür);
- *  fold = katlanır kalkar (dikeyde bölünür); drawer = çekmece ön paneli; fixed = menteşesiz ön panel. */
+/** Kapak tipi: left / right yan menteşe, up kalkar, down düşer, double iki kanat, fold katlanır, drawer çekmece önü, fixed menteşesiz. */
 export type DoorType = 'left' | 'right' | 'up' | 'down' | 'double' | 'fold' | 'drawer' | 'fixed';
 /** Derz hizası: 'min'/'max' = levha o taraftaki kapağın arkasında; 'center' = derz levhanın ortasında. */
 export type DoorAlign = 'min' | 'center' | 'max';
 /** İki kanatlı hücre: kanat ölçüleri (toplam = hücre ölçüsü − kanat arası boşluk) + kanat arası boşluk (mm). */
 export interface DoorLeafSplit { leaves: GapSpec[]; gap: number }
 
-// ARKALIK (BackService) — kapaktan bağımsız veri modeli. Sınır = VF.backBound; üye = VF.backGroupId.
-//  placement 'outer' = arkadan ÇAKMA: sınır panellerinin arka yüzüne, hacmin DIŞINA (panel kalınlığını örter, bini kadar);
-//  'inner' = KANALLI: panellerin arasına, arka yüzden `setback` kadar içerde; her KENARIN ilişkisi ayrı (BackEdgeRel):
-//  'groove' → panel tam boy, parça `inset` kadar kanala girer;
-//  'nail' → panel arkalığın ÖN yüzüne kadar kısalır, parça ucunu `cover` kadar örter.
-//  Tip / setback / inset / bini PARÇA BAŞINA (BackNode leaf); kenar ilişkisi GRUP BAŞINA (kenar = o sınır paneliyle derz).
+// ARKALIK — sınır = VF.backBound, üye = VF.backGroupId. 'outer' = çakma (arka yüze, bini kadar örter); 'inner' = kanallı (setback içerde).
+// Kenar ilişkisi (grup başına): 'groove' panel tam boy, parça `inset` girer; 'nail' panel kısalır, parça `cover` örter.
+// Tip / setback / inset / bini parça başına.
 export type BackPlacement = 'outer' | 'inner';
 /** Kenar ilişkisi (yalnız kanallı/iç parçada anlamlı): kanallı (panel tam boy) ya da çakma (panel arkalığın ön yüzünde biter). */
 export type BackEdgeRel = 'groove' | 'nail';
@@ -220,13 +201,9 @@ export interface BackEdgeGaps { uMin: number; uMax: number; vMin: number; vMax: 
 /** Derz hizası: 'min'/'max' = levha o taraftaki parçanın arkasında; 'center' = derz levhanın ortasında. */
 export type BackAlign = 'min' | 'center' | 'max';
 /** Derz bağı (parça levhayı izler): bağlı levhanın VF id'si + derzin levhaya göre konumu. */
-/** rel: levhayla İLİŞKİ (yoksa 'groove'): groove → iki yandan kanal, levha tam boy; nail → levha arkalığın ön yüzüne kadar kısalır,
- *  parçalar ucunu `jointIn` kadar örter. */
+/** rel (yoksa 'groove'): groove → iki yandan kanal; nail → levha arkalığın önüne kadar kısalır, parçalar `jointIn` örter. */
 export interface BackJointRef { vfId: string; align: BackAlign; rel?: BackEdgeRel }
-/** ARKALIK AĞACI: leaf = parça; split = u (yan yana) / v (üst üste) eksende çocuklar (sizes + n−1 gaps).
- *  Çocuk ölçüleri (+ aralar) toplamı HER ZAMAN düğümün alanıdır → bölmek üst bölmenin ölçüsünü değiştirmez.
- *  Alan = İÇ dikdörtgen (sınır panellerinin iç yüzleri); her PARÇA kendi tipini, setback'ini ve kenar giriş/binisini taşır
- *  (yoksa grup varsayılanı) — kanallı parça kenardan `inset` kadar panele girer, çakma parça bini kadar paneli örter. */
+/** Arkalık ağacı: leaf = parça; split kapak ağacıyla aynı kural. Alan = iç dikdörtgen; parça kendi tip / setback / giriş değerini taşır. */
 export type BackNode =
   | {
     id: string; kind: 'leaf';
@@ -235,8 +212,7 @@ export type BackNode =
     inset?: Partial<BackEdgeGaps>;
     /** Çakma: kenar başına sınır panelinin ÜZERİNE BİNME (mm; 0 = iç yüzünde biter, kalınlık/yok = tamamen örter). */
     cover?: Partial<BackEdgeGaps>;
-    /** İÇ LEVHAYA BİNME (dikme/raf, levhaya bağlı derzde): parçanın o kenarda levhanın üzerine ne kadar bindiği (mm, 0..levha kalınlığı).
-     *  Çakma ve kanallı parçada aynı anlam; yoksa levhanın ortası (kalınlık / 2). İki yandaki parçalar ayrı değer taşır. */
+    /** İç levhaya binme (mm, 0..levha kalınlığı); yoksa kalınlık / 2. İki yandaki parçalar ayrı değer taşır. */
     jointIn?: Partial<BackEdgeGaps>;
   }
   | {
@@ -273,8 +249,7 @@ export interface BackGroup {
   grooveClearBy?: Record<string, { front?: number; back?: number; depth?: number }>;
   /** Derinlik referansı: sınır panelinin arka yüzü. Yoksa en gerideki sınır panelinin yüzü. Çakma (kısaltılan) kenar derinlik vermez. */
   depthRef?: BackBoundRef;
-  /** CANLI DERİNLİK REFERANSI (hızlı gövde: "arkalık referansı" seçilen panel / kanallı arka kayıt): yüz seçimiyle kurulan grupta
-   *  bile düzlem `depthRef` panelinin arka yüzünden ölçülür (sınır olmasa da) → panel kısalınca / taşınınca arkalık onunla gider. */
+  /** Canlı derinlik referansı: düzlem `depthRef` panelinin arka yüzünden ölçülür → panel kısalınca / taşınınca arkalık izler. */
   depthRefLive?: boolean;
   /** İÇ dikdörtgen (sınır panellerinin iç yüzleri / gövde kenarları); front = sınır panellerinin ARKA yüzü (P). */
   rect: BackRect;
@@ -298,8 +273,7 @@ export interface BackGroup {
 /** Raf/dikme boşluğu: değer (mm) + kilit (küp boyutlanınca sabit kalır). */
 export interface GapSpec { value: number; locked: boolean; edited?: boolean }
 export interface CavityBox { min: [number, number, number]; max: [number, number, number] }
-/** HACİM ADIMI: grup hacminin bir yüzü panel yüz extrude'uyla aynı modlarla (fixed/dyn/ref) itilir.
- *  Her rebuild'de ham hacme sırayla uygulanır; faceNormal gövde-yerel, eksen hizalı. */
+/** Hacim adımı: grup hacminin bir yüzü extrude modlarıyla (fixed / dyn / ref) itilir; her rebuild'de sırayla uygulanır. */
 export interface CavityStep {
   id: string; faceNormal: Vec3; axisLabel: string; value: number; isFixed: boolean; timestamp: number;
   /** Tıklama, gövde kutusuna oransal — şekilli hacimde hangi bağlantılı yüzün hareket edeceğini seçer. */
@@ -307,15 +281,12 @@ export interface CavityStep {
   refShapeId?: string; refFaceGroupIndex?: number; refNormalWorld?: Vec3; refPointWorld?: Vec3;
   resolvedValue?: number;
 }
-/** HACİM ADAYI: gövde katısından ve panellerden kalan, tohumdan taşarak bulunan serbest bölge.
- *  bbox = dizilim açıklığı; boxes = hücre kutuları; surface = önizleme üçgenleri; seed = çıpa. */
+/** Hacim adayı: tohumdan taşarak bulunan serbest bölge. bbox = açıklık, boxes = hücreler, surface = önizleme, seed = çıpa. */
 export interface CavityPick {
   key: string; bbox: CavityBox; boxes: CavityBox[]; surface: number[]; seed: [number, number, number];
   /** 'shaped' = bağlantılı serbest bölgenin tamamı; 'box' = tohumu içeren maksimal kutu. */
   shape: 'shaped' | 'box';
-  /** arrow = tıklanan gövde yüzünden içeri (kameradan bağımsız; üst/alt yüzden tıkta Z−).
-   *  axis = dizilim ekseni: raf daima Y; dikme oka paralel → okun yatay diki.
-   *  facing = sayım tarafı (+1 = MİN'den) ve üye VF normali (facing·axis). at = ışının bölgeye girdiği nokta. */
+  /** arrow = tıklanan yüzden içeri; axis = dizilim ekseni (raf Y, dikme okun yatay diki); facing = sayım tarafı; at = giriş noktası. */
   axis: 0 | 1 | 2; facing: 1 | -1; at: [number, number, number];
   arrow: { axis: 0 | 1 | 2; facing: 1 | -1 };
 }
@@ -343,8 +314,7 @@ export interface PanelGroup {
   /** Üye başına kalınlık; eksik/kısa ise `thickness`. */
   memberThicknesses?: number[];
   cavitySteps?: CavityStep[];
-  /** KAPAK DERZİNE BAĞ (levha kapağı izler; tersi DoorNode.refs): `member` (vars. 0) her çözümde derze göre
-   *  konumlanır, o boşluk çözümden yazılır. Kapak/derz silinirse bağ düşer. */
+  /** Kapak derzine bağ (levha kapağı izler; tersi DoorNode.refs): `member` derze göre konumlanır; kapak / derz silinirse bağ düşer. */
   doorBond?: DoorBond;
   memberVfIds: string[];
   /** Grup adı (vars. 'Shelf' / 'Divider'); üye panellerin adı budur. */
@@ -357,30 +327,21 @@ export interface PanelGroup {
 /** 'arrow' = ok modu DYN (her tık değer kadar), 'arrowFixed' = ok modu FIXED (o eksendeki toplam ölçü = değer). */
 export type FaceExtrudeValueMode = 'arrow' | 'arrowFixed' | 'fixed' | 'dyn' | 'ref';
 export type QuickBodyBase = 'plain' | 'legs' | 'plinth';
-/** Hızlı gövdenin ürettiği panel parçaları (VF.quickBody). Aynı rolde birden çok yüz (L gövde: iki sağ yüz, iki ön baza) → `key#n`.
- *  `topFront/topRear/bottomFront/bottomRear` = üst / alt panel YERİNE kayıtlar (PanelGroupService › hızlı gövde kayıtları). */
+/** Hızlı gövde parçaları (VF.quickBody); aynı rolde birden çok yüz → `key#n`. topFront / … = üst / alt panel yerine kayıtlar. */
 export type QuickBodyPartBase = 'top' | 'left' | 'right' | 'bottom' | 'plinth' | 'rearPlinth' | 'topFront' | 'topRear' | 'bottomFront' | 'bottomRear';
 export type QuickBodyPart = QuickBodyPartBase | `${QuickBodyPartBase}#${number}`;
-/* ───────── KAYITLAR (Goker, Kas 2026 — "üst panel yok / alt panel yok seçeneği; onun yerine kayıt (traverse) arayüzü: ön / arka,
-   yatay / dikey, ölçü ve çektirme; arka kayıtta arkalık kanal mı, kayıt arkalığın önüne mi") ─────────
-   Mutfak gövdelerinde bütün üst panel yerine iki kısa panel (kayıt) kullanılır. `kind`: 'horizontal' = yatay (üst / alt düzlemde yatan,
-   derinlik yönünde `size` genişliğinde şerit) · 'vertical' = dikey (ön / arka yüzde dik duran, `size` yüksekliğinde şerit) · 'none' = yok.
-   `setback` = kayıtın gövdenin ön / arka yüzünden içeri çekilmesi (mm). Kalınlık = gövde panel kalınlığı. */
+/* ───────── KAYITLAR ─────────
+   Üst / alt panel yerine kısa paneller. `kind`: 'horizontal' (yatay şerit) · 'vertical' (ön / arka yüzde dik) · 'none'.
+   `setback` = ön / arka yüzden içeri çekme (mm); kalınlık = gövde panel kalınlığı. */
 export type RailKind = 'none' | 'horizontal' | 'vertical';
-/** Arka kayıt ↔ KANALLI arkalık: 'groove' = arkalık kayıta kanal açar (kayıt arka yüze kadar, arkalık içine girer) ·
- *  'infront' = kayıt arkalığın ÖNÜNE yerleşir (arkalık kayıtın arkasından gövde kenarına kadar sürer; yatay kayıt arkalığın ön yüzüne
- *  kadar kısaltılır, dikey kayıt arkalığın önüne çekilir). Çakma arkalıkta anlamsız (kayıt arka yüzde, arkalık üstüne çakılır). */
+/** Arka kayıt ↔ kanallı arkalık: 'groove' = arkalık kayda kanal açar · 'infront' = kayıt arkalığın önünde. Çakma arkalıkta anlamsız. */
 export type RailBackRel = 'groove' | 'infront';
-/** Dikey kayıt ↔ aynı yüzdeki tam panel birleşimi (Goker, 8 Kas 2026 — "dikey kayıt ve bütün panel varsa 2 panel arasındaki birleşim
- *  tipini göster, tüm dikey parçalarda"): 'panel' = panel geçer (kayıt panelin altında / üstünde, varsayılan) · 'rail' = kayıt geçer
- *  (kayıt yüz kenarına kadar, panel kayıtın yüzünde kısalır). Yalnız dikey kayıt + panel varken anlamlı. */
+/** Dikey kayıt ↔ aynı yüzdeki tam panel: 'panel' = panel geçer (varsayılan) · 'rail' = kayıt geçer, panel kısalır. */
 export type RailJoin = 'panel' | 'rail';
 export interface RailSpec { kind: RailKind; size: number; setback: number; join?: RailJoin }
 /** Üst ya da alt yüzün yapısı: tam panel ya da kayıtlar (ön + arka; ikisi de 'none' → açık). */
-/** Üst ya da alt yüzün yapısı (Goker, Kas 2026 — "üst ya da alt panel varsa da kayıt yerleşebilir"): tam panel VAR/YOK ve ön + arka
- *  kayıt BİRBİRİNDEN BAĞIMSIZ. Panel varken kayıtlar panelin altında (üstte) / üstünde (altta) durur: dikey kayıt ön / arka yüzde
- *  panele dayanır, yatay kayıt panelin iç yüzüne istiflenir. Panel yok + iki kayıt 'none' → açık. `mode` = eski kayıt alanı
- *  ('panel' = yalnız panel, kayıtlar yok sayılırdı · 'rails' = panelsiz kayıtlar) — `railsOf` `panel`a çevirir. */
+/** Üst / alt yüz yapısı: tam panel ve ön / arka kayıtlar bağımsız; panel varken kayıtlar ona dayanır / istiflenir.
+ *  `mode` = eski alan, `railsOf` çevirir. */
 export interface QuickBodyRails { panel: boolean; front: RailSpec; rear: RailSpec; backRel: RailBackRel; mode?: 'panel' | 'rails' }
 export const DEFAULT_RAILS: QuickBodyRails = {
   panel: true, front: { kind: 'none', size: 100, setback: 0 }, rear: { kind: 'none', size: 100, setback: 0 }, backRel: 'groove',
@@ -425,14 +386,10 @@ export interface QuickBodyConfig {
   /** Üst / alt yüz: tam panel ya da kayıtlar (yoksa tam panel — eski kayıtlar). */
   top?: QuickBodyRails;
   bottom?: QuickBodyRails;
-  /** PANEL UÇ UZATMA / KISALTMA (Goker, 8 Kas 2026 — "alt üst sağ ve sol panellerin uzatma ve kısaltma değerlerini arayüzden
-   *  girebileyim"): panel başına uç değerleri (mm; + uzatır, − kısaltır) — yanlarda ön / arka / üst / alt, üst / alt panelde ön / arka /
-   *  sol / sağ uç. Kurulumda panelin o yöndeki dış yüzüne dyn extrude adımı olarak yazılır (PanelGroupService.applyQuickBody). */
+  /** Panel uç uzatma / kısaltma (mm; + uzatır): kurulumda o yöndeki dış yüze dyn extrude adımı olarak yazılır (applyQuickBody). */
   ext?: Partial<Record<QuickBodyPanelKey, PanelEdgeExt>>;
-  /** ARKALIK REFERANSI (Goker, 8 Kas 2026 — "panele arkalık ofseti için referans al seçeneği; o panel kısalsa bile arkalık o panele
-   *  göre yerleşsin"): arkalığın setback'i bu parçanın ARKA yüzünden ölçülür ve parça sonradan kısalınca / taşınınca arkalık izler.
-   *  Yoksa (null): kanallı arka kayıt (önce üst) otomatik referans; o da yoksa gövdenin arka yüzü. 'body' = otomatik referans da
-   *  kapalı (her zaman gövdenin arka yüzü). */
+  /** Arkalık referansı: setback bu parçanın arka yüzünden ölçülür (parça kısalınca arkalık izler). null → kanallı arka kayıt, o da yoksa
+   *  gövdenin arka yüzü; 'body' → her zaman gövdenin arka yüzü. */
   backRef?: QuickBackRefKey | 'body' | null;
 }
 export type QuickBackRefKey = QuickBodyPanelKey | 'topRear' | 'bottomRear';
@@ -446,51 +403,36 @@ export const PANEL_EDGE_DIRS: Record<QuickBodyPanelKey, PanelEdgeDir[]> = {
 };
 /** Panelin uç değeri (yoksa 0). */
 export const panelEdgeOf = (cfg: QuickBodyConfig, key: QuickBodyPanelKey, dir: PanelEdgeDir): number => cfg.ext?.[key]?.[dir] ?? 0;
-/* ───────── AKSESUAR KÜTÜPHANESİ (AccessoryService; Goker, Eki 2026 — "Panel editör yanında Aksesuar sekmesi; ayak modelini dışarıdan
-   al, 3 parça, orta parça uzasın; 4/5/6 ayak setlerini kaydet, ayak kısmında çağır") ───────── */
+/* ───────── AKSESUAR KÜTÜPHANESİ (AccessoryService) ───────── */
 export type AccessoryUnit = 'mm' | 'cm' | 'm' | 'in';
 export type AccessoryCategory = 'legs' | 'rails' | 'hinges' | 'layers';
-/** AKSESUAR KATMANI (Goker, Kas 2026 — "ayağın parçalarının katmanını seçebileyim; katmanları bir listede tut, tüm aksesuarlarda
- *  kullanılacak"): kütüphane geneli liste (IndexedDB `layers`); her aksesuar parçası bir katmana bağlanır (`layerId`), katmanın rengi
- *  parçayı boyar (önizleme + sahne). Gelecekte ray / menteşe parçaları da aynı listeyi okur. */
+/** Aksesuar katmanı: kütüphane geneli liste; parça `layerId` ile bağlanır, katman rengi parçayı boyar. */
 export interface AccessoryLayer { id: string; name: string; color: string; createdAt: number }
-/** DELİK (genel, Goker, Kas 2026 — "ayağın modelinin üzerine delik atabileyim; yönü, x y z pozisyonu ayağın sıfırına göre, çapı ve
- *  derinliği olsun; ileride başka yerlerde de kullanılacak"): aksesuarın KENDİ çerçevesinde silindirik delik tanımı.
- *  `dir` = delme yönü (birim; yüzeyden dışarı, dokunduğu panelin içine), `pos` = deliğin ağız merkezi, `diameter` / `depth` mm.
- *  `part` = bağlı parça (ayakta Top / Middle / Bottom): `pos` o parçanın ÖLÇEKSİZ model uzayındadır → parça uzayınca / taşınınca /
- *  ölçüsü değişince delik yüzeydeki yerini korur (panele vidalanan tabla deliği ayak boyuyla birlikte yükselir). `part` yok → `pos`
- *  doğrudan aksesuar sıfırına göre. Panele etkisi: silindir (ağızdan `depth` kadar) ∩ panel katıdan çıkarılır (PanelEngine). */
+/** Delik (genel): aksesuar çerçevesinde silindir. `dir` delme yönü, `pos` ağız merkezi, `diameter` / `depth` mm.
+ *  `part` verilirse `pos` o parçanın ölçeksiz model uzayında (parça uzayınca delik yerini korur). Panele etkisi: silindir ∩ panel çıkarılır. */
 export interface HoleSpec { id: string; part?: LegPartRole | null; pos: Vec3; dir: Vec3; diameter: number; depth: number; name?: string }
-/** PANELDEKİ DELİK KAYDI (üretim / CNC; PanelEngine her rebuild'de yazar — Shape.holes): gövde-yerel giriş noktası, yön (panelin
- *  içine), çap, panel içindeki gerçek derinlik, giriş yüzü ekseni, delinen yüzeyden geçiyor mu; kaynak aksesuar. */
+/** Paneldeki delik kaydı (üretim / CNC; her rebuild'de): giriş noktası, yön, çap, gerçek derinlik, giriş yüzü, geçiyor mu, kaynak. */
 export interface PanelHole {
   id: string; entry: Vec3; dir: Vec3; diameter: number; depth: number; through: boolean; face: AxisDir | null;
   source: { kind: 'leg'; setId: string; legIndex: number; holeId: string } | { kind: string; [k: string]: unknown };
 }
 /** Ayak parçası rolü: taban (zemine basar) · gövde/mil (set yüksekliğine göre UZAR) · üst tabla (panele vidalanır). */
 export type LegPartRole = 'base' | 'stem' | 'top';
-/** İçe aktarılmış model dosyası — bayt dizisi IndexedDB'de, burada üst bilgi. `size` = normalize edilmiş ölçü (mm; Y yukarı, taban y=0).
- *  DWG / DXF'ten çevrilen modelde saklanan baytlar STL'dir: `source` = özgün dosya adı, `note` = dönüşüm özeti (kullanıcıya gösterilir). */
+/** İçe aktarılmış model (baytlar IndexedDB'de). `size` normalize ölçü. DWG / DXF'ten çevrilmişse baytlar STL; `source` / `note` dönüşüm bilgisi. */
 export interface AccessoryModel {
   id: string; name: string; fileName: string; ext: string; unit: AccessoryUnit; upAxis: 'y' | 'z'; size: Vec3; createdAt: number;
   source?: string; note?: string;
 }
-/** Ayak parçası (Goker: "her parçada scale ve move olsun; scale yüzde değil net ölçü; her parçada stretch özelliği olsun").
- *  `dims` = NİHAİ ölçü (mm; x / y / z — yoksa modelin kendi ölçüsü). `offset` = TAŞIMA (mm; x·z düz kaydırma, y istif içinde: üstteki
- *  parçalar da kayar, uzayan parçalar telafi eder → toplam yükseklik değişmez). `stretch` = ayak boyu değişince bu parça da uzar /
- *  kısalır (yoksa: orta parça evet, üst / alt hayır); kapalıysa `dims[1]` boyunda sabit kalır. `scale` = eski kayıt (orta parça X/Z çarpanı). */
+/** Ayak parçası: `dims` nihai ölçü (mm), `offset` taşıma (y istif içinde, toplam boy değişmez), `stretch` ayak boyuyla uzar
+ *  (yoksa yalnız orta parça). `scale` eski kayıt. */
 export interface LegModelPart {
   modelId: string; role: LegPartRole; offset?: Vec3; dims?: Vec3; stretch?: boolean; scale?: [number, number]; layerId?: string | null;
-  /** PANELE GİREN KISIM (mm; Goker, Kas 2026 — "üst parçanın deliğe girecek yerleri panelin içine girsin; STL'nin en üst noktası orası olduğu
-   *  için panele sokmuyor"): parçanın tepesinden bu kadarı TEMAS düzleminin üstündedir (tabla üstündeki pimler / vida yuvaları). Ayak
-   *  boyu temas düzlemine kadar sayılır, model bu kadar panelin içine uzanır. Yalnız en üstteki parçada okunur. */
+  /** Panele giren kısım (mm): parçanın tepesinden bu kadarı temas düzleminin üstünde (pimler); yalnız en üst parçada okunur. */
   embed?: number;
 }
-/** Ayak modeli: 3 yuva (alt / orta / üst = base / stem / top); hangi parçaların uzadığı parça başına (`LegModelPart.stretch`).
- *  `holes` = ayağın delikleri (HoleSpec; panele dokunan yer panelden çıkarılır). `stretch` = eski kayıt alanı, okunmaz. */
+/** Ayak modeli: 3 yuva (base / stem / top); `holes` ayağın delikleri. `stretch` eski alan, okunmaz. */
 export interface LegModel { id: string; name: string; parts: LegModelPart[]; holes?: HoleSpec[]; stretch?: LegPartRole; createdAt: number }
-/** Ayak seti ("kaset"): hangi model, AYAK AYAK kurallar (LegLayout.LegRule — çapa + mm; iz çokgenine göre çözülür), varsayılan yükseklik.
- *  count / side / front / rear: standart düzen üreteci parametreleri (eski kayıtlarda kural yoksa düzen bunlardan türer). */
+/** Ayak seti ("kaset"): model, kurallar, varsayılan yükseklik; count / side / front / rear standart düzen parametreleri. */
 export interface LegPreset {
   id: string; name: string; legModelId: string | null; count: 4 | 5 | 6; side: number; front: number; rear: number; height: number; createdAt: number;
   rules?: LegRule[];
@@ -499,7 +441,7 @@ export interface LegPreset {
 export const DEFAULT_QUICK_BODY: QuickBodyConfig = {
   base: 'plinth', thickness: 18,
   joins: { tl: 'side', tr: 'side', bl: 'side', br: 'side' },
-  plinth: { height: 100, front: 0, rear: 50, rearPlinth: true },   // ön baza gövde önüyle aynı hizada, arka baza 50 mm içeride (Goker)
+  plinth: { height: 100, front: 0, rear: 50, rearPlinth: true },   // ön baza gövde önüyle aynı hizada, arka baza 50 mm içeride
   legs: { count: 0, height: 100, diameter: 50, side: 60, front: 60, rear: 60 },   // bazalıda ayak varsayılan yok; Legs tabanına geçince 4
   back: { enabled: true, placement: 'inner', thickness: 8, setback: 10, inset: 10, clear: { front: 0.5, back: 0.5, depth: 1 } },
   top: DEFAULT_RAILS, bottom: DEFAULT_RAILS,
@@ -585,8 +527,7 @@ export interface AppState {
   deletePanelGroup: (id: string) => void;
   /** Grup seçimi = "tüm panelleri seç" (satır seçimiyle karşılıklı dışlayıcı). */
   selectedPanelGroupId: string | null; setSelectedPanelGroupId: (id: string | null) => void;
-  /** Hacim seçme modu. groupId verilirse YENİDEN SEÇİM: grup yeni hacme taşınır — hacmi yalnız VF sırasında
-   *  gruptan ÖNCE gelen paneller sınırlar; sonrakiler ve grubun kendi üyeleri engel sayılmaz. */
+  /** Hacim seçme modu. groupId verilirse yeniden seçim: hacmi yalnız sırada gruptan önce gelen paneller sınırlar. */
   volumePickMode: 'shelf' | 'divider' | null; setVolumePickMode: (m: 'shelf' | 'divider' | null, groupId?: string | null) => void;
   volumePickGroupId: string | null;
   volumePickCandidates: CavityPick[]; volumePickIndex: number;
@@ -633,8 +574,7 @@ export interface AppState {
   plinthPickFacing: AxisDir | null; setPlinthPickFacing: (a: AxisDir | null) => void;
   /** Yerleştirmede kullanılacak ayak seti (LegPreset id; null = yerleşik ayak, varsayılan düzen). */
   plinthPickPresetId: string | null; setPlinthPickPresetId: (id: string | null) => void;
-  /** GÖVDE YÜZ ROLLERİ (Parameters › Faces): "Show face roles" açıkken (varsayılan kapalı) liste görünür ve seçili gövdenin yüzlerinde
-   *  tıklanabilir rol rozetleri çizilir (iki yön de store'dan: sahnedeki rozet ↔ liste); listede üzerine gelinen yüz 3D'de vurgulanır. */
+  /** Gövde yüz rolleri: "Show face roles" açıkken liste ve sahnede tıklanabilir rol rozetleri (iki yön de store'dan). */
   showFaceRoles: boolean; setShowFaceRoles: (b: boolean) => void;
   faceRoleHover: { shapeId: string; gi: number } | null; setFaceRoleHover: (h: { shapeId: string; gi: number } | null) => void;
 
@@ -681,7 +621,7 @@ export interface AppState {
   faceExtrudeCavityFaceNormal: Vec3 | null; setFaceExtrudeCavityFaceNormal: (n: Vec3 | null) => void;
   /** Baza seti hacim düzenleme (Volume): hedef set — panel / grup hedefiyle karşılıklı dışlayıcı. */
   faceExtrudePlinthId: string | null; setFaceExtrudePlinthId: (id: string | null) => void;
-  /** Ok modlarında seçili ok (Goker: "önce oka tıkla, sonra değeri gir ve onayla"): tık yalnız seçer, şeritteki onay uygular. */
+  /** Ok modlarında seçili ok: tık yalnız seçer, şeritteki onay uygular. */
   faceExtrudeArrowAxis: AxisDir | null; setFaceExtrudeArrowAxis: (a: AxisDir | null) => void;
 
   panelMoveMode: boolean; setPanelMoveMode: (b: boolean) => void;
@@ -765,8 +705,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const sh = shapeById(id, state.shapes);
     if (!sh) return {};
     const moved = 'position' in updates || 'rotation' in updates || 'scale' in updates;
-    // GÖVDENİN PANELLERİ gövdeyle aynı dönüşümü taşır (geometrileri gövde-yerel): gövde taşınınca / dönünce / ölçeklenince (parametre
-    // paneli, gizmo, grup) paneller de aynı değeri alır — eskiden yalnız sürükleme taşıyordu, parametreden döndürünce paneller kalıyordu.
+    // Gövdenin panelleri gövdeyle aynı dönüşümü taşır (geometrileri gövde-yerel) — parametreden döndürmede de.
     const bodyXf = moved && sh.type !== 'panel' ? {
       ...(updates.position ? { position: [...updates.position] as Vec3 } : {}),
       ...(updates.rotation ? { rotation: [...updates.rotation] as Vec3 } : {}),

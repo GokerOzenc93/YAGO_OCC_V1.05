@@ -1,21 +1,6 @@
-/* AYAK DÜZENİ — ayak ayak parametrik yerleşim (Goker, Eki 2026 — "ayak kasedinin tek tek ayak ayak nereye yerleşeceğini parametrik
-   olarak belirlemem gerekiyor: hacmin ön tarafına bakan kısmını referans al, önden şu kadar geride, yandan şu kadar mesafede; ya da
-   hacmin tam ortasına; karmaşık şekillerde bile uyum sağlamalı").
-
-   KURAL (LegRule): her ayak iki eksende bir ÇAPA + mm ÖTELEME taşır.
-     ax: left | center | right   dx: kenardan içeri (center: ortadan, + sağa)
-     az: front | center | rear   dz: kenardan içeri (center: ortadan, + öne)
-   Kurallar hacmin ÖN yönüne göre okunur (PlinthSet.facing): "önden bakan" çerçeve — u sağa, v öne artar (ön = max v).
-
-   ÇÖZÜM (resolveLegRules): ayak izi bir ÇOKGENDİR (dikdörtgen olmak zorunda değil — L gövde, pahlı köşe …). Çapa önce çokgenin
-   toplam kapsamına göre alınır, sonra o çizgideki GERÇEK kenarlara göre iki geçişte düzeltilir: u'daki dikey açıklıktan v (ön/arka
-   kenar orada neredeyse), v'deki yatay açıklıktan u (sol/sağ kenar orada neredeyse). Çukur şekillerde çizgi birden çok aralık kesebilir;
-   mevcut noktaya en yakın aralık alınır. Son olarak ayak (yarıçap R) çokgenin içinde kalacak biçimde kıstırılır.
-   YÜZ / KENAR ROLLERİ + OTOMATİK KÖŞE DÜZENİ (Goker, Eki 2026 — "ayak da raf ve dikme gibi hacmin şeklini alsın; L ya da karmaşık
-   küplerde ayağın önünü / yanını / arkasını belirleyeyim; otomatik olsun; gerekirse yüzlere rol vereyim, roller parametrede olsun"):
-   rol = dış normalin ön yöne göre baskın bileşeni (roleOfHorizontal / roleOfNormal); iz çokgeninin kenarları rol alır (edgeRoles — gövde
-   yüzü eşlemesi PlinthService'ten gelir); autoLegPoints her köşeye rolüne göre ötelenmiş kenarların kesişiminde ayak koyar.
-   Bu dosya store'a bağlı değildir (saf hesap); PlinthService / Accessories / PanelEditor kullanır. */
+/* AYAK DÜZENİ — saf hesap (store'a bağlı değil); PlinthService / Accessories kullanır.
+   Kural (LegRule): her eksende çapa + mm öteleme, hacmin ön yönüne göre (u sağa, v öne). resolveLegRules çapayı iz çokgeninin
+   gerçek kenarlarına göre düzeltir (L / pahlı / çukur şekiller), ayağı çokgenin içinde kıstırır. autoLegPoints köşelere rolüne göre ayak koyar. */
 import type { AxisDir } from './Geometry';
 
 export type LegAnchorX = 'left' | 'center' | 'right';
@@ -23,10 +8,6 @@ export type LegAnchorZ = 'front' | 'center' | 'rear';
 export interface LegRule { ax: LegAnchorX; dx: number; az: LegAnchorZ; dz: number }
 export type Pt = { x: number; y: number };
 export type Facing = AxisDir;
-
-export const LEG_ANCHOR_X: LegAnchorX[] = ['left', 'center', 'right'];
-export const LEG_ANCHOR_Z: LegAnchorZ[] = ['front', 'center', 'rear'];
-export const LEG_ANCHOR_LABEL: Record<LegAnchorX | LegAnchorZ, string> = { left: 'Left', center: 'Centre', right: 'Right', front: 'Front', rear: 'Rear' };
 
 const r1 = (v: number) => Math.round(v * 10) / 10;
 export const sameRule = (a: LegRule, b: LegRule) => a.ax === b.ax && a.az === b.az && Math.abs(a.dx - b.dx) < 0.05 && Math.abs(a.dz - b.dz) < 0.05;
@@ -124,19 +105,10 @@ export function resolveLegRule(rule: LegRule, poly: Pt[], R: number): Pt {
     const su = pickSpan(spansAtY(poly, v), u);
     if (su) u = along(rule.ax, su[0], su[1], rule.dx);
   }
-  // İz içinde kal: o çizgideki aralıklara R payıyla kıstır (kenara yakın / dışarı taşan kural).
-  const sv = pickSpan(spansAtX(poly, u), v);
-  if (sv) v = clampIn(v, sv[0], sv[1], R);
-  const su = pickSpan(spansAtY(poly, v), u);
-  if (su) u = clampIn(u, su[0], su[1], R);
-  if (!pointInPoly({ x: u, y: v }, poly)) {
-    // Son çare: kapsam dikdörtgenine kıstır (bozuk çokgen).
-    u = clampIn(u, e.x0, e.x1, R); v = clampIn(v, e.y0, e.y1, R);
-  }
-  return { x: r1(u), y: r1(v) };
+  return clampInsidePoly({ x: u, y: v }, poly, R);   // iz içinde kal (kenara yakın / dışarı taşan kural)
 }
 
-/** Noktayı iz çokgeninin içinde R payıyla tutar (o çizgideki aralığa kıstırma; Δ düzeltmesi dışarı taşınca). */
+/** Noktayı iz çokgeninin içinde R payıyla tutar: o çizgideki aralığa kıstırır; yine dışardaysa (bozuk çokgen) kapsam dikdörtgenine. */
 export function clampInsidePoly(q: Pt, poly: Pt[], R: number): Pt {
   let u = q.x, v = q.y;
   const sv = pickSpan(spansAtX(poly, u), v); if (sv) v = clampIn(v, sv[0], sv[1], R);
@@ -145,21 +117,12 @@ export function clampInsidePoly(q: Pt, poly: Pt[], R: number): Pt {
   return { x: r1(u), y: r1(v) };
 }
 
-/** KURALLAR → gövde-yerel (x, z) ayak merkezleri. `footprint` gövde-yerel çokgen (x, z); `facing` ön yön. */
-export function resolveLegRules(rules: LegRule[], footprint: Pt[], facing: Facing, R: number): Array<{ x: number; z: number }> {
-  if (footprint.length < 3) return [];
-  const poly = footprint.map(p => toFacing({ x: p.x, y: p.y }, facing));
-  return rules.map(r => { const q = fromFacing(resolveLegRule(r, poly, R), facing); return { x: q.x, z: q.y }; });
-}
-
-/* ───────── YÜZ / KENAR ROLLERİ (Goker, Eki 2026 — "L ya da karmaşık küplerde bile ayağın önünü, yanını, arkasını belirleyeyim; akıllı,
-   mümkünse otomatik; olmazsa referans kübün yüzlerine ön / arka / sağ / sol / üst / alt rolü vereyim, roller parametrede olsun").
-   Rol = yüzün DIŞ normalinin ön yöne göre baskın bileşeni (üst/alt: |ny| baskın). Gövde yüzlerinin rolü PlinthService.bodyFaces'te
-   okunur (parametre üstüne yazar); iz çokgeninin her kenarı gövde yüzünden rolünü alır, panel kesiğinden gelen kenar normalden. ───────── */
+/* ───────── YÜZ / KENAR ROLLERİ ─────────
+   Rol = dış normalin ön yöne göre baskın bileşeni. Gövde yüzü rolü PlinthService.bodyFaces'ten (parametre üstüne yazar),
+   panel kesiğinden gelen kenar normalden. */
 export type FaceRole = 'front' | 'rear' | 'left' | 'right' | 'top' | 'bottom';
 export const FACE_ROLES: FaceRole[] = ['front', 'rear', 'left', 'right', 'top', 'bottom'];
 export const FACE_ROLE_LABEL: Record<FaceRole, string> = { front: 'Front', rear: 'Rear', left: 'Left', right: 'Right', top: 'Top', bottom: 'Bottom' };
-export const FACE_ROLE_SHORT: Record<FaceRole, string> = { front: 'F', rear: 'R', left: 'L', right: 'Rt', top: 'T', bottom: 'B' };
 /** Ön yön vektörü (gövde-yerel x,z) ve sağ = up × front (önde durup gövdeye bakanın sağı). toFacing ile aynı çerçeve. */
 export function facingVectors(facing: Facing): { front: Pt; right: Pt } {
   switch (facing) {
@@ -186,15 +149,6 @@ export const signedArea = (p: Pt[]): number => {
   let s = 0;
   for (let i = 0; i < p.length; i++) { const a = p[i], b = p[(i + 1) % p.length]; s += a.x * b.y - b.x * a.y; }
   return s / 2;
-};
-export const polyCentroid = (p: Pt[]): Pt => {
-  let a = 0, cx = 0, cy = 0;
-  for (let i = 0; i < p.length; i++) {
-    const q = p[i], r = p[(i + 1) % p.length], w = q.x * r.y - r.x * q.y;
-    a += w; cx += (q.x + r.x) * w; cy += (q.y + r.y) * w;
-  }
-  if (Math.abs(a) < 1e-9) { const e = polyExtent(p); return { x: (e.x0 + e.x1) / 2, y: (e.y0 + e.y1) / 2 }; }
-  return { x: cx / (3 * a), y: cy / (3 * a) };
 };
 /** Ardışık yinelenen ve doğrudaş (kenar ortası) noktalar düşer; kapanış yinelemesi kalkar. */
 export function cleanPoly(poly: Pt[], tol = 1e-3): Pt[] {
@@ -241,11 +195,9 @@ const segDist = (q: Pt, a: Pt, b: Pt): number => {
   return Math.hypot(q.x - (a.x + dx * t), q.y - (a.y + dy * t));
 };
 
-/* ───────── OTOMATİK KÖŞE DÜZENİ (Goker: "akıllıca, mümkünse otomatik") ─────────
-   Her DIŞBÜKEY köşeye bir ayak: köşeyi kuran iki kenar kendi rolünün mesafesi kadar içeri ötelenir (ön → front, arka → rear, yan → side),
-   öteli çizgilerin kesişimi ayak merkezidir — kenar açısı ne olursa olsun (pahlı köşe, L, U). İçbükey köşelere de (`inner`, varsayılan açık)
-   aynı yolla ayak gelir (L gövdenin iç köşesi). 5 = + merkez (iz çokgeninde kalır), 6 = + her ön / arka kenarın iki ayağı arasına orta ayak.
-   Dikdörtgende sonuç eski 4 / 5 / 6 düzeniyle (legSpots) birebir aynıdır. */
+/* ───────── OTOMATİK KÖŞE DÜZENİ ─────────
+   Her köşeyi kuran iki kenar kendi rolünün mesafesi kadar içeri ötelenir; kesişim ayak merkezidir (açıdan bağımsız: pah, L, U).
+   5 = + merkez, 6 = + ön / arka kenar ortası. Dikdörtgende eski legSpots düzeniyle birebir. */
 export interface AutoLegCfg { count: 4 | 5 | 6; side: number; front: number; rear: number; inner?: boolean }
 export const offsetForRole = (r: FaceRole, cfg: Pick<AutoLegCfg, 'side' | 'front' | 'rear'>): number =>
   r === 'front' ? cfg.front : r === 'rear' ? cfg.rear : cfg.side;

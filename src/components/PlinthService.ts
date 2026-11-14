@@ -1,26 +1,11 @@
-/* BAZA AYAĞI SETİ (PlinthService) — gövdeden BAĞIMSIZ yerleşen baza ayağı seti (Goker, Eki 2026: "baza ayağını body haricinde de
-   yerleştirebilmeliyim; set olarak; ölçülerini arrow oklarıyla revize edeyim; yerleşeceği hacmi highlight et; kodları ayır, sonra
-   detaylandırılacak"). TEK MODEL (Goker: "body'den yerleştirilen ayakla mantığı aynı olmalı, birleştir"): hızlı gövdenin ayakları da
-   bu setlerden biridir (`quickBody: true`, alt panele bağlı) — eski `parameters.legs` / CabinetLegs yolu kaldırıldı.
-
-   Model: `PlinthSet.box` = gövde-yerel KAPSAM kutusu (x/z = setin istendiği alan; Volume Fixed/Dyn bunu düzenler). ETKİN HACİM kutu
-   değil BÖLGEDİR (Goker: "ayak da raf ve dikme gibi mevcut hacmin şeklini alsın"): kapsam kutusunun içinde, gövdenin İÇİNDE (L gövde,
-   çıkarma, vertex düzenlemesi) ve sırada ÖNCE gelen düşey levhaların DIŞINDA kalan serbest bölge — raf/dikme hacmiyle aynı ızgara
-   (PanelGroupService.freeRegionInBox). `plinthRegionOf` → kutular (engel / çizim), bbox (eski kutu tüketicileri), taban çokgeni (ayaklar;
-   kesen panel yoksa gövde taban çevresi: pahlı / eğik kenar tam). AYAĞIN ALTI HER ZAMAN REFERANS KÜBÜN ALT YÜZÜNDE (zemin); `bottomVfId`
-   bağlıysa üst yüz = o alt panelin alt yüzü (canlı); bağsız sette yükseklik karttan / Volume'dan.
-
-   YÜZ ROLLERİ (Goker: "L ya da karmaşık küplerde ayağın önünü / yanını / arkasını belirleyeyim; otomatik olsun; olmazsa referans kübün
-   yüzlerine ön arka sağ sol üst alt rolü vereyim, roller parametrede olsun"): ÖN YÖN gövdenin parametresidir (`parameters.faceRoles.
-   frontAxis`; yoksa kapakların yüzünden, o da yoksa +Z). Gövdenin her düz yüzü ön yöne göre otomatik rol alır; yüz başına üstüne yazma
-   `parameters.faceRoles.overrides` (yüz tanımlayıcısıyla eşlenir, boyut değişince de tutar). İz çokgeninin her kenarı üstüne oturduğu gövde
-   yüzünün rolünü taşır (panel kesiği → normalden). Ayak düzeni HER ZAMAN OTOMATİK KÖŞE DÜZENİ (LegLayout.autoLegPoints: her köşeye
-   rolüne göre ön / arka / yan mesafesiyle ayak; L'nin iç köşesine de); CUSTOM = otomatik pozisyonların üzerine ayak ayak Δ (legs.adjust).
-   Roller ayak kartında gösterilmez (Goker: "roller ayakta gelmesin; kübün üzerinde göster, Parameters'ta listeyle yönet").
-   Yerleşim: raf/dikme gibi hacme tıklanır; adaylar (1) yükseltilmiş alt panelin ALTINDAKİ boşluk (zemin → panel altı, panele bağlanır),
-   (2) gövdenin içinde zeminden varsayılan yüksekliğe kadar — hiç panel olmasa da yerleşir; aday hacmi bölge olarak gösterilir.
-   Şimdilik yalnız geometri: set hiçbir paneli itmez / kesmez — panel ilişkileri sonraki adımda. */
-import { type CavityBox, type FaceDescriptor, type Shape, type VirtualFace, useAppStore, shapeById, childPanelsOf, vfOfPanel, panelOfVf, requestRebuild } from '../store';
+/* BAZA AYAĞI SETİ — gövdeden bağımsız yerleşen ayak seti; hızlı gövdenin ayakları da bu setlerden biridir (`quickBody: true`).
+   Model: `PlinthSet.box` = gövde-yerel kapsam kutusu; etkin hacim bölgedir (gövdenin içinde, sırada önce gelen düşey levhaların dışında —
+   raf / dikme ile aynı ızgara, freeRegionInBox). Ayağın altı her zaman referans kübün alt yüzünde; `bottomVfId` bağlıysa üstü o panelin altı.
+   Yüz rolleri: ön yön gövde parametresi (`faceRoles.frontAxis`, yoksa +Z), her yüz otomatik rol alır (`overrides` üstüne yazar).
+   Ayak düzeni her zaman otomatik köşe düzeni (LegLayout.autoLegPoints); Custom = üstüne ayak başına Δ. Set henüz paneli itmez / kesmez. */
+import {
+  type CavityBox, type FaceDescriptor, type Shape, type VirtualFace, useAppStore, shapeById, childPanelsOf, vfOfPanel, panelOfVf, requestRebuild,
+} from '../store';
 import {
   type AxisDir, type FaceData, type Vec3, axisDirToVec, computeFaceComponentContour, createFaceDescriptor, effectiveBodyGeometry, genId,
   getFacesAndGroups, localBboxOf, round1,
@@ -29,31 +14,23 @@ import { type FreeRegion, freeRegionInBox, legSpots } from './PanelGroupService'
 import { type HoleCutter, legHoleCutters, legModelById, legsFromPreset, resolveLegPreset } from './AccessoryService';
 import {
   type EdgeRole, type FaceRole, type LegRule, type Pt, autoLegPoints, clampInsidePoly, cleanPoly, clipPolyToRect, edgeRoles, fromFacing, rectPoly,
-  roleOfNormal, signedArea, standardLegRules, toFacing,
+  roleOfNormal, signedArea, toFacing,
 } from './LegLayout';
 import * as THREE from 'three';
 
-/** Ayak düzeni. AYAK HER ZAMAN KAYITLI BİR SETTİR (Goker: "sadece kayıtlı ayaklar gelsin"): `presetId` = Aksesuar sekmesindeki ayak seti
- *  (yoksa kütüphanedeki ilk set — resolveLegPreset); model ve Ø her zaman o setten. YERLEŞİM HER ZAMAN OTOMATİKTİR (köşe düzeni count /
- *  side / front / rear ile, kenar rolleri gövde yüzlerinden).
- *  • Düzen / mesafeler (Layout · Side · Front · Rear) Auto'da da DÜZENLENİR (Goker: "auto modunda da front rear side ofsetler açık
- *    kalabilir"): elle girilince `ownLayout` — değerler setin kendisinde; yoksa ayak setinden canlı.
- *  • AUTO / CUSTOM yalnız AYAK LİSTESİ: Custom (`custom: true`) = ayak başına Δ (ön çerçeve: du sağa, dv öne; `off` = ayak kaldırıldı)
- *    uygulanır ve liste düzenlenir; Auto'da liste pasif, Δ'lar saklanır ama uygulanmaz.
- *  `rules` (eski kasetlerden) yerleşimde okunmaz. Eski kayıt: `custom` = kendi düzeni + Δ. */
+/** Ayak düzeni: her zaman kayıtlı bir set (`presetId`, yoksa ilk set); model ve Ø oradan, yerleşim otomatik.
+ *  Düzen / mesafeler elle girilince `ownLayout`. Custom (`custom: true`) = ayak başına Δ (du sağa, dv öne, `off` kaldırıldı); Auto'da saklanır
+ *  ama uygulanmaz. `rules` (eski) okunmaz. */
 export interface LegAdjust { du: number; dv: number; off?: boolean }
 export type PlinthLegs = {
   count: 4 | 5 | 6; diameter: number; side: number; front: number; rear: number; legModelId?: string | null; presetId?: string | null; rules?: LegRule[] | null;
   inner?: boolean; ownLayout?: boolean; custom?: boolean; adjust?: LegAdjust[] | null;
 };
-/** Setin standart kuralları (yalnız eski kaset / kural düzenleyici uyumu için). */
-export const plinthLegRules = (legs: PlinthLegs): LegRule[] => (legs.rules && legs.rules.length ? legs.rules : standardLegRules(legs.count, legs.side, legs.front, legs.rear));
 /** Auto = ayak başına Δ uygulanmaz (liste pasif); eski kayıtta `custom` yoksa Δ listesi varsa Custom. */
 export const plinthLegsAuto = (legs: PlinthLegs): boolean => !(legs.custom ?? !!legs.adjust);
 /** Düzen / mesafeler setin kendisinde mi (elle girildi); eski kayıtta `custom` aynı anlamdaydı. */
 export const plinthOwnLayout = (legs: PlinthLegs): boolean => legs.ownLayout ?? !!legs.custom;
-/** ETKİN ayak düzeni: model + Ø kayıtlı setten; adet / mesafeler elle girildiyse setin kendi değerleri, yoksa ayak setinden. Kütüphanede
- *  set yoksa kaydedilen alanlar (yerleşik ayak). Çizim, damga, engel ve kart hepsi bunu okur. */
+/** Etkin ayak düzeni: model + Ø setten; adet / mesafeler elle girildiyse setin kendisinden. Çizim, damga, engel ve kart bunu okur. */
 export function plinthLegsOf(legs: PlinthLegs, st = useAppStore.getState()): PlinthLegs {
   const preset = resolveLegPreset(legs.presetId, st);
   if (!preset) return legs;
@@ -91,7 +68,6 @@ export interface PlinthPick {
 export type ArrowMode = 'dyn' | 'fixed';
 
 export const DEFAULT_PLINTH_LEGS: PlinthLegs = { count: 4, diameter: 50, side: 60, front: 60, rear: 60 };
-export const PLINTH_DEFAULT_HEIGHT = 100;
 export const plinthRowKey = (id: string) => `plinth-${id}`;
 export const plinthSetsOf = (shapeId: string | null | undefined, sets = useAppStore.getState().plinthSets): PlinthSet[] =>
   shapeId ? sets.filter(s => s.shapeId === shapeId) : [];
@@ -100,8 +76,6 @@ export const quickPlinthSetOf = (shapeId: string, sets = useAppStore.getState().
 export const plinthName = (s: PlinthSet) => s.name || 'Plinth';
 export const plinthIsBound = (s: PlinthSet) => !!s.bottomVfId;
 export const isPlinthVf = (vf: unknown): boolean => !!(vf as { plinthId?: string } | null)?.plinthId;
-export const plinthOfVf = (vf: { plinthId?: string } | undefined, sets = useAppStore.getState().plinthSets): PlinthSet | undefined =>
-  vf?.plinthId ? sets.find(s => s.id === vf.plinthId) : undefined;
 
 /** Setin VF sırası (basan/basılan); VF yoksa ∞ (herkesten sonra). */
 export function plinthVfIndex(s: PlinthSet, vfs = useAppStore.getState().virtualFaces): number {
@@ -120,8 +94,7 @@ export interface BodyFace {
 }
 export const FACE_ROLE_ORDER: FaceRole[] = ['front', 'rear', 'left', 'right', 'top', 'bottom'];
 export const bodyFaceRolesOf = (body: Shape | undefined | null): BodyFaceRoles => (body?.parameters?.faceRoles as BodyFaceRoles | undefined) ?? {};
-/** ÖN YÖN: parametre (Parameters › Faces), yoksa +Z. Kapaklardan ÇIKARILMAZ (Goker: kapak yerleşince roller değişiyordu — roller
- *  kübün ayarıdır, kapak rolleri izler, tersi değil). */
+/** Ön yön: parametre, yoksa +Z. Kapaklardan çıkarılmaz (roller kübün ayarıdır, kapak rolleri izler). */
 export function bodyFrontAxis(body: Shape | undefined | null, _st = useAppStore.getState()): { facing: PlinthFacing; source: 'parameter' | 'default' } {
   const fr = bodyFaceRolesOf(body);
   if (fr.frontAxis && PLINTH_FACINGS.includes(fr.frontAxis)) return { facing: fr.frontAxis, source: 'parameter' };
@@ -206,9 +179,7 @@ export function setBodyFaceRole(shapeId: string, gi: number, role: FaceRole | nu
   const overrides = role && role !== face.auto ? [...kept, { descriptor: face.descriptor, role }] : kept;
   st.updateShape(shapeId, { parameters: { ...body.parameters, faceRoles: { ...fr, overrides } } } as Partial<Shape>);
 }
-/** Rolü `role` olan TÜM düz yüzler — eğik olanlar dahil (Goker: "vertexlerle kübün şeklini değiştirince eğimli yerlere de panel yerleşsin;
- *  rolü olduğu için her türlü panel yerleşmeli"): normal, merkez, alan, eksen (eğikse null); alan azalan. Hızlı gövde yan / üst / alt
- *  panelleri bunu okur; eksen gerektiren işler (baza, arkalık) eksenli olanları süzer. */
+/** Rolü `role` olan tüm düz yüzler (eğikler dahil): normal, merkez, alan, eksen (eğikse null); alan azalan. */
 export function bodyFacesByRoleAll(body: Shape | undefined | null, role: FaceRole, st = useAppStore.getState()): Array<{ axis: AxisDir | null; bounds: { min: Vec3; max: Vec3 }; center: Vec3; normal: Vec3; area: number }> {
   return bodyFaces(body, st).filter(f => f.role === role).map(f => ({ axis: f.axis ?? null, bounds: f.bounds, center: f.center, normal: f.normal, area: f.area }));
 }
@@ -219,8 +190,7 @@ export function bodyFacesByRole(body: Shape | undefined | null, role: FaceRole, 
     bounds: f.bounds, center: f.center, normal: f.normal, area: f.area,
   }));
 }
-/** Gövde-yerel noktadan geçen, dış normali `n` (yatay, x/z) olan DÜŞEY gövde yüzü (rolüyle); yüz yoksa null (panel kesiği). Ayak izi
- *  kenarları (plinthEdgeRoles) ve hızlı gövde kayıt kenarları (PanelGroupService.railEdgesOf) bununla yüze / role bağlanır. */
+/** Gövde-yerel noktadan geçen, dış normali `n` (yatay) olan düşey gövde yüzü (rolüyle); yoksa null (panel kesiği). */
 export function bodyFaceAt(body: Shape | undefined | null, p: Vec3, n: Pt, st = useAppStore.getState()): BodyFace | null {
   if (!body) return null;
   const tol = 2;
@@ -261,8 +231,7 @@ function anchoredBox(s: PlinthSet, body: Shape | undefined, shapes: Shape[]): Ca
   const y1 = bound != null && bound - y0 > 0.5 ? bound : y0 + h;
   return { min: [s.box.min[0], y0, s.box.min[2]], max: [s.box.max[0], y1, s.box.max[2]] };
 }
-/** BASILAN SET (Goker: "sırası değişince volümün birleşim tipi değişsin"): sırada ÖNCE gelen, setin y aralığıyla kesişen DÜŞEY gövde
- *  levhaları (ince ekseni x ya da z) bölgeyi sınırlar; yatay levhalar sınırlamaz; sonra gelen paneller sette basılır (PanelEngine). */
+/** Basılan set: sırada önce gelen, y aralığıyla kesişen düşey gövde levhaları bölgeyi sınırlar; sonra gelenler sette basılır. */
 function earlierSlabs(myIdx: number, box: CavityBox, body: Shape, shapes: Shape[], vfs: VirtualFace[]): CavityBox[] {
   const out: CavityBox[] = [];
   if (myIdx < 0) return out;
@@ -334,17 +303,14 @@ export function plinthBoxOf(s: PlinthSet, shapes = useAppStore.getState().shapes
 export function plinthBoxesOf(s: PlinthSet, shapes?: Shape[], vfs?: VirtualFace[]): CavityBox[] {
   return plinthRegionOf(s, shapes, vfs).boxes;
 }
-/** AYAK KUTULARI (Goker: "baza ayağı varsa bile ayağın aksesuarına çarpmıyorsa panel o kısma yerleşsin"): engel ve damga set hacmi
- *  DEĞİL, yalnız ayakların kendisidir — her ayak için taban diski + montaj tablası (R = 1.15·Ø/2) çevresinde zeminden setin üstüne kutu. */
+/** Ayak kutuları: engel ve damga set hacmi değil yalnız ayaklardır (taban diski + tabla, R = 1.15·Ø/2, zeminden set üstüne). */
 export function plinthLegBoxes(s: PlinthSet, shapes = useAppStore.getState().shapes, vfs?: VirtualFace[]): CavityBox[] {
   const b = plinthRegionOf(s, shapes, vfs).bbox;
   const R = legRadius(plinthLegsOf(s.legs));
   return plinthLegSpots(s, shapes).map(p => ({ min: [p.x - R, b.min[1], p.z - R] as Vec3, max: [p.x + R, b.max[1], p.z + R] as Vec3 }));
 }
-/** AYAK DELİKLERİ → KESİCİLER (Goker, Kas 2026 — "ayağın deliği panele değdiği yerden çıkarma yapacak"): gövdedeki her setin her
- *  ayağı, kayıtlı ayak modelinin deliklerini (HoleSpec) kendi yerine (ayak merkezi, zemin) taşır; PanelEngine son geçişte bu
- *  silindirleri paneli kesenlerle süzüp TEK boolean ile çıkarır. Yalnız görünüm / katı — ayak izi, damga, sıralama kesilmemiş
- *  geometriyi (Shape.ungroovedGeometry) okur. Geometri çözülmesi gerekmez (düzen model ölçülerinden). */
+/** Ayak delikleri → kesiciler: her ayak modelin deliklerini kendi yerine taşır; PanelEngine son geçişte tek boolean ile çıkarır.
+ *  Yalnız görünüm / katı — ayak izi, damga, sıralama kesilmemiş geometriyi okur. */
 export function plinthHoleCuttersFor(panel: Shape, st = useAppStore.getState()): HoleCutter[] {
   const parentId = (panel.parameters as any)?.parentShapeId as string | undefined;
   if (!parentId) return [];
@@ -360,16 +326,12 @@ export function plinthHoleCuttersFor(panel: Shape, st = useAppStore.getState()):
   }
   return out;
 }
-export const plinthHeight = (s: PlinthSet, shapes?: Shape[]) => { const b = plinthBoxOf(s, shapes); return b.max[1] - b.min[1]; };
-/** Zeminden setin üstüne (üst üste panel derinliği). */
-export const plinthTopDepth = (s: PlinthSet, shapes?: Shape[]) => plinthHeight(s, shapes);
 export const plinthSize = (s: PlinthSet, shapes?: Shape[]): Vec3 => {
   const b = plinthBoxOf(s, shapes);
   return [b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]];
 };
-/** Çokgen (x,z) prizması [y0, y1] — çizim ve damga geometrisi. İNDEKSLİ, yüz başına paylaşılan köşeler (kapak: köşe başına bir vertex,
- *  yan: dörtgen başına dört): ayak izi sınır yürüyüşü (Geometry.onPlaneBoundaryEdges) kenarları vertex indeksiyle sayar — yan yüzler tek
- *  dörtgen → düzlemdeki ayak izi dikdörtgen; kapaklar içbükey (L) sınırı korur. Normaller dışa. */
+/** Çokgen (x, z) prizması [y0, y1]. İndeksli, yüz başına paylaşılan köşeler: onPlaneBoundaryEdges kenarları indeksle sayar
+ *  (yan yüz tek dörtgen, kapak içbükey sınırı korur). Normaller dışa. */
 export function prismGeometry(poly: Pt[], y0: number, y1: number): THREE.BufferGeometry {
   const p = cleanPoly(poly);
   const pos: number[] = [], idx: number[] = [];
@@ -398,11 +360,6 @@ export function prismGeometry(poly: Pt[], y0: number, y1: number): THREE.BufferG
   g.computeVertexNormals();
   return g;
 }
-/** Setin hacim geometrisi (prizma; dikdörtgende kutu ile aynı). */
-export const plinthPrismOf = (s: PlinthSet, shapes?: Shape[], vfs?: VirtualFace[]): THREE.BufferGeometry => {
-  const r = plinthRegionOf(s, shapes, vfs);
-  return prismGeometry(r.poly, r.bbox.min[1], r.bbox.max[1]);
-};
 
 /* ───────── AYAKLAR ───────── */
 /** Setin ön yönü: eski kayıt set başına; yoksa gövde parametresi (kapaklar / +Z). */
@@ -439,8 +396,7 @@ export function plinthLegPoints(s: PlinthSet, shapes = useAppStore.getState().sh
     return { x: k.x, z: k.y, off: !!a.off };
   });
 }
-/** Ayak merkezleri (gövde-yerel x/z): otomatik düzen + Custom Δ, kapalı ayaklar düşmüş. Ayak (taban diski + montaj tablası ≈ 1.15·Ø/2)
- *  HER ZAMAN hacmin içinde kalır. */
+/** Ayak merkezleri (gövde-yerel x / z): otomatik düzen + Custom Δ; ayak her zaman hacmin içinde kalır. */
 export function plinthLegSpots(s: PlinthSet, shapes = useAppStore.getState().shapes): Array<{ x: number; z: number }> {
   const all = plinthLegPoints(s, shapes);
   if (all.length) return all.filter(p => !p.off).map(p => ({ x: p.x, z: p.z }));
@@ -495,9 +451,7 @@ function bottomPanelOf(body: Shape, shapes: Shape[], vfs: VirtualFace[]): { pane
   return best;
 }
 
-/** Aday hacimler (gövde-yerel), ikisi de ZEMİNDEN başlar: (1) yükseltilmiş alt panelin altı (panele bağlanır), (2) gövdenin içinde
- *  zemin → varsayılan yükseklik — alt panel olmasa da. Her aday gerçek şekliyle (bölge: yeni set sona ekleneceğinden mevcut düşey gövde
- *  levhalarının hepsi sınırlar). */
+/** Aday hacimler (zeminden): (1) yükseltilmiş alt panelin altı (panele bağlanır), (2) gövde içinde zemin → varsayılan yükseklik. */
 export function plinthCandidates(body: Shape, shapes: Shape[], vfs: VirtualFace[], height: number, facing: PlinthFacing = bodyFrontAxis(body).facing): PlinthPick[] {
   const bb = localBboxOf(effectiveBodyGeometry(body)); if (!bb) return [];
   const H = Math.max(1, height);
@@ -533,8 +487,7 @@ function syncAfterPlinthChange(shapeId: string): void {
   const st = useAppStore.getState();
   if (st.panelGroups.some(g => g.shapeId === shapeId) || childPanelsOf(shapeId, st.shapes).length) void requestRebuild(shapeId);
 }
-/** Kütüphanedeki bir ayak seti / modeli değişince (Aksesuar sekmesi): o seti Auto okuyan (ya da ilk sete düşen) her set yeniden çözülür —
- *  ayak kutuları (engel / damga) yeni Ø ve düzene göre. */
+/** Kütüphanedeki set / model değişince onu okuyan her set yeniden çözülür. */
 export function syncPlinthSetsUsingPreset(presetId: string | null): void {
   const st = useAppStore.getState();
   const done = new Set<string>();
@@ -634,9 +587,7 @@ export function syncQuickBodyPlinth(shapeId: string, legs: PlinthLegs | null, bo
   if (existing) st.updatePlinthSet(existing.id, { box, legs: { ...legs, custom: existing.legs.custom, adjust: existing.legs.adjust }, bottomVfId });
   placeBeforeQuickBody(shapeId, set.vfId);
 }
-/** SIRA (Goker, Kas 2026: "ayak her zaman hızlı gövdede ilk sırada olmalı, ona göre hızlı gövde yerleşsin" — önceki "bodyden sonra"
- *  kuralının yerine): hızlı gövde ayak setinin VF'si gövdenin İLK hızlı gövde parçasının (yanlar/üst/alt/bazalar) hemen ÖNÜNE alınır —
- *  her Build/Rebuild'de; set basan taraf olur, gövde panelleri ayaklara göre çözülür. Body parçası yoksa yerinde kalır. */
+/** Sıra: hızlı gövde ayak setinin VF'si gövdenin ilk hızlı gövde parçasının hemen önüne alınır (set basan taraftır). */
 function placeBeforeQuickBody(shapeId: string, vfId: string): void {
   useAppStore.setState(s => {
     const vf = s.virtualFaces.find(f => f.id === vfId);
@@ -677,8 +628,7 @@ export function resetPlinthLayout(id: string): void {
   const s = st.plinthSets.find(x => x.id === id); if (!s) return;
   st.updatePlinthSet(id, { legs: { ...s.legs, ownLayout: false, custom: !plinthLegsAuto(s.legs) } });
 }
-/** AYAK SETİ UYGULA (Goker: "kaydettiğim ayak kasetlerini ayak kısmında çağıralım"): düzen + model setten, Δ'lar silinir; bağsız sette
- *  yükseklik de. Set bulunamazsa (silinmiş) kütüphanedeki ilk set. */
+/** Ayak seti uygula: düzen + model setten, Δ'lar silinir (bağsız sette yükseklik de). Set yoksa ilk set. */
 export function applyLegPresetToSet(id: string, presetId: string | null): void {
   const st = useAppStore.getState();
   const s = st.plinthSets.find(x => x.id === id); if (!s) return;
@@ -689,13 +639,6 @@ export function applyLegPresetToSet(id: string, presetId: string | null): void {
   if (!plinthIsBound(s) && preset.height > 0) setPlinthHeight(id, preset.height);
   else syncAfterPlinthChange(s.shapeId);
 }
-/** Ön yön değişince ayaklar döner (kutu aynı) — gövde parametresine yazılır; setin eski kendi yönü silinir. */
-export function setPlinthFacing(id: string, facing: PlinthFacing): void {
-  const st = useAppStore.getState();
-  const s = st.plinthSets.find(x => x.id === id); if (!s) return;
-  if (s.facing) st.updatePlinthSet(id, { facing: undefined });
-  setBodyFrontAxis(s.shapeId, facing);
-}
 /** Yükseklik: taban zeminde sabit, üst yüz oynar (bağlı sette etkisiz — üst alt panelden gelir). */
 export function setPlinthHeight(id: string, h: number): void {
   const st = useAppStore.getState();
@@ -705,8 +648,7 @@ export function setPlinthHeight(id: string, h: number): void {
   syncAfterPlinthChange(s.shapeId);
 }
 
-/** Ok: X/Z = o kutu yüzü oynar; Y (iki ok da) = yalnız ÜST yüz / yükseklik — taban zeminde kalır. dyn → `value` kadar (− içeri; y− için
- *  aşağı = kısalma); fixed → o eksendeki ölçü `value` olur. Ölçü 1 mm'in altına inmez. */
+/** Ok: X / Z o kutu yüzünü, Y yalnız üst yüzü oynatır (taban zeminde). dyn → `value` kadar, fixed → ölçü `value` olur (≥ 1 mm). */
 export function plinthBoxAfterArrow(box: CavityBox, axis: AxisDir, value: number, mode: ArrowMode): CavityBox {
   const d = axisDirToVec(axis); const a = Math.abs(d.x) > 0.5 ? 0 : Math.abs(d.y) > 0.5 ? 1 : 2; const pos = d.getComponent(a) > 0;
   const min = [...box.min] as Vec3, max = [...box.max] as Vec3;

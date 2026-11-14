@@ -4,7 +4,9 @@ import * as THREE from 'three';
 import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
-import { round1, localBboxOf, axisDirToVec, largestFaceNormal, isFlatNormal, clipPolyToConvex, polyArea, getFacesAndGroups } from './Geometry';
+import {
+  round1, localBboxOf, axisDirToVec, largestFaceNormal, isFlatNormal, clipPolyToConvex, polyArea, getFacesAndGroups, swingPoints,
+} from './Geometry';
 import { UI_FONT } from './Ui';
 import {
   type DoorType, type BackPlacement, type Shape, type CavityBox, type PanelGroup, type DoorAlign, type DoorGroup, type BackGroup, type BackEdgeRel,
@@ -24,12 +26,10 @@ import {
   backSizeMode, backGrooveClearOverridden, backGrooveClearOf, BACK_REL_LABEL, BACK_TYPE_LABEL,
 } from './BackService';
 
-/* PANEL ŞEMALARI — 1) şema kiti · 2) panel önizlemesi + raf / dikme şeması · 3) kapak / arkalık ortak çekirdeği ·
-   4) kapak şeması · 5) arkalık şeması. Panel editörü (PanelEditor.tsx) bunları kullanır. */
+/* PANEL ŞEMALARI — 1) şema kiti · 2) panel önizlemesi + raf / dikme şeması · 3) kapak / arkalık ortak çekirdeği · 4) kapak · 5) arkalık. */
 
 // ════════════════════════════════════════════════════ 1. ŞEMA KİTİ ════════════════════════════════════════════════════
-/* ŞEMA KİTİ — şema görsel dili (pill / kilit / rozet), şema kancaları, tip ikonları ve kapak açılım çizimi.
-   Kapak, arkalık ve raf/dikme şemaları ile panel listesi aynı parçaları kullanır. */
+/* ŞEMA KİTİ — görsel dil (pill / kilit / rozet), kancalar, tip ikonları, kapak açılım çizimi. */
 
 export const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
 
@@ -40,15 +40,13 @@ export const fmt1 = (v: number) => String(round1(v));
 
 /* ───────────── ŞEMA GÖRSEL DİLİ ───────────── */
 
-/* Önizleme yazı ölçeği (Goker: "bir tık büyük, okunaklı") — kapak / arkalık / raf-dikme şemaları ve panel önizlemesi aynı ölçek. */
+/* Önizleme yazı ölçeği — kapak / arkalık / raf-dikme şemaları ve panel önizlemesi aynı ölçek. */
 export const schemFs = (w: number) => Math.max(10.5, Math.min(14, w * 0.0285));
 export const schemFsT = (fs: number) => Math.max(9.5, fs * 0.88);
 /** Bant rozetleri (Full / Half / Split here / Groove / In …). */
 export const chipFs = (fsT: number) => fsT * 0.86;
-/* ŞEMA ROZET DİLİ (Goker: kapak rozetleri arkalık gibi): beyaz = seçenek; koyu taş = AÇIK/seçili durum; turuncu çerçeve = bu tık
-   seçili parçayı / bölmeyi değiştirir; kırmızı = kaldır. */
-/* ÖNİZLEME GÖRSEL DİLİ (Goker, Kas 2026 — "preview ekranları minimal ve profesyonel"): düz kâğıt zemin, gölgesiz düz parçalar, ince
-   ölçü çizgileri, çerçevesiz-hafif pill'ler; turuncu yalnız seçim / etkin durum. Gradyanlar tek renge indirildi (aynı id'ler korunur). */
+/* Rozet dili: beyaz = seçenek, koyu taş = açık / seçili, turuncu çerçeve = seçili parçayı değiştirir, kırmızı = kaldır. */
+/* Önizleme dili: düz kâğıt zemin, gölgesiz düz parçalar, ince ölçü çizgileri; turuncu yalnız seçim (gradyan id'leri korunur). */
 export const CHIP = {
   base: { fill: '#ffffff', stroke: '#d3ccc2', text: '#57534e' },
   on: { fill: '#292524', stroke: '#292524', text: '#ffffff' },
@@ -211,8 +209,7 @@ export function PillEditInput({ at, fs, value, onChange, onCommit, onCancel }: {
   );
 }
 
-/* AÇILIŞ İŞARETİ (DIN/AWI görünüş sözleşmesi): kulp kenarının iki köşesinden menteşe kenarının ORTASINA kesikli çizgi —
-   sivri uç menteşe tarafıdır. Fold'da iki kanadın ucu da üstte. Şema ve tip ikonları aynı çizimi kullanır. */
+/* Açılış işareti (DIN/AWI): kulp kenarının köşelerinden menteşe kenarının ortasına kesikli çizgi; sivri uç menteşe tarafı. */
 export type Hinge = 'L' | 'R' | 'T' | 'B';
 const vPath = (...v: number[]) => { const s = v.map(n => n.toFixed(1)); return `M${s[0]},${s[1]} L${s[2]},${s[3]} L${s[4]},${s[5]}`; };
 export const swingPath = (x0: number, y0: number, x1: number, y1: number, h: Hinge) => {
@@ -221,33 +218,10 @@ export const swingPath = (x0: number, y0: number, x1: number, y1: number, h: Hin
     : h === 'T' ? vPath(x0, y1, cx, y0, x1, y1) : vPath(x0, y0, cx, y1, x1, y0);
 };
 const HINGE_DIR: Record<Hinge, Pt> = { L: { x: -1, y: 0 }, R: { x: 1, y: 0 }, T: { x: 0, y: -1 }, B: { x: 0, y: 1 } };
-const HINGE_OPP: Record<Hinge, Hinge> = { L: 'R', R: 'L', T: 'B', B: 'T' };
-/** Çokgen kapakta açılış işareti: menteşe kenarı = dış normali menteşe yönüne en çok bakan kenar; kulp kenarı = karşısı. */
+/** Çokgen kapakta açılış işareti (Geometry.swingPoints). */
 export const swingPathPoly = (pts: Pt[], h: Hinge, ins: number): string | null => {
-  if (pts.length < 3) return null;
-  const c = { x: pts.reduce((a, q) => a + q.x, 0) / pts.length, y: pts.reduce((a, q) => a + q.y, 0) / pts.length };
-  const edges = pts.map((a, i) => {
-    const b = pts[(i + 1) % pts.length];
-    const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
-    let nx = (b.y - a.y) / len, ny = -(b.x - a.x) / len;
-    if (nx * ((a.x + b.x) / 2 - c.x) + ny * ((a.y + b.y) / 2 - c.y) < 0) { nx = -nx; ny = -ny; }
-    return { a, b, len, nx, ny };
-  });
-  const pick = (k: Hinge) => {
-    const d = HINGE_DIR[k];
-    const sc = edges.map(e => ({ e, dot: e.nx * d.x + e.ny * d.y })).filter(x => x.dot > 0.5);
-    if (!sc.length) return null;
-    const top = Math.max(...sc.map(x => x.dot));
-    return sc.filter(x => x.dot > top - 0.15).sort((p, q) => q.e.len - p.e.len)[0].e;
-  };
-  const he = pick(h), pe = pick(HINGE_OPP[h]);
-  if (!he || !pe) return null;
-  const inward = (q: Pt) => {
-    const dx = c.x - q.x, dy = c.y - q.y, L = Math.hypot(dx, dy) || 1;
-    return { x: q.x + dx / L * ins * 1.4, y: q.y + dy / L * ins * 1.4 };
-  };
-  const p0 = inward(pe.a), p1 = inward(pe.b);
-  return vPath(p0.x, p0.y, (he.a.x + he.b.x) / 2 - he.nx * ins, (he.a.y + he.b.y) / 2 - he.ny * ins, p1.x, p1.y);
+  const s = swingPoints(pts, HINGE_DIR[h], ins);
+  return s ? vPath(s[0].x, s[0].y, s[1].x, s[1].y, s[2].x, s[2].y) : null;
 };
 /** Kanat sırası: double sol→sağ (bakan kişiye göre), fold üst→alt. */
 const LEAF_HINGES: Partial<Record<DoorType, Hinge[]>> = { left: ['L'], right: ['R'], up: ['T'], down: ['B'], double: ['L', 'R'], fold: ['T', 'T'] };
@@ -281,8 +255,7 @@ export function DoorTypeIcon({ type, size = 14, strokeWidth = 1.25 }: TypeIconPr
   );
 }
 
-/* ARKALIK TİPİ İKONU — plan kesiti: iki yan panel (düşey çubuklar) + arkalık. Çakma: panellerin arkasında, dışta;
-   kanallı: panellerin arasında, iki yana da kanal kadar girer. */
+/* Arkalık tipi ikonu (plan kesiti): çakma panellerin arkasında, kanallı aralarında kanal kadar girer. */
 export function BackTypeIcon({ type, size = 14, strokeWidth = 1.25 }: TypeIconProps & { type: BackPlacement }) {
   const outer = type === 'outer';
   return (
@@ -303,9 +276,8 @@ export function geoAxes(geo: THREE.BufferGeometry) {
   return { axes, size, bbox };
 }
 
-/* PANEL ÇERÇEVESİ: önizleme ve ölçüler gövde-yerel geometriden okunursa dönmüş panelde eğik bbox
-   yanlış ölçü ve sahte "kesim" verir. Dönüş adımlarının birleşik dönüşü (PanelEngine.composeSteps ile
-   AYNI sıra) tersine uygulanır; adımsız eğik levhada en büyük yüz normali en yakın eksene çevrilir. */
+/* Panel çerçevesi: dönmüş panelde gövde-yerel bbox yanlış ölçü verir → dönüş adımları (composeSteps ile aynı sıra) tersine uygulanır;
+   adımsız eğik levhada en büyük yüz normali en yakın eksene çevrilir. */
 const _frameCache = new WeakMap<THREE.BufferGeometry, { key: string; geo: THREE.BufferGeometry; inv: THREE.Quaternion }>();
 const rotDeg = (st: any): number => (typeof st.resolvedValue === 'number' ? st.resolvedValue : st.value);
 function stepsFrameQuat(steps: any[] | undefined): THREE.Quaternion {
@@ -347,8 +319,7 @@ export function panelFrameOf(shape: Shape | undefined | null): { geo: THREE.Buff
 }
 
 /** Liste satırı ölçüleri: en / boy (ok yönüne göre) + kalınlık (parametreden; dönmüş panelde bbox'ın en küçüğü gerçek kalınlık değildir). */
-/** EĞRİ YÜZ PANELİ ölçüleri: açınım boyu (en geniş eğri yüzün alanı ÷ eksen boyu) × eksen boyunca düz boy — bükülecek levhanın ölçüsü.
- *  Eksen, eğri yüzün üçgen normallerinin hepsine dik yöndür. */
+/** Eğri yüz paneli ölçüleri: açınım boyu (en geniş eğri yüzün alanı ÷ eksen boyu) × eksen boyu. Eksen = tüm eğri normallere dik yön. */
 function curvedPanelDims(geo: THREE.BufferGeometry): { arc: number; length: number; axis: THREE.Vector3 } | null {
   const { faces, groups } = getFacesAndGroups(geo);
   const g = groups.filter(x => x.isCurved).sort((a, b) => b.totalArea - a.totalArea)[0];
@@ -515,8 +486,7 @@ const PREVIEW_LIGHT = { hemi: 1.0, ambient: 0.3, key: 1.9, fill: 0.55 };
 const dimFs = (w: number) => Math.max(10.5, Math.min(13.5, w * 0.027));
 const arrowSize = (w: number) => Math.max(4, Math.min(6.5, w * 0.014));
 
-/* TEK WebGL BAĞLAMI: tarayıcı ~16 bağlamı aşınca EN ESKİSİNİ (ana sahne Canvas'ı) öldürür. Tüm önizlemeler
-   tek ekran-dışı renderer'ı paylaşır; görüntü görünür canvas'a 2D drawImage ile kopyalanır. */
+/* Tek WebGL bağlamı: ~16 bağlamı aşınca tarayıcı ana sahneyi öldürür → önizlemeler tek ekran-dışı renderer'ı paylaşır (drawImage). */
 let _sharedPreviewRenderer: THREE.WebGLRenderer | null = null;
 function getSharedPreviewRenderer(): THREE.WebGLRenderer | null {
   const cur = _sharedPreviewRenderer;
@@ -629,8 +599,7 @@ export function PanelPreview2D({ shape, arrowRotated }: { shape: Shape; arrowRot
 
     const subGeos: any[] = Array.isArray(shape.subtractionGeometries) ? shape.subtractionGeometries : [];
     const groundDims = computeGroundDimWorld(frameGeo, wIdx, hIdx, minIdx, upW);
-    // BOMBELİ PANEL (Goker, Kas 2026 — "panelin ölçüsü olarak açılmış halinin ölçüsünü göster"): önizleme paneli bükülmüş haliyle çizer;
-    // ölçüler kutunun (kirişin) değil AÇINIMIN ölçüsüdür — liste satırıyla aynı (panelDims): eğri boyunca açınım boyu, eksen boyunca düz boy.
+    // Bombeli panel: önizleme bükülmüş çizilir ama ölçüler açınımdır (liste satırıyla aynı).
     const dev = shape.parameters?.curved ? curvedPanelDims(frameGeo) : null;
     if (dev && groundDims.length === 2) {
       const wAlongAxis = Math.abs(dev.axis.getComponent(wIdx)) >= Math.abs(dev.axis.getComponent(hIdx));
@@ -894,8 +863,7 @@ export function GroupSchematic({
       </g>
     );
   };
-  /* Levha rozetleri (kapak sınırı · arkalık sınırı) — YAZILI rozet (Goker): arkalık/kapak şemasındaki bant rozetleriyle aynı dil
-     (beyaz = kapalı, koyu taş = açık). Levhanın UZUNLUĞU boyunca, levha yönünde dizilir → üye sayısı artsa da çakışmaz. */
+  /* Levha rozetleri (kapak / arkalık sınırı): levhanın uzunluğu boyunca dizilir → üye sayısı artsa da çakışmaz. */
   const barBadges = (i: number, b: { x0: number; y0: number; x1: number; y1: number }) => {
     const lbl = memberLabels[i] ?? String(i + 1);
     // Rozet uzunluğu (levha yönünde) = pill genişliği; ilki levhanın ucundan 6 px içeride, aralarında 5 px.
@@ -1001,8 +969,7 @@ export function GroupSchematic({
 }
 
 // ═════════════════════════════════════════ 3. KAPAK / ARKALIK ORTAK ÇEKİRDEĞİ ═════════════════════════════════════════
-/* KAPAK / ARKALIK ŞEMASI ORTAK ÇEKİRDEĞİ — yalnız çizim ve yerleşim (servisler ayrı): ekran haritası, levha bantları, ölçü zincirleri,
-   pill şeritleri, kilit / rozet yerleşimi, ortak SVG parçaları ve değer kutusu. */
+/* KAPAK / ARKALIK ŞEMASI ORTAK ÇEKİRDEĞİ — yalnız çizim ve yerleşim: ekran haritası, bantlar, zincirler, pill şeritleri, rozetler. */
 
 const PART_INSET = 1.5;   // parçalar içeri çizilir ki 3 mm boşluklar görünsün
 const BAND_MIN = 6;
@@ -1016,8 +983,7 @@ export type Box4 = { u0: number; u1: number; v0: number; v1: number };
 type PxBox = { x0: number; y0: number; x1: number; y1: number };
 type Rect = { x: number; y: number; w: number; h: number };
 type SchemEdit = { key: string; v: string };
-/** Ölçü zinciri öğesi; a..b = eksen boyunca mm. `span` (yalnız boşluk): kenarın/derzin çapraz eksendeki GERÇEK uzunluğu —
- *  pill bu uzunluğun ortasına yerleşir (açılı kesimde kenar kısalır). */
+/** Ölçü zinciri öğesi (a..b mm). `span`: boşluğun çapraz eksendeki gerçek uzunluğu — pill ortasına yerleşir. */
 export type ChainItem = {
   key: string; kind: 'size' | 'gap'; a: number; b: number; txt: string; title: string; locked?: boolean; edited?: boolean; passive?: boolean;
   onLock?: () => void; lockTitle?: string; commit: (v: number) => void; preview?: (v: number) => void; min: number; span?: [number, number];
@@ -1040,8 +1006,7 @@ export const crossOf = (r: Box4, ax: Axis): [number, number] => (ax === 'u' ? [r
 
 /* ───────────── EKRAN HARİTASI ───────────── */
 
-/** mm (u, v) → px. Eksenler ayrı ölçeklenir; aynalı görünüşte u / v ters akar. x1 / y1 = çizim alanının sağ / alt sınırı (bantlar
- *  buraya kırpılır). */
+/** mm (u, v) → px; eksenler ayrı ölçeklenir, aynalı görünüşte ters akar. x1 / y1 = çizim alanı sınırı. */
 export function schemView(rect: Box4, ox: number, oy: number, SW: number, SH: number, mirrorU: boolean, mirrorV: boolean, x1: number, y1: number) {
   const duR = Math.max(1e-6, rect.u1 - rect.u0), dvR = Math.max(1e-6, rect.v1 - rect.v0);
   const sx = (u: number) => (mirrorU ? ox + SW - ((u - rect.u0) / duR) * SW : ox + ((u - rect.u0) / duR) * SW);
@@ -1088,8 +1053,7 @@ export function nodePath(root: SolvedNode, id: string): string[] {
 /* ───────────── LEVHA BANTLARI ───────────── */
 
 type NearLike = { kind: Axis; a0: number; a1: number; c0: number; c1: number; poly?: Pt[]; ref?: unknown; joint?: unknown };
-/** Sınır levhası bandı (px): kalınlık en az BAND_MIN, boy çizim alanına kırpılı. Ön görünüşü dikdörtgen olmayan levhada (eğik panel
- *  altında pahlı yan) `pts` gerçek izdüşüm zarfı, x/y/w/h = zarfın kutusu. `aligned` = levhaya bağlı derz (sıcak ton). */
+/** Sınır levhası bandı (px): kalınlık ≥ BAND_MIN; dikdörtgen olmayan levhada `pts` gerçek zarf. `aligned` = bağlı derz. */
 export function bandGeom(np: NearLike, v: SchemView) {
   const vertical = np.kind === 'u';
   const along = vertical ? v.sx : v.sy, across = vertical ? v.sy : v.sx, clamp = vertical ? v.clampY : v.clampX;
@@ -1174,8 +1138,7 @@ const clampSpan = (sp: [number, number], c: [number, number]): [number, number] 
   const lo = Math.max(sp[0], Math.min(c[0], c[1])), hi = Math.min(sp[1], Math.max(c[0], c[1]));
   return hi - lo > 1 ? [lo, hi] : sp;
 };
-/** Ölçü zincirleri + turuncu boşluk şeritleri. `outline` = kutunun (açılı kesimli) mm çokgeni: boşluk pill'i kenarın / derzin
- *  gerçek uzunluğunun ortasına yerleşir. */
+/** Ölçü zincirleri + boşluk şeritleri; `outline` = kutunun (açılı) mm çokgeni. */
 export function chainKit(v: SchemView, outline: (r: Box4) => Pt[]) {
   const chains: Chain[] = [], strips: Rect[] = [];
   const slots = new Map<string, { h: number; v: number }>();   // bölge başına aynı yöndeki zincir sayısı (kademe)
@@ -1226,8 +1189,7 @@ export type ChainParts<N extends SolvedNode> = {
   /** Bölge alanın kenarına değiyorsa kenar boşluğu öğesi (`end` = bitiş ucu; `on` = zincirin bölgesi). */
   edge?: (n: N, horiz: boolean, end: boolean, at: number, on?: N) => ChainItem | null;
 };
-/** Seçili bölgenin zincirleri: bölmede kendi ölçüleri, yaprakta üst bölmedeki yeri; çapraz yönde ilk farklı eksenli üst bölmedeki yer
- *  (yoksa alanın tamamı). */
+/** Seçili bölgenin zincirleri: bölmede kendi ölçüleri, yaprakta üst bölmedeki yeri. */
 export function regionChains<N extends SolvedNode>(kit: ChainKit, root: N, n: N, parts: ChainParts<N>) {
   const gap = (P: SplitOf<N>, k: number, a: number, b: number, on: N, clampOn?: N): ChainItem[] => {
     if (parts.hideGap?.(P, k)) return [];
@@ -1279,10 +1241,8 @@ export function regionChains<N extends SolvedNode>(kit: ChainKit, root: N, n: N,
 
 /* ───────────── PILL / KİLİT / ROZET YERLEŞİMİ ───────────── */
 
-/** Çakışma önlemi: zincir başına şeritler (kademeli ölçü). Sabit boşluk pill'leri (kenar/derz ortasında) yerinde kalır; önce ÖLÇÜ
- *  pill'leri bunlara 2B'de çarpmayan ilk şeride, sonra serbest BOŞLUK pill'leri ilk boş şeride girer (sığmazsa son şerit — hiçbir boşluk
- *  gizlenmez). Şeritler bölgenin içine doğru (yatay → yukarı, düşey → sola). Kilit yeri: ölçünün ucu; çarpıyorsa karşı uç, sonra
- *  pill'in yanları — kilitler pill'lere ve birbirine binmesin. W / H = SVG boyu. */
+/** Çakışma önlemi: ölçü pill'leri sabit boşluk pill'lerine çarpmayan ilk şeride, sonra boşluk pill'leri (hiçbiri gizlenmez).
+ *  Kilit ölçünün ucunda, çarpıyorsa karşı uç / yanlar. */
 export function layoutPills(chains: Chain[], v: SchemView, fs: number, slopePills: Pill[], W: number, H: number): Pill[] {
   type LanePill = Pill & { fixed: boolean };
   const chainPills = chains.map(ch => ({ ch, all: ch.items.map((it): LanePill => {
@@ -1339,8 +1299,7 @@ export function layoutPills(chains: Chain[], v: SchemView, fs: number, slopePill
   }
   return pills;
 }
-/** Bant rozeti yerleşimi: rozet pill / kilide çarpıyorsa bant boyunca (dönüşümlü) kaydırılır, bandın içinde kalır. Parça etiket bloğu
- *  (no · ölçü · tür) da engel: "Split here" gibi rozetler etiketin üstüne binmesin. `obstacles` dışarıdan büyütülebilir. */
+/** Bant rozeti çarpıyorsa bant boyunca kaydırılır; parça etiket bloğu da engeldir. */
 export function chipPlacer(pills: Pill[], members: Box4[], v: SchemView, fsT: number) {
   const obstacles = pills.flatMap(p => {
     const o = [{ x: p.cx, y: p.cy, r: Math.max(p.pw, p.ph) / 2 }];
@@ -1487,8 +1446,7 @@ export const memberTip = (head: string, m: Box4 & { poly?: Pt[] }, depth: number
   `${head} · ${Math.round(m.u1 - m.u0)} × ${Math.round(m.v1 - m.v0)} mm${m.poly ? ' · angled (cut by rotated reference)' : ''}`
   + ` — click: select the area, click again to go one level deeper (${depth} level${depth === 1 ? '' : 's'})`
   + ` · Shift/Ctrl+click: add another region · ${tail}`;
-/** Parça (kapak / arkalık parçası): gradyanlı kutu ya da açılı çokgen + no · W×H · tür yazısı. Zincir pill'i yazı alanına biniyorsa
- *  W×H gizlenir (zincir zaten söyler). `extra` = kutunun üstüne çizilen işaret (kapak açılım çizgisi). */
+/** Parça: kutu ya da açılı çokgen + no · W×H · tür; zincir pill'i yazıya biniyorsa W×H gizlenir. `extra` = açılım çizgisi. */
 export function MemberCell({ m, view, gid, on, inSel, lbl, tip, caption, fsT, pills, onPick, extra }: {
   m: Box4 & { poly?: Pt[] }; view: SchemView; gid: string; on: boolean; inSel: boolean; lbl: string; tip: string; caption: string | null; fsT: number;
   pills: Pill[]; onPick: (additive: boolean) => void; extra?: (b: PxBox, pts: Pt[] | null) => React.ReactNode;
@@ -1531,8 +1489,7 @@ export function MemberCell({ m, view, gid, on, inSel, lbl, tip, caption, fsT, pi
     </g>
   );
 }
-/** Zincir pill'leri: boşluk (turuncu, eğik kenarda döndürülmüş), pasif ölçü (kalanı toplar), ölçü + kilit rozeti. Düzenlenebilir ölçü =
- *  kilitlenebilir ya da canlı önizlemeli (kanat ölçüsü); alanın tamamı sınırlardan gelir (`bounds`). */
+/** Zincir pill'leri: boşluk, pasif ölçü, ölçü + kilit. Alanın tamamı sınırlardan gelir (`bounds`). */
 export function ChainPills({ pills, ed, bounds }: { pills: Pill[]; ed: SchemEditSession; bounds: string }) {
   const edit = (p: Pill) => (e: React.MouseEvent) => { stop(e); ed.begin({ key: p.key, v: p.item.txt }); };
   return (
@@ -1565,14 +1522,12 @@ export function ChainPills({ pills, ed, bounds }: { pills: Pill[]; ed: SchemEdit
 }
 
 // ══════════════════════════════════════════════════ 4. KAPAK ŞEMASI ══════════════════════════════════════════════════
-/* KAPAK ŞEMASI: temsili ön görünüş (eksenler ayrı ölçeklenir). Ölçü zinciri yalnız seçili bölgenin üzerinde ve
-   oksuz (oklar 3 mm boşluklara giriyordu). Sınır levhaları yalnız DIŞ kapakta çizilir. */
+/* KAPAK ŞEMASI: temsili ön görünüş; zincir yalnız seçili bölgede ve oksuz. Sınır levhaları yalnız dış kapakta. */
 const DOOR_PAD = 12;                   // dört kenar
 const DOOR_MIN_ASPECT = 0.6;      // çok geniş kapakta ölçüler sıkışmasın
 type DoorSplit = Extract<DoorNodeSolved, { kind: 'split' }>;
-// DERZ BİNİSİ: 'min'/'max' = o taraftaki (düşük/yüksek u·v) kapak levhayı tamamen örter (Full), 'center' = ikisi yarı (Half).
-// KAPAK BİNİSİ (kapak seçili): Full = seçili kapak levhayı tamamen örter · Half = iki kapak levha ortasına · None = seçili kapak
-// levhanın kenarında biter, komşu kapak levhayı örter. Levha yerinde kalır; yalnız iki komşu kapak uzar/kısalır.
+// Derz binisi: 'min' / 'max' = o taraftaki kapak levhayı örter (Full), 'center' = yarı (Half).
+// Kapak seçiliyken: Full / Half / None seçili kapağa göre; levha yerinde, yalnız komşu kapaklar uzar / kısalır.
 type OverlayOpt = 'Full' | 'Half' | 'None';
 const alignForOpt = (side: DoorAlign, o: OverlayOpt): DoorAlign => (o === 'Full' ? side : o === 'Half' ? 'center' : side === 'min' ? 'max' : 'min');
 const optOf = (side: DoorAlign, st: DoorAlign | null): OverlayOpt | null => (st === 'center' ? 'Half' : st === side ? 'Full' : st ? 'None' : null);
@@ -1728,8 +1683,7 @@ export function DoorSchematic({
     if (!j) { if (splitChipOn(np)) onSplitAtPanel!(np.vfId); return; }
     if (additive) { if (np.ref) onAlignJoint(np.ref.splitId, np.ref.k, np.vfId, null); return; }
     const ctx = overlayCtx(np);
-    // İKİ BİNİ MODU: kapak seçiliyken → KAPAK uzar/kısalır, levha yerinde (setDoorJointOverlay); kapak seçili değilken →
-    // LEVHA derzin altına taşınır, kapaklar yerinde (setDoorJointRef). Sıra ekrana göre: Half → sol/üst full → sağ/alt full.
+    // İki bini modu: kapak seçili → kapak uzar, levha yerinde (setDoorJointOverlay); değilse levha derze taşınır (setDoorJointRef).
     if (ctx) {
       const cur = optOf(ctx.side, overlayState(np, ctx.j));
       onJointOverlay(ctx.j.splitId, ctx.j.k, np.vfId, alignForOpt(ctx.side, cur === 'Full' ? 'Half' : cur === 'Half' ? 'None' : 'Full'));
@@ -1917,8 +1871,7 @@ export function DoorSchematic({
   );
 }
 
-// Arkalık şemasının kenar payı: en dış sınır levhaları (yan / üst / alt) iç dikdörtgenin DIŞINDA, bu payda çizilir; ilişki ve değer
-// rozetleri levhanın üzerinde durur → pay levha + rozet kalınlığını almalı (kapak payı 12 px ile rozetler SVG dışına taşıp kırpılıyordu).
+// Arkalık şeması kenar payı: dış sınır levhaları ve rozetleri payda çizilir (12 px'te rozetler kırpılıyordu).
 const BACK_PAD = 22;
 const T0 = 0.05;
 type BackSplit = Extract<BackNodeSolved, { kind: 'split' }>;
@@ -1930,9 +1883,7 @@ type BandChip = EditTarget & { key: string; vfId: string; label: string; rot: nu
 const same = (vs: number[]) => (vs.length && vs.every(x => Math.abs(x - vs[0]) < T0) ? vs[0] : null);
 
 // ═════════════════════════════════════════════════ 5. ARKALIK ŞEMASI ═════════════════════════════════════════════════
-/** ARKALIK ŞEMASI: ön görünüş (arkadan bakış aynalı), parçalar + sınır levhası bantları (çakma parçada bini, kanallı parçada kanal girişi),
- *  açılı levha şeritleri, derz rozetleri ve seçili bölgenin ölçü zincirleri. Değerler PARÇA BAŞINA: kenar rozeti / pill'i seçili
- *  parçalara (seçim yoksa o kenara değen tüm parçalara) yazar; karışık değer "…" / "Mixed" gösterir. */
+/** ARKALIK ŞEMASI: ön görünüş, parçalar + sınır bantları + derz rozetleri + zincirler. Değerler parça başına (karışık → "Mixed"). */
 export function BackSchematic({
   group, solution, selectedIndex, selectedNodes, memberLabels, cuts, nearPanels, refPick, onEditSize, onToggleLock, onEditSplitGap, onEditInset, onEditJointIn,
   onPathClick, onRefPick, onSplitAtPanel, onEditCover, onToggleEdgeRel, onToggleJointRel, clearVfId, onPickClearEdge, grooveHint, onEditBegin, onEditCancel,
@@ -1975,12 +1926,9 @@ export function BackSchematic({
   const { axis, side } = group;
   // rect = İÇ dikdörtgen (sınır panellerinin iç yüzleri); parçalar kendi uzantılarıyla dışına taşar.
   const { rect, solved, members, sides } = solution;
-  // TEMSİLİ KARE (Goker, Eki 2026 — "preview tam kare olsun, arkalık o alanı maksimum göstersin, ölçüye göre dinamik değil temsili"):
-  // şema kare (yükseklik = genişlik), arkalık dikdörtgeni her zaman aynı temsili alana GERİLİR (oran korunmaz) — kenar bantları
-  // ve rozetler dar kenar payında kalır.
+  // Temsili kare: şema kare, arkalık aynı alana gerilir (oran korunmaz).
   const SW = Math.max(40, width - 2 * BACK_PAD), SH = SW, height = SH + 2 * BACK_PAD;
-  // Görünüş: arkalık ÖNDEN çizilir (gövdenin içine bakar gibi) — 3B ön görünüşle aynı sol/sağ (Goker: arkadan aynalı görünüş
-  // ters geliyordu, soldaki parçayı düzeltirken sağdaki değişiyordu). Sağ yan (X+) aynalı; üst (Y+) → Z aşağı.
+  // Arkalık önden çizilir (3B ön görünüşle aynı sol / sağ).
   const view = schemView(rect, BACK_PAD, BACK_PAD, SW, SH, axis === 0 && side > 0, axis === 1 && side > 0, width - 2, height - 2);
   const { sx, sy } = view;
   const fs = schemFs(width), fsT = schemFsT(fs), cfs = chipFs(fsT);
@@ -2010,8 +1958,7 @@ export function BackSchematic({
   const commonCover = (k: BackEdgeKey, ids: string[], t: number) => same(ids.map(id => coverOf(k, id, t)));
   const selRegions = selectedNodes.map(id => findSolvedBackNode(solved, id)).filter((n): n is BackNodeSolved => !!n);
   const selLeafIds = new Set(selRegions.flatMap(leafIds));
-  /** Kenar rozetinin / pill'inin yazacağı parçalar: seçili bölgelerin (ya da seçili üye satırının) o kenara değen yaprakları;
-   *  seçim yoksa kenara değen tüm yapraklar. */
+  /** Kenar rozetinin yazacağı parçalar: seçili bölgelerin o kenara değen yaprakları, seçim yoksa tümü. */
   const scopeLeaves = (k: BackEdgeKey): string[] => {
     const sel = selLeafIds.size ? [...selLeafIds] : selectedIndex >= 0 && members[selectedIndex] ? [members[selectedIndex].leafId] : allLeafIds;
     const t = touchingLeaves(k, sel);
@@ -2020,8 +1967,7 @@ export function BackSchematic({
   const scopeTxt = (ids: string[]) => (ids.length === 1 ? `piece ${memberLabels[allLeafIds.indexOf(ids[0])] ?? ''}`.trim() : `${ids.length} pieces`);
 
   // Kenar şeritleri: kanallı parçada KANAL GİRİŞİ (pill), çakma parçada bini Full/Half/None (rozet) — ikisi de parça başına.
-  /** Kenar bandı: `na` = bini rozeti yazılacak parçalar (dış çakma parçalar + ÇAKMA kenardaki iç parçalar), `gr` = kanallı
-   *  kenardaki iç parçalar (giriş pill'i), `nl` = çakma kenardaki iç parçalar (panel kısaltılır), `rel` = kenar ilişkisi (grup başına). */
+  /** Kenar bandı: `na` bini rozeti parçaları, `gr` kanallı kenar, `nl` çakma kenardaki iç parçalar, `rel` kenar ilişkisi. */
   const bands = nearPanels.map(np => {
     const scope = np.edge ? scopeLeaves(np.edge) : [];
     const rel: BackEdgeRel | null = np.edge ? edgeRelOf(group, np.edge) : null;
@@ -2044,8 +1990,7 @@ export function BackSchematic({
   // Eğik kenarın boşluk pill'i eğik kenarın üzerinde durur; düz kenar zincirlerinde o kenar GÖSTERİLMEZ.
   const slopeSegs = slopeSegsOf(cutBands, members);
   const edgeName = (b: Band) => edgeLabel(b.vertical, b.np.edge, view);
-  // İÇ LEVHA (arkalık-sınırı dikme/raf) tek eylemlidir: BÖL. Bini / Left-Right rozeti yok (Goker, Eki 2026): bütün kanallı arkalık
-  // levhayı kısaltır; bölününce parçalar levhanın ortasına kadar girer (iki yandan kanallı) ve derz levhayı izler.
+  // İç levha (arkalık-sınırı dikme / raf) tek eylemli: BÖL.
   const splittable = (np: BackNearPanel) => !!onSplitAtPanel && !np.edge && !np.joint && canSplitBackAtPanel(group, np);
   /** Levhaya bağlı derz bandı: iki yanın binme değerleri (ekranda sol/üst → sağ/alt), karışıksa "…". */
   const refJoint = (np: BackNearPanel) => {
@@ -2118,8 +2063,7 @@ export function BackSchematic({
     if (splittable(np)) onSplitAtPanel!(np.vfId);
   };
 
-  // KENAR / DERZ BİNME DEĞERLERİ ölçü zincirinde GÖSTERİLMEZ (Goker, Eki 2026 — "arkalığa tıklayınca In / On yanında bir de kanal
-  // derinlik kutucukları geliyor, iki tane binme değeri görünüyor"): bunlar yalnız bandın In / On rozetlerinde; zincir = parça ölçüleri + aralar.
+  // Kenar / derz bini değerleri zincirde gösterilmez, yalnız bant rozetlerinde.
   const kit = chainKit(view, r => backCutOutline(group, rect, r, cuts));
   const sizeItem = (P: BackSplit, i: number, a: number, b: number, horiz: boolean): ChainItem => {
     const base = { key: `size-${P.id}-${i}`, kind: 'size' as const, a, b, txt: fmt1(P.sizes[i]?.value ?? 0), min: 1 };
@@ -2165,8 +2109,7 @@ export function BackSchematic({
   const pills = layoutPills(kit.chains, view, fs, slopePills, width, height);
   const chips = chipPlacer(pills, members, view, fsT);
 
-  // KENAR DEĞER ROZETLERİ (bant üzerinde, tıklayınca yerinde düzenlenir): çakma parça → "On <mm>" = panelin üzerine binme,
-  // kanallı parça → "In <mm>" = kanal derinliği. Değer seçili parçalara (yoksa kenara değen tüm parçalara) yazılır.
+  // Kenar değer rozetleri: çakma → "On <mm>" bini, kanallı → "In <mm>" kanal derinliği.
   const bandChips: BandChip[] = [];
   const placeChip = (c: Omit<BandChip, 'cx' | 'cy' | 'pw' | 'ph' | 'f' | 'item'> & { item?: ChainItem }, ax: ChipAxis) => {
     const { pw, ph } = pillSize(c.label, cfs);
@@ -2203,8 +2146,7 @@ export function BackSchematic({
               + `Click to switch to Groove (the ${what} keeps its full depth, both pieces enter it from both sides).`
             : `GROOVED on both sides — the ${what} keeps its full depth and both pieces enter it by their overlap. `
               + `Click to switch to Nail (the ${what} is shortened to the back panel's front face automatically; the pieces cover its end).`) }, ax);
-        // BİNME rozetleri (her yan ayrı, doğrudan düzenlenir): Nail → "On" = parçanın levha ucunun üzerine binmesi,
-        // Groove → "In" = levhaya giriş. Rozet o yanın parçasına doğru kaydırılır (hangi yan olduğu görünsün).
+        // Bini rozetleri (her yan ayrı): Nail → "On", Groove → "In"; rozet o yanın parçasına doğru kayar.
         for (const which of ['before', 'after'] as const) {
           const ek: BackEdgeKey = b.vertical ? (which === 'before' ? 'uMax' : 'uMin') : (which === 'before' ? 'vMin' : 'vMax');
           const ids = allLeafIds.filter(id => { const x = sides[id]?.[ek]; return !!x && x.splitId === splitId && x.k === jk; });
@@ -2262,9 +2204,7 @@ export function BackSchematic({
   }
   const editables = new Map<string, EditTarget>([...pills.map(p => [p.key, p] as const), ...bandChips.filter(c => !c.toggle).map(c => [c.key, c] as const)]);
 
-  // GİRİŞ BÖLGELERİ (Goker, Eki 2026 — "arkalığın panelin içine girdiğini daha belirgin göster"): parça ∩ sınır levhası şeridi.
-  // groove = parça panelin kanalına giriyor (turuncu, kanal dibi koyu çizgi); nail = parça panelin ucunu örtüyor (taş rengi).
-  // Her zaman çizilir (seçim gerekmez); çok ince bölge en az 3 px gösterilir (panelin iç yüzünden dışa doğru).
+  // Giriş bölgeleri: parça ∩ sınır levhası; groove turuncu, nail taş rengi; ince bölge en az 3 px.
   type Zone = { key: string; x: number; y: number; w: number; h: number; kind: 'groove' | 'nail'; vertical: boolean; deepX: number; deepY: number;
     /** Kanal (bollaştırılmış) kutusu: parça bölgesi + kanal dibi payı (D), panelin iç yüzü sabit. */
     groove?: { x: number; y: number; w: number; h: number };
@@ -2350,8 +2290,7 @@ export function BackSchematic({
       })}
       <FocusStrips strips={kit.strips} clip={stripClip} />
       {selRegions.map(n => <SelOutline key={`sel-${n.id}`} n={n} view={view} shape={cuts.length ? backCutOutline(group, rect, n, cuts) : null} />)}
-      {/* Bant tık alanları bilinçli olarak seçim çerçevesi/şeritlerin ÜSTÜNDE, pill'lerin ALTINDA çizilir. Kenar bandının değer rozetleri
-          ayrı çizilir (bandChips); burada yalnız bölme rozeti. */}
+      {/* Bant tık alanları seçim çerçevesinin üstünde, pill'lerin altında; burada yalnız bölme rozeti. */}
       {bands.map(b => {
         const np = b.np;
         const pickable = !!refPick && !np.edge, splitOn = !pickable && splittable(np);
@@ -2372,8 +2311,7 @@ export function BackSchematic({
             : ' It stands outside the back panel plane, so there is no overlay to set.');
         return <BandHit key={`cuthit-${cb.cut.vfId}`} gid={gid} pts={cb.pts} warm={cb.half} title={tip} onClick={chip ? () => editChip(chip) : undefined} />;
       })}
-      {/* Kenar değer rozetleri: "On <mm>" (çakma binme) / "In <mm>" (kanal derinliği) — tık yerinde düzenler. İlişki rozeti (Groove / Nail):
-          dolu koyu taş = Nail (panel kısaltılır), açık = Groove; tık çevirir. */}
+      {/* Kenar değer rozetleri ("On" / "In") ve ilişki rozeti (dolu = Nail, açık = Groove; tık çevirir). */}
       {bandChips.map(c => {
         const tone = c.toggle && c.warm ? CHIP.on : c.warm || c.accent ? CHIP.accent : CHIP.base;
         return (

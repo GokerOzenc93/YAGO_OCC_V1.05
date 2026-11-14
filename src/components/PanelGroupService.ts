@@ -4,7 +4,7 @@ import {
   effectiveBodyGeometry, getFacesAndGroups, vertexModsKey, isFlatNormal, matchReferenceFace, getShapeMatrix, dominantAxisLabel, type FaceData,
   type CoplanarFaceGroup, computeFaceComponentContour, computeFreeRegionLocal, fromPlaneUV, vec3, createFaceDescriptor, createPanelFromVirtualFace,
   convertReplicadToThreeGeometry, type MoveTransformStep, type ExtrudeStep, axisDirToVec, panelBehindStackPlane, clipRegionToRailStrip, toUV, applyRailExt,
-  initReplicad, rebuildBodySolid,
+  initReplicad, rebuildBodySolid, panelFrontHull,
 } from './Geometry';
 import {
   type CavityBox, type Shape, type VirtualFace, panelOfVf, type GapSpec, useAppStore, type PanelGroup, type CavityPick, type CavityStep, shapeById,
@@ -12,7 +12,7 @@ import {
   type QuickBodyRails, type RailSpec, type RailBackRel, railsOf, type PanelEdgeDir, PANEL_EDGE_DIRS, panelEdgeOf, type QuickBackRefKey, type BackGroup,
   type RailStripSpec, type RailExt, type RailExtTarget, DEFAULT_QUICK_BODY, DEFAULT_RAILS,
 } from '../store';
-import { type EdgeRole, type Pt, cleanPoly, edgeRoles } from './LegLayout';
+import { type EdgeRole, type Pt, cleanPoly, edgeRoles, pointInPoly } from './LegLayout';
 import {
   backObstacleFor, backMemberCutFor, isBackPanel, backPreviewStamp, backCandidatesAt, BACK_AXIS, BACK_SIDE, createBackGroupFromPick, setBackDefaults,
   deleteBackGroupWithMembers,
@@ -26,8 +26,8 @@ import {
 /* PANEL GRUP SERVİSİ — 1) kapak / arkalık / raf-dikme ortak bölme yardımcıları · 2) raf / dikme grupları · 3) hızlı gövde. */
 
 // ════════════════════════════════════════════ 1. ORTAK BÖLME YARDIMCILARI ════════════════════════════════════════════
-// KAPAK / ARKALIK / RAF-DİKME ORTAK YARDIMCILARI: yalnız saf geometri, bölme ağacı gezintisi, ölçü dağıtımı ve üye VF bakımı.
-// İş kuralları (sınır seçimi, bini, kanal, bağ yönü) servislerde kalır. Yardımcılar fonksiyon bildirimi → döngüsel içe aktarmada TDZ yok.
+// Kapak / arkalık / raf-dikme ortak saf yardımcıları (geometri, ağaç gezintisi, ölçü dağıtımı, üye VF bakımı); iş kuralları servislerde.
+// Yardımcılar fonksiyon bildirimi → döngüsel importta TDZ yok.
 
 export type Pt2 = Point2D;
 export type Axis3 = 0 | 1 | 2;
@@ -90,6 +90,86 @@ export function collectBoundPanels(parent: Shape, shapes: Shape[], vfs: VirtualF
   }
   return out;
 }
+/** Gövde kenarına bağlı (vfId'siz) kenarlar: o kenarın dış yüzü gövde kenarında (± 1 mm) duran ve grubun çapraz açıklığıyla en çok
+ *  örtüşen ince levha kenar olur (sonradan konan yan / üst / alt panel). Değişiklik yoksa `bounds` aynen döner. */
+export function adoptEdgeSlabs<B extends Partial<Record<EdgeKey, { vfId?: string } | undefined>>>(
+  bounds: B, body: CavityBox, bps: BoundPanel[], u: 0 | 1 | 2, v: 0 | 1 | 2, rect: PlaneRect, minSpan: number,
+): B {
+  const THIN_PANEL = 60, EDGE_ADOPT_TOL = 1;
+  let out = bounds;
+  for (const k of EDGE_KEYS) {
+    if (bounds[k]?.vfId) continue;
+    const isU = k === 'uMin' || k === 'uMax', minSide = k === 'uMin' || k === 'vMin';
+    const ax = isU ? u : v, cx = isU ? v : u;
+    const edge = minSide ? body.min[ax] : body.max[ax];
+    const c0 = isU ? rect.v0 : rect.u0, c1 = isU ? rect.v1 : rect.u1;
+    let best: BoundPanel | null = null, bestOv = minSpan;
+    for (const bp of bps) {
+      const b = bp.box, t = b.max[ax] - b.min[ax];
+      if (t > THIN_PANEL || t > b.max[cx] - b.min[cx]) continue;
+      if (Math.abs((minSide ? b.min[ax] : b.max[ax]) - edge) > EDGE_ADOPT_TOL) continue;
+      const ov = Math.min(b.max[cx], c1) - Math.max(b.min[cx], c0);
+      if (ov > bestOv) { bestOv = ov; best = bp; }
+    }
+    if (best) { if (out === bounds) out = { ...bounds }; (out as Record<EdgeKey, { vfId: string }>)[k] = { vfId: best.vfId }; }
+  }
+  return out;
+}
+/** Kapak / arkalık grubuna yaklaşan ince sınır levhaları (ortak gezinti): ekseni (kind), boyuna (a) / çapraz (c) aralığı, grubun
+ *  gerisinde mi, raf grubu, kenarı ve derzi. Derz: kenar levhasında yok; `boundJoint` bağlı derz verirse o, yoksa aynı eksende çapraz
+ *  örtüşen en yakın derz. Ön görünüşü dikdörtgen olmayan levhada `poly` gerçek izdüşüm. */
+export function nearSlabsOf<E extends string, R>(o: {
+  bps: BoundPanel[]; parent: Shape; shapes: Shape[]; vfs: VirtualFace[]; panelGroups: PanelGroup[];
+  u: 0 | 1 | 2; v: 0 | 1 | 2; axis: 0 | 1 | 2; side: 1 | -1; front: number; cells: PlaneRect[]; joints: SplitJoint[]; near: number; jointNear: number;
+  edgeOf: (vfId: string) => E | undefined;
+  boundJoint: (vfId: string, kind: 'u' | 'v', pg: PanelGroup | undefined, memberIndex: number | undefined) => { ref: R; joint?: SplitJoint } | null;
+}): Array<{
+  vfId: string; panelId: string; name: string; kind: 'u' | 'v'; a0: number; a1: number; c0: number; c1: number; behind: boolean; edge?: E;
+  groupId?: string; memberIndex?: number; joint?: SplitJoint; ref?: R; poly?: Pt2[];
+}> {
+  const { u, v } = o, THIN_PANEL = 60, TOL = 0.5;
+  const out: ReturnType<typeof nearSlabsOf<E, R>> = [];
+  for (const bp of o.bps) {
+    const b = bp.box;
+    const tu = b.max[u] - b.min[u], tv = b.max[v] - b.min[v];
+    let kind: 'u' | 'v';
+    if (tu <= THIN_PANEL && tu <= tv) kind = 'u'; else if (tv <= THIN_PANEL) kind = 'v'; else continue;
+    const a0 = kind === 'u' ? b.min[u] : b.min[v], a1 = kind === 'u' ? b.max[u] : b.max[v];
+    const c0 = kind === 'u' ? b.min[v] : b.min[u], c1 = kind === 'u' ? b.max[v] : b.max[u];
+    const touching = o.cells.some(m => {
+      const mc0 = kind === 'u' ? m.v0 : m.u0, mc1 = kind === 'u' ? m.v1 : m.u1;
+      const ma0 = kind === 'u' ? m.u0 : m.v0, ma1 = kind === 'u' ? m.u1 : m.v1;
+      if (Math.min(mc1, c1) - Math.max(mc0, c0) < TOL) return false;
+      return Math.max(ma0, a0) - Math.min(ma1, a1) <= o.near;
+    });
+    if (!touching) continue;
+    const behind = o.side > 0 ? b.max[o.axis] <= o.front + TOL : b.min[o.axis] >= o.front - TOL;
+    const vf = o.vfs.find(f => f.id === bp.vfId);
+    const pg = vf?.groupId ? o.panelGroups.find(g => g.id === vf.groupId) : undefined;
+    const memberIndex = pg ? (vf!.groupIndex ?? pg.memberVfIds.indexOf(vf!.id)) : undefined;
+    const edge = o.edgeOf(bp.vfId);
+    let joint: SplitJoint | undefined, ref: R | undefined;
+    if (!edge) {
+      const bound = o.boundJoint(bp.vfId, kind, pg, memberIndex);
+      if (bound) ({ ref, joint } = bound);
+      else {
+        const pc = (a0 + a1) / 2, t = a1 - a0;
+        let best = Infinity;
+        for (const j of o.joints) {
+          if (j.axis !== kind || Math.min(j.c1, c1) - Math.max(j.c0, c0) < TOL) continue;
+          const d = Math.abs((j.p0 + j.p1) / 2 - pc);
+          if (d <= t / 2 + (j.p1 - j.p0) / 2 + o.jointNear && d < best) { best = d; joint = j; }
+        }
+      }
+    }
+    const ps = shapeById(bp.panelId, o.shapes);
+    const hull = ps ? panelFrontHull(ps, o.parent, u, v) : null;
+    const boxArea = (b.max[u] - b.min[u]) * (b.max[v] - b.min[v]);
+    const poly = hull && hull.length >= 3 && boxArea - Math.abs(polyArea(hull)) > Math.max(1, boxArea * 1e-3) ? hull : undefined;
+    out.push({ vfId: bp.vfId, panelId: bp.panelId, name: bp.name, kind, a0, a1, c0, c1, behind, edge, groupId: pg?.id, memberIndex, joint, ref, poly });
+  }
+  return out;
+}
 
 /** Dönmüş sınır paneli: büyük-yüz normali + o normaldeki [dMin,dMax] + kutu; pts = tekil köşeler (şema ön görünüşü). */
 export interface SlabCut { vfId: string; name: string; n: Vec3; dMin: number; dMax: number; box: CavityBox; pts?: Vec3[] }
@@ -135,8 +215,7 @@ export function cutCoverFar(c: SlabCut, axis: Axis3, side: 1 | -1, placement: Sl
   return placement === 'outer' && (side > 0 ? c.box.max[axis] <= front + TOL : c.box.min[axis] >= front - TOL);
 }
 
-// Şemada açılı sınır levhası: levha düzlemindeki kesit bir ŞERİT (dMin ≤ A·u + B·v + Na·front ≤ dMax), en az minT mm.
-// covered → bini rozeti anlamlı.
+// Şemada açılı sınır levhası: levha düzlemindeki kesit bir şerit (dMin ≤ A·u + B·v + Na·front ≤ dMax), en az minT mm.
 export interface CutBand { cut: SlabCut; poly: Pt2[]; edge: EdgeKey | null; covered: boolean; dir: Pt2 }
 type BandGroup = { axis: Axis3; side: 1 | -1; placement: SlabPlacement; anchor?: [number, number] };
 export function cutBands(group: BandGroup, rect: PlaneRect & { front: number }, cuts: SlabCut[], area: Pt2[], minT: number): CutBand[] {
@@ -206,8 +285,7 @@ export function slabVfGeometry(axis: Axis3, side: 1 | -1, plane: number, m: Plan
   return { normal, vertices, center: mk(c.x, c.y) };
 }
 
-// BÖLME AĞACI (kapak / arkalık)
-// leaf = parça; split = u (yan yana) / v (ÜSTTEN aşağı) eksende çocuklar (sizes + n−1 gaps); refs = levhaya bağlı derzler.
+// Bölme ağacı (kapak / arkalık): leaf = parça; split = u / v (üstten aşağı) eksende çocuklar; refs = levhaya bağlı derzler.
 export interface SplitFields<C> {
   id: string; kind: 'split'; axis: 'u' | 'v'; sizes: GapSpec[]; gaps: number[]; children: C[];
   targetSize?: number; refs?: Record<number, { vfId: string }>;
@@ -248,6 +326,48 @@ export function cloneTree<N extends TreeNode>(n: N, splitPrefix: string, leaf: (
     ...s, id: genId(splitPrefix), sizes: s.sizes.map(x => ({ ...x })), gaps: [...s.gaps],
     children: (s.children as N[]).map(c => cloneTree(c, splitPrefix, leaf)), ...(s.refs ? { refs: { ...s.refs } } : {}),
   };
+}
+/** Düğümün `axis` eksenindeki parça sayısını `n` yapar (kapak / arkalık ortak): yaprak → split; aynı eksende çocuk ekle / çıkar
+ *  (son parça bölmeyse kopyası, değilse yeni yaprak); öbür eksende sarılır. Üst ölçüler değişmez; elle sayı girilince spacing hedefi
+ *  kalkar, derz bağları kalan derzlerde korunur. `leaves(k, from, total, base)`: yeni yapraklar (base = bölünen yaprak, eklemede null).
+ *  Döner: sonuç düğüm id'si + değiştiyse yeni düğüm ve üyeleri yenilenecek yapraklar. */
+export function resplitNode<N extends TreeNode>(
+  node: N, axis: 'u' | 'v', count: number, gap: number, keepTargetSize: boolean,
+  kit: { prefix: string; clone: (x: N) => N; leaves: (k: number, from: number, total: number, base: LeafOf<N> | null) => N[] },
+): { id: string; repl?: N; restructured?: Set<string> } {
+  const gapsFor = (m: number, old: number[] = []) => Array.from({ length: m }, (_, i) => old[i] ?? old[0] ?? gap);
+  const ids = (xs: N[]) => xs.flatMap(c => treeLeaves(c).map(l => l.id));
+  const n = count;
+  if (node.kind === 'leaf') {
+    if (n <= 1) return { id: node.id };
+    const split = { id: genId(kit.prefix), kind: 'split', axis, sizes: [], gaps: gapsFor(n - 1), children: kit.leaves(n, 0, n, node as LeafOf<N>) } as unknown as N;
+    return { id: split.id, repl: split, restructured: new Set([node.id]) };
+  }
+  const s = node as SplitOf<N>, kids = s.children as N[];
+  if (s.axis === axis) {
+    if (n === kids.length) return { id: s.id };
+    if (n <= 1) return { id: kids[0].id, repl: kids[0], restructured: new Set(ids(kids.slice(1))) };
+    let children = kids.slice();
+    const restructured = new Set<string>();
+    if (n > children.length) {
+      const last = children[children.length - 1], add = n - children.length;
+      children = [...children, ...(last.kind === 'split' ? Array.from({ length: add }, () => kit.clone(last)) : kit.leaves(add, children.length, n, null))];
+    } else {
+      for (const id of ids(children.slice(n))) restructured.add(id);
+      children = children.slice(0, n);
+    }
+    const refs = Object.fromEntries(Object.entries(s.refs ?? {}).filter(([k]) => +k < n - 1));
+    const next = {
+      ...s, children, gaps: gapsFor(n - 1, s.gaps), sizes: [],
+      targetSize: keepTargetSize ? s.targetSize : undefined, refs: Object.keys(refs).length ? refs : undefined,
+    } as unknown as N;
+    return { id: s.id, repl: next, restructured };
+  }
+  if (n <= 1) return { id: s.id };
+  const wrap = {
+    id: genId(kit.prefix), kind: 'split', axis, sizes: [], gaps: gapsFor(n - 1), children: [node, ...Array.from({ length: n - 1 }, () => kit.clone(node))],
+  } as unknown as N;
+  return { id: wrap.id, repl: wrap, restructured: new Set() };
 }
 export function jointRefs<N extends TreeNode>(n: N): Array<{ splitId: string; k: number; ref: RefOf<N> }> {
   if (n.kind === 'leaf') return [];
@@ -326,8 +446,7 @@ export function splitGapsOf(n: { children: unknown[]; gaps: number[] }, gap: num
   if (n.gaps.length === m && n.gaps.every(x => Number.isFinite(x) && x >= 0)) return n.gaps.slice();
   return Array.from({ length: m }, (_, i) => (Number.isFinite(n.gaps[i]) && n.gaps[i] >= 0 ? n.gaps[i] : n.gaps.length ? n.gaps[0] : gap));
 }
-// KATSAYI kuralı: kilitli ölçüler sabit; kalan alan kilitsizlere (girilmişler dahil) mevcut oranlarıyla dağılır.
-// Toplam alanı tutuyorsa sonuç birimdir (kayma yok).
+// Katsayı kuralı: kilitli ölçüler sabit, kalan alan kilitsizlere mevcut oranlarıyla dağılır.
 export function distributeSizes(specs: GapSpec[], L: number, gaps: number[]): GapSpec[] {
   const out = rescaleGaps(specs, L, gaps.length, gaps);
   const resid = round1(L - gaps.reduce((a, g) => a + g, 0) - out.reduce((a, g) => a + g.value, 0));
@@ -340,8 +459,7 @@ export function distributeSizes(specs: GapSpec[], L: number, gaps: number[]): Ga
   }
   return out;
 }
-// along[k] = k. derz merkezinin bölme başlangıcından uzaklığı (u: soldan, v: üstten). Bağ kilitli ölçüye de baskındır;
-// tüm ölçüler edited yazılır → bağsız çözüm aynı değerleri verir. Parçalar (en az 1 mm) sığmazsa bağ yok sayılır.
+// along[k] = k. derz merkezinin bölme başından uzaklığı (u soldan, v üstten). Bağ kilitli ölçüye de baskın; parçalar sığmazsa yok sayılır.
 export function distributeSizesWithJoints(specs: GapSpec[], L: number, gaps: number[], along: Map<number, number>): GapSpec[] {
   const n = gaps.length + 1;
   const base = Array.from({ length: n }, (_, i) => specs[i] ?? { value: 0, locked: false });
@@ -467,11 +585,8 @@ export function setMemberPanelThickness(vfIds: string[], t: number): void {
 }
 
 // ══════════════════════════════════════════════ 2. RAF / DİKME GRUPLARI ══════════════════════════════════════════════
-// RAF / DİKME GRUPLARI: grup = şekilli serbest hacim (CavityGrid hücre bölgesi, tohumdan floodRegion) + n panel + n+1 boşluk.
-//  • Her raf kendi dilimindeki kesitin sınır çokgenini alır (sectionPolygon); çıpa (anchorFrac) tohumdur, kutu merkezi değil.
-//  • Boşluk: Σgap + n·t = L; kilitli boşluk sabit, kilitsizler oranla ölçeklenir.
-//  • VF SIRASI (basan/basılan): üyelerden ÖNCE gelen gövde paneli hacmi sınırlar, SONRA geleni üyeler damgalar.
-//    İç grup yalnız kendinden önceki iç grupların panelleriyle sınırlanır.
+// Grup = şekilli serbest hacim (CavityGrid bölgesi) + n panel + n+1 boşluk; Σgap + n·t = L. Her raf kendi dilimindeki kesiti alır.
+// VF sırası: üyelerden önce gelen gövde paneli hacmi sınırlar, sonra geleni üyeler damgalar.
 
 export const GROUP_PANEL_THICKNESS = 18;
 const TOL = 0.5;
@@ -523,11 +638,8 @@ export function bodyLocalBox(parent: Shape): CavityBox | null {
   return bb ? toCavityBox(bb) : null;
 }
 
-/** CANLI YÜZ KUTUSU (Goker: "kübün derinliği değişince / subtract güncellenince kapak yerinde kalıyor"): kapak / arkalık grubunun
- *  seçildiği yüzün kutusu (`faceBox`) seçim anında saklanır; gövde boyutu, çıkarma ya da vertex düzenlemesi değişince yüz yer
- *  değiştirir. Saklı kutu GÜNCEL gövdede aynı yöne bakan (eksen + yön) düz yüzlerle eşlenir: yüz düzlemindeki iki eksende en çok
- *  örtüşen yüz (örtüşme yoksa düzlem içi merkezi en yakın) — derinlik değişince ön yüz yeni z'ye, genişlik değişince yeni ölçüye,
- *  çentik büyüyünce / küçülünce çentik yüzüyle birlikte gider. Uygun yüz yoksa saklı kutu kalır. */
+/** Canlı yüz kutusu: saklı `faceBox` güncel gövdede aynı yöne bakan, en çok örtüşen düz yüzle eşlenir (ölçü / çıkarma / vertex değişince
+ *  kapak yüzle gider). Uygun yüz yoksa saklı kutu kalır. */
 const _faceBoxCache = new Map<string, Array<{ box: CavityBox }>>();
 export function liveFaceBox(parent: Shape, axis: 0 | 1 | 2, side: 1 | -1, stored: CavityBox): CavityBox {
   const geo = effectiveBodyGeometry(parent);
@@ -581,8 +693,7 @@ export interface CavityGrid {
   nx: number; ny: number; nz: number;
   /** 1 = serbest (gövde içinde, panel dışında). */
   free: Uint8Array;
-  /** Gövde katısının içi (düzenlenmiş gövde: vertex / çıkarma / pah); düz kutuda yok. Işın örnekleri bununla da sınanır — hücre
-   *  merkezi içeride diye kabul edilen büyük hücrenin gövde DIŞINDA kalan kısmına (eğik üstün üstü) aday verilmez. */
+  /** Gövde katısının içi (düzenlenmiş gövdede); ışın örnekleri gövde dışındaki hücre kısmına aday vermesin. */
   inside?: (p: Vec3) => boolean;
   obstacles?: CavityBox[];
   /** Eğik panel yüzleri: kutu değil YARIM-UZAY olarak sınırlar. */
@@ -591,9 +702,7 @@ export interface CavityGrid {
   solids?: SolidObstacle[];
 }
 
-// EĞRİ PANEL (gövdenin radüslü yüzündeki): kutusu kemerin altındaki boşluğu da kapatır (Goker: "oval gövdede dikme / raf hacmi
-// düzgün seçilmiyor") → ızgarada kutu engeli DEĞİL katıdır: hücre ancak tamamı katının içindeyse dolu sayılır, ışın örnekleri ve
-// hacim açıklığı (refineRegionExtents) katının gerçek yüzeyini okur; üyeyi motor panelin katısıyla keser (cutByEarlierOverlaps).
+// Eğri panel ızgarada kutu engeli değil katıdır: hücre ancak tamamı katının içindeyse dolu; açıklık katının gerçek yüzeyini okur.
 interface SolidObstacle { id: string; vfId?: string; key: string; bbox: CavityBox; inside: (p: Vec3) => boolean }
 const _solidTests = new WeakMap<THREE.BufferGeometry, (p: Vec3) => boolean>();
 function solidObstacleOf(p: Shape, parent: Shape, bbox: CavityBox): SolidObstacle {
@@ -609,8 +718,7 @@ function solidObstacleOf(p: Shape, parent: Shape, bbox: CavityBox): SolidObstacl
 }
 const isCurvedBodyPanel = (p: Shape): boolean => !!(p.parameters as any)?.curved;
 
-// EĞİK PANELLER: kutu engeli kama boşluğunu kaybettirir → ızgarada engel değil, tohuma bakan yüzün yarım-uzayıyla kırpılır.
-// VF sırasında ÖNCE ise (basan) üye uzak yüze uzatılır (motor cutByRotatedPressers pahlar); sonra ise yakın yüze (iç içe geçmez).
+// Eğik paneller: ızgarada engel değil, tohuma bakan yüzün yarım-uzayıyla kırpılır. Önce geliyorsa üye uzak yüze, sonraysa yakın yüze.
 interface TiltFace { id: string; vfId?: string; n: Vec3; d: number; bbox: CavityBox }
 interface TiltPlane extends TiltFace { bevel?: boolean }
 const dot3 = (a: Vec3, b: Vec3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
@@ -681,9 +789,8 @@ function clippedRegionBBox(g: CavityGrid, cells: Set<number>, planes: TiltPlane[
   return refineRegionExtents(g, cells, planeClippedBBox(g, cells, planes), planes);
 }
 
-// GERÇEK AÇIKLIK: hücreler eksen-düzlemlidir; eğri panelin (katı) ya da şekilli gövdenin kestiği hücre "kısmen serbest" sayılır ve
-// kutusu boşluğun ötesine taşar (kemerin altındaki bölge kemerin kutusuna kadar çıkar). Dizilim açıklığı L ve seçim kutusu gerçek
-// serbest noktaları okumalı: her eksen yönünde, bölge sütunlarında (kafes + en iyi sütunun çevresinde arama) serbest olan en uç nokta.
+// Gerçek açıklık: eğri panelin / şekilli gövdenin kestiği hücre "kısmen serbest" ve kutusu taşar → her eksen yönünde gerçek serbest
+// en uç nokta aranır.
 const _extentCache = new WeakMap<CavityGrid, Map<string, CavityBox>>();
 function refineRegionExtents(g: CavityGrid, cells: Set<number>, box: CavityBox, planes: TiltPlane[]): CavityBox {
   if (!cells.size) return box;
@@ -967,11 +1074,8 @@ function buildCavityGrid(
   const modified = !!parent.vertexModifications?.length || !!parent.subtractionGeometries?.some(Boolean) || !!parent.fillets?.length;
   const inside = groups.length === 6 && axisFaces === 6 && !modified ? null : makeInsideMeshTest(geo);
   if (inside) grid.inside = inside;
-  // Hücre gövdenin içinde mi: merkez, değilse 8 iç örnek (¼ / ¾). Eğik gövde yüzünü (vertex düzenlemesi) kesen BÜYÜK hücrenin merkezi
-  // eğimin üstünde kalabilir; yalnız merkeze bakılınca hücre dolu sayılıp boşluk eğimden çok aşağıda kesiliyordu (Goker: "eğimli
-  // üstlü dolapta kapak derzinden atılan dikme kısa kalıyor"). Kısmen içerideki hücre serbesttir; eğik üst panel yarım-uzayı
-  // (tiltFaces) bölgeyi kırpar, motor iç paneli gövdeyle keser.
-  // Eğri panel katısı da aynı kuralla: örneklerinden biri gövdenin içinde VE hiçbir katının içinde değilse hücre serbesttir.
+  // Hücre gövdenin içinde mi: merkez, değilse 8 iç örnek (eğik üstte büyük hücrenin merkezi dışarıda kalabilir). Kısmen içerideki serbest;
+  // eğri panel katısı da aynı kuralla.
   const ptFree = (q: Vec3): boolean => (!inside || inside(q)) && !solids.some(x => x.inside(q));
   const cellInBody = (i: number, j: number, k: number, c: Vec3): boolean => {
     if (!inside && !solids.length) return true;
@@ -1134,14 +1238,6 @@ export function traceMaskLoops(us: number[], vs: number[], filled: (i: number, k
   return loops;
 }
 
-const pointInPoly = (pt: Pt2, poly: Pt2[]) => {
-  let inside = false;
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    const a = poly[i], b = poly[j];
-    if ((a.y > pt.y) !== (b.y > pt.y) && pt.x < ((b.x - a.x) * (pt.y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
-  }
-  return inside;
-};
 
 /** Dilimi kesen TÜM katmanlarda bölgede olan (u,v) hücrelerinin dış sınırı; çok parçada tohumu içeren, yoksa en büyük. */
 function sectionPolygon(g: CavityGrid, cells: Set<number>, axis: number, a0: number, a1: number, seed?: Vec3): Pt2[] | null {
@@ -1426,8 +1522,7 @@ export function rescaleGaps(gaps: GapSpec[], L: number, count: number, ts: numbe
   return out;
 }
 
-/** Ölçü modu (DoorService ile ortak): 'open' alan ve kardeşle oranla; 'hold' (edited) kardeş farkını almaz ama alanla ölçeklenir;
- *  'locked' sabit. n ölçüde en fazla n−1 pinli+kilitli (passiveGapIndex). */
+/** Ölçü modu: 'open' oranla, 'hold' alanla ölçeklenir, 'locked' sabit. n ölçüde en fazla n−1 kilitli (passiveGapIndex). */
 export type GapMode = 'open' | 'hold' | 'locked';
 export const gapMode = (g: GapSpec | undefined): GapMode => (g?.locked ? 'locked' : g?.edited ? 'hold' : 'open');
 export const nextGapMode = (m: GapMode): GapMode => (m === 'open' ? 'hold' : m === 'hold' ? 'locked' : 'open');
@@ -1460,9 +1555,7 @@ export function cycleGapMode(gaps: GapSpec[], k: number, count = gaps.length): G
   }
   return gaps.map((g, i) => (i === k ? { ...g, locked: next === 'locked', edited: next === 'hold' } : g));
 }
-/** Ölçü girişi (kapak + raf/dikme ortak): fark AÇIK ölçülere oranla (yoksa pinlilere), MIN su doldurma; sığmayan değer kırpılır.
- *  `base` = düzenleme başındaki dizi (oranlar her tuşta kaymasın). Pasif ölçü ve diğerleri kilitliyken giriş yok sayılır;
- *  `force` (kapak derzi bağı) ikisini de yok sayar (hepsi kilitliyse değer alana kırpılır). */
+/** Ölçü girişi: fark açık ölçülere oranla (yoksa pinlilere); `base` = düzenleme başındaki dizi. `force` (derz bağı) kilitleri yok sayar. */
 export function applyGapEditProportional(gaps: GapSpec[], k: number, value: number, L: number, count: number, ts: number[],
   opts: { base?: GapSpec[]; min?: number; force?: boolean } = {}): GapSpec[] {
   const n = count + 1, MIN = opts.min ?? MIN_GAP;
@@ -1592,8 +1685,7 @@ function refPlaneInParent(st: CavityStep, parent: Shape, shapes: Shape[]): { cen
   return { center: [c.x, c.y, c.z], normal: [n.x, n.y, n.z] };
 }
 
-/** Hacim adımları hücre düzeyinde: yalnız çıpanın düştüğü BAĞLANTILI sınır yüzü hareket eder (L'nin bir kolu).
- *  Büyüme ham hacmi aşamaz; küçülme 1 mm derinlik bırakır. */
+/** Hacim adımları hücre düzeyinde: yalnız çıpanın düştüğü bağlantılı sınır yüzü hareket eder; büyüme ham hacmi aşamaz. */
 interface StepFace { coord: number; cols: Set<string>; anchorCell: number }
 function findStepFace(g: CavityGrid, cells: Set<number>, axis: number, side: 1 | -1, anchor: Vec3): StepFace | null {
   const [ua, va] = [0, 1, 2].filter(a => a !== axis);
@@ -1690,8 +1782,7 @@ function applyCavityStepsToCells(
 
 interface ObstacleSet { obstacles: CavityBox[]; splitBoxes: CavityBox[]; tiltFaces: TiltFace[]; solids?: SolidObstacle[] }
 
-/** Düz paneller kutu engeli; eğik paneller yalnız bölme düzlemi (splitBoxes) + yarım-uzay (tiltFaces); EĞRİ paneller katı (solids).
- *  Kapak hiç engel değildir; arkalık yalnız `backBox` bir kutu verirse (çakma kenarındaki / geçtiği levhayı kısaltır — BackService). */
+/** Düz paneller kutu engeli; eğikler bölme düzlemi + yarım-uzay; eğriler katı. Kapak engel değil; arkalık yalnız `backBox` verirse. */
 export function collectObstacles(
   parent: Shape, panels: Shape[], include: (p: Shape) => boolean = () => true, backBox: (p: Shape) => CavityBox | null = () => null,
 ): ObstacleSet {
@@ -1707,7 +1798,7 @@ export function collectObstacles(
     if (isCurvedBodyPanel(p)) { splitBoxes.push(b); solids.push(solidObstacleOf(p, parent, b)); }
     else if (panelHasRotation(p)) { splitBoxes.push(b); tilted.push(p); } else obstacles.push(b);
   }
-  // BAZA AYAĞI SETLERİ: yalnız AYAKLAR engeldir (Goker: "ayağın aksesuarına çarpmıyorsa panel o kısma yerleşsin") — set hacmi değil.
+  // BAZA AYAĞI SETLERİ: yalnız AYAKLAR engeldir, set hacmi değil.
   for (const ps of plinthSetsOf(parent.id)) obstacles.push(...plinthLegBoxes(ps));
   return { obstacles, splitBoxes, tiltFaces: tiltedPanelFaces(parent, tilted), ...(solids.length ? { solids } : {}) };
 }
@@ -1719,8 +1810,7 @@ const groupVfIndex = (group: PanelGroup, vfIdx: Map<string, number>): number => 
   return best;
 };
 
-/** Hacmi SINIRLAYAN panel yüklemi (çözüm, yeniden seçim ve x-ray aynı kuralı okur): VF sırasında üyelerden ÖNCE gelen gövde
- *  paneli sınırlar, SONRA gelen sınırlamaz (grup basar); başka grup yalnız daha önce oluşturulmuşsa. VF'siz panel sınırlar. */
+/** Hacmi sınırlayan panel: sırada üyelerden önce gelen gövde paneli; başka grup yalnız önce oluşturulmuşsa; VF'siz panel sınırlar. */
 export function groupBoundsPanelPredicate(
   group: PanelGroup, groups: PanelGroup[], vfs: VirtualFace[] = useAppStore.getState().virtualFaces,
 ): (p: Shape) => boolean {
@@ -1745,8 +1835,7 @@ function groupObstacles(group: PanelGroup, parent: Shape, panels: Shape[], group
   return collectObstacles(parent, panels, p => bounds(p), p => backObstacleFor(group, p));
 }
 
-/** ÜYE BAŞINA ARKALIK KESİMİ (BackService.backMemberCutFor): grubun bir üyesi iç parçanın kanallı kenarı / bağlı derzi iken ilişkisiz
- *  üyeler parçanın levhasından geçmesin — grup hacmi değişmez, yalnız o üyelerin kesiti kutunun dışında alınır (solveGroup). */
+/** Üye başına arkalık kesimi (backMemberCutFor): ilişkisiz üyeler parçanın levhasından geçmesin; grup hacmi değişmez. */
 type MemberCut = { box: CavityBox; vfIds: string[] };
 function groupMemberBackCuts(group: PanelGroup, parent: Shape, panels: Shape[]): MemberCut[] {
   const out: MemberCut[] = [];
@@ -1814,9 +1903,8 @@ export function boxesSurface(boxes: CavityBox[]): number[] {
   return regionSurface(g, cells);
 }
 
-/** KUTU İÇİ SERBEST BÖLGE (baza ayağı seti; Goker: "ayak da raf ve dikme gibi mevcut hacmin şeklini alsın"): gövdenin içi, engellerin
- *  dışı hücreler `box` ile kırpılır ve `seed`den taşırılır (L gövde, çıkarma, erken yan paneller). Kutular (birleşik) + bbox + taban
- *  çokgeni (x, z; tüm katmanlarda serbest hücreler). Tohum serbest değilse kutudaki en yakın serbest hücre. */
+/** Kutu içi serbest bölge (baza seti): gövdenin içi, engellerin dışı hücreler `box` ile kırpılıp `seed`den taşırılır.
+ *  Döner: kutular + bbox + taban çokgeni. Tohum serbest değilse en yakın serbest hücre. */
 export interface FreeRegion { boxes: CavityBox[]; bbox: CavityBox; poly: Pt2[] }
 export function freeRegionInBox(parent: Shape, obstacles: CavityBox[], box: CavityBox, seed: Vec3): FreeRegion | null {
   const g = buildCavityGrid(parent, obstacles, [], [], boxPlanes(box));
@@ -1920,8 +2008,7 @@ function solveGroup(group: PanelGroup, parent: Shape, panels: Shape[], groups: P
   }
   const L = boxSpan(cavity, group.axis);
   let gaps = rescaleGaps(group.gaps, L, group.count, ts);
-  // Kapak derzine bağ: bağlı üyenin boşluğu derzden yazılır, kalanlar katsayı kuralıyla. Derz yoksa / eksen uyuşmuyorsa / derz
-  // hacmin dışındaysa bağ bu çözümde yok sayılır (bayat bağı syncPanelGroups düşürür).
+  // Kapak derzine bağ: bağlı üyenin boşluğu derzden yazılır; derz yoksa / hacim dışındaysa bu çözümde yok sayılır.
   if (group.doorBond) {
     const bj = doorJointForBond(group.doorBond, parent, panels);
     const m = Math.min(Math.max(0, group.doorBond.member ?? 0), group.count - 1);
@@ -1991,15 +2078,6 @@ const fallbackSolution = (group: PanelGroup, gaps: GapSpec[], count: number, see
   starts: panelStarts(group.cavity, group.axis, groupFacing(group), gaps, memberThicknessesOf(group, count)), sections: Array(count).fill(null), seed,
 });
 
-function removeMembers(vfIds: string[]): void {
-  const st = useAppStore.getState();
-  for (const vfId of vfIds) {
-    const p = panelOfVf(vfId, st.shapes);
-    if (p) st.deleteShape(p.id);
-    st.deleteVirtualFace(vfId);
-    if (st.selectedPanelRow === `vf-${vfId}`) st.setSelectedPanelRow(null);
-  }
-}
 
 function makeMemberVf(group: PanelGroup, i: number, sol: GroupSolution): VirtualFace {
   const g = memberGeometry(group, sol, i);
@@ -2054,8 +2132,7 @@ export function createPanelGroupFromCavity(
   return group;
 }
 
-// YENİDEN HACİM SEÇİMİ: ızgara yalnız gruptan önceki panellerle (repickObstacles). Taşımada adet, kalınlıklar, ad ve
-// VF SIRASI korunur; boşluklar aynı eksende ölçeklenir, eksen değişince eşitlenir; hacim adımları eski hacme ait → düşer.
+// Yeniden hacim seçimi: ızgara yalnız gruptan önceki panellerle. Adet, kalınlık, ad, VF sırası korunur; hacim adımları düşer.
 
 export function startGroupRepick(groupId: string): void {
   const st = useAppStore.getState();
@@ -2143,7 +2220,7 @@ export async function setGroupCount(groupId: string, count: number, opts: { keep
   const memberThicknesses = memberThicknessesOf(group, n);
   const gaps = equalGaps(boxSpan(group.cavity, group.axis), n, memberThicknesses);
   let memberVfIds = group.memberVfIds.slice();
-  if (n < group.count) { removeMembers(memberVfIds.slice(n)); memberVfIds = memberVfIds.slice(0, n); }
+  if (n < group.count) { removeMemberVfs(memberVfIds.slice(n)); memberVfIds = memberVfIds.slice(0, n); }
   const next: PanelGroup = { ...group, count: n, gaps, memberVfIds, memberThicknesses };
   const sol = solveFromStore(next) || fallbackSolution(group, gaps, n, anchorPoint(group, group.cavity));
   for (let i = 0; i < Math.min(n, group.count); i++) {
@@ -2232,8 +2309,7 @@ export async function editGroupGap(groupId: string, k: number, value: number): P
   if (!group || !Number.isFinite(value)) return;
   if (passiveGapIndex(group.gaps, group.count + 1) === k) { groupEditBase = null; return; }
   const gaps = editedGaps(group, k, value);
-  // Derze bağlı üyenin yan boşluğu girilince LEVHA değil KAPAK DERZİ taşınır (levha rebuild'de derzi izler).
-  // Derz taşınamıyorsa girilen değer kazanır: bağ çözülür (levha kapağı artık izlemez).
+  // Derze bağlı üyenin yan boşluğu girilince kapak derzi taşınır; taşınamazsa bağ çözülür.
   let extra: Partial<PanelGroup> = group.targetGap != null ? { targetGap: undefined } : {};
   if (group.doorBond) {
     const m = Math.min(Math.max(0, group.doorBond.member ?? 0), group.count - 1);
@@ -2305,10 +2381,7 @@ export async function executeCavityExtrude(groupId: string, faceNormal: Vec3, va
   return true;
 }
 
-/** OK İLE HACİM (Goker, Eki 2026 — "arrow dyn / fixed hacimlerde de olsun"): yüz seçilmez, oka göre hacmin o yöndeki EN DIŞ yüzü.
- *  Adım çıpasız yazılır (motor bölge kutusunun o yüzünün ortasını çıpa alır → dış yüz). Aynı yönde çıpasız adım varsa birleşir:
- *  dyn → değer ona eklenir (fixed adımda ölçü değer kadar değişir, ref adımda çözülen değerden dyn'e döner); fixed → ölçü = değer.
- *  Hacim yalnız serbest alan içinde değişir (büyüme ham hacmi aşamaz). */
+/** Ok ile hacim: oka göre hacmin en dış yüzü; çıpasız adım yazılır, aynı yöndekiyle birleşir (dyn toplanır, fixed = değer). */
 export async function executeCavityExtrudeOuter(groupId: string, axis: AxisDirLike, value: number, mode: 'dyn' | 'fixed'): Promise<boolean> {
   const group = groupById(groupId);
   if (!group || !Number.isFinite(value)) return false;
@@ -2398,7 +2471,7 @@ export function renamePanelGroup(groupId: string, name: string): void {
 export function deletePanelGroupWithMembers(groupId: string): void {
   const group = groupById(groupId);
   if (!group) return;
-  removeMembers(group.memberVfIds);
+  removeMemberVfs(group.memberVfIds);
   useAppStore.getState().deletePanelGroup(groupId);
 }
 
@@ -2438,38 +2511,13 @@ export function syncPanelGroups(parentShapeId: string): void {
 }
 
 // ═══════════════════════════════════════════════════ 3. HIZLI GÖVDE ═══════════════════════════════════════════════════
-/* HIZLI GÖVDE: dört gövde paneli (üst/sol/sağ/alt) + taban (düz / ayaklı / bazalı) + arkalık tek seferde, sanki tek tek
-   yerleştirilmiş gibi üretilir. Sonuç sıradan VF-panelleridir (adımlarına girilip değiştirilir); yalnız AYAKLAR gövde
-   parametresinde kalıcıdır (`parameters.legs`) ve listede ilk sırada çizilir.
-
-   Köşe birleşimi = VF SIRASI: önce yerleşen panel köşeden geçer (basan), sonra yerleşen arada kalır (basılan).
-   Dört köşenin kısıtlarından topolojik sıra çıkarılır; çevrim (fırıldak) kurulamaz → tercih sırası (sol, sağ, üst, alt).
-   Bölgeler YEREL olarak, önceki panellerin (gerekirse taşınmış/kısaltılmış) vekil geometrileriyle hesaplanır; her şey
-   tek seferde store'a yazılır, arkalık ise paneller gerçekten üretildikten (rebuild boşaldıktan) sonra adaylardan kurulur.
-
-   AYARLAR gövdede saklanır (`parameters.quickBody`), parçalar VF.quickBody ile işaretlidir (Goker: "ayarını tut, tekrar seçip
-   revize edeyim"). Yeniden uygulama: aynı parçanın VF / panel id'si korunur (raf, kapak, arkalık referansları bozulmaz), kalkan
-   parçalar silinir, gövde VF'leri HER ZAMAN gövdenin öteki VF'lerinin ÖNÜNE yazılır (gövde panelleri önce yerleşir, geçer);
-   hızlı gövdenin kurduğu arkalık (`BackGroup.quickBody`) yerinde güncellenir, ayaklar yeniden yazılır.
-
-   KAYITLAR (Goker, Kas 2026 — "üst panel yok / alt panel yok seçeneği; yerine kayıt arayüzü"): üst / alt panel yerine ön + arka kayıt
-   (store.QuickBodyRails; Goker, 8 Kas 2026 — "üst ya da alt panel varsa da kayıt yerleşebilir": panel VAR/YOK ile ön / arka kayıt
-   BAĞIMSIZ). Panel varken: dikey kayıt ön / arka yüzde panele dayanır (yüz bölgesinde panelin şeridi sınırdır), yatay kayıt panelin iç
-   yüzüne İSTİFLENİR (VF.stackDepth = panel kalınlığı, altta + lift; motor her regen'de aynı düzlemde çözer) ve kayıtlar köşe birleşiminden
-   bağımsız olarak YANLARDAN SONRA yerleşir (hep yanların arasında). DİKEY kayıt ↔ panel birleşimi (`RailSpec.join`, Goker 8 Kas 2026 —
-   "dikey kayıt ve bütün panel varsa 2 panel arasındaki birleşim tipini de göster"): 'panel' = panel geçer (yukarıdaki) · 'rail' = kayıt
-   geçer: kayıt PANELDEN ÖNCE ve yüz kenarından başlar (panelsizle aynı kesimler), panel kayıtın yüzünde kısalır; panel yanların üstünden
-   geçen köşede kayıt yanlardan da önce kurulduğundan o uçtan t kadar X kesimi alır. Panelsiz: yatay kayıt = üst / alt YÜZDE yatan şerit: tam serbest bölge, ön / arka kenardan `setback` kadar dyn kesim +
-   karşı yüzden FIXED genişlik (`size`) — gövde derinliği değişse de kayıt genişliği sabit kalır. Dikey kayıt = ÖN / ARKA YÜZDE dik duran
-   şerit: üstte alt yüzünden fixed yükseklik; altta üst yüzünden fixed (lift + size) + alt yüzünden dyn −lift (ayak / baza yüksekliği
-   kadar yukarıda; move kullanılmaz — ön yüz bölgesi tam boy olduğundan taşıma paneli gövdenin üstüne taşırırdı), çektirme = içeri move.
-   Kayıtlı yüzün köşeleri 'side' (yanlar geçer); YALNIZ ön ve arka kayıt İKİSİ DE YATAYSA köşe birleşimi serbesttir (Goker, Kas 2026 —
-   "her 2 kayıt da yatay olduğunda birleşim tipi değişebilsin; üst ve alt için ayrı ayrı") — 'horiz' = kayıtlar yanların üstünden / altından
-   geçer (sıra: kayıtlar önce, yan panel kayıtın büyük yüzünde biter: H − t, tam derinlik). ARKA KAYIT ↔ KANALLI ARKALIK (`backRel`):
-   'groove' → kayıt arkalık sınırı, arkalık kayıta `inset` kadar girer (kanal kesicisi kayıtı oyar); panel varsa panel bu durumda arkalık
-   sınırı DEĞİLDİR (arkalık panele değil kayıta girer) · 'infront' → kayıt (yatay da dikey de) arkalık sınırı DEĞİLDİR ve arkalığın
-   önüne (setback + kalınlık) çekilir; arkalık kayıtın arkasından panele (panel varsa, kanallı) ya da gövde kenarına sürer. Panel +
-   ÇAKMA arkalıkta panel sınırdır (arkalık paneli de örter), arka kayıt değil. */
+/* HIZLI GÖVDE: gövde panelleri + taban + kayıtlar + arkalık tek seferde, tek tek yerleştirilmiş gibi; sonuç sıradan VF-panelleridir.
+   Köşe birleşimi = VF sırası (önce yerleşen geçer); dört köşenin kısıtlarından topolojik sıra, çevrimde tercih sırası.
+   Ayarlar gövdede (`parameters.quickBody`), parçalar VF.quickBody; yeniden uygulamada VF / panel id'leri korunur, gövde VF'leri öne yazılır.
+   Kayıtlar (QuickBodyRails): panel var / yok ile ön / arka kayıt bağımsız. Panelliyken dikey kayıt panele dayanır, yatay kayıt panelin
+   iç yüzüne istiflenir; `join` 'rail' ise kayıt panelden önce kurulur, panel kayıtta kısalır. Panelsiz yatay kayıt = yüzde şerit, dikey =
+   ön / arka yüzde dik şerit. İki kayıt da yatayken köşe birleşimi seçilebilir. Arka kayıt ↔ kanallı arkalık (`backRel`): 'groove' kayıt
+   arkalık sınırı, 'infront' kayıt arkalığın önünde. Çakma arkalıkta panel sınırdır. */
 export type QuickPanelKey = 'top' | 'left' | 'right' | 'bottom';
 export const QUICK_PANEL_NAME: Record<QuickPanelKey, string> = { top: 'Top', left: 'Left', right: 'Right', bottom: 'Bottom' };
 /** Kayıt parçası adları (liste). */
@@ -2500,8 +2548,7 @@ export const panelYieldsBackTo = (cfg: QuickBodyConfig, face: 'top' | 'bottom'):
 /** Dikey kayıt aynı yüzdeki tam paneli GEÇİYOR mu (RailSpec.join 'rail'): kayıt yüz kenarına kadar, panel kayıtın yüzünde kısalır. */
 export const railPassesPanel = (r: QuickBodyRails, pos: 'front' | 'rear'): boolean => r.panel && r[pos].kind === 'vertical' && r[pos].join === 'rail';
 
-/** PANELSİZ yüzde ön + arka kayıt İKİSİ DE yatay → köşe birleşimi seçilebilir (kayıtlar yanların üstünden / altından geçebilir). Panel
- *  varsa köşeyi panel belirler (kayıtlar hep yanların arasında). */
+/** Panelsiz yüzde iki kayıt da yatay → köşe birleşimi seçilebilir; panel varsa köşeyi panel belirler. */
 export const railsBothHorizontal = (cfg: QuickBodyConfig, face: 'top' | 'bottom'): boolean => {
   const r = railsOf(cfg, face);
   return !r.panel && r.front.kind === 'horizontal' && r.rear.kind === 'horizontal';
@@ -2509,9 +2556,7 @@ export const railsBothHorizontal = (cfg: QuickBodyConfig, face: 'top' | 'bottom'
 /** Panelsiz yüzün köşeleri kilitli mi (kayıt yok / dikey kayıt var → yanlar geçer). */
 const railsLockCorners = (cfg: QuickBodyConfig, face: 'top' | 'bottom') => !facePanelOn(cfg, face) && !railsBothHorizontal(cfg, face);
 
-/** PANEL UCUNUN İZİNLİ ARALIĞI (cfg.ext; + uzat, − kısalt): köşede GEÇEN parçanın ucu yalnız uzar (kısalırsa yüz bölgesi boşalan
- *  yere açılır, karşı parça içine girer), DURAN parçanın ucu yalnız kısalır (uzarsa geçen parçaya girer). Yüzü boş (None) köşede yanın
- *  ucu serbest; ön / arka uçlar serbest. Motor (edgeCutsFor) ve arayüz aynı aralığı kullanır. */
+/** Panel ucunun izinli aralığı (cfg.ext): köşede geçen parça yalnız uzar, duran yalnız kısalır; boş köşede ve ön / arka uçta serbest. */
 export function panelEdgeLimits(cfg: QuickBodyConfig, key: QuickPanelKey, dir: PanelEdgeDir): [number, number] {
   const j = effectiveJoins(cfg), isSide = key === 'left' || key === 'right';
   if (isSide && (dir === 'top' || dir === 'bottom')) {
@@ -2531,9 +2576,7 @@ export function panelEdgeValue(cfg: QuickBodyConfig, key: QuickPanelKey, dir: Pa
   return Math.min(hi, Math.max(lo, panelEdgeOf(cfg, key, dir)));
 }
 
-/** ETKİN ARKALIK REFERANSI: seçilen parça (cfg.backRef; varsa ve geçerliyse — yanlar her zaman, üst / alt panel varken, arka kayıt
- *  varken ve arkalığın önünde değilken); yoksa KANALLI arkalıkta arkalık sınırı olan arka kayıt (önce üst, sonra alt) — kayıt öne
- *  alınınca arkalık onunla gelir; o da yoksa null (gövdenin arka yüzü). */
+/** Etkin arkalık referansı: seçilen parça (geçerliyse); yoksa kanallı arkalıkta arkalık sınırı olan arka kayıt; o da yoksa null. */
 export function backRefOf(cfg: QuickBodyConfig): QuickBackRefKey | null {
   const rearRailOk = (face: 'top' | 'bottom') => railsOf(cfg, face).rear.kind !== 'none' && railBackRelOf(cfg, face) !== 'infront';
   const valid = (k: QuickBackRefKey) => (k === 'left' || k === 'right' ? true : k === 'top' || k === 'bottom' ? railsOf(cfg, k).panel
@@ -2549,8 +2592,7 @@ export function backRefOf(cfg: QuickBodyConfig): QuickBackRefKey | null {
   return null;
 }
 
-/** Etkin köşe birleşimleri: bazalıda alt köşeler her zaman 'side' (alt panel yanların arasında, yanlar yere iner); kayıtlı yüzün köşeleri
- *  de 'side' — yalnız iki kayıt da yatayken kullanıcının seçimi geçerli. */
+/** Etkin köşe birleşimleri: bazalıda alt köşeler ve kayıtlı yüz köşeleri 'side'; yalnız iki kayıt yatayken kullanıcı seçimi. */
 export function effectiveJoins(cfg: QuickBodyConfig): Record<CornerKey, JoinPass> {
   const j = { ...cfg.joins };
   if (cfg.base === 'plinth' || railsLockCorners(cfg, 'bottom')) { j.bl = 'side'; j.br = 'side'; }
@@ -2587,9 +2629,7 @@ export function panelOrderFor(joins: Record<CornerKey, JoinPass>): { order: Quic
 
 /** Tabanın alt panelin altında bıraktığı yükseklik (ayak / baza); düzde 0. */
 export const baseLiftOf = (cfg: QuickBodyConfig): number => (cfg.base === 'plinth' ? cfg.plinth.height : cfg.base === 'legs' ? cfg.legs.height : 0);
-/** HIZLI GÖVDE AYAKLARI (etkin düzen; baza seti kartıyla aynı kural — PlinthService.plinthLegsOf): ayak her zaman KAYITLI bir settir
- *  (cfg.legs.presetId; seçilmemişse kütüphanedeki ilk set) — model + Ø setten; adet / mesafeler elle girildiyse (`ownLayout`) cfg.legs'in
- *  kendi değerleri, yoksa setten. Kütüphane boşsa cfg alanları (yerleşik ayak). null = bu tabanda ayak yok (düz taban; bazalıda count 0). */
+/** Hızlı gövde ayakları (plinthLegsOf ile aynı kural): kayıtlı set (yoksa ilk set); `ownLayout`'ta cfg değerleri. null = ayak yok. */
 export function quickLegsOf(cfg: QuickBodyConfig, st = useAppStore.getState()): PlinthLegs | null {
   const on = cfg.base === 'legs' || (cfg.base === 'plinth' && cfg.legs.count > 0);
   if (!on) return null;
@@ -2610,23 +2650,6 @@ export function legSpots(legs: Pick<BodyLegs, 'count' | 'side' | 'front' | 'rear
   if (legs.count === 6) pts.push({ x: W / 2, z: zf }, { x: W / 2, z: zb });
   return pts;
 }
-/** Ayak yüksekliği: alt panelin alt yüzü − gövde tabanı (canlı); alt panel yoksa kayıtlı yükseklik. */
-export function legHeightOf(body: Shape, legs: BodyLegs, shapes = useAppStore.getState().shapes): number {
-  const bb = localBboxOf(effectiveBodyGeometry(body));
-  const bottom = legs.bottomVfId ? panelOfVf(legs.bottomVfId, shapes) : undefined;
-  const pb = bottom ? localBboxOf(bottom.geometry) : null;
-  if (bb && pb) { const h = pb.min.y - bb.min.y; if (h > 0.5) return h; }
-  return legs.height;
-}
-export const bodyLegsOf = (body: Shape | undefined | null): BodyLegs | null => (body?.parameters?.legs as BodyLegs | undefined) ?? null;
-export function setBodyLegs(shapeId: string, patch: Partial<BodyLegs> | null): void {
-  const st = useAppStore.getState();
-  const body = shapeById(shapeId, st.shapes); if (!body) return;
-  const next = { ...body.parameters };
-  const defaults: BodyLegs = { count: 4, diameter: 50, side: 60, front: 60, rear: 60, height: 100 };
-  if (patch === null) delete next.legs; else next.legs = { ...(bodyLegsOf(body) ?? defaults), ...patch };
-  st.updateShape(shapeId, { parameters: next } as Partial<Shape>);
-}
 
 /* ───────── Yerel bölge → VF ───────── */
 interface FaceCtx { body: Shape; eff: THREE.BufferGeometry; faces: FaceData[]; groups: CoplanarFaceGroup[]; W2L: THREE.Matrix4; box: THREE.Box3 }
@@ -2644,9 +2667,7 @@ function faceGroupFor(ctx: FaceCtx, n: Vec3, seed: THREE.Vector3): CoplanarFaceG
   return cands.sort((a, b) => a.center.distanceTo(seed) - b.center.distanceTo(seed) || b.totalArea - a.totalArea)[0];
 }
 
-/** `buildFacePreview` ile aynı VF kurulumu (önizleme mesh'i olmadan): bölge tek kaynaktan (computeFreeRegionLocal). `stack` = ÜST ÜSTE
- *  (panelin iç yüzüne istiflenmiş) VF — buildFacePreview'ün yığın dalıyla birebir: kontur ve tohum yüzden `depth` kadar içeri, düzlemin
- *  GERİSİNDEKİ paneller (taban panel) kardeş değil, kalanlar delen-engel; motor regen'i aynı düzlemi `stackDepth` ile yeniden çözer. */
+/** `buildFacePreview` ile aynı VF kurulumu (önizlemesiz). `stack` = üst üste VF: kontur ve tohum `depth` içeri, gerideki paneller kardeş değil. */
 function vfOnFace(
   ctx: FaceCtx, n: Vec3, seedLocal: THREE.Vector3, siblings: Shape[], name: string, stack?: { depth: number; baseVfId: string }, strip?: RailStripSpec,
   railExt?: VirtualFace['railExt'],
@@ -2692,13 +2713,9 @@ function vfOnFace(
   };
 }
 
-/* ───────── KAYIT KENARLARI (Goker, Kas 2026 — "kayıtlar aynı ayak gibi referans kübün yüzey rollerine göre akıllı yerleşsin; L dolaba
-   öne 2 kayıt gerekiyorsa otomatik gelsin") ─────────
-   Üst / alt yüzün KONTURU (gövde yüz çevresi; L'de 6 köşe) kenar kenar rol alır — ayak izi düzeniyle aynı yol (LegLayout.edgeRoles:
-   kenarın üstüne oturduğu gövde yüzünün rolü, Parameters › Faces üstüne yazmaları dahil; yüz yoksa normalden otomatik). Her ÖN rollü kenara
-   bir ön kayıt, her ARKA kenara bir arka kayıt gelir: yatay kayıt o kenarın şeridi (VirtualFace.railStrip), dikey kayıt kenarın üstüne
-   oturduğu düşey gövde yüzünde. Köşeler: DIŞBÜKEY köşede komşu (yan panel / önce yerleşen kayıt) damgasıyla keser; İÇBÜKEY köşede (L'nin iç
-   köşesi) önce yerleşen kayıt, sonra yerleşen komşu kayıtın (ya da yan panelin) altına kadar uzar — t×t boşluk kalmaz. */
+/* ───────── KAYIT KENARLARI ─────────
+   Üst / alt yüz konturunun kenarları rol alır (LegLayout.edgeRoles). Her ön kenara ön kayıt, her arka kenara arka kayıt.
+   Dışbükey köşede komşu damgasıyla keser; içbükey köşede önce yerleşen kayıt sonra gelenin altına kadar uzar (t×t boşluk kalmaz). */
 interface RailEdge extends EdgeRole {
   /** Kenarın üstüne oturduğu düşey gövde yüzü (eksen-hizalı ise dikey kayıt buraya); yoksa null. */
   face: BodyFace | null;
@@ -2786,8 +2803,7 @@ function extrudeStepFor(geo: THREE.BufferGeometry, n: Vec3, label: string, value
 type QuickCut = [Vec3, string, number, boolean?];
 const neg = (n: Vec3): Vec3 => [-n[0], -n[1], -n[2]];
 const labelOf = (n: Vec3) => dominantAxisLabel({ x: n[0], y: n[1], z: n[2] });
-/** VEKİL çokgen: kesimlerin VF çokgenine izdüşümü (damga budaması gibi — koordinat kırpma; sıralı: fixed, o anki açıklığa göre).
- *  Kısaltma o yöndeki dış köşeleri içeri çeker; UZATMA (iç köşeye uzayan kayıt) dış köşeleri dışarı taşır (motor damgası ile aynı kural). */
+/** Vekil çokgen: kesimlerin VF çokgenine izdüşümü (damga budaması gibi). Kısaltma köşeleri içeri, uzatma dışarı çeker. */
 function clampVerts(vs: Vec3[], cuts: QuickCut[]): Vec3[] {
   const out = vs.map(v => [...v] as Vec3);
   for (const [n, , value, fixed] of cuts) {
@@ -2848,9 +2864,7 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
     ...existing.filter(isBackPanel).map(backPreviewStamp).filter((p): p is Shape => !!p),
   ];
 
-  // YÜZ ROLLERİNE GÖRE (Goker: "quick body kübün yüz rollerine göre otomatik gelsin: left ise sol panel, üst ise üst; bazalıysa front
-  // olan yerlere baza, rear olan yerlere arkalık"): her rolün EKSEN-HİZALI yüzleri (Parameters › Faces; L gövdede bir rolde birden çok
-  // yüz → "Right", "Right 2"); rolde yüz yoksa eski kutu yüzü.
+  // Yüz rollerine göre: her rolün eksen-hizalı yüzleri (L'de "Right", "Right 2"); rolde yüz yoksa eski kutu yüzü.
   const fallback: Record<QuickPanelKey, { n: Vec3; seed: THREE.Vector3 }> = {
     top: { n: [0, 1, 0], seed: new THREE.Vector3((x0 + x1) / 2, y1, (z0 + z1) / 2) },
     bottom: { n: [0, -1, 0], seed: new THREE.Vector3((x0 + x1) / 2, y0, (z0 + z1) / 2) },
@@ -2860,8 +2874,7 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
   const roleFaces = (role: 'top' | 'bottom' | 'left' | 'right' | 'front' | 'rear') => bodyFacesByRole(body, role).sort((a, b) => b.area - a.area);
   // Yan / üst / alt: EĞİK yüzler de (vertex düzenlemeli gövde) — panel yüzün gerçek normaliyle kurulur, motor eğik levha olarak çözer.
   const roleFacesAll = (role: 'top' | 'bottom' | 'left' | 'right') => bodyFacesByRoleAll(body, role).sort((a, b) => b.area - a.area);
-  // Yüz rolleri hiç çözülemediyse (yüz bulunamadı) eski kutu yüzleri; roller varsa rolü boş kalan parça KURULMAZ (Goker: +X yüzü
-  // Rear yapınca sağ yan panel gelmemeli — oraya arkalık gelir).
+  // Roller çözülemediyse eski kutu yüzleri; roller varsa rolü boş kalan parça kurulmaz (+X Rear ise sağ yan gelmez).
   const noRoles = !bodyFaces(body).length;
   const FACE: Record<QuickPanelKey, Array<{ n: Vec3; seed: THREE.Vector3 }>> = { top: [], bottom: [], left: [], right: [] };
   for (const key of ['top', 'bottom', 'left', 'right'] as QuickPanelKey[]) {
@@ -2914,12 +2927,10 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
     return true;
   };
 
-  // KAYITLAR: ön / arka yön = gövdenin ön ekseni (Parameters › Faces; yoksa +Z) — yalnız panel uç kesimleri için; kayıtların kendisi
-  // kontur KENAR ROLLERİYLE yerleşir (railEdgesOf).
+  // Kayıtlar: ön / arka yön gövdenin ön ekseni (yalnız uç kesimleri için); kayıtlar kontur kenar rolleriyle yerleşir.
   const fwd: Vec3 = vec3(axisDirToVec(bodyFrontAxis(body).facing));
   const inward = (n: Vec3) => axisDirOfNormal(neg(n));
-  /** Panelin UÇ değerleri (cfg.ext; + uzat, − kısalt) → dyn kesimler: ön / arka = gövdenin ön ekseni, üst / alt = ±Y, sol / sağ = yan
-   *  yüzlerin normali (roller yoksa ±X). */
+  /** Panel uç değerleri (cfg.ext) → dyn kesimler: ön / arka = ön eksen, üst / alt = ±Y, sol / sağ = yan yüz normali. */
   const edgeCutsFor = (key: QuickPanelKey): QuickCut[] => {
     const ext = cfg.ext?.[key]; if (!ext) return [];
     const nOf: Record<PanelEdgeDir, Vec3> = {
@@ -2931,30 +2942,21 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
     return PANEL_EDGE_DIRS[key].filter(d => !passEnd(d)).map(d => [d, panelEdgeValue(cfg, key, d)] as const).filter(([, v]) => Math.abs(v) > 0.001)
       .map(([d, v]) => [nOf[d], labelOf(nOf[d]), v] as QuickCut);
   };
-  /** Yüzün kayıtları — KENAR KENAR (railEdgesOf): `which` = üst / alt, `faceList` = o rolün üst / alt yüzleri (her yüzün konturu ayrı
-   *  okunur; yatay kayıtlar o yüzde, istif tabanı o yüzün paneli), `withPanel` = yüzde tam panel var (kayıtlar panelin içinde: yatay →
-   *  panelin iç yüzüne istif, dikey → ön / arka yüzde panele dayalı). `phase` (panelli yüz): 'before' = paneli GEÇEN dikey kayıtlar
-   *  (panelden ÖNCE; kenara kadar, panel onlarda kısalır), 'after' = kalanlar (yanlardan sonra).
-   *  Her ÖN rollü kontur kenarına bir ön kayıt, her ARKA kenara bir arka kayıt (L köşe dolabı: iki ön, iki arka). Sıra: ön kayıtlar
-   *  (kontur sırasıyla), sonra arka. İÇ (içbükey) KÖŞE (Goker, Kas 2026 — "kayıdın biri ileriye kadar değsin, diğer kayıt ona bağlansın;
-   *  havada kalamaz"): iki kayıttan biri GEÇER — kendi kenar yönünde, kendi bandı boyunca ilk değdiği kenarın DOLU bandına (karşıdaki kayıt,
-   *  yan panel ya da yüz sınırı) kadar uzar; öteki onun yanına dayanır. Geçen = hedefe daha KISA yoldan değen (eşitlikte kontur sırası).
-   *  Komşu kenarda kayıt yoksa kayıt yine ilk desteğe kadar uzar; komşu yan panelse yalnız t×t boşluğu kapatır. Hedef (RailExtTarget)
-   *  saklanır, motor her regen'de yeniden ölçer. */
+  /** Yüzün kayıtları, kenar kenar: `which` üst / alt, `withPanel` yüzde tam panel var; `phase` 'before' = paneli geçen dikey kayıtlar.
+   *  İç köşe: hedefe daha kısa yoldan değen kayıt geçer (kendi bandı boyunca ilk dolu banda kadar uzar), öteki ona dayanır.
+   *  Hedef saklanır, motor her regen'de yeniden ölçer. */
   const pushRails = async (which: 'top' | 'bottom', faceList: Array<{ n: Vec3; seed: THREE.Vector3 }>, withPanel: boolean, phase: 'all' | 'before' | 'after' = 'all') => {
     const r = railsOf(cfg, which), top = which === 'top', rel = railBackRelOf(cfg, which);
     const b = cfg.back, grooved = b.enabled && b.placement === 'inner';
     const backT = b.enabled ? Math.max(1, b.thickness) : 0, backS = grooved ? Math.max(0, b.setback) : 0;
     const stackD = top ? t : lift + t;                        // panelin iç yüzü: yüzden içeri (altta panel lift kadar yukarıda)
     const sideOf = (role: EdgeRole['role']): 'front' | 'rear' | null => (role === 'front' || role === 'rear' ? role : null);
-    /** Kenarın ETKİN çektirmesi: kendi çektirmesi + paneli izleme (panel o uçtan kısaldıysa; Goker, 8 Kas 2026 — "alt panel arkadan
-     *  kısalınca alt arka dik kayıt onun beraberinde gelmeli") + arkalığın önüne (arka kayıt, 'infront': arkalığın ön yüzüne kadar). */
+    /** Kenarın etkin çektirmesi: kendi + paneli izleme (panel o uçtan kısaldıysa) + arkalığın önü ('infront'). */
     const setbackOf = (side: 'front' | 'rear') => {
       const follow = withPanel ? Math.max(0, -panelEdgeValue(cfg, which, side)) : 0;
       return Math.max(0, r[side].setback) + follow + (side === 'rear' && rel === 'infront' ? backS + backT : 0);
     };
-    // Yüz yüz kenar analizi → yerleşim sırası: önce ön kayıtlar, sonra arka; aynı tarafta kontur sırası. Çok kısa kenar (genişliğin yarısından
-    // ya da 2t'den kısa) kayıt almaz.
+    // Yerleşim sırası: önce ön kayıtlar, sonra arka; aynı tarafta kontur sırası. Çok kısa kenar kayıt almaz.
     const perFace = faceList.map(f => railEdgesOf(ctx, f.n, f.seed));
     type Placed = { e: RailEdge; faceIdx: number; side: 'front' | 'rear' };
     const seq: Placed[] = [];
@@ -2976,8 +2978,7 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
     const bandOf = (s0: 'front' | 'rear'): [number, number] => { const lo = setbackOf(s0); return [lo, lo + (r[s0].kind === 'horizontal' ? Math.max(1, r[s0].size) : t)]; };
     /** Kenarın DOLU bandı (hedef olarak): kayıt → bandın iç kıyısı, yan (sol / sağ) → panel kalınlığı, diğer → 0 (yüz sınırı). */
     const fillOf = (e: EdgeRole): number => { const s0 = railSideOf(e); return s0 ? bandOf(s0)[1] : e.role === 'left' || e.role === 'right' ? t : 0; };
-    /** İÇ KÖŞEDEN UZAMA: kenarın `atStart` ucundan kenar yönünde, kendi bandı boyunca (iki kıyı + orta ışın) plan çokgeninde ilk çıkılan
-     *  kenarın dolu bandına kadar mesafe ve o kenar (hedef). */
+    /** İç köşeden uzama: `atStart` ucundan kendi bandı boyunca ilk çıkılan kenarın dolu bandına mesafe ve hedef kenar. */
     const landingOf = (edges: RailEdge[], e: RailEdge, atStart: boolean): { amount: number; to: RailExtTarget } | null => {
       const s0 = sideOf(e.role); if (!s0) return null;
       const [lo, hi] = bandOf(s0);
@@ -3002,20 +3003,14 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
       return best && best.amount > 0.5 ? best : null;
     };
     type ExtSpec = { amount: number; to?: RailExtTarget };
-    /** Komşunun ÇEKTİRMESİ (kenar çizgisinden boşluğa ilk dolu yüzü): kayıtlı kenar → bandın dış kıyısı (kayıtın arka yüzü); kayıtsız ARKA
-     *  kenar + kanallı arkalık + kayıt arkalığın önünde → arkalığın iç yüzü (çektirme + kalınlık); diğer → 0. */
+    /** Komşunun çektirmesi: kayıtlı kenar → bandın dış kıyısı; kayıtsız arka kenar + kanallı arkalık önünde → arkalığın iç yüzü; diğer 0. */
     const reachOf = (nb: EdgeRole): number => {
       const s0 = railSideOf(nb);
       if (s0) return bandOf(s0)[0];
       return nb.role === 'rear' && rel === 'infront' ? backS + backT : 0;
     };
-    /** Kenarın bir ucundaki ayar (+ uzat, − kısalt).
-     *  DIŞBÜKEY köşe (Goker, 10 Kas 2026 — "mavi seçili kayıt arkalığın içine girmiş"): komşunun çektirmesi kadar KISALIR — kayıt komşu
-     *  yüzün arkalığından / geri çekilmiş kayıtından geçip gövde kenarına kadar uzanmaz (arkalığın önündeki kayıt, öbür yüzün arkalığında
-     *  biter). Yan panel kendi damgasıyla keser.
-     *  İÇBÜKEY köşe: komşu yan panel → t (t×t boşluk); komşu kenarda kayıt → hedefe daha kısa yoldan değen GEÇER (hedefe kadar uzar), öteki
-     *  geçenin dış yüzüne kadar uzar (geçen geri çekilmişse aradaki boşluk kalmaz); komşuda kayıt yok → ilk desteğe kadar. Karar iki kenar
-     *  için simetrik (faza ve sıraya bakmaz). */
+    /** Kenar ucundaki ayar (+ uzat, − kısalt). Dışbükey köşe: komşunun çektirmesi kadar kısalır (komşu yüzün arkalığına girmesin).
+     *  İçbükey: yan panel → t; komşuda kayıt → kısa yoldan değen geçer, öteki onun dış yüzüne uzar; kayıt yoksa ilk desteğe. Karar simetrik. */
     const extAt = (edges: RailEdge[], e: RailEdge, atStart: boolean): ExtSpec | null => {
       const nb = edges.find(f => f.i === (atStart ? e.prev.i : e.next.i));
       if (!nb) return null;
@@ -3026,8 +3021,7 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
       if (nb.role === 'left' || nb.role === 'right') return { amount: t };
       const nbSide = railSideOf(nb), meSide = sideOf(e.role);
       const butt = (): ExtSpec | null => (nbSide && bandOf(nbSide)[0] > 0.01 ? { amount: bandOf(nbSide)[0] } : null);
-      // Paneli GEÇEN dikey kayıt panelin yüksekliğindedir: hedefe uzarsa tam paneli ikiye böler → panel varken iç köşe eski kuralla
-      // kapanır (paneli geçen önce yerleşir, komşusunun bandı kadar uzar; panel zaten her şeyi taşır).
+      // Paneli geçen dikey kayıt hedefe uzarsa paneli böler → panel varken iç köşe eski kuralla kapanır.
       if (withPanel && nbSide && meSide && (railPassesPanel(r, meSide) || railPassesPanel(r, nbSide))) {
         const mp = railPassesPanel(r, meSide), np = railPassesPanel(r, nbSide);
         const iFirst = mp !== np ? mp : e.i < nb.i;
@@ -3051,8 +3045,7 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
       const idx = counters[side]++;
       const size = Math.max(1, spec.size), setback = setbackOf(side);
       const infront = side === 'rear' && rel === 'infront';
-      // Arka kayıt arkalık sınırı: kanal ilişkisinde; panel + çakma arkalıkta panel sınırdır (arkalık paneli de örter), kayıt değil —
-      // kayıt paneli geçiyorsa (arka kenarda o var) yine kayıt.
+      // Arka kayıt arkalık sınırı: kanal ilişkisinde; panel + çakma arkalıkta panel sınırdır (kayıt paneli geçiyorsa yine kayıt).
       const rearBound = !infront && (!withPanel || grooved || passes);
       const bound = side === 'front' ? { doorBound: true, backBound: false } : { doorBound: false, backBound: rearBound };
       const dirStart: Vec3 = [-e.d.x, 0, -e.d.y], dirEnd: Vec3 = [e.d.x, 0, e.d.y];   // kenar boyunca uçlara doğru (gövde-yerel)
@@ -3060,8 +3053,7 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
         .filter((x): x is [ExtSpec, Vec3] => !!x[0] && Math.abs(x[0].amount) > 0.01)
         .map(([x, dir]) => ({ dir, amount: x.amount, ...(x.to ? { to: x.to } : {}) }));
       if (spec.kind === 'horizontal') {
-        // Yatay şerit: kenara bağlı (railStrip) — kenardan setback içeri, genişlik size, kenar boyu (+ iç köşe uzatmaları). Panelsiz: yüzde
-        // (altta lift kadar yukarı); panelli: panelin iç yüzüne istif. Genişlik ve kenar bağı motor regen'inde korunur.
+        // Yatay şerit kenara bağlı (railStrip); panelsiz yüzde (altta lift kadar yukarı), panelliyken panelin iç yüzüne istif.
         const f = faceList[faceIdx];
         const base = withPanel ? newVfs.find(v => v.quickBody === partKey(which, faceIdx)) : undefined;
         if (withPanel && !base) { warnings.push(`${partName(nm, idx)}: no ${which} panel to sit on`); continue; }
@@ -3073,17 +3065,14 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
           strip, ...bound,
         });
       } else {
-        // Kenarın üstüne oturduğu düşey yüzde dik duran şerit — panelli: panelden itibaren fixed yükseklik (üstte alttan, altta üstten);
-        // panelsiz: üstte alt yüzünden fixed yükseklik, altta üst yüzünden fixed (lift + h) + alt yüzünden dyn −lift.
-        // Kayıt kenardan başlar: panel yok ya da kayıt paneli geçiyor (panelden önce yerleşir, panel bu kayıtta kısalır).
+        // Dikey şerit: panelliyken panelden itibaren fixed yükseklik; panelsiz üstte alt yüzünden fixed, altta (lift + h) fixed + dyn −lift.
         const fn: Vec3 = e.face ? e.face.normal : [e.n.x, 0, e.n.y];
         const ax = inward(fn); if (!ax || ax[0] === 'y') { warnings.push(`${partName(nm, idx)}: edge is not axis-aligned`); continue; }
         const fromEdge = !withPanel || passes;
         const cuts: QuickCut[] = top ? [[[0, -1, 0], 'Y-', size, true]]
           : !fromEdge ? [[[0, 1, 0], 'Y+', size, true]]
           : [[[0, 1, 0], 'Y+', lift + size, true], ...(lift > 0 ? [[[0, -1, 0], 'Y-', -lift] as QuickCut] : [])];
-        // Paneli geçen kayıt, panel yanların üstünden geçen köşede yanlardan ÖNCE kurulur → o uçtan kalınlık kadar kesilir (yanların
-        // arasında kalır; kısalmış damgası yana değmez). Köşe = o uçtaki komşu kenarın yanı (sol / sağ).
+        // Paneli geçen kayıt, panel yanların üstünden geçen köşede yanlardan önce kurulur → o uçtan kalınlık kadar kesilir.
         if (passes) {
           for (const [nb, dir] of [[e.prev, dirStart], [e.next, dirEnd]] as Array<[EdgeRole, Vec3]>) {
             if (nb.role !== 'left' && nb.role !== 'right') continue;
@@ -3091,8 +3080,7 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
             if (joins[c] === 'horiz') cuts.push([dir, labelOf(dir), -t]);
           }
         }
-        // İÇ KÖŞE UZATMASI: VF bölgesi kenar yönündeki ucundan uzar (VirtualFace.railExt; gövdenin içinde kalır) — hedef her regen'de
-        // yeniden ölçülür. Bant = levhanın plan aralığı (çektirme..çektirme+t), ölçüm bandın ortasından.
+        // İç köşe uzatması: VF bölgesi kenar yönünde uzar (railExt); hedef her regen'de ölçülür, bant ortasından.
         const railExt = exts.length ? exts.map(x => ({ ...x, band: bandOf(side) })) : undefined;
         const merged = mergeCuts(cuts);
         const off = fromEdge ? 0 : t;
@@ -3118,27 +3106,22 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
     const pb = (key === 'top' || key === 'bottom') && panelYieldsBackTo(cfg, key) ? { backBound: false } : {};
     for (let i = 0; i < FACE[key].length; i++) {
       const f = FACE[key][i], pk = partKey(key, i), nm = partName(QUICK_PANEL_NAME[key], i);
-      // Ayaklıda yan köşeden geçiyor ama ayak kadar yukarıda biter: alt kenar extrude ile kısaltılır. Kullanıcının uç değerleri
-      // (uzat / kısalt) aynı yöndeki kesime eklenir; vekil kısaltmaları izler (büyütme vekile yansımaz — damga kuralı).
+      // Ayaklıda yan ayak kadar yukarıda biter (alt kenar extrude ile kısalır); kullanıcı uç değerleri aynı yöndeki kesime eklenir.
       const legCut: QuickCut[] = (key === 'left' || key === 'right') && cfg.base === 'legs' && lift > 0 && joins[key === 'left' ? 'bl' : 'br'] === 'side'
         ? [[[0, -1, 0], 'Y-', -lift]] : [];
       const cuts = mergeCuts(legCut, edgeCutsFor(key));
       const withCuts = cuts.length ? { cuts, proxyVerts: (vs: Vec3[]) => clampVerts(vs, cuts) } : {};
-      // Yükseltilen alt panelin bölgesi motor tarafından GERÇEK konumunda çözülür (damgalar panelin ötelemesi kadar kaydırılır);
-      // ayaklıda kısaltılmış yanlar o yükseklikte alt paneli keser → ek extrude gerekmez.
+      // Yükseltilen alt panelin bölgesi gerçek konumunda çözülür; kısaltılmış yanlar onu keser → ek extrude gerekmez.
       await push(pk, f.n, f.seed, nm, { ...(key === 'bottom' && lift > 0 ? { move: ['y+', lift] as [MoveTransformStep['axis'], number] } : {}), ...withCuts, ...pb });
     }
   }
   for (const key of railsAfter) await pushRails(key, FACE[key], true, 'after');
 
   if (cfg.base === 'plinth' && lift > 0) {
-    // BAZALAR: her FRONT rolündeki yüzün alt şeridine ön baza (içeri setback kadar), her REAR yüze arka baza (içeri inset kadar);
-    // L gövdede iki ön yüz → iki baza. Kapak/arkalık sınırı DEĞİL. Rolde yüz yoksa +Z / −Z. Alt yüz kayıtlıysa (alt panel yok → yüz
-    // bölgesi yukarı açık olabilir) üst yüzünden FIXED baza yüksekliği.
+    // Bazalar: her front yüzün alt şeridine ön baza (setback), her rear yüze arka baza (inset); sınır değil. Kayıtlı altta fixed yükseklik.
     const ym = y0 + lift / 2;
     const fronts = roleFaces('front'), rears = roleFaces('rear');
-    // Baza yüksekliği HER ZAMAN sabitlenir: alt panel yoksa ya da önden / arkadan kısaltıldıysa yüz bölgesi yukarı açılır (baza
-    // üst panele kadar uzardı).
+    // Baza yüksekliği her zaman sabitlenir (alt panel yoksa / kısaltıldıysa yüz bölgesi yukarı açılır).
     const plinthCuts: QuickCut[] = [[[0, 1, 0], 'Y+', lift, true]];
     const plinthProxy = plinthCuts.length ? (vs: Vec3[]) => clampVerts(vs, plinthCuts) : undefined;
     const frontList = fronts.length ? fronts.map(f => ({ n: f.normal, c: f.center })) : noRoles ? [{ n: [0, 0, 1] as Vec3, c: [(x0 + x1) / 2, ym, z1] as Vec3 }] : [];
@@ -3161,8 +3144,7 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
 
   if (!newVfs.length) return { panelCount: 0, backCreated: false, cyclic, warnings };
 
-  // Tek seferde yaz: eski parçalar düşer, yeni VF'ler sırayla (= basan/basılan) gövdenin ÖTEKİ VF'lerinin ÖNÜNE girer; korunan
-  // paneller yerinde güncellenir, yeniler eklenir (hazır geometri: otomatik üretim efekti devreye girmez). Ayarlar gövdeye yazılır.
+  // Tek seferde yaz: yeni VF'ler sırayla gövdenin öteki VF'lerinin önüne; korunan paneller yerinde güncellenir. Ayarlar gövdeye.
   const dropVf = new Set(prevVfs.map(v => v.id)), keepPanel = new Map(newShapes.map(p => [p.id, p]));
   const dropPanel = new Set([...prevPanelIds].filter(id => !keepPanel.has(id)));
   useAppStore.setState(s => {
@@ -3174,9 +3156,7 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
     const added = newShapes.filter(p => !s.shapes.some(x => x.id === p.id));
     return { virtualFaces, shapes: [...shapes, ...added] };
   });
-  // Ayaklar: ayaklı tabanda zorunlu, bazalıda isteğe bağlı (count 0 = yok) — baza ayağı SETİ (PlinthService, alt panele bağlı, zemine
-  // basar); yeniden uygulamada güncellenir / kalkan ayaklar silinir.
-  // Ayak = kayıtlı set (model + Ø setten; Auto'da düzen de) — quickLegsOf; set kartı aynı kuralla canlı okur.
+  // Ayaklar: ayaklıda zorunlu, bazalıda isteğe bağlı — baza ayağı seti (alt panele bağlı); yeniden uygulamada güncellenir.
   const L = quickLegsOf(cfg);
   syncQuickBodyPlinth(body.id, L ? {
     count: L.count, diameter: L.diameter, side: L.side, front: L.front, rear: L.rear, legModelId: L.legModelId ?? null, presetId: L.presetId ?? null,
@@ -3187,17 +3167,11 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
   const { whenRebuildIdle } = await import('./PanelEngine');
   await whenRebuildIdle(body.id);
 
-  // Arkalık: paneller gerçek geometrisiyle üretildikten sonra her REAR rolündeki yüze bir arkalık (Goker: "rear olan kısma arkalık
-  // ata; L kübün iki rear yüzü olabilir"); hızlı gövdenin kurduğu arkalıklar duruyorsa yerinde güncellenir (bölmeleri korunur),
-  // arkalık kapatıldıysa silinir. Rolde yüz yoksa −Z.
+  // Arkalık: paneller üretildikten sonra her rear yüze bir arkalık; varsa yerinde güncellenir, kapatıldıysa silinir. Rol yoksa −Z.
   let backCreated = false;
   const b = cfg.back;
-  // ARKALIK REFERANSI (backRefOf): seçilen / otomatik parçanın VF'si CANLI derinlik referansı olur → arkalık o parçanın arka yüzünden
-  // ölçülür, parça kısalınca / taşınınca (ör. arka dik kayıt öne alınınca) arkalık onunla gider. Yoksa yüz düzlemi (eski davranış).
-  // ARKA KAYIT referansı YÜZE GÖRE (Goker, Kas 2026 — L / çentikli gövdede birden çok arka yüz, her birinde kendi arka kayıtı): referans
-  // parça bir arka kayıtsa (`topRear` / `bottomRear`), her arkalık KENDİ yüzündeki kayıtı (yatay: şerit kenarı yüz normali yönünde, dikey:
-  // VF normali yüz normali; düzlem içinde o yüzle örtüşen) alır — tek kayıt bütün arkalıklara referans olunca öteki yüzün arkalığı o
-  // kayıtın düzlemine (boşluğa) gidiyordu. Panel referansı (yan / üst / alt) eskisi gibi tek parça.
+  // Arkalık referansı (backRefOf): parçanın VF'si canlı derinlik referansı. Arka kayıt referansında her arkalık kendi yüzündeki kaydı alır
+  // (tek kayıt tüm arkalıklara referans olunca öteki yüzün arkalığı boşluğa gidiyordu).
   const refKey = backRefOf(cfg);
   const refIsRail = refKey === 'topRear' || refKey === 'bottomRear';
   const railVfOnFace = (axis: 0 | 1 | 2, side: 1 | -1, box: CavityBox | undefined): VirtualFace | undefined => {
@@ -3219,8 +3193,7 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
   const depthInit = (refVf: VirtualFace | undefined, fallback?: BackGroup['depthRef']): Pick<BackGroup, 'depthRef' | 'depthRefLive'> =>
     (refVf ? { depthRef: { vfId: refVf.id }, depthRefLive: true } : { depthRef: fallback, depthRefLive: false });
   let live = quickBackGroupsOf(body.id);
-  // Arkalığın sınırlarını değiştiren bir kayıt ayarı değiştiyse (üst / alt panel ↔ kayıt, arka kayıt tipi, kanal / önüne) kurulu arkalık
-  // eski VF'lere bağlıdır → silinip adaydan yeniden kurulur (bölmeleri korunamaz); yoksa yerinde güncellenir.
+  // Arkalığın sınırlarını değiştiren kayıt ayarı değiştiyse arkalık silinip yeniden kurulur; yoksa yerinde güncellenir.
   const backKeyOf = (c: QuickBodyConfig | null) => (['top', 'bottom'] as const).map(f => {
     if (!c) return 'none';
     const r = railsOf(c, f);
@@ -3249,12 +3222,8 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
     targets.forEach((tg, i) => {
       const picks = backCandidatesAt(fresh, tg.axis, tg.side, tg.click, undefined, undefined, tg.box);
       if (!picks.length) { warnings.push(`Back${i ? ` ${i + 1}` : ''}: no candidate between the panels.`); return; }
-      // Aday = yeni panellerin ARASI: yükseltilmiş alt panelin (ya da alt kayıtın) dış yüzü gövde kenarında olmadığından gövde kenarı
-      // (yere kadar) da adaydır ve alanı daha büyüktür — bu yüzden en çok yeni ARKALIK SINIRI panele dayanan aday seçilir, eşitlikte
-      // büyük alan. Bazalar ve ön kayıtlar sınır değildir (backBound false).
-      // PUAN = sınır panellerinin KENARI KAPLAMA oranı toplamı (Goker, Kas 2026 — "kayıt arkalığın içine geçiyor karmaşık durumlarda"):
-      // yalnız sayılırsa L köşede komşu arka yüzün kısa kayıtı (yalnız 80 mm yükseklik) yan sınır sayılıp asıl üst kayıtın yerini alıyor,
-      // arkalık gövdenin üstüne kadar çıkıp üst panele / kayıtlara giriyordu.
+      // Aday = yeni panellerin arası; puan = sınır panellerinin kenarı kaplama oranı toplamı (eşitlikte büyük alan) — salt sayı L köşede
+      // komşu yüzün kısa kaydını yan sınır sayıp arkalığı yukarı taşıyordu.
       const ours = new Set(newVfs.filter(v => v.backBound !== false).map(v => v.id));
       const { u: pu, v: pv } = planeAxes(tg.axis);
       const cover = (r: { vfId?: string }, cx: 0 | 1 | 2, c0: number, c1: number) => {
@@ -3279,10 +3248,9 @@ export async function applyQuickBody(shapeId: string, cfg: QuickBodyConfig): Pro
   return { panelCount: newVfs.length, backCreated, cyclic, warnings };
 }
 
-/* ───────── Traverse (kayıt) senaryoları — eski src/components/rails.ts ─────────
-   Hızlı gövde traverslerinin kutu ve L gövdede nereye yerleştiğini ölçer (gerçek replicad / OCC). Uygulama çağırmaz; Node harness'i
-   ya da tarayıcı konsolu çağırır, sonuç satır listesi olarak döner. Senaryo adı: box | L | L-corner | L-backnotch öneki + parçalar
-   (panel · bottom · back · legs · horiz · passes · sb · xfront) + son ek -v (dikey) / -h (yatay). Örn. "L-panel-back-h". */
+/* ───────── Traverse (kayıt) senaryoları ─────────
+   Hızlı gövde kayıtlarının kutu / L gövdede yerini ölçer (gerçek OCC). Uygulama çağırmaz; harness / konsol çağırır.
+   Senaryo: box | L | L-corner | L-backnotch + parçalar (panel · bottom · back · legs · horiz · passes · sb · xfront) + -v / -h. */
 export interface RailsScenarioOptions {
   /** Aynı ayarla ikinci kez uygula: parça kimlikleri korunuyor mu. */
   reapply?: boolean;
@@ -3340,7 +3308,7 @@ export async function railsScenario(scen: string, opt: RailsScenarioOptions = {}
   const st = useAppStore.getState();
   const W = 800, H = 720, D = 560;
   const isL = scen.startsWith('L');
-  // L: ön-sağ köşede çentik (x 450..800, z 300..560 boş) → ön yüzler: z=560 (x 0..450) ve z=300 (x 450..800); +X yüzler: x=800 (z 0..300) ve x=450 (z 300..560)
+  // L: ön-sağ köşede çentik (x 450..800, z 300..560 boş).
   const notch = isL ? { x0: 450, z0: 300, w: 400, d: 300 } : null;
   const body = await makeBody('body-1', W, H, D, notch ?? undefined);
   st.addShape(body);

@@ -1,24 +1,8 @@
-/* AKSESUAR KÜTÜPHANESİ (Goker, Eki 2026 — "Panel editör yanında Aksesuar sekmesi; ilk seçenek ayak. Ayak için dışarıdan model alayım,
-   alabildiğimiz tüm uzantıları destekleyelim; ayaklar 3 parça, yalnız orta parça uzasın, uzayacak parçayı eklerden seçip rol vereyim;
-   4/5/6 ayak setlerini kaydedip ayak kısmında çağıralım").
-
-   KATMANLAR
-   1) Dosya → geometri: Three örnek yükleyicileri (glTF/GLB, OBJ, STL, FBX, DAE, PLY, 3MF, 3DS, AMF, WRL) + STEP (replicad / OpenCascade).
-      Sonuç TEK BufferGeometry: birim ölçeği (mm/cm/m/in), yukarı ekseni (Y/Z), XZ'de merkezlenmiş, tabanı y=0'da ("normalize").
-      DWG / DXF (Goker, Kas 2026 — "elimdeki aksesuarlar DWG; içeri alırken STL'ye çevirip alalım"): içe aktarırken `public/dwg2stl.wasm`
-      ile ikili STL'ye çevrilir ve kütüphaneye STL OLARAK kaydedilir (`convertDwgToStl`; kaynak: dwg2stl/lib.rs). Dönüştürücü yalnız
-      içe aktarma anında yüklenir; kayıtlı modeller ona bağlı değildir.
-   2) Kalıcılık: IndexedDB `yago-accessories` — `models` (üst bilgi + ham bayt dizisi), `legModels`, `legPresets`. Store'daki kopya canlıdır;
-      her yazım IDB'ye de gider. indexedDB yoksa (Node harness) yalnız bellek.
-   3) Ayak modeli (LegModel) = 1–3 parça + rol: base (zemin) · stem (UZAR) · top (tabla). `legAssembly(leg, h)` parçaları alt alta dizer;
-      stem yüksekliği = h − (diğer parçalar) → set yüksekliği değişince yalnız mil uzar/kısalır (Goker). Stem yoksa hiçbir parça ölçeklenmez.
-      Her parça nihai ölçüsünde (`dims`, mm), X/Y/Z taşınır (`offset`); uzayan parçalar (`stretch`; varsayılan orta) boyu paylaşır.
-   4) Ayak seti (LegPreset, "kaset"): model + adet + kenar mesafeleri + varsayılan yükseklik. `legsFromPreset` → PlinthLegs (baza seti / hızlı gövde).
-   5) KATMANLAR (AccessoryLayer, IDB `layers`): kütüphane geneli liste; her parça bir katmana bağlanır, katman rengi parçayı boyar.
-   6) DELİKLER (HoleSpec, LegModel.holes): ayak çerçevesinde silindirik delik tanımı; `legHolesAt` montajdaki yerini, `legHoleCutters`
-      gövde-yerel kesici silindirleri (PanelEngine tek boolean ile panelden çıkarır) verir. Delik tanımı GENELDİR — ray / menteşe de
-      aynı HoleSpec + HoleCutter yolunu kullanacak (konum: parçaya bağlı, aksesuar sıfırına göre gösterilir).
-   Bu dosya PlinthService'i İÇE AKTARMAZ (PlinthService buradan okur). */
+/* AKSESUAR KÜTÜPHANESİ. PlinthService'i içe aktarmaz (o buradan okur).
+   1) Dosya → tek BufferGeometry (Three yükleyicileri + STEP), birim / yukarı eksen normalize, taban y=0. DWG / DXF içe aktarırken
+      dwg2stl.wasm ile STL'ye çevrilip STL olarak kaydedilir. 2) Kalıcılık: IndexedDB `yago-accessories` (yoksa yalnız bellek).
+   3) Ayak modeli = 1–3 parça; `legAssembly` istifler, uzayan parçalar kalan boyu paylaşır. 4) Ayak seti → `legsFromPreset`.
+   5) Katmanlar: parça rengi. 6) Delikler (HoleSpec): `legHolesAt` montaj yeri, `legHoleCutters` gövde-yerel kesiciler (ray / menteşe de kullanacak). */
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {
@@ -44,12 +28,6 @@ export const ACCESSORY_ACCEPT = [...Object.keys(ACCESSORY_FORMATS), ...CAD_CONVE
 /** Biçimin olağan yukarı ekseni: CAD / baskı biçimleri Z-yukarı (AutoCAD STLOUT dahil), diğerleri Y-yukarı. */
 export const defaultUpAxis = (fileName: string): 'y' | 'z' => (['stl', 'step', 'stp', '3mf', 'amf', 'ply'].includes(extOf(fileName)) ? 'z' : 'y');
 export const UNIT_FACTOR: Record<AccessoryUnit, number> = { mm: 1, cm: 10, m: 1000, in: 25.4 };
-export const LEG_ROLE_LABEL: Record<LegPartRole, string> = { base: 'Base', stem: 'Stem', top: 'Top plate' };
-export const LEG_ROLE_TITLE: Record<LegPartRole, string> = {
-  base: 'Base — stands on the floor, keeps its own size',
-  stem: 'Stem — the only part that stretches: its height follows the set height',
-  top: 'Top plate — screwed under the panel, keeps its own size',
-};
 const ROLE_ORDER: Record<LegPartRole, number> = { base: 0, stem: 1, top: 2 };
 export const extOf = (fileName: string) => (fileName.split('.').pop() || '').toLowerCase();
 export const isSupportedAccessoryFile = (fileName: string) => !!ACCESSORY_FORMATS[extOf(fileName)] || CAD_CONVERT_EXTS.includes(extOf(fileName));
@@ -168,8 +146,6 @@ export interface DwgReport { units: number; solids: number; faces: number; appro
 /** $INSUNITS → kütüphane birimi (tanımadığı / birimsiz çizimde mm varsayılır). */
 const DWG_UNIT: Record<number, AccessoryUnit> = { 1: 'in', 4: 'mm', 5: 'cm', 6: 'm' };
 let dwgModule: Promise<WebAssembly.Module> | null = null;
-/** Harness / Node: WASM baytlarını elle vermek için (tarayıcıda `public/dwg2stl.wasm` kendiliğinden indirilir). */
-export function setDwgConverterWasm(bytes: BufferSource): void { dwgModule = WebAssembly.compile(bytes); }
 function loadDwgModule(): Promise<WebAssembly.Module> {
   if (!dwgModule) {
     const url = `${import.meta.env.BASE_URL}dwg2stl.wasm`;
@@ -181,9 +157,8 @@ function loadDwgModule(): Promise<WebAssembly.Module> {
   }
   return dwgModule;
 }
-/** DWG / DXF baytları → ikili STL. Tamamen tarayıcıda çalışır (dosya dışarı gönderilmez). Her çağrı TAZE bir WASM örneği kurar:
- *  dönüştürücü belleği serbest bırakmaz, örnekle birlikte atılır; bozuk dosyada tuzağa düşerse sonraki çağrıyı etkilemez.
- *  Modül WASI hedefiyle derlidir ama dosya / ortam kullanmaz — aşağıdaki küçük vekil yeter (saat, rastgele sayı, yazı çıktısı yutulur). */
+/** DWG / DXF → ikili STL, tamamen tarayıcıda. Her çağrı taze WASM örneği: dönüştürücü belleği bırakmaz, tuzak sonrakini etkilemesin.
+ *  WASI vekili yalnız saat / rastgele / yazı çıktısı. */
 export async function convertDwgToStl(bytes: ArrayBuffer): Promise<{ stl: ArrayBuffer; report: DwgReport }> {
   const mod = await loadDwgModule();
   let mem!: WebAssembly.Memory;
@@ -294,9 +269,7 @@ function seededFlag(set = false): boolean {
   } catch { return false; }
 }
 
-/** DOSYA İÇE AKTAR: çöz, normalize et, üst bilgi + baytları kaydet. Hata → fırlatır (UI gösterir).
- *  DWG / DXF: önce STL'ye çevrilir; kayıt STL'dir (`fileName` = ad.stl, `source` = özgün dosya adı, `note` = dönüşüm özeti).
- *  Birim verilmediyse çizimin $INSUNITS değeri kullanılır; yukarı eksen AutoCAD'deki gibi Z. */
+/** Dosya içe aktar: çöz, normalize et, kaydet (hata fırlatır). DWG / DXF STL olarak kaydedilir ($INSUNITS birimi, yukarı Z). */
 export async function importAccessoryFile(file: File, unit?: AccessoryUnit, upAxis?: 'y' | 'z', name?: string): Promise<AccessoryModel> {
   const ext = extOf(file.name);
   if (!isSupportedAccessoryFile(file.name)) throw new Error(`Unsupported file type: .${ext}`);
@@ -396,11 +369,8 @@ export async function deleteLegPreset(id: string): Promise<void> {
   await idbDelete('legPresets', id);
 }
 export const newLegModel = (name = 'Leg'): LegModel => ({ id: genId('leg'), name, parts: [], stretch: 'stem', createdAt: Date.now() });
-/** Parça uzar mı (Goker: "her parçada stretch özelliği olsun; seçiliyse ayak büyüyüp küçüldüğünde komple sünsün, kapalıysa verilen
- *  değerde sabit kalsın"): parçanın kendi ayarı; eski kayıtta yok → orta parça uzar, üst / alt sabit. */
+/** Parça uzar mı: parçanın ayarı; eski kayıtta yoksa orta parça uzar, üst / alt sabit. */
 export const legPartStretches = (p: Pick<LegModelPart, 'stretch' | 'role'>): boolean => p.stretch ?? p.role === 'stem';
-/** Eski API: uzayan parçanın varsayılan rolü. */
-export const legStretchOf = (_leg?: Pick<LegModel, 'stretch'>): LegPartRole => 'stem';
 /** Parçanın taşıması (mm). */
 export const legPartOffset = (p: Pick<LegModelPart, 'offset'>): Vec3 => [p.offset?.[0] ?? 0, p.offset?.[1] ?? 0, p.offset?.[2] ?? 0];
 /** Parçanın NİHAİ ölçüsü (mm): girilen `dims`, yoksa model ölçüsü (eski kayıt: orta parçanın X/Z çarpanı uygulanır). */
@@ -430,10 +400,8 @@ export interface LegPartPlacement {
 }
 /** Montajdaki parça: yer + çözülmüş geometri. */
 export interface LegAssemblyPart extends LegPartPlacement { geo: THREE.BufferGeometry }
-/** AYAK MONTAJ DÜZENİ (geometri gerekmez — yalnız model ölçüleri): yuvalar alttan üste (taban → orta → üst), her parça NİHAİ ölçüsünde
- *  (`dims`). Ayak boyu h: UZAYAN parçalar (`legPartStretches`) kalan boyu kendi boyları oranında paylaşır → toplam h; uzamayanlar girilen
- *  boyda sabit. Hiç uzayan yoksa ayak doğal boyundadır. X / Z taşıma düz kaydırma; Y taşıma istifte (üstündekiler de kayar).
- *  Ölçüsü bilinmeyen (kütüphanede olmayan) parça varsa null. Delik yerleri de bu düzenden okunur (geometri yüklenmeden). */
+/** Ayak montaj düzeni (geometrisiz): parçalar alttan üste nihai ölçüde; uzayan parçalar kalan boyu oranla paylaşır, yoksa doğal boy.
+ *  Y taşıma istifi kaydırır. Ölçüsü bilinmeyen parça varsa null. */
 export function legLayout(leg: LegModel, h: number, sizeOf: (id: string) => Vec3 | null = modelSizeNow): LegPartPlacement[] | null {
   const parts = orderedParts(leg.parts);
   if (!parts.length) return null;
@@ -441,8 +409,7 @@ export function legLayout(leg: LegModel, h: number, sizeOf: (id: string) => Vec3
   if (resolved.some(r => !r.size)) return null;
   const rows = resolved.map(r => ({ ...r, d: legPartDims(r.p, r.size!), st: legPartStretches(r.p), off: legPartOffset(r.p) }));
   const offY = rows.reduce((a, r) => a + r.off[1], 0);
-  // PANELE GİREN KISIM: en üst parçanın tepesinden `embed` kadarı temas düzleminin üstünde → ayak boyu h temas düzlemine kadar,
-  // model h + embed'e uzanır (uzayan parçalar embed kadar daha uzar). Uzayan üst parçada okunmaz.
+  // Panele giren kısım: üst parçanın tepesinden `embed` kadarı temas düzleminin üstünde → model h + embed'e uzanır.
   const top = rows[rows.length - 1];
   const embed = top.st ? 0 : legPartEmbed(top.p, top.d[1]);
   const fixedH = rows.filter(r => !r.st).reduce((a, r) => a + r.d[1], 0) + offY - embed;
@@ -468,8 +435,7 @@ export const legPartEmbed = (p: Pick<LegModelPart, 'embed'>, partHeight: number)
 /** TEMAS YÜKSEKLİĞİ (panelin altı): en üst parçanın tepesi − panele giren kısım; model tepesi `legTopHeight`. */
 export const legContactHeight = (parts: LegPartPlacement[]): number => parts.reduce((a, p) => Math.max(a, p.y + p.size[1] * p.scaleY - p.embed), 0);
 export const legTopHeight = (parts: LegPartPlacement[]): number => parts.reduce((a, p) => Math.max(a, p.y + p.size[1] * p.scaleY), 0);
-/** PANELE GİREN KISMI MODELDEN BUL: +Y bakan üçgenlerin y'ye göre alan toplamı — en büyük alanlı yatay düzlem = temas düzlemi (tabla
- *  üstü); embed = model tepesi − o düzlem (model uzayında; nihai ölçüye `scaleY` ile). Üstte pim / vida yuvası yoksa 0. */
+/** Panele giren kısmı modelden bul: +Y bakan en büyük alanlı yatay düzlem = temas düzlemi; embed = tepe − düzlem (pim yoksa 0). */
 export function detectPartEmbed(geo: THREE.BufferGeometry, scaleY = 1): number {
   const pos = geo.getAttribute('position') as THREE.BufferAttribute | undefined; if (!pos) return 0;
   const index = geo.index; const n = index ? index.count : pos.count;
@@ -517,8 +483,7 @@ export function legModelDims(leg: LegModel | undefined, models = useAppStore.get
 /** Ayak boyla değişir mi (en az bir uzayan parça). */
 export const legModelHasStem = (leg: LegModel | undefined) => !!leg && leg.parts.some(legPartStretches);
 
-/** Setin KÖŞE DÜZENİ (adet + kenar mesafeleri). Yerleşim her zaman otomatik köşe düzenidir; eski kayıtların ayak ayak kuralları
- *  standart düzene denkse oradan okunur, değilse setin alanları. */
+/** Setin köşe düzeni; eski ayak ayak kurallar standart düzene denkse oradan okunur. */
 export function presetLayout(p: Pick<LegPreset, 'rules' | 'count' | 'side' | 'front' | 'rear'>): { count: 4 | 5 | 6; side: number; front: number; rear: number } {
   const std = p.rules && p.rules.length ? standardOf(p.rules) : null;
   return std ?? { count: p.count, side: p.side, front: p.front, rear: p.rear };
@@ -532,28 +497,18 @@ export function legsFromPreset(preset: LegPreset, st = useAppStore.getState()): 
   const L = presetLayout(preset);
   return { ...L, diameter: dims?.diameter || 50, legModelId: leg ? leg.id : null, presetId: preset.id, rules: standardLegRules(L.count, L.side, L.front, L.rear) };
 }
-/** Setin ayak ayak kuralları (eski kayıt: standart düzenden türer). */
-export const presetRules = (p: Pick<LegPreset, 'rules' | 'count' | 'side' | 'front' | 'rear'>): LegRule[] =>
-  p.rules && p.rules.length ? p.rules : standardLegRules(p.count, p.side, p.front, p.rear);
 export const legPresetById = (id: string | null | undefined, st = useAppStore.getState()) => (id ? st.legPresets.find(p => p.id === id) : undefined);
-/** KULLANILACAK AYAK SETİ (Goker: "sadece kayıtlı ayaklar gelsin, yerleşik ayak seçeneği hiç gelmesin"): verilen id'nin seti; yoksa
- *  (eski kayıt / hiç seçilmemiş) kütüphanedeki İLK set; kütüphane boşsa undefined (yalnız o zaman yerleşik ayak çizilir). */
+/** Kullanılacak set: verilen id, yoksa kütüphanedeki ilk set; kütüphane boşsa undefined (yalnız o zaman yerleşik ayak). */
 export const resolveLegPreset = (id: string | null | undefined, st = useAppStore.getState()): LegPreset | undefined =>
   legPresetById(id, st) ?? st.legPresets[0];
 export const legModelById = (id: string | null | undefined, st = useAppStore.getState()) => (id ? st.legModels.find(p => p.id === id) : undefined);
 
 /* ───────────────────────────── Katmanlar ─────────────────────────────
-   Kütüphane geneli liste (Goker: "katmanları bir listede tut, tüm aksesuarlarda bu katmanlar ilerde kullanılacak"): ad + renk.
-   Parça → katman bağı parçanın kendisinde (`layerId`); katman silinince bağ düşer (parça varsayılan renge döner). */
+   Parça → katman bağı parçada (`layerId`); katman silinince bağ düşer. */
 export const LAYER_PALETTE = ['#8a8f99', '#3f3f46', '#b45309', '#0f766e', '#2563eb', '#be123c', '#4d7c0f', '#7c3aed', '#a16207', '#57534e'];
 const DEFAULT_LAYERS: Array<Pick<AccessoryLayer, 'name' | 'color'>> = [{ name: 'Metal', color: '#9aa0a8' }, { name: 'Plastic', color: '#56534f' }];
 /** Katmansız parçanın rengi (eski kayıtlar / katman silinmiş). */
 export const LAYER_DEFAULT_COLOR = '#4a4542';
-export const layerById = (id: string | null | undefined, st = useAppStore.getState()): AccessoryLayer | undefined =>
-  id ? st.accessoryLayers.find(l => l.id === id) : undefined;
-/** Parçanın çizim rengi: katmanın rengi, katman yoksa `fallback`. */
-export const layerColorOf = (layerId: string | null | undefined, fallback = LAYER_DEFAULT_COLOR, st = useAppStore.getState()): string =>
-  layerById(layerId, st)?.color ?? fallback;
 /** Listede kullanılmayan ilk palet rengi (hepsi kullanıldıysa sıradaki). */
 export function nextLayerColor(layers = useAppStore.getState().accessoryLayers): string {
   const used = new Set(layers.map(l => l.color.toLowerCase()));
@@ -577,10 +532,8 @@ export const layerUseCount = (id: string, legModels = useAppStore.getState().leg
   legModels.reduce((n, lm) => n + lm.parts.filter(p => p.layerId === id).length, 0);
 
 /* ───────────────────────────── Delikler ─────────────────────────────
-   HoleSpec (store): parçaya bağlı, parçanın ÖLÇEKSİZ model uzayında `pos`; `dir` birim yön. Montajdaki yeri parçanın yerinden
-   (`legLayout`) türer: merkez = parça + pos·ölçek. Ayak sıfırına göre X/Y/Z gösterilir / düzenlenir (`holeLegPos` / `holePosFromLeg`).
-   Kesici: ağız HOLE_MOUTH kadar geri alınmış silindir (panel yüzeyiyle çakışık kapak olmasın — boolean temiz ve hızlı), boy mouth + depth;
-   panelden çıkan = silindir ∩ panel ("panele değdiği yerden"). */
+   HoleSpec parçanın ölçeksiz model uzayında; montaj yeri `legLayout`'tan. Kesici ağzı HOLE_MOUTH geri alınır (panel yüzüyle
+   çakışık kapak boolean'ı bozmasın); panelden çıkan = silindir ∩ panel. */
 export const HOLE_DEFAULTS = { diameter: 4, depth: 12 } as const;
 /** Ağız payı (mm): silindir ağızdan bu kadar geride başlar. */
 export const HOLE_MOUTH = 1;
@@ -644,11 +597,9 @@ export function holeCutterBox(c: HoleCutter): CavityBox {
   const r = c.radius;
   return { min: [Math.min(c.start[0], end[0]) - r, Math.min(c.start[1], end[1]) - r, Math.min(c.start[2], end[2]) - r], max: [Math.max(c.start[0], end[0]) + r, Math.max(c.start[1], end[1]) + r, Math.max(c.start[2], end[2]) + r] };
 }
-/* ───────────────────────────── Yakalama noktaları (snap) ─────────────────────────────
-   Goker (Kas 2026): "delikleri stl modeli üzerindeki belli noktalara yerleştirebileyim". Üçgen ağından CAD yakalama noktaları:
-   KÖŞE (keskin kenarların kırıldığı / buluştuğu tepe), ORTA (düz keskin kenar parçasının ortası), MERKEZ (kapalı keskin kenar
-   çevriminin çember merkezi — modeldeki delik ağzı, disk / mil kenarı). Keskin kenar = iki yüz normali arası > 25° ya da sınır kenarı.
-   Geometri başına bir kez hesaplanır (WeakMap); 150k üçgenden büyük ağlar atlanır. Noktalar parçanın ölçeksiz model uzayında. */
+/* ───────────────────────────── Yakalama noktaları ─────────────────────────────
+   Üçgen ağından köşe / orta / merkez (kapalı keskin kenar çevriminin çemberi); keskin kenar > 25° ya da sınır.
+   Geometri başına bir kez (WeakMap); 150k üçgenden büyük ağ atlanır. */
 export interface SnapPoint { kind: 'vertex' | 'mid' | 'center'; p: Vec3; normals: Vec3[] }
 const _snapCache = new WeakMap<THREE.BufferGeometry, SnapPoint[]>();
 const SNAP_SHARP = Math.cos((25 * Math.PI) / 180), SNAP_STRAIGHT = Math.cos((3 * Math.PI) / 180), SNAP_BEND = Math.cos((20 * Math.PI) / 180);
@@ -801,8 +752,7 @@ function computeSnapPoints(geo: THREE.BufferGeometry): SnapPoint[] {
   return out;
 }
 
-/** PANEL DELİK KAYDI (üretim): kesicinin panel kutusuna giriş noktası, panel içindeki derinlik, giriş yüzü, geçiyor mu.
- *  Eksen-hizalı delikte kutu yüzünden giriş; eğik delikte giriş = silindir başı (yaklaşık). */
+/** Panel delik kaydı (üretim): giriş noktası, derinlik, giriş yüzü, geçiyor mu. Eğik delikte giriş ≈ silindir başı. */
 export function panelHoleRecord(c: HoleCutter, pb: { min: Vec3; max: Vec3 }): PanelHole {
   const axis = holeAxisOf(c.dir);
   const end: Vec3 = [c.start[0] + c.dir[0] * c.length, c.start[1] + c.dir[1] * c.length, c.start[2] + c.dir[2] * c.length];
