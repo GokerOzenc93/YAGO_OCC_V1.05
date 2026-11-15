@@ -11,7 +11,7 @@ import { panelStepRotation, whenRebuildIdle } from './PanelEngine';
 import {
   type DraftIsolate, type SketchApply, type DraftPlane, type DraftFace, type BindDefault, type CircleS, type SketchBind, type Entity, type Geo, type GeoStyle, type LineS, type P2, type Shape2, type SnapKind, type V3, GROUND_PLANE, SNAP_KINDS,
   SNAP_LABEL, activatePlane, cancelCommand, closestOn, commandActive, commandById, deg, dist, enterKey, fmt, loadEntities, moveShape, pointerClick, pointerLeave,
-  pointerMove, profileLoops, selectEntity, setAids, setApply, setExtraSnap, setIsolate, setPanelOpen, setPlaneCandidate, setPlaneConfirm, setPlaneNeeded, setPlanePick, setSession,
+  pointerMove, profileLoops, selectEntity, setAids, setApply, setBodyPreview, setExtraSnap, setIsolate, setPanelOpen, setPlaneCandidate, setPlaneConfirm, setPlaneNeeded, setPlanePick, setSession,
   startCommand, stripEnt, takeEntities, tessellate, useDraft,
   autoKind, bindCoord, bindText, bindsOf, ctrlPoints, evalExpr, movePointsTo, paramTargets, parseBind, pointAt, prefsOf, ptKey,
   segmentAt, selectPoints, setCircleRadius, setFace, setPHover, setPointPrefs, setRefEdges, togglePoint,
@@ -85,6 +85,9 @@ const shownGeometryOf = (s: Shape) => (isPanel(s) ? s.geometry : effectiveBodyGe
 /** İzolasyonda yalnız görünen şekiller: hedef panel (+ gövdesi) ya da hedef gövde. */
 const visibleShapes = (shapes: Shape[], iso: DraftIsolate | null) =>
   (iso ? shapes.filter(s => s.id === iso.targetId) : shapes);
+/** Gövde adımı düzenlenirken çizim katmanının gördüğü şekiller: gövde ADIMSIZ önizleme katısıyla, panelleri yok (sahnede de gizli). */
+const withBodyPreview = (shapes: Shape[], pv: { shapeId: string; geometry: object } | null): Shape[] => (!pv ? shapes
+  : shapes.filter(s => !(isPanel(s) && s.parameters?.parentShapeId === pv.shapeId)).map(s => (s.id === pv.shapeId ? { ...s, geometry: pv.geometry as THREE.BufferGeometry } : s)));
 /** Tıklanan yüzden aday: X sağa, Y yukarı (yatay yüzde arkaya), orijin sol-alt köşe; panelde kesilmemiş mesh'ten. */
 function facePickOf(shape: Shape, hit: THREE.Intersection, shapes: Shape[]): FacePick | null {
   const geo = (hit.object as THREE.Mesh).geometry;
@@ -574,6 +577,35 @@ export async function applySketch(): Promise<string | null> {
 }
 // Açık adımın çizimi yüklendiği andan beri değişti mi (boşta Esc kaydedilmemiş emeği silmesin diye sorulur).
 let sessionBase = '';
+let sessionApply = '';   // oturum açılırken uygulama ayarları (değişmediyse "Update" hiçbir şeyi yeniden üretmez)
+// Gövde adımı önizlemesi: adımsız katı. `src` = kurulduğu andaki depo geometrisi (gövde oturum sürerken değişirse yeniden kurulur).
+let previewSrc: { shapeId: string; featureId: string; geometry: THREE.BufferGeometry | undefined; tick: number } | null = null;
+let previewTick = 0;
+function dropBodyPreview() {
+  previewSrc = null; previewTick++;
+  const pv = useDraft.getState().bodyPreview;
+  if (pv) { setBodyPreview(null); (pv.geometry as THREE.BufferGeometry).dispose?.(); }
+}
+async function refreshBodyPreview(shapeId: string, featureId: string): Promise<boolean> {
+  const s = shapeById(shapeId);
+  if (!s) return false;
+  const tick = ++previewTick;
+  previewSrc = { shapeId, featureId, geometry: s.geometry, tick };
+  try {
+    const feats = sketchFeaturesOf(s).filter(x => x.id !== featureId);
+    const r = await rebuildBodySolid({ parameters: { ...s.parameters, sketchFeatures: feats }, fillets: s.fillets }, s.subtractionGeometries, undefined, false);
+    try { (r.replicadShape as { delete?: () => void } | undefined)?.delete?.(); } catch { /* yalnız mesh gerekli */ }
+    if (tick !== previewTick) { r.geometry.dispose(); return false; }
+    const old = useDraft.getState().bodyPreview;
+    setBodyPreview({ shapeId, geometry: r.geometry });
+    if (old) (old.geometry as THREE.BufferGeometry).dispose?.();
+    return true;
+  } catch (e) {
+    console.error('[YAGO][ÇİZİM] adımsız gövde önizlemesi kurulamadı:', e);
+    if (tick === previewTick) previewSrc = null;
+    return false;
+  }
+}
 const sessionKey = (planeId: string) => JSON.stringify(useDraft.getState().entities.filter(e => e.plane === planeId && !e.ref));
 export const sessionDirty = () => { const ses = useDraft.getState().session; return !!ses && sessionKey(ses.planeId) !== sessionBase; };
 /** Adımı düzenlemeye açar: yüz düzlemi + izolasyon, adım bastırılır (katı adımsız), nesneleri oturum düzlemine yüklenir. */
@@ -585,11 +617,17 @@ export async function editSketch(targetId: string, featureId: string) {
   cancelCommand(); cancelFacePick(true);
   const bodyId = bodyIdOf(first), kind = isPanel(first) ? 'panel' as const : 'body' as const;
   await whenRebuildIdle(bodyId);
-  setSketchSuppressed(featureId);
-  await rebuildTarget(targetId);
+  // PANEL adımı: adım bastırılır, yalnız o panel adımsız yeniden üretilir (komşular tepki vermez).
+  // GÖVDE adımı: depoya DOKUNULMAZ — adımsız katı yalnız önizleme olarak kurulur. Eskiden gövde depoda adımsız yeniden üretiliyor,
+  // tüm paneller o geçici katıya göre çözülüyordu: yüzü kalmayan paneller kayboluyor, vazgeçince de eski yerlerine aynen dönmüyordu.
+  if (kind === 'panel') { setSketchSuppressed(featureId); await rebuildTarget(targetId); }
+  else if (!(await refreshBodyPreview(targetId, featureId))) return;
   const target = shapeById(targetId);
   const fr = target ? sketchFrameOf(await uncutMeshOf(target), f.n, f.u, f.inset, stepRotationOf(target)) : null;
-  if (!target || !fr) { setSketchSuppressed(null); await rebuildTarget(targetId); return; }
+  if (!target || !fr) {
+    if (kind === 'panel') { setSketchSuppressed(null); await rebuildTarget(targetId); } else dropBodyPreview();
+    return;
+  }
   const name = isPanel(target) ? vfOfPanel(target)?.description || 'Panel' : 'Body';
   const planeId = activatePlane({ kind: 'face', shapeId: targetId, origin: arr3(fr.o), u: arr3(fr.u), v: arr3(fr.v), n: arr3(fr.n), label: name }, true);
   // Parametric adım: nesneler o anki yüz ölçüsünde çözülür ve nokta bağ tercihleriyle yüklenir (formül çözülemezse saklı hâliyle).
@@ -603,6 +641,7 @@ export async function editSketch(targetId: string, featureId: string) {
     op: f.op, through: f.depth == null, ...(f.depth != null ? { depth: f.depth } : {}), anchor: [f.anchor[0], f.anchor[1]], stretch: [f.stretch[0], f.stretch[1]],
     mode: param ? 'points' : 'anchor',
   });
+  sessionApply = JSON.stringify(useDraft.getState().apply);
   setSession({ targetId, featureId, name: f.name, planeId });
   setIsolate({ targetId, bodyId, kind }); setPanelOpen(true);
   keepPose();
@@ -616,6 +655,10 @@ export async function finishSketchEdit(save: boolean, stay = false): Promise<str
   if (!ses) return null;
   const target = shapeById(ses.targetId), f = sketchFeaturesOf(target).find(x => x.id === ses.featureId);
   cancelCommand();
+  const onBody = !!target && !isPanel(target);
+  // Hiçbir şey değişmediyse (çizim + uygulama ayarları yüklendiği gibi) kaydetmek = vazgeçmek: adım yeniden yazılmaz, paneller üretilmez.
+  if (save && !sessionDirty() && JSON.stringify(st.apply) === sessionApply) save = false;
+  let wrote = false;
   if (save && target && f) {
     const ents = st.entities.filter(e => e.plane === ses.planeId && !e.ref);
     if (!profileLoops(ents).loops.length) return 'The step needs at least one closed profile.';
@@ -632,11 +675,14 @@ export async function finishSketchEdit(save: boolean, stay = false): Promise<str
       ...sketchPayload(ents, a, g.w, g.h, g.dx, g.dy, varsOfTarget(fit ? shapeById(target.id) ?? target : target)),
     };
     writeFeatures(target.id, old => old.map(x => (x.id === f.id ? next : x)));
+    wrote = true;
   }
   takeEntities(ses.planeId);
-  setSketchSuppressed(null); setSession(null);
+  setSketchSuppressed(null); setSession(null); dropBodyPreview();
   if (!stay && applyBeforeEdit) { setApply(applyBeforeEdit); applyBeforeEdit = null; }
-  if (target) await rebuildTarget(target.id);
+  // Gövde: yalnız adım gerçekten yazıldıysa gövde + paneller yeniden üretilir; vazgeçilince depo hiç değişmediği için paneller olduğu gibi kalır.
+  // Panel: adım bastırılarak üretilmişti → her durumda geri üretilir.
+  if (target && (wrote || !onBody)) await rebuildTarget(target.id);
   if (!stay) leaveFace();
   else {
     // Yüzde kalınıyor: yüzün kendi düzlemine dönülür (bekleyen serbest çizim yeniden görünsün).
@@ -856,6 +902,8 @@ const IDENT = new THREE.Matrix4();
 export const DraftLayer: React.FC = () => {
   const camera = useThree(s => s.camera), gl = useThree(s => s.gl), size = useThree(s => s.size), controls = useThree(s => s.controls) as unknown as OrbitLike;
   const shapes = useAppStore(s => s.shapes), ortho = useAppStore(s => s.orthoMode), snapSettings = useAppStore(s => s.snapSettings);
+  const bodyPreview = useDraft(s => s.bodyPreview);
+  const drawShapes = useMemo(() => withBodyPreview(shapes, bodyPreview), [shapes, bodyPreview]);   // yakalama / referans kenarları sahnede görünenden okunur
   const snapOn = useAppStore(s => s.snapEnabled);
   const planes = useDraft(s => s.planes), activeId = useDraft(s => s.activePlane), entities = useDraft(s => s.entities), selection = useDraft(s => s.selection);
   const hoverId = useDraft(s => s.hoverId), preview = useDraft(s => s.preview), cursor = useDraft(s => s.cursor), cmd = useDraft(s => s.cmd);
@@ -871,8 +919,12 @@ export const DraftLayer: React.FC = () => {
   useEffect(() => {
     const st = useDraft.getState(), gone = (id: string) => !shapes.some(s => s.id === id);
     if (st.session && gone(st.session.targetId)) {
-      takeEntities(st.session.planeId); setSketchSuppressed(null); setSession(null);
+      takeEntities(st.session.planeId); setSketchSuppressed(null); setSession(null); dropBodyPreview();
       if (applyBeforeEdit) { setApply(applyBeforeEdit); applyBeforeEdit = null; }
+    } else if (previewSrc && st.session?.targetId === previewSrc.shapeId) {
+      // Oturum sürerken gövde başka yoldan değiştiyse (ölçü, başka adım) önizleme yeni gövdeden yeniden kurulur.
+      const cur = shapes.find(s => s.id === previewSrc!.shapeId);
+      if (cur && cur.geometry !== previewSrc.geometry) void refreshBodyPreview(previewSrc.shapeId, previewSrc.featureId);
     }
     if (st.isolate && gone(st.isolate.targetId)) setIsolate(null);
     const pl = st.planes.find(p => p.id === st.activePlane);
@@ -894,12 +946,12 @@ export const DraftLayer: React.FC = () => {
   useEffect(() => { setAids({ ortho: ortho === OrthoMode.ON, osnap: snapOn, snaps: snapSettings as unknown as Record<SnapKind, boolean> }); }, [ortho, snapOn, snapSettings]);
   const busy = !!cmd;
   // Yakalama kaynağı yalnız GÖRÜNEN şekillerin kenarlarıdır (izolasyonda hedef panel / gövde).
-  useEffect(() => { setExtraSnap(busy ? planeEdges(activeInv, visibleShapes(shapes, iso), shapes) : []); }, [busy, activeInv, shapes, iso]);
+  useEffect(() => { setExtraSnap(busy ? planeEdges(activeInv, visibleShapes(drawShapes, iso), drawShapes) : []); }, [busy, activeInv, drawShapes, iso]);
   // Referans kenarlar: etkin yüzün sahibinin o düzlemdeki kenarları seçilebilir (setRefEdges) — değiştirilemez, adıma girmez.
   useEffect(() => {
-    const pl = planes.find(q => q.id === activeId), host = pl?.kind === 'face' ? shapes.find(x => x.id === pl.shapeId) : undefined;
-    setRefEdges(host ? activeId : null, host ? planeEdges(activeInv, [host], shapes) : []);
-  }, [activeId, planes, activeInv, shapes, entities]);   // entities: çizime katılan / silinen kenar için referanslar yeniden süzülür
+    const pl = planes.find(q => q.id === activeId), host = pl?.kind === 'face' ? drawShapes.find(x => x.id === pl.shapeId) : undefined;
+    setRefEdges(host ? activeId : null, host ? planeEdges(activeInv, [host], drawShapes) : []);
+  }, [activeId, planes, activeInv, drawShapes, entities]);   // entities: çizime katılan / silinen kenar için referanslar yeniden süzülür
   const kind = cmd?.kind ?? null;
   useEffect(() => {
     gl.domElement.style.cursor = planePick ? 'copy' : kind ? (kind === 'pick' ? PICKBOX_CURSOR : 'crosshair') : '';

@@ -2187,6 +2187,18 @@ export function largestFaceNormal(geo: any, tol = 0): THREE.Vector3 | null {
   return best ? (best as { n: THREE.Vector3; a: number }).n.clone() : null;
 }
 /** VF-eğimli levha (eğilmiş gövde yüzünde): dönüş adımı yok ama DÖNMÜŞ kardeş gibi ele alınır. */
+/** Gövdede eksen-dışı (eğik) ya da eğri yüz var mı (çizimle biçimlenmiş; vertex düzenlemeli gövde ayrı yoldadır). */
+const _shapedBodyCache = new WeakMap<THREE.BufferGeometry, boolean>();
+export function isShapedBody(parent: { geometry?: THREE.BufferGeometry | null; vertexModifications?: unknown[] } | null | undefined): boolean {
+  if (!parent?.geometry || (Array.isArray(parent.vertexModifications) && parent.vertexModifications.length > 0)) return false;
+  const geo = parent.geometry;
+  let v = _shapedBodyCache.get(geo);
+  if (v === undefined) {
+    v = !!geo.userData?.brep && getFacesAndGroups(geo).groups.some(g => g.isCurved || !isFlatNormal(g.normal.clone().normalize(), 0.999 - Number.EPSILON));
+    _shapedBodyCache.set(geo, v);
+  }
+  return v;
+}
 export function panelIsTiltedSlab(panel: any): boolean {
   // Eğri yüz paneli eğik levha değildir (dilimlenmiş silindir yüzü "en büyük yüz" oyununu şansa bırakır); kendi yoluyla çözülür.
   if (panel?.parameters?.curved) return false;

@@ -593,6 +593,7 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
   const [hoveredExtrudeGroup, setHoveredExtrudeGroup] = useState<number | null>(null);
   const [moveRefHover, setMoveRefHover] = useState(false);
   const draftIso = useDraft(st => st.isolate);
+  const draftBodyEdit = useDraft(st => st.bodyPreview?.shapeId ?? null);
   const { faces, groups: faceGroups } = useMemo(() => (shape.geometry ? getFacesAndGroups(shape.geometry) : { faces: [], groups: [] }), [shape.geometry]);
 
   const params = shape.parameters;
@@ -665,6 +666,8 @@ export const PanelDrawing: React.FC<{ shape: any; isSelected: boolean }> = React
   if (isRepickHidden) return null;
   // Yüz çiziminde izolasyon (DraftView): yalnız hedef panel çizilir; gövde yüzüne çizimde tüm paneller gizlenir.
   if (draftIso && draftIso.targetId !== shape.id) return null;
+  // Gövde adımı düzenlenirken (izolasyon kapatılsa da) gövdenin panelleri çizilmez: yalnız çizgiler görünür; paneller depoda aynen durur.
+  if (draftBodyEdit && shape.parameters?.parentShapeId === draftBodyEdit) return null;
 
   // Çizim hedefi panel dolgusuz, yalnız kenarlarla çizilir (çizim ve düğümler kaybolmasın); yüz seçimi kendi ışınıyla çalışır.
   const isDraftTarget = !!draftIso && draftIso.targetId === shape.id;
@@ -1925,10 +1928,13 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
   const [hoveredRefGroup, setHoveredRefGroup] = useState<number | null>(null);
   const [moveRefHover, setMoveRefHover] = useState(false);
   const draftIso = useDraft(st => st.isolate);
+  // Gövde adımı düzenlenirken çizilen katı ADIMSIZ önizlemedir; depodaki gövde (ve panelleri) oturum boyunca değişmez.
+  const draftPreview = useDraft(st => (st.bodyPreview && st.bodyPreview.shapeId === shape.id ? st.bodyPreview.geometry as THREE.BufferGeometry : null));
   const vertexModsString = useMemo(() => JSON.stringify(shape.vertexModifications || []), [shape.vertexModifications]);
   const { faces: refFaces, groups: refFaceGroups } = useMemo(() => (shape.geometry ? getFacesAndGroups(effectiveBodyGeometry(shape)) : { faces: [], groups: [] }),
     [shape.geometry, vertexModsString]);
-  const edgePoints = useMemo(() => safeEdgePoints(localGeometry, 5), [localGeometry]);
+  const drawGeometry = draftPreview ?? localGeometry;
+  const edgePoints = useMemo(() => safeEdgePoints(drawGeometry, 5), [drawGeometry]);
 
   // Çizilen gövde = effectiveBodyGeometry (yerleştirme, VF regen ve motorla aynı kaynak).
   useEffect(() => {
@@ -2022,7 +2028,7 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
   if (shape.isolated === false || !localGeometry) return null;
   // Yüz çiziminde izolasyon (DraftView): başka gövdeler gizlenir; hedef GÖVDE yüzüyse (panelleri gizli) gövde görünür kılınır.
   if (draftIso && draftIso.bodyId !== shape.id) return null;
-  const isoBody = draftIso?.kind === 'body' && draftIso.targetId === shape.id;
+  const isoBody = !!draftPreview || (draftIso?.kind === 'body' && draftIso.targetId === shape.id);
 
   const raycastProps = suppressBodyRaycast ? { raycast: noRaycast } : {};
   const hoverProps = isMoveRefPickActive ? {
@@ -2068,7 +2074,7 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
 
         {!isWireframe && !isXray && !shouldShowAsReference && (
           <>
-            <mesh ref={meshRef} geometry={localGeometry} castShadow receiveShadow {...raycastProps} {...hoverProps}>
+            <mesh ref={meshRef} geometry={drawGeometry} castShadow receiveShadow {...raycastProps} {...hoverProps}>
               <meshStandardMaterial color="#c8c8c8" emissive={bodyEmissive} emissiveIntensity={moveRefBodyHighlight ? 0.9 : 0}
                 metalness={0} roughness={1.0} transparent opacity={bodyOpacity}
                 side={THREE.DoubleSide} depthWrite={false} flatShading={false} polygonOffset polygonOffsetFactor={4} polygonOffsetUnits={8} />
@@ -2078,13 +2084,13 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
         )}
         {isWireframe && (
           <>
-            <mesh ref={meshRef} geometry={localGeometry} visible={false} {...raycastProps} />
+            <mesh ref={meshRef} geometry={drawGeometry} visible={false} {...raycastProps} />
             {outline(WIRE_COLOR, accented ? EDGE_LINE_WIDTH + 0.75 : EDGE_LINE_WIDTH + 0.25, true)}
           </>
         )}
         {(isXray || shouldShowAsReference) && (
           <>
-            <mesh ref={meshRef} geometry={localGeometry} castShadow receiveShadow {...raycastProps}>
+            <mesh ref={meshRef} geometry={drawGeometry} castShadow receiveShadow {...raycastProps}>
               <meshStandardMaterial color={shouldShowAsReference ? '#ef4444' : '#c8c8c8'} emissive="#000000" emissiveIntensity={0} metalness={0} roughness={1.0}
                 transparent opacity={hasPanels ? 0 : shouldShowAsReference ? 0.2 : 0.06} side={THREE.DoubleSide} depthWrite={false} flatShading={false} />
             </mesh>
@@ -2104,10 +2110,10 @@ export const ShapeWithTransform: React.FC<{ shape: any; isSelected: boolean; orb
         {isSelected && S.doorPickMode && <DoorPickOverlay shape={shape} />}
         {isSelected && S.backPickMode && <BackPickOverlay shape={shape} />}
         {isSelected && S.plinthPickMode && <PlinthPickOverlay shape={shape} />}
-        {!draftIso && <PlinthSets shape={shape} />}
+        {!draftIso && !draftPreview && <PlinthSets shape={shape} />}
         {S.faceExtrudeMode && S.faceExtrudeCavityGroupId && <CavityEditOverlay shape={shape} />}
         {S.faceExtrudeMode && S.faceExtrudePlinthId && <PlinthEditOverlay shape={shape} />}
-        {!draftIso && <VirtualFaceOverlay shape={shape} />}
+        {!draftIso && !draftPreview && <VirtualFaceOverlay shape={shape} />}
         {S.showFaceRoles && isSelected && <BodyFaceRoleLabels shape={shape} hovered={S.faceRoleHover?.shapeId === shape.id ? S.faceRoleHover!.gi : null} />}
         {S.faceRoleHover && S.faceRoleHover.shapeId === shape.id && <FaceRoleHighlight shape={shape} faces={refFaces} groups={refFaceGroups} gi={S.faceRoleHover.gi} />}
       </group>

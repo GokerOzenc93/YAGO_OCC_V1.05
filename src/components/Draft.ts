@@ -1020,6 +1020,9 @@ export interface DraftState {
   isolate: DraftIsolate | null;
   /** Çizim adımı düzenleme oturumu: adımın nesneleri geçici olarak bu düzlemde durur. */
   session: { targetId: string; featureId: string; name: string; planeId: string } | null;
+  /** GÖVDE adımı düzenlenirken sahnede gösterilen ADIMSIZ katı (yalnız görüntü + yakalama kaynağı). Depodaki gövde ve panelleri
+   *  oturum boyunca değişmez: paneller yalnız adım onaylanınca yeniden üretilir, vazgeçilince oldukları gibi kalır. */
+  bodyPreview: { shapeId: string; geometry: object } | null;
   /** Yüze uygulama ayarları (Cut / Shape, derinlik, çapa, uzama) — Drawing paneli. */
   apply: SketchApply;
   /** Parametric kip — seçili kontrol noktaları ("nesneId:sıra"). */
@@ -1048,7 +1051,7 @@ export const useDraft = create<DraftState>(() => ({
     snaps: { endpoint: true, midpoint: true, center: true, quadrant: true, intersection: true, perpendicular: true, tangent: false, nearest: false },
   },
   lastCmd: null, recent: {}, typed: '', panelOpen: false,
-  planeCandidate: null, isolate: null, session: null,
+  planeCandidate: null, isolate: null, session: null, bodyPreview: null,
   apply: { op: 'cut', through: true, depth: 8, anchor: [0, 0], stretch: [false, false], mode: 'anchor', auto: true },
   psel: [], face: null, pview: null, phover: null,
 }));
@@ -1075,6 +1078,7 @@ export const setPanelOpen = (b: boolean) => set({ panelOpen: b });
 export const setPlaneCandidate = (c: DraftState['planeCandidate']) => set({ planeCandidate: c });
 export const setIsolate = (i: DraftIsolate | null) => set({ isolate: i });
 export const setSession = (x: DraftState['session']) => set({ session: x });
+export const setBodyPreview = (x: DraftState['bodyPreview']) => set({ bodyPreview: x });
 export const setApply = (patch: Partial<SketchApply>) => set(s => ({ apply: { ...s.apply, ...patch } }));
 export const setFace = (f: DraftFace | null) => set({ face: f });
 

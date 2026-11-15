@@ -4,7 +4,7 @@ import {
   effectiveBodyGeometry, getFacesAndGroups, vertexModsKey, isFlatNormal, matchReferenceFace, getShapeMatrix, dominantAxisLabel, type FaceData,
   type CoplanarFaceGroup, computeFaceComponentContour, computeFreeRegionLocal, fromPlaneUV, vec3, createFaceDescriptor, createPanelFromVirtualFace,
   convertReplicadToThreeGeometry, type MoveTransformStep, type ExtrudeStep, axisDirToVec, panelBehindStackPlane, clipRegionToRailStrip, toUV, applyRailExt,
-  initReplicad, rebuildBodySolid, panelFrontHull,
+  initReplicad, rebuildBodySolid, panelFrontHull, isShapedBody, uniqueMeshPoints, projRange,
 } from './Geometry';
 import {
   type CavityBox, type Shape, type VirtualFace, panelOfVf, type GapSpec, useAppStore, type PanelGroup, type CavityPick, type CavityStep, shapeById,
@@ -173,8 +173,19 @@ export function nearSlabsOf<E extends string, R>(o: {
 
 /** Dönmüş sınır paneli: büyük-yüz normali + o normaldeki [dMin,dMax] + kutu; pts = tekil köşeler (şema ön görünüşü). */
 export interface SlabCut { vfId: string; name: string; n: Vec3; dMin: number; dMax: number; box: CavityBox; pts?: Vec3[] }
+const _bodyPtsCache = new WeakMap<THREE.BufferGeometry, THREE.Vector3[]>();
+const bodyPointsOf = (geo: THREE.BufferGeometry): THREE.Vector3[] => {
+  let p = _bodyPtsCache.get(geo);
+  if (!p) { p = uniqueMeshPoints(geo); _bodyPtsCache.set(geo, p); }
+  return p;
+};
 export function collectRotatedCuts(parent: Shape, shapes: Shape[], vfs: VirtualFace[], accept: (vf: VirtualFace) => boolean): SlabCut[] {
   const out: SlabCut[] = [];
+  // Biçimlenmiş gövdenin eğik YÜZÜNE oturan panel (adımsız): 2B kesici "büyük yüz düzleminin öte yanı atılır" der ve düzlem sonsuzdur.
+  // Bu yalnız düzlem gövdenin DESTEK düzlemiyse doğrudur (gövdenin tamamı bir yanında). Değilse — panel bittikten sonra gövde düzlemin
+  // öte yanına geçiyorsa (üstünde yay / pah başlayan eğik yan, V çentiğin yüzleri) — levhanın geçerli alanını da keserdi → kesici
+  // sayılmaz; kapak / arkalık orada gövde çevresi ve panellerin katısıyla şekillenir (PanelEngine.fitSlabToBodyFace).
+  const bodyPts = isShapedBody(parent) && parent.geometry ? bodyPointsOf(parent.geometry) : null;
   for (const vf of vfs) {
     if (vf.shapeId !== parent.id || !accept(vf)) continue;
     const p = panelOfVf(vf.id, shapes);
@@ -195,6 +206,11 @@ export function collectRotatedCuts(parent: Shape, shapes: Shape[], vfs: VirtualF
       if (!seen.has(k)) { seen.add(k); pts.push([x, y, z]); }
     }
     if (!(dMax - dMin > 0.5)) continue;
+    if (bodyPts && !isFlatNormal(new THREE.Vector3(...vf.normal).normalize())
+      && !((p.parameters as any)?.transformSteps ?? []).some((st: any) => st?.type === 'move' || st?.type === 'rotate')) {
+      const r = projRange(bodyPts, n);
+      if (!(r.max <= dMax + 0.5 || r.min >= dMin - 0.5)) continue;
+    }
     out.push({ vfId: vf.id, name: vf.description || 'Panel', n: [n.x, n.y, n.z], dMin, dMax, box, pts });
   }
   return out;
@@ -719,7 +735,12 @@ function solidObstacleOf(p: Shape, parent: Shape, bbox: CavityBox): SolidObstacl
 const isCurvedBodyPanel = (p: Shape): boolean => !!(p.parameters as any)?.curved;
 
 // Eğik paneller: ızgarada engel değil, tohuma bakan yüzün yarım-uzayıyla kırpılır. Önce geliyorsa üye uzak yüze, sonraysa yakın yüze.
-interface TiltFace { id: string; vfId?: string; n: Vec3; d: number; bbox: CavityBox }
+interface TiltFace {
+  id: string; vfId?: string; n: Vec3; d: number; bbox: CavityBox;
+  /** Panelin KENDİ düzlemindeki kapsamı (biçimlenmiş gövdenin eğik yüz paneli). Dünya eksenli kutu, normali iki eksene yayılan panelde
+   *  (V çentiğin yüzü) tek eksene iner: yarım-uzay panelin hizasındaki HER hücreye uygulanıp çentiğin iki yanındaki hacmi siliyordu. */
+  span?: { u: Vec3; v: Vec3; u0: number; u1: number; v0: number; v1: number };
+}
 interface TiltPlane extends TiltFace { bevel?: boolean }
 const dot3 = (a: Vec3, b: Vec3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 const planeSpanAxes = (pl: TiltFace): [number, number] => {
@@ -727,6 +748,10 @@ const planeSpanAxes = (pl: TiltFace): [number, number] => {
   return [a[0], a[1]];
 };
 const inPlaneRange = (pl: TiltFace, p: Vec3, tol = 2): boolean => {
+  if (pl.span) {
+    const pu = dot3(pl.span.u, p), pv = dot3(pl.span.v, p);
+    return pu >= pl.span.u0 - tol && pu <= pl.span.u1 + tol && pv >= pl.span.v0 - tol && pv <= pl.span.v1 + tol;
+  }
   const [a, b] = planeSpanAxes(pl);
   return p[a] >= pl.bbox.min[a] - tol && p[a] <= pl.bbox.max[a] + tol && p[b] >= pl.bbox.min[b] - tol && p[b] <= pl.bbox.max[b] + tol;
 };
@@ -745,20 +770,38 @@ const cellInsideTiltPlanes = (planes: TiltPlane[], b: CavityBox): boolean => pla
 
 function tiltedPanelFaces(parent: Shape, panels: Shape[]): TiltFace[] {
   const out: TiltFace[] = [];
+  const shaped = isShapedBody(parent);
   for (const p of panels) {
     if (!panelHasRotation(p) || !p.geometry) continue;
     const bbox = panelLocalBox(p, parent);
     if (!bbox) continue;
     const dpos = [0, 1, 2].map(i => (p.position?.[i] ?? 0) - (parent.position?.[i] ?? 0));
     const groups = getFacesAndGroups(p.geometry).groups.slice().sort((a, b) => b.totalArea - a.totalArea).slice(0, 2);
+    const steps = ((p.parameters as any)?.transformSteps ?? []) as Array<{ type?: string }>;
+    const faceFollowing = shaped && !steps.some(st => st?.type === 'move' || st?.type === 'rotate');
+    const pts = faceFollowing ? uniqueMeshPoints(p.geometry) : null;
     for (const gr of groups) {
       const n = gr.normal.clone().normalize();
       const c: Vec3 = [gr.center.x + dpos[0], gr.center.y + dpos[1], gr.center.z + dpos[2]];
       const nn: Vec3 = [n.x, n.y, n.z];
-      out.push({ id: p.id, vfId: (p.parameters as any)?.virtualFaceId, n: nn, d: dot3(nn, c), bbox });
+      const face: TiltFace = { id: p.id, vfId: (p.parameters as any)?.virtualFaceId, n: nn, d: dot3(nn, c), bbox };
+      if (pts) {
+        const { u, v } = planeBasis(n);
+        const off = new THREE.Vector3(dpos[0], dpos[1], dpos[2]);
+        const ru = projRange(pts, u), rv = projRange(pts, v), ou = off.dot(u), ov = off.dot(v);
+        face.span = { u: [u.x, u.y, u.z], v: [v.x, v.y, v.z], u0: ru.min + ou, u1: ru.max + ou, v0: rv.min + ov, v1: rv.max + ov };
+      }
+      out.push(face);
     }
   }
   return out;
+}
+/** Düzlem içi dik taban (yalnız kapsam ölçümü için; yönü önemsiz). */
+function planeBasis(n: THREE.Vector3): { u: THREE.Vector3; v: THREE.Vector3 } {
+  const a = Math.abs(n.x) <= Math.abs(n.y) && Math.abs(n.x) <= Math.abs(n.z) ? new THREE.Vector3(1, 0, 0)
+    : Math.abs(n.y) <= Math.abs(n.z) ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(0, 0, 1);
+  const u = new THREE.Vector3().crossVectors(n, a).normalize();
+  return { u, v: new THREE.Vector3().crossVectors(n, u).normalize() };
 }
 
 /** Tohuma bakan yüz → panel başına en fazla bir yarım-uzay (n·p ≥ d). */
@@ -1795,7 +1838,21 @@ export function collectObstacles(
     if (!include(p)) continue;
     const b = panelLocalBox(p, parent);
     if (!b) continue;
-    if (isCurvedBodyPanel(p)) { splitBoxes.push(b); solids.push(solidObstacleOf(p, parent, b)); }
+    if (isCurvedBodyPanel(p)) {
+      splitBoxes.push(b); solids.push(solidObstacleOf(p, parent, b));
+      // Yayın İÇ sınırı da ızgara düzlemi olur (kutu − kalınlık): yoksa yayın tepesi ile bir alttaki düzlem (düz üst panelin yüzü)
+      // arasındaki ince serbest bant hücre örneklerine denk gelmez, dikme / raf yayın altında birkaç mm kısa kalırdı.
+      // Yalnız panelin gövdeyi boydan boya geçmediği eksenlerde (derinlik gibi doğrultman ekseninde iç sınır yoktur).
+      const pt = parseFloat((p.parameters as any)?.panelThickness) || GROUP_PANEL_THICKNESS, bodyBox = bodyLocalBox(parent);
+      const inner: CavityBox = { min: [...b.min] as Vec3, max: [...b.max] as Vec3 };
+      let any = false;
+      for (const k of [0, 1, 2]) {
+        if (bodyBox && b.min[k] <= bodyBox.min[k] + 1 && b.max[k] >= bodyBox.max[k] - 1) continue;
+        if (!(b.max[k] - b.min[k] > 2 * pt + 1)) continue;
+        inner.min[k] = b.min[k] + pt; inner.max[k] = b.max[k] - pt; any = true;
+      }
+      if (any) splitBoxes.push(inner);
+    }
     else if (panelHasRotation(p)) { splitBoxes.push(b); tilted.push(p); } else obstacles.push(b);
   }
   // BAZA AYAĞI SETLERİ: yalnız AYAKLAR engeldir, set hacmi değil.
