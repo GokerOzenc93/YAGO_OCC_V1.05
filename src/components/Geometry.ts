@@ -5,7 +5,7 @@ import {
   type VirtualFace, type FaceDescriptor, type FilletInfo, type SubtractedGeometry, type Shape, shapeById, requestRebuild, vfOfPanel, type RefFacePick,
   type RailStripSpec, type RailExt, type RailExtTarget, type SketchFeature, useAppStore,
 } from '../store';
-import { type Shape2, profileLoops, scaleShapeXY, moveShape, resolveParam, solveDims, solveDimsX, hasDims, bindsOf, prefsOf, tessellate, useDraft } from './Draft';
+import { type Shape2, profileLoops, scaleShapeXY, moveShape, resolveParam, solveDimsX, hasDims, bindsOf, prefsOf, tessellate, useDraft } from './Draft';
 
 /* GEOMETRY — 1) geometri çekirdeği + OCC katı servisi · 2) yüz bölgesi · 3) panel işlem adımları (taşı / döndür / extrude, ref yüz). */
 
@@ -774,7 +774,10 @@ export function placeSketchShapes(f: SketchFeature, w: number, h: number, vars: 
     // Gövdeyi süren profil (fit): yüz = profilin dış kutusu → nokta bağları özdeşliktir, saklı nesneler doğrudan kullanılır (bağ yuvarlaması girmez).
     const asStored = !!f.fit && Math.abs(w - f.baseSize[0]) < 0.011 && Math.abs(h - f.baseSize[1]) < 0.011;
     const base = asStored ? f.shapes : resolveParam(f.shapes, f.pts, f.radii, w, h, vars);
-    return hasDims(f.dims) ? solveDims(base, f.dims, f.pin, vars, undefined, f.angs) : base;
+    if (!hasDims(f.dims)) return base;
+    const r = solveDimsX(base, f.dims, f.pin, vars, undefined, f.angs);
+    if (r.crossed) throw new Error('The outline crosses itself with these dimension values');   // adım uygulanmaz, Assembly'de "!" olur
+    return r.shapes;
   }
   const sx = f.stretch[0] && f.baseSize[0] > 1e-6 ? w / f.baseSize[0] : 1, sy = f.stretch[1] && f.baseSize[1] > 1e-6 ? h / f.baseSize[1] : 1;
   const at = { x: f.anchor[0] * w, y: f.anchor[1] * h };
@@ -814,15 +817,26 @@ export function fitDrivenBody(parameters: any): { axes: [number, number]; size: 
   const axisOf = (q: THREE.Vector3) => { const a = [Math.abs(q.x), Math.abs(q.y), Math.abs(q.z)], i = a.indexOf(Math.max(...a)); return a[i] > 0.9999 ? { i, s: Math.sign(q.getComponent(i)) } : null; };
   const U = axisOf(u), V = axisOf(v);
   if (!U || !V || U.i === V.i) return null;
-  const [w0, h0] = f.baseSize, vars = sketchVarsOf(parameters);
-  let solved: Shape2[], angs: typeof f.angs | null;
-  try { const r = solveDimsX(f.shapes, f.dims, f.pin, vars, undefined, f.angs); solved = r.shapes; angs = r.angs as typeof f.angs | null; } catch { return null; }
-  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-  for (const s of solved) for (const p of tessellate(s, Math.PI / 720)) { x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y); }
-  // 0,01 mm dışa yuvarlanır (yay tepesi kutu yüzüyle kesilmesin) — DraftView.fitBodyToProfile ile aynı kural.
+  const [w0, h0] = f.baseSize, size3 = [...dims];
   const lo = (q: number) => Math.floor(q * 100 + 1e-6) / 100, up = (q: number) => Math.ceil(q * 100 - 1e-6) / 100;
-  const ox = lo(x0), oy = lo(y0), w = up(x1 - ox), h = up(y1 - oy);
-  if (!(w > 1) || !(h > 1)) return null;
+  let solved: Shape2[] = f.shapes, angs: typeof f.angs | null = null, vars: Record<string, number> = {}, ox = 0, oy = 0, w = w0, h = h0;
+  // W / H / D = gövde ölçüsü, gövde ölçüsü de profilden gelir: ifade o adı kullanıyorsa önce verilen değerle (Parameters'a yazılan) çözülür;
+  // profil kutudan taşıyorsa kutu (ve o ad) büyür, profil yeni değerle yeniden çözülür — durulana kadar (en çok 4 geçiş).
+  for (let pass = 0; pass < 4; pass++) {
+    vars = sketchVarsOf(parameters, { width: size3[0], height: size3[1], depth: size3[2] });
+    try {
+      const r = solveDimsX(f.shapes, f.dims, f.pin, vars, undefined, f.angs);
+      if (r.crossed) return null;   // kendini kesen çevre: gövde olduğu gibi kalır, adım üretimde hata verir
+      solved = r.shapes; angs = r.angs as typeof f.angs | null;
+    } catch { return null; }
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const s of solved) for (const p of tessellate(s, Math.PI / 720)) { x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y); }
+    // 0,01 mm dışa yuvarlanır (yay tepesi kutu yüzüyle kesilmesin) — DraftView.fitBodyToProfile ile aynı kural.
+    ox = lo(x0); oy = lo(y0); w = up(x1 - ox); h = up(y1 - oy);
+    if (!(w > 1) || !(h > 1)) return null;
+    if (Math.abs(size3[U.i] - w) < 1e-9 && Math.abs(size3[V.i] - h) < 1e-9) break;
+    size3[U.i] = w; size3[V.i] = h;
+  }
   const shift: Vec3 = [0, 0, 0];
   shift[U.i] = U.s > 0 ? ox : w0 - (ox + w);
   shift[V.i] += V.s > 0 ? oy : h0 - (oy + h);
@@ -1268,7 +1282,8 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
   try {
     // Ölçülü profil gövdeyi sürüyorsa (fit): profil yeni parametre değerleriyle çözülür, gövdenin o yüzdeki iki ölçüsü profilden gelir
     // (o eksenlere elle yazılan ölçü geçersizdir), adım yeni kutuya göre yeniden tabanlanır.
-    const driven = selectedShape.vertexModifications?.length ? null : fitDrivenBody({ ...selectedShape.parameters, customParameters });
+    // Yazılan W / H / D profilin girdisidir (ifadeler o adı kullanıyorsa); kullanmıyorsa profil ölçüsü geçerlidir.
+    const driven = selectedShape.vertexModifications?.length ? null : fitDrivenBody({ ...selectedShape.parameters, width, height, depth, customParameters });
     if (driven) { const d3 = [width, height, depth]; d3[driven.axes[0]] = driven.size[0]; d3[driven.axes[1]] = driven.size[1]; [width, height, depth] = d3; }
     const cur = driven?.changed ? { ...selectedShape.parameters, sketchFeatures: driven.features } : selectedShape.parameters;
     const scale = new THREE.Vector3(width / cur.width, height / cur.height, depth / cur.depth);

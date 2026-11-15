@@ -5,7 +5,7 @@ import { useThree, useFrame } from '@react-three/fiber';
 import { useAppStore, OrthoMode, SnapType, type Shape, type SketchFeature, childPanelsOf, requestRebuild, shapeById, vfOfPanel } from '../store';
 import {
   createFaceHighlightGeometry, effectiveBodyGeometry, footprintGeometry, genId, getFacesAndGroups, getShapeMatrix, groupIndexOfFace, placeSketchShapes,
-  rebuildBodySolid, setSketchSuppressed, sketchFrameOf, sketchVarsOf, SKETCH_HIDDEN_VARS, type SketchFrame,
+  rebuildBodySolid, setSketchSuppressed, sketchFrameOf, sketchVarsOf, SKETCH_HIDDEN_VARS, fitDrivenBody, shiftBodyLocal, type SketchFrame,
 } from './Geometry';
 import { panelStepRotation, whenRebuildIdle } from './PanelEngine';
 import {
@@ -247,8 +247,8 @@ const xfOf = (m: THREE.Matrix4) => {
   return { position: p, quaternion: q, scale: s };
 };
 /** Bir düzlemin kalıcı nesneleri. */
-const PlaneEntities: React.FC<{ matrix: THREE.Matrix4; ents: Entity[]; active: boolean; selection: Set<string>; hoverId: string | null; dash: number }> =
-  React.memo(({ matrix, ents, active, selection, hoverId, dash }) => {
+const PlaneEntities: React.FC<{ matrix: THREE.Matrix4; ents: Entity[]; active: boolean; selection: Set<string>; hoverId: string | null }> =
+  React.memo(({ matrix, ents, active, selection, hoverId }) => {
     const xf = useMemo(() => xfOf(matrix), [matrix]);
     return (
       <group position={xf.position} quaternion={xf.quaternion} scale={xf.scale}>
@@ -259,7 +259,7 @@ const PlaneEntities: React.FC<{ matrix: THREE.Matrix4; ents: Entity[]; active: b
             const ref = !!e.ref && !sel && !hov;
             if (ref) return null;   // panelin kendi kenarı zaten sahnede çizili — üstüne ikinci bir çizgi kalabalık yapar
             return <DLine key={e.id} s={e} color={sel ? COL.sel : hov ? COL.hi : ref ? COL.hi : active ? COL.ent : COL.other} width={sel ? 2.2 : hov ? 2.6 : ref ? 1.2 : active ? 1.7 : 1.3}
-              dash={sel ? dash * 5 : 0} order={sel || hov ? 21 : 20} depth opacity={ref ? 0.5 : 1} />;
+              dash={0} order={sel || hov ? 21 : 20} depth opacity={ref ? 0.5 : 1} />;
           })}
         </group>
       </group>
@@ -479,6 +479,7 @@ async function syncFace() {
   setFace(next);
   resolveDims();   // parametre değeri değiştiyse açık çizimdeki ölçülü kenarlar yeni değeri alır
 }
+const CROSS_MSG = 'The outline crosses itself with these dimensions — change one before applying.';
 const anchorKind = (a: number): 'L' | 'R' | 'C' => (a === 0 ? 'L' : a === 1 ? 'R' : 'C');
 const bindDefaults = (a: SketchApply): [BindDefault, BindDefault] => (a.auto ? ['A', 'A'] : [anchorKind(a.anchor[0]), anchorKind(a.anchor[1])]);
 /** Çizimden adımın geometri alanları. Simple: çapaya göre + uzama. Parametric: her kontrol noktası kendi bağıyla (+ yarıçap formülü). */
@@ -539,6 +540,18 @@ function fitBodyToProfile(target: Shape, fr: SketchFrame, ents: Entity[], dx: nu
   }));
   return { w, h, dx: dx - ox, dy: dy - oy };
 }
+/** Ölçülü profil gövdeyi sürüyorsa adım yazıldıktan sonra gövde + adım durulur: profil W / H / D kullanıyorsa ve gövde uyarlanırken o ölçü
+ *  değiştiyse profil yeni değerle yeniden çözülür (Parameters'tan değer değişince çalışan yolun aynısı). */
+function settleDrivenBody(id: string) {
+  const s = shapeById(id);
+  if (!s || isPanel(s) || s.vertexModifications?.length) return;
+  const d = fitDrivenBody(s.parameters);
+  if (!d?.changed) return;
+  const dims = [Number(s.parameters.width), Number(s.parameters.height), Number(s.parameters.depth)];
+  dims[d.axes[0]] = d.size[0]; dims[d.axes[1]] = d.size[1];
+  useAppStore.getState().updateShape(id, { parameters: { ...s.parameters, width: dims[0], height: dims[1], depth: dims[2], sketchFeatures: d.features } });
+  shiftBodyLocal(id, d.shift);
+}
 /** Hedef katıyı yeniden üretir: panelde motor (yalnız o panel değişti), gövdede katı + panelleri. */
 async function rebuildTarget(id: string) {
   const s = shapeById(id);
@@ -560,8 +573,9 @@ const writeFeatures = (targetId: string, next: (old: SketchFeature[]) => SketchF
 /** Etkin yüzdeki çizimi (seçim varsa yalnız seçilenleri) adım olarak yazar; oturum açıksa adımı kaydeder. Hata metni döner. */
 export async function applySketch(): Promise<string | null> {
   if (useDraft.getState().session) return finishSketchEdit(true);
-  const dimErr = resolveDims();   // ölçülü kenarlar güncel parametrelerle çözülmüş olmalı; çelişki varsa adım yazılmaz
+  const dimErr = resolveDims();   // ölçülü kenarlar güncel parametrelerle çözülmüş olmalı; çözülemiyorsa / çevre kendini kesiyorsa adım yazılmaz
   if (dimErr) return dimErr;
+  if (useDraft.getState().dimCross) return CROSS_MSG;
   const st = useDraft.getState();
   const ft = faceTarget();
   if (!ft) return 'Pick a face first.';
@@ -586,6 +600,7 @@ export async function applySketch(): Promise<string | null> {
   };
   writeFeatures(target.id, old => [...old, feature]);
   takeEntities(ft.plane.id, use.map(e => e.id));
+  if (feature.fit) settleDrivenBody(target.id);
   await rebuildTarget(target.id);
   const err = shapeById(target.id)?.parameters?.sketchErrors?.[feature.id] as string | undefined;
   return err ? `Step added, but it could not be applied: ${err}` : null;
@@ -667,7 +682,7 @@ export async function editSketch(targetId: string, featureId: string) {
 }
 /** Oturumu kapatır. save: düzlemdeki tüm nesneler adıma geri yazılır. Bitince yüzden çıkılır; `stay`: başka adıma geçerken yüzde kal. */
 export async function finishSketchEdit(save: boolean, stay = false): Promise<string | null> {
-  if (save && useDraft.getState().session) { const dimErr = resolveDims(); if (dimErr) return dimErr; }
+  if (save && useDraft.getState().session) { const dimErr = resolveDims(); if (dimErr) return dimErr; if (useDraft.getState().dimCross) return CROSS_MSG; }
   const st = useDraft.getState(), ses = st.session;
   if (!ses) return null;
   const target = shapeById(ses.targetId), f = sketchFeaturesOf(target).find(x => x.id === ses.featureId);
@@ -695,6 +710,7 @@ export async function finishSketchEdit(save: boolean, stay = false): Promise<str
       ...kept, op, depth: op === 'shape' || a.through ? null : Math.max(0.1, a.depth), ...payload, ...(fit && payload.dims ? { fit: true } : {}),
     };
     writeFeatures(target.id, old => old.map(x => (x.id === f.id ? next : x)));
+    if (next.fit) settleDrivenBody(target.id);
     wrote = true;
   }
   takeEntities(ses.planeId);
@@ -809,8 +825,8 @@ const bentBy = (ref: number | null | undefined, a: P2, b: P2) => {
   return Math.abs(Math.atan2(Math.sin(d), Math.cos(d)));
 };
 /** Parametric sahne katmanı: her noktada kare tutamak; seçili noktalarda bağlı kenara kesikli kılavuz + değer. */
-const ParamOverlay: React.FC<{ ents: Entity[]; face: DraftFace; apply: SketchApply; targets: Set<string>; wpp: number; pseg: string | null }> =
-  ({ ents, face, apply, targets, wpp, pseg }) => {
+const ParamOverlay: React.FC<{ ents: Entity[]; face: DraftFace; apply: SketchApply; targets: Set<string>; wpp: number; pseg: string | null; hseg: string | null }> =
+  ({ ents, face, apply, targets, wpp, pseg, hseg }) => {
     const show = apply.mode === 'points';
     // Kenar ölçüleri: ölçülü her kenarda etiket ("W1 = 900"), seçili kenarda ölçüsüzse o anki boyu — tıklanıp sayı / parametre yazılır.
     const segTags = useMemo(() => {
@@ -873,9 +889,7 @@ const ParamOverlay: React.FC<{ ents: Entity[]; face: DraftFace; apply: SketchApp
       const out: { key: string; info: PInfo; axis: 'x' | 'y'; line: LineS | null; at: P2; text: string; edit: string; color: string }[] = [];
       const x0 = -face.dx, y0 = -face.dy;
       for (const horiz of [true, false]) {
-        // Kenar seçiliyken yalnız iki ucun ORTAK mesafesi gösterilir (dikey kenarda soldan / sağdan, yatayda alttan / üstten);
-        // uçların ayrı ayrı mesafeleri kenarın boy etiketiyle karışmasın.
-        if (pseg && new Set(infos.filter(i => targets.has(i.key)).map(i => bindText(horiz ? i.bx : i.by, horiz ? 'W' : 'H'))).size !== 1) continue;
+        if (pseg) break;   // kenar seçiliyken yalnız kenarın boy etiketi (yüz kenarına mesafeler tutamak seçiminde)
         const seen = new Set<string>();
         for (const i of infos) {
           if (!targets.has(i.key)) continue;
@@ -918,11 +932,12 @@ const ParamOverlay: React.FC<{ ents: Entity[]; face: DraftFace; apply: SketchApp
       setCircleRadius([id], v, /^\s*\d+(?:[.,]\d+)?\s*$/.test(raw) ? null : raw.trim());
       return true;
     };
-    // Yüz referansları (seçim varken): dört kenar + iki orta çizgi. Seçimin bağlı olduğu turuncu, imlecin altındaki kalın.
+    // Yüz referansları — yalnız TUTAMAK (nokta) seçiliyken: dört kenar; orta çizgiler yalnız üzerine gelince ya da nokta ona bağlıyken çizilir
+    // (yüzün ortasındaki kesik "+" kalktı). Kenar seçiliyken hiçbiri çizilmez: ekranda yalnız çizim ve ölçüleri kalır.
     const hover = useDraft(st => st.phover);
     const refs = useMemo(() => {
       const sel = infos.filter(i => targets.has(i.key));
-      if (!sel.length) return [];
+      if (!sel.length || pseg) return [];
       const kx = sel.every(i => i.bx.k === sel[0].bx.k) ? sel[0].bx.k : null, ky = sel.every(i => i.by.k === sel[0].by.k) ? sel[0].by.k : null;
       const x0 = -face.dx, y0 = -face.dy, w = face.w, h = face.h, ln = (ax: number, ay: number, bx: number, by: number): LineS => ({ t: 'line', a: pt(ax, ay), b: pt(bx, by) });
       return [
@@ -930,7 +945,16 @@ const ParamOverlay: React.FC<{ ents: Entity[]; face: DraftFace; apply: SketchApp
         { id: 'xR', s: ln(x0 + w, y0, x0 + w, y0 + h), on: kx === 'R', mid: false }, { id: 'yL', s: ln(x0, y0, x0 + w, y0), on: ky === 'L', mid: false },
         { id: 'yC', s: ln(x0, y0 + h / 2, x0 + w, y0 + h / 2), on: ky === 'C', mid: true }, { id: 'yR', s: ln(x0, y0 + h, x0 + w, y0 + h), on: ky === 'R', mid: false },
       ];
-    }, [infos, targets, face]);
+    }, [infos, targets, face, pseg]);
+    // Seçili kenar düz turuncu, imlecin altındaki kenar yeşil: polyline'ın tamamı değil yalnız o kenar.
+    const marks = useMemo(() => {
+      const of = (key: string | null) => {
+        if (!key) return null;
+        const [id, j] = splitSegKey(key), e = ents.find(x => x.id === id);
+        return e ? segShapeOf(e, j) : null;
+      };
+      return { sel: of(pseg), hov: hseg && hseg !== pseg ? of(hseg) : null };
+    }, [ents, pseg, hseg]);
     return (
       <>
         {show && (
@@ -941,14 +965,17 @@ const ParamOverlay: React.FC<{ ents: Entity[]; face: DraftFace; apply: SketchApp
             <points geometry={geo.all} renderOrder={1097}><pointsMaterial size={6} sizeAttenuation={false} color="#292524" depthTest={false} depthWrite={false} transparent /></points>
             <points geometry={geo.sel} renderOrder={1098}><pointsMaterial size={13} sizeAttenuation={false} color="#fdfcfa" depthTest={false} depthWrite={false} transparent /></points>
             <points geometry={geo.sel} renderOrder={1099}><pointsMaterial size={9} sizeAttenuation={false} color="#ea580c" depthTest={false} depthWrite={false} transparent /></points>
+            {marks.hov && <DLine s={marks.hov} color={COL.hi} width={3.2} order={1091} depth={false} opacity={0.9} />}
+            {marks.sel && <DLine s={marks.sel} color={COL.sel} width={3.6} order={1092} depth={false} />}
             {refs.map(r => {
               const hot = !!hover && hover.split(' ').includes(r.id);
-              return <DLine key={r.id} s={r.s} color={r.on ? '#ea580c' : '#0f766e'} width={hot ? 4.5 : r.on ? 3 : 1.6} dash={r.mid ? wpp * 7 : 0} order={1093} depth={false}
-                opacity={hot || r.on ? 1 : 0.5} />;
+              if (r.mid && !hot && !r.on) return null;
+              // Noktanın bağlı olduğu yüz kenarı kalın yeşil (turuncu yalnız SEÇİM rengidir — yüz kenarı seçili çizgi sanılmasın).
+              return <DLine key={r.id} s={r.s} color="#0f766e" width={hot ? 4 : r.on ? 2.6 : 1.2} order={1093} depth={false} opacity={hot || r.on ? 0.95 : 0.4} />;
             })}
             {guides.map(gd => (
               <React.Fragment key={gd.key}>
-                {gd.line && <DLine s={gd.line} color={gd.color} width={1} dash={wpp * 3} order={1094} depth={false} opacity={0.9} />}
+                {gd.line && <DLine s={gd.line} color={gd.color} width={1} order={1094} depth={false} opacity={0.9} />}
                 <DimTag at={gd.at} text={gd.text} edit={gd.edit} color={gd.color} title="Click to type a value" onCommit={t => editDim(gd.info, gd.axis, t)} />
               </React.Fragment>
             ))}
@@ -985,6 +1012,15 @@ const FaceGlow: React.FC<{ pick: FacePick; strong: boolean }> = ({ pick, strong 
 
 const PICKBOX_CURSOR = `url("data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15"><rect x="3.5" y="3.5" width="8" height="8" fill="none" stroke="#1c1917" stroke-width="1.2"/></svg>')}") 7 7, crosshair`;
 const IDENT = new THREE.Matrix4();
+const NO_SEL = new Set<string>();
+/** Bir kenarın çizilebilir biçimi (sıra = segsOf): polyline'da yalnız o kenar, doğru / yayda nesnenin kendisi. */
+function segShapeOf(e: Entity, j: number): Shape2 | null {
+  const sg = segsOf(e)[j];
+  if (!sg) return null;
+  if (e.t !== 'pline') return stripEnt(e);
+  const a = e.v[sg.a], b = e.v[sg.b];
+  return { t: 'pline', v: [{ x: a.x, y: a.y, ...(a.b ? { b: a.b } : {}) }, { x: b.x, y: b.y }] };
+}
 
 export const DraftLayer: React.FC = () => {
   const camera = useThree(s => s.camera), gl = useThree(s => s.gl), size = useThree(s => s.size), controls = useThree(s => s.controls) as unknown as OrbitLike;
@@ -998,6 +1034,7 @@ export const DraftLayer: React.FC = () => {
   const face = useDraft(s => s.face), apply = useDraft(s => s.apply), psel = useDraft(s => s.psel), pseg = useDraft(s => s.pseg);
   const [wpp, setWpp] = useState(1);
   const [hoverFace, setHoverFace] = useState<FacePick | null>(null);
+  const [hseg, setHseg] = useState<string | null>(null);   // Parametric kip: imlecin altındaki kenar ("nesneId:kenar")
   // Etkin yüzün çerçevesi (ölçü + formül değişkenleri) depoda güncel tutulur: düzlem ya da hedefin geometrisi değişince yeniden okunur.
   useEffect(() => { void syncFace(); }, [activeId, planes, shapes]);
   const cand = planePick && candTick ? candidate : null;
@@ -1041,9 +1078,9 @@ export const DraftLayer: React.FC = () => {
   }, [activeId, planes, activeInv, drawShapes, entities]);   // entities: çizime katılan / silinen kenar için referanslar yeniden süzülür
   const kind = cmd?.kind ?? null;
   useEffect(() => {
-    gl.domElement.style.cursor = planePick ? 'copy' : kind ? (kind === 'pick' ? PICKBOX_CURSOR : 'crosshair') : '';
+    gl.domElement.style.cursor = planePick ? 'copy' : kind ? (kind === 'pick' ? PICKBOX_CURSOR : 'crosshair') : hseg && apply.mode === 'points' ? 'pointer' : '';
     return () => { gl.domElement.style.cursor = ''; };
-  }, [gl, planePick, kind]);
+  }, [gl, planePick, kind, hseg, apply.mode]);
 
   const live = useRef({ camera, size, controls, shapes, matrices, activeM, activeInv });
   live.current = { camera, size, controls, shapes, matrices, activeM, activeInv };
@@ -1127,7 +1164,7 @@ export const DraftLayer: React.FC = () => {
     };
     const stop = (e: Event) => { e.stopPropagation(); };
     const onMove = (e: PointerEvent) => {
-      if (e.target !== el) { if (inside) { inside = false; pointerLeave(); } return; }
+      if (e.target !== el) { if (inside) { inside = false; pointerLeave(); setHseg(null); } return; }
       const st = useDraft.getState();
       // Yüz seçimi: imlecin altındaki yüz hafifçe vurgulanır (tıklanınca aday olur).
       if (st.planePick) {
@@ -1142,10 +1179,14 @@ export const DraftLayer: React.FC = () => {
       const h = onActive(e);
       if (!h) return;
       // Parametric kip: seçim varken imlecin altındaki yüz referansı (kenar / orta çizgi) vurgulanır.
+      // Kenar seçiliyken yüz referansları kapalıdır (görünmeyen çizgiye bağlanılmasın).
       if (!st.cmd && st.apply.mode === 'points' && st.face?.planeId === st.activePlane && e.buttons === 0) {
-        const r = paramTargets(st).length && !pointAt(h.p, h.tol) && !segmentAt(h.p, h.tol) ? faceRefAt(h.p, h.tol, st.face) : null;
+        const overPt = pointAt(h.p, h.tol), sg = overPt ? null : segmentAt(h.p, h.tol);
+        const hs = sg && sg.j >= 0 ? ptKey(sg.id, sg.j) : null;
+        setHseg(prev => (prev === hs ? prev : hs));
+        const r = paramTargets(st).length && !st.pseg && !overPt && !sg ? faceRefAt(h.p, h.tol, st.face) : null;
         setPHover(r ? refKey(r) : null);
-      }
+      } else if (e.buttons === 0) setHseg(prev => (prev === null ? prev : null));
       inside = true;
       const w = tolAt(h.world) / PICK_PX;
       setWpp(prev => (Math.abs(w - prev) / prev > 0.12 ? w : prev));
@@ -1188,7 +1229,7 @@ export const DraftLayer: React.FC = () => {
           if (key) { togglePoint(key, add); swallow = true; stop(e); return; }
           const seg = segmentAt(h.p, h.tol);
           if (seg) { selectPoints(seg.keys, seg.id, add, seg.j); swallow = true; stop(e); return; }
-          const tg = paramTargets(st), r = tg.length ? faceRefAt(h.p, h.tol, st.face) : null;
+          const tg = paramTargets(st), r = tg.length && !st.pseg ? faceRefAt(h.p, h.tol, st.face) : null;
           if (r) {
             if (r.x) setPointPrefs(tg, 'x', { k: r.x });
             if (r.y) setPointPrefs(tg, 'y', { k: r.y });
@@ -1237,6 +1278,8 @@ export const DraftLayer: React.FC = () => {
   const activeEnts = useMemo(() => (byPlane.get(activeId) ?? []).filter(e => !e.ref), [byPlane, activeId]);
   const paramFace = face && face.planeId === activeId && activeEnts.length && apply.mode === 'points' ? face : null;
   const targets = useMemo(() => new Set(paramFace ? paramTargets({ entities, activePlane: activeId, psel, selection }) : []), [paramFace, entities, activeId, psel, selection]);
+  // Parametric kipte (komut yokken) nesne bütün olarak vurgulanmaz: seçim ve imleç KENAR düzeyindedir (ParamOverlay çizer).
+  const edgeMode = !!paramFace && !busy;
   const showUcs = activeId !== GROUND_PLANE.id && !planePick;   // zeminde / yüz seçerken eksen işareti yok (panel kapanınca yüzden çıkılır → kalkar)
   const track = cursor?.track, trackLen = wpp * 6000;
   return (
@@ -1246,14 +1289,14 @@ export const DraftLayer: React.FC = () => {
         if (iso && pl.kind === 'face' && pl.shapeId !== iso.targetId) return null;   // izolasyonda gizlenen şeklin yüzündeki çizim de gizlenir
         // Yüzden çıkınca o yüzde kalan (uygulanmamış) çizim sahnede durmaz, tıklamayı da çalmaz; aynı yüze girince geri gelir.
         if (pl.kind === 'face' && pl.id !== activeId) return null;
-        return m && ents?.length ? <PlaneEntities key={pl.id} matrix={m} ents={ents} active={pl.id === activeId} selection={selSet} hoverId={hoverId} dash={wpp} /> : null;
+        return m && ents?.length ? <PlaneEntities key={pl.id} matrix={m} ents={ents} active={pl.id === activeId} selection={edgeMode ? NO_SEL : selSet} hoverId={edgeMode ? null : hoverId} /> : null;
       })}
       {showUcs && <UcsIcon matrix={activeM} />}
       {/* Komut sürerken (trim, ofset…) tutamaklar ve bağ çizgileri GİZLİDİR — yalnız çizim ve panel kenarları görünür. */}
       {paramFace && !planePick && !busy && (
         <group position={activeXf.position} quaternion={activeXf.quaternion} scale={activeXf.scale}>
           <group position={[0, 0, LIFT]}>
-            <ParamOverlay ents={activeEnts} face={paramFace} apply={apply} targets={targets} wpp={wpp} pseg={pseg} />
+            <ParamOverlay ents={activeEnts} face={paramFace} apply={apply} targets={targets} wpp={wpp} pseg={pseg} hseg={hseg} />
           </group>
         </group>
       )}
@@ -1529,7 +1572,7 @@ const FaceApply: React.FC<{ tip: TipFn }> = ({ tip }) => {
   const entities = useDraft(s => s.entities), selection = useDraft(s => s.selection);
   const shapesNow = useAppStore(s => s.shapes);   // hedef silinir / değişirse blok yenilensin
   const faceVars = useDraft(s => s.face?.vars ?? null);
-  const pseg = useDraft(s => s.pseg), dimErr = useDraft(s => s.dimErr), dimTilt = useDraft(s => s.dimTilt), pin = useDraft(s => pinKey(s)), onePt = useDraft(s => (!s.pseg && s.psel.length === 1 ? s.psel[0] : null));
+  const pseg = useDraft(s => s.pseg), dimErr = useDraft(s => s.dimErr), dimTilt = useDraft(s => s.dimTilt), dimCross = useDraft(s => s.dimCross), pin = useDraft(s => pinKey(s)), onePt = useDraft(s => (!s.pseg && s.psel.length === 1 ? s.psel[0] : null));
   const [showVars, setShowVars] = useState(true);
   // Bu yüze yazılmış adımlar: yüze girince sonuncusu kendiliğinden açılır; birden çoksa buradan geçilir, "New" yeni adım başlatır.
   const [steps, setSteps] = useState<SketchFeature[]>([]);
@@ -1686,7 +1729,8 @@ const FaceApply: React.FC<{ tip: TipFn }> = ({ tip }) => {
           {session && <button className="dp-ghost" disabled={busy} onClick={() => { void cancelEdit(); }}>Cancel</button>}
         </div>
         {param && dimErr && dimErr !== msg?.text && <div style={{ fontSize: 11, lineHeight: 1.35, color: '#b91c1c' }}>{dimErr}</div>}
-        {param && !dimErr && dimTilt && (
+        {param && !dimErr && dimCross && msg?.text !== CROSS_MSG && <div style={{ fontSize: 11, lineHeight: 1.35, color: '#b91c1c' }}>{CROSS_MSG}</div>}
+        {param && !dimErr && !dimCross && dimTilt && (
           <div style={{ fontSize: 11, lineHeight: 1.35, color: '#b45309' }}>
             The dimensions don't agree with square corners — the amber edges were turned so every value fits.
           </div>
