@@ -2143,7 +2143,9 @@ function sketchStepItems(target: Shape, liveId: string | null): StepItem[] {
       onEdit: () => { void editSketch(target.id, f.id); }, remove: () => { void deleteSketch(target.id, f.id); },
       error: errs[f.id], live: liveId === f.id, tag: f.mode === 'points' ? 'P' : undefined,
       title: f.mode === 'points'
-        ? `${f.name} — parametric: every point is tied to an edge, a ratio or a formula. Pencil: edit the drawing.`
+        ? f.dims?.some(d => d?.some(Boolean))
+          ? `${f.name} — parametric: dimensioned edges follow the body's parameters${f.fit ? ' and the body follows the outline' : ''}. Pencil: edit the drawing.`
+          : `${f.name} — parametric: every point is tied to an edge, a ratio or a formula. Pencil: edit the drawing.`
         : `${f.name} — anchored to the ${ANCHOR_TXT(f.anchor)} of the face${str}. Pencil: edit the drawing.`,
     };
   });

@@ -5,7 +5,7 @@ import {
   type VirtualFace, type FaceDescriptor, type FilletInfo, type SubtractedGeometry, type Shape, shapeById, requestRebuild, vfOfPanel, type RefFacePick,
   type RailStripSpec, type RailExt, type RailExtTarget, type SketchFeature, useAppStore,
 } from '../store';
-import { type Shape2, profileLoops, scaleShapeXY, moveShape, resolveParam } from './Draft';
+import { type Shape2, profileLoops, scaleShapeXY, moveShape, resolveParam, solveDims, solveDimsX, hasDims, bindsOf, prefsOf, tessellate, useDraft } from './Draft';
 
 /* GEOMETRY — 1) geometri çekirdeği + OCC katı servisi · 2) yüz bölgesi · 3) panel işlem adımları (taşı / döndür / extrude, ref yüz). */
 
@@ -769,8 +769,13 @@ export function sketchFrameOf(mesh: THREE.BufferGeometry | undefined | null, n3:
 }
 /** Adımın nesneleri yüz koordinatında (orijin = yüzün alt-sol köşesi): uzama ölçeği + çapa ötelemesi uygulanmış. */
 export function placeSketchShapes(f: SketchFeature, w: number, h: number, vars: Record<string, number> = {}): Shape2[] {
-  // Parametric kip: her kontrol noktası kendi bağıyla (kenar / oran / formül) çözülür; formül çözülemezse fırlatır.
-  if (f.mode === 'points' && f.pts) return resolveParam(f.shapes, f.pts, f.radii, w, h, vars);
+  // Parametric kip: her kontrol noktası kendi bağıyla (kenar / oran / formül) çözülür, sonra kenar ölçüleri uygulanır; çözülemezse fırlatır.
+  if (f.mode === 'points' && f.pts) {
+    // Gövdeyi süren profil (fit): yüz = profilin dış kutusu → nokta bağları özdeşliktir, saklı nesneler doğrudan kullanılır (bağ yuvarlaması girmez).
+    const asStored = !!f.fit && Math.abs(w - f.baseSize[0]) < 0.011 && Math.abs(h - f.baseSize[1]) < 0.011;
+    const base = asStored ? f.shapes : resolveParam(f.shapes, f.pts, f.radii, w, h, vars);
+    return hasDims(f.dims) ? solveDims(base, f.dims, f.pin, vars, undefined, f.angs) : base;
+  }
   const sx = f.stretch[0] && f.baseSize[0] > 1e-6 ? w / f.baseSize[0] : 1, sy = f.stretch[1] && f.baseSize[1] > 1e-6 ? h / f.baseSize[1] : 1;
   const at = { x: f.anchor[0] * w, y: f.anchor[1] * h };
   return f.shapes.map(s => moveShape(scaleShapeXY(s, sx, sy), at));
@@ -782,15 +787,54 @@ export const liveSketchFeatures = (shape: { parameters?: any } | undefined | nul
   ((shape?.parameters?.sketchFeatures ?? []) as SketchFeature[]).filter(f => f && f.id !== _sketchSuppressed);
 /** Önbellek anahtarı: adımların üretimi etkileyen tüm alanları. */
 export const sketchFeaturesKey = (feats: SketchFeature[]) =>
-  JSON.stringify(feats.map(f => [f.id, f.op, f.depth, f.n, f.u, f.inset, f.anchor, f.stretch, f.baseSize, f.shapes, f.mode, f.pts, f.radii]));
-/** Parametric formül değişkenleri: BW / BH / BD + gövdenin özel parametreleri (W / H çözümde eklenir). Panelde üst gövdeninkiler. */
+  JSON.stringify(feats.map(f => [f.id, f.op, f.depth, f.n, f.u, f.inset, f.anchor, f.stretch, f.baseSize, f.shapes, f.mode, f.pts, f.radii, f.dims, f.pin, f.fit, f.angs]));
+/** Çizim formül değişkenleri — Parameters panelindeki adlarla aynı: W / H / D gövde ölçüleri + gövdenin özel parametreleri (aynı adda
+ *  özel parametre gövde ölçüsünü örter, Parameters panelinin kuralı). Panelde üst gövdeninkiler. BW / BH / BD eski adımlar için gizli eş ad. */
+export const SKETCH_HIDDEN_VARS = ['BW', 'BH', 'BD'];
 export function sketchVarsOf(bodyParams: any, size?: { width: number; height: number; depth: number }): Record<string, number> {
-  const out: Record<string, number> = {};
+  const W = size?.width ?? bodyParams?.width ?? 0, H = size?.height ?? bodyParams?.height ?? 0, D = size?.depth ?? bodyParams?.depth ?? 0;
+  const out: Record<string, number> = { W, H, D, BW: W, BH: H, BD: D };
   for (const p of (bodyParams?.customParameters ?? []) as { name?: string; result?: number }[]) {
     if (p?.name && typeof p.result === 'number' && Number.isFinite(p.result)) out[p.name] = p.result;
   }
-  out.BW = size?.width ?? bodyParams?.width ?? 0; out.BH = size?.height ?? bodyParams?.height ?? 0; out.BD = size?.depth ?? bodyParams?.depth ?? 0;
   return out;
+}
+
+/** Profil gövdeyi sürer: `fit` işaretli ölçülü adımda (tam dış yüze Shape) profil O ANKİ parametrelerle çözülür; gövdenin o yüzdeki iki
+ *  ölçüsü (axes: 0 = W, 1 = H, 2 = D → size) profilin dış kutusu olur, adım yeni kutuya göre yeniden tabanlanır (saklı nesneler = çözülmüş
+ *  hâl, dış kutu orijinde).
+ *  shift: gövde-yerel öteleme — sabit nokta dünyada yerinde kalsın diye gövde bu kadar kayar. Adım yoksa / çözülemezse null
+ *  (çözülemeyen ölçü üretimde `sketchErrors`a düşer, gövde olduğu gibi kalır). */
+export function fitDrivenBody(parameters: any): { axes: [number, number]; size: [number, number]; shift: Vec3; features: SketchFeature[]; changed: boolean } | null {
+  const feats = (parameters?.sketchFeatures ?? []) as SketchFeature[];
+  const f = feats.find(x => x?.fit && x.op === 'shape' && x.mode === 'points' && !!x.pts && hasDims(x.dims));
+  const dims = [Number(parameters?.width), Number(parameters?.height), Number(parameters?.depth)];
+  if (!f || dims.some(d => !Number.isFinite(d))) return null;
+  const n = toVector3(f.n).normalize(), u = toVector3(f.u).normalize(), v = new THREE.Vector3().crossVectors(n, u);
+  const axisOf = (q: THREE.Vector3) => { const a = [Math.abs(q.x), Math.abs(q.y), Math.abs(q.z)], i = a.indexOf(Math.max(...a)); return a[i] > 0.9999 ? { i, s: Math.sign(q.getComponent(i)) } : null; };
+  const U = axisOf(u), V = axisOf(v);
+  if (!U || !V || U.i === V.i) return null;
+  const [w0, h0] = f.baseSize, vars = sketchVarsOf(parameters);
+  let solved: Shape2[], angs: typeof f.angs | null;
+  try { const r = solveDimsX(f.shapes, f.dims, f.pin, vars, undefined, f.angs); solved = r.shapes; angs = r.angs as typeof f.angs | null; } catch { return null; }
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const s of solved) for (const p of tessellate(s, Math.PI / 720)) { x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y); }
+  // 0,01 mm dışa yuvarlanır (yay tepesi kutu yüzüyle kesilmesin) — DraftView.fitBodyToProfile ile aynı kural.
+  const lo = (q: number) => Math.floor(q * 100 + 1e-6) / 100, up = (q: number) => Math.ceil(q * 100 - 1e-6) / 100;
+  const ox = lo(x0), oy = lo(y0), w = up(x1 - ox), h = up(y1 - oy);
+  if (!(w > 1) || !(h > 1)) return null;
+  const shift: Vec3 = [0, 0, 0];
+  shift[U.i] = U.s > 0 ? ox : w0 - (ox + w);
+  shift[V.i] += V.s > 0 ? oy : h0 - (oy + h);
+  const moved = solved.some((s, i) => s !== f.shapes[i]) || Math.abs(ox) > 1e-9 || Math.abs(oy) > 1e-9 || JSON.stringify(angs ?? null) !== JSON.stringify(f.angs ?? null);
+  const changed = moved || Math.abs(w - dims[U.i]) > 1e-9 || Math.abs(h - dims[V.i]) > 1e-9 || Math.abs(w - w0) > 1e-9 || Math.abs(h - h0) > 1e-9;
+  const shapes = moved ? solved.map(s => moveShape(s, { x: -ox, y: -oy })) : f.shapes;
+  const next: SketchFeature = !changed ? f : {
+    ...f, shapes, baseSize: [w, h], angs: angs ?? undefined,
+    pts: shapes.map((s, i) => bindsOf(s, prefsOf(f.pts![i]), w, h, ['A', 'A'], vars)),
+  };
+  if (!next.angs) delete next.angs;
+  return { axes: [U.i, V.i], size: [w, h], shift, features: feats.map(x => (x === f ? next : x)), changed };
 }
 
 /** Adımın kesici katısı: kapalı döngüler yüz düzleminin 1 mm DIŞINDAN içeri doğru prizmalanır; iç içe döngülerde tek sıra ada / deliktir. */
@@ -1199,13 +1243,34 @@ export interface ApplyShapeChangesParams {
 }
 
 const degToRad = (a: number, b: number, c: number): Vec3 => [a * (Math.PI / 180), b * (Math.PI / 180), c * (Math.PI / 180)];
+/** Gövdeyi kendi eksenlerinde öteler (profil kutuyu sola / aşağı büyüttüğünde sabit nokta dünyada yerinde kalsın). Gövde + kendi panelleri
+ *  doğrudan yazılır (updateShape grubun öbür üyelerini de taşırdı); gövdenin çizim düzlemleri dünyada yerinde kalır. */
+export function shiftBodyLocal(id: string, shift: Vec3) {
+  if (!shift.some(q => Math.abs(q) > 1e-9)) return;
+  const body = shapeById(id);
+  if (!body) return;
+  const M = getShapeMatrix(body), d = toVector3(shift).applyMatrix4(M).sub(new THREE.Vector3().applyMatrix4(M));
+  const pos: Vec3 = [body.position[0] + d.x, body.position[1] + d.y, body.position[2] + d.z];
+  useAppStore.setState(st => ({
+    shapes: st.shapes.map(x => (x.id === id ? { ...x, position: pos }
+      : x.type === 'panel' && (x.parameters as any)?.parentShapeId === id ? { ...x, position: [...pos] as Vec3 } : x)),
+  }));
+  useDraft.setState(st => ({
+    planes: st.planes.map(pl => (pl.kind === 'face' && pl.shapeId === id ? { ...pl, origin: [pl.origin[0] - shift[0], pl.origin[1] - shift[1], pl.origin[2] - shift[2]] as Vec3 } : pl)),
+  }));
+}
 
 export async function applyShapeChanges(params: ApplyShapeChangesParams) {
-  const { selectedShape, width, height, depth, rotX, rotY, rotZ, customParameters, vertexModifications, filletRadii, selectedSubtractionIndex,
+  const { selectedShape, rotX, rotY, rotZ, customParameters, vertexModifications, filletRadii, selectedSubtractionIndex,
     subWidth, subHeight, subDepth, subPosX, subPosY, subPosZ, subRotX, subRotY, subRotZ, subParams, updateShape } = params;
+  let { width, height, depth } = params;
   if (!selectedShape) return;
   try {
-    const cur = selectedShape.parameters;
+    // Ölçülü profil gövdeyi sürüyorsa (fit): profil yeni parametre değerleriyle çözülür, gövdenin o yüzdeki iki ölçüsü profilden gelir
+    // (o eksenlere elle yazılan ölçü geçersizdir), adım yeni kutuya göre yeniden tabanlanır.
+    const driven = selectedShape.vertexModifications?.length ? null : fitDrivenBody({ ...selectedShape.parameters, customParameters });
+    if (driven) { const d3 = [width, height, depth]; d3[driven.axes[0]] = driven.size[0]; d3[driven.axes[1]] = driven.size[1]; [width, height, depth] = d3; }
+    const cur = driven?.changed ? { ...selectedShape.parameters, sketchFeatures: driven.features } : selectedShape.parameters;
     const scale = new THREE.Vector3(width / cur.width, height / cur.height, depth / cur.depth);
     const dimensionsChanged = width !== cur.width || height !== cur.height || depth !== cur.depth;
 
@@ -1252,6 +1317,7 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
     // Parametric çizim adımı olan gövdede özel parametre değeri değişirse katı yeniden kurulur (adım formülleri o değerleri okur).
     const customKey = (list: any[] | undefined) => JSON.stringify((list ?? []).map(p => [p?.name, p?.result]));
     if ((cur.sketchFeatures ?? []).some((f: SketchFeature) => f?.mode === 'points') && customKey(cur.customParameters) !== customKey(customParameters)) needsSolid = true;
+    if (driven?.changed) needsSolid = true;
     if (hasSubtractionChanges) {
       const updated = {
         ...selectedShape.subtractionGeometries![selectedSubtractionIndex!],
@@ -1275,6 +1341,7 @@ export async function applyShapeChanges(params: ApplyShapeChangesParams) {
       // Çizim adımı olan gövdede uygulanamayan adımlar tazelenir (adımı olmayan gövdede parametreler eskisiyle aynı kalır).
       parameters: { ...parameters, scaledBaseVertices: r.scaledBaseVertices, ...(parameters.sketchFeatures?.length ? { sketchErrors: r.sketchErrors } : {}) },
     });
+    if (driven) shiftBodyLocal(selectedShape.id, driven.shift);
   } catch (error) {
     console.error('Failed to update parameters:', error);
     updateShape(selectedShape.id, { parameters: { ...selectedShape.parameters, width, height, depth, customParameters }, vertexModifications: [] });

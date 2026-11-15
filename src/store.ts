@@ -42,6 +42,12 @@ export interface SketchFeature {
   /** Parametric kip (`mode: 'points'`): çapa / uzama kullanılmaz; shapes yüz çerçevesinde, her kontrol noktası kendi X / Y bağıyla çözülür
    *  (pts[nesne][nokta]). radii: daire yarıçap formülü. */
   mode?: 'points'; pts?: PtBind[][]; radii?: (string | null)[];
+  /** Kenar ölçüleri (Parametric): dims[nesne][kenar] = uzunluk / yarıçap ifadesi (sıra = Draft.segsOf); nokta bağlarından SONRA çözülür.
+   *  pin: sabit nokta [nesne, kontrol noktası] (yoksa yüz orijinine en yakın köşe).
+   *  fit: profil GÖVDEYİ sürer — gövdenin o yüzdeki iki ölçüsü profilin dış kutusudur (Geometry.fitDrivenBody). */
+  dims?: ((string | null)[] | null)[]; pin?: [number, number] | null; fit?: boolean;
+  /** Tasarım yönleri (radyan; yalnız çözümün çizildiği yönden saptırdığı kenarlar — Draft.AngList). */
+  angs?: ((number | null)[] | null)[];
 }
 
 export interface SubtractedGeometry {

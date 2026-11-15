@@ -5,7 +5,7 @@ import { useThree, useFrame } from '@react-three/fiber';
 import { useAppStore, OrthoMode, SnapType, type Shape, type SketchFeature, childPanelsOf, requestRebuild, shapeById, vfOfPanel } from '../store';
 import {
   createFaceHighlightGeometry, effectiveBodyGeometry, footprintGeometry, genId, getFacesAndGroups, getShapeMatrix, groupIndexOfFace, placeSketchShapes,
-  rebuildBodySolid, setSketchSuppressed, sketchFrameOf, sketchVarsOf, type SketchFrame,
+  rebuildBodySolid, setSketchSuppressed, sketchFrameOf, sketchVarsOf, SKETCH_HIDDEN_VARS, type SketchFrame,
 } from './Geometry';
 import { panelStepRotation, whenRebuildIdle } from './PanelEngine';
 import {
@@ -15,6 +15,7 @@ import {
   startCommand, stripEnt, takeEntities, tessellate, useDraft,
   autoKind, bindCoord, bindText, bindsOf, ctrlPoints, evalExpr, movePointsTo, paramTargets, parseBind, pointAt, prefsOf, ptKey,
   segmentAt, selectPoints, setCircleRadius, setFace, setPHover, setPointPrefs, setRefEdges, togglePoint,
+  pinKey, resolveDims, segMid, segValue, segsOf, setPin, setSegDim, solveDimsX, splitSegKey,
 } from './Draft';
 
 /* 2B ÇİZİM GÖRÜNÜMÜ — Draft.ts çekirdeğinin sahne katmanı (DraftLayer) ve sağdaki Drawing paneli.
@@ -219,6 +220,8 @@ function flyTo(camera: THREE.Camera, controls: OrbitLike, focus: THREE.Vector3, 
 const toOrtho = () => { void (window as any).__cameraAuto?.('ortho'); };
 /** Şeritteki "View plane" düğmesi — sahne katmanı kaydolur. */
 let viewPlaneFn: (() => void) | null = null;
+/** Ölçü atanınca çizim görünümün dışına taştıysa kamera çizime yeniden oturur (sahne katmanı kaydolur). */
+let revealFn: (() => void) | null = null;
 
 // ═════════════════════════════════════════════════ 2. SAHNE KATMANI ═══════════════════════════════════════════════════
 const ptsCache = new WeakMap<object, [number, number, number][]>();
@@ -470,30 +473,39 @@ async function syncFace() {
   const r6 = (x: number) => Math.round(x * 1e6) / 1e6 || 0;   // kayan nokta gürültüsü depoyu boşuna yenilemesin
   const next: DraftFace | null = r ? (() => {
     const w = r6(r.fr.w), h = r6(r.fr.h);
-    return { planeId: ft.plane.id, dx: r6(r.dx), dy: r6(r.dy), w, h, vars: { ...varsOfTarget(ft.shape), W: w, H: h } };
+    return { planeId: ft.plane.id, dx: r6(r.dx), dy: r6(r.dy), w, h, vars: varsOfTarget(ft.shape) };
   })() : null;
-  if (JSON.stringify(next) !== JSON.stringify(useDraft.getState().face)) setFace(next);
+  if (JSON.stringify(next) === JSON.stringify(useDraft.getState().face)) return;
+  setFace(next);
+  resolveDims();   // parametre değeri değiştiyse açık çizimdeki ölçülü kenarlar yeni değeri alır
 }
 const anchorKind = (a: number): 'L' | 'R' | 'C' => (a === 0 ? 'L' : a === 1 ? 'R' : 'C');
 const bindDefaults = (a: SketchApply): [BindDefault, BindDefault] => (a.auto ? ['A', 'A'] : [anchorKind(a.anchor[0]), anchorKind(a.anchor[1])]);
 /** Çizimden adımın geometri alanları. Simple: çapaya göre + uzama. Parametric: her kontrol noktası kendi bağıyla (+ yarıçap formülü). */
 function sketchPayload(ents: Entity[], a: SketchApply, w: number, h: number, dx: number, dy: number, vars: Record<string, number>):
-  Pick<SketchFeature, 'anchor' | 'stretch' | 'baseSize' | 'shapes' | 'mode' | 'pts' | 'radii'> {
+  Pick<SketchFeature, 'anchor' | 'stretch' | 'baseSize' | 'shapes' | 'mode' | 'pts' | 'radii' | 'dims' | 'pin' | 'angs'> {
   if (a.mode !== 'points') {
     const off = { x: dx - a.anchor[0] * w, y: dy - a.anchor[1] * h };
     return { anchor: [...a.anchor], stretch: [...a.stretch], baseSize: [w, h], shapes: ents.map(e => moveShape(stripEnt(e), off)) };
   }
-  const v = { ...vars, W: w, H: h }, shapes = ents.map(e => moveShape(stripEnt(e), { x: dx, y: dy })), dflt = bindDefaults(a);
+  const v = vars, shapes = ents.map(e => moveShape(stripEnt(e), { x: dx, y: dy })), dflt = bindDefaults(a);
   const radii = ents.map(e => { if (e.t !== 'circle' || !e.re) return null; const r = evalExpr(e.re, v); return r !== null && Math.abs(r - e.r) < 0.02 ? e.re : null; });
+  // Kenar ölçüleri (çözülebilen ifadeler) + sabit nokta: üretimde nokta bağlarından sonra uygulanır.
+  const dims = ents.map(e => { const d = segsOf(e).map((_, k) => { const x = e.sd?.[k]; return x && evalExpr(x, v) !== null ? x : null; }); return d.some(Boolean) ? d : null; });
+  const pinI = ents.findIndex(e => e.fx !== undefined && e.fx < ctrlPoints(e).length);
+  const angs = ents.map(e => (dims.some(Boolean) && e.sa?.some(x => x != null) ? segsOf(e).map((_, k) => e.sa?.[k] ?? null) : null));
   return {
     anchor: [...a.anchor], stretch: [false, false], baseSize: [w, h], shapes, mode: 'points',
     pts: shapes.map((sh, i) => bindsOf(sh, ents[i].pb, w, h, dflt, vars)), ...(radii.some(Boolean) ? { radii } : {}),
+    ...(dims.some(Boolean) ? { dims } : {}), ...(pinI >= 0 ? { pin: [pinI, ents[pinI].fx!] as [number, number] } : {}),
+    ...(angs.some(Boolean) ? { angs } : {}),
   };
 }
 const stepRotationOf = (target: Shape) => (isPanel(target) ? panelStepRotation(target) : new THREE.Quaternion());
 /** Gövde şekle uyar: tam dış yüze çizilen Shape profili kutudan taşıyor / küçük kalıyorsa gövdenin o iki ölçüsü profilin dış kutusu olur,
  *  gövde ötelenir (şekil dünyada yerinde kalır). 0,01 mm dışa yuvarlanır (yay tepesinde ince düz yüz doğmasın).
- *  Parametric'te formüle bağlı nokta varsa yapılmaz (formüller kutudan ölçülür). Döner: yeni çerçeve + öteleme, ya da null. */
+ *  Parametric'te formüle bağlı nokta varsa yapılmaz (formüller kutudan ölçülür). Döner: (yeni) çerçeve + öteleme; gövde uyarlanamıyorsa null.
+ *  Profil kutuya zaten oturuyorsa çerçeve aynen döner — ölçülü profilde adım `fit` işaretlenir (Geometry.fitDrivenBody). */
 function fitBodyToProfile(target: Shape, fr: SketchFrame, ents: Entity[], dx: number, dy: number, param: boolean): { w: number; h: number; dx: number; dy: number } | null {
   if (isPanel(target) || target.vertexModifications?.length) return null;
   if (param && ents.some(e => (e.t === 'circle' && !!e.re) || e.pb?.some(b => b?.x?.k === 'F' || b?.y?.k === 'F'))) return null;
@@ -509,7 +521,7 @@ function fitBodyToProfile(target: Shape, fr: SketchFrame, ents: Entity[], dx: nu
   if (!(x1 - x0 > 1) || !(y1 - y0 > 1)) return null;
   const lo = (v: number) => Math.floor(v * 100 + 1e-6) / 100, up = (v: number) => Math.ceil(v * 100 - 1e-6) / 100;
   const ox = lo(x0), oy = lo(y0), w = up(x1 - ox), h = up(y1 - oy);
-  if (Math.abs(ox) < 0.011 && Math.abs(oy) < 0.011 && Math.abs(w - fr.w) < 0.011 && Math.abs(h - fr.h) < 0.011) return null;
+  if (Math.abs(ox) < 0.011 && Math.abs(oy) < 0.011 && Math.abs(w - fr.w) < 0.011 && Math.abs(h - fr.h) < 0.011) return { w: fr.w, h: fr.h, dx, dy };
   // Çerçevenin 0 noktası yüzün (u, v) en küçük köşesidir; u / v gövde ekseninin tersine bakıyorsa kutu öbür uçtan ölçülür.
   const shift = new THREE.Vector3();
   shift.setComponent(U.i, U.s > 0 ? ox : fr.w - (ox + w));
@@ -547,8 +559,10 @@ const writeFeatures = (targetId: string, next: (old: SketchFeature[]) => SketchF
 };
 /** Etkin yüzdeki çizimi (seçim varsa yalnız seçilenleri) adım olarak yazar; oturum açıksa adımı kaydeder. Hata metni döner. */
 export async function applySketch(): Promise<string | null> {
+  if (useDraft.getState().session) return finishSketchEdit(true);
+  const dimErr = resolveDims();   // ölçülü kenarlar güncel parametrelerle çözülmüş olmalı; çelişki varsa adım yazılmaz
+  if (dimErr) return dimErr;
   const st = useDraft.getState();
-  if (st.session) return finishSketchEdit(true);
   const ft = faceTarget();
   if (!ft) return 'Pick a face first.';
   const ents = st.entities.filter(e => e.plane === ft.plane.id && !e.ref), picked = ents.filter(e => st.selection.includes(e.id)), use = picked.length ? picked : ents;
@@ -563,11 +577,12 @@ export async function applySketch(): Promise<string | null> {
   const op = a.op, label = op === 'cut' ? 'Cut' : 'Shape';
   const fit = op === 'shape' && ft.kind === 'body' && r.inset < 0.05 ? fitBodyToProfile(target, r.fr, use, r.dx, r.dy, a.mode === 'points') : null;
   const g = fit ?? { w: r.fr.w, h: r.fr.h, dx: r.dx, dy: r.dy };
-  const host = fit ? shapeById(target.id) ?? target : target;   // uyarlamadan sonra güncel ölçüler (formül değişkenleri BW / BH / BD)
+  const host = fit ? shapeById(target.id) ?? target : target;   // uyarlamadan sonra güncel ölçüler (formül değişkenleri W / H / D)
+  const payload = sketchPayload(use, a, g.w, g.h, g.dx, g.dy, varsOfTarget(host));
   const feature: SketchFeature = {
     id: genId('sk'), name: `${label} ${sketchFeaturesOf(target).filter(f => f.op === op).length + 1}`, timestamp: Date.now(),
     op, depth: op === 'shape' || a.through ? null : Math.max(0.1, a.depth), n: r.n, u: r.u, inset: r.inset,
-    ...sketchPayload(use, a, g.w, g.h, g.dx, g.dy, varsOfTarget(host)),
+    ...payload, ...(fit && payload.dims ? { fit: true } : {}),   // ölçülü profil gövdeyi sürer: parametre değişince gövde profile uyar
   };
   writeFeatures(target.id, old => [...old, feature]);
   takeEntities(ft.plane.id, use.map(e => e.id));
@@ -634,7 +649,8 @@ export async function editSketch(targetId: string, featureId: string) {
   const param = f.mode === 'points' && !!f.pts;
   let loaded = f.shapes;
   try { loaded = placeSketchShapes(f, fr.w, fr.h, varsOfTarget(target)); } catch { /* bozuk formül: saklı nesneler düzenlenir */ }
-  loadEntities(loaded, planeId, param ? f.pts!.map(prefsOf) : undefined, param ? f.radii : undefined);
+  loadEntities(loaded, planeId, param ? f.pts!.map(prefsOf) : undefined, param ? f.radii : undefined, param ? f.dims : undefined, param ? f.pin : undefined,
+    param ? f.angs : undefined);
   sessionBase = sessionKey(planeId);
   if (!applyBeforeEdit) applyBeforeEdit = { ...useDraft.getState().apply };
   setApply({
@@ -651,6 +667,7 @@ export async function editSketch(targetId: string, featureId: string) {
 }
 /** Oturumu kapatır. save: düzlemdeki tüm nesneler adıma geri yazılır. Bitince yüzden çıkılır; `stay`: başka adıma geçerken yüzde kal. */
 export async function finishSketchEdit(save: boolean, stay = false): Promise<string | null> {
+  if (save && useDraft.getState().session) { const dimErr = resolveDims(); if (dimErr) return dimErr; }
   const st = useDraft.getState(), ses = st.session;
   if (!ses) return null;
   const target = shapeById(ses.targetId), f = sketchFeaturesOf(target).find(x => x.id === ses.featureId);
@@ -665,14 +682,17 @@ export async function finishSketchEdit(save: boolean, stay = false): Promise<str
     const fr = sketchFrameOf(await uncutMeshOf(target), f.n, f.u, f.inset, stepRotationOf(target));
     if (!fr) return 'The face could not be resolved.';
     const a = st.apply, op = a.op;
-    // Oturum düzleminin orijini yüz çerçevesinin orijinidir (dx = dy = 0). Kip değişmişse eski kipin alanları adımdan düşer.
-    const { mode: _m, pts: _p, radii: _r, ...kept } = f;
-    void _m; void _p; void _r;
-    const fit = op === 'shape' && !isPanel(target) && (f.inset || 0) < 0.05 ? fitBodyToProfile(target, fr, ents, 0, 0, a.mode === 'points') : null;
-    const g = fit ?? { w: fr.w, h: fr.h, dx: 0, dy: 0 };
+    // Oturum düzleminin orijini yüz çerçevesinin orijinidir (dx = dy = 0); oturum sürerken gövde ölçüsü değiştiyse (parametre → ölçülü
+    // profil) çerçeve kaymış olabilir → öteleme düzlemden okunur. Kip değişmişse eski kipin alanları adımdan düşer.
+    const { mode: _m, pts: _p, radii: _r, dims: _d, pin: _pn, fit: _f, angs: _a, ...kept } = f;
+    void _m; void _p; void _r; void _d; void _pn; void _f; void _a;
+    const pl = st.planes.find(q => q.id === ses.planeId), off = pl ? v3(pl.origin).sub(fr.o) : new THREE.Vector3();
+    const dx0 = Math.round(off.dot(fr.u) * 1e6) / 1e6 || 0, dy0 = Math.round(off.dot(fr.v) * 1e6) / 1e6 || 0;
+    const fit = op === 'shape' && !isPanel(target) && (f.inset || 0) < 0.05 ? fitBodyToProfile(target, fr, ents, dx0, dy0, a.mode === 'points') : null;
+    const g = fit ?? { w: fr.w, h: fr.h, dx: dx0, dy: dy0 };
+    const payload = sketchPayload(ents, a, g.w, g.h, g.dx, g.dy, varsOfTarget(fit ? shapeById(target.id) ?? target : target));
     const next: SketchFeature = {
-      ...kept, op, depth: op === 'shape' || a.through ? null : Math.max(0.1, a.depth),
-      ...sketchPayload(ents, a, g.w, g.h, g.dx, g.dy, varsOfTarget(fit ? shapeById(target.id) ?? target : target)),
+      ...kept, op, depth: op === 'shape' || a.through ? null : Math.max(0.1, a.depth), ...payload, ...(fit && payload.dims ? { fit: true } : {}),
     };
     writeFeatures(target.id, old => old.map(x => (x.id === f.id ? next : x)));
     wrote = true;
@@ -738,10 +758,10 @@ function autoBind() {
 }
 /** Ekrandaki ölçü etiketi: tıklanınca yerinde düzenlenir (Enter uygular, Esc vazgeçer; onCommit false → kırmızı).
  *  Durum burada: Html ayrı DOM kökünde, R3F ağacında dursaydı her tuşta sıfırlanırdı. */
-type DimProps = { text: string; edit: string; color: string; title: string; onCommit: (t: string) => boolean };
+type DimProps = { text: string; edit: string; color: string; title: string; onCommit: (t: string) => boolean; solid?: boolean };
 /** Açık ölçü alanına metin ekleyen işlev (Drawing panelindeki parametre listesi kullanır); alan kapalıyken null. */
 let dimInsert: ((txt: string) => void) | null = null;
-const DimField: React.FC<DimProps> = ({ text, edit, color, title, onCommit }) => {
+const DimField: React.FC<DimProps> = ({ text, edit, color, title, onCommit, solid }) => {
   const [val, setVal] = useState<string | null>(null);
   const [bad, setBad] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -760,7 +780,8 @@ const DimField: React.FC<DimProps> = ({ text, edit, color, title, onCommit }) =>
   }, [editing]);
   if (val === null) return (
     <button type="button" title={title} aria-label={`Dimension ${text}`} onClick={() => { setVal(edit); setBad(false); }}
-      style={{ ...TAG, pointerEvents: 'auto', cursor: 'text', border: 'none', color, boxShadow: `0 0 0 1px ${color}66` }}>{text}</button>
+      style={{ ...TAG, pointerEvents: 'auto', cursor: 'text', border: 'none', color: solid ? '#fff' : color, boxShadow: `0 0 0 1px ${color}66`,
+        ...(solid ? { background: color, padding: '1px 6px', boxShadow: '0 1px 3px rgba(30,40,80,0.28)' } : {}) }}>{text}</button>
   );
   return (
     <input ref={inputRef} autoFocus value={val} spellCheck={false} aria-label="Dimension value" onFocus={e => e.target.select()}
@@ -781,10 +802,64 @@ const TAG: React.CSSProperties = {
   padding: '0 4px', borderRadius: 4, background: 'rgba(253,252,250,0.95)', fontFamily: MONO_FONT, fontSize: 10, fontWeight: 600, lineHeight: '15px',
   whiteSpace: 'nowrap', pointerEvents: 'none', userSelect: 'none',
 };
+/** Kenarın tasarım yönünden sapması (radyan); tasarım yönü yoksa 0. Etikette yalnız gözle görülür dönüş (≈ 0,1°) turuncu gösterilir. */
+const bentBy = (ref: number | null | undefined, a: P2, b: P2) => {
+  if (ref == null) return 0;
+  const d = Math.atan2(b.y - a.y, b.x - a.x) - ref;
+  return Math.abs(Math.atan2(Math.sin(d), Math.cos(d)));
+};
 /** Parametric sahne katmanı: her noktada kare tutamak; seçili noktalarda bağlı kenara kesikli kılavuz + değer. */
-const ParamOverlay: React.FC<{ ents: Entity[]; face: DraftFace; apply: SketchApply; targets: Set<string>; wpp: number }> =
-  ({ ents, face, apply, targets, wpp }) => {
+const ParamOverlay: React.FC<{ ents: Entity[]; face: DraftFace; apply: SketchApply; targets: Set<string>; wpp: number; pseg: string | null }> =
+  ({ ents, face, apply, targets, wpp, pseg }) => {
     const show = apply.mode === 'points';
+    // Kenar ölçüleri: ölçülü her kenarda etiket ("W1 = 900"), seçili kenarda ölçüsüzse o anki boyu — tıklanıp sayı / parametre yazılır.
+    const segTags = useMemo(() => {
+      const out: { key: string; id: string; j: number; at: P2; text: string; edit: string; driven: boolean; bad: boolean; bent: boolean }[] = [];
+      if (!show) return out;
+      let cx = 0, cy = 0, n = 0;
+      for (const e of ents) for (const p of ctrlPoints(e)) { cx += p.x; cy += p.y; n++; }
+      if (!n) return out;
+      cx /= n; cy /= n;
+      for (const e of ents) {
+        const cp = ctrlPoints(e);
+        segsOf(e).forEach((sg, j) => {
+          const key = ptKey(e.id, j), expr = e.sd?.[j];
+          if (!expr && pseg !== key) return;
+          const a = cp[sg.a], b = cp[sg.b], len = dist(a, b);
+          if (len < 1e-6) return;
+          const val = segValue(a, b, sg.sw), m = segMid(a, b, sg.sw), nx = -(b.y - a.y) / len, ny = (b.x - a.x) / len;
+          const side = (m.x - cx) * nx + (m.y - cy) * ny >= 0 ? 1 : -1;   // etiket çizimin DIŞ yanında
+          const want = expr ? evalExpr(expr, face.vars) : null, plain = !!expr && /^\d+(?:[.,]\d+)?$/.test(expr.trim());
+          const text = `${expr && !plain ? `${expr} = ` : ''}${sg.sw ? 'R ' : ''}${fmt(val, 1)}`;   // yayda ölçü yarıçaptır: "R1 = R 80"
+          const off = (Math.abs(nx) * (text.length * 3.4 + 9) + Math.abs(ny) * 11 + 6) * wpp;
+          out.push({ key, id: e.id, j, at: pt(m.x + nx * side * off, m.y + ny * side * off), text, edit: expr ?? fmt(val, 2), driven: !!expr,
+            bad: !!expr && (want === null || Math.abs(want - val) > 0.02), bent: !!expr && bentBy(e.sa?.[j], a, b) > 0.0017 });
+        });
+      }
+      return out;
+    }, [show, ents, pseg, face, wpp]);
+    /** Kenara ölçü yazıldı: boş = ölçü kalkar (kenar serbest) · sayı = sabit boy · ad / ifade = parametreye bağlı. */
+    const editSeg = (id: string, j: number, raw: string): boolean => {
+      const t = raw.trim();
+      if (!t) return !setSegDim(id, j, null);
+      const v = evalExpr(t, face.vars);
+      if (v === null || !(v > 0) || setSegDim(id, j, t)) return false;
+      revealFn?.();
+      return true;
+    };
+    // Sabit nokta(lar): ölçü değişince çizimin yerinde kalan köşesi (işaretlenen nokta; yoksa çözücünün seçtiği köşe).
+    const anchorGeo = useMemo(() => {
+      const pinI = ents.findIndex(e => e.fx !== undefined), pts: P2[] = [];
+      if (show && ents.some(e => e.sd?.some(Boolean))) {
+        try { pts.push(...solveDimsX(ents.map(stripEnt), ents.map(e => e.sd), pinI >= 0 ? [pinI, ents[pinI].fx!] : null, face.vars, pt(-face.dx, -face.dy), ents.map(e => e.sa)).anchors); } catch { /* hata panelde yazılı */ }
+      }
+      const pinP = show && pinI >= 0 ? ctrlPoints(ents[pinI])[ents[pinI].fx!] : undefined;
+      if (pinP && !pts.some(q => dist(q, pinP) < 0.05)) pts.push(pinP);
+      const b = new THREE.BufferGeometry();
+      b.setAttribute('position', new THREE.Float32BufferAttribute(pts.flatMap(q => [q.x, q.y, 0]), 3));
+      return b;
+    }, [show, ents, face]);
+    useEffect(() => () => { anchorGeo.dispose(); }, [anchorGeo]);
     const infos = useMemo(() => (show ? paramPoints(ents, face, apply) : []), [show, ents, face, apply]);
     const geo = useMemo(() => {
       const all: number[] = [], sel: number[] = [];
@@ -798,6 +873,9 @@ const ParamOverlay: React.FC<{ ents: Entity[]; face: DraftFace; apply: SketchApp
       const out: { key: string; info: PInfo; axis: 'x' | 'y'; line: LineS | null; at: P2; text: string; edit: string; color: string }[] = [];
       const x0 = -face.dx, y0 = -face.dy;
       for (const horiz of [true, false]) {
+        // Kenar seçiliyken yalnız iki ucun ORTAK mesafesi gösterilir (dikey kenarda soldan / sağdan, yatayda alttan / üstten);
+        // uçların ayrı ayrı mesafeleri kenarın boy etiketiyle karışmasın.
+        if (pseg && new Set(infos.filter(i => targets.has(i.key)).map(i => bindText(horiz ? i.bx : i.by, horiz ? 'W' : 'H'))).size !== 1) continue;
         const seen = new Set<string>();
         for (const i of infos) {
           if (!targets.has(i.key)) continue;
@@ -815,7 +893,7 @@ const ParamOverlay: React.FC<{ ents: Entity[]; face: DraftFace; apply: SketchApp
         }
       }
       return out;
-    }, [infos, targets, face, wpp]);
+    }, [infos, targets, face, wpp, pseg]);
     /** Ölçü yazıldı: sayı = mesafe · "25%" = oran · başka metin = formül. Aynı bağı paylaşan seçili noktalar birlikte taşınır. */
     const editDim = (i: PInfo, axis: 'x' | 'y', raw: string): boolean => {
       const X = axis === 'x', S = X ? 'W' as const : 'H' as const, b = X ? i.bx : i.by, size = X ? face.w : face.h, off = X ? face.dx : face.dy;
@@ -857,6 +935,8 @@ const ParamOverlay: React.FC<{ ents: Entity[]; face: DraftFace; apply: SketchApp
       <>
         {show && (
           <>
+            <points geometry={anchorGeo} renderOrder={1094}><pointsMaterial size={19} sizeAttenuation={false} color="#2563eb" depthTest={false} depthWrite={false} transparent /></points>
+            <points geometry={anchorGeo} renderOrder={1095}><pointsMaterial size={14} sizeAttenuation={false} color="#fdfcfa" depthTest={false} depthWrite={false} transparent /></points>
             <points geometry={geo.all} renderOrder={1096}><pointsMaterial size={10} sizeAttenuation={false} color="#fdfcfa" depthTest={false} depthWrite={false} transparent /></points>
             <points geometry={geo.all} renderOrder={1097}><pointsMaterial size={6} sizeAttenuation={false} color="#292524" depthTest={false} depthWrite={false} transparent /></points>
             <points geometry={geo.sel} renderOrder={1098}><pointsMaterial size={13} sizeAttenuation={false} color="#fdfcfa" depthTest={false} depthWrite={false} transparent /></points>
@@ -871,6 +951,13 @@ const ParamOverlay: React.FC<{ ents: Entity[]; face: DraftFace; apply: SketchApp
                 {gd.line && <DLine s={gd.line} color={gd.color} width={1} dash={wpp * 3} order={1094} depth={false} opacity={0.9} />}
                 <DimTag at={gd.at} text={gd.text} edit={gd.edit} color={gd.color} title="Click to type a value" onCommit={t => editDim(gd.info, gd.axis, t)} />
               </React.Fragment>
+            ))}
+            {segTags.map(sg => (
+              <DimTag key={`s${sg.key}`} at={sg.at} text={sg.text} edit={sg.edit} solid={sg.driven}
+                color={sg.bad ? '#dc2626' : sg.bent ? '#b45309' : sg.driven ? BIND_COL.formula : '#57534e'}
+                title={sg.bent ? 'Dimension — this edge was turned so every dimension fits; it straightens when the values agree'
+                  : sg.driven ? 'Dimension — click to change; clear it to free the edge' : 'Click to type a length or a parameter (W1, W1-D2 …)'}
+                onCommit={t => editSeg(sg.id, sg.j, t)} />
             ))}
             {radii.map(c => (
               <DimTag key={`r${c.id}`} at={pt(c.c.x + c.r * 0.71 + 16 * wpp, c.c.y + c.r * 0.71 + 10 * wpp)} text={`R ${c.re ?? fmt(c.r, 1)}`} edit={c.re ?? fmt(c.r, 2)}
@@ -908,7 +995,7 @@ export const DraftLayer: React.FC = () => {
   const planes = useDraft(s => s.planes), activeId = useDraft(s => s.activePlane), entities = useDraft(s => s.entities), selection = useDraft(s => s.selection);
   const hoverId = useDraft(s => s.hoverId), preview = useDraft(s => s.preview), cursor = useDraft(s => s.cursor), cmd = useDraft(s => s.cmd);
   const planePick = useDraft(s => s.planePick), dynOn = useDraft(s => s.aids.dyn), iso = useDraft(s => s.isolate), candTick = useDraft(s => s.planeCandidate);
-  const face = useDraft(s => s.face), apply = useDraft(s => s.apply), psel = useDraft(s => s.psel);
+  const face = useDraft(s => s.face), apply = useDraft(s => s.apply), psel = useDraft(s => s.psel), pseg = useDraft(s => s.pseg);
   const [wpp, setWpp] = useState(1);
   const [hoverFace, setHoverFace] = useState<FacePick | null>(null);
   // Etkin yüzün çerçevesi (ölçü + formül değişkenleri) depoda güncel tutulur: düzlem ya da hedefin geometrisi değişince yeniden okunur.
@@ -980,6 +1067,15 @@ export const DraftLayer: React.FC = () => {
       }
       flyTo(L.camera, L.controls, target, n, up, extent, L.size.height, null, viewInset(gl.domElement), toOrtho);
     };
+    revealFn = () => {
+      const L = live.current, st = useDraft.getState(), q = new THREE.Vector3();
+      let out = false, any = false;
+      for (const e of st.entities) {
+        if (e.plane !== st.activePlane || e.ref) continue;
+        for (const p of ctrlPoints(e)) { any = true; q.set(p.x, p.y, 0).applyMatrix4(L.activeM).project(L.camera); if (Math.abs(q.x) > 0.97 || Math.abs(q.y) > 0.97) out = true; }
+      }
+      if (any && out) viewPlaneFn?.();
+    };
     sceneApi.fly = (c, n, up, extent) => { const L = live.current; flyTo(L.camera, L.controls, c, n, up, extent, L.size.height, null, viewInset(gl.domElement), toOrtho); };
     sceneApi.pose = () => {
       const L = live.current;
@@ -991,7 +1087,7 @@ export const DraftLayer: React.FC = () => {
       const sw = (window as any).__cameraAuto?.('persp') as Promise<void> | undefined;
       if (sw) void sw.then(() => requestAnimationFrame(() => requestAnimationFrame(go))); else go();
     };
-    return () => { viewPlaneFn = null; sceneApi.fly = null; sceneApi.pose = null; sceneApi.restore = null; };
+    return () => { viewPlaneFn = null; revealFn = null; sceneApi.fly = null; sceneApi.pose = null; sceneApi.restore = null; };
   }, []);
 
   // Fare: pencere düzeyinde yakalama aşaması — komut etkinken tıklama gövde/panel işleyicilerine ve yörünge kontrolüne ULAŞMAZ.
@@ -1091,7 +1187,7 @@ export const DraftLayer: React.FC = () => {
           const key = pointAt(h.p, h.tol);
           if (key) { togglePoint(key, add); swallow = true; stop(e); return; }
           const seg = segmentAt(h.p, h.tol);
-          if (seg) { selectPoints(seg.keys, seg.id, add); swallow = true; stop(e); return; }
+          if (seg) { selectPoints(seg.keys, seg.id, add, seg.j); swallow = true; stop(e); return; }
           const tg = paramTargets(st), r = tg.length ? faceRefAt(h.p, h.tol, st.face) : null;
           if (r) {
             if (r.x) setPointPrefs(tg, 'x', { k: r.x });
@@ -1128,6 +1224,15 @@ export const DraftLayer: React.FC = () => {
     };
   }, [gl]);
 
+  // Ortografik görünümde ölçek imleçten bağımsızdır: yakınlaştırma / kamera uçuşu bitince etiket aralıkları fare oynamadan da güncellenir.
+  const zoomSeen = useRef(0);
+  useFrame(() => {
+    const o = camera as THREE.OrthographicCamera;
+    if (!o.isOrthographicCamera || o.zoom === zoomSeen.current) return;
+    zoomSeen.current = o.zoom;
+    const w = worldPerPixel(camera, size.height, activeXf.position);
+    setWpp(prev => (Math.abs(w - prev) / prev > 0.12 ? w : prev));
+  });
   const toWorld = (p: P2) => new THREE.Vector3(p.x, p.y, 0).applyMatrix4(activeM);
   const activeEnts = useMemo(() => (byPlane.get(activeId) ?? []).filter(e => !e.ref), [byPlane, activeId]);
   const paramFace = face && face.planeId === activeId && activeEnts.length && apply.mode === 'points' ? face : null;
@@ -1148,7 +1253,7 @@ export const DraftLayer: React.FC = () => {
       {paramFace && !planePick && !busy && (
         <group position={activeXf.position} quaternion={activeXf.quaternion} scale={activeXf.scale}>
           <group position={[0, 0, LIFT]}>
-            <ParamOverlay ents={activeEnts} face={paramFace} apply={apply} targets={targets} wpp={wpp} />
+            <ParamOverlay ents={activeEnts} face={paramFace} apply={apply} targets={targets} wpp={wpp} pseg={pseg} />
           </group>
         </group>
       )}
@@ -1424,7 +1529,8 @@ const FaceApply: React.FC<{ tip: TipFn }> = ({ tip }) => {
   const entities = useDraft(s => s.entities), selection = useDraft(s => s.selection);
   const shapesNow = useAppStore(s => s.shapes);   // hedef silinir / değişirse blok yenilensin
   const faceVars = useDraft(s => s.face?.vars ?? null);
-  const [showVars, setShowVars] = useState(false);
+  const pseg = useDraft(s => s.pseg), dimErr = useDraft(s => s.dimErr), dimTilt = useDraft(s => s.dimTilt), pin = useDraft(s => pinKey(s)), onePt = useDraft(s => (!s.pseg && s.psel.length === 1 ? s.psel[0] : null));
+  const [showVars, setShowVars] = useState(true);
   // Bu yüze yazılmış adımlar: yüze girince sonuncusu kendiliğinden açılır; birden çoksa buradan geçilir, "New" yeni adım başlatır.
   const [steps, setSteps] = useState<SketchFeature[]>([]);
   useEffect(() => { let live = true; void faceSteps().then(x => { if (live) setSteps(x); }); return () => { live = false; }; }, [activePlane, session?.featureId, shapesNow]);
@@ -1465,11 +1571,16 @@ const FaceApply: React.FC<{ tip: TipFn }> = ({ tip }) => {
     finally { setBusy(false); }
   };
   // Parametre listesi: tıklanan ad açık ölçü alanına imleç yerinden yazılır. Önce özel parametreler, sonra ölçüler.
-  const BUILTIN = ['W', 'H', 'BW', 'BH', 'BD'];
-  const varList = faceVars ? [...Object.keys(faceVars).filter(k => !BUILTIN.includes(k)), ...BUILTIN.filter(k => k in faceVars)] : [];
+  const BUILTIN = ['W', 'H', 'D'];
+  const varList = faceVars ? [...Object.keys(faceVars).filter(k => !BUILTIN.includes(k) && !SKETCH_HIDDEN_VARS.includes(k)), ...BUILTIN.filter(k => k in faceVars)] : [];
+  // Açık ölçü alanı varsa ad oraya yazılır; yoksa SEÇİLİ KENARA doğrudan atanır (kenara tık → parametreye tık).
   const pickVar = (name: string) => {
-    if (dimInsert) { dimInsert(name); setMsg(null); }
-    else setMsg({ text: 'Click a dimension on the drawing first, then pick the parameter.', ok: true });
+    if (dimInsert) { dimInsert(name); setMsg(null); return; }
+    const sg = useDraft.getState().pseg;
+    if (!sg) { setMsg({ text: 'Click an edge of the drawing first, then pick the parameter.', ok: true }); return; }
+    const [id, j] = splitSegKey(sg), err = setSegDim(id, j, name);
+    setMsg(err ? { text: err, ok: false } : null);
+    if (!err) revealFn?.();
   };
   const [ax, ay] = apply.anchor;
   const noun = isBody ? 'body' : 'panel';
@@ -1512,18 +1623,26 @@ const FaceApply: React.FC<{ tip: TipFn }> = ({ tip }) => {
           <button className={!param ? 'on' : ''} onClick={() => setApply({ mode: 'anchor' })} {...tip(`Simple — the drawing follows one anchor of the ${noun}, with optional stretch`)}>
             <DIcon name="modeA" size={16} />Simple
           </button>
-          <button className={param ? 'on' : ''} onClick={() => setApply({ mode: 'points', auto: true })}
-            {...tip('Parametric — click a point or edge of the drawing, then the face edge it follows; click a dimension to type it')}>
+          <button className={param ? 'on' : ''} onClick={() => { setApply({ mode: 'points', auto: true }); resolveDims(); }}
+            {...tip('Parametric — click an edge and give it a length or a parameter; click a point, then the face edge it follows')}>
             <DIcon name="modeP" size={16} />Parametric
           </button>
         </div>
         {param ? (
           /* PARAMETRIC — düzenleme EKRANDA yapılır: nokta / kenar seç → yüzün kenarını göster → ölçüye tıklayıp yaz. Panelde yalnız Auto. */
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ flex: 1, minWidth: 0, fontSize: 11, color: nSel ? P.ink : P.faint, fontWeight: nSel ? 600 : 400 }}>{nSel ? `${nSel} selected` : 'Nearest edge'}</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            <span style={{ flex: '1 1 70px', minWidth: 0, fontSize: 11, color: nSel ? P.ink : P.faint, fontWeight: nSel ? 600 : 400, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {pseg ? '1 edge' : nSel ? `${nSel} selected` : 'Pick edge'}</span>
+            {(onePt || pin) && (
+              <button className={`dp-chip${pin && (!onePt || onePt === pin) ? ' on' : ''}`} style={{ height: 26, padding: '0 9px', gap: 5 }} aria-pressed={!!pin && (!onePt || onePt === pin)} aria-label="Pin"
+                onClick={() => setPin(onePt && onePt !== pin ? onePt : null)}
+                {...tip(onePt && onePt !== pin ? 'Pin — this point stays put; the drawing grows away from it when a dimension changes' : 'Pinned point — click to release (the corner nearest the face origin is used)')}>
+                Pin
+              </button>
+            )}
             <button className={`dp-chip${showVars ? ' on' : ''}`} style={{ height: 26, padding: '0 9px', gap: 5 }} aria-pressed={showVars} aria-label="Parameters"
               onMouseDown={e => e.preventDefault()} onClick={() => setShowVars(v => !v)}
-              {...tip('Parameters — click a dimension on the drawing, then pick a parameter to write it in')}>
+              {...tip('Parameters — click an edge of the drawing, then pick the parameter that drives its length')}>
               <span style={{ fontFamily: MONO_FONT, fontWeight: 700, color: '#a8a29e' }}>ƒ</span>Parameters
             </button>
             <button className="dp-chip" style={{ height: 26, padding: '0 9px', gap: 5 }} disabled={!stats.count} onClick={autoBind}
@@ -1566,6 +1685,12 @@ const FaceApply: React.FC<{ tip: TipFn }> = ({ tip }) => {
           </button>
           {session && <button className="dp-ghost" disabled={busy} onClick={() => { void cancelEdit(); }}>Cancel</button>}
         </div>
+        {param && dimErr && dimErr !== msg?.text && <div style={{ fontSize: 11, lineHeight: 1.35, color: '#b91c1c' }}>{dimErr}</div>}
+        {param && !dimErr && dimTilt && (
+          <div style={{ fontSize: 11, lineHeight: 1.35, color: '#b45309' }}>
+            The dimensions don't agree with square corners — the amber edges were turned so every value fits.
+          </div>
+        )}
         {msg && <div style={{ fontSize: 11, lineHeight: 1.35, color: msg.ok ? P.mute : '#b91c1c' }}>{msg.text}</div>}
       </div>
     </Section>

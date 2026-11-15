@@ -53,7 +53,11 @@ export type Shape2 = LineS | CircleS | ArcS | EllipseS | PlineS;
 /** pb: kontrol noktalarının parametrik bağ tercihleri (sıra = ctrlPoints) · re: daire yarıçapı formülü — yalnız Parametric kipte anlamlıdır. */
 /** ref: referans kenar (seçilen yüzün kenarı). Komutlar seçebilir; bir komut kenarı değiştirirse bağlı çevre çizime katılır (adoptRef),
  *  dokunulmamış referans adıma girmez. */
-export type Entity = Shape2 & { id: string; plane: string; pb?: (PtPref | undefined)[]; re?: string; ref?: boolean };
+/** sd: kenar ölçüleri (sıra = segsOf; doğru / polyline kenarı = uzunluk, yay = yarıçap; sayı ya da ifade) · fx: SABİT kontrol noktası —
+ *  ölçü değişince çizim bu noktadan büyür (yoksa yüz orijinine en yakın köşe). */
+/** sa: çözümün çizildiği yönden saptırdığı kenarların TASARIM yönü (radyan, sıra = segsOf) — ölçüler tutarlı olunca kenar o yöne döner. */
+export type Entity = Shape2 & { id: string; plane: string; pb?: (PtPref | undefined)[]; re?: string; ref?: boolean; sd?: (string | undefined)[]; fx?: number;
+  sa?: (number | null | undefined)[] };
 export type GeoStyle = 'ghost' | 'rubber' | 'hi' | 'del' | 'track';
 /** Geçici çizim (önizleme): nesne biçimi + stil, veya seçim penceresi. */
 export type Geo = (Shape2 & { style?: GeoStyle }) | { t: 'box'; a: P2; b: P2; crossing: boolean };
@@ -851,18 +855,15 @@ export function bindText(b: SketchBind, S: 'W' | 'H'): string {
     case 'F': return b.e;
   }
 }
-/** Yazılan metinden bağ: sade kalıplar (50 · W-50 · W/2+20 · W*0.25) kenar bağına, gerisi formüle döner. Çözülemeyen metin → null. */
+/** Yazılan metinden bağ: düz sayı kenar bağına, gerisi formüle döner (W / H / D gövde ölçüleri, öteki adlar Parameters panelindeki
+ *  parametreler — yüz ölçüsü için ayrı ad yoktur; yüz kenarına bağlamak için kenara tıklanır). Çözülemeyen metin → null. S artık kullanılmıyor. */
 export function parseBind(text: string, S: 'W' | 'H', vars: Record<string, number>): SketchBind | null {
   if (evalExpr(text, vars) === null) return null;
   const t = text.replace(/\s+/g, ''), num = '(\\d+(?:[.,]\\d+)?|\\.\\d+)', f = (x: string) => parseFloat(x.replace(',', '.'));
   const re = (p: string) => new RegExp(`^${p}$`, 'i').exec(t);
-  let m: RegExpExecArray | null;
-  if ((m = re(`(-?)${num}`))) return { k: 'L', v: (m[1] ? -1 : 1) * f(m[2]) };
-  if (re(S)) return { k: 'R', v: 0 };
-  if ((m = re(`${S}([+-])${num}`))) return { k: 'R', v: (m[1] === '-' ? 1 : -1) * f(m[2]) };
-  if (re(`${S}/2`)) return { k: 'C', v: 0 };
-  if ((m = re(`${S}/2([+-])${num}`))) return { k: 'C', v: (m[1] === '+' ? 1 : -1) * f(m[2]) };
-  if ((m = re(`${S}\\*${num}`)) || (m = re(`${num}\\*${S}`))) return { k: 'P', v: f(m[1]) };
+  void S;
+  const m = re(`(-?)${num}`);
+  if (m) return { k: 'L', v: (m[1] ? -1 : 1) * f(m[2]) };
   return { k: 'F', e: text.trim() };
 }
 
@@ -890,7 +891,7 @@ export function withCtrl(s: Shape2, pts: P2[], r?: number): Shape2 {
 }
 /** Nokta bağlı adımı yüz ölçüsünde çözer (orijin yüzün sol-alt köşesi). Formül çözülemezse fırlatır → adım uygulanmaz. */
 export function resolveParam(shapes: Shape2[], pts: PtBind[][], radii: (string | null)[] | undefined, w: number, h: number, vars: Record<string, number>): Shape2[] {
-  const v = { ...vars, W: w, H: h };
+  const v = vars;   // W / H / D = gövde ölçüleri (Parameters paneliyle aynı adlar); yüz ölçüsü yalnız L / R / C / P bağlarında
   const need = (b: SketchBind, size: number): number => {
     const c = bindCoord(b, size, v);
     if (c === null) throw new Error(`Formula "${b.k === 'F' ? b.e : ''}" could not be evaluated`);
@@ -907,7 +908,7 @@ export function resolveParam(shapes: Shape2[], pts: PtBind[][], radii: (string |
 /** Nokta tercihlerinden bağlar: tür tercihten ya da varsayılandan ('A' = en yakın kenar), değer koordinattan.
  *  Formüllü nokta elle taşınmışsa formül düşer. */
 export function bindsOf(s: Shape2, prefs: (PtPref | undefined)[] | undefined, w: number, h: number, dflt: [BindDefault, BindDefault], vars: Record<string, number>): PtBind[] {
-  const v = { ...vars, W: w, H: h };
+  const v = vars;
   const axis = (pref: AxisPref | undefined, coord: number, size: number, d: BindDefault): SketchBind => {
     if (pref?.k === 'F') { const val = evalExpr(pref.e, v); if (val !== null && Math.abs(val - coord) < 0.02) return { k: 'F', e: pref.e }; }
     return bindFrom(pref && pref.k !== 'F' ? pref.k : d === 'A' ? autoKind(coord, size) : d, coord, size);
@@ -917,6 +918,277 @@ export function bindsOf(s: Shape2, prefs: (PtPref | undefined)[] | undefined, w:
 /** Adımın bağlarından düzenleyici tercihleri (adım düzenlemeye açılırken). */
 export const prefsOf = (pts: PtBind[] | undefined): PtPref[] | undefined =>
   pts?.map(b => ({ x: b.x.k === 'F' ? { k: 'F', e: b.x.e } : { k: b.x.k }, y: b.y.k === 'F' ? { k: 'F', e: b.y.e } : { k: b.y.k } }));
+
+// ── ÖLÇÜLÜ KENARLAR ──
+// Parametric kipte bir kenara ÖLÇÜ verilir: doğru / polyline kenarı = uzunluk, yay = yarıçap; değer sayı ya da ifadedir (W1, W1-D2 …).
+// Çözüm: ölçülü kenar YÖNÜNÜ korur, boyu ifadeden gelir · ölçüsüz doğru önce boyunu (boyuyla orantılı), yetmezse yönünü değiştirir ·
+// ölçüsüz yay rijittir. Uç uca değen nesneler tek çerçevedir; her çerçevenin SABİT noktası (pin; yoksa orijine en yakın köşe) yerinde kalır.
+/** Nesnenin ölçü alabilen parçaları (sıra = Entity.sd / adımın dims'i): doğru 1 · yay 1 · polyline kenarları. a / b: ctrlPoints sırası;
+ *  sw: yay süpürmesi (işaretli; 0 = doğru). */
+export interface SegRef { a: number; b: number; sw: number }
+export function segsOf(s: Shape2): SegRef[] {
+  if (s.t === 'line') return [{ a: 0, b: 1, sw: 0 }];
+  if (s.t === 'arc') return [{ a: 0, b: 1, sw: ccwDelta(s.a0, s.a1) || TAU }];
+  if (s.t !== 'pline') return [];
+  const n = s.v.length, m = s.closed ? n : n - 1;
+  return Array.from({ length: Math.max(0, m) }, (_, j) => ({ a: j, b: (j + 1) % n, sw: s.v[j].b ? 4 * Math.atan(s.v[j].b!) : 0 }));
+}
+/** Kiriş = ölçü × chordK: doğruda 1, yayda 2·sin(açı / 2) (ölçü = yarıçap). */
+const chordK = (sw: number) => (sw ? 2 * Math.sin(Math.min(Math.abs(sw), TAU) / 2) : 1);
+/** Parçanın ölçü değeri: doğruda uzunluk, yayda yarıçap. */
+export const segValue = (a: P2, b: P2, sw: number) => { const k = chordK(sw); return k > 1e-9 ? dist(a, b) / k : 0; };
+/** Parçanın orta noktası (yayda yayın üstünde) — ölçü etiketinin yeri. */
+export const segMid = (a: P2, b: P2, sw: number): P2 => (sw ? add(mid(a, b), mul(perp(unit(sub(b, a))), -Math.tan(sw / 4) * dist(a, b) / 2)) : mid(a, b));
+/** Simetrik matrisin özdeğerleri + özvektörleri (sütunlar) — döngüsel Jacobi; ölçü çözücüsünün küçük sistemleri için. */
+function symEig(A: number[][]): { w: number[]; V: number[][] } {
+  const n = A.length, a = A.map(r => r.slice()), V: number[][] = a.map((_, i) => a.map((__, j) => (i === j ? 1 : 0)));
+  for (let sweep = 0; sweep < 64; sweep++) {
+    let off = 0, diag = 0;
+    for (let i = 0; i < n; i++) { diag += a[i][i] * a[i][i]; for (let j = i + 1; j < n; j++) off += a[i][j] * a[i][j]; }
+    if (off <= 1e-28 * (diag + off)) break;
+    for (let p = 0; p < n - 1; p++) for (let q = p + 1; q < n; q++) {
+      const apq = a[p][q];
+      if (Math.abs(apq) < 1e-300) continue;
+      const th = (a[q][q] - a[p][p]) / (2 * apq), t = (th >= 0 ? 1 : -1) / (Math.abs(th) + Math.sqrt(th * th + 1)), c = 1 / Math.sqrt(t * t + 1), sn = t * c;
+      for (let k = 0; k < n; k++) { const x = a[k][p], y = a[k][q]; a[k][p] = c * x - sn * y; a[k][q] = sn * x + c * y; }
+      for (let k = 0; k < n; k++) { const x = a[p][k], y = a[q][k]; a[p][k] = c * x - sn * y; a[q][k] = sn * x + c * y; }
+      for (let k = 0; k < n; k++) { const x = V[k][p], y = V[k][q]; V[k][p] = c * x - sn * y; V[k][q] = sn * x + c * y; }
+    }
+  }
+  return { w: a.map((r, i) => r[i]), V };
+}
+type Tier = { rows: number[][]; rhs: number[] };
+/** Öncelik sıralı en küçük kareler: her kademe, öncekilerin bıraktığı serbestlik içinde çözülür (önceki kademe bozulmaz);
+ *  hiçbir kademenin bağlamadığı serbestlik yerinde kalır (x = 0). */
+function lexSolve(m: number, tiers: Tier[]): number[] {
+  const x = new Array<number>(m).fill(0);
+  let Z: number[][] = x.map((_, i) => x.map((__, j) => (i === j ? 1 : 0)));   // m × k: kalan serbestliğin tabanı
+  for (const t of tiers) {
+    const k = Z[0]?.length ?? 0;
+    if (!k) break;
+    if (!t.rows.length) continue;
+    const M = t.rows.map(r => { const o = new Array<number>(k).fill(0); for (let i = 0; i < m; i++) if (r[i]) for (let c = 0; c < k; c++) o[c] += r[i] * Z[i][c]; return o; });
+    const res = t.rhs.map((b, ri) => { let v = b; const r = t.rows[ri]; for (let i = 0; i < m; i++) if (r[i]) v -= r[i] * x[i]; return v; });
+    const G = Array.from({ length: k }, () => new Array<number>(k).fill(0)), g = new Array<number>(k).fill(0);
+    M.forEach((row, ri) => { for (let a = 0; a < k; a++) { if (!row[a]) continue; g[a] += row[a] * res[ri]; for (let b = 0; b < k; b++) G[a][b] += row[a] * row[b]; } });
+    const { w, V } = symEig(G), tol = Math.max(1, ...w) * 1e-10, y = new Array<number>(k).fill(0), free: number[] = [];
+    for (let c = 0; c < k; c++) {
+      if (w[c] <= tol) { free.push(c); continue; }
+      let coef = 0;
+      for (let i = 0; i < k; i++) coef += V[i][c] * g[i];
+      coef /= w[c];
+      for (let i = 0; i < k; i++) y[i] += V[i][c] * coef;
+    }
+    for (let i = 0; i < m; i++) { let v = 0; for (let c = 0; c < k; c++) v += Z[i][c] * y[c]; x[i] += v; }
+    Z = Z.map(zr => free.map(c => { let v = 0; for (let j = 0; j < k; j++) v += zr[j] * V[j][c]; return v; }));
+  }
+  return x;
+}
+export type DimList = ((string | null | undefined)[] | null | undefined)[];
+/** Kenarların TASARIM yönleri (radyan, sıra = segsOf): çözüm bir kenarı çizildiği yönden saptırdıysa asıl yönü burada saklanır, sonraki
+ *  çözümler ona göre yapılır → ölçüler yeniden tutarlı olunca kenar çizildiği yöne döner (yön birikmez). null = şu anki yönü. */
+export type AngList = ((number | null | undefined)[] | null | undefined)[];
+export const hasDims = (dims: DimList | undefined | null) => !!dims?.some(d => d?.some(Boolean));
+/** Doğrusal çözümün karşılayamadığı ölçü kümesi (kapalı çevre fazla ölçülü / çelişik) — yönleri uyarlayan çözüme geçilir. */
+class DimConflict extends Error {}
+export interface DimSolve { shapes: Shape2[]; anchors: P2[]; /** ölçüler köşe açıları değiştirilerek karşılandı */ tilted: boolean; angs: AngList | null }
+/** Ölçüleri çözer. pin: [nesne, kontrol noktası]; origin: pinsiz çerçevelerde sabit köşe buna en yakın olandır; angs: tasarım yönleri.
+ *  1) Doğrusal çözüm: ölçülü kenar yönünü korur, boyu ifadeden gelir; ölçüsüz doğru önce boyunu (orantılı), yetmezse — eğikse — yönünü
+ *     değiştirir; ölçüsüz yay rijit. Tutarlı fazla ölçü (her kenar ölçülü) burada çözülür.
+ *  2) Ölçüler çelişirse (kapalı çevre bu yönlerle kapanmıyor): her ölçü TAM karşılanır, çevre köşe açıları en az değiştirilerek kapatılır
+ *     (önce eğik kenarlar, sonra yatay / dikey kenarlar ve yaylar döner). Sonuç `tilted`.
+ *  Değişmeyen nesne aynı referansla döner. Çözülemeyen ifade / kapanamayan çevre → Error (ileti kullanıcıya gösterilir). */
+export function solveDimsX(shapes: Shape2[], dims: DimList | undefined | null, pin: [number, number] | null | undefined, vars: Record<string, number>,
+  origin: P2 = P(0, 0), angs?: AngList | null): DimSolve {
+  const none: DimSolve = { shapes, anchors: [], tilted: false, angs: null };
+  if (!hasDims(dims)) return none;
+  // Düğümler: 0,05 mm'den yakın kontrol noktaları aynı düğümdür (profileLoops'un "uç uca" ölçütü).
+  const TOL = 0.05, CELL = 0.25, cps = shapes.map(ctrlPoints), nodes: P2[] = [], grid = new Map<string, number[]>();
+  const nodeAt = (p: P2): number => {
+    const gx = Math.floor(p.x / CELL), gy = Math.floor(p.y / CELL);
+    for (let ix = -1; ix <= 1; ix++) for (let iy = -1; iy <= 1; iy++) for (const i of grid.get(`${gx + ix},${gy + iy}`) ?? []) if (dist(nodes[i], p) <= TOL) return i;
+    const k = `${gx},${gy}`, i = nodes.push(p) - 1;
+    grid.set(k, [...(grid.get(k) ?? []), i]);
+    return i;
+  };
+  const nodeOf = cps.map(list => list.map(nodeAt));
+  /** u0: tasarım yönü (kiriş yönü) · len: şu anki kiriş · L: hedef kiriş (ölçülü) */
+  type Edge = { si: number; k: number; i: number; j: number; len: number; u0: P2; arc: boolean; L: number | null; ex?: string };
+  const edges: Edge[] = [];
+  shapes.forEach((s, si) => segsOf(s).forEach((sg, k) => {
+    const i = nodeOf[si][sg.a], j = nodeOf[si][sg.b];
+    if (i === j) return;
+    const d = sub(nodes[j], nodes[i]), len = vlen(d), kk = chordK(sg.sw);
+    if (len < 1e-4 || kk < 1e-9) return;
+    const ex = dims?.[si]?.[k] || undefined, ra = angs?.[si]?.[k];
+    let L: number | null = null;
+    if (ex) {
+      const v = evalExpr(ex, vars);
+      if (v === null) throw new Error(`Dimension "${ex}" could not be evaluated`);
+      if (!(v > 1e-3)) throw new Error(`Dimension "${ex}" must be greater than zero`);
+      L = v * kk;
+    }
+    edges.push({ si, k, i, j, len, u0: typeof ra === 'number' && Number.isFinite(ra) ? polar(ra) : unit(d), arc: !!sg.sw, L, ex });
+  }));
+  if (!edges.some(e => e.L !== null)) return none;
+  const par = nodes.map((_, i) => i), find = (i: number): number => (par[i] === i ? i : (par[i] = find(par[i])));
+  edges.forEach(e => { par[find(e.i)] = find(e.j); });
+  const hot = new Set(edges.filter(e => e.L !== null).map(e => find(e.i)));
+  const pinNode = pin ? nodeOf[pin[0]]?.[pin[1]] ?? -1 : -1;
+  const axial = (u: P2) => Math.abs(u.x) < 1e-4 || Math.abs(u.y) < 1e-4;
+  const next = nodes.slice(), anchors: P2[] = [];
+  let tilted = false;
+
+  /** 1) Doğrusal: ölçülü kenarlarla bağlı düğümler rijit küme; bilinmeyen = kümelerin ötelemesi. Karşılanamazsa DimConflict. */
+  const linear = (mem: number[], a: number, ce: Edge[]): Map<number, P2> => {
+    const cl = new Map<number, number>(), rel = new Map<number, P2>(), root: number[] = [], drivenAt = new Map<number, Edge[]>();
+    for (const e of ce) if (e.L !== null) for (const n of [e.i, e.j]) drivenAt.set(n, [...(drivenAt.get(n) ?? []), e]);
+    const order = [a, ...mem.filter(i => i !== a)];
+    for (const s0 of order) {
+      if (cl.has(s0)) continue;
+      const c = root.push(s0) - 1;
+      cl.set(s0, c); rel.set(s0, P(0, 0));
+      for (const q = [s0]; q.length;) {
+        const u = q.pop()!;
+        for (const e of drivenAt.get(u) ?? []) {
+          const fwd = e.i === u, v = fwd ? e.j : e.i, at = add(rel.get(u)!, mul(e.u0, (fwd ? 1 : -1) * e.L!));
+          if (!cl.has(v)) { cl.set(v, c); rel.set(v, at); q.push(v); }
+          else if (dist(rel.get(v)!, at) > 0.005) throw new DimConflict('closure');
+        }
+      }
+    }
+    // Sabit noktanın kümesi (0) yerinde; öteki kümelerin kök düğümü başlangıçta şu anki yerinde.
+    const col = new Map<number, number>();
+    for (let c = 1; c < root.length; c++) col.set(c, (c - 1) * 2);
+    const m = col.size * 2;
+    if (m > 400) throw new Error('Too many free points in a dimensioned outline');
+    const base = (c: number): P2 => (c === 0 ? sub(nodes[a], rel.get(a)!) : nodes[root[c]]);
+    const row = (ci: number, cj: number, v: P2, k = 1): number[] => {
+      const r = new Array<number>(m).fill(0), pj = col.get(cj), pi = col.get(ci);
+      if (pj !== undefined) { r[pj] += v.x * k; r[pj + 1] += v.y * k; }
+      if (pi !== undefined) { r[pi] -= v.x * k; r[pi + 1] -= v.y * k; }
+      return r;
+    };
+    // Kademe 1: ölçüsüz doğrunun yönü + ölçüsüz yayın tamamı (rijit) · Kademe 2: ölçüsüz doğrunun boyu (değişim boyla orantılı dağılır).
+    const dirs: Tier = { rows: [], rhs: [] }, lens: Tier = { rows: [], rhs: [] };
+    for (const e of ce) {
+      if (e.L !== null) continue;
+      const ci = cl.get(e.i)!, cj = cl.get(e.j)!;
+      if (ci === cj) continue;
+      const K = sub(add(base(cj), rel.get(e.j)!), add(base(ci), rel.get(e.i)!)), n = perp(e.u0);
+      if (e.arc) { const want = mul(e.u0, e.len); dirs.rows.push(row(ci, cj, P(1, 0)), row(ci, cj, P(0, 1))); dirs.rhs.push(want.x - K.x, want.y - K.y); }
+      else {
+        const wt = 1 / Math.sqrt(e.len);
+        dirs.rows.push(row(ci, cj, n)); dirs.rhs.push(-dot(n, K));
+        lens.rows.push(row(ci, cj, e.u0, wt)); lens.rhs.push((e.len - dot(e.u0, K)) * wt);
+      }
+    }
+    const x = m ? lexSolve(m, [dirs, lens]) : [];
+    const T = (c: number): P2 => { const k = col.get(c); return k === undefined ? base(c) : add(base(c), P(x[k], x[k + 1])); };
+    const out = new Map<number, P2>();
+    for (const i of mem) out.set(i, add(T(cl.get(i)!), rel.get(i)!));
+    // Ölçüsüz kenar: yatay / dikey doğru yatay / dikey kalmalı, yay biçimini korumalı (yalnız EĞİK doğru döner) — olmazsa ölçüler çelişiyor;
+    // tutarlı ölçüde boyu sıfırın altına inen serbest kenar ise gerçek hatadır (ölçüler o kenara yer bırakmıyor).
+    let flip = false;
+    for (const e of ce) {
+      if (e.L !== null) continue;
+      const now = sub(out.get(e.j)!, out.get(e.i)!);
+      if (e.arc ? dist(now, mul(e.u0, e.len)) > 0.01 : axial(e.u0) && Math.abs(cross(e.u0, now)) > 0.01) throw new DimConflict('free');
+      if (!e.arc && dot(e.u0, now) < 1e-3) flip = true;
+    }
+    if (flip) throw new Error('These dimensions leave no room for a free edge — it would collapse or flip');
+    return out;
+  };
+
+  /** 2) Ölçüler çelişiyor: her ölçü (ve ölçüsüz yayın yarıçapı) TAM; köşe açıları en az değişir. Dönme sırası (ilk dönen başta):
+   *  ölçüsüz eğik → ölçülü eğik → ölçüsüz yatay / dikey → ölçülü yatay / dikey ve yaylar; ölçüsüz doğrunun boyu en son.
+   *  Böylece serbest kenar varsa önce o döner; her kenar ölçülüyse sapma ölçülü kenarlara en küçük karelerle dağılır.
+   *  Gauss–Newton, her adım öncelik sıralı en küçük kareler. */
+  const bend = (mem: number[], a: number, ce: Edge[]): Map<number, P2> => {
+    const col = new Map<number, number>();
+    for (const i of mem) if (i !== a) col.set(i, col.size * 2);
+    const m = col.size * 2;
+    if (m > 240) throw new Error('This outline has too many points to close with every edge dimensioned — leave one edge free');
+    const Q = new Map(mem.map(i => [i, nodes[i]] as [number, P2]));
+    let scale = 1;
+    for (const e of ce) scale = Math.max(scale, e.len, e.L ?? 0);
+    const row = (i: number, j: number, v: P2): number[] => {
+      const r = new Array<number>(m).fill(0), pj = col.get(j), pi = col.get(i);
+      if (pj !== undefined) { r[pj] += v.x; r[pj + 1] += v.y; }
+      if (pi !== undefined) { r[pi] -= v.x; r[pi + 1] -= v.y; }
+      return r;
+    };
+    for (let it = 0; it < 80; it++) {
+      const mk = (): Tier => ({ rows: [], rhs: [] });
+      const T1 = mk(), keepAx = mk(), freeAx = mk(), keepOb = mk(), freeOb = mk(), T4 = mk();
+      for (const e of ce) {
+        const cur = sub(Q.get(e.j)!, Q.get(e.i)!), c = Math.max(vlen(cur), 1e-6), u = c > 1e-6 ? mul(cur, 1 / c) : e.u0, n0 = perp(e.u0);
+        if (e.L !== null || e.arc) { T1.rows.push(row(e.i, e.j, u)); T1.rhs.push((e.L ?? e.len) - c); }
+        const w = e.arc ? 4 : 1, dimd = e.L !== null || e.arc;
+        const tier = e.arc || axial(e.u0) ? (dimd ? keepAx : freeAx) : dimd ? keepOb : freeOb;
+        tier.rows.push(row(e.i, e.j, mul(n0, w / c))); tier.rhs.push((-dot(n0, cur) * w) / c);
+        if (e.L === null && !e.arc) { const wt = 1 / Math.sqrt(e.len); T4.rows.push(row(e.i, e.j, mul(u, wt))); T4.rhs.push((e.len - c) * wt); }
+      }
+      const x = lexSolve(m, [T1, keepAx, freeAx, keepOb, freeOb, T4]);
+      let step = 0;
+      for (const [i, k] of col) { Q.set(i, add(Q.get(i)!, P(x[k], x[k + 1]))); step = Math.max(step, Math.abs(x[k]), Math.abs(x[k + 1])); }
+      if (step < 1e-10 * scale) break;
+    }
+    for (const e of ce) {
+      const cur = sub(Q.get(e.j)!, Q.get(e.i)!);
+      if ((e.L !== null || e.arc) && Math.abs(vlen(cur) - (e.L ?? e.len)) > 0.005)
+        throw new Error(`These edge dimensions cannot close the outline${e.ex ? ` ("${e.ex}" is too long or too short for the others)` : ''}`);
+      if (dot(e.u0, cur) < 1e-3) throw new Error('These dimensions leave no room for an edge — it would collapse or flip');
+    }
+    return Q;
+  };
+
+  for (const comp of hot) {
+    const mem = par.map((_, i) => i).filter(i => find(i) === comp), ce = edges.filter(e => find(e.i) === comp);
+    let a = pinNode >= 0 && find(pinNode) === comp ? pinNode : -1;
+    if (a < 0) {
+      a = mem[0];
+      for (const i of mem) {
+        const di = dist(nodes[i], origin), da = dist(nodes[a], origin);
+        if (di < da - 1e-6 || (Math.abs(di - da) <= 1e-6 && (nodes[i].y < nodes[a].y - 1e-6 || (Math.abs(nodes[i].y - nodes[a].y) <= 1e-6 && nodes[i].x < nodes[a].x)))) a = i;
+      }
+    }
+    anchors.push(nodes[a]);
+    let pos: Map<number, P2>;
+    try { pos = linear(mem, a, ce); }
+    catch (err) {
+      if (!(err instanceof DimConflict)) throw err;
+      pos = bend(mem, a, ce);
+      tilted = true;
+    }
+    for (const [i, p] of pos) next[i] = p;
+  }
+  // Tasarım yönünden sapan kenarların asıl yönü saklanır (yalnız sapma varken).
+  const angOut: AngList = shapes.map(() => null);
+  let anyAng = false;
+  for (const e of edges) {
+    if (!hot.has(find(e.i))) continue;
+    const now = sub(next[e.j], next[e.i]);
+    if (vlen(now) < 1e-6 || Math.abs(cross(e.u0, unit(now))) < 1e-7) continue;
+    const row = (angOut[e.si] ??= segsOf(shapes[e.si]).map(() => null));
+    row[e.k] = Math.atan2(e.u0.y, e.u0.x);
+    anyAng = true;
+  }
+  const r6 = (v: number) => Math.round(v * 1e6) / 1e6;
+  const out = shapes.map((s, si) => {
+    let moved = false;
+    const pts = cps[si].map((p, pi) => {
+      const n = nodeOf[si][pi], dx = next[n].x - nodes[n].x, dy = next[n].y - nodes[n].y;
+      if (Math.abs(dx) < 1e-7 && Math.abs(dy) < 1e-7) return p;
+      moved = true;
+      return P(r6(p.x + dx), r6(p.y + dy));
+    });
+    return moved ? withCtrl(s, pts) : s;
+  });
+  return { shapes: out, anchors, tilted, angs: anyAng ? angOut : null };
+}
+export const solveDims = (shapes: Shape2[], dims: DimList | undefined | null, pin: [number, number] | null | undefined, vars: Record<string, number>, origin?: P2,
+  angs?: AngList | null): Shape2[] => solveDimsX(shapes, dims, pin, vars, origin, angs).shapes;
 
 // ═════════════════════════════════════════════════ 5. NESNE YAKALAMA ══════════════════════════════════════════════════
 export type SnapKind = 'endpoint' | 'midpoint' | 'center' | 'quadrant' | 'intersection' | 'perpendicular' | 'tangent' | 'nearest';
@@ -1027,6 +1299,12 @@ export interface DraftState {
   apply: SketchApply;
   /** Parametric kip — seçili kontrol noktaları ("nesneId:sıra"). */
   psel: string[];
+  /** Parametric kip — son tıklanan KENAR ("nesneId:kenar", sıra = segsOf): ölçü etiketi onda açılır, listeden seçilen parametre ona yazılır. */
+  pseg: string | null;
+  /** Kenar ölçüleri çözülemediyse nedeni (Drawing panelinde kırmızı). */
+  dimErr: string | null;
+  /** Ölçüler çevreyi fazla tanımlıyor ve çelişiyor: köşe açıları değiştirilerek karşılandı (Drawing panelinde uyarı, engel değil). */
+  dimTilt: boolean;
   /** Etkin yüzün çerçevesi: düzlem koordinatı + (dx, dy) = yüz çerçevesi koordinatı; w / h yüz ölçüsü; vars formül değişkenleri. */
   face: DraftFace | null;
   /** Parametric önizleme: sanal yüz ölçüsü (null = kapalı) — çizimin o ölçüde alacağı hâl sahnede hayalet olarak çizilir. */
@@ -1053,7 +1331,7 @@ export const useDraft = create<DraftState>(() => ({
   lastCmd: null, recent: {}, typed: '', panelOpen: false,
   planeCandidate: null, isolate: null, session: null, bodyPreview: null,
   apply: { op: 'cut', through: true, depth: 8, anchor: [0, 0], stretch: [false, false], mode: 'anchor', auto: true },
-  psel: [], face: null, pview: null, phover: null,
+  psel: [], pseg: null, dimErr: null, dimTilt: false, face: null, pview: null, phover: null,
 }));
 const get = useDraft.getState, set = useDraft.setState;
 
@@ -1083,13 +1361,32 @@ export const setApply = (patch: Partial<SketchApply>) => set(s => ({ apply: { ..
 export const setFace = (f: DraftFace | null) => set({ face: f });
 
 const say = (t: string) => set(s => ({ log: [...s.log.slice(-59), t] }));
-export const stripEnt = (e: Entity): Shape2 => { const s: Record<string, unknown> = { ...e }; delete s.id; delete s.plane; delete s.pb; delete s.re; delete s.ref; return s as unknown as Shape2; };
+export const stripEnt = (e: Entity): Shape2 => {
+  const s: Record<string, unknown> = { ...e };
+  delete s.id; delete s.plane; delete s.pb; delete s.re; delete s.ref; delete s.sd; delete s.fx; delete s.sa;
+  return s as unknown as Shape2;
+};
 /** Nesne güncellenirken nokta bağ tercihleri korunur (tür ve kontrol noktası sayısı aynıysa); yeni biçimle taşınan eski alanlar atılır. */
 const keepPrefs = (old: Entity, next: Entity): Entity => {
   const out = { ...next };
-  delete out.pb; delete out.re; delete out.ref;
-  if (old.pb && old.t === next.t && ctrlPoints(old).length === ctrlPoints(next).length) out.pb = old.pb;
+  delete out.pb; delete out.re; delete out.ref; delete out.sd; delete out.fx; delete out.sa;
+  const sameForm = old.t === next.t && ctrlPoints(old).length === ctrlPoints(next).length;
+  if (old.pb && sameForm) out.pb = old.pb;
   if (old.re && next.t === 'circle') out.re = old.re;
+  if (old.fx !== undefined && sameForm) out.fx = old.fx;
+  // Kenar ölçüleri: biçim aynıysa (taşı / döndür / ölçekle / esnet) hepsi kalır — komut bitince ölçüler yeniden çözülür.
+  // Kenar sayısı değiştiyse (kırp, köşe yuvarla) yalnız iki ucu yerinde duran kenarların ölçüsü kalır.
+  if (old.sd?.some(Boolean)) {
+    const os = segsOf(old), ns = segsOf(next), oc = ctrlPoints(old), nc = ctrlPoints(next);
+    const sd = sameForm && os.length === ns.length ? old.sd.slice(0, ns.length)
+      : ns.map(g => { const k = os.findIndex((o, i) => !!old.sd![i] && !o.sw === !g.sw && same(oc[o.a], nc[g.a], 1e-4) && same(oc[o.b], nc[g.b], 1e-4)); return k >= 0 ? old.sd![k] : undefined; });
+    if (sd.some(Boolean)) out.sd = sd;
+  }
+  // Tasarım yönleri yalnız salt ötelemede (MOVE) anlamını korur; döndürme / esnetme yeni yönü tasarım yönü yapar.
+  if (old.sa && sameForm && out.sd) {
+    const oc = ctrlPoints(old), nc = ctrlPoints(next), d = sub(nc[0], oc[0]);
+    if (oc.every((p, i) => same(add(p, d), nc[i], 1e-6))) out.sa = old.sa;
+  }
   return out;
 };
 const planeEnts = () => { const st = get(); return st.entities.filter(e => e.plane === st.activePlane); };
@@ -1117,7 +1414,7 @@ const ctx: Ctx = {
   ents: planeEnts,
   add(s) {
     const e = { ...s, id: `d${Date.now().toString(36)}${(seq++).toString(36)}`, plane: get().activePlane } as Entity;
-    delete e.pb; delete e.re; delete e.ref;   // yeni nesne (kopya dahil) bağsız başlar → varsayılan bağ; referans kenarın kopyası normal çizimdir
+    delete e.pb; delete e.re; delete e.ref; delete e.sd; delete e.fx; delete e.sa;   // yeni nesne (kopya dahil) bağsız başlar → varsayılan bağ; referans kenarın kopyası normal çizimdir
     set(st => ({ entities: [...st.entities, e] }));
     return e;
   },
@@ -1183,10 +1480,11 @@ function refresh() {
   set({ cmd: view, cursor: r?.cursor ?? null, hoverId: r?.ent?.id ?? null, preview });
 }
 function finish() {
-  const st = get();
-  if (undoBase && undoBase !== st.entities) set({ undoStack: [...st.undoStack.slice(-49), undoBase], redoStack: [] });
+  const st = get(), changed = !!undoBase && undoBase !== st.entities;
+  if (changed) set({ undoStack: [...st.undoStack.slice(-49), undoBase!], redoStack: [] });
   gen = null; req = null; curDef = null; undoBase = null;
   set({ dyn: DYN0 });
+  if (changed) resolveDims();   // ölçülü kenar komutla bozulduysa ölçüsüne döner; serbest kenarlar yeni hâlini korur
   refresh();
 }
 function advance(ev?: Ev) {
@@ -1214,13 +1512,15 @@ export function undo() {
   cancelCommand();
   const st = get();
   if (!st.undoStack.length) { say('Nothing to undo.'); return; }
-  set({ entities: withRefs(st.undoStack[st.undoStack.length - 1], st.entities), undoStack: st.undoStack.slice(0, -1), redoStack: [...st.redoStack, st.entities], selection: [], psel: [] });
+  set({ entities: withRefs(st.undoStack[st.undoStack.length - 1], st.entities), undoStack: st.undoStack.slice(0, -1), redoStack: [...st.redoStack, st.entities], selection: [], psel: [], pseg: null });
+  resolveDims();   // geri gelen çizim o anki parametre değerleriyle çözülür
 }
 export function redo() {
   cancelCommand();
   const st = get();
   if (!st.redoStack.length) { say('Nothing to redo.'); return; }
-  set({ entities: withRefs(st.redoStack[st.redoStack.length - 1], st.entities), redoStack: st.redoStack.slice(0, -1), undoStack: [...st.undoStack, st.entities], selection: [], psel: [] });
+  set({ entities: withRefs(st.redoStack[st.redoStack.length - 1], st.entities), redoStack: st.redoStack.slice(0, -1), undoStack: [...st.undoStack, st.entities], selection: [], psel: [], pseg: null });
+  resolveDims();
 }
 /** Komutu adı veya kısaltmasıyla başlatır (LINE · L …). */
 export function startCommand(name: string): boolean {
@@ -1324,11 +1624,11 @@ export function setAids(patch: Partial<Aids>) { set(s => ({ aids: { ...s.aids, .
 // ── Seçim ve düzlem (boşta) ──
 export function selectEntity(id: string | null, additive = false) {
   const st = get();
-  if (!id) { if (st.selection.length || st.psel.length) set({ selection: [], psel: [] }); return; }
+  if (!id) { if (st.selection.length || st.psel.length) set({ selection: [], psel: [], pseg: null }); return; }
   const e = st.entities.find(x => x.id === id);
   if (!e) return;
-  if (e.plane !== st.activePlane) { set({ activePlane: e.plane, selection: [id], psel: [] }); return; }
-  set({ selection: additive ? (st.selection.includes(id) ? st.selection.filter(i => i !== id) : [...st.selection, id]) : [id], psel: [] });
+  if (e.plane !== st.activePlane) { set({ activePlane: e.plane, selection: [id], psel: [], pseg: null }); return; }
+  set({ selection: additive ? (st.selection.includes(id) ? st.selection.filter(i => i !== id) : [...st.selection, id]) : [id], psel: [], pseg: null });
 }
 export function eraseSelection(): boolean {
   const st = get();
@@ -1345,7 +1645,7 @@ const near3 = (a: V3, b: V3, tol: number) => Math.abs(a[0] - b[0]) <= tol && Mat
 export function activatePlane(pl: Omit<DraftPlane, 'id'> | 'ground', fresh = false): string {
   cancelCommand();
   const st = get();
-  if (pl === 'ground') { set({ activePlane: GROUND_PLANE.id, planePick: false, planeCandidate: null, selection: [], psel: [], pview: null }); return GROUND_PLANE.id; }
+  if (pl === 'ground') { set({ activePlane: GROUND_PLANE.id, planePick: false, planeCandidate: null, selection: [], psel: [], pseg: null, pview: null }); return GROUND_PLANE.id; }
   // Aynı yüz = aynı hedef + yön + eş düzlem (orijin şartı yok): yoksa oturum düzlemi ile seçim düzlemi ayrı düşüp çizim kayboluyordu.
   const coplanar = (q: DraftPlane) => Math.abs((q.origin[0] - pl.origin[0]) * pl.n[0] + (q.origin[1] - pl.origin[1]) * pl.n[1] + (q.origin[2] - pl.origin[2]) * pl.n[2]) < 0.05;
   const same = (q: DraftPlane) => q.kind === 'face' && q.id !== st.session?.planeId && q.shapeId === pl.shapeId && near3(q.n, pl.n, 1e-4) && near3(q.u, pl.u, 1e-4) && coplanar(q);
@@ -1354,15 +1654,18 @@ export function activatePlane(pl: Omit<DraftPlane, 'id'> | 'ground', fresh = fal
   const used = new Set(st.entities.map(e => e.plane));
   const plane: DraftPlane = hit ?? { ...pl, id: `pl${Date.now().toString(36)}${(seq++).toString(36)}` };
   set({ planes: [...st.planes.filter(q => q.id === GROUND_PLANE.id || q.id === plane.id || used.has(q.id)).filter(q => q.id !== plane.id), plane],
-    activePlane: plane.id, planePick: false, planeCandidate: null, selection: [], psel: [], pview: null });
+    activePlane: plane.id, planePick: false, planeCandidate: null, selection: [], psel: [], pseg: null, pview: null });
   return plane.id;
 }
 export const setPlanePick = (on: boolean) => { if (on) cancelCommand(); set({ planePick: on, planeCandidate: null }); };
 /** Nesneleri bir düzleme yükler (adım düzenleme oturumu); geri alma yığınına girmez. */
-export function loadEntities(shapes: Shape2[], planeId: string, prefs?: (PtPref[] | undefined)[], radii?: (string | null | undefined)[]): Entity[] {
+export function loadEntities(shapes: Shape2[], planeId: string, prefs?: (PtPref[] | undefined)[], radii?: (string | null | undefined)[],
+  dims?: DimList, pin?: [number, number] | null, angs?: AngList | null): Entity[] {
   const made = shapes.map((s, i) => ({
     ...s, id: `d${Date.now().toString(36)}${(seq++).toString(36)}`, plane: planeId,
     ...(prefs?.[i] ? { pb: prefs[i] } : {}), ...(radii?.[i] && s.t === 'circle' ? { re: radii[i]! } : {}),
+    ...(dims?.[i]?.some(Boolean) ? { sd: dims[i]!.map(x => x || undefined) } : {}), ...(pin && pin[0] === i ? { fx: pin[1] } : {}),
+    ...(angs?.[i]?.some(x => x != null) ? { sa: angs[i]!.map(x => x ?? null) } : {}),
   }) as Entity);
   set(st => ({ entities: [...st.entities, ...made] }));
   return made;
@@ -1372,7 +1675,7 @@ export function takeEntities(planeId: string, ids?: string[]): Shape2[] {
   const k = ids ? new Set(ids) : null, st = get();
   const taken = st.entities.filter(e => e.plane === planeId && (!k || k.has(e.id)));
   const gone = new Set(taken.map(e => e.id));
-  set({ entities: st.entities.filter(e => !gone.has(e.id)), selection: st.selection.filter(i => !gone.has(i)), undoStack: [], redoStack: [], psel: [] });
+  set({ entities: st.entities.filter(e => !gone.has(e.id)), selection: st.selection.filter(i => !gone.has(i)), undoStack: [], redoStack: [], psel: [], pseg: null });
   return taken.map(stripEnt);
 }
 
@@ -1394,24 +1697,29 @@ export function pointAt(q: P2, tol: number): string | null {
   return best;
 }
 /** İmlecin altındaki çizim PARÇASI: doğru / yay → iki ucu · polyline → tıklanan kenarın iki köşesi · daire / elips → merkez. */
-export function segmentAt(q: P2, tol: number): { id: string; keys: string[] } | null {
-  let best: { id: string; keys: string[] } | null = null, bd = tol;
+/** j: kenarın segsOf sırası (ölçü alabilen parça); daire / elipste -1. */
+export function segmentAt(q: P2, tol: number): { id: string; keys: string[]; j: number } | null {
+  let best: { id: string; keys: string[]; j: number } | null = null, bd = tol;
   for (const e of drawnEnts()) {
-    if (e.t !== 'pline') { const d = closestOn(e, q).d; if (d <= bd) { bd = d; best = { id: e.id, keys: ctrlPoints(e).map((_, i) => ptKey(e.id, i)) }; } continue; }
+    if (e.t !== 'pline') {
+      const d = closestOn(e, q).d;
+      if (d <= bd) { bd = d; best = { id: e.id, keys: ctrlPoints(e).map((_, i) => ptKey(e.id, i)), j: e.t === 'line' || e.t === 'arc' ? 0 : -1 }; }
+      continue;
+    }
     const n = e.v.length, m = e.closed ? n : n - 1;
     for (let j = 0; j < m; j++) {
       const a = e.v[j], b = e.v[(j + 1) % n];
       if (same(a, b)) continue;
       const d = primClosest(a.b ? bulgeArc(a, b, a.b) : { k: 's', a: P(a.x, a.y), b: P(b.x, b.y) }, q).d;
-      if (d <= bd) { bd = d; best = { id: e.id, keys: [ptKey(e.id, j), ptKey(e.id, (j + 1) % n)] }; }
+      if (d <= bd) { bd = d; best = { id: e.id, keys: [ptKey(e.id, j), ptKey(e.id, (j + 1) % n)], j }; }
     }
   }
   return best;
 }
 /** Bir parçanın noktalarını seçer (nesnesi de seçili olur → Delete onu siler); additive: seçime ekler. */
-export function selectPoints(keys: string[], entId: string, additive: boolean) {
-  const st = get();
-  set(additive ? { psel: [...new Set([...st.psel, ...keys])], selection: [...new Set([...st.selection, entId])] } : { psel: keys, selection: [entId] });
+export function selectPoints(keys: string[], entId: string, additive: boolean, seg: number = -1) {
+  const st = get(), pseg = seg >= 0 ? ptKey(entId, seg) : null;
+  set(additive ? { psel: [...new Set([...st.psel, ...keys])], selection: [...new Set([...st.selection, entId])], pseg } : { psel: keys, selection: [entId], pseg });
 }
 export const setPHover = (h: string | null) => { if (get().phover !== h) set({ phover: h }); };
 /** Uç uca değen doğru parçalarını zincirler (aynı doğrultudaki ardışık parçalar birleşir): kapalı / açık polyline'lar. */
@@ -1494,7 +1802,7 @@ export function setRefEdges(planeId: string | null, lines: LineS[]) {
 /** Noktayı seçer; additive: seçime ekler / seçiliyse çıkarır. */
 export function togglePoint(key: string, additive: boolean) {
   const cur = get().psel;
-  set({ psel: additive ? (cur.includes(key) ? cur.filter(k => k !== key) : [...cur, key]) : [key], selection: [] });
+  set({ psel: additive ? (cur.includes(key) ? cur.filter(k => k !== key) : [...cur, key]) : [key], selection: [], pseg: null });
 }
 function mapEnts(ids: Set<string>, f: (e: Entity) => Entity, undoable: boolean) {
   const st = get(), next = st.entities.map(e => (ids.has(e.id) ? f(e) : e));
@@ -1518,6 +1826,7 @@ export function movePointsTo(keys: string[], axis: 'x' | 'y', coord: number, pre
     for (const i of by.get(e.id)!) if (cp[i]) { cp[i] = axis === 'x' ? P(coord, cp[i].y) : P(cp[i].x, coord); pb[i][axis] = pref; }
     return { ...(withCtrl(e, cp) as Entity), pb };
   }, true);
+  resolveDims();
 }
 /** Dairelerin yarıçapı: r uygulanır; expr verilirse formül olarak saklanır (yüz ölçüsü değişince yeniden hesaplanır). Geri alınabilir. */
 export function setCircleRadius(ids: string[], r: number, expr: string | null) {
@@ -1528,6 +1837,71 @@ export function setCircleRadius(ids: string[], r: number, expr: string | null) {
     return out;
   }, true);
 }
+
+// ── Parametric kip: kenar ölçüleri ve sabit nokta ──
+/** Etkin düzlemdeki ölçülü çizimi O ANKİ parametre değerleriyle çözer (depoya yazar; geri alma yığınına girmez). Hata metni döner.
+ *  Yüz çerçevesi henüz okunmadıysa (değişkenler yok) dokunmaz. */
+export function resolveDims(): string | null {
+  const st = get(), f = st.face?.planeId === st.activePlane ? st.face : null, ents = st.entities.filter(e => e.plane === st.activePlane && !e.ref);
+  // Ölçüler yalnız Parametric kipte geçerlidir (Simple adımda saklanmaz → orada çizimi de oynatmaz).
+  if (st.apply.mode !== 'points' || !f || !ents.some(e => e.sd?.some(Boolean))) { if (st.dimErr || st.dimTilt) set({ dimErr: null, dimTilt: false }); return null; }
+  const pinI = ents.findIndex(e => e.fx !== undefined);
+  try {
+    const r = solveDimsX(ents.map(stripEnt), ents.map(e => e.sd), pinI >= 0 ? [pinI, ents[pinI].fx!] : null, f.vars, P(-f.dx, -f.dy), ents.map(e => e.sa));
+    const by = new Map<string, Entity>();
+    ents.forEach((e, i) => {
+      const sa = r.angs?.[i]?.some(x => x != null) ? r.angs[i]!.map(x => x ?? null) : undefined;
+      if (sameShape(r.shapes[i], e) && JSON.stringify(sa ?? null) === JSON.stringify(e.sa ?? null)) return;
+      const o = { ...e, ...r.shapes[i] } as Entity;
+      if (sa) o.sa = sa; else delete o.sa;
+      by.set(e.id, o);
+    });
+    const patch: Partial<DraftState> = {};
+    if (by.size) patch.entities = st.entities.map(e => by.get(e.id) ?? e);
+    if (st.dimErr) patch.dimErr = null;
+    if (st.dimTilt !== r.tilted) patch.dimTilt = r.tilted;
+    if (Object.keys(patch).length) set(patch);
+    return null;
+  } catch (err) {
+    const msg = (err as Error)?.message || 'Dimensions could not be solved';
+    if (st.dimErr !== msg) set({ dimErr: msg });
+    return msg;
+  }
+}
+/** Çözücü değişmeyen nesneyi aynı referansla döndürür; soyulmuş kopyayla karşılaştırma alan alan yapılır. */
+const sameShape = (a: Shape2, e: Entity) => JSON.stringify(a) === JSON.stringify(stripEnt(e));
+/** Kenara ölçü yazar (expr null / boş: ölçü kalkar, kenar serbest) ve çizimi çözer. Çözülemezse hiçbir şey değişmez, neden döner. Geri alınabilir. */
+export function setSegDim(id: string, j: number, expr: string | null): string | null {
+  const st = get(), e = st.entities.find(x => x.id === id), n = e ? segsOf(e).length : 0;
+  if (!e || e.ref || j < 0 || j >= n) return 'That edge no longer exists.';
+  const sd = Array.from({ length: n }, (_, k) => e.sd?.[k] || undefined);
+  sd[j] = expr?.trim() || undefined;
+  const next = { ...e } as Entity;
+  if (sd.some(Boolean)) next.sd = sd; else delete next.sd;
+  set({ entities: st.entities.map(x => (x.id === id ? next : x)) });
+  const err = resolveDims();
+  if (err) { set({ entities: st.entities, dimErr: err }); return err; }   // neden panelde görünür; sonraki başarılı çözüm siler
+  set({ undoStack: [...st.undoStack.slice(-49), st.entities], redoStack: [] });
+  return null;
+}
+/** Sabit noktayı işaretler (key null: işaret kalkar → yüz orijinine en yakın köşe). Çizim yerinden oynamaz; sonraki ölçü değişimleri bu noktadan büyür. */
+export function setPin(key: string | null) {
+  const st = get(), hit = key ? splitKey(key) : null;
+  set({ entities: st.entities.map(e => {
+    if (e.plane !== st.activePlane || e.ref) return e;
+    const fx = hit && hit[0] === e.id && hit[1] < ctrlPoints(e).length ? hit[1] : undefined;
+    if (e.fx === fx) return e;
+    const o = { ...e } as Entity;
+    if (fx === undefined) delete o.fx; else o.fx = fx;
+    return o;
+  }) });
+}
+/** Etkin düzlemdeki sabit nokta ("nesneId:sıra") ya da null. */
+export const pinKey = (st: Pick<DraftState, 'entities' | 'activePlane'> = get()): string | null => {
+  const e = st.entities.find(x => x.plane === st.activePlane && !x.ref && x.fx !== undefined);
+  return e ? ptKey(e.id, e.fx!) : null;
+};
+export const splitSegKey = (k: string): [string, number] => splitKey(k);
 
 // ═════════════════════════════════════════════════ 7. KOMUTLAR ════════════════════════════════════════════════════════
 const o = (label: string, key: string): Opt => ({ label, key });
@@ -1576,7 +1950,7 @@ function* PSEL(): G {
       prompt: `POINTS  Click a point, or the first corner of a window${n ? `  (${n} selected)` : ''}`,
     };
     if (isOpt(ev, 'A')) { set({ psel: all(), selection: [] }); continue; }
-    if (isOpt(ev, 'C')) { set({ psel: [] }); continue; }
+    if (isOpt(ev, 'C')) { set({ psel: [], pseg: null }); continue; }
     if (ev.k !== 'pt') return;
     const hit = pointAt(ev.p, lastMove?.tol ?? 0);
     if (hit) { togglePoint(hit, true); continue; }
